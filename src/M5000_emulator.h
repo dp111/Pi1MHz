@@ -1,0 +1,1 @@
+void M5000_emulator_init();
