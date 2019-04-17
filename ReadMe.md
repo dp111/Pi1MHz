@@ -10,7 +10,7 @@ A simple Level shifter is required to connect the 1MHz port to the beeb. A Pizer
 
 PiZero and PiZeroW are treated as the same. Pi3B+ is also supported via a cable as it won't fit under the computer. Pi3A+ should also work but hasn't been tested.
 
-## setting up
+## Setting up
 
 You will need a PiZero or Pi3B+ with a cable, SDCARD and level shifter and some means of powering the Pi ( a bit of wire from the beeb)
 
@@ -20,7 +20,7 @@ Insert the SDCARD into the pi. Attach the level shifter to the pi and insert int
 
 ## ADFS Harddisc Emulation
 
-ADFS harddisc emulation is based on BeebSCSI. For more information goto : https://www.domesday86.com/?page_id=400 .If you have a Master then you will have ADFS already in ROM. If you have a beeb you will need ADFS. It is possible if the computer boots very fast and the SDCARD is slow that the computer boots faster than the Pi in this case an extra CTRL-BREAK will be required.
+ADFS harddisc emulation is based on BeebSCSI. For more information goto : https://www.domesday86.com/?page_id=400 . If you have a Master then you will have ADFS already in ROM. If you have a beeb you will need ADFS. It is possible if the computer boots very fast and the SDCARD is slow that the computer boots faster than the Pi in this case an extra CTRL-BREAK will be required.
 
 Read speed appears to be about 100K/sec. 
 
