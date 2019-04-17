@@ -1,4 +1,18 @@
 /*
+
+    Pi1MHz is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Pi1MHz is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Pi1MHz.  If not, see <http://www.gnu.org/licenses/>.
+
    Raspberry Pi 1MHz emulator
 
    The main program and the Fast Interrupt handle the interface side of things
@@ -66,6 +80,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 &FD00-&FDFF Page-wide expansion RAM window
 &FD40-&FD4F Torch SASI/SCSI Hard Drive Access
 &FDFE-&FDFF Reset Test vector
+
 */
 
 #include <string.h>
@@ -118,14 +133,14 @@ size_t  Pi1MHz_polls_max;
 // for access variable use WRITE_FRED WRITE_JIM READ_FRED READ_JIM
 void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr func_ptr )
 {
-   Pi1MHz_callback_table[access+addr]=func_ptr;
+   Pi1MHz_callback_table[access+addr] = func_ptr;
 }
 
 // For each task that whats to be polled during idle it must register itself.
 // is can only register once
 void Pi1MHz_Register_Poll( func_ptr func_ptr )
 {
-   Pi1MHz_poll_table[Pi1MHz_polls_max]=func_ptr;
+   Pi1MHz_poll_table[Pi1MHz_polls_max] = func_ptr;
    Pi1MHz_polls_max++;
 }
 
@@ -162,7 +177,7 @@ void Pi1MHzBus_addr_Status(unsigned int gpio)
    Pi1MHz_Memory[addr+1] = data;
 }
 
-// take date written by the beeb and put it to the correct place
+// take data written by the beeb and put it to the correct place
 void Pi1MHzBus_write_Status(unsigned int gpio)
 {
    uint32_t data = GET_DATA(gpio);
