@@ -10,17 +10,17 @@ A simple Level shifter is required to connect the 1MHz port to the beeb. A Pizer
 
 PiZero and PiZeroW are treated as the same. Pi3B+ is also supported via a cable as it won't fit under the computer. Pi3A+ should also work but hasn't been tested.
 
-## setting up
+## Setting up
 
 You will need a PiZero or Pi3B+ with a cable, SDCARD and level shifter and some means of powering the Pi ( a bit of wire from the beeb)
 
-Copy the contents of the firmware directory to the root of your SDCARD. If you want a prepared ADFS harddisc you can copy https://www.domesday86.com/wp-content/u ... UN_2_5.zip to the root of the SDCARD otherwise you can find out more details on creating an ADFS LUN at : https://www.domesday86.com/?page_id=400
+Copy the contents of the firmware directory to the root of your SDCARD. If you want a prepared ADFS harddisc you can copy https://www.domesday86.com/wp-content/uploads/2019/03/BeebSCSI_Quickstart_LUN_2_5.zip to the root of the SDCARD otherwise you can find out more details on creating an ADFS LUN at : https://www.domesday86.com/?page_id=400
 
 Insert the SDCARD into the pi. Attach the level shifter to the pi and insert into the 1MHz bus socket of the beeb. Take extra care to ensure that it is connected correctly. You will also need to take +5v from somewhere to power the pi, this can be the user port or Tube for example.
 
 ## ADFS Harddisc Emulation
 
-ADFS harddisc emulation is based on BeebSCSI. For more information goto : https://www.domesday86.com/?page_id=400 .If you have a Master then you will have ADFS already in ROM. If you have a beeb you will need ADFS. It is possible if the computer boots very fast and the SDCARD is slow that the computer boots faster than the Pi in this case an extra CTRL-BREAK will be required.
+ADFS harddisc emulation is based on BeebSCSI. For more information goto : https://www.domesday86.com/?page_id=400 . If you have a Master then you will have ADFS already in ROM. If you have a beeb you will need ADFS. It is possible if the computer boots very fast and the SDCARD is slow that the computer boots faster than the Pi in this case an extra CTRL-BREAK will be required.
 
 Read speed appears to be about 100K/sec. 
 
@@ -55,6 +55,25 @@ Addresses currently defined
 
 ## Command.txt options
 
-*LED override : depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx where xx is the pi GPIO number
-*M5000_BeebAudio_Off=1 to turn off Audio out of the Beeb and enable stereo on the headphone jack of Pi3B+
-*M5000_Gain=xxxx : Over rides default gain of 16. Add 1000 to disable auto scaling as well. Auto scaling reduces the gain if the signal clips 
+* LED override : depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx where xx is the pi GPIO number
+* M5000_BeebAudio_Off=1 to turn off Audio out of the Beeb and enable stereo on the headphone jack of Pi3B+
+* M5000_Gain=xxxx : Over rides default gain of 16. Add 1000 to disable auto scaling as well. Auto scaling reduces the gain if the signal clips 
+
+## Donations Welcome
+
+Donations to developement of Projects are welcome, especially if you are make a profit from using the project e.g. selling boards or kits.
+
+## License
+
+    Pi1MHz is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Pi1MHz is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Pi1MHz.  If not, see <http://www.gnu.org/licenses/>.
