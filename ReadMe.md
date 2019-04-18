@@ -14,7 +14,7 @@ PiZero and PiZeroW are treated as the same. Pi3B+ is also supported via a cable 
 
 You will need a PiZero or Pi3B+ with a cable, SDCARD and level shifter and some means of powering the Pi ( a bit of wire from the beeb)
 
-Copy the contents of the firmware directory to the root of your SDCARD. If you want a prepared ADFS harddisc you can copy {https://www.domesday86.com/wp-content/uploads/2019/03/BeebSCSI_Quickstart_LUN_2_5.zip} to the root of the SDCARD otherwise you can find out more details on creating an ADFS LUN at : https://www.domesday86.com/?page_id=400
+Copy the contents of the firmware directory to the root of your SDCARD. If you want a prepared ADFS harddisc you can copy https://www.domesday86.com/wp-content/uploads/2019/03/BeebSCSI_Quickstart_LUN_2_5.zip to the root of the SDCARD otherwise you can find out more details on creating an ADFS LUN at : https://www.domesday86.com/?page_id=400
 
 Insert the SDCARD into the pi. Attach the level shifter to the pi and insert into the 1MHz bus socket of the beeb. Take extra care to ensure that it is connected correctly. You will also need to take +5v from somewhere to power the pi, this can be the user port or Tube for example.
 
