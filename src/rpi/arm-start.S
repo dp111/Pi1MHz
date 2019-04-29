@@ -159,7 +159,7 @@ _reset_continue:
 
 // import fiq setup from fiq.s this is a #define 
 #ifdef FIQ_SETUP
-    FIQ_SETUP
+    FIQ_SETUP_M
 #endif
 
     // Also setup the stack used for undefined exceptions
