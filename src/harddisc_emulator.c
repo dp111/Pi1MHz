@@ -141,12 +141,7 @@ void harddisc_emulator_init( void )
    // clear status
    HD_STATUS = 0;
    // Turn off all host adapter signals
-   hd_emulator_status(STATUS_MSG, CLEAR);
-   hd_emulator_status(STATUS_BSY, CLEAR);
-   hd_emulator_status(STATUS_REQ, CLEAR);
-   hd_emulator_status(STATUS_INO, CLEAR);
-   hd_emulator_status(STATUS_CND, CLEAR);
-   hd_emulator_status(STATUS_IRQ, CLEAR);
+   hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_CND | STATUS_IRQ, CLEAR);
 
    HD_ACK = CLEAR;
    HD_SEL = CLEAR;
@@ -214,7 +209,7 @@ void harddisc_emulator_init( void )
 // Databus manipulation functions -------------------------------------------------------
 
 // Read a byte from the databus (directly)
-inline uint8_t hostadapterReadDatabus(void)
+uint8_t hostadapterReadDatabus(void)
 {
    return HD_DATA;
 }
@@ -222,7 +217,7 @@ inline uint8_t hostadapterReadDatabus(void)
 // SCSI Bus action functions ------------------------------------------------------------
 
 // Function to read a byte from the host (using REQ/ACK)
-inline uint8_t hostadapterReadByte(void)
+uint8_t hostadapterReadByte(void)
 {
    // Set the REQuest signal
    hostadapterWriteRequestFlag(ACTIVE);
@@ -236,7 +231,7 @@ inline uint8_t hostadapterReadByte(void)
 }
 
 // Function to write a byte to the host (using REQ/ACK)
-inline void hostadapterWriteByte(uint8_t databusValue)
+void hostadapterWriteByte(uint8_t databusValue)
 {
    // Write the byte of data to the databus
    Pi1MHz_Memory[HD_ADDR] = databusValue;
@@ -258,11 +253,11 @@ inline void hostadapterWriteByte(uint8_t databusValue)
 uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
 {
    uint32_t currentByte = 0;
-   uint32_t timeoutCounter = 0;
+   uint32_t timeoutCounter;
 
    // Loop to write bytes (unless a reset condition is detected)
-   while (currentByte < 256 && timeoutCounter != TOC_MAX)
-   {
+   
+   do {
       // Write the current byte to the databus and point to the next byte
       Pi1MHz_Memory[HD_ADDR] = dataBuffer[currentByte++];
 
@@ -282,7 +277,7 @@ uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
 
       // Clear the REQuest signal
       hostadapterWriteRequestFlag(CLEAR);
-   }
+   } while (currentByte < 256 );
 
    return currentByte - 1;
 }
@@ -292,11 +287,11 @@ uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
 uint16_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
 {
    uint32_t currentByte = 0;
-   uint32_t timeoutCounter = 0;
+   uint32_t timeoutCounter;
 
    // Loop to read bytes (unless a reset condition is detected)
-   while (currentByte < 256 && timeoutCounter != TOC_MAX)
-   {
+   
+   do {
       // Set the REQuest signal
       hostadapterWriteRequestFlag(ACTIVE);
 
@@ -316,7 +311,7 @@ uint16_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
 
       // Clear the REQuest signal
       hostadapterWriteRequestFlag(CLEAR);
-   }
+   } while (currentByte < 256 );
 
    return currentByte - 1;
 }
@@ -363,7 +358,7 @@ void hostadapterWriteBusyFlag(bool flagState)
 
 // Function to write the host request flag
 // Note: all SCSI signals are inverted logic
-inline void hostadapterWriteRequestFlag(bool flagState)
+void hostadapterWriteRequestFlag(bool flagState)
 {
    if (flagState==CLEAR)
    {
