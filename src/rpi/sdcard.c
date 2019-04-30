@@ -264,10 +264,10 @@ static rpi_emmc_t* const RPI_EMMCBase = (rpi_emmc_t*) EMMC_BASE;
 #define SD_VER_4            5
 
 #ifdef EMMC_DEBUG
-static char *sd_versions[] = { "unknown", "1.0 and 1.01", "1.10",
+static const char *sd_versions[] = { "unknown", "1.0 and 1.01", "1.10",
     "2.00", "3.0x", "4.xx" };
 
-static char *err_irpts[] = { "CMD_TIMEOUT", "CMD_CRC", "CMD_END_BIT", "CMD_INDEX",
+static const char *err_irpts[] = { "CMD_TIMEOUT", "CMD_CRC", "CMD_END_BIT", "CMD_INDEX",
    "DATA_TIMEOUT", "DATA_CRC", "DATA_END_BIT", "CURRENT_LIMIT",
    "AUTO_CMD12", "ADMA", "TUNING", "RSVD" };
 #endif
@@ -275,7 +275,7 @@ static char *err_irpts[] = { "CMD_TIMEOUT", "CMD_CRC", "CMD_END_BIT", "CMD_INDEX
 size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
 size_t sd_write(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
 
-static uint32_t sd_commands[] = {
+static const uint32_t sd_commands[] = {
     SD_CMD_INDEX(0),
     SD_CMD_RESERVED(1),
     SD_CMD_INDEX(2) | SD_RESP_R2,
@@ -342,7 +342,7 @@ static uint32_t sd_commands[] = {
     SD_CMD_RESERVED(63)
 };
 
-static uint32_t sd_acommands[] = {
+static const uint32_t sd_acommands[] = {
     SD_CMD_RESERVED(0),
     SD_CMD_RESERVED(1),
     SD_CMD_RESERVED(2),
