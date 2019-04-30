@@ -251,7 +251,7 @@ static void music5000_get_sample(uint32_t *left, uint32_t *right)
     *right = sr + audio_range;
     if (clip && autorange) {
         gain /= 2;
-        LOG_WARN("Music 5000 clipped, reducing gain by 3dB (divisor now %d)\r\n", gain);
+        LOG_DEBUG("Music 5000 clipped, reducing gain by 3dB (divisor now %u)\r\n", gain);
     }
 }
 
