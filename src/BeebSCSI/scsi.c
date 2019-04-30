@@ -724,18 +724,14 @@ static uint8_t scsiCommandRequestSense(void)
    // Since this command provides additional error information, it is available even if the
    // LUN is unavailable (no LUN image on file system).
 
-      // Get the requested number of sense bytes
-      uint8_t numberOfSenseBytes = commandDataBlock.data[4];
-
       // The ACB-4000 manual (section 5.5.1) states that, if the number of sense bytes
       // is less than 4, it should default to four bytes
-      if (numberOfSenseBytes < 4) numberOfSenseBytes = 4;
 
       // Note: The ACB-4000 manual is a little confusing around the subject of the
       // number of bytes.  There doesn't seem to be any condition in which the
       // number would be anything other than 4 (nor any result with less than 4 bytes).
 
-    debugStringInt16_P(PSTR("SCSI Commands: Sense bytes = "), numberOfSenseBytes, true);
+    debugStringInt16_P(PSTR("SCSI Commands: Sense bytes = "), (commandDataBlock.data[4]<4)?4:commandDataBlock.data[4], true);
    }
    // Set up the control signals ready for the data in phase
    scsiInformationTransferPhase(ITPHASE_DATAIN);
@@ -1700,14 +1696,13 @@ static uint8_t scsiCommandVerify(void)
    if (debugFlag_scsiCommands) {
       // Get the requested number of blocks
       // Get the requested number of blocks from the CDB
-      uint32_t numberOfBlocks =
-      ((uint32_t)commandDataBlock.data[7] << 8) |
-      ((uint32_t)commandDataBlock.data[8]);
 
       // If the number of blocks is 0, set to the maximum of 65536
-      if (numberOfBlocks == 0) numberOfBlocks = 65536;
       debugStringInt32_P(PSTR(", LBA = "), logicalBlockAddress, false);
-      debugStringInt32_P(PSTR(", number of blocks = "), numberOfBlocks, true);
+      debugStringInt32_P(PSTR(", number of blocks = "), 
+      ((((uint32_t)commandDataBlock.data[7] << 8) | ((uint32_t)commandDataBlock.data[8]))==0)?65536:
+        ((uint32_t)commandDataBlock.data[7] << 8) | ((uint32_t)commandDataBlock.data[8])
+      , true);
    }
    // Read the drive descriptor
    if (filesystemReadLunDescriptor(commandDataBlock.targetLUN, scsiSectorBuffer)) {
