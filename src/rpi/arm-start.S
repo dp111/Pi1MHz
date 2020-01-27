@@ -90,7 +90,7 @@ _start:
     #include "../FIQ.s"
 #else
     ldr pc,_fiq_vector_h
-    _fiq_vector_h:                  .word   arm_irq_handler
+    _fiq_vector_h:                  .word   arm_fiq_handler
 #endif
 
 _interrupt_vector_h:                .word   arm_irq_handler
@@ -114,16 +114,16 @@ _reset_:
     orr     r4,#SCTLR_ENABLE_BRANCH_PREDICTION + SCTLR_ENABLE_INSTRUCTION_CACHE
     // System Control Register = R0
     mcr     p15,0,r4,c1,c0,0
-    
+
     // Set the CPACR for access to CP10 and CP11, and clear the ASEDIS and D32DIS bits:
     ldr     r4, =(0xf << 20)
     mcr     p15, 0, r4, c1, c0, 2
-    
+
     // Enable VFP ------------------------------------------------------------
     // Set the FPEXC EN bit to enable the NEON MPE:
     mov     r4, #0x40000000
     vmsr    fpexc, r4
-    
+
 #ifdef HAS_MULTICORE
 
     // enter in HYP mode and need to force a switch to SVC mode
@@ -136,6 +136,7 @@ _reset_:
     .word 0xE12EF30E  // msr_elr_hyp lr
     .word 0xE160006E  // eret
 _reset_continue:
+
 
 #endif
 
@@ -157,8 +158,8 @@ _reset_continue:
     CPS     #CPSR_MODE_FIQ
     add     sp, r4, #C0_FIQ_STACK
 
-// import fiq setup from fiq.s this is a #define 
-#ifdef FIQ_SETUP
+// import fiq setup from fiq.s this is a #define
+#ifdef FIQ_SETUP_CODE
     FIQ_SETUP_M
 #endif
 
@@ -185,12 +186,12 @@ _reset_continue:
 
     ldr     r4,=__bss_start__
     ldr     r5,=__bss_end__
-   
+
     mov     r6,#0
     mov     r7,#0
     mov     r8,#0
-    mov     r9,#0  
-    
+    mov     r9,#0
+
     stmia   r4!,{r6,r7,r8,r9}
     bic     r4,r4,#0x3F       // 64 byte align
 
