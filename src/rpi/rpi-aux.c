@@ -5,21 +5,15 @@
 #include "rpi-gpio.h"
 #include "arm-start.h"
 #include "info.h"
-#include "rpi-systimer.h"
-
-/* Define the system clock frequency in MHz for the baud rate calculation.
- This is clearly defined on the BCM2835 datasheet errata page:
- http://elinux.org/BCM2835_datasheet_errata */
-#define FALLBACK_SYS_FREQ    250000000
 
 #define USE_IRQ
 
 #define RPI_TX_PIN 14
 #define RPI_RX_PIN 15
 
-#define TX_BUFFER_SIZE 65536  // Must be a power of 2
-
 #if defined(USE_IRQ)
+
+#define TX_BUFFER_SIZE 65536  // Must be a power of 2
 
 #include "rpi-interrupts.h"
 
@@ -47,7 +41,7 @@ static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
 #else
       /* Else just echo characters */
       //RPI_AuxMiniUartWrite(RPI_Aux->MU_IO & 0xFF);
-      RPI_Aux->MU_IO; // read char and dump to clear irq? 
+      RPI_Aux->MU_IO; // read char and dump to clear irq?
 #endif
     }
 
@@ -65,6 +59,7 @@ static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
     }
   }
   _data_memory_barrier();
+
 }
 #endif
 
@@ -80,13 +75,8 @@ void RPI_AuxMiniUartInit(int baud)
   RPI_SetGpioPinFunction(RPI_RX_PIN, FS_ALT5);
 
   // Enable weak pullups
-  RPI_GpioBase->GPPUD = 2;
-  RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
-  
-  RPI_GpioBase->GPPUDCLK0 = (1 << RPI_TX_PIN) | (1 << RPI_RX_PIN);
-  RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
 
-  RPI_GpioBase->GPPUDCLK0 = 0;
+  RPI_SetPullUps((1u << RPI_TX_PIN) | (1u << RPI_RX_PIN));
 
   _data_memory_barrier();
 
@@ -111,22 +101,20 @@ void RPI_AuxMiniUartInit(int baud)
   /* Disable all interrupts from MU and clear the fifos */
   RPI_Aux->MU_IER = 0;
   RPI_Aux->MU_IIR = 0xC6;
-  
+
   int sys_freq = get_clock_rate(CORE_CLK_ID);
-  if (!sys_freq) {
-     sys_freq = FALLBACK_SYS_FREQ;
-  }
 
   _data_memory_barrier();
   /* Transposed calculation from Section 2.2.1 of the ARM peripherals manual */
   RPI_Aux->MU_BAUD = ( sys_freq / (8 * baud)) - 1;
- 
+
 #ifdef USE_IRQ
    {  extern int _interrupt_vector_h;
    tx_buffer = malloc(TX_BUFFER_SIZE);
    tx_head = tx_tail = 0;
-   *((unsigned int *) &_interrupt_vector_h )= (unsigned int )&RPI_AuxMiniUartIRQHandler;
+   *((unsigned int *) &_interrupt_vector_h ) = (unsigned int )&RPI_AuxMiniUartIRQHandler;
    _data_memory_barrier();
+
    RPI_IRQBase->Enable_IRQs_1 = (1 << 29);
    _data_memory_barrier();
    RPI_Aux->MU_IER |= AUX_MUIER_RX_INT;
