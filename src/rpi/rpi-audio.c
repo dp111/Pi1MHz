@@ -8,7 +8,7 @@
 // buffer contains both left and right sample words
 #define DMA_BUFFER_SIZE 512
 
-struct  __attribute__((__packed__)) bcm2708_dma_cb {
+struct bcm2708_dma_cb {
    uint32_t info;
    uint32_t src;
    uint32_t dst;
@@ -96,9 +96,9 @@ static void init_dma_buffer(size_t buf, uint32_t buffer_init)
 uint32_t rpi_audio_init(uint32_t samplerate)
 {
    uint32_t audio_range = 500000000 / (2 * samplerate);
-   
+
    _data_memory_barrier();
-   
+
    RPI_CLKBase->PWM_CTL = PM_PASSWORD | BCM2835_PWMCLK_CNTL_KILL;
    _data_memory_barrier();
    RPI_PWMBase->PWM_CONTROL = 0;
@@ -107,22 +107,22 @@ uint32_t rpi_audio_init(uint32_t samplerate)
 
    // Bits 0..11 Fractional Part Of Divisor = 0, Bits 12..23 Integer Part Of Divisor = 2
    _data_memory_barrier();
-   
+
    RPI_CLKBase->PWM_DIV = PM_PASSWORD | (0x2000);
    RPI_CLKBase->PWM_CTL = PM_PASSWORD | BCM2835_PWMCLK_CNTL_ENABLE | BCM2835_PWMCLK_CNTL_PLLD ;
    _data_memory_barrier();
    usleep(1);
-   
+
    RPI_PWMBase->PWM0_RANGE = audio_range;
    RPI_PWMBase->PWM1_RANGE = audio_range;
 
    init_dma_buffer(0,audio_range>>1);
    init_dma_buffer(1,audio_range>>1);
-   
+
    usleep(1);
 
    RPI_PWMBase->PWM_DMAC = PWMDMAC_ENAB | PWMDMAC_THRSHLD;
-   
+
    // it feals as that we should have | BCM2835_PWM0_REPEATFF | BCM2835_PWM1_REPEATFF  enabled
    //but this appears to half the output frequency.  May be we need to set up PWMDMAC_THRSHLD differently
    RPI_PWMBase->PWM_CONTROL = BCM2835_PWM1_USEFIFO | BCM2835_PWM1_ENABLE | BCM2835_PWM1_REPEATFF |
