@@ -5,7 +5,7 @@
 
 #include "rpi/rpi.h"
 
-#define RELEASENAME "Alpha1"
+#define RELEASENAME "Alpha2"
 
 #define PAGE_SIZE    0x100
 
@@ -18,7 +18,7 @@
 //CLK1MHZ- pin 13 - GPIO27
 //  nRST - Pin 37 – GPIO26
 // NPCFD - pin 22 - GPIO25
-// NPCFC - pin 18 – GPIO24 
+// NPCFC - pin 18 – GPIO24
 
 //    RX - pin 10 - GPIO15
 //    TX = pin 8  - GPIO14
@@ -36,14 +36,14 @@
 //    A1 - Pin 11 – GPIO17
 //    A0 – Pin 36 – GPIO16
 //
-//    D7 - Pin 21 – GPIO9 
-//    D6 - Pin 24 – GPIO8 
-//    D5 - Pin 26 – GPIO7 
-//    D4 - Pin 31 – GPIO6 
-//    D3 - Pin 29 – GPIO5 
-//    D2 – Pin 7  – GPIO4 
-//    D1 – Pin 5  – GPIO3 
-//    D0 - Pin 3  – GPIO2 
+//    D7 - Pin 21 – GPIO9
+//    D6 - Pin 24 – GPIO8
+//    D5 - Pin 26 – GPIO7
+//    D4 - Pin 31 – GPIO6
+//    D3 - Pin 29 – GPIO5
+//    D2 – Pin 7  – GPIO4
+//    D1 – Pin 5  – GPIO3
+//    D0 - Pin 3  – GPIO2
 
 // not used GPIO 0 GPIO1 These are id pins
 //    TEST pin 27  GPIO0
