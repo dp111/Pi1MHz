@@ -33,7 +33,7 @@
 
 // buffer size of 1500 16ms @ 46.875KHz (must be multiple of 3)
 
-//NB ample software access the waveform ram with bit 7 and 8 equal 
+//NB ample software access the waveform ram with bit 7 and 8 equal
 //Pi1MHz has the complete ram where as B-em masks bit 8 when the ram is written
 #define I_WAVEFORM(n,a) (((n)<<8)| (((n)<<7)&128)|(a))
 #define I_WFTOP (0x0E00)
@@ -57,11 +57,11 @@
 
 // These variables can be setup form the config.txt file.
 
-static unsigned int stereo;
-static unsigned int gain;
+static int stereo;
+static int gain;
 static int autorange;
 
-struct synth { 
+struct synth {
     uint32_t phaseRAM[16];
     uint8_t modulate;
     int sleft,sright;
