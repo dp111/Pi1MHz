@@ -2180,8 +2180,6 @@ static uint8_t scsiBeebScsiFatRead(void)
    uint32_t numberOfBlocks = 0;
    uint32_t fatFileId = 0;
 
-   DEBUG_bytesTransferred(0);
-
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: BSFATREAD command (G6 0x14) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
@@ -2230,7 +2228,7 @@ static uint8_t scsiBeebScsiFatRead(void)
        if(!filesystemReadNextFatBlock(scsiSectorBuffer)) {
          // Could not read block from FAT file system!
          sei();
-         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Failed to read new FAT block at byte #"), bytesTransferred, true);
+         if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Failed to read new FAT block"));
          filesystemCloseFatForRead();
          return SCSI_BUSFREE;
       }
