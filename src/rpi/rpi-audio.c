@@ -125,8 +125,8 @@ uint32_t rpi_audio_init(uint32_t samplerate)
 
    // it feals as that we should have | BCM2835_PWM0_REPEATFF | BCM2835_PWM1_REPEATFF  enabled
    //but this appears to half the output frequency.  May be we need to set up PWMDMAC_THRSHLD differently
-   RPI_PWMBase->PWM_CONTROL = BCM2835_PWM1_USEFIFO | BCM2835_PWM1_ENABLE | BCM2835_PWM1_REPEATFF |
-                              BCM2835_PWM0_USEFIFO | BCM2835_PWM0_ENABLE | BCM2835_PWM0_REPEATFF | BCM2735_PWMx_CLRF ;
+   RPI_PWMBase->PWM_CONTROL = BCM2835_PWM1_USEFIFO | BCM2835_PWM1_ENABLE |
+                              BCM2835_PWM0_USEFIFO | BCM2835_PWM0_ENABLE | BCM2735_PWMx_CLRF ;
 
    _data_memory_barrier();
 
