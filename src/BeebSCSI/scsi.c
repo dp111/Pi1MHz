@@ -48,9 +48,9 @@
 #define FIRMWARE_MINOR     0x05
 #define FIRMWARE_STRING    "V002.005"
 
-// Debug code displays the bytes transfer 
+// Debug code displays the bytes transfer
 // when a non debug build is used the variable bytesTransferred becomes unused.
-// The following macro prevents the warning from the compiler 
+// The following macro prevents the warning from the compiler
 
 #ifdef DEBUG
 #include <stdio.h>
@@ -2179,6 +2179,8 @@ static uint8_t scsiBeebScsiFatRead(void)
    uint32_t blockOffset = 0;
    uint32_t numberOfBlocks = 0;
    uint32_t fatFileId = 0;
+
+   DEBUG_bytesTransferred(0);
 
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: BSFATREAD command (G6 0x14) received\r\n"));

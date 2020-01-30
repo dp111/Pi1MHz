@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "cpuspecfic.h"
 #include "debug.h"
 #include "fatfs/ff.h"
 #include "filesystem.h"
