@@ -85,7 +85,7 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
 static int32_t audio_range;
 
 // in config.txt M5000_Gain=16 set the default audio gain
-// if gain has >1000 then gain = gain - 1000 and auto ranging 
+// if gain has >1000 then gain = gain - 1000 and auto ranging
 // is disabled
 
 static void M5000_gain() {
@@ -95,13 +95,13 @@ static void M5000_gain() {
       gain = atoi(prop);
    else
       gain = DEFAULT_GAIN;
-   
+
    if ( gain >1000 )
    {
       autorange = 0;
       gain = gain - 1000;
    }
-   else 
+   else
       autorange = 1;
 }
 
@@ -114,7 +114,7 @@ static void M5000_BeebAudio() {
       stereo = atoi(prop);
    else
       stereo = 0;
-   
+
    if (stereo == 1 )
       RPI_SetGpioPinFunction(AUDIO_PIN, FS_INPUT); // Turn off Beeb audio
 }
@@ -124,7 +124,7 @@ static void update_6MHz(struct synth *s)
    int sleft = 0;
    int sright = 0;
    uint8_t modulate = s->modulate; // this also contains the pointer to E00
-   
+
    for (int i = 0; i < 16; i++)
    {
       uint8_t * c = s->ram + I_WFTOP + modulate + i;
@@ -181,7 +181,7 @@ static void update_6MHz(struct synth *s)
       // in the real hardware, inversion does not affect modulation
       if (INVERT(c)) {
          sign ^= 0x80;
-      }  
+      }
       //sam is now an 8-bit log value
       sample =  antilogtable[sample];
       if (!(sign))
@@ -196,7 +196,7 @@ static void update_6MHz(struct synth *s)
       sleft  += ((sample*pan));
       sright += ((sample*(6 - pan)));
    }
-   s->sleft  = sleft; // should really divide by six but as that is just gain 
+   s->sleft  = sleft; // should really divide by six but as that is just gain
    s->sright = sright; // so we can do it later
    s->modulate = modulate;
 }
@@ -251,7 +251,7 @@ static void music5000_get_sample(uint32_t *left, uint32_t *right)
     *right = sr + audio_range;
     if (clip && autorange) {
         gain /= 2;
-        LOG_DEBUG("Music 5000 clipped, reducing gain by 3dB (divisor now %u)\r\n", gain);
+        LOG_DEBUG("Music 5000 clipped, reducing gain by 3dB (divisor now %i)\r\n", gain);
     }
 }
 
