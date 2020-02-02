@@ -107,12 +107,12 @@ void RPI_SetGpioValue(rpi_gpio_pin_t gpio, rpi_gpio_value_t value)
 
 void RPI_SetPullUps(unsigned int gpio)
 {
-  // Enable weak pullups
+  /* Enable weak pullups */
   RPI_GpioBase->GPPUD = 2;
-  RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
+  RPI_WaitMicroSeconds(2); /* wait of 150 cycles needed see datasheet */
 
   RPI_GpioBase->GPPUDCLK0 = gpio;
-  RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
+  RPI_WaitMicroSeconds(2); /* wait of 150 cycles needed see datasheet */
 
   RPI_GpioBase->GPPUDCLK0 =  0;
 }

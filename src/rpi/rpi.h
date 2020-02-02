@@ -11,15 +11,15 @@
 
 #define LOG_WARN(...) printf(__VA_ARGS__)
 
-// Pi 2/3 Multicore options
+/* Pi 2/3 Multicore options */
 #if defined(RPI2) || defined(RPI3)
 
-// Indicate the platform has multiple cores
+/* Indicate the platform has multiple cores */
 #define HAS_MULTICORE
 
 #endif
 
-// Put large arrays in no init section saves bss time
+/* Put large arrays in no init section saves bss time */
 
 #define NOINIT_SECTION __attribute__ ((section (".noinit")))
 

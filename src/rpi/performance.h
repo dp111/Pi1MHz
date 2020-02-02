@@ -1,11 +1,11 @@
-// performance.h
+/* performance.h */
 
 #ifndef PERFORMANCE_H
 #define PERFORMANCE_H
 
 #if defined(RPI3) ||  defined(RPI2)
 
-// TODO - More work is needed on the RPI2 performance metrics
+/* TODO - More work is needed on the RPI2 performance metrics */
 
 #define MAX_COUNTERS 6
 

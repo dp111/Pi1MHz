@@ -1,4 +1,4 @@
-// startup.h
+/* startup.h */
 
 #ifndef STARTUP_H
 #define STARTUP_H

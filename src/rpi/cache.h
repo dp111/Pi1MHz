@@ -1,10 +1,10 @@
-// cache.h
+/* cache.h */
 
 #ifndef CACHE_H
 #define CACHE_H
 
-// The first 2MB of memory is mapped at 4K pages so the 6502 Co Pro
-// can play tricks with banks selection
+/* The first 2MB of memory is mapped at 4K pages so the 6502 Co Pro
+ can play tricks with banks selection */
 #define NUM_4K_PAGES 512
 
 void _clean_cache_area(void *start, unsigned int length);

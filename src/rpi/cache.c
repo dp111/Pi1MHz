@@ -5,23 +5,23 @@
 #include "cache.h"
 #include "rpi.h"
 
-// Historical Note:
-// Were seeing core 3 crashes if inner *and* outer both set to some flavour of WB (i.e. 1 or 3)
-// The point of crashing is when the data cache is enabled
-// At that point, the stack appears to vanish and the data read back is 0x55555555
-// Reason turned out to be failure to correctly invalidate the entire data cache
+/* Historical Note:
+   Were seeing core 3 crashes if inner *and* outer both set to some flavour of WB (i.e. 1 or 3)
+   The point of crashing is when the data cache is enabled
+   At that point, the stack appears to vanish and the data read back is 0x55555555
+   Reason turned out to be failure to correctly invalidate the entire data cache */
 
 volatile __attribute__ ((aligned (0x4000))) NOINIT_SECTION unsigned int PageTable[4096];
 volatile __attribute__ ((aligned (0x4000))) NOINIT_SECTION unsigned int PageTable2[NUM_4K_PAGES];
 
-// Just to keep things simple we cache all memory upto the peripherals
+/* Just to keep things simple we cache all memory upto the peripherals */
 #define L1_CACHED_MEM_TOP (PERIPHERAL_BASE>>20)
 #define L2_CACHED_MEM_TOP (PERIPHERAL_BASE>>20)
 
 static const int bufferable = 1;
 static const int cachable = 1;
 #if defined(RPI2) || defined(RPI3)
-static const int aa0 = 0; // note ARM ARM bit ordering is confusing
+static const int aa0 = 0; /* note ARM ARM bit ordering is confusing */
 static const int aa6 = 1;
 #endif
 static const int bb = 1;
@@ -31,22 +31,22 @@ static const int shareable = 1;
 
 #define SETWAY_LEVEL_SHIFT          1
 
-// 4 ways x 128 sets x 64 bytes per line 32KB
+/* 4 ways x 128 sets x 64 bytes per line 32KB */
 #define L1_DATA_CACHE_SETS        128
 #define L1_DATA_CACHE_WAYS          4
-#define L1_SETWAY_WAY_SHIFT        30   // 32-Log2(L1_DATA_CACHE_WAYS)
-#define L1_SETWAY_SET_SHIFT         6   // Log2(L1_DATA_CACHE_LINE_LENGTH)
+#define L1_SETWAY_WAY_SHIFT        30   /* 32-Log2(L1_DATA_CACHE_WAYS) */
+#define L1_SETWAY_SET_SHIFT         6   /* Log2(L1_DATA_CACHE_LINE_LENGTH) */
 
 #if defined(RPI2)
-// 8 ways x 1024 sets x 64 bytes per line = 512KB
+/* 8 ways x 1024 sets x 64 bytes per line = 512KB */
 #define L2_CACHE_SETS            1024
 #define L2_CACHE_WAYS               8
-#define L2_SETWAY_WAY_SHIFT        29   // 32-Log2(L2_CACHE_WAYS)
+#define L2_SETWAY_WAY_SHIFT        29   /* 32-Log2(L2_CACHE_WAYS) */
 #else
-// 16 ways x 512 sets x 64 bytes per line = 512KB
+/* 16 ways x 512 sets x 64 bytes per line = 512KB */
 #define L2_CACHE_SETS             512
 #define L2_CACHE_WAYS              16
-#define L2_SETWAY_WAY_SHIFT        28   // 32-Log2(L2_CACHE_WAYS)
+#define L2_SETWAY_WAY_SHIFT        28   /* 32-Log2(L2_CACHE_WAYS) */
 #endif
 
 #define L2_SETWAY_SET_SHIFT         6   // Log2(L2_CACHE_LINE_LENGTH)

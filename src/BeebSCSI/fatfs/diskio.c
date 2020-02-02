@@ -26,7 +26,7 @@ size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t
 size_t sd_write(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
 #endif
 
-//static unsigned int sd_status=STA_NOINIT;
+/*static unsigned int sd_status=STA_NOINIT;*/
 
 static struct emmc_block_dev bd;
 /*-----------------------------------------------------------------------*/
@@ -46,7 +46,7 @@ DSTATUS disk_status (
 
 #ifdef DRV_SD
    case DRV_SD :
-      return 0; //(sdInitCard())? STA_NOINIT:0;//mmc_disk_status();
+      return 0; /*(sdInitCard())? STA_NOINIT:0;//mmc_disk_status();*/
 #endif
 
    }
@@ -69,8 +69,8 @@ DSTATUS disk_initialize (
 #endif
 #ifdef DRV_SD
    case DRV_SD :
-      //sd_status = (sdInitCard())? STA_NOINIT:RES_OK;
-      return RES_OK;//sd_status;//mmc_disk_initialize();
+      /*sd_status = (sdInitCard())? STA_NOINIT:RES_OK;*/
+      return RES_OK;/*sd_status;//mmc_disk_initialize();*/
 #endif
    }
    return STA_NOINIT;
@@ -147,7 +147,7 @@ DRESULT disk_ioctl (
 #endif
    }
 #ifdef DRV_SD
-   return RES_OK; // sync is the only case used and writes always complete before returning so always synced
+   return RES_OK; /* sync is the only case used and writes always complete before returning so always synced */
 #else
    return RES_PARERR;
 #endif
