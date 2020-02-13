@@ -50,7 +50,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall" )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostartfiles " )
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffixed-ip" )
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -fdata-sections -ffunction-sections")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _printf_float" )
