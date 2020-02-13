@@ -273,7 +273,7 @@ static const char *err_irpts[] = { "CMD_TIMEOUT", "CMD_CRC", "CMD_END_BIT", "CMD
 #endif
 
 size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
-size_t sd_write(struct block_device *dev, const uint8_t *buf, size_t buf_size, uint32_t block_no);
+size_t sd_write(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
 
 static const uint32_t sd_commands[] = {
     SD_CMD_INDEX(0),
@@ -2010,7 +2010,7 @@ size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t
 }
 
 #ifdef SD_WRITE_SUPPORT
-size_t sd_write(struct block_device *dev, const uint8_t *buf, size_t buf_size, uint32_t block_no)
+size_t sd_write(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no)
 {
    // Check the status of the card
    struct emmc_block_dev *edev = (struct emmc_block_dev *)dev;
