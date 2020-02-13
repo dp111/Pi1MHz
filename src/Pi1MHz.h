@@ -161,7 +161,7 @@ void Pi1MHz_Register_Poll( func_ptr func_ptr );
 void Pi1MHz_SetnIRQ(bool irq);
 void Pi1MHz_SetnNMI(bool nmi);
 
-uint8_t * const Pi1MHz_Memory;
+extern uint8_t * const Pi1MHz_Memory;
 
 bool Pi1MHz_is_rst_active();
 #endif
