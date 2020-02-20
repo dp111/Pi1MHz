@@ -38,7 +38,8 @@ bool HD_IRQ_ENABLE;
 #define STATUS_INO (1<<6)
 #define STATUS_REQ (1<<5)
 #define STATUS_IRQ (1<<4)
-
+#define STATUS_3   (1<<3)
+#define STATUS_2   (1<<2)
 #define STATUS_BSY (1<<1)
 #define STATUS_MSG (1<<0)
 
@@ -138,10 +139,8 @@ void hd_emulator_conf(unsigned int gpio)
 
 void harddisc_emulator_init( void )
 {
-   // clear status
-   HD_STATUS = 0;
    // Turn off all host adapter signals
-   hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_CND | STATUS_IRQ, CLEAR);
+   hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_3 | STATUS_2 | STATUS_CND | STATUS_IRQ, CLEAR);
 
    HD_ACK = CLEAR;
    HD_SEL = CLEAR;
