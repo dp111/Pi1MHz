@@ -46,12 +46,13 @@ endif()
 # are in the toolchain files toolchain-arm-none-eabi-bcm2835.cmake, etc.
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall" )
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wextra" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wextra -Wno-unused-parameter -Wnull-dereference" )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostartfiles " )
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffixed-ip" )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto" )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -fdata-sections -ffunction-sections")
+
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
+
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _printf_float" )
 

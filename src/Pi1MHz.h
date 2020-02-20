@@ -10,9 +10,9 @@
 #define PAGE_SIZE    0x100
 
 // Memory map of arrays used by FIQ handler
-#define Pi1MHz_MEM_BASE 0x0
+#define Pi1MHz_MEM_BASE 0x100
 #define Pi1MHZ_MEM_SIZE (PAGE_SIZE*2)
-#define Pi1MHz_CB_BASE  0x200
+#define Pi1MHz_CB_BASE  0x400
 #define Pi1MHz_CB_SIZE  (PAGE_SIZE*2*2*4)
 
 //CLK1MHZ- pin 13 - GPIO27
