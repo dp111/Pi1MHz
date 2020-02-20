@@ -360,7 +360,7 @@ void kernel_main()
    RPI_AuxMiniUartInit( 115200 );
 
    enable_MMU_and_IDCaches(0);
-   _enable_unaligned_access();
+
    init_hardware();
 
    init_emulator();

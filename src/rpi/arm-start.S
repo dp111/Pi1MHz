@@ -201,25 +201,6 @@ bssclearloop:
     blt     bssclearloop
     b       kernel_main
 
-.section ".text._get_stack_pointer"
-_get_stack_pointer:
-    mov     r0, sp
-    mov     pc, lr
-
-.section ".text._get_cpsr"
-_get_cpsr:
-    mrs     r0, cpsr
-    mov     pc, lr
-
-.section ".text._set_interrupts"
-_set_interrupts:
-    and     r0, r0, #CPSR_IRQ_INHIBIT | CPSR_FIQ_INHIBIT    // extract the IRQ/FIQ bits from the value of cpsr passed in
-    mrs     r1, cpsr
-    bic     r1, r1, #CPSR_IRQ_INHIBIT | CPSR_FIQ_INHIBIT
-    orr     r1, r1, r0
-    msr     cpsr_c, r1
-    mov     pc, lr
-
 .section ".text._undefined_instruction_handler_"
 _undefined_instruction_handler_:
     stmfd    sp!, {r0-r12, lr}
@@ -251,14 +232,6 @@ _swi_handler_:
     stmfd    sp!, {r0}            // Store spsr onto stack.
     mov      r0, sp
     b       swi_handler
-
-.section ".text._enable_unaligned_access"
-_enable_unaligned_access:
-    mrc      p15, 0, r0, c1, c0, 0   // read SCTLR
-    bic      r0, r0, #2              // A (no unaligned access fault)
-    orr      r0, r0, #1 << 22        // U (v6 unaligned access model)
-    mcr      p15, 0, r0, c1, c0, 0   // write SCTLR
-    mov      pc, lr
 
 .section ".text._data_memory_barrier"
 _data_memory_barrier:
