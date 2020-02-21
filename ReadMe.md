@@ -64,7 +64,7 @@ Addresses currently defined
 
 ## Making the code
 
-You will need a linux command prompt. Under windows10 I use  windows bash shell. You will also need the arm dev tools : <https://developer.arm.com/-/media/Files/downloads/gnu-a/9.2-2019.12/binrel/gcc-arm-9.2-2019.12-x86_64-arm-none-eabi.tar.xz> . in the src/scripts directory you can select the platform you'd like to build for by excuting the configure_rpi.sh ( for pi zero) and configure_rpi3.sh ( for rpi3B+). Then just use make -j4. Copy the firmware directory to the root of your SDCARD. Serial debug can be enabled using the configure scripts. Or the complete systemcan be built in one goes (PiZero, RPI3 both normal and debug) by using the release.sh script
+You will need a linux command prompt. Under windows10 I use  windows bash shell. You will also need the arm dev tools : <https://developer.arm.com/-/media/Files/downloads/gnu-a/9.2-2019.12/binrel/gcc-arm-9.2-2019.12-x86_64-arm-none-eabi.tar.xz> . in the src/scripts directory you can select the platform you'd like to build for by excuting the configure_rpi.sh ( for pi zero) and configure_rpi3.sh ( for rpi3B+). Then just use make -j4. Copy the firmware directory to the root of your SDCARD. Serial debug can be enabled using the configure scripts. Or the complete system can be built in one go (PiZero, RPI3 both normal and debug) by using the release.sh script
 
 The current PCB is too small to have a serial debug connector fitted. I fitted a 3 pin sil header to the underside of my pizero ( 0v TX TX)
 
