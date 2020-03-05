@@ -1,5 +1,4 @@
 /*
-
     Pi1MHz is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
@@ -222,7 +221,7 @@ static void init_emulator() {
    memset(Pi1MHz_Memory, 0, Pi1MHZ_MEM_SIZE);
 #pragma GCC diagnostic pop
 
-   // make sure we are causing an interrupt
+   // make sure we aren't causing an interrupt
    Pi1MHz_SetnIRQ(CLEAR_IRQ);
    Pi1MHz_SetnNMI(CLEAR_NMI);
 
