@@ -62,9 +62,6 @@ void RPI_PropertyInit( void )
 
     /* First available data slot */
     pt_index = 2;
-
-    /* NULL tag to terminate tag list */
-    pt[pt_index] = 0;
 }
 
 /**
