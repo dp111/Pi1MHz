@@ -498,17 +498,13 @@ static uint32_t sd_get_base_clock_hz()
 #if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
 static int bcm_2708_power_off()
 {
-   RPI_PropertyInit();
-   RPI_PropertyAddTag(TAG_SET_POWER_STATE, 2);
-   RPI_PropertyProcess();
+   RPI_PropertySetWord(TAG_SET_POWER_STATE, 0, 2);
    return 0;
 }
 
 static int bcm_2708_power_on()
 {
-   RPI_PropertyInit();
-   RPI_PropertyAddTag(TAG_SET_POWER_STATE, 3);
-   RPI_PropertyProcess();
+   RPI_PropertySetWord(TAG_SET_POWER_STATE, 0, 2);
    return 0;
 }
 
