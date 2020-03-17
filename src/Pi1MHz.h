@@ -5,7 +5,7 @@
 
 #include "rpi/rpi.h"
 
-#define RELEASENAME "Alpha2"
+#define RELEASENAME "v1.00"
 
 #define PAGE_SIZE    0x100
 
