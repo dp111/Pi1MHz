@@ -117,10 +117,10 @@ void _clean_cache_area(void * start, unsigned int length)
    cachelinesize = (cachelinesize>> 16 ) & 0xF;
    cachelinesize = 4<<cachelinesize;
    endptr = startptr + length;
-   
+
    // round down start address
-   start = (char *)(((uint32_t)start) & ~(cachelinesize - 1));
-   
+   startptr = (char *)(((uint32_t)start) & ~(cachelinesize - 1));
+
    do{
       asm volatile ("mcr     p15, 0, %0, c7, c14, 1" : : "r" (startptr));
       startptr = startptr + cachelinesize;
