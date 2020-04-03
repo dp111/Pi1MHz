@@ -119,7 +119,7 @@ static void M5000_BeebAudio() {
       RPI_SetGpioPinFunction(AUDIO_PIN, FS_INPUT); // Turn off Beeb audio
 }
 
-static void update_6MHz(struct synth *s)
+static void update_channels(struct synth *s)
 {
    int sleft = 0;
    int sright = 0;
@@ -128,73 +128,71 @@ static void update_6MHz(struct synth *s)
    for (int i = 0; i < 16; i++)
    {
       uint8_t * c = s->ram + I_WFTOP + modulate + i;
-      int disable = DISABLE(c);
-      int c4d, sign, sample;
 
       // In the real hardware the disable bit works by forcing the
       // phase accumulator to zero.
-      if (disable) {
-         s->phaseRAM[i] = 0;
-         c4d = 0;
+      if (DISABLE(c)) {
+          s->phaseRAM[i] = 0;
       } else {
-         unsigned int sum = s->phaseRAM[i] + FREQ(c);
-         s->phaseRAM[i] = sum & 0xffffff;
-         // c4d is used for "Synchronization" e.g. the "Wha" instrument
-         c4d = sum & (1<<24);
-      }
+		  int c4d, sign, sample;
+          unsigned int sum = s->phaseRAM[i] + FREQ(c);
+          s->phaseRAM[i] = sum & 0xffffff;
+          // c4d is used for "Synchronization" e.g. the "Wha" instrument
+          c4d = sum & (1<<24);
 
-      sample = s->ram[I_WAVEFORM(WAVESEL(c),( s->phaseRAM[i] >> 17))];
-      {
-      // The amplitude operates in the log domain
-      // - sam holds the wave table output which is 1 bit sign and 7 bit magnitude
-      // - amp holds the amplitude which is 1 bit sign and 8 bit magnitude (0x00 being quite, 0x7f being loud)
-      // The real hardware combines these in a single 8 bit adder, as we do here
-      //
-      // Consider a positive wav value (sign bit = 1)
-      //       wav: (0x80 -> 0xFF) + amp: (0x00 -> 0x7F) => (0x80 -> 0x7E)
-      // values in the range 0x80...0xff are very small are clamped to zero
-      //
-      // Consider a negative wav vale (sign bit = 0)
-      //       wav: (0x00 -> 0x7F) + amp: (0x00 -> 0x7F) => (0x00 -> 0xFE)
-      // values in the range 0x00...0x7f are very small are clamped to zero
-      //
-      // In both cases:
-      // - zero clamping happens when the sign bit stays the same
-      // - the 7-bit result is in bits 0..6
-      //
-      // Note:
-      // - this only works if the amp < 0x80
-      // - amp >= 0x80 causes clamping at the high points of the waveform
-      // - this behavior matches the FPGA implementation, and we think the original hardware
-      }
-      sign = sample & 0x80;
-      sample += AMP(c);
-      modulate = (( MODULATE(c) && (!!(sign) || !!(c4d)))? 128:0);
-      if ((sign ^ sample) & 0x80) {
-         // sign bits being different is the normal case
-         sample &= 0x7f;
-      } else {
-         // sign bits being the same indicates underflow so clamp to zero
-         sample = 0;
-      }
+		  sample = s->ram[I_WAVEFORM(WAVESEL(c),( s->phaseRAM[i] >> 17))];
+		  {
+		  // The amplitude operates in the log domain
+		  // - sam holds the wave table output which is 1 bit sign and 7 bit magnitude
+		  // - amp holds the amplitude which is 1 bit sign and 8 bit magnitude (0x00 being quite, 0x7f being loud)
+		  // The real hardware combines these in a single 8 bit adder, as we do here
+		  //
+		  // Consider a positive wav value (sign bit = 1)
+		  //       wav: (0x80 -> 0xFF) + amp: (0x00 -> 0x7F) => (0x80 -> 0x7E)
+		  // values in the range 0x80...0xff are very small are clamped to zero
+		  //
+		  // Consider a negative wav vale (sign bit = 0)
+		  //       wav: (0x00 -> 0x7F) + amp: (0x00 -> 0x7F) => (0x00 -> 0xFE)
+		  // values in the range 0x00...0x7f are very small are clamped to zero
+		  //
+		  // In both cases:
+		  // - zero clamping happens when the sign bit stays the same
+		  // - the 7-bit result is in bits 0..6
+		  //
+		  // Note:
+		  // - this only works if the amp < 0x80
+		  // - amp >= 0x80 causes clamping at the high points of the waveform
+		  // - this behavior matches the FPGA implementation, and we think the original hardware
+		  }
+		  sign = sample & 0x80;
+		  sample += AMP(c);
+		  modulate = (( MODULATE(c) && (!!(sign) || !!(c4d)))? 128:0);
+		  if ((sign ^ sample) & 0x80) {
+			 // sign bits being different is the normal case
+			 sample &= 0x7f;
+		  } else {
+			 // sign bits being the same indicates underflow so clamp to zero
+			 sample = 0;
+		  }
 
-      // in the real hardware, inversion does not affect modulation
-      if (INVERT(c)) {
-         sign ^= 0x80;
-      }
-      //sam is now an 8-bit log value
-      sample =  antilogtable[sample];
-      if (!(sign))
-      {
-         // sign being zero is negative
-         sample =-sample;
-      }
-      //sam is now a 14-bit linear sample
-      uint8_t pan = PanArray[PAN(c)];
+		  // in the real hardware, inversion does not affect modulation
+		  if (INVERT(c)) {
+			 sign ^= 0x80;
+		  }
+		  //sam is now an 8-bit log value
+		  sample =  antilogtable[sample];
+		  if (!(sign))
+		  {
+			 // sign being zero is negative
+			 sample =-sample;
+		  }
+		  //sam is now a 14-bit linear sample
+		  uint8_t pan = PanArray[PAN(c)];
 
-      // Apply panning. Divide by 6 taken out of the loop as a common subexpression
-      sleft  += ((sample*pan));
-      sright += ((sample*(6 - pan)));
+		  // Apply panning. Divide by 6 taken out of the loop as a common subexpression
+		  sleft  += ((sample*pan));
+		  sright += ((sample*(6 - pan)));
+	  }
    }
    s->sleft  = sleft; // should really divide by six but as that is just gain
    s->sright = sright; // so we can do it later
@@ -262,8 +260,8 @@ void music5000_emulate(void)
    {
     uint32_t *bufptr = rpi_audio_buffer_pointer();
     for (size_t sample = (space>>1); sample !=0 ; sample--) {
-        update_6MHz(&m5000);
-        update_6MHz(&m3000);
+        update_channels(&m5000);
+        update_channels(&m3000);
         music5000_get_sample(bufptr, bufptr + 1);
         bufptr +=2;
     }
