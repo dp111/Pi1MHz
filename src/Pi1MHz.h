@@ -5,7 +5,7 @@
 
 #include "rpi/rpi.h"
 
-#define RELEASENAME "v1.01"
+#define RELEASENAME "v1.02"
 
 #define PAGE_SIZE    0x100
 
