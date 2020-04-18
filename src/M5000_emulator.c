@@ -178,7 +178,6 @@ static void update_channels(struct synth *s)
 			 sample = 0;
 		  }
 
-		  // in the real hardware, inversion does not affect modulation
 		  if (INVERT(c)) {
 			 sign ^= 0x80;
 		  }
@@ -189,7 +188,7 @@ static void update_channels(struct synth *s)
 			 // sign being zero is negative
 			 sample =-sample;
 		  }
-		  //sam is now a 14-bit linear sample
+		  // sample is now a 14-bit linear sample
 		  uint8_t pan = PanArray[PAN(c)];
 
 		  // Apply panning. Divide by 6 taken out of the loop as a common subexpression
