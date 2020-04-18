@@ -94,8 +94,6 @@ _software_interrupt_vector_h:       .word   _swi_handler_
 _prefetch_abort_vector_h:           .word   _prefetch_abort_handler_
 _data_abort_vector_h:               .word   _data_abort_handler_
 
-.ltorg
-
 .section ".text.arm_irq_handler"
 arm_irq_handler:
     subs    pc, lr, #4
@@ -107,11 +105,11 @@ _reset_:
     mrc     p15,0,r4,c1,c0,0
     // Enable caches and branch prediction
     orr     r4,#SCTLR_ENABLE_BRANCH_PREDICTION + SCTLR_ENABLE_INSTRUCTION_CACHE
-    // System Control Register = R0
+    // System Control Register
     mcr     p15,0,r4,c1,c0,0
 
-    // Set the CPACR for access to CP10 and CP11, and clear the ASEDIS and D32DIS bits:
-    ldr     r4, =(0xf << 20)
+    // Set the CPACR for access to all coprocessors
+    mov     r4, #0x0FFFFFFF
     mcr     p15, 0, r4, c1, c0, 2
 
     // Enable VFP ------------------------------------------------------------
@@ -131,8 +129,6 @@ _reset_:
     .word 0xE12EF30E  // msr_elr_hyp lr
     .word 0xE160006E  // eret
 _reset_continue:
-
-
 #endif
 
     // We enter execution in supervisor mode. For more information on
@@ -153,7 +149,7 @@ _reset_continue:
     CPS     #CPSR_MODE_FIQ
     add     sp, r4, #C0_FIQ_STACK
 
-// import fiq setup from fiq.s this is a #define
+// import fiq setup from fiq.s this is a macro
 #ifdef FIQ_SETUP_CODE
     FIQ_SETUP_M
 #endif
