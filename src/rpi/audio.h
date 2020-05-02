@@ -43,8 +43,8 @@ static rpi_clk_t* const RPI_CLKBase = (rpi_clk_t*) CLOCK_BASE;
 #define BCM2835_PWMCLK_CNTL_KILL (1<<5)
 #define BCM2835_PWMCLK_CNTL_ENABLE (1<<4)
 
-#define PWMDMAC_ENAB	(1UL<<31)
-#define PWMDMAC_THRSHLD	((4<<8)|(4<<0))
+#define PWMDMAC_ENAB (1UL<<31)
+#define PWMDMAC_THRSHLD ((4<<8)|(4<<0))
 
 #define BCM2835_PWM1_MS_MODE    0x8000  /*  Run in MS mode                   */
 #define BCM2835_PWM1_USEFIFO    0x2000  /*  Data from FIFO                   */
@@ -75,31 +75,31 @@ static rpi_clk_t* const RPI_CLKBase = (rpi_clk_t*) CLOCK_BASE;
 #define BCM2835_FULL1 0x1
 
 /* DMA CS Control and Status bits */
-#define BCM2708_DMA_ACTIVE	(1 << 0)
-#define BCM2708_DMA_INT		(1 << 2)
-#define BCM2708_DMA_ISPAUSED	(1 << 4)  /* Pause requested or not active */
-#define BCM2708_DMA_ISHELD	(1 << 5)  /* Is held by DREQ flow control */
-#define BCM2708_DMA_ERR		(1 << 8)
-#define BCM2708_DMA_ABORT	(1 << 30) /* stop current CB, go to next, WO */
-#define BCM2708_DMA_RESET	(1UL << 31) /* WO, self clearing */
+#define BCM2708_DMA_ACTIVE (1 << 0)
+#define BCM2708_DMA_INT    (1 << 2)
+#define BCM2708_DMA_ISPAUSED  (1 << 4)  /* Pause requested or not active */
+#define BCM2708_DMA_ISHELD (1 << 5)  /* Is held by DREQ flow control */
+#define BCM2708_DMA_ERR    (1 << 8)
+#define BCM2708_DMA_ABORT  (1 << 30) /* stop current CB, go to next, WO */
+#define BCM2708_DMA_RESET  (1UL << 31) /* WO, self clearing */
 
 /* DMA control block "info" field bits */
-#define BCM2708_DMA_INT_EN	(1 << 0)
-#define BCM2708_DMA_TDMODE	(1 << 1)
-#define BCM2708_DMA_WAIT_RESP	(1 << 3)
-#define BCM2708_DMA_D_INC	(1 << 4)
-#define BCM2708_DMA_D_WIDTH	(1 << 5)
-#define BCM2708_DMA_D_DREQ	(1 << 6)
-#define BCM2708_DMA_S_INC	(1 << 8)
-#define BCM2708_DMA_S_WIDTH	(1 << 9)
-#define BCM2708_DMA_S_DREQ	(1 << 10)
+#define BCM2708_DMA_INT_EN (1 << 0)
+#define BCM2708_DMA_TDMODE (1 << 1)
+#define BCM2708_DMA_WAIT_RESP (1 << 3)
+#define BCM2708_DMA_D_INC  (1 << 4)
+#define BCM2708_DMA_D_WIDTH   (1 << 5)
+#define BCM2708_DMA_D_DREQ (1 << 6)
+#define BCM2708_DMA_S_INC  (1 << 8)
+#define BCM2708_DMA_S_WIDTH   (1 << 9)
+#define BCM2708_DMA_S_DREQ (1 << 10)
 
-#define	BCM2708_DMA_BURST(x)	(((x)&0xf) << 12)
-#define	BCM2708_DMA_PER_MAP(x)	((x) << 16)
-#define	BCM2708_DMA_WAITS(x)	(((x)&0x1f) << 21)
+#define  BCM2708_DMA_BURST(x) (((x)&0xf) << 12)
+#define  BCM2708_DMA_PER_MAP(x)  ((x) << 16)
+#define  BCM2708_DMA_WAITS(x) (((x)&0x1f) << 21)
 
-#define BCM2708_DMA_DREQ_EMMC	11
-#define BCM2708_DMA_DREQ_SDHOST	13
+#define BCM2708_DMA_DREQ_EMMC 11
+#define BCM2708_DMA_DREQ_SDHOST  13
 
 typedef struct
 {
@@ -129,8 +129,8 @@ static rpi_dma_t* const RPI_DMABase = (rpi_dma_t*) (DMA_CONTROLLER_BASE + 0xFE0)
 #define BCM2708_DMA_TDMODE_LEN(w, h) ((h) << 16 | (w))
 
 // Missing from original kernel file:
-#define BCM2708_DMA_END				(1<<1)
-#define BCM2708_DMA_NO_WIDE_BURSTS	(1<<26)
+#define BCM2708_DMA_END             (1<<1 )
+#define BCM2708_DMA_NO_WIDE_BURSTS  (1<<26)
 
 size_t rpi_audio_buffer_free_space();
 uint32_t * rpi_audio_buffer_pointer();
