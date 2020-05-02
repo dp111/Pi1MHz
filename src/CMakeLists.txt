@@ -45,8 +45,7 @@ endif()
 # Add any C compiler flags here. The C flags concerned with processor tuning
 # are in the toolchain files toolchain-arm-none-eabi-bcm2835.cmake, etc.
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2" )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall" )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wextra -Wno-unused-parameter -Wnull-dereference" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-unused-parameter -Wnull-dereference -pedantic -Wall -Wcast-qual -Wno-deprecated-declarations -Wfloat-equal -Wmissing-format-attribute -Wno-long-long -Wpacked -Wredundant-decls -Wundef -Wno-shadow -Wno-missing-field-initializers -Wno-missing-braces -Wno-sign-compare -Wno-multichar" )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostartfiles " )
 
@@ -63,44 +62,50 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _
 set( CMAKE_EXE_LINKER_FLAGS "-Wl,--gc-sections -Wl,--defsym=START_ADDR=0x8000 -Wl,-T,${PROJECT_SOURCE_DIR}/rpi/rpi.ld " )
 
 file( GLOB core_files
-    rpi/arm-start.S
-    rpi/armc-cstubs.c
-    rpi/exception.c
-    rpi/cache.c
-    rpi/rpi-gpio.c
-    rpi/rpi-aux.c
-    rpi/rpi-mailbox-interface.c
-    rpi/rpi-systimer.c
-    rpi/info.c
-    rpi/rpi-audio.c
-    rpi/performance.c
-    rpi/rpi.c
-    Pi1MHz.c
-    ram_emulator.c
+   rpi/arm-start.S
+   rpi/armc-cstubs.c
+   rpi/exception.c
+   rpi/cache.c
+   rpi/gpio.c
+   rpi/aux.c
+   rpi/mailbox.c
+   rpi/systimer.c
+   rpi/info.c
+   rpi/audio.c
+   rpi/performance.c
+   rpi/rpi.c
+   Pi1MHz.c
+   ram_emulator.c
 )
 
 # Harddisc emulator
 file( GLOB harddisc_emulator_files
-    harddisc_emulator.c
-    BeebSCSI/debug.c
-    BeebSCSI/filesystem.c
-    BeebSCSI/scsi.c
-    BeebSCSI/fatfs/ff.c
-    BeebSCSI/fatfs/diskio.c
-    BeebSCSI/fatfs/ffunicode.c
-    rpi/sdcard.c
+   harddisc_emulator.c
+   BeebSCSI/debug.c
+   BeebSCSI/filesystem.c
+   BeebSCSI/scsi.c
+   BeebSCSI/fatfs/ff.c
+   BeebSCSI/fatfs/diskio.c
+   BeebSCSI/fatfs/ffunicode.c
+   rpi/sdcard.c
 )
 include_directories(BeebSCSI)
 
 # M5000 emulator
 file( GLOB M5000_emulator_files
-    rpi-audio.c
-    M5000_emulator.c
+   rpi/audio.c
+   M5000_emulator.c
+)
+
+#FrameBuffer
+file( GLOB FrameBuffer_emulator_files
+   framebuffer.c
+   rpi/v3d.c
 )
 
 if( ${DEBUG} )
 
-    set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDEBUG=1 " )
+   set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDEBUG=1 " )
 
 endif()
 
@@ -111,6 +116,7 @@ endif()
             ${core_files}
             ${harddisc_emulator_files}
             ${M5000_emulator_files}
+            ${FrameBuffer_emulator_files}
         )
 
     else()
@@ -119,18 +125,19 @@ endif()
             ${core_files}
             ${harddisc_emulator_files}
             ${M5000_emulator_files}
+             ${FrameBuffer_emulator_files}
         )
 
     endif()
-    
+
 target_link_libraries (Pi1MHz m)
 
 add_custom_command(
-    TARGET Pi1MHz POST_BUILD
-    COMMAND ${CMAKE_OBJCOPY} ./Pi1MHz -O binary ../../firmware/${KERNEL_NAME}
-    COMMAND ls -l ../../firmware/${KERNEL_NAME}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Convert the ELF output file to a binary image" )
+   TARGET Pi1MHz POST_BUILD
+   COMMAND ${CMAKE_OBJCOPY} ./Pi1MHz -O binary ../../firmware/${KERNEL_NAME}
+   COMMAND ls -l ../../firmware/${KERNEL_NAME}
+   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+   COMMENT "Convert the ELF output file to a binary image" )
 
 # Generate a header file with the current git version in it
 
@@ -139,8 +146,8 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 add_custom_target(gitversion ALL)
 
 add_custom_command(
-    TARGET gitversion
-    COMMAND bash version.sh
+   TARGET gitversion
+   COMMAND bash version.sh
 )
 
 add_dependencies(Pi1MHz gitversion)

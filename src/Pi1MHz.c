@@ -90,12 +90,12 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include <stdlib.h>
 
 #include "rpi/arm-start.h"
-#include "rpi/rpi-aux.h"
+#include "rpi/aux.h"
 #include "rpi/cache.h"
 #include "rpi/performance.h"
 #include "rpi/info.h"
-#include "rpi/rpi-gpio.h"
-#include "rpi/rpi-interrupts.h"
+#include "rpi/gpio.h"
+#include "rpi/interrupts.h"
 #include "Pi1MHz.h"
 #include "scripts/gitversion.h"
 #include "BeebSCSI/filesystem.h"
@@ -105,12 +105,22 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "ram_emulator.h"
 #include "harddisc_emulator.h"
 #include "M5000_emulator.h"
+#include "framebuffer.h"
 
-static const func_ptr emulator_inits[] = {
-   ram_emulator_init,
-   harddisc_emulator_init,
-   M5000_emulator_init
+typedef struct {
+   const func_ptr init;
+   uint8_t disable;
+} emulator_list;
+
+static emulator_list emulator[] = {
+   ram_emulator_init, 0,
+   harddisc_emulator_init, 0,
+   M5000_emulator_init, 0,
+   fb_emulator_init, 1,
+   0,0 // Dummy end of list 
 };
+
+#define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list)-1)
 
 uint8_t *JIM_ram; // 480M Bytes of RAM for pizero
 
@@ -123,10 +133,10 @@ uint8_t * const Pi1MHz_Memory = (uint8_t *)Pi1MHz_MEM_BASE;
 callback_func_ptr * const Pi1MHz_callback_table = (void *)Pi1MHz_CB_BASE;
 
 // Table of polling functions to call while idle
-func_ptr Pi1MHz_poll_table[sizeof(emulator_inits)/sizeof(func_ptr)];
+func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
 
 // holds the total number of polling functions to call
-size_t  Pi1MHz_polls_max;
+static size_t  Pi1MHz_polls_max;
 
 // For each location in FRED and JIM which a task wants to be called for
 // it must register its interest. Only one task can be called per location
@@ -191,8 +201,25 @@ void Pi1MHzBus_read_Status(unsigned int gpio)
 }
 
 static void init_emulator() {
-   LOG_INFO("\r\n**** Raspberry Pi 1MHz Emulator ****\r\n");
+   LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
+
+   char *prop = get_cmdline_prop("Pi1MHzDisable");
+   if (prop)
+   {  // now look for a common seperated values to 
+      char c;
+      do {
+        uint32_t temp=atoi(prop);
+        if (temp < NUM_EMULATORS)
+          emulator[temp].disable = 1;
+        do { 
+          c = *prop++;
+          if (c == ' ') break;
+          if (c == ',') break;
+          if (c == '\0' ) break;
+        } while(1);
+      } while ( c == ',' );
+   }
 
    _disable_interrupts();
 
@@ -221,14 +248,11 @@ static void init_emulator() {
    Pi1MHz_Register_Memory(WRITE_FRED, 0xcb, Pi1MHzBus_write_Status );
    Pi1MHz_Register_Memory( READ_FRED, 0xcb, Pi1MHzBus_read_Status );
 
-   for( size_t i=0; i <sizeof(emulator_inits)/sizeof(func_ptr); i++)
-   {
-      emulator_inits[i]();
-   }
-
+   for( size_t i=0; i <NUM_EMULATORS; i++)
+      if (emulator[i].disable==0) emulator[i].init();
 }
 
-static int led_pin;;
+static int led_pin;
 
 void Pi1MHz_LED(int led)
 {
@@ -275,7 +299,6 @@ static void init_JIM()
       ram = putstring(ram,0   , " Pi :");
       ram = putstring(ram,'\n', get_info_string());
             putstring(ram,'\r', " ");
-
    }
 // suppress a warning as we really do want to memcpy 256,jim_ram, 256!
 #pragma GCC diagnostic push
@@ -339,7 +362,7 @@ static void init_hardware()
 #endif
 }
 
-void kernel_main()
+int kernel_main()
 {
    RPI_AuxMiniUartInit( 115200 );
 
@@ -353,11 +376,11 @@ void kernel_main()
 
    do {
       if (Pi1MHz_is_rst_active())
-	  {
+      {
         init_emulator();
-		while (Pi1MHz_is_rst_active());
-	  }
+        while (Pi1MHz_is_rst_active());
+      }
       for (size_t i=0 ; i<Pi1MHz_polls_max; i++ )
-        Pi1MHz_poll_table[i]();
+        if (emulator[i].disable==0) Pi1MHz_poll_table[i]();
    } while (1);
 }
