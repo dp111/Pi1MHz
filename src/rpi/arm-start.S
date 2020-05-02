@@ -109,7 +109,7 @@ _reset_:
     mcr     p15,0,r4,c1,c0,0
 
     // Set the CPACR for access to all coprocessors
-    mov     r4, #0x0FFFFFFF
+    mov     r4, #0x00FFFFFF
     mcr     p15, 0, r4, c1, c0, 2
 
     // Enable VFP ------------------------------------------------------------
@@ -190,7 +190,7 @@ bssclearloop:
     cmp     r4,r5
     stmia   r4!,{r6,r7,r8,r9}
     blt     bssclearloop
-    b       main
+    b       kernel_main
 
 .section ".text._exception_handlers_", "x"
 _undefined_instruction_handler_:
