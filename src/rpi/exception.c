@@ -1,6 +1,5 @@
 #include "rpi.h"
-#include "rpi-aux.h"
-#include "arm-start.h"
+#include "aux.h"
 
 /* From here: https://www.raspberrypi.org/forums/viewtopic.php?f=72&t=53862*/
 static void reboot_now(void)
@@ -27,16 +26,17 @@ static void dump_digit(unsigned char c) {
 }
 
 static void dump_hex(unsigned int value) {
-  for (int i = 8; i !=0 ; i--) {
-   dump_digit((uint8_t)(value >> 28));
+  int nibbles = sizeof(value) * 2 ;
+  for (int i = nibbles; i != 0 ; i--) {
+   dump_digit( (uint8_t) (value >> ( (nibbles * 4) - 4) ) );
    value <<= 4;
   }
 }
 
 static void dump_binary(unsigned int value) {
-  int maxbits = (sizeof(value) * 8);
-  for (int i = 0; i < maxbits; i++) {
-    RPI_AuxMiniUartWrite('0' + (value >> (maxbits - 1)));
+  int bits = (sizeof(value) * 8);
+  for (int i = bits; i != 0; i--) {
+    RPI_AuxMiniUartWrite('0' + (value >> (bits - 1)));
     value <<= 1;
   }
 }
@@ -49,7 +49,7 @@ static void dump_string(char *string) {
 }
 
 /* For some reason printf generally doesn't work here */
-static void dump_info(unsigned int *context, int offset, char *type) {
+void dump_info(unsigned int *context, int offset, char *type) {
   unsigned int *addr;
   unsigned int *reg;
   unsigned int flags;
@@ -65,8 +65,7 @@ static void dump_info(unsigned int *context, int offset, char *type) {
   dump_string(" on core ");
   dump_digit(_get_core());
 #endif
-  dump_string("\r\n");
-  dump_string("Registers:\r\n");
+  dump_string("\r\nRegisters:\r\n");
   for (int i = 0; i <= 13; i++) {
     int j = (i < 13) ? i : 14; /* slot 13 actually holds the link register */
     dump_string("  r[");
@@ -120,25 +119,7 @@ static void dump_info(unsigned int *context, int offset, char *type) {
     dump_string("Illegal");
     break;
   };
-  dump_string(" Mode)\r\n");
-
-  dump_string("Halted waiting for reset\r\n");
+  dump_string(" Mode)\r\nHalted waiting for reset\r\n");
 
   reboot_now();
-}
-
-void undefined_instruction_handler(unsigned int *context) {
-  dump_info(context, 4, "Undefined Instruction");
-}
-
-void prefetch_abort_handler(unsigned int *context) {
-  dump_info(context, 4, "Prefetch Abort");
-}
-
-void data_abort_handler(unsigned int *context) {
-  dump_info(context, 8, "Data Abort");
-}
-
-void swi_handler(unsigned int *context) {
-  dump_info(context, 4, "SWI");
 }
