@@ -406,7 +406,7 @@ static uint8_t scsiEmulationBusFree(void)
          if (!hostadapterReadSelectFlag()) return SCSI_BUSFREE;
 
          // Read the host ID (from the host databus)
-         #if DEBUG
+         #ifdef DEBUG
             uint8_t hostIdentifier = hostadapterReadDatabus();
          #else
             hostadapterReadDatabus();
