@@ -190,39 +190,48 @@ bssclearloop:
     cmp     r4,r5
     stmia   r4!,{r6,r7,r8,r9}
     blt     bssclearloop
-    b       kernel_main
+    b       main
 
-.section ".text._undefined_instruction_handler_", "x"
+.section ".text._exception_handlers_", "x"
 _undefined_instruction_handler_:
     stmfd    sp!, {r0-r12, lr}
-    mrs      r0, spsr             // Get spsr.
-    stmfd    sp!, {r0}            // Store spsr onto stack.
-    mov      r0, sp
-    b       undefined_instruction_handler
+    mov      r1, #4
+    adr      r2, undefined_instruction_txt
+    b        exception_store_spsr
 
-.section ".text._prefetch_abort_handler_", "x"
 _prefetch_abort_handler_:
     stmfd    sp!, {r0-r12, lr}
-    mrs      r0, spsr             // Get spsr.
-    stmfd    sp!, {r0}            // Store spsr onto stack.
-    mov      r0, sp
-    b       prefetch_abort_handler
+    mov      r1, #4
+    adr      r2, prefetch_abort_txt
+    b        exception_store_spsr
 
-.section ".text._data_abort_handler_", "x"
 _data_abort_handler_:
     stmfd    sp!, {r0-r12, lr}
-    mrs      r0, spsr             // Get spsr.
-    stmfd    sp!, {r0}            // Store spsr onto stack.
-    mov      r0, sp
-    b       data_abort_handler
+    mov      r1, #8
+    adr      r2, data_abort_txt
+    b        exception_store_spsr
 
-.section ".text._swi_handler_", "x"
-.global _swi_handler_
-.func swi,_swi_handler_
 _swi_handler_:
     stmfd    sp!, {r0-r12, lr}
+    mov      r1, #8
+    adr      r2, unknown_swi_txt
+
+exception_store_spsr:
     mrs      r0, spsr             // Get spsr.
     stmfd    sp!, {r0}            // Store spsr onto stack.
     mov      r0, sp
-    b       swi_handler
-.endfunc
+
+    b        dump_info
+
+undefined_instruction_txt:
+.ascii "Undefined Instruction\0"
+
+prefetch_abort_txt:
+.ascii "Prefetch Abort\0"
+
+data_abort_txt:
+.ascii "Data Abort\0"
+
+unknown_swi_txt:
+.ascii "SWI\0"
+
