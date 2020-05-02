@@ -63,7 +63,7 @@ extern int errno;
 #include <sys/times.h>
 
 /* Prototype for the UART write function */
-#include "rpi-aux.h"
+#include "aux.h"
 
 /* A pointer to a list of environment variables and their values. For a minimal
  environment, this empty list is adequate: */
@@ -209,7 +209,7 @@ __attribute__((used)) int _isatty(int file __attribute__((unused)))
 
 /* Set position in a file. Minimal implementation: */
 __attribute__((used)) int _lseek(int file __attribute__((unused)),
-                                 int ptr __attribute__((unused)), 
+                                 int ptr __attribute__((unused)),
                                  int dir __attribute__((unused)))
 {
   return 0;
@@ -232,9 +232,7 @@ __attribute__((used)) int _read(int file __attribute__((unused)),
  manufacturer) to actually perform the output. */
 __attribute__((used)) int _write(int file __attribute__((unused)), char *ptr, int len)
 {
-  int todo;
-
-  for (todo = 0; todo < len; todo++)
+  for (int todo = 0; todo < len; todo++)
     outbyte(*ptr++);
 
   return len;
@@ -247,9 +245,8 @@ unsigned int _get_cpsr()
   return ret;
 }
 
-#if defined(RPI2) || defined(RPI3)
+#if defined(RPI2) || defined(RPI3) || defined(RPI4)
     #define _data_memory_barrier() {asm volatile ("dmb");}
 #else
-	void _data_memory_barrier() {  asm volatile ("mcr p15, 0, %0, c7, c10, 5" :: "r" (0));}
-
+    void _data_memory_barrier() {  asm volatile ("mcr p15, 0, %0, c7, c10, 5" :: "r" (0));}
 #endif
