@@ -33,10 +33,10 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include "block.h"
-#include "rpi-base.h"
+#include "base.h"
 #include "arm-start.h"
 
-#include "rpi-systimer.h"
+#include "systimer.h"
 
 #define TIMEOUT_WAIT(stop_if_true, usec)     \
 { int time= usec;\
@@ -1727,7 +1727,7 @@ int sd_card_init(struct block_device **dev)
     }
 
 #ifdef EMMC_DEBUG
-    printf("SD: &scr: %p\r\n", &ret->scr->scr[0]);
+    printf("SD: &scr: %p\r\n", (void *)&ret->scr->scr[0]);
     printf("SD: SCR[0]: %08"PRIu32", SCR[1]: %08"PRIu32"\r\n", ret->scr->scr[0], ret->scr->scr[1]);;
     printf("SD: SCR: %08"PRIu32"%08"PRIu32"\r\n", byte_swap(ret->scr->scr[0]), byte_swap(ret->scr->scr[1]));
     printf("SD: SCR: version %s, bus_widths %01"PRIu32"\r\n", sd_versions[ret->scr->sd_version],
