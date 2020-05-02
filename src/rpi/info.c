@@ -87,7 +87,6 @@ char *get_info_string() {
 static char *get_cmdline() {
    static int read = 0;
    if (!read) {
-      //memset(cmdline, 0, PROP_SIZE);
       rpi_mailbox_property_t *buf;
       buf = RPI_PropertyGetBuffer( TAG_GET_COMMAND_LINE );
       if (buf) {
@@ -127,7 +126,7 @@ NOINIT_SECTION static char ret[PROP_SIZE];
 }
 
 static clock_info_t * get_clock_rates(int clk_id) {
-   static clock_info_t result;
+NOINIT_SECTION static clock_info_t result;
    int *rp = (int *) &result;
    rpi_mailbox_tag_t tags[] = {
       TAG_GET_CLOCK_RATE,
@@ -137,13 +136,8 @@ static clock_info_t * get_clock_rates(int clk_id) {
    size_t n = sizeof(tags) / sizeof(rpi_mailbox_tag_t);
 
    rpi_mailbox_property_t *buf;
-   RPI_PropertyInit();
    for (size_t i = 0; i < n; i++) {
-      RPI_PropertyAddTag(tags[i], clk_id);
-   }
-   RPI_PropertyProcess();
-   for (size_t i = 0; i < n; i++) {
-      buf = RPI_PropertyGet(tags[i]);
+      buf = RPI_PropertyGetWord(tags[i],clk_id);
       *rp++ = buf ? buf->data.buffer_32[1] : 0;
    }
    return &result;
@@ -165,9 +159,9 @@ void dump_useful_info() {
       TAG_GET_BOARD_MODEL,
       TAG_GET_BOARD_REVISION,
       TAG_GET_BOARD_MAC_ADDRESS,
-      TAG_GET_BOARD_SERIAL
-      , TAG_GET_ARM_MEMORY
-      , TAG_GET_VC_MEMORY
+      TAG_GET_BOARD_SERIAL,
+      TAG_GET_ARM_MEMORY,
+      TAG_GET_VC_MEMORY
       //, TAG_GET_DMA_CHANNELS
       //, TAG_GET_CLOCKS
       //, TAG_GET_COMMAND_LINE
@@ -178,9 +172,9 @@ void dump_useful_info() {
       "BOARD_MODEL",
       "BOARD_REVISION",
       "BOARD_MAC_ADDRESS",
-      "BOARD_SERIAL"
-      , "ARM_MEMORY"
-      , "VC_MEMORY"
+      "BOARD_SERIAL",
+      "ARM_MEMORY",
+      "VC_MEMORY"
       //, "DMA_CHANNEL"
       //, "CLOCKS"
       //, "COMMAND_LINE"
@@ -201,22 +195,9 @@ void dump_useful_info() {
    };
 
    size_t n = sizeof(tags) / sizeof(rpi_mailbox_tag_t);
-   // put some new lines in the serial stream as we don't know what is currently on the terminal
-   LOG_INFO("\r\n");
-   LOG_INFO("\r\n");
-   LOG_INFO("**********     Raspberry Pi BBC Micro 1MHz Interface     **********\r\n");
-   LOG_INFO("\r\n");
-   LOG_INFO("\r\n");
-
-   RPI_PropertyInit();
-   for (size_t i = 0; i < n ; i++) {
-      RPI_PropertyAddTag(tags[i]);
-   }
-
-   RPI_PropertyProcess();
 
    for (size_t i = 0; i < n; i++) {
-      rpi_mailbox_property_t *buf = RPI_PropertyGet(tags[i]);
+      rpi_mailbox_property_t *buf = RPI_PropertyGetWord(tags[i], 0);
       print_tag_value(tagnames[i], buf, 1);
    }
 
