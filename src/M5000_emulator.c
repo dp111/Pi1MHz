@@ -30,8 +30,7 @@
 #include "rpi/audio.h"
 #include "rpi/gpio.h"
 #include "rpi/info.h"
-
-// buffer size of 1500 16ms @ 46.875KHz (must be multiple of 3)
+#include "BeebSCSI/fatfs/ff.h"
 
 //NB ample software access the waveform ram with bit 7 and 8 equal
 //Pi1MHz has the complete ram where as B-em masks bit 8 when the ram is written
@@ -61,9 +60,11 @@ static int stereo;
 static int gain;
 static int autorange;
 
+static int fx_pointer;
+
 struct synth {
     uint32_t phaseRAM[16];
-    int sleft,sright;
+    int sleft, sright;
     uint8_t * ram;
 };
 
@@ -78,7 +79,7 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
    s->ram = ptr;
    // Real hardware clears 0x3E00 for 128bytes and random
    // Waveform bytes depending on phaseRAM
-   // we only need to clear the disable bytes   
+   // we only need to clear the disable bytes
    memset(&s->ram[I_WFTOP], 1, 16);
 }
 
@@ -132,7 +133,8 @@ static void update_channels(struct synth *s)
       // In the real hardware the disable bit works by forcing the
       // phase accumulator to FREQUENCY.
       if (DISABLE(c)) {
-         // s->phaseRAM[i] = 0;
+          //s->phaseRAM[i] = FREQ(c);
+          //s->phaseRAM[i] = 0;
           // A slight differnce as modulation is still calculated in real hardware
           // but not here
           modulate = 0;
@@ -254,31 +256,137 @@ static void music5000_get_sample(uint32_t *left, uint32_t *right)
     }
 }
 
-void music5000_emulate(void)
+static int record = 0;
+static bool rec_started;
+static uint32_t Audio_Index;
+
+static void music5000_rec_start()
 {
-   size_t space = rpi_audio_buffer_free_space();
+    Audio_Index = 0x100000 + 48;
+    rec_started = false;
+}
+
+void music5000_rec_stop()
+{
+   static const char wavfmt[] = {
+      'R','I','F','F',
+      0x00, 0x00, 0x00, 0x00,
+      0x57, 0x41, 0x56, 0x45, // "WAVE"
+      0x66, 0x6D, 0x74, 0x20, // "fmt "
+      0x10, 0x00, 0x00, 0x00, // format chunk size
+      0x01, 0x00,             // format 1=PCM
+      0x02, 0x00,             // channels 2=stereo
+      0x1B, 0xB7, 0x00, 0x00, // sample rate.
+      0x6C, 0xDC, 0x02, 0x00, // byte rate.
+      0x04, 0x00,             // block align.
+      0x10, 0x00,             // bits per sample.
+      0x64, 0x61, 0x74, 0x61, // "DATA".
+      0x00, 0x00, 0x00, 0x00, // length filled in later
+      0x00, 0x00, 0x00, 0x00  // dummy sample
+   };
+
+   char fn[13];
+   FRESULT result;
+   int number = 0;
+   uint32_t i = 0;
+   FIL music5000_fp;
+
+    do {
+      sprintf(&fn[i],"Musics%.3i.wav",number);
+      result = f_open( &music5000_fp, fn, FA_CREATE_NEW  | FA_WRITE);
+      LOG_INFO("Filename : %s\r\n",fn);
+      if ( result == FR_EXIST)
+         number++;
+    } while ( result != FR_OK );
+
+   for(uint32_t i=0; i<sizeof(wavfmt) ; i=i+4)
+      *(uint32_t *) &(JIM_ram[0x100000+i]) = *(const uint32_t *) &(wavfmt[i]);
+
+   uint32_t size = Audio_Index - 0x100000 - 48;
+   *(uint32_t *) &(JIM_ram[0x100000+4]) = size;
+   *(uint32_t *) &(JIM_ram[0x100000+40]) = size-36;
+
+
+   UINT temp;
+   f_write(&music5000_fp, &JIM_ram[0x100000],Audio_Index - 0x100000 , &temp);
+   f_close(&music5000_fp);
+   rec_started = 0;
+}
+
+static void store_samples(struct synth *s3,struct synth *s5)
+{
+    int sl = (s3->sleft  +  s5->sleft) * gain;
+    int sr = (s3->sright + s5->sright)* gain;
+    if (rec_started || sl || sr)
+    {
+      if (stereo)
+      {
+         sl = sl / 1024;
+         sr = sr / 1024;
+      }
+      else {
+         sl = sl / 512;
+         sr = sr / 512;
+      }
+      JIM_ram[Audio_Index++] = sl;
+      JIM_ram[Audio_Index++] = sl>>8;
+      JIM_ram[Audio_Index++] = sr;
+      JIM_ram[Audio_Index++] = sr>>8;
+      rec_started = true;
+      // TODO check  we don't over run JIM_ram
+    }
+}
+
+void music5000_emulate()
+{
+   if ((record == 0 ) && (fx_register[fx_pointer] != 0))
+   {
+      music5000_rec_start();
+      record = 1;
+   }
+
+   if ((record == 1 ) && (fx_register[fx_pointer] == 0))
+   {
+      LOG_INFO("Recording stopping\r\n");
+      music5000_rec_stop();
+      record = 0;
+   }
+
+   size_t space = rpi_audio_buffer_free_space()>>1;
    if (space)
    {
-    uint32_t *bufptr = rpi_audio_buffer_pointer();
-    for (size_t sample = (space>>1); sample !=0 ; sample--) {
-        update_channels(&m5000);
-        update_channels(&m3000);
-        music5000_get_sample(bufptr, bufptr + 1);
-        bufptr +=2;
-    }
-    rpi_audio_samples_written();
+      uint32_t *bufptr = rpi_audio_buffer_pointer();
+      for (size_t sample = space; sample !=0 ; sample--) {
+         update_channels(&m5000);
+         update_channels(&m3000);
+         music5000_get_sample(bufptr, bufptr + 1);
+         if (record)
+            store_samples(&m5000,&m3000);
+         bufptr += 2;
+      }
+      rpi_audio_samples_written();
    }
 }
 
-void M5000_emulator_init()
+void M5000_emulator_init(uint8_t instance)
 {
-   for (uint32_t n = 0; n <(sizeof(antilogtable)/sizeof(antilogtable[0])) ; n++) {
-       //12-bit antilog as per AM6070 datasheet
-       // this actually has a 13 bit fsd ( sign bit makes it 14bit)
-       int S = n & 15, C = n >> 4;
-       antilogtable[n] = ( (1<<C)*((S<<1) + 33) - 33);
+   if (record)
+   {
+      // stop recording
+      music5000_rec_stop();
+      record = 0;
    }
-   
+   LOG_INFO("M5000 FX ID : %d\r\n",instance);
+   fx_pointer = instance ;
+   fx_register[fx_pointer] = 0;
+
+   for (uint32_t n = 0; n <(sizeof(antilogtable)/sizeof(antilogtable[0])) ; n++) {
+      // 12-bit antilog as per AM6070 datasheet
+      // this actually has a 13 bit fsd ( sign bit makes it 14bit)
+      int S = n & 15, C = n >> 4;
+      antilogtable[n] = ( (1<<C)*((S<<1) + 33) - 33);
+   }
+
    M5000_gain();
    M5000_BeebAudio();
 
