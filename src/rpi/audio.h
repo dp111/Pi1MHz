@@ -5,6 +5,17 @@
 #include "base.h"
 #include <stddef.h>
 
+// NB Buffer size must be a multiple of 32 bytes
+// buffer contains both left and right sample words
+// @46875Hz
+// buffer of 2048 21.84ms
+// buffer of 1024 10.92ms
+// buffer of  512  5.46ms
+// buffer of  256  2.73ms
+
+// NB b-em has a buffer of 1500 which is a delay of 32ms
+#define DMA_BUFFER_SIZE 256
+
 #define PWM_BASE          (PERIPHERAL_BASE + 0x20C000) /* PWM controller */
 #define CLOCK_BASE        (PERIPHERAL_BASE + 0x101000)
 
