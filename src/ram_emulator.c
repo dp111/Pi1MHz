@@ -83,7 +83,7 @@ void ram_emulator_page_write(unsigned int gpio)
    Pi1MHz_Memory[Pi1MHz_MEM_PAGE + addr] = data;
 }
 
-void ram_emulator_init( void )
+void ram_emulator_init( uint8_t instance )
 {
    byte_ram_addr = 0;
    page_ram_addr = 0;
