@@ -90,7 +90,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include <stdlib.h>
 
 #include "rpi/arm-start.h"
-#include "rpi/aux.h"
+#include "rpi/auxuart.h"
 #include "rpi/cache.h"
 #include "rpi/performance.h"
 #include "rpi/info.h"
@@ -100,6 +100,8 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "scripts/gitversion.h"
 #include "BeebSCSI/filesystem.h"
 
+#define Pi1MHZ_FX_CONTROL 0xCA
+
 // add new emulators to the lists below
 
 #include "ram_emulator.h"
@@ -108,7 +110,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "framebuffer.h"
 
 typedef struct {
-   const func_ptr init;
+   const func_ptr_parameter init;
    uint8_t disable;
 } emulator_list;
 
@@ -117,7 +119,7 @@ static emulator_list emulator[] = {
    harddisc_emulator_init, 0,
    M5000_emulator_init, 0,
    fb_emulator_init, 1,
-   0,0 // Dummy end of list 
+   0,0 // Dummy end of list
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list)-1)
@@ -137,6 +139,9 @@ func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
 
 // holds the total number of polling functions to call
 static size_t  Pi1MHz_polls_max;
+
+// *fx register buffer
+uint8_t fx_register[256];
 
 // For each location in FRED and JIM which a task wants to be called for
 // it must register its interest. Only one task can be called per location
@@ -178,12 +183,7 @@ void Pi1MHzBus_addr_Status(unsigned int gpio)
    uint32_t addr = GET_ADDR(gpio);
    status_addr = data;
    Pi1MHz_Memory[addr] = data; // enable read back
-   switch (status_addr)
-   {
-      case 0: data = JIM_ram_size ; break; // status reg 0 returns JIM_ram_size
-      default : break;
-   }
-   Pi1MHz_Memory[addr+1] = data;
+   Pi1MHz_Memory[addr+1] = fx_register[status_addr];
 }
 
 // take data written by the beeb and put it to the correct place
@@ -191,28 +191,28 @@ void Pi1MHzBus_write_Status(unsigned int gpio)
 {
    uint32_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
+   fx_register[status_addr] = data;
    Pi1MHz_Memory[addr] = data; // enable read back
-   // writes not yet supported
 }
 
 void Pi1MHzBus_read_Status(unsigned int gpio)
 {
-
 }
 
 static void init_emulator() {
    LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
+
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
 
    char *prop = get_cmdline_prop("Pi1MHzDisable");
    if (prop)
-   {  // now look for a common seperated values to 
+   {  // now look for a common seperated values to
       char c;
       do {
         uint32_t temp=atoi(prop);
         if (temp < NUM_EMULATORS)
           emulator[temp].disable = 1;
-        do { 
+        do {
           c = *prop++;
           if (c == ' ') break;
           if (c == ',') break;
@@ -244,12 +244,12 @@ static void init_emulator() {
    _enable_interrupts();
 
    // Regsiter Status read back
-   Pi1MHz_Register_Memory(WRITE_FRED, 0xca, Pi1MHzBus_addr_Status );
-   Pi1MHz_Register_Memory(WRITE_FRED, 0xcb, Pi1MHzBus_write_Status );
-   Pi1MHz_Register_Memory( READ_FRED, 0xcb, Pi1MHzBus_read_Status );
+   Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL, Pi1MHzBus_addr_Status );
+   Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_write_Status );
+   Pi1MHz_Register_Memory( READ_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_read_Status );
 
    for( size_t i=0; i <NUM_EMULATORS; i++)
-      if (emulator[i].disable==0) emulator[i].init();
+      if (emulator[i].disable==0) emulator[i].init(i);
 }
 
 static int led_pin;
@@ -284,6 +284,8 @@ static void init_JIM()
    JIM_ram_size = JIM_ram_size -( 4*1024*1024) ; // 4Mbytes for other mallocs
    JIM_ram_size = JIM_ram_size & 0xFF000000; // round down to 16Mbyte boundary
    JIM_ram_size = JIM_ram_size >> 24 ; // set to 16Mbyte sets
+
+   fx_register[0] = JIM_ram_size;  // fx addr 0 returns ram size
 
    JIM_ram = (uint8_t *) malloc(16*1024*1024*JIM_ram_size); // malloc 480Mbytes
 
@@ -364,7 +366,7 @@ static void init_hardware()
 
 int kernel_main()
 {
-   RPI_AuxMiniUartInit( 115200 );
+   RPI_AuxMiniUartInit( 3000000/*115200*/ );
 
    enable_MMU_and_IDCaches(0);
 
