@@ -21,14 +21,14 @@ volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTab
 
 static const int bufferable = 1;
 static const int cachable = 1;
-#if defined(RPI2) || defined(RPI3) || defined(RPI4)
+#if (__ARM_ARCH >= 7 )
 static const int aa0 = 0; /* note ARM ARM bit ordering is confusing */
 static const int aa6 = 1;
 #endif
 static const int bb = 1;
 static const int shareable = 1;
 
-#if defined(RPI2) || defined(RPI3) || defined(RPI4)
+#if (__ARM_ARCH >= 7 )
 
 #define SETWAY_LEVEL_SHIFT          1
 
@@ -38,7 +38,7 @@ static const int shareable = 1;
 #define L1_SETWAY_WAY_SHIFT        30   /* 32-Log2(L1_DATA_CACHE_WAYS) */
 #define L1_SETWAY_SET_SHIFT         6   /* Log2(L1_DATA_CACHE_LINE_LENGTH) */
 
-#if defined(RPI2)
+#if (__ARM_ARCH == 7 )
 /* 8 ways x 1024 sets x 64 bytes per line = 512KB */
 #define L2_CACHE_SETS            1024
 #define L2_CACHE_WAYS               8
@@ -110,7 +110,7 @@ void CleanDataCache (void)
 
 void _clean_cache_area(void * start, unsigned int length)
 {
-#if defined(RPI2) || defined(RPI3) || defined(RPI4)
+#if (__ARM_ARCH >= 7 )
    uint32_t cachelinesize;
    char * startptr = start;
    char * endptr;
@@ -192,7 +192,7 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
   //   this means bit 0 of the page table is actually XN and must be clear
   //   to allow native ARM code to execute
   //   (this was the cause of issue #27)
-#if defined(RPI2) || defined (RPI3) || defined(RPI4)
+#if (__ARM_ARCH >= 7 )
   PageTable2[logical] = (physical<<12) | 0x132 | (bb << 6) | (cachable<<3) | (bufferable << 2);
 #else
   PageTable2[logical] = (physical<<12) | 0x133 | (bb << 6) | (cachable<<3) | (bufferable << 2);
@@ -288,14 +288,14 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
      }
   }
 
-#if defined(RPI3) || defined(RPI4)
+#if (__ARM_ARCH >= 8 )
   //unsigned cpuextctrl0, cpuextctrl1;
   //asm volatile ("mrrc p15, 1, %0, %1, c15" : "=r" (cpuextctrl0), "=r" (cpuextctrl1));
   //LOG_DEBUG("extctrl = %08x %08x\r\n", cpuextctrl1, cpuextctrl0);
 #else
   // RPI:  bit 6 of auxctrl is restrict cache size to 16K (no page coloring)
   // RPI2: bit 6 of auxctrl is set SMP bit, otherwise all caching disabled
-#if defined(RPI2)
+#if (__ARM_ARCH == 7 )
  unsigned auxctrl;
   asm volatile ("mrc p15, 0, %0, c1, c0,  1" : "=r" (auxctrl));
   auxctrl |= 1 << 6;
@@ -306,7 +306,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // set domain 0 to client
   asm volatile ("mcr p15, 0, %0, c3, c0, 0" :: "r" (1));
 
-#if defined(RPI2) || defined(RPI3) || defined(RPI4)
+#if (__ARM_ARCH >= 7 )
   // set TTBR0 - page table walk memory cacheability/shareable
   // [Bit 0, Bit 6] indicates inner cachability: 01 = normal memory, inner write-back write-allocate cacheable
   // [Bit 4, Bit 3] indicates outer cachability: 01 = normal memory, outer write-back write-allocate cacheable
@@ -320,7 +320,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 #endif
 
   // Invalidate entire data cache
-#if defined(RPI2) || defined(RPI3) || defined(RPI4)
+#if (__ARM_ARCH >= 7 )
   asm volatile ("isb" ::: "memory");
   InvalidateDataCache();
 #else

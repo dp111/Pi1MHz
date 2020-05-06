@@ -66,7 +66,4 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfpu=neon-fp-armv8" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" CACHE STRING "" )
 set( CMAKE_ASM_FLAGS "${CMAKE_C_FLAGS}" CACHE STRING "" )
 
-# Add the raspberry-pi 3 definition so conditional compilation works
-add_definitions( -DRPI3=1 )
-
 set( KERNEL_NAME "kernel7.img" )

@@ -33,7 +33,7 @@
 
 #ifdef __ASSEMBLER__
 
-#if defined(RPI2) || defined(RPI3)
+#if (__ARM_ARCH >= 7 )
     #define PERIPHERAL_BASE     0x3f000000
 #else
     #define PERIPHERAL_BASE     0x20000000
@@ -41,7 +41,7 @@
 
 #else
 
-#if defined(RPI2) || defined(RPI3)
+#if (__ARM_ARCH >= 7 )
     #define PERIPHERAL_BASE     0x3f000000UL
 #else
     #define PERIPHERAL_BASE     0x20000000UL
@@ -49,7 +49,7 @@
 
 #define PERIPHERAL_BASE_GPU     0x7e000000UL
 
-#if defined(RPI2) || defined(RPI3)
+#if (__ARM_ARCH >= 7 )
     #define GPU_BASE     0xC0000000UL
 #else
     #define GPU_BASE     0x40000000UL

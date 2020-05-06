@@ -27,9 +27,7 @@
 //  R11 is preset to be the GPIO base
 #define FIQ_SETUP_CODE 1
 .macro FIQ_SETUP_M
-  #if defined(RPI2) || defined(RPI3)
-
-  #else
+  #if (__ARM_ARCH == 6 )
   // ARMv6 lock FIQ handler into cache
   // disable the cache
     ldr     r8,=FIQstart
@@ -72,10 +70,8 @@ prefetch_loop:
 .endm
 
 .macro DMB_MACRO
-
-#if defined(RPI2) || defined(RPI3)
+#if (__ARM_ARCH == 6 )
    // dmb   // Only needed on ArmV6 systems
-#else
     mov      r8, #0
     mcr      p15, 0, r8, c7, c10, 5
 #endif
