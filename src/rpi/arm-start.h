@@ -9,10 +9,9 @@
 
 #define _disable_interrupts() {asm volatile ("CPSID if");}
 
-#if defined(RPI2) || defined(RPI3)
+#if (__ARM_ARCH >= 7 )
     #define _data_memory_barrier() {asm volatile ("dmb");}
 #else
-
     extern void _data_memory_barrier();
 #endif
 
