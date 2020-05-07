@@ -114,7 +114,7 @@
 #define DATABUS_MASK (D7_MASK | D6_MASK | D5_MASK | D4_MASK | D3_MASK | D2_MASK | D1_MASK | D0_MASK)
 #define ADDRBUS_MASK (A7_MASK | A6_MASK | A5_MASK | A4_MASK | A3_MASK | A2_MASK | A1_MASK | A0_MASK)
 
-#define DATABUS_TO_OUTPUTS ((1<<(D7_PIN*3))|(1<<(D6_PIN*3))|(1<<(D5_PIN*3))|(1<<(D4_PIN*3))|(1<<(D3_PIN*3))|(1<<(D2_PIN*3))|(1<<(D1_PIN*3))|(1<<(D0_PIN*3))) 
+#define DATABUS_TO_OUTPUTS ((1<<(D7_PIN*3))|(1<<(D6_PIN*3))|(1<<(D5_PIN*3))|(1<<(D4_PIN*3))|(1<<(D3_PIN*3))|(1<<(D2_PIN*3))|(1<<(D1_PIN*3))|(1<<(D0_PIN*3)))
 
 #define DATABUS_SHIFT D0_PIN
 #define ADDRBUS_SHIFT A0_PIN
@@ -129,7 +129,7 @@
 
 #define Pi1MHz_MEM_PAGE  (1<<8)
 #define Pi1MHz_MEM_RNW   (1<<9)
-                                  
+
 #define WRITE_FRED   0
 #define WRITE_JIM                     Pi1MHz_MEM_PAGE
 #define READ_FRED    Pi1MHz_MEM_RNW
