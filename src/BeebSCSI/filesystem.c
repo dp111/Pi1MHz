@@ -23,7 +23,6 @@
    Email: simon.inns@gmail.com
 
 ************************************************************************/
-//#define DEBUG
 
 #include <stdbool.h>
 #include <stdint.h>
