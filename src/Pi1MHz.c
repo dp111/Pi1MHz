@@ -364,9 +364,9 @@ static void init_hardware()
 #endif
 }
 
-int kernel_main()
+void kernel_main()
 {
-   RPI_AuxMiniUartInit( 3000000/*115200*/ );
+   RPI_AuxMiniUartInit( 115200 );
 
    enable_MMU_and_IDCaches(0);
 
