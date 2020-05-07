@@ -22,7 +22,7 @@ static void dump_digit(unsigned char c) {
    } else {
       c = 'A' + c - 10;
    }
-   RPI_AuxMiniUartWrite(c);
+   RPI_AuxMiniUartWriteForce(c);
 }
 
 static void dump_hex(unsigned int value) {
@@ -36,7 +36,7 @@ static void dump_hex(unsigned int value) {
 static void dump_binary(unsigned int value) {
   int bits = (sizeof(value) * 8);
   for (int i = bits; i != 0; i--) {
-    RPI_AuxMiniUartWrite('0' + (value >> (bits - 1)));
+    RPI_AuxMiniUartWriteForce('0' + (value >> (bits - 1)));
     value <<= 1;
   }
 }
@@ -44,11 +44,11 @@ static void dump_binary(unsigned int value) {
 static void dump_string(char *string) {
   char c;
   while ((c = *string++) != 0) {
-    RPI_AuxMiniUartWrite(c);
+    RPI_AuxMiniUartWriteForce(c);
   }
 }
 
-/* For some reason printf generally doesn't work here */
+/* printf isn't used as it is buffered and uses IRQs which might be disabled */
 void dump_info(unsigned int *context, int offset, char *type) {
   unsigned int *addr;
   unsigned int *reg;
@@ -56,6 +56,7 @@ void dump_info(unsigned int *context, int offset, char *type) {
 
   /* context point into the exception stack, at flags, followed by registers 0 .. 13 */
   reg = context + 1;
+  dump_string("\r\n\r\n");
   dump_string(type);
   dump_string(" at ");
   /* The stacked LR points one or two words afer the exception address */
@@ -69,8 +70,8 @@ void dump_info(unsigned int *context, int offset, char *type) {
   for (int i = 0; i <= 13; i++) {
     int j = (i < 13) ? i : 14; /* slot 13 actually holds the link register */
     dump_string("  r[");
-    RPI_AuxMiniUartWrite('0' + (j / 10));
-    RPI_AuxMiniUartWrite('0' + (j % 10));
+    dump_digit(j / 10);
+    dump_digit(j % 10);
     dump_string("]=");
     dump_hex(reg[i]);
     dump_string("\r\n");
@@ -79,7 +80,7 @@ void dump_info(unsigned int *context, int offset, char *type) {
   for (int i = -4; i <= 4; i++) {
     dump_string("  ");
     dump_hex((unsigned int) (addr + i));
-    RPI_AuxMiniUartWrite('=');
+    RPI_AuxMiniUartWriteForce('=');
     dump_hex(*(addr + i));
     if (i == 0) {
       dump_string(" <<<<<< \r\n");
