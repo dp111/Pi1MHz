@@ -3,7 +3,7 @@
 #include "rpi.h"
 
 /* define the stack space which is setup in arm-start.s */
-__attribute__((used))  NOINIT_SECTION uint8_t arm_stack[8*64*1024];
+__attribute__ ((aligned (0x1000) )) __attribute__((used))  NOINIT_SECTION uint8_t arm_stack[8*64*1024];
 
 #if (__ARM_ARCH >= 7 )
 int _get_core(void)
