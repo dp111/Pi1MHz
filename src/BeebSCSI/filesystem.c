@@ -1554,8 +1554,8 @@ bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer)
          debugString_P(PSTR("\r\n"));
       }
 
-      // Get the directory entry's file size in bytes (64-bit as we have exFAT configured)
-      uint64_t fileSize = (uint64_t)filesystemState.fsInfo.fsize;
+      // Get the directory entry's file size in bytes
+      FSIZE_t fileSize = filesystemState.fsInfo.fsize;
 
       // The maximum supported file size in ADFS is 512Mbytes (524,288 Kbytes or 536,870,912)
       // If the file size is bigger than this, the file must be truncated.
