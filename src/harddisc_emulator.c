@@ -79,7 +79,7 @@ static void hd_emulator_IRQ(unsigned int gpio)
    {
       Pi1MHz_SetnIRQ(CLEAR_IRQ);
       hd_emulator_status(STATUS_IRQ, CLEAR);
-   } else 
+   } else
    {
       if (HD_STATUS & STATUS_REQ)
       {
@@ -87,7 +87,7 @@ static void hd_emulator_IRQ(unsigned int gpio)
          hd_emulator_status(STATUS_IRQ, ACTIVE);
       }
    }
-   
+
 }
 
 void hd_emulator_conf(unsigned int gpio)
@@ -387,10 +387,10 @@ void hostadapterWriteRequestFlag(bool flagState)
       HD_ACK = CLEAR;
       hd_emulator_status(STATUS_REQ, ACTIVE); // REQ = 0 (active)
       if (HD_IRQ_ENABLE)
-         {
+      {
          Pi1MHz_SetnIRQ(ASSERT_IRQ);
          hd_emulator_status(STATUS_IRQ, ACTIVE);
-         }
+      }
    }
 }
 
