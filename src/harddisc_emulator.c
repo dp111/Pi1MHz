@@ -73,13 +73,21 @@ static void hd_emulator_IRQ(unsigned int gpio)
 {
    unsigned int data = GET_DATA(gpio);
    // D0 used to enable / disable
-   HD_IRQ_ENABLE=( data & 1 );
+   HD_IRQ_ENABLE = ( data & 1 );
 
    if (!HD_IRQ_ENABLE)
    {
       Pi1MHz_SetnIRQ(CLEAR_IRQ);
       hd_emulator_status(STATUS_IRQ, CLEAR);
+   } else 
+   {
+      if (HD_STATUS & STATUS_REQ)
+      {
+         Pi1MHz_SetnIRQ(ASSERT_IRQ);
+         hd_emulator_status(STATUS_IRQ, ACTIVE);
+      }
    }
+   
 }
 
 void hd_emulator_conf(unsigned int gpio)
