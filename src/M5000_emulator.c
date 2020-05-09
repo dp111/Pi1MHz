@@ -299,7 +299,7 @@ void music5000_rec_stop()
          number++;
     } while ( result != FR_OK );
 
-   for(uint32_t i=0; i<sizeof(wavfmt) ; i=i+4)
+   for(i=0; i<sizeof(wavfmt) ; i=i+4)
       *(uint32_t *) &(JIM_ram[0x100000+i]) = *(const uint32_t *) &(wavfmt[i]);
 
    uint32_t size = Audio_Index - 0x100000 - 48;
