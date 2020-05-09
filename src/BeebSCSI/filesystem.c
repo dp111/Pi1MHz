@@ -79,7 +79,7 @@ uint32_t clmt[SZ_TBL];// upto 63 fragments
 
 static void filesystemFlush( void)
 {
-   // If a Lun is open close 
+   // If a Lun is open close
    if (lunOpenFlag) {
      //Close the open file object
      f_close(&filesystemState.fileObject);
@@ -599,8 +599,8 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
 
    // Check that the LUN file size is actually a size which ADFS can support (the number of sectors is limited to a 21 bit number)
    // i.e. a maximum of 0x1FFFFF or 2,097,151 (* 256 bytes per sector = 512Mb = 536,870,656 bytes)
-   if (lunFileSize > (((1<<21)-1) * 256)) {
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): WARNING: The LUN file size is greater than 512Mbs\r\n"));
+   if (lunFileSize > (((1<<21)) * 256)) {
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): WARNING: The LUN file size is greater than 512MBytes\r\n"));
    }
 
    // Close the LUN image file
@@ -735,8 +735,8 @@ bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNumber, ui
 
    // Check that the LUN file size is actually a size which ADFS can support (the number of sectors is limited to a 21 bit number)
    // i.e. a maximum of 0x1FFFFF or 2,097,151 (* 256 bytes per sector = 512Mb = 536,870,656 bytes)
-   if (lunFileSize > 536870656) {
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateDscFromLunImage(): WARNING: The LUN file size is greater than 512Mbs\r\n"));
+   if (lunFileSize > ((1<<21)*256) ) {
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateDscFromLunImage(): WARNING: The LUN file size is greater than 512MBytes\r\n"));
    }
 
    // Check that the LUN file size is actually a size which the ACB-4000 card could have supported (given that the
@@ -1189,8 +1189,8 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
 {
    uint32_t sectorsToRead = 0;
 
-   
-      // check that it is the same lunDirectory 
+
+      // check that it is the same lunDirectory
    if (lunOpenFlag && (filesystemState.lunNumber == lunNumber)) {
       // Move to the correct point in the DAT file
       // This is * 256 as each block is 256 bytes
@@ -1222,7 +1222,7 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
          }
       }
    }
-   
+
    // Fill the file system sector buffer
    sectorsToRead = requiredNumberOfSectors;
    if (sectorsToRead > SECTOR_BUFFER_LENGTH) sectorsToRead = SECTOR_BUFFER_LENGTH;
@@ -1309,7 +1309,7 @@ bool filesystemCloseLunForRead(void)
 bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t requiredNumberOfSectors)
 {
    if (lunOpenFlag) {
-      // check that it is the same lunDirectory 
+      // check that it is the same lunDirectory
       if (filesystemState.lunNumber != lunNumber) {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): Flushing the file system\r\n"));
          filesystemFlush();
