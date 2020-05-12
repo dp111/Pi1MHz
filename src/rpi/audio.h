@@ -13,8 +13,11 @@
 // buffer of  512  5.46ms
 // buffer of  256  2.73ms
 
+// Music 5000 updates @ 10mS
+// so we ideally want to be <5ms so lets choose a buffer of 448 with is 4.77mS
+
 // NB b-em has a buffer of 1500 which is a delay of 32ms
-#define DMA_BUFFER_SIZE 256
+#define DMA_BUFFER_SIZE 448
 
 #define PWM_BASE          (PERIPHERAL_BASE + 0x20C000) /* PWM controller */
 #define CLOCK_BASE        (PERIPHERAL_BASE + 0x101000)
