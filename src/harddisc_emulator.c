@@ -176,13 +176,16 @@ void harddisc_emulator_init( uint8_t instance )
    if (!PowerOn)
    {
       // Initialise the SD Card and FAT file system functions
-       filesystemInitialise();
-       // Initialise the SCSI emulation
+      filesystemInitialise();
+      // Initialise the SCSI emulation
       scsiInitialise();
 
       PowerOn = 1;
+   } else
+   {
+      filesystemReset();
+      scsiReset();
    }
-
    // register polling function
    Pi1MHz_Register_Poll(scsiProcessEmulation);
 }
