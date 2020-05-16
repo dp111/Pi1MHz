@@ -178,11 +178,10 @@ void harddisc_emulator_init( uint8_t instance )
    if (!PowerOn)
    {
       char *prop = get_cmdline_prop("SCSIJUKE");
-      int scsijuke;
+      int scsijuke = 0;
       if (prop)
          scsijuke = atoi(prop);
-      else
-         scsijuke = 0;
+
       // Initialise the SD Card and FAT file system functions
       filesystemInitialise(scsijuke);
       // Initialise the SCSI emulation
@@ -190,7 +189,7 @@ void harddisc_emulator_init( uint8_t instance )
 
       PowerOn = 1;
    }
-   
+
    scsiReset();
    filesystemReset();
    // register polling function
