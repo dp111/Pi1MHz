@@ -36,7 +36,7 @@
 #define SECTOR_BUFFER_LENGTH	(SECTOR_BUFFER_SIZE / 256)
 
 // External prototypes
-void filesystemInitialise(void);
+void filesystemInitialise(int scsijuke);
 void filesystemReset(void);
 
 bool filesystemMount(void);

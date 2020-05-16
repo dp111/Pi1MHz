@@ -7,7 +7,9 @@
 #define HD_ADDR 0x40
 
 #include <string.h>
+#include <stdlib.h>
 #include "Pi1MHz.h"
+#include "rpi/info.h"
 
 #define FILE __FILE
 
@@ -175,8 +177,14 @@ void harddisc_emulator_init( uint8_t instance )
    // Fixes *SCSIJUKE surving over shift break.
    if (!PowerOn)
    {
+      char *prop = get_cmdline_prop("SCSIJUKE");
+      int scsijuke;
+      if (prop)
+         scsijuke = atoi(prop);
+      else
+         scsijuke = 0;
       // Initialise the SD Card and FAT file system functions
-      filesystemInitialise();
+      filesystemInitialise(scsijuke);
       // Initialise the SCSI emulation
       scsiInitialise();
 
