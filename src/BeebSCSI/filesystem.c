@@ -635,7 +635,7 @@ bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNumber, ui
    // The lunFileSize (in tracks) should be evenly divisible by the head count and the head count should be
    // 16 or less.
    heads = 16;
-   while ((lunFileSize % heads != 0) && heads != 1) heads--;
+   while ((lunFileSize % heads != 0) && heads > 1) heads--;
    cylinders = lunFileSize / heads;
 
    if (debugFlag_filesystem) {
