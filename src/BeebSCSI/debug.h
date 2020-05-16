@@ -37,6 +37,7 @@ extern  bool debugFlag_scsiState;
 extern  bool debugFlag_fatfs;
 
 #ifdef DEBUG
+#include "cpuspecfic.h"
 /* Function prototypes */
 void debugString_P(const char *addr);
 void debugString(char *string);

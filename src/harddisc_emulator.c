@@ -181,11 +181,10 @@ void harddisc_emulator_init( uint8_t instance )
       scsiInitialise();
 
       PowerOn = 1;
-   } else
-   {
-      filesystemReset();
-      scsiReset();
    }
+   
+   scsiReset();
+   filesystemReset();
    // register polling function
    Pi1MHz_Register_Poll(scsiProcessEmulation);
 }
