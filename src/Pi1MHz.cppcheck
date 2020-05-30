@@ -3,6 +3,13 @@
     <builddir>Pi1MHz-cppcheck-build-dir</builddir>
     <platform>Unspecified</platform>
     <analyze-all-vs-configs>true</analyze-all-vs-configs>
+    <bug-hunting/>
+    <check-headers>true</check-headers>
+    <check-unused-templates>false</check-unused-templates>
+    <max-ctu-depth>20</max-ctu-depth>
+    <safe-checks>
+        <class-public/>
+    </safe-checks>
     <tools>
         <tool>clang-tidy</tool>
     </tools>

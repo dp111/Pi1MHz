@@ -45,14 +45,14 @@ void ram_emulator_byte_addr(unsigned int gpio)
       default: byte_ram_addr = (byte_ram_addr & 0xFF00FFFF) | data<<16; break;
    }
 
-   Pi1MHz_Memory[3]    = JIM_ram[byte_ram_addr]; // setup new data now the address has changed;
-   Pi1MHz_Memory[addr] = data;                   // enable the address register to be read back
+   Pi1MHz_MemoryWrite(3,JIM_ram[byte_ram_addr]); // setup new data now the address has changed;
+   Pi1MHz_MemoryWrite(addr, data);                   // enable the address register to be read back
 }
 
 void ram_emulator_byte_write(unsigned int gpio)
 {
    JIM_ram[byte_ram_addr] = gpio;
-   Pi1MHz_Memory[3] = gpio;
+   Pi1MHz_MemoryWrite(3, gpio);
 }
 
 void ram_emulator_page_addr(unsigned int gpio)
@@ -70,9 +70,10 @@ void ram_emulator_page_addr(unsigned int gpio)
    else
       page_ram_addr = (page_ram_addr & 0xFFFF00FF) | data<<8;
    }
-   Pi1MHz_Memory[addr] = data; // enable the address register to be read back
+   Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
    // setup new data now the address has changed
-   memcpy(&Pi1MHz_Memory[Pi1MHz_MEM_PAGE], &JIM_ram[page_ram_addr], PAGE_SIZE);
+   for( uint32_t i = 0; i < PAGE_SIZE ; i++)
+      Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + i, JIM_ram[page_ram_addr+i]);
 }
 
 void ram_emulator_page_write(unsigned int gpio)
@@ -80,7 +81,7 @@ void ram_emulator_page_write(unsigned int gpio)
    uint32_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    JIM_ram[page_ram_addr + addr] = data;
-   Pi1MHz_Memory[Pi1MHz_MEM_PAGE + addr] = data;
+   Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + addr, data);
 }
 
 void ram_emulator_init( uint8_t instance )
@@ -88,7 +89,9 @@ void ram_emulator_init( uint8_t instance )
    byte_ram_addr = 0;
    page_ram_addr = 0;
 
-   memcpy(&Pi1MHz_Memory[Pi1MHz_MEM_PAGE], &JIM_ram[page_ram_addr], PAGE_SIZE);
+   for( uint32_t i = 0; i < PAGE_SIZE ; i++)
+      Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + i, JIM_ram[page_ram_addr+i]);
+
 
    // register call backs
    // byte memory address write fc00 01 02
