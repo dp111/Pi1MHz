@@ -47,7 +47,7 @@
    } while ( time--); \
 }
 
-#ifdef DEBUG
+#ifdef DEBUG_SD
 #define EMMC_DEBUG
 #else
 #define printf(...)
