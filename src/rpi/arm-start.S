@@ -238,4 +238,3 @@ data_abort_txt:
 
 unknown_swi_txt:
 .ascii "SWI\0"
-
