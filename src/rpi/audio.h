@@ -129,6 +129,8 @@ typedef struct
    rpi_reg_rw_t Debug;
 } rpi_dmax_t;
 
+static rpi_dmax_t* const RPI_DMA4Base = (rpi_dmax_t*) (DMA_CONTROLLER_BASE + 0x400);
+
 static rpi_dmax_t* const RPI_DMA5Base = (rpi_dmax_t*) (DMA_CONTROLLER_BASE + 0x500);
 
 typedef struct
