@@ -16,5 +16,10 @@ BeebSCSI changes
  Starting ADFS with F break now doesn't start any LUNs so SCSIJUKE can be the first command
  Fall back to slow seeking if the LUN us too fragmented instead of just failing over.
 
-v1.04
+v1.04b
 Use VPU1 to sample the P1MHz
+
+V1.04c
+Add more plot codes ( NB Triangle and elipse are broken)
+Faster screen scrolling
+Tweek FIQ handler to be a bit faster
