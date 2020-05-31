@@ -17,6 +17,7 @@
 #define SCREEN_HEIGHT   512
 
 #define CURSOR (95-32)
+#define CLEAR_CHAR 255
 
 //define how many bits per pixel
 
@@ -129,32 +130,6 @@ static void update_palette(int offset, int num_colours) {
 }
 
 #endif
-
-/*
-#define D_RED   ((((RED & ~ALPHA)   >> 1) & RED)   | ALPHA)
-#define D_GREEN ((((GREEN & ~ALPHA) >> 1) & GREEN) | ALPHA)
-#define D_BLUE  ((((BLUE & ~ALPHA)  >> 1) & BLUE)  | ALPHA)
-
-static uint32_t colour_table[] = {
-   0x0000,                   // Black
-   D_RED,                    // Dark Red
-   D_GREEN,                  // Dark Green
-   D_RED | D_GREEN,          // Dark Yellow
-   D_BLUE,                   // Dark Blue
-   D_RED | D_BLUE,           // Dark Magenta
-   D_GREEN | D_BLUE,         // Dark Cyan
-   D_RED | D_GREEN | D_BLUE, // Dark White
-
-   0x0000,                   // Dark Black
-   RED,                      // Red
-   GREEN,                    // Green
-   RED | GREEN,              // Yellow
-   BLUE,                     // Blue
-   RED | BLUE,               // Magenta
-   GREEN | BLUE,             // Cyan
-   RED | GREEN | BLUE        // White
-
-};*/
 
 // Fill modes:
 #define HL_LR_NB 1 // Horizontal line fill (left & right) to non-background
@@ -870,7 +845,6 @@ static void fb_draw_character(int c, int invert, int eor) {
    unsigned char temp=0;
 #endif
 
-   // Map the character to a section of the 6847 font data
    c *= cheight;
 
    if(invert) invert = 0xFF ;
@@ -880,7 +854,11 @@ static void fb_draw_character(int c, int invert, int eor) {
    for (uint32_t i = 0; i < cheight; i++) {
       for (uint32_t scaley = c_y_scale; scaley != 0; scaley-- )
       {
-       int data = BBCFont[c + i] ^ invert;
+      int data;
+      if ( c == CLEAR_CHAR)
+         data = 0;
+      else
+         data = BBCFont[c + i] ^ invert;
 #ifdef BPP32
       uint32_t *fbptr = fb + c_x_pos * bpp * c_x_scale + (c_y_pos * c_y_scale * cheight + i*c_y_scale + scaley) * pitch;
 #endif
@@ -979,6 +957,7 @@ void fb_writec(int c) {
    static int r;
    static int g;
    static int b;
+   static uint32_t temp;
 
    switch (state)
    {
@@ -1075,6 +1054,21 @@ void fb_writec(int c) {
          state = NORMAL;
          return;
       }
+
+    case IN_VDU23:
+    { // redefine character
+      if (count == 0 )
+         temp = c -32;
+      else
+         BBCFont[temp*cheight+(count -1)] = c;
+      count++;
+      if (count==9)
+      {
+         state = NORMAL;
+      }
+      return;
+    }
+
 
    case IN_VDU25:
    {
@@ -1272,6 +1266,11 @@ void fb_writec(int c) {
       count = 0;
       return;
 
+   case 23:
+      state = IN_VDU23;
+      count = 0;
+      return;
+
    case 25:
       state = IN_VDU25;
       count = 0;
@@ -1289,7 +1288,7 @@ void fb_writec(int c) {
       break;
 
    case 127:
-      fb_draw_character(0, 0, 0);
+      fb_draw_character(CLEAR_CHAR, 0, 0);
       fb_cursor_left();
       fb_draw_character(CURSOR, 0, 0);
       break;
@@ -1378,19 +1377,20 @@ static void fb_initialize() {
 
     /* Update the palette (only in 8-bpp modes) */
     update_palette(0, NUM_COLOURS);
-    
+
     mode_init();
-    
+
     fb_clear();
+    fb_draw_character(CURSOR, 0, 1);
 
     fb_writes("\r\n\r\nAcorn MOS\r\n\r\nPi1MHz\r\n\r\nBASIC\r\n\r\n>");
-
+#
 #ifdef BPP32
        for (int y = 0; y < 16; y++) {
           uint32_t *fbptr = (uint32_t *) (fb + pitch * y);
           for (int col = 23; col >= 0; col--) {
              for (int x = 0; x < 8; x++) {
-                *fbptr++ = 1 << col;
+                *fbptr++ = col;
              }
           }
        }
@@ -1400,7 +1400,7 @@ static void fb_initialize() {
           uint16_t *fbptr = (uint16_t *) (fb + pitch * y);
           for (int col = 15; col >= 0; col--) {
              for (int x = 0; x < 8; x++) {
-                *fbptr++ = 1 << col;
+                *fbptr++ = col;
              }
           }
        }
@@ -1408,9 +1408,9 @@ static void fb_initialize() {
 #ifdef BPP8
        for (int y = 0; y < 16; y++) {
           uint8_t *fbptr = (uint8_t *) (fb + pitch * y);
-          for (int col = 15; col >= 0; col--) {
+          for (int col = 0; col <= 15; col++) {
              for (int x = 0; x < 8; x++) {
-                *fbptr++ = 1 << col;
+                *fbptr++ = col;
              }
           }
        }
