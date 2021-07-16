@@ -28,6 +28,7 @@ static const int cachable = 1;
 #if (__ARM_ARCH >= 7 )
 static const int aa0 = 0; /* note ARM ARM bit ordering is confusing */
 static const int aa6 = 1;
+static const int shareable = 1;
 #endif
 static const int bb = 1;
 
