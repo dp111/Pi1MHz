@@ -5,6 +5,10 @@ set -e
 
 NAME=Pi1MHz_$(date +"%Y%m%d_%H%M")_$USER
 
+# detect number of available CPUs for parallel make
+[ -z "$NCPUS" ] && [ ! -z "$(type -P nproc)" ] && NCPUS=$(nproc)
+[ -z "$NCPUS" ] && NCPUS=$(getconf _NPROCESSORS_ONLN) # fallback in case nproc unavailable
+
 DIR=../../releases/${NAME}
 mkdir -p "${DIR}/debug"
 
@@ -13,7 +17,7 @@ do
     # compile debug kernel
     ./clobber.sh
     ./configure_${MODEL}.sh -DDEBUG=1
-    make -B -j4
+    make -B -j$NCPUS
 done
 
 cp -a ../../firmware/kernel* "${DIR}/debug"
@@ -24,7 +28,7 @@ do
     # compile normal kernel
     ./clobber.sh
     ./configure_${MODEL}.sh
-    make -B -j4
+    make -B -j$NCPUS
 done
 
 cp -a ../../firmware/* "${DIR}"
