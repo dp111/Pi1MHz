@@ -39,7 +39,7 @@
  Write buffering has been introduced to increase performance
 
  Buffers have been increased to 16K to reduced SDCARD access and make use of
- multiblock acceses
+ multiblock accesses
 
  Bugs around testing for errors on dsc file lengths being 22 bytes fixed.
 

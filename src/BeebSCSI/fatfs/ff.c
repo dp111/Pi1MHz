@@ -997,7 +997,7 @@ static FRESULT dec_lock (	/* Decrement object open counter */
 		if (n == 0) Files[i].fs = 0;	/* Delete the entry if open count gets zero */
 		res = FR_OK;
 	} else {
-		res = FR_INT_ERR;		/* Invalid index nunber */
+		res = FR_INT_ERR;		/* Invalid index number */
 	}
 	return res;
 }
@@ -1990,7 +1990,7 @@ static void gen_numname (
 		seq = (UINT)sreg;
 	}
 
-	/* Make suffix (~ + hexdecimal) */
+	/* Make suffix (~ + hexadecimal) */
 	i = 7;
 	do {
 		c = (BYTE)((seq % 16) + '0'); seq /= 16;
@@ -2093,16 +2093,16 @@ static DWORD xsum32 (	/* Returns 32-bit checksum */
 
 
 /*-----------------------------------*/
-/* exFAT: Get a directry entry block */
+/* exFAT: Get a directory entry block */
 /*-----------------------------------*/
 
 static FRESULT load_xdir (	/* FR_INT_ERR: invalid entry block */
-	DIR* dp					/* Reading direcotry object pointing top of the entry block to load */
+	DIR* dp					/* Reading directory object pointing top of the entry block to load */
 )
 {
 	FRESULT res;
 	UINT i, sz_ent;
-	BYTE *dirb = dp->obj.fs->dirbuf;	/* Pointer to the on-memory direcotry entry block 85+C0+C1s */
+	BYTE *dirb = dp->obj.fs->dirbuf;	/* Pointer to the on-memory directory entry block 85+C0+C1s */
 
 
 	/* Load file directory entry */
@@ -2166,7 +2166,7 @@ static void init_alloc_info (
 /*------------------------------------------------*/
 
 static FRESULT load_obj_xdir (
-	DIR* dp,			/* Blank directory object to be used to access containing direcotry */
+	DIR* dp,			/* Blank directory object to be used to access containing directory */
 	const FFOBJID* obj	/* Object with its containing directory information */
 )
 {
@@ -2195,18 +2195,18 @@ static FRESULT load_obj_xdir (
 /*----------------------------------------*/
 
 static FRESULT store_xdir (
-	DIR* dp				/* Pointer to the direcotry object */
+	DIR* dp				/* Pointer to the directory object */
 )
 {
 	FRESULT res;
 	UINT nent;
-	BYTE *dirb = dp->obj.fs->dirbuf;	/* Pointer to the direcotry entry block 85+C0+C1s */
+	BYTE *dirb = dp->obj.fs->dirbuf;	/* Pointer to the directory entry block 85+C0+C1s */
 
 	/* Create set sum */
 	st_word(dirb + XDIR_SetSum, xdir_sum(dirb));
 	nent = dirb[XDIR_NumSec] + 1;
 
-	/* Store the direcotry entry block to the directory */
+	/* Store the directory entry block to the directory */
 	res = dir_sdi(dp, dp->blk_ofs);
 	while (res == FR_OK) {
 		res = move_window(dp->obj.fs, dp->sect);
@@ -2223,11 +2223,11 @@ static FRESULT store_xdir (
 
 
 /*-------------------------------------------*/
-/* exFAT: Create a new directory enrty block */
+/* exFAT: Create a new directory entry block */
 /*-------------------------------------------*/
 
 static void create_xdir (
-	BYTE* dirb,			/* Pointer to the direcotry entry block buffer */
+	BYTE* dirb,			/* Pointer to the directory entry block buffer */
 	const WCHAR* lfn	/* Pointer to the object name */
 )
 {
@@ -2674,7 +2674,7 @@ static void get_fileinfo (
 	fno->altname[di] = 0;	/* Terminate the SFN  (null string means SFN is invalid) */
 
 	if (fno->fname[0] == 0) {	/* If LFN is invalid, altname[] needs to be copied to fname[] */
-		if (di == 0) {	/* If LFN and SFN both are invalid, this object is inaccesible */
+		if (di == 0) {	/* If LFN and SFN both are invalid, this object is inaccessible */
 			fno->fname[di++] = '?';
 		} else {
 			for (si = di = 0, lcf = NS_BODY; fno->altname[si]; si++, di++) {	/* Copy altname[] to fname[] with case information */
@@ -3387,7 +3387,7 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 
 	/* Find an FAT volume on the drive */
 	fmt = find_volume(fs, LD2PT(vol));
-	if (fmt == 4) return FR_DISK_ERR;		/* An error occured in the disk I/O layer */
+	if (fmt == 4) return FR_DISK_ERR;		/* An error occurred in the disk I/O layer */
 	if (fmt >= 2) return FR_NO_FILESYSTEM;	/* No FAT volume is found */
 	bsect = fs->winsect;					/* Volume offset */
 
@@ -3426,7 +3426,7 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 		fs->volbase = bsect;
 		fs->database = bsect + ld_dword(fs->win + BPB_DataOfsEx);
 		fs->fatbase = bsect + ld_dword(fs->win + BPB_FatOfsEx);
-		if (maxlba < (QWORD)fs->database + nclst * fs->csize) return FR_NO_FILESYSTEM;	/* (Volume size must not be smaller than the size requiered) */
+		if (maxlba < (QWORD)fs->database + nclst * fs->csize) return FR_NO_FILESYSTEM;	/* (Volume size must not be smaller than the size required) */
 		fs->dirbase = ld_dword(fs->win + BPB_RootClusEx);
 
 		/* Get bitmap location and check if it is contiguous (implementation assumption) */
@@ -3747,7 +3747,7 @@ FRESULT f_open (
 			}
 		}
 		else {	/* Open an existing file */
-			if (res == FR_OK) {					/* Is the object exsiting? */
+			if (res == FR_OK) {					/* Is the object existing? */
 				if (dj.obj.attr & AM_DIR) {		/* File open against a directory */
 					res = FR_NO_FILE;
 				} else {
@@ -4582,7 +4582,7 @@ FRESULT f_opendir (
 		FREE_NAMBUF();
 		if (res == FR_NO_FILE) res = FR_NO_PATH;
 	}
-	if (res != FR_OK) dp->obj.fs = 0;		/* Invalidate the directory object if function faild */
+	if (res != FR_OK) dp->obj.fs = 0;		/* Invalidate the directory object if function failed */
 
 	LEAVE_FF(fs, res);
 }
@@ -5026,7 +5026,7 @@ FRESULT f_mkdir (
 						st_clust(fs, fs->win + SZDIRE, pcl);
 						fs->wflag = 1;
 					}
-					res = dir_register(&dj);	/* Register the object to the parent directoy */
+					res = dir_register(&dj);	/* Register the object to the parent directory */
 				}
 			}
 			if (res == FR_OK) {
@@ -5689,7 +5689,7 @@ static FRESULT create_partition (
 		rnd = (DWORD)sz_drv + GET_FATTIME();	/* Random seed */
 		align = GPT_ALIGN / ss;				/* Partition alignment for GPT [sector] */
 		sz_ptbl = GPT_ITEMS * SZ_GPTE / ss;	/* Size of partition table [sector] */
-		top_bpt = sz_drv - sz_ptbl - 1;		/* Backup partiiton table start sector */
+		top_bpt = sz_drv - sz_ptbl - 1;		/* Backup partition table start sector */
 		nxt_alloc = 2 + sz_ptbl;			/* First allocatable sector */
 		sz_pool = top_bpt - nxt_alloc;		/* Size of allocatable area */
 		bcc = 0xFFFFFFFF; sz_part = 1;
@@ -6402,7 +6402,7 @@ TCHAR* f_gets (
 			if (rc != ct || dc < 0x80 || IsSurrogate(dc) || dc >= 0x110000) continue;	/* Wrong encoding? */
 		}
 #endif
-		/* A code point is avaialble in dc to be output */
+		/* A code point is available in dc to be output */
 
 		if (FF_USE_STRFUNC == 2 && dc == '\r') continue;	/* Strip \r off if needed */
 #if FF_LFN_UNICODE == 1	|| FF_LFN_UNICODE == 3	/* Output it in UTF-16/32 encoding */
@@ -6742,7 +6742,7 @@ static void ftoa (
 		er = "NaN";
 	} else {
 		if (prec < 0) prec = 6;	/* Default precision? (6 fractional digits) */
-		if (val < 0) {			/* Nagative? */
+		if (val < 0) {			/* Negative? */
 			val = 0 - val; sign = '-';
 		} else {
 			sign = '+';
@@ -6829,7 +6829,7 @@ int f_printf (
 			putc_bfd(&pb, tc);
 			continue;
 		}
-		f = w = 0; pad = ' '; prec = -1;	/* Initialize parms */
+		f = w = 0; pad = ' '; prec = -1;	/* Initialize parameters */
 		tc = *fmt++;
 		if (tc == '0') {			/* Flag: '0' padded */
 			pad = '0'; tc = *fmt++;
@@ -6875,8 +6875,8 @@ int f_printf (
 		case 'd':					/* Signed decimal */
 		case 'u':					/* Unsigned decimal */
 			r = 10; break;
-		case 'x':					/* Unsigned hexdecimal (lower case) */
-		case 'X':					/* Unsigned hexdecimal (upper case) */
+		case 'x':					/* Unsigned hexadecimal (lower case) */
+		case 'X':					/* Unsigned hexadecimal (upper case) */
 			r = 16; break;
 		case 'c':					/* Character */
 			putc_bfd(&pb, (TCHAR)va_arg(arp, int));
@@ -6894,7 +6894,7 @@ int f_printf (
 		case 'f':					/* Floating point (decimal) */
 		case 'e':					/* Floating point (e) */
 		case 'E':					/* Floating point (E) */
-			ftoa(str, va_arg(arp, double), prec, tc);	/* Make a flaoting point string */
+			ftoa(str, va_arg(arp, double), prec, tc);	/* Make a floating point string */
 			for (j = strlen(str); !(f & 2) && j < w; j++) putc_bfd(&pb, pad);	/* Left pads */
 			for (i = 0; str[i]; putc_bfd(&pb, str[i++])) ;	/* Body */
 			while (j++ < w) putc_bfd(&pb, ' ');	/* Right pads */

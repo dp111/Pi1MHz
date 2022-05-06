@@ -118,7 +118,7 @@ static inline void set_colour(unsigned int index, int r, int g, int b) {
 static void update_palette(int offset, int num_colours) {
    RPI_PropertyInit();
    RPI_PropertyAddTag(TAG_SET_PALETTE, offset, num_colours, colour_table);
-   // Call the Check version as doorbell and mailboxes are seperate
+   // Call the Check version as doorbell and mailboxes are separate
    //LOG_INFO("Calling TAG_SET_PALETTE\r\n");
    RPI_PropertyProcess();
    //rpi_mailbox_property_t *buf = RPI_PropertyGet(TAG_SET_PALETTE);
@@ -283,7 +283,7 @@ static void memsetquick( void * ptr, int value, size_t num )
   uint32_t length = num;
   length = (length >>2);
   // not much point here of doing more than 4 bytes as the write buffer will improve
-  // peformance
+  // performance
   for ( ; length; length--) {
     *dst++ = a;
   }
