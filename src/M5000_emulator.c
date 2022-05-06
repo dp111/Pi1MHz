@@ -34,7 +34,7 @@
 
 //NB ample software access the waveform ram with bit 7 and 8 equal
 //Pi1MHz has the complete ram where as B-em masks bit 8 when the ram is written
-#define I_WAVEFORM(n,a) (((n)<<8)| (((n)<<7)&128)|(a))
+#define I_WAVEFORM(n,a) (((unsigned int)((n)<<8)| ((unsigned int)(((n)<<7)&128)|((unsigned int)a))))
 #define I_WFTOP (0x0E00)
 
 #define I_FREQlo(c)  (*((c)+0x00))
@@ -135,12 +135,12 @@ static void update_channels(struct synth *s)
       if (DISABLE(c)) {
           //s->phaseRAM[i] = FREQ(c);
           //s->phaseRAM[i] = 0;
-          // A slight differnce as modulation is still calculated in real hardware
+          // A slight difference as modulation is still calculated in real hardware
           // but not here
           modulate = 0;
       } else {
           int c4d, sign, sample;
-          unsigned int sum = s->phaseRAM[i] + FREQ(c);
+          unsigned int sum = s->phaseRAM[i] + (unsigned int ) FREQ(c);
           s->phaseRAM[i] = sum & 0xffffff;
           // c4d is used for "Synchronization" e.g. the "Wha" instrument
           c4d = sum & (1<<24);
@@ -238,7 +238,7 @@ static void music5000_get_sample(uint32_t *left, uint32_t *right)
         sl =  audio_range;
         clip = 1;
     }
-    *left = sl + audio_range;
+    *left = (uint32_t)(sl + audio_range);
 
     sr = ( sr * gain ) / 1024;
     if (sr < -audio_range) {
@@ -249,7 +249,7 @@ static void music5000_get_sample(uint32_t *left, uint32_t *right)
         sr =  audio_range;
         clip = 1;
     }
-    *right = sr + audio_range;
+    *right = (uint32_t)(sr + audio_range);
     if (clip && autorange) {
         gain /= 2;
         LOG_DEBUG("Music 5000 clipped, reducing gain by 3dB (divisor now %i)\r\n", gain);
@@ -285,14 +285,14 @@ void music5000_rec_stop()
       0x00, 0x00, 0x00, 0x00  // dummy sample
    };
 
-   char fn[13];
+   char fn[22];
    FRESULT result;
    int number = 0;
    uint32_t i = 0;
    FIL music5000_fp;
 
     do {
-      sprintf(&fn[i],"Musics%.3i.wav",number);
+      sprintf(fn,"Musics%.3i.wav",number);
       result = f_open( &music5000_fp, fn, FA_CREATE_NEW  | FA_WRITE);
       LOG_INFO("Filename : %s\r\n",fn);
       if ( result == FR_EXIST)
@@ -328,10 +328,10 @@ static void store_samples(struct synth *s3,struct synth *s5)
          sl = sl / (512/8);
          sr = sr / (512/8);
       }
-      JIM_ram[Audio_Index++] = sl;
-      JIM_ram[Audio_Index++] = sl>>8;
-      JIM_ram[Audio_Index++] = sr;
-      JIM_ram[Audio_Index++] = sr>>8;
+      JIM_ram[Audio_Index++] = (uint8_t )sl;
+      JIM_ram[Audio_Index++] = (uint8_t )(sl>>8);
+      JIM_ram[Audio_Index++] = (uint8_t )sr;
+      JIM_ram[Audio_Index++] = (uint8_t )(sr>>8);
       rec_started = true;
       // TODO check  we don't over run JIM_ram
     }
@@ -383,7 +383,8 @@ void M5000_emulator_init(uint8_t instance)
    for (uint32_t n = 0; n <(sizeof(antilogtable)/sizeof(antilogtable[0])) ; n++) {
       // 12-bit antilog as per AM6070 datasheet
       // this actually has a 13 bit fsd ( sign bit makes it 14bit)
-      int S = n & 15, C = n >> 4;
+      int S = n & 15;
+      uint32_t C = n >> 4;
       antilogtable[n] = ( (1<<C)*((S<<1) + 33) - 33);
    }
 
@@ -393,7 +394,7 @@ void M5000_emulator_init(uint8_t instance)
    synth_reset(&m5000, &JIM_ram[0x3000]);
    synth_reset(&m3000, &JIM_ram[0x5000]);
 
-   audio_range = rpi_audio_init(46875)>>1;
+   audio_range = (int)(rpi_audio_init(46875)>>1);
 
    // register polling function
    Pi1MHz_Register_Poll(music5000_emulate);

@@ -4,7 +4,6 @@
 #include <math.h>
 #include "rpi/mailbox.h"
 #include "framebuffer.h"
-#include "rpi/v3d.h"
 #include "BBCFont.h"
 #include "MODE7Font.h"
 #include "Pi1MHz.h"
@@ -467,7 +466,7 @@ static void fb_fill_triangle(int x, int y, int x2, int y2, int x3, int y3, unsig
    y2 = SCREEN_HEIGHT - 1 - y2;
    y3 = SCREEN_HEIGHT - 1 - y3;
    colour = get_colour(colour);
-   v3d_draw_triangle(x, y, x2, y2, x3, y3, colour);
+ //  v3d_draw_triangle(x, y, x2, y2, x3, y3, colour);
 }
 
 
@@ -1226,7 +1225,7 @@ void fb_writec(int c) {
       }
       return;
    }
-   
+
    case IN_VDU31 :
    {
       switch (count) {
@@ -1252,7 +1251,7 @@ void fb_writec(int c) {
    }
    switch(c) {
 
-   case 4: 
+   case 4:
       if (vdu45flag)
       {
          c_x_pos = old_c_x_pos;
@@ -1260,7 +1259,7 @@ void fb_writec(int c) {
          vdu45flag = 0;
       }
       return;
-   
+
    case 5:
       if (vdu45flag == 0 )
       {
@@ -1515,7 +1514,7 @@ void fb_emulator_init(uint8_t instance)
 {
   fb_initialize();
 
-  v3d_initialize(fb_get_address(), fb_get_width(), fb_get_height(), fb_get_bpp());
+  //v3d_initialize(fb_get_address(), fb_get_width(), fb_get_height(), fb_get_bpp());
 
   Pi1MHz_Register_Memory(WRITE_FRED, 0xd0, fb_emulator_vdu);
 

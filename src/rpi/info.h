@@ -4,6 +4,7 @@
 #define INFO_H
 
 #include "mailbox.h"
+#include <stdint.h>
 
 typedef struct {
    int rate;
@@ -16,15 +17,15 @@ typedef struct {
 #define COMPONENT_SDRAM_P 3
 #define COMPONENT_SDRAM_I 4
 
-unsigned int mem_info(int size);
+extern uint32_t mem_info(int size);
 
-extern int get_clock_rate(int clk_id);
+extern uint32_t get_clock_rate(uint32_t clk_id);
 /* Cached on boot, so this is safe to call at any time */
-extern int get_speed();
+extern uint32_t get_speed();
 /* Cached on boot, so this is safe to call at any time */
 extern char *get_info_string();
 extern void dump_useful_info();
 /* Cached on boot, so this is safe to call at any time */
-extern char *get_cmdline_prop(char *prop);
+extern char *get_cmdline_prop(const char *prop);
 
 #endif

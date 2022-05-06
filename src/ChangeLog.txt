@@ -11,7 +11,7 @@ BeebSCSI changes
  Some duplicate code has been removed
  Write buffering has been introduced to increase performance
  Buffers have been increased to 16K to reduced SDCARD access and make use of
- multiblock acceses
+ multiblock accesses
  Bugs around testing for errors on dsc file lengths being 22 bytes fixed.
  Starting ADFS with F break now doesn't start any LUNs so SCSIJUKE can be the first command
  Fall back to slow seeking if the LUN us too fragmented instead of just failing over.
@@ -20,7 +20,7 @@ v1.04b
 Use VPU1 to sample the P1MHz
 
 V1.04c
-Add more plot codes ( NB Triangle and elipse are broken)
+Add more plot codes ( NB Triangle and ellipse are broken)
 Faster screen scrolling
 Tweek FIQ handler to be a bit faster
 
@@ -35,3 +35,7 @@ Add TAB(x,y) support
 Add VDU 4 and 5 support ( still needs work e.g. scrolling)
 very basic NuLA support
 Very Basic Mode 7 support no graphics nothing fancy
+
+V1.05
+Code base tiding to remove cppcheck and extra gcc warnings
+Support Pizero2 by updating the firmware

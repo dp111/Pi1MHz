@@ -133,7 +133,7 @@ uint32_t JIM_ram_size; // Size of JIM ram in 16Mbyte steps
 // Memory for FRED and JIM
 static uint8_t * const Pi1MHz_Memory = (uint8_t *)0x100;
 
-// Memory for VPU to read FRED and JIM 
+// Memory for VPU to read FRED and JIM
 static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE;
 
 // Call back table for each address in FRED and JIM
@@ -150,11 +150,14 @@ uint8_t fx_register[256];
 
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow="
    Pi1MHz_Memory[addr] = data;
+#pragma GCC diagnostic pop
    switch (addr & 1)
    {
    case 0: Pi1MHz_Memory_VPU[addr>>1] =      data  | (Pi1MHz_Memory[addr+1]); break;
-   case 1: Pi1MHz_Memory_VPU[addr>>1] = (data<<16) | (Pi1MHz_Memory[addr-1]); break;
+   case 1: Pi1MHz_Memory_VPU[addr>>1] = ((uint32_t )data<<16) | (Pi1MHz_Memory[addr-1]); break;
    }
 }
 
@@ -166,16 +169,16 @@ uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 // For each location in FRED and JIM which a task wants to be called for
 // it must register its interest. Only one task can be called per location
 // for access variable use WRITE_FRED WRITE_JIM READ_FRED READ_JIM
-void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr func_ptr )
+void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr function_ptr )
 {
-   Pi1MHz_callback_table[access+addr] = func_ptr;
+   Pi1MHz_callback_table[access+addr] = function_ptr;
 }
 
 // For each task that needs to be polled during idle it must register itself.
 // is can only register once
-void Pi1MHz_Register_Poll( func_ptr func_ptr )
+void Pi1MHz_Register_Poll( func_ptr function_ptr )
 {
-   Pi1MHz_poll_table[Pi1MHz_polls_max] = func_ptr;
+   Pi1MHz_poll_table[Pi1MHz_polls_max] = function_ptr;
    Pi1MHz_polls_max++;
 }
 
@@ -199,7 +202,7 @@ static uint8_t status_addr;
 // setup the address for status read write
 void Pi1MHzBus_addr_Status(unsigned int gpio)
 {
-   uint32_t data = GET_DATA(gpio);
+   uint8_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    status_addr = data;
    Pi1MHz_MemoryWrite(addr, data); // enable read back
@@ -209,7 +212,7 @@ void Pi1MHzBus_addr_Status(unsigned int gpio)
 // take data written by the beeb and put it to the correct place
 void Pi1MHzBus_write_Status(unsigned int gpio)
 {
-   uint32_t data = GET_DATA(gpio);
+   uint8_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    fx_register[status_addr] = data;
    Pi1MHz_MemoryWrite(addr, data); // enable read back
@@ -227,10 +230,10 @@ static void init_emulator() {
 
    char *prop = get_cmdline_prop("Pi1MHzDisable");
    if (prop)
-   {  // now look for a common seperated values to
+   {  // now look for a common separated values to
       char c;
       do {
-        uint32_t temp=atoi(prop);
+        int temp=atoi(prop);
         if (temp < NUM_EMULATORS)
           emulator[temp].enable = 0;
         do {
@@ -243,10 +246,13 @@ static void init_emulator() {
    }
 
    Pi1MHz_polls_max = 0;
-   memset(Pi1MHz_callback_table, 0, Pi1MHz_CB_SIZE);
 
-   for( uint32_t i = 0 ; i < PAGE_SIZE; i++)
-      Pi1MHz_Memory[i] = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow="
+#pragma GCC diagnostic ignored "-Warray-bounds"
+   memset(Pi1MHz_callback_table, 0, Pi1MHz_CB_SIZE);
+   memset(Pi1MHz_Memory,0,PAGE_SIZE);
+#pragma GCC diagnostic pop
 
    int func,r0,r1, r2,r3,r4,r5;
    func = (int) Pi1MHzvc_asm;
@@ -272,7 +278,7 @@ static void init_emulator() {
    Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_write_Status );
    Pi1MHz_Register_Memory( READ_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_read_Status );
 
-   for( size_t i=0; i <NUM_EMULATORS; i++)
+   for( uint8_t i=0; i <NUM_EMULATORS; i++)
       if (emulator[i].enable==1) emulator[i].init(i);
 }
 
@@ -311,7 +317,7 @@ static void init_JIM()
    JIM_ram_size = JIM_ram_size & 0xFF000000; // round down to 16Mbyte boundary
    JIM_ram_size = JIM_ram_size >> 24 ; // set to 16Mbyte sets
 
-   fx_register[0] = JIM_ram_size;  // fx addr 0 returns ram size
+   fx_register[0] = (uint8_t)JIM_ram_size;  // fx addr 0 returns ram size
 
    JIM_ram = (uint8_t *) malloc(16*1024*1024*JIM_ram_size); // malloc 480Mbytes
 

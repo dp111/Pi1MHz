@@ -23,14 +23,14 @@ volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTab
 
 #define PERIPHERAL_END 0x80000000
 
-static const int bufferable = 1;
-static const int cachable = 1;
+static const unsigned int bufferable = 1;
+static const unsigned int cacheable = 1;
 #if (__ARM_ARCH >= 7 )
-static const int aa0 = 0; /* note ARM ARM bit ordering is confusing */
-static const int aa6 = 1;
-static const int shareable = 1;
+static const unsigned int aa0 = 0; /* note ARM ARM bit ordering is confusing */
+static const unsigned int aa6 = 1;
+static const unsigned int shareable = 1;
 #endif
-static const int bb = 1;
+static const unsigned int bb = 1;
 
 #if (__ARM_ARCH >= 7 )
 
@@ -188,7 +188,7 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
   _invalidate_dtlb_mva((void *)(logical << 12));
   // Setup the 4K page table entry
   // Second level descriptors use extended small page format
-  //  so inner/outer cacheing can be controlled
+  //  so inner/outer caching can be controlled
   // Pi 0/1:
   //   XP (bit 23) in SCTRL is 0 so descriptors use ARMv4/5 backwards compatible format
   // Pi 2/3:
@@ -197,9 +197,9 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
   //   to allow native ARM code to execute
   //   (this was the cause of issue #27)
 #if (__ARM_ARCH >= 7 )
-  PageTable2[logical] = (physical<<12) | 0x132 | (bb << 6) | (cachable<<3) | (bufferable << 2);
+  PageTable2[logical] = (physical<<12) | 0x132u | (bb << 6) | (cachable<<3) | (bufferable << 2);
 #else
-  PageTable2[logical] = (physical<<12) | 0x133 | (bb << 6) | (cachable<<3) | (bufferable << 2);
+  PageTable2[logical] = (physical<<12) | 0x133u | (bb << 6) | (cacheable<<3) | (bufferable << 2);
 #endif
 }
 
@@ -322,7 +322,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // set TTBR0 - page table walk memory cacheability/shareable
   // [Bit 0, Bit 6] indicates inner cachability: 01 = normal memory, inner write-back write-allocate cacheable
   // [Bit 4, Bit 3] indicates outer cachability: 01 = normal memory, outer write-back write-allocate cacheable
-  // Bit 1 indicates sharable
+  // Bit 1 indicates shareable
   // 4A = 0100 1010
   unsigned int attr = ((aa6) << 6) | (bb << 3) | (shareable << 1) | ((aa0 ));
   asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (attr | (unsigned) &PageTable));

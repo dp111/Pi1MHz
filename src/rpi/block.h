@@ -67,7 +67,7 @@ struct emmc_block_dev
 	uint32_t last_r3;
 
 	void *buf;
-	int blocks_to_transfer;
+	uint32_t blocks_to_transfer;
 	size_t block_size;
 	int use_sdma;
 	int card_removal;

@@ -783,7 +783,7 @@ static DWORD tchar2uni (	/* Returns a character in UTF-16 encoding (>=0x10000 on
 	if (dbc_1st((BYTE)wc)) {	/* Is it a DBC 1st byte? */
 		b = (BYTE)*p++;			/* Get 2nd byte */
 		if (!dbc_2nd(b)) return 0xFFFFFFFF;	/* Invalid code? */
-		wc = (wc << 8) + b;		/* Make a DBC */
+		wc = (WCHAR)(wc << 8) + b;		/* Make a DBC */
 	}
 	if (wc != 0) {
 		wc = ff_oem2uni(wc, CODEPAGE);	/* ANSI/OEM ==> Unicode */
@@ -1862,7 +1862,7 @@ static int cmp_lfn (		/* 1:matched, 0:not matched */
 
 	if (ld_word(dir + LDIR_FstClusLO) != 0) return 0;	/* Check LDIR_FstClusLO */
 
-	i = ((dir[LDIR_Ord] & 0x3F) - 1) * 13;	/* Offset in the LFN buffer */
+	i = ((dir[LDIR_Ord] & 0x3F) - 1) * 13u;	/* Offset in the LFN buffer */
 
 	for (wc = 1, s = 0; s < 13; s++) {		/* Process all characters in the entry */
 		uc = ld_word(dir + LfnOfs[s]);		/* Pick an LFN character */
@@ -1898,7 +1898,7 @@ static int pick_lfn (	/* 1:succeeded, 0:buffer overflow or invalid LFN entry */
 
 	if (ld_word(dir + LDIR_FstClusLO) != 0) return 0;	/* Check LDIR_FstClusLO is 0 */
 
-	i = ((dir[LDIR_Ord] & ~LLEF) - 1) * 13;	/* Offset in the LFN buffer */
+	i = ((UINT)(dir[LDIR_Ord] & ~LLEF) - 1u) * 13u;	/* Offset in the LFN buffer */
 
 	for (wc = 1, s = 0; s < 13; s++) {		/* Process all characters in the entry */
 		uc = ld_word(dir + LfnOfs[s]);		/* Pick an LFN character */
@@ -1941,7 +1941,7 @@ static void put_lfn (
 	dir[LDIR_Type] = 0;
 	st_word(dir + LDIR_FstClusLO, 0);
 
-	i = (ord - 1) * 13;				/* Get offset in the LFN working buffer */
+	i = (ord - 1) * 13u;				/* Get offset in the LFN working buffer */
 	s = wc = 0;
 	do {
 		if (wc != 0xFFFF) wc = lfn[i++];	/* Get an effective character */
@@ -2027,7 +2027,7 @@ static BYTE sum_sfn (
 	UINT n = 11;
 
 	do {
-		sum = (sum >> 1) + (sum << 7) + *dir++;
+		sum =(BYTE) ( (sum >> 1) + (sum << 7) + *dir++);
 	} while (--n);
 	return sum;
 }

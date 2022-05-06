@@ -123,9 +123,9 @@ const char * type_names[] = {
 
 #endif
 
-const char *type_lookup(int type) {
+const char *type_lookup(unsigned int type) {
    int num_types = sizeof(type_names) / sizeof(type_names[0]);
-   if (type >= 0 && type < num_types) {
+   if (type < num_types) {
       return type_names[type];
    } else {
       static const char *UNKNOWN = "UNKNOWN";
@@ -144,7 +144,7 @@ void reset_performance_counters(perf_counters_t *pct) {
 
   /* Initialize performance counters */
 #if (__ARM_ARCH >= 7 )
-   pct->num_counters = 6;
+   pct->num_counters = MAX_COUNTERS;
    pct->type[0] = PERF_TYPE_L1I_CACHE;
    pct->type[1] = PERF_TYPE_L1I_CACHE_REFILL;
    pct->type[2] = PERF_TYPE_L1D_CACHE;
@@ -158,7 +158,7 @@ void reset_performance_counters(perf_counters_t *pct) {
    pct->counter[4] = 0;
    pct->counter[5] = 0;
 #else
-   pct->num_counters = 2;
+   pct->num_counters = MAX_COUNTERS;
    pct->type[0] = PERF_TYPE_I_CACHE_MISS;
    pct->type[1] = PERF_TYPE_D_CACHE_MISS;
    pct->counter[0] = 0;
@@ -226,7 +226,7 @@ static char* uint64ToDecimal(uint64_t v) {
    char* p = bfr + sizeof(bfr);
    *(--p) = '\0';
    while (v || first) {
-      *(--p) = '0' + v % 10;
+      *(--p) = (char)('0' + v % 10);
       v = v / 10;
       first = 0;
    }
@@ -244,62 +244,3 @@ void print_performance_counters(const perf_counters_t *pct) {
       printf("%26s = %u\r\n", type_lookup(pct->type[i]), pct->counter[i]);
    }
 }
-#ifdef BENCHMARK
-int benchmark() {
-   int total;
-   perf_counters_t pct;
-   unsigned char mem1[1024*1024];
-   unsigned char mem2[1024*1024];
-   mem2[0]=0;
-#if (__ARM_ARCH >= 7 )
-   pct.num_counters = 6;
-   pct.type[0] = PERF_TYPE_L1I_CACHE;
-   pct.type[1] = PERF_TYPE_L1I_CACHE_REFILL;
-   pct.type[2] = PERF_TYPE_L1D_CACHE;
-   pct.type[3] = PERF_TYPE_L1D_CACHE_REFILL;
-   pct.type[4] = PERF_TYPE_L2D_CACHE_REFILL;
-   pct.type[5] = PERF_TYPE_INST_RETIRED;
-   pct.counter[0] = 100;
-   pct.counter[1] = 101;
-   pct.counter[2] = 102;
-   pct.counter[3] = 103;
-   pct.counter[4] = 104;
-   pct.counter[5] = 105;
-#else
-   pct.num_counters = 2;
-   pct.type[0] = PERF_TYPE_I_CACHE_MISS;
-   pct.type[1] = PERF_TYPE_D_CACHE_MISS;
-#endif
-
-   printf("benchmarking core....\r\n");
-   reset_performance_counters(&pct);
-   /* These only work on Pi 1
-     _invalidate_icache();
-     _invalidate_dcache();*/
-   total = 0;
-   for (int i = 0; i < 1000000; i++) {
-      if ((i & 3) == 0) {
-         total += i;
-      } else {
-         total -= i;
-      }
-   }
-   read_performance_counters(&pct);
-   print_performance_counters(&pct);
-
-   for (int i = 0; i <= 10; i++) {
-      int size = 1 << i;
-      printf("benchmarking %dKB memory copy....\r\n", size);
-      size *= 1024;
-      reset_performance_counters(&pct);
-      /* These only work on Pi 1
-        _invalidate_icache();
-        _invalidate_dcache();*/
-      memcpy(mem1, mem2, size);
-      read_performance_counters(&pct);
-      print_performance_counters(&pct);
-   }
-
-   return total;
-}
-#endif

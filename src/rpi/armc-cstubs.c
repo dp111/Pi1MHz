@@ -159,7 +159,7 @@ int stat(const char *file __attribute__((unused)), struct stat *st )
 /* Timing information for current process. Minimal implementation: */
 clock_t times(struct tms *buf __attribute__((unused)))
 {
-  return -1;
+  return (clock_t)-1;
 }
 
 /* Remove a file's directory entry. Minimal implementation: */
