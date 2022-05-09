@@ -352,6 +352,6 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // The L1 instruction cache can be used independently of the MMU
   // The L1 data cache will one be enabled if the MMU is enabled
   sctrl |= 0x00001805;
-
+  sctrl |= 1<<22; // U (v6 unaligned access model)
   asm volatile ("mcr p15,0,%0,c1,c0,0" :: "r" (sctrl) : "memory");
 }
