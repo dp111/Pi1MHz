@@ -15,9 +15,10 @@
 
 #define TX_BUFFER_SIZE 65536  /* Must be a power of 2 */
 
+NOINIT_SECTION static char tx_buffer[TX_BUFFER_SIZE];
+
 #include "interrupts.h"
 
-static char *tx_buffer;
 static volatile int tx_head;
 static volatile int tx_tail;
 
@@ -102,7 +103,6 @@ void RPI_AuxMiniUartInit(unsigned int baud)
 
 #ifdef USE_IRQ
    {  extern int _interrupt_vector_h;
-   tx_buffer = malloc(TX_BUFFER_SIZE);
    tx_head = tx_tail = 0;
    *((unsigned int *) &_interrupt_vector_h ) = (unsigned int )&RPI_AuxMiniUartIRQHandler;
 
