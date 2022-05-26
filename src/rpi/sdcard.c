@@ -649,7 +649,7 @@ static int sd_reset_cmd()
    return 0;
 }
 
-// Reset the CMD line
+// Reset the DAT line
 static int sd_reset_dat()
 {
    uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
