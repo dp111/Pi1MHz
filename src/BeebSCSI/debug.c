@@ -179,10 +179,10 @@ void debugLunDescriptor(const uint8_t *buffer)
    // The next 12 bytes are the Drive Parameter List (ACB-4000 manual figure 5-20)
    debugString_P(PSTR("File system: Drive Parameter List:\r\n"));
    debugStringInt16_P(PSTR("File system:   List format code = "), buffer[12], true);
-   debugStringInt16_P(PSTR("File system:   Cylinder count = "), (buffer[13] << 8) + buffer[14], true);
+   debugStringInt16_P(PSTR("File system:   Cylinder count = "), (uint16_t)((buffer[13] << 8) + buffer[14]), true);
    debugStringInt16_P(PSTR("File system:   Data head count = "), buffer[15], true);
-   debugStringInt16_P(PSTR("File system:   Reduced write current cylinder = "), (buffer[16] << 8) + buffer[17], true);
-   debugStringInt16_P(PSTR("File system:   Write pre-compensation cylinder = "), (buffer[18] << 8) + buffer[19], true);
+   debugStringInt16_P(PSTR("File system:   Reduced write current cylinder = "), (uint16_t)((buffer[16] << 8) + buffer[17]), true);
+   debugStringInt16_P(PSTR("File system:   Write pre-compensation cylinder = "), (uint16_t)((buffer[18] << 8) + buffer[19]), true);
    debugStringInt16_P(PSTR("File system:   Landing zone position = "), buffer[20], true);
    debugStringInt16_P(PSTR("File system:   Step pulse output rate code = "), buffer[21], true);
 
