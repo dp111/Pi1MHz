@@ -39,3 +39,11 @@ Very Basic Mode 7 support no graphics nothing fancy
 V1.05
 Code base tiding to remove cppcheck and extra gcc warnings
 Support Pizero2 by updating the firmware
+
+V1.06
+gcc 12 fixes
+A few minor improvements
+config.txt disable poe fan
+Speed up sdcard initalisation
+Fix SCSI format Bug
+Speed up reading from mailboxes
