@@ -28,8 +28,8 @@
 struct fs;
 
 struct block_device {
-	char *driver_name;
-	char *device_name;
+	const char *driver_name;
+	const char *device_name;
 	uint8_t *device_id;
 	size_t dev_id_len;
 
