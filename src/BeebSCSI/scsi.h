@@ -51,6 +51,7 @@
 #define SCSI_MODESENSE		19
 #define SCSI_STARTSTOP		20
 #define SCSI_VERIFY			21
+#define SCSI_READCAPACITY   22
 
 // SCSI emulation command states (LV-DOS Group 6 commands)
 #define SCSI_WRITE_FCODE	30

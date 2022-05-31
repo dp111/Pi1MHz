@@ -115,6 +115,7 @@ static uint8_t scsiCommandModeSelect(void);
 static uint8_t scsiCommandModeSense(void);
 static uint8_t scsiCommandStartStop(void);
 static uint8_t scsiCommandVerify(void);
+static uint8_t scsiCommandReadCapacity(void);
 
 #ifdef FCODE
 #include "fcode.h"
@@ -274,6 +275,10 @@ void scsiProcessEmulation(void)
 
       case SCSI_VERIFY:
       scsiState = scsiCommandVerify();
+      break;
+
+      case SCSI_READCAPACITY:
+      scsiState = scsiCommandReadCapacity();
       break;
 
 #ifdef FCODE
@@ -528,6 +533,9 @@ uint8_t scsiEmulationCommand(void)
    if (commandDataBlock.group == 1) {
       // Select group 1 command type
       switch (commandDataBlock.opCode) {
+         case 0x05:
+         return SCSI_READCAPACITY;
+         break;
          case 0x0F:
          return SCSI_VERIFY;
          break;
@@ -1041,7 +1049,7 @@ static uint8_t scsiCommandRead6(void)
       // Check for a host reset condition
       if (hostadapterReadResetFlag()) {
          sei();
-         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Read DMA interrupted by host reset at byte #"), bytesTransferred, true);
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Read DMA interrupted by host reset at byte #"), (uint16_t)bytesTransferred, true);
 
          // Close the currently open LUN image
          filesystemCloseLunForRead(commandDataBlock.targetLUN);
@@ -1177,7 +1185,7 @@ static uint8_t scsiCommandWrite6(void)
 
       // Check for a host reset condition
       if (hostadapterReadResetFlag()) {
-         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Write DMA interrupted by host reset at byte #"), bytesTransferred, true);
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Write DMA interrupted by host reset at byte #"), (uint16_t)bytesTransferred, true);
 
          // Close the currently open LUN image
          filesystemCloseLunForWrite(commandDataBlock.targetLUN);
@@ -1290,7 +1298,7 @@ static uint8_t scsiCommandTranslate(void)
       debugString_P(PSTR("SCSI Commands: TRANSLATE command (0x0F) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
    }
-
+/*
    // Make sure the target LUN is started
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // LUN unavailable... return with error status
@@ -1306,6 +1314,36 @@ static uint8_t scsiCommandTranslate(void)
       requestSenseData[commandDataBlock.targetLUN].logicalBlockAddress = 0x00;
 
       return SCSI_STATUS;
+   }
+*/
+// Make sure the target LUN is started
+   if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
+      // Target LUN is not started.  If the LUN is present, then start it, otherwise
+      // return an error.  Note: The original Adaptec SCSI host adapter would always
+      // auto-start a LUN if it was present, so we duplicate that behavior here even
+      // though it is 'more correct' (according to the specs) to return with error
+
+      // Is the requested LUN available?
+      if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
+
+      // Auto-start the LUN
+      if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
+         // Could not start LUN... return with error status
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Could not auto-start LUN #"), commandDataBlock.targetLUN, true);
+         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.message = 0x00;
+
+         // Set request sense error globals
+         requestSenseData[commandDataBlock.targetLUN].errorFlag = true;
+         requestSenseData[commandDataBlock.targetLUN].validAddressFlag = false;
+         requestSenseData[commandDataBlock.targetLUN].errorClass = 0x02; // Class 02 error code
+         requestSenseData[commandDataBlock.targetLUN].errorCode = 0x1C; // 1C Bad format
+         requestSenseData[commandDataBlock.targetLUN].logicalBlockAddress = 0x00;
+
+         return SCSI_STATUS;
+      }
+
+      if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Requested LUN has been auto-started\r\n"));
    }
 
    // Get the logical block address from the CDB
@@ -1736,6 +1774,49 @@ static uint8_t scsiCommandVerify(void)
 
    return SCSI_STATUS;
 }
+
+static uint8_t scsiCommandReadCapacity(void)
+{
+   if (debugFlag_scsiCommands) {
+      debugString_P(PSTR("SCSI Commands: VERIFY command (0x2F) received\r\n"));
+      debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, false);
+   }
+
+   // Make sure the target LUN is started
+   if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
+      // LUN unavailable... return with error status
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
+      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.message = 0x00;
+
+      return SCSI_STATUS;
+   }
+
+   uint32_t lunsize = filesystemGetLunSizeFromDsc(commandDataBlock.targetLUN)/256;
+
+   // Set up the control signals ready for the data in phase
+   scsiInformationTransferPhase(ITPHASE_DATAIN);
+
+   // Send the translation data to the host
+   // 4 bytes last block address
+   hostadapterWriteByte((uint8_t)((lunsize & 0xFF0000) >> 16));     // Cylinder number MSB
+   hostadapterWriteByte((uint8_t)((lunsize & 0xFF00) >> 8));     // Cylinder number
+   hostadapterWriteByte((uint8_t)(lunsize & 0xFF));              // Cylinder number LSB
+
+   hostadapterWriteByte((uint8_t)lunsize);                        // Head number
+   // four bytes block size
+   uint32_t blocksize = 256;
+   hostadapterWriteByte((uint8_t)((blocksize & 0xFF000000) >> 24));   // Bytes from index MSB
+   hostadapterWriteByte((uint8_t)((blocksize & 0x00FF0000) >> 16));   // Bytes from index
+   hostadapterWriteByte((uint8_t)((blocksize & 0x0000FF00) >> 8)); // Bytes from index
+   hostadapterWriteByte((uint8_t)( blocksize & 0x000000FF));       // Bytes from index LSB
+
+   // Indicate successful command in status and message
+   commandDataBlock.status = 0x00; // 0x00 = Good
+   commandDataBlock.message = 0x00;
+   return SCSI_STATUS;
+}
+
 #ifdef FCODE
 // LV-DOS specific group 6 commands -----------------------------------------------------------------------------------
 
@@ -2047,7 +2128,7 @@ static uint8_t scsiBeebScsiFatPath(void)
    // Check for a host reset condition
    if (hostadapterReadResetFlag()) {
       sei();
-      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Write DMA interrupted by host reset at byte #"), bytesTransferred, true);
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Write DMA interrupted by host reset at byte #"), (uint16_t)bytesTransferred, true);
       return SCSI_BUSFREE;
    }
 
@@ -2125,7 +2206,7 @@ static uint8_t scsiBeebScsiFatInfo(void)
    // Check for a host reset condition
    if (hostadapterReadResetFlag()) {
       sei();
-      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Read DMA interrupted by host reset at byte #"), bytesTransferred, true);
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Read DMA interrupted by host reset at byte #"),(uint16_t) bytesTransferred, true);
 
       return SCSI_BUSFREE;
    }
@@ -2220,7 +2301,7 @@ static uint8_t scsiBeebScsiFatRead(void)
       // Check for a host reset condition
       if (hostadapterReadResetFlag()) {
          sei();
-         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Read DMA interrupted by host reset at byte #"), bytesTransferred, true);
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Read DMA interrupted by host reset at byte #"), (uint16_t)bytesTransferred, true);
 
          filesystemCloseFatForRead();
          return SCSI_BUSFREE;
