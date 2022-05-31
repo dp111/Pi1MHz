@@ -3,14 +3,14 @@ src/scripts/CMakeFiles/Pi1MHz.dir/rpi/rpi.c.obj.d
 *.obj
 *.d
 *.su
-src/scripts/CMakeFiles/*.*
+src/scripts/CMakeFiles/*
 
 *.internal
 *.cmake
 
 src/scripts/Pi1MHz.cbp
 
-releases/*.*
+releases/*
 src/scripts/Makefile
 src/scripts/Pi1MHz
 src/scripts/gitversion.h
