@@ -137,7 +137,7 @@ static uint8_t * const Pi1MHz_Memory = (uint8_t *)0x100;
 static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE;
 
 // Call back table for each address in FRED and JIM
-callback_func_ptr * const Pi1MHz_callback_table = (void *)Pi1MHz_CB_BASE;
+static callback_func_ptr * const Pi1MHz_callback_table = (void *)Pi1MHz_CB_BASE;
 
 // Table of polling functions to call while idle
 static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
@@ -146,7 +146,7 @@ static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
 static u_int32_t  Pi1MHz_polls_max;
 
 // *fx register buffer
-uint8_t fx_register[256];
+NOINIT_SECTION uint8_t fx_register[256];
 
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 {

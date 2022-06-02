@@ -66,7 +66,7 @@
 
 #define NUM_COLOURS 256
 
-static uint32_t colour_table[NUM_COLOURS];
+NOINIT_SECTION static uint32_t colour_table[NUM_COLOURS];
 
 #if defined(BPP32)
 
@@ -1497,7 +1497,7 @@ static void fb_initialize() {
 volatile int wp = 0;
 static int rp = 0;
 
-unsigned char vdu_queue[QSIZE];
+NOINIT_SECTION static unsigned char vdu_queue[QSIZE];
 
 static void fb_emulator_vdu(unsigned int gpio)
 {
