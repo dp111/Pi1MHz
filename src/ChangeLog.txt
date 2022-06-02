@@ -47,3 +47,5 @@ config.txt disable poe fan
 Speed up sdcard initalisation
 Fix SCSI format Bug
 Speed up reading from mailboxes
+Fix Pizero2 VPU address bug.
+Add RPI4 Pull support

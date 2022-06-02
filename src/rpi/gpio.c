@@ -105,14 +105,23 @@ void RPI_SetGpioValue(rpi_gpio_pin_t gpio, rpi_gpio_value_t value)
 }
 
 
-void RPI_SetPullUps(unsigned int gpio)
+void RPI_SetGpioPull(rpi_gpio_pin_t gpio, rpi_gpio_pull pull)
 {
-  /* Enable weak pullups */
-  RPI_GpioBase->GPPUD = 2;
-  RPI_WaitMicroSeconds(2); /* wait of 150 cycles needed see datasheet */
+#if defined(RPI4)
+  rpi_reg_rw_t* pull_reg = &RPI_GpioBase->GPPULL[gpio / 16];
 
-  RPI_GpioBase->GPPUDCLK0 = gpio;
-  RPI_WaitMicroSeconds(2); /* wait of 150 cycles needed see datasheet */
+  rpi_reg_rw_t pull_copy = *pull_reg;
+  pull_copy &= (uint32_t)~(0x3 << ((gpio % 16) * 2));
+  pull_copy |= (pull << ((gpio % 16) * 2));
+  *pull_reg = pull_copy;
+#else
+  RPI_GpioBase->GPPUD = pull;
+  RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
 
-  RPI_GpioBase->GPPUDCLK0 =  0;
+  RPI_GpioBase->GPPUDCLK0 = 1<<gpio;
+  RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
+
+  RPI_GpioBase->GPPUDCLK0 = 0;
+#endif
 }
+
