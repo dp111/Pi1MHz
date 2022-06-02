@@ -22,8 +22,10 @@ NOINIT_SECTION static char tx_buffer[TX_BUFFER_SIZE];
 static volatile int tx_head;
 static volatile int tx_tail;
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
 static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
-
+#pragma GCC diagnostic pop
   _data_memory_barrier();
   while (1) {
 
