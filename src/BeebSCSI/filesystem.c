@@ -88,7 +88,7 @@ static uint32_t sectorsInBuffer = 0;
 static uint32_t currentBufferSector = 0;
 static uint32_t sectorsRemaining = 0;
 
-static FIL fileObjectFAT;
+NOINIT_SECTION static FIL fileObjectFAT;
 
 static void filesystemPrintfserror(FRESULT fsResult)
 {
