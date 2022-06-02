@@ -263,18 +263,16 @@ static void init_emulator() {
    memset(Pi1MHz_Memory,0,PAGE_SIZE);
 #pragma GCC diagnostic pop
 
-   int func,r0,r1, r2,r3,r4,r5;
-   func = (int) Pi1MHzvc_asm;
-   r0   =  Pi1MHz_MEM_BASE_GPU ;   // address of register block in IO space
-   r1   = (PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) );
-   r2   = 0;
-   r3   = DATABUS_TO_OUTPUTS;
-   r4   = TEST_PINS_OUTPUTS;
-   r5   = 0; // TEST_MASK;                     // test pin
-
-   RPI_PropertyInit();
-   RPI_PropertyAddTag(TAG_LAUNCH_VPU1, func, r0, r1, r2, r3, r4, r5);
+   RPI_PropertyStart(TAG_LAUNCH_VPU1, 7);
+   RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function 
+   RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
+   RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1 
+   RPI_PropertyAdd(0); // r2
+   RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
+   RPI_PropertyAdd(TEST_PINS_OUTPUTS); // r4
+   RPI_PropertyAdd(0); // r5 TEST_MASK
    RPI_PropertyProcess();
+
    RPI_IRQBase->FIQ_control = 0x80 + 67; // doorbell FIQ
 
    // make sure we aren't causing an interrupt
