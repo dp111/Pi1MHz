@@ -84,9 +84,6 @@ static struct commandDataBlockStruct
    uint8_t data[10];
    uint8_t length;
 
-   uint8_t opCode;
-   uint8_t group;
-
    uint8_t targetLUN;
 
    uint8_t status;
@@ -425,11 +422,11 @@ uint8_t scsiEmulationCommand(void)
    commandDataBlock.data[commandDataBlockPointer] = hostadapterReadByte();
 
    // Decode the CDB 1st byte
-   commandDataBlock.group = (commandDataBlock.data[0] & 0xE0) >> 5;
-   commandDataBlock.opCode = (commandDataBlock.data[0] & 0x1F);
+   uint8_t group = (commandDataBlock.data[0] & 0xE0) >> 5;
+   uint8_t opCode = (commandDataBlock.data[0] & 0x1F);
 
    // Set the length of the CDB based on the command group
-   switch (commandDataBlock.group) {
+   switch (group) {
       case 0:
       commandDataBlock.length = 6;
       break;
@@ -476,9 +473,9 @@ uint8_t scsiEmulationCommand(void)
    commandDataBlock.targetLUN = (commandDataBlock.data[1] & 0xE0) >> 5;
 
    // Transition to command based on received opCode (group 0 commands)
-   if (commandDataBlock.group == 0) {
+   if (group == 0) {
       // Select group 0 command type
-      switch (commandDataBlock.opCode) {
+      switch (opCode) {
          case 0x00:
          return SCSI_TESTUNITREADY;
          break;
@@ -526,9 +523,9 @@ uint8_t scsiEmulationCommand(void)
    }
 
    // Transition to command based on received opCode (group 1 commands)
-   if (commandDataBlock.group == 1) {
+   if (group == 1) {
       // Select group 1 command type
-      switch (commandDataBlock.opCode) {
+      switch (opCode) {
          case 0x05:
          return SCSI_READCAPACITY;
          break;
@@ -539,9 +536,9 @@ uint8_t scsiEmulationCommand(void)
    }
 #ifdef FCODE
    // Transition to command based on received opCode (group 6 LV-DOS commands)
-   if (commandDataBlock.group == 6 && emulationMode == LVDOS_EMULATION) {
+   if (group == 6 && emulationMode == LVDOS_EMULATION) {
       // Select group 6 command type
-      switch (commandDataBlock.opCode) {
+      switch (opCode) {
          case 0x0A:
          return SCSI_WRITE_FCODE;
          break;
@@ -553,9 +550,9 @@ uint8_t scsiEmulationCommand(void)
    }
 #endif
    // Transition to command based on received opCode (group 6 BeebSCSI commands)
-   if (commandDataBlock.group == 6) {
+   if (group == 6) {
       // Select group 6 command type
-      switch (commandDataBlock.opCode) {
+      switch (opCode) {
          case 0x10:
          return SCSI_BEEBSCSI_SENSE;
          break;
