@@ -121,10 +121,9 @@ static emulator_list emulator[] = {
    harddisc_emulator_init, 1,
    M5000_emulator_init, 1,
    fb_emulator_init, 1,
-   0,0 // Dummy end of list
 };
 
-#define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list)-1)
+#define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
 
 uint8_t *JIM_ram; // 480M Bytes of RAM for pizero
 
@@ -143,7 +142,7 @@ static callback_func_ptr * const Pi1MHz_callback_table = (void *)Pi1MHz_CB_BASE;
 static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
 
 // holds the total number of polling functions to call
-static u_int32_t  Pi1MHz_polls_max;
+static u_int8_t  Pi1MHz_polls_max;
 
 // *fx register buffer
 NOINIT_SECTION uint8_t fx_register[256];
