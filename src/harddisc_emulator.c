@@ -157,7 +157,7 @@ static void hd_emulator_conf(unsigned int gpio)
 
 void harddisc_emulator_init( uint8_t instance )
 {
-   static int PowerOn = 0 ;
+   static bool PowerOn = 0 ;
    // Turn off all host adapter signals
    hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_3 | STATUS_2 | STATUS_CND | STATUS_IRQ, CLEAR);
 
