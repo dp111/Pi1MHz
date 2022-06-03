@@ -438,7 +438,7 @@ uint8_t scsiEmulationCommand(void)
       break;
 
       default:
-      length = 6;
+      length = 6; // guess at a length !
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: BAD command group received\r\n"));
       break;
    }
