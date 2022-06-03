@@ -82,8 +82,6 @@ static uint32_t requestSenseData[8];
 static struct commandDataBlockStruct
 {
    uint8_t data[10];
-   uint8_t length;
-
    uint8_t targetLUN;
 
    uint8_t status;
@@ -424,22 +422,24 @@ uint8_t scsiEmulationCommand(void)
    // Decode the CDB 1st byte
    uint8_t group = (commandDataBlock.data[0] & 0xE0) >> 5;
    uint8_t opCode = (commandDataBlock.data[0] & 0x1F);
+   uint8_t length;
 
    // Set the length of the CDB based on the command group
    switch (group) {
       case 0:
-      commandDataBlock.length = 6;
+      length = 6;
       break;
 
       case 1:
-      commandDataBlock.length = 10;
+      length = 10;
       break;
 
       case 6:
-      commandDataBlock.length = 6;
+      length = 6;
       break;
 
       default:
+      length = 6;
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: BAD command group received\r\n"));
       break;
    }
@@ -447,9 +447,9 @@ uint8_t scsiEmulationCommand(void)
    // Show CDB byte 0 decode
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: CDB byte 0 decode: "));
-      debugStringInt16_P(PSTR("Command group "), commandDataBlock.group, false);
-      debugStringInt16_P(PSTR(" ("), commandDataBlock.length, false);
-      debugStringInt16_P(PSTR(" bytes) opcode "), commandDataBlock.opCode, true);
+      debugStringInt16_P(PSTR("Command group "), group, false);
+      debugStringInt16_P(PSTR(" ("), length, false);
+      debugStringInt16_P(PSTR(" bytes) opcode "), opCode, true);
       // Show received byte value
       debugString_P(PSTR("SCSI Commands: Received command operand bytes:"));
       debugStringInt16_P(PSTR(" "), commandDataBlock.data[commandDataBlockPointer], false);
@@ -459,7 +459,7 @@ uint8_t scsiEmulationCommand(void)
    commandDataBlockPointer++;
 
    // Get the remainder of the CDB bytes;
-   while (commandDataBlockPointer < commandDataBlock.length) {
+   while (commandDataBlockPointer < length) {
       commandDataBlock.data[commandDataBlockPointer] = hostadapterReadByte();
 
       // Show received byte value
