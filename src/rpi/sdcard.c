@@ -649,7 +649,6 @@ static int sd_reset_dat()
 
 static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, uint32_t argument, useconds_t timeout)
 {
-    dev->last_cmd_reg = cmd_reg;
     dev->last_cmd_success = 0;
 
     // This is as per HCSS 3.7.1.1/3.7.2.2
@@ -751,9 +750,9 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
 
         case SD_CMD_RSPNS_TYPE_136:
             dev->last_r0 = RPI_EMMCBase->EMMC_RESP0;
-            dev->last_r1 = RPI_EMMCBase->EMMC_RESP1;
-            dev->last_r2 = RPI_EMMCBase->EMMC_RESP2;
-            dev->last_r3 = RPI_EMMCBase->EMMC_RESP3;
+         //   dev->last_r1 = RPI_EMMCBase->EMMC_RESP1;
+         //   dev->last_r2 = RPI_EMMCBase->EMMC_RESP2;
+         //   dev->last_r3 = RPI_EMMCBase->EMMC_RESP3;
             break;
     }
 
@@ -1085,15 +1084,12 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
             dev->last_cmd_success = 0;
             return;
         }
-        dev->last_cmd = APP_CMD;
-
         uint32_t rca = 0;
         if(dev->card_rca)
             rca = dev->card_rca << 16;
         sd_issue_command_int(dev, sd_commands[APP_CMD], rca, timeout);
         if(dev->last_cmd_success)
         {
-            dev->last_cmd = command | IS_APP_CMD;
             sd_issue_command_int(dev, sd_acommands[command], argument, timeout);
         }
     }
@@ -1110,7 +1106,6 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
             return;
         }
 
-        dev->last_cmd = command;
         sd_issue_command_int(dev, sd_commands[command], argument, timeout);
     }
 
@@ -1311,9 +1306,9 @@ int sd_card_init(struct block_device **dev)
    //assert(ret);
 
    memset(ret, 0, sizeof(struct emmc_block_dev));
-   ret->bd.driver_name = "emmc";
-   ret->bd.device_name = "emmc0";
-   ret->bd.block_size = 512;
+ //  ret->bd.driver_name = "emmc";
+ //  ret->bd.device_name = "emmc0";
+//   ret->bd.block_size = 512;
    ret->bd.read = sd_read;
 #ifdef SD_WRITE_SUPPORT
     ret->bd.write = sd_write;
@@ -1444,7 +1439,7 @@ int sd_card_init(struct block_device **dev)
        if((ret->last_r0 >> 31) & 0x1)
        {
            // Initialization is complete
-           ret->card_ocr = (ret->last_r0 >> 8) & 0xffff;
+           //card_ocr = (ret->last_r0 >> 8) & 0xffff;
            ret->card_supports_sdhc = ((ret->last_r0) >> 30) & 0x1;
 
 #ifdef SD_1_8V_SUPPORT
@@ -1466,7 +1461,7 @@ int sd_card_init(struct block_device **dev)
 
 #ifdef EMMC_DEBUG
    printf("SD: card identified: OCR: %04"PRIx32", 1.8v support: %"PRIu32", SDHC support: %"PRIu32"\r\n",
-         ret->card_ocr, ret->card_supports_18v, ret->card_supports_sdhc);
+         (ret->last_r0 >> 8) & 0xffff, ret->card_supports_18v, ret->card_supports_sdhc);
 #endif
 
     // At this point, we know the card is definitely an SD card, so will definitely
@@ -1572,13 +1567,12 @@ int sd_card_init(struct block_device **dev)
 #ifdef EMMC_DEBUG
    printf("SD: card CID: %08"PRIu32"%08"PRIu32"%08"PRIu32"%08"PRIu32"\r\n", ret->last_r3, ret->last_r2, ret->last_r1, ret->last_r0);
 #endif
-   uint32_t *dev_id = (uint32_t *)malloc(4 * sizeof(uint32_t));
-   dev_id[0] = ret->last_r0;
-   dev_id[1] = ret->last_r1;
-   dev_id[2] = ret->last_r2;
-   dev_id[3] = ret->last_r3;
-   ret->bd.device_id = (uint8_t *)dev_id;
-   ret->bd.dev_id_len = 4 * sizeof(uint32_t);
+
+  // ret->bd.device_id[0] = ret->last_r0;
+  // ret->bd.device_id[1] = ret->last_r1;
+  // ret->bd.device_id[2] = ret->last_r2;
+  // ret->bd.device_id[3] = ret->last_r3;
+  // ret->bd.dev_id_len = 4 * sizeof(uint32_t);
 
    // Send CMD3 to enter the data state
    sd_issue_command(ret, SEND_RELATIVE_ADDR, 0, 500000);
@@ -1605,7 +1599,6 @@ int sd_card_init(struct block_device **dev)
    {
       printf("SD: CRC error\r\n");
       if (!dev) free(ret);
-      free(dev_id);
       return -1;
    }
 
@@ -1613,7 +1606,6 @@ int sd_card_init(struct block_device **dev)
    {
       printf("SD: illegal command\r\n");
       if (!dev) free(ret);
-      free(dev_id);
       return -1;
    }
 
@@ -1621,7 +1613,6 @@ int sd_card_init(struct block_device **dev)
    {
       printf("SD: generic error\r\n");
       if (!dev) free(ret);
-      free(dev_id);
       return -1;
    }
 
@@ -1629,7 +1620,6 @@ int sd_card_init(struct block_device **dev)
    {
       printf("SD: not ready for data\r\n");
       if (!dev) free(ret);
-      free(dev_id);
       return -1;
    }
 
@@ -1653,7 +1643,6 @@ int sd_card_init(struct block_device **dev)
    {
       printf("SD: invalid status (%"PRIu32")\r\n", status);
       if (!dev) free(ret);
-      free(dev_id);
       return -1;
    }
 

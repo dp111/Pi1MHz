@@ -24,22 +24,23 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 struct fs;
 
 struct block_device {
-	const char *driver_name;
-	const char *device_name;
-	uint8_t *device_id;
-	size_t dev_id_len;
+//	const char *driver_name;
+//	const char *device_name;
+//	uint32_t device_id[4];
+//	size_t dev_id_len;
 
-	int supports_multiple_block_read;
-	int supports_multiple_block_write;
+//	int supports_multiple_block_read;
+//	int supports_multiple_block_write;
 
 	size_t (*read)(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_num);
 	size_t (*write)(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_num);
-	size_t block_size;
-	size_t num_blocks;
+//	size_t block_size;
+//	size_t num_blocks;
 
 	struct fs *fs;
 };
@@ -47,30 +48,28 @@ struct block_device {
 struct emmc_block_dev
 {
 	struct block_device bd;
-	uint32_t card_supports_sdhc;
-	uint32_t card_supports_18v;
-	uint32_t card_ocr;
+	bool card_supports_sdhc;
+	bool card_supports_18v;
 	uint32_t card_rca;
 	uint32_t last_interrupt;
 	uint32_t last_error;
 
 	struct sd_scr *scr;
 
-	int failed_voltage_switch;
+	bool failed_voltage_switch;
 
-    uint32_t last_cmd_reg;
-    uint32_t last_cmd;
-	uint32_t last_cmd_success;
+	bool last_cmd_success;
+	bool use_sdma;
+	bool card_removal;
 	uint32_t last_r0;
-	uint32_t last_r1;
-	uint32_t last_r2;
-	uint32_t last_r3;
+//	uint32_t last_r1;
+//	uint32_t last_r2;
+//	uint32_t last_r3;
 
 	void *buf;
 	uint32_t blocks_to_transfer;
 	size_t block_size;
-	int use_sdma;
-	int card_removal;
+
 };
 
 
