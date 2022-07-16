@@ -117,10 +117,10 @@ typedef struct {
 } emulator_list;
 
 static emulator_list emulator[] = {
-   ram_emulator_init, 1,
-   harddisc_emulator_init, 1,
-   M5000_emulator_init, 1,
-   fb_emulator_init, 1,
+   {ram_emulator_init, 1},
+   {harddisc_emulator_init, 1},
+   {M5000_emulator_init, 1},
+   {fb_emulator_init, 1},
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
@@ -165,7 +165,7 @@ uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-overflow="
-#pragma GCC diagnostic ignored "-Warray-bounds"   
+#pragma GCC diagnostic ignored "-Warray-bounds"
    return Pi1MHz_Memory[addr];
 #pragma GCC diagnostic pop
 }
@@ -263,9 +263,9 @@ static void init_emulator() {
 #pragma GCC diagnostic pop
 
    RPI_PropertyStart(TAG_LAUNCH_VPU1, 7);
-   RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function 
+   RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function
    RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
-   RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1 
+   RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1
    RPI_PropertyAdd(0); // r2
    RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
    RPI_PropertyAdd(TEST_PINS_OUTPUTS); // r4
@@ -388,7 +388,7 @@ static void init_hardware()
    RPI_SetGpioInput(RNW_PIN);
 
    RPI_SetGpioOutput(TEST_PIN);
-   RPI_SetGpioLo(TEST_PIN); 
+   RPI_SetGpioLo(TEST_PIN);
    RPI_SetGpioOutput(TEST2_PIN);
 
    RPI_SetGpioLo(NIRQ_PIN);   // Set outputs low ready for interrupts when pin is changed to FS_OUPTUT
@@ -402,7 +402,7 @@ static void init_hardware()
 void kernel_main()
 {
    RPI_SetGpioOutput(TEST_PIN);
-   RPI_SetGpioLo(TEST_PIN); 
+   RPI_SetGpioLo(TEST_PIN);
    RPI_AuxMiniUartInit( 115200 );
 
    enable_MMU_and_IDCaches(0);
@@ -410,10 +410,10 @@ void kernel_main()
    init_hardware();
 
    init_JIM();
-RPI_SetGpioHi(TEST_PIN); 
+RPI_SetGpioHi(TEST_PIN);
 
    init_emulator();
-   RPI_SetGpioHi(TEST_PIN); 
+   RPI_SetGpioHi(TEST_PIN);
    while (Pi1MHz_is_rst_active());
    do {
       if (Pi1MHz_is_rst_active())
