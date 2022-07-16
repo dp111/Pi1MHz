@@ -5,7 +5,7 @@
 #include "rpi/mailbox.h"
 #include "framebuffer.h"
 #include "BBCFont.h"
-#include "MODE7Font.h"
+#include "Mode7Font.h"
 #include "Pi1MHz.h"
 
 #define DEBUG_FB
@@ -117,7 +117,7 @@ static inline void set_colour(unsigned int index, int r, int g, int b) {
 
 static void update_palette(int offset, int num_colours) {
    RPI_PropertyStart(TAG_SET_PALETTE, 2 + num_colours);
-   RPI_PropertyAddTwoWords(offset , num_colours); 
+   RPI_PropertyAddTwoWords(offset , num_colours);
    for(uint32_t i = 0 ; i < num_colours ; i++)
       RPI_PropertyAdd(colour_table[offset + i]);
 
@@ -1398,7 +1398,7 @@ static void fb_initialize() {
     rpi_mailbox_property_t *mp;
 
     /* Initialise a framebuffer... */
-    RPI_PropertyStart(TAG_ALLOCATE_BUFFER, 2); RPI_PropertyAddTwoWords(64,0); 
+    RPI_PropertyStart(TAG_ALLOCATE_BUFFER, 2); RPI_PropertyAddTwoWords(64,0);
     RPI_PropertyNewTag(TAG_SET_PHYSICAL_SIZE,2); RPI_PropertyAddTwoWords(SCREEN_WIDTH, SCREEN_HEIGHT );
     RPI_PropertyNewTag(TAG_SET_VIRTUAL_SIZE,2); RPI_PropertyAddTwoWords(SCREEN_WIDTH, SCREEN_HEIGHT *2 );
     RPI_PropertyNewTag(TAG_SET_DEPTH,1); RPI_PropertyAdd(SCREEN_DEPTH);
