@@ -45,9 +45,9 @@ endif()
 # Add any C compiler flags here. The C flags concerned with processor tuning
 # are in the toolchain files toolchain-arm-none-eabi-bcm2835.cmake, etc.
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2" )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wmissing-field-initializers ")
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wredundant-decls -Wmaybe-uninitialized -Wlong-long -Wpacked -Wundef -Wshadow  -Wmissing-braces -Wmultichar -Wnarrowing -Woverflow -Wlogical-not-parentheses " )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wredundant-decls -Wmaybe-uninitialized -Wlong-long -Wpacked -Wundef -Wshadow -Wmissing-braces -Wmultichar -Wnarrowing -Woverflow -Wlogical-not-parentheses " )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Winit-self -Wpointer-arith  -Wwrite-strings -Wunreachable-code -Wdouble-promotion  -Wformat-truncation -fstack-usage -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wnull-dereference -pedantic -Wcast-qual -Wjump-misses-init ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum")
@@ -69,9 +69,12 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-sign-conversion")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-function")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-discarded-qualifiers")
 
-# current failures
+# current failures in frame buffer.c
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wconversion")
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-overflow=5")
+
+# current failures in code
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter ")
 
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
 # Set the linker flags so that we use our "custom" linker script
