@@ -282,7 +282,7 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
    }
 
    // Transitioning from stopped to started?
-   if (filesystemState.fsLunStatus[lunNumber] == false && lunStatus == true) {
+   if (lunStatus == true) {
       // Is the file system mounted?
       if (filesystemState.fsMountState == false) {
          // Nothing to do...
@@ -319,7 +319,7 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
    }
 
    // Transitioning from started to stopped?
-   if (filesystemState.fsLunStatus[lunNumber] == true && lunStatus == false) {
+   if (lunStatus == false) {
       f_close(&filesystemState.fileObject[lunNumber]);
       filesystemState.fsLunStatus[lunNumber] = false;
 
