@@ -855,7 +855,7 @@ static uint8_t scsiCommandFormat(void)
    }
 
    // Tell the file system to start the new LUN
-  // filesystemSetLunStatus(commandDataBlock.targetLUN, true);
+   filesystemSetLunStatus(commandDataBlock.targetLUN, true);   // ISW 17/7/22 Restore this line, was commented out which causes verify following format to go on "forever"
 
    // Indicate successful command in status and message
    commandDataBlock.status = 0x00; // 0x00 = Good
