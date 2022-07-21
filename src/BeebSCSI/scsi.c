@@ -855,7 +855,7 @@ static uint8_t scsiCommandFormat(void)
    }
 
    // Tell the file system to start the new LUN
-  // filesystemSetLunStatus(commandDataBlock.targetLUN, true);
+   filesystemSetLunStatus(commandDataBlock.targetLUN, true);   // ISW 17/7/22 Restore this line, was commented out which causes verify following format to go on "forever"
 
    // Indicate successful command in status and message
    commandDataBlock.status = 0x00; // 0x00 = Good
@@ -1653,13 +1653,12 @@ static uint8_t scsiCommandReadCapacity(void)
    // Set up the control signals ready for the data in phase
    scsiInformationTransferPhase(ITPHASE_DATAIN);
 
-   // Send the translation data to the host
+   // Send the Read Capacity data to the host
    // 4 bytes last block address
-   hostadapterWriteByte((uint8_t)((lunsize & 0xFF0000) >> 16));     // Cylinder number MSB
-   hostadapterWriteByte((uint8_t)((lunsize & 0xFF00) >> 8));     // Cylinder number
-   hostadapterWriteByte((uint8_t)(lunsize & 0xFF));              // Cylinder number LSB
-
-   hostadapterWriteByte((uint8_t)lunsize);                        // Head number
+   hostadapterWriteByte((uint8_t)((lunsize & 0xFF000000) >> 24));   // Last block MSB   ISW 17/7/22 correct calculation as was returning bytes not sectors
+   hostadapterWriteByte((uint8_t)((lunsize & 0x00FF0000) >>16));    // Last block
+   hostadapterWriteByte((uint8_t)((lunsize & 0x0000FF00) >> 8));    // Last block
+   hostadapterWriteByte((uint8_t)(lunsize & 0x000000FF));          // Last block LSB
    // four bytes block size
    uint32_t blocksize = 256;
    hostadapterWriteByte((uint8_t)((blocksize & 0xFF000000) >> 24));   // Bytes from index MSB
