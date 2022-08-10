@@ -43,7 +43,7 @@ Byte mode uses the registers &FC02, &FC01, &FC00 to select the byte and FC03 to 
 
 Page mode uses the registers &FCFD &FCFE FCFF to select the page for FD00--FDFF
 
-The first page of JIM ram is preloaded with build information. This can be accessed by doing PRINT $FD00. This is RAM so can easily be over written.
+The first page of JIM ram is preloaded with build information. This can be accessed by doing PRINT $&FD00. This is RAM so can easily be over written.
 
 If a file called "JIM_Init.bin" exists it will be loaded starting at the beginning of JIM on wards ( NB over writes build info). This enables future very large programs which, with clever programming could all run in JIM RAM.
 
