@@ -570,7 +570,7 @@ static uint32_t sd_get_clock_divider(uint32_t base_clock, uint32_t target_rate)
 
     uint32_t freq_select = divisor & 0xff;
     uint32_t upper_bits = (divisor >> 8) & 0x3;
-    uint32_t ret = (freq_select << 8) | (upper_bits << 6) | (0 << 5);
+    uint32_t ret = (freq_select << 8) | (upper_bits << 6);
 
 #ifdef EMMC_DEBUG
     unsigned int denominator = 1;
@@ -1151,7 +1151,7 @@ int sd_card_init(struct block_device **dev)
                64 * sizeof(uint32_t));
         return -1;
     }
-#endif    
+#endif
 // don't bother power cycling the SDCARD it just wastes time.
 #ifdef SDCARD_PWR_CYCLE
 #if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
@@ -1165,7 +1165,7 @@ int sd_card_init(struct block_device **dev)
       printf("EMMC: BCM2708 controller power-cycled\r\n");
 #endif
 #endif
-#endif 
+#endif
 #ifdef EMMC_DEBUG
    // Read the controller version
 
@@ -1366,7 +1366,7 @@ int sd_card_init(struct block_device **dev)
         else
             v2_later = 1;
     }
-#if 0 
+#if 0
     // Here we are supposed to check the response to CMD5 (HCSS 3.6)
     // It only returns if the card is a SDIO card
 #ifdef EMMC_DEBUG
@@ -1935,12 +1935,11 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
             retry_count++;
             if(retry_count < max_retries)
                 {printf("Retrying...\r\n");}
-            else
-                {printf("Giving up.\r\n");}
         }
    }
    if(retry_count == max_retries)
     {
+        printf("Giving up.\r\n");
         edev->card_rca = 0;
         return -1;
     }

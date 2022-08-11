@@ -460,6 +460,7 @@ static void fb_draw_line(int x,int y,int x2, int y2, unsigned int color) {
 }
 
 static void fb_fill_triangle(int x, int y, int x2, int y2, int x3, int y3, unsigned int colour) {
+   /*
    x = ((x + g_x_origin) * SCREEN_WIDTH)  / BBC_X_RESOLUTION;
    y = ((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION;
    x2 = ((x2 + g_x_origin) * SCREEN_WIDTH)  / BBC_X_RESOLUTION;
@@ -472,6 +473,7 @@ static void fb_fill_triangle(int x, int y, int x2, int y2, int x3, int y3, unsig
    y3 = SCREEN_HEIGHT - 1 - y3;
    colour = get_colour(colour);
  //  v3d_draw_triangle(x, y, x2, y2, x3, y3, colour);
+ */
 }
 
 
@@ -675,7 +677,7 @@ void fb_fill_area(int x, int y, unsigned int colour, unsigned int mode) {
          }
       }
       stop = 0;
-      x = save_x - 1;
+      //x = save_x - 1;
       while (! stop) {
          if (fb_getpixel(x_left,y) == get_colour(g_bg_col) && x_left >= 0) {
             x_left -= BBC_X_RESOLUTION/SCREEN_WIDTH;    // speeds up but might fail if not integer
@@ -704,7 +706,7 @@ void fb_fill_area(int x, int y, unsigned int colour, unsigned int mode) {
          }
       }
       stop = 0;
-      x = save_x - 1;
+      //x = save_x - 1;
       while (! stop) {
          if (fb_getpixel(x_left,y) != get_colour(g_fg_col) && x_left >= 0) {
             x_left -= BBC_X_RESOLUTION/SCREEN_WIDTH;    // speeds up but might fail if not integer
