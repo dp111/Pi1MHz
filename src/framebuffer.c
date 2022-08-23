@@ -799,7 +799,7 @@ void fb_fill_area(int x, int y, unsigned int colour, unsigned int mode) {
       break;
 
    default:
-      printf( "Unknown fill mode %d\r\n", mode);
+      printf( "Unknown fill mode %u\r\n", mode);
       break;
    }
 
@@ -984,12 +984,12 @@ void fb_writec(int c) {
       if (c & 128) {
          c_bg_col = c & 15;
 #ifdef DEBUG_VDU
-         printf("bg = %d\r\n", c_bg_col);
+         printf("bg = %u\r\n", c_bg_col);
 #endif
       } else {
          c_fg_col = c & 15;
 #ifdef DEBUG_VDU
-         printf("fg = %d\r\n", c_fg_col);
+         printf("fg = %u\r\n", c_fg_col);
 #endif
       }
       return;
@@ -1038,7 +1038,7 @@ void fb_writec(int c) {
             update_palette(l, NUM_COLOURS);
          } else {
             // See http://beebwiki.mdfs.net/VDU_19
-            if ((p < 16) & (r==0) & (g==0) & (b==0 )) {
+            if ((p < 16) && (r==0) && (g==0) && (b==0 )) {
                int i = (p & 8) ? 255 : 127;
                b = (p & 4) ? i : 0;
                g = (p & 2) ? i : 0;
