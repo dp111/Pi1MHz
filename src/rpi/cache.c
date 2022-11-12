@@ -244,8 +244,8 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // 9      P     -               - set to 0
   // 8..5   Domain- access domain - set to 0000 as nor using access ctrl
   // 4      XN    - eXecute Never - set to 1 for I/O devices
-  // 3      C     - cacheable     - set to 1 for cachable RAM i
-  // 2      B     - bufferable    - set to 1 for cachable RAM
+  // 3      C     - cacheable     - set to 1 for cacheable RAM i
+  // 2      B     - bufferable    - set to 1 for cacheable RAM
   // 1      1                     - TEX, C, B used together, see below
   // 0      0                     - TEX, C, B used together, see below
 
