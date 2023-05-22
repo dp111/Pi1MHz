@@ -39,7 +39,7 @@
 #include "systimer.h"
 
 #define TIMEOUT_WAIT(stop_if_true, usec)     \
-{ useconds_t time= usec;\
+{ uint32_t time= usec;\
    do {                    \
       if (stop_if_true) \
          break;\
@@ -647,7 +647,7 @@ static int sd_reset_dat()
    return 0;
 }
 
-static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, uint32_t argument, useconds_t timeout)
+static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, uint32_t argument, uint32_t timeout)
 {
     dev->last_cmd_success = 0;
 
@@ -1057,7 +1057,7 @@ static void sd_handle_interrupts(struct emmc_block_dev *dev)
     RPI_EMMCBase->EMMC_INTERRUPT = reset_mask;
 }
 
-static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint32_t argument, useconds_t timeout)
+static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint32_t argument, uint32_t timeout)
 {
     // First, handle any pending interrupts
     sd_handle_interrupts(dev);

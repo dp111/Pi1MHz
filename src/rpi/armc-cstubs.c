@@ -250,3 +250,11 @@ unsigned int _get_cpsr()
 #else
     void _data_memory_barrier() {  asm volatile ("mcr p15, 0, %0, c7, c10, 5" :: "r" (0));}
 #endif
+
+void _getpid_r()
+{
+}
+
+void _kill_r()
+{
+}
