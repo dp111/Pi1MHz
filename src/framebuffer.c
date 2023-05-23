@@ -25,7 +25,8 @@
 
 #ifdef BPP32
 #define SCREEN_DEPTH    32
-
+#define PIXEL_T uint32_t
+#define BYTES_PER_PIXEL (SCREEN_DEPTH/8)
 #define ALPHA 0xFF000000
 #define RED   0xFFFF0000
 #define GREEN 0xFF00FF00
@@ -35,7 +36,8 @@
 
 #ifdef BPP16
 #define SCREEN_DEPTH    16
-
+#define PIXEL_T uint16_t
+#define BYTES_PER_PIXEL (SCREEN_DEPTH/8)
 // R4 R3 R2 R1 R0 G5 G4 G3 G2 G1 G0 B4 B3 B2 B1 B0
 #define ALPHA 0x0000
 #define RED   0xF800
@@ -46,7 +48,8 @@
 
 #ifdef BPP8
 #define SCREEN_DEPTH    8
-
+#define PIXEL_T uint8_t
+#define BYTES_PER_PIXEL (SCREEN_DEPTH/8)
 #define ALPHA 0x0000
 #define RED   0xE0
 #define GREEN 0x1C
@@ -56,7 +59,8 @@
 
 #ifdef BPP4
 #define SCREEN_DEPTH    4
-
+#define PIXEL_T uint8_t
+#define BYTES_PER_PIXEL (1)
 #define ALPHA 0x0000
 #define RED   0x8
 #define GREEN 0x6
@@ -70,9 +74,8 @@ NOINIT_SECTION static uint32_t colour_table[NUM_COLOURS];
 
 #if defined(BPP32)
 
-#define SCREEN_DEPTH    32
 
-static inline unsigned int get_colour(unsigned int index) {
+static inline PIXEL_T get_colour(unsigned int index) {
    return colour_table[index];
 }
 
@@ -86,9 +89,7 @@ static void update_palette(int offset, int num_colours) {
 
 #elif defined (BPP16)
 
-#define SCREEN_DEPTH    16
-
-static inline unsigned int get_colour(unsigned int index) {
+static inline PIXEL_T get_colour(unsigned int index) {
    return colour_table[index];
 }
 
@@ -107,8 +108,8 @@ static void update_palette(int offset, int num_colours) {
 
 #define SCREEN_DEPTH    8
 
-static inline unsigned int get_colour(unsigned int index) {
-   return index;
+static inline PIXEL_T get_colour(unsigned int index) {
+   return (PIXEL_T)index;
 }
 
 static inline void set_colour(unsigned int index, int r, int g, int b) {
@@ -136,6 +137,8 @@ static void update_palette(int offset, int num_colours) {
 
 #endif
 
+#define BYTES_PER_PIXEL (SCREEN_DEPTH/8)
+
 // Fill modes:
 #define HL_LR_NB 1 // Horizontal line fill (left & right) to non-background
 #define HL_RO_BG 2 // Horizontal line fill (right only) to background
@@ -161,20 +164,20 @@ static uint32_t mode7flag;
 // Graphics colour / cursor position
 static uint8_t g_bg_col;
 static uint8_t g_fg_col;
-static int16_t g_x_origin;
+static int g_x_origin;
 static int16_t g_x_pos;
-static int16_t g_x_pos_last1;
-static int16_t g_x_pos_last2;
-static int16_t g_y_origin;
+static int g_x_pos_last1;
+static int g_x_pos_last2;
+static int g_y_origin;
 static int16_t g_y_pos;
-static int16_t g_y_pos_last1;
-static int16_t g_y_pos_last2;
+static int g_y_pos_last1;
+static int g_y_pos_last2;
 
 static uint32_t cheight;
 
 static unsigned char* fb = NULL;
 static unsigned char* fbcache = NULL;
-static uint16_t width, height;
+static uint32_t width, height;
 
 static int bpp, pitch;
 
@@ -220,28 +223,21 @@ static void fb_putpixel(int x, int y, unsigned int colour) {
    if (y < 0 || y > SCREEN_HEIGHT - 1) {
       return;
    }
-#ifdef BPP32
-   *(uint32_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 4) = get_colour(colour);
-#endif
-#ifdef BPP16
-   *(uint16_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 2) = get_colour(colour);
-#endif
-#ifdef BPP8
-   *(uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 1) = get_colour(colour);
 
-#endif
 #ifdef BPP4
-   uint8_t *fbptr = (uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 1);
+   PIXEL_T *fbptr = (PIXEL_T *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * BYTES_PER_PIXEL);
 
    if (~x&1)
       {*fbptr = ((*fbptr) &0x0F) | get_colour(colour)<<4;}
    else
       {*fbptr = ((*fbptr) &0xF0) | get_colour(colour);}
    return;
+#else
+    *(PIXEL_T *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * BYTES_PER_PIXEL) = get_colour(colour);
 #endif
 }
 
-unsigned int fb_getpixel(int x, int y) {
+PIXEL_T fb_getpixel(int x, int y) {
    x = ((x + g_x_origin) * SCREEN_WIDTH)  / BBC_X_RESOLUTION;
    y = ((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION;
    if (x < 0  || x > SCREEN_WIDTH - 1) {
@@ -250,13 +246,8 @@ unsigned int fb_getpixel(int x, int y) {
    if (y < 0 || y > SCREEN_HEIGHT - 1) {
       return g_bg_col;
    }
-#if defined(BPP32)
-   uint32_t *fbptr = (uint32_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 4);
-#elif defined(BPP16)
-   uint16_t *fbptr = (uint16_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 2);
-#else
-   uint8_t *fbptr = (uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x);
-#endif
+
+   PIXEL_T *fbptr = (PIXEL_T *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * BYTES_PER_PIXEL);
    return *fbptr;
 }
 
@@ -862,8 +853,8 @@ static void fb_draw_character(int c, int invert, int eor) {
    uint32_t ch = c * cheight;
 
    if(invert) invert = 0xFF ;
-   uint32_t c_fgol = get_colour(c_fg_col);
-   uint32_t c_bgol = get_colour(c_bg_col);
+   PIXEL_T c_fgol = get_colour(c_fg_col);
+   PIXEL_T c_bgol = get_colour(c_bg_col);
 
    // Copy the character into the frame buffer
    for (uint32_t i = 0; i < cheight; i++) {
@@ -877,21 +868,11 @@ static void fb_draw_character(int c, int invert, int eor) {
             data = MODE7Font[ch+i]<<2;
          else
             data = BBCFont[ch + i] ^ invert;
-#ifdef BPP32
-      uint32_t *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
-#endif
-#ifdef BPP16
-      uint16_t *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
-#endif
-#ifdef BPP8
-      uint8_t *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
-#endif
-#ifdef BPP4
-      uint8_t *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
-#endif
+
+      PIXEL_T *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
 
       for (uint32_t j = 0; j < 8; j++) {
-         int col = (data & 0x80) ? c_fgol : c_bgol;
+         PIXEL_T col = (data & 0x80) ? c_fgol : c_bgol;
          for(uint32_t scalex=c_x_scale; scalex !=0; scalex--)
          {
             if (eor) {
@@ -961,8 +942,8 @@ int max(int a, int b)
    else
       return b;
 }
-void fb_writec(int c) {
-   static uint8_t g_mode;
+static void fb_writec(uint8_t c) {
+
 //   static uint8_t g_plotmode; // not currently used
    static int state = NORMAL;
    static int count = 0;
@@ -1096,6 +1077,7 @@ void fb_writec(int c) {
 
    case IN_VDU25:
    {
+      static uint8_t g_mode;
       switch (count) {
       case 0:
          g_mode = c;
@@ -1420,7 +1402,7 @@ static void fb_initialize() {
         width = mp->data.buffer_32[0];
         height = mp->data.buffer_32[1];
 #ifdef DEBUG_FB
-        printf( "Initialised Framebuffer: %dx%d ", width, height );
+        printf( "Initialised Framebuffer: %lux%lu ", width, height );
 #endif
     }
 
@@ -1463,8 +1445,8 @@ static void fb_initialize() {
 
 #ifdef BPP32
        for (int y = 0; y < 16; y++) {
-          uint32_t *fbptr = (uint32_t *) (fb + pitch * y);
-          for (int col = 23; col >= 0; col--) {
+          PIXEL_T *fbptr = (PIXEL_T *) (fb + pitch * y);
+          for (PIXEL_T col = 23; col >= 0; col--) {
              for (int x = 0; x < 8; x++) {
                 *fbptr++ = col;
              }
@@ -1473,8 +1455,8 @@ static void fb_initialize() {
 #endif
 #ifdef BPP16
        for (int y = 0; y < 16; y++) {
-          uint16_t *fbptr = (uint16_t *) (fb + pitch * y);
-          for (int col = 15; col >= 0; col--) {
+          PIXEL_T *fbptr = (PIXEL_T *) (fb + pitch * y);
+          for (PIXEL_T col = 15; col >= 0; col--) {
              for (int x = 0; x < 8; x++) {
                 *fbptr++ = col;
              }
@@ -1483,8 +1465,8 @@ static void fb_initialize() {
 #endif
 #ifdef BPP8
        for (int y = 0; y < 16; y++) {
-          uint8_t *fbptr = (uint8_t *) (fb + pitch * y);
-          for (int col = 0; col <= 15; col++) {
+          PIXEL_T *fbptr = (PIXEL_T *) (fb + pitch * y);
+          for (PIXEL_T col = 0; col <= 15; col++) {
              for (int x = 0; x < 8; x++) {
                 *fbptr++ = col;
              }
