@@ -112,15 +112,17 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "framebuffer.h"
 
 typedef struct {
+   const char *name;
    const func_ptr_parameter init;
+   int address;
    uint8_t enable;
 } emulator_list;
 
 static emulator_list emulator[] = {
-   {ram_emulator_init, 1},
-   {harddisc_emulator_init, 1},
-   {M5000_emulator_init, 1},
-   {fb_emulator_init, 1},
+   {"Ram",ram_emulator_init, 0, 1},
+   {"Harddisc",harddisc_emulator_init, 0, 1},
+   {"M5000",M5000_emulator_init, 0, 1},
+   {"Frambuffer",fb_emulator_init, 0, 1},
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
@@ -155,8 +157,8 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
    Pi1MHz_Memory[addr] = data;
    switch (addr & 1)
    {
-   case 0: Pi1MHz_Memory_VPU[addr>>1] =      data  | (Pi1MHz_Memory[addr+1]); break;
-   case 1: Pi1MHz_Memory_VPU[addr>>1] = ((uint32_t )data<<16) | (Pi1MHz_Memory[addr-1]); break;
+   case 0: Pi1MHz_Memory_VPU[addr>>1] = (1<<8) |                    data  | (Pi1MHz_Memory[addr+1]); break;
+   case 1: Pi1MHz_Memory_VPU[addr>>1] = (1<<(8+16))|((uint32_t )data<<16) | (Pi1MHz_Memory[addr-1]); break;
    }
 #pragma GCC diagnostic pop
 }
@@ -261,6 +263,9 @@ static void init_emulator() {
    memset(Pi1MHz_callback_table, 0, Pi1MHz_CB_SIZE);
    memset(Pi1MHz_Memory,0,PAGE_SIZE);
 #pragma GCC diagnostic pop
+
+   for(int i=255; i>0; i--)
+      Pi1MHz_Memory_VPU[i]=0;             // Clear VPU ram.
 
    RPI_PropertyStart(TAG_LAUNCH_VPU1, 7);
    RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function
