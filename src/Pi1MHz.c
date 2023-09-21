@@ -120,9 +120,9 @@ typedef struct {
 
 static emulator_list emulator[] = {
    {"Ram",ram_emulator_init, 0, 1},
-   {"Harddisc",harddisc_emulator_init, 0, 1},
+   {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
-   {"Frambuffer",fb_emulator_init, 0, 1},
+   {"Frambuffer",fb_emulator_init, 0xD0, 1},
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
@@ -289,7 +289,7 @@ static void init_emulator() {
    Pi1MHz_Register_Memory( READ_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_read_Status );
 
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
-      if (emulator[i].enable==1) emulator[i].init(i);
+      if (emulator[i].enable==1) emulator[i].init(i,emulator[i].address);
 }
 
 static uint8_t led_pin;

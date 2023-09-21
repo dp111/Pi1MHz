@@ -1,1 +1,1 @@
-void ram_emulator_init( uint8_t instance );
+void ram_emulator_init( uint8_t instance , int address);

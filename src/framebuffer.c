@@ -1498,13 +1498,13 @@ static void fb_emulator_poll()
    }
 }
 
-void fb_emulator_init(uint8_t instance)
+void fb_emulator_init(uint8_t instance, int address)
 {
   fb_initialize();
 
   //v3d_initialize(fb_get_address(), fb_get_width(), fb_get_height(), fb_get_bpp());
 
-  Pi1MHz_Register_Memory(WRITE_FRED, 0xd0, fb_emulator_vdu);
+  Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
 
   Pi1MHz_Register_Poll(fb_emulator_poll);
 }

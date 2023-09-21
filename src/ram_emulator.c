@@ -33,19 +33,21 @@ Millipede PRISMA-3 (Not support)
 static size_t byte_ram_addr;
 static size_t page_ram_addr;
 
+static uint8_t ram_address;
+
 void ram_emulator_byte_addr(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
 
-   switch (addr)
+   switch (addr - ram_address)
    {
       case 0:  byte_ram_addr = (byte_ram_addr & 0xFFFFFF00) | data; break;
       case 1:  byte_ram_addr = (byte_ram_addr & 0xFFFF00FF) | data<<8; break;
       default: byte_ram_addr = (byte_ram_addr & 0xFF00FFFF) | data<<16; break;
    }
 
-   Pi1MHz_MemoryWrite(3,JIM_ram[byte_ram_addr]); // setup new data now the address has changed;
+   Pi1MHz_MemoryWrite(ram_address + 3 , JIM_ram[byte_ram_addr]); // setup new data now the address has changed;
    Pi1MHz_MemoryWrite(addr, data);               // enable the address register to be read back
 }
 
@@ -53,7 +55,7 @@ void ram_emulator_byte_write(unsigned int gpio)
 {
    uint8_t data = GET_DATA(gpio);
    JIM_ram[byte_ram_addr] =  data;
-   Pi1MHz_MemoryWrite(3,  data);
+   Pi1MHz_MemoryWrite(ram_address + 3,  data);
 }
 
 void ram_emulator_page_addr(unsigned int gpio)
@@ -85,23 +87,24 @@ void ram_emulator_page_write(unsigned int gpio)
    Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + addr, data);
 }
 
-void ram_emulator_init( uint8_t instance )
+void ram_emulator_init( uint8_t instance , int address)
 {
    byte_ram_addr = 0;
    page_ram_addr = 0;
 
+   ram_address = (uint8_t) address;
+
    for( uint32_t i = 0; i < PAGE_SIZE ; i++)
       Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + i, JIM_ram[page_ram_addr+i]);
 
-
    // register call backs
    // byte memory address write fc00 01 02
-   Pi1MHz_Register_Memory(WRITE_FRED, 0, ram_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, 1, ram_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, 2, ram_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+0, ram_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+1, ram_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+2, ram_emulator_byte_addr );
 
    // fc03 write data byte
-   Pi1MHz_Register_Memory(WRITE_FRED, 3, ram_emulator_byte_write );
+   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+3, ram_emulator_byte_write );
 
    // Page access register write fcfd fcfe fcff
    Pi1MHz_Register_Memory(WRITE_FRED, 0xfd, ram_emulator_page_addr );

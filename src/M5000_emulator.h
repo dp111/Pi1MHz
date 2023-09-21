@@ -1,1 +1,1 @@
-void M5000_emulator_init(uint8_t instance);
+void M5000_emulator_init(uint8_t instance, int address);
