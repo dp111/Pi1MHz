@@ -64,7 +64,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-field-initializers" )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum -Wenum-int-mismatch -Wxor-used-as-pow -fstrict-flex-arrays -Warray-bounds=2")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
 
