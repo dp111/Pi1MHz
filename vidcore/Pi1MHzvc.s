@@ -22,7 +22,7 @@
 #  r4 - debug output control
 #  r5 - debug pin mask (0 = no debug  xx= debug pin e.g 1<<21)
 #  r6 - GPFSEL0 constant
-#  r7 - External nOE pin 
+#  r7 - External nOE pin
 #  r8 - temp
 #  r9 - r9 Databus and test pin output select
 # r10 - address mask
@@ -134,10 +134,9 @@ waitforclkhighloop:
    btst   r12,ADDRBUS_SHIFT      # select which 16bits hold the data
    lsrne  r8,16-DATASHIFT        # High 16 bits to low 16 bits with databus shift
    lsleq  r8,DATASHIFT           # low 16 bits wiht databus shift
-
+   btst   r8, OUTPUTBIT
    and    r8,255<<DATASHIFT      # isolate databus
 
-   btst   r8, OUTPUTBIT  
    stne   r8, 0(r11)             # set up databus ( only if it has been written to)
    st     r9, GPFSEL0_offset(r6) # set databus to outputs
    stne   r7, r11GPCLR0_offset(r11)  # set external output enable low
@@ -152,7 +151,7 @@ waitforclklow2loop:
    btst   r12, CLK
    bne    waitforclklow2loop
 
-   st     r7, GPSET0_offset(r6)  # set external output enable high  
+   st     r7, GPSET0_offset(r6)  # set external output enable high
    st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
 
    mov    r8, (0xFF<<DATASHIFT)  # clear databus low
