@@ -50,8 +50,8 @@
 .equ RnW,          10
 .equ CLK,          27
 .equ DATASHIFT,    2
-.equ ADDRBUS_SHIFT,    (16)
-.equ OUTPUTBIT,   (DATASHIFT+8)
+.equ ADDRBUS_SHIFT, (16)
+.equ OUTPUTBIT,   (15)
 
 .equ D7_PIN,       (9)
 .equ D6_PIN,       (8)
@@ -77,10 +77,10 @@
    or     r9, r3, r4       # add in test pin so that it is still enabled
    mov    r6, GPFSEL0
    mov    r7, 1            # external nOE pin
-   mov    r10,((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))>>1
+   mov    r10, ((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))>>1
    add    r11, r6, GPSET0_offset
    mov    r13, GPU_ARM_DBELL
-   b Poll_loop
+   b      Poll_loop
 
 # poll for nPCFC or nPCFD being low
 .align 4
@@ -108,8 +108,7 @@ waitforclklow:                   # wait for extra half cycle to end
    bne    waitforclklow
 
 waitforclkhigh:
-.align 4
-   b waitforclkhighloop
+
 waitforclkhighloop:
    ld     r12, GPLEV0_offset(r6)
    btst   r12, CLK
@@ -122,7 +121,7 @@ waitforclkhighloop:
 
    and    r8, r10                # Isolate address bus
 
-   ld     r8,(r0,r8) # get byte to write out
+   ld     r8, (r0,r8) # get byte to write out
    btst   r12, nPCFC
    btstne r12, nPCFD
    bne    Poll_loop
@@ -131,15 +130,17 @@ waitforclkhighloop:
    btst   r12, RnW
    beq    writecycle
 
-   btst   r12,ADDRBUS_SHIFT      # select which 16bits hold the data
-   lsrne  r8,16-DATASHIFT        # High 16 bits to low 16 bits with databus shift
-   lsleq  r8,DATASHIFT           # low 16 bits wiht databus shift
+   btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
+   lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
+   lsleq  r8, DATASHIFT          # low 16 bits with databus shift
    btst   r8, OUTPUTBIT
-   and    r8,255<<DATASHIFT      # isolate databus
+   and    r8, 255<<DATASHIFT     # isolate databus
 
-   stne   r8, 0(r11)             # set up databus ( only if it has been written to)
-   st     r9, GPFSEL0_offset(r6) # set databus to outputs
-   stne   r7, r11GPCLR0_offset(r11)  # set external output enable low
+   st     r8, GPSET0_offset(r6)  # set up databus
+   beq    skipenablingbus
+   st   r9, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
+   st   r7, r11GPCLR0_offset(r11)  # set external output enable low
+ skipenablingbus:
    st     r12, (r1)              # post data
    st     r12, (r13)             # ring doorbell
 
@@ -157,7 +158,7 @@ waitforclklow2loop:
    mov    r8, (0xFF<<DATASHIFT)  # clear databus low
    st     r8, GPCLR0_offset(r6)  # clear databus low
 
-   b Poll_loop
+   b      Poll_loop
 
 writecycle:
 
@@ -169,4 +170,4 @@ waitforclkloww2:
    st     r12, (r1)         # post data
    st     r12, (r13)        # ring doorbell
 
-   b Poll_loop
+   b      Poll_loop
