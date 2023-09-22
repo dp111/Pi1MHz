@@ -52,4 +52,6 @@ Add RPI4 Pull support
 
 V1.07
 Support nOE on external buffers
-Improve baud rate rouding for small dividers
+Improve baud rate rounding for small dividers
+Update CMAKE and linker files for newer versions
+Add YYYY_addr to cmdline.txt to change addresses of emulated devices
