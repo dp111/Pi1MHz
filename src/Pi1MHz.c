@@ -264,6 +264,7 @@ static void init_emulator() {
          if (prop)
             {
                int temp=strtol(prop,0,0);
+               printf("Found : %s=0x%x\r\n", key, temp);
                if (temp<0)
                   emulator[i].enable = 0;
                else
@@ -305,7 +306,7 @@ static void init_emulator() {
    Pi1MHz_Register_Memory( READ_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_read_Status );
 
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
-      if (emulator[i].enable==1) emulator[i].init(i,emulator[i].address);
+      if (emulator[i].enable == 1) emulator[i].init(i, emulator[i].address);
 }
 
 static uint8_t led_pin;
