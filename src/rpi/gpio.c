@@ -14,7 +14,7 @@ void RPI_SetGpioPinFunction(rpi_gpio_pin_t gpio, rpi_gpio_alt_function_t func)
 
 rpi_gpio_alt_function_t RPI_GetGpioPinFunction(rpi_gpio_pin_t gpio)
 {
-  rpi_reg_rw_t* fsel_reg = &RPI_GpioBase->GPFSEL[gpio / 10];
+  const rpi_reg_rw_t* fsel_reg = &RPI_GpioBase->GPFSEL[gpio / 10];
 
   uint32_t fsel_copy = *fsel_reg;
   fsel_copy >>= ((gpio % 10) * 3);
@@ -124,4 +124,3 @@ void RPI_SetGpioPull(rpi_gpio_pin_t gpio, rpi_gpio_pull pull)
   RPI_GpioBase->GPPUDCLK0 = 0;
 #endif
 }
-

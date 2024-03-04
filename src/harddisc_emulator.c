@@ -188,7 +188,7 @@ void harddisc_emulator_init( uint8_t instance , int address)
    // Fixes *SCSIJUKE surving over shift break.
    if (!PowerOn)
    {
-      char *prop = get_cmdline_prop("SCSIJUKE");
+      const char *prop = get_cmdline_prop("SCSIJUKE");
       int scsijuke = 0;
       if (prop)
          scsijuke = atoi(prop);
@@ -359,6 +359,7 @@ uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
 
 // Function to determine if the host adapter is connected to the external or internal
 // host bus
+// cppcheck-suppress unusedFunction
 bool hostadapterConnectedToExternalBus(void)
 {
    //if ((INTNEXT_PIN & INTNEXT) != 0) return false; // Internal bus

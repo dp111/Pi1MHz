@@ -128,9 +128,9 @@ typedef struct
    rpi_reg_rw_t EMMC_ARG1;
    rpi_reg_rw_t EMMC_CMDTM;
    rpi_reg_rw_t EMMC_RESP0;
-   rpi_reg_rw_t EMMC_RESP1;
-   rpi_reg_rw_t EMMC_RESP2;
-   rpi_reg_rw_t EMMC_RESP3;
+   rpi_reg_rw_t EMMC_RESP1; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_RESP2; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_RESP3; // cppcheck-suppress unusedStructMember
    rpi_reg_rw_t EMMC_DATA;
    rpi_reg_rw_t EMMC_STATUS;
    rpi_reg_rw_t EMMC_CONTROL0;
@@ -139,27 +139,27 @@ typedef struct
    rpi_reg_rw_t EMMC_IRPT_MASK;
    rpi_reg_rw_t EMMC_IRPT_EN;
    rpi_reg_rw_t EMMC_CONTROL2;
-   rpi_reg_rw_t EMMC_CAPABILITIES_0;
-   rpi_reg_rw_t EMMC_CAPABILITIES_1;
-   rpi_reg_rw_t EMMC_HWMAXAMP0;
-   rpi_reg_ro_t reserved1;
-   rpi_reg_rw_t EMMC_FORCE_IRPT;
-   rpi_reg_rw_t EMMC_DMA_STATUS;
-   rpi_reg_ro_t reserved2[6];
-   rpi_reg_rw_t EMMC_BOOT_TIMEOUT;
-   rpi_reg_rw_t EMMC_DBG_SEL;
-   rpi_reg_ro_t reserved3[2];
-   rpi_reg_rw_t EMMC_EXRDFIFO_CFG;
-   rpi_reg_rw_t EMMC_EXRDFIFO_EN;
-   rpi_reg_rw_t EMMC_TUNE_STEP;
-   rpi_reg_rw_t EMMC_TUNE_STEPS_STD;
-   rpi_reg_rw_t EMMC_TUNE_STEPS_DDR;
-   rpi_reg_ro_t reserved4[19];
-   rpi_reg_rw_t EMMC_BUS_CTRL;
-   rpi_reg_ro_t reserved5[3];
-   rpi_reg_rw_t EMMC_SPI_INT_SPT;
-   rpi_reg_ro_t reserved6[2];
-   rpi_reg_rw_t EMMC_SLOTISR_VER;
+   rpi_reg_rw_t EMMC_CAPABILITIES_0; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_CAPABILITIES_1; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_HWMAXAMP0; // cppcheck-suppress unusedStructMember
+   rpi_reg_ro_t reserved1; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_FORCE_IRPT; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_DMA_STATUS; // cppcheck-suppress unusedStructMember
+   rpi_reg_ro_t reserved2[6]; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_BOOT_TIMEOUT; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_DBG_SEL; // cppcheck-suppress unusedStructMember
+   rpi_reg_ro_t reserved3[2]; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_EXRDFIFO_CFG; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_EXRDFIFO_EN; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_TUNE_STEP; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_TUNE_STEPS_STD; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_TUNE_STEPS_DDR; // cppcheck-suppress unusedStructMember
+   rpi_reg_ro_t reserved4[19]; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_BUS_CTRL; // cppcheck-suppress unusedStructMember
+   rpi_reg_ro_t reserved5[3]; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_SPI_INT_SPT; // cppcheck-suppress unusedStructMember
+   rpi_reg_ro_t reserved6[2]; // cppcheck-suppress unusedStructMember
+   rpi_reg_rw_t EMMC_SLOTISR_VER; // cppcheck-suppress unusedStructMember
 } rpi_emmc_t;
 
 #define EMMC_BASE    (PERIPHERAL_BASE + 0x0300000UL)
@@ -509,8 +509,7 @@ static int bcm_2708_power_on()
 
 static int bcm_2708_power_cycle()
 {
-   if(bcm_2708_power_off() < 0)
-      return -1;
+   bcm_2708_power_off();
 
    usleep(5000);
    return bcm_2708_power_on();
@@ -1156,12 +1155,13 @@ int sd_card_init(struct block_device **dev)
 #ifdef SDCARD_PWR_CYCLE
 #if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
    // Power cycle the card to ensure its in its startup state
-   if(bcm_2708_power_cycle() != 0)
-   {
-      printf("EMMC: BCM2708 controller did not power cycle successfully\r\n");
-   }
+   //if(bcm_2708_power_cycle() != 0)
+   //{
+   //   printf("EMMC: BCM2708 controller did not power cycle successfully\r\n");
+  // }
+  bcm_2708_power_cycle();
 #ifdef EMMC_DEBUG
-   else
+   //else
       printf("EMMC: BCM2708 controller power-cycled\r\n");
 #endif
 #endif
