@@ -21,6 +21,58 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110 - 1301 USA.
 
 // The code has been simplified to reduce the processor overheads of emulation
+/*
+Internal Waveform description
+Use https://wavedrom.com/editor.html
+
+{signal: [
+  {name: 'clk',  wave: 'hlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlh.........................................'},
+  {name: 'addr0',wave: 'l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'addr1',wave: 'l...h...l...h...l...h...l...h...l...h...l...h'},
+  {name: 'addr2',wave: 'l.......h.......l.......h.......l.......h.......'},
+  {name: 'pa1'  ,wave: 'h.l...h...l...h...l...h...l...h...l...h...l...h'},
+  {name: 'pa2'  ,wave: 'h.l.......h.......l.......h.......l.......h.......'},
+  {name: 'nS0'  ,wave: 'l.h.............l.h............................'},
+  {name: 'nS1'  ,wave: 'h.l.h............................................'},
+  {name: 'nS4'  ,wave: 'h.......l.h............................................'},
+  {name: 'nS6'  ,wave: 'h...........l.h............................................'},
+  {name: 'nS7'  ,wave: 'h.............l.h............................................'},
+  {name: 'ram addr', wave: 'x.3.4.3.4.3.4.3.4.3.', data: ['Freqlo', 'x4', 'Freqmid', 'waveform','FreqHigh','Amplitude','wavedata','Control']},
+  {name: 'adder A', wave: 'x...3.4.3.4.3.4.3.4.3.', data: ['Freqlo', 'x4', 'Freqmid', 'waveform','FreqHigh','Amplitude','wavedata','Control']},
+
+  {name: 'CY4'  ,wave: 'l.......................................................'},
+  {name: 'CY4d' ,wave: 'l.......................................................'},
+  {name: 'C4D'  ,wave: 'l.......................................................'},
+  {name: 'nSx'  ,        wave: 'h..........................................................'},
+  {name: 'phase noe'    ,wave: 'h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'phase ICB4b 4',wave: 'h...l.h.l.h.l.h.....l.h.l.h.l.h.l.h.'},
+  {name: 'phase nWE ',   wave: '.h...lh..lh..lh......lh.l.h.l.h.l.h.l.h.'},
+  {name: 'phase addr',   wave: 'h.3...4...3...4...3...4.3.4.3.', data: ['0', '1', '2', '3','0','Amplitude','x3','Control']},
+  {name: 'phase IC22mm',  wave: '.x...3x..3x..3xx..3...4.3.4.3.', data: ['sphl', 'sphm', 'sphh', 'amp','0','Amplitude','x3','Control']},
+  {name: 'phase ramop',  wave: 'x.3.x.3.x.3.x.3.x.3...4.3.4.3.', data: ['phlo', 'phmid', 'phhigh', 'amp','0','Amplitude','x3','Control']},
+
+  {name: 'adder B', wave: 'x.0.3.0.3.0.3.0.3.0..3...4.3.4.3.', data: ['phlo', 'phmid', 'phhigh', 'amp','0','Amplitude','x3','Control']},
+
+  {name: 'sum bus', wave: 'x.0.3.0.3.0.3.0.3.0..3...4.3.4.3.', data: ['sphlo', 'sphmid', 'sphhigh', 'saudio','0','Amplitude','x3','Control']},
+
+
+  {name: 'CY4'  ,    wave: 'l............h.......................................................'},
+  {name: 'CY4d' ,    wave: 'l.............h.......................................................'},
+  {name: 'C4D'  ,    wave: 'l..............h.......................................................'},
+  {name: 'nSx'  ,    wave: 'h.............l.h............................................'},
+  {name: 'phase noe',wave: 'h.l.h.l.h.l.h.....l.h.l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'phase ICB4b 4',wave: 'h...l.h.l.h.l...h...l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'phase nWE ', wave: '.h...lh..lh..lhlh....l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'phase addr', wave: 'h.3...4...3...4...3...4.3.4.3.', data: ['0', '1', '2', '3','0','Amplitude','x3','Control']},
+  {name: 'phase IC22mm', wave: '.x...3x..3x..3x3x..3...4.3.4.3.', data: ['sphl', 'sphm', 'sphh', 'amp','0','Amplitude','x3','Control']},
+  {name: 'phase ramop', wave: 'x.3.x.3.x.3.x.x...3...4.3.4.3.', data: ['phlo', 'phmid', 'phhigh', 'sum','0','Amplitude','x3','Control']},
+
+  {name: 'adder B', wave: 'x.0.3.0.3.0.3.0.3.0..3...4.3.4.3.', data: ['phlo', 'phmid', 'phhigh', 'amp','0','Amplitude','x3','Control']},
+
+  {name: 'sum bus', wave: 'x.0.3.0.3.0.3.0.3.0..3...4.3.4.3.', data: ['sphlo', 'sphmid', 'sphhigh', 'saudio','0','Amplitude','x3','Control']},
+
+]}
+*/
 
 #include <inttypes.h>
 #include <string.h>
