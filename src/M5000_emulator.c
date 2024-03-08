@@ -130,7 +130,8 @@ static void update_channels(struct synth *s)
     uint8_t modulate = s->modulate;
     int c4d; // c4d is used for "Synchronization" e.g. the "Wha" instrument
 
-    for (int i = 0; i < 16; i++) {
+    for (int channel = 0; channel < 16; channel++) {
+      int i = (channel>>1) | ((channel&1)<<3);
       uint8_t * c = s->ram + I_WFTOP + modulate + i;
       if  (!PHASESET(c))
          {
