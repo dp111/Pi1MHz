@@ -21,6 +21,58 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110 - 1301 USA.
 
 // The code has been simplified to reduce the processor overheads of emulation
+/*
+Internal Waveform description
+Use https://wavedrom.com/editor.html
+
+{signal: [
+  {name: 'clk',  wave: 'hlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlhlh.........................................'},
+  {name: 'addr0',wave: 'l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'addr1',wave: 'l...h...l...h...l...h...l...h...l...h...l...h'},
+  {name: 'addr2',wave: 'l.......h.......l.......h.......l.......h.......'},
+  {name: 'pa1'  ,wave: 'h.l...h...l...h...l...h...l...h...l...h...l...h'},
+  {name: 'pa2'  ,wave: 'h.l.......h.......l.......h.......l.......h.......'},
+  {name: 'nS0'  ,wave: 'l.h.............l.h............................'},
+  {name: 'nS1'  ,wave: 'h.l.h............................................'},
+  {name: 'nS4'  ,wave: 'h.......l.h............................................'},
+  {name: 'nS6'  ,wave: 'h...........l.h............................................'},
+  {name: 'nS7'  ,wave: 'h.............l.h............................................'},
+  {name: 'ram addr', wave: 'x.3.4.3.4.3.4.3.4.3.', data: ['Freqlo', 'x4', 'Freqmid', 'waveform','FreqHigh','Amplitude','wavedata','Control']},
+  {name: 'adder A', wave: 'x...3.4.3.4.3.4.3.4.3.', data: ['Freqlo', 'x4', 'Freqmid', 'waveform','FreqHigh','Amplitude','wavedata','Control']},
+
+  {name: 'CY4'  ,wave: 'l.......................................................'},
+  {name: 'CY4d' ,wave: 'l.......................................................'},
+  {name: 'C4D'  ,wave: 'l.......................................................'},
+  {name: 'nSx'  ,        wave: 'h..........................................................'},
+  {name: 'phase noe'    ,wave: 'h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'phase ICB4b 4',wave: 'h...l.h.l.h.l.h.....l.h.l.h.l.h.l.h.'},
+  {name: 'phase nWE ',   wave: '.h...lh..lh..lh......lh.l.h.l.h.l.h.l.h.'},
+  {name: 'phase addr',   wave: 'h.3...4...3...4...3...4.3.4.3.', data: ['0', '1', '2', '3','0','Amplitude','x3','Control']},
+  {name: 'phase IC22mm',  wave: '.x...3x..3x..3xx..3...4.3.4.3.', data: ['sphl', 'sphm', 'sphh', 'amp','0','Amplitude','x3','Control']},
+  {name: 'phase ramop',  wave: 'x.3.x.3.x.3.x.3.x.3...4.3.4.3.', data: ['phlo', 'phmid', 'phhigh', 'amp','0','Amplitude','x3','Control']},
+
+  {name: 'adder B', wave: 'x.0.3.0.3.0.3.0.3.0..3...4.3.4.3.', data: ['phlo', 'phmid', 'phhigh', 'amp','0','Amplitude','x3','Control']},
+
+  {name: 'sum bus', wave: 'x.0.3.0.3.0.3.0.3.0..3...4.3.4.3.', data: ['sphlo', 'sphmid', 'sphhigh', 'saudio','0','Amplitude','x3','Control']},
+
+
+  {name: 'CY4'  ,    wave: 'l............h.......................................................'},
+  {name: 'CY4d' ,    wave: 'l.............h.......................................................'},
+  {name: 'C4D'  ,    wave: 'l..............h.......................................................'},
+  {name: 'nSx'  ,    wave: 'h.............l.h............................................'},
+  {name: 'phase noe',wave: 'h.l.h.l.h.l.h.....l.h.l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'phase ICB4b 4',wave: 'h...l.h.l.h.l...h...l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'phase nWE ', wave: '.h...lh..lh..lhlh....l.h.l.h.l.h.l.h.l.h.'},
+  {name: 'phase addr', wave: 'h.3...4...3...4...3...4.3.4.3.', data: ['0', '1', '2', '3','0','Amplitude','x3','Control']},
+  {name: 'phase IC22mm', wave: '.x...3x..3x..3x3x..3...4.3.4.3.', data: ['sphl', 'sphm', 'sphh', 'amp','0','Amplitude','x3','Control']},
+  {name: 'phase ramop', wave: 'x.3.x.3.x.3.x.x...3...4.3.4.3.', data: ['phlo', 'phmid', 'phhigh', 'sum','0','Amplitude','x3','Control']},
+
+  {name: 'adder B', wave: 'x.0.3.0.3.0.3.0.3.0..3...4.3.4.3.', data: ['phlo', 'phmid', 'phhigh', 'amp','0','Amplitude','x3','Control']},
+
+  {name: 'sum bus', wave: 'x.0.3.0.3.0.3.0.3.0..3...4.3.4.3.', data: ['sphlo', 'sphmid', 'sphhigh', 'saudio','0','Amplitude','x3','Control']},
+
+]}
+*/
 
 #include <inttypes.h>
 #include <string.h>
@@ -44,7 +96,7 @@
 #define I_AMP(c)     (*((c)+0x60))
 #define I_CTL(c)     (*((c)+0x70))
 #define FREQ(c)      (I_FREQlo(c)|(I_FREQmid(c)<<8)|(I_FREQhi(c)<<16))
-#define DISABLE(c)   (!!(I_FREQlo(c)&1))
+#define PHASESET(c)   (!!(I_FREQlo(c)&1))
 #define AMP(c)       (I_AMP(c))
 #define WAVESEL(c)   (I_WAVESEL(c)>>4)
 #define CTL(c)       (I_CTL(c))
@@ -52,7 +104,7 @@
 #define INVERT(c)    (!!(CTL(c)&0x10))
 #define PAN(c)       (CTL(c)&0xf)
 
-#define DEFAULT_GAIN 16
+#define DEFAULT_GAIN 3
 
 // These variables can be setup form the cmdline.txt file.
 
@@ -65,7 +117,9 @@ static uint8_t fx_pointer;
 struct synth {
     uint32_t phaseRAM[16];
     int sleft, sright;
+    uint8_t amplitude[16];
     uint8_t * ram;
+    uint8_t modulate;
 };
 
 static const uint8_t PanArray[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 6, 6, 6, 5, 4, 3, 2, 1 };
@@ -77,20 +131,21 @@ NOINIT_SECTION static int antilogtable[128];
 static void synth_reset(struct synth *s, uint8_t * ptr)
 {
    s->ram = ptr;
-   // Real hardware clears 0x3E00 for 128bytes and random
-   // Waveform bytes depending on phaseRAM
-   // we only need to clear the disable bytes
-   memset(&s->ram[I_WFTOP], 1, 16);
+   s->modulate = 0;
+   // Real hardware clears 0x3E00 for 128bytes
+   // and random Waveform bytes depending on phaseRAM
+   memset(&s->ram[I_WFTOP], 0, 128);
+   memset(&s->amplitude[0], 0, 16);
 }
 
 static int32_t audio_range;
 
 // in cmdline.txt M5000_Gain=16 set the default audio gain
 // if gain has >1000 then gain = gain - 1000 and auto ranging
-// is disabled
+// is PHASESET
 
 static void M5000_gain() {
-   char *prop = get_cmdline_prop("M5000_Gain");
+   const char *prop = get_cmdline_prop("M5000_Gain");
 
    if (prop)
       gain = atoi(prop);
@@ -109,7 +164,7 @@ static void M5000_gain() {
 // in cmdline.txt M5000_BeebAudio_Off=1 turns off beeb Audio
 
 static void M5000_BeebAudio() {
-   char *prop = get_cmdline_prop("M5000_BeebAudio_Off");
+   const char *prop = get_cmdline_prop("M5000_BeebAudio_Off");
 
    if (prop)
       stereo = (uint8_t)atoi(prop);
@@ -122,93 +177,91 @@ static void M5000_BeebAudio() {
 
 static void update_channels(struct synth *s)
 {
-   int sleft = 0;
-   int sright = 0;
-   uint8_t modulate = 0; // in real hardware modulate wraps from channel 16 to 0 but is never used
+    int sleft = 0;
+    int sright = 0;
+    uint8_t modulate = s->modulate;
+    int c4d; // c4d is used for "Synchronization" e.g. the "Wha" instrument
 
-   for (int i = 0; i < 16; i++)
-   {
+    for (int channel = 0; channel < 16; channel++) {
+      int i = (channel>>1) | ((channel&1)<<3);
       uint8_t * c = s->ram + I_WFTOP + modulate + i;
+      if  (!PHASESET(c))
+         {
+            unsigned int sum = FREQ(c) + s->phaseRAM[i];
+            s->phaseRAM[i] = sum & 0xffffff;
+            c4d = sum & (1<<24);
+            // only if there is a carry ( waveform crossing do we update the amplitude)
+            if (c4d)
+               s->amplitude[i] = AMP(c);
+         }
+         else
+         {
+            s->phaseRAM[i] = FREQ(c);
+            c4d = 0;
+         }
 
-      // In the real hardware the disable bit works by forcing the
-      // phase accumulator to FREQUENCY.
-      if (DISABLE(c)) {
-          //s->phaseRAM[i] = FREQ(c);
-          //s->phaseRAM[i] = 0;
-          // A slight difference as modulation is still calculated in real hardware
-          // but not here
-          modulate = 0;
-      } else {
-          int c4d, sign, sample;
-          unsigned int sum = s->phaseRAM[i] + (unsigned int ) FREQ(c);
-          s->phaseRAM[i] = sum & 0xffffff;
-          // c4d is used for "Synchronization" e.g. the "Wha" instrument
-          c4d = sum & (1<<24);
+      int sample = s->ram[ I_WAVEFORM( WAVESEL(c) , ( s->phaseRAM[i] >> 17) ) ];
+      int sign = sample & 0x80;
 
-          sample = s->ram[ I_WAVEFORM( WAVESEL(c) , ( s->phaseRAM[i] >> 17) ) ];
-          {
-          // The amplitude operates in the log domain
-          // - sam holds the wave table output which is 1 bit sign and 7 bit magnitude
-          // - amp holds the amplitude which is 1 bit sign and 8 bit magnitude (0x00 being quite, 0x7f being loud)
-          // The real hardware combines these in a single 8 bit adder, as we do here
-          //
-          // Consider a positive wav value (sign bit = 1)
-          //       wav: (0x80 -> 0xFF) + amp: (0x00 -> 0x7F) => (0x80 -> 0x7E)
-          // values in the range 0x80...0xff are very small are clamped to zero
-          //
-          // Consider a negative wav vale (sign bit = 0)
-          //       wav: (0x00 -> 0x7F) + amp: (0x00 -> 0x7F) => (0x00 -> 0xFE)
-          // values in the range 0x00...0x7f are very small are clamped to zero
-          //
-          // In both cases:
-          // - zero clamping happens when the sign bit stays the same
-          // - the 7-bit result is in bits 0..6
-          //
-          // Note:
-          // - this only works if the amp < 0x80
-          // - amp >= 0x80 causes clamping at the high points of the waveform
-          // - this behavior matches the FPGA implementation, and we think the original hardware
-          }
-          sign = sample & 0x80;
-          sample += AMP(c);
-          modulate = (( MODULATE(c) && (!!(sign) || !!(c4d)))? 128:0);
-          if ((sign ^ sample) & 0x80) {
-             // sign bits being different is the normal case
-             sample &= 0x7f;
-          } else {
-             // sign bits being the same indicates underflow so clamp to zero
-             sample = 0;
-          }
+      // The amplitude operates in the log domain
+      // - sam holds the wave table output which is 1 bit sign and 7 bit magnitude
+      // - amp holds the amplitude which is 1 bit sign and 8 bit magnitude (0x00 being quite, 0x7f being loud)
+      // The real hardware combines these in a single 8 bit adder, as we do here
+      //
+      // Consider a positive wav value (sign bit = 1)
+      //       wav: (0x80 -> 0xFF) + amp: (0x00 -> 0x7F) => (0x80 -> 0x7E)
+      // values in the range 0x80...0xff are very small are clamped to zero
+      //
+      // Consider a negative wav vale (sign bit = 0)
+      //       wav: (0x00 -> 0x7F) + amp: (0x00 -> 0x7F) => (0x00 -> 0xFE)
+      // values in the range 0x00...0x7f are very small are clamped to zero
+      //
+      // In both cases:
+      // - zero clamping happens when the sign bit stays the same
+      // - the 7-bit result is in bits 0..6
+      //
+      // Note:
+      // - this only works if the amp < 0x80
+      // - amp >= 0x80 causes clamping at the high points of the waveform
+      // - this behavior matches the FPGA implementation, and we think the original hardware
 
-          if (INVERT(c)) {
-             sign ^= 0x80;
-          }
-          //sam is now an 8-bit log value
-          sample =  antilogtable[sample];
-          if (!(sign))
-          {
-             // sign being zero is negative
-             sample =-sample;
-          }
-          // sample is now a 14-bit linear sample
-          uint8_t pan = PanArray[PAN(c)];
+      sample += s->amplitude[i];
+      modulate = (( MODULATE(c) && (!!(sign) || !!(c4d)))? 128u:0u);
 
-          // Apply panning. Divide by 6 taken out of the loop as a common subexpression
-          sleft  += ((sample*pan));
-          sright += ((sample*(6 - pan)));
+      if ((sign ^ sample) & 0x80) {
+         uint8_t pan = PanArray[PAN(c)];
+         // sign bits being different is the normal case
+         sample &= 0x7f;
+
+         //sam is now an 7-bit log value
+         sample =  antilogtable[sample];
+
+         if (INVERT(c)) {
+            sign ^= 0x80;
+         }
+
+         if (sign) {
+            // sign being zero is negative
+            sample =-sample;
+         }
+         // sample is now a 14-bit linear sample
+         // Apply panning. Divide by 6 taken out of the loop as a common subexpression
+         sleft  += sample * pan;
+         sright += sample * (6 - pan);
       }
-   }
-   s->sleft  = sleft; // should really divide by six but as that is just gain
-   s->sright = sright; // so we can do it later
+
+    }
+    s->sleft  = sleft;
+    s->sright = sright;
+    s->modulate = modulate;
 }
 
-static void music5000_get_sample(uint32_t *left, uint32_t *right)
+static void music5000_store_sample(int sl, int sr, uint32_t *left, uint32_t *right)
 {
-    // the range of sleft/right is (-8191..8191) i.e. 14 bits
+    // the range of sleft/right is (-8031..8031) i.e. 14 bits
     // so summing 16 channels gives an 18 bit output
     // now times 6 as pan division has been taken out of loop
-    int sl = m5000.sleft  + m3000.sleft;
-    int sr = m5000.sright + m3000.sright;
+    // so 21bits
 
     if (!stereo)
     {
@@ -216,7 +269,7 @@ static void music5000_get_sample(uint32_t *left, uint32_t *right)
        sr = sl;
     }
 
-    // Worst case we should divide by 64 to get 18 bits down to 12.x bits.
+    // Worst case we should divide by 256 to get 20bits down to 12.x bits.
     // But this does loose dynamic range.
     //
     // Even loud tracks like In Concert by Pilgrim Beat rarely use
@@ -294,7 +347,7 @@ void music5000_rec_stop()
     do {
       sprintf(fn,"Musics%.3i.wav",number);
       result = f_open( &music5000_fp, fn, FA_CREATE_NEW  | FA_WRITE);
-      LOG_INFO("Filename : %s\r\n",fn);
+      LOG_INFO("Music5000 Filename : %s\r\n",fn);
       if ( result == FR_EXIST)
          number++;
     } while ( result != FR_OK );
@@ -313,21 +366,12 @@ void music5000_rec_stop()
    rec_started = 0;
 }
 
-static void store_samples(struct synth *s3,struct synth *s5)
+static void store_samples(int sl, int sr)
 {
-    int sl = (s3->sleft  +  s5->sleft) * gain;
-    int sr = (s3->sright + s5->sright) * gain;
-    if (rec_started || sl || sr)
+   if (rec_started || sl || sr)
     {
-      if (stereo)
-      {
-         sl = sl / (1024/8); // +/- 2666.6 so scale to fit +/- 32,768
-         sr = sr / (1024/8);
-      }
-      else {
-         sl = sl / (512/8);
-         sr = sr / (512/8);
-      }
+      sl = (sl * gain * 12) / 1024; // +/- 2666.6 so scale to fit +/- 32,768
+      sr = (sr * gain * 12) / 1024;
       JIM_ram[Audio_Index++] = (uint8_t )sl;
       JIM_ram[Audio_Index++] = (uint8_t )(sl>>8);
       JIM_ram[Audio_Index++] = (uint8_t )sr;
@@ -347,7 +391,6 @@ void music5000_emulate()
 
    if ((record == 1 ) && (fx_register[fx_pointer] == 0))
    {
-      LOG_INFO("Recording stopping\r\n");
       music5000_rec_stop();
       record = 0;
    }
@@ -359,9 +402,12 @@ void music5000_emulate()
       for (size_t sample = space; sample !=0 ; sample--) {
          update_channels(&m5000);
          update_channels(&m3000);
-         music5000_get_sample(bufptr, bufptr + 1);
+         int sl = m5000.sleft  + m3000.sleft;
+         int sr = m5000.sright + m3000.sright;
+
+         music5000_store_sample(sl, sr, bufptr, bufptr + 1);
          if (record)
-            store_samples(&m5000,&m3000);
+            store_samples(sl, sr);
          bufptr += 2;
       }
       rpi_audio_samples_written();
