@@ -163,6 +163,21 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 #pragma GCC diagnostic pop
 }
 
+void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
+{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow="
+#pragma GCC diagnostic ignored "-Warray-bounds"
+   // write a word at a time ( the compiler does the correct thing and does an STR instruction)
+   *(uint32_t *)(&Pi1MHz_Memory[addr])= data;
+
+   Pi1MHz_Memory_VPU[addr>>1] = 0xFF00FF00 | (data&0xFF) | (((data&0xFF00)>>8)<<16);
+
+   Pi1MHz_Memory_VPU[(addr+2)>>1] = 0xFF00FF00 | ((data)>>16) | (data>>24)<<16;
+
+#pragma GCC diagnostic pop
+}
+
 // cppcheck-suppress unusedFunction
 uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 {
@@ -291,7 +306,7 @@ static void init_emulator() {
    RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1
    RPI_PropertyAdd(0); // r2
    RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
-   RPI_PropertyAdd(TEST_PINS_OUTPUTS); // r4
+   RPI_PropertyAdd(TEST_PINS_OUTPUTS |(1<<(NOE_PIN<<3))); // r4
    RPI_PropertyAdd(0); // r5 TEST_MASK
    RPI_PropertyProcess(false);
 
@@ -363,8 +378,11 @@ static void init_JIM()
             putstring(ram,'\r', " ");
    }
 
-    for( uint32_t i = 0; i < PAGE_SIZE ; i++)
-       Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + i, JIM_ram[i]);
+   // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
+   filesystemReadFile("BEEB.MMB",JIM_ram+(16*1024*1024),JIM_ram_size<<24);
+
+   for( uint32_t i = 0; i < PAGE_SIZE ; i=i+4)
+      Pi1MHz_MemoryWrite32(Pi1MHz_MEM_PAGE + i, *((uint32_t *)(&JIM_ram[i])));
 }
 
 static void init_hardware()
@@ -413,7 +431,7 @@ static void init_hardware()
    RPI_SetGpioHi(NOE_PIN);          // disable external data bus buffer
    RPI_SetGpioOutput(NOE_PIN);      // extrernal data buffer nOE pin
 
-   RPI_SetGpioOutput(TEST2_PIN);
+   RPI_SetGpioOutput(TEST_PIN);
 
    RPI_SetGpioLo(NIRQ_PIN);   // Set outputs low ready for interrupts when pin is changed to FS_OUPTUT
    RPI_SetGpioLo(NNMI_PIN);
@@ -430,6 +448,8 @@ void kernel_main()
    enable_MMU_and_IDCaches(0);
 
    init_hardware();
+
+   filesystemInitialise(0);
 
    init_JIM();
 

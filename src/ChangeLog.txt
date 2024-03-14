@@ -55,3 +55,9 @@ Support nOE on external buffers
 Improve baud rate rounding for small dividers
 Update CMAKE and linker files for newer versions
 Add YYYY_addr to cmdline.txt to change addresses of emulated devices
+
+V1.08 ( test build )
+cppcheck fixes
+Fix initialisation of the filesystem before trying to load JIM_init.bin.
+Load BEEB.mmc into JIM @ +16Mbytes if it exists.
+NB M5000 is broken currently
