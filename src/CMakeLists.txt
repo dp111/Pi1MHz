@@ -88,7 +88,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-discarded-qualifiers")
 # current failures in code
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter ")
 
-# set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=auto")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=auto")
 # Set the linker flags so that we use our "custom" linker script
 
 #set( CMAKE_EXE_LINKER_FLAGS "-Wl,--gc-sections -Wl,--print-gc-sections -Wl,-unresolved-symbols=ignore-in-object-files -Wl,-T,${PROJECT_SOURCE_DIR}/rpi.ld" )

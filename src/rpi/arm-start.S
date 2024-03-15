@@ -233,3 +233,47 @@ data_abort_txt:
 
 unknown_swi_txt:
 .ascii "SWI\0"
+
+// fast 1MHz page copy.
+
+// Entry
+// r0 destination
+// r1 source
+
+.section ".text.Pi1MHz_MemoryWritePage", "x"
+
+.global Pi1MHz_MemoryWritePage
+
+Pi1MHz_MemoryWritePage:
+
+    push {r4, r5, r6, r7, r14}
+    ldr r6, =(PERIPHERAL_BASE + 0xA04000 )  // P1MHz_memory_VPU
+    ldr r2, [r1], #4 // get data
+    mov r7, #0xFF000000
+    mov r4, #256/4 // loop counter
+    add r5, r0, #0x100 // Pi1Mhz_memory
+    orr r7, r7, #0xFF00
+    mov r3, r1
+    add r6, r6, r0, LSL #1
+
+copy_loop:
+
+    subs r4, r4, #1
+
+    str r2, [r5], #4
+
+    and r0, r2, #0xFF
+    mov r1, r2, LSR #24
+    orr r0, r0, r2, LSL #8
+    orr r2, r7, r2, LSR #16
+    orr r0, r0, r7
+    orr r1, r2, r1, LSL #16
+
+    ldr r2, [r3], #4 // get data
+
+    strd r0, [r6], #8
+
+    bne copy_loop
+
+    pop {r4, r5, r6, r7, pc}
+.ltorg

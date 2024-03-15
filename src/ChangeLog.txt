@@ -65,3 +65,6 @@ NB M5000 is broken currently
 V.1.09 (test build)
 Speedup page write in ram_emulator_page_addr was 38.2uS now 6.8uS
 Tidy up NOE pin definition
+
+V1.10
+Further spedup of page writing
