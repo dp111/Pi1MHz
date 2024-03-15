@@ -40,7 +40,7 @@ extern  bool debugFlag_fatfs;
 #include "cpuspecfic.h"
 /* Function prototypes */
 void debugString_P(const char *addr);
-void debugString(char *string);
+void debugString(const char *string);
 void debugStringInt8Hex_P(const char *addr, uint8_t integerValue, bool newLine);
 void debugStringInt16_P(const char *addr, uint16_t integerValue, bool newLine);
 void debugStringInt32_P(const char *addr, uint32_t integerValue, bool newLine);
