@@ -83,7 +83,7 @@ static void init_dma_buffer(size_t buf, uint32_t buffer_init)
    for (size_t i=0; i<sizeof(dma_cb_data[buf].buffer)/sizeof(uint32_t); i++)
        dma_cb_data[buf].buffer[i] = buffer_init;
    buffer_state |= 1<<buf;
-   _clean_cache_area(&dma_cb_data[buf], sizeof(dma_cb_data));
+   _clean_cache_area(&dma_cb_data[buf], sizeof(dma_cb_data[buf]));
 }
 
 // return the sample range
