@@ -180,17 +180,16 @@ static void update_channels(struct synth *s)
     int sleft = 0;
     int sright = 0;
     uint8_t modulate = s->modulate;
-    int c4d; // c4d is used for "Synchronization" e.g. the "Wha" instrument
 
-    for (int channel = 0; channel < 16; channel++) {
-      int i = (channel>>1) | ((channel&1)<<3);
+    for (int i = 0; i < 16; i++) {
+      int c4d; // c4d is used for "Synchronization" e.g. the "Wha" instrument
       uint8_t * c = s->ram + I_WFTOP + modulate + i;
       if  (!PHASESET(c))
          {
             unsigned int sum = FREQ(c) + s->phaseRAM[i];
             s->phaseRAM[i] = sum & 0xffffff;
-            c4d = sum & (1<<24);
-            // only if there is a carry ( waveform crossing do we update the amplitude)
+            c4d = sum & ( 1 << 24 );
+            // only if there is a carry ( waveform crossing ) do we update the amplitude
             if (c4d)
                s->amplitude[i] = AMP(c);
          }
@@ -226,7 +225,7 @@ static void update_channels(struct synth *s)
       // - this behavior matches the FPGA implementation, and we think the original hardware
 
       sample += s->amplitude[i];
-      modulate = (( MODULATE(c) && (!!(sign) || !!(c4d)))? 128u:0u);
+      modulate = ( MODULATE(c) && (!!(sign) || !!(c4d))) ? 128u : 0u ;
 
       if ((sign ^ sample) & 0x80) {
          uint8_t pan = PanArray[PAN(c)];
