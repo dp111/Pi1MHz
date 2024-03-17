@@ -67,4 +67,13 @@ Speedup page write in ram_emulator_page_addr was 38.2uS now 6.8uS
 Tidy up NOE pin definition
 
 V1.10
-Further spedup of page writing
+Further speedup of page writing
+
+V1.11
+Improve Music 5000 Emulation
+  PHSET now works
+  Amplitude adjustment now occur on zero crossing
+  Audio output is no longer rounded, but errors are now carried forward.
+  Initial audio output better DC balanced
+  Audio output cache flush size reduced
+FIQ code optimised
