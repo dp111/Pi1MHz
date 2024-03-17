@@ -126,7 +126,7 @@ int kill(int pid __attribute__((unused)), int sig __attribute__((unused)))
 
 /* Establish a new name for an existing file. Minimal implementation: */
 // cppcheck-suppress unusedFunction
-int link( char *old __attribute__((unused)), char *new __attribute__((unused)) )
+int link( const char *old __attribute__((unused)), const char *new __attribute__((unused)) )
 {
   errno = EMLINK;
   return -1;
@@ -174,7 +174,7 @@ clock_t times(struct tms *buf __attribute__((unused)))
 
 /* Remove a file's directory entry. Minimal implementation: */
 // cppcheck-suppress unusedFunction
-int unlink(char *name __attribute__((unused)))
+int unlink(const char *name __attribute__((unused)))
 {
   errno = ENOENT;
   return -1;
@@ -182,7 +182,7 @@ int unlink(char *name __attribute__((unused)))
 
 /* Wait for a child process. Minimal implementation: */
 // cppcheck-suppress unusedFunction
-int wait(int *status __attribute__((unused)))
+int wait(const int *status __attribute__((unused)))
 {
   errno = ECHILD;
   return -1;
@@ -234,7 +234,7 @@ __attribute__((used)) int _lseek(int file __attribute__((unused)),
 /* Read from a file. Minimal implementation: */
 // cppcheck-suppress unusedFunction
 __attribute__((used)) int _read(int file __attribute__((unused)),
-                                char *ptr __attribute__((unused)),
+                                const char *ptr __attribute__((unused)),
                                 int len __attribute__((unused)))
 {
   return 0;
