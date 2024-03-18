@@ -243,24 +243,38 @@ unknown_swi_txt:
 .section ".text.Pi1MHz_MemoryWritePage", "x"
 
 .global Pi1MHz_MemoryWritePage
-
+.align 5
+    nop
+    nop
+    nop
+    nop
+    nop
 Pi1MHz_MemoryWritePage:
-
+    ldrd r2, [r1], #8 // get data
     push {r4, r5, r6, r7, r14}
-    ldr r6, =(PERIPHERAL_BASE + 0xA04000 )  // P1MHz_memory_VPU
-    ldr r2, [r1], #4 // get data
-    mov r7, #0xFF000000
-    mov r4, #256/4 // loop counter
-    add r5, r0, #0x100 // Pi1Mhz_memory
-    orr r7, r7, #0xFF00
-    mov r3, r1
-    add r6, r6, r0, LSL #1
+    mov r12, r1
 
+    mov r4,     #(PERIPHERAL_BASE + 0xA04000 ) &0xFF000000
+    orr r4, r4, #(PERIPHERAL_BASE + 0xA04000 ) &0x00FF0000
+    orr r6, r4, #(PERIPHERAL_BASE + 0xA04000 ) &0x0000FF00
+
+    add r5, r0, #0x100 // Pi1Mhz_memory
+
+    mov r7, #0xFF000000
+    mov r14, #2
+    orr r7, r7, #0xFF00
+    add r6, r6, r0, LSL #1
+outer_copy_loop:
+    mov r4, #256/16 // loop counter
+    PLD [r12,#32]
+    PLD [r12,#64]
+    PLD [r12,#96]
+    PLD [r12,#128]
 copy_loop:
 
     subs r4, r4, #1
 
-    str r2, [r5], #4
+    strd r2, [r5], #8
 
     and r0, r2, #0xFF
     mov r1, r2, LSR #24
@@ -269,11 +283,26 @@ copy_loop:
     orr r0, r0, r7
     orr r1, r2, r1, LSL #16
 
-    ldr r2, [r3], #4 // get data
+    str r0, [r6], #4
+    str r1, [r6], #4
 
-    strd r0, [r6], #8
+    and r0, r3, #0xFF
+    mov r1, r3, LSR #24
+    orr r0, r0, r3, LSL #8
+    orr r3, r7, r3, LSR #16
+
+    orr r1, r3, r1, LSL #16
+
+    ldrd r2, [r12], #8 // get data
+
+    orr r0, r0, r7
+    str r0, [r6], #4
+    str r1, [r6], #4
 
     bne copy_loop
 
+    subs r14,r14,#1
+    bne outer_copy_loop
     pop {r4, r5, r6, r7, pc}
+
 .ltorg
