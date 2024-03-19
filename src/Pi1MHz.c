@@ -131,14 +131,8 @@ uint8_t *JIM_ram; // 480M Bytes of RAM for pizero
 
 uint8_t JIM_ram_size; // Size of JIM ram in 16Mbyte steps
 
-// Memory for FRED and JIM
-static uint8_t * const Pi1MHz_Memory = (uint8_t *)0x100;
-
 // Memory for VPU to read FRED and JIM
 static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE;
-
-// Call back table for each address in FRED and JIM
-static callback_func_ptr * const Pi1MHz_callback_table = (void *)Pi1MHz_CB_BASE;
 
 // Table of polling functions to call while idle
 NOINIT_SECTION static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
@@ -151,43 +145,30 @@ NOINIT_SECTION uint8_t fx_register[256];
 
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstringop-overflow="
-#pragma GCC diagnostic ignored "-Warray-bounds"
-   Pi1MHz_Memory[addr] = data;
+   Pi1MHz->Memory[addr] = data;
    uint32_t da = 0xff00 | data ; // set output enable
    switch (addr & 1)
    {
    case 0: Pi1MHz_Memory_VPU[addr>>1] = da  | (Pi1MHz_Memory_VPU[addr>>1] & 0xFFFFFF00); break;
    case 1: Pi1MHz_Memory_VPU[addr>>1] = (da<<16) | (Pi1MHz_Memory_VPU[addr>>1] & 0xFF00FFFF); break;
    }
-#pragma GCC diagnostic pop
 }
 
 void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
 {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstringop-overflow="
-#pragma GCC diagnostic ignored "-Warray-bounds"
    // write a word at a time ( the compiler does the correct thing and does an STR instruction)
-   *(uint32_t *)(&Pi1MHz_Memory[addr])= data;
+   *(uint32_t *)(&Pi1MHz->Memory[addr])= data;
 
    uint32_t ad = addr >> 1;
 
    Pi1MHz_Memory_VPU[ad++] = 0xFF00FF00 | (data&0xFF) | (data<<8);
    Pi1MHz_Memory_VPU[ad] = 0xFF00FF00 | (data>>16) | (data>>24)<<16;
-
-#pragma GCC diagnostic pop
 }
 
 // cppcheck-suppress unusedFunction
 uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstringop-overflow="
-#pragma GCC diagnostic ignored "-Warray-bounds"
-   return Pi1MHz_Memory[addr];
-#pragma GCC diagnostic pop
+   return Pi1MHz->Memory[addr];
 }
 
 // For each location in FRED and JIM which a task wants to be called for
@@ -195,11 +176,7 @@ uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 // for access variable use WRITE_FRED WRITE_JIM READ_FRED READ_JIM
 void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr function_ptr )
 {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstringop-overflow="
-#pragma GCC diagnostic ignored "-Warray-bounds"
-   Pi1MHz_callback_table[access+addr] = function_ptr;
-#pragma GCC diagnostic pop
+   Pi1MHz->callback_table[access+addr] = function_ptr;
 }
 
 // For each task that needs to be polled during idle it must register itself.
@@ -292,12 +269,8 @@ static void init_emulator() {
 
    Pi1MHz_polls_max = 0;
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstringop-overflow="
-#pragma GCC diagnostic ignored "-Warray-bounds"
-   memset(Pi1MHz_callback_table, 0, Pi1MHz_CB_SIZE);
-   memset(Pi1MHz_Memory,0,PAGE_SIZE);
-#pragma GCC diagnostic pop
+   memset(&Pi1MHz->callback_table[0], 0, Pi1MHz_CB_SIZE);
+   memset(&Pi1MHz->Memory[0],0,PAGE_SIZE);
 
    for(int i=255; i>0; i--)
       Pi1MHz_Memory_VPU[i]=0;             // Clear VPU ram.
