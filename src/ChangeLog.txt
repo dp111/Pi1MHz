@@ -81,3 +81,7 @@ FIQ code optimised
 V1.12
 Fix Jim memory Page copy
 Make Page copy faster. Maximum time now about 4.36uS mean 3.22uS
+
+V1.13
+Add loading of 6502code.bin to JIM 0xFDB0 onwards
+Remove more warnings
