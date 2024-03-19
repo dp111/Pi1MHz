@@ -82,7 +82,7 @@ static void init_dma_buffer(size_t buf, uint32_t buffer_init)
    dma_cb_data[buf].pad[1] = 0;
 
    // average any error between samples
-   int error = buffer_init & 1;
+   uint32_t error = buffer_init & 1;
    for (size_t i=0; i<sizeof(dma_cb_data[buf].buffer)/sizeof(uint32_t); )
    {
        dma_cb_data[buf].buffer[i++] = buffer_init >> 1;

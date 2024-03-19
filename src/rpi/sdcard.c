@@ -768,13 +768,13 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
             wr_irpt = (1 << 4);     // write
         }
 
-        int cur_block = 0;
+        unsigned int cur_block = 0;
         uint32_t *cur_buf_addr = (uint32_t *)dev->buf;
         while(cur_block < dev->blocks_to_transfer)
         {
 #ifdef EMMC_DEBUG
          if(dev->blocks_to_transfer > 1)
-            printf("SD: multi block transfer, awaiting block %i ready\r\n",
+            printf("SD: multi block transfer, awaiting block %u ready\r\n",
             cur_block);
 #endif
             TIMEOUT_WAIT(RPI_EMMCBase->EMMC_INTERRUPT & (wr_irpt | 0x8000), timeout);
@@ -808,7 +808,7 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
             }
 
 #ifdef EMMC_DEBUG
-         printf("SD: block %i transfer complete\r\n", cur_block);
+         printf("SD: block %u transfer complete\r\n", cur_block);
 #endif
 
             cur_block++;

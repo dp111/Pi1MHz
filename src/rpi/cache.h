@@ -3,7 +3,7 @@
 #ifndef CACHE_H
 #define CACHE_H
 
-void _clean_cache_area(const void *start, unsigned int length);
+void _clean_cache_area(void *start, unsigned int length);
 
 void _invalidate_cache_area(const void * start, unsigned int length);
 
