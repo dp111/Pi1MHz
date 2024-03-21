@@ -1505,6 +1505,13 @@ void fb_emulator_init(uint8_t instance, int address)
   //v3d_initialize(fb_get_address(), fb_get_width(), fb_get_height(), fb_get_bpp());
 
   Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
+ // Create 6 bytes of RAM for vector code
+  Pi1MHz_MemoryWrite(address+1, 0x8D);
+  Pi1MHz_MemoryWrite(address+2, 0xFC);
+  Pi1MHz_MemoryWrite(address+3, (uint8_t) address);
+  Pi1MHz_MemoryWrite(address+4, 0x4c);
+  Pi1MHz_MemoryWrite(address+5, 0x00);
+  Pi1MHz_MemoryWrite(address+5, 0x00);
 
   Pi1MHz_Register_Poll(fb_emulator_poll);
 }
