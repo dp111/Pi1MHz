@@ -200,6 +200,7 @@ void Pi1MHz_SetnIRQ(bool irq);
 void Pi1MHz_SetnNMI(bool nmi);
 
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
+void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data);
 void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data);
 uint8_t Pi1MHz_MemoryRead(uint32_t addr);
 

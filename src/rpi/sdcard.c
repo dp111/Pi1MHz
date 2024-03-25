@@ -1303,7 +1303,7 @@ int sd_card_init(struct block_device **dev)
    else
       ret = (struct emmc_block_dev *)*dev;
 
-   //assert(ret);
+   assert(ret);
 
    memset(ret, 0, sizeof(struct emmc_block_dev));
  //  ret->bd.driver_name = "emmc";

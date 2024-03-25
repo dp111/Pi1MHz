@@ -109,7 +109,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "harddisc_emulator.h"
 #include "M5000_emulator.h"
 #include "framebuffer.h"
-//#include "diskaccess.h"
+#include "diskaccess_emulator.h"
 
 typedef struct {
    const char *name;
@@ -123,6 +123,7 @@ static emulator_list emulator[] = {
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
    {"Framebuffer",fb_emulator_init, 0xD0, 1},
+   {"Diskaccess",diskaccess_emulator_init, 0xD6, 1 },
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
@@ -148,6 +149,16 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
    case 0: Pi1MHz_Memory_VPU[addr>>1] = da  | (Pi1MHz_Memory_VPU[addr>>1] & 0xFFFFFF00); break;
    case 1: Pi1MHz_Memory_VPU[addr>>1] = (da<<16) | (Pi1MHz_Memory_VPU[addr>>1] & 0xFF00FFFF); break;
    }
+}
+
+void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
+{
+   // write a word at a time ( the compiler does the correct thing and does an STR instruction)
+   *(uint16_t *)(&Pi1MHz->Memory[addr])= (uint16_t ) data;
+
+   uint32_t ad = addr >> 1;
+
+   Pi1MHz_Memory_VPU[ad] = 0xFF00FF00 | (data&0xFF) | (data<<8);
 }
 
 void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)

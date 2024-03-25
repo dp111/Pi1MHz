@@ -51,10 +51,7 @@ static void ram_emulator_update_address()
       Pi1MHz_MemoryWrite( ram_address+5, (uint8_t) (byte_ram_addr >> 24) );
    if ((byte_ram_addr_old & 0x00FF0000 ) != (byte_ram_addr & 0x00FF0000 ) )
       Pi1MHz_MemoryWrite( ram_address+2, ( byte_ram_addr >> 16 ) & 0xFF );
-   if ((byte_ram_addr_old & 0x0000FF00 ) != (byte_ram_addr & 0x0000FF00 ) )
-      Pi1MHz_MemoryWrite( ram_address+1, ( byte_ram_addr >> 8 ) & 0xFF );
-   if ((byte_ram_addr_old & 0x000000FF ) != (byte_ram_addr & 0x000000FF ) )
-      Pi1MHz_MemoryWrite( ram_address+0, ( byte_ram_addr >> 8 ) & 0xFF );
+   Pi1MHz_MemoryWrite16(ram_address, byte_ram_addr);
 }
 
 void ram_emulator_byte_addr(unsigned int gpio)
