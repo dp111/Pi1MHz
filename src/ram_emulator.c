@@ -30,6 +30,15 @@ Millipede PRISMA-3 (Not support)
 #include <string.h>
 #include "Pi1MHz.h"
 
+#include "rpi/info.h"
+#include <stdlib.h>
+#include "scripts/gitversion.h"
+#include "BeebSCSI/filesystem.h"
+
+uint8_t *JIM_ram; // 480M Bytes of RAM for pizero
+
+uint8_t JIM_ram_size; // Size of JIM ram in 16Mbyte steps
+
 static size_t byte_ram_addr;
 static size_t page_ram_addr;
 
@@ -124,15 +133,31 @@ void ram_emulator_page_write(unsigned int gpio)
    Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + addr, data);
 }
 
+static char* putstring(char *ram, char term, const char *string)
+{
+   size_t length;
+   length = strlcpy(ram, string, PAGE_SIZE);
+   ram += length;
+   if (term == '\n')
+   {
+      *ram++ ='\n';
+      for (size_t i=0 ; i <length; i++)
+         *ram++ = 8; // Cursor left
+   }
+   if (term == '\r')
+      {
+         *ram++ ='\n';
+         *ram++ ='\r';
+      }
+   return ram;
+}
+
 void ram_emulator_init( uint8_t instance , int address)
 {
    byte_ram_addr = 0;
    page_ram_addr = 0;
 
    ram_address = (uint8_t) address;
-
-   for( uint32_t i = 0; i < PAGE_SIZE ; i++)
-      Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + i, JIM_ram[page_ram_addr+i]);
 
    // register call backs
    // byte memory address write fc00 01 02
@@ -158,4 +183,40 @@ void ram_emulator_init( uint8_t instance , int address)
    // register every address in JIM &FD00
    for (int i=0 ; i<PAGE_SIZE; i++)
       Pi1MHz_Register_Memory(WRITE_JIM, i, ram_emulator_page_write );
+
+   // Initialise JIM RAM
+
+   extern char _end;
+
+   uint32_t temp = mem_info(1); // get size of ram
+   temp = temp - (unsigned int)&_end; // remove program
+   temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
+   temp = temp & 0xFF000000; // round down to 16Mbyte boundary
+   JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
+
+   fx_register[instance] = JIM_ram_size;  // fx addr 0 returns ram size
+
+   JIM_ram = (uint8_t *) malloc(16*1024*1024*JIM_ram_size); // malloc 480Mbytes
+
+   filesystemInitialise(0);
+
+   // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
+   if (!filesystemReadFile("JIM_Init.bin",JIM_ram,JIM_ram_size<<24))
+   {
+       // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
+      char * ram = (char *)JIM_ram;
+      ram = putstring(ram,'\n', "");
+      ram = putstring(ram,'\n', " Pi1MHz "RELEASENAME);
+      ram = putstring(ram,'\n', " Commit ID: "GITVERSION);
+      ram = putstring(ram,'\n', " Date : " __DATE__ " " __TIME__);
+      ram = putstring(ram,0   , " Pi :");
+            putstring(ram,'\r', get_info_string());
+   }
+
+   // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
+   filesystemReadFile("BEEB.MMB",JIM_ram+(16*1024*1024),JIM_ram_size<<24);
+
+   filesystemReadFile("6502code.bin",&JIM_ram[0xB0],JIM_ram_size<<24);
+
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[0])) );
 }
