@@ -49,7 +49,7 @@ The first page of JIM ram is preloaded with build information. This can be acces
 
 If a file called "JIM_Init.bin" exists it will be loaded starting at the beginning of JIM on wards ( NB over writes build info). This enables future very large programs which, with clever programming could all run in JIM RAM.
 
-## Fat Access
+## SDCARD / Fat Access
 
 A simplified access to the Pi's SDCARD is provided. This can be used to access local files and could for instance by used by mmfs2. A 16Mbyte buffer is provided that can be split up into various different ways. Multiple files maybe open at the same time , but they must be unique files. A 24 bit pointer is provided with autoincrement. Using this address space a file system e.g. MMFS may "cache" the entire drive and not need to raise PAGE. The buffer also hold the FAT command that is going to be executed.
 It is suggested the first 4Mbytes be reserved for the currently active Filesystem. 8Mbyte to 14 Mbytes be reserved for the currently active program.
@@ -102,11 +102,32 @@ It is suggested the first 4Mbytes be reserved for the currently active Filesyste
                                 (20) Short fread/fwrite
 
 
-FAT commands are the first byte of the command buffer
+SDCARD / FAT commands are the first byte of the command buffer
 
-0 = fopen
+0 = Read sector
 
     command pointer + 0 = 0
+    command pointer + 1 = 0
+    command pointer + 2 = 0
+    command pointer + 3 = 0
+    command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
+    command pointer + 8,9,10,11 4 bytes , start sector in LBA
+    command pointer + 12,13,14,15 4 bytes , number of sectors to read
+
+1 = Write sector
+
+    command pointer + 0 = 1
+    command pointer + 1 = 0
+    command pointer + 2 = 0
+    command pointer + 3 = 0
+    command pointer + 4,5,6,7 4 bytes of source address in buffer NB top byte must be zero.
+    command pointer + 8,9,10,11 4 bytes , start sector in LBA
+    command pointer + 12,13,14,15 4 bytes , number of sectors to write
+
+2 = fopen
+
+    command pointer + 0 = 2
+    command pointer + 1 =
         #define	FA_READ				0x01
         #define	FA_WRITE			0x02
         #define	FA_OPEN_EXISTING	0x00
@@ -116,44 +137,44 @@ FAT commands are the first byte of the command buffer
         #define	FA_OPEN_APPEND		0x30
     command pointer + 1 = filename zero terminated
 
-1 = fclose
+3 = fclose
 
-    command pointer + 0 = 1
+    command pointer + 0 = 3
 
-2 = fread ( with implicit lseek)
+4 = fread ( with implicit lseek)
 
-    command pointer + 0 = 2
+    command pointer + 0 = 4
     command pointer + 1,2,3 3 bytes of length to read. Once complete this returns the actually number of byte read
                 The command pointer + 0 = 20 if the read was short
     command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
     command pointer + 8,9,10,11 4 byte pointer within file to start the read from
 
-3 = fwrite ( with impicit lseek , fsync)
+5 = fwrite ( with impicit lseek , fsync)
 
-    command pointer + 0 = 3
+    command pointer + 0 = 5
     command pointer + 1,2,3 3 bytes of length to write. Once complete this returns the actually number of byte read
                 The command pointer + 0 = 20 if the write was short
     command pointer + 4,5,6,7 4 bytes of source address in buffer NB top byte must be zero.
     command pointer + 8,9,10,11 4 byte pointer within file to start the write from
 
-4 = fsize
-
-    command pointer + 0 = 4
-    returns
-    command pointer + 8,9,10,11 4 bytes size of file
-
-5 = fopendir ( DP to check sub directories)
-
-    command pointer + 0 = 5
-    command pointer + 1 ...  = directory name zero terminated
-
-6 = fclosedir
+6 = fsize
 
     command pointer + 0 = 6
+    returns :
+    command pointer + 8,9,10,11 4 bytes size of file
 
-7 = readdir
+7 = fopendir ( DP to check sub directories)
 
     command pointer + 0 = 7
+    command pointer + 1 ...  = directory name zero terminated
+
+8 = fclosedir
+
+    command pointer + 0 = 8
+
+9 = readdir
+
+    command pointer + 0 = 9
     command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
 
     {return structure for each entry
@@ -170,14 +191,14 @@ FAT commands are the first byte of the command buffer
     #define AM_DIR	0x10	/* Directory */
     #define AM_ARC	0x20	/* Archive */
 
-8 = fmkdir
+10 = fmkdir
 
-    command pointer + 0 = 8
+    command pointer + 0 = 10
     command pointer + 1 ... = directory name ( zero terminated)
 
-9 = chdir change directory
+11 = chdir change directory
 
-    command pointer + 0 = 9
+    command pointer + 0 = 11
     command pointer + 1 ... = directory name ( zero terminated)
 
     /* Change current directory of the current drive ("dir1" under root directory) */
@@ -186,26 +207,24 @@ FAT commands are the first byte of the command buffer
     /* Change current directory of the drive "flash" and set it as current drive (at Unix style volume ID) */
     f_chdir("/flash/dir1");
 
-10 = frename
+12 = frename
 
-    command pointer + 0 = 10
+    command pointer + 0 = 12
     command pointer + 1 ... =  old name ( zero terminated)
     command pointer + ..newname ( zero terminated)
 
-11 = fgetfree
-
-    command pointer + 0 = 11
-    command pointer + 8,9,10,11 4 bytes freespace in bytes
-
-12 = fmount ( not sure how this works yet ) ( this could support swapping SDCARDs while running)
-
-    command pointer + 0 = 12
-
-13 = funmount ( not sure how this works yet )
+13 = fgetfree
 
     command pointer + 0 = 13
+    command pointer + 8,9,10,11 4 bytes freespace in bytes
 
+14 = fmount ( not sure how this works yet ) ( this could support swapping SDCARDs while running)
 
+    command pointer + 0 = 14
+
+15 = funmount ( not sure how this works yet )
+
+    command pointer + 0 = 15
 
 
 ## Internal status and control
