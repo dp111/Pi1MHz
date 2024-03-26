@@ -38,6 +38,8 @@ static size_t byte_ram_addr;
 
 static uint8_t ram_address;
 
+static FIL fileObject[16];
+
 static void diskaccess_emulator_update_address()
 {
    size_t byte_ram_addr_old = byte_ram_addr-1;
@@ -102,6 +104,63 @@ void diskaccess_emulator_command(unsigned int gpio)
             disk_write( JIM_ram[command_pointer+1], &JIM_ram[*(uint32_t *)&JIM_ram[command_pointer+4]+base_addr ]
                     , *(uint32_t *)&JIM_ram[command_pointer+8] , *(uint32_t *)&JIM_ram[command_pointer+12] ) );
          break;
+    case 2 :
+        Pi1MHz_MemoryWrite(addr,
+            f_open( &fileObject[data & 15], (char * )&JIM_ram[command_pointer+3]
+                    , JIM_ram[command_pointer+2] ) );
+        break;
+    case 3 :
+        Pi1MHz_MemoryWrite(addr,
+             f_close( &fileObject[data & 15] ) );
+        break;
+    case 4 :
+    {
+        FRESULT result;
+        UINT length;
+        result = f_lseek( &fileObject[data & 15], *(uint32_t *)&JIM_ram[command_pointer+8] );
+        if (result)
+            {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+        result = f_read( &fileObject[data & 15], &JIM_ram[*(uint32_t *)&JIM_ram[command_pointer+4]+base_addr] , (*(uint32_t *)&JIM_ram[command_pointer])>>8 , &length);
+        if (result)
+            {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+        if ( length <  ((*(uint32_t *)&JIM_ram[command_pointer])>>8 ))
+        {
+                Pi1MHz_MemoryWrite(addr, 20);
+                break;
+        }
+        Pi1MHz_MemoryWrite(addr, FR_OK);
+        break;
+    }
+    case 5 :
+    {
+        FRESULT result;
+        UINT length;
+        result = f_lseek( &fileObject[data & 15], *(uint32_t *)&JIM_ram[command_pointer+8] );
+        if (result)
+            {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+        result = f_write( &fileObject[data & 15], &JIM_ram[*(uint32_t *)&JIM_ram[command_pointer+4]+base_addr] , (*(uint32_t *)&JIM_ram[command_pointer])>>8 , &length);
+        if (result)
+            {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+        if ( length <  ((*(uint32_t *)&JIM_ram[command_pointer])>>8 ))
+        {
+                Pi1MHz_MemoryWrite(addr, 20);
+                break;
+        }
+        Pi1MHz_MemoryWrite(addr, FR_OK);
+        break;
+    }
 
     default : break;
    }
