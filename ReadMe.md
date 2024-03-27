@@ -164,7 +164,9 @@ SDCARD / FAT commands are the first byte of the command buffer
     returns :
     command pointer + 8,9,10,11 4 bytes size of file
 
-7 = fopendir ( DP to check sub directories)
+Below isn't currently implemented
+
+7 = fopendir
 
     command pointer + 0 = 7
     command pointer + 1 ...  = directory name zero terminated

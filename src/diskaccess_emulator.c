@@ -124,6 +124,7 @@ void diskaccess_emulator_command(unsigned int gpio)
                 break;
             }
         result = f_read( &fileObject[data & 15], &JIM_ram[*(uint32_t *)&JIM_ram[command_pointer+4]+base_addr] , (*(uint32_t *)&JIM_ram[command_pointer])>>8 , &length);
+        *(uint32_t *)&JIM_ram[command_pointer] = (length << 8 ) | JIM_ram[command_pointer];
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
@@ -148,6 +149,7 @@ void diskaccess_emulator_command(unsigned int gpio)
                 break;
             }
         result = f_write( &fileObject[data & 15], &JIM_ram[*(uint32_t *)&JIM_ram[command_pointer+4]+base_addr] , (*(uint32_t *)&JIM_ram[command_pointer])>>8 , &length);
+        *(uint32_t *)&JIM_ram[command_pointer] = (length << 8 ) | JIM_ram[command_pointer];
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
@@ -161,7 +163,12 @@ void diskaccess_emulator_command(unsigned int gpio)
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }
-
+    case 6 :
+    {
+        *(uint32_t *)&JIM_ram[command_pointer+8] = f_size(  &fileObject[data & 15] );
+        Pi1MHz_MemoryWrite(addr, FR_OK);
+        break;
+    }
     default : break;
    }
 
