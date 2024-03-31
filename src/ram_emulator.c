@@ -35,7 +35,7 @@ Millipede PRISMA-3 (Not support)
 #include "scripts/gitversion.h"
 #include "BeebSCSI/filesystem.h"
 
-uint8_t *JIM_ram; // 480M Bytes of RAM for pizero
+uint8_t *JIM_ram; // 480M Bytes of RAM for PiZero
 
 uint8_t JIM_ram_size; // Size of JIM ram in 16Mbyte steps
 

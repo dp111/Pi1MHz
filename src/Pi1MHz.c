@@ -109,7 +109,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "harddisc_emulator.h"
 #include "M5000_emulator.h"
 #include "framebuffer.h"
-#include "diskaccess_emulator.h"
+#include "discaccess_emulator.h"
 
 typedef struct {
    const char *name;
@@ -123,7 +123,7 @@ static emulator_list emulator[] = {
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
    {"Framebuffer",fb_emulator_init, 0xD0, 1},
-   {"Diskaccess",diskaccess_emulator_init, 0xD6, 1 },
+   {"Discaccess",discaccess_emulator_init, 0xD6, 1 },
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
@@ -365,7 +365,7 @@ static void init_hardware()
 
    RPI_SetGpioOutput(TEST_PIN);
 
-   RPI_SetGpioLo(NIRQ_PIN);   // Set outputs low ready for interrupts when pin is changed to FS_OUPTUT
+   RPI_SetGpioLo(NIRQ_PIN);   // Set outputs low ready for interrupts when pin is changed to FS_OUTPUT
    RPI_SetGpioLo(NNMI_PIN);
 
 #ifdef DEBUG

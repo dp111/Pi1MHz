@@ -1,29 +1,7 @@
 /*
- Emulates both byte ram and page ram
+  Creates methods to enable a beeb to access the SDCARD
 
- 16Mbytes is shared between both access types.
-
- Byte RAM docs and RAMFS : http://www.sprow.co.uk/bbc/ramdisc.htm
-
- Notes from stardot
-
- Torch Graduate ( Rom not paged in)
-- Paging register at &FCFF to page into JIM 32 pages (8K) of ROM.
-  At startup page 0 of ROM is paged into JIM and executed from OS with JMP (&FDFE) to download into BBC RAM.
-
-Music 5000/3000
-- Paging register at &FCFF to page into JIM 8 pages (4K) of RAM.
-  Both devices use JIM, 5000 when 0xFCFF & 0xF0 = 0x30, 3000 when 0xFCFF & 0xF0 = 0x50.
-
-Opus Challenger 3
-- Paging registers at &FCFE, &FCFF to page into JIM 2048 pages (512K) of RAM disc.
-
-Morley RAMdisc (Not supported)
-- Paging registers at &FC00-02 to page into JIM 4096 pages (1MB) of RAM disc.
-  Not fully understood so may be inaccurate.
-
-Millipede PRISMA-3 (Not support)
-- Paging register at &FCB7 to page into JIM 32 pages (8K) of non-volatile RAM, containing palette, etc.
+ 16Mbytes is available as a buffer
 
 */
 
@@ -40,7 +18,7 @@ static uint8_t ram_address;
 
 static FIL fileObject[16];
 
-static void diskaccess_emulator_update_address()
+static void discaccess_emulator_update_address()
 {
    size_t byte_ram_addr_old = byte_ram_addr-1;
 
@@ -49,7 +27,7 @@ static void diskaccess_emulator_update_address()
       Pi1MHz_MemoryWrite( ram_address+2, ( byte_ram_addr >> 16 ) & 0xFF );
 }
 
-void diskaccess_emulator_byte_addr(unsigned int gpio)
+void discaccess_emulator_byte_addr(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -65,24 +43,24 @@ void diskaccess_emulator_byte_addr(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr, data);               // enable the address register to be read back
 }
 
-void diskaccess_emulator_byte_write_inc(unsigned int gpio)
+void discaccess_emulator_byte_write_inc(unsigned int gpio)
 {
    uint8_t data = GET_DATA(gpio);
    JIM_ram[byte_ram_addr] =  data;
    byte_ram_addr++;
    Pi1MHz_MemoryWrite(ram_address + 3 , JIM_ram[byte_ram_addr]); // setup new data now the address has changed;
-   diskaccess_emulator_update_address();
+   discaccess_emulator_update_address();
 }
 
-void diskaccess_emulator_byte_read_inc(unsigned int gpio)
+void discaccess_emulator_byte_read_inc(unsigned int gpio)
 {
    byte_ram_addr++;
    Pi1MHz_MemoryWrite(ram_address + 3 , JIM_ram[byte_ram_addr]); // setup new data now the address has changed;
-   diskaccess_emulator_update_address();
+   discaccess_emulator_update_address();
 }
 
 
-void diskaccess_emulator_command(unsigned int gpio)
+void discaccess_emulator_command(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -175,7 +153,7 @@ void diskaccess_emulator_command(unsigned int gpio)
 }
 
 
-void diskaccess_emulator_init( uint8_t instance , int address)
+void discaccess_emulator_init( uint8_t instance , int address)
 {
    byte_ram_addr = (JIM_ram_size - 1) * 16 * 1024 * 1024;
 
@@ -183,13 +161,13 @@ void diskaccess_emulator_init( uint8_t instance , int address)
 
    // register call backs
    // byte memory address write
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+0, diskaccess_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+1, diskaccess_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+2, diskaccess_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+0, discaccess_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+1, discaccess_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+2, discaccess_emulator_byte_addr );
    // data byte
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+3, diskaccess_emulator_byte_write_inc );
-   Pi1MHz_Register_Memory(READ_FRED , ram_address+3, diskaccess_emulator_byte_read_inc );
+   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+3, discaccess_emulator_byte_write_inc );
+   Pi1MHz_Register_Memory(READ_FRED , ram_address+3, discaccess_emulator_byte_read_inc );
    // command pointer
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+4, diskaccess_emulator_command );
+   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+4, discaccess_emulator_command );
 
 }

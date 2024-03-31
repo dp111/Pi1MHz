@@ -139,9 +139,9 @@ file( GLOB FrameBuffer_emulator_files
 )
 
 
-# Diskaccess emulator
-file( GLOB diskaccess_emulator_files
-   diskaccess_emulator.c
+# Discaccess emulator
+file( GLOB discaccess_emulator_files
+   discaccess_emulator.c
 )
 
 
