@@ -26,7 +26,7 @@ typedef enum {
     MB0_TAGS_VC_TO_ARM,
 } mailbox0_channel_t;
 
-/* These defines come from the Broadcom Videocode driver source code, see:
+/* These defines come from the Broadcom Videocore driver source code, see:
    brcm_usrlib/dag/vmcsx/vcinclude/bcm2708_chip/arm_control.h */
 #define ARM_MS_FULL  0x80000000
 #define ARM_MS_EMPTY 0x40000000
