@@ -134,6 +134,7 @@ void _clean_cache_area(const void * start, unsigned int length)
 #endif
 }
 
+// cppcheck-suppress unusedFunction
 void _invalidate_cache_area(const void * start, unsigned int length)
 {
 #if (__ARM_ARCH >= 7 )
