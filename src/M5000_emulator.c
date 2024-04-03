@@ -21,6 +21,7 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110 - 1301 USA.
 
 // The code has been simplified to reduce the processor overheads of emulation
+
 /*
 Internal Waveform description
 Use https://wavedrom.com/editor.html
