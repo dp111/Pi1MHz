@@ -8,11 +8,11 @@ MACRO PAGESELECT
     SKIPTO &FDF0
 .pagerts
     LDX #0
-    STX &FCFF
+    STX &FCFC
     RTS
     EQUB 0,0
 .pageselect
-    STX &FCFF
+    STX &FCFC
     JMP &FD00
     EQUB 0,0
 ENDMACRO
@@ -337,17 +337,14 @@ ORG &FD00
 ; Strings
 {
 ORG &FD00
-    LDA #0
-    STA &FC00 ; clear byte pointer to zero.
-    STA &FC01
-    STA &FC02
-    STA &FC04
+    LDA #0   : STA &FCD6 ; clear byte pointer to zero.
+    LDA #&E0 : STA &FCD7
+    LDX #&FF : STA &FCD8
 .stringloop
-    LDA &FC05 ; auto increment register
+    LDA &FCD9 ; auto increment register
     JSR &FFEE
-    CMP #13
+    CMP #0
     BNE stringloop
-    JSR &FFEE
     JMP pagerts
 
     PAGESELECT
