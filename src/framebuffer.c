@@ -1498,6 +1498,13 @@ static void fb_emulator_poll()
    }
 }
 
+void fb_emulator_ram(unsigned int gpio)
+{
+   uint8_t  data = GET_DATA(gpio);
+   uint32_t addr = GET_ADDR(gpio);
+   Pi1MHz_MemoryWrite(addr, data);
+}
+
 void fb_emulator_init(uint8_t instance, int address)
 {
   fb_initialize();
@@ -1507,11 +1514,12 @@ void fb_emulator_init(uint8_t instance, int address)
   Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
  // Create 6 bytes of RAM for vector code
   Pi1MHz_MemoryWrite(address+1, 0x8D);
-  Pi1MHz_MemoryWrite(address+2, 0xFC);
-  Pi1MHz_MemoryWrite(address+3, (uint8_t) address);
+  Pi1MHz_MemoryWrite(address+2, (uint8_t) address);
+  Pi1MHz_MemoryWrite(address+3, 0XFC);
   Pi1MHz_MemoryWrite(address+4, 0x4c);
-  Pi1MHz_MemoryWrite(address+5, 0x00);
-  Pi1MHz_MemoryWrite(address+5, 0x00);
+
+  Pi1MHz_Register_Memory(WRITE_FRED, address + 5, fb_emulator_ram);
+  Pi1MHz_Register_Memory(WRITE_FRED, address + 6, fb_emulator_ram);
 
   Pi1MHz_Register_Poll(fb_emulator_poll);
 }
