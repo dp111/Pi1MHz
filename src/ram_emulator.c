@@ -69,15 +69,6 @@ void ram_emulator_byte_write(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr,  data);
 }
 
-void ram_emulator_page_addr_stack(unsigned int gpio)
-{
-   uint8_t  data = GET_DATA(gpio);
-   uint32_t addr = GET_ADDR(gpio);
-   page_ram_addr = data<<8;
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[page_ram_addr])) );
-   Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
-}
-
 void ram_emulator_page_addr_high(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
@@ -108,6 +99,10 @@ void ram_emulator_page_addr_low(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
+void ram_emulator_page_restore(void)
+{
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[page_ram_addr])) );
+}
 
 void ram_emulator_page_write(unsigned int gpio)
 {
@@ -139,7 +134,6 @@ static char* putstring(char *ram, char term, const char *string)
 void rampage_emulator_init( uint8_t instance , int address)
 {
    // Page access register write fcfd fcfe fcff
-   Pi1MHz_Register_Memory(WRITE_FRED, address, ram_emulator_page_addr_stack ); // reset address
    Pi1MHz_Register_Memory(WRITE_FRED, address + 1, ram_emulator_page_addr_high ); // high byte
    Pi1MHz_Register_Memory(WRITE_FRED, address + 2, ram_emulator_page_addr_mid ); // Mid byte
    Pi1MHz_Register_Memory(WRITE_FRED, address + 3, ram_emulator_page_addr_low ); // low byte
@@ -178,28 +172,10 @@ void rampage_emulator_init( uint8_t instance , int address)
       ram = putstring(ram,'\n', " Date : " __DATE__ " " __TIME__);
       ram = putstring(ram,0   , " Pi :");
             putstring(ram,'\r', get_info_string());
-
-      // create short cuts to helper functions
-      // FDB0 onwards
-      // LDX #16 : BNE +44
-      // LDX #15 : BNE +40
-
-      // FDF0
-      // LDX #00
-      // STX &FCFC
-      // RTS
-      // NOP : NOP
-      // STX &FCFC
-      // JMP FD00  // 4C 00 FD
-      // NOP : NOP
-
-
    }
 
    // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
    filesystemReadFile("BEEB.MMB",JIM_ram+(16*1024*1024),JIM_ram_size<<24);
-
-   filesystemReadFile("6502code.bin",&JIM_ram[0xB0],JIM_ram_size<<24);
 
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[0])) );
 }
