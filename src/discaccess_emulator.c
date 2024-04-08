@@ -19,7 +19,7 @@ static size_t byte_ram_addr;
 
 static uint8_t ram_address;
 
-static FIL fileObject[16];
+NOINIT_SECTION static FIL fileObject[16];
 
 static void discaccess_emulator_update_address()
 {
