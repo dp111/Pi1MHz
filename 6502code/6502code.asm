@@ -72,38 +72,52 @@ MACRO FINDSWR
         sta    &fe30
 ENDMACRO
 
-; Page 0 CALL &fc88
-{
-ORG &FD00
-    ENDBLOCK 0
-}
-
-; Page 1 CALL &fc88
+; Page 0
+; help screen
 {
 ORG &FD00
 
-    ENDBLOCK &100
+  ENDBLOCK &700
 }
 
-; Page 2 CALL &FDE8
+; Page 8 CALL &FDD0
+; Strings
+{
+ORG &FD00
+    LDA #0   : STA &FCD6 ; clear byte pointer to zero.
+    LDA #&E0 : STA &FCD7
+    LDX #&FF : STA &FCD8
+.stringloop
+    LDA &FCD9 ; auto increment register
+    JSR &FFEE
+    CMP #0
+    BNE stringloop
+    PAGERTS
+
+  ENDBLOCK &000
+}
+
+; Page 1
+; oswrch redirector
 {
 ORG &FD00
 
-    ENDBLOCK &200
+newoswrch = &FCD1
+
+  LDA &20E
+  STA newoswrch+4
+  LDA &20F
+  STA newoswrch+4+1
+  LDA #(newoswrch MOD 256)
+  STA &20E
+  LDA #(newoswrch DIV 256)
+  STA &20F
+  PAGERTS
+
+  ENDBLOCK &100
 }
 
-; Page 3 CALL &FDE4
-; mmfs
-{
-ORG &FD00
-
-
-
-
-    ENDBLOCK &300
-}
-
-; Page 4 CALL &FDE0
+; Page 2
 ; adfs
 {
 ORG &FD00
@@ -112,7 +126,7 @@ ORG &FD00
     TXA
     BPL SWRfound
 .pagertsjmp
-    JMP pagerts ; no SWR found
+    PAGERTS; no SWR found
 .SWRfound
     ; fopen
     LDY #0   : STY discaccess
@@ -186,11 +200,12 @@ ORG &FD00
     EQUB 0, 0, 0, 0
     EQUB &FF
 
-
-    ENDBLOCK &400
+    ENDBLOCK &200
 }
 
-; Page 5 CALL &FDDC
+
+; Page 3
+; MMFS
 {
 ORG &FD00
 
@@ -198,13 +213,12 @@ ORG &FD00
     TXA
     BPL SWRfound
 .pagertsjmp
-    JMP pagerts ; no SWR found
+    PAGERTS; no SWR found
 .SWRfound
     ; fopen
     LDY #0   : STY discaccess
     DEY      : STY discaccess+1
                STY discaccess+2
-
 .fopenloop
     INY
     LDA fopenstring, Y: STA discaccess+3
@@ -265,7 +279,7 @@ ORG &FD00
 
 
 .fopenstring
-    EQUB 2 , 0, 1 : EQUS "ROMS\MMFSJR.rom" : EQUB 0, 255
+    EQUB 2 , 0, 1 : EQUS "ROMS\MFS.rom" : EQUB 0, 255
 
 .freaddata
     EQUB 4, 0, &40, 0
@@ -273,62 +287,97 @@ ORG &FD00
     EQUB 0, 0, 0, 0
     EQUB &FF
 
-    ENDBLOCK &500
+    ENDBLOCK &300
 }
 
-; Page 6 CALL &FDD8
-; oswrch redirector
+; Page 4
+; MMFSv2
 {
 ORG &FD00
 
-newoswrch = &FCD1
+    FINDSWR
+    TXA
+    BPL SWRfound
+.pagertsjmp
+    PAGERTS; no SWR found
+.SWRfound
+    ; fopen
+    LDY #0   : STY discaccess
+    DEY      : STY discaccess+1
+               STY discaccess+2
+.fopenloop
+    INY
+    LDA fopenstring, Y: STA discaccess+3
+    BPL fopenloop
+    STA discaccess+4
 
-  LDA &20E
-  STA newoswrch+4
-  LDA &20F
-  STA newoswrch+4+1
-  LDA #(newoswrch MOD 256)
-  STA &20E
-  LDA #(newoswrch DIV 256)
-  STA &20F
-  PAGERTS
+.fopencheckloop
+    LDA discaccess+4
+    BMI fopencheckloop
+    BNE pagertsjmp ; file not found
 
-  ENDBLOCK &600
+    LDY #0   : STY discaccess
+    DEY      : STY discaccess+1
+               STY discaccess+2
+
+.freadsetuploop
+    LDA freaddata+1, Y: STA discaccess+3
+    INY
+    CPY #12
+    BNE freadsetuploop
+    STA discaccess+4
+
+.freadcheckloop
+    LDA discaccess+4
+    BMI freadcheckloop
+    BEQ readdone
+    CMP #20
+    BNE pagerts ; file open error
+
+.readdone
+    LDY #0   : STY discaccess
+             : STY discaccess+1
+    LDA #&F0 : STA discaccess+2
+
+             : STY swrpointer+1
+    LDA #&80 : STA swrpointer+2
+
+    LDA &F4
+    PHA
+    STX &F4
+    STX &FE30
+
+.copyswrloop
+    LDA discaccess+3 : .swrpointer STA &8000,Y
+    INY
+    BNE copyswrloop
+
+    LDX swrpointer+2
+    INX
+    STX swrpointer+2
+    CPX #&C0
+    BNE copyswrloop;
+
+    PLA
+    STA &F4
+    STA &FE30
+    JMP (&FFFC) ; Reset
+
+
+.fopenstring
+    EQUB 2 , 0, 1 : EQUS "ROMS\MMFSv2.rom" : EQUB 0, 255
+
+.freaddata
+    EQUB 4, 0, &40, 0
+    EQUB 0, 0, &F0, 0
+    EQUB 0, 0, 0, 0
+    EQUB &FF
+
+    ENDBLOCK &400
 }
 
-; Page 7 CALL &FDD4
-; Status
-{
-ORG &FD00
-
-  ENDBLOCK &700
-}
-
-; Page 8 CALL &FDD0
-; Strings
-{
-ORG &FD00
-    LDA #0   : STA &FCD6 ; clear byte pointer to zero.
-    LDA #&E0 : STA &FCD7
-    LDX #&FF : STA &FCD8
-.stringloop
-    LDA &FCD9 ; auto increment register
-    JSR &FFEE
-    CMP #0
-    BNE stringloop
-    JMP pagerts
-
-  ENDBLOCK &800
-}
-
-; Page 9 CALL &FDCC
-{
-ORG &FD00
-
-  ENDBLOCK &900
-}
 
 
 .end
 
-SAVE "6502code.bin" , 0, &A00
+SAVE "6502code.bin" , 0, &500
