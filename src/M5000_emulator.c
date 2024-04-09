@@ -374,15 +374,15 @@ void music5000_rec_stop()
     } while ( result != FR_OK );
 
    for(i=0; i<sizeof(wavfmt) ; i=i+4)
-      *(uint32_t *) &(JIM_ram[0x100000+i]) = *(const uint32_t *) &(wavfmt[i]);
+      *(uint32_t *) &(Pi1MHz->JIM_ram[0x100000+i]) = *(const uint32_t *) &(wavfmt[i]);
 
    uint32_t size = Audio_Index - 0x100000 - 48;
-   *(uint32_t *) &(JIM_ram[0x100000+4]) = size;
-   *(uint32_t *) &(JIM_ram[0x100000+40]) = size-36;
+   *(uint32_t *) &(Pi1MHz->JIM_ram[0x100000+4]) = size;
+   *(uint32_t *) &(Pi1MHz->JIM_ram[0x100000+40]) = size-36;
 
 
    UINT temp;
-   f_write(&music5000_fp, &JIM_ram[0x100000],Audio_Index - 0x100000 , &temp);
+   f_write(&music5000_fp, &Pi1MHz->JIM_ram[0x100000],Audio_Index - 0x100000 , &temp);
    f_close(&music5000_fp);
    rec_started = 0;
 }
@@ -393,12 +393,12 @@ static void store_samples(int sl, int sr)
     {
       sl = (sl * gain * 12) / 1024; // +/- 2666.6 so scale to fit +/- 32,768
       sr = (sr * gain * 12) / 1024;
-      JIM_ram[Audio_Index++] = (uint8_t )sl;
-      JIM_ram[Audio_Index++] = (uint8_t )(sl>>8);
-      JIM_ram[Audio_Index++] = (uint8_t )sr;
-      JIM_ram[Audio_Index++] = (uint8_t )(sr>>8);
+      Pi1MHz->JIM_ram[Audio_Index++] = (uint8_t )sl;
+      Pi1MHz->JIM_ram[Audio_Index++] = (uint8_t )(sl>>8);
+      Pi1MHz->JIM_ram[Audio_Index++] = (uint8_t )sr;
+      Pi1MHz->JIM_ram[Audio_Index++] = (uint8_t )(sr>>8);
       rec_started = true;
-      // TODO check  we don't over run JIM_ram
+      // TODO check  we don't over run Pi1MHz->JIM_ram
     }
 }
 
@@ -458,8 +458,8 @@ void M5000_emulator_init(uint8_t instance, int address)
    M5000_gain();
    M5000_BeebAudio();
 
-   synth_reset(&m5000, &JIM_ram[0x3000]);
-   synth_reset(&m3000, &JIM_ram[0x5000]);
+   synth_reset(&m5000, &Pi1MHz->JIM_ram[0x3000]);
+   synth_reset(&m3000, &Pi1MHz->JIM_ram[0x5000]);
 
    M5000_audio_range = (int)(rpi_audio_init(46875)) * M5000_DIVIDER;
 
