@@ -3,7 +3,7 @@
 
 */
 #include <string.h>
-
+#include <stdio.h>
 #include "Pi1MHz.h"
 #include "ram_emulator.h"
 #include "BeebSCSI/filesystem.h"
@@ -48,7 +48,12 @@ void helpers_init( uint8_t instance , int address)
         Pi1MHz_MemoryWrite(address+5, 0xFD);
         Pi1MHz_MemoryWrite(address+6, 0x00);
 
-           // We also hide the help screen at &FFE000
+        // We also hide the help screen at &FFE000
+        char hex[3];
+        char dec[4];
+        sprintf(hex, "%X",address);
+        sprintf(dec, "%d",address);
+
         char * helpscreen = ( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000] ;
         helpscreen += strlcpy(helpscreen, "\r Pi1MHZ "RELEASENAME
         "\r Commit ID : "GITVERSION
@@ -58,8 +63,16 @@ void helpers_init( uint8_t instance , int address)
         helpscreen += strlcpy(helpscreen, "\r\r"
         "\r Helper functions"
         "\r"
-        "\r *FX147,136,nn <ret> or X%=nn"
-        "\r then either CALL&FC88 , *GO FC88, *GOIO FC88"
+        "\r *FX147,", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, dec, PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,",nn <ret> or X%=nn"
+        "\r then either CALL&FC", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen," , *GO FC", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen," , *GOIO FC", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,
         "\r where nn is one of the following"
         "\r"
         "\r 0 # This help screen"
