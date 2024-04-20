@@ -40,7 +40,7 @@ void discaccess_emulator_byte_addr(unsigned int gpio)
    }
 
    Pi1MHz_MemoryWrite(ram_address + 3 , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
-   Pi1MHz_MemoryWrite(addr, data);               // enable the address register to be read back
+   discaccess_emulator_update_address();              // enable the address register to be read back
 }
 
 void discaccess_emulator_byte_write_inc(unsigned int gpio)
@@ -66,7 +66,7 @@ void discaccess_emulator_command(unsigned int gpio)
    uint32_t addr = GET_ADDR(gpio);
 
    Pi1MHz_MemoryWrite(addr, data); // return existing command
-   uint32_t base_addr = ((Pi1MHz->JIM_ram_size - 2) * 16 * 1024 * 1024) ;
+   uint32_t base_addr = DISC_RAM_BASE ;
 
    uint32_t command_pointer = base_addr | 0xFF0000 | (data<<8);
 
@@ -74,13 +74,29 @@ void discaccess_emulator_command(unsigned int gpio)
    {
     case 0 :
         Pi1MHz_MemoryWrite(addr,
-            disk_read( Pi1MHz->JIM_ram[command_pointer+1], &Pi1MHz->JIM_ram[*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4]+base_addr ]
-                    , *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8] , *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+12] ) );
+            disk_read( Pi1MHz->JIM_ram[command_pointer+1],
+                        &Pi1MHz->JIM_ram[(*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4])+base_addr ],
+                        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8],
+                        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+12]
+                        ) );
+       #if 0
+            printf("Read sector %x, %p %x, %x, %x, %x\r\n",base_addr, &Pi1MHz->JIM_ram[0],Pi1MHz->JIM_ram[command_pointer+1],*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4],*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8],*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+12] );
+             uint8_t buffer[512];
+             for(int i=0;i<512;i++)
+            {
+                printf("%x ",buffer[i] /*Pi1MHz->JIM_ram[(*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4])+base_addr + i ] */);
+                Pi1MHz->JIM_ram[(*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4])+base_addr + i ]=buffer[i];
+                if ((i%16)==0) printf("\r\n");
+            }
+        #endif
         break;
     case 1 :
          Pi1MHz_MemoryWrite(addr,
-            disk_write( Pi1MHz->JIM_ram[command_pointer+1], &Pi1MHz->JIM_ram[*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4]+base_addr ]
-                    , *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8] , *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+12] ) );
+            disk_write( Pi1MHz->JIM_ram[command_pointer+1],
+                        &Pi1MHz->JIM_ram[(*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4])+base_addr ],
+                        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8] ,
+                        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+12] )
+                        );
          break;
     case 2 :
         Pi1MHz_MemoryWrite(addr,
@@ -147,6 +163,7 @@ void discaccess_emulator_command(unsigned int gpio)
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }
+    case 20 : Pi1MHz_MemoryWrite(addr, disk_type()); break;
     default : break;
    }
 
@@ -169,5 +186,7 @@ void discaccess_emulator_init( uint8_t instance , int address)
    Pi1MHz_Register_Memory(READ_FRED , ram_address+3, discaccess_emulator_byte_read_inc );
    // command pointer
    Pi1MHz_Register_Memory(WRITE_FRED, ram_address+4, discaccess_emulator_command );
+
+   Pi1MHz_MemoryWrite(ram_address+4, 0 ) ; // make sure command is null on read back
 
 }
