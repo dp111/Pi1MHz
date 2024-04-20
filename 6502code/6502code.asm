@@ -90,12 +90,10 @@ MACRO LOADFILETOSWR filename
     BNE pagertsjmp ; file not found
 
     LDY #0   : STY discaccess
-    DEY      : STY discaccess+1
-               STY discaccess+2
 
 .freadsetuploop
-    INY :
     LDA freaddata, Y: STA discaccess+3
+    INY
     CMP #255
     BNE freadsetuploop
     STA discaccess+4
@@ -125,15 +123,25 @@ MACRO LOADFILETOSWR filename
     INY
     BNE copyswrloop
 
+    INC swrpointer+2
     LDX swrpointer+2
-    INX
-    STX swrpointer+2
     CPX #&C0
     BNE copyswrloop;
+    ; Y is zero
+           : STY discaccess
+    DEY    : STY discaccess+1
+             STY discaccess+2
+    ; fclose
+    LDA #3
+    STA discaccess+3
+    STY discaccess+4
 
     PLA
     STA &F4
     STA &FE30
+    LDA #200
+    LDX #3
+    JSR &FFF4
     JMP (&FFFC) ; Reset
 
 
@@ -152,14 +160,6 @@ ENDMACRO
 ; help screen
 {
 ORG &FD00
-
-  ENDBLOCK &700
-}
-
-; Page 8 CALL &FDD0
-; Strings
-{
-ORG &FD00
     LDA #0   : STA &FCD6 ; clear byte pointer to zero.
     LDA #&E0 : STA &FCD7
     LDA #&FF : STA &FCD8
@@ -172,8 +172,15 @@ ORG &FD00
 
   ENDBLOCK &000
 }
+; page 1 status screen
+{
+    ORG &FD00
+    PAGERTS
 
-; Page 1
+    ENDBLOCK &100
+}
+
+; Page 2
 ; oswrch redirector
 {
 ORG &FD00
@@ -190,10 +197,10 @@ newoswrch = &FCD1
   STA &20F
   PAGERTS
 
-  ENDBLOCK &100
+  ENDBLOCK &200
 }
 
-; Page 2
+; Page 3
 ; ADFS
 {
 ORG &FD00
@@ -207,11 +214,11 @@ ORG &FD00
 
     LOADFILETOSWR "ROMS/ADFS.rom"
 
-    ENDBLOCK &200
+    ENDBLOCK &300
 }
 
 
-; Page 3
+; Page 4
 ; MMFS
 {
 ORG &FD00
@@ -225,10 +232,10 @@ ORG &FD00
 
     LOADFILETOSWR "ROMS/MMFS.rom"
 
-    ENDBLOCK &300
+    ENDBLOCK &400
 }
 
-; Page 4
+; Page 5
 ; MMFSv2
 {
 ORG &FD00
@@ -242,9 +249,9 @@ ORG &FD00
 
     LOADFILETOSWR "ROMS/MMFSv2.rom"
 
-    ENDBLOCK &400
+    ENDBLOCK &500
 }
 
 .end
 
-SAVE "../firmware/6502code.bin" , 0, &500
+SAVE "../firmware/6502code.bin" , 0, &600
