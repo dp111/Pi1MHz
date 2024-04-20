@@ -87,3 +87,7 @@ Add loading of 6502code.bin to JIM 0xFDB0 onwards
 Remove more warnings
 Support auto increment of byte ram addresses
 Add 6502 code to display the welcome text CALL &FDD0
+
+V1.14
+Now support Pi1MHz MMFS Sector access.
+Added 6502 helper functions
