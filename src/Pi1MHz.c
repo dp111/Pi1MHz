@@ -334,32 +334,9 @@ static void init_hardware()
    LOG_DEBUG("LED pin %d\r\n",led_pin);
 
    // Configure our pins as default state as inputs
-   RPI_SetGpioInput(D7_PIN);
-   RPI_SetGpioInput(D6_PIN);
-   RPI_SetGpioInput(D5_PIN);
-   RPI_SetGpioInput(D4_PIN);
-   RPI_SetGpioInput(D3_PIN);
-   RPI_SetGpioInput(D2_PIN);
-   RPI_SetGpioInput(D1_PIN);
-   RPI_SetGpioInput(D0_PIN);
+   // Pins default to inputs so only setup Outputs and alternate modes
 
-   RPI_SetGpioInput(A7_PIN);
-   RPI_SetGpioInput(A6_PIN);
-   RPI_SetGpioInput(A5_PIN);
-   RPI_SetGpioInput(A4_PIN);
-   RPI_SetGpioInput(A3_PIN);
-   RPI_SetGpioInput(A2_PIN);
-   RPI_SetGpioInput(A1_PIN);
-   RPI_SetGpioInput(A0_PIN);
-
-   RPI_SetGpioInput(CLK1MHZ_PIN);
-   RPI_SetGpioInput(NRST_PIN);
-   RPI_SetGpioInput(NPCFD_PIN);
-   RPI_SetGpioInput(NPCFC_PIN);
    RPI_SetGpioPinFunction(AUDIO_PIN, FS_ALT0); // PWM1
-   RPI_SetGpioInput(NIRQ_PIN);
-   RPI_SetGpioInput(NNMI_PIN);
-   RPI_SetGpioInput(RNW_PIN);
 
    RPI_SetGpioHi(NOE_PIN);          // disable external data bus buffer
    RPI_SetGpioOutput(NOE_PIN);      // external data buffer nOE pin
@@ -376,7 +353,14 @@ static void init_hardware()
 // cppcheck-suppress unusedFunction
 void kernel_main()
 {
-   RPI_AuxMiniUartInit( 115200 );
+   unsigned int baud_rate;
+   const char * const prop = get_cmdline_prop("baud_rate");
+   if (prop)
+      baud_rate = (uint32_t)atoi(prop);
+   else
+      baud_rate = 115200;
+
+   RPI_AuxMiniUartInit( baud_rate );
 
    enable_MMU_and_IDCaches(0);
 
