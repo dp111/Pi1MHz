@@ -247,7 +247,7 @@ ORG &FD00
     PAGERTS; no SWR found
 .SWRfound
 
-    LOADFILETOSWR "ROMS/MMFSv2.rom"
+    LOADFILETOSWR "ROMS/MMFS2.rom"
 
     ENDBLOCK &500
 }
