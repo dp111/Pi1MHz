@@ -78,11 +78,11 @@ void helpers_init( uint8_t instance , int address)
         " <ret>\r\n\r\n where n is one of the following"
         "\r\n"
         "\r\n 0 # This help screen"
-        "\r\n 1 # status N/A"
+        "\r\n 1 # Status N/A"
         "\r\n 2 # Enable screen redirector"
         "\r\n 3 # Load ADFS into SWR"
         "\r\n 4 # Load MMFS into SWR"
-        "\r\n 5 # Load MMFSv2 into SWR"
+        "\r\n 5 # Load MMFS2 into SWR"
         "\r\n", PAGE_SIZE*16);
         helpscreen[0] = 0;
 
