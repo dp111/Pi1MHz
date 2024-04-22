@@ -8,6 +8,11 @@ rpi_sys_timer_t* RPI_GetSystemTimer(void)
     return rpiSystemTimer;
 }
 
+uint32_t RPI_GetSystemTime(void)
+{
+    return rpiSystemTimer->counter_lo;
+}
+
 void RPI_WaitMicroSeconds( uint32_t us )
 {
     uint32_t ts = rpiSystemTimer->counter_lo;
