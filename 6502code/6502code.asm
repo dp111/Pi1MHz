@@ -194,7 +194,7 @@ ORG &FD00
 {
 ORG &FD00
 
-newoswrch = &FCD1
+newoswrch = &FCD0
 
   LDA &20E
   STA newoswrch+4

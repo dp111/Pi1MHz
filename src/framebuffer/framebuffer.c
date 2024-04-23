@@ -2234,13 +2234,13 @@ void fb_emulator_init(uint8_t instance, int address)
   fb_show_splash_screen();
   Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
  // Create 6 bytes of RAM for vector code
-  Pi1MHz_MemoryWrite(address+1, 0x8D);
-  Pi1MHz_MemoryWrite(address+2, (uint8_t) address);
-  Pi1MHz_MemoryWrite(address+3, 0XFC);
-  Pi1MHz_MemoryWrite(address+4, 0x4c);
+  Pi1MHz_MemoryWrite(address+0, 0x8D);
+  Pi1MHz_MemoryWrite(address+1, (uint8_t) address);
+  Pi1MHz_MemoryWrite(address+2, 0XFC);
+  Pi1MHz_MemoryWrite(address+3, 0x4c);
 
+  Pi1MHz_Register_Memory(WRITE_FRED, address + 4, fb_emulator_ram);
   Pi1MHz_Register_Memory(WRITE_FRED, address + 5, fb_emulator_ram);
-  Pi1MHz_Register_Memory(WRITE_FRED, address + 6, fb_emulator_ram);
 
  // Pi1MHz_Register_Poll(fb_emulator_poll);
 }
