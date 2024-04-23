@@ -94,7 +94,10 @@ _prefetch_abort_vector_h:           .word   _prefetch_abort_handler_
 _data_abort_vector_h:               .word   _data_abort_handler_
 
 arm_irq_handler:
-    subs    pc, lr, #4
+    subs    lr, lr, #4
+    push    {r0, r1, r2, r3, ip, lr}
+    bl      IRQHandler_main
+    ldm     sp!, {r0, r1, r2, r3, ip, pc}^
 
 _reset_:
 
@@ -304,5 +307,23 @@ copy_loop:
     subs r14,r14,#1
     bne outer_copy_loop
     pop {r4, r5, r6, r7, pc}
+
+.section ".text._fast_scroll", "x"
+.global _fast_scroll
+// R0 = dst
+// R1 = src
+// R2 = number of bytes, must be a multiple of 64
+// Note: R7 reserved by Fast 6502 FIQ handler, so avoid
+_fast_scroll:
+        push    {r4, r5, r6, r8, r9, r10, r11, lr}
+        bic     r2, r2, #0x4F
+_fast_scroll_loop:
+        ldmia   r1!,{r3, r4, r5, r6, r8, r9, r10, r11}
+        subs    r2, r2, #64
+        stmia   r0!,{r3, r4, r5, r6, r8, r9, r10, r11}
+        ldmia   r1!,{r3, r4, r5, r6, r8, r9, r10, r11}
+        stmia   r0!,{r3, r4, r5, r6, r8, r9, r10, r11}
+        bne     _fast_scroll_loop
+        pop     {r4, r5, r6, r8, r9, r10, r11, pc}
 
 .ltorg

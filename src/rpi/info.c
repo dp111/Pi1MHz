@@ -153,7 +153,10 @@ uint32_t mem_info(int size)
    rpi_mailbox_property_t *buf;
    buf = RPI_PropertyGetWord(TAG_GET_ARM_MEMORY, 0);
    if (size)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnull-dereference"
       return buf->data.buffer_32[1];
+#pragma GCC diagnostic pop
    return buf->data.buffer_32[0];
 }
 

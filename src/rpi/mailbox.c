@@ -23,7 +23,7 @@ static size_t pt_index;
 static mailbox_t* rpiMailbox0 = (mailbox_t*)RPI_MAILBOX0_BASE;
 static mailbox_t* rpiMailbox1 = (mailbox_t*)RPI_MAILBOX1_BASE;
 
-static void RPI_Mailbox0Write( mailbox0_channel_t channel, uint32_t * ptr )
+void RPI_Mailbox0Write( mailbox0_channel_t channel, uint32_t * ptr )
 {
     _clean_cache_area(ptr, ptr[PT_OSIZE]);
     /* Wait until the mailbox becomes available and then write to the mailbox
