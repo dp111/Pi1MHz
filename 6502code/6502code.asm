@@ -3,7 +3,7 @@
 ;
 
 discaccess = &FCD6
-
+OSBYTE = &FFF4
 MACRO PAGERTS
     LDX #&FF
     JMP &FC88
@@ -150,7 +150,7 @@ MACRO LOADFILETOSWR filename
 
     LDA #200
     LDX #3
-    JSR &FFF4
+    JSR OSBYTE
     JMP (&FFFC) ; Reset
 
 
@@ -204,7 +204,29 @@ newoswrch = &FCD0
   STA &20E
   LDA #(newoswrch DIV 256)
   STA &20F
+  LDA #&75:JSR OSBYTE   :\ Read VDU status
+  TXA:AND #&10:CMP #&10 :\ Test shadow flag in bit 4
+  PHP                   :\ Save shadow flag in Carry
+  LDA #&A0 : LDX #&55
+  JSR OSBYTE  :\ Read current MODE
+  TXA :ASL A:PLP:ROR A   :\ Move shadow flag into bit 7
+
+  ; Change mode so that both screens match
+  PHA
+  LDA #22: JSR &FFEE
+  PLA : JSR &FFEE
+  LDX #0
+
+.stringloop
+    LDA string,X; auto increment register
+    JSR &FFEE
+    INX
+    TAY ; Set flags
+    BNE stringloop
   PAGERTS
+
+.string
+    EQUS " Screen Redirector enabled.": EQUB 13,10,13,10,0
 
   ENDBLOCK &200
 }
