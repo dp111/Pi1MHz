@@ -257,19 +257,6 @@ __attribute__((used)) int _write(int file __attribute__((unused)), const char *p
   return len;
 }
 
-unsigned int _get_cpsr()
-{
-  unsigned int ret;
-  asm volatile ( "mrs %0,cpsr" : "=r" ( ret) );
-  return ret;
-}
-
-#if (__ARM_ARCH >= 7 )
-    #define _data_memory_barrier() {asm volatile ("dmb");}
-#else
-    void _data_memory_barrier() {  asm volatile ("mcr p15, 0, %0, c7, c10, 5" :: "r" (0));}
-#endif
-
 // cppcheck-suppress unusedFunction
 void _getpid_r()
 {

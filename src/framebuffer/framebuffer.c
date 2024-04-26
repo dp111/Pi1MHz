@@ -1625,7 +1625,7 @@ void fb_show_splash_screen() {
    fb_writec(0);
    fb_writec(56);
 
-   cursor(1);
+  // cursor(1);
 }
 
 void fb_initialize() {
@@ -1787,8 +1787,10 @@ void fb_process_vdu_queue() {
 
 void fb_writec_buffered(char c) {
    // TODO: Deal with overflow
+   _disable_interrupts();
    vdu_queue[vdu_wp] = c;
    vdu_wp = (vdu_wp + 1) & (VDU_QSIZE - 1);
+   _enable_interrupts();
 }
 
 void fb_writec(char c) {

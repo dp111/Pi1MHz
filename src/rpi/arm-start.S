@@ -44,7 +44,7 @@
 
 .global _start
 
-.global _interrupt_vector_h
+//.global _interrupt_vector_h
 
 // From the ARM ARM (Architecture Reference Manual). Make sure you get the
 // ARMv5 documentation which includes the ARMv6 documentation which is the
@@ -77,7 +77,7 @@ _start:
     ldr pc, _prefetch_abort_vector_h
     ldr pc, _data_abort_vector_h
     B _reset_
-    ldr pc, _interrupt_vector_h
+    B arm_irq_handler  //ldr pc, _interrupt_vector_h
 
 #ifdef FIQ_VECTOR_CODE
     // include FIQ handler at the address directly
