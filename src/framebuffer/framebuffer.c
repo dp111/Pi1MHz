@@ -2243,7 +2243,7 @@ void fb_emulator_ram(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr, data);
 }
 
-void fb_emulator_init(uint8_t instance, int address)
+void fb_emulator_init(uint8_t instance, uint8_t address)
 {
   fb_initialize();
   fb_show_splash_screen();

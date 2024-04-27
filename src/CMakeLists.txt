@@ -77,13 +77,6 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _printf_float" )
 
-# needed to remove warnings in framebuffer.c
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-shadow")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-sign-compare")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-sign-conversion")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-function")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-discarded-qualifiers")
-
 # current failures in frame buffer.c
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-overflow=5")
 

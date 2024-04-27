@@ -435,7 +435,7 @@ void music5000_emulate()
    }
 }
 
-void M5000_emulator_init(uint8_t instance, int address)
+void M5000_emulator_init(uint8_t instance, uint8_t address)
 {
    if (record)
    {

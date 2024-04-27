@@ -126,6 +126,6 @@ void fb_set_c_bg_col(pixel_t colour);
 
 uint8_t fb_get_gcol_from_colnum(uint8_t colnum);
 
-void fb_emulator_init(uint8_t instance, int address);
+void fb_emulator_init(uint8_t instance, uint8_t address);
 
 #endif

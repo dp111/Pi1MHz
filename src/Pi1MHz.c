@@ -115,7 +115,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 typedef struct {
    const char *name;
    const func_ptr_parameter init;
-   int address;
+   uint8_t address;
    uint8_t enable;
 } emulator_list;
 
@@ -183,7 +183,7 @@ uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 // For each location in FRED and JIM which a task wants to be called for
 // it must register its interest. Only one task can be called per location
 // for access variable use WRITE_FRED WRITE_JIM READ_FRED READ_JIM
-void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr function_ptr )
+void Pi1MHz_Register_Memory(int access, uint8_t addr, callback_func_ptr function_ptr )
 {
    Pi1MHz->callback_table[access+addr] = function_ptr;
 }
@@ -282,7 +282,7 @@ static void init_emulator() {
                if (temp<0)
                   emulator[i].enable = 0;
                else
-                  emulator[i].address = temp;
+                  emulator[i].address = (uint8_t) temp;
             }
       }
 
