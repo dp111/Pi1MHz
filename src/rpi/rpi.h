@@ -20,7 +20,6 @@
 typedef void (*func_ptr)();
 
 #if (__ARM_ARCH >= 7 )
-unsigned char _get_core(void);
 void start_core(int core, func_ptr func);
 #endif
 

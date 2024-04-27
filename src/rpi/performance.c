@@ -167,7 +167,6 @@ void reset_performance_counters(perf_counters_t *pct) {
 
 
 #if (__ARM_ARCH >= 7 )
-   int i;
    unsigned cntenset = (1U << 31);
 
    unsigned type_impl;
@@ -176,7 +175,7 @@ void reset_performance_counters(perf_counters_t *pct) {
       to see test whether the requested event is implemented */
    asm volatile ("mrc p15,0,%0,c9,c12,6" : "=r" (type_impl));
 
-   for (i = 0; i < pct->num_counters; i++) {
+   for (unsigned int i = 0; i < pct->num_counters; i++) {
       if ((type_impl >> pct->type[i]) & 1) {
          /* Select the event count/type via the event type selection register */
          asm volatile ("mcr p15,0,%0,c9,c12,5" :: "r" (i) : "memory");
@@ -204,8 +203,7 @@ void reset_performance_counters(perf_counters_t *pct) {
 // cppcheck-suppress constParameterPointer
 void read_performance_counters(perf_counters_t *pct) {
 #if (__ARM_ARCH >= 7 )
-   int i;
-   for (i = 0; i < pct->num_counters; i++) {
+   for (unsigned int i = 0; i < pct->num_counters; i++) {
       /* Select the event count/type via the event type selection register */
       asm volatile ("mcr p15,0,%0,c9,c12,5" :: "r" (i) : "memory");
       /* Read the required event count */
