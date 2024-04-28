@@ -12,47 +12,13 @@
 
 NOINIT_SECTION uint8_t helper_ram[4*1024];
 
-void helpers_bank_select(unsigned int gpio)
+static void helpers_setup(uint8_t helper_address)
 {
-   uint8_t  data = GET_DATA(gpio);
-   uint32_t addr = GET_ADDR(gpio);
-
-   if (data == 0xFF)
-    {
-        // put RTS in instruction stream
-        Pi1MHz_MemoryWrite(addr+4, 0x60);
-        // old page data
-        ram_emulator_page_restore();
-    }
-    else
-    {
-        // put JMP instruction stream
-        Pi1MHz_MemoryWrite(addr+4, 0x4c);
-        // select page
-        Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&helper_ram[data<<8])) );
-    }
-
-}
-void helpers_init( uint8_t instance , uint8_t address)
-{
-   if (filesystemReadFile("6502code.bin",&helper_ram[0],sizeof(helper_ram)))
-    {
-        // register call backs
-        Pi1MHz_Register_Memory(WRITE_FRED, address, helpers_bank_select );
-
-        Pi1MHz_MemoryWrite(address+0, 0x8E); // STX &FCxx
-        Pi1MHz_MemoryWrite(address+1, (uint8_t) address);
-        Pi1MHz_MemoryWrite(address+2, 0xFC);
-        Pi1MHz_MemoryWrite(address+3, 0XEA); // NOP
-        Pi1MHz_MemoryWrite(address+4, 0x4c); // JMP &FD00 // RTS
-        Pi1MHz_MemoryWrite(address+5, 0x00);
-        Pi1MHz_MemoryWrite(address+6, 0xFD);
-
-        // We also hide the help screen at &FFE000
+  // We also hide the help screen at &FFE000
         char hex[3];
         char dec[4];
-        sprintf(hex, "%X",address);
-        sprintf(dec, "%d",address);
+        sprintf(hex, "%X",helper_address);
+        sprintf(dec, "%d",helper_address);
 
         char * helpscreen = ( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000] ;
         helpscreen += strlcpy(helpscreen, "\r\n Pi1MHZ "RELEASENAME
@@ -85,6 +51,49 @@ void helpers_init( uint8_t instance , uint8_t address)
         "\r\n 5 # Load MMFS2 into SWR"
         "\r\n", PAGE_SIZE*16);
         helpscreen[0] = 0;
+        //signal to beeb the help screen is setup
+        Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE+1, 0x03);
+}
 
+void helpers_bank_select(unsigned int gpio)
+{
+   uint8_t  data = GET_DATA(gpio);
+   uint32_t addr = GET_ADDR(gpio);
+
+   if (data == 0xFF)
+    {
+        // put RTS in instruction stream
+        Pi1MHz_MemoryWrite(addr+4, 0x60);
+        // old page data
+        ram_emulator_page_restore();
+    }
+    else
+    {
+        // put JMP instruction stream
+        Pi1MHz_MemoryWrite(addr+4, 0x4c);
+        // select page
+        Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&helper_ram[data<<8])) );
+        if (data==0)
+            helpers_setup((uint8_t)addr);
+    }
+
+}
+
+void helpers_init( uint8_t instance , uint8_t address)
+{
+   if (filesystemReadFile("6502code.bin",&helper_ram[0],sizeof(helper_ram)))
+    {
+        // register call backs
+        Pi1MHz_Register_Memory(WRITE_FRED, address, helpers_bank_select );
+
+        Pi1MHz_MemoryWrite(address+0, 0x8E); // STX &FCxx
+        Pi1MHz_MemoryWrite(address+1, (uint8_t) address);
+        Pi1MHz_MemoryWrite(address+2, 0xFC);
+        Pi1MHz_MemoryWrite(address+3, 0XEA); // NOP
+        Pi1MHz_MemoryWrite(address+4, 0x4c); // JMP &FD00 // RTS
+        Pi1MHz_MemoryWrite(address+5, 0x00);
+        Pi1MHz_MemoryWrite(address+6, 0xFD);
+
+        helpers_setup(address);
     }
 }

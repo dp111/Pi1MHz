@@ -168,6 +168,8 @@ ENDMACRO
 ; help screen
 {
 ORG &FD00
+.waitloop
+    JMP waitloop    ; Arm code will rewrite this to signal help screen has been setup.
     LDA #0   : STA discaccess ; clear byte pointer to zero.
     LDA #&E0 : STA discaccess+1
     LDA #&FF : STA discaccess+2
