@@ -335,7 +335,6 @@ static void init_variables() {
    set_default_colours();
    prim_set_bg_plotmode(screen, PM_NORMAL);
    prim_set_fg_plotmode(screen, PM_NORMAL);
-
    // Reset dot pattern and pattern length to defaults
    prim_set_dot_pattern_len(screen, 0);
 
@@ -347,7 +346,6 @@ static void init_variables() {
 
    // Cursor mode
    vdu_4(NULL);
-
    // Reset text/graphics areas and home cursors (VDU 26 actions)
    reset_areas();
 
@@ -367,6 +365,7 @@ static void reset_areas() {
    // (left, bottom, right, top)
    g_clip_window_t default_graphics_window = {0, 0, (int16_t)((screen->width << screen->xeigfactor) - 1), (int16_t)((screen->height << screen->yeigfactor) - 1)};
    set_graphics_area(screen, &default_graphics_window);
+
    // Home the text cursor
    c_x_pos = t_window.left;
    c_y_pos = t_window.top;
@@ -1787,10 +1786,10 @@ void fb_process_vdu_queue() {
 
 void fb_writec_buffered(char c) {
    // TODO: Deal with overflow
-   _disable_interrupts();
+   unsigned int irq = _disable_interrupts_cspr();
    vdu_queue[vdu_wp] = c;
    vdu_wp = (vdu_wp + 1) & (VDU_QSIZE - 1);
-   _enable_interrupts();
+  _set_interrupts(irq);
 }
 
 void fb_writec(char c) {
