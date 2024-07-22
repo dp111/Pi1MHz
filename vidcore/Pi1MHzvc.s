@@ -80,9 +80,10 @@
    mov    r13, GPU_ARM_DBELL
 
 # poll for nPCFC or nPCFD being low
-.balignw 4,1 # Align with nops
+
 Poll_loop:
    st     r5, GPCLR0_offset(r6)  # Turn off debug signal
+.balignw 4,1 # Align with nops
 Poll_access_low:
    ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
 
@@ -107,6 +108,9 @@ waitforclklow:                   # wait for extra half cycle to end
 waitforclkhigh:
 
 waitforclkhighloop:
+   LSR    r8, r12,ADDRBUS_SHIFT+1
+   and    r8, r10                # Isolate address bus
+   ld     r8, (r0,r8) # get byte to write out
    ld     r12, GPLEV0_offset(r6)
    btst   r12, CLK
    beq    waitforclkhighloop
@@ -114,11 +118,7 @@ waitforclkhighloop:
 # seen rising edge of CLK
 # so address bus has now been setup
 
-   LSR    r8, r12,ADDRBUS_SHIFT+1
 
-   and    r8, r10                # Isolate address bus
-
-   ld     r8, (r0,r8) # get byte to write out
    btst   r12, nPCFC
    btstne r12, nPCFD
    bne    Poll_loop
