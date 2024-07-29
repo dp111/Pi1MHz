@@ -75,7 +75,7 @@
    or     r9, r3, r4       # add in test pin so that it is still enabled
    mov    r6, GPFSEL0
    mov    r7, 1            # external nOE pin
-   mov    r10, ((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))>>1
+   mov    r10, ((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))
    mov    r11, (0xFF<<DATASHIFT)  # clear databus low
    mov    r13, GPU_ARM_DBELL
 
@@ -108,16 +108,15 @@ waitforclklow:                   # wait for extra half cycle to end
 waitforclkhigh:
 
 waitforclkhighloop:
-   LSR    r8, r12,ADDRBUS_SHIFT+1
+   LSR    r8, r12,ADDRBUS_SHIFT
    and    r8, r10                # Isolate address bus
-   ld     r8, (r0,r8) # get byte to write out
+   ldh     r8, (r0,r8) # get byte to write out
    ld     r12, GPLEV0_offset(r6)
    btst   r12, CLK
    beq    waitforclkhighloop
 
 # seen rising edge of CLK
 # so address bus has now been setup
-
 
    btst   r12, nPCFC
    btstne r12, nPCFD
@@ -127,9 +126,7 @@ waitforclkhighloop:
    btst   r12, RnW
    beq    writecycle
 
-   btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
-   lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
-   lsleq  r8, DATASHIFT          # low 16 bits with databus shift
+   lsl  r8, DATASHIFT          # low 16 bits with databus shift
    btst   r8, OUTPUTBIT
    and    r8, r11     # isolate databus
 

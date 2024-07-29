@@ -257,9 +257,9 @@ Pi1MHz_MemoryWritePage:
     push {r4, r5, r6, r7, r14}
     mov r12, r1
 
-    mov r4,     #(PERIPHERAL_BASE + 0xA04000 ) &0xFF000000
-    orr r4, r4, #(PERIPHERAL_BASE + 0xA04000 ) &0x00FF0000
-    orr r6, r4, #(PERIPHERAL_BASE + 0xA04000 ) &0x0000FF00
+    mov r4,     #Pi1MHz_MEM_BASE & 0xFF000000
+    orr r4, r4, #Pi1MHz_MEM_BASE & 0x00FF0000
+    orr r6, r4, #Pi1MHz_MEM_BASE & 0x0000FF00
 
     add r5, r0, #0x100 // Pi1Mhz_memory
 
