@@ -83,7 +83,7 @@
 
 Poll_loop:
    st     r5, GPCLR0_offset(r6)  # Turn off debug signal
-.balignw 4,1 # Align with nops
+
 Poll_access_low:
    ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
 
@@ -106,12 +106,13 @@ waitforclklow:                   # wait for extra half cycle to end
    bne    waitforclklow
 
 waitforclkhigh:
-
+.balignw 4,1 # Align with nops
 waitforclkhighloop:
    LSR    r8, r12,ADDRBUS_SHIFT
-   and    r8, r10                # Isolate address bus
-   ldh     r8, (r0,r8) # get byte to write out
    ld     r12, GPLEV0_offset(r6)
+   and    r8, r10                # Isolate address bus
+   ldh    r8, (r0,r8) # get byte to write out
+
    btst   r12, CLK
    beq    waitforclkhighloop
 
@@ -121,19 +122,24 @@ waitforclkhighloop:
    btst   r12, nPCFC
    btstne r12, nPCFD
    bne    Poll_loop
+
 # check if we are in a read or write cycle
 # we do this here while the read above is stalling
+
    btst   r12, RnW
+   lsl    r8, DATASHIFT
    beq    writecycle
 
-   lsl  r8, DATASHIFT          # low 16 bits with databus shift
+
    btst   r8, OUTPUTBIT
-   and    r8, r11     # isolate databus
+   and    r8, r11                # isolate databus
 
    st     r8, GPSET0_offset(r6)  # set up databus
    beq    skipenablingbus
+
    st     r9, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
    st     r7, GPCLR0_offset(r6)  # set external output enable low
+
  skipenablingbus:
    st     r12, (r1)              # post data
    st     r12, (r13)             # ring doorbell

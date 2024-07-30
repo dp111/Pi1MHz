@@ -98,3 +98,6 @@ Port across latest version of the frame buffer code from Pi1MHz
 V1.16
 Fix helper screen getting over written.
 Swap to using the SW MMFS roms
+
+V1.17
+Speed up 1MHz accesses ( change to using USB buffers)
