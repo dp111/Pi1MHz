@@ -1,6 +1,6 @@
 /*
 ** cpu.c PowerPC cpu-description file
-** (c) in 2002-2017 by Frank Wille
+** (c) in 2002-2019,2024 by Frank Wille
 */
 
 #include "vasm.h"
@@ -10,11 +10,10 @@ mnemonic mnemonics[] = {
 #include "opcodes.h"
 };
 
-int mnemonic_cnt=sizeof(mnemonics)/sizeof(mnemonics[0]);
+const int mnemonic_cnt=sizeof(mnemonics)/sizeof(mnemonics[0]);
 
-char *cpu_copyright="vasm PowerPC cpu backend 3.0 (c) 2002-2017 Frank Wille";
-char *cpuname = "PowerPC";
-int bitsperbyte = 8;
+const char *cpu_copyright="vasm PowerPC cpu backend 3.2 (c) 2002-2019,2024 Frank Wille";
+const char *cpuname = "PowerPC";
 int bytespertaddr = 4;
 int ppc_endianess = 1;
 
@@ -252,11 +251,13 @@ char *parse_cpu_special(char *start)
     s++;
     while (ISIDCHAR(*s))
       s++;
-    if (s-name==6 && !strncmp(name,".sdreg",6)) {
+    if (dotdirs && *name=='.')
+      name++;
+    if (s-name==5 && !strncmp(name,"sdreg",5)) {
       sdreg = read_sdreg(&s,sdreg);
       return s;
     }
-    else if (s-name==7 && !strncmp(name,".sd2reg",7)) {
+    else if (s-name==6 && !strncmp(name,"sd2reg",6)) {
       sd2reg = read_sdreg(&s,sd2reg);
       return s;
     }
@@ -423,12 +424,12 @@ static taddr make_reloc(int reloctype,operand *op,section *sec,
           if (ppcop->bits == 26) {
             size = 24;
             pos = 6;
-            mask = 0x3fffffc;
+            mask = ~3;
           }
           else {
             size = 14;
             offset = 2;
-            mask = 0xfffc;
+            mask = ~3;
           }
           addend = (btype == BASE_PCREL) ? val + offset : val;
         }
@@ -464,6 +465,12 @@ illreloc:
       general_error(38);  /* illegal relocation */
     }
   }
+  else {
+     if (reloctype == REL_PC) {
+       /* a relative reference to an absolute label */
+       return val-pc;
+     }
+  }
 
   return val;
 }
@@ -475,26 +482,6 @@ static void fix_reloctype(dblock *db,int rtype)
 
   for (rl=db->relocs; rl!=NULL; rl=rl->next)
     rl->type = rtype;
-}
-
-
-static int cnt_insn_ops(instruction *p)
-{
-  int cnt = 0;
-
-  while (cnt<MAX_OPERANDS && p->op[cnt]!=NULL)
-    cnt++;
-  return cnt;
-}
-
-
-static int cnt_mnemo_ops(mnemonic *p)
-{
-  int cnt = 0;
-
-  while (cnt<MAX_OPERANDS && p->operand_type[cnt]!=UNUSED)
-    cnt++;
-  return cnt;
 }
 
 
@@ -567,7 +554,7 @@ size_t eval_operands(instruction *ip,section *sec,taddr pc,
 {
   mnemonic *mnemo = &mnemonics[ip->code];
   size_t isize = 4;
-  int i,j,omitted;
+  int i;
   operand op;
 
   if (insn != NULL)
@@ -783,12 +770,34 @@ dblock *eval_data(operand *op,size_t bitsize,section *sec,taddr pc)
 }
 
 
-operand *new_operand()
+operand *new_operand(void)
 {
   operand *new = mymalloc(sizeof(*new));
   new->type = -1;
   new->mode = OPM_NONE;
   return new;
+}
+
+
+size_t cpu_reloc_size(rlist *rl)
+{
+  return 0;  /* no special cpu relocs, all are nreloc */
+}
+
+
+void cpu_reloc_print(FILE *f,rlist *rl)
+{
+  static const char *rname[(LAST_CPU_RELOC+1)-FIRST_CPU_RELOC] = {
+    "sd2","sd21","sdi16","drel","brel"
+  };
+  fprintf(f,"r%s",rname[rl->type-FIRST_CPU_RELOC]);
+  print_nreloc(f,rl->reloc,1);
+}
+
+
+void cpu_reloc_write(FILE *f,rlist *rl)
+{
+  /* nothing to do, all are nreloc */
 }
 
 
@@ -825,7 +834,7 @@ static void define_regnames(void)
 }
 
 
-int init_cpu()
+int init_cpu(void)
 {
   if (regnames)
     define_regnames();

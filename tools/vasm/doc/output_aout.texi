@@ -3,10 +3,10 @@ selected with the @option{-Faout} option.
 
 @section Legal
 
-    This module is written in 2008-2012 by Frank Wille and
+    This module is written in 2008-2016,2020,2021 by Frank Wille and
     is covered by the vasm copyright without modifications.
 
-@section Additional options for this version
+@section Additional options for this module
  
 @table @option
     @item -mid=<machine id>
@@ -17,7 +17,7 @@ selected with the @option{-Faout} option.
 
 @section General
 
-This output module outputs the @code{a.out} (assembler output)
+This output module emits the @code{a.out} (assembler output)
 format, which is an older 32-bit format for Unix-like operating systems,
 originally invented by AT&T.
 
@@ -38,16 +38,15 @@ The following standard relocations are supported by default:
 @item base-relative
 @end itemize
 
-Standard relocations occupy 8 bytes and don't include an addend, so they
-are not suitable for most RISC CPUs. The extended relocations format occupies
-12 bytes and also allows more relocation types.
+Standard relocation table entries occupy 8 bytes and don't include an addend,
+so they are not suitable for most RISC CPUs. The extended relocation
+format occupies 12 bytes and also allows more relocation types.
 
 @section Known Problems
 
     Some known problems of this module at the moment:
 
 @itemize @minus
-@item Support for stab debugging symbols is still missing.
 @item The extended relocation format is not supported.
 @end itemize
 
@@ -56,7 +55,7 @@ are not suitable for most RISC CPUs. The extended relocations format occupies
 This module has the following error messages:
 
 @itemize @minus
-@item 3004: section attributes <attr> not suppported
+@item 3004: section attributes <attr> not supported
 @item 3008: output module doesn't allow multiple sections of the same type
 @item 3010: section <%s>: alignment padding (%lu) not a multiple of %lu at 0x%llx
 @end itemize

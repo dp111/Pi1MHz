@@ -10,10 +10,10 @@
   "number or identifier expected",ERROR,
   "could not initialize %s module",NOLINE|ERROR|FATAL,          /* 10 */
   "multiple input files",NOLINE|ERROR,
-  "could not open <%s> for input",NOLINE|ERROR|FATAL,
+  "could not open <%s> for input",ERROR|FATAL,
   "could not open <%s> for output",NOLINE|ERROR|FATAL,
   "unknown option <%s>",NOLINE|ERROR,
-  "no input file specified",NOLINE|ERROR|FATAL,                 /* 15 */
+  "%s module doesn't support %d-bit bytes",NOLINE|ERROR|FATAL,  /* 15 */
   "could not initialize output module <%s>",NOLINE|ERROR|FATAL,
   "out of memory",NOLINE|ERROR|FATAL,
   "symbol <%s> recursively defined",ERROR|FATAL,
@@ -26,16 +26,16 @@
   "missing end directive for macro \"%s\"",ERROR|FATAL,         /* 25 */
   "macro definition inside macro \"%s\"",ERROR|FATAL,
   "maximum number of %d macro arguments exceeded",ERROR,
-  "option -%c was specified twice",NOLINE|WARNING,
+  "option %s was specified twice",NOLINE|WARNING,
   "read error on <%s>",NOLINE|ERROR|FATAL,
   "expression must be constant",ERROR,                          /* 30 */
   "initialized data in bss",WARNING,
   "missing end directive in repeat-block",ERROR|FATAL,
-  "#%d is not a valid warning message",NOLINE|ERROR,
+  "#%d is not a valid %smessage",NOLINE|ERROR,
   "relocation not allowed",ERROR,
   "illegal escape sequence \\%c",WARNING,                       /* 35 */
   "no current macro to exit",ERROR,
-  "internal symbol %s redefined by user",FATAL,
+  "internal symbol %s redefined by user",ERROR|FATAL,
   "illegal relocation",ERROR,
   "label name conflicts with mnemonic",WARNING,
   "label name conflicts with directive",WARNING,                /* 40 */
@@ -59,7 +59,7 @@
   "register symbol <%s> redefined",ERROR,
   "cannot evaluate constant huge integer expression",ERROR,
   "cannot evaluate floating point expression",ERROR,            /* 60 */
-  "imported symbol <%s> was not referenced",WARNING,
+  "imported symbol <%s> was not referenced",NOLINE|WARNING,
   "symbol <%s> already defined with %s scope",WARNING,
   "unexpected \"else\" without \"if\"",ERROR,
   "unexpected \"endif\" without \"if\"",ERROR,
@@ -73,3 +73,17 @@
   "undefined macro argument name",ERROR,
   "required macro argument %d was left out",ERROR,
   "label <%s> redefined",ERROR,
+  "base %d numerical term expected",ERROR,                      /* 75 */
+  "section stack overflow",ERROR,
+  "section stack is empty",ERROR,
+  "illegal value for option: %s",NOLINE|ERROR,
+  "%s backend does not support floating point",ERROR|FATAL,
+  "unknown listing file format \"%s\" ignored",NOLINE|WARNING,  /* 80 */
+  "cannot export equate based on imported symbol: <%s>",NOLINE|ERROR,
+  "label definition not allowed here",ERROR,
+  "label defined on the same line as a new section",WARNING,
+  "no debug output possible with source from stdin",WARNING,
+  "external symbol <%s> must not be defined",ERROR,             /* 85 */
+  "missing definition for symbol <%s>",NOLINE|WARNING,
+  "additional macro arguments ignored (expecting %d)",WARNING,
+  "macro previously defined at line %d of %s",WARNING,

@@ -3,25 +3,27 @@ with the extension @code{std}.
 
 @section Legal
 
-    This module is written in 2002-2017 by Volker Barthelmann and
+    This module is written in 2002-2024 by Volker Barthelmann and
     is covered by the vasm copyright without modifications.
 
-@section Additional options for this version
+@section Additional options for this module
  
 This syntax module provides the following additional options:
  
 @table @option
  
 @item -ac
- Immediately allocate common symbols in .bss/.sbss section and
- define them as externally visible.
+ Immediately allocate common symbols in the @code{.bss}/@code{.sbss}
+ section and define them as externally visible.
 @item -align
  Enforces the backend's natural alignment for all data directives
  (@code{.word}, @code{.long}, @code{.float}, etc.).
+@item -gas
+ Enable GNU-as compatibility mode. Currently this will only prevent
+ labels prefixed by a dot to be recognized as local labels and turn
+ @code{.org} into a pure section-offset.
 @item -nodotneeded
  Recognize assembly directives without a leading dot (@code{.}).
-@item -noesc
- Ignore escape character sequences in string constants.
 @item -sdlimit=<n>
  Put data up to a maximum size of n bytes into the small-data
  sections. Default is n=0, which means the function is disabled.
@@ -30,10 +32,18 @@ This syntax module provides the following additional options:
 
 @section General Syntax
 
-Labels have to be terminated with a colon (@code{:}).
-Local labels may either be preceded by a '@code{.}' or terminated by
-'@code{$}', and consist out of digits only.
-Local labels exist and keep their value between two global label definitions.
+Labels always have to be terminated by a colon (@code{:}), therefore
+they don't necessarily have to start at the first column of a line.
+
+Local labels may either be preceded by a '@code{.}' (unless option
+@option{-gas} was given) or terminated by '@code{$}',
+and consist out of digits only.
+These labels exist and keep their value between two global label definitions.
+
+A special form of reusable "local" labels, independent of global labels,
+may be defined by using a single digit from @code{0} to @code{9}.
+You can reference the nearest previous digit-label with @code{Nb} and the
+nearest following digit-label with @code{Nf}, where @code{N} is such a digit.
 
 Make sure that you don't define a label on the same line as a
 directive for conditional assembly (if, else, endif)! This is not supported.
@@ -42,14 +52,15 @@ The operands are separated from the mnemonic by whitespace.
 Multiple operands are separated by comma (@code{,}).
 
 Comments are introduced by the comment character @code{#}. The rest
-of the line will be ignored. For the c16x, m68k, 650x, ARM, Z80, 6800
-and Jaguar-RISC backends, the comment character is @code{;}
+of the line will be ignored. For the c16x, m68k, 650x, ARM, Z80, 6800,
+6809, QNICE and Jaguar-RISC backends, the comment character is @code{;}
 instead of @code{#}, although @code{#} is still allowed when being the
 first non-blank character on a line.
 
 Example:
-
-@code{mylabel:  inst.q1.q2 op1,op2,op3  # comment}
+@example
+mylabel:  inst.q1.q2 op1,op2,op3  # comment
+@end example
 
 In expressions, numbers starting with @code{0x} or @code{0X} are
 hexadecimal (e.g. @code{0xfb2c}). @code{0b} or @code{0B} introduces
@@ -92,7 +103,8 @@ See @code{.string}.
 @item .balign <byte_count>[,<fill>][,<maxpad>]
       Insert as much fill bytes as required to reach an address which
       is dividable by <byte_count>. For example @code{.balign 2} would
-      make an alignment to the next 16-bit boundary.
+      make an alignment to the next 16-bit boundary, on a target with
+      8-bit addressable memory.
       The padding bytes are initialized by <fill>, when given. The optional
       third argument defines a maximum number of padding bytes to use. When
       more are needed then the alignment is not done at all.
@@ -111,22 +123,33 @@ See @code{.string}.
 
 @item .byte <exp1>[,<exp2>,"<string1>"...]
       Assign the integer or string constant operands into successive
-      bytes of memory in the current section. Any combination of integer
+      8-bit memory cells in the current section. Any combination of integer
       and character string constant operands is permitted.
 
 @item .comm <symbol>,<size>[,<align>]
       Defines a common symbol which has a size of <size> bytes. The
-      final size and alignment will be assigned by the linker, which
+      final size and alignment is assigned by the linker, which
       will use the highest size and alignment values of all common
-      symbols with the same name found. A common symbol is allocated
-      in the .bss section in the final executable. ".comm"-areas of
-      less than 8 bytes in size are aligned to word boundaries, other-
-      wise to doubleword boundaries.
+      symbols with the same name found. A common symbol is usually
+      allocated in the .bss section of the final executable.
+      In case the optional <align> argument was not specified the backend's
+      default alignment for the given size will be used.
 
 @item .double <exp1>[,<exp2>...]
-      Parse one of more double precision floating point expressions and
-      write them into successive blocks of 8 bytes into memory using the
-      backend's endianess.
+      Parse one of more IEEE double precision floating point expressions and
+      write them into successive blocks of 64 bits into memory using the
+      backend's endianness.
+
+@item .else
+      Assemble the following block only if the previous @code{.if}
+      condition was false.
+
+@item .elseif <exp>
+      Same as @code{.else} followed by @code{.if}, but without the
+      need for an @code{.endif}. Avoids nesting.
+
+@item .endif
+      Ends a block of conditional assembly.
 
 @item .endm
       Ends a macro definition.
@@ -149,7 +172,7 @@ See @code{.string}.
         See @code{.global}.
 
 @item .fail <expression>
-      Cause a warning when <expresion> is greater or equal 500. Otherwise
+      Cause a warning when <expression> is greater or equal 500. Otherwise
       cause an error.
 
 @item .file "string"
@@ -158,9 +181,9 @@ See @code{.string}.
       command line is used.
 
 @item .float <exp1>[,<exp2>...]
-      Parse one of more single precision floating point expressions and
-      write them into successive blocks of 4 bytes into memory using the
-      backend's endianess.
+      Parse one of more IEEE single precision floating point expressions and
+      write them into successive blocks of 32 bits into memory using the
+      backend's endianness.
 
 @item .global <symbol>[,<symbol>...]
       Flag <symbol> as an external symbol, which means that <symbol> is
@@ -172,7 +195,7 @@ See @code{.string}.
 
 @item .half <exp1>[,<exp2>...]
       Assign the values of the operands into successive 16-bit words of
-      memory in the current section using the backend's endianess.
+      memory in the current section using the backend's endianness.
 
 @item .if <expression>
       Conditionally assemble the following lines if <expression> is non-zero.
@@ -215,9 +238,15 @@ See @code{.string}.
 
 @item .incbin <file>
       Inserts the binary contents of <file> into the object code at
-      this position. The file will be searched first in the current
-      directory, then in all paths defined by @option{-I} or
-      @code{.incdir} in the order of occurence.
+      this position.
+      When the file size (in 8-bit bytes) is not aligned with the size
+      of a target-byte the missing bits are automatically appended and
+      assumed to be zero.
+      As vasm's internal target-byte endianness for more than 8 bits per byte
+      is big-endian, included binary files are assumed to have the same
+      endianness. Otherwise you have to specify @option{-ile} to tell vasm
+      that they use little-endian target-bytes (on your 8-bit bytes host
+      file system).
 
 @item .incdir <path>
       Add another path to search for include files to the list of
@@ -225,13 +254,12 @@ See @code{.string}.
       searched first.
 
 @item .include <file>
-      Include source text of <file> at this position. The include file
-      will be searched first in the current directory, then in all
-      paths defined by @option{-I} or @code{.incdir} in the order of
-      occurence.
+      Include source text of <file> at this position.
 
 @item .int <exp1>[,<exp2>...]
-      See @code{.long}.
+      Assign the values of the operands into successive words of
+      memory in the current section using the target's endianness and
+      address size.
 
 @item .irp <symbol>[,<val>...]
       Iterates the block between @code{.irp} and @code{.endr} for each
@@ -253,8 +281,7 @@ See @code{.string}.
       <symbol> may be made globally visible by the .globl directive.
 
 @item .list
-      The following lines will appear in the listing file, if it was
-      requested.
+      The following lines will appear in the listing file, when enabled.
 
 @item .local <symbol>[,<symbol>...]
       Flag <symbol> as a local symbol, which means that <symbol> is
@@ -263,13 +290,13 @@ See @code{.string}.
 
 @item .long <exp1>[,<exp2>...]
       Assign the values of the operands into successive 32-bit words of
-      memory in the current section using the backend's endianess.
+      memory in the current section using the backend's endianness.
 
 @item .macro <name> [<argname1>[=<default>][,<argname2>...]]
-      Defines a macro which can be referenced by <name>. The macro
-      definition is closed by an @code{.endm} directive. The names
-      of the arguments, which may be passed to this macro, must be
-      declared directly following the macro name. You can define an
+      Defines a macro, which can be referenced by <name>. The macro
+      definition is closed by an @code{.endm} directive. The argument
+      names, which may be passed to this macro, must be declared directly
+      following the macro name, separated by white-space. You can define an
       optional default value in the case an argument is left out.
       Note that macro names are case-insensitive while the argument
       names are case-sensitive.
@@ -280,19 +307,24 @@ See @code{.string}.
       argument and the subsequent text.
 
 @item .nolist
-      The following lines will not be visible in a listing file.
+      This line and the following lines will not be visible in a listing file.
 
-@item .org <exp>
-      Before any other section directive @code{<exp>} defines the absolute
-      start address of the program. Within a section @code{<exp>} defines
-      the offset from the start of this section for the subsequent code.
+@item .org <exp>[,<fill>]
+      Before any section directive, and in absence of the @option{-gas}
+      option, @code{<exp>} defines the absolute start address of
+      the following code and @code{<fill>} has no meaning.
+      Within a relocatable section @code{<exp>} defines the relative offset
+      from the start of this section for the subsequent code.
+      The optional <fill> value is only valid within a section and is used
+      to fill the space to the new program counter (defaults to zero).
       When <exp> starts with a current-pc symbol followed by a plus (@code{+})
-      operator, then the directive behaves like @code{.space}.
+      operator, then the directive just reserves space (filled with zero).
 
 @item .p2align <bit_count>[,<fill>][,<maxpad>]
       Insert as much fill bytes as required to reach an address where
       <bit_count> low order bits are zero. For example @code{.p2align 2} would
-      make an alignment to the next 32-bit boundary.
+      make an alignment to the next 32-bit boundary, when the target has
+      8-bit addressable memory.
       The padding bytes are initialized by <fill>, when given. The optional
       third argument defines a maximum number of padding bytes to use. When
       more are needed then the alignment is not done at all.
@@ -309,10 +341,19 @@ See @code{.string}.
       are not already 16-bit aligned, will cause a warning and padded by
       zero-bytes.
 
+@item .popsection
+      Restore the top section from the internal section-stack.
+      Also refer to @code{.pushsection}.
+
+@item .pushsection <name>[,"<attributes>"][[,@@<type>]|[,%<type>]|[,<mem_flags>]]
+      Works exactly like @code{.section}, but additionally pushes
+      the previously active section onto an internal stack, where it may be
+      restored from by the @code{.popsection} directive.
+
 @item .quad <exp1>[,<exp2>...]
       Assign the values of the operands into successive quadwords
       (64-bit) of memory in the current section using the backend's
-      endianess.
+      endianness.
 
 @item .rept <expression>
       Repeats the assembly of the block between @code{.rept} and @code{.endr}
@@ -337,7 +378,7 @@ See @code{.string}.
          section has uninitialized data
 
 @item i 
-         section has directives (info section)
+         section has directives (info or offsets section)
 
 @item n 
          section can be discarded
@@ -362,20 +403,22 @@ See @code{.string}.
          section is executable
            
 @item  s 
-         section is sharable
+         section is shareable
 @end table
 
       Section Alignment: A digit, which is ignored. The assembler will
       automatically align the section to the highest alignment restriction
       used within.
 
-      Memory flags (Amiga hunk format only):
+      Memory attributes:
 
 @table @code
-@item C 
-         load section to Chip RAM
-@item  F 
-         load section to Fast RAM 
+@item C
+         load section to Chip RAM (AmigaOS hunk format)
+@item F
+         load section to Fast RAM (AmigaOS hunk format)
+@item z
+         load section to zero/direct-page (6502, 65816, 680x, etc.)
 @end table
 
       The optional @code{<type>} argument is mainly used for ELF output
@@ -403,13 +446,18 @@ See @code{.string}.
       contain a new value from now on.
  
 @item .size <symbol>,<size>
-      Set the size in bytes of an object defined at <symbol>. 
+      Defines the size in bytes associated with the given <symbol>.
+      This information is only used by some object file formats (for
+      example ELF) and typically sets the size of function symbols.
 
 @item .short <exp1>[,<exp2>...]
-      See @code{.half}.
+      Assign the values of the operands into successive 16-bit words of
+      memory in the current section using the backend's endianness.
 
 @item .single <exp1>[,<exp2>...]
-      Same as @code{.float}.
+      Parse one of more IEEE single precision floating point expressions and
+      write them into successive blocks of 32 bits into memory using the
+      backend's endianness.
 
 @item .skip <exp>[,<fill>]
       Insert <exp> zero or <fill> bytes into the current section.
@@ -434,7 +482,7 @@ See @code{.string}.
       Just for compatibility. Do nothing.
 
 @item .type <symbol>,<type>
-      Set type of symbol called <symbol> to <type>, which must be one of:
+      Set type of symbol named <symbol> to <type>, which must be one of:
 @table @code
       @item 1: Object
       @item 2: Function
@@ -444,6 +492,7 @@ See @code{.string}.
       The predefined symbols @code{@@object} and 
         @code{@@function} are available for
       this purpose.
+      Only used by some object file formats (for example ELF).
  
 @item .uahalf <exp1>[,<exp2>...]
       Assign the values of the operands into successive 16-bit areas of
@@ -473,7 +522,7 @@ See @code{.string}.
  
 @item .word <exp1>[,<exp2>...]
       Assign the values of the operands into successive 16-bit words of
-      memory in the current section using the backend's endianess.
+      memory in the current section using the backend's endianness.
 
 @item .zero <exp>[,<fill>]
       Insert <exp> zero or <fill> bytes into the current section.
@@ -502,6 +551,8 @@ Predefined section directives:
       .section ".text","acrx"
 @item .tocd
       .section ".tocd","adrw"
+@item .dpage
+      .section ".dpage","adrwz"
 @end table
 
 @section Known Problems

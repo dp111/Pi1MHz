@@ -1,5 +1,5 @@
 /* supp.c miscellaneous support routines */
-/* (c) in 2008-2017 by Frank Wille */
+/* (c) in 2008-2024 by Frank Wille */
 
 #include <math.h>
 #include "vasm.h"
@@ -88,7 +88,7 @@ void *mycalloc(size_t sz)
 }
 
 
-void *myrealloc(void *old,size_t sz)
+void *myrealloc(const void *old,size_t sz)
 {
   size_t *p;
 
@@ -100,7 +100,7 @@ void *myrealloc(void *old,size_t sz)
     *p++ = sz;
   }
   else {
-    p = realloc(old,sz);
+    p = realloc((void *)old,sz);
     if (!p)
       general_error(17);
   }
@@ -123,38 +123,71 @@ void myfree(void *p)
 }
 
 
-int field_overflow(int signedbits,size_t numbits,taddr bitval)
+taddr bf_sign_extend(taddr val,int numbits)
+/* sign-extend a bitfield value which fits into numbits bits */
 {
-  if (signedbits) {
-    uint64_t mask = ~MAKEMASK(numbits - 1);
-    uint64_t val = (int64_t)bitval;
+  taddr himask = ~MAKEMASK(numbits);
 
-    return (bitval < 0) ? (val & mask) != mask : (val & mask) != 0;
-  }
-  else
-    return (((uint64_t)(utaddr)bitval) & ~MAKEMASK(numbits)) != 0;
+  if (!(val & himask) && (val & (1LL<<(numbits-1))))
+    val |= himask;  /* extend bitfield-sign over the taddr type */
+  return val;
 }
 
 
-uint64_t readval(int be,void *src,size_t size)
-/* read value with given endianess */
+#if BITSPERBYTE != 8
+
+utaddr readbyte(void *src)
+/* reads a target byte */
 {
-  unsigned char *s = src;
+  uint8_t *s = src;
+  utaddr val = 0;
+  int len = octetsperbyte;
+
+  while (len--) {
+    val <<= 8;
+    val += (utaddr)*s++;
+  }
+  return val;
+}
+
+
+void writebyte(void *dest,utaddr val)
+/* writes a target byte */
+{
+  uint8_t *d = dest;
+  int len = octetsperbyte;
+
+  d += len;
+  while (len--) {
+    *(--d) = (uint8_t)val;
+    val >>= 8;
+  }
+}
+
+#endif /* BITSPERBYTE != 8 */
+
+
+uint64_t readval(int be,void *src,size_t size)
+/* read value with given endianness and size in target-bytes */
+{
+  uint8_t *s = src;
   uint64_t val = 0;
 
-  if (size > sizeof(uint64_t))
+  if (OCTETS(size) > sizeof(uint64_t))
     ierror(0);
   if (be) {
     while (size--) {
-      val <<= 8;
-      val += (uint64_t)*s++;
+      val <<= BITSPERBYTE;
+      val += (uint64_t)readbyte(s);
+      s += OCTETS(1);
     }
   }
   else {
-    s += size;
+    s += OCTETS(size);
     while (size--) {
-      val <<= 8;
-      val += (uint64_t)*(--s);
+      s -= OCTETS(1);
+      val <<= BITSPERBYTE;
+      val += (uint64_t)readbyte(s);
     }
   }
   return val;
@@ -162,24 +195,26 @@ uint64_t readval(int be,void *src,size_t size)
 
 
 void *setval(int be,void *dest,size_t size,uint64_t val)
-/* write value to destination with desired endianess */
+/* write value to destination with desired endianness */
 {
   uint8_t *d = dest;
 
-  if (size > sizeof(uint64_t))
+  if (OCTETS(size) > sizeof(uint64_t))
     ierror(0);
   if (be) {
-    d += size;
+    d += OCTETS(size);
     dest = d;
     while (size--) {
-      *(--d) = (uint8_t)val;
-      val >>= 8;
+      d -= OCTETS(1);
+      writebyte(d,(utaddr)val);
+      val >>= BITSPERBYTE;
     }
   }
   else {
     while (size--) {
-      *d++ = (uint8_t)val;
-      val >>= 8;
+      writebyte(d,(utaddr)val);
+      val >>= BITSPERBYTE;
+      d += OCTETS(1);
     }
     dest = d;
   }
@@ -188,29 +223,31 @@ void *setval(int be,void *dest,size_t size,uint64_t val)
 
 
 void *setval_signext(int be,void *dest,size_t extsz,size_t valsz,int64_t val)
-/* write a sign-extended value to destination with desired endianess */
+/* write a sign-extended value to destination with desired endianness */
 {
   uint8_t *d = dest;
   int sign = val<0 ? 0xff : 0;
 
-  if (valsz > sizeof(uint64_t))
+  if (OCTETS(valsz) > sizeof(uint64_t))
     ierror(0);
   if (be) {
-    memset(d,sign,extsz);
-    d += extsz + valsz;
+    memset(d,sign,OCTETS(extsz));
+    d += OCTETS(extsz + valsz);
     dest = d;
     while (valsz--) {
-      *(--d) = (uint8_t)val;
-      val >>= 8;
+      d -= OCTETS(1);
+      writebyte(d,(utaddr)val);
+      val >>= BITSPERBYTE;
     }
   }
   else {
     while (valsz--) {
-      *d++ = (uint8_t)val;
-      val >>= 8;
+      writebyte(d,(utaddr)val);
+      val >>= BITSPERBYTE;
+      d += OCTETS(1);
     }
-    memset(d,sign,extsz);
-    dest = d + extsz;
+    memset(d,sign,OCTETS(extsz));
+    dest = d + OCTETS(extsz);
   }
   return dest;
 }
@@ -219,9 +256,9 @@ void *setval_signext(int be,void *dest,size_t extsz,size_t valsz,int64_t val)
 uint64_t readbits(int be,void *p,unsigned bfsize,unsigned offset,unsigned size)
 /* read value from a bitfield (max. 64 bits) */
 {
-  if ((bfsize&7)==0 && offset+size<=bfsize) {
-    uint64_t mask = (1 << size) - 1;
-    uint64_t val = readval(be,p,bfsize>>3);
+  if ((bfsize&(BITSPERBYTE-1))==0 && offset+size<=bfsize) {
+    uint64_t mask = MAKEMASK(size);
+    uint64_t val = readval(be,p,bfsize/BITSPERBYTE);
 
     return be ? ((val >> (bfsize-(offset+size))) & mask)
               : ((val >> offset) & mask);
@@ -235,12 +272,12 @@ void setbits(int be,void *p,unsigned bfsize,unsigned offset,unsigned size,
              uint64_t d)
 /* write value to a bitfield (max. 64 bits) */
 {
-  if ((bfsize&7)==0 && offset+size<=bfsize) {
+  if (bfsize%BITSPERBYTE==0 && offset+size<=bfsize) {
     uint64_t mask = MAKEMASK(size);
-    uint64_t val = readval(be,p,bfsize>>3);
+    uint64_t val = readval(be,p,bfsize/BITSPERBYTE);
     int s = be ? bfsize - (offset + size) : offset;
 
-    setval(be,p,bfsize>>3,(val & ~(mask<<s)) | ((d & mask) << s));
+    setval(be,p,bfsize/BITSPERBYTE,(val & ~(mask<<s)) | ((d & mask) << s));
   }
   else
     ierror(0);
@@ -263,27 +300,50 @@ int countbits(taddr val)
 }
 
 
-void copy_cpu_taddr(void *dest,taddr val,size_t bytes)
-/* copy 'bytes' low-order bytes from val to dest in cpu's endianess */
+int tffs(taddr val)
+/* first first bit set in a taddr - similar to POSIX ffs() */
+{
+  int i,n=sizeof(taddr)<<3;
+
+  if (val == 0)
+    return 0;
+  for (i=0; i<n; i++) {
+    if (val & 1)
+      break;
+    val >>= 1;
+  }
+  return i;
+}
+
+
+void copy_cpu_taddr(void *dest,taddr val,size_t tbytes)
+/* copy 'tbytes' low-order target-bytes from val to dest in cpu's endianness */
 {
   uint8_t *d = dest;
-  int i;
 
-  if (bytes > sizeof(taddr))
+  if (OCTETS(tbytes) > sizeof(taddr))
     ierror(0);
   if (BIGENDIAN) {
-    for (i=bytes-1; i>=0; i--,val>>=8)
-      d[i] = (uint8_t)val;
+    d += OCTETS(tbytes);
+    while (tbytes--) {
+      d -= OCTETS(1);
+      writebyte(d,val);
+      val >>= BITSPERBYTE;
+    }
   }
   else if (LITTLEENDIAN) {
-    for (i=0; i<(int)bytes; i++,val>>=8)
-      d[i] = (uint8_t)val;
+    while (tbytes--) {
+      writebyte(d,val);
+      val >>= BITSPERBYTE;
+      d += OCTETS(1);
+    }
   }
   else
     ierror(0);
 }
 
 
+#if FLOAT_PARSER
 void conv2ieee32(int be,uint8_t *buf,tfloat f)
 /* single precision */
 {
@@ -293,7 +353,7 @@ void conv2ieee32(int be,uint8_t *buf,tfloat f)
   } conv;
 
   conv.sp = (float)f;
-  setval(be,buf,4,conv.x);
+  setval(be,buf,32/BITSPERBYTE,conv.x);
 }
 
 
@@ -306,60 +366,7 @@ void conv2ieee64(int be,uint8_t *buf,tfloat f)
   } conv;
 
   conv.dp = (double)f;
-  setval(be,buf,8,conv.x);
-}
-
-
-void conv2ieee80(int be,uint8_t *buf,tfloat f)
-/* extended precision */
-/* @@@ Warning: precision is lost! Converting to double precision. */
-{
-  uint64_t man;
-  uint32_t exp;
-  union {
-    double dp;
-    uint64_t x;
-  } conv;
-
-  conv.dp = (double)f;
-  if (conv.x == 0) {
-    memset(buf,0,12);  /* 0.0 */
-  }
-  else if (conv.x == 0x8000000000000000LL) {
-    if (be) {
-      buf[0] = 0x80;
-      memset(buf+1,0,11);  /* -0.0 */
-    }
-    else {
-      buf[11] = 0x80;
-      memset(buf,0,11);  /* -0.0 */
-    }
-  }
-  else {
-    man = ((conv.x & 0xfffffffffffffLL) << 11) | 0x8000000000000000LL;
-    exp = ((conv.x >> 52) & 0x7ff) - 0x3ff + 0x3fff;
-    if (be) {
-      buf[0] = ((conv.x >> 56) & 0x80) | (exp >> 8);
-      buf[1] = exp & 0xff;
-      buf[2] = 0;
-      buf[3] = 0;
-      setval(1,buf+4,8,man);
-    }
-    else {
-      buf[11] = ((conv.x >> 56) & 0x80) | (exp >> 8);
-      buf[10] = exp & 0xff;
-      buf[9] = 0;
-      buf[8] = 0;
-      setval(0,buf,8,man);
-    }
-  }
-}
-
-
-void conv2ieee128(int be,uint8_t *buf,tfloat f)
-/* quadrupel precision */
-{
-  /* @@@@ FIXME - Doesn't exist in hardware? */
+  setval(be,buf,64/BITSPERBYTE,conv.x);
 }
 
 
@@ -367,10 +374,14 @@ void conv2ieee128(int be,uint8_t *buf,tfloat f)
    ignoring the fractional part */
 int flt_chkrange(tfloat f,int bits)
 {
-  tfloat max = pow(2.0,(double)(bits-1));
-
-  return (f<2.0*max && f>=-max);
+  if (bits <= sizeof(taddr)*8) {
+    tfloat max = (utaddr)1LL<<(bits-1);
+    return (f<2.0*max && f>=-max);
+  }
+  ierror(0);  /* FIXME - shouldn't happen? */
+  return 0;
 }
+#endif /* FLOAT_PARSER */
 
 
 void fw8(FILE *f,uint8_t x)
@@ -393,6 +404,19 @@ void fw16(FILE *f,uint16_t x,int be)
 }
 
 
+void fw24(FILE *f,uint32_t x,int be)
+{
+  if (be) {
+    fw8(f,(x>>16) & 0xff);
+    fw16(f,(uint16_t)x,1);
+  }
+  else {
+    fw16(f,(uint16_t)x,0);
+    fw8(f,(x>>16) & 0xff);
+  }
+}
+
+
 void fw32(FILE *f,uint32_t x,int be)
 {
   if (be) {
@@ -410,7 +434,8 @@ void fw32(FILE *f,uint32_t x,int be)
 }
 
 
-void fwdata(FILE *f,void *d,size_t n)
+void fwdata(FILE *f,const void *d,size_t n)
+/* n is in 8-bit bytes */
 {
   if (n) {
     if (!fwrite(d,1,n,f))
@@ -419,18 +444,34 @@ void fwdata(FILE *f,void *d,size_t n)
 }
 
 
+void fwbytes(FILE *f,void *buf,size_t n)
+/* write target-bytes in selected endianess; n is in target-bytes */
+{
+  if (output_bytes_le) {
+    uint8_t *p = buf;
+    int i;
+
+    while (n--) {
+      for (i=octetsperbyte; i>0; fw8(f,p[--i]));
+      p += octetsperbyte;
+    }
+  }
+  else
+    fwdata(f,buf,OCTETS(n));
+}
+
+
 void fwsblock(FILE *f,sblock *sb)
 {
   size_t i;
 
-  for (i=0; i<sb->space; i++) {
-    if (!fwrite(sb->fill,sb->size,1,f))
-      output_error(2);  /* write error */
-  }
+  for (i=0; i<sb->space; i++)
+    fwbytes(f,sb->fill,sb->size);
 }
 
 
 void fwspace(FILE *f,size_t n)
+/* n is in 8-bit bytes */
 {
   size_t i;
 
@@ -442,14 +483,45 @@ void fwspace(FILE *f,size_t n)
 
 
 void fwalign(FILE *f,taddr n,taddr align)
+/* n and align are in target-bytes */
 {
-  fwspace(f,balign(n,align));
+  fwspace(f,OCTETS(balign(n,align)));
+}
+
+
+int fwpattern(FILE *f,taddr n,uint8_t *pat,int patlen)
+/* n and patlen are in target-bytes */
+{
+  int align_warning = 0;
+
+  while (n % patlen) {
+    align_warning = 1;
+    fwspace(f,OCTETS(1));
+    n--;
+  }
+
+  /* write alignment pattern */
+  while (n >= patlen) {
+    fwbytes(f,pat,patlen);
+    n -= patlen;
+  }
+
+  while (n--) {
+    align_warning = 1;
+    fwspace(f,OCTETS(1));
+  }
+  
+#if 0
+  if (align_warning)
+    output_error(9,sec->name,(unsigned long)n,(unsigned long)patlen,
+                 ULLTADDR(pc));
+#endif
+  return align_warning;
 }
 
 
 taddr fwpcalign(FILE *f,atom *a,section *sec,taddr pc)
 {
-  int align_warning = 0;
   taddr n = balign(pc,a->align);
   taddr patlen;
   uint8_t *pat;
@@ -458,7 +530,7 @@ taddr fwpcalign(FILE *f,atom *a,section *sec,taddr pc)
     return pc;
 
   if (a->type==SPACE && a->content.sb->space==0) {  /* space align atom */
-    if (a->content.sb->maxalignbytes!=0 &&  n>a->content.sb->maxalignbytes)
+    if (a->content.sb->maxalignbytes!=0 && n>a->content.sb->maxalignbytes)
       return pc;
     pat = a->content.sb->fill;
     patlen = a->content.sb->size;
@@ -468,109 +540,30 @@ taddr fwpcalign(FILE *f,atom *a,section *sec,taddr pc)
     patlen = sec->padbytes;
   }
 
-  pc += n;
+  fwpattern(f,n,pat,patlen);
 
-  while (n % patlen) {
-    if (!align_warning) {
-      align_warning = 1;
-      /*output_error(9,sec->name,(unsigned long)n,(unsigned long)patlen,
-                   ULLTADDR(pc));*/
-    }
-    fw8(f,0);
-    n--;
-  }
-
-  /* write alignment pattern */
-  while (n >= patlen) {
-    if (!fwrite(pat,patlen,1,f))
-      output_error(2);  /* write error */
-    n -= patlen;
-  }
-
-  while (n--) {
-    if (!align_warning) {
-      align_warning = 1;
-      /*output_error(9,sec->name,(unsigned long)n,(unsigned long)patlen,
-                   ULLTADDR(pc));*/
-    }
-    fw8(f,0);
-  }
-
-  return pc;
+  return pc+n;
 }
 
 
 size_t filesize(FILE *fp)
 /* @@@ Warning! filesize() only works reliably on binary streams! @@@ */
 {
-  long oldpos,size;
+  long size;
 
-  if ((oldpos = ftell(fp)) >= 0)
+  if (fgetc(fp) != EOF)
     if (fseek(fp,0,SEEK_END) >= 0)
       if ((size = ftell(fp)) >= 0)
-        if (fseek(fp,oldpos,SEEK_SET) >= 0)
-          return ((size_t)size);
-  return -1;
+        if (fseek(fp,0,SEEK_SET) >= 0)
+          return (size_t)size;
+  return 0;
 }
 
 
-int abs_path(char *path)
+int abs_path(const char *path)
 /* return true, when path is absolute */
 {
   return *path=='/' || *path=='\\' || strchr(path,':')!=NULL;
-}
-
-
-char *convert_path(char *path)
-{
-  char *newpath;
-
-#if defined(AMIGA)
-  char *p = newpath = mymalloc(strlen(path)+1);
-
-  while (*path) {
-    if (*path=='.') {
-      if (*(path+1)=='\0') {
-        path++;
-        continue;
-      }
-      else if (*(path+1)=='/' || *(path+1)=='\\') {
-        path += 2;
-        continue;
-      }
-      else if (*(path+1)=='.' &&
-               (*(path+2)=='/' || *(path+2)=='\\'))
-        path += 2;
-    }
-    if (*path == '\\') {
-      *p++ = '/';
-      path++;
-    }
-    else
-      *p++ = *path++;
-  }
-  *p = '\0';
-
-#elif defined(MSDOS) || defined(ATARI) || defined(_WIN32)
-  char *p;
-
-  newpath = mystrdup(path);
-  for (p=newpath; *p; p++) {
-    if (*p == '/')
-      *p = '\\';
-  }
-
-#else /* Unixish */
-  char *p;
-
-  newpath = mystrdup(path);
-  for (p=newpath; *p; p++) {
-    if (*p == '\\')
-      *p = '/';
-  }
-#endif
-
-  return newpath;
 }
 
 
@@ -595,7 +588,7 @@ int strnicmp(const char *str1,const char *str2,size_t n)
 }
 
 
-char *mystrdup(char *name)
+char *mystrdup(const char *name)
 {
   char *p=mymalloc(strlen(name)+1);
   strcpy(p,name);
@@ -603,13 +596,36 @@ char *mystrdup(char *name)
 }
 
 
-char *cnvstr(char *name,int l)
+char *cnvstr(const char *name,int l)
 /* converts a pair of pointer/length to a null-terminated string */
 {
   char *p=mymalloc(l+1);
   memcpy(p,name,l);
   p[l]=0;
   return p;
+}
+
+
+char *strbuf_alloc(strbuf *buf,size_t sz)
+/* make sure static strbuf has space for 'sz' bytes */
+{
+  if (sz > buf->size) {
+    buf->size = (sz+(STRBUFINC-1)) & ~(STRBUFINC-1);
+    return buf->str = myrealloc(buf->str,buf->size);
+  }
+  return buf->str;
+}
+
+
+char *cutstr(strbuf *buf,const char *name,size_t len)
+{
+  if (len >= buf->size) {
+    buf->size = (len+STRBUFINC) & ~(STRBUFINC-1);
+    buf->str = myrealloc(buf->str,buf->size);
+  }
+  buf->str[len] = 0;
+  buf->len = len;
+  return memcpy(buf->str,name,len);
 }
 
 
@@ -645,17 +661,35 @@ const char *trim(const char *s)
 }
 
 
-taddr balign(taddr addr,taddr a)
-/* return number of bytes required to achieve alignment */
+char *get_str_arg(const char *s)
+/* get string argument from the command line, optionally in quotes */
 {
-  return a ? (((addr+a-1)&~(a-1)) - addr) : 0;
+  int term = 0;
+  char *e;
+
+  if (*s == '\"')
+    term = *s++;
+  if (!(e = strchr(s,term)))
+    e = strchr(s,0);
+  return cnvstr(s,e-s);
 }
 
 
-taddr palign(taddr addr,taddr a)
+taddr balign(taddr addr,taddr a)
 /* return number of bytes required to achieve alignment */
 {
-  return balign(addr,1<<a);
+  if (a) {
+    if (addr %= a)
+      return a - addr;
+  }
+  return 0;
+}
+
+
+taddr palign(taddr addr,int a)
+/* return number of bytes required to achieve alignment */
+{
+  return balign(addr,((taddr)1)<<a);
 }
 
 
@@ -669,6 +703,41 @@ taddr pcalign(atom *a,taddr pc)
   return pc + n;
 }
 
+
+int make_padding(taddr val,uint8_t *pad,int maxbits)
+/* fill a padding array with maxbits bits from a given padding value,
+   return length in target-bytes */
+{
+  utaddr uval;
+  int len;
+
+  for (len=0,uval=(utaddr)val; uval!=0; uval>>=BITSPERBYTE,len++);
+  if (len*BITSPERBYTE > maxbits)
+    len = maxbits / BITSPERBYTE;
+  copy_cpu_taddr(pad,val,len);
+  return len;
+}
+
+
+size_t chk_sec_overlap(section *s)
+/* fatal error when section address ranges overlap, return number of sect. */
+{
+  section *s2;
+  size_t nsecs;
+
+  for (nsecs=0; s!=NULL; s=s->next) {
+    for (s2=s->next; s2; s2=s2->next) {
+      if (((ULLTADDR(s2->org) >= ULLTADDR(s->org) &&
+            ULLTADDR(s2->org) < ULLTADDR(s->pc)) ||
+           (ULLTADDR(s2->pc) > ULLTADDR(s->org) &&
+            ULLTADDR(s2->pc) <= ULLTADDR(s->pc))))
+        output_error(0,s->name,ULLTADDR(s->org),ULLTADDR(s->pc),
+                     s2->name,ULLTADDR(s2->org),ULLTADDR(s2->pc));
+    }
+    nsecs++;
+  }
+  return nsecs;
+}
 
 taddr get_sym_value(symbol *s)
 /* determine symbol's value, returns alignment for common symbols */
@@ -711,4 +780,25 @@ utaddr get_sec_size(section *sec)
   /* section size is assumed to be in in (sec->pc - sec->org), otherwise
      we would have to calculate it from the atoms and store it there */
   return sec ? (utaddr)sec->pc - (utaddr)sec->org : 0;
+}
+
+
+int get_sec_type(section *s)
+/* determine section type from its attributes */
+{
+  char *a = s->attr;
+
+  if (s->flags & ABSOLUTE)
+    return S_ABS;
+  while (*a) {
+    switch (*a++) {
+      case 'c':
+        return S_TEXT;
+      case 'd':
+        return S_DATA;
+      case 'u':
+        return S_BSS;
+    }
+  }
+  return S_MISS;  /* type is missing */
 }

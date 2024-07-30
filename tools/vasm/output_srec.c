@@ -1,8 +1,10 @@
-/* output_srec.c Motorola S-record output driver for vasm
+/* srec.c Motorola S-record output driver for vasm
  (c) in 2015 by Joseph Zatarski
  
  jzatar2@illinois.edu
  
+  modified 2021 by Grzegorz Mazur, g.mazur@ii.pw.edu.pl
+
 NOTE: this file makes assumptions that your character set is at least ASCII
 compatible. That is, the characters 0-9, A-F, and S are the same for your
 character set as in ASCII, and your newline character at least contains CR.
@@ -14,7 +16,7 @@ likely need to be converted to ASCII to use it elsewhere.
 #include "vasm.h"
 
 #ifdef OUTSREC
-static char *copyright="vasm motorola srecord output module 1.0 (c) 2015 Joseph Zatarski";
+static char *copyright="vasm motorola srecord output module 2.0 (c) 2015 Joseph Zatarski";
 
 static uint8_t data[32];  /* acts as a buffer for data portion of a record */
 static size_t data_size;  /* indicates current size of data[] */
@@ -49,23 +51,27 @@ static char *start_sym; /* points to name of the start symbol, or NULL if not
 static char *default_start="start"; /* name of default execution address symbol
                                        for termination record */
 
+/* gbm modifications 06'21 */
+static void write_newline(FILE *f)
+{
+  if (!asciiout)
+    fw8(f, '\r');
+  fw8(f, '\n');
+}
+
+static char tohex(uint8_t v)
+{
+  return "0123456789ABCDEF"[v & 0xf];
+}
+
 static void write_hex_byte(FILE *f, uint8_t byte)
 /* write a pair of ASCII characters to represent the byte in hex */
 {
-  uint8_t temp;
-  
-  temp = ((byte & 0xf0) >> 4) + '0';  /* adds offset for character '0' */
-  if(temp > '9')  /* if the nibble isn't 0-9 */
-    temp += 'A' - '9' - 1; /* then we convert to A-F */
-  
-  fw8(f,temp);
-  
-  temp = (byte & 0x0f) + '0';  /* see above */
-  if(temp > '9')
-    temp += 'A' - '9' - 1;
-  
-  fw8(f,temp);
+  fw8(f, tohex(byte >> 4));
+  fw8(f, tohex(byte));
 }
+/* end of gbm mods */
+
 
 static void write_data_buffer(FILE *f, uint8_t type)
 /*
@@ -75,10 +81,8 @@ static void write_data_buffer(FILE *f, uint8_t type)
  * types, although that should never happen.
  */
 {
-  uint8_t checksum = 0;
+  uint8_t checksum;
   int i;
-  
-  char line_end[] = "\n";
   
   if(data_size == 0 && type != 0) /* allow S0 record to have data size of 0 */
     return; /* nothing to write */
@@ -87,70 +91,51 @@ static void write_data_buffer(FILE *f, uint8_t type)
   if(type > 0 && ((srec_pc >> ((type + 1) * 8)) != 0))
     output_error(11,srec_pc);
   
-  if(type <= 3)
-  {
-    fw8(f, 'S');
-    fw8(f, type + '0');
-  }
-  
-  else
+  if(type > 3)
     return; /* ignore types we don't handle, but this shouldn't ever happen */
-  
-  if(type == 3)
-  {
-    write_hex_byte(f, data_size + 5); /* count: 4 bytes for address + checksum */
-    checksum += data_size + 5;
-  
-  }
 
-  else if(type == 2)
-  {
-    write_hex_byte(f, data_size + 4); /* count: 3 bytes for address + checksum */
-    checksum += data_size + 4;
-  }
+  fw8(f, 'S');
+  fw8(f, type + '0');
   
-  else if(type <= 1) /* type is uint, so no need to check if <0 */
-  {
-    write_hex_byte(f, data_size + 3); /* count: 2 bytes for address + checksum */
-    checksum += data_size + 3;
-  }
-  
+  checksum = data_size + 2 + (type ? type : 1);  /* at least 2 byte address */
+
+  write_hex_byte(f, checksum); /* count: 4 bytes for address + checksum */
+
   if(type > 2)
   {
-    write_hex_byte(f, (srec_pc & 0xff000000) >> 24);
-    checksum += (srec_pc & 0xff000000) >> 24;
+    uint8_t b = srec_pc >> 24;
+    write_hex_byte(f, b);
+    checksum += b;
   }
-  
   if(type > 1)
   {
-    write_hex_byte(f, (srec_pc & 0xff0000) >> 16);
-    checksum += (srec_pc & 0xff0000) >> 16;
+    uint8_t b = srec_pc >> 16;
+    write_hex_byte(f, b);
+    checksum += b;
   }
-  
   if(type > 0)
   {
-    write_hex_byte(f, (srec_pc & 0xff00) >> 8);
-    checksum += (srec_pc & 0xff00) >> 8;
+    uint8_t b = srec_pc >> 8;
+    write_hex_byte(f, b);
+    checksum += b;
     write_hex_byte(f, srec_pc & 0xff);
     checksum += srec_pc & 0xff;
-  }
-  
+  }  
   else /* type must be 0 */
   {
     write_hex_byte(f, 0);
     write_hex_byte(f, 0);
   }
   
-  for(i=0; i < data_size; i++)
+  for(i = 0; i < data_size; i++)
   {
     write_hex_byte(f, data[i]);
     checksum += data[i];
   }
   
   write_hex_byte(f, checksum ^ 0xff);
-  
-  for(i = 0; line_end[i] != '\0'; i++)
-    fw8(f, line_end[i]);
+
+  write_newline(f);
   
   srec_pc += data_size;
   data_size = 0;
@@ -161,10 +146,6 @@ static void write_termination_record(FILE *f)
  * mode */
 {
   uint8_t checksum = 0;
-  
-  char line_end[] = "\n";
-  
-  int i;
   
   /* check if address is out of range for this record type and error */
   if(srecfmt > 0 && ((start_addr >> ((srecfmt + 1) * 8)) != 0))
@@ -179,40 +160,35 @@ static void write_termination_record(FILE *f)
     checksum += 5;
   
   }
-
   else if(srecfmt == S28)
   {
     write_hex_byte(f, 4); /* count: 3 bytes for address + checksum */
     checksum += 4;
   }
-  
   else if(srecfmt == S19)
   {
     write_hex_byte(f, 3); /* count: 2 bytes for address + checksum */
     checksum += 3;
   }
-  
+
   if(srecfmt >= S37)
   {
     write_hex_byte(f, (start_addr & 0xff000000) >> 24);
     checksum += (start_addr & 0xff000000) >> 24;
-  }
-  
+  }  
   if(srecfmt >= S28)
   {
     write_hex_byte(f, (start_addr & 0xff0000) >> 16);
     checksum += (start_addr & 0xff0000) >> 16;
-  }
-  
+  }  
   write_hex_byte(f, (start_addr & 0xff00) >> 8);
   checksum += (start_addr & 0xff00) >> 8;
   write_hex_byte(f, start_addr & 0xff);
   checksum += start_addr & 0xff;
-  
+
   write_hex_byte(f, checksum ^ 0xff);
-  
-  for(i = 0; line_end[i] != '\0'; i++)
-    fw8(f, line_end[i]);
+
+  write_newline(f);
 }
 
 static void put_byte_in_buffer(FILE *f, uint8_t byte)
@@ -224,17 +200,28 @@ static void put_byte_in_buffer(FILE *f, uint8_t byte)
   
   if(data_size >= 32)
     write_data_buffer(f, srecfmt);
-    
+}
+
+static void put_tbyte_in_buffer(FILE *f, void *tbyte)
+/* puts a target byte into the data buffer (not necessarily 8-bit bytes) */
+{
+  uint8_t *p = tbyte;
+  int i;
+
+  if (output_bytes_le)
+    for (i = octetsperbyte; i > 0; put_byte_in_buffer(f, p[--i]));
+  else
+    for (i = 0; i < octetsperbyte; put_byte_in_buffer(f, p[i++]));
   pc++;
 }
 
 static void addralign(FILE *f,atom *a,section *sec)
 /* modified from fwpcalign() in supp.c */
 {
-  int align_warning = 0;
   taddr n = balign(pc,a->align);
   taddr patlen;
   uint8_t *pat;
+  int i;
 
   if (n == 0)
     return;
@@ -250,43 +237,30 @@ static void addralign(FILE *f,atom *a,section *sec)
     patlen = sec->padbytes;
   }
 
-  /*pc += n; */ /*done in put_byte_in_buffer()*/
-
   while (n % patlen) {
-    if (!align_warning) {
-      align_warning = 1;
-      /*output_error(9,sec->name,(unsigned long)n,(unsigned long)patlen,
-                   ULLTADDR(pc));*/
-    }
-    put_byte_in_buffer(f,0);
+    for (i = 0; i < octetsperbyte; i++)
+      put_byte_in_buffer(f, 0);
     n--;
+    pc++;
   }
 
-  /* write alignment pattern */
   while (n >= patlen) {
-    int i;
     for(i = 0; i < patlen; i++)
-    {
-      put_byte_in_buffer(f, *(pat + i));
-    }
+      put_tbyte_in_buffer(f, pat + OCTETS(i));
     n -= patlen;
   }
 
   while (n--) {
-    if (!align_warning) {
-      align_warning = 1;
-      /*output_error(9,sec->name,(unsigned long)n,(unsigned long)patlen,
-                   ULLTADDR(pc));*/
-    }
-    put_byte_in_buffer(f, 0);
+    for (i = 0; i < octetsperbyte; i++)
+      put_byte_in_buffer(f, 0);
+    pc++;
   }
 }
 
 static void write_output(FILE *f,section *sec,symbol *sym)
 {
-  section *s,*s2,**seclist,**slp;
+  section *s;
   atom *p;
-  size_t nsecs;
   unsigned long long i, j;
 
   if (!sec)
@@ -315,21 +289,21 @@ static void write_output(FILE *f,section *sec,symbol *sym)
     }
     write_data_buffer(f, 0); /* record type is S0 for header */
     
-    pc = ULLTADDR(s->org);	/* start at the org address */
-    srec_pc = pc;		/* need to update both */
-    for (p=s->first; p; p=p->next)	/* iterate through atoms */
+    pc = s->org;                        /* start at the org address */
+    srec_pc = pc * octetsperbyte;       /* displayed in s-records */
+    for (p=s->first; p; p=p->next)      /* iterate through atoms */
     {
       addralign(f,p,s);
       if(p->type == DATA)
         for (i = 0; i < p->content.db->size; i++)
-          put_byte_in_buffer(f,(uint8_t)p->content.db->data[i]);
+          put_tbyte_in_buffer(f,p->content.db->data+OCTETS(i));
       else if (p->type == SPACE)
       {
         for (i = 0; i < p->content.sb->space; i++)
         {
           for (j = 0; j < p->content.sb->size; j++)
           {
-            put_byte_in_buffer(f,p->content.sb->fill[j]);
+            put_tbyte_in_buffer(f,p->content.sb->fill+OCTETS(j));
           }
         }
       } 
@@ -373,6 +347,12 @@ static int output_args(char *p)
     start_sym = p + 6;
     return 1;
   }
+
+  else if (!strcmp(p, "-crlf"))
+  {
+    asciiout = 0;
+    return 1;
+  }
   return 0;	
 }
 
@@ -382,6 +362,9 @@ int init_output_srec(char **cp,void (**wo)(FILE *,section *,symbol *),int (**oa)
   *cp = copyright;
   *wo = write_output;
   *oa = output_args;
+  asciiout = 1;
+  output_bitsperbyte = 1;  /* we do support BITSPERBYTE != 8 */
+  defsecttype = emptystr;  /* default section is "org 0" */
   return 1;
 }
 

@@ -3,8 +3,9 @@
 
 #define LITTLEENDIAN 1
 #define BIGENDIAN 0
+#define BITSPERBYTE 8
 #define VASM_CPU_X86 1
-#define MNEMOHTABSIZE 0x8000
+#define MNEMOHTABSIZE 0x10000
 
 /* maximum number of operands in one mnemonic */
 #define MAX_OPERANDS 3
@@ -15,6 +16,9 @@
 /* data type to represent a target-address */
 typedef int64_t taddr;
 typedef uint64_t utaddr;
+
+/* we support floating point constants */
+#define FLOAT_PARSER 1
 
 /* minimum instruction alignment */
 #define INST_ALIGN 1
@@ -30,7 +34,10 @@ int x86_data_operand(int);
 #define DATA_OPERAND(n) x86_data_operand(n)
 
 /* make sure operand is cleared upon first entry into parse_operand() */
-#define NEED_CLEARED_OPERANDS 1
+#define CLEAR_OPERANDS_ON_START 1
+
+/* may use '#' to introduce comments in std-syntax */
+#define SYNTAX_STD_COMMENTCHAR_HASH
 
 
 /* register symbols */

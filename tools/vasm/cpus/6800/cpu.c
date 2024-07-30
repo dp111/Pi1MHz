@@ -1,6 +1,6 @@
 /*
  * cpu.c 6800 cpu description file
- * (c) in 2013-2016 by Esben Norby and Frank Wille
+ * (c) in 2013-2016,2019 by Esben Norby and Frank Wille
  */
 
 #include "vasm.h"
@@ -8,20 +8,18 @@
 mnemonic mnemonics[] = {
 #include "opcodes.h"
 };
+const int mnemonic_cnt = sizeof(mnemonics) / sizeof(mnemonics[0]);
 
-int mnemonic_cnt = sizeof(mnemonics) / sizeof(mnemonics[0]);
-
-int		bitsperbyte = 8;
 int		bytespertaddr = 2;
-char *		cpu_copyright = "vasm 6800/6801/68hc11 cpu backend 0.3 (c) 2013-2016 Esben Norby";
-char *		cpuname = "6800";
+const char *	cpu_copyright = "vasm 6800/6801/68hc11 cpu backend 0.5 (c) 2013-2016,2019,2021 Esben Norby";
+const char *	cpuname = "6800";
 
 static uint8_t	cpu_type = M6800;
 static int 	modifier;	/* set by find_base() */
 
 
 int
-init_cpu()
+init_cpu(void)
 {
 	return 1;
 }
@@ -32,7 +30,7 @@ cpu_args(char *p)
 {
 	if (!strncmp(p, "-m68", 4)) {
 		p += 4;
-		if (p[0] == '0' && p[3] == '\0') {
+		if (p[0] == '0' && p[2] == '\0') {
 			switch(p[1]) {
 				case '0':
 				case '2':
@@ -70,7 +68,7 @@ parse_cpu_special(char *start)
 
 
 operand *
-new_operand()
+new_operand(void)
 {
 	operand *new = mymalloc(sizeof(*new));
 	new->type = -1;
@@ -138,6 +136,11 @@ parse_operand(char *p, int len, operand *op, int required)
 		return PO_NOMATCH;
 	}
 
+	p = skip(p);
+	if (*p && p-start<len) {
+		cpu_error(0);  /* trailing garbage */
+		return PO_CORRUPT;
+	}
 	op->type = required;
 	return PO_MATCH;
 }
@@ -170,12 +173,12 @@ eval_oper(operand *op, section *sec, taddr pc, taddr offs, dblock *db)
 	    case DIR:
 		size = 1;
 		if (db != NULL && (val < 0 || val > 0xff))
-			cpu_error(1);  /* operand doesn't fit into 8-bits */
+			cpu_error(2);  /* operand doesn't fit into 8-bits */
                 break;
 	    case IMM:
 		size = 1;
 		if (db != NULL && !modifier && (val < -0x80 || val > 0xff))
-			cpu_error(1);  /* operand doesn't fit into 8-bits */
+			cpu_error(2);  /* operand doesn't fit into 8-bits */
 		break;
 	    case EXT:
 	    case IMM16:
@@ -188,12 +191,18 @@ eval_oper(operand *op, section *sec, taddr pc, taddr offs, dblock *db)
 
 	if (size > 0 && db != NULL) {
 		/* create relocation entry and code for this operand */
-		if (base != NULL && btype == BASE_OK && op->type == REL) {
+		if (op->type == REL && base == NULL) {
+			/* relative branch to absolute label */
+			val = val - (pc + offs + 1);
+			if (val < -0x80 || val > 0x7f)
+				cpu_error(3); /* branch out of range */
+		}
+		else if (op->type == REL && base != NULL && btype == BASE_OK) {
 			/* relative branches */
 			if (!is_pc_reloc(base, sec)) {
 				val = val - (pc + offs + 1);
 				if (val < -0x80 || val > 0x7f)
-					cpu_error(2); /* branch out of range */
+					cpu_error(3); /* branch out of range */
 			}
 			else
 				add_extnreloc(&db->relocs, base, val, REL_PC,
@@ -304,7 +313,7 @@ eval_data(operand *op, size_t bitsize, section *sec, taddr pc)
 	taddr val;
 
 	if (bitsize != 8 && bitsize != 16)
-		cpu_error(0,bitsize);  /* data size not supported */
+		cpu_error(1,bitsize);  /* data size not supported */
 
 	db->size = bitsize >> 3;
 	d = db->data = mymalloc(db->size);
@@ -337,7 +346,7 @@ eval_data(operand *op, size_t bitsize, section *sec, taddr pc)
 
 	if (bitsize == 8) {
 		if (val < -0x80 || val > 0xff)
-			cpu_error(1);  /* operand doesn't fit into 8-bits */
+			cpu_error(2);  /* operand doesn't fit into 8-bits */
 	}
 	else  /* 16 bits */
 		*d++ = (val >> 8) & 0xff;

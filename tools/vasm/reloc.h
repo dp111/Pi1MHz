@@ -1,5 +1,5 @@
 /* reloc.h  reloc header file for vasm */
-/* (c) in 2002,2005-8,2010,2011,2016 by Volker Barthelmann and Frank Wille */
+/* (c) in 2002,2005-11,2016,2023-2024 by Volker Barthelmann and Frank Wille */
 
 #ifndef RELOC_H
 #define RELOC_H
@@ -28,40 +28,65 @@
 #define REL_JMPSLOT (REL_COPY+1)     /* procedure linkage table entry */
 #define REL_SECOFF (REL_JMPSLOT+1)   /* symbol's offset to start of section */
 #define LAST_STANDARD_RELOC REL_SECOFF
+#if LAST_STANDARD_RELOC>0x1f
+#error too many standard relocation types
+#endif
+#define STD_REL_TYPE(t) ((t)&0x1f)   /* masks out the standard type */
+
+/* By default relocations have unspecified signedness, which makes signed
+   and unsigned ranges both valid for checks.
+   The backend may define an explicit signedness with the following flags: */
+#define REL_MOD_S 0x20               /* signed */
+#define REL_MOD_U 0x40               /* unsigned */
+
+/* CPU-specific relocations start here */
+#define FIRST_CPU_RELOC 0x80
+/* LAST_CPU_RELOC must be defined by CPU module, when it supports additional
+   relocations. */
 
 /* standard reloc struct */
 typedef struct nreloc {
   size_t byteoffset;  /* byte-offset in data atom to beginning of relocation */
   size_t bitoffset;   /* bit-offset adds to byte-off. - start of reloc.field */
   size_t size;        /* size of relocation field in bits */
-  taddr mask;
+  utaddr mask;
   taddr addend;
   symbol *sym;
 } nreloc;
 
-typedef struct rlist {
+struct rlist {
   struct rlist *next;
   void *reloc;
   int type;
-} rlist;
+};
 
-#define MAKEMASK(x) ((1LL<<(x))-1LL)
+#define DEFMASK (~(utaddr)0)
+#define MAKEMASK(x) (((x)>=sizeof(unsigned long long)*CHAR_BIT)?(~(unsigned long long)0):((((unsigned long long)1)<<(x))-1u))
 
 
 nreloc *new_nreloc(void);
 rlist *add_extnreloc(rlist **,symbol *,taddr,int,size_t,size_t,size_t);
 rlist *add_extnreloc_masked(rlist **,symbol *,taddr,int,size_t,size_t,
-                            size_t,taddr);
-int is_pc_reloc(symbol *,section *);
-void do_pic_check(rlist *);
-taddr nreloc_real_addend(nreloc *);
-void unsupp_reloc_error(rlist *);
-void print_reloc(FILE *,int,nreloc *);
-
+                            size_t,utaddr);
 /* old interface: byteoffset and bitoffset are calculated from offset 'o' */
 #define add_nreloc(r,y,a,t,s,o) \
-  add_extnreloc(r,y,a,t,(o)%bitsperbyte,s,(o)/bitsperbyte)
+  add_extnreloc(r,y,a,t,(o)%BITSPERBYTE,s,(o)/BITSPERBYTE)
 #define add_nreloc_masked(r,y,a,t,s,o,m) \
-  add_extnreloc_masked(r,y,a,t,(o)%bitsperbyte,s,(o)/bitsperbyte,m)
+  add_extnreloc_masked(r,y,a,t,(o)%BITSPERBYTE,s,(o)/BITSPERBYTE,m)
+
+#ifndef LAST_CPU_RELOC
+#define cpu_reloc_size(r) 0
+#endif
+int is_pc_reloc(symbol *,section *);
+int std_reloc(rlist *);
+#define is_std_reloc(r) (std_reloc(r)>=0)
+#define is_nreloc(r) (std_reloc(r)>=0 || cpu_reloc_size(r)==0)
+void do_pic_check(rlist *);
+taddr nreloc_real_addend(nreloc *);
+void unsupp_reloc_error(atom *,rlist *);
+void print_nreloc(FILE *,nreloc *,int);
+void print_reloc(FILE *,rlist *);
+rlist *get_relocs(atom *);
+int patch_nreloc(atom *,rlist *,taddr,int);
 
 #endif
