@@ -230,6 +230,14 @@ See @code{.string}.
       Conditionally assemble the following lines when <operand> is
       non-blank.
 
+@item .ifc <string1>,<string2>
+      Conditionally assemble the following lines when <string1> matches
+      <string2>. Empty strings are allowed. Quotes are optional.
+
+@item .ifnc <string1>,<string2>
+      Conditionally assembler the following lines when <string1> differs
+      from <string2>. Empty strings are allowed. Quotes are optional.
+
 @item .ifdef <symbol>
       Conditionally assemble the following lines if <symbol> is defined.
 

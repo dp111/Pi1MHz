@@ -60,6 +60,12 @@ o 6502: New option -am to mask all immediate and data values to their
   specified size.
 o x86: Default to 16-bit addressing when -m selects a CPU below 386.
   Default to 64-bit addressing with -m64.
+o x86: Let the mnemonic's suffix always decide about the operation size,
+  even when the operand is label (gas seems to do the same).
+o x86: Mask all immediate operand relocations according to their size
+  (to allow something like movb $label,dest or movw $label,dest).
+o x86: Fix macros with size-suffixes (b,w,l,s,q,x). Size qualifiers are
+  no longer allowed in x86-macros.
 o oldstyle-syntax: MACRO (written in upper case) didn't work with arguments.
 o oldstyle-syntax: New ifblank and ifnblank directives may be used to
   check whether a macro argument was given.
@@ -72,6 +78,7 @@ o std-syntax: The "true" result of logical operations should be 1 not -1.
 o std-syntax: Allow XY' (alternate) registers with Z80.
 o std-syntax: The .org directive always defines the absolute address for
   subsequent code, as long as no relocatable section was defined (or -gas).
+o std-syntax: .ifc and .ifnc directives for comparing strings.
 o hunk-output: New option -noabspath to refrain from creating absolute
   paths for source line debugging (LINE debug format).
 o hunk-output: New options -dbg-local and -dbg-globloc to include local
