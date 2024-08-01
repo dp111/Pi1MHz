@@ -25,8 +25,8 @@
 #  r7 - External nOE pin
 #  r8 - temp
 #  r9 - r9 Databus and test pin output select
-# r10 - address mask
-# r11 - (0xFF<<DATASHIFT)  # clear databus low
+# r10 -
+# r11 -
 # r12 - GPIO pins value
 # r13 - pointer to doorbell register
 # r14 -
@@ -51,16 +51,9 @@
 .equ ADDRBUS_SHIFT, (16)
 .equ OUTPUTBIT,   (15)
 
-.equ D7_PIN,       (9)
-.equ D6_PIN,       (8)
-.equ D5_PIN,       (7)
-.equ D4_PIN,       (6)
-.equ D3_PIN,       (5)
-.equ D2_PIN,       (4)
-.equ D1_PIN,       (3)
-.equ D0_PIN,       (2)
+.equ ADDRESSBUS_WIDTH, (8 + 1)
+.equ DATABUS_WIDTH, 8
 
-.equ ADDRBUS_MASK,  (0xFF<<ADDRBUS_SHIFT)
 .equ NPCFC_MASK,    (1<<nPCFC)
 
 .equ Pi1MHz_MEM_RNW, (1<<9)
@@ -75,9 +68,15 @@
    or     r9, r3, r4       # add in test pin so that it is still enabled
    mov    r6, GPFSEL0
    mov    r7, 1            # external nOE pin
-   mov    r10, ((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))
-   mov    r11, (0xFF<<DATASHIFT)  # clear databus low
+
    mov    r13, GPU_ARM_DBELL
+   nop
+   nop
+   nop
+   nop
+   nop
+   nop
+
 
 # poll for nPCFC or nPCFD being low
 
@@ -105,13 +104,13 @@ waitforclklow:                   # wait for extra half cycle to end
    btst   r12, CLK
    bne    waitforclklow
 
-waitforclkhigh:
 .balignw 4,1 # Align with nops
+waitforclkhigh:
 waitforclkhighloop:
    LSR    r8, r12,ADDRBUS_SHIFT
    ld     r12, GPLEV0_offset(r6)
-   and    r8, r10                # Isolate address bus
-   ldh    r8, (r0,r8) # get byte to write out
+   extu   r8, ADDRESSBUS_WIDTH   # bmask Isolate address bus
+   ldh    r8, (r0,r8)            # get byte to write out
 
    btst   r12, CLK
    beq    waitforclkhighloop
@@ -132,7 +131,7 @@ waitforclkhighloop:
 
 
    btst   r8, OUTPUTBIT
-   and    r8, r11                # isolate databus
+   extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above
 
    st     r8, GPSET0_offset(r6)  # set up databus
    beq    skipenablingbus
@@ -152,7 +151,7 @@ waitforclklow2loop:
 
    st     r7, GPSET0_offset(r6)  # set external output enable high
    st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
-   st     r11, GPCLR0_offset(r6)  # clear databus low (0xFF<<DATASHIFT)
+   st     r8, GPCLR0_offset(r6)  # clear databus low
 
    b      Poll_loop
 
