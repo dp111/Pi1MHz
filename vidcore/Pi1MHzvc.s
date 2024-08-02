@@ -18,7 +18,7 @@
 #  r0 - pointer to shared memory ( VC address) of tube registers
 #  r1 - pointer to data to xfer to ARM
 #  r2 - unused
-#  r3 - r9 Databus and test pin output select
+#  r3 - Databus and test pin output select
 #  r4 - debug output control
 #  r5 - debug pin mask (0 = no debug  xx= debug pin e.g 1<<21)
 #  r6 - GPFSEL0 constant
@@ -159,11 +159,12 @@ waitforclklow2loop:
 writecycle:
    st     r7, GPCLR0_offset(r6)  # set external output enable low
 waitforclkloww2:
-   ld     r8, GPLEV0_offset(r6)
-   btst   r8, CLK
-   movne  r12,r8
+   mov    r8,r12
+   ld     r12, GPLEV0_offset(r6)
+   btst   r12, CLK
    bne    waitforclkloww2
-   st     r12, (r1)         # post data
-   st     r12, (r13)        # ring doorbell
+
+   st     r8, (r1)         # post data
+   st     r8, (r13)        # ring doorbell
    st     r7, GPSET0_offset(r6)  # set external output enable high
    b      Poll_loop

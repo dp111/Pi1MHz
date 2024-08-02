@@ -1,5 +1,5 @@
 Sections:
-00: "org0001:0" (0-92)
+00: "org0001:0" (0-90)
 
 
 Source: "Pi1MHzvc.s"
@@ -23,7 +23,7 @@ Source: "Pi1MHzvc.s"
                             	    18: #  r0 - pointer to shared memory ( VC address) of tube registers
                             	    19: #  r1 - pointer to data to xfer to ARM
                             	    20: #  r2 - unused
-                            	    21: #  r3 - r9 Databus and test pin output select
+                            	    21: #  r3 - Databus and test pin output select
                             	    22: #  r4 - debug output control
                             	    23: #  r5 - debug pin mask (0 = no debug  xx= debug pin e.g 1<<21)
                             	    24: #  r6 - GPFSEL0 constant
@@ -164,15 +164,16 @@ Source: "Pi1MHzvc.s"
                             	   159: writecycle:
 00:0000007E 673A            	   160:    st     r7, GPCLR0_offset(r6)  # set external output enable low
                             	   161: waitforclkloww2:
-00:00000080 682D            	   162:    ld     r8, GPLEV0_offset(r6)
-00:00000082 B86D            	   163:    btst   r8, CLK
-00:00000084 0CC08860        	   164:    movne  r12,r8
-00:00000088 FC18            	   165:    bne    waitforclkloww2
-00:0000008A 1C09            	   166:    st     r12, (r1)         # post data
-00:0000008C DC09            	   167:    st     r12, (r13)        # ring doorbell
-00:0000008E 6737            	   168:    st     r7, GPSET0_offset(r6)  # set external output enable high
-00:00000090 481F            	   169:    b      Poll_loop
-                            	   170: 
+00:00000080 C840            	   162:    mov    r8,r12
+00:00000082 6C2D            	   163:    ld     r12, GPLEV0_offset(r6)
+00:00000084 BC6D            	   164:    btst   r12, CLK
+00:00000086 FD18            	   165:    bne    waitforclkloww2
+                            	   166: 
+00:00000088 1809            	   167:    st     r8, (r1)         # post data
+00:0000008A D809            	   168:    st     r8, (r13)        # ring doorbell
+00:0000008C 6737            	   169:    st     r7, GPSET0_offset(r6)  # set external output enable high
+00:0000008E 491F            	   170:    b      Poll_loop
+                            	   171: 
 
 
 Symbols by name:
