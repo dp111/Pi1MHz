@@ -32,6 +32,10 @@ o Fixed string constants (in immediate addressing modes) with non-ASCII
 o Fixed potential buffer overflow when generating a section name for
   ORG directives (since V1.9f).
 o Output modules now show the source line for unknown relocation errors.
+o m68k: Most out of range errors have now become warnings.
+o m68k: Out of range 8-bit immediate constants write to all 16 bits of
+  the extension word, with a warning (to be able to simulate the behaviour
+  of some old, faulty assemblers).
 o m68k: Improved -opt-size optimization for move.l->moveq/lsl, which now
   optimizes all values below 0x8000 where the highest and lowest bit set
   does not span more than 7 bits (suggested by Erik Hemming).
@@ -58,10 +62,13 @@ o 6502: Byte-selector operators are gone and turned into operand prefixes,
   according to the official WDC syntax.
 o 6502: New option -am to mask all immediate and data values to their
   specified size.
+o 6502: Hu6280 uses SETDP $2000 to move the zero page for automatic code
+  optimizations.
+o 6502: Generate SECOFF-relocs for 65816 DP addressing modes.
 o x86: Default to 16-bit addressing when -m selects a CPU below 386.
   Default to 64-bit addressing with -m64.
 o x86: Let the mnemonic's suffix always decide about the operation size,
-  even when the operand is label (gas seems to do the same).
+  even when the operand is a label (gas seems to do the same).
 o x86: Mask all immediate operand relocations according to their size
   (to allow something like movb $label,dest or movw $label,dest).
 o x86: Fix macros with size-suffixes (b,w,l,s,q,x). Size qualifiers are
@@ -74,6 +81,7 @@ o oldstyle-syntax: New directive exitmacro to exit recursive macro
 o oldstyle-syntax: New directive da as an alias for addr.
 o oldstyle-syntax: Section attributes 'f' and 'z' may be used to designate
   a section for far- or near-addressing (e.g. direct/zero-page).
+o oldstyle-syntax: Fixed FCC for single characters (no expressions allowed).
 o std-syntax: The "true" result of logical operations should be 1 not -1.
 o std-syntax: Allow XY' (alternate) registers with Z80.
 o std-syntax: The .org directive always defines the absolute address for

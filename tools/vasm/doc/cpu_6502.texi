@@ -14,7 +14,9 @@ This module provides the following additional options:
 
 @table @option
     @item -6280
-        Recognize all HuC6280 instructions.
+        Recognize all HuC6280 instructions. Includes @code{setdp $2000}, so
+        zero-page addressing modes will be automatically used from
+        @code{$2000} to @code{$20ff}.
     @item -802
         Same as @option{-816}. There is no difference in the instruction set.
     @item -816
@@ -159,8 +161,9 @@ directives:
 
 @item setdp <expr>
       Set the current base address of the zero/direct page for
-      optimizations from absolute to zero-page addressing modes.
-      Example: set it to @code{$2000} for the HuC6280/PC-Engine.
+      optimizations from absolute to direct-page addressing modes.
+      Can be set to any 16-bit address on 65816 (defaults to zero).
+      Is preset to @code{$2000} for the HuC6280/PC-Engine.
 
 @item x8
       Declares that immediate instructions accessing the index registers

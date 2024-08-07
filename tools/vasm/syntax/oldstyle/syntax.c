@@ -408,17 +408,25 @@ static void handle_d8_mod(char *s)
 static void do_text(char *s,unsigned char add)
 {
   char *opstart = s;
-  dblock *db = NULL;
+  dblock *db;
 
   if (db = parse_string(&opstart,*s,8)) {
     if (db->data) {
       add_atom(0,new_data_atom(db,1));
       db->data[db->size-1] += add;
-      eol(opstart);
-      return;
     }
+    eol(opstart);
   }
-  syntax_error(8);  /* invalid data operand */
+  else if (!ISEOL(s) && !ISEOL(s+1)) {  /* store single character */
+    db = new_dblock();
+
+    db->size = 1;  /* 8 bits! */
+    db->data = mymalloc(db->size);
+    db->data[0] = s[1] + add;
+    add_atom(0,new_data_atom(db,1));
+  }
+  else
+    syntax_error(8);  /* invalid data operand */
 }
 
 
@@ -1361,13 +1369,14 @@ static int execute_struct(char *name,int name_len,char *s)
             if (*opp=='\"' || *opp=='\'') {
               dblock *strdb;
 
-              strdb = parse_string(&opp,*opp,8);
-              if (strdb->size) {
-                if (strdb->size > db->size)
-                  syntax_error(24,strdb->size-db->size);  /* cut last chars */
-                memcpy(db->data,strdb->data,
-                       strdb->size > db->size ? db->size : strdb->size);
-                myfree(strdb->data);
+              if (strdb = parse_string(&opp,*opp,8)) {
+                if (strdb->size) {
+                  if (strdb->size > db->size)
+                    syntax_error(24,strdb->size-db->size); /* cut last chars */
+                  memcpy(db->data,strdb->data,
+                         strdb->size > db->size ? db->size : strdb->size);
+                  myfree(strdb->data);
+                }
               }
               myfree(strdb);
             }
