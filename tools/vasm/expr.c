@@ -5,14 +5,24 @@
 
 char current_pc_char='$';
 int unsigned_shift;
+int charsperexp;
 
 static char *s;
 static symbol *cpc;
 static int make_tmp_lab;
 static int exp_type;
+static int charspertaddr;
 
 static expr *expression(void);
 
+
+int init_expr(void)
+{
+  /* maximum number of characters in expression strings */
+  charspertaddr=bytespertaddr*BITSPERBYTE/8;
+  if(!charsperexp) charsperexp=charspertaddr;
+  return 1;
+}
 
 #ifndef EXPSKIP
 #define EXPSKIP() s=expskip(s)
@@ -257,6 +267,8 @@ static expr *primary_expr(void)
         shift+=8;
       }else
         ierror(0);
+      if(cnt>=charsperexp&&*s!=quote)
+        break;
     }
     EXPSKIP();
     new=new_expr();

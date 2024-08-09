@@ -73,6 +73,8 @@ o x86: Mask all immediate operand relocations according to their size
   (to allow something like movb $label,dest or movw $label,dest).
 o x86: Fix macros with size-suffixes (b,w,l,s,q,x). Size qualifiers are
   no longer allowed in x86-macros.
+o x86: Allow multiple alternating .codeNN directives in the source.
+o x86: Add missing prefix when using 32-bit registers in 16-bit mode.
 o oldstyle-syntax: MACRO (written in upper case) didn't work with arguments.
 o oldstyle-syntax: New ifblank and ifnblank directives may be used to
   check whether a macro argument was given.
@@ -82,6 +84,8 @@ o oldstyle-syntax: New directive da as an alias for addr.
 o oldstyle-syntax: Section attributes 'f' and 'z' may be used to designate
   a section for far- or near-addressing (e.g. direct/zero-page).
 o oldstyle-syntax: Fixed FCC for single characters (no expressions allowed).
+o oldstyle-syntax: The closing quote-character (' or ") in single-character
+  expressions is now optional (compatibility with old Motorola sources).
 o std-syntax: The "true" result of logical operations should be 1 not -1.
 o std-syntax: Allow XY' (alternate) registers with Z80.
 o std-syntax: The .org directive always defines the absolute address for

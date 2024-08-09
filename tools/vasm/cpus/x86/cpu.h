@@ -19,6 +19,19 @@
 typedef int64_t taddr;
 typedef uint64_t utaddr;
 
+/* assembler mode: 16, 32 or 64 bit */
+enum codetype {
+  CODE_32BIT,
+  CODE_16BIT,
+  CODE_64BIT
+};
+
+/* we use OPTS atoms for cpu-specific options */
+#define HAVE_CPU_OPTS 1
+typedef struct {
+  enum codetype mode;
+} cpuopts;
+
 /* we support floating point constants */
 #define FLOAT_PARSER 1
 

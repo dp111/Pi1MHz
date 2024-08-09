@@ -51,12 +51,6 @@ static char *l_str = "l";
 static char *q_str = "q";
 /*static char *x_str = "x";*/
 
-/* assembler mode: 16, 32 or 64 bit */
-enum codetype {
-  CODE_32BIT,
-  CODE_16BIT,
-  CODE_64BIT
-};
 static enum codetype mode_flag = CODE_32BIT;  /* may change with cpu_type */
 
 /* operand types for printing */
@@ -71,6 +65,35 @@ static const char *operand_type_str[] = {
 /* scale factors log2(scale) -> original scale factor */
 static const int scale_factor_tab[4] = { 1, 2, 4, 8 };
 
+
+
+void cpu_opts(void *opts)
+/* set cpu options for following atoms */
+{
+  mode_flag = ((cpuopts *)opts)->mode;
+}
+
+
+void cpu_opts_init(section *s)
+/* add a current cpu opts atom */
+{
+  if (s || current_section) {
+    cpuopts *new = mymalloc(sizeof(cpuopts));
+
+    new->mode = mode_flag;
+    add_atom(s,new_opts_atom(new));
+  }
+}
+
+
+void print_cpu_opts(FILE *f,void *opts)
+{
+  static const int addrbits[] = {  /* following order of enum codetype */
+    32, 16, 64
+  };
+
+  fprintf(f,"opts: %d-bit mode",addrbits[((cpuopts *)opts)->mode]);
+}
 
 
 operand *new_operand(void)
@@ -917,6 +940,11 @@ static int make_modrm(instruction *ip,mnemonic *mnemo,int final)
 
       else if (memop->basereg->reg_type & Reg16) {
         /* 16-bit mode base register */
+        if (mode_flag == CODE_32BIT)
+          add_ip_prefix(ip,OC_ADDR_PREFIX);  /* set 16-bit addressing prefix */
+        else if (mode_flag == CODE_64BIT)
+          cpu_error(23);  /* operand size not supported */
+
         switch (memop->basereg->reg_num) {
           case 3:  /* %bx */
             if (memop->indexreg)  /* (%bx,%si) or (%bx,%di) */
@@ -949,6 +977,8 @@ static int make_modrm(instruction *ip,mnemonic *mnemo,int final)
         /* 32/64 bit mode base register */
         if (mode_flag==CODE_64BIT && (memop->type & Disp))
           memop->type = (memop->type&Disp8) ? Disp8|Disp32S : Disp32S;
+        else if (mode_flag != CODE_32BIT)    /* @@@ else? What about 64 bit? */
+          add_ip_prefix(ip,OC_ADDR_PREFIX);  /* set 32-bit addressing prefix */
 
         ip->ext.rm.regmem = memop->basereg->reg_num;
         ip->ext.sib.base = memop->basereg->reg_num;
@@ -1417,17 +1447,18 @@ char *parse_cpu_special(char *start)
       s++;
     if (dotdirs && *name=='.')
       name++;
-    if (s-name==6 && !strncmp(name,"code16",6)) {
-      mode_flag = CODE_16BIT;
-      return s;
-    }
-    else if (s-name==6 && !strncmp(name,"code32",6)) {
-      mode_flag = CODE_32BIT;
-      return s;
-    }
-    else if (s-name==6 && !strncmp(name,"code64",6)) {
-      mode_flag = CODE_64BIT;
-      return s;
+    if (s-name==6 && !strncmp(name,"code",4)) {
+      if (!strncmp(name+4,"16",2))
+        mode_flag = CODE_16BIT;
+      else if (!strncmp(name+4,"32",2))
+        mode_flag = CODE_32BIT;
+      else if (!strncmp(name+4,"64",2))
+        mode_flag = CODE_64BIT;
+      else
+        return start;
+      cpu_opts_init(NULL);
+      eol(s);
+      return skip_line(s);
     }
   }
   return start;
