@@ -259,9 +259,9 @@ char *skip_string(char *s,char delim,size_t *size)
     }
     n++;
   }
-
   if (*(s-1) != delim)
-    general_error(6,delim);  /* " expected */
+    n = 1;  /* missing closing-quote, so not a string, try as single-char */
+
   if (size)
     *size = n;
   return s;
@@ -328,8 +328,8 @@ dblock *parse_string(char **str,char delim,int width)
 
   /* how many bytes do we need for the string? */
   skip_string(s,delim,&size);
-  if (size == 1)
-    return NULL; /* it's just one char, so use eval_expr() on it */
+  if (size <= 1)
+    return NULL; /* not a string, so we can use eval_expr() on it */
 
   db = new_dblock();
   db->size = (size + (BITSPERBYTE / width) - 1) / (BITSPERBYTE / width);

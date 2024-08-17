@@ -230,6 +230,13 @@ This module provides the following additional options:
     @item -showopt
         Print all optimizations and translations vasm is doing
         (same as @code{opt ow+}).
+
+    @item -warnabs16
+        Show a warning for every access to an absolute 16-bit address.
+
+    @item -warnabs32
+        Show a warning for every access to an absolute 32-bit address.
+        This doesn't include section labels.
 @end table
 
 In its default setting (no @option{-devpac} or @option{-phxass} option)
@@ -549,8 +556,10 @@ directives:
       @item o6
         No effect in vasm.
       @item o7
-        Convert @code{bra.b} to @code{nop}, when branching to the next
-        instruction.
+        Replace @code{bra.b} by a 2-byte no-operation instruction, like
+        @code{lea (a6),a6}, when branching to the next instruction.
+        Note: @code{nop} is not really a no-operation instruction on 68040
+        and higher.
       @item o8
         Optimize 68020+ base displacements to 16 bit.
       @item o9
@@ -1144,5 +1153,5 @@ This module has the following error messages:
 @item 2071: instruction too large for bank prefix
 @item 2072: bad FPU id %d for selected cpu type
 @item 2073: absolute k-factor without '#'
-
+@item 2074: %d-bit access to absolute address
 @end itemize

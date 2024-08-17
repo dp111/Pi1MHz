@@ -157,27 +157,23 @@ static char *skip_operand(int instoper,char *s)
 #else
     else if (c=='\'' || c=='\"') {
 #endif
-      if (instoper) {
-        /* a quote expects just a single character with an optional
-           quote character following it */
-        if (!ISEOL(s+1)) {
-          s++;
-          if (*s == '\\')
-            s = escape(s,NULL) - 1;
-          else if (*s==c && *(s+1)==c)
-            s++;  /* "" or '' is a single quote-character */
-        }
-        if (*(s+1) == c)  /* optional */
-          s++;
+      /* a quote expects just a single character with an optional
+         quote character following it */
+      if (!ISEOL(s+1)) {
+        s++;
+        if (*s == '\\')
+          s = escape(s,NULL) - 1;
+        else if (*s==c && *(s+1)==c)
+          s++;  /* "" or '' is a single quote-character */
       }
-      else
-        s = skip_string(s,c,NULL) - 1;
+      if (*(s+1) == c)  /* optional */
+        s++;
     }
     else if ((!instoper || (instoper && OPERSEP_COMMA)) &&
              c==',' && par_cnt==0)
       break;
-    else if (instoper && OPERSEP_BLANK && isspace((unsigned char)c)
-             && par_cnt==0)
+    else if (((instoper && OPERSEP_BLANK) || igntrail)
+             && isspace((unsigned char)c) && par_cnt==0)
       break;
     else if (c=='\0' || c==commentchar)
       break;
@@ -1902,9 +1898,21 @@ char *const_prefix(char *s,int *base)
     return s;
   }
 
-  if (*s=='$' && isxdigit((unsigned char)s[1])) {
-    *base = 16;
-    return s+1;
+  if (*s=='$') {
+    if (isxdigit((unsigned char)s[1])) {
+      *base = 16;
+      return s+1;
+    }
+    else if (isxdigit((unsigned char)s[2]) && s[1]=='-') {
+      /* requires BROKEN_HEXCONST in expr.c */
+      *base = 16;
+      return s+2;
+    }
+    else {
+      /* just skip the '$' and continue parsing, for example $'A' */
+      *base = 0;
+      return s+1;
+    }
   }
 #if defined(VASM_CPU_Z80)
   if ((*s=='&' || *s=='#') && isxdigit((unsigned char)s[1])) {

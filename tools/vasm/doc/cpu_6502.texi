@@ -37,6 +37,9 @@ This module provides the following additional options:
     @item -ce02
         Enables the Commodore CSG65CE02 instruction set, which extends on
         the WDC02 instruction set.
+    @item -dpo
+        Generate 8-bit offset instead of absolute relocations when
+        accessing a zero- or direct-page symbol.
     @item -dtv
         Recognize the three additional C64-DTV instructions.
     @item -illegal
