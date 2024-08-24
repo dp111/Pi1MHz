@@ -286,6 +286,10 @@ The current PCB is too small to have a serial debug connector fitted. I fitted a
 
 Donations to development of Projects are welcome, especially if you are make a profit from using the project e.g. selling boards or kits.
 
+## SAST Tools
+
+[PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - static analyzer for C, C++, C#, and Java code.
+
 ## License
 
     Pi1MHz is free software: you can redistribute it and/or modify
