@@ -359,7 +359,7 @@ static uint8_t tt_process_controls(int c, int col, int row) {
       set_background(TT_BLACK);
       break;
    case TT_NEW_BGD:
-      set_background(tt.fgd_colour);
+      set_background((tt_colour_t) ( ( tt.fgd_colour) & 7 ));
       break;
    case TT_HOLD:
       tt.held = TRUE;
@@ -411,7 +411,7 @@ static void tt_process_controls_after(int c, int col, int row) {
    case TT_A_WHITE:
       tt.graphics = FALSE;
       tt.concealed = FALSE;
-      set_foreground(c - TT_A_BLACK);
+      set_foreground((tt_colour_t)((c - TT_A_BLACK) & 7));
       // A change from graphics back to text, even when held, will reset the held character
       tt.held_char = TT_SPACE;
       break;
@@ -424,7 +424,7 @@ static void tt_process_controls_after(int c, int col, int row) {
    case TT_G_WHITE:
       tt.graphics = TRUE;
       tt.concealed = FALSE;
-      set_foreground(c - TT_G_BLACK);
+      set_foreground((tt_colour_t)((c - TT_G_BLACK) & 7));
       break;
    case TT_FLASH:
       set_flashing(TRUE);
