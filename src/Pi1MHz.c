@@ -63,7 +63,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/FREDaddrs for full details
 &FC90-&FC9F Electron sound and speech
 &FCA0-&FCAF
 &FCB0-&FCBF Electron 6522 VIA expansion
-            PRSIMA Video System
+            PRISMA Video System
 &FCC0-&FCCF Morley Electronics RAMDisk
 &FCC0-&FCCF Electron floppy disk expansion
 &FCD0-&FCDB
