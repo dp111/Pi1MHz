@@ -172,9 +172,17 @@ CPU- and output-module allow it):
 @item blk <exp>[,<fill>]
       Insert <exp> zero or <fill> bytes into the current section.
 
+@item blkl <exp>[,<fill>]
+      Insert <exp> zero or <fill> 32-bit long words into the current section,
+      using the endianness of the target CPU.
+
 @item blkw <exp>[,<fill>]
       Insert <exp> zero or <fill> 16-bit words into the current section,
       using the endianness of the target CPU.
+
+@item bss <exp>
+      Equivalent to @code{blk <exp>,0}.
+      (Not available with option @option{-sect}.)
 
 @item bss
       With option @option{-sect}:
@@ -264,6 +272,9 @@ CPU- and output-module allow it):
       @code{dsect} sections continue with the last offset from the former.
       Such an offsect-section block is closed by the @code{dend} directive,
       which restores the previous 'real' section.
+
+@item dsl <exp>[,<fill>]
+      Equivalent to @code{blkl <exp>[,<fill>]}.
 
 @item dsw <exp>[,<fill>]
       Equivalent to @code{blkw <exp>[,<fill>]}.
