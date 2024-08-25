@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include <string.h>
+#include <strings.h>
 
 #include "fonts.h"
 
