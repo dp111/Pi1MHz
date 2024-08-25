@@ -263,7 +263,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // For cacheable RAM
   // TEX = 001; C=1; B=1 (Outer and inner write back, write allocate)
 
-  // For non-cachable RAM
+  // For non-cacheable RAM
   // TEX = 001; C=0; B=0 (Outer and inner non-cacheable)
 
   // For individual control
@@ -306,7 +306,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 
   for (; base < PERIPHERAL_END>>20; base++)
   {
-    // shared device, never execute storely ordered
+    // shared device, never execute store ordered
      PageTable[base] = (base << 20) | 0x10C12;
   }
   // now create and uncached copy of the memory
