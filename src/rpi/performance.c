@@ -173,14 +173,14 @@ void reset_performance_counters(perf_counters_t *pct) {
 
    /* Read the common event identification register
       to see test whether the requested event is implemented */
-   asm volatile ("mrc p15,0,%0,c9,c12,6" : "=r" (type_impl));
+   __asm volatile ("mrc p15,0,%0,c9,c12,6" : "=r" (type_impl));
 
    for (unsigned int i = 0; i < pct->num_counters; i++) {
       if ((type_impl >> pct->type[i]) & 1) {
          /* Select the event count/type via the event type selection register */
-         asm volatile ("mcr p15,0,%0,c9,c12,5" :: "r" (i) : "memory");
+         __asm volatile ("mcr p15,0,%0,c9,c12,5" :: "r" (i) : "memory");
          /* Configure the required event type */
-         asm volatile ("mcr p15,0,%0,c9,c13,1" :: "r" (pct->type[i]) : "memory");
+         __asm volatile ("mcr p15,0,%0,c9,c13,1" :: "r" (pct->type[i]) : "memory");
          /* Set the bit to enable the counter */
          cntenset |= (1 << i);
       } else {
@@ -188,15 +188,15 @@ void reset_performance_counters(perf_counters_t *pct) {
       }
    }
    /* Write the control register */
-   asm volatile ("mcr p15,0,%0,c9,c12,0" :: "r" (ctrl) : "memory");
+   __asm volatile ("mcr p15,0,%0,c9,c12,0" :: "r" (ctrl) : "memory");
 
    /* Enable the counters */
-   asm volatile ("mcr p15,0,%0,c9,c12,1" :: "r" (cntenset) : "memory");
+   __asm volatile ("mcr p15,0,%0,c9,c12,1" :: "r" (cntenset) : "memory");
 #else
    /* Only two counters (0 and 1) are supported on the arm11 */
    ctrl |= (pct->type[0] << 20);
    ctrl |= (pct->type[1] << 12);
-   asm volatile ("mcr p15,0,%0,c15,c12,0" :: "r" (ctrl) : "memory");
+   __asm volatile ("mcr p15,0,%0,c15,c12,0" :: "r" (ctrl) : "memory");
 #endif
 }
 
@@ -205,16 +205,16 @@ void read_performance_counters(perf_counters_t *pct) {
 #if (__ARM_ARCH >= 7 )
    for (unsigned int i = 0; i < pct->num_counters; i++) {
       /* Select the event count/type via the event type selection register */
-      asm volatile ("mcr p15,0,%0,c9,c12,5" :: "r" (i) : "memory");
+      __asm volatile ("mcr p15,0,%0,c9,c12,5" :: "r" (i) : "memory");
       /* Read the required event count */
-      asm volatile ("mrc p15,0,%0,c9,c13,2" : "=r" (pct->counter[i]));
+      __asm volatile ("mrc p15,0,%0,c9,c13,2" : "=r" (pct->counter[i]));
    }
-   asm volatile ("mrc p15,0,%0,c9,c13,0" : "=r" (pct->cycle_counter));
+   __asm volatile ("mrc p15,0,%0,c9,c13,0" : "=r" (pct->cycle_counter));
 #else
    // Only two counters (0 and 1) are supported on the arm11
-   asm volatile ("mrc p15,0,%0,c15,c12,2" : "=r" (pct->counter[0]));
-   asm volatile ("mrc p15,0,%0,c15,c12,3" : "=r" (pct->counter[1]));
-   asm volatile ("mrc p15,0,%0,c15,c12,1" : "=r" (pct->cycle_counter));
+   __asm volatile ("mrc p15,0,%0,c15,c12,2" : "=r" (pct->counter[0]));
+   __asm volatile ("mrc p15,0,%0,c15,c12,3" : "=r" (pct->counter[1]));
+   __asm volatile ("mrc p15,0,%0,c15,c12,1" : "=r" (pct->cycle_counter));
 #endif
 }
 
