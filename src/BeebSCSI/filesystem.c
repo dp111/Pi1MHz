@@ -323,21 +323,17 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
       return true;
    }
 
-   // Transitioning from started to stopped?
-   if (lunStatus == false) {
-      f_close(&filesystemState.fileObject[lunNumber]);
-      filesystemState.fsLunStatus[lunNumber] = false;
+   // Transitioning from started to stopped
+   f_close(&filesystemState.fileObject[lunNumber]);
+   filesystemState.fsLunStatus[lunNumber] = false;
 
-      if (debugFlag_filesystem) {
-         debugStringInt16_P(PSTR("File system: filesystemSetLunStatus(): LUN number "), (uint16_t)lunNumber, false);
-         debugString_P(PSTR(" is stopped\r\n"));
-      }
-
-      // Exit with success
-      return true;
+   if (debugFlag_filesystem) {
+      debugStringInt16_P(PSTR("File system: filesystemSetLunStatus(): LUN number "), (uint16_t)lunNumber, false);
+      debugString_P(PSTR(" is stopped\r\n"));
    }
 
-   return false;
+   // Exit with success
+   return true;
 }
 
 // Function to read the status of a LUN image
