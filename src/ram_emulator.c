@@ -141,7 +141,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    extern char _end;
 
    uint32_t temp = mem_info(1); // get size of ram
-   temp = temp - (unsigned int)&_end; // remove program
+   temp = temp - (uint32_t)&_end; // remove program
    temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
    temp = temp & 0xFF000000; // round down to 16Mbyte boundary
    Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
