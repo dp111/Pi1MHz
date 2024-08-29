@@ -5,8 +5,8 @@
 #include "osdep.h"
 #include "output_hunk.h"
 #if defined(OUTHUNK) && (defined(VASM_CPU_M68K) || defined(VASM_CPU_PPC))
-static char *copyright="vasm hunk format output module 2.17 (c) 2002-2024 Frank Wille";
-int hunk_xdefonly;
+static char *copyright="vasm hunk format output module 2.17a (c) 2002-2024 Frank Wille";
+int hunk_xdefonly,hunk_devpac;
 
 static uint32_t sec_cnt;
 static symbol **secsyms;
@@ -926,6 +926,19 @@ static void write_object(FILE *f,section *sec,symbol *sym)
           else
             fwalign(f,pc,4);
         }
+        else {
+          /* only process line-debug information in BSS, if present */
+          utaddr pc;
+
+          for (pc=0,a=sec->first; a; a=a->next) {
+            pc += balign(pc,a->align);
+            if (genlinedebug && !hunk_devpac && a->type==SPACE)
+              add_linedebug(&linedblist,a->src,a->line,pc);
+            else if (a->type == LINE)
+              add_linedebug(&linedblist,NULL,a->content.srcline,pc);
+            pc += atom_size(a,sec,pc);
+          }
+        }
 
         /* relocation hunks */
         reloc_hunk(f,HUNK_ABSRELOC32,0,&reloclist);
@@ -1011,17 +1024,17 @@ static void write_exec(FILE *f,section *sec,symbol *sym)
 
           size = databss ? file_size(sec) : sect_size(sec);
           fw32(f,(size+3)>>2,1);
-          for (a=sec->first,pc=0; a!=NULL&&pc<size; a=a->next) {
+          for (a=sec->first,pc=0; a; a=a->next) {
             npc = fwpcalign(f,a,sec,pc);
 
             if (genlinedebug && (a->type==DATA || a->type==SPACE))
               add_linedebug(&linedblist,a->src,a->line,npc);
 
-            if (a->type == DATA)
+            if (a->type==DATA && pc<size)
               fwdata(f,a->content.db->data,a->content.db->size);
-            else if (a->type == SPACE)
+            else if (a->type==SPACE && pc<size)
               fwsblock(f,a->content.sb);
-            else if (a->type == LINE && !genlinedebug)
+            else if (a->type==LINE && !genlinedebug)
               add_linedebug(&linedblist,NULL,a->content.srcline,npc);
 
             process_relocs(a,&reloclist,NULL,sec,npc);
@@ -1036,10 +1049,20 @@ static void write_exec(FILE *f,section *sec,symbol *sym)
         else {
           /* HUNK_BSS */
           uint32_t len = (get_sec_size(sec) + 3) >> 2;
+          utaddr pc;
 
           if (kick1 && len > 0x10000)
             output_error(18,sec->name);  /* warn about kickstart 1.x bug */
           fw32(f,len,1);
+
+          for (pc=0,a=sec->first; a; a=a->next) {
+            pc += balign(pc,a->align);
+            if (genlinedebug && !hunk_devpac && a->type==SPACE)
+              add_linedebug(&linedblist,a->src,a->line,pc);
+            else if (a->type == LINE)
+              add_linedebug(&linedblist,NULL,a->content.srcline,pc);
+            pc += atom_size(a,sec,pc);
+          }
         }
 
         if (!kick1)

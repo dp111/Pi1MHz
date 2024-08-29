@@ -104,6 +104,9 @@ o std-syntax: The .org directive always defines the absolute address for
 o std-syntax: .ifc and .ifnc directives for comparing strings.
 o hunk-output: New option -noabspath to refrain from creating absolute
   paths for source line debugging (LINE debug format).
+o hunk-output: Automatic source line debugging output (-linedebug) also
+  includes BSS sections now, unless Devpac-compatibility was specified
+  (-devpac).
 o hunk-output: New options -dbg-local and -dbg-globloc to include local
   labels into the debug symbol hunk (HUNK_SYMBOL).
 o o65-output: Support low-word relocs in 65816 mode.

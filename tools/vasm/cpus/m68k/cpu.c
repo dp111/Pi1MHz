@@ -6425,6 +6425,9 @@ int cpu_args(char *arg)
 #ifdef OUTTOS
     tos_hisoft_dri = 0;  /* no extended symbol names unless OPT X+ is given */
 #endif
+#ifdef OUTHUNK
+    hunk_devpac = 1;  /* Devpac-compatible hunk-format output */
+#endif
     clear_all_opts();
     no_symbols = 1;
     warn_opts = 2;
