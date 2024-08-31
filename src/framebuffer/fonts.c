@@ -159,7 +159,7 @@ static void copy_font_character(const font_t *font, const  uint8_t *src, int c, 
       // Stage 2: perform rounding
       if (!is_graphics) {
          dst -= font->height * 2;
-         for (int i = 0; i < font->height - 1; i++) {
+         for (unsigned int i = 0; i < (unsigned int ) font->height - 1; i++) {
             uint16_t o_row = dst[i * 2 + 1];
             uint16_t e_row = dst[i * 2 + 2];
             dst[i * 2 + 1] = combine_rows(o_row, e_row);
