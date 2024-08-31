@@ -145,9 +145,9 @@ int open(const char *name __attribute__((unused)), int flags __attribute__((unus
  standalone system; it exploits the symbol _end automatically defined by the
  GNU linker. */
 // cppcheck-suppress unusedFunction
+extern char _end;
 caddr_t _sbrk(int incr)
 {
-  extern char _end;
   static char* heap_end = &_end;
   char* prev_heap_end;
 
