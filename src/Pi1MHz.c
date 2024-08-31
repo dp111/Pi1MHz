@@ -196,7 +196,7 @@ void Pi1MHz_Register_Poll( func_ptr function_ptr )
    Pi1MHz_polls_max++;
 }
 
-bool Pi1MHz_is_rst_active() {
+bool Pi1MHz_is_rst_active(void) {
    return ((RPI_GpioBase->GPLEV0 & NRST_MASK) == 0);
 }
 
@@ -237,7 +237,7 @@ void Pi1MHzBus_read_Status(unsigned int gpio)
 }
 
 // cppcheck-suppress unusedFunction
-void IRQHandler_main() {
+void IRQHandler_main(void) {
   RPI_AuxMiniUartIRQHandler();
   // Periodically also process the VDU Queue
   fb_process_vdu_queue();
@@ -245,7 +245,7 @@ void IRQHandler_main() {
   _data_memory_barrier();
 }
 
-static void init_emulator() {
+static void init_emulator(void) {
    LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
@@ -329,7 +329,7 @@ void Pi1MHz_LED(int led)
       RPI_SetGpioValue(led_pin , led);
 }
 
-static void init_hardware()
+static void init_hardware(void)
 {
    // enable overriding default LED option using command.txt
    // depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx
@@ -362,7 +362,7 @@ static void init_hardware()
 #endif
 }
 // cppcheck-suppress unusedFunction
-void kernel_main()
+void kernel_main(void)
 {
    unsigned int baud_rate;
    const char * const prop = get_cmdline_prop("baud_rate");

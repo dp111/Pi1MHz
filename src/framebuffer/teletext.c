@@ -241,7 +241,7 @@ static void tt_reset(screen_mode_t *screen) {
    initialize_palette(screen);
 }
 
-static void update_double_height_counts() {
+static void update_double_height_counts(void) {
    unsigned int *count = tt.dh_count;
    for (int row = 0; row < tt.rows; row++) {
       *count = 0;

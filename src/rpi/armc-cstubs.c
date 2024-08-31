@@ -258,10 +258,10 @@ __attribute__((used)) int _write(int file __attribute__((unused)), const char *p
 }
 
 // cppcheck-suppress unusedFunction
-void _getpid_r()
+void _getpid_r(void)
 {
 }
 // cppcheck-suppress unusedFunction
-void _kill_r()
+void _kill_r(void)
 {
 }
