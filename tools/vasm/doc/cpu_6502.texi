@@ -162,6 +162,14 @@ directives:
       as a zero page symbol and use zero page addressing whenever
       <symbol> is used in a memory addressing mode.
 
+@item longa on|off
+      Turns 16-bit accumulator width on or off.
+      WDC-style alias for @code{a16}/@code{a8} (WDC65816 only).
+
+@item longi on|off
+      Turns 16-bit index register width on or off.
+      WDC-style alias for @code{x16}/@code{x8} (WDC65816 only).
+
 @item setdp <expr>
       Set the current base address of the zero/direct page for
       optimizations from absolute to direct-page addressing modes.
@@ -239,6 +247,7 @@ This module has the following error messages:
 @item 2007: branch destination out of range
 @item 2008: illegal bit number
 @item 2009: identifier expected
+@item 2010: bad operand
 @item 2011: zero/direct-page addressing not available
 @item 2012: operand not in zero/direct-page range
 @item 2013: absolute-long addressing not available

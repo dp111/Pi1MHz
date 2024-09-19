@@ -24,9 +24,7 @@ static char zeroname[]=".zero",zeroattr[]="aurwz";
 
 char commentchar=';';
 
-static char macname[] = ".mac";
 static char macroname[] = ".macro";
-static char eqname[] = ".eq";
 static char equname[] = ".equ";
 static char setname[] = ".set";
 
@@ -35,7 +33,7 @@ static char endrname[] = ".endrepeat";
 static char reptname[] = ".rept";
 static char repeatname[] = ".repeat";
 static struct namelen macro_dirlist[] = {
-  { 5,&macroname[1] }, { 3,&macname[1] }, { 0,0 }
+  { 5,&macroname[1] }, { 3,&macroname[1] }, { 0,0 }
 };
 static struct namelen endm_dirlist[] = {
   { 4,&endmname[1] }, { 6,&endmname[1] }, { 8,&endmname[1] }, { 0,0 }
@@ -47,7 +45,7 @@ static struct namelen endr_dirlist[] = {
   { 4,&endrname[1] }, { 6,&endrname[1] }, { 9,&endrname[1] }, { 0,0 }
 };
 static struct namelen dmacro_dirlist[] = {
-  { 6,&macroname[0] }, { 4,&macname[0] }, { 0,0 }
+  { 6,&macroname[0] }, { 4,&macroname[0] }, { 0,0 }
 };
 static struct namelen dendm_dirlist[] = {
   { 5,&endmname[0] }, { 7,&endmname[0] }, { 9,&endmname[0] }, { 0,0 }
@@ -1567,10 +1565,11 @@ void parse(void)
       symbol *label;
       int equlen = 0;
 
+      s = skip(s);
       if (!strnicmp(s,equname+!dotdirs,3+dotdirs) &&
           isspace((unsigned char)*(s+3+dotdirs)))
         equlen = 3+dotdirs;
-      else if (!strnicmp(s,eqname+!dotdirs,2+dotdirs) &&
+      else if (!strnicmp(s,equname+!dotdirs,2+dotdirs) &&
                isspace((unsigned char)*(s+2+dotdirs)))
         equlen = 2+dotdirs;
       else if (*s == '=')
@@ -1598,7 +1597,7 @@ void parse(void)
           label = new_abs(labname,parse_expr_tmplab(&s));
         }
       }
-      else if (!strnicmp(s,macname+!dotdirs,3+dotdirs) &&
+      else if (!strnicmp(s,macroname+!dotdirs,3+dotdirs) &&
                (isspace((unsigned char)*(s+3+dotdirs)) ||
                 *(s+3+dotdirs)=='\0') ||
                !strnicmp(s,macroname+!dotdirs,5+dotdirs) &&

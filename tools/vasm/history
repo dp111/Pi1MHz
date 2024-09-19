@@ -56,7 +56,8 @@ o m68k: New Apollo instructions: fmoverz, fmoveurz, moveiw, mov3q, movs,
   movz, move2 (updated), clr.q.
 o m68k: Do not allow Bcc.B with branch distance -130 for Apollo, as it
   would encode as $6xff (opcode for 32-bit branch).
-o 6502: Added al/as/xl/xs as aliases for a16/a8/x16/x8 directives (65816).
+o 6502: Added al/as/xl/xs as aliases for a16/a8/x16/x8 directives.
+  Added longa/longi as WDC-style aliases for theses directives (65816).
 o 6502: Absolute 16-bit addressing modes ignore the bank by default for 65816.
 o 6502: Optionally allow alternative syntax with immediate operands for MVN,
   MVP and PEA (65816).
@@ -97,6 +98,8 @@ o oldstyle-syntax: The closing quote-character (' or ") in single-character
   expressions is now optional (compatibility with old Motorola sources).
 o oldstyle-syntax: Broken hex-constants with the minus-operator following
   the '$' are supported for compatibility reasons.
+o oldstyle-syntax: Allow optional colon after a label for macro, equ
+  and set directives.
 o std-syntax: The "true" result of logical operations should be 1 not -1.
 o std-syntax: Allow XY' (alternate) registers with Z80.
 o std-syntax: The .org directive always defines the absolute address for

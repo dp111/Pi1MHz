@@ -122,6 +122,11 @@ expressions. Not optional for strings.
 
 @section Directives
 
+Note that data directives, like @code{byt}, @code{dfb}, @code{db},
+@code{word}, @code{dfw}, @code{dw}, etc. may optionally be written
+without any operand. In this case they are treated like space directives,
+which just increment the program counter by 1 or 2 bytes.
+
 The following directives are supported by this syntax module (if the
 CPU- and output-module allow it):
 
@@ -647,7 +652,6 @@ CPU- and output-module allow it):
       of memory in the current section, using the endianness of the target
       CPU.
       Without any operand just the program counter is incremented by two.
-      Equivalent to @code{wor <exp1>[,<exp2>...]}.
 
 @item xdef  <symbol>[,<symbol>...]
         See @code{global}.
