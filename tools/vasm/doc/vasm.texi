@@ -8,7 +8,7 @@
 @setfilename index.texi
 @settitle vasm manual
 @setchapternewpage odd
-@set UPDATED September 2024
+@set UPDATED October 2024
 
 @ifinfo
 
@@ -42,9 +42,9 @@ Different CPU-, syntax and output-modules are supported.
 Most common directives/pseudo-opcodes are supported (depending on the
 syntax module) as well as CPU-specific extensions.
 
-The assembler supports optimizations and relaxations (e.g. choosing
+The assembler supports optimizations and relaxations. For example, choosing
 the shortest possible branch instruction or addressing mode as well as
-converting a branch to an absolute jump if necessary).
+converting a branch to an absolute jump if necessary.
 
 It also supports target CPUs with more than 8 bits per byte
 (word-addressing) but requires that the host system has 8-bit bytes.

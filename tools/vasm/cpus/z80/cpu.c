@@ -1819,7 +1819,7 @@ dblock *eval_data(operand *op,size_t bitsize,section *sec,taddr pc)
                                0, bitsize, 0);
             val = apply_modifier(rl, val);
         }
-        else if (btype != BASE_NONE)
+        else
             general_error(38);  /* illegal relocation */
     }
     if (bitsize < 16 && (val<-0x80 || val>0xff))

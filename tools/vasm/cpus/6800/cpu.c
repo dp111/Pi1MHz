@@ -340,7 +340,7 @@ eval_data(operand *op, size_t bitsize, section *sec, taddr pc)
 				break;
 			}
 		}
-		else if (btype != BASE_NONE)
+		else
 			general_error(38);  /* illegal relocation */
 	}
 

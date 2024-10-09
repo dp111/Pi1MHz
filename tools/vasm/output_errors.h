@@ -21,3 +21,4 @@
   "too many symbols for selected output file format",ERROR|NOLINE,
   "all sections are absolute, nothing to relocate",WARNING|NOLINE,  /* 20 */
   "expression type of symbol %s not supported",ERROR|NOLINE,
+  "unaligned relocation offset at %s+%#lx",WARNING,

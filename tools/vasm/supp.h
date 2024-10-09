@@ -65,7 +65,6 @@ void fwalign(FILE *,taddr,taddr);
 int fwpattern(FILE *,taddr,uint8_t *,int);
 taddr fwpcalign(FILE *,atom *,section *,taddr);
 size_t filesize(FILE *);
-int abs_path(const char *);
 
 int stricmp(const char *,const char *);
 int strnicmp(const char *,const char *,size_t);

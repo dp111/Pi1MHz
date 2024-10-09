@@ -545,13 +545,18 @@ static void process_relocs(atom *a,struct list *reloclist,
     if (hr!=NULL && (xreflist!=NULL || hr->hunk_id==HUNK_ABSRELOC32 ||
                      hr->hunk_id==HUNK_RELRELOC32)) {
       addtail(reloclist,&hr->n);       /* add new relocation */
+      if ((hr->hunk_offset&1) && ((nreloc *)rl->reloc)->size > 8)
+        output_atom_error(22,a,sec->name,(unsigned long)hr->hunk_offset);
     }
     else {
       struct hunkxref *xref = convert_xref(rl,pc);
 
       if (xref) {
-        if (xreflist)
+        if (xreflist) {
           addtail(xreflist,&xref->n);  /* add new external reference */
+          if ((xref->offset&1) && ((nreloc *)rl->reloc)->size > 8)
+            output_atom_error(22,a,sec->name,(unsigned long)xref->offset);
+        }
         else
           output_atom_error(8,a,xref->name,sec->name,xref->offset,rl->type);
       }

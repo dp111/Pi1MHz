@@ -460,7 +460,7 @@ static taddr make_reloc(int reloctype,operand *op,section *sec,
       add_extnreloc_masked(reloclist,base,addend,reloctype,
                            pos,size,offset,mask);
     }
-    else if (btype != BASE_NONE) {
+    else {
 illreloc:
       general_error(38);  /* illegal relocation */
     }

@@ -12,7 +12,7 @@
 #endif
 
 char *compile_dir;
-int ignore_multinc,nocompdir,depend,depend_all;
+int ignore_multinc,relpath,nocompdir,depend,depend_all;
 
 static struct include_path *first_incpath;
 static struct source_file *first_source;
@@ -108,7 +108,7 @@ static FILE *locate_file(char *filename,char *mode,struct include_path **ipath_u
   struct include_path *ipath;
   FILE *f;
 
-  if (abs_path(filename)) {
+  if (!relpath && abs_path(filename)) {
     /* file name is absolute, then don't use any include paths */
     if (f = fopen(filename,mode)) {
       if (depend_all)

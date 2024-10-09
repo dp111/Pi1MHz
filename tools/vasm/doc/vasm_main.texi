@@ -201,6 +201,11 @@ Other options:
         Try to generate position independent code. Every relocation
         position is flagged by an error message.
 
+@item -relpath
+        Do not interpret a source path starting with '/' or '\', or including
+        a colon, as absolute, but always attach it relative to defined
+        include paths first.
+
 @item -underscore
         Add a leading underscore in front of all imported and exported
         (also common, weak) symbol names, just before writing the

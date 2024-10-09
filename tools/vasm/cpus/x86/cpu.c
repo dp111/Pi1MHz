@@ -1892,7 +1892,7 @@ dblock *eval_data(operand *op,size_t bitsize,section *sec,taddr pc)
           add_extnreloc_masked(&db->relocs,base,val,REL_ABS,0,bitsize,0,
                                MAKEMASK(bitsize));  /* @@@ always mask? */
       }
-      else if (btype != BASE_NONE)
+      else
         general_error(38);  /* illegal relocation */
     }
     write_taddr(db->data,val,bitsize);
