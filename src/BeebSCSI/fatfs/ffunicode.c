@@ -15225,7 +15225,7 @@ WCHAR ff_uni2oem (	/* Returns OEM code character, zero on error */
 )
 {
 	WCHAR c = 0;
-	const WCHAR* p = CVTBL(uc, FF_CODE_PAGE);
+
 
 
 	if (uni < 0x80) {	/* ASCII? */
@@ -15233,6 +15233,7 @@ WCHAR ff_uni2oem (	/* Returns OEM code character, zero on error */
 
 	} else {			/* Non-ASCII */
 		if (uni < 0x10000 && cp == FF_CODE_PAGE) {	/* Is it in BMP and valid code page? */
+			const WCHAR* p = CVTBL(uc, FF_CODE_PAGE);
 			for (c = 0; c < 0x80 && uni != p[c]; c++) ;
 			c = (c + 0x80) & 0xFF;
 		}
@@ -15465,8 +15466,6 @@ DWORD ff_wtoupper (	/* Returns up-converted code point */
 	DWORD uni		/* Unicode code point to be up-converted */
 )
 {
-	const WORD* p;
-	WORD uc, bc, nc, cmd;
 	static const WORD cvt1[] = {	/* Compressed up conversion table for U+0000 - U+0FFF */
 		/* Basic Latin */
 		0x0061,0x031A,
@@ -15561,9 +15560,11 @@ DWORD ff_wtoupper (	/* Returns up-converted code point */
 
 
 	if (uni < 0x10000) {	/* Is it in BMP? */
-		uc = (WORD)uni;
-		p = uc < 0x1000 ? cvt1 : cvt2;
+		WORD uc;
 		for (;;) {
+			WORD bc, nc, cmd;
+			uc = (WORD)uni;
+			const WORD* p = uc < 0x1000 ? cvt1 : cvt2;
 			bc = *p++;								/* Get the block base */
 			if (bc == 0 || uc < bc) break;			/* Not matched? */
 			nc = *p++; cmd = nc >> 8; nc &= 0xFF;	/* Get processing command and block size */
@@ -15581,6 +15582,7 @@ DWORD ff_wtoupper (	/* Returns up-converted code point */
 				}
 				break;
 			}
+// cppcheck-suppress unreadVariable
 			if (cmd == 0) p += nc;	/* Skip table if needed */
 		}
 		uni = uc;
