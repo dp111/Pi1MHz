@@ -1,35 +1,70 @@
-This chapter describes the TOS output module which can be
-selected with the @option{-Ftos} option.
+This chapter describes the TOS output module, which can be
+selected with option @option{-Ftos} to generate Atari TOS
+executable files, or with option @option{-Fdri} to generate DRI-format object
+files.
+Additionally you can generate absolute Z-file executables for the Sharp
+X68000, when specifying option @option{-zfile} together with @option{-Ftos}.
 
 @section Legal
 
-    This module is written in 2009-2014 by Frank Wille and
+    This module is written in 2009-2016,2020-2024 by Frank Wille and
     is covered by the vasm copyright without modifications.
 
-@section Additional options for this version
- 
+@section Additional options for this module
+
+@table @option
+    @item -szbx
+        Use the SozobonX extension, which allows symbol names with
+        unlimited length in DRI objects and executables.
+        Overrides the HiSoft extension.
+    @item -stdsymbols
+        Do not write HiSoft extended symbol names. Cut names after 8 characters.
+@end table
+These options are valid for the @code{tos} module only:
 @table @option
     @item -monst
         Write Devpac "MonST"-compatible symbols.
     @item -tos-flags=<flags>
         Sets the flags field in the TOS file header. Defaults to 0.
         Overwrites a TOS flags definition in the assembler source.
+    @item -zfile=<load-address>
+        Outputs an absolute Z-file for Sharp X68000 computers to be loaded
+        at @code{<load-address>} in memory.
 @end table
 
 @section General
 
-This module outputs the TOS executable file format, which is used
-on Atari 16/32-bit computers with 68000 up to 68060 CPU. The symbol
-table uses the DRI format.
+@table @option
+  @item -Ftos
+    The TOS executable file format is used on Atari 16/32-bit computers
+    with 68000 up to 68060 CPU running TOS, MiNT or any compatible
+    operating system. The symbol table is in DRI format and may use
+    HiSoft (default) or SozobonX extended symbol names.
+  @item -Fdri
+    The object file format defined by Digital Research for Atari M68k
+    systems. May use SozobonX extended symbol names.
+@end table
 
 @section Restrictions
 
 @itemize @minus
-@item All symbols must be defined, otherwise the generation of the executable
-  fails. Unknown symbols are listed by vasm.
-@item The only relocations allowed in this format are 32-bit absolute.
+@item These file formats only support a single Text (code), Data and BSS
+  section.
+@item For @code{tos} all symbols must be defined, otherwise the generation
+  of the executable fails. Unknown symbols are listed by vasm.
+@item The only relocations allowed in @code{tos} are 32-bit absolute. For
+  @code{dri} all 16- and 32-bit absolute and PC-relative relocations
+  are supported. 16-bit base-relative appears as a 16-bit absolute symbol
+  reference.
+@item The maximum symbol length is 8 characters only. The @code{tos}
+  format increases the maximum length to 22 by using an extension
+  created by HiSoft, unless forbidden by @option{-stdsymbols}.
+  With @option{-szbx} you may enable the SozobonX extension for
+  unlimited length - but you need a linker which supports that format.
+@item Symbol references in @code{dri} object files are limited to a
+  maximum of 8192 symbols.
 @end itemize
-Those are restrictions of the output format, not of vasm.
+All these restrictions are defined by the file format itself.
 
 @section Known Problems
 
@@ -44,11 +79,13 @@ Those are restrictions of the output format, not of vasm.
 This module has the following error messages:
 
 @itemize @minus
-@item 3004: section attributes <attr> not suppported
+@item 3004: section attributes <attr> not supported
 @item 3005: reloc type %d, size %d, mask 0x%lx (symbol %s + 0x%lx) not supported
 @item 3006: reloc type %d not supported
 @item 3007: undefined symbol <%s>
 @item 3008: output module doesn't allow multiple sections of the same type
+@item 3009: undefined symbol <%s> at %s+%#lx, reloc type %d
 @item 3010: section <%s>: alignment padding (%lu) not a multiple of %lu at 0x%llx
 @item 3011: weak symbol <%s> not supported by output format, treating as global
+@item 3020: too many symbols for selected output file format
 @end itemize

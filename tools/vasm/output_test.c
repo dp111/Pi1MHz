@@ -1,4 +1,4 @@
-/* output_test.c example output driver for vasm */
+/* test.c example output driver for vasm */
 /* (c) in 2002 by Volker Barthelmann */
 
 #include "vasm.h"
@@ -29,6 +29,9 @@ int init_output_test(char **cp,void (**wo)(FILE *,section *,symbol *),int (**oa)
   *cp=copyright;
   *wo=write_output;
   *oa=output_args;
+  secname_attr=1;  /* attribute is used to differentiate between sections */
+  asciiout=1;
+  output_bitsperbyte=1;
   return 1;
 }
 

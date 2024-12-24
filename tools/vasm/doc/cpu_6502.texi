@@ -1,9 +1,10 @@
 This chapter documents the backend for the MOS/Rockwell 6502
-microprocessor family.
+microprocessor family. It also supports the Rockwell/WDC 65C02,
+the Hudson Soft HuC6280 and the WDC 65802/65816 instruction sets.
 
 @section Legal
 
-    This module is written in 2002,2006,2008-2012,2014-2017 by Frank Wille
+    This module is written in 2002,2006,2008-2012,2014-2024 by Frank Wille
     and is covered by the vasm copyright without modifications.
 
 
@@ -12,61 +13,213 @@ microprocessor family.
 This module provides the following additional options:
 
 @table @option
+    @item -6280
+        Recognize all HuC6280 instructions. Includes @code{setdp $2000}, so
+        zero-page addressing modes will be automatically used from
+        @code{$2000} to @code{$20ff}.
+    @item -802
+        Same as @option{-816}. There is no difference in the instruction set.
+    @item -816
+        Enables the 8/16 bit instruction set for the WDC65816/65802 and
+        additional directives to switch loading of the accumulator and/or
+        the index register between 8 and 16 bits.
+        The target address size becomes 24 bits.
+    @item -am
+        Automatically mask values to match their data size or the size
+        of immediate addressing, which effectively disables any range
+        checks on immediate and data values in the assembler and linker.
+    @item -bbcade
+        Swap meaning of @code{<} and @code{>} selectors for compatibility
+        with the BBC ADE assembler.
     @item -c02
         Recognize all 65C02 instructions. This excludes DTV (@option{-dtv})
         and illegal (@option{-illegal}) instructions.
+    @item -ce02
+        Enables the Commodore CSG65CE02 instruction set, which extends on
+        the WDC02 instruction set.
+    @item -dpo
+        Generate 8-bit offset instead of absolute relocations when
+        accessing a zero- or direct-page symbol.
     @item -dtv
         Recognize the three additional C64-DTV instructions.
     @item -illegal
         Allow 'illegal' 6502 instructions to be recognized.
+    @item -mega65
+        Enables the 45GS02 instruction set for the MEGA65 computer.
     @item -opt-branch
-        Enables 'optimization' of B<cc> branches into
-        "B<!cc> *+3 ; JMP label" sequences when necessary.
+        Enables translation of @code{B<cc>} branches into sequences of
+        @code{B<!cc> *+5 ; JMP label} when necessary. @code{BRA} (DTV, 65C02)
+        is directly translated into a @code{JMP} when out of range.
+        It also performs optimization of @code{JMP} to @code{BRA},
+        whenever possible.
+    @item -wdc02
+        Recognize all 65C02 instructions and the WDC65C02 extensions
+        (@code{RMB},@code{SMB},@code{BBR},@code{BBS},@code{STP},@code{WAI)}.
 @end table
 
 @section General
 
 This backend accepts 6502 family instructions as described in
 the instruction set reference manuals from MOS and Rockwell, which are valid
-for the following CPUs: 6502, 65C02, 65CE02, 65C102, 65C112, 6503, 6504, 6505,
-6507, 6508, 6509, 6510, 6511, 65F11, 6512 - 6518, 65C00/21, 65C29,
-6570, 6571, 6280, 6702, 740, 7501, 8500, 8502, 65802, 65816.
+for the following CPUs: 6502 - 6518, 6570, 6571, 6702, 7501, 8500, 8502.
 
-The target address type is 16 bit.
+Optionally accepts 65C02 family instructions as described in the
+instruction set reference manuals from Rockwell and WDC. Also supports
+the WDC extensions in the W65C02 and W65C134.
 
-Instructions consist of one up to three bytes and require no alignment.
+Optionally accepts 65CE02 family instructions as described in the
+instruction set reference manuals from Commodore Semiconductor Group.
+
+Optionally accepts HuC6280 instructions as described in the instruction
+set reference manuals from Hudson Soft.
+
+Optionally accepts 45GS02 instructions as defined by the Mega65 project.
+
+Optionally accepts WDC65816 insructions as described in the Programming
+Manual by The Western Design Center.
+
+The target address type is 16 bits, or 24 bits in WDC65816 mode.
+
+Instructions consist of one up to three bytes for the standard 6502 family
+(up to 7 bytes for the 6280) and require no alignment.
 There is also no alignment requirement for sections and data.
 
-All known mnemonics for illegal instructions are recognized (e.g.
+All known mnemonics for illegal instructions are optionally recognized (e.g.
 @code{dcm} and @code{dcp} refer to the same instruction). Some illegal
 insructions (e.g. @code{$ab}) are known to show unpredictable behaviour,
 or do not always work the same on different CPUs.
 
+Note that the WDC65816's @code{MVN} and @code{MVP} block move instructions
+require a full 24-bit address (or a label) for the source and destination,
+as documented in WDC's Programming Manual. To specify the bank only, you
+have to use immediate addressing syntax. Example: @code{mvn #$7f,#^label}.
+
 @section Extensions
+
+Note that some of these extensions have changed since version 1.0 of
+this backend. Bitstream-selectors (to get the low-byte, high-byte, etc. of
+an expression) are no longer available as unary operators, to avoid
+inconsistencies, and to better conform with classic assemblers and the
+official WDC syntax.
 
 This backend provides the following specific extensions:
 
 @itemize @minus
 
-@item The parser understands a lo/hi-modifier to select low- or high-byte
- of a 16-bit word. The character @code{<} is used to select the low-byte
- and @code{>} for the high-byte. It has to be the first character before
- an expression.
+@item Immediate addressing mode operands and data directives allow
+ bitstream selector prefixes as the first character in the operand.
+ @code{<} selects the least significant bits which fit into the current
+ immediate or data field width (AKA low-byte for 8-bit data).
+ @code{>} selects the same, but shifts the value right by 8 bits first
+ (AKA high-byte for 8-bit data).
+ @code{^} or @code{`} shifts the value by 16 bits first (AKA bank-byte
+ for 8-bit data).
+ Refer to chapter 6.3.3.4 (Byte Selection Operator) of the W65C816S datasheet.
+ These selector prefixes are always valid, no matter if 6502 or 65816
+ mode is active.
+ See also option @option{-bbcade}, which swaps the meaning of these
+ operators.
 
-@item When applying the operation @code{/256}, @code{%256} or @code{&256}
- on a label, an appropriate lo/hi-byte relocation will automatically be
- generated.
+@item Other operands allow an addressing mode selector prefix as the
+ first character in the operand field, which can be used as a hint for the
+ assembler when the best addressing mode cannot be determined (e.g.
+ externally defined symbols), or to enforce a specific addressing mode
+ (example: @code{lda >$12} to force 16-bit instead of zero-page addressing).
+ @code{<} forces 8-bit (direct/zero-page) addressing.
+ @code{|} or @code{!} forces 16-bit (absolute) addressing.
+ @code{>} forces 24-bit (long absolute) addressing in 65816 mode, 16-bit
+ otherwise.
+ Refer to chapter 6.3.3.5 of the W65C816S datasheet.
 
 @end itemize
 
+This backend extends the selected syntax module by the following
+directives:
+
+@table @code
+@item a8
+      Declares that immediate instructions accessing the accumulator
+      have 8 bits width (default, WDC65816 only).
+
+@item a16
+      Declares that immediate instructions accessing the accumulator
+      have 16 bits width (WDC65816 only).
+
+@item as
+      Alias for @code{a8} (WDC65816 only).
+
+@item al
+      Alias for @code{a16} (WDC65816 only).
+
+@item cpu <name>
+      Define the cpu model. Must be specified before any code is generated
+      and has priority over cpu settings on the command line.
+      Most common names are recognized, like: @code{65c02}, @code{wdc02},
+      @code{65816}, @code{HU6280}, @code{45gs02}, @code{6510}, etc.
+
+@item <symbol> ezp <expr>
+      Works exactly like the @code{equ} directive, but marks <symbol>
+      as a zero page symbol and use zero page addressing whenever
+      <symbol> is used in a memory addressing mode.
+
+@item longa on|off
+      Turns 16-bit accumulator width on or off.
+      WDC-style alias for @code{a16}/@code{a8} (WDC65816 only).
+
+@item longi on|off
+      Turns 16-bit index register width on or off.
+      WDC-style alias for @code{x16}/@code{x8} (WDC65816 only).
+
+@item setdp <expr>
+      Set the current base address of the zero/direct page for
+      optimizations from absolute to direct-page addressing modes.
+      Can be set to any 16-bit address on 65816 (defaults to zero).
+      Is preset to @code{$2000} for the HuC6280/PC-Engine.
+
+@item x8
+      Declares that immediate instructions accessing the index registers
+      have 8 bits width (default, WDC65816 only).
+
+@item x16
+      Declares that immediate instructions accessing the index registers
+      have 16 bits width (WDC65816 only).
+
+@item xs
+      Alias for @code{x8} (WDC65816 only).
+
+@item xl
+      Alias for @code{x16} (WDC65816 only).
+
+@item zero
+      Switch to a zero page section called @code{zero} or @code{.zero},
+      which has the type @code{bss} with attributes @code{"aurwz"}.
+      Accesses to symbols from this section will default to zero page
+      addressing mode.
+
+@item zpage <symbol1> [,<symbol2>...]
+      Mark symbols as zero page and use zero page addressing for
+      expressions based on this symbol, unless overridden by a
+      hi-modifier (@code{>}).
+@end table
+
+All these directives are also available in the form starting with a
+dot (@code{.}).
+
 @section Optimizations
 
-This backend performs the following operand optimizations:
+This backend performs the following operand optimizations and translations:
 
 @itemize @minus
 
-@item Branches, where the destination is out of range, are translated
- into @code{B<!cc> *+3} and an absolute @code{JMP} instruction.
+@item Absolute addressing modes are optimized to zero-page (or direct-page)
+  addressing modes, whenever possible.
+@item An absolute addressing mode will be promoted to long addressing
+  (24 bits) for the WDC65816, when needed.
+@item Conditional branches, where the destination is out of range, are
+  translated into @code{B<!cc> *+5} and an absolute @code{JMP} instruction
+  (@option{-opt-branch}).
+@item Some CPUs also allow optimization of @code{JMP} to @code{BRA},
+  when @option{-opt-branch} was given.
 
 @end itemize
 
@@ -75,8 +228,7 @@ This backend performs the following operand optimizations:
     Some known problems of this module at the moment:
 
 @itemize @minus
-
-@item None.
+@item None?
 
 @end itemize
 
@@ -88,10 +240,18 @@ This module has the following error messages:
 
 @item 2001: instruction not supported on selected architecture
 @item 2002: trailing garbage in operand
-@item 2003: missing closing parenthesis in addressing mode
+@item 2003: selector prefix ignored
 @item 2004: data size %d not supported
 @item 2005: relocation does not allow hi/lo modifier
-@item 2006: operand doesn't fit into 8-bits
+@item 2006: operand doesn't fit into %d bits
 @item 2007: branch destination out of range
+@item 2008: illegal bit number
+@item 2009: identifier expected
+@item 2010: bad operand
+@item 2011: zero/direct-page addressing not available
+@item 2012: operand not in zero/direct-page range
+@item 2013: absolute-long addressing not available
+@item 2014: cpu must be defined before any code is generated
+@item 2015: unknown cpu model: %s
 
 @end itemize

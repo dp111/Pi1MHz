@@ -150,7 +150,7 @@ static int32_t M5000_audio_range;
 // if gain has >1000 then gain = gain - 1000 and auto ranging
 // is PHASESET
 
-static void M5000_gain() {
+static void M5000_gain(void) {
    const char *prop = get_cmdline_prop("M5000_Gain");
 
    if (prop)
@@ -169,7 +169,7 @@ static void M5000_gain() {
 
 // in cmdline.txt M5000_BeebAudio_Off=1 turns off beeb Audio
 
-static void M5000_BeebAudio() {
+static void M5000_BeebAudio(void) {
    const char *prop = get_cmdline_prop("M5000_BeebAudio_Off");
 
    if (prop)
@@ -334,15 +334,15 @@ static bool record = 0;
 static bool rec_started;
 static uint32_t Audio_Index;
 
-static void music5000_rec_start()
+static void music5000_rec_start(void)
 {
     Audio_Index = 0x100000 + 48;
     rec_started = false;
 }
 
-void music5000_rec_stop()
+void music5000_rec_stop(void)
 {
-   static const char wavfmt[] = {
+   static const unsigned char wavfmt[] = {
       'R','I','F','F',
       0x00, 0x00, 0x00, 0x00,
       0x57, 0x41, 0x56, 0x45, // "WAVE"
@@ -402,7 +402,7 @@ static void store_samples(int sl, int sr)
     }
 }
 
-void music5000_emulate()
+void music5000_emulate(void)
 {
    if ((record == 0 ) && (fx_register[fx_pointer] != 0))
    {

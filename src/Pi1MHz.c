@@ -63,7 +63,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/FREDaddrs for full details
 &FC90-&FC9F Electron sound and speech
 &FCA0-&FCAF
 &FCB0-&FCBF Electron 6522 VIA expansion
-            PRSIMA Video System
+            PRISMA Video System
 &FCC0-&FCCF Morley Electronics RAMDisk
 &FCC0-&FCCF Electron floppy disk expansion
 &FCD0-&FCDB
@@ -177,7 +177,7 @@ void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
 // cppcheck-suppress unusedFunction
 uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 {
-   return Pi1MHz->Memory[addr];
+   return Pi1MHz->Memory[addr<<1];
 }
 
 // For each location in FRED and JIM which a task wants to be called for
@@ -196,7 +196,7 @@ void Pi1MHz_Register_Poll( func_ptr function_ptr )
    Pi1MHz_polls_max++;
 }
 
-bool Pi1MHz_is_rst_active() {
+bool Pi1MHz_is_rst_active(void) {
    return ((RPI_GpioBase->GPLEV0 & NRST_MASK) == 0);
 }
 
@@ -237,7 +237,7 @@ void Pi1MHzBus_read_Status(unsigned int gpio)
 }
 
 // cppcheck-suppress unusedFunction
-void IRQHandler_main() {
+void IRQHandler_main(void) {
   RPI_AuxMiniUartIRQHandler();
   // Periodically also process the VDU Queue
   fb_process_vdu_queue();
@@ -245,11 +245,11 @@ void IRQHandler_main() {
   _data_memory_barrier();
 }
 
-static void init_emulator() {
+static void init_emulator(void) {
    LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
-   RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
+
    _enable_interrupts();
 
    const char *prop = get_cmdline_prop("Pi1MHzDisable");
@@ -272,8 +272,9 @@ static void init_emulator() {
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {
          char key[128]="";
-         strcat(key,emulator[i].name);
-         strcat(key,"_addr");
+         char * ptr = key;
+         ptr  += strlcpy(key,emulator[i].name,sizeof(key));
+         strlcpy(ptr,"_addr", 5);
          const char *prop2 = get_cmdline_prop(key);
          if (prop2)
             {
@@ -317,6 +318,7 @@ static void init_emulator() {
 
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       if (emulator[i].enable == 1) emulator[i].init(i, emulator[i].address);
+
 }
 
 static uint8_t led_pin;
@@ -327,7 +329,7 @@ void Pi1MHz_LED(int led)
       RPI_SetGpioValue(led_pin , led);
 }
 
-static void init_hardware()
+static void init_hardware(void)
 {
    // enable overriding default LED option using command.txt
    // depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx
@@ -360,7 +362,7 @@ static void init_hardware()
 #endif
 }
 // cppcheck-suppress unusedFunction
-void kernel_main()
+void kernel_main(void)
 {
    unsigned int baud_rate;
    const char * const prop = get_cmdline_prop("baud_rate");

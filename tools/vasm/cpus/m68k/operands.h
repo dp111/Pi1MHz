@@ -20,7 +20,7 @@ struct addrmode addrmodes[] = {
 
 /* specregs.h */
 enum {
-  REG_CCR=0,REG_SR,REG_NC,REG_DC,REG_IC,REG_BC,
+  REG_CCR=0,REG_SR,REG_USP,REG_NC,REG_DC,REG_IC,REG_BC,
 
   REG_ACC,REG_ACC0,REG_ACC1,REG_ACC2,REG_ACC3,REG_ACCX01,REG_ACCX23,
   REG_MACSR,REG_MASK,REG_SFLEFT,REG_SFRIGHT,
@@ -44,15 +44,17 @@ enum {
   REG_ACR0,REG_ACR1,REG_ACR2,REG_ACR3,
   REG_BUSCR,REG_MMUBAR,
   REG_STR,REG_STC,REG_STH,REG_STB,REG_MWR,
-  REG_USP,REG_VBR,REG_CAAR,REG_MSP,
+  REG_USP_,REG_VBR,REG_CAAR,REG_MSP,
   REG_ISP,REG_MMUSR_,REG_URP,REG_SRP_,REG_PCR,
   REG_CCC,REG_IEP1,REG_IEP2,REG_BPC,REG_BPW,REG_DCH,REG_DCM,
   REG_ROMBAR,REG_ROMBAR0,REG_ROMBAR1,
   REG_RAMBAR,REG_RAMBAR0,REG_RAMBAR1,
   REG_MPCR,REG_EDRAMBAR,REG_SECMBAR,REG_MBAR,
   REG_PCR1U0,REG_PCR1L0,REG_PCR2U0,REG_PCR2L0,REG_PCR3U0,REG_PCR3L0,
-  REG_PCR1U1,REG_PCR1L1,REG_PCR2U1,REG_PCR2L1,REG_PCR3U1,REG_PCR3L1,
+  REG_PCR1U1,REG_PCR1L1,REG_PCR2U1,REG_PCR2L1,REG_PCR3U1,REG_PCR3L1
 };
+#define FIRST_CTRLREG REG_SFC
+#define LAST_CTRLREG REG_PCR3L1
 
 
 #define _(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p) \
@@ -61,14 +63,14 @@ enum {
   ((o)<<14)|((p)<<15))
 
 enum {
-  OP_D8=1,OP_D16,OP_D32,OP_D64,OP_F32,OP_F64,OP_F96,
-  D_,A_,B_,AI,IB,R_,RM,DD,CS,VDR2,VDR4,PA,AP,DP,
-  F_,FF,FR,FPIAR,IM,QI,IR,BR,AB,VA,M6,RL,FL,FS,
-  AY,AM,MA,MI,FA,CF,MAQ,CFAM,CM,AL,DA,DN,CFDA,CT,AC,AD,CFAD,
-  BD,BS,AK,MS,MR,CFMM,CFMN,ND,NI,NJ,NK,BY,BI,BJ,
+  OP_D8=1,OP_D16,OP_D32,OP_D64,OP_F32,OP_F64,OP_F96,OP_FPD,
+  D_,A_,B_,AI,IB,R_,RM,DD,CS,RR,VR2,VB2,VDR2,VDR4,PA,AP,DP,
+  F_,FF,FR,FPIAR,IM,IQ,QI,IR,BR,DB,AB,VA,M6,RL,FL,FS,
+  AY,AM,MA,MI,FA,CF,MAQ,CFAM,CM,AL,DA,DN,DI,CFDA,CT,AC,AD,CFAD,
+  BD,BS,AK,MS,MR,CFMM,CFMN,ND,NI,NJ,BY,BI,BJ,OF_,
   _CCR,_SR,_USP,_CACHES,_ACC,_MACSR,_MASK,_CTRL,_ACCX,_AEXT,
   _VAL,_FC,_RP_030,_RP_851,_TC,_AC,_M1_B,_BAC,_BAD,_PSR,_PCSR,
-  _TT,SH,VX,VXR2,VXR4
+  _TT,SH,VX,VXR2,VXR4,OVX,VXBF
 };
 
 struct optype optypes[] = {
@@ -93,6 +95,9 @@ struct optype optypes[] = {
   _(0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0),OTF_DATA|OTF_FLTIMM,0,0,
 
 /* OP_F96    96-bit data */
+  _(0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0),OTF_DATA|OTF_FLTIMM,0,0,
+
+/* OP_FPD    96-bit data (Packed Decimal) */
   _(0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0),OTF_DATA|OTF_FLTIMM,0,0,
 
 /* D_        data register */
@@ -122,8 +127,17 @@ struct optype optypes[] = {
 /* CS        any double data or address register indirect (cas2) */
   _(0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0),FL_DoubleReg,0,0,
 
+/* RR        double register (address or data) */
+  _(1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0),FL_DoubleReg,0,0,
+
+/* VR2       (Apollo) Rn:Rn+1 @@@FIXME: currently unused! */
+  _(1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0),OTF_VXRNG2|FL_DoubleReg,0,0,
+
+/* VB2       (Apollo) Bn:Bn+1 @@@FIXME: currently unused! */
+  _(0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0),OTF_VXRNG2|FL_BnReg|FL_DoubleReg,0,0,
+
 /* VDR2      (Apollo) Dn:Dn+1 */
-  _(1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),OTF_VXRNG2,0,0,
+  _(1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),OTF_VXRNG2|FL_DoubleReg,0,0,
 
 /* VDR4      (Apollo) Dn-Dn+3 */
   _(1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0),OTF_VXRNG4,0,0,
@@ -152,6 +166,9 @@ struct optype optypes[] = {
 /* IM        immediate data */
   _(0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0),0,0,0,
 
+/* IQ        immediate quad data */
+  _(0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0),OTF_QUADIMM,0,0,
+
 /* QI        quick immediate data (moveq, addq, subq) */
   _(0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0),OTF_NOSIZE,0,0,
 
@@ -160,6 +177,9 @@ struct optype optypes[] = {
 
 /* BR        branch destination */
   _(0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0),OTF_BRANCH,0,0,
+
+/* DB        DBcc branch destination (always 16 bits) */
+  _(0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0),OTF_DBRA,0,0,
 
 /* AB        absolute long destination */
   _(0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0),0,0,0,
@@ -216,6 +236,9 @@ struct optype optypes[] = {
 /* DN        data, but not immediate 0,2-6,7.0-3 */
   _(1,0,1,1,1,1,1,1,1,1,1,0,0,0,0,0),0,0,0,
 
+/* DI        data registers and immediate */
+  _(1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0),0,0,0,
+
 /* CFDA      (ColdFire) float data 0,2-6,7.0-4 (=CF + mode 0) */
   _(1,0,1,1,1,1,0,0,0,1,0,0,0,0,0,0),0,0,0,
 
@@ -253,16 +276,13 @@ struct optype optypes[] = {
   _(0,0,1,0,0,1,0,0,0,1,0,0,0,0,0,0),0,0,0,
 
 /* ND        (Apollo) all except Dn, 1-6,7.0-4 */
-  _(0,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0),0,0,0,
+  _(0,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0),0,0,0,
 
 /* NI        (Apollo) all except immediate, 0-6,7.0-3 */
   _(1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0),0,0,0,
 
 /* NJ        (Apollo) all except Dn and immediate, 1-6,7.0-3 */
   _(0,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0),0,0,0,
-
-/* NK        (Apollo) all except An and immediate, 0,2-6,7.0-3 */
-  _(1,0,1,1,1,1,1,1,1,1,1,0,0,0,0,0),0,0,0,
 
 /* BY        (Apollo) all addressing modes 0-6,7.0-4 with An replaced by Bn */
   _(1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0),FL_BnReg,0,0,
@@ -272,6 +292,9 @@ struct optype optypes[] = {
 
 /* BJ        (Apollo) all except Dn/An & immediate, 0-6,7.0-3, An -> Bn */
   _(0,0,1,1,1,1,1,1,1,1,1,0,0,0,0,0),FL_BnReg,0,0,
+
+/* OF_       (Apollo) optional FPU register FPn */
+  _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0),OTF_OPT,0,0,
 
 /* special registers */
 /* _CCR */
@@ -289,8 +312,7 @@ struct optype optypes[] = {
 /* _MASK */
   _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_CHKREG,REG_MASK,REG_MASK,
 /* _CTRL */
-  _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_SRRANGE|OTF_CHKREG,
-    REG_SFC,REG_PCR3L1,
+  _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_MOVCREG,FIRST_CTRLREG,LAST_CTRLREG,
 /* _ACCX */
   _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_SRRANGE|OTF_CHKREG,
     REG_ACC0,REG_ACC3,
@@ -300,7 +322,8 @@ struct optype optypes[] = {
 /* _VAL */
   _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_CHKREG,REG_VAL,REG_VAL,
 /* _FC */
-  _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_CHKREG,REG_SFC,REG_DFC,
+  _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_MOVCREG|OTF_SRRANGE|OTF_CHKREG,
+    REG_SFC,REG_DFC,
 /* _RP_030 */
   _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_CHKREG,REG_SRP,REG_CRP,
 /* _RP_851 */
@@ -326,9 +349,13 @@ struct optype optypes[] = {
 /* VX (Apollo) */
   _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_SRRANGE|OTF_CHKREG,REG_VX00,REG_VX23,
 /* VXR2 (Apollo) En:En+1 */
-  _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_VXRNG2|OTF_SRRANGE|OTF_CHKREG,REG_VX00,REG_VX23,
+  _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_VXRNG2|OTF_SRRANGE|OTF_CHKREG|FL_DoubleReg,REG_VX00,REG_VX23,
 /* VXR4 (Apollo) En-En+3 */
   _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_VXRNG4|OTF_SRRANGE|OTF_CHKREG,REG_VX00,REG_VX23,
+/* OVX (Apollo) optional En register */
+  _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_OPT|OTF_SPECREG|OTF_SRRANGE|OTF_CHKREG,REG_VX00,REG_VX23,
+/* VXBF (Apollo) En{b1:b2} */
+  _(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1),OTF_SPECREG|OTF_SRRANGE|OTF_CHKREG|FL_Bitfield,REG_VX00,REG_VX23,
 };
 
 #undef _
@@ -340,8 +367,8 @@ static void write_val(unsigned char *,int,int,taddr,int);
 
 static void insert_cas2(unsigned char *d,struct oper_insert *i,operand *o)
 {
-  uint16_t w1 = (*(d+2)<<8) | *(d+3);
-  uint16_t w2 = (*(d+4)<<8) | *(d+5);
+  uint16_t w1 = (((uint16_t)*(d+2))<<8) | *(d+3);
+  uint16_t w2 = (((uint16_t)*(d+4))<<8) | *(d+5);
 
   w1 |= (i->size==4 ? o->reg&15 : o->reg&7) << (16-((i->pos-16)+i->size));
   w2 |= (o->reg>>4) << (16-((i->pos-16)+i->size));
@@ -376,14 +403,23 @@ static void insert_muldivl(unsigned char *d,struct oper_insert *i,operand *o)
 
 static void insert_divl(unsigned char *d,struct oper_insert *i,operand *o)
 {
-  *(d+2) |= o->reg & 0xf0;
-  *(d+3) |= o->reg & 0xf;
+  if (o->flags & FL_DoubleReg) {
+    *(d+2) |= o->reg & 0xf0;
+    *(d+3) |= o->reg & 0xf;
+  }
+  else insert_muldivl(d,i,o);
 }
 
 static void insert_tbl(unsigned char *d,struct oper_insert *i,operand *o)
 {
   *(d+1) |= o->reg & 7;
   *(d+3) |= (o->reg & 0x70) >> 4;
+}
+
+static void insert_mv2(unsigned char *d,struct oper_insert *i,operand *o)
+{
+  *(d+2) |= ((o->reg&0x0f) << 4) | ((o->reg&0xc0) >> 6);
+  *(d+3) |= (o->reg&0x30) << 2;
 }
 
 static void insert_fp(unsigned char *d,struct oper_insert *i,operand *o)
@@ -425,9 +461,9 @@ static void insert_ammx(unsigned char *d,struct oper_insert *i,operand *o)
 /* place to put an operand */
 enum {
   NOP=0,NEA,SEA,MEA,BEA,KEA,REA,EAM,BRA,DBR,RHI,RLO,RL4,R2H,R2M,R2L,R2P,
-  FPN,FPM,FMD,C2H,A2M,A2L,AXA,AXB,AXD,AX0,CS1,CS2,CS3,MDL,DVL,TBL,FPS,FPC,
-  RMM,RMW,RMY,RMX,ACX,ACR,DL8,DL4,D3Q,DL3,CAC,D16,S16,D2R,ELC,EL8,E8R,
-  EL3,EL4,EM3,EM4,EH3,BAX,FCR,F13,M3Q,MSF,ACW,AHI,ALO,LIN
+  FPN,FPM,FMD,C2H,A2M,A2L,R3H,AXA,AXB,AXD,AX0,CS1,CS2,CS3,MDL,DVL,TBL,MV2,
+  FPS,FPC,RMM,RMW,RMY,RMX,ACX,ACR,DL8,DL4,D3Q,DL3,CAC,D16,S16,D2R,ELC,
+  EL8,E8R,EL3,EL4,EM3,EM4,EH3,BAX,FCR,F13,M3Q,MSF,ACW,AHI,ALO,LIN
 };
 
 struct oper_insert insert_info[] = {
@@ -500,6 +536,9 @@ struct oper_insert insert_info[] = {
 /* A2L register 4 bits in 2nd word bits 3-0 (Apollo AMMX) */
   M_reg,4,28,0,0,
 
+/* R3H register 4 bits in 3rd word bits 15-12 (Apollo TEX instruction) */
+  M_reg,4,32,0,0,
+
 /* AXA vector register field A (Apollo AMMX) */
   M_func,4,28,IIF_A|IIF_ABSVAL,insert_ammx,
 
@@ -529,6 +568,9 @@ struct oper_insert insert_info[] = {
 
 /* TBL 3 bit Dym to 1st w. bits 2-0, Dyn to 2nd w. 2-0 */
   M_func,0,0,0,insert_tbl,
+
+/* MV2 (Rn:Rm) 4 bit Rn to 2nd word bits 15-12, Rm to bits 9-6 */
+  M_func,0,0,0,insert_mv2,
 
 /* FPS 3 bit FPn to 2nd word bits 12-10 (FPm) and 9-7 (FPn) */
   M_func,0,0,0,insert_fp,

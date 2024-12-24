@@ -67,7 +67,7 @@ void InvalidateDataCache (void)
          nSetWayLevel = nWay << L1_SETWAY_WAY_SHIFT
                       | nSet << L1_SETWAY_SET_SHIFT
                       | 0 << SETWAY_LEVEL_SHIFT;
-         asm volatile ("mcr p15, 0, %0, c7, c6,  2" : : "r" (nSetWayLevel) : "memory");   // DCISW
+         __asm volatile ("mcr p15, 0, %0, c7, c6,  2" : : "r" (nSetWayLevel) : "memory");   // DCISW
       }
    }
 
@@ -77,7 +77,7 @@ void InvalidateDataCache (void)
          nSetWayLevel = nWay << L2_SETWAY_WAY_SHIFT
                       | nSet << L2_SETWAY_SET_SHIFT
                       | 1 << SETWAY_LEVEL_SHIFT;
-         asm volatile ("mcr p15, 0, %0, c7, c6,  2" : : "r" (nSetWayLevel) : "memory");   // DCISW
+         __asm volatile ("mcr p15, 0, %0, c7, c6,  2" : : "r" (nSetWayLevel) : "memory");   // DCISW
       }
    }
 }
@@ -93,7 +93,7 @@ void CleanDataCache (void)
          nSetWayLevel = nWay << L1_SETWAY_WAY_SHIFT
                       | nSet << L1_SETWAY_SET_SHIFT
                       | 0 << SETWAY_LEVEL_SHIFT;
-         asm volatile ("mcr p15, 0, %0, c7, c10,  2" : : "r" (nSetWayLevel) : "memory");
+         __asm volatile ("mcr p15, 0, %0, c7, c10,  2" : : "r" (nSetWayLevel) : "memory");
       }
    }
 
@@ -103,7 +103,7 @@ void CleanDataCache (void)
          nSetWayLevel = nWay << L2_SETWAY_WAY_SHIFT
                       | nSet << L2_SETWAY_SET_SHIFT
                       | 1 << SETWAY_LEVEL_SHIFT;
-         asm volatile ("mcr p15, 0, %0, c7, c10,  2" : : "r" (nSetWayLevel) : "memory");
+         __asm volatile ("mcr p15, 0, %0, c7, c10,  2" : : "r" (nSetWayLevel) : "memory");
       }
    }
 }
@@ -119,7 +119,7 @@ void _clean_cache_area(const void * start, unsigned int length)
    char * startptr = start;
 #pragma GCC diagnostic pop
    char * endptr;
-   asm volatile ("mrc p15, 0, %0, c0, c0,  1" : "=r" (cachelinesize));
+   __asm volatile ("mrc p15, 0, %0, c0, c0,  1" : "=r" (cachelinesize));
    cachelinesize = (cachelinesize>> 16 ) & 0xF;
    cachelinesize = 4<<cachelinesize;
    endptr = startptr + length;
@@ -128,11 +128,11 @@ void _clean_cache_area(const void * start, unsigned int length)
    startptr = (char *)(((uint32_t)start) & ~(cachelinesize - 1));
 
    do{
-      asm volatile ("mcr     p15, 0, %0, c7, c14, 1" : : "r" (startptr));
+      __asm volatile ("mcr     p15, 0, %0, c7, c14, 1" : : "r" (startptr));
       startptr = startptr + cachelinesize;
    } while ( startptr  < endptr);
 #else
-   asm volatile("mcrr p15,0,%0,%1,c14"::"r" (((uint32_t)start)+length), "r" (start));
+   __asm volatile("mcrr p15,0,%0,%1,c14"::"r" (((uint32_t)start)+length), "r" (start));
    _data_memory_barrier();
 #endif
 }
@@ -147,7 +147,7 @@ void _invalidate_cache_area(const void * start, unsigned int length)
    char * startptr = start;
 #pragma GCC diagnostic pop
    char * endptr;
-   asm volatile ("mrc p15, 0, %0, c0, c0,  1" : "=r" (cachelinesize));
+   __asm volatile ("mrc p15, 0, %0, c0, c0,  1" : "=r" (cachelinesize));
    cachelinesize = (cachelinesize>> 16 ) & 0xF;
    cachelinesize = 4<<cachelinesize;
    endptr = startptr + length;
@@ -155,11 +155,11 @@ void _invalidate_cache_area(const void * start, unsigned int length)
    startptr = (char *)(((uint32_t)start) & ~(cachelinesize - 1));
 
    do{
-      asm volatile ("mcr     p15, 0, %0, c7, c6, 1" : : "r" (startptr));
+      __asm volatile ("mcr     p15, 0, %0, c7, c6, 1" : : "r" (startptr));
       startptr = startptr + cachelinesize;
    } while ( startptr  < endptr);
 #else
-   asm volatile("mcrr p15,0,%0,%1,c6"::"r" ((uint32_t)start+length), "r" (start));
+   __asm volatile("mcrr p15,0,%0,%1,c6"::"r" ((uint32_t)start+length), "r" (start));
 #endif
    _data_memory_barrier();
 }
@@ -167,32 +167,32 @@ void _invalidate_cache_area(const void * start, unsigned int length)
 #if 0
 static void _invalidate_icache()
 {
-   asm volatile ("mcr p15, 0, %0, c7, c5, 0" : : "r" (0));
+   __asm volatile ("mcr p15, 0, %0, c7, c5, 0" : : "r" (0));
 }
 
 static void _invalidate_dcache()
 {
-   asm volatile ("mcr p15, 0, %0, c7, c6, 0" : : "r" (0));
+   __asm volatile ("mcr p15, 0, %0, c7, c6, 0" : : "r" (0));
 }
 
 static void _clean_invalidate_dcache()
 {
-   asm volatile ("mcr p15, 0, %0, c7, c14, 0" : : "r" (0));
+   __asm volatile ("mcr p15, 0, %0, c7, c14, 0" : : "r" (0));
 }
 
 static void _invalidate_dcache_mva(void *address)
 {
-   asm volatile ("mcr p15, 0, %0, c7, c6, 1" : : "r" (address));
+   __asm volatile ("mcr p15, 0, %0, c7, c6, 1" : : "r" (address));
 }
 
 static void _clean_invalidate_dcache_mva(void *address)
 {
-   asm volatile ("mcr p15, 0, %0, c7, c14, 1" : : "r" (address));
+   __asm volatile ("mcr p15, 0, %0, c7, c14, 1" : : "r" (address));
 }
 
 static void _invalidate_dtlb()
 {
-   asm volatile ("mcr p15, 0, %0, c8, c6, 0" : : "r" (0));
+   __asm volatile ("mcr p15, 0, %0, c8, c6, 0" : : "r" (0));
 }
 #endif
 
@@ -208,7 +208,7 @@ static void _invalidate_dtlb()
 #ifdef NUM_4K_PAGES
 static void _invalidate_dtlb_mva(const void *address)
 {
-   asm volatile ("mcr p15, 0, %0, c8, c6, 1" : : "r" (address));
+   __asm volatile ("mcr p15, 0, %0, c8, c6, 1" : : "r" (address));
 }
 
 void map_4k_page(unsigned int logical, unsigned int physical) {
@@ -263,7 +263,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // For cacheable RAM
   // TEX = 001; C=1; B=1 (Outer and inner write back, write allocate)
 
-  // For non-cachable RAM
+  // For non-cacheable RAM
   // TEX = 001; C=0; B=0 (Outer and inner non-cacheable)
 
   // For individual control
@@ -306,7 +306,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 
   for (; base < PERIPHERAL_END>>20; base++)
   {
-    // shared device, never execute storely ordered
+    // shared device, never execute store ordered
      PageTable[base] = (base << 20) | 0x10C12;
   }
   // now create and uncached copy of the memory
@@ -333,21 +333,21 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 
 #if (__ARM_ARCH >= 8 )
   //unsigned cpuextctrl0, cpuextctrl1;
-  //asm volatile ("mrrc p15, 1, %0, %1, c15" : "=r" (cpuextctrl0), "=r" (cpuextctrl1));
+  //__asm volatile ("mrrc p15, 1, %0, %1, c15" : "=r" (cpuextctrl0), "=r" (cpuextctrl1));
   //LOG_DEBUG("extctrl = %08x %08x\r\n", cpuextctrl1, cpuextctrl0);
 #else
   // RPI:  bit 6 of auxctrl is restrict cache size to 16K (no page coloring)
   // RPI2: bit 6 of auxctrl is set SMP bit, otherwise all caching disabled
 #if (__ARM_ARCH == 7 )
  unsigned auxctrl;
-  asm volatile ("mrc p15, 0, %0, c1, c0,  1" : "=r" (auxctrl));
+  __asm volatile ("mrc p15, 0, %0, c1, c0,  1" : "=r" (auxctrl));
   auxctrl |= 1 << 6;
-  asm volatile ("mcr p15, 0, %0, c1, c0,  1" :: "r" (auxctrl));
+  __asm volatile ("mcr p15, 0, %0, c1, c0,  1" :: "r" (auxctrl));
  #endif
 #endif
 
   // set domain 0 to client
-  asm volatile ("mcr p15, 0, %0, c3, c0, 0" :: "r" (1));
+  __asm volatile ("mcr p15, 0, %0, c3, c0, 0" :: "r" (1));
 
 #if (__ARM_ARCH >= 7 )
   // set TTBR0 - page table walk memory cacheability/shareable
@@ -356,26 +356,26 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // Bit 1 indicates shareable
   // 4A = 0100 1010
   unsigned int attr = ((aa6) << 6) | (1 << 3) | (shareable << 1) | ((aa0 ));
-  asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (attr | (unsigned) &PageTable));
+  __asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (attr | (unsigned) &PageTable));
 #else
   // set TTBR0 (page table walk inner cacheable, outer non-cacheable, shareable memory)
-  asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (0x03 | (unsigned) &PageTable));
+  __asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (0x03 | (unsigned) &PageTable));
 #endif
 
   // Invalidate entire data cache
 #if (__ARM_ARCH >= 7 )
-  asm volatile ("isb" ::: "memory");
+  __asm volatile ("isb" ::: "memory");
   InvalidateDataCache();
 #else
   // invalidate data cache and flush prefetch buffer
-  asm volatile ("mcr p15, 0, %0, c7, c5,  4" :: "r" (0) : "memory");
-  asm volatile ("mcr p15, 0, %0, c7, c6,  0" :: "r" (0) : "memory");
+  __asm volatile ("mcr p15, 0, %0, c7, c5,  4" :: "r" (0) : "memory");
+  __asm volatile ("mcr p15, 0, %0, c7, c6,  0" :: "r" (0) : "memory");
 #endif
 
   // enable MMU, L1 cache and instruction cache, L2 cache, write buffer,
   //   branch prediction and extended page table on
   unsigned sctrl;
-  asm volatile ("mrc p15,0,%0,c1,c0,0" : "=r" (sctrl));
+  __asm volatile ("mrc p15,0,%0,c1,c0,0" : "=r" (sctrl));
   // Bit 12 enables the L1 instruction cache
   // Bit 11 enables branch pre-fetching
   // Bit  2 enables the L1 data cache
@@ -384,5 +384,5 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // The L1 data cache will one be enabled if the MMU is enabled
   sctrl |= 0x00001805;
   sctrl |= 1<<22; // U (v6 unaligned access model)
-  asm volatile ("mcr p15,0,%0,c1,c0,0" :: "r" (sctrl) : "memory");
+  __asm volatile ("mcr p15,0,%0,c1,c0,0" :: "r" (sctrl) : "memory");
 }

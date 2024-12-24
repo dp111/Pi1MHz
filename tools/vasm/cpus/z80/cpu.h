@@ -29,6 +29,7 @@
 
 #define BIGENDIAN 0
 #define LITTLEENDIAN 1
+#define BITSPERBYTE 8
 #define VASM_CPU_Z80 1
 
 /* maximum number of operands for one mnemonic */
@@ -36,8 +37,6 @@
 
 /* maximum number of mnemonic-qualifiers per mnemonic */
 #define MAX_QUALIFIERS 0
-
-/* maximum number of additional command-line-flags for this cpu */
 
 /* data type to represent a target-address */
 typedef int32_t taddr;
@@ -91,7 +90,7 @@ typedef struct {
 #define CPU_Z180    32
 #define CPU_EZ80    64
 #define CPU_GB80    128
-
+#define CPU_80OS    256
 
 #define CPU_RABBIT (CPU_RCM2000|CPU_RCM3000|CPU_RCM4000)
 #define CPU_ZILOG (CPU_Z80|CPU_Z180|CPU_EZ80)
@@ -108,14 +107,14 @@ typedef struct {
 #define F_ALTD  2    /* altd valid */
 #define F_ALTDW  4   /* warn about altw use */
 #define F_ALTDWHL 8  /* Warn about HLREF  use with altd */
-
+#define F_80OS_CHECK 16 /* When both 8080 and 80OS are specified, jp = "jump on plus" else jp = jump (jmp) */
 #define F_ALL ( F_IO|F_ALTD)
 
 /* additional mnemonic data */
 typedef struct {
     int           mode;        /* Opcode mode */
     uint32_t      opcode;      /* Opcode */
-    unsigned char cpus;
+    unsigned short cpus;
     int           modifier_flags;    /* Modifier flags for altd/ioi etc */
     int           rabbit2000_action; /* Action to take on a rabbit */
     int           rabbit3000_action; /* Action to take on a rabbit */
@@ -139,7 +138,7 @@ typedef struct {
 #define FLAGS_LT  2
 #define FLAGS_V   3
 
-/* Theses values are significant */
+/* These values are significant */
 #define REG_BC  0x00
 #define REG_DE  0x01
 #define REG_HL  0x02
@@ -147,7 +146,7 @@ typedef struct {
 #define REG_AF  0x04
 
 
-/* These values are signifcant - opcodes are derived using them */
+/* These values are significant - opcodes are derived using them */
 #define REG_B      0x00
 #define REG_C      0x01
 #define REG_D      0x02
@@ -155,6 +154,7 @@ typedef struct {
 #define REG_H      0x04
 #define REG_L      0x05
 #define REG_HLREF  0x06
+#define REG_M      0x06
 #define REG_A      0x07
 /* Extra ones - values from here onwards aren't significant */
 #define REG_I      0x08
@@ -245,7 +245,10 @@ typedef struct {
 #define OP_OFFSIX   0x80000  /* Have +ix as offset */
 #define OP_OFFSIY   0x100000  /* Have +iy as offset */
 
-
+#define OP_RP          0x200000 /*  Reg Pair (BC, DE, HL, and SP) */
+#define OP_RP_PUSHABLE 0x400000 /*  Pushable reg pair (BC, DE, HL, and PSW) */
+#define OP_B           0x800000 /*  Reg Pair B (for ldax and stax) */
+#define OP_D           0x1000000 /*  Reg Pair D (for ldax and stax) */
 
 /* Opcode types - we can group them together to calculate offsets etc */
 #define TYPE_NONE     0x00    /* No modifiers */
@@ -266,3 +269,4 @@ typedef struct {
 #define TYPE_NOPREFIX 0x0d    /* Don't add on an indexing prefix (RCM) */
 #define TYPE_IDX32R   0x0e    /* p? * 16 + p? * 64*/
 #define TYPE_OUT_C_0  0x0f    /* for out (c), number, number can only be 0 */
+#define TYPE_RP       0x10    /* Register pair instructions */

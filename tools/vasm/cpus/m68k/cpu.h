@@ -1,12 +1,13 @@
 /*
 ** cpu.h Motorola M68k, CPU32 and ColdFire cpu-description header-file
-** (c) in 2002,2006-2017 by Frank Wille
+** (c) in 2002,2006-2024 by Frank Wille
 */
 
 #define BIGENDIAN 1
 #define LITTLEENDIAN 0
+#define BITSPERBYTE 8
 #define VASM_CPU_M68K 1
-#define MNEMOHTABSIZE 0x4000
+#define MNEMOHTABSIZE 0x8000
 
 /* maximum number of operands for one mnemonic */
 #define MAX_OPERANDS 6
@@ -14,11 +15,12 @@
 /* maximum number of mnemonic-qualifiers per mnemonic */
 #define MAX_QUALIFIERS 1
 
-/* maximum number of additional command-line-flags for this cpu */
-
 /* data type to represent a target-address */
 typedef int32_t taddr;
 typedef uint32_t utaddr;
+
+/* we support floating point constants */
+#define FLOAT_PARSER 1
 
 /* instruction extension */
 #define HAVE_INSTRUCTION_EXTENSION 1
@@ -28,7 +30,6 @@ typedef struct {
       unsigned char flags;
       signed char last_size;
       signed char orig_ext;
-      char unused;
     } real;
     struct {
       struct instruction *next;
@@ -37,6 +38,8 @@ typedef struct {
 } instruction_ext;
 #define IFL_RETAINLASTSIZE    1   /* retain current last_size value */
 #define IFL_UNSIZED           2   /* instruction had no size extension */
+#define IFL_NOTYPECHK         4   /* do not check limits of oper. value */
+#define IFL_ANYSIGN           8   /* allow M_val0 signed and unsigned */
 
 /* we use OPTS atoms for cpu-specific options */
 #define HAVE_CPU_OPTS 1
@@ -67,6 +70,7 @@ enum {
   OCMD_OPTDISP,
   OCMD_OPTABS,
   OCMD_OPTMOVEQ,
+  OCMD_OPTNMOVQ,
   OCMD_OPTQUICK,
   OCMD_OPTBRANOP,
   OCMD_OPTBDISP,
@@ -75,6 +79,8 @@ enum {
   OCMD_OPTLQUICK,
   OCMD_OPTIMMADDR,
   OCMD_OPTSPEED,
+  OCMD_OPTSIZE,
+  OCMD_OPTPC080,
   OCMD_SMALLCODE,
   OCMD_SMALLDATA,
   OCMD_OPTWARN,
@@ -95,8 +101,18 @@ enum {
 /* returns true when instruction is valid for selected cpu */
 #define MNEMONIC_VALID(n) m68k_available(n)
 
+/* returns true when operand type is optional; may init default operand */
+#define OPERAND_OPTIONAL(p,t) m68k_operand_optional(p,t)
+
 /* parse cpu-specific directives with label */
 #define PARSE_CPU_LABEL(l,s) parse_cpu_label(l,s)
+
+/* we define one additional, but internal, unary operation, to count 1-bits */
+int ext_unary_eval(int,taddr,taddr *,int);
+int ext_find_base(symbol **,expr *,section *,taddr);
+#define CNTONES (LAST_EXP_TYPE+1)
+#define EXT_UNARY_EVAL(t,v,r,c) ext_unary_eval(t,v,r,c)
+#define EXT_FIND_BASE(b,e,s,p) BASE_ILLEGAL
 
 /* type to store each operand */
 typedef struct {
@@ -268,10 +284,12 @@ struct optype {
 #define OTF_SPECREG  0x20 /* check for special registers during parse */
 #define OTF_SRRANGE  0x40 /* check range between first/last only */
 #define OTF_REGLIST  0x80 /* register list required, even when single reg. */
-#define OTF_CHKVAL  0x100 /* compare op. value against first/last */
+#define OTF_MOVCREG 0x100 /* check for MOVEC control registers during parse */
 #define OTF_CHKREG  0x200 /* compare op. register against first/last */
 #define OTF_VXRNG2  0x400 /* Apollo AMMX Rn:Rn+1 vector register range */
 #define OTF_VXRNG4  0x800 /* Apollo AMMX Rn-Rn+3 vector register range */
+#define OTF_OPT    0x1000 /* optional operand */
+#define OTF_DBRA   0x2000 /* DBcc branch is always 16 bits, ignores size */
 
 
 /* additional mnemonic data */
@@ -293,7 +311,8 @@ typedef struct {
 #define SIZE_PACKED 0x4000
 #define SIZE_MASK 0x7f00
 #define SIZE_UNAMBIG 0x8000 /* only a single size allowed for this mnemonic */
-#define S_CFCHECK 0x80      /* SIZE_LONG only, when mcf (Coldfire) set */
+#define S_CFCHECK 0x80      /* Coldfire: SIZE_LONG only, when mcf set */
+#define S_QUADDEF 0x80      /* Apollo: prefer SIZE_DOUBLE, when apollo set */
 #define S_NONE 4
 #define S_STD S_NONE+4      /* 1st word, bits 6-7 */
 #define S_STD1 S_STD+4      /* 1st word, bits 6-7, b=1,w=2,l=3  */
@@ -307,6 +326,8 @@ typedef struct {
 #define S_EXT S_TRAP+4      /* 2nd word, bits 6-7 */
 #define S_FP S_EXT+4        /* 2nd word, bits 12-10 (l=0,s,x,p,w,d,b) */
 #define S_MAC S_FP+4        /* w/l flag in 2nd word bit 11 */
+#define S_AMMX S_MAC+4      /* q/w flag in 1st word bit 8 */
+#define S_TEX S_AMMX+4      /* tex instr.: b/w/l in bits 1-0 or 3rd word */
 #define S_OPCODE_SIZE(n) (n&3)
 #define S_SIZEMODE(n) (n&0x7c)
 
@@ -321,6 +342,8 @@ typedef struct {
 #define BW (SIZE_BYTE|SIZE_WORD)
 #define WL (SIZE_WORD|SIZE_LONG)
 #define BWL (SIZE_BYTE|SIZE_WORD|SIZE_LONG)
+#define WQ (SIZE_WORD|SIZE_DOUBLE)
+#define QW (SIZE_WORD|SIZE_DOUBLE|S_QUADDEF)
 #define CFWL (SIZE_WORD|SIZE_LONG|S_CFCHECK)
 #define CFBWL (SIZE_BYTE|SIZE_WORD|SIZE_LONG|S_CFCHECK)
 #define ANY (SIZE_BYTE|SIZE_WORD|SIZE_LONG|SIZE_SINGLE|SIZE_DOUBLE| \
@@ -394,6 +417,7 @@ struct cpu_models {
 #define mcffpu   0x00020000
 #define mcfmmu   0x00040000
 #define ac68080  0x00100000
+#define mbanked  0x10000000 /* Apollo 68080 Bank Prefix */
 #define mgas     0x20000000 /* a GNU-as specific mnemonic */
 #define malias   0x40000000 /* a bad alias which we should warn about */
 #define mfpu     0x80000000 /* just to check if CP-ID needs to be inserted */
@@ -403,7 +427,7 @@ struct cpu_models {
 #define apollo    (ac68080)
 #define mcf       (mcfa|mcfaplus|mcfb|mcfc)
 #define mcf_all   (mcfa|mcfaplus|mcfb|mcfc|mcfhwdiv|mcfmac|mcfemac|mcfusp|mcffpu|mcfmmu)
-#define	mfloat    (mfpu|m68881|m68882|m68040|m68060)
+#define	mfloat    (mfpu|m68881|m68882|m68040|m68060|ac68080)
 #define	mmmu      (m68851|m68030|m68040|m68060)
 #define	m68040up  (m68040|m68060|apollo)
 #define	m68030up  (m68030|m68040up)
@@ -420,6 +444,7 @@ struct cpu_models {
 #define RSTYPE_An   1
 #define RSTYPE_FPn  2
 #define RSTYPE_Bn   3  /* Apollo only */
+#define RSTYPE_En   4  /* Apollo only */
 
 
 /* MID for a.out format */
@@ -429,4 +454,5 @@ extern int m68k_mid;
 /* exported functions */
 int m68k_available(int);
 int m68k_data_operand(int);
+int m68k_operand_optional(operand *,int);
 int parse_cpu_label(char *,char **);

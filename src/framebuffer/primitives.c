@@ -175,7 +175,7 @@ static void set_pixel(screen_mode_t *screen, int x, int y, plotcol_t col) {
          colour = existing & (max_col - colour);
          break;
       case PM_OR_INVERTED:
-         colour = existing & (max_col - colour);
+         colour = existing | (max_col - colour);
          break;
       case PM_NORMAL:
       case PM_ECF:
@@ -646,11 +646,11 @@ void prim_set_fg_plotmode(const screen_mode_t *screen, plotmode_t plotmode) {
    g_fg_plotmode = plotmode;
 }
 
-plotmode_t prim_get_fg_plotmode() {
+plotmode_t prim_get_fg_plotmode(void) {
    return g_fg_plotmode;
 }
 
-pixel_t prim_get_fg_col() {
+pixel_t prim_get_fg_col(void) {
    return g_fg_col;
 }
 
@@ -662,11 +662,11 @@ void prim_set_bg_plotmode(const screen_mode_t *screen, plotmode_t plotmode) {
    g_bg_plotmode = plotmode;
 }
 
-plotmode_t prim_get_bg_plotmode() {
+plotmode_t prim_get_bg_plotmode(void) {
    return g_bg_plotmode;
 }
 #if 0
-pixel_t prim_get_bg_col() {
+pixel_t prim_get_bg_col(void) {
    return g_bg_col;
 }
 #endif

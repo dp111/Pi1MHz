@@ -32,6 +32,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#include <assert.h>
 #include "block.h"
 #include "base.h"
 #include "arm-start.h"
@@ -465,7 +466,7 @@ static const uint32_t sd_acommands[] = {
 #include "info.h"
 #endif
 
-static void sd_power_off()
+static void sd_power_off(void)
 {
    /* Power off the SD card */
    uint32_t control0 = RPI_EMMCBase->EMMC_CONTROL0;
@@ -473,7 +474,7 @@ static void sd_power_off()
    RPI_EMMCBase->EMMC_CONTROL0 = control0;
 }
 
-static uint32_t sd_get_base_clock_hz()
+static uint32_t sd_get_base_clock_hz(void)
 {
    uint32_t base_clock;
 #if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_GENERIC
@@ -617,7 +618,7 @@ static int sd_switch_clock_rate(uint32_t base_clock, uint32_t target_rate)
 }
 
 // Reset the CMD line
-static int sd_reset_cmd()
+static int sd_reset_cmd(void)
 {
    uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
    control1 |= SD_RESET_CMD;
@@ -632,7 +633,7 @@ static int sd_reset_cmd()
 }
 
 // Reset the DAT line
-static int sd_reset_dat()
+static int sd_reset_dat(void)
 {
    uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
    control1 |= SD_RESET_DAT;

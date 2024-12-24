@@ -5,10 +5,10 @@ This chapter is under construction!
 
 
 This chapter describes some of the internals of @command{vasm}
- and tries to explain
+and tries to explain
 what has to be done to write a cpu module, a syntax module
 or an output module for @command{vasm}.
-However if someone wants to write one, I suggest to contact me first,
+However, if someone wants to write one, I suggest to contact me first,
 so that it can be integrated into the source tree.
 
 Note that this documentation may mention explicit values when introducing
@@ -41,17 +41,18 @@ Directories for the syntax modules.
 Directories for the cpu modules.
 
 @item vasm/obj/
-Directory the object modules will be stored in.
+Directory the object files will be stored in.
 
 @end table
 
     All compiling is done from the main directory and
     the executables will be placed there as well.
     The main assembler for a combination of @code{<cpu>} and
-    @code{<syntax>} will
-    be called @command{vasm<cpu>_<syntax>}. All output modules are
-    usually integrated in every executable and can be selected at
-    runtime.
+    @code{<syntax>} will be called @command{vasm<cpu>_<syntax>}.
+    All output modules are usually integrated in every executable
+    and can be selected at runtime. Otherwise you have to adapt
+    the @code{OUTFMTS} definition in @file{make.rules} and select
+    those you want.
 
 @subsection Adapting the Makefile
 
@@ -70,23 +71,42 @@ Directory the object modules will be stored in.
     @item CC
        Here you have to insert a command that invokes an ANSI C
        compiler you want to use to build vasm. It must support
-       the @option{-I} option the same like e.g. @command{vc} or
+       the @option{-I} option in the same way like e.g. @command{vc} or
        @command{gcc}.
 
     @item COPTS
        Here you will usually define an option like @option{-c} to instruct
        the compiler to generate an object file.
        Additional options, like the optimization level, should also be
-       inserted here as well. When the host operating system is different
-       from a Unix (MacOSX and MiNT are Unix), you have to define one of the
-       following preprocessor macros:
+       inserted here as well. Specifying the host OS helps to determine
+       work-directories for DWARF and defines the appropriate internal
+       symbol for the host's file system path style. The following are
+       supported:
        @table @code
           @item -DAMIGA
           AmigaOS (M68k or PPC), MorphOS, AROS.
+          Defines the internal symbol @code{__AMIGAFS}.
           @item -DATARI
           Atari TOS.
+          Defines the internal symbol @code{__MSDOSFS}.
           @item -DMSDOS
           CP/M, MS-DOS, Windows.
+          Defines the internal symbol @code{__MSDOSFS}.
+          @item -DUNIX
+          All kinds of Unix (Linux, BSD) including MacOSX and Atari-MiNT.
+          Defines the internal symbol @code{__UNIXFS}.
+          @item -D_WIN32
+          Windows.
+          Defines the internal symbol @code{__MSDOSFS}.
+       @end table
+       Building without specifying a host-OS is allowed. Then vasm
+       defaults to Unix-style path handling and will not define a
+       file system symbol for conditional assembly.
+       Other options:
+       @table @code
+          @item -DLOWMEM
+          Builds for a host-OS with a low amount of memory. This will
+          basically reduce all hash tables to minimal size.
        @end table
 
     @item CCOUT
@@ -135,13 +155,13 @@ Directory the object modules will be stored in.
       RM = rm -f
 @end example
 
-Open/Net/Free/Any BSD i386 systems will probably require the following
-an additional @option{-D_ANSI_SOURCE} in @code{COPTS}.
+Open/Net/Free/Any BSD systems will probably require an additional
+@option{-D_ANSI_SOURCE} in @code{COPTS}.
 
 
 @subsection Building vasm
 
-Note to users of Open/Free/Any BSD i386 systems: You will probably have to use
+Note to users of BSD systems: You will probably have to use
 GNU make instead of BSD make, i.e. in the following examples replace "make"
 with "gmake".
 
@@ -158,13 +178,18 @@ The following CPU modules can be selected:
 @itemize
 @item @code{CPU=6502}
 @item @code{CPU=6800}
+@item @code{CPU=6809}
 @item @code{CPU=arm}
 @item @code{CPU=c16x}
+@item @code{CPU=hans}
 @item @code{CPU=jagrisc}
 @item @code{CPU=m68k}
+@item @code{CPU=pdp11}
 @item @code{CPU=ppc}
+@item @code{CPU=qnice}
 @item @code{CPU=test}
 @item @code{CPU=tr3200}
+@item @code{CPU=unsp}
 @item @code{CPU=vidcore}
 @item @code{CPU=x86}
 @item @code{CPU=z80}
@@ -181,10 +206,65 @@ The following syntax modules can be selected:
 
 For Windows and various Amiga targets there are already Makefiles included,
 which you may either copy on top of the default @file{Makefile}, or call
-it explicitely with @command{make}'s @option{-f} option:
+it explicitly with @command{make}'s @option{-f} option:
 @example
     make -f Makefile.OS4 CPU=ppc SYNTAX=std
 @end example
+
+
+@section vasm global variables
+
+Important global variables, which may be read or modified by
+syntax-, cpu- or output-modules.
+
+@table @code
+
+@item source *cur_src;
+Pointer to the current source text instance (see structures below).
+
+@item char *defsectname;
+Name of a default section which vasm creates when a label or code occurs
+in the source without any preceding @code{section} or @code{org} directive.
+Assigning NULL means that the default is an absolute section and its
+base address is taken from @code{defsectorg}.
+These @code{defsect...} variables can be overridden by syntax- or
+output-modules.
+
+@item taddr defsectorg;
+Used when @code{defsectname==NULL}. Defines the base address of a default
+absolute @code{org} section.
+
+@item char *defsecttype;
+Attributes of the default section (see above). May be NULL to indicate
+that no default has been defined and vasm will show an error.
+
+@item char emptystr[];
+An empty string (zero length).
+
+@item int exec_out;
+Non-zero, when the output file is an executable and not an object file.
+
+@item char *filename;
+Defaults to the file part of the input source file name. Syntax modules
+may modify it with @code{setfilename(char *)} and output modules may
+use it for their own purpose.
+
+@item char *inname;
+Input source file name.
+
+@item int octetsperbyte;
+Number of 8-bit bytes used to represent a backend's target-byte. The macro
+@code{OCTETS(n)} may be used to calculate the number of 8-bit bytes for
+@code{n} target-bytes.
+
+@item char *outname;
+Output object file name.
+
+@item int output_bitsperbyte;
+May be assigned by an output module with @code{1}, to indicate that it
+supports target-bytes with @code{BITSPERBYTE}.
+
+@end table
 
 
 @section General data structures
@@ -197,9 +277,9 @@ the respective sections on writing specific modules where necessary.
 @subsection Source
 
 A source structure represents a source text module, which can be
-either the main source text, an included file or a macro. There is
-always a link to the parent source from where the current source context
-was included or called.
+either the main source text, an included file, a macro or a repetition.
+There is always a link to the parent source from where the current
+source context was included or called.
 
 @table @code
 @item struct source *parent;
@@ -212,6 +292,11 @@ was included or called.
         during parsing and later from the atoms. But an include directive
         doesn't create an atom.
 
+@item struct source_file *srcfile;
+        The @code{source_file} structure has the unique file name, index
+        and text-pointer for this source text instance.
+        Used for debugging output, like DWARF.
+
 @item char *name;
         File name of the main source or include file, or macro name.
 
@@ -221,18 +306,27 @@ was included or called.
 @item size_t size;
         Size of the source text to assemble in bytes.
 
+@item struct source *defsrc;
+        This is a @code{NULL}-pointer for real source text files. Otherwise
+        it is a reference to the source which defines the current macro
+        or repetition.
+
+@item int defline;
+        Valid when @code{defsrc} is not @code{NULL}. Contains the starting
+        line number of a macro or repetition in a source text file.
+
 @item macro *macro;
         Pointer to macro structure, when currently inside a macro
         (see also @code{num_params}).
 
 @item unsigned long repeat;
         Number of repetitions of this source text. Usually this is 1, but
-        for text blocks between a @code{rept} and @code{endr} directive
-        it allows any number of repetitions, which is decremented everytime
-        the end of this source text block is reached.
+        for text blocks between a @code{rept} and @code{endr} (or similar)
+        directive it allows any number of repetitions, which is decremented
+        every time the end of the source text block is reached.
 
 @item char *irpname;
-        Name of the iterator symbol in special repeat loops which use a
+        Name of the iterator symbol in special repeat loops, which use a
         sequence of arbitrary values, being assigned to this symbol within
         the loop. Example: @code{irp} directive in std-syntax.
 
@@ -255,10 +349,10 @@ was included or called.
         For macros 0 (no parameters) or higher.
 
 @item char *param[MAXMACPARAMS];
-        Pointer to the macro parameters.
+        Pointers to the macro arguments.
 
 @item int param_len[MAXMACPARAMS];
-        Number of characters per macro parameter.
+        Number of characters per macro argument.
 
 @item int num_quals;
         (If @code{MAX_QUALIFIERS!=0}.) Number of qualifiers for a macro.
@@ -272,14 +366,14 @@ was included or called.
 
 @item unsigned long id;
         Every source has its unique id. Useful for macros supporting
-        the special @code{\@@} parameter.
+        the special @code{\@@} argument for creating unique labels.
 
 @item char *srcptr;
         The current source text pointer, pointing to the beginning of
         the next line to assemble.
 
 @item int line;
-        Line number in the current source context. After parsing the
+        Line number in the current source context. After parsing, the
         line number of the current atom is stored here.
 
 @item size_t bufsize;
@@ -321,8 +415,8 @@ the modules:
 
 @item  char *attr;
         A string describing the section flags in ELF notation (see,
-        for example, documentation o the @code{.section} directive of
-        the standard syntax mopdule.
+        for example, documentation of the @code{.section} directive in
+        the standard syntax module).
 
 @item  atom *first;
 @itemx atom *last;
@@ -330,7 +424,7 @@ the modules:
         sections for information on atoms.
 
 @item  taddr align;
-        Alignment of the section in bytes.
+        Alignment of the section in target-bytes.
 
 @item  uint32_t flags;
         Flags of the section. Currently available flags are:
@@ -355,7 +449,7 @@ the modules:
         Section is loaded at an absolute address in memory.
 @item PREVABS
         Remembers state of the @code{ABSOLUTE} flag before entering
-        relocated-org mode (@code{IN_RORG}). So it can be restored later.
+        relocated-@code{org} mode (@code{IN_RORG}). So it can be restored later.
 @item IN_RORG
         Section has entered relocated-org mode, which also sets the
         @code{ABSOLUTE} flag. In this mode code is written into the current
@@ -363,13 +457,19 @@ the modules:
         information are generated.
 @item NEAR_ADDRESSING
         Section is marked as suitable for cpu-specific "near" addressing
-        modes. For example, base-register relative. The cpu backend can use
-        this information as an optimization hint when referencing symbols
-        from this section.
+        modes. For example, base-register relative or zero/direct-page.
+        The cpu backend can use this information as an optimization hint
+        when referencing symbols from this section.
+@item FAR_ADDRESSING
+        Section requires cpu-specific "far" addressing modes. For example
+        an addressing mode including the bank or "segment". The cpu backend
+        may use this information to select appropriate addressing modes
+        when referencing symbols from this section.
 @end table
 
 @item  taddr org;
         Start address of a section. Usually zero.
+        Set to an absolute start address in @code{ABSOLUTE} mode.
 
 @item  taddr pc;
         Current address in this section. Can be used
@@ -395,10 +495,10 @@ following members that can be accessed by the modules:.
         The symbol is a label defined at a specific location.
 
 @item #define IMPORT 2
-        The symbol is imported from another file.
+        The symbol is externally defined and its value is unknown.
 
 @item #define EXPRESSION 3
-        The symbol is defined using an expression.
+        The symbol is defined using an expression (equate).
 @end table
 
 @item  uint32_t flags;
@@ -420,13 +520,14 @@ following members that can be accessed by the modules:.
       The symbol defines a file.  
 
 @item #define EXPORT (1<<3)
-        The symbol is exported to other files.
+        The symbol is exported to other object files.
 
 @item #define INEVAL (1<<4)
         Used internally.
 
 @item #define COMMON (1<<5)
-        The symbol is a common symbol.
+        The symbol is a common symbol and also has a size.
+        It will be allocated by the linker.
 
 @item #define WEAK (1<<6)
         The symbol is weak, which means the linker may overwrite it with
@@ -435,11 +536,12 @@ following members that can be accessed by the modules:.
         zero.
 
 @item #define LOCAL (1<<7)
-        Only informational. A symbol can be explicitely declared as local
-        by a syntax-module directive.
+        Only informational. A symbol can be explicitly declared as local
+        by a syntax-module directive. Otherwise all symbols without the
+        @code{EXPORT} flag are not considered for object linking.
 
 @item #define VASMINTERN (1<<8)
-        Vasm-internal symbol, which is usually not exported into an output
+        Vasm-internal symbol, which must not be exported into an object
         file.
 
 @item #define PROTECTED (1<<9)
@@ -450,26 +552,36 @@ following members that can be accessed by the modules:.
         been created.
 
 @item #define ABSLABEL (1<<11)
-        Label was defined inside an absolute section, or during
-        relocated-org mode. So it has an absolute address and will not
-        generate a relocation entry when being referenced.
+        Label was defined inside an absolute section, or during a code block
+        in relocated-org mode. Therefore it has an absolute address and will
+        not generate a relocation entry when being referenced.
 
 @item #define EQUATE (1<<12)
-        Symbols flagged as @code{EQUATE} are constant and its value must
-        not be changed.
+        Symbols flagged as @code{EQUATE} are constant expressions and their
+        value must not be changed.
 
 @item #define REGLIST (1<<13)
         Symbol is a register list definition.
 
 @item #define USED (1<<14)
         Symbol appeared in an expression. Symbols which were only defined,
-        (as label or equte) and never used throughout the whole source,
-        don't get this flag set.
+        (as label or equate) and otherwise never appear throughout the
+        whole source, don't get this flag set.
 
 @item #define NEAR (1<<15)
         Symbol may be referenced by "near" addressing mode. For example,
-        base register relative. Used as an optimization hint in the cpu
+        base register relative. Used as an optimization hint to the cpu
         backend.
+
+@item #define XDEF (1<<16)
+        This symbol must become defined in the source. Which means
+        its @code{type} must not remain @code{IMPORT}. Otherwise a
+        warning is displayed.
+
+@item #define XREF (1<<17)
+        Symbol is externally defined and its @code{type} must never
+        become something else than @code{IMPORT}. Otherwise an error
+        is displayed.
 
 @item #define RSRVD_S (1L<<24)
         The range from bit 24 to 27 (counted from the LSB) is reserved for
@@ -490,7 +602,8 @@ expects a pointer to a symbol as argument.
         The expression in case of @code{EXPRESSION} symbols.
 
 @item   expr *size;
-        The size of the symbol, if specified.
+        The size of the symbol in target-bytes, if specified.
+        Common symbols always have a size.
 
 @item  section *sec;
         The section a @code{LABSYM} symbol is defined in.
@@ -499,7 +612,7 @@ expects a pointer to a symbol as argument.
         The address of a @code{LABSYM} symbol.
 
 @item  taddr align;
-        The alignment of the symbol in bytes.
+        The alignment of the symbol in target-bytes.
 
 @item  unsigned long idx;
         A member usable by the output module for private purposes.
@@ -539,7 +652,7 @@ The contents of each section are a linked list built out of non-separable
 atoms. The general structure of an atom is:
 
 @example
-typedef struct atom @{
+struct atom @{
   struct atom *next;
   int type;
   taddr align;
@@ -563,23 +676,26 @@ typedef struct atom @{
     assertion *assert;
     aoutnlist *nlist;
   @} content;
-@} atom;
+@};
 @end example
 
 The members have the following meaning:
 
 @table @code
 @item  struct atom *next;
-Pointer to the following atom (0 if last).
+Pointer to the following atom (@code{NULL} if last).
 
 @item  int type;
 The type of the atom. Can be one of
 @table @code
+@item #define VASMDEBUG 0
+Used for internal debugging.
+
 @item #define LABEL 1
 A label is defined here.
 
 @item #define DATA  2
-Some data bytes of fixed length and constant data are put here.
+A fixed number of target-bytes with constant data are put here.
 
 @item #define INSTRUCTION 3
 Generally refers to a machine instruction or pseudo/opcode. These atoms
@@ -587,22 +703,24 @@ can change length during optimization passes and will be translated to
 @code{DATA}-atoms later.
 
 @item #define SPACE 4
-Defines a block of data filled with one value (byte). BSS sections usually
-contain only such atoms, but they are also sometimes useful as shorter
-versions of @code{DATA}-atoms in other sections.
+Defines a block of data filled with one value of a given size (up to
+@code{MAXPADSIZE} 8-bit bytes). BSS sections usually contain only such atoms,
+but they are also sometimes useful as shorter versions of
+@code{DATA}-atoms in other sections.
 
 @item #define DATADEF 5
 Defines data of fixed size which can contain cpu specific operands and
-expressions. Will be translated to @code{DATA}-atoms later.
+expressions. Usually generated by data in a source text, which are no
+machine instructions. Will be translated to @code{DATA}-atoms later.
 
 @item #define LINE 6
-A source text line number (usually from a high level language) is bound
+A source text line number (usually from a higher level language) is bound
 to the atom's address. Useful for source level debugging in certain ABIs.
 
 @item #define OPTS 7
 A means to change assembler options at a specific source text line.
 For example optimization settings, or the cpu type to generate code for.
-The cpu module has to define @code{HAVE_CPU_OPTS} and export the required
+The cpu backend has to define @code{HAVE_CPU_OPTS} and export the required
 functions if it wants to use this type of atom.
 
 @item #define PRINTTEXT 8
@@ -622,7 +740,7 @@ Assemble this block under the given base address, while the code is still
 written into the original memory region.
 
 @item #define RORGEND 12
-Ends a RORG block and returns to the original addessing.
+Ends a RORG block and returns to the original addressing.
 
 @item #define ASSERT 13
 The assertion expression is checked in the final pass and an error message
@@ -657,7 +775,7 @@ Pointer to the source text object to which this atom belongs.
 The source line number that created this atom.
 
 @item listing *list;
-Pointer to the listing object to which this atoms belong.
+Pointer to the listing file object to which this atom belongs.
 
 @item    instruction *inst;
 (In union @code{content}.) Pointer to an instruction structure in the case
@@ -673,8 +791,8 @@ The cpu specific code of this instruction.
 (If @code{MAX_OPERANDS!=0}.) The cpu-specific operands of this instruction.
 
 @item  instruction_ext ext;
-(If the cpu module defines @code{HAVE_INSTRUCTION_EXTENSION}.)
-A cpu-module-specific structure. Typically used to store appropriate
+(If the cpu backend defines @code{HAVE_INSTRUCTION_EXTENSION}.)
+A cpu-specific structure. Typically used to store appropriate
 opcodes, allowed addressing modes, supported cpu derivates etc.
 @end table
 
@@ -683,10 +801,15 @@ opcodes, allowed addressing modes, supported cpu derivates etc.
 of a @code{DATA}-atom. Contains the following elements:
 @table @code
 @item  taddr size;
-The number of bytes stored in this atom.
+The number of target-bytes stored in this atom.
 
-@item  char *data;
-A pointer to the data.
+@item    uint8_t *data;
+A pointer to the constant data. Consider using @code{writebyte()} or
+@code{setval()} to write target-bytes which are different from 8 bits.
+The internal ordering of target-bytes on an 8-bit host is big-endian,
+and a target-byte will always allocate the next minimal number of
+8-bit host-bytes. The macro @code{OCTETS(n)} may be used to calculate
+the number of host-bytes required to represent @code{n} target-bytes.
 
 @item  rlist *relocs;
 A pointer to relocation information for the data.
@@ -700,18 +823,18 @@ of a @code{LABEL}-atom.
 (In union @code{content}.) Pointer to a sblock structure in the case
 of a @code{SPACE}-atom. Contains the following elements:
 @table @code
-@item  taddr space;
-The size of the empty/filled space in bytes.
+@item size_t space;
+The number of space-elements (see below) to generate here.
 
 @item expr *space_exp;
 The above size as an expression, which will be evaluated during assembly
 and copied to @code{space} in the final pass.
 
-@item  int size;
-The size of each space-element and of the fill-pattern in bytes.
+@item size_t size;
+The size of each space-element and of the fill-pattern in target-bytes.
 
-@item  unsigned char fill[MAXBYTES];
-The fill pattern, up to MAXBYTES bytes.
+@item uint8_t fill[MAXPADSIZE];
+The fill pattern, up to MAXPADSIZE 8-bit bytes.
 
 @item expr *fill_exp;
 Optional. Evaluated and copied to @code{fill} in the final pass, when not null.
@@ -722,6 +845,19 @@ A pointer to relocation information for the space.
 @item taddr maxalignbytes;
 An optional number of maximum padding bytes to fulfil the atom's alignment
 requirement. Zero means there is no restriction.
+
+@item uint32_t flags;
+@table @code
+@item SPC_UNINITIALIZED
+        This space is completely uninitialized. May be used as a hint by
+        output modules.
+@item SPC_DATABSS
+        The output module should not allocate any file space for this
+        atom, when possible (example: DataBss section, as supported by
+        the "hunkexe" output file format). It is not needed to set this
+        flag when the output section is BSS.
+@end table
+
 @end table
 
 @item    defblock *defb;
@@ -737,7 +873,7 @@ Pointer to a cpu-specific operand structure.
 @end table
 
 @item    void *opts;
-(In union @code{content}.) Points to a cpu module specific options object
+(In union @code{content}.) Points to a cpu-backend specific options object
 in the case of a @code{OPTS}-atom.
 
 @item    int srcline;
@@ -816,7 +952,7 @@ They always refer to the data in this atom only.
 
 There are a number of predefined standard relocations and it is possible
 to add other cpu-specific relocations. Note however, that it is always
-preferrable to use standard relocations, if possible. Chances that an
+preferable to use standard relocations, if possible. Chances that an
 output module supports a certain relocation are much higher if it is a
 standard relocation.
 
@@ -835,25 +971,39 @@ type numbers between @code{FIRST_STANDARD_RELOC} and
 @code{LAST_STANDARD_RELOC}. Consider @file{reloc.h} to see which
 standard relocations are available.
 
- The detailed information can be accessed
+Standard types may be combined with the modifier flags @code{REL_MOD_S}
+for signed and @code{REL_MOD_U} for unsigned relocations. The default,
+when both flags are missing, is to check the value being inserted into
+the given relocation field against both ranges, signed and unsigned.
+Setting both flags together is illegal!
+
+Typical signed relocations are PC-relative. An example for an
+unsigned relocation would be a zero- or direct-page addressing mode
+on the 6502/6809 families. If you are unsure, just don't set any of
+these flags.
+
+To get access to the real standard relocation type, without any
+flags, you have to use the @code{STD_REL_TYPE(type)} macro.
+
+The detailed information can be accessed
 via the pointer @code{reloc}. It will point to a structure that depends
 on the relocation type, so a module must only use it if it knows the
 relocation type.
 
-All standard relocations point to a type @code{nreloc} with the following
-members:
+All standard relocations point to a type @code{nreloc} structure
+with the following members:
 @table @code
 @item  size_t byteoffset;
-Offset in bytes, from the start of the current @code{DATA} atom, to the
-beginning of the relocation field. This may also be the address which is
-used as a basis for PC-relative relocations. Or a common basis for several
+Offset in target-bytes, from the start of the current @code{DATA} atom, to
+the beginning of the relocation field. This may also be the address which is
+used as a basis for PC-relative relocations. Or a common basis for multiple
 separated relocation fields, which will be translated into a single
 relocation type by the output module.
 
 @item  size_t bitoffset;
-Offset in bits to the beginning of the relocation field, adds to
-@code{byteoffset*bitsperbyte}. Bits are counted in a bit-stream from lower
-to higher address bytes. But note, that inside a little-endian byte they
+Offset in bits to the beginning of the relocation field. Adds to
+@code{byteoffset*BITSPERBYTE}. Bits are counted in a bit-stream from lower
+to higher address bytes. But note, that within a little-endian byte bits
 are counted from the LSB to the MSB, while they are counted from the MSB to
 the LSB for big-endian targets.
 
@@ -876,10 +1026,11 @@ To describe the meaning of these entries, we will define the steps that
 shall be executed when performing a relocation:
 
 @enumerate 1
-@item Extract the @code{size} bits from the data atom, starting with bit
-        number @code{byteoffset*bitsperbyte+bitoffset}. We start counting
-        bits from the lowest to the highest numbered byte in memory.
-        Inside a big-endian byte we count from the MSB to the LSB. Inside
+@item Extract @code{size} number of bits from the @code{DATA} atom, starting
+        with bit number @code{byteoffset*BITSPERBYTE+bitoffset}.
+        We start counting bits from the lowest to the highest numbered byte
+        in memory.
+        Within a big-endian byte we count from the MSB to the LSB. Within
         a little-endian byte we count from the LSB to the MSB.
 
 @item Determine the relocation value of the symbol. For a simple absolute
@@ -891,17 +1042,64 @@ shall be executed when performing a relocation:
         atom plus @code{byteoffset} from the value
         of @code{sym} plus @code{addend}.
 
-@item Calculate the bit-wise "and" of the value obtained in the step above
-        and the @code{mask} value.
+@item Calculate the bit-wise @code{AND} of the value obtained in the step
+        above and the @code{mask} value.
 
 @item Normalize, i.e. shift the value above right as many bit positions as
         there are low order zero bits in @code{mask}.
 
 @item Add this value to the value extracted in step 1.
 
-@item Insert the low order @code{size} bits of this value into the data atom
-        starting with bit @code{byteoffset*bitsperbyte+bitoffset}.
+@item Insert the low order @code{size} bits of this value into the @code{DATA}
+        atom starting with bit @code{byteoffset*BITSPERBYTE+bitoffset}.
 @end enumerate
+
+
+@subsection CPU-specific Relocations
+
+Whenever a CPU module requires a relocation type which cannot be
+expresssed by any standard type you have the option to define your own,
+beginning with @code{FIRST_CPU_RELOC} (defined in @code{reloc.h}).
+The last CPU-specific relocation has to be defined in your backend's
+@code{cpu.h} by @code{LAST_CPU_RELOC}, which is also a hint for the
+assembler's core routines that CPU-specific relocations do exist.
+
+Example:
+@example
+/* PPC specific relocations */
+#define REL_PPCEABI_SDA2 (FIRST_CPU_RELOC)
+#define REL_PPCEABI_SDA21 (FIRST_CPU_RELOC+1)
+#define REL_PPCEABI_SDAI16 (FIRST_CPU_RELOC+2)
+#define REL_PPCEABI_SDA2I16 (FIRST_CPU_RELOC+3)
+#define REL_MORPHOS_DREL (FIRST_CPU_RELOC+4)
+#define REL_AMIGAOS_BREL (FIRST_CPU_RELOC+5)
+#define LAST_CPU_RELOC REL_AMIGAOS_BREL
+@end example
+
+Also the CPU module must implement and export the following functions:
+@table @code
+@item size_t cpu_reloc_size(rlist *)
+  Return the size of your cpu-specific relocation in 8-bit host-bytes for
+  the given type. If this type uses the standard @code{nreloc} structure,
+  just return zero.
+@item void cpu_reloc_print(FILE *,rlist *)
+  Print the relocation name and its parameters to the given file.
+  Usually it has the form:
+  @code{rname(startbyte,startbit-endbit,mask,addend,symbol)}.
+  When using @code{nreloc} you may call @code{print_nreloc()}
+  (refer to @code{reloc.h}) to simplify output.
+@item void cpu_reloc_write(FILE *,rlist *)
+  If this relocation type uses a cpu-specific structure, write it to
+  the object file's relocation table in @code{VOBJ} format.
+@end table
+
+Note, that support for cpu-specific relocations has to be added to
+other tools reading and writing the @code{VOBJ} format, like
+@command{vlink} and @command{vobjdump} as well.
+Otherwise they will be ignored (but do not cause any failure).
+
+Also, if you want cpu-specific relocations to be recognized in other
+output modules, you have to handle these types there appropriately.
 
 
 @subsection Errors
@@ -912,7 +1110,7 @@ comma-separated list of a printf-format string and error flags. Allowed
 flags are @code{WARNING}, @code{ERROR}, @code{FATAL}, @code{MESSAGE} and
 @code{NOLINE}.
 They can be combined using or (@code{|}). @code{NOLINE} has to be set for
-error messages during initialiation or while writing the output, when
+error messages during initialization or while writing the output, when
 no source text is available. Errors cause the assembler to return false.
 @code{FATAL} causes the assembler to terminate
 immediately.
@@ -922,6 +1120,147 @@ The errors can be emitted using the function @code{syntax_error(int n,...)},
 argument is the number of the error message (starting from zero). Additional
 arguments must be passed according to the format string of the
 corresponding error message.
+
+
+@section Support Functions
+
+Useful support functions for writing CPU-, Syntax- and Output-modules.
+
+@subsection Memory Functions
+@table @code
+@item void *mymalloc(size_t sz)
+  Allocate memory. See also @code{mycalloc()} and @code{myrealloc()}.
+@item void myfree(void *p)
+  Free an allocated memory block with one of the functions above.
+@item uint64_t readval(int be,void *src,size_t size)
+  Reads an unsigned value with @code{size} target-bytes and byte-ordering
+  @code{be} from the @code{src} pointer (0 is little-, 1 is big-endian).
+@item void *setval(int be,void *dest,size_t size,uint64_t val)
+  Stores the value @code{val} to @code{dest}, which has a size of
+  @code{size} target-bytes, using a byte-ordering of @code{be}
+  (0 is little-, 1 is big-endian).
+@item uint64_t readbits(int be,void *p,unsigned bfsize,unsigned offset,unsigned size)
+  Reads an unsigned value from the bitfield with @code{bfsize} bits at
+  @code{p}. @code{size} bits at bit-offset @code{offset} will be extracted.
+  Use endianness @code{be} while reading the bitfield.
+@item void setbits(int be,void *p,unsigned bfsize,unsigned offset,unsigned size,uint64_t d)
+  Writes the value @code{d} with @code{size} bits into a bitfield at @code{p}
+  with @code{bfsize} bits, starting at bit-offset @code{offset}, following
+  the rules of the given endianness @code{be}.
+@item utaddr readbyte(void *src)
+  Reads an unsigned target-byte from @code{src}.
+@item void writebyte(void *dest,utaddr val)
+  Stores the value @code{val} into a target-byte at @code{dest}.
+@item OCTETS(n)
+  This macro expands to the number of 8-bit host-bytes required for @code{n}
+  target-bytes.
+@end table
+
+@subsection Expressions
+@table @code
+@item expr *parse_expr(char **pp)
+  Parses any expression starting at @code{*p}. Updates @code{*p} to point
+  at the next character after the expression.
+@item expr *parse_expr_tmplab(char **pp)
+  Same as @code{parse_expr()}, but defines a temporary label for the PC
+  symbol, so it does not change its value when this expression is
+  evaluated at other section locations.
+@item expr *parse_expr_huge(char **pp)
+  Parses a constant expression (no labels allowed) with 128 bit integers.
+@item expr *parse_expr_float(char **pp)
+  Parses a floating pointer expression (no labels allowed), if the
+  backend supports floating point constants (defines @code{FLOAT_PARSER}).
+@item taddr parse_constexpr(char **pp)
+  Parses an expression which is immediately evaluated to a constant value.
+  Generates an error message and returns zero when it depends on
+  non-constant, 128-bit or floating point values.
+@item void free_expr(expr *tree)
+  Free an expression.
+@item int type_of_expr(expr *tree)
+  Returns the type of an expression, which may be either @code{NUM},
+  @code{HUG} (128 bit constant) or @code{FLT} (floating point). This
+  will tell you which evaluation function to use (see below).
+@item void simplify_expr(expr *tree)
+  Try to evaluate the expression as far as possible. Subexpressions
+  only containing constants or absolute symbols are simplified.
+@item int eval_expr(expr *tree,taddr *result,section *sec,taddr pc)
+  Evaluate an expression using the @code{pc} in section @code{sec} and
+  store the result in @code{*result}. The return value is non-zero
+  when the result is constant (i.e. only depends on constants or absolute
+  symbols).
+@item int eval_expr_huge(expr *tree,thuge *result)
+  Evaluate a constant 128-bit integer expression, which is written to
+  @code{*result}. The return value becomes zero when there were problems
+  (like unsupported operations).
+@item int eval_expr_float(expr *tree,tfloat *result)
+  Evaluate a constant floating point expression and write the result to
+  @code{*result}. The return value becomes zero when there were problems
+  (like unsupported operations).
+@item int find_base(expr *p,symbol **base,section *sec,taddr pc)
+  Tests, if an expression is based only on one non-absolute symbol
+  plus constants or minus label. Writes either that symbol-pointer to
+  @code{*base} or @code{NULL}.
+  The return value defines the type of base-relative
+  operation, which is @code{BASE_OK} (normal base plus constant),
+  @code{BASE_PCREL} (base minus label is pc-relative) or
+  @code{BASE_ILLEGAL} (illegal arithmetic operation with base symbol).
+@item expr *number_expr(taddr val)
+  Create a constant expression from @code{val}.
+@item expr *huge_expr(thuge val)
+  Create a constant 128-bit expression from @code{val}.
+@item expr *float_expr(tfloat val)
+  Create a constant floating point expression from @code{val}.
+@end table
+
+@subsection Symbols
+@table @code
+@item regsym *new_regsym(int redef,int no_case,const char *name,int type,unsigned int flags,unsigned int num)
+  Create a new CPU register symbol with name @code{name} and number
+  @code{num}. The @code{type} and @code{flags} can be used by the
+  backend as needed (for example integer and floating point register type).
+  A non-zero @code{redef} allows redefinition of a register symbol without
+  error message. A non-zero @code{no_case} defines that the case of the
+  symbol name is ignored.
+@item regsym *find_regsym(const char *name,int len)
+  Find register symbol with @code{name} and @code{len} characters.
+@item regsym *find_regsym_nc(const char *name,int len)
+  Like above, but ignores the case of the symbol.
+@end table
+
+@subsection Atoms
+@table @code
+@item instruction *new_inst(const char *inst,int len,int op_cnt,char **op,int *op_len)
+  Traverses the backend's mnemonic table for instructions called @code{inst}
+  and tries to parse @code{op_cnt} operands using the cpu module's
+  @code{parse_operand()} function. Returns an instruction pointer when the
+  requirements from the mnemonic table were met or @code{NULL}.
+@item dblock *new_dblock(void)
+  Allocate a new @code{dblock} structure for storing constant data.
+@item sblock *new_sblock(expr *space,size_t size,expr *fill)
+  Allocate a new @code{sblock} structure for storing @code{space} elements
+  of @code{size} target-bytes, filled with @code{fill}, or zeros when
+  @code{fill} is @code{NULL}.
+@item atom *new_atom(int type,taddr align)
+  Allocate a new atom with given type and alignment.
+@item atom *new_inst_atom(instruction *p)
+  Allocate a new @code{INSTRUCTION} atom from @code{p}.
+@item atom *new_data_atom(dblock *p,taddr align)
+  Allocate a new @code{DATA} atom with alignment @code{align} atom from
+  @code{p}.
+@item atom *new_label_atom(symbol *p)
+  Allocate a new @code{LABEL} atom from symbol @code{p}.
+@item atom *new_space_atom(expr *space,size_t size,expr *fill)
+  Allocate a new @code{SPACE} atom with @code{space} elements of
+  @code{size} target-bytes, filled with @code{fill}, or zeros when
+  @code{fill} is @code{NULL}.
+@item atom *new_datadef_atom(size_t bitsize,operand *op)
+  Allocate a new @code{DATADEF} atom from operand @code{op} with
+  @code{bitsize} bits.
+@item void add_atom(section *sec,atom *a)
+  Adds a new atom to the end of the specified section. If @code{sec} is
+  @code{NULL} then the current section is used. If there is no current
+  section yet, then a default section is created.
+@end table
 
 @section Syntax modules
 
@@ -979,9 +1318,9 @@ ignore the rest of the line (e.g. to treat the rest as comment). The
 function is defined as @code{char *exp_skip(char *stream)}.
 
 @item #define IGNORE_FIRST_EXTRA_OP 1
-Should be defined when the syntax module wants to ignore the operand field
-on instructions without an operand. Useful, when everything following
-an operand should be regarded as comment, without a comment character.
+Should be defined as non-zero (true) when the syntax module wants to ignore
+the operand field on instructions without an operand. Useful, when everything
+following an operand should be regarded as comment, without a comment character.
 
 @item #define MAXMACPARAMS 35
 Optionally defines the maximum number of macro arguments, if you need more than
@@ -1033,12 +1372,12 @@ Defaults to unused.
 
 @subsection The file @file{syntax.c}
 
-A syntax module has to provide the following elements (all other funtions
+A syntax module has to provide the following elements (all other functions
 should be @code{static} to prevent name clashes):
 
 @table @code
 
-@item char *syntax_copyright;
+@item const char *syntax_copyright;
 A string that will be emitted as part of the copyright message.
 
 @item hashtable *dirhash;
@@ -1047,16 +1386,11 @@ A pointer to the hash table with all directives.
 @item char commentchar;
 A character used to introduce a comment until the end of the line.
 
-@item char *defsectname;
-Name of a default section which vasm creates when a label or code occurs
-in the source, but the programmer forgot to specify a section. Assigning
-NULL means that there is no default and vasm will show an error in this
-case.
+@item int dotdirs;
+Define @code{dotdirs} as non-zero, when the syntax module works with
+directives starting with a dot (@code{.}).
 
-@item char *defsecttype;
-Type of the default section (see above). May be NULL.
-
-@item int init_syntax();
+@item int init_syntax(void);
 Will be called during startup, after argument parsing Must return zero if
 initializations failed, non-zero otherwise.
 
@@ -1065,13 +1399,17 @@ This function will be called with the command line arguments (unless they
 were already recognized by other modules). If an argument was recognized,
 return non-zero.
 
+@item int syntax_defsect(void);
+Lets the syntax module define a default section, which is used when no
+section was created by any @code{section} or @code{org} directive before
+the first code or data is defined.
+May set @code{defsectname}, @code{defsecttype} and @code{defsectorg}
+accordingly and return with non-zero. Or return with zero and accept
+the defaults, which are: @code{defsectname=".text"} and
+@code{defsecttype="acrx"}.
+
 @item char *skip(char *);
 A function to skip whitespace etc.
-
-@item char *skip_operand(char *);
-A function to skip an instruction's operand. Will terminate at end of line
-or the next comma, returning a pointer to the rest of the line behind
-the comma.
 
 @item void eol(char *);
 This function should check that the argument points to the end of a line
@@ -1111,7 +1449,7 @@ source stream pointer after successful parsing.
 @item int expand_macro(source *,char **,char *,int);
 Expand parameters and special commands inside a macro source. The second
 argument is a pointer to the current source stream pointer, which is
-updated on any succesful expansion. The function will return the
+updated on any successful expansion. The function will return the
 number of characters written to the destination buffer (third argument)
 in this case. Returning @code{-1} means: no expansion took place.
 The last argument defines the space in characters which is left in the
@@ -1139,6 +1477,24 @@ A cpu module has to provide the following elements (all other functions
 should be @code{static} to prevent name clashes) in @code{cpu.h}:
 
 @table @code
+@item #define LITTLEENDIAN 1
+@itemx #define BIGENDIAN 0
+Define these according to the target endianness. For CPUs which support big-
+and little-endian, you may assign a global variable here. So be aware of
+it, and never use @code{#if BIGENDIAN}, but always @code{if(BIGENDIAN)} in
+your code.
+
+@item #define VASM_CPU_<cpu> 1
+Defines a cpu-specific macro. May be used to perform special handling in
+syntax- or output-modules.
+
+@item #define BITSPERBYTE 8
+The number of bits per byte of the target cpu. Usually 8. We require
+that vasm is running on a host architecture and file system which uses
+8-bit bytes. When writing output for a backend with @code{BITSPERBYTE > 8}
+the vasm-internal ordering of 8-bit host-bytes within a target-byte
+is big-endian.
+
 @item #define MAX_OPERANDS 3
 Maximum number of operands of one instruction.
 
@@ -1150,21 +1506,14 @@ Define this, when qualifiers shouldn't be allowed for macros. For some
 architectures, like ARM, macro qualifiers make no sense.
 
 @item typedef int32_t taddr;
-Data type to represent a target-address. Preferrably use the ones from
-@file{stdint.h}.
+Data type to represent a target-address. Preferably use the types from
+@file{stdint.h}. Does not necessarily have to match the cpu's address
+bus size (refer to @code{bytespertaddr}), but the largest data you will
+be able to do calculations with. For example, you may want to allow 32-bit
+data definitions for an 8-bit cpu.
 
 @item typedef uint32_t utaddr;
 Unsigned data type to represent a target-address.
-
-@item #define LITTLEENDIAN 1
-@itemx #define BIGENDIAN 0
-Define these according to the target endianess. For CPUs which support big-
-and little-endian, you may assign a global variable here. So be aware of
-it, and never use @code{#if BIGENDIAN}, but always @code{if(BIGENDIAN)} in
-your code.
-
-@item #define VASM_CPU_<cpu> 1
-Insert the cpu specifier.
 
 @item #define INST_ALIGN 2
 Minimum instruction alignment.
@@ -1177,24 +1526,44 @@ Operand class for n-bit data definitions. Can also be a function.
 Negative values denote a floating point data definition of -n bits.
 
 @item typedef ... operand;
-Structure to store an operand.
+Structure to store an operand for a machine instruction or a
+data constant.
 
 @item typedef ... mnemonic_extension;
-Mnemonic extension.
+Mnemonic extension for the cpu's instruction table.
 @end table
 
 Optional features, which can be enabled by defining the following macros:
 
 @table @code
+@item #define FLOAT_PARSER 1
+Enables the floating point parser and floating point evalulation in the
+expression module. With this option the backend has to be prepared that
+expressions may contain floating point constants, which can be checked
+by testing the result of @code{type_of_expr(expression)} for @code{FLT}.
+Then use @code{eval_expr_float(expression,&float_val)} to retrieve the
+floating point value with type @code{tfloat}.
+It is up to the backend to convert the host's floating point format,
+which should be IEEE, into the backend's native format. The vasm frontend
+only supports IEEE to IEEE conversion via @code{conv2ieee32()} and
+@code{conv2ieee64()}.
+
 @item #define HAVE_INSTRUCTION_EXTENSION 1
 If cpu-specific data should be added to all instruction atoms.
 
 @item typedef ... instruction_ext;
 Type for the above extension.
 
-@item #define NEED_CLEARED_OPERANDS 1
-Backend requires a zeroed operand structure when calling @code{parse_operand()}
-for the first time. Defaults to undefined.
+@item #define CLEAR_OPERANDS_ON_START 1
+Backend requires zeroed operand structures when calling @code{parse_operand()}
+for the first time. Might be useful to parse operands only once.
+Defaults to undefined.
+
+@item #define CLEAR_OPERANDS_ON_MNEMO 1
+Backend requires zeroed operand structures when calling @code{parse_operand()}
+for any new mnemonic. Useful to parse the same operand multiple times on
+the current mnemonic, but reset everything for the next mnemonic.
+Defaults to undefined.
 
 @item START_PARENTH(x)
 Valid opening parenthesis for instruction operands. Defaults to @code{'('}.
@@ -1249,27 +1618,37 @@ The section pointer @code{s} and the current pc @code{p} are needed to call
 the standard @code{find_base()} function.
 @end table
 
+Syntax modules may support additional features, which can be enabled or
+disabled by a preprocessor define.
+Like allowing the @code{#} character for introducing comments in the
+std-syntax module, when the CPU's operand parser doesn't need it
+(Example: PPC or x86).
+Defines for these optional features follow the general syntax
+@code{[module type]_[module name]_[feature name]}.
+@example
+#define SYNTAX_STD_COMMENTCHAR_HASH
+@end example
+
 @subsection The file @file{cpu.c}
 
 A cpu module has to provide the following elements (all other functions
 and data should be @code{static} to prevent name clashes) in @code{cpu.c}:
 
 @table @code
-@item int bitsperbyte;
-The number of bits per byte of the target cpu.
-
 @item int bytespertaddr;
-The number of bytes per @code{taddr}.
+The number of bytes per target address. Note, that this really
+defines the size of a backend's address pointer in target-bytes and
+might differ from the actual size of @code{taddr} (see above).
 
 @item mnemonic mnemonics[];
 The mnemonic table keeps a list of mnemonic names and operand types the
 assembler will match against using @code{parse_operand()}. It may also
 include a target specific @code{mnemonic_extension}.
 
-@item char *cpu_copyright;
+@item const char *cpu_copyright;
 A string that will be emitted as part of the copyright message.
 
-@item char *cpuname;
+@item const char *cpuname;
 A string describing the target cpu.
 
 @item int init_cpu();
@@ -1284,26 +1663,50 @@ return non-zero.
 @item char *parse_cpu_special(char *);
 This function will be called with a source line as argument and allows
 the cpu module to handle cpu-specific directives etc. Functions like
-@code{eol()} and @code{skip()} should be used by the syntax module to
+@code{eol()} and @code{skip()} from the syntax-module should be used to
 keep the syntax consistent.
 
 @item operand *new_operand();
 Allocate and initialize a new operand structure.
 
-@item int parse_operand(char *text,int len,operand *out,int requires);
+@item int parse_operand(char *text,int len,operand *op,int requires);
 Parses the source at @code{text} with length @code{len} to fill the target
-specific operand structure pointed to by @code{out}. Returns @code{PO_MATCH}
-when the operand matches the operand-type passed in @code{requires} and
-@code{PO_NOMATCH} otherwise. When the source is definitely identified as
-garbage, the function may return @code{PO_CORRUPT} to tell the assembler
-that it is useless to try matching against any other operand types.
-Another special case is @code{PO_SKIP}, which is also a match, but skips
-the next operand from the mnemonic table (because it was already handled
-together with the current operand).
+specific operand structure pointed to by @code{op}. Return with one
+of the following codes:
+@table @code
+@item PO_NOMATCH
+The source did no match the operand type given in @code{requires}.
+@item PO_CORRUPT
+The source was definitely identified as garbage, making it useless to
+try matching it against any other operand types.
+@item PO_MATCH
+The parsed source matches the operand type in @code{requires}. As soon
+as all the instruction's operands have been matched, the instruction
+is successfully recognized.
+@item PO_SKIP
+Works like @code{PO_MATCH}, but skips the next operand from the mnemonic
+table. For example, because it was already handled together with the
+current operand.
+@item PO_COMB_OPT
+Works like @code{PO_MATCH}, but requests parsing of the next argument from
+the source text, if any, with a pointer to the same @code{operand} structure
+as before. This makes it possible to merge multiple operands into a
+single operand structure.
+@item PO_COMB_REQ
+Like @code{PO_COMB_OPT}, requests parsing of the next argument
+with a pointer to the same @code{operand} structure. But this time the
+additional argument is mandatory.
+@item PO_NEXT
+Source did not match the given operand type in @code{requires}. Request
+parsing the same chunk of source text again, but using the following
+operand type. Can be used to break a @code{PO_COMB_OPT} or @code{PO_COMB_REQ}
+attempt and continue normally.
+@end table
 
-@item taddr instruction_size(instruction *ip, section *sec, taddr pc);
-Returns the size of the instruction @code{ip} in bytes, which must be
-identical to the number of bytes written by @code{eval_instruction()}
+@item size_t instruction_size(instruction *ip, section *sec, taddr pc);
+Returns the size of the instruction @code{ip} in target-bytes, which, in the
+final pass, must be identical to the number of bytes written by
+@code{eval_instruction()}
 (see below).
 
 @item dblock *eval_instruction(instruction *ip, section *sec, taddr pc);
@@ -1330,7 +1733,7 @@ would be a single qualifier, called "w". Used by @code{execute_macro()}.
 @item cpu_opts_init(section *);
 (If @code{HAVE_CPU_OPTS} is set.)
 Gives the cpu module the chance to write out @code{OPTS} atoms with
-initial settings before the first atom is generated.
+initial settings before the first atom for a section is generated.
 
 @item cpu_opts(void *);
 (If @code{HAVE_CPU_OPTS} is set.)
@@ -1352,8 +1755,9 @@ structure differs somewhat from syntax and cpu modules.
 
 Usually, an output module for some object format @code{fmt} should be contained
 in a file @file{output_<fmt>.c} (it may use/include other files if necessary).
-To automatically include this format in the build process, the @file{make.rules}
-has to be extended. The module should be added to the @code{OBJS} variable
+To automatically include this format in the build process, the
+@code{OUTFMTS} definition in @file{make.rules} has to be extended.
+The module should be added to the @code{OBJS} variable
 at the start of @file{make.rules}. Also, a dependency line should be added
 (see the existing output modules).
 
@@ -1393,14 +1797,103 @@ zero must be returned.
 
 @end table
 
-At last, a call to the @code{output_init_<fmt>} has to be added in the
+At last, a call to the @code{init_output_<fmt>()} has to be added in the
 @code{init_output()} function in @file{vasm.c} (should be self-explanatory).
+Besides assigning the above mentioned function pointers, this function
+can be used to redefine the assembler's behaviour.
+For example you may optionally set the following global variables:
+
+@table @code
+@item asciiout = 1;
+  Set when the output module likes the output file to be opened in
+  text-mode instead of binary-mode.
+@item unnamed_sections = 1;
+  Set when the output module cannot handle section names. Usually such
+  an output module only knows section types: text, data, bss.
+@item secname_attr = 1;
+  Set when the section attributes are used to differentiate between
+  two sections with the same name.
+@item output_bitsperbyte = 1;
+  Set when the output module supports target-bytes with @code{BITSPERBYTE}.
+  Otherwise it is expected that all output modules do work at least
+  with 8-bit target-bytes.
+@end table
+
+Writing a section's contents is typically done by traversing over all
+the section's atoms, establish alignment and write the contents of
+a @code{DATA} or @code{SPACE} atom using @code{fwdblock()} or
+@code{fwsblock()} into the output file.
+@example
+  section *s;
+  atom *p;
+
+  for (p=s->first,pc=(unsigned long long)s->org; p; p=p->next) @{
+    npc = fwpcalign(f,p,s,pc);
+
+    if (p->type == DATA)
+      fwdblock(f,p->content.db);
+    else if (p->type == SPACE)
+      fwsblock(f,p->content.sb);
+
+    pc = npc + atom_size(p,s,npc);
+  @}
+@end example
+
+Useful support functions for output modules, when writing data into the
+output file:
+
+@table @code
+@item void fw8(FILE *f,uint8_t x)
+  Write 8 bits of data.
+@item void fw16(FILE *f,uint16_t x,int be)
+  Write 16 bits of data with endianness @code{be} (0 is little, 1 is big).
+@item void fw24(FILE *f,uint32_t x,int be)
+  Write 24 bits of data with endianness @code{be} (0 is little, 1 is big).
+@item void fw32(FILE *f,uint32_t x,int be)
+  Write 32 bits of data with endianness @code{be} (0 is little, 1 is big).
+@item void fwdata(FILE *f,const void *buf,size_t n)
+  Write @code{n} 8-bit bytes of data.
+@item void fwspace(FILE *f,size_t n)
+  Write @code{n} zeroed 8-bit bytes.
+@item void fwbytes(FILE *f,void *buf,size_t n)
+  Write @code{n} target-bytes (@code{BITSPERBYTE}).
+@item void fwdblock(FILE *f,dblock *db)
+  Write the target-bytes within a @code{dblock}.
+@item void fwsblock(FILE *f,sblock *sb)
+  Write the target-bytes within a @code{sblock}.
+@item void fwalign(FILE *f,taddr n,taddr align)
+  Write as many zero target-bytes as required to align address @code{n}
+  to @code{align} bytes.
+@item int fwpattern(FILE *f,taddr n,uint8_t *pat,int patlen)
+  Write @code{n} target-bytes, which are initialized with pattern @code{pat}.
+  The @code{patlen} is given in target-bytes as well. Note, that the
+  pattern output may be preceded by a number of zero-bytes when @code{n}
+  is not a multiple of @code{patlen}. The function returns non-zero if
+  that happened.
+@item taddr fwpcalign(FILE *f,atom *a,section *sec,taddr pc)
+  Write as many target-bytes as required to achieve proper alignment
+  for atom @code{a}. This space will either be filled by a @code{SPACE}
+  atom's fill-pattern, or otherwise by the section's default pattern
+  (@code{section.pad}).
+  The newly aligned @code{pc} is returned.
+@end table
 
 Some remarks:
 @itemize @minus
 
 @item
-Some output modules can not handle all supported CPUs. Nevertheless,
+Note, that the output of atoms and target-bytes, using the functions from
+above, is done by writing 8-bit bytes to the host's file system. The
+order of 8-bit bytes within target-bytes which are greater than 8 bits
+can be selected by the options @option{-obe} for big-endian and @option{-ole}
+for little-endian. The target-bytes are automatically written in that
+selected order, when using the @code{fw*} functions from above. Otherwise
+you can check the global variable @code{output_bytes_le}, which will be
+zero for big-endian and non-zero for little-endian target-byte output.
+The default is vasm's internal target-byte endianness, which is big-endian.
+
+@item
+Some output modules cannot handle all supported CPUs. Nevertheless,
 they have to be written in a way that they can be compiled. If code
 references CPU-specifics, they have to be enclosed in
 @code{#ifdef VASM_CPU_MYCPU} ... @code{#endif} or similar.
@@ -1413,15 +1906,20 @@ As all output modules are linked together, they have a common list of error
 messages in the file @file{output_errors.h}. If a new message is needed, this
 file has to be extended (see the section on general data structures for
 details).
+When the cause for an error relates to an @code{atom} you may also use
+the @code{output_atom_error} function instead, which additionally prints
+the atom's source text line.
+In @file{output_errors.h} use the @code{NOLINE} flag when no atom is
+available.
 
 @item
 @command{vasm} has a mechanism to specify rather complex relocations in a
 standard way (see the section on general data structures). They can be
-extended with CPU specific relocations, but usually CPU modules will
+extended with CPU-specific relocations, but usually CPU modules will
 try to create standard relocations (sometimes several standard relocations
-can be used to implement a CPU specific relocation). An output
+can be used to implement a CPU-specific relocation). An output
 module should try to find appropriate relocations supported by the
-object format. The goal is to avoid special CPU specific
+object format. The goal is to avoid special CPU-specific
 relocations as much as possible.
 
 @end itemize

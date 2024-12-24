@@ -1,28 +1,38 @@
 /* expr.c expression handling for vasm */
-/* (c) in 2002-2017 by Volker Barthelmann and Frank Wille */
+/* (c) in 2002-2024 by Volker Barthelmann and Frank Wille */
 
 #include "vasm.h"
 
 char current_pc_char='$';
 int unsigned_shift;
+int charsperexp;
+
 static char *s;
 static symbol *cpc;
 static int make_tmp_lab;
 static int exp_type;
+static int charspertaddr;
+
+static expr *expression(void);
+
+
+int init_expr(void)
+{
+  /* maximum number of characters in expression strings */
+  charspertaddr=bytespertaddr*BITSPERBYTE/8;
+  if(!charsperexp) charsperexp=charspertaddr;
+  return 1;
+}
 
 #ifndef EXPSKIP
 #define EXPSKIP() s=expskip(s)
-#endif
-
-static expr *expression();
-
-
 static char *expskip(char *s)
 {
   s=skip(s);
   if(*s==commentchar) *s='\0';  /* rest of line is commented out */
   return s;
 }
+#endif
 
 expr *new_expr(void)
 {
@@ -43,7 +53,6 @@ expr *make_expr(int type,expr *left,expr *right)
 expr *copy_tree(expr *old)
 {
   expr *new=0;
-
   if(old){
     new=make_expr(old->type,copy_tree(old->left),copy_tree(old->right));
     new->c=old->c;
@@ -51,17 +60,22 @@ expr *copy_tree(expr *old)
   return new;
 }
 
-expr *curpc_expr(void)
+expr *new_sym_expr(symbol *sym)
 {
   expr *new=new_expr();
+  new->type=SYM;
+  new->c.sym=sym;
+  return new;
+}
+
+expr *curpc_expr(void)
+{
   if(!cpc){
     cpc=new_import(" *current pc dummy*");
     cpc->type=LABSYM;
     cpc->flags|=VASMINTERN|PROTECTED;
   }
-  new->type=SYM;
-  new->c.sym=cpc;
-  return new;
+  return new_sym_expr(cpc);
 }
 
 static void update_curpc(expr *exp,section *sec,taddr pc)
@@ -78,8 +92,9 @@ static void update_curpc(expr *exp,section *sec,taddr pc)
 
 static expr *primary_expr(void)
 {
+  strbuf *buf;
   expr *new;
-  char *m,*name;
+  char *m;
   int base;
 
   if(*s=='('){
@@ -93,18 +108,12 @@ static expr *primary_expr(void)
     EXPSKIP();
     return new;
   }
-  if(name=get_local_label(&s)){
-    symbol *sym=find_symbol(name);
+  if(buf=get_local_label(EXPBUFNO,&s)){
+    symbol *sym=find_symbol(buf->str);
     if(!sym)
-      sym=new_import(name);
+      sym=new_import(buf->str);
     sym->flags|=USED;
-    if (sym->type!=EXPRESSION){
-      new=new_expr();
-      new->type=SYM;
-      new->c.sym=sym;
-    }else
-      new=copy_tree(sym->expr);
-    myfree(name);
+    new=(sym->type!=EXPRESSION)?new_sym_expr(sym):copy_tree(sym->expr);
     return new;
   }
   m=const_prefix(s,&base);
@@ -112,7 +121,9 @@ static expr *primary_expr(void)
     char *start=s;
     utaddr val,nval;
     thuge huge;
+#if FLOAT_PARSER
     tfloat flt;
+#endif
     switch(exp_type){
     case NUM:
       s=m;
@@ -124,9 +135,14 @@ static expr *primary_expr(void)
             goto hugeval;  /* taddr overflow, read a thuge value instead */
           val=nval+*s++-'0';
         }
+#if FLOAT_PARSER
         if(base==10&&(*s=='e'||*s=='E'||(*s=='.'&&*(s+1)>='0'&&*(s+1)<='9')))
           goto fltval;  /* decimal point or exponent: read floating point */
+#endif
       }else if(base==16){
+#ifdef BROKEN_HEXCONST
+        int msign=*(s-1)=='-'&&*(s-2)=='$';
+#endif
         for(;;){
           nval=val<<4;
           if(*s>='0'&&*s<='9')
@@ -141,6 +157,9 @@ static expr *primary_expr(void)
           else
             val=nval;
         }
+#ifdef BROKEN_HEXCONST
+        if(msign) val=-val;
+#endif
       }else ierror(0);
       break;
     hugeval:
@@ -151,9 +170,11 @@ static expr *primary_expr(void)
       if(base<=10){
         while(*s>='0'&&*s<base+'0')
           huge=haddi(hmuli(huge,base),*s++-'0');
+#if FLOAT_PARSER
         if(base==10&&(*s=='e'||*s=='E'||
                       (*s=='.'&&*(s+1)>='0'&&*(s+1)<='9')))
           goto fltval;  /* decimal point or exponent: read floating point */
+#endif
       }else if(base==16){
         for(;;){
           if(*s>='0'&&*s<='9')
@@ -166,6 +187,7 @@ static expr *primary_expr(void)
         }
       }else ierror(0);
       break;
+#if FLOAT_PARSER
     fltval:
       exp_type=FLT;
     case FLT:
@@ -173,9 +195,14 @@ static expr *primary_expr(void)
       s=m;
       flt=strtotfloat(s,&s);
       break;
+#endif
     default:
       ierror(0);
       break;
+    }
+    if(s==m){
+      general_error(75,base);
+      goto dummyexp;
     }
     s=const_suffix(start,s);
     EXPSKIP();
@@ -183,74 +210,75 @@ static expr *primary_expr(void)
     switch(new->type=exp_type){
       case NUM: new->c.val=val; break;
       case HUG: new->c.huge=huge; break;
+#if FLOAT_PARSER
       case FLT: new->c.flt=flt; break;
+#endif
     }
     return new;
   }
+  s=m;
   if(*s==current_pc_char && !ISIDCHAR(*(s+1))){
     s++;
     EXPSKIP();
     if(make_tmp_lab){
-      new=new_expr();
-      new->type=SYM;
-      new->c.sym=new_tmplabel(0);
+      new=new_sym_expr(new_tmplabel(0));
       add_atom(0,new_label_atom(new->c.sym));
     }else new=curpc_expr();
     return new;
   }
-  if(name=parse_identifier(&s)){
+  if(buf=parse_identifier(EXPBUFNO,&s)){
     symbol *sym;    
     EXPSKIP();
-    sym=find_symbol(name);
+    sym=find_symbol(buf->str);
     if(!sym){
 #ifdef NARGSYM
-      if(!strcmp(name,NARGSYM)){
+      int match = nocase?!stricmp(buf->str,NARGSYM):!strcmp(buf->str,NARGSYM);
+      if(match){
         new=new_expr();
         new->type=NUM;
         new->c.val=cur_src->num_params; /*@@@ check for macro mode? */
         return new;
       }
 #endif
-      sym=new_import(name);
+      sym=new_import(buf->str);
     }
     sym->flags|=USED;
-    if (sym->type!=EXPRESSION){
-      new=new_expr();
-      new->type=SYM;
-      new->c.sym=sym;
-    }
-    else
-      new=copy_tree(sym->expr);
-    myfree(name);
+    new=(sym->type!=EXPRESSION)?new_sym_expr(sym):copy_tree(sym->expr);
     return new;
   }
   if(*s=='\''||*s=='\"'){
     taddr val=0;
     int shift=0,cnt=0;
+    int charspertaddr=bytespertaddr*BITSPERBYTE/8;
     char quote=*s++;
-    while(*s){
+    for(;;){
       char c;
       if(*s=='\\')
         s=escape(s,&c);
       else{
-        c=*s++;
+        if (!(c=*s++)) {
+          general_error(6,quote);  /* closing-quote expected */
+          break;
+        }
         if(c==quote){
           if(*s==quote)
             s++;  /* allow """" to be recognized as " and '''' as ' */
           else break;
         }
       }
-      if(++cnt>bytespertaddr){
-        general_error(21,bytespertaddr*8);  /* target data type overflow */
+      if(++cnt>charspertaddr){
+        general_error(21,bytespertaddr*BITSPERBYTE); /* target data type overflow */
         break;
       }
       if(BIGENDIAN){
-        val=(val<<8)+c;
+        val=(val<<8)+(unsigned char)c;
       }else if(LITTLEENDIAN){
-        val+=c<<shift;
+        val+=((unsigned char)c)<<shift;
         shift+=8;
       }else
         ierror(0);
+      if(cnt>=charsperexp&&*s!=quote)
+        break;
     }
     EXPSKIP();
     new=new_expr();
@@ -259,43 +287,45 @@ static expr *primary_expr(void)
     return new;
   }
   general_error(9);
+dummyexp:
   new=new_expr();
   new->type=NUM;
   new->c.val=-1;
   return new;
 }
     
-static expr *unary_expr()
+static expr *unary_expr(void)
 {
   expr *new;
   char *m;
   int len;
-  if(*s=='+'||*s=='-'||*s=='!'||*s=='~'){
-    m=s++;
-    EXPSKIP();
-  }
-  else if(len=EXT_UNARY_NAME(s)){
+  if(len=EXT_UNARY_NAME(s)){
     m=s;
     s+=len;
+  }else if(*s=='+'){
+    s++;
     EXPSKIP();
-  }else
     return primary_expr();
-  if(*m=='+')
+  }else if(*s=='+'||*s=='-'||*s=='!'||*s=='~')
+    m=s++;
+  else
     return primary_expr();
+  EXPSKIP();
   new=new_expr();
-  if(*m=='-')
+  if(len)
+    new->type=EXT_UNARY_TYPE(m);
+  else if(*m=='-')
     new->type=NEG;
   else if(*m=='!')
     new->type=NOT;
   else if(*m=='~')
     new->type=CPL;
-  else if(EXT_UNARY_NAME(m))
-    new->type=EXT_UNARY_TYPE(m);
+  else ierror(0);
   new->left=primary_expr();
   return new;
 }  
 
-static expr *shift_expr()
+static expr *shift_expr(void)
 {
   expr *left,*new;
   char m;
@@ -497,7 +527,7 @@ static expr *logical_and_expr(void)
   return left;
 }
 
-static expr *expression()
+static expr *expression(void)
 {
   expr *left,*new;
   left=logical_and_expr();
@@ -521,7 +551,7 @@ static expr *expression()
    Automatically switches to a HUG expression type, when encountering a
    constant which doesn't fit into taddr.
    Automatically switches to a FLT expression type, when reading a decimal
-   point or an exponent in a decimal constant. */
+   point or an exponent in a decimal constant (requires FLOAT_PARSER). */
 expr *parse_expr(char **pp)
 {
   expr *tree;
@@ -565,6 +595,7 @@ expr *parse_expr_huge(char **pp)
    When the constant is not decimal switch to reading a HUG expression type. */
 expr *parse_expr_float(char **pp)
 {
+#if FLOAT_PARSER
   expr *tree;
   s=*pp;
   make_tmp_lab=0;
@@ -573,6 +604,10 @@ expr *parse_expr_float(char **pp)
   simplify_expr(tree);
   *pp=s;
   return tree;
+#else
+  general_error(79,cpuname);  /* backend does not support floating point */
+  return NULL;
+#endif
 }
 
 void free_expr(expr *tree)
@@ -594,17 +629,40 @@ int type_of_expr(expr *tree)
     return 0;
   ltype=tree->type;
   if(ltype==SYM){
-    if(tree->c.sym->flags&INEVAL)
-      general_error(18,tree->c.sym->name);
-    tree->c.sym->flags|=INEVAL;
-    ltype=tree->c.sym->type==EXPRESSION?type_of_expr(tree->c.sym->expr):NUM;
-    tree->c.sym->flags&=~INEVAL;
-    return ltype;
-  }else if(ltype==NUM||ltype==HUG||ltype==FLT)
+    symbol *sym=tree->c.sym;
+    if(sym->type==EXPRESSION){
+      if(sym->flags&INEVAL)
+        general_error(18,sym->name);
+      sym->flags|=INEVAL;
+      ltype=type_of_expr(sym->expr);
+      sym->flags&=~INEVAL;
+      return ltype;
+    }else return NUM;
+  }else if(ltype<SYM)  /* NUM, HUG, FLT */
     return ltype;
   ltype=type_of_expr(tree->left);
   rtype=type_of_expr(tree->right);
   return rtype>ltype?rtype:ltype;
+}
+
+/* Find pointer to first symbol occurrence inside expression tree */
+expr **find_sym_expr(expr **ptree,char *name)
+{
+  expr **psym;
+
+  if(*ptree==NULL)
+    return NULL;
+  if((*ptree)->left!=NULL &&
+     (*ptree)->left->type==SYM&&!strcmp((*ptree)->left->c.sym->name,name))
+    return &(*ptree)->left;
+  if(psym=find_sym_expr(&(*ptree)->left,name))
+    return psym;
+  if((*ptree)->right!=NULL &&
+     (*ptree)->right->type==SYM&&!strcmp((*ptree)->right->c.sym->name,name))
+    return &(*ptree)->right;
+  if(psym=find_sym_expr(&(*ptree)->right,name))
+    return psym;
+  return NULL;
 }
 
 /* Try to evaluate expression as far as possible. Subexpressions
@@ -613,7 +671,9 @@ void simplify_expr(expr *tree)
 {
   taddr ival;
   thuge hval;
+#if FLOAT_PARSER
   tfloat fval;
+#endif
   int type=0;
   if(!tree)
     return;
@@ -630,12 +690,12 @@ void simplify_expr(expr *tree)
     tree->right->right=x;
   }
   if(tree->left){
-    if(tree->left->type==NUM||tree->left->type==HUG||tree->left->type==FLT)
+    if(tree->left->type<SYM)  /* NUM, HUG, FLT */
       type=tree->left->type;
     else return;
   }
   if(tree->right){
-    if(tree->right->type==NUM||tree->right->type==HUG||tree->right->type==FLT){
+    if(tree->right->type<SYM){  /* NUM, HUG, FLT */
       if(tree->right->type>type)
         type=tree->right->type;
     } else return;
@@ -655,6 +715,9 @@ void simplify_expr(expr *tree)
       if(tree->right->c.val==0){
         general_error(41);
         ival=0;
+      }else if(tree->left->c.val==taddrmin&&tree->right->c.val==-1){
+        general_error(21,sizeof(taddr)*8);  /* target data type overflow */
+        ival=taddrmin;
       }else
         ival=(tree->left->c.val/tree->right->c.val);
       break;
@@ -662,6 +725,9 @@ void simplify_expr(expr *tree)
       if(tree->right->c.val==0){
         general_error(41);
         ival=0;
+      }else if(tree->left->c.val==taddrmin&&tree->right->c.val==-1){
+        general_error(21,sizeof(taddr)*8);  /* target data type overflow */
+        ival=taddrmin;
       }else
         ival=(tree->left->c.val%tree->right->c.val);
       break;
@@ -687,7 +753,7 @@ void simplify_expr(expr *tree)
       ival=(tree->left->c.val^tree->right->c.val);
       break;
     case NOT:
-      ival=(!tree->left->c.val);
+      ival=BOOLEAN(!tree->left->c.val);
       break;
     case LSH:
       ival=(tree->left->c.val<<tree->right->c.val);
@@ -786,7 +852,8 @@ void simplify_expr(expr *tree)
       hval=hxor(lval,rval);
       break;
     case NOT:
-      hval=hnot(lval);
+      ival=BOOLEAN(hcmp(lval,huge_zero())==0);
+      type=NUM;
       break;
     case LSH:
       hval=hshl(lval,huge_to_int(rval));
@@ -825,6 +892,7 @@ void simplify_expr(expr *tree)
       return;
     }
   }
+#if FLOAT_PARSER
   else if(type==FLT){
     tfloat lval,rval;
     if(tree->left){
@@ -889,6 +957,7 @@ void simplify_expr(expr *tree)
       return;
     }
   }
+#endif  /* FLOAT_PARSER */
   else{
     if(tree->type==SYM&&tree->c.sym->type==EXPRESSION){
       switch(tree->c.sym->expr->type){
@@ -900,10 +969,12 @@ void simplify_expr(expr *tree)
         hval=tree->c.sym->expr->c.huge;
         type=HUG;
         break;
+#if FLOAT_PARSER
       case FLT:
         fval=tree->c.sym->expr->c.flt;
         type=FLT;
         break;
+#endif
       default:
         return;
       }
@@ -915,8 +986,23 @@ void simplify_expr(expr *tree)
   switch(tree->type=type){
     case NUM: tree->c.val=ival; break;
     case HUG: tree->c.huge=hval; break;
+#if FLOAT_PARSER
     case FLT: tree->c.flt=fval; break;
+#endif
     default: ierror(0); break;
+  }
+}
+
+static void add_dep(section *src, section *dest)
+{
+  if(num_secs&&src!=NULL&&src!=dest){
+    if(debug&&(!dest->deps||!BTST(dest->deps,src->idx)))
+      printf("sec %s might depend on %s\n",src->name,dest->name);
+    if(!dest->deps){
+      dest->deps=mymalloc(BVSIZE(num_secs));
+      memset(dest->deps,0,BVSIZE(num_secs));
+    }
+    BSET(dest->deps, src->idx);
   }
 }
 
@@ -928,7 +1014,7 @@ int eval_expr(expr *tree,taddr *result,section *sec,taddr pc)
 {
   taddr val,lval,rval;
   symbol *lsym,*rsym;
-  int cnst=1;
+  int cnst=1,lbok,rbok;
 
   if(!tree)
     ierror(0);
@@ -942,24 +1028,31 @@ int eval_expr(expr *tree,taddr *result,section *sec,taddr pc)
     val=(lval+rval);
     break;
   case SUB:
-    find_base(tree->left,&lsym,sec,pc);
-    find_base(tree->right,&rsym,sec,pc);
-    if(cnst==0&&lsym!=NULL&&rsym!=NULL&&LOCREF(rsym)){
-      if(LOCREF(lsym)&&lsym->sec==rsym->sec){
+    lbok=find_base(tree->left,&lsym,sec,pc)==BASE_OK;
+    rbok=find_base(tree->right,&rsym,sec,pc)==BASE_OK;
+    if(cnst==0&&rbok&&LOCREF(rsym)){
+      if(lbok&&LOCREF(lsym)&&lsym->sec==rsym->sec){
         /* l2-l1 is constant when both have a valid symbol-base, and both
            symbols are LABSYMs from the same section, e.g. (sym1+x)-(sym2-y) */
         cnst=1;
-      }else if(rsym->sec==sec&&(EXTREF(lsym)||LOCREF(lsym))){
-        /* Difference between symbols from different section or between an
+        add_dep(sec,lsym->sec);
+      }else if(lbok&&(rsym->sec==sec&&(EXTREF(lsym)||LOCREF(lsym)))){
+        /* Difference between symbols from different sections or between an
            external symbol and a symbol from the current section can be
            represented by a REL_PC, so we calculate the addend. */
-        if((rsym->flags&ABSLABEL)&&(lsym->flags&ABSLABEL))
+        if((rsym->flags&ABSLABEL)&&(lsym->flags&ABSLABEL)){
+          add_dep(sec, lsym->sec);
+          add_dep(sec, rsym->sec);
           cnst=1;  /* constant, when labels are from two ORG sections */
-        else{
+        }else{
           /* prepare a value which works with REL_PC */
           val=(pc-rval+lval-(lsym->sec?lsym->sec->org:0));
           break;
         }
+      }else if(!lbok&&(rsym->flags&ABSLABEL)){
+        /* const-label is valid and yields a const in absolute ORG sections */
+        add_dep(sec, rsym->sec);
+        cnst=1;
       }
     }
     val=(lval-rval);
@@ -969,15 +1062,25 @@ int eval_expr(expr *tree,taddr *result,section *sec,taddr pc)
     break;
   case DIV:
     if(rval==0){
-      general_error(41);
+      if (final_pass)
+        general_error(41);
       val=0;
+    }else if(lval==taddrmin&&rval==-1){
+      if (final_pass)
+        general_error(21,sizeof(taddr)*8);  /* target data type overflow */
+      val=taddrmin;
     }else
       val=(lval/rval);
     break;
   case MOD:
     if(rval==0){
-      general_error(41);
+      if (final_pass)
+        general_error(41);
       val=0;
+    }else if(lval==taddrmin&&rval==-1){
+      if (final_pass)
+        general_error(21,sizeof(taddr)*8);  /* target data type overflow */
+      val=taddrmin;
     }else
       val=(lval%rval);
     break;
@@ -1003,7 +1106,7 @@ int eval_expr(expr *tree,taddr *result,section *sec,taddr pc)
     val=(lval^rval);
     break;
   case NOT:
-    val=(!lval);
+    val=BOOLEAN(!lval);
     break;
   case LSH:
     val=(lval<<rval);
@@ -1033,16 +1136,19 @@ int eval_expr(expr *tree,taddr *result,section *sec,taddr pc)
     val=BOOLEAN(lval==rval);
     break;
   case SYM:
-    if(tree->c.sym->type==EXPRESSION){
-      if(tree->c.sym->flags&INEVAL)
-        general_error(18,tree->c.sym->name);
-      tree->c.sym->flags|=INEVAL;
-      cnst=eval_expr(tree->c.sym->expr,&val,sec,pc);
-      tree->c.sym->flags&=~INEVAL;
-    }else if(LOCREF(tree->c.sym)){
+    lsym=tree->c.sym;
+    if(lsym->type==EXPRESSION){
+      if(lsym->flags&INEVAL)
+        general_error(18,lsym->name);
+      lsym->flags|=INEVAL;
+      cnst=eval_expr(lsym->expr,&val,sec,pc);
+      lsym->flags&=~INEVAL;
+    }else if(LOCREF(lsym)){
       update_curpc(tree,sec,pc);
-      val=tree->c.sym->pc;
-      cnst=tree->c.sym->sec==NULL?0:(tree->c.sym->sec->flags&UNALLOCATED)!=0;
+      val=lsym->pc;
+      cnst=lsym->sec==NULL?0:(lsym->sec->flags&UNALLOCATED)!=0;
+      if(lsym->flags&ABSLABEL) cnst=1;
+      if(cnst) add_dep(sec,lsym->sec);
     }else{
       /* IMPORT */
       cnst=0;
@@ -1053,15 +1159,17 @@ int eval_expr(expr *tree,taddr *result,section *sec,taddr pc)
     val=tree->c.val;
     break;
   case HUG:
-    if (!huge_chkrange(tree->c.huge,bytespertaddr*8))
-      general_error(21,bytespertaddr*8);  /* target data type overflow */
+    if (!huge_chkrange(tree->c.huge,bytespertaddr*BITSPERBYTE) && final_pass)
+      general_error(21,bytespertaddr*BITSPERBYTE); /* target data type overflow */
     val=huge_to_int(tree->c.huge);
     break;
+#if FLOAT_PARSER
   case FLT:
-    if (!flt_chkrange(tree->c.flt,bytespertaddr*8))
-      general_error(21,bytespertaddr*8);  /* target data type overflow */
+    if (!flt_chkrange(tree->c.flt,bytespertaddr*BITSPERBYTE) && final_pass)
+      general_error(21,bytespertaddr*BITSPERBYTE); /* target data type overflow */
     val=(taddr)tree->c.flt;
     break;
+#endif
   default:
 #ifdef EXT_UNARY_EVAL
     if (EXT_UNARY_EVAL(tree->type,lval,&val,cnst))
@@ -1099,14 +1207,16 @@ int eval_expr_huge(expr *tree,thuge *result)
     break;
   case DIV:
     if(hcmp(rval,huge_zero())==0){
-      general_error(41);
+      if (final_pass)
+        general_error(41);
       val=huge_zero();
     }else
       val=hdiv(lval,rval);
     break;
   case MOD:
     if(hcmp(rval,huge_zero())==0){
-      general_error(41);
+      if (final_pass)
+        general_error(41);
       val=huge_zero();
     }else
       val=hmod(lval,rval);
@@ -1135,7 +1245,7 @@ int eval_expr_huge(expr *tree,thuge *result)
     val=hxor(lval,rval);
     break;
   case NOT:
-    val=hnot(lval);
+    val=huge_from_int(BOOLEAN(hcmp(lval,huge_zero())==0));
     break;
   case LSH:
     val=hshl(lval,huge_to_int(rval));
@@ -1187,9 +1297,11 @@ int eval_expr_huge(expr *tree,thuge *result)
   case HUG:
     val=tree->c.huge;
     break;
+#if FLOAT_PARSER
   case FLT:
     val=huge_from_float(tree->c.flt);
     break;
+#endif
   default:
     return 0;
   }
@@ -1197,6 +1309,7 @@ int eval_expr_huge(expr *tree,thuge *result)
   return 1;
 }
 
+#if FLOAT_PARSER
 /* Evaluate a floating point expression using current values of all symbols.
    Result is written to *result. The return value specifies whether all
    operations were valid. */
@@ -1223,7 +1336,8 @@ int eval_expr_float(expr *tree,tfloat *result)
     break;
   case DIV:
     if(rval==0.0){
-      general_error(41);
+      if (final_pass)
+        general_error(41);
       val=0.0;
     }else
       val=(lval/rval);
@@ -1276,6 +1390,7 @@ int eval_expr_float(expr *tree,tfloat *result)
   *result=val;
   return 1;
 }
+#endif  /* FLOAT_PARSER */
 
 void print_expr(FILE *f,expr *p)
 {
@@ -1283,73 +1398,32 @@ void print_expr(FILE *f,expr *p)
     ierror(0);
   simplify_expr(p);
   if(p->type==NUM)
-    fprintf(f,"%lld=0x%llx",(long long)p->c.val,ULLTADDR(p->c.val));
+    fprintf(f,"%lld=0x%llx",(long long)p->c.val,ULLTVAL(p->c.val));
   else if(p->type==HUG)
-    fprintf(f,"0x%016llx%016llx",(long long)p->c.huge.hi,(long long)p->c.huge.lo);
+    fprintf(f,"0x%016llx%016llx",
+            (unsigned long long)p->c.huge.hi,(unsigned long long)p->c.huge.lo);
+#if FLOAT_PARSER
   else if(p->type==FLT)
     fprintf(f,"%.8g",(double)p->c.flt);
+#endif
   else
     fprintf(f,"complex expression");
 }
 
-/* return a single base symbol from an absolute ORG section, when present */
-static int find_abs_base(expr *tree,symbol **base)
-{
-  if(tree==NULL)
-    return 1;
-  if(tree->type==SYM){
-    if(tree->c.sym->type==EXPRESSION){
-      int ok;
-      if(tree->c.sym->flags&INEVAL)
-        return 0;
-      tree->c.sym->flags|=INEVAL;
-      ok=find_abs_base(tree->c.sym->expr,base);
-      tree->c.sym->flags&=~INEVAL;
-      return ok;
-    }else if(LOCREF(tree->c.sym)){
-      if(tree->c.sym->flags&ABSLABEL){
-        *base=tree->c.sym;
-        return 1;
-      }
-    }
-#if 0 /* There is no reason to forbid that? Especially not in RORG sections,
-         which are embedded in a normal relocatable, linkable code section. */
-    else{
-      if(current_section!=NULL&&(current_section->flags&ABSOLUTE)){
-        /* IMPORT in ORG section, will be flagged as BASE_ILLEGAL */
-        *base=tree->c.sym;
-        return 1;
-      }
-    }
-#endif
-    return 0;
-  }
-  if(!find_abs_base(tree->left,base))
-    return 0;
-  if(*base!=NULL){
-    symbol *tstbase=NULL;
-    if(!find_abs_base(tree->right,&tstbase))
-      return 0;
-    if(tstbase!=NULL){
-      *base=NULL;
-      return 1;
-    }
-  }else{
-    if(!find_abs_base(tree->right,base))
-      return 0;
-  }
-  return 1;
-}
-
 static int _find_base(expr *p,symbol **base,section *sec,taddr pc)
 {
+#ifdef EXT_FIND_BASE
+  int ret;
+  if(ret=EXT_FIND_BASE(base,p,sec,pc))
+    return ret;
+#endif
   if(p->type==SYM){
     update_curpc(p,sec,pc);
     if(p->c.sym->type==EXPRESSION)
       return _find_base(p->c.sym->expr,base,sec,pc);
     else{
       if(base)
-        *base=p->c.sym;
+        *base=p->c.sym;  /* set base to symbol, also when BASE_ILLEGAL later */
       return BASE_OK;
     }
   }
@@ -1382,20 +1456,8 @@ static int _find_base(expr *p,symbol **base,section *sec,taddr pc)
    Note: Does not find all possible solutions. */
 int find_base(expr *p,symbol **base,section *sec,taddr pc)
 {
-#ifdef EXT_FIND_BASE
-  int ret;
-  if(ret=EXT_FIND_BASE(base,p,sec,pc))
-    return ret;
-#endif
-  if(base){
+  if(base)
     *base=NULL;
-    if(find_abs_base(p,base)){
-        /* a base label from an absolute ORG section */
-      if(*base!=NULL)
-        return EXTREF(*base)?BASE_ILLEGAL:BASE_OK;
-      return BASE_NONE;
-    }
-  }
   return _find_base(p,base,sec,pc);
 }
 
@@ -1415,6 +1477,7 @@ expr *huge_expr(thuge val)
   return new;
 }
 
+#if FLOAT_PARSER
 expr *float_expr(tfloat val)
 {
   expr *new=new_expr();
@@ -1422,6 +1485,7 @@ expr *float_expr(tfloat val)
   new->c.flt=val;
   return new;
 }
+#endif
 
 taddr parse_constexpr(char **s)
 {
@@ -1429,7 +1493,6 @@ taddr parse_constexpr(char **s)
   taddr val = 0;
 
   if (tree = parse_expr(s)) {
-    simplify_expr(tree);
     switch(tree->type){
       case NUM:
         val = tree->c.val;

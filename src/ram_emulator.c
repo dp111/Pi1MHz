@@ -124,13 +124,15 @@ static char* putstring(char *ram, char term, const char *string)
    return ram;
 }
 
+extern char _end;
+
 void rampage_emulator_init( uint8_t instance , uint8_t address)
 {
    static uint8_t init = 0 ;
    // Page access register write fcfd fcfe fcff
-   Pi1MHz_Register_Memory(WRITE_FRED, address + 1, ram_emulator_page_addr_high ); // high byte
-   Pi1MHz_Register_Memory(WRITE_FRED, address + 2, ram_emulator_page_addr_mid ); // Mid byte
-   Pi1MHz_Register_Memory(WRITE_FRED, address + 3, ram_emulator_page_addr_low ); // low byte
+   Pi1MHz_Register_Memory(WRITE_FRED, address + 0, ram_emulator_page_addr_high ); // high byte
+   Pi1MHz_Register_Memory(WRITE_FRED, address + 1, ram_emulator_page_addr_mid ); // Mid byte
+   Pi1MHz_Register_Memory(WRITE_FRED, address + 2, ram_emulator_page_addr_low ); // low byte
 
    // register every address in JIM &FD00
    for (uint32_t i=0 ; i<PAGE_SIZE; i++)
@@ -138,10 +140,10 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 
    // Initialise JIM RAM
 
-   extern char _end;
+
 
    uint32_t temp = mem_info(1); // get size of ram
-   temp = temp - (unsigned int)&_end; // remove program
+   temp = temp - (uint32_t)&_end; // remove program
    temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
    temp = temp & 0xFF000000; // round down to 16Mbyte boundary
    Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets

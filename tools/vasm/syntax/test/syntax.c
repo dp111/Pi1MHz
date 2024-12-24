@@ -12,13 +12,11 @@
    be provided by the main module.
 */
 
-char *syntax_copyright="vasm test syntax module (c) 2002 Volker Barthelmann";
+const char *syntax_copyright="vasm test syntax module (c) 2002 Volker Barthelmann";
 
 hashtable *dirhash;
-
 char commentchar=';';
-char *defsectname = NULL;
-char *defsecttype = NULL;
+int dotdirs;
 
 
 char *skip(char *s)
@@ -56,14 +54,6 @@ char *skip_operand(char *s)
   return s;
 }
 
-static void prident(char *p,int len)
-{
-  int olen=len;
-  while(len--)
-    putchar(*p++);
-  printf("(len=%d)",olen);
-}
-
 static void handle_section(char *s)
 {
   char *name,*attr;
@@ -99,8 +89,7 @@ static void handle_section(char *s)
     s=skip(s+1);
   }else
     attr="";
-  new_section(name,attr,1);
-  switch_section(name,attr);
+  set_section(new_section(name,attr,1));
   eol(s);
 }
 
@@ -125,7 +114,7 @@ static char *string(char *s,dblock **result)
   db->size=size;
   db->data=mymalloc(db->size);
   s=p;
-  p=db->data;
+  p=(char *)db->data;
   while(*s&&*s!='\"'){
     if(*s=='\\')
       s=escape(s,p++);
@@ -142,7 +131,6 @@ static char *string(char *s,dblock **result)
 
 static void handle_data(char *s,int size,int noalign,int zeroterm)
 {
-  expr *tree;
   dblock *db;
   do{
     char *opstart=s;
@@ -183,15 +171,13 @@ static void handle_data(char *s,int size,int noalign,int zeroterm)
 static void handle_global(char *s)
 {
   symbol *sym;
-  char *name;
-  name=s;
-  if(!(name=parse_identifier(&s))){
+  strbuf *name;
+  if(!(name=parse_identifier(0,&s))){
     syntax_error(10);
     return;
   }
-  sym=new_import(name);
+  sym=new_import(name->str);
   sym->flags|=EXPORT;
-  myfree(name);
   eol(s);
 }
 
@@ -232,7 +218,7 @@ static void handle_bsss(char *s){ handle_section(".bss,\"aurw4\"");eol(s);}
 static void handle_sbsss(char *s){ handle_section(".bss,\"aurw4\"");eol(s);}
 
 struct {
-  char *name;
+  const char *name;
   void (*func)(char *);
 } directives[]={
   "section",handle_section,
@@ -278,14 +264,14 @@ void parse(void)
 {
   char *s,*line,*inst,*ext[MAX_QUALIFIERS?MAX_QUALIFIERS:1],*op[MAX_OPERANDS];
   int inst_len,ext_len[MAX_QUALIFIERS?MAX_QUALIFIERS:1],op_len[MAX_OPERANDS];
-  int i,ext_cnt,op_cnt,par_cnt;
+  int i,ext_cnt,op_cnt;
   instruction *ip;
   while(line=read_next_line()){
     s=line;
 
     if(isalnum((unsigned char)*s)){
       /* Handle labels at beginning of line */
-      char *labname,*equ;
+      char *labname;
       symbol *label;
       while(*s&&!isspace((unsigned char)*s)&&*s!=':')
         s++;
@@ -401,7 +387,7 @@ char *const_suffix(char *start,char *end)
   return end;
 }
 
-char *get_local_label(char **start)
+strbuf *get_local_label(int n,char **start)
 {
   return NULL;
 }
@@ -418,7 +404,7 @@ int expand_macro(source *src,char **line,char *d,int dlen)
   return 0;
 }
 
-int init_syntax()
+int init_syntax(void)
 {
   size_t i;
   hashdata data;
@@ -429,6 +415,11 @@ int init_syntax()
   }
   
   return 1;
+}
+
+int syntax_defsect(void)
+{
+  return 0;
 }
 
 int syntax_args(char *p)

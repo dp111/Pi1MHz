@@ -18,14 +18,14 @@
 #  r0 - pointer to shared memory ( VC address) of tube registers
 #  r1 - pointer to data to xfer to ARM
 #  r2 - unused
-#  r3 -
+#  r3 - Databus and test pin output select
 #  r4 - debug output control
 #  r5 - debug pin mask (0 = no debug  xx= debug pin e.g 1<<21)
 #  r6 - GPFSEL0 constant
 #  r7 - External nOE pin
 #  r8 - temp
-#  r9 - r9 Databus and test pin output select
-# r10 - address mask
+#  r9 -
+# r10 -
 # r11 -
 # r12 - GPIO pins value
 # r13 - pointer to doorbell register
@@ -51,16 +51,9 @@
 .equ ADDRBUS_SHIFT, (16)
 .equ OUTPUTBIT,   (15)
 
-.equ D7_PIN,       (9)
-.equ D6_PIN,       (8)
-.equ D5_PIN,       (7)
-.equ D4_PIN,       (6)
-.equ D3_PIN,       (5)
-.equ D2_PIN,       (4)
-.equ D1_PIN,       (3)
-.equ D0_PIN,       (2)
+.equ ADDRESSBUS_WIDTH, (8 + 1)
+.equ DATABUS_WIDTH, 8
 
-.equ ADDRBUS_MASK,  (0xFF<<ADDRBUS_SHIFT)
 .equ NPCFC_MASK,    (1<<nPCFC)
 
 .equ Pi1MHz_MEM_RNW, (1<<9)
@@ -72,17 +65,17 @@
 # disable interrupts
 
   di
-   or     r9, r3, r4       # add in test pin so that it is still enabled
+   or     r3, r4       # add in test pin so that it is still enabled
    mov    r6, GPFSEL0
    mov    r7, 1            # external nOE pin
-   mov    r10, ((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))>>1
+   mov    r9, GPCLR0_offset>>2
    mov    r13, GPU_ARM_DBELL
-   b      Poll_loop
 
 # poll for nPCFC or nPCFD being low
-.align 4
+.balignw 16,1 # Align with nops
 Poll_loop:
    st     r5, GPCLR0_offset(r6)  # Turn off debug signal
+
 Poll_access_low:
    ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
 
@@ -104,46 +97,41 @@ waitforclklow:                   # wait for extra half cycle to end
    btst   r12, CLK
    bne    waitforclklow
 
+.balignw 16,1 # Align with nops
 waitforclkhigh:
-
 waitforclkhighloop:
+   LSR    r8, r12,ADDRBUS_SHIFT
    ld     r12, GPLEV0_offset(r6)
+   extu   r8, ADDRESSBUS_WIDTH   # bmask Isolate address bus
+   ldh    r8, (r0,r8)            # get byte to write out
+
    btst   r12, CLK
    beq    waitforclkhighloop
 
 # seen rising edge of CLK
 # so address bus has now been setup
 
-   LSR    r8, r12,ADDRBUS_SHIFT+1
-
-   and    r8, r10                # Isolate address bus
-
-   ld     r8, (r0,r8) # get byte to write out
    btst   r12, nPCFC
    btstne r12, nPCFD
    bne    Poll_loop
+
 # check if we are in a read or write cycle
 # we do this here while the read above is stalling
+
    btst   r12, RnW
+   lsl    r8, DATASHIFT
    beq    writecycle
 
-   btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
-   lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
-   lsleq  r8, DATASHIFT          # low 16 bits with databus shift
    btst   r8, OUTPUTBIT
-   and    r8, 255<<DATASHIFT     # isolate databus
+   extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above
 
    st     r8, GPSET0_offset(r6)  # set up databus
-   beq    skipenablingbus
-   st     r9, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
-   st     r7, GPCLR0_offset(r6)  # set external output enable low
- skipenablingbus:
+   st     r3, GPFSEL0_offset(r6) # set databus to output
+   stne   r7,(r6,r9)             # set external output enable low ( only if it has been written to)
    st     r12, (r1)              # post data
    st     r12, (r13)             # ring doorbell
 
-   b waitforclklow2loop
-
-.align 4
+.balignw 4,1 # Align with nops
 waitforclklow2loop:
    ld     r12, GPLEV0_offset(r6)
    btst   r12, CLK
@@ -151,8 +139,6 @@ waitforclklow2loop:
 
    st     r7, GPSET0_offset(r6)  # set external output enable high
    st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
-
-   mov    r8, (0xFF<<DATASHIFT)  # clear databus low
    st     r8, GPCLR0_offset(r6)  # clear databus low
 
    b      Poll_loop
@@ -160,11 +146,12 @@ waitforclklow2loop:
 writecycle:
    st     r7, GPCLR0_offset(r6)  # set external output enable low
 waitforclkloww2:
-   ld     r8, GPLEV0_offset(r6)
-   btst   r8, CLK
-   movne  r12,r8
+   mov    r8,r12
+   ld     r12, GPLEV0_offset(r6)
+   btst   r12, CLK
    bne    waitforclkloww2
-   st     r12, (r1)         # post data
-   st     r12, (r13)        # ring doorbell
+
+   st     r8, (r1)         # post data
+   st     r8, (r13)        # ring doorbell
    st     r7, GPSET0_offset(r6)  # set external output enable high
    b      Poll_loop
