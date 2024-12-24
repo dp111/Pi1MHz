@@ -189,7 +189,7 @@ static void update_channels(struct synth *s)
 
     for (int i = 0; i < 16; i++) {
       int c4d; // c4d is used for "Synchronization" e.g. the "Wha" instrument
-      uint8_t * c = s->ram + I_WFTOP + modulate + i;
+      const uint8_t * c = s->ram + I_WFTOP + modulate + i;
       if  (!PHASESET(c))
          {
             unsigned int sum = FREQ(c) + s->phaseRAM[i];

@@ -27,9 +27,6 @@ volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTab
 static const unsigned int aa0 = 0; /* note ARM ARM bit ordering is confusing */
 static const unsigned int aa6 = 1;
 static const unsigned int shareable = 1;
-#endif
-
-#if (__ARM_ARCH >= 7 )
 
 #define SETWAY_LEVEL_SHIFT          1
 
