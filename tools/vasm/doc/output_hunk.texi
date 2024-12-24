@@ -52,7 +52,7 @@ These options are valid for the @code{hunkexe} module only:
 
 @section General
 
-This output module outputs the @code{hunk} object (standard for @code{M68k}
+This module outputs the @code{hunk} object (standard for @code{M68k}
 and extended for @code{PowerPC}) and @code{hunkexe} executable format, which
 is a proprietary file format used by AmigaOS and WarpOS.
 
@@ -130,5 +130,6 @@ This module has the following error messages:
 @item 3018: no additional space in section to convert NONE relocation <%s> to ABS
 @item 3019: section <%s>: kickstart 1.x cannot initialize bss sections >256k to zero
 @item 3023: unaligned relocation offset at %s+%#lx
+@item 3024: section <%s>: maximum size of 0x%llx bytes exceeded (0x%llx)
 
 @end itemize

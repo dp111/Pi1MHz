@@ -1,7 +1,7 @@
 This chapter documents the backend for the unSP CPU architecture.
 
 @section Legal
-    This module is written in 2021-2023 by Adrien Destugues
+    This module is written in 2021-2024 by Adrien Destugues
     and is covered by the vasm copyright without modifications.
 
 @section General

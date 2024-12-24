@@ -54,12 +54,12 @@ This syntax module provides the following additional options:
 @section General Syntax
 
 Labels always start at the first column and may be terminated by a
-colon (@code{:}), but don't need to. In the latter case the mnemonic
-has to be separated from the label by whitespace (not required in
+colon (@code{:}), but don't need to. In the latter case the mnemonic or
+directive has to be separated from the label by whitespace (not required in
 any case, e.g. with @code{=}).
 
 Local labels are introduced by '@code{.}' or terminated by '@code{$}'.
-For the rest, any alphanumeric character including '@code{_}' is allowed.
+For the rest, any alphanumeric character, including '@code{_}', is allowed.
 Local labels are valid between two global label definitions.
 
 It is allowed, but not recommended, to refer to any local symbol starting with
@@ -119,6 +119,8 @@ The one character following a @code{'} or @code{"} is converted into
 ASCII code. A closing quote behind that character is optional in
 expressions. Not optional for strings.
 
+The current-PC symbols is @code{*}, unless redefined by a CPU backend
+(e.g. Z80 sets @code{$}).
 
 @section Directives
 
@@ -152,7 +154,7 @@ CPU- and output-module allow it):
       alternative directive @code{da} instead.
 
 @item align <bitcount>
-      Insert as much zero bytes as required to reach an address where
+      Insert as many zero bytes as required to reach an address where
       <bit_count> low order bits are zero. For example @code{align 2} would
       make an alignment to the next 32-bit boundary on a target with
       8-bit addressable memory.
@@ -341,7 +343,7 @@ CPU- and output-module allow it):
 @item exitmacro
       Exit the current macro (proceed to @code{endm}) at this point and
       continue assembling the parent context.
-      Note that this directive also resets the level of conditional
+      Note, that this directive also resets the level of conditional
       assembly to a state before the macro was invoked (which means that
       it works as a 'break' command on all new @code{if} directives).
 
@@ -593,8 +595,8 @@ CPU- and output-module allow it):
 
 @item <symbol> set <expression>
       Create a new symbol with the name <symbol> and assign
-      the value of <expression>. If <symbol> is already assigned, it will
-      contain a new value from now on.
+      the value of <expression>. If <symbol> was already assigned by
+      @code{set} before, it will hold the new value from now on.
 
 @item spc <exp>
       Equivalent to @code{blk <exp>,0}.

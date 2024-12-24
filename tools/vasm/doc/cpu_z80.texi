@@ -85,6 +85,8 @@ The target address type is 16 bit.
 Instructions consist of one up to six bytes and require no alignment.
 There is also no alignment requirement for sections and data.
 
+The current PC symbol is @code{$}.
+
 @section Extensions
 
 This backend provides the following specific extensions:

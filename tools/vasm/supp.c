@@ -723,7 +723,7 @@ size_t chk_sec_overlap(section *s)
       if (((ULLTADDR(s2->org) >= ULLTADDR(s->org) &&
             ULLTADDR(s2->org) < ULLTADDR(s->pc)) ||
            (ULLTADDR(s2->pc) > ULLTADDR(s->org) &&
-            ULLTADDR(s2->pc) <= ULLTADDR(s->pc))))
+            ULLTADDR(s2->pc) < ULLTADDR(s->pc))))
         output_error(0,s->name,ULLTADDR(s->org),ULLTADDR(s->pc),
                      s2->name,ULLTADDR(s2->org),ULLTADDR(s2->pc));
     }
