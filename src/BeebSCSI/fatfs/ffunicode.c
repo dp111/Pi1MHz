@@ -15456,7 +15456,7 @@ WCHAR ff_oem2uni (	/* Returns Unicode character in UTF-16, zero on error */
 }
 #endif
 
-
+#include <stdio.h>
 
 /*------------------------------------------------------------------------*/
 /* Unicode Up-case Conversion                                             */
@@ -15466,6 +15466,7 @@ DWORD ff_wtoupper (	/* Returns up-converted code point */
 	DWORD uni		/* Unicode code point to be up-converted */
 )
 {
+	const WORD* p;
 	static const WORD cvt1[] = {	/* Compressed up conversion table for U+0000 - U+0FFF */
 		/* Basic Latin */
 		0x0061,0x031A,
@@ -15558,13 +15559,11 @@ DWORD ff_wtoupper (	/* Returns up-converted code point */
 		0x0000	/* EOT */
 	};
 
-
 	if (uni < 0x10000) {	/* Is it in BMP? */
-		WORD uc;
+		WORD uc = (WORD)uni;
+		p = uc < 0x1000 ? cvt1 : cvt2;
 		for (;;) {
-			WORD bc, nc, cmd;
-			uc = (WORD)uni;
-			const WORD* p = uc < 0x1000 ? cvt1 : cvt2;
+			WORD  bc, nc, cmd;
 			bc = *p++;								/* Get the block base */
 			if (bc == 0 || uc < bc) break;			/* Not matched? */
 			nc = *p++; cmd = nc >> 8; nc &= 0xFF;	/* Get processing command and block size */
@@ -15582,12 +15581,10 @@ DWORD ff_wtoupper (	/* Returns up-converted code point */
 				}
 				break;
 			}
-// cppcheck-suppress unreadVariable
 			if (cmd == 0) p += nc;	/* Skip table if needed */
 		}
 		uni = uc;
 	}
-
 	return uni;
 }
 
