@@ -140,8 +140,6 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 
    // Initialise JIM RAM
 
-
-
    uint32_t temp = mem_info(1); // get size of ram
    temp = temp - (uint32_t)&_end; // remove program
    temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
@@ -164,12 +162,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    {
        // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
       char * ram = (char *)Pi1MHz->JIM_ram;
-      ram = putstring(ram,'\n', "");
-      ram = putstring(ram,'\n', " Pi1MHz "RELEASENAME);
-      ram = putstring(ram,'\n', " Commit ID: "GITVERSION);
-      ram = putstring(ram,'\n', " Date : " __DATE__ " " __TIME__);
-      ram = putstring(ram,0   , " Pi :");
-            putstring(ram,'\r', get_info_string());
+      ram = putstring(ram,'\n', " Use CALL &FC888");
    }
 
    // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
