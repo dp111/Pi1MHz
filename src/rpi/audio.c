@@ -109,7 +109,6 @@ uint32_t rpi_audio_init(uint32_t samplerate)
    // Bits 0..11 Fractional Part Of Divisor = 0, Bits 12..23 Integer Part Of Divisor = 2
 
    RPI_CLKBase->PWM_DIV = PM_PASSWORD | (0x2000);
-// cppcheck-suppress redundantAssignment
    RPI_CLKBase->PWM_CTL = PM_PASSWORD | BCM2835_PWMCLK_CNTL_ENABLE | BCM2835_PWMCLK_CNTL_PLLD ;
 
    usleep(1);

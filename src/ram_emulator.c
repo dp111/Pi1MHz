@@ -162,7 +162,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    {
        // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
       char * ram = (char *)Pi1MHz->JIM_ram;
-      ram = putstring(ram,'\n', " Use CALL &FC888");
+      putstring(ram,'\n', " Use CALL &FC888");
    }
 
    // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
