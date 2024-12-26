@@ -261,4 +261,4 @@ ORG &FD00
 
 .end
 
-SAVE "../firmware/6502code.bin" , 0, &600
+SAVE "../firmware/6502code.bin" , 0, &700
