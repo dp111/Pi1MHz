@@ -123,7 +123,7 @@
 /   3: Enable LFN with dynamic working buffer on the HEAP.
 /
 /  To enable the LFN, ffunicode.c needs to be added to the project. The LFN feature
-/  requiers certain internal working buffer occupies (FF_MAX_LFN + 1) * 2 bytes and
+/  requires certain internal working buffer occupies (FF_MAX_LFN + 1) * 2 bytes and
 /  additional (FF_MAX_LFN + 44) / 15 * 32 bytes when exFAT is enabled.
 /  The FF_MAX_LFN defines size of the working buffer in UTF-16 code unit and it can
 /  be in range of 12 to 255. It is recommended to be set 255 to fully support the LFN
@@ -148,7 +148,7 @@
 #define FF_LFN_BUF		255
 #define FF_SFN_BUF		12
 /* This set of options defines size of file name members in the FILINFO structure
-/  which is used to read out directory items. These values should be suffcient for
+/  which is used to read out directory items. These values should be sufficient for
 /  the file names to read. The maximum possible length of the read file name depends
 /  on character encoding. When LFN is not enabled, these options have no effect. */
 
@@ -226,7 +226,7 @@
 
 #define FF_FS_TINY		0
 /* This option switches tiny buffer configuration. (0:Normal or 1:Tiny)
-/  At the tiny configuration, size of file object (FIL) is shrinked FF_MAX_SS bytes.
+/  At the tiny configuration, size of file object (FIL) is shrunk to FF_MAX_SS bytes.
 /  Instead of private sector buffer eliminated from the file object, common sector
 /  buffer in the filesystem object (FATFS) is used for the file data transfer. */
 
@@ -281,7 +281,7 @@
 /  module itself. Note that regardless of this option, file access to different
 /  volume is always re-entrant and volume control functions, f_mount(), f_mkfs()
 /  and f_fdisk(), are always not re-entrant. Only file/directory access to
-/  the same volume is under control of this featuer.
+/  the same volume is under control of this feature.
 /
 /   0: Disable re-entrancy. FF_FS_TIMEOUT have no effect.
 /   1: Enable re-entrancy. Also user provided synchronization handlers,
