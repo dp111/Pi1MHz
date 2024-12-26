@@ -49,6 +49,7 @@ static void helpers_setup(uint8_t helper_address)
         "\r\n 3 # Load ADFS into SWR"
         "\r\n 4 # Load MMFS into SWR"
         "\r\n 5 # Load MMFS2 into SWR"
+        "\r\n 6 # Load VFS171 into SWR"
         "\r\n", PAGE_SIZE*16);
         helpscreen[0] = 0;
         //signal to beeb the help screen is setup
