@@ -252,6 +252,7 @@ static void init_emulator(void) {
 
    _enable_interrupts();
 
+// This is an old way of disabling emulators and will be removed in the future
    const char *prop = get_cmdline_prop("Pi1MHzDisable");
    if (prop)
    {  // now look for a common separated values to
@@ -274,12 +275,12 @@ static void init_emulator(void) {
          char key[128]="";
          char * ptr = key;
          ptr  += strlcpy(key,emulator[i].name,sizeof(key));
-         strlcpy(ptr,"_addr", 5);
+         strlcpy(ptr,"_addr", 6);
          const char *prop2 = get_cmdline_prop(key);
          if (prop2)
             {
                int temp=strtol(prop2,0,0);
-               printf("Found : %s=0x%x\r\n", key, temp);
+               LOG_DEBUG("Found : %s=0x%x\r\n", key, temp);
                if (temp<0)
                   emulator[i].enable = 0;
                else
