@@ -115,6 +115,7 @@ file( GLOB harddisc_emulator_files
    BeebSCSI/debug.c
    BeebSCSI/filesystem.c
    BeebSCSI/scsi.c
+   BeebSCSI/fcode.c
    BeebSCSI/fatfs/ff.c
    BeebSCSI/fatfs/diskio.c
    BeebSCSI/fatfs/ffunicode.c

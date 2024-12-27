@@ -29,9 +29,11 @@
 
 // External global
 extern uint8_t scsiFcodeBuffer[256];
+extern uint8_t scsiFcodeBufferRX[256];
 
 // Function prototypes
 void fcodeWriteBuffer(uint8_t lunNumber);
 void fcodeReadBuffer(void);
+void fcodeClearBuffer(void);
 
 #endif /* FCODE_H_ */
