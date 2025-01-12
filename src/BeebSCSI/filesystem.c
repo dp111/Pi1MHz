@@ -45,7 +45,7 @@
 
  Starting ADFS with F break now doesn't start any LUNs so SCSIJUKE can be the first command
 
- Fall back to slow seeking if the LUN us too fragmented instead of just failing over.
+ Fall back to slow seeking if the LUN is too fragmented instead of just failing over.
 
 */
 
