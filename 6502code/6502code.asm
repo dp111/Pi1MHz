@@ -211,7 +211,7 @@ ORG &FD00
 .redirectnextbyte
   STA newoswrch+4+1
 
-  LDA &20E 
+  LDA &20E
   STA newoswrch+4
 
   LDA #(newoswrch MOD 256)
@@ -267,7 +267,7 @@ ORG &FD00
 ; VFS171
 {
 ORG &FD00
-    LOADFILETOSWR "ROMS/VFS171.rom"
+    LOADFILETOSWR "ROMS/VFS.rom"
     ENDBLOCK &600
 }
 
