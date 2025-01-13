@@ -111,6 +111,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "framebuffer/framebuffer.h"
 #include "discaccess_emulator.h"
 #include "helpers.h"
+#include "mouseredirect.h"
 
 typedef struct {
    const char *name;
@@ -127,6 +128,7 @@ static emulator_list emulator[] = {
    {"Framebuffer",fb_emulator_init, 0xA0, 1},
    {"Discaccess",discaccess_emulator_init, 0xA6, 1 },
    {"Helpers",helpers_init, 0x88, 1 },
+   {"Mouseredirect",mouse_redirect_init, 0xAB, 1 },
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))

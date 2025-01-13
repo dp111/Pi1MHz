@@ -150,6 +150,9 @@ file( GLOB discaccess_emulator_files
    discaccess_emulator.c
 )
 
+file( GLOB mouse_redirect_files
+   mouseredirect.c
+)
 
 
 if( ${DEBUG} )
@@ -167,6 +170,7 @@ endif()
             ${M5000_emulator_files}
             ${FrameBuffer_emulator_files}
             ${discaccess_emulator_files}
+            ${mouse_redirect_files}
         )
 
     else()
@@ -177,6 +181,7 @@ endif()
             ${M5000_emulator_files}
             ${FrameBuffer_emulator_files}
             ${discaccess_emulator_files}
+            ${mouse_redirect_files}
         )
 
     endif()
