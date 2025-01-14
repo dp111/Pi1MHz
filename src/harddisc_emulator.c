@@ -156,6 +156,12 @@ static void hd_emulator_conf(unsigned int gpio)
 }
 #endif
 
+
+static void hd_emulator_write_scsijuke(unsigned int gpio)
+{
+   filesystemInitialise( GET_DATA(gpio) );
+}
+
 void harddisc_emulator_init( uint8_t instance , uint8_t address)
 {
    static bool PowerOn = 0 ;
@@ -180,9 +186,10 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+2, hd_emulator_nSEL     );
    // address FC43 write = Enable/Disable BBC nIRQ command
    Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+3, hd_emulator_IRQ );
-   // address FC44 write = Write BeebSCSI configuration byte
+
+   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+1, hd_emulator_write_scsijuke );
 #ifdef DEBUG
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+1, hd_emulator_conf );
+   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+4, hd_emulator_conf );
 #endif
    // Initialise but only at power on
    // Fixes *SCSIJUKE surviving over shift break.
