@@ -56,7 +56,7 @@ static void helpers_setup(uint8_t helper_address)
         Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE+1, 0x03);
 }
 
-void helpers_bank_select(unsigned int gpio)
+static void helpers_bank_select(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);

@@ -90,6 +90,12 @@ static uint32_t sectorsRemaining = 0;
 
 NOINIT_SECTION static FIL fileObjectFAT;
 
+static bool filesystemMount(void);
+static bool filesystemDismount(void);
+static bool filesystemCheckLunDirectory(uint8_t lunDirectory);
+static bool filesystemCheckLunImage(uint8_t lunNumber);
+static bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNumber, uint32_t lunFileSize);
+
 static void filesystemPrintfserror(FRESULT fsResult)
 {
    switch(fsResult) {
@@ -202,7 +208,7 @@ void filesystemReset(void)
 // File system mount and dismount functions --------------------------------------------------------------------
 
 // Function to mount the file system
-bool filesystemMount(void)
+static bool filesystemMount(void)
 {
    FRESULT fsResult;
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemMount(): Mounting file system\r\n"));
@@ -234,7 +240,7 @@ bool filesystemMount(void)
 }
 
 // Function to dismount the file system
-bool filesystemDismount(void)
+static bool filesystemDismount(void)
 {
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemDismount(): Dismounting file system\r\n"));
@@ -375,7 +381,7 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 }
 
 // Check that the currently selected LUN directory exists (and, if not, create it)
-bool filesystemCheckLunDirectory(uint8_t lunDirectory)
+static bool filesystemCheckLunDirectory(uint8_t lunDirectory)
 {
    FRESULT fsResult;
    DIR dirObject;
@@ -422,7 +428,7 @@ bool filesystemCheckLunDirectory(uint8_t lunDirectory)
 
 // Function to scan for SCSI LUN image file on the mounted file system
 // and check the image is valid.
-bool filesystemCheckLunImage(uint8_t lunNumber)
+static bool filesystemCheckLunImage(uint8_t lunNumber)
 {
    uint32_t lunFileSize;
    FRESULT fsResult;
@@ -596,7 +602,7 @@ uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
 // If the DSC is inaccurate then, for the BBC Micro, it's not that important, since the
 // host only looks at its own file system data (Superform and other formatters use the DSC
 // information though... so beware).
-bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNumber, uint32_t lunFileSize)
+static bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNumber, uint32_t lunFileSize)
 {
    uint32_t cylinders;
    uint32_t heads;

@@ -1231,7 +1231,7 @@ int default_read_character(screen_mode_t *screen, int col, int row, pixel_t bg_c
 void default_unknown_vdu(screen_mode_t *screen, const uint8_t *buf) {
 }
 
-void default_flash(screen_mode_t *screen, int mark) {
+static void default_flash(screen_mode_t *screen, int mark) {
    update_palette(screen, mark);
 }
 

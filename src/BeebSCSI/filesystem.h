@@ -39,8 +39,7 @@
 void filesystemInitialise(uint8_t scsijuke);
 void filesystemReset(void);
 
-bool filesystemMount(void);
-bool filesystemDismount(void);
+
 
 void filesystemSetLunDirectory(uint8_t lunDirectoryNumber);
 uint8_t filesystemGetLunDirectory(void);
@@ -50,11 +49,7 @@ bool filesystemReadLunStatus(uint8_t lunNumber);
 bool filesystemTestLunStatus(uint8_t lunNumber);
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5]);
 
-bool filesystemCheckLunDirectory(uint8_t lunDirectory);
-bool filesystemCheckLunImage(uint8_t lunNumber);
-
 uint32_t filesystemGetLunSizeFromDsc(uint8_t lunNumber);
-bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNumber, uint32_t lunFileSize);
 
 void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber);
 
