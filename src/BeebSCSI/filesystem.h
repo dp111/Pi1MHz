@@ -36,12 +36,12 @@
 #define SECTOR_BUFFER_LENGTH	(SECTOR_BUFFER_SIZE / 256)
 
 // External prototypes
-void filesystemInitialise(uint8_t scsijuke);
+void filesystemInitialise(uint8_t scsijuke, uint8_t vfsjuke);
 void filesystemReset(void);
 
 
 
-void filesystemSetLunDirectory(uint8_t lunDirectoryNumber);
+void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber);
 uint8_t filesystemGetLunDirectory(void);
 
 bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus);

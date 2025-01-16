@@ -155,7 +155,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
       init = 1;
       Pi1MHz->JIM_ram = (uint8_t *) malloc(16*1024*1024*Pi1MHz->JIM_ram_size); // malloc 480Mbytes
    }
-   filesystemInitialise(0);
+   filesystemInitialise(0,0);
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
    if (!filesystemReadFile("JIM_Init.bin",Pi1MHz->JIM_ram,Pi1MHz->JIM_ram_size<<24))

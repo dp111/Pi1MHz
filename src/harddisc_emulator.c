@@ -160,7 +160,7 @@ static void hd_emulator_conf(unsigned int gpio)
 static void hd_emulator_write_scsijuke(unsigned int gpio)
 {
    filesystemReset();
-   filesystemSetLunDirectory(GET_DATA(gpio));
+   scsiJukebox(GET_DATA(gpio));
 }
 
 void harddisc_emulator_init( uint8_t instance , uint8_t address)
@@ -201,8 +201,13 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       if (prop)
          scsijuke = atoi(prop);
 
+      const char *prop2 = get_cmdline_prop("VFSJUKE");
+      int vfsjuke = 0;
+      if (prop2)
+         vfsjuke = atoi(prop);
+
       // Initialise the SD Card and FAT file system functions
-      filesystemInitialise((uint8_t)scsijuke);
+      filesystemInitialise((uint8_t)scsijuke, (uint8_t) vfsjuke);
       // Initialise the SCSI emulation
       scsiInitialise();
 
