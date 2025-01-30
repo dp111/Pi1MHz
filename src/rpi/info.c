@@ -44,7 +44,7 @@ uint32_t get_clock_rate(uint32_t clk_id) {
    }
 }
 
-static float get_temp(void) {
+float get_temp(void) {
    rpi_mailbox_property_t *buf;
    buf = RPI_PropertyGetWord(TAG_GET_TEMPERATURE, 0);
    if (buf) {
@@ -79,11 +79,10 @@ uint32_t get_speed(void) {
 char *get_info_string(void) {
    static uint8_t read = 0;
    if (!read) {
-      sprintf(info_string, "%"PRIx32" %04"PRId32"/%03"PRId32"MHz %2.1fC",
+      sprintf(info_string, "%"PRIx32" %04"PRId32"/%03"PRId32"MHz",
          get_revision(),
          get_clock_rate(ARM_CLK_ID) / 1000000,
-         get_clock_rate(CORE_CLK_ID) / 1000000,
-         (double)get_temp()
+         get_clock_rate(CORE_CLK_ID) / 1000000
          );
       read = 1;
    }

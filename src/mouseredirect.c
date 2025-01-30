@@ -2,7 +2,7 @@
 
 Mouse re-director
 
-Takes the Beeb mouse cooridnates and displays a mouse pointer on the screen
+Takes the Beeb mouse coordinates and displays a mouse pointer on the screen
 
 Takes 5 bytes of RAM
 
