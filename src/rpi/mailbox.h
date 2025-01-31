@@ -181,7 +181,6 @@ typedef struct {
 #define MIN_CLK_ID  0x000000001
 #define MAX_CLK_ID  0x00000000a
 
-void RPI_Mailbox0Write( mailbox0_channel_t channel, uint32_t * ptr );
 extern void RPI_PropertyInit( void );
 extern rpi_mailbox_property_t* RPI_PropertyGetWord( rpi_mailbox_tag_t tag, uint32_t data );
 extern rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag);

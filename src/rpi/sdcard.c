@@ -1133,7 +1133,7 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
 #endif
 }
 
-int sd_card_init(struct block_device **dev)
+static int sd_card_init(struct block_device **dev)
 {
 #ifdef EMMC_DEBUG
     // Check the sanity of the sd_commands and sd_acommands structures

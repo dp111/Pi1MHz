@@ -12,10 +12,9 @@
 
     Plane 0 - YUV 768 x 576
     Plane 1 - RGB 320 x 240 256 colour
-    Plane 2 - RGB 320 x 240 256 colour
-    Plane 3 - RGB 16x16  mouse pointer 2 colour
-    Plane 4 - RGB 320x16  status 2 colour
-    plane 5 - RGB 320x16  status 2 colour
+    Plane 2 - RGB 16x16  mouse pointer 2 colour
+    Plane 3 - RGB 320x16  status 2 colour
+    plane 4 - RGB 320x16  status 2 colour
 
 */
 
@@ -56,37 +55,37 @@ YUV plane = 768*8 + 768/2* 8
 // NB 8 planes of 768 *16 gives 96K
 
 typedef struct {
-    rpi_reg_rw_t ctrl;      // 0x00
-    rpi_reg_rw_t stat;      // 0x04
-    rpi_reg_ro_t id;        // 0x08
-    rpi_reg_rw_t ectrl;     // 0x0c
-    rpi_reg_rw_t prof;      // 0x10
-    rpi_reg_rw_t dither;    // 0x14
-    rpi_reg_rw_t eoln;      // 0x18
-    rpi_reg_ro_t unused0;   // 0x1c
-    rpi_reg_rw_t list0;     // 0x20
+    rpi_reg_rw_t ctrl;      // cppcheck-suppress unusedStructMember // 0x00
+    rpi_reg_rw_t stat;      // cppcheck-suppress unusedStructMember // 0x04
+    rpi_reg_ro_t id;        // cppcheck-suppress unusedStructMember // 0x08
+    rpi_reg_rw_t ectrl;     // cppcheck-suppress unusedStructMember // 0x0c
+    rpi_reg_rw_t prof;      // cppcheck-suppress unusedStructMember // 0x10
+    rpi_reg_rw_t dither;    // cppcheck-suppress unusedStructMember // 0x14
+    rpi_reg_rw_t eoln;      // cppcheck-suppress unusedStructMember // 0x18
+    rpi_reg_ro_t unused0;   // cppcheck-suppress unusedStructMember // 0x1c
+    rpi_reg_rw_t list0;     // cppcheck-suppress unusedStructMember // 0x20
     rpi_reg_rw_t list1;     // 0x24   // default list used
-    rpi_reg_rw_t list2;     // 0x28
-    rpi_reg_ro_t lstat;     // 0x2c
-    rpi_reg_rw_t lact0;     // 0x30
-    rpi_reg_rw_t lact1;     // 0x34
-    rpi_reg_rw_t lact2;     // 0x38
-    rpi_reg_ro_t unused1;   // 0x3c
-    rpi_reg_rw_t ctrl0;     // 0x40
-    rpi_reg_rw_t bkgnd0;    // 0x44
-    rpi_reg_ro_t stat0;     // 0x48
-    rpi_reg_rw_t base0;     // 0x4c
-    rpi_reg_rw_t ctrl1;     // 0x50
-    rpi_reg_rw_t bkgnd1;    // 0x54
-    rpi_reg_ro_t stat1;     // 0x58
-    rpi_reg_rw_t base1;     // 0x5c
-    rpi_reg_rw_t ctrl2;     // 0x60
-    rpi_reg_rw_t bkgnd2;    // 0x64
-    rpi_reg_ro_t stat2;     // 0x68
-    rpi_reg_rw_t base2;     // 0x6c
-    rpi_reg_rw_t alpha2;    // 0x70
-    rpi_reg_ro_t unused2;   // 0x74
-    rpi_reg_rw_t gamaddr;   // 0x78
+    rpi_reg_rw_t list2;     // cppcheck-suppress unusedStructMember // 0x28
+    rpi_reg_ro_t lstat;     // cppcheck-suppress unusedStructMember // 0x2c
+    rpi_reg_rw_t lact0;     // cppcheck-suppress unusedStructMember // 0x30
+    rpi_reg_rw_t lact1;     // cppcheck-suppress unusedStructMember // 0x34
+    rpi_reg_rw_t lact2;     // cppcheck-suppress unusedStructMember // 0x38
+    rpi_reg_ro_t unused1;   // cppcheck-suppress unusedStructMember // 0x3c
+    rpi_reg_rw_t ctrl0;     // cppcheck-suppress unusedStructMember // 0x40
+    rpi_reg_rw_t bkgnd0;    // cppcheck-suppress unusedStructMember // 0x44
+    rpi_reg_ro_t stat0;     // cppcheck-suppress unusedStructMember // 0x48
+    rpi_reg_rw_t base0;     // cppcheck-suppress unusedStructMember // 0x4c
+    rpi_reg_rw_t ctrl1;     // cppcheck-suppress unusedStructMember // 0x50
+    rpi_reg_rw_t bkgnd1;    // cppcheck-suppress unusedStructMember // 0x54
+    rpi_reg_ro_t stat1;     // cppcheck-suppress unusedStructMember // 0x58
+    rpi_reg_rw_t base1;     // cppcheck-suppress unusedStructMember // 0x5c
+    rpi_reg_rw_t ctrl2;     // cppcheck-suppress unusedStructMember // 0x60
+    rpi_reg_rw_t bkgnd2;    // cppcheck-suppress unusedStructMember // 0x64
+    rpi_reg_ro_t stat2;     // cppcheck-suppress unusedStructMember // 0x68
+    rpi_reg_rw_t base2;     // cppcheck-suppress unusedStructMember // 0x6c
+    rpi_reg_rw_t alpha2;    // cppcheck-suppress unusedStructMember // 0x70
+    rpi_reg_ro_t unused2;   // cppcheck-suppress unusedStructMember // 0x74
+    rpi_reg_rw_t gamaddr;   // cppcheck-suppress unusedStructMember // 0x78
 
 } hvs_t;
 
@@ -286,7 +285,7 @@ typedef struct {
     rpi_reg_rw_t y_ptr;  // 0x14
     rpi_reg_ro_t y_ctx;  // 0x18
 
-    // 31-26 = pixels to drop at the begining of each line
+    // 31-26 = pixels to drop at the beginning of each line
     // 25 = 0 Alpha [7:0] 1 Alpha [31:24]
     // 15:0 = pitch to next line
     rpi_reg_rw_t pitch;  // 0x1C
@@ -732,10 +731,10 @@ void screen_plane_enable( uint32_t planeno , bool enable )
 
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
 {
-    // pallette 0 is normal colours
-    // pallette 1 is flash colours
-    // pallette 2 is black is alpha 0
-    // pallette 3 is flash and black is alpha 0
+    // palette 0 is normal colours
+    // palette 1 is flash colours
+    // palette 2 is black is alpha 0
+    // palette 3 is flash and black is alpha 0
 
     uint32_t colour = ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
 
