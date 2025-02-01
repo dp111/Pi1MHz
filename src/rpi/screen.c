@@ -20,29 +20,28 @@
 
 /* context memory layout 16Kbytes ( 0x4000 bytes)
 
-    typically starts a 0x1990
     planes are 128bytes each 0x80
     assume 8 planes 0x400
 
-    0x1fd0 polyphase filter coefficient
+    0xf00 polyphase filter coefficient
 
-    1fd0, 7ebfc00
-    1fd4, 7e3edf8
-    1fd8, 4805fd
-    1fdc, 1dca432
-    1fe0, 355769b
-    1fe4, 1c6e3
-    1fe8, 355769b
-    1fec, 1dca432
-    1ff0, 4805fd
-    1ff4, 7e3edf8
-    1ff8, 7ebfc00
+    f00, 7ebfc00
+    f04, 7e3edf8
+    f08, 4805fd
+    f0c, 1dca432
+    f10, 355769b
+    f14, 1c6e3
+    f18, 355769b
+    f1c, 1dca432
+    f20, 4805fd
+    f24, 7e3edf8
+    f28, 7ebfc00
 
-    0x2000 palettes 256*4 = 0x400 each
+    0x1000 palettes 256*4 = 0x400 each
     0x3000 4K spare ( used for other things)
 
-
-LBM memory
+LBM memory fixed at 768  bytes per line of each plane 8 planes
+    RGB plane = 768*16
 
 YUV plane = 768*8 + 768/2* 8
 */
@@ -91,7 +90,6 @@ typedef struct {
 
 static hvs_t* const RPI_hvs = (hvs_t*) (PERIPHERAL_BASE + 0x400000);
 static uint32_t* context_memory = (uint32_t*) (PERIPHERAL_BASE+ 0x402000);
-
 
 //YUV plane ( YV12 format)
 typedef struct {
@@ -604,7 +602,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t startpos;
         screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos );
         YUV_plane_t* yuv = (YUV_plane_t*) plane;
-        yuv->ctrl = 0x40000000 + (0x20<<24) + (1<<13 ) + 0xA; // valid list, 32 words, YCrcb format , YUV
+        yuv->ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0xA; // invalid list, 32 words, YCrcb format , YUV
         yuv->pos = startpos;
         yuv->scale = (scaled_height << 16) + scaled_width;
         yuv->src_size =  (height << 16) + width;
@@ -653,7 +651,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         if (colour_depth == 3)
         {
             rgb_8bit_t* rgb = (rgb_8bit_t*) plane;
-            rgb->ctrl = 0x40000000 + (0x20<<24) + (3<<11) + 0xD; // valid list, 32 words, 8 bit RGB
+            rgb->ctrl = 0x00000000 + (0x20<<24) + (3<<11) + 0xD; // invalid list, 32 words, 8 bit RGB
             rgb->pos = startpos + 0xFF000000;
             rgb->scale = (scaled_height << 16) + scaled_width;
             rgb->src_size =  (height << 16) + width;
@@ -673,12 +671,12 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             rgb_t* rgb = (rgb_t*) plane;
             if (colour_depth == 4)
             {
-                rgb->ctrl = 0x40000000 + (0x20<<24) + (2<<13) + 0x4; // valid list, 32 words, RGB format, 16 bit RGB
+                rgb->ctrl = 0x00000000 + (0x20<<24) + (2<<13) + 0x4; // invalid list, 32 words, RGB format, 16 bit RGB
                 rgb->pitch = width <<1;
             }
             else
             {
-                rgb->ctrl = 0x40000000 + (0x20<<24) + (3<<13) + 0x7; // valid list, 32 words, ABGR format, 32 bit RGB
+                rgb->ctrl = 0x00000000 + (0x20<<24) + (3<<13) + 0x7; // invalid list, 32 words, ABGR format, 32 bit RGB
                 rgb->pitch = width <<2;
             }
             rgb->pos = startpos;
@@ -699,21 +697,27 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
     plane_valid[planeno] = true;
 }
 
-void screen_set_plane_position( uint32_t * plane, uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t buffer )
+void screen_set_plane_position( uint32_t planeno, int x, int y )
 {
     // we can cheat here as we are only changing the position
-    rgb_8bit_t* rgb = (rgb_8bit_t*) plane;
+    rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];;
 
-    rgb->pos = ((y * (uint32_t)rgb_scale + yoffset) << 12) +( x * (uint32_t)rgb_scale + xoffset);
+// we should clip the plane to the screen size
 
-    rgb->scale = ((height * (uint32_t)rgb_scale )<<16) + (width * (uint32_t)rgb_scale);
-
-    rgb->src_size = (height << 16) + width;
-
-    if (buffer)
+    int newy = (int) (( float) y * rgb_scale) + (int) yoffset;
+    if (newy < 0)
     {
-        rgb->y_ptr = buffer;
+        newy = 0;
     }
+
+    int newx = (int) (( float) x * rgb_scale) + (int)xoffset;
+    if (newx < 0)
+    {
+        newx = 0;
+    }
+
+    LOG_DEBUG("newx %"PRId32" newy %"PRId32"\r\n", newx, newy);
+    rgb->pos = ( (uint32_t) newy << 12) +( (uint32_t) newx ) ;
 }
 
 void screen_plane_enable( uint32_t planeno , bool enable )
@@ -740,10 +744,10 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
 
     context_memory[(PALETTE_BASE>>2) + entry] = 0xff000000 | colour;
 
-    if (colour )
-        colour |= 0xff000000;
+    if (colour || ((entry&255) >15 ))
+        colour |= 0xff000000; // set alpha to 0xff if not black
 
-    context_memory[(PALETTE_BASE>>2) + entry+512] = colour;
+    context_memory[(PALETTE_BASE>>2) + entry + (256*2)] = colour;
 }
 
 uint32_t screen_get_palette_entry( uint32_t entry )
@@ -754,14 +758,13 @@ uint32_t screen_get_palette_entry( uint32_t entry )
 // flags
 // 0 set palette
 // 1 set palette ( preserve alpha)
-// 2 set alpha
+// 2 set alpha palette
 // 3 clear alpha
 // 4 flash palette
 
-
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
-    rgb_8bit_t* rgb = (rgb_8bit_t*) context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
     if ( (rgb->ctrl & 0xF) != 0xD)
         return;
 
@@ -770,19 +773,19 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
     switch (flags)
     {
         case 0:
-            rgb->palette = ( rgb->palette & 0xf0000000 ) | (((palette)*0x400) + PALETTE_BASE);
+            rgb->palette = ( 0xc0000000 ) | ((palette*0x400) + PALETTE_BASE);
             break;
         case 1:
-            rgb->palette = ( rgb->palette & 0xf0000000 ) | ((((old_palette & 2) | palette)*0x400) + PALETTE_BASE);
+            rgb->palette = ( 0xc0000000 ) | ((((old_palette & 2) | palette)*0x400) + PALETTE_BASE);
             break;
         case 2:
-            rgb->palette = ( rgb->palette & 0xf0000000 ) | (((old_palette | 2)*0x400) + PALETTE_BASE);
+            rgb->palette = ( 0xc0000000 ) | (((old_palette | 2)*0x400) + PALETTE_BASE);
             break;
         case 3:
-            rgb->palette = ( rgb->palette & 0xf0000000 ) | (((old_palette & 1 )*0x400) + PALETTE_BASE);
+            rgb->palette = ( 0xc0000000 ) | (((old_palette & 1 )*0x400) + PALETTE_BASE);
             break;
         case 4:
-            rgb->palette = ( rgb->palette & 0xf0000000 ) | (((old_palette ^ 1 )*0x400) + PALETTE_BASE);
+            rgb->palette = ( 0xc0000000 ) | (((old_palette ^ 1 )*0x400) + PALETTE_BASE);
             break;
     }
 }

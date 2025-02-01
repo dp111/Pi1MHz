@@ -1158,8 +1158,6 @@ static void vdu_19(const uint8_t *buf) {
          screen->set_colour(screen, l + 0x100, r, g, b);
       }
    }
-   // Force an update of the palette
-   //screen->update_palette(screen, -1);
 }
 
 static void vdu_20(const uint8_t *buf) {

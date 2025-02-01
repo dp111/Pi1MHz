@@ -962,8 +962,6 @@ void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_wi
 }
 
 void default_set_colour_8bpp(screen_mode_t *screen, colour_index_t index, uint32_t r, uint32_t g, uint32_t b) {
-   //pixel_t *colour_t = ((index & 0x100) ? palette1_base : palette0_base) + PALETTE_DATA_OFFSET;
-   //colour_t[index & 0xff] = 0xFF000000 | ((b & 0xFF) << 16) | ((g & 0xFF) << 8) | (r & 0xFF);
    screen_update_palette_entry( index, r , g , b );
 }
 
