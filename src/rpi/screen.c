@@ -424,6 +424,7 @@ static void screen_scale ( uint32_t width, uint32_t height , float par, bool yuv
     static float yuv_scale = 0.0f;
 
     // Calculate optimal overscan
+    _data_memory_barrier();
     uint32_t h_display = get_hdisplay();
     uint32_t v_display = get_vdisplay();
     LOG_DEBUG("actual Display %"PRId32" x %"PRId32"\r\n", h_display, v_display);
@@ -724,34 +725,21 @@ void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
     {
         newx = 0;
     }
-    unsigned int cpsr = _disable_interrupts_cspr();
-    _data_memory_barrier();
-  //  LOG_DEBUG("newx %"PRIi32" newy %"PRIi32"\r\n", (int32_t)newx, (int32_t)newy);
     rgb->pos = (  ((uint32_t)newy&0xfff) << 12) +(  ((uint32_t)newx &0xfff) ) ;
-    _data_memory_barrier();
-    _restore_cpsr(cpsr);
-    LOG_DEBUG("pos %"PRIx32" buffer %"PRIx32"\r\n", rgb->pos,rgb->y_ptr);
 }
 
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
-    unsigned int cpsr = _disable_interrupts_cspr();
     _data_memory_barrier();
-
     if (enable)
     {
-        rgb->y_ctx =0;
-        _data_memory_barrier();
         rgb->ctrl |= (uint32_t)0x40000000;
     }
     else
     {
         rgb->ctrl &= ~(uint32_t)0x40000000;
     }
-    _data_memory_barrier();
-    _restore_cpsr(cpsr);
-    LOG_DEBUG("ctrl %"PRIx32" buffer %"PRIx32" plane %"PRIx32"\r\n", rgb->ctrl,rgb->y_ptr, planeno);
 }
 
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
@@ -762,23 +750,19 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
     // palette 3 is flash and black is alpha 0
 
     uint32_t colour = ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
-    unsigned int cpsr = _disable_interrupts_cspr();
-    _data_memory_barrier();
+
     context_memory[(PALETTE_BASE>>2) + entry] = 0xff000000 | colour;
 
     if (colour || ((entry&255) >15 ))
         colour |= 0xff000000; // set alpha to 0xff if not black
 
     context_memory[(PALETTE_BASE>>2) + entry + (256*2)] = colour;
-    _data_memory_barrier();
-    _restore_cpsr(cpsr);
 }
 
 uint32_t screen_get_palette_entry( uint32_t entry )
 {
     _data_memory_barrier();
     return context_memory[(PALETTE_BASE>>2) + entry];
-    _data_memory_barrier();
 }
 
 // flags
@@ -816,6 +800,5 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
                 break;
         }
     }
-    _data_memory_barrier();
     _restore_cpsr(cpsr);
 }
