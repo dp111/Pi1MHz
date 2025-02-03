@@ -1726,52 +1726,50 @@ static void writec(char ch) {
    }
 }
 
-void fb_process_vdu_queue(void) {
-   if (RPI_GetIrqController()->IRQ_pending_2 & RPI_VSYNC_IRQ) {
-      static uint8_t cursor_count = 0;
-      // Clear the vsync interrupt
-      _data_memory_barrier();
-      *((volatile uint32_t *)SMICTRL) = 0;
-      _data_memory_barrier();
-      // Note the vsync interrupt
-      vsync_flag = 1;
-      // Handle the flashing cursor (toggles every 160ms / 320ms)
-      cursor_count++;
-      if (cursor_count >= (e_enabled ? 8 : 16)) {
-         cursor_interrupt();
-         cursor_count = 0;
-      }
+void fb_process_flash(void)
+{
+   static uint8_t cursor_count = 0;
 
-      // Handle the flashing colours
-      // - non-teletext mode, 500ms on, 500ms off
-      // - teletext mode, 320ms on 960ms off
-      // -
-      if (screen->flash) {
-         static uint8_t flash_count = 0;
-         static uint8_t flash_state = 0;
-         if (flash_mark_time == 0 || flash_space_time == 0) {
-            // An on/off time of zero is infinite and flashing stops
-            uint8_t tmp = (flash_mark_time == 0) ? 1 : 0;
-            if (tmp != flash_state) {
-               flash_state = tmp;
-               screen->flash(screen, tmp);
-               flash_count = 0;
-            }
-         } else {
-            flash_count++;
-            if (flash_count >= (flash_state ? flash_mark_time : flash_space_time)) {
-               flash_state = !flash_state;
-               screen->flash(screen, flash_state);
-               flash_count = 0;
-            }
+   // Note the vsync interrupt
+   vsync_flag = 1;
+   // Handle the flashing cursor (toggles every 160ms / 320ms)
+   cursor_count++;
+   if (cursor_count >= (e_enabled ? 8 : 16)) {
+      cursor_interrupt();
+      cursor_count = 0;
+   }
+
+   // Handle the flashing colours
+   // - non-teletext mode, 500ms on, 500ms off
+   // - teletext mode, 320ms on 960ms off
+   // -
+   if (screen->flash) {
+      static uint8_t flash_count = 0;
+      static uint8_t flash_state = 0;
+      if (flash_mark_time == 0 || flash_space_time == 0) {
+         // An on/off time of zero is infinite and flashing stops
+         uint8_t tmp = (flash_mark_time == 0) ? 1 : 0;
+         if (tmp != flash_state) {
+            flash_state = tmp;
+            screen->flash(screen, tmp);
+            flash_count = 0;
+         }
+      } else {
+         flash_count++;
+         if (flash_count >= (flash_state ? flash_mark_time : flash_space_time)) {
+            flash_state = !flash_state;
+            screen->flash(screen, flash_state);
+            flash_count = 0;
          }
       }
    }
+}
 
+void fb_process_vdu_queue(void) {
+   _data_memory_barrier();
    if (RPI_GetIrqController()->IRQ_basic_pending & RPI_BASIC_ARM_TIMER_IRQ) {
 
       // Clear the ARM Timer interrupt
-      _data_memory_barrier();
       RPI_GetArmTimer()->IRQClear = 0;
       _data_memory_barrier();
 
@@ -1842,7 +1840,7 @@ void fb_wait_for_vsync(void) {
    // Clear the VSYNC flag
    vsync_flag = 0;
 }
-// cppcheck-suppress unusedFunction
+
 screen_mode_t *fb_get_current_screen_mode(void) {
    return screen;
 }

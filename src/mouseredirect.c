@@ -249,100 +249,79 @@ i,B,i,0,0,0,
 
 #define MOUSE_PLANE 2
 
+static bool change;
+
 static uint8_t fred_address;
-static int mouse_x;
-static int mouse_y;
-static uint8_t mouse_pointer;
+
 
 static void mouse_redirect_move_mouse_data(unsigned int gpio)
 {
     Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
+    change = true;
 }
 
-static void mouse_redirect_move_mouse(unsigned int gpio)
+void mouse_redirect_move_mouse()
 {
-    Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
-    mouse_x = Pi1MHz_MemoryRead(fred_address + 0) | (Pi1MHz_MemoryRead(fred_address+1)<<8);
-    mouse_y = Pi1MHz_MemoryRead(fred_address + 2) | (GET_DATA(gpio)<<8);
-    LOG_DEBUG("Mouse x %"PRId32" y %"PRId32" \r\n", mouse_x, mouse_y);
+    int32_t mouse_x;
+    int32_t mouse_y;
+    uint8_t mouse_pointer;
+    static uint8_t lastmouse_pointer=255;
+    if (!change)
+        return;
 
-// different pointers have different offsets
-    switch (mouse_pointer)
+    change = false;
+    mouse_x = (int32_t)((int16_t)(Pi1MHz_MemoryRead(fred_address + 0) | (Pi1MHz_MemoryRead(fred_address + 1)<<8)));
+    mouse_y = (int32_t)((int16_t)(Pi1MHz_MemoryRead(fred_address + 2) | (Pi1MHz_MemoryRead(fred_address + 3)<<8)));
+    mouse_pointer = Pi1MHz_MemoryRead(fred_address + 4);
+    LOG_DEBUG("Mouse x %"PRIi32" y %"PRIi32" Pointer %u Last pointer %u\r\n", mouse_x, mouse_y, mouse_pointer, lastmouse_pointer);
+
+    if (lastmouse_pointer != mouse_pointer)
     {
-        case 0: mouse_x -= 0;
-                mouse_y -= 0;
+        lastmouse_pointer = mouse_pointer;
+        if (mouse_pointer == 255)
+        {
+            screen_plane_enable(MOUSE_PLANE, false);
+            return;
+        }
+        screen_plane_enable(MOUSE_PLANE, false);
+        switch (fb_get_current_screen_mode()->mode_num)
+        {
+        case 0: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE0WIDTH, PTRMODEHEIGHT , 0.5, 256, 3, (uint32_t) &mouse_pointer_data[PTRMODE0WIDTH*PTRMODEHEIGHT*mouse_pointer]);
+                screen_set_palette( MOUSE_PLANE, 2, 0 );
                 break;
-        case 1: mouse_x -= 0;
-                mouse_y -= 0;
+        case 1: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE1WIDTH, PTRMODEHEIGHT , 1.0, 256, 3, (uint32_t) &mouse_pointer_data[(PTRMODE0WIDTH*PTRMODEHEIGHT*PTRMAX) + PTRMODE1WIDTH*PTRMODEHEIGHT*mouse_pointer]);
+                screen_set_palette( MOUSE_PLANE, 2, 0 );
                 break;
-        case 2: mouse_x -= 0;
-                mouse_y -= 0;
+        case 2: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE2WIDTH, PTRMODEHEIGHT , 2.0, 256, 3, (uint32_t) &mouse_pointer_data[(PTRMODE0WIDTH*PTRMODEHEIGHT*PTRMAX) + (PTRMODE1WIDTH*PTRMODEHEIGHT*PTRMAX) + PTRMODE2WIDTH*PTRMODEHEIGHT*mouse_pointer]);
+                screen_set_palette( MOUSE_PLANE, 2, 0 );
                 break;
-        case 3: mouse_x -= 0;
-                mouse_y -= 0;
-                break;
+        default:
+            return;
+            break;
+        }
     }
 
 // BBC coordinates are 0-1279, 0-1023 origin bottom left
 // Screen coordinates are 0-319, 0-255 origin top left
 
-        switch (fb_get_current_screen_mode()->mode_num)
-        {
-        case 0: mouse_y = 255 - (mouse_y / 2);
-                mouse_x = mouse_x / 2;
-                break;
-        case 1: mouse_y = 255 - (mouse_y / 4);
-                mouse_x = mouse_x / 4;
-                break;
-        case 2: mouse_y = 255 - (mouse_y / 4);
-                mouse_x = mouse_x / 4;
-                break;
-        default : break;
-        }
+    switch (fb_get_current_screen_mode()->mode_num)
+    {
+    case 0: mouse_y = 255 - (mouse_y / 2);
+            mouse_x = mouse_x / 2;
+            break;
+    case 1: mouse_y = 255 - (mouse_y / 4);
+            mouse_x = mouse_x / 4;
+            break;
+    case 2: mouse_y = 255 - (mouse_y / 4);
+            mouse_x = mouse_x / 4;
+            break;
+    default : break;
+    }
 
-    LOG_DEBUG("calc Mouse x %"PRId32" y %"PRId32" \r\n", mouse_x, mouse_y);
+  //  LOG_DEBUG("calc Mouse x %"PRIi32" y %"PRIi32" \r\n", mouse_x, mouse_y);
 
     screen_set_plane_position( MOUSE_PLANE, mouse_x, mouse_y );
-}
-
-static void mouse_redirect_change_pointer(unsigned int gpio)
-{
-    if (GET_DATA(gpio) == mouse_pointer)
-        return;
-    else
-        mouse_pointer = GET_DATA(gpio);
-    LOG_DEBUG("Mouse pointer %u mode %u \r\n", mouse_pointer, fb_get_current_screen_mode()->mode_num);
-
-    if (mouse_pointer == 255)
-    {
-        screen_plane_enable(MOUSE_PLANE, false);
-        return;
-    }
-    else
-    {
-        screen_plane_enable(MOUSE_PLANE, false);
-        switch (fb_get_current_screen_mode()->mode_num)
-        {
-        case 0: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE0WIDTH, PTRMODEHEIGHT , 0.5, 256, 3, (uint32_t) &mouse_pointer_data[PTRMODE0WIDTH*PTRMODEHEIGHT*mouse_pointer]);
-                mouse_redirect_move_mouse( Pi1MHz_MemoryRead(fred_address + 3) );
-                screen_set_palette( MOUSE_PLANE, 2, 0 );
-                screen_plane_enable(MOUSE_PLANE, true);
-                break;
-        case 1: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE1WIDTH, PTRMODEHEIGHT , 1.0, 256, 3, (uint32_t) &mouse_pointer_data[(PTRMODE0WIDTH*PTRMODEHEIGHT*PTRMAX) + PTRMODE1WIDTH*PTRMODEHEIGHT*mouse_pointer]);
-                mouse_redirect_move_mouse( Pi1MHz_MemoryRead(fred_address + 3) );
-                screen_set_palette( MOUSE_PLANE, 2, 0 );
-                screen_plane_enable(MOUSE_PLANE, true);
-                break;
-        case 2: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE2WIDTH, PTRMODEHEIGHT , 2.0, 256, 3, (uint32_t) &mouse_pointer_data[(PTRMODE0WIDTH*PTRMODEHEIGHT*PTRMAX) + (PTRMODE1WIDTH*PTRMODEHEIGHT*PTRMAX) + PTRMODE2WIDTH*PTRMODEHEIGHT*mouse_pointer]);
-                mouse_redirect_move_mouse( Pi1MHz_MemoryRead(fred_address + 3) );
-                screen_set_palette( MOUSE_PLANE, 2, 0 );
-                screen_plane_enable(MOUSE_PLANE, true);
-                break;
-        default:
-            screen_plane_enable(MOUSE_PLANE, false);
-            break;
-        }
-    }
+    screen_plane_enable(MOUSE_PLANE, true);
 }
 
 void mouse_redirect_init(uint8_t instance, uint8_t address)
@@ -352,6 +331,6 @@ void mouse_redirect_init(uint8_t instance, uint8_t address)
     Pi1MHz_Register_Memory(WRITE_FRED, address+0, mouse_redirect_move_mouse_data );
     Pi1MHz_Register_Memory(WRITE_FRED, address+1, mouse_redirect_move_mouse_data );
     Pi1MHz_Register_Memory(WRITE_FRED, address+2, mouse_redirect_move_mouse_data );
-    Pi1MHz_Register_Memory(WRITE_FRED, address+3, mouse_redirect_move_mouse );
-    Pi1MHz_Register_Memory(WRITE_FRED, address+4, mouse_redirect_change_pointer );
+    Pi1MHz_Register_Memory(WRITE_FRED, address+3, mouse_redirect_move_mouse_data );
+    Pi1MHz_Register_Memory(WRITE_FRED, address+4, mouse_redirect_move_mouse_data );
 }

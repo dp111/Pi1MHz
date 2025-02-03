@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 #include "arm-start.h"
 #include "base.h"
 #include "cache.h"
@@ -231,7 +232,7 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
 void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 {
 
-  LOG_DEBUG("enable_MMU_and_IDCaches\r\n");
+  LOG_DEBUG("enable_MMU_and_IDCaches  L1TOP %"PRIx32" L2TOP %"PRIx32" PerTOP %"PRIx32" VCTOP %"PRIx32"\r\n", L1_CACHED_MEM_TOP, L2_CACHED_MEM_TOP, PERIPHERAL_BASE, VC_TOP);
 
   unsigned int base=0;
   unsigned int end;

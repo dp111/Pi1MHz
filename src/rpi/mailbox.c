@@ -68,7 +68,7 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
     unsigned int irq = _disable_interrupts_cspr();
     RPI_PropertyProcess(true);
     rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
-    _set_interrupts(irq);
+    _restore_cpsr(irq);
     return result;
 }
 
@@ -94,7 +94,7 @@ rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
     unsigned int irq = _disable_interrupts_cspr();
     RPI_PropertyProcess(true);
     rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
-    _set_interrupts(irq);
+    _restore_cpsr(irq);
     return result;
 }
 
