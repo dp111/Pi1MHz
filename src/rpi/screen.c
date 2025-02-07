@@ -15,8 +15,6 @@
     Plane 1 - RGB 320 x 240 256 colour
     Plane 2 - RGB 16x16  mouse pointer 2 colour
     Plane 3 - RGB 320x16  status 2 colour
-    plane 4 - RGB 320x16  status 2 colour
-
 */
 
 /* context memory layout 16Kbytes ( 0x4000 bytes)
@@ -46,7 +44,7 @@ LBM memory fixed at 768  bytes per line of each plane 8 planes
 
 YUV plane = 768*8 + 768/2* 8
 */
-#define MAX_PLANES 8
+#define MAX_PLANES 4
 #define PLOYPHASE_BASE (0xf00>>2)
 #define PALETTE_BASE (0x1000)
 
@@ -419,10 +417,10 @@ static uint32_t get_vdisplay(void) {
     return (*PIXELVALVE2_VERTB) & 0xFFFF;
 }
 
-static void screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos )
+static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh)
 {
     static float yuv_scale = 0.0f;
-
+    static uint32_t offset = 0;
     // Calculate optimal overscan
     _data_memory_barrier();
     uint32_t h_display = get_hdisplay();
@@ -482,14 +480,27 @@ static void screen_scale ( uint32_t width, uint32_t height , float par, bool yuv
             rgb_scale = yuv_scale*2;
         }
 
-        *scaled_width = (((uint32_t)yuv_scale * h_corrected) & 0xfff);
-        *scaled_height = (((uint32_t)yuv_scale * v_corrected) & 0xfff);
+        *scaled_width = (((uint32_t)(yuv_scale * (float)h_corrected)) & 0xfff);
+        *scaled_height = (((uint32_t)(yuv_scale * (float)v_corrected)) & 0xfff);
 
+        if (*scaled_height > v_display)
+        {
+            offset = (uint32_t) ((float )(( *scaled_height -v_display) /2) /yuv_scale);
+
+            *nsh = v_display;
+            *nh = (uint32_t)((float)v_display/yuv_scale);
+            uint32_t h_overscan = (h_display - *scaled_width) / 2;
+            *startpos = (h_overscan & 0xfff);
+            return offset;
+        }
+
+        *nsh = *scaled_height;
+        *nh = height;
         uint32_t h_overscan = (h_display - *scaled_width) / 2;
         uint32_t v_overscan = (v_display - *scaled_height) / 2;
 
         *startpos = ((v_overscan & 0xfff)<<12) + (h_overscan & 0xfff);
-        return;
+        return offset;
     }
 
     if ( rgb_scale < 0.1f)
@@ -541,6 +552,7 @@ static void screen_scale ( uint32_t width, uint32_t height , float par, bool yuv
         xoffset = h_overscan;
         yoffset = v_overscan;
     }
+    return 0;
 }
 
 /* phase magnitude bits */
@@ -616,26 +628,24 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t scaled_width;
         uint32_t scaled_height;
         uint32_t startpos;
-        screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos );
+        uint32_t nsh;
+        uint32_t nh;
+        uint32_t vertical_offset = screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos, &nsh, &nh);
 
         LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", scaled_width, scaled_height);
 
-        uint32_t vertical_offset = 0;
-
-        if (scaled_height < height)
-        {
-            vertical_offset = (height - scaled_height) / 2;
-        }
-
+        LOG_DEBUG("startpos %"PRIx32"\r\n", startpos);
+        LOG_DEBUG("nsh %"PRId32"\r\n", nsh);
+        LOG_DEBUG("nh %"PRId32"\r\n", nh);
         YUV_plane_t* yuv = (YUV_plane_t*) plane;
         yuv->ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0xA; // invalid list, 32 words, YCrcb format , YUV
         yuv->pos = startpos;
-        yuv->scale = (scaled_height << 16) + scaled_width;
-        yuv->src_size =  (height << 16) + width;
+        yuv->scale = (nsh << 16) + scaled_width;
+        yuv->src_size =  ((nh) << 16) + width;
         //yuv->src_context = 0;
-        yuv->y_ptr = buffer + 0x80000000 + vertical_offset*width;
-        yuv->cb_ptr = buffer + 0x80000000 + width*height + vertical_offset*width/2;
-        yuv->cr_ptr = buffer + 0x80000000 + width*height + width*height/2 + vertical_offset*width/2;
+        yuv->y_ptr =  buffer + 0x80000000 + vertical_offset*width;
+        yuv->cb_ptr = buffer + 0x80000000 + width*height + width*height/2 + vertical_offset*width/2;
+        yuv->cr_ptr = buffer + 0x80000000 + width*height + vertical_offset*width/2;
         //yuv->y_ctx = 0;
         //yuv->cb_ctx = 0;
         //yuv->cr_ctx = 0;
@@ -646,17 +656,41 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         yuv->csc1 = 0xe73304A8;
         yuv->csc2 = 0x00066604;
         yuv->LBM = (LBM_PLANE_SIZE * planeno);
-        yuv->hpf0 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
-        yuv->vpf0 = vc4_ppf(height, scaled_height, startpos >>12, 0 );
+        yuv->hpf0 = vc4_ppf(width, scaled_width*2, startpos & 0xFFF, 0 );
+        yuv->vpf0 = vc4_ppf(nh, nsh, startpos >>12, 0 );
         //yuv->vpf0_ctx = 0;
 
-        yuv->hpf1 = vc4_ppf(width/2, scaled_width, startpos & 0xFFF, 0 );
-        yuv->vpf1 = vc4_ppf(height, scaled_height, startpos >>12, 0 );;
+        yuv->hpf1 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
+        yuv->vpf1 = vc4_ppf(nh, nsh, startpos >>12, 0 );;
         //yuv->vpf1_ctx = 0;
         yuv->pfkph0 = PLOYPHASE_BASE;
         yuv->pfkpv0 = PLOYPHASE_BASE;
         yuv->pfkph1 = PLOYPHASE_BASE;
         yuv->pfkpv1 = PLOYPHASE_BASE;
+
+        LOG_DEBUG("ctrl %"PRIx32"\r\n", yuv->ctrl);
+        LOG_DEBUG("pos %"PRIx32"\r\n", yuv->pos);
+        LOG_DEBUG("scale %"PRIx32"\r\n", yuv->scale);
+        LOG_DEBUG("src_size %"PRIx32"\r\n", yuv->src_size);
+
+        LOG_DEBUG("y_ptr %"PRIx32"\r\n", yuv->y_ptr);
+        LOG_DEBUG("cb_ptr %"PRIx32"\r\n", yuv->cb_ptr);
+        LOG_DEBUG("cr_ptr %"PRIx32"\r\n", yuv->cr_ptr);
+        LOG_DEBUG("pitch %"PRIx32"\r\n", yuv->pitch);
+        LOG_DEBUG("pitch1 %"PRIx32"\r\n", yuv->pitch1);
+        LOG_DEBUG("pitch2 %"PRIx32"\r\n", yuv->pitch2);
+        LOG_DEBUG("csc0 %"PRIx32"\r\n", yuv->csc0);
+        LOG_DEBUG("csc1 %"PRIx32"\r\n", yuv->csc1);
+        LOG_DEBUG("csc2 %"PRIx32"\r\n", yuv->csc2);
+        LOG_DEBUG("LBM %"PRIx32"\r\n", yuv->LBM);
+        LOG_DEBUG("hpf0 %"PRIx32"\r\n", yuv->hpf0);
+        LOG_DEBUG("vpf0 %"PRIx32"\r\n", yuv->vpf0);
+        LOG_DEBUG("hpf1 %"PRIx32"\r\n", yuv->hpf1);
+        LOG_DEBUG("vpf1 %"PRIx32"\r\n", yuv->vpf1);
+        LOG_DEBUG("pfkph0 %"PRIx32"\r\n", yuv->pfkph0);
+        LOG_DEBUG("pfkpv0 %"PRIx32"\r\n", yuv->pfkpv0);
+        LOG_DEBUG("pfkph1 %"PRIx32"\r\n", yuv->pfkph1);
+        LOG_DEBUG("pfkpv1 %"PRIx32"\r\n", yuv->pfkpv1);
 
         setup_polyphase();
     }
@@ -672,8 +706,10 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t scaled_width;
         uint32_t scaled_height;
         uint32_t startpos;
-        screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos );
-
+        uint32_t nsh;
+        uint32_t nh;
+        screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh);
+        buffer |= 0x80000000;
         if (colour_depth == 3)
         {
             rgb_8bit_t* rgb = (rgb_8bit_t*) plane;
@@ -682,7 +718,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             rgb->scale = (scaled_height << 16) + scaled_width;
             rgb->src_size =  (height << 16) + width;
             //rgb->src_context = 0;
-            rgb->y_ptr = buffer+ 0x80000000 ;
+            rgb->y_ptr = buffer ;
             rgb->pitch = width;
             rgb->palette = 0xC0000000 + PALETTE_BASE; // 8 bit palette
             rgb->LBM = (LBM_PLANE_SIZE * planeno);
