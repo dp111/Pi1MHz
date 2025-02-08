@@ -626,6 +626,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
 {
     uint32_t * plane =  screen_get_nextplane( planeno);
     LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
+    //buffer |= 0xC0000000;
     if (plane)
     {
         uint32_t scaled_width;
@@ -647,9 +648,9 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         yuv->scale = (nsh << 16) + scaled_width;
         yuv->src_size =  ((nh) << 16) + width;
         //yuv->src_context = 0;
-        yuv->y_ptr =  buffer + 0xC0000000 + vertical_offset*width;
-        yuv->cb_ptr = buffer + 0xC0000000 + width*height + width*height/2 + vertical_offset*width/2;
-        yuv->cr_ptr = buffer + 0xC0000000 + width*height + vertical_offset*width/2;
+        yuv->y_ptr =  buffer + vertical_offset*width;
+        yuv->cb_ptr = buffer + width*height + width*height/2 + vertical_offset*width/2;
+        yuv->cr_ptr = buffer + width*height + vertical_offset*width/2;
         //yuv->y_ctx = 0;
         //yuv->cb_ctx = 0;
         //yuv->cr_ctx = 0;
@@ -697,6 +698,14 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         LOG_DEBUG("pfkpv1 %"PRIx32"\r\n", yuv->pfkpv1);
 #endif
         setup_polyphase();
+
+        uint32_t *cache = (uint32_t *) (PERIPHERAL_BASE+ 0x02000 + 0x10C);
+        LOG_DEBUG("cache L1 %"PRIx32"\r\n", *cache);
+
+        uint32_t *hvs = (uint32_t *) (PERIPHERAL_BASE+ 0x04000 + 0x08);
+        LOG_DEBUG("HVS pri %"PRIx32"\r\n", *hvs);
+
+        //RPI_hvs->ectrl = 0x713f0000; // reduce maximum best burst to 8 beats to give time for GPU to read data
     }
     plane_valid[planeno] = true;
 }
@@ -713,7 +722,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t nsh;
         uint32_t nh;
         screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh);
-        buffer |= 0xC0000000;
+        //buffer |= 0xC0000000;
         if (colour_depth == 3)
         {
             rgb_8bit_t* rgb = (rgb_8bit_t*) plane;
@@ -731,6 +740,27 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             //rgb->vpf0_ctx = 0;
             rgb->pfkph0 = PLOYPHASE_BASE;
             rgb->pfkpv0 = PLOYPHASE_BASE;
+
+            LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
+            LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", scaled_width, scaled_height);
+
+            LOG_DEBUG("startpos %"PRIx32"\r\n", startpos);
+            LOG_DEBUG("nsh %"PRId32"\r\n", nsh);
+            LOG_DEBUG("nh %"PRId32"\r\n", nh);
+            LOG_DEBUG("ctrl %"PRIx32"\r\n", rgb->ctrl);
+            LOG_DEBUG("pos %"PRIx32"\r\n", rgb->pos);
+            LOG_DEBUG("scale %"PRIx32"\r\n", rgb->scale);
+            LOG_DEBUG("src_size %"PRIx32"\r\n", rgb->src_size);
+            LOG_DEBUG("y_ptr %"PRIx32"\r\n", rgb->y_ptr);
+            LOG_DEBUG("palette %"PRIx32"\r\n", rgb->palette);
+            LOG_DEBUG("pitch %"PRIx32"\r\n", rgb->pitch);
+            LOG_DEBUG("LBM %"PRIx32"\r\n", rgb->LBM);
+            LOG_DEBUG("hpf0 %"PRIx32"\r\n", rgb->hpf0);
+            LOG_DEBUG("vpf0 %"PRIx32"\r\n", rgb->vpf0);
+            LOG_DEBUG("pfkph0 %"PRIx32"\r\n", rgb->pfkph0);
+            LOG_DEBUG("pfkpv0 %"PRIx32"\r\n", rgb->pfkpv0);
+
+
         }
         else
         {
@@ -758,6 +788,8 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             rgb->pfkph0 = PLOYPHASE_BASE;
             rgb->pfkpv0 = PLOYPHASE_BASE;
         }
+
+
         setup_polyphase();
     }
     plane_valid[planeno] = true;
@@ -797,6 +829,20 @@ void screen_plane_enable( uint32_t planeno , bool enable )
     {
         rgb->ctrl &= ~(uint32_t)0x40000000;
     }
+
+    LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
+    LOG_DEBUG("ctrl %"PRIx32"\r\n", rgb->ctrl);
+    LOG_DEBUG("pos %"PRIx32"\r\n", rgb->pos);
+    LOG_DEBUG("scale %"PRIx32"\r\n", rgb->scale);
+    LOG_DEBUG("src_size %"PRIx32"\r\n", rgb->src_size);
+    LOG_DEBUG("y_ptr %"PRIx32"\r\n", rgb->y_ptr);
+    LOG_DEBUG("palette %"PRIx32"\r\n", rgb->palette);
+    LOG_DEBUG("pitch %"PRIx32"\r\n", rgb->pitch);
+    LOG_DEBUG("LBM %"PRIx32"\r\n", rgb->LBM);
+    LOG_DEBUG("hpf0 %"PRIx32"\r\n", rgb->hpf0);
+    LOG_DEBUG("vpf0 %"PRIx32"\r\n", rgb->vpf0);
+    LOG_DEBUG("pfkph0 %"PRIx32"\r\n", rgb->pfkph0);
+    LOG_DEBUG("pfkpv0 %"PRIx32"\r\n", rgb->pfkpv0);
 }
 
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
