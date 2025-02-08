@@ -858,11 +858,15 @@ static void null_handler( screen_mode_t *screen, int mark) {
 void default_init_screen(screen_mode_t *screen, font_t *font) {
 
    static uint32_t handle;
+
    screen_plane_enable(SCREEN_PLANE, false);
-   screen_release_buffer(handle); // doesn't do anything if fb is NULL
-   fb = (unsigned char *) screen_allocate_buffer((uint32_t) (screen->width * screen->height) * (1 << (uint32_t) screen->log2bpp) / 8 , &handle);
-   screen->pitch = screen->width * (1 << (uint32_t) screen->log2bpp) / 8;
-   screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
+   if (fb == NULL)
+   {
+      screen_release_buffer(handle); // doesn't do anything if fb is NULL
+      fb = (unsigned char *) screen_allocate_buffer((uint32_t) (screen->width * screen->height) * (1 << (uint32_t) screen->log2bpp) / 8 , &handle);
+      screen->pitch = screen->width * (1 << (uint32_t) screen->log2bpp) / 8;
+      screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
+   }
 
     // Initialize colour table and palette
     screen->font = font;

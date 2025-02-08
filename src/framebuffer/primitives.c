@@ -5,6 +5,7 @@
 #include "primitives.h"
 #include "framebuffer.h"
 #include "fonts.h"
+#include <inttypes.h>
 
 static pixel_t    max_col;
 static pixel_t    marker;
