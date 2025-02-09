@@ -399,35 +399,14 @@ static uint32_t* screen_get_nextplane( uint32_t planeno )
     return returnplane;
 }
 
-// Registers to read the physical screen size
-#ifdef RPI4
-#define PIXELVALVE2_HORZB (volatile uint32_t *)(PERIPHERAL_BASE + 0x20A010)
-#define PIXELVALVE2_VERTB (volatile uint32_t *)(PERIPHERAL_BASE + 0x20A018)
-#else
-#define PIXELVALVE2_HORZB (volatile uint32_t *)(PERIPHERAL_BASE + 0x807010)
-#define PIXELVALVE2_VERTB (volatile uint32_t *)(PERIPHERAL_BASE + 0x807018)
-#endif
-
-static uint32_t get_hdisplay(void) {
-#ifdef RPI4
-   return  ((*PIXELVALVE2_HORZB) & 0xFFFF) * 2;
-#else
-    return (*PIXELVALVE2_HORZB) & 0xFFFF;
-#endif
-}
-
-static uint32_t get_vdisplay(void) {
-    return (*PIXELVALVE2_VERTB) & 0xFFFF;
-}
-
 static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh)
 {
     static float yuv_scale = 0.0f;
     static uint32_t offset = 0;
     // Calculate optimal overscan
     _data_memory_barrier();
-    uint32_t h_display = get_hdisplay();
-    uint32_t v_display = get_vdisplay();
+    uint32_t h_display = ( RPI_hvs->ctrl1 >> 12 ) & 0xfff;
+    uint32_t v_display = ( RPI_hvs->ctrl1       ) & 0xfff;
     LOG_DEBUG("actual Display %"PRId32" x %"PRId32"\r\n", h_display, v_display);
     // TODO: this can be greatly improved!
     // It assumes you want to fill (or nearly fill) a 1280x1024 window on your physical display
@@ -722,7 +701,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t nsh;
         uint32_t nh;
         screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh);
-        buffer |= 0x80000000;
+        buffer |= 0x80000000; // if we use &C then there is an error on the screen
         if (colour_depth == 3)
         {
             rgb_8bit_t* rgb = (rgb_8bit_t*) plane;
