@@ -86,8 +86,19 @@ typedef struct {
 
 } hvs_t;
 
+typedef struct {
+    rpi_reg_ro_t core_rev;  // cppcheck-suppress unusedStructMember   // 0x00
+    rpi_reg_rw_t reset;     // cppcheck-suppress unusedStructMember   // 0x04
+    rpi_reg_rw_t hotplug_int;  // cppcheck-suppress unusedStructMember   // 0x08
+    rpi_reg_rw_t hotplug;   // 0x0c bit 0 hot plug state
+
+} hdmi_t;
+
 static hvs_t* const RPI_hvs = (hvs_t*) (PERIPHERAL_BASE + 0x400000);
 static uint32_t* context_memory = (uint32_t*) (PERIPHERAL_BASE+ 0x402000);
+
+static hdmi_t* const RPI_hdmi = (hdmi_t*) (PERIPHERAL_BASE + 0x902000);
+
 
 //YUV plane ( YV12 format)
 typedef struct {
@@ -802,7 +813,8 @@ void screen_plane_enable( uint32_t planeno , bool enable )
     _data_memory_barrier();
     if (enable)
     {
-        rgb->ctrl |= (uint32_t)0x40000000;
+        if (~(RPI_hdmi->hotplug))
+            rgb->ctrl |= (uint32_t)0x40000000;
     }
     else
     {
