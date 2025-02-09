@@ -25,7 +25,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
 
     screen_create_YUV_plane( YUV_PLANE, 768, 576, buffer );
 
-    screen_plane_enable(YUV_PLANE, true);
+    //screen_plane_enable(YUV_PLANE, true);
    // while(1);
 #endif
 }

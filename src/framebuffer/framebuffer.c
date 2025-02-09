@@ -1568,6 +1568,8 @@ static void fb_show_splash_screen(void) {
    int address = 0x88; // TODO takes this value from the helper code
    // Select the default screen mode
    fb_writec(22);
+
+#if 1
    fb_writec(DEFAULT_SCREEN_MODE);
 
    // Turn of the cursor (as there are some bugs when changing fonts)
@@ -1623,6 +1625,10 @@ static void fb_show_splash_screen(void) {
    fb_writec(56);
 
   // cursor(1);
+#else
+   fb_writec(1);
+   cursor(0);
+#endif
 }
 
 static void fb_initialize(void) {

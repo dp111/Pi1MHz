@@ -48,8 +48,8 @@ YUV plane = 768*8 + 768/2* 8
 #define PLOYPHASE_BASE (0xf00>>2)
 #define PALETTE_BASE (0x1000)
 
-// NB 8 planes of 768 *16 gives 96K
-#define LBM_PLANE_SIZE (96*1024/MAX_PLANES)
+// 48K words of plane memory
+#define LBM_PLANE_SIZE (48*1024/MAX_PLANES)
 
 typedef struct {
     rpi_reg_rw_t ctrl;      // cppcheck-suppress unusedStructMember // 0x00
@@ -626,7 +626,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
 {
     uint32_t * plane =  screen_get_nextplane( planeno);
     LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
-    //buffer |= 0xC0000000;
+    buffer |= 0xC0000000;
     if (plane)
     {
         uint32_t scaled_width;
@@ -699,7 +699,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
 #endif
         setup_polyphase();
 
-        uint32_t *cache = (uint32_t *) (PERIPHERAL_BASE+ 0x02000 + 0x10C);
+        uint32_t *cache = (uint32_t *) (PERIPHERAL_BASE+ 0xe02000 + 0x10C);
         LOG_DEBUG("cache L1 %"PRIx32"\r\n", *cache);
 
         uint32_t *hvs = (uint32_t *) (PERIPHERAL_BASE+ 0x04000 + 0x08);
@@ -722,7 +722,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t nsh;
         uint32_t nh;
         screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh);
-        //buffer |= 0xC0000000;
+        buffer |= 0x80000000;
         if (colour_depth == 3)
         {
             rgb_8bit_t* rgb = (rgb_8bit_t*) plane;
