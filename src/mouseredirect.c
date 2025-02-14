@@ -252,7 +252,7 @@ i,B,i,0,0,0,
 static bool change;
 
 static uint8_t fred_address;
-
+static uint8_t lastmouse_pointer=255;
 
 static void mouse_redirect_move_mouse_data(unsigned int gpio)
 {
@@ -265,7 +265,7 @@ void mouse_redirect_move_mouse()
     int32_t mouse_x;
     int32_t mouse_y;
     uint8_t mouse_pointer;
-    static uint8_t lastmouse_pointer=255;
+
     if (!change)
         return;
 
@@ -322,6 +322,12 @@ void mouse_redirect_move_mouse()
 
     screen_set_plane_position( MOUSE_PLANE, mouse_x, mouse_y );
     screen_plane_enable(MOUSE_PLANE, true);
+}
+
+void mouse_redirect_mouseoff(void)
+{
+    screen_plane_enable(MOUSE_PLANE, false);
+    lastmouse_pointer = 255;
 }
 
 void mouse_redirect_init(uint8_t instance, uint8_t address)

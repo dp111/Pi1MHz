@@ -9,6 +9,7 @@
 #include "fonts.h"
 #include "teletext.h"
 #include "framebuffer.h"
+#include "../mouseredirect.h"
 
 unsigned char* fb = NULL;
 
@@ -873,6 +874,8 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
     screen->clear(screen, NULL, 0);
 
     screen_plane_enable(SCREEN_PLANE, true);
+
+    mouse_redirect_mouseoff();
 }
 
 void default_reset_screen(screen_mode_t *screen) {
