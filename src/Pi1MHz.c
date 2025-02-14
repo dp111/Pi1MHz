@@ -96,6 +96,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "rpi/info.h"
 #include "rpi/gpio.h"
 #include "rpi/interrupts.h"
+#include "rpi/screen.h"
 #include "Pi1MHz.h"
 
 
@@ -243,12 +244,8 @@ static void Pi1MHzBus_read_Status(unsigned int gpio)
 // cppcheck-suppress unusedFunction
 void IRQHandler_main(void) {
    RPI_AuxMiniUartIRQHandler();
-   _data_memory_barrier();
-   if (RPI_GetIrqController()->IRQ_pending_2 & RPI_VSYNC_IRQ)
+   if (screen_check_vsync())
    {
-      // Clear the vsync interrupt
-      *((volatile uint32_t *)SMICTRL) = 0;
-      _data_memory_barrier();
       mouse_redirect_move_mouse();
       fb_process_flash();
    }
@@ -262,6 +259,14 @@ static void init_emulator(void) {
    LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
+
+   {
+      uint32_t *ico = (uint32_t *)0x20002000;
+      //for(int i=0; i<(0x38/4); i++)
+      //   LOG_DEBUG("ICO %d %08x\r\n",i,ico[i]);
+
+      ico[0x20/4] = 0x00000000;// disable HVS interrupts going to the VPU
+   }
 
    _enable_interrupts();
 
@@ -313,9 +318,9 @@ static void init_emulator(void) {
    RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function
    RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
    RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1
-   RPI_PropertyAdd(0); // r2
+   RPI_PropertyAdd(0); // r2 ( External nOE pin) |(1<<(NOE_PIN<<3))
    RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
-   RPI_PropertyAdd(TEST_PINS_OUTPUTS |(1<<(NOE_PIN<<3))); // r4
+   RPI_PropertyAdd(TEST_PINS_OUTPUTS); //|(1<<(NOE_PIN<<3))); // r4
    RPI_PropertyAdd(0); // r5 TEST_MASK
    RPI_PropertyProcess(false);
 
@@ -394,7 +399,35 @@ void kernel_main(void)
    init_hardware();
 
    init_emulator();
+#if 0
+   {
+   uint32_t *ico = (uint32_t *)0x20002000;
+   for(int i=0; i<(0x38/4); i++)
+      LOG_DEBUG("ICO %x %08x\r\n",i*4,ico[i]);
 
+   ico[0x20/4] = 0x00000000; // hvs
+   ico[0x14/4] = 0x00000000;
+   ico[0x1C/4] = 0x00000000; // undefined is required
+
+   for(int i=0; i<(0x38/4); i++)
+      ico[i] =0;
+   }
+
+   {
+      uint32_t *ico = (uint32_t *)0x20002800;
+      for(int i=0; i<(0x38/4); i++)
+         LOG_DEBUG("IC1 %x %08x\r\n",i*4,ico[i]);
+      }
+
+   uint32_t * fsel_reg = &RPI_GpioBase->GPFSEL[0];
+   for(int i=0; i<0x94/4; i++)
+      LOG_DEBUG("GPIO %x %08x\r\n",i*4,fsel_reg[i]);
+
+      uint32_t * irq_reg = (uint32_t *) 0x2000B200;
+      for(int i=0; i<0x24/4; i++)
+         LOG_DEBUG("IRQ %x %08x\r\n",i*4,irq_reg[i]);
+
+#endif
    while (Pi1MHz_is_rst_active());
    do {
       if (Pi1MHz_is_rst_active())

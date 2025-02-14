@@ -3,9 +3,6 @@
 
 #kernel=debug/kernel.img
 
-# Enable VSYNC interrupts
-fake_vsync_isr=1
-
 # Settings for Pi 3
 [pi3]
 #kernel=debug/kernel7.img
