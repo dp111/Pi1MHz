@@ -223,11 +223,6 @@ ORG &FD00
   STA &20E
   LDA #(newoswrch DIV 256)
   STA &20F
-  RTS
-
-.setupredirectorwithmessage
-  JSR setupredirector
-
   LDA #&75:JSR OSBYTE   :\ Read VDU status
   TXA:AND #&10:CMP #&10 :\ Test shadow flag in bit 4
   PHP                   :\ Save shadow flag in Carry
@@ -239,6 +234,10 @@ ORG &FD00
   PHA
   LDA #22: JSR &FFEE
   PLA : JSR &FFEE
+  RTS
+
+.setupredirectorwithmessage
+  JSR setupredirector
 
   PRTSTRING " Screen Redirector enabled."
   JSR OSNEWL
