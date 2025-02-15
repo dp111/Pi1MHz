@@ -861,6 +861,7 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
    static uint32_t handle;
 
    screen_plane_enable(SCREEN_PLANE, false);
+   mouse_redirect_mouseoff();
    screen_release_buffer(handle); // doesn't do anything if fb is NULL
    fb = (unsigned char *) screen_allocate_buffer((uint32_t) (screen->width * screen->height) * (1 << (uint32_t) screen->log2bpp) / 8 , &handle);
    screen->pitch = screen->width * (1 << (uint32_t) screen->log2bpp) / 8;
@@ -875,7 +876,6 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
 
     screen_plane_enable(SCREEN_PLANE, true);
 
-    mouse_redirect_mouseoff();
 }
 
 void default_reset_screen(screen_mode_t *screen) {
