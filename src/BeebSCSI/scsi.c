@@ -1211,6 +1211,9 @@ static uint8_t scsiCommandTranslate(void)
    uint32_t bytesFromIndex;
    uint32_t logicalBlockAddress;
    uint32_t headsPerCylinder;
+   uint8_t sectorspertrack; // Now a variable
+   
+   sectorspertrack=33 ; // Currently 33 but will be variable depending on value of interleave supplied during Format
 
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: TRANSLATE command (0x0F) received\r\n"));
@@ -1309,9 +1312,9 @@ static uint8_t scsiCommandTranslate(void)
    headsPerCylinder = (uint32_t)Buffer[15]; // Data head count
 
    // Convert LBA to CHS (sectors per track is always 33)
-   cylinderNumber = logicalBlockAddress / (headsPerCylinder * 33);
-   headNumber = (logicalBlockAddress / 33) % headsPerCylinder;
-   bytesFromIndex = ((logicalBlockAddress % 33) + 1) * 256; // Sector number * block size (256)
+   cylinderNumber = logicalBlockAddress / (headsPerCylinder * sectorspertrack);
+   headNumber = (logicalBlockAddress / sectorspertrack) % headsPerCylinder;
+   bytesFromIndex = ((logicalBlockAddress % sectorspertrack) + 1) * 256; // Sector number * block size (256)
 
    if (debugFlag_scsiCommands) {
       debugStringInt32_P(PSTR("SCSI Commands:   LBA = "), logicalBlockAddress, true);
@@ -1558,7 +1561,10 @@ static uint8_t scsiCommandVerify(void)
    uint32_t logicalBlockAddress = 0;
    uint32_t lunSizeInSectors = 0;
    uint8_t Buffer[22];
-
+   uint8_t sectorspertrack; // Now a variable
+   
+   sectorspertrack=33 ; // Currently 33 but will be variable depending on value of interleave supplied during Format
+   
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: VERIFY command (0x2F) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, false);
@@ -1600,7 +1606,7 @@ static uint8_t scsiCommandVerify(void)
       //
       // tracks = heads * cylinders
       // sectors = tracks * 33 (33 tracks per sector)
-      lunSizeInSectors = ((uint32_t)Buffer[15] * (((uint32_t)Buffer[13] << 8) + (uint32_t)Buffer[14])) * 33;
+      lunSizeInSectors = ((uint32_t)Buffer[15] * (((uint32_t)Buffer[13] << 8) + (uint32_t)Buffer[14])) * sectorspertrack;
    } else {
       // DSC not OK
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: DSC read error\r\n"));
