@@ -40,6 +40,7 @@
 uint8_t scsiFcodeBuffer[256];
 uint8_t scsiFcodeBufferRX[256];
 
+
 static char VPmode;
 // Function to handle F-Code buffer write actions
 void fcodeWriteBuffer(uint8_t lunNumber)
@@ -51,67 +52,66 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 	//uartFlush(); // Flushes the UART Rx buffer
 
 	// Output the F-Code bytes to debug
-	if (debugFlag_scsiFcodes) debugString_P(PSTR("F-Code: Received bytes:"));
+	FCdebugString_P(PSTR("F-Code: Received bytes:"));
 
 	// Write out the buffer until a CR character is found
 	for (byteCounter = 0; byteCounter < 256; byteCounter++) {
-		if (debugFlag_scsiFcodes) debugStringInt8Hex_P(PSTR(" "), scsiFcodeBuffer[byteCounter], false);
+		FCdebugStringInt8Hex_P(PSTR(" "), scsiFcodeBuffer[byteCounter], false);
 		if (scsiFcodeBuffer[byteCounter] == 0x0D) break;
 		fcodeLength++;
 	}
-	if (debugFlag_scsiFcodes) debugString_P(PSTR("\r\n"));
-
+	FCdebugString_P(PSTR("\r\n"));
 
 	// F-Code decoding for debug output
-	if (debugFlag_scsiFcodes) {
+
 		// Display the F-Code command value
-		debugStringInt8Hex_P(PSTR("F-Code: Received F-Code "), scsiFcodeBuffer[0], false);
+		FCdebugStringInt8Hex_P(PSTR("F-Code: Received F-Code "), scsiFcodeBuffer[0], false);
 
 		// Display the F-Code command function
 		switch(scsiFcodeBuffer[0]) {
 			case 0x21: // !xy
-			debugString_P(PSTR(" = Sound insert (beep)\r\n"));
+			FCdebugString_P(PSTR(" = Sound insert (beep)\r\n"));
 			break;
 
 			case 0x23: // #xy
-			debugString_P(PSTR(" = RC-5 command out via A/V EUROCONNECTOR\r\n"));
+			FCdebugString_P(PSTR(" = RC-5 command out via A/V EUROCONNECTOR\r\n"));
 			break;
 
 			case 0x24: // $0, $1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Replay switch disable\r\n")); // VFS sends this
+				FCdebugString_P(PSTR(" = Replay switch disable\r\n")); // VFS sends this
                 scsiFcodeBufferRX[0] = 'A'; // Open ?
                 scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Replay switch enable\r\n"));
+				FCdebugString_P(PSTR(" = Replay switch enable\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Replay switch (Invalid parameter)\r\n"));
+					FCdebugString_P(PSTR(" = Replay switch (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
 
 			case 0x27: // ' // VFS sends this
-			debugString_P(PSTR(" = Eject (open the front-loader tray)\r\n"));
+			FCdebugString_P(PSTR(" = Eject (open the front-loader tray)\r\n"));
             // Response O when open
 			break;
 
 			case 0x29: // )0, )1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Transmission delay off\r\n"));
+				FCdebugString_P(PSTR(" = Transmission delay off\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Transmission delay on\r\n"));
+				FCdebugString_P(PSTR(" = Transmission delay on\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Transmission delay (invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Transmission delay (invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -120,94 +120,82 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case 0x0D:
 				// No parameter, assume default
-				debugString_P(PSTR(" = Halt (still mode)\r\n"));
+				FCdebugString_P(PSTR(" = Halt (still mode)\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Repetitive halt and jump\r\n"));
+				FCdebugString_P(PSTR(" = Repetitive halt and jump\r\n"));
 				break;
 			}
 			break;
 
 			case 0x2B: // + yy ( yy = 1..50) // VFS sends this
-			debugString_P(PSTR(" = Instant jump forwards\r\n"));
+			FCdebugString_P(PSTR(" = Instant jump forwards\r\n"));
 			break;
 
 			case 0x2C: // ,
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Standby (unload)\r\n"));
+				FCdebugString_P(PSTR(" = Standby (unload)\r\n"));
 				break;
 
 				case '1': // response S or O if tray open
-				debugString_P(PSTR(" = On (load)\r\n"));
+				FCdebugString_P(PSTR(" = On (load)\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Standby/On (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Standby/On (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
 
 			case 0x2D: // - yy ( yy = 1..50)
-			debugString_P(PSTR(" = Instant jump backwards\r\n"));
+			FCdebugString_P(PSTR(" = Instant jump backwards\r\n"));
 			break;
 
 			case 0x2F: // /
-			debugString_P(PSTR(" = Pause (halt + all muted)\r\n"));
+			FCdebugString_P(PSTR(" = Pause (halt + all muted)\r\n"));
 			break;
 
 			case 0x3A: // :
-			debugString_P(PSTR(" = Reset to default values\r\n"));
+			FCdebugString_P(PSTR(" = Reset to default values\r\n"));
 			break;
 
 			case 0x3F: // ?
 			switch(scsiFcodeBuffer[1]) {
 				case 'F': // response Fxxxxx X if not available O if open
-				debugString_P(PSTR(" = Picture number request\r\n"));
+				FCdebugString_P(PSTR(" = Picture number request\r\n"));
 				break;
 
 				case 'C': // response C xx X if not available O if open
-				debugString_P(PSTR(" = Chapter number request\r\n"));
+				FCdebugString_P(PSTR(" = Chapter number request\r\n"));
 				break;
 
 				case 'D':
-				debugString_P(PSTR(" = Disc program status request\r\n"));
+				FCdebugString_P(PSTR(" = Disc program status request\r\n"));
 				break;
 
 				case 'P':
-				debugString_P(PSTR(" = Player status request\r\n"));
+				FCdebugString_P(PSTR(" = Player status request\r\n"));
 				break;
 
 				case 'U':
-				debugString_P(PSTR(" = User code request\r\n"));
+				FCdebugString_P(PSTR(" = User code request\r\n"));
 
-                // If the F-Code is a user code request (?U), we need to send the user-code via
-                // the UART (as this is the only way the external F-Code emulation can know
-                // the right code to send back
-                uint8_t userCode[5];
-                // Get the user code for the target LUN
-                filesystemReadLunUserCode(lunNumber, userCode);
+                // If the F-Code is a user code request (?U)
 
-                printf("<UCD>");
-               // for (byteCounter = 0; byteCounter < 5; byteCounter++)
-                //    printf("%c", userCode[byteCounter]);
-                //printf("</UCD>\r\n");
-                scsiFcodeBufferRX[0] = 0x55; // 'U' fixed code for now disc south
-                scsiFcodeBufferRX[1] = 0x31; // fixed code for now
-                scsiFcodeBufferRX[2] = 0x3D;
-                scsiFcodeBufferRX[3] = 0x30;
-                scsiFcodeBufferRX[4] = 0x36;
-                scsiFcodeBufferRX[5] = 0x36;
+				scsiFcodeBufferRX[0] = 'U';
+				// Get the user code for the target LUN
+                filesystemReadLunUserCode(lunNumber, &scsiFcodeBufferRX[1]);
                 scsiFcodeBufferRX[6] = 0x0D; // terminator
 				break;
 
 				case '=':
-				debugString_P(PSTR(" = Revision level request\r\n"));
+				FCdebugString_P(PSTR(" = Revision level request\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Request (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Request (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -215,17 +203,17 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x41: // A0, A1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Audio-1 off\r\n"));
+				FCdebugString_P(PSTR(" = Audio-1 off\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Audio-1 on\r\n"));
+				FCdebugString_P(PSTR(" = Audio-1 on\r\n"));
                     scsiFcodeBufferRX[0] = 'A';
                     scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				default:
-				debugString_P(PSTR(" = Audio-1 (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Audio-1 (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -233,17 +221,17 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x42: // B0, B1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Audio-2 off\r\n"));
+				FCdebugString_P(PSTR(" = Audio-2 off\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Audio-2 on\r\n"));
+				FCdebugString_P(PSTR(" = Audio-2 on\r\n"));
                     scsiFcodeBufferRX[0] = 'A';
                     scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				default:
-				debugString_P(PSTR(" = Audio-2 (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Audio-2 (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -251,15 +239,15 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x43: // C0, C1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Chapter number display off\r\n"));
+				FCdebugString_P(PSTR(" = Chapter number display off\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Chapter number display on\r\n"));
+				FCdebugString_P(PSTR(" = Chapter number display on\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Chapter number display (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Chapter number display (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -267,15 +255,15 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x44: // D0, D1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Picture number/time code display off\r\n"));
+				FCdebugString_P(PSTR(" = Picture number/time code display off\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Picture number/time code display on\r\n"));
+				FCdebugString_P(PSTR(" = Picture number/time code display on\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Picture number/time code display (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Picture number/time code display (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -283,17 +271,17 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x45: // E // VFS sends this
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Video off\r\n"));
+				FCdebugString_P(PSTR(" = Video off\r\n"));
 				screen_plane_enable(0, false);
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Video on\r\n"));
+				FCdebugString_P(PSTR(" = Video on\r\n"));
 				screen_plane_enable(0, true);
 				break;
 
 				default:
-				debugString_P(PSTR(" = Video (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Video (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -302,9 +290,9 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			{
 				uint32_t pictureNumber = 0;
 				char op;
-				debugString_P(PSTR(" = Load/Goto picture number : "));
+				FCdebugString_P(PSTR(" = Load/Goto picture number : "));
 
-				for (byteCounter = 0; byteCounter < 256; byteCounter++) {
+				for (byteCounter = 0; byteCounter < 32; byteCounter++) {
 					if (scsiFcodeBuffer[byteCounter] == 0x0D) break;
 					if ((char)scsiFcodeBuffer[byteCounter] <= '9') {
 						pictureNumber = pictureNumber * 10 + (scsiFcodeBuffer[byteCounter] - '0');
@@ -315,46 +303,46 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 						}
 					}
 				scsiFcodeBuffer[byteCounter] = 0;
-				debugStringInt32_P(PSTR(""), pictureNumber, false);
-				debugString_P(PSTR(" op: "));
-				debugString_P(PSTR((char *)&scsiFcodeBuffer[byteCounter-1]));
+				FCdebugStringInt32_P(PSTR(""), pictureNumber, false);
+				FCdebugString_P(PSTR(" op: "));
+				FCdebugString_P(PSTR((char *)&scsiFcodeBuffer[byteCounter-1]));
 
 				switch(scsiFcodeBuffer[byteCounter-1]) {
 					case 'I':
-					debugString_P(PSTR(" = Load Picture Info register\r\n"));
+					FCdebugString_P(PSTR(" = Load Picture Info register\r\n"));
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '3'; // when passed
 					break;
 
 					case 'S':
-					debugString_P(PSTR(" = Stop Register\r\n"));
+					FCdebugString_P(PSTR(" = Stop Register\r\n"));
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '2'; // when stops
 					break;
 
 					case 'R':
-					debugString_P(PSTR(" = Still picture\r\n"));
+					FCdebugString_P(PSTR(" = Still picture\r\n"));
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '0';
 
 					break;
 
 					case 'N':
-					debugString_P(PSTR(" = Goto Picture and play normally\r\n"));
+					FCdebugString_P(PSTR(" = Goto Picture and play normally\r\n"));
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '1'; // when complete
 
 					break;
 
 					case 'Q':
-					debugString_P(PSTR(" = Goto Picture and play in previous mode\r\n"));
+					FCdebugString_P(PSTR(" = Goto Picture and play in previous mode\r\n"));
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '0';
 
 					break;
 
 					default:
-					debugString_P(PSTR(" = (Invalid parameter)\r\n"));
+					FCdebugString_P(PSTR(" = (Invalid parameter)\r\n"));
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '0';
 					break;
@@ -368,15 +356,15 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x48: // H
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Remote control not routed to computer\r\n"));
+				FCdebugString_P(PSTR(" = Remote control not routed to computer\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Remote control routed to computer\r\n"));
+				FCdebugString_P(PSTR(" = Remote control routed to computer\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Remote control routed (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Remote control routed (Invalid parameter)\r\n"));
 				break;
 			}
 
@@ -385,17 +373,17 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x49: // I // Domesday sends this
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Local front panel buttons disabled\r\n"));
+				FCdebugString_P(PSTR(" = Local front panel buttons disabled\r\n"));
                 scsiFcodeBufferRX[0] = 'A';
                 scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Local front panel buttons enabled\r\n"));
+				FCdebugString_P(PSTR(" = Local front panel buttons enabled\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Local front panel buttons (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Local front panel buttons (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -403,55 +391,55 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x4A: // J // Domesday sends this
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Remote control disabled for player control\r\n"));
+				FCdebugString_P(PSTR(" = Remote control disabled for player control\r\n"));
                 scsiFcodeBufferRX[0] = 'A';
                 scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Remote control enabled for player control\r\n"));
+				FCdebugString_P(PSTR(" = Remote control enabled for player control\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Remote control for player control (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Remote control for player control (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
 
 			case 0x4C: // L // VFS sends this
-			debugString_P(PSTR(" = Still forward\r\n"));
+			FCdebugString_P(PSTR(" = Still forward\r\n"));
 			break;
 
 			case 0x4D: // M // VFS sends this
-			debugString_P(PSTR(" = Still reverse\r\n"));
+			FCdebugString_P(PSTR(" = Still reverse\r\n"));
 			break;
 
 			case 0x4E: // N // VFS sends this
-			debugString_P(PSTR(" = Play forward\r\n"));
+			FCdebugString_P(PSTR(" = Play forward\r\n"));
 			break;
 
 			case 0x4F: // O // VFS sends this
-			debugString_P(PSTR(" = Play reverse\r\n"));
+			FCdebugString_P(PSTR(" = Play reverse\r\n"));
 			break;
 
 			case 0x51: // Q // VFS sends this
-			debugString_P(PSTR(" = Goto chapter and halt/play\r\n"));
+			FCdebugString_P(PSTR(" = Goto chapter and halt/play\r\n"));
 			break;
 
 			case 0x52: // R // VFS sends this
-			debugString_P(PSTR(" = Slow/Fast read\r\n"));
+			FCdebugString_P(PSTR(" = Slow/Fast read\r\n"));
 			break;
 
 			case 0x53: // S // VFS sends this
-			debugString_P(PSTR(" = Set fast/slow speed value\r\n"));
+			FCdebugString_P(PSTR(" = Set fast/slow speed value\r\n"));
 			break;
 
 			case 0x54: // T
-			debugString_P(PSTR(" = Goto/Load time code register\r\n"));
+			FCdebugString_P(PSTR(" = Goto/Load time code register\r\n"));
 			break;
 
 			case 0x55: // U // VFS sends this
-			debugString_P(PSTR(" = Slow motion forward\r\n"));
+			FCdebugString_P(PSTR(" = Slow motion forward\r\n"));
 			break;
 
 			case 0x56: // V, VP // VFS sends this
@@ -460,7 +448,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				VPmode = scsiFcodeBuffer[1];
 				switch(scsiFcodeBuffer[2]) {
 					case '1':
-					debugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
+					FCdebugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
 					screen_plane_enable(0, true);
 					screen_plane_enable(1, false);
 					screen_plane_enable(2, false);
@@ -468,7 +456,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					break;
 
 					case '2':
-					debugString_P(PSTR(" = Video overlay mode 2 (External (computer) RGB only)\r\n"));
+					FCdebugString_P(PSTR(" = Video overlay mode 2 (External (computer) RGB only)\r\n"));
 					screen_set_palette( 1, 0, 3 );
 					screen_plane_enable(0, false);
 					screen_plane_enable(1, true);
@@ -477,7 +465,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					break;
 
 					case '3':
-					debugString_P(PSTR(" = Video overlay mode 3 (Hard-keyed)\r\n"));
+					FCdebugString_P(PSTR(" = Video overlay mode 3 (Hard-keyed)\r\n"));
 					screen_set_palette( 1, 0, 2 );
 					screen_plane_enable(0, true);
 					screen_plane_enable(1, true);
@@ -486,15 +474,15 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					break;
 
 					case '4':
-					debugString_P(PSTR(" = Video overlay mode 4 (Mixed)\r\n"));
+					FCdebugString_P(PSTR(" = Video overlay mode 4 (Mixed)\r\n"));
 					break;
 
 					case '5':
-					debugString_P(PSTR(" = Video overlay mode 5 (Enhanced)\r\n"));
+					FCdebugString_P(PSTR(" = Video overlay mode 5 (Enhanced)\r\n"));
 					break;
 
 					case 'X':
-					debugString_P(PSTR(" = Video overlay mode request\r\n")); // Domesday sends this
+					FCdebugString_P(PSTR(" = Video overlay mode request\r\n")); // Domesday sends this
 					scsiFcodeBufferRX[0] = 'V';
                     scsiFcodeBufferRX[1] = 'P';
                     scsiFcodeBufferRX[2] = VPmode;
@@ -502,45 +490,45 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					break;
 
 					default:
-					debugString_P(PSTR(" = Video overlay mode (Invalid parameter)\r\n"));
+					FCdebugString_P(PSTR(" = Video overlay mode (Invalid parameter)\r\n"));
 					break;
 				}
 				break;
 
 				case 0x0D:
-				debugString_P(PSTR(" = Slow motion reverse\r\n"));
+				FCdebugString_P(PSTR(" = Slow motion reverse\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Slow motion reverse (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Slow motion reverse (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
 
 			case 0x57: // W // VFS sends this
-			debugString_P(PSTR(" = Fast forward\r\n"));
+			FCdebugString_P(PSTR(" = Fast forward\r\n"));
 			break;
 
 			case 0x58: // X
-			debugString_P(PSTR(" = Clear\r\n"));
+			FCdebugString_P(PSTR(" = Clear\r\n"));
 			break;
 
 			case 0x5A: // Z // VFS sends this
-			debugString_P(PSTR(" = Fast reverse\r\n"));
+			FCdebugString_P(PSTR(" = Fast reverse\r\n"));
 			break;
 
 			case 0x5B: // [0, [1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Audio-1 from internal\r\n"));
+				FCdebugString_P(PSTR(" = Audio-1 from internal\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Audio-1 from external\r\n"));
+				FCdebugString_P(PSTR(" = Audio-1 from external\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Audio-1 from (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Audio-1 from (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -548,15 +536,15 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x5C: // '\'
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Video from internal\r\n"));
+				FCdebugString_P(PSTR(" = Video from internal\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Video from external\r\n"));
+				FCdebugString_P(PSTR(" = Video from external\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Video from (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Video from (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -564,15 +552,15 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x5D: // ]0, ]1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Audio-2 from internal\r\n"));
+				FCdebugString_P(PSTR(" = Audio-2 from internal\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Audio-2 from external\r\n"));
+				FCdebugString_P(PSTR(" = Audio-2 from external\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Audio-2 from (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Audio-2 from (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
@@ -580,26 +568,23 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x5F: // _0, _1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
-				debugString_P(PSTR(" = Teletext from disc off\r\n"));
+				FCdebugString_P(PSTR(" = Teletext from disc off\r\n"));
 				break;
 
 				case '1':
-				debugString_P(PSTR(" = Teletext from disc on\r\n"));
+				FCdebugString_P(PSTR(" = Teletext from disc on\r\n"));
 				break;
 
 				default:
-				debugString_P(PSTR(" = Teletext from disc (Invalid parameter)\r\n"));
+				FCdebugString_P(PSTR(" = Teletext from disc (Invalid parameter)\r\n"));
 				break;
 			}
 			break;
 
 			default:
-			debugString_P(PSTR("Unknown!\r\n"));
+			FCdebugString_P(PSTR("Unknown!\r\n"));
 			break;
 		}
-	}
-
-
 
 	// Send the F-Code to the serial UART
 //	printf("<FCODE>");
@@ -611,9 +596,9 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 // Function to copy the UART serial buffer into the fcodeBuffer
 void fcodeReadBuffer(void)
 {
-    debugString_P(PSTR("fcodeReadBuffer\r\n"));
-    for (uint16_t byteCounter = 0; byteCounter < 6; byteCounter++) {
-		if (debugFlag_scsiFcodes) debugStringInt8Hex_P(PSTR(" "), scsiFcodeBufferRX[byteCounter], false);
+    FCdebugString_P(PSTR("fcodeReadBuffer\r\n"));
+    for (uint16_t byteCounter = 0; byteCounter < 7; byteCounter++) {
+		FCdebugStringInt8Hex_P(PSTR(" "), scsiFcodeBufferRX[byteCounter], false);
     }
 #if 0
 	uint16_t byteCounter = 0;
@@ -630,19 +615,19 @@ void fcodeReadBuffer(void)
 	// Ensure we have a full F-code response terminated with
 	// 0x0D (CR) before we send it to the host
 	if (uartPeekForString()) {
-		if (debugFlag_scsiFcodes) debugString_P(PSTR("F-Code: Transmitting F-Code bytes: "));
+		if (debugFlag_scsiFcodes) FCdebugString_P(PSTR("F-Code: Transmitting F-Code bytes: "));
 
 		// Copy the UART Rx buffer to the F-Code buffer
 		for (byteCounter = 0; byteCounter < availableBytes; byteCounter++) {
 			scsiFcodeBuffer[byteCounter] = (char)(uartRead() & 0xFF);
 			if (debugFlag_scsiFcodes) debugStringInt8Hex_P(PSTR(" "), scsiFcodeBuffer[byteCounter], false);
 		}
-		if (debugFlag_scsiFcodes) debugString_P(PSTR("\r\n"));
+		if (debugFlag_scsiFcodes) FCdebugString_P(PSTR("\r\n"));
 	}
 	// If there is nothing to send we should reply with only a CR according
 	// to page 40 of the VP415 operating instructions (C8H Read F-code reply)
 	else {
-		if (debugFlag_scsiFcodes) debugString_P(PSTR("F-Code: No response from host; sending empty CR terminated response.\r\n"));
+		if (debugFlag_scsiFcodes) FCdebugString_P(PSTR("F-Code: No response from host; sending empty CR terminated response.\r\n"));
 		scsiFcodeBuffer[0] = 0x0D;
 	}
 #endif
@@ -650,6 +635,6 @@ void fcodeReadBuffer(void)
 
 void fcodeClearBuffer(void)
 {
-    debugString_P(PSTR(" fcodeClearBuffer\r\n"));
+    FCdebugString_P(PSTR(" fcodeClearBuffer\r\n"));
     scsiFcodeBufferRX[0] = 0x0D;
 }
