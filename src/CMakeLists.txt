@@ -109,6 +109,7 @@ file( GLOB core_files
    ram_emulator.c
    helpers.c
    videoplayer.c
+   rpi/decompress.S
 )
 
 # Harddisc emulator
