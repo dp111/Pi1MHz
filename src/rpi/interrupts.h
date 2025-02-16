@@ -52,7 +52,7 @@
 #define RPI_BASIC_ACCESS_ERROR_1_IRQ    (1 << 6)
 #define RPI_BASIC_ACCESS_ERROR_0_IRQ    (1 << 7)
 
-#define RPI_HVS_IRQ                     (1 << 0)
+#define RPI_HVS_IRQ                     (1 << 1)
 
 #if defined(RPI4)
 /** @brief The interrupt controller memory mapped register set */

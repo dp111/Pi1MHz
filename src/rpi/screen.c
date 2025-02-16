@@ -728,7 +728,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             rgb->src_size =  (height << 16) + width;
             //rgb->src_context = 0;
             rgb->y_ptr = buffer ;
-            rgb->y_ctx = buffer;
+          //  rgb->y_ctx = buffer;
             rgb->pitch = width;
             rgb->palette = 0xC0000000 + PALETTE_BASE; // 8 bit palette
             rgb->LBM = (LBM_PLANE_SIZE * planeno);
@@ -877,9 +877,10 @@ uint32_t screen_get_palette_entry( uint32_t entry )
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
-    unsigned int cpsr = _disable_interrupts_cspr();
+
     if ( (rgb->ctrl & 0xF) == 0xD)
     {
+        unsigned int cpsr = _disable_interrupts_cspr();
         uint32_t old_palette = ((rgb->palette & 0x00003fff) - PALETTE_BASE)/0x400;
 
         switch (flags)
@@ -900,15 +901,16 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
                 rgb->palette = ( 0xc0000000 ) | (((old_palette ^ 1 )*0x400) + PALETTE_BASE);
                 break;
         }
+        _restore_cpsr(cpsr);
     }
-    _restore_cpsr(cpsr);
 }
 
 void screen_set_vsync( bool enable )
 {
     if (enable)
     {
-        RPI_hvs->ctrl |=  (1 <<9) + 1; // end of frame and enable IRQs
+        RPI_hvs->ctrl = (RPI_hvs->ctrl &0xffff0000) | ((1 <<9) + ( 1<<2 )+ 1); // end of frame and enable IRQs
+        //LOG_INFO("Enable VSYNC %x\r\n", RPI_hvs->ctrl);
         RPI_GetIrqController()->Enable_IRQs_2 = RPI_HVS_IRQ;
     }
     else
