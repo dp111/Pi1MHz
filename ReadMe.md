@@ -275,6 +275,7 @@ Addresses currently defined
 * Framebuffer_addr=0xYY : set the base address of the frame buffer registers default &A0, -1 to disable
 * Discaccess_addr=0xYY : set the base address of the discaccess registers default &A6, -1 to disable
 * Helpers_addr=0xYY : set the base address of the helpers registers default &88, -1 to disable
+* Pi1MHZnOE : Enables external nOE pin on the buffers, this then supports multiple devices on the 1MHz bus
 
 ## Making the code
 

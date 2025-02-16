@@ -271,6 +271,7 @@ static void init_emulator(void) {
    _enable_interrupts();
 
 // This is an old way of disabling emulators and will be removed in the future
+
    const char *prop = get_cmdline_prop("Pi1MHzDisable");
    if (prop)
    {  // now look for a common separated values to
@@ -318,7 +319,14 @@ static void init_emulator(void) {
    RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function
    RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
    RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1
-   RPI_PropertyAdd(0); // r2 ( External nOE pin) |(1<<(NOE_PIN<<3))
+
+   if (get_cmdline_prop("Pi1MHznOE"))
+   {
+      RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
+   }
+   else
+      RPI_PropertyAdd(0); // r2  No external nOE pin
+
    RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
    RPI_PropertyAdd(TEST_PINS_OUTPUTS | (1<<(NOE_PIN<<3))); // r4
    RPI_PropertyAdd(0); // r5 TEST_MASK
