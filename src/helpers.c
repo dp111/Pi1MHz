@@ -84,7 +84,7 @@ static void helpers_bank_select(unsigned int gpio)
 
 void helpers_init( uint8_t instance , uint8_t address)
 {
-   if (filesystemReadFile("6502code.bin",&helper_ram[0],sizeof(helper_ram)))
+   if (filesystemReadFile("6502code.bin",(unsigned char **)&helper_ram,sizeof(helper_ram)))
     {
         // register call backs
         Pi1MHz_Register_Memory(WRITE_FRED, address, helpers_bank_select );
