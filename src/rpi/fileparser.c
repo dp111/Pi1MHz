@@ -44,7 +44,7 @@ struct keyvalue {
     char * key;
     int min;
     int max;
-    int line;
+    int valid;
     enum keyvaluetype type;
     char * defaultvalue;
     char * value;
@@ -148,108 +148,134 @@ struct keyvalue scsiattributes[] = {
     { ""} // end of list
 };
 
-static uint32_t parse_skip( const char * buffer , uint32_t * ptr , uint32_t filesize )
-{
-    while ( *ptr < filesize)
-    {
-        if ((buffer[*ptr] == ' ') || (buffer[*ptr] == '\t') || (buffer[*ptr] == '='))
-        {
-            *ptr++;
-            continue;
-        }
-        if (buffer[*ptr] == '#')
-        {
-            while ( ((buffer[*ptr] != '\n')||( buffer[*ptr] != '\r' )) && *ptr < filesize)
-                *ptr++;
-            return 0;
-        }
-        if ((buffer[*ptr] == '\n') || ( buffer[*ptr] != '\r' ))
-        {
-            *ptr++;
-            return 0;
-        }
-        return ptr;
-    }
+//
+// Parse a file into the key value structure
+// 
+// if outfile filename is set then the keyvalues will be written back to the file. 
 
-}
-
-int parse_readfile( const char * filename , struct keyvalue keyv[] )
+int parse_readfile( const char * filename , const char * outfile, struct keyvalue keyv[] )
 {
 // open file for reading
-    int ptr = 0;
+    int ptr = 0, outptr = 0;
     char * buffer = 0 ;
     uint32_t filesize = filesystemReadFile( filename , buffer , 0 );
     if (filesize == 0)
         return 0;
+    
+    outbuf=malloc( filesize*4); // create out buffer *4 input size should be enough
 
     while (ptr <filesize)
     {
+        // skip white space and blank lines
+        while  (buffer[ptr] <= ' ') && ptr < filesize)
         // skip a line if it starts with a #
         if (buffer[ptr] == '#')
         {
             while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
-                ptr++;
-            continue;
+                outbuf[outptr++] = buffer[ptr++];
+            continue
         }
 
         // find the key
         int keyindex = FIND_INDEX( buffer + ptr , keyv );
         if (keyindex == -1)
         {
-            // key not found
+            // key not found skip line
             LOG_DEBUG("Key not found %s\n", buffer + ptr );
             while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
-                ptr++;
-            continue;
+                outbuf[outptr++] = buffer[ptr++];
+            continue
 
         }
         else
         {
             // key found
-            ptr += strlen(keyv[keyindex].key);
-            // skip white space
-            // skip "="
-            // if '#' then skip line
-            // if new line then skip
-            if ( parse_skip( buffer , &ptr , filesize ) == 0)
-                continue;
+            int keylen = strlen(keyv[keyindex].key);
+            while (keylen)
+                {
+                    outbuf[outptr++] = buffer[ptr++];
+                    keylen-=1
+                }
+            bool flag = false;
+            while ( ptr < filesize)
+            {
+                if ((buffer[ptr] == ' ') || (buffer[ptr] == '\t') || (buffer[ptr] == '='))
+                {
+                    outbuf[outptr++] = buffer[ptr++];
+                    continue;
+                }
+                if (buffer[*ptr] == '#')
+                {
+                    while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
+                        outbuf[outptr++] = buffer[ptr++];
+                    break;
+                    
+                }
+                if ((buffer[*ptr] == '\n') || ( buffer[*ptr] != '\r' ))
+                {
+                    outbuf[outptr++] = buffer[ptr++];
+                    break;
+                }
+                flag = true;
+                break;
+            }    
+            if (flag) 
+                {
+                    if (outbuf) 
+                    {
+                      // check if value exists  
+                      if (keyv[keyindex].valid)
+                      {        
+                        // if so write it out
+                        if (keyv[keyindex].type == NUMSTRING)
+                        {
+                            // write a string number
+                        }
+                        else if (keyv[keyindex].type == STRING)
+                        {
+                            // write a string
+                        }
+                        else if (keyv[keyindex].type == INTEGER)
+                        {
+                            // write a number
+                        }
+                       }else
+                       {
+                        // just copy line
+                        while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
+                            outbuf[outptr++] = buffer[ptr++];
+                       }          
+                    
+                    } else {      
 
-            // read value into keyv[keyindex].value
-            if (keyv[keyindex].type == NUMSTRING)
-            {
-                // read a number
-                // skip white space
-                // skip ","
-                // if new line then return
-                // read number
-            }
-            else if (keyv[keyindex].type == STRING)
-            {
-                // read a string
-                // skip white space
-                // skip ","
-                // if new line then return
-                // read string
-            }
-            else if (keyv[keyindex].type == INTEGER)
-            {
-                // read a number
-                // skip white space
-                // skip ","
-                // if new line then return
-                // read number
+                    if (keyv[keyindex].type == NUMSTRING)
+                    {
+                        // read a string number
+                    }
+                    else if (keyv[keyindex].type == STRING)
+                    {
+                        // read a string
+                    }
+                    else if (keyv[keyindex].type == INTEGER)
+                    {
+                        // read a number
+                    }
+                }
+
             }
         }
     }
-
-
+    
     free(buffer);
+    
+    if (outfile)
+    {
+    // write out file
+
+    }
+    free(outbuf);
+    
     return 1;
-}
-
-int parse_writefile ( const char * filename , struct keyvalue keyv[]  )
-{
-
 }
 
 int parse_relasekeyvalues( struct keyvalue *keys )
