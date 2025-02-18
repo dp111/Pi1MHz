@@ -14,8 +14,10 @@ keys must start at the beginning of the line and with
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <inttypes.h>
 #include "../beebscsi/filesystem.h"
+#include "rpi.h"
 
 
 #define DEFAULT_BLOCK_SIZE 512
@@ -23,10 +25,10 @@ keys must start at the beginning of the line and with
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-#define FIND_INDEX(key, array) ({ \
+#define FIND_INDEX(searchkey, array) ({ \
     int index = -1; \
     for (int i = 0; i < ARRAY_SIZE(array); i++) { \
-        if (strcasecmp(array[i].key, key) == 0) { \
+        if (strcasecmp(array[i].key, searchkey) == 0) { \
             index = i; \
             break; \
         } \
@@ -44,7 +46,7 @@ struct keyvalue {
     char * key;
     int min;
     int max;
-    int valid;
+    int length;
     enum keyvaluetype type;
     char * defaultvalue;
     char * value;
@@ -148,10 +150,42 @@ struct keyvalue scsiattributes[] = {
     { ""} // end of list
 };
 
+// nonnumber = 0 for hex digits, 1 for 0x, -1 for non decimal digits
+//
+//
+static int parse_strlen( const char * buf , int ptr, int max,  int *nonnumber)
+{
+    int len = 0;
+    int oldptr = ptr;
+    *nonnumber = 0;
+    while ((buf[ptr] > ' ') && (buf[ptr] != '#')  && (ptr < max))
+        {
+            if ( (buf[ptr] >= '0') && (buf[ptr] <= '9') ||
+                    (buf[ptr] >= 'A') && (buf[ptr] <= 'F') ||
+                    (buf[ptr] >= 'a') && (buf[ptr] <= 'f')
+            )
+                {}
+                else
+                {
+                    if (buf[ptr] == 'x' || buf[ptr] == 'X')
+                        if ((*nonnumber == 0) && ( (ptr-oldptr)==1) )
+                            *nonnumber = 1;
+                        else
+                            *nonnumber = -1;
+                    else
+                        *nonnumber = -1;
+                }
+            len++;
+            ptr++;
+        }
+    return len;
+}
+
+
 //
 // Parse a file into the key value structure
-// 
-// if outfile filename is set then the keyvalues will be written back to the file. 
+//
+// if outfile filename is set then the keyvalues will be written back to the file.
 
 int parse_readfile( const char * filename , const char * outfile, struct keyvalue keyv[] )
 {
@@ -161,40 +195,41 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
     uint32_t filesize = filesystemReadFile( filename , buffer , 0 );
     if (filesize == 0)
         return 0;
-    
-    outbuf=malloc( filesize*4); // create out buffer *4 input size should be enough
+    LOG_DEBUG("Parsing %s File size %d\n\r",filename, filesize);
+    char * outbuf = malloc( filesize*4); // create out buffer *4 input size should be enough
 
     while (ptr <filesize)
     {
         // skip white space and blank lines
-        while  (buffer[ptr] <= ' ') && ptr < filesize)
+        while  ((buffer[ptr] <= ' ') && (ptr < filesize))
         // skip a line if it starts with a #
         if (buffer[ptr] == '#')
         {
             while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
                 outbuf[outptr++] = buffer[ptr++];
-            continue
+            continue;
         }
 
         // find the key
-        int keyindex = FIND_INDEX( buffer + ptr , keyv );
+        int keyindex = FIND_INDEX( (buffer + ptr) , keyv );
         if (keyindex == -1)
         {
             // key not found skip line
             LOG_DEBUG("Key not found %s\n", buffer + ptr );
             while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
                 outbuf[outptr++] = buffer[ptr++];
-            continue
+            continue;
 
         }
         else
         {
             // key found
             int keylen = strlen(keyv[keyindex].key);
+            LOG_DEBUG("Key found %s ", keyv[keyindex].key );
             while (keylen)
                 {
                     outbuf[outptr++] = buffer[ptr++];
-                    keylen-=1
+                    keylen-=1;
                 }
             bool flag = false;
             while ( ptr < filesize)
@@ -204,77 +239,152 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
                     outbuf[outptr++] = buffer[ptr++];
                     continue;
                 }
-                if (buffer[*ptr] == '#')
+                if (buffer[ptr] == '#')
                 {
                     while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
                         outbuf[outptr++] = buffer[ptr++];
                     break;
-                    
+
                 }
-                if ((buffer[*ptr] == '\n') || ( buffer[*ptr] != '\r' ))
+                if ((buffer[ptr] == '\n') || ( buffer[ptr] != '\r' ))
                 {
                     outbuf[outptr++] = buffer[ptr++];
                     break;
                 }
                 flag = true;
                 break;
-            }    
-            if (flag) 
+            }
+            if (flag)
                 {
-                    if (outbuf) 
+                    if (outbuf)
                     {
-                      // check if value exists  
-                      if (keyv[keyindex].valid)
-                      {        
+                      int nonnumber;
+                      int len = parse_strlen( buffer , ptr, filesize, &nonnumber);
+                      // check if value exists
+                      if (keyv[keyindex].length)
+                      {
                         // if so write it out
                         if (keyv[keyindex].type == NUMSTRING)
                         {
                             // write a string number
+                            for( int i = 0; i < keyv[keyindex].length; i++)
+                                {
+                                    int nibble = keyv[keyindex].value[i] >> 4;
+                                    if (nibble < 10)
+                                        outbuf[outptr++] = nibble + '0';
+                                    else
+                                        outbuf[outptr++] = nibble + 'A' - 10;
+                                    nibble = keyv[keyindex].value[i] & 0x0F;
+                                    if (nibble < 10)
+                                        outbuf[outptr++] = nibble + '0';
+                                    else
+                                        outbuf[outptr++] = nibble + 'A' - 10;
+                                }
+                            ptr += len;
                         }
                         else if (keyv[keyindex].type == STRING)
                         {
                             // write a string
+                            for( int i = 0; i < keyv[keyindex].length; i++)
+                                outbuf[outptr++] = keyv[keyindex].value[i];
+                            ptr += len;
                         }
                         else if (keyv[keyindex].type == INTEGER)
                         {
                             // write a number
+                            int outlen = sprintf( outbuf + outptr , "%d" , *keyv[keyindex].value);
+                            outptr += outlen;
+                            ptr += len;
                         }
-                       }else
-                       {
-                        // just copy line
+                       }
+
+                        // copy the rest of the line to the output buffer
                         while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
                             outbuf[outptr++] = buffer[ptr++];
-                       }          
-                    
-                    } else {      
 
-                    if (keyv[keyindex].type == NUMSTRING)
-                    {
-                        // read a string number
-                    }
-                    else if (keyv[keyindex].type == STRING)
-                    {
-                        // read a string
-                    }
-                    else if (keyv[keyindex].type == INTEGER)
-                    {
-                        // read a number
-                    }
+
+                    } else {
+                        int nonnumber;
+                        int len = parse_strlen( buffer , ptr, filesize, &nonnumber);
+                        if (keyv[keyindex].type == NUMSTRING)
+                        {
+                            if (nonnumber<0)
+                            {
+                                // error
+                                LOG_DEBUG("Error in number format\n\r");
+                            }
+                            else
+                            {
+                                if (nonnumber=1)
+                                    {
+                                     // strip off 0x
+                                     ptr+=2;
+                                     len-=2;
+                                    }
+                                // read a string number
+                                LOG_DEBUG("Number %s\n\r" , &buffer[ptr]);
+                                keyv[keyindex].value = malloc( len/2);
+                                for (int i = 0; i < len/2; i++)
+                                {
+                                    if (buffer[ptr] >= '0' && buffer[ptr] <= '9')
+                                        keyv[keyindex].value[i] = (buffer[ptr] - '0')<<4;
+                                    else if (buffer[ptr] >= 'A' && buffer[ptr] <= 'F')
+                                        keyv[keyindex].value[i] = (buffer[ptr] - 'A' + 10)<<4;
+                                    else if (buffer[ptr] >= 'a' && buffer[ptr] <= 'f')
+                                        keyv[keyindex].value[i] = (buffer[ptr] - 'a' + 10)<<4;
+                                    ptr++;
+                                    if (buffer[ptr] >= '0' && buffer[ptr] <= '9')
+                                        keyv[keyindex].value[i] += (buffer[ptr] - '0');
+                                    else if (buffer[ptr] >= 'A' && buffer[ptr] <= 'F')
+                                        keyv[keyindex].value[i] += (buffer[ptr] - 'A' + 10);
+                                    else if (buffer[ptr] >= 'a' && buffer[ptr] <= 'f')
+                                        keyv[keyindex].value[i] += (buffer[ptr] - 'a' + 10);
+                                    ptr++;
+                                }
+
+                                keyv[keyindex].length = len/2;
+                            }
+                        }
+                        else if (keyv[keyindex].type == STRING)
+                        {
+                            // read a string
+                            keyv[keyindex].value = malloc( len + 1);
+                            memcpy( keyv[keyindex].value , buffer + ptr , len);
+                            keyv[keyindex].value[len] = 0;
+                            keyv[keyindex].length = len;
+                            LOG_DEBUG("string %s\n\r" , keyv[keyindex].value);
+                            ptr += len;
+                        }
+                        else if (keyv[keyindex].type == INTEGER)
+                        {
+                            // read a number
+                            keyv[keyindex].value = malloc( 4);
+                            *keyv[keyindex].value = strtol( buffer + ptr, 0 , 0);
+                            LOG_DEBUG("number %d\n\r" , *keyv[keyindex].value);
+                            keyv[keyindex].length = 1;
+                            ptr += len;
+                        }
+
+                        // now seach for the end of the line
+                        while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
+                            outbuf[outptr++] = buffer[ptr++];
                 }
-
+            } else
+            {
+                LOG_DEBUG("Key data not found \n\r" );
             }
         }
     }
-    
+
     free(buffer);
-    
+
     if (outfile)
     {
     // write out file
 
     }
     free(outbuf);
-    
+
     return 1;
 }
 
@@ -285,6 +395,7 @@ int parse_relasekeyvalues( struct keyvalue *keys )
         if (keys[i].value != NULL)
         {
             free(keys[i].value);
+            keys[i].length = 0;
         }
     }
 }
