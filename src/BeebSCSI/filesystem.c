@@ -48,16 +48,20 @@
  Fall back to slow seeking if the LUN is too fragmented instead of just failing over.
 
  Add using BeebVFS for the VFS LUNs
-
+ 
+ altered to allow variable sizes of Sectors per Track. This supports drives that have been
+ connected on a ACB4070 which uses RLL encoding and allows a larger sector per track size.
+ The default is 33 sectors per track (MFM)
 */
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "debug.h"
+#include "scsi.h"
+#include "ext_attributes.h"
 #include "fatfs/ff.h"
 #include "filesystem.h"
 #include "../rpi/rpi.h"
@@ -65,6 +69,16 @@
 #define SZ_TBL 64
 
 #define MAX_LUNS 16
+// Minimum geometry details needed to operate the LUN
+// This saves looking them up again in the future
+struct HDGeometry
+{
+	uint32_t BlockSize;				// This will almost always be 256
+	uint32_t Cylinders;
+	uint8_t  Heads;
+	uint16_t SectorsPerTrack;		// default is 33
+	uint16_t Interleave;				// doesn't really matter for BeebSCSI
+};
 
 // File system state structure
 NOINIT_SECTION static struct filesystemStateStruct
@@ -75,11 +89,12 @@ NOINIT_SECTION static struct filesystemStateStruct
 
    bool fsMountState;      // File system mount state (true = mounted, false = dismounted)
 
-   uint8_t lunDirectory;   // Current LUN directory ID
+   uint8_t lunDirectory;               // Current LUN directory ID
    uint8_t lunDirectoryVFS;   // Current LUN directory ID for VFS
-   bool fsLunStatus[MAX_LUNS]; // LUN image availability flags for the currently selected LUN directory (true = started, false = stopped)
+   bool fsLunStatus[MAX_LUNS];         // LUN image availability flags for the currently selected LUN directory (true = started, false = stopped)
    uint8_t fsLunUserCode[MAX_LUNS][5];  // LUN 5-byte User code (used for F-Code interactions - only present for laser disc images)
-
+	bool fsLunHasExtendedAttributes[MAX_LUNS];	// flag to show if extended attributes are available
+	struct HDGeometry fsLunGeometry[MAX_LUNS];   // Keep the geometry details for each LUN
 } filesystemState;
 
 NOINIT_SECTION static char fileName[255];       // String for storing LFN filename
@@ -382,7 +397,7 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
    userCode[3] = filesystemState.fsLunUserCode[lunNumber][3];
    userCode[4] = filesystemState.fsLunUserCode[lunNumber][4];
 
-   userCode[0] = 0x31; // fixed code for now *** TODO ******
+   userCode[0] = 0x31; // fixed code for now *** TODO ****** ( 1=066) ( 1=986)
    userCode[1] = 0x3D;
    userCode[2] = 0x30;
    userCode[3] = 0x36;
@@ -589,6 +604,17 @@ static bool filesystemCheckLunImage(uint8_t lunNumber)
       filesystemGetUserCodeFromUcd(filesystemState.lunDirectory, lunNumber);
    }
 #endif
+	filesystemCheckExtAttributes(lunNumber);
+
+	// Calculate the LUN size from the extended attributes file
+	uint32_t lunDscSize = filesystemGetLunTotalBytes(lunNumber);
+	if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemCheckLunImage(): LUN size in bytes (according to .ext) = "), lunDscSize, 1);
+
+	// Are the file size and DSC size consistent?
+	if (lunDscSize != lunFileSize) {
+		if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): WARNING: File size and EXT parameters are NOT consistent\r\n"));
+	}
+
    // Exit with success
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): Successful\r\n"));
    return true;
@@ -601,6 +627,9 @@ uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
    UINT fsCounter;
    FRESULT fsResult;
    FIL fileObject;
+
+	// pointer to the geometry data of the currently selected LUN
+	struct HDGeometry* ptr = &filesystemState.fsLunGeometry[lunNumber];
 
    // Assemble the DSC file name
    if (lunNumber < 8 )
@@ -630,9 +659,19 @@ uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
       // Interpret the DSC information and calculate the LUN size
       if (debugFlag_filesystem) debugLunDescriptor(Buffer);
 
-      uint32_t blockSize = (((uint32_t)Buffer[9] << 16) + ((uint32_t)Buffer[10] << 8) + (uint32_t)Buffer[11]);
-      uint32_t cylinderCount = (((uint32_t)Buffer[13] << 8) + (uint32_t)Buffer[14]);
-      uint32_t dataHeadCount =  (uint32_t)Buffer[15];
+		// read the parameters into the cache
+		(*ptr).BlockSize 	= (((uint32_t)Buffer[9] << 16) |
+		                     ((uint32_t)Buffer[10] << 8) | 
+								    (uint32_t)Buffer[11]);
+
+		(*ptr).Cylinders 	= (((uint32_t)Buffer[13] << 8) |
+		                      (uint32_t)Buffer[14]);
+
+		(*ptr).Heads 		=  (uint8_t)Buffer[15];
+
+		(*ptr).SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;			// .dsc files don't contain sectors per track, always assume the default
+
+      lunSize = filesystemGetLunTotalBytes(lunNumber);
 
       // Note:
       //
@@ -649,6 +688,61 @@ uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
 
    return lunSize;
 }
+
+// Function to return the LUN image Block size in bytes from the stored geometry
+//
+uint32_t filesystemGetLunBlockSize( uint8_t lunNumber)
+{
+	return filesystemState.fsLunGeometry[lunNumber].BlockSize;
+}
+
+// Function to return the LUN image sectors per track size in bytes from the stored geometry
+//
+uint32_t filesystemGetLunSPTSize( uint8_t lunNumber)
+{
+	return filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack;
+}
+
+// Function to return the LUN image size in bytes from the stored geometry
+//
+uint32_t filesystemGetLunTotalBytes( uint8_t lunNumber)
+{
+	// pointer to the geometry data of the LUN
+	struct HDGeometry* ptr = &filesystemState.fsLunGeometry[lunNumber];
+
+	// The drive size (actual data storage) is calculated by the following formula:
+	//
+	// Tracks = Cylinders * Heads
+	// Total Sectors = Tracks * Sectors per Track 
+	// (the default '33' is because SuperForm uses a 2:1 interleave format with 33 sectors per
+	// track (F-2 in the ACB-4000 manual))
+	// Total Bytes = Total Sectors * Block Size (block size is normally 256 bytes)
+
+	return (((*ptr).Heads * (*ptr).Cylinders) * (*ptr).SectorsPerTrack) * (*ptr).BlockSize;
+}
+
+// Function to return the LUN image size in sectors from the stored geometry
+//
+uint32_t filesystemGetLunTotalSectors( uint8_t lunNumber)
+{
+	// pointer to the geometry data of the LUN
+	struct HDGeometry* ptr = &filesystemState.fsLunGeometry[lunNumber];
+
+	// Tracks = Cylinders * Heads
+	// Total Sectors = Tracks * Sectors per Track 
+	return (((*ptr).Cylinders * (*ptr).Heads) * (*ptr).SectorsPerTrack);
+}
+
+// Function to return the cylinders and heads from the LUN descriptor file parameters
+// into the buffer
+//
+void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf)
+{
+	returnbuf[3] = ((uint8_t)((filesystemState.fsLunGeometry[lunNumber].Cylinders & 0x0000FF00) >> 8));
+	returnbuf[4] = ((uint8_t) (filesystemState.fsLunGeometry[lunNumber].Cylinders & 0x000000FF));
+	returnbuf[5] = filesystemState.fsLunGeometry[lunNumber].Heads;
+}
+
 #if 0
 // Function to automatically create a DSC file based on the file size of the LUN image
 // Note, this function is specific to the BBC Micro and the ACB-4000 host adapter card
@@ -667,17 +761,17 @@ static bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNum
    // Calculate the LUN file size in tracks (33 sectors per track, 256 bytes per sector)
 
    // Check that the LUN file size is actually a size which ADFS can support (the number of sectors is limited to a 21 bit number)
-   // i.e. a maximum of 0x1FFFFF or 2,097,151 (* 256 bytes per sector = 512Mb = 536,870,656 bytes)
-   if (lunFileSize > ((1<<21)*256) ) {
+   // i.e. a maximum of 0x1FFFFF or 2,097,151 (* 256 - DEFAULT_BLOCK_SIZE - bytes per sector = 512Mb = 536,870,656 bytes)
+   if (lunFileSize > ((1<<21)*DEFAULT_BLOCK_SIZE) ) {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateDscFromLunImage(): WARNING: The LUN file size is greater than 512MBytes\r\n"));
    }
 
    // Check that the LUN file size is actually a size which the ACB-4000 card could have supported (given that the
-   // block and track sizes were fixed to 256 and 33 respectively)
-   if (lunFileSize % (256 * 33) != 0) {
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateDscFromLunImage(): WARNING: The LUN file size could not be supported by an ACB-4000 card\r\n"));
+   // block and track sizes were fixed to 256 and a default of 33 respectively)
+   if (lunFileSize % (DEFAULT_BLOCK_SIZE * DEFAULT_SECTORS_PER_TRACK) != 0) {
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateDscFromLunImage(): WARNING: The LUN file size could not be supported by an ACB-4000 card. Not divisible by 256.\r\n"));
    }
-   lunFileSize = lunFileSize / (33 * 256);
+   lunFileSize = lunFileSize / (DEFAULT_BLOCK_SIZE * DEFAULT_SECTORS_PER_TRACK);
 
    // The lunFileSize (in tracks) should be evenly divisible by the head count and the head count should be
    // 16 or less.
@@ -686,9 +780,12 @@ static bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNum
    cylinders = lunFileSize / heads;
 
    if (debugFlag_filesystem) {
-      debugStringInt32_P(PSTR("File system: filesystemCreateDscFromLunImage(): LUN size in tracks (33 * 256 bytes) = "), lunFileSize, true);
       debugStringInt32_P(PSTR("File system: filesystemCreateDscFromLunImage(): Number of heads = "), heads, true);
       debugStringInt32_P(PSTR("File system: filesystemCreateDscFromLunImage(): Number of cylinders = "), cylinders, true);
+      debugStringInt32_P(PSTR("File system: filesystemCreateDscFromLunImage(): Number of sectors per track = "), DEFAULT_SECTORS_PER_TRACK, true);
+      debugStringInt32_P(PSTR("File system: filesystemCreateDscFromLunImage(): LUN size in tracks = "), heads*cylinders, true);
+      debugStringInt32_P(PSTR("File system: filesystemCreateDscFromLunImage(): LUN size in sectors = "), heads*cylinders*DEFAULT_SECTORS_PER_TRACK, true);
+      debugStringInt32_P(PSTR("File system: filesystemCreateDscFromLunImage(): LUN size in bytes (total sectors * 256 bytes) = "), heads*cylinders*DEFAULT_SECTORS_PER_TRACK*DEFAULT_BLOCK_SIZE, true);
    }
    // The first 4 bytes are the Mode Select Parameter List (ACB-4000 manual figure 5-18)
    Buffer[ 0] = 0;      // Reserved (0)
@@ -766,7 +863,7 @@ void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber)
 
    fsResult = f_open(&fileObject, fileName, FA_READ);
    if (fsResult == FR_OK) {
-      // Read the DSC data
+      // Read the UCD data
       fsResult = f_read(&fileObject, filesystemState.fsLunUserCode[lunNumber], 5, &fsCounter);
       f_close(&fileObject);
 
@@ -961,10 +1058,8 @@ bool filesystemWriteLunDescriptor(uint8_t lunNumber, uint8_t const buffer[])
 // Function to format a LUN image
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 {
-   uint32_t requiredNumberOfSectors = 0;
    FIL fileObject;
    FRESULT fsResult;
-   uint8_t Buffer[22];
 
    if (lunNumber >7)
    {
@@ -976,18 +1071,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 
    filesystemSetLunStatus(lunNumber, false );
 
-   // Read the LUN descriptor for the LUN image into the sector buffer
-   if (!filesystemReadLunDescriptor(lunNumber, Buffer)) {
-      // Unable to read the LUN descriptor
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): ERROR: Could not read .dsc file for LUN\r\n"));
-      return false;
-   }
-
-   // Calculate the number of 256 byte sectors required to fulfill the drive geometry
-   // tracks = heads * cylinders
-   // sectors = tracks * 33
-   requiredNumberOfSectors = ((uint32_t)Buffer[15] * (((uint32_t)Buffer[13] << 8) + (uint32_t)Buffer[14])) * 33;
-   if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemFormatLun(): Sectors required = "), requiredNumberOfSectors, true);
+   if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemFormatLun(): Sectors required = "), filesystemGetLunTotalSectors(lunNumber), true);
 
    // Assemble the .dat file name
    sprintf(fileName, "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
@@ -1017,7 +1101,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
       //
       // This ignores the data pattern (since the file is only allocated - not
       // actually written).
-      fsResult = f_expand(&fileObject /*&filesystemState.fileObject[lunNumber]*/, (FSIZE_t)(requiredNumberOfSectors * 256), 1);
+      fsResult = f_expand(&fileObject /*&filesystemState.fileObject[lunNumber]*/, (FSIZE_t)(filesystemGetLunTotalBytes(lunNumber)), 1);
 
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): Format complete\r\n"));
 
@@ -1038,6 +1122,260 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): Successful\r\n"));
    return true;
 }
+
+// Functions for creating and using LUN extended attributes-------------------------------------------------------------------
+
+// Function to create a LUN Extended attributes tmp file for writing (makes an empty .tmp file)
+bool filesystemCreateLunExtAttributes_tmp(uint8_t lunNumber)
+{
+	FRESULT fsResult;
+   FIL fileObject;
+
+   // Assemble the .external attributes as a temp file
+   sprintf(fileName, "/BeebSCSI%d/scsi%d.tmp", filesystemState.lunDirectory, lunNumber);
+
+   fsResult = f_open(&fileObject, fileName, FA_READ);
+   if (fsResult == FR_OK) {
+      // File opened ok - which means it already exists...
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_tmp: .tmp already exists - ignoring request to create a new .tmp\r\n"));
+      f_close(&fileObject);
+      return true;
+   }
+
+   // Create a new .tmp Extended attributes file
+   fsResult = f_open(&fileObject, fileName, FA_CREATE_NEW);
+   if (fsResult != FR_OK) {
+      // Create .ext file failed
+      if (debugFlag_filesystem) { 
+			debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_tmp: ERROR: Could not create new .tmp file!\r\n"));
+      	debugStringInt16_P(PSTR("File system: filesystemCreateLunExtAttributes_tmp: ERROR = "), fsResult, true);
+		}
+		return false;
+   }
+
+   // LUN .tmp external attributes file created successfully
+   f_close(&fileObject);
+   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunExtAttributes(): Successful\r\n"));
+   return true;
+}
+
+// Function to rename a LUN Extended attributes .tmp file to a .ext file
+bool filesystemCreateLunExtAttributes_Rename(uint8_t lunNumber)
+{
+	FRESULT fsResult;
+	char fileName_source[255];
+
+   // Assemble the names of the source and destination file
+   sprintf(fileName_source, "/BeebSCSI%d/scsi%d.tmp", filesystemState.lunDirectory, lunNumber);
+   sprintf(fileName, "/BeebSCSI%d/scsi%d.ext", filesystemState.lunDirectory, lunNumber);
+
+	fsResult = f_rename (fileName_source, fileName);
+
+   if (fsResult != FR_OK) {
+      // File did not rename successfully
+      if (debugFlag_filesystem) {
+			debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_Rename(): File Not Copied\r\n"));
+      	debugStringInt16_P(PSTR("File system: filesystemCreateDscFromLunImage(): ERROR = "), fsResult, true);
+		}
+      return false;
+   }
+
+   // LUN external attributes file created successfully
+   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_Rename(): Successful\r\n"));
+   
+	filesystemState.fsLunHasExtendedAttributes[lunNumber] = true;
+
+	return true;
+}
+
+// Function to write all values to to a .ext tmp file
+bool filesystemCreateLunExtAttributes_WriteValues(uint8_t lunNumber)
+{
+	FRESULT fsResult_ext;
+	FRESULT fsResult_tmp;
+   FIL fileObject_ext;
+   FIL fileObject_tmp;
+	char fileName_tmp[255];
+	uint8_t newdata[512];
+	bool usedefaults = false;
+
+	// if the .tmp file cannot be opened (it doesn't exist), create it
+	if (!filesystemCreateLunExtAttributes_tmp(lunNumber)) {
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_WriteValues: Major Error. .tmp file not accessible\r\n"));
+		return false;
+	}
+
+   // Assemble the file name of the extended attributes temp file
+   sprintf(fileName, "/BeebSCSI%d/scsi%d.ext", filesystemState.lunDirectory, lunNumber);
+   sprintf(fileName_tmp, "/BeebSCSI%d/scsi%d.tmp", filesystemState.lunDirectory, lunNumber);
+
+	// if an .ext file cannot be opened (it doesn't exist), flag to use defaults values
+   fsResult_ext = f_open(&fileObject_ext, fileName, FA_READ);
+   if (fsResult_ext != FR_OK) {
+      // File didn't open, use stored default values ...
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_WriteValues: No existing .ext file for the LUN. Using default values\r\n"));
+		usedefaults = true;
+      f_close(&fileObject_ext);
+   }
+	else
+	{
+     f_close(&fileObject_ext);
+	}
+
+	// Open .tmp file for writing
+   fsResult_tmp = f_open(&fileObject_tmp, fileName_tmp, FA_WRITE);
+	if (fsResult_tmp == FR_OK) {
+
+		// copy all stored defalult values
+		if (usedefaults) {
+
+			// set up the list of default pages
+
+			uint8_t default_NonModePageTokens[3] = {TOKEN_INQUIRY, TOKEN_MPHEADER, TOKEN_LBADESCRIPTOR};
+			uint8_t default_ModePageTokens[9] = {1,3,4,32,33,35,36,37,38};
+			uint8_t buff[2];
+
+			// loop through the default Mode Pages that need creating
+			buff[1] = 0; // length (0=default values)
+
+			// loop through the default Non Mode Pages that need creating
+			for (uint8_t i = 0; i < sizeof(default_NonModePageTokens); i++) {
+				if (createNonModePage(usedefaults, default_NonModePageTokens[i], buff, newdata) == 0)
+					filesystemWriteline(&fileObject_tmp, newdata);
+				else
+					if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCreateLunExtAttributes_WriteValues(): ERROR: No value returned for non page mode token "), default_NonModePageTokens[i], true);
+			}	
+
+			// loop through the default Mode Pages that need creating
+			for (uint8_t i = 0; i < sizeof(default_ModePageTokens); i++) {
+				buff[0] = default_ModePageTokens[i];
+
+				if (createModePage(lunNumber, buff, newdata) == 0)
+					filesystemWriteline(&fileObject_tmp, newdata);
+				else
+					if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCreateLunExtAttributes_WriteValues(): ERROR: No Mode Page value returned for page "), buff[0], true);
+
+			}
+
+		}
+		else {
+			// .ext file open for reading. Loop through and copy all values	
+			f_close(&fileObject_ext);
+		}
+	}
+
+	// close .tmp file
+   f_close(&fileObject_tmp);
+
+   // LUN external attributes written to temp file successfully
+   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_WriteValues(): Attributes written to tmp file successfully\r\n"));
+   
+	// rename .tmp file to .ext file
+	return filesystemCreateLunExtAttributes_Rename(lunNumber);
+
+}
+
+// Check an extended attributes file is available for that LUN
+// and register it
+bool filesystemCheckExtAttributes( uint8_t lunNumber)
+{
+
+   FRESULT fsResult;
+   FIL fileObject;
+
+   sprintf(extAttributes_fileName, "/BeebSCSI%d/scsi%d.ext", filesystemState.lunDirectory, lunNumber);
+
+   // Check if the LUN extended attributes file (.ext) is present
+   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: Checking for (.ext) LUN extended attributes file\r\n"));
+
+   fsResult = f_open(&fileObject, extAttributes_fileName, FA_READ);
+
+   if (fsResult != FR_OK) {
+      // LUN extended properties file is not found
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file not found\r\n"));
+		
+		
+		filesystemCreateLunExtAttributes_WriteValues(lunNumber);
+      
+		
+		// continue using values from .dsc file and other generic defaults
+		// filesystemState.fsLunHasExtendedAttributes[lunNumber] = false;
+
+   } else {
+      // LUN extended attributes file is present
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file found\r\n"));
+
+      // Read the extended attributes from the .ext file
+		filesystemState.fsLunHasExtendedAttributes[lunNumber] = true;
+
+   }
+
+	// Update the cached geomety for this LUN from the extended attributes
+   uint8_t Buffer[24];
+
+	// Try read page 3
+	if (readModePage(lunNumber, 3, 24, Buffer) !=0) {
+		filesystemState.fsLunGeometry[lunNumber].BlockSize = (uint32_t)(((Buffer[9] << 16) + (Buffer[10] << 8) + Buffer[11]) & 0x00FFFFFF);
+		filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint32_t)(((Buffer[22] << 8) + Buffer[23]) & 0x0000FFFF);
+	}
+	else
+	{
+		filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
+		// write with mode select
+	}
+
+	if (readModePage(lunNumber, 4, 18, Buffer) !=0) {
+		// Calculate the number of (block size) byte sectors required to fulfill the drive geometry
+		// tracks = heads * cylinders
+		// sectors = tracks * sectorsperTrack
+		filesystemState.fsLunGeometry[lunNumber].BlockSize = (uint32_t)(((Buffer[9] << 16) + (Buffer[10] << 8) + Buffer[11]) & 0x00FFFFFF);
+		filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)(((Buffer[9] << 14) + (Buffer[15] << 8) + Buffer[16]) & 0x00FFFFFF);
+		filesystemState.fsLunGeometry[lunNumber].Heads = (uint8_t)(Buffer[17]);
+	}
+	else
+	{
+		filesystemState.fsLunGeometry[lunNumber].BlockSize = DEFAULT_BLOCK_SIZE;
+		// try and calculate cylinders / heads automatically
+
+		// write with mode select
+	}
+
+	// Close the .ext file
+	f_close(&fileObject);
+
+	return filesystemState.fsLunHasExtendedAttributes[lunNumber];
+}
+
+// Check if a LUN has registered extended attributes when it was started
+// and ensure the extAttributes filename is correct for the LUN
+bool filesystemHasExtAttributes( uint8_t lunNumber)
+{
+   sprintf(extAttributes_fileName, "/BeebSCSI%d/scsi%d.ext", filesystemState.lunDirectory, lunNumber);
+	return filesystemState.fsLunHasExtendedAttributes[lunNumber];
+}
+
+
+uint8_t filesystemWriteline(FIL* fileObject, uint8_t *outString) {
+
+	FRESULT fsResult;
+	UINT fsCounter;
+	size_t len;
+
+	len = strlen(outString);
+
+	fsResult = f_write(fileObject, outString, len, &fsCounter);
+
+	// Check that the file was written OK and is the correct length
+	if (fsResult != FR_OK  && fsCounter == len) {
+		// Something went wrong
+		if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteline: ERROR: writing Mode Page value\r\n"));
+		return 1;
+	}
+
+	return 0;
+
+}
+
 
 // Functions for reading and writing LUN images --------------------------------------------------------------------
 

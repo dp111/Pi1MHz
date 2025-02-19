@@ -1,9 +1,9 @@
 #include <stdint.h>
+#include <stdio.h>
+#include <inttypes.h>
 #include "base.h"
 #include "mailbox.h"
 #include "rpi.h"
-#include <stdio.h>
-#include <inttypes.h>
 #include "../rpi/asm-helpers.h"
 #include "../rpi/interrupts.h"
 
@@ -329,45 +329,52 @@ static uint32_t yoffset = 0;
 
 static bool plane_valid[8];
 
-// Allocates a buffer from CMA aligned to a 4K page boundary
-
-uint32_t screen_allocate_buffer( uint32_t buffer_size, uint32_t * handle )
-{
+/**
+ * @brief Allocates a buffer from CMA aligned to a 4K page boundary.
+ *
+ * @param buffer_size Size of the buffer to allocate.
+ * @param handle Pointer to store the handle of the allocated buffer.
+ * @return uint32_t Address of the allocated buffer.
+ */
+uint32_t screen_allocate_buffer(uint32_t buffer_size, uint32_t *handle) {
     rpi_mailbox_property_t *mp;
     RPI_PropertyStart(TAG_ALLOCATE_MEMORY, 3);
-    RPI_PropertyAddTwoWords(  buffer_size,  4096);
-    RPI_PropertyAdd((1<<6) + (1<<5) + (1<<4) + (1<<2) ); // FLAGS
+    RPI_PropertyAddTwoWords(buffer_size, 4096);
+    RPI_PropertyAdd((1 << 6) + (1 << 5) + (1 << 4) + (1 << 2)); // FLAGS
     RPI_PropertyProcess(true);
-    if( ( mp = RPI_PropertyGet( TAG_ALLOCATE_MEMORY ) ) )
-    {
+    if ((mp = RPI_PropertyGet(TAG_ALLOCATE_MEMORY))) {
         *handle = mp->data.buffer_32[0];
         RPI_PropertyStart(TAG_LOCK_MEMORY, 1);
-        RPI_PropertyAdd( *handle );
+        RPI_PropertyAdd(*handle);
         RPI_PropertyProcess(true);
-        if( (mp = RPI_PropertyGet( TAG_LOCK_MEMORY ) ) )
-        {
-            LOG_DEBUG("Allocated buffer at %"PRIx32"\r\n", mp->data.buffer_32[0]);
+        if ((mp = RPI_PropertyGet(TAG_LOCK_MEMORY))) {
+            LOG_DEBUG("Allocated buffer at %" PRIx32 "\r\n", mp->data.buffer_32[0]);
             return mp->data.buffer_32[0] & 0x3FFFFFFF;
         }
     }
     return 0;
 }
 
-void screen_release_buffer( uint32_t handle )
-{
+/**
+ * @brief Releases a previously allocated buffer.
+ *
+ * @param handle Handle of the buffer to release.
+ */
+void screen_release_buffer(uint32_t handle) {
     RPI_PropertyStart(TAG_UNLOCK_MEMORY, 1);
     RPI_PropertyAdd(handle);
     RPI_PropertyProcess(true);
-    if( RPI_PropertyGet( TAG_UNLOCK_MEMORY ) )
-    {
+    if (RPI_PropertyGet(TAG_UNLOCK_MEMORY)) {
         RPI_PropertyStart(TAG_RELEASE_MEMORY, 1);
-        RPI_PropertyAdd(handle );
+        RPI_PropertyAdd(handle);
         RPI_PropertyProcess(false);
     }
 }
 
-static void setup_polyphase(void)
-{
+/**
+ * @brief Sets up the polyphase filter coefficients.
+ */
+static void setup_polyphase(void) {
     context_memory[PLOYPHASE_BASE + 0] = 0x7ebfc00;
     context_memory[PLOYPHASE_BASE + 1] = 0x7e3edf8;
     context_memory[PLOYPHASE_BASE + 2] = 0x4805fd;
@@ -378,42 +385,59 @@ static void setup_polyphase(void)
     context_memory[PLOYPHASE_BASE + 7] = 0x1dca432;
     context_memory[PLOYPHASE_BASE + 8] = 0x4805fd;
     context_memory[PLOYPHASE_BASE + 9] = 0x7e3edf8;
-    context_memory[PLOYPHASE_BASE +10] = 0x7ebfc00;
+    context_memory[PLOYPHASE_BASE + 10] = 0x7ebfc00;
 }
 
 #define MAX_PLANES_SIZE 0x80
 #define PLANE_BASE (MAX_PLANES_SIZE>>2)
 
-static uint32_t* screen_get_nextplane( uint32_t planeno )
-{
+/**
+ * @brief Gets the next available plane.
+ *
+ * @param planeno Plane number to get.
+ * @return uint32_t* Pointer to the next available plane.
+ */
+static uint32_t* screen_get_nextplane(uint32_t planeno) {
     static uint32_t* plane = 0;
     uint32_t* returnplane = 0;
 
     RPI_hvs->list1 = PLANE_BASE;
     context_memory[0] = 0x80000000; // set end of list bit and clear valid bit for other display lists
 
-    for (uint32_t i=0; i<planeno; i++)
-    {
-        if (plane_valid[i] == false)
-        {
+    for (uint32_t i = 0; i < planeno; i++) {
+        if (plane_valid[i] == false) {
             // ensure previous planes are skipped if not used.
-            context_memory[ (MAX_PLANES_SIZE >>2 ) * i + PLANE_BASE ] = 0x00000000 + ((MAX_PLANES_SIZE>>2)<<24); // clear valid and set list size
+            context_memory[(MAX_PLANES_SIZE >> 2) * i + PLANE_BASE] = 0x00000000 + ((MAX_PLANES_SIZE >> 2) << 24); // clear valid and set list size
         }
     }
 
-    plane = &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    plane = &context_memory[(MAX_PLANES_SIZE >> 2) * planeno + PLANE_BASE];
 
     *plane = 0x80000000; // set end of list bit and clear valid
     returnplane = plane;
-    plane = plane + (MAX_PLANES_SIZE>>2); // space for 32 words in context memory
-    if (plane_valid[planeno+1] == false)
-    {
+    plane = plane + (MAX_PLANES_SIZE >> 2); // space for 32 words in context memory
+    if (plane_valid[planeno + 1] == false) {
         *plane = 0x80000000; // set end of list bit and clear valid
     }
 
     return returnplane;
 }
 
+/**
+ * @brief Calculates the scaling factors for the screen.
+ *
+ * @param width Width of the source image.
+ * @param height Height of the source image.
+ * @param par Pixel aspect ratio.
+ * @param yuv Flag indicating if the image is YUV.
+ * @param scale_height Height to scale to.
+ * @param scaled_width Pointer to store the scaled width.
+ * @param scaled_height Pointer to store the scaled height.
+ * @param startpos Pointer to store the start position.
+ * @param nsh Pointer to store the new scaled height.
+ * @param nh Pointer to store the new height.
+ * @return uint32_t Vertical offset.
+ */
 static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh)
 {
     static float yuv_scale = 0.0f;
@@ -557,9 +581,16 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
 /* phase magnitude bits */
 #define PHASE_BITS 6
 // entry width or height, scaled width or height, x or y position, 1 for cbcr 0 for y
-static uint32_t vc4_ppf( uint32_t src, uint32_t dst,
-			 uint32_t xy, int channel)
-{
+/**
+ * @brief Calculates the phase magnitude bits for the VC4.
+ *
+ * @param src Source size.
+ * @param dst Destination size.
+ * @param xy Position.
+ * @param channel Channel (1 for cbcr, 0 for y).
+ * @return uint32_t Phase magnitude bits.
+ */
+static uint32_t vc4_ppf(uint32_t src, uint32_t dst, uint32_t xy, int channel) {
 	uint32_t scale = (src<<16) / dst;
 	int offset, offset2;
 	int phase;
