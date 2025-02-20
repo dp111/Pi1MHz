@@ -110,6 +110,7 @@ file( GLOB core_files
    helpers.c
    videoplayer.c
    rpi/decompress.S
+   rpi/fileparser.c
 )
 
 # Harddisc emulator
