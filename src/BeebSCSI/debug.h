@@ -35,11 +35,13 @@ extern  bool debugFlag_scsiBlocks;
 extern  bool debugFlag_scsiFcodes;
 extern  bool debugFlag_scsiState;
 extern  bool debugFlag_fatfs;
+extern  bool debugFlag_extended_attributes;
 
 #ifdef DEBUG
 #include "cpuspecfic.h"
 /* Function prototypes */
 void debugString_P(const char *addr);
+void debugString_C(const char *addr, uint8_t style);
 void debugString(const char *string);
 void debugStringInt8Hex_P(const char *addr, uint8_t integerValue, bool newLine);
 void debugStringInt16_P(const char *addr, uint16_t integerValue, bool newLine);
@@ -55,6 +57,7 @@ void debugLunDescriptor(const uint8_t *buffer);
 
 #else
 #define debugString_P(...) {}
+#define debugString_C(...) {}
 #define debugString(...) {}
 #define debugStringInt8Hex_P(...) {}
 #define debugStringInt16_P(...) {}

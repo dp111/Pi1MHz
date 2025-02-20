@@ -36,7 +36,7 @@ static uint8_t DefaultInquiryData[] =
 	0x00,												// Vendor Unique
 	'B','E','E','B','S','C','S','I',			// Vendor  Identification ASCII  8 bytes
 	' ','G','E','N','E','R','I','C',			// Product Identification ASCII 16 bytes
-	' ','H','D',' ',' ',' ',' ',' ',							
+	' ','H','D',' ',' ',' ',' ',' ',
 	'1','.','0','0'								// Product Revision Level ASCII  4 bytes
 };
 
@@ -82,21 +82,21 @@ static uint8_t FormatDevice[] =
 	0x00, 0x06,				// Alternate Tracks per Zone (MSB, LSB)
 	0x00, 0x06,				// Alternate Tracks per Volume (MSB, LSB)
 	(DEFAULT_SECTORS_PER_TRACK & 0xFF00) >> 8,		// Sectors per Track (MSB, LSB)
-	(DEFAULT_SECTORS_PER_TRACK & 0xFF),		
+	(DEFAULT_SECTORS_PER_TRACK & 0xFF),
 	(DEFAULT_BLOCK_SIZE & 0x00FF00) >> 8, 				// Data Bytes per Physical Sector (MSB, LSB)
 	(DEFAULT_BLOCK_SIZE & 0x0000FF),
 	0x00, 0x01,				// Interleave (MSB, LSB)
 	0x00, 0x00,				// Track Skew Factor (MSB, LSB)
 	0x00, 0x00,				// Cylinder Skew Factor (MSB, LSB)
 	0x80,						// | b7 SSEC | b6 HSEC | b5 RMB | b4 SURF | b3-b0 Drive Type
-};	
+};
 
 // Mode Page 4 - Rigid Disk Drive Geometry Parameters
 uint8_t RigidDiskDriveGeometry[] =
 {
 	0x04,						// Page Code	| b7 PS| b6 SPF| b5-b0 Page Code
-	0x04,						// Page Length (4)											
-	0x00, 0x01, 0x32,		// Number of Cylinders (MSB-LSB)							
+	0x04,						// Page Length (4)
+	0x00, 0x01, 0x32,		// Number of Cylinders (MSB-LSB)
 	0x04						// Number of Heads
 };
 
@@ -132,7 +132,7 @@ static uint8_t Page0x24[] =
 {
 	0x24,						// Page Code	| b7 PS| b6 SPF| b5-b0 Page Code
 	0x02,						// Page Length (2)
-	0x00, 0x00				// 
+	0x00, 0x00				//
 };
 
 // Mode Page 37 - User Page1 Parameters
@@ -210,7 +210,7 @@ uint16_t read_attribute(const char *token, char *buf) {
 		// try find a delimiting =, and the end of the line
 		dlim_ptr = strstr(fbuf, "=");
 		end_ptr = strstr(dlim_ptr, "\n");
-	
+
 		// check if a delimiter was found
 		if (StartsWith(dlim_ptr, "=")){
 
@@ -342,7 +342,7 @@ uint8_t getInquiryData(uint8_t bytesRequested, uint8_t *buf, uint8_t LUN) {
 	if (debugFlag_extended_attributes) debugString_C(PSTR("ext_attributes: getInquiryData: Use the default data\r\n"), DEBUG_INFO);
 
 	memcpy(buf, DefaultInquiryData, bytesRequested);
-	
+
 	// get the LUN size from the DSC to add to the default model
 	// 0 is returned if the DSC cannot be read
 	uint16_t LUN_size =	(uint16_t)((filesystemGetLunTotalBytes(LUN)) >> 20);	// size in MB
@@ -548,7 +548,7 @@ uint8_t getModePage(uint8_t LUN, uint8_t *DefaultValue, uint8_t Page, uint8_t Pa
 	ptr = (uint8_t)((ptr + LBA_size) & 0xFF);
 
 	// ---------------------------------------------------------------------------------------------------------------------------------------
-	// read the Page data 
+	// read the Page data
 
 //	if (debugFlag_extended_attributes) debugString_C(PSTR("ext_attributes: getModePage: Retrieving Mode Page Data.\r\n"), DEBUG_INFO);
 
@@ -560,14 +560,14 @@ uint8_t getModePage(uint8_t LUN, uint8_t *DefaultValue, uint8_t Page, uint8_t Pa
 
 		// if read is successful swap the DefaultValue ptr to the return buffer
 
-		if (read_attribute(token, (char *)temp_buffer)) 		
+		if (read_attribute(token, (char *)temp_buffer))
 			DefaultValue = temp_buffer;
 		else {
 			if (debugFlag_extended_attributes) debugString_C(PSTR("ext_attributes: getModePage: Using default values for the page data.\r\n"), DEBUG_INFO);
 		}
 	}
 
-	// Otherwise default attributes are being used	
+	// Otherwise default attributes are being used
 
 /*
 	if (debugFlag_extended_attributes) {
@@ -587,7 +587,7 @@ uint8_t getModePage(uint8_t LUN, uint8_t *DefaultValue, uint8_t Page, uint8_t Pa
 		length = (uint8_t)(length + 2 + modepagedata_length);
 	}
 	else{
-		// change mode page size to the length of data requested 
+		// change mode page size to the length of data requested
 		length = (uint8_t)(length + 2 + (PageLength-14));
 
    	//adjust the mode page data lenth being returned
@@ -605,7 +605,7 @@ uint8_t getModePage(uint8_t LUN, uint8_t *DefaultValue, uint8_t Page, uint8_t Pa
 	if (length > PageLength) {
 		if (debugFlag_extended_attributes) debugString_C(PSTR("ext_attributes: getModePage: data is longer than requesting buffer. Trimming.\r\n"), DEBUG_INFO);
 		length = PageLength;					// shorten the length to the buffer
-		modepagedata_length=length-14;   // shorten the amount of data being returned 
+		modepagedata_length=length-14;   // shorten the amount of data being returned
 	}
 
 	// insert mode page header
@@ -640,9 +640,9 @@ uint8_t replaceModePage(uint8_t LUN, uint8_t *Data) {
 
 //	uint8_t Page=Data[0] & 0x3F;
 //	uint8_t DataLength=Data[1];
-	
+
 	status =	createModePage(LUN, Data, retString);
-	
+
 	return status;
 }
 
@@ -650,7 +650,7 @@ uint8_t replaceModePage(uint8_t LUN, uint8_t *Data) {
 //
 // Returns 0 if successful
 // otherwise 1
-// 
+//
 uint8_t createNonModePage(bool usedefaults, uint8_t token, uint8_t *Data, uint8_t *retString) {
 
 	uint8_t status = 0;
@@ -663,7 +663,7 @@ uint8_t createNonModePage(bool usedefaults, uint8_t token, uint8_t *Data, uint8_
 			else
 				ToHexString(HexString, Data, sizeof(Data));
 
-			sprintf(retString, "Inquiry=%s\r\n", HexString);
+			sprintf((char *) retString, "Inquiry=%s\r\n", HexString);
 			break;
 
 		case TOKEN_MPHEADER:
@@ -672,18 +672,18 @@ uint8_t createNonModePage(bool usedefaults, uint8_t token, uint8_t *Data, uint8_
 			else
 				ToHexString(HexString, Data, sizeof(Data));
 
-			sprintf(retString, "ModeParamHeader=%s\r\n", HexString);
+			sprintf((char *)retString, "ModeParamHeader=%s\r\n", HexString);
 			break;
-	
+
 		case TOKEN_LBADESCRIPTOR:
 			if (usedefaults)
 				ToHexString(HexString, LBA_byte_block_descriptor_Mode6, sizeof(LBA_byte_block_descriptor_Mode6));
 			else
 				ToHexString(HexString, Data, sizeof(Data));
 
-			sprintf(retString, "LBADescriptor=%s\r\n", HexString);
+			sprintf((char *)retString, "LBADescriptor=%s\r\n", HexString);
 			break;
-	
+
 		default:
 			if (debugFlag_extended_attributes) debugString_C(PSTR("ext_attributes: createNonModePage: Unrecognised Token\r\n"), DEBUG_ERROR);
 			status = 1;
@@ -691,7 +691,7 @@ uint8_t createNonModePage(bool usedefaults, uint8_t token, uint8_t *Data, uint8_
 	}
 
 	if (debugFlag_extended_attributes) debugString_C(PSTR(retString), DEBUG_INFO);
-	
+
 	return status;
 }
 
@@ -700,7 +700,7 @@ uint8_t createNonModePage(bool usedefaults, uint8_t token, uint8_t *Data, uint8_
 //
 // Returns 0 if successful
 // otherwise 1
-// 
+//
 uint8_t createModePage(uint8_t LUN, uint8_t *Data, uint8_t *retString) {
 
 	uint8_t status = 0;
@@ -789,7 +789,7 @@ uint8_t createModePage(uint8_t LUN, uint8_t *Data, uint8_t *retString) {
 	}
 
 	if (debugFlag_extended_attributes) debugString_C(PSTR(retString), DEBUG_INFO);
-		
+
 	return status;
 
 }
@@ -802,7 +802,7 @@ uint8_t setModePage(uint8_t *Data, uint8_t *retString) {
 	char HexString[496];
 	ToHexString(HexString, Data, (Data[1])+2);
 
-	sprintf(retString, "ModePage%d=%s\r\n", Data[0], HexString);
+	sprintf((char *)retString, "ModePage%d=%s\r\n", Data[0], HexString);
 
 	return 0;
 }
@@ -818,12 +818,12 @@ bool StartsWith(const char *a, const char *b)
 // Converts hex number to ascii string of hex
 //
 // e.g. 210 -> 323130
-void ToHexString (char *hex, char *string, size_t len) 
+void ToHexString (char *hex, uint8_t *string, size_t len)
 {
 
 	// Convert hex to ascii
 	for (size_t i = 0, j = 0; i < len; ++i, j += 2)
-		sprintf(hex + j, "%02X", string[i] & 0xff);
+		sprintf(hex + j, "%02X", ((char *)string)[i] & 0xff);
 
 	return;
 }

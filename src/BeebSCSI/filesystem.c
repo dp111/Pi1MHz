@@ -58,6 +58,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "debug.h"
 #include "scsi.h"
@@ -111,7 +112,7 @@ NOINIT_SECTION static FIL fileObjectFAT;
 static bool filesystemMount(void);
 static bool filesystemDismount(void);
 static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber);
-static bool filesystemCheckLunImage(uint8_t lunNumber);
+
 //static bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNumber, uint32_t lunFileSize);
 
 static void filesystemPrintfserror(FRESULT fsResult)
@@ -458,7 +459,7 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
 
 // Function to scan for SCSI LUN image file on the mounted file system
 // and check the image is valid.
-static bool filesystemCheckLunImage(uint8_t lunNumber)
+bool filesystemCheckLunImage(uint8_t lunNumber)
 {
    uint32_t lunFileSize;
    FRESULT fsResult;
@@ -670,8 +671,6 @@ uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
 
 		(*ptr).SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;			// .dsc files don't contain sectors per track, always assume the default
 
-      lunSize = filesystemGetLunTotalBytes(lunNumber);
-
       // Note:
       //
       // The drive size (actual data storage) is calculated by the following formula:
@@ -680,8 +679,9 @@ uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
       // sectors = tracks * 33
       // (the '33' is because SuperForm uses a 2:1 interleave format with 33 sectors per
       // track (F-2 in the ACB-4000 manual))
-      // bytes = sectors * block size (block size is always 256 bytes)
-      lunSize = ((dataHeadCount * cylinderCount) * 33) * blockSize;
+      // bytes = sectors * block size (block size is always 256 bytes
+      lunSize = filesystemGetLunTotalBytes(lunNumber);
+
       f_close(&fileObject);
    }
 
@@ -1187,6 +1187,28 @@ bool filesystemCreateLunExtAttributes_Rename(uint8_t lunNumber)
 	return true;
 }
 
+
+static uint8_t filesystemWriteline(FIL* fileObject, uint8_t *outString) {
+
+	FRESULT fsResult;
+	UINT fsCounter;
+	size_t len;
+
+	len = strlen((char *) outString);
+
+	fsResult = f_write(fileObject, outString, len, &fsCounter);
+
+	// Check that the file was written OK and is the correct length
+	if (fsResult != FR_OK  && fsCounter == len) {
+		// Something went wrong
+		if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteline: ERROR: writing Mode Page value\r\n"));
+		return 1;
+	}
+
+	return 0;
+
+}
+
 // Function to write all values to to a .ext tmp file
 bool filesystemCreateLunExtAttributes_WriteValues(uint8_t lunNumber)
 {
@@ -1354,26 +1376,7 @@ bool filesystemHasExtAttributes( uint8_t lunNumber)
 }
 
 
-uint8_t filesystemWriteline(FIL* fileObject, uint8_t *outString) {
 
-	FRESULT fsResult;
-	UINT fsCounter;
-	size_t len;
-
-	len = strlen(outString);
-
-	fsResult = f_write(fileObject, outString, len, &fsCounter);
-
-	// Check that the file was written OK and is the correct length
-	if (fsResult != FR_OK  && fsCounter == len) {
-		// Something went wrong
-		if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteline: ERROR: writing Mode Page value\r\n"));
-		return 1;
-	}
-
-	return 0;
-
-}
 
 
 // Functions for reading and writing LUN images --------------------------------------------------------------------

@@ -40,14 +40,14 @@
 // The default '33' is from the ACB-4000 which uses MFM encoding. The later
 // ACB-4070 which Acorn used in the FileStore product uses RLL encoding and
 // allows for a higher density of sectors per track.
-#define DEFAULT_SECTORS_PER_TRACK 33	
+#define DEFAULT_SECTORS_PER_TRACK 33
 #define DEFAULT_BLOCK_SIZE 256
 
 // External prototypes
 void filesystemInitialise(uint8_t scsijuke, uint8_t vfsjuke);
 void filesystemReset(void);
 
-
+bool filesystemCheckLunImage(uint8_t lunNumber);
 
 void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber);
 uint8_t filesystemGetLunDirectory(void);
@@ -60,6 +60,19 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5]);
 uint32_t filesystemGetLunSizeFromDsc(uint8_t lunNumber);
 
 void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber);
+
+bool filesystemCreateLunExtAttributes_tmp(uint8_t lunNumber);
+bool filesystemCreateLunExtAttributes_Rename(uint8_t lunNumber);
+bool filesystemCreateLunExtAttributes_WriteValues(uint8_t lunNumber);
+
+bool filesystemCheckExtAttributes( uint8_t lunNumber);
+bool filesystemHasExtAttributes( uint8_t lunNumber);
+
+void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf);
+uint32_t filesystemGetLunBlockSize(uint8_t lunNumber);
+uint32_t filesystemGetLunSPTSize( uint8_t lunNumber);
+uint32_t filesystemGetLunTotalSectors(uint8_t lunNumber);
+uint32_t filesystemGetLunTotalBytes(uint8_t lunNumber);
 
 bool filesystemCreateLunImage(uint8_t lunNumber);
 bool filesystemCreateLunDescriptor(uint8_t lunNumber);
@@ -79,5 +92,6 @@ bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer);
 bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber);
 bool filesystemReadNextFatBlock(uint8_t *buffer);
 bool filesystemCloseFatForRead(void);
+
 uint32_t filesystemReadFile(const char * filename, unsigned char **address, unsigned int max_size);
 #endif /* FILESYSTEM_H_ */

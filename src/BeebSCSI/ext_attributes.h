@@ -21,7 +21,7 @@ uint8_t createModePage(uint8_t LUN, uint8_t *Data, uint8_t *retString);
 uint8_t setModePage(uint8_t *Data, uint8_t *retString);
 
 bool StartsWith(const char *a, const char *b);
-void ToHexString(char *hex, char *string, size_t len);
+void ToHexString(char *hex, uint8_t *string, size_t len);
 void FromHexString(char *hex, char *string, size_t length);
 bool ValidHexString(char *buf);
 
