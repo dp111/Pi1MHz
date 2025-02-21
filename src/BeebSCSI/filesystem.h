@@ -93,5 +93,5 @@ bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber);
 bool filesystemReadNextFatBlock(uint8_t *buffer);
 bool filesystemCloseFatForRead(void);
 
-uint32_t filesystemReadFile(const char * filename, unsigned char **address, unsigned int max_size);
+uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned int max_size);
 #endif /* FILESYSTEM_H_ */

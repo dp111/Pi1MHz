@@ -22,11 +22,11 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     {
         screen_release_buffer(handle); // doesn't do anything if handle is NULL
         buffer = screen_allocate_buffer( 768*576*2, &handle );
-        void * buf = malloc(768*576*2);
+        uint8_t * buf = malloc(768*576*2);
         if (buf)
         {
-            filesystemReadFile("frame.lz",(unsigned char ** ) (buf),768*576*2);
-            decompress_lz4(buf, (unsigned char *) buffer);
+            filesystemReadFile("frame.lz",&buf,768*576*2);
+            decompress_lz4(buf, ( uint8_t*) buffer);
         }
 
         // filesystemReadFile("frame.yuv",(unsigned char *) (buffer),768*576*2);

@@ -1,1 +1,1 @@
-void decompress_lz4( void * src, void * dst );
+void decompress_lz4( void * src, uint8_t * dst );
