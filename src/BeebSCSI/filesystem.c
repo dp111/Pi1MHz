@@ -202,8 +202,6 @@ static void filesystemPrintfserror(FRESULT fsResult)
       default:
       debugString_P(PSTR("unknown error\r\n"));
       break;
-
-
    }
 }
 
@@ -283,8 +281,10 @@ static bool filesystemDismount(void)
 */
    // Set all LUNs to stopped
    for( uint8_t i=0 ; i < MAX_LUNS; i++ )
+   {
       filesystemSetLunStatus(i, false);
-
+      parse_relasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
+   }
 /*   // Dismount the SD card
      FRESULT fsResult;
  //  fsResult = f_mount(&filesystemState.fsObject, "", 0);
@@ -360,6 +360,7 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
 
    // Transitioning from started to stopped
    f_close(&filesystemState.fileObject[lunNumber]);
+   parse_relasekeyvalues(filesystemState.keyvalues[lunNumber], NUM_KEYS);
    filesystemState.fsLunStatus[lunNumber] = false;
 
    if (debugFlag_filesystem) {
@@ -482,13 +483,9 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
 
    // Attempt to open the LUN image
    if (lunNumber < 8 )
-   {
       sprintf(fileName, "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
-   }
    else
-   {
       sprintf(fileName, "/BeebVFS%d/scsi%d.dat", filesystemState.lunDirectoryVFS, lunNumber & 7);
-   }
 
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCheckLunImage(): Checking for (.dat) LUN image "), (uint16_t)lunNumber, 1);
    fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName, FA_READ | FA_WRITE);
@@ -922,10 +919,6 @@ bool filesystemHasExtAttributes( uint8_t lunNumber)
 	return 0;
 }
 
-
-
-
-
 // Functions for reading and writing LUN images --------------------------------------------------------------------
 
 // Function to open a LUN ready for reading
@@ -1305,4 +1298,22 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
    f_read(&fileObject, address, max_size, &byteCounter);
    f_close(&fileObject);
    return f_size(&fileObject);
+}
+
+
+// read a file buffer can be malloced if the address is NULL
+
+uint32_t filesystemWriteFile(const char * filename, uint8_t *address, uint32_t max_size)
+{
+   UINT byteCounter;
+   FRESULT fsResult;
+   FIL fileObject;
+
+   fsResult = f_open(&fileObject, filename, FA_WRITE);
+   if (fsResult != FR_OK)
+      return 0;
+
+   f_write(&fileObject, address, max_size, &byteCounter);
+   f_close(&fileObject);
+   return byteCounter;
 }
