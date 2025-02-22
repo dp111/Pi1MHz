@@ -224,125 +224,43 @@ void scsiProcessEmulation(void)
    // Process SCSI emulation state
    switch (scsiState) {
       // Handle SCSI bus states:
-      case SCSI_BUSFREE:
-      scsiState = scsiEmulationBusFree();
-      break;
-
-      case SCSI_COMMAND:
-      scsiState = scsiEmulationCommand();
-      break;
-
-      case SCSI_STATUS:
-      scsiState = scsiEmulationStatus();
-      break;
-
-      case SCSI_MESSAGE:
-      scsiState = scsiEmulationMessage();
-      break;
+      case SCSI_BUSFREE:  scsiState = scsiEmulationBusFree(); break;
+      case SCSI_COMMAND:  scsiState = scsiEmulationCommand(); break;
+      case SCSI_STATUS:   scsiState = scsiEmulationStatus();  break;
+      case SCSI_MESSAGE:  scsiState = scsiEmulationMessage(); break;
 
       // Handle SCSI commands:
-      case SCSI_TESTUNITREADY:
-      scsiState = scsiCommandTestUnitReady();
-      break;
-
-      case SCSI_REZEROUNIT:
-      scsiState = scsiCommandRezeroUnit();
-      break;
-
-      case SCSI_REQUESTSENSE:
-      scsiState = scsiCommandRequestSense();
-      break;
-
-      case SCSI_FORMAT:
-      scsiState = scsiCommandFormat();
-      break;
-
-      case SCSI_REASSIGNBLOCKS:
-      scsiState = scsiCommandReassignBlocks();
-      break;
-
-      case SCSI_READ6:
-      scsiState = scsiCommandRead6();
-      break;
-
-      case SCSI_WRITE6:
-      scsiState = scsiCommandWrite6();
-      break;
-
-      case SCSI_SEEK:
-      scsiState = scsiCommandSeek();
-      break;
-
-      case SCSI_TRANSLATE:
-      scsiState = scsiCommandTranslate();
-      break;
-
-      case SCSI_MODESELECT6:
-      scsiState = scsiCommandModeSelect6();
-      break;
-
-      case SCSI_MODESENSE6:
-      scsiState = scsiCommandModeSense6();
-      break;
-
-      case SCSI_STARTSTOP:
-      scsiState = scsiCommandStartStop();
-      break;
-
-      case SCSI_VERIFY:
-      scsiState = scsiCommandVerify();
-      break;
-
-      case SCSI_READCAPACITY:
-      scsiState = scsiCommandReadCapacity();
-      break;
-
-		case SCSI_READDEFECTDATA10:
-		scsiState = scsiCommandReadDefectData10();
-		break;
-
-      case SCSI_INQUIRY:
-      scsiState = scsiCommandInquiry();
-      break;
-
-      case SCSI_SENDDIAGNOSTIC:
-      scsiState = scsiCommandSendDiagnostic();
-      break;
+      case SCSI_TESTUNITREADY: scsiState = scsiCommandTestUnitReady(); break;
+      case SCSI_REZEROUNIT:    scsiState = scsiCommandRezeroUnit();    break;
+      case SCSI_REQUESTSENSE:  scsiState = scsiCommandRequestSense();  break;
+      case SCSI_FORMAT:        scsiState = scsiCommandFormat();        break;
+      case SCSI_REASSIGNBLOCKS:scsiState = scsiCommandReassignBlocks();break;
+      case SCSI_READ6:         scsiState = scsiCommandRead6();         break;
+      case SCSI_WRITE6:        scsiState = scsiCommandWrite6();        break;
+      case SCSI_SEEK:          scsiState = scsiCommandSeek();          break;
+      case SCSI_TRANSLATE:     scsiState = scsiCommandTranslate();     break;
+      case SCSI_MODESELECT6:   scsiState = scsiCommandModeSelect6();   break;
+      case SCSI_MODESENSE6:    scsiState = scsiCommandModeSense6();    break;
+      case SCSI_STARTSTOP:     scsiState = scsiCommandStartStop();     break;
+      case SCSI_VERIFY:        scsiState = scsiCommandVerify();        break;
+      case SCSI_READCAPACITY:  scsiState = scsiCommandReadCapacity();  break;
+		case SCSI_READDEFECTDATA10:scsiState = scsiCommandReadDefectData10(); break;
+      case SCSI_INQUIRY:         scsiState = scsiCommandInquiry();          break;
+      case SCSI_SENDDIAGNOSTIC:  scsiState = scsiCommandSendDiagnostic();   break;
 
       // Handle LV-DOS specific group 6 commands
-      case SCSI_WRITE_FCODE:
-      scsiState = scsiWriteFCode();
-      break;
-
-      case SCSI_READ_FCODE:
-      scsiState = scsiReadFCode();
-      break;
+      case SCSI_WRITE_FCODE:  scsiState = scsiWriteFCode(); break;
+      case SCSI_READ_FCODE:   scsiState = scsiReadFCode();  break;
 
       // Handle BeebSCSI specific group 6 commands
-      case SCSI_BEEBSCSI_SENSE:
-      scsiState = scsiBeebScsiSense();
-      break;
-
-      case SCSI_BEEBSCSI_SELECT:
-      scsiState = scsiBeebScsiSelect();
-      break;
-
-      case SCSI_BEEBSCSI_FATPATH:
-      scsiState = scsiBeebScsiFatPath();
-      break;
-
-      case SCSI_BEEBSCSI_FATINFO:
-      scsiState = scsiBeebScsiFatInfo();
-      break;
-
-      case SCSI_BEEBSCSI_FATREAD:
-      scsiState = scsiBeebScsiFatRead();
-      break;
+      case SCSI_BEEBSCSI_SENSE:  scsiState = scsiBeebScsiSense();  break;
+      case SCSI_BEEBSCSI_SELECT: scsiState = scsiBeebScsiSelect(); break;
+      case SCSI_BEEBSCSI_FATPATH:scsiState = scsiBeebScsiFatPath();break;
+      case SCSI_BEEBSCSI_FATINFO:scsiState = scsiBeebScsiFatInfo();break;
+      case SCSI_BEEBSCSI_FATREAD:scsiState = scsiBeebScsiFatRead();break;
 
       // Handle Vendor specific group 7 commands
-      case SCSI_CERTIFY:
-      scsiState = scsiCommandCertify();
-      break;
+      case SCSI_CERTIFY: scsiState = scsiCommandCertify(); break;
 
       default:
       if (debugFlag_scsiState) debugString_P(PSTR("SCSI State: ERROR: Invalid SCSI state!\r\n"));
@@ -466,21 +384,10 @@ uint8_t scsiEmulationCommand(void)
 
    // Set the length of the CDB based on the command group
    switch (group) {
-      case 0:
-      length = 6;
-      break;
-
-      case 1:
-      length = 10;
-      break;
-
-      case 6:
-      length = 6;
-      break;
-
-      case 7:
-      length = 6;
-      break;
+      case 0: length = 6; break;
+      case 1: length = 10;break;
+      case 6: length = 6; break;
+      case 7: length = 6; break;
 
       default:
       length = 6; // guess at a length !
@@ -522,61 +429,20 @@ uint8_t scsiEmulationCommand(void)
    if (group == 0) {
       // Select group 0 command type
       switch (opCode) {
-         case 0x00:
-         return SCSI_TESTUNITREADY;
-         break;
-
-         case 0x01:
-         return SCSI_REZEROUNIT;
-         break;
-
-         case 0x03:
-         return SCSI_REQUESTSENSE;
-         break;
-
-         case 0x04:
-         return SCSI_FORMAT;
-         break;
-
-         case 0x07:
-         return SCSI_REASSIGNBLOCKS;
-         break;
-
-         case 0x08:
-         return SCSI_READ6;
-         break;
-
-         case 0x0A:
-         return SCSI_WRITE6;
-         break;
-
-         case 0x0B:
-         return SCSI_SEEK;
-         break;
-
-         case 0x0F:
-         return SCSI_TRANSLATE;
-         break;
-
-         case 0x12:
-         return SCSI_INQUIRY;
-         break;
-
-         case 0x15:
-         return SCSI_MODESELECT6;
-         break;
-
-         case 0x1A:
-         return SCSI_MODESENSE6;
-         break;
-
-         case 0x1B:
-         return SCSI_STARTSTOP;
-         break;
-
-         case 0x1D:
-         return SCSI_SENDDIAGNOSTIC;
-         break;
+         case 0x00: return SCSI_TESTUNITREADY; break;
+         case 0x01: return SCSI_REZEROUNIT;    break;
+         case 0x03: return SCSI_REQUESTSENSE;  break;
+         case 0x04: return SCSI_FORMAT;        break;
+         case 0x07: return SCSI_REASSIGNBLOCKS;break;
+         case 0x08: return SCSI_READ6;         break;
+         case 0x0A: return SCSI_WRITE6;        break;
+         case 0x0B: return SCSI_SEEK;          break;
+         case 0x0F: return SCSI_TRANSLATE;     break;
+         case 0x12: return SCSI_INQUIRY;       break;
+         case 0x15: return SCSI_MODESELECT6;   break;
+         case 0x1A: return SCSI_MODESENSE6;    break;
+         case 0x1B: return SCSI_STARTSTOP;     break;
+         case 0x1D: return SCSI_SENDDIAGNOSTIC;break;
       }
    }
 
@@ -584,15 +450,9 @@ uint8_t scsiEmulationCommand(void)
    if (group == 1) {
       // Select group 1 command type
       switch (opCode) {
-         case 0x05:
-         return SCSI_READCAPACITY;
-         break;
-         case 0x0F:
-         return SCSI_VERIFY;
-         break;
-         case 0x17:
-         return SCSI_READDEFECTDATA10;
-         break;
+         case 0x05: return SCSI_READCAPACITY;     break;
+         case 0x0F: return SCSI_VERIFY;           break;
+         case 0x17: return SCSI_READDEFECTDATA10; break;
       }
    }
 
@@ -600,13 +460,8 @@ uint8_t scsiEmulationCommand(void)
    if (group == 6 && (scsiHostID == 8)) {
       // Select group 6 command type
       switch (opCode) {
-         case 0x0A:
-         return SCSI_WRITE_FCODE;
-         break;
-
-         case 0x08:
-         return SCSI_READ_FCODE;
-         break;
+         case 0x0A: return SCSI_WRITE_FCODE; break;
+         case 0x08: return SCSI_READ_FCODE;  break;
       }
    }
 
@@ -614,34 +469,18 @@ uint8_t scsiEmulationCommand(void)
    if (group == 6) {
       // Select group 6 command type
       switch (opCode) {
-         case 0x10:
-         return SCSI_BEEBSCSI_SENSE;
-         break;
-
-         case 0x11:
-         return SCSI_BEEBSCSI_SELECT;
-         break;
-
-         case 0x12:
-         return SCSI_BEEBSCSI_FATPATH;
-         break;
-
-         case 0x13:
-         return SCSI_BEEBSCSI_FATINFO;
-         break;
-
-         case 0x14:
-         return SCSI_BEEBSCSI_FATREAD;
-         break;
+         case 0x10: return SCSI_BEEBSCSI_SENSE;   break;
+         case 0x11: return SCSI_BEEBSCSI_SELECT;  break;
+         case 0x12: return SCSI_BEEBSCSI_FATPATH; break;
+         case 0x13: return SCSI_BEEBSCSI_FATINFO; break;
+         case 0x14: return SCSI_BEEBSCSI_FATREAD; break;
       }
    }
    // Transition to command based on received opCode (group 7 Vendor specific commands)
    if (group == 7) {
       // Select group 7 command type
       switch (opCode) {
-         case 0x02:
-         return SCSI_CERTIFY;
-         break;
+         case 0x02: return SCSI_CERTIFY; break;
 		}
 	}
 
