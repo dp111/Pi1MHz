@@ -18,54 +18,13 @@ keys must start at the beginning of the line and with
 #include <inttypes.h>
 #include "../beebscsi/filesystem.h"
 #include "rpi.h"
+#include "fileparser.h"
 
-enum keyvaluetype {
-    NUMSTRING,
-    STRING,
-    INTEGER
-};
-
-struct keyvalue {
-    const char * key;
-    int min;
-    int max;
-    enum keyvaluetype type;
-};
-
-
-struct values {
-    size_t length;
-    union {
-        int * integer;
-        char * string;
-    } v;
-};
-
-const struct keyvalue scsiattributes[] = {
-    { "Title"           , 0 , 39 , STRING},
-    { "Description"     , 0 ,255 , STRING },
-    { "Inquiry"         , 0 ,101 , NUMSTRING },
-    { "ModeParamHeader" , 0 ,  4 , NUMSTRING },
-    { "LBADescriptor"   , 0 ,  8 , NUMSTRING },
-    { "ModePage1"       , 0 ,  5 , NUMSTRING},
-    { "ModePage3"       , 0 , 21 , NUMSTRING },
-    { "ModePage4"       , 0 ,  6 , NUMSTRING},
-    { "ModePage32"      , 0 , 10 , NUMSTRING},
-    { "ModePage33"      , 0 ,  9 , NUMSTRING },
-    { "ModePage35"      , 0 ,  3 , NUMSTRING},
-    { "ModePage36"      , 0 ,  4 , NUMSTRING},
-    { "ModePage37"      , 0 ,  6 , NUMSTRING},
-    { "ModePage38"      , 0 ,  6 , NUMSTRING},
-    { "LDUserCode"      , 0 ,  4 , STRING },
-    { "LDVideoXoffset"  , -768 , 768 , INTEGER },
-    { "" , 0 ,0, 0} // end of list
-};
-
-inline int parse_findindex( uint8_t * searchkey, const struct keyvalue array[])
+int parse_findindex( const char * searchkey, const parserkey array[])
 {
     int i = 0;
     while (array[i].key) {
-        if (strcasecmp(array[i].key, (char *) searchkey) == 0) {
+        if (strcasecmp(array[i].key, searchkey) == 0) {
             return i;
         }
     }
@@ -110,7 +69,7 @@ static size_t parse_strlen( const uint8_t * buf , size_t ptr, size_t max,  int *
 //
 // if outfile filename is set then the keyvalues will be written back to the file.
 
-int parse_readfile( const char * filename , const char * outfile, struct keyvalue keyv[], struct values values[] )
+int parse_readfile( const char * filename , const char * outfile, const parserkey keyv[], parserkeyvalue values[])
 {
 // open file for reading
     size_t ptr = 0, outptr = 0;
@@ -121,28 +80,38 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
     LOG_DEBUG("Parsing %s File size %d\n\r",filename, filesize);
     char * outbuf = malloc( filesize*4); // create out buffer *4 input size should be enough
 
+    if (outbuf == NULL)
+        return 0;
+
     while (ptr <filesize)
     {
         // skip white space and blank lines
-        while  ((buffer[ptr] <= ' ') && (ptr < filesize))
+        while  ((ptr < filesize) && (buffer[ptr] <= ' ') )
+            {
+                outbuf[outptr++] = buffer[ptr++];
+                ptr++;
+            }
+
+        if (ptr >= filesize)
+            break;
+
         // skip a line if it starts with a #
         if (buffer[ptr] == '#')
         {
-            while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
+            while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )) )
                 outbuf[outptr++] = buffer[ptr++];
             continue;
         }
 
         // find the key
-        int keyindex = parse_findindex( (buffer + ptr) , keyv );
+        int keyindex = parse_findindex(( const char *) (buffer + ptr) , keyv );
         if (keyindex == -1)
         {
             // key not found skip line
             LOG_DEBUG("Key not found %s\n", buffer + ptr );
-            while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
+            while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )) )
                 outbuf[outptr++] = buffer[ptr++];
             continue;
-
         }
         else
         {
@@ -164,12 +133,12 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
                 }
                 if (buffer[ptr] == '#')
                 {
-                    while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
+                    while ( (ptr < filesize) && ((buffer[ptr] != '\n')&&( buffer[ptr] != '\r' )) )
                         outbuf[outptr++] = buffer[ptr++];
                     break;
 
                 }
-                if ((buffer[ptr] == '\n') || ( buffer[ptr] != '\r' ))
+                if ((buffer[ptr] == '\n') || ( buffer[ptr] == '\r' ))
                 {
                     outbuf[outptr++] = buffer[ptr++];
                     break;
@@ -179,7 +148,7 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
             }
             if (flag)
                 {
-                    if (outbuf)
+                    if (outfile)
                     {
                       int nonnumber;
                       size_t len = parse_strlen( buffer , ptr, filesize, &nonnumber);
@@ -222,7 +191,7 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
                        }
 
                         // copy the rest of the line to the output buffer
-                        while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && ptr < filesize)
+                        while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )))
                             outbuf[outptr++] = buffer[ptr++];
 
 
@@ -247,49 +216,68 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
                                 // read a string number
                                 LOG_DEBUG("Number %s\n\r" , &buffer[ptr]);
                                 values[keyindex].v.string = malloc( len/2);
-                                for (size_t i = 0; i < len/2; i++)
+                                if (values[keyindex].v.string == NULL)
+                                    {
+                                    LOG_DEBUG("Error allocating memory for string number\n\r");
+                                    ptr += len;
+                                } else
                                 {
-                                    if ((buffer[ptr] >= '0') && (buffer[ptr] <= '9'))
-                                        values[keyindex].v.string[i] = (char)(buffer[ptr] - '0')<<4;
-                                    else if ((buffer[ptr] >= 'A' && buffer[ptr] <= 'F'))
-                                        values[keyindex].v.string[i] = (char)(buffer[ptr] - 'A' + 10)<<4;
-                                    else if ((buffer[ptr] >= 'a' && buffer[ptr] <= 'f'))
-                                        values[keyindex].v.string[i] = (char)(buffer[ptr] - 'a' + 10)<<4;
-                                    ptr++;
-                                    if ((buffer[ptr] >= '0') && (buffer[ptr] <= '9'))
-                                        values[keyindex].v.string[i] += (char)(buffer[ptr] - '0');
-                                    else if ((buffer[ptr] >= 'A') && (buffer[ptr] <= 'F'))
-                                        values[keyindex].v.string[i] += (char)(buffer[ptr] - 'A' + 10);
-                                    else if ((buffer[ptr] >= 'a') && (buffer[ptr] <= 'f'))
-                                        values[keyindex].v.string[i] += (char)(buffer[ptr] - 'a' + 10);
-                                    ptr++;
+                                    for (size_t i = 0; i < len/2; i++)
+                                    {
+                                        if ((buffer[ptr] >= '0') && (buffer[ptr] <= '9'))
+                                            values[keyindex].v.string[i] = (char)(buffer[ptr] - '0')<<4;
+                                        else if ((buffer[ptr] >= 'A' && buffer[ptr] <= 'F'))
+                                            values[keyindex].v.string[i] = (char)(buffer[ptr] - 'A' + 10)<<4;
+                                        else if ((buffer[ptr] >= 'a' && buffer[ptr] <= 'f'))
+                                            values[keyindex].v.string[i] = (char)(buffer[ptr] - 'a' + 10)<<4;
+                                        ptr++;
+                                        if ((buffer[ptr] >= '0') && (buffer[ptr] <= '9'))
+                                            values[keyindex].v.string[i] += (char)(buffer[ptr] - '0');
+                                        else if ((buffer[ptr] >= 'A') && (buffer[ptr] <= 'F'))
+                                            values[keyindex].v.string[i] += (char)(buffer[ptr] - 'A' + 10);
+                                        else if ((buffer[ptr] >= 'a') && (buffer[ptr] <= 'f'))
+                                            values[keyindex].v.string[i] += (char)(buffer[ptr] - 'a' + 10);
+                                        ptr++;
+                                    }
+                                    values[keyindex].length = len/2;
                                 }
-
-                                values[keyindex].length = len/2;
                             }
                         }
                         else if (keyv[keyindex].type == STRING)
                         {
                             // read a string
                             values[keyindex].v.string = malloc( len + 1);
-                            memcpy( values[keyindex].v.string , buffer + ptr , len);
-                            values[keyindex].v.string[len] = 0;
-                            values[keyindex].length = len;
-                            LOG_DEBUG("string %s\n\r" , values[keyindex].v.string);
-                            ptr += len;
+                            if (values[keyindex].v.string == NULL)
+                                {
+                                LOG_DEBUG("Error allocating memory for string\n\r");
+                                ptr += len;
+                            } else {
+                                memcpy( values[keyindex].v.string , buffer + ptr , len);
+                                values[keyindex].v.string[len] = 0;
+                                values[keyindex].length = len;
+                                LOG_DEBUG("string %s\n\r" , values[keyindex].v.string);
+                                ptr += len;
+                            }
                         }
                         else if (keyv[keyindex].type == INTEGER)
                         {
                             // read a number
                             values[keyindex].v.integer = malloc( 4);
-                            *values[keyindex].v.integer = (int) strtol( (char *)buffer + ptr, 0 , 0);
-                            LOG_DEBUG("number %d\n\r" , *values[keyindex].value);
-                            values[keyindex].length = 1;
-                            ptr += len;
+                            if (values[keyindex].v.integer == NULL)
+                                {
+                                LOG_DEBUG("Error allocating memory for integer\n\r");
+                                ptr += len;
+                            } else
+                            {
+                                *values[keyindex].v.integer = (int) strtol( (char *)buffer + ptr, 0 , 0);
+                                LOG_DEBUG("number %d\n\r" , *values[keyindex].value);
+                                values[keyindex].length = 1;
+                                ptr += len;
+                            }
                         }
 
                         // now seach for the end of the line
-                        while ( ((buffer[ptr] != '\n')||( buffer[ptr] != '\r' )) && (ptr < filesize))
+                        while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )))
                             outbuf[outptr++] = buffer[ptr++];
                 }
             } else
@@ -311,7 +299,7 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
     return 1;
 }
 
-void parse_relasekeyvalues( struct values values[], int numberofkeys )
+void parse_relasekeyvalues( parserkeyvalue values[], int numberofkeys )
 {
     for (int i = 0; i < numberofkeys ; i++)
     {

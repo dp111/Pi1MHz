@@ -43,6 +43,18 @@
 #define DEFAULT_SECTORS_PER_TRACK 33
 #define DEFAULT_BLOCK_SIZE 256
 
+
+// Minimum geometry details needed to operate the LUN
+// This saves looking them up again in the future
+struct HDGeometry
+{
+	uint32_t BlockSize;				// This will almost always be 256
+	uint32_t Cylinders;
+	uint8_t  Heads;
+	uint16_t SectorsPerTrack;		// default is 33
+	uint16_t Interleave;				// doesn't really matter for BeebSCSI
+};
+
 // External prototypes
 void filesystemInitialise(uint8_t scsijuke, uint8_t vfsjuke);
 void filesystemReset(void);
@@ -57,8 +69,6 @@ bool filesystemReadLunStatus(uint8_t lunNumber);
 bool filesystemTestLunStatus(uint8_t lunNumber);
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5]);
 
-uint32_t filesystemGetLunSizeFromDsc(uint8_t lunNumber);
-
 void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber);
 
 bool filesystemCreateLunExtAttributes_tmp(uint8_t lunNumber);
@@ -70,13 +80,14 @@ bool filesystemHasExtAttributes( uint8_t lunNumber);
 
 void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf);
 uint32_t filesystemGetLunBlockSize(uint8_t lunNumber);
+uint32_t filesystemGetheadspercylinder(uint8_t lunNumber);
 uint32_t filesystemGetLunSPTSize( uint8_t lunNumber);
 uint32_t filesystemGetLunTotalSectors(uint8_t lunNumber);
 uint32_t filesystemGetLunTotalBytes(uint8_t lunNumber);
 
 bool filesystemCreateLunImage(uint8_t lunNumber);
 bool filesystemCreateLunDescriptor(uint8_t lunNumber);
-bool filesystemReadLunDescriptor(uint8_t lunNumber, uint8_t buffer[]);
+bool filesystemReadLunDescriptor(uint8_t lunNumber);
 bool filesystemWriteLunDescriptor(uint8_t lunNumber, const uint8_t buffer[]);
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern);
 
