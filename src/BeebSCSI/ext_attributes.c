@@ -335,7 +335,7 @@ uint8_t getInquiryData(uint8_t bytesRequested, uint8_t *buf, uint8_t LUN) {
 
 	}
 
-	// extended attrtibutes not available
+	// extended attributes not available
 
 	// use the default data
 	if (debugFlag_extended_attributes) debugString_C(PSTR("ext_attributes: getInquiryData: Use the default data\r\n"), DEBUG_INFO);

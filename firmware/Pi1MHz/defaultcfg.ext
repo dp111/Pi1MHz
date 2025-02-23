@@ -94,7 +94,7 @@ ModeParamHeader=10000008
 #               | | \Write Protect | Rsvd | DPOFUA |    Reserved       |
 #               | \Medium type
 #               \Mode Data length of(MPHeader + LBA BLOCK + Mode Page) -1
-#                e.g. 4bytes +6bytes +[Page1]5bytes -1 = 16bytes (0x10)
+#                e.g. 4bytes +8bytes +[Page1]5bytes -1 = 16bytes (0x10)
 #                This is automatically calculated and overwritten in BeebSCSI
 
 # LBA mode parameter block descriptor Mode6 - 8 bytes
@@ -171,7 +171,7 @@ ModePage32=20083131303030303030
 #
 #          /Mode Page - 33 Manufacture
 #          |   871013
-ModePage33=2106570A0D02860002
+ModePage33=2107570A0D02860002
 #          | | |
 #          | | \Manufacture Date and Build Level
 #          | \Page Length

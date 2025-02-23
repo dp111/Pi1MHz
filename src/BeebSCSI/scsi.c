@@ -1522,8 +1522,6 @@ static uint8_t scsiCommandModeSense6(void)
 {
 
    uint8_t sizerequested = commandDataBlock.data[4];
-   uint8_t buf[sizerequested];
-   memset(buf, 0x00 , sizerequested);
 
    if (debugFlag_scsiCommands) {
       debugString_C(PSTR("SCSI Commands: MODESENSE6 command (0x1A) received\r\n"),DEBUG_SCSI_COMMAND);
@@ -1534,34 +1532,71 @@ static uint8_t scsiCommandModeSense6(void)
 	// We do not check if the LUN is available since there (at this point) may only be a descriptor
 	// file for the LUN.  If the descriptor cannot be read we assume that the LUN is completely unavailable
 
-	// read mode page data (either default or from extended attributes file)
-	if (readModePage(commandDataBlock.targetLUN, commandDataBlock.data[2], sizerequested, buf) != 0) {
+   if (!filesystemReadLunDescriptor(commandDataBlock.targetLUN)) {
+      // Unable to read drive descriptor! Exit with error status
+      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
 
-		// transfer the page data
+      // Set request sense error globals
+      requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
 
-		// Set up the control signals ready for the data in phase
-		scsiInformationTransferPhase(ITPHASE_DATAIN);
+      debugString_P(PSTR("SCSI Commands: ERROR: Could not read geometry from LUN descriptor\r\n"));
 
-		// Transfer the buffer contents
-		if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Sending Page Mode data to host\r\n"), DEBUG_SUCCESS);
+      // Transition to the STATUS state
+      return SCSI_STATUS;
+   }
 
-		for (uint8_t i = 0; i < sizerequested; i++)
-				hostadapterWriteByte(buf[i]);
+   char * headerptr, *LBAptr, *modeptr;
+   int headerlen,LBAlen,modelen;
 
-		// Indicate successful command in status and message
-		commandDataBlock.status = 0x00; // 0x00 = Good
-	}
-	else
-	{
-		// no data found either default or in the extended file
+   headerptr = filesystemGetModeParamHeaderData(commandDataBlock.targetLUN, (size_t * ) & headerlen);
+   LBAptr = filesystemGetLBADescriptorData(commandDataBlock.targetLUN, (size_t * ) & LBAlen);
+   modeptr = filesystemGetModePageData(commandDataBlock.targetLUN, commandDataBlock.data[2], (size_t * ) & modelen);
 
-		if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Bad Page Argument\r\n"), DEBUG_ERROR);
-		// Indicate unsuccessful command in status and message
-		commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+   if ( (headerptr == NULL) || (LBAptr == NULL) || (modeptr == NULL)) {
+      // Unable to read drive descriptor! Exit with error status
+      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
 
-		// Set request sense error globals
-		requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
-	}
+      // Set request sense error globals
+      requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
+
+      debugString_P(PSTR("SCSI Commands: ERROR: Could not read geometry from LUN descriptor\r\n"));
+
+      // Transition to the STATUS state
+      return SCSI_STATUS;
+   }
+
+   // Set up the control signals ready for the data in phase
+   scsiInformationTransferPhase(ITPHASE_DATAIN);
+   if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Sending Page Mode data to host\r\n"));
+   int length = headerlen+LBAlen+modelen;
+
+   if (sizerequested < length) {
+       length = sizerequested;
+   }
+   // send length
+   hostadapterWriteByte((uint8_t)(length - 1 ));
+   // send header
+   for (int i = 1; i < headerlen; i++)
+      hostadapterWriteByte(headerptr[i]);
+
+   length -= headerlen;
+
+   if (length < LBAlen)
+         LBAlen = length;
+
+   for (int i = 0; i < LBAlen; i++)
+      hostadapterWriteByte(LBAptr[i]);
+
+
+   length -= LBAlen;
+   if (length < modelen)
+         modelen = length;
+
+   for (int i = 0; i < modelen; i++)
+      hostadapterWriteByte(modeptr[i]);
+
+   // Indicate successful command in status and message
+   commandDataBlock.status = 0x00; // 0x00 = Good
 
    return SCSI_STATUS;
 }
@@ -1798,7 +1833,6 @@ static uint8_t scsiCommandReadDefectData10(void)
 //
 static uint8_t scsiCommandInquiry(void)
 {
-
    if (debugFlag_scsiCommands) {
       debugString_C(PSTR("SCSI Commands: CommandInquiry (0x12) received\r\n"), DEBUG_SCSI_COMMAND);
 //      debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
@@ -1808,12 +1842,9 @@ static uint8_t scsiCommandInquiry(void)
 		debugString_C(PSTR(msg), DEBUG_INFO);
    }
 
-	// create a temporary buffer the size of the data to be returned
-	uint8_t buf[commandDataBlock.data[4]];
-
-	// get the inquiry data either from the extended attributes or default data
-	if ( getInquiryData(commandDataBlock.data[4], buf, commandDataBlock.targetLUN) == 0) {
-		// Set up the control signals ready for the data in phase
+   char * buf = filesystemGetInquiryData(commandDataBlock.targetLUN);
+   if (buf) {
+      // Set up the control signals ready for the data in phase
 		scsiInformationTransferPhase(ITPHASE_DATAIN);
 
 		// send back the inquiry data
@@ -1823,7 +1854,7 @@ static uint8_t scsiCommandInquiry(void)
 		// Indicate successful command in status and message
 		commandDataBlock.status = 0x00; // 0x00 = Good
 	}
-	else {
+   else {
 		if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: scsiCommandInquiry: Error reading Inquiry data\r\n"), DEBUG_ERROR);
 
 		// Indicate unsuccessful command in status and message
@@ -2343,7 +2374,7 @@ static uint8_t scsiBeebScsiFatRead(void)
 //
 // This is a RODIME vendor specific command.
 //
-// No infornmation what this does on the RODIME drives. A 6 byte cmd block is
+// No information what this does on the RODIME drives. A 6 byte cmd block is
 // passed,  &E2, LUN , 0 , cycles , 0 , 0
 static uint8_t scsiCommandCertify(void)
 {
