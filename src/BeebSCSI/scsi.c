@@ -1545,7 +1545,7 @@ static uint8_t scsiCommandModeSense6(void)
       return SCSI_STATUS;
    }
 
-   char * headerptr, *LBAptr, *modeptr;
+   const char * headerptr, *LBAptr, *modeptr;
    int headerlen,LBAlen,modelen;
 
    headerptr = filesystemGetModeParamHeaderData(commandDataBlock.targetLUN, (size_t * ) & headerlen);
@@ -1849,7 +1849,7 @@ static uint8_t scsiCommandInquiry(void)
 		debugString_C(PSTR(msg), DEBUG_INFO);
    }
 
-   char * buf = filesystemGetInquiryData(commandDataBlock.targetLUN);
+   const char * buf = filesystemGetInquiryData(commandDataBlock.targetLUN);
    if (buf) {
       // Set up the control signals ready for the data in phase
 		scsiInformationTransferPhase(ITPHASE_DATAIN);
