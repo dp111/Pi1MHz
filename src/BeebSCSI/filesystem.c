@@ -77,6 +77,7 @@ static const parserkey scsiattributes[] = {
    { "Inquiry"         , 0 ,101 , NUMSTRING },
    { "ModeParamHeader" , 0 ,  4 , NUMSTRING },
    { "LBADescriptor"   , 0 ,  8 , NUMSTRING },
+   { "ModePage0"       , 0 ,  10 , NUMSTRING},
    { "ModePage1"       , 0 ,  5 , NUMSTRING},
    { "ModePage3"       , 0 , 21 , NUMSTRING },
    { "ModePage4"       , 0 ,  6 , NUMSTRING},
@@ -869,43 +870,77 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
       // LUN extended attributes file is not present
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file not found\r\n"));
    }
-	// Update the cached geometry for this LUN from the extended attributes
-   int index = parse_findindex("ModePage3", scsiattributes);
 
+   int index = parse_findindex("ModeParamHeader", scsiattributes);
+   if  (!filesystemState.keyvalues[lunNumber][index].v.string)
+   {
+      // now recreate the ModeParamHeader
+      filesystemState.keyvalues[lunNumber][index].v.string = malloc(4);
+      filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x00; // Reserved
+      filesystemState.keyvalues[lunNumber][index].v.string[1] = 0x00; // Reserved
+      filesystemState.keyvalues[lunNumber][index].v.string[2] = 0x00; // Reserved
+      filesystemState.keyvalues[lunNumber][index].v.string[3] = 0x08; // Reserved
+   }
+
+	// Update the cached geometry for this LUN from the extended attributes
+   index = parse_findindex("LBADescriptor", scsiattributes);
+   if  (filesystemState.keyvalues[lunNumber][index].v.string)
+      {
+         filesystemState.fsLunGeometry[lunNumber].BlockSize = (uint32_t)((filesystemState.keyvalues[lunNumber][index].v.string[5] << 16) +
+                                                                         (filesystemState.keyvalues[lunNumber][index].v.string[6] << 8) +
+                                                                          filesystemState.keyvalues[lunNumber][index].v.string[7]);
+      }
+      else
+      {
+         filesystemState.fsLunGeometry[lunNumber].BlockSize = DEFAULT_BLOCK_SIZE;
+         //now recreate the LBADescriptor
+         filesystemState.keyvalues[lunNumber][index].v.string = malloc(8);
+         filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x00; // Reserved
+         filesystemState.keyvalues[lunNumber][index].v.string[1] = 0x00; // Reserved
+         filesystemState.keyvalues[lunNumber][index].v.string[2] = 0x00; // Reserved
+         filesystemState.keyvalues[lunNumber][index].v.string[3] = 0x00; // Reserved
+         filesystemState.keyvalues[lunNumber][index].v.string[4] = 0x00; // Reserved
+         filesystemState.keyvalues[lunNumber][index].v.string[5] = (char)(DEFAULT_BLOCK_SIZE >>16); // block size MSB
+         filesystemState.keyvalues[lunNumber][index].v.string[6] = (char)(DEFAULT_BLOCK_SIZE >>8); // block size
+         filesystemState.keyvalues[lunNumber][index].v.string[7] = (char)(DEFAULT_BLOCK_SIZE); // block size LSB
+      }
+
+   index = parse_findindex("ModePage0", scsiattributes);
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-		filesystemState.fsLunGeometry[lunNumber].BlockSize = (uint32_t)((filesystemState.keyvalues[lunNumber][index].v.string[12] << 8) +
-                                                                       filesystemState.keyvalues[lunNumber][index].v.string[13]);
 		filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)(((filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
                                                                               filesystemState.keyvalues[lunNumber][index].v.string[11]));
-
+      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)(((filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
+                                                                        filesystemState.keyvalues[lunNumber][index].v.string[2]));
+      filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
    }
    else
    {
+      uint32_t lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+
       filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
-      filesystemState.fsLunGeometry[lunNumber].BlockSize = DEFAULT_BLOCK_SIZE;
+
+      lunFileSize = lunFileSize / (DEFAULT_SECTORS_PER_TRACK * filesystemState.fsLunGeometry[lunNumber].BlockSize);
+      uint8_t heads = 16;
+
+      while ((lunFileSize % heads != 0) && heads > 1) heads--;
+      uint32_t cylinders = lunFileSize / heads;
+
+      filesystemState.fsLunGeometry[lunNumber].Cylinders = cylinders;
+      filesystemState.fsLunGeometry[lunNumber].Heads = heads;
+      // now recreate Page0
+      filesystemState.keyvalues[lunNumber][index].v.string = malloc(10);
+      filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x01; // List format 1
+      filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(cylinders>>8); // cylinder count MSB <<<
+      filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)cylinders; // cylinder count LSB <<<
+      filesystemState.keyvalues[lunNumber][index].v.string[3] = heads; // Heads  <<<<
+      filesystemState.keyvalues[lunNumber][index].v.string[4] = 0x00; // Reduced write current MSB
+      filesystemState.keyvalues[lunNumber][index].v.string[5] = 0x80; // Reduced write current LSB
+      filesystemState.keyvalues[lunNumber][index].v.string[6] = 0x00; // Write precompensation MSB
+      filesystemState.keyvalues[lunNumber][index].v.string[7] = 0x80; // Write precompensation LSB
+      filesystemState.keyvalues[lunNumber][index].v.string[8] = 0x00; // Landing zone
+      filesystemState.keyvalues[lunNumber][index].v.string[9] = 0x01; // Step pulse count
    }
-
-   index = parse_findindex("ModePage4", scsiattributes);
-
-   if  (filesystemState.keyvalues[lunNumber][index].v.string)
-   {
-		// Calculate the number of (block size) byte sectors required to fulfill the drive geometry
-		// tracks = heads * cylinders
-		// sectors = tracks * sectorsperTrack
-		filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)(((filesystemState.keyvalues[lunNumber][index].v.string[2] << 16) +
-                                                                         (filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
-                                                                          filesystemState.keyvalues[lunNumber][index].v.string[4]));
-		filesystemState.fsLunGeometry[lunNumber].Heads = (uint8_t)(filesystemState.keyvalues[lunNumber][index].v.string[5]);
-	}
-	else
-	{
-		//filesystemState.fsLunGeometry[lunNumber].Cylinders = ;
-      //filesystemState.fsLunGeometry[lunNumber].Heads = ;
-		// try and calculate cylinders / heads automatically
-
-		// write with mode select
-	}
 
 	return flag;
 }

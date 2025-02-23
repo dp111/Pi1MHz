@@ -1573,8 +1573,15 @@ static uint8_t scsiCommandModeSense6(void)
    if (sizerequested < length) {
        length = sizerequested;
    }
-   // send length
-   hostadapterWriteByte((uint8_t)(length - 1 ));
+
+   if (commandDataBlock.data[2] == 0x00) {
+      // send length ( page zero is reserved)
+      hostadapterWriteByte(0);
+   } else {
+      // send length
+      hostadapterWriteByte((uint8_t)(length - 1 ));
+   }
+
    // send header
    for (int i = 1; i < headerlen; i++)
       hostadapterWriteByte(headerptr[i]);
