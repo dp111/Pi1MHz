@@ -276,7 +276,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                             }
                         }
 
-                        // now seach for the end of the line
+                        // now search for the end of the line
                         while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )))
                             outbuf[outptr++] = buffer[ptr++];
                 }

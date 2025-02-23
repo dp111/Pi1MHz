@@ -487,7 +487,7 @@ uint8_t scsiEmulationCommand(void)
    // Unrecognized command received!
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: BAD opcode received - transitioning to bus free\r\n"));
 
-	// prevent the requestor from potentially hanging if it sends an unknown command
+	// prevent the requester from potentially hanging if it sends an unknown command
 	// Indicate unsuccessful command in status and message
 	commandDataBlock.status = (commandDataBlock.targetLUN << 5) | 0x02;      // 0x02 = Bad
    return SCSI_STATUS;
@@ -1750,8 +1750,8 @@ static uint8_t scsiCommandVerify(void)
 // mode. If PMI is 01 hex, this command will return the
 // address of the block (after the specified starting address)
 // at which a substantial delay of time in data transfer will be
-// encountered (e.g., a cylinder boundary). Any calue other than
-// 00 hex or 01 hex in bute 08 will cause Check Status with an
+// encountered (e.g., a cylinder boundary). Any value other than
+// 00 hex or 01 hex in byte 08 will cause Check Status with an
 // error code of 24 hex for an invalid argument.
 //
 // In both cases, an eight-byte data field is returned. The first
@@ -2400,16 +2400,16 @@ static uint8_t scsiCommandCertify(void)
 
 
 // The BBC and Master ADFS appear to use:
-// Drive 0 : Host Indentifier = 1 LUN = 0
-// Drive 1 : Host Indentifier = 1 LUN =32
-// Drive 2 : Host Indentifier = 1 LUN =64
-// Drive 3 : Host Indentifier = 1 LUN =96
+// Drive 0 : Host Identifier = 1 LUN = 0
+// Drive 1 : Host Identifier = 1 LUN =32
+// Drive 2 : Host Identifier = 1 LUN =64
+// Drive 3 : Host Identifier = 1 LUN =96
 //
 // Other systems use
-// Drive 0 : Host Indentifier = 1 LUN =0
-// Drive 1 : Host Indentifier = 2 LUN =0
-// Drive 2 : Host Indentifier = 4 LUN =0
-// Drive 3 : Host Indentifier = 8 LUN =0
+// Drive 0 : Host Identifier = 1 LUN =0
+// Drive 1 : Host Identifier = 2 LUN =0
+// Drive 2 : Host Identifier = 4 LUN =0
+// Drive 3 : Host Identifier = 8 LUN =0
 //
 // BeebSCSI works on the numbering system for
 // the BBC and Master ADFS

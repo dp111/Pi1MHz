@@ -24,7 +24,7 @@
 // INQUIRY Command default data
 static uint8_t DefaultInquiryData[] =
 {
-	0x00,												// Peripherial Device Type
+	0x00,												// Peripheral Device Type
 	0x00,												// RMB / Device-Type Qualifier
 	0x00,												// ISO Version | ECMA Version | ANSI Version
 	0x00,												// Reserved
@@ -151,7 +151,7 @@ static uint8_t UserPage2[] =
 
 
 
-// Looks up the value of token in the extended attibutes file
+// Looks up the value of token in the extended attributes file
 // for the current LUN and returns the value in buffer
 // converting it from a hex string to hex values
 //
@@ -317,6 +317,9 @@ uint8_t getInquiryData(uint8_t bytesRequested, uint8_t *buf, uint8_t LUN) {
 	uint8_t buffSize = sizeof buf;
 	memset(buf, 0x00 , buffSize);
 
+
+
+
 	if (filesystemCheckLunImage(LUN)) {
 
 		// if extended attributes are available
@@ -464,7 +467,7 @@ uint8_t getModePage(uint8_t LUN, uint8_t *DefaultValue, uint8_t Page, uint8_t Pa
 
 	// ---------------------------------------------------------------------------------------------------------------------------------------
 	// Load the Mode Page Header
-	// Curently only handles Mode(6) and Mode(10) formats
+	// Currently only handles Mode(6) and Mode(10) formats
 	// The difference is the size of the MP Header and the following LBA Descriptor
 
 	if (filesystemHasExtAttributes(LUN))
@@ -589,7 +592,7 @@ uint8_t getModePage(uint8_t LUN, uint8_t *DefaultValue, uint8_t Page, uint8_t Pa
 		// change mode page size to the length of data requested
 		length = (uint8_t)(length + 2 + (PageLength-14));
 
-   	//adjust the mode page data lenth being returned
+   	//adjust the mode page data length being returned
 		modepagedata_length = PageLength-14;
 	}
 /*
