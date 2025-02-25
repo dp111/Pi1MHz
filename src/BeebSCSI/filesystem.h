@@ -105,5 +105,5 @@ bool filesystemReadNextFatBlock(uint8_t *buffer);
 bool filesystemCloseFatForRead(void);
 
 uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned int max_size);
-uint32_t filesystemWriteFile(const char * filename, uint8_t *address, uint32_t max_size);
+uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint32_t max_size);
 #endif /* FILESYSTEM_H_ */
