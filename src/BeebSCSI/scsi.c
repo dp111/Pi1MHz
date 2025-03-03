@@ -97,7 +97,6 @@ static struct commandDataBlockStruct
 {
    uint8_t data[10];
    uint8_t targetLUN;
-   uint8_t originalLUN;
    uint8_t status;
 } commandDataBlock;
 
@@ -974,13 +973,6 @@ static uint8_t scsiCommandRead6(void)
    if (debugFlag_scsiCommands) {
       debugStringInt32_P(PSTR(", LBA = "), logicalBlockAddress, false);
       debugStringInt32_P(PSTR(", Blocks = "), numberOfBlocks, true);
-
-		if ((commandDataBlock.originalLUN & 0x1F) != (commandDataBlock.data[1] & 0x1F)){
-			char msg[256];
-			sprintf(msg, "CommandRead6: Original MSB = %d != New MSB = %d\r\n", commandDataBlock.originalLUN & 0x1F, commandDataBlock.data[1] & 0x1F);
-			debugString_C(PSTR(msg), DEBUG_ERROR);
-			}
-
    }
 
    // Set up the control signals ready for the data in phase
@@ -2423,12 +2415,10 @@ static uint8_t scsiCommandCertify(void)
 // BeebSCSI works on the numbering system for
 // the BBC and Master ADFS
 //
+// VFS 2.00 uses host ID 16
+
 static uint32_t scsiTransformLUNid(uint8_t LUN)
 {
-	// Need to store the original LUN the controller is using
-	// for any response messages
-	commandDataBlock.originalLUN = LUN;
-
 	// ensure the lower bits b0-b4 are kept as they contain other information
 
 	// Host Identifier holds the drive selected 1, 2, 4, 8 (0, 1, 2, 3)
