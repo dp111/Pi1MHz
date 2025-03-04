@@ -83,7 +83,7 @@ LBADescriptor=0000000000000100
 ##################################################################################################
 # MODE PARAMETER Pages
 #
-# Page 0x00 ( replaces DSC )
+# Page 0x00 ( replaces DSC ) almost the same as Page 3 and 4
 #
 
 # The DSC descriptor comes from the ACB 4000 and Acorn SuperForm requirements

@@ -62,7 +62,6 @@
 
 #include "debug.h"
 #include "scsi.h"
-#include "ext_attributes.h"
 #include "fatfs/ff.h"
 #include "filesystem.h"
 #include "../rpi/rpi.h"
@@ -760,7 +759,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
 }
 
 // Function to write a LUN descriptor
-bool filesystemWriteLunDescriptor(uint8_t lunNumber, uint8_t const buffer[])
+bool filesystemWriteAttributes(uint8_t lunNumber)
 {
    if (lunNumber >7)
    {
@@ -773,10 +772,10 @@ bool filesystemWriteLunDescriptor(uint8_t lunNumber, uint8_t const buffer[])
 
    if (parse_readfile(fileName, fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteLunDescriptor(): Successful\r\n"));
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): Successful\r\n"));
       return true;
    }
-   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteLunDescriptor(): ERROR: Could not create new .ext file!\r\n"));
+   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): ERROR: Could not create new .ext file!\r\n"));
    return false;
 }
 
@@ -871,6 +870,15 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file not found\r\n"));
    }
 
+
+	return flag;
+}
+
+//
+// Transfer key Values from attributes to the LUN geometry
+//
+void filesystemUpdateLunGeometry(uint8_t lunNumber)
+{
    int index = parse_findindex("ModeParamHeader", scsiattributes);
    if  (!filesystemState.keyvalues[lunNumber][index].v.string)
    {
@@ -880,6 +888,7 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
       filesystemState.keyvalues[lunNumber][index].v.string[1] = 0x00; // Reserved
       filesystemState.keyvalues[lunNumber][index].v.string[2] = 0x00; // Reserved
       filesystemState.keyvalues[lunNumber][index].v.string[3] = 0x08; // Reserved
+      filesystemState.keyvalues[lunNumber][index].length = 4;
    }
 
 	// Update the cached geometry for this LUN from the extended attributes
@@ -903,13 +912,12 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].v.string[5] = (char)(DEFAULT_BLOCK_SIZE >>16); // block size MSB
          filesystemState.keyvalues[lunNumber][index].v.string[6] = (char)(DEFAULT_BLOCK_SIZE >>8); // block size
          filesystemState.keyvalues[lunNumber][index].v.string[7] = (char)(DEFAULT_BLOCK_SIZE); // block size LSB
+         filesystemState.keyvalues[lunNumber][index].length = 8;
       }
 
    index = parse_findindex("ModePage0", scsiattributes);
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-		filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)(((filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
-                                                                              filesystemState.keyvalues[lunNumber][index].v.string[11]));
       filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)(((filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
                                                                         filesystemState.keyvalues[lunNumber][index].v.string[2]));
       filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
@@ -917,8 +925,6 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
    else
    {
       uint32_t lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
-
-      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
 
       lunFileSize = lunFileSize / (DEFAULT_SECTORS_PER_TRACK * filesystemState.fsLunGeometry[lunNumber].BlockSize);
       uint8_t heads = 16;
@@ -931,27 +937,69 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
       // now recreate Page0
       filesystemState.keyvalues[lunNumber][index].v.string = malloc(10);
       filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x01; // List format 1
-      filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(cylinders>>8); // cylinder count MSB <<<
-      filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)cylinders; // cylinder count LSB <<<
-      filesystemState.keyvalues[lunNumber][index].v.string[3] = heads; // Heads  <<<<
+      filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(cylinders>>8); // cylinder count MSB
+      filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)cylinders; // cylinder count LSB
+      filesystemState.keyvalues[lunNumber][index].v.string[3] = heads; // Heads
       filesystemState.keyvalues[lunNumber][index].v.string[4] = 0x00; // Reduced write current MSB
       filesystemState.keyvalues[lunNumber][index].v.string[5] = 0x80; // Reduced write current LSB
       filesystemState.keyvalues[lunNumber][index].v.string[6] = 0x00; // Write precompensation MSB
       filesystemState.keyvalues[lunNumber][index].v.string[7] = 0x80; // Write precompensation LSB
       filesystemState.keyvalues[lunNumber][index].v.string[8] = 0x00; // Landing zone
       filesystemState.keyvalues[lunNumber][index].v.string[9] = 0x01; // Step pulse count
+      filesystemState.keyvalues[lunNumber][index].length = 10;
    }
 
-	return flag;
+   index = parse_findindex("ModePage3", scsiattributes);
+   if  (filesystemState.keyvalues[lunNumber][index].v.string)
+   {
+      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)(((filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
+                                                                              filesystemState.keyvalues[lunNumber][index].v.string[11]));
+   }
+   else
+   {
+      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
+   }
 }
 
-// Check if a LUN has registered extended attributes when it was started
-// and ensure the extAttributes filename is correct for the LUN
-bool filesystemHasExtAttributes( uint8_t lunNumber)
+
+void filesystemCopyPage0toPage4(uint8_t lunNumber)
 {
-   char extAttributes_fileName[255];
-   sprintf(extAttributes_fileName, "/BeebSCSI%d/scsi%d.ext", filesystemState.lunDirectory, lunNumber);
-	return 0;
+   int index = parse_findindex("ModePage0", scsiattributes);
+   if (filesystemState.keyvalues[lunNumber][index].v.string)
+   {
+      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)(((filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
+                                                                        filesystemState.keyvalues[lunNumber][index].v.string[2]));
+      filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
+      // now recreate Page4
+      index = parse_findindex("ModePage4", scsiattributes);
+      if  (filesystemState.keyvalues[lunNumber][index].v.string)
+      {
+         filesystemState.keyvalues[lunNumber][index].v.string[2] = 0 ;
+         filesystemState.keyvalues[lunNumber][index].v.string[3] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
+         filesystemState.keyvalues[lunNumber][index].v.string[4] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
+         filesystemState.keyvalues[lunNumber][index].v.string[5] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+      }
+   }
+}
+
+void filesystemCopyPage4toPage0(uint8_t lunNumber)
+{
+   int index = parse_findindex("ModePage4", scsiattributes);
+   if (filesystemState.keyvalues[lunNumber][index].v.string)
+   {
+      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)(((filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
+                                                                        filesystemState.keyvalues[lunNumber][index].v.string[4]));
+      filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[5]);
+      // now recreate Page3
+      index = parse_findindex("ModePage0", scsiattributes);
+      if  (filesystemState.keyvalues[lunNumber][index].v.string)
+      {
+         filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
+         filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
+         filesystemState.keyvalues[lunNumber][index].v.string[3] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+      }
+   }
+
 }
 
 // Functions for reading and writing LUN images --------------------------------------------------------------------
@@ -1123,6 +1171,33 @@ char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * lengt
       return 0;
    *length= filesystemState.keyvalues[lunNumber][index].length;
    return filesystemState.keyvalues[lunNumber][index].v.string;
+}
+
+int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer)
+{
+   char page1 , page2;
+   if (page >10)
+   {
+      page1= page/10;
+      page2= page%10;
+   }
+   else
+      {
+      page1= page;
+      page2= 0;
+      }
+
+   const char mode[] = {'M','o','d','e','P','a','g','e',page1,page2,0};
+   int index = parse_findindex(mode,scsiattributes);
+   if (index == -1)
+      return 0;
+
+   filesystemState.keyvalues[lunNumber][index].length = len;
+   if (filesystemState.keyvalues[lunNumber][index].v.string)
+      free(filesystemState.keyvalues[lunNumber][index].v.string);
+   filesystemState.keyvalues[lunNumber][index].v.string= malloc(len);
+   memcpy(filesystemState.keyvalues[lunNumber][index].v.string, Buffer, len);
+   return 1;
 }
 
 // Functions for FAT Transfer support --------------

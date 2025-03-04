@@ -54,7 +54,6 @@
 #include "filesystem.h"
 #include "statusled.h"
 #include "scsi.h"
-#include "ext_attributes.h"
 
 // Define the major and minor firmware version number returned
 // by the BSSENSE command
@@ -427,7 +426,7 @@ uint8_t scsiEmulationCommand(void)
    }
    if (debugFlag_scsiCommands) debugString_P(PSTR("\r\n"));
 
-//   // if the format Drive[1,2,4,8].0 was used, convert to to Drive 1.[0 1 2 3]
+  // if the format Drive[1,2,4,8].0 was used, convert to to Drive 1.[0 1 2 3]
 
    uint32_t newLUN = scsiTransformLUNid(commandDataBlock.data[1]);
 	commandDataBlock.data[1] = (uint8_t)(newLUN & 0xFF);
@@ -1435,80 +1434,79 @@ static uint8_t scsiCommandModeSelect6(void)
 	}
 	if (debugFlag_scsiCommands)debugString_P(PSTR("\r\n"));
 
+   // we skip the 4 byte header
+   uint8_t start = 4;
 
-   if (length != 22) {
-		// Sometimes, multiple pages are sent in one go depending on the drive type
+   // if the length is 22 and byte is 8 then the drive descriptor is being written
+   if (Buffer[3]== 8 )
+   {
+     if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT dsc\r\n"), DEBUG_SUCCESS);
+     // we can skip LBADescriptor 8 bytes
+     start += 8;
+     // update  ModePage0
+     filesystemWriteModePageData(commandDataBlock.targetLUN, 0, 22-4-8, &Buffer[start] );
+     // update  Page 4 NB we should do page 3 but that never changes
+     filesystemCopyPage0toPage4(commandDataBlock.targetLUN);
+   }
+   else
+   {
+      // MODE SELECT Parameters : 0 0 0 0 37 6 40  67  41  65 13 30
+      //                                  38 6 99 111 114 110 13  0
 
-		//MODE SELECT Parameters : 0 0 0 0 37 6 40  67  41  65 13 30
-		//                                 38 6 99 111 114 110 13  0
+      // we are updating a standard page here
 
-		// Parse the data
-		// get rid of any leading zeros and find the first page
-		uint8_t start = 0;
-		while ((start<length) && (Buffer[start] == 0)) {
-			start++;
-		}
-      if ((start+3)>=length) {
-         // No data found
-         if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT Bad Argument error\r\n"), DEBUG_ERROR);
+      // then we have page number and length
+      // we might have more that one page so loop if there is more data
+      while ( start+2 < length )
+      {
+         uint8_t page = Buffer[start];
+         uint8_t len = Buffer[start+1];
 
-         // Indicate unsuccessful command in status and message
-         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+         if (debugFlag_scsiCommands)debugStringInt16_P(PSTR("SCSI commands: Writing MODE SELECT Page "), page, true);
+         if (start + len  > length)
+            {
+            // No data found / bad page
+            if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT Bad Argument error\r\n"), DEBUG_ERROR);
 
-         // Set request sense error globals
-         requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
-         return SCSI_STATUS;
+            // Indicate unsuccessful command in status and message
+            commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+
+            // Set request sense error globals
+            requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
+            return SCSI_STATUS;
+            }
+
+         filesystemWriteModePageData(commandDataBlock.targetLUN, page, len+2, &Buffer[start] );
+         start += 2;
+         start += len;
+         if ( page == 4 )
+            {
+            // update Page 0 NB we should do page 3 but that never changes
+            filesystemCopyPage4toPage0(commandDataBlock.targetLUN);
+            }
       }
-
-		uint8_t PageLength = Buffer[start+1];
-
-		while (((uint8_t)sizeof(Buffer) >= (uint8_t)(PageLength + start + 2))) {
-			// set data pointer to the start of the block of data starting with the page
-			uint8_t * dataptr = Buffer + start;
-			if ((replaceModePage(commandDataBlock.targetLUN, dataptr)) !=0) {
-		      if (debugFlag_scsiCommands)debugString_C(PSTR("SCSI Commands: Writing MODE SELECT Bad Argument error\r\n"), DEBUG_ERROR);
-
-				// Indicate unsuccessful command in status and message
-				commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
-
-				// Set request sense error globals
-				requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
-				return SCSI_STATUS;
-			}
-
-			// move forward along the buffer until there is no more data
-			start = (uint8_t)(start + 2 + PageLength);
-			PageLength = Buffer[start+1];
-		}
-
-		// Indicate successful command in status and message
-		if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT successful\r\n"), DEBUG_SUCCESS);
-		commandDataBlock.status = SCSI_STATUS_OK; // 0x00 = Good
-
    }
 
-	// Output the geometry to debug
-	if (length == 22) {
-		if (debugFlag_scsiCommands) debugLunDescriptor(Buffer);
+   filesystemUpdateLunGeometry(commandDataBlock.targetLUN);
 
-		// Write the descriptor information to the file system
-		if(!filesystemWriteLunDescriptor(commandDataBlock.targetLUN, Buffer)) {
-			// Write failed! - Indicate unsuccessful command in status and message
-			if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Writing LUN descriptor failed!\r\n"));
-			commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Error
+   if (!filesystemWriteAttributes(commandDataBlock.targetLUN))
+   {
+      // Unable to write attributes! Exit with error status
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
 
-			// Set request sense error globals
-			requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
+      // Set request sense error globals
+      requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
 
-			return SCSI_STATUS;
-		}
+      debugString_P(PSTR("SCSI Commands: ERROR: Could not write attributes\r\n"));
 
-	// Indicate successful command in status and message
-	if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Writing LUN descriptor successful\r\n"));
-	commandDataBlock.status = SCSI_STATUS_OK; // 0x00 = Good
+      // Transition to the STATUS state
+      return SCSI_STATUS;
+   }
 
-	}
-	return SCSI_STATUS;
+   // Indicate successful command in status and message
+   if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT successful\r\n"), DEBUG_SUCCESS);
+   commandDataBlock.status = SCSI_STATUS_OK; // 0x00 = Good
+   return SCSI_STATUS;
 }
 
 // SCSI Command (0x1A) ModeSense6
@@ -2384,6 +2382,8 @@ static uint8_t scsiBeebScsiFatRead(void)
 //
 // No information what this does on the RODIME drives. A 6 byte cmd block is
 // passed,  &E2, LUN , 0 , cycles , 0 , 0
+// FServFMt says this command needs increased timeout.
+// moretime%=cycles*60*18*cyl%*heads%*sects_trk%/&3D850
 static uint8_t scsiCommandCertify(void)
 {
 

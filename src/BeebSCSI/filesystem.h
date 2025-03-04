@@ -71,7 +71,10 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5]);
 
 void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber);
 bool filesystemCheckExtAttributes( uint8_t lunNumber);
-bool filesystemHasExtAttributes( uint8_t lunNumber);
+void filesystemUpdateLunGeometry(uint8_t lunNumber);
+
+void filesystemCopyPage0toPage4(uint8_t lunNumber);
+void filesystemCopyPage4toPage0(uint8_t lunNumber);
 
 void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf);
 uint32_t filesystemGetLunBlockSize(uint8_t lunNumber);
@@ -83,7 +86,7 @@ uint32_t filesystemGetLunTotalBytes(uint8_t lunNumber);
 bool filesystemCreateLunImage(uint8_t lunNumber);
 bool filesystemCreateLunDescriptor(uint8_t lunNumber);
 bool filesystemReadLunDescriptor(uint8_t lunNumber);
-bool filesystemWriteLunDescriptor(uint8_t lunNumber, const uint8_t buffer[]);
+bool filesystemWriteAttributes(uint8_t lunNumber);
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern);
 
 bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t requiredNumberOfSectors);
@@ -97,6 +100,7 @@ char * filesystemGetInquiryData(uint8_t lunNumber);
 char * filesystemGetModeParamHeaderData(uint8_t lunNumber, size_t * length);
 char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length);
 char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * length);
+int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer);
 
 bool filesystemSetFatDirectory(const uint8_t * buffer);
 bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer);
