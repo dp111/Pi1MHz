@@ -88,13 +88,14 @@ static const parserkey scsiattributes[] = {
    { "ModePage38"      , 0 ,  6 , NUMSTRING},
    { "LDUserCode"      , 0 ,  4 , STRING },
    { "LDVideoXoffset"  , -768 , 768 , INTEGER },
-   { "" , 0 ,0, 0} // end of list
+   { NULL , 0 ,0, 0} // end of list
 };
 
 #define NUM_KEYS (sizeof(scsiattributes)/sizeof(parserkey))
 
 // File system state structure
-NOINIT_SECTION static struct filesystemStateStruct
+//NOINIT_SECTION
+static struct filesystemStateStruct
 {
    FATFS fsObject;                     // FAT FS file system object
    FIL fileObject[MAX_LUNS];           // FAT FS file objects
@@ -106,7 +107,7 @@ NOINIT_SECTION static struct filesystemStateStruct
    uint8_t lunDirectoryVFS;            // Current LUN directory ID for VFS
    bool fsLunStatus[MAX_LUNS];         // LUN image availability flags for the currently selected LUN directory (true = started, false = stopped)
 	struct HDGeometry fsLunGeometry[MAX_LUNS];   // Keep the geometry details for each LUN
-   parserkeyvalue keyvalues[MAX_LUNS][NUM_KEYS];   // keys from .ext file for each LUN
+   parserkeyvalue keyvalues[MAX_LUNS][NUM_KEYS];   // keys from .cfg file for each LUN
 } filesystemState;
 
 NOINIT_SECTION static char fileName[255];       // String for storing LFN filename
@@ -583,8 +584,7 @@ uint32_t filesystemGetLunTotalBytes( uint8_t lunNumber)
 	// (the default '33' is because SuperForm uses a 2:1 interleave format with 33 sectors per
 	// track (F-2 in the ACB-4000 manual))
 	// Total Bytes = Total Sectors * Block Size (block size is normally 256 bytes)
-
-	return (((*ptr).Heads * (*ptr).Cylinders) * (*ptr).SectorsPerTrack) * (*ptr).BlockSize;
+  	return (((*ptr).Heads * (*ptr).Cylinders) * (*ptr).SectorsPerTrack) * (*ptr).BlockSize;
 }
 
 // Function to return the LUN image size in sectors from the stored geometry
@@ -663,24 +663,24 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
    return true;
 }
 
-// Function to create a new LUN descriptor (makes an default .ext file)
+// Function to create a new LUN descriptor (makes an default .cfg file)
 bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 {
    if (lunNumber >7)
    {
-      // VFS doesn't support creating .ext files
+      // VFS doesn't support creating .cfg files
       return false;
    }
 
-   // Assemble the .ext file name
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.ext", filesystemState.lunDirectory, lunNumber);
+   // Assemble the .cfg file name
+   sprintf(fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
 
-   if (parse_readfile("/Pi1MHz/default.ext",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
+   if (parse_readfile("/Pi1MHz/default.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): Successful\r\n"));
       return true;
    }
-   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): ERROR: Could not create new .ext file!\r\n"));
+   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): ERROR: Could not create new .cfg file!\r\n"));
    return false;
 }
 
@@ -763,19 +763,19 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
 {
    if (lunNumber >7)
    {
-      // VFS doesn't support write to .ext files
+      // VFS doesn't support write to .cfg files
       return false;
    }
 
-   // Assemble the .ext file name
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.ext", filesystemState.lunDirectory, lunNumber);
+   // Assemble the .cfg file name
+   sprintf(fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
 
    if (parse_readfile(fileName, fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): Successful\r\n"));
       return true;
    }
-   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): ERROR: Could not create new .ext file!\r\n"));
+   if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): ERROR: Could not create new .cfg file!\r\n"));
    return false;
 }
 
@@ -854,15 +854,16 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
    bool flag = false;
    char extAttributes_fileName[255];
    if (lunNumber <8)
-      sprintf(extAttributes_fileName, "/BeebSCSI%d/scsi%d.ext", filesystemState.lunDirectory, lunNumber);
+      sprintf(extAttributes_fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
    else
-      sprintf(extAttributes_fileName, "/BeebVFS%d/scsi%d.ext", filesystemState.lunDirectoryVFS, lunNumber);
+      sprintf(extAttributes_fileName, "/BeebVFS%d/scsi%d.cfg", filesystemState.lunDirectoryVFS, lunNumber);
 
    if (parse_readfile(extAttributes_fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber]))
    {
       // LUN extended attributes file is present
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file found\r\n"));
       flag = true;
+      filesystemUpdateLunGeometry(lunNumber);
    }
    else
    {
@@ -1431,6 +1432,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
    UINT byteCounter;
    FRESULT fsResult;
    FIL fileObject;
+   LOG_DEBUG("filesystemReadFile: %s\n\r", filename);
    if (filesystemState.fsMountState == false) {
          fsResult = f_mount(&filesystemState.fsObject, "", 1);
          if (fsResult != FR_OK) {
@@ -1449,7 +1451,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
       }
       max_size = f_size(&fileObject);
    }
-   f_read(&fileObject, address, max_size, &byteCounter);
+   f_read(&fileObject, *address, max_size, &byteCounter);
    f_close(&fileObject);
    return f_size(&fileObject);
 }
