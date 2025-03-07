@@ -9,7 +9,7 @@
 #include "rpi/screen.h"
 #include "BeebSCSI/filesystem.h"
 #include "rpi/decompress.h"
-#include "stdio.h"
+#include <stdio.h>
 #include "rpi/rpi.h"
 
 #define YUV_PLANE 0
