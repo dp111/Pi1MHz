@@ -1616,7 +1616,8 @@ static void fb_show_splash_screen(void) {
         "\r\n 2 # Enable screen redirector"
         "\r\n 3 # Load ADFS into SWR"
         "\r\n 4 # Load MMFS into SWR"
-        "\r\n 5 # Load MMFS2 into SWR");
+        "\r\n 5 # Load MMFS2 into SWR"
+        "\r\n 6 # Load BeebSCSI helper ROM into SWR");
 
    select_font(0, 1, 1, 0); // Default
    fb_writec(26);
