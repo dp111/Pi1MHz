@@ -436,7 +436,7 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
    if (lunNumber < 8 )
       sprintf(fileName, "/BeebSCSI%d", lunDirectory);
    else
-      sprintf(fileName, "/BeebVFS%d", lunDirectory);
+      sprintf(fileName, "/BeebVFS%d", lunDirectory & 7);
 
    fsResult = f_opendir(&dirObject, fileName);
 
@@ -858,7 +858,7 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
    if (lunNumber <8)
       sprintf(extAttributes_fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
    else
-      sprintf(extAttributes_fileName, "/BeebVFS%d/scsi%d.cfg", filesystemState.lunDirectoryVFS, lunNumber);
+      sprintf(extAttributes_fileName, "/BeebVFS%d/scsi%d.cfg", filesystemState.lunDirectoryVFS, lunNumber & 7);
 
    if (parse_readfile(extAttributes_fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber]))
    {

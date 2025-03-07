@@ -361,7 +361,6 @@ static uint8_t scsiEmulationBusFree(void)
 
          // We are now in the selected state
          if (debugFlag_scsiState) debugStringInt16_P(PSTR("SCSI State: Selected by host ID "), scsiHostID, true);
-         scsiHostID = (scsiHostID==1)?0:8 ; // convert to 0 or 8
          scsiEmulationBusFreestate = 0;
          break;
    }
@@ -465,7 +464,7 @@ uint8_t scsiEmulationCommand(void)
    }
 
    // Transition to command based on received opCode (group 6 LV-DOS commands)
-   if (group == 6 && (scsiHostID == 8)) {
+   if (group == 6 && (scsiHostID == 16)) {
       // Select group 6 command type
       switch (opCode) {
          case 0x0A: return SCSI_WRITE_FCODE; break;
@@ -2052,7 +2051,7 @@ static uint8_t scsiBeebScsiSense(void)
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: LUN directory number = "), filesystemGetLunDirectory(), true);
 
    // Byte 2 shows if we are in fixed (0) or VP415 emulation mode (1)
-   if (scsiHostID == 0) {
+   if (scsiHostID != 16) {
       hostadapterWriteByte(0x00);
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Emulation mode fixed (0x00)\r\n"));
    } else {
