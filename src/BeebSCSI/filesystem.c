@@ -1154,47 +1154,64 @@ char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length)
 	return filesystemState.keyvalues[lunNumber][index].v.string;
 }
 
+// takes a page number and returns the index of the mode page
+
+static int filesystemPagetoIndex( uint8_t page)
+{
+   if (page < 128)
+   {
+      char page1 , page2;
+      if (page >10)
+      {
+         page1= (page/10)+'0';
+         page2= (page%10)+'0';
+      }
+      else
+         {
+         page1= page+'0';
+         page2= 0;
+         }
+
+      const char mode[] = {'M','o','d','e','P','a','g','e',page1,page2,0};
+      return parse_findindex(mode,scsiattributes);
+   }
+
+   switch (page)
+   {
+      case 128: return parse_findindex("Title",scsiattributes); break;
+      case 129: return parse_findindex("Description",scsiattributes);break;
+      case 130: return parse_findindex("LDUserCode",scsiattributes);break;
+     // case 131: return parse_findindex("LDVideoXoffset",scsiattributes);break;
+      default: return -1; break;
+   }
+}
+
+// returns the mode page data for a given page
+
 char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * length)
 {
-   char page1 , page2;
-   if (page >10)
-   {
-      page1= (page/10)+'0';
-      page2= (page%10)+'0';
-   }
-   else
-      {
-      page1= page+'0';
-      page2= 0;
-      }
 
-   const char mode[] = {'M','o','d','e','P','a','g','e',page1,page2,0};
-   int index = parse_findindex(mode,scsiattributes);
+   int index = filesystemPagetoIndex(page);
    if (index == -1)
       return 0;
    *length= filesystemState.keyvalues[lunNumber][index].length;
    return filesystemState.keyvalues[lunNumber][index].v.string;
 }
 
+// Writes the mode page data for a given page
+
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer)
 {
-   char page1 , page2;
-   if (page >10)
-   {
-      page1= (page/10)+'0';
-      page2= (page%10)+'0';
-   }
-   else
-      {
-      page1= page+'0';
-      page2= 0;
-      }
-
-   const char mode[] = {'M','o','d','e','P','a','g','e',page1,page2,0};
-   int index = parse_findindex(mode,scsiattributes);
+   int index = filesystemPagetoIndex(page);
    if (index == -1)
       return 0;
 
+   if (page>= 128)
+   {
+      // these pages are string pages so don't have the header
+      len -=2;
+      Buffer +=2;
+   }
    filesystemState.keyvalues[lunNumber][index].length = len;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
       free(filesystemState.keyvalues[lunNumber][index].v.string);
@@ -1216,7 +1233,6 @@ bool filesystemSetFatDirectory(const uint8_t *buffer)
    }
    return true;
 }
-
 
 // Read an entry from the FAT directory and place the information about the entry into the buffer
 //

@@ -1592,13 +1592,17 @@ static uint8_t scsiCommandModeSense6(void)
    for (int i = 0; i < LBAlen; i++)
       hostadapterWriteByte(LBAptr[i]);
 
-
    length -= LBAlen;
    if (length < modelen)
          modelen = length;
 
    for (int i = 0; i < modelen; i++)
       hostadapterWriteByte(modeptr[i]);
+   length -= modelen;
+
+   for (int i = 0; i < length; i++)
+      hostadapterWriteByte(0); // pad with zeros
+   // Show the command debug information
 
    // Indicate successful command in status and message
    commandDataBlock.status = SCSI_STATUS_OK; // 0x00 = Good
@@ -2374,6 +2378,7 @@ static uint8_t scsiBeebScsiFatRead(void)
    // Transition to the successful state
    return SCSI_STATUS;
 }
+
 
 // SCSI Command Certify (group 7 - command 0xE2)
 //
