@@ -24,7 +24,7 @@ Menu system
 
 how to create the compressed video files
 
-/mnt/c/Archlinux/ld-decode/tools/ld-chroma-decoder/ld-chroma-decoder --decoder transform3d -p y4m -s 3000 -l 1 -q /mnt/s/domsday/south.tbc  | ffmpeg -i - -c:v v210 -f mov -top 1 -vf setfield=tff -flags +ilme+ildct -pix_fmt yuv422p -color_primaries bt470bg -color_trc bt709 -colorspace bt470bg -color_range tv -vf setdar=4/3,setfield=tff -s768x576 -c:v rawvideo image3000.yuv
+ /mnt/c/Archlinux/ld-decode/tools/ld-chroma-decoder/ld-chroma-decoder --decoder transform3d -p y4m -s 3000 -l 1 -q /mnt/s/domsday/south.tbc  | ffmpeg -i - -c:v v210 -f mov -top 1 -vf setfield=tff -flags +ilme+ildct -pix_fmt yuv422p -color_primaries bt470bg -color_trc bt709 -colorspace bt470bg -color_range tv -vf setdar=4/3,setfield=tff,scale=768x576 -c:v rawvideo image3000.yuv
 
 
 truncate :
@@ -56,7 +56,7 @@ F-Code: Received F-Code 0x24 = Replay switch disable
 fcodeReadBuffer
  0x41 0x0d 0x00 0x00 0x00 0x00 fcodeClearBuffer
 F-Code: Received bytes: 0x3f 0x55 0x0d
-F-Code: Received F-Code 0x3f = User code request         <- TODO ->
+F-Code: Received F-Code 0x3f = User code request
 <UCD>fcodeReadBuffer
  0x55 0x31 0x3d 0x30 0x36 0x36 fcodeClearBuffer
 fcodeReadBuffer

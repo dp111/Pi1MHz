@@ -101,6 +101,7 @@ char * filesystemGetModeParamHeaderData(uint8_t lunNumber, size_t * length);
 char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length);
 char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * length);
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer);
+uint8_t filesystemGetVFSLunDirectory(void);
 
 bool filesystemSetFatDirectory(const uint8_t * buffer);
 bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer);
@@ -110,4 +111,9 @@ bool filesystemCloseFatForRead(void);
 
 uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned int max_size);
 uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint32_t max_size);
+
+bool filesystemfopen(const char * filename, FIL * fileObject);
+bool filesystemfclose(FIL * fileObject);
+bool filesystemfread(FIL * fileObject, uint8_t *buffer, uint32_t size);
+
 #endif /* FILESYSTEM_H_ */

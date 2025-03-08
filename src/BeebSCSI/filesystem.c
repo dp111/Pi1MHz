@@ -1220,6 +1220,13 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    return 1;
 }
 
+
+uint8_t filesystemGetVFSLunDirectory(void)
+{
+   return filesystemState.lunDirectoryVFS;
+}
+
+
 // Functions for FAT Transfer support --------------
 
 // Change the filesystem's FAT transfer directory
@@ -1490,4 +1497,46 @@ uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint
    f_write(&fileObject, address, max_size, &byteCounter);
    f_close(&fileObject);
    return byteCounter;
+}
+
+bool filesystemfopen(const char * filename, FIL * fileObject)
+{
+   FRESULT fsResult;
+
+   if (filesystemState.fsMountState == false) {
+         fsResult = f_mount(&filesystemState.fsObject, "", 1);
+         if (fsResult != FR_OK) {
+            return false;
+         }
+   }
+   fsResult = f_open(fileObject, filename, FA_READ);
+   if (fsResult != FR_OK) {
+      return false;
+   }
+   return true;
+}
+
+bool filesystemfclose(FIL * fileObject)
+{
+   if (fileObject != NULL) {
+      if (fileObject->obj.fs == &filesystemState.fsObject) {
+         f_close(fileObject);
+         return true;
+      }
+   }
+   return false;
+}
+
+bool filesystemfread(FIL * fileObject, uint8_t *buffer, uint32_t size)
+{
+   UINT byteCounter;
+   FRESULT fsResult;
+
+   if (fileObject != NULL) {
+      fsResult  = f_read(fileObject, buffer, size, &byteCounter);
+      if (fsResult == FR_OK) {
+         return true;
+      }
+   }
+   return false;
 }
