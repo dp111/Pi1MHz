@@ -107,7 +107,6 @@ Fix bug introduced in 1.13 , FRED page select not working ( Broke M5000)
 
 V1.19
 Update FatFS to 0.15a
-Add loading of VFS
 Change P.$&FD00 text to direct people to CALL &FC88
 Mouse pointer redirector
 *FX147,65,n now is them same as *SCSIJUKE n ( NB 65 is the harddisc address base address + 1)
@@ -116,3 +115,8 @@ change to using the HVS directly for the HDMI display
 Only enable video if HDMI hotplug detected
 YUV display added
 Fcode video overlay added.
+Add scsi.cfg loading and parsing based on Mark's code. Replaces .dsc files
+Speed up videocore code for faster 1MHz bus access
+Move roms into Pi1MHz directory
+Add SCSIID to the cmdline.txt options to select a particular SCSI ID we listen to.
+Add beebscsi helper rom.

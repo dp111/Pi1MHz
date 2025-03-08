@@ -6,13 +6,12 @@ Doomsday notes
 TODO notes in no order
 
 Check mouse offsets and fix VFS ROM bug
-*MOUSE appears to not always work see if original VFS has this bug and fix
+*MOUSE appears to not always work, see if original VFS has this bug and fix
 See if boot time can be improved
 LZ4 decompressor speedup memcpy
 YUV frame display
 More Fcode support (including VP4 and VP5 )
 See if power consumption of the Pi can be improved
-Add Marks code for plain text description drives ( add User codes and Video X offset )
 check and fix YUV scaling
 Audio support HDMI and beeb ?
 composite video out ?

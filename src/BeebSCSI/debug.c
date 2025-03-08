@@ -45,6 +45,7 @@
     bool debugFlag_scsiFcodes = true;
     bool debugFlag_scsiState = false;
     bool debugFlag_fatfs = false;
+    bool debugFlag_extended_attributes = true;
 #else
    // Default debug settings for release builds
     bool debugFlag_filesystem = false;
@@ -53,6 +54,7 @@
     bool debugFlag_scsiFcodes = false;
     bool debugFlag_scsiState = false;
     bool debugFlag_fatfs = false;
+    bool debugFlag_extended_attributes = false;
 #endif
 
 #ifdef DEBUG
@@ -66,6 +68,36 @@ void debugString_P(const char *addr)
    char c;
 
    while ((c = pgm_read_byte(addr++))) uartWrite(c);
+}
+
+void debugString_C(const char *addr, uint8_t style)
+{
+   char c;
+
+   switch(style)
+   {
+      case DEBUG_SUCCESS:
+         printf("%s", BGRN);
+         break;
+      case DEBUG_INFO:
+         printf("%s", BCYN);
+         break;
+      case DEBUG_WARNING:
+         printf("%s", BYEL);
+         break;
+      case DEBUG_ERROR:
+         printf("%s", BRED);
+         break;
+      case DEBUG_SCSI_COMMAND:
+         printf("%s", BMAG);
+         break;
+      default:
+         printf("%s", WHT);
+      }
+
+   while ((c = pgm_read_byte(addr++))) uartWrite(c);
+
+   printf("%s", COLOUR_RESET);
 }
 
 // This function outputs a string stored in RAM space to the UART

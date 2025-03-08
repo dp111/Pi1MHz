@@ -51,7 +51,7 @@ static void helpers_setup(uint8_t helper_address)
         "\r\n 3 # Load ADFS into SWR"
         "\r\n 4 # Load MMFS into SWR"
         "\r\n 5 # Load MMFS2 into SWR"
-        "\r\n 6 # Load VFS171 into SWR"
+        "\r\n 6 # Load BeebSCSI helper ROM into SWR"
         "\r\n", PAGE_SIZE*16);
         helpscreen[0] = 0;
         //signal to beeb the help screen is setup
@@ -84,7 +84,8 @@ static void helpers_bank_select(unsigned int gpio)
 
 void helpers_init( uint8_t instance , uint8_t address)
 {
-   if (filesystemReadFile("6502code.bin",(unsigned char **)&helper_ram,sizeof(helper_ram)))
+   uint8_t *helper = &helper_ram[0];
+   if (filesystemReadFile("Pi1MHz/6502code.bin",&helper,sizeof(helper_ram)))
     {
         // register call backs
         Pi1MHz_Register_Memory(WRITE_FRED, address, helpers_bank_select );

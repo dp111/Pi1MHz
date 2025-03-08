@@ -148,7 +148,7 @@ static int32_t M5000_audio_range;
 
 // in cmdline.txt M5000_Gain=16 set the default audio gain
 // if gain has >1000 then gain = gain - 1000 and auto ranging
-// is PHASESET
+// is OFF
 
 static void M5000_gain(void) {
    const char *prop = get_cmdline_prop("M5000_Gain");
