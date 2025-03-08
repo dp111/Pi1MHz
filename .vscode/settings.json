@@ -28,7 +28,8 @@
         "array": "c",
         "tuple": "c",
         "type_traits": "c",
-        "utility": "c"
+        "utility": "c",
+        "ff.h": "c"
     },
     "cSpell.words": [
         "ADDRBUS",
