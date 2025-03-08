@@ -88,7 +88,7 @@
 
 // Function prototypes
 void scsiInitialise(void);
-void scsiReset(void);
+void scsiReset(uint8_t scsiid);
 
 void scsiJukebox (uint8_t lun);
 
