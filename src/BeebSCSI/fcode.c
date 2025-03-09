@@ -35,11 +35,13 @@
 #include "filesystem.h"
 #include "fcode.h"
 #include "../rpi/screen.h"
+#include "../videoplayer.h"
 
 // Global SCSI (LV-DOS) F-Code buffer (256 bytes)
 uint8_t scsiFcodeBuffer[256];
 uint8_t scsiFcodeBufferRX[256];
 
+uint32_t PictureNumberStopReg = 0;
 
 static char VPmode;
 // Function to handle F-Code buffer write actions
@@ -316,15 +318,25 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 					case 'S':
 					FCdebugString_P(PSTR(" = Stop Register\r\n"));
+					PictureNumberStopReg = pictureNumber;
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '2'; // when stops
 					break;
 
 					case 'R':
 					FCdebugString_P(PSTR(" = Still picture\r\n"));
-					scsiFcodeBufferRX[0] = 'A';
-					scsiFcodeBufferRX[1] = '0';
-
+					if (videoplayer_frame(pictureNumber))
+					{
+						FCdebugString_P(PSTR(" Still picture loaded\r\n"));
+						scsiFcodeBufferRX[0] = 'A';
+						scsiFcodeBufferRX[1] = '0'; // when complete
+					}
+					else
+					{
+						FCdebugString_P(PSTR(" Still picture not loaded\r\n"));
+						scsiFcodeBufferRX[0] = 'A';
+						scsiFcodeBufferRX[1] = 'N'; // when complete
+					}
 					break;
 
 					case 'N':
@@ -416,6 +428,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x4E: // N // VFS sends this
 			FCdebugString_P(PSTR(" = Play forward\r\n"));
+			videoplayer_frame(PictureNumberStopReg ); // << hack for now
 			break;
 
 			case 0x4F: // O // VFS sends this

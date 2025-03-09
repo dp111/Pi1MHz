@@ -112,8 +112,4 @@ bool filesystemCloseFatForRead(void);
 uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned int max_size);
 uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint32_t max_size);
 
-bool filesystemfopen(const char * filename, FIL * fileObject);
-bool filesystemfclose(FIL * fileObject);
-bool filesystemfread(FIL * fileObject, uint8_t *buffer, uint32_t size);
-
 #endif /* FILESYSTEM_H_ */

@@ -238,23 +238,26 @@ void filesystemReset(void)
 // Function to mount the file system
 static bool filesystemMount(void)
 {
-   FRESULT fsResult;
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemMount(): Mounting file system\r\n"));
 
    // Mount the SD card
-   fsResult = f_mount(&filesystemState.fsObject, "", 1);
+   if (filesystemState.fsMountState == false)
+   {
+      FRESULT fsResult;
+      fsResult = f_mount(&filesystemState.fsObject, "", 1);
 
-   // Check the result
-   if (fsResult != FR_OK) {
-      if (debugFlag_filesystem) {
-         debugString_P(PSTR("File system: filesystemMount(): ERROR: "));
-         filesystemPrintfserror(fsResult);
+      // Check the result
+      if (fsResult != FR_OK) {
+         if (debugFlag_filesystem) {
+            debugString_P(PSTR("File system: filesystemMount(): ERROR: "));
+            filesystemPrintfserror(fsResult);
+         }
+
+         // Exit with error status
+         filesystemState.fsMountState = false;
+         return false;
       }
-
-      // Exit with error status
-      filesystemState.fsMountState = false;
-      return false;
-   }
+  }
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemMount(): Successful\r\n"));
    filesystemState.fsMountState = true;
@@ -1463,6 +1466,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
          if (fsResult != FR_OK) {
             return 0;
          }
+         filesystemState.fsMountState = true;
    }
    fsResult = f_open(&fileObject, filename, FA_READ);
    if (fsResult != FR_OK) {
@@ -1497,46 +1501,4 @@ uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint
    f_write(&fileObject, address, max_size, &byteCounter);
    f_close(&fileObject);
    return byteCounter;
-}
-
-bool filesystemfopen(const char * filename, FIL * fileObject)
-{
-   FRESULT fsResult;
-
-   if (filesystemState.fsMountState == false) {
-         fsResult = f_mount(&filesystemState.fsObject, "", 1);
-         if (fsResult != FR_OK) {
-            return false;
-         }
-   }
-   fsResult = f_open(fileObject, filename, FA_READ);
-   if (fsResult != FR_OK) {
-      return false;
-   }
-   return true;
-}
-
-bool filesystemfclose(FIL * fileObject)
-{
-   if (fileObject != NULL) {
-      if (fileObject->obj.fs == &filesystemState.fsObject) {
-         f_close(fileObject);
-         return true;
-      }
-   }
-   return false;
-}
-
-bool filesystemfread(FIL * fileObject, uint8_t *buffer, uint32_t size)
-{
-   UINT byteCounter;
-   FRESULT fsResult;
-
-   if (fileObject != NULL) {
-      fsResult  = f_read(fileObject, buffer, size, &byteCounter);
-      if (fsResult == FR_OK) {
-         return true;
-      }
-   }
-   return false;
 }
