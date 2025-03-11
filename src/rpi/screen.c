@@ -575,6 +575,21 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
         xoffset = h_overscan;
         yoffset = v_overscan;
     }
+
+    if ( !yuv)
+    {
+        *startpos += (uint32_t)(4.5*((double)*scaled_height/512.0))<<12; // beeb screen is 4.5 lines late.
+        yoffset+= (uint32_t)(4.5*((double)*scaled_height/512.0));
+        uint32_t sw = (uint32_t)((double)*scaled_width*768.0/832.0); // scaling required for the beeb mode
+        uint32_t xos = (*scaled_width - sw)/2;
+        *scaled_width = sw;
+        *startpos += xos;
+        xoffset += xos;
+        LOG_DEBUG("height %"PRId32" x %"PRId32"\r\n", height, *scaled_height);
+        LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", *scaled_width, *scaled_height);
+        LOG_DEBUG("sw %"PRId32" xos %"PRId32"\r\n", sw, xos);
+    }
+
     return 0;
 }
 
