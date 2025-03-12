@@ -676,7 +676,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
 {
     uint32_t * plane =  screen_get_nextplane( planeno);
    // LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
-    buffer |= 0xC0000000;
+    buffer |= 0x80000000;
     if (plane)
     {
         uint32_t scaled_width;
