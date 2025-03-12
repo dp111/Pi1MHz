@@ -279,7 +279,7 @@ void mouse_redirect_move_mouse()
     mouse_x = (int32_t)((int16_t)(Pi1MHz_MemoryRead(fred_address + 0) | (Pi1MHz_MemoryRead(fred_address + 1)<<8)));
     mouse_y = (int32_t)((int16_t)(Pi1MHz_MemoryRead(fred_address + 2) | (Pi1MHz_MemoryRead(fred_address + 3)<<8)));
     mouse_pointer = Pi1MHz_MemoryRead(fred_address + 4);
-    LOG_DEBUG("Mouse x %"PRIi32" y %"PRIi32" Pointer %u Last pointer %u\r\n", mouse_x, mouse_y, mouse_pointer, lastmouse_pointer);
+   // LOG_DEBUG("Mouse x %"PRIi32" y %"PRIi32" Pointer %u Last pointer %u\r\n", mouse_x, mouse_y, mouse_pointer, lastmouse_pointer);
 
     if (lastmouse_pointer != mouse_pointer)
     {
@@ -287,7 +287,7 @@ void mouse_redirect_move_mouse()
         screen_plane_enable(MOUSE_PLANE, false);
         if (mouse_pointer == 255u)
             return;
-        LOG_DEBUG("*** Mouse pointer %u\r\n", mouse_pointer);
+        //LOG_DEBUG("*** Mouse pointer %u\r\n", mouse_pointer);
         switch (fb_get_current_screen_mode()->mode_num)
         {
         case 0: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE0WIDTH, PTRMODEHEIGHT , 0.5, 256, 3, (uint32_t) &mouse_pointer_data[PTRMODE0WIDTH*PTRMODEHEIGHT*mouse_pointer]);

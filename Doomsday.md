@@ -9,10 +9,9 @@ Check mouse offsets and fix VFS ROM bug
 *MOUSE appears to not always work, see if original VFS has this bug and fix
 See if boot time can be improved
 LZ4 decompressor speedup memcpy
-YUV frame display
 More Fcode support (including VP4 and VP5 )
 See if power consumption of the Pi can be improved
-check and fix YUV scaling
+Fix minor scaling error either YUV or RGB scaling
 Audio support HDMI and beeb ?
 composite video out ?
 50Hz HDMI modes
@@ -86,7 +85,7 @@ F-Code: Received F-Code 0x45 = Video on
 F-Code: Received bytes: 0x46 0x31 0x36 0x30 0x30 0x53 0x0d
 F-Code: Received F-Code 0x46 = Load/Goto picture number : 1600 op: S = Stop Register  <- TODO ->
 F-Code: Received bytes: 0x4e 0x0d
-F-Code: Received F-Code 0x4e = Play forward
+F-Code: Received F-Code 0x4e = Play forward        <<< >>>
 fcodeReadBuffer
  0x41 0x32 0x0d 0x0d 0x36 0x36 fcodeClearBuffer
 fcodeReadBuffer

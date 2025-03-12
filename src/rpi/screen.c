@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <math.h>
 #include "base.h"
 #include "mailbox.h"
 #include "rpi.h"
@@ -46,7 +47,9 @@ LBM memory fixed at 768  bytes per line of each plane 8 planes
 YUV plane = 768*8 + 768/2* 8
 */
 
-// #define SCREEN_DEBUG
+//#define SCREEN_DEBUG
+
+#define BEEB_SCALE (768.0/832.0)
 
 #define MAX_PLANES 4
 #define PLOYPHASE_BASE (0xf00>>2)
@@ -503,8 +506,8 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
             rgb_scale = yuv_scale*2;
         }
 
-        *scaled_width = (((uint32_t)(yuv_scale * (float)h_corrected)) & 0xfff);
-        *scaled_height = (((uint32_t)(yuv_scale * (float)v_corrected)) & 0xfff);
+        *scaled_width = (((uint32_t)round((yuv_scale * (float)h_corrected))) & 0xfff);
+        *scaled_height = (((uint32_t)round((yuv_scale * (float)v_corrected))) & 0xfff);
 
         if (*scaled_height > v_display)
         {
@@ -579,16 +582,21 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     if ( !yuv)
     {
         *startpos += (uint32_t)(4.5*((double)*scaled_height/512.0))<<12; // beeb screen is 4.5 lines late.
-        yoffset+= (uint32_t)(4.5*((double)*scaled_height/512.0));
-        uint32_t sw = (uint32_t)((double)*scaled_width*768.0/832.0); // scaling required for the beeb mode
+
+        uint32_t sw = (uint32_t)((double)*scaled_width*BEEB_SCALE); // scaling required for the beeb mode
         uint32_t xos = (*scaled_width - sw)/2;
         *scaled_width = sw;
         *startpos += xos;
-        xoffset += xos;
-        LOG_DEBUG("height %"PRId32" x %"PRId32"\r\n", height, *scaled_height);
-        LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", *scaled_width, *scaled_height);
-        LOG_DEBUG("sw %"PRId32" xos %"PRId32"\r\n", sw, xos);
+        if (!scale_height)
+            {
+            xoffset += xos;
+            yoffset += (uint32_t)(4.5*((double)*scaled_height/512.0));
+            }
+    //    LOG_DEBUG("sw %"PRId32" xos %"PRId32"\r\n", sw, xos);
+
     }
+    //    LOG_DEBUG("height %"PRId32" sch %"PRId32"\r\n", height, *scaled_height);
+     //   LOG_DEBUG("scw %"PRId32" sch %"PRId32"\r\n", *scaled_width, *scaled_height);
 
     return 0;
 }
@@ -667,7 +675,7 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
 void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
     uint32_t * plane =  screen_get_nextplane( planeno);
-    LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
+   // LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
     buffer |= 0xC0000000;
     if (plane)
     {
@@ -852,7 +860,7 @@ void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
         newy = 0;
     }
 
-    int newx = (int) (( float) x * rgb_scale) + (int)xoffset;
+    int newx = (int) (( double ) x * ( double )rgb_scale * BEEB_SCALE) + (int)xoffset;
     if (newx < 0)
     {
         newx = 0;
@@ -862,7 +870,7 @@ void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
 
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
-    LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
+   // LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
 
     if (enable)
