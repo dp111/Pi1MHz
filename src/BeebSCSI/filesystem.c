@@ -1229,6 +1229,10 @@ uint8_t filesystemGetVFSLunDirectory(void)
    return filesystemState.lunDirectoryVFS;
 }
 
+void filesystemSwapVFSjukebox(void)
+{
+   filesystemState.lunDirectoryVFS = ((filesystemState.lunDirectoryVFS-1) ^ 0x01)+1;
+}
 
 // Functions for FAT Transfer support --------------
 

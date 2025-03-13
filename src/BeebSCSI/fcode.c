@@ -43,6 +43,7 @@ uint8_t scsiFcodeBufferRX[256];
 
 uint32_t PictureNumberStopReg = 0;
 
+uint32_t fcodecleardelay = 0;
 static char VPmode;
 // Function to handle F-Code buffer write actions
 void fcodeWriteBuffer(uint8_t lunNumber)
@@ -83,8 +84,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Replay switch disable\r\n")); // VFS sends this
-                scsiFcodeBufferRX[0] = 'A'; // Open ?
-                scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				case '1':
@@ -98,8 +97,9 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			break;
 
 			case 0x27: // ' // VFS sends this
-			FCdebugString_P(PSTR(" = Eject (open the front-loader tray)\r\n"));
-            // Response O when open
+				FCdebugString_P(PSTR(" = Eject (open the front-loader tray)\r\n"));
+				filesystemSwapVFSjukebox();
+				fcodecleardelay = 10;
 			break;
 
 			case 0x29: // )0, )1
@@ -143,6 +143,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 				case '1': // response S or O if tray open
 				FCdebugString_P(PSTR(" = On (load)\r\n"));
+				scsiFcodeBufferRX[0] = 'S';
+				scsiFcodeBufferRX[1] = 0x0D; // terminator
 				break;
 
 				default:
@@ -210,8 +212,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 				case '1':
 				FCdebugString_P(PSTR(" = Audio-1 on\r\n"));
-                    scsiFcodeBufferRX[0] = 'A';
-                    scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				default:
@@ -228,8 +228,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 				case '1':
 				FCdebugString_P(PSTR(" = Audio-2 on\r\n"));
-                    scsiFcodeBufferRX[0] = 'A';
-                    scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				default:
@@ -386,8 +384,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Local front panel buttons disabled\r\n"));
-                scsiFcodeBufferRX[0] = 'A';
-                scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				case '1':
@@ -404,8 +400,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Remote control disabled for player control\r\n"));
-                scsiFcodeBufferRX[0] = 'A';
-                scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				case '1':
@@ -649,5 +643,14 @@ void fcodeReadBuffer(void)
 void fcodeClearBuffer(void)
 {
     FCdebugString_P(PSTR(" fcodeClearBuffer\r\n"));
+	if (fcodecleardelay > 0) {
+		fcodecleardelay--;
+		if (!fcodecleardelay)
+			{
+				scsiFcodeBufferRX[0] = 'O';
+				scsiFcodeBufferRX[1] = 0x0D;
+				return;
+			}
+	}
     scsiFcodeBufferRX[0] = 0x0D;
 }
