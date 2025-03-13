@@ -1909,7 +1909,7 @@ static uint8_t scsiWriteFCode(void)
       debugString_P(PSTR("SCSI Commands: WRITE F-Code command (G6 0x0A) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
    }
-
+#if 0
    // Make sure the target LUN is started
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // LUN unavailable... return with error status
@@ -1922,7 +1922,7 @@ static uint8_t scsiWriteFCode(void)
 
       return SCSI_STATUS;
    }
-
+#endif
    // Set up the control signals ready for the data out phase
    scsiInformationTransferPhase(ITPHASE_DATAOUT);
 
@@ -1964,7 +1964,7 @@ static uint8_t scsiReadFCode(void)
       debugString_P(PSTR("SCSI Commands: READ F-Code command (G6 0x08) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
    }
-
+#if 0
    // Make sure the target LUN is started
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // LUN unavailable... return with error status
@@ -1976,7 +1976,7 @@ static uint8_t scsiReadFCode(void)
 
       return SCSI_STATUS;
    }
-
+#endif
    // Set up the control signals ready for the data in phase
    scsiInformationTransferPhase(ITPHASE_DATAIN);
 
