@@ -757,6 +757,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
 #endif
         //RPI_hvs->ectrl = 0x713f0000; // reduce maximum best burst to 8 beats to give time for GPU to read data
     }
+    _data_memory_barrier();
     plane_valid[planeno] = true;
 }
 
@@ -844,6 +845,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
 
         setup_polyphase();
     }
+    _data_memory_barrier();
     plane_valid[planeno] = true;
 }
 
@@ -866,6 +868,7 @@ void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
         newx = 0;
     }
     rgb->pos = (  ((uint32_t)newy&0xfff) << 12) +(  ((uint32_t)newx &0xfff) ) ;
+    _data_memory_barrier();
 }
 
 void screen_plane_enable( uint32_t planeno , bool enable )
@@ -897,6 +900,7 @@ void screen_plane_enable( uint32_t planeno , bool enable )
     LOG_DEBUG("pfkph0 %"PRIx32"\r\n", rgb->pfkph0);
     LOG_DEBUG("pfkpv0 %"PRIx32"\r\n", rgb->pfkpv0);
 #endif
+    _data_memory_barrier();
 }
 
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
@@ -914,6 +918,7 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
         colour |= 0xff000000; // set alpha to 0xff if not black
 
     context_memory[(PALETTE_BASE>>2) + entry + (256*2)] = colour;
+    _data_memory_barrier();
 }
 
 uint32_t screen_get_palette_entry( uint32_t entry )
@@ -931,7 +936,7 @@ uint32_t screen_get_palette_entry( uint32_t entry )
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
-
+    _data_memory_barrier();
     if ( (rgb->ctrl & 0xF) == 0xD)
     {
         unsigned int cpsr = _disable_interrupts_cspr();
@@ -957,6 +962,7 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
         }
         _restore_cpsr(cpsr);
     }
+    _data_memory_barrier();
 }
 
 void screen_set_vsync( bool enable )
@@ -972,6 +978,7 @@ void screen_set_vsync( bool enable )
         RPI_hvs->ctrl &= (uint32_t)~( (1<<9) + 1);
         RPI_GetIrqController()->Disable_IRQs_2 = RPI_HVS_IRQ;
     }
+    _data_memory_barrier();
 }
 
 bool screen_check_vsync( void )
