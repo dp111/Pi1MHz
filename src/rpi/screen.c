@@ -903,6 +903,36 @@ void screen_plane_enable( uint32_t planeno , bool enable )
     _data_memory_barrier();
 }
 
+
+void screen_plane_setalpha( uint32_t planeno , uint8_t alpha )
+{
+   // LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
+    rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+
+    // rgb->ctrl
+    // top 2 bits alpha mode
+    // 0x00000000 = no alpha
+    // 0x40000000 = alpha from source word 0
+    // 0x80000000 = use alpha from source word 0 for all alpha non zero alpha pixels
+    // 0xc0000000 = use alpha from source word 0 if pixel alpha >7
+
+    // rgb->pos = startpos;
+    // top 8 bits alpha
+
+    if (alpha)
+    {
+        rgb->pos = (rgb->pos & 0x00ffffff) + ((uint32_t)alpha << 24);
+        rgb->src_size = (rgb->src_size & 0x3fffffff) + 0x40000000; // set alpha mode
+    }
+    else
+    {
+        rgb->pos = (rgb->pos & 0x00ffffff) ;
+        rgb->src_size = (rgb->src_size & 0x3fffffff); // set alpha mode
+    }
+    _data_memory_barrier();
+}
+
+
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
 {
     // palette 0 is normal colours

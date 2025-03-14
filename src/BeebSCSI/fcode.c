@@ -488,6 +488,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 					case '4':
 					FCdebugString_P(PSTR(" = Video overlay mode 4 (Mixed)\r\n"));
+					screen_set_palette( 1, 0, 3 );
+					screen_plane_enable(0, true);
+					screen_plane_enable(1, true);
+					screen_plane_enable(2, true);
+					screen_plane_setalpha( 1, 0x80 );
+					screen_plane_setalpha( 2, 0x80 );
 					VPmode = '4';
 					break;
 
