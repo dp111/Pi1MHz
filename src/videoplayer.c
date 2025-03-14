@@ -37,6 +37,20 @@ FIL fileObject;
 static uint32_t last_frame;
 static uint32_t fbuffer;
 
+// state
+// 0 not read
+// 1 missing
+// 2 read
+
+
+
+enum index_state {
+    INDEX_NOT_READ = 0,
+    INDEX_MISSING = 1,
+    INDEX_READ = 2
+};
+
+static enum index_state indexstate = INDEX_NOT_READ;
 // load frame index
 
 bool videoplayer_index()
@@ -50,6 +64,7 @@ bool videoplayer_index()
     if (f_open( &fileObject, frame_filename, FA_READ) != FR_OK)
     {
         LOG_DEBUG("videoplayer_index: ERROR: Could not open video index file\r\n");
+        indexstate = INDEX_MISSING;
         return false;
     }
 
@@ -58,11 +73,13 @@ bool videoplayer_index()
     {
         LOG_DEBUG("videoplayer_index: ERROR: Could not read video index\r\n");
         f_close(&fileObject);
+        indexstate = INDEX_MISSING;
         return false;
     }
 
     f_close(&fileObject);
     LOG_DEBUG("videoplayer_index: Index Loaded\r\n");
+    indexstate = INDEX_READ;
     return true;
 }
 
@@ -74,6 +91,17 @@ static bool videoplayer_getframe(uint32_t frame, uint8_t * fb)
     if (last_frame == frame)
         return true;
 
+    if (indexstate == INDEX_NOT_READ)
+    {
+        if (!videoplayer_index())
+        {
+            return false;
+        }
+    }
+    if (indexstate == INDEX_MISSING)
+    {
+        return false;
+    }
     LOG_DEBUG("videoplayer_getframe: frame %lu last frame %lu\r\n", frame, last_frame);
     if ( (frame>>12) != (last_frame>>12) )
     {
@@ -126,17 +154,17 @@ static bool videoplayer_getframe(uint32_t frame, uint8_t * fb)
 void videoplayer_init(uint8_t instance, uint8_t address)
 {
     static uint32_t handle;
-    videoplayer_index();
+    //videoplayer_index();
     screen_plane_enable(YUV_PLANE, false);
     if (!handle)
     {
-
         screen_release_buffer(handle); // doesn't do anything if handle is NULL
         fbuffer = screen_allocate_buffer( 768*576*2, &handle );
         LOG_DEBUG("videoplayer_init\r\n");
-#if 1
-        videoplayer_getframe(3000,(uint8_t *) fbuffer);
         screen_create_YUV_plane( YUV_PLANE, 768, 576, fbuffer );
+#if 0
+        videoplayer_getframe(3000,(uint8_t *) fbuffer);
+
         screen_plane_enable(YUV_PLANE, true);
 #endif
    }
@@ -152,4 +180,10 @@ bool videoplayer_frame(uint32_t frame)
     //screen_create_YUV_plane( YUV_PLANE, 768, 576, fbuffer );
     //screen_plane_enable(YUV_PLANE, true);
     return true;
+}
+
+void videoplayer_reset(void)
+{
+    f_close(&fileObject);
+    indexstate = INDEX_NOT_READ;
 }

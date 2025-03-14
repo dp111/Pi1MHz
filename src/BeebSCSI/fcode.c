@@ -463,6 +463,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					case '1':
 					FCdebugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
 					screen_plane_enable(0, true);
+					screen_plane_setalpha( 0, -1 );
+					screen_plane_setalpha( 1, -1 );
 					screen_plane_enable(1, false);
 					screen_plane_enable(2, false);
 					VPmode = '1';
@@ -471,6 +473,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					case '2':
 					FCdebugString_P(PSTR(" = Video overlay mode 2 (External (computer) RGB only)\r\n"));
 					screen_set_palette( 1, 0, 3 );
+					screen_plane_setalpha( 0, -1 );
+					screen_plane_setalpha( 1, -1 );
 					screen_plane_enable(0, false);
 					screen_plane_enable(1, true);
 					screen_plane_enable(2, true);
@@ -480,6 +484,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					case '3':
 					FCdebugString_P(PSTR(" = Video overlay mode 3 (Hard-keyed)\r\n"));
 					screen_set_palette( 1, 0, 2 );
+					screen_plane_setalpha( 0, -1 );
+					screen_plane_setalpha( 1, -1 );
 					screen_plane_enable(0, true);
 					screen_plane_enable(1, true);
 					screen_plane_enable(2, true);
@@ -489,16 +495,22 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					case '4':
 					FCdebugString_P(PSTR(" = Video overlay mode 4 (Mixed)\r\n"));
 					screen_set_palette( 1, 0, 3 );
+					screen_plane_setalpha( 0, -1 );
+					screen_plane_setalpha( 1, 0x80 );
 					screen_plane_enable(0, true);
 					screen_plane_enable(1, true);
 					screen_plane_enable(2, true);
-					screen_plane_setalpha( 1, 0x80 );
-					screen_plane_setalpha( 2, 0x80 );
 					VPmode = '4';
 					break;
 
 					case '5':
 					FCdebugString_P(PSTR(" = Video overlay mode 5 (Enhanced)\r\n"));
+					screen_set_palette( 1, 0, 2 );
+					screen_plane_setalpha( 0, 0x20 );
+					screen_plane_setalpha( 1, 0x140 );
+					screen_plane_enable(0, true);
+					screen_plane_enable(1, true);
+					screen_plane_enable(2, true);
 					VPmode = '5';
 					break;
 

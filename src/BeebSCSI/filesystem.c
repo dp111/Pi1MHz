@@ -66,7 +66,7 @@
 #include "filesystem.h"
 #include "../rpi/rpi.h"
 #include "../rpi/fileparser.h"
-
+#include "../videoplayer.h"
 
 #define SZ_TBL 64
 
@@ -211,6 +211,7 @@ void filesystemInitialise(uint8_t scsijuke, uint8_t vfsjuke)
 {
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemInitialise(): Initialising file system\r\n"));
    filesystemState.lunDirectory = scsijuke;      // Default to LUN directory 0
+   videoplayer_reset();
    filesystemState.lunDirectoryVFS = vfsjuke;      // Default to LUN directory 0
    filesystemState.fsMountState = false;  // FS default state is unmounted
 }
@@ -621,7 +622,10 @@ void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber)
    if (scsiHostID != 16)
       filesystemState.lunDirectory = lunDirectoryNumber;
    else
-      filesystemState.lunDirectoryVFS = lunDirectoryNumber;
+      {
+         videoplayer_reset();
+         filesystemState.lunDirectoryVFS = lunDirectoryNumber;
+      }
 }
 
 // Function to read the current LUN directory (for the LUN jukeboxing functionality)
@@ -1231,12 +1235,14 @@ uint8_t filesystemGetVFSLunDirectory(void)
 
 void filesystemSetVFSlunDirectory(uint8_t lunDirectoryNumber)
 {
+   videoplayer_reset();
    // Change the current LUN directory number
    filesystemState.lunDirectoryVFS = lunDirectoryNumber;
 }
 
 void filesystemSwapVFSjukebox(void)
 {
+   videoplayer_reset();
    filesystemState.lunDirectoryVFS = (uint8_t)((filesystemState.lunDirectoryVFS-1) ^ 1)+1;
 }
 
