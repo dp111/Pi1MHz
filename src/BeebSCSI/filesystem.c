@@ -618,7 +618,7 @@ void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf)
 void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber)
 {
    // Change the current LUN directory number
-   if (scsiHostID == 0)
+   if (scsiHostID != 16)
       filesystemState.lunDirectory = lunDirectoryNumber;
    else
       filesystemState.lunDirectoryVFS = lunDirectoryNumber;
@@ -1229,9 +1229,15 @@ uint8_t filesystemGetVFSLunDirectory(void)
    return filesystemState.lunDirectoryVFS;
 }
 
+void filesystemSetVFSlunDirectory(uint8_t lunDirectoryNumber)
+{
+   // Change the current LUN directory number
+   filesystemState.lunDirectoryVFS = lunDirectoryNumber;
+}
+
 void filesystemSwapVFSjukebox(void)
 {
-   filesystemState.lunDirectoryVFS = ((filesystemState.lunDirectoryVFS-1) ^ 0x01)+1;
+   filesystemState.lunDirectoryVFS = (uint8_t)((filesystemState.lunDirectoryVFS-1) ^ 1)+1;
 }
 
 // Functions for FAT Transfer support --------------

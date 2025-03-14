@@ -124,3 +124,4 @@ Add beebscsi helper rom.
 V1.20
 support swapping disc for VFS
 Fix beeb screen width ( 92.3% of square pixel)
+Add new FCODE to change the VFS directory *FCODE >01 change to BeebVFS01

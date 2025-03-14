@@ -102,6 +102,7 @@ char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length);
 char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * length);
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer);
 uint8_t filesystemGetVFSLunDirectory(void);
+void filesystemSetVFSlunDirectory(uint8_t lunDirectoryNumber);
 void filesystemSwapVFSjukebox(void);
 
 bool filesystemSetFatDirectory(const uint8_t * buffer);

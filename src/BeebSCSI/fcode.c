@@ -165,6 +165,13 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			FCdebugString_P(PSTR(" = Reset to default values\r\n"));
 			break;
 
+			case 0x3E: // >  New FCODE to select the VFS directory
+			FCdebugString_P(PSTR(" = Select VFS directory\r\n"));
+			// Get the VFS directory number from the F-Code
+			filesystemSetVFSlunDirectory((uint8_t)((int)(scsiFcodeBuffer[1]-'0') * 10 +
+										           (int)(scsiFcodeBuffer[2]-'0')));
+			// Set the VFS directory number for the target LUN
+			break;
 			case 0x3F: // ?
 			switch(scsiFcodeBuffer[1]) {
 				case 'F': // response Fxxxxx X if not available O if open
