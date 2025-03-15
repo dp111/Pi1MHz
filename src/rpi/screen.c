@@ -903,7 +903,7 @@ void screen_plane_enable( uint32_t planeno , bool enable )
     _data_memory_barrier();
 }
 
-
+#if 0
 void screen_plane_setalpha( uint32_t planeno , int alpha )
 {
    // LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
@@ -936,7 +936,7 @@ void screen_plane_setalpha( uint32_t planeno , int alpha )
     }
     _data_memory_barrier();
 }
-
+#endif
 
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
 {
@@ -944,15 +944,38 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
     // palette 1 is flash colours
     // palette 2 is black is alpha 0
     // palette 3 is flash and black is alpha 0
+    // palette 4 is VP4 alpha blend palette ( black 0% alpha,  non black 38% alpha) could use global alpha
+    // palette 5 is flash VP4 alpha blend palette ( black 0% alpha,  non black 38% alpha) could use global alpha
+    // palette 6 is VP5 alpha blend palette ( black 43.7% alpha,  non black 100% alpha)
+    // palette 7 is flash VP5 alpha blend palette ( black 43.7% alpha,  non black 100% alpha)
 
     uint32_t colour = ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
-
+    uint32_t tempcolour = colour;
+    // platte 0 is normal colours and palette 1 is flash colours
     context_memory[(PALETTE_BASE>>2) + entry] = 0xff000000 | colour;
 
+    // palette 2 is black is alpha 0 and palette 3 is flash and black is alpha 0
     if (colour || ((entry&255) >15 ))
-        colour |= 0xff000000; // set alpha to 0xff if not black
+        tempcolour |= 0xff000000; // set alpha to 0xff if not black
+    context_memory[(PALETTE_BASE>>2) + entry + (256*2)] = tempcolour;
 
-    context_memory[(PALETTE_BASE>>2) + entry + (256*2)] = colour;
+    // palette 4 is VP4 alpha blend palette ( black 0% alpha,  non black 38% alpha) could use global alpha
+    // and palette 5 is flash VP4 alpha blend palette ( black 0% alpha,  non black 38% alpha) could use global alpha
+    if (colour || ((entry&255) >15 ))
+        tempcolour = 0x61000000 | colour ; // set alpha to 38% if not black
+    else
+        tempcolour = 0x0000000 | colour; // set alpha to 0 if  black
+    context_memory[(PALETTE_BASE>>2) + entry + (256*4)] = tempcolour;
+
+    // palette 6 is VP5 alpha blend palette ( black 43.7% alpha,  non black 100% alpha)
+    // and palette 7 is flash VP5 alpha blend palette ( black 43.7% alpha,  non black 100% alpha)
+    if (colour || ((entry&255) >15 ))
+        tempcolour = 0x00000000 ; // set alpha to 0% if not black
+    else
+        tempcolour = 0x6F000000; // set alpha to 43.7% if black
+
+    context_memory[(PALETTE_BASE>>2) + entry + (256*6)] = tempcolour;
+
     _data_memory_barrier();
 }
 
@@ -964,9 +987,8 @@ uint32_t screen_get_palette_entry( uint32_t entry )
 // flags
 // 0 set palette
 // 1 set palette ( preserve alpha)
-// 2 set alpha palette
-// 3 clear alpha
-// 4 flash palette
+// 2 set palette ( preserve flash)
+
 
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
@@ -983,17 +1005,12 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
                 rgb->palette = ( 0xc0000000 ) | ((palette*0x400) + PALETTE_BASE);
                 break;
             case 1:
-                rgb->palette = ( 0xc0000000 ) | ((((old_palette & 2) | palette)*0x400) + PALETTE_BASE);
+                rgb->palette = ( 0xc0000000 ) | ((((old_palette & 6) | palette)*0x400) + PALETTE_BASE);
                 break;
             case 2:
-                rgb->palette = ( 0xc0000000 ) | (((old_palette | 2)*0x400) + PALETTE_BASE);
+                rgb->palette = ( 0xc0000000 ) | ((((old_palette & 1) | palette )*0x400) + PALETTE_BASE);
                 break;
-            case 3:
-                rgb->palette = ( 0xc0000000 ) | (((old_palette & 1 )*0x400) + PALETTE_BASE);
-                break;
-            case 4:
-                rgb->palette = ( 0xc0000000 ) | (((old_palette ^ 1 )*0x400) + PALETTE_BASE);
-                break;
+
         }
         _restore_cpsr(cpsr);
     }
