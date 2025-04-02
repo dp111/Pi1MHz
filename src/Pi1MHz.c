@@ -152,19 +152,22 @@ NOINIT_SECTION uint8_t fx_register[256];
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 {
    uint32_t da = 0xff00 | data ; // set output enable
+   _data_memory_barrier();
    switch (addr & 1)
    {
    case 0: Pi1MHz_Memory_VPU[addr>>1] = da  | (Pi1MHz_Memory_VPU[addr>>1] & 0xFFFFFF00); break;
    case 1: Pi1MHz_Memory_VPU[addr>>1] = (da<<16) | (Pi1MHz_Memory_VPU[addr>>1] & 0xFF00FFFF); break;
    }
+
    Pi1MHz->Memory[addr] = data;
 }
 
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
 {
    // write a word at a time ( the compiler does the correct thing and does an STR instruction)
-   *(uint16_t *)(&Pi1MHz->Memory[addr])= (uint16_t ) data;
 
+   *(uint16_t *)(&Pi1MHz->Memory[addr])= (uint16_t ) data;
+   _data_memory_barrier();
    Pi1MHz_Memory_VPU[addr >> 1] = 0xFF00FF00 | (data&0xFF) | (data<<8);
 }
 
@@ -175,7 +178,7 @@ void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
    *(uint32_t *)(&Pi1MHz->Memory[addr])= data;
 
    uint32_t ad = addr >> 1;
-
+   _data_memory_barrier();
    Pi1MHz_Memory_VPU[ad++] = 0xFF00FF00 | (data&0xFF) | (data<<8);
    Pi1MHz_Memory_VPU[ad] = 0xFF00FF00 | (data>>16) | (data>>24)<<16;
 }
