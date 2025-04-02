@@ -1,24 +1,27 @@
 Doomsday notes
-
-
-
-
+=================
 TODO notes in no order
 
 Check mouse offsets and fix VFS ROM bug
 *MOUSE appears to not always work, see if original VFS has this bug and fix
 See if boot time can be improved
 LZ4 decompressor speedup memcpy
-More Fcode support (including VP4 and VP5 )
+More Fcode support
+VP5 overscan isn't dimmed
 See if power consumption of the Pi can be improved
-Fix minor scaling error either YUV or RGB scaling
+Fix minor scaling error, either YUV or RGB scaling
+Vertical position of beeb screen check.
 Audio support HDMI and beeb ?
-composite video out ?
 50Hz HDMI modes
 Check 1MHz timing / add DMBs ( sometimes bad FSMAP)
 Check beeb screen offset vertical appears off by a pixel ?
 Menu system
+Rewrite new code to be neat!
 
+
+Possible Future work
+====================
+composite video out ?
 
 
 
@@ -72,34 +75,34 @@ plot 99 1279 59
 fcodeReadBuffer
  0x56 0x50 0x33 0x0d 0x36 0x36 fcodeClearBuffer
 F-Code: Received bytes: 0x41 0x31 0x0d
-F-Code: Received F-Code 0x41 = Audio-1 on                <- TODO ->
+F-Code: Received F-Code 0x41 = Audio-1 on               <- TODO ->
 F-Code: Received bytes: 0x42 0x31 0x0d
 F-Code: Received F-Code 0x42 = Audio-2 on               <- TODO ->
 fcodeReadBuffer
  0x41 0x0d 0x33 0x0d 0x36 0x36 fcodeClearBuffer
 F-Code: Received bytes: 0x46 0x35 0x31 0x52 0x0d
-F-Code: Received F-Code 0x46 = Load/Goto picture number : 51 op: R = Still picture   <- TODO ->
+F-Code: Received F-Code 0x46 = Load/Goto picture number : 51 op: R = Still picture
 fcodeReadBuffer
  0x41 0x30 0x0d 0x0d 0x36 0x36 fcodeClearBuffer
 F-Code: Received bytes: 0x45 0x31 0x0d
 F-Code: Received F-Code 0x45 = Video on
 F-Code: Received bytes: 0x46 0x31 0x36 0x30 0x30 0x53 0x0d
-F-Code: Received F-Code 0x46 = Load/Goto picture number : 1600 op: S = Stop Register  <- TODO ->
+F-Code: Received F-Code 0x46 = Load/Goto picture number : 1600 op: S = Stop Register
 F-Code: Received bytes: 0x4e 0x0d
-F-Code: Received F-Code 0x4e = Play forward        <<< >>>
+F-Code: Received F-Code 0x4e = Play forward        <<< TODO>>>
 fcodeReadBuffer
  0x41 0x32 0x0d 0x0d 0x36 0x36 fcodeClearBuffer
 fcodeReadBuffer
  0x0d 0x32 0x0d 0x0d 0x36 0x36 fcodeClearBuffer
 F-Code: Received bytes: 0x41 0x30 0x0d
-F-Code: Received F-Code 0x41 = Audio-1 off
+F-Code: Received F-Code 0x41 = Audio-1 off          <- TODO ->
 F-Code: Received bytes: 0x42 0x30 0x0d
-F-Code: Received F-Code 0x42 = Audio-2 off
+F-Code: Received F-Code 0x42 = Audio-2 off            <- TODO ->
 
 fcodeReadBuffer
  0x0d 0x32 0x0d 0x0d 0x36 0x36 fcodeClearBuffer
 F-Code: Received bytes: 0x46 0x31 0x38 0x37 0x39 0x32 0x52 0x0d
-F-Code: Received F-Code 0x46 = Load/Goto picture number : 18792 op: R = Still picture  <- TODO ->
+F-Code: Received F-Code 0x46 = Load/Goto picture number : 18792 op: R = Still picture
 fcodeReadBuffer
  0x41 0x30 0x0d 0x0d 0x36 0x36 fcodeClearBuffer
 fcodeReadBuffer
