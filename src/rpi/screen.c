@@ -962,15 +962,15 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
     // palette 4 is VP4 alpha blend palette ( black 0% alpha,  non black 38% alpha) could use global alpha
     // and palette 5 is flash VP4 alpha blend palette ( black 0% alpha,  non black 38% alpha) could use global alpha
     if (colour || ((entry&255) >15 ))
-        tempcolour = 0x61000000 | colour ; // set alpha to 38% if not black
+        tempcolour = 0x61000000 | colour; // set alpha to 38% if not black
     else
-        tempcolour = 0x0000000 | colour; // set alpha to 0 if  black
+        tempcolour =              colour; // set alpha to 0 if black
     context_memory[(PALETTE_BASE>>2) + entry + (256*4)] = tempcolour;
 
     // palette 6 is VP5 alpha blend palette ( black 43.7% alpha,  non black 100% alpha)
     // and palette 7 is flash VP5 alpha blend palette ( black 43.7% alpha,  non black 100% alpha)
     if (colour || ((entry&255) >15 ))
-        tempcolour = 0x00000000 ; // set alpha to 0% if not black
+        tempcolour = 0x00000000; // set alpha to 0% if not black
     else
         tempcolour = 0x6F000000; // set alpha to 43.7% if black
 
@@ -993,10 +993,10 @@ uint32_t screen_get_palette_entry( uint32_t entry )
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    unsigned int cpsr = _disable_interrupts_cspr();
     _data_memory_barrier();
     if ( (rgb->ctrl & 0xF) == 0xD)
     {
-        unsigned int cpsr = _disable_interrupts_cspr();
         uint32_t old_palette = ((rgb->palette & 0x00003fff) - PALETTE_BASE)/0x400;
 
         switch (flags)
@@ -1010,11 +1010,11 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
             case 2:
                 rgb->palette = ( 0xc0000000 ) | ((((old_palette & 1) | palette )*0x400) + PALETTE_BASE);
                 break;
+            }
 
-        }
-        _restore_cpsr(cpsr);
     }
     _data_memory_barrier();
+    _restore_cpsr(cpsr);
 }
 
 void screen_set_vsync( bool enable )
