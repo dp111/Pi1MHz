@@ -398,8 +398,8 @@ static void setup_polyphase(void) {
  * @return uint32_t* Pointer to the next available plane.
  */
 static uint32_t* screen_get_nextplane(uint32_t planeno) {
-    static uint32_t* plane = 0;
-    uint32_t* returnplane = 0;
+    static uint32_t* plane;
+    uint32_t* returnplane;
 
     RPI_hvs->list1 = PLANE_BASE;
     context_memory[0] = 0x80000000; // set end of list bit and clear valid bit for other display lists
@@ -654,8 +654,6 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
     uint32_t * plane =  screen_get_nextplane( planeno);
     LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
     buffer |= 0xC0000000;
-    if (plane)
-    {
         uint32_t scaled_width;
         uint32_t scaled_height;
         uint32_t startpos;
@@ -733,7 +731,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         LOG_DEBUG("HVS pri %"PRIx32"\r\n", *hvs);
 #endif
         //RPI_hvs->ectrl = 0x713f0000; // reduce maximum best burst to 8 beats to give time for GPU to read data
-    }
+
     plane_valid[planeno] = true;
 }
 
@@ -741,8 +739,6 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
 void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height, float par , uint32_t scale_height, uint32_t colour_depth, uint32_t buffer )
 {
     uint32_t * plane = screen_get_nextplane( planeno);
-    if (plane)
-    {
         uint32_t scaled_width;
         uint32_t scaled_height;
         uint32_t startpos;
@@ -820,7 +816,6 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
 
 
         setup_polyphase();
-    }
     plane_valid[planeno] = true;
 }
 
