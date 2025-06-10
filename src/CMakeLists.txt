@@ -63,7 +63,20 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsign-compare" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wlong-long" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-field-initializers" )
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wconversion")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunused -Wuninitialized -Wduplicated-branches ")
+
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wduplicated-cond -Wnested-externs -Wfloat-conversion ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Winline")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -Wmissing-include-dirs  ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Woverlength-strings -Wdisabled-optimization -Wnormalized -Wformat-overflow=1 ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wrestrict -Wshift-overflow=2 -Wnull-dereference -Wmain ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -Wstringop-overflow=4 -Wstringop-overread -Wstrict-prototypes ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -Wreturn-local-addr -Wlogical-op -fstrict-aliasing ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-aliasing=3 -Wunsafe-loop-optimizations -Wformat-signedness ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Walloc-zero -Wdiscarded-qualifiers -Wtrampolines -Wbad-function-cast ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}   -Waddress-of-packed-member -Wsuggest-attribute=noreturn ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdiscarded-array-qualifiers -Wmissing-noreturn ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wflex-array-member-not-at-end -ftabstop=8  ")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 
@@ -79,8 +92,11 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _
 
 # current failures in frame buffer.c
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-overflow=5")
+#very noisy warnings in code
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wcast-align -Wcast-align=strict")
+#-Wunused-macros
 
-# current failures in code
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter ")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=auto")

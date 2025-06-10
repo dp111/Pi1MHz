@@ -17,7 +17,7 @@
 #define NOINIT_SECTION __attribute__ ((section (".noinit")))
 
 #ifndef __ASSEMBLER__
-typedef void (*func_ptr)();
+typedef void (*func_ptr)(void);
 
 #if (__ARM_ARCH >= 7 )
 void start_core(int core, func_ptr func);

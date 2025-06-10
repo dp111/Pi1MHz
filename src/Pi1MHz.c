@@ -299,7 +299,7 @@ static void init_emulator(void) {
          if (prop2)
             {
                int temp=strtol(prop2,0,0);
-               LOG_DEBUG("Found : %s=0x%x\r\n", key, temp);
+               LOG_DEBUG("Found : %s=0x%x\r\n", key, (unsigned int )temp);
                if (temp<0)
                   emulator[i].enable = 0;
                else
@@ -391,7 +391,7 @@ static void init_hardware(void)
 #endif
 }
 // cppcheck-suppress unusedFunction
-void kernel_main(void)
+_Noreturn void kernel_main(void)
 {
    unsigned int baud_rate;
    const char * const prop = get_cmdline_prop("baud_rate");

@@ -110,8 +110,8 @@ static struct filesystemStateStruct
    parserkeyvalue keyvalues[MAX_LUNS][NUM_KEYS];   // keys from .cfg file for each LUN
 } filesystemState;
 
-NOINIT_SECTION static char fileName[255];       // String for storing LFN filename
-NOINIT_SECTION static char fatDirectory[255];      // String for storing FAT directory (for FAT transfer operations)
+NOINIT_SECTION static char fileName[256];       // String for storing LFN filename
+NOINIT_SECTION static char fatDirectory[256];      // String for storing FAT directory (for FAT transfer operations)
 
 NOINIT_SECTION static uint8_t sectorBuffer[SECTOR_BUFFER_SIZE];   // Buffer for reading sectors
 

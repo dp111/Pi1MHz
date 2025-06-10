@@ -50,7 +50,7 @@ int parse_findindex( const char * searchkey, const parserkey array[])
 
 
 // nonnumber = 0 for hex digits, 1 for 0x, -1 for non decimal digits
-//
+// returns the length of the string
 //
 static size_t parse_numstrlen( const uint8_t * buf , size_t ptr, size_t max,  int *nonnumber)
 {
@@ -108,7 +108,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
     size_t filesize = filesystemReadFile( filename , &buffer , 0 );
     if (filesize == 0)
         return 0;
-    LOG_DEBUG("Parsing %s File size %d\n\r",filename, filesize);
+    LOG_DEBUG("Parsing %s File size %u\n\r",filename, filesize);
     char * outbuf = malloc( filesize*4); // create out buffer *4 input size should be enough
 
     if (outbuf == NULL)

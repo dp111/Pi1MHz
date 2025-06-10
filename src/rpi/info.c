@@ -79,7 +79,7 @@ uint32_t get_speed(void) {
 char *get_info_string(void) {
    static uint8_t read = 0;
    if (!read) {
-      sprintf(info_string, "%"PRIx32" %04"PRId32"/%03"PRId32"MHz",
+      sprintf(info_string, "%"PRIx32" %04"PRIu32"/%03"PRIu32"MHz",
          get_revision(),
          get_clock_rate(ARM_CLK_ID) / 1000000,
          get_clock_rate(CORE_CLK_ID) / 1000000

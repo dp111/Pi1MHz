@@ -1608,7 +1608,7 @@ static void fb_show_splash_screen(void) {
 
    sprintf(buffer, "*FX147,%d,n <ret> *GO FD00 <ret>\r\n", address); fb_writes(buffer);
    sprintf(buffer, "*FX147,%d,n <ret> *GOIO FD00 <ret>\r\n", address); fb_writes(buffer);
-   sprintf(buffer, "X%%=n:CALL&FC%x <ret>\r\n", address); fb_writes(buffer);
+   sprintf(buffer, "X%%=n:CALL&FC%x <ret>\r\n", (unsigned int)address); fb_writes(buffer);
    fb_writes("\r\n where n is one of the following"
         "\r\n"
         "\r\n 0 # This help screen"

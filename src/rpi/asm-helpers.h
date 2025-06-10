@@ -6,11 +6,11 @@ void _set_interrupts( unsigned int cpsr );
 void  _disable_interrupts( void );
 unsigned int _disable_interrupts_cspr(void);
 void _restore_cpsr(unsigned int cpsr);
-unsigned int _get_cpsr();
-unsigned int _get_stack_pointer();
-void _invalidate_icache();
-void _data_memory_barrier();
-void _data_synchronization_barrier();
+unsigned int _get_cpsr(void);
+unsigned int _get_stack_pointer(void);
+void _invalidate_icache(void);
+void _data_memory_barrier(void);
+void _data_synchronization_barrier(void);
 void _invalidate_tlb_mva(const void *address);
-unsigned int _get_core();
+unsigned int _get_core(void);
 #endif

@@ -3,7 +3,7 @@
 #include "auxuart.h"
 
 /* From here: https://www.raspberrypi.org/forums/viewtopic.php?f=72&t=53862*/
-static void reboot_now(void)
+_Noreturn static void reboot_now(void)
 {
   const int PM_PASSWORD = 0x5a000000;
   const int PM_RSTC_WRCFG_FULL_RESET = 0x00000020;
@@ -51,7 +51,7 @@ static void dump_string(const char *string) {
 
 /* printf isn't used as it is buffered and uses IRQs which might be disabled */
 // cppcheck-suppress unusedFunction
-void dump_info(unsigned int *context, int offset, const char *type) {
+_Noreturn void dump_info(unsigned int *context, int offset, const char *type) {
   unsigned int *addr;
   const unsigned int *reg;
   unsigned int flags;
