@@ -189,7 +189,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                             // write a string number
                             for( size_t i = 0; i < values[keyindex].length; i++)
                                 {
-                                    char nibble = values[keyindex].v.string[i] >> 4;
+                                    char nibble = (values[keyindex].v.string[i] >> 4) & 0x0F;
                                     if (nibble < 10)
                                         outbuf[outptr++] = nibble + '0';
                                     else
@@ -214,8 +214,9 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                         {
                             size_t len = parse_strlen( buffer , ptr, filesize);
                             // write a number
-                            size_t outlen = (size_t) sprintf( outbuf + outptr , "%d" , *values[keyindex].v.integer);
-                            outptr += outlen;
+                            size_t remaining = (filesize * 4) - outptr;
+                            size_t outlen = (size_t) snprintf( outbuf + outptr , remaining , "%d" , *values[keyindex].v.integer);
+                            if (outlen > 0 && outlen < remaining) outptr += outlen;
                             ptr += len;
                         }
                        }
@@ -243,14 +244,15 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                      // strip off 0x
                                      ptr+=2;
                                      len-=2;
-                                     if (len%2)
-                                         {
-                                             // odd number of digits error
-                                             LOG_DEBUG("Error odd number of digits in hex string\n\r");
-                                             len++;
-                                             ptr--;
-                                             buffer[ptr]='0'; // pad with a 0
-                                         }
+
+                                    }
+                                if (len%2)
+                                    {
+                                        // odd number of digits error
+                                        LOG_DEBUG("Error odd number of digits in hex string\n\r");
+                                        len++;
+                                        ptr--;
+                                        buffer[ptr]='0'; // pad with a 0
                                     }
                                 // read a string number
                               //  LOG_DEBUG("Number %s\n\r" , &buffer[ptr]);
