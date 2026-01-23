@@ -2083,17 +2083,15 @@ static uint8_t scsiBeebScsiSense(void)
    return SCSI_STATUS;
 }
 
-void scsiJukebox (uint8_t lun) {
-    uint8_t availableLUNs = 0;
+bool scsiJukebox (uint8_t lun) {
    // Check if any LUNs are in the started state
    for (uint8_t byteCounter = 0; byteCounter < MAX_LUNS; byteCounter++)
-      if (filesystemReadLunStatus(byteCounter)) availableLUNs++;
+      if (filesystemReadLunStatus(byteCounter)) return false;
 
    // Only jukebox if no LUNs are in the started state
-   if (availableLUNs == 0) {
-      // Perform jukeboxing
-      filesystemSetLunDirectory(scsiHostID, lun);
-   }
+   filesystemSetLunDirectory(scsiHostID, lun);
+   if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Jukeboxing successful - LUN directory set to "), lun, true);
+   return true;
 }
 
 // SCSI Command BeebSCSI Select (group 6 - command 0x11)
@@ -2102,7 +2100,6 @@ void scsiJukebox (uint8_t lun) {
 static uint8_t scsiBeebScsiSelect(void)
 {
    uint8_t byteCounter;
-   uint8_t availableLUNs = 0;
    uint8_t Buffer[8];
 
    if (debugFlag_scsiCommands) {
@@ -2134,17 +2131,8 @@ static uint8_t scsiBeebScsiSelect(void)
         }
      }
 
-   // Check if any LUNs are in the started state
-   for (byteCounter = 0; byteCounter < MAX_LUNS; byteCounter++)
-      if (filesystemReadLunStatus(byteCounter)) availableLUNs++;
-
    // Only jukebox if no LUNs are in the started state
-   if (availableLUNs == 0) {
-      // Perform jukeboxing
-      filesystemSetLunDirectory(scsiHostID, Buffer[0]);
-
-      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Jukeboxing successful - LUN directory set to "), Buffer[0], true);
-   } else {
+   if (!scsiJukebox(Buffer[0])) {
       // One or more LUNs are started... cannot perform jukeboxing
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Error - cannot jukebox if LUNs are started\r\n"));
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad

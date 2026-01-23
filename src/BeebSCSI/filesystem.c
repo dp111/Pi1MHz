@@ -614,8 +614,11 @@ void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf)
 // Function to set the current LUN directory (for the LUN jukeboxing functionality)
 void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber)
 {
+   if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemSetLunDirectory(): setting lun directory\r\n"), lunDirectoryNumber, 0);
+   if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemSetLunDirectory(): setting scsihostid directory\r\n"), scsiHostID, 0);
+
    // Change the current LUN directory number
-   if (scsiHostID == 0)
+   if (scsiHostID < 16)
       filesystemState.lunDirectory = lunDirectoryNumber;
    else
       filesystemState.lunDirectoryVFS = lunDirectoryNumber;

@@ -90,7 +90,7 @@
 void scsiInitialise(void);
 void scsiReset(uint8_t scsiid);
 
-void scsiJukebox (uint8_t lun);
+bool scsiJukebox (uint8_t lun);
 
 void scsiProcessEmulation(void);
 
