@@ -728,7 +728,8 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
             // Something went wrong
             if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReadLunDescriptor(): ERROR: Could not read .dsc file\r\n"));
             f_close(&fileObject);
-            return 0;
+
+            return false;
          }
 
          // Interpret the DSC information and calculate the LUN size
@@ -755,7 +756,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
          // (the '33' is because SuperForm uses a 2:1 interleave format with 33 sectors per
          // track (F-2 in the ACB-4000 manual))
          // bytes = sectors * block size (block size is always 256 bytes
-
+         filesystemUpdateLunGeometry(lunNumber);
          f_close(&fileObject);
       }
       return true;
@@ -777,9 +778,22 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
 
    if (parse_readfile(fileName, fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): Successful\r\n"));
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg overwritten Successful\r\n"));
       return true;
    }
+
+   // assume no cfg file so create one
+
+      // Assemble the .cfg file name
+   sprintf(fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
+
+   if (parse_readfile("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
+   {
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg created Successful\r\n"));
+      return true;
+   }
+
+
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): ERROR: Could not create new .cfg file!\r\n"));
    return false;
 }
@@ -1509,7 +1523,7 @@ uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint
    FRESULT fsResult;
    FIL fileObject;
 
-   fsResult = f_open(&fileObject, filename, FA_WRITE);
+   fsResult = f_open(&fileObject, filename, FA_CREATE_ALWAYS |FA_WRITE);
    if (fsResult != FR_OK)
       return 0;
 

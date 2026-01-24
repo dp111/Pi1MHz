@@ -6,7 +6,7 @@
 #include "rpi/rpi.h"
 #include "rpi/base.h"
 
-#define RELEASENAME "v1.20 alpha"
+#define RELEASENAME "v1.21"
 
 #define PAGE_SIZE    0x100
 
