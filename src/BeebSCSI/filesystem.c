@@ -935,6 +935,17 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].length = 8;
       }
 
+   index = parse_findindex("ModePage3", scsiattributes);
+   if  (filesystemState.keyvalues[lunNumber][index].v.string)
+   {
+      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
+                                                                              (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[11]));
+   }
+   else
+   {
+      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
+   }
+
    index = parse_findindex("ModePage0", scsiattributes);
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
@@ -944,9 +955,20 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
    }
    else
    {
+      // check if page4 is present
+      index = parse_findindex("ModePage4", scsiattributes);
+      if  (filesystemState.keyvalues[lunNumber][index].v.string)
+      {
+               filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
+                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[4]));
+               filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[5]);
+      } else
+      {
+         // set to default values
+
       uint32_t lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
 
-      lunFileSize = lunFileSize / (DEFAULT_SECTORS_PER_TRACK * filesystemState.fsLunGeometry[lunNumber].BlockSize);
+      lunFileSize = lunFileSize / (filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack * filesystemState.fsLunGeometry[lunNumber].BlockSize);
       uint8_t heads = 16;
 
       while ((lunFileSize % heads != 0) && heads > 1) heads--;
@@ -969,16 +991,7 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
       filesystemState.keyvalues[lunNumber][index].length = 10;
    }
 
-   index = parse_findindex("ModePage3", scsiattributes);
-   if  (filesystemState.keyvalues[lunNumber][index].v.string)
-   {
-      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
-                                                                              (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[11]));
-   }
-   else
-   {
-      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
-   }
+
 }
 
 
