@@ -273,13 +273,90 @@ ORG &FD00
     ENDBLOCK &500
 }
 ; Page 6
-; VFS
+; BSROM
 {
 ORG &FD00
     LOADFILETOSWR "Pi1MHz/BSrom.rom"
     ENDBLOCK &600
 }
+; Page 7
+; BSROM duplicate
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/BSrom.rom"
+    ENDBLOCK &700
+}
+; Page 8
+; BSROM duplicate
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/BSrom.rom"
+    ENDBLOCK &800
+}
+; Page 9
+; BSROM duplicate
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/BSrom.rom"
+    ENDBLOCK &900
+}
+; Page 10
+; User ROM10
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/ROM10.rom"
+    ENDBLOCK &A00
+}
+; Page 11
+; User ROM11
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/ROM11.rom"
+    ENDBLOCK &B00
+}
+; Page 12
+; User ROM12
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/ROM12.rom"
+    ENDBLOCK &C00
+}
+; Page 13
+; User ROM13
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/ROM13.rom"
+    ENDBLOCK &D00
+}
+; Page 14
+; User ROM14
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/ROM14.rom"
+    ENDBLOCK &E00
+}
+; Page 14
+; User ROM14
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/ROM14.rom"
+    ENDBLOCK &E00
+}
+; Page 14
+; User ROM14
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/ROM14.rom"
+    ENDBLOCK &E00
+}
+; Page 15
+; User ROM15
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/ROM15.rom"
+    ENDBLOCK &F00
+}
 
 .end
 
-SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &700
+SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &1000

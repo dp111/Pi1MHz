@@ -21,8 +21,7 @@ static void helpers_setup(uint8_t helper_address)
         sprintf(dec, "%d",helper_address);
 
         char * helpscreen = ( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000] ;
-        helpscreen += strlcpy(helpscreen, "\r\n Pi1MHZ "RELEASENAME
-        "\r\n Commit ID : "GITVERSION
+        helpscreen += strlcpy(helpscreen, "\r\n Pi1MHZ "RELEASENAME" , "GITVERSION
         "\r\n Date : " __DATE__ " " __TIME__
         "\r\n Pi : " , PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, get_info_string(), PAGE_SIZE*16);
@@ -52,6 +51,7 @@ static void helpers_setup(uint8_t helper_address)
         "\r\n 4 # Load MMFS into SWR"
         "\r\n 5 # Load MMFS2 into SWR"
         "\r\n 6 # Load BeebSCSI helper ROM into SWR"
+        "\r\n 10-15 # Load User ROM10-ROM15 into SWR"
         "\r\n", PAGE_SIZE*16);
         helpscreen[0] = 0;
         //signal to beeb the help screen is setup
