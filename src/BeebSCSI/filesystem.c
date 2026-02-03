@@ -78,7 +78,8 @@ static const parserkey scsiattributes[] = {
    { "LBADescriptor"   , 0 ,  8 , NUMSTRING },
    { "ModePage0"       , 0 ,  10 , NUMSTRING},
    { "ModePage1"       , 0 ,  5 , NUMSTRING},
-   { "ModePage3"       , 0 , 21 , NUMSTRING },
+   { "ModePage3"       , 0 , 23 , NUMSTRING },
+   { "WritPage3"       , 0 , 23 , NUMSTRING },
    { "ModePage4"       , 0 ,  6 , NUMSTRING},
    { "ModePage32"      , 0 , 10 , NUMSTRING},
    { "ModePage33"      , 0 ,  9 , NUMSTRING },
@@ -100,6 +101,7 @@ enum parserkeyvalueenum {
     MODEPAGE0,
     MODEPAGE1,
     MODEPAGE3,
+    WRITPAGE3,
     MODEPAGE4,
     MODEPAGE32,
     MODEPAGE33,
@@ -614,6 +616,9 @@ uint32_t filesystemGetLunTotalSectors( uint8_t lunNumber)
 {
 	// pointer to the geometry data of the LUN
 	struct HDGeometry* ptr = &filesystemState.fsLunGeometry[lunNumber];
+   if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemGetLunTotalSectors(): Cylinders = "), (*ptr).Cylinders, 0);
+   if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemGetLunTotalSectors(): Heads = "), (*ptr).Heads, 0);
+   if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemGetLunTotalSectors(): SectorsPerTrack = "), (*ptr).SectorsPerTrack, 0);
 
 	// Tracks = Cylinders * Heads
 	// Total Sectors = Tracks * Sectors per Track
@@ -960,9 +965,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
 
 void filesytemdattoconfigGeometry(uint8_t lunNumber)
 {
-   // not implemented
-
-         uint32_t lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+      uint32_t lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
 
       lunFileSize = lunFileSize / (filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack * filesystemState.fsLunGeometry[lunNumber].BlockSize);
       uint8_t heads = 16;
@@ -1266,6 +1269,25 @@ static int filesystemPagetoIndex( uint8_t page)
    return parse_findindex(mode,scsiattributes);
 }
 
+static int filesystemWritetoIndex( uint8_t page)
+{
+   page = page & 0x3f;
+   char page1 , page2;
+   if (page >= 10)
+   {
+      page1= (page/10)+'0';
+      page2= (page%10)+'0';
+   }
+   else
+      {
+      page1= page+'0';
+      page2= 0;
+      }
+
+   const char mode[] = {'W','r','i','t','P','a','g','e',page1,page2,0};
+   return parse_findindex(mode,scsiattributes);
+}
+
 // returns the mode page data for a given page
 
 char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * length)
@@ -1285,6 +1307,17 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    int index = filesystemPagetoIndex(page);
    if (index == -1)
       return 0;
+
+   int windex = filesystemWritetoIndex(page);
+   if (windex != -1)
+      {
+         for ( unsigned int i=0; (i< len) && (i < filesystemState.keyvalues[lunNumber][windex].length ); i++)
+         {
+            filesystemState.keyvalues[lunNumber][index].v.string[i] = (Buffer[i] & filesystemState.keyvalues[lunNumber][windex].v.string[i]) |
+                      ((filesystemState.keyvalues[lunNumber][index].v.string[i] & ~filesystemState.keyvalues[lunNumber][windex].v.string[i]));
+         }
+         return 1;
+      }
 
    filesystemState.keyvalues[lunNumber][index].length = len;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
