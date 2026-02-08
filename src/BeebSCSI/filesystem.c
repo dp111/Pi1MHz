@@ -616,7 +616,7 @@ uint32_t filesystemGetLunTotalSectors( uint8_t lunNumber)
 {
 	// pointer to the geometry data of the LUN
 	struct HDGeometry* ptr = &filesystemState.fsLunGeometry[lunNumber];
-   if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemGetLunTotalSectors(): Cylinders = "), (*ptr).Cylinders, 0);
+   if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemGetLunTotalSectors(): Cylinders = "), ( uint16_t) (*ptr).Cylinders, 0);
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemGetLunTotalSectors(): Heads = "), (*ptr).Heads, 0);
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemGetLunTotalSectors(): SectorsPerTrack = "), (*ptr).SectorsPerTrack, 0);
 
