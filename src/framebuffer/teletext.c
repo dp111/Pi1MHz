@@ -338,7 +338,7 @@ static void tt_reset_line_state(int row) {
    // This attribute also causes normal height stuff on the bottom row of double height
    // to be suppressed (i.e. displayed as spaces in the current background colour).
    tt.double_bottom = FALSE;
-   for (int r = row - 1; r >= 0 && tt.dh_count[r] > 0; r--) {
+   for (int r = row ; r >= 1 && tt.dh_count[r-1] > 0; r--) {
       tt.double_bottom = !tt.double_bottom;
    }
 }
