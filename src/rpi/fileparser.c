@@ -192,14 +192,14 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                 {
                                     char nibble = (values[keyindex].v.string[i] >> 4) & 0x0F;
                                     if (nibble < 10)
-                                        outbuf[outptr++] = nibble + '0';
+                                        outbuf[outptr++] = (char) (nibble + '0');
                                     else
-                                        outbuf[outptr++] = nibble + 'A' - 10;
+                                        outbuf[outptr++] = (char) (nibble + 'A' - 10);
                                     nibble = values[keyindex].v.string[i] & 0x0F;
                                     if (nibble < 10)
-                                        outbuf[outptr++] = nibble + '0';
+                                        outbuf[outptr++] = (char) (nibble + '0');
                                     else
-                                        outbuf[outptr++] = nibble + 'A' - 10;
+                                        outbuf[outptr++] = (char) (nibble + 'A' - 10);
                                 }
                             ptr += len;
                         }
@@ -266,19 +266,22 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                 {
                                     for (size_t i = 0; i < len/2; i++)
                                     {
+                                        char digit = 0;
                                         if ((buffer[ptr] >= '0') && (buffer[ptr] <= '9'))
-                                            values[keyindex].v.string[i] = (char)(buffer[ptr] - '0')<<4;
+                                            digit = (char)((buffer[ptr] - '0'));
                                         else if ((buffer[ptr] >= 'A' && buffer[ptr] <= 'F'))
-                                            values[keyindex].v.string[i] = (char)(buffer[ptr] - 'A' + 10)<<4;
+                                            digit= (char)((buffer[ptr] - 'A' + 10));
                                         else if ((buffer[ptr] >= 'a' && buffer[ptr] <= 'f'))
-                                            values[keyindex].v.string[i] = (char)(buffer[ptr] - 'a' + 10)<<4;
+                                            digit = (char)((buffer[ptr] - 'a' + 10)) ;
+                                        digit = (char) (digit << 4);
                                         ptr++;
                                         if ((buffer[ptr] >= '0') && (buffer[ptr] <= '9'))
-                                            values[keyindex].v.string[i] += (char)(buffer[ptr] - '0');
+                                            digit = (char)((digit) | (buffer[ptr] - '0'));
                                         else if ((buffer[ptr] >= 'A') && (buffer[ptr] <= 'F'))
-                                            values[keyindex].v.string[i] += (char)(buffer[ptr] - 'A' + 10);
+                                            digit = (char)((digit) | (buffer[ptr] - 'A' + 10));
                                         else if ((buffer[ptr] >= 'a') && (buffer[ptr] <= 'f'))
-                                            values[keyindex].v.string[i] += (char)(buffer[ptr] - 'a' + 10);
+                                            digit = (char)((digit) | (buffer[ptr] - 'a' + 10));
+                                        values[keyindex].v.string[i] = digit;
                                         ptr++;
                                         LOG_DEBUG("%02x ", values[keyindex].v.string[i]);
                                     }

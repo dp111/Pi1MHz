@@ -24,7 +24,7 @@ static void discaccess_emulator_update_address(void)
 
    Pi1MHz_MemoryWrite16(ram_address, disc_ram_addr);
    if ((disc_ram_addr_old & 0x00FF0000 ) != (disc_ram_addr & 0x00FF0000 ) )
-      Pi1MHz_MemoryWrite( ram_address+2, ( disc_ram_addr >> 16 ) & 0xFF );
+      Pi1MHz_MemoryWrite((uint32_t)(ram_address+2), ( disc_ram_addr >> 16 ) & 0xFF );
 }
 
 static void discaccess_emulator_byte_addr(unsigned int gpio)
@@ -34,12 +34,12 @@ static void discaccess_emulator_byte_addr(unsigned int gpio)
 
    switch (addr - ram_address)
    {
-      case 0:  disc_ram_addr = (disc_ram_addr & 0xFFFFFF00) | data; break;
-      case 1:  disc_ram_addr = (disc_ram_addr & 0xFFFF00FF) | data<<8; break;
-      default: disc_ram_addr = (disc_ram_addr & 0xFF00FFFF) | data<<16; break;
+      case 0:  disc_ram_addr = (size_t) ((disc_ram_addr & 0xFFFFFF00) | data); break;
+      case 1:  disc_ram_addr = (size_t) ((disc_ram_addr & 0xFFFF00FF) | (size_t)(data<<8)); break;
+      default: disc_ram_addr = (size_t) ((disc_ram_addr & 0xFF00FFFF) | (size_t)(data<<16)); break;
    }
 
-   Pi1MHz_MemoryWrite(ram_address + 3 , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
+   Pi1MHz_MemoryWrite((uint32_t)(ram_address + 3) , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
    discaccess_emulator_update_address();              // enable the address register to be read back
 }
 
@@ -48,14 +48,14 @@ static void discaccess_emulator_byte_write_inc(unsigned int gpio)
    uint8_t data = GET_DATA(gpio);
    Pi1MHz->JIM_ram[disc_ram_addr] =  data;
    disc_ram_addr++;
-   Pi1MHz_MemoryWrite(ram_address + 3 , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
+   Pi1MHz_MemoryWrite((uint32_t)(ram_address + 3) , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
    discaccess_emulator_update_address();
 }
 
 static void discaccess_emulator_byte_read_inc(unsigned int gpio)
 {
    disc_ram_addr++;
-   Pi1MHz_MemoryWrite(ram_address + 3 , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
+   Pi1MHz_MemoryWrite((uint32_t)(ram_address + 3) , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
    discaccess_emulator_update_address();
 }
 
@@ -68,7 +68,7 @@ static void discaccess_emulator_command(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr, data); // return existing command
    uint32_t base_addr = DISC_RAM_BASE ;
 
-   uint32_t command_pointer = base_addr | 0xFF0000 | (data<<8);
+   uint32_t command_pointer = (uint32_t) (base_addr | 0xFF0000U | (uint32_t) (data<<8));
 
    switch (  Pi1MHz->JIM_ram[command_pointer] )
    {
@@ -178,15 +178,14 @@ void discaccess_emulator_init( uint8_t instance , uint8_t address)
 
    // register call backs
    // byte memory address write
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+0, discaccess_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+1, discaccess_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+2, discaccess_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+0), discaccess_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+1), discaccess_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+2), discaccess_emulator_byte_addr );
    // data byte
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+3, discaccess_emulator_byte_write_inc );
-   Pi1MHz_Register_Memory(READ_FRED , ram_address+3, discaccess_emulator_byte_read_inc );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+3), discaccess_emulator_byte_write_inc );
+   Pi1MHz_Register_Memory(READ_FRED , (uint8_t)(ram_address+3), discaccess_emulator_byte_read_inc );
    // command pointer
-   Pi1MHz_Register_Memory(WRITE_FRED, ram_address+4, discaccess_emulator_command );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+4), discaccess_emulator_command );
 
-   Pi1MHz_MemoryWrite(ram_address+4, 0 ) ; // make sure command is null on read back
-
+   Pi1MHz_MemoryWrite((uint32_t)(ram_address+4), 0 ) ; // make sure command is null on read back
 }

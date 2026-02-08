@@ -696,19 +696,19 @@ void prim_set_ecf_pattern(const screen_mode_t *screen, int num, const uint8_t *p
          case 1:
             for (int j = 0; j < 8; j++) {
                ptr[j] = (pixel_t)((p & 0x80) >> 7);
-               p <<= 1;
+               p = (uint8_t)(p<<1);
             }
             break;
          case 3:
             for (int j = 0; j < 4; j++) {
-               ptr[j] = (pixel_t)((p & 0x80) >> 6) | ((p & 0x08) >> 3);
-               p <<= 1;
+               ptr[j] = (pixel_t)(((p & 0x80) >> 6) | ((p & 0x08) >> 3));
+               p = (uint8_t)(p<<1);
             }
             break;
          case 15:
             for (int j = 0; j < 2; j++) {
-               ptr[j] = (pixel_t)((p & 0x80) >> 4) | ((p & 0x20) >> 3) | ((p & 0x08) >> 2) | ((p & 0x02) >> 1);
-               p <<= 1;
+               ptr[j] = (pixel_t)(((p & 0x80) >> 4) | ((p & 0x20) >> 3) | ((p & 0x08) >> 2) | ((p & 0x02) >> 1));
+               p = (uint8_t)(p<<1);
             }
             break;
          default:
@@ -1576,7 +1576,7 @@ void prim_define_sprite(screen_mode_t *screen, int n, int x1, int y1, int x2, in
    // Memory allocation
    sprite->width = x2 - x1 + 1;
    sprite->height = y2 - y1 + 1;
-   size_t size = (size_t)sprite->width * (size_t)sprite->height * (1 << (screen->log2bpp - 3));
+   size_t size = ((size_t)sprite->width * (size_t)sprite->height) << (screen->log2bpp - 3);
    if  (sprite->data != NULL)
          free(sprite->data);
 

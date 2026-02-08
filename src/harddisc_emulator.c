@@ -41,7 +41,7 @@ static uint8_t HD_status;
 static void HD_STATUS_Write(uint8_t data)
 {
    HD_status = data;
-   Pi1MHz_MemoryWrite(HD_ADDR+1, data);
+   Pi1MHz_MemoryWrite((uint32_t)(HD_ADDR+1), data);
 }
 
 #define STATUS_CND (1<<7)
@@ -184,13 +184,13 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    // address FC40 write = Write SCSI databus command
    Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR, hd_emulator_write_data );
    // address FC42 write = Assert SCSI nSEL command
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+2, hd_emulator_nSEL     );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(HD_ADDR+2), hd_emulator_nSEL     );
    // address FC43 write = Enable/Disable BBC nIRQ command
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+3, hd_emulator_IRQ );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(HD_ADDR+3), hd_emulator_IRQ );
 
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+1, hd_emulator_write_scsijuke );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(HD_ADDR+1), hd_emulator_write_scsijuke );
 #ifdef DEBUG
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+4, hd_emulator_conf );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(HD_ADDR+4), hd_emulator_conf );
 #endif
    // Initialise but only at power on
    // Fixes *SCSIJUKE surviving over shift break.

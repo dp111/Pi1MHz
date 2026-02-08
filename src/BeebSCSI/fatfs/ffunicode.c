@@ -10459,7 +10459,7 @@ static WCHAR oem2uni_sbcs (	/* Returns Unicode character in UTF-16, zero on erro
 #else
 	if (cp == FF_CODE_PAGE) tbl = CVTBL(uc, FF_CODE_PAGE);	/* Conversion table */
 #endif
-	oem -= 0x80;
+	oem = (WCHAR)(oem - 0x80);
 	if (tbl && oem < 0x80) uni = tbl[oem];	/* Table conversion */
 	return uni;
 }
@@ -10875,7 +10875,7 @@ DWORD ff_wtoupper (	/* Returns up-converted code point */
 	};
 
 	if (uni < 0x10000) {	/* Is it in BMP? */
-		WORD uc = (WORD)uni;
+		DWORD uc = uni;
 		p = uc < 0x1000 ? cvt1 : cvt2;
 		for (;;) {
 			WORD  bc, nc, cmd;

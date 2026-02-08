@@ -143,14 +143,14 @@ static void copy_font_character(const font_t *font, const  uint8_t *src, int c, 
       // Stage 1: expand each pixel to 2x2 pixels
       // Copy the defined part of the font
       for (int i = 0; i < font->height; i++) {
-         uint8_t data = (*src++) >> font->shift;
+         uint8_t data = (uint8_t)((*src++) >> font->shift);
          uint16_t expanded = 0;
          for (int j = 0; j < 8; j++) {
-            expanded <<= 2;
+            expanded = (uint16_t)(expanded << 2);
             if (data & 0x80) {
                expanded |= 3;
             }
-            data <<= 1;
+            data = (uint8_t)(data << 1);
          }
          // Insert two copies of the expanded row
          *dst++ = expanded;
@@ -169,7 +169,7 @@ static void copy_font_character(const font_t *font, const  uint8_t *src, int c, 
    } else {
       // Copy the defined part of the font
       for (int j = 0; j < font->height; j++) {
-         *dst++ = (*src++) >> font->shift;
+         *dst++ = (uint16_t)((*src++) >> font->shift);
       }
    }
 }

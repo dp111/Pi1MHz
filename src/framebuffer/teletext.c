@@ -141,7 +141,7 @@ static screen_mode_t teletext_screen_modes[] = {
 static void set_font(screen_mode_t *screen, int num) {
    // This screen mode always uses the SAA505x family of fonts
    char name[] = "SAA5050";
-   name[6] += (num & 7);
+   name[6] = (char)('0'+(num & 7));
    font_t *font = screen->font;
    initialize_font_by_name(name, font);
    font->set_rounding(font, TRUE);
@@ -211,7 +211,7 @@ static void set_background(tt_colour_t colour) {
    colour &= 0x07;
    tt.bgd_colour = (pixel_t) ((colour << 3) | colour);
    if (tt.flashing) {
-      tt.fgd_colour = (colour << 3) | (tt.fgd_colour & 0x07);
+      tt.fgd_colour = ((pixel_t)(colour << 3) | (pixel_t) (tt.fgd_colour & 0x07));
    }
 }
 

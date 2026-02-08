@@ -1446,7 +1446,7 @@ static uint8_t scsiCommandModeSelect6(void)
    {
      if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT cfg\r\n"), DEBUG_SUCCESS);
      // we can skip LBADescriptor 8 bytes
-     start += 8;
+     start = (uint8_t)(start + 8);
      // update  ModePage0
      filesystemWriteModePageData(commandDataBlock.targetLUN, 0, 22-4-8, &Buffer[start] );
      // update  Page 4 NB we should do page 3 but that never changes
@@ -1481,9 +1481,8 @@ static uint8_t scsiCommandModeSelect6(void)
             return SCSI_STATUS;
             }
 
-         filesystemWriteModePageData(commandDataBlock.targetLUN, page, len+2, &Buffer[start] );
-         start += 2;
-         start += len;
+         filesystemWriteModePageData(commandDataBlock.targetLUN, page, (uint8_t)(len+2), &Buffer[start] );
+         start = (uint8_t)(start + len + 2 );
          if ( page == 4 )
             {
             // update Page 0 NB we should do page 3 but that never changes

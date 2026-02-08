@@ -598,10 +598,10 @@ static void set_graphics_area(const screen_mode_t *scr, const g_clip_window_t *w
    // Accept the window
    g_window = *window;
    // Transform to screen coordinates
-   int16_t x1 = window->left   >> scr->xeigfactor;
-   int16_t y1 = window->bottom >> scr->yeigfactor;
-   int16_t x2 = window->right  >> scr->xeigfactor;
-   int16_t y2 = window->top    >> scr->yeigfactor;
+   int16_t x1 = (int16_t)(window->left   >> scr->xeigfactor);
+   int16_t y1 = (int16_t)(window->bottom >> scr->yeigfactor);
+   int16_t x2 = (int16_t)(window->right  >> scr->xeigfactor);
+   int16_t y2 = (int16_t)(window->top    >> scr->yeigfactor);
    // Set the clipping window
    prim_set_graphics_area(screen, x1, y1, x2, y2);
 }
@@ -676,8 +676,8 @@ static void text_cursor_tab(const uint8_t *buf) {
    printf("cursor move to %d %d\r\n", x, y);
 #endif
    // Take account of current text window
-   x += t_window.left;
-   y += t_window.top;
+   x = (uint8_t)(x + t_window.left);
+   y = (uint8_t)(y + t_window.top);
    if (x <= t_window.right && y <= t_window.bottom) {
       c_x_pos = x;
       c_y_pos = y;
@@ -716,7 +716,7 @@ static void text_delete(const uint8_t *buf) {
 //    font_width/height are in screen pixels
 
 static void graphics_cursor_left(const uint8_t *buf) {
-   g_x_pos -= (int16_t)(font_width << screen->xeigfactor);
+   g_x_pos = (int16_t)(g_x_pos - (font_width << screen->xeigfactor));
    if (g_x_pos < g_window.left) {
       g_x_pos = (int16_t)(g_window.right + 1 - (font_width << screen->xeigfactor));
       graphics_cursor_up(NULL);
@@ -724,7 +724,7 @@ static void graphics_cursor_left(const uint8_t *buf) {
 }
 
 static void graphics_cursor_right(const uint8_t *buf) {
-   g_x_pos += (int16_t)(font_width << screen->xeigfactor);
+   g_x_pos = (int16_t)( g_x_pos + (font_width << screen->xeigfactor));
    if (g_x_pos > g_window.right) {
       g_x_pos = g_window.left;
       graphics_cursor_down(NULL);
@@ -732,14 +732,14 @@ static void graphics_cursor_right(const uint8_t *buf) {
 }
 
 static void graphics_cursor_up(const uint8_t *buf) {
-   g_y_pos += (int16_t)(font_height << screen->yeigfactor);
+   g_y_pos = (int16_t)(g_y_pos + (font_height << screen->yeigfactor));
    if (g_y_pos > g_window.top) {
       g_y_pos = (int16_t)((g_window.bottom - 1) + (font_height << screen->yeigfactor));
    }
 }
 
 static void graphics_cursor_down(const uint8_t *buf) {
-   g_y_pos -= (int16_t)(font_height << screen->yeigfactor);
+   g_y_pos = (int16_t)(g_y_pos - (font_height << screen->yeigfactor));
    if (g_y_pos < g_window.bottom) {
       g_y_pos = g_window.top;
    }
@@ -761,14 +761,14 @@ static void graphics_cursor_tab(const uint8_t *buf) {
    printf("cursor move to %d %d\r\n", x, y);
 #endif
    // Scale to absolute external coordinates
-   x *= (uint8_t)(font_width << screen->xeigfactor);
-   y *= (uint8_t)(font_height << screen->yeigfactor);
+   x = (uint8_t)(x * (font_width << screen->xeigfactor));
+   y = (uint8_t)(y * (font_height << screen->yeigfactor));
    // Take account of current text window
-   x += (uint8_t)g_window.left;
-   y += (uint8_t)g_window.bottom;
+   x = (uint8_t)(x + g_window.left) ;
+   y = (uint8_t)(y + g_window.bottom);
    // Deliberately don't range check here
-   g_x_pos = g_window.left + x;
-   g_y_pos = g_window.bottom + y;
+   g_x_pos = (int16_t)(g_window.left + x);
+   g_y_pos = (int16_t)(g_window.bottom + y);
 }
 
 static void graphics_area_clear(const uint8_t *buf) {
@@ -1143,19 +1143,19 @@ static void vdu_19(const uint8_t *buf) {
       r = (p & 1) ? 0xff : 0;
       screen->set_colour(screen, l, r, g, b);
       if (p & 8) {
-         screen->set_colour(screen, l + 0x100, 0xff - r, 0xff - g, 0xff - b);
+         screen->set_colour(screen, (uint16_t)(l + 0x100), (uint32_t)(0xff - r), (uint32_t)(0xff - g), (uint32_t)(0xff - b));
       } else {
-         screen->set_colour(screen, l + 0x100, r, g, b);
+         screen->set_colour(screen, (uint16_t)(l + 0x100), r, g, b);
       }
    } else {
       // Set to RGB Colour
       if (p == 16 || p == 17) {
          // First flashing physical colour
-         screen->set_colour(screen, l, r, g, b);
+         screen->set_colour(screen, (uint16_t)l, r, g, b);
       }
       if (p == 16 || p == 18) {
          // Second flashing physical colour
-         screen->set_colour(screen, l + 0x100, r, g, b);
+         screen->set_colour(screen, (uint16_t)(l + 0x100), r, g, b);
       }
    }
 }
@@ -1220,10 +1220,10 @@ static void vdu_24(const uint8_t *buf) {
           window.left, window.bottom, window.right, window.top);
 #endif
    // Transform to absolute external coordinates
-   window.left   += g_x_origin;
-   window.bottom += g_y_origin;
-   window.right  += g_x_origin;
-   window.top    += g_y_origin;
+   window.left   = (int16_t)(window.left + g_x_origin);
+   window.bottom = (int16_t)(window.bottom + g_y_origin);
+   window.right  = (int16_t)(window.right + g_x_origin);
+   window.top    = (int16_t)(window.top + g_y_origin);
    // Set the window
    set_graphics_area(screen, &window);
 }
@@ -1241,10 +1241,10 @@ static void vdu_25(const uint8_t *buf) {
 
    if (g_mode & 4) {
       // Relative to the graphics origin
-      update_g_cursors(g_x_origin + x, g_y_origin + y);
+      update_g_cursors((int16_t)(g_x_origin + x), (int16_t)(g_y_origin + y));
    } else {
       // Relative to the last point.
-      update_g_cursors(g_x_pos + x, g_y_pos + y);
+      update_g_cursors((int16_t)(g_x_pos + x), (int16_t)(g_y_pos + y));
    }
 
    // Transform plotting coordinates to screen coordinates
@@ -2163,15 +2163,15 @@ uint8_t fb_get_flash_space_time(void) {
 // cppcheck-suppress unusedFunction
 int fb_point(int16_t x, int16_t y, pixel_t *colour) {
    // convert to absolute external coordinates
-   x += g_x_origin;
-   y += g_y_origin;
+   x = (int16_t)(x + g_x_origin);
+   y = (int16_t)(y + g_y_origin);
    if (x < g_window.left || x > g_window.right || y < g_window.bottom || y > g_window.top) {
       // -1 indicates pixel off screen
       return -1;
    } else {
       // convert to absolute pixel coordinates
-      x >>= screen->xeigfactor;
-      y >>= screen->yeigfactor;
+      x = (int16_t)(x >> screen->xeigfactor);
+      y = (int16_t)(y >> screen->yeigfactor);
       // read the pixel
       *colour = prim_get_pixel(screen, x, y);
       // 0 indicates pixel on screen
@@ -2243,13 +2243,13 @@ void fb_emulator_init(uint8_t instance, uint8_t address)
 
   Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
  // Create 6 bytes of RAM for vector code
-  Pi1MHz_MemoryWrite(address+0, 0x8D);
-  Pi1MHz_MemoryWrite(address+1, (uint8_t) address);
-  Pi1MHz_MemoryWrite(address+2, 0XFC);
-  Pi1MHz_MemoryWrite(address+3, 0x4c);
+  Pi1MHz_MemoryWrite((uint32_t)(address+0), 0x8D);
+  Pi1MHz_MemoryWrite((uint32_t)(address+1), (uint8_t) address);
+  Pi1MHz_MemoryWrite((uint32_t)(address+2), 0XFC);
+  Pi1MHz_MemoryWrite((uint32_t)(address+3), 0x4c);
 
-  Pi1MHz_Register_Memory(WRITE_FRED, address + 4, fb_emulator_ram);
-  Pi1MHz_Register_Memory(WRITE_FRED, address + 5, fb_emulator_ram);
+  Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 4), fb_emulator_ram);
+  Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 5), fb_emulator_ram);
 
  // Pi1MHz_Register_Poll(fb_emulator_poll);
 }

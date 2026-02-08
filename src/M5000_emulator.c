@@ -192,7 +192,7 @@ static void update_channels(struct synth *s)
       const uint8_t * c = s->ram + I_WFTOP + modulate + i;
       if  (!PHASESET(c))
          {
-            unsigned int sum = FREQ(c) + s->phaseRAM[i];
+            uint32_t sum = (uint32_t)FREQ(c) + s->phaseRAM[i];
             s->phaseRAM[i] = sum & 0xffffff;
             c4d = sum & ( 1 << 24 );
             // only if there is a carry ( waveform crossing ) do we update the amplitude
@@ -201,7 +201,7 @@ static void update_channels(struct synth *s)
          }
          else
          {
-            s->phaseRAM[i] = FREQ(c);
+            s->phaseRAM[i] = (uint32_t)FREQ(c);
             c4d = 0;
          }
 
