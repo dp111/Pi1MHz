@@ -119,7 +119,7 @@ void _clean_cache_area(const void * start, unsigned int length)
    char * endptr;
    __asm volatile ("mrc p15, 0, %0, c0, c0,  1" : "=r" (cachelinesize));
    cachelinesize = (cachelinesize>> 16 ) & 0xF;
-   cachelinesize = 4<<cachelinesize;
+   cachelinesize = 4u<<cachelinesize;
    endptr = startptr + length;
 
    // round down start address
@@ -147,7 +147,7 @@ void _invalidate_cache_area(const void * start, unsigned int length)
    char * endptr;
    __asm volatile ("mrc p15, 0, %0, c0, c0,  1" : "=r" (cachelinesize));
    cachelinesize = (cachelinesize>> 16 ) & 0xF;
-   cachelinesize = 4<<cachelinesize;
+   cachelinesize = 4u<<cachelinesize;
    endptr = startptr + length;
    // round down start address
    startptr = (char *)(((uint32_t)start) & ~(cachelinesize - 1));

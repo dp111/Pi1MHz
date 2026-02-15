@@ -11,6 +11,7 @@
 #include "ram_emulator.h"
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
 #include "BeebSCSI/fatfs/diskio.h"
+#include "BeebSCSI/filesystem.h"
 
 static size_t disc_ram_addr;
 
@@ -163,6 +164,28 @@ static void discaccess_emulator_command(unsigned int gpio)
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }
+    case 14 : // f mount
+        if (filesystemMount())
+         {
+            Pi1MHz_MemoryWrite(addr, FR_OK);
+         }
+         else
+         {
+            Pi1MHz_MemoryWrite(addr, FR_DISK_ERR);
+         }
+        break;
+
+    case 15 : // f unmount
+        if (filesystemDismount())
+        {
+            Pi1MHz_MemoryWrite(addr, FR_OK);
+        }
+        else
+        {
+            Pi1MHz_MemoryWrite(addr, FR_DISK_ERR);
+        }
+        break;
+
     case 20 : Pi1MHz_MemoryWrite(addr, disk_type()); break;
     default : break;
    }

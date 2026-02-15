@@ -81,8 +81,9 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wflex-array-member-not-at-end -ftabstop=8 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum -Wenum-int-mismatch -Wxor-used-as-pow -fstrict-flex-arrays -Warray-bounds=2")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
 
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostartfiles " )
 
@@ -93,7 +94,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _
 # current failures in frame buffer.c
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-overflow=5")
 #very noisy warnings in code
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
+
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wcast-align -Wcast-align=strict")
 #-Wunused-macros
 

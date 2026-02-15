@@ -638,13 +638,14 @@ static uint8_t scsiCommandRequestSense(void)
    scsiInformationTransferPhase(ITPHASE_DATAIN);
 
    // Is there an error waiting to be reported?
+#ifdef DEBUG
    if (requestSenseData[commandDataBlock.targetLUN] == NO_ERROR) {
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: No error flagged\r\n"));
    } else {
       // Assemble request sense error response
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Error flagged - sending to host\r\n"));
    }
-
+#endif
 	// TO DO - should this section be in the preceding if ... else ? or is all the data always output
 
    hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0xFF000000) >> 24)); // Error code
@@ -1138,7 +1139,7 @@ static uint8_t scsiCommandWrite6(void)
    }
 
    // Transfer the requested blocks from the host to the LUN image
-   if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Transferring requested blocks from the host..."));
+   if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Transferring requested blocks from the host...\r\n"));
    for (currentBlock = 0; currentBlock < numberOfBlocks; currentBlock++) {
       uint8_t Buffer[256];
       // Get the data from the host
