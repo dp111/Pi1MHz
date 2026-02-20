@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include "Pi1MHz.h"
 #include "ram_emulator.h"
+#include "harddisc_emulator.h"
+#include "M5000_emulator.h"
 #include "BeebSCSI/filesystem.h"
 #include "scripts/gitversion.h"
 #include "rpi/info.h"
@@ -17,42 +19,52 @@ static void helpers_setup(uint8_t helper_address)
   // We also hide the help screen at &FFE000
         char hex[3];
         char dec[4];
+        char M5000address[4];
         sprintf(hex, "%X",helper_address);
         sprintf(dec, "%d",helper_address);
+        sprintf(M5000address, "%d", M5000_emulator_read_instance());
+
+        char scsiaddress[4];
+        sprintf(scsiaddress, "%d", harddisc_emulator_get_address()+1);
 
         char * helpscreen = ( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000] ;
-        helpscreen += strlcpy(helpscreen, "\r\n Pi1MHZ "RELEASENAME" , "GITVERSION
-        "\r\n Date : " __DATE__ " " __TIME__
-        "\r\n Pi : " , PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, "\r\nPi1MHz "RELEASENAME" , "GITVERSION
+        "\r\nDate : " __DATE__ " " __TIME__
+        "\r\nPi : " , PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, get_info_string(), PAGE_SIZE*16);
         sprintf(helpscreen, " %2.1fC", (double) get_temp() );
         helpscreen += 6;
         helpscreen += strlcpy(helpscreen, "\r\n"
-        "\r\n Helper functions can be started in one"
-        "\r\n of three ways :"
-        "\r\n"
-        "\r\n *FX147,", PAGE_SIZE*16);
+        "\r\n3 ways to start helper functions :"
+        "\r\n*FX147,", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, dec, PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen,",n <ret> *GO FD00 <ret>", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen,"\r\n *FX147,", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,"\r\n*FX147,", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, dec, PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen,",n <ret> *GOIO FD00 <ret>", PAGE_SIZE*16);
 
-        helpscreen += strlcpy(helpscreen,"\r\n X%=n:CALL&FC", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,"\r\nX%=n:CALL&FC", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
 
         helpscreen += strlcpy(helpscreen,
-        " <ret>\r\n\r\n where n is one of the following"
-        "\r\n"
-        "\r\n 0 # This help screen"
-        "\r\n 1 # Status N/A"
-        "\r\n 2 # Enable screen redirector"
-        "\r\n 3 # Load ADFS into SWR"
-        "\r\n 4 # Load MMFS into SWR"
-        "\r\n 5 # Load MMFS2 into SWR"
-        "\r\n 6 # Load BeebSCSI helper ROM into SWR"
-        "\r\n 10-15 # Load User ROM10-ROM15 into SWR"
-        "\r\n", PAGE_SIZE*16);
+        " <ret>\r\n\r\nwhere n is one of the following :"
+        "\r\n0 # This help screen"
+        "\r\n1 # Status N/A"
+        "\r\n2 # Enable screen redirector"
+        "\r\n3 # Load ADFS into SWR"
+        "\r\n4 # Load MMFS into SWR"
+        "\r\n5 # Load MMFS2 into SWR"
+        "\r\n6 # Load BeebSCSI helper ROM into SWR"
+        "\r\n10-15 # Load User ROM10-ROM15 into SWR\r\n"
+        "\r\n*FX147,", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, scsiaddress, PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,",n : SCSIJUKE box directory"
+            "\r\n*FX147,202,", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, M5000address, PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,":*FX147,203,1 #Record M5000\r\n"
+                    "*FX147,202,", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, M5000address, PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,":*FX147,203,0 #End Record\r\n", PAGE_SIZE*16);
         helpscreen[0] = 0;
         //signal to beeb the help screen is setup
         Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE+1, 0x03);

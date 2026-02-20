@@ -42,7 +42,7 @@
 
 .section ".text.startup"
 
-.global _start
+.global _start_vectors
 
 //.global _interrupt_vector_h
 
@@ -70,7 +70,7 @@
 .equ    CPSR_IRQ_INHIBIT,       0x80
 .equ    CPSR_FIQ_INHIBIT,       0x40
 
-_start:
+_start_vectors:
     B _reset_
     ldr pc, _undefined_instruction_vector_h
     ldr pc, _software_interrupt_vector_h
@@ -138,7 +138,7 @@ _reset_continue:
     // We enter execution in supervisor mode. For more information on
     // processor modes see ARM Section A2.2 (Processor Modes)
 
-    adr     r4,_start
+    adr     r4,_start_vectors
     mcr     p15, 0, r4, c12, c0, 0     //set vectors to beginning of this code
 
     // Initialise Stack Pointers ---------------------------------------------
@@ -309,6 +309,33 @@ copy_loop:
     pop {r4, r5, r6, r7, pc}
 
 .section ".text._fast_scroll", "x"
+.global _copyandreboot
+// R0 = source
+// R1 = length
+_copyandreboot:
+    push {r0, r1}
+    ldr r0, =_start_vectors - 0x100
+    ldr r1, =_copyandreboot_code
+    mov r2, # _fast_scroll_end - _copyandreboot_code
+    bl _fast_scroll
+    b _start_vectors - 0x100
+_copyandreboot_code:
+    pop {r1, r2}
+    ldr r0, =_start_vectors
+    bl _fast_scroll
+
+    ldr r0, = 0x5a000000 + 1
+    ldr r1, = PERIPHERAL_BASE + 0x00100024
+    str r0, [r1] // reset the pi
+    ldr r0, = 0x5a000000 + 0x20
+    ldr r1 , = PERIPHERAL_BASE + 0x0010001c
+    str r0, [r1] // reset the pi
+resetforever:
+    b resetforever
+
+
+// we copy our code to below &8000 and then jump to it.
+// and then restart
 .global _fast_scroll
 // R0 = dst
 // R1 = src
@@ -325,5 +352,10 @@ _fast_scroll_loop:
         stmia   r0!,{r3, r4, r5, r6, r8, r9, r10, r11}
         bne     _fast_scroll_loop
         pop     {r4, r5, r6, r8, r9, r10, r11, pc}
+_fast_scroll_end:
+
+
+
+
 
 .ltorg

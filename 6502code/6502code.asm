@@ -7,15 +7,38 @@ OSBYTE = &FFF4
 OSWRCH = &FFEE
 OSNEWL = &FFE7
 
+GUARD &FE00
+
 MACRO PAGERTS
     LDX #&FF
     JMP &FC88
 ENDMACRO
 
+;; entry A bank to switch too
+;; Y pointer into back - 1
+;; X parameter for code
+MACRO PAGESWITCHORG
+    ORG &FE00-9
+ENDMACRO
+
+MACRO PAGESWITCH
+    PAGESWITCHORG
+;; stack rts data
+    STA     &FC88 ; 3 do page switch
+    LDA     #&FD  ; 2 high byte of return address
+    PHA           ; 1
+    TYA           ; 1 low byte of return address
+    PHA           ; 1
+    RTS           ; 1 off we go
+                  ; 9 bytes total
+ENDMACRO
+
+
 MACRO ENDBLOCK pos
     SKIPTO &FE00
     COPYBLOCK &FD00, &FE00, pos
     CLEAR &FD00, &FE00
+    GUARD &FE00
 ENDMACRO
 
 MACRO PRTSTRING string
@@ -82,7 +105,7 @@ MACRO LOADFILETOSWR filename
    ; STX     &FC88   ; Restore JIM
     BRK
     EQUB 255: EQUS "No SWR":EQUB 0
-}
+
 .fileerror
 
     PLA
@@ -152,14 +175,10 @@ MACRO LOADFILETOSWR filename
            : STY discaccess
     DEY    : STY discaccess+1
              STY discaccess+2
-    ; fclose
-    LDA #3
-    STA discaccess+3
-    STY discaccess+4
-    LDA #&7F
-    STA &FE4E
-    JMP (&FFFC) ; Reset
 
+    LDY #fclose-&FD01
+    LDA #0
+    BEQ pageswitch
 
 .fopenstring
     EQUB 2, 0, 1 : EQUS filename : EQUB 0, 255
@@ -170,6 +189,10 @@ MACRO LOADFILETOSWR filename
     EQUB 0, 0, 0, 0
     EQUB &FF
 
+    PAGESWITCHORG
+.pageswitch
+    PAGESWITCH
+}
 ENDMACRO
 
 ; Page 0
@@ -188,6 +211,29 @@ ORG &FD00
     BNE stringloop
     PAGERTS
 
+.*fclose
+    LDA #3
+    STA discaccess+3
+    LDY #255
+    STY discaccess+4
+.*reboot
+    LDA #0      ; get machine id
+    LDX #1
+    JSR OSBYTE
+    CPX #3
+    BCC doviareset  ; jump for BEEB and B+
+    LDA #200        ; master
+    LDY #0
+    LDX #2
+    JSR OSBYTE
+    JMP (&FFFC) ; Reset
+.doviareset
+    LDA #&7F
+    STA &FE4E ; clear IER
+    JMP (&FFFC) ; Reset
+
+  PAGESWITCHORG
+  PAGESWITCH
   ENDBLOCK &000
 }
 ; page 1 status screen

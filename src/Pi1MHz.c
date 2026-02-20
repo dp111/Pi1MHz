@@ -321,12 +321,17 @@ static void init_emulator(void) {
    RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
    RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1
 
-   if (get_cmdline_prop("Pi1MHznOE"))
+   prop = get_cmdline_prop("Pi1MHznOE");
+   if (prop)
    {
-      RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
+      int temp = atoi(prop);
+      if (temp == 0)
+         RPI_PropertyAdd(0); // r2  No external nOE pin
+      else
+         RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
    }
    else
-      RPI_PropertyAdd(0); // r2  No external nOE pin
+      RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
 
    RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
    RPI_PropertyAdd(TEST_PINS_OUTPUTS | (1<<(NOE_PIN<<3))); // r4
