@@ -78,10 +78,20 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}   -Waddress-of-packed-member -Wsuggest-attr
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdiscarded-array-qualifiers -Wmissing-noreturn ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wflex-array-member-not-at-end -ftabstop=8  ")
 
+# need for tiny USB packet structure packing
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-attributes")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-packed")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-conversion")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-switch-enum")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-bad-function-cast")
+
+
+
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum -Wenum-int-mismatch -Wxor-used-as-pow -fstrict-flex-arrays -Warray-bounds=2")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wenum-int-mismatch -Wxor-used-as-pow -fstrict-flex-arrays -Warray-bounds=2")
+# tinyusb doesn't linke below
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
 
@@ -128,7 +138,19 @@ file( GLOB core_files
    videoplayer.c
    rpi/decompress.S
    rpi/fileparser.c
+   usb.c
+   usb/board_millis.c
+   usb/mtp_fs.c
+     usb/tinyusb/src/tusb.c
+  usb/tinyusb/src/common/tusb_fifo.c
+  usb/tinyusb/src/device/usbd.c
+  usb/tinyusb/src/device/usbd_control.c
+  usb/tinyusb/src/class/mtp/mtp_device.c
+  usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
+  usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
 )
+
+
 
 # Harddisc emulator
 file( GLOB harddisc_emulator_files
@@ -143,12 +165,17 @@ file( GLOB harddisc_emulator_files
    rpi/sdcard.c
 )
 include_directories(BeebSCSI)
+include_directories(usb/tinyusb/src)
+include_directories(usb/tinyusb/hw)
+include_directories(usb)
 
 # M5000 emulator
 file( GLOB M5000_emulator_files
    rpi/audio.c
    M5000_emulator.c
 )
+
+
 
 #FrameBuffer
 file( GLOB FrameBuffer_emulator_files

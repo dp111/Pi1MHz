@@ -144,3 +144,6 @@ change default of Pi1MHznOE to 1
 v.1.24
 Fix ROM loading with MOS 3.5.
 Fix Broken Pi1MHznOE cmdline option
+
+v.1.25
+Start of USB device support

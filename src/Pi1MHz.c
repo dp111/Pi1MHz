@@ -115,6 +115,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "helpers.h"
 #include "mouseredirect.h"
 #include "videoplayer.h"
+#include "usb.h"
 
 typedef struct {
    const char *name;
@@ -134,6 +135,7 @@ static emulator_list emulator[] = {
    {"Discaccess",discaccess_emulator_init, 0xA6, 1 },
    {"Helpers",helpers_init, 0x88, 1 },
    {"Mouseredirect",mouse_redirect_init, 0xAB, 1 },
+   {"usb",usb_init, 0x00, 1 },
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
@@ -244,6 +246,12 @@ static void Pi1MHzBus_read_Status(unsigned int gpio)
 
 // cppcheck-suppress unusedFunction
 void IRQHandler_main(void) {
+   _data_memory_barrier();
+   // Check for USB IRQ (IRQ #9 in Enable_IRQs_1)
+   if (RPI_GetIrqController()->IRQ_pending_1 & (1 << 9)) {
+      tud_int_handler(0);
+   }
+
    RPI_AuxMiniUartIRQHandler();
    if (screen_check_vsync())
    {
@@ -260,7 +268,7 @@ static void init_emulator(void) {
    LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
-
+   RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
    {
       uint32_t *ico = (uint32_t *)0x20002000;
       //for(int i=0; i<(0x38/4); i++)
@@ -345,7 +353,7 @@ static void init_emulator(void) {
    Pi1MHz_SetnNMI(CLEAR_NMI);
 
    // Register Status read back
-   Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL, Pi1MHzBus_addr_Status );
+   Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL  , Pi1MHzBus_addr_Status );
    Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_write_Status );
    Pi1MHz_Register_Memory( READ_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_read_Status );
 
@@ -444,12 +452,20 @@ _Noreturn void kernel_main(void)
          LOG_DEBUG("IRQ %x %08x\r\n",i*4,irq_reg[i]);
 
 #endif
-   while (Pi1MHz_is_rst_active());
+
+   bool oldreset = Pi1MHz_is_rst_active();
    do {
-      if (Pi1MHz_is_rst_active())
+      if ( Pi1MHz_is_rst_active() )
       {
-        init_emulator();
-        while (Pi1MHz_is_rst_active());
+         if (oldreset == false)
+         {
+            LOG_INFO("Reset detected\r\n");
+            init_emulator();
+            oldreset = true;
+         }
+      } else
+      {
+         oldreset = false;
       }
       for (size_t i=0 ; i<Pi1MHz_polls_max; i++ )
         Pi1MHz_poll_table[i]();

@@ -100,10 +100,10 @@ waitforclklow:                   # wait for extra half cycle to end
 .balignw 16,1 # Align with nops
 waitforclkhigh:
 waitforclkhighloop:
-   LSR    r8, r12,ADDRBUS_SHIFT
+   LSR    r8, r12,ADDRBUS_SHIFT+1
    ld     r12, GPLEV0_offset(r6)
-   extu   r8, ADDRESSBUS_WIDTH   # bmask Isolate address bus
-   ldh    r8, (r0,r8)            # get byte to write out
+   extu   r8, ADDRESSBUS_WIDTH-1   # bmask Isolate address bus
+   ld     r8, (r0,r8)            # get byte to write out
 
    btst   r12, CLK
    beq    waitforclkhighloop
@@ -119,8 +119,12 @@ waitforclkhighloop:
 # we do this here while the read above is stalling
 
    btst   r12, RnW
-   lsl    r8, DATASHIFT
+  # lsl    r8, DATASHIFT
    beq    writecycle
+
+   btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
+   lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
+   lsleq  r8, DATASHIFT          # low 16 bits with databus shift
 
   # btst   r8, OUTPUTBIT
    extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above
@@ -187,10 +191,10 @@ nOE_waitforclklow:                   # wait for extra half cycle to end
 .balignw 16,1 # Align with nops
 nOE_waitforclkhigh:
 nOE_waitforclkhighloop:
-   LSR    r8, r12,ADDRBUS_SHIFT
+   LSR    r8, r12,ADDRBUS_SHIFT+1
    ld     r12, GPLEV0_offset(r6)
-   extu   r8, ADDRESSBUS_WIDTH   # bmask Isolate address bus
-   ldh    r8, (r0,r8)            # get byte to write out
+   extu   r8, ADDRESSBUS_WIDTH-1   # bmask Isolate address bus
+   ld     r8, (r0,r8)            # get byte to write out
 
    btst   r12, CLK
    beq    nOE_waitforclkhighloop
@@ -206,8 +210,13 @@ nOE_waitforclkhighloop:
 # we do this here while the read above is stalling
 
    btst   r12, RnW
-   lsl    r8, DATASHIFT
+   #lsl    r8, DATASHIFT
    beq    nOE_writecycle
+
+   btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
+   lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
+   lsleq  r8, DATASHIFT          # low 16 bits with databus shift
+
 
    btst   r8, OUTPUTBIT
    extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above

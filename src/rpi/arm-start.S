@@ -323,16 +323,7 @@ _copyandreboot_code:
     pop {r1, r2}
     ldr r0, =_start_vectors
     bl _fast_scroll
-
-    ldr r0, = 0x5a000000 + 1
-    ldr r1, = PERIPHERAL_BASE + 0x00100024
-    str r0, [r1] // reset the pi
-    ldr r0, = 0x5a000000 + 0x20
-    ldr r1 , = PERIPHERAL_BASE + 0x0010001c
-    str r0, [r1] // reset the pi
-resetforever:
-    b resetforever
-
+    b _start_vectors
 
 // we copy our code to below &8000 and then jump to it.
 // and then restart
@@ -353,9 +344,5 @@ _fast_scroll_loop:
         bne     _fast_scroll_loop
         pop     {r4, r5, r6, r8, r9, r10, r11, pc}
 _fast_scroll_end:
-
-
-
-
 
 .ltorg

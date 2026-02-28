@@ -6,14 +6,15 @@
 #include "rpi/rpi.h"
 #include "rpi/base.h"
 
-#define RELEASENAME "v1.24"
+#define RELEASENAME "v1.25"
 
 #define PAGE_SIZE    0x100
 
 #define Pi1MHz_MEM_BASE_GPU (PERIPHERAL_BASE_GPU | (Pi1MHz_MEM_BASE & 0x00FFFFFF) )
 
-#define Pi1MHz_MEM_BASE ( PERIPHERAL_BASE + 0x9A0000+(1024*15))
+//#define Pi1MHz_MEM_BASE ( PERIPHERAL_BASE + 0x9A0000+(1024*15))
 //#define Pi1MHz_MEM_BASE ( PERIPHERAL_BASE + 0x402000 + 4096*3)
+#define Pi1MHz_MEM_BASE (PERIPHERAL_BASE + 0xA04000 )
 
 #define Pi1MHz_VPU_RETURN (PERIPHERAL_BASE + 0x600010 )
 

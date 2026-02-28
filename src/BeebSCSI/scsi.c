@@ -352,15 +352,16 @@ static uint8_t scsiEmulationBusFree(void)
          scsiEmulationBusFreestate=1; // fall through
 
       case 1:
-         if (hostadapterReadResetFlag()) {scsiEmulationBusFreestate=0; return SCSI_BUSFREE;}
-         if (!hostadapterReadSelectFlag()) return SCSI_BUSFREE;
 
+         if (!hostadapterReadSelectFlag()) return SCSI_BUSFREE;
+      //   if (hostadapterReadResetFlag()) {scsiEmulationBusFreestate=0; return SCSI_BUSFREE;}
          // Read the host ID (from the host databus)
          scsiHostID = hostadapterReadDatabus();
          if ((ourscsiid != 0) && (scsiHostID != ourscsiid)) {
             // SCSI ID not for us
             return SCSI_BUSFREE;
          }
+
          // Set busy flag to active
          hostadapterWriteBusyFlag(true);
 
