@@ -573,7 +573,6 @@ static void fs_release_write_state(void) {
 static bool fs_kernel_alloc(uint32_t capacity) {
   uint8_t* new_data = (uint8_t*) malloc(capacity);
   if (new_data == NULL) {
-    printf("MTP kernel.now: malloc failed (%lu bytes)\n", (unsigned long) capacity);
     return false;
   }
 
@@ -690,6 +689,8 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
 
     case MTP_OP_SEND_OBJECT: {
       if (g_write_state.is_kernel_now) {
+        uint32_t reboot_copy_len = (g_write_state.transferred + 63u) & ~63u;
+
         if (g_write_state.size_known && (g_write_state.transferred != g_write_state.size)) {
           resp->header->code = MTP_RESP_GENERAL_ERROR;
           fs_release_write_state();
@@ -702,12 +703,17 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
           break;
         }
 
-        printf("MTP kernel.now: received %lu bytes, rebooting...\n", (unsigned long) g_write_state.transferred);
+        if (reboot_copy_len > g_write_state.kernel_capacity) {
+          resp->header->code = MTP_RESP_STORE_FULL;
+          fs_release_write_state();
+          break;
+        }
 
-        printf("MTP kernel.now: if the system does not reboot within 5 seconds, please power cycle the device\n");
-        RPI_WaitMicroSeconds(1000000u);
+        if (reboot_copy_len > g_write_state.transferred) {
+          memset(g_write_state.kernel_data + g_write_state.transferred, 0, reboot_copy_len - g_write_state.transferred);
+        }
         _disable_interrupts();
-        _copyandreboot(g_write_state.kernel_data, (int)g_write_state.transferred);
+        _copyandreboot(g_write_state.kernel_data, (int)reboot_copy_len);
 
         resp->header->code = MTP_RESP_GENERAL_ERROR;
         fs_release_write_state();
@@ -1177,7 +1183,7 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
         return MTP_RESP_INVALID_OBJECT_FORMAT_CODE;
       }
 
-      uint32_t kernel_capacity = g_write_state.size_known ? g_write_state.size : FS_KERNEL_NOW_FALLBACK_CAPACITY;
+      uint32_t kernel_capacity = g_write_state.size_known ? ((g_write_state.size + 63u) & ~63u) : FS_KERNEL_NOW_FALLBACK_CAPACITY;
       if (!fs_kernel_alloc(kernel_capacity)) {
         fs_release_write_state();
         return MTP_RESP_STORE_FULL;

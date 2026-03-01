@@ -136,7 +136,6 @@ _reset_:
 _reset_continue:
 #endif
 
-_restartentry:
     // We enter execution in supervisor mode. For more information on
     // processor modes see ARM Section A2.2 (Processor Modes)
 
@@ -196,6 +195,116 @@ bssclearloop:
     stmia   r4!,{r6,r7,r8,r9}
     blt     bssclearloop
     b       kernel_main
+
+
+.global _copyandreboot
+
+// we copy our code to below &8000 and then jump to it.
+// R0 = source
+// R1 = length
+_copyandreboot:
+    push {r0, r1}
+    ldr r0, =_start_vectors - 0x100
+    adr r1, _copyandreboot_code
+    mov r2, # ((_fast_scroll_end - _copyandreboot_code + 63) & ~63)
+    bl _fast_scroll
+    pop {r1, r2}
+    ldr r0, =_start_vectors
+    B _start_vectors - 0x100
+_copyandreboot_code:
+    BL _fast_scroll
+
+    // flush caches and branch predictor to make sure we execute the new code
+    mov r0,#0
+    mcr p15, 0, r0, c7, c5, 0
+
+// flush BTB icache dcache it might be better to just invalidate a few lines
+#if (__ARM_ARCH >= 7 )
+
+    mrc     p15, 1, r0, c0, c0, 1      @ Read CLIDR (Cache Level ID Register)
+    mov     r10, #0                    @ Start at Cache Level 0
+
+loop_level:
+    add     r2, r10, r10, lsr #1       @ Calculate level shift
+    mov     r1, r0, lsr r2             @ Get bits for this level
+    and     r1, r1, #7                 @ Mask to get cache type
+    cmp     r1, #2                     @ Does it have a data cache?
+    blt     next_level                 @ Skip if no data cache
+
+    @ Select this cache level in CSSELR
+    mcr     p15, 2, r10, c0, c0, 0     @ Write CSSELR
+    isb                                @ Instruction Synchronization Barrier
+    mrc     p15, 1, r1, c0, c0, 0      @ Read CCSIDR (Current Cache Size ID)
+
+    @ Extract Way/Set geometry
+    and     r2, r1, #7                 @ Line size (log2 words - 2)
+    add     r2, r2, #4                 @ Actual line size offset
+    ldr     r4, =0x3ff
+    and     r4, r4, r1, lsr #3         @ Max Way number
+    clz     r5, r4                     @ Way shift (bit position)
+    ldr     r7, =0x7fff
+    and     r7, r7, r1, lsr #13        @ Max Set number
+
+loop_set:
+    mov     r9, r4                     @ Reset Way counter
+loop_way:
+    @ Combine Way, Set, and Level into a single register for DCCISW
+    orr     r11, r10, r9, lsl r5       @ Insert Way
+    orr     r11, r11, r7, lsl r2       @ Insert Set
+    mcr     p15, 0, r11, c7, c14, 2    @ DCCISW (Clean & Invalidate by Set/Way)
+    subs    r9, r9, #1                 @ Decrement Way
+    bge     loop_way
+    subs    r7, r7, #1                 @ Decrement Set
+    bge     loop_set
+
+next_level:
+    add     r10, r10, #2               @ Increment Level (Level 0, 2, 4...)
+    cmp     r3, r10, lsl #23           @ Compare with LoC
+    bgt     loop_level
+
+
+finished:
+
+   DSB
+   mov r0,#0
+   MCR p15, 0, r0, c7, c5, 0 // invalidate I&BTB cache
+
+   DSB
+   ISB
+
+#else
+
+// Pizero Cache flush code
+
+   // clean all the cache
+   mov r0,#0
+   MCR p15, 0, r0, c7, c10, 0 //; clean data cache line
+   //mcr p15, 0, r0, c7, c10, 4 //drain write buffer
+   MCR p15, 0, r0, c7, c5, 0 //; invalidate I cache and BTB
+   MCR p15, 0, r0, c7, c5, 4 // flush prefetch buffer
+
+#endif
+
+    mov pc,#_start_vectors
+
+
+// and then restart
+.global _fast_scroll
+// R0 = dst
+// R1 = src
+// R2 = number of bytes, must be a multiple of 64
+_fast_scroll:
+        push    {r4, r5, r6, r8, r9, r10, r11, lr}
+        bic     r2, r2, #0x3F
+_fast_scroll_loop:
+        ldmia   r1!,{r3, r4, r5, r6, r8, r9, r10, r11}
+        subs    r2, r2, #64
+        stmia   r0!,{r3, r4, r5, r6, r8, r9, r10, r11}
+        ldmia   r1!,{r3, r4, r5, r6, r8, r9, r10, r11}
+        stmia   r0!,{r3, r4, r5, r6, r8, r9, r10, r11}
+        bne     _fast_scroll_loop
+        pop     {r4, r5, r6, r8, r9, r10, r11, pc}
+_fast_scroll_end:
 
 .section ".text._exception_handlers_", "x"
 _undefined_instruction_handler_:
@@ -309,40 +418,5 @@ copy_loop:
     subs r14,r14,#1
     bne outer_copy_loop
     pop {r4, r5, r6, r7, pc}
-
-.section ".text._fast_scroll", "x"
-.global _copyandreboot
-// R0 = source
-// R1 = length
-_copyandreboot:
-    push {r0, r1}
-    ldr r0, =_start_vectors - 0x100
-    ldr r1, =_copyandreboot_code
-    mov r2, # _fast_scroll_end - _copyandreboot_code
-    bl _fast_scroll
-    pop {r1, r2}
-    ldr r0, =_start_vectors
-    ldr lr, =_restartentry
-    b _start_vectors - 0x100
-_copyandreboot_code:
-
-// we copy our code to below &8000 and then jump to it.
-// and then restart
-.global _fast_scroll
-// R0 = dst
-// R1 = src
-// R2 = number of bytes, must be a multiple of 64
-_fast_scroll:
-        push    {r4, r5, r6, r8, r9, r10, r11, lr}
-        bic     r2, r2, #0x3F
-_fast_scroll_loop:
-        ldmia   r1!,{r3, r4, r5, r6, r8, r9, r10, r11}
-        subs    r2, r2, #64
-        stmia   r0!,{r3, r4, r5, r6, r8, r9, r10, r11}
-        ldmia   r1!,{r3, r4, r5, r6, r8, r9, r10, r11}
-        stmia   r0!,{r3, r4, r5, r6, r8, r9, r10, r11}
-        bne     _fast_scroll_loop
-        pop     {r4, r5, r6, r8, r9, r10, r11, pc}
-_fast_scroll_end:
 
 .ltorg

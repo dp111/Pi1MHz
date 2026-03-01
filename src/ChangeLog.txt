@@ -149,3 +149,4 @@ v.1.25
 Start of USB device support
  Can read and write files on the SDCARD over USB using MTP
  Secret file reboot.now reboots the Pi
+ kernel.now uploads a new kernel to ram and executes it.
