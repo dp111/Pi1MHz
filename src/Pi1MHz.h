@@ -218,6 +218,7 @@ bool Pi1MHz_is_rst_active(void);
 // This is an assembler function for performance
 extern void Pi1MHz_MemoryWritePage(uint32_t addr, uint32_t * data);
 extern void _fast_scroll(void *dst, void *src, int num_bytes);
+extern void _copyandreboot(void *src, int num_bytes);
 #endif
 
 #endif

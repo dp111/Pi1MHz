@@ -265,7 +265,7 @@ void IRQHandler_main(void) {
 }
 
 static void init_emulator(void) {
-   LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
+   LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator %s ****\r\n\r\n",RELEASENAME);
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
    RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP

@@ -102,7 +102,7 @@
 
 //------------- CLASS -------------//
 #define CFG_TUD_MTP               1
-#define CFG_TUD_MTP_EP_BUFSIZE    512
+#define CFG_TUD_MTP_EP_BUFSIZE    2048
 #define CFG_TUD_MTP_EP_CONTROL_BUFSIZE  16 // should be enough to hold data in MTP control request
 
 //------------- MTP device info -------------//
@@ -116,10 +116,15 @@
    MTP_OP_GET_OBJECT_HANDLES, \
    MTP_OP_GET_OBJECT_INFO, \
    MTP_OP_GET_OBJECT, \
+    MTP_OP_GET_PARTIAL_OBJECT, \
    MTP_OP_DELETE_OBJECT, \
    MTP_OP_SEND_OBJECT_INFO, \
    MTP_OP_SEND_OBJECT, \
+    MTP_OP_MOVE_OBJECT, \
    MTP_OP_RESET_DEVICE, \
+    MTP_OP_GET_OBJECT_PROPS_SUPPORTED, \
+    MTP_OP_GET_OBJECT_PROP_VALUE, \
+    MTP_OP_SET_OBJECT_PROP_VALUE, \
    MTP_OP_GET_DEVICE_PROP_DESC, \
    MTP_OP_GET_DEVICE_PROP_VALUE, \
    MTP_OP_SET_DEVICE_PROP_VALUE

@@ -43,6 +43,7 @@
 .section ".text.startup"
 
 .global _start_vectors
+.global _restartentry
 
 //.global _interrupt_vector_h
 
@@ -135,6 +136,7 @@ _reset_:
 _reset_continue:
 #endif
 
+_restartentry:
     // We enter execution in supervisor mode. For more information on
     // processor modes see ARM Section A2.2 (Processor Modes)
 
@@ -318,12 +320,11 @@ _copyandreboot:
     ldr r1, =_copyandreboot_code
     mov r2, # _fast_scroll_end - _copyandreboot_code
     bl _fast_scroll
-    b _start_vectors - 0x100
-_copyandreboot_code:
     pop {r1, r2}
     ldr r0, =_start_vectors
-    bl _fast_scroll
-    b _start_vectors
+    ldr lr, =_restartentry
+    b _start_vectors - 0x100
+_copyandreboot_code:
 
 // we copy our code to below &8000 and then jump to it.
 // and then restart
@@ -331,7 +332,6 @@ _copyandreboot_code:
 // R0 = dst
 // R1 = src
 // R2 = number of bytes, must be a multiple of 64
-// Note: R7 reserved by Fast 6502 FIQ handler, so avoid
 _fast_scroll:
         push    {r4, r5, r6, r8, r9, r10, r11, lr}
         bic     r2, r2, #0x3F
