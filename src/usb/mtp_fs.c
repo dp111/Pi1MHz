@@ -34,6 +34,7 @@
 #include "../BeebSCSI/fatfs/ff.h"
 #include "../rpi/asm-helpers.h"
 #include "../rpi/systimer.h"
+#include "../Pi1MHz.h"
 
 _Noreturn void reboot_now(void);
 extern void _copyandreboot(void *src, int num_bytes);
@@ -43,9 +44,9 @@ extern void _copyandreboot(void *src, int num_bytes);
 //--------------------------------------------------------------------+
 
 //------------- device info -------------//
-#define DEV_INFO_MANUFACTURER   "TinyUSB"
+#define DEV_INFO_MANUFACTURER   "Pi1MHz"
 #define DEV_INFO_MODEL          "Pi1MHz MTP"
-#define DEV_INFO_VERSION        "1.0"
+#define DEV_INFO_VERSION        RELEASENAME
 #define DEV_PROP_FRIENDLY_NAME  "Pi1MHz MTP"
 
 //------------- storage info -------------//
