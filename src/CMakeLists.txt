@@ -90,7 +90,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-bad-function-cast")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wenum-int-mismatch -Wxor-used-as-pow -fstrict-flex-arrays -Warray-bounds=2")
-# tinyusb doesn't linke below
+# tinyusb doesn't like below
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
