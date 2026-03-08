@@ -37,7 +37,6 @@
 #include "../Pi1MHz.h"
 
 _Noreturn void reboot_now(void);
-extern void _copyandreboot(void *src, int num_bytes);
 
 //--------------------------------------------------------------------+
 // Dataset
