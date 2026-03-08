@@ -47,7 +47,7 @@ Info: Processing complete - 1 frames in 0.257 seconds ( 3.89105 FPS )
 */
 
 #define XSIZE 768
-#DEFINE YSIZE 576
+#define YSIZE 576
 
 #include <stdio.h>
 
