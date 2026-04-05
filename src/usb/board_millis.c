@@ -9,7 +9,7 @@
 uint32_t board_millis(void)
 {
     /* Use 64-bit system timer (microseconds) to avoid 32-bit rollover. */
-    rpi_sys_timer_t *timer = RPI_GetSystemTimer();
+    const rpi_sys_timer_t *timer = RPI_GetSystemTimer();
     uint32_t hi1;
     uint32_t lo;
     uint32_t hi2;
