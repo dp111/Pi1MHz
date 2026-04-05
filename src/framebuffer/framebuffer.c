@@ -846,7 +846,7 @@ static void vdu23_7(const uint8_t *buf) {
 
 static void vdu23_8(const uint8_t *buf) {
   // VDU 23,8,t0,t1,x0,y0,x1,y1,0,0 (Clear Block)
-   uint8_t t[2] = { buf[1], buf[2] };
+   const uint8_t t[2] = { buf[1], buf[2] };
    uint8_t x[2] = { buf[3], buf[5] };
    uint8_t y[2] = { buf[4], buf[6] };
 
