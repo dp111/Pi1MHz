@@ -177,7 +177,9 @@ SDCARD / FAT commands are the first byte of the command buffer
 
     command pointer + 0 = 8
 
-9 = readdir ( not implemented yet )
+9 = readdir
+
+    each read returns the next entry in the directory until there are no more entries at which point it returns 20. If the entry is a file the size is returned, if it's a directory the size is invalid and should be ignored. The modification and creation dates and times are also returned as FAT format date and time which can be converted to a more standard format if needed. The attribute byte can be used to determine if the entry is a file or directory or other attributes. The long and short names are also returned. The long name should be used in preference to the short name if it exists.
 
     command pointer + 0 = 9
     command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
