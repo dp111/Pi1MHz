@@ -18,6 +18,7 @@ static size_t disc_ram_addr;
 static uint8_t ram_address;
 
 NOINIT_SECTION static FIL fileObject[16];
+NOINIT_SECTION static DIR dirObject[16];
 
 static void discaccess_emulator_update_address(void)
 {
@@ -164,16 +165,16 @@ static void discaccess_emulator_command(unsigned int gpio)
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }
-#if 0
+
     case 7 : // fopendir
         Pi1MHz_MemoryWrite(addr,
-             f_opendir( (DIR * )&Pi1MHz->JIM_ram[command_pointer + 3], (char * )&Pi1MHz->JIM_ram[command_pointer + 3] ) );
+             f_opendir( (DIR * )&dirObject[data & 15], (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
         break;
 
 
     case 8: // fclosedir
         Pi1MHz_MemoryWrite(addr,
-             f_closedir( (DIR * )&Pi1MHz->JIM_ram[command_pointer + 3] ) );
+             f_closedir( (DIR * )&dirObject[data & 15] ) );
         break;
 
 
@@ -181,7 +182,7 @@ static void discaccess_emulator_command(unsigned int gpio)
     {
         FRESULT result;
         FILINFO fileInfo;
-        result = f_readdir( (DIR * )&Pi1MHz->JIM_ram[command_pointer + 3], &fileInfo );
+        result = f_readdir( (DIR * )&dirObject[data & 15], &fileInfo );
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
@@ -192,11 +193,11 @@ static void discaccess_emulator_command(unsigned int gpio)
                 Pi1MHz_MemoryWrite(addr, 20);
                 break;
         }
-        memcpy(&Pi1MHz->JIM_ram[command_pointer + 3], fileInfo.fname, strlen(fileInfo.fname)+1);
+
+        memcpy(&Pi1MHz->JIM_ram[command_pointer + 4], fileInfo.fname, strlen(fileInfo.fname)+1);
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }
-#endif
 
     case 10 : // f mkdir
         Pi1MHz_MemoryWrite(addr,
