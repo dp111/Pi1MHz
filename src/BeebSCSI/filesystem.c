@@ -914,12 +914,11 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
 
       // LUN extended attributes file is not present
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file not found\r\n"));
+      filesystemConfigToLunGeometry(lunNumber);
    }
 
 	return false;
 }
-
-
 
 // takes lun geometry and updates the keyvalues
 
