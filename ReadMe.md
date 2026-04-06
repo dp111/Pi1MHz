@@ -1,24 +1,41 @@
-# Raspberry Pi to Beeb 1MHz interface
+# Pi1MHz
 
 [![Codacy Badge](https://api.codacy.com/project/badge/Grade/ebe2e1bd0b1c42719c0a7ea5bec9bed2)](https://app.codacy.com/app/dominic.plunkett/Pi1MHz?utm_source=github.com&utm_medium=referral&utm_content=dp111/Pi1MHz&utm_campaign=Badge_Grade_Settings)
 
-This project enables a Raspberry Pi to emulate a number of existing Beeb peripherals plus some new ones:
+Pi1MHz is a Raspberry Pi bare-metal interface for the BBC Micro/Master 1MHz bus.
 
-* ADFS Harddisc
-* Music 5000 / 3000
-* Expansion RAM (480Mbytes for a PiZero)
+It emulates:
 
-A simple Level shifter is required to connect the 1MHz port to the Beeb. A PiZero and level shifter can sit under a Beeb or Master.
+- ADFS hard disk (based on BeebSCSI)
+- Hybrid Music 5000/3000 functionality
+- Large JIM RAM expansion
+- FAT/SD transfer services for host software
 
-PiZero and PiZeroW are treated as the same. Pi3B+ is also supported via a cable as it won't fit under the computer. Pi3A+ should also work but hasn't been tested.
+Supported hardware (project-tested):
 
-## Setting up
+- Raspberry Pi Zero / Zero W
+- Raspberry Pi Zero2W / 3B+
 
-You will need a PiZero or Pi3B+ with a cable, SD-CARD and level shifter and some means of powering the Pi ( a bit of wire from the Beeb)
+Pi 3A+ is expected to work but is not formally tested.
 
-Copy the contents of the firmware directory to the root of your SDCARD. If you want a prepared ADFS Harddisc you can copy <https://www.domesday86.com/wp-content/uploads/2019/03/BeebSCSI_Quickstart_LUN_2_5.zip> to the root of the SD-CARD otherwise you can find out more details on creating an ADFS LUN at : <https://www.domesday86.com/?page_id=400>
+## Hardware Requirements
 
-Insert the SD-CARD into the Pi. Attach the level shifter to the Pi and insert into the 1MHz bus socket of the Beeb. Take extra care to ensure that it is connected correctly. You will also need to take +5v from somewhere to power the Pi, this can be the user port or Tube for example.
+- BBC Micro or BBC Master with 1MHz bus access
+- Raspberry Pi Zero/Zero W or Pi 3B+
+- SD card
+- 1MHz bus level shifter
+- 5V power feed for the Pi (for example from User Port or Tube)
+
+## Quick Start
+
+1. Copy the contents of firmware/ to the root of the SD card.
+2. Optionally add a prepared BeebSCSI image set:
+   - https://www.domesday86.com/wp-content/uploads/2019/03/BeebSCSI_Quickstart_LUN_2_5.zip
+3. Insert SD card into the Pi.
+4. Connect the level shifter and 1MHz bus interface carefully.
+5. Power the Pi and boot the BBC.
+
+On fast beeb boot plus slow SD cards, an extra CTRL-BREAK may be required.
 
 To check the build information and get help type one of the following:
 
@@ -296,31 +313,23 @@ Addresses currently defined
 * SCSIJUKE=xx : sets the default SCSI jukebox. 0 is default.
 * VFSJUKE=xx : sets the default VFS jukebox. 0 is default.
 
-## Making the code
+## Notes
 
-You will need a Linux command prompt. Under windows10 I use  windows bash shell. You will also need the arm dev tools : <https://developer.arm.com/-/media/Files/downloads/gnu-a/9.2-2019.12/binrel/gcc-arm-9.2-2019.12-x86_64-arm-none-eabi.tar.xz> . in the src/scripts directory you can select the platform you'd like to build for by executing the configure_rpi.sh ( for PiZero) and configure_rpi3.sh ( for rpi3B+). Then just use make -j4. Copy the firmware directory to the root of your SD-CARD. Serial debug can be enabled using the configure scripts. Or the complete system can be built in one go (PiZero, RPI3 both normal and debug) by using the release.sh script.
+- PCB space is limited for a dedicated serial debug connector on some builds.
+- A custom 3-pin header (0V, TX, RX) can be fitted under a Pi Zero.
 
-The current PCB is too small to have a serial debug connector fitted. I fitted a 3 pin sil header to the underside of my PiZero ( 0v TX TX)
+## Donations
 
-## Donations Welcome
-
-Donations to development of Projects are welcome, especially if you are make a profit from using the project e.g. selling boards or kits.
+Donations are welcome, especially from commercial kit/board sellers using this project.
 
 ## SAST Tools
 
-[PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - static analyzer for C, C++, C#, and Java code.
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source): static analyzer for C, C++, C#, and Java.
 
 ## License
 
-    Pi1MHz is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
+Pi1MHz is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
-    Pi1MHz is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
+Pi1MHz is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
-    along with Pi1MHz.  If not, see <http://www.gnu.org/licenses/>.
+You should have received a copy of the GNU General Public License along with Pi1MHz. If not, see http://www.gnu.org/licenses/.
