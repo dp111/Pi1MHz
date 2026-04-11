@@ -16,20 +16,19 @@ NOINIT_SECTION uint8_t helper_ram[4*1024];
 
 static uint8_t helper_address;
 
-static void helpers_setup(uint8_t helper_addr)
+void helpers_screen_setup( char * helpscreen)
 {
   // We also hide the help screen at &FFE000
         char hex[3];
         char dec[4];
         char M5000address[4];
-        sprintf(hex, "%X",helper_addr);
-        sprintf(dec, "%d",helper_addr);
+        sprintf(hex, "%X",helper_address);
+        sprintf(dec, "%d",helper_address);
         sprintf(M5000address, "%d", M5000_emulator_read_instance());
 
         char scsiaddress[4];
         sprintf(scsiaddress, "%d", harddisc_emulator_get_address()+1);
 
-        char * helpscreen = ( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000] ;
         helpscreen += strlcpy(helpscreen, "\r\nPi1MHz "RELEASENAME" , "GITVERSION
         "\r\nDate : " __DATE__ " " __TIME__
         "\r\nPi : " , PAGE_SIZE*16);
@@ -68,8 +67,6 @@ static void helpers_setup(uint8_t helper_addr)
         helpscreen += strlcpy(helpscreen, M5000address, PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen,":*FX147,203,0 #End Record\r\n", PAGE_SIZE*16);
         helpscreen[0] = 0;
-        //signal to beeb the help screen is setup
-        Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE+1, 0x03);
 }
 
 static void helpers_bank_select(unsigned int gpio)
@@ -91,7 +88,11 @@ static void helpers_bank_select(unsigned int gpio)
         // select page
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&helper_ram[data<<8])) );
         if (data==0)
-            helpers_setup((uint8_t)addr);
+        {
+            helpers_screen_setup(( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000]);
+            //signal to beeb the help screen is setup
+            Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE+1, 0x03);
+        }
     }
 
 }

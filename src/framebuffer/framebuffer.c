@@ -14,6 +14,7 @@
 #include "../rpi/screen.h"
 
 #include "../Pi1MHz.h"
+#include "../helpers.h"
 #include "screen_modes.h"
 #include "framebuffer.h"
 #include "primitives.h"
@@ -841,7 +842,43 @@ static void vdu23_6(const uint8_t *buf) {
 
 static void vdu23_7(const uint8_t *buf) {
    // VDU 23,7,extent,direction,movement,0,0,0,0,0 (Scroll rectangle)
-   // TODO
+   // Extent
+   t_clip_window_t window;
+   switch (buf[1]) {
+   case 0:
+      window = t_window;
+      break;
+   case 1:
+      window.left = 0;
+      window.top = 0;
+      window.right = (uint8_t)(text_width - 1);
+      window.bottom = (uint8_t)(text_height - 1);
+      break;
+   default: return;
+   }
+
+   // Direction
+   scroll_dir_t dir;
+   switch (buf[2]) {
+   case 0: dir = SCROLL_RIGHT; break;
+   case 1: dir = SCROLL_LEFT ; break;
+   case 2: dir = SCROLL_DOWN ; break;
+   case 3: dir = SCROLL_UP   ; break;
+   case 4: dir = SCROLL_RIGHT; break;
+   case 5: dir = SCROLL_LEFT ; break;
+   case 6: dir = SCROLL_DOWN ; break;
+   case 7: dir = SCROLL_UP   ; break;
+   default: return;
+   }
+
+   // Movement: TODO
+
+   // Scroll
+   int tmp = disable_cursors();
+   screen->scroll(screen, &window, c_bg_col, dir);
+   if (tmp) {
+      enable_cursors();
+   }
 }
 
 static void vdu23_8(const uint8_t *buf) {
@@ -1644,7 +1681,7 @@ static void cursor(int n) {
    fb_writec(0);
    fb_writec(0);
 }
-
+#if 0
 static void plot(int n, int x, int y) {
    fb_writec(25);
    fb_writec((char)n);
@@ -1719,16 +1756,13 @@ static void owl(int x0, int y0, int r, int col) {
    prim_set_fg_plotmode(screen, old_mode);
    prim_set_fg_col(screen, old_col);
 }
-
+#endif
 static void fb_show_splash_screen(void) {
-   char buffer[256];
-   int address = 0x88; // TODO takes this value from the helper code
-   // Select the default screen mode
-   fb_writec(22);
 
 #if 1
+   // Select the default screen mode
+   fb_writec(22);
    fb_writec(DEFAULT_SCREEN_MODE);
-
    // Turn of the cursor (as there are some bugs when changing fonts)
    cursor(0);
    select_font(12, 2, 2, 0); // Computer Font
@@ -1745,45 +1779,18 @@ static void fb_show_splash_screen(void) {
    fb_writec(17);
    fb_writec(63); // White in MODE 21
 
-   // Draw a green owl
-   owl(944, 1008, 20, 12);
-
-   select_font(32, 1, 1, 1); // SAA5050
-   fb_writec(26);
-   fb_writec(31);
-   fb_writec(0);
-   fb_writec(4);
-   fb_writes("Release: "RELEASENAME"\r\n");
-   fb_writes("Commit : "GITVERSION"\r\n");
-   fb_writes("Pi Info: ");
-   fb_writes(get_info_string());
-   fb_writes("\r\n");
-   sprintf(buffer, "Temp   : %2.1fC\r\n", (double) get_temp() ); fb_writes(buffer);
-    fb_writes("\r\n\n\n\n\n\n\n");
-
-   fb_writes("Helper functions can be started in one  of three ways : \r\n\r\n");
-
-   sprintf(buffer, "*FX147,%d,n <ret> *GO FD00 <ret>\r\n", address); fb_writes(buffer);
-   sprintf(buffer, "*FX147,%d,n <ret> *GOIO FD00 <ret>\r\n", address); fb_writes(buffer);
-   sprintf(buffer, "X%%=n:CALL&FC%x <ret>\r\n", (unsigned int)address); fb_writes(buffer);
-   fb_writes("\r\n where n is one of the following"
-        "\r\n"
-        "\r\n 0 # This help screen"
-        "\r\n 1 # Status N/A"
-        "\r\n 2 # Enable screen redirector"
-        "\r\n 3 # Load ADFS into SWR"
-        "\r\n 4 # Load MMFS into SWR"
-        "\r\n 5 # Load MMFS2 into SWR"
-        "\r\n 6 # Load BeebSCSI helper ROM into SWR");
-
-   select_font(0, 1, 1, 0); // Default
-   fb_writec(26);
-   fb_writec(31);
-   fb_writec(0);
-   fb_writec(56);
-
+   char screeninfo[1024];
+   helpers_screen_setup(screeninfo);
+   for (unsigned int i = 0; i < sizeof(screeninfo); i++) {
+      if (screeninfo[i] == '\0') {
+         break;
+      } else {
+         fb_writec(screeninfo[i]);
+      }
+   }
   // cursor(1);
 #else
+   fb_writec(22);
    fb_writec(1);
    cursor(0);
 #endif
