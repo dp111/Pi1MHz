@@ -15,7 +15,6 @@ Takes 5 bytes of RAM
 
 */
 
-#include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include "Pi1MHz.h"

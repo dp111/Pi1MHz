@@ -2,8 +2,6 @@
   usb
 */
 #define LOG  2
-#include <inttypes.h>
-#include <stdbool.h>
 #include "usb/tusb_config.h"
 #include "usb/tinyusb/src/tusb.h"
 #include "usb/tinyusb/hw/bsp/board_api.h"

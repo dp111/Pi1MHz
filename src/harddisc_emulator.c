@@ -5,13 +5,11 @@
 
 */
 
-#include <string.h>
 #include <stdlib.h>
 #include "Pi1MHz.h"
 #include "rpi/info.h"
 
 #include <stdbool.h>
-#include <stdio.h>
 
 // includes from the beebSCSI directory
 #include "BeebSCSI/debug.h"
