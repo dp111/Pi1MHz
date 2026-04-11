@@ -125,13 +125,12 @@ typedef struct {
 } emulator_list;
 
 static emulator_list emulator[] = {
-
-   {"Rampage",rampage_emulator_init, 0xFD, 1},
+   {"Helpers",helpers_init, 0x88, 1 }, // needs to be before framebuffer so it can write to the screen
+   {"Rampage",rampage_emulator_init, 0xFD, 1}, // needs to after helpers
    {"Rambyte",rambyte_emulator_init, 0x00, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
    {"Discaccess",discaccess_emulator_init, 0xA6, 1 },
-   {"Helpers",helpers_init, 0x88, 1 },
    {"Videoplayer",videoplayer_init, 0x00, 1},  // start before frame buffer , but after filesystem
    {"Framebuffer",fb_emulator_init, 0xA0, 1},
    {"Mouseredirect",mouse_redirect_init, 0xAB, 1 },
