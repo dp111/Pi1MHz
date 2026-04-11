@@ -10,8 +10,6 @@
 #include "Pi1MHz.h"
 #include "rpi/info.h"
 
-#define FILE __FILE
-
 #include <stdbool.h>
 #include <stdio.h>
 
