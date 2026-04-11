@@ -863,10 +863,11 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
    screen_plane_enable(SCREEN_PLANE, false);
    mouse_redirect_mouseoff();
    screen_release_buffer(handle); // doesn't do anything if fb is NULL
-   uint32_t temp =screen_allocate_buffer((uint32_t) ((screen->width * screen->height) << (uint32_t) screen->log2bpp)>>3 , &handle);
-   fb = (unsigned char *) temp;
    screen->pitch = (screen->width << (uint32_t) screen->log2bpp) >>3;
-   screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
+   // Allocate 1 extra line at top as a guard line for the PPF scaler's pre-roll
+   uint32_t temp = screen_allocate_buffer((uint32_t)((uint32_t)screen->pitch * (uint32_t)(screen->height + 1)) , &handle);
+   fb = (unsigned char *) (temp + (uint32_t) screen->pitch);
+   screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) temp );
 
     // Initialize colour table and palette
     screen->font = font;
@@ -874,6 +875,9 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
 
     /* Clear the screen to the background colour */
     screen->clear(screen, NULL, 0);
+
+    /* Clear the guard line (1 line before fb) to match the first visible line */
+    memcpy(fb - screen->pitch, fb, (size_t) screen->pitch);
 
     screen_plane_enable(SCREEN_PLANE, true);
 
@@ -903,6 +907,8 @@ void default_clear_screen(const screen_mode_t *screen, const t_clip_window_t *te
          screen->set_pixel(screen, x, y, col);
       }
    }
+   // Update guard line above fb (for PPF scaler pre-roll)
+   memcpy(fb - screen->pitch, fb, (size_t) screen->pitch);
 }
 
 void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_window, pixel_t bg_col, scroll_dir_t dir) {
@@ -982,6 +988,8 @@ void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_wi
          screen->set_pixel(screen, x, y, col);
       }
    }
+   // Update guard line above fb to match the new top visible line (for PPF scaler pre-roll)
+   memcpy(fb - screen->pitch, fb, (size_t) screen->pitch);
 }
 // cppcheck-suppress constParameterCallback
 void default_set_colour_8bpp(screen_mode_t *screen, colour_index_t index, uint32_t r, uint32_t g, uint32_t b) {
