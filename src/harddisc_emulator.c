@@ -204,11 +204,11 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       const char *prop2 = get_cmdline_prop("VFSJUKE");
       int vfsjuke = 0;
       if (prop2)
-         vfsjuke = atoi(prop);
+         vfsjuke = atoi(prop2);
 
       const char *prop3 = get_cmdline_prop("SCSIID");
       if (prop3)
-      scsiid = (uint8_t) atoi(prop);
+      scsiid = (uint8_t) atoi(prop3);
 
       // Initialise the SD Card and FAT file system functions
       filesystemInitialise((uint8_t)scsijuke, (uint8_t) vfsjuke);
