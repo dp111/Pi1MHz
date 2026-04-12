@@ -132,6 +132,8 @@ file( GLOB core_files
    rpi/rpi.c
    rpi/asm-helpers.c
    rpi/screen.c
+   rpi/jpegdec.c
+   rpi/jpegdec_idct.S
    Pi1MHz.c
    ram_emulator.c
    helpers.c
