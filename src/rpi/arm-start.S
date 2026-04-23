@@ -43,7 +43,6 @@
 .section ".text.startup"
 
 .global _start_vectors
-.global _restartentry
 
 //.global _interrupt_vector_h
 
