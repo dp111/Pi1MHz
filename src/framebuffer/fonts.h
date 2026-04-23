@@ -13,16 +13,16 @@ typedef struct font_cat {
    const uint8_t *data;      // pointer to the raw font data
    int bytes_per_char; // Number of bytes of raw data per character
    int num_chars;      // Number of characters in the character set
-   int offset;         // Offset (in bytes) to the first row of the character
-   int shift;          // Offset (in bits) to the first column of the character
-   int width;          // Width (in pixels) of the character
-   int height;         // Height(in pixels) of the character
+   char offset;         // Offset (in bytes) to the first row of the character
+   char shift;          // Offset (in bits) to the first column of the character
+   char width;          // Width (in pixels) of the character
+   char height;         // Height(in pixels) of the character
 
    // These control the way the font is rendered
-   int spacing_w;
-   int spacing_h;
-   int scale_w;
-   int scale_h;
+   char spacing_w;
+   char spacing_h;
+   char scale_w;
+   char scale_h;
 } font_catalog_t;
 
 typedef struct font {
