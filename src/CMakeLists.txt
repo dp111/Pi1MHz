@@ -132,8 +132,6 @@ file( GLOB core_files
    rpi/rpi.c
    rpi/asm-helpers.c
    rpi/screen.c
-   rpi/jpegdec.c
-   rpi/jpegdec_idct.S
    Pi1MHz.c
    ram_emulator.c
    helpers.c
@@ -170,6 +168,8 @@ include_directories(BeebSCSI)
 include_directories(usb/tinyusb/src)
 include_directories(usb/tinyusb/hw)
 include_directories(usb)
+include_directories(usb/tinyusb/lib/lwip/src/include)
+include_directories(wifi)
 
 # M5000 emulator
 file( GLOB M5000_emulator_files
@@ -204,6 +204,42 @@ file( GLOB mouse_redirect_files
    mouseredirect.c
 )
 
+file( GLOB wifi_files
+   wifi/cyw43.c
+   wifi/framebuffer_export.c
+   wifi/sdio.c
+   wifi/sdio_host.c
+   wifi/wifi.c
+   wifi/wifi_lwip.c
+   wifi/wifi.h
+   wifi/wifi_lwip.h
+   wifi/webserver.c
+   wifi/webserver.h
+)
+
+file( GLOB lwip_files
+   usb/tinyusb/lib/lwip/src/core/def.c
+   usb/tinyusb/lib/lwip/src/core/dns.c
+   usb/tinyusb/lib/lwip/src/core/inet_chksum.c
+   usb/tinyusb/lib/lwip/src/core/init.c
+   usb/tinyusb/lib/lwip/src/core/ip.c
+   usb/tinyusb/lib/lwip/src/core/mem.c
+   usb/tinyusb/lib/lwip/src/core/memp.c
+   usb/tinyusb/lib/lwip/src/core/netif.c
+   usb/tinyusb/lib/lwip/src/core/pbuf.c
+   usb/tinyusb/lib/lwip/src/core/stats.c
+   usb/tinyusb/lib/lwip/src/core/sys.c
+   usb/tinyusb/lib/lwip/src/core/timeouts.c
+   usb/tinyusb/lib/lwip/src/core/udp.c
+   usb/tinyusb/lib/lwip/src/core/ipv4/autoip.c
+   usb/tinyusb/lib/lwip/src/core/ipv4/dhcp.c
+   usb/tinyusb/lib/lwip/src/core/ipv4/etharp.c
+   usb/tinyusb/lib/lwip/src/core/ipv4/icmp.c
+   usb/tinyusb/lib/lwip/src/core/ipv4/ip4.c
+   usb/tinyusb/lib/lwip/src/core/ipv4/ip4_addr.c
+   usb/tinyusb/lib/lwip/src/netif/ethernet.c
+)
+
 
 if( ${DEBUG} )
 
@@ -221,6 +257,8 @@ endif()
             ${FrameBuffer_emulator_files}
             ${discaccess_emulator_files}
             ${mouse_redirect_files}
+         ${wifi_files}
+         ${lwip_files}
         )
 
     else()
@@ -232,6 +270,8 @@ endif()
             ${FrameBuffer_emulator_files}
             ${discaccess_emulator_files}
             ${mouse_redirect_files}
+         ${wifi_files}
+         ${lwip_files}
         )
 
     endif()
@@ -253,7 +293,8 @@ add_custom_target(gitversion ALL)
 
 add_custom_command(
    TARGET gitversion PRE_BUILD
-   COMMAND bash version.sh
+   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/version.sh
+   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/scripts
 )
 
 add_dependencies(Pi1MHz gitversion)
