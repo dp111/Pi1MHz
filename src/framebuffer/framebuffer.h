@@ -97,8 +97,6 @@ void fb_writec(char c);
 
 void fb_writes(const char *string);
 
-uint32_t fb_get_address(void);
-
 int fb_get_cursor_x(void);
 
 int fb_get_cursor_y(void);
