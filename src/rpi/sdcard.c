@@ -36,6 +36,8 @@
 #include "block.h"
 #include "base.h"
 #include "arm-start.h"
+#include "gpio.h"
+#include "info.h"
 
 #include "systimer.h"
 
@@ -121,51 +123,6 @@ static inline uint32_t byte_swap(uint32_t in)
    return ret;
 }
 #endif
-
-typedef struct
-{
-   rpi_reg_rw_t EMMC_ARG2;
-   rpi_reg_rw_t EMMC_BLKSIZECNT;
-   rpi_reg_rw_t EMMC_ARG1;
-   rpi_reg_rw_t EMMC_CMDTM;
-   rpi_reg_rw_t EMMC_RESP0;
-   rpi_reg_rw_t EMMC_RESP1; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_RESP2; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_RESP3; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_DATA;
-   rpi_reg_rw_t EMMC_STATUS;
-   rpi_reg_rw_t EMMC_CONTROL0;
-   rpi_reg_rw_t EMMC_CONTROL1;
-   rpi_reg_rw_t EMMC_INTERRUPT;
-   rpi_reg_rw_t EMMC_IRPT_MASK;
-   rpi_reg_rw_t EMMC_IRPT_EN;
-   rpi_reg_rw_t EMMC_CONTROL2;
-   rpi_reg_rw_t EMMC_CAPABILITIES_0; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_CAPABILITIES_1; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_HWMAXAMP0; // cppcheck-suppress unusedStructMember
-   rpi_reg_ro_t reserved1; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_FORCE_IRPT; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_DMA_STATUS; // cppcheck-suppress unusedStructMember
-   rpi_reg_ro_t reserved2[6]; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_BOOT_TIMEOUT; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_DBG_SEL; // cppcheck-suppress unusedStructMember
-   rpi_reg_ro_t reserved3[2]; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_EXRDFIFO_CFG; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_EXRDFIFO_EN; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_TUNE_STEP; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_TUNE_STEPS_STD; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_TUNE_STEPS_DDR; // cppcheck-suppress unusedStructMember
-   rpi_reg_ro_t reserved4[19]; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_BUS_CTRL; // cppcheck-suppress unusedStructMember
-   rpi_reg_ro_t reserved5[3]; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_SPI_INT_SPT; // cppcheck-suppress unusedStructMember
-   rpi_reg_ro_t reserved6[2]; // cppcheck-suppress unusedStructMember
-   rpi_reg_rw_t EMMC_SLOTISR_VER; // cppcheck-suppress unusedStructMember
-} rpi_emmc_t;
-
-#define EMMC_BASE    (PERIPHERAL_BASE + 0x0300000UL)
-
-static rpi_emmc_t* const RPI_EMMCBase = (rpi_emmc_t*) EMMC_BASE;
 
 #define SD_CMD_INDEX(a)    ((a) << 24)
 #define SD_CMD_TYPE_NORMAL 0x0
@@ -263,6 +220,76 @@ static rpi_emmc_t* const RPI_EMMCBase = (rpi_emmc_t*) EMMC_BASE;
 #define SD_VER_3            4
 #define SD_VER_4            5
 
+#define SDHOST_BASE                 (PERIPHERAL_BASE + 0x202000UL)
+#define SDCMD                       0x00
+#define SDARG                       0x04
+#define SDTOUT                      0x08
+#define SDCDIV                      0x0c
+#define SDRSP0                      0x10
+#define SDRSP1                      0x14
+#define SDRSP2                      0x18
+#define SDRSP3                      0x1c
+#define SDHSTS                      0x20
+#define SDVDD                       0x30
+#define SDEDM                       0x34
+#define SDHCFG                      0x38
+#define SDHBCT                      0x3c
+#define SDDATA                      0x40
+#define SDHBLC                      0x50
+
+#define SDCMD_NEW_FLAG              0x8000
+#define SDCMD_FAIL_FLAG             0x4000
+#define SDCMD_BUSYWAIT              0x0800
+#define SDCMD_NO_RESPONSE           0x0400
+#define SDCMD_LONG_RESPONSE         0x0200
+#define SDCMD_WRITE_CMD             0x0080
+#define SDCMD_READ_CMD              0x0040
+#define SDCMD_CMD_MASK              0x003f
+
+#define SDCDIV_MAX_CDIV             0x07ff
+
+#define SDHSTS_BUSY_IRPT            0x0400
+#define SDHSTS_BLOCK_IRPT           0x0200
+#define SDHSTS_SDIO_IRPT            0x0100
+#define SDHSTS_REW_TIME_OUT         0x0080
+#define SDHSTS_CMD_TIME_OUT         0x0040
+#define SDHSTS_CRC16_ERROR          0x0020
+#define SDHSTS_CRC7_ERROR           0x0010
+#define SDHSTS_FIFO_ERROR           0x0008
+#define SDHSTS_DATA_FLAG            0x0001
+#define SDHSTS_TRANSFER_ERROR_MASK  (SDHSTS_CRC7_ERROR | SDHSTS_CRC16_ERROR | SDHSTS_REW_TIME_OUT | SDHSTS_FIFO_ERROR)
+#define SDHSTS_ERROR_MASK           (SDHSTS_CMD_TIME_OUT | SDHSTS_TRANSFER_ERROR_MASK)
+
+#define SDHCFG_BUSY_IRPT_EN         (1 << 10)
+#define SDHCFG_BLOCK_IRPT_EN        (1 << 8)
+#define SDHCFG_SDIO_IRPT_EN         (1 << 5)
+#define SDHCFG_DATA_IRPT_EN         (1 << 4)
+#define SDHCFG_SLOW_CARD            (1 << 3)
+#define SDHCFG_WIDE_EXT_BUS         (1 << 2)
+#define SDHCFG_WIDE_INT_BUS         (1 << 1)
+#define SDHCFG_REL_CMD_LINE         (1 << 0)
+
+#define SDEDM_FORCE_DATA_MODE       (1 << 19)
+#define SDEDM_WRITE_THRESHOLD_SHIFT 9
+#define SDEDM_READ_THRESHOLD_SHIFT  14
+#define SDEDM_THRESHOLD_MASK        0x1f
+#define SDEDM_FSM_MASK              0x0f
+#define SDEDM_FSM_IDENTMODE         0x0
+#define SDEDM_FSM_DATAMODE          0x1
+#define SDEDM_FSM_READDATA          0x2
+#define SDEDM_FSM_WRITEDATA         0x3
+#define SDEDM_FSM_READWAIT          0x4
+#define SDEDM_FSM_READCRC           0x5
+#define SDEDM_FSM_WRITECRC          0x6
+#define SDEDM_FSM_WRITEWAIT1        0x7
+#define SDEDM_FSM_POWERDOWN         0x8
+#define SDEDM_FSM_WRITESTART1       0xa
+#define SDEDM_FSM_WRITESTART2       0xb
+
+#define FIFO_READ_THRESHOLD         4u
+#define FIFO_WRITE_THRESHOLD        4u
+#define SDDATA_FIFO_PIO_BURST       8u
+
 #ifdef EMMC_DEBUG
 static const char *sd_versions[] = { "unknown", "1.0 and 1.01", "1.10",
     "2.00", "3.0x", "4.xx" };
@@ -273,7 +300,58 @@ static const char *err_irpts[] = { "CMD_TIMEOUT", "CMD_CRC", "CMD_END_BIT", "CMD
 #endif
 
 size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
-size_t sd_write(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
+size_t sd_write(struct block_device *dev, const uint8_t *buf, size_t buf_size, uint32_t block_no);
+
+static uint32_t sdhost_read(uint32_t reg);
+static void sdhost_write(uint32_t reg, uint32_t value);
+static void sdhost_prepare_storage_pins(void);
+static void sdhost_reset_internal(void);
+static int sdhost_reset_controller(void);
+static uint32_t sdhost_get_base_clock_hz(void);
+static int sdhost_switch_clock_rate(uint32_t target_rate);
+static int sd_reset_cmd_sdhost(void);
+static int sd_reset_dat_sdhost(void);
+static uint32_t sdhost_translate_error(uint32_t status, bool is_data);
+static int sdhost_wait_for_data_idle(bool is_read);
+static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write);
+static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t timeout, uint32_t *response0, bool has_data, uint32_t *error_out);
+static int sdhost_issue_stop_command(uint32_t timeout, uint32_t *error_out);
+static int sdhost_prepare_storage_controller(void);
+static int sdhost_set_firmware_clock(uint32_t target_rate, uint32_t *actual_rate);
+static void sdhost_probe_firmware_clock_mode(void);
+static int sdhost_wait_for_request_ready(uint32_t timeout);
+
+#ifdef DEBUG_SD
+static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argument, struct emmc_block_dev *dev)
+{
+    printf(
+        "SDHOST %s: cmd=%" PRIu32 " arg=%08" PRIx32 " err=%08" PRIx32
+        " hsts=%08" PRIx32 " edm=%08" PRIx32 " hcfg=%08" PRIx32
+        " cdiv=%08" PRIx32 " blocks=%" PRIu32 " blksz=%zu\r\n",
+        phase,
+        opcode,
+        argument,
+        dev->last_error,
+        sdhost_read(SDHSTS),
+        sdhost_read(SDEDM),
+        sdhost_read(SDHCFG),
+        sdhost_read(SDCDIV),
+        dev->blocks_to_transfer,
+        dev->block_size);
+}
+#else
+static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argument, struct emmc_block_dev *dev)
+{
+    (void)phase;
+    (void)opcode;
+    (void)argument;
+    (void)dev;
+}
+#endif
+
+static uint32_t g_sdhost_storage_hcfg = SDHCFG_BUSY_IRPT_EN;
+static uint32_t g_sdhost_storage_cdiv = SDCDIV_MAX_CDIV;
+static bool g_sdhost_firmware_sets_cdiv;
 
 static const uint32_t sd_commands[] = {
     SD_CMD_INDEX(0),
@@ -455,44 +533,7 @@ static const uint32_t sd_acommands[] = {
 #define SET_CLR_CARD_DETECT     (42 | IS_APP_CMD)
 #define SEND_SCR                (51 | IS_APP_CMD)
 
-#define SD_RESET_CMD            (1 << 25)
-#define SD_RESET_DAT            (1 << 26)
 #define SD_RESET_ALL            (1 << 24)
-
-#define SD_GET_CLOCK_DIVIDER_FAIL   0xffffffff
-
-// Get the current base clock rate in Hz
-#if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
-#include "info.h"
-#endif
-
-static void sd_power_off(void)
-{
-   /* Power off the SD card */
-   uint32_t control0 = RPI_EMMCBase->EMMC_CONTROL0;
-   control0 &= ~(1U << 8);  // Set SD Bus Power bit off in Power Control Register
-   RPI_EMMCBase->EMMC_CONTROL0 = control0;
-}
-
-static uint32_t sd_get_base_clock_hz(void)
-{
-   uint32_t base_clock;
-#if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_GENERIC
-   uint32_t capabilities_0 = RPI_EMMCBase->EMMC_CAPABILITIES_0;
-   base_clock = ((capabilities_0 >> 8) & 0xff) * 1000000;
-#elif SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
-   base_clock = get_clock_rate(EMMC_CLK_ID);
-#else
-   printf("EMMC: get_base_clock_hz() is not implemented for this "
-          "architecture.\r\n");
-   return 0;
-#endif
-
-#ifdef EMMC_DEBUG
-   printf("EMMC: base clock rate is %"PRIu32" Hz\r\n", base_clock);
-#endif
-   return base_clock;
-}
 
 #if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
 #ifdef SDCARD_PWR_CYCLE
@@ -511,551 +552,104 @@ static int bcm_2708_power_on()
 static int bcm_2708_power_cycle()
 {
    bcm_2708_power_off();
-
    usleep(5000);
    return bcm_2708_power_on();
 }
 #endif
 #endif
 
-// Set the clock dividers to generate a target value
-static uint32_t sd_get_clock_divider(uint32_t base_clock, uint32_t target_rate)
-{
-    // TODO: implement use of preset value registers
-
-    uint32_t targetted_divisor = 0;
-    if(target_rate > base_clock)
-        targetted_divisor = 1;
-    else
-    {
-        targetted_divisor = base_clock / target_rate;
-        uint32_t mod = base_clock % target_rate;
-        if(mod)
-            targetted_divisor--;
-    }
-
-    // Decide on the clock mode to use
-
-    // HCI version 3 or greater supports 10-bit divided clock mode
-    // This requires a power-of-two divider
-
-    // Find the first bit set
-    int divisor = -1;
-    for(int first_bit = 31; first_bit >= 0; first_bit--)
-    {
-        uint32_t bit_test = (1u << first_bit);
-        if(targetted_divisor & bit_test)
-        {
-            divisor = first_bit;
-            targetted_divisor &= ~bit_test;
-            if(targetted_divisor)
-            {
-                // The divisor is not a power-of-two, increase it
-                divisor++;
-            }
-            break;
-        }
-    }
-
-    if(divisor == -1)
-        divisor = 11;
-    if(divisor > 11)
-        divisor = 11;
-
-    if(divisor != 0)
-        divisor = (1 << (divisor - 1));
-
-    if(divisor >= 0x400)
-        divisor = 0x3ff;
-
-    uint32_t freq_select = divisor & 0xff;
-    uint32_t upper_bits = (divisor >> 8) & 0x3;
-    uint32_t ret = (freq_select << 8) | (upper_bits << 6);
-
-#ifdef EMMC_DEBUG
-    unsigned int denominator = 1;
-    if(divisor != 0)
-        denominator = (unsigned int )divisor * 2;
-    unsigned int actual_clock = base_clock / denominator;
-    printf("EMMC: base_clock: %"PRIu32", target_rate: %"PRIu32", divisor: %08i, "
-            "actual_clock: %i, ret: %08"PRIx32"\r\n", base_clock, target_rate,
-            divisor, actual_clock, ret);
-#endif
-
-    return ret;
-}
-
-// Switch the clock rate whilst running
-static int sd_switch_clock_rate(uint32_t base_clock, uint32_t target_rate)
-{
-    // Decide on an appropriate divider
-    uint32_t divider = sd_get_clock_divider(base_clock, target_rate);
-
-    // Wait for the command inhibit (CMD and DAT) bits to clear
-    while(RPI_EMMCBase->EMMC_STATUS & 0x3)
-        usleep(1);
-
-    // Set the SD clock off
-    uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
-    control1 &= ~(1U << 2);
-    RPI_EMMCBase->EMMC_CONTROL1 = control1;
-    usleep(5); // Wait 2 SCLKs
-
-    // Write the new divider
-    control1 &= ~0xffe0U;    // Clear old setting + clock generator select
-    control1 |= divider;
-    RPI_EMMCBase->EMMC_CONTROL1 = control1;
-    usleep(5); // Wait 2 SCLKs
-
-    // Enable the SD clock
-    control1 |= (1 << 2);
-    RPI_EMMCBase->EMMC_CONTROL1 = control1;
-
-#ifdef EMMC_DEBUG
-    printf("EMMC: successfully set clock rate to %"PRIu32" Hz\r\n", target_rate);
-#endif
-    return 0;
-}
-
-// Reset the CMD line
-static int sd_reset_cmd(void)
-{
-   uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
-   control1 |= SD_RESET_CMD;
-   RPI_EMMCBase->EMMC_CONTROL1 = control1;
-   TIMEOUT_WAIT(((RPI_EMMCBase->EMMC_CONTROL1 & SD_RESET_CMD) == 0), 1000000);
-   if((RPI_EMMCBase->EMMC_CONTROL1 & SD_RESET_CMD) != 0)
-   {
-      printf("EMMC: CMD line did not reset properly\r\n");
-      return -1;
-   }
-   return 0;
-}
-
-// Reset the DAT line
-static int sd_reset_dat(void)
-{
-   uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
-   control1 |= SD_RESET_DAT;
-   RPI_EMMCBase->EMMC_CONTROL1 = control1;
-   TIMEOUT_WAIT((RPI_EMMCBase->EMMC_CONTROL1 & SD_RESET_DAT) == 0, 1000000);
-   if((RPI_EMMCBase->EMMC_CONTROL1 & SD_RESET_DAT) != 0)
-   {
-      printf("EMMC: DAT line did not reset properly\r\n");
-      return -1;
-   }
-   return 0;
-}
-
 static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, uint32_t argument, uint32_t timeout)
 {
+    uint32_t opcode = (cmd_reg >> 24) & 0x3fu;
+    uint32_t sdcmd = opcode & SDCMD_CMD_MASK;
+    bool has_data = (cmd_reg & SD_CMD_ISDATA) != 0u;
+    bool is_write = has_data && (cmd_reg & SD_CMD_DAT_DIR_CH) == 0u;
+
     dev->last_cmd_success = 0;
+    dev->last_interrupt = 0;
+    dev->last_error = 0;
 
-    // This is as per HCSS 3.7.1.1/3.7.2.2
+    if ((cmd_reg & SD_CMD_RSPNS_TYPE_MASK) == SD_CMD_RSPNS_TYPE_NONE)
+        sdcmd |= SDCMD_NO_RESPONSE;
+    else if ((cmd_reg & SD_CMD_RSPNS_TYPE_MASK) == SD_CMD_RSPNS_TYPE_136)
+        sdcmd |= SDCMD_LONG_RESPONSE;
+    else if ((cmd_reg & SD_CMD_RSPNS_TYPE_MASK) == SD_CMD_RSPNS_TYPE_48B)
+        sdcmd |= SDCMD_BUSYWAIT;
 
-    // Check Command Inhibit
-    while(RPI_EMMCBase->EMMC_STATUS & 0x1)
-        usleep(1);
-
-    // Is the command with busy?
-    if((cmd_reg & SD_CMD_RSPNS_TYPE_MASK) == SD_CMD_RSPNS_TYPE_48B)
+    if (has_data)
     {
-        // With busy
-
-        // Is is an abort command?
-        if((cmd_reg & SD_CMD_TYPE_MASK) != SD_CMD_TYPE_ABORT)
-        {
-            // Not an abort command
-
-            // Wait for the data line to be free
-            while(RPI_EMMCBase->EMMC_STATUS & 0x2)
-                usleep(1);
-        }
-    }
-
-    // Is this a DMA transfer?
-    int is_sdma = 0;
-    if((cmd_reg & SD_CMD_ISDATA) && (dev->use_sdma))
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: performing SDMA transfer, current INTERRUPT: %08"PRIx32"\r\n",
-               RPI_EMMCBase->EMMC_INTERRUPT);
-#endif
-        is_sdma = 1;
-    }
-
-    if(is_sdma)
-    {
-        // Set system address register (ARGUMENT2 in RPi)
-
-        // We need to define a 4 kiB aligned buffer to use here
-        // Then convert its virtual address to a bus address
-        RPI_EMMCBase->EMMC_ARG2 = SDMA_BUFFER_PA;
-    }
-
-    // Set block size and block count
-    // For now, block size = 512 bytes, block count = 1,
-    //  host SDMA buffer boundary = 4 kiB
-    if(dev->blocks_to_transfer > 0xffff)
-    {
-        printf("SD: blocks_to_transfer too great (%"PRIu32")\r\n",
-               dev->blocks_to_transfer);
-        dev->last_cmd_success = 0;
-        return;
-    }
-    uint32_t blksizecnt = dev->block_size | (dev->blocks_to_transfer << 16);
-    RPI_EMMCBase->EMMC_BLKSIZECNT = blksizecnt;
-
-    // Set argument 1 reg
-    RPI_EMMCBase->EMMC_ARG1 = argument;
-
-    if(is_sdma)
-    {
-        // Set Transfer mode register
-        cmd_reg |= SD_CMD_DMA;
-    }
-
-    // Set command reg
-    RPI_EMMCBase->EMMC_CMDTM = cmd_reg;
-
-    // usleep(2000);//*****
-
-    // Wait for command complete interrupt
-    TIMEOUT_WAIT(RPI_EMMCBase->EMMC_INTERRUPT & 0x8001, timeout);
-    uint32_t irpts = RPI_EMMCBase->EMMC_INTERRUPT;
-
-    // Clear command complete status
-    RPI_EMMCBase->EMMC_INTERRUPT = 0xffff0001;
-
-    // Test for errors
-    if((irpts & 0xffff0001) != 0x1)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: error occurred whilst waiting for command complete interrupt\r\n");
-#endif
-        dev->last_error = irpts & 0xffff0000;
-        dev->last_interrupt = irpts;
-        return;
-    }
-
-    // usleep(2000); //***
-
-    // Get response data
-    switch(cmd_reg & SD_CMD_RSPNS_TYPE_MASK)
-    {
-        case SD_CMD_RSPNS_TYPE_48:
-        case SD_CMD_RSPNS_TYPE_48B:
-            dev->last_r0 = RPI_EMMCBase->EMMC_RESP0;
-            break;
-
-        case SD_CMD_RSPNS_TYPE_136:
-            dev->last_r0 = RPI_EMMCBase->EMMC_RESP0;
-         //   dev->last_r1 = RPI_EMMCBase->EMMC_RESP1;
-         //   dev->last_r2 = RPI_EMMCBase->EMMC_RESP2;
-         //   dev->last_r3 = RPI_EMMCBase->EMMC_RESP3;
-            break;
-    }
-
-    // If with data, wait for the appropriate interrupt
-    if((cmd_reg & SD_CMD_ISDATA) && (is_sdma == 0))
-    {
-        uint32_t wr_irpt;
-        int is_write = 0;
-        if(cmd_reg & SD_CMD_DAT_DIR_CH)
-            wr_irpt = (1 << 5);     // read
-        else
-        {
-            is_write = 1;
-            wr_irpt = (1 << 4);     // write
-        }
-
-        unsigned int cur_block = 0;
-        uint32_t *cur_buf_addr = (uint32_t *)dev->buf;
-        while(cur_block < dev->blocks_to_transfer)
-        {
-#ifdef EMMC_DEBUG
-         if(dev->blocks_to_transfer > 1)
-            printf("SD: multi block transfer, awaiting block %u ready\r\n",
-            cur_block);
-#endif
-            TIMEOUT_WAIT(RPI_EMMCBase->EMMC_INTERRUPT & (wr_irpt | 0x8000), timeout);
-            irpts = RPI_EMMCBase->EMMC_INTERRUPT;
-            RPI_EMMCBase->EMMC_INTERRUPT = 0xffff0000 | wr_irpt;
-
-            if((irpts & (0xffff0000 | wr_irpt)) != wr_irpt)
-            {
-#ifdef EMMC_DEBUG
-            printf("SD: error occurred whilst waiting for data ready interrupt\r\n");
-#endif
-                dev->last_error = irpts & 0xffff0000;
-                dev->last_interrupt = irpts;
-                return;
-            }
-
-            // Transfer the block
-            uint32_t cur_byte_no = 0;
-            while(cur_byte_no < dev->block_size)
-            {
-                if(is_write)
-            {
-                  RPI_EMMCBase->EMMC_DATA = *cur_buf_addr;
-            }
-                else
-            {
-                  *cur_buf_addr = RPI_EMMCBase->EMMC_DATA;
-            }
-                cur_byte_no += sizeof( RPI_EMMCBase->EMMC_DATA);
-                cur_buf_addr++;
-            }
-
-#ifdef EMMC_DEBUG
-         printf("SD: block %u transfer complete\r\n", cur_block);
-#endif
-
-            cur_block++;
-        }
-    }
-
-    // Wait for transfer complete (set if read/write transfer or with busy)
-    if((((cmd_reg & SD_CMD_RSPNS_TYPE_MASK) == SD_CMD_RSPNS_TYPE_48B) ||
-       (cmd_reg & SD_CMD_ISDATA)) && (is_sdma == 0))
-    {
-        // First check command inhibit (DAT) is not already 0
-        if((RPI_EMMCBase->EMMC_STATUS & 0x2) == 0)
-            RPI_EMMCBase->EMMC_INTERRUPT = 0xffff0002;
-        else
-        {
-            TIMEOUT_WAIT(RPI_EMMCBase->EMMC_INTERRUPT & 0x8002, timeout);
-            irpts = RPI_EMMCBase->EMMC_INTERRUPT;
-            RPI_EMMCBase->EMMC_INTERRUPT = 0xffff0002;
-
-            // Handle the case where both data timeout and transfer complete
-            //  are set - transfer complete overrides data timeout: HCSS 2.2.17
-            if(((irpts & 0xffff0002) != 0x2) && ((irpts & 0xffff0002) != 0x100002))
-            {
-#ifdef EMMC_DEBUG
-                printf("SD: error occurred whilst waiting for transfer complete interrupt\r\n");
-#endif
-                dev->last_error = irpts & 0xffff0000;
-                dev->last_interrupt = irpts;
-                return;
-            }
-            RPI_EMMCBase->EMMC_INTERRUPT = 0xffff0002;
-        }
-    }
-    else if (is_sdma)
-    {
-        // For SDMA transfers, we have to wait for either transfer complete,
-        //  DMA int or an error
-
-        // First check command inhibit (DAT) is not already 0
-        if((RPI_EMMCBase->EMMC_STATUS & 0x2) == 0)
-            RPI_EMMCBase->EMMC_INTERRUPT = 0xffff000a;
-        else
-        {
-            TIMEOUT_WAIT(RPI_EMMCBase->EMMC_INTERRUPT & 0x800a, timeout);
-            irpts = RPI_EMMCBase->EMMC_INTERRUPT;
-            RPI_EMMCBase->EMMC_INTERRUPT = 0xffff000a;
-
-            // Detect errors
-            if((irpts & 0x8000) && ((irpts & 0x2) != 0x2))
-            {
-#ifdef EMMC_DEBUG
-                printf("SD: error occurred whilst waiting for transfer complete interrupt\r\n");
-#endif
-                dev->last_error = irpts & 0xffff0000;
-                dev->last_interrupt = irpts;
-                return;
-            }
-
-            // Detect DMA interrupt without transfer complete
-            // Currently not supported - all block sizes should fit in the
-            //  buffer
-            if((irpts & 0x8) && ((irpts & 0x2) != 0x2))
-            {
-#ifdef EMMC_DEBUG
-                printf("SD: error: DMA interrupt occurred without transfer complete\r\n");
-#endif
-                dev->last_error = irpts & 0xffff0000;
-                dev->last_interrupt = irpts;
-                return;
-            }
-
-            // Detect transfer complete
-            if(irpts & 0x2)
-            {
-#ifdef EMMC_DEBUG
-                printf("SD: SDMA transfer complete\r\n");
-#endif
-                // Transfer the data to the user buffer
-                memcpy(dev->buf, (const void *)SDMA_BUFFER, dev->block_size);
-            }
-            else
-            {
-                // Unknown error
-#ifdef EMMC_DEBUG
-                if(irpts == 0)
-                    printf("SD: timeout waiting for SDMA transfer to complete\r\n");
-                else
-                    printf("SD: unknown SDMA transfer error\r\n");
-
-                printf("SD: INTERRUPT: %08"PRIx32", STATUS %08"PRIx32"\r\n", irpts,
-                       RPI_EMMCBase->EMMC_STATUS);
-#endif
-
-                if((irpts == 0) && ((RPI_EMMCBase->EMMC_STATUS & 0x3) == 0x2))
-                {
-                    // The data transfer is ongoing, we should attempt to stop
-                    //  it
-#ifdef EMMC_DEBUG
-                    printf("SD: aborting transfer\r\n");
-#endif
-                    RPI_EMMCBase->EMMC_CMDTM = sd_commands[STOP_TRANSMISSION];
-
-#ifdef EMMC_DEBUG
-                    // pause to let us read the screen
-                    usleep(2000000);
-#endif
-                }
-                dev->last_error = irpts & 0xffff0000;
-                dev->last_interrupt = irpts;
-                return;
-            }
-        }
-    }
-
-    // Return success
-    dev->last_cmd_success = 1;
-}
-
-static void sd_handle_card_interrupt(struct emmc_block_dev *dev)
-{
-    // Handle a card interrupt
-
-#ifdef EMMC_DEBUG
-    uint32_t status = RPI_EMMCBase->EMMC_STATUS;
-
-    printf("SD: card interrupt\r\n");
-    printf("SD: controller status: %08"PRIx32"\r\n", status);
-#endif
-
-    // Get the card status
-    if(dev->card_rca)
-    {
-        sd_issue_command_int(dev, sd_commands[SEND_STATUS], dev->card_rca << 16,
-                         500000);
-        if(FAIL(dev))
-        {
-#ifdef EMMC_DEBUG
-            printf("SD: unable to get card status\r\n");
-#endif
-        }
-        else
-        {
-#ifdef EMMC_DEBUG
-            printf("SD: card status: %08"PRIx32"\r\n", dev->last_r0);
-#endif
-        }
+        sdcmd |= is_write ? SDCMD_WRITE_CMD : SDCMD_READ_CMD;
+        sdhost_write(SDHBCT, (uint32_t) dev->block_size);
+        sdhost_write(SDHBLC, dev->blocks_to_transfer);
     }
     else
     {
-#ifdef EMMC_DEBUG
-        printf("SD: no card currently selected\r\n");
-#endif
+        sdhost_write(SDHBCT, 0);
+        sdhost_write(SDHBLC, 0);
     }
+
+    if (sdhost_issue_raw_command(sdcmd, argument, timeout, &dev->last_r0, has_data, &dev->last_error) != 0)
+    {
+        dev->last_interrupt = sdhost_read(SDHSTS);
+        sdhost_log_failure("cmd", opcode, argument, dev);
+        return;
+    }
+
+    if (has_data)
+    {
+        if (sdhost_transfer_pio(dev, is_write) != 0)
+        {
+            dev->last_interrupt = sdhost_read(SDHSTS);
+            dev->last_error = sdhost_translate_error(dev->last_interrupt, true);
+            sdhost_log_failure("pio", opcode, argument, dev);
+            sdhost_write(SDHSTS, dev->last_interrupt & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG));
+            return;
+        }
+
+        if ((opcode == READ_MULTIPLE_BLOCK || opcode == WRITE_MULTIPLE_BLOCK) &&
+            sdhost_wait_for_data_idle(!is_write) != 0)
+        {
+            dev->last_interrupt = sdhost_read(SDHSTS);
+            dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
+            sdhost_log_failure("pre-stop", opcode, argument, dev);
+            return;
+        }
+
+        if ((opcode == READ_MULTIPLE_BLOCK || opcode == WRITE_MULTIPLE_BLOCK) &&
+            sdhost_issue_stop_command(timeout, &dev->last_error) != 0)
+        {
+            dev->last_interrupt = sdhost_read(SDHSTS);
+            sdhost_log_failure("stop", opcode, argument, dev);
+            return;
+        }
+
+        if (sdhost_wait_for_data_idle(!is_write) != 0)
+        {
+            dev->last_interrupt = sdhost_read(SDHSTS);
+            dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
+            sdhost_log_failure("data-idle", opcode, argument, dev);
+            return;
+        }
+    }
+    else if ((cmd_reg & SD_CMD_RSPNS_TYPE_MASK) == SD_CMD_RSPNS_TYPE_48B)
+    {
+        if (sdhost_wait_for_data_idle(false) != 0)
+        {
+            dev->last_interrupt = sdhost_read(SDHSTS);
+            dev->last_error = SD_ERR_MASK_CMD_TIMEOUT;
+            sdhost_log_failure("busy-idle", opcode, argument, dev);
+            return;
+        }
+    }
+
+    dev->last_cmd_success = 1;
+    dev->last_interrupt = sdhost_read(SDHSTS);
 }
 
 static void sd_handle_interrupts(struct emmc_block_dev *dev)
 {
+    (void)dev;
     _data_memory_barrier();
-    uint32_t irpts = RPI_EMMCBase->EMMC_INTERRUPT;
-    uint32_t reset_mask = 0;
-
-    if(irpts & SD_COMMAND_COMPLETE)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: spurious command complete interrupt\r\n");
-#endif
-        reset_mask |= SD_COMMAND_COMPLETE;
-    }
-
-    if(irpts & SD_TRANSFER_COMPLETE)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: spurious transfer complete interrupt\r\n");
-#endif
-        reset_mask |= SD_TRANSFER_COMPLETE;
-    }
-
-    if(irpts & SD_BLOCK_GAP_EVENT)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: spurious block gap event interrupt\r\n");
-#endif
-        reset_mask |= SD_BLOCK_GAP_EVENT;
-    }
-
-    if(irpts & SD_DMA_INTERRUPT)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: spurious DMA interrupt\r\n");
-#endif
-        reset_mask |= SD_DMA_INTERRUPT;
-    }
-
-    if(irpts & SD_BUFFER_WRITE_READY)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: spurious buffer write ready interrupt\r\n");
-#endif
-        reset_mask |= SD_BUFFER_WRITE_READY;
-        sd_reset_dat();
-    }
-
-    if(irpts & SD_BUFFER_READ_READY)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: spurious buffer read ready interrupt\r\n");
-#endif
-        reset_mask |= SD_BUFFER_READ_READY;
-        sd_reset_dat();
-    }
-
-    if(irpts & SD_CARD_INSERTION)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: card insertion detected\r\n");
-#endif
-        reset_mask |= SD_CARD_INSERTION;
-    }
-
-    if(irpts & SD_CARD_REMOVAL)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: card removal detected\r\n");
-#endif
-        reset_mask |= SD_CARD_REMOVAL;
-        dev->card_removal = 1;
-    }
-
-    if(irpts & SD_CARD_INTERRUPT)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: card interrupt detected\r\n");
-#endif
-        sd_handle_card_interrupt(dev);
-        reset_mask |= SD_CARD_INTERRUPT;
-    }
-
-    if(irpts & 0x8000)
-    {
-#ifdef EMMC_DEBUG
-        printf("SD: spurious error interrupt: %08"PRIx32"\r\n", irpts);
-#endif
-        reset_mask |= 0xffff0000;
-    }
-
-    RPI_EMMCBase->EMMC_INTERRUPT = reset_mask;
 }
 
 static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint32_t argument, uint32_t timeout)
@@ -1134,170 +728,466 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
 #endif
 }
 
+static uint32_t sdhost_read(uint32_t reg)
+{
+    return *(volatile uint32_t *)(uintptr_t)(SDHOST_BASE + reg);
+}
+
+static void sdhost_write(uint32_t reg, uint32_t value)
+{
+    *(volatile uint32_t *)(uintptr_t)(SDHOST_BASE + reg) = value;
+}
+
+static void sdhost_prepare_storage_pins(void)
+{
+    unsigned int index;
+
+    for (index = 0u; index < 6u; ++index)
+    {
+        rpi_gpio_pin_t pin = (rpi_gpio_pin_t)(RPI_GPIO48 + index);
+
+        RPI_SetGpioPinFunction(pin, FS_ALT0);
+        RPI_SetGpioPull(pin, index == 0u ? PULL_NONE : PULL_UP);
+    }
+}
+
+static void sdhost_reset_internal(void)
+{
+    uint32_t temp;
+
+    sdhost_write(SDVDD, 0u);
+    sdhost_write(SDCMD, 0u);
+    sdhost_write(SDARG, 0u);
+    sdhost_write(SDTOUT, 0x00f00000u);
+    sdhost_write(SDCDIV, SDCDIV_MAX_CDIV);
+    sdhost_write(SDHSTS, SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG | SDHSTS_ERROR_MASK);
+    sdhost_write(SDHCFG, 0u);
+    sdhost_write(SDHBCT, 0u);
+    sdhost_write(SDHBLC, 0u);
+
+    temp = sdhost_read(SDEDM);
+    temp &= (uint32_t)~((uint32_t)(SDEDM_THRESHOLD_MASK << SDEDM_READ_THRESHOLD_SHIFT) |
+                        (uint32_t)(SDEDM_THRESHOLD_MASK << SDEDM_WRITE_THRESHOLD_SHIFT));
+    temp |= (FIFO_READ_THRESHOLD << SDEDM_READ_THRESHOLD_SHIFT) |
+            (FIFO_WRITE_THRESHOLD << SDEDM_WRITE_THRESHOLD_SHIFT);
+    sdhost_write(SDEDM, temp);
+
+    usleep(10000);
+    sdhost_write(SDVDD, 1u);
+    usleep(10000);
+}
+
+static int sdhost_reset_controller(void)
+{
+    g_sdhost_storage_hcfg = SDHCFG_BUSY_IRPT_EN | SDHCFG_WIDE_INT_BUS | SDHCFG_SLOW_CARD;
+    g_sdhost_storage_cdiv = SDCDIV_MAX_CDIV;
+    sdhost_probe_firmware_clock_mode();
+    sdhost_reset_internal();
+    sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
+    return 0;
+}
+
+static int sdhost_set_firmware_clock(uint32_t target_rate, uint32_t *actual_rate)
+{
+    rpi_mailbox_property_t *response;
+
+    RPI_PropertyStart(TAG_SET_SDHOST_CLOCK, 3);
+    RPI_PropertyAdd(target_rate);
+    RPI_PropertyAdd(0u);
+    RPI_PropertyAdd(0u);
+    RPI_PropertyProcess(true);
+
+    response = RPI_PropertyGet(TAG_SET_SDHOST_CLOCK);
+    if (response == NULL)
+        return -1;
+
+    if (actual_rate != NULL)
+    {
+        uint32_t first = response->data.buffer_32[1];
+        uint32_t second = response->data.buffer_32[2];
+        *actual_rate = first > second ? first : second;
+    }
+
+    return 0;
+}
+
+static void sdhost_probe_firmware_clock_mode(void)
+{
+    rpi_mailbox_property_t *response;
+
+    RPI_PropertyStart(TAG_SET_SDHOST_CLOCK, 3);
+    RPI_PropertyAdd(0u);
+    RPI_PropertyAdd(~0u);
+    RPI_PropertyAdd(~0u);
+    RPI_PropertyProcess(true);
+
+    response = RPI_PropertyGet(TAG_SET_SDHOST_CLOCK);
+    if (response == NULL)
+    {
+        g_sdhost_firmware_sets_cdiv = false;
+        return;
+    }
+
+    g_sdhost_firmware_sets_cdiv = response->data.buffer_32[1] != ~0u;
+}
+
+static uint32_t sdhost_get_base_clock_hz(void)
+{
+    uint32_t base_clock = get_clock_rate(CORE_CLK_ID);
+
+    if (base_clock == 0u)
+        base_clock = 250000000u;
+
+    return base_clock;
+}
+
+static int sdhost_switch_clock_rate(uint32_t target_rate)
+{
+    uint32_t base_clock;
+    uint32_t input_clock;
+    uint32_t divider;
+    uint32_t actual_clock;
+
+    if (target_rate == 0u)
+        return -1;
+
+    base_clock = sdhost_get_base_clock_hz();
+    input_clock = target_rate;
+
+    if (g_sdhost_firmware_sets_cdiv)
+    {
+        if (sdhost_set_firmware_clock(target_rate, &actual_clock) != 0)
+            return -1;
+        if (actual_clock == 0u)
+            actual_clock = target_rate;
+        sdhost_write(SDTOUT, actual_clock / 2u);
+        sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
+        usleep(10);
+        return 0;
+    }
+
+    if (input_clock < 100000u)
+    {
+        divider = SDCDIV_MAX_CDIV;
+    }
+    else
+    {
+        divider = base_clock / input_clock;
+        if (divider < 2u)
+            divider = 2u;
+        if ((base_clock / divider) > input_clock)
+            ++divider;
+        divider -= 2u;
+    }
+
+    if (divider > SDCDIV_MAX_CDIV)
+        divider = SDCDIV_MAX_CDIV;
+
+    g_sdhost_storage_cdiv = divider;
+    g_sdhost_storage_hcfg |= SDHCFG_SLOW_CARD;
+
+    sdhost_write(SDTOUT, input_clock / 2u);
+    sdhost_write(SDCDIV, g_sdhost_storage_cdiv);
+    sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
+    usleep(10);
+    return 0;
+}
+
+static int sd_reset_cmd_sdhost(void)
+{
+    sdhost_write(SDHCFG, g_sdhost_storage_hcfg | SDHCFG_REL_CMD_LINE);
+    usleep(10);
+    sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
+    return 0;
+}
+
+static int sd_reset_dat_sdhost(void)
+{
+    return sdhost_reset_controller();
+}
+
+static uint32_t sdhost_translate_error(uint32_t status, bool is_data)
+{
+    uint32_t error = 0u;
+
+    (void)is_data;
+
+    if (status & SDHSTS_CMD_TIME_OUT)
+        error |= SD_ERR_MASK_CMD_TIMEOUT;
+    if (status & SDHSTS_CRC7_ERROR)
+        error |= SD_ERR_MASK_CMD_CRC;
+    if (status & SDHSTS_CRC16_ERROR)
+        error |= SD_ERR_MASK_DATA_CRC;
+    if (status & SDHSTS_FIFO_ERROR)
+        error |= SD_ERR_MASK_CMD_END_BIT;
+    if ((error == 0u) && (status & SDHSTS_REW_TIME_OUT))
+        error |= SD_ERR_MASK_DATA_TIMEOUT;
+
+    return error;
+}
+
+static int sdhost_wait_for_data_idle(bool is_read)
+{
+    uint32_t edm = 0u;
+    uint32_t alternate_idle = is_read ? SDEDM_FSM_READWAIT : SDEDM_FSM_WRITESTART1;
+    uint32_t retries = 1000000u;
+
+    while (retries-- > 0u)
+    {
+        uint32_t fsm;
+
+        edm = sdhost_read(SDEDM);
+        fsm = edm & SDEDM_FSM_MASK;
+        if ((fsm == SDEDM_FSM_IDENTMODE) || (fsm == SDEDM_FSM_DATAMODE))
+            return 0;
+        if (fsm == alternate_idle)
+        {
+            sdhost_write(SDEDM, edm | SDEDM_FORCE_DATA_MODE);
+            return 0;
+        }
+        usleep(1);
+    }
+
+    return -1;
+}
+
+static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
+{
+    uint32_t *cursor = (uint32_t *)dev->buf;
+    uint32_t total_words = (uint32_t)((dev->block_size * dev->blocks_to_transfer) / sizeof(uint32_t));
+
+    while (total_words > 0u)
+    {
+        uint32_t burst_words = SDDATA_FIFO_PIO_BURST;
+        uint32_t wait_loops = 500000u;
+
+        if (burst_words > total_words)
+            burst_words = total_words;
+
+        while (burst_words > 0u)
+        {
+            uint32_t edm = sdhost_read(SDEDM);
+            uint32_t words = is_write ? (16u - ((edm >> 4) & 0x1fu)) : ((edm >> 4) & 0x1fu);
+            uint32_t hsts;
+            uint32_t fsm_state;
+
+            if (words == 0u)
+            {
+                if (wait_loops-- == 0u)
+                {
+                    dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
+                    return -1;
+                }
+
+                fsm_state = edm & SDEDM_FSM_MASK;
+                if (is_write)
+                {
+                    if ((fsm_state != SDEDM_FSM_WRITEDATA) &&
+                        (fsm_state != SDEDM_FSM_WRITESTART1) &&
+                        (fsm_state != SDEDM_FSM_WRITESTART2))
+                    {
+                        hsts = sdhost_read(SDHSTS);
+                        if ((hsts & SDHSTS_ERROR_MASK) != 0u)
+                        {
+                            dev->last_error = sdhost_translate_error(hsts, true);
+                            return -1;
+                        }
+                    }
+                }
+                else
+                {
+                    if ((fsm_state != SDEDM_FSM_READDATA) &&
+                        (fsm_state != SDEDM_FSM_READWAIT) &&
+                        (fsm_state != SDEDM_FSM_READCRC))
+                    {
+                        hsts = sdhost_read(SDHSTS);
+                        if ((hsts & SDHSTS_ERROR_MASK) != 0u)
+                        {
+                            dev->last_error = sdhost_translate_error(hsts, true);
+                            return -1;
+                        }
+                    }
+                }
+
+                usleep(1);
+                continue;
+            }
+
+            if (words > burst_words)
+                words = burst_words;
+
+            burst_words -= words;
+            total_words -= words;
+
+            while (words-- > 0u)
+            {
+                if (is_write)
+                    sdhost_write(SDDATA, *cursor);
+                else
+                    *cursor = sdhost_read(SDDATA);
+                ++cursor;
+            }
+        }
+    }
+
+    if ((sdhost_read(SDHSTS) & SDHSTS_ERROR_MASK) != 0u)
+    {
+        dev->last_error = sdhost_translate_error(sdhost_read(SDHSTS), true);
+        return -1;
+    }
+
+    return 0;
+}
+
+static int sdhost_wait_for_request_ready(uint32_t timeout)
+{
+    uint32_t wait_loops = timeout;
+
+    while (wait_loops-- > 0u)
+    {
+        uint32_t edm = sdhost_read(SDEDM);
+        uint32_t fsm = edm & SDEDM_FSM_MASK;
+
+        if ((fsm == SDEDM_FSM_IDENTMODE) || (fsm == SDEDM_FSM_DATAMODE))
+            return 0;
+
+        usleep(1);
+    }
+
+    return -1;
+}
+
+static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t timeout, uint32_t *response0, bool has_data, uint32_t *error_out)
+{
+    uint32_t status;
+    uint32_t wait_loops = timeout;
+    uint32_t hcfg = g_sdhost_storage_hcfg;
+
+    status = sdhost_read(SDHSTS);
+    if ((status & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG)) != 0u)
+    {
+        sdhost_write(SDHSTS, status & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG));
+    }
+
+    if (has_data)
+        hcfg |= SDHCFG_DATA_IRPT_EN | SDHCFG_BLOCK_IRPT_EN;
+    else
+        hcfg &= (uint32_t)~(SDHCFG_DATA_IRPT_EN | SDHCFG_BLOCK_IRPT_EN);
+    sdhost_write(SDHCFG, hcfg);
+
+    if (sdhost_wait_for_request_ready(timeout) != 0)
+    {
+        if (error_out != NULL)
+            *error_out = SD_ERR_MASK_CMD_TIMEOUT;
+        return -1;
+    }
+
+    while ((sdhost_read(SDCMD) & SDCMD_NEW_FLAG) != 0u)
+    {
+        if (wait_loops-- == 0u)
+        {
+            if (error_out != NULL)
+                *error_out = SD_ERR_MASK_CMD_TIMEOUT;
+            return -1;
+        }
+        usleep(1);
+    }
+
+    sdhost_write(SDARG, argument);
+    sdhost_write(SDCMD, sdcmd | SDCMD_NEW_FLAG);
+
+    wait_loops = timeout;
+    while ((sdhost_read(SDCMD) & SDCMD_NEW_FLAG) != 0u)
+    {
+        if (wait_loops-- == 0u)
+        {
+            if (error_out != NULL)
+                *error_out = SD_ERR_MASK_CMD_TIMEOUT;
+            return -1;
+        }
+        usleep(1);
+    }
+
+    status = sdhost_read(SDHSTS);
+    if (((sdhost_read(SDCMD) & SDCMD_FAIL_FLAG) != 0u) || ((status & SDHSTS_ERROR_MASK) != 0u))
+    {
+        if (error_out != NULL)
+            *error_out = sdhost_translate_error(status, false);
+        sdhost_write(SDHSTS, status & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG));
+        return -1;
+    }
+
+    if (response0 != NULL)
+        *response0 = sdhost_read(SDRSP0);
+    if (error_out != NULL)
+        *error_out = 0u;
+
+    return 0;
+}
+
+static int sdhost_issue_stop_command(uint32_t timeout, uint32_t *error_out)
+{
+    uint32_t response0;
+    uint32_t sdcmd = (uint32_t)STOP_TRANSMISSION & SDCMD_CMD_MASK;
+
+    sdcmd |= SDCMD_BUSYWAIT;
+    return sdhost_issue_raw_command(sdcmd, 0u, timeout, &response0, false, error_out);
+}
+
+static int sdhost_prepare_storage_controller(void)
+{
+    sdhost_prepare_storage_pins();
+    if (sdhost_reset_controller() != 0)
+        return -1;
+    return sdhost_switch_clock_rate(SD_CLOCK_ID);
+}
+
+static void sdhost_prepare_device_state(struct emmc_block_dev *dev)
+{
+    memset(dev, 0, sizeof(*dev));
+    dev->bd.read = sd_read;
+#ifdef SD_WRITE_SUPPORT
+    dev->bd.write = sd_write;
+#endif
+    dev->block_size = 512;
+    dev->blocks_to_transfer = 1;
+}
+
+static int sd_prepare_controller(struct emmc_block_dev *dev)
+{
+    (void) dev;
+    return sdhost_prepare_storage_controller();
+}
+
+static uint32_t sd_get_storage_base_clock_hz(const struct emmc_block_dev *dev)
+{
+    (void) dev;
+    return sdhost_get_base_clock_hz();
+}
+
+static int sd_set_storage_clock_rate(const struct emmc_block_dev *dev, uint32_t base_clock, uint32_t target_rate)
+{
+    (void) dev;
+    (void) base_clock;
+    return sdhost_switch_clock_rate(target_rate);
+}
+
+static int sd_reset_cmd_for_dev(const struct emmc_block_dev *dev)
+{
+    (void) dev;
+    return sd_reset_cmd_sdhost();
+}
+
+static int sd_reset_dat_for_dev(const struct emmc_block_dev *dev)
+{
+    (void) dev;
+    return sd_reset_dat_sdhost();
+}
+
 static int sd_card_init(struct block_device **dev)
 {
-#ifdef EMMC_DEBUG
-    // Check the sanity of the sd_commands and sd_acommands structures
-    if(sizeof(sd_commands) != (64 * sizeof(uint32_t)))
-    {
-        printf("EMMC: fatal error, sd_commands of incorrect size: %zu"
-               " expected %zu\r\n", sizeof(sd_commands),
-               64 * sizeof(uint32_t));
-        return -1;
-    }
-    if(sizeof(sd_acommands) != (64 * sizeof(uint32_t)))
-    {
-        printf("EMMC: fatal error, sd_acommands of incorrect size: %zu"
-               " expected %zu\r\n", sizeof(sd_acommands),
-               64 * sizeof(uint32_t));
-        return -1;
-    }
-#endif
-// don't bother power cycling the SDCARD it just wastes time.
-#ifdef SDCARD_PWR_CYCLE
-#if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
-   // Power cycle the card to ensure its in its startup state
-   //if(bcm_2708_power_cycle() != 0)
-   //{
-   //   printf("EMMC: BCM2708 controller did not power cycle successfully\r\n");
-  // }
-  bcm_2708_power_cycle();
-#ifdef EMMC_DEBUG
-   //else
-      printf("EMMC: BCM2708 controller power-cycled\r\n");
-#endif
-#endif
-#endif
-#ifdef EMMC_DEBUG
-   // Read the controller version
+    uint32_t base_clock;
 
-   uint32_t ver = RPI_EMMCBase->EMMC_SLOTISR_VER;
-   uint32_t sdversion = (ver >> 16) & 0xff;
-
-   uint32_t vendor = ver >> 24;
-   uint32_t slot_status = ver & 0xff;
-
-   printf("EMMC: vendor %"PRIx32", sdversion %"PRIx32", slot_status %"PRIx32"\r\n", vendor, sdversion, slot_status);
-
-   if(sdversion < 2)
-   {
-      printf("EMMC: only SDHCI versions >= 3.0 are supported\r\n");
-      return -1;
-   }
-#endif
-
-#ifdef RESET_CONTROLLER
-
-   // Reset the controller
-#ifdef EMMC_DEBUG
-   printf("EMMC: resetting controller\r\n");
-#endif
-   uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
-   control1 |= (1U << 24);
-   // Disable clock
-   control1 &= ~(1U << 2);
-   control1 &= ~(1U << 0);
-   RPI_EMMCBase->EMMC_CONTROL1 = control1;
-   TIMEOUT_WAIT((RPI_EMMCBase->EMMC_CONTROL1 & (0x7 << 24)) == 0, 1000000);
-   if((RPI_EMMCBase->EMMC_CONTROL1 & (0x7 << 24)) != 0)
-   {
-      printf("EMMC: controller did not reset properly\r\n");
-      return -1;
-   }
-#ifdef EMMC_DEBUG
-   printf("EMMC: control0: %08"PRIx32", control1: %08"PRIx32", control2: %08"PRIx32"\r\n",
-         RPI_EMMCBase->EMMC_CONTROL0,
-         RPI_EMMCBase->EMMC_CONTROL1,
-         RPI_EMMCBase->EMMC_CONTROL2);
-
-   // Read the capabilities registers
-   uint32_t capabilities_0 = RPI_EMMCBase->EMMC_CAPABILITIES_0;
-   uint32_t capabilities_1 = RPI_EMMCBase->EMMC_CAPABILITIES_1;
-
-   printf("EMMC: capabilities: %08"PRIx32"%08"PRIx32"\r\n", capabilities_1, capabilities_0);
-#endif
-
-   // Check for a valid card
-#ifdef EMMC_DEBUG
-   printf("EMMC: checking for an inserted card\r\n");
-#endif
-    TIMEOUT_WAIT(RPI_EMMCBase->EMMC_STATUS & (1 << 16), 500000);
-   uint32_t status_reg = RPI_EMMCBase->EMMC_STATUS;
-   if((status_reg & (1 << 16)) == 0)
-   {
-      printf("EMMC: no card inserted\r\n");
-      return -1;
-   }
-#ifdef EMMC_DEBUG
-   printf("EMMC: status: %08"PRIx32"\r\n", status_reg);
-#endif
-
-   // Clear control2
-   RPI_EMMCBase->EMMC_CONTROL2 = 0;
-   // Get the base clock rate
-   uint32_t base_clock = sd_get_base_clock_hz();
-#if 0
-   if(base_clock == 0)
-   {
-       printf("EMMC: assuming clock rate to be 100MHz\r\n");
-       base_clock = 100000000;
-   }
-#endif
-   // Set clock rate to something slow
-#ifdef EMMC_DEBUG
-   printf("EMMC: setting clock rate\r\n");
-#endif
-   control1 = RPI_EMMCBase->EMMC_CONTROL1;
-   control1 |= 1;       // enable clock
-
-   // Set to identification frequency (400 kHz)
-   uint32_t f_id = sd_get_clock_divider(base_clock, SD_CLOCK_ID);
-   control1 |= f_id;
-
-  // control1 |= (7 << 16);     // data timeout = TMCLK * 2^10
-   control1 &= ~(0x0FU << 16); // mask timeout bits
-   control1 |=  (0x0BU << 16); //data timeout = TMCLK * 2^(x+13)
-   RPI_EMMCBase->EMMC_CONTROL1 = control1;
-   TIMEOUT_WAIT(RPI_EMMCBase->EMMC_CONTROL1 & 0x2, 0x1000000);
-   if((RPI_EMMCBase->EMMC_CONTROL1 & 0x2) == 0)
-   {
-      printf("EMMC: controller's clock did not stabilise within 1 second\r\n");
-      return -1;
-   }
-#ifdef EMMC_DEBUG
-   printf("EMMC: control0: %08"PRIx32", control1: %08"PRIx32"\r\n",
-         RPI_EMMCBase->EMMC_CONTROL0,
-         RPI_EMMCBase->EMMC_CONTROL1);
-#endif
-
-   // Enable the SD clock
-#ifdef EMMC_DEBUG
-   printf("EMMC: enabling SD clock\r\n");
-#endif
-   control1 = RPI_EMMCBase->EMMC_CONTROL1;
-   control1 |= 4;
-   RPI_EMMCBase->EMMC_CONTROL1 = control1;
-   usleep(6);
-#ifdef EMMC_DEBUG
-   printf("EMMC: SD clock enabled\r\n");
-#endif
-
-   // Mask off sending interrupts to the ARM
-   RPI_EMMCBase->EMMC_IRPT_EN = 0;
-   // Reset interrupts
-   RPI_EMMCBase->EMMC_INTERRUPT = 0xffffffff;
-   // Have all interrupts sent to the INTERRUPT register
-   uint32_t irpt_mask = (~SD_CARD_INTERRUPT);
-#ifdef SD_CARD_INTERRUPTS
-   irpt_mask |= SD_CARD_INTERRUPT;
-#endif
-   RPI_EMMCBase->EMMC_IRPT_MASK = irpt_mask;
-
-#ifdef EMMC_DEBUG
-   printf("EMMC: interrupts disabled\r\n");
-#endif
-   usleep(6);
-#endif // end if RESET controller
     // Prepare the device structure
    struct emmc_block_dev *ret;
    if(*dev == NULL)
@@ -1307,18 +1197,12 @@ static int sd_card_init(struct block_device **dev)
 
    assert(ret);
 
-   memset(ret, 0, sizeof(struct emmc_block_dev));
- //  ret->bd.driver_name = "emmc";
- //  ret->bd.device_name = "emmc0";
-//   ret->bd.block_size = 512;
-   ret->bd.read = sd_read;
-#ifdef SD_WRITE_SUPPORT
-    ret->bd.write = sd_write;
-#endif
-  // these aren't actually used anywhere
-  //  ret->bd.supports_multiple_block_read = 1;
-  //  ret->bd.supports_multiple_block_write = 1;
-  //  ret->base_clock = base_clock;
+    sdhost_prepare_device_state(ret);
+
+    if (sd_prepare_controller(ret) != 0)
+        return -1;
+
+    base_clock = sd_get_storage_base_clock_hz(ret);
 
 #ifdef EMMC_DEBUG
    printf("EMMC: device structure created\r\n");
@@ -1345,9 +1229,8 @@ static int sd_card_init(struct block_device **dev)
         v2_later = 0;
     else if(CMD_TIMEOUT(ret))
     {
-        if(sd_reset_cmd() == -1)
+        if(sd_reset_cmd_for_dev(ret) == -1)
             return -1;
-        RPI_EMMCBase->EMMC_INTERRUPT = SD_ERR_MASK_CMD_TIMEOUT;
         v2_later = 0;
     }
     else if(FAIL(ret))
@@ -1380,9 +1263,8 @@ static int sd_card_init(struct block_device **dev)
     {
         if(CMD_TIMEOUT(ret))
         {
-            if(sd_reset_cmd() == -1)
+            if(sd_reset_cmd_for_dev(ret) == -1)
                 return -1;
-            RPI_EMMCBase->EMMC_INTERRUPT = SD_ERR_MASK_CMD_TIMEOUT;
         }
         else
         {
@@ -1466,10 +1348,6 @@ static int sd_card_init(struct block_device **dev)
          (ret->last_r0 >> 8) & 0xffff, ret->card_supports_18v, ret->card_supports_sdhc);
 #endif
 
-    // At this point, we know the card is definitely an SD card, so will definitely
-   //  support SDR12 mode which runs at 25 MHz
-    sd_switch_clock_rate(base_clock, SD_CLOCK_NORMAL);
-
 
    // Switch to 1.8V mode if possible
    if(0)// PiDoesn't support 1.8v //ret->card_supports_18v)
@@ -1480,95 +1358,21 @@ static int sd_card_init(struct block_device **dev)
 #ifdef EMMC_DEBUG
         printf("SD: switching to 1.8V mode\r\n");
 #endif
-       // As per HCSS 3.6.1
-
-       // Send VOLTAGE_SWITCH
-       sd_issue_command(ret, VOLTAGE_SWITCH, 0, 500000);
-       if(FAIL(ret))
-       {
-#ifdef EMMC_DEBUG
-            printf("SD: error issuing VOLTAGE_SWITCH\r\n");
-#endif
-           ret->failed_voltage_switch = 1;
-           sd_power_off();
-           return sd_card_init((struct block_device **)&ret);
-       }
-
-       // Disable SD clock
-       control1 = RPI_EMMCBase->EMMC_CONTROL1;
-       control1 &= ~(1U << 2);
-       RPI_EMMCBase->EMMC_CONTROL1 = control1;
-
-       // Check DAT[3:0]
-       status_reg = RPI_EMMCBase->EMMC_STATUS;
-       uint32_t dat30 = (status_reg >> 20) & 0xf;
-       if(dat30 != 0)
-       {
-#ifdef EMMC_DEBUG
-            printf("SD: DAT[3:0] did not settle to 0\r\n");
-#endif
-           ret->failed_voltage_switch = 1;
-           sd_power_off();
-           return sd_card_init((struct block_device **)&ret);
-       }
-
-       // Set 1.8V signal enable to 1
-       uint32_t control0 = RPI_EMMCBase->EMMC_CONTROL0;
-       control0 |= (1 << 8);
-       RPI_EMMCBase->EMMC_CONTROL0 = control0;
-
-       // Wait 5 ms
-       usleep(5000);
-
-       // Check the 1.8V signal enable is set
-       control0 = RPI_EMMCBase->EMMC_CONTROL0;
-       if(((control0 >> 8) & 0x1) == 0)
-       {
-#ifdef EMMC_DEBUG
-            printf("SD: controller did not keep 1.8V signal enable high\r\n");
-#endif
-           ret->failed_voltage_switch = 1;
-         sd_power_off();
-           return sd_card_init((struct block_device **)&ret);
-       }
-
-       // Re-enable the SD clock
-       control1 = RPI_EMMCBase->EMMC_CONTROL1;
-       control1 |= (1 << 2);
-       RPI_EMMCBase->EMMC_CONTROL1 = control1;
-
-       // Wait 1 ms
-       usleep(10000);
-
-       // Check DAT[3:0]
-       status_reg = RPI_EMMCBase->EMMC_STATUS;
-       dat30 = (status_reg >> 20) & 0xf;
-       if(dat30 != 0xf)
-       {
-#ifdef EMMC_DEBUG
-            printf("SD: DAT[3:0] did not settle to 1111b (%01"PRIx32")\r\n", dat30);
-#endif
-           ret->failed_voltage_switch = 1;
-           sd_power_off();
-           return sd_card_init((struct block_device **)&ret);
-       }
-
-#ifdef EMMC_DEBUG
-        printf("SD: voltage switch complete\r\n");
-#endif
-   }
-
-   // Send CMD2 to get the cards CID
-   sd_issue_command(ret, ALL_SEND_CID, 0, 500000);
-   if(FAIL(ret))
-   {
-       printf("SD: error sending ALL_SEND_CID\r\n");
        return -1;
    }
 
 #ifdef EMMC_DEBUG
 //   printf("SD: card CID: %08"PRIu32"%08"PRIu32"%08"PRIu32"%08"PRIu32"\r\n", ret->last_r3, ret->last_r2, ret->last_r1, ret->last_r0);
 #endif
+
+    // Send CMD2 to read the card CID before requesting an RCA with CMD3.
+    sd_issue_command(ret, ALL_SEND_CID, 0, 500000);
+    if(FAIL(ret))
+    {
+          printf("SD: error sending ALL_SEND_CID\r\n");
+          if (!dev) free(ret);
+          return -1;
+    }
 
   // ret->bd.device_id[0] = ret->last_r0;
   // ret->bd.device_id[1] = ret->last_r1;
@@ -1660,10 +1464,8 @@ static int sd_card_init(struct block_device **dev)
        }
    }
 
-   uint32_t controller_block_size = RPI_EMMCBase->EMMC_BLKSIZECNT;
-   controller_block_size &= (~0xfffU);
-   controller_block_size |= 0x200U;
-   RPI_EMMCBase->EMMC_BLKSIZECNT = controller_block_size;
+    sdhost_write(SDHBCT, 0x200u);
+    sdhost_write(SDHBLC, 1u);
 
    // Get the cards SCR register
    ret->scr = (struct sd_scr *)malloc(sizeof(struct sd_scr));
@@ -1680,7 +1482,6 @@ static int sd_card_init(struct block_device **dev)
        printf("******************************************\r\n");
        printf("* Reinitializing SD Card Driver          *\r\n");
        printf("******************************************\r\n");
-       sd_power_off();
        return sd_card_init((struct block_device **)&ret);
    }
 
@@ -1717,6 +1518,10 @@ static int sd_card_init(struct block_device **dev)
            ret->scr->sd_bus_widths);
 #endif
 
+   // Keep identification timing through RCA assignment and SCR read, then
+   // switch to the normal SDR12 transfer clock for the remaining setup.
+   sd_set_storage_clock_rate(ret, base_clock, SD_CLOCK_NORMAL);
+
     if(ret->scr->sd_bus_widths & 0x4)
     {
         // Set 4-bit transfer mode (ACMD6)
@@ -1727,23 +1532,14 @@ static int sd_card_init(struct block_device **dev)
 #endif
 
         // Disable card interrupt in host
-        uint32_t old_irpt_mask = RPI_EMMCBase->EMMC_IRPT_MASK;
-        uint32_t new_iprt_mask = old_irpt_mask & ~(1U << 8);
-        RPI_EMMCBase->EMMC_IRPT_MASK = new_iprt_mask;
-
         // Send ACMD6 to change the card's bit mode
         sd_issue_command(ret, SET_BUS_WIDTH, 0x2, 500000);
         if(FAIL(ret))
             {printf("SD: switch to 4-bit data mode failed\r\n");}
         else
         {
-            // Change bit mode for Host
-            uint32_t control0 = RPI_EMMCBase->EMMC_CONTROL0;
-            control0 |= 0x2;
-            RPI_EMMCBase->EMMC_CONTROL0 = control0;
-
-            // Re-enable card interrupt in host
-            RPI_EMMCBase->EMMC_IRPT_MASK = old_irpt_mask;
+            g_sdhost_storage_hcfg |= SDHCFG_WIDE_EXT_BUS | SDHCFG_WIDE_INT_BUS | SDHCFG_SLOW_CARD;
+            sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
 
 #ifdef EMMC_DEBUG
                 printf("SD: switch to 4-bit complete\r\n");
@@ -1757,10 +1553,15 @@ static int sd_card_init(struct block_device **dev)
 #endif
 #endif
    // Reset interrupt register
-   RPI_EMMCBase->EMMC_INTERRUPT = 0xffffffff;
+   sdhost_write(SDHSTS, SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG | SDHSTS_ERROR_MASK);
 
    *dev = (struct block_device *)ret;
    return 0;
+}
+
+int sdhost_init_device(struct block_device **dev)
+{
+    return sd_card_init(dev);
 }
 
 static int sd_ensure_data_mode(struct emmc_block_dev *edev)
@@ -1814,7 +1615,7 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
       }
 
       // Reset the data circuit
-      sd_reset_dat();
+    sd_reset_dat_for_dev(edev);
    }
    else if(cur_state != 4)
    {
@@ -1972,7 +1773,7 @@ size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t
 }
 
 #ifdef SD_WRITE_SUPPORT
-size_t sd_write(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no)
+size_t sd_write(struct block_device *dev, const uint8_t *buf, size_t buf_size, uint32_t block_no)
 {
    // Check the status of the card
    struct emmc_block_dev *edev = (struct emmc_block_dev *)dev;
@@ -1983,11 +1784,11 @@ size_t sd_write(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_
    printf("SD: write() card ready, writing to block %"PRIu32"\r\n", block_no);
 #endif
 
-    if(sd_do_data_command(edev, 1, buf, buf_size, block_no) < 0)
+    if(sd_do_data_command(edev, 1, (uint8_t *)(uintptr_t)buf, buf_size, block_no) < 0)
         return 0;
 
 #ifdef EMMC_DEBUG
-   printf("SD: write read successful\r\n");
+    printf("SD: data write successful\r\n");
 #endif
 
    return buf_size;

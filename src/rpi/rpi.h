@@ -1,6 +1,9 @@
 #ifndef RPI_H
 #define RPI_H
 
+#ifndef __ASSEMBLER__
+#include <stdio.h>
+
 #ifdef DEBUG
 #define LOG_DEBUG(...) printf(__VA_ARGS__)
 #else
@@ -10,6 +13,7 @@
 #define LOG_INFO(...) printf(__VA_ARGS__)
 
 #define LOG_WARN(...) printf(__VA_ARGS__)
+#endif
 
 
 /* Put large arrays in no init section saves bss time */
