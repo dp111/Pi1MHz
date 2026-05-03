@@ -442,7 +442,6 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
       music5000_rec_stop();
       record = 0;
    }
-   LOG_INFO("M5000 FX ID : %d\r\n",instance);
    fx_pointer = instance ;
    fx_register[fx_pointer] = 0;
 
