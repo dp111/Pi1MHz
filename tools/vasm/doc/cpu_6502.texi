@@ -117,19 +117,24 @@ This backend provides the following specific extensions:
  Refer to chapter 6.3.3.4 (Byte Selection Operator) of the W65C816S datasheet.
  These selector prefixes are always valid, no matter if 6502 or 65816
  mode is active.
- See also option @option{-bbcade}, which swaps the meaning of these
- operators.
+ See also option @option{-bbcade}, which swaps the meaning of the @code{<}
+ and @code{>} selectors.
 
 @item Other operands allow an addressing mode selector prefix as the
  first character in the operand field, which can be used as a hint for the
- assembler when the best addressing mode cannot be determined (e.g.
+ assembler in case the best addressing mode cannot be determined (e.g.
  externally defined symbols), or to enforce a specific addressing mode
- (example: @code{lda >$12} to force 16-bit instead of zero-page addressing).
- @code{<} forces 8-bit (direct/zero-page) addressing.
- @code{|} or @code{!} forces 16-bit (absolute) addressing.
- @code{>} forces 24-bit (long absolute) addressing in 65816 mode, 16-bit
+ (Example: @code{lda >$12} to enforce a 16-bit instead of a zero-page address).
+ @code{<} enforces 8-bit (direct/zero-page) addressing.
+ @code{|} or @code{!} enforces 16-bit (absolute) addressing.
+ @code{>} enforces 24-bit (long absolute) addressing in 65816 mode, 16-bit
  otherwise.
  Refer to chapter 6.3.3.5 of the W65C816S datasheet.
+
+@item The prefix character @code{?} can be used in immediate addressing
+ modes and data directives to retrieve a symbol's memory/bank ID. Note,
+ that this feature depends on a special relocation type, which is only
+ supported by @code{vlink} and requires the @code{VOBJ} format.
 
 @end itemize
 
@@ -159,7 +164,7 @@ directives:
 
 @item <symbol> ezp <expr>
       Works exactly like the @code{equ} directive, but marks <symbol>
-      as a zero page symbol and use zero page addressing whenever
+      as a zero/direct page symbol and use zero page addressing whenever
       <symbol> is used in a memory addressing mode.
 
 @item longa on|off
@@ -191,15 +196,15 @@ directives:
       Alias for @code{x16} (WDC65816 only).
 
 @item zero
-      Switch to a zero page section called @code{zero} or @code{.zero},
+      Switch to a zero/direct page section called @code{zero} or @code{.zero},
       which has the type @code{bss} with attributes @code{"aurwz"}.
       Accesses to symbols from this section will default to zero page
       addressing mode.
 
 @item zpage <symbol1> [,<symbol2>...]
-      Mark symbols as zero page and use zero page addressing for
-      expressions based on this symbol, unless overridden by a
-      hi-modifier (@code{>}).
+      Mark symbols as zero/direct page and use zero page addressing for
+      expressions based on this symbol, unless overridden by an addressing
+      mode selector (like @code{>}).
 @end table
 
 All these directives are also available in the form starting with a

@@ -328,7 +328,7 @@ dblock *parse_string(char **str,char delim,int width)
 
   /* how many bytes do we need for the string? */
   skip_string(s,delim,&size);
-  if (size <= 1)
+  if (size == 1)
     return NULL; /* not a string, so we can use eval_expr() on it */
 
   db = new_dblock();
@@ -342,14 +342,14 @@ dblock *parse_string(char **str,char delim,int width)
 }
 
 
-char *parse_symbol(char **s)
-/* return ptr to a local/global symbol string in a static buffer, or NULL */
+char *parse_symbol_strbuf(int n,char **s)
+/* return ptr to a local/global symbol string in static buffer n, or NULL */
 {
   strbuf *name;
 
-  name = get_local_label(0,s);
+  name = get_local_label(n,s);
   if (name == NULL)
-    name = parse_identifier(0,s);
+    name = parse_identifier(n,s);
   return name ? name->str : NULL;
 }
 

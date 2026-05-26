@@ -20,7 +20,7 @@ For example by the GST assembler and Devpac.
 
 @itemize @minus
 @item Although there can be multiple sections, they don't have a type.
-@item Maximum size of section and symbol names is 255 characters.
+@item Maximum length of section and symbol names is 255 characters.
 @item Only absolute, pc-relative and common-symbol relocations are
       supported at the moment.
 @item Possible relocation sizes are 8, 16 and 32 bits.

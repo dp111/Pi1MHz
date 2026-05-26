@@ -261,8 +261,9 @@ Number of 8-bit bytes used to represent a backend's target-byte. The macro
 Output object file name.
 
 @item int output_bitsperbyte;
-May be assigned by an output module with @code{1}, to indicate that it
-supports target-bytes with @code{BITSPERBYTE}.
+May be assigned by an output module with @code{1} during its init function,
+to indicate that it supports target-bytes with @code{BITSPERBYTE}.
+Otherwise an output module is expected to support 8-bit bytes only.
 
 @end table
 
@@ -699,7 +700,7 @@ A fixed number of target-bytes with constant data are put here.
 
 @item #define INSTRUCTION 3
 Generally refers to a machine instruction or pseudo/opcode. These atoms
-can change length during optimization passes and will be translated to
+can change their size during optimization passes and will be translated to
 @code{DATA}-atoms later.
 
 @item #define SPACE 4
@@ -1095,7 +1096,7 @@ Also the CPU module must implement and export the following functions:
 
 Note, that support for cpu-specific relocations has to be added to
 other tools reading and writing the @code{VOBJ} format, like
-@command{vlink} and @command{vobjdump} as well.
+@command{vlink} and @command{vobjdump}, as well.
 Otherwise they will be ignored (but do not cause any failure).
 
 Also, if you want cpu-specific relocations to be recognized in other
@@ -1111,7 +1112,7 @@ flags are @code{WARNING}, @code{ERROR}, @code{FATAL}, @code{MESSAGE} and
 @code{NOLINE}.
 They can be combined using or (@code{|}). @code{NOLINE} has to be set for
 error messages during initialization or while writing the output, when
-no source text is available. Errors cause the assembler to return false.
+no source context is available. Errors cause the assembler to return false.
 @code{FATAL} causes the assembler to terminate
 immediately.
 
@@ -1159,7 +1160,7 @@ Useful support functions for writing CPU-, Syntax- and Output-modules.
 @subsection Expressions
 @table @code
 @item expr *parse_expr(char **pp)
-  Parses any expression starting at @code{*p}. Updates @code{*p} to point
+  Parses any expression starting at @code{*pp}. Updates @code{*pp} to point
   at the next character after the expression.
 @item expr *parse_expr_tmplab(char **pp)
   Same as @code{parse_expr()}, but defines a temporary label for the PC
@@ -1168,12 +1169,12 @@ Useful support functions for writing CPU-, Syntax- and Output-modules.
 @item expr *parse_expr_huge(char **pp)
   Parses a constant expression (no labels allowed) with 128 bit integers.
 @item expr *parse_expr_float(char **pp)
-  Parses a floating pointer expression (no labels allowed), if the
+  Parses a floating point expression (no labels allowed), if the
   backend supports floating point constants (defines @code{FLOAT_PARSER}).
 @item taddr parse_constexpr(char **pp)
   Parses an expression which is immediately evaluated to a constant value.
   Generates an error message and returns zero when it depends on
-  non-constant, 128-bit or floating point values.
+  non-constant, 128-bit (huge) or floating point values.
 @item void free_expr(expr *tree)
   Free an expression.
 @item int type_of_expr(expr *tree)
@@ -1214,6 +1215,21 @@ Useful support functions for writing CPU-, Syntax- and Output-modules.
 
 @subsection Symbols
 @table @code
+@item symbol *new_abs(const char *name,expr *tree)
+  Create a new absolute symbol (type @code{EXPRESSION}).
+@item symbol *new_equate(const char *name,expr *tree)
+  Same as @code{new_abs()} but set the @code{EQUATE} flag to indicate that
+  the symbol must not change its value (unlike a @code{.set} symbol).
+@item symbol *new_import(const char *name)
+  Add an externally defined symbol name.
+@item symbol *new_labsym(section *sec,const char *name)
+  Create a label symbol (type @code{LABSYM}) for the current PC in the given
+  section. Uses the current/default section when @code{sec} is @code{NULL}.
+@item symbol *new_tmplabel(section *sec)
+  Create a temporary label symbol with a unique name for the given section.
+@item symbol *internal_abs(const char *name)
+  Create an internal absolute symbol (type @code{EXPRESSION}), which gets
+  the flag @code{VASMINTERN}, so it is never written into object files.
 @item regsym *new_regsym(int redef,int no_case,const char *name,int type,unsigned int flags,unsigned int num)
   Create a new CPU register symbol with name @code{name} and number
   @code{num}. The @code{type} and @code{flags} can be used by the
@@ -1318,9 +1334,10 @@ ignore the rest of the line (e.g. to treat the rest as comment). The
 function is defined as @code{char *exp_skip(char *stream)}.
 
 @item #define IGNORE_FIRST_EXTRA_OP 1
-Should be defined as non-zero (true) when the syntax module wants to ignore
+Should be defined as non-zero (true) if the syntax module wants to ignore
 the operand field on instructions without an operand. Useful, when everything
-following an operand should be regarded as comment, without a comment character.
+following the operand should be regarded as comment, without requiring a
+comment character.
 
 @item #define MAXMACPARAMS 35
 Optionally defines the maximum number of macro arguments, if you need more than
@@ -1401,7 +1418,7 @@ return non-zero.
 
 @item int syntax_defsect(void);
 Lets the syntax module define a default section, which is used when no
-section was created by any @code{section} or @code{org} directive before
+section was created by any @code{section} or @code{org} directive, before
 the first code or data is defined.
 May set @code{defsectname}, @code{defsecttype} and @code{defsectorg}
 accordingly and return with non-zero. Or return with zero and accept
@@ -1431,7 +1448,7 @@ character after that constant. Example: constants with a 'h' suffix to
 indicate a hexadecimal base.
 
 @item void parse(void);
-This is the main parsing function. It has to read lines via
+This is the main parsing function. It has to read source text lines via
 the @code{read_next_line()} function, parse them and create sections,
 atoms and symbols. Pseudo directives are usually handled by the syntax 
 module. Instructions can be parsed by the cpu module using
@@ -1464,6 +1481,17 @@ the current source pointer to point behind the label.
 Have a look at the support functions provided by the frontend to help.
 
 @end table
+
+Syntax modules may support additional features, which can be enabled or
+disabled by a preprocessor define.
+Like allowing the @code{#} character for introducing comments in the
+std-syntax module, when the CPU's operand parser doesn't need it
+(Example: PPC or x86).
+Defines for these optional features follow the general syntax
+@code{[module type]_[module name]_[feature name]}.
+@example
+#define SYNTAX_STD_COMMENTCHAR_HASH
+@end example
 
 @section CPU modules
 
@@ -1508,9 +1536,9 @@ architectures, like ARM, macro qualifiers make no sense.
 @item typedef int32_t taddr;
 Data type to represent a target-address. Preferably use the types from
 @file{stdint.h}. Does not necessarily have to match the cpu's address
-bus size (refer to @code{bytespertaddr}), but the largest data you will
-be able to do calculations with. For example, you may want to allow 32-bit
-data definitions for an 8-bit cpu.
+bus size (refer to @code{bytespertaddr}), but choose it according to the
+largest data you will be able to do calculations with. For example, you may
+want to allow 32-bit data definitions for an 8-bit cpu.
 
 @item typedef uint32_t utaddr;
 Unsigned data type to represent a target-address.
@@ -1527,10 +1555,11 @@ Negative values denote a floating point data definition of -n bits.
 
 @item typedef ... operand;
 Structure to store an operand for a machine instruction or a
-data constant.
+data constant. Stores, for example, addressing modes and expressions.
 
 @item typedef ... mnemonic_extension;
-Mnemonic extension for the cpu's instruction table.
+Mnemonic extension for the cpu's instruction table. Often used for the
+actual opcode or cpu-model flags.
 @end table
 
 Optional features, which can be enabled by defining the following macros:
@@ -1571,14 +1600,16 @@ Valid opening parenthesis for instruction operands. Defaults to @code{'('}.
 @item END_PARENTH(x)
 Valid closing parenthesis for instruction operands. Defaults to @code{')'}.
 
-@item #define MNEMONIC_VALID(i)
+@item #define MNEMONIC_VALID(idx)
 An optional function with the arguments @code{(int idx)}. Returns true
 when the mnemonic with index @code{idx} is valid for the current state of
-the backend (e.g. it is available for the selected cpu architecture).
+the backend (e.g. it is available for the selected cpu model).
 
 @item #define MNEMOHTABSIZE 0x4000
 You can optionally overwrite the default hash table size defined in
 @file{vasm.h}. May be necessary for larger mnemonic tables.
+Run vasm with option @option{-debug} to print the number of collisions
+in the hash tables.
 
 @item #define OPERAND_OPTIONAL(p,t)
 When defined, this is a function with the arguments
@@ -1618,17 +1649,6 @@ The section pointer @code{s} and the current pc @code{p} are needed to call
 the standard @code{find_base()} function.
 @end table
 
-Syntax modules may support additional features, which can be enabled or
-disabled by a preprocessor define.
-Like allowing the @code{#} character for introducing comments in the
-std-syntax module, when the CPU's operand parser doesn't need it
-(Example: PPC or x86).
-Defines for these optional features follow the general syntax
-@code{[module type]_[module name]_[feature name]}.
-@example
-#define SYNTAX_STD_COMMENTCHAR_HASH
-@end example
-
 @subsection The file @file{cpu.c}
 
 A cpu module has to provide the following elements (all other functions
@@ -1651,7 +1671,7 @@ A string that will be emitted as part of the copyright message.
 @item const char *cpuname;
 A string describing the target cpu.
 
-@item int init_cpu();
+@item int init_cpu(void);
 Will be called during startup, after argument parsing. Must return zero if
 initializations failed, non-zero otherwise.
 
@@ -1809,7 +1829,8 @@ For example you may optionally set the following global variables:
   text-mode instead of binary-mode.
 @item unnamed_sections = 1;
   Set when the output module cannot handle section names. Usually such
-  an output module only knows section types: text, data, bss.
+  an output module differentiates sections by their type only:
+  text, data or bss.
 @item secname_attr = 1;
   Set when the section attributes are used to differentiate between
   two sections with the same name.

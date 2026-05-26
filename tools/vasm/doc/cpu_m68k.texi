@@ -19,7 +19,7 @@ This module provides the following additional options:
 @subsection CPU selections
 @table @option
     @item -m68000
-        Generate code for the MC68000 CPU.
+        Generate code for the MC68000 CPU (default).
 
     @item -m68008
         Generate code for the MC68008 CPU.
@@ -98,7 +98,7 @@ This module provides the following additional options:
     @item -no-fpu
         Ignore any FPU options or directives, which has the effect that
         no 68881/2 FPU instructions will be accepted. This option can
-        override the default of @option{-gas} to enable the FPU.
+        override the default behaviour of @option{-gas} enabling the FPU.
 @end table
 
 @subsection Optimization options
@@ -134,9 +134,10 @@ This module provides the following additional options:
     @item -opt-fconst
         Floating point constants are loaded with the lowest precision
         possible. This means that @code{FMOVE.D #1.0,FP0} would be
-        optimized to @code{FMOVE.S #1.0,FP0}, because it is faster and
-        shorter at the same precision. The optimization will be performed
-        on all FPU instructions with immediate addressing mode.
+        optimized to @code{FMOVE.S #1.0,FP0}, or even @code{FMOVE.W #1,FP0},
+        because it is faster and shorter at the same precision.
+        The optimization will be performed on all FPU instructions with
+        immediate addressing mode.
         When an FDIV-family instruction (@code{FSDIV}, @code{FDDIV},
         @code{FSGLDIV}) is detected it will additionally be checked if the
         immediate constant is a power of 2 and then converted into
@@ -151,7 +152,7 @@ This module provides the following additional options:
         Allows optimization of @code{LSL #1} into @code{ADD}. It is also
         needed to optimize @code{ASL #2} and @code{LSL #2} into two @code{ADD}
         instructions (together with @option{-opt-speed}).
-        These optimizations may modify the V-flag, which might not be intended.
+        These optimizations can modify the V-flag, which may not be intended.
 
     @item -opt-movem
         Enables optimization from @code{MOVEM <ea>,Rn} into
@@ -172,7 +173,7 @@ This module provides the following additional options:
         This optimization will leave the flags in a different state as
         can normally be expected after a multiplication instruction, and
         the size of the optimized code may be bigger than before in some
-        situations (e.g. @code{MULS.W #4,Dn}). The latter will additionally
+        situations (e.g. @code{MULS.W #4,Dn}). So the latter will additionally
         require the @option{-opt-speed} flag.
 
     @item -opt-nmoveq
@@ -217,7 +218,7 @@ This module provides the following additional options:
 
     @item -sd
         References to labels in a
-        small data section (named "__MERGED") are optimized into a
+        small data section (named "__MERGED") are optimized into
         base-relative addressing mode, using the current base register set
         by an active @code{NEAR} directive.
         This option is automatically enabled in @option{-phxass} mode.
@@ -267,7 +268,7 @@ vasm performs the following optimizations:
         Other options are the same as vasm's defaults.
         The symbol @code{__G2} is defined, which contains information
         about the selected cpu type.
-        The symbol @code{__LK} reflects the type of output file generated.
+        The symbol @code{__LK} reflects the type of output file to generate.
         Which is 0 for TOS executables, 1 for DRI objects, 2 for GST objects,
         3 for AmigaDOS objects and 4 for AmigaDOS executables.
         All other formats are represented by 99, as they are unknown to Devpac.
@@ -319,9 +320,8 @@ vasm performs the following optimizations:
         @option{-sd} and @option{-guess-ext}.
 
     @item -rangewarnings
-        Values which are out of range usually produce an error. With this
-        option the errors 2026, 2030, 2033 and 2037 will be displayed as
-        a warning, allowing the user to create an object file.
+        Recognized for backwards-compatibility only.
+        No longer needed since V2.0.
 
     @item -regsymredef
         Allow redefining register symbols with @code{EQUR}. This should
@@ -582,7 +582,7 @@ directives:
         Default is on in Devpac-compatibility mode, otherwise off.
       @item p
         Check if code is position independent. This will cause an error on
-        each relocation being required.
+        every relocation entry being required.
         Default is off.
       @item s
         Include symbols in listing file.
@@ -613,8 +613,8 @@ directives:
         function was to select TOS-executable (0), DRI-object (1) or
         GST-object (2) output. For GST objects use (@option{-Fgst}) instead.
       @item p=<type>[/<type>]
-        Sets the CPU type to any model vasm supports (original Devpac
-        only allowed 68000-68040, 68332, 68881, 68882 and 68851).
+        Sets the CPU type to any model vasm supports (Devpac only allows
+        68000-68040, 68332, 68881, 68882 and 68851).
    @end table
 
    Also the following Devpac3-style options are supported:
