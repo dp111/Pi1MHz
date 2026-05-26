@@ -164,12 +164,9 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
       char * ram = (char *)Pi1MHz->JIM_ram;
       char hex[4];
       sprintf(hex, "%X",helpers_get_address());
-      putstring(ram, 0, " Use CALL &FC");
-      putstring(ram,'\r', hex);
+      ram = putstring(ram, 0, " Use CALL &FC");
+      ram = putstring(ram,'\r', hex);
    }
-
-   // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
-  // filesystemReadFile("BEEB.MMB",Pi1MHz->JIM_ram+(16*1024*1024),Pi1MHz->JIM_ram_size<<24);
 
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[0])) );
 }
