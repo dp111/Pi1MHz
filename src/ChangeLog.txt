@@ -107,6 +107,8 @@ Fix bug introduced in 1.13 , FRED page select note working ( Broke M5000)
 
 V1.19
 Update FatFS to 0.15a
-Move beebscsi debug to fc41
-Add loading of VFS171
+Add loading of VFS
 Change P.$&FD00 text to direct people to CALL &FC88
+Start of mouse pointer redirector
+*FX147,65,n now is them same as *SCSIJUKE n ( NB 65 is the harddisc address base address + 1)
+Screen redirector can no be started without displaying the message.
