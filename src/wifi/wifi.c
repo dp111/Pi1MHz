@@ -36,6 +36,10 @@ typedef enum {
 static wifi_boot_stage_t g_wifi_boot_stage;
 static bool g_wifi_boot_poll_registered;
 static bool g_wifi_images_preloaded;
+/* WiFi is initialised exactly once.  A BBC RST re-runs init_emulator()
+   - which calls every emulator's init again - but the WiFi connection
+   has no BBC-bus state, so a reset must not tear it down and re-join. */
+static bool g_wifi_init_done;
 static void wifi_debug_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 static bool wifi_equals_ignore_case(const char *left, const char *right);
 
@@ -453,6 +457,14 @@ void wifi_emulator_init(uint8_t instance, uint8_t address)
 
 void wifi_init(void)
 {
+   /* Initialise once only.  init_emulator() is re-run on every BBC RST;
+      on the second and later calls (i.e. on a reset) this returns
+      immediately, leaving the existing WiFi connection - and its
+      registered poll hooks - running undisturbed. */
+   if (g_wifi_init_done)
+      return;
+   g_wifi_init_done = true;
+
     (void) wifi_config_load(&g_wifi_config);
    g_wifi_boot_stage = WIFI_BOOT_STAGE_IDLE;
    g_wifi_images_preloaded = false;
