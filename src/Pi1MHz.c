@@ -255,6 +255,21 @@ static void init_emulator() {
       } while ( c == ',' );
    }
 
+   for( uint8_t i=0; i <NUM_EMULATORS; i++)
+      {
+
+         char *prop = get_cmdline_prop(strcat(emulator[i].name,"_addr"));
+         if (prop)
+            {
+               int temp=atoi(prop);      
+               if (temp<0)
+                  emulator[i].enable = 0;
+               else
+                  emulator[i].address = temp;         
+            }
+
+      }
+
    Pi1MHz_polls_max = 0;
 
 #pragma GCC diagnostic push
