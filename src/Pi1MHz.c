@@ -235,7 +235,7 @@ void Pi1MHz_SetnNMI(bool nmi)
    RPI_SetGpioPinFunction(NNMI_PIN, nmi?FS_OUTPUT:FS_INPUT);
 }
 
-static uint8_t status_addr;
+static volatile uint8_t status_addr;
 
 // Enables the beeb to read and write status info
 // setup the address for status read write
@@ -245,7 +245,7 @@ static void Pi1MHzBus_addr_Status(unsigned int gpio)
    uint32_t addr = GET_ADDR(gpio);
    status_addr = data;
    Pi1MHz_MemoryWrite(addr, data); // enable read back
-   Pi1MHz_MemoryWrite(addr+1, fx_register[status_addr]);
+   Pi1MHz_MemoryWrite(addr+1, fx_register[data]);
 }
 
 // take data written by the beeb and put it to the correct place

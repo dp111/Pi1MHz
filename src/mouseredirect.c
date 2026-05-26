@@ -248,7 +248,7 @@ i,B,i,0,0,0,
 
 #define MOUSE_PLANE 2
 
-static bool change;
+static volatile bool change;
 
 static uint8_t fred_address;
 static uint8_t lastmouse_pointer=255;
