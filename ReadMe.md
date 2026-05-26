@@ -127,7 +127,8 @@ SDCARD / FAT commands are the first byte of the command buffer
 2 = fopen
 
     command pointer + 0 = 2
-    command pointer + 1 =
+    command pointer + 1 = 0
+    command pointer + 2 =
         #define	FA_READ				0x01
         #define	FA_WRITE			0x02
         #define	FA_OPEN_EXISTING	0x00
@@ -135,7 +136,7 @@ SDCARD / FAT commands are the first byte of the command buffer
         #define	FA_CREATE_ALWAYS	0x08
         #define	FA_OPEN_ALWAYS		0x10
         #define	FA_OPEN_APPEND		0x30
-    command pointer + 1 = filename zero terminated
+    command pointer + 3 = filename zero terminated
 
 3 = fclose
 
@@ -145,15 +146,15 @@ SDCARD / FAT commands are the first byte of the command buffer
 
     command pointer + 0 = 4
     command pointer + 1,2,3 3 bytes of length to read. Once complete this returns the actually number of byte read
-                The command pointer + 0 = 20 if the read was short
+                The command pointer register = 20 if the read was short
     command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
     command pointer + 8,9,10,11 4 byte pointer within file to start the read from
 
-5 = fwrite ( with impicit lseek , fsync)
+5 = fwrite ( with implicit lseek , fsync)
 
     command pointer + 0 = 5
     command pointer + 1,2,3 3 bytes of length to write. Once complete this returns the actually number of byte read
-                The command pointer + 0 = 20 if the write was short
+                 The command pointer register = 20 if the write was short
     command pointer + 4,5,6,7 4 bytes of source address in buffer NB top byte must be zero.
     command pointer + 8,9,10,11 4 byte pointer within file to start the write from
 

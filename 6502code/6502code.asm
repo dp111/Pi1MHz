@@ -1,7 +1,8 @@
 ;
 ; Pi1MHz 6502 code
 ;
-;
+
+diskaccees = &FCD6
 
 MACRO PAGESELECT
     SKIPTO &FDF0
@@ -68,8 +69,6 @@ MACRO FINDSWR
         bpl     romlp
 
 .testdone
-
-        ldx     ourrom          ; page back in the source ROM
         PLA
         sta    &f4
         sta    &fe30
@@ -117,6 +116,9 @@ ORG &FD00
 {
 ORG &FD00
 
+
+
+
     PAGESELECT
     COPYBLOCK &FD00, &FE00, &250
     CLEAR &FD00, &FE00
@@ -129,7 +131,10 @@ ORG &FD00
 
     FINDSWR
     TXA
-    BMI pagerts
+    BPL SWRfound
+.pagertsjmp
+    JMP pagerts ; no SWR found
+.SWRfound
 
 
     PAGESELECT
@@ -140,6 +145,84 @@ ORG &FD00
 ; Page 5 CALL &FDDC
 {
 ORG &FD00
+
+    FINDSWR
+    TXA
+    BPL SWRfound
+.pagertsjmp
+    JMP pagerts ; no SWR found
+.SWRfound
+    ; fopen
+    LDY #0   : STY diskaccees
+    LDA #&FF : STA diskaccees+1
+               STA diskaccees+2
+
+.fopenloop
+    LDA fopenstring, Y: STA diskaccees+3
+    BPL fopenloop
+    STA diskaccees+4
+
+.fopencheckloop
+    LDA diskaccees+4
+    BMI fopencheckloop
+    BNE pagertsjmp ; file not found
+
+    LDY #0   : STY diskaccees
+    LDA #&FF : STA diskaccees+1
+               STA diskaccees+2
+
+.freadsetuploop
+    LDA fopenstring, Y: STA diskaccees+3
+    INY
+    CPY #13
+    BNE freadsetuploop
+    STA diskaccees+4
+
+.freadcheckloop
+    LDA diskaccees+4
+    BMI freadcheckloop
+    BEQ readdone
+    CMP #20
+    BNE pagerts ; file open error
+
+.readdone
+    LDY #0   : STY diskaccees
+             : STY diskaccees+1
+    LDA #&F0 : STA diskaccees+2
+
+             : STY swrpointer+1
+    LDA #&80 : STA swrpointer+2
+
+    LDA &F4
+    PHA
+    STX &F4
+    STX &FE30
+
+.copyswrloop
+    LDA diskaccees+3 : .swrpointer STA &8000,Y
+    INY
+    BNE copyswrloop
+
+    LDX swrpointer+2
+    INX
+    STX swrpointer+2
+    CPX #&C0
+    BNE copyswrloop;
+
+    PLA
+    STA &F4
+    STA &FE30
+    JMP (&FFFC) ; Reset
+
+
+.fopenstring
+    EQUB 2 , 0, 1 : EQUS "ROMS\MMFSJR.rom" : EQUB 0, 255
+
+.freaddata
+    EQUB 4, 0, &40, 0
+    EQUB 0, 0, &F0, 0
+    EQUB 0, 0, 0, 0
+    EQUB &FF
 
     PAGESELECT
     COPYBLOCK &FD00, &FE00, &450
