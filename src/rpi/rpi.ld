@@ -162,6 +162,8 @@ SECTIONS
   .data.rel.ro : { *(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*) *(.data.rel.ro* .gnu.linkonce.d.rel.ro.*) }
   .dynamic        : { *(.dynamic) }
   .got            : { *(.got.plt) *(.igot.plt) *(.got) *(.igot) }
+   . = ALIGN(32);
+
   .data           :
   {
     __data_start = . ;
@@ -170,6 +172,10 @@ SECTIONS
   }
   .data1          : { *(.data1) }
   _edata = .; PROVIDE (edata = .);
+    .noinit(NOLOAD) :
+  {
+   *(.noinit*)
+  }
    . = ALIGN(32);
   __bss_start = .;
   __bss_start__ = .;
@@ -189,10 +195,6 @@ SECTIONS
   . = ALIGN(32 / 8);
   . = ALIGN(32 / 8);
   __end__ = . ; 
-  .noinit(NOLOAD) :
-  {
-   *(.noinit*)
-  }
   _end = .; PROVIDE (end = .);
 
   /* Stabs debugging sections.  */
