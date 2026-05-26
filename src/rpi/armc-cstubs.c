@@ -165,9 +165,8 @@ caddr_t _sbrk(int incr)
     errno = EINVAL;
     return (caddr_t) -1;
   }
-  char * ceiling = heap_limit ? heap_limit : (&_end + EARLY_HEAP_SIZE);
 
-  if ( next > ceiling) {
+  if ( next > ( heap_limit ? heap_limit : (&_end + EARLY_HEAP_SIZE) ) ) {
     errno = ENOMEM;
     return (caddr_t) -1;
   }
