@@ -203,14 +203,22 @@ ORG &FD00
 {
 ORG &FD00
 
-  LDA &20E
-  STA newoswrch+4
   LDA &20F
+  CMP #(newoswrch DIV 256)
+  BNE redirectnextbyte
+  JMP oswtchredirectexit
+
+.redirectnextbyte
   STA newoswrch+4+1
+
+  LDA &20E 
+  STA newoswrch+4
+
   LDA #(newoswrch MOD 256)
   STA &20E
   LDA #(newoswrch DIV 256)
   STA &20F
+
   LDA #&75:JSR OSBYTE   :\ Read VDU status
   TXA:AND #&10:CMP #&10 :\ Test shadow flag in bit 4
   PHP                   :\ Save shadow flag in Carry
@@ -226,6 +234,7 @@ ORG &FD00
   PRTSTRING " Screen Redirector enabled."
   JSR OSNEWL
   JSR OSNEWL
+.oswtchredirectexit
   PAGERTS
 
   ENDBLOCK &200
