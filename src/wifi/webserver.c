@@ -57,7 +57,8 @@ typedef enum {
    CONN_RECV_HEADER = 0,   /* accumulating the HTTP request headers     */
    CONN_RECV_UPLOAD,       /* streaming a multipart body to the SD card */
    CONN_SEND_MEM,          /* sending an in-memory response             */
-   CONN_SEND_FILE          /* sending a header then streaming a file    */
+   CONN_SEND_FILE,         /* sending a header then streaming a file    */
+   CONN_SEND_FB            /* sending a header then streaming the framebuffer */
 } conn_state_t;
 
 typedef enum {
@@ -89,6 +90,10 @@ typedef struct {
    uint8_t  dl_buf[WS_FILE_CHUNK];
    size_t   dl_buf_len;
    size_t   dl_buf_sent;
+
+   /* framebuffer streaming (CONN_SEND_FB); reuses dl_buf to hold rows */
+   framebuffer_export_info_t fb_info;
+   uint32_t fb_row;
 
    /* output accounting (for the close decision) */
    uint32_t bytes_queued;
@@ -726,6 +731,52 @@ static void conn_close(ws_conn_t *c, bool abort_conn)
    free(c);
 }
 
+/* Convert one framebuffer scanline into a 24-bit bottom-up BMP row.
+   bmp_row 0 is the bottom of the image; framebuffer memory is top-down,
+   so it maps to framebuffer row (height - 1 - bmp_row).  Exactly
+   row_padded bytes are written (BGR pixels followed by zero padding). */
+static void fb_render_row(const framebuffer_export_info_t *info,
+                          uint32_t bmp_row, uint8_t *dst, uint32_t row_padded)
+{
+   const uint8_t *fb  = (const uint8_t *)(uintptr_t)info->address;
+   const uint8_t *src = fb + (size_t)(info->height - 1u - bmp_row)
+                             * info->pitch;
+   uint32_t x;
+
+   for (x = 0u; x < info->width; ++x) {
+      uint8_t cr;
+      uint8_t cg;
+      uint8_t cb;
+
+      if (info->bits_per_pixel == 8u) {
+         uint32_t e = screen_get_palette_entry(src[x]);   /* 0x00RRGGBB */
+         cr = (uint8_t)((e >> 16) & 0xFFu);
+         cg = (uint8_t)((e >> 8) & 0xFFu);
+         cb = (uint8_t)(e & 0xFFu);
+      } else if (info->bits_per_pixel == 16u) {
+         uint32_t v  = (uint32_t)src[x * 2u]
+                     | ((uint32_t)src[x * 2u + 1u] << 8);
+         uint32_t r5 = (v >> 11) & 0x1Fu;
+         uint32_t g6 = (v >> 5) & 0x3Fu;
+         uint32_t b5 = v & 0x1Fu;
+         cr = (uint8_t)((r5 << 3) | (r5 >> 2));
+         cg = (uint8_t)((g6 << 2) | (g6 >> 4));
+         cb = (uint8_t)((b5 << 3) | (b5 >> 2));
+      } else {
+         cr = src[x * 4u];
+         cg = src[x * 4u + 1u];
+         cb = src[x * 4u + 2u];
+      }
+
+      dst[x * 3u]      = cb;
+      dst[x * 3u + 1u] = cg;
+      dst[x * 3u + 2u] = cr;
+   }
+
+   for (x = info->width * 3u; x < row_padded; ++x)
+      dst[x] = 0u;
+}
+
 static void conn_pump(ws_conn_t *c)
 {
    err_t err = ERR_OK;
@@ -788,6 +839,50 @@ static void conn_pump(ws_conn_t *c)
       }
    }
 
+   /* framebuffer body: generate BMP rows on demand, a bounded few per
+      call, so the conversion is spread across ticks rather than done in
+      one long burst inside a single callback. */
+   if (err == ERR_OK && c->state == CONN_SEND_FB
+       && (c->out == NULL || c->out_sent >= c->out_len)) {
+      uint32_t row_padded = (c->fb_info.width * 3u + 3u) & ~3u;
+
+      while (1) {
+         u16_t  avail;
+         size_t want;
+
+         if (c->dl_buf_sent >= c->dl_buf_len) {
+            size_t filled = 0u;
+
+            if (c->fb_row >= c->fb_info.height)
+               break;                      /* every row generated */
+            while (c->fb_row < c->fb_info.height
+                   && filled + row_padded <= sizeof c->dl_buf) {
+               fb_render_row(&c->fb_info, c->fb_row,
+                             &c->dl_buf[filled], row_padded);
+               filled += row_padded;
+               c->fb_row++;
+            }
+            if (filled == 0u)
+               break;                      /* row wider than dl_buf */
+            c->dl_buf_len = filled;
+            c->dl_buf_sent = 0u;
+         }
+
+         avail = tcp_sndbuf(c->pcb);
+         if (avail == 0u)
+            break;
+         want = c->dl_buf_len - c->dl_buf_sent;
+         if (want > avail)
+            want = avail;
+         err = tcp_write(c->pcb, c->dl_buf + c->dl_buf_sent, (u16_t)want,
+                         TCP_WRITE_FLAG_COPY);
+         if (err != ERR_OK)
+            break;
+         c->dl_buf_sent += want;
+         c->bytes_queued += (uint32_t)want;
+      }
+   }
+
    if (c->pcb != NULL)
       tcp_output(c->pcb);
 
@@ -796,7 +891,10 @@ static void conn_pump(ws_conn_t *c)
       bool file_done = (c->state != CONN_SEND_FILE)
                     || ((c->dl_buf_sent >= c->dl_buf_len)
                         && (c->dl_remaining == 0u || c->dl_eof));
-      c->producing_done = mem_done && file_done;
+      bool fb_done = (c->state != CONN_SEND_FB)
+                    || ((c->dl_buf_sent >= c->dl_buf_len)
+                        && c->fb_row >= c->fb_info.height);
+      c->producing_done = mem_done && file_done && fb_done;
    }
 
    if (c->producing_done && c->bytes_acked >= c->bytes_queued)
@@ -994,26 +1092,22 @@ static bool route_framebuffer(ws_conn_t *c)
    return ws_finish_html(c, 200, "OK", &b);
 }
 
-/* Render the current framebuffer as a 24-bit BMP and send it.  The whole
-   image is built into one malloc'd buffer (HTTP header + BMP) and handed
-   to the normal in-memory send path. */
+/* Serve the current framebuffer as a 24-bit BMP.  Only the HTTP header
+   and the 54-byte BMP header are built up front; the pixel rows are
+   generated on demand by conn_pump() (state CONN_SEND_FB), so the
+   conversion is spread across ticks instead of run as one long burst. */
 static bool route_framebuffer_bmp(ws_conn_t *c)
 {
    framebuffer_export_info_t info;
-   const uint8_t            *fb;
-   uint8_t                   pal_r[256];
-   uint8_t                   pal_g[256];
-   uint8_t                   pal_b[256];
-   char                      header[160];
-   uint8_t                  *out;
-   uint8_t                  *bmp;
-   uint8_t                  *pixels;
-   uint32_t                  row_padded;
-   uint32_t                  pixel_bytes;
-   uint32_t                  total;
-   uint32_t                  y;
-   size_t                    hdr_len;
-   int                       hn;
+   char     header[160];
+   uint8_t *out;
+   uint8_t *bmp;
+   uint32_t row_padded;
+   uint32_t pixel_bytes;
+   uint32_t total;
+   uint32_t bytes_per_pixel;
+   size_t   hdr_len;
+   int      hn;
 
    if (!framebuffer_export_get_info(&info)
        || info.width == 0u || info.height == 0u || info.address == 0u)
@@ -1029,7 +1123,17 @@ static bool route_framebuffer_bmp(ws_conn_t *c)
       return ws_error(c, 503, "Service Unavailable",
                       "The framebuffer is too large to export.");
 
-   row_padded  = (info.width * 3u + 3u) & ~3u;
+   /* Each source row must lie wholly within the framebuffer region. */
+   bytes_per_pixel = info.bits_per_pixel / 8u;
+   if (info.pitch < info.width * bytes_per_pixel
+       || info.size < info.pitch * info.height)
+      return ws_error(c, 503, "Service Unavailable",
+                      "The framebuffer geometry is inconsistent.");
+
+   row_padded = (info.width * 3u + 3u) & ~3u;
+   if (row_padded > sizeof c->dl_buf)        /* one row per stream chunk */
+      return ws_error(c, 503, "Service Unavailable",
+                      "The framebuffer is too wide to export.");
    pixel_bytes = row_padded * info.height;
    total       = 54u + pixel_bytes;
    if (total > WS_FB_BMP_MAX)
@@ -1049,14 +1153,16 @@ static bool route_framebuffer_bmp(ws_conn_t *c)
                       "Could not build the image header.");
    hdr_len = (size_t)hn;
 
-   out = malloc(hdr_len + total);
+   /* out holds only the HTTP header + the 54-byte BMP header; the pixel
+      rows are streamed afterwards by conn_pump(). */
+   out = malloc(hdr_len + 54u);
    if (out == NULL)
       return ws_error(c, 500, "Internal Server Error",
                       "Out of memory rendering the framebuffer.");
 
    memcpy(out, header, hdr_len);
    bmp = out + hdr_len;
-   memset(bmp, 0, total);
+   memset(bmp, 0, 54u);
 
    /* BMP file header (14 bytes) + BITMAPINFOHEADER (40 bytes). */
    bmp[0] = 'B';
@@ -1072,65 +1178,17 @@ static bool route_framebuffer_bmp(ws_conn_t *c)
    ws_store_u32(&bmp[38], 2835u);        /* ~72 DPI (x) */
    ws_store_u32(&bmp[42], 2835u);        /* ~72 DPI (y) */
 
-   pixels = bmp + 54u;
-   fb = (const uint8_t *)(uintptr_t)info.address;
-
-   if (info.bits_per_pixel == 8u) {
-      uint32_t i;
-      for (i = 0u; i < 256u; ++i) {
-         uint32_t e = screen_get_palette_entry(i);   /* 0x00RRGGBB */
-         pal_r[i] = (uint8_t)((e >> 16) & 0xFFu);
-         pal_g[i] = (uint8_t)((e >> 8) & 0xFFu);
-         pal_b[i] = (uint8_t)(e & 0xFFu);
-      }
-   }
-
-   /* Framebuffer memory is top-down, but a positive-height BMP is stored
-      bottom-up, so BMP row y is framebuffer row (height - 1 - y). */
-   for (y = 0u; y < info.height; ++y) {
-      const uint8_t *src = fb + (size_t)(info.height - 1u - y) * info.pitch;
-      uint8_t       *dst = pixels + (size_t)y * row_padded;
-      uint32_t       x;
-
-      for (x = 0u; x < info.width; ++x) {
-         uint8_t cr;
-         uint8_t cg;
-         uint8_t cb;
-
-         if (info.bits_per_pixel == 8u) {
-            uint8_t idx = src[x];
-            cr = pal_r[idx];
-            cg = pal_g[idx];
-            cb = pal_b[idx];
-         } else if (info.bits_per_pixel == 16u) {
-            uint32_t v  = (uint32_t)src[x * 2u]
-                        | ((uint32_t)src[x * 2u + 1u] << 8);
-            uint32_t r5 = (v >> 11) & 0x1Fu;
-            uint32_t g6 = (v >> 5) & 0x3Fu;
-            uint32_t b5 = v & 0x1Fu;
-            cr = (uint8_t)((r5 << 3) | (r5 >> 2));
-            cg = (uint8_t)((g6 << 2) | (g6 >> 4));
-            cb = (uint8_t)((b5 << 3) | (b5 >> 2));
-         } else {
-            /* 32 bpp little-endian xxBBGGRR: byte0 R, byte1 G, byte2 B */
-            cr = src[x * 4u];
-            cg = src[x * 4u + 1u];
-            cb = src[x * 4u + 2u];
-         }
-
-         dst[x * 3u]      = cb;
-         dst[x * 3u + 1u] = cg;
-         dst[x * 3u + 2u] = cr;
-      }
-   }
-
    free(c->out);
    c->out = (char *)out;
-   c->out_len = hdr_len + total;
+   c->out_len = hdr_len + 54u;
    c->out_sent = 0u;
    c->bytes_queued = 0u;
    c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
+   c->fb_info = info;
+   c->fb_row = 0u;
+   c->dl_buf_len = 0u;
+   c->dl_buf_sent = 0u;
+   c->state = CONN_SEND_FB;
    conn_pump(c);
    return true;
 }
@@ -1786,7 +1844,8 @@ static err_t ws_poll(void *arg, struct tcp_pcb *tpcb)
       return ERR_ABRT;
    }
 
-   if (c->state == CONN_SEND_MEM || c->state == CONN_SEND_FILE)
+   if (c->state == CONN_SEND_MEM || c->state == CONN_SEND_FILE
+       || c->state == CONN_SEND_FB)
       conn_pump(c);            /* may free c */
    return ERR_OK;
 }

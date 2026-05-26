@@ -3337,6 +3337,100 @@ static int sdio_runtime_join_step(sdio_host_t *dev)
    return (g_runtime_join_index >= g_runtime_join_count) ? 1 : 0;
 }
 
+/* Per-tick form of the post-firmware SDPCM interrupt-ack handshake.
+   The blocking sdio_probe_ack_interrupts() polls INT_STATUS up to 30
+   times with a 10 ms usleep between polls - as much as 300 ms inside a
+   single poll callback.  This spreads those same 30 polls across ticks
+   (about one poll per 10 ms of wall-clock) so the cooperative 1 MHz loop
+   is never stalled.  Returns 1 = done, 0 = in progress, -1 = bus error.
+   The blocking version is retained for the diagnostic probe path. */
+static int sdio_runtime_ack_interrupts_step(sdio_host_t *dev)
+{
+   static bool         started;
+   static unsigned int round_count;
+   static unsigned int no_hmb;
+   static uint32_t     poll_deadline_us;
+   uint32_t            now;
+
+   if (dev == NULL)
+      return -1;
+
+   now = RPI_GetSystemTime();
+
+   if (!started) {
+      uint32_t ack_value = g_sdio_probe_result.sdio_int_status
+                         & SDIO_HOST_INTERRUPT_MASK;
+
+      g_sdio_probe_result.sdio_interrupt_ack_value = ack_value;
+      if (ack_value != 0u) {
+         uint32_t int_status_after_ack = 0u;
+
+         g_sdio_probe_result.interrupt_ack_attempted = true;
+         if (!sdio_backplane_write_u32(dev,
+                CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+                ack_value)
+            || !sdio_backplane_read_u32(dev,
+                CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+                &int_status_after_ack))
+            return -1;
+         g_sdio_probe_result.sdio_int_status_after_ack = int_status_after_ack;
+         g_sdio_probe_result.interrupt_ack_success = true;
+         (void)sdio_backplane_write_u32(dev,
+                CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
+                0x00000002u);   /* SMB_INT_ACK */
+      }
+      round_count = 0u;
+      no_hmb = 0u;
+      poll_deadline_us = now + 10000u;   /* first HMB poll in ~10 ms */
+      started = true;
+      return 0;
+   }
+
+   if ((int32_t)(now - poll_deadline_us) < 0)
+      return 0;                          /* still inside the 10 ms gap */
+
+   {
+      uint32_t int_status = 0u;
+
+      if (!sdio_backplane_read_u32(dev,
+             CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+             &int_status)) {
+         started = false;
+         return 1;        /* bus read failed: stop, as the old loop did */
+      }
+      if ((int_status & SDIO_HOST_INTERRUPT_MASK) != 0u) {
+         uint32_t hmb_data = 0u;
+
+         no_hmb = 0u;
+         (void)sdio_backplane_write_u32(dev,
+                CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+                int_status);
+         (void)sdio_backplane_read_u32(dev,
+                CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET,
+                &hmb_data);
+         (void)sdio_backplane_write_u32(dev,
+                CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
+                0x00000002u);   /* SMB_INT_ACK */
+         if ((hmb_data & 0x00000002u) != 0u) {   /* FWREADY */
+            started = false;
+            return 1;
+         }
+      } else {
+         if (++no_hmb >= 3u) {            /* ~30 ms with no activity */
+            started = false;
+            return 1;
+         }
+      }
+   }
+
+   if (++round_count >= 30u) {            /* original 30-poll cap */
+      started = false;
+      return 1;
+   }
+   poll_deadline_us = now + 10000u;
+   return 0;
+}
+
 static bool sdio_probe_sweep_rx_frames(sdio_host_t *dev,
                                        sdio_probe_result_t *probe_result,
                                        uint8_t max_frames)
@@ -4565,10 +4659,16 @@ bool sdio_runtime_tick(void)
          return true;
 
       case SDIO_RUNTIME_STAGE_ACK_INTERRUPTS:
-         if (!sdio_probe_ack_interrupts(&g_runtime_device, &g_sdio_probe_result))
+      {
+         int ack_result = sdio_runtime_ack_interrupts_step(&g_runtime_device);
+
+         if (ack_result < 0)
             return sdio_runtime_finalize_error("WiFi SDIO interrupt ack failed");
+         if (ack_result == 0)
+            return true;          /* still polling the HMB handshake */
          g_runtime_stage = SDIO_RUNTIME_STAGE_WRITE_INTR_MASK;
          return true;
+      }
 
       case SDIO_RUNTIME_STAGE_WRITE_INTR_MASK:
          if (!sdio_probe_write_interrupt_mask(&g_runtime_device, &g_sdio_probe_result))
@@ -4744,7 +4844,11 @@ bool sdio_runtime_get_chip_mac(uint8_t mac_out[6])
 
 bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_length)
 {
-   uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   /* static: keeps this ~1.6 KB buffer off the stack.  This runs inside
+      the lwIP transmit path, which is itself nested under the RX drain
+      (wifi_lwip_drain_rx_frames -> lwIP -> link_output -> here), so a
+      stack copy would compound an already deep call chain. */
+   static uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
    uint16_t total_length;
 
    if (!g_runtime_started || frame == NULL || frame_length == 0u) {

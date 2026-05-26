@@ -128,7 +128,10 @@ static void wifi_lwip_update_runtime_state(void)
 
 static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
 {
-   uint8_t frame[WIFI_LWIP_RX_FRAME_MAX_LEN];
+   /* static: this is on the cooperative poll path and is large (~1.6 KB).
+      Keeping it off the stack avoids a deep RX->TX nesting blowing the
+      bare-metal stack.  The function is never re-entered. */
+   static uint8_t frame[WIFI_LWIP_RX_FRAME_MAX_LEN];
    uint16_t offset = 0u;
    const struct pbuf *cursor = p;
 
@@ -150,7 +153,10 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
 
 static void wifi_lwip_drain_rx_frames(void)
 {
-   uint8_t frame[WIFI_LWIP_RX_FRAME_MAX_LEN];
+   /* static: this is on the cooperative poll path and is large (~1.6 KB).
+      Keeping it off the stack avoids a deep RX->TX nesting blowing the
+      bare-metal stack.  The function is never re-entered. */
+   static uint8_t frame[WIFI_LWIP_RX_FRAME_MAX_LEN];
    uint16_t frame_length;
    uint8_t frame_index;
 
