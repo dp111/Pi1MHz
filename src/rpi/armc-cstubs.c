@@ -239,3 +239,10 @@ __attribute__((used)) int _write(int file __attribute__((unused)), char *ptr, in
 
   return len;
 }
+
+unsigned int _get_cpsr()
+{
+  unsigned int ret;
+  asm volatile ( "mrs %0,cpsr" : "=r" ( ret) );
+  return ret;
+}

@@ -21,6 +21,4 @@ extern unsigned int _get_cpsr();
 
 extern unsigned int _get_stack_pointer();
 
-extern void _enable_unaligned_access();
-
 #endif
