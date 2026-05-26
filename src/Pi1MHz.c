@@ -239,7 +239,7 @@ static void init_emulator() {
       char c;
       do {
         int temp=atoi(prop);
-        if (temp < NUM_EMULATORS)
+        if (temp < ( (int) (NUM_EMULATORS) ) )
           emulator[temp].enable = 0;
         do {
           c = *prop++;
@@ -320,7 +320,10 @@ static char* putstring(char *ram, char term, const char *string)
          *ram++ = 8; // Cursor left
    }
    if (term == '\r')
-      *ram++ ='\r';
+      {
+         *ram++ ='\n';
+         *ram++ ='\r';
+      }
    return ram;
 }
 
@@ -344,17 +347,18 @@ static void init_JIM()
    {
        // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
       char * ram = (char *)JIM_ram;
-      ram = putstring(ram,'\n', " ");
+      ram = putstring(ram,'\n', "");
       ram = putstring(ram,'\n', " Pi1MHz "RELEASENAME);
       ram = putstring(ram,'\n', " Commit ID: "GITVERSION);
       ram = putstring(ram,'\n', " Date : " __DATE__ " " __TIME__);
       ram = putstring(ram,0   , " Pi :");
-      ram = putstring(ram,'\n', get_info_string());
-            putstring(ram,'\r', " ");
+            putstring(ram,'\r', get_info_string());
    }
 
    // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
    filesystemReadFile("BEEB.MMB",JIM_ram+(16*1024*1024),JIM_ram_size<<24);
+
+   filesystemReadFile("6502code.bin",&JIM_ram[0xB0],JIM_ram_size<<24);
 
    for( uint32_t i = 0; i < PAGE_SIZE ; i=i+4)
       Pi1MHz_MemoryWrite32(Pi1MHz_MEM_PAGE + i, *((uint32_t *)(&JIM_ram[i])));
