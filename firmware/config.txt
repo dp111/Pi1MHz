@@ -1,0 +1,20 @@
+# config.txt for Pi1MHz (https://github.com/hoglet67/PiTubeDirect)
+# Debug kernels (needs a 115200 serial connection)
+# default options
+
+#kernel=debug/kernelrpi.img
+
+# Settings for Pi 3
+[pi3]
+#kernel=debug/kernel7.img
+
+# Global settings
+[all]
+force_turbo=1
+gpio=0=a0
+hdmi_blanking=2
+hdmi_ignore_edid=0xa5000080
+hdmi_ignore_hotplug=1
+boot_delay=0
+
+gpu_mem=16

@@ -1,0 +1,1 @@
+void harddisc_emulator_init( void );
