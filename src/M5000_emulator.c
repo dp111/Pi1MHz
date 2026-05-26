@@ -54,13 +54,13 @@
 
 #define DEFAULT_GAIN 16
 
-// These variables can be setup form the config.txt file.
+// These variables can be setup form the cmdline.txt file.
 
-static int stereo;
+static uint8_t stereo;
 static int gain;
-static int autorange;
+static uint8_t autorange;
 
-static int fx_pointer;
+static uint8_t fx_pointer;
 
 struct synth {
     uint32_t phaseRAM[16];
@@ -85,7 +85,7 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
 
 static int32_t audio_range;
 
-// in cmdline.txtt M5000_Gain=16 set the default audio gain
+// in cmdline.txt M5000_Gain=16 set the default audio gain
 // if gain has >1000 then gain = gain - 1000 and auto ranging
 // is disabled
 
@@ -112,7 +112,7 @@ static void M5000_BeebAudio() {
    char *prop = get_cmdline_prop("M5000_BeebAudio_Off");
 
    if (prop)
-      stereo = atoi(prop);
+      stereo = (uint8_t)atoi(prop);
    else
       stereo = 0;
 
@@ -256,7 +256,7 @@ static void music5000_get_sample(uint32_t *left, uint32_t *right)
     }
 }
 
-static int record = 0;
+static bool record = 0;
 static bool rec_started;
 static uint32_t Audio_Index;
 
