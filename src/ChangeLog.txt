@@ -107,3 +107,6 @@ Fix bug introduced in 1.13 , FRED page select note working ( Broke M5000)
 
 V1.19
 Update FatFS to 0.15a
+Move beebscsi debug to fc41
+Add loading of VFS171
+Change P.$&FD00 text to direct people to CALL &FC88
