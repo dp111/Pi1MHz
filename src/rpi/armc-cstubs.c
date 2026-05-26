@@ -89,8 +89,8 @@ void _exit(int status)
 
 /* Transfer control to a new process. Minimal implementation (for a system
  without processes): */
-int execve(char *name __attribute__((unused)), char **argv __attribute__((unused)),
-           char **env __attribute__((unused)))
+int execve(const char *name __attribute__((unused)), char * const *argv __attribute__((unused)),
+           char * const *env __attribute__((unused)))
 {
   errno = ENOMEM;
   return -1;
