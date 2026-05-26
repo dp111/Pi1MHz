@@ -1134,7 +1134,7 @@ static FRESULT sync_fs (	/* Returns FR_OK or FR_DISK_ERR */
 #if FF_FS_EXFAT
 			else if (fs->fs_type == FS_EXFAT) {	/* exFAT: Update PercInUse field in BPB */
 				if (disk_read(fs->pdrv, fs->win, fs->winsect = fs->volbase, 1) == RES_OK) {	/* Load VBR */
-					BYTE perc_inuse = (fs->free_clst <= fs->n_fatent - 2) ? (BYTE)((QWORD)(fs->n_fatent - 2 - fs->free_clst) * 100 / (fs->n_fatent - 2)) : 0xFF;	/* Precent in use 0-100 or 0xFF(unknown) */
+					BYTE perc_inuse = (fs->free_clst <= fs->n_fatent - 2) ? (BYTE)((QWORD)(fs->n_fatent - 2 - fs->free_clst) * 100 / (fs->n_fatent - 2)) : 0xFF;	/* Percent in use 0-100 or 0xFF(unknown) */
 
 					if (fs->win[BPB_PercInUseEx] != perc_inuse) {	/* Write it back into VBR if needed */
 						fs->win[BPB_PercInUseEx] = perc_inuse;
@@ -2001,7 +2001,7 @@ static void put_lfn (
 		st_word(dir + LfnOfs[di], chr);	/* Set it */
 		if (chr == 0) chr = 0xFFFF;		/* Padding characters after the terminator */
 	} while (++di < 13);
-	if (chr == 0xFFFF || !lfn[ni]) ord |= LLEF;	/* Last LFN part is the start of an enrty set */
+	if (chr == 0xFFFF || !lfn[ni]) ord |= LLEF;	/* Last LFN part is the start of an entry set */
 	dir[LDIR_Ord] = ord;			/* Set order in the entry set */
 }
 
@@ -2043,7 +2043,7 @@ static void gen_numname (
 		seq = (UINT)crc_sreg;
 	}
 
-	/* Make suffix (~ + hexdecimal) */
+	/* Make suffix (~ + hexadecimal) */
 	i = 7;
 	do {
 		c = (BYTE)((seq % 16) + '0'); seq /= 16;
@@ -2299,7 +2299,7 @@ static void create_xdir (
 	dirb[0 * SZDIRE + XDIR_Type] = ET_FILEDIR;
 	dirb[1 * SZDIRE + XDIR_Type] = ET_STREAM;
 
-	/* Create file name entries (3rd enrty and follows) */
+	/* Create file name entries (3rd entry and follows) */
 	i = SZDIRE * 2;	/* Top of file name entries */
 	nlen = n_c1 = 0; chr = 1;
 	do {
@@ -3832,7 +3832,7 @@ FRESULT f_open (
 			}
 		}
 		else {	/* Open an existing file */
-			if (res == FR_OK) {					/* Is the object exsiting? */
+			if (res == FR_OK) {					/* Is the object existing? */
 				if (dj.obj.attr & AM_DIR) {		/* File open against a directory */
 					res = FR_NO_FILE;
 				} else {
@@ -5921,7 +5921,7 @@ FRESULT f_mkfs (
 	DWORD sz_buf, sz_blk, n_clst, pau, nsect, n, vsn;
 	LBA_t sz_vol, b_vol, b_fat, b_data;		/* Volume size, base LBA of volume, base LBA of FAT and base LBA of data */
 	LBA_t sect, lba[2];
-	DWORD sz_rsv, sz_fat, sz_dir, sz_au;	/* Size of reserved area, FAT area, directry area, data area and cluster */
+	DWORD sz_rsv, sz_fat, sz_dir, sz_au;	/* Size of reserved area, FAT area, directory area, data area and cluster */
 	UINT n_fat, n_root, i;					/* Number of FATs, number of roor directory entries and some index */
 	int vol;
 	DSTATUS ds;
