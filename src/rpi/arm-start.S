@@ -109,8 +109,8 @@ _reset_:
 
 #if defined(RPI4)
    ldr      r4,=0xff842000
-   mov      r5,#0
-   str      r5,[r4]        // disable GIC on rpi4
+   mov      r9,#0
+   str      r9,[r4]        // disable GIC on rpi4
 #endif
 
     // Set the CPACR for access to all coprocessors
@@ -130,8 +130,8 @@ _reset_:
     // HYP mode: cpsr ends with 1a3
     adr     lr , _reset_continue
     msr     spsr_cxsf, #CPSR_IRQ_INHIBIT | CPSR_FIQ_INHIBIT | CPSR_MODE_SVC
-    .word 0xE12EF30E  // msr_elr_hyp lr
-    .word 0xE160006E  // eret
+    msr     ELR_hyp , lr
+    eret
 _reset_continue:
 #endif
 
@@ -187,7 +187,6 @@ _reset_continue:
     mov     r8,#0
     mov     r9,#0
 
-    stmia   r4!,{r6,r7,r8,r9}
     bic     r4,r4,#0xF            // 16 byte align
 
 bssclearloop:
@@ -211,15 +210,15 @@ _prefetch_abort_handler_:
 
 _data_abort_handler_:
     stmfd    sp!, {r0-r12, lr}
-    mov      r1, #8
     adr      r2, data_abort_txt
-    b        exception_store_spsr
+    b        exception_store_spsr_r1_8
 
 _swi_handler_:
     stmfd    sp!, {r0-r12, lr}
-    mov      r1, #8
     adr      r2, unknown_swi_txt
 
+exception_store_spsr_r1_8:
+    mov      r1, #8
 exception_store_spsr:
     mrs      r0, spsr             // Get spsr.
     stmfd    sp!, {r0}            // Store spsr onto stack.
