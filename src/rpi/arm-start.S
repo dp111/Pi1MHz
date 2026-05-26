@@ -197,13 +197,14 @@ bssclearloop:
 // R1 = length
 _copyandreboot:
     push {r0, r1}
-    ldr r0, =_start_vectors - 0x100
-    adr r1, _copyandreboot_code
-    mov r2, # ((_fast_scroll_end - _copyandreboot_code + 63) & ~63)
-    bl _fast_scroll
+    //ldr r0, =_start_vectors - 0x100
+    //adr r1, _copyandreboot_code
+    //mov r2, # ((_fast_scroll_end - _copyandreboot_code + 63) & ~63)
+    //bl _fast_scroll
     pop {r1, r2}
     ldr r0, =_start_vectors
-    B _start_vectors - 0x100
+
+    //B _start_vectors - 0x100
 _copyandreboot_code:
     BL _fast_scroll
 
