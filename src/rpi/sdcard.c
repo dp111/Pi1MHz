@@ -32,6 +32,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#include <assert.h>
 #include "block.h"
 #include "base.h"
 #include "arm-start.h"
