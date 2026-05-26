@@ -35,8 +35,7 @@
 #include "../rpi/asm-helpers.h"
 #include "../rpi/systimer.h"
 #include "../Pi1MHz.h"
-
-_Noreturn void reboot_now(void);
+#include "../rpi/exceptions.h"
 
 //--------------------------------------------------------------------+
 // Dataset
