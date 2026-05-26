@@ -119,7 +119,8 @@ typedef struct {
 } emulator_list;
 
 static emulator_list emulator[] = {
-   {"Ram",ram_emulator_init, 0, 1},
+   {"Rampage",rampage_emulator_init, 0xFC, 1},
+   {"Rambyte",rambyte_emulator_init, 0x00, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
    {"Framebuffer",fb_emulator_init, 0xD0, 1},
