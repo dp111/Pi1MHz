@@ -4,20 +4,20 @@
 
 void RPI_SetGpioPinFunction(rpi_gpio_pin_t gpio, rpi_gpio_alt_function_t func)
 {
-  rpi_reg_rw_t* fsel_reg = &RPI_GpioBase->GPFSEL[gpio / 10];
+  rpi_reg_rw_t* fsel_reg = &RPI_GpioBase->GPFSEL[gpio / 10u];
 
   uint32_t fsel_copy = *fsel_reg;
-  fsel_copy &= (uint32_t)~(FS_MASK << ((gpio % 10) * 3));
-  fsel_copy = (uint32_t) (fsel_copy |(uint32_t)(func << ((gpio % 10) * 3)));
+  fsel_copy &= (uint32_t)~(FS_MASK << ((gpio % 10u) * 3));
+  fsel_copy = (uint32_t) (fsel_copy |(uint32_t)(func << ((gpio % 10u) * 3)));
   *fsel_reg = fsel_copy;
 }
 
 rpi_gpio_alt_function_t RPI_GetGpioPinFunction(rpi_gpio_pin_t gpio)
 {
-  const rpi_reg_rw_t* fsel_reg = &RPI_GpioBase->GPFSEL[gpio / 10];
+  const rpi_reg_rw_t* fsel_reg = &RPI_GpioBase->GPFSEL[gpio / 10u];
 
   uint32_t fsel_copy = *fsel_reg;
-  fsel_copy >>= ((gpio % 10) * 3);
+  fsel_copy >>= ((gpio % 10u) * 3);
   fsel_copy &= FS_MASK;
 
   return fsel_copy;
@@ -67,11 +67,11 @@ void RPI_SetGpioHi(rpi_gpio_pin_t gpio)
   switch (gpio / 32)
   {
     case 0:
-      RPI_GpioBase->GPSET0 = (rpi_reg_wo_t) (1 << gpio);
+      RPI_GpioBase->GPSET0 = (rpi_reg_wo_t) (1u << gpio);
     break;
 
     case 1:
-      RPI_GpioBase->GPSET1 = (rpi_reg_wo_t) (1 << (gpio - 32));
+      RPI_GpioBase->GPSET1 = (rpi_reg_wo_t) (1u << (gpio - 32));
     break;
 
     default:
@@ -84,7 +84,7 @@ void RPI_SetGpioLo(rpi_gpio_pin_t gpio)
   switch (gpio / 32)
   {
     case 0:
-      RPI_GpioBase->GPCLR0 = (rpi_reg_wo_t) (1 << gpio);
+      RPI_GpioBase->GPCLR0 = (rpi_reg_wo_t) (1u << gpio);
     break;
 
     case 1:
