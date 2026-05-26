@@ -1004,7 +1004,7 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
     }
 
     // On the Pi 2/3 the mailbox returns the address with bits 31..30 set, which is wrong
-    fb = (unsigned char *)(((unsigned int) fb) & 0x3fffffff);
+    fb = (unsigned char *)(((uint32_t) fb) & 0x3fffffff);
 
     // Initialize colour table and palette
     screen->font = font;
