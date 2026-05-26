@@ -16,6 +16,7 @@
 #include "../BeebSCSI/fatfs/ff.h"
 #include "../rpi/screen.h"
 #include "../rpi/exceptions.h"
+#include "../rpi/info.h"
 #include "../rpi/systimer.h"
 #include "../Pi1MHz.h"
 
@@ -1040,7 +1041,7 @@ static bool route_status(ws_conn_t *c)
       table_row(&b, "Gateway", ip);
    }
 
-   if (sdio_runtime_get_chip_mac(mac)) {
+   if (rpi_get_board_mac(mac)) {
       snprintf(tmp, sizeof tmp, "%02X:%02X:%02X:%02X:%02X:%02X",
                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
       table_row(&b, "MAC address", tmp);

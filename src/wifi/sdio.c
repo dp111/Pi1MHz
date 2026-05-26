@@ -28,17 +28,10 @@ static bool g_runtime_started;
 static bool g_runtime_link_up;
 static uint32_t g_runtime_tx_frame_count;
 static uint32_t g_runtime_rx_frame_count;
-/* The chip's WiFi MAC (cur_etheraddr), captured at boot so the lwIP
-   netif can use the real address.  The CDC decoder fills
-   g_runtime_chip_mac when the GET-VAR response carrying the exact
-   request_id we sent for cur_etheraddr arrives - matching by ID
-   rather than by a global "currently expecting MAC" flag means any
-   other GET_VAR reply that happens to land in the same window is
-   not mistaken for the MAC. */
-static uint8_t g_runtime_chip_mac[6];
-static bool g_runtime_chip_mac_valid;
-static bool g_runtime_mac_request_pending;
-static uint16_t g_runtime_mac_request_id;
+/* (Chip-MAC capture state removed: the MAC is now patched into the
+   brcmfmac NVRAM from rpi_get_board_mac() before firmware boot, so
+   there is no cur_etheraddr round trip to wait on and every consumer
+   asks the mailbox directly via rpi_get_board_mac.) */
 static char g_runtime_error[96];
 static uint8_t g_runtime_data_sequence;
 static bool g_runtime_emulator_mode;
@@ -78,7 +71,6 @@ typedef enum {
    /* CLM download, MAC read and the 38-step join each advance one step
       per tick so no single poll callback stalls the main 1 MHz loop. */
    SDIO_RUNTIME_STAGE_CLM_DOWNLOAD,
-   SDIO_RUNTIME_STAGE_QUERY_MAC,
    SDIO_RUNTIME_STAGE_JOIN,
    SDIO_RUNTIME_STAGE_SWEEP_RX,
    SDIO_RUNTIME_STAGE_DONE,
@@ -1762,7 +1754,6 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
          return WLC_SET_VAR;
       case WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_VERIFY:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_CHANSPEC:
-      case WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_SUP_WPA:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY:
          return WLC_GET_VAR;
@@ -1857,10 +1848,6 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          /* "chanspec\0" + 4 zero bytes for the chip to write the
             current chanspec into.  GET-VAR convention. */
          return (uint16_t)(sizeof("chanspec") + 4u);
-      case WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC:
-         /* "cur_etheraddr\0" + 6 zero bytes for the chip to write the
-            current MAC into. */
-         return (uint16_t)(sizeof("cur_etheraddr") + 6u);
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY:
          /* "country\0" + 20-byte response slot.  wl_country_t is 12
             bytes; the extra room lets us see if this firmware build
@@ -2354,19 +2341,6 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
                 "chanspec", name_length);
          /* Trailing 4 bytes already zeroed by the memset at the top
             of this function - that's where the chip writes the value. */
-         break;
-      }
-      case WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC:
-      {
-         /* GET-VAR "cur_etheraddr" - returns the chip's current MAC
-            (6 bytes).  All-zero response means NVRAM didn't apply
-            during firmware boot, which would also explain a silent
-            radio (PA/antenna calibration lives in NVRAM). */
-         size_t name_length = sizeof("cur_etheraddr");
-
-         memcpy(probe_result->tx_control_template_payload_bytes,
-                "cur_etheraddr", name_length);
-         /* Trailing 6 bytes already zeroed by the memset at top. */
          break;
       }
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY:
@@ -2875,24 +2849,10 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
          sdio_debug_log("cdc rsp cmd=%lu status=%lu ERROR",
                         (unsigned long)cdc_cmd, (unsigned long)cdc_status);
 
-      /* Capture the chip's MAC from the cur_etheraddr GET-VAR reply.
-         Matched by the exact request_id we sent so an unrelated
-         GET_VAR reply that happens to land in the same window cannot
-         be mistaken for the MAC.  The 6-byte MAC is the first thing
-         after the CDC header. */
-      {
-         uint16_t cdc_request_id =
-            (uint16_t)((cdc_flags & CDCF_IOC_ID_MASK) >> CDCF_IOC_ID_SHIFT);
-         if (g_runtime_mac_request_pending && cdc_cmd == WLC_GET_VAR
-             && cdc_request_id == g_runtime_mac_request_id
-             && !(cdc_flags & CDCF_IOC_ERROR)
-             && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 6u)) {
-            memcpy(g_runtime_chip_mac,
-                   &frame_buffer[header_length + CDC_HEADER_LENGTH], 6u);
-            g_runtime_chip_mac_valid = true;
-            g_runtime_mac_request_pending = false;
-         }
-      }
+      /* (cur_etheraddr MAC capture removed: the chip's MAC is set
+         deterministically via a brcmfmac NVRAM macaddr= patch driven
+         from rpi_get_board_mac() before firmware boot, so there is
+         no GET-VAR reply to wait on here.) */
       return false;
    }
 
@@ -3291,45 +3251,6 @@ static int sdio_runtime_clm_download_step(sdio_host_t *dev)
    g_runtime_clm_offset += chunk_len;
    g_runtime_step_sent = false;
    return (g_runtime_clm_offset >= clm_length) ? 1 : 0;
-}
-
-/* Read the chip's cur_etheraddr MAC across ticks: send the GET, wait a
-   short settle, then drain (the CDC decoder captures the MAC).  Returns
-   1 when done, 0 while in progress. */
-static int sdio_runtime_query_mac_step(sdio_host_t *dev)
-{
-   uint32_t now;
-
-   if (dev == NULL)
-      return 1;
-
-   now = RPI_GetSystemTime();
-
-   if (!g_runtime_step_sent) {
-      g_runtime_chip_mac_valid = false;
-      sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                       WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC);
-      /* Remember the exact request_id the template carries so the
-         CDC decoder matches only the reply to THIS GET_VAR rather
-         than any GET_VAR that happens to arrive in the window. */
-      g_runtime_mac_request_id =
-         g_sdio_probe_result.tx_control_template_request_id;
-      g_runtime_mac_request_pending = true;
-      (void)sdio_probe_send_single_tx_control_template_timeout(dev,
-                                                              &g_sdio_probe_result,
-                                                              SDIO_RUNTIME_POLL_TIMEOUT_US);
-      g_runtime_step_sent = true;
-      g_runtime_step_deadline_us = now + 10000u;
-      return 0;
-   }
-
-   if ((int32_t)(now - g_runtime_step_deadline_us) < 0)
-      return 0;
-
-   (void)sdio_drain_fn2_responses(dev);
-   g_runtime_mac_request_pending = false;
-   g_runtime_step_sent = false;
-   return 1;
 }
 
 /* Send one join ioctl per call: prepare g_runtime_join_commands[index],
@@ -4765,24 +4686,11 @@ bool sdio_runtime_tick(void)
             sdio_debug_log("CLM: clmload download complete (%lu bytes)",
                            (unsigned long)g_cyw43_clm_length);
          g_runtime_step_sent = false;
-         g_runtime_stage = SDIO_RUNTIME_STAGE_QUERY_MAC;
-         return true;
-      }
-
-      case SDIO_RUNTIME_STAGE_QUERY_MAC:
-      {
-         int mac_result = sdio_runtime_query_mac_step(&g_runtime_device);
-
-         if (mac_result == 0)
-            return true;
-         if (g_runtime_chip_mac_valid)
-            sdio_debug_log("chip MAC %02x:%02x:%02x:%02x:%02x:%02x",
-                           (unsigned)g_runtime_chip_mac[0], (unsigned)g_runtime_chip_mac[1],
-                           (unsigned)g_runtime_chip_mac[2], (unsigned)g_runtime_chip_mac[3],
-                           (unsigned)g_runtime_chip_mac[4], (unsigned)g_runtime_chip_mac[5]);
-         else
-            sdio_debug_log("chip MAC read failed - lwIP netif keeps its default address");
-         g_runtime_step_sent = false;
+         /* Straight into the join: the MAC was set deterministically
+            via the NVRAM patch (wifi_preload_images) before firmware
+            boot, so there is no cur_etheraddr round trip needed
+            here.  rpi_get_board_mac is the single source of truth
+            for every consumer (lwIP netif, /status). */
          sdio_debug_log("== STAGE_JOIN: starting join sequence ==");
          g_runtime_stage = SDIO_RUNTIME_STAGE_JOIN;
          return true;
@@ -4865,17 +4773,10 @@ bool sdio_runtime_link_is_up(void)
    return g_runtime_started && g_runtime_link_up;
 }
 
-/* Copy the chip's WiFi MAC (read from cur_etheraddr at boot) into
-   mac_out.  Returns false if it was never captured, in which case the
-   caller should keep its own default. */
-bool sdio_runtime_get_chip_mac(uint8_t mac_out[6])
-{
-   if (mac_out == NULL || !g_runtime_chip_mac_valid)
-      return false;
-
-   memcpy(mac_out, g_runtime_chip_mac, 6u);
-   return true;
-}
+/* (sdio_runtime_get_chip_mac removed: every consumer now asks the
+   mailbox directly via rpi_get_board_mac, which is the same value
+   patched into the NVRAM and therefore the address the chip uses
+   for transmit.) */
 
 bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_length)
 {

@@ -96,13 +96,10 @@ typedef enum {
       being lost on the host side rather than not generated. */
    WIFI_SDIO_TX_PROBE_COMMAND_GET_BSSID,
    WIFI_SDIO_TX_PROBE_COMMAND_GET_CHANSPEC,
-   /* WLC_GET_VAR cur_etheraddr - dumps the MAC the chip is currently
-      using for TX.  All-zero readback proves NVRAM didn't apply
-      during firmware boot (PA/antenna config also lives in NVRAM and
-      would be missing for the same reason, which would explain a
-      silent radio).  Real-looking 6-byte MAC means NVRAM applied and
-      the silence is somewhere else. */
-   WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC,
+   /* (GET_MAC removed - the chip's MAC is now set deterministically
+      from the SoC's board-serial OTP via a brcmfmac NVRAM macaddr=
+      patch, so there is nothing to read back: every caller already
+      knows the address before firmware boot.) */
    /* Heartbeat readbacks of the WPA/security setup state.  These prove
       whether the SET_WSEC / SET_WPA_AUTH / SET_AUTH / SET_INFRA /
       bsscfg:sup_wpa SET commands during the join sequence actually

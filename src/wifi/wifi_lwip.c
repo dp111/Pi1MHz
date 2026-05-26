@@ -5,6 +5,7 @@
 #include "wifi.h"
 
 #include "../Pi1MHz.h"
+#include "../rpi/info.h"
 #include "../rpi/rpi.h"
 #include "../rpi/systimer.h"
 
@@ -200,12 +201,13 @@ static err_t wifi_lwip_netif_init(struct netif *netif)
    netif->output = etharp_output;
    netif->linkoutput = wifi_lwip_link_output;
    netif->hwaddr_len = 6;
-   /* Use the chip's real WiFi MAC: the firmware associates with that
-      address, so the lwIP netif must present the same one or DHCP and
-      ARP replies are addressed to a station the access point does not
-      know.  Fall back to a fixed locally-administered address only if
-      the chip MAC could not be read. */
-   if (!sdio_runtime_get_chip_mac(netif->hwaddr)) {
+   /* The chip transmits with the MAC we patched into the brcmfmac
+      NVRAM in wifi_preload_images, so the lwIP netif must present
+      the same address or the AP's ARP/DHCP replies are sent to a
+      station the chip is not.  Ask the same source (VC4 mailbox)
+      here; fall back to a fixed locally-administered MAC only if
+      the mailbox query fails. */
+   if (!rpi_get_board_mac(netif->hwaddr)) {
       netif->hwaddr[0] = 0x02;
       netif->hwaddr[1] = 0x50;
       netif->hwaddr[2] = 0x31;
