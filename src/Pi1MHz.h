@@ -6,7 +6,7 @@
 #include "rpi/rpi.h"
 #include "rpi/base.h"
 
-#define RELEASENAME "v1.11"
+#define RELEASENAME "v1.13"
 
 #define PAGE_SIZE    0x100
 
@@ -186,6 +186,16 @@ extern uint8_t fx_register[256];
 
 typedef void (*callback_func_ptr)( unsigned int);
 typedef void (*func_ptr_parameter)( uint8_t instance, int address);
+
+
+typedef struct
+{
+   uint8_t Memory[PAGE_SIZE*2];
+   uint8_t Spare[PAGE_SIZE*2];
+   callback_func_ptr callback_table[PAGE_SIZE*2*2];
+} Pi1MHz_t;
+
+static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;
 
 void Pi1MHz_LED(int led);
 void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr function_ptr );
