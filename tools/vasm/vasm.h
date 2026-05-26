@@ -260,6 +260,7 @@ extern int tos_hisoft_dri;
 #endif
 #ifdef OUTHUNK
 extern int hunk_xdefonly;
+extern int hunk_devpac;
 #endif
 
 int init_output_test(char **,void (**)(FILE *,section *,symbol *),int (**)(char *));
