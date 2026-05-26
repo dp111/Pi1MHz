@@ -16,15 +16,17 @@
 
 #ifdef DRV_SD
 #include "../../rpi/sdcard.h"
+#include "../../rpi/block.h"
 #endif
 
 /*static unsigned int sd_status=STA_NOINIT;*/
 
-static struct emmc_block_dev bd;
+static struct emmc_block_dev sd_dev_storage;
+static struct block_device *sd_dev = (struct block_device *)&sd_dev_storage.bd;
 
 static int sd_drive_initialized(void)
 {
-   return bd.card_rca != 0;
+   return sd_dev_storage.card_rca != 0;
 }
 /*-----------------------------------------------------------------------*/
 /* Get Drive Status                                                      */
@@ -71,7 +73,7 @@ DSTATUS disk_initialize (
    if (sd_drive_initialized())
       return 0;
 
-   return sdhost_init_device((struct block_device **)&bd) == 0 ? 0 : STA_NOINIT;
+   return sdhost_init_device(&sd_dev) == 0 ? 0 : STA_NOINIT;
 #endif
    }
    return STA_NOINIT;
@@ -97,7 +99,7 @@ DRESULT disk_read (
 #endif
 #ifdef DRV_SD
    case DRV_SD :
-      result = sd_read((struct block_device *)&bd,buff,512*count,sector)?RES_OK:RES_ERROR;
+      result = sd_read(sd_dev,buff,512*count,sector)?RES_OK:RES_ERROR;
       return result;
 
 #endif
@@ -125,7 +127,7 @@ DRESULT disk_write (
 #endif
 #ifdef DRV_SD
    case DRV_SD :
-   return sd_write((struct block_device *)&bd,buff,512*count,sector)?RES_OK:RES_ERROR;
+   return sd_write(sd_dev,buff,512*count,sector)?RES_OK:RES_ERROR;
 #endif
    }
    return RES_PARERR;
@@ -170,5 +172,5 @@ DRESULT disk_ioctl (
 
 unsigned char disk_type( void)
 {
-   return bd.card_supports_sdhc;
+   return sd_dev_storage.card_supports_sdhc;
 }
