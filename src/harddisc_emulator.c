@@ -23,7 +23,7 @@ volatile bool HD_ACK;
 volatile uint8_t HD_DATA;
 
 volatile bool HD_SEL;
-bool HD_IRQ_ENABLE;
+volatile bool HD_IRQ_ENABLE;
 
 #define ACK_CLEAR 0
 #define ACK_SET   1
@@ -79,14 +79,14 @@ static void hd_emulator_IRQ(unsigned int gpio)
 {
    unsigned int data = GET_DATA(gpio);
    // D0 used to enable / disable
-   HD_IRQ_ENABLE = ( data & 1 );
-
-   if (!HD_IRQ_ENABLE)
+   if (! ( data & 1 ))
    {
+      HD_IRQ_ENABLE = CLEAR;
       Pi1MHz_SetnIRQ(CLEAR_IRQ);
       hd_emulator_status(STATUS_IRQ, CLEAR);
    } else
    {
+      HD_IRQ_ENABLE = ACTIVE;
       if (HD_STATUS_Read & STATUS_REQ)
       {
          Pi1MHz_SetnIRQ(ASSERT_IRQ);
