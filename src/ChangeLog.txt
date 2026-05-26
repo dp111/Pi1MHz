@@ -34,3 +34,4 @@ VDU 23 support
 Add TAB(x,y) support
 Add VDU 4 and 5 support ( still needs work e.g. scrolling)
 very basic NuLA support
+Very Basic Mode 7 support no graphics nothing fancy

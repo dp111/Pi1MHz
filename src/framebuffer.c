@@ -6,6 +6,7 @@
 #include "framebuffer.h"
 #include "rpi/v3d.h"
 #include "BBCFont.h"
+#include "MODE7Font.h"
 #include "Pi1MHz.h"
 
 #define DEBUG_FB
@@ -151,6 +152,7 @@ static uint32_t c_x_max;
 static uint32_t c_y_max;
 static uint32_t c_x_scale;
 static uint32_t c_y_scale;
+static uint32_t mode7flag;
 
 // Graphics colour / cursor position
 static uint8_t g_bg_col;
@@ -164,7 +166,7 @@ static int16_t g_y_pos;
 static int16_t g_y_pos_last1;
 static int16_t g_y_pos_last2;
 
-#define cheight 8
+static uint32_t cheight;
 
 static unsigned char* fb = NULL;
 static unsigned char* fbcache = NULL;
@@ -173,10 +175,12 @@ static uint16_t width, height;
 static int bpp, pitch;
 
 static void mode_init(){
-   c_x_max = 79;
-   c_y_max = 31;
-   c_x_scale = 1;
+   c_x_max = 39;
+   c_y_max = 24;
+   c_x_scale = 2;
    c_y_scale = 2;
+   mode7flag = 1;
+   cheight = 10;
 }
 
 static void fb_init_variables() {
@@ -198,6 +202,7 @@ static void fb_init_variables() {
    g_y_pos       = 0;
    g_y_pos_last1 = 0;
    g_y_pos_last2 = 0;
+
 }
 
 static void fb_putpixel(int x, int y, unsigned int colour) {
@@ -862,7 +867,10 @@ static void fb_draw_character(int c, int invert, int eor) {
       if ( c == CLEAR_CHAR)
          data = 0;
       else
-         data = BBCFont[ch + i] ^ invert;
+         if (mode7flag)
+            data = MODE7Font[ch+i]<<2;
+         else
+            data = BBCFont[ch + i] ^ invert;
 #ifdef BPP32
       uint32_t *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
 #endif
@@ -1046,6 +1054,8 @@ void fb_writec(int c) {
          vdu45flag = 0;
          init_colour_table();
          update_palette(l, NUM_COLOURS);
+         mode7flag = 0;
+         cheight = 8;
          switch (c)
          {
          case 0: c_x_max = 79; c_x_scale = 1; c_y_max = 31; break;
@@ -1055,7 +1065,9 @@ void fb_writec(int c) {
          case 4: c_x_max = 39; c_x_scale = 2; c_y_max = 31; break;
          case 5: c_x_max = 19; c_x_scale = 4; c_y_max = 31; break;
          case 6: c_x_max = 39; c_x_scale = 2; c_y_max = 24; break;
-         case 7: c_x_max = 39; c_x_scale = 4; c_y_max = 24; break;
+         case 7: c_x_max = 39; c_x_scale = 2; c_y_max = 24;
+               mode7flag = 1; cheight=10;
+         break;
          }
          state = NORMAL;
          return;
