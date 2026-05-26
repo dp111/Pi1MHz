@@ -41,6 +41,10 @@ void videoplayer_init(uint8_t instance, uint8_t address)
 
             free(buf);
         }
+        else
+        {
+            LOG_INFO("videoplayer_init: ERROR: Unable to allocate memory for video frame\r\n");
+        }
 
         // filesystemReadFile("frame.yuv",(unsigned char *) (buffer),768*576*2);
    }
