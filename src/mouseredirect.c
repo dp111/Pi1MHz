@@ -21,8 +21,7 @@ Takes 5 bytes of RAM
 #include "framebuffer/framebuffer.h"
 #include "rpi/screen.h"
 
-// abcdefghijklmnopqrstuvwxyz
-// ABCDEFGHIJKLMNOPQRSTUVWXYZ
+_Static_assert(sizeof(void*) == 4 ,"Must have 32bit pointers");
 
 #define PTRMAX        4
 #define PTRMODE0WIDTH 24
@@ -238,7 +237,7 @@ i,B,i,0,0,0,
 i,B,i,0,0,0,
 0,i,0,0,0,0
 
-#undef H
+#undef B
 #undef i
 };
 
