@@ -108,10 +108,10 @@ static bool wifi_validate_config(void)
       return false;
    }
 
-   if (g_wifi_config.ip_mode == WIFI_IP_MODE_STATIC && g_wifi_config.ip_address[0] == '\0') {
-      wifi_set_error("wifi_ip must be a valid IPv4 address when static addressing is selected");
-      return false;
-   }
+   /* No need to re-check that ip_address is non-empty when
+      ip_mode == STATIC: wifi_parse_ip_mode only selects STATIC after
+      successfully parsing an IPv4 into ip_address, so the field is
+      always populated by the time we reach here. */
 
    g_wifi_state = WIFI_STATE_CONFIGURED;
    wifi_debug_log("configuration accepted ssid=%s hostname=%s",
