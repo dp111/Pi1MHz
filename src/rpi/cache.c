@@ -197,7 +197,7 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
   //   to allow native ARM code to execute
   //   (this was the cause of issue #27)
 #if (__ARM_ARCH >= 7 )
-  PageTable2[logical] = (physical<<12) | 0x132u | (bb << 6) | (cachable<<3) | (bufferable << 2);
+  PageTable2[logical] = (physical<<12) | 0x132u | (bb << 6) | (cacheable<<3) | (bufferable << 2);
 #else
   PageTable2[logical] = (physical<<12) | 0x133u | (bb << 6) | (cacheable<<3) | (bufferable << 2);
 #endif
