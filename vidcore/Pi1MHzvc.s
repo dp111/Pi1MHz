@@ -64,7 +64,7 @@
 
 # disable interrupts
 
-  di
+   di
    or     r3, r4       # add in test pin so that it is still enabled
    mov    r6, GPFSEL0
    mov    r7, 1            # external nOE pin
