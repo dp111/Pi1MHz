@@ -35,13 +35,6 @@ Millipede PRISMA-3 (Not support)
 #include "scripts/gitversion.h"
 #include "BeebSCSI/filesystem.h"
 
-uint8_t *JIM_ram; // 480M Bytes of RAM for PiZero
-
-uint8_t JIM_ram_size; // Size of JIM ram in 16Mbyte steps
-
-static size_t byte_ram_addr;
-static size_t page_ram_addr;
-
 static uint8_t rambyte_address;
 
 void ram_emulator_byte_addr(unsigned int gpio)
@@ -51,12 +44,12 @@ void ram_emulator_byte_addr(unsigned int gpio)
 
    switch (addr - rambyte_address)
    {
-      case 0:  byte_ram_addr = (byte_ram_addr & 0xFFFFFF00) | data; break;
-      case 1:  byte_ram_addr = (byte_ram_addr & 0xFFFF00FF) | data<<8; break;
-      default: byte_ram_addr = (byte_ram_addr & 0xFF00FFFF) | data<<16; break;
+      case 0:  Pi1MHz->byte_ram_addr = (Pi1MHz->byte_ram_addr & 0xFFFFFF00) | data; break;
+      case 1:  Pi1MHz->byte_ram_addr = (Pi1MHz->byte_ram_addr & 0xFFFF00FF) | data<<8; break;
+      default: Pi1MHz->byte_ram_addr = (Pi1MHz->byte_ram_addr & 0xFF00FFFF) | data<<16; break;
    }
 
-   Pi1MHz_MemoryWrite(rambyte_address + 3 , JIM_ram[byte_ram_addr]); // setup new data now the address has changed;
+   Pi1MHz_MemoryWrite(rambyte_address + 3 , Pi1MHz->JIM_ram[Pi1MHz->byte_ram_addr]); // setup new data now the address has changed;
    Pi1MHz_MemoryWrite(addr, data);               // enable the address register to be read back
 }
 
@@ -65,7 +58,7 @@ void ram_emulator_byte_write(unsigned int gpio)
    uint8_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
 
-   JIM_ram[byte_ram_addr] =  data;
+   Pi1MHz->JIM_ram[Pi1MHz->byte_ram_addr] =  data;
    Pi1MHz_MemoryWrite(addr,  data);
 }
 
@@ -73,9 +66,9 @@ void ram_emulator_page_addr_high(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   if (data > (JIM_ram_size)) data = JIM_ram_size - 1;
-               page_ram_addr = (page_ram_addr & 0x00FFFFFF) | data<<24;
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[page_ram_addr])) );
+   if (data > (Pi1MHz->JIM_ram_size)) data = Pi1MHz->JIM_ram_size - 1;
+               Pi1MHz->page_ram_addr = (Pi1MHz->page_ram_addr & 0x00FFFFFF) | data<<24;
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
@@ -83,8 +76,8 @@ void ram_emulator_page_addr_mid(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   page_ram_addr = (page_ram_addr & 0xFF00FFFF) | data<<16;
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[page_ram_addr])) );
+   Pi1MHz->page_ram_addr = (Pi1MHz->page_ram_addr & 0xFF00FFFF) | data<<16;
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
@@ -92,23 +85,23 @@ void ram_emulator_page_addr_low(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   page_ram_addr = (page_ram_addr & 0xFFFF00FF) | data<<8 ;
+   Pi1MHz->page_ram_addr = (Pi1MHz->page_ram_addr & 0xFFFF00FF) | data<<8 ;
    // RPI_SetGpioHi(TEST_PIN);
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[page_ram_addr])) );
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    // RPI_SetGpioLo(TEST_PIN);
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
 void ram_emulator_page_restore(void)
 {
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[page_ram_addr])) );
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
 }
 
 void ram_emulator_page_write(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   JIM_ram[page_ram_addr + addr] = data;
+   Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr + addr] = data;
    Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + addr, data);
 }
 
@@ -150,22 +143,22 @@ void rampage_emulator_init( uint8_t instance , int address)
    temp = temp - (unsigned int)&_end; // remove program
    temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
    temp = temp & 0xFF000000; // round down to 16Mbyte boundary
-   JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
+   Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
 
-   byte_ram_addr = (JIM_ram_size - 1) * 16 * 1024 * 1024;
-   page_ram_addr = 0;
+   Pi1MHz->byte_ram_addr = (Pi1MHz->JIM_ram_size - 1) * 16 * 1024 * 1024;
+   Pi1MHz->page_ram_addr = 0;
 
-   fx_register[instance] = JIM_ram_size;  // fx addr 0 returns ram size
+   fx_register[instance] = Pi1MHz->JIM_ram_size;  // fx addr 0 returns ram size
 
-   JIM_ram = (uint8_t *) malloc(16*1024*1024*JIM_ram_size); // malloc 480Mbytes
+   Pi1MHz->JIM_ram = (uint8_t *) malloc(16*1024*1024*Pi1MHz->JIM_ram_size); // malloc 480Mbytes
 
    filesystemInitialise(0);
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
-   if (!filesystemReadFile("JIM_Init.bin",JIM_ram,JIM_ram_size<<24))
+   if (!filesystemReadFile("JIM_Init.bin",Pi1MHz->JIM_ram,Pi1MHz->JIM_ram_size<<24))
    {
        // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
-      char * ram = (char *)JIM_ram;
+      char * ram = (char *)Pi1MHz->JIM_ram;
       ram = putstring(ram,'\n', "");
       ram = putstring(ram,'\n', " Pi1MHz "RELEASENAME);
       ram = putstring(ram,'\n', " Commit ID: "GITVERSION);
@@ -175,9 +168,9 @@ void rampage_emulator_init( uint8_t instance , int address)
    }
 
    // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
-   filesystemReadFile("BEEB.MMB",JIM_ram+(16*1024*1024),JIM_ram_size<<24);
+   filesystemReadFile("BEEB.MMB",Pi1MHz->JIM_ram+(16*1024*1024),Pi1MHz->JIM_ram_size<<24);
 
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[0])) );
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[0])) );
 }
 
 void rambyte_emulator_init( uint8_t instance , int address)
