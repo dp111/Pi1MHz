@@ -21,7 +21,7 @@ enum {
    NUM_PALETTES
 };
 
-void fb_emulator_init(uint8_t instance);
+void fb_emulator_init(uint8_t instance, int address);
 /*
 void fb_initialize();
 

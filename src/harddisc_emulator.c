@@ -4,7 +4,6 @@
  NB the inversions have been optimized out
 
 */
-#define HD_ADDR 0x40
 
 #include <string.h>
 #include <stdlib.h>
@@ -21,6 +20,8 @@
 #include "BeebSCSI/filesystem.h"
 #include "BeebSCSI/hostadapter.h"
 #include "BeebSCSI/scsi.h"
+
+static uint8_t HD_ADDR;
 
 volatile bool HD_ACK;
 volatile uint8_t HD_DATA;
@@ -155,9 +156,12 @@ static void hd_emulator_conf(unsigned int gpio)
 }
 #endif
 
-void harddisc_emulator_init( uint8_t instance )
+void harddisc_emulator_init( uint8_t instance , int address)
 {
    static bool PowerOn = 0 ;
+
+   HD_ADDR = (uint8_t) address;
+
    // Turn off all host adapter signals
    hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_3 | STATUS_2 | STATUS_CND | STATUS_IRQ, CLEAR);
 
