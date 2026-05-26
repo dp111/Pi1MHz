@@ -1577,7 +1577,7 @@ bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer)
       if (strlen(filesystemState.fsInfo.fname) > 125) filesystemState.fsInfo.fname[126] = '\0';
 
       // Copy the string into the buffer - starting from byte 127
-      strcpy((char*)buffer+127, filesystemState.fsInfo.fname);
+      strlcpy((char*)buffer+127, filesystemState.fsInfo.fname, 127);
    }
 
    // Close the directory object
