@@ -63,7 +63,7 @@ extern int errno;
 #include <sys/times.h>
 
 /* Prototype for the UART write function */
-#include "aux.h"
+#include "auxuart.h"
 
 /* A pointer to a list of environment variables and their values. For a minimal
  environment, this empty list is adequate: */
