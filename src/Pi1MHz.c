@@ -84,7 +84,6 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 */
 
 #include <string.h>
-#include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,7 +91,6 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "rpi/arm-start.h"
 #include "rpi/auxuart.h"
 #include "rpi/cache.h"
-#include "rpi/performance.h"
 #include "rpi/info.h"
 #include "rpi/gpio.h"
 #include "rpi/interrupts.h"
