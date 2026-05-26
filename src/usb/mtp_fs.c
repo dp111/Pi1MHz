@@ -844,7 +844,7 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
           memset(g_write_state.kernel_data + g_write_state.transferred, 0, reboot_copy_len - g_write_state.transferred);
         }
         _disable_interrupts();
-        _copyandreboot(g_write_state.kernel_data, (int)reboot_copy_len);
+        _copyandreboot(g_write_state.kernel_data, (int)reboot_copy_len); // this never returns
 
         resp->header->code = MTP_RESP_GENERAL_ERROR;
         fs_release_write_state();
@@ -972,7 +972,6 @@ static int32_t fs_get_storage_info(tud_mtp_cb_data_t* cb_data) {
   if (!fs_ensure_ready()) {
     return MTP_RESP_STORE_NOT_AVAILABLE;
   }
-
   // update storage info with current free space
   storage_info.max_capacity_in_bytes = UINT64_MAX;
   storage_info.free_space_in_bytes = UINT64_MAX;
@@ -1033,7 +1032,6 @@ static int32_t fs_get_object_handles(tud_mtp_cb_data_t* cb_data) {
   if (!fs_ensure_ready()) {
     return MTP_RESP_STORE_NOT_AVAILABLE;
   }
-
   if (parent_handle != 0u && parent_handle != 0xFFFFFFFFu) {
     fs_entry_t parent;
     if (!fs_get_entry_by_handle(parent_handle, &parent)) {
@@ -1200,7 +1198,6 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
   if (!fs_ensure_ready()) {
     return MTP_RESP_STORE_NOT_AVAILABLE;
   }
-
   if (cb_data->phase == MTP_PHASE_COMMAND) {
     (void) tud_mtp_data_receive(io_container);
   } else if (cb_data->phase == MTP_PHASE_DATA) {
