@@ -14,7 +14,11 @@
         "string.h": "c",
         "string_view": "c",
         "stdlib.h": "c",
-        "stdio.h": "c"
+        "stdio.h": "c",
+        "framebuffer.h": "c",
+        "mailbox.h": "c",
+        "rpi.h": "c",
+        "charconv": "c"
     },
     "cSpell.words": [
         "ADDRBUS",
