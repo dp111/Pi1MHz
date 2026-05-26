@@ -67,7 +67,7 @@ static void ram_emulator_page_addr_high(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   if (data > (Pi1MHz->JIM_ram_size)) data = (uint8_t)(Pi1MHz->JIM_ram_size - 1);
+   if (data >= (Pi1MHz->JIM_ram_size)) data = (uint8_t)(Pi1MHz->JIM_ram_size - 1);
                Pi1MHz->page_ram_addr = (size_t) ((Pi1MHz->page_ram_addr & 0x00FFFFFF) | (size_t)(data<<24));
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
@@ -147,7 +147,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    temp = temp & 0xFF000000; // round down to 16Mbyte boundary
    Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
 
-   Pi1MHz->byte_ram_addr = (size_t) ((Pi1MHz->JIM_ram_size - 1)<<24); // 16Mbyte boundary
+   Pi1MHz->byte_ram_addr = ((size_t)Pi1MHz->JIM_ram_size - 1)<<24; // 16Mbyte boundary
    Pi1MHz->page_ram_addr = 0;
 
    fx_register[instance] = Pi1MHz->JIM_ram_size;  // fx addr 0 returns ram size
