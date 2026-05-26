@@ -145,15 +145,15 @@ static const unsigned char wavfmt[] = {
 static inline void put_le16(uint8_t *p, uint16_t v)
 {
    p[0] = (uint8_t)v;
-   p[1] = (v >> 8);
+   p[1] = (uint8_t)(v >> 8);
 }
 
 static inline void put_le32(uint8_t *p, uint32_t v)
 {
    p[0] = (uint8_t)v;
-   p[1] = (v >> 8);
-   p[2] = (v >> 16);
-   p[3] = (v >> 24);
+   p[1] = (uint8_t)(v >> 8);
+   p[2] = (uint8_t)(v >> 16);
+   p[3] = (uint8_t)(v >> 24);
 }
 
 struct synth {
