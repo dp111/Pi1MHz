@@ -1,7 +1,7 @@
 # config.txt for Pi1MHz (https://github.com/dp111/Pi1MHz)
 # Debug kernels (needs a 115200 serial connection)
 
-#kernel=debug/kernelrpi.img
+#kernel=debug/kernel.img
 
 # Settings for Pi 3
 [pi3]
