@@ -63,7 +63,7 @@ void ram_emulator_page_addr(unsigned int gpio)
    if ( addr == 0xfd)
    {  if (data > (JIM_ram_size))
          data = JIM_ram_size;
-      page_ram_addr = (page_ram_addr & 0x00FFFFFF) | (data)<<24;
+      page_ram_addr = (page_ram_addr & 0x00FFFFFF) | data<<24;
    } else {
    if ( addr == 0xfe)
       page_ram_addr = (page_ram_addr & 0xFF00FFFF) | data<<16;
@@ -72,7 +72,7 @@ void ram_emulator_page_addr(unsigned int gpio)
    }
    Pi1MHz_Memory[addr] = data; // enable the address register to be read back
    // setup new data now the address has changed
-   memcpy(&Pi1MHz_Memory[Pi1MHz_MEM_PAGE], &JIM_ram[page_ram_addr], PAGE_SIZE);;
+   memcpy(&Pi1MHz_Memory[Pi1MHz_MEM_PAGE], &JIM_ram[page_ram_addr], PAGE_SIZE);
 }
 
 void ram_emulator_page_write(unsigned int gpio)
