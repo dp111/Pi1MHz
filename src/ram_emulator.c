@@ -158,7 +158,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
       // malloc can't fail. If it does the system will just run out of memory and crash, but it won't cause any corruption.
       if (!Pi1MHz->JIM_ram)
       {
-         LOG_INFO("RAM Emulator: rampage_emulator_init(): ERROR: Unable to allocate memory for JIM RAM\r\n");
+         LOG_INFO("No RAM\r\n");
       }
    }
 
