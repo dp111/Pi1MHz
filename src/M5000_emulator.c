@@ -63,7 +63,6 @@ static int autorange;
 
 struct synth {
     uint32_t phaseRAM[16];
-    uint8_t modulate;
     int sleft,sright;
     uint8_t * ram;
 };
@@ -77,9 +76,10 @@ NOINIT_SECTION static int antilogtable[128];
 static void synth_reset(struct synth *s, uint8_t * ptr)
 {
    s->ram = ptr;
-   memset(&s->ram[I_WFTOP], 0, 128); // Real hardware clears 0x3E00 and random
-                                     // Waveform bytes depending on phaseRAM
-   s->modulate = 0;
+   // Real hardware clears 0x3E00 for 128bytes and random
+   // Waveform bytes depending on phaseRAM
+   // we only need to clear the disable bytes   
+   memset(&s->ram[I_WFTOP], 1, 16);
 }
 
 static int32_t audio_range;
@@ -123,7 +123,7 @@ static void update_channels(struct synth *s)
 {
    int sleft = 0;
    int sright = 0;
-   uint8_t modulate = s->modulate; // this also contains the pointer to E00
+   uint8_t modulate = 0; // in real hardware modulate wraps from channel 16 to 0 but is never used
 
    for (int i = 0; i < 16; i++)
    {
@@ -133,6 +133,8 @@ static void update_channels(struct synth *s)
       // phase accumulator to zero.
       if (DISABLE(c)) {
           s->phaseRAM[i] = 0;
+		  // A slight differnce as modulation is still calculated in real hardware
+		  // but not here
       } else {
 		  int c4d, sign, sample;
           unsigned int sum = s->phaseRAM[i] + FREQ(c);
@@ -196,7 +198,6 @@ static void update_channels(struct synth *s)
    }
    s->sleft  = sleft; // should really divide by six but as that is just gain
    s->sright = sright; // so we can do it later
-   s->modulate = modulate;
 }
 
 static void music5000_get_sample(uint32_t *left, uint32_t *right)
