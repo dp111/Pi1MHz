@@ -73,10 +73,10 @@
 
 _start_vectors:
     B _reset_
-    ldr pc, _undefined_instruction_vector_h
-    ldr pc, _software_interrupt_vector_h
-    ldr pc, _prefetch_abort_vector_h
-    ldr pc, _data_abort_vector_h
+    B _undefined_instruction_handler_
+    B _swi_handler_
+    B _prefetch_abort_handler_
+    B _data_abort_handler_
     B _reset_
     B arm_irq_handler  //ldr pc, _interrupt_vector_h
 
@@ -87,12 +87,6 @@ _start_vectors:
     ldr pc,_fiq_vector_h
     _fiq_vector_h:                  .word   arm_fiq_handler
 #endif
-
-_interrupt_vector_h:                .word   arm_irq_handler
-_undefined_instruction_vector_h:    .word   _undefined_instruction_handler_
-_software_interrupt_vector_h:       .word   _swi_handler_
-_prefetch_abort_vector_h:           .word   _prefetch_abort_handler_
-_data_abort_vector_h:               .word   _data_abort_handler_
 
 arm_irq_handler:
     subs    lr, lr, #4
