@@ -59,7 +59,7 @@ void ram_emulator_page_addr(unsigned int gpio)
 {
    uint32_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   
+
    if ( addr == 0xfd)
    {  if (data > (JIM_ram_size))
          data = JIM_ram_size;
