@@ -165,3 +165,5 @@ Pull frame buffer changes in from PitTubeDirect
 Fix bug $&FD00 message was missing
 Fix bug cmdline.txt VFSJUKE and SCSIID not working
 Fix frame buffer missing top line output line of pixels ( a bit of a hack of having a blank line of pixels at the top of the frame buffer as a guard line for the PPF scaler pre-roll)
+move sdcard accesses to sdhost.
+Make build work with gcc 16.1

@@ -94,7 +94,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wenum-int-mismatch -Wxor-used-as-pow -fstr
 # tinyusb doesn't like below
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostartfiles " )
 
@@ -169,7 +169,10 @@ include_directories(BeebSCSI)
 include_directories(usb/tinyusb/src)
 include_directories(usb/tinyusb/hw)
 include_directories(usb)
-include_directories(usb/tinyusb/lib/lwip/src/include)
+
+set(LWIP_ROOT wifi/lwip)
+
+include_directories(${LWIP_ROOT}/src/include)
 include_directories(wifi)
 
 # M5000 emulator
@@ -219,26 +222,36 @@ file( GLOB wifi_files
 )
 
 file( GLOB lwip_files
-   usb/tinyusb/lib/lwip/src/core/def.c
-   usb/tinyusb/lib/lwip/src/core/dns.c
-   usb/tinyusb/lib/lwip/src/core/inet_chksum.c
-   usb/tinyusb/lib/lwip/src/core/init.c
-   usb/tinyusb/lib/lwip/src/core/ip.c
-   usb/tinyusb/lib/lwip/src/core/mem.c
-   usb/tinyusb/lib/lwip/src/core/memp.c
-   usb/tinyusb/lib/lwip/src/core/netif.c
-   usb/tinyusb/lib/lwip/src/core/pbuf.c
-   usb/tinyusb/lib/lwip/src/core/stats.c
-   usb/tinyusb/lib/lwip/src/core/sys.c
-   usb/tinyusb/lib/lwip/src/core/timeouts.c
-   usb/tinyusb/lib/lwip/src/core/udp.c
-   usb/tinyusb/lib/lwip/src/core/ipv4/autoip.c
-   usb/tinyusb/lib/lwip/src/core/ipv4/dhcp.c
-   usb/tinyusb/lib/lwip/src/core/ipv4/etharp.c
-   usb/tinyusb/lib/lwip/src/core/ipv4/icmp.c
-   usb/tinyusb/lib/lwip/src/core/ipv4/ip4.c
-   usb/tinyusb/lib/lwip/src/core/ipv4/ip4_addr.c
-   usb/tinyusb/lib/lwip/src/netif/ethernet.c
+   ${LWIP_ROOT}/src/core/def.c
+   ${LWIP_ROOT}/src/core/dns.c
+   ${LWIP_ROOT}/src/core/inet_chksum.c
+   ${LWIP_ROOT}/src/core/init.c
+   ${LWIP_ROOT}/src/core/ip.c
+   ${LWIP_ROOT}/src/core/mem.c
+   ${LWIP_ROOT}/src/core/memp.c
+   ${LWIP_ROOT}/src/core/netif.c
+   ${LWIP_ROOT}/src/core/pbuf.c
+   ${LWIP_ROOT}/src/core/stats.c
+   ${LWIP_ROOT}/src/core/sys.c
+   ${LWIP_ROOT}/src/core/tcp.c
+   ${LWIP_ROOT}/src/core/tcp_in.c
+   ${LWIP_ROOT}/src/core/tcp_out.c
+   ${LWIP_ROOT}/src/core/timeouts.c
+   ${LWIP_ROOT}/src/core/udp.c
+   ${LWIP_ROOT}/src/core/ipv4/acd.c
+   ${LWIP_ROOT}/src/core/ipv4/autoip.c
+   ${LWIP_ROOT}/src/core/ipv4/dhcp.c
+   ${LWIP_ROOT}/src/core/ipv4/etharp.c
+   ${LWIP_ROOT}/src/core/ipv4/icmp.c
+   ${LWIP_ROOT}/src/core/ipv4/ip4.c
+   ${LWIP_ROOT}/src/core/ipv4/ip4_addr.c
+   ${LWIP_ROOT}/src/netif/ethernet.c
+)
+
+set_source_files_properties(
+   ${LWIP_ROOT}/src/core/tcp_out.c
+   PROPERTIES
+   COMPILE_OPTIONS "-Wno-duplicated-branches;-Wno-sign-conversion"
 )
 
 

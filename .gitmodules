@@ -1,2 +1,6 @@
 [submodule "src/usb/tinyusb"]
 	path = src/usb/tinyusb
+	url = https://github.com/hathach/tinyusb.git
+[submodule "src/wifi/lwip"]
+	path = src/wifi/lwip
+	url = https://github.com/lwip-tcpip/lwip.git

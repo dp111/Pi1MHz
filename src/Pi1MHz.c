@@ -95,9 +95,12 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "rpi/gpio.h"
 #include "rpi/interrupts.h"
 #include "rpi/screen.h"
+#include "rpi/systimer.h"
 #include "Pi1MHz.h"
 
 #include "Pi1MHzvc.c"
+
+#include "scripts/gitversion.h"
 
 #include "BeebSCSI/filesystem.h"
 
@@ -114,6 +117,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "mouseredirect.h"
 #include "videoplayer.h"
 #include "usb.h"
+#include "wifi/wifi.h"
 
 typedef struct {
    const char *name;
@@ -133,6 +137,7 @@ static emulator_list emulator[] = {
    {"Framebuffer",fb_emulator_init, 0xA0, 1},
    {"Mouseredirect",mouse_redirect_init, 0xAB, 1 },
    {"usb",usb_init, 0x00, 1 },
+   {"wifi",wifi_emulator_init, 0x00, 1 }
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
@@ -142,7 +147,6 @@ static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE
 
 // Table of polling functions to call while idle
 NOINIT_SECTION static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
-
 // holds the total number of polling functions to call
 static uint8_t  Pi1MHz_polls_max;
 
@@ -197,6 +201,22 @@ void Pi1MHz_Register_Memory(int access, uint8_t addr, callback_func_ptr function
 // is can only register once
 void Pi1MHz_Register_Poll( func_ptr function_ptr )
 {
+   uint8_t i;
+
+   if (function_ptr == NULL)
+      return;
+
+   for (i = 0u; i < Pi1MHz_polls_max; ++i) {
+      if (Pi1MHz_poll_table[i] == function_ptr)
+         return;
+   }
+
+   if (Pi1MHz_polls_max >= NUM_EMULATORS) {
+      LOG_INFO("Poll registration ignored: table full (%u)\r\n",
+               (unsigned int)NUM_EMULATORS);
+      return;
+   }
+
    Pi1MHz_poll_table[Pi1MHz_polls_max] = function_ptr;
    Pi1MHz_polls_max++;
 }
@@ -262,7 +282,7 @@ void IRQHandler_main(void) {
 }
 
 static void init_emulator(void) {
-   LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator %s ****\r\n\r\n",RELEASENAME);
+   LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator %s %s " __DATE__ " " __TIME__" ****\r\n\r\n",RELEASENAME, GITVERSION);
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
    RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
@@ -451,6 +471,7 @@ _Noreturn void kernel_main(void)
 #endif
 
    bool oldreset = Pi1MHz_is_rst_active();
+   uint32_t main_poll_loops = 0u;
    do {
       if ( Pi1MHz_is_rst_active() )
       {
@@ -465,6 +486,30 @@ _Noreturn void kernel_main(void)
          oldreset = false;
       }
       for (size_t i=0 ; i<Pi1MHz_polls_max; i++ )
-        Pi1MHz_poll_table[i]();
+      {
+         func_ptr poll_fn = Pi1MHz_poll_table[i];
+
+         if (poll_fn != NULL) {
+            uint32_t before_us = RPI_GetSystemTime();
+            poll_fn();
+            {
+               uint32_t after_us = RPI_GetSystemTime();
+               uint32_t duration_us = after_us - before_us;
+
+               if (duration_us > 50000u) {
+               LOG_INFO("Slow poll callback idx=%u duration_us=%lu\r\n",
+                        (unsigned int)i,
+                        (unsigned long)duration_us);
+               }
+            }
+         }
+      }
+
+      main_poll_loops++;
+      if ((main_poll_loops % 1000000u) == 0u) {
+         LOG_INFO("Main poll heartbeat loops=%lu callbacks=%u\r\n",
+                  (unsigned long)main_poll_loops,
+                  (unsigned int)Pi1MHz_polls_max);
+      }
    } while (1);
 }
