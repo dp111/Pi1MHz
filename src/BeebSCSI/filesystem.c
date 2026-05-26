@@ -683,6 +683,8 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
    if (parse_readfile("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): Successful\r\n"));
+      // now parse the new file
+      parse_readfile(fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber]);
       return true;
    }
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): ERROR: Could not create new .cfg file!\r\n"));
@@ -989,9 +991,8 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
       filesystemState.keyvalues[lunNumber][index].v.string[8] = 0x00; // Landing zone
       filesystemState.keyvalues[lunNumber][index].v.string[9] = 0x01; // Step pulse count
       filesystemState.keyvalues[lunNumber][index].length = 10;
+      }
    }
-
-
 }
 
 
