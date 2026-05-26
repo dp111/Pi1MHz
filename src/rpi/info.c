@@ -151,9 +151,9 @@ uint32_t mem_info(int size)
 {
    rpi_mailbox_property_t *buf;
    buf = RPI_PropertyGetWord(TAG_GET_ARM_MEMORY, 0);
-   if (size)
-      return buf->data.buffer_32[1];
-   return buf->data.buffer_32[0];
+   if (buf)
+      return buf->data.buffer_32[size];
+   return 0;
 }
 
 void dump_useful_info(void) {
