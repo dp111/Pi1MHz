@@ -99,7 +99,6 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "Pi1MHz.h"
 #include "scripts/gitversion.h"
 #include "BeebSCSI/filesystem.h"
-#include "rpi/rpi-systimer.h"
 
 // add new emulators to the lists below
 
@@ -346,8 +345,6 @@ static void init_hardware()
 
    RPI_SetGpioLo(NIRQ_PIN);   // Set outputs low ready for interrupts when pin is changed to FS_OUPTUT
    RPI_SetGpioLo(NNMI_PIN);
-
-   RPI_SetPullUps((1UL<<NNMI_PIN) | (1UL<<NIRQ_PIN));
 
 #ifdef DEBUG
    dump_useful_info();
