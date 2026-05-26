@@ -24,7 +24,7 @@
 
 ************************************************************************/
 
-#include "cpuspecfic.h"
+#include "cpuspecific.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <inttypes.h>

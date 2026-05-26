@@ -39,7 +39,7 @@
 ************************************************************************/
 
 // Global includes
-#include "cpuspecfic.h"
+#include "cpuspecific.h"
 
 #include <stdbool.h>
 #include <stdint.h>

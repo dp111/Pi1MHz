@@ -38,7 +38,7 @@ extern  bool debugFlag_fatfs;
 extern  bool debugFlag_extended_attributes;
 
 #ifdef DEBUG
-#include "cpuspecfic.h"
+#include "cpuspecific.h"
 /* Function prototypes */
 void debugString_P(const char *addr);
 void debugString_C(const char *addr, uint8_t style);
