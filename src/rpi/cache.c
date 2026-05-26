@@ -109,7 +109,7 @@ void CleanDataCache (void)
 }
 #endif
 
-void _clean_cache_area(const void * start, unsigned int length)
+void _clean_cache_area(void * start, unsigned int length)
 {
 #if (__ARM_ARCH >= 7 )
    uint32_t cachelinesize;

@@ -13,7 +13,7 @@ static void print_tag_value(const char *name, const rpi_mailbox_property_t *buf,
    if (buf == NULL) {
       LOG_INFO("*** failed ***");
    } else {
-      for (int i = 0;  i < (buf->byte_length + 3) >> 2; i++) {
+      for (uint32_t i = 0;  i < (buf->byte_length + 3) >> 2; i++) {
          if (hex) {
             LOG_INFO("%08"PRIx32, buf->data.buffer_32[i]);
          } else {
