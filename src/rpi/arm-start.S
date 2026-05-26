@@ -44,10 +44,6 @@
 .section ".text.startup"
 
 .global _start
-.global _get_cpsr
-.global _get_stack_pointer
-.global _set_interrupts
-.global _enable_unaligned_access
 .global _data_memory_barrier
 
 .global _interrupt_vector_h
