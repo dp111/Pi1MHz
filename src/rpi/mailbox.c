@@ -6,6 +6,7 @@
 #include "rpi.h"
 #include "mailbox.h"
 #include "cache.h"
+#include "asm-helpers.h"
 
 /* Make sure the property tag buffer is aligned to a 16-byte boundary because
    we only have 28-bits available in the property interface protocol to pass
@@ -26,9 +27,11 @@ static mailbox_t* rpiMailbox1 = (mailbox_t*)RPI_MAILBOX1_BASE;
 void RPI_Mailbox0Write( mailbox0_channel_t channel, uint32_t * ptr )
 {
     _clean_cache_area(ptr, ptr[PT_OSIZE]);
+    rpiMailbox0->Data; // empty buffer incase anything is left over.
     /* Wait until the mailbox becomes available and then write to the mailbox
        channel */
-    while ( ( rpiMailbox1->Status & ARM_MS_FULL ) != 0 ) { }
+
+    while ( ( rpiMailbox1->Status & ARM_MS_FULL ) != 0 ) { rpiMailbox0->Data; }
     /* Add the channel number into the lower 4 bits */
     /* Write the modified value + channel number into the write register */
    rpiMailbox1->Data = ((uint32_t)ptr ) | channel;
@@ -61,8 +64,11 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
     pt[pt_index++] = 0; /* Request */
     pt[pt_index++] = data;
     pt_index += 1;
+    _disable_interrupts();
     RPI_PropertyProcess(true);
-    return RPI_PropertyGet(tag);
+    rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
+    _enable_interrupts();
+    return result;
 }
 
 void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data)
@@ -84,8 +90,11 @@ rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
     pt[pt_index++] = PROP_SIZE;
     pt[pt_index++] = 0; /* Request */
     pt_index += PROP_SIZE >> 2;
+    _disable_interrupts();
     RPI_PropertyProcess(true);
-    return RPI_PropertyGet(tag);
+    rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
+    _enable_interrupts();
+    return result;
 }
 
 void RPI_PropertyStart(rpi_mailbox_tag_t tag, uint32_t length)

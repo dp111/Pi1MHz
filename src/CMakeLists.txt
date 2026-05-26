@@ -110,6 +110,7 @@ file( GLOB core_files
    rpi/audio.c
    rpi/performance.c
    rpi/rpi.c
+   rpi/asm-helpers.c
    Pi1MHz.c
    ram_emulator.c
    helpers.c
