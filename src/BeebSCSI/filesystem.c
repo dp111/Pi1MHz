@@ -476,9 +476,9 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
    if (fsResult != FR_OK) {
       if (debugFlag_filesystem) {
          debugString_P(PSTR("File system: filesystemCheckLunDirectory(): ERROR: f_opendir returned "));
-         filesystemPrintfserror(fsResult);
-         return false;
+         filesystemPrintfserror(fsResult);   
       }
+      return false;
    }
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunDirectory(): LUN directory found\r\n"));
 
@@ -1220,6 +1220,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): ERROR: Cannot write to LUN image!\r\n"));
          return false;
       }
+
       currentBufferSector = 0;
       sectorsRemaining -= sectorsToWrite;
 
