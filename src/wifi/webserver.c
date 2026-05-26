@@ -48,6 +48,7 @@
 #define WS_ERROR_TEXT_MAX    128u
 #define WS_FB_BMP_MAX        (6u * 1024u * 1024u)  /* exported BMP size cap */
 #define WS_REBOOT_DELAY_US   (1500u * 1000u)       /* defer reboot ~1.5s */
+#define WS_FREE_REFRESH_US   (5u * 1000u * 1000u)  /* SD-free-space cache TTL */
 
 /* ------------------------------------------------------------------ */
 /* Connection model                                                    */
@@ -131,6 +132,13 @@ static bool            g_ws_ready;
 static char            g_ws_error[WS_ERROR_TEXT_MAX + 1u];
 static bool            g_ws_reboot_pending;
 static uint32_t        g_ws_reboot_at;
+/* Cached SD free-space.  f_getfree walks the FAT and can stall a
+   slow / fragmented card for hundreds of ms - too long for a TCP
+   callback to hold the cooperative poll loop.  webserver_poll
+   refreshes this in the background and route_status reads it. */
+static bool            g_ws_sd_free_valid;
+static uint32_t        g_ws_sd_free_mb;
+static uint32_t        g_ws_sd_free_age_us;
 
 static void ws_set_error(const char *message)
 {
@@ -1046,17 +1054,15 @@ static bool route_status(ws_conn_t *c)
             (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
    table_row(&b, "HTTP port", tmp);
 
-   {
-      DWORD  nclst = 0u;
-      FATFS *fs = NULL;
-      if (f_getfree("/", &nclst, &fs) == FR_OK && fs != NULL) {
-         uint64_t free_sect = (uint64_t)nclst * (uint64_t)fs->csize;
-         snprintf(tmp, sizeof tmp, "%lu MB free",
-                  (unsigned long)(free_sect / 2048u));
-         table_row(&b, "SD card", tmp);
-      } else {
-         table_row(&b, "SD card", "not available");
-      }
+   if (g_ws_sd_free_valid) {
+      snprintf(tmp, sizeof tmp, "%lu MB free",
+               (unsigned long)g_ws_sd_free_mb);
+      table_row(&b, "SD card", tmp);
+   } else {
+      /* webserver_poll refreshes the cache in the background; in the
+         narrow window before the first refresh has run, just say so
+         rather than stalling the TCP callback on f_getfree. */
+      table_row(&b, "SD card", "(querying)");
    }
 
    sb_puts(&b, "</table></div>");
@@ -1919,6 +1925,30 @@ static err_t ws_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
 /* Public interface                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Refresh the SD-card free-space cache.  f_getfree can take hundreds
+   of ms on a slow / fragmented card so it must not run from a TCP
+   callback; doing it here from the cooperative poll keeps /status
+   responsive without taking the listener offline. */
+static void webserver_refresh_sd_free(void)
+{
+   uint32_t now = RPI_GetSystemTime();
+   DWORD    nclst = 0u;
+   FATFS   *fs = NULL;
+
+   if (g_ws_sd_free_valid
+       && (now - g_ws_sd_free_age_us) < WS_FREE_REFRESH_US)
+      return;
+
+   g_ws_sd_free_age_us = now;
+   if (f_getfree("/", &nclst, &fs) == FR_OK && fs != NULL) {
+      uint64_t free_sect = (uint64_t)nclst * (uint64_t)fs->csize;
+      g_ws_sd_free_mb = (uint32_t)(free_sect / 2048u);
+      g_ws_sd_free_valid = true;
+   } else {
+      g_ws_sd_free_valid = false;
+   }
+}
+
 /* Poll hook: once a reboot has been requested via POST /reboot and the
    short grace period has elapsed - long enough for the response page to
    have been delivered - restart the Pi.  reboot_now() does not return. */
@@ -1928,6 +1958,9 @@ void webserver_poll(void)
        && (RPI_GetSystemTime() - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
       reboot_now();
    }
+
+   if (g_ws_ready)
+      webserver_refresh_sd_free();
 }
 
 void webserver_init(void)
