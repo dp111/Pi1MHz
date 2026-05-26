@@ -316,7 +316,7 @@ copy_loop:
 // Note: R7 reserved by Fast 6502 FIQ handler, so avoid
 _fast_scroll:
         push    {r4, r5, r6, r8, r9, r10, r11, lr}
-        bic     r2, r2, #0x4F
+        bic     r2, r2, #0x3F
 _fast_scroll_loop:
         ldmia   r1!,{r3, r4, r5, r6, r8, r9, r10, r11}
         subs    r2, r2, #64

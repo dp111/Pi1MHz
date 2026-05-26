@@ -189,9 +189,9 @@ static void initialize_palette(screen_mode_t *screen) {
       for (uint32_t i = 0; i < 0x40; i++) {
          // Depending on whether mark is true
          int colour = (mark ? i : (i >> 3)) & 0x07;
-         int red   = (colour & 1) ? 0xff : 0x00;
-         int green = (colour & 2) ? 0xff : 0x00;
-         int blue  = (colour & 4) ? 0xff : 0x00;
+         uint32_t red   = (colour & 1) ? 0xff : 0x00;
+         uint32_t green = (colour & 2) ? 0xff : 0x00;
+         uint32_t blue  = (colour & 4) ? 0xff : 0x00;
          screen->set_colour(screen, i + (mark << 8), red, green, blue);
       }
    }

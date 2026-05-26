@@ -1,25 +1,14 @@
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 
-#include "../rpi/mailbox.h"
+#include "../rpi/screen.h"
 #include "../rpi/base.h"
 #include "../Pi1MHz.h"
 #include "screen_modes.h"
 #include "fonts.h"
 #include "teletext.h"
 #include "framebuffer.h"
-
-// Align frame buffer of a 64KB boundary (mostly for OCD reasons!)
-#define FB_ALIGNMENT 0x10000
-
-// Registers to read the physical screen size
-#ifdef RPI4
-#define PIXELVALVE2_HORZB (volatile uint32_t *)(PERIPHERAL_BASE + 0x20A010)
-#define PIXELVALVE2_VERTB (volatile uint32_t *)(PERIPHERAL_BASE + 0x20A018)
-#else
-#define PIXELVALVE2_HORZB (volatile uint32_t *)(PERIPHERAL_BASE + 0x807010)
-#define PIXELVALVE2_VERTB (volatile uint32_t *)(PERIPHERAL_BASE + 0x807018)
-#endif
 
 unsigned char* fb = NULL;
 
@@ -33,12 +22,7 @@ typedef struct {
    int y2;
 } rectangle_t;
 
-// Colour palette request blocks
-
-#define PALETTE_DATA_OFFSET 7
-
-__attribute__((aligned(64))) __attribute__ ((section (".noinit"))) static uint32_t palette0_base[NUM_COLOURS+PALETTE_DATA_OFFSET+1];
-__attribute__((aligned(64))) __attribute__ ((section (".noinit"))) static uint32_t palette1_base[NUM_COLOURS+PALETTE_DATA_OFFSET+1];
+#define SCREEN_PLANE 1
 
 // ==========================================================================
 // Screen Mode Definitions
@@ -56,7 +40,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 1,
@@ -67,7 +51,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 2,
@@ -78,7 +62,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 4,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 2.0f
    },
    {
       .mode_num      = 3,
@@ -90,7 +74,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 4,
@@ -101,7 +85,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 2.0f
    },
    {
       .mode_num      = 5,
@@ -112,7 +96,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 4,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 2.0f
    },
    {
       .mode_num      = 6,
@@ -124,7 +108,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    // mode 7 is implemented in teletext.c
    {
@@ -136,7 +120,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 9,
@@ -147,7 +131,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 10,
@@ -159,7 +143,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 4,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 2.0f
    },
    {
       .mode_num      = 11,
@@ -171,7 +155,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 12,
@@ -182,7 +166,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 13,
@@ -194,7 +178,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 2.0f
    },
    {
       .mode_num      = 14,
@@ -206,7 +190,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 15,
@@ -218,7 +202,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 16,
@@ -229,7 +213,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 17,
@@ -241,7 +225,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 18,
@@ -252,7 +236,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 19,
@@ -263,7 +247,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 20,
@@ -274,7 +258,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 21,
@@ -286,7 +270,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 22,
@@ -297,7 +281,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 23,
@@ -309,7 +293,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 24,
@@ -321,7 +305,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 25,
@@ -332,7 +316,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 26,
@@ -343,7 +327,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 27,
@@ -354,7 +338,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 28,
@@ -366,7 +350,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 29,
@@ -377,7 +361,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 30,
@@ -388,7 +372,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 31,
@@ -399,7 +383,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 32,
@@ -411,7 +395,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 33,
@@ -422,7 +406,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 34,
@@ -433,7 +417,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 35,
@@ -444,7 +428,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 36,
@@ -456,7 +440,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 37,
@@ -467,7 +451,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 38,
@@ -478,7 +462,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 39,
@@ -489,7 +473,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 40,
@@ -501,7 +485,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 41,
@@ -512,7 +496,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 42,
@@ -523,7 +507,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 43,
@@ -534,7 +518,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 44,
@@ -545,7 +529,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 45,
@@ -556,7 +540,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 46,
@@ -567,7 +551,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 0.5f
    },
    {
       .mode_num      = 47,
@@ -579,7 +563,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 2.0f
    },
    {
       .mode_num      = 48,
@@ -590,7 +574,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 2.0f
    },
    {
       .mode_num      = 49,
@@ -602,7 +586,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 2.0f
    },
    {
       .mode_num      = 50,
@@ -613,7 +597,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 1,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 51,
@@ -624,7 +608,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 3,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 52,
@@ -635,7 +619,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 15,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 53,
@@ -647,7 +631,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    // 8 bpp
    {
@@ -660,7 +644,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 65,
@@ -672,7 +656,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 3,
       .log2bpc       = 3,
       .ncolour       = 255,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    // 16 bpp
    {
@@ -684,7 +668,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 4,
       .log2bpc       = 4,
       .ncolour       = 0xffff,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 67,
@@ -695,7 +679,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 4,
       .log2bpc       = 4,
       .ncolour       = 0xffff,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    // 32 bpp
    {
@@ -707,7 +691,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 5,
       .log2bpc       = 5,
       .ncolour       = 0xffffff,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = 69,
@@ -718,7 +702,7 @@ static screen_mode_t screen_modes[] = {
       .log2bpp       = 5,
       .log2bpc       = 5,
       .ncolour       = 0xffffff,
-      .par           = 0.0f
+      .par           = 1.0f
    },
    {
       .mode_num      = CUSTOM_8BPP_SCREEN_MODE,
@@ -753,12 +737,10 @@ static void update_palette(screen_mode_t *screen, int mark) {
    if (mark < 0) {
       mark = last_mark;
    }
-   uint32_t *pt = mark ? palette0_base : palette1_base;
-   // These are overwritten by the previous response
-   pt[1] = 0;
-   pt[4] = 0;
-   // Don't block waiting for the response
-   RPI_Mailbox0Write( MB0_TAGS_ARM_TO_VC, pt );
+
+   screen_set_palette(SCREEN_PLANE,mark?0:1,1);
+   screen_set_palette(SCREEN_PLANE+1,mark?0:1,1); // mouse plane
+
    // Remember the currently selected palette
    last_mark = mark;
 }
@@ -819,10 +801,10 @@ static void init_colour_table(screen_mode_t *screen) {
       // Colour 14 = Cyan/Red
       // Colour 15 = White/Black
       for (uint32_t i = 0; i < NUM_COLOURS * 2; i++) {
-         int c = ((i & 0x108) == 0x108) ? 7 - (i & 7) : (i & 7);
-         int b = (c & 4) ? 0xff : 0x00;
-         int g = (c & 2) ? 0xff : 0x00;
-         int r = (c & 1) ? 0xff : 0x00;
+         uint32_t c = ((i & 0x108) == 0x108) ? 7 - (i & 7) : (i & 7);
+         uint32_t b = (c & 4) ? 0xff : 0x00;
+         uint32_t g = (c & 2) ? 0xff : 0x00;
+         uint32_t r = (c & 1) ? 0xff : 0x00;
          screen->set_colour(screen, i, r, g, b);
       }
    } else {
@@ -831,43 +813,16 @@ static void init_colour_table(screen_mode_t *screen) {
       // Bits 4,2 = R    (0x00, 0x44, 0x88, 0xCC)
       // Bits 6,5 = G    (0x00, 0x44, 0x88, 0xCC)
       // Bits 7,3 = B    (0x00, 0x44, 0x88, 0xCC)
-      for (int i = 0; i < NUM_COLOURS * 2; i++) {
+      for (uint32_t i = 0; i < NUM_COLOURS * 2; i++) {
          // Tint
-         int tint = (i & 0x03) * 0x11;
+         uint32_t tint = (i & 0x03) * 0x11;
          // Colour
-         int r = (((i >> 3) & 0x02) | ((i >> 2) & 0x01)) * 0x44 + tint;
-         int g = (((i >> 5) & 0x02) | ((i >> 5) & 0x01)) * 0x44 + tint;
-         int b = (((i >> 6) & 0x02) | ((i >> 3) & 0x01)) * 0x44 + tint;
-         screen->set_colour(screen, (uint32_t)i, r, g, b);
+         uint32_t r = (((i >> 3) & 0x02) | ((i >> 2) & 0x01)) * 0x44 + tint;
+         uint32_t g = (((i >> 5) & 0x02) | ((i >> 5) & 0x01)) * 0x44 + tint;
+         uint32_t b = (((i >> 6) & 0x02) | ((i >> 3) & 0x01)) * 0x44 + tint;
+         screen->set_colour(screen, i, r, g, b);
       }
    }
-   // Prepare the palette request messages, to make flashing efficient
-   if (screen->log2bpp == 3) {
-      uint32_t n = NUM_COLOURS;
-      for (int i = 0; i < 2; i++) {
-         uint32_t *p = i ? palette1_base : palette0_base;
-         p[0]     = (n + 8) * 4;         // 0: property buffer: length (bytes)
-         p[1]     = 0;                   // 1: property buffer: 0=request
-         p[2]     = TAG_SET_PALETTE;     // 2: tag header: tag
-         p[3]     = (n + 2) * 4;         // 3: tag header: length of body (bytes)
-         p[4]     = 0;                   // 4: tag header: 0=request
-         p[5]     = 0;                   // 5: tag body: offset
-         p[6]     = n;                   // 6: tag body: number of colours
-         p[7 + n] = 0;                   // 7: property buffer: terminator
-      }
-   }
-}
-
-static int get_hdisplay(void) {
-#ifdef RPI4
-   return  ((*PIXELVALVE2_HORZB) & 0xFFFF) * 2;
-#else
-    return (*PIXELVALVE2_HORZB) & 0xFFFF;
-#endif
-}
-
-static int get_vdisplay(void) {
-    return (*PIXELVALVE2_VERTB) & 0xFFFF;
 }
 
 static void to_rectangle(const screen_mode_t *screen, const t_clip_window_t *text_window, rectangle_t *r) {
@@ -902,109 +857,12 @@ static void null_handler( screen_mode_t *screen, int mark) {
 
 void default_init_screen(screen_mode_t *screen, font_t *font) {
 
-    rpi_mailbox_property_t *mp;
-
-    // Calculate optimal overscan
-    int h_display = get_hdisplay();
-    int v_display = get_vdisplay();
-
-    // TODO: this can be greatly improved!
-    // It assumes you want to fill (or nearly fill) a 1280x1024 window on your physical display
-    // It will work really badly with an 800x600 screen mode, say on a 1600x1200 monitor
-
-    int h_corrected;
-    int v_corrected;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-    if (screen->par == 1.0f) {
-#pragma GCC diagnostic pop
-       // Square pixels
-       h_corrected = screen->width;
-       v_corrected = screen->height;
-    } else if (screen->par > 1.0f) {
-       // Wide pixels
-       h_corrected = (int) (((float)screen->width) * screen->par);
-       v_corrected = screen->height;
-    } else {
-       // Narrow pixels
-       h_corrected = screen->width;
-       v_corrected = (int) (((float)screen->height) / screen->par);
-    }
-
-    int h_scale = 2 * h_display / h_corrected;
-    int v_scale = 2 * v_display / v_corrected;
-
-    int scale = (h_scale < v_scale) ? h_scale : v_scale;
-
-    int h_window = scale * h_corrected / 2;
-    int v_window = scale * v_corrected / 2;
-
-    int h_overscan = (h_display - h_window) / 2;
-    int v_overscan = (v_display - v_window) / 2;
-
-#ifdef DEBUG_VDU
-    printf("         display: %d x %d\r\n", h_display, v_display);
-    printf("     framebuffer: %d x %d\r\n", screen->width, screen->height);
-    printf("aspect corrected: %d x %d\r\n", h_corrected, v_corrected);
-    printf("         scaling: %1.1f x %1.1f\r\n", (double)(((float) h_window) / ((float) screen->width)), (double)(((float) v_window) / ((float) screen->height)));
-    printf("  display window: %d x %d\r\n", h_window, v_window);
-    printf("display overscan: %d x %d\r\n", h_overscan, v_overscan);
-#endif
-
-    // Work-around for issue #134 (Certain mode changes trigger incorrectly sized framebuffer)
-    // Allocate an 8x8 framebuffer first, then allocate the size we actually need
-    RPI_PropertyStart(TAG_ALLOCATE_BUFFER, 2); RPI_PropertyAddTwoWords(FB_ALIGNMENT,0);
-    RPI_PropertyNewTag(TAG_SET_PHYSICAL_SIZE, 2); RPI_PropertyAddTwoWords( 64, 64 );
-    RPI_PropertyNewTag(TAG_SET_VIRTUAL_SIZE, 2); RPI_PropertyAddTwoWords( 64, 64 );
-    RPI_PropertyNewTag(TAG_SET_DEPTH, 1); RPI_PropertyAdd( 1 << screen->log2bpp);
-    RPI_PropertyProcess(TRUE);
-
-    // Initialise the framebuffer for real...
-    RPI_PropertyStart(TAG_ALLOCATE_BUFFER, 2); RPI_PropertyAddTwoWords(FB_ALIGNMENT,0);
-    RPI_PropertyNewTag(TAG_SET_PHYSICAL_SIZE, 2);
-    RPI_PropertyAddTwoWords( (uint32_t) screen->width,  (uint32_t) screen->height );
-    RPI_PropertyNewTag(TAG_SET_VIRTUAL_SIZE, 2);
-    RPI_PropertyAddTwoWords(  (uint32_t) screen->width,  (uint32_t) screen->height );
-    RPI_PropertyNewTag(TAG_SET_DEPTH, 1); RPI_PropertyAdd( 1 << screen->log2bpp);
-
-    RPI_PropertyNewTag(TAG_SET_OVERSCAN, 4);
-    RPI_PropertyAddTwoWords( (uint32_t) v_overscan,  (uint32_t) v_overscan);
-    RPI_PropertyAddTwoWords(  (uint32_t) h_overscan,  (uint32_t) h_overscan);
-    RPI_PropertyProcess(TRUE);
-
-    if( ( mp = RPI_PropertyGet( TAG_ALLOCATE_BUFFER ) ) )
-    {
-        fb = (unsigned char*)mp->data.buffer_32[0];
-#ifdef DEBUG_VDU
-        printf( "Framebuffer address: %8.8X\r\n", (unsigned int)fb );
-#endif
-    }
-
-#ifdef DEBUG_VDU
-    if( ( mp = RPI_PropertyGetWord( TAG_GET_PHYSICAL_SIZE, 2 ) ) )
-    {
-        uint32_t width = mp->data.buffer_32[0];
-        uint32_t height = mp->data.buffer_32[1];
-        printf( "Initialised Framebuffer: %"PRId32"x%"PRId32, width, height );
-    }
-
-    if( ( mp = RPI_PropertyGetWord( TAG_GET_DEPTH, 1 ) ) )
-    {
-        uint32_t bpp = mp->data.buffer_32[0];
-        printf( " %"PRId32"bpp\r\n", bpp );
-    }
-#endif
-
-    if( ( mp = RPI_PropertyGetWord( TAG_GET_PITCH, 1 ) ) )
-    {
-        screen->pitch = (int)mp->data.buffer_32[0];
-#ifdef DEBUG_VDU
-        printf( "Pitch: %d bytes\r\n", screen->pitch );
-#endif
-    }
-
-    // On the Pi 2/3 the mailbox returns the address with bits 31..30 set, which is wrong
-    fb = (unsigned char *)(((uint32_t) fb) & 0x3fffffff);
+   static uint32_t handle;
+   screen_plane_enable(SCREEN_PLANE, false);
+   screen_release_buffer(handle); // doesn't do anything if fb is NULL
+   fb = (unsigned char *) screen_allocate_buffer((uint32_t) (screen->width * screen->height) * (1 << (uint32_t) screen->log2bpp) / 8 , &handle);
+   screen->pitch = screen->width * (1 << (uint32_t) screen->log2bpp) / 8;
+   screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
 
     // Initialize colour table and palette
     screen->font = font;
@@ -1012,6 +870,8 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
 
     /* Clear the screen to the background colour */
     screen->clear(screen, NULL, 0);
+
+    screen_plane_enable(SCREEN_PLANE, true);
 }
 
 void default_reset_screen(screen_mode_t *screen) {
@@ -1054,6 +914,9 @@ void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_wi
       } else if (screen->log2bpp == 4) {
          bg_col = bg_col | (bg_col << 16);
       }
+      LOG_DEBUG("Scrolling screen up by %d pixels\n\r", font_height);
+      LOG_DEBUG("Screen: %d x %d, Pitch: %d\n\r", screen->width, screen->height, screen->pitch);
+      LOG_DEBUG("fb : %p\r\n", fb);
       _fast_scroll(fb, fb + font_height * screen->pitch, (screen->height - font_height) * screen->pitch);
       // Now blank the bottom line
       blank = r.y1;
@@ -1098,17 +961,18 @@ void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_wi
    }
 }
 
-void default_set_colour_8bpp(screen_mode_t *screen, colour_index_t index, int r, int g, int b) {
-   pixel_t *colour_t = ((index & 0x100) ? palette1_base : palette0_base) + PALETTE_DATA_OFFSET;
-   colour_t[index & 0xff] = 0xFF000000 | ((b & 0xFF) << 16) | ((g & 0xFF) << 8) | (r & 0xFF);
+void default_set_colour_8bpp(screen_mode_t *screen, colour_index_t index, uint32_t r, uint32_t g, uint32_t b) {
+   //pixel_t *colour_t = ((index & 0x100) ? palette1_base : palette0_base) + PALETTE_DATA_OFFSET;
+   //colour_t[index & 0xff] = 0xFF000000 | ((b & 0xFF) << 16) | ((g & 0xFF) << 8) | (r & 0xFF);
+   screen_update_palette_entry( index, r , g , b );
 }
 
 // cppcheck-suppress constParameterCallback
-void default_set_colour_16bpp(screen_mode_t *screen, colour_index_t index, int r, int g, int b) {
+void default_set_colour_16bpp(screen_mode_t *screen, colour_index_t index, uint32_t r, uint32_t g, uint32_t b) {
 }
 
 // cppcheck-suppress constParameterCallback
-void default_set_colour_32bpp(screen_mode_t *screen, colour_index_t index, int r, int g, int b) {
+void default_set_colour_32bpp(screen_mode_t *screen, colour_index_t index, uint32_t r, uint32_t g, uint32_t b) {
 }
 
 pixel_t default_get_colour_8bpp(const screen_mode_t *screen, uint8_t gcol) {
@@ -1149,14 +1013,15 @@ pixel_t default_get_colour_32bpp(const screen_mode_t *screen, uint8_t gcol) {
 
 pixel_t default_nearest_colour_8bpp(const struct screen_mode *screen, uint8_t r, uint8_t g, uint8_t b) {
    // Max distance is 7 * 255 * 255 which fits easily in an int
+
    int distance = 0x7fffffff;
    colour_index_t best = 0;
    for (colour_index_t i = 0; i <= screen->ncolour && distance != 0; i++) {
-      pixel_t colour = palette0_base[i + PALETTE_DATA_OFFSET];
-      // xxBBGGRR
-      int dr = r - (colour & 0xff);
-      int dg = g - ((colour >> 8) & 0xff);
-      int db = b - ((colour >> 16) & 0xff);
+      pixel_t colour = screen_get_palette_entry(i);
+      // xxRRGGBB
+      int dr = r - ((colour >> 16 ) & 0xff);
+      int dg = g - ((colour >> 8  ) & 0xff);
+      int db = b - ((colour       ) & 0xff);
       int d = 2 * dr * dr + 4 * dg * dg + db * db;
       if (d < distance) {
          distance = d;
@@ -1304,12 +1169,7 @@ screen_mode_t *get_screen_mode(int mode_num) {
          sm->get_pixel      = default_get_pixel_8bpp;
          break;
       }
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-      if (sm->par == 0.0F) {
-#pragma GCC diagnostic pop
-         sm->par = ((float) (1 << sm->xeigfactor)) / ((float) (1 << sm->yeigfactor));
-      }
+
       if (!sm->flash && sm->log2bpp == 3) {
          sm->flash = default_flash;
       }

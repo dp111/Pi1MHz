@@ -13,6 +13,7 @@
 #include "../rpi/base.h"
 #include "../rpi/interrupts.h"
 #include "../rpi/asm-helpers.h"
+#include "../rpi/screen.h"
 //#include "../tube.h"
 //#include "../copro-defs.h"
 //#include "../tube-defs.h"
@@ -1098,13 +1099,13 @@ static void vdu_17(const uint8_t *buf) {
       c_bg_gcol = col;
       c_bg_col = calculate_colour(c_bg_gcol, c_bg_tint);
 #ifdef DEBUG_VDU
-      printf("bg = "PRIx32"\r\n", c_bg_col);
+      printf("bg = %"PRIx32"\r\n", c_bg_col);
 #endif
    } else {
       c_fg_gcol = col;             ;
       c_fg_col = calculate_colour(c_fg_gcol, c_fg_tint);
 #ifdef DEBUG_VDU
-      printf("fg ="PRIx32"\r\n", c_fg_col);
+      printf("fg = %"PRIx32"\r\n", c_fg_col);
 #endif
    }
 }
@@ -1158,7 +1159,7 @@ static void vdu_19(const uint8_t *buf) {
       }
    }
    // Force an update of the palette
-   screen->update_palette(screen, -1);
+   //screen->update_palette(screen, -1);
 }
 
 static void vdu_20(const uint8_t *buf) {
@@ -1577,7 +1578,7 @@ static void fb_show_splash_screen(void) {
    // Turn of the cursor (as there are some bugs when changing fonts)
    cursor(0);
    select_font(12, 2, 2, 0); // Computer Font
-   fb_writes("Pi1MHz VDU Driver\r\n");
+   fb_writes("Pi1MHz VDU Driver\r\n\n");
 
    fb_writec(17);
 #ifdef DEBUG
@@ -1598,14 +1599,13 @@ static void fb_show_splash_screen(void) {
    fb_writec(31);
    fb_writec(0);
    fb_writec(4);
-   fb_writes("\r\n\n\n");
-   fb_writes("\r\n\n\n");
-   fb_writes("\r\n\n\n");
    fb_writes("Release: "RELEASENAME"\r\n");
-   fb_writes(" Commit: "GITVERSION"\r\n");
+   fb_writes("Commit : "GITVERSION"\r\n");
    fb_writes("Pi Info: ");
    fb_writes(get_info_string());
-   fb_writes("\r\n\n\n");
+   fb_writes("\r\n");
+   sprintf(buffer, "Temp   : %2.1fC\r\n", (double) get_temp() ); fb_writes(buffer);
+    fb_writes("\r\n\n\n\n\n\n\n");
 
    fb_writes("Helper functions can be started in one  of three ways : \r\n\r\n");
 
@@ -1670,9 +1670,7 @@ void fb_destroy(void) {
    RPI_GetIrqController()->Disable_Basic_IRQs = RPI_BASIC_ARM_TIMER_IRQ;
 
    // Disable the frame buffer
-   RPI_PropertyInit();
-   RPI_PropertyAddTag(TAG_RELEASE_BUFFER);
-   RPI_PropertyProcess();
+   screen_release_buffer ( handle);
 }
 #endif
 void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours) {
@@ -1701,6 +1699,7 @@ void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours) {
       y_pixels <<= 1;
    } while (y_pixels < 1024);
    new_screen->ncolour = n_colours - 1;
+   new_screen->par = ((float) (1 << new_screen->xeigfactor)) / ((float) (1 << new_screen->yeigfactor));
    change_mode(new_screen);
 }
 
@@ -2247,8 +2246,10 @@ void fb_emulator_ram(unsigned int gpio)
 
 void fb_emulator_init(uint8_t instance, uint8_t address)
 {
+
   fb_initialize();
   fb_show_splash_screen();
+
   Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
  // Create 6 bytes of RAM for vector code
   Pi1MHz_MemoryWrite(address+0, 0x8D);

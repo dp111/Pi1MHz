@@ -544,7 +544,7 @@ static bool filesystemCheckLunImage(uint8_t lunNumber)
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): WARNING: File size and DSC parameters are NOT consistent\r\n"));
       }
    }
-   //  .ucd files hve been superceded
+   //  .ucd files have been superseded
 #if 0
    // this isn't expected to exist
    // Check if the LUN user code descriptor file (.ucd) is present

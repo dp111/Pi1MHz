@@ -28,4 +28,6 @@ extern void dump_useful_info(void);
 /* Cached on boot, so this is safe to call at any time */
 extern char *get_cmdline_prop(const char *prop);
 
+float get_temp(void);
+
 #endif

@@ -69,7 +69,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wm
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum -Wenum-int-mismatch -Wxor-used-as-pow -fstrict-flex-arrays -Warray-bounds=2")
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostartfiles " )
 
@@ -104,6 +104,7 @@ file( GLOB core_files
    rpi/performance.c
    rpi/rpi.c
    rpi/asm-helpers.c
+   rpi/screen.c
    Pi1MHz.c
    ram_emulator.c
    helpers.c

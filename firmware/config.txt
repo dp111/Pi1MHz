@@ -3,7 +3,7 @@
 
 #kernel=debug/kernel.img
 
-# Enable VSYNC interrputs
+# Enable VSYNC interrupts
 fake_vsync_isr=1
 
 # Settings for Pi 3
