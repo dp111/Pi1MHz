@@ -855,7 +855,7 @@ static uint8_t scsiCommandFormat(void)
    }
 
    // Tell the file system to start the new LUN
-   filesystemSetLunStatus(commandDataBlock.targetLUN, true);   // ISW 17/7/22 Restore this line, was commented out which causes verify following format to go on "forever"
+   filesystemSetLunStatus(commandDataBlock.targetLUN, true);   // Needed to prevent verify looping forever
 
    // Indicate successful command in status and message
    commandDataBlock.status = 0x00; // 0x00 = Good
@@ -1655,16 +1655,16 @@ static uint8_t scsiCommandReadCapacity(void)
 
    // Send the Read Capacity data to the host
    // 4 bytes last block address
-   hostadapterWriteByte((uint8_t)((lunsize & 0xFF000000) >> 24));   // Last block MSB   ISW 17/7/22 correct calculation as was returning bytes not sectors
-   hostadapterWriteByte((uint8_t)((lunsize & 0x00FF0000) >>16));    // Last block
-   hostadapterWriteByte((uint8_t)((lunsize & 0x0000FF00) >> 8));    // Last block
-   hostadapterWriteByte((uint8_t)(lunsize & 0x000000FF));          // Last block LSB
+   hostadapterWriteByte((uint8_t)((lunsize & 0xFF000000) >> 24));    // Last block MSB
+   hostadapterWriteByte((uint8_t)((lunsize & 0x00FF0000) >>16));     // Last block
+   hostadapterWriteByte((uint8_t)((lunsize & 0x0000FF00) >> 8));     // Last block
+   hostadapterWriteByte((uint8_t)(lunsize & 0x000000FF));            // Last block LSB
    // four bytes block size
    uint32_t blocksize = 256;
-   hostadapterWriteByte((uint8_t)((blocksize & 0xFF000000) >> 24));   // Bytes from index MSB
-   hostadapterWriteByte((uint8_t)((blocksize & 0x00FF0000) >> 16));   // Bytes from index
-   hostadapterWriteByte((uint8_t)((blocksize & 0x0000FF00) >> 8)); // Bytes from index
-   hostadapterWriteByte((uint8_t)( blocksize & 0x000000FF));       // Bytes from index LSB
+   hostadapterWriteByte((uint8_t)((blocksize & 0xFF000000) >> 24));  // Bytes from index MSB
+   hostadapterWriteByte((uint8_t)((blocksize & 0x00FF0000) >> 16));  // Bytes from index
+   hostadapterWriteByte((uint8_t)((blocksize & 0x0000FF00) >> 8));   // Bytes from index
+   hostadapterWriteByte((uint8_t)( blocksize & 0x000000FF));         // Bytes from index LSB
 
    // Indicate successful command in status and message
    commandDataBlock.status = 0x00; // 0x00 = Good
