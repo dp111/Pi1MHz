@@ -74,7 +74,8 @@ void RPI_AuxMiniUartInit(unsigned int baud)
 
   /* Enable weak pullups */
 
-  RPI_SetPullUps((1u << RPI_TX_PIN) | (1u << RPI_RX_PIN));
+  RPI_SetGpioPull(RPI_TX_PIN, PULL_UP);
+  RPI_SetGpioPull(RPI_RX_PIN, PULL_UP);
 
   /* As this is a mini uart the configuration is complete! Now just
    enable the uart. Note from the documentation in section 2.1.1 of
