@@ -1893,7 +1893,7 @@ void prim_define_sprite(screen_mode_t *screen, int n, int x1, int y1, int x2, in
       uint16_t *data = sprite->data;
       for (int yp = 0; yp < sprite->height; yp++) {
          for (int xp = 0; xp < sprite->width; xp++) {
-            *data++ = (uint16_t)get_pixel(screen, x1 + xp, y1 + xp);
+            *data++ = (uint16_t)get_pixel(screen, x1 + xp, y1 + yp);
          }
       }
    } else if (screen->log2bpp == 5)  {
