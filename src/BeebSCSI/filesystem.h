@@ -59,6 +59,9 @@ struct HDGeometry
 void filesystemInitialise(uint8_t scsijuke, uint8_t vfsjuke);
 void filesystemReset(void);
 
+bool filesystemMount(void);
+bool filesystemDismount(void);
+
 bool filesystemCheckLunImage(uint8_t lunNumber);
 
 void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber);

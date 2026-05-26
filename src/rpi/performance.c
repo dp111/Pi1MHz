@@ -182,7 +182,7 @@ void reset_performance_counters(perf_counters_t *pct) {
          /* Configure the required event type */
          __asm volatile ("mcr p15,0,%0,c9,c13,1" :: "r" (pct->type[i]) : "memory");
          /* Set the bit to enable the counter */
-         cntenset |= (1 << i);
+         cntenset |= (1u << i);
       } else {
          printf("Event: %s not implemented\r\n", type_lookup(pct->type[i]));
       }

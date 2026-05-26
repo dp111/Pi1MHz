@@ -144,8 +144,6 @@ static uint32_t sectorsRemaining = 0;
 
 NOINIT_SECTION static FIL fileObjectFAT;
 
-static bool filesystemMount(void);
-static bool filesystemDismount(void);
 static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber);
 
 static void filesystemPrintfserror(FRESULT fsResult)
@@ -254,7 +252,7 @@ void filesystemReset(void)
 // File system mount and dismount functions --------------------------------------------------------------------
 
 // Function to mount the file system
-static bool filesystemMount(void)
+ bool filesystemMount(void)
 {
    FRESULT fsResult;
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemMount(): Mounting file system\r\n"));
@@ -286,7 +284,7 @@ static bool filesystemMount(void)
 }
 
 // Function to dismount the file system
-static bool filesystemDismount(void)
+bool filesystemDismount(void)
 {
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemDismount(): Dismounting file system\r\n"));

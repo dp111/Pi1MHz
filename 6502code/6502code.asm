@@ -287,14 +287,14 @@ ORG &FD00
     ENDBLOCK &700
 }
 ; Page 8
-; BSROM duplicate
+; Xfer program ??
 {
 ORG &FD00
     LOADFILETOSWR "Pi1MHz/BSrom.rom"
     ENDBLOCK &800
 }
 ; Page 9
-; BSROM duplicate
+; Remount mount program ??
 {
 ORG &FD00
     LOADFILETOSWR "Pi1MHz/BSrom.rom"

@@ -364,7 +364,7 @@ uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
 
       // Read the current byte from the databus and point to the next byte
       dataBuffer[currentByte++] = HD_DATA;
-
+      //printf(" %x", HD_DATA);
       // Clear the REQuest signal
       hostadapterWriteRequestFlag(CLEAR);
    } while (currentByte < 256 );
