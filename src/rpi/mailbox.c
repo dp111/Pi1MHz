@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include "rpi.h"
 #include "mailbox.h"
 #include "cache.h"
@@ -60,7 +61,7 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
     pt[pt_index++] = 0; /* Request */
     pt[pt_index++] = data;
     pt_index += 1;
-    RPI_PropertyProcess();
+    RPI_PropertyProcess(true);
     return RPI_PropertyGet(tag);
 }
 
@@ -72,7 +73,7 @@ void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data)
     pt[pt_index++] = 0; /* Request */
     pt[pt_index++] = id;
     pt[pt_index++] = data;
-    RPI_PropertyProcess();
+    RPI_PropertyProcess(false);
 }
 
 rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
@@ -83,7 +84,7 @@ rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
     pt[pt_index++] = PROP_SIZE;
     pt[pt_index++] = 0; /* Request */
     pt_index += PROP_SIZE >> 2;
-    RPI_PropertyProcess();
+    RPI_PropertyProcess(true);
     return RPI_PropertyGet(tag);
 }
 
@@ -113,7 +114,7 @@ void RPI_PropertyNewTag(rpi_mailbox_tag_t tag, uint32_t length)
     pt[pt_index++] = 0; /* Request */
 }
 
-unsigned int RPI_PropertyProcess( void )
+unsigned int RPI_PropertyProcess( bool wait )
 {
     unsigned int result;
 
@@ -129,6 +130,9 @@ unsigned int RPI_PropertyProcess( void )
         LOG_INFO( "Request: %3d %8.8"PRIx32"\r\n", i, pt[i] );
 #endif
     RPI_Mailbox0Write( MB0_TAGS_ARM_TO_VC, pt );
+
+    if (wait == false)
+        return 0;
 
     do { // make sure the response is for us
        result = RPI_Mailbox0Read( MB0_TAGS_ARM_TO_VC );
