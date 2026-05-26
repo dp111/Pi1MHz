@@ -31,7 +31,12 @@ truncate :
 dd if=image3000d.yuv iflag=skip_bytes,count_bytes,fullblock bs=4096 skip=36 count=884736 of=image3000cor.yuv
 
 compress
-lz4 -12 image3000d.yuv image300d.lz4
+lz4 -12 image3000cor.yuv image3000cor.lz4
+
+there is a 7 byte header which we don't need so remove that
+
+dd if=image3000cor.lz4 iflag=skip_bytes,count_bytes,fullblock bs=4096 skip=7 of=image3000cor.lz
+
 
 Fcodes that need supporting to boot
 

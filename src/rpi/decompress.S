@@ -3,13 +3,13 @@
 
 /* License: Public Domain - I cannot be held responsible for what it does or does not do if you use it, whether it's modified or not. */
 
-/* Entry point = unlz4. On entry: r0 = source, r1 = destination. The first two bytes of the source must contain the length of the compressed data. */
+/* Entry point = decompress_lz4. On entry: r0 = source, r1 = destination. The first word of the source must contain the length of the compressed data. */
 
-                    .func               unlz4
-                    .global             unlz4
-                    .type               unlz4,%function
+                    .func               decompress_lz4
+                    .global             decompress_lz4
+                    .type               decompress_lz4,%function
 
-unlz4:              ldrh                r2,[r0],#2          /* get length of compressed data */
+decompress_lz4:      ldr                 r2,[r0],#4          /* get length of compressed data */
 
                     push                {r4-r6,lr}          /* save r4, r5, r6 and return-address */
                     add                 r5,r2,r0            /* point r5 to end of compressed data */
@@ -53,6 +53,7 @@ gotLength:          bx                  lr                  /* return */
 copyData:
 
                     // think about using ldrh and ldr for longer copies
+                    // needs fast memcpy for small lengths
 
 copyDataLoop:       ldrb                r3,[r2],#1          /* read byte from source */
                     subs                r4,r4,#1            /* decrement index */
