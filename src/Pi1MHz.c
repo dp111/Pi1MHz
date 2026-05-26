@@ -161,6 +161,7 @@ void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
    Pi1MHz_Memory_VPU[ad] = 0xFF00FF00 | (data&0xFF) | (data<<8);
 }
 
+// cppcheck-suppress unusedFunction
 void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
 {
    // write a word at a time ( the compiler does the correct thing and does an STR instruction)
