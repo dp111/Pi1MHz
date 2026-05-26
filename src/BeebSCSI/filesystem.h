@@ -30,7 +30,7 @@
 // Read/Write sector buffer (must be 256 bytes minimum)
 // Testing shows that this is optimal when it matches the sector size of
 // the SD card (which is 512 bytes).
-#define SECTOR_BUFFER_SIZE		512
+#define SECTOR_BUFFER_SIZE	 (16*1024)
 
 // Calculate the length of the sector buffer in 256 byte sectors
 #define SECTOR_BUFFER_LENGTH	(SECTOR_BUFFER_SIZE / 256)
@@ -65,11 +65,11 @@ bool filesystemWriteLunDescriptor(uint8_t lunNumber, uint8_t buffer[]);
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern);
 
 bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t requiredNumberOfSectors);
-bool filesystemReadNextSector(uint8_t buffer[]);
-bool filesystemCloseLunForRead(void);
+bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer);
+bool filesystemCloseLunForRead(uint8_t lunNumber);
 bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t requiredNumberOfSectors);
-bool filesystemWriteNextSector(uint8_t buffer[]);
-bool filesystemCloseLunForWrite(void);
+bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t buffer[]);
+bool filesystemCloseLunForWrite(uint8_t lunNumber);
 
 bool filesystemSetFatDirectory(uint8_t *buffer);
 bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer);

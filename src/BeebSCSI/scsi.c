@@ -131,7 +131,6 @@ static uint8_t scsiBeebScsiFatRead(void);
 // Initialise the SCSI emulation (called on a cold-start of the AVR)
 void scsiInitialise(void)
 {
-   uint8_t lunNumber;
 #if 0
    // On a cold-start we always output debug information (ignoring the setting of the
    // debug flags) - as this is useful for initial board testing
@@ -166,18 +165,6 @@ void scsiInitialise(void)
    debugString_P(PSTR("\r\n"));
 #endif
    if (debugFlag_scsiState) debugString_P(PSTR("SCSI State: Initialising SCSI emulation\r\n"));
-
-   // Clear the request sense error globals
-   for (lunNumber = 0; lunNumber < 8; lunNumber++) {
-      requestSenseData[lunNumber].errorFlag = false;
-      requestSenseData[lunNumber].validAddressFlag = false;
-      requestSenseData[lunNumber].errorClass = 0x00;
-      requestSenseData[lunNumber].errorCode = 0x00;
-      requestSenseData[lunNumber].logicalBlockAddress = 0x00;
-   }
-
-   // Set the initial SCSI emulation state
-   scsiState = SCSI_BUSFREE;
 }
 
 // Reset the SCSI emulation (called when the host signals reset)
@@ -909,7 +896,7 @@ static uint8_t scsiCommandFormat(void)
    }
 
    // Tell the file system to start the new LUN
-   filesystemSetLunStatus(commandDataBlock.targetLUN, true);
+  // filesystemSetLunStatus(commandDataBlock.targetLUN, true);
 
    // Indicate successful command in status and message
    commandDataBlock.status = 0x00; // 0x00 = Good
@@ -944,6 +931,7 @@ static uint8_t scsiCommandRead6(void)
    uint32_t logicalBlockAddress = 0;
    uint32_t numberOfBlocks = 0;
    uint32_t currentBlock = 0;
+   uint8_t *sectorPtr = 0;
 
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: READ command (0x08) received\r\n"));
@@ -1016,8 +1004,7 @@ static uint8_t scsiCommandRead6(void)
       requestSenseData[commandDataBlock.targetLUN].logicalBlockAddress = 0x00;
 
       // The LUN is in an unknown state... Stop the LUN
-      filesystemCloseLunForRead();
-      filesystemSetLunStatus(commandDataBlock.targetLUN, false);
+      filesystemCloseLunForRead(commandDataBlock.targetLUN);
 
       return SCSI_STATUS;
    }
@@ -1027,7 +1014,7 @@ static uint8_t scsiCommandRead6(void)
    for (currentBlock = 0; currentBlock < numberOfBlocks; currentBlock++) {
 
       // Read the requested block from the LUN image
-      if(!filesystemReadNextSector(scsiSectorBuffer)) {
+      if(!filesystemReadNextSector(commandDataBlock.targetLUN, &sectorPtr)) {
          // Reading from the LUN image failed... try to recover with a little grace...
          if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Could not read next sector from LUN image!\r\n"));
          commandDataBlock.status = (commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
@@ -1041,15 +1028,14 @@ static uint8_t scsiCommandRead6(void)
          requestSenseData[commandDataBlock.targetLUN].logicalBlockAddress = 0x00;
 
          // The LUN is in an unknown state... Stop the LUN
-         filesystemCloseLunForRead();
-         filesystemSetLunStatus(commandDataBlock.targetLUN, false);
+         filesystemCloseLunForRead(commandDataBlock.targetLUN);
 
          return SCSI_STATUS;
       }
 
       // Send the data to the host
       cli();
-      DEBUG_bytesTransferred(hostadapterPerformReadDMA(scsiSectorBuffer));
+      DEBUG_bytesTransferred(hostadapterPerformReadDMA(sectorPtr));
       sei();
 
       // Check for a host reset condition
@@ -1058,7 +1044,7 @@ static uint8_t scsiCommandRead6(void)
          if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Read DMA interrupted by host reset at byte #"), bytesTransferred, true);
 
          // Close the currently open LUN image
-         filesystemCloseLunForRead();
+         filesystemCloseLunForRead(commandDataBlock.targetLUN);
 
          return SCSI_BUSFREE;
       }
@@ -1071,13 +1057,13 @@ static uint8_t scsiCommandRead6(void)
          }
       } else {
          debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
-         debugSectorBufferHex(scsiSectorBuffer, 256);
+         debugSectorBufferHex(sectorPtr, 256);
       }
    }
    if (debugFlag_scsiCommands || debugFlag_scsiBlocks) debugString_P(PSTR("\r\n"));
 
    // Close the currently open LUN image
-   filesystemCloseLunForRead();
+   //filesystemCloseLunForRead(commandDataBlock.targetLUN);
 
    // Indicate successful transfer in status and message
    commandDataBlock.status = 0x00; // 0x00 = Good
@@ -1176,8 +1162,7 @@ static uint8_t scsiCommandWrite6(void)
       requestSenseData[commandDataBlock.targetLUN].logicalBlockAddress = 0x00;
 
       // The LUN is in an unknown state... Stop the LUN
-      filesystemCloseLunForWrite();
-      filesystemSetLunStatus(commandDataBlock.targetLUN, false);
+      filesystemCloseLunForWrite(commandDataBlock.targetLUN);
 
       return SCSI_STATUS;
    }
@@ -1195,13 +1180,13 @@ static uint8_t scsiCommandWrite6(void)
          if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Write DMA interrupted by host reset at byte #"), bytesTransferred, true);
 
          // Close the currently open LUN image
-         filesystemCloseLunForWrite();
+         filesystemCloseLunForWrite(commandDataBlock.targetLUN);
 
          return SCSI_BUSFREE;
       }
 
       // Write the requested block to the LUN image
-      if(!filesystemWriteNextSector(scsiSectorBuffer)) {
+      if(!filesystemWriteNextSector(commandDataBlock.targetLUN, scsiSectorBuffer)) {
          // Writing to the LUN image failed... try to recover with a little grace...
          if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Writing to LUN image failed!\r\n"));
          commandDataBlock.status = (commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
@@ -1215,8 +1200,7 @@ static uint8_t scsiCommandWrite6(void)
          requestSenseData[commandDataBlock.targetLUN].logicalBlockAddress = 0x00;
 
          // The LUN is in an unknown state... Stop the LUN
-         filesystemCloseLunForWrite();
-         filesystemSetLunStatus(commandDataBlock.targetLUN, false);
+         filesystemCloseLunForWrite(commandDataBlock.targetLUN);
 
          return SCSI_STATUS;
       }
@@ -1235,7 +1219,7 @@ static uint8_t scsiCommandWrite6(void)
    if (debugFlag_scsiCommands || debugFlag_scsiBlocks) debugString_P(PSTR("\r\n"));
 
    // Close the currently open LUN image
-   filesystemCloseLunForWrite();
+   // filesystemCloseLunForWrite(commandDataBlock.targetLUN);
 
    // Indicate successful transfer in status and message
    commandDataBlock.status = 0x00; // 0x00 = Good
