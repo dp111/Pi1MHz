@@ -49,7 +49,6 @@ static ip_addr_t       g_mdns_group;
 static char            g_host[NETNAME_HOST_MAX + 1u];
 static uint8_t         g_host_len;
 static bool            g_ready;
-static bool            g_poll_registered;
 static bool            g_announced;
 static uint32_t        g_last_announce_us;
 
@@ -217,7 +216,7 @@ static void netname_nbns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 }
 
 /* Poll hook: re-announce over mDNS at a steady interval. */
-static void netname_poll(void)
+void netname_poll(void)
 {
    uint8_t  ip[4];
    uint32_t now;
@@ -276,9 +275,8 @@ void netname_init(void)
       }
    }
 
-   if (!g_poll_registered) {
-      Pi1MHz_Register_Poll(netname_poll);
-      g_poll_registered = true;
-   }
+   /* No poll registration: netname_poll is called from
+      wifi_dispatch_poll in wifi.c so the whole WiFi stack costs a
+      single slot in the main Pi1MHz poll table. */
    g_ready = true;
 }

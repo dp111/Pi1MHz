@@ -129,7 +129,6 @@ typedef struct {
 static struct tcp_pcb *g_ws_listener;
 static bool            g_ws_ready;
 static char            g_ws_error[WS_ERROR_TEXT_MAX + 1u];
-static bool            g_ws_poll_registered;
 static bool            g_ws_reboot_pending;
 static uint32_t        g_ws_reboot_at;
 
@@ -1923,7 +1922,7 @@ static err_t ws_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
 /* Poll hook: once a reboot has been requested via POST /reboot and the
    short grace period has elapsed - long enough for the response page to
    have been delivered - restart the Pi.  reboot_now() does not return. */
-static void webserver_poll(void)
+void webserver_poll(void)
 {
    if (g_ws_reboot_pending
        && (RPI_GetSystemTime() - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
@@ -1972,10 +1971,9 @@ void webserver_init(void)
    tcp_arg(g_ws_listener, NULL);
    tcp_accept(g_ws_listener, ws_accept);
 
-   if (!g_ws_poll_registered) {
-      Pi1MHz_Register_Poll(webserver_poll);
-      g_ws_poll_registered = true;
-   }
+   /* No poll registration: webserver_poll is called from
+      wifi_dispatch_poll in wifi.c so the whole WiFi stack costs a
+      single slot in the main Pi1MHz poll table. */
 
    g_ws_ready = true;
    wifi_note_http_ready();

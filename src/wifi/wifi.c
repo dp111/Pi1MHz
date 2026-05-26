@@ -1,6 +1,7 @@
 #include "wifi.h"
 
 #include "cyw43.h"
+#include "netname.h"
 #include "sdio.h"
 #include "webserver.h"
 #include "wifi_lwip.h"
@@ -42,6 +43,21 @@ static bool g_wifi_images_preloaded;
 static bool g_wifi_init_done;
 static void wifi_debug_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 static bool wifi_equals_ignore_case(const char *left, const char *right);
+
+/* Single poll entry-point for the whole WiFi stack: the four sub-poll
+   functions all have early-exit guards (boot stage IDLE,
+   timers_running, reboot_pending, g_ready), so calling them
+   unconditionally is safe even before their owning sub-system has
+   been initialised.  Calling them straight from here avoids using
+   four slots in the small Pi1MHz poll table and keeps the call set
+   visible in one place. */
+static void wifi_dispatch_poll(void)
+{
+   wifi_boot();
+   wifi_lwip_poll();
+   webserver_poll();
+   netname_poll();
+}
 
 static bool wifi_preload_images(void)
 {
@@ -486,8 +502,12 @@ void wifi_init(void)
 
    wifi_debug_log("boot start state=%s", wifi_state_name(g_wifi_state));
 
+   /* Register the dispatcher with the main poll table exactly once;
+      every WiFi sub-system (wifi_boot, wifi_lwip_poll, webserver_poll,
+      netname_poll) is called from wifi_dispatch_poll instead of
+      taking its own slot. */
    if (!g_wifi_boot_poll_registered) {
-      Pi1MHz_Register_Poll(wifi_boot);
+      Pi1MHz_Register_Poll(wifi_dispatch_poll);
       g_wifi_boot_poll_registered = true;
    }
 

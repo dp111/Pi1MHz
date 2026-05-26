@@ -15,5 +15,9 @@
  * netname_init() is called once the lwIP netif is up. */
 
 void netname_init(void);
+/* Per-tick mDNS re-announce.  Called from the shared WiFi dispatcher
+   in wifi.c; safe to call before netname_init - it just returns
+   until g_ready is set. */
+void netname_poll(void);
 
 #endif

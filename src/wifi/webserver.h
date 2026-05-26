@@ -14,6 +14,10 @@
  * three entry points below are part of the public interface. */
 
 void webserver_init(void);
+/* Per-tick housekeeping (deferred reboot, etc).  Called from the
+   shared WiFi dispatcher in wifi.c; safe to call before
+   webserver_init - it just no-ops until something is pending. */
+void webserver_poll(void);
 bool webserver_is_ready(void);
 const char *webserver_last_error(void);
 

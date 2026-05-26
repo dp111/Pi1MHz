@@ -302,8 +302,11 @@ void wifi_lwip_init_stack(void)
    netif_set_up(&g_wifi_lwip_context.netif);
    netif_set_link_down(&g_wifi_lwip_context.netif);
    g_wifi_lwip_context.timers_running = true;
-   Pi1MHz_Register_Poll(wifi_lwip_poll);
-   wifi_lwip_debug_log("netif added and poll hook registered");
+   /* No poll registration: wifi_lwip_poll is called from
+      wifi_dispatch_poll in wifi.c so the whole WiFi stack costs a
+      single slot in the main Pi1MHz poll table.  timers_running
+      gates the poll so it stays a no-op until this point. */
+   wifi_lwip_debug_log("netif added");
 
    /* Start the NetBIOS / mDNS name responders so the Pi can be reached
       by name as well as by IP address. */
