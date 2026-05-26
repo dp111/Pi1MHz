@@ -50,7 +50,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wextra -Wno-unused-parameter -Wnull-derefe
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostartfiles " )
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections")
 
