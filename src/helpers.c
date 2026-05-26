@@ -97,7 +97,5 @@ void helpers_init( uint8_t instance , uint8_t address)
         Pi1MHz_MemoryWrite(address+4, 0x4c); // JMP &FD00 // RTS
         Pi1MHz_MemoryWrite(address+5, 0x00);
         Pi1MHz_MemoryWrite(address+6, 0xFD);
-
-        helpers_setup(address);
     }
 }

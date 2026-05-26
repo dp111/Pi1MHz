@@ -129,3 +129,7 @@ v1.21
 Fix SCSIJUKE LUN directory setting bug.
 Fix a number of bugs that prevented format from working correctly.
 Support Loading user roms 10-15 with X%=10-15: CALL &FC88
+
+v.1.22
+Update FatFS to 0.16
+Fix P.$&FD00 message getting over written by the helper screen ACK byte.
