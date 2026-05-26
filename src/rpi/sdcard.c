@@ -50,7 +50,7 @@
    } while ( time--); \
 }
 
-//#define DEBUG_SD
+#define DEBUG_SD
 #define RESET_CONTROLLER
 
 #ifdef DEBUG_SD
@@ -327,7 +327,7 @@ static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argu
     printf(
         "SDHOST %s: cmd=%" PRIu32 " arg=%08" PRIx32 " err=%08" PRIx32
         " hsts=%08" PRIx32 " edm=%08" PRIx32 " hcfg=%08" PRIx32
-        " cdiv=%08" PRIx32 " blocks=%" PRIu32 " blksz=%zu\r\n",
+        " cdiv=%08" PRIx32 " blocks=%" PRIu32 " blksz=%u\r\n",
         phase,
         opcode,
         argument,
@@ -337,7 +337,7 @@ static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argu
         sdhost_read(SDHCFG),
         sdhost_read(SDCDIV),
         dev->blocks_to_transfer,
-        dev->block_size);
+        (unsigned int) dev->block_size);
 }
 #else
 static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argument, struct emmc_block_dev *dev)
@@ -603,15 +603,6 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
             dev->last_error = sdhost_translate_error(dev->last_interrupt, true);
             sdhost_log_failure("pio", opcode, argument, dev);
             sdhost_write(SDHSTS, dev->last_interrupt & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG));
-            return;
-        }
-
-        if ((opcode == READ_MULTIPLE_BLOCK || opcode == WRITE_MULTIPLE_BLOCK) &&
-            sdhost_wait_for_data_idle(!is_write) != 0)
-        {
-            dev->last_interrupt = sdhost_read(SDHSTS);
-            dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
-            sdhost_log_failure("pre-stop", opcode, argument, dev);
             return;
         }
 
@@ -1062,6 +1053,7 @@ static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t 
     uint32_t status;
     uint32_t wait_loops = timeout;
     uint32_t hcfg = g_sdhost_storage_hcfg;
+    bool is_stop_command = (sdcmd & SDCMD_CMD_MASK) == ((uint32_t) STOP_TRANSMISSION & SDCMD_CMD_MASK);
 
     status = sdhost_read(SDHSTS);
     if ((status & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG)) != 0u)
@@ -1075,7 +1067,7 @@ static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t 
         hcfg &= (uint32_t)~(SDHCFG_DATA_IRPT_EN | SDHCFG_BLOCK_IRPT_EN);
     sdhost_write(SDHCFG, hcfg);
 
-    if (sdhost_wait_for_request_ready(timeout) != 0)
+    if (!is_stop_command && sdhost_wait_for_request_ready(timeout) != 0)
     {
         if (error_out != NULL)
             *error_out = SD_ERR_MASK_CMD_TIMEOUT;
