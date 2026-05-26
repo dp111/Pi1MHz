@@ -5,9 +5,9 @@
 
 /* Found in the *start.S file, implemented in assembler */
 
-#define _enable_interrupts() {asm volatile ("CPSIE if");}
+#define _enable_interrupts() {__asm volatile ("CPSIE if");}
 
-#define _disable_interrupts() {asm volatile ("CPSID if");}
+#define _disable_interrupts() {__asm volatile ("CPSID if");}
 
 #if (__ARM_ARCH >= 7 )
     #define _data_memory_barrier() {asm volatile ("dmb");}
