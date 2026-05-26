@@ -69,7 +69,7 @@ void debugString_P(const char *addr)
 }
 
 // This function outputs a string stored in RAM space to the UART
-void debugString(char *string)
+void debugString(const char *string)
 {
    printf("%s", string);
 }

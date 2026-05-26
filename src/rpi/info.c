@@ -93,8 +93,7 @@ char *get_info_string() {
 static char *get_cmdline() {
    static uint8_t read = 0;
    if (!read) {
-      rpi_mailbox_property_t *buf;
-      buf = RPI_PropertyGetBuffer( TAG_GET_COMMAND_LINE );
+      rpi_mailbox_property_t const *buf = RPI_PropertyGetBuffer( TAG_GET_COMMAND_LINE );
       if (buf) {
          memcpy(cmdline, buf->data.buffer_8, buf->byte_length);
          cmdline[buf->byte_length] = 0;
@@ -202,7 +201,7 @@ void dump_useful_info() {
    size_t n = sizeof(tags) / sizeof(rpi_mailbox_tag_t);
 
    for (size_t i = 0; i < n; i++) {
-      rpi_mailbox_property_t *buf = RPI_PropertyGetWord(tags[i], 0);
+      const rpi_mailbox_property_t *buf = RPI_PropertyGetWord(tags[i], 0);
       print_tag_value(tagnames[i], buf, 1);
    }
 

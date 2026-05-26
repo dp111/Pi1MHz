@@ -347,6 +347,7 @@ bool filesystemReadLunStatus(uint8_t lunNumber)
 }
 
 // Function to confirm that a LUN image is still available
+// cppcheck-suppress unusedFunction
 bool filesystemTestLunStatus(uint8_t lunNumber)
 {
    if (filesystemState.fsLunStatus[lunNumber] == true) {
@@ -367,6 +368,7 @@ bool filesystemTestLunStatus(uint8_t lunNumber)
 }
 
 // Function to read the user code for the specified LUN image
+// cppcheck-suppress unusedFunction
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 {
    userCode[0] = filesystemState.fsLunUserCode[lunNumber][0];
@@ -841,7 +843,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber, uint8_t buffer[])
 }
 
 // Function to write a LUN descriptor
-bool filesystemWriteLunDescriptor(uint8_t lunNumber, uint8_t buffer[])
+bool filesystemWriteLunDescriptor(uint8_t lunNumber, uint8_t const buffer[])
 {
    FRESULT fsResult;
    FIL fileObject;
@@ -1033,7 +1035,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 }
 
 // Function to write next sector to a LUN
-bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t buffer[])
+bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
 {
 
    memcpy(sectorBuffer + (currentBufferSector * 256), buffer , 256 );
@@ -1079,7 +1081,7 @@ bool filesystemCloseLunForWrite(uint8_t lunNumber)
 // Functions for FAT Transfer support --------------
 
 // Change the filesystem's FAT transfer directory
-bool filesystemSetFatDirectory(uint8_t *buffer)
+bool filesystemSetFatDirectory(const uint8_t *buffer)
 {
    sprintf(fatDirectory, "%s", buffer);
    if (debugFlag_filesystem) {

@@ -11,7 +11,7 @@ rpi_sys_timer_t* RPI_GetSystemTimer(void)
 void RPI_WaitMicroSeconds( uint32_t us )
 {
     uint32_t ts = rpiSystemTimer->counter_lo;
-
+// cppcheck-suppress duplicateExpression
     while ( ( rpiSystemTimer->counter_lo - ts ) < us )
     {
         /* BLANK */

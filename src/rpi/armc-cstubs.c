@@ -76,6 +76,7 @@ char **environ = __env;
 
 /* Never return from _exit as there's no OS to exit to, so instead we trap
  here */
+ // cppcheck-suppress unusedFunction
 void _exit(int status)
 {
   /* Stop the compiler complaining about unused variables by "using" it */
@@ -89,6 +90,7 @@ void _exit(int status)
 
 /* Transfer control to a new process. Minimal implementation (for a system
  without processes): */
+ // cppcheck-suppress unusedFunction
 int execve(const char *name __attribute__((unused)), char * const *argv __attribute__((unused)),
            char * const *env __attribute__((unused)))
 {
@@ -98,6 +100,7 @@ int execve(const char *name __attribute__((unused)), char * const *argv __attrib
 
 /* Create a new process. Minimal implementation (for a system without
  processes): */
+// cppcheck-suppress unusedFunction
 int fork(void)
 {
   errno = EAGAIN;
@@ -107,12 +110,14 @@ int fork(void)
 /* Process-ID; this is sometimes used to generate strings unlikely to conflict
  with other processes. Minimal implementation, for a system without
  processes: */
+// cppcheck-suppress unusedFunction
 int getpid(void)
 {
   return 1;
 }
 
 /* Send a signal. Minimal implementation: */
+// cppcheck-suppress unusedFunction
 int kill(int pid __attribute__((unused)), int sig __attribute__((unused)))
 {
   errno = EINVAL;
@@ -120,6 +125,7 @@ int kill(int pid __attribute__((unused)), int sig __attribute__((unused)))
 }
 
 /* Establish a new name for an existing file. Minimal implementation: */
+// cppcheck-suppress unusedFunction
 int link( char *old __attribute__((unused)), char *new __attribute__((unused)) )
 {
   errno = EMLINK;
@@ -127,6 +133,7 @@ int link( char *old __attribute__((unused)), char *new __attribute__((unused)) )
 }
 
 /* Open a file. Minimal implementation: */
+// cppcheck-suppress unusedFunction
 int open(const char *name __attribute__((unused)), int flags __attribute__((unused)),
          int mode __attribute__((unused)))
 {
@@ -137,6 +144,7 @@ int open(const char *name __attribute__((unused)), int flags __attribute__((unus
  it is useful to have a working implementation. The following suffices for a
  standalone system; it exploits the symbol _end automatically defined by the
  GNU linker. */
+// cppcheck-suppress unusedFunction
 caddr_t _sbrk(int incr)
 {
   extern char _end;
@@ -150,6 +158,7 @@ caddr_t _sbrk(int incr)
 }
 
 /* Status of a file (by name). Minimal implementation: */
+// cppcheck-suppress unusedFunction
 int stat(const char *file __attribute__((unused)), struct stat *st )
 {
   st->st_mode = S_IFCHR;
@@ -157,12 +166,14 @@ int stat(const char *file __attribute__((unused)), struct stat *st )
 }
 
 /* Timing information for current process. Minimal implementation: */
+// cppcheck-suppress unusedFunction
 clock_t times(struct tms *buf __attribute__((unused)))
 {
   return (clock_t)-1;
 }
 
 /* Remove a file's directory entry. Minimal implementation: */
+// cppcheck-suppress unusedFunction
 int unlink(char *name __attribute__((unused)))
 {
   errno = ENOENT;
@@ -170,6 +181,7 @@ int unlink(char *name __attribute__((unused)))
 }
 
 /* Wait for a child process. Minimal implementation: */
+// cppcheck-suppress unusedFunction
 int wait(int *status __attribute__((unused)))
 {
   errno = ECHILD;
@@ -184,6 +196,7 @@ void outbyte(char b)
 // works correctly
 /* There's currently no implementation of a file system because there's no
  file system! */
+// cppcheck-suppress unusedFunction
 __attribute__((used)) int _close(int file __attribute__((unused)))
 {
   return -1;
@@ -193,6 +206,7 @@ __attribute__((used)) int _close(int file __attribute__((unused)))
  in these examples, all files are regarded as character special devices. The
  sys/stat.h header file required is distributed in the include subdirectory
  for this C library. */
+// cppcheck-suppress unusedFunction
 __attribute__((used)) int _fstat(int file __attribute__((unused)), struct stat *st)
 {
   st->st_mode = S_IFCHR;
@@ -202,12 +216,14 @@ __attribute__((used)) int _fstat(int file __attribute__((unused)), struct stat *
 /* Query whether output stream is a terminal. For consistency with the other
  minimal implementations, which only support output to stdout, this minimal
  implementation is suggested: */
+// cppcheck-suppress unusedFunction
 __attribute__((used)) int _isatty(int file __attribute__((unused)))
 {
   return 1;
 }
 
 /* Set position in a file. Minimal implementation: */
+// cppcheck-suppress unusedFunction
 __attribute__((used)) int _lseek(int file __attribute__((unused)),
                                  int ptr __attribute__((unused)),
                                  int dir __attribute__((unused)))
@@ -216,6 +232,7 @@ __attribute__((used)) int _lseek(int file __attribute__((unused)),
 }
 
 /* Read from a file. Minimal implementation: */
+// cppcheck-suppress unusedFunction
 __attribute__((used)) int _read(int file __attribute__((unused)),
                                 char *ptr __attribute__((unused)),
                                 int len __attribute__((unused)))
@@ -230,7 +247,8 @@ __attribute__((used)) int _read(int file __attribute__((unused)),
  incomplete example; it relies on a outbyte subroutine (not shown; typically,
  you must write this in assembler from examples provided by your hardware
  manufacturer) to actually perform the output. */
-__attribute__((used)) int _write(int file __attribute__((unused)), char *ptr, int len)
+// cppcheck-suppress unusedFunction
+__attribute__((used)) int _write(int file __attribute__((unused)), const char *ptr, int len)
 {
   for (int todo = 0; todo < len; todo++)
     outbyte(*ptr++);
@@ -251,10 +269,11 @@ unsigned int _get_cpsr()
     void _data_memory_barrier() {  asm volatile ("mcr p15, 0, %0, c7, c10, 5" :: "r" (0));}
 #endif
 
+// cppcheck-suppress unusedFunction
 void _getpid_r()
 {
 }
-
+// cppcheck-suppress unusedFunction
 void _kill_r()
 {
 }

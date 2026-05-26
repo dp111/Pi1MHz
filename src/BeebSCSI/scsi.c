@@ -820,6 +820,7 @@ static uint8_t scsiCommandFormat(void)
       for (uint16_t defectListRecords = 0; defectListRecords < defectListLength; defectListRecords++) {
          // Read the defect data
          for (size_t byteCounter = 0; byteCounter < 8; byteCounter++)
+           // cppcheck-suppress unreadVariable
            Buffer[byteCounter] = hostadapterReadByte();
 
          // Output defect to debug

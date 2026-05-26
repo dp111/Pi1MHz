@@ -49,9 +49,10 @@ static void dump_string(const char *string) {
 }
 
 /* printf isn't used as it is buffered and uses IRQs which might be disabled */
-void dump_info(unsigned int *context, int offset, char *type) {
+// cppcheck-suppress unusedFunction
+void dump_info(unsigned int *context, int offset, const char *type) {
   unsigned int *addr;
-  unsigned int *reg;
+  const unsigned int *reg;
   unsigned int flags;
 
   /* context point into the exception stack, at flags, followed by registers 0 .. 13 */

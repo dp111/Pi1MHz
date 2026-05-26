@@ -163,6 +163,7 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 #pragma GCC diagnostic pop
 }
 
+// cppcheck-suppress unusedFunction
 uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 {
 #pragma GCC diagnostic push
@@ -238,7 +239,7 @@ static void init_emulator() {
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
    _enable_interrupts();
 
-   char *prop = get_cmdline_prop("Pi1MHzDisable");
+   const char *prop = get_cmdline_prop("Pi1MHzDisable");
    if (prop)
    {  // now look for a common separated values to
       char c;
@@ -260,10 +261,10 @@ static void init_emulator() {
          char key[128]="";
          strcat(key,emulator[i].name);
          strcat(key,"_addr");
-         char *prop = get_cmdline_prop(key);
-         if (prop)
+         const char *prop2 = get_cmdline_prop(key);
+         if (prop2)
             {
-               int temp=strtol(prop,0,0);
+               int temp=strtol(prop2,0,0);
                printf("Found : %s=0x%x\r\n", key, temp);
                if (temp<0)
                   emulator[i].enable = 0;
@@ -370,7 +371,7 @@ static void init_hardware()
 {
    // enable overriding default LED option using command.txt
    // depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx
-   char *prop = get_cmdline_prop("disk_led_gpio");
+   const char *prop = get_cmdline_prop("disk_led_gpio");
    if (prop)
    {
       led_pin = (uint8_t)atoi(prop);
@@ -421,7 +422,7 @@ static void init_hardware()
    dump_useful_info();
 #endif
 }
-
+// cppcheck-suppress unusedFunction
 void kernel_main()
 {
    RPI_AuxMiniUartInit( 115200 );
