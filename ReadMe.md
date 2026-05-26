@@ -168,18 +168,16 @@ SDCARD / FAT commands are the first byte of the command buffer
     returns :
     command pointer + 8,9,10,11 4 bytes size of file
 
-Below isn't currently implemented
-
-7 = fopendir
+7 = fopendir ( not implemented yet )
 
     command pointer + 0 = 7
     command pointer + 1 ...  = directory name zero terminated
 
-8 = fclosedir
+8 = fclosedir ( not implemented yet )
 
     command pointer + 0 = 8
 
-9 = readdir
+9 = readdir ( not implemented yet )
 
     command pointer + 0 = 9
     command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
@@ -203,7 +201,7 @@ Below isn't currently implemented
     command pointer + 0 = 10
     command pointer + 1 ... = directory name ( zero terminated)
 
-11 = chdir change directory
+11 = fchdir change directory
 
     command pointer + 0 = 11
     command pointer + 1 ... = directory name ( zero terminated)
@@ -223,7 +221,9 @@ Below isn't currently implemented
 13 = fgetfree
 
     command pointer + 0 = 13
-    command pointer + 8,9,10,11 4 bytes freespace in bytes
+
+    return
+    command pointer + 8,9,10,11 4 bytes freespace in bytes / 256
 
 14 = fmount ( not sure how this works yet ) ( this could support swapping SDCARDs while running)
 
@@ -232,6 +232,11 @@ Below isn't currently implemented
 15 = funmount ( not sure how this works yet )
 
     command pointer + 0 = 15
+
+16 = funlnk ( delete a file or directory)
+
+    command pointer + 0 = 16
+    command pointer + 1 = filename zero terminated
 
 20 = SDCARD type
     command pointer + 0 = 20

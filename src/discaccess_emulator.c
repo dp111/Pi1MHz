@@ -158,12 +158,78 @@ static void discaccess_emulator_command(unsigned int gpio)
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }
-    case 6 :
+    case 6 : // fsize
     {
-        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8] = f_size(  &fileObject[data & 15] );
+        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer + 8] = f_size(  &fileObject[data & 15] );
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }
+#if 0
+    case 7 : // fopendir
+        Pi1MHz_MemoryWrite(addr,
+             f_opendir( (DIR * )&Pi1MHz->JIM_ram[command_pointer + 3], (char * )&Pi1MHz->JIM_ram[command_pointer + 3] ) );
+        break;
+
+
+    case 8: // fclosedir
+        Pi1MHz_MemoryWrite(addr,
+             f_closedir( (DIR * )&Pi1MHz->JIM_ram[command_pointer + 3] ) );
+        break;
+
+
+    case 9 : // f readdir
+    {
+        FRESULT result;
+        FILINFO fileInfo;
+        result = f_readdir( (DIR * )&Pi1MHz->JIM_ram[command_pointer + 3], &fileInfo );
+        if (result)
+            {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+        if (fileInfo.fname[0] == 0)
+        {
+                Pi1MHz_MemoryWrite(addr, 20);
+                break;
+        }
+        memcpy(&Pi1MHz->JIM_ram[command_pointer + 3], fileInfo.fname, strlen(fileInfo.fname)+1);
+        Pi1MHz_MemoryWrite(addr, FR_OK);
+        break;
+    }
+#endif
+
+    case 10 : // f mkdir
+        Pi1MHz_MemoryWrite(addr,
+             f_mkdir( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
+        break;
+
+    case 11 : // fchdir
+        Pi1MHz_MemoryWrite(addr,
+             f_chdir( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
+        break;
+
+    case 12 : // f_rename
+        Pi1MHz_MemoryWrite(addr,
+             f_rename( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ,
+                                (char * )&Pi1MHz->JIM_ram[command_pointer + 1 + strlen((char * )&Pi1MHz->JIM_ram[command_pointer + 1]) + 1] ) );
+        break;
+
+    case 13 : // fgetfree
+    {
+        FATFS *fs;
+        DWORD fre_clust;
+        FRESULT result = f_getfree("", &fre_clust, &fs);
+        if (result)
+            {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+        // assumes sector size of 512 bytes
+        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8] = (fs->csize * fre_clust) * 2  ; // return free space in bytes/256
+        Pi1MHz_MemoryWrite(addr, FR_OK);
+        break;
+    }
+
     case 14 : // f mount
         if (filesystemMount())
          {
@@ -184,6 +250,10 @@ static void discaccess_emulator_command(unsigned int gpio)
         {
             Pi1MHz_MemoryWrite(addr, FR_DISK_ERR);
         }
+        break;
+    case 16 : // f_unlink
+            Pi1MHz_MemoryWrite(addr,
+             f_unlink( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
         break;
 
     case 20 : Pi1MHz_MemoryWrite(addr, disk_type()); break;
