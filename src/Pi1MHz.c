@@ -155,10 +155,11 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 #pragma GCC diagnostic ignored "-Wstringop-overflow="
 #pragma GCC diagnostic ignored "-Warray-bounds"
    Pi1MHz_Memory[addr] = data;
+   uint32_t da = 0xff00 | data ; // set output enable
    switch (addr & 1)
    {
-   case 0: Pi1MHz_Memory_VPU[addr>>1] = (0xff<<8) |                    data  | (Pi1MHz_Memory_VPU[addr>>1] & 0xFFFF0000); break;
-   case 1: Pi1MHz_Memory_VPU[addr>>1] = (0xff<<(8+16))|((uint32_t )data<<16) | (Pi1MHz_Memory_VPU[addr>>1] & 0x0000FFFF); break;
+   case 0: Pi1MHz_Memory_VPU[addr>>1] = da  | (Pi1MHz_Memory_VPU[addr>>1] & 0xFFFFFF00); break;
+   case 1: Pi1MHz_Memory_VPU[addr>>1] = (da<<16) | (Pi1MHz_Memory_VPU[addr>>1] & 0xFF00FFFF); break;
    }
 #pragma GCC diagnostic pop
 }
@@ -171,9 +172,10 @@ void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
    // write a word at a time ( the compiler does the correct thing and does an STR instruction)
    *(uint32_t *)(&Pi1MHz_Memory[addr])= data;
 
-   Pi1MHz_Memory_VPU[addr>>1] = 0xFF00FF00 | (data&0xFF) | (((data&0xFF00)>>8)<<16);
+   uint32_t ad = addr >> 1;
 
-   Pi1MHz_Memory_VPU[(addr+2)>>1] = 0xFF00FF00 | ((data)>>16) | (data>>24)<<16;
+   Pi1MHz_Memory_VPU[ad++] = 0xFF00FF00 | (data&0xFF) | (data<<8);
+   Pi1MHz_Memory_VPU[ad] = 0xFF00FF00 | (data>>16) | (data>>24)<<16;
 
 #pragma GCC diagnostic pop
 }

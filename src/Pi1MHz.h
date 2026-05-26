@@ -6,7 +6,7 @@
 #include "rpi/rpi.h"
 #include "rpi/base.h"
 
-#define RELEASENAME "v1.09"
+#define RELEASENAME "v1.10"
 
 #define PAGE_SIZE    0x100
 
@@ -198,6 +198,9 @@ void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data);
 uint8_t Pi1MHz_MemoryRead(uint32_t addr);
 
 bool Pi1MHz_is_rst_active();
+
+// This is an assembler function for performance
+void Pi1MHz_MemoryWritePage(uint32_t addr, uint32_t * data);
 #endif
 
 #endif
