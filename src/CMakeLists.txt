@@ -141,13 +141,13 @@ file( GLOB core_files
    usb.c
    usb/board_millis.c
    usb/mtp_fs.c
-     usb/tinyusb/src/tusb.c
-  usb/tinyusb/src/common/tusb_fifo.c
-  usb/tinyusb/src/device/usbd.c
-  usb/tinyusb/src/device/usbd_control.c
-  usb/tinyusb/src/class/mtp/mtp_device.c
-  usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
-  usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
+   usb/tinyusb/src/tusb.c
+   usb/tinyusb/src/common/tusb_fifo.c
+   usb/tinyusb/src/device/usbd.c
+   usb/tinyusb/src/device/usbd_control.c
+   usb/tinyusb/src/class/mtp/mtp_device.c
+   usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
+   usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
 )
 
 
