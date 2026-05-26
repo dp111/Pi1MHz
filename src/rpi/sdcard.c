@@ -47,6 +47,8 @@
    } while ( time--); \
 }
 
+//#define DEBUG_SD
+
 #ifdef DEBUG_SD
 #define EMMC_DEBUG
 #else
@@ -579,10 +581,10 @@ static uint32_t sd_get_clock_divider(uint32_t base_clock, uint32_t target_rate)
         uint32_t ret = (freq_select << 8) | (upper_bits << 6) | (0 << 5);
 
 #ifdef EMMC_DEBUG
-        int denominator = 1;
+        unsigned int denominator = 1;
         if(divisor != 0)
-            denominator = divisor * 2;
-        int actual_clock = base_clock / denominator;
+            denominator = (unsigned int )divisor * 2;
+        unsigned int actual_clock = base_clock / denominator;
         printf("EMMC: base_clock: %"PRIu32", target_rate: %"PRIu32", divisor: %08i, "
                "actual_clock: %i, ret: %08"PRIx32"\r\n", base_clock, target_rate,
                divisor, actual_clock, ret);
@@ -714,7 +716,7 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
     //  host SDMA buffer boundary = 4 kiB
     if(dev->blocks_to_transfer > 0xffff)
     {
-        printf("SD: blocks_to_transfer too great (%ui)\r\n",
+        printf("SD: blocks_to_transfer too great (%"PRIu32")\r\n",
                dev->blocks_to_transfer);
         dev->last_cmd_success = 0;
         return;
@@ -1980,7 +1982,7 @@ size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t
         return 0;
 
 #ifdef EMMC_DEBUG
-   printf("SD: read() card ready, reading from block %"PRIu32"\r\n", block_no);
+   printf("SD: read() card ready, reading from block %"PRIx32"\r\n", block_no);
 #endif
 
     if(sd_do_data_command(edev, 0, buf, buf_size, block_no) < 0)
