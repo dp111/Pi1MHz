@@ -1800,8 +1800,11 @@ static void fb_initialize(void) {
    initialize_font_by_number(DEFAULT_FONT, &font_normal);
    initialize_font_by_name("SAA5050", &font_teletext);
 
-   // Select the default screen mode
-   { const uint8_t c[] = { 22, DEFAULT_SCREEN_MODE }; fb_writen(c, sizeof c); }
+   // Select the default screen mode *synchronously*: this sets the global
+   // 'screen' pointer, and it must be valid before the timer IRQ is enabled
+   // below - IRQHandler_main runs fb_process_flash() (which dereferences
+   // 'screen') before it drains the VDU queue.
+   { const uint8_t c[] = { 22, DEFAULT_SCREEN_MODE }; vdu_22(c); }
 
    // Enable the timer interrupts (flashing colours, cursor, etc)
    RPI_ArmTimerInit();
