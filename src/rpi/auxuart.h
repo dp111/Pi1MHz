@@ -142,6 +142,7 @@ typedef struct
 
 extern void RPI_AuxMiniUartInit(int baud);
 extern void RPI_AuxMiniUartWrite(char c);
+extern void RPI_AuxMiniUartWriteForce(char c);
 
 static aux_t* const RPI_Aux = (aux_t*) AUX_BASE;
 

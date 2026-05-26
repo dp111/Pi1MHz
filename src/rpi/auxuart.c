@@ -147,3 +147,13 @@ void RPI_AuxMiniUartWrite(char c)
   RPI_Aux->MU_IO = c;
 #endif
 }
+
+void RPI_AuxMiniUartWriteForce(char c)
+{
+  /* Wait until the UART has an empty space in the FIFO */
+  while ((RPI_Aux->MU_LSR & AUX_MULSR_TX_EMPTY) == 0)
+  {
+  }
+  /* Write the character to the FIFO for transmission */
+  RPI_Aux->MU_IO = c;
+}
