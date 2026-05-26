@@ -50,7 +50,7 @@
    } while ( time--); \
 }
 
-#define DEBUG_SD
+//#define DEBUG_SD
 #define RESET_CONTROLLER
 
 #ifdef DEBUG_SD
