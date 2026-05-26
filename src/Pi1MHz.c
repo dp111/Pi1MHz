@@ -360,8 +360,7 @@ static void init_JIM()
 
    filesystemReadFile("6502code.bin",&JIM_ram[0xB0],JIM_ram_size<<24);
 
-   for( uint32_t i = 0; i < PAGE_SIZE ; i=i+4)
-      Pi1MHz_MemoryWrite32(Pi1MHz_MEM_PAGE + i, *((uint32_t *)(&JIM_ram[i])));
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[0])) );
 }
 
 static void init_hardware()
