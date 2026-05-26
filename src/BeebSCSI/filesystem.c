@@ -67,7 +67,6 @@
 #include "../rpi/rpi.h"
 #include "../rpi/fileparser.h"
 
-
 #define SZ_TBL 64
 
 static const parserkey scsiattributes[] = {
@@ -241,7 +240,7 @@ void filesystemReset(void)
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReset(): Resetting file system\r\n"));
 
    // Reset the default FAT transfer directory
-   sprintf(fatDirectory, "/Transfer");
+   snprintf(fatDirectory, sizeof(fatDirectory), "/Transfer");
 
    // ensure the file-system is closed on reset
    filesystemDismount();
@@ -450,9 +449,9 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
 
    // Does a directory exist for the currently selected LUN directory - if not, create it
    if (lunNumber < 8 )
-      sprintf(fileName, "/BeebSCSI%d", lunDirectory);
+      snprintf(fileName, sizeof(fileName), "/BeebSCSI%d", lunDirectory);
    else
-      sprintf(fileName, "/BeebVFS%d", lunDirectory & 7);
+      snprintf(fileName, sizeof(fileName), "/BeebVFS%d", lunDirectory & 7);
 
    fsResult = f_opendir(&dirObject, fileName);
 
@@ -500,9 +499,9 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
 
    // Attempt to open the LUN image
    if (lunNumber < 8 )
-      sprintf(fileName, "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
+      snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
    else
-      sprintf(fileName, "/BeebVFS%d/scsi%d.dat", filesystemState.lunDirectoryVFS, lunNumber & 7);
+      snprintf(fileName, sizeof(fileName), "/BeebVFS%d/scsi%d.dat", filesystemState.lunDirectoryVFS, lunNumber & 7);
 
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCheckLunImage(): Checking for (.dat) LUN image "), (uint16_t)lunNumber, 1);
    fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName, FA_READ | FA_WRITE);
@@ -675,7 +674,7 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
    }
 
    // Assemble the .dat file name
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
+   snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
 
    // Create a new .dat file
    fsResult = f_open(&fileObject, fileName, FA_CREATE_NEW | FA_READ | FA_WRITE);
@@ -702,7 +701,7 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
    }
 
    // Assemble the .cfg file name
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
+   snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
    if(parse_readfile(fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber] ))
       return true;
 
@@ -726,10 +725,10 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
       FRESULT fsResult;
       // Check if the LUN descriptor file (.dsc) is present
       if (lunNumber < 8 )
-         sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
+         snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
       else
          // this isn't expected to exist
-         sprintf(fileName, "/BeebVFS%d/scsi%d.dsc", filesystemState.lunDirectoryVFS, lunNumber & 7);
+         snprintf(fileName, sizeof(fileName), "/BeebVFS%d/scsi%d.dsc", filesystemState.lunDirectoryVFS, lunNumber & 7);
 
       if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemReadLunDescriptor(): Checking for (.dsc) LUN descriptor "), (uint16_t)lunNumber, 1);
       fsResult = f_open(&fileObject, fileName, FA_READ);
@@ -802,7 +801,7 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
    }
 
    // Assemble the .cfg file name
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
+   snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
 
    if (parse_readfile(fileName, fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
@@ -841,7 +840,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
    if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemFormatLun(): Sectors required = "), filesystemGetLunTotalSectors(lunNumber), true);
 
    // Assemble the .dat file name
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
+   snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
 
    // Note: We are using the expand FAT method to create the LUN image... the dataPattern byte
    // will be ignored.
@@ -896,9 +895,9 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
 {
    char extAttributes_fileName[255];
    if (lunNumber <8)
-      sprintf(extAttributes_fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
+      snprintf(extAttributes_fileName, sizeof(extAttributes_fileName), "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
    else
-      sprintf(extAttributes_fileName, "/BeebVFS%d/scsi%d.cfg", filesystemState.lunDirectoryVFS, lunNumber & 7);
+      snprintf(extAttributes_fileName, sizeof(extAttributes_fileName), "/BeebVFS%d/scsi%d.cfg", filesystemState.lunDirectoryVFS, lunNumber & 7);
 
    if (parse_readfile(extAttributes_fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber]))
    {
@@ -909,7 +908,7 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
    }
    else
    {
-      sprintf(fileName, "/Pi1MHz/defscsi.cfg");
+      snprintf(fileName, sizeof(fileName), "/Pi1MHz/defscsi.cfg");
       parse_readfile(fileName,0, scsiattributes, filesystemState.keyvalues[lunNumber]);
 
       // LUN extended attributes file is not present
@@ -930,6 +929,10 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    if  (!filesystemState.keyvalues[lunNumber][index].v.string)
    {
       filesystemState.keyvalues[lunNumber][index].v.string = malloc(10);
+      if (!filesystemState.keyvalues[lunNumber][index].v.string)
+      {
+         LOG_INFO(PSTR("File system: filesystemLunToconfigGeometry(): ERROR: Unable to allocate memory for MODEPAGE0\r\n"));
+      }
       filesystemState.keyvalues[lunNumber][index].length = 10;
    }
 
@@ -948,6 +951,10 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    if  (!filesystemState.keyvalues[lunNumber][index].v.string)
    {
       filesystemState.keyvalues[lunNumber][index].v.string = malloc(6);
+      if (!filesystemState.keyvalues[lunNumber][index].v.string)
+      {
+         LOG_INFO(PSTR("File system: filesystemLunToconfigGeometry(): ERROR: Unable to allocate memory for MODEPAGE4\r\n"));
+      }
       filesystemState.keyvalues[lunNumber][index].length = 6;
    }
    filesystemState.keyvalues[lunNumber][index].v.string[0] = 04 ;
@@ -987,6 +994,10 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
    {
       // now recreate the ModeParamHeader
       filesystemState.keyvalues[lunNumber][index].v.string = malloc(4);
+      if (!filesystemState.keyvalues[lunNumber][index].v.string)
+      {
+         LOG_INFO(PSTR("File system: filesystemConfigToLunGeometry(): ERROR: Unable to allocate memory for MODEPARAMHEADER\r\n"));
+      }
       filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x00; // Reserved
       filesystemState.keyvalues[lunNumber][index].v.string[1] = 0x00; // Reserved
       filesystemState.keyvalues[lunNumber][index].v.string[2] = 0x00; // Reserved
@@ -1007,6 +1018,10 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          filesystemState.fsLunGeometry[lunNumber].BlockSize = DEFAULT_BLOCK_SIZE;
          //now recreate the LBADescriptor
          filesystemState.keyvalues[lunNumber][index].v.string = malloc(8);
+         if (!filesystemState.keyvalues[lunNumber][index].v.string)
+         {
+            LOG_INFO(PSTR("File system: filesystemConfigToLunGeometry(): ERROR: Unable to allocate memory for LBADescriptor\r\n"));
+         }
          filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x00; // Reserved
          filesystemState.keyvalues[lunNumber][index].v.string[1] = 0x00; // Reserved
          filesystemState.keyvalues[lunNumber][index].v.string[2] = 0x00; // Reserved
@@ -1322,6 +1337,7 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    filesystemState.keyvalues[lunNumber][index].v.string = malloc(len);
    if (filesystemState.keyvalues[lunNumber][index].v.string == NULL) {
       filesystemState.keyvalues[lunNumber][index].length = 0;
+      LOG_INFO(PSTR("File system: filesystemWriteModePageData(): ERROR: Unable to allocate memory for mode page data\r\n"));
       return 0; /* allocation failed */
    }
    memcpy(filesystemState.keyvalues[lunNumber][index].v.string, Buffer, len);
@@ -1497,9 +1513,9 @@ bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber)
          f_closedir(&dirObject);
          return false;
       } else {
-         char tempfileName[512];
+         char tempfileName[514];
          // Assemble the full path name and file name for the requested file
-         sprintf(tempfileName, "%s/%s", fatDirectory, fsInfo.fname);
+         snprintf(tempfileName, sizeof(tempfileName), "%s/%s", fatDirectory, fsInfo.fname);
          f_closedir(&dirObject);
 
          // Open the requested file for reading
@@ -1579,6 +1595,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
          /* allocate buffer to hold entire file */
          *address = malloc((size_t)fileSize);
          if (*address == NULL) {
+            LOG_INFO(PSTR("File system: filesystemReadFile(): ERROR: Unable to allocate memory for file read\r\n"));
             f_close(&fileObject);
             return 0;
          }
