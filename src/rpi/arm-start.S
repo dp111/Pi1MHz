@@ -93,11 +93,8 @@ _software_interrupt_vector_h:       .word   _swi_handler_
 _prefetch_abort_vector_h:           .word   _prefetch_abort_handler_
 _data_abort_vector_h:               .word   _data_abort_handler_
 
-.section ".text.arm_irq_handler"
 arm_irq_handler:
     subs    pc, lr, #4
-
-.section ".text._reset_"
 
 _reset_:
 
@@ -138,7 +135,7 @@ _reset_continue:
     // We enter execution in supervisor mode. For more information on
     // processor modes see ARM Section A2.2 (Processor Modes)
 
-    ldr     r4,=_start
+    adr     r4,_start
     mcr     p15, 0, r4, c12, c0, 0     //set vectors to beginning of this code
 
     // Initialise Stack Pointers ---------------------------------------------
@@ -198,27 +195,26 @@ bssclearloop:
 .section ".text._exception_handlers_", "x"
 _undefined_instruction_handler_:
     stmfd    sp!, {r0-r12, lr}
-    mov      r1, #4
     adr      r2, undefined_instruction_txt
-    b        exception_store_spsr
+    b        exception_store_spsr_r1_4
 
 _prefetch_abort_handler_:
     stmfd    sp!, {r0-r12, lr}
-    mov      r1, #4
     adr      r2, prefetch_abort_txt
-    b        exception_store_spsr
+    b        exception_store_spsr_r1_4
 
 _data_abort_handler_:
     stmfd    sp!, {r0-r12, lr}
     adr      r2, data_abort_txt
-    b        exception_store_spsr_r1_8
+    mov      r1, #8
+    b        exception_store_spsr
 
 _swi_handler_:
     stmfd    sp!, {r0-r12, lr}
     adr      r2, unknown_swi_txt
 
-exception_store_spsr_r1_8:
-    mov      r1, #8
+exception_store_spsr_r1_4:
+    mov      r1, #4
 exception_store_spsr:
     mrs      r0, spsr             // Get spsr.
     stmfd    sp!, {r0}            // Store spsr onto stack.
