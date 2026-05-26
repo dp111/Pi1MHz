@@ -57,8 +57,8 @@
 
 // These variables can be setup form the config.txt file.
 
-static int stereo;
-static int gain;
+static unsigned int stereo;
+static unsigned int gain;
 static int autorange;
 
 struct synth { 
