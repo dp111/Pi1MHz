@@ -34,7 +34,14 @@ bool HD_IRQ_ENABLE;
 #define CLEAR     0
 #define ACTIVE    1
 
-#define HD_STATUS (Pi1MHz_Memory[HD_ADDR+1])
+static uint8_t HD_status;
+
+#define HD_STATUS_Read (HD_status)
+static void HD_STATUS_Write(uint8_t data)
+{
+   HD_status = data;
+   Pi1MHz_MemoryWrite(HD_ADDR+1, data);
+}
 
 #define STATUS_CND (1<<7)
 #define STATUS_INO (1<<6)
@@ -48,7 +55,7 @@ bool HD_IRQ_ENABLE;
 void hd_emulator_write_data(unsigned int gpio)
 {
    HD_DATA = GET_DATA(gpio);
-   Pi1MHz_Memory[HD_ADDR] = GET_DATA(gpio);
+   Pi1MHz_MemoryWrite(HD_ADDR, GET_DATA(gpio));
    HD_ACK = ACTIVE;
 }
 
@@ -66,9 +73,9 @@ void hd_emulator_nSEL(unsigned int gpio)
 static void hd_emulator_status(unsigned int bit, bool state)
 {
    if (state == CLEAR)
-      HD_STATUS &= ~bit;
+      HD_STATUS_Write( HD_STATUS_Read & ~bit);
    else
-      HD_STATUS |= bit;
+      HD_STATUS_Write( HD_STATUS_Read |= bit);
 }
 
 static void hd_emulator_IRQ(unsigned int gpio)
@@ -83,7 +90,7 @@ static void hd_emulator_IRQ(unsigned int gpio)
       hd_emulator_status(STATUS_IRQ, CLEAR);
    } else
    {
-      if (HD_STATUS & STATUS_REQ)
+      if (HD_STATUS_Read & STATUS_REQ)
       {
          Pi1MHz_SetnIRQ(ASSERT_IRQ);
          hd_emulator_status(STATUS_IRQ, ACTIVE);
@@ -264,7 +271,7 @@ uint8_t hostadapterReadByte(void)
 void hostadapterWriteByte(uint8_t databusValue)
 {
    // Write the byte of data to the databus
-   Pi1MHz_Memory[HD_ADDR] = databusValue;
+   Pi1MHz_MemoryWrite(HD_ADDR, databusValue);
 
    // Set the REQuest signal
    hostadapterWriteRequestFlag(ACTIVE);
@@ -288,7 +295,7 @@ uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
 
    do {
       // Write the current byte to the databus and point to the next byte
-      Pi1MHz_Memory[HD_ADDR] = dataBuffer[currentByte++];
+      Pi1MHz_MemoryWrite(HD_ADDR, dataBuffer[currentByte++]);
 
       // Set the REQuest signal
       hostadapterWriteRequestFlag(ACTIVE);

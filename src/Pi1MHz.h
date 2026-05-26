@@ -4,16 +4,45 @@
 #define Pi1MHz_H
 
 #include "rpi/rpi.h"
+#include "rpi/base.h"
 
-#define RELEASENAME "v1.03"
+#define RELEASENAME "v1.04b"
 
 #define PAGE_SIZE    0x100
 
-// Memory map of arrays used by FIQ handler
-#define Pi1MHz_MEM_BASE 0x100
+#define Pi1MHz_MEM_BASE_GPU (PERIPHERAL_BASE_GPU | (Pi1MHz_MEM_BASE & 0x01FFFFFF) )
+
+#define Pi1MHz_MEM_BASE (PERIPHERAL_BASE + 0xA04000 )
+
+#define Pi1MHz_VPU_RETURN (PERIPHERAL_BASE + 0xA00160 )
+
 #define Pi1MHZ_MEM_SIZE (PAGE_SIZE*2)
 #define Pi1MHz_CB_BASE  0x400
 #define Pi1MHz_CB_SIZE  (PAGE_SIZE*2*2*4)
+
+/* Raspberry Pi Pinout Bottom view
+
+      +5v  Pin 2  o o Pin 1  +3.3v
+      +5v  Pin 4  o o Pin 3  IO2  D0
+      GND  Pin 6  o o Pin 5  IO3  D1
+   TX IO14 Pin 8  o o Pin 7  IO4  D2
+   RX IO15 Pin 10 o o Pin 9  GND
+   A2 IO18 Pin 12 o o Pin 11 IO17 A1
+      GND  Pin 14 o o Pin 13 IO27 CLK1MHZ
+   A7 IO23 Pin 16 o o Pin 15 IO22 A6
+nPCFC IO24 Pin 18 o o Pin 17 +3.3v
+      GND  Pin 20 o o Pin 19 IO10 RnW
+nPCFD IO25 Pin 22 o o Pin 21 IO9  D7
+   D6 IO8  Pin 24 o o Pin 23 IO11 nNMI
+   D5 IO7  Pin 26 o o Pin 25 GND
+      IO1  Pin 28 o o Pin 27 IO0  TEST_PIN
+      GND  Pin 30 o o Pin 29 IO5  D3
+ nIRQ IO12 Pin 32 o o Pin 31 IO6  D4
+      GND  Pin 34 o o Pin 33 IO13 PWM
+   A0 IO16 Pin 36 o o Pin 35 1O19 A3
+   A4 IO20 Pin 38 o o Pin 37 IO26 nRST
+   A5 IO21 Pin 40 o o Pin 39 GND
+*/
 
 //CLK1MHZ- pin 13 - GPIO27
 //  nRST - Pin 37 – GPIO26
@@ -31,7 +60,7 @@
 //    A6 - Pin 15 – GPIO22
 //    A5 - Pin 40 – GPIO21
 //    A4 - Pin 38 – GPIO20
-//    A3 - Pin 33 – GPIO19
+//    A3 - Pin 35 – GPIO19
 //    A2 - Pin 12 – GPIO18
 //    A1 - Pin 11 – GPIO17
 //    A0 – Pin 36 – GPIO16
@@ -164,7 +193,8 @@ void Pi1MHz_Register_Poll( func_ptr func_ptr );
 void Pi1MHz_SetnIRQ(bool irq);
 void Pi1MHz_SetnNMI(bool nmi);
 
-extern uint8_t * const Pi1MHz_Memory;
+void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
+uint8_t Pi1MHz_MemoryRead(uint32_t addr);
 
 bool Pi1MHz_is_rst_active();
 #endif

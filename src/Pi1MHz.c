@@ -100,6 +100,8 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "scripts/gitversion.h"
 #include "BeebSCSI/filesystem.h"
 
+#include "Pi1MHzvc.c"
+
 #define Pi1MHZ_FX_CONTROL 0xCA
 
 // add new emulators to the lists below
@@ -111,13 +113,13 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 
 typedef struct {
    const func_ptr_parameter init;
-   uint8_t disable;
+   uint8_t enable;
 } emulator_list;
 
 static emulator_list emulator[] = {
-   ram_emulator_init, 0,
-   harddisc_emulator_init, 0,
-   M5000_emulator_init, 0,
+   ram_emulator_init, 1,
+   harddisc_emulator_init, 1,
+   M5000_emulator_init, 1,
    fb_emulator_init, 1,
    0,0 // Dummy end of list
 };
@@ -128,20 +130,38 @@ uint8_t *JIM_ram; // 480M Bytes of RAM for pizero
 
 uint32_t JIM_ram_size; // Size of JIM ram in 16Mbyte steps
 
-// Memory for FRED and JIM so that the FIQ can read the result quickly
-uint8_t * const Pi1MHz_Memory = (uint8_t *)Pi1MHz_MEM_BASE;
+// Memory for FRED and JIM
+static uint8_t * const Pi1MHz_Memory = (uint8_t *)0x100;
+
+// Memory for VPU to read FRED and JIM 
+static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE;
 
 // Call back table for each address in FRED and JIM
 callback_func_ptr * const Pi1MHz_callback_table = (void *)Pi1MHz_CB_BASE;
 
 // Table of polling functions to call while idle
-func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
+static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
 
 // holds the total number of polling functions to call
 static size_t  Pi1MHz_polls_max;
 
 // *fx register buffer
 uint8_t fx_register[256];
+
+void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
+{
+   Pi1MHz_Memory[addr] = data;
+   switch (addr & 1)
+   {
+   case 0: Pi1MHz_Memory_VPU[addr>>1] =      data  | (Pi1MHz_Memory[addr+1]); break;
+   case 1: Pi1MHz_Memory_VPU[addr>>1] = (data<<16) | (Pi1MHz_Memory[addr-1]); break;
+   }
+}
+
+uint8_t Pi1MHz_MemoryRead(uint32_t addr)
+{
+   return Pi1MHz_Memory[addr];
+}
 
 // For each location in FRED and JIM which a task wants to be called for
 // it must register its interest. Only one task can be called per location
@@ -182,8 +202,8 @@ void Pi1MHzBus_addr_Status(unsigned int gpio)
    uint32_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    status_addr = data;
-   Pi1MHz_Memory[addr] = data; // enable read back
-   Pi1MHz_Memory[addr+1] = fx_register[status_addr];
+   Pi1MHz_MemoryWrite(addr, data); // enable read back
+   Pi1MHz_MemoryWrite(addr+1, fx_register[status_addr]);
 }
 
 // take data written by the beeb and put it to the correct place
@@ -192,7 +212,7 @@ void Pi1MHzBus_write_Status(unsigned int gpio)
    uint32_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    fx_register[status_addr] = data;
-   Pi1MHz_Memory[addr] = data; // enable read back
+   Pi1MHz_MemoryWrite(addr, data); // enable read back
 }
 
 void Pi1MHzBus_read_Status(unsigned int gpio)
@@ -202,6 +222,7 @@ void Pi1MHzBus_read_Status(unsigned int gpio)
 static void init_emulator() {
    LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
 
+   _enable_interrupts();
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
 
    char *prop = get_cmdline_prop("Pi1MHzDisable");
@@ -211,7 +232,7 @@ static void init_emulator() {
       do {
         uint32_t temp=atoi(prop);
         if (temp < NUM_EMULATORS)
-          emulator[temp].disable = 1;
+          emulator[temp].enable = 0;
         do {
           c = *prop++;
           if (c == ' ') break;
@@ -221,35 +242,38 @@ static void init_emulator() {
       } while ( c == ',' );
    }
 
-   _disable_interrupts();
-
-   // Direct Fred Jim access to FIQ handler
-
-   RPI_GpioBase->GPFEN0 = NPCFD_MASK | NPCFC_MASK;
-   RPI_IRQBase->FIQ_control = 0x80 + 49; // enable GPIO IRQ
-
    Pi1MHz_polls_max = 0;
    memset(Pi1MHz_callback_table, 0, Pi1MHz_CB_SIZE);
 
-// suppress a warning as we really do want to memset 0 !
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wnonnull"
-   memset(Pi1MHz_Memory, 0, Pi1MHZ_MEM_SIZE);
-#pragma GCC diagnostic pop
+   for( uint32_t i = 0 ; i < PAGE_SIZE; i++)
+      Pi1MHz_Memory[i] = 0;
+
+   int func,r0,r1, r2,r3,r4,r5;
+   func = (int) Pi1MHzvc_asm;
+   r0   =  Pi1MHz_MEM_BASE_GPU ;   // address of register block in IO space
+   r1   = (PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x01FFFFFF) );
+   r2   = 0;
+   r3   = DATABUS_TO_OUTPUTS;
+   r4   = TEST_PINS_OUTPUTS;
+   r5   = 0; //TEST_MASK;                     // test pin
+
+   RPI_PropertyInit();
+   RPI_PropertyAddTag(TAG_LAUNCH_VPU1, func, r0, r1, r2, r3, r4, r5);
+   RPI_PropertyProcess();
+
+   RPI_IRQBase->FIQ_control = 0x80 + 67; // doorbell FIQ
 
    // make sure we aren't causing an interrupt
    Pi1MHz_SetnIRQ(CLEAR_IRQ);
    Pi1MHz_SetnNMI(CLEAR_NMI);
 
-   _enable_interrupts();
-
-   // Regsiter Status read back
+   // Register Status read back
    Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL, Pi1MHzBus_addr_Status );
    Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_write_Status );
    Pi1MHz_Register_Memory( READ_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_read_Status );
 
    for( size_t i=0; i <NUM_EMULATORS; i++)
-      if (emulator[i].disable==0) emulator[i].init(i);
+      if (emulator[i].enable==1) emulator[i].init(i);
 }
 
 static int led_pin;
@@ -279,6 +303,8 @@ static char* putstring(char *ram, char term, const char *string)
 static void init_JIM()
 {
    extern char _end;
+
+   RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
    JIM_ram_size = mem_info(1); // get size of ram
    JIM_ram_size = JIM_ram_size - (unsigned int)&_end; // remove program
    JIM_ram_size = JIM_ram_size -( 4*1024*1024) ; // 4Mbytes for other mallocs
@@ -302,12 +328,9 @@ static void init_JIM()
       ram = putstring(ram,'\n', get_info_string());
             putstring(ram,'\r', " ");
    }
-// suppress a warning as we really do want to memcpy 256,jim_ram, 256!
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wrestrict"
-    memcpy(&Pi1MHz_Memory[Pi1MHz_MEM_PAGE], &JIM_ram[0], PAGE_SIZE);
-#pragma GCC diagnostic pop
 
+    for( uint32_t i = 0; i < PAGE_SIZE ; i++)
+       Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + i, JIM_ram[i]);
 }
 
 static void init_hardware()
@@ -383,6 +406,6 @@ void kernel_main()
         while (Pi1MHz_is_rst_active());
       }
       for (size_t i=0 ; i<Pi1MHz_polls_max; i++ )
-        if (emulator[i].disable==0) Pi1MHz_poll_table[i]();
+        Pi1MHz_poll_table[i]();
    } while (1);
 }
