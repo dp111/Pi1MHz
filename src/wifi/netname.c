@@ -246,8 +246,14 @@ void netname_init(void)
 
    cfg = wifi_get_config();
    src = (cfg != NULL && cfg->hostname[0] != '\0') ? cfg->hostname : "Pi1MHz";
+   /* g_host is encoded as a single DNS label - the '.' character is
+      the label separator in DNS wire format and is not allowed inside
+      a label.  Replace any embedded dots with '-' so a misconfigured
+      hostname like "foo.bar" still produces a valid "foo-bar.local"
+      mDNS name rather than a malformed packet that every resolver
+      rejects. */
    for (i = 0u; i < NETNAME_HOST_MAX && src[i] != '\0'; ++i)
-      g_host[i] = src[i];
+      g_host[i] = (src[i] == '.') ? '-' : src[i];
    g_host[i] = '\0';
    g_host_len = (uint8_t)i;
    if (g_host_len == 0u)
