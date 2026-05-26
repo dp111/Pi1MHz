@@ -19,9 +19,9 @@ _Noreturn static void reboot_now(void)
 static void dump_digit(unsigned char c) {
    c &= 15;
    if (c < 10) {
-      c = '0' + c;
+      c = (unsigned char) ('0' + c);
    } else {
-      c = 'A' + c - 10;
+      c = (unsigned char) ('A' + c - 10);
    }
    RPI_AuxMiniUartWriteForce((uint8_t)c);
 }

@@ -90,12 +90,12 @@ void helpers_init( uint8_t instance , uint8_t address)
         // register call backs
         Pi1MHz_Register_Memory(WRITE_FRED, address, helpers_bank_select );
 
-        Pi1MHz_MemoryWrite(address+0, 0x8E); // STX &FCxx
-        Pi1MHz_MemoryWrite(address+1, (uint8_t) address);
-        Pi1MHz_MemoryWrite(address+2, 0xFC);
-        Pi1MHz_MemoryWrite(address+3, 0XEA); // NOP
-        Pi1MHz_MemoryWrite(address+4, 0x4c); // JMP &FD00 // RTS
-        Pi1MHz_MemoryWrite(address+5, 0x00);
-        Pi1MHz_MemoryWrite(address+6, 0xFD);
+        Pi1MHz_MemoryWrite((uint32_t)(address+0), 0x8E); // STX &FCxx
+        Pi1MHz_MemoryWrite((uint32_t)(address+1), (uint8_t) address);
+        Pi1MHz_MemoryWrite((uint32_t)(address+2), 0xFC);
+        Pi1MHz_MemoryWrite((uint32_t)(address+3), 0XEA); // NOP
+        Pi1MHz_MemoryWrite((uint32_t)(address+4), 0x4c); // JMP &FD00 // RTS
+        Pi1MHz_MemoryWrite((uint32_t)(address+5), 0x00);
+        Pi1MHz_MemoryWrite((uint32_t)(address+6), 0xFD);
     }
 }

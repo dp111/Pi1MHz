@@ -164,7 +164,7 @@ void debugSectorBufferHex(const uint8_t *buffer, uint16_t numberOfBytes)
    uint16_t i;
    uint16_t index = 16; // Width of output in bytes
 
-   for (uint16_t byteNumber = 0; byteNumber < numberOfBytes; byteNumber += 16)
+   for (int byteNumber = 0; byteNumber < numberOfBytes; byteNumber += 16)
    {
       for (i = 0; i < index; i++)
       {

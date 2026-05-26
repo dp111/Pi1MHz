@@ -294,7 +294,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				for (byteCounter = 0; byteCounter < 32; byteCounter++) {
 					if (scsiFcodeBuffer[byteCounter] == 0x0D) break;
 					if ((char)scsiFcodeBuffer[byteCounter] <= '9') {
-						pictureNumber = pictureNumber * 10 + (scsiFcodeBuffer[byteCounter] - '0');
+						pictureNumber = (uint32_t) ((uint32_t)(pictureNumber * 10) + ((uint32_t)(scsiFcodeBuffer[byteCounter] - '0')));
 					}
 				}
 				scsiFcodeBuffer[byteCounter] = 0;

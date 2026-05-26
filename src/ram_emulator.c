@@ -44,12 +44,12 @@ static void ram_emulator_byte_addr(unsigned int gpio)
 
    switch (addr - rambyte_address)
    {
-      case 0:  Pi1MHz->byte_ram_addr = (Pi1MHz->byte_ram_addr & 0xFFFFFF00) | data; break;
-      case 1:  Pi1MHz->byte_ram_addr = (Pi1MHz->byte_ram_addr & 0xFFFF00FF) | data<<8; break;
-      default: Pi1MHz->byte_ram_addr = (Pi1MHz->byte_ram_addr & 0xFF00FFFF) | data<<16; break;
+      case 0:  Pi1MHz->byte_ram_addr = (size_t) ((Pi1MHz->byte_ram_addr & 0xFFFFFF00) | data); break;
+      case 1:  Pi1MHz->byte_ram_addr = (size_t) ((Pi1MHz->byte_ram_addr & 0xFFFF00FF) | (size_t)(data<<8)); break;
+      default: Pi1MHz->byte_ram_addr = (size_t) ((Pi1MHz->byte_ram_addr & 0xFF00FFFF) | (size_t)(data<<16)); break;
    }
 
-   Pi1MHz_MemoryWrite(rambyte_address + 3 , Pi1MHz->JIM_ram[Pi1MHz->byte_ram_addr]); // setup new data now the address has changed;
+   Pi1MHz_MemoryWrite((uint32_t)(rambyte_address + 3) , Pi1MHz->JIM_ram[Pi1MHz->byte_ram_addr]); // setup new data now the address has changed;
    Pi1MHz_MemoryWrite(addr, data);               // enable the address register to be read back
 }
 
@@ -66,8 +66,8 @@ static void ram_emulator_page_addr_high(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   if (data > (Pi1MHz->JIM_ram_size)) data = Pi1MHz->JIM_ram_size - 1;
-               Pi1MHz->page_ram_addr = (Pi1MHz->page_ram_addr & 0x00FFFFFF) | data<<24;
+   if (data > (Pi1MHz->JIM_ram_size)) data = (uint8_t)(Pi1MHz->JIM_ram_size - 1);
+               Pi1MHz->page_ram_addr = (size_t) ((Pi1MHz->page_ram_addr & 0x00FFFFFF) | (size_t)(data<<24));
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
@@ -76,7 +76,7 @@ static void ram_emulator_page_addr_mid(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   Pi1MHz->page_ram_addr = (Pi1MHz->page_ram_addr & 0xFF00FFFF) | data<<16;
+   Pi1MHz->page_ram_addr = (size_t) ((Pi1MHz->page_ram_addr & 0xFF00FFFF) | (size_t)(data<<16));
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
@@ -85,7 +85,7 @@ static void ram_emulator_page_addr_low(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   Pi1MHz->page_ram_addr = (Pi1MHz->page_ram_addr & 0xFFFF00FF) | data<<8 ;
+   Pi1MHz->page_ram_addr = (size_t) ((Pi1MHz->page_ram_addr & 0xFFFF00FF) | (size_t)(data<<8));
    // RPI_SetGpioHi(TEST_PIN);
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    // RPI_SetGpioLo(TEST_PIN);
@@ -130,9 +130,9 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 {
    static uint8_t init = 0 ;
    // Page access register write fcfd fcfe fcff
-   Pi1MHz_Register_Memory(WRITE_FRED, address + 0, ram_emulator_page_addr_high ); // high byte
-   Pi1MHz_Register_Memory(WRITE_FRED, address + 1, ram_emulator_page_addr_mid ); // Mid byte
-   Pi1MHz_Register_Memory(WRITE_FRED, address + 2, ram_emulator_page_addr_low ); // low byte
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 0), ram_emulator_page_addr_high ); // high byte
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 1), ram_emulator_page_addr_mid ); // Mid byte
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 2), ram_emulator_page_addr_low ); // low byte
 
    // register every address in JIM &FD00
    for (uint32_t i=0 ; i<PAGE_SIZE; i++)
@@ -146,18 +146,18 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    temp = temp & 0xFF000000; // round down to 16Mbyte boundary
    Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
 
-   Pi1MHz->byte_ram_addr = (size_t) ((Pi1MHz->JIM_ram_size - 1) * 16UL * 1024UL * 1024UL);
+   Pi1MHz->byte_ram_addr = (size_t) ((Pi1MHz->JIM_ram_size - 1)<<24); // 16Mbyte boundary
    Pi1MHz->page_ram_addr = 0;
 
    fx_register[instance] = Pi1MHz->JIM_ram_size;  // fx addr 0 returns ram size
    if (init == 0)
    {
       init = 1;
-      Pi1MHz->JIM_ram = (uint8_t *) malloc(16*1024*1024*Pi1MHz->JIM_ram_size); // malloc 480Mbytes
+      Pi1MHz->JIM_ram = (uint8_t *) malloc((size_t)(Pi1MHz->JIM_ram_size<<24)); // malloc 480Mbytes
    }
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
-   if (!filesystemReadFile("JIM_Init.bin",&Pi1MHz->JIM_ram,Pi1MHz->JIM_ram_size<<24))
+   if (!filesystemReadFile("JIM_Init.bin",&Pi1MHz->JIM_ram,(size_t)(Pi1MHz->JIM_ram_size<<24)))
    {
        // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
       char * ram = (char *)Pi1MHz->JIM_ram;
@@ -176,9 +176,9 @@ void rambyte_emulator_init( uint8_t instance , uint8_t address)
 
    // register call backs
    // byte memory address write fc00 01 02
-   Pi1MHz_Register_Memory(WRITE_FRED, rambyte_address+0, ram_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, rambyte_address+1, ram_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, rambyte_address+2, ram_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(rambyte_address+0), ram_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(rambyte_address+1), ram_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(rambyte_address+2), ram_emulator_byte_addr );
    // fc03 write data byte
-   Pi1MHz_Register_Memory(WRITE_FRED, rambyte_address+3, ram_emulator_byte_write );
+   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(rambyte_address+3), ram_emulator_byte_write );
 }

@@ -8,7 +8,7 @@ void RPI_SetGpioPinFunction(rpi_gpio_pin_t gpio, rpi_gpio_alt_function_t func)
 
   uint32_t fsel_copy = *fsel_reg;
   fsel_copy &= (uint32_t)~(FS_MASK << ((gpio % 10) * 3));
-  fsel_copy |= (func << ((gpio % 10) * 3));
+  fsel_copy = (uint32_t) (fsel_copy |(uint32_t)(func << ((gpio % 10) * 3)));
   *fsel_reg = fsel_copy;
 }
 
@@ -67,11 +67,11 @@ void RPI_SetGpioHi(rpi_gpio_pin_t gpio)
   switch (gpio / 32)
   {
     case 0:
-      RPI_GpioBase->GPSET0 = (1 << gpio);
+      RPI_GpioBase->GPSET0 = (rpi_reg_wo_t) (1 << gpio);
     break;
 
     case 1:
-      RPI_GpioBase->GPSET1 = (1 << (gpio - 32));
+      RPI_GpioBase->GPSET1 = (rpi_reg_wo_t) (1 << (gpio - 32));
     break;
 
     default:
@@ -84,11 +84,11 @@ void RPI_SetGpioLo(rpi_gpio_pin_t gpio)
   switch (gpio / 32)
   {
     case 0:
-      RPI_GpioBase->GPCLR0 = (1 << gpio);
+      RPI_GpioBase->GPCLR0 = (rpi_reg_wo_t) (1 << gpio);
     break;
 
     case 1:
-      RPI_GpioBase->GPCLR1 = (1 << (gpio - 32));
+      RPI_GpioBase->GPCLR1 = (rpi_reg_wo_t) (1 << (gpio - 32));
     break;
 
     default:
@@ -118,7 +118,7 @@ void RPI_SetGpioPull(rpi_gpio_pin_t gpio, rpi_gpio_pull pull)
   RPI_GpioBase->GPPUD = pull;
   RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
 
-  RPI_GpioBase->GPPUDCLK0 = 1<<gpio;
+  RPI_GpioBase->GPPUDCLK0 = (rpi_reg_wo_t) (1<<gpio);
   RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
 
   RPI_GpioBase->GPPUDCLK0 = 0;

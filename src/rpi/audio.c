@@ -90,7 +90,7 @@ static void init_dma_buffer(size_t buf, uint32_t buffer_init)
        dma_cb_data[buf].buffer[i++] = ( buffer_init >> 1 ) + error;
        dma_cb_data[buf].buffer[i++] = ( buffer_init >> 1 ) + error;
    }
-   buffer_state |= 1<<buf;
+   buffer_state = (uint8_t) (buffer_state | 1<<buf);
    _clean_cache_area(&dma_cb_data[buf], sizeof(dma_cb_data[buf]));
 }
 

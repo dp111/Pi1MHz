@@ -1256,13 +1256,13 @@ static int filesystemPagetoIndex( uint8_t page)
    char page1 , page2;
    if (page >= 10)
    {
-      page1= (page/10)+'0';
-      page2= (page%10)+'0';
+      page1 = (char) ( (page/10)+'0');
+      page2 = (char) ( (page%10)+'0');
    }
    else
       {
-      page1= page+'0';
-      page2= 0;
+      page1 = (char) (page+'0');
+      page2 = 0;
       }
 
    const char mode[] = {'M','o','d','e','P','a','g','e',page1,page2,0};
@@ -1275,13 +1275,13 @@ static int filesystemWritetoIndex( uint8_t page)
    char page1 , page2;
    if (page >= 10)
    {
-      page1= (page/10)+'0';
-      page2= (page%10)+'0';
+      page1 = (char) ( (page/10)+'0');
+      page2 = (char) ( (page%10)+'0');
    }
    else
       {
-      page1= page+'0';
-      page2= 0;
+      page1 = (char) (page+'0');
+      page2 = 0;
       }
 
    const char mode[] = {'W','r','i','t','P','a','g','e',page1,page2,0};
@@ -1313,8 +1313,8 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
       {
          for ( unsigned int i=0; (i< len) && (i < filesystemState.keyvalues[lunNumber][windex].length ); i++)
          {
-            filesystemState.keyvalues[lunNumber][index].v.string[i] = (Buffer[i] & filesystemState.keyvalues[lunNumber][windex].v.string[i]) |
-                      ((filesystemState.keyvalues[lunNumber][index].v.string[i] & ~filesystemState.keyvalues[lunNumber][windex].v.string[i]));
+            filesystemState.keyvalues[lunNumber][index].v.string[i] = (char) ( (Buffer[i] & filesystemState.keyvalues[lunNumber][windex].v.string[i]) |
+                      ((filesystemState.keyvalues[lunNumber][index].v.string[i] & ~filesystemState.keyvalues[lunNumber][windex].v.string[i])));
          }
          return 1;
       }

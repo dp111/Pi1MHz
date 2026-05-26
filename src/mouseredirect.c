@@ -276,9 +276,9 @@ void mouse_redirect_move_mouse(void)
         return;
 
     change = false;
-    mouse_x = (int32_t)((int16_t)(Pi1MHz_MemoryRead(fred_address + 0) | (Pi1MHz_MemoryRead(fred_address + 1)<<8)));
-    mouse_y = (int32_t)((int16_t)(Pi1MHz_MemoryRead(fred_address + 2) | (Pi1MHz_MemoryRead(fred_address + 3)<<8)));
-    mouse_pointer = Pi1MHz_MemoryRead(fred_address + 4);
+    mouse_x = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 0)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 1))<<8)));
+    mouse_y = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 2)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))<<8)));
+    mouse_pointer = Pi1MHz_MemoryRead((uint32_t)(fred_address + 4));
     LOG_DEBUG("Mouse x %"PRIi32" y %"PRIi32" Pointer %u Last pointer %u\r\n", mouse_x, mouse_y, mouse_pointer, lastmouse_pointer);
 
     if (lastmouse_pointer != mouse_pointer)
@@ -338,9 +338,9 @@ void mouse_redirect_init(uint8_t instance, uint8_t address)
 {
     // register call backs
     fred_address = address;
-    Pi1MHz_Register_Memory(WRITE_FRED, address+0, mouse_redirect_move_mouse_data );
-    Pi1MHz_Register_Memory(WRITE_FRED, address+1, mouse_redirect_move_mouse_data );
-    Pi1MHz_Register_Memory(WRITE_FRED, address+2, mouse_redirect_move_mouse_data );
-    Pi1MHz_Register_Memory(WRITE_FRED, address+3, mouse_redirect_move_mouse_data );
-    Pi1MHz_Register_Memory(WRITE_FRED, address+4, mouse_redirect_mouse_type );
+    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+0), mouse_redirect_move_mouse_data );
+    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+1), mouse_redirect_move_mouse_data );
+    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+2), mouse_redirect_move_mouse_data );
+    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+3), mouse_redirect_move_mouse_data );
+    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+4), mouse_redirect_mouse_type );
 }

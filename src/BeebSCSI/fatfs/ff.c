@@ -622,7 +622,7 @@ static WORD ld_16 (const BYTE* ptr)	/*	 Load a 2-byte little-endian word */
 	WORD rv;
 
 	rv = ptr[1];
-	rv = rv << 8 | ptr[0];
+	rv = (WORD)(rv << 8 | ptr[0]);
 	return rv;
 }
 
@@ -1198,7 +1198,7 @@ static DWORD get_fat (		/* 0xFFFFFFFF:Disk error, 1:Internal error, 2..0x7FFFFFF
 			if (move_window(fs, fs->fatbase + (bc / SS(fs))) != FR_OK) break;
 			wc = fs->win[bc++ % SS(fs)];		/* Get 1st byte of the entry */
 			if (move_window(fs, fs->fatbase + (bc / SS(fs))) != FR_OK) break;
-			wc |= fs->win[bc % SS(fs)] << 8;	/* Merge 2nd byte of the entry */
+			wc = (UINT)(wc | (UINT)(fs->win[bc % SS(fs)] << 8));	/* Merge 2nd byte of the entry */
 			val = (clst & 1) ? (wc >> 4) : (wc & 0xFFF);	/* Adjust bit position */
 			break;
 
@@ -1272,7 +1272,7 @@ static FRESULT put_fat (	/* FR_OK(0):succeeded, !=0:error */
 			res = move_window(fs, fs->fatbase + (bc / SS(fs)));
 			if (res != FR_OK) break;
 			p = fs->win + bc++ % SS(fs);
-			*p = (clst & 1) ? ((*p & 0x0F) | ((BYTE)val << 4)) : (BYTE)val;	/* Update 1st byte */
+			*p = (clst & 1) ? ((BYTE)((*p & 0x0F) | ((BYTE)val << 4))) : (BYTE)val;	/* Update 1st byte */
 			fs->wflag = 1;
 			res = move_window(fs, fs->fatbase + (bc / SS(fs)));
 			if (res != FR_OK) break;
@@ -1786,7 +1786,7 @@ static FRESULT dir_next (	/* FR_OK(0):succeeded, FR_NO_FILE:End of table, FR_DEN
 			}
 		}
 		else {					/* Dynamic table */
-			if ((ofs / SS(fs) & (fs->csize - 1)) == 0) {	/* Cluster changed? */
+			if ((ofs / SS(fs) & (DWORD)(fs->csize - 1)) == 0) {	/* Cluster changed? */
 				clst = get_fat(&dp->obj, dp->clust);		/* Get next cluster */
 				if (clst <= 1) return FR_INT_ERR;			/* Internal error */
 				if (clst == 0xFFFFFFFF) return FR_DISK_ERR;	/* Disk error */
@@ -2047,7 +2047,7 @@ static void gen_numname (
 	i = 7;
 	do {
 		c = (BYTE)((seq % 16) + '0'); seq /= 16;
-		if (c > '9') c += 7;
+		if (c > '9') c = (BYTE)(c + 7);
 		ns[i--] = c;
 	} while (i && seq);
 	ns[i] = '~';
@@ -2386,7 +2386,7 @@ static FRESULT dir_read (
 						dp->blk_ofs = dp->dptr;
 					}
 					/* Check LFN validity and capture it */
-					ord = (et == ord && sum == dp->dir[LDIR_Chksum] && pick_lfn(fs->lfnbuf, dp->dir)) ? ord - 1 : 0xFF;
+					ord =  (et == ord && sum == dp->dir[LDIR_Chksum] && pick_lfn(fs->lfnbuf, dp->dir)) ? (BYTE)(ord - 1) : 0xFF;
 				} else {				/* An SFN entry is found */
 					if (ord != 0 || sum != sum_sfn(dp->dir)) {	/* Is there a valid LFN? */
 						dp->blk_ofs = 0xFFFFFFFF;	/* It has no LFN. */
@@ -2472,7 +2472,7 @@ static FRESULT dir_find (	/* FR_OK(0):succeeded, !=0:error */
 						sum = dp->dir[LDIR_Chksum];	/* Sum of the SFN */
 					}
 					/* Check validity of the LFN entry and compare it with given name */
-					ord = (et == ord && sum == dp->dir[LDIR_Chksum] && cmp_lfn(fs->lfnbuf, dp->dir)) ? ord - 1 : 0xFF;
+					ord =  (et == ord && sum == dp->dir[LDIR_Chksum] && cmp_lfn(fs->lfnbuf, dp->dir)) ?(BYTE) (ord - 1) : 0xFF;
 				}
 			} else {					/* SFN entry */
 				if (ord == 0 && sum == sum_sfn(dp->dir)) break;	/* LFN matched? */
@@ -2769,7 +2769,7 @@ static void get_fileinfo (
 			for (si = di = 0; fno->altname[si]; si++, di++) {	/* Copy altname[] to fname[] with case information */
 				wc = (WCHAR)fno->altname[si];
 				if (wc == '.') lcflg = NS_EXT;
-				if (IsUpper(wc) && (dp->dir[DIR_NTres] & lcflg)) wc += 0x20;
+				if (IsUpper(wc) && (dp->dir[DIR_NTres] & lcflg)) wc = (WCHAR)(wc + 0x20);
 				fno->fname[di] = (TCHAR)wc;
 			}
 		}
@@ -2972,7 +2972,7 @@ static FRESULT create_name (	/* FR_OK: successful, FR_INVALID_NAME: could not cr
 			}
 			if (si != di) cf |= NS_LOSS | NS_LFN;	/* Name body overflow? */
 			if (si > di) break;						/* No name extension? */
-			si = di; i = 8; ni = 11; b <<= 2;		/* Enter name extension */
+			si = di; i = 8; ni = 11; b = (BYTE) (b<<2);		/* Enter name extension */
 			continue;
 		}
 
@@ -3007,7 +3007,7 @@ static FRESULT create_name (	/* FR_OK: successful, FR_INVALID_NAME: could not cr
 					b |= 2;
 				}
 				if (IsLower(wc)) {		/* ASCII lower case? */
-					b |= 1; wc -= 0x20;
+					b |= 1; wc = (WCHAR) (wc - 0x20);
 				}
 			}
 		}
@@ -3016,7 +3016,7 @@ static FRESULT create_name (	/* FR_OK: successful, FR_INVALID_NAME: could not cr
 
 	if (dp->fn[0] == DDEM) dp->fn[0] = RDDEM;	/* If the first character collides with DDEM, replace it with RDDEM */
 
-	if (ni == 8) b <<= 2;				/* Shift capital flags if no extension */
+	if (ni == 8) b = (BYTE) (b<<2);				/* Shift capital flags if no extension */
 	if ((b & 0x0C) == 0x0C || (b & 0x03) == 0x03) cf |= NS_LFN;	/* LFN entry needs to be created if composite capitals */
 	if (!(cf & NS_LFN)) {				/* When LFN is in 8.3 format without extended character, NT flags are created */
 		if (b & 0x01) cf |= NS_EXT;		/* NT flag (Extension has small capital letters only) */
@@ -4027,7 +4027,7 @@ FRESULT f_read (
 
 	for ( ; btr > 0; btr -= rcnt, *br += rcnt, rbuff += rcnt, fp->fptr += rcnt) {	/* Repeat until btr bytes read */
 		if (fp->fptr % SS(fs) == 0) {			/* On the sector boundary? */
-			csect = (UINT)(fp->fptr / SS(fs) & (fs->csize - 1));	/* Sector offset in the cluster */
+			csect = (UINT)(fp->fptr / SS(fs) & (UINT) (fs->csize - 1));	/* Sector offset in the cluster */
 			if (csect == 0) {					/* On the cluster boundary? */
 				DWORD clst;
 
@@ -4131,7 +4131,7 @@ FRESULT f_write (
 
 	for ( ; btw > 0; btw -= wcnt, *bw += wcnt, wbuff += wcnt, fp->fptr += wcnt, fp->obj.objsize = (fp->fptr > fp->obj.objsize) ? fp->fptr : fp->obj.objsize) {	/* Repeat until all data written */
 		if (fp->fptr % SS(fs) == 0) {		/* On the sector boundary? */
-			csect = (UINT)(fp->fptr / SS(fs)) & (fs->csize - 1);	/* Sector offset in the cluster */
+			csect = (UINT)(fp->fptr / SS(fs)) & (UINT)(fs->csize - 1);	/* Sector offset in the cluster */
 			if (csect == 0) {				/* On the cluster boundary? */
 				if (fp->fptr == 0) {		/* On the top of the file? */
 					clst = fp->obj.sclust;	/* Follow from the origin */
@@ -4621,7 +4621,7 @@ FRESULT f_lseek (
 				fp->clust = clmt_clust(fp, ofs - 1);
 				dsc = clst2sect(fs, fp->clust);
 				if (dsc == 0) ABORT(fs, FR_INT_ERR);
-				dsc += (DWORD)((ofs - 1) / SS(fs)) & (fs->csize - 1);
+				dsc += (DWORD)((ofs - 1) / SS(fs)) & (DWORD) (fs->csize - 1);
 				if (fp->fptr % SS(fs) && dsc != fp->sect) {	/* Refill sector cache if needed */
 #if !FF_FS_TINY
 #if !FF_FS_READONLY

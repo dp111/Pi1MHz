@@ -863,9 +863,9 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
    screen_plane_enable(SCREEN_PLANE, false);
    mouse_redirect_mouseoff();
    screen_release_buffer(handle); // doesn't do anything if fb is NULL
-   uint32_t temp =screen_allocate_buffer((uint32_t) (screen->width * screen->height) * (1 << (uint32_t) screen->log2bpp) / 8 , &handle);
+   uint32_t temp =screen_allocate_buffer((uint32_t) ((screen->width * screen->height) << (uint32_t) screen->log2bpp)>>3 , &handle);
    fb = (unsigned char *) temp;
-   screen->pitch = screen->width * (1 << (uint32_t) screen->log2bpp) / 8;
+   screen->pitch = (screen->width << (uint32_t) screen->log2bpp) >>3;
    screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
 
     // Initialize colour table and palette
@@ -1022,9 +1022,9 @@ pixel_t default_nearest_colour_8bpp(const struct screen_mode *screen, uint8_t r,
    for (colour_index_t i = 0; i <= screen->ncolour && distance != 0; i++) {
       pixel_t colour = screen_get_palette_entry(i);
       // xxRRGGBB
-      int dr = r - ((colour >> 16 ) & 0xff);
-      int dg = g - ((colour >> 8  ) & 0xff);
-      int db = b - ((colour       ) & 0xff);
+      int dr = (int)(r - ((colour >> 16 ) & 0xff));
+      int dg = (int)(g - ((colour >> 8  ) & 0xff));
+      int db = (int)(b - ((colour       ) & 0xff));
       int d = 2 * dr * dr + 4 * dg * dg + db * db;
       if (d < distance) {
          distance = d;
