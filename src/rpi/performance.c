@@ -3,7 +3,7 @@
 #include <string.h>
 #include "performance.h"
 
-#if defined(RPI3)
+#if (__ARM_ARCH == 8 )
 
 const char * type_names[] = {
 
@@ -41,7 +41,7 @@ const char * type_names[] = {
    "L1D_CACHE_ALLOCATE"
 };
 
-#elif defined(RPI2)
+#elif (__ARM_ARCH == 7 )
 
 const char * type_names[] = {
    "TODO",
@@ -143,7 +143,7 @@ void reset_performance_counters(perf_counters_t *pct) {
    unsigned ctrl = 0x0F;
 
   /* Initialize performance counters */
-#if defined(RPI2) || defined(RPI3)
+#if (__ARM_ARCH >= 7 )
    pct->num_counters = 6;
    pct->type[0] = PERF_TYPE_L1I_CACHE;
    pct->type[1] = PERF_TYPE_L1I_CACHE_REFILL;
@@ -166,7 +166,7 @@ void reset_performance_counters(perf_counters_t *pct) {
 #endif
 
 
-#if defined(RPI2) || defined(RPI3)
+#if (__ARM_ARCH >= 7 )
    int i;
    unsigned cntenset = (1U << 31);
 
@@ -202,7 +202,7 @@ void reset_performance_counters(perf_counters_t *pct) {
 }
 
 void read_performance_counters(perf_counters_t *pct) {
-#if defined(RPI2) || defined(RPI3)
+#if (__ARM_ARCH >= 7 )
    int i;
    for (i = 0; i < pct->num_counters; i++) {
       /* Select the event count/type via the event type selection register */
@@ -251,7 +251,7 @@ int benchmark() {
    unsigned char mem1[1024*1024];
    unsigned char mem2[1024*1024];
    mem2[0]=0;
-#if defined(RPI2) || defined(RPI3)
+#if (__ARM_ARCH >= 7 )
    pct.num_counters = 6;
    pct.type[0] = PERF_TYPE_L1I_CACHE;
    pct.type[1] = PERF_TYPE_L1I_CACHE_REFILL;
