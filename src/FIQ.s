@@ -75,13 +75,13 @@ FIQstart:
    mov      r12, #0
 
    movs     r9, r9
-   // DMB_MACRO r12           // check doorbell ack has actually left the core.
+   DMB_MACRO r12           // check doorbell ack has actually left the core.
    subeqs   pc, lr,#4   // no callback
 
    push    {r0-r3,r12, r14}
    mov     r0, r8, LSR # DATABUS_SHIFT
    blx     r9
    pop     {r0-r3,r12, r14}
-
+   DMB_MACRO r12
    subs    pc, lr, #4
 FIQend:

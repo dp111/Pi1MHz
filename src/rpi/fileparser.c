@@ -16,17 +16,34 @@ keys must start at the beginning of the line and with
 #include <string.h>
 #include <stdbool.h>
 #include <inttypes.h>
+#include <ctype.h>
 #include "../beebscsi/filesystem.h"
 #include "rpi.h"
 #include "fileparser.h"
+
+/* Compare S1 and S2, ignoring case, returning less than, equal to or
+   greater than zero if S1 is lexicographically less than,
+   equal to or greater than S2.  */
+static bool localstrcasecmp(const char *s1, const char *s2 )
+{
+    while(1)
+    {
+        //printf("compare : %c %c\n\r",*s1,*s2);
+        if ( tolower(*s1++) != tolower(*s2++) )
+            return false;
+        if ((*s1 == '\0') && ((*s2 == '\0') || (*s2 == '\n') || (*s2 == '\r') || (*s2 == ' ') || (*s2 == '\t') || (*s2 == '#') || (*s2 == '=')))
+            return true;
+    }
+}
 
 int parse_findindex( const char * searchkey, const parserkey array[])
 {
     int i = 0;
     while (array[i].key) {
-        if (strcasecmp(array[i].key, searchkey) == 0) {
+        if (localstrcasecmp(array[i].key, searchkey)) {
             return i;
         }
+        i++;
     }
     return -1;
 }
@@ -35,7 +52,7 @@ int parse_findindex( const char * searchkey, const parserkey array[])
 // nonnumber = 0 for hex digits, 1 for 0x, -1 for non decimal digits
 //
 //
-static size_t parse_strlen( const uint8_t * buf , size_t ptr, size_t max,  int *nonnumber)
+static size_t parse_numstrlen( const uint8_t * buf , size_t ptr, size_t max,  int *nonnumber)
 {
     size_t len = 0;
     size_t oldptr = ptr;
@@ -57,6 +74,20 @@ static size_t parse_strlen( const uint8_t * buf , size_t ptr, size_t max,  int *
                     else
                         *nonnumber = -1;
                 }
+            len++;
+            ptr++;
+        }
+    return len;
+}
+
+// length of string till end of line or #
+//
+//
+static size_t parse_strlen( const uint8_t * buf , size_t ptr, size_t max)
+{
+    size_t len = 0;
+    while ((buf[ptr] >= ' ') && (buf[ptr] != '#')  && (ptr < max))
+        {
             len++;
             ptr++;
         }
@@ -87,10 +118,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
     {
         // skip white space and blank lines
         while  ((ptr < filesize) && (buffer[ptr] <= ' ') )
-            {
-                outbuf[outptr++] = buffer[ptr++];
-                ptr++;
-            }
+            outbuf[outptr++] = buffer[ptr++];
 
         if (ptr >= filesize)
             break;
@@ -108,7 +136,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
         if (keyindex == -1)
         {
             // key not found skip line
-            LOG_DEBUG("Key not found %s\n", buffer + ptr );
+            LOG_DEBUG("Key not found\n\r" );
             while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )) )
                 outbuf[outptr++] = buffer[ptr++];
             continue;
@@ -117,7 +145,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
         {
             // key found
             size_t keylen = strlen(keyv[keyindex].key);
-            LOG_DEBUG("Key found %s ", keyv[keyindex].key );
+            LOG_DEBUG("Key found %s \r\n", keyv[keyindex].key );
             while (keylen)
                 {
                     outbuf[outptr++] = buffer[ptr++];
@@ -133,10 +161,9 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                 }
                 if (buffer[ptr] == '#')
                 {
-                    while ( (ptr < filesize) && ((buffer[ptr] != '\n')&&( buffer[ptr] != '\r' )) )
+                    while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )) )
                         outbuf[outptr++] = buffer[ptr++];
                     break;
-
                 }
                 if ((buffer[ptr] == '\n') || ( buffer[ptr] == '\r' ))
                 {
@@ -151,13 +178,14 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                     if (outfile)
                     {
                       int nonnumber;
-                      size_t len = parse_strlen( buffer , ptr, filesize, &nonnumber);
                       // check if value exists
                       if (values[keyindex].length)
                       {
+
                         // if so write it out
                         if (keyv[keyindex].type == NUMSTRING)
                         {
+                            size_t len = parse_numstrlen( buffer , ptr, filesize, &nonnumber);
                             // write a string number
                             for( size_t i = 0; i < values[keyindex].length; i++)
                                 {
@@ -176,6 +204,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                         }
                         else if (keyv[keyindex].type == STRING)
                         {
+                            size_t len = parse_strlen( buffer , ptr, filesize);
                             // write a string
                             for( size_t i = 0; i < values[keyindex].length; i++)
                                 outbuf[outptr++] = values[keyindex].v.string[i];
@@ -183,6 +212,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                         }
                         else if (keyv[keyindex].type == INTEGER)
                         {
+                            size_t len = parse_strlen( buffer , ptr, filesize);
                             // write a number
                             size_t outlen = (size_t) sprintf( outbuf + outptr , "%d" , *values[keyindex].v.integer);
                             outptr += outlen;
@@ -197,9 +227,10 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
 
                     } else {
                         int nonnumber;
-                        size_t len = parse_strlen( buffer , ptr, filesize, &nonnumber);
+
                         if (keyv[keyindex].type == NUMSTRING)
                         {
+                            size_t len = parse_numstrlen( buffer , ptr, filesize, &nonnumber);
                             if (nonnumber<0)
                             {
                                 // error
@@ -214,7 +245,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                      len-=2;
                                     }
                                 // read a string number
-                                LOG_DEBUG("Number %s\n\r" , &buffer[ptr]);
+                              //  LOG_DEBUG("Number %s\n\r" , &buffer[ptr]);
                                 values[keyindex].v.string = malloc( len/2);
                                 if (values[keyindex].v.string == NULL)
                                     {
@@ -238,13 +269,16 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                         else if ((buffer[ptr] >= 'a') && (buffer[ptr] <= 'f'))
                                             values[keyindex].v.string[i] += (char)(buffer[ptr] - 'a' + 10);
                                         ptr++;
+                                        LOG_DEBUG("%02x ", values[keyindex].v.string[i]);
                                     }
                                     values[keyindex].length = len/2;
+                                    LOG_DEBUG("\r\n" );
                                 }
                             }
                         }
                         else if (keyv[keyindex].type == STRING)
                         {
+                            size_t len = parse_strlen( buffer , ptr, filesize);
                             // read a string
                             values[keyindex].v.string = malloc( len + 1);
                             if (values[keyindex].v.string == NULL)
@@ -261,6 +295,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                         }
                         else if (keyv[keyindex].type == INTEGER)
                         {
+                            size_t len = parse_strlen( buffer , ptr, filesize);
                             // read a number
                             values[keyindex].v.integer = malloc( 4);
                             if (values[keyindex].v.integer == NULL)
