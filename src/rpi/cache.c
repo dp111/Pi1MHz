@@ -28,7 +28,6 @@ static const unsigned int aa0 = 0; /* note ARM ARM bit ordering is confusing */
 static const unsigned int aa6 = 1;
 static const unsigned int shareable = 1;
 #endif
-static const unsigned int bb = 1;
 
 #if (__ARM_ARCH >= 7 )
 
@@ -218,9 +217,9 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
   //   to allow native ARM code to execute
   //   (this was the cause of issue #27)
 #if (__ARM_ARCH >= 7 )
-  PageTable2[logical] = (physical<<12) | 0x132u | (bb << 6) | (1<<3) | (1 << 2);
+  PageTable2[logical] = (physical<<12) | 0x132u | (1 << 6) | (1<<3) | (1 << 2);
 #else
-  PageTable2[logical] = (physical<<12) | 0x133u | (bb << 6) | (1<<3) | (1 << 2);
+  PageTable2[logical] = (physical<<12) | 0x133u | (1 << 6) | (1<<3) | (1 << 2);
 #endif
 }
 #endif
@@ -348,7 +347,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // [Bit 4, Bit 3] indicates outer cachability: 01 = normal memory, outer write-back write-allocate cacheable
   // Bit 1 indicates shareable
   // 4A = 0100 1010
-  unsigned int attr = ((aa6) << 6) | (bb << 3) | (shareable << 1) | ((aa0 ));
+  unsigned int attr = ((aa6) << 6) | (1 << 3) | (shareable << 1) | ((aa0 ));
   asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (attr | (unsigned) &PageTable));
 #else
   // set TTBR0 (page table walk inner cacheable, outer non-cacheable, shareable memory)
