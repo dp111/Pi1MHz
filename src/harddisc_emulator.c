@@ -253,7 +253,6 @@ void hostadapterWriteByte(uint8_t databusValue)
 uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
 {
    uint32_t currentByte = 0;
-   uint32_t timeoutCounter;
 
    // Loop to write bytes (unless a reset condition is detected)
    
@@ -265,7 +264,7 @@ uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
       hostadapterWriteRequestFlag(ACTIVE);
 
       // Wait for ACKnowledge
-      timeoutCounter = 0; // Reset timeout counter
+      uint32_t timeoutCounter = 0; // Reset timeout counter
 
       while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
       {
@@ -287,7 +286,6 @@ uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
 uint16_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
 {
    uint32_t currentByte = 0;
-   uint32_t timeoutCounter;
 
    // Loop to read bytes (unless a reset condition is detected)
    
@@ -296,7 +294,7 @@ uint16_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
       hostadapterWriteRequestFlag(ACTIVE);
 
       // Wait for ACKnowledge
-      timeoutCounter = 0; // Reset timeout counter
+      uint32_t timeoutCounter = 0; // Reset timeout counter
 
       while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
       {
