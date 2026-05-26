@@ -421,7 +421,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					break;
 
 					case 'X':
-					debugString_P(PSTR(" = Video overlay mode request\r\n"));
+					debugString_P(PSTR(" = Video overlay mode request\r\n")); // Domesday sends this
 					break;
 
 					default:

@@ -39,9 +39,6 @@
 #include "statusled.h"
 #include "scsi.h"
 
-// Uncomment next line to enable Fcode support
-//#define FCODE
-
 // Define the major and minor firmware version number returned
 // by the BSSENSE command
 #define FIRMWARE_MAJOR     0x03
