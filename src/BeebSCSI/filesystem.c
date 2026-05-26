@@ -514,7 +514,7 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
       f_close(&fileObject);
 
       // Calculate the LUN size from the descriptor file
-      uint32_t lunDscSize = filesystemGetLunSizeFromDsc(filesystemState.lunDirectory, lunNumber);
+      uint32_t lunDscSize = filesystemGetLunSizeFromDsc(lunNumber);
       if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemCheckLunImage(): LUN size in bytes (according to .dsc) = "), lunDscSize, 1);
 
       // Are the file size and DSC size consistent?
@@ -556,7 +556,7 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
 }
 
 // Function to calculate the LUN image size from the LUN descriptor file parameters
-uint32_t filesystemGetLunSizeFromDsc(uint8_t lunDirectory, uint8_t lunNumber)
+uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
 {
    uint32_t lunSize = 0;
    UINT fsCounter;
@@ -564,7 +564,7 @@ uint32_t filesystemGetLunSizeFromDsc(uint8_t lunDirectory, uint8_t lunNumber)
    FIL fileObject;
 
    // Assemble the DSC file name
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", lunDirectory, lunNumber);
+   sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
 
    fsResult = f_open(&fileObject, fileName, FA_READ);
    if (fsResult == FR_OK) {
@@ -937,14 +937,14 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
       //
       // This ignores the data pattern (since the file is only allocated - not
       // actually written).
-      fsResult = f_expand(&filesystemState.fileObject[lunNumber], (FSIZE_t)(requiredNumberOfSectors * 256), 1);
+      fsResult = f_expand(&fileObject /*&filesystemState.fileObject[lunNumber]*/, (FSIZE_t)(requiredNumberOfSectors * 256), 1);
 
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): Format complete\r\n"));
 
       // Check that the file was written OK
       if (fsResult != FR_OK) {
          // Something went wrong writing to the .dat
-         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): ERROR: Could not write .dat\r\n"));
+         if (debugFlag_filesystem) debugStringInt8Hex_P(PSTR("File system: filesystemFormatLun(): ERROR: Could not write .dat : \r\n"),fsResult,1);
          return false;
       }
    } else {
