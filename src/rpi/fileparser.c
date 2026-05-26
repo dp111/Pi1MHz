@@ -17,7 +17,7 @@ keys must start at the beginning of the line and with
 #include <stdbool.h>
 #include <inttypes.h>
 #include <ctype.h>
-#include "../beebscsi/filesystem.h"
+#include "../BeebSCSI/filesystem.h"
 #include "rpi.h"
 #include "fileparser.h"
 
