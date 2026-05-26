@@ -191,7 +191,7 @@ typedef void (*func_ptr_parameter)( uint8_t instance, int address);
 typedef struct
 {
    uint8_t Memory[PAGE_SIZE*2];
-   uint8_t Spare[PAGE_SIZE*2];
+   uint8_t Spare[PAGE_SIZE];
    callback_func_ptr callback_table[PAGE_SIZE*2*2];
 } Pi1MHz_t;
 
