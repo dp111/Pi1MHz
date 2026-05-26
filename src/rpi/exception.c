@@ -1,4 +1,5 @@
 #include "rpi.h"
+#include "asm-helpers.h"
 #include "auxuart.h"
 
 /* From here: https://www.raspberrypi.org/forums/viewtopic.php?f=72&t=53862*/
@@ -65,7 +66,7 @@ void dump_info(unsigned int *context, int offset, const char *type) {
   dump_hex((unsigned int)addr);
 #if (__ARM_ARCH >= 7 )
   dump_string(" on core ");
-  dump_digit(_get_core());
+  dump_digit((unsigned char)_get_core());
 #endif
   dump_string("\r\nRegisters:\r\n");
   for (int i = 0; i <= 13; i++) {

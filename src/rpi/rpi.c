@@ -6,12 +6,6 @@
 __attribute__ ((aligned (0x1000) )) __attribute__((used))  NOINIT_SECTION uint8_t arm_stack[8*64*1024];
 
 #if (__ARM_ARCH >= 7 )
-unsigned char _get_core(void)
-{
-   int core;
-   asm volatile ("mrc p15, 0, %0, c0, c0,  5" : "=r" (core));
-   return core & 3;
-}
 
 void start_core(int core, func_ptr func) {
    LOG_DEBUG("starting core %d\r\n", core);
