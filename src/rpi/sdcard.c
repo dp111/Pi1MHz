@@ -47,8 +47,8 @@
    } while ( time--); \
 }
 
-//#define DEBUG_SD
-
+#define DEBUG_SD
+#define RESET_CONTROLLER
 #ifdef DEBUG_SD
 #define EMMC_DEBUG
 #else
@@ -84,6 +84,9 @@
 // Enable card interrupts
 //#define SD_CARD_INTERRUPTS
 
+// enable power cycling at the start ( wastes time, may be useful for Pi4 )
+//#define SDCARD_PWR_CYCLE
+
 // Enable EXPERIMENTAL (and possibly DANGEROUS) SD write support
 #define SD_WRITE_SUPPORT
 
@@ -94,14 +97,6 @@
 #define SDHCI_IMPLEMENTATION_GENERIC        0
 #define SDHCI_IMPLEMENTATION_BCM_2708       1
 #define SDHCI_IMPLEMENTATION                SDHCI_IMPLEMENTATION_BCM_2708
-
-static char driver_name[] = "emmc";
-static char device_name[] = "emmc0";   // We use a single device name as there is only
-               // one card slot in the RPi
-
-static uint32_t hci_ver = 0;
-static uint32_t capabilities_0 = 0;
-static uint32_t capabilities_1 = 0;
 
 struct sd_scr
 {
@@ -498,6 +493,7 @@ static uint32_t sd_get_base_clock_hz()
 }
 
 #if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
+#ifdef SDCARD_PWR_CYCLE
 static int bcm_2708_power_off()
 {
    RPI_PropertySetWord(TAG_SET_POWER_STATE, 0, 2);
@@ -519,6 +515,7 @@ static int bcm_2708_power_cycle()
    return bcm_2708_power_on();
 }
 #endif
+#endif
 
 // Set the clock dividers to generate a target value
 static uint32_t sd_get_clock_divider(uint32_t base_clock, uint32_t target_rate)
@@ -538,68 +535,53 @@ static uint32_t sd_get_clock_divider(uint32_t base_clock, uint32_t target_rate)
 
     // Decide on the clock mode to use
 
-    // Currently only 10-bit divided clock mode is supported
+    // HCI version 3 or greater supports 10-bit divided clock mode
+    // This requires a power-of-two divider
 
-#ifndef EMMC_ALLOW_OLD_SDHCI
-    if(hci_ver >= 2)
+    // Find the first bit set
+    int divisor = -1;
+    for(int first_bit = 31; first_bit >= 0; first_bit--)
     {
-#endif
-        // HCI version 3 or greater supports 10-bit divided clock mode
-        // This requires a power-of-two divider
-
-        // Find the first bit set
-        int divisor = -1;
-        for(int first_bit = 31; first_bit >= 0; first_bit--)
+        uint32_t bit_test = (1u << first_bit);
+        if(targetted_divisor & bit_test)
         {
-            uint32_t bit_test = (1u << first_bit);
-            if(targetted_divisor & bit_test)
+            divisor = first_bit;
+            targetted_divisor &= ~bit_test;
+            if(targetted_divisor)
             {
-                divisor = first_bit;
-                targetted_divisor &= ~bit_test;
-                if(targetted_divisor)
-                {
-                    // The divisor is not a power-of-two, increase it
-                    divisor++;
-                }
-                break;
+                // The divisor is not a power-of-two, increase it
+                divisor++;
             }
+            break;
         }
+    }
 
-        if(divisor == -1)
-            divisor = 11;
-        if(divisor > 11)
-            divisor = 11;
+    if(divisor == -1)
+        divisor = 11;
+    if(divisor > 11)
+        divisor = 11;
 
-        if(divisor != 0)
-            divisor = (1 << (divisor - 1));
+    if(divisor != 0)
+        divisor = (1 << (divisor - 1));
 
-        if(divisor >= 0x400)
-            divisor = 0x3ff;
+    if(divisor >= 0x400)
+        divisor = 0x3ff;
 
-        uint32_t freq_select = divisor & 0xff;
-        uint32_t upper_bits = (divisor >> 8) & 0x3;
-        uint32_t ret = (freq_select << 8) | (upper_bits << 6) | (0 << 5);
+    uint32_t freq_select = divisor & 0xff;
+    uint32_t upper_bits = (divisor >> 8) & 0x3;
+    uint32_t ret = (freq_select << 8) | (upper_bits << 6) | (0 << 5);
 
 #ifdef EMMC_DEBUG
-        unsigned int denominator = 1;
-        if(divisor != 0)
-            denominator = (unsigned int )divisor * 2;
-        unsigned int actual_clock = base_clock / denominator;
-        printf("EMMC: base_clock: %"PRIu32", target_rate: %"PRIu32", divisor: %08i, "
-               "actual_clock: %i, ret: %08"PRIx32"\r\n", base_clock, target_rate,
-               divisor, actual_clock, ret);
+    unsigned int denominator = 1;
+    if(divisor != 0)
+        denominator = (unsigned int )divisor * 2;
+    unsigned int actual_clock = base_clock / denominator;
+    printf("EMMC: base_clock: %"PRIu32", target_rate: %"PRIu32", divisor: %08i, "
+            "actual_clock: %i, ret: %08"PRIx32"\r\n", base_clock, target_rate,
+            divisor, actual_clock, ret);
 #endif
 
-        return ret;
-#ifndef EMMC_ALLOW_OLD_SDHCI
-    }
-    else
-    {
-        printf("EMMC: unsupported host version\r\n");
-        return SD_GET_CLOCK_DIVIDER_FAIL;
-    }
-#endif
-
+    return ret;
 }
 
 // Switch the clock rate whilst running
@@ -610,24 +592,24 @@ static int sd_switch_clock_rate(uint32_t base_clock, uint32_t target_rate)
 
     // Wait for the command inhibit (CMD and DAT) bits to clear
     while(RPI_EMMCBase->EMMC_STATUS & 0x3)
-        usleep(1000);
+        usleep(1);
 
     // Set the SD clock off
     uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
     control1 &= ~(1U << 2);
     RPI_EMMCBase->EMMC_CONTROL1 = control1;
-    usleep(2000);
+    usleep(5); // Wait 2 SCLKs
 
     // Write the new divider
     control1 &= ~0xffe0U;    // Clear old setting + clock generator select
     control1 |= divider;
     RPI_EMMCBase->EMMC_CONTROL1 = control1;
-    usleep(2000);
+    usleep(5); // Wait 2 SCLKs
 
     // Enable the SD clock
     control1 |= (1 << 2);
     RPI_EMMCBase->EMMC_CONTROL1 = control1;
-    usleep(2000);
+
 #ifdef EMMC_DEBUG
     printf("EMMC: successfully set clock rate to %"PRIu32" Hz\r\n", target_rate);
 #endif
@@ -673,7 +655,7 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
 
     // Check Command Inhibit
     while(RPI_EMMCBase->EMMC_STATUS & 0x1)
-        usleep(100);
+        usleep(1);
 
     // Is the command with busy?
     if((cmd_reg & SD_CMD_RSPNS_TYPE_MASK) == SD_CMD_RSPNS_TYPE_48B)
@@ -687,7 +669,7 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
 
             // Wait for the data line to be free
             while(RPI_EMMCBase->EMMC_STATUS & 0x2)
-                usleep(100);
+                usleep(1);
         }
     }
 
@@ -1157,6 +1139,7 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
 
 int sd_card_init(struct block_device **dev)
 {
+#ifdef EMMC_DEBUG
     // Check the sanity of the sd_commands and sd_acommands structures
     if(sizeof(sd_commands) != (64 * sizeof(uint32_t)))
     {
@@ -1172,7 +1155,9 @@ int sd_card_init(struct block_device **dev)
                64 * sizeof(uint32_t));
         return -1;
     }
-
+#endif    
+// don't bother power cycling the SDCARD it just wastes time.
+#ifdef SDCARD_PWR_CYCLE
 #if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
    // Power cycle the card to ensure its in its startup state
    if(bcm_2708_power_cycle() != 0)
@@ -1184,28 +1169,26 @@ int sd_card_init(struct block_device **dev)
       printf("EMMC: BCM2708 controller power-cycled\r\n");
 #endif
 #endif
-
+#endif 
+#ifdef EMMC_DEBUG
    // Read the controller version
 
    uint32_t ver = RPI_EMMCBase->EMMC_SLOTISR_VER;
    uint32_t sdversion = (ver >> 16) & 0xff;
-#ifdef EMMC_DEBUG
+
    uint32_t vendor = ver >> 24;
    uint32_t slot_status = ver & 0xff;
 
    printf("EMMC: vendor %"PRIx32", sdversion %"PRIx32", slot_status %"PRIx32"\r\n", vendor, sdversion, slot_status);
-#endif
-   hci_ver = sdversion;
 
-   if(hci_ver < 2)
+   if(sdversion < 2)
    {
-#ifdef EMMC_ALLOW_OLD_SDHCI
-      printf("EMMC: WARNING: old SDHCI version detected\r\n");
-#else
       printf("EMMC: only SDHCI versions >= 3.0 are supported\r\n");
       return -1;
-#endif
    }
+#endif
+
+#ifdef RESET_CONTROLLER
 
    // Reset the controller
 #ifdef EMMC_DEBUG
@@ -1228,12 +1211,11 @@ int sd_card_init(struct block_device **dev)
          RPI_EMMCBase->EMMC_CONTROL0,
          RPI_EMMCBase->EMMC_CONTROL1,
          RPI_EMMCBase->EMMC_CONTROL2);
-#endif
 
    // Read the capabilities registers
-   capabilities_0 = RPI_EMMCBase->EMMC_CAPABILITIES_0;
-   capabilities_1 = RPI_EMMCBase->EMMC_CAPABILITIES_1;
-#ifdef EMMC_DEBUG
+   uint32_t capabilities_0 = RPI_EMMCBase->EMMC_CAPABILITIES_0;
+   uint32_t capabilities_1 = RPI_EMMCBase->EMMC_CAPABILITIES_1;
+
    printf("EMMC: capabilities: %08"PRIx32"%08"PRIx32"\r\n", capabilities_1, capabilities_0);
 #endif
 
@@ -1256,11 +1238,13 @@ int sd_card_init(struct block_device **dev)
    RPI_EMMCBase->EMMC_CONTROL2 = 0;
    // Get the base clock rate
    uint32_t base_clock = sd_get_base_clock_hz();
+#if 0
    if(base_clock == 0)
    {
        printf("EMMC: assuming clock rate to be 100MHz\r\n");
        base_clock = 100000000;
    }
+#endif
    // Set clock rate to something slow
 #ifdef EMMC_DEBUG
    printf("EMMC: setting clock rate\r\n");
@@ -1292,11 +1276,10 @@ int sd_card_init(struct block_device **dev)
 #ifdef EMMC_DEBUG
    printf("EMMC: enabling SD clock\r\n");
 #endif
-   usleep(100);
    control1 = RPI_EMMCBase->EMMC_CONTROL1;
    control1 |= 4;
    RPI_EMMCBase->EMMC_CONTROL1 = control1;
-   usleep(100);
+   usleep(6);
 #ifdef EMMC_DEBUG
    printf("EMMC: SD clock enabled\r\n");
 #endif
@@ -1315,8 +1298,8 @@ int sd_card_init(struct block_device **dev)
 #ifdef EMMC_DEBUG
    printf("EMMC: interrupts disabled\r\n");
 #endif
-   usleep(1000);
-
+   usleep(6);
+#endif // end if RESET controller
     // Prepare the device structure
    struct emmc_block_dev *ret;
    if(*dev == NULL)
@@ -1327,21 +1310,22 @@ int sd_card_init(struct block_device **dev)
    //assert(ret);
 
    memset(ret, 0, sizeof(struct emmc_block_dev));
-   ret->bd.driver_name = driver_name;
-   ret->bd.device_name = device_name;
+   ret->bd.driver_name = "emmc";
+   ret->bd.device_name = "emmc0";
    ret->bd.block_size = 512;
    ret->bd.read = sd_read;
 #ifdef SD_WRITE_SUPPORT
     ret->bd.write = sd_write;
 #endif
-    ret->bd.supports_multiple_block_read = 1;
-    ret->bd.supports_multiple_block_write = 1;
-    ret->base_clock = base_clock;
+  // these aren't actually used anywhere
+  //  ret->bd.supports_multiple_block_read = 1;
+  //  ret->bd.supports_multiple_block_write = 1;
+  //  ret->base_clock = base_clock;
 
 #ifdef EMMC_DEBUG
    printf("EMMC: device structure created\r\n");
 #endif
-
+#ifdef RESET_CONTROLLER
    // Send CMD0 to the card (reset to idle state)
    sd_issue_command(ret, GO_IDLE_STATE, 0, 500000);
    if(FAIL(ret))
@@ -1386,7 +1370,7 @@ int sd_card_init(struct block_device **dev)
         else
             v2_later = 1;
     }
-
+#if 0 
     // Here we are supposed to check the response to CMD5 (HCSS 3.6)
     // It only returns if the card is a SDIO card
 #ifdef EMMC_DEBUG
@@ -1411,7 +1395,7 @@ int sd_card_init(struct block_device **dev)
             return -1;
         }
     }
-
+#endif
     // Call an inquiry ACMD41 (voltage window = 0) to get the OCR
 #ifdef EMMC_DEBUG
     printf("SD: sending inquiry ACMD41\r\n");
@@ -1488,12 +1472,13 @@ int sd_card_init(struct block_device **dev)
    //  support SDR12 mode which runs at 25 MHz
     sd_switch_clock_rate(base_clock, SD_CLOCK_NORMAL);
 
-   // A small wait before the voltage switch
-   usleep(1000);
 
    // Switch to 1.8V mode if possible
    if(0)// PiDoesn't support 1.8v //ret->card_supports_18v)
    {
+        // A small wait before the voltage switch
+        usleep(1000);
+
 #ifdef EMMC_DEBUG
         printf("SD: switching to 1.8V mode\r\n");
 #endif
@@ -1778,7 +1763,7 @@ int sd_card_init(struct block_device **dev)
    printf("SD: found a valid version %s SD card\r\n", sd_versions[ret->scr->sd_version]);
    printf("SD: setup successful (status %"PRIu32")\r\n", status);
 #endif
-
+#endif
    // Reset interrupt register
    RPI_EMMCBase->EMMC_INTERRUPT = 0xffffffff;
 
@@ -2011,7 +1996,7 @@ size_t sd_write(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_
         return 0;
 
 #ifdef EMMC_DEBUG
-   printf("SD: write read successful\n");
+   printf("SD: write read successful\r\n");
 #endif
 
    return buf_size;
