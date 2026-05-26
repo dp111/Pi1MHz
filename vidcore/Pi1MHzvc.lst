@@ -14,7 +14,7 @@ F00:0013       #  r3 - data outputs
 F00:0014       #  r4 - debug output control
 F00:0015       #  r5 - debug pin mask (0 = no debug  xx= debug pin e.g 1<<21)
 F00:0016       
-F00:0017       # Intenal register allocation
+F00:0017       # Internal register allocation
 F00:0018       #  r0 - pointer to shared memory ( VC address) of tube registers
 F00:0019       #  r1 - pointer to data to xfer to ARM
 F00:0020       #  r2 - unused
@@ -22,7 +22,7 @@ F00:0021       #  r3 -
 F00:0022       #  r4 - debug output control
 F00:0023       #  r5 - debug pin mask (0 = no debug  xx= debug pin e.g 1<<21)
 F00:0024       #  r6 - GPFSEL0 constant
-F00:0025       #  r7 - External nOE pin 
+F00:0025       #  r7 - External nOE pin
 F00:0026       #  r8 - temp
 F00:0027       #  r9 - r9 Databus and test pin output select
 F00:0028       # r10 - address mask
@@ -171,67 +171,66 @@ F00:0135          lsrne  r8,16-DATASHIFT        # High 16 bits to low 16 bits wi
                S01:00000060:  48 C3 CE 40
 F00:0136          lsleq  r8,DATASHIFT           # low 16 bits wiht databus shift
                S01:00000064:  88 C3 42 40
-F00:0137       
+F00:0137          btst   r8, OUTPUTBIT
+               S01:00000068:  A8 6C
 F00:0138          and    r8,255<<DATASHIFT      # isolate databus
-               S01:00000068:  E8 E8 FC 03 00 00
+               S01:0000006A:  E8 E8 FC 03 00 00
 F00:0139       
-F00:0140          btst   r8, OUTPUTBIT  
-               S01:0000006E:  A8 6C
-F00:0141          stne   r8, 0(r11)             # set up databus ( only if it has been written to)
+F00:0140          stne   r8, 0(r11)             # set up databus ( only if it has been written to)
                S01:00000070:  28 A0 C0 58
-F00:0142          st     r9, GPFSEL0_offset(r6) # set databus to outputs
+F00:0141          st     r9, GPFSEL0_offset(r6) # set databus to outputs
                S01:00000074:  69 30
-F00:0143          stne   r7, r11GPCLR0_offset(r11)  # set external output enable low
+F00:0142          stne   r7, r11GPCLR0_offset(r11)  # set external output enable low
                S01:00000076:  27 A0 CC 58
-F00:0144          st     r12, (r1)              # post data
+F00:0143          st     r12, (r1)              # post data
                S01:0000007A:  1C 09
-F00:0145          st     r12, (r13)             # ring doorbell
+F00:0144          st     r12, (r13)             # ring doorbell
                S01:0000007C:  DC 09
-F00:0146       
-F00:0147          b waitforclklow2loop
+F00:0145       
+F00:0146          b waitforclklow2loop
                S01:0000007E:  01 1F
-F00:0148       
-F00:0149       .align 4
-F00:0150       waitforclklow2loop:
-F00:0151          ld     r12, GPLEV0_offset(r6)
+F00:0147       
+F00:0148       .align 4
+F00:0149       waitforclklow2loop:
+F00:0150          ld     r12, GPLEV0_offset(r6)
                S01:00000080:  6C 2D
-F00:0152          btst   r12, CLK
+F00:0151          btst   r12, CLK
                S01:00000082:  BC 6D
-F00:0153          bne    waitforclklow2loop
+F00:0152          bne    waitforclklow2loop
                S01:00000084:  FE 18
-F00:0154       
-F00:0155          st     r7, GPSET0_offset(r6)  # set external output enable high  
+F00:0153       
+F00:0154          st     r7, GPSET0_offset(r6)  # set external output enable high
                S01:00000086:  67 37
-F00:0156          st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
+F00:0155          st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
                S01:00000088:  64 30
-F00:0157       
-F00:0158          mov    r8, (0xFF<<DATASHIFT)  # clear databus low
+F00:0156       
+F00:0157          mov    r8, (0xFF<<DATASHIFT)  # clear databus low
                S01:0000008A:  08 E8 FC 03 00 00
-F00:0159          st     r8, GPCLR0_offset(r6)  # clear databus low
+F00:0158          st     r8, GPCLR0_offset(r6)  # clear databus low
                S01:00000090:  68 3A
-F00:0160       
-F00:0161          b Poll_loop
+F00:0159       
+F00:0160          b Poll_loop
                S01:00000092:  47 1F
-F00:0162       
-F00:0163       writecycle:
-F00:0164       
-F00:0165       waitforclkloww2:
-F00:0166          ld     r8, GPLEV0_offset(r6)
+F00:0161       
+F00:0162       writecycle:
+F00:0163       
+F00:0164       waitforclkloww2:
+F00:0165          ld     r8, GPLEV0_offset(r6)
                S01:00000094:  68 2D
-F00:0167          btst   r8, CLK
+F00:0166          btst   r8, CLK
                S01:00000096:  B8 6D
-F00:0168          movne  r12,r8
+F00:0167          movne  r12,r8
                S01:00000098:  0C C0 88 60
-F00:0169          bne    waitforclkloww2
+F00:0168          bne    waitforclkloww2
                S01:0000009C:  FC 18
-F00:0170          st     r12, (r1)         # post data
+F00:0169          st     r12, (r1)         # post data
                S01:0000009E:  1C 09
-F00:0171          st     r12, (r13)        # ring doorbell
+F00:0170          st     r12, (r13)        # ring doorbell
                S01:000000A0:  DC 09
-F00:0172       
-F00:0173          b Poll_loop
+F00:0171       
+F00:0172          b Poll_loop
                S01:000000A2:  7F 9E BF FF
-F00:0174       
+F00:0173       
 
 
 Sections:
