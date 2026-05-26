@@ -59,7 +59,7 @@ void helpers_screen_setup( char * helpscreen)
         "\r\n10-15 # Load User ROM10-ROM15 into SWR\r\n"
         "\r\n*FX147,", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, scsiaddress, PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen,",n : SCSIJUKE box directory"
+        helpscreen += strlcpy(helpscreen,",n # SCSIJUKE box directory"
             "\r\n*FX147,202,", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, M5000address, PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen,":*FX147,203,1 #Record M5000\r\n"
@@ -94,7 +94,6 @@ static void helpers_bank_select(unsigned int gpio)
             Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE+1, 0x03);
         }
     }
-
 }
 
 void helpers_init( uint8_t instance , uint8_t address)
