@@ -88,9 +88,8 @@
 #define BAD_ARG         (0x24u<<24)
 #define INTERLEAVE_ERROR (0x2Au<<24)
 
-#define MAX_SCSI_LUNS 16
 // REQUEST SENSE command error reporting structure
-static uint32_t requestSenseData[MAX_SCSI_LUNS];
+static uint32_t requestSenseData[MAX_LUNS];
 
 // Global structure for storing SCSI CDBs
 static struct commandDataBlockStruct
@@ -208,7 +207,7 @@ void scsiReset(void)
    }
 
    // Clear the request sense error globals
-   for (lunNumber = 0; lunNumber < MAX_SCSI_LUNS; lunNumber++) {
+   for (lunNumber = 0; lunNumber < MAX_LUNS; lunNumber++) {
       requestSenseData[lunNumber] = NO_ERROR;
    }
 
@@ -513,7 +512,7 @@ uint8_t scsiEmulationCommand(void)
    }
    if (debugFlag_scsiCommands) debugString_P(PSTR("\r\n"));
 
-//   // if the format Drive[1,2,4,8].0 was used, convert to to Drive 1.[0 1 2 3] 
+//   // if the format Drive[1,2,4,8].0 was used, convert to to Drive 1.[0 1 2 3]
 //	commandDataBlock.data[1] = TransformLUN(commandDataBlock.data[1]);
    // Decode the target LUN
    commandDataBlock.targetLUN = ((commandDataBlock.data[1] & 0xE0) >> 5) + scsiHostID;
@@ -982,12 +981,12 @@ static uint8_t scsiCommandReassignBlocks(void)
 	if (debugFlag_scsiCommands)debugString_P(PSTR("\r\n"));
 
 	uint32_t list_length;
-	list_length = 
+	list_length =
 	      ((uint32_t)Buffer[2] << 8) |
    	   ((uint32_t)Buffer[3]);
-	
+
 	if (longlist) {
-		list_length = 
+		list_length =
 	      ((uint32_t)Buffer[0] << 24) |
 	      ((uint32_t)Buffer[1] << 16) |
 			list_length;
@@ -1582,7 +1581,7 @@ static uint8_t scsiCommandModeSelect6(void)
    if (length != 22) {
 		// Sometimes, multiple pages are sent in one go depending on the drive type
 
-		//MODE SELECT Parameters : 0 0 0 0 37 6 40  67  41  65 13 30 
+		//MODE SELECT Parameters : 0 0 0 0 37 6 40  67  41  65 13 30
 		//                                 38 6 99 111 114 110 13  0
 
 		// Parse the data
@@ -1643,7 +1642,7 @@ static uint8_t scsiCommandModeSelect6(void)
 	commandDataBlock.status = 0x00; // 0x00 = Good
 
 	}
-*/	
+*/
 
 	return SCSI_STATUS;
 }
@@ -1768,7 +1767,7 @@ static uint8_t scsiCommandStartStop(void)
 // Note: This function is used by the *VERIFY command provided in the
 //       library directory of the BBC Master welcome disc
 //
-// This implementation only verifies the LUN is available, and the LBAs 
+// This implementation only verifies the LUN is available, and the LBAs
 // given are within range on the LUN.
 //
 static uint8_t scsiCommandVerify(void)
@@ -1841,13 +1840,13 @@ static uint8_t scsiCommandVerify(void)
 // Adaptec ACB-4000 Manual notes:
 //
 // If the Partial Media Indicator (PMI) is 00 hex, this command will
-// return the address of the last block on the unit. It is not 
+// return the address of the last block on the unit. It is not
 // necessary to specify a starting block address in this command
-// mode. If PMI is 01 hex, this command will return the 
+// mode. If PMI is 01 hex, this command will return the
 // address of the block (after the specified starting address)
 // at which a substantial delay of time in data transfer will be
 // encountered (e.g., a cylinder boundary). Any calue other than
-// 00 hex or 01 hex in bute 08 will cause Check Status with an 
+// 00 hex or 01 hex in bute 08 will cause Check Status with an
 // error code of 24 hex for an invalid argument.
 //
 // In both cases, an eight-byte data field is returned. The first
@@ -1881,7 +1880,7 @@ static uint8_t scsiCommandReadCapacity(void)
    hostadapterWriteByte((uint8_t)((lunsize & 0x00FF0000) >> 16));    // Last block
    hostadapterWriteByte((uint8_t)((lunsize & 0x0000FF00) >>  8));    // Last block
    hostadapterWriteByte((uint8_t)(lunsize & 0x000000FF));            // Last block LSB
-   
+
 	// four bytes block size
    uint32_t blocksize = filesystemGetLunBlockSize(commandDataBlock.targetLUN);
    hostadapterWriteByte((uint8_t)((blocksize & 0xFF000000) >> 24));  // Bytes from index MSB
@@ -1896,12 +1895,12 @@ static uint8_t scsiCommandReadCapacity(void)
 
 // SCSI Command (0x37) Read Defect Data10
 //
-// The READ DEFECT DATA (10) command requests that the device server transfers 
+// The READ DEFECT DATA (10) command requests that the device server transfers
 // the medium defect data to the data-in buffer.
 // In our case this will always be no defects.
 //
 static uint8_t scsiCommandReadDefectData10(void)
-{	
+{
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: Read Defect Data(10) command (0x37) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
@@ -2179,7 +2178,7 @@ static uint8_t scsiBeebScsiSense(void)
 void scsiJukebox (uint8_t lun) {
     uint8_t availableLUNs = 0;
    // Check if any LUNs are in the started state
-   for (uint8_t byteCounter = 0; byteCounter < MAX_SCSI_LUNS; byteCounter++)
+   for (uint8_t byteCounter = 0; byteCounter < MAX_LUNS; byteCounter++)
       if (filesystemReadLunStatus(byteCounter)) availableLUNs++;
 
    // Only jukebox if no LUNs are in the started state
@@ -2228,7 +2227,7 @@ static uint8_t scsiBeebScsiSelect(void)
      }
 
    // Check if any LUNs are in the started state
-   for (byteCounter = 0; byteCounter < MAX_SCSI_LUNS; byteCounter++)
+   for (byteCounter = 0; byteCounter < MAX_LUNS; byteCounter++)
       if (filesystemReadLunStatus(byteCounter)) availableLUNs++;
 
    // Only jukebox if no LUNs are in the started state
@@ -2481,7 +2480,7 @@ static uint8_t scsiBeebScsiFatRead(void)
 //
 // This is a RODIME vendor specific command.
 //
-// No infornmation what this does on the RODIME drives. A 6 byte cmd block is 
+// No infornmation what this does on the RODIME drives. A 6 byte cmd block is
 // passed,  &E2, LUN , 0 , cycles , 0 , 0
 static uint8_t scsiCommandCertify(void)
 {
@@ -2518,7 +2517,7 @@ uint8_t TransformLUN(uint8_t LUN)
 {
 // this isn't need for beebscsi
 // if this is re instated then though to VFS is required
-// as host id 2 is use  
+// as host id 2 is use
 #if 0
 	// Need to store the original LUN the controller is using
 	// for any response messages
