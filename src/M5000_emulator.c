@@ -316,17 +316,17 @@ void music5000_rec_stop()
 static void store_samples(struct synth *s3,struct synth *s5)
 {
     int sl = (s3->sleft  +  s5->sleft) * gain;
-    int sr = (s3->sright + s5->sright)* gain;
+    int sr = (s3->sright + s5->sright) * gain;
     if (rec_started || sl || sr)
     {
       if (stereo)
       {
-         sl = sl / 1024;
-         sr = sr / 1024;
+         sl = sl / (1024/8); // +/- 2666.6 so scale to fit +/- 32,768
+         sr = sr / (1024/8);
       }
       else {
-         sl = sl / 512;
-         sr = sr / 512;
+         sl = sl / (512/8);
+         sr = sr / (512/8);
       }
       JIM_ram[Audio_Index++] = sl;
       JIM_ram[Audio_Index++] = sl>>8;
