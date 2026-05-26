@@ -14,8 +14,6 @@ rpi_arm_timer_t* RPI_GetArmTimer(void)
 
 void RPI_ArmTimerInit(void)
 {
-   _data_memory_barrier();
-
    // The Pi 0 and 3A PreDivider defaults to 399, which gives a
    // timer base frequency of 400 / (399 + 1) = 1MHz
    //

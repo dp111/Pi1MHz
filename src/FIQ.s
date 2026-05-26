@@ -46,6 +46,7 @@ FIQstart:
    str r0,[r1]
    pop {r0-r1}
 #endif
+
 // Stall as going off chip
 // so do something a bit useful
    mov      r12,      #(PERIPHERAL_BASE + 0x00B844) & 0xff000000
@@ -54,9 +55,9 @@ FIQstart:
 #endif
    orr      r12, r12, #(PERIPHERAL_BASE + 0x00B844) & 0x0000ff00
 
-   tst      r8, # RNW_MASK
-
    LDR      r12, [R12, #(PERIPHERAL_BASE + 0x00B844) & 0x000000ff]       // read door bell to ack
+
+   tst      r8, # RNW_MASK
 
    and      r9, r10, r8, LSR # ADDRBUS_SHIFT - 2 // isolate address bus and fred or jim
 
@@ -74,7 +75,7 @@ FIQstart:
    mov      r12, #0
 
    movs     r9, r9
-   DMB_MACRO r12           // check doorbell ack has actually left the core.
+   // DMB_MACRO r12           // check doorbell ack has actually left the core.
    subeqs   pc, lr,#4   // no callback
 
    push    {r0-r3,r12, r14}
