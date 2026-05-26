@@ -93,8 +93,8 @@ static int16_t arc_fill_y;
 #define NUM_SPRITES 256
 
 typedef struct {
-   int width;
-   int height;
+   char width;
+   char height;
    void *data;
 } sprite_t;
 

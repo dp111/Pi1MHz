@@ -31,17 +31,17 @@ typedef struct font {
    const uint8_t *data;      // pointer to the raw font data
    int bytes_per_char; // Number of bytes of raw data per character
    int num_chars;      // Number of characters in the character set
-   int offset;         // Offset (in bytes) to the first row of the character
-   int shift;          // Offset (in bits) to the first column of the character
-   int width;          // Width (in pixels) of the character
-   int height;         // Height(in pixels) of the character
+   char offset;         // Offset (in bytes) to the first row of the character
+   char shift;          // Offset (in bits) to the first column of the character
+   char width;          // Width (in pixels) of the character
+   char height;         // Height(in pixels) of the character
 
    // These control the way the font is rendered
-   int spacing_w;
-   int spacing_h;
-   int scale_w;
-   int scale_h;
-   int rounding;
+   char spacing_w;
+   char spacing_h;
+   char scale_w;
+   char scale_h;
+   char rounding;
 
    // The font number
    uint32_t number;
@@ -49,24 +49,24 @@ typedef struct font {
    // The working copy of the font data
    uint16_t *buffer;
 
-   void  (*set_spacing_w)(struct font *font, int spacing_w);
-   void  (*set_spacing_h)(struct font *font, int spacing_h);
-   void    (*set_scale_w)(struct font *font, int scale_w);
-   void    (*set_scale_h)(struct font *font, int scale_h);
-   void   (*set_rounding)(struct font *font, int rounding);
+   void  (*set_spacing_w)(struct font *font, char spacing_w);
+   void  (*set_spacing_h)(struct font *font, char spacing_h);
+   void    (*set_scale_w)(struct font *font, char scale_w);
+   void    (*set_scale_h)(struct font *font, char scale_h);
+   void   (*set_rounding)(struct font *font, char rounding);
 
    const char * (*get_name)(const struct font *font);
    uint32_t  (*get_number)(const struct font *font);
-   int    (*get_spacing_w)(const struct font *font);
-   int    (*get_spacing_h)(const struct font *font);
-   int      (*get_scale_w)(const struct font *font);
-   int      (*get_scale_h)(const struct font *font);
-   int     (*get_rounding)(const struct font *font);
-   int    (*get_overall_w)(const struct font *font);
-   int    (*get_overall_h)(const struct font *font);
+   char    (*get_spacing_w)(const struct font *font);
+   char    (*get_spacing_h)(const struct font *font);
+   char      (*get_scale_w)(const struct font *font);
+   char      (*get_scale_h)(const struct font *font);
+   char     (*get_rounding)(const struct font *font);
+   char    (*get_overall_w)(const struct font *font);
+   char    (*get_overall_h)(const struct font *font);
 
-   void     (*write_char)(struct font *font, screen_mode_t *screen, int c, int x, int y, pixel_t fg_col, pixel_t bg_col);
-   int      ( *read_char)(const struct font *font, screen_mode_t *screen, int x, int y,                        pixel_t bg_col);
+   void     (*write_char)(struct font *font, screen_mode_t *screen, char c, int x, int y, pixel_t fg_col, pixel_t bg_col);
+   char      ( *read_char)(const struct font *font, screen_mode_t *screen, int x, int y,                        pixel_t bg_col);
 
 } font_t;
 

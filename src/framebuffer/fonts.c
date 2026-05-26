@@ -133,7 +133,7 @@ static inline uint16_t combine_rows(uint16_t a, uint16_t b) {
 }
 
 static void copy_font_character(const font_t *font, const  uint8_t *src, int c, int is_graphics) {
-   if (c > font->num_chars) {
+   if (c >= font->num_chars) {
       return;
    }
    uint16_t *dst = font->buffer + c * (font->height << font->rounding);
@@ -142,10 +142,10 @@ static void copy_font_character(const font_t *font, const  uint8_t *src, int c, 
    if (font->rounding) {
       // Stage 1: expand each pixel to 2x2 pixels
       // Copy the defined part of the font
-      for (int i = 0; i < font->height; i++) {
+      for (char i = 0; i < font->height; i++) {
          uint8_t data = (uint8_t)((*src++) >> font->shift);
          uint16_t expanded = 0;
-         for (int j = 0; j < 8; j++) {
+         for (char j = 0; j < 8; j++) {
             expanded = (uint16_t)(expanded << 2);
             if (data & 0x80) {
                expanded |= 3;
@@ -159,7 +159,7 @@ static void copy_font_character(const font_t *font, const  uint8_t *src, int c, 
       // Stage 2: perform rounding
       if (!is_graphics) {
          dst -= font->height * 2;
-         for (unsigned int i = 0; i < (unsigned int ) font->height - 1; i++) {
+         for (unsigned char i = 0; i < (unsigned char) font->height - 1; i++) {
             uint16_t o_row = dst[i * 2 + 1];
             uint16_t e_row = dst[i * 2 + 2];
             dst[i * 2 + 1] = combine_rows(o_row, e_row);
@@ -168,7 +168,7 @@ static void copy_font_character(const font_t *font, const  uint8_t *src, int c, 
       }
    } else {
       // Copy the defined part of the font
-      for (int j = 0; j < font->height; j++) {
+      for (char j = 0; j < font->height; j++) {
          *dst++ = (uint16_t)((*src++) >> font->shift);
       }
    }
@@ -178,23 +178,23 @@ static void copy_font_character(const font_t *font, const  uint8_t *src, int c, 
 // Default handlers
 // ==========================================================================
 
-static void default_set_spacing_w(font_t *font, int spacing_w) {
+static void default_set_spacing_w(font_t *font, char spacing_w) {
    font->spacing_w = spacing_w;
 }
 
-static void default_set_spacing_h(font_t *font, int spacing_h) {
+static void default_set_spacing_h(font_t *font, char spacing_h) {
    font->spacing_h = spacing_h;
 }
 
-static void default_set_scale_w(font_t *font, int scale_w) {
+static void default_set_scale_w(font_t *font, char scale_w) {
    font->scale_w = scale_w;
 }
 
-static void default_set_scale_h(font_t *font, int scale_h) {
+static void default_set_scale_h(font_t *font, char scale_h) {
    font->scale_h = scale_h;
 }
 
-static void default_set_rounding(font_t *font, int rounding) {
+static void default_set_rounding(font_t *font, char rounding) {
    font->rounding = rounding & 1;
    const uint8_t *src = font->data;
    // Special case the SAA fonts to avoid rounding the graphics
@@ -215,46 +215,46 @@ static uint32_t default_get_number(const font_t *font) {
    return font->number;
 }
 
-static int default_get_spacing_w(const font_t *font) {
+static char default_get_spacing_w(const font_t *font) {
    return font->spacing_w;
 }
 
-static int default_get_spacing_h(const font_t *font) {
+static char default_get_spacing_h(const font_t *font) {
    return font->spacing_h;
 }
 
-static int default_get_scale_w(const font_t *font) {
+static char default_get_scale_w(const font_t *font) {
    return font->scale_w;
 }
 
-static int default_get_scale_h(const font_t *font) {
+static char default_get_scale_h(const font_t *font) {
    return font->scale_h;
 }
 
-static int default_get_rounding(const font_t *font) {
+static char default_get_rounding(const font_t *font) {
    return font->rounding;
 }
 
-static int default_get_overall_w(const font_t *font) {
+static char default_get_overall_w(const font_t *font) {
    return ((font->width + font->spacing_w) << font->rounding) * font->scale_w;
 }
 
-static int default_get_overall_h(const font_t *font) {
+static char default_get_overall_h(const font_t *font) {
    return ((font->height + font->spacing_h) << font->rounding) * font->scale_h;
 }
 
-static void default_write_char(font_t *font, screen_mode_t *screen, int c, int x, int y, pixel_t fg_col, pixel_t bg_col) {
+static void default_write_char(font_t *font, screen_mode_t *screen, char c, int x, int y, pixel_t fg_col, pixel_t bg_col) {
    int x_pos = x;
-   int width  = font->width  << font->rounding;
-   int height = font->height << font->rounding;
+   char width  = font->width  << font->rounding;
+   char height = font->height << font->rounding;
    int p      = c * height;
    int mask = 1 << (width - 1);
-   for (int i = 0; i < height; i++) {
+   for (char i = 0; i < height; i++) {
       int data = font->buffer[p++];
-      for (int j = 0; j < width; j++) {
+      for (char j = 0; j < width; j++) {
          pixel_t col = (data & mask) ? fg_col : bg_col;
-         for (int sx = 0; sx < font->scale_w; sx++) {
-            for (int sy = 0; sy < font->scale_h; sy++) {
+         for (char sx = 0; sx < font->scale_w; sx++) {
+            for (char sy = 0; sy < font->scale_h; sy++) {
                screen->set_pixel(screen, x + sx, y + sy, col);
             }
          }
@@ -266,16 +266,16 @@ static void default_write_char(font_t *font, screen_mode_t *screen, int c, int x
    }
 }
 
-static int default_read_char(const font_t *font, screen_mode_t *screen, int x, int y, pixel_t bg_col) {
+static char default_read_char(const font_t *font, screen_mode_t *screen, int x, int y, pixel_t bg_col) {
    int screendata[MAX_FONT_HEIGHT];
    // Read the character from screen memory
    int *dp = screendata;
-   int width  = font->width  << font->rounding;
-   int height = font->height << font->rounding;
-   int h = 0;
-   for (int i = 0; i < height ; i +=1) {
+   char width  = font->width  << font->rounding;
+   char height = font->height << font->rounding;
+   char h = 0;
+   for (char i = 0; i < height ; i +=1) {
       int row = 0;
-      for (int j = 0; j < width * font->scale_w; j += font->scale_w) {
+      for (char j = 0; j < width * font->scale_w; j += font->scale_w) {
          row <<= 1;
          if (screen->get_pixel(screen, x + j, y - h) != bg_col) {
             row |= 1;

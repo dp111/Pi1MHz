@@ -25,10 +25,10 @@ static screen_mode_t *screen = NULL;
 // Current font
 static font_t font_normal;
 static font_t font_teletext;
-static int font_width;
-static int font_height;
-static int text_height; // of whole screen
-static int text_width;  // of whole screen
+static char font_width;
+static char font_height;
+static char text_height; // of whole screen
+static char text_width;  // of whole screen
 static int cursor_start;
 static int cursor_end;
 static int cursor_off;  // controlled by VDU 23,0,10
