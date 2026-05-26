@@ -29,12 +29,16 @@ static bool g_runtime_link_up;
 static uint32_t g_runtime_tx_frame_count;
 static uint32_t g_runtime_rx_frame_count;
 /* The chip's WiFi MAC (cur_etheraddr), captured at boot so the lwIP
-   netif can use the real address.  g_runtime_capture_mac is armed
-   briefly around the GET cur_etheraddr ioctl; the CDC decoder fills
-   g_runtime_chip_mac when the matching GET-VAR response arrives. */
+   netif can use the real address.  The CDC decoder fills
+   g_runtime_chip_mac when the GET-VAR response carrying the exact
+   request_id we sent for cur_etheraddr arrives - matching by ID
+   rather than by a global "currently expecting MAC" flag means any
+   other GET_VAR reply that happens to land in the same window is
+   not mistaken for the MAC. */
 static uint8_t g_runtime_chip_mac[6];
 static bool g_runtime_chip_mac_valid;
-static bool g_runtime_capture_mac;
+static bool g_runtime_mac_request_pending;
+static uint16_t g_runtime_mac_request_id;
 static char g_runtime_error[96];
 static uint8_t g_runtime_data_sequence;
 static bool g_runtime_emulator_mode;
@@ -2811,7 +2815,17 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
                                                               uint16_t *frame_length,
                                                               uint32_t timeout_us)
 {
-   uint8_t frame_buffer[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   /* static: ~1.6 KB.  Called from the cooperative poll path
+      (wifi_lwip_poll -> drain_rx_frames -> poll_ethernet_frame ->
+      here); the call chain is single-threaded and never re-entered,
+      so the buffer can live in BSS instead of pushing 1.6 KB onto a
+      stack that already carries other large transient frames. */
+   /* _Alignas(4): the bcm2835 EMMC controller drains DATA one 32-bit
+      word at a time, so the receive buffer must be 4-byte aligned or
+      the host code's uint32_t* access can take an alignment fault on
+      ARMv6.  Static uint8_t arrays only have 1-byte alignment by
+      default; force 4 to match the hardware. */
+   _Alignas(4) static uint8_t frame_buffer[SDIO_RUNTIME_MAX_FRAME_SIZE];
    uint16_t total_length;
    uint8_t channel;
    uint8_t header_length;
@@ -2862,16 +2876,22 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
                         (unsigned long)cdc_cmd, (unsigned long)cdc_status);
 
       /* Capture the chip's MAC from the cur_etheraddr GET-VAR reply.
-         g_runtime_capture_mac is armed only around that single ioctl,
-         so a non-error WLC_GET_VAR response while it is set is that
-         reply; the 6-byte MAC is the first thing after the CDC header. */
-      if (g_runtime_capture_mac && cdc_cmd == WLC_GET_VAR
-          && !(cdc_flags & CDCF_IOC_ERROR)
-          && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 6u)) {
-         memcpy(g_runtime_chip_mac,
-                &frame_buffer[header_length + CDC_HEADER_LENGTH], 6u);
-         g_runtime_chip_mac_valid = true;
-         g_runtime_capture_mac = false;
+         Matched by the exact request_id we sent so an unrelated
+         GET_VAR reply that happens to land in the same window cannot
+         be mistaken for the MAC.  The 6-byte MAC is the first thing
+         after the CDC header. */
+      {
+         uint16_t cdc_request_id =
+            (uint16_t)((cdc_flags & CDCF_IOC_ID_MASK) >> CDCF_IOC_ID_SHIFT);
+         if (g_runtime_mac_request_pending && cdc_cmd == WLC_GET_VAR
+             && cdc_request_id == g_runtime_mac_request_id
+             && !(cdc_flags & CDCF_IOC_ERROR)
+             && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 6u)) {
+            memcpy(g_runtime_chip_mac,
+                   &frame_buffer[header_length + CDC_HEADER_LENGTH], 6u);
+            g_runtime_chip_mac_valid = true;
+            g_runtime_mac_request_pending = false;
+         }
       }
       return false;
    }
@@ -3007,12 +3027,16 @@ static bool sdio_runtime_complete_read_ethernet_frame(sdio_host_t *dev,
    command). */
 static uint8_t sdio_drain_fn2_responses(sdio_host_t *dev)
 {
-   uint8_t scratch[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   /* static + _Alignas(4): same single-threaded poll-path rationale
+      as the buffer in complete_read_ethernet_frame_timeout, plus the
+      4-byte alignment the EMMC PIO transfer needs. */
+   _Alignas(4) static uint8_t scratch[SDIO_RUNTIME_MAX_FRAME_SIZE];
    uint8_t i;
    uint8_t consumed = 0u;
 
    for (i = 0u; i < SDIO_RUNTIME_MAX_RX_FRAMES_PER_POLL; ++i) {
-      uint16_t hwtag[2] = { 0u, 0u };
+      /* _Alignas(4): filled by a 32-bit EMMC PIO read. */
+      _Alignas(4) uint16_t hwtag[2] = { 0u, 0u };
       uint16_t scratch_length = 0u;
 
       if (!sdio_function2_transfer(dev, false, (uint8_t *)hwtag,
@@ -3186,7 +3210,10 @@ static uint32_t g_runtime_step_deadline_us;
    a transfer error.  See the clmload framing notes above. */
 static int sdio_runtime_clm_download_step(sdio_host_t *dev)
 {
-   uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   /* static: ~1.6 KB.  Each tick rebuilds the next CLM chunk; the
+      step runs from the cooperative poll path and is not re-entered,
+      so the buffer can be reused across ticks from BSS. */
+   _Alignas(4) static uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
    static const char clm_iovar[] = "clmload";
    const uint16_t name_length = (uint16_t)sizeof(clm_iovar); /* "clmload" + NUL = 8 */
    uint32_t clm_length = g_cyw43_clm_length;
@@ -3279,10 +3306,15 @@ static int sdio_runtime_query_mac_step(sdio_host_t *dev)
    now = RPI_GetSystemTime();
 
    if (!g_runtime_step_sent) {
-      g_runtime_capture_mac = true;
       g_runtime_chip_mac_valid = false;
       sdio_prepare_tx_control_template(&g_sdio_probe_result,
                                        WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC);
+      /* Remember the exact request_id the template carries so the
+         CDC decoder matches only the reply to THIS GET_VAR rather
+         than any GET_VAR that happens to arrive in the window. */
+      g_runtime_mac_request_id =
+         g_sdio_probe_result.tx_control_template_request_id;
+      g_runtime_mac_request_pending = true;
       (void)sdio_probe_send_single_tx_control_template_timeout(dev,
                                                               &g_sdio_probe_result,
                                                               SDIO_RUNTIME_POLL_TIMEOUT_US);
@@ -3295,7 +3327,7 @@ static int sdio_runtime_query_mac_step(sdio_host_t *dev)
       return 0;
 
    (void)sdio_drain_fn2_responses(dev);
-   g_runtime_capture_mac = false;
+   g_runtime_mac_request_pending = false;
    g_runtime_step_sent = false;
    return 1;
 }
@@ -4370,7 +4402,10 @@ static bool sdio_probe_read_post_header_prefix(sdio_host_t *dev,
 static bool sdio_probe_read_frame_header(sdio_host_t *dev,
                                          sdio_probe_result_t *probe_result)
 {
-   uint16_t hwtag[2];
+   /* _Alignas(4): the buffer is filled by a 32-bit-wide EMMC PIO
+      read, which is undefined behaviour on ARMv6 against a buffer
+      with only uint16_t alignment. */
+   _Alignas(4) uint16_t hwtag[2];
    uint8_t sdpcm_header[8];
 
    if (probe_result == NULL)
@@ -4848,7 +4883,7 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       the lwIP transmit path, which is itself nested under the RX drain
       (wifi_lwip_drain_rx_frames -> lwIP -> link_output -> here), so a
       stack copy would compound an already deep call chain. */
-   static uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   _Alignas(4) static uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
    uint16_t total_length;
 
    if (!g_runtime_started || frame == NULL || frame_length == 0u) {
@@ -4930,31 +4965,12 @@ static bool sdio_runtime_wake_bus(sdio_host_t *dev)
    return false;
 }
 
-void sdio_runtime_poll_events(void)
-{
-   uint8_t dummy_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
-   uint16_t dummy_length;
-   uint8_t i;
-
-   if (!g_runtime_started)
-      return;
-
-   /* Drain any pending BRCM async event frames from the chip (WLC_E_LINK,
-      WLC_E_SET_SSID, etc.). sdio_runtime_poll_ethernet_frame processes
-      events as a side effect (updating g_runtime_link_up), so we just
-      need to drive the read loop without surfacing the frames. */
-   for (i = 0u; i < SDIO_RUNTIME_MAX_RX_FRAMES_PER_POLL; ++i) {
-      dummy_length = 0u;
-      if (!sdio_runtime_poll_ethernet_frame(dummy_frame, sizeof(dummy_frame), &dummy_length))
-         break;
-   }
-}
-
 bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                                       uint16_t *frame_length)
 {
    uint8_t frame_index;
-   uint16_t hwtag[2];
+   /* _Alignas(4): filled by a 32-bit EMMC PIO read. */
+   _Alignas(4) uint16_t hwtag[2];
 
    if (frame_length != NULL)
       *frame_length = 0u;
