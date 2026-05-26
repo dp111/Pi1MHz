@@ -36,7 +36,7 @@
 #define UART_NO_DATA            0x0100      // Receive data not available
 
 // Global FILE stream for STDIO use
-FILE uartStream;
+// FILE uartStream;
 
 // Function prototypes
 void uartInitialise(void);

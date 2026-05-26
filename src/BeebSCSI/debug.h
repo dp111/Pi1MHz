@@ -27,15 +27,14 @@
 #ifndef DEBUG_H_
 #define DEBUG_H_
 
-/* External globals  // these should be volatile as they are set in the int handler
-   gcc7 8 appear to optimise all the code away if they are set to volatile */
-extern  bool debugFlag_filesystem;
-extern  bool debugFlag_scsiCommands;
-extern  bool debugFlag_scsiBlocks;
-extern  bool debugFlag_scsiFcodes;
-extern  bool debugFlag_scsiState;
-extern  bool debugFlag_fatfs;
-extern  bool debugFlag_extended_attributes;
+/* External globals  // these should be volatile as they are set in the int handler */
+extern  volatile bool debugFlag_filesystem;
+extern  volatile bool debugFlag_scsiCommands;
+extern  volatile bool debugFlag_scsiBlocks;
+extern  volatile bool debugFlag_scsiFcodes;
+extern  volatile bool debugFlag_scsiState;
+extern  volatile bool debugFlag_fatfs;
+extern  volatile bool debugFlag_extended_attributes;
 
 #ifdef DEBUG
 #include "cpuspecific.h"

@@ -35,26 +35,24 @@
 // Note: these are modified by the configure interrupt, so they all
 // need to be volatile variables
 
- // these should be volatile as they are set in the int handler
-// gcc7 8 appear to optimise all the code away if they are set to volatile
 #ifdef DEBUG
    // Default debug settings for debug builds
-    bool debugFlag_filesystem = true;
-    bool debugFlag_scsiCommands = true;
-    bool debugFlag_scsiBlocks = false;
-    bool debugFlag_scsiFcodes = true;
-    bool debugFlag_scsiState = true;
-    bool debugFlag_fatfs = false;
-    bool debugFlag_extended_attributes = true;
+    volatile bool debugFlag_filesystem = true;
+    volatile bool debugFlag_scsiCommands = true;
+    volatile bool debugFlag_scsiBlocks = false;
+    volatile bool debugFlag_scsiFcodes = true;
+    volatile bool debugFlag_scsiState = true;
+    volatile bool debugFlag_fatfs = false;
+    volatile bool debugFlag_extended_attributes = true;
 #else
    // Default debug settings for release builds
-    bool debugFlag_filesystem = false;
-    bool debugFlag_scsiCommands = false;
-    bool debugFlag_scsiBlocks = false;
-    bool debugFlag_scsiFcodes = false;
-    bool debugFlag_scsiState = false;
-    bool debugFlag_fatfs = false;
-    bool debugFlag_extended_attributes = false;
+    volatile bool debugFlag_filesystem = false;
+    volatile bool debugFlag_scsiCommands = false;
+    volatile bool debugFlag_scsiBlocks = false;
+    volatile bool debugFlag_scsiFcodes = false;
+    volatile bool debugFlag_scsiState = false;
+    volatile bool debugFlag_fatfs = false;
+    volatile bool debugFlag_extended_attributes = false;
 #endif
 
 #ifdef DEBUG
