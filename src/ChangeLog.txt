@@ -22,7 +22,7 @@ Use VPU1 to sample the P1MHz
 V1.04c
 Add more plot codes ( NB Triangle and ellipse are broken)
 Faster screen scrolling
-Tweek FIQ handler to be a bit faster
+Tweak FIQ handler to be a bit faster
 
 V1.04d
 Change frame buffer size to 640x512 ( to match the Beeb better)
@@ -49,3 +49,7 @@ Fix SCSI format Bug
 Speed up reading from mailboxes
 Fix Pizero2 VPU address bug.
 Add RPI4 Pull support
+
+V1.07
+Support nOE on external buffers
+Improve baud rate rouding for small dividers
