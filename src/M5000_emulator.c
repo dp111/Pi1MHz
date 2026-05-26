@@ -119,6 +119,42 @@ static int32_t M5000_right_error;
 
 static uint8_t fx_pointer;
 
+static size_t ram_max;
+
+#define M5000_REC_BASE 0x100000u
+#define M5000_REC_END ( 2u * 16u*1024*104u)
+
+static const unsigned char wavfmt[] = {
+   'R','I','F','F',
+   0x00, 0x00, 0x00, 0x00,
+   0x57, 0x41, 0x56, 0x45, // "WAVE"
+   0x66, 0x6D, 0x74, 0x20, // "fmt "
+   0x10, 0x00, 0x00, 0x00, // format chunk size
+   0x01, 0x00,             // format 1=PCM
+   0x02, 0x00,             // channels 2=stereo
+   0x1B, 0xB7, 0x00, 0x00, // sample rate.
+   0x6C, 0xDC, 0x02, 0x00, // byte rate.
+   0x04, 0x00,             // block align.
+   0x10, 0x00,             // bits per sample.
+   0x64, 0x61, 0x74, 0x61, // "DATA".
+   0x00, 0x00, 0x00, 0x00, // length filled in later
+   0x00, 0x00, 0x00, 0x00  // dummy sample
+};
+
+static inline void put_le16(uint8_t *p, uint16_t v)
+{
+   p[0] = v;
+   p[1] = (v >> 8);
+}
+
+static inline void put_le32(uint8_t *p, uint32_t v)
+{
+   p[0] = v;
+   p[1] = (v >> 8);
+   p[2] = (v >> 16);
+   p[3] = (v >> 24);
+}
+
 struct synth {
     uint32_t phaseRAM[16];
     int sleft, sright;
@@ -290,9 +326,6 @@ static void music5000_store_sample(int sl, int sr, uint32_t *left, uint32_t *rig
 
    M5000_left_error = sl % M5000_DIVIDER ;
 
-   if (sl < ( M5000_audio_range >> 1 ))
-      M5000_left_error = - M5000_left_error;
-
    if (sl < 0) {
       sl = 0;
       clip = 1;
@@ -307,9 +340,6 @@ static void music5000_store_sample(int sl, int sr, uint32_t *left, uint32_t *rig
    sr = ( sr * gain ) + ( M5000_audio_range >> 1 ) + M5000_right_error ;
 
    M5000_right_error = sr % M5000_DIVIDER ;
-
-   if (sr < ( M5000_audio_range >> 1 ))
-      M5000_right_error = - M5000_right_error;
 
    if (sr < 0) {
       sr = 0;
@@ -329,39 +359,22 @@ static void music5000_store_sample(int sl, int sr, uint32_t *left, uint32_t *rig
    }
 }
 
-static bool record = 0;
+static bool record = false;
 static bool rec_started;
 static uint32_t Audio_Index;
 
 static void music5000_rec_start(void)
 {
-    Audio_Index = 0x100000 + 48;
+    Audio_Index = M5000_REC_BASE + sizeof(wavfmt);
     rec_started = false;
+    ram_max = M5000_REC_BASE + Pi1MHz->JIM_ram_size * 16u*1024u - M5000_REC_END;
 }
 
 static void music5000_rec_stop(void)
 {
-   static const unsigned char wavfmt[] = {
-      'R','I','F','F',
-      0x00, 0x00, 0x00, 0x00,
-      0x57, 0x41, 0x56, 0x45, // "WAVE"
-      0x66, 0x6D, 0x74, 0x20, // "fmt "
-      0x10, 0x00, 0x00, 0x00, // format chunk size
-      0x01, 0x00,             // format 1=PCM
-      0x02, 0x00,             // channels 2=stereo
-      0x1B, 0xB7, 0x00, 0x00, // sample rate.
-      0x6C, 0xDC, 0x02, 0x00, // byte rate.
-      0x04, 0x00,             // block align.
-      0x10, 0x00,             // bits per sample.
-      0x64, 0x61, 0x74, 0x61, // "DATA".
-      0x00, 0x00, 0x00, 0x00, // length filled in later
-      0x00, 0x00, 0x00, 0x00  // dummy sample
-   };
-
    char fn[22];
    FRESULT result;
    int number = 0;
-   uint32_t i = 0;
    FIL music5000_fp;
 
     do {
@@ -372,18 +385,16 @@ static void music5000_rec_stop(void)
          number++;
     } while ( result != FR_OK );
 
-   for(i=0; i<sizeof(wavfmt) ; i=i+4)
-      *(uint32_t *) &(Pi1MHz->JIM_ram[0x100000+i]) = *(const uint32_t *) &(wavfmt[i]);
+    memcpy(&Pi1MHz->JIM_ram[M5000_REC_BASE], wavfmt, sizeof(wavfmt));
 
-   uint32_t size = Audio_Index - 0x100000 - 48;
-   *(uint32_t *) &(Pi1MHz->JIM_ram[0x100000+4]) = size;
-   *(uint32_t *) &(Pi1MHz->JIM_ram[0x100000+40]) = size-36;
-
+   uint32_t size = Audio_Index - M5000_REC_BASE;
+   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+4], size -8u);
+   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+40], size - sizeof(wavfmt));
 
    UINT temp;
-   f_write(&music5000_fp, &Pi1MHz->JIM_ram[0x100000],Audio_Index - 0x100000 , &temp);
+   f_write(&music5000_fp, &Pi1MHz->JIM_ram[M5000_REC_BASE],Audio_Index - M5000_REC_BASE , &temp);
    f_close(&music5000_fp);
-   rec_started = 0;
+   rec_started = false;
 }
 
 static void store_samples(int sl, int sr)
@@ -392,10 +403,15 @@ static void store_samples(int sl, int sr)
     {
       sl = (sl * gain * 12) / 1024; // +/- 2666.6 so scale to fit +/- 32,768
       sr = (sr * gain * 12) / 1024;
-      Pi1MHz->JIM_ram[Audio_Index++] = (uint8_t )sl;
-      Pi1MHz->JIM_ram[Audio_Index++] = (uint8_t )(sl>>8);
-      Pi1MHz->JIM_ram[Audio_Index++] = (uint8_t )sr;
-      Pi1MHz->JIM_ram[Audio_Index++] = (uint8_t )(sr>>8);
+      if ((Audio_Index+4) >= ram_max)
+      {
+         LOG_INFO("Music 5000 recording stopped as we have run out of JIM RAM\r\n");
+         music5000_rec_stop();
+         return;
+      }
+      put_le16(&Pi1MHz->JIM_ram[Audio_Index], (uint16_t)sl);
+      put_le16(&Pi1MHz->JIM_ram[Audio_Index+2], (uint16_t)sr);
+      Audio_Index += 4;
       rec_started = true;
       // TODO check  we don't over run Pi1MHz->JIM_ram
     }
