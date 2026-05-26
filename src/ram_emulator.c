@@ -124,6 +124,8 @@ static char* putstring(char *ram, char term, const char *string)
    return ram;
 }
 
+extern char _end;
+
 void rampage_emulator_init( uint8_t instance , uint8_t address)
 {
    static uint8_t init = 0 ;
@@ -138,7 +140,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 
    // Initialise JIM RAM
 
-   extern char _end;
+
 
    uint32_t temp = mem_info(1); // get size of ram
    temp = temp - (uint32_t)&_end; // remove program
