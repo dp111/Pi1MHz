@@ -1,0 +1,20 @@
+ChangeLog
+
+v1.03
+
+BeebSCSI changes
+ Support all Luns to be open at the same time.
+ This actually has simplified code in places.
+ The code has be refactored in places to simplify it.
+ A number of global variable have become local.
+ Unreachable code has been removed.
+ Some duplicate code has been removed
+ Write buffering has been introduced to increase performance
+ Buffers have been increased to 16K to reduced SDCARD access and make use of
+ multiblock acceses
+ Bugs around testing for errors on dsc file lengths being 22 bytes fixed.
+ Starting ADFS with F break now doesn't start any LUNs so SCSIJUKE can be the first command
+ Fall back to slow seeking if the LUN us too fragmented instead of just failing over.
+
+v1.04
+Use VPU1 to sample the P1MHz
