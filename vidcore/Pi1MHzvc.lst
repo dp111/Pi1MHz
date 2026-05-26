@@ -50,8 +50,8 @@ F00:0049
 F00:0050       .equ RnW,          10
 F00:0051       .equ CLK,          27
 F00:0052       .equ DATASHIFT,    2
-F00:0053       .equ ADDRBUS_SHIFT,    (16)
-F00:0054       .equ OUTPUTBIT,   (DATASHIFT+8)
+F00:0053       .equ ADDRBUS_SHIFT, (16)
+F00:0054       .equ OUTPUTBIT,   (15)
 F00:0055       
 F00:0056       .equ D7_PIN,       (9)
 F00:0057       .equ D6_PIN,       (8)
@@ -81,13 +81,13 @@ F00:0078          mov    r6, GPFSEL0
                S01:00000006:  06 E8 00 00 20 7E
 F00:0079          mov    r7, 1            # external nOE pin
                S01:0000000C:  17 60
-F00:0080          mov    r10,((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))>>1
+F00:0080          mov    r10, ((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))>>1
                S01:0000000E:  0A E8 FF 00 00 00
 F00:0081          add    r11, r6, GPSET0_offset
                S01:00000014:  4B C0 5C 37
 F00:0082          mov    r13, GPU_ARM_DBELL
                S01:00000018:  0D E8 44 B8 00 7E
-F00:0083          b Poll_loop
+F00:0083          b      Poll_loop
                S01:0000001E:  01 1F
 F00:0084       
 F00:0085       # poll for nPCFC or nPCFD being low
@@ -130,107 +130,108 @@ F00:0108          bne    waitforclklow
                S01:0000003E:  FA 18
 F00:0109       
 F00:0110       waitforclkhigh:
-F00:0111       .align 4
-F00:0112          b waitforclkhighloop
-               S01:00000040:  01 1F
-F00:0113       waitforclkhighloop:
-F00:0114          ld     r12, GPLEV0_offset(r6)
-               S01:00000042:  6C 2D
-F00:0115          btst   r12, CLK
-               S01:00000044:  BC 6D
-F00:0116          beq    waitforclkhighloop
-               S01:00000046:  7E 18
-F00:0117       
-F00:0118       # seen rising edge of CLK
-F00:0119       # so address bus has now been setup
-F00:0120       
-F00:0121          LSR    r8, r12,ADDRBUS_SHIFT+1
-               S01:00000048:  48 C3 51 67
-F00:0122       
-F00:0123          and    r8, r10                # Isolate address bus
-               S01:0000004C:  A8 47
-F00:0124       
-F00:0125          ld     r8,(r0,r8) # get byte to write out
-               S01:0000004E:  08 A0 08 07
-F00:0126          btst   r12, nPCFC
-               S01:00000052:  8C 6D
-F00:0127          btstne r12, nPCFD
-               S01:00000054:  8C C1 D9 60
-F00:0128          bne    Poll_loop
-               S01:00000058:  E4 18
-F00:0129       # check if we are in a read or write cycle
-F00:0130       # we do this here while the read above is stalling
-F00:0131          btst   r12, RnW
-               S01:0000005A:  AC 6C
-F00:0132          beq    writecycle
-               S01:0000005C:  1C 18
-F00:0133       
-F00:0134          btst   r12,ADDRBUS_SHIFT      # select which 16bits hold the data
-               S01:0000005E:  0C 6D
-F00:0135          lsrne  r8,16-DATASHIFT        # High 16 bits to low 16 bits with databus shift
-               S01:00000060:  48 C3 CE 40
-F00:0136          lsleq  r8,DATASHIFT           # low 16 bits wiht databus shift
-               S01:00000064:  88 C3 42 40
-F00:0137          btst   r8, OUTPUTBIT
-               S01:00000068:  A8 6C
-F00:0138          and    r8,255<<DATASHIFT      # isolate databus
-               S01:0000006A:  E8 E8 FC 03 00 00
-F00:0139       
-F00:0140          stne   r8, 0(r11)             # set up databus ( only if it has been written to)
-               S01:00000070:  28 A0 C0 58
-F00:0141          st     r9, GPFSEL0_offset(r6) # set databus to outputs
-               S01:00000074:  69 30
-F00:0142          stne   r7, r11GPCLR0_offset(r11)  # set external output enable low
-               S01:00000076:  27 A0 CC 58
-F00:0143          st     r12, (r1)              # post data
-               S01:0000007A:  1C 09
-F00:0144          st     r12, (r13)             # ring doorbell
-               S01:0000007C:  DC 09
-F00:0145       
-F00:0146          b waitforclklow2loop
-               S01:0000007E:  01 1F
-F00:0147       
-F00:0148       .align 4
-F00:0149       waitforclklow2loop:
-F00:0150          ld     r12, GPLEV0_offset(r6)
+F00:0111       
+F00:0112       waitforclkhighloop:
+F00:0113          ld     r12, GPLEV0_offset(r6)
+               S01:00000040:  6C 2D
+F00:0114          btst   r12, CLK
+               S01:00000042:  BC 6D
+F00:0115          beq    waitforclkhighloop
+               S01:00000044:  7E 18
+F00:0116       
+F00:0117       # seen rising edge of CLK
+F00:0118       # so address bus has now been setup
+F00:0119       
+F00:0120          LSR    r8, r12,ADDRBUS_SHIFT+1
+               S01:00000046:  48 C3 51 67
+F00:0121       
+F00:0122          and    r8, r10                # Isolate address bus
+               S01:0000004A:  A8 47
+F00:0123       
+F00:0124          ld     r8, (r0,r8) # get byte to write out
+               S01:0000004C:  08 A0 08 07
+F00:0125          btst   r12, nPCFC
+               S01:00000050:  8C 6D
+F00:0126          btstne r12, nPCFD
+               S01:00000052:  8C C1 D9 60
+F00:0127          bne    Poll_loop
+               S01:00000056:  E5 18
+F00:0128       # check if we are in a read or write cycle
+F00:0129       # we do this here while the read above is stalling
+F00:0130          btst   r12, RnW
+               S01:00000058:  AC 6C
+F00:0131          beq    writecycle
+               S01:0000005A:  1D 18
+F00:0132       
+F00:0133          btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
+               S01:0000005C:  0C 6D
+F00:0134          lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
+               S01:0000005E:  48 C3 CE 40
+F00:0135          lsleq  r8, DATASHIFT          # low 16 bits with databus shift
+               S01:00000062:  88 C3 42 40
+F00:0136          btst   r8, OUTPUTBIT
+               S01:00000066:  F8 6C
+F00:0137          and    r8, 255<<DATASHIFT     # isolate databus
+               S01:00000068:  E8 E8 FC 03 00 00
+F00:0138       
+F00:0139          st     r8, GPSET0_offset(r6)  # set up databus
+               S01:0000006E:  68 37
+F00:0140          beq    skipenablingbus
+               S01:00000070:  03 18
+F00:0141          st   r9, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
+               S01:00000072:  69 30
+F00:0142          st   r7, r11GPCLR0_offset(r11)  # set external output enable low
+               S01:00000074:  B7 33
+F00:0143        skipenablingbus:
+F00:0144          st     r12, (r1)              # post data
+               S01:00000076:  1C 09
+F00:0145          st     r12, (r13)             # ring doorbell
+               S01:00000078:  DC 09
+F00:0146       
+F00:0147          b waitforclklow2loop
+               S01:0000007A:  03 1F
+F00:0148       
+F00:0149       .align 4
+F00:0150       waitforclklow2loop:
+F00:0151          ld     r12, GPLEV0_offset(r6)
                S01:00000080:  6C 2D
-F00:0151          btst   r12, CLK
+F00:0152          btst   r12, CLK
                S01:00000082:  BC 6D
-F00:0152          bne    waitforclklow2loop
+F00:0153          bne    waitforclklow2loop
                S01:00000084:  FE 18
-F00:0153       
-F00:0154          st     r7, GPSET0_offset(r6)  # set external output enable high
+F00:0154       
+F00:0155          st     r7, GPSET0_offset(r6)  # set external output enable high
                S01:00000086:  67 37
-F00:0155          st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
+F00:0156          st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
                S01:00000088:  64 30
-F00:0156       
-F00:0157          mov    r8, (0xFF<<DATASHIFT)  # clear databus low
+F00:0157       
+F00:0158          mov    r8, (0xFF<<DATASHIFT)  # clear databus low
                S01:0000008A:  08 E8 FC 03 00 00
-F00:0158          st     r8, GPCLR0_offset(r6)  # clear databus low
+F00:0159          st     r8, GPCLR0_offset(r6)  # clear databus low
                S01:00000090:  68 3A
-F00:0159       
-F00:0160          b Poll_loop
+F00:0160       
+F00:0161          b      Poll_loop
                S01:00000092:  47 1F
-F00:0161       
-F00:0162       writecycle:
-F00:0163       
-F00:0164       waitforclkloww2:
-F00:0165          ld     r8, GPLEV0_offset(r6)
+F00:0162       
+F00:0163       writecycle:
+F00:0164       
+F00:0165       waitforclkloww2:
+F00:0166          ld     r8, GPLEV0_offset(r6)
                S01:00000094:  68 2D
-F00:0166          btst   r8, CLK
+F00:0167          btst   r8, CLK
                S01:00000096:  B8 6D
-F00:0167          movne  r12,r8
+F00:0168          movne  r12,r8
                S01:00000098:  0C C0 88 60
-F00:0168          bne    waitforclkloww2
+F00:0169          bne    waitforclkloww2
                S01:0000009C:  FC 18
-F00:0169          st     r12, (r1)         # post data
+F00:0170          st     r12, (r1)         # post data
                S01:0000009E:  1C 09
-F00:0170          st     r12, (r13)        # ring doorbell
+F00:0171          st     r12, (r13)        # ring doorbell
                S01:000000A0:  DC 09
-F00:0171       
-F00:0172          b Poll_loop
+F00:0172       
+F00:0173          b      Poll_loop
                S01:000000A2:  7F 9E BF FF
-F00:0173       
+F00:0174       
 
 
 Sections:
@@ -244,8 +245,9 @@ F00  Pi1MHzvc.s
 Symbols:
 waitforclkloww2 EXPR(148=0x94) ABS 
 waitforclklow2loop EXPR(128=0x80) ABS 
+skipenablingbus EXPR(118=0x76) ABS 
 writecycle EXPR(148=0x94) ABS 
-waitforclkhighloop EXPR(66=0x42) ABS 
+waitforclkhighloop EXPR(64=0x40) ABS 
 waitforclklow EXPR(50=0x32) ABS 
 waitforclkhigh EXPR(64=0x40) ABS 
 Poll_access_low EXPR(34=0x22) ABS 
@@ -262,7 +264,7 @@ D4_PIN EXPR(6=0x6) UNUSED
 D5_PIN EXPR(7=0x7) UNUSED 
 D6_PIN EXPR(8=0x8) UNUSED 
 D7_PIN EXPR(9=0x9) UNUSED 
-OUTPUTBIT EXPR(10=0xa) 
+OUTPUTBIT EXPR(15=0xf) 
 ADDRBUS_SHIFT EXPR(16=0x10) 
 DATASHIFT EXPR(2=0x2) 
 CLK EXPR(27=0x1b) 
