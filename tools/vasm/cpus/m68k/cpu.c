@@ -831,24 +831,21 @@ int ext_unary_eval(int type,taddr val,taddr *result,int cnst)
 }
 
 
-static uint16_t eval_rlsymbol(char **start)
-/* Parse and evaluate a register list symbol, return its value.
-   Return zero otherwise. May cause an error message on illegal symbol type. */
+static expr *rlsymbol_expr(char **start)
+/* Return register list symbol expression or a zero-expression when
+   nothing was specified. NULL otherwise (no valid register list symbol). */
 {
   symbol *sym;
   char *name;
-  taddr val = 0;
 
   if (name = parse_symbol(start)) {
     if ((sym = find_symbol(name)) &&
-        (sym->flags & REGLIST) && sym->type==EXPRESSION) {
-      if (!eval_expr(sym->expr,&val,NULL,0))
-        ierror(0);  /* REGLIST must be constant */
-    }
-    else
-      cpu_error(66);  /* not a valid register list symbol */
+        (sym->flags & REGLIST) && sym->type==EXPRESSION)
+      return sym->expr;
   }
-  return (uint16_t)val;
+  else if (ISEOL(*start))
+    return number_expr(0);  /* empty register list is 0 */
+  return NULL;  /* no valid register list */
 }
 
 
@@ -918,9 +915,9 @@ static signed char getreg(char **start,int indexreg)
 }
 
 
-static uint16_t scan_Rnlist(char **start)
-/* returns bit field for a Dn/An register list
-   returns 0 otherwise */
+static expr *scan_Rnlist(char **start)
+/* returns bitfield expression for a Dn/An register list,
+   or NULL if the buffer didn't start with a valid register */
 {
   char *p = *start;
 
@@ -937,7 +934,7 @@ static uint16_t scan_Rnlist(char **start)
       }
       else if ((reg = getreg(&p,0)) < 0) {
         cpu_error(2);  /* invalid register list */
-        return 0;
+        break;
       }
 
       if (rangemode) {
@@ -973,9 +970,9 @@ static uint16_t scan_Rnlist(char **start)
         break;
     }
     *start = p;
-    return list;
+    return number_expr((taddr)list);
   }
-  return eval_rlsymbol(start);
+  return rlsymbol_expr(start);
 }
 
 
@@ -1057,9 +1054,9 @@ static signed char getfreg(char **start)
 }
 
 
-static uint16_t scan_FPnlist(char **start)
-/* returns bit field for a FPn or FPIAR/FPSR/FPCR register list
-   returns 0 otherwise */
+static expr *scan_FPnlist(char **start)
+/* returns bitfield expression for a FPn or FPIAR/FPSR/FPCR register list,
+   or NULL if the buffer didn't start with a valid register */
 {
   char *p = *start;
 
@@ -1076,7 +1073,7 @@ static uint16_t scan_FPnlist(char **start)
       }
       else if ((reg = getfreg(&p)) < 0) {
         cpu_error(2);  /* invalid register list */
-        return 0;
+        break;
       }
 
       if (fpnmode < 0) {
@@ -1086,7 +1083,7 @@ static uint16_t scan_FPnlist(char **start)
         /* disallow mixing of fp0-fp7 and fpiar/fpsr/fpcr lists */
         if ((reg<=7 && !fpnmode) || (reg>7 && fpnmode)) {
           cpu_error(2);  /* invalid register list */
-          return 0;
+          break;
         }
       }
 
@@ -1120,9 +1117,9 @@ static uint16_t scan_FPnlist(char **start)
         break;
     }
     *start = p;
-    return list;
+    return number_expr((taddr)list);
   }
-  return eval_rlsymbol(start);
+  return rlsymbol_expr(start);
 }
 
 
@@ -1253,7 +1250,8 @@ static int get_any_register(char **start,operand *op,struct optype *ot)
       op->mode = MODE_Extended;
       op->reg = REG_RnList;
       *start = s;
-      op->value[0] = number_expr((taddr)scan_Rnlist(start));
+      if (!(op->value[0] = scan_Rnlist(start)))
+        ierror(0);
     }
     else {
       unsigned char sf = reg >> 4;
@@ -1273,15 +1271,13 @@ static int get_any_register(char **start,operand *op,struct optype *ot)
 
     if (*p=='-' || *p=='/' || (ot->flags & OTF_REGLIST)) {
       /* it's a register list */
-      uint16_t lst;
-
       op->mode = MODE_Extended;
       op->reg = REG_FPnList;
       *start = s;
-      lst = scan_FPnlist(start);
+      if (!(op->value[0] = scan_FPnlist(start)))
+        ierror(0);
       if (reg >= 10)
         op->flags |= FL_FPSpec;  /* fpiar/fpcr/fpsr list */
-      op->value[0] = number_expr((taddr)lst);
     }
     else {
       op->mode = MODE_FPn;
@@ -6379,9 +6375,12 @@ int parse_cpu_label(char *labname,char **start)
              (s-dir==5 && !strnicmp(dir,"equrl",5))) {
       /* label REG reglist */
       symbol *sym;
+      expr *rmask;
 
       s = skip(s);
-      sym = new_equate(labname,number_expr((taddr)scan_Rnlist(&s)));
+      if (!(rmask = scan_Rnlist(&s)))
+        rmask = parse_expr(&s);  /* parse register mask as numeric constant */
+      sym = new_equate(labname,rmask);
       sym->flags |= REGLIST;
       eol(s);
       *start = skip_line(s);
@@ -6392,9 +6391,12 @@ int parse_cpu_label(char *labname,char **start)
              (s-dir==6 && !strnicmp(dir,"fequrl",6))) {
       /* label FREG reglist */
       symbol *sym;
+      expr *rmask;
 
       s = skip(s);
-      sym = new_equate(labname,number_expr((taddr)scan_FPnlist(&s)));
+      if (!(rmask = scan_FPnlist(&s)))
+        rmask = parse_expr(&s);  /* parse register mask as numeric constant */
+      sym = new_equate(labname,rmask);
       sym->flags |= REGLIST;
       eol(s);
       *start = skip_line(s);

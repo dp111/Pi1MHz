@@ -445,7 +445,7 @@ void fwdata(FILE *f,const void *d,size_t n)
 
 
 void fwbytes(FILE *f,void *buf,size_t n)
-/* write target-bytes in selected endianess; n is in target-bytes */
+/* write target-bytes in selected endianness; n is in target-bytes */
 {
   if (output_bytes_le) {
     uint8_t *p = buf;
@@ -557,13 +557,6 @@ size_t filesize(FILE *fp)
         if (fseek(fp,0,SEEK_SET) >= 0)
           return (size_t)size;
   return 0;
-}
-
-
-int abs_path(const char *path)
-/* return true, when path is absolute */
-{
-  return *path=='/' || *path=='\\' || strchr(path,':')!=NULL;
 }
 
 

@@ -783,9 +783,9 @@ static void handle_fpd(char *s)
 #endif
 
 
-static void do_alignment(taddr align,expr *offset,size_t pad,expr *fill)
+static void do_alignment(taddr align,taddr offset,size_t pad,expr *fill)
 {
-  atom *a = new_space_atom(offset,pad,fill);
+  atom *a = new_space_atom(number_expr(offset),pad,fill);
 
   a->align = align;
   add_atom(0,a);
@@ -794,10 +794,10 @@ static void do_alignment(taddr align,expr *offset,size_t pad,expr *fill)
 
 static void handle_cnop(char *s)
 {
-  expr *offset;
+  taddr offset;
   taddr align=1;
 
-  offset = parse_expr_tmplab(&s);
+  offset = parse_constexpr(&s);
   s = skip(s);
   if (*s == ',') {
     s = skip(s+1);
@@ -809,8 +809,12 @@ static void handle_cnop(char *s)
   /* align with cnop_pad in a code section, otherwise with zero */
   /* @@@ number of padding bytes should be variable for different archs. ? */
   if (!devpac_compat && align>3 &&
-      (current_section==NULL || strchr(current_section->attr,'c')!=NULL))
-    do_alignment(align,offset,2,number_expr(cnop_pad));
+      (current_section==NULL || strchr(current_section->attr,'c')!=NULL)) {
+    do_alignment(align,0,2,number_expr(cnop_pad));
+    do_space(16,number_expr(offset/2),number_expr(cnop_pad));
+    if (offset & 1)
+      do_space(8,number_expr(1),NULL);
+  }
   else
     do_alignment(align,offset,1,NULL);
 }
@@ -818,19 +822,19 @@ static void handle_cnop(char *s)
 
 static void handle_align(char *s)
 {
-  do_alignment(1<<parse_constexpr(&s),number_expr(0),1,NULL);
+  do_alignment(1<<parse_constexpr(&s),0,1,NULL);
 }
 
 
 static void handle_even(char *s)
 {
-  do_alignment(2,number_expr(0),1,NULL);
+  do_alignment(2,0,1,NULL);
 }
 
 
 static void handle_odd(char *s)
 {
-  do_alignment(2,number_expr(1),1,NULL);
+  do_alignment(2,1,1,NULL);
 }
 
 
@@ -1053,6 +1057,15 @@ static void handle_nolist(char *s)
 {
   del_last_listing();  /* hide directive in listing */
   set_listing(0);
+}
+
+
+static void handle_title(char *s)
+{
+  strbuf *name;
+
+  if (name = parse_name(0,&s))
+    set_list_title(name->str,name->len);
 }
 
 
@@ -1881,7 +1894,7 @@ struct {
   "fail",P|D,handle_fail,
   "assert",0,handle_assert,
   "idnt",P|D,handle_idnt,
-  "ttl",P|D,handle_idnt,
+  "ttl",P|D,handle_title,
   "list",P|D,handle_list,
   "module",P|D,handle_idnt,
   "nolist",P|D,handle_nolist,

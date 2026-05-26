@@ -413,7 +413,7 @@ dblock* eval_instruction
         }
     }
 
-    /* write opcode - endianess doesn't matter */
+    /* write opcode - endianness doesn't matter */
     setval(1, dataBlock->data, dataBlock->size, opCode);
     return dataBlock;
 }
@@ -444,7 +444,7 @@ dblock* eval_data
             add_extnreloc(&dataBlock->relocs, baseOfImmediate, addendum,
                 baseType == BASE_PCREL ? REL_PC : REL_ABS, 0, bitsize, 0);
         }
-        else if (baseType != BASE_NONE)
+        else
             general_error(38);  /* illegal relocation */
     }
 

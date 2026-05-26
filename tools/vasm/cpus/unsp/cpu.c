@@ -528,7 +528,7 @@ static size_t process_instruction(instruction* ip, section* sec, taddr pc, uint1
     }
 
     case XJMP: {
-        /* Extended conditional jump instructions. Made of a reverse conditonal jump to PC+2 and
+        /* Extended conditional jump instructions. Made of a reverse conditional jump to PC+2 and
          * a GOTO instruction, if needed to reach outside the range of a 6 bit relative jump.
          */
 
@@ -665,7 +665,7 @@ dblock *eval_data(operand *op,size_t bitsize,section *sec,taddr pc)
       add_extnreloc(&db->relocs,base,val,
                     btype==BASE_PCREL?REL_PC:REL_ABS,0,bitsize,0);
     }
-    else if (btype != BASE_NONE)
+    else
       general_error(38);  /* illegal relocation */
   }
 

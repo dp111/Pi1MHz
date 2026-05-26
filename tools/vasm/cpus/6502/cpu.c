@@ -26,7 +26,7 @@ static char hi_c = '>';   /* select high-byte or full absolute */
 static int OC_JMPABS,OC_BRA,OC_FIRSTMV,OC_LASTMV;
 
 /* sizes for all operand types - refer to addressing modes enum in cpu.h */
-uint8_t opsize[NUM_OPTYPES] = {
+const uint8_t opsize[NUM_OPTYPES] = {
   0,0,2,2,2,2,3,3,1,1,1,1,1,2,1,1,1,1,1,2,2,1,2,1,4,1,2,0,0,1,2,0,1,0
 };
 
@@ -961,7 +961,7 @@ dblock *eval_data(operand *op,size_t bitsize,section *sec,taddr pc)
       rl = add_extnreloc(&db->relocs,base,val,
                          btype==BASE_PCREL?REL_PC:REL_ABS,0,bitsize,0);
     }
-    else if (btype != BASE_NONE)
+    else
       general_error(38);  /* illegal relocation */
   }
 

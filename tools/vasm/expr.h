@@ -72,4 +72,3 @@ int eval_expr_float(expr *,tfloat *);
 #define BASE_ILLEGAL 0
 #define BASE_OK 1
 #define BASE_PCREL 2
-#define BASE_NONE -1  /* no base-symbol assigned, all labels are absolute */

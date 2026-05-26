@@ -354,11 +354,18 @@ The mask flag in @code{MAC} instructions is written as @code{&} and is
 appended directly to the effective address operand. Example:
 @code{mac d0,d1,(a0)&,d2}.
 
+The register list in @code{MOVEM}, @code{FMOVEM}, etc. instructions
+may optionally be specified by an immediate addressing mode, using a
+16 or 8 (@code{FMOVEM}) bit register mask constant.
+Example (push no registers): @code{movem.l #0,-(sp)}.
+
 The target address type is 32 bit. Floating point constants in
 instructions and data are supported and encoded in IEEE format.
 
 Default alignment for instructions is 2 bytes. The default alignment for
-data is 2 bytes, when the data size is larger than 8 bits.
+data is 2 bytes, when the data size is larger than 8 bits. Note, that
+data is not auto-aligned unless you specify the @option{-align} option
+(or use Devpac-compatibility mode: @option{-devpac}).
 
 @section Internal symbols
 
@@ -726,15 +733,21 @@ module:
       Defines a new symbol named <symbol> and assign the FPU register
       list <reglist> to it. Registers in a list must be separated
       by a slash (@code{/}) and ranges or registers can be defined
-      by using a hyphen (@code{-}). Examples for valid FPU register
-      lists are: @code{fp0-fp7}, @code{fp1-3/fp5/fp7}, @code{fpiar/fpcr}.
+      by using a hyphen (@code{-}). No character at all represents
+      an empty regiser list. Optionally you may specify the <reglist>
+      as an 8-bit register mask constant (@code{fp0} is bit 0, @code{fp7}
+      is bit 7). Examples for valid FPU register lists are: @code{fp0-fp7},
+      @code{fp1-3/fp5/fp7}, @code{fpiar/fpcr}.
 
 @item <symbol> reg <reglist>
       Defines a new symbol named <symbol> and assign the register
       list <reglist> to it. Registers in a list must be separated
       by a slash (@code{/}) and ranges or registers can be defined
-      by using a hyphen (@code{-}). Examples for valid register lists
-      are: @code{d0-d7/a0-a6}, @code{d3-6/a0/a1/a4-5}.
+      by using a hyphen (@code{-}). No character at all represents
+      an empty regiser list. Optionally you may specify the <reglist>
+      as a 16-bit register mask constant (@code{d0} is bit 0, @code{a7}
+      is bit 15). Examples for valid register lists are: @code{d0-d7/a0-a6},
+      @code{d3-6/a0/a1/a4-5}.
 
 @end table
 
@@ -1146,7 +1159,6 @@ This module has the following error messages:
 @item 2064: "%s" directive was replaced by an instruction with the same name
 @item 2065: Addr.reg. operand at level #0 causes F-line exception
 @item 2066: Dr and Dq are identical, transforming DIVxL.L effectively into DIVx.L
-@item 2067: not a valid register list symbol
 @item 2068: trailing garbage in operand
 @item 2069: encoding absolute displacement directly
 @item 2070: internal symbol %s has been modified

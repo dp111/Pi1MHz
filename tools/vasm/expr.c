@@ -1493,7 +1493,6 @@ taddr parse_constexpr(char **s)
   taddr val = 0;
 
   if (tree = parse_expr(s)) {
-    simplify_expr(tree);
     switch(tree->type){
       case NUM:
         val = tree->c.val;

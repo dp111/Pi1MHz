@@ -68,7 +68,7 @@ struct deplist {
 
 
 extern char *compile_dir;
-extern int ignore_multinc,nocompdir,depend,depend_all;
+extern int ignore_multinc,relpath,nocompdir,depend,depend_all;
 
 void write_depends(FILE *);
 source *new_source(char *,struct source_file *,char *,size_t);

@@ -931,7 +931,7 @@ section *new_org(taddr org)
   char buf[32];
   section *sec;
 
-  sprintf(buf,"org%04u:%llx",++cnt,(unsigned long long)org);
+  sprintf(buf,"org%04u:%llx",++cnt,(unsigned long long)(utaddr)org);
   sec = new_section(buf,"acrwx",1);
   sec->org = sec->pc = org;
   sec->flags |= ABSOLUTE;  /* absolute destination address */
@@ -1267,6 +1267,10 @@ int main(int argc,char **argv)
     }
     if(!strcmp("-nocase",argv[i])){
       nocase=1;
+      continue;
+    }
+    if(!strcmp("-relpath",argv[i])){
+      relpath=1;
       continue;
     }
     if(!strcmp("-nocompdir",argv[i])){

@@ -430,7 +430,7 @@ dblock *eval_data(operand *op, size_t bitsize, section *sec, taddr pc)
     if (base)
       add_extnreloc(&new->relocs, base, val,
                     btype==BASE_PCREL ? REL_PC : REL_ABS, 0, bitsize, 0);
-    else if (btype != BASE_NONE)
+    else
       general_error(38);  /* illegal relocation */
   }
 

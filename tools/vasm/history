@@ -10,6 +10,8 @@ o New options -ibe and -ile to define the endianess of target-bytes in
   binary includes (incbin).
 o New option -underscore adds a leading underscore to all imported and
   exported symbol names.
+o New option -relpath to treat all include paths as relative first,
+  even when starting with '/' or '\'.
 o Reworked relocations and added the option to define their signedness.
 o New CPU backend for unSP (micro-nSP), having 16-bit bytes. Contributed
   by Adrien Destugues.
@@ -46,6 +48,8 @@ o m68k: Command line options of the form -opt-<option> execute a
   of the source text.
 o m68k: New options -warnabs16 and -warnabs32 to show a warning when
   accessing absolute 16- oder 32-bit addresses.
+o m68k: REG/EQURL directives optionally allow to specify register lists as a
+  register mask constant (BAsm compatibility).
 o m68k: Add Apollo E-register banking for negx, swap, movex, sCC,
   addiw.l, cmpiw.l, rol, ror, roxl, roxr, and perm.
 o m68k: Apollo instructions pabsb, pabsw are gone (opcode space will be
@@ -82,6 +86,8 @@ o x86: Fix macros with size-suffixes (b,w,l,s,q,x). Size qualifiers are
 o x86: Allow multiple alternating .codeNN directives in the source.
 o x86: Add missing prefix when using 32-bit registers in 16-bit mode.
 o x86: Fixed relative calls with size suffix (callw, calll) in 16/32-bit mode.
+o mot-syntax: Fixed non-zero offset in CNOP, which was broken since V1.7c.
+o mot-syntax: TTL sets the listing file page title and not the unit name.
 o oldstyle-syntax: MACRO (written in upper case) didn't work with arguments.
 o oldstyle-syntax: New ifblank and ifnblank directives may be used to
   check whether a macro argument was given.
@@ -112,6 +118,8 @@ o hunk-output: Automatic source line debugging output (-linedebug) also
   (-devpac).
 o hunk-output: New options -dbg-local and -dbg-globloc to include local
   labels into the debug symbol hunk (HUNK_SYMBOL).
+o hunk-output: Warn about odd relocation offsets, which might crash the
+  AmigaOS loader on 68000 and 68010 systems (suggested by Erik Hemming).
 o o65-output: Support low-word relocs in 65816 mode.
 o bin-output: Foenix PGX format supports 65C02 and PGZ format supports 32-bit.
 o bin-output: New option -coalesced to output org-blocks without padding.

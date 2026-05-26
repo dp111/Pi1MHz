@@ -4,7 +4,7 @@ M68k and ColdFire families of CPUs, which is available with the extension
 
 @section Legal
 
-    This module is written in 2002-2023 by Frank Wille and
+    This module is written in 2002-2024 by Frank Wille and
     is covered by the vasm copyright without modifications.
 
 @section Additional options for this module
@@ -212,8 +212,8 @@ CPU- and output-module support them):
 @item cnop <offset>,<alignment>
       Insert as many padding bytes as required to reach an address which
       can be divided by <alignment>. Then add <offset> padding bytes.
-      May fill the padding-bytes with no-operation instructions for certain
-      cpus.
+      May fill the alignment- and padding-bytes with no-operation
+      instructions for certain cpus. See option @option{-cnop}.
 
 @item code
       Equivalent to @code{section code,code}.
@@ -825,10 +825,10 @@ foo IIF bar equ 42
       Equivalent to @code{section code,code}.
 
 @item ttl <name>
-      PhxAss syntax. Equivalent to @code{idnt <name>}.
+      Devpac/PhxAss syntax. Set current page title for the listing file.
 
 @item <name> ttl
-      Motorola syntax. Equivalent to @code{idnt <name>}.
+      Motorola syntax. Set current page title for the listing file.
 
 @item weak <symbol>[,<symbol>...]
       Flag @code{<symbol>} as a weak symbol, which means that @code{<symbol>}
