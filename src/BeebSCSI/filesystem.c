@@ -602,12 +602,14 @@ uint32_t filesystemGetLunTotalSectors( uint8_t lunNumber)
 // Function to return the cylinders and heads from the LUN descriptor file parameters
 // into the buffer
 //
+#if 0
 void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf)
 {
 	returnbuf[3] = ((uint8_t)((filesystemState.fsLunGeometry[lunNumber].Cylinders & 0x0000FF00) >> 8));
 	returnbuf[4] = ((uint8_t) (filesystemState.fsLunGeometry[lunNumber].Cylinders & 0x000000FF));
 	returnbuf[5] = filesystemState.fsLunGeometry[lunNumber].Heads;
 }
+#endif
 
 // Function to set the current LUN directory (for the LUN jukeboxing functionality)
 void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber)
@@ -698,16 +700,16 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
          // this isn't expected to exist
          sprintf(fileName, "/BeebVFS%d/scsi%d.dsc", filesystemState.lunDirectoryVFS, lunNumber & 7);
 
-      if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCheckLunImage(): Checking for (.dsc) LUN descriptor "), (uint16_t)lunNumber, 1);
+      if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemReadLunDescriptor(): Checking for (.dsc) LUN descriptor "), (uint16_t)lunNumber, 1);
       fsResult = f_open(&fileObject, fileName, FA_READ);
 
       if (fsResult != FR_OK) {
          // LUN descriptor file is not found
-         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): LUN descriptor not found\r\n"));
+         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReadLunDescriptor(): LUN descriptor not found\r\n"));
          return false;
       } else {
          // LUN descriptor file is present
-         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): LUN descriptor found\r\n"));
+         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReadLunDescriptor(): LUN descriptor found\r\n"));
 
          UINT fsCounter;
 
@@ -721,7 +723,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
          // Check that the file was read OK and is the correct length
          if (fsResult != FR_OK  || fsCounter != 22) {
             // Something went wrong
-            if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): ERROR: Could not read .dsc file\r\n"));
+            if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReadLunDescriptor(): ERROR: Could not read .dsc file\r\n"));
             f_close(&fileObject);
             return 0;
          }
