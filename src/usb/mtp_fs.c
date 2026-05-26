@@ -83,7 +83,7 @@ storage_info_t storage_info = {
 //--------------------------------------------------------------------+
 // MTP FILESYSTEM
 //--------------------------------------------------------------------+
-#define FS_NAME_MAX_LEN 127u
+#define FS_NAME_MAX_LEN FF_MAX_LFN
 #define FS_PATH_MAX 512u
 #define FS_FALLBACK_DATETIME "19800101T000000.0" // "YYYYMMDDTHHMMSS.s"
 #define FS_DATETIME_STR_LEN 18u
@@ -763,7 +763,7 @@ static bool fs_kernel_alloc(uint32_t capacity) {
 //--------------------------------------------------------------------+
 bool tud_mtp_request_cancel_cb(tud_mtp_request_cb_data_t* cb_data) {
   mtp_request_reset_cancel_data_t cancel_data;
-  memcpy(&cancel_data, cb_data->buf, sizeof(cancel_data));
+ // memcpy(&cancel_data, cb_data->buf, sizeof(cancel_data));
   (void) cancel_data.code;
   (void ) cancel_data.transaction_id;
   return true;
@@ -971,7 +971,7 @@ static int32_t fs_get_storage_info(tud_mtp_cb_data_t* cb_data) {
   if (!fs_ensure_ready()) {
     return MTP_RESP_STORE_NOT_AVAILABLE;
   }
-  // update storage info with current free space
+  // update storage info with current free space TODO ****** f_getfree
   storage_info.max_capacity_in_bytes = UINT64_MAX;
   storage_info.free_space_in_bytes = UINT64_MAX;
   storage_info.free_space_in_objects = UINT32_MAX;
