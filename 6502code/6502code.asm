@@ -1,46 +1,42 @@
 ;
-; Pi1MHz 6502 code
+; Pi1MHz 6502 helper code
 ;
 
 discaccess = &FCD6
 
-    MACRO PAGERTS
-        LDX #&FF
-        JMP &FC88
-    ENDMACRO
+MACRO PAGERTS
+    LDX #&FF
+    JMP &FC88
+ENDMACRO
 
-    MACRO ENDBLOCK pos
-        SKIPTO &FE00
-        COPYBLOCK &FD00, &FE00, pos
-        CLEAR &FD00, &FE00
-    ENDMACRO
+MACRO ENDBLOCK pos
+    SKIPTO &FE00
+    COPYBLOCK &FD00, &FE00, pos
+    CLEAR &FD00, &FE00
+ENDMACRO
 
-    MACRO  page_rom_x
-    stx    &f4
-    stx    &fe30
-    ENDMACRO
-
-MACRO FINDSWR
+MACRO LOADFILETOSWR filename
+{
     LDA &F4
     PHA
     LDX #15
 .romlp
-    page_rom_x
-
+    stx    &f4
+    stx    &fe30
 ;; Step 1: Test if candidate slot already contains a rom image
 ;; so we don't clobber any pre-existing ROM images
-        ldy     &8007
-        lda     &8000, Y
-        bne     testram
-        lda     &8001, Y
-        cmp     #'('
-        bne     testram
-        lda     &8002, Y
-        cmp     #'C'
-        bne     testram
-        lda     &8003, Y
-        cmp     #')'
-        bne     testram
+    ldy     &8007
+    lda     &8000, Y
+    bne     testram
+    lda     &8001, Y
+    cmp     #'('
+    bne     testram
+    lda     &8002, Y
+    cmp     #'C'
+    bne     testram
+    lda     &8003, Y
+    cmp     #')'
+    bne     testram
 
 ;; Step 2: Test if that pre-existing rom image is SWMMFS
 ;; so we re-use the same slot again and again
@@ -50,29 +46,48 @@ MACRO FINDSWR
      ;   lda     &b5ff
      ;   cmp     #MAGIC1
      ;   bne     romnxt
-
+    beq romnxt
 ;; Step 3: Check if slot is RAM
 .testram
-        lda     &8006
-        eor     #&FF
+    lda     &8006
+    eor     #&FF
+    sta     &8006
+    cmp     &8006
+    PHP
+    eor     #&FF
         sta     &8006
-        cmp     &8006
-        php
-        eor     #&FF
-        sta     &8006
-        plp
-        beq     testdone
+        PLP
+        beq     SWRfound
 .romnxt
-        dex
-        bpl     romlp
+    dex
+    bpl     romlp
 
-.testdone
-        PLA
-        sta    &f4
-        sta    &fe30
-ENDMACRO
+; no SWR found
+.noswr
+    PLA
+    sta    &f4
+    sta    &fe30
+   ; should really put the error on the stack
+   ; and fake RTS on the stack
+   ; LDX     #255
+   ; STX     &FC88   ; Restore JIM
+    BRK
+    EQUB 255: EQUS "No SWR":EQUB 0
+}
+.fileerror
 
-MACRO LOADFILETOSWR filename
+    PLA
+    sta    &f4
+    sta    &fe30
+   ; should really put the error on the stack
+   ; and fake RTS on the stack
+   ; LDX     #255
+   ; STX     &FC88   ; Restore JIM
+    BRK
+    EQUB &D6: EQUS "No ROM":EQUB 0
+
+.SWRfound
+
     ; fopen
     LDY #0   : STY discaccess
     DEY      : STY discaccess+1
@@ -87,7 +102,7 @@ MACRO LOADFILETOSWR filename
 .fopencheckloop
     LDA discaccess+4
     BMI fopencheckloop
-    BNE pagertsjmp ; file not found
+    BNE fileerror ; file not found
 
     LDY #0   : STY discaccess
 
@@ -100,10 +115,10 @@ MACRO LOADFILETOSWR filename
 
 .freadcheckloop
     LDA discaccess+4
-    BMI freadcheckloop
     BEQ readdone
+    BMI freadcheckloop
     CMP #20
-    BNE pagertsjmp ; file open error
+    BNE fileerror ; file open error
 
 .readdone
     LDY #0   : STY discaccess
@@ -113,19 +128,16 @@ MACRO LOADFILETOSWR filename
              : STY swrpointer+1
     LDA #&80 : STA swrpointer+2
 
-    LDA &F4
-    PHA
-    STX &F4
-    STX &FE30
-
+    LDX #&C0-&80
 .copyswrloop
-    LDA discaccess+3 : .swrpointer STA &8000,Y
+    LDA discaccess+3
+.swrpointer
+    STA &8000,Y
     INY
     BNE copyswrloop
 
     INC swrpointer+2
-    LDX swrpointer+2
-    CPX #&C0
+    DEX
     BNE copyswrloop;
     ; Y is zero
            : STY discaccess
@@ -136,9 +148,6 @@ MACRO LOADFILETOSWR filename
     STA discaccess+3
     STY discaccess+4
 
-    PLA
-    STA &F4
-    STA &FE30
     LDA #200
     LDX #3
     JSR &FFF4
@@ -160,13 +169,13 @@ ENDMACRO
 ; help screen
 {
 ORG &FD00
-    LDA #0   : STA &FCD6 ; clear byte pointer to zero.
-    LDA #&E0 : STA &FCD7
-    LDA #&FF : STA &FCD8
+    LDA #0   : STA discaccess ; clear byte pointer to zero.
+    LDA #&E0 : STA discaccess+1
+    LDA #&FF : STA discaccess+2
 .stringloop
-    LDA &FCD9 ; auto increment register
+    LDA discaccess+3 ; auto increment register
     JSR &FFEE
-    CMP #0
+    TAX ; Set flags
     BNE stringloop
     PAGERTS
 
@@ -204,34 +213,15 @@ newoswrch = &FCD1
 ; ADFS
 {
 ORG &FD00
-
-    FINDSWR
-    TXA
-    BPL SWRfound
-.pagertsjmp
-    PAGERTS; no SWR found
-.SWRfound
-
     LOADFILETOSWR "ROMS/ADFS.rom"
-
     ENDBLOCK &300
 }
-
 
 ; Page 4
 ; MMFS
 {
 ORG &FD00
-
-    FINDSWR
-    TXA
-    BPL SWRfound
-.pagertsjmp
-    PAGERTS; no SWR found
-.SWRfound
-
     LOADFILETOSWR "ROMS/MMFS.rom"
-
     ENDBLOCK &400
 }
 
@@ -239,16 +229,7 @@ ORG &FD00
 ; MMFSv2
 {
 ORG &FD00
-
-    FINDSWR
-    TXA
-    BPL SWRfound
-.pagertsjmp
-    PAGERTS; no SWR found
-.SWRfound
-
     LOADFILETOSWR "ROMS/MMFS2.rom"
-
     ENDBLOCK &500
 }
 
