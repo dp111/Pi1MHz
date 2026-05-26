@@ -109,7 +109,7 @@ static void ram_emulator_page_write(unsigned int gpio)
 static char* putstring(char *ram, char term, const char *string)
 {
    size_t length;
-   length = strlcpy(ram, string, PAGE_SIZE);
+   length = strlcpy(ram, string, PAGE_SIZE-1);
    ram += length;
    if (term == '\n')
    {

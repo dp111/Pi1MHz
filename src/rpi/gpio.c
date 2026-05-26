@@ -88,7 +88,7 @@ void RPI_SetGpioLo(rpi_gpio_pin_t gpio)
     break;
 
     case 1:
-      RPI_GpioBase->GPCLR1 = (rpi_reg_wo_t) (1 << (gpio - 32));
+      RPI_GpioBase->GPCLR1 = (rpi_reg_wo_t) (1u << (gpio - 32));
     break;
 
     default:

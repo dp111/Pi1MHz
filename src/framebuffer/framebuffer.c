@@ -1245,6 +1245,10 @@ static void vdu23_22(const uint8_t *buf) {
    if (n_colours == 0) {
       n_colours = 256;
    }
+   if (x_pixels == 0 || y_pixels == 0 ) {
+      return;
+   }
+   
    fb_custom_mode(x_pixels, y_pixels, n_colours);
 }
 

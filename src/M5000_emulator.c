@@ -122,8 +122,7 @@ static uint8_t fx_pointer;
 static size_t ram_max;
 
 #define M5000_REC_BASE 0x100000u
-#define JIM_RAM_STEP ( 16u*1024*1024u)
-#define M5000_REC_END ( 2u * JIM_RAM_STEP)
+#define M5000_REC_END ( DISC_RAM_SIZE)
 
 static const unsigned char wavfmt[] = {
    'R','I','F','F',
@@ -385,19 +384,24 @@ static void music5000_rec_stop(void)
       sprintf(fn,"Musics%.3i.wav",number);
       result = f_open( &music5000_fp, fn, FA_CREATE_NEW  | FA_WRITE);
       LOG_INFO("Music5000 Filename : %s\r\n",fn);
-      if ( result == FR_EXIST)
-         number++;
-   } while ( result != FR_OK );
+      number++;
+   } while ( result != FR_OK && number < 1000 );
 
-   memcpy(&Pi1MHz->JIM_ram[M5000_REC_BASE], wavfmt, sizeof(wavfmt));
+   if ( result != FR_OK )
+   {
+      LOG_DEBUG("Music5000 recording stopped as we could not create a file\r\n");
+   }
+   else {
+      memcpy(&Pi1MHz->JIM_ram[M5000_REC_BASE], wavfmt, sizeof(wavfmt));
 
-   uint32_t size = Audio_Index - M5000_REC_BASE;
-   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+4], size - 8u);
-   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+40], size - 44u);
+      uint32_t size = Audio_Index - M5000_REC_BASE;
+      put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+4], size - 8u);
+      put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+40], size - 44u);
 
-   UINT temp;
-   f_write(&music5000_fp, &Pi1MHz->JIM_ram[M5000_REC_BASE],Audio_Index - M5000_REC_BASE , &temp);
-   f_close(&music5000_fp);
+      UINT temp;
+      f_write(&music5000_fp, &Pi1MHz->JIM_ram[M5000_REC_BASE],Audio_Index - M5000_REC_BASE , &temp);
+      f_close(&music5000_fp);
+   }
    record = false;
    fx_register[fx_pointer] = 0;
 }

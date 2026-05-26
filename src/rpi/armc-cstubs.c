@@ -253,7 +253,7 @@ __attribute__((used)) int _lseek(int file __attribute__((unused)),
 /* Read from a file. Minimal implementation: */
 // cppcheck-suppress unusedFunction
 __attribute__((used)) int _read(int file __attribute__((unused)),
-                                const char *ptr __attribute__((unused)),
+                                char *ptr __attribute__((unused)),
                                 int len __attribute__((unused)))
 {
   return 0;

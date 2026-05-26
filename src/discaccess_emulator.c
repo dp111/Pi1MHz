@@ -15,6 +15,9 @@
 
 static size_t disc_ram_addr;
 static size_t disc_ram_max;
+// High byte (bits 16-23) of the address last written to the +2 read-back
+// register; -1 means "not written yet" (reset on init).
+static int disc_ram_addr_hi;
 
 static uint8_t ram_address;
 
@@ -82,11 +85,19 @@ static bool discaccess_string_ok(uint32_t start)
 
 static void discaccess_emulator_update_address(void)
 {
-   size_t disc_ram_addr_old = disc_ram_addr-1;
-
+   // Write the low 16 bits of the address back for the Beeb to read, and
+   // refresh the high-byte (bits 16-23) register only when it actually
+   // changes - the common sequential-access case skips the extra write.
+   // Comparing against the last value written (rather than reconstructing
+   // the previous address as disc_ram_addr-1) is correct for every caller,
+   // including the byte_addr path that sets the address arbitrarily.
+   int hi = (int)((disc_ram_addr >> 16) & 0xFF);
    Pi1MHz_MemoryWrite16(ram_address, disc_ram_addr);
-   if ((disc_ram_addr_old & 0x00FF0000 ) != (disc_ram_addr & 0x00FF0000 ) )
-      Pi1MHz_MemoryWrite((uint32_t)(ram_address+2), ( disc_ram_addr >> 16 ) & 0xFF );
+   if (hi != disc_ram_addr_hi)
+   {
+      disc_ram_addr_hi = hi;
+      Pi1MHz_MemoryWrite((uint32_t)(ram_address + 2), (uint8_t)hi);
+   }
 }
 
 static void discaccess_emulator_byte_addr(unsigned int gpio)
@@ -396,6 +407,7 @@ void discaccess_emulator_init( uint8_t instance , uint8_t address)
 {
    disc_ram_addr = DISC_RAM_BASE;
    disc_ram_max  = DISC_RAM_BASE + DISC_RAM_SIZE;
+   disc_ram_addr_hi = -1;   // force the +2 read-back register to be written on the first update
 
    ram_address = address;
 

@@ -435,12 +435,14 @@ static void init_hardware(void)
 // cppcheck-suppress unusedFunction
 _Noreturn void kernel_main(void)
 {
-   unsigned int baud_rate;
+   unsigned int baud_rate = 115200;
    const char * const prop = get_cmdline_prop("baud_rate");
    if (prop)
-      baud_rate = (uint32_t)atoi(prop);
-   else
-      baud_rate = 115200;
+   {
+      int b = atoi(prop);
+      if (b > 0)
+         baud_rate = (unsigned int) b; 
+   }
 
    RPI_AuxMiniUartInit( baud_rate );
 
