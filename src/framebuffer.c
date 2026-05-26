@@ -140,10 +140,13 @@ static void update_palette(int offset, int num_colours) {
 #define AF_TOFGD 6 // Flood (area fill) to foreground
 
 // Character colour / cursor position
-static uint8_t c_bg_col;
-static uint8_t c_fg_col;
-static uint8_t c_x_pos;
-static uint8_t c_y_pos;
+static uint32_t c_bg_col;
+static uint32_t c_fg_col;
+static uint32_t c_x_pos;
+static uint32_t c_y_pos;
+static uint32_t old_c_x_pos=0;
+static uint32_t old_c_y_pos=0;
+static uint32_t vdu45flag=0;
 static uint32_t c_x_max;
 static uint32_t c_y_max;
 static uint32_t c_x_scale;
@@ -366,15 +369,15 @@ int calc_radius(int x1, int y1, int x2, int y2) {
 
 static void fb_cursor_left() {
    if (c_x_pos != 0) {
-      c_x_pos--;
+      c_x_pos-= bpp * c_x_scale;
    } else {
-      c_x_pos = c_x_max;
+      c_x_pos = c_x_max * bpp * c_x_scale;
    }
 }
 
 static void fb_cursor_right() {
-   if (c_x_pos < c_x_max) {
-      c_x_pos++;
+   if (c_x_pos < c_x_max * bpp * c_x_scale) {
+      c_x_pos+= bpp * c_x_scale;
    } else {
       c_x_pos = 0;
    }
@@ -382,15 +385,15 @@ static void fb_cursor_right() {
 
 static void fb_cursor_up() {
    if (c_y_pos != 0) {
-      c_y_pos--;
+      c_y_pos-= c_y_scale * cheight;
    } else {
-      c_y_pos = c_y_max;
+      c_y_pos = c_y_max * c_y_scale * cheight;
    }
 }
 
 static void fb_cursor_down() {
-   if (c_y_pos < c_y_max) {
-      c_y_pos++;
+   if (c_y_pos < c_y_max* c_y_scale * cheight) {
+      c_y_pos+= c_y_scale * cheight;
    } else {
       fb_scroll();
    }
@@ -406,8 +409,8 @@ static void fb_cursor_home() {
 }
 
 static void fb_cursor_next() {
-   if (c_x_pos < c_x_max) {
-      c_x_pos++;
+   if (c_x_pos < c_x_max * bpp * c_x_scale) {
+      c_x_pos+= bpp * c_x_scale;
    } else {
       c_x_pos = 0;
       fb_cursor_down();
@@ -845,11 +848,12 @@ static void fb_draw_character(int c, int invert, int eor) {
    unsigned char temp=0;
 #endif
 
-   c *= cheight;
+   uint32_t ch = c * cheight;
 
    if(invert) invert = 0xFF ;
    uint32_t c_fgol = get_colour(c_fg_col);
    uint32_t c_bgol = get_colour(c_bg_col);
+
    // Copy the character into the frame buffer
    for (uint32_t i = 0; i < cheight; i++) {
       for (uint32_t scaley = c_y_scale; scaley != 0; scaley-- )
@@ -858,18 +862,18 @@ static void fb_draw_character(int c, int invert, int eor) {
       if ( c == CLEAR_CHAR)
          data = 0;
       else
-         data = BBCFont[c + i] ^ invert;
+         data = BBCFont[ch + i] ^ invert;
 #ifdef BPP32
-      uint32_t *fbptr = fb + c_x_pos * bpp * c_x_scale + (c_y_pos * c_y_scale * cheight + i*c_y_scale + scaley) * pitch;
+      uint32_t *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
 #endif
 #ifdef BPP16
-      uint16_t *fbptr = fb + c_x_pos * bpp * c_x_scale + (c_y_pos * c_y_scale * cheight + i*c_y_scale + scaley) * pitch;
+      uint16_t *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
 #endif
 #ifdef BPP8
-      uint8_t *fbptr = fb + c_x_pos * bpp * c_x_scale + (c_y_pos * c_y_scale * cheight + i*c_y_scale + scaley) * pitch;
+      uint8_t *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
 #endif
 #ifdef BPP4
-      uint8_t *fbptr = fb + c_x_pos * bpp * c_x_scale + (c_y_pos * c_y_scale * cheight + i*c_y_scale + scaley) * pitch;
+      uint8_t *fbptr = fb + c_x_pos + (c_y_pos + i*c_y_scale + scaley) * pitch;
 #endif
 
       for (uint32_t j = 0; j < 8; j++) {
@@ -881,14 +885,13 @@ static void fb_draw_character(int c, int invert, int eor) {
             } else {
                *fbptr++ = col;
             }
-
 #ifdef BPP4
          if (eor) {
             *fbptr ^= col; // FIX 4 bit EOR
          } else {
            if (j & 1)
            {
-             *(uint8_t *)(fb + c_x_pos * c_x_scale * bpp+(0+(j>>1)) + (c_y_pos * c_y_scale * cheight + i) * pitch) = (temp<<4) | col;
+             *(uint8_t *)(fb + c_x_pos +(0+(j>>1)) + (c_y_pos + i) * pitch) = (temp<<4) | col;
              fbptr += 1;
            } else
            {
@@ -1021,7 +1024,7 @@ void fb_writec(int c) {
             update_palette(l, NUM_COLOURS);
          } else {
             // See http://beebwiki.mdfs.net/VDU_19
-            if (p < 16) {
+            if ((p < 16) & (r==0) & (g==0) & (b==0 )) {
                int i = (p & 8) ? 255 : 127;
                b = (p & 4) ? i : 0;
                g = (p & 2) ? i : 0;
@@ -1040,6 +1043,9 @@ void fb_writec(int c) {
    case IN_VDU22:
       { // mode change
          fb_clear();
+         vdu45flag = 0;
+         init_colour_table();
+         update_palette(l, NUM_COLOURS);
          switch (c)
          {
          case 0: c_x_max = 79; c_x_scale = 1; c_y_max = 31; break;
@@ -1208,8 +1214,53 @@ void fb_writec(int c) {
       }
       return;
    }
-}
+   
+   case IN_VDU31 :
+   {
+      switch (count) {
+      case 0:
+         x_tmp = c;
+         break;
+      case 1:
+         fb_draw_character(CURSOR, 0, 1);
+         y_tmp = c;
+         c_x_pos = x_tmp * bpp * c_x_scale;
+         c_y_pos = y_tmp * c_y_scale * cheight;
+
+#ifdef DEBUG_VDU
+         printf("cursor move to %d %d\r\n", x_tmp, y_tmp);
+#endif
+      }
+      count++;
+      if (count == 2) {
+         state = NORMAL;
+      }
+      return;
+   }
+   }
    switch(c) {
+
+   case 4: 
+      if (vdu45flag)
+      {
+         c_x_pos = old_c_x_pos;
+         c_y_pos = old_c_y_pos;
+         vdu45flag = 0;
+      }
+      return;
+   
+   case 5:
+      if (vdu45flag == 0 )
+      {
+         fb_draw_character(CURSOR, 0, 1);
+         old_c_x_pos = c_x_pos;
+         old_c_y_pos = c_y_pos;
+      }
+         c_x_pos = ((g_x_pos + g_x_origin)*SCREEN_WIDTH)/BBC_X_RESOLUTION;
+         c_y_pos = ((BBC_Y_RESOLUTION - (g_y_pos + g_y_origin))*SCREEN_HEIGHT)/BBC_Y_RESOLUTION ;
+         vdu45flag = 1;
+         // **** Todo **** cursor should be off here
+      return;
 
    case 8:
       fb_draw_character(CURSOR, 0, 1);
@@ -1244,6 +1295,10 @@ void fb_writec(int c) {
       fb_draw_character(CURSOR, 0, 1);
       fb_cursor_col0();
       fb_draw_character(CURSOR, 0, 1);
+      break;
+
+   case 16:
+      fb_clear();
       break;
 
    case 17:
@@ -1286,6 +1341,10 @@ void fb_writec(int c) {
       fb_cursor_home();
       fb_draw_character(CURSOR, 0, 1);
       break;
+   case 31 :
+      state = IN_VDU31;
+      count = 0 ;
+      return;
 
    case 127:
       fb_draw_character(CLEAR_CHAR, 0, 0);
@@ -1434,6 +1493,7 @@ static void fb_emulator_vdu(unsigned int gpio)
 static void fb_emulator_poll()
 {
    if (rp != wp) {
+//      printf("char %x,\r\n",vdu_queue[rp]);
       fb_writec(vdu_queue[rp]);
       rp = (rp + 1) & (QSIZE - 1);
    }
