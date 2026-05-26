@@ -142,7 +142,7 @@ static callback_func_ptr * const Pi1MHz_callback_table = (void *)Pi1MHz_CB_BASE;
 NOINIT_SECTION static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
 
 // holds the total number of polling functions to call
-static u_int8_t  Pi1MHz_polls_max;
+static uint8_t  Pi1MHz_polls_max;
 
 // *fx register buffer
 NOINIT_SECTION uint8_t fx_register[256];

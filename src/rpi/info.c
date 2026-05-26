@@ -112,10 +112,10 @@ char *get_cmdline_prop(const char *prop) {
 NOINIT_SECTION static char ret[PROP_SIZE];
    char *retptr = ret;
    char *cmdptr = get_cmdline();
-   size_t proplen = strlen(prop);
 
    cmdptr = strcasestr(cmdptr, prop);
    if (cmdptr != 0) {
+      size_t proplen = strlen(prop);
       // check for an equals in the expected place
       if (*(cmdptr + proplen) == '=') {
             // skip the equals
