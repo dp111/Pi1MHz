@@ -129,7 +129,7 @@
 
 #define Pi1MHz_MEM_PAGE  (1<<8)
 #define Pi1MHz_MEM_RNW   (1<<9)
-
+                                  
 #define WRITE_FRED   0
 #define WRITE_JIM                     Pi1MHz_MEM_PAGE
 #define READ_FRED    Pi1MHz_MEM_RNW
