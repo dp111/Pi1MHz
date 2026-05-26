@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "rpi-gpio.h"
+#include "rpi-systimer.h"
 
 void RPI_SetGpioPinFunction(rpi_gpio_pin_t gpio, rpi_gpio_alt_function_t func)
 {
@@ -18,7 +19,7 @@ rpi_gpio_alt_function_t RPI_GetGpioPinFunction(rpi_gpio_pin_t gpio)
   uint32_t fsel_copy = *fsel_reg;
   fsel_copy >>= ((gpio % 10) * 3);
   fsel_copy &= FS_MASK;
-  
+
   return fsel_copy;
 }
 
@@ -101,4 +102,17 @@ void RPI_SetGpioValue(rpi_gpio_pin_t gpio, rpi_gpio_value_t value)
     RPI_SetGpioLo(gpio);
   else if ((value == RPI_IO_HI) || (value == RPI_IO_ON))
     RPI_SetGpioHi(gpio);
+}
+
+
+void RPI_SetPullUps(unsigned int gpio)
+{
+  // Enable weak pullups
+  RPI_GpioBase->GPPUD = 2;
+  RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
+
+  RPI_GpioBase->GPPUDCLK0 = gpio;
+  RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
+
+  RPI_GpioBase->GPPUDCLK0 =  0;
 }

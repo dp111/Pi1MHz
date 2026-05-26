@@ -185,5 +185,5 @@ extern void RPI_SetGpioHi(rpi_gpio_pin_t gpio);
 extern void RPI_SetGpioLo(rpi_gpio_pin_t gpio);
 extern void RPI_SetGpioValue(rpi_gpio_pin_t gpio, rpi_gpio_value_t value);
 extern void RPI_ToggleGpio(rpi_gpio_pin_t gpio);
-
+extern void RPI_SetPullUps(unsigned int gpio);
 #endif
