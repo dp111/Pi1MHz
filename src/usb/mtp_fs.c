@@ -87,7 +87,7 @@ storage_info_t storage_info = {
 #define FS_PATH_MAX 512u
 #define FS_FALLBACK_DATETIME "19800101T000000.0" // "YYYYMMDDTHHMMSS.s"
 #define FS_DATETIME_STR_LEN 18u
-#define FS_KERNEL_NOW_FALLBACK_CAPACITY (512u * 1024u)
+#define FS_KERNEL_NOW_FALLBACK_CAPACITY (4u* 1024u * 1024u)
 
 typedef struct {
   uint32_t handle;
@@ -264,27 +264,34 @@ static void fs_utf16_to_ascii(const uint16_t utf16[], char ascii[], size_t max_c
   ascii[i] = '\0';
 }
 
-static uint32_t fs_mtp_string_to_ascii(uint8_t* buf, char ascii[], size_t max_chars) {
-  if ((buf == NULL) || (ascii == NULL) || (max_chars == 0u)) {
+/* Returns bytes consumed from buf, or 0 if the MTP string would read past
+ * bytes_available (caller must treat 0 as a malformed/short packet). */
+static uint32_t fs_mtp_string_to_ascii(const uint8_t* buf, size_t bytes_available,
+                                       char ascii[], size_t max_chars) {
+  if ((buf == NULL) || (ascii == NULL) || (max_chars == 0u) || (bytes_available == 0u)) {
     return 0u;
   }
 
-  const uint8_t nchars = buf[0];
-  const uint32_t consumed = 1u + (2u * nchars);
+  const uint8_t  nchars   = buf[0];
+  const uint32_t consumed = 1u + (2u * (uint32_t)nchars);
+
+  /* Refuse to read a string that extends past the received payload. */
+  if (consumed > bytes_available) {
+    return 0u;
+  }
 
   if (nchars == 0u) {
     ascii[0] = '\0';
     return consumed;
   }
 
-  const size_t src_chars = (size_t) nchars - 1u; // exclude UTF-16 trailing null
-  const size_t copy_chars = tu_min32((uint32_t)src_chars, (uint32_t)(max_chars - 1u));
-
+  const size_t src_chars  = (size_t)nchars - 1u;            /* drop UTF-16 NUL */
+  const size_t copy_chars = tu_min32((uint32_t)src_chars,
+                                     (uint32_t)(max_chars - 1u));
   for (size_t i = 0; i < copy_chars; i++) {
     ascii[i] = (char) buf[1u + (i * 2u)];
   }
   ascii[copy_chars] = '\0';
-
   return consumed;
 }
 
@@ -499,20 +506,30 @@ static bool fs_cache_build_cb(const fs_entry_t* entry, void* user_data) {
   return true;
 }
 
+static int fs_cache_cmp_handle(const void* a, const void* b) {
+  const uint32_t ha = ((const fs_cache_entry_t*)a)->handle;
+  const uint32_t hb = ((const fs_cache_entry_t*)b)->handle;
+  return (ha < hb) ? -1 : ((ha > hb) ? 1 : 0);
+}
+
 static bool fs_cache_ensure(void) {
   if (g_fs_cache.valid) {
     return true;
   }
-
   fs_cache_clear();
-
   fs_cache_build_ctx_t ctx = {
     .ok = true
   };
-
   if (!fs_walk_tree(fs_cache_build_cb, &ctx) || !ctx.ok) {
     fs_cache_clear();
     return false;
+  }
+  /* Sort by handle so fs_get_entry_by_handle() can binary-search.
+   * The cache is only ever appended to during the walk above and never
+   * mutated afterwards, so sorting once here keeps the bsearch invariant. */
+  if (g_fs_cache.count > 1u) {
+    qsort(g_fs_cache.entries, g_fs_cache.count,
+          sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
   }
 
   g_fs_cache.valid = true;
@@ -547,23 +564,27 @@ static bool fs_get_entry_by_handle(uint32_t handle, fs_entry_t* out_entry) {
     return false;
   }
 
-  for (uint32_t i = 0; i < g_fs_cache.count; i++) {
-    const fs_cache_entry_t* cache_entry = &g_fs_cache.entries[i];
-    if (cache_entry->handle == handle) {
-      memset(out_entry, 0, sizeof(*out_entry));
-      out_entry->handle = cache_entry->handle;
-      out_entry->parent = cache_entry->parent;
-      out_entry->is_dir = cache_entry->is_dir;
-      out_entry->size = cache_entry->size;
-      out_entry->mdate = cache_entry->mdate;
-      out_entry->mtime = cache_entry->mtime;
-      strlcpy(out_entry->path, cache_entry->path, sizeof(out_entry->path));
-      strlcpy(out_entry->name, fs_basename(cache_entry->path), sizeof(out_entry->name));
-      return true;
-    }
+  /* Cache is sorted by handle (see fs_cache_ensure) — binary search it.
+   * Only .handle is read by the comparator, so the rest of key is unused. */
+  const fs_cache_entry_t key = { .handle = handle };
+  const fs_cache_entry_t* cache_entry =
+      bsearch(&key, g_fs_cache.entries, g_fs_cache.count,
+              sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
+
+  if (cache_entry == NULL) {
+    return false;
   }
 
-  return false;
+  memset(out_entry, 0, sizeof(*out_entry));
+  out_entry->handle = cache_entry->handle;
+  out_entry->parent = cache_entry->parent;
+  out_entry->is_dir = cache_entry->is_dir;
+  out_entry->size   = cache_entry->size;
+  out_entry->mdate  = cache_entry->mdate;
+  out_entry->mtime  = cache_entry->mtime;
+  strlcpy(out_entry->path, cache_entry->path, sizeof(out_entry->path));
+  strlcpy(out_entry->name, fs_basename(cache_entry->path), sizeof(out_entry->name));
+  return true;
 }
 
 static bool fs_append_handle(uint32_t** arr, uint32_t* count, uint32_t* cap, uint32_t handle) {
@@ -762,10 +783,11 @@ static bool fs_kernel_alloc(uint32_t capacity) {
 // Control Request callback
 //--------------------------------------------------------------------+
 bool tud_mtp_request_cancel_cb(tud_mtp_request_cb_data_t* cb_data) {
-  mtp_request_reset_cancel_data_t cancel_data;
- // memcpy(&cancel_data, cb_data->buf, sizeof(cancel_data));
-  (void) cancel_data.code;
-  (void ) cancel_data.transaction_id;
+  (void) cb_data;
+  /* Host aborted the current transaction — drop any in-progress transfer so
+   * the open FIL / kernel buffer don't leak until the next operation. */
+  fs_release_read_state();
+  fs_release_write_state();
   return true;
 }
 
@@ -971,10 +993,20 @@ static int32_t fs_get_storage_info(tud_mtp_cb_data_t* cb_data) {
   if (!fs_ensure_ready()) {
     return MTP_RESP_STORE_NOT_AVAILABLE;
   }
-  // update storage info with current free space TODO ****** f_getfree
-  storage_info.max_capacity_in_bytes = UINT64_MAX;
-  storage_info.free_space_in_bytes = UINT64_MAX;
-  storage_info.free_space_in_objects = UINT32_MAX;
+  {
+    FATFS*   fs = NULL;
+    DWORD    free_clusters = 0;
+    uint64_t total_bytes = 0, free_bytes = 0;
+
+    if (f_getfree("", &free_clusters, &fs) == FR_OK && fs != NULL) {
+      const uint64_t bytes_per_cluster = (uint64_t)fs->csize * 512u;  /* FF_*_SS == 512 */
+      total_bytes = (uint64_t)(fs->n_fatent - 2u) * bytes_per_cluster;
+      free_bytes  = (uint64_t)free_clusters       * bytes_per_cluster;
+    }
+    storage_info.max_capacity_in_bytes = total_bytes;
+    storage_info.free_space_in_bytes   = free_bytes;
+    storage_info.free_space_in_objects = 0xFFFFFFFFu;  /* unknown — no object cap */
+  }
   (void) mtp_container_add_raw(io_container, &storage_info, sizeof(storage_info));
   tud_mtp_data_send(io_container);
   return 0;
@@ -1202,12 +1234,16 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
   } else if (cb_data->phase == MTP_PHASE_DATA) {
     fs_release_write_state();
 
+    /* The fixed ObjectInfo header must be fully present before we read it. */
+    if (io_container->payload_bytes < sizeof(mtp_object_info_header_t)) {
+      return MTP_RESP_GENERAL_ERROR;     /* MTP_RESP_INVALID_DATASET if defined */
+    }
     mtp_object_info_header_t* obj_info = (mtp_object_info_header_t*) io_container->payload;
+
     if (obj_info->storage_id != 0 && obj_info->storage_id != SUPPORTED_STORAGE_ID) {
       return MTP_RESP_INVALID_STORAGE_ID;
     }
-
-    const uint32_t cmd_parent = parent_handle;
+        const uint32_t cmd_parent = parent_handle;
     const uint32_t info_parent = obj_info->parent_object;
 
     uint32_t effective_parent;
@@ -1223,16 +1259,28 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
     if (!fs_get_parent_path(effective_parent, parent_path)) {
       return MTP_RESP_INVALID_PARENT_OBJECT;
     }
+    char created_ascii[FS_DATETIME_STR_LEN];
+    char modified_ascii[FS_DATETIME_STR_LEN];
 
-    char created_ascii[32];
-    char modified_ascii[32];
-    uint8_t* buf = io_container->payload + sizeof(mtp_object_info_header_t);
-    uint32_t consumed = fs_mtp_string_to_ascii(buf, g_write_state.name, sizeof(g_write_state.name));
-    buf += consumed;
-    consumed = fs_mtp_string_to_ascii(buf, created_ascii, sizeof(created_ascii));
-    buf += consumed;
-    consumed = fs_mtp_string_to_ascii(buf, modified_ascii, sizeof(modified_ascii));
-    buf += consumed;
+    /* The three variable-length strings live after the fixed header. */
+    uint8_t* buf       = io_container->payload + sizeof(mtp_object_info_header_t);
+    size_t   remaining = io_container->payload_bytes - sizeof(mtp_object_info_header_t);
+
+    uint32_t consumed = fs_mtp_string_to_ascii(buf, remaining,
+                                               g_write_state.name, sizeof(g_write_state.name));
+    if (consumed == 0u) {                      /* filename is mandatory */
+      return MTP_RESP_GENERAL_ERROR;
+    }
+    buf += consumed; remaining -= consumed;
+
+    /* date_created / date_modified are optional — tolerate a short packet */
+    consumed = fs_mtp_string_to_ascii(buf, remaining, created_ascii, sizeof(created_ascii));
+    if (consumed == 0u) { created_ascii[0] = '\0'; }
+    else { buf += consumed; remaining -= consumed; }
+
+    consumed = fs_mtp_string_to_ascii(buf, remaining, modified_ascii, sizeof(modified_ascii));
+    if (consumed == 0u) { modified_ascii[0] = '\0'; }
+    else { buf += consumed; remaining -= consumed; }
 
     g_write_state.host_time_valid = false;
     if (modified_ascii[0] != '\0') {
@@ -1269,7 +1317,7 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
       }
 
       uint32_t kernel_capacity = g_write_state.size_known ? ((g_write_state.size + 63u) & ~63u) : FS_KERNEL_NOW_FALLBACK_CAPACITY;
-      if (!fs_kernel_alloc(kernel_capacity)) {
+      if ( (g_write_state.size > (FS_KERNEL_NOW_FALLBACK_CAPACITY - 63)) || (!fs_kernel_alloc(kernel_capacity))) {
         fs_release_write_state();
         return MTP_RESP_STORE_FULL;
       }
