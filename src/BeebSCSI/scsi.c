@@ -1228,10 +1228,8 @@ static uint8_t scsiCommandWrite6(void)
             debugString_P(PSTR(" "));
          }
       } else {
-         if (debugFlag_scsiBlocks) {
-            debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
-            debugSectorBufferHex(scsiSectorBuffer, 256);
-         }
+         debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
+         debugSectorBufferHex(scsiSectorBuffer, 256);
       }
    }
    if (debugFlag_scsiCommands || debugFlag_scsiBlocks) debugString_P(PSTR("\r\n"));
@@ -1697,7 +1695,7 @@ static uint8_t scsiCommandVerify(void)
 
       // If the number of blocks is 0, set to the maximum of 65536
       debugStringInt32_P(PSTR(", LBA = "), logicalBlockAddress, false);
-      debugStringInt32_P(PSTR(", number of blocks = "), 
+      debugStringInt32_P(PSTR(", number of blocks = "),
       ((((uint32_t)commandDataBlock.data[7] << 8) | ((uint32_t)commandDataBlock.data[8]))==0)?65536:
         ((uint32_t)commandDataBlock.data[7] << 8) | ((uint32_t)commandDataBlock.data[8])
       , true);
