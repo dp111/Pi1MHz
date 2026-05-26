@@ -99,8 +99,9 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "rpi/screen.h"
 #include "Pi1MHz.h"
 
-
 #include "Pi1MHzvc.c"
+
+#include "BeebSCSI/filesystem.h"
 
 #define Pi1MHZ_FX_CONTROL 0xCA
 
@@ -405,6 +406,8 @@ _Noreturn void kernel_main(void)
    enable_MMU_and_IDCaches(0);
 
    init_hardware();
+
+   filesystemInitialise(0,0); // default filesystem
 
    init_emulator();
 #if 0

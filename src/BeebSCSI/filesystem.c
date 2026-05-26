@@ -1066,7 +1066,7 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
 bool filesystemCloseLunForRead(uint8_t lunNumber)
 {
    filesystemSetLunStatus(lunNumber, false);
-   return false;
+   return true;
 }
 
 // Function to open a LUN ready for writing
@@ -1091,6 +1091,28 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 // Function to write next sector to a LUN
 bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
 {
+   /* Prevent writing when no sectors remaining */
+   if (sectorsRemaining == 0) {
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): ERROR: No sectors remaining to write!\r\n"));
+      return false;
+   }
+
+   /* If buffer is already full (possible after a previous write failure), flush it before copying */
+   if (currentBufferSector >= SECTOR_BUFFER_LENGTH) {
+      FRESULT fsResult;
+      UINT fsCounter;
+      uint32_t sectorsToWrite = currentBufferSector;
+
+      fsResult = f_write(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToWrite * 256, &fsCounter);
+      if (fsResult != FR_OK) {
+         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): ERROR: Cannot write to LUN image when flushing full buffer!\r\n"));
+         return false;
+      }
+      currentBufferSector = 0;
+      if (sectorsRemaining >= sectorsToWrite) sectorsRemaining -= sectorsToWrite; else sectorsRemaining = 0;
+      if (sectorsRemaining == 0)
+         f_sync(&filesystemState.fileObject[lunNumber]);
+   }
 
    memcpy(sectorBuffer + (currentBufferSector * 256), buffer , 256 );
    currentBufferSector++;
@@ -1128,7 +1150,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
 bool filesystemCloseLunForWrite(uint8_t lunNumber)
 {
    filesystemSetLunStatus(lunNumber, false);
-   return false;
+   return true;
 }
 
 // Functions for reading SCSI attributes -------------------------------------------------------------
@@ -1161,7 +1183,7 @@ static int filesystemPagetoIndex( uint8_t page)
    if (page < 128)
    {
       char page1 , page2;
-      if (page >10)
+      if (page >= 10)
       {
          page1= (page/10)+'0';
          page2= (page%10)+'0';
@@ -1209,13 +1231,18 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    if (page>= 128)
    {
       // these pages are string pages so don't have the header
-      len -=2;
-      Buffer +=2;
+      if (len < 2) return 0; /* invalid length */
+      len -= 2;
+      Buffer += 2;
    }
    filesystemState.keyvalues[lunNumber][index].length = len;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
       free(filesystemState.keyvalues[lunNumber][index].v.string);
-   filesystemState.keyvalues[lunNumber][index].v.string= malloc(len);
+   filesystemState.keyvalues[lunNumber][index].v.string = malloc(len);
+   if (filesystemState.keyvalues[lunNumber][index].v.string == NULL) {
+      filesystemState.keyvalues[lunNumber][index].length = 0;
+      return 0; /* allocation failed */
+   }
    memcpy(filesystemState.keyvalues[lunNumber][index].v.string, Buffer, len);
    return 1;
 }
@@ -1225,7 +1252,8 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
 // Change the filesystem's FAT transfer directory
 bool filesystemSetFatDirectory(const uint8_t *buffer)
 {
-   sprintf(fatDirectory, "%s", buffer);
+   /* copy safely, ensure null-termination */
+   strlcpy(fatDirectory, (const char *)buffer, sizeof(fatDirectory));
    if (debugFlag_filesystem) {
       debugString_P(PSTR("File system: filesystemSetFatDirectory(): FAT transfer directory changed to: "));
       debugString(fatDirectory);
@@ -1461,17 +1489,34 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
    if (fsResult != FR_OK) {
       return 0;
    }
-   if (*address == NULL) {
-      *address = malloc(f_size(&fileObject));
+   /* Determine file size and clamp requested read size to file size */
+   {
+      FSIZE_t fileSize = f_size(&fileObject);
+      size_t read_len;
+
       if (*address == NULL) {
-         f_close(&fileObject);
+         /* allocate buffer to hold entire file */
+         *address = malloc((size_t)fileSize);
+         if (*address == NULL) {
+            f_close(&fileObject);
+            return 0;
+         }
+         read_len = (size_t)fileSize;
+      } else {
+         /* caller provided a buffer length in max_size; clamp to file size */
+         read_len = (size_t)max_size;
+         if ((FSIZE_t)read_len > fileSize) read_len = (size_t)fileSize;
+      }
+
+      fsResult = f_read(&fileObject, *address, read_len, &byteCounter);
+      f_close(&fileObject);
+      if (fsResult != FR_OK) {
+         LOG_DEBUG("filesystemReadFile: f_read failed %d\n\r", fsResult);
          return 0;
       }
-      max_size = f_size(&fileObject);
+
+      return (uint32_t)byteCounter;
    }
-   f_read(&fileObject, *address, max_size, &byteCounter);
-   f_close(&fileObject);
-   return f_size(&fileObject);
 }
 
 

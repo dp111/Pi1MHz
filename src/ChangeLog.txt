@@ -120,3 +120,7 @@ Speed up videocore code for faster 1MHz bus access
 Move roms into Pi1MHz directory
 Add SCSIID to the cmdline.txt options to select a particular SCSI ID we listen to.
 Add beebscsi helper rom.
+
+v.1.20
+Update MMFS/MMFS2 roms to 1.60
+Fix SCSIJUKE not being preserved over shift break.
