@@ -246,3 +246,10 @@ unsigned int _get_cpsr()
   asm volatile ( "mrs %0,cpsr" : "=r" ( ret) );
   return ret;
 }
+
+#if defined(RPI2) || defined(RPI3)
+    #define _data_memory_barrier() {asm volatile ("dmb");}
+#else
+	void _data_memory_barrier() {  asm volatile ("mcr p15, 0, %0, c7, c10, 5" :: "r" (0));}
+
+#endif
