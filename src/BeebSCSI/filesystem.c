@@ -188,6 +188,11 @@ void filesystemReset(void)
 
    // Reset the default FAT transfer directory
    sprintf(fatDirectory, "/Transfer");
+
+   // Set all LUNs to stopped
+   for( uint8_t i=0 ; i < MAX_LUNS; i++ )
+      filesystemState.fsLunStatus[i] = false;
+
    // ensure the file-system is closed on reset
    filesystemDismount();
    // Now Mount the filesystem
