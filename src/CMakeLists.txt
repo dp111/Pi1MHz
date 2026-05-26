@@ -212,6 +212,8 @@ file( GLOB wifi_files
    wifi/wifi_lwip.h
    wifi/webserver.c
    wifi/webserver.h
+   wifi/netname.c
+   wifi/netname.h
 )
 
 file( GLOB lwip_files

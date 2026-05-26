@@ -1,5 +1,6 @@
 #include "wifi_lwip.h"
 
+#include "netname.h"
 #include "sdio.h"
 #include "wifi.h"
 
@@ -8,6 +9,7 @@
 #include "../rpi/systimer.h"
 
 #include "lwip/dhcp.h"
+#include "lwip/prot/dhcp.h"
 #include "lwip/dns.h"
 #include "lwip/err.h"
 #include "lwip/init.h"
@@ -28,6 +30,7 @@ static bool g_wifi_lwip_link_logged;
 static bool g_wifi_lwip_last_link_up;
 static bool g_wifi_lwip_address_logged;
 static bool g_wifi_lwip_last_address_ready;
+static u8_t g_wifi_lwip_last_dhcp_state = 0xFFu;   /* 0xFF = not seen yet */
 static void wifi_lwip_debug_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 #define WIFI_LWIP_RX_FRAME_MAX_LEN 1600u
@@ -296,6 +299,10 @@ void wifi_lwip_init_stack(void)
    Pi1MHz_Register_Poll(wifi_lwip_poll);
    wifi_lwip_debug_log("netif added and poll hook registered");
 
+   /* Start the NetBIOS / mDNS name responders so the Pi can be reached
+      by name as well as by IP address. */
+   netname_init();
+
    if (g_wifi_lwip_context.use_dhcp) {
       dhcp_result = dhcp_start(&g_wifi_lwip_context.netif);
       if (dhcp_result == ERR_OK)
@@ -314,6 +321,44 @@ void wifi_lwip_init_stack(void)
    wifi_lwip_debug_log("static network configured");
 
    wifi_lwip_update_runtime_state();
+}
+
+static const char *wifi_lwip_dhcp_state_name(u8_t state)
+{
+   switch (state) {
+      case DHCP_STATE_OFF:         return "off";
+      case DHCP_STATE_INIT:        return "init";
+      case DHCP_STATE_SELECTING:   return "selecting (Discover sent)";
+      case DHCP_STATE_REQUESTING:  return "requesting (Offer in, Request sent)";
+      case DHCP_STATE_CHECKING:    return "checking (Ack in, conflict check)";
+      case DHCP_STATE_BOUND:       return "bound (address acquired)";
+      case DHCP_STATE_RENEWING:    return "renewing";
+      case DHCP_STATE_REBINDING:   return "rebinding";
+      case DHCP_STATE_REBOOTING:   return "rebooting";
+      case DHCP_STATE_RELEASING:   return "releasing";
+      case DHCP_STATE_BACKING_OFF: return "backing off (timed out, retrying)";
+      case DHCP_STATE_PERMANENT:   return "permanent";
+      case DHCP_STATE_INFORMING:   return "informing";
+      default:                     return "unknown";
+   }
+}
+
+/* Log every DHCP state change with a millisecond timestamp, so the time
+   from link-up to address acquisition - and any retries - can be seen.
+   wifi_lwip_debug_log() self-gates, so this is silent unless wifi_debug
+   is enabled. */
+static void wifi_lwip_log_dhcp_state(void)
+{
+   struct dhcp *d = netif_dhcp_data(&g_wifi_lwip_context.netif);
+
+   if (d == NULL || d->state == g_wifi_lwip_last_dhcp_state)
+      return;
+
+   g_wifi_lwip_last_dhcp_state = d->state;
+   wifi_lwip_debug_log("dhcp %s  t=%lu ms  tries=%u",
+                       wifi_lwip_dhcp_state_name(d->state),
+                       (unsigned long)(RPI_GetSystemTime() / 1000u),
+                       (unsigned int)d->tries);
 }
 
 void wifi_lwip_poll(void)
@@ -342,12 +387,19 @@ void wifi_lwip_poll(void)
       return;
    }
 
-   /* Keep draining BRCM async events from fn2 so we eventually see the
-      WLC_E_LINK / WLC_E_SET_SSID etc. that signal join completion. */
-   sdio_runtime_poll_events();
+   /* Drain inbound frames and hand them to lwIP.  sdio_runtime_poll_-
+      ethernet_frame() also processes the chip's async events (WLC_E_LINK,
+      WLC_E_SET_SSID, etc.) as a side effect, so this single drain covers
+      both events and data.
 
+      A separate sdio_runtime_poll_events() call used to run here first -
+      but it read frames into a throwaway buffer, so every inbound TCP/UDP
+      data frame it touched was consumed from the chip and silently
+      discarded before lwIP could see it.  That crippled throughput
+      (constant retransmits); draining straight into lwIP fixes it. */
    wifi_lwip_drain_rx_frames();
    sys_check_timeouts();
+   wifi_lwip_log_dhcp_state();
    g_wifi_lwip_context.last_service_time_us = RPI_GetSystemTime();
    g_wifi_lwip_context.service_calls++;
    wifi_lwip_update_runtime_state();

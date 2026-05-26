@@ -390,7 +390,7 @@ bool wifi_config_load(wifi_config_t *config)
    config->ip_mode = WIFI_IP_MODE_DHCP;
    config->ip_config_valid = true;
    config->sdio_rx_sweep_limit = 16u;
-   strlcpy(config->hostname, "P1MHz", sizeof(config->hostname));
+   strlcpy(config->hostname, "Pi1MHz", sizeof(config->hostname));
    strlcpy(config->netmask, "255.255.255.0", sizeof(config->netmask));
    config->sdio_probe_enabled = wifi_cmdline_bool("wifi_sdio_probe");
    config->sdio_tx_probe_enabled = wifi_cmdline_bool("wifi_sdio_tx_probe");

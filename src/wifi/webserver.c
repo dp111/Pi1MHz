@@ -1,1740 +1,1914 @@
+/* Minimal HTTP file-browser webserver for Pi1MHz.
+ *
+ * Built directly on the lwIP raw/callback TCP API (NO_SYS=1).  Serves a
+ * home page, a status page and a file browser that can list folders on
+ * the SD card, download files and upload files (multipart/form-data).
+ *
+ * One request per connection (HTTP/1.1 with "Connection: close").
+ */
+
 #include "webserver.h"
 
-#include "cyw43.h"
-#include "framebuffer_export.h"
-#include "sdio.h"
 #include "wifi.h"
 #include "wifi_lwip.h"
+#include "sdio.h"
+#include "framebuffer_export.h"
 #include "../BeebSCSI/fatfs/ff.h"
-#include "../BeebSCSI/filesystem.h"
-#include "../framebuffer/framebuffer.h"
-#include "../rpi/info.h"
+#include "../rpi/screen.h"
+#include "../rpi/exceptions.h"
+#include "../rpi/systimer.h"
+#include "../Pi1MHz.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
+#include "lwip/netif.h"
+#include "lwip/ip4_addr.h"
 
-#include <stdlib.h>
 #include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#define WEBSERVER_REQUEST_MAX_LEN 1024u
-#define WEBSERVER_RESPONSE_CHUNK_LEN 1024u
-#define WEBSERVER_ERROR_TEXT_MAX_LEN 96u
+/* ------------------------------------------------------------------ */
+/* Tunables                                                            */
+/* ------------------------------------------------------------------ */
+
+#define WS_HEADER_MAX        2048u   /* max HTTP request-header bytes   */
+#define WS_FILE_CHUNK        8192u   /* SD read size while downloading  */
+#define WS_BOUNDARY_MAX      128u    /* multipart boundary text limit   */
+#define WS_UPLOAD_HEAD_MAX   1024u   /* multipart part-header limit     */
+#define WS_UPLOAD_WORK       2048u   /* upload scan working buffer      */
+#define WS_PATH_MAX          512u    /* SD path / URL path limit        */
+#define WS_LISTING_HARD_CAP  8000u   /* max directory entries listed    */
+#define WS_POLL_INTERVAL     1u      /* tcp_poll ticks (1 = ~500ms, the floor) */
+#define WS_POLL_LIMIT        60u     /* idle polls (~0.5s each) -> ~30s abort */
+#define WS_ERROR_TEXT_MAX    128u
+#define WS_FB_BMP_MAX        (6u * 1024u * 1024u)  /* exported BMP size cap */
+#define WS_REBOOT_DELAY_US   (1500u * 1000u)       /* defer reboot ~1.5s */
+
+/* ------------------------------------------------------------------ */
+/* Connection model                                                    */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+   CONN_RECV_HEADER = 0,   /* accumulating the HTTP request headers     */
+   CONN_RECV_UPLOAD,       /* streaming a multipart body to the SD card */
+   CONN_SEND_MEM,          /* sending an in-memory response             */
+   CONN_SEND_FILE          /* sending a header then streaming a file    */
+} conn_state_t;
+
+typedef enum {
+   UP_PART_HEADER = 0,     /* reading the multipart part header         */
+   UP_DATA,                /* streaming file bytes to the SD card       */
+   UP_EPILOGUE,            /* upload finished, discarding trailing bytes*/
+   UP_FAILED               /* upload failed, response already queued    */
+} upload_state_t;
 
 typedef struct {
    struct tcp_pcb *pcb;
-   char request[WEBSERVER_REQUEST_MAX_LEN + 1u];
-   size_t request_length;
-   char *response_data;
-   size_t response_length;
-   size_t response_queued;
-   size_t response_acked;
-   bool close_after_send;
-} webserver_connection_t;
+   conn_state_t    state;
+   uint8_t         poll_count;
 
-static struct tcp_pcb *g_webserver_listener;
-static bool g_webserver_ready;
-static char g_webserver_error[WEBSERVER_ERROR_TEXT_MAX_LEN + 1u];
+   /* request header buffer */
+   char    reqhdr[WS_HEADER_MAX + 1u];
+   size_t  reqhdr_len;
 
-static void webserver_set_error(const char *message);
-static void webserver_close_connection(webserver_connection_t *connection, bool abort_connection);
-static err_t webserver_queue_response(webserver_connection_t *connection);
-static err_t webserver_connection_sent(void *arg, struct tcp_pcb *tpcb, u16_t len);
-static err_t webserver_connection_poll(void *arg, struct tcp_pcb *tpcb);
-static void webserver_connection_error(void *arg, err_t err);
-static err_t webserver_connection_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err);
-static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err);
-static bool webserver_request_complete(const char *request, size_t request_length);
-static const char *webserver_status_text(uint16_t status_code);
-static bool webserver_build_response_text(const char *request_text, char **response_text,
-                                          size_t *response_length);
-static size_t response_append(webserver_response_t *response, const char *format, ...)
-   __attribute__((format(printf, 2, 3)));
-static void response_begin_html(webserver_response_t *response, const char *title);
-static void response_end_html(webserver_response_t *response);
+   /* in-memory output (HTML body, or the HTTP header of a download) */
+   char   *out;
+   size_t  out_len;
+   size_t  out_sent;
 
-static void webserver_set_error(const char *message)
+   /* file download */
+   bool     dl_open;
+   FIL      dl_file;
+   uint32_t dl_remaining;
+   bool     dl_eof;
+   uint8_t  dl_buf[WS_FILE_CHUNK];
+   size_t   dl_buf_len;
+   size_t   dl_buf_sent;
+
+   /* output accounting (for the close decision) */
+   uint32_t bytes_queued;
+   uint32_t bytes_acked;
+   bool     producing_done;
+
+   /* upload */
+   upload_state_t up_state;
+   bool     up_complete;
+   bool     up_file_open;
+   FIL      up_file;
+   char     up_delim[WS_BOUNDARY_MAX + 8u];   /* "\r\n--" + boundary    */
+   size_t   up_delim_len;
+   char     up_head[WS_UPLOAD_HEAD_MAX + 1u];
+   size_t   up_head_len;
+   uint8_t  up_tail[WS_BOUNDARY_MAX + 8u];     /* held-back bytes        */
+   size_t   up_tail_len;
+   char     up_dir[WS_PATH_MAX];
+   char     up_name[FF_LFN_BUF + 1];
+   uint32_t up_bytes_written;
+} ws_conn_t;
+
+typedef struct {
+   char     name[FF_LFN_BUF + 1];
+   uint32_t size;
+   bool     is_dir;
+} ws_dir_entry_t;
+
+/* ------------------------------------------------------------------ */
+/* Module state                                                        */
+/* ------------------------------------------------------------------ */
+
+static struct tcp_pcb *g_ws_listener;
+static bool            g_ws_ready;
+static char            g_ws_error[WS_ERROR_TEXT_MAX + 1u];
+static bool            g_ws_poll_registered;
+static bool            g_ws_reboot_pending;
+static uint32_t        g_ws_reboot_at;
+
+static void ws_set_error(const char *message)
 {
    if (message == NULL) {
-      g_webserver_error[0] = '\0';
+      g_ws_error[0] = '\0';
       return;
    }
-
-   strlcpy(g_webserver_error, message, sizeof(g_webserver_error));
+   strlcpy(g_ws_error, message, sizeof g_ws_error);
 }
 
-static void webserver_connection_detach_callbacks(webserver_connection_t *connection)
-{
-   if (connection == NULL || connection->pcb == NULL)
-      return;
+/* ------------------------------------------------------------------ */
+/* Dynamic string buffer                                               */
+/* ------------------------------------------------------------------ */
 
-   tcp_arg(connection->pcb, NULL);
-   tcp_sent(connection->pcb, NULL);
-   tcp_recv(connection->pcb, NULL);
-   tcp_poll(connection->pcb, NULL, 0);
-   tcp_err(connection->pcb, NULL);
+typedef struct {
+   char  *data;
+   size_t len;
+   size_t cap;
+   bool   failed;
+} ws_strbuf_t;
+
+static void sb_init(ws_strbuf_t *sb)
+{
+   sb->data = NULL;
+   sb->len = 0u;
+   sb->cap = 0u;
+   sb->failed = false;
 }
 
-static void webserver_close_connection(webserver_connection_t *connection, bool abort_connection)
+static void sb_free(ws_strbuf_t *sb)
 {
-   if (connection == NULL)
-      return;
-
-   webserver_connection_detach_callbacks(connection);
-   if (connection->pcb != NULL) {
-      err_t close_result = abort_connection ? ERR_ABRT : tcp_close(connection->pcb);
-
-      if (abort_connection || close_result != ERR_OK)
-         tcp_abort(connection->pcb);
-   }
-
-   free(connection->response_data);
-   free(connection);
+   free(sb->data);
+   sb->data = NULL;
+   sb->len = 0u;
+   sb->cap = 0u;
 }
 
-static bool webserver_request_complete(const char *request, size_t request_length)
+static bool sb_reserve(ws_strbuf_t *sb, size_t extra)
 {
-   size_t index;
+   size_t need;
+   size_t ncap;
+   char  *nd;
 
-   if (request == NULL)
+   if (sb->failed)
       return false;
 
-   for (index = 0u; index + 3u < request_length; ++index) {
-      if (request[index] == '\r' && request[index + 1u] == '\n'
-         && request[index + 2u] == '\r' && request[index + 3u] == '\n') {
-         return true;
+   need = sb->len + extra + 1u;
+   if (need <= sb->cap)
+      return true;
+
+   ncap = (sb->cap == 0u) ? 1024u : sb->cap;
+   while (ncap < need)
+      ncap *= 2u;
+
+   nd = realloc(sb->data, ncap);
+   if (nd == NULL) {
+      sb->failed = true;
+      return false;
+   }
+   sb->data = nd;
+   sb->cap = ncap;
+   return true;
+}
+
+static void sb_putc(ws_strbuf_t *sb, char c)
+{
+   if (!sb_reserve(sb, 1u))
+      return;
+   sb->data[sb->len++] = c;
+   sb->data[sb->len] = '\0';
+}
+
+static void sb_write(ws_strbuf_t *sb, const char *p, size_t n)
+{
+   if (n == 0u || !sb_reserve(sb, n))
+      return;
+   memcpy(sb->data + sb->len, p, n);
+   sb->len += n;
+   sb->data[sb->len] = '\0';
+}
+
+static void sb_puts(ws_strbuf_t *sb, const char *s)
+{
+   sb_write(sb, s, strlen(s));
+}
+
+static void sb_printf(ws_strbuf_t *sb, const char *fmt, ...)
+   __attribute__((format(printf, 2, 3)));
+
+static void sb_printf(ws_strbuf_t *sb, const char *fmt, ...)
+{
+   va_list ap;
+   int     n;
+
+   va_start(ap, fmt);
+   n = vsnprintf(NULL, 0u, fmt, ap);
+   va_end(ap);
+   if (n < 0) {
+      sb->failed = true;
+      return;
+   }
+   if (!sb_reserve(sb, (size_t)n))
+      return;
+   va_start(ap, fmt);
+   vsnprintf(sb->data + sb->len, (size_t)n + 1u, fmt, ap);
+   va_end(ap);
+   sb->len += (size_t)n;
+}
+
+/* ------------------------------------------------------------------ */
+/* Small text helpers                                                  */
+/* ------------------------------------------------------------------ */
+
+static int ws_lc(int c)
+{
+   return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+}
+
+static int ws_stricmp(const char *a, const char *b)
+{
+   while (*a != '\0' && *b != '\0') {
+      int d = ws_lc((unsigned char)*a) - ws_lc((unsigned char)*b);
+      if (d != 0)
+         return d;
+      ++a;
+      ++b;
+   }
+   return ws_lc((unsigned char)*a) - ws_lc((unsigned char)*b);
+}
+
+static bool ws_prefix(const char *prefix, const char *s)
+{
+   while (*prefix != '\0') {
+      if (*prefix != *s)
+         return false;
+      ++prefix;
+      ++s;
+   }
+   return true;
+}
+
+static bool ws_prefix_ci(const char *s, const char *prefix, size_t n)
+{
+   size_t k;
+   for (k = 0u; k < n; ++k) {
+      if (ws_lc((unsigned char)s[k]) != ws_lc((unsigned char)prefix[k]))
+         return false;
+   }
+   return true;
+}
+
+static bool ws_prefix_ci_str(const char *s, const char *prefix)
+{
+   return ws_prefix_ci(s, prefix, strlen(prefix));
+}
+
+static int ws_hexval(char c)
+{
+   if (c >= '0' && c <= '9')
+      return c - '0';
+   if (c >= 'a' && c <= 'f')
+      return c - 'a' + 10;
+   if (c >= 'A' && c <= 'F')
+      return c - 'A' + 10;
+   return -1;
+}
+
+static void ws_url_decode(const char *src, char *dst, size_t dstsz)
+{
+   size_t o = 0u;
+   while (*src != '\0' && o + 1u < dstsz) {
+      if (*src == '%' && src[1] != '\0' && src[2] != '\0') {
+         int hi = ws_hexval(src[1]);
+         int lo = ws_hexval(src[2]);
+         if (hi >= 0 && lo >= 0) {
+            dst[o++] = (char)((hi << 4) | lo);
+            src += 3;
+            continue;
+         }
+      }
+      dst[o++] = *src++;
+   }
+   dst[o] = '\0';
+}
+
+static bool ws_is_unreserved(char c)
+{
+   return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+       || (c >= '0' && c <= '9')
+       || c == '-' || c == '_' || c == '.' || c == '~';
+}
+
+/* Append `s` to `sb`, percent-encoding everything that is not safe in a
+   URL path.  '/' is left intact so whole paths can be encoded at once. */
+static void sb_urlpath(ws_strbuf_t *sb, const char *s)
+{
+   static const char hex[] = "0123456789ABCDEF";
+   for (; *s != '\0'; ++s) {
+      unsigned char c = (unsigned char)*s;
+      if (ws_is_unreserved((char)c) || c == '/') {
+         sb_putc(sb, (char)c);
+      } else {
+         sb_putc(sb, '%');
+         sb_putc(sb, hex[c >> 4]);
+         sb_putc(sb, hex[c & 0x0Fu]);
       }
    }
+}
 
-   for (index = 0u; index + 1u < request_length; ++index) {
-      if (request[index] == '\n' && request[index + 1u] == '\n')
-         return true;
+/* Append `s` to `sb`, escaping the HTML metacharacters. */
+static void sb_html(ws_strbuf_t *sb, const char *s)
+{
+   for (; *s != '\0'; ++s) {
+      switch (*s) {
+         case '&':  sb_puts(sb, "&amp;");  break;
+         case '<':  sb_puts(sb, "&lt;");   break;
+         case '>':  sb_puts(sb, "&gt;");   break;
+         case '"':  sb_puts(sb, "&quot;"); break;
+         case '\'': sb_puts(sb, "&#39;");  break;
+         default:   sb_putc(sb, *s);       break;
+      }
    }
+}
 
+static int ws_memfind(const uint8_t *hay, size_t hlen,
+                      const uint8_t *need, size_t nlen)
+{
+   size_t i;
+   if (nlen == 0u || hlen < nlen)
+      return -1;
+   for (i = 0u; i + nlen <= hlen; ++i) {
+      if (hay[i] == need[0] && memcmp(hay + i, need, nlen) == 0)
+         return (int)i;
+   }
+   return -1;
+}
+
+/* Return the offset just past the blank line that ends a header block,
+   or -1 if it has not been seen yet. */
+static int ws_find_header_end(const char *buf, size_t len)
+{
+   size_t i;
+   for (i = 0u; i + 1u < len; ++i) {
+      if (buf[i] == '\n' && buf[i + 1u] == '\n')
+         return (int)(i + 2u);
+      if (i + 3u < len
+          && buf[i] == '\r' && buf[i + 1u] == '\n'
+          && buf[i + 2u] == '\r' && buf[i + 3u] == '\n')
+         return (int)(i + 4u);
+   }
+   return -1;
+}
+
+static const char *ws_basename(const char *p)
+{
+   const char *b = p;
+   const char *s;
+   for (s = p; *s != '\0'; ++s) {
+      if (*s == '/' || *s == '\\')
+         b = s + 1;
+   }
+   return b;
+}
+
+static void ws_human_size(uint32_t bytes, char *buf, size_t n)
+{
+   if (bytes < 1024u) {
+      snprintf(buf, n, "%lu B", (unsigned long)bytes);
+   } else if (bytes < 1024u * 1024u) {
+      snprintf(buf, n, "%lu.%lu KB",
+               (unsigned long)(bytes / 1024u),
+               (unsigned long)((bytes % 1024u) * 10u / 1024u));
+   } else {
+      snprintf(buf, n, "%lu.%lu MB",
+               (unsigned long)(bytes / (1024u * 1024u)),
+               (unsigned long)(((bytes / 1024u) % 1024u) * 10u / 1024u));
+   }
+}
+
+static void ws_ip_str(const ip4_addr_t *a, char *buf, size_t n)
+{
+   char *s = ip4addr_ntoa(a);
+   strlcpy(buf, (s != NULL) ? s : "0.0.0.0", n);
+}
+
+/* Store a 32-bit value little-endian (BMP headers are little-endian). */
+static void ws_store_u32(uint8_t *p, uint32_t v)
+{
+   p[0] = (uint8_t)(v & 0xFFu);
+   p[1] = (uint8_t)((v >> 8) & 0xFFu);
+   p[2] = (uint8_t)((v >> 16) & 0xFFu);
+   p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+/* ------------------------------------------------------------------ */
+/* HTTP request parsing                                                */
+/* ------------------------------------------------------------------ */
+
+static bool ws_parse_request_line(const char *hdr, char *method, size_t msz,
+                                  char *path, size_t psz)
+{
+   size_t i = 0u;
+   size_t o = 0u;
+
+   while (hdr[i] != '\0' && hdr[i] != ' '
+          && hdr[i] != '\r' && hdr[i] != '\n') {
+      if (o + 1u < msz)
+         method[o++] = hdr[i];
+      ++i;
+   }
+   method[o] = '\0';
+   if (hdr[i] != ' ')
+      return false;
+
+   while (hdr[i] == ' ')
+      ++i;
+
+   o = 0u;
+   while (hdr[i] != '\0' && hdr[i] != ' '
+          && hdr[i] != '\r' && hdr[i] != '\n') {
+      if (o + 1u < psz)
+         path[o++] = hdr[i];
+      ++i;
+   }
+   path[o] = '\0';
+   return o > 0u;
+}
+
+/* Find the value of header `name` within hdr[0..limit). */
+static bool ws_find_header(const char *hdr, size_t limit, const char *name,
+                           char *out, size_t osz)
+{
+   size_t namelen = strlen(name);
+   size_t i = 0u;
+
+   /* skip the request line */
+   while (i < limit && hdr[i] != '\n')
+      ++i;
+   if (i < limit)
+      ++i;
+
+   while (i < limit) {
+      if (i + namelen < limit
+          && ws_prefix_ci(hdr + i, name, namelen)
+          && hdr[i + namelen] == ':') {
+         size_t v = i + namelen + 1u;
+         size_t o = 0u;
+         while (v < limit && (hdr[v] == ' ' || hdr[v] == '\t'))
+            ++v;
+         while (v < limit && hdr[v] != '\r' && hdr[v] != '\n') {
+            if (o + 1u < osz)
+               out[o++] = hdr[v];
+            ++v;
+         }
+         out[o] = '\0';
+         return true;
+      }
+      while (i < limit && hdr[i] != '\n')
+         ++i;
+      if (i < limit)
+         ++i;
+   }
    return false;
 }
 
-static const char *webserver_status_text(uint16_t status_code)
+static bool ws_extract_boundary(const char *ctype, char *out, size_t osz)
 {
-   switch (status_code) {
-      case 200:
-         return "OK";
-      case 400:
-         return "Bad Request";
-      case 404:
-         return "Not Found";
-      case 405:
-         return "Method Not Allowed";
-      case 413:
-         return "Payload Too Large";
-      case 500:
-         return "Internal Server Error";
-      case 501:
-         return "Not Implemented";
-      default:
-         return "OK";
+   const char *b = ctype;
+   size_t      o = 0u;
+
+   while (*b != '\0' && !ws_prefix_ci(b, "boundary=", 9u))
+      ++b;
+   if (*b == '\0')
+      return false;
+   b += 9u;
+
+   if (*b == '"') {
+      ++b;
+      while (*b != '\0' && *b != '"') {
+         if (o + 1u < osz)
+            out[o++] = *b;
+         ++b;
+      }
+   } else {
+      while (*b != '\0' && *b != ';' && *b != ' '
+             && *b != '\r' && *b != '\n') {
+         if (o + 1u < osz)
+            out[o++] = *b;
+         ++b;
+      }
    }
+   out[o] = '\0';
+   return o > 0u;
 }
 
-static bool webserver_build_error_response(uint16_t status_code, const char *title,
-                                           const char *detail, char **response_text,
-                                           size_t *response_length)
+static bool ws_extract_filename(const char *parthdr, char *out, size_t osz)
 {
-   webserver_response_t response;
-   char header[192];
-   int header_length;
-   char *full_response;
+   const char *f = parthdr;
+   size_t      o = 0u;
 
-   response_begin_html(&response, title);
-   response.status_code = status_code;
-   response_append(&response, "<p>%s</p>", detail);
-   response_end_html(&response);
-
-   header_length = snprintf(header, sizeof(header),
-                            "HTTP/1.1 %u %s\r\n"
-                            "Content-Type: %s\r\n"
-                            "Content-Length: %lu\r\n"
-                            "Connection: close\r\n"
-                            "\r\n",
-                            (unsigned int)response.status_code,
-                            webserver_status_text(response.status_code),
-                            response.content_type,
-                            (unsigned long)response.body_length);
-   if (header_length <= 0 || (size_t)header_length >= sizeof(header))
+   while (*f != '\0' && !ws_prefix_ci(f, "filename=", 9u))
+      ++f;
+   if (*f == '\0')
       return false;
-
-   full_response = malloc((size_t)header_length + response.body_length);
-   if (full_response == NULL)
+   f += 9u;
+   if (*f != '"')
       return false;
-
-   memcpy(full_response, header, (size_t)header_length);
-   memcpy(full_response + header_length, response.body, response.body_length);
-   *response_text = full_response;
-   *response_length = (size_t)header_length + response.body_length;
+   ++f;
+   while (*f != '\0' && *f != '"') {
+      if (o + 1u < osz)
+         out[o++] = *f;
+      ++f;
+   }
+   out[o] = '\0';
    return true;
 }
 
-static bool webserver_build_response_text(const char *request_text, char **response_text,
-                                          size_t *response_length)
+/* ------------------------------------------------------------------ */
+/* SD path helpers                                                     */
+/* ------------------------------------------------------------------ */
+
+static bool ws_path_is_safe(const char *p)
 {
-   webserver_request_t request;
-   webserver_response_t response;
-   char method[8];
-   char path[256];
-   char request_line[320];
-   char *line_end;
-   char header[192];
-   int header_length;
-   char *full_response;
-
-   if (request_text == NULL || response_text == NULL || response_length == NULL)
-      return false;
-
-   *response_text = NULL;
-   *response_length = 0u;
-
-   strlcpy(request_line, request_text, sizeof(request_line));
-   line_end = strstr(request_line, "\r\n");
-   if (line_end == NULL)
-      line_end = strchr(request_line, '\n');
-   if (line_end != NULL)
-      *line_end = '\0';
-
-   method[0] = '\0';
-   path[0] = '\0';
-   if (sscanf(request_line, "%7s %255s", method, path) != 2) {
-      return webserver_build_error_response(400u, "Bad Request",
-                                            "Could not parse the HTTP request line.",
-                                            response_text, response_length);
+   const char *s = p;
+   while (*s != '\0') {
+      if ((unsigned char)*s < 0x20u)
+         return false;
+      ++s;
    }
-
-   if (strcmp(method, "GET") != 0) {
-      return webserver_build_error_response(405u, "Method Not Allowed",
-                                            "Only HTTP GET is supported right now.",
-                                            response_text, response_length);
+   s = p;
+   while (*s != '\0') {
+      const char *start = s;
+      size_t      len;
+      while (*s != '\0' && *s != '/')
+         ++s;
+      len = (size_t)(s - start);
+      if (len == 2u && start[0] == '.' && start[1] == '.')
+         return false;
+      if (*s == '/')
+         ++s;
    }
-
-   memset(&request, 0, sizeof(request));
-   request.method = method;
-   request.path = path;
-
-   if (!webserver_render(&request, &response)) {
-      return webserver_build_error_response(500u, "Internal Server Error",
-                                            "The webserver could not render a response.",
-                                            response_text, response_length);
-   }
-
-   if (response.content_type == NULL)
-      response.content_type = "text/plain; charset=utf-8";
-
-   header_length = snprintf(header, sizeof(header),
-                            "HTTP/1.1 %u %s\r\n"
-                            "Content-Type: %s\r\n"
-                            "Content-Length: %lu\r\n"
-                            "Connection: close\r\n"
-                            "\r\n",
-                            (unsigned int)response.status_code,
-                            webserver_status_text(response.status_code),
-                            response.content_type,
-                            (unsigned long)response.body_length);
-   if (header_length <= 0 || (size_t)header_length >= sizeof(header))
-      return false;
-
-   full_response = malloc((size_t)header_length + response.body_length);
-   if (full_response == NULL)
-      return false;
-
-   memcpy(full_response, header, (size_t)header_length);
-   memcpy(full_response + header_length, response.body, response.body_length);
-   *response_text = full_response;
-   *response_length = (size_t)header_length + response.body_length;
    return true;
 }
 
-static err_t webserver_queue_response(webserver_connection_t *connection)
+/* Normalise a decoded path: force a leading '/', collapse repeated
+   slashes, drop a trailing slash (except for the root). */
+static void ws_normalize_path(const char *raw, char *out, size_t osz)
 {
-   err_t result = ERR_OK;
+   size_t o = 0u;
+   const char *s;
 
-   if (connection == NULL || connection->pcb == NULL)
-      return ERR_CLSD;
-
-   while (connection->response_queued < connection->response_length) {
-      size_t remaining = connection->response_length - connection->response_queued;
-      u16_t send_window = tcp_sndbuf(connection->pcb);
-      size_t send_length = remaining;
-
-      if (send_window == 0u)
-         break;
-
-      if (send_length > (size_t)send_window)
-         send_length = send_window;
-      if (send_length > WEBSERVER_RESPONSE_CHUNK_LEN)
-         send_length = WEBSERVER_RESPONSE_CHUNK_LEN;
-
-      result = tcp_write(connection->pcb,
-                         connection->response_data + connection->response_queued,
-                         (u16_t)send_length,
-                         TCP_WRITE_FLAG_COPY);
-      if (result != ERR_OK)
-         break;
-
-      connection->response_queued += send_length;
+   if (raw == NULL || raw[0] == '\0') {
+      strlcpy(out, "/", osz);
+      return;
    }
-
-   if (result == ERR_OK && connection->response_queued != 0u)
-      result = tcp_output(connection->pcb);
-
-   if (result == ERR_OK
-      && connection->close_after_send
-      && connection->response_acked >= connection->response_length) {
-      webserver_close_connection(connection, false);
-      return ERR_OK;
+   if (raw[0] != '/' && o + 1u < osz)
+      out[o++] = '/';
+   for (s = raw; *s != '\0'; ++s) {
+      if (*s == '/' && o > 0u && out[o - 1u] == '/')
+         continue;
+      if (o + 1u < osz)
+         out[o++] = *s;
    }
-
-   return result;
+   out[o] = '\0';
+   while (o > 1u && out[o - 1u] == '/')
+      out[--o] = '\0';
+   if (o == 0u)
+      strlcpy(out, "/", osz);
 }
 
-static err_t webserver_connection_sent(void *arg, struct tcp_pcb *tpcb, u16_t len)
+static void ws_parent_path(const char *sdpath, char *out, size_t osz)
 {
-   webserver_connection_t *connection = (webserver_connection_t *)arg;
-
-   (void)tpcb;
-
-   if (connection == NULL)
-      return ERR_OK;
-
-   connection->response_acked += len;
-   if (connection->close_after_send && connection->response_acked >= connection->response_length) {
-      webserver_close_connection(connection, false);
-      return ERR_OK;
-   }
-
-   return webserver_queue_response(connection);
+   char *slash;
+   strlcpy(out, sdpath, osz);
+   slash = strrchr(out, '/');
+   if (slash == out)
+      out[1] = '\0';            /* "/x" -> "/" */
+   else if (slash != NULL)
+      *slash = '\0';            /* "/a/b" -> "/a" */
+   else
+      strlcpy(out, "/", osz);
 }
 
-static err_t webserver_connection_poll(void *arg, struct tcp_pcb *tpcb)
+static bool ws_is_root(const char *p)
 {
-   webserver_connection_t *connection = (webserver_connection_t *)arg;
-
-   (void)tpcb;
-
-   if (connection == NULL)
-      return ERR_OK;
-
-   if (connection->response_data == NULL) {
-      webserver_close_connection(connection, true);
-      return ERR_ABRT;
-   }
-
-   return webserver_queue_response(connection);
+   return p[0] == '/' && p[1] == '\0';
 }
 
-static void webserver_connection_error(void *arg, err_t err)
+/* ------------------------------------------------------------------ */
+/* Forward declarations                                                */
+/* ------------------------------------------------------------------ */
+
+static void conn_close(ws_conn_t *c, bool abort_conn);
+static void conn_pump(ws_conn_t *c);
+static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len);
+static bool process_request(ws_conn_t *c, int body_at);
+static bool upload_consume(ws_conn_t *c, const uint8_t *data, size_t len);
+
+/* ------------------------------------------------------------------ */
+/* HTML page scaffolding                                               */
+/* ------------------------------------------------------------------ */
+
+static void page_open(ws_strbuf_t *b, const char *title)
 {
-   webserver_connection_t *connection = (webserver_connection_t *)arg;
+   sb_puts(b,
+      "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+      "<title>");
+   sb_html(b, title);
+   sb_puts(b,
+      "</title><style>"
+      "body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;"
+      "background:#f4f4f6;color:#1d1d1f}"
+      "header{background:#1d1d2e;color:#fff;padding:14px 20px;font-size:18px;"
+      "font-weight:600}"
+      "header a{color:#9db8ff;text-decoration:none;font-size:14px;"
+      "font-weight:400;margin-left:14px}"
+      "main{max-width:880px;margin:0 auto;padding:20px}"
+      "h1{font-size:20px;margin:0 0 14px;word-break:break-all}"
+      "a{color:#2c5fd6}"
+      "table{width:100%;border-collapse:collapse;background:#fff;"
+      "border-radius:8px;overflow:hidden}"
+      "th,td{text-align:left;padding:9px 12px;border-bottom:1px solid #e6e6ea;"
+      "font-size:14px}"
+      "th{background:#ececf0}"
+      "tr:last-child td{border-bottom:none}"
+      "td.r,th.r{text-align:right;color:#666;white-space:nowrap}"
+      ".card{background:#fff;border-radius:8px;padding:16px;margin-bottom:16px}"
+      ".err{color:#c0271a}"
+      ".muted{color:#777;font-size:13px}"
+      "input[type=submit]{background:#2c5fd6;color:#fff;border:0;"
+      "border-radius:6px;padding:8px 16px;font-size:14px;cursor:pointer}"
+      "</style></head><body><header>Pi1MHz"
+      "<a href=\"/\">Home</a><a href=\"/files/\">Files</a>"
+      "<a href=\"/framebuffer\">Screen</a><a href=\"/status\">Status</a>"
+      "</header><main>");
+}
 
-   (void)err;
+static void page_close(ws_strbuf_t *b)
+{
+   sb_puts(b, "</main></body></html>");
+}
 
-   if (connection == NULL)
+/* Append the "/files..." URL for an SD directory path. */
+static void append_files_url(ws_strbuf_t *b, const char *sdpath)
+{
+   sb_puts(b, "/files");
+   if (ws_is_root(sdpath))
+      sb_putc(b, '/');
+   else
+      sb_urlpath(b, sdpath);
+}
+
+static void table_row(ws_strbuf_t *b, const char *label, const char *value)
+{
+   sb_puts(b, "<tr><th>");
+   sb_html(b, label);
+   sb_puts(b, "</th><td>");
+   sb_html(b, value);
+   sb_puts(b, "</td></tr>");
+}
+
+/* ------------------------------------------------------------------ */
+/* Connection lifecycle                                                */
+/* ------------------------------------------------------------------ */
+
+static void conn_close(ws_conn_t *c, bool abort_conn)
+{
+   if (c == NULL)
       return;
 
-   connection->pcb = NULL;
-   free(connection->response_data);
-   free(connection);
+   if (c->dl_open) {
+      f_close(&c->dl_file);
+      c->dl_open = false;
+   }
+   if (c->up_file_open) {
+      f_close(&c->up_file);
+      c->up_file_open = false;
+   }
+
+   if (c->pcb != NULL) {
+      struct tcp_pcb *pcb = c->pcb;
+      c->pcb = NULL;
+      tcp_arg(pcb, NULL);
+      tcp_recv(pcb, NULL);
+      tcp_sent(pcb, NULL);
+      tcp_poll(pcb, NULL, 0);
+      tcp_err(pcb, NULL);
+      if (abort_conn) {
+         tcp_abort(pcb);
+      } else if (tcp_close(pcb) != ERR_OK) {
+         tcp_abort(pcb);
+      }
+   }
+
+   free(c->out);
+   free(c);
 }
 
-static err_t webserver_connection_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
+static void conn_pump(ws_conn_t *c)
 {
-   webserver_connection_t *connection = (webserver_connection_t *)arg;
+   err_t err = ERR_OK;
 
-   if (connection == NULL)
-      return ERR_ARG;
+   if (c == NULL || c->pcb == NULL)
+      return;
+
+   /* in-memory portion (HTML body, or the HTTP header of a download) */
+   while (c->out != NULL && c->out_sent < c->out_len) {
+      u16_t  avail = tcp_sndbuf(c->pcb);
+      size_t want  = c->out_len - c->out_sent;
+      if (avail == 0u)
+         break;
+      if (want > avail)
+         want = avail;
+      err = tcp_write(c->pcb, c->out + c->out_sent, (u16_t)want,
+                      TCP_WRITE_FLAG_COPY);
+      if (err != ERR_OK)
+         break;
+      c->out_sent += want;
+      c->bytes_queued += (uint32_t)want;
+   }
+
+   /* file body */
+   if (err == ERR_OK && c->state == CONN_SEND_FILE
+       && (c->out == NULL || c->out_sent >= c->out_len)) {
+      while (1) {
+         u16_t  avail;
+         size_t want;
+
+         if (c->dl_buf_sent >= c->dl_buf_len) {
+            UINT br = 0u;
+            UINT req;
+            if (c->dl_remaining == 0u || c->dl_eof)
+               break;
+            req = (c->dl_remaining < WS_FILE_CHUNK)
+                  ? (UINT)c->dl_remaining : (UINT)WS_FILE_CHUNK;
+            if (f_read(&c->dl_file, c->dl_buf, req, &br) != FR_OK
+                || br == 0u) {
+               c->dl_eof = true;
+               break;
+            }
+            c->dl_buf_len = br;
+            c->dl_buf_sent = 0u;
+            c->dl_remaining -= br;
+         }
+
+         avail = tcp_sndbuf(c->pcb);
+         if (avail == 0u)
+            break;
+         want = c->dl_buf_len - c->dl_buf_sent;
+         if (want > avail)
+            want = avail;
+         err = tcp_write(c->pcb, c->dl_buf + c->dl_buf_sent, (u16_t)want,
+                         TCP_WRITE_FLAG_COPY);
+         if (err != ERR_OK)
+            break;
+         c->dl_buf_sent += want;
+         c->bytes_queued += (uint32_t)want;
+      }
+   }
+
+   if (c->pcb != NULL)
+      tcp_output(c->pcb);
+
+   {
+      bool mem_done = (c->out == NULL) || (c->out_sent >= c->out_len);
+      bool file_done = (c->state != CONN_SEND_FILE)
+                    || ((c->dl_buf_sent >= c->dl_buf_len)
+                        && (c->dl_remaining == 0u || c->dl_eof));
+      c->producing_done = mem_done && file_done;
+   }
+
+   if (c->producing_done && c->bytes_acked >= c->bytes_queued)
+      conn_close(c, false);
+}
+
+/* ------------------------------------------------------------------ */
+/* Response helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+static bool ws_oom(ws_conn_t *c)
+{
+   conn_close(c, true);
+   return false;
+}
+
+/* Wrap an HTML body strbuf in a complete HTTP response and start it.
+   Always consumes `body`.  Returns false only if the connection had to
+   be aborted (out of memory). */
+static bool ws_finish_html(ws_conn_t *c, int status, const char *stext,
+                           ws_strbuf_t *body)
+{
+   ws_strbuf_t r;
+
+   if (body->failed) {
+      sb_free(body);
+      return ws_oom(c);
+   }
+
+   sb_init(&r);
+   sb_printf(&r,
+             "HTTP/1.1 %d %s\r\n"
+             "Content-Type: text/html; charset=utf-8\r\n"
+             "Content-Length: %lu\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             status, stext, (unsigned long)body->len);
+   if (body->len > 0u && body->data != NULL)
+      sb_write(&r, body->data, body->len);
+   sb_free(body);
+
+   if (r.failed) {
+      sb_free(&r);
+      return ws_oom(c);
+   }
+
+   free(c->out);
+   c->out = r.data;
+   c->out_len = r.len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
+   conn_pump(c);
+   return true;
+}
+
+static bool ws_error(ws_conn_t *c, int status, const char *stext,
+                     const char *msg)
+{
+   ws_strbuf_t b;
+   sb_init(&b);
+   page_open(&b, stext);
+   sb_printf(&b, "<h1>%d ", status);
+   sb_html(&b, stext);
+   sb_puts(&b, "</h1><div class=\"card\"><p class=\"err\">");
+   sb_html(&b, msg);
+   sb_puts(&b, "</p><p><a href=\"/\">Return home</a></p></div>");
+   page_close(&b);
+   return ws_finish_html(c, status, stext, &b);
+}
+
+/* ------------------------------------------------------------------ */
+/* Page routes                                                         */
+/* ------------------------------------------------------------------ */
+
+static bool route_home(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+   sb_init(&b);
+   page_open(&b, "Pi1MHz");
+   sb_puts(&b,
+      "<h1>Pi1MHz Web Interface</h1>"
+      "<div class=\"card\">"
+      "<p>Transfer files to and from the SD card, view the Pi VDU "
+      "screen, or check the network status.</p>"
+      "<p><a href=\"/files/\">Browse SD card files &rarr;</a></p>"
+      "<p><a href=\"/framebuffer\">View the framebuffer &rarr;</a></p>"
+      "<p><a href=\"/status\">Network status &rarr;</a></p>"
+      "<p><a href=\"/reboot\">Reboot the Pi &rarr;</a></p>"
+      "</div>");
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
+}
+
+static bool route_status(ws_conn_t *c)
+{
+   wifi_status_t                st  = wifi_get_status();
+   const wifi_config_t         *cfg = wifi_get_config();
+   const wifi_lwip_context_t   *lw  = wifi_lwip_get_context();
+   sdio_runtime_status_t        rs  = sdio_runtime_get_status();
+   ws_strbuf_t                  b;
+   char                         tmp[64];
+   uint8_t                      mac[6];
+
+   sb_init(&b);
+   page_open(&b, "Status");
+   sb_puts(&b, "<h1>Status</h1><div class=\"card\"><table>");
+
+   table_row(&b, "WiFi state", wifi_state_name(st.state));
+   table_row(&b, "SSID",
+             (cfg != NULL && cfg->ssid[0] != '\0') ? cfg->ssid : "(not set)");
+   table_row(&b, "Hostname",
+             (cfg != NULL && cfg->hostname[0] != '\0')
+                ? cfg->hostname : "(default)");
+   table_row(&b, "Link", sdio_runtime_link_is_up() ? "up" : "down");
+
+   if (lw != NULL) {
+      char ip[20];
+      ws_ip_str(netif_ip4_addr(&lw->netif), ip, sizeof ip);
+      table_row(&b, "IP address", ip);
+      ws_ip_str(netif_ip4_netmask(&lw->netif), ip, sizeof ip);
+      table_row(&b, "Netmask", ip);
+      ws_ip_str(netif_ip4_gw(&lw->netif), ip, sizeof ip);
+      table_row(&b, "Gateway", ip);
+   }
+
+   if (sdio_runtime_get_chip_mac(mac)) {
+      snprintf(tmp, sizeof tmp, "%02X:%02X:%02X:%02X:%02X:%02X",
+               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      table_row(&b, "MAC address", tmp);
+   }
+
+   snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.tx_frames);
+   table_row(&b, "Frames sent", tmp);
+   snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.rx_frames);
+   table_row(&b, "Frames received", tmp);
+   snprintf(tmp, sizeof tmp, "%u",
+            (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
+   table_row(&b, "HTTP port", tmp);
+
+   {
+      DWORD  nclst = 0u;
+      FATFS *fs = NULL;
+      if (f_getfree("/", &nclst, &fs) == FR_OK && fs != NULL) {
+         uint64_t free_sect = (uint64_t)nclst * (uint64_t)fs->csize;
+         snprintf(tmp, sizeof tmp, "%lu MB free",
+                  (unsigned long)(free_sect / 2048u));
+         table_row(&b, "SD card", tmp);
+      } else {
+         table_row(&b, "SD card", "not available");
+      }
+   }
+
+   sb_puts(&b, "</table></div>");
+   sb_puts(&b, "<p><a href=\"/files/\">Browse files &rarr;</a> &middot; "
+               "<a href=\"/reboot\">Reboot the Pi</a></p>");
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
+}
+
+/* ------------------------------------------------------------------ */
+/* Framebuffer view                                                    */
+/* ------------------------------------------------------------------ */
+
+static bool route_framebuffer(ws_conn_t *c)
+{
+   framebuffer_export_info_t info;
+   ws_strbuf_t               b;
+
+   sb_init(&b);
+   page_open(&b, "Framebuffer");
+   sb_puts(&b, "<h1>Framebuffer</h1>");
+
+   if (!framebuffer_export_get_info(&info)
+       || info.width == 0u || info.height == 0u) {
+      sb_puts(&b, "<div class=\"card\"><p class=\"err\">"
+                  "The framebuffer is not available - the Pi VDU may be "
+                  "inactive.</p></div>");
+      page_close(&b);
+      return ws_finish_html(c, 200, "OK", &b);
+   }
+
+   sb_puts(&b, "<div class=\"card\">");
+   sb_printf(&b, "<p class=\"muted\">%lu &times; %lu pixels, %lu bpp</p>",
+             (unsigned long)info.width,
+             (unsigned long)info.height,
+             (unsigned long)info.bits_per_pixel);
+   sb_puts(&b,
+      "<p><img src=\"/framebuffer.bmp\" alt=\"Pi VDU framebuffer\" "
+      "style=\"max-width:100%;image-rendering:pixelated;"
+      "border:1px solid #ccc;background:#000\"></p>"
+      "<p><a href=\"/framebuffer\">Refresh</a></p></div>");
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
+}
+
+/* Render the current framebuffer as a 24-bit BMP and send it.  The whole
+   image is built into one malloc'd buffer (HTTP header + BMP) and handed
+   to the normal in-memory send path. */
+static bool route_framebuffer_bmp(ws_conn_t *c)
+{
+   framebuffer_export_info_t info;
+   const uint8_t            *fb;
+   uint8_t                   pal_r[256];
+   uint8_t                   pal_g[256];
+   uint8_t                   pal_b[256];
+   char                      header[160];
+   uint8_t                  *out;
+   uint8_t                  *bmp;
+   uint8_t                  *pixels;
+   uint32_t                  row_padded;
+   uint32_t                  pixel_bytes;
+   uint32_t                  total;
+   uint32_t                  y;
+   size_t                    hdr_len;
+   int                       hn;
+
+   if (!framebuffer_export_get_info(&info)
+       || info.width == 0u || info.height == 0u || info.address == 0u)
+      return ws_error(c, 503, "Service Unavailable",
+                      "The framebuffer is not available.");
+
+   if (info.bits_per_pixel != 8u && info.bits_per_pixel != 16u
+       && info.bits_per_pixel != 32u)
+      return ws_error(c, 501, "Not Implemented",
+                      "This framebuffer colour depth cannot be exported.");
+
+   if (info.width > 8192u || info.height > 8192u)
+      return ws_error(c, 503, "Service Unavailable",
+                      "The framebuffer is too large to export.");
+
+   row_padded  = (info.width * 3u + 3u) & ~3u;
+   pixel_bytes = row_padded * info.height;
+   total       = 54u + pixel_bytes;
+   if (total > WS_FB_BMP_MAX)
+      return ws_error(c, 503, "Service Unavailable",
+                      "The framebuffer is too large to export.");
+
+   hn = snprintf(header, sizeof header,
+                 "HTTP/1.1 200 OK\r\n"
+                 "Content-Type: image/bmp\r\n"
+                 "Content-Length: %lu\r\n"
+                 "Cache-Control: no-store\r\n"
+                 "Connection: close\r\n"
+                 "\r\n",
+                 (unsigned long)total);
+   if (hn <= 0 || (size_t)hn >= sizeof header)
+      return ws_error(c, 500, "Internal Server Error",
+                      "Could not build the image header.");
+   hdr_len = (size_t)hn;
+
+   out = malloc(hdr_len + total);
+   if (out == NULL)
+      return ws_error(c, 500, "Internal Server Error",
+                      "Out of memory rendering the framebuffer.");
+
+   memcpy(out, header, hdr_len);
+   bmp = out + hdr_len;
+   memset(bmp, 0, total);
+
+   /* BMP file header (14 bytes) + BITMAPINFOHEADER (40 bytes). */
+   bmp[0] = 'B';
+   bmp[1] = 'M';
+   ws_store_u32(&bmp[2], total);
+   ws_store_u32(&bmp[10], 54u);          /* offset to pixel data */
+   ws_store_u32(&bmp[14], 40u);          /* DIB header size */
+   ws_store_u32(&bmp[18], info.width);
+   ws_store_u32(&bmp[22], info.height);  /* positive height = bottom-up */
+   bmp[26] = 1;                          /* colour planes */
+   bmp[28] = 24;                         /* bits per pixel */
+   ws_store_u32(&bmp[34], pixel_bytes);
+   ws_store_u32(&bmp[38], 2835u);        /* ~72 DPI (x) */
+   ws_store_u32(&bmp[42], 2835u);        /* ~72 DPI (y) */
+
+   pixels = bmp + 54u;
+   fb = (const uint8_t *)(uintptr_t)info.address;
+
+   if (info.bits_per_pixel == 8u) {
+      uint32_t i;
+      for (i = 0u; i < 256u; ++i) {
+         uint32_t e = screen_get_palette_entry(i);   /* 0x00RRGGBB */
+         pal_r[i] = (uint8_t)((e >> 16) & 0xFFu);
+         pal_g[i] = (uint8_t)((e >> 8) & 0xFFu);
+         pal_b[i] = (uint8_t)(e & 0xFFu);
+      }
+   }
+
+   /* Framebuffer memory is top-down, but a positive-height BMP is stored
+      bottom-up, so BMP row y is framebuffer row (height - 1 - y). */
+   for (y = 0u; y < info.height; ++y) {
+      const uint8_t *src = fb + (size_t)(info.height - 1u - y) * info.pitch;
+      uint8_t       *dst = pixels + (size_t)y * row_padded;
+      uint32_t       x;
+
+      for (x = 0u; x < info.width; ++x) {
+         uint8_t cr;
+         uint8_t cg;
+         uint8_t cb;
+
+         if (info.bits_per_pixel == 8u) {
+            uint8_t idx = src[x];
+            cr = pal_r[idx];
+            cg = pal_g[idx];
+            cb = pal_b[idx];
+         } else if (info.bits_per_pixel == 16u) {
+            uint32_t v  = (uint32_t)src[x * 2u]
+                        | ((uint32_t)src[x * 2u + 1u] << 8);
+            uint32_t r5 = (v >> 11) & 0x1Fu;
+            uint32_t g6 = (v >> 5) & 0x3Fu;
+            uint32_t b5 = v & 0x1Fu;
+            cr = (uint8_t)((r5 << 3) | (r5 >> 2));
+            cg = (uint8_t)((g6 << 2) | (g6 >> 4));
+            cb = (uint8_t)((b5 << 3) | (b5 >> 2));
+         } else {
+            /* 32 bpp little-endian xxBBGGRR: byte0 R, byte1 G, byte2 B */
+            cr = src[x * 4u];
+            cg = src[x * 4u + 1u];
+            cb = src[x * 4u + 2u];
+         }
+
+         dst[x * 3u]      = cb;
+         dst[x * 3u + 1u] = cg;
+         dst[x * 3u + 2u] = cr;
+      }
+   }
+
+   free(c->out);
+   c->out = (char *)out;
+   c->out_len = hdr_len + total;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
+   conn_pump(c);
+   return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Reboot                                                              */
+/* ------------------------------------------------------------------ */
+
+static bool route_reboot_confirm(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+
+   sb_init(&b);
+   page_open(&b, "Reboot");
+   sb_puts(&b,
+      "<h1>Reboot the Pi1MHz</h1>"
+      "<div class=\"card\">"
+      "<p>This restarts the device.  The BBC will briefly lose its "
+      "emulated peripherals, and this web session will drop.</p>"
+      "<form method=\"post\" action=\"/reboot\">"
+      "<p><input type=\"submit\" value=\"Reboot now\"></p>"
+      "</form>"
+      "<p><a href=\"/\">Cancel</a></p>"
+      "</div>");
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
+}
+
+static bool route_reboot_do(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+
+   /* Defer the reboot: webserver_poll() carries it out once the delay
+      has elapsed, by which time this response page has been sent. */
+   g_ws_reboot_pending = true;
+   g_ws_reboot_at = RPI_GetSystemTime();
+
+   sb_init(&b);
+   page_open(&b, "Rebooting");
+   sb_puts(&b,
+      "<h1>Rebooting</h1>"
+      "<div class=\"card\">"
+      "<p>The Pi1MHz is restarting now.  This page will stop "
+      "responding - reconnect in a few seconds.</p>"
+      "</div>");
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
+}
+
+/* ------------------------------------------------------------------ */
+/* Directory listing                                                   */
+/* ------------------------------------------------------------------ */
+
+static int ws_entry_cmp(const void *pa, const void *pb)
+{
+   const ws_dir_entry_t *a = (const ws_dir_entry_t *)pa;
+   const ws_dir_entry_t *b = (const ws_dir_entry_t *)pb;
+   if (a->is_dir != b->is_dir)
+      return a->is_dir ? -1 : 1;
+   return ws_stricmp(a->name, b->name);
+}
+
+static bool render_listing(ws_conn_t *c, const char *sdpath)
+{
+   DIR             dir;
+   FILINFO         fno;
+   FRESULT         fr;
+   ws_dir_entry_t *entries = NULL;
+   size_t          count = 0u;
+   size_t          cap = 0u;
+   bool            truncated = false;
+   bool            oom = false;
+   size_t          i;
+   ws_strbuf_t     b;
+
+   fr = f_opendir(&dir, sdpath);
+   if (fr != FR_OK) {
+      if (fr == FR_NO_PATH || fr == FR_NO_FILE || fr == FR_INVALID_NAME)
+         return ws_error(c, 404, "Not Found",
+                         "That folder does not exist on the SD card.");
+      return ws_error(c, 503, "Service Unavailable",
+                      "The SD card could not be read.");
+   }
+
+   for (;;) {
+      fr = f_readdir(&dir, &fno);
+      if (fr != FR_OK || fno.fname[0] == '\0')
+         break;
+      if (count >= WS_LISTING_HARD_CAP) {
+         truncated = true;
+         break;
+      }
+      if (count >= cap) {
+         size_t          ncap = (cap == 0u) ? 64u : cap * 2u;
+         ws_dir_entry_t *ne = realloc(entries, ncap * sizeof *ne);
+         if (ne == NULL) {
+            oom = true;
+            break;
+         }
+         entries = ne;
+         cap = ncap;
+      }
+      strlcpy(entries[count].name, fno.fname, sizeof entries[count].name);
+      entries[count].size = (uint32_t)fno.fsize;
+      entries[count].is_dir = (fno.fattrib & AM_DIR) != 0u;
+      ++count;
+   }
+   f_closedir(&dir);
+
+   if (oom) {
+      free(entries);
+      return ws_error(c, 500, "Internal Server Error",
+                      "Ran out of memory while listing the folder.");
+   }
+
+   if (count > 1u)
+      qsort(entries, count, sizeof *entries, ws_entry_cmp);
+
+   sb_init(&b);
+   page_open(&b, "Files");
+   sb_puts(&b, "<h1>");
+   sb_html(&b, sdpath);
+   sb_puts(&b, "</h1>");
+
+   sb_puts(&b,
+      "<table><tr><th>Name</th><th class=\"r\">Size</th></tr>");
+
+   if (!ws_is_root(sdpath)) {
+      char pp[WS_PATH_MAX];
+      ws_parent_path(sdpath, pp, sizeof pp);
+      sb_puts(&b, "<tr><td><a href=\"");
+      append_files_url(&b, pp);
+      sb_puts(&b, "\">../</a></td><td class=\"r\"></td></tr>");
+   }
+
+   for (i = 0u; i < count; ++i) {
+      sb_puts(&b, "<tr><td><a href=\"/files");
+      if (!ws_is_root(sdpath))
+         sb_urlpath(&b, sdpath);
+      sb_putc(&b, '/');
+      sb_urlpath(&b, entries[i].name);
+      if (entries[i].is_dir)
+         sb_putc(&b, '/');
+      sb_puts(&b, "\">");
+      sb_html(&b, entries[i].name);
+      if (entries[i].is_dir)
+         sb_putc(&b, '/');
+      sb_puts(&b, "</a></td><td class=\"r\">");
+      if (entries[i].is_dir) {
+         sb_puts(&b, "&lt;DIR&gt;");
+      } else {
+         char hs[32];
+         ws_human_size(entries[i].size, hs, sizeof hs);
+         sb_html(&b, hs);
+      }
+      sb_puts(&b, "</td></tr>");
+   }
+   sb_puts(&b, "</table>");
+   if (truncated)
+      sb_puts(&b,
+         "<p class=\"muted\">Listing truncated &mdash; folder too large.</p>");
+
+   sb_puts(&b,
+      "<div class=\"card\" style=\"margin-top:16px\">"
+      "<form method=\"post\" enctype=\"multipart/form-data\" action=\"");
+   sb_puts(&b, "/files");
+   if (!ws_is_root(sdpath))
+      sb_urlpath(&b, sdpath);
+   sb_putc(&b, '/');
+   sb_puts(&b,
+      "\"><p>Upload a file into this folder:</p>"
+      "<input type=\"file\" name=\"file\" required> "
+      "<input type=\"submit\" value=\"Upload\"></form></div>");
+
+   free(entries);
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
+}
+
+/* ------------------------------------------------------------------ */
+/* File download                                                       */
+/* ------------------------------------------------------------------ */
+
+static bool start_download(ws_conn_t *c, const char *sdpath)
+{
+   FRESULT     fr;
+   uint32_t    size;
+   char        dname[FF_LFN_BUF + 1];
+   const char *src;
+   size_t      o = 0u;
+   ws_strbuf_t h;
+
+   fr = f_open(&c->dl_file, sdpath, FA_READ);
+   if (fr != FR_OK)
+      return ws_error(c, 404, "Not Found",
+                      "The file could not be opened.");
+   c->dl_open = true;
+   size = (uint32_t)f_size(&c->dl_file);
+   c->dl_remaining = size;
+   c->dl_eof = false;
+   c->dl_buf_len = 0u;
+   c->dl_buf_sent = 0u;
+
+   /* sanitise the name for the Content-Disposition header */
+   for (src = ws_basename(sdpath); *src != '\0' && o + 1u < sizeof dname;
+        ++src) {
+      char ch = *src;
+      if (ch == '"' || ch == '\\' || (unsigned char)ch < 0x20u)
+         ch = '_';
+      dname[o++] = ch;
+   }
+   dname[o] = '\0';
+   if (o == 0u)
+      strlcpy(dname, "download", sizeof dname);
+
+   sb_init(&h);
+   sb_printf(&h,
+             "HTTP/1.1 200 OK\r\n"
+             "Content-Type: application/octet-stream\r\n"
+             "Content-Length: %lu\r\n"
+             "Content-Disposition: attachment; filename=\"%s\"\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             (unsigned long)size, dname);
+   if (h.failed) {
+      sb_free(&h);
+      f_close(&c->dl_file);
+      c->dl_open = false;
+      return ws_oom(c);
+   }
+
+   free(c->out);
+   c->out = h.data;            /* ownership transferred */
+   c->out_len = h.len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_FILE;
+   conn_pump(c);
+   return true;
+}
+
+static bool route_files_get(ws_conn_t *c, const char *rawpath)
+{
+   char    decoded[WS_PATH_MAX];
+   char    sdpath[WS_PATH_MAX];
+   FILINFO fno;
+
+   ws_url_decode(rawpath + 6, decoded, sizeof decoded);   /* skip "/files" */
+   ws_normalize_path(decoded, sdpath, sizeof sdpath);
+   if (!ws_path_is_safe(sdpath))
+      return ws_error(c, 400, "Bad Request", "That path is not allowed.");
+
+   if (ws_is_root(sdpath))
+      return render_listing(c, sdpath);
+
+   if (f_stat(sdpath, &fno) != FR_OK)
+      return ws_error(c, 404, "Not Found",
+                      "That file or folder does not exist.");
+   if ((fno.fattrib & AM_DIR) != 0u)
+      return render_listing(c, sdpath);
+   return start_download(c, sdpath);
+}
+
+/* ------------------------------------------------------------------ */
+/* File upload (multipart/form-data)                                   */
+/* ------------------------------------------------------------------ */
+
+static bool upload_fail(ws_conn_t *c, const char *msg)
+{
+   ws_strbuf_t b;
+
+   if (c->up_file_open) {
+      f_close(&c->up_file);
+      c->up_file_open = false;
+   }
+   c->up_state = UP_FAILED;
+
+   sb_init(&b);
+   page_open(&b, "Upload failed");
+   sb_puts(&b, "<h1>Upload failed</h1><div class=\"card\">"
+               "<p class=\"err\">");
+   sb_html(&b, msg);
+   sb_puts(&b, "</p><p><a href=\"");
+   append_files_url(&b, c->up_dir);
+   sb_puts(&b, "\">Back to folder</a></p></div>");
+   page_close(&b);
+   return ws_finish_html(c, 400, "Bad Request", &b);
+}
+
+static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
+{
+   UINT bw = 0u;
+
+   if (len == 0u || !c->up_file_open)
+      return true;
+   if (f_write(&c->up_file, data, (UINT)len, &bw) != FR_OK || bw != len)
+      return upload_fail(c, "Writing to the SD card failed "
+                            "(the card may be full or write-protected).");
+   c->up_bytes_written += (uint32_t)len;
+   return true;
+}
+
+static bool upload_finish(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+
+   if (c->up_file_open) {
+      FRESULT fr = f_close(&c->up_file);
+      c->up_file_open = false;
+      if (fr != FR_OK)
+         return upload_fail(c, "The file could not be saved correctly.");
+   }
+   c->up_complete = true;
+   c->up_state = UP_EPILOGUE;
+
+   sb_init(&b);
+   page_open(&b, "Upload complete");
+   sb_puts(&b, "<h1>Upload complete</h1><div class=\"card\"><p><code>");
+   sb_html(&b, c->up_name);
+   sb_printf(&b, "</code> (%lu bytes) was saved.</p><p><a href=\"",
+             (unsigned long)c->up_bytes_written);
+   append_files_url(&b, c->up_dir);
+   sb_puts(&b, "\">Back to folder</a></p></div>");
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
+}
+
+/* Parse the multipart part header in up_head[] and open the target file. */
+static bool upload_begin_part(ws_conn_t *c)
+{
+   char        fname[FF_LFN_BUF + 1];
+   const char *base;
+   const char *s;
+   /* Big enough for up_dir (up to WS_PATH_MAX-1) + '/' + base (up to
+      FF_LFN_BUF) + NUL, so the snprintf below can never truncate. */
+   char        full[WS_PATH_MAX + FF_LFN_BUF + 2u];
+
+   if (!ws_extract_filename(c->up_head, fname, sizeof fname)
+       || fname[0] == '\0')
+      return upload_fail(c, "No file was selected for upload.");
+
+   base = ws_basename(fname);
+   if (base[0] == '\0'
+       || strcmp(base, ".") == 0 || strcmp(base, "..") == 0)
+      return upload_fail(c, "The uploaded file has an invalid name.");
+   for (s = base; *s != '\0'; ++s) {
+      if ((unsigned char)*s < 0x20u)
+         return upload_fail(c, "The uploaded file has an invalid name.");
+   }
+
+   if (ws_is_root(c->up_dir))
+      snprintf(full, sizeof full, "/%s", base);
+   else
+      snprintf(full, sizeof full, "%s/%s", c->up_dir, base);
+
+   if (f_open(&c->up_file, full, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+      return upload_fail(c, "The file could not be created on the SD card.");
+
+   c->up_file_open = true;
+   c->up_bytes_written = 0u;
+   strlcpy(c->up_name, base, sizeof c->up_name);
+   return true;
+}
+
+/* Stream multipart body bytes to the SD card, holding back the bytes
+   that could still turn out to be the closing boundary. */
+static bool upload_feed_data(ws_conn_t *c, const uint8_t *data, size_t len)
+{
+   size_t delim = c->up_delim_len;
+   size_t hold  = (delim > 0u) ? delim - 1u : 0u;
+
+   while (len > 0u && c->up_state == UP_DATA) {
+      uint8_t work[WS_UPLOAD_WORK];
+      size_t  maxslice = WS_UPLOAD_WORK - hold;
+      size_t  slice = (len < maxslice) ? len : maxslice;
+      size_t  work_len;
+      int     found;
+
+      memcpy(work, c->up_tail, c->up_tail_len);
+      memcpy(work + c->up_tail_len, data, slice);
+      work_len = c->up_tail_len + slice;
+      data += slice;
+      len  -= slice;
+
+      found = ws_memfind(work, work_len,
+                         (const uint8_t *)c->up_delim, delim);
+      if (found >= 0) {
+         if (!upload_write(c, work, (size_t)found))
+            return false;
+         if (c->up_state != UP_DATA)
+            return true;          /* a write error was reported */
+         c->up_tail_len = 0u;
+         return upload_finish(c);
+      } else {
+         size_t writeable = (work_len > hold) ? (work_len - hold) : 0u;
+         if (writeable > 0u) {
+            if (!upload_write(c, work, writeable))
+               return false;
+            if (c->up_state != UP_DATA)
+               return true;
+         }
+         c->up_tail_len = work_len - writeable;
+         memmove(c->up_tail, work + writeable, c->up_tail_len);
+      }
+   }
+   return true;
+}
+
+static bool upload_consume(ws_conn_t *c, const uint8_t *data, size_t len)
+{
+   size_t pos = 0u;
+
+   while (pos < len) {
+      if (c->up_state == UP_PART_HEADER) {
+         size_t space = WS_UPLOAD_HEAD_MAX - c->up_head_len;
+         size_t take  = len - pos;
+         int    body_at;
+
+         if (take > space)
+            take = space;
+         memcpy(c->up_head + c->up_head_len, data + pos, take);
+         c->up_head_len += take;
+         pos += take;
+         c->up_head[c->up_head_len] = '\0';
+
+         body_at = ws_find_header_end(c->up_head, c->up_head_len);
+         if (body_at >= 0) {
+            if (!upload_begin_part(c))
+               return false;
+            if (c->up_state == UP_FAILED)
+               return true;       /* failure page already queued */
+            c->up_state = UP_DATA;
+            c->up_tail_len = 0u;
+            if (!upload_feed_data(c,
+                                  (const uint8_t *)c->up_head + body_at,
+                                  c->up_head_len - (size_t)body_at))
+               return false;
+         } else if (c->up_head_len >= WS_UPLOAD_HEAD_MAX) {
+            return upload_fail(c, "The upload form data is malformed.");
+         } else {
+            return true;          /* need more data */
+         }
+      } else if (c->up_state == UP_DATA) {
+         if (!upload_feed_data(c, data + pos, len - pos))
+            return false;
+         pos = len;
+      } else {
+         /* UP_EPILOGUE / UP_FAILED: discard the rest */
+         pos = len;
+      }
+   }
+   return true;
+}
+
+static bool route_upload(ws_conn_t *c, const char *rawpath, int body_at)
+{
+   char    decoded[WS_PATH_MAX];
+   char    dir[WS_PATH_MAX];
+   char    ctype[256];
+   char    boundary[WS_BOUNDARY_MAX];
+   FILINFO fno;
+
+   ws_url_decode(rawpath + 6, decoded, sizeof decoded);   /* skip "/files" */
+   ws_normalize_path(decoded, dir, sizeof dir);
+   if (!ws_path_is_safe(dir))
+      return ws_error(c, 400, "Bad Request", "That path is not allowed.");
+
+   if (!ws_is_root(dir)) {
+      if (f_stat(dir, &fno) != FR_OK || (fno.fattrib & AM_DIR) == 0u)
+         return ws_error(c, 404, "Not Found",
+                         "The upload folder does not exist.");
+   }
+
+   if (!ws_find_header(c->reqhdr, (size_t)body_at, "Content-Type",
+                       ctype, sizeof ctype)
+       || !ws_prefix_ci_str(ctype, "multipart/form-data"))
+      return ws_error(c, 400, "Bad Request",
+                      "Uploads must use multipart/form-data.");
+   if (!ws_extract_boundary(ctype, boundary, sizeof boundary))
+      return ws_error(c, 400, "Bad Request",
+                      "The upload is missing its multipart boundary.");
+
+   strlcpy(c->up_dir, dir, sizeof c->up_dir);
+   c->up_delim[0] = '\r';
+   c->up_delim[1] = '\n';
+   c->up_delim[2] = '-';
+   c->up_delim[3] = '-';
+   strlcpy(c->up_delim + 4, boundary, sizeof c->up_delim - 4u);
+   c->up_delim_len = 4u + strlen(boundary);
+
+   c->state = CONN_RECV_UPLOAD;
+   c->up_state = UP_PART_HEADER;
+   c->up_head_len = 0u;
+   c->up_tail_len = 0u;
+   c->up_complete = false;
+   c->up_bytes_written = 0u;
+
+   return upload_consume(c, (const uint8_t *)c->reqhdr + body_at,
+                         c->reqhdr_len - (size_t)body_at);
+}
+
+/* ------------------------------------------------------------------ */
+/* Request dispatch                                                    */
+/* ------------------------------------------------------------------ */
+
+static bool process_request(ws_conn_t *c, int body_at)
+{
+   char  method[8];
+   char  rawpath[WS_PATH_MAX];
+   char *query;
+
+   if (!ws_parse_request_line(c->reqhdr, method, sizeof method,
+                              rawpath, sizeof rawpath))
+      return ws_error(c, 400, "Bad Request", "The request was malformed.");
+
+   query = strchr(rawpath, '?');
+   if (query != NULL)
+      *query = '\0';
+
+   if (strcmp(method, "GET") == 0) {
+      if (strcmp(rawpath, "/") == 0)
+         return route_home(c);
+      if (strcmp(rawpath, "/status") == 0)
+         return route_status(c);
+      if (strcmp(rawpath, "/framebuffer") == 0)
+         return route_framebuffer(c);
+      if (strcmp(rawpath, "/framebuffer.bmp") == 0)
+         return route_framebuffer_bmp(c);
+      if (strcmp(rawpath, "/reboot") == 0)
+         return route_reboot_confirm(c);
+      if (strcmp(rawpath, "/files") == 0 || ws_prefix("/files/", rawpath))
+         return route_files_get(c, rawpath);
+      return ws_error(c, 404, "Not Found", "No such page.");
+   }
+
+   if (strcmp(method, "POST") == 0) {
+      if (strcmp(rawpath, "/reboot") == 0)
+         return route_reboot_do(c);
+      if (strcmp(rawpath, "/files") == 0 || ws_prefix("/files/", rawpath))
+         return route_upload(c, rawpath, body_at);
+      return ws_error(c, 404, "Not Found", "No such page.");
+   }
+
+   return ws_error(c, 405, "Method Not Allowed",
+                   "Only GET and POST are supported.");
+}
+
+static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
+{
+   size_t pos = 0u;
+
+   while (pos < len) {
+      if (c->state == CONN_RECV_HEADER) {
+         size_t space = WS_HEADER_MAX - c->reqhdr_len;
+         size_t take  = len - pos;
+         int    body_at;
+
+         if (take > space)
+            take = space;
+         memcpy(c->reqhdr + c->reqhdr_len, data + pos, take);
+         c->reqhdr_len += take;
+         pos += take;
+         c->reqhdr[c->reqhdr_len] = '\0';
+
+         body_at = ws_find_header_end(c->reqhdr, c->reqhdr_len);
+         if (body_at >= 0) {
+            if (!process_request(c, body_at))
+               return false;
+            /* loop continues; any remaining bytes go to the new state */
+         } else if (c->reqhdr_len >= WS_HEADER_MAX) {
+            return ws_error(c, 431, "Request Header Fields Too Large",
+                            "The request header is too large.");
+         } else {
+            return true;          /* wait for more header data */
+         }
+      } else if (c->state == CONN_RECV_UPLOAD) {
+         if (!upload_consume(c, data + pos, len - pos))
+            return false;
+         pos = len;
+      } else {
+         /* CONN_SEND_*: ignore any further request bytes */
+         return true;
+      }
+   }
+   return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* lwIP callbacks                                                      */
+/* ------------------------------------------------------------------ */
+
+static err_t ws_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
+                     err_t err)
+{
+   ws_conn_t   *c = (ws_conn_t *)arg;
+   struct pbuf *q;
+   bool         alive = true;
+
+   if (c == NULL) {
+      if (p != NULL)
+         pbuf_free(p);
+      return ERR_OK;
+   }
 
    if (err != ERR_OK) {
       if (p != NULL)
          pbuf_free(p);
-      webserver_close_connection(connection, true);
+      conn_close(c, true);
       return ERR_ABRT;
    }
 
    if (p == NULL) {
-      webserver_close_connection(connection, false);
+      /* the remote end closed the connection */
+      conn_close(c, false);
       return ERR_OK;
    }
 
-   if (connection->request_length + p->tot_len > WEBSERVER_REQUEST_MAX_LEN) {
-      tcp_recved(tpcb, p->tot_len);
-      pbuf_free(p);
-      if (!webserver_build_error_response(413u, "Request Too Large",
-                                          "The request headers exceeded the supported size.",
-                                          &connection->response_data,
-                                          &connection->response_length)) {
-         webserver_close_connection(connection, true);
-         return ERR_ABRT;
-      }
-      connection->close_after_send = true;
-      return webserver_queue_response(connection);
-   }
-
-   pbuf_copy_partial(p, &connection->request[connection->request_length], p->tot_len, 0u);
-   connection->request_length += p->tot_len;
-   connection->request[connection->request_length] = '\0';
    tcp_recved(tpcb, p->tot_len);
+   c->poll_count = 0u;
+
+   for (q = p; q != NULL && alive; q = q->next)
+      alive = conn_consume(c, (const uint8_t *)q->payload, q->len);
+
    pbuf_free(p);
-
-   if (!webserver_request_complete(connection->request, connection->request_length))
-      return ERR_OK;
-
-   if (!webserver_build_response_text(connection->request,
-                                      &connection->response_data,
-                                      &connection->response_length)) {
-      if (!webserver_build_error_response(500u, "Internal Server Error",
-                                          "The webserver could not build an HTTP response.",
-                                          &connection->response_data,
-                                          &connection->response_length)) {
-         webserver_close_connection(connection, true);
-         return ERR_ABRT;
-      }
-   }
-
-   connection->close_after_send = true;
-   return webserver_queue_response(connection);
+   return alive ? ERR_OK : ERR_ABRT;
 }
 
-static err_t webserver_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
+static err_t ws_sent(void *arg, struct tcp_pcb *tpcb, u16_t len)
 {
-   webserver_connection_t *connection;
+   ws_conn_t *c = (ws_conn_t *)arg;
+   (void)tpcb;
 
+   if (c == NULL)
+      return ERR_OK;
+
+   c->bytes_acked += len;
+   c->poll_count = 0u;
+   conn_pump(c);               /* may free c */
+   return ERR_OK;
+}
+
+static err_t ws_poll(void *arg, struct tcp_pcb *tpcb)
+{
+   ws_conn_t *c = (ws_conn_t *)arg;
+   (void)tpcb;
+
+   if (c == NULL)
+      return ERR_OK;
+
+   if (++c->poll_count > WS_POLL_LIMIT) {
+      conn_close(c, true);
+      return ERR_ABRT;
+   }
+
+   if (c->state == CONN_SEND_MEM || c->state == CONN_SEND_FILE)
+      conn_pump(c);            /* may free c */
+   return ERR_OK;
+}
+
+static void ws_err(void *arg, err_t err)
+{
+   ws_conn_t *c = (ws_conn_t *)arg;
+   (void)err;
+
+   if (c == NULL)
+      return;
+
+   /* lwIP has already freed the pcb */
+   c->pcb = NULL;
+   if (c->dl_open) {
+      f_close(&c->dl_file);
+      c->dl_open = false;
+   }
+   if (c->up_file_open) {
+      f_close(&c->up_file);
+      c->up_file_open = false;
+   }
+   free(c->out);
+   free(c);
+}
+
+static err_t ws_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
+{
+   ws_conn_t *c;
    (void)arg;
 
    if (err != ERR_OK || newpcb == NULL)
       return ERR_VAL;
 
-   connection = calloc(1u, sizeof(*connection));
-   if (connection == NULL) {
+   c = calloc(1u, sizeof *c);
+   if (c == NULL) {
       tcp_abort(newpcb);
       return ERR_ABRT;
    }
 
-   connection->pcb = newpcb;
-   tcp_arg(newpcb, connection);
-   tcp_recv(newpcb, webserver_connection_recv);
-   tcp_sent(newpcb, webserver_connection_sent);
-   tcp_poll(newpcb, webserver_connection_poll, 4u);
-   tcp_err(newpcb, webserver_connection_error);
+   c->pcb = newpcb;
+   c->state = CONN_RECV_HEADER;
+
+   tcp_arg(newpcb, c);
+   tcp_recv(newpcb, ws_recv);
+   tcp_sent(newpcb, ws_sent);
+   tcp_poll(newpcb, ws_poll, WS_POLL_INTERVAL);
+   tcp_err(newpcb, ws_err);
    return ERR_OK;
 }
 
-static size_t response_append(webserver_response_t *response, const char *format, ...)
+/* ------------------------------------------------------------------ */
+/* Public interface                                                    */
+/* ------------------------------------------------------------------ */
+
+/* Poll hook: once a reboot has been requested via POST /reboot and the
+   short grace period has elapsed - long enough for the response page to
+   have been delivered - restart the Pi.  reboot_now() does not return. */
+static void webserver_poll(void)
 {
-   va_list args;
-   int written;
-   size_t remaining;
-
-   if (response->body_length >= sizeof(response->body))
-      return 0;
-
-   remaining = sizeof(response->body) - response->body_length;
-
-   va_start(args, format);
-   written = vsnprintf(&response->body[response->body_length], remaining, format, args);
-   va_end(args);
-
-   if (written <= 0)
-      return 0;
-
-   if ((size_t)written >= remaining) {
-      response->body_length = sizeof(response->body) - 1;
-      return remaining - 1;
+   if (g_ws_reboot_pending
+       && (RPI_GetSystemTime() - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
+      reboot_now();
    }
-
-   response->body_length += (size_t)written;
-   return (size_t)written;
-}
-
-static void response_begin_html(webserver_response_t *response, const char *title)
-{
-   response->status_code = 200;
-   response->content_type = "text/html; charset=utf-8";
-   response->body_length = 0;
-   response->body[0] = '\0';
-
-   response_append(response,
-                   "<!doctype html><html><head><meta charset=\"utf-8\">"
-                   "<title>%s</title>"
-                   "<style>body{font-family:sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem;}"
-                   "table{border-collapse:collapse;width:100%%;}"
-                   "th,td{border:1px solid #999;padding:.35rem;text-align:left;}"
-                   "code{background:#eee;padding:.1rem .2rem;}"
-                   "nav a{margin-right:1rem;}</style></head><body>"
-                   "<nav><a href=\"/\">Home</a><a href=\"/status\">Status</a>"
-                   "<a href=\"/files\">Files</a><a href=\"/framebuffer\">Framebuffer</a></nav>"
-                   "<h1>%s</h1>",
-                   title, title);
-}
-
-static void response_end_html(webserver_response_t *response)
-{
-   response_append(response, "</body></html>");
-}
-
-static const char *sdpcm_channel_name(uint8_t channel)
-{
-   switch (channel) {
-      case 0:
-         return "control";
-      case 1:
-         return "event";
-      case 2:
-         return "data";
-      default:
-         return "unknown";
-   }
-}
-
-static const char *ethertype_name(uint16_t ethertype)
-{
-   switch (ethertype) {
-      case 0x0800:
-         return "IPv4";
-      case 0x0806:
-         return "ARP";
-      case 0x8100:
-         return "802.1Q";
-      case 0x86dd:
-         return "IPv6";
-      case 0x886c:
-         return "Broadcom event";
-      case 0x888e:
-         return "EAPOL";
-      default:
-         return "other";
-   }
-}
-
-static const char *cdc_command_name(uint32_t command)
-{
-   switch (command) {
-      case 0u:
-         return "WLC_GET_MAGIC";
-      case 1u:
-         return "WLC_GET_VERSION";
-      case 2u:
-         return "WLC_UP";
-      case 268u:
-         return "WLC_SET_WSEC_PMK";
-      case 3u:
-         return "WLC_DOWN";
-      case 20u:
-         return "WLC_SET_INFRA";
-      case 22u:
-         return "WLC_SET_AUTH";
-      case 26u:
-         return "WLC_SET_SSID";
-      case 165u:
-         return "WLC_SET_WPA_AUTH";
-      case 134u:
-         return "WLC_SET_WSEC";
-      case 262u:
-         return "WLC_GET_VAR";
-      case 263u:
-         return "WLC_SET_VAR";
-      default:
-         return "other";
-   }
-}
-
-static const char *tx_probe_command_name(wifi_sdio_tx_probe_command_t command)
-{
-   switch (command) {
-      case WIFI_SDIO_TX_PROBE_COMMAND_MAGIC:
-         return "WLC_GET_MAGIC";
-      case WIFI_SDIO_TX_PROBE_COMMAND_INFRA:
-         return "WLC_SET_INFRA";
-      case WIFI_SDIO_TX_PROBE_COMMAND_AUTH:
-         return "WLC_SET_AUTH";
-      case WIFI_SDIO_TX_PROBE_COMMAND_SSID:
-         return "WLC_SET_SSID";
-      case WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH:
-         return "WLC_SET_WPA_AUTH";
-      case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
-         return "WLC_SET_WSEC";
-      case WIFI_SDIO_TX_PROBE_COMMAND_PMK:
-         return "WLC_SET_WSEC_PMK";
-      case WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF:
-         return "WLC_SET_PM(0)";
-      case WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF:
-         return "bus:txglom=0";
-      case WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF:
-         return "roam_off=1";
-      case WIFI_SDIO_TX_PROBE_COMMAND_JOIN:
-         return "JOIN_SEQUENCE";
-      case WIFI_SDIO_TX_PROBE_COMMAND_UP:
-         return "WLC_UP";
-      case WIFI_SDIO_TX_PROBE_COMMAND_GET_WSEC:
-         return "WLC_GET_WSEC";
-      case WIFI_SDIO_TX_PROBE_COMMAND_GET_WPA_AUTH:
-         return "WLC_GET_WPA_AUTH";
-      case WIFI_SDIO_TX_PROBE_COMMAND_GET_AUTH:
-         return "WLC_GET_AUTH";
-      case WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA:
-         return "WLC_GET_INFRA";
-      case WIFI_SDIO_TX_PROBE_COMMAND_GET_SUP_WPA:
-         return "GET bsscfg:sup_wpa";
-      case WIFI_SDIO_TX_PROBE_COMMAND_VERSION:
-      default:
-         return "WLC_GET_VERSION";
-   }
-}
-
-static const char *brcm_event_probe_result(const sdio_probe_result_t *sdio_probe)
-{
-   if (!sdio_probe->sdpcm_brcm_event_probe_attempted)
-      return "not Broadcom event traffic";
-
-   if (!sdio_probe->sdpcm_brcm_event_probe_success)
-      return "frame too short or read failed";
-
-   if (!sdio_probe->sdpcm_brcm_event_oui_match)
-      return "OUI mismatch";
-
-   if (!sdio_probe->sdpcm_brcm_event_version_valid)
-      return "unexpected version";
-
-   return "Broadcom event header decoded";
-}
-
-static const char *brcm_event_name(uint32_t event_type)
-{
-   switch (event_type) {
-      case 0x7ffffffeu:
-         return "WLC_E_NONE";
-      case 0u:
-         return "WLC_E_SET_SSID";
-      case 1u:
-         return "WLC_E_JOIN";
-      case 2u:
-         return "WLC_E_START";
-      case 3u:
-         return "WLC_E_AUTH";
-      case 4u:
-         return "WLC_E_AUTH_IND";
-      case 5u:
-         return "WLC_E_DEAUTH";
-      case 6u:
-         return "WLC_E_DEAUTH_IND";
-      case 7u:
-         return "WLC_E_ASSOC";
-      case 8u:
-         return "WLC_E_ASSOC_IND";
-      case 9u:
-         return "WLC_E_REASSOC";
-      case 10u:
-         return "WLC_E_REASSOC_IND";
-      case 11u:
-         return "WLC_E_DISASSOC";
-      case 12u:
-         return "WLC_E_DISASSOC_IND";
-      case 16u:
-         return "WLC_E_LINK";
-      case 46u:
-         return "WLC_E_PSK_SUP";
-      case 54u:
-         return "WLC_E_IF";
-      default:
-         return "other";
-   }
-}
-
-static const char *brcm_event_status_name(uint32_t event_type, uint32_t status)
-{
-   if (event_type == 46u) {
-      switch (status) {
-         case 256u:
-            return "WLC_SUP_DISCONNECTED";
-         case 257u:
-            return "WLC_SUP_CONNECTING";
-         case 258u:
-            return "WLC_SUP_IDREQUIRED";
-         case 259u:
-            return "WLC_SUP_AUTHENTICATING";
-         case 260u:
-            return "WLC_SUP_AUTHENTICATED / WLC_SUP_KEYXCHANGE_WAIT_M1";
-         case 261u:
-            return "WLC_SUP_KEYXCHANGE / WLC_SUP_KEYXCHANGE_PREP_M2";
-         case 262u:
-            return "WLC_SUP_KEYED";
-         case 263u:
-            return "WLC_SUP_TIMEOUT";
-         case 264u:
-            return "WLC_SUP_LAST_BASIC_STATE / WLC_SUP_KEYXCHANGE_WAIT_M3";
-         case 265u:
-            return "WLC_SUP_KEYXCHANGE_PREP_M4";
-         case 266u:
-            return "WLC_SUP_KEYXCHANGE_WAIT_G1";
-         case 267u:
-            return "WLC_SUP_KEYXCHANGE_PREP_G2";
-         default:
-            return "other supplicant status";
-      }
-   }
-
-   if (status >= 512u) {
-      switch (status) {
-         case 512u:
-            return "WLC_DOT11_SC_SUCCESS";
-         case 513u:
-            return "WLC_DOT11_SC_FAILURE";
-         case 522u:
-            return "WLC_DOT11_SC_CAP_MISMATCH";
-         case 523u:
-            return "WLC_DOT11_SC_REASSOC_FAIL";
-         case 524u:
-            return "WLC_DOT11_SC_ASSOC_FAIL";
-         case 525u:
-            return "WLC_DOT11_SC_AUTH_MISMATCH";
-         case 526u:
-            return "WLC_DOT11_SC_AUTH_SEQ";
-         case 527u:
-            return "WLC_DOT11_SC_AUTH_CHALLENGE_FAIL";
-         case 528u:
-            return "WLC_DOT11_SC_AUTH_TIMEOUT";
-         case 549u:
-            return "WLC_DOT11_SC_DECLINED";
-         case 550u:
-            return "WLC_DOT11_SC_INVALID_PARAMS";
-         case 555u:
-            return "WLC_DOT11_SC_INVALID_AKMP";
-         case 566u:
-            return "WLC_DOT11_SC_INVALID_MDID";
-         default:
-            return "other 802.11 status";
-      }
-   }
-
-   switch (status) {
-      case 0u:
-         return "WLC_E_STATUS_SUCCESS";
-      case 1u:
-         return "WLC_E_STATUS_FAIL";
-      case 2u:
-         return "WLC_E_STATUS_TIMEOUT";
-      case 3u:
-         return "WLC_E_STATUS_NO_NETWORKS";
-      case 4u:
-         return "WLC_E_STATUS_ABORT";
-      case 5u:
-         return "WLC_E_STATUS_NO_ACK";
-      case 6u:
-         return "WLC_E_STATUS_UNSOLICITED";
-      case 7u:
-         return "WLC_E_STATUS_ATTEMPT";
-      case 8u:
-         return "WLC_E_STATUS_PARTIAL";
-      case 9u:
-         return "WLC_E_STATUS_NEWSCAN";
-      case 10u:
-         return "WLC_E_STATUS_NEWASSOC";
-      case 11u:
-         return "WLC_E_STATUS_11HQUIET";
-      case 12u:
-         return "WLC_E_STATUS_SUPPRESS";
-      case 13u:
-         return "WLC_E_STATUS_NOCHANS";
-      case 14u:
-         return "WLC_E_STATUS_CCXFASTRM";
-      case 15u:
-         return "WLC_E_STATUS_CS_ABORT";
-      case 16u:
-         return "WLC_E_STATUS_ERROR";
-      default:
-         return "other event status";
-   }
-}
-
-static const char *brcm_link_reason_name(uint32_t reason)
-{
-   switch (reason) {
-      case 0u:
-         return "initial assoc";
-      case 1u:
-         return "beacon loss";
-      case 2u:
-         return "disassoc";
-      case 3u:
-         return "assoc recreate failed";
-      case 4u:
-         return "bsscfg down";
-      default:
-         return "other link reason";
-   }
-}
-
-static const char *join_event_result(uint32_t event_type, uint32_t event_status, uint32_t event_reason)
-{
-   switch (event_type) {
-      case 0u:
-         switch (event_status) {
-            case 0u:
-               return "SSID accepted, waiting for auth/assoc";
-            case 3u:
-               return "SSID not found";
-            case 2u:
-               return "SSID join timed out";
-            default:
-               return "SSID join request failed";
-         }
-      case 3u:
-         if (event_status == 0u)
-            return "802.11 authentication succeeded";
-         if (event_status == 6u)
-            return "auth frame was unsolicited";
-         return "802.11 authentication failed";
-      case 7u:
-      case 9u:
-         if (event_status == 0u)
-            return "association succeeded";
-         return "association failed";
-      case 16u:
-         if (event_reason == 0u)
-            return "link reported up";
-         return brcm_link_reason_name(event_reason);
-      case 46u:
-         if (event_status == 262u)
-            return "WPA key exchange completed";
-         if (event_status == 260u && event_reason == 527u)
-            return "waiting for M1 timed out";
-         if (event_status == 264u && event_reason == 527u)
-            return "waiting for M3 timed out; passphrase likely wrong";
-         if (event_status == 266u && event_reason == 527u)
-            return "waiting for G1 timed out";
-         return "WPA key exchange still in progress or failed";
-      default:
-         return NULL;
-   }
-}
-
-static bool join_event_result_prefers_span(uint32_t event_type, uint32_t event_status, uint32_t event_reason)
-{
-   switch (event_type) {
-      case 0u:
-         return event_status == 0u;
-      case 3u:
-         return event_status == 0u || event_status == 6u;
-      case 7u:
-      case 9u:
-         return event_status == 0u;
-      case 46u:
-         if (event_status == 262u)
-            return false;
-         if ((event_status == 260u || event_status == 264u || event_status == 266u) && event_reason == 527u)
-            return false;
-         return true;
-      default:
-         return false;
-   }
-}
-
-static const char *join_event_phase(uint32_t event_type, uint32_t event_status, uint32_t event_reason)
-{
-   switch (event_type) {
-      case 0u:
-         if (event_status == 0u)
-            return "ssid accepted";
-         return "ssid failed";
-      case 3u:
-         if (event_status == 0u)
-            return "auth ok";
-         return "auth failed";
-      case 7u:
-      case 9u:
-         if (event_status == 0u)
-            return "assoc ok";
-         return "assoc failed";
-      case 16u:
-         if (event_reason == 0u)
-            return "link up";
-         return "link issue";
-      case 46u:
-         if (event_status == 262u)
-            return "wpa complete";
-         if ((event_status == 260u || event_status == 264u || event_status == 266u) && event_reason == 527u)
-            return "wpa failed";
-         return "wpa pending";
-      default:
-         return "unclassified";
-   }
-}
-
-static const char *join_probe_phase(const sdio_probe_result_t *sdio_probe)
-{
-   static char phase_text[96];
-   const char *first_phase;
-   const char *last_phase;
-
-   if (!sdio_probe->tx_control_probe_attempted)
-      return "not attempted";
-
-   if (!sdio_probe->tx_control_probe_success)
-      return "write failed";
-
-   if (sdio_probe->sdpcm_brcm_event_count == 0u)
-      return "no event phase observed";
-
-   first_phase = join_event_phase(sdio_probe->sdpcm_brcm_event_first_type,
-                                  sdio_probe->sdpcm_brcm_event_first_status,
-                                  sdio_probe->sdpcm_brcm_event_first_reason);
-   last_phase = join_event_phase(sdio_probe->sdpcm_brcm_event_type,
-                                 sdio_probe->sdpcm_brcm_event_status,
-                                 sdio_probe->sdpcm_brcm_event_reason);
-
-   if (sdio_probe->sdpcm_brcm_event_count == 1u || strcmp(first_phase, last_phase) == 0)
-      return last_phase;
-
-   snprintf(phase_text, sizeof(phase_text), "%s -> %s", first_phase, last_phase);
-   return phase_text;
-}
-
-static const char *join_probe_span_result(const sdio_probe_result_t *sdio_probe)
-{
-   static char span_text[192];
-   const char *first_result;
-   const char *last_result;
-
-   if (!sdio_probe->tx_control_probe_attempted)
-      return "not attempted";
-
-   if (!sdio_probe->tx_control_probe_success)
-      return "CMD53 write failed before join response";
-
-   if (sdio_probe->sdpcm_brcm_event_count == 0u)
-      return "no Broadcom event span observed";
-
-   first_result = join_event_result(sdio_probe->sdpcm_brcm_event_first_type,
-                                    sdio_probe->sdpcm_brcm_event_first_status,
-                                    sdio_probe->sdpcm_brcm_event_first_reason);
-   last_result = join_event_result(sdio_probe->sdpcm_brcm_event_type,
-                                   sdio_probe->sdpcm_brcm_event_status,
-                                   sdio_probe->sdpcm_brcm_event_reason);
-
-   if (first_result == NULL)
-      first_result = "first event not classified yet";
-   if (last_result == NULL)
-      last_result = "last event not classified yet";
-
-   if (sdio_probe->sdpcm_brcm_event_count == 1u)
-      return first_result;
-
-   snprintf(span_text, sizeof(span_text), "progressed from %s to %s", first_result, last_result);
-   return span_text;
-}
-
-static const char *join_probe_result(const sdio_probe_result_t *sdio_probe)
-{
-   const char *event_result;
-   const char *first_event_result;
-
-   if (!sdio_probe->tx_control_probe_attempted)
-      return "not attempted";
-
-   if (!sdio_probe->tx_control_probe_success)
-      return "CMD53 write failed before join response";
-
-   if (sdio_probe->tx_control_probe_multi_step
-      && sdio_probe->tx_control_probe_steps_completed < sdio_probe->tx_control_probe_steps_requested) {
-      return "join burst stopped before final step";
-   }
-
-   if (sdio_probe->sdpcm_brcm_event_msg_probe_success) {
-      event_result = join_event_result(sdio_probe->sdpcm_brcm_event_type,
-                                       sdio_probe->sdpcm_brcm_event_status,
-                                       sdio_probe->sdpcm_brcm_event_reason);
-      if (event_result != NULL) {
-         first_event_result = join_event_result(sdio_probe->sdpcm_brcm_event_first_type,
-                                                sdio_probe->sdpcm_brcm_event_first_status,
-                                                sdio_probe->sdpcm_brcm_event_first_reason);
-         if (sdio_probe->sdpcm_brcm_event_count > 1u
-            && first_event_result != NULL
-            && strcmp(first_event_result, event_result) != 0
-            && join_event_result_prefers_span(sdio_probe->sdpcm_brcm_event_type,
-                                              sdio_probe->sdpcm_brcm_event_status,
-                                              sdio_probe->sdpcm_brcm_event_reason)) {
-            return join_probe_span_result(sdio_probe);
-         }
-         return event_result;
-      }
-   }
-
-   if (sdio_probe->sdpcm_cdc_header_probe_success) {
-      if ((sdio_probe->sdpcm_cdc_flags & 0x01u) != 0u)
-         return "firmware returned CDC ioctl error";
-      if (sdio_probe->sdpcm_cdc_status != 0u)
-         return "firmware returned non-zero CDC status";
-   }
-
-   if (sdio_probe->frame_header_probe_success
-      && !(sdio_probe->frame_header_size == 0u && sdio_probe->frame_header_size_complement == 0u)) {
-      return "response frame captured but join outcome is not classified yet";
-   }
-
-   return "no join response observed yet";
-}
-
-static const char *brcm_event_msg_result(const sdio_probe_result_t *sdio_probe)
-{
-   if (!sdio_probe->sdpcm_brcm_event_msg_probe_attempted)
-      return "not attempted";
-
-   if (!sdio_probe->sdpcm_brcm_event_msg_probe_success)
-      return "frame too short or read failed";
-
-   if (!sdio_probe->sdpcm_brcm_event_msg_datalen_sane)
-      return "payload extends past frame";
-
-   return "event message decoded";
-}
-
-static const char *tx_post_write_effect(const sdio_probe_result_t *sdio_probe)
-{
-   if (!sdio_probe->tx_control_probe_attempted)
-      return "not attempted";
-
-   if (!sdio_probe->tx_control_probe_success)
-      return "write failed before response sampling";
-
-   if (!sdio_probe->tx_control_post_state_probe_success)
-      return "write completed but post-state sampling failed";
-
-   if (sdio_probe->frame_header_probe_success
-      && !(sdio_probe->frame_header_size == 0u && sdio_probe->frame_header_size_complement == 0u)) {
-      return "response frame available";
-   }
-
-   if (sdio_probe->tx_control_post_read_frame_byte_count != sdio_probe->read_frame_byte_count)
-      return "frame-count changed";
-
-   if (sdio_probe->tx_control_post_int_status != sdio_probe->sdio_int_status)
-      return "interrupt status changed";
-
-   if (sdio_probe->tx_control_post_to_sb_mailbox != sdio_probe->sdio_to_sb_mailbox)
-      return "to-SB mailbox changed";
-
-   if (sdio_probe->tx_control_post_to_host_mailbox_data != sdio_probe->sdio_to_host_mailbox_data)
-      return "to-host mailbox changed";
-
-   return "no immediate observable change";
-}
-
-static void render_home_page(webserver_response_t *response)
-{
-   const wifi_status_t status = wifi_get_status();
-
-   response_begin_html(response, "Pi1MHz WiFi");
-   response_append(response,
-                   "<p>This HTTP layer is ready to be connected to the future TCP/IP stack.</p>"
-                   "<p>Current WiFi state: <strong>%s</strong></p>"
-                   "<ul>"
-                   "<li><a href=\"/files\">Copy files to and from the SD card</a></li>"
-                   "<li><a href=\"/framebuffer\">Inspect framebuffer state and future PNG export</a></li>"
-                   "<li><a href=\"/status\">Review WiFi and board status</a></li>"
-                   "</ul>",
-                   wifi_state_name(status.state));
-   response_end_html(response);
-}
-
-static void render_status_page(webserver_response_t *response)
-{
-   const wifi_config_t *config = wifi_get_config();
-   const wifi_status_t status = wifi_get_status();
-   const wifi_lwip_context_t *lwip_context = wifi_lwip_get_context();
-   const sdio_probe_result_t *sdio_probe = sdio_get_probe_result();
-
-   response_begin_html(response, "Status");
-   response_append(response,
-                   "<table>"
-                   "<tr><th>Build info</th><td>%s</td></tr>"
-                   "<tr><th>WiFi state</th><td>%s</td></tr>"
-                   "<tr><th>SSID configured</th><td>%s</td></tr>"
-                   "<tr><th>Password configured</th><td>%s</td></tr>"
-                   "<tr><th>Hostname</th><td>%s</td></tr>"
-                   "<tr><th>IP mode</th><td>%s</td></tr>"
-                   "<tr><th>Static IP</th><td>%s</td></tr>"
-                   "<tr><th>Netmask</th><td>%s</td></tr>"
-                   "<tr><th>Gateway</th><td>%s</td></tr>"
-                   "<tr><th>DNS</th><td>%s</td></tr>"
-                   "<tr><th>HTTP port</th><td>%u</td></tr>"
-                   "<tr><th>SDIO probe enabled</th><td>%s</td></tr>"
-                   "<tr><th>SDIO TX probe enabled</th><td>%s</td></tr>"
-                   "<tr><th>SDIO host backend</th><td>%s</td></tr>"
-                   "<tr><th>SDIO host status</th><td>%s</td></tr>"
-                   "<tr><th>SDIO RX sweep cap</th><td>%u frames</td></tr>"
-                   "<tr><th>SDIO TX probe command</th><td>%s</td></tr>"
-                   "<tr><th>SDIO probe attempted</th><td>%s</td></tr>"
-                   "<tr><th>SDIO probe result</th><td>%s</td></tr>"
-                   "<tr><th>SDIO OCR</th><td>0x%08lx</td></tr>"
-                   "<tr><th>SDIO functions</th><td>%u</td></tr>"
-                   "<tr><th>SDIO memory present</th><td>%s</td></tr>"
-                   "<tr><th>SDIO 1.8V support</th><td>%s</td></tr>"
-                   "<tr><th>CCCR reads</th><td>%s</td></tr>"
-                   "<tr><th>CCCR revision</th><td>%u</td></tr>"
-                   "<tr><th>SDIO revision</th><td>%u</td></tr>"
-                   "<tr><th>IO enable</th><td>0x%02x</td></tr>"
-                   "<tr><th>IO ready</th><td>0x%02x</td></tr>"
-                   "<tr><th>Bus control</th><td>0x%02x</td></tr>"
-                   "<tr><th>Function setup attempted</th><td>%s</td></tr>"
-                   "<tr><th>Function setup result</th><td>%s</td></tr>"
-                   "<tr><th>Requested IO enable</th><td>0x%02x</td></tr>"
-                   "<tr><th>Configured IO enable</th><td>0x%02x</td></tr>"
-                   "<tr><th>Configured IO ready</th><td>0x%02x</td></tr>"
-                   "<tr><th>Function 1 block size</th><td>%u</td></tr>"
-                   "<tr><th>Function 2 block size</th><td>%u</td></tr>"
-                   "<tr><th>Clock probe</th><td>%s</td></tr>"
-                   "<tr><th>Clock probe result</th><td>%s</td></tr>"
-                   "<tr><th>Chip clock CSR initial</th><td>0x%02x</td></tr>"
-                   "<tr><th>Chip clock CSR requested</th><td>0x%02x</td></tr>"
-                   "<tr><th>Chip clock CSR final</th><td>0x%02x</td></tr>"
-                   "<tr><th>Power probe</th><td>%s</td></tr>"
-                   "<tr><th>Wakeup control</th><td>0x%02x</td></tr>"
-                   "<tr><th>Sleep CSR</th><td>0x%02x</td></tr>"
-                   "<tr><th>KSO probe</th><td>%s</td></tr>"
-                   "<tr><th>KSO probe result</th><td>%s</td></tr>"
-                   "<tr><th>KSO requested</th><td>0x%02x</td></tr>"
-                   "<tr><th>KSO final</th><td>0x%02x</td></tr>"
-                   "<tr><th>Mailbox probe</th><td>%s</td></tr>"
-                   "<tr><th>SDIO core base</th><td>0x%08lx</td></tr>"
-                   "<tr><th>SDIO int status</th><td>0x%08lx</td></tr>",
-                   get_info_string(),
-                   wifi_state_name(status.state),
-                   status.has_ssid ? "yes" : "no",
-                   status.has_password ? "yes" : "no",
-                   config->hostname,
-                   wifi_ip_mode_name(config->ip_mode),
-                   config->ip_address[0] != '\0' ? config->ip_address : "not set",
-                   config->netmask[0] != '\0' ? config->netmask : "not set",
-                   config->gateway[0] != '\0' ? config->gateway : "not set",
-                   config->dns[0] != '\0' ? config->dns : "not set",
-                   (unsigned int)status.http_port,
-                   status.sdio_probe_enabled ? "yes" : "no",
-                   status.sdio_tx_probe_enabled ? "yes" : "no",
-                   sdio_host_backend_name(),
-                   sdio_host_last_error()[0] != '\0' ? sdio_host_last_error() : "ready",
-                   (unsigned int)config->sdio_rx_sweep_limit,
-                   tx_probe_command_name(status.sdio_tx_probe_command),
-                   sdio_probe->attempted ? "yes" : "no",
-                   sdio_probe->attempted ? (sdio_probe->success ? "CMD5 responded" : "CMD5 failed") : "not attempted",
-                   (unsigned long)sdio_probe->ocr.raw_ocr,
-                   (unsigned int)sdio_probe->ocr.function_count,
-                   sdio_probe->ocr.memory_present ? "yes" : "no",
-                   sdio_probe->ocr.supports_1p8v ? "yes" : "no",
-                   sdio_probe->cccr_read_success ? "CMD52 reads succeeded" : "not available",
-                   (unsigned int)sdio_probe->cccr_revision,
-                   (unsigned int)sdio_probe->sd_revision,
-                   (unsigned int)sdio_probe->io_enable,
-                   (unsigned int)sdio_probe->io_ready,
-                   (unsigned int)sdio_probe->bus_interface_control,
-                   sdio_probe->function_setup_attempted ? "yes" : "no",
-                   sdio_probe->function_setup_attempted ? (sdio_probe->function_setup_success ? "functions 1 and 2 enabled" : "setup failed") : "not attempted",
-                   (unsigned int)sdio_probe->requested_io_enable,
-                   (unsigned int)sdio_probe->configured_io_enable,
-                   (unsigned int)sdio_probe->configured_io_ready,
-                   (unsigned int)sdio_probe->function1_block_size,
-                   (unsigned int)sdio_probe->function2_block_size,
-                   sdio_probe->clock_probe_attempted ? "yes" : "no",
-                   sdio_probe->clock_probe_attempted ? (sdio_probe->clock_probe_success ? "ALP available" : "ALP request failed") : "not attempted",
-                   (unsigned int)sdio_probe->chip_clock_csr_initial,
-                   (unsigned int)sdio_probe->chip_clock_csr_requested,
-                   (unsigned int)sdio_probe->chip_clock_csr_final,
-                   sdio_probe->power_probe_success ? "wakeup and sleep registers read" : "not available",
-                   (unsigned int)sdio_probe->wakeup_control,
-                   (unsigned int)sdio_probe->sleep_control_status,
-                   sdio_probe->kso_probe_attempted ? "yes" : "no",
-                   sdio_probe->kso_probe_attempted ? (sdio_probe->kso_probe_success ? "wl kso and devon asserted" : "wake polling failed") : "not attempted",
-                   (unsigned int)sdio_probe->kso_control_requested,
-                   (unsigned int)sdio_probe->kso_control_final,
-                   sdio_probe->mailbox_probe_success ? "sdio core registers read" : "not available",
-                   (unsigned long)sdio_probe->sdio_core_base,
-                   (unsigned long)sdio_probe->sdio_int_status);
-   response_append(response,
-                   "<tr><th>Interrupt ack</th><td>%s</td></tr>"
-                   "<tr><th>Interrupt ack result</th><td>%s</td></tr>"
-                   "<tr><th>Interrupt ack value</th><td>0x%08lx</td></tr>"
-                   "<tr><th>SDIO int status after ack</th><td>0x%08lx</td></tr>"
-                   "<tr><th>SDIO int host mask</th><td>0x%08lx</td></tr>"
-                   "<tr><th>Interrupt mask write</th><td>%s</td></tr>"
-                   "<tr><th>Interrupt mask result</th><td>%s</td></tr>"
-                   "<tr><th>Requested int host mask</th><td>0x%08lx</td></tr>"
-                   "<tr><th>SDIO int host mask after write</th><td>0x%08lx</td></tr>"
-                   "<tr><th>To SB mailbox</th><td>0x%08lx</td></tr>"
-                   "<tr><th>To host mailbox data</th><td>0x%08lx</td></tr>"
-                   "<tr><th>Function 2 probe</th><td>%s</td></tr>"
-                   "<tr><th>Function 2 info</th><td>0x%02x</td></tr>"
-                   "<tr><th>Function 2 watermark</th><td>0x%02x</td></tr>"
-                   "<tr><th>Read frame byte count</th><td>%u</td></tr>"
-                   "<tr><th>Frame header probe</th><td>%s</td></tr>"
-                   "<tr><th>Frame header result</th><td>%s</td></tr>"
-                   "<tr><th>Frame size</th><td>%u</td></tr>"
-                   "<tr><th>Frame size complement</th><td>0x%04x</td></tr>"
-                   "<tr><th>SDPCM header</th><td>%s</td></tr>"
-                   "<tr><th>SDPCM sequence</th><td>%u</td></tr>"
-                   "<tr><th>SDPCM channel</th><td>%s (%u)</td></tr>"
-                   "<tr><th>SDPCM channel/flags</th><td>0x%02x</td></tr>"
-                   "<tr><th>SDPCM next length</th><td>%u</td></tr>"
-                   "<tr><th>SDPCM header length</th><td>%u</td></tr>"
-                   "<tr><th>Expected SDPCM header length</th><td>%u</td></tr>"
-                   "<tr><th>SDPCM header layout</th><td>%s</td></tr>"
-                   "<tr><th>SDPCM header sanity</th><td>%s</td></tr>"
-                   "<tr><th>Post-header probe</th><td>%s</td></tr>"
-                   "<tr><th>Post-header result</th><td>%s</td></tr>"
-                   "<tr><th>Post-header bytes</th><td>%u</td></tr>"
-                   "<tr><th>Post-header prefix</th><td>%02x %02x %02x %02x</td></tr>"
-                   "<tr><th>CDC command prefix</th><td>%s</td></tr>"
-                   "<tr><th>BDC header</th><td>%s</td></tr>"
-                   "<tr><th>SDPCM flow control</th><td>0x%02x</td></tr>"
-                   "<tr><th>SDPCM bus credit</th><td>%u</td></tr>",
-                   sdio_probe->interrupt_ack_attempted ? "yes" : "no",
-                   sdio_probe->sdio_interrupt_ack_value == 0 ? "no pending host interrupt bits" : (sdio_probe->interrupt_ack_success ? "status write completed" : "status write failed"),
-                   (unsigned long)sdio_probe->sdio_interrupt_ack_value,
-                   (unsigned long)sdio_probe->sdio_int_status_after_ack,
-                   (unsigned long)sdio_probe->sdio_int_host_mask,
-                   sdio_probe->interrupt_mask_write_attempted ? "yes" : "no",
-                   sdio_probe->interrupt_mask_write_attempted ? (sdio_probe->interrupt_mask_write_success ? "mask configured" : "mask write failed") : "not attempted",
-                   (unsigned long)sdio_probe->sdio_int_host_mask_requested,
-                   (unsigned long)sdio_probe->sdio_int_host_mask_after_write,
-                   (unsigned long)sdio_probe->sdio_to_sb_mailbox,
-                   (unsigned long)sdio_probe->sdio_to_host_mailbox_data,
-                   sdio_probe->function2_probe_success ? "f2 and frame-count registers read" : "not available",
-                   (unsigned int)sdio_probe->function2_info,
-                   (unsigned int)sdio_probe->function2_watermark,
-                   (unsigned int)sdio_probe->read_frame_byte_count,
-                   sdio_probe->frame_header_probe_attempted ? "yes" : "no",
-                   !sdio_probe->frame_header_probe_success ? "header read failed" : ((sdio_probe->frame_header_size == 0 && sdio_probe->frame_header_size_complement == 0) ? "no frame available" : (sdio_probe->frame_header_valid ? "valid frame tag" : "invalid frame tag")),
-                   (unsigned int)sdio_probe->frame_header_size,
-                   (unsigned int)sdio_probe->frame_header_size_complement,
-                   sdio_probe->sdpcm_header_read_success ? "decoded" : "not decoded",
-                   (unsigned int)sdio_probe->sdpcm_sequence,
-                   sdpcm_channel_name(sdio_probe->sdpcm_channel),
-                   (unsigned int)sdio_probe->sdpcm_channel,
-                   (unsigned int)sdio_probe->sdpcm_channel_and_flags,
-                   (unsigned int)sdio_probe->sdpcm_next_length,
-                   (unsigned int)sdio_probe->sdpcm_header_length,
-                   (unsigned int)sdio_probe->sdpcm_expected_header_length,
-                   sdio_probe->sdpcm_header_read_success ? (sdio_probe->sdpcm_header_length_expected ? "matches channel" : "unexpected for channel") : "not decoded",
-                   sdio_probe->sdpcm_header_read_success ? (sdio_probe->sdpcm_header_sane ? "sane" : "not sane") : "not decoded",
-                   sdio_probe->sdpcm_post_header_probe_attempted ? "yes" : "no",
-                   !sdio_probe->sdpcm_post_header_probe_attempted ? "not needed" : (sdio_probe->sdpcm_post_header_probe_success ? "prefix captured" : "prefix read failed or frame too short"),
-                   (unsigned int)sdio_probe->sdpcm_post_header_bytes_requested,
-                   (unsigned int)sdio_probe->sdpcm_post_header_prefix0,
-                   (unsigned int)sdio_probe->sdpcm_post_header_prefix1,
-                   (unsigned int)sdio_probe->sdpcm_post_header_prefix2,
-                   (unsigned int)sdio_probe->sdpcm_post_header_prefix3,
-                   sdio_probe->sdpcm_cdc_prefix_decoded ? "decoded" : "not control",
-                   sdio_probe->sdpcm_bdc_header_decoded ? "decoded" : "not data",
-                   (unsigned int)sdio_probe->sdpcm_wireless_flow_control,
-                   (unsigned int)sdio_probe->sdpcm_bus_data_credit);
-   response_append(response,
-                   "<tr><th>CDC header probe</th><td>%s</td></tr>"
-                   "<tr><th>CDC header result</th><td>%s</td></tr>"
-                   "<tr><th>CDC command value</th><td>0x%08lx</td></tr>"
-                   "<tr><th>CDC command name</th><td>%s</td></tr>"
-                   "<tr><th>CDC length</th><td>0x%08lx</td></tr>"
-                   "<tr><th>CDC request bytes</th><td>%u</td></tr>"
-                   "<tr><th>CDC response bytes</th><td>%u</td></tr>"
-                   "<tr><th>CDC payload bytes in frame</th><td>%u</td></tr>"
-                   "<tr><th>CDC payload fit</th><td>%s</td></tr>"
-                   "<tr><th>CDC flags</th><td>0x%08lx</td></tr>"
-                   "<tr><th>CDC interface</th><td>%u</td></tr>"
-                   "<tr><th>CDC request ID</th><td>%u</td></tr>"
-                   "<tr><th>CDC set flag</th><td>%s</td></tr>"
-                   "<tr><th>CDC error flag</th><td>%s</td></tr>"
-                   "<tr><th>CDC status</th><td>0x%08lx</td></tr>"
-                   "<tr><th>CDC status check</th><td>%s</td></tr>"
-                   "<tr><th>CDC payload word0 probe</th><td>%s</td></tr>"
-                   "<tr><th>CDC payload word0 result</th><td>%s</td></tr>"
-                   "<tr><th>CDC payload word0</th><td>0x%08lx</td></tr>"
-                   "<tr><th>CDC payload word1 probe</th><td>%s</td></tr>"
-                   "<tr><th>CDC payload word1 result</th><td>%s</td></tr>"
-                   "<tr><th>CDC payload word1</th><td>0x%08lx</td></tr>"
-                   "<tr><th>CDC magic check</th><td>%s</td></tr>"
-                   "<tr><th>CDC version check</th><td>%s</td></tr>"
-                   "<tr><th>CDC request metadata match</th><td>%s</td></tr>"
-                   "<tr><th>TX control template</th><td>%s</td></tr>"
-                   "<tr><th>TX control probe</th><td>%s</td></tr>"
-                   "<tr><th>TX control probe result</th><td>%s</td></tr>"
-                   "<tr><th>TX control probe response</th><td>0x%08lx</td></tr>"
-                   "<tr><th>TX control probe interrupt</th><td>0x%08lx</td></tr>"
-                   "<tr><th>TX control probe error</th><td>0x%08lx</td></tr>"
-                   "<tr><th>TX post-state probe</th><td>%s</td></tr>"
-                   "<tr><th>TX post-state result</th><td>%s</td></tr>"
-                   "<tr><th>TX post-state read frame count</th><td>%u</td></tr>"
-                   "<tr><th>TX post-state int status</th><td>0x%08lx</td></tr>"
-                   "<tr><th>TX post-state to SB mailbox</th><td>0x%08lx</td></tr>"
-                   "<tr><th>TX post-state to host mailbox</th><td>0x%08lx</td></tr>"
-                   "<tr><th>RX frame sweep</th><td>%s</td></tr>"
-                   "<tr><th>RX frame sweep result</th><td>%s</td></tr>"
-                   "<tr><th>RX frames decoded</th><td>%u/%u</td></tr>"
-                   "<tr><th>RX sweep tail state</th><td>%s</td></tr>"
-                   "<tr><th>TX post-write effect</th><td>%s</td></tr>"
-                   "<tr><th>TX response command match</th><td>%s</td></tr>"
-                   "<tr><th>TX template command</th><td>0x%08lx (%s)</td></tr>"
-                   "<tr><th>TX template payload bytes</th><td>%u</td></tr>"
-                   "<tr><th>TX template request ID</th><td>%u</td></tr>"
-                   "<tr><th>TX template interface</th><td>%u</td></tr>"
-                   "<tr><th>TX template frame size</th><td>%u</td></tr>"
-                   "<tr><th>TX template frame complement</th><td>0x%04x</td></tr>"
-                   "<tr><th>TX template SDPCM seq</th><td>%u</td></tr>"
-                   "<tr><th>TX template SDPCM channel/flags</th><td>0x%02x</td></tr>"
-                   "<tr><th>TX template SDPCM next length</th><td>%u</td></tr>"
-                   "<tr><th>TX template SDPCM header length</th><td>%u</td></tr>"
-                   "<tr><th>TX template flow control</th><td>0x%02x</td></tr>"
-                   "<tr><th>TX template bus credit</th><td>%u</td></tr>"
-                   "<tr><th>TX template CDC length</th><td>0x%08lx</td></tr>"
-                   "<tr><th>TX template CDC flags</th><td>0x%08lx</td></tr>"
-                   "<tr><th>TX template CDC status</th><td>0x%08lx</td></tr>"
-                   "<tr><th>TX template payload word0</th><td>0x%08lx</td></tr>",
-                   sdio_probe->sdpcm_cdc_header_probe_attempted ? "yes" : "no",
-                   sdio_probe->sdpcm_cdc_header_probe_attempted ? (sdio_probe->sdpcm_cdc_header_probe_success ? "full CDC header captured" : "frame too short or read failed") : "not control",
-                   (unsigned long)sdio_probe->sdpcm_cdc_cmd_prefix,
-                   cdc_command_name(sdio_probe->sdpcm_cdc_cmd_prefix),
-                   (unsigned long)sdio_probe->sdpcm_cdc_length,
-                   (unsigned int)sdio_probe->sdpcm_cdc_request_length,
-                   (unsigned int)sdio_probe->sdpcm_cdc_response_length,
-                   (unsigned int)sdio_probe->sdpcm_cdc_payload_bytes_available,
-                   sdio_probe->sdpcm_cdc_header_probe_success ? (sdio_probe->sdpcm_cdc_response_length_sane ? "fits frame" : "extends past frame") : "not decoded",
-                   (unsigned long)sdio_probe->sdpcm_cdc_flags,
-                   (unsigned int)sdio_probe->sdpcm_cdc_interface,
-                   (unsigned int)sdio_probe->sdpcm_cdc_request_id,
-                   sdio_probe->sdpcm_cdc_header_probe_success ? ((sdio_probe->sdpcm_cdc_flags & 0x02u) != 0u ? "yes" : "no") : "not decoded",
-                   sdio_probe->sdpcm_cdc_header_probe_success ? ((sdio_probe->sdpcm_cdc_flags & 0x01u) != 0u ? "yes" : "no") : "not decoded",
-                   (unsigned long)sdio_probe->sdpcm_cdc_status,
-                   !sdio_probe->sdpcm_cdc_header_probe_success ? "not decoded"
-                      : ((sdio_probe->sdpcm_cdc_flags & 0x01u) != 0u ? "firmware reported ioctl error"
-                      : (sdio_probe->sdpcm_cdc_status == 0u ? "status clear" : "non-zero status without error flag")),
-                   sdio_probe->sdpcm_cdc_payload_word0_probe_attempted ? "yes" : "no",
-                   sdio_probe->sdpcm_cdc_payload_word0_probe_attempted ? (sdio_probe->sdpcm_cdc_payload_word0_probe_success ? "first payload word captured" : "payload read failed") : "not attempted",
-                   (unsigned long)sdio_probe->sdpcm_cdc_payload_word0,
-                   sdio_probe->sdpcm_cdc_payload_word1_probe_attempted ? "yes" : "no",
-                   sdio_probe->sdpcm_cdc_payload_word1_probe_attempted ? (sdio_probe->sdpcm_cdc_payload_word1_probe_success ? "second payload word captured" : "payload read failed") : "not attempted",
-                   (unsigned long)sdio_probe->sdpcm_cdc_payload_word1,
-                   sdio_probe->sdpcm_cdc_cmd_prefix != 0u ? "not WLC_GET_MAGIC"
-                      : (!sdio_probe->sdpcm_cdc_payload_word0_probe_success ? "magic payload not captured"
-                      : (sdio_probe->sdpcm_cdc_payload_word0_magic_valid ? "matches WLC_IOCTL_MAGIC" : "unexpected magic value")),
-                   sdio_probe->sdpcm_cdc_cmd_prefix != 1u ? "not WLC_GET_VERSION"
-                      : (!sdio_probe->sdpcm_cdc_payload_word0_probe_success ? "version payload not captured"
-                      : ((sdio_probe->sdpcm_cdc_payload_word0 == 1u || sdio_probe->sdpcm_cdc_payload_word0 == 2u)
-                         ? "known ioctl version"
-                         : "unexpected ioctl version")),
-                   !sdio_probe->tx_control_probe_attempted ? "not attempted"
-                      : (!sdio_probe->sdpcm_cdc_header_probe_success ? "response was not a decoded control header"
-                      : ((sdio_probe->sdpcm_cdc_request_id == sdio_probe->tx_control_template_request_id)
-                         && (sdio_probe->sdpcm_cdc_interface == sdio_probe->tx_control_template_interface)
-                         ? "request ID and interface match"
-                         : "request ID or interface differ")),
-                   sdio_probe->tx_control_template_ready ? "prepared" : "not prepared",
-                   sdio_probe->tx_control_probe_attempted ? "yes" : "no",
-                   sdio_probe->tx_control_probe_attempted ? (sdio_probe->tx_control_probe_success ? "CMD53 write completed" : "CMD53 write failed") : "not attempted",
-                   (unsigned long)sdio_probe->tx_control_probe_response0,
-                   (unsigned long)sdio_probe->tx_control_probe_interrupt,
-                   (unsigned long)sdio_probe->tx_control_probe_error,
-                   sdio_probe->tx_control_post_state_probe_attempted ? "yes" : "no",
-                   sdio_probe->tx_control_post_state_probe_attempted ? (sdio_probe->tx_control_post_state_probe_success ? "post-write state captured" : "post-write state read failed") : "not attempted",
-                   (unsigned int)sdio_probe->tx_control_post_read_frame_byte_count,
-                   (unsigned long)sdio_probe->tx_control_post_int_status,
-                   (unsigned long)sdio_probe->tx_control_post_to_sb_mailbox,
-                   (unsigned long)sdio_probe->tx_control_post_to_host_mailbox_data,
-                   sdio_probe->rx_frame_sweep_attempted ? "yes" : "no",
-                   !sdio_probe->rx_frame_sweep_attempted ? "not attempted"
-                      : (sdio_probe->rx_frame_sweep_success ? "bounded sweep completed" : "frame sweep stopped by read failure"),
-                   (unsigned int)sdio_probe->rx_frames_decoded,
-                   (unsigned int)sdio_probe->rx_frame_sweep_limit,
-                   !sdio_probe->rx_frame_sweep_attempted ? "not attempted"
-                      : (!sdio_probe->rx_frame_sweep_success ? "unknown"
-                      : (sdio_probe->rx_frame_sweep_more_pending ? "fixed limit reached with more data pending" : "queue drained or no more frames pending")),
-                   tx_post_write_effect(sdio_probe),
-                   !sdio_probe->tx_control_probe_attempted ? "not attempted"
-                      : (!sdio_probe->frame_header_probe_success ? "no response frame decoded"
-                      : (!sdio_probe->sdpcm_cdc_header_probe_success ? "response was not a decoded control header"
-                      : (sdio_probe->sdpcm_cdc_cmd_prefix == sdio_probe->tx_control_template_command
-                         ? "matches transmitted command"
-                         : "different response command"))),
-                   (unsigned long)sdio_probe->tx_control_template_command,
-                   cdc_command_name(sdio_probe->tx_control_template_command),
-                   (unsigned int)sdio_probe->tx_control_template_payload_length,
-                   (unsigned int)sdio_probe->tx_control_template_request_id,
-                   (unsigned int)sdio_probe->tx_control_template_interface,
-                   (unsigned int)sdio_probe->tx_control_template_frame_size,
-                   (unsigned int)sdio_probe->tx_control_template_frame_size_complement,
-                   (unsigned int)sdio_probe->tx_control_template_sequence,
-                   (unsigned int)sdio_probe->tx_control_template_channel_and_flags,
-                   (unsigned int)sdio_probe->tx_control_template_next_length,
-                   (unsigned int)sdio_probe->tx_control_template_header_length,
-                   (unsigned int)sdio_probe->tx_control_template_wireless_flow_control,
-                   (unsigned int)sdio_probe->tx_control_template_bus_data_credit,
-                   (unsigned long)sdio_probe->tx_control_template_cdc_length,
-                   (unsigned long)sdio_probe->tx_control_template_cdc_flags,
-                   (unsigned long)sdio_probe->tx_control_template_cdc_status,
-                   (unsigned long)sdio_probe->tx_control_template_payload_word0);
-   response_append(response,
-                   "<tr><th>TX probe mode</th><td>%s</td></tr>"
-                   "<tr><th>TX probe steps</th><td>%u/%u</td></tr>"
-                   "<tr><th>TX last command</th><td>0x%08lx (%s)</td></tr>"
-                   "<tr><th>TX last request ID</th><td>%u</td></tr>"
-                   "<tr><th>TX last SDPCM seq</th><td>%u</td></tr>",
-                   sdio_probe->tx_control_probe_multi_step ? "multi-step join burst" : "single ioctl",
-                   (unsigned int)sdio_probe->tx_control_probe_steps_completed,
-                   (unsigned int)sdio_probe->tx_control_probe_steps_requested,
-                   (unsigned long)sdio_probe->tx_control_probe_last_command,
-                   cdc_command_name(sdio_probe->tx_control_probe_last_command),
-                   (unsigned int)sdio_probe->tx_control_probe_last_request_id,
-                   (unsigned int)sdio_probe->tx_control_probe_last_sequence);
-   response_append(response,
-                   "<tr><th>BDC version</th><td>%u</td></tr>"
-                   "<tr><th>BDC version check</th><td>%s</td></tr>"
-                   "<tr><th>BDC flags</th><td>0x%02x</td></tr>"
-                   "<tr><th>BDC priority</th><td>0x%02x</td></tr>"
-                   "<tr><th>BDC flags2</th><td>0x%02x</td></tr>"
-                   "<tr><th>BDC data offset</th><td>%u</td></tr>"
-                   "<tr><th>BDC data offset bytes</th><td>%u</td></tr>"
-                   "<tr><th>BDC offset check</th><td>%s</td></tr>"
-                   "<tr><th>Data ethertype probe</th><td>%s</td></tr>"
-                   "<tr><th>Data ethertype result</th><td>%s</td></tr>"
-                   "<tr><th>Data ethertype</th><td>0x%04x (%s)</td></tr>"
-                   "<tr><th>Broadcom event probe</th><td>%s</td></tr>"
-                   "<tr><th>Broadcom event result</th><td>%s</td></tr>"
-                   "<tr><th>Broadcom event subtype</th><td>0x%04x</td></tr>"
-                   "<tr><th>Broadcom event length</th><td>%u</td></tr>"
-                   "<tr><th>Broadcom event version</th><td>%u</td></tr>"
-                   "<tr><th>Broadcom event OUI</th><td>%02x:%02x:%02x</td></tr>"
-                   "<tr><th>Broadcom event user subtype</th><td>0x%04x</td></tr>"
-                   "<tr><th>Broadcom event message probe</th><td>%s</td></tr>"
-                   "<tr><th>Broadcom event message result</th><td>%s</td></tr>"
-                   "<tr><th>Join summary</th><td>%s</td></tr>"
-                   "<tr><th>Join phase</th><td>%s</td></tr>"
-                   "<tr><th>Join event span</th><td>%s</td></tr>"
-                   "<tr><th>Broadcom events seen</th><td>%u</td></tr>"
-                   "<tr><th>Broadcom first event</th><td>0x%08lx (%s)</td></tr>"
-                   "<tr><th>Broadcom first status</th><td>0x%08lx (%s)</td></tr>"
-                   "<tr><th>Broadcom first reason</th><td>0x%08lx (%s)</td></tr>"
-                   "<tr><th>Broadcom event msg version</th><td>%u</td></tr>"
-                   "<tr><th>Broadcom event msg flags</th><td>0x%04x</td></tr>"
-                   "<tr><th>Broadcom event type</th><td>0x%08lx (%s)</td></tr>"
-                   "<tr><th>Broadcom event status</th><td>0x%08lx (%s)</td></tr>"
-                   "<tr><th>Broadcom event reason</th><td>0x%08lx (%s)</td></tr>"
-                   "<tr><th>Broadcom event auth type</th><td>0x%08lx</td></tr>"
-                   "<tr><th>Broadcom event data length</th><td>%lu</td></tr>"
-                   "<tr><th>Broadcom event addr</th><td>%02x:%02x:%02x:%02x:%02x:%02x</td></tr>"
-                   "<tr><th>Broadcom event ifname</th><td>%s%s</td></tr>"
-                   "<tr><th>Broadcom event ifidx</th><td>%u</td></tr>"
-                   "<tr><th>Broadcom event bsscfgidx</th><td>%u</td></tr>"
-                   "<tr><th>Broadcom event payload bytes</th><td>%lu</td></tr>"
-                   "<tr><th>Broadcom event payload fit</th><td>%s</td></tr>"
-                   "<tr><th>Read abort</th><td>%s</td></tr>"
-                   "<tr><th>Read abort result</th><td>%s</td></tr>"
-                   "<tr><th>Backplane probe</th><td>%s</td></tr>"
-                   "<tr><th>Chipcommon ID reg</th><td>0x%08lx</td></tr>"
-                   "<tr><th>Chip ID</th><td>%u</td></tr>"
-                   "<tr><th>Chip revision</th><td>%u</td></tr>"
-                   "<tr><th>HTTP ready</th><td>%s</td></tr>"
-                   "<tr><th>lwIP adapter</th><td>%s</td></tr>"
-                   "<tr><th>lwIP core</th><td>%s</td></tr>"
-                   "<tr><th>netif added</th><td>%s</td></tr>"
-                   "<tr><th>lwIP timers</th><td>%s</td></tr>"
-                   "<tr><th>Service calls</th><td>%lu</td></tr>"
-                   "<tr><th>Link state</th><td>%s</td></tr>"
-                   "<tr><th>Address ready</th><td>%s</td></tr>"
-                   "<tr><th>DHCP started</th><td>%s</td></tr>"
-                   "<tr><th>Firmware image</th><td>%s (%lu bytes)</td></tr>"
-                   "<tr><th>NVRAM image</th><td>%s (%lu bytes)</td></tr>"
-                   "<tr><th>Last error</th><td>%s</td></tr>"
-                   "</table>",
-                   (unsigned int)sdio_probe->sdpcm_bdc_version,
-                   sdio_probe->sdpcm_bdc_header_decoded ? (sdio_probe->sdpcm_bdc_version_valid ? "version 2" : "unexpected version") : "not data",
-                   (unsigned int)sdio_probe->sdpcm_bdc_flags,
-                   (unsigned int)sdio_probe->sdpcm_bdc_priority,
-                   (unsigned int)sdio_probe->sdpcm_bdc_flags2,
-                   (unsigned int)sdio_probe->sdpcm_bdc_data_offset,
-                   (unsigned int)sdio_probe->sdpcm_bdc_data_offset_bytes,
-                   sdio_probe->sdpcm_bdc_header_decoded ? (sdio_probe->sdpcm_bdc_data_offset_sane ? "within frame" : "past frame") : "not data",
-                   sdio_probe->sdpcm_data_ethertype_probe_attempted ? "yes" : "no",
-                   !sdio_probe->sdpcm_data_ethertype_probe_attempted ? "not data" : (sdio_probe->sdpcm_data_ethertype_probe_success ? "ethernet header reached" : "frame too short or read failed"),
-                   (unsigned int)sdio_probe->sdpcm_data_ethertype,
-                   ethertype_name(sdio_probe->sdpcm_data_ethertype),
-                   sdio_probe->sdpcm_brcm_event_probe_attempted ? "yes" : "no",
-                   brcm_event_probe_result(sdio_probe),
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_subtype,
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_length,
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_version,
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_oui0,
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_oui1,
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_oui2,
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_usr_subtype,
-                   sdio_probe->sdpcm_brcm_event_msg_probe_attempted ? "yes" : "no",
-                   brcm_event_msg_result(sdio_probe),
-                   join_probe_result(sdio_probe),
-                   join_probe_phase(sdio_probe),
-                   join_probe_span_result(sdio_probe),
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_count,
-                   (unsigned long)sdio_probe->sdpcm_brcm_event_first_type,
-                   sdio_probe->sdpcm_brcm_event_count == 0u ? "none observed" : brcm_event_name(sdio_probe->sdpcm_brcm_event_first_type),
-                   (unsigned long)sdio_probe->sdpcm_brcm_event_first_status,
-                   sdio_probe->sdpcm_brcm_event_count == 0u ? "no event status"
-                      : brcm_event_status_name(sdio_probe->sdpcm_brcm_event_first_type,
-                                               sdio_probe->sdpcm_brcm_event_first_status),
-                   (unsigned long)sdio_probe->sdpcm_brcm_event_first_reason,
-                   sdio_probe->sdpcm_brcm_event_count == 0u ? "no event reason"
-                      : (sdio_probe->sdpcm_brcm_event_first_type == 16u
-                         ? brcm_link_reason_name(sdio_probe->sdpcm_brcm_event_first_reason)
-                         : "context-specific"),
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_msg_version,
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_msg_flags,
-                   (unsigned long)sdio_probe->sdpcm_brcm_event_type,
-                   brcm_event_name(sdio_probe->sdpcm_brcm_event_type),
-                   (unsigned long)sdio_probe->sdpcm_brcm_event_status,
-                   brcm_event_status_name(sdio_probe->sdpcm_brcm_event_type,
-                                          sdio_probe->sdpcm_brcm_event_status),
-                   (unsigned long)sdio_probe->sdpcm_brcm_event_reason,
-                   sdio_probe->sdpcm_brcm_event_type == 16u
-                      ? brcm_link_reason_name(sdio_probe->sdpcm_brcm_event_reason)
-                      : "context-specific",
-                   (unsigned long)sdio_probe->sdpcm_brcm_event_auth_type,
-                   (unsigned long)sdio_probe->sdpcm_brcm_event_datalen,
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_addr[0],
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_addr[1],
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_addr[2],
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_addr[3],
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_addr[4],
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_addr[5],
-                   sdio_probe->sdpcm_brcm_event_ifname,
-                   sdio_probe->sdpcm_brcm_event_ifname_truncated ? "..." : "",
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_ifidx,
-                   (unsigned int)sdio_probe->sdpcm_brcm_event_bsscfgidx,
-                   (unsigned long)sdio_probe->sdpcm_brcm_event_payload_bytes_available,
-                   sdio_probe->sdpcm_brcm_event_msg_probe_success ? (sdio_probe->sdpcm_brcm_event_msg_datalen_sane ? "fits frame" : "extends past frame") : "not decoded",
-                   sdio_probe->frame_read_abort_attempted ? "yes" : "no",
-                   sdio_probe->frame_read_abort_attempted ? (sdio_probe->frame_read_abort_success ? "fifo terminated" : "abort failed") : "not needed",
-                   sdio_probe->backplane_probe_success ? "chipcommon read succeeded" : "not available",
-                   (unsigned long)sdio_probe->chipcommon_id_register,
-                   (unsigned int)sdio_probe->chip_id,
-                   (unsigned int)sdio_probe->chip_revision,
-                   status.can_start_http ? "yes" : "no",
-                   lwip_context->prepared ? (lwip_context->use_dhcp ? "prepared for DHCP" : "prepared for static IPv4") : "not prepared",
-                   lwip_context->initialized ? (lwip_context->static_configured ? "initialized with static config" : (lwip_context->dhcp_started ? "initialized with DHCP client" : "initialized")) : "not initialized",
-                   lwip_context->netif_added ? "yes" : "no",
-                   lwip_context->timers_running ? "registered in Pi1MHz poll loop" : "not running",
-                   (unsigned long)lwip_context->service_calls,
-                   lwip_context->link_up ? "up" : "down",
-                   lwip_context->address_ready ? "yes" : "no",
-                   lwip_context->dhcp_started ? "yes" : "no",
-                   g_cyw43_firmware_path,
-                   (unsigned long)g_cyw43_firmware_length,
-                   g_cyw43_nvram_path,
-                   (unsigned long)g_cyw43_nvram_length,
-                   status.last_error[0] != '\0' ? status.last_error : "none");
-   response_end_html(response);
-}
-
-static void render_file_listing(webserver_response_t *response)
-{
-   FRESULT fr;
-   DIR dir;
-   FILINFO info;
-   unsigned int shown = 0;
-
-   response_begin_html(response, "Files");
-   response_append(response,
-                   "<p>This page reuses the existing FAT filesystem layer. Upload and download handlers still need the TCP body parser.</p>"
-                   "<p>Planned endpoints: <code>POST /files/upload</code>, <code>GET /files/download?name=...</code>.</p>");
-
-   if (!filesystemMount()) {
-      response_append(response, "<p>Filesystem mount failed.</p>");
-      response_end_html(response);
-      return;
-   }
-
-   fr = f_opendir(&dir, "/");
-   if (fr != FR_OK) {
-      response_append(response, "<p>Could not open root directory. FatFs error %u.</p>", (unsigned int)fr);
-      response_end_html(response);
-      return;
-   }
-
-   response_append(response, "<table><tr><th>Name</th><th>Type</th><th>Size</th></tr>");
-   for (;;) {
-      fr = f_readdir(&dir, &info);
-      if (fr != FR_OK || info.fname[0] == '\0' || shown >= 24)
-         break;
-
-      response_append(response,
-                      "<tr><td>%s</td><td>%s</td><td>%lu</td></tr>",
-                      info.fname,
-                      (info.fattrib & AM_DIR) != 0 ? "directory" : "file",
-                      (unsigned long)info.fsize);
-      ++shown;
-   }
-   response_append(response, "</table>");
-   f_closedir(&dir);
-   response_end_html(response);
-}
-
-static void render_framebuffer_page(webserver_response_t *response)
-{
-   framebuffer_export_info_t info;
-   bool have_info = framebuffer_export_get_info(&info);
-   screen_mode_t *mode = fb_get_current_screen_mode();
-
-   response_begin_html(response, "Framebuffer");
-   response_append(response,
-                   "<p>This page is ready to sit on top of the existing framebuffer subsystem.</p>"
-                   "<table>"
-                   "<tr><th>Framebuffer address</th><td>0x%08lx</td></tr>"
-                   "<tr><th>Mode number</th><td>%d</td></tr>"
-                   "<tr><th>Dimensions</th><td>%d x %d</td></tr>"
-                   "<tr><th>Pitch</th><td>%lu bytes</td></tr>"
-                   "<tr><th>Bits per pixel</th><td>%lu</td></tr>"
-                   "<tr><th>Snapshot size</th><td>%lu bytes</td></tr>"
-                   "<tr><th>Colours</th><td>%u</td></tr>"
-                   "<tr><th>Raw snapshot</th><td><a href=\"/framebuffer/save.raw\">save to Pi1MHz/framebuffer.raw</a></td></tr>"
-                   "<tr><th>PNG export</th><td>planned after encoder integration</td></tr>"
-                   "</table>"
-                   "<p>PNG export still needs a snapshot-to-PNG encoder. A raw dump path is available now for validation.</p>",
-                   have_info ? (unsigned long)info.address : (unsigned long)fb_get_address(),
-                   mode != NULL ? mode->mode_num : -1,
-                   mode != NULL ? mode->width : 0,
-                   mode != NULL ? mode->height : 0,
-                   have_info ? (unsigned long)info.pitch : 0ul,
-                   have_info ? (unsigned long)info.bits_per_pixel : 0ul,
-                   have_info ? (unsigned long)info.size : 0ul,
-                   mode != NULL ? mode->ncolour : 0u);
-   response_end_html(response);
-}
-
-static void render_framebuffer_save_raw_page(webserver_response_t *response)
-{
-   framebuffer_export_info_t info;
-   bool saved;
-
-   response_begin_html(response, "Framebuffer Raw Snapshot");
-   saved = framebuffer_export_save_raw("Pi1MHz/framebuffer.raw", &info);
-   if (saved) {
-      response_append(response,
-                      "<p>Saved raw framebuffer snapshot to <code>Pi1MHz/framebuffer.raw</code>.</p>"
-                      "<table>"
-                      "<tr><th>Size</th><td>%lu bytes</td></tr>"
-                      "<tr><th>Dimensions</th><td>%lu x %lu</td></tr>"
-                      "<tr><th>Bits per pixel</th><td>%lu</td></tr>"
-                      "</table>",
-                      (unsigned long)info.size,
-                      (unsigned long)info.width,
-                      (unsigned long)info.height,
-                      (unsigned long)info.bits_per_pixel);
-   } else {
-      response_append(response,
-                      "<p>Could not save framebuffer snapshot. Check that the framebuffer is active and the filesystem is writable.</p>");
-   }
-   response_end_html(response);
-}
-
-static void render_not_implemented(webserver_response_t *response, const char *title, const char *detail)
-{
-   response_begin_html(response, title);
-   response->status_code = 501;
-   response_append(response, "<p>%s</p>", detail);
-   response_end_html(response);
 }
 
 void webserver_init(void)
 {
    const wifi_config_t *config = wifi_get_config();
-   struct tcp_pcb *listener;
+   struct tcp_pcb      *listener;
+   uint16_t             port;
 
-   g_webserver_ready = false;
-   webserver_set_error(NULL);
+   g_ws_ready = false;
+   ws_set_error(NULL);
 
-   if (g_webserver_listener != NULL) {
-      tcp_arg(g_webserver_listener, NULL);
-      tcp_accept(g_webserver_listener, NULL);
-      tcp_close(g_webserver_listener);
-      g_webserver_listener = NULL;
+   if (g_ws_listener != NULL) {
+      tcp_arg(g_ws_listener, NULL);
+      tcp_accept(g_ws_listener, NULL);
+      tcp_close(g_ws_listener);
+      g_ws_listener = NULL;
    }
+
+   port = (config != NULL && config->http_port != 0u)
+          ? config->http_port : 80u;
 
    listener = tcp_new_ip_type(IPADDR_TYPE_V4);
    if (listener == NULL) {
-      webserver_set_error("lwIP could not allocate a TCP listener PCB");
+      ws_set_error("could not allocate the HTTP listener");
       return;
    }
 
-   if (tcp_bind(listener, IP_ADDR_ANY, config->http_port) != ERR_OK) {
+   if (tcp_bind(listener, IP_ADDR_ANY, port) != ERR_OK) {
       tcp_close(listener);
-      webserver_set_error("lwIP could not bind the HTTP listener port");
+      ws_set_error("could not bind the HTTP port");
       return;
    }
 
-   g_webserver_listener = tcp_listen_with_backlog(listener, 2u);
-   if (g_webserver_listener == NULL) {
+   g_ws_listener = tcp_listen_with_backlog(listener, 4u);
+   if (g_ws_listener == NULL) {
       tcp_close(listener);
-      webserver_set_error("lwIP could not switch the HTTP PCB into listen mode");
+      ws_set_error("could not listen on the HTTP port");
       return;
    }
 
-   tcp_arg(g_webserver_listener, NULL);
-   tcp_accept(g_webserver_listener, webserver_accept);
-   g_webserver_ready = true;
+   tcp_arg(g_ws_listener, NULL);
+   tcp_accept(g_ws_listener, ws_accept);
+
+   if (!g_ws_poll_registered) {
+      Pi1MHz_Register_Poll(webserver_poll);
+      g_ws_poll_registered = true;
+   }
+
+   g_ws_ready = true;
    wifi_note_http_ready();
 }
 
 bool webserver_is_ready(void)
 {
-   return g_webserver_ready;
+   return g_ws_ready;
 }
 
 const char *webserver_last_error(void)
 {
-   return g_webserver_error;
-}
-
-bool webserver_render(const webserver_request_t *request, webserver_response_t *response)
-{
-   if (request == NULL || response == NULL || request->path == NULL)
-      return false;
-
-   if (strcmp(request->path, "/") == 0) {
-      render_home_page(response);
-      return true;
-   }
-
-   if (strcmp(request->path, "/status") == 0) {
-      render_status_page(response);
-      return true;
-   }
-
-   if (strcmp(request->path, "/files") == 0) {
-      render_file_listing(response);
-      return true;
-   }
-
-   if (strcmp(request->path, "/framebuffer") == 0) {
-      render_framebuffer_page(response);
-      return true;
-   }
-
-    if (strcmp(request->path, "/framebuffer/save.raw") == 0) {
-      render_framebuffer_save_raw_page(response);
-      return true;
-   }
-
-   if (strcmp(request->path, "/files/upload") == 0) {
-      render_not_implemented(response, "Upload", "Multipart upload handling is not wired into the network stack yet.");
-      return true;
-   }
-
-   if (strcmp(request->path, "/framebuffer.png") == 0) {
-      render_not_implemented(response, "Framebuffer PNG", "PNG encoding is not implemented yet.");
-      return true;
-   }
-
-   response_begin_html(response, "Not Found");
-   response->status_code = 404;
-   response_append(response, "<p>No route for %s</p>", request->path);
-   response_end_html(response);
-   return true;
+   return g_ws_error;
 }
