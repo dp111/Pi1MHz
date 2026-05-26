@@ -3,7 +3,7 @@
 #ifndef INFO_H
 #define INFO_H
 
-#include "rpi-mailbox-interface.h"
+#include "mailbox.h"
 
 typedef struct {
    int rate;
