@@ -1458,7 +1458,7 @@ static void fb_initialize() {
     fb_draw_character(CURSOR, 0, 1);
 
     fb_writes("\r\n\r\nAcorn MOS\r\n\r\nPi1MHz\r\n\r\nBASIC\r\n\r\n>");
-#
+
 #ifdef BPP32
        for (int y = 0; y < 16; y++) {
           uint32_t *fbptr = (uint32_t *) (fb + pitch * y);
