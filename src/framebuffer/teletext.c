@@ -235,8 +235,8 @@ static void tt_reset(screen_mode_t *screen) {
    set_font(screen, 0);
    font_t *font = screen->font;
    // Set the rows/columns based on the the font
-   tt.columns = screen->width / (int)font->get_overall_w(font);
-   tt.rows = screen->height / (int)font->get_overall_h(font);
+   tt.columns = screen->width / font->get_overall_w(font);
+   tt.rows = screen->height / font->get_overall_h(font);
    // Reset the rendering params to sensible defaults
    tt.last_row = -1;
    tt.last_col = -1;
