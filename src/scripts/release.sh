@@ -10,14 +10,20 @@ mkdir -p "${DIR}/debug"
 
 for MODEL in rpi3 rpi
 do
-    # compile normal kernel
-    ./clobber.sh
-    ./configure_${MODEL}.sh
-    make -B -j
     # compile debug kernel
     ./clobber.sh
     ./configure_${MODEL}.sh -DDEBUG=1
-    make -B -j
+    make -B -j4
+done
+
+cp -a ../../firmware/kernel* "${DIR}/debug"
+
+for MODEL in rpi3 rpi
+do
+    # compile normal kernel
+    ./clobber.sh
+    ./configure_${MODEL}.sh
+    make -B -j4
 done
 
 cp -a ../../firmware/* "${DIR}"
