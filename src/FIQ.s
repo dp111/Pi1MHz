@@ -15,9 +15,8 @@
 .macro FIQ_SETUP_M
    mov     R12, #0
    LDR     r11, =Pi1MHz_VPU_RETURN
-   mov     r10, #ADDRBUS_MASK>>ADDRBUS_SHIFT
-   orr     r10, r10, #NPCFC_MASK>>ADDRBUS_SHIFT
-   mov     r10, r10, LSL # 2
+   mov     r10, #ADDRBUS_MASK>>(ADDRBUS_SHIFT-2)
+   orr     r10, r10, #NPCFC_MASK>>(ADDRBUS_SHIFT-2)
 .endm
 
 .macro DMB_MACRO reg
@@ -42,15 +41,17 @@ FIQstart:
    LDR      r8, [r11]       // get data posted from the VPU.
 #if 0
    push {r0-r1}
+   ldr r1,=(PERIPHERAL_BASE +0x20001C) // set
    mov r0,#1 // debug pin
-   ldr r1,=(PERIPHERAL_BASE +0x20001C) // set 
    str r0,[r1]
    pop {r0-r1}
 #endif
 // Stall as going off chip
 // so do something a bit useful
    mov      r12,      #(PERIPHERAL_BASE + 0x00B844) & 0xff000000
+#if  ((PERIPHERAL_BASE + 0x00B844) & 0x00ff0000)
    orr      r12, r12, #(PERIPHERAL_BASE + 0x00B844) & 0x00ff0000
+#endif
    orr      r12, r12, #(PERIPHERAL_BASE + 0x00B844) & 0x0000ff00
 
    tst      r8, # RNW_MASK
@@ -62,10 +63,10 @@ FIQstart:
    orrne    r9, r9, # Pi1MHz_MEM_RNW<<2     // set read flag ready for call back table
 
    ldr      r9, [r9, #Pi1MHz_CB_BASE]    // load call back pointer
-#if 0 
+#if 0
    push {r0-r1}
-   mov r0,#1 // debug pin
    ldr r1,= (PERIPHERAL_BASE+0x200028) // clear
+   mov r0,#1 // debug pin
    str r0,[r1]
    pop {r0-r1}
 #endif
