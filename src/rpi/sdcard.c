@@ -670,12 +670,12 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
     {
         command &= 0xff;
 #ifdef EMMC_DEBUG
-        printf("SD: issuing command ACMD%"PRIi32"\r\n", command);
+        printf("SD: issuing command ACMD%"PRIu32"\r\n", command);
 #endif
 
         if(sd_acommands[command] == SD_CMD_RESERVED(0))
         {
-            printf("SD: invalid command ACMD%"PRIi32"\r\n", command);
+            printf("SD: invalid command ACMD%"PRIu32"\r\n", command);
             dev->last_cmd_success = 0;
             return;
         }
@@ -691,7 +691,7 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
     else
     {
 #ifdef EMMC_DEBUG
-        printf("SD: issuing command CMD%"PRIi32"\r\n", command);
+        printf("SD: issuing command CMD%"PRIu32"\r\n", command);
 #endif
 
         if(sd_commands[command] == SD_CMD_RESERVED(0))
@@ -716,7 +716,7 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
             {
                 if(dev->last_error & (1 << (i + 16)))
                 {
-                    printf(err_irpts[i]);
+                    printf("%s", err_irpts[i]);
                     printf(" ");
                 }
             }
@@ -1345,7 +1345,7 @@ static int sd_card_init(struct block_device **dev)
 
 #ifdef EMMC_DEBUG
    printf("SD: card identified: OCR: %04"PRIx32", 1.8v support: %"PRIu32", SDHC support: %"PRIu32"\r\n",
-         (ret->last_r0 >> 8) & 0xffff, ret->card_supports_18v, ret->card_supports_sdhc);
+       (ret->last_r0 >> 8) & 0xffff, (uint32_t)ret->card_supports_18v, (uint32_t)ret->card_supports_sdhc);
 #endif
 
 
