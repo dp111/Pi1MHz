@@ -79,7 +79,7 @@ void _set_interrupts(unsigned int cpsr)
     :
     );
 }
-// cppcheck-suppress unusedFunction
+
 void _restore_cpsr(unsigned int cpsr)
 {
     __asm volatile
