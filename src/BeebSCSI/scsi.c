@@ -65,11 +65,8 @@
 // The removable mode emulates the Laser Video Disc Player (LV-DOS) for Domesday
 static uint8_t emulationMode = FIXED_EMULATION;
 
-// Global SCSI sector buffer (256 bytes)
-static uint8_t scsiSectorBuffer[256];
-
 // REQUEST SENSE command error reporting structure
-struct requestSenseDataStruct
+static struct requestSenseDataStruct
 {
    bool errorFlag;
    bool validAddressFlag;
@@ -79,7 +76,7 @@ struct requestSenseDataStruct
 } requestSenseData[8];
 
 // Global structure for storing SCSI CDBs
-struct commandDataBlockStruct
+static struct commandDataBlockStruct
 {
    uint8_t data[10];
    uint8_t length;
@@ -846,6 +843,7 @@ static uint8_t scsiCommandFormat(void)
 
    // If specified (by the options) read the defect list (ACB-4000 figure 5-6)
    if (formatOptions == 28 || formatOptions == 30) {
+      uint8_t Buffer[8];
       // Read the defect list
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Reading the defect list:\r\n"));
 
@@ -855,27 +853,27 @@ static uint8_t scsiCommandFormat(void)
       // Read the defect list header
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Defect list header:\r\n"));
       for (size_t byteCounter = 0; byteCounter < 4; byteCounter++)
-        scsiSectorBuffer[byteCounter] = hostadapterReadByte();
+        Buffer[byteCounter] = hostadapterReadByte();
 
-      uint16_t defectListLength = (uint16_t) ((scsiSectorBuffer[2] << 8) + (scsiSectorBuffer[3]) / 8);
+      uint16_t defectListLength = (uint16_t) ((Buffer[2] << 8) + (Buffer[3]) / 8);
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands:   Length = "), defectListLength, true);
 
       // Read the defect records
       for (uint16_t defectListRecords = 0; defectListRecords < defectListLength; defectListRecords++) {
          // Read the defect data
          for (size_t byteCounter = 0; byteCounter < 8; byteCounter++)
-           scsiSectorBuffer[byteCounter] = hostadapterReadByte();
+           Buffer[byteCounter] = hostadapterReadByte();
 
          // Output defect to debug
          if (debugFlag_scsiCommands) {
             debugStringInt16_P(PSTR("SCSI Commands: Defect #"), defectListRecords, true);
             debugStringInt32_P(PSTR("SCSI Commands:   Cylinder = "),
-         ((uint32_t)scsiSectorBuffer[0] << 16) + ((uint32_t)scsiSectorBuffer[1] << 8) + (uint32_t)scsiSectorBuffer[2],
+         ((uint32_t)Buffer[0] << 16) + ((uint32_t)Buffer[1] << 8) + (uint32_t)Buffer[2],
          true);
-            debugStringInt16_P(PSTR("SCSI Commands:   Head = "), scsiSectorBuffer[3], true);
+            debugStringInt16_P(PSTR("SCSI Commands:   Head = "), Buffer[3], true);
             debugStringInt32_P(PSTR("SCSI Commands:   Bytes = "),
-         ((uint32_t)scsiSectorBuffer[4] << 24) + ((uint32_t)scsiSectorBuffer[5] << 16) +
-         ((uint32_t)scsiSectorBuffer[6] << 8) + (uint32_t)scsiSectorBuffer[7],
+         ((uint32_t)Buffer[4] << 24) + ((uint32_t)Buffer[5] << 16) +
+         ((uint32_t)Buffer[6] << 8) + (uint32_t)Buffer[7],
          true);
          }
       }
@@ -1178,9 +1176,10 @@ static uint8_t scsiCommandWrite6(void)
    // Transfer the requested blocks from the host to the LUN image
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Transferring requested blocks from the host...\r\n"));
    for (currentBlock = 0; currentBlock < numberOfBlocks; currentBlock++) {
+      uint8_t Buffer[256];
       // Get the data from the host
       cli();
-      DEBUG_bytesTransferred(hostadapterPerformWriteDMA(scsiSectorBuffer));
+      DEBUG_bytesTransferred(hostadapterPerformWriteDMA(Buffer));
       sei();
 
       // Check for a host reset condition
@@ -1194,7 +1193,7 @@ static uint8_t scsiCommandWrite6(void)
       }
 
       // Write the requested block to the LUN image
-      if(!filesystemWriteNextSector(commandDataBlock.targetLUN, scsiSectorBuffer)) {
+      if(!filesystemWriteNextSector(commandDataBlock.targetLUN, Buffer)) {
          // Writing to the LUN image failed... try to recover with a little grace...
          if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Writing to LUN image failed!\r\n"));
          commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
@@ -1221,7 +1220,7 @@ static uint8_t scsiCommandWrite6(void)
          }
       } else {
          debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
-         debugSectorBufferHex(scsiSectorBuffer, 256);
+         debugSectorBufferHex(Buffer, 256);
       }
    }
    if (debugFlag_scsiCommands || debugFlag_scsiBlocks) debugString_P(PSTR("\r\n"));
@@ -1288,6 +1287,7 @@ static uint8_t scsiCommandSeek(void)
 // like a physical SCSI drive) it's good to include it anyway.
 static uint8_t scsiCommandTranslate(void)
 {
+   uint8_t Buffer[22];
    uint32_t cylinderNumber;
    uint32_t headNumber;
    uint32_t bytesFromIndex;
@@ -1385,7 +1385,7 @@ static uint8_t scsiCommandTranslate(void)
    // Note: The 'bytes from index' is the number of bytes from the start of the track (to the defect)
 
    // Read the geometry description for the LUN into the sector buffer
-   if (!filesystemReadLunDescriptor(commandDataBlock.targetLUN, scsiSectorBuffer)) {
+   if (!filesystemReadLunDescriptor(commandDataBlock.targetLUN, Buffer)) {
       // Unable to read drive descriptor! Exit with error status
       commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
       commandDataBlock.message = 0x00;
@@ -1404,7 +1404,7 @@ static uint8_t scsiCommandTranslate(void)
    }
 
    // Get the number of heads per cylinder (HPC)
-   headsPerCylinder = (uint32_t)scsiSectorBuffer[15]; // Data head count
+   headsPerCylinder = (uint32_t)Buffer[15]; // Data head count
 
    // Convert LBA to CHS (sectors per track is always 33)
    cylinderNumber = logicalBlockAddress / (headsPerCylinder * 33);
@@ -1458,6 +1458,7 @@ static uint8_t scsiCommandTranslate(void)
 // containing the drive geometry information
 static uint8_t scsiCommandModeSelect(void)
 {
+   uint8_t Buffer[22];
    uint8_t byteCounter;
 
    if (debugFlag_scsiCommands) {
@@ -1510,13 +1511,13 @@ static uint8_t scsiCommandModeSelect(void)
 
    // Read the 22 byte descriptor from the host
    for (byteCounter = 0; byteCounter < commandDataBlock.data[4]; byteCounter++)
-   scsiSectorBuffer[byteCounter] = hostadapterReadByte();
+      Buffer[byteCounter] = hostadapterReadByte();
 
    // Output the geometry to debug
    // TODO!
 
    // Write the descriptor information to the file system
-   if(!filesystemWriteLunDescriptor(commandDataBlock.targetLUN, scsiSectorBuffer)) {
+   if(!filesystemWriteLunDescriptor(commandDataBlock.targetLUN, Buffer)) {
       // Write failed! - Indicate unsuccessful command in status and message
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Writing LUN descriptor failed!\r\n"));
       commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Error
@@ -1550,6 +1551,7 @@ static uint8_t scsiCommandModeSelect(void)
 // legal command.
 static uint8_t scsiCommandModeSense(void)
 {
+   uint8_t Buffer[22];
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: MODESENSE command (0x1A) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
@@ -1578,7 +1580,7 @@ static uint8_t scsiCommandModeSense(void)
    }
 
    // Read the drive descriptor
-   if (filesystemReadLunDescriptor(commandDataBlock.targetLUN, scsiSectorBuffer)) {
+   if (filesystemReadLunDescriptor(commandDataBlock.targetLUN, Buffer)) {
       // DSC read OK - Transfer the DSC contents to the host
 
       // Set up the control signals ready for the data in phase
@@ -1587,7 +1589,7 @@ static uint8_t scsiCommandModeSense(void)
       // Transfer the DSC contents
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Sending LUN descriptor to host\r\n"));
       for (uint8_t byteCounter = 0; byteCounter < 22; byteCounter++)
-         hostadapterWriteByte(scsiSectorBuffer[byteCounter]);
+         hostadapterWriteByte(Buffer[byteCounter]);
    } else {
       // DSC not OK
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Descriptor read error\r\n"));
@@ -1686,6 +1688,7 @@ static uint8_t scsiCommandVerify(void)
 {
    uint32_t logicalBlockAddress = 0;
    uint32_t lunSizeInSectors = 0;
+   uint8_t Buffer[22];
 
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: VERIFY command (0x2F) received\r\n"));
@@ -1723,13 +1726,13 @@ static uint8_t scsiCommandVerify(void)
       , true);
    }
    // Read the drive descriptor
-   if (filesystemReadLunDescriptor(commandDataBlock.targetLUN, scsiSectorBuffer)) {
+   if (filesystemReadLunDescriptor(commandDataBlock.targetLUN, Buffer)) {
       // Get the LUN size (as number of available sectors)
       // The drive size (actual data storage) is calculated by the following formula:
       //
       // tracks = heads * cylinders
       // sectors = tracks * 33 (33 tracks per sector)
-      lunSizeInSectors = ((uint32_t)scsiSectorBuffer[15] * (((uint32_t)scsiSectorBuffer[13] << 8) + (uint32_t)scsiSectorBuffer[14])) * 33;
+      lunSizeInSectors = ((uint32_t)Buffer[15] * (((uint32_t)Buffer[13] << 8) + (uint32_t)Buffer[14])) * 33;
    } else {
       // DSC not OK
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: DSC read error\r\n"));
@@ -2029,6 +2032,7 @@ static uint8_t scsiBeebScsiSelect(void)
 {
    uint8_t byteCounter;
    uint8_t availableLUNs = 0;
+   uint8_t Buffer[8];
 
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: BSSELECT command (G6 0x11) received\r\n"));
@@ -2057,10 +2061,10 @@ static uint8_t scsiBeebScsiSelect(void)
 
    // Read the 8 bytes from the host
    for (byteCounter = 0; byteCounter < commandDataBlock.data[4]; byteCounter++) {
-      scsiSectorBuffer[byteCounter] = hostadapterReadByte();
+      Buffer[byteCounter] = hostadapterReadByte();
       if (debugFlag_scsiCommands) {
          debugStringInt16_P(PSTR("SCSI Commands: Received byte "), (uint16_t)byteCounter, false);
-         debugStringInt16_P(PSTR(" = "), (uint16_t)scsiSectorBuffer[byteCounter], true);
+         debugStringInt16_P(PSTR(" = "), (uint16_t)Buffer[byteCounter], true);
         }
      }
 
@@ -2071,9 +2075,9 @@ static uint8_t scsiBeebScsiSelect(void)
    // Only jukebox if no LUNs are in the started state
    if (availableLUNs == 0) {
       // Perform jukeboxing
-      filesystemSetLunDirectory(scsiSectorBuffer[0]);
+      filesystemSetLunDirectory(Buffer[0]);
 
-      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Jukeboxing successful - LUN directory set to "), scsiSectorBuffer[0], true);
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Jukeboxing successful - LUN directory set to "), Buffer[0], true);
    } else {
       // One or more LUNs are started... cannot perform jukeboxing
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Error - cannot jukebox if LUNs are started\r\n"));
@@ -2107,6 +2111,7 @@ static uint8_t scsiBeebScsiSelect(void)
 //
 static uint8_t scsiBeebScsiFatPath(void)
 {
+   uint8_t Buffer[256];
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: BSFATPATH command (G6 0x12) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
@@ -2122,7 +2127,7 @@ static uint8_t scsiBeebScsiFatPath(void)
    // disabling interrupts can cause incoming serial bytes to be lost
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Transferring FAT path buffer from the host...\r\n"));
    cli();
-   DEBUG_bytesTransferred(hostadapterPerformWriteDMA(scsiSectorBuffer));
+   DEBUG_bytesTransferred(hostadapterPerformWriteDMA(Buffer));
    sei();
 
    // Check for a host reset condition
@@ -2133,12 +2138,12 @@ static uint8_t scsiBeebScsiFatPath(void)
    }
 
    // Change the filesystem's FAT transfer directory
-   filesystemSetFatDirectory(scsiSectorBuffer);
+   filesystemSetFatDirectory(Buffer);
 
    // Show debug
    if (debugFlag_scsiBlocks) {
       debugString_P(PSTR("Hex dump for FAT path block:\r\n"));
-      debugSectorBufferHex(scsiSectorBuffer, 256);
+      debugSectorBufferHex(Buffer, 256);
    }
 
    // Indicate successful transfer in status and message
@@ -2165,6 +2170,7 @@ static uint8_t scsiBeebScsiFatPath(void)
 static uint8_t scsiBeebScsiFatInfo(void)
 {
    uint32_t fatFileId = 0;
+   uint8_t Buffer[256];
 
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: BSFATINFO command (G6 0x13) received\r\n"));
@@ -2181,7 +2187,7 @@ static uint8_t scsiBeebScsiFatInfo(void)
    scsiInformationTransferPhase(ITPHASE_DATAIN);
 
    // Get the FAT file information into the buffer for the host to read
-   if(!filesystemGetFatFileInfo(fatFileId, scsiSectorBuffer)) {
+   if(!filesystemGetFatFileInfo(fatFileId, Buffer)) {
       // Reading from the FAT image failed... try to recover with a little grace...
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Could not read FAT file information!\r\n"));
       commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
@@ -2200,7 +2206,7 @@ static uint8_t scsiBeebScsiFatInfo(void)
    // Send the data to the host
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Transferring FAT info buffer to the host...\r\n"));
    cli();
-   DEBUG_bytesTransferred(hostadapterPerformReadDMA(scsiSectorBuffer));
+   DEBUG_bytesTransferred(hostadapterPerformReadDMA(Buffer));
    sei();
 
    // Check for a host reset condition
@@ -2214,7 +2220,7 @@ static uint8_t scsiBeebScsiFatInfo(void)
    // Show debug
    if (debugFlag_scsiBlocks) {
       debugString_P(PSTR("Hex dump for FAT info block:\r\n"));
-      debugSectorBufferHex(scsiSectorBuffer, 256);
+      debugSectorBufferHex(Buffer, 256);
    }
 
    // Indicate successful transfer in status and message
@@ -2240,6 +2246,7 @@ static uint8_t scsiBeebScsiFatRead(void)
    uint32_t blockOffset = 0;
    uint32_t numberOfBlocks = 0;
    uint32_t fatFileId = 0;
+   uint8_t Buffer[256];
 
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: BSFATREAD command (G6 0x14) received\r\n"));
@@ -2286,7 +2293,7 @@ static uint8_t scsiBeebScsiFatRead(void)
    }
 
    for (uint32_t currentBlock = 0; currentBlock < numberOfBlocks; currentBlock++) {
-       if(!filesystemReadNextFatBlock(scsiSectorBuffer)) {
+       if(!filesystemReadNextFatBlock(Buffer)) {
          // Could not read block from FAT file system!
          sei();
          if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Failed to read new FAT block"));
@@ -2295,7 +2302,7 @@ static uint8_t scsiBeebScsiFatRead(void)
       }
       // Send the data to the host
       cli();
-      DEBUG_bytesTransferred(hostadapterPerformReadDMA(scsiSectorBuffer));
+      DEBUG_bytesTransferred(hostadapterPerformReadDMA(Buffer));
       sei();
 
       // Check for a host reset condition
@@ -2310,7 +2317,7 @@ static uint8_t scsiBeebScsiFatRead(void)
       // Show debug
      if (debugFlag_scsiBlocks) {
          debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
-         debugSectorBufferHex(scsiSectorBuffer, 256);
+         debugSectorBufferHex(Buffer, 256);
      } else {
         if (debugFlag_scsiCommands) {
            debugStringInt32_P(PSTR(""), currentBlock, false);

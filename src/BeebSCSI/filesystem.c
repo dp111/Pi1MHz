@@ -57,13 +57,14 @@
 #include "debug.h"
 #include "fatfs/ff.h"
 #include "filesystem.h"
+#include "../rpi/rpi.h"
 
 #define SZ_TBL 64
 
 #define MAX_LUNS 8
 
 // File system state structure
-static struct filesystemStateStruct
+NOINIT_SECTION static struct filesystemStateStruct
 {
    FATFS fsObject;         // FAT FS file system object
    FIL fileObject[MAX_LUNS];         // FAT FS file objects
@@ -77,10 +78,10 @@ static struct filesystemStateStruct
 
 } filesystemState;
 
-static char fileName[255];       // String for storing LFN filename
-static char fatDirectory[255];      // String for storing FAT directory (for FAT transfer operations)
+NOINIT_SECTION static char fileName[255];       // String for storing LFN filename
+NOINIT_SECTION static char fatDirectory[255];      // String for storing FAT directory (for FAT transfer operations)
 
-static uint8_t sectorBuffer[SECTOR_BUFFER_SIZE];   // Buffer for reading sectors
+NOINIT_SECTION static uint8_t sectorBuffer[SECTOR_BUFFER_SIZE];   // Buffer for reading sectors
 
 // Globals for multi-sector reading
 static uint32_t sectorsInBuffer = 0;
@@ -248,14 +249,14 @@ bool filesystemDismount(void)
 {
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemDismount(): Dismounting file system\r\n"));
-
+/*
    // Is the file system mounted?
    if (filesystemState.fsMountState == false) {
       // Nothing to do...
       debugString_P(PSTR("File system: filesystemDismount(): No file system to dismount\r\n"));
       return false;
    }
-
+*/
    // Set all LUNs to stopped
    for( uint8_t i=0 ; i < MAX_LUNS; i++ )
       filesystemSetLunStatus(i, false);
