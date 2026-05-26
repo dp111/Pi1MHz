@@ -241,7 +241,6 @@ bool sdio_probe_card(bool tx_control_probe_enabled,
 const sdio_probe_result_t *sdio_get_probe_result(void);
 bool sdio_runtime_start(void);
 bool sdio_runtime_tick(void);
-void sdio_runtime_poll_events(void);
 bool sdio_runtime_started(void);
 bool sdio_runtime_link_is_up(void);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
