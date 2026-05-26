@@ -21,6 +21,22 @@ static uint8_t ram_address;
 NOINIT_SECTION static FIL fileObject[16];
 NOINIT_SECTION static DIR dirObject[16];
 
+/* 32-bit access into JIM RAM. The command block is always page-aligned
+ * and JIM_ram is malloc'd, so &JIM_ram[off] is 4-byte aligned at every
+ * call site below. memcpy + assume_aligned yields a single LDR/STR on
+ * every CPU, with no strict-aliasing UB and no -Wcast-align warning. */
+static inline uint32_t jim_read32(uint32_t off)
+{
+   uint32_t v;
+   memcpy(&v, __builtin_assume_aligned(&Pi1MHz->JIM_ram[off], 4), sizeof v);
+   return v;
+}
+
+static inline void jim_write32(uint32_t off, uint32_t v)
+{
+   memcpy(__builtin_assume_aligned(&Pi1MHz->JIM_ram[off], 4), &v, sizeof v);
+}
+
 static void discaccess_emulator_update_address(void)
 {
    size_t disc_ram_addr_old = disc_ram_addr-1;
@@ -79,17 +95,17 @@ static void discaccess_emulator_command(unsigned int gpio)
     case 0 :
         Pi1MHz_MemoryWrite(addr,
             disk_read( Pi1MHz->JIM_ram[command_pointer+1],
-                        &Pi1MHz->JIM_ram[(*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4])+base_addr ],
-                        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8],
-                        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+12]
+                        &Pi1MHz->JIM_ram[jim_read32(command_pointer+4)+base_addr ],
+                        jim_read32(command_pointer+8),
+                        jim_read32(command_pointer+12)
                         ) );
         break;
     case 1 :
          Pi1MHz_MemoryWrite(addr,
             disk_write( Pi1MHz->JIM_ram[command_pointer+1],
-                        &Pi1MHz->JIM_ram[(*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4])+base_addr ],
-                        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8] ,
-                        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+12] )
+                        &Pi1MHz->JIM_ram[jim_read32(command_pointer+4)+base_addr ],
+                        jim_read32(command_pointer+8) ,
+                        jim_read32(command_pointer+12) )
                         );
          break;
     case 2 :
@@ -106,20 +122,20 @@ static void discaccess_emulator_command(unsigned int gpio)
     {
         FRESULT result;
         UINT length;
-        result = f_lseek( &fileObject[data & 15], *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8] );
+        result = f_lseek( &fileObject[data & 15], jim_read32(command_pointer+8) );
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
                 break;
             }
-        result = f_read( &fileObject[data & 15], &Pi1MHz->JIM_ram[*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4]+base_addr] , (*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer])>>8 , &length);
-        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer] = (length << 8 ) | Pi1MHz->JIM_ram[command_pointer];
+        result = f_read( &fileObject[data & 15], &Pi1MHz->JIM_ram[jim_read32(command_pointer+4)+base_addr] , (jim_read32(command_pointer)>>8) , &length);
+        jim_write32(command_pointer, (length << 8 ) | Pi1MHz->JIM_ram[command_pointer]);
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
                 break;
             }
-        if ( length <  ((*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer])>>8 ))
+        if ( length <  (jim_read32(command_pointer)>>8 ))
         {
                 Pi1MHz_MemoryWrite(addr, 20);
                 break;
@@ -131,20 +147,20 @@ static void discaccess_emulator_command(unsigned int gpio)
     {
         FRESULT result;
         UINT length;
-        result = f_lseek( &fileObject[data & 15], *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8] );
+        result = f_lseek( &fileObject[data & 15], jim_read32(command_pointer+8) );
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
                 break;
             }
-        result = f_write( &fileObject[data & 15], &Pi1MHz->JIM_ram[*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4]+base_addr] , (*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer])>>8 , &length);
-        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer] = (length << 8 ) | Pi1MHz->JIM_ram[command_pointer];
+        result = f_write( &fileObject[data & 15], &Pi1MHz->JIM_ram[jim_read32(command_pointer+4)+base_addr] , (jim_read32(command_pointer)>>8) , &length);
+        jim_write32(command_pointer, (length << 8 ) | Pi1MHz->JIM_ram[command_pointer]);
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
                 break;
             }
-        if ( length <  ((*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer])>>8 ))
+        if ( length <  (jim_read32(command_pointer)>>8 ))
         {
                 Pi1MHz_MemoryWrite(addr, 20);
                 break;
@@ -154,7 +170,7 @@ static void discaccess_emulator_command(unsigned int gpio)
     }
     case 6 : // fsize
     {
-        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer + 8] = f_size(  &fileObject[data & 15] );
+        jim_write32(command_pointer + 8, f_size( &fileObject[data & 15] ));
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }
@@ -219,7 +235,7 @@ static void discaccess_emulator_command(unsigned int gpio)
                 break;
             }
         // assumes sector size of 512 bytes
-        *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8] = (fs->csize * fre_clust) * 2  ; // return free space in bytes/256
+        jim_write32(command_pointer+8, (fs->csize * fre_clust) * 2);  // return free space in bytes/256
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }

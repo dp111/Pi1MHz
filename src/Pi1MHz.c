@@ -174,8 +174,12 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
 {
-   // write a word at a time ( the compiler does the correct thing and does an STR instruction)
-   *(uint16_t *)(&Pi1MHz->Memory[addr])= (uint16_t ) data;
+   // addr is always even and Pi1MHz->Memory is page-aligned, so the
+   // destination is 2-byte aligned. memcpy + assume_aligned lets the
+   // compiler emit a single STRH on every CPU (incl. ARMv6) with no
+   // aliasing UB and no -Wcast-align warning.
+   uint16_t v = (uint16_t) data;
+   memcpy(__builtin_assume_aligned(&Pi1MHz->Memory[addr], 2), &v, sizeof v);
 
    Pi1MHz_Memory_VPU[addr >> 1] = 0xFF00FF00 | (data&0xFF) | (data<<8);
 }
@@ -183,8 +187,10 @@ void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
 // cppcheck-suppress unusedFunction
 void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
 {
-   // write a word at a time ( the compiler does the correct thing and does an STR instruction)
-   *(uint32_t *)(&Pi1MHz->Memory[addr])= data;
+   // addr is always a multiple of 4, so the destination is 4-byte aligned.
+   // memcpy + assume_aligned -> a single STR on every CPU (incl. ARMv6),
+   // no aliasing UB, no -Wcast-align warning.
+   memcpy(__builtin_assume_aligned(&Pi1MHz->Memory[addr], 4), &data, sizeof data);
 
    uint32_t ad = addr >> 1;
 
