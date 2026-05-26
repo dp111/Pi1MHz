@@ -160,6 +160,11 @@ void Pi1MHz_SetnNMI(bool nmi)
 
 static uint8_t status_addr;
 
+// Variables used to check 1MHz interface for false accesses.
+
+static uint8_t status_rd_count;
+static uint8_t status_wr_count;
+
 // Enables the beeb to read and write status info
 // setup the address for status read write 
 void Pi1MHzBus_addr_Status(unsigned int gpio)
@@ -171,7 +176,8 @@ void Pi1MHzBus_addr_Status(unsigned int gpio)
    switch (status_addr)
    {
       case 0: data = JIM_ram_size ; break; // status reg 0 returns JIM_ram_size
-      
+      case 0xfe : data = status_rd_count; break;
+      case 0xff : data = status_wr_count; break;
       default : break;
    }
    Pi1MHz_Memory[addr+1] = data;
@@ -183,8 +189,13 @@ void Pi1MHzBus_write_Status(unsigned int gpio)
    uint32_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    Pi1MHz_Memory[addr] = data; // enable read back
-   
+   status_wr_count ++;
    // writes not yet supported
+}
+
+void Pi1MHzBus_read_Status(unsigned int gpio)
+{
+   status_rd_count ++;
 }
 
 static void init_emulator() {
@@ -196,7 +207,7 @@ static void init_emulator() {
    // Direct Fred Jim access to FIQ handler
 
    RPI_GpioBase->GPFEN0 = NPCFD_MASK | NPCFC_MASK;
-   RPI_IRQBase->FIQ_control = 0x80 +49; // enable GPIO IRQ
+   RPI_IRQBase->FIQ_control = 0x80 + 49; // enable GPIO IRQ
 
    Pi1MHz_polls_max = 0;
    memset(Pi1MHz_callback_table, 0, Pi1MHz_CB_SIZE);
@@ -205,7 +216,7 @@ static void init_emulator() {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnonnull"
    memset(Pi1MHz_Memory, 0, Pi1MHZ_MEM_SIZE);
-#pragma GCC diagnostic pop   
+#pragma GCC diagnostic pop
 
    // make sure we are causing an interrupt
    Pi1MHz_SetnIRQ(CLEAR_IRQ);
@@ -216,7 +227,8 @@ static void init_emulator() {
    // Regsiter Status read back
    Pi1MHz_Register_Memory(WRITE_FRED, 0xca, Pi1MHzBus_addr_Status );
    Pi1MHz_Register_Memory(WRITE_FRED, 0xcb, Pi1MHzBus_write_Status );
-   
+   Pi1MHz_Register_Memory( READ_FRED, 0xcb, Pi1MHzBus_read_Status );
+
    for( size_t i=0; i <sizeof(emulator_inits)/sizeof(func_ptr); i++)
    {
       emulator_inits[i]();
@@ -259,16 +271,26 @@ static void init_JIM()
    JIM_ram_size = JIM_ram_size >> 24 ; // set to 16Mbyte sets 
 
    JIM_ram = (uint8_t *) malloc(16*1024*1024*JIM_ram_size); // malloc 480Mbytes
-   
-   // put info in fred so beeb user can do P.$&FD00
-   char * ram = (char *)JIM_ram;
-   ram = putstring(ram,'\n', " ");
-   ram = putstring(ram,'\n', " Pi1MHz "RELEASENAME);
-   ram = putstring(ram,'\n', " Commit ID: "GITVERSION);
-   ram = putstring(ram,'\n', " Date : " __DATE__ " " __TIME__);
-   ram = putstring(ram,0   , " Pi :");
-   ram = putstring(ram,'\n', get_info_string());
-         putstring(ram,'\r', " ");
+
+   // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
+   if (!filesystemReadFile("JIM_Init.bin",JIM_ram,JIM_ram_size<<24))
+   {
+       // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
+      char * ram = (char *)JIM_ram;
+      ram = putstring(ram,'\n', " ");
+      ram = putstring(ram,'\n', " Pi1MHz "RELEASENAME);
+      ram = putstring(ram,'\n', " Commit ID: "GITVERSION);
+      ram = putstring(ram,'\n', " Date : " __DATE__ " " __TIME__);
+      ram = putstring(ram,0   , " Pi :");
+      ram = putstring(ram,'\n', get_info_string());
+            putstring(ram,'\r', " ");
+      
+   }
+// suppress a warning as we really do want to memcpy 256,jim_ram, 256!
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wrestrict"
+   memcpy(&Pi1MHz_Memory[Pi1MHz_MEM_PAGE], &JIM_ram[0], PAGE_SIZE);
+#pragma GCC diagnostic pop
 }
 
 static void init_hardware()
@@ -327,24 +349,20 @@ static void init_hardware()
 
 void kernel_main()
 {
-
    RPI_AuxMiniUartInit( 115200 );
 
    enable_MMU_and_IDCaches(0);
    _enable_unaligned_access();
    init_hardware();
-
-   init_JIM();
+   
    init_emulator();
-   
-   // see if JIM_Init existing on the SDCARD if so load it to JIM
-   filesystemReadFile("JIM_Init.bin",JIM_ram,JIM_ram_size<<24);
-   
-  do {
-     if (Pi1MHz_is_rst_active())
+   init_JIM();
+
+   do {
+      if (Pi1MHz_is_rst_active())
         init_emulator();
 
-     for (size_t i=0 ; i<Pi1MHz_polls_max; i++ )
+      for (size_t i=0 ; i<Pi1MHz_polls_max; i++ )
         Pi1MHz_poll_table[i]();
-  } while (1);
+   } while (1);
 }
