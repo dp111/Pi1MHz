@@ -158,11 +158,11 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    filesystemInitialise(0,0);
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
-   if (!filesystemReadFile("JIM_Init.bin",Pi1MHz->JIM_ram,Pi1MHz->JIM_ram_size<<24))
+   if (!filesystemReadFile("JIM_Init.bin",&Pi1MHz->JIM_ram,Pi1MHz->JIM_ram_size<<24))
    {
        // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
       char * ram = (char *)Pi1MHz->JIM_ram;
-      putstring(ram,'\n', " Use CALL &FC888");
+      putstring(ram,'\n', " Use CALL &FC88");
    }
 
    // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes

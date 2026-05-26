@@ -54,6 +54,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "debug.h"
@@ -1389,9 +1390,9 @@ bool filesystemCloseFatForRead(void)
    return true;
 }
 
-// read a file
+// read a file buffer can be malloced if the address is NULL
 
-bool filesystemReadFile(const char * filename, unsigned char * address, unsigned int max_size)
+uint32_t filesystemReadFile(const char * filename, unsigned char **address, unsigned int max_size)
 {
    UINT byteCounter;
    FRESULT fsResult;
@@ -1399,14 +1400,22 @@ bool filesystemReadFile(const char * filename, unsigned char * address, unsigned
    if (filesystemState.fsMountState == false) {
          fsResult = f_mount(&filesystemState.fsObject, "", 1);
          if (fsResult != FR_OK) {
-            return false;
+            return 0;
          }
    }
    fsResult = f_open(&fileObject, filename, FA_READ);
    if (fsResult != FR_OK) {
-      return false;
+      return 0;
+   }
+   if (*address == NULL) {
+      *address = malloc(f_size(&fileObject));
+      if (*address == NULL) {
+         f_close(&fileObject);
+         return 0;
+      }
+      max_size = f_size(&fileObject);
    }
    f_read(&fileObject, address, max_size, &byteCounter);
    f_close(&fileObject);
-   return true;
+   return f_size(&fileObject);
 }

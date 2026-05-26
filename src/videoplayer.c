@@ -25,7 +25,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
         void * buf = malloc(768*576*2);
         if (buf)
         {
-            filesystemReadFile("frame.lz",(unsigned char *) (buf),768*576*2);
+            filesystemReadFile("frame.lz",(unsigned char ** ) (buf),768*576*2);
             decompress_lz4(buf, (unsigned char *) buffer);
         }
 
