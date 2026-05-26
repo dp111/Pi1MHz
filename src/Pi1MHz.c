@@ -341,7 +341,7 @@ static void init_emulator(void) {
    Pi1MHz_polls_max = 0;
 
    memset(&Pi1MHz->callback_table[0], 0, Pi1MHz_CB_SIZE);
-   memset(&Pi1MHz->Memory[0],0,PAGE_SIZE);
+   memset(&Pi1MHz->Memory[0],0,sizeof(Pi1MHz->Memory)); // Clear FRED and JIM memory
 
    for(int i=255; i>=0; i--)
       Pi1MHz_Memory_VPU[i]=0;             // Clear VPU ram.

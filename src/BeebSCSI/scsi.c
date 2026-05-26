@@ -745,7 +745,7 @@ static uint8_t scsiCommandFormat(void)
       for (size_t byteCounter = 0; byteCounter < 4; byteCounter++)
         Buffer[byteCounter] = hostadapterReadByte();
 
-      uint16_t defectListLength = (uint16_t) ((Buffer[2] << 8) + (Buffer[3]) / 8);
+      uint16_t defectListLength = (uint16_t) (((Buffer[2] << 8) + Buffer[3]) / 8);
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands:   Length = "), defectListLength, true);
 
       // Read the defect records

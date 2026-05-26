@@ -311,7 +311,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                         {
                             size_t len = parse_strlen( buffer , ptr, filesize);
                             // read a number
-                            values[keyindex].v.integer = malloc( 4);
+                            values[keyindex].v.integer = malloc(sizeof(int));
                             if (values[keyindex].v.integer == NULL)
                                 {
                                 LOG_DEBUG("Error allocating memory for integer\n\r");

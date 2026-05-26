@@ -154,11 +154,12 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    if (init == 0)
    {
       init = 1;
-      Pi1MHz->JIM_ram = (uint8_t *) malloc((size_t)(Pi1MHz->JIM_ram_size<<24)); // malloc 480Mbytes
+      Pi1MHz->JIM_ram = (uint8_t *) malloc(((size_t)Pi1MHz->JIM_ram_size<<24)); // malloc 480Mbytes
       // malloc can't fail. If it does the system will just run out of memory and crash, but it won't cause any corruption.
       if (!Pi1MHz->JIM_ram)
       {
-         LOG_INFO("No RAM\r\n");
+         LOG_INFO("No RAM\r\n"); return;
+         Pi1MHz->JIM_ram_size = 0;
       }
    }
 
