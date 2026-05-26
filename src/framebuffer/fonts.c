@@ -235,26 +235,26 @@ static char default_get_rounding(const font_t *font) {
    return font->rounding;
 }
 
-static char default_get_overall_w(const font_t *font) {
+static int default_get_overall_w(const font_t *font) {
    return ((font->width + font->spacing_w) << font->rounding) * font->scale_w;
 }
 
-static char default_get_overall_h(const font_t *font) {
+static int default_get_overall_h(const font_t *font) {
    return ((font->height + font->spacing_h) << font->rounding) * font->scale_h;
 }
 
-static void default_write_char(font_t *font, screen_mode_t *screen, char c, int x, int y, pixel_t fg_col, pixel_t bg_col) {
+static void default_write_char(font_t *font, screen_mode_t *screen, int c, int x, int y, pixel_t fg_col, pixel_t bg_col) {
    int x_pos = x;
-   char width  = font->width  << font->rounding;
-   char height = font->height << font->rounding;
+   int width  = font->width  << font->rounding;
+   int height = font->height << font->rounding;
    int p      = c * height;
    int mask = 1 << (width - 1);
-   for (char i = 0; i < height; i++) {
+   for (int i = 0; i < height; i++) {
       int data = font->buffer[p++];
-      for (char j = 0; j < width; j++) {
+      for (int j = 0; j < width; j++) {
          pixel_t col = (data & mask) ? fg_col : bg_col;
-         for (char sx = 0; sx < font->scale_w; sx++) {
-            for (char sy = 0; sy < font->scale_h; sy++) {
+         for (int sx = 0; sx < font->scale_w; sx++) {
+            for (int sy = 0; sy < font->scale_h; sy++) {
                screen->set_pixel(screen, x + sx, y + sy, col);
             }
          }
@@ -266,16 +266,16 @@ static void default_write_char(font_t *font, screen_mode_t *screen, char c, int 
    }
 }
 
-static char default_read_char(const font_t *font, screen_mode_t *screen, int x, int y, pixel_t bg_col) {
+static int default_read_char(const font_t *font, screen_mode_t *screen, int x, int y, pixel_t bg_col) {
    int screendata[MAX_FONT_HEIGHT];
    // Read the character from screen memory
    int *dp = screendata;
-   char width  = font->width  << font->rounding;
-   char height = font->height << font->rounding;
-   char h = 0;
-   for (char i = 0; i < height ; i +=1) {
+   int width  = font->width  << font->rounding;
+   int height = font->height << font->rounding;
+   int h = 0;
+   for (int i = 0; i < height ; i +=1) {
       int row = 0;
-      for (char j = 0; j < width * font->scale_w; j += font->scale_w) {
+      for (int j = 0; j < width * font->scale_w; j += font->scale_w) {
          row <<= 1;
          if (screen->get_pixel(screen, x + j, y - h) != bg_col) {
             row |= 1;

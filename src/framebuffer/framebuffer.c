@@ -25,10 +25,10 @@ static screen_mode_t *screen = NULL;
 // Current font
 static font_t font_normal;
 static font_t font_teletext;
-static char font_width;
-static char font_height;
-static char text_height; // of whole screen
-static char text_width;  // of whole screen
+static int font_width;
+static int font_height;
+static int text_height; // of whole screen
+static int text_width;  // of whole screen
 static int cursor_start;
 static int cursor_end;
 static int cursor_off;  // controlled by VDU 23,0,10
@@ -907,48 +907,48 @@ static void vdu23_8(const uint8_t *buf) {
       switch (t[i]) {
       case 0:
          // top left of window
-         x[i] += left;
-         y[i] += top;
+         x[i] = (uint8_t)(x[i] + left);
+         y[i] = (uint8_t)(y[i] + top);
          break;
       case 1:
          // top of cursor column
-         x[i] += cx;
-         y[i] += top;
+         x[i] = (uint8_t)(x[i] + cx);
+         y[i] = (uint8_t)(y[i] + top);
          break;
       case 2:
          // off top right of window
-         x[i] += right;
-         y[i] += top;
+         x[i] = (uint8_t)(x[i] + right);
+         y[i] = (uint8_t)(y[i] + top);
          break;
       case 4:
          // left of cursor line
-         x[i] += left;
-         y[i] += cy;
+         x[i] = (uint8_t)(x[i] + left);
+         y[i] = (uint8_t)(y[i] + cy);
          break;
       case 5:
          // cursor position
-         x[i] += cx;
-         y[i] += cy;
+         x[i] = (uint8_t)(x[i] + cx);
+         y[i] = (uint8_t)(y[i] + cy);
          break;
       case 6:
          // off right of cursor line
-         x[i] += right;
-         y[i] += cy;
+         x[i] = (uint8_t)(x[i] + right);
+         y[i] = (uint8_t)(y[i] + cy);
          break;
       case 8:
          // bottom left of window
-         x[i] += left;
-         y[i] += bottom;
+         x[i] = (uint8_t)(x[i] + left);
+         y[i] = (uint8_t)(y[i] + bottom);
          break;
       case 9:
          // bottom of cursor column
-         x[i] += cx;
-         y[i] += bottom;
+         x[i] = (uint8_t)(x[i] + cx);
+         y[i] = (uint8_t)(y[i] + bottom);
          break;
       case 10:
          // off bottom right of window
-         x[i] += right;
-         y[i] += bottom;
+         x[i] = (uint8_t)(x[i] + right);
+         y[i] = (uint8_t)(y[i] + bottom);
          break;
       }
 
@@ -977,10 +977,10 @@ static void vdu23_8(const uint8_t *buf) {
    }
 
      // Make absolute
-   x[0] += t_window.left;
-   x[1] += t_window.left;
-   y[0] += t_window.top;
-   y[1] += t_window.top;
+   x[0] = (uint8_t)(x[0] + t_window.left);
+   x[1] = (uint8_t)(x[1] + t_window.left);
+   y[0] = (uint8_t)(y[0] + t_window.top);
+   y[1] = (uint8_t)(y[1] + t_window.top);
 
    // Disable cursor to avoid artifacts
    int tmp = disable_cursors();

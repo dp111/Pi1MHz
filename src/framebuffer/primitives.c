@@ -92,10 +92,10 @@ static int16_t arc_fill_y;
 
 #define NUM_SPRITES 256
 
-typedef struct {
-   char width;
-   char height;
+typedef struct {  
    void *data;
+   uint16_t width;
+   uint16_t height;
 } sprite_t;
 
 // This needs to be in initialized memory, otherwise prim_reset_sprites()
@@ -1498,18 +1498,18 @@ void prim_fill_chord(screen_mode_t *screen, int xc, int yc, int x1, int y1, int 
       // Square pixels
       radius  = calc_radius_float(xc, yc, x1, y1);
       radius2 = calc_radius_float(xc, yc, x2, y2);
-      width   = (int) roundf(radius);
-      height  = (int) roundf(radius);
+      width   = (int) lroundf(radius);
+      height  = (int) lroundf(radius);
    } else {
       // Rectangular pixels
       radius  = calc_radius_float(xc << screen->xeigfactor, yc << screen->yeigfactor, x1 << screen->xeigfactor, y1 << screen->yeigfactor);
       radius2 = calc_radius_float(xc << screen->xeigfactor, yc << screen->yeigfactor, x2 << screen->xeigfactor, y2 << screen->yeigfactor);
-      width   = (int) roundf(radius / (float)(1 << screen->xeigfactor));
-      height  = (int) roundf(radius / (float)(1 << screen->yeigfactor));
+      width   = (int) lroundf(radius / (float)(1 << screen->xeigfactor));
+      height  = (int) lroundf(radius / (float)(1 << screen->yeigfactor));
    }
    // Project end onto perimeter
-   end_dx = (int)roundf(((float) end_dx) * radius / radius2);
-   end_dy = (int)roundf(((float) end_dy) * radius / radius2);
+   end_dx = (int)lroundf(((float) end_dx) * radius / radius2);
+   end_dy = (int)lroundf(((float) end_dy) * radius / radius2);
    // Draw filled segment
    draw_arc_or_sector_or_segment(screen, xc, yc, width, height, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_SEGMENT);
 }
@@ -1877,8 +1877,8 @@ void prim_define_sprite(screen_mode_t *screen, int n, int x1, int y1, int x2, in
 #endif
 
    // Memory allocation
-   sprite->width = x2 - x1 + 1;
-   sprite->height = y2 - y1 + 1;
+   sprite->width = (uint16_t)(x2 - x1 + 1);
+   sprite->height = (uint16_t)(y2 - y1 + 1);
    size_t size = ((size_t)sprite->width * (size_t)sprite->height) << (screen->log2bpp - 3);
    if  (sprite->data != NULL)
          free(sprite->data);
