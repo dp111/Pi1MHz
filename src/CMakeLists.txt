@@ -138,6 +138,14 @@ file( GLOB FrameBuffer_emulator_files
    framebuffer.c
 )
 
+
+# Diskaccess emulator
+file( GLOB diskaccess_emulator_files
+   diskaccess_emulator.c
+)
+
+
+
 if( ${DEBUG} )
 
    set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDEBUG=1 " )
@@ -152,6 +160,7 @@ endif()
             ${harddisc_emulator_files}
             ${M5000_emulator_files}
             ${FrameBuffer_emulator_files}
+            ${diskaccess_emulator_files}
         )
 
     else()
@@ -160,7 +169,8 @@ endif()
             ${core_files}
             ${harddisc_emulator_files}
             ${M5000_emulator_files}
-             ${FrameBuffer_emulator_files}
+            ${FrameBuffer_emulator_files}
+            ${diskaccess_emulator_files}
         )
 
     endif()
