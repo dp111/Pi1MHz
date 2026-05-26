@@ -290,23 +290,23 @@ static bool filesystemDismount(void)
 {
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemDismount(): Dismounting file system\r\n"));
-/*
+
    // Is the file system mounted?
    if (filesystemState.fsMountState == false) {
       // Nothing to do...
       debugString_P(PSTR("File system: filesystemDismount(): No file system to dismount\r\n"));
       return false;
    }
-*/
+
    // Set all LUNs to stopped
    for( uint8_t i=0 ; i < MAX_LUNS; i++ )
    {
       filesystemSetLunStatus(i, false);
       parse_relasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
    }
-/*   // Dismount the SD card
+   // Dismount the SD card
      FRESULT fsResult;
- //  fsResult = f_mount(&filesystemState.fsObject, "", 0);
+   fsResult = f_mount(&filesystemState.fsObject, "", 0);
 
    // Check the result
    if (fsResult != FR_OK) {
@@ -319,7 +319,7 @@ static bool filesystemDismount(void)
       filesystemState.fsMountState = false;
       return false;
    }
-*/
+
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemDismount(): Successful\r\n"));
    filesystemState.fsMountState = false;
    return true;

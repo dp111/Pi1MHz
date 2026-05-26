@@ -41,7 +41,8 @@
 #define MAX_FAT16	0xFFF5			/* Max FAT16 clusters (differs from specs, but right for real DOS/Windows behavior) */
 #define MAX_FAT32	0x0FFFFFF5		/* Max FAT32 clusters (not defined in specs, practical limit) */
 #define MAX_EXFAT	0x7FFFFFFD		/* Max exFAT clusters (differs from specs, implementation limit) */
-
+#define MIN_FAT12	32				/* Min FAT12 clusters (Not defined in specs, implementation limit) */
+#define MIN_VOLUME	64				/* Min volume sectors (Not defined in specs, implementation limit) */
 
 /* Character code support macros */
 #define IsUpper(c)		((c) >= 'A' && (c) <= 'Z')
@@ -3398,7 +3399,7 @@ static UINT check_fs (	/* 0:FAT/FAT32 VBR, 1:exFAT VBR, 2:Not FAT and valid BS, 
 			&& ld_16(fs->win + BPB_RsvdSecCnt) != 0		/* Properness of number of reserved sectors (MNBZ) */
 			&& (UINT)fs->win[BPB_NumFATs] - 1 <= 1		/* Properness of number of FATs (1 or 2) */
 			&& ld_16(fs->win + BPB_RootEntCnt) != 0		/* Properness of root dir size (MNBZ) */
-			&& (ld_16(fs->win + BPB_TotSec16) >= 128 || ld_32(fs->win + BPB_TotSec32) >= 0x10000)	/* Properness of volume size (>=128) */
+			&& (ld_16(fs->win + BPB_TotSec16) >= MIN_VOLUME || ld_32(fs->win + BPB_TotSec32) >= 0x10000)	/* Properness of volume size */
 			&& ld_16(fs->win + BPB_FATSz16) != 0) {		/* Properness of FAT size (MNBZ) */
 				return 0;	/* It can be presumed an FAT VBR */
 		}
@@ -3623,6 +3624,7 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 		if (nclst <= MAX_FAT32) fmt = FS_FAT32;
 		if (nclst <= MAX_FAT16) fmt = FS_FAT16;
 		if (nclst <= MAX_FAT12) fmt = FS_FAT12;
+		if (nclst <= MIN_FAT12) fmt = 0;
 		if (fmt == 0) return FR_NO_FILESYSTEM;
 
 		/* Boundaries and Limits */
@@ -3704,13 +3706,14 @@ static FRESULT validate (	/* Returns FR_OK or FR_INVALID_OBJECT */
 )
 {
 	FRESULT res = FR_INVALID_OBJECT;
-
+	*rfs = 0;
 
 	if (obj && obj->fs && obj->fs->fs_type && obj->id == obj->fs->id) {	/* Test if the object is valid */
 #if FF_FS_REENTRANT
 		if (lock_volume(obj->fs, 0)) {	/* Take a grant to access the volume */
 			if (!(disk_status(obj->fs->pdrv) & STA_NOINIT)) { /* Test if the hosting physical drive is kept initialized */
 				res = FR_OK;
+				*rfs = obj->fs;
 			} else {
 				unlock_volume(obj->fs, FR_OK);	/* Invalidated volume, abort to access */
 			}
@@ -3720,10 +3723,11 @@ static FRESULT validate (	/* Returns FR_OK or FR_INVALID_OBJECT */
 #else
 		if (!(disk_status(obj->fs->pdrv) & STA_NOINIT)) { /* Test if the hosting physical drive is kept initialized */
 			res = FR_OK;
+			*rfs = obj->fs;
 		}
 #endif
 	}
-	*rfs = (res == FR_OK) ? obj->fs : 0;	/* Return corresponding filesystem object if it is valid */
+	//*rfs = (res == FR_OK) ? obj->fs : 0;	/* Return corresponding filesystem object if it is valid */
 	return res;
 }
 
@@ -5235,6 +5239,9 @@ FRESULT f_mkdir (
 					fs->dirbuf[XDIR_GenFlags] = 3;			/* Initialize the object flag */
 					fs->dirbuf[XDIR_Attr] = AM_DIR;			/* Attribute */
 					res = store_xdir(&dj);
+					if (res == FR_OK) {
+						res = sync_fs(fs);
+					}
 				} else
 #endif
 				{
@@ -5243,8 +5250,6 @@ FRESULT f_mkdir (
 					st_clust(fs, dj.dir, dcl);			/* Table start cluster */
 					dj.dir[DIR_Attr] = AM_DIR;			/* Attribute */
 					fs->wflag = 1;
-				}
-				if (res == FR_OK) {
 					res = sync_fs(fs);
 				}
 			} else {
@@ -6163,7 +6168,7 @@ FRESULT f_mkfs (
 			}
 		}
 	}
-	if (sz_vol < 128) LEAVE_MKFS(FR_MKFS_ABORTED);	/* Check if volume size is >=128 sectors */
+	if (sz_vol < MIN_VOLUME) LEAVE_MKFS(FR_MKFS_ABORTED);	/* Check if volume size is not too small */
 
 	/* Now start to create an FAT volume at b_vol and sz_vol */
 
@@ -6395,7 +6400,8 @@ FRESULT f_mkfs (
 			}
 
 			/* Determine number of clusters and final check of validity of the FAT sub-type */
-			if (sz_vol < b_data + pau * 16 - b_vol) LEAVE_MKFS(FR_MKFS_ABORTED);	/* Too small volume? */
+			if (sz_vol < b_data + pau * MIN_FAT12 - b_vol) LEAVE_MKFS(FR_MKFS_ABORTED);	/* Too small volume for this configuration? */
+
 			n_clst = ((DWORD)sz_vol - sz_rsv - sz_fat * n_fat - sz_dir) / pau;
 			if (fsty == FS_FAT32) {
 				if (n_clst <= MAX_FAT16) {	/* Too few clusters for FAT32? */
@@ -7252,4 +7258,3 @@ FRESULT f_setcp (
 	return FR_OK;
 }
 #endif	/* FF_CODE_PAGE == 0 */
-
