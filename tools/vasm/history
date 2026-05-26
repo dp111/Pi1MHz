@@ -53,7 +53,7 @@ o m68k: Apollo instructions pabsb, pabsw are gone (opcode space will be
 o m68k: Apollo fmove.{b/w/l/s/d} En,Em is replaced by floadi and fstorei to
   make clear whether the Em target is an integer or floating point register.
 o m68k: New Apollo instructions: fmoverz, fmoveurz, moveiw, mov3q, movs,
-  movz, clr.q.
+  movz, move2 (updated), clr.q.
 o m68k: Do not allow Bcc.B with branch distance -130 for Apollo, as it
   would encode as $6xff (opcode for 32-bit branch).
 o 6502: Added al/as/xl/xs as aliases for a16/a8/x16/x8 directives (65816).

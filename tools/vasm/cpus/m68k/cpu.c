@@ -1687,11 +1687,9 @@ int parse_operand(char *p,int len,operand *op,int required)
           else if (op->mode!=MODE_SpecReg && !(op->flags&FL_BnReg)) {
             /* Apollo: Rm:Rn */
             reg = getreg(&ptmp,0);
-            if (reg >= 0) {
-              if (op->mode == MODE_An) {
-                op->mode = MODE_Dn; /* make it appear as Dn/DoubleReg mode */
+            if (reg>=0 && (reg<REGAn || (reqmode&(1<<MODE_An)))) {
+              if (op->mode == MODE_An)
                 op->reg |= REGAn;   /* restore An-bit for Rm */
-              }
               op->reg |= reg << 4;  /* insert Rn with 4 bits too */
               op->flags |= FL_DoubleReg;
               p = ptmp;
