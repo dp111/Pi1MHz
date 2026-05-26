@@ -5,7 +5,6 @@
 #include "cache.h"
 #include "rpi.h"
 #include "info.h"
-
 /* Historical Note:
    Were seeing core 3 crashes if inner *and* outer both set to some flavour of WB (i.e. 1 or 3)
    The point of crashing is when the data cache is enabled
@@ -26,7 +25,6 @@ static const int aa0 = 0; /* note ARM ARM bit ordering is confusing */
 static const int aa6 = 1;
 #endif
 static const int bb = 1;
-static const int shareable = 1;
 
 #if (__ARM_ARCH >= 7 )
 
@@ -210,7 +208,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // TLB 1MB Sector Descriptor format
   // 31..20 Section Base Address
   // 19     NS    - ?             - set to 0
-  // 18     0     -               - set to 0
+  // 18     0     -               - set to 0 - 1 = 16Mbyte section
   // 17     nG    - ?             - set to 0
   // 16     S     - ?             - set to 0
   // 15     APX   - access ctrl   - set to 0 for full access from user and super modes
@@ -249,6 +247,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
     PageTable[base] = ((unsigned int) (&PageTable2[base << 8])) | 1;
   }
   end = L1_CACHED_MEM_TOP;
+
   for (; base < end;  base++)
   {
     // Value from my original RPI code = 11C0E (outer and inner write back, write allocate, shareable)
@@ -256,21 +255,22 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
     // Values from RPI2 = 11C0E (outer and inner write back, write allocate, shareable (fast but unsafe)); works on RPI
     // Values from RPI2 = 10C0A (outer and inner write through, no write allocate, shareable)
     // Values from RPI2 = 15C0A (outer write back, write allocate, inner write through, no write allocate, shareable)
-    PageTable[base] = base << 20 | 0x04C02 | (shareable << 16) | (bb << 12) | (cachable<<3) | (bufferable << 2);
+    PageTable[base] = base << 20 | 0x0C0E ;
   }
   end = L2_CACHED_MEM_TOP;
   for (; base < L2_CACHED_MEM_TOP; base++)
   {
-     PageTable[base] = base << 20 | 0x04C02 | (shareable << 16) | (bb << 12);
+     PageTable[base] = base << 20 | 0x10C0E;
   }
   for (; base < (PERIPHERAL_BASE>>20); base++)
   {
-    PageTable[base] = base << 20 | 0x01C12 | (cachable<<3);
+     PageTable[base] = base << 20 | 0x11C06 ;
   }
+
   for (; base < 4096; base++)
   {
-    // shared device, never execute
-    PageTable[base] = base << 20 | 0x10C16;
+    // shared device, never execute storely ordered
+     PageTable[base] = base << 20 | 0x10C12;
   }
 
   if ( num_4k_pages != 0 )
@@ -343,4 +343,3 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 
   asm volatile ("mcr p15,0,%0,c1,c0,0" :: "r" (sctrl) : "memory");
 }
-
