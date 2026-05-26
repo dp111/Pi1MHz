@@ -122,11 +122,12 @@ typedef struct {
 } emulator_list;
 
 static emulator_list emulator[] = {
-   {"Videoplayer",videoplayer_init, 0x00, 1},
+
    {"Rampage",rampage_emulator_init, 0xFD, 1},
    {"Rambyte",rambyte_emulator_init, 0x00, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
+   {"Videoplayer",videoplayer_init, 0x00, 1},  // start before frame buffer , but after filesystem
    {"Framebuffer",fb_emulator_init, 0xA0, 1},
    {"Discaccess",discaccess_emulator_init, 0xA6, 1 },
    {"Helpers",helpers_init, 0x88, 1 },
@@ -253,7 +254,6 @@ void IRQHandler_main(void) {
    }
    // Periodically also process the VDU Queue
    fb_process_vdu_queue();
-
 
    _data_memory_barrier();
 }

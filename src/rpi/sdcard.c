@@ -967,6 +967,7 @@ static void sd_handle_card_interrupt(struct emmc_block_dev *dev)
 
 static void sd_handle_interrupts(struct emmc_block_dev *dev)
 {
+    _data_memory_barrier();
     uint32_t irpts = RPI_EMMCBase->EMMC_INTERRUPT;
     uint32_t reset_mask = 0;
 

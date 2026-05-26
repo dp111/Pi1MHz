@@ -13,12 +13,16 @@
 void videoplayer_init(uint8_t instance, uint8_t address)
 {
     static uint32_t handle;
+    static uint32_t buffer;
 #if 1
     screen_plane_enable(YUV_PLANE, false);
-    screen_release_buffer(handle); // doesn't do anything if handle is NULL
+    if (!handle)
+    {
+        screen_release_buffer(handle); // doesn't do anything if handle is NULL
+        buffer = screen_allocate_buffer( 768*576*2, &handle );
+        filesystemReadFile("frame.yuv",(unsigned char *) (buffer),768*576*2);
+   }
 
-    uint32_t buffer = screen_allocate_buffer( 768*576*2, &handle );
-    filesystemReadFile("frame.yuv",(unsigned char *) buffer,768*576*2);
     screen_create_YUV_plane( YUV_PLANE, 768, 576, buffer );
 
     screen_plane_enable(YUV_PLANE, true);

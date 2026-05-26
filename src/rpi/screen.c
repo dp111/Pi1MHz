@@ -331,7 +331,7 @@ uint32_t screen_allocate_buffer( uint32_t buffer_size, uint32_t * handle )
         RPI_PropertyProcess(true);
         if( (mp = RPI_PropertyGet( TAG_LOCK_MEMORY ) ) )
         {
-            LOG_DEBUG("Allocated buffer at %"PRIu32"\r\n", mp->data.buffer_32[0]);
+            LOG_DEBUG("Allocated buffer at %"PRIx32"\r\n", mp->data.buffer_32[0]);
             return mp->data.buffer_32[0] & 0x3FFFFFFF;
         }
     }
@@ -391,7 +391,10 @@ static uint32_t* screen_get_nextplane( uint32_t planeno )
     *plane = 0x80000000; // set end of list bit and clear valid
     returnplane = plane;
     plane = plane + (MAX_PLANES_SIZE>>2); // space for 32 words in context memory
-    *plane = 0x80000000; // set end of list bit and clear valid
+    if (plane_valid[planeno+1] == false)
+    {
+        *plane = 0x80000000; // set end of list bit and clear valid
+    }
 
     return returnplane;
 }
@@ -622,7 +625,7 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
 void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
     uint32_t * plane =  screen_get_nextplane( planeno);
-    LOG_DEBUG("plane %d\r\n", planeno);
+    LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
     if (plane)
     {
         uint32_t scaled_width;
@@ -631,21 +634,22 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t nsh;
         uint32_t nh;
         uint32_t vertical_offset = screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos, &nsh, &nh);
-
+#if 0
         LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", scaled_width, scaled_height);
 
         LOG_DEBUG("startpos %"PRIx32"\r\n", startpos);
         LOG_DEBUG("nsh %"PRId32"\r\n", nsh);
         LOG_DEBUG("nh %"PRId32"\r\n", nh);
+#endif
         YUV_plane_t* yuv = (YUV_plane_t*) plane;
         yuv->ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0xA; // invalid list, 32 words, YCrcb format , YUV
         yuv->pos = startpos;
         yuv->scale = (nsh << 16) + scaled_width;
         yuv->src_size =  ((nh) << 16) + width;
         //yuv->src_context = 0;
-        yuv->y_ptr =  buffer + 0x80000000 + vertical_offset*width;
-        yuv->cb_ptr = buffer + 0x80000000 + width*height + width*height/2 + vertical_offset*width/2;
-        yuv->cr_ptr = buffer + 0x80000000 + width*height + vertical_offset*width/2;
+        yuv->y_ptr =  buffer + 0xC0000000 + vertical_offset*width;
+        yuv->cb_ptr = buffer + 0xC0000000 + width*height + width*height/2 + vertical_offset*width/2;
+        yuv->cr_ptr = buffer + 0xC0000000 + width*height + vertical_offset*width/2;
         //yuv->y_ctx = 0;
         //yuv->cb_ctx = 0;
         //yuv->cr_ctx = 0;
@@ -667,7 +671,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         yuv->pfkpv0 = PLOYPHASE_BASE;
         yuv->pfkph1 = PLOYPHASE_BASE;
         yuv->pfkpv1 = PLOYPHASE_BASE;
-
+#if 0
         LOG_DEBUG("ctrl %"PRIx32"\r\n", yuv->ctrl);
         LOG_DEBUG("pos %"PRIx32"\r\n", yuv->pos);
         LOG_DEBUG("scale %"PRIx32"\r\n", yuv->scale);
@@ -691,7 +695,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         LOG_DEBUG("pfkpv0 %"PRIx32"\r\n", yuv->pfkpv0);
         LOG_DEBUG("pfkph1 %"PRIx32"\r\n", yuv->pfkph1);
         LOG_DEBUG("pfkpv1 %"PRIx32"\r\n", yuv->pfkpv1);
-
+#endif
         setup_polyphase();
     }
     plane_valid[planeno] = true;
@@ -709,7 +713,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t nsh;
         uint32_t nh;
         screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh);
-        buffer |= 0x80000000;
+        buffer |= 0xC0000000;
         if (colour_depth == 3)
         {
             rgb_8bit_t* rgb = (rgb_8bit_t*) plane;
@@ -782,6 +786,7 @@ void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
 
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
+    LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
     _data_memory_barrier();
     if (enable)
