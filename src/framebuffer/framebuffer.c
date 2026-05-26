@@ -380,7 +380,10 @@ static void reset_areas() {
 
 // 0,0 is the top left
 static void set_text_area(const t_clip_window_t *window) {
-   if (window->left > window->right || window->right > text_width - 1 || window->top > window->bottom || window->bottom > text_height - 1) {
+   if (window->left > window->right ||
+       (unsigned int )window->right > (unsigned int ) text_width - 1 ||
+       window->top > window->bottom ||
+       (unsigned int ) window->bottom > (unsigned int ) text_height - 1) {
       return;
    }
    // Shallow copy of the struct
