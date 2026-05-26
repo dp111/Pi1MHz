@@ -80,8 +80,16 @@ static void init_dma_buffer(size_t buf, uint32_t buffer_init)
    dma_cb_data[buf].next = (uint32_t)&dma_cb_data[(buf+1)%2].info | GPU_BASE;
    dma_cb_data[buf].pad[0] = 0;
    dma_cb_data[buf].pad[1] = 0;
-   for (size_t i=0; i<sizeof(dma_cb_data[buf].buffer)/sizeof(uint32_t); i++)
-       dma_cb_data[buf].buffer[i] = buffer_init;
+
+   // average any error between samples
+   int error = buffer_init & 1;
+   for (size_t i=0; i<sizeof(dma_cb_data[buf].buffer)/sizeof(uint32_t); )
+   {
+       dma_cb_data[buf].buffer[i++] = buffer_init >> 1;
+       dma_cb_data[buf].buffer[i++] = buffer_init >> 1;
+       dma_cb_data[buf].buffer[i++] = ( buffer_init >> 1 ) + error;
+       dma_cb_data[buf].buffer[i++] = ( buffer_init >> 1 ) + error;
+   }
    buffer_state |= 1<<buf;
    _clean_cache_area(&dma_cb_data[buf], sizeof(dma_cb_data[buf]));
 }
@@ -89,7 +97,9 @@ static void init_dma_buffer(size_t buf, uint32_t buffer_init)
 // return the sample range
 uint32_t rpi_audio_init(uint32_t samplerate)
 {
-   uint32_t audio_range = 500000000 / (2 * samplerate);
+   // hardcoded constant clock rate 500MHz
+   // Clock is divided by two to feed the PWM block ( 250MHz )
+   uint32_t audio_range = 500000000 / (2 * samplerate) ;
 
    RPI_CLKBase->PWM_CTL = PM_PASSWORD | BCM2835_PWMCLK_CNTL_KILL;
    RPI_PWMBase->PWM_CONTROL = 0;
@@ -107,8 +117,8 @@ uint32_t rpi_audio_init(uint32_t samplerate)
    RPI_PWMBase->PWM0_RANGE = audio_range;
    RPI_PWMBase->PWM1_RANGE = audio_range;
 
-   init_dma_buffer(0,audio_range>>1);
-   init_dma_buffer(1,audio_range>>1);
+   init_dma_buffer(0,audio_range);
+   init_dma_buffer(1,audio_range);
 
    usleep(1);
 
