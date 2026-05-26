@@ -598,6 +598,23 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
 
         if (opcode == READ_MULTIPLE_BLOCK || opcode == WRITE_MULTIPLE_BLOCK)
         {
+            if (is_write)
+            {
+                // Wait for the last block's CRC to complete before issuing CMD12.
+                // WRITESTART1 appears between blocks after the CRC exchange is
+                // acknowledged by the card; issuing CMD12 any earlier risks
+                // aborting the last block while it is still being clocked out.
+                uint32_t retries = 1000000u;
+                while (retries-- > 0u)
+                {
+                    uint32_t fsm = sdhost_read(SDEDM) & SDEDM_FSM_MASK;
+                    if (fsm == SDEDM_FSM_WRITESTART1 ||
+                        fsm == SDEDM_FSM_IDENTMODE  ||
+                        fsm == SDEDM_FSM_DATAMODE)
+                        break;
+                    usleep(1);
+                }
+            }
             uint32_t stop_response;
             uint32_t stop_cmd = ((uint32_t)STOP_TRANSMISSION & SDCMD_CMD_MASK) | SDCMD_BUSYWAIT;
             if (sdhost_issue_raw_command(stop_cmd, 0u, timeout, &stop_response, false, &dev->last_error) != 0)
@@ -734,6 +751,7 @@ static void sdhost_reset_internal(void)
     sdhost_write(SDTOUT, 0x00f00000u);
     sdhost_write(SDCDIV, SDCDIV_MAX_CDIV);
     sdhost_write(SDHSTS, SDHSTS_CLEAR_MASK);
+    sdhost_write(SDHCFG, 0u);
     sdhost_write(SDHBCT, 0u);
     sdhost_write(SDHBLC, 0u);
 
