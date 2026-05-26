@@ -484,7 +484,7 @@ static void tt_draw_character(screen_mode_t *screen, int c, int col, int row) {
       // Use a custom font renderer to render double height
       int width  = font->width << font->get_rounding(font);
       int height = font->height << font->get_rounding(font);
-      uint16_t *rowp = font->buffer + c * height + (tt.double_bottom ? (height >> 1) : 0);
+      const uint16_t *rowp = font->buffer + c * height + (tt.double_bottom ? (height >> 1) : 0);
       for (int y = 0; y < height; y++) {
          uint16_t innerrow = *rowp;
          int mask = 1 << (width - 1);
