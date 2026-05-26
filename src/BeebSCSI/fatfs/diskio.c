@@ -84,6 +84,7 @@ DRESULT disk_read (
 	UINT count		/* Number of sectors to read */
 )
 {
+   DRESULT result;
    switch (pdrv) {
 
 #ifdef DRV_MMC
@@ -92,7 +93,15 @@ DRESULT disk_read (
 #endif
 #ifdef DRV_SD
    case DRV_SD :
-      return sd_read((struct block_device *)&bd,buff,512*count,sector)?RES_OK:RES_ERROR;
+      printf("sd_read buf %p, sector %lu, count %d\r\n",buff,sector,count);
+      result = sd_read((struct block_device *)&bd,buff,512*count,sector)?RES_OK:RES_ERROR;
+    /*  for(int i=0;i<512;i++)
+         {
+            printf("%x ",buff[i] );
+            if ((i%16)==15) printf("\r\n");
+         }*/
+      return result;
+
 #endif
    }
    return RES_PARERR;
@@ -118,6 +127,7 @@ DRESULT disk_write (
 #endif
 #ifdef DRV_SD
    case DRV_SD :
+   printf("sd_write buf %p, sector %lu, count %d\r\n",buff,sector,count);
       return sd_write((struct block_device *)&bd,buff,512*count,sector)?RES_OK:RES_ERROR;
 #endif
    }
@@ -148,4 +158,9 @@ DRESULT disk_ioctl (
 #else
    return RES_PARERR;
 #endif
+}
+
+unsigned char disk_type()
+{
+   return bd.card_supports_sdhc;
 }
