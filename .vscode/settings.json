@@ -19,7 +19,8 @@
         "mailbox.h": "c",
         "rpi.h": "c",
         "charconv": "c",
-        "variant": "c"
+        "variant": "c",
+        "stdint.h": "c"
     },
     "cSpell.words": [
         "ADDRBUS",

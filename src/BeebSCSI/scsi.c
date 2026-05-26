@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdio.h>
 
 // Local includes
 
@@ -992,25 +993,34 @@ static uint8_t scsiCommandReassignBlocks(void)
 			list_length;
 	}
 
-	uint32_t logicalBlockAddress = 0;
-	uint64_t logicalBlockAddress64 = 0;
-
 	if (debugFlag_scsiCommands)debugString_P(PSTR("Defective LBA List ="));
 
 	for (uint8_t byteCounter = 0; byteCounter < (list_length/longlba); byteCounter++) {
-		if (longlba==4) {
-			logicalBlockAddress =
+		if (longlba==4)
+#ifdef DEBUG
+         {
+         if (debugFlag_scsiCommands) {
+			uint32_t logicalBlockAddress =
 				((uint32_t)hostadapterReadByte() << 24) |
 				((uint32_t)hostadapterReadByte() << 16) |
 				((uint32_t)hostadapterReadByte() << 8) |
 				((uint32_t)hostadapterReadByte());
 
 			// Show received byte value
-			if (debugFlag_scsiCommands)debugStringInt32_P(PSTR(" "), logicalBlockAddress, false);
-		}
+			debugStringInt32_P(PSTR(" "), logicalBlockAddress, false);
+         }
+      }
+#else
+         {
+            for (uint8_t i=0; i<4; i++)
+               hostadapterReadByte();
+         }
+#endif
 		else
+#ifdef DEBUG
 		{
-			logicalBlockAddress64 =
+         if (debugFlag_scsiCommands) {
+			uint64_t logicalBlockAddress64 =
 				((uint64_t)hostadapterReadByte() << 56) |
 				((uint64_t)hostadapterReadByte() << 48) |
 				((uint64_t)hostadapterReadByte() << 40) |
@@ -1021,10 +1031,17 @@ static uint8_t scsiCommandReassignBlocks(void)
 				((uint64_t)hostadapterReadByte());
 
 			// Show received byte value
-			if (debugFlag_scsiCommands)debugStringInt32_P(PSTR(" "), (uint32_t)(logicalBlockAddress64 >> 32), false);
-			if (debugFlag_scsiCommands)debugStringInt32_P(PSTR(""), (uint32_t)(logicalBlockAddress64 & 0x00000000FFFFFFFF), false);
+			debugStringInt32_P(PSTR(" "), (uint32_t)(logicalBlockAddress64 >> 32), false);
+			debugStringInt32_P(PSTR(""), (uint32_t)(logicalBlockAddress64 & 0x00000000FFFFFFFF), false);
+         }
+      }
+#else
+         {
+            for (uint8_t i=0; i<8; i++)
+               hostadapterReadByte();
+         }
+#endif
 		}
-	}
 	if (debugFlag_scsiCommands)debugString_P(PSTR("\r\n"));
 
 
@@ -1109,12 +1126,13 @@ static uint8_t scsiCommandRead6(void)
    if (debugFlag_scsiCommands) {
       debugStringInt32_P(PSTR(", LBA = "), logicalBlockAddress, false);
       debugStringInt32_P(PSTR(", Blocks = "), numberOfBlocks, true);
-
+#if 0
 		if ((commandDataBlock.originalLUN & 0x1F) != (commandDataBlock.data[1] & 0x1F)){
 			char msg[256];
 			sprintf(msg, "CommandRead6: Original MSB = %d != New MSB = %d\r\n", commandDataBlock.originalLUN & 0x1F, commandDataBlock.data[1] & 0x1F);
 			debugString_C(PSTR(msg), DEBUG_ERROR);
 			}
+#endif
    }
 
    // Set up the control signals ready for the data in phase
@@ -1985,7 +2003,7 @@ static uint8_t scsiCommandSendDiagnostic(void)
 
    return SCSI_STATUS;
 }
-#ifdef FCODE
+
 // LV-DOS specific group 6 commands -----------------------------------------------------------------------------------
 
 // SCSI Command Write F-Code (group 6 - command 0x0A)
