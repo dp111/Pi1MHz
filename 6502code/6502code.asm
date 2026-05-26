@@ -52,7 +52,7 @@ MACRO LOADFILETOSWR filename
     ; bne     testram
 
 ;; Step 2: Test if that pre-existing rom image is SWMMFS
-;; so we re-use the same slot again and again
+;; so we reuse the same slot again and again
      ;   lda     &b5fe
      ;   cmp     #MAGIC0
      ;   bne     romnxt
