@@ -31,7 +31,7 @@ Takes 5 bytes of RAM
 #define PTRMODE2WIDTH 6
 #define PTRMODEHEIGHT 16
 
-static char mouse_pointer_data[] = {
+_Alignas(16) static char mouse_pointer_data[] = {
 #define B (1)
 #define i 16
 

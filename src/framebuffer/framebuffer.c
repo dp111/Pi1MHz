@@ -1177,10 +1177,7 @@ static void vdu_22(const uint8_t *buf) {
 
 static void vdu_23(const uint8_t *buf) {
 #ifdef DEBUG_VDU
-   for (int i = 0; i < 10; i++) {
-      printf("%X", buf[i]);
-      printf("\n\r");
-   }
+      printf("VDU %X %X %X %X %X %X %X %X %X %X\n\r", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]);
 #endif
    // User defined characters
    if (buf[1] >= 32) {
@@ -1648,16 +1645,12 @@ static void fb_initialize(void) {
    RPI_ArmTimerInit();
    RPI_GetIrqController()->Enable_Basic_IRQs = RPI_BASIC_ARM_TIMER_IRQ;
 
-#ifdef DEBUG_VDU
-   fb_writes("DEBUG_VDU is enabled, execution might be slow!\r\n\r\n");
-#endif
-
    // Make vsync visible
    // Enable smi_int which is IRQ 48
    // https://github.com/raspberrypi/firmware/issues/67
    RPI_GetIrqController()->Enable_IRQs_2 = RPI_VSYNC_IRQ;
-
 }
+
 #if 0
 void fb_destroy(void) {
 
