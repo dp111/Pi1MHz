@@ -9,7 +9,9 @@
 // and is triggered by fred or jim access
 
 #include "Pi1MHz.h"
-#include "rpi/rpi-base.h"
+#include "rpi/base.h"
+
+#define DEBUG_FIQ
 
 #define GPFSEL0 (PERIPHERAL_BASE + 0x200000)  // controls GPIOs 0..9
 
@@ -30,9 +32,8 @@
   #else
   // ARMv6 lock FIQ handler into cache
   // disable the cache
-    ldr     r8,=_start
-    ldr     r9,=FIQexit
-    mov     r10,#8
+    ldr     r8,=FIQstart
+    ldr     r9,=FIQend
 
     // flush instruction cache
     mov     r11,#0
@@ -52,9 +53,10 @@ prefetch_loop:
 
     // 7 Lock down reg
     MCR      p15, 0, r10, c9, c0, 1
+
     #if 0
     // lock down the TLB
-    ldr     r11,=_start
+    ldr     r11,=FIQstart
     MCR     p15,0,r11,c8,c7,1
     MRC     p15,0,R8,c10,c0,0
     ORR     r8,r8,#1
@@ -65,6 +67,7 @@ prefetch_loop:
     MCR     p15,0,R8,c10,c0,0
     #endif
   #endif
+
    LDR     r11,=GPFSEL0
 .endm
 
@@ -89,9 +92,12 @@ prefetch_loop:
 //  r12 gpio read
 //  r13 stack
 //  r14 return address
-
+FIQstart:
     DMB_MACRO
-
+#ifdef DEBUG_FIQ
+    mov r8 ,#TEST_MASK
+    str r8,[r11,#GPSET0_OFFSET]
+#endif
 checkforvalidcycle:
     LDR     r12, [r11, # GPLEV0_OFFSET]    // this will be slow as we are going off chip
 
@@ -171,5 +177,10 @@ waitforclklow2:
     B       checkforvalidcycle
 
 FIQexit:
-    DMB_MACRO
+#ifdef DEBUG_FIQ
+    mov r8 ,#TEST_MASK
+    str r8,[r11,#GPCLR0_OFFSET]
+#endif
     subs    pc, lr, #4
+FIQend:
+.ltorg
