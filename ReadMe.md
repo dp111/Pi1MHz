@@ -168,12 +168,12 @@ SDCARD / FAT commands are the first byte of the command buffer
     returns :
     command pointer + 8,9,10,11 4 bytes size of file
 
-7 = fopendir ( not implemented yet )
+7 = fopendir
 
     command pointer + 0 = 7
     command pointer + 1 ...  = directory name zero terminated
 
-8 = fclosedir ( not implemented yet )
+8 = fclosedir
 
     command pointer + 0 = 8
 
@@ -183,11 +183,14 @@ SDCARD / FAT commands are the first byte of the command buffer
     command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
 
     {return structure for each entry
-    4 byte files size
-    2 byte data
-    2 time
+    4 byte files size ( invalid for directory)
+    2 byte modification date
+    2 byte modification time
+    2 byte Creation date
+    2 byte Creation time
     1 byte attribute
-    13 bytes filename ( zero terminated)
+    13 bytes alternate name ( zero terminated)
+    256 bytes for long primary name ( zero terminated)
     }
     /* File attribute bits for directory entry (FILINFO.fattrib) */
     #define	AM_RDO	0x01	/* Read only */
@@ -195,6 +198,8 @@ SDCARD / FAT commands are the first byte of the command buffer
     #define	AM_SYS	0x04	/* System */
     #define AM_DIR	0x10	/* Directory */
     #define AM_ARC	0x20	/* Archive */
+
+    return type is FR_OK if read ok, 20 if no more files
 
 10 = fmkdir
 
