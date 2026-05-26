@@ -13,7 +13,7 @@ __attribute__((aligned(16)))  NOINIT_SECTION static uint32_t pt[PROP_BUFFER_SIZE
 
 static size_t pt_index;
 
-//#define PRINT_PROP_DEBUG 1
+#define PRINT_PROP_DEBUG 0
 
     /* For information about accessing mailboxes, see:
        https://github.com/raspberrypi/firmware/wiki/Accessing-mailboxes */
@@ -28,7 +28,7 @@ static void RPI_Mailbox0Write( mailbox0_channel_t channel, uint32_t * ptr )
     /* Wait until the mailbox becomes available and then write to the mailbox
        channel */
     while ( ( rpiMailbox1->Status & ARM_MS_FULL ) != 0 ) { }
-    /* Add the channel number into the lower 4 bits */  
+    /* Add the channel number into the lower 4 bits */
     /* Write the modified value + channel number into the write register */
    rpiMailbox1->Data = ((uint32_t)ptr ) | channel;
 }
@@ -97,7 +97,7 @@ void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... )
             pt[pt_index++] = 8;
             pt[pt_index++] = 8; /* Request */
             pt[pt_index++] = 0;
-            pt[pt_index++] = va_arg( vl, int ); // 2 off 3 on
+            pt[pt_index++] = va_arg( vl, int ); /* 2 off 3 on */
             pt_index += 1;
             break;
         case TAG_GET_CLOCKS:
@@ -126,13 +126,13 @@ void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... )
         case TAG_EXECUTE_CODE:
             pt[pt_index++] = 28;
             pt[pt_index++] = 0; /* Request */
-            pt[pt_index++] = va_arg( vl, int ); // Function pointer
-            pt[pt_index++] = va_arg( vl, int ); // R0
-            pt[pt_index++] = va_arg( vl, int ); // R1
-            pt[pt_index++] = va_arg( vl, int ); // R2
-            pt[pt_index++] = va_arg( vl, int ); // R3
-            pt[pt_index++] = va_arg( vl, int ); // R4
-            pt[pt_index++] = va_arg( vl, int ); // R5
+            pt[pt_index++] = va_arg( vl, int ); /* Function pointer */
+            pt[pt_index++] = va_arg( vl, int ); /* R0 */
+            pt[pt_index++] = va_arg( vl, int ); /* R1 */
+            pt[pt_index++] = va_arg( vl, int ); /* R2 */
+            pt[pt_index++] = va_arg( vl, int ); /* R3 */
+            pt[pt_index++] = va_arg( vl, int ); /* R4 */
+            pt[pt_index++] = va_arg( vl, int ); /* R5 */
             break;
 
         case TAG_ALLOCATE_BUFFER:
@@ -225,7 +225,7 @@ void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... )
 int RPI_PropertyProcess( void )
 {
     int result;
-    
+
 #if( PRINT_PROP_DEBUG == 1 )
     LOG_INFO( "%s Length: %d\r\n", __func__, pt[PT_OSIZE] );
 #endif

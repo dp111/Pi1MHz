@@ -1,7 +1,7 @@
-## Changes from BeebSCSI
+# Changes from BeebSCSI
 
 These files have beeen taken from the BeebSCSI project. Fatfs has been updated to 0.13c.
-host_interface.c has been significantly changed as it contains the equalivant of the CPLD as well, moved up a level and renamed to harddisdc_emaultor.c 
+host_interface.c has been significantly changed as it contains the equalivant of the CPLD as well, moved up a level and renamed to harddisdc_emaultor.c
 
 Filesystem.c is largely unchanged except from remove AVR specific code.
 
@@ -21,7 +21,7 @@ Rather than using a physical hard drive, BeebSCSI uses a single Micro SD card to
 
 ## Installation
 
-Please see http://www.domesday86.com for detailed documentation on BeebSCSI
+Please see <http://www.domesday86.com> for detailed documentation on BeebSCSI
 
 ## Author
 

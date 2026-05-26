@@ -72,7 +72,7 @@ char *__env[1] =
 char **environ = __env;
 
 /* A helper function written in assembler to aid us in allocating memory */
-//extern caddr_t _get_stack_pointer(void);
+/*extern caddr_t _get_stack_pointer(void);*/
 
 /* Never return from _exit as there's no OS to exit to, so instead we trap
  here */

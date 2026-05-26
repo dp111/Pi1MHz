@@ -1,7 +1,8 @@
 #include <stdint.h>
+#include <stdio.h>
 #include "rpi.h"
 
-// define the stack space which is setup in arm-start.s
+/* define the stack space which is setup in arm-start.s */
 __attribute__((used))  NOINIT_SECTION uint8_t arm_stack[8*64*1024];
 
 #ifdef HAS_MULTICORE

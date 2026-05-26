@@ -1,4 +1,4 @@
-// info.h
+/* info.h */
 
 #ifndef INFO_H
 #define INFO_H

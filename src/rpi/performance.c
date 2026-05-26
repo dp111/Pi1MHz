@@ -134,15 +134,15 @@ const char *type_lookup(int type) {
 }
 
 
-// Set control register and zero counters
+/* Set control register and zero counters */
 void reset_performance_counters(perf_counters_t *pct) {
-   // bit 3 = 1 means count every 64th processor cycle
-   // bit 2 = 1 means reset cycle counter to zero
-   // bit 1 = 1 means reset counters to zero
-   // bit 0 = 1 enable counters
+   /* bit 3 = 1 means count every 64th processor cycle
+      bit 2 = 1 means reset cycle counter to zero
+      bit 1 = 1 means reset counters to zero
+      bit 0 = 1 enable counters */
    unsigned ctrl = 0x0F;
 
-  // Initialize performance counters
+  /* Initialize performance counters */
 #if defined(RPI2) || defined(RPI3)
    pct->num_counters = 6;
    pct->type[0] = PERF_TYPE_L1I_CACHE;
@@ -172,29 +172,29 @@ void reset_performance_counters(perf_counters_t *pct) {
 
    unsigned type_impl;
 
-   // Read the common event identification register
-   // to see test whether the requested event is implemented
+   /* Read the common event identification register
+      to see test whether the requested event is implemented */
    asm volatile ("mrc p15,0,%0,c9,c12,6" : "=r" (type_impl));
 
    for (i = 0; i < pct->num_counters; i++) {
       if ((type_impl >> pct->type[i]) & 1) {
-         // Select the event count/type via the event type selection register
+         /* Select the event count/type via the event type selection register */
          asm volatile ("mcr p15,0,%0,c9,c12,5" :: "r" (i) : "memory");
-         // Configure the required event type
+         /* Configure the required event type */
          asm volatile ("mcr p15,0,%0,c9,c13,1" :: "r" (pct->type[i]) : "memory");
-         // Set the bit to enable the counter
+         /* Set the bit to enable the counter */
          cntenset |= (1 << i);
       } else {
          printf("Event: %s not implemented\r\n", type_lookup(pct->type[i]));
       }
    }
-   // Write the control register
+   /* Write the control register */
    asm volatile ("mcr p15,0,%0,c9,c12,0" :: "r" (ctrl) : "memory");
 
-   // Enable the counters
+   /* Enable the counters */
    asm volatile ("mcr p15,0,%0,c9,c12,1" :: "r" (cntenset) : "memory");
 #else
-   // Only two counters (0 and 1) are supported on the arm11
+   /* Only two counters (0 and 1) are supported on the arm11 */
    ctrl |= (pct->type[0] << 20);
    ctrl |= (pct->type[1] << 12);
    asm volatile ("mcr p15,0,%0,c15,c12,0" :: "r" (ctrl) : "memory");
@@ -205,9 +205,9 @@ void read_performance_counters(perf_counters_t *pct) {
 #if defined(RPI2) || defined(RPI3)
    int i;
    for (i = 0; i < pct->num_counters; i++) {
-      // Select the event count/type via the event type selection register
+      /* Select the event count/type via the event type selection register */
       asm volatile ("mcr p15,0,%0,c9,c12,5" :: "r" (i) : "memory");
-      // Read the required event count
+      /* Read the required event count */
       asm volatile ("mrc p15,0,%0,c9,c13,2" : "=r" (pct->counter[i]));
    }
    asm volatile ("mrc p15,0,%0,c9,c13,0" : "=r" (pct->cycle_counter));
@@ -237,8 +237,8 @@ void print_performance_counters(const perf_counters_t *pct) {
    int i;
    uint64_t cycle_counter = pct->cycle_counter;
    cycle_counter *= 64;
-   // newlib-nano doesn't appear to support 64-bit printf/scanf on 32-bit systems
-   // printf("%26s = %"PRIu64"\r\n", "cycle counter", cycle_counter);
+   /* newlib-nano doesn't appear to support 64-bit printf/scanf on 32-bit systems
+      printf("%26s = %"PRIu64"\r\n", "cycle counter", cycle_counter); */
    printf("%26s = %s\r\n", "cycle counter", uint64ToDecimal(cycle_counter));
    for (i = 0; i < pct->num_counters; i++) {
       printf("%26s = %u\r\n", type_lookup(pct->type[i]), pct->counter[i]);
@@ -273,9 +273,9 @@ int benchmark() {
 
    printf("benchmarking core....\r\n");
    reset_performance_counters(&pct);
-   // These only work on Pi 1
-   //_invalidate_icache();
-   //_invalidate_dcache();
+   /* These only work on Pi 1
+     _invalidate_icache();
+     _invalidate_dcache();*/
    total = 0;
    for (int i = 0; i < 1000000; i++) {
       if ((i & 3) == 0) {
@@ -292,9 +292,9 @@ int benchmark() {
       printf("benchmarking %dKB memory copy....\r\n", size);
       size *= 1024;
       reset_performance_counters(&pct);
-      // These only work on Pi 1
-      //_invalidate_icache();
-      //_invalidate_dcache();
+      /* These only work on Pi 1
+        _invalidate_icache();
+        _invalidate_dcache();*/
       memcpy(mem1, mem2, size);
       read_performance_counters(&pct);
       print_performance_counters(&pct);

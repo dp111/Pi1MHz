@@ -13,7 +13,7 @@
 
 #if defined(USE_IRQ)
 
-#define TX_BUFFER_SIZE 65536  // Must be a power of 2
+#define TX_BUFFER_SIZE 65536  /* Must be a power of 2 */
 
 #include "rpi-interrupts.h"
 
@@ -40,8 +40,8 @@ static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
       debugger_rx_char(RPI_Aux->MU_IO & 0xFF);
 #else
       /* Else just echo characters */
-      //RPI_AuxMiniUartWrite(RPI_Aux->MU_IO & 0xFF);
-      RPI_Aux->MU_IO; // read char and dump to clear irq?
+      /* RPI_AuxMiniUartWrite(RPI_Aux->MU_IO & 0xFF); */
+      RPI_Aux->MU_IO; /* read char and dump to clear irq? */
 #endif
     }
 
@@ -65,16 +65,16 @@ static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
 
 void RPI_AuxMiniUartInit(int baud)
 {
-  // Data memory barrier need to be places between accesses to different peripherals
-  //
-  // See page 7 of the BCM2853 manual
+  /* Data memory barrier need to be places between accesses to different peripherals
 
-  /* Setup GPIO 14 and 15 as alternative function 5 which is
+     See page 7 of the BCM2853 manual
+
+   Setup GPIO 14 and 15 as alternative function 5 which is
    UART 1 TXD/RXD. These need to be set before enabling the UART */
   RPI_SetGpioPinFunction(RPI_TX_PIN, FS_ALT5);
   RPI_SetGpioPinFunction(RPI_RX_PIN, FS_ALT5);
 
-  // Enable weak pullups
+  /* Enable weak pullups */
 
   RPI_SetPullUps((1u << RPI_TX_PIN) | (1u << RPI_RX_PIN));
 

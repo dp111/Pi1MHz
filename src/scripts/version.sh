@@ -7,11 +7,11 @@ echo "Running version.sh script"
 VERSION="$(git rev-parse --short HEAD)"
 
 # Check if any uncommitted changes in tracked files
-if [ -n "$(git status --untracked-files=no --porcelain)" ]; then 
+if [ -n "$(git status --untracked-files=no --porcelain)" ]; then
   VERSION="${VERSION}?"
 fi
 
-echo -e "version:\n    ${VERSION}"
+echo -e "version:\\n    ${VERSION}"
 
 echo "#define GITVERSION \"${VERSION}\"" > gitversion.h.tmp
 
@@ -22,7 +22,7 @@ echo "#define GITVERSION \"${VERSION}\"" > gitversion.h.tmp
 # always build to get the latest time stamp into the kernel
 mv gitversion.h.tmp gitversion.h
 
-echo -e "gitversion.h:\n    $(cat gitversion.h)"
+echo -e "gitversion.h:\\n    $(cat gitversion.h)"
 
 #rm -f gitversion.h.tmp
 
