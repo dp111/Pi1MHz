@@ -26,7 +26,7 @@
 #  r8 - temp
 #  r9 - r9 Databus and test pin output select
 # r10 - address mask
-# r11 - GPSET0 constant
+# r11 -
 # r12 - GPIO pins value
 # r13 - pointer to doorbell register
 # r14 -
@@ -39,8 +39,6 @@
 .equ GPCLR0_offset, 0x28
 .equ GPLEV0_offset, 0x34
 .equ GPEDS0_offset, 0x40
-
-.equ r11GPCLR0_offset, (GPCLR0_offset-GPSET0_offset)
 
 # fixed pin bit positions ( TEST passed in dynamically)
 .equ nRST,         26
@@ -78,7 +76,6 @@
    mov    r6, GPFSEL0
    mov    r7, 1            # external nOE pin
    mov    r10, ((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))>>1
-   add    r11, r6, GPSET0_offset
    mov    r13, GPU_ARM_DBELL
    b      Poll_loop
 
@@ -138,8 +135,8 @@ waitforclkhighloop:
 
    st     r8, GPSET0_offset(r6)  # set up databus
    beq    skipenablingbus
-   st   r9, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
-   st   r7, r11GPCLR0_offset(r11)  # set external output enable low
+   st     r9, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
+   st     r7, GPCLR0_offset(r6)  # set external output enable low
  skipenablingbus:
    st     r12, (r1)              # post data
    st     r12, (r13)             # ring doorbell
@@ -161,7 +158,7 @@ waitforclklow2loop:
    b      Poll_loop
 
 writecycle:
-
+   st     r7, GPCLR0_offset(r6)  # set external output enable low
 waitforclkloww2:
    ld     r8, GPLEV0_offset(r6)
    btst   r8, CLK
@@ -169,5 +166,5 @@ waitforclkloww2:
    bne    waitforclkloww2
    st     r12, (r1)         # post data
    st     r12, (r13)        # ring doorbell
-
+   st     r7, GPSET0_offset(r6)  # set external output enable high
    b      Poll_loop
