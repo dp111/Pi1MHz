@@ -78,6 +78,8 @@ static unsigned char opt_sc = 0;      /* external JMP/JSR are 16-bit PC-rel. */
 static unsigned char opt_sd = 0;      /* small data opts: abs.L -> (d16,An) */
 static unsigned char no_opt = 0;      /* don't optimize at all! */
 static unsigned char warn_opts = 0;   /* warn on optimizations/translations */
+static unsigned char warn_abs16 = 0;  /* warn about absolute 16-bit accesses */
+static unsigned char warn_abs32 = 0;  /* warn about absolute 32-bit accesses */
 static unsigned char convert_brackets = 0;  /* convert [ into ( for <020 */
 static unsigned char typechk = 1;     /* check value types and ranges */
 static unsigned char ign_unambig_ext = 0;  /* don't check unambig. size ext. */
@@ -118,8 +120,9 @@ static int OC_ST,OC_ADDQ,OC_SUBQ,OC_ADDA,OC_ADD,OC_BRA,OC_BSR,OC_TST;
 static int OC_NOT,OC_NOOP,OC_FNOP,OC_MOVEA,OC_EXT,OC_MVZ,OC_MOVE;
 static int OC_ASRI,OC_LSRI,OC_ASLI,OC_LSLI,OC_NEG;
 static int OC_FMOVEMTOLIST,OC_FMOVEMTOSPEC,OC_FMOVEMFROMSPEC;
-static int OC_FMUL,OC_FSMUL,OC_FDMUL,OC_FSGLMUL,OC_LOAD,OC_SWAP;
-static int OC_ADDQVX,OC_SUBQVX;
+static int OC_FDIV,OC_FSDIV,OC_FDDIV,OC_FSGLDIV;
+static int OC_FMUL,OC_FSMUL,OC_FDMUL,OC_FSGLMUL;
+static int OC_LOAD,OC_SWAP,OC_ADDQVX,OC_SUBQVX;
 
 static struct {
   int *var;
@@ -137,6 +140,9 @@ static struct {
   &OC_BSR,              "bsr",    0,0,
   &OC_CLR,              "clr",    0,0,
   &OC_EXT,              "ext",    0,0,
+  &OC_FDIV,             "fdiv",   FA,F_,
+  &OC_FSDIV,            "fsdiv",  FA,F_,
+  &OC_FDDIV,            "fddiv",  FA,F_,
   &OC_FMOVEMTOLIST,     "fmovem", MR,FL,
   &OC_FMOVEMFROMSPEC,   "fmovem", FS,AM,
   &OC_FMOVEMTOSPEC,     "fmovem", MA,FS,
@@ -144,6 +150,7 @@ static struct {
   &OC_FSMUL,            "fsmul",  FA,F_,
   &OC_FDMUL,            "fdmul",  FA,F_,
   &OC_FNOP,             "fnop",   0,0,
+  &OC_FSGLDIV,          "fsgldiv",FA,F_,
   &OC_FSGLMUL,          "fsglmul",FA,F_,
   &OC_JMP,              "jmp",    0,0,
   &OC_JSR,              "jsr",    0,0,
@@ -3742,6 +3749,7 @@ dontswap:
     else
       ext = 0;
 
+    /* first try to reduce to double/single while preserving precision */
     if (ext == 'x') {
       /* Fxxx.X #m,FPn */
       int i;
@@ -3794,68 +3802,82 @@ dontswap:
           if (warn_opts>1)
             cpu_error(51,"f<op>.d #m,FPn -> f<op>.s #m,FPn");
         }
+        ip->op[0]->flags |= FL_ExtVal0;
+        ip->op[0]->extval[0] = val = v;
         ip->qualifiers[0] = s_str;
         ext = 's';
         setval(1,buf,4,v);
       }
     }
 
-    if (final && (!strcmp(mnemo->name,"fdiv") || !strcmp(mnemo->name,"fsdiv")
-        || !strcmp(mnemo->name,"fddiv") || !strcmp(mnemo->name,"fsgldiv"))) {
-      /* FxDIV.s #m,FPn and FxDIV.d #m,FPn
-         Can be optimized to FxMUL.s/FxMUL.d #1/m,FPn when m is a power of 2,
-         which is the case when the mantissa is zero. */
-      int optok = 0;
+    if (ext == 's') {  /* need single prec. for the following optimizations */
+      tfloat fval;
+      int fmulopt,intwopt;
 
-      if (ext == 's') {
-        exp = ((((int)buf[0]&0x7f)<<1) | (((int)buf[1]&0x80)>>7)) - 0x7f;
-        if ((readval(1,buf,4) & 0x007fffffLL) == 0
-            && exp!=-0x7f) {
-          setbits(1,buf,16,1,8,0x7f-exp);  /* 8-bit exponent to offset 1 */
+      exp = ((((int)buf[0]&0x7f)<<1) | (((int)buf[1]&0x80)>>7)) - 0x7f;
+      man = readval(1,buf,4);
+
+      /* check if optimization to 16-bit integer constants is possible */
+      if (man) {
+        man &= 0x7fffffLL;
+        fval = (tfloat)(man + 0x800000LL) / (tfloat)0x800000;
+        fval = ldexptfloat(buf[0]&0x80?-fval:fval,exp);
+        intwopt = roundtfloat(fval)==fval && fval>=-32768.0 && fval<32768.0;
+      }
+      else {  /* special case 0.0, when exponent and mantissa is all zero */
+        fval = 0.0;
+        intwopt = 1;
+      }
+
+      /* check if FxDIV.s #m,FPn can be optimized to FxMUL.s #1/m,FPn
+         if m is a power of 2, which is the case when the mantissa is zero. */
+      fmulopt = (ip->code==OC_FDIV || ip->code==OC_FSDIV ||
+                 ip->code==OC_FDDIV || ip->code==OC_FSGLDIV) &&
+                 man==0 && exp!=-0x7f;
+
+      if (fmulopt && (!intwopt || !opt_size)) {
+        /* do fdiv->fmul optimization when no 16-bit integer optimization
+           is possible or no optimization for size is preferred */
+        if (final) {
+          if (ip->code == OC_FDIV) {
+            ip->code = OC_FMUL;
+            if (warn_opts>1)
+              cpu_error(51,"fdiv #m,FPn -> fmul #1/m,FPn");
+          }
+          else if (ip->code == OC_FSDIV) {
+            ip->code = OC_FSMUL;
+            if (warn_opts>1)
+              cpu_error(51,"fsdiv #m,FPn -> fsmul #1/m,FPn");
+          }
+          else if (ip->code == OC_FDDIV) {
+            ip->code = OC_FDMUL;
+            if (warn_opts>1)
+              cpu_error(51,"fddiv #m,FPn -> fdmul #1/m,FPn");
+          }
+          else if (ip->code == OC_FSGLDIV) {
+            ip->code = OC_FSGLMUL;
+            if (warn_opts>1)
+              cpu_error(51,"fsgldiv #m,FPn -> fsglmul #1/m,FPn");
+          }
+          else
+            ierror(0);
+          setbits(1,buf,16,1,8,0x7f-exp); /* 8-bit exponent to offset 1 */
           free_op_exp(ip->op[0]);
           ip->op[0]->value[0] = number_expr(readval(1,buf,4));
-          optok = 1;
         }
       }
-      else if (ext == 'd') {
-        exp = ((((int)buf[0]&0x7f)<<4) | (((int)buf[1]&0xf0)>>4)) - 0x3ff;
-        if ((readval(1,buf,8) & 0xfffffffffffffLL) == 0 && exp!=-0x3ff) {
-          setbits(1,buf,16,1,11,0x3ff-exp);  /* 11-bit exponent to offset 1 */
+      else if (intwopt) {
+        /* otherwise we can optimize to an integer word constant */
+        if (final) {
           free_op_exp(ip->op[0]);
-          ip->op[0]->value[0] = huge_expr(huge_from_mem(1,buf,8));
-          optok = 1;
-        }
-      }
-      else if (ext == 'x') {
-        exp = ((((int)buf[0]&0x7f)<<8) | (int)buf[1]) - 0x3fff;
-        if ((readval(1,buf+4,8) & 0x7fffffffffffffffLL) == 0) {
-          setbits(1,buf,16,1,15,0x3fff-exp);  /* 15-bit exponent to offset 1 */
-          free_op_exp(ip->op[0]);
-          ip->op[0]->value[0] = huge_expr(huge_from_mem(1,buf,12));
-          optok = 1;
-        }
-      }
-      if (optok) {
-        if (!strcmp(mnemo->name,"fdiv")) {
-          ip->code = OC_FMUL;
+          ip->op[0]->value[0] = number_expr((taddr)fval);
           if (warn_opts>1)
-            cpu_error(51,"fdiv #m,FPn -> fmul #1/m,FPn");
+            cpu_error(51,"f<op> #m,FPn -> f<op>.w #m,FPn");
         }
-        else if (!strcmp(mnemo->name,"fsdiv")) {
-          ip->code = OC_FSMUL;
-          if (warn_opts>1)
-            cpu_error(51,"fsdiv #m,FPn -> fsmul #1/m,FPn");
-        }
-        else if (!strcmp(mnemo->name,"fddiv")) {
-          ip->code = OC_FDMUL;
-          if (warn_opts>1)
-            cpu_error(51,"fddiv #m,FPn -> fdmul #1/m,FPn");
-        }
-        else if (!strcmp(mnemo->name,"fsgldiv")) {
-          ip->code = OC_FSGLMUL;
-          if (warn_opts>1)
-            cpu_error(51,"fsgldiv #m,FPn -> fsglmul #1/m,FPn");
-        }
+        ip->op[0]->flags |= FL_ExtVal0;
+        ip->op[0]->extval[0] = val = (taddr)fval;
+        ip->qualifiers[0] = w_str;
+        ext = 'w';
       }
     }
   }
@@ -4860,6 +4882,8 @@ static unsigned char *write_ea_ext(dblock *db,unsigned char *d,operand *op,
           rtype = REL_ABS;
           rsize = 16;
         }
+        else if (warn_abs16)
+          cpu_error(73,16);  /* 16-bit access to absolute address */
         d = write_extval(0,2,db,d,op,rtype);
       }
 
@@ -4869,6 +4893,8 @@ static unsigned char *write_ea_ext(dblock *db,unsigned char *d,operand *op,
           rtype = REL_ABS;
           rsize = 32;
         }
+        else if (warn_abs32)
+          cpu_error(73,32);  /* 32-bit access to absolute address */
         d = write_extval(0,4,db,d,op,rtype);
       }
 
@@ -4979,27 +5005,36 @@ static uint16_t apollo_bank_prefix(instruction *ip)
 /* generate Apollo bank prefix */
 {
   uint16_t bank,aaReg=0,bbReg=0,ddddd=0;
+  int i;
 
-  if (ip->op[0]->mode == MODE_SpecReg)
-    aaReg = ip->op[0]->reg - REG_VX00;  /* e0 - e23 */
+  /* If the first operand is immediate, and the instruction is already 3
+     operands, we move the bankable operand indices up and prevent an NDD
+     instruction form using ddd-dd */
+  if (ip->op[0]->mode==MODE_Extended && ip->op[0]->reg==REG_Immediate &&
+      ip->op[2]!=NULL && ip->op[2]->mode!=-1)
+    i = 1;
+  else
+    i = 0;
 
-  if (ip->op[1] != NULL) {
-    if (ip->op[1]->mode == MODE_SpecReg) {
-      bbReg = ip->op[1]->reg - REG_VX00;            /* e0 - e23 */
-      ddddd |= ((bbReg % 8) << 2) | (1 + bbReg/8);  /* ddd-dd==reg-bank */
+  if (ip->op[i]->mode == MODE_SpecReg)
+    aaReg = 1 + ((ip->op[i]->reg - REG_VX00) >> 3);  /* e0 - e23 */
+
+  if (ip->op[i+1] != NULL) {
+    if (ip->op[i+1]->mode == MODE_SpecReg) {
+      bbReg = 1 + ((ip->op[i+1]->reg - REG_VX00) >> 3);  /* e0 - e23 */
+      ddddd = ((ip->op[i+1]->reg - REG_VX00) % 8) << 2;
     }
     else  /* no bbReg but still apply to ddd-dd value */
-      ddddd = ip->op[1]->reg << 2;
+      ddddd = ip->op[i+1]->reg << 2;
   }
-  else {
-    /* use bbReg for single operand instructions */
+  else if (mnemonics[ip->code].ext.place[0] == FPS) {
+    /* FPU instructions with a single operand really use two */
     bbReg = aaReg;
-    aaReg = 0;
   }
 
-  bank = 0x7100 | ((1 + aaReg/8) << 2) | (1 + bbReg/8);
+  bank = 0x7100 | (aaReg << 2) | bbReg;
 
-#if 1 /* FIXME: size information is no longer needed since July 2024 */
+#if 0 /* size information is no longer needed since July 2024 */
   switch (ip_size(ip)) {
     case 4:
       /* SS = 00 */
@@ -5022,21 +5057,25 @@ static uint16_t apollo_bank_prefix(instruction *ip)
   }
 #endif
 
-  /* handle optional 3rd operand */
-  if (ip->op[2] != NULL) {
+  /* handle optional 3rd operand, but only if there wasn't a non-bankable
+     first operand in an already 3-operand instructions (i=1) */
+  if (i==0 && ip->op[2]!=NULL) {
     if (ip->op[2]->mode != -1) {
       /* optional operand was not omitted - refer to m68k_operand_optional() */
-      uint16_t dbank;
+      uint16_t ddReg;
 
-      if (ip->op[2]->mode == MODE_FPn)
-        dbank = ip->op[2]->reg << 2;
-      else if (ip->op[2]->mode == MODE_SpecReg)
-        dbank = (1 + ((ip->op[2]->reg - REG_VX00) >> 3)) |
-                (((ip->op[2]->reg - REG_VX00) % 8) << 2);
+      if (ip->op[2]->mode == MODE_FPn) {
+        ddReg = 0;
+        ddddd ^= ip->op[2]->reg << 2;
+      }
+      else if (ip->op[2]->mode == MODE_SpecReg) {
+        ddReg = 1 + ((ip->op[2]->reg - REG_VX00) >> 3);
+        ddddd ^= ((ip->op[2]->reg - REG_VX00) % 8) << 2;
+      }
       else
         ierror(0);
 
-      ddddd ^= dbank;
+      ddddd |= (bbReg ^ ddReg) & 0x3;
       bank |= (((ddddd >> 2) & 7) << 9) | ((ddddd & 3) << 4);
     }
     free_operand(ip->op[2]);
@@ -6460,6 +6499,10 @@ nofpu:
     warn_opts = 1;
   else if (!strcmp(p,"-showopt"))
     warn_opts = 2;
+  else if (!strcmp(p,"-warnabs16"))
+    warn_abs16 = 1;
+  else if (!strcmp(p,"-warnabs32"))
+    warn_abs32 = 1;
   else if (!strcmp(p,"-sc"))
     opt_sc = !no_opt;
   else if (!strcmp(p,"-sd"))

@@ -39,9 +39,13 @@ o m68k: Out of range 8-bit immediate constants write to all 16 bits of
 o m68k: Improved -opt-size optimization for move.l->moveq/lsl, which now
   optimizes all values below 0x8000 where the highest and lowest bit set
   does not span more than 7 bits (suggested by Erik Hemming).
+o m68k: Float-constant optimization (OPT of, enabled by default) now also
+  supports integer constant optimization to 16-bit.
 o m68k: Command line options of the form -opt-<option> execute a
   Devpac-style option in the same way as an OPT directive at the top
   of the source text.
+o m68k: New options -warnabs16 and -warnabs32 to show a warning when
+  accessing absolute 16- oder 32-bit addresses.
 o m68k: Add Apollo E-register banking for negx, swap, movex, sCC,
   addiw.l, cmpiw.l, rol, ror, roxl, roxr, and perm.
 o m68k: Apollo instructions pabsb, pabsw are gone (opcode space will be
@@ -64,7 +68,8 @@ o 6502: New option -am to mask all immediate and data values to their
   specified size.
 o 6502: Hu6280 uses SETDP $2000 to move the zero page for automatic code
   optimizations.
-o 6502: Generate SECOFF-relocs for 65816 DP addressing modes.
+o 6502: New option -dpo to generate offset-relocs for zero- or direct-page
+  accesses.
 o x86: Default to 16-bit addressing when -m selects a CPU below 386.
   Default to 64-bit addressing with -m64.
 o x86: Let the mnemonic's suffix always decide about the operation size,
@@ -75,6 +80,7 @@ o x86: Fix macros with size-suffixes (b,w,l,s,q,x). Size qualifiers are
   no longer allowed in x86-macros.
 o x86: Allow multiple alternating .codeNN directives in the source.
 o x86: Add missing prefix when using 32-bit registers in 16-bit mode.
+o x86: Fixed relative calls with size suffix (callw, calll) in 16/32-bit mode.
 o oldstyle-syntax: MACRO (written in upper case) didn't work with arguments.
 o oldstyle-syntax: New ifblank and ifnblank directives may be used to
   check whether a macro argument was given.
@@ -86,6 +92,8 @@ o oldstyle-syntax: Section attributes 'f' and 'z' may be used to designate
 o oldstyle-syntax: Fixed FCC for single characters (no expressions allowed).
 o oldstyle-syntax: The closing quote-character (' or ") in single-character
   expressions is now optional (compatibility with old Motorola sources).
+o oldstyle-syntax: Broken hex-constants with the minus-operator following
+  the '$' are supported for compatibility reasons.
 o std-syntax: The "true" result of logical operations should be 1 not -1.
 o std-syntax: Allow XY' (alternate) registers with Z80.
 o std-syntax: The .org directive always defines the absolute address for

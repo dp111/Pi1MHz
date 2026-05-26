@@ -708,6 +708,8 @@ static void optimize_imm(instruction *ip,operand *op,section *sec,
 static void optimize_jump(instruction *ip,operand *op,section *sec,
                           taddr pc,int final)
 {
+  char suffix = ip->qualifiers[0] ?
+                tolower((unsigned char)ip->qualifiers[0][0]) : '\0';
   mnemonic *mnemo = &mnemonics[ip->code];
   int mod = mnemo->ext.opcode_modifier;
   int label_in_sec;
@@ -734,18 +736,25 @@ static void optimize_jump(instruction *ip,operand *op,section *sec,
     }
   }
   else if (mod & JmpDword) {
-    if (mode_flag == CODE_16BIT)
-      op->type &= ~(Disp32|Disp32S);
-    else
-      op->type &= ~Disp16;
+    switch (suffix) {
+      case 'w':
+        op->type &= ~(Disp32|Disp32S);
+        break;
+      case 'l':
+        op->type &= ~Disp16;
+        break;
+      default:
+        op->type &= (mode_flag==CODE_16BIT) ? ~(Disp32|Disp32S) : ~Disp16;
+        break;
+    }
     if (final && label_in_sec) {
       diff = val - (pc + ip->ext.last_size);
-      if (mode_flag == CODE_16BIT) {
-        if (diff<-0x8000 || diff>0x7fff)
+      if (op->type & (Disp32|Disp32S)) {
+        if (diff<-0x80000000LL || diff>0x7fffffffLL)
           cpu_error(22,diff);  /* jump destination out of range */
       }
       else {
-        if (diff<-0x80000000LL || diff>0x7fffffffLL)
+        if (diff<-0x8000 || diff>0x7fff)
           cpu_error(22,diff);  /* jump destination out of range */
       }
     }
@@ -1371,8 +1380,9 @@ static unsigned char *output_disp(dblock *db,unsigned char *d,
             }
             else {
               /* reloc for a normal absolute displacement */
-              add_extnreloc(&db->relocs,base,val,REL_ABS,0,bits,
-                            (int)(d-(unsigned char *)db->data));
+              add_extnreloc_masked(&db->relocs,base,val,REL_ABS,0,bits,
+                                   (int)(d-(unsigned char *)db->data),
+                                   MAKEMASK(bits));  /* @@@ always mask? */
             }
           }
           else
@@ -1448,6 +1458,8 @@ char *parse_cpu_special(char *start)
     if (dotdirs && *name=='.')
       name++;
     if (s-name==6 && !strncmp(name,"code",4)) {
+      enum codetype last_mode = mode_flag;
+
       if (!strncmp(name+4,"16",2))
         mode_flag = CODE_16BIT;
       else if (!strncmp(name+4,"32",2))
@@ -1456,7 +1468,8 @@ char *parse_cpu_special(char *start)
         mode_flag = CODE_64BIT;
       else
         return start;
-      cpu_opts_init(NULL);
+      if (mode_flag != last_mode)
+        cpu_opts_init(NULL);  /* emit atom to switch mode */
       eol(s);
       return skip_line(s);
     }
@@ -1872,10 +1885,13 @@ dblock *eval_data(operand *op,size_t bitsize,section *sec,taddr pc)
       int btype;
     
       btype = find_base(op->value,&base,sec,pc);
-      if (base)
-        add_extnreloc(&db->relocs,base,val,
-                      btype==BASE_PCREL?REL_PC:REL_ABS,
-                      0,bitsize,0);
+      if (base) {
+        if (btype == BASE_PCREL)
+          add_extnreloc(&db->relocs,base,val,REL_PC,0,bitsize,0);
+        else
+          add_extnreloc_masked(&db->relocs,base,val,REL_ABS,0,bitsize,0,
+                               MAKEMASK(bitsize));  /* @@@ always mask? */
+      }
       else if (btype != BASE_NONE)
         general_error(38);  /* illegal relocation */
     }

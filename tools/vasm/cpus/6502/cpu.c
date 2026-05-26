@@ -15,7 +15,7 @@ const char *cpuname = "6502";
 int bytespertaddr = 2;
 
 uint16_t cpu_type = M6502;
-static int auto_mask,branchopt;
+static int auto_mask,branchopt,dp_offset;
 static uint16_t dpage;    /* zero/direct page (default 0) - set with SETDP */
 static uint8_t asize = 8; /* Accumulator is 8 bits by default */
 static uint8_t xsize = 8; /* Index registers are 8 bits by default */
@@ -701,13 +701,13 @@ dblock *eval_instruction(instruction *ip,section *sec,taddr pc)
                 case DPIND:
                 case LDPIND:
                 case LDPINDY:
-                  if (op->flags & OF_LO)
+                  if (dp_offset)
+                    type = REL_SECOFF;  /* 8-bit offset to DP-section */
+                  if (!dp_offset || (op->flags & OF_LO))
                     mask = 0xff;
-                  else if (op->flags & (OF_HI|OF_WA))
+                  if (op->flags & (OF_HI|OF_WA))
                     cpu_error(2);  /* selector prefix ignored */
                   size = 8;
-                  if (cpu_type & WDC65816)
-                    type = REL_SECOFF;  /* 8-bit offset to DP-section */
                   break;
                 case SR:
                 case SRINDY:
@@ -1078,6 +1078,8 @@ int cpu_args(char *p)
   }
   else if (!strcmp(p,"-am"))
     auto_mask = 1;
+  else if (!strcmp(p,"-dpo"))
+    dp_offset = 1;
   else if (!strcmp(p,"-opt-branch"))
     branchopt = 1;
   else if (*p!='-' || !set_cpu_type(p+1))

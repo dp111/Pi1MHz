@@ -140,6 +140,9 @@ static expr *primary_expr(void)
           goto fltval;  /* decimal point or exponent: read floating point */
 #endif
       }else if(base==16){
+#ifdef BROKEN_HEXCONST
+        int msign=*(s-1)=='-'&&*(s-2)=='$';
+#endif
         for(;;){
           nval=val<<4;
           if(*s>='0'&&*s<='9')
@@ -154,6 +157,9 @@ static expr *primary_expr(void)
           else
             val=nval;
         }
+#ifdef BROKEN_HEXCONST
+        if(msign) val=-val;
+#endif
       }else ierror(0);
       break;
     hugeval:
@@ -210,6 +216,7 @@ static expr *primary_expr(void)
     }
     return new;
   }
+  s=m;
   if(*s==current_pc_char && !ISIDCHAR(*(s+1))){
     s++;
     EXPSKIP();
@@ -244,12 +251,15 @@ static expr *primary_expr(void)
     int shift=0,cnt=0;
     int charspertaddr=bytespertaddr*BITSPERBYTE/8;
     char quote=*s++;
-    while(*s){
+    for(;;){
       char c;
       if(*s=='\\')
         s=escape(s,&c);
       else{
-        c=*s++;
+        if (!(c=*s++)) {
+          general_error(6,quote);  /* closing-quote expected */
+          break;
+        }
         if(c==quote){
           if(*s==quote)
             s++;  /* allow """" to be recognized as " and '''' as ' */

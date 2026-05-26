@@ -73,3 +73,4 @@
   "instruction too large for bank prefix",ERROR,                     /* 70 */
   "bad FPU id %d for selected cpu type",ERROR,
   "absolute k-factor without '#'",WARNING,
+  "%d-bit access to absolute address",WARNING,
