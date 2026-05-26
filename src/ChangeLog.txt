@@ -158,3 +158,10 @@ Port New fill sector /segment code from PiTubeDirect
 Add disk access 16 f_unlink
 Add other disc access functions.
 fix if now .cfg or dsc it was possible to used invalid block size and sectors per track
+
+V.1.27
+Make both the HDMI splash screen and the helper screen the same.
+Pull frame buffer changes in from PitTubeDirect
+Fix bug $&FD00 message was missing
+Fix bug cmdline.txt VFSJUKE and SCSIID not working
+Fix frame buffer missing top line output line of pixels ( a bit of a hack of having a blank line of pixels at the top of the frame buffer as a guard line for the PPF scaler pre-roll)
