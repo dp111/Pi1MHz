@@ -12,6 +12,9 @@
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
 #include "BeebSCSI/fatfs/diskio.h"
 
+#include "scripts/gitversion.h"
+#include "rpi/info.h"
+
 static size_t byte_ram_addr;
 
 static uint8_t ram_address;
@@ -66,7 +69,7 @@ void discaccess_emulator_command(unsigned int gpio)
    uint32_t addr = GET_ADDR(gpio);
 
    Pi1MHz_MemoryWrite(addr, data); // return existing command
-   uint32_t base_addr = ((JIM_ram_size - 1) * 16 * 1024 * 1024) ;
+   uint32_t base_addr = ((JIM_ram_size - 2) * 16 * 1024 * 1024) ;
 
    uint32_t command_pointer = base_addr | 0xFF0000 | (data<<8);
 
@@ -155,7 +158,7 @@ void discaccess_emulator_command(unsigned int gpio)
 
 void discaccess_emulator_init( uint8_t instance , int address)
 {
-   byte_ram_addr = (JIM_ram_size - 1) * 16 * 1024 * 1024;
+   byte_ram_addr = (JIM_ram_size - 2) * 16 * 1024 * 1024;
 
    ram_address = (uint8_t) address;
 
@@ -170,4 +173,21 @@ void discaccess_emulator_init( uint8_t instance , int address)
    // command pointer
    Pi1MHz_Register_Memory(WRITE_FRED, ram_address+4, discaccess_emulator_command );
 
+   // We also hide the help screen at &FFE000
+    char * helpscreen = ( char *) &JIM_ram[ byte_ram_addr + 0x00FFE000] ;
+    helpscreen += strlcpy(helpscreen, "\r Pi1MHZ "RELEASENAME, PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r Commit ID : "GITVERSION, PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r Date : " __DATE__ " " __TIME__, PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r Pi : " , PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, get_info_string(), PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r\r", PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r Helper functions", PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r ?&FCFC=1:CALL&FD00 # ", PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r ?&FCFC=2:CALL&FD00 # ", PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r ?&FCFC=3:CALL&FD00 # Load MMFS rom into SWR", PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r ?&FCFC=4:CALL&FD00 # Load ADFS rom into SWR", PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r ?&FCFC=5:CALL&FD00 # Load MMFS rom into SWR", PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r ?&FCFC=7:CALL&FD00 # ", PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r ?&FCFC=8:CALL&FD00 # This help screen", PAGE_SIZE*16);
+    helpscreen += strlcpy(helpscreen, "\r", PAGE_SIZE*16);
 }

@@ -160,7 +160,7 @@ endif()
             ${harddisc_emulator_files}
             ${M5000_emulator_files}
             ${FrameBuffer_emulator_files}
-            ${diskaccess_emulator_files}
+            ${discaccess_emulator_files}
         )
 
     else()
@@ -170,7 +170,7 @@ endif()
             ${harddisc_emulator_files}
             ${M5000_emulator_files}
             ${FrameBuffer_emulator_files}
-            ${diskaccess_emulator_files}
+            ${discaccess_emulator_files}
         )
 
     endif()
