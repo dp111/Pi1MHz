@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "../../rpi/exceptions.h"
+#include "../../rpi/rpi.h"
 #include "../../rpi/systimer.h"
 
 typedef int sys_prot_t;
@@ -22,6 +24,17 @@ typedef int sys_prot_t;
 #define PACK_STRUCT_END
 #define PACK_STRUCT_FIELD(x) x
 
-#define LWIP_PLATFORM_ASSERT(x) do { if (!(x)) while (1) { } } while (0)
+/* lwIP only invokes this on a hard internal invariant failure.  The
+   previous spin-forever swallowed the diagnostic and froze the Pi
+   silently - on a board with no JTAG you'd never know why.  Print
+   the failing assertion to whatever LOG_INFO is wired to (usually
+   the aux UART) and reboot so the system recovers automatically. */
+#define LWIP_PLATFORM_ASSERT(x) \
+   do { \
+      if (!(x)) { \
+         LOG_INFO("lwIP assert: %s (%s:%d)\r\n", #x, __FILE__, __LINE__); \
+         reboot_now(); \
+      } \
+   } while (0)
 
 #endif
