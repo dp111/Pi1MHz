@@ -340,7 +340,7 @@ static void music5000_rec_start(void)
     rec_started = false;
 }
 
-void music5000_rec_stop(void)
+static void music5000_rec_stop(void)
 {
    static const unsigned char wavfmt[] = {
       'R','I','F','F',
@@ -402,7 +402,7 @@ static void store_samples(int sl, int sr)
     }
 }
 
-void music5000_emulate(void)
+static void music5000_emulate(void)
 {
    if ((record == 0 ) && (fx_register[fx_pointer] != 0))
    {
