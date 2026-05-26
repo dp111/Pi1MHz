@@ -131,16 +131,16 @@ unsigned int RPI_PropertyProcess( bool wait )
 #endif
     RPI_Mailbox0Write( MB0_TAGS_ARM_TO_VC, pt );
 
-    if (wait == false)
-        return 0;
+    //if (wait == false)
+    //    return 0;
 
     do { // make sure the response is for us
        result = RPI_Mailbox0Read( MB0_TAGS_ARM_TO_VC );
     } while ((uint32_t) result != ((uint32_t) pt) >> 4);
 
 #if defined(RPI4)
-    _invalidate_cache_area(pt, pt[0]); 
-#endif 
+    _invalidate_cache_area(pt, pt[0]);
+#endif
 
 #if( PRINT_PROP_DEBUG == 1 )
     for ( int i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
@@ -150,13 +150,13 @@ unsigned int RPI_PropertyProcess( bool wait )
 }
 
 rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag)
-{  
+{
     /* Get the tag from the buffer. Start at the first tag position  */
     uint32_t index = 2;
 
     while ( index < ( pt[PT_OSIZE] >> 2 ) )
     {
-        // LOG_DEBUG( "Test Tag: [%d] %8.8X\r\n", index, pt[index] ); 
+        // LOG_DEBUG( "Test Tag: [%d] %8.8X\r\n", index, pt[index] );
         if ( pt[index] == tag )
         {
             /* Return the required data */
