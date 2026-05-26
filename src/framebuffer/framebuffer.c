@@ -1248,7 +1248,7 @@ static void vdu23_22(const uint8_t *buf) {
    if (x_pixels == 0 || y_pixels == 0 ) {
       return;
    }
-   
+
    fb_custom_mode(x_pixels, y_pixels, n_colours);
 }
 
@@ -2402,13 +2402,6 @@ static void fb_emulator_vdu(unsigned int gpio)
    vdu_wp = next;
 }
 
-void fb_emulator_ram(unsigned int gpio)
-{
-   uint8_t  data = GET_DATA(gpio);
-   uint32_t addr = GET_ADDR(gpio);
-   Pi1MHz_MemoryWrite(addr, data);
-}
-
 void fb_emulator_init(uint8_t instance, uint8_t address)
 {
 
@@ -2422,8 +2415,8 @@ void fb_emulator_init(uint8_t instance, uint8_t address)
   Pi1MHz_MemoryWrite((uint32_t)(address+2), 0XFC);
   Pi1MHz_MemoryWrite((uint32_t)(address+3), 0x4c);
 
-  Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 4), fb_emulator_ram);
-  Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 5), fb_emulator_ram);
+  Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 4), Pi1MHz_EmulatedMemoryByte);
+  Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 5), Pi1MHz_EmulatedMemoryByte);
 
  // Pi1MHz_Register_Poll(fb_emulator_poll);
 }

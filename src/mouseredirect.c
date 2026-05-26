@@ -252,11 +252,6 @@ static volatile bool change;
 static uint8_t fred_address;
 static uint8_t lastmouse_pointer=255;
 
-static void mouse_redirect_move_mouse_data(unsigned int gpio)
-{
-    Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
-}
-
 static void mouse_redirect_mouse_type(unsigned int gpio)
 {
     Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
@@ -336,9 +331,9 @@ void mouse_redirect_init(uint8_t instance, uint8_t address)
 {
     // register call backs
     fred_address = address;
-    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+0), mouse_redirect_move_mouse_data );
-    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+1), mouse_redirect_move_mouse_data );
-    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+2), mouse_redirect_move_mouse_data );
-    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+3), mouse_redirect_move_mouse_data );
+    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+0), Pi1MHz_EmulatedMemoryByte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+1), Pi1MHz_EmulatedMemoryByte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+2), Pi1MHz_EmulatedMemoryByte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+3), Pi1MHz_EmulatedMemoryByte );
     Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+4), mouse_redirect_mouse_type );
 }

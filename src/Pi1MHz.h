@@ -216,6 +216,8 @@ void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data);
 void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data);
 uint8_t Pi1MHz_MemoryRead(uint32_t addr);
 
+void Pi1MHz_EmulatedMemoryByte(unsigned int gpio);
+
 bool Pi1MHz_is_rst_active(void);
 
 // This is an assembler function for performance.

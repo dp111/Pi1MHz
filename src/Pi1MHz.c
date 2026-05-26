@@ -203,6 +203,11 @@ uint8_t Pi1MHz_MemoryRead(uint32_t addr)
    return Pi1MHz->Memory[addr];
 }
 
+void Pi1MHz_EmulatedMemoryByte(unsigned int gpio)
+{
+   Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
+}
+
 // For each location in FRED and JIM which a task wants to be called for
 // it must register its interest. Only one task can be called per location
 // for access variable use WRITE_FRED WRITE_JIM READ_FRED READ_JIM
