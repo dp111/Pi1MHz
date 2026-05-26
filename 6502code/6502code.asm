@@ -18,14 +18,14 @@ ENDMACRO
 
 MACRO LOADFILETOSWR filename
 {
-    LDA &F4
+    LDA     &F4
     PHA
-    LDX #15
+    LDX     #15
 .romlp
-    stx    &f4
-    stx    &fe30
-    LDA    #'.'
-    JSR    OSWRCH
+    stx     &f4
+    stx     &fe30
+    LDA     #'.'
+    JSR     OSWRCH
 ;; Step 1: Test if candidate slot already contains a rom image
 ;; so we don't clobber any pre-existing ROM images
     ldy     &8007
@@ -39,7 +39,7 @@ MACRO LOADFILETOSWR filename
     bne     testram
     lda     &8003, Y
     cmp     #')'
-    bne     testram
+    ; bne     testram
 
 ;; Step 2: Test if that pre-existing rom image is SWMMFS
 ;; so we re-use the same slot again and again
@@ -49,7 +49,7 @@ MACRO LOADFILETOSWR filename
      ;   lda     &b5ff
      ;   cmp     #MAGIC1
      ;   bne     romnxt
-    beq romnxt
+    beq     romnxt
 ;; Step 3: Check if slot is RAM
 .testram
     lda     &8006
@@ -146,7 +146,8 @@ MACRO LOADFILETOSWR filename
     LDA #3
     STA discaccess+3
     STY discaccess+4
-
+    LDA #&7F
+    STA &FE4E
     LDA #200
     LDX #3
     JSR OSBYTE
