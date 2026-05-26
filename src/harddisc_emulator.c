@@ -89,8 +89,8 @@ static void hd_emulator_IRQ(unsigned int gpio)
    }
 
 }
-
-void hd_emulator_conf(unsigned int gpio)
+#ifdef DEBUG
+static void hd_emulator_conf(unsigned int gpio)
 {
    unsigned int databusValue = GET_DATA(gpio);
 
@@ -144,6 +144,7 @@ void hd_emulator_conf(unsigned int gpio)
    if (databusValue == 20) debugFlag_fatfs = true;
    if (databusValue == 21) debugFlag_fatfs = false;
 }
+#endif
 
 void harddisc_emulator_init( uint8_t instance )
 {
@@ -167,8 +168,9 @@ void harddisc_emulator_init( uint8_t instance )
    // address FC43 write = Enable/Disable BBC nIRQ command
    Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+3, hd_emulator_IRQ );
    // address FC44 write = Write BeebSCSI configuration byte
+#ifdef DEBUG
    Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+4, hd_emulator_conf );
-
+#endif
    // Initialise but only at power on
    // Fixes *SCSIJUKE surving over shift break.
    if (!PowerOn)
