@@ -39,11 +39,11 @@
 // gcc7 8 appear to optimise all the code away if they are set to volatile
 #ifdef DEBUG
    // Default debug settings for debug builds
-    bool debugFlag_filesystem = false;
-    bool debugFlag_scsiCommands = false;
+    bool debugFlag_filesystem = true;
+    bool debugFlag_scsiCommands = true;
     bool debugFlag_scsiBlocks = false;
     bool debugFlag_scsiFcodes = true;
-    bool debugFlag_scsiState = false;
+    bool debugFlag_scsiState = true;
     bool debugFlag_fatfs = false;
     bool debugFlag_extended_attributes = true;
 #else
