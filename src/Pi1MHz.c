@@ -320,7 +320,7 @@ static void init_emulator(void) {
    RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1
    RPI_PropertyAdd(0); // r2 ( External nOE pin) |(1<<(NOE_PIN<<3))
    RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
-   RPI_PropertyAdd(TEST_PINS_OUTPUTS); //|(1<<(NOE_PIN<<3))); // r4
+   RPI_PropertyAdd(TEST_PINS_OUTPUTS | (1<<(NOE_PIN<<3))); // r4
    RPI_PropertyAdd(0); // r5 TEST_MASK
    RPI_PropertyProcess(false);
 
