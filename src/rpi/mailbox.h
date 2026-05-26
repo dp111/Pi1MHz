@@ -82,6 +82,7 @@ typedef enum {
     TAG_GET_MIN_CLOCK_RATE = 0x30007,
     TAG_GET_TURBO = 0x30009,
     TAG_SET_TURBO = 0x38009,
+    TAG_SET_SDHOST_CLOCK = 0x38042,
 
     /* Voltage */
     TAG_GET_VOLTAGE = 0x30003,
