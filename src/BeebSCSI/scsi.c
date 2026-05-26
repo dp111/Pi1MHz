@@ -2152,7 +2152,7 @@ static uint8_t scsiBeebScsiFatInfo(void)
 // This function accepts a FAT file identification number (in the 5th field of the command),
 // a block offset (the block to start reading from) and a number of blocks.
 //
-// The requested number of blocks from the FAT file are transfered to the host
+// The requested number of blocks from the FAT file are transferred to the host
 //
 static uint8_t scsiBeebScsiFatRead(void)
 {

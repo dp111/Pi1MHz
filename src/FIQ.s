@@ -37,7 +37,7 @@
 //  r14 return address
 FIQstart:
    DMB_MACRO r12            // R12 is defined to be zero
-                            // This finshes any outstanding read that might be inflight
+                            // This finishes any outstanding read that might be inflight
                             // e.g. from the foreground task
    LDR      r8, [r11]       // get data posted from the VPU.
 
