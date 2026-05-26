@@ -26,32 +26,6 @@
 # Desctiption of the Disc
 #Desciption=
 
-# The DSC descriptor comes from the ACB 4000 and Acorn SuperForm requirements
-
-#   /Mode Select Parameter list (ACB-4000 manual fig 5.18) 4 bytes
-#   |       /Extent Descriptor list (8 bytes)
-#   |       |               / Drive Parameter List (ACB-4000 manual fig. 5-20)
-#   |       |         | 256 | |306|4|   |   | |
-DSC=00000008000000000000010001013204008000800001
-#   | | | | | |       |     | |   | |   |   | |
-#   | | | | | |       |     | |   | |   |   | \Step pulse output rate code
-#   | | | | | |       |     | |   | |   |   \Landing zone position
-#   | | | | | |       |     | |   | |   \Write pre-compenstation cylinder (MSB, LSB)
-#   | | | | | |       |     | |   | \Reduced write current cylinder (MSB, LSB)
-#   | | | | | |       |     | |   \Head count
-#   | | | | | |       |     | \Cylinder count (MSB, LSB)
-#   | | | | | |       |     \List format code
-#   | | | | | |       |
-#   | | | | | |       \Logical Block length (MSB-LSB)
-#   | | | | | \Reserved
-#   | | | | \Density code
-#   | | | \LBA Block Descriptor length
-#   | | |      7       |   6  |    5   | 4 | 3 | 2 | 1 | 0 |
-#   | | \Write Protect | Rsvd | DPOFUA |    Reserved       |
-#   | \Medium type
-#   \Mode Data length of(MPHeader + LBA BLOCK + Mode Page) -1
-#    e.g. 4bytes +6bytes +[Page1]5bytes -1 = 16bytes (0x10)
-#    This is automatically calculated and overwritten in BeebSCSI
 
 ##################################################################################################
 # INQUIRY Data
@@ -109,6 +83,25 @@ LBADescriptor=0000000000000100
 ##################################################################################################
 # MODE PARAMETER Pages
 #
+# Page 0x00 ( replaces DSC )
+#
+
+# The DSC descriptor comes from the ACB 4000 and Acorn SuperForm requirements
+# NB you should keep this consistant with Pages 3 and 4
+#         / Drive Parameter List (ACB-4000 manual fig. 5-20)
+#         | |306|4|   |   | |
+ModePage0=01013204008000800001
+#         | |   | |   |   | |
+#         | |   | |   |   | \Step pulse output rate code
+#         | |   | |   |   \Landing zone position
+#         | |   | |   \Write pre-compenstation cylinder (MSB, LSB)
+#         | |   | \Reduced write current cylinder (MSB, LSB)
+#         | |   \Head count
+#         | \Cylinder count (MSB, LSB)
+#         \List format code
+#
+
+
 # PAGE 0x01
 #
 #         /Mode Page - 01 Error Correction Status Parameters
