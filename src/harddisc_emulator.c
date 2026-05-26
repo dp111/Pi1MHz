@@ -70,12 +70,12 @@ void hd_emulator_nSEL(unsigned int gpio)
    HD_SEL = ACTIVE;
 }
 
-static void hd_emulator_status(unsigned int bit, bool state)
+static void hd_emulator_status(uint8_t bit, bool state)
 {
    if (state == CLEAR)
-      HD_STATUS_Write( HD_STATUS_Read & ~bit);
+      HD_STATUS_Write( HD_STATUS_Read & (uint8_t)~bit);
    else
-      HD_STATUS_Write( HD_STATUS_Read |= bit);
+      HD_STATUS_Write( HD_STATUS_Read |= (uint8_t)bit);
 }
 
 static void hd_emulator_IRQ(unsigned int gpio)
@@ -190,7 +190,7 @@ void harddisc_emulator_init( uint8_t instance )
          scsijuke = atoi(prop);
 
       // Initialise the SD Card and FAT file system functions
-      filesystemInitialise(scsijuke);
+      filesystemInitialise((uint8_t)scsijuke);
       // Initialise the SCSI emulation
       scsiInitialise();
 
@@ -287,7 +287,7 @@ void hostadapterWriteByte(uint8_t databusValue)
 
 // Host reads data from SCSI device using DMA transfer (reads a 256 byte block)
 // Returns number of bytes transferred (for debug in case of DMA failure)
-uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
+uint32_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
 {
    uint32_t currentByte = 0;
 
@@ -320,7 +320,7 @@ uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
 
 // Host writes data to SCSI device using DMA transfer (writes a 256 byte block)
 // Returns number of bytes transferred (for debug in case of DMA failure)
-uint16_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
+uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
 {
    uint32_t currentByte = 0;
 

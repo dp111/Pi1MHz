@@ -52,3 +52,7 @@ releases/Pi1MHz_20220101_1146_root/start_cd.elf
 src/scripts/Makefile
 src/scripts/Pi1MHz
 src/scripts/gitversion.h
+src/scripts/CMakeCache.txt
+src/scripts/CMakeFiles/3.23.1/CompilerIdC/CMakeCCompilerId.c
+src/scripts/CMakeFiles/3.23.1/CompilerIdC/CMakeCCompilerId.o
+firmware/kernel.img

@@ -36,7 +36,7 @@
 #define SECTOR_BUFFER_LENGTH	(SECTOR_BUFFER_SIZE / 256)
 
 // External prototypes
-void filesystemInitialise(int scsijuke);
+void filesystemInitialise(uint8_t scsijuke);
 void filesystemReset(void);
 
 bool filesystemMount(void);
@@ -77,5 +77,5 @@ bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber);
 bool filesystemReadNextFatBlock(uint8_t *buffer);
 bool filesystemCloseFatForRead(void);
 
-bool filesystemReadFile(char * filename, unsigned char * address, unsigned int max_size);
+bool filesystemReadFile(const char * filename, unsigned char * address, unsigned int max_size);
 #endif /* FILESYSTEM_H_ */

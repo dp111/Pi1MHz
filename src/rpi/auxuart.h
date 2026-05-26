@@ -87,12 +87,12 @@
       https://www.raspberrypi.org/wp-content/uploads/2012/02/BCM2835-ARM-Peripherals.pdf
   See errata:
       http://elinux.org/BCM2835_datasheet_errata#p12 */
-#define AUX_MUIER_TX_INT            ( (1 << 1) )
-#define AUX_MUIER_RX_INT            ( (1 << 0 ) | (1 << 2) )
+#define AUX_MUIER_TX_INT            ( (1U << 1) )
+#define AUX_MUIER_RX_INT            ( (1U << 0 ) | (1U << 2) )
 
-#define AUX_MUIIR_INT_NOT_PENDING   ( 1 << 0 )
-#define AUX_MUIIR_INT_IS_TX         ( 1 << 1 )
-#define AUX_MUIIR_INT_IS_RX         ( 1 << 2 )
+#define AUX_MUIIR_INT_NOT_PENDING   ( 1U << 0 )
+#define AUX_MUIIR_INT_IS_TX         ( 1U << 1 )
+#define AUX_MUIIR_INT_IS_RX         ( 1U << 2 )
 
 typedef struct
 {
@@ -140,7 +140,7 @@ typedef struct
   rpi_reg_ro_t SPI1_PEEK;
 } aux_t;
 
-extern void RPI_AuxMiniUartInit(int baud);
+extern void RPI_AuxMiniUartInit(unsigned int baud);
 extern void RPI_AuxMiniUartWrite(char c);
 extern void RPI_AuxMiniUartWriteForce(char c);
 

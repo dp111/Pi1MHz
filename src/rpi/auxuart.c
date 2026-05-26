@@ -26,7 +26,7 @@ static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
   _data_memory_barrier();
   while (1) {
 
-    int iir = RPI_Aux->MU_IIR;
+    unsigned int iir = RPI_Aux->MU_IIR;
 
     if (iir & AUX_MUIIR_INT_NOT_PENDING) {
       /* No more interrupts */
@@ -54,7 +54,7 @@ static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
          RPI_Aux->MU_IO = tx_buffer[temp];
       } else {
         /* Disable TxEmpty interrupt */
-         RPI_Aux->MU_IER &= ~AUX_MUIER_TX_INT;
+         RPI_Aux->MU_IER &=  (uint8_t)~AUX_MUIER_TX_INT;
       }
     }
   }
@@ -63,7 +63,7 @@ static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
 }
 #endif
 
-void RPI_AuxMiniUartInit(int baud)
+void RPI_AuxMiniUartInit(unsigned int baud)
 {
   /*
    Setup GPIO 14 and 15 as alternative function 5 which is
@@ -95,7 +95,7 @@ void RPI_AuxMiniUartInit(int baud)
   RPI_Aux->MU_IER = 0;
   RPI_Aux->MU_IIR = 0xC6;
 
-  int sys_freq = get_clock_rate(CORE_CLK_ID);
+  unsigned int sys_freq = get_clock_rate(CORE_CLK_ID);
 
   /* Transposed calculation from Section 2.2.1 of the ARM peripherals manual */
   RPI_Aux->MU_BAUD = ( sys_freq / (8 * baud)) - 1;

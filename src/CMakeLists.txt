@@ -45,16 +45,25 @@ endif()
 # Add any C compiler flags here. The C flags concerned with processor tuning
 # are in the toolchain files toolchain-arm-none-eabi-bcm2835.cmake, etc.
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2" )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-unused-parameter -Wnull-dereference -pedantic -Wall -Wcast-qual -Wno-deprecated-declarations -Wfloat-equal -Wmissing-format-attribute -Wno-long-long -Wpacked -Wredundant-decls -Wundef -Wno-shadow -Wno-missing-field-initializers -Wno-missing-braces -Wno-sign-compare -Wno-multichar" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter -Wredundant-decls -Wnull-dereference -pedantic -Wcast-qual -Wno-maybe-uninitialized -Wno-long-long -Wpacked -Wundef -Wno-shadow  -Wno-missing-braces -Wno-sign-compare -Wno-multichar -Wnarrowing -Woverflow -Wconversion  -Wlogical-not-parentheses -Winit-self -Wpointer-arith  -Wwrite-strings -Wunreachable-code -Wshadow -Wdouble-promotion  -Wformat-truncation -fstack-usage -Wno-deprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
+
+# -Wjump-misses-init
+
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wformat=2")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsign-conversion")
+
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostartfiles " )
-
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _printf_float" )
 
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum")
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-overflow=5")
+
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
 # Set the linker flags so that we use our "custom" linker script
 
 #set( CMAKE_EXE_LINKER_FLAGS "-Wl,--gc-sections -Wl,--print-gc-sections -Wl,-unresolved-symbols=ignore-in-object-files -Wl,-T,${PROJECT_SOURCE_DIR}/rpi.ld" )
@@ -100,7 +109,6 @@ file( GLOB M5000_emulator_files
 #FrameBuffer
 file( GLOB FrameBuffer_emulator_files
    framebuffer.c
-   rpi/v3d.c
 )
 
 if( ${DEBUG} )

@@ -153,12 +153,12 @@ typedef enum {
     } rpi_tag_offset_t;
 
 typedef struct {
-    int tag;
-    int byte_length;
+    unsigned int tag;
+    unsigned int byte_length;
     union {
-        int value_32;
+        uint32_t value_32;
         unsigned char buffer_8[PROP_SIZE];
-        int buffer_32[PROP_SIZE >> 2];
+        uint32_t buffer_32[PROP_SIZE >> 2];
     } data;
     } rpi_mailbox_property_t;
 
@@ -183,9 +183,9 @@ extern void RPI_PropertyInit( void );
 extern rpi_mailbox_property_t* RPI_PropertyGetWord( rpi_mailbox_tag_t tag, uint32_t data );
 extern rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag);
 extern void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data);
-extern void RPI_PropertySetBuffer(rpi_mailbox_tag_t tag, uint32_t *buffer, uint32_t length);
+extern void RPI_PropertySetBuffer(rpi_mailbox_tag_t tag, const uint32_t *buffer, uint32_t length);
 extern void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... );
-extern int RPI_PropertyProcess( void );
+extern unsigned int RPI_PropertyProcess( void );
 extern void RPI_PropertyProcessNoCheck( void );
 extern rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag );
 

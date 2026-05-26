@@ -60,23 +60,23 @@ static rpi_clk_t* const RPI_CLKBase = (rpi_clk_t*) CLOCK_BASE;
 #define PWMDMAC_ENAB (1UL<<31)
 #define PWMDMAC_THRSHLD ((4<<8)|(4<<0))
 
-#define BCM2835_PWM1_MS_MODE    0x8000  /*  Run in MS mode                   */
-#define BCM2835_PWM1_USEFIFO    0x2000  /*  Data from FIFO                   */
-#define BCM2835_PWM1_REVPOLAR   0x1000  /* Reverse polarity             */
-#define BCM2835_PWM1_OFFSTATE   0x0800  /* Ouput Off state             */
-#define BCM2835_PWM1_REPEATFF   0x0400  /* Repeat last value if FIFO empty   */
-#define BCM2835_PWM1_SERIAL     0x0200  /* Run in serial mode             */
-#define BCM2835_PWM1_ENABLE     0x0100  /* Channel Enable             */
+#define BCM2835_PWM1_MS_MODE    0x8000  /* Run in MS mode                  */
+#define BCM2835_PWM1_USEFIFO    0x2000  /* Data from FIFO                  */
+#define BCM2835_PWM1_REVPOLAR   0x1000  /* Reverse polarity                */
+#define BCM2835_PWM1_OFFSTATE   0x0800  /* Output Off state                */
+#define BCM2835_PWM1_REPEATFF   0x0400  /* Repeat last value if FIFO empty */
+#define BCM2835_PWM1_SERIAL     0x0200  /* Run in serial mode              */
+#define BCM2835_PWM1_ENABLE     0x0100  /* Channel Enable                  */
 
-#define BCM2735_PWMx_CLRF       0x0040  /* clear FIFO */
+#define BCM2735_PWMx_CLRF       0x0040  /* clear FIFO                      */
 
-#define BCM2835_PWM0_MS_MODE    0x0080  /* Run in MS mode             */
-#define BCM2835_PWM0_USEFIFO    0x0020  /* Data from FIFO             */
-#define BCM2835_PWM0_REVPOLAR   0x0010  /* Reverse polarity             */
-#define BCM2835_PWM0_OFFSTATE   0x0008  /* Ouput Off state             */
-#define BCM2835_PWM0_REPEATFF   0x0004  /* Repeat last value if FIFO empty   */
-#define BCM2835_PWM0_SERIAL     0x0002  /* Run in serial mode             */
-#define BCM2835_PWM0_ENABLE     0x0001  /* Channel Enable             */
+#define BCM2835_PWM0_MS_MODE    0x0080  /* Run in MS mode                  */
+#define BCM2835_PWM0_USEFIFO    0x0020  /* Data from FIFO                  */
+#define BCM2835_PWM0_REVPOLAR   0x0010  /* Reverse polarity                */
+#define BCM2835_PWM0_OFFSTATE   0x0008  /* Output Off state                */
+#define BCM2835_PWM0_REPEATFF   0x0004  /* Repeat last value if FIFO empty */
+#define BCM2835_PWM0_SERIAL     0x0002  /* Run in serial mode              */
+#define BCM2835_PWM0_ENABLE     0x0001  /* Channel Enable                  */
 
 #define BCM2835_BERR  0x100
 #define BCM2835_GAPO4 0x80
@@ -91,10 +91,10 @@ static rpi_clk_t* const RPI_CLKBase = (rpi_clk_t*) CLOCK_BASE;
 /* DMA CS Control and Status bits */
 #define BCM2708_DMA_ACTIVE (1 << 0)
 #define BCM2708_DMA_INT    (1 << 2)
-#define BCM2708_DMA_ISPAUSED  (1 << 4)  /* Pause requested or not active */
-#define BCM2708_DMA_ISHELD (1 << 5)  /* Is held by DREQ flow control */
+#define BCM2708_DMA_ISPAUSED  (1 << 4) /* Pause requested or not active */
+#define BCM2708_DMA_ISHELD (1 << 5)    /* Is held by DREQ flow control */
 #define BCM2708_DMA_ERR    (1 << 8)
-#define BCM2708_DMA_ABORT  (1 << 30) /* stop current CB, go to next, WO */
+#define BCM2708_DMA_ABORT  (1 << 30)   /* stop current CB, go to next, WO */
 #define BCM2708_DMA_RESET  (1UL << 31) /* WO, self clearing */
 
 /* DMA control block "info" field bits */

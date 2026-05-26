@@ -22,7 +22,7 @@ static void dump_digit(unsigned char c) {
    } else {
       c = 'A' + c - 10;
    }
-   RPI_AuxMiniUartWriteForce(c);
+   RPI_AuxMiniUartWriteForce((uint8_t)c);
 }
 
 static void dump_hex(unsigned int value) {
@@ -36,15 +36,15 @@ static void dump_hex(unsigned int value) {
 static void dump_binary(unsigned int value) {
   int bits = (sizeof(value) * 8);
   for (int i = bits; i != 0; i--) {
-    RPI_AuxMiniUartWriteForce('0' + (value >> (bits - 1)));
+    RPI_AuxMiniUartWriteForce((uint8_t)('0' + (value >> (bits - 1))));
     value <<= 1;
   }
 }
 
-static void dump_string(char *string) {
+static void dump_string(const char *string) {
   char c;
   while ((c = *string++) != 0) {
-    RPI_AuxMiniUartWriteForce(c);
+    RPI_AuxMiniUartWriteForce((uint8_t)c);
   }
 }
 
@@ -59,8 +59,8 @@ void dump_info(unsigned int *context, int offset, char *type) {
   dump_string("\r\n\r\n");
   dump_string(type);
   dump_string(" at ");
-  /* The stacked LR points one or two words afer the exception address */
-  addr = (unsigned int *)((reg[13] & ~3) - offset);
+  /* The stacked LR points one or two words after the exception address */
+  addr = (unsigned int *)((reg[13] & ~3u) - (uint32_t)offset);
   dump_hex((unsigned int)addr);
 #if (__ARM_ARCH >= 7 )
   dump_string(" on core ");
@@ -70,8 +70,8 @@ void dump_info(unsigned int *context, int offset, char *type) {
   for (int i = 0; i <= 13; i++) {
     int j = (i < 13) ? i : 14; /* slot 13 actually holds the link register */
     dump_string("  r[");
-    dump_digit(j / 10);
-    dump_digit(j % 10);
+    RPI_AuxMiniUartWrite((uint8_t)('0' + (j / 10)));
+    RPI_AuxMiniUartWrite((uint8_t)('0' + (j % 10)));
     dump_string("]=");
     dump_hex(reg[i]);
     dump_string("\r\n");

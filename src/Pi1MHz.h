@@ -188,8 +188,8 @@ typedef void (*callback_func_ptr)( unsigned int);
 typedef void (*func_ptr_parameter)( uint8_t instance);
 
 void Pi1MHz_LED(int led);
-void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr func_ptr );
-void Pi1MHz_Register_Poll( func_ptr func_ptr );
+void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr function_ptr );
+void Pi1MHz_Register_Poll( func_ptr function_ptr );
 void Pi1MHz_SetnIRQ(bool irq);
 void Pi1MHz_SetnNMI(bool nmi);
 

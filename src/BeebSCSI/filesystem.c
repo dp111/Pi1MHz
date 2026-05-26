@@ -169,7 +169,7 @@ static void filesystemPrintfserror(FRESULT fsResult)
 }
 
 // Function to initialise the file system control functions (called on a cold-start of the AVR)
-void filesystemInitialise(int scsijuke)
+void filesystemInitialise(uint8_t scsijuke)
 {
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemInitialise(): Initialising file system\r\n"));
    filesystemState.lunDirectory = scsijuke;      // Default to LUN directory 0
@@ -1072,7 +1072,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t buffer[])
       sectorsRemaining -= sectorsToWrite;
 
       if (sectorsRemaining == 0)
-         fsResult = f_sync(&filesystemState.fileObject[lunNumber]);
+         f_sync(&filesystemState.fileObject[lunNumber]);
    }
    // Exit with success
    return true;
@@ -1200,10 +1200,10 @@ bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer)
       }
 
       // Convert the file size into a 32 bit number and place it in 4 bytes of the buffer (1-4)
-      buffer[1] = (fileSize & 0xFF000000UL) >> 24;
-      buffer[2] = (fileSize & 0x00FF0000UL) >> 16;
-      buffer[3] = (fileSize & 0x0000FF00UL) >>  8;
-      buffer[4] = (fileSize & 0x000000FFUL);
+      buffer[1] = (uint8_t)((fileSize & 0xFF000000UL) >> 24);
+      buffer[2] = (uint8_t)((fileSize & 0x00FF0000UL) >> 16);
+      buffer[3] = (uint8_t)((fileSize & 0x0000FF00UL) >>  8);
+      buffer[4] = (uint8_t)((fileSize & 0x000000FFUL));
    }
 
    // Store the file name of the directory entry in the buffer (limited to 126 characters and NULL (0x00) terminated)
@@ -1312,7 +1312,7 @@ bool filesystemCloseFatForRead(void)
 
 // read a file
 
-bool filesystemReadFile(char * filename, unsigned char * address, unsigned int max_size)
+bool filesystemReadFile(const char * filename, unsigned char * address, unsigned int max_size)
 {
    UINT byteCounter;
    FRESULT fsResult;
