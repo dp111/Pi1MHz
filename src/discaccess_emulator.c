@@ -14,6 +14,7 @@
 #include "BeebSCSI/filesystem.h"
 
 static size_t disc_ram_addr;
+static size_t disc_ram_max;
 
 static uint8_t ram_address;
 
@@ -50,6 +51,7 @@ static void discaccess_emulator_byte_write_inc(unsigned int gpio)
    uint8_t data = GET_DATA(gpio);
    Pi1MHz->JIM_ram[disc_ram_addr] =  data;
    disc_ram_addr++;
+   if (disc_ram_addr >= disc_ram_max) disc_ram_addr = DISC_RAM_BASE;
    Pi1MHz_MemoryWrite((uint32_t)(ram_address + 3) , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
    discaccess_emulator_update_address();
 }
@@ -57,10 +59,10 @@ static void discaccess_emulator_byte_write_inc(unsigned int gpio)
 static void discaccess_emulator_byte_read_inc(unsigned int gpio)
 {
    disc_ram_addr++;
+   if (disc_ram_addr >= disc_ram_max) disc_ram_addr = DISC_RAM_BASE;
    Pi1MHz_MemoryWrite((uint32_t)(ram_address + 3) , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
    discaccess_emulator_update_address();
 }
-
 
 static void discaccess_emulator_command(unsigned int gpio)
 {
@@ -70,8 +72,8 @@ static void discaccess_emulator_command(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr, data); // return existing command
    uint32_t base_addr = DISC_RAM_BASE ;
 
+   // command pointer is always page aligned
    uint32_t command_pointer = (uint32_t) (base_addr | 0xFF0000U | (uint32_t) (data<<8));
-
    switch (  Pi1MHz->JIM_ram[command_pointer] )
    {
     case 0 :
@@ -81,16 +83,6 @@ static void discaccess_emulator_command(unsigned int gpio)
                         *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8],
                         *(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+12]
                         ) );
-       #if 0
-            printf("Read sector %x, %p %x, %x, %x, %x\r\n",base_addr, &Pi1MHz->JIM_ram[0],Pi1MHz->JIM_ram[command_pointer+1],*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4],*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+8],*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+12] );
-             uint8_t buffer[512];
-             for(int i=0;i<512;i++)
-            {
-                printf("%x ",buffer[i] /*Pi1MHz->JIM_ram[(*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4])+base_addr + i ] */);
-                Pi1MHz->JIM_ram[(*(uint32_t *)&Pi1MHz->JIM_ram[command_pointer+4])+base_addr + i ]=buffer[i];
-                if ((i%16)==0) printf("\r\n");
-            }
-        #endif
         break;
     case 1 :
          Pi1MHz_MemoryWrite(addr,
@@ -102,6 +94,7 @@ static void discaccess_emulator_command(unsigned int gpio)
          break;
     case 2 :
         Pi1MHz_MemoryWrite(addr,
+            // Filename defiend to be zero terminated string at command_pointer+3, mode in command_pointer+2
             f_open( &fileObject[data & 15], (char * )&Pi1MHz->JIM_ram[command_pointer+3]
                     , Pi1MHz->JIM_ram[command_pointer+2] ) );
         break;
@@ -267,6 +260,7 @@ static void discaccess_emulator_command(unsigned int gpio)
 void discaccess_emulator_init( uint8_t instance , uint8_t address)
 {
    disc_ram_addr = DISC_RAM_BASE;
+   disc_ram_max  = DISC_RAM_BASE + DISC_RAM_SIZE;
 
    ram_address = address;
 
