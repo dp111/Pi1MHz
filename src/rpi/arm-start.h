@@ -12,9 +12,9 @@
 #if (__ARM_ARCH >= 7 )
     #define _data_memory_barrier() {asm volatile ("dmb");}
 #else
-    extern void _data_memory_barrier();
+    extern void _data_memory_barrier(void);
 #endif
 
-extern unsigned int _get_cpsr();
+extern unsigned int _get_cpsr(void);
 
 #endif

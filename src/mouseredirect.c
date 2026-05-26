@@ -266,7 +266,7 @@ static void mouse_redirect_mouse_type(unsigned int gpio)
 }
 
 
-void mouse_redirect_move_mouse()
+void mouse_redirect_move_mouse(void)
 {
     int32_t mouse_x;
     int32_t mouse_y;

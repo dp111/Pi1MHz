@@ -29,7 +29,9 @@
         "tuple": "c",
         "type_traits": "c",
         "utility": "c",
-        "ff.h": "c"
+        "ff.h": "c",
+        "random": "c",
+        "debug.h": "c"
     },
     "cSpell.words": [
         "ADDRBUS",

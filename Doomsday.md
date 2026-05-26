@@ -22,6 +22,27 @@ Menu system
 
 
 
+Default VFS layout
+VFS0 Menu Disk
+VFS1 Community disc South Usercode 1=066
+VFS2 Community disc North Usercode 1=067
+VFS3 National disc A Usercode 1=986
+VFS4 National disc B Usercode 1=987
+VFS5 Eco disc side 1 Usercode 1=988
+VFS6 Eco disc side 2 Usercode NONE
+VFS7 country side 1 Usercode 1=991
+VFS8 country side 2 Usercode 1=992
+
+VFS7 Volcanoes Usercode 1=986 *** duplicate User code ***
+VFS8 The city Disc Usercode
+VFS9 North Polar Expedition Usercode NONE
+VFS10 The World, the UN and you Usercode
+VFS11 British Garden Birds side 1 Usercode NONE
+VFS12 British Garden Birds side 2 Usercode NONE
+
+
+
+
 how to create the compressed video files
 
 /mnt/c/Archlinux/ld-decode/tools/ld-chroma-decoder/ld-chroma-decoder --decoder transform3d -p y4m -s 3000 -l 1 -q /mnt/s/domsday/south.tbc  | ffmpeg -i - -c:v v210 -f mov -top 1 -vf setfield=tff -flags +ilme+ildct -pix_fmt yuv422p -color_primaries bt470bg -color_trc bt709 -colorspace bt470bg -color_range tv -vf setdar=4/3,setfield=tff -s768x576 -c:v rawvideo image3000.yuv
@@ -56,7 +77,7 @@ F-Code: Received F-Code 0x24 = Replay switch disable
 fcodeReadBuffer
  0x41 0x0d 0x00 0x00 0x00 0x00 fcodeClearBuffer
 F-Code: Received bytes: 0x3f 0x55 0x0d
-F-Code: Received F-Code 0x3f = User code request         <- TODO ->
+F-Code: Received F-Code 0x3f = User code request
 <UCD>fcodeReadBuffer
  0x55 0x31 0x3d 0x30 0x36 0x36 fcodeClearBuffer
 fcodeReadBuffer
