@@ -413,6 +413,11 @@ static uint32_t* screen_get_nextplane(uint32_t planeno) {
 
     plane = &context_memory[(MAX_PLANES_SIZE >> 2) * planeno + PLANE_BASE];
 
+    // Clear the entire plane context to zero out stale fields (src_context, y_ctx, etc.)
+    // left over from the GPU bootloader splash screen
+    for (uint32_t i = 0; i < (MAX_PLANES_SIZE >> 2); i++)
+        plane[i] = 0;
+
     *plane = 0x80000000; // set end of list bit and clear valid
     returnplane = plane;
     plane = plane + (MAX_PLANES_SIZE >> 2); // space for 32 words in context memory
@@ -752,7 +757,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             rgb->ctrl = 0x00000000 + (0x20<<24) + (3<<11) + 0xD; // invalid list, 32 words, 8 bit RGB
             rgb->pos = startpos + 0xFF000000;
             rgb->scale = (scaled_height << 16) + scaled_width;
-            rgb->src_size =  (height << 16) + width;
+            rgb->src_size =  ((height + 1) << 16) + width;  // +1 for guard line at top
             //rgb->src_context = 0;
             rgb->y_ptr = buffer ;
           //  rgb->y_ctx = buffer;
@@ -802,7 +807,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             }
             rgb->pos = startpos;
             rgb->scale = (scaled_height << 16) + scaled_width;
-            rgb->src_size =  (height << 16) + width;
+            rgb->src_size =  ((height + 1) << 16) + width;  // +1 for guard line at top
             //rgb->src_context = 0;
             rgb->y_ptr = buffer;
 
