@@ -280,10 +280,10 @@ ORG &FD00
     ENDBLOCK &600
 }
 ; Page 7
-; BSROM duplicate
+; VFSROM
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/BSrom.rom"
+    LOADFILETOSWR "Pi1MHz/VFS.rom"
     ENDBLOCK &700
 }
 ; Page 8
