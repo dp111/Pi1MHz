@@ -116,7 +116,7 @@ waitforclkhigh:
 
     // Address mask includes FC00 which is next to bit 7 of the address bus.
     // it will be low for for FC00 access and high for FD00
-    mov     r9, # (ADDRBUS_MASK)>>ADDRBUS_SHIFT
+    mov     r9, # ADDRBUS_MASK>>ADDRBUS_SHIFT
     orr     r9,r9,#NPCFC_MASK>>ADDRBUS_SHIFT
 
     tst     r12, # NPCFD_MASK

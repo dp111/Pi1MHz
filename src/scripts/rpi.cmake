@@ -42,16 +42,13 @@ set( TC_PATH "" )
 
 # The toolchain prefix for all toolchain executables
 set( CROSS_COMPILE arm-none-eabi- )
-#set( CROSS_COMPILE arm-none-eabi- )
 # specify the cross compiler. We force the compiler so that CMake doesn't
 # attempt to build a simple test program as this will fail without us using
 # the -nostartfiles option on the command line
 set(CMAKE_C_COMPILER ${TC_PATH}${CROSS_COMPILE}gcc)
 set(CMAKE_C_COMPILER_FORCED TRUE)
 
-#CMAKE_FORCE_C_COMPILER( ${TC_PATH}${CROSS_COMPILE}gcc GNU )
-
-#CMAKE_C_COMPILER( ${TC_PATH}${CROSS_COMPILE}clang-8 clang )
+#set(CMAKE_C_COMPILER ${TC_PATH}${CROSS_COMPILE}clang-9  )
 
 # We must set the OBJCOPY setting into cache so that it's available to the
 # whole project. Otherwise, this does not get set into the CACHE and therefore
@@ -61,6 +58,7 @@ set( CMAKE_OBJCOPY      ${TC_PATH}${CROSS_COMPILE}objcopy
 
 # Set the CMAKE C flags (which should also be used by the assembler!
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -target arm-none-eabi")
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -target armv6m" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfpu=vfp" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfloat-abi=hard" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv6zk" )
