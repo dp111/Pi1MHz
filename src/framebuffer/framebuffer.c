@@ -176,20 +176,20 @@ static vdu_operation_t vdu_operation_table[256] = {
 // Static methods
 // ==========================================================================
 
-static void update_font_size();
-static void update_text_area();
-static void init_variables();
-static void reset_areas();
+static void update_font_size(void);
+static void update_text_area(void);
+static void init_variables(void);
+static void reset_areas(void);
 static void set_text_area(const t_clip_window_t *window);
 static void invert_cursor(int x_pos, int y_pos, int start, int end);
-static void enable_edit_cursor();
-static void disable_edit_cursor();
-static void update_cursors();
-static void cursor_interrupt();
-static void edit_cursor_up();
-static void edit_cursor_down();
-static void edit_cursor_left();
-static void edit_cursor_right();
+static void enable_edit_cursor(void);
+static void disable_edit_cursor(void);
+static void update_cursors(void);
+static void cursor_interrupt(void);
+static void edit_cursor_up(void);
+static void edit_cursor_down(void);
+static void edit_cursor_left(void);
+static void edit_cursor_right(void);
 static void text_area_scroll(scroll_dir_t dir);
 static void update_g_cursors(int16_t x, int16_t y);
 static void change_mode(screen_mode_t *new_screen);
@@ -197,28 +197,28 @@ static void set_graphics_area(const screen_mode_t *scr, const g_clip_window_t *w
 static int read_character(int x_pos, int y_pos);
 
 // These are used in VDU 4 mode
-static void text_cursor_left();
-static void text_cursor_right();
-static void text_cursor_up();
-static void text_cursor_down();
-static void text_cursor_col0();
-static void text_cursor_home();
+static void text_cursor_left(const uint8_t *buf);
+static void text_cursor_right(const uint8_t *buf);
+static void text_cursor_up(const uint8_t *buf);
+static void text_cursor_down(const uint8_t *buf);
+static void text_cursor_col0(const uint8_t *buf);
+static void text_cursor_home(const uint8_t *buf);
 static void text_cursor_tab(const uint8_t *buf);
-static void text_area_clear();
-static void text_delete();
+static void text_area_clear(const uint8_t *buf);
+static void text_delete(const uint8_t *buf);
 
 // These are used in VDU 5 mode
-static void graphics_cursor_left();
-static void graphics_cursor_right();
-static void graphics_cursor_up();
-static void graphics_cursor_down();
-static void graphics_cursor_col0();
-static void graphics_cursor_home();
+static void graphics_cursor_left(const uint8_t *buf);
+static void graphics_cursor_right(const uint8_t *buf);
+static void graphics_cursor_up(const uint8_t *buf);
+static void graphics_cursor_down(const uint8_t *buf);
+static void graphics_cursor_col0(const uint8_t *buf);
+static void graphics_cursor_home(const uint8_t *buf);
 static void graphics_cursor_tab(const uint8_t *buf);
-static void graphics_area_clear();
-static void graphics_delete();
+static void graphics_area_clear(const uint8_t *buf);
+static void graphics_delete(const uint8_t *buf);
 
-static void update_font_size() {
+static void update_font_size(void) {
    // get the current font from the screen
    font_t *font = screen->font;
    // Calculate the font size, taking account of scale and spacing
@@ -241,7 +241,7 @@ static void update_font_size() {
    text_height = screen->height / font_height;
 }
 
-static void update_text_area() {
+static void update_text_area(void) {
    // Make sure font size hasn't changed
    update_font_size();
    // Make sure text area is on the screen
@@ -295,7 +295,7 @@ static pixel_t calculate_colour(uint8_t col, uint8_t tint) {
    }
 }
 
-static void set_default_colours() {
+static void set_default_colours(void) {
 
    // Lookup the pixel_t value for white...
    uint8_t white_gcol = screen->white;
@@ -318,7 +318,7 @@ static void set_default_colours() {
    prim_set_fg_col(screen, white_col);
 }
 
-static void init_variables() {
+static void init_variables(void) {
 
    // Separate global cursor disabled flag
    cursor_off = 0;
@@ -351,7 +351,7 @@ static void init_variables() {
 
 }
 
-static void reset_areas() {
+static void reset_areas(void) {
    // Calculate the size of the text area
    update_font_size();
    // Initialize the text area to the full screen
@@ -404,7 +404,7 @@ static void invert_cursor(int x_pos, int y_pos, int start, int end) {
    }
 }
 
-static void update_cursors() {
+static void update_cursors(void) {
    // Update the flashing cursor
    if (f_visible) {
       invert_cursor(f_x_pos, f_y_pos, cursor_start, cursor_end);
@@ -429,11 +429,11 @@ static void update_cursors() {
    }
 }
 
-static void enable_cursors() {
+static void enable_cursors(void) {
    c_enabled = !cursor_off;
 }
 
-static int disable_cursors() {
+static int disable_cursors(void) {
    int ret = c_enabled;
    c_enabled = 0;
    if (f_visible) {
@@ -448,14 +448,14 @@ static int disable_cursors() {
 
 }
 
-static void cursor_interrupt() {
+static void cursor_interrupt(void) {
    if (c_enabled || e_enabled) {
       f_visible = !f_visible;
       invert_cursor(f_x_pos, f_y_pos, cursor_start, cursor_end);
    }
 }
 
-static void enable_edit_cursor() {
+static void enable_edit_cursor(void) {
    if (!e_enabled && !text_at_g_cursor) {
       e_enabled = 1;
       e_x_pos = c_x_pos;
@@ -464,7 +464,7 @@ static void enable_edit_cursor() {
    }
 }
 
-static void disable_edit_cursor() {
+static void disable_edit_cursor(void) {
    if (e_enabled) {
       e_enabled = 0;
       e_x_pos = 0;
@@ -473,7 +473,7 @@ static void disable_edit_cursor() {
    }
 }
 
-static void edit_cursor_up() {
+static void edit_cursor_up(void) {
    enable_edit_cursor();
    if (e_y_pos > t_window.top) {
       e_y_pos--;
@@ -483,7 +483,7 @@ static void edit_cursor_up() {
    update_cursors();
 }
 
-static void edit_cursor_down() {
+static void edit_cursor_down(void) {
    enable_edit_cursor();
    if (e_y_pos < t_window.bottom) {
       e_y_pos++;
@@ -493,7 +493,7 @@ static void edit_cursor_down() {
    update_cursors();
 }
 
-static void edit_cursor_left() {
+static void edit_cursor_left(void) {
    enable_edit_cursor();
    if (e_x_pos > t_window.left) {
       e_x_pos--;
@@ -508,7 +508,7 @@ static void edit_cursor_left() {
    update_cursors();
 }
 
-static void edit_cursor_right() {
+static void edit_cursor_right(void) {
    enable_edit_cursor();
    if (e_x_pos < t_window.right) {
       e_x_pos++;
@@ -576,7 +576,7 @@ static void change_mode(screen_mode_t *new_screen) {
    // initialise VDU variable
    init_variables();
    // clear screen
-   text_area_clear();
+   text_area_clear(NULL);
    // reset all sprite definitions
    prim_reset_sprites(screen);
 }
@@ -618,27 +618,27 @@ static int read_character(int x_pos, int y_pos) {
 // VDU 4 mode: cursor commands operate on text cursor
 // ==========================================================================
 
-static void text_cursor_left() {
+static void text_cursor_left(const uint8_t *buf) {
    if (c_x_pos > t_window.left) {
       c_x_pos--;
    } else {
       c_x_pos = t_window.right;
-      text_cursor_up();
+      text_cursor_up(NULL);
    }
    update_cursors();
 }
 
-static void text_cursor_right() {
+static void text_cursor_right(const uint8_t *buf) {
    if (c_x_pos < t_window.right) {
       c_x_pos++;
    } else {
       c_x_pos = t_window.left;
-      text_cursor_down();
+      text_cursor_down(NULL);
    }
    update_cursors();
 }
 
-static void text_cursor_up() {
+static void text_cursor_up(const uint8_t *buf) {
    if (c_y_pos > t_window.top) {
       c_y_pos--;
    } else {
@@ -647,7 +647,7 @@ static void text_cursor_up() {
    update_cursors();
 }
 
-static void text_cursor_down() {
+static void text_cursor_down(const uint8_t *buf) {
    if (c_y_pos < t_window.bottom) {
       c_y_pos++;
    } else {
@@ -656,13 +656,13 @@ static void text_cursor_down() {
    update_cursors();
 }
 
-static void text_cursor_col0() {
+static void text_cursor_col0(const uint8_t *buf) {
    disable_edit_cursor();
    c_x_pos = t_window.left;
    update_cursors();
 }
 
-static void text_cursor_home() {
+static void text_cursor_home(const uint8_t *buf) {
    c_x_pos = t_window.left;
    c_y_pos = t_window.top;
    update_cursors();
@@ -684,7 +684,7 @@ static void text_cursor_tab(const uint8_t *buf) {
    }
 }
 
-static void text_area_clear() {
+static void text_area_clear(const uint8_t *buf) {
    int tmp = disable_cursors();
    screen->clear(screen, &t_window, c_bg_col);
    if (tmp) {
@@ -695,8 +695,8 @@ static void text_area_clear() {
    update_cursors();
 }
 
-static void text_delete() {
-   text_cursor_left();
+static void text_delete(const uint8_t *buf) {
+   text_cursor_left(NULL);
    int tmp = disable_cursors();
    screen->write_character(screen, ' ', c_x_pos, c_y_pos, c_fg_col, c_bg_col);
    if (tmp) {
@@ -714,41 +714,41 @@ static void text_delete() {
 //    g_window.left/max are also in absolute external coordinates
 //    font_width/height are in screen pixels
 
-static void graphics_cursor_left() {
+static void graphics_cursor_left(const uint8_t *buf) {
    g_x_pos -= (int16_t)(font_width << screen->xeigfactor);
    if (g_x_pos < g_window.left) {
       g_x_pos = (int16_t)(g_window.right + 1 - (font_width << screen->xeigfactor));
-      graphics_cursor_up();
+      graphics_cursor_up(NULL);
    }
 }
 
-static void graphics_cursor_right() {
+static void graphics_cursor_right(const uint8_t *buf) {
    g_x_pos += (int16_t)(font_width << screen->xeigfactor);
    if (g_x_pos > g_window.right) {
       g_x_pos = g_window.left;
-      graphics_cursor_down();
+      graphics_cursor_down(NULL);
    }
 }
 
-static void graphics_cursor_up() {
+static void graphics_cursor_up(const uint8_t *buf) {
    g_y_pos += (int16_t)(font_height << screen->yeigfactor);
    if (g_y_pos > g_window.top) {
       g_y_pos = (int16_t)((g_window.bottom - 1) + (font_height << screen->yeigfactor));
    }
 }
 
-static void graphics_cursor_down() {
+static void graphics_cursor_down(const uint8_t *buf) {
    g_y_pos -= (int16_t)(font_height << screen->yeigfactor);
    if (g_y_pos < g_window.bottom) {
       g_y_pos = g_window.top;
    }
 }
 
-static void graphics_cursor_col0() {
+static void graphics_cursor_col0(const uint8_t *buf) {
    g_x_pos = g_window.left;
 }
 
-static void graphics_cursor_home() {
+static void graphics_cursor_home(const uint8_t *buf) {
    g_x_pos = g_window.left;
    g_y_pos = g_window.top;
 }
@@ -770,14 +770,14 @@ static void graphics_cursor_tab(const uint8_t *buf) {
    g_y_pos = g_window.bottom + y;
 }
 
-static void graphics_area_clear() {
+static void graphics_area_clear(const uint8_t *buf) {
    g_x_pos = g_window.left;
    g_y_pos = g_window.top;
    prim_clear_graphics_area(screen);
 }
 
-static void graphics_delete() {
-   graphics_cursor_left();
+static void graphics_delete(const uint8_t *buf) {
+   graphics_cursor_left(NULL);
    int x = g_x_pos >> screen->xeigfactor;
    int y = g_y_pos >> screen->yeigfactor;
    prim_fill_rectangle(screen, x, y, x + (font_width - 1), y - (font_height - 1), PC_BG);
@@ -1445,7 +1445,7 @@ static void vdu_default(const uint8_t *buf) {
       // Only draw the foreground pixels
       prim_draw_character(screen, c, x, y, PC_FG);
       // Advance the drawing position
-      graphics_cursor_right();
+      graphics_cursor_right(NULL);
    } else {
       // Draw the character at the text cursor (VDU 4 mode)
       // - Pixel 0,0 is in the bottom left
@@ -1458,7 +1458,7 @@ static void vdu_default(const uint8_t *buf) {
          enable_cursors();
       }
       // Advance the drawing position
-      text_cursor_right();
+      text_cursor_right(NULL);
    }
 }
 
@@ -1567,7 +1567,7 @@ static void owl(int x0, int y0, int r, int col) {
    prim_set_fg_col(screen, old_col);
 }
 
-void fb_show_splash_screen() {
+void fb_show_splash_screen(void) {
    char buffer[256];
    int address = 0x88; // TODO takes this value from the helper code
    // Select the default screen mode
@@ -1630,7 +1630,7 @@ void fb_show_splash_screen() {
   // cursor(1);
 }
 
-void fb_initialize() {
+void fb_initialize(void) {
 
    // Initialize the VDU operation table
    for (unsigned int i = 32; i < sizeof(vdu_operation_table) / sizeof(vdu_operation_t); i++) {
@@ -1661,7 +1661,7 @@ void fb_initialize() {
 
 }
 #if 0
-void fb_destroy() {
+void fb_destroy(void) {
 
    // Disable the VSync Interrupt
    RPI_GetIrqController()->Disable_IRQs_2 = RPI_VSYNC_IRQ;
@@ -1729,7 +1729,7 @@ static void writec(char ch) {
    }
 }
 
-void fb_process_vdu_queue() {
+void fb_process_vdu_queue(void) {
    if (RPI_GetIrqController()->IRQ_pending_2 & RPI_VSYNC_IRQ) {
       static uint8_t cursor_count = 0;
       // Clear the vsync interrupt
@@ -1813,7 +1813,7 @@ void fb_writes(const char *string) {
    }
 }
 
-int fb_get_cursor_x() {
+int fb_get_cursor_x(void) {
    if (e_enabled) {
       return e_x_pos - t_window.left;
    } else {
@@ -1821,7 +1821,7 @@ int fb_get_cursor_x() {
    }
 }
 
-int fb_get_cursor_y() {
+int fb_get_cursor_y(void) {
    if (e_enabled) {
       return e_y_pos - t_window.top;
    } else {
@@ -1829,7 +1829,7 @@ int fb_get_cursor_y() {
    }
 }
 // cppcheck-suppress unusedFunction
-int fb_get_cursor_char() {
+int fb_get_cursor_char(void) {
    if (e_enabled) {
       return read_character(e_x_pos, e_y_pos);
    } else {
@@ -1837,7 +1837,7 @@ int fb_get_cursor_char() {
    }
 }
 // cppcheck-suppress unusedFunction
-void fb_wait_for_vsync() {
+void fb_wait_for_vsync(void) {
 
    // Wait for the VSYNC flag to be set by the IRQ handler
    while (!vsync_flag);
@@ -1846,7 +1846,7 @@ void fb_wait_for_vsync() {
    vsync_flag = 0;
 }
 // cppcheck-suppress unusedFunction
-screen_mode_t *fb_get_current_screen_mode() {
+screen_mode_t *fb_get_current_screen_mode(void) {
    return screen;
 }
 
@@ -2163,11 +2163,11 @@ void fb_set_flash_space_time(uint8_t time) {
    flash_space_time = time;
 }
 // cppcheck-suppress unusedFunction
-uint8_t fb_get_flash_mark_time() {
+uint8_t fb_get_flash_mark_time(void) {
    return flash_mark_time;
 }
 // cppcheck-suppress unusedFunction
-uint8_t fb_get_flash_space_time() {
+uint8_t fb_get_flash_space_time(void) {
    return flash_space_time;
 }
 // cppcheck-suppress unusedFunction

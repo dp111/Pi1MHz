@@ -160,7 +160,7 @@ DRESULT disk_ioctl (
 #endif
 }
 
-unsigned char disk_type()
+unsigned char disk_type( void)
 {
    return bd.card_supports_sdhc;
 }

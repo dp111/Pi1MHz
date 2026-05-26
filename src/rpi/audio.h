@@ -148,9 +148,9 @@ static rpi_dma_t* const RPI_DMABase = (rpi_dma_t*) (DMA_CONTROLLER_BASE + 0xFE0)
 #define BCM2708_DMA_END             (1<<1 )
 #define BCM2708_DMA_NO_WIDE_BURSTS  (1<<26)
 
-size_t rpi_audio_buffer_free_space();
-uint32_t * rpi_audio_buffer_pointer();
-void rpi_audio_samples_written();
+size_t rpi_audio_buffer_free_space(void);
+uint32_t * rpi_audio_buffer_pointer(void);
+void rpi_audio_samples_written(void);
 uint32_t rpi_audio_init(uint32_t samplerate );
 
 #endif

@@ -72,33 +72,33 @@ typedef enum {
    V_WINDOWHEIGHT    = 257  // &101 Height of text window in chars
 } vdu_variable_t;
 
-void fb_initialize();
+void fb_initialize(void);
 
-void fb_show_splash_screen();
+void fb_show_splash_screen(void);
 
-void fb_destroy();
+void fb_destroy(void);
 
 void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours);
 
 void fb_writec_buffered(char c);
 
-void fb_process_vdu_queue();
+void fb_process_vdu_queue(void);
 
 void fb_writec(char c);
 
 void fb_writes(const char *string);
 
-uint32_t fb_get_address();
+uint32_t fb_get_address(void);
 
-int fb_get_cursor_x();
+int fb_get_cursor_x(void);
 
-int fb_get_cursor_y();
+int fb_get_cursor_y(void);
 
-int fb_get_cursor_char();
+int fb_get_cursor_char(void);
 
-void fb_wait_for_vsync();
+void fb_wait_for_vsync(void);
 
-screen_mode_t *fb_get_current_screen_mode();
+screen_mode_t *fb_get_current_screen_mode(void);
 
 void fb_set_vdu_device(vdu_device_t device);
 
@@ -110,9 +110,9 @@ void fb_set_flash_mark_time(uint8_t time);
 
 void fb_set_flash_space_time(uint8_t time);
 
-uint8_t fb_get_flash_mark_time();
+uint8_t fb_get_flash_mark_time(void);
 
-uint8_t fb_get_flash_space_time();
+uint8_t fb_get_flash_space_time(void);
 
 int fb_point(int16_t x, int16_t y, pixel_t *colour);
 

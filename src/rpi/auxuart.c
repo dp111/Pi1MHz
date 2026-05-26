@@ -22,7 +22,7 @@ NOINIT_SECTION static char tx_buffer[TX_BUFFER_SIZE];
 static volatile int tx_head;
 static volatile int tx_tail;
 
-void RPI_AuxMiniUartIRQHandler()
+void RPI_AuxMiniUartIRQHandler(void)
 {
   _data_memory_barrier();
   while (1) {

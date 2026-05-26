@@ -24,7 +24,7 @@ static void print_tag_value(const char *name, const rpi_mailbox_property_t *buf,
    LOG_INFO("\r\n");
 }
 
-static uint32_t get_revision() {
+static uint32_t get_revision(void) {
    rpi_mailbox_property_t *buf;
    buf = RPI_PropertyGetWord(TAG_GET_BOARD_REVISION,0);
    if (buf) {
@@ -44,7 +44,7 @@ uint32_t get_clock_rate(uint32_t clk_id) {
    }
 }
 
-static float get_temp() {
+static float get_temp(void) {
    rpi_mailbox_property_t *buf;
    buf = RPI_PropertyGetWord(TAG_GET_TEMPERATURE, 0);
    if (buf) {
@@ -68,7 +68,7 @@ static float get_voltage(uint32_t component_id) {
 // Speed
 // Temp
 
-uint32_t get_speed() {
+uint32_t get_speed(void) {
    static uint32_t speed = 0;
    if (!speed) {
      speed = get_clock_rate(ARM_CLK_ID) / 1000000;
@@ -76,7 +76,7 @@ uint32_t get_speed() {
    return speed;
 }
 
-char *get_info_string() {
+char *get_info_string(void) {
    static uint8_t read = 0;
    if (!read) {
       sprintf(info_string, "%"PRIx32" %04"PRId32"/%03"PRId32"MHz %2.1fC",
@@ -90,7 +90,7 @@ char *get_info_string() {
    return info_string;
 }
 
-static char *get_cmdline() {
+static char *get_cmdline(void) {
    static uint8_t read = 0;
    if (!read) {
       rpi_mailbox_property_t const *buf = RPI_PropertyGetBuffer( TAG_GET_COMMAND_LINE );
@@ -157,7 +157,7 @@ uint32_t mem_info(int size)
    return buf->data.buffer_32[0];
 }
 
-void dump_useful_info() {
+void dump_useful_info(void) {
    rpi_mailbox_tag_t tags[] = {
       TAG_GET_FIRMWARE_VERSION,
       TAG_GET_BOARD_MODEL,

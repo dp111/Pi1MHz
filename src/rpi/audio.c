@@ -29,7 +29,7 @@ buffer state dma
 static uint8_t buffer_state;
 static uint32_t *next_buffer;
 
-size_t rpi_audio_buffer_free_space()
+size_t rpi_audio_buffer_free_space(void)
 {
    if ((RPI_DMA5Base->SRC_ADR) < (((uint32_t)&dma_cb_data[1].buffer[0]) | GPU_BASE))
    {
@@ -55,7 +55,7 @@ size_t rpi_audio_buffer_free_space()
    return (sizeof(dma_cb_data[0].buffer)/sizeof(uint32_t));
 }
 
-uint32_t * rpi_audio_buffer_pointer()
+uint32_t * rpi_audio_buffer_pointer(void)
 {
    return next_buffer;
 }

@@ -147,7 +147,7 @@ void         default_unknown_vdu(screen_mode_t *screen, const uint8_t *buf);
 
 screen_mode_t *get_screen_mode(int mode_num);
 
-uint32_t get_fb_address();
+uint32_t get_fb_address(void);
 
 int32_t fb_read_mode_variable(mode_variable_t v, screen_mode_t *screen);
 

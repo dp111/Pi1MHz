@@ -858,7 +858,7 @@ static void init_colour_table(screen_mode_t *screen) {
    }
 }
 
-static int get_hdisplay() {
+static int get_hdisplay(void) {
 #ifdef RPI4
    return  ((*PIXELVALVE2_HORZB) & 0xFFFF) * 2;
 #else
@@ -866,7 +866,7 @@ static int get_hdisplay() {
 #endif
 }
 
-static int get_vdisplay() {
+static int get_vdisplay(void) {
     return (*PIXELVALVE2_VERTB) & 0xFFFF;
 }
 
@@ -891,7 +891,7 @@ static int is_full_screen(const screen_mode_t *screen, const rectangle_t *r) {
    return (r->x1 == 0 && r->y1 == 0 && r->x2 == screen->width - 1 && r->y2 == screen->height - 1);
 }
 
-static void null_handler() {
+static void null_handler( screen_mode_t *screen, int mark) {
 }
 
 // ==========================================================================
@@ -1328,7 +1328,7 @@ screen_mode_t *get_screen_mode(int mode_num) {
    return sm;
 }
 
-uint32_t get_fb_address() {
+uint32_t get_fb_address(void) {
    return (uint32_t) fb;
 }
 
