@@ -23,7 +23,7 @@
    Email: simon.inns@gmail.com
 
 ************************************************************************/
-#define DEBUG
+
 #include "cpuspecfic.h"
 #include <stdbool.h>
 #include <stdio.h>
