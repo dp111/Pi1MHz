@@ -155,6 +155,11 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    {
       init = 1;
       Pi1MHz->JIM_ram = (uint8_t *) malloc((size_t)(Pi1MHz->JIM_ram_size<<24)); // malloc 480Mbytes
+      // malloc can't fail. If it does the system will just run out of memory and crash, but it won't cause any corruption.
+      if (!Pi1MHz->JIM_ram)
+      {
+         LOG_INFO("RAM Emulator: rampage_emulator_init(): ERROR: Unable to allocate memory for JIM RAM\r\n");
+      }
    }
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
@@ -163,7 +168,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
        // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
       char * ram = (char *)Pi1MHz->JIM_ram;
       char hex[4];
-      sprintf(hex, "%X",helpers_get_address());
+      snprintf(hex, sizeof(hex), "%X",helpers_get_address());
       ram = putstring(ram, 0, " Use CALL &FC");
       putstring(ram,'\r', hex);
    }
