@@ -44,7 +44,6 @@
 .section ".text.startup"
 
 .global _start
-.global _data_memory_barrier
 
 .global _interrupt_vector_h
 
@@ -189,7 +188,7 @@ _reset_continue:
     mov     r9,#0
 
     stmia   r4!,{r6,r7,r8,r9}
-    bic     r4,r4,#0x3F       // 64 byte align
+    bic     r4,r4,#0xF            // 16 byte align
 
 bssclearloop:
     cmp     r4,r5
@@ -197,7 +196,7 @@ bssclearloop:
     blt     bssclearloop
     b       kernel_main
 
-.section ".text._undefined_instruction_handler_"
+.section ".text._undefined_instruction_handler_", "x"
 _undefined_instruction_handler_:
     stmfd    sp!, {r0-r12, lr}
     mrs      r0, spsr             // Get spsr.
@@ -205,7 +204,7 @@ _undefined_instruction_handler_:
     mov      r0, sp
     b       undefined_instruction_handler
 
-.section ".text._prefetch_abort_handler_"
+.section ".text._prefetch_abort_handler_", "x"
 _prefetch_abort_handler_:
     stmfd    sp!, {r0-r12, lr}
     mrs      r0, spsr             // Get spsr.
@@ -213,7 +212,7 @@ _prefetch_abort_handler_:
     mov      r0, sp
     b       prefetch_abort_handler
 
-.section ".text._data_abort_handler_"
+.section ".text._data_abort_handler_", "x"
 _data_abort_handler_:
     stmfd    sp!, {r0-r12, lr}
     mrs      r0, spsr             // Get spsr.
@@ -221,20 +220,13 @@ _data_abort_handler_:
     mov      r0, sp
     b       data_abort_handler
 
-.section ".text._swi_handler_"
+.section ".text._swi_handler_", "x"
+.global _swi_handler_
+.func swi,_swi_handler_
 _swi_handler_:
     stmfd    sp!, {r0-r12, lr}
     mrs      r0, spsr             // Get spsr.
     stmfd    sp!, {r0}            // Store spsr onto stack.
     mov      r0, sp
     b       swi_handler
-
-.section ".text._data_memory_barrier"
-_data_memory_barrier:
-#if defined(RPI2) || defined(RPI3)
-    dmb
-#else
-    mov      r0, #0
-    mcr      p15, 0, r0, c7, c10, 5
-#endif
-    mov      pc, lr
+.endfunc
