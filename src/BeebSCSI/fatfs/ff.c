@@ -3744,7 +3744,7 @@ FRESULT f_read (
    FATFS *fs;
    DWORD clst, sect;
    FSIZE_t remain;
-   UINT rcnt, cc, csect;
+   UINT rcnt=0, cc, csect;
    BYTE *rbuff = (BYTE*)buff;
 
 
@@ -4163,9 +4163,9 @@ FRESULT f_getcwd (
    TCHAR *tp = buff;
 #if FF_VOLUMES >= 2
    UINT vl;
-#endif
 #if FF_STR_VOLUME_ID
    const char *vp;
+#endif
 #endif
    FILINFO fno;
    DEF_NAMBUF
