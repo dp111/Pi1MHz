@@ -890,7 +890,7 @@ static void to_rectangle(const screen_mode_t *screen, const t_clip_window_t *tex
 static int is_full_screen(const screen_mode_t *screen, const rectangle_t *r) {
    return (r->x1 == 0 && r->y1 == 0 && r->x2 == screen->width - 1 && r->y2 == screen->height - 1);
 }
-
+// cppcheck-suppress constParameterCallback
 static void null_handler( screen_mode_t *screen, int mark) {
 }
 
