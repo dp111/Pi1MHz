@@ -71,28 +71,19 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Winline")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -Wmissing-include-dirs  ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Woverlength-strings -Wdisabled-optimization -Wnormalized -Wformat-overflow=1 ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wrestrict -Wshift-overflow=2 -Wnull-dereference -Wmain ")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -Wstringop-overflow=4 -Wstringop-overread -Wstrict-prototypes ")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -Wreturn-local-addr -Wlogical-op -fstrict-aliasing ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstringop-overflow=4 -Wstringop-overread -Wstrict-prototypes ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wreturn-local-addr -Wlogical-op -fstrict-aliasing ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-aliasing=3 -Wunsafe-loop-optimizations -Wformat-signedness ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Walloc-zero -Wdiscarded-qualifiers -Wtrampolines -Wbad-function-cast ")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}   -Waddress-of-packed-member -Wsuggest-attribute=noreturn ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Waddress-of-packed-member -Wsuggest-attribute=noreturn ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdiscarded-array-qualifiers -Wmissing-noreturn ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wflex-array-member-not-at-end -ftabstop=8  ")
-
-# need for tiny USB packet structure packing
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-attributes")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-packed")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-conversion")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-switch-enum")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-bad-function-cast")
-
-
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wenum-int-mismatch -Wxor-used-as-pow -fstrict-flex-arrays -Warray-bounds=2")
-# tinyusb doesn't like below
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
+
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
 
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
 
@@ -103,10 +94,11 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _printf_float" )
 
 # current failures in frame buffer.c
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-overflow=5")
-#very noisy warnings in code
+# Level 2 is the highest actionable level; 3-5 are documented-noisy and
+# produce false positives on ordinary screen-coordinate arithmetic.
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-overflow=2")
 
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wcast-align -Wcast-align=strict")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wcast-align -Wcast-align=strict")
 #-Wunused-macros
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter ")
@@ -165,13 +157,17 @@ file( GLOB harddisc_emulator_files
    rpi/sdcard.c
 )
 include_directories(BeebSCSI)
-include_directories(usb/tinyusb/src)
-include_directories(usb/tinyusb/hw)
+# TinyUSB is third-party - mark as SYSTEM so its headers (e.g. board_api.h)
+# do not trip our strict warnings such as -Warith-conversion / -Wconversion.
+include_directories(SYSTEM usb/tinyusb/src)
+include_directories(SYSTEM usb/tinyusb/hw)
 include_directories(usb)
 
 set(LWIP_ROOT wifi/lwip)
 
-include_directories(${LWIP_ROOT}/src/include)
+# lwIP is third-party - mark as SYSTEM so its headers do not trip our
+# strict warnings (same rationale as the TinyUSB includes above).
+include_directories(SYSTEM ${LWIP_ROOT}/src/include)
 include_directories(wifi)
 
 # M5000 emulator
@@ -179,8 +175,6 @@ file( GLOB M5000_emulator_files
    rpi/audio.c
    M5000_emulator.c
 )
-
-
 
 #FrameBuffer
 file( GLOB FrameBuffer_emulator_files
@@ -248,9 +242,49 @@ file( GLOB lwip_files
 )
 
 set_source_files_properties(
-   ${LWIP_ROOT}/src/core/tcp_out.c
+   wifi/sdio.c
    PROPERTIES
-   COMPILE_OPTIONS "-Wno-duplicated-branches;-Wno-sign-conversion"
+   COMPILE_OPTIONS "-Wno-arith-conversion"
+)
+
+set_source_files_properties(
+   usb/tinyusb/src/tusb.c
+   usb/tinyusb/src/common/tusb_fifo.c
+   usb/tinyusb/src/device/usbd.c
+   usb/tinyusb/src/class/mtp/mtp_device.c
+   usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
+   usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
+   PROPERTIES
+   COMPILE_OPTIONS "-Wno-arith-conversion;-Wno-strict-overflow;-Wno-attributes;-Wno-packed;-Wno-conversion;-Wno-switch-enum;-Wno-bad-function-cast"
+)
+
+set_source_files_properties(
+   ${LWIP_ROOT}/src/core/def.c
+   ${LWIP_ROOT}/src/core/dns.c
+   ${LWIP_ROOT}/src/core/inet_chksum.c
+   ${LWIP_ROOT}/src/core/init.c
+   ${LWIP_ROOT}/src/core/ip.c
+   ${LWIP_ROOT}/src/core/mem.c
+   ${LWIP_ROOT}/src/core/memp.c
+   ${LWIP_ROOT}/src/core/netif.c
+   ${LWIP_ROOT}/src/core/pbuf.c
+   ${LWIP_ROOT}/src/core/stats.c
+   ${LWIP_ROOT}/src/core/sys.c
+   ${LWIP_ROOT}/src/core/tcp.c
+   ${LWIP_ROOT}/src/core/tcp_in.c
+   ${LWIP_ROOT}/src/core/tcp_out.c
+   ${LWIP_ROOT}/src/core/timeouts.c
+   ${LWIP_ROOT}/src/core/udp.c
+   ${LWIP_ROOT}/src/core/ipv4/acd.c
+   ${LWIP_ROOT}/src/core/ipv4/autoip.c
+   ${LWIP_ROOT}/src/core/ipv4/dhcp.c
+   ${LWIP_ROOT}/src/core/ipv4/etharp.c
+   ${LWIP_ROOT}/src/core/ipv4/icmp.c
+   ${LWIP_ROOT}/src/core/ipv4/ip4.c
+   ${LWIP_ROOT}/src/core/ipv4/ip4_addr.c
+   ${LWIP_ROOT}/src/netif/ethernet.c
+   PROPERTIES
+   COMPILE_OPTIONS "-Wno-duplicated-branches;-Wno-arith-conversion;-Wno-sign-conversion;-Wno-strict-overflow;-Wno-attributes;-Wno-packed;-Wno-conversion"
 )
 
 
