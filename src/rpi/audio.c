@@ -26,7 +26,7 @@ buffer state dma
 11 clear buffer bit as DMA is using it.
 */
 
-static uint32_t buffer_state;
+static uint8_t buffer_state;
 static uint32_t *next_buffer;
 
 size_t rpi_audio_buffer_free_space()

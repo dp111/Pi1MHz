@@ -139,7 +139,7 @@ static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE
 static callback_func_ptr * const Pi1MHz_callback_table = (void *)Pi1MHz_CB_BASE;
 
 // Table of polling functions to call while idle
-static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
+NOINIT_SECTION static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
 
 // holds the total number of polling functions to call
 static u_int8_t  Pi1MHz_polls_max;
@@ -287,11 +287,11 @@ static void init_emulator() {
       if (emulator[i].enable==1) emulator[i].init(i);
 }
 
-static int led_pin;
+static uint8_t led_pin;
 
 void Pi1MHz_LED(int led)
 {
-   if (led_pin!=-1)
+   if (led_pin!=255)
       RPI_SetGpioValue(led_pin , led);
 }
 
@@ -351,11 +351,11 @@ static void init_hardware()
    char *prop = get_cmdline_prop("disk_led_gpio");
    if (prop)
    {
-      led_pin = atoi(prop);
+      led_pin = (uint8_t)atoi(prop);
       RPI_SetGpioOutput(led_pin);
    }
    else
-      led_pin = -1;
+      led_pin = 255;
 
    LOG_DEBUG("LED pin %d\r\n",led_pin);
 

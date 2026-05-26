@@ -84,8 +84,8 @@ NOINIT_SECTION static char fatDirectory[255];      // String for storing FAT dir
 NOINIT_SECTION static uint8_t sectorBuffer[SECTOR_BUFFER_SIZE];   // Buffer for reading sectors
 
 // Globals for multi-sector reading
-static uint32_t sectorsInBuffer = 0;
-static uint32_t currentBufferSector = 0;
+static uint8_t sectorsInBuffer = 0;
+static uint8_t currentBufferSector = 0;
 static uint32_t sectorsRemaining = 0;
 
 NOINIT_SECTION static FIL fileObjectFAT;
@@ -988,7 +988,7 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
          return false;
       }
 
-      sectorsInBuffer = sectorsToRead;
+      sectorsInBuffer = (uint8_t)sectorsToRead;
       currentBufferSector = 0;
       sectorsRemaining = sectorsRemaining - sectorsInBuffer;
    }
