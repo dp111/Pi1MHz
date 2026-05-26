@@ -153,7 +153,10 @@ extern uint32_t JIM_ram_size;
 
 extern uint8_t * JIM_ram;
 
+extern uint8_t fx_register[256];
+
 typedef void (*callback_func_ptr)( unsigned int);
+typedef void (*func_ptr_parameter)( uint8_t instance);
 
 void Pi1MHz_LED(int led);
 void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr func_ptr );
