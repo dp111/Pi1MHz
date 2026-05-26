@@ -18,13 +18,13 @@
 #  r0 - pointer to shared memory ( VC address) of tube registers
 #  r1 - pointer to data to xfer to ARM
 #  r2 - unused
-#  r3 -
+#  r3 - r9 Databus and test pin output select
 #  r4 - debug output control
 #  r5 - debug pin mask (0 = no debug  xx= debug pin e.g 1<<21)
 #  r6 - GPFSEL0 constant
 #  r7 - External nOE pin
 #  r8 - temp
-#  r9 - r9 Databus and test pin output select
+#  r9 -
 # r10 -
 # r11 -
 # r12 - GPIO pins value
@@ -65,11 +65,12 @@
 # disable interrupts
 
   di
-   or     r9, r3, r4       # add in test pin so that it is still enabled
+   or     r3, r4       # add in test pin so that it is still enabled
    mov    r6, GPFSEL0
    mov    r7, 1            # external nOE pin
 
    mov    r13, GPU_ARM_DBELL
+   nop
    nop
    nop
    nop
@@ -136,7 +137,7 @@ waitforclkhighloop:
    st     r8, GPSET0_offset(r6)  # set up databus
    beq    skipenablingbus
 
-   st     r9, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
+   st     r3, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
    st     r7, GPCLR0_offset(r6)  # set external output enable low
 
  skipenablingbus:
