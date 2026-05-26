@@ -80,11 +80,10 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
 {
    s->ram = ptr;
    s->modulate = 0;
-   // Real hardware clears 0x3E00 for 128bytes and random
-   // Waveform bytes depending on phaseRAM
-   // we only need to clear the PHASESET bytes
-   memset(&s->ram[I_WFTOP], 255, 255);
-   memset(&s->amplitude[0], 1, 16);
+   // Real hardware clears 0x3E00 for 128bytes
+   // and random Waveform bytes depending on phaseRAM
+   memset(&s->ram[I_WFTOP], 0, 128);
+   memset(&s->amplitude[0], 0, 16);
 }
 
 static int32_t audio_range;
