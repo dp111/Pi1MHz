@@ -25,7 +25,7 @@ unsigned int _get_stack_pointer(void)
     );
 return result;
 }
-
+// cppcheck-suppress unusedFunction
 void _enable_interrupts(void)
 {
     asm volatile
@@ -36,7 +36,7 @@ void _enable_interrupts(void)
     :
     );
 }
-
+// cppcheck-suppress unusedFunction
 void _disable_interrupts(void)
 {
     asm volatile

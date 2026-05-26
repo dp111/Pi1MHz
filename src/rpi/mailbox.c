@@ -65,10 +65,10 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
     pt[pt_index++] = 0; /* Request */
     pt[pt_index++] = data;
     pt_index += 1;
-    _disable_interrupts();
+    unsigned int irq = _disable_interrupts_cspr();
     RPI_PropertyProcess(true);
     rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
-    _enable_interrupts();
+    _set_interrupts(irq);
     return result;
 }
 
@@ -91,10 +91,10 @@ rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
     pt[pt_index++] = PROP_SIZE;
     pt[pt_index++] = 0; /* Request */
     pt_index += PROP_SIZE >> 2;
-    _disable_interrupts();
+    unsigned int irq = _disable_interrupts_cspr();
     RPI_PropertyProcess(true);
     rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
-    _enable_interrupts();
+    _set_interrupts(irq);
     return result;
 }
 
