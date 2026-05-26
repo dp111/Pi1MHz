@@ -154,6 +154,7 @@ typedef enum {
 
 typedef struct {
     unsigned int tag;
+    unsigned int request;
     unsigned int byte_length;
     union {
         uint32_t value_32;

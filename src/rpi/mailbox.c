@@ -319,22 +319,18 @@ unsigned int RPI_PropertyProcess( void )
 }
 
 rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag)
-{
-    NOINIT_SECTION static rpi_mailbox_property_t property;
-    uint32_t * tag_buffer = NULL;
-
-    property.tag = tag;
-
+{  
     /* Get the tag from the buffer. Start at the first tag position  */
     uint32_t index = 2;
 
     while ( index < ( pt[PT_OSIZE] >> 2 ) )
     {
-        /* LOG_DEBUG( "Test Tag: [%d] %8.8X\r\n", index, pt[index] ); */
+        // LOG_DEBUG( "Test Tag: [%d] %8.8X\r\n", index, pt[index] ); 
         if ( pt[index] == tag )
         {
-           tag_buffer = &pt[index];
-           break;
+            /* Return the required data */
+            (&pt[index])[T_ORESPONSE] = (&pt[index])[T_ORESPONSE] & 0xFFFF;
+            return (rpi_mailbox_property_t*) &pt[index];
         }
 
         /* Progress to the next tag if we haven't yet discovered the tag */
@@ -342,12 +338,5 @@ rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag)
     }
 
     /* Return NULL of the property tag cannot be found in the buffer */
-    if ( tag_buffer == NULL )
-        return NULL;
-
-    /* Return the required data */
-    property.byte_length = tag_buffer[T_ORESPONSE] & 0xFFFF;
-    memcpy( property.data.buffer_8, &tag_buffer[T_OVALUE], property.byte_length );
-
-    return &property;
+    return NULL;
 }
