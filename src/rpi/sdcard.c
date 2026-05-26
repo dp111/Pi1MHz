@@ -570,9 +570,9 @@ static uint32_t sd_get_clock_divider(uint32_t base_clock, uint32_t target_rate)
         }
 
         if(divisor == -1)
-            divisor = 31;
-        if(divisor >= 32)
-            divisor = 31;
+            divisor = 11;
+        if(divisor > 11)
+            divisor = 11;
 
         if(divisor != 0)
             divisor = (1 << (divisor - 1));
