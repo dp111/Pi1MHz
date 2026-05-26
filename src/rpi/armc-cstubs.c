@@ -145,16 +145,35 @@ int open(const char *name __attribute__((unused)), int flags __attribute__((unus
  standalone system; it exploits the symbol _end automatically defined by the
  GNU linker. */
 extern char _end;
+static char *heap_end = &_end;
+static char *heap_limit = NULL;
+#define EARLY_HEAP_SIZE (4u * 1024u * 1024u)
+
+void arm_setup_heap_limit(void *limit)
+{
+  if ((char *) limit>heap_end) {
+    heap_limit = (char *) limit;
+  }
+}
+
 // cppcheck-suppress unusedFunction
 caddr_t _sbrk(int incr)
 {
-  static char* heap_end = &_end;
-  char* prev_heap_end;
+  char * prev = heap_end;
+  char * next = heap_end + incr;
+  if ( next < &_end) {
+    errno = EINVAL;
+    return (caddr_t) -1;
+  }
+  char * ceiling = heap_limit ? heap_limit : (&_end + EARLY_HEAP_SIZE);
 
-  prev_heap_end = heap_end;
-  heap_end += incr;
+  if ( next > ceiling) {
+    errno = ENOMEM;
+    return (caddr_t) -1;
+  }
 
-  return (caddr_t) prev_heap_end;
+  heap_end = next;
+  return (caddr_t) prev;
 }
 
 /* Status of a file (by name). Minimal implementation: */

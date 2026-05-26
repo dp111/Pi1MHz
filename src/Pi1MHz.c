@@ -96,6 +96,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "rpi/interrupts.h"
 #include "rpi/screen.h"
 #include "rpi/systimer.h"
+#include "rpi/armc-cstubs.h"
 #include "Pi1MHz.h"
 
 #include "Pi1MHzvc.c"
@@ -434,6 +435,9 @@ _Noreturn void kernel_main(void)
    RPI_AuxMiniUartInit( baud_rate );
 
    enable_MMU_and_IDCaches(0);
+
+   // Setup malloc memory
+   arm_setup_heap_limit((void *) (uintptr_t) (mem_info(1)) );
 
    init_hardware();
 
