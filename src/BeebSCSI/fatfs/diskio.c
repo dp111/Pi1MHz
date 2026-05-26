@@ -93,7 +93,7 @@ DRESULT disk_read (
 #endif
 #ifdef DRV_SD
    case DRV_SD :
-      printf("sd_read buf %p, sector %lu, count %d\r\n",buff,sector,count);
+     // printf("sd_read buf %p, sector %lu, count %d\r\n",buff,sector,count);
       result = sd_read((struct block_device *)&bd,buff,512*count,sector)?RES_OK:RES_ERROR;
     /*  for(int i=0;i<512;i++)
          {
@@ -127,7 +127,7 @@ DRESULT disk_write (
 #endif
 #ifdef DRV_SD
    case DRV_SD :
-   printf("sd_write buf %p, sector %lu, count %d\r\n",buff,sector,count);
+  // printf("sd_write buf %p, sector %lu, count %d\r\n",buff,sector,count);
       return sd_write((struct block_device *)&bd,buff,512*count,sector)?RES_OK:RES_ERROR;
 #endif
    }
