@@ -63,6 +63,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsign-compare" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wlong-long" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-field-initializers" )
 
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wconversion")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 
@@ -84,7 +85,6 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-function")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-discarded-qualifiers")
 
 # current failures in frame buffer.c
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wconversion")
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-overflow=5")
 
 # current failures in code
