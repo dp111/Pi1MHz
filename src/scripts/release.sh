@@ -37,7 +37,7 @@ cp -a ../../firmware/* "${DIR}"
 cat >"${DIR}/README.txt" <<EOF
 Pi1MHz
 
-(c) 2020  Dominic Plunkett (dp11) and other contributors
+(c) 2020-2022  Dominic Plunkett (dp11) and other contributors
 
   git version: $(grep GITVERSION gitversion.h  | cut -d\" -f2)
 build version: ${NAME}
