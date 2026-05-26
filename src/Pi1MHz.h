@@ -214,8 +214,8 @@ uint8_t Pi1MHz_MemoryRead(uint32_t addr);
 bool Pi1MHz_is_rst_active();
 
 // This is an assembler function for performance
-void Pi1MHz_MemoryWritePage(uint32_t addr, uint32_t * data);
-
+extern void Pi1MHz_MemoryWritePage(uint32_t addr, uint32_t * data);
+extern void _fast_scroll(void *dst, void *src, int num_bytes);
 #endif
 
 #endif

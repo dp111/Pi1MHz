@@ -136,7 +136,18 @@ file( GLOB M5000_emulator_files
 
 #FrameBuffer
 file( GLOB FrameBuffer_emulator_files
-   framebuffer.c
+   framebuffer/framebuffer.c
+   framebuffer/framebuffer.h
+   framebuffer/screen_modes.c
+   framebuffer/screen_modes.h
+   framebuffer/primitives.c
+   framebuffer/primitives.h
+   framebuffer/fonts.c
+   framebuffer/fonts.h
+   framebuffer/teletext.c
+   framebuffer/teletext.h
+   rpi/armtimer.c
+   rpi/interrupts.c
 )
 
 # Discaccess emulator

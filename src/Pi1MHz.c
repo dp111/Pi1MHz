@@ -108,7 +108,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "ram_emulator.h"
 #include "harddisc_emulator.h"
 #include "M5000_emulator.h"
-#include "framebuffer.h"
+#include "framebuffer/framebuffer.h"
 #include "discaccess_emulator.h"
 #include "helpers.h"
 
@@ -234,6 +234,15 @@ void Pi1MHzBus_write_Status(unsigned int gpio)
 
 void Pi1MHzBus_read_Status(unsigned int gpio)
 {
+}
+
+// cppcheck-suppress unusedFunction
+void IRQHandler_main() {
+  RPI_AuxMiniUartIRQHandler();
+  // Periodically also process the VDU Queue
+  fb_process_vdu_queue();
+
+  _data_memory_barrier();
 }
 
 static void init_emulator() {

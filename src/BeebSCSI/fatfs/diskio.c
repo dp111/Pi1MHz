@@ -8,7 +8,7 @@
 /*-----------------------------------------------------------------------*/
 
 #include "ff.h"			/* Obtains integer types */
-
+#include <stdio.h>
 /* Definitions of physical drive number for each drive */
 #define DRV_SD    0  /* Example: Map MMC/SD card to physical drive 0 (default) */
 

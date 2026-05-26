@@ -22,10 +22,8 @@ NOINIT_SECTION static char tx_buffer[TX_BUFFER_SIZE];
 static volatile int tx_head;
 static volatile int tx_tail;
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wattributes"
-static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
-#pragma GCC diagnostic pop
+void RPI_AuxMiniUartIRQHandler()
+{
   _data_memory_barrier();
   while (1) {
 
@@ -63,7 +61,6 @@ static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
     }
   }
   _data_memory_barrier();
-
 }
 #endif
 
@@ -107,9 +104,9 @@ void RPI_AuxMiniUartInit(unsigned int baud)
   RPI_Aux->MU_BAUD = (( sys_freq*2 / (8 * baud)) - 1)/2;
 
 #ifdef USE_IRQ
-   {  extern int _interrupt_vector_h;
+   {  // extern int _interrupt_vector_h;
    tx_head = tx_tail = 0;
-   *((unsigned int *) &_interrupt_vector_h ) = (unsigned int )&RPI_AuxMiniUartIRQHandler;
+   //*((unsigned int *) &_interrupt_vector_h ) = (unsigned int )&RPI_AuxMiniUartIRQHandler;
 
    RPI_IRQBase->Enable_IRQs_1 = (1 << 29);
    RPI_Aux->MU_IER |= AUX_MUIER_RX_INT;
