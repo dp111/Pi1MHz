@@ -109,7 +109,8 @@ void CleanDataCache (void)
 }
 #endif
 
-void _clean_cache_area(void * start, unsigned int length)
+//
+void _clean_cache_area(const void * start, unsigned int length)
 {
 #if (__ARM_ARCH >= 7 )
    uint32_t cachelinesize;
@@ -128,7 +129,7 @@ void _clean_cache_area(void * start, unsigned int length)
       startptr = startptr + cachelinesize;
    } while ( startptr  < endptr);
 #else
-   asm volatile("mcrr p15,0,%0,%1,c14"::"r" (((char *)start)+length), "r" (start));
+   asm volatile("mcrr p15,0,%0,%1,c14"::"r" (((uint32_t)start)+length), "r" (start));
    _data_memory_barrier();
 #endif
 }

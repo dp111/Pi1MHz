@@ -167,6 +167,7 @@ int stat(const char *file __attribute__((unused)), struct stat *st )
 
 /* Timing information for current process. Minimal implementation: */
 // cppcheck-suppress unusedFunction
+// cppcheck-suppress constParameterPointer
 clock_t times(struct tms *buf __attribute__((unused)))
 {
   return (clock_t)-1;

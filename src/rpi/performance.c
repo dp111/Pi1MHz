@@ -201,6 +201,7 @@ void reset_performance_counters(perf_counters_t *pct) {
 #endif
 }
 
+// cppcheck-suppress constParameterPointer
 void read_performance_counters(perf_counters_t *pct) {
 #if (__ARM_ARCH >= 7 )
    int i;
