@@ -18,7 +18,9 @@ You will need a PiZero or Pi3B+ with a cable, SD-CARD and level shifter and some
 
 Copy the contents of the firmware directory to the root of your SDCARD. If you want a prepared ADFS Harddisc you can copy <https://www.domesday86.com/wp-content/uploads/2019/03/BeebSCSI_Quickstart_LUN_2_5.zip> to the root of the SD-CARD otherwise you can find out more details on creating an ADFS LUN at : <https://www.domesday86.com/?page_id=400>
 
-Insert the SD-CARD into the pi. Attach the level shifter to the pi and insert into the 1MHz bus socket of the Beeb. Take extra care to ensure that it is connected correctly. You will also need to take +5v from somewhere to power the pi, this can be the user port or Tube for example.
+Insert the SD-CARD into the Pi. Attach the level shifter to the Pi and insert into the 1MHz bus socket of the Beeb. Take extra care to ensure that it is connected correctly. You will also need to take +5v from somewhere to power the Pi, this can be the user port or Tube for example.
+
+To check the build information type P.$&FD00
 
 ## ADFS Harddisc Emulation
 
@@ -61,6 +63,10 @@ Addresses currently defined
 * LED override : depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx where xx is the pi GPIO number
 * M5000_BeebAudio_Off=1 to turn off Audio out of the Beeb and enable stereo on the headphone jack of Pi3B+
 * M5000_Gain=xxxx : Over rides default gain of 16. Add 1000 to disable auto scaling as well. Auto scaling reduces the gain if the signal clips
+* Ram_addr=0xYY : set the base address of the byte write ram registers , -1 to disable
+* Harddisc_addr=0xYY : set the base address of the harddisc registers , -1 to disable
+* M5000_addr=-1 : disables the M5000 emulator
+* Framebuffer_addr=0xYY : set the base address of the frame buffer registers , -1 to disable
 
 ## Making the code
 

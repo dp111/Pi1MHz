@@ -148,6 +148,8 @@ nPCFD IO25 Pin 22 o o Pin 21 IO9  D7
 #define DATABUS_SHIFT D0_PIN
 #define ADDRBUS_SHIFT A0_PIN
 
+#define NOE_PIN      (0)
+
 #define TEST_PIN     (0)
 #define TEST_MASK    (1 << TEST_PIN)
 #define TEST2_PIN    (1)

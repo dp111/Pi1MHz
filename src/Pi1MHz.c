@@ -122,7 +122,7 @@ static emulator_list emulator[] = {
    {"Ram",ram_emulator_init, 0, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
-   {"Frambuffer",fb_emulator_init, 0xD0, 1},
+   {"Framebuffer",fb_emulator_init, 0xD0, 1},
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
@@ -157,8 +157,8 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
    Pi1MHz_Memory[addr] = data;
    switch (addr & 1)
    {
-   case 0: Pi1MHz_Memory_VPU[addr>>1] = (1<<8) |                    data  | (Pi1MHz_Memory[addr+1]); break;
-   case 1: Pi1MHz_Memory_VPU[addr>>1] = (1<<(8+16))|((uint32_t )data<<16) | (Pi1MHz_Memory[addr-1]); break;
+   case 0: Pi1MHz_Memory_VPU[addr>>1] = (0xff<<8) |                    data  | (Pi1MHz_Memory_VPU[addr>>1] & 0xFFFF0000); break;
+   case 1: Pi1MHz_Memory_VPU[addr>>1] = (0xff<<(8+16))|((uint32_t )data<<16) | (Pi1MHz_Memory_VPU[addr>>1] & 0x0000FFFF); break;
    }
 #pragma GCC diagnostic pop
 }
@@ -257,17 +257,18 @@ static void init_emulator() {
 
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {
-
-         char *prop = get_cmdline_prop(strcat(emulator[i].name,"_addr"));
+         char key[128]="";
+         strcat(key,emulator[i].name);
+         strcat(key,"_addr");
+         char *prop = get_cmdline_prop(key);
          if (prop)
             {
-               int temp=atoi(prop);      
+               int temp=strtol(prop,0,0);
                if (temp<0)
                   emulator[i].enable = 0;
                else
-                  emulator[i].address = temp;         
+                  emulator[i].address = temp;
             }
-
       }
 
    Pi1MHz_polls_max = 0;
@@ -407,8 +408,9 @@ static void init_hardware()
    RPI_SetGpioInput(NNMI_PIN);
    RPI_SetGpioInput(RNW_PIN);
 
-   RPI_SetGpioOutput(TEST_PIN);
-   RPI_SetGpioLo(TEST_PIN);
+   RPI_SetGpioHi(NOE_PIN);          // disable external data bus buffer
+   RPI_SetGpioOutput(NOE_PIN);      // extrernal data buffer nOE pin
+
    RPI_SetGpioOutput(TEST2_PIN);
 
    RPI_SetGpioLo(NIRQ_PIN);   // Set outputs low ready for interrupts when pin is changed to FS_OUPTUT
@@ -421,8 +423,6 @@ static void init_hardware()
 
 void kernel_main()
 {
-   RPI_SetGpioOutput(TEST_PIN);
-   RPI_SetGpioLo(TEST_PIN);
    RPI_AuxMiniUartInit( 115200 );
 
    enable_MMU_and_IDCaches(0);
@@ -430,10 +430,9 @@ void kernel_main()
    init_hardware();
 
    init_JIM();
-RPI_SetGpioHi(TEST_PIN);
 
    init_emulator();
-   RPI_SetGpioHi(TEST_PIN);
+
    while (Pi1MHz_is_rst_active());
    do {
       if (Pi1MHz_is_rst_active())
