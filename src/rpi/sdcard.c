@@ -1565,7 +1565,7 @@ int sd_card_init(struct block_device **dev)
    }
 
 #ifdef EMMC_DEBUG
-   printf("SD: card CID: %08"PRIu32"%08"PRIu32"%08"PRIu32"%08"PRIu32"\r\n", ret->last_r3, ret->last_r2, ret->last_r1, ret->last_r0);
+//   printf("SD: card CID: %08"PRIu32"%08"PRIu32"%08"PRIu32"%08"PRIu32"\r\n", ret->last_r3, ret->last_r2, ret->last_r1, ret->last_r0);
 #endif
 
   // ret->bd.device_id[0] = ret->last_r0;
