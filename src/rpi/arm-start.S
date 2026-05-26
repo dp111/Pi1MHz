@@ -196,6 +196,7 @@ bssclearloop:
 // R0 = source
 // R1 = length
 _copyandreboot:
+    CPSID if    // disable interrupts while we copy and reboot
     push {r0, r1}
     ldr r0, =_start_vectors - 0x100
     adr r1, _copyandreboot_code
