@@ -36,6 +36,7 @@ cmake_minimum_required( VERSION 3.10 )
 project( Pi1MHz C ASM )
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu23" )
 
 if(EXISTS ${PROJECT_SOURCE_DIR}/FIQ.s)
 # comment out line below if FIQ code doesn't sit directly at the FIQ vector
