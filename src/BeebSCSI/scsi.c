@@ -1406,7 +1406,7 @@ static uint8_t scsiCommandModeSelect6(void)
    }
 
    // Make sure the target LUN is started
-   if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
+   if (!filesystemCheckLunImage(commandDataBlock.targetLUN)) {
       // If the target LUN is unavailable then the host is probably attempting to MODESELECT
       // a LUN for which no descriptor exists.  So here we create the LUN descriptor
       if(!filesystemCreateLunDescriptor(commandDataBlock.targetLUN)) {
@@ -1463,7 +1463,8 @@ static uint8_t scsiCommandModeSelect6(void)
       // we might have more that one page so loop if there is more data
       while ( start+2 < length )
       {
-         uint8_t page = Buffer[start];
+         uint8_t page = Buffer[start] & 0x3F ; //
+         Buffer[start] &= 0x3F ;
          uint8_t len = Buffer[start+1];
 
          if (debugFlag_scsiCommands)debugStringInt16_P(PSTR("SCSI commands: Writing MODE SELECT Page "), page, true);
@@ -1491,7 +1492,7 @@ static uint8_t scsiCommandModeSelect6(void)
       }
    }
 
-   filesystemUpdateLunGeometry(commandDataBlock.targetLUN);
+   filesystemConfigToLunGeometry(commandDataBlock.targetLUN);
 
    if (!filesystemWriteAttributes(commandDataBlock.targetLUN))
    {
@@ -1580,14 +1581,19 @@ static uint8_t scsiCommandModeSense6(void)
    if (commandDataBlock.data[2] == 0x00) {
       // send length ( page zero is reserved)
       hostadapterWriteByte(0);
+      if (debugFlag_scsiCommands)debugStringInt16_P(PSTR(" "), 0, false);
    } else {
       // send length
       hostadapterWriteByte((uint8_t)(length - 1 ));
+      if (debugFlag_scsiCommands)debugStringInt16_P(PSTR(" "), (uint16_t)(length - 1), false);
    }
 
    // send header
    for (int i = 1; i < headerlen; i++)
+   {
       hostadapterWriteByte(headerptr[i]);
+      if (debugFlag_scsiCommands)debugStringInt16_P(PSTR(" "), headerptr[i], false);
+   }
 
    length -= headerlen;
 
@@ -1595,20 +1601,26 @@ static uint8_t scsiCommandModeSense6(void)
          LBAlen = length;
 
    for (int i = 0; i < LBAlen; i++)
+   {
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR(" "), LBAptr[i], false);
       hostadapterWriteByte(LBAptr[i]);
+   }
 
    length -= LBAlen;
    if (length < modelen)
          modelen = length;
 
    for (int i = 0; i < modelen; i++)
+   {
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR(" "), modeptr[i], false);
       hostadapterWriteByte(modeptr[i]);
+   }
    length -= modelen;
 
    for (int i = 0; i < length; i++)
       hostadapterWriteByte(0); // pad with zeros
    // Show the command debug information
-
+    debugString_P(PSTR("SCSI Commands: MODESENSE6 command complete\r\n"));
    // Indicate successful command in status and message
    commandDataBlock.status = SCSI_STATUS_OK; // 0x00 = Good
 

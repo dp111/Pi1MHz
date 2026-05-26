@@ -91,6 +91,26 @@ static const parserkey scsiattributes[] = {
    { NULL , 0 ,0, 0} // end of list
 };
 
+enum parserkeyvalueenum {
+    TITLE,
+    DESCRIPTION,
+    INQUIRY,
+    MODEPARAMHEADER,
+    LBADESCRIPTOR,
+    MODEPAGE0,
+    MODEPAGE1,
+    MODEPAGE3,
+    MODEPAGE4,
+    MODEPAGE32,
+    MODEPAGE33,
+    MODEPAGE35,
+    MODEPAGE36,
+    MODEPAGE37,
+    MODEPAGE38,
+    LDUSERCODE,
+    LDVIDEOXOFFSET
+};
+
 #define NUM_KEYS (sizeof(scsiattributes)/sizeof(parserkey))
 
 // File system state structure
@@ -222,10 +242,6 @@ void filesystemReset(void)
 
    // Reset the default FAT transfer directory
    sprintf(fatDirectory, "/Transfer");
-
-   // Set all LUNs to stopped
-   for( uint8_t i=0 ; i < MAX_LUNS; i++ )
-      filesystemState.fsLunStatus[i] = false;
 
    // ensure the file-system is closed on reset
    filesystemDismount();
@@ -403,7 +419,7 @@ bool filesystemTestLunStatus(uint8_t lunNumber)
 // Function to read the user code for the specified LUN image
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 {
-   int index = parse_findindex("LDUserCode",scsiattributes);
+   int index = LDUSERCODE;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
       userCode[0] = filesystemState.keyvalues[lunNumber][index].v.string[0];
@@ -533,7 +549,12 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
 
    filesystemState.fsLunStatus[lunNumber] = true;
 
-   filesystemReadLunDescriptor( lunNumber);
+   if (!filesystemReadLunDescriptor( lunNumber)) {
+
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): Creating new LUN descriptor\r\n"));
+
+      filesytemdattoconfigGeometry(lunNumber);
+   }
 
    // Calculate the LUN size from the descriptor file
 
@@ -679,6 +700,8 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 
    // Assemble the .cfg file name
    sprintf(fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
+   if(parse_readfile(fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber] ))
+      return true;
 
    if (parse_readfile("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
@@ -758,7 +781,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
          // (the '33' is because SuperForm uses a 2:1 interleave format with 33 sectors per
          // track (F-2 in the ACB-4000 manual))
          // bytes = sectors * block size (block size is always 256 bytes
-         filesystemUpdateLunGeometry(lunNumber);
+         filesystemLunToconfigGeometry(lunNumber);
          f_close(&fileObject);
       }
       return true;
@@ -786,15 +809,11 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
 
    // assume no cfg file so create one
 
-      // Assemble the .cfg file name
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
-
    if (parse_readfile("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg created Successful\r\n"));
       return true;
    }
-
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): ERROR: Could not create new .cfg file!\r\n"));
    return false;
@@ -872,7 +891,6 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 // and register it
 bool filesystemCheckExtAttributes( uint8_t lunNumber)
 {
-   bool flag = false;
    char extAttributes_fileName[255];
    if (lunNumber <8)
       sprintf(extAttributes_fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
@@ -883,25 +901,88 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
    {
       // LUN extended attributes file is present
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file found\r\n"));
-      flag = true;
-      filesystemUpdateLunGeometry(lunNumber);
+      filesystemConfigToLunGeometry(lunNumber);
+      return true;
    }
    else
    {
+      sprintf(fileName, "/Pi1MHz/defscsi.cfg");
+      parse_readfile(fileName,0, scsiattributes, filesystemState.keyvalues[lunNumber]);
+
       // LUN extended attributes file is not present
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file not found\r\n"));
    }
 
-
-	return flag;
+	return false;
 }
+
+
+
+// takes lun geometry and updates the keyvalues
+
+void filesystemLunToconfigGeometry(uint8_t lunNumber)
+{
+   int index;
+   // Update the extended attributes from the cached geometry for this LUN
+   index = MODEPAGE0;
+   if  (!filesystemState.keyvalues[lunNumber][index].v.string)
+   {
+      filesystemState.keyvalues[lunNumber][index].v.string = malloc(10);
+      filesystemState.keyvalues[lunNumber][index].length = 10;
+   }
+
+   filesystemState.keyvalues[lunNumber][index].v.string[0] = 1 ;
+   filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
+   filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
+   filesystemState.keyvalues[lunNumber][index].v.string[3] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+   filesystemState.keyvalues[lunNumber][index].v.string[4] = 0x00; // Reduced write current MSB
+   filesystemState.keyvalues[lunNumber][index].v.string[5] = 0x80; // Reduced write current LSB
+   filesystemState.keyvalues[lunNumber][index].v.string[6] = 0x00; // Write precompensation MSB
+   filesystemState.keyvalues[lunNumber][index].v.string[7] = 0x80; // Write precompensation LSB
+   filesystemState.keyvalues[lunNumber][index].v.string[8] = 0x00; // Landing zone
+   filesystemState.keyvalues[lunNumber][index].v.string[9] = 0x01; // Step pulse count
+
+   index = MODEPAGE4;
+   if  (!filesystemState.keyvalues[lunNumber][index].v.string)
+   {
+      filesystemState.keyvalues[lunNumber][index].v.string = malloc(6);
+      filesystemState.keyvalues[lunNumber][index].length = 6;
+   }
+   filesystemState.keyvalues[lunNumber][index].v.string[0] = 04 ;
+   filesystemState.keyvalues[lunNumber][index].v.string[1] = 04 ;
+   filesystemState.keyvalues[lunNumber][index].v.string[2] = 0 ;
+   filesystemState.keyvalues[lunNumber][index].v.string[3] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
+   filesystemState.keyvalues[lunNumber][index].v.string[4] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
+   filesystemState.keyvalues[lunNumber][index].v.string[5] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+
+
+}
+
+void filesytemdattoconfigGeometry(uint8_t lunNumber)
+{
+   // not implemented
+
+         uint32_t lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+
+      lunFileSize = lunFileSize / (filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack * filesystemState.fsLunGeometry[lunNumber].BlockSize);
+      uint8_t heads = 16;
+
+      while ((lunFileSize % heads != 0) && heads > 1) heads--;
+      uint32_t cylinders = lunFileSize / heads;
+
+      filesystemState.fsLunGeometry[lunNumber].Cylinders = cylinders;
+      filesystemState.fsLunGeometry[lunNumber].Heads = heads;
+
+      filesystemLunToconfigGeometry(lunNumber);
+}
+
 
 //
 // Transfer key Values from attributes to the LUN geometry
 //
-void filesystemUpdateLunGeometry(uint8_t lunNumber)
+void filesystemConfigToLunGeometry(uint8_t lunNumber)
 {
-   int index = parse_findindex("ModeParamHeader", scsiattributes);
+   int index = MODEPARAMHEADER;
    if  (!filesystemState.keyvalues[lunNumber][index].v.string)
    {
       // now recreate the ModeParamHeader
@@ -914,7 +995,7 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
    }
 
 	// Update the cached geometry for this LUN from the extended attributes
-   index = parse_findindex("LBADescriptor", scsiattributes);
+   index = LBADESCRIPTOR;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
          filesystemState.fsLunGeometry[lunNumber].BlockSize = (uint32_t)(((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[5] << 16) +
@@ -937,7 +1018,7 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].length = 8;
       }
 
-   index = parse_findindex("ModePage3", scsiattributes);
+   index = MODEPAGE3;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
       filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
@@ -948,49 +1029,29 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
       filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
    }
 
-   index = parse_findindex("ModePage0", scsiattributes);
+   index = MODEPAGE0;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
       filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
                                                                         (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[2]));
       filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
+
    }
    else
    {
       // check if page4 is present
-      index = parse_findindex("ModePage4", scsiattributes);
+      index = MODEPAGE4;
       if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
                filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
                                                                         (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[4]));
                filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[5]);
+
+               filesystemCopyPage4toPage0(lunNumber);
       } else
       {
          // set to default values
-
-      uint32_t lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
-
-      lunFileSize = lunFileSize / (filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack * filesystemState.fsLunGeometry[lunNumber].BlockSize);
-      uint8_t heads = 16;
-
-      while ((lunFileSize % heads != 0) && heads > 1) heads--;
-      uint32_t cylinders = lunFileSize / heads;
-
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = cylinders;
-      filesystemState.fsLunGeometry[lunNumber].Heads = heads;
-      // now recreate Page0
-      filesystemState.keyvalues[lunNumber][index].v.string = malloc(10);
-      filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x01; // List format 1
-      filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(cylinders>>8); // cylinder count MSB
-      filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)cylinders; // cylinder count LSB
-      filesystemState.keyvalues[lunNumber][index].v.string[3] = heads; // Heads
-      filesystemState.keyvalues[lunNumber][index].v.string[4] = 0x00; // Reduced write current MSB
-      filesystemState.keyvalues[lunNumber][index].v.string[5] = 0x80; // Reduced write current LSB
-      filesystemState.keyvalues[lunNumber][index].v.string[6] = 0x00; // Write precompensation MSB
-      filesystemState.keyvalues[lunNumber][index].v.string[7] = 0x80; // Write precompensation LSB
-      filesystemState.keyvalues[lunNumber][index].v.string[8] = 0x00; // Landing zone
-      filesystemState.keyvalues[lunNumber][index].v.string[9] = 0x01; // Step pulse count
-      filesystemState.keyvalues[lunNumber][index].length = 10;
+         filesytemdattoconfigGeometry(lunNumber);
       }
    }
 }
@@ -998,14 +1059,14 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
 
 void filesystemCopyPage0toPage4(uint8_t lunNumber)
 {
-   int index = parse_findindex("ModePage0", scsiattributes);
+   int index = MODEPAGE0;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
       filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
                                                                         (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[2]));
       filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
       // now recreate Page4
-      index = parse_findindex("ModePage4", scsiattributes);
+      index = MODEPAGE4;
       if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
          filesystemState.keyvalues[lunNumber][index].v.string[2] = 0 ;
@@ -1018,14 +1079,14 @@ void filesystemCopyPage0toPage4(uint8_t lunNumber)
 
 void filesystemCopyPage4toPage0(uint8_t lunNumber)
 {
-   int index = parse_findindex("ModePage4", scsiattributes);
+   int index = MODEPAGE4;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
       filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
                                                                         (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[4]));
       filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[5]);
-      // now recreate Page3
-      index = parse_findindex("ModePage0", scsiattributes);
+      // now recreate Page0
+      index = MODEPAGE0;
       if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
          filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
@@ -1033,7 +1094,6 @@ void filesystemCopyPage4toPage0(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].v.string[3] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
       }
    }
-
 }
 
 // Functions for reading and writing LUN images --------------------------------------------------------------------
@@ -1167,20 +1227,20 @@ bool filesystemCloseLunForWrite(uint8_t lunNumber)
 
 char * filesystemGetInquiryData(uint8_t lunNumber)
 {
-   int index = parse_findindex("Inquiry",scsiattributes);
+   int index = INQUIRY;
 	return filesystemState.keyvalues[lunNumber][index].v.string;
 }
 
 char * filesystemGetModeParamHeaderData(uint8_t lunNumber, size_t * length)
 {
-   int index = parse_findindex("ModeParamHeader",scsiattributes);
+   int index = MODEPARAMHEADER;
    *length= filesystemState.keyvalues[lunNumber][index].length;
 	return filesystemState.keyvalues[lunNumber][index].v.string;
 }
 
 char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length)
 {
-   int index = parse_findindex("LBADescriptor",scsiattributes);
+   int index = LBADESCRIPTOR;
    *length= filesystemState.keyvalues[lunNumber][index].length;
 	return filesystemState.keyvalues[lunNumber][index].v.string;
 }
@@ -1189,32 +1249,21 @@ char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length)
 
 static int filesystemPagetoIndex( uint8_t page)
 {
-   if (page < 128)
+   page = page & 0x3f;
+   char page1 , page2;
+   if (page >= 10)
    {
-      char page1 , page2;
-      if (page >= 10)
+      page1= (page/10)+'0';
+      page2= (page%10)+'0';
+   }
+   else
       {
-         page1= (page/10)+'0';
-         page2= (page%10)+'0';
+      page1= page+'0';
+      page2= 0;
       }
-      else
-         {
-         page1= page+'0';
-         page2= 0;
-         }
 
-      const char mode[] = {'M','o','d','e','P','a','g','e',page1,page2,0};
-      return parse_findindex(mode,scsiattributes);
-   }
-
-   switch (page)
-   {
-      case 128: return parse_findindex("Title",scsiattributes); break;
-      case 129: return parse_findindex("Description",scsiattributes);break;
-      case 130: return parse_findindex("LDUserCode",scsiattributes);break;
-     // case 131: return parse_findindex("LDVideoXoffset",scsiattributes);break;
-      default: return -1; break;
-   }
+   const char mode[] = {'M','o','d','e','P','a','g','e',page1,page2,0};
+   return parse_findindex(mode,scsiattributes);
 }
 
 // returns the mode page data for a given page
@@ -1237,13 +1286,6 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    if (index == -1)
       return 0;
 
-   if (page>= 128)
-   {
-      // these pages are string pages so don't have the header
-      if (len < 2) return 0; /* invalid length */
-      len -= 2;
-      Buffer += 2;
-   }
    filesystemState.keyvalues[lunNumber][index].length = len;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
       free(filesystemState.keyvalues[lunNumber][index].v.string);
