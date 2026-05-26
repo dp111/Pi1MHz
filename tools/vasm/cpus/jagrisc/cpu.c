@@ -1,6 +1,6 @@
 /*
  * cpu.c Jaguar RISC cpu description file
- * (c) in 2014-2017 by Frank Wille
+ * (c) in 2014-2017,2020,2021,2024 by Frank Wille
  */
 
 #include "vasm.h"
@@ -8,11 +8,10 @@
 mnemonic mnemonics[] = {
 #include "opcodes.h"
 };
-int mnemonic_cnt = sizeof(mnemonics) / sizeof(mnemonics[0]);
+const int mnemonic_cnt = sizeof(mnemonics) / sizeof(mnemonics[0]);
 
-char *cpu_copyright = "vasm Jaguar RISC cpu backend 0.4c (c) 2014-2017 Frank Wille";
-char *cpuname = "jagrisc";
-int bitsperbyte = 8;
+const char *cpu_copyright = "vasm Jaguar RISC cpu backend 0.6 (c) 2014-2017,2020,2021,2024 Frank Wille";
+const char *cpuname = "jagrisc";
 int bytespertaddr = 4;
 
 int jag_big_endian = 1;  /* defaults to big-endian (Atari Jaguar 68000) */
@@ -22,22 +21,32 @@ static int OC_MOVEI,OC_UNPACK;
 
 /* condition codes */
 static regsym cc_regsyms[] = {
-  {"T",  RTYPE_CC, 0, 0x00},
-  {"NE", RTYPE_CC, 0, 0x01},
-  {"EQ", RTYPE_CC, 0, 0x02},
-  {"CC", RTYPE_CC, 0, 0x04},
-  {"HI", RTYPE_CC, 0, 0x05},
-  {"CS", RTYPE_CC, 0, 0x08},
-  {"PL", RTYPE_CC, 0, 0x14},
-  {"MI", RTYPE_CC, 0, 0x18},
-  {"t",  RTYPE_CC, 0, 0x00},
-  {"ne", RTYPE_CC, 0, 0x01},
-  {"eq", RTYPE_CC, 0, 0x02},
-  {"cc", RTYPE_CC, 0, 0x04},
-  {"hi", RTYPE_CC, 0, 0x05},
-  {"cs", RTYPE_CC, 0, 0x08},
-  {"pl", RTYPE_CC, 0, 0x14},
-  {"mi", RTYPE_CC, 0, 0x18},
+  {"t",    RTYPE_CC, 0, 0x00},
+  {"a",    RTYPE_CC, 0, 0x00},
+  {"ne",   RTYPE_CC, 0, 0x01},
+  {"eq",   RTYPE_CC, 0, 0x02},
+  {"cc",   RTYPE_CC, 0, 0x04},
+  {"hs",   RTYPE_CC, 0, 0x04},
+  {"hi",   RTYPE_CC, 0, 0x05},
+  {"cs",   RTYPE_CC, 0, 0x08},
+  {"lo",   RTYPE_CC, 0, 0x08},
+  {"pl",   RTYPE_CC, 0, 0x14},
+  {"mi",   RTYPE_CC, 0, 0x18},
+  {"f",    RTYPE_CC, 0, 0x1f},
+  {"nz",   RTYPE_CC, 0, 0x01},
+  {"z",    RTYPE_CC, 0, 0x02},
+  {"nc",   RTYPE_CC, 0, 0x04},
+  {"ncnz", RTYPE_CC, 0, 0x05},
+  {"ncz" , RTYPE_CC, 0, 0x06},
+  {"c",    RTYPE_CC, 0, 0x08},
+  {"cnz" , RTYPE_CC, 0, 0x09},
+  {"cz",   RTYPE_CC, 0, 0x0a},
+  {"nn",   RTYPE_CC, 0, 0x14},
+  {"nnnz", RTYPE_CC, 0, 0x15},
+  {"nnz",  RTYPE_CC, 0, 0x16},
+  {"n",    RTYPE_CC, 0, 0x18},
+  {"n_nz", RTYPE_CC, 0, 0x19},
+  {"n_z",  RTYPE_CC, 0, 0x1a},
   {NULL, 0, 0, 0}
 };
 
@@ -118,7 +127,7 @@ static expr *parse_cc(char **p)
   *p = skip(*p);
 
   if (end = skip_identifier(*p)) {
-    regsym *sym = find_regsym(*p,end-*p);
+    regsym *sym = find_regsym_nc(*p,end-*p);
 
     if (sym!=NULL && sym->reg_type==RTYPE_CC) {
       *p = end;
@@ -131,8 +140,8 @@ static expr *parse_cc(char **p)
 }
 
 
-static void jagswap32(char *d,int32_t w)
-/* write a 32-bit word with swapped halfs (Jaguar MOVEI) */
+static void jagswap32(unsigned char *d,int32_t w)
+/* write a 32-bit word with swapped halves (Jaguar MOVEI) */
 {
   if (jag_big_endian) {
     *d++ = (w >> 8) & 0xff;
@@ -153,12 +162,13 @@ static void jagswap32(char *d,int32_t w)
 char *parse_cpu_special(char *start)
 /* parse cpu-specific directives; return pointer to end of cpu-specific text */
 {
+  strbuf *buf;
   char *name=start;
   char *s;
 
   if (s = skip_identifier(name)) {
     /* Atari MadMac compatibility directives */
-    if (*name == '.')  /* ignore leading dot */
+    if (dotdirs && *name=='.')  /* ignore leading dot */
       name++;
 
     if (s-name==3 && !strnicmp(name,"dsp",3)) {
@@ -177,9 +187,8 @@ char *parse_cpu_special(char *start)
              s-name==9 && !strnicmp(name,"equrundef",9)) {
       /* undefine a register symbol */
       s = skip(s);
-      if (name = parse_identifier(&s)) {
-        undef_regsym(name,0,RTYPE_R);
-        myfree(name);
+      if (buf = parse_identifier(0,&s)) {
+        undef_regsym(buf->str,0,RTYPE_R);
         eol(s);
         return skip_line(s);
       }
@@ -188,9 +197,8 @@ char *parse_cpu_special(char *start)
     else if (s-name==7 && !strnicmp(name,"ccundef",7)) {
       /* undefine a condition code symbol */
       s = skip(s);
-      if (name = parse_identifier(&s)) {
-        undef_regsym(name,0,RTYPE_CC);
-        myfree(name);
+      if (buf = parse_identifier(0,&s)) {
+        undef_regsym(strtolower(buf->str),0,RTYPE_CC);
         eol(s);
         return skip_line(s);
       }
@@ -206,10 +214,9 @@ int parse_cpu_label(char *labname,char **start)
    return zero when no valid directive was recognized */ 
 {
   char *dir=*start;
-  char *s,*name;
-  hashdata data;
+  char *s;
 
-  if (*dir == '.')  /* ignore leading dot */
+  if (dotdirs && *dir=='.')  /* ignore leading dot */
     dir++;
 
   if (s = skip_identifier(dir)) {
@@ -370,7 +377,7 @@ static int32_t eval_oper(instruction *ip,operand *op,section *sec,
   symbol *base = NULL;
   int optype = op->type;
   int btype;
-  taddr val,loval,hival,mask;
+  taddr val,loval,hival,mask=0x1f;
 
   switch (optype) {
     case PC:
@@ -390,19 +397,18 @@ static int32_t eval_oper(instruction *ip,operand *op,section *sec,
     case IR15D:
     case REL:
     case CC:
-      mask = 0x1f;
       if (!eval_expr(op->val,&val,sec,pc))
         btype = find_base(op->val,&base,sec,pc);
 
       if (optype==IMM0 || optype==CC || optype==IMM1 || optype==SIMM) {
         if (base != NULL) {
-          loval = -32;
-          hival = 32;
+          loval = -16;
+          hival = optype==SIMM ? 15 : 31;
           if (btype != BASE_ILLEGAL) {
             if (db) {
-              add_extnreloc_masked(&db->relocs,base,val,
-                                   btype==BASE_PCREL?REL_PC:REL_ABS,
-                                   jag_big_endian?6:5,5,0,0x1f);
+              add_extnreloc(&db->relocs,base,val,
+                            btype==BASE_PCREL?REL_PC:REL_ABS,
+                            jag_big_endian?6:5,5,0);
               base = NULL;
             }
           }
@@ -422,9 +428,9 @@ static int32_t eval_oper(instruction *ip,operand *op,section *sec,
       }
       else if (optype==IR14D || optype==IR15D) {
         if (base==NULL && val==0) {
-          /* Optimize (Rn+0) to (Rn). Assume that the "load/store (Rn+d)"
-             instructions follow directly after "load/store (Rn)". */
-          ip->code -= optype==IR14D ? 1 : 2;
+          /* Optimize (Rn+0) to (Rn). Assume that load/store (Rn) is
+             three entries before (R14+d) and four entries before (R15+d). */
+          ip->code -= optype==IR14D ? 3 : 4;  /* @OPT1@ */
           op->type = IREG;
           op->reg = optype==IR14D ? 14 : 15;
           return op->reg;
@@ -452,18 +458,19 @@ static int32_t eval_oper(instruction *ip,operand *op,section *sec,
       else if (optype==REL) {
         loval = -16;
         hival = 15;
-        if (base!=NULL && btype==BASE_OK) {
-          if (is_pc_reloc(base,sec)) {
-            /* external label or from a different section (distance / 2) */
-            add_extnreloc_masked(&db->relocs,base,val-2,REL_PC,
-                                 jag_big_endian?6:5,5,0,0x3e);
-          }
-          else if (LOCREF(base)) {
-            /* known label from the same section doesn't need a reloc */
-            val = (val - (pc + 2)) / 2;
-          }
-          base = NULL;
+        if ((base!=NULL && btype==BASE_OK && !is_pc_reloc(base,sec)) ||
+            base==NULL) {
+          /* known label from same section or absolute label */
+          val = (val - (pc + 2)) / 2;
         }
+        else if (btype == BASE_OK) {
+          /* external label or from a different section (distance / 2) */
+          val -= 2;
+          add_extnreloc_masked(&db->relocs,base,val,REL_PC,
+                               jag_big_endian?6:5,5,0,~1);
+          val /= 2;
+        }
+        base = NULL;
       }
       else ierror(0);
 

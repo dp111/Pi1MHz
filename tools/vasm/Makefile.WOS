@@ -2,15 +2,14 @@
 
 TARGET = _wos
 TARGETEXTENSION = 
-OUTFMTS = -DOUTAOUT -DOUTBIN -DOUTELF -DOUTHUNK -DOUTSREC -DOUTTOS -DOUTVOBJ
 
 CC = vc +warpos
-CCOUT = -o 
-COPTS = -c -c99 -DAMIGA -O1 $(OUTFMTS)
+CCOUT = -o=
+CFLAGS = -c -merge-strings -DAMIGA -O1 $(OUTFMTS)
 
 LD = $(CC)
 LDOUT = $(CCOUT)
-LDFLAGS = -lm
+LDFLAGS = -lm -lamiga
 
 RM = delete force quiet
 

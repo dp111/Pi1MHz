@@ -3,7 +3,7 @@
 
 #include "vasm.h"
 
-char *cpu_copyright="vasm test cpu backend (c) in 2002 Volker Barthelmann";
+const char *cpu_copyright="vasm test cpu backend (c) in 2002 Volker Barthelmann";
 
 /* example machine.
    valid Registers: R0-R3
@@ -23,8 +23,7 @@ char *cpu_copyright="vasm test cpu backend (c) in 2002 Volker Barthelmann";
         Special case for bra: 11112222: 0-255 relative offset
 */
 
-char *cpuname="test";
-int bitsperbyte=8;
+const char *cpuname="test";
 int bytespertaddr=4;
 
 mnemonic mnemonics[]={
@@ -38,7 +37,7 @@ mnemonic mnemonics[]={
   "bra",{OP_ABS,0},{CPU_ALL,0x7},
 };
 
-int mnemonic_cnt=sizeof(mnemonics)/sizeof(mnemonics[0]);
+const int mnemonic_cnt=sizeof(mnemonics)/sizeof(mnemonics[0]);
 
 
 char *parse_instruction(char *s,int *inst_len,char **ext,int *ext_len,
@@ -159,8 +158,9 @@ static int operand_code(operand *p)
   if(p->type==OP_IMM32)
     return 9;
   ierror(0);
+  return 0;
 }
-static char *fill_operand(operand *p,section *sec,taddr pc,char *d,rlist **relocs,int roffset)
+static unsigned char *fill_operand(operand *p,section *sec,taddr pc,unsigned char *d,rlist **relocs,int roffset)
 {
   taddr val;
   if(!p||p->type==OP_REG)
@@ -189,7 +189,6 @@ dblock *eval_instruction(instruction *p,section *sec,taddr pc)
   dblock *db=new_dblock();
   int c=opt_inst(p,sec,pc);
   unsigned char *d;
-  taddr val;
   db->size=size;
   d=db->data=mymalloc(size);
   *d=c;
@@ -277,15 +276,15 @@ size_t instruction_size(instruction *p,section *sec,taddr pc)
   return size;    
 }
 
-operand *new_operand()
+operand *new_operand(void)
 {
   operand *new=mymalloc(sizeof(*new));
   new->type=-1;
   return new;
 }
 
-/* return true, if initialization was successfull */
-int init_cpu()
+/* return true, if initialization was successful */
+int init_cpu(void)
 {
   return 1;
 }

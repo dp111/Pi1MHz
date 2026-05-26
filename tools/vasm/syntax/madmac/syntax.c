@@ -1,7 +1,8 @@
 /* syntax.c  syntax module for vasm */
-/* (c) in 2015-2018 by Frank Wille */
+/* (c) in 2015-2023 by Frank Wille */
 
 #include "vasm.h"
+#include "error.h"
 
 /* The syntax module parses the input (read_next_line), handles
    assembly-directives (section, data-storage etc.) and parses
@@ -12,9 +13,10 @@
    be provided by the main module.
 */
 
-char *syntax_copyright="vasm madmac syntax module 0.4d (c) 2015-2018 Frank Wille";
+const char *syntax_copyright="vasm madmac syntax module 0.7 (c) 2015-2023 Frank Wille";
 hashtable *dirhash;
 char commentchar = ';';
+int dotdirs;
 
 static char text_name[] = ".text";
 static char data_name[] = ".data";
@@ -22,8 +24,6 @@ static char bss_name[] = ".bss";
 static char text_type[] = "acrx";
 static char data_type[] = "adrw";
 static char bss_type[] = "aurw";
-char *defsectname = text_name;
-char *defsecttype = text_type;
 
 static char macroname[] = ".macro";
 static char endmname[] = ".endm";
@@ -121,7 +121,7 @@ char *const_suffix(char *start,char *end)
 }
 
 
-char *get_local_label(char **start)
+strbuf *get_local_label(int n,char **start)
 /* local labels start with '.' */
 {
   char *name = *start;
@@ -131,7 +131,7 @@ char *get_local_label(char **start)
     end = skip_identifier(name+1);
     if (end != NULL) {
       *start = skip(end);
-      return make_local_label(NULL,0,name,end-name);
+      return make_local_label(n,NULL,0,name,end-name);
     }
   }
   return NULL;
@@ -154,7 +154,7 @@ static void handle_equ(char *s)
 
   sym = new_equate(labname,parse_expr_tmplab(&s));
   if (exp) {
-    if (is_local_label(labname))
+    if (is_local_symbol_name(labname))
       syntax_error(1);  /* cannot export local symbol */
     sym->flags |= EXPORT;
   }
@@ -232,7 +232,9 @@ static void handle_bss(char *s)
 
 static void handle_org(char *s)
 {
-  if (current_section!=NULL && !(current_section->flags & ABSOLUTE))
+  if (current_section!=NULL &&
+      (!(current_section->flags & ABSOLUTE) ||
+        (current_section->flags & IN_RORG)))
     start_rorg(parse_constexpr(&s));
   else
     set_section(new_org(parse_constexpr(&s)));
@@ -240,27 +242,24 @@ static void handle_org(char *s)
 }
 
 
-#ifdef VASM_CPU_JAGRISC
 static void handle_68000(char *s)
 {
   try_end_rorg();  /* works like ending the last RORG-block */
   eol(s);
 }
-#endif
 
 
 static void handle_globl(char *s)
 {
-  char *name;
+  strbuf *name;
   symbol *sym;
 
   for (;;) {
-    if (!(name = parse_identifier(&s))) {
+    if (!(name = parse_identifier(0,&s))) {
       syntax_error(10);  /* identifier expected */
       return;
     }
-    sym = new_import(name);
-    myfree(name);
+    sym = new_import(name->str);
 
     if (sym->flags & EXPORT)
       general_error(62,sym->name,get_bind_name(sym)); /* binding already set */
@@ -324,8 +323,10 @@ static void handle_datadef(char *s,int sz)
     s = skip(s);
     if (*s == ',')
       s = skip(s+1);
-    else
+    else {
+      eol(s);
       break;
+    }
   }
 }
 
@@ -475,21 +476,21 @@ static void handle_qphrase(char *s)
 
 static void handle_include(char *s)
 {
-  char *name;
+  strbuf *name;
 
-  if (name = parse_name(&s)) {
+  if (name = parse_name(0,&s)) {
     eol(s);
-    include_source(name);
+    include_source(name->str);
   }
 }
 
 
 static void handle_incbin(char *s)
 {
-  char *name;
+  strbuf *name;
 
-  if (name = parse_name(&s))
-    include_binary_file(name,0,0);
+  if (name = parse_name(0,&s))
+    include_binary_file(name->str,0,0);
   eol(s);
 }
 
@@ -516,6 +517,7 @@ static void handle_list(char *s)
 
 static void handle_nlist(char *s)
 {
+  del_last_listing();  /* hide directive in listing */
   set_listing(0);
   eol(s);
 }
@@ -523,14 +525,13 @@ static void handle_nlist(char *s)
 
 static void handle_macro(char *s)
 {
-  char *name;
+  strbuf *name;
 
-  if (name = parse_identifier(&s)) {
+  if (name = parse_identifier(0,&s)) {
     s = skip(s);
     if (ISEOL(s))
       s = NULL;  /* no named arguments */
-    new_macro(name,endm_dirlist,s);
-    myfree(name);
+    new_macro(name->str,macro_dirlist,endm_dirlist,s);
   }
   else
     syntax_error(10);  /* identifier expected */
@@ -539,11 +540,10 @@ static void handle_macro(char *s)
 
 static void handle_macundef(char *s)
 {
-  char *name;
+  strbuf *name;
 
-  while (name = parse_identifier(&s)) {
-    undef_macro(name);
-    myfree(name);
+  while (name = parse_identifier(0,&s)) {
+    undef_macro(name->str);
     s = skip(s);
     if (*s != ',')
       break;
@@ -578,7 +578,7 @@ static void handle_print(char *s)
         txt = mymalloc(len+1);
         s = read_string(txt,s,'\"',8);
         txt[len] = '\0';
-        add_atom(0,new_text_atom(txt));
+        add_or_save_atom(new_text_atom(txt));
       }
     }
     else {
@@ -619,20 +619,35 @@ static void handle_print(char *s)
         }
         s = skip(s);
       }
-      add_atom(0,new_expr_atom(parse_expr(&s),type,size));
+      add_or_save_atom(new_expr_atom(parse_expr(&s),type,size));
     }
     s = skip(s);
     if (*s != ',')
       break;
     s = skip(s+1);
   }
-  add_atom(0,new_text_atom(NULL));  /* new line */
+  add_or_save_atom(new_text_atom(NULL));  /* new line */
   eol(s);
 }
 
 
+static void handle_offset(char *s)
+{
+  taddr offs;
+
+  if (!ISEOL(s))
+    offs = parse_constexpr(&s);
+  else
+    offs = 0;
+
+  try_end_rorg();
+  switch_offset_section(NULL,offs);
+}
+
+
+
 struct {
-  char *name;
+  const char *name;
   void (*func)(char *);
 } directives[] = {
   "equ",handle_equ,
@@ -651,9 +666,7 @@ struct {
   "data",handle_data,
   "bss",handle_bss,
   "org",handle_org,
-#ifdef VASM_CPU_JAGRISC
   "68000",handle_68000,
-#endif
   "globl",handle_globl,
   "extern",handle_globl,
   "assert",handle_assert,
@@ -681,7 +694,11 @@ struct {
   "list",handle_list,
   "nlist",handle_nlist,
   "nolist",handle_nlist,
-  "print",handle_print
+  "print",handle_print,
+#ifndef VASM_CPU_JAGRISC
+  "abs",handle_offset,
+#endif
+  "offset",handle_offset
 };
 
 int dir_cnt = sizeof(directives) / sizeof(directives[0]);
@@ -699,8 +716,12 @@ static int check_directive(char **line)
   name = s++;
   while (ISIDCHAR(*s) || *s=='.')
     s++;
-  if (*name=='.')  /* leading dot is optional for all directives */
+  if (*name=='.') {  /* leading dot is optional for all directives */
     name++;
+    dotdirs = 1;
+  }
+  else
+    dotdirs = 0;
   if (!find_namelen_nc(dirhash,name,s-name,&data))
     return -1;
   *line = s;
@@ -747,10 +768,9 @@ void parse(void)
       int idx = -1;
 
       s = skip(line);
-      if (labname = parse_labeldef(&s,1)) {
+      if (parse_labeldef(&s,1)) {
         if (*s == ':')
           s++;  /* skip double-colon */
-        myfree(labname);
         s = skip(s);
       }
       else {
@@ -787,7 +807,6 @@ again:
         s++;
       }
       add_atom(0,new_label_atom(sym));
-      myfree(labname);
       s = skip(s);
     }
     else {
@@ -804,19 +823,14 @@ again:
          and s pointing to the second. Find out where the directive is. */
       if (!ISEOL(s)) {
 #ifdef PARSE_CPU_LABEL
-        if (PARSE_CPU_LABEL(labname,&s)) {
-          myfree(labname);
+        if (PARSE_CPU_LABEL(labname,&s))
           continue;
-        }
 #endif
-        if (handle_directive(s)) {
-          myfree(labname);
+        if (handle_directive(s))
           continue;
-        }
       }
 
       /* directive or mnemonic must be in the first field */
-      myfree(labname);
       s = inst;
     }
 
@@ -897,8 +911,13 @@ again:
     }
 #endif
 
-    if (ip)
+    if (ip) {
+#if MAX_OPERANDS>0
+      if (ip->op[0]==NULL && op_cnt!=0)
+        syntax_error(6);  /* mnemonic without operands has tokens in op.field */
+#endif
       add_atom(0,new_inst_atom(ip));
+    }
   }
 
   cond_check();  /* check for open conditional blocks */
@@ -911,16 +930,8 @@ char *parse_macro_arg(struct macro *m,char *s,
 {
   arg->len = 0;  /* cannot select specific named arguments */
   param->name = s;
-
-  if (*s=='\"' || *s=='\'') {
-    s = skip_string(s,*s,NULL);
-    param->len = s - param->name;
-  }
-  else {
-    s = skip_operand(s);
-    param->len = s - param->name;
-  }
-
+  s = skip_operand(s);
+  param->len = s - param->name;
   return s;
 }
 
@@ -959,25 +970,28 @@ int expand_macro(source *src,char **line,char *d,int dlen)
             *d++ = '\\';  /* make it a double \ again */
             nc = 2;
           }
-          else
-            nc = -1;
+          else nc = -1;
         }
-        else
-          nc = 1;
+        else nc = 1;
       }
-      else
-        nc = -1;
+      else nc = -1;
     }
 
     else if (*s == '~') {
       /* \~: insert a unique id */
-      nc = snprintf(d,dlen,"M%lu",src->id);
-      s++;
+      if (dlen > 10) {
+        nc = sprintf(d,"M%lu",src->id);
+        s++;
+      }
+      else nc = -1;
     }
     else if (*s == '#') {
       /* \# : insert number of parameters */
-      nc = snprintf(d,dlen,"%d",src->num_params);
-      s++;
+      if (dlen > 3) {
+        nc = sprintf(d,"%d",src->num_params);
+        s++;
+      }
+      else nc = -1;
     }
     else if (*s == '!') {
       /* \!: copy qualifier (dot-size) */
@@ -1036,17 +1050,19 @@ int expand_macro(source *src,char **line,char *d,int dlen)
 }
 
 
-int init_syntax()
+int init_syntax(void)
 {
   size_t i;
   hashdata data;
 
-  dirhash = new_hashtable(0x200);
+  dirhash = new_hashtable(0x800);
   for (i=0; i<dir_cnt; i++) {
     data.idx = i;
     add_hashentry(dirhash,directives[i].name,data);
   }
-  
+  if (debug && dirhash->collisions)
+    fprintf(stderr,"*** %d directive collisions!!\n",dirhash->collisions);
+
   cond_init();
   current_pc_char = '*';
   esc_sequences = 1;
@@ -1055,6 +1071,12 @@ int init_syntax()
   modify_gen_err(WARNING,47,0);
 
   return 1;
+}
+
+
+int syntax_defsect(void)
+{
+  return 0;  /* default to .text */
 }
 
 

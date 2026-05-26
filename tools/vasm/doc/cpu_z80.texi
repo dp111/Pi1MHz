@@ -34,13 +34,23 @@ This module provides the following additional options:
 
 @table @option
     @item -8080
-        Turns on 8080 compatibility mode. Any use of z80 (or higher)
+        Turns on 8080/8085 compatibility mode. Any use of z80 (or higher)
         opcodes will result in an error being generated.
     @item -gbz80
         Turns on gbz80 compatibility mode. Any use of non-supported
         opcodes will result in an error being generated.
     @item -hd64180
         Turns on 64180 mode supporting additional 64180 opcodes.
+    @item -intel-syntax
+        Turns on the older Intel 8080 syntax mode.  When this mode is
+        activated, mnemonics and oprand types from the Intel 8080 syntax 
+        instead of the Zilog Z80 syntax (such as @code{STA 1234h}
+        instead of @code{ld (1234h),a}) will be valid.  This option can
+        be used in parallel with -8080 to use both sets of mnemonics, 
+        although this is discouraged, as two instructions (@code{jp} and
+        @code{cp}) mean different things in each syntax. In this case, 
+        these instructions will be assembled as the Intel syntax, and a 
+        warning will be emitted.       
     @item -rcm2000
     @item -rcm3000
     @item -rcm4000
@@ -65,7 +75,7 @@ This module provides the following additional options:
 
 This backend accepts z80 family instructions in standard
 Zilog syntax. Rabbit opcodes are accepted as defined in the 
-publically available reference material from Rabbit Semiconductor,
+publicly available reference material from Rabbit Semiconductor,
 with the exception that the @code{ljp} and @code{lcall} opcodes need
 to be supplied with a 24 bit number rather than an 8 bit @code{xpc} and a
 16 bit address.
@@ -91,7 +101,7 @@ This backend provides the following specific extensions:
  and @code{>} for the high-byte. It has to be the first character before
  an expression.
 
-@item When applying the operation @code{/256}, @code{%256} or @code{&256}
+@item When applying the operation @code{/256}, @code{%256} or @code{&255}
  on a label, an appropriate lo/hi-byte relocation will automatically be
  generated.
 
@@ -125,7 +135,7 @@ will be emulated.
 This module has the following error messages:
 
 @itemize @minus
-@item 2001: index offset out of bounds (%d)
+@item 2001: trailing garbage in operand
 @item 2002: Opcode not supported by %s (%s)
 @item 2003: Index registers not available on 8080
 @item 2004: out of range for 8 bit expression (%d)
@@ -151,4 +161,6 @@ This module has the following error messages:
 @item 2024: Operations between different index registers are forbidden
 @item 2025: Operations between ix/iy/hl are forbidden
 @item 2026: Double indirection forbidden
+@item 2027: Instruction %s will be assembled as '%s'
+@item 2028: index offset out of bounds (%d)
 @end itemize

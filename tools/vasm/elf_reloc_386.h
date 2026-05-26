@@ -18,7 +18,7 @@
 #define R_386_PC8       23
 
 
-  if ((*rl)->type <= LAST_STANDARD_RELOC) {
+  if (is_std_reloc(*rl)) {
     nreloc *r = (nreloc *)(*rl)->reloc;
 
     *refsym = r->sym;
@@ -28,7 +28,11 @@
     *roffset = r->byteoffset;
     mask = r->mask;
 
-    switch ((*rl)->type) {
+    switch (STD_REL_TYPE((*rl)->type)) {
+
+      case REL_NONE:
+        t = R_386_NONE;
+        break;
 
       case REL_ABS:
         if (pos==0 && mask==~0) {

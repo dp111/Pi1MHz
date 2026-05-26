@@ -1,5 +1,5 @@
 /* expr.h expression handling for vasm */
-/* (c) in 2002-2015 by Volker Barthelmann and Frank Wille */
+/* (c) in 2002-2020 by Volker Barthelmann and Frank Wille */
 
 #include "hugeint.h"
 
@@ -21,6 +21,10 @@ struct expr {
   } c;
 };
 
+/* strbuf-number to use for the expression parser only in
+   parse_identifier() and get_local_label() */
+#define EXPBUFNO 2
+
 /* Macros for extending the unary operation types (e.g. '<' and '>' for 6502).
    Cpu module has to define EXT_UNARY_EVAL(type,val,res,c) for evaluation. */
 #ifndef EXT_UNARY_NAME
@@ -38,6 +42,7 @@ extern int unsigned_shift;
 expr *new_expr(void);
 expr *make_expr(int,expr *,expr *);
 expr *copy_tree(expr *);
+expr *new_sym_expr(symbol *);
 expr *curpc_expr(void);
 expr *parse_expr(char **);
 expr *parse_expr_tmplab(char **);
@@ -46,15 +51,18 @@ expr *parse_expr_float(char **);
 taddr parse_constexpr(char **);
 expr *number_expr(taddr);
 expr *huge_expr(thuge);
-expr *float_expr(tfloat);
 void free_expr(expr *);
 int type_of_expr(expr *);
+expr **find_sym_expr(expr **,char *);
 void simplify_expr(expr *);
 int eval_expr(expr *,taddr *,section *,taddr);
 int eval_expr_huge(expr *,thuge *);
-int eval_expr_float(expr *,tfloat *);
 void print_expr(FILE *,expr *);
 int find_base(expr *,symbol **,section *,taddr);
+#if FLOAT_PARSER
+expr *float_expr(tfloat);
+int eval_expr_float(expr *,tfloat *);
+#endif
 
 /* find_base return codes */
 #define BASE_ILLEGAL 0

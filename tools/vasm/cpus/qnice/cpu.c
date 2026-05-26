@@ -3,16 +3,15 @@
 
 #include "vasm.h"
 
-char *cpu_copyright="vasm qnice cpu backend 0.1 (c) in 2016 Volker Barthelmann";
-char *cpuname="qnice";
+const char *cpu_copyright="vasm qnice cpu backend 0.1 (c) in 2016 Volker Barthelmann";
+const char *cpuname="qnice";
 
 mnemonic mnemonics[]={
 #include "opcodes.h"
 };
 
-int mnemonic_cnt=sizeof(mnemonics)/sizeof(mnemonics[0]);
+const int mnemonic_cnt=sizeof(mnemonics)/sizeof(mnemonics[0]);
 
-int bitsperbyte=8;
 int bytespertaddr=4;
 
 static char *skip_reg(char *s,int *reg)
@@ -167,8 +166,7 @@ dblock *eval_instruction(instruction *p,section *sec,taddr pc)
   dblock *db=new_dblock();
   int opcode,c,osize;
   unsigned int code,addr1,addr2,aflag=0;
-  char *d;
-  taddr val;
+  unsigned char *d;
   rlist *relocs=0;
 
   c=translate(p,sec,pc);
@@ -180,19 +178,22 @@ dblock *eval_instruction(instruction *p,section *sec,taddr pc)
 
   code=opcode<<12;
   if(p->op[0]){
+    int of=6;
+    if(opcode==14)
+      of=0;
     if(p->op[0]->type==OP_ABS){
-      code|=15<<8;
-      code|=(OP_POSTINC-1)<<6;
+      code|=15<<(of+2);
+      code|=(OP_POSTINC-1)<<of;
       addr1=absoffset(p->op[0]->offset,sec,pc,&relocs,p->op[0]->reg,16,16);
       aflag=1;
     }else if(p->op[0]->type==OP_REL){
-      code|=15<<8;
-      code|=(OP_POSTINC-1)<<6;
+      code|=15<<(of+2);
+      code|=(OP_POSTINC-1)<<of;
       addr1=reloffset(p->op[0]->offset,sec,pc);
       aflag=1;
     }else{
-      code|=p->op[0]->reg<<8;
-      code|=(p->op[0]->type-1)<<6;
+      code|=p->op[0]->reg<<(of+2);
+      code|=(p->op[0]->type-1)<<of;
     }
   }
   if(mnemonics[c].ext.encoding==0){
@@ -214,7 +215,8 @@ dblock *eval_instruction(instruction *p,section *sec,taddr pc)
     }
   }else{
     code|=(mnemonics[c].ext.encoding-1)<<4;
-    code|=p->op[1]->cc<<0;
+    if(p->op[1])
+      code|=p->op[1]->cc<<0;
   }
 
   d=db->data;
@@ -266,7 +268,7 @@ size_t instruction_size(instruction *p,section *sec,taddr pc)
 {  
   int sz=2;
 
-  //int c=translate(p,sec,pc),add=0;
+  /*int c=translate(p,sec,pc),add=0;*/
 
   if(p->op[0]&&(p->op[0]->type==OP_ABS||p->op[0]->type==OP_REL))
     sz+=2;
@@ -275,15 +277,15 @@ size_t instruction_size(instruction *p,section *sec,taddr pc)
   return sz;
 }
 
-operand *new_operand()
+operand *new_operand(void)
 {
   operand *new=mymalloc(sizeof(*new));
   new->type=-1;
   return new;
 }
 
-/* return true, if initialization was successfull */
-int init_cpu()
+/* return true, if initialization was successful */
+int init_cpu(void)
 {
   return 1;
 }

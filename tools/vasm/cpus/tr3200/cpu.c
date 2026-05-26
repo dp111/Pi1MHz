@@ -1,5 +1,5 @@
 /* cpu.c tr3200 cpu description file */
-/* (c) in 2014 by Luis Panadero Guardeno */
+/* (c) in 2014,2019 by Luis Panadero Guardeno */
 
 #include "vasm.h"
 
@@ -9,17 +9,16 @@
 #define INSTR_DEBUG (1)
 #endif
 
-char *cpu_copyright="vasm TR3200 cpu module v0.1.2 by Luis Panadero Guardeno";
+const char *cpu_copyright="vasm TR3200 cpu module v0.2 by Luis Panadero Guardeno";
 
-char *cpuname="tr3200";
-int bitsperbyte=8;
+const char *cpuname="tr3200";
 int bytespertaddr=4;
 
 mnemonic mnemonics[]={
 #include "opcodes.h"
 };
 
-int mnemonic_cnt=sizeof(mnemonics)/sizeof(mnemonics[0]);
+const int mnemonic_cnt=sizeof(mnemonics)/sizeof(mnemonics[0]);
 
 
 static taddr opsize(operand *p, unsigned char num_operands, section *sec, taddr pc);
@@ -28,7 +27,7 @@ static taddr opsize(operand *p, unsigned char num_operands, section *sec, taddr 
 char *parse_instruction(char *s, int *inst_len, char **ext, int *ext_len,
                         int *ext_cnt)
 {
-  char* inst = s;
+/*  char* inst = s;*/
 #ifdef CPU_DEBUG
     fprintf(stderr, "parse_inst : \"%.*s\"\n", *inst_len, s);
 #endif
@@ -107,7 +106,7 @@ static int parse_reg(char **p, int len, operand *op)
 
   rp++;
   /* Get number */
-  if (len < 2 || sscanf(rp, "%u", &reg) != 1) {
+  if (len < 2 || sscanf(rp, "%d", &reg) != 1) {
     return 0;
   }
 
@@ -155,18 +154,17 @@ int parse_operand(char *p, int len, operand *op, int requires)
       op->type = OP_IMM;
       p=skip(p+1);
       tree = parse_expr(&p);
-      if (!tree) { /* It's not a valid expresion */
+      if (!tree) { /* It's not a valid expression */
         return PO_NOMATCH;
       }
       op->value = tree;
-    } else { /* expresion that would be a immediate value */
+    } else { /* expression that would be a immediate value */
+      /*int parent=0;*/
+      expr *tree;
 #ifdef OPERAND_DEBUG
     fprintf(stderr, "expr\t");
 #endif
       op->type = OP_IMM;
-
-      int parent=0;
-      expr *tree;
 
       /*
       if (*p=='(') {
@@ -176,7 +174,7 @@ int parse_operand(char *p, int len, operand *op, int requires)
       */
 
       tree = parse_expr(&p);
-      if (!tree) { /* It's not a valid expresion */
+      if (!tree) { /* It's not a valid expression */
         return PO_NOMATCH ;
       }
 
@@ -215,7 +213,7 @@ dblock *eval_instruction (instruction *p, section *sec, taddr pc)
   size_t size = instruction_size(p, sec, pc);
   dblock *db = new_dblock();
   mnemonic m = mnemonics[p->code];
-  unsigned char *opcode, *d; /* Data */
+  unsigned char *d; /* Data */
   taddr val;
   unsigned char ml_bits = 0;
   unsigned char num_operands = 0;
@@ -337,16 +335,15 @@ dblock *eval_instruction (instruction *p, section *sec, taddr pc)
           btype = find_base(rn->value, &base, sec, pc);
         /* CALL/JUMP stuff */
         if (m.ext.opcode >= 0x27 && m.ext.opcode <= 0x28 ) {
-          if (base != NULL && btype == BASE_OK) {
-            if (is_pc_reloc(base, sec))
-              add_extnreloc_masked(&db->relocs, base, val-4, REL_PC,
-                                   0, 22, 0, 0xfffffc);
-            else if (LOCREF(base))
-              val = val - pc - 4; /* Relative jump/call (%pc has been increased) */
-            base = NULL;
-          }
-          else
+          if ((base != NULL && btype == BASE_OK && !is_pc_reloc(base, sec)) ||
+              base == NULL)
             val = val - pc - 4; /* Relative jump/call (%pc has been increased) */
+          else if (btype == BASE_OK)
+            add_extnreloc_masked(&db->relocs, base, val-4, REL_PC,
+                                 0, 22, 0, 0xfffffc);
+          else
+            general_error(38);  /* @@@ illegal relocation */
+          base = NULL;
           val = val >> 2; /* CALL/JMP does a left shift of two bits */
         } else if (m.ext.opcode >= 0x25 && m.ext.opcode <= 0x26 ) {
           if (base != NULL && btype != BASE_ILLEGAL) {
@@ -355,7 +352,6 @@ dblock *eval_instruction (instruction *p, section *sec, taddr pc)
                                  0, 22, 0, 0xfffffc);
             base = NULL;
           }
-          val = val >> 2; /* CALL/JMP does a left shift of two bits */
         }
 
 #ifdef INSTR_DEBUG
@@ -497,15 +493,15 @@ size_t instruction_size (instruction *p, section *sec, taddr pc)
   return size;
 }
 
-operand *new_operand()
+operand *new_operand(void)
 {
   operand *new = mymalloc(sizeof(*new));
   new->type=-1;
   return new;
 }
 
-/* return true, if initialization was successfull */
-int init_cpu()
+/* return true, if initialization was successful */
+int init_cpu(void)
 {
   return 1;
 }

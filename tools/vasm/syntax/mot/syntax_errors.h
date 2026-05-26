@@ -21,3 +21,10 @@
   "einline without inline",ERROR,                                    /* 20 */
   "missing %c",WARNING,
   "maximum inline nesting depth exceeded (%d)",ERROR,
+  "skipping instruction in struct init",WARNING,
+  "last %d bytes of string constant have been cut",WARNING,
+  "conditional assembly for pass 1 is not really supported, "        /* 25 */
+    "assuming true",WARNING,
+  "conditional assembly for pass 2 is not really supported, assuming false",
+    WARNING,
+  "modified memory attributes for section \"%s\"",ERROR,

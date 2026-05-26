@@ -3,6 +3,7 @@
 
 #define LITTLEENDIAN (!arm_be_mode)
 #define BIGENDIAN (arm_be_mode)
+#define BITSPERBYTE 8
 #define VASM_CPU_ARM 1
 
 /* maximum number of operands in one mnemonic */
@@ -22,7 +23,7 @@ typedef int32_t taddr;
 typedef uint32_t utaddr;
 
 /* minimum instruction alignment */
-#define INST_ALIGN (thumb_mode ? 2 : 4)
+#define INST_ALIGN 0  /* Handled internally! */
 
 /* default alignment for n-bit data */
 #define DATA_ALIGN(n) ((n)<=8 ? 1 : ((n)<=16 ? 2 : 4))
@@ -117,7 +118,7 @@ enum {
   TPCLW,      /* PC-relative label, has to fit into 10-bit uns.imm. >> 2 */
   TBR08,      /* 9-bit branch offset >> 1 to label at 7..0 */
   TBR11,      /* 12-bit branch offset >> 1 to label at 10..0 */
-  TBRHL       /* 23-bit branch offset >> 1 splitted into two 11-bit instr. */
+  TBRHL       /* 23-bit branch offset >> 1 split into two 11-bit instr. */
 };
 
 #define ARMOPER(x)    ((x)>=BRA24 && (x)<=RLIST)
@@ -210,6 +211,5 @@ typedef struct {
 
 /* exported by cpu.c */
 extern int arm_be_mode;
-extern int thumb_mode;
 
 int cpu_available(int);

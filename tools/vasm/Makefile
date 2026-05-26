@@ -1,11 +1,11 @@
-# Unix
+# Unix, using gcc
 
+CC = gcc
 TARGET =
-TARGETEXTENSION = 
-OUTFMTS = -DOUTAOUT -DOUTBIN -DOUTELF -DOUTHUNK -DOUTSREC -DOUTTOS -DOUTVOBJ
+TARGETEXTENSION =
 
-CCOUT = -o 
-COPTS = -c -O2 $(OUTFMTS)
+CCOUT = -o $(DUMMY)
+CFLAGS = -c -std=c90 -O2 -pedantic -Wno-long-long -Wno-shift-count-overflow -fanalyzer -DUNIX $(OUTFMTS)
 
 LD = $(CC)
 LDOUT = $(CCOUT)

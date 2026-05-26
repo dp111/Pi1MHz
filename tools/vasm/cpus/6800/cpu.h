@@ -5,7 +5,9 @@
 
 #define BIGENDIAN 1
 #define LITTLEENDIAN 0
+#define BITSPERBYTE 8
 #define VASM_CPU_6800 1
+#define MNEMOHTABSIZE 0x2000
 
 /* maximum number of operands for one mnemonic */
 #define MAX_OPERANDS 4
@@ -64,7 +66,7 @@ typedef struct {
 #define M6801   2       /* 6801/6803: Adds D register and some extras */
 #define M68HC11 4       /* standard 68HC11 instruction set */
 
-/* adressing modes */
+/* addressing modes */
 #define INH     0
 #define IMM	1	/* #$12 */		/* IMM ii */
 #define IMM16	2	/* #$1234 */		/* IMM jj kk */

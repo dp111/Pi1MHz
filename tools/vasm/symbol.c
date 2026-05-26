@@ -1,68 +1,77 @@
 /* symbol.c - manage all kinds of symbols */
-/* (c) in 2014-2018 by Volker Barthelmann and Frank Wille */
+/* (c) in 2014-2023 by Volker Barthelmann and Frank Wille */
 
 #include "vasm.h"
 
 
-symbol *first_symbol=NULL;
-static symbol *saved_symbol=NULL;
+symbol *first_symbol;
 
-static char *last_global_label=emptystr;
+static symbol *saved_symbol;
+static const char *last_global_label=emptystr;
 
 #ifndef SYMHTABSIZE
 #define SYMHTABSIZE 0x10000
 #endif
 static hashtable *symhash;
+
+#ifdef HAVE_REGSYMS
 static hashtable *regsymhash;
+#endif
 
 
 static void print_type(FILE *f,symbol *p)
 {
   static const char *typename[] = {"???","obj","func","sect","file"};
+  int t;
 
   if (p == NULL)
     ierror(0);
-  fprintf(f,"type=%s ",typename[TYPE(p)]);
+  t = TYPE(p);
+  fprintf(f,"type=%s ",typename[t<=TYPE_LAST?t:0]);
 }
 
 
 void print_symbol(FILE *f,symbol *p)
 {
-  if (p==NULL)
+  if (p == NULL)
     ierror(0);	/* this is usually an error in a cpu-backend, don't crash! */
 
   fprintf(f,"%s ",p->name);
 
-  if (p->type==LABSYM)
-    fprintf(f,"LAB (0x%llx) ",ULLTADDR(p->pc));
-  if (p->type==IMPORT)
+  if (p->type == LABSYM)
+    fprintf(f,"LAB (%#llx) ",ULLTADDR(p->pc));
+  if (p->type == IMPORT)
     fprintf(f,"IMP ");
-  if (p->type==EXPRESSION){
+  if (p->type == EXPRESSION){
     fprintf(f,"EXPR(");
     print_expr(f,p->expr);
     fprintf(f,") ");
   }
-  if (!(p->flags&(USED|VASMINTERN)))
+  if (!(p->flags & (USED|VASMINTERN)))
     fprintf(f,"UNUSED ");
-  if (p->flags&VASMINTERN)
+  if (p->flags & VASMINTERN)
     fprintf(f,"INTERNAL ");
-  if (p->flags&EXPORT)
+  if (p->flags & EXPORT)
     fprintf(f,"EXPORT ");
-  if (p->flags&COMMON)
+  if (p->flags & COMMON)
     fprintf(f,"COMMON ");
-  if (p->flags&WEAK)
+  if (p->flags & WEAK)
     fprintf(f,"WEAK ");
-  if (p->flags&LOCAL)
+  if (p->flags & LOCAL)
     fprintf(f,"LOCAL ");
-  if (p->flags&PROTECTED)
+  if (p->flags & XREF)
+    fprintf(f,"XREF ");
+  if (p->flags & XDEF)
+    fprintf(f,"XDEF ");
+  if (p->flags & PROTECTED)
     fprintf(f,"PROT ");
-  if (p->flags&REFERENCED)
+  if (p->flags & REFERENCED)
     fprintf(f,"REF ");
-  if (p->flags&ABSLABEL)
+  if (p->flags & ABSLABEL)
     fprintf(f,"ABS ");
-  if (p->flags&EQUATE)
+  if (p->flags & EQUATE)
     fprintf(f,"EQU ");
-  if (p->flags&REGLIST)
+  if (p->flags & REGLIST)
     fprintf(f,"REGL ");
   if (TYPE(p))
     print_type(f,p);
@@ -78,13 +87,13 @@ void print_symbol(FILE *f,symbol *p)
 }
 
 
-char *get_bind_name(symbol *p)
+const char *get_bind_name(symbol *p)
 {
-  if (p->flags&EXPORT)
+  if (p->flags & EXPORT)
     return "global";
-  else if (p->flags&WEAK)
+  else if (p->flags & WEAK)
     return "weak";
-  else if (p->flags&LOCAL)
+  else if (p->flags & LOCAL)
     return "local";
   return "unknown";
 }
@@ -101,7 +110,7 @@ void add_symbol(symbol *p)
 }
 
 
-symbol *find_symbol(char *name)
+symbol *find_symbol(const char *name)
 {
   hashdata data;
   if (!find_name(symhash,name,&data))
@@ -110,7 +119,7 @@ symbol *find_symbol(char *name)
 }
 
 
-void refer_symbol(symbol *sym,char *refname)
+void refer_symbol(symbol *sym,const char *refname)
 /* refer to an existing symbol with an additional name */
 {
   hashdata data;
@@ -145,7 +154,7 @@ void restore_symbols(void)
       }
       else {
         rem_hashentry(symhash,symp->name,nocase);
-        /* myfree(symp->name);  could be dangerous? */
+        myfree((void *)symp->name);
         myfree(symp);
       }
     }
@@ -159,7 +168,7 @@ void restore_symbols(void)
 }
 
 
-int check_symbol(char *name)
+int check_symbol(const char *name)
 /* issue an error when symbol is already defined in the current source */
 {
   symbol *sym;
@@ -174,34 +183,45 @@ int check_symbol(char *name)
 }
 
 
-char *set_last_global_label(char *name)
+const char *set_last_global_label(const char *name)
 {
-  char *prevlgl = last_global_label;
+  const char *prevlgl = last_global_label;
 
   last_global_label = name;
   return prevlgl;
 }
 
 
-int is_local_label(char *name)
-/* returns true when name belong to a label with local scope */
+int is_local_symbol_name(const char *name)
+/* returns true when name belongs to a symbol with local scope */
 {
-  return *name == ' ';
+  return *name==' ' && strchr(name+1,' ')!=NULL;
 }
 
 
-char *make_local_label(char *glob,int glen,char *loc,int llen)
-/* construct a local label of the form:
-   " " + global_label_name + " " + local_label_name */
+const char *real_symbol_name(symbol *sym)
+/* return local symbol name or NULL if symbol is not local */
 {
-  char *name,*p;
+  return is_local_symbol_name(sym->name) ?
+         (strchr(sym->name+1,' ') + 1) : sym->name;
+}
+
+
+strbuf *make_local_label(int n,
+                         const char *glob,int glen,const char *loc,int llen)
+/* construct a local label of the form:
+   " " + global_label_name + " " + local_label_name
+   return a pointer to one of two static string buffers */
+{
+  static strbuf buf[EXPBUFNO+1];
+  char *p;
 
   if (glen == 0) {
     /* use the last defined global label */
     glob = last_global_label;
     glen = strlen(last_global_label);
   }
-  p = name = mymalloc(llen+glen+3);
+  p = strbuf_alloc(&buf[n],llen+glen+3);
   *p++ = ' ';
   if (glen) {
     memcpy(p,glob,glen);
@@ -210,17 +230,18 @@ char *make_local_label(char *glob,int glen,char *loc,int llen)
   *p++ = ' ';
   memcpy(p,loc,llen);
   *(p + llen) = '\0';
-  return name;
+  buf[n].len = llen+glen+2;  /* new string length in buffer */
+  return &buf[n];
 }
 
 
-symbol *new_abs(char *name,expr *tree)
+symbol *new_abs(const char *name,expr *tree)
 {
   symbol *new = find_symbol(name);
   int add;
 
   if (new) {
-    if (new->flags&EQUATE)
+    if (new->flags & EQUATE)
       general_error(67,name); /* repeatedly defined symbol (error) */
     if (new->type!=IMPORT && new->type!=EXPRESSION)
       general_error(5,name);  /* symbol redefined (warning) */
@@ -246,7 +267,7 @@ symbol *new_abs(char *name,expr *tree)
 }
 
 
-symbol *new_equate(char *name,expr *tree)
+symbol *new_equate(const char *name,expr *tree)
 {
   symbol *sym;
 
@@ -257,7 +278,7 @@ symbol *new_equate(char *name,expr *tree)
 }
 
 
-symbol *new_import(char *name)
+symbol *new_import(const char *name)
 {
   symbol *new = find_symbol(name);
 
@@ -277,7 +298,7 @@ symbol *new_import(char *name)
 }
 
 
-symbol *new_labsym(section *sec,char *name)
+symbol *new_labsym(section *sec,const char *name)
 {
   symbol *new;
   int add;
@@ -301,11 +322,18 @@ symbol *new_labsym(section *sec,char *name)
 
   sec->flags |= HAS_SYMBOLS;
 
-  if (sec->flags&LABELS_ARE_LOCAL)
-    name = make_local_label(sec->name,strlen(sec->name),name,strlen(name));
+  if (sec->flags & LABELS_ARE_LOCAL) {
+    strbuf *buf;
+    buf = make_local_label(1,sec->name,strlen(sec->name),name,strlen(name));
+    name = buf->str;
+  }
 
   if (new = find_symbol(name)) {
-    if (new->type!=IMPORT) {
+    if (new->type == IMPORT) {
+      if (new->flags & XREF)
+        general_error(85,name);  /* must not be defined */
+    }
+    else {
       symbol *old = new;
 
       new = mymalloc(sizeof(*new));
@@ -316,10 +344,7 @@ symbol *new_labsym(section *sec,char *name)
   }
   else {
     new = mymalloc(sizeof(*new));
-    if (sec->flags&LABELS_ARE_LOCAL)
-      new->name = name;
-    else
-      new->name = mystrdup(name);
+    new->name = mystrdup(name);
     add = 1;
   }
 
@@ -356,7 +381,7 @@ symbol *new_tmplabel(section *sec)
 }
 
 
-symbol *internal_abs(char *name)
+symbol *internal_abs(const char *name)
 {
   symbol *new = find_symbol(name);
 
@@ -372,7 +397,7 @@ symbol *internal_abs(char *name)
 }
 
 
-expr *set_internal_abs(char *name,taddr newval)
+expr *set_internal_abs(const char *name,taddr newval)
 {
   symbol *sym = internal_abs(name);
   expr *oldexpr = sym->expr;
@@ -397,7 +422,7 @@ void add_regsym(regsym *rsym)
 }
 
 
-regsym *find_regsym(char *name,int len)
+regsym *find_regsym(const char *name,int len)
 {
   hashdata data;
 
@@ -407,7 +432,7 @@ regsym *find_regsym(char *name,int len)
 }
 
 
-regsym *find_regsym_nc(char *name,int len)
+regsym *find_regsym_nc(const char *name,int len)
 {
   hashdata data;
 
@@ -417,7 +442,7 @@ regsym *find_regsym_nc(char *name,int len)
 }
 
 
-regsym *new_regsym(int redef,int no_case,char *name,int type,
+regsym *new_regsym(int redef,int no_case,const char *name,int type,
                    unsigned int flags,unsigned int num)
 {
   int len = strlen(name);
@@ -450,7 +475,7 @@ regsym *new_regsym(int redef,int no_case,char *name,int type,
 
 
 /* remove an already defined register symbol from the hash table */
-int undef_regsym(char *name,int no_case,int type)
+int undef_regsym(const char *name,int no_case,int type)
 {
   regsym *rsym = no_case!=0 ?
                  find_regsym_nc(name,strlen(name)) :
@@ -480,4 +505,17 @@ int init_symbol(void)
   regsymhash = new_hashtable(REGSYMHTSIZE);
 #endif
   return 1;
+}
+
+
+void exit_symbol(void)
+{
+  if (debug) {
+    if (symhash->collisions)
+      fprintf(stderr,"*** %d symbol collisions!!\n",symhash->collisions);
+#ifdef HAVE_REGSYMS
+    if (regsymhash->collisions)
+      fprintf(stderr,"*** %d register symbol collisions!!\n",regsymhash->collisions);
+#endif
+  }
 }
