@@ -110,6 +110,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "M5000_emulator.h"
 #include "framebuffer.h"
 #include "discaccess_emulator.h"
+#include "helpers.h"
 
 typedef struct {
    const char *name;
@@ -119,12 +120,13 @@ typedef struct {
 } emulator_list;
 
 static emulator_list emulator[] = {
-   {"Rampage",rampage_emulator_init, 0xFC, 1},
+   {"Rampage",rampage_emulator_init, 0xFD, 1},
    {"Rambyte",rambyte_emulator_init, 0x00, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
    {"Framebuffer",fb_emulator_init, 0xD0, 1},
    {"Discaccess",discaccess_emulator_init, 0xD6, 1 },
+   {"Helpers",helpers_init, 0x88, 1 },
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))

@@ -4,18 +4,16 @@
 
 discaccess = &FCD6
 
-MACRO PAGESELECT
-    SKIPTO &FDF0
-.pagerts
-    LDX #0
-    STX &FCFC
-    RTS
-    EQUB 0,0
-.pageselect
-    STX &FCFC
-    JMP &FD00
-    EQUB 0,0
-ENDMACRO
+    MACRO PAGERTS
+        LDX #&FF
+        JMP &FC88
+    ENDMACRO
+
+    MACRO ENDBLOCK pos
+        SKIPTO &FE00
+        COPYBLOCK &FD00, &FE00, pos
+        CLEAR &FD00, &FE00
+    ENDMACRO
 
     MACRO  page_rom_x
     stx    &f4
@@ -74,41 +72,24 @@ MACRO FINDSWR
         sta    &fe30
 ENDMACRO
 
-MACRO LOADFILE
-
-ENDMACRO
-
-pagerts = &FDF0
+; Page 0 CALL &fc88
 {
-    ORG &FDB0
-.start
-    FOR n, 16,1, -1
-        LDX #n : BNE pagesel+8
-    NEXT
-.pagesel
-    PAGESELECT
-.end
-    COPYBLOCK start, end, 0
-    CLEAR &FD00, &FE00
+ORG &FD00
+    ENDBLOCK 0
 }
 
-
-; Page 1 CALL &FDEC
+; Page 1 CALL &fc88
 {
 ORG &FD00
 
-    PAGESELECT
-    COPYBLOCK &FD00, &FE00, &50
-      CLEAR &FD00, &FE00
+    ENDBLOCK &100
 }
 
 ; Page 2 CALL &FDE8
 {
 ORG &FD00
 
-    PAGESELECT
-    COPYBLOCK &FD00, &FE00, &150
-      CLEAR &FD00, &FE00
+    ENDBLOCK &200
 }
 
 ; Page 3 CALL &FDE4
@@ -119,9 +100,7 @@ ORG &FD00
 
 
 
-    PAGESELECT
-    COPYBLOCK &FD00, &FE00, &250
-    CLEAR &FD00, &FE00
+    ENDBLOCK &300
 }
 
 ; Page 4 CALL &FDE0
@@ -208,9 +187,7 @@ ORG &FD00
     EQUB &FF
 
 
-    PAGESELECT
-    COPYBLOCK &FD00, &FE00, &350
-    CLEAR &FD00, &FE00
+    ENDBLOCK &400
 }
 
 ; Page 5 CALL &FDDC
@@ -296,9 +273,7 @@ ORG &FD00
     EQUB 0, 0, 0, 0
     EQUB &FF
 
-    PAGESELECT
-    COPYBLOCK &FD00, &FE00, &450
-    CLEAR &FD00, &FE00
+    ENDBLOCK &500
 }
 
 ; Page 6 CALL &FDD8
@@ -316,11 +291,9 @@ newoswrch = &FCD1
   STA &20E
   LDA #(newoswrch DIV 256)
   STA &20F
-  JMP pagerts
+  PAGERTS
 
-    PAGESELECT
-    COPYBLOCK &FD00, &FE00, &550
-    CLEAR &FD00, &FE00
+  ENDBLOCK &600
 }
 
 ; Page 7 CALL &FDD4
@@ -328,9 +301,7 @@ newoswrch = &FCD1
 {
 ORG &FD00
 
-    PAGESELECT
-    COPYBLOCK &FD00, &FE00, &650
-    CLEAR &FD00, &FE00
+  ENDBLOCK &700
 }
 
 ; Page 8 CALL &FDD0
@@ -347,21 +318,17 @@ ORG &FD00
     BNE stringloop
     JMP pagerts
 
-    PAGESELECT
-    COPYBLOCK &FD00, &FE00, &750
-    CLEAR &FD00, &FE00
+  ENDBLOCK &800
 }
 
 ; Page 9 CALL &FDCC
 {
 ORG &FD00
 
-    PAGESELECT
-    COPYBLOCK &FD00, &FE00, &850
-    CLEAR &FD00, &FE00
+  ENDBLOCK &900
 }
 
 
 .end
 
-SAVE "6502code.bin" , 0, &850
+SAVE "6502code.bin" , 0, &A00

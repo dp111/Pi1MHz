@@ -112,6 +112,7 @@ file( GLOB core_files
    rpi/rpi.c
    Pi1MHz.c
    ram_emulator.c
+   helpers.c
 )
 
 # Harddisc emulator
@@ -137,7 +138,6 @@ file( GLOB M5000_emulator_files
 file( GLOB FrameBuffer_emulator_files
    framebuffer.c
 )
-
 
 # Discaccess emulator
 file( GLOB discaccess_emulator_files
