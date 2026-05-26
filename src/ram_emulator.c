@@ -30,10 +30,11 @@ Millipede PRISMA-3 (Not support)
 #include <string.h>
 #include "Pi1MHz.h"
 
-#include "rpi/info.h"
 #include <stdlib.h>
-#include "scripts/gitversion.h"
+#include <stdio.h>
+#include "rpi/info.h"
 #include "BeebSCSI/filesystem.h"
+#include "helpers.h"
 
 static uint8_t rambyte_address;
 
@@ -161,7 +162,10 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    {
        // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
       char * ram = (char *)Pi1MHz->JIM_ram;
-      putstring(ram,'\r', " Use CALL &FC88");
+      char hex[4];
+      sprintf(hex, "%X",helpers_get_address());
+      putstring(ram, 0, " Use CALL &FC");
+      putstring(ram,'\r', hex);
    }
 
    // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes

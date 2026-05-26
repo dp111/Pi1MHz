@@ -14,14 +14,16 @@
 
 NOINIT_SECTION uint8_t helper_ram[4*1024];
 
-static void helpers_setup(uint8_t helper_address)
+static uint8_t helper_address;
+
+static void helpers_setup(uint8_t helper_addr)
 {
   // We also hide the help screen at &FFE000
         char hex[3];
         char dec[4];
         char M5000address[4];
-        sprintf(hex, "%X",helper_address);
-        sprintf(dec, "%d",helper_address);
+        sprintf(hex, "%X",helper_addr);
+        sprintf(dec, "%d",helper_addr);
         sprintf(M5000address, "%d", M5000_emulator_read_instance());
 
         char scsiaddress[4];
@@ -97,6 +99,7 @@ static void helpers_bank_select(unsigned int gpio)
 void helpers_init( uint8_t instance , uint8_t address)
 {
    uint8_t *helper = &helper_ram[0];
+   helper_address = address;
    if (filesystemReadFile("Pi1MHz/6502code.bin",&helper,sizeof(helper_ram)))
     {
         // register call backs
@@ -110,4 +113,9 @@ void helpers_init( uint8_t instance , uint8_t address)
         Pi1MHz_MemoryWrite((uint32_t)(address+5), 0x00);
         Pi1MHz_MemoryWrite((uint32_t)(address+6), 0xFD);
     }
+}
+
+uint8_t helpers_get_address(void)
+{
+   return helper_address;
 }
