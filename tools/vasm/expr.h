@@ -1,13 +1,15 @@
 /* expr.h expression handling for vasm */
-/* (c) in 2002-2020 by Volker Barthelmann and Frank Wille */
+/* (c) in 2002-2020,2024 by Volker Barthelmann and Frank Wille */
 
 #include "hugeint.h"
 
+/* Note: NUM, HUG, FLT and SYM *must* be the first types! In this order! */
 enum {
+  NUM=1,HUG,FLT,SYM,
   ADD,SUB,MUL,DIV,MOD,NEG,CPL,LAND,LOR,BAND,BOR,XOR,NOT,LSH,RSH,RSHU,
-  LT,GT,LEQ,GEQ,NEQ,EQ,NUM,HUG,FLT,SYM
+  LT,GT,LEQ,GEQ,NEQ,EQ
 };
-#define LAST_EXP_TYPE SYM
+#define LAST_EXP_TYPE EQ
 
 struct expr {
   int type;

@@ -74,6 +74,7 @@ static uint32_t aoutstd_getrinfo(atom *a,rlist **rl,
     rlist *rl2 = (*rl)->next;
     uint32_t r=0,s=4;
     nreloc *nr2;
+    utaddr szmask;
     int b=0;
 
     switch (std_reloc(*rl)) {
@@ -87,9 +88,10 @@ static uint32_t aoutstd_getrinfo(atom *a,rlist **rl,
       return b==RSTDB_baserel || b==RSTDB_jmptable;
 
     nr2 = rl2!=NULL ? (nreloc *)rl2->reloc : NULL;
+    szmask = MAKEMASK(nr->size);
 
     if (nr->bitoffset==0 && (nr2==NULL || nr2->byteoffset!=nr->byteoffset)
-        && (nr->mask & MAKEMASK(nr->size)) == MAKEMASK(nr->size)) {
+        && (nr->mask & szmask) == szmask) {
       switch (nr->size) {
         case 8: s=0; break;
         case 16: s=1; break;

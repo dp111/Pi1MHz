@@ -13,7 +13,7 @@
    be provided by the main module.
 */
 
-const char *syntax_copyright="vasm std syntax module 5.6 (c) 2002-2024 Volker Barthelmann";
+const char *syntax_copyright="vasm std syntax module 5.6a (c) 2002-2024 Volker Barthelmann";
 hashtable *dirhash;
 int dotdirs = 1;
 
@@ -827,6 +827,30 @@ static void handle_ifnb(char *s)
   cond_if(!ISEOL(s));
 }
 
+static void ifc(char *s,int b)
+{
+  strbuf *str1,*str2;
+
+  str1 = parse_name(0,&s);
+  if (*s == ',') {
+    s = skip(s+1);
+    str2 = parse_name(1,&s);
+    cond_if((!strcmp(str1?str1->str:emptystr,str2?str2->str:emptystr)) == b);
+  }
+  else
+    syntax_error(5);  /* missing operand */
+}
+
+static void handle_ifc(char *s)
+{
+  ifc(s,1);
+}
+
+static void handle_ifnc(char *s)
+{
+  ifc(s,0);
+}
+
 static int eval_ifexp(char **s,int c)
 {
   expr *condexp = parse_expr_tmplab(s);
@@ -1028,6 +1052,8 @@ struct {
   "ifndef",handle_ifnd,
   "ifb",handle_ifb,
   "ifnb",handle_ifnb,
+  "ifc",handle_ifc,
+  "ifnc",handle_ifnc,
   "if",handle_ifne,
   "ifeq",handle_ifeq,
   "ifne",handle_ifne,

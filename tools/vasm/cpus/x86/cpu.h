@@ -1,5 +1,5 @@
 /* cpu.h x86 cpu-description header-file */
-/* (c) in 2005-2006,2017 by Frank Wille */
+/* (c) in 2005-2006,2017,2024 by Frank Wille */
 
 #define LITTLEENDIAN 1
 #define BIGENDIAN 0
@@ -12,6 +12,8 @@
 
 /* maximum number of mnemonic-qualifiers per mnemonic */
 #define MAX_QUALIFIERS 1
+/* but no qualifiers for macros */
+#define NO_MACRO_QUALIFIERS
 
 /* data type to represent a target-address */
 typedef int64_t taddr;
@@ -274,3 +276,6 @@ typedef struct {
 #define NoRex64     0x20000000  /* doesn't require REX64 prefix */
 #define Rex64       0x40000000  /* requires REX64 prefix */
 #define Deprecated  0x80000000  /* deprecated FPU instruction */
+
+/* instruction doesn't take any suffix (or is already part of mnemonic) */
+#define NOSUF (b_Illegal|w_Illegal|l_Illegal|s_Illegal|x_Illegal|q_Illegal)

@@ -607,13 +607,16 @@ int type_of_expr(expr *tree)
     return 0;
   ltype=tree->type;
   if(ltype==SYM){
-    if(tree->c.sym->flags&INEVAL)
-      general_error(18,tree->c.sym->name);
-    tree->c.sym->flags|=INEVAL;
-    ltype=tree->c.sym->type==EXPRESSION?type_of_expr(tree->c.sym->expr):NUM;
-    tree->c.sym->flags&=~INEVAL;
-    return ltype;
-  }else if(ltype==NUM||ltype==HUG||ltype==FLT)
+    symbol *sym=tree->c.sym;
+    if(sym->type==EXPRESSION){
+      if(sym->flags&INEVAL)
+        general_error(18,sym->name);
+      sym->flags|=INEVAL;
+      ltype=type_of_expr(sym->expr);
+      sym->flags&=~INEVAL;
+      return ltype;
+    }else return NUM;
+  }else if(ltype<SYM)  /* NUM, HUG, FLT */
     return ltype;
   ltype=type_of_expr(tree->left);
   rtype=type_of_expr(tree->right);
@@ -665,12 +668,12 @@ void simplify_expr(expr *tree)
     tree->right->right=x;
   }
   if(tree->left){
-    if(tree->left->type==NUM||tree->left->type==HUG||tree->left->type==FLT)
+    if(tree->left->type<SYM)  /* NUM, HUG, FLT */
       type=tree->left->type;
     else return;
   }
   if(tree->right){
-    if(tree->right->type==NUM||tree->right->type==HUG||tree->right->type==FLT){
+    if(tree->right->type<SYM){  /* NUM, HUG, FLT */
       if(tree->right->type>type)
         type=tree->right->type;
     } else return;

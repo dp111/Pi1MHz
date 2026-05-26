@@ -10,7 +10,7 @@ mnemonic mnemonics[] = {
 };
 const int mnemonic_cnt = sizeof(mnemonics)/sizeof(mnemonics[0]);
 
-const char *cpu_copyright = "vasm x86 cpu backend 0.7b (c) 2005-2006,2011,2015-2019,2024 Frank Wille";
+const char *cpu_copyright = "vasm x86 cpu backend 0.7c (c) 2005-2006,2011,2015-2019,2024 Frank Wille";
 const char *cpuname = "x86";
 int bytespertaddr = 4;
 
@@ -642,7 +642,7 @@ static void optimize_imm(instruction *ip,operand *op,section *sec,
 
   if (!eval_expr(op->value,&val,sec,pc)) {
     /* reloc or unknown symbols have always full size until they are known */
-    ot = Imm32;  /* @@@ fixme? gas also allows Imm8-references */
+    ot = Imm8|Imm16|Imm32|Imm64;  /* @@@ FIXME */
   }
   else {
     /* set valid operand types for this number */
@@ -1390,8 +1390,9 @@ static unsigned char *output_imm(dblock *db,unsigned char *d,
           symbol *base;
 
           if (find_base(op->value,&base,sec,pc) == BASE_OK) {
-            add_extnreloc(&db->relocs,base,val,REL_ABS,0,bits,
-                          (int)(d-(unsigned char *)db->data));
+            add_extnreloc_masked(&db->relocs,base,val,REL_ABS,0,bits,
+                                 (int)(d-(unsigned char *)db->data),
+                                 MAKEMASK(bits));  /* @@@ always mask? */
           }
           else
             general_error(38);  /* illegal relocation */
@@ -1492,14 +1493,17 @@ char *parse_instruction(char *s,int *inst_len,char **ext,int *ext_len,
       if (len >= 2) {
         char x = *(s-1);
 
-        if (x=='b' || x=='w' || x=='l' || x=='s' || x=='q' || x=='x') {
-          /* a potential suffix found, save it */
-          int cnt = *ext_cnt;
+        if ((x=='b' || x=='w' || x=='l' || x=='s' || x=='q' || x=='x') &&
+            find_namelen(mnemohash,inst,len-1,&data)) {
+          if ((mnemonics[data.idx].ext.opcode_modifier&NOSUF) != NOSUF) {
+            /* a potential suffix found, save it */
+            int cnt = *ext_cnt;
 
-          ext[cnt] = s-1;
-          ext_len[cnt] = 1;
-          *ext_cnt = ++cnt;
-          --len;
+            ext[cnt] = s-1;
+            ext_len[cnt] = 1;
+            *ext_cnt = ++cnt;
+            --len;
+          }
         }
       }
     }
