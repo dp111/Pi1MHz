@@ -201,7 +201,8 @@ typedef struct
 
 static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;
 
-#define DISC_RAM_BASE ((uint32_t)( (Pi1MHz->JIM_ram_size - 2) * 16 * 1024 * 1024 ))
+#define DISC_RAM_SIZE (2u * 16u * 1024u * 1024u)
+#define DISC_RAM_BASE ((uint32_t)( (Pi1MHz->JIM_ram_size) * 16 * 1024 * 1024 )- DISC_RAM_SIZE)
 
 void Pi1MHz_LED(int led);
 void Pi1MHz_Register_Memory(int access, uint8_t addr, callback_func_ptr function_ptr );
