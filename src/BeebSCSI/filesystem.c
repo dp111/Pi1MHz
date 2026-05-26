@@ -169,10 +169,10 @@ static void filesystemPrintfserror(FRESULT fsResult)
 }
 
 // Function to initialise the file system control functions (called on a cold-start of the AVR)
-void filesystemInitialise(void)
+void filesystemInitialise(int scsijuke)
 {
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemInitialise(): Initialising file system\r\n"));
-   filesystemState.lunDirectory = 0;      // Default to LUN directory 0
+   filesystemState.lunDirectory = scsijuke;      // Default to LUN directory 0
    filesystemState.fsMountState = false;  // FS default state is unmounted
 
 }
