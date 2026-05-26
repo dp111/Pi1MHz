@@ -692,7 +692,7 @@ uint8_t createNonModePage(bool usedefaults, uint8_t token, uint8_t *Data, uint8_
 
 	}
 
-	if (debugFlag_extended_attributes) debugString_C(PSTR(retString), DEBUG_INFO);
+	if (debugFlag_extended_attributes) debugString_C(PSTR((char *)retString), DEBUG_INFO);
 
 	return status;
 }
@@ -790,7 +790,7 @@ uint8_t createModePage(uint8_t LUN, uint8_t *Data, uint8_t *retString) {
 			break;
 	}
 
-	if (debugFlag_extended_attributes) debugString_C(PSTR(retString), DEBUG_INFO);
+	if (debugFlag_extended_attributes) debugString_C(PSTR((char *)retString), DEBUG_INFO);
 
 	return status;
 

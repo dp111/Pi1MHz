@@ -270,7 +270,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                             } else
                             {
                                 *values[keyindex].v.integer = (int) strtol( (char *)buffer + ptr, 0 , 0);
-                                LOG_DEBUG("number %d\n\r" , *values[keyindex].value);
+                                LOG_DEBUG("number %d\n\r" , *values[keyindex].v.integer);
                                 values[keyindex].length = 1;
                                 ptr += len;
                             }
