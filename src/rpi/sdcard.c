@@ -221,21 +221,21 @@ static inline uint32_t byte_swap(uint32_t in)
 #define SD_VER_4            5
 
 #define SDHOST_BASE                 (PERIPHERAL_BASE + 0x202000UL)
-#define SDCMD                       0x00
-#define SDARG                       0x04
-#define SDTOUT                      0x08
-#define SDCDIV                      0x0c
-#define SDRSP0                      0x10
-#define SDRSP1                      0x14
-#define SDRSP2                      0x18
-#define SDRSP3                      0x1c
-#define SDHSTS                      0x20
-#define SDVDD                       0x30
-#define SDEDM                       0x34
-#define SDHCFG                      0x38
-#define SDHBCT                      0x3c
-#define SDDATA                      0x40
-#define SDHBLC                      0x50
+#define SDCMD  0x00 /* Command to SD card              - 16 R/W */
+#define SDARG  0x04 /* Argument to SD card             - 32 R/W */
+#define SDTOUT 0x08 /* Start value for timeout counter - 32 R/W */
+#define SDCDIV 0x0c /* Start value for clock divider   - 11 R/W */
+#define SDRSP0 0x10 /* SD card response (31:0)         - 32 R   */
+#define SDRSP1 0x14 /* SD card response (63:32)        - 32 R   */
+#define SDRSP2 0x18 /* SD card response (95:64)        - 32 R   */
+#define SDRSP3 0x1c /* SD card response (127:96)       - 32 R   */
+#define SDHSTS 0x20 /* SD host status                  - 11 R   */
+#define SDVDD  0x30 /* SD card power control           -  1 R/W */
+#define SDEDM  0x34 /* Emergency Debug Mode            - 13 R/W */
+#define SDHCFG 0x38 /* Host configuration              -  2 R/W */
+#define SDHBCT 0x3c /* Host byte count (debug)         - 32 R/W */
+#define SDDATA 0x40 /* Data to/from SD card            - 32 R/W */
+#define SDHBLC 0x50 /* Host block count (SDIO/SDHC)    -  9 R/W */
 
 #define SDCMD_NEW_FLAG              0x8000
 #define SDCMD_FAIL_FLAG             0x4000
@@ -259,6 +259,7 @@ static inline uint32_t byte_swap(uint32_t in)
 #define SDHSTS_DATA_FLAG            0x0001
 #define SDHSTS_TRANSFER_ERROR_MASK  (SDHSTS_CRC7_ERROR | SDHSTS_CRC16_ERROR | SDHSTS_REW_TIME_OUT | SDHSTS_FIFO_ERROR)
 #define SDHSTS_ERROR_MASK           (SDHSTS_CMD_TIME_OUT | SDHSTS_TRANSFER_ERROR_MASK)
+#define SDHSTS_CLEAR_MASK           (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG)
 
 #define SDHCFG_BUSY_IRPT_EN         (1 << 10)
 #define SDHCFG_BLOCK_IRPT_EN        (1 << 8)
@@ -304,22 +305,11 @@ size_t sd_write(struct block_device *dev, const uint8_t *buf, size_t buf_size, u
 
 static uint32_t sdhost_read(uint32_t reg);
 static void sdhost_write(uint32_t reg, uint32_t value);
-static void sdhost_prepare_storage_pins(void);
-static void sdhost_reset_internal(void);
-static int sdhost_reset_controller(void);
-static uint32_t sdhost_get_base_clock_hz(void);
-static int sdhost_switch_clock_rate(uint32_t target_rate);
-static int sd_reset_cmd_sdhost(void);
-static int sd_reset_dat_sdhost(void);
 static uint32_t sdhost_translate_error(uint32_t status, bool is_data);
 static int sdhost_wait_for_data_idle(bool is_read);
 static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write);
 static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t timeout, uint32_t *response0, bool has_data, uint32_t *error_out);
-static int sdhost_issue_stop_command(uint32_t timeout, uint32_t *error_out);
-static int sdhost_prepare_storage_controller(void);
-static int sdhost_set_firmware_clock(uint32_t target_rate, uint32_t *actual_rate);
 static void sdhost_probe_firmware_clock_mode(void);
-static int sdhost_wait_for_request_ready(uint32_t timeout);
 
 #ifdef DEBUG_SD
 static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argument, struct emmc_block_dev *dev)
@@ -602,16 +592,20 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
             dev->last_interrupt = sdhost_read(SDHSTS);
             dev->last_error = sdhost_translate_error(dev->last_interrupt, true);
             sdhost_log_failure("pio", opcode, argument, dev);
-            sdhost_write(SDHSTS, dev->last_interrupt & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG));
+            sdhost_write(SDHSTS, dev->last_interrupt & SDHSTS_CLEAR_MASK);
             return;
         }
 
-        if ((opcode == READ_MULTIPLE_BLOCK || opcode == WRITE_MULTIPLE_BLOCK) &&
-            sdhost_issue_stop_command(timeout, &dev->last_error) != 0)
+        if (opcode == READ_MULTIPLE_BLOCK || opcode == WRITE_MULTIPLE_BLOCK)
         {
-            dev->last_interrupt = sdhost_read(SDHSTS);
-            sdhost_log_failure("stop", opcode, argument, dev);
-            return;
+            uint32_t stop_response;
+            uint32_t stop_cmd = ((uint32_t)STOP_TRANSMISSION & SDCMD_CMD_MASK) | SDCMD_BUSYWAIT;
+            if (sdhost_issue_raw_command(stop_cmd, 0u, timeout, &stop_response, false, &dev->last_error) != 0)
+            {
+                dev->last_interrupt = sdhost_read(SDHSTS);
+                sdhost_log_failure("stop", opcode, argument, dev);
+                return;
+            }
         }
 
         if (sdhost_wait_for_data_idle(!is_write) != 0)
@@ -637,19 +631,11 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
     dev->last_interrupt = sdhost_read(SDHSTS);
 }
 
-static void sd_handle_interrupts(struct emmc_block_dev *dev)
-{
-    (void)dev;
-    _data_memory_barrier();
-}
-
 static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint32_t argument, uint32_t timeout)
 {
-    // First, handle any pending interrupts
-    sd_handle_interrupts(dev);
+    _data_memory_barrier();
 
-    // Stop the command issue if it was the card remove interrupt that was
-    //  handled
+    // Stop the command issue if it was the card remove interrupt that was handled
     if(dev->card_removal)
     {
         dev->last_cmd_success = 0;
@@ -670,9 +656,7 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
             dev->last_cmd_success = 0;
             return;
         }
-        uint32_t rca = 0;
-        if(dev->card_rca)
-            rca = dev->card_rca << 16;
+        uint32_t rca = dev->card_rca << 16;
         sd_issue_command_int(dev, sd_commands[APP_CMD], rca, timeout);
         if(dev->last_cmd_success)
         {
@@ -731,9 +715,7 @@ static void sdhost_write(uint32_t reg, uint32_t value)
 
 static void sdhost_prepare_storage_pins(void)
 {
-    unsigned int index;
-
-    for (index = 0u; index < 6u; ++index)
+    for (unsigned int index = 0u; index < 6u; ++index)
     {
         rpi_gpio_pin_t pin = (rpi_gpio_pin_t)(RPI_GPIO48 + index);
 
@@ -751,8 +733,7 @@ static void sdhost_reset_internal(void)
     sdhost_write(SDARG, 0u);
     sdhost_write(SDTOUT, 0x00f00000u);
     sdhost_write(SDCDIV, SDCDIV_MAX_CDIV);
-    sdhost_write(SDHSTS, SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG | SDHSTS_ERROR_MASK);
-    sdhost_write(SDHCFG, 0u);
+    sdhost_write(SDHSTS, SDHSTS_CLEAR_MASK);
     sdhost_write(SDHBCT, 0u);
     sdhost_write(SDHBLC, 0u);
 
@@ -763,19 +744,18 @@ static void sdhost_reset_internal(void)
             (FIFO_WRITE_THRESHOLD << SDEDM_WRITE_THRESHOLD_SHIFT);
     sdhost_write(SDEDM, temp);
 
-    usleep(10000);
+    usleep(1);
     sdhost_write(SDVDD, 1u);
-    usleep(10000);
+    usleep(1);
 }
 
-static int sdhost_reset_controller(void)
+static void sdhost_reset_controller(void)
 {
     g_sdhost_storage_hcfg = SDHCFG_BUSY_IRPT_EN | SDHCFG_WIDE_INT_BUS | SDHCFG_SLOW_CARD;
     g_sdhost_storage_cdiv = SDCDIV_MAX_CDIV;
     sdhost_probe_firmware_clock_mode();
     sdhost_reset_internal();
     sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
-    return 0;
 }
 
 static int sdhost_set_firmware_clock(uint32_t target_rate, uint32_t *actual_rate)
@@ -822,31 +802,14 @@ static void sdhost_probe_firmware_clock_mode(void)
     g_sdhost_firmware_sets_cdiv = response->data.buffer_32[1] != ~0u;
 }
 
-static uint32_t sdhost_get_base_clock_hz(void)
-{
-    uint32_t base_clock = get_clock_rate(CORE_CLK_ID);
-
-    if (base_clock == 0u)
-        base_clock = 250000000u;
-
-    return base_clock;
-}
-
 static int sdhost_switch_clock_rate(uint32_t target_rate)
 {
-    uint32_t base_clock;
-    uint32_t input_clock;
-    uint32_t divider;
-    uint32_t actual_clock;
-
     if (target_rate == 0u)
         return -1;
 
-    base_clock = sdhost_get_base_clock_hz();
-    input_clock = target_rate;
-
     if (g_sdhost_firmware_sets_cdiv)
     {
+        uint32_t actual_clock;
         if (sdhost_set_firmware_clock(target_rate, &actual_clock) != 0)
             return -1;
         if (actual_clock == 0u)
@@ -857,16 +820,21 @@ static int sdhost_switch_clock_rate(uint32_t target_rate)
         return 0;
     }
 
-    if (input_clock < 100000u)
+    uint32_t base_clock = get_clock_rate(CORE_CLK_ID);
+    if (base_clock == 0u)
+        base_clock = 250000000u;
+    uint32_t divider;
+
+    if (target_rate < 100000u)
     {
         divider = SDCDIV_MAX_CDIV;
     }
     else
     {
-        divider = base_clock / input_clock;
+        divider = base_clock / target_rate;
         if (divider < 2u)
             divider = 2u;
-        if ((base_clock / divider) > input_clock)
+        if ((base_clock / divider) > target_rate)
             ++divider;
         divider -= 2u;
     }
@@ -877,24 +845,18 @@ static int sdhost_switch_clock_rate(uint32_t target_rate)
     g_sdhost_storage_cdiv = divider;
     g_sdhost_storage_hcfg |= SDHCFG_SLOW_CARD;
 
-    sdhost_write(SDTOUT, input_clock / 2u);
+    sdhost_write(SDTOUT, target_rate / 2u);
     sdhost_write(SDCDIV, g_sdhost_storage_cdiv);
     sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
     usleep(10);
     return 0;
 }
 
-static int sd_reset_cmd_sdhost(void)
+static void sd_reset_cmd_sdhost(void)
 {
     sdhost_write(SDHCFG, g_sdhost_storage_hcfg | SDHCFG_REL_CMD_LINE);
     usleep(10);
     sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
-    return 0;
-}
-
-static int sd_reset_dat_sdhost(void)
-{
-    return sdhost_reset_controller();
 }
 
 static uint32_t sdhost_translate_error(uint32_t status, bool is_data)
@@ -919,16 +881,13 @@ static uint32_t sdhost_translate_error(uint32_t status, bool is_data)
 
 static int sdhost_wait_for_data_idle(bool is_read)
 {
-    uint32_t edm = 0u;
     uint32_t alternate_idle = is_read ? SDEDM_FSM_READWAIT : SDEDM_FSM_WRITESTART1;
     uint32_t retries = 1000000u;
 
     while (retries-- > 0u)
     {
-        uint32_t fsm;
-
-        edm = sdhost_read(SDEDM);
-        fsm = edm & SDEDM_FSM_MASK;
+        uint32_t edm = sdhost_read(SDEDM);
+        uint32_t fsm = edm & SDEDM_FSM_MASK;
         if ((fsm == SDEDM_FSM_IDENTMODE) || (fsm == SDEDM_FSM_DATAMODE))
             return 0;
         if (fsm == alternate_idle)
@@ -959,11 +918,12 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
         {
             uint32_t edm = sdhost_read(SDEDM);
             uint32_t words = is_write ? (16u - ((edm >> 4) & 0x1fu)) : ((edm >> 4) & 0x1fu);
-            uint32_t hsts;
-            uint32_t fsm_state;
 
             if (words == 0u)
             {
+                uint32_t fsm_state;
+                uint32_t hsts;
+
                 if (wait_loops-- == 0u)
                 {
                     dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
@@ -1021,9 +981,10 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
         }
     }
 
-    if ((sdhost_read(SDHSTS) & SDHSTS_ERROR_MASK) != 0u)
+    uint32_t final_hsts = sdhost_read(SDHSTS);
+    if ((final_hsts & SDHSTS_ERROR_MASK) != 0u)
     {
-        dev->last_error = sdhost_translate_error(sdhost_read(SDHSTS), true);
+        dev->last_error = sdhost_translate_error(final_hsts, true);
         return -1;
     }
 
@@ -1056,9 +1017,9 @@ static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t 
     bool is_stop_command = (sdcmd & SDCMD_CMD_MASK) == ((uint32_t) STOP_TRANSMISSION & SDCMD_CMD_MASK);
 
     status = sdhost_read(SDHSTS);
-    if ((status & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG)) != 0u)
+    if ((status & SDHSTS_CLEAR_MASK) != 0u)
     {
-        sdhost_write(SDHSTS, status & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG));
+        sdhost_write(SDHSTS, status & SDHSTS_CLEAR_MASK);
     }
 
     if (has_data)
@@ -1105,7 +1066,7 @@ static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t 
     {
         if (error_out != NULL)
             *error_out = sdhost_translate_error(status, false);
-        sdhost_write(SDHSTS, status & (SDHSTS_ERROR_MASK | SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG));
+        sdhost_write(SDHSTS, status & SDHSTS_CLEAR_MASK);
         return -1;
     }
 
@@ -1117,20 +1078,10 @@ static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t 
     return 0;
 }
 
-static int sdhost_issue_stop_command(uint32_t timeout, uint32_t *error_out)
-{
-    uint32_t response0;
-    uint32_t sdcmd = (uint32_t)STOP_TRANSMISSION & SDCMD_CMD_MASK;
-
-    sdcmd |= SDCMD_BUSYWAIT;
-    return sdhost_issue_raw_command(sdcmd, 0u, timeout, &response0, false, error_out);
-}
-
 static int sdhost_prepare_storage_controller(void)
 {
     sdhost_prepare_storage_pins();
-    if (sdhost_reset_controller() != 0)
-        return -1;
+    sdhost_reset_controller();
     return sdhost_switch_clock_rate(SD_CLOCK_ID);
 }
 
@@ -1145,41 +1096,8 @@ static void sdhost_prepare_device_state(struct emmc_block_dev *dev)
     dev->blocks_to_transfer = 1;
 }
 
-static int sd_prepare_controller(struct emmc_block_dev *dev)
-{
-    (void) dev;
-    return sdhost_prepare_storage_controller();
-}
-
-static uint32_t sd_get_storage_base_clock_hz(const struct emmc_block_dev *dev)
-{
-    (void) dev;
-    return sdhost_get_base_clock_hz();
-}
-
-static int sd_set_storage_clock_rate(const struct emmc_block_dev *dev, uint32_t base_clock, uint32_t target_rate)
-{
-    (void) dev;
-    (void) base_clock;
-    return sdhost_switch_clock_rate(target_rate);
-}
-
-static int sd_reset_cmd_for_dev(const struct emmc_block_dev *dev)
-{
-    (void) dev;
-    return sd_reset_cmd_sdhost();
-}
-
-static int sd_reset_dat_for_dev(const struct emmc_block_dev *dev)
-{
-    (void) dev;
-    return sd_reset_dat_sdhost();
-}
-
 static int sd_card_init(struct block_device **dev)
 {
-    uint32_t base_clock;
-
     // Prepare the device structure
    struct emmc_block_dev *ret;
    if(*dev == NULL)
@@ -1191,10 +1109,8 @@ static int sd_card_init(struct block_device **dev)
 
     sdhost_prepare_device_state(ret);
 
-    if (sd_prepare_controller(ret) != 0)
+    if (sdhost_prepare_storage_controller() != 0)
         return -1;
-
-    base_clock = sd_get_storage_base_clock_hz(ret);
 
 #ifdef EMMC_DEBUG
    printf("EMMC: device structure created\r\n");
@@ -1217,20 +1133,9 @@ static int sd_card_init(struct block_device **dev)
 #endif
    sd_issue_command(ret, SEND_IF_COND, 0x1aa, 500000);
    int v2_later = 0;
-   if(TIMEOUT(ret))
-        v2_later = 0;
-    else if(CMD_TIMEOUT(ret))
-    {
-        if(sd_reset_cmd_for_dev(ret) == -1)
-            return -1;
-        v2_later = 0;
-    }
-    else if(FAIL(ret))
-    {
-        printf("SD: failure sending CMD8 (%08"PRIx32")\r\n", ret->last_interrupt);
-        return -1;
-    }
-    else
+   if(CMD_TIMEOUT(ret))
+        sd_reset_cmd_sdhost();
+    else if(!FAIL(ret))
     {
         if((ret->last_r0 & 0xfff) != 0x1aa)
         {
@@ -1243,31 +1148,12 @@ static int sd_card_init(struct block_device **dev)
         else
             v2_later = 1;
     }
-#if 0
-    // Here we are supposed to check the response to CMD5 (HCSS 3.6)
-    // It only returns if the card is a SDIO card
-#ifdef EMMC_DEBUG
-    printf("SD: note that a timeout error on the following command (CMD5) is "
-           "normal and expected if the card is not a SDIO card.\r\n");
-#endif
-    sd_issue_command(ret, IO_SET_OP_COND, 0, 10000);
-    if(!TIMEOUT(ret))
+    else if(!TIMEOUT(ret))
     {
-        if(CMD_TIMEOUT(ret))
-        {
-            if(sd_reset_cmd_for_dev(ret) == -1)
-                return -1;
-        }
-        else
-        {
-            printf("SD: SDIO card detected - not currently supported\r\n");
-#ifdef EMMC_DEBUG
-            printf("SD: CMD5 returned %08"PRIx32"\r\n", ret->last_r0);
-#endif
-            return -1;
-        }
+        printf("SD: failure sending CMD8 (%08"PRIx32")\r\n", ret->last_interrupt);
+        return -1;
     }
-#endif
+    // else: plain timeout - v2_later stays 0
     // Call an inquiry ACMD41 (voltage window = 0) to get the OCR
 #ifdef EMMC_DEBUG
     printf("SD: sending inquiry ACMD41\r\n");
@@ -1340,23 +1226,6 @@ static int sd_card_init(struct block_device **dev)
        (ret->last_r0 >> 8) & 0xffff, (uint32_t)ret->card_supports_18v, (uint32_t)ret->card_supports_sdhc);
 #endif
 
-
-   // Switch to 1.8V mode if possible
-   if(0)// PiDoesn't support 1.8v //ret->card_supports_18v)
-   {
-        // A small wait before the voltage switch
-        usleep(1000);
-
-#ifdef EMMC_DEBUG
-        printf("SD: switching to 1.8V mode\r\n");
-#endif
-       return -1;
-   }
-
-#ifdef EMMC_DEBUG
-//   printf("SD: card CID: %08"PRIu32"%08"PRIu32"%08"PRIu32"%08"PRIu32"\r\n", ret->last_r3, ret->last_r2, ret->last_r1, ret->last_r0);
-#endif
-
     // Send CMD2 to read the card CID before requesting an RCA with CMD3.
     sd_issue_command(ret, ALL_SEND_CID, 0, 500000);
     if(FAIL(ret))
@@ -1365,12 +1234,6 @@ static int sd_card_init(struct block_device **dev)
           if (!dev) free(ret);
           return -1;
     }
-
-  // ret->bd.device_id[0] = ret->last_r0;
-  // ret->bd.device_id[1] = ret->last_r1;
-  // ret->bd.device_id[2] = ret->last_r2;
-  // ret->bd.device_id[3] = ret->last_r3;
-  // ret->bd.dev_id_len = 4 * sizeof(uint32_t);
 
    // Send CMD3 to enter the data state
    sd_issue_command(ret, SEND_RELATIVE_ADDR, 0, 500000);
@@ -1390,7 +1253,6 @@ static int sd_card_init(struct block_device **dev)
    uint32_t crc_error = (cmd3_resp >> 15) & 0x1;
    uint32_t illegal_cmd = (cmd3_resp >> 14) & 0x1;
    uint32_t error = (cmd3_resp >> 13) & 0x1;
-   uint32_t status;// = (cmd3_resp >> 9) & 0xf;
    uint32_t ready = (cmd3_resp >> 8) & 0x1;
 
    if(crc_error)
@@ -1435,7 +1297,7 @@ static int sd_card_init(struct block_device **dev)
    }
 
    uint32_t cmd7_resp = ret->last_r0;
-   status = (cmd7_resp >> 9) & 0xf;
+   uint32_t status = (cmd7_resp >> 9) & 0xf;
 
    if((status != 3) && (status != 4))
    {
@@ -1512,7 +1374,7 @@ static int sd_card_init(struct block_device **dev)
 
    // Keep identification timing through RCA assignment and SCR read, then
    // switch to the normal SDR12 transfer clock for the remaining setup.
-   sd_set_storage_clock_rate(ret, base_clock, SD_CLOCK_NORMAL);
+   sdhost_switch_clock_rate(SD_CLOCK_NORMAL);
 
     if(ret->scr->sd_bus_widths & 0x4)
     {
@@ -1545,7 +1407,7 @@ static int sd_card_init(struct block_device **dev)
 #endif
 #endif
    // Reset interrupt register
-   sdhost_write(SDHSTS, SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG | SDHSTS_ERROR_MASK);
+   sdhost_write(SDHSTS, SDHSTS_CLEAR_MASK);
 
    *dev = (struct block_device *)ret;
    return 0;
@@ -1607,7 +1469,7 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
       }
 
       // Reset the data circuit
-    sd_reset_dat_for_dev(edev);
+    sdhost_reset_controller();
    }
    else if(cur_state != 4)
    {
@@ -1685,20 +1547,10 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
 
    // Decide on the command to use
    unsigned int command;
-   if(is_write)
-   {
-       if(edev->blocks_to_transfer > 1)
-            command = WRITE_MULTIPLE_BLOCK;
-        else
-            command = WRITE_BLOCK;
-   }
+   if (edev->blocks_to_transfer > 1)
+       command = is_write ? WRITE_MULTIPLE_BLOCK : READ_MULTIPLE_BLOCK;
    else
-    {
-        if(edev->blocks_to_transfer > 1)
-            command = READ_MULTIPLE_BLOCK;
-        else
-            command = READ_SINGLE_BLOCK;
-    }
+       command = is_write ? WRITE_BLOCK : READ_SINGLE_BLOCK;
 
    int retry_count = 0;
    int max_retries = 3;
