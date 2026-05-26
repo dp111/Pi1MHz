@@ -727,10 +727,10 @@ static uint8_t scsiCommandRequestSense(void)
       // Assemble request sense error response
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Error flagged - sending to host\r\n"));
    }
-   hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0xFF000000) >> 24));
-   hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0x1F0000) >> 16));
-   hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0x00FF00) >> 8));
-   hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0x0000FF)));
+   hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0xFF000000) >> 24)); // Error code
+   hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0x1F0000) >> 16)); // LBA
+   hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0x00FF00) >> 8)); // LBA
+   hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0x0000FF))); // LBA
    // Clear the request sense error reporting globals
    requestSenseData[commandDataBlock.targetLUN] = NO_ERROR;
 
@@ -1245,12 +1245,7 @@ static uint8_t scsiCommandTranslate(void)
       commandDataBlock.message = 0x00;
 
       // Set request sense error globals
-      requestSenseData[commandDataBlock.targetLUN].errorFlag = true;
-      requestSenseData[commandDataBlock.targetLUN].validAddressFlag = false;
-      requestSenseData[commandDataBlock.targetLUN].errorClass = 0x00; // Class 00 error code
-      requestSenseData[commandDataBlock.targetLUN] = 0x04; // Drive not ready
-      requestSenseData[commandDataBlock.targetLUN].logicalBlockAddress = 0x00;
-
+      requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
       return SCSI_STATUS;
    }
 */
@@ -1745,11 +1740,8 @@ static uint8_t scsiWriteFCode(void)
       commandDataBlock.message = 0x00;
 
       // Set request sense error globals
-      requestSenseData[commandDataBlock.targetLUN].errorFlag = true;
-      requestSenseData[commandDataBlock.targetLUN].validAddressFlag = false;
-      requestSenseData[commandDataBlock.targetLUN].errorClass = 0x02; // Class 02 error code
-      requestSenseData[commandDataBlock.targetLUN] = 0x02; // Unit not ready
-      requestSenseData[commandDataBlock.targetLUN].logicalBlockAddress = 0x00;
+
+      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
 
       return SCSI_STATUS;
    }
@@ -1805,11 +1797,7 @@ static uint8_t scsiReadFCode(void)
       commandDataBlock.message = 0x00;
 
       // Set request sense error globals
-      requestSenseData[commandDataBlock.targetLUN].errorFlag = true;
-      requestSenseData[commandDataBlock.targetLUN].validAddressFlag = false;
-      requestSenseData[commandDataBlock.targetLUN].errorClass = 0x02; // Class 02 error code
-      requestSenseData[commandDataBlock.targetLUN] = 0x02; // Unit not ready
-      requestSenseData[commandDataBlock.targetLUN].logicalBlockAddress = 0x00;
+      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
 
       return SCSI_STATUS;
    }
