@@ -59,6 +59,13 @@ Addresses currently defined
 * M5000_BeebAudio_Off=1 to turn off Audio out of the Beeb and enable stereo on the headphone jack of Pi3B+
 * M5000_Gain=xxxx : Over rides default gain of 16. Add 1000 to disable auto scaling as well. Auto scaling reduces the gain if the signal clips 
 
+## Making the code
+
+You will need a linux command prompt. Under windows10 I use  windows bash shell. You will also need the arm dev tools : https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-a/downloads . in the src/scripts directory you can select the platform you'd like to build for by excuting the configure_rpi.sh ( for pi zero) and configure_rpi3.sh ( for rpi3B+). Then just use make -j4. Copy the firmware directory to the root of your SDCARD. Serial debug can be enabled using the configure scripts. Or the complete systemcan be built in one goes (PiZero, RPI3 both normal and debug) by using the release.sh script
+
+The current PCB is too small to have a serial debug connector fitted. I fitted a 3 pin sil header to the underside of my pizero ( 0v TX TX)
+
+
 ## Donations Welcome
 
 Donations to developement of Projects are welcome, especially if you are make a profit from using the project e.g. selling boards or kits.
