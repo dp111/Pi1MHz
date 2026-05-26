@@ -1,0 +1,218 @@
+# Hard Drive extended attibutes file for BeebSCSI
+# Max line length 256
+#
+# Mode Parameter Pages can be added and removed. They must take the format MPAGEnn
+# These will be picked up by 1MHz BeebSCSI and BeebEm
+#
+#########################################################################################
+# RODIME RO652 TYPE2 21MB (Acorn FileStore E20)
+#########################################################################################
+# Cylinders 306, Heads 4 = 1224 Tracks
+# Sec/Track 61, Byte/Sec 256, Interleave 8 = Total 74664 Sectors, 19 113 984 bytes total
+#
+# includes (C)ACORN in user pages 37 and 38
+#########################################################################################
+#
+# useful reference documents
+# Seagate - SCSI Command Reference Manual. https://www.seagate.com/files/staticfiles/support/docs/manual/Interface%20manuals/100293068j.pdf
+# American National Standard for information systems - SMALL COMPUTER SYSTEM INTERFACE (SCSI). Document Number ANSI X3.131-1986 (X3T9/84-40 Rev. 1B) (X3T9.2/82-2 Rev. 17B)
+# Adaptec ACB-4000 User's Manual. https://archive.org/details/400003-00a_acb4000um_oct85/page/n49/mode/2up
+
+#BETA VERSION
+
+# Title of the Disc
+#Title=
+
+# Desctiption of the Disc
+#Desciption=
+
+# The DSC descriptor comes from the ACB 4000 and Acorn SuperForm requirements
+
+#   /Mode Select Parameter list (ACB-4000 manual fig 5.18) 4 bytes
+#   |       /Extent Descriptor list (8 bytes)
+#   |       |               / Drive Parameter List (ACB-4000 manual fig. 5-20)
+#   |       |         | 256 | |306|4|   |   | |
+DSC=00000008000000000000010001013204008000800001
+#   | | | | | |       |     | |   | |   |   | |
+#   | | | | | |       |     | |   | |   |   | \Step pulse output rate code
+#   | | | | | |       |     | |   | |   |   \Landing zone position
+#   | | | | | |       |     | |   | |   \Write pre-compenstation cylinder (MSB, LSB)
+#   | | | | | |       |     | |   | \Reduced write current cylinder (MSB, LSB)
+#   | | | | | |       |     | |   \Head count
+#   | | | | | |       |     | \Cylinder count (MSB, LSB)
+#   | | | | | |       |     \List format code
+#   | | | | | |       |
+#   | | | | | |       \Logical Block length (MSB-LSB)
+#   | | | | | \Reserved
+#   | | | | \Density code
+#   | | | \LBA Block Descriptor length
+#   | | |      7       |   6  |    5   | 4 | 3 | 2 | 1 | 0 |
+#   | | \Write Protect | Rsvd | DPOFUA |    Reserved       |
+#   | \Medium type
+#   \Mode Data length of(MPHeader + LBA BLOCK + Mode Page) -1
+#    e.g. 4bytes +6bytes +[Page1]5bytes -1 = 16bytes (0x10)
+#    This is automatically calculated and overwritten in BeebSCSI
+
+##################################################################################################
+# INQUIRY Data
+#       00            07|8            15|6                            31|2    35|6            43|4                    55| | 58                            73|4                                        95|6
+#       |               |B E E B S C S I|  G E N E R I C   H D          |1 . 0 0|               |                       | | | Version descriptors           | Vendor Specific Parameters                |
+Inquiry=000000001E00000042454542534353493047454E455249432048442020202020312E3030
+#       | | |   |       |               |                               |       |               |                       | | |   |   |   |   |   |   |   |   |                                           |MSB
+#       | | |   |       |               |                               |       |               |                       | | |   |   |   |   |   |   |   |   |                                           \Copyright Notice (MSB - LSB)
+#       | | |   |       |               |                               |       |               |                       | | |   |   |   |   |   |   |   |   \Reserved 74 -> 95
+#       | | |   |       |               |                               |       |               |                       | | |   |   |   |   |   |   |   \Version Descriptor 8 (MSB, LSB)
+#       | | |   |       |               |                               |       |               |                       | | |   |   |   |   |   |   \Version Descriptor 7 (MSB, LSB)
+#       | | |   |       |               |                               |       |               |                       | | |   |   |   |   |   \Version Descriptor 6 (MSB, LSB)
+#       | | |   |       |               |                               |       |               |                       | | |   |   |   |   \Version Descriptor 5 (MSB, LSB)
+#       | | |   |       |               |                               |       |               |                       | | |   |   |   \Version Descriptor 4 (MSB, LSB)
+#       | | |   |       |               |                               |       |               |                       | | |   |   \Version Descriptor 3 (MSB, LSB)
+#       | | |   |       |               |                               |       |               |                       | | |   \Version Descriptor 2 (MSB, LSB)
+#       | | |   |       |               |                               |       |               |                       | | \Version Descriptor 1 (MSB, LSB)
+#       | | |   |       |               |                               |       |               |                       | \Reserved
+#       | | |   |       |               |                               |       |               |                       \Reserved
+#       | | |   |       |               |                               |       |               \Vendor Unique
+#       | | |   |       |               |                               |       \Drive Serial Number
+#       | | |   |       |               |                               \ Product Revision Level
+#       | | |   |       |               \Product Identification
+#       | | |   |       \Vendor Identification
+#       | | |   \Additional Length
+#       | | \ISO Version | ECMA Version | ANSI Version
+#       | \Removable Media Bit | Device-Type Qualifier
+#       \Peripheral Device Type
+
+
+##################################################################################################
+# MODE PARAMETER Headers
+#
+
+# Mode Parameter Header Mode6 - 4 bytes
+ModeParamHeader=10000008
+#               | | | |
+#               | | | \LBA Block Descriptor length
+#               | | |      7       |   6  |    5   | 4 | 3 | 2 | 1 | 0 |
+#               | | \Write Protect | Rsvd | DPOFUA |    Reserved       |
+#               | \Medium type
+#               \Mode Data length of(MPHeader + LBA BLOCK + Mode Page) -1
+#                e.g. 4bytes +6bytes +[Page1]5bytes -1 = 16bytes (0x10)
+#                This is automatically calculated and overwritten in BeebSCSI
+
+# LBA mode parameter block descriptor Mode6 - 8 bytes
+#
+#             |       | | 256
+LBADescriptor=0000000000000100
+#             |       | |
+#             |       | \Logical Block length (MSB-LSB)
+#             |       \Reserved
+#             \Number of Blocks (MSB-LSB)
+
+##################################################################################################
+# MODE PARAMETER Pages
+#
+# PAGE 0x01
+#
+#         /Mode Page - 01 Error Correction Status Parameters
+#         |
+ModePage1=0103200405
+#         | | | | |
+#         | | | | \Error correction bit span
+#         | | |  \Error Recovery retries
+#         | | \| 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+#         | |  |   |   |TB |RC |EER|PER|DTE|DCR|
+#         | \Page Length
+#         | | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+#         \ | PS|SPF|      Page Code        |
+
+
+# PAGE 0x03
+#
+#         /Mode Page - 03 Format Device Parameters
+#         |                     33 256
+ModePage3=031301320132000600060021010000080000000080
+#         | | |   |   |   |   |   |   |   |   |   |
+#         | | |   |   |   |   |   |   |   |   |   |  7  |   6  |  5  |  4   | 3  | 2 | 1 | 0 |
+#         | | |   |   |   |   |   |   |   |   |   \SSEC | HSEC | RMB | SURF |   Drive Type   |
+#         | | |   |   |   |   |   |   |   |   \Cylinder Skew factor (MSB, LSB)
+#         | | |   |   |   |   |   |   |   \Track Skew factor (MSB, LSB)
+#         | | |   |   |   |   |   |   \Interleave (MSB, LSB)
+#         | | |   |   |   |   |   \Data bytes per Physical sector (MSB, LSB)
+#         | | |   |   |   |   \Sectors per Track (MSB, LSB)
+#         | | |   |   |   \Alternate Tracks per Volume (MSB, LSB)
+#         | | |   |   \Alternate Tracks per Zone (MSB, LSB)
+#         | | |   \Alternate Sectors per Zone (MSB, LSB)
+#         | | \Tracks per Zone (MSB, LSB)
+#         | \Page Length
+#         | | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+#         \ | PS|SPF|      Page Code        |
+
+# PAGE 0x04
+#
+#         /Mode Page - 04 Rigid Drive Geometry Parameters
+#         |
+ModePage4=040400013204
+#         | | |     |
+#         | | |     \Number of Heads
+#         | | \Number of Cylinders (MSB-LSB)
+#         | \Page Length
+#         | | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+#         \ | PS|SPF|      Page Code        |
+
+# PAGE 0x20
+#
+#          /Mode Page - 32 Serial Number
+#          |   |0 0 0 0 0 0 0 0
+ModePage32=20083131303030303030
+#          | | |
+#          | | \Serial Number
+#          | \Page Length
+#          \Page Code
+
+# PAGE 0x21
+#
+#          /Mode Page - 33 Manufacture
+#          |   871013
+ModePage33=2106570A0D02860002
+#          | | |
+#          | | \Manufacture Date and Build Level
+#          | \Page Length
+#          \Page Code
+
+# PAGE 0x23
+#
+#          /Mode Page - 35 System Flags
+#          |
+ModePage35=230100
+#          | | |
+#          | | \System Flags
+#          | \Page Length
+#          \Page Code
+
+# PAGE 0x24
+#
+#          /Mode Page - 36 Unknown
+#          |
+ModePage36=24020000
+#          | |
+#          | |
+#          | \Page Length
+#          \Page Code
+
+# PAGE 0x25
+#
+#          /Mode Page - 37  User Page 1
+#          |    ( C ) A
+ModePage37=250428432941
+#          | | |
+#          | | \Copyright
+#          | \Page Length
+#          \Page Code
+
+# PAGE 0x26
+#
+#          /Mode Page - 38  User Page 2
+#          |    c o r n
+ModePage38=2604636F726E
+#          | | |
+#          | | \Copyright
+#          | \Page Length
+#          \Page Code

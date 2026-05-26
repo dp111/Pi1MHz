@@ -145,7 +145,7 @@ struct keyvalue scsiattributes[] = {
         0x04,						// Page Length (6)
         'c','o','r','n'		// ASCII (4-bytes)
     } },
-    { "LDUserCode"      , 0 , 4 , 0 , NUMSTRING },
+    { "LDUserCode"      , 0 , 4 , 0 , STRING },
     { "LDVideoXoffset"  , -768 , 768 , 0 , INTEGER },
     { ""} // end of list
 };

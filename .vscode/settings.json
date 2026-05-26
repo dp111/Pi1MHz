@@ -18,7 +18,8 @@
         "framebuffer.h": "c",
         "mailbox.h": "c",
         "rpi.h": "c",
-        "charconv": "c"
+        "charconv": "c",
+        "variant": "c"
     },
     "cSpell.words": [
         "ADDRBUS",
