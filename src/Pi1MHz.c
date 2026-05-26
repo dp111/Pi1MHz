@@ -343,7 +343,7 @@ static void init_emulator(void) {
    memset(&Pi1MHz->callback_table[0], 0, Pi1MHz_CB_SIZE);
    memset(&Pi1MHz->Memory[0],0,PAGE_SIZE);
 
-   for(int i=255; i>0; i--)
+   for(int i=255; i>=0; i--)
       Pi1MHz_Memory_VPU[i]=0;             // Clear VPU ram.
 
    RPI_PropertyStart(TAG_LAUNCH_VPU1, 7);

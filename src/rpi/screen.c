@@ -491,8 +491,8 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
                 case 576: yuv_scale = 1 ; break; // 256 * 2 = 512
                 case 600: yuv_scale = 2.25/2; break;  // 256 * 2.25 = 576
                 case 720: yuv_scale = 2.75/2; break;  // 256 * 2.75 = 704
-                case 768: yuv_scale = 3/2; break;  // 256 * 3 = 768
-                case 800: yuv_scale = 3/2; break;  // 256 * 3 = 768
+                case 768: yuv_scale = 3.0/2; break;  // 256 * 3 = 768
+                case 800: yuv_scale = 3.0/2; break;  // 256 * 3 = 768
                 case 864: yuv_scale = 3.25/2; break;  // 256 * 3.25 = 832
                 case 900: yuv_scale = 3.5/2; break;  // 256 * 3.5 = 896
                 case 960: yuv_scale = 3.75/2; break;  // 256 * 3.75 = 960
