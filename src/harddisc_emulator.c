@@ -182,7 +182,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+3, hd_emulator_IRQ );
    // address FC44 write = Write BeebSCSI configuration byte
 #ifdef DEBUG
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+4, hd_emulator_conf );
+   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+1, hd_emulator_conf );
 #endif
    // Initialise but only at power on
    // Fixes *SCSIJUKE surviving over shift break.
