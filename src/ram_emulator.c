@@ -75,8 +75,10 @@ void ram_emulator_page_addr(unsigned int gpio)
    }
 
    // setup new data now the address has changed
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[page_ram_addr])) );
 
+   // RPI_SetGpioHi(TEST_PIN);
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[page_ram_addr])) );
+   // RPI_SetGpioLo(TEST_PIN);
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
