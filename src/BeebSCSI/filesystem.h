@@ -101,7 +101,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[]);
 bool filesystemCloseLunForWrite(uint8_t lunNumber);
 
-char * filesystemGetInquiryData(uint8_t lunNumber);
+char * filesystemGetInquiryData(uint8_t lunNumber, size_t * length);
 char * filesystemGetModeParamHeaderData(uint8_t lunNumber, size_t * length);
 char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length);
 char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * length);

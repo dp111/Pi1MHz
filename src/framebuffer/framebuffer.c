@@ -750,17 +750,17 @@ static void graphics_cursor_home(const uint8_t *buf) {
 }
 
 static void graphics_cursor_tab(const uint8_t *buf) {
-   uint8_t x = buf[1];
-   uint8_t y = buf[2];
+   uint16_t x = (uint16_t)buf[1];
+   uint16_t y = (uint16_t)buf[2];
 #ifdef DEBUG_VDU
    printf("cursor move to %d %d\r\n", x, y);
 #endif
    // Scale to absolute external coordinates
-   x = (uint8_t)(x * (font_width << screen->xeigfactor));
-   y = (uint8_t)(y * (font_height << screen->yeigfactor));
+   x = (uint16_t)(x * (font_width << screen->xeigfactor));
+   y = (uint16_t)(y * (font_height << screen->yeigfactor));
    // Take account of current text window
-   x = (uint8_t)(x + g_window.left) ;
-   y = (uint8_t)(y + g_window.bottom);
+   x = (uint16_t)(x + g_window.left) ;
+   y = (uint16_t)(y + g_window.bottom);
    // Deliberately don't range check here
    g_x_pos = (int16_t)(g_window.left + x);
    g_y_pos = (int16_t)(g_window.bottom + y);

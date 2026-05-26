@@ -45,9 +45,9 @@ static void ram_emulator_byte_addr(unsigned int gpio)
 
    switch (addr - rambyte_address)
    {
-      case 0:  Pi1MHz->byte_ram_addr = (size_t) ((Pi1MHz->byte_ram_addr & 0xFFFFFF00) | data); break;
-      case 1:  Pi1MHz->byte_ram_addr = (size_t) ((Pi1MHz->byte_ram_addr & 0xFFFF00FF) | (size_t)(data<<8)); break;
-      default: Pi1MHz->byte_ram_addr = (size_t) ((Pi1MHz->byte_ram_addr & 0xFF00FFFF) | (size_t)(data<<16)); break;
+      case 0:  Pi1MHz->byte_ram_addr = ((Pi1MHz->byte_ram_addr & 0xFFFFFF00) | data); break;
+      case 1:  Pi1MHz->byte_ram_addr = ((Pi1MHz->byte_ram_addr & 0xFFFF00FF) | ((size_t)data<<8)); break;
+      default: Pi1MHz->byte_ram_addr = ((Pi1MHz->byte_ram_addr & 0xFF00FFFF) | ((size_t)data<<16)); break;
    }
 
    Pi1MHz_MemoryWrite((uint32_t)(rambyte_address + 3) , Pi1MHz->JIM_ram[Pi1MHz->byte_ram_addr]); // setup new data now the address has changed;
@@ -68,7 +68,7 @@ static void ram_emulator_page_addr_high(unsigned int gpio)
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    if (data >= (Pi1MHz->JIM_ram_size)) data = (uint8_t)(Pi1MHz->JIM_ram_size - 1);
-               Pi1MHz->page_ram_addr = (size_t) ((Pi1MHz->page_ram_addr & 0x00FFFFFF) | (size_t)(data<<24));
+               Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0x00FFFFFF) | ((size_t)data<<24));
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
@@ -77,7 +77,7 @@ static void ram_emulator_page_addr_mid(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   Pi1MHz->page_ram_addr = (size_t) ((Pi1MHz->page_ram_addr & 0xFF00FFFF) | (size_t)(data<<16));
+   Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0xFF00FFFF) | ((size_t)data<<16));
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
@@ -86,7 +86,7 @@ static void ram_emulator_page_addr_low(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   Pi1MHz->page_ram_addr = (size_t) ((Pi1MHz->page_ram_addr & 0xFFFF00FF) | (size_t)(data<<8));
+   Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0xFFFF00FF) | ((size_t)data<<8));
    // RPI_SetGpioHi(TEST_PIN);
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
    // RPI_SetGpioLo(TEST_PIN);

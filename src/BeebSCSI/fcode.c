@@ -291,12 +291,14 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				uint32_t pictureNumber = 0;
 				FCdebugString_P(PSTR(" = Load/Goto picture number : "));
 
-				for (byteCounter = 0; byteCounter < 32; byteCounter++) {
+				for (byteCounter = 0; byteCounter < 7; byteCounter++) {
 					if (scsiFcodeBuffer[byteCounter] == 0x0D) break;
 					if ( (char)scsiFcodeBuffer[byteCounter] >= '0' && (char)scsiFcodeBuffer[byteCounter] <= '9') {
 						pictureNumber = (uint32_t) ((uint32_t)(pictureNumber * 10) + ((uint32_t)(scsiFcodeBuffer[byteCounter] - '0')));
 					}
 				}
+				if (byteCounter == 0 || byteCounter >=7) break;
+
 				scsiFcodeBuffer[byteCounter] = 0;
 				FCdebugStringInt32_P(PSTR(""), pictureNumber, false);
 				FCdebugString_P(PSTR(" op: "));

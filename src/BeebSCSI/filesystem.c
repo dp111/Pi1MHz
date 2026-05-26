@@ -1240,9 +1240,10 @@ bool filesystemCloseLunForWrite(uint8_t lunNumber)
 // Functions for reading SCSI attributes -------------------------------------------------------------
 
 
-char * filesystemGetInquiryData(uint8_t lunNumber)
+char * filesystemGetInquiryData(uint8_t lunNumber, size_t * length)
 {
    int index = INQUIRY;
+   *length = filesystemState.keyvalues[lunNumber][index].length;
 	return filesystemState.keyvalues[lunNumber][index].v.string;
 }
 
@@ -1556,6 +1557,14 @@ bool filesystemReadNextFatBlock(uint8_t *buffer)
    fsResult  = f_read(&fileObjectFAT, buffer, 256, &byteCounter);
    if (fsResult != FR_OK) {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReadNextFatBlock(): Could not read data from the target file!\r\n"));
+      return false;
+   }
+
+   if (byteCounter != 256) {
+
+      for (UINT i = byteCounter; i < 256; i++) {
+         buffer[i] = 0; // pad the rest of the buffer with zeros
+      }
       return false;
    }
 

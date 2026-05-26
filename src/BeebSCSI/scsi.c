@@ -1407,6 +1407,12 @@ static uint8_t scsiCommandModeSelect6(void)
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
    }
 
+   if (length < 4  ) {
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+      requestSenseData[commandDataBlock.targetLUN] = BAD_ARG;
+      return SCSI_STATUS;
+   }
+
    // Make sure the target LUN is started
    if (!filesystemCheckLunImage(commandDataBlock.targetLUN)) {
       // If the target LUN is unavailable then the host is probably attempting to MODESELECT
@@ -1444,7 +1450,7 @@ static uint8_t scsiCommandModeSelect6(void)
    uint8_t start = 4;
 
    // if the length is 22 and byte is 8 then the drive descriptor is being written
-   if (Buffer[3]== 8 )
+   if ((length == 22) && Buffer[3]== 8 )
    {
      if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT cfg\r\n"), DEBUG_SUCCESS);
      // we can skip LBADescriptor 8 bytes
@@ -1872,15 +1878,15 @@ static uint8_t scsiCommandInquiry(void)
 		sprintf(msg, "SCSI Commands: Target LUN = %d  Length = %d\r\n", commandDataBlock.targetLUN, commandDataBlock.data[4]);
 		debugString_C(PSTR(msg), DEBUG_INFO);
    }
-
-   const char * buf = filesystemGetInquiryData(commandDataBlock.targetLUN);
+   size_t inqLen;
+   const char * buf = filesystemGetInquiryData(commandDataBlock.targetLUN,&inqLen);
    if (buf) {
       // Set up the control signals ready for the data in phase
 		scsiInformationTransferPhase(ITPHASE_DATAIN);
 
 		// send back the inquiry data
 		for (uint8_t i = 0; i < commandDataBlock.data[4]; i++)
-			hostadapterWriteByte(buf[i]);
+			hostadapterWriteByte((i < inqLen) ? buf[i] : 0 );
 
 		// Indicate successful command in status and message
 		commandDataBlock.status = SCSI_STATUS_OK; // 0x00 = Good
