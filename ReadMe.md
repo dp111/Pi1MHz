@@ -20,7 +20,11 @@ Copy the contents of the firmware directory to the root of your SDCARD. If you w
 
 Insert the SD-CARD into the Pi. Attach the level shifter to the Pi and insert into the 1MHz bus socket of the Beeb. Take extra care to ensure that it is connected correctly. You will also need to take +5v from somewhere to power the Pi, this can be the user port or Tube for example.
 
-To check the build information type P.$&FD00
+To check the build information and get help type one of the following:
+
+X%=0 :CALL &FC88
+*fx147,136,0 : *GO &FD00
+*fx147,136,0 : *GOIO &FD00
 
 ## ADFS Harddisc Emulation
 
@@ -275,7 +279,7 @@ Addresses currently defined
 * Framebuffer_addr=0xYY : set the base address of the frame buffer registers default &A0, -1 to disable
 * Discaccess_addr=0xYY : set the base address of the discaccess registers default &A6, -1 to disable
 * Helpers_addr=0xYY : set the base address of the helpers registers default &88, -1 to disable
-* Pi1MHZnOE=1 : Enables external nOE pin on the buffers, this then supports multiple devices on the 1MHz bus
+* Pi1MHZnOE=0 : Disables external nOE pin on the buffers,  =1 supports multiple devices on the 1MHz bus
 * SCSIID=xx : Set the SCSI ID of the ADFS/VFS emulation. 0 is default to listens to every id
 * SCSIJUKE=xx : sets the default SCSI jukebox. 0 is default.
 * VFSJUKE=xx : sets the default VFS jukebox. 0 is default.

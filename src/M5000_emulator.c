@@ -466,3 +466,8 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
    // register polling function
    Pi1MHz_Register_Poll(music5000_emulate);
 }
+
+uint8_t M5000_emulator_read_instance(void)
+{
+   return fx_pointer;
+}

@@ -134,3 +134,13 @@ v.1.22
 Update FatFS to 0.16
 Fix P.$&FD00 message getting over written by the helper screen ACK byte.
 Remove some build warnings.
+
+v1.23
+compress help screen add *fx147,65,xx for scsijuke
+add *fx for M5000 recording to help screen
+Change to using *Fx200,2 for rom loading
+change default of Pi1MHznOE to 1
+
+v.1.24
+Fix ROM loading with MOS 3.5.
+Fix Broken Pi1MHznOE cmdline option

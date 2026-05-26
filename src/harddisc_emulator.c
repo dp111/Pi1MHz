@@ -224,7 +224,10 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    Pi1MHz_Register_Poll(scsiProcessEmulation);
 }
 
-
+uint8_t harddisc_emulator_get_address(void)
+{
+   return HD_ADDR;
+}
 /************************************************************************
    hostadapter.c
 
