@@ -1732,7 +1732,7 @@ bool filesystemCloseFatForRead(void)
 
 // read a file buffer can be malloced if the address is NULL
 
-uint32_t filesystemReadFile(const char * filename, unsigned char **address, unsigned int max_size)
+uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned int max_size)
 {
    UINT byteCounter;
    FRESULT fsResult;

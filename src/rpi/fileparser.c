@@ -61,11 +61,11 @@ const struct keyvalue scsiattributes[] = {
     { "" , 0 ,0, 0} // end of list
 };
 
-inline int parse_findindex( char * searchkey, const struct keyvalue array[])
+inline int parse_findindex( uint8_t * searchkey, const struct keyvalue array[])
 {
     int i = 0;
     while (array[i].key) {
-        if (strcasecmp(array[i].key, searchkey) == 0) {
+        if (strcasecmp(array[i].key, (char *) searchkey) == 0) {
             return i;
         }
     }
@@ -76,7 +76,7 @@ inline int parse_findindex( char * searchkey, const struct keyvalue array[])
 // nonnumber = 0 for hex digits, 1 for 0x, -1 for non decimal digits
 //
 //
-static size_t parse_strlen( const char * buf , size_t ptr, size_t max,  int *nonnumber)
+static size_t parse_strlen( const uint8_t * buf , size_t ptr, size_t max,  int *nonnumber)
 {
     size_t len = 0;
     size_t oldptr = ptr;
@@ -114,8 +114,8 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
 {
 // open file for reading
     size_t ptr = 0, outptr = 0;
-    char * buffer = 0 ;
-    size_t filesize = filesystemReadFile( filename , *buffer , 0 );
+    uint8_t * buffer = 0 ;
+    size_t filesize = filesystemReadFile( filename , &buffer , 0 );
     if (filesize == 0)
         return 0;
     LOG_DEBUG("Parsing %s File size %d\n\r",filename, filesize);
@@ -282,7 +282,7 @@ int parse_readfile( const char * filename , const char * outfile, struct keyvalu
                         {
                             // read a number
                             values[keyindex].v.integer = malloc( 4);
-                            *values[keyindex].v.integer = (int) strtol( buffer + ptr, 0 , 0);
+                            *values[keyindex].v.integer = (int) strtol( (char *)buffer + ptr, 0 , 0);
                             LOG_DEBUG("number %d\n\r" , *values[keyindex].value);
                             values[keyindex].length = 1;
                             ptr += len;
