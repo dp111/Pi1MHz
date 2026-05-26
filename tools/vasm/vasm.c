@@ -532,7 +532,8 @@ static void assemble(void)
           general_error(45);  /* address space overflow */
         ovflw=sec->pc==0;
       }
-      if(bss&&(p->type==DATA||(p->type==SPACE&&p->content.sb->fill_exp))){
+      if(bss&&((p->type==DATA&&p->content.db->size)||
+         (p->type==SPACE&&p->content.sb->size&&p->content.sb->fill_exp))){
         if(lasterrsrc!=p->src||lasterrline!=p->line){
           if(sec->flags&UNALLOCATED){
             if(warn_unalloc_ini_dat)

@@ -471,7 +471,7 @@ static void handle_secbss(char *s)
     eol(s);
   }
   else
-    syntax_error(0);
+    handle_space(s,8);
 }
 
 
@@ -519,13 +519,13 @@ static void handle_spc24(char *s)
 {
   handle_space(s,24);
 }
+#endif
 
 
 static void handle_spc32(char *s)
 {
   handle_space(s,32);
 }
-#endif
 
 
 static void handle_string(char *s)
@@ -1169,8 +1169,10 @@ struct {
   "reserve",handle_spc8,
   "spc",handle_spc8,
   "dsw",handle_spc16,
+  "dsl",handle_spc32,
   "blk",handle_spc8,
   "blkw",handle_spc16,
+  "blkl",handle_spc32,
   "dc",handle_spc8,
   "byt",handle_d8,
   "wrd",handle_d16,
@@ -1975,7 +1977,7 @@ strbuf *get_local_label(int n,char **start)
     /* skip local part of global.local label */
     s = p;
     p = skip_local(s);
-    name = make_local_label(n,*start,(s-1)-*start,s,p-s);
+    name = make_local_label(n,*start,s-*start,s,p-s);
     *start = skip(p);
   }
   else if (p!=NULL && p>(s+1) && *s=='.') {  /* .label */

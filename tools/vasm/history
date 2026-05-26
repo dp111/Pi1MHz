@@ -87,6 +87,9 @@ o oldstyle-syntax: New ifblank and ifnblank directives may be used to
 o oldstyle-syntax: New directive exitmacro to exit recursive macro
   invocations.
 o oldstyle-syntax: New directive da as an alias for addr.
+o oldstyle-syntax: New directive bss to reserve space, like ds or reserve.
+o oldstyle-syntax: New directives blkl and dsl for defining space with a
+  32-bit pattern.
 o oldstyle-syntax: Section attributes 'f' and 'z' may be used to designate
   a section for far- or near-addressing (e.g. direct/zero-page).
 o oldstyle-syntax: Fixed FCC for single characters (no expressions allowed).
