@@ -1,6 +1,6 @@
 /*
  Emulates Harddisc using beebSCSI
- This file combines the verilog file the hostadaptor.c and the interface to Pi1MHz
+ This file combines the Verilog file the hostadaptor.c and the interface to Pi1MHz
  NB the inversions have been optimized out
 
 */
@@ -185,7 +185,7 @@ void harddisc_emulator_init( uint8_t instance , int address)
    Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+4, hd_emulator_conf );
 #endif
    // Initialise but only at power on
-   // Fixes *SCSIJUKE surving over shift break.
+   // Fixes *SCSIJUKE surviving over shift break.
    if (!PowerOn)
    {
       const char *prop = get_cmdline_prop("SCSIJUKE");
