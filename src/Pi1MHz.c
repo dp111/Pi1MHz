@@ -272,8 +272,9 @@ static void init_emulator() {
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {
          char key[128]="";
-         strcat(key,emulator[i].name);
-         strcat(key,"_addr");
+         char * ptr = key;
+         ptr  += strlcpy(key,emulator[i].name,sizeof(key));
+         strlcpy(ptr,"_addr", 5);
          const char *prop2 = get_cmdline_prop(key);
          if (prop2)
             {
