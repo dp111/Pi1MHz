@@ -49,6 +49,165 @@ The first page of JIM ram is preloaded with build information. This can be acces
 
 If a file called "JIM_Init.bin" exists it will be loaded starting at the beginning of JIM on wards ( NB over writes build info). This enables future very large programs which, with clever programming could all run in JIM RAM.
 
+## Fat Access
+
+A simplified access to the Pi's SDCARD is provided. This can be used to access local files and could for instance by used by mmfs2. A 16Mbyte buffer is provided that can be split up into various different ways. Multiple files maybe open at the same time , but they must be unique files. A 24 bit pointer is provided with autoincrement. Using this address space a file system e.g. MMFS may "cache" the entire drive and not need to raise PAGE. The buffer also hold the FAT command that is going to be executed.
+It is suggested the first 4Mbytes be reserved for the currently active Filesystem. 8Mbyte to 14 Mbytes be reserved for the currently active program.
+
+    Base address = &FCD6
+
+    Base + 0 = lower 8bits of the 24bit address pointer
+    Base + 1 = middle 8bits of the 24bit address pointer
+    Base + 2 = top 8bits of the 24bits address pointer
+    Base + 3 = data register ( with auto address increment)
+    Base + 4 = command pointer (&F0-FF).
+            command = &F0 points to a command at 0xFFF000 in the buffer
+            command = &F1 points to a command at 0xFFF100 in the buffer
+            ...
+            command = &FF points to a command at 0xFFFF00 in the buffer
+
+            Each command pointer can only be used for one FAT file/ directory
+            When the command is complete the the command pointer returns success or and error code
+
+            Suggested code
+                    LDA # command
+                    STA &FCDA
+            .complete_check_loop
+                    LDA &FCDA
+                    BMI complete_check_loop
+                    BNE command_error
+
+
+
+ 	FR_OK = 0,				/* (0) Succeeded */
+	FR_DISK_ERR,			/* (1) A hard error occurred in the low level disk I/O layer */
+	FR_INT_ERR,				/* (2) Assertion failed */
+	FR_NOT_READY,			/* (3) The physical drive cannot work */
+	FR_NO_FILE,				/* (4) Could not find the file */
+	FR_NO_PATH,				/* (5) Could not find the path */
+	FR_INVALID_NAME,		/* (6) The path name format is invalid */
+	FR_DENIED,				/* (7) Access denied due to prohibited access or directory full */
+	FR_EXIST,				/* (8) Access denied due to prohibited access */
+	FR_INVALID_OBJECT,		/* (9) The file/directory object is invalid */
+	FR_WRITE_PROTECTED,		/* (10) The physical drive is write protected */
+	FR_INVALID_DRIVE,		/* (11) The logical drive number is invalid */
+	FR_NOT_ENABLED,			/* (12) The volume has no work area */
+	FR_NO_FILESYSTEM,		/* (13) There is no valid FAT volume */
+	FR_MKFS_ABORTED,		/* (14) The f_mkfs() aborted due to any problem */
+	FR_TIMEOUT,				/* (15) Could not get a grant to access the volume within defined period */
+	FR_LOCKED,				/* (16) The operation is rejected according to the file sharing policy */
+	FR_NOT_ENOUGH_CORE,		/* (17) LFN working buffer could not be allocated */
+	FR_TOO_MANY_OPEN_FILES,	/* (18) Number of open files > FF_FS_LOCK */
+	FR_INVALID_PARAMETER	/* (19) Given parameter is invalid */
+                                (20) Short fread/fwrite
+
+
+FAT commands are the first byte of the command buffer
+
+0 = fopen
+
+    command pointer + 0 = 0
+        #define	FA_READ				0x01
+        #define	FA_WRITE			0x02
+        #define	FA_OPEN_EXISTING	0x00
+        #define	FA_CREATE_NEW		0x04
+        #define	FA_CREATE_ALWAYS	0x08
+        #define	FA_OPEN_ALWAYS		0x10
+        #define	FA_OPEN_APPEND		0x30
+    command pointer + 1 = filename zero terminated
+
+1 = fclose
+
+    command pointer + 0 = 1
+
+2 = fread ( with implicit lseek)
+
+    command pointer + 0 = 2
+    command pointer + 1,2,3 3 bytes of length to read. Once complete this returns the actually number of byte read
+                The command pointer + 0 = 20 if the read was short
+    command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
+    command pointer + 8,9,10,11 4 byte pointer within file to start the read from
+
+3 = fwrite ( with impicit lseek , fsync)
+
+    command pointer + 0 = 3
+    command pointer + 1,2,3 3 bytes of length to write. Once complete this returns the actually number of byte read
+                The command pointer + 0 = 20 if the write was short
+    command pointer + 4,5,6,7 4 bytes of source address in buffer NB top byte must be zero.
+    command pointer + 8,9,10,11 4 byte pointer within file to start the write from
+
+4 = fsize
+
+    command pointer + 0 = 4
+    returns
+    command pointer + 8,9,10,11 4 bytes size of file
+
+5 = fopendir ( DP to check sub directories)
+
+    command pointer + 0 = 5
+    command pointer + 1 ...  = directory name zero terminated
+
+6 = fclosedir
+
+    command pointer + 0 = 6
+
+7 = readdir
+
+    command pointer + 0 = 7
+    command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
+
+    {return structure for each entry
+    4 byte files size
+    2 byte data
+    2 time
+    1 byte attribute
+    13 bytes filename ( zero terminated)
+    }
+    /* File attribute bits for directory entry (FILINFO.fattrib) */
+    #define	AM_RDO	0x01	/* Read only */
+    #define	AM_HID	0x02	/* Hidden */
+    #define	AM_SYS	0x04	/* System */
+    #define AM_DIR	0x10	/* Directory */
+    #define AM_ARC	0x20	/* Archive */
+
+8 = fmkdir
+
+    command pointer + 0 = 8
+    command pointer + 1 ... = directory name ( zero terminated)
+
+9 = chdir change directory
+
+    command pointer + 0 = 9
+    command pointer + 1 ... = directory name ( zero terminated)
+
+    /* Change current directory of the current drive ("dir1" under root directory) */
+    f_chdir("/dir1");
+
+    /* Change current directory of the drive "flash" and set it as current drive (at Unix style volume ID) */
+    f_chdir("/flash/dir1");
+
+10 = frename
+
+    command pointer + 0 = 10
+    command pointer + 1 ... =  old name ( zero terminated)
+    command pointer + ..newname ( zero terminated)
+
+11 = fgetfree
+
+    command pointer + 0 = 11
+    command pointer + 8,9,10,11 4 bytes freespace in bytes
+
+12 = fmount ( not sure how this works yet ) ( this could support swapping SDCARDs while running)
+
+    command pointer + 0 = 12
+
+13 = funmount ( not sure how this works yet )
+
+    command pointer + 0 = 13
+
+
+
+
 ## Internal status and control
 
 &FCCA selects the command/status address
