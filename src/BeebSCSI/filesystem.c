@@ -1301,7 +1301,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
 }
 
 
-// read a file buffer can be malloced if the address is NULL
+// Write a file
 
 uint32_t filesystemWriteFile(const char * filename, uint8_t *address, uint32_t max_size)
 {
