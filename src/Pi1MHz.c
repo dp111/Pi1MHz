@@ -126,7 +126,7 @@ typedef struct {
 
 static emulator_list emulator[] = {
    {"Helpers",helpers_init, 0x88, 1 }, // needs to be before framebuffer so it can write to the screen
-   {"Rampage",rampage_emulator_init, 0xFD, 1}, // needs to after helpers
+   {"Rampage",rampage_emulator_init, 0xFD, 1},
    {"Rambyte",rambyte_emulator_init, 0x00, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
