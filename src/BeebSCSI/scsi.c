@@ -111,11 +111,10 @@ static uint8_t scsiCommandStartStop(void);
 static uint8_t scsiCommandVerify(void);
 static uint8_t scsiCommandReadCapacity(void);
 
-#ifdef FCODE
 #include "fcode.h"
 static uint8_t scsiWriteFCode(void);
 static uint8_t scsiReadFCode(void);
-#endif
+
 static uint8_t scsiBeebScsiSense(void);
 static uint8_t scsiBeebScsiSelect(void);
 
@@ -191,6 +190,8 @@ void scsiReset(void)
    for (lunNumber = 0; lunNumber < 8; lunNumber++) {
       requestSenseData[lunNumber] = NO_ERROR;
    }
+
+   fcodeClearBuffer(); // clear teh FCODE buffer
 
    // Ensure the SCSI bus phase is BUS FREE
    scsiState = SCSI_BUSFREE;
@@ -271,7 +272,6 @@ void scsiProcessEmulation(void)
       scsiState = scsiCommandReadCapacity();
       break;
 
-#ifdef FCODE
       // Handle LV-DOS specific group 6 commands
       case SCSI_WRITE_FCODE:
       scsiState = scsiWriteFCode();
@@ -280,7 +280,7 @@ void scsiProcessEmulation(void)
       case SCSI_READ_FCODE:
       scsiState = scsiReadFCode();
       break;
-#endif
+
       // Handle BeebSCSI specific group 6 commands
       case SCSI_BEEBSCSI_SENSE:
       scsiState = scsiBeebScsiSense();
@@ -533,9 +533,9 @@ uint8_t scsiEmulationCommand(void)
          break;
       }
    }
-#ifdef FCODE
+
    // Transition to command based on received opCode (group 6 LV-DOS commands)
-   if (group == 6 && emulationMode == LVDOS_EMULATION) {
+   if (group == 6 /*&& emulationMode == LVDOS_EMULATION*/) { // ********** todo **********
       // Select group 6 command type
       switch (opCode) {
          case 0x0A:
@@ -547,7 +547,7 @@ uint8_t scsiEmulationCommand(void)
          break;
       }
    }
-#endif
+
    // Transition to command based on received opCode (group 6 BeebSCSI commands)
    if (group == 6) {
       // Select group 6 command type
@@ -1672,7 +1672,7 @@ static uint8_t scsiCommandReadCapacity(void)
    return SCSI_STATUS;
 }
 
-#ifdef FCODE
+
 // LV-DOS specific group 6 commands -----------------------------------------------------------------------------------
 
 // SCSI Command Write F-Code (group 6 - command 0x0A)
@@ -1713,7 +1713,7 @@ static uint8_t scsiWriteFCode(void)
 
    // Check for a host reset condition
    if (hostadapterReadResetFlag()) {
-      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Write DMA interrupted by host reset at byte #"), bytesTransferred, true);
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Write DMA interrupted by host reset at byte #"), (uint16_t)bytesTransferred, true);
       return SCSI_BUSFREE;
    }
 
@@ -1766,12 +1766,14 @@ static uint8_t scsiReadFCode(void)
    // Note: Since VFS is slower than ADFS we do not disable interrupts here as
    // disabling interrupts can cause incoming serial bytes to be lost
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Transferring F-Code buffer to the host...\r\n"));
-   DEBUG_bytesTransferred(hostadapterPerformReadDMA(scsiFcodeBuffer));
+   DEBUG_bytesTransferred(hostadapterPerformReadDMA(scsiFcodeBufferRX));
+
+   fcodeClearBuffer();
 
    // Check for a host reset condition
    if (hostadapterReadResetFlag()) {
       sei();
-      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Read DMA interrupted by host reset at byte #"), bytesTransferred, true);
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Read DMA interrupted by host reset at byte #"), (uint16_t) bytesTransferred, true);
 
       return SCSI_BUSFREE;
    }
@@ -1783,7 +1785,7 @@ static uint8_t scsiReadFCode(void)
    // Transition to the successful state
    return SCSI_STATUS;
 }
-#endif
+
 // BeebSCSI specific group 6 commands -----------------------------------------------------------------------------------
 
 // SCSI Command BeebSCSI Sense (group 6 - command 0x10)
