@@ -30,7 +30,7 @@ Read speed appears to be about 100K/sec.
 
 The emulation can play sounds through the computers internal speaker. If you are using the pi3B+ you can use the headphone jack. Currently if an ADFS access occurs while playing music the music will be interrupted briefly.
 
-See the command.txt section for various configuration options
+See the cmdline.txt section for various configuration options
 
 ## Expansion Ram Emulation
 
@@ -56,7 +56,7 @@ Addresses currently defined
 
 * &00 : Read only : JIM RAM size in 16Mbyte steps
 
-## Command.txt options
+## cmdline.txt options
 
 * LED override : depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx where xx is the pi GPIO number
 * M5000_BeebAudio_Off=1 to turn off Audio out of the Beeb and enable stereo on the headphone jack of Pi3B+
