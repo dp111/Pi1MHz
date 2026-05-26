@@ -115,12 +115,24 @@ void RPI_SetGpioPull(rpi_gpio_pin_t gpio, rpi_gpio_pull pull)
   pull_copy |= (pull << ((gpio % 16) * 2));
   *pull_reg = pull_copy;
 #else
+  /* BCM2835/2836/2837 have two GPPUDCLK registers:
+       GPPUDCLK0 covers GPIO 0..31
+       GPPUDCLK1 covers GPIO 32..53
+     Without selecting the right one, pull-up requests for GPIO >= 32 are
+     silently dropped (the high bits of (1 << gpio) get masked off by the
+     32-bit shift) - which breaks the WiFi SDIO pins on GPIO 34..39. */
   RPI_GpioBase->GPPUD = pull;
   RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
 
-  RPI_GpioBase->GPPUDCLK0 = (rpi_reg_wo_t) (1<<gpio);
-  RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
+  if (gpio < 32u) {
+    RPI_GpioBase->GPPUDCLK0 = (rpi_reg_wo_t) (1u << gpio);
+    RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
+    RPI_GpioBase->GPPUDCLK0 = 0;
+  } else {
+    RPI_GpioBase->GPPUDCLK1 = (rpi_reg_wo_t) (1u << (gpio - 32u));
+    RPI_WaitMicroSeconds(2); // wait of 150 cycles needed see datasheet
+    RPI_GpioBase->GPPUDCLK1 = 0;
+  }
 
-  RPI_GpioBase->GPPUDCLK0 = 0;
 #endif
 }
