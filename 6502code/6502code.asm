@@ -5,6 +5,8 @@ newoswrch = &FCA0
 discaccess =newoswrch+6
 OSBYTE = &FFF4
 OSWRCH = &FFEE
+OSNEWL = &FFE7
+
 MACRO PAGERTS
     LDX #&FF
     JMP &FC88
@@ -14,6 +16,14 @@ MACRO ENDBLOCK pos
     SKIPTO &FE00
     COPYBLOCK &FD00, &FE00, pos
     CLEAR &FD00, &FE00
+ENDMACRO
+
+MACRO PRTSTRING string
+FOR n,1,LEN(string)
+    LDA # ASC(MID$(string,n,1))
+    JSR &FFEE
+NEXT
+
 ENDMACRO
 
 MACRO LOADFILETOSWR filename
@@ -212,18 +222,11 @@ ORG &FD00
   PHA
   LDA #22: JSR &FFEE
   PLA : JSR &FFEE
-  LDX #0
 
-.stringloop
-    LDA string,X; auto increment register
-    JSR &FFEE
-    INX
-    TAY ; Set flags
-    BNE stringloop
+  PRTSTRING " Screen Redirector enabled."
+  JSR OSNEWL
+  JSR OSNEWL
   PAGERTS
-
-.string
-    EQUS " Screen Redirector enabled.": EQUB 13,10,13,10,0
 
   ENDBLOCK &200
 }
