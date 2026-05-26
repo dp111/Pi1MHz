@@ -69,7 +69,7 @@ static void ram_emulator_page_addr_high(unsigned int gpio)
    uint32_t addr = GET_ADDR(gpio);
    if (data >= (Pi1MHz->JIM_ram_size)) data = (uint8_t)(Pi1MHz->JIM_ram_size - 1);
                Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0x00FFFFFF) | ((size_t)data<<24));
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
@@ -78,7 +78,7 @@ static void ram_emulator_page_addr_mid(unsigned int gpio)
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0xFF00FFFF) | ((size_t)data<<16));
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
@@ -88,14 +88,14 @@ static void ram_emulator_page_addr_low(unsigned int gpio)
    uint32_t addr = GET_ADDR(gpio);
    Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0xFFFF00FF) | ((size_t)data<<8));
    // RPI_SetGpioHi(TEST_PIN);
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
    // RPI_SetGpioLo(TEST_PIN);
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
 void ram_emulator_page_restore(void)
 {
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
 }
 
 static void ram_emulator_page_write(unsigned int gpio)
@@ -174,7 +174,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
       putstring(ram,'\r', hex);
    }
 
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[0])) );
+   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[0]);
 }
 
 void rambyte_emulator_init( uint8_t instance , uint8_t address)

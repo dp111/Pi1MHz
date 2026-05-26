@@ -12,7 +12,8 @@
 #include "scripts/gitversion.h"
 #include "rpi/info.h"
 
-NOINIT_SECTION uint8_t helper_ram[4*1024];
+// 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
+_Alignas(4) NOINIT_SECTION uint8_t helper_ram[4*1024];
 
 static uint8_t helper_address;
 
@@ -117,7 +118,7 @@ static void helpers_bank_select(unsigned int gpio)
         if ((data )>= sizeof(helper_ram)>>8)
             data = 0;
 
-        Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&helper_ram[data<<8])) );
+        Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
         if (data==0)
         {
             helpers_screen_setup(( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000],1024);
