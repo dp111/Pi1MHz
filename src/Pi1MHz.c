@@ -179,7 +179,7 @@ void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
 // cppcheck-suppress unusedFunction
 uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 {
-   return Pi1MHz->Memory[addr<<1];
+   return Pi1MHz->Memory[addr];
 }
 
 // For each location in FRED and JIM which a task wants to be called for

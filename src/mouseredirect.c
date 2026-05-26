@@ -27,6 +27,11 @@ static uint32_t mouse_x;
 static uint32_t mouse_y;
 static uint8_t mouse_pointer;
 
+static void mouse_redirect_move_mouse_data(unsigned int gpio)
+{
+    Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
+}
+
 static void mouse_redirect_move_mouse(unsigned int gpio)
 {
     mouse_x = Pi1MHz_MemoryRead(fred_address + 0) | (Pi1MHz_MemoryRead(fred_address+1)<<8);
@@ -44,6 +49,9 @@ void mouse_redirect_init(uint8_t instance, uint8_t address)
 {
     // register call backs
     fred_address = address;
+    Pi1MHz_Register_Memory(WRITE_FRED, address+0, mouse_redirect_move_mouse_data );
+    Pi1MHz_Register_Memory(WRITE_FRED, address+1, mouse_redirect_move_mouse_data );
+    Pi1MHz_Register_Memory(WRITE_FRED, address+2, mouse_redirect_move_mouse_data );
     Pi1MHz_Register_Memory(WRITE_FRED, address+3, mouse_redirect_move_mouse );
     Pi1MHz_Register_Memory(WRITE_FRED, address+4, mouse_redirect_change_pointer );
 }
