@@ -1310,9 +1310,10 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 {
    if (lunOpenFlag) {
       // check that it is the same lunDirectory 
-      if (filesystemState.lunNumber != lunNumber)
+      if (filesystemState.lunNumber != lunNumber) {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): Flushing the file system\r\n"));
          filesystemFlush();
+      }
    }
 
    if (!lunOpenFlag) {
