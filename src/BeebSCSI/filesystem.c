@@ -48,7 +48,7 @@
  Fall back to slow seeking if the LUN is too fragmented instead of just failing over.
 
  Add using BeebVFS for the VFS LUNs
- 
+
  altered to allow variable sizes of Sectors per Track. This supports drives that have been
  connected on a ACB4070 which uses RLL encoding and allows a larger sector per track size.
  The default is 33 sectors per track (MFM)
@@ -68,7 +68,6 @@
 
 #define SZ_TBL 64
 
-#define MAX_LUNS 16
 // Minimum geometry details needed to operate the LUN
 // This saves looking them up again in the future
 struct HDGeometry
@@ -661,7 +660,7 @@ uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
 
 		// read the parameters into the cache
 		(*ptr).BlockSize 	= (((uint32_t)Buffer[9] << 16) |
-		                     ((uint32_t)Buffer[10] << 8) | 
+		                     ((uint32_t)Buffer[10] << 8) |
 								    (uint32_t)Buffer[11]);
 
 		(*ptr).Cylinders 	= (((uint32_t)Buffer[13] << 8) |
@@ -713,7 +712,7 @@ uint32_t filesystemGetLunTotalBytes( uint8_t lunNumber)
 	// The drive size (actual data storage) is calculated by the following formula:
 	//
 	// Tracks = Cylinders * Heads
-	// Total Sectors = Tracks * Sectors per Track 
+	// Total Sectors = Tracks * Sectors per Track
 	// (the default '33' is because SuperForm uses a 2:1 interleave format with 33 sectors per
 	// track (F-2 in the ACB-4000 manual))
 	// Total Bytes = Total Sectors * Block Size (block size is normally 256 bytes)
@@ -729,7 +728,7 @@ uint32_t filesystemGetLunTotalSectors( uint8_t lunNumber)
 	struct HDGeometry* ptr = &filesystemState.fsLunGeometry[lunNumber];
 
 	// Tracks = Cylinders * Heads
-	// Total Sectors = Tracks * Sectors per Track 
+	// Total Sectors = Tracks * Sectors per Track
 	return (((*ptr).Cylinders * (*ptr).Heads) * (*ptr).SectorsPerTrack);
 }
 
@@ -1146,7 +1145,7 @@ bool filesystemCreateLunExtAttributes_tmp(uint8_t lunNumber)
    fsResult = f_open(&fileObject, fileName, FA_CREATE_NEW);
    if (fsResult != FR_OK) {
       // Create .ext file failed
-      if (debugFlag_filesystem) { 
+      if (debugFlag_filesystem) {
 			debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_tmp: ERROR: Could not create new .tmp file!\r\n"));
       	debugStringInt16_P(PSTR("File system: filesystemCreateLunExtAttributes_tmp: ERROR = "), fsResult, true);
 		}
@@ -1182,7 +1181,7 @@ bool filesystemCreateLunExtAttributes_Rename(uint8_t lunNumber)
 
    // LUN external attributes file created successfully
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_Rename(): Successful\r\n"));
-   
+
 	filesystemState.fsLunHasExtendedAttributes[lunNumber] = true;
 
 	return true;
@@ -1244,7 +1243,7 @@ bool filesystemCreateLunExtAttributes_WriteValues(uint8_t lunNumber)
 					filesystemWriteline(&fileObject_tmp, newdata);
 				else
 					if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCreateLunExtAttributes_WriteValues(): ERROR: No value returned for non page mode token "), default_NonModePageTokens[i], true);
-			}	
+			}
 
 			// loop through the default Mode Pages that need creating
 			for (uint8_t i = 0; i < sizeof(default_ModePageTokens); i++) {
@@ -1259,7 +1258,7 @@ bool filesystemCreateLunExtAttributes_WriteValues(uint8_t lunNumber)
 
 		}
 		else {
-			// .ext file open for reading. Loop through and copy all values	
+			// .ext file open for reading. Loop through and copy all values
 			f_close(&fileObject_ext);
 		}
 	}
@@ -1269,7 +1268,7 @@ bool filesystemCreateLunExtAttributes_WriteValues(uint8_t lunNumber)
 
    // LUN external attributes written to temp file successfully
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunExtAttributes_WriteValues(): Attributes written to tmp file successfully\r\n"));
-   
+
 	// rename .tmp file to .ext file
 	return filesystemCreateLunExtAttributes_Rename(lunNumber);
 
@@ -1293,11 +1292,11 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
    if (fsResult != FR_OK) {
       // LUN extended properties file is not found
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file not found\r\n"));
-		
-		
+
+
 		filesystemCreateLunExtAttributes_WriteValues(lunNumber);
-      
-		
+
+
 		// continue using values from .dsc file and other generic defaults
 		// filesystemState.fsLunHasExtendedAttributes[lunNumber] = false;
 
