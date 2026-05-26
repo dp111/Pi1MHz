@@ -30,9 +30,10 @@ static size_t strlcpylen(char *dst, const char *src, size_t dstsize)
 }
 
 
-void helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
+size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
 {
   // We also hide the help screen at &FFE000
+        char * const start = helpscreen;
         char hex[3];
         char dec[4];
         char M5000address[4];
@@ -52,6 +53,9 @@ void helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         size = strlcpylen(helpscreen, get_info_string(), helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
         size = (size_t)snprintf(helpscreen, helpscreen_size, " %2.1fC", (double) get_temp() );
+        // snprintf returns the would-be length, which may exceed the buffer;
+        // clamp so the running pointer/size (and the returned length) stay exact.
+        if (size >= helpscreen_size) size = helpscreen_size - 1;
         helpscreen += size;helpscreen_size -= size;
         size= strlcpylen(helpscreen, "\r\n"
         "\r\n3 ways to start helper functions :"
@@ -95,7 +99,12 @@ void helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         helpscreen += size;helpscreen_size -= size;
         size = strlcpylen(helpscreen, M5000address, helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        strlcpylen(helpscreen,":*FX147,203,0 #End Record\r\n", helpscreen_size);
+        size = strlcpylen(helpscreen,":*FX147,203,0 #End Record\r\n", helpscreen_size);
+        helpscreen += size;
+
+        // Return the number of characters written (excluding the NUL) so the
+        // caller can pass the exact length to fb_writen() with no strlen().
+        return (size_t)(helpscreen - start);
 }
 
 static void helpers_bank_select(unsigned int gpio)

@@ -105,16 +105,28 @@ static volatile uint8_t flash_space_time = 25;
 
 // VDU Queue
 #define VDU_QSIZE 8192
+#define VDU_BUF_LEN 16
 static volatile unsigned int vdu_wp = 0;
 static volatile unsigned int vdu_rp = 0;
-NOINIT_SECTION static uint8_t vdu_queue[VDU_QSIZE];
-
-#define VDU_BUF_LEN 16
+// The ring is over-allocated by VDU_BUF_LEN bytes. Every write to an index
+// < VDU_BUF_LEN is mirrored at index + VDU_QSIZE, so any whole VDU command
+// (at most 10 bytes) is contiguously readable at &vdu_queue[vdu_rp] even
+// across the wrap point - the consumer hands the handler a direct pointer.
+NOINIT_SECTION static uint8_t vdu_queue[VDU_QSIZE + VDU_BUF_LEN];
 
 typedef struct {
    int len;
    void (*handler)(const uint8_t *buf);
 } vdu_operation_t;
+
+// Append one complete multi-byte VDU command to the queue (defined below).
+static void fb_writen(const uint8_t *buf, unsigned int len);
+
+// Queue a string *literal*: the length is computed at compile time with
+// sizeof, so there is no runtime strlen(). Valid only for a string literal
+// or char array - never a char* (sizeof would yield the pointer size). Use
+// fb_writes() for runtime strings.
+#define fb_writes_literal(s) fb_writen((const uint8_t *)(s), (unsigned int)(sizeof(s) - 1u))
 
 static void vdu_4(const uint8_t *buf);
 static void vdu_5(const uint8_t *buf);
@@ -750,17 +762,17 @@ static void graphics_cursor_home(const uint8_t *buf) {
 }
 
 static void graphics_cursor_tab(const uint8_t *buf) {
-   uint16_t x = (uint16_t)buf[1];
-   uint16_t y = (uint16_t)buf[2];
+   int x = (int)buf[1];
+   int y = (int)buf[2];
 #ifdef DEBUG_VDU
    printf("cursor move to %d %d\r\n", x, y);
 #endif
    // Scale to absolute external coordinates
-   x = (uint16_t)(x * (font_width << screen->xeigfactor));
-   y = (uint16_t)(y * (font_height << screen->yeigfactor));
+   x = x * (font_width << screen->xeigfactor);
+   y = y * (font_height << screen->yeigfactor);
    // Take account of current text window
-   x = (uint16_t)(x + g_window.left) ;
-   y = (uint16_t)(y + g_window.bottom);
+   // x = (uint16_t)(x + g_window.left) ;
+   // y = (uint16_t)(y + g_window.bottom);
    // Deliberately don't range check here
    g_x_pos = (int16_t)(g_window.left + x);
    g_y_pos = (int16_t)(g_window.bottom + y);
@@ -1365,7 +1377,7 @@ static void vdu_22(const uint8_t *buf) {
    if (new_screen != NULL) {
       change_mode(new_screen);
    } else {
-      fb_writes("Unsupported screen mode!\r\n");
+      fb_writes_literal("Unsupported screen mode!\r\n");
    }
 }
 
@@ -1657,29 +1669,15 @@ static void vdu_default(const uint8_t *buf) {
 // ==========================================================================
 
 static void select_font(int n, int sh, int sv, int r) {
-   fb_writec(23);
-   fb_writec(19);
-   fb_writec(0);
-   fb_writec((char)n);
-   fb_writec((char)sh);
-   fb_writec((char)sv);
-   fb_writec(0xff);
-   fb_writec(0xff);
-   fb_writec((char)r);
-   fb_writec(0);
+   const uint8_t cmd[] = {
+      23, 19, 0, (uint8_t)n, (uint8_t)sh, (uint8_t)sv, 0xff, 0xff, (uint8_t)r, 0
+   };
+   fb_writen(cmd, sizeof cmd);
 }
 
 static void cursor(int n) {
-   fb_writec(23);
-   fb_writec(1);
-   fb_writec((char)n);
-   fb_writec(0);
-   fb_writec(0);
-   fb_writec(0);
-   fb_writec(0);
-   fb_writec(0);
-   fb_writec(0);
-   fb_writec(0);
+   const uint8_t cmd[] = { 23, 1, (uint8_t)n, 0, 0, 0, 0, 0, 0, 0 };
+   fb_writen(cmd, sizeof cmd);
 }
 #if 0
 static void plot(int n, int x, int y) {
@@ -1761,37 +1759,27 @@ static void fb_show_splash_screen(void) {
 
 #if 1
    // Select the default screen mode
-   fb_writec(22);
-   fb_writec(DEFAULT_SCREEN_MODE);
+   { const uint8_t c[] = { 22, DEFAULT_SCREEN_MODE }; fb_writen(c, sizeof c); }
    // Turn of the cursor (as there are some bugs when changing fonts)
    cursor(0);
    select_font(12, 2, 2, 0); // Computer Font
-   fb_writes("Pi1MHz VDU Driver\r\n\n");
+   fb_writes_literal("Pi1MHz VDU Driver\r\n\n");
 
-   fb_writec(17);
 #ifdef DEBUG
-   fb_writec(3); // Red in MODE 21
-   fb_writes("      DEBUG Kernel\r\n");
+   { const uint8_t c[] = { 17, 3 }; fb_writen(c, sizeof c); }  // Red in MODE 21
+   fb_writes_literal("      DEBUG Kernel\r\n");
 #else
-   fb_writec(12); // Green in MODE 21
-   fb_writes("      NORMAL Kernel\r\n");
+   { const uint8_t c[] = { 17, 12 }; fb_writen(c, sizeof c); } // Green in MODE 21
+   fb_writes_literal("      NORMAL Kernel\r\n");
 #endif
-   fb_writec(17);
-   fb_writec(63); // White in MODE 21
+   { const uint8_t c[] = { 17, 63 }; fb_writen(c, sizeof c); } // White in MODE 21
 
    char screeninfo[1024];
-   helpers_screen_setup(screeninfo, sizeof(screeninfo));
-   for (unsigned int i = 0; i < sizeof(screeninfo); i++) {
-      if (screeninfo[i] == '\0') {
-         break;
-      } else {
-         fb_writec(screeninfo[i]);
-      }
-   }
+   size_t infolen = helpers_screen_setup(screeninfo, sizeof(screeninfo));
+   fb_writen((const uint8_t *)screeninfo, (unsigned int)infolen);
   // cursor(1);
 #else
-   fb_writec(22);
-   fb_writec(1);
+   { const uint8_t c[] = { 22, 1 }; fb_writen(c, sizeof c); }
    cursor(0);
 #endif
 }
@@ -1809,8 +1797,7 @@ static void fb_initialize(void) {
    initialize_font_by_name("SAA5050", &font_teletext);
 
    // Select the default screen mode
-   fb_writec(22);
-   fb_writec(DEFAULT_SCREEN_MODE);
+   { const uint8_t c[] = { 22, DEFAULT_SCREEN_MODE }; fb_writen(c, sizeof c); }
 
    // Enable the timer interrupts (flashing colours, cursor, etc)
    RPI_ArmTimerInit();
@@ -1862,31 +1849,6 @@ void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours) {
    change_mode(new_screen);
 }
 
-static void writec(char ch) {
-
-   static int vdu_index = 0;
-   static vdu_operation_t *vdu_op = NULL;
-   NOINIT_SECTION  static uint8_t vdu_buf[VDU_BUF_LEN];
-
-   uint8_t c = (uint8_t) ch;
-
-   // Buffer the character
-   vdu_buf[vdu_index] = c;
-
-   // Start of a VDU command
-   if (vdu_index == 0) {
-      vdu_op = vdu_operation_table + c;
-   }
-
-   // End of a VDU command
-   if (vdu_index == vdu_op->len) {
-      vdu_index = 0;
-      vdu_op->handler(vdu_buf);
-   } else {
-      vdu_index++;
-   }
-}
-
 void fb_process_flash(void)
 {
    static uint8_t cursor_count = 0;
@@ -1932,39 +1894,72 @@ void fb_process_vdu_queue(void) {
       // Clear the ARM Timer interrupt
       RPI_GetArmTimer()->IRQClear = 0;
 
-      // Service the VDU Queue
+      // Service the VDU queue one whole command at a time. The mirrored tail
+      // (see vdu_queue) makes &vdu_queue[vdu_rp] contiguous for the whole
+      // command, so the handler is given a direct pointer - no copy.
       while (vdu_rp != vdu_wp) {
-         uint8_t ch = vdu_queue[vdu_rp];
-         writec(ch);
-         vdu_rp = (vdu_rp + 1) & (VDU_QSIZE - 1);
+         unsigned int rp = vdu_rp;
+         const vdu_operation_t *vdu_op = vdu_operation_table + vdu_queue[rp];
+         unsigned int needed = (unsigned int)vdu_op->len + 1u;
+         // Stop if the whole command (command byte + parameters) has not
+         // arrived yet; it is picked up on a later call.
+         if (((vdu_wp - rp) & (VDU_QSIZE - 1)) < needed)
+            break;
+         vdu_op->handler(&vdu_queue[rp]);
+         vdu_rp = (rp + needed) & (VDU_QSIZE - 1);
       }
    }
 }
 
-void fb_writec_buffered(char c) {
-   // TODO: Deal with overflow
-   unsigned int irq = _disable_interrupts_cspr();
-   vdu_queue[vdu_wp] = c;
-   vdu_wp = (vdu_wp + 1) & (VDU_QSIZE - 1);
-  _set_interrupts(irq);
+// Append a block of bytes to the VDU queue. Interrupts are disabled per
+// VDU_BUF_LEN-byte chunk: that keeps any single VDU command (<= 10 bytes,
+// always passed as one block) atomic against a FIQ Beeb byte, while a long
+// run of text only holds interrupts off for a bounded window at a time.
+// Writes near the start of the ring are mirrored into the over-allocated
+// tail so the consumer can read wrapped commands contiguously.
+// If the queue is full a chunk is dropped whole, never partially: a VDU
+// command is always a single chunk, so a command is dropped all-or-nothing
+// and the consumer never sees a half-written command.
+static void vdu_enqueue(const uint8_t *buf, unsigned int len) {
+   unsigned int i = 0;
+   while (i < len) {
+      unsigned int chunk = len - i;
+      if (chunk > VDU_BUF_LEN) chunk = VDU_BUF_LEN;
+      unsigned int irq = _disable_interrupts_cspr();
+      unsigned int wp = vdu_wp;
+      // Free space: capacity is VDU_QSIZE-1 (one slot separates full from
+      // empty). vdu_rp is stable here - the consumer IRQ is masked.
+      unsigned int space = (vdu_rp - wp - 1u) & (VDU_QSIZE - 1);
+      if (space < chunk) {
+         _set_interrupts(irq);
+         break;                          // queue full - drop the rest
+      }
+      for (unsigned int j = 0; j < chunk; j++) {
+         uint8_t b = buf[i + j];
+         vdu_queue[wp] = b;
+         if (wp < VDU_BUF_LEN)
+            vdu_queue[wp + VDU_QSIZE] = b;  // keep the mirrored tail in sync
+         wp = (wp + 1) & (VDU_QSIZE - 1);
+      }
+      vdu_wp = wp;
+      _set_interrupts(irq);
+      i += chunk;
+   }
 }
 
 void fb_writec(char c) {
- // *** TODO Disable interrupts to avoid race condition
-   // Avoid re-ordering parasite and host characters
-   if (vdu_rp != vdu_wp) {
-      // Some characters are already queued, so append to the end of the queue
-      fb_writec_buffered(c);
-   } else {
-      // Otherwise, it's safe to print directly
-      writec(c);
-   }
+   uint8_t b = (uint8_t)c;
+   vdu_enqueue(&b, 1);
+}
+
+// Append one complete multi-byte VDU command as a single unit so a FIQ Beeb
+// byte cannot be interleaved into the middle of it.
+static void fb_writen(const uint8_t *buf, unsigned int len) {
+   vdu_enqueue(buf, len);
 }
 
 void fb_writes(const char *string) {
-   while (*string) {
-      fb_writec(*string++);
-   }
+   vdu_enqueue((const uint8_t *)string, (unsigned int)strlen(string));
 }
 
 int fb_get_cursor_x(void) {
@@ -2387,8 +2382,17 @@ uint8_t fb_get_gcol_from_colnum(uint8_t colnum) {
 
 static void fb_emulator_vdu(unsigned int gpio)
 {
-   vdu_queue[vdu_wp] = GET_DATA(gpio);
-   vdu_wp = (vdu_wp + 1) & (VDU_QSIZE - 1);
+   // FIQ context: append one Beeb VDU byte. Writes near the ring start are
+   // mirrored into the over-allocated tail (see vdu_queue).
+   unsigned int wp = vdu_wp;
+   unsigned int next = (wp + 1) & (VDU_QSIZE - 1);
+   if (next == vdu_rp)
+      return;                            // queue full - drop the byte
+   uint8_t data = (uint8_t)GET_DATA(gpio);
+   vdu_queue[wp] = data;
+   if (wp < VDU_BUF_LEN)
+      vdu_queue[wp + VDU_QSIZE] = data;  // keep the mirrored tail in sync
+   vdu_wp = next;
 }
 
 void fb_emulator_ram(unsigned int gpio)
@@ -2407,7 +2411,7 @@ void fb_emulator_init(uint8_t instance, uint8_t address)
   Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
  // Create 6 bytes of RAM for vector code
   Pi1MHz_MemoryWrite((uint32_t)(address+0), 0x8D);
-  Pi1MHz_MemoryWrite((uint32_t)(address+1), (uint8_t) address);
+  Pi1MHz_MemoryWrite((uint32_t)(address+1), address);
   Pi1MHz_MemoryWrite((uint32_t)(address+2), 0XFC);
   Pi1MHz_MemoryWrite((uint32_t)(address+3), 0x4c);
 
