@@ -101,6 +101,9 @@ static void helpers_bank_select(unsigned int gpio)
         // put JMP instruction stream
         Pi1MHz_MemoryWrite(addr+4, 0x4c);
         // select page
+        if ((data )>= sizeof(helper_ram)>>8)
+            data = 0;
+
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&helper_ram[data<<8])) );
         if (data==0)
         {
