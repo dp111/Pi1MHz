@@ -61,3 +61,7 @@ cppcheck fixes
 Fix initialisation of the filesystem before trying to load JIM_init.bin.
 Load BEEB.mmc into JIM @ +16Mbytes if it exists.
 NB M5000 is broken currently
+
+V.1.09 (test build)
+Speedup page write in ram_emulator_page_addr was 38.2uS now 6.8uS
+Tidy up NOE pin definition
