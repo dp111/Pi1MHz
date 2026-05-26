@@ -13,11 +13,11 @@
 
 #define FIQ_SETUP_CODE 1
 .macro FIQ_SETUP_M
-   mov     R12,#0
-   LDR     r11,= Pi1MHz_VPU_RETURN
-   mov     r10, # ADDRBUS_MASK>>ADDRBUS_SHIFT
-   orr     r10,r10,#NPCFC_MASK>>ADDRBUS_SHIFT
-   mov     r10, r10 , LSL # 2
+   mov     R12, #0
+   LDR     r11, =Pi1MHz_VPU_RETURN
+   mov     r10, #ADDRBUS_MASK>>ADDRBUS_SHIFT
+   orr     r10, r10, #NPCFC_MASK>>ADDRBUS_SHIFT
+   mov     r10, r10, LSL # 2
 .endm
 
 .macro DMB_MACRO reg
@@ -43,14 +43,13 @@ FIQstart:
 
 // Stall as going off chip
 // so do something a bit useful
-   orr      r12,r12,#(PERIPHERAL_BASE + 0x00B844) & 0xff000000
-   orr      r12,r12,#(PERIPHERAL_BASE + 0x00B844) & 0x00ff0000
-   orr      r12,r12,#(PERIPHERAL_BASE + 0x00B844) & 0x0000ff00
-   orr      r12,r12,#(PERIPHERAL_BASE + 0x00B844) & 0x000000ff
+   orr      r12, r12, #(PERIPHERAL_BASE + 0x00B844) & 0xff000000
+   orr      r12, r12, #(PERIPHERAL_BASE + 0x00B844) & 0x00ff0000
+   orr      r12, r12, #(PERIPHERAL_BASE + 0x00B844) & 0x0000ff00
 
    tst      r8, # RNW_MASK
 
-   LDR      r12,[R12]       // read door bell to ack
+   LDR      r12, [R12, #(PERIPHERAL_BASE + 0x00B844) & 0x000000ff]       // read door bell to ack
 
    and      r9, r10, r8, LSR # ADDRBUS_SHIFT - 2 // isolate address bus and fred or jim
 
