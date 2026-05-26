@@ -44,7 +44,7 @@ V1.06
 gcc 12 fixes
 A few minor improvements
 config.txt disable poe fan
-Speed up sdcard initalisation
+Speed up sdcard initialisation
 Fix SCSI format Bug
 Speed up reading from mailboxes
 Fix Pizero2 VPU address bug.
