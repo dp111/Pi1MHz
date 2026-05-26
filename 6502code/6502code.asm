@@ -2,7 +2,7 @@
 ; Pi1MHz 6502 code
 ;
 
-diskaccees = &FCD6
+discaccess = &FCD6
 
 MACRO PAGESELECT
     SKIPTO &FDF0
@@ -136,42 +136,42 @@ ORG &FD00
     JMP pagerts ; no SWR found
 .SWRfound
     ; fopen
-    LDY #0   : STY diskaccees
-    DEY      : STY diskaccees+1
-               STY diskaccees+2
+    LDY #0   : STY discaccess
+    DEY      : STY discaccess+1
+               STY discaccess+2
 .fopenloop
     INY
-    LDA fopenstring, Y: STA diskaccees+3
+    LDA fopenstring, Y: STA discaccess+3
     BPL fopenloop
-    STA diskaccees+4
+    STA discaccess+4
 
 .fopencheckloop
-    LDA diskaccees+4
+    LDA discaccess+4
     BMI fopencheckloop
     BNE pagertsjmp ; file not found
 
-    LDY #0   : STY diskaccees
-    DEY      : STY diskaccees+1
-               STY diskaccees+2
+    LDY #0   : STY discaccess
+    DEY      : STY discaccess+1
+               STY discaccess+2
 
 .freadsetuploop
-    LDA freaddata+1, Y: STA diskaccees+3
+    LDA freaddata+1, Y: STA discaccess+3
     INY
     CPY #12
     BNE freadsetuploop
-    STA diskaccees+4
+    STA discaccess+4
 
 .freadcheckloop
-    LDA diskaccees+4
+    LDA discaccess+4
     BMI freadcheckloop
     BEQ readdone
     CMP #20
     BNE pagerts ; file open error
 
 .readdone
-    LDY #0   : STY diskaccees
-             : STY diskaccees+1
-    LDA #&F0 : STA diskaccees+2
+    LDY #0   : STY discaccess
+             : STY discaccess+1
+    LDA #&F0 : STA discaccess+2
 
              : STY swrpointer+1
     LDA #&80 : STA swrpointer+2
@@ -182,7 +182,7 @@ ORG &FD00
     STX &FE30
 
 .copyswrloop
-    LDA diskaccees+3 : .swrpointer STA &8000,Y
+    LDA discaccess+3 : .swrpointer STA &8000,Y
     INY
     BNE copyswrloop
 
@@ -224,43 +224,43 @@ ORG &FD00
     JMP pagerts ; no SWR found
 .SWRfound
     ; fopen
-    LDY #0   : STY diskaccees
-    DEY      : STY diskaccees+1
-               STY diskaccees+2
+    LDY #0   : STY discaccess
+    DEY      : STY discaccess+1
+               STY discaccess+2
 
 .fopenloop
     INY
-    LDA fopenstring, Y: STA diskaccees+3
+    LDA fopenstring, Y: STA discaccess+3
     BPL fopenloop
-    STA diskaccees+4
+    STA discaccess+4
 
 .fopencheckloop
-    LDA diskaccees+4
+    LDA discaccess+4
     BMI fopencheckloop
     BNE pagertsjmp ; file not found
 
-    LDY #0   : STY diskaccees
-    DEY      : STY diskaccees+1
-               STY diskaccees+2
+    LDY #0   : STY discaccess
+    DEY      : STY discaccess+1
+               STY discaccess+2
 
 .freadsetuploop
-    LDA freaddata+1, Y: STA diskaccees+3
+    LDA freaddata+1, Y: STA discaccess+3
     INY
     CPY #12
     BNE freadsetuploop
-    STA diskaccees+4
+    STA discaccess+4
 
 .freadcheckloop
-    LDA diskaccees+4
+    LDA discaccess+4
     BMI freadcheckloop
     BEQ readdone
     CMP #20
     BNE pagerts ; file open error
 
 .readdone
-    LDY #0   : STY diskaccees
-             : STY diskaccees+1
-    LDA #&F0 : STA diskaccees+2
+    LDY #0   : STY discaccess
+             : STY discaccess+1
+    LDA #&F0 : STA discaccess+2
 
              : STY swrpointer+1
     LDA #&80 : STA swrpointer+2
@@ -271,7 +271,7 @@ ORG &FD00
     STX &FE30
 
 .copyswrloop
-    LDA diskaccees+3 : .swrpointer STA &8000,Y
+    LDA discaccess+3 : .swrpointer STA &8000,Y
     INY
     BNE copyswrloop
 
