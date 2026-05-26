@@ -44,9 +44,9 @@
 
 // Define the major and minor firmware version number returned
 // by the BSSENSE command
-#define FIRMWARE_MAJOR     0x02
-#define FIRMWARE_MINOR     0x05
-#define FIRMWARE_STRING    "V002.005"
+#define FIRMWARE_MAJOR     0x03
+#define FIRMWARE_MINOR     0x00
+#define FIRMWARE_STRING    "V003.000"
 
 // Debug code displays the bytes transfer
 // when a non debug build is used the variable bytesTransferred becomes unused.
