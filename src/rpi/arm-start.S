@@ -107,8 +107,14 @@ _reset_:
     // System Control Register
     mcr     p15,0,r4,c1,c0,0
 
+#if defined(RPI4)
+   ldr      r4,=0xff842000
+   mov      r5,#0
+   str      r5,[r4]        // disable GIC on rpi4
+#endif
+
     // Set the CPACR for access to all coprocessors
-    mov     r4, #0x00FFFFFF
+    mov     r4, #0x0fffffff
     mcr     p15, 0, r4, c1, c0, 2
 
     // Enable VFP ------------------------------------------------------------
