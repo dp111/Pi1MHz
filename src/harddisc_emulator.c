@@ -25,9 +25,6 @@ volatile uint8_t HD_DATA;
 volatile bool HD_SEL;
 volatile bool HD_IRQ_ENABLE;
 
-#define ACK_CLEAR 0
-#define ACK_SET   1
-
 #define CLEAR     0
 #define ACTIVE    1
 
@@ -280,7 +277,15 @@ uint8_t hostadapterReadByte(void)
    hostadapterWriteRequestFlag(ACTIVE);
 
    // Wait for ACKnowledge
-   while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active());
+   uint32_t timeoutCounter = 0; // Reset timeout counter
+
+   while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
+   {
+      if (++timeoutCounter == TOC_MAX)
+      {
+         break;
+      }
+   }
 
    hostadapterWriteRequestFlag(CLEAR);
 
@@ -297,7 +302,16 @@ void hostadapterWriteByte(uint8_t databusValue)
    hostadapterWriteRequestFlag(ACTIVE);
 
    // Wait for ACKnowledge
-   while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active());
+   uint32_t timeoutCounter = 0; // Reset timeout counter
+
+   while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
+   {
+      if (++timeoutCounter == TOC_MAX)
+      {
+         break;
+      }
+   }
+
 
    // Clear the REQuest signal
    hostadapterWriteRequestFlag(CLEAR);
@@ -335,7 +349,7 @@ uint32_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
       hostadapterWriteRequestFlag(CLEAR);
    } while (currentByte < 256 );
 
-   return currentByte - 1;
+   return currentByte;
 }
 
 // Host writes data to SCSI device using DMA transfer (writes a 256 byte block)
@@ -368,7 +382,7 @@ uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
       hostadapterWriteRequestFlag(CLEAR);
    } while (currentByte < 256 );
 
-   return currentByte - 1;
+   return currentByte;
 }
 
 // Host adapter signal control and detection functions ------------------------------------
@@ -376,20 +390,20 @@ uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
 // Function to determine if the host adapter is connected to the external or internal
 // host bus
 // cppcheck-suppress unusedFunction
-bool hostadapterConnectedToExternalBus(void)
+inline bool hostadapterConnectedToExternalBus(void)
 {
    //if ((INTNEXT_PIN & INTNEXT) != 0) return false; // Internal bus
    return true; // External bus
 }
 
 // Function to write the host reset flag
-void hostadapterWriteResetFlag(bool flagState __attribute__((unused)))
+inline void hostadapterWriteResetFlag(bool flagState __attribute__((unused)))
 {
 
 }
 
 // Function to return the state of the host reset flag
-bool hostadapterReadResetFlag(void)
+inline bool hostadapterReadResetFlag(void)
 {
    return Pi1MHz_is_rst_active();
 }
