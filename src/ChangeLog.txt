@@ -26,6 +26,8 @@ Tweek FIQ handler to be a bit faster
 
 V1.04d
 Change frame buffer size to 640x512 ( to match the Beeb better)
-Added sudo mode support ( not mode 7)
+Added pseudo mode support ( not mode 7)
 Changed font to BBC font
 Changed cursor to underline
+Bodge cursor fix for first cursor move.
+VDU 23 support
