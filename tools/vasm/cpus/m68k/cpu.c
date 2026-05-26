@@ -57,6 +57,7 @@ static unsigned char opt_div = 0;     /* DIVU/DIVS.L #n,Dn -> LSR/ASR #n,Dn */
 static unsigned char opt_fconst = 1;  /* Fxxx.D #m,FPn -> Fxxx.S #m,FPn */
 static unsigned char opt_brajmp = 0;  /* branch to different sect. into jump */
 static unsigned char opt_pc = 1;      /* <label> -> (<label>,PC) */
+static unsigned char opt_pc080 = 0;   /* dest.label -> (<label>,PC) (Apollo) */
 static unsigned char opt_bra = 1;     /* B<cc>.L -> B<cc>.W -> B<cc>.B */
 static unsigned char opt_allbra = 0;  /* also optimizes sized branches */
 static unsigned char opt_jbra = 0;    /* JMP/JSR <ext> -> BRA.L/BSR.L (020+) */
@@ -431,6 +432,7 @@ void cpu_opts(void *opts)
     case OCMD_OPTIMMADDR: opt_immaddr=arg; break;
     case OCMD_OPTSPEED: opt_speed=arg; break;
     case OCMD_OPTSIZE: opt_size=arg; break;
+    case OCMD_OPTPC080: opt_pc080=arg; break;
     case OCMD_SMALLCODE: opt_sc=arg; break;
     case OCMD_SMALLDATA: opt_sd=arg; break;
 
@@ -527,7 +529,8 @@ void print_cpu_opts(FILE *f,void *opts)
     "opt displacement","opt absolute","opt moveq","opt neg.moveq",
     "opt quick", "opt branch to nop","opt base disp","opt outer disp",
     "opt adda/subq to lea","opt lea to addq/subq","opt immediate areg",
-    "opt for speed","opt for size","opt small code","opt small data",
+    "opt for speed","opt for size","opt dest-pc",
+    "opt small code","opt small data",
     "warn about optimizations","PIC check","type and range checks",
     "hide all warnings"
   };
@@ -2300,10 +2303,12 @@ static int copy_float_exp(unsigned char *d,operand *op,int size)
 }
 
 
-static void optimize_oper(operand *op,struct optype *ot,section *sec,
+static void optimize_oper(int i,instruction *ip,section *sec,
                           taddr pc,taddr cpc,int final)
 /* evaluate expressions in operand and try to optimize addressing modes */
 {
+  uint16_t modes = optypes[mnemonics[ip->code].operand_type[i]].modes;
+  operand *op = ip->op[i];
   int size16[2]; /* true, when extval[] fits into 16 bits */
   taddr pcdisp;  /* calculated pc displacement = (label - current_pc) */
   int pcdisp16;  /* true, when pcdisp fits into 16 bits */
@@ -2338,7 +2343,7 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
 
     if (op->mode==MODE_An16Disp) {
       if (opt_disp && !op->base[0] && op->extval[0]==0 &&
-          (ot->modes & (1<<AM_AnIndir))) {
+          (modes & (1<<AM_AnIndir))) {
         /* (0,An) --> (An) */
         op->mode = MODE_AnIndir;
         if (final) {
@@ -2350,7 +2355,7 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
       }
       else if (((op->base[0] && !undef) || (!op->base[0] && !size16[0])) &&
                (cpu_type & (m68020up|cpu32)) && op->reg!=sdreg &&
-               (ot->modes & (1<<AM_An8Format))) {
+               (modes & (1<<AM_An8Format))) {
         /* (d16,An) --> (bd32,An,ZDn.w) for 020+ only */
         op->mode = MODE_An8Format;
         op->format = FW_FullFormat | FW_IndexSuppress | FW_BDSize(FW_Long);
@@ -2362,7 +2367,7 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
 
     else if (op->mode==MODE_Extended && op->reg==REG_PC16Disp &&
              (cpu_type & (m68020up|cpu32)) &&
-             (ot->modes & (1<<AM_PC8Format))) {
+             (modes & (1<<AM_PC8Format))) {
       if ((absdpc && !size16[0]) || (secrel && !pcdisp16)) {
         /* (d16,PC) --> (bd32,PC,ZDn.w) for 020+ only */
         op->reg = REG_PC8Format;
@@ -2404,7 +2409,7 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
     }
 
     else if (op->mode==MODE_Extended && op->reg==REG_AbsShort &&
-             (ot->modes & (1<<AM_AbsLong))) {
+             (modes & (1<<AM_AbsLong))) {
       if (!op->base[0] && !size16[0]) {
         /* absval.w --> absval.l */
         op->reg = REG_AbsLong;
@@ -2421,14 +2426,14 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
 
     else if (op->mode==MODE_Extended && op->reg==REG_AbsLong) {
       if (opt_abs && !op->base[0] && size16[0] &&
-          (ot->modes & (1<<AM_AbsShort))) {
+          (modes & (1<<AM_AbsShort))) {
         /* absval.l --> absval.w */
         op->reg = REG_AbsShort;
         if (final && warn_opts>1)
           cpu_error(49,"abs.l->abs.w");
       }
       else if (sdreg>=0 && op->base[0]!=NULL &&
-               (ot->modes & (1<<AM_An16Disp)) &&
+               (modes & (1<<AM_An16Disp)) &&
                ((opt_gen && (op->base[0]->flags&NEAR)) ||
                 (opt_sd && LOCREF(op->base[0]) &&
                  (op->base[0]->sec->flags&NEAR_ADDRESSING))) &&
@@ -2439,7 +2444,8 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
         if (final && warn_opts>1)
           cpu_error(49,"label->(label,An)");
       }
-      else if (opt_pc && (ot->modes & (1<<AM_PC16Disp))) {
+      else if (((!i && opt_pc) || (i && opt_pc080)) &&
+               (modes & (1<<AM_PC16Disp))) {
         if (secrel && pcdisp16) {
           /* label.l --> d16(PC) */
           op->reg = REG_PC16Disp;
@@ -2470,7 +2476,7 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
           /* base relative addressing in 020 full format */
 
           if ((op->format & FW_IndexSuppress) &&
-              (ot->modes & (1<<AM_An16Disp)) &&
+              (modes & (1<<AM_An16Disp)) &&
               !(op->flags & FL_ZIndex)) {
             /* (label,An,ZRn) --> (label,An) small-data */
             op->mode = MODE_An16Disp;
@@ -2498,7 +2504,7 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
         else if (opt_bdisp && bdopt && !op->base[0] && size16[0] &&
                  FW_getBDSize(op->format)==FW_Long) {
           if ((op->format & FW_IndexSuppress) &&
-              (ot->modes & (1<<AM_An16Disp)) &&
+              (modes & (1<<AM_An16Disp)) &&
               !(op->flags & FL_ZIndex)) {
             /* (bd32,An,ZRn) --> (d16,An) */
             op->mode = MODE_An16Disp;
@@ -2519,7 +2525,7 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
       else if (opt_gen && !op->base[0] &&
                (op->format & FW_IndexSuppress) &&
                !(op->format & FW_BaseSuppress) &&
-               (ot->modes & (1<<AM_AnIndir)) &&
+               (modes & (1<<AM_AnIndir)) &&
                !(op->flags & FL_ZIndex)) {
         /* (An,ZRn) --> (An) */
         op->mode = MODE_AnIndir;
@@ -2607,7 +2613,7 @@ static void optimize_oper(operand *op,struct optype *ot,section *sec,
                  ((secrel && pcdisp16) || (absdpc && size16[0]))
                  && FW_getBDSize(op->format)==FW_Long) {
           if ((op->format & FW_IndexSuppress) &&
-              (ot->modes & (1<<AM_PC16Disp)) &&
+              (modes & (1<<AM_PC16Disp)) &&
               !(op->flags & FL_ZIndex)) {
             /* (bd32,PC,ZRn) --> (d16,PC) */
             op->reg = REG_PC16Disp;
@@ -2875,7 +2881,7 @@ static unsigned char optimize_instruction(instruction *iplist,section *sec,
 
   /* evaluate and optimize operands */
   for (i=0; i<MAX_OPERANDS && ip->op[i]!=NULL; i++)
-    optimize_oper(ip->op[i],&optypes[mnemo->operand_type[i]],sec,pc,cpc,final);
+    optimize_oper(i,ip,sec,pc,cpc,final);
 
   /* resolve register lists in MOVEM instructions */
   if (mnemo->ext.opcode[0]==0x4880 && mnemo->operand_type[0]!=IR &&
@@ -4186,8 +4192,7 @@ dontswap:
   for (ip=iplist; ip; ip=ip->ext.un.copy.next) {
     if (ip->code >= 0) {
       for (i=0; i<MAX_OPERANDS && ip->op[i]!=NULL; i++)
-        optimize_oper(ip->op[i],&optypes[mnemonics[ip->code].operand_type[i]],
-                      sec,pc,cpc,final);
+        optimize_oper(i,ip,sec,pc,cpc,final);
     }
   }
 
@@ -4973,32 +4978,28 @@ static unsigned char *write_ea_ext(dblock *db,unsigned char *d,operand *op,
 static uint16_t apollo_bank_prefix(instruction *ip)
 /* generate Apollo bank prefix */
 {
-  /* b is the first possible banking operand (0 or 1) - skip immediate */
-  int b = ip->op[0]->mode==MODE_Extended && ip->op[0]->reg==REG_Immediate;
-  uint16_t bank = 0x7100;
-  uint16_t ddddd = 0;
+  uint16_t bank,aaReg=0,bbReg=0,ddddd=0;
 
-  /* calculate bank prefix */
-  if (ip->op[b]->mode == MODE_SpecReg) {
-    uint16_t aaReg = ip->op[b]->reg - REG_VX00;  /* e0 - e23 */
-    bank |= (1 + aaReg/8) << 2;
-  }
+  if (ip->op[0]->mode == MODE_SpecReg)
+    aaReg = ip->op[0]->reg - REG_VX00;  /* e0 - e23 */
 
-  if (ip->op[b+1] != NULL) {
-    if (ip->op[b+1]->mode == MODE_SpecReg) {
-      uint16_t bbReg = ip->op[b+1]->reg - REG_VX00;  /* e0 - e23 */
-      ddddd |= ((bbReg % 8) << 2) | (1 + bbReg/8);   /* ddd-dd==reg-bank */
-      bank |= 1 + bbReg/8;
+  if (ip->op[1] != NULL) {
+    if (ip->op[1]->mode == MODE_SpecReg) {
+      bbReg = ip->op[1]->reg - REG_VX00;            /* e0 - e23 */
+      ddddd |= ((bbReg % 8) << 2) | (1 + bbReg/8);  /* ddd-dd==reg-bank */
     }
-    else
-      ddddd = ip->op[b+1]->reg << 2;
+    else  /* no bbReg but still apply to ddd-dd value */
+      ddddd = ip->op[1]->reg << 2;
   }
   else {
-    /* For a single operand instr, both AA and BB should be the same */
-    uint16_t bbReg = ip->op[b]->reg - REG_VX00;  /* e0 - e23 */
-    bank |= 1 + bbReg/8;
+    /* use bbReg for single operand instructions */
+    bbReg = aaReg;
+    aaReg = 0;
   }
 
+  bank = 0x7100 | ((1 + aaReg/8) << 2) | (1 + bbReg/8);
+
+#if 1 /* FIXME: size information is no longer needed since July 2024 */
   switch (ip_size(ip)) {
     case 4:
       /* SS = 00 */
@@ -5019,26 +5020,27 @@ static uint16_t apollo_bank_prefix(instruction *ip)
       cpu_error(70); /* bank prefix not encodable due to size limit */
       break;
   }
+#endif
 
-  /* handle 3rd operand */
-  if (ip->op[b+2] != NULL) {
-    if (ip->op[b+2]->mode != -1) {
+  /* handle optional 3rd operand */
+  if (ip->op[2] != NULL) {
+    if (ip->op[2]->mode != -1) {
       /* optional operand was not omitted - refer to m68k_operand_optional() */
       uint16_t dbank;
 
-      if (ip->op[b+2]->mode == MODE_FPn)
-        dbank = ip->op[b+2]->reg << 2;
-      else if (ip->op[b+2]->mode == MODE_SpecReg)
-        dbank = (1 + ((ip->op[b+2]->reg - REG_VX00) >> 3)) |
-                (((ip->op[b+2]->reg - REG_VX00) % 8) << 2);
+      if (ip->op[2]->mode == MODE_FPn)
+        dbank = ip->op[2]->reg << 2;
+      else if (ip->op[2]->mode == MODE_SpecReg)
+        dbank = (1 + ((ip->op[2]->reg - REG_VX00) >> 3)) |
+                (((ip->op[2]->reg - REG_VX00) % 8) << 2);
       else
         ierror(0);
 
       ddddd ^= dbank;
       bank |= (((ddddd >> 2) & 7) << 9) | ((ddddd & 3) << 4);
     }
-    free_operand(ip->op[b+2]);
-    ip->op[b+2] = NULL;
+    free_operand(ip->op[2]);
+    ip->op[2] = NULL;
   }
 
   return bank;
@@ -5649,7 +5651,7 @@ static void clear_all_opts(void)
   opt_fconst = opt_brajmp = opt_pc = opt_bra = opt_allbra = opt_jbra = 0;
   opt_disp = opt_abs = opt_moveq = opt_nmovq = opt_quick = opt_branop = 0;
   opt_bdisp = opt_odisp = opt_lea = opt_lquick = opt_immaddr = 0;
-  opt_gen = opt_speed = opt_size = 0;
+  opt_gen = opt_speed = opt_size = opt_pc080 = 0;
 }
 
 
@@ -5944,6 +5946,9 @@ static char *devpac_option(char *s)
                     add_cpu_opt(0,OCMD_OPTFCONST,1);
                   }
                 }
+                break;
+              case 'a': /* vasm-specific */
+                add_cpu_opt(0,OCMD_OPTPC080,flag);
                 break;
               case 'b': /* vasm-specific */
                 add_cpu_opt(0,OCMD_OPTJBRA,flag);

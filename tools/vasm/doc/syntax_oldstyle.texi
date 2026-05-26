@@ -1,11 +1,13 @@
 This chapter describes the oldstyle syntax module suitable
-for some 8-bit CPUs (6502, 680x, 68HC1x, Z80, etc.),
+for some 8-bit CPUs (6502, 65816, 680x, 68HC1x, Z80, etc.),
 which is available with the extension @code{oldstyle}.
+
 
 @section Legal
 
     This module is written in 2002-2024 by Frank Wille and
     is covered by the vasm copyright without modifications.
+
 
 @section Additional options for this module
  
@@ -48,6 +50,7 @@ This syntax module provides the following additional options:
 
 @end table
 
+
 @section General Syntax
 
 Labels always start at the first column and may be terminated by a
@@ -55,29 +58,30 @@ colon (@code{:}), but don't need to. In the latter case the mnemonic
 has to be separated from the label by whitespace (not required in
 any case, e.g. with @code{=}).
 
-Local labels are preceded by '@code{.}' or terminated by '@code{$}'.
+Local labels are introduced by '@code{.}' or terminated by '@code{$}'.
 For the rest, any alphanumeric character including '@code{_}' is allowed.
 Local labels are valid between two global label definitions.
 
 It is allowed, but not recommended, to refer to any local symbol starting with
-'@code{.}' in the source, by preceding its name with the name of the last
+'@code{.}' in the source, by prefixing it with the name of the last
 previously defined global symbol: @code{global_name.local_name}.
+
+The option @option{-ldots} allows dots (@code{.}) within labels and other
+identifiers, but disables the above mentioned feature.
 
 Anonymous labels are supported by defining them with a single '@code{:}'
 at the beginning of a line. They may be referenced by '@code{:}' followed
 directly by one or more '@code{+}' or '@code{-}' signs. A @code{+} selects
 the first anonymous label following the point of reference. A @code{++}
-select the second anonymous label in that direction, and so on. A @code{-}
+selects the second anonymous label in that direction, and so on. A @code{-}
 selects the first anonymous label before the point of reference. Example:
 @example
 :       jmp     :-    ;infinite loop
 @end example
 
-The option @option{-ldots} allows dots (@code{.}) within labels and other
-identifiers, but disables the above mentioned feature.
-
 The operands are separated from the mnemonic by whitespace. Multiple
-operands are separated by comma (@code{,}).
+operands are separated by comma (@code{,}), or in some backends by
+whitespace.
 
 Make sure that you don't define a label on the same line as a
 directive for conditional assembly (if, else, endif)! This is not supported
@@ -111,6 +115,9 @@ binary. Hexadecimal intel-style constants must start with a digit (prepend
 Also C-style prefixes are supported for hexadecimal (@code{0x}) and
 binary (@code{0b}).
 All other numbers starting with a digit are decimal, e.g. @code{1239}.
+The one character following a @code{'} or @code{"} is converted into
+ASCII code. A closing quote behind that character is optional in
+expressions. Not optional for strings.
 
 
 @section Directives
@@ -716,6 +723,7 @@ point3
 @item Expressions in an @code{if} directive must be constant.
 
 @end itemize
+
 
 @section Error Messages
 

@@ -153,11 +153,26 @@ static char *skip_operand(int instoper,char *s)
     }
 #ifdef VASM_CPU_Z80
     /* For the Z80 ignore ' behind a letter, as it may be a register */
-    else if ((c=='\'' && (lastuc<'A' || lastuc>'Z')) || c=='\"')
+    else if ((c=='\'' && (lastuc<'A' || lastuc>'Z')) || c=='\"') {
 #else
-    else if (c=='\'' || c=='\"')
+    else if (c=='\'' || c=='\"') {
 #endif
-      s = skip_string(s,c,NULL) - 1;
+      if (instoper) {
+        /* a quote expects just a single character with an optional
+           quote character following it */
+        if (!ISEOL(s+1)) {
+          s++;
+          if (*s == '\\')
+            s = escape(s,NULL) - 1;
+          else if (*s==c && *(s+1)==c)
+            s++;  /* "" or '' is a single quote-character */
+        }
+        if (*(s+1) == c)  /* optional */
+          s++;
+      }
+      else
+        s = skip_string(s,c,NULL) - 1;
+    }
     else if ((!instoper || (instoper && OPERSEP_COMMA)) &&
              c==',' && par_cnt==0)
       break;
@@ -2003,6 +2018,7 @@ int init_syntax(void)
   current_pc_char = '*';
   current_pc_str[0] = current_pc_char;
   current_pc_str[1] = 0;
+  charsperexp = 1;  /* allows 'x and "x expressions without 2nd quote-char */
 
   if (orgmode != ~0)
     set_section(new_org(orgmode));

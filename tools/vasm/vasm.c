@@ -1385,6 +1385,8 @@ int main(int argc,char **argv)
     general_error(10,"cpu");
   set_taddr();  /* update taddr mask/min/max */
   set_defaults();
+  if(!init_expr())
+    general_error(10,"expr");
   parse();
   end_all_rorg();
   listena=0;

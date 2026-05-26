@@ -39,8 +39,10 @@ struct expr {
 /* global variables */
 extern char current_pc_char;
 extern int unsigned_shift;
+extern int charsperexp;
 
 /* functions */
+int init_expr(void);
 expr *new_expr(void);
 expr *make_expr(int,expr *,expr *);
 expr *copy_tree(expr *);

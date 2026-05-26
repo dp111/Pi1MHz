@@ -641,6 +641,9 @@ directives:
    writing portable source. Using @code{opt o+} or @code{opt o-} in
    Devpac mode only toggles @code{og} and @code{of}.
    @table @code
+      @item oa
+        Automatically optimize absolute Apollo destination operands to
+        PC-relative references (requires 68080 code-generation enabled).
       @item ob
         Convert absolute jumps to external labels into long-branches
         (refer to @option{-opt-jbra}).
