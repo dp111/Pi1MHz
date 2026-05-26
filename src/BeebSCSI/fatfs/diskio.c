@@ -12,18 +12,13 @@
 /* Definitions of physical drive number for each drive */
 #define DRV_SD    0  /* Example: Map MMC/SD card to physical drive 0 (default) */
 
-#include "diskio.h"     /* FatFs lower layer API */
-#ifdef DRV_CFC
-#include "cfc_avr.h" /* Header file of existing CF control module */
-#endif
-#ifdef DRV_MMC
-#include "mmc_avr.h" /* Header file of existing SD control module */
-#endif
+#include "diskio.h"		/* Declarations of disk functions */
+
 
 #ifdef DRV_SD
 #include "../../rpi/block.h"
 size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
-size_t sd_write(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_no);
+size_t sd_write(struct block_device *dev, const uint8_t *buf, size_t buf_size, uint32_t block_no);
 #endif
 
 /*static unsigned int sd_status=STA_NOINIT;*/
@@ -34,7 +29,7 @@ static struct emmc_block_dev bd;
 /*-----------------------------------------------------------------------*/
 
 DSTATUS disk_status (
-   BYTE pdrv      /* Physical drive number to identify the drive */
+	BYTE pdrv		/* Physical drive nmuber to identify the drive */
 )
 {
    switch (pdrv) {
@@ -53,12 +48,14 @@ DSTATUS disk_status (
    return STA_NOINIT;
 }
 
+
+
 /*-----------------------------------------------------------------------*/
 /* Inidialize a Drive                                                    */
 /*-----------------------------------------------------------------------*/
 
 DSTATUS disk_initialize (
-   BYTE pdrv            /* Physical drive number to identify the drive */
+	BYTE pdrv				/* Physical drive nmuber to identify the drive */
 )
 {
    switch (pdrv) {
@@ -81,10 +78,10 @@ DSTATUS disk_initialize (
 /*-----------------------------------------------------------------------*/
 
 DRESULT disk_read (
-   BYTE pdrv,     /* Physical drive nmuber to identify the drive */
-   BYTE *buff,    /* Data buffer to store read data */
-   DWORD sector,  /* Sector address in LBA */
-   UINT count     /* Number of sectors to read */
+	BYTE pdrv,		/* Physical drive nmuber to identify the drive */
+	BYTE *buff,		/* Data buffer to store read data */
+	LBA_t sector,	/* Start sector in LBA */
+	UINT count		/* Number of sectors to read */
 )
 {
    switch (pdrv) {
@@ -107,10 +104,10 @@ DRESULT disk_read (
 /*-----------------------------------------------------------------------*/
 #if FF_FS_READONLY == 0
 DRESULT disk_write (
-   BYTE pdrv,        /* Physical drive nmuber to identify the drive */
-   BYTE *buff, /* Data to be written */
-   DWORD sector,     /* Sector address in LBA */
-   UINT count        /* Number of sectors to write */
+	BYTE pdrv,			/* Physical drive nmuber to identify the drive */
+	const BYTE *buff,	/* Data to be written */
+	LBA_t sector,		/* Start sector in LBA */
+	UINT count			/* Number of sectors to write */
 )
 {
    switch (pdrv) {
@@ -153,15 +150,3 @@ DRESULT disk_ioctl (
 #endif
 }
 
-
-
-/*-----------------------------------------------------------------------*/
-/* Timer driven procedure                                                */
-/*-----------------------------------------------------------------------*/
-void disk_timerproc (void)
-{
-
-#ifdef DRV_MMC
-   mmc_disk_timerproc();
-#endif
-}

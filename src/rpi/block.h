@@ -37,7 +37,7 @@ struct block_device {
 	int supports_multiple_block_write;
 
 	size_t (*read)(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_num);
-	size_t (*write)(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t block_num);
+	size_t (*write)(struct block_device *dev, const uint8_t *buf, size_t buf_size, uint32_t block_num);
 	size_t block_size;
 	size_t num_blocks;
 
