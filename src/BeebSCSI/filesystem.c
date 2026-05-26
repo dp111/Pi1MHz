@@ -675,7 +675,7 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
    // Assemble the .cfg file name
    sprintf(fileName, "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
 
-   if (parse_readfile("/Pi1MHz/default.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
+   if (parse_readfile("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): Successful\r\n"));
       return true;
@@ -1157,12 +1157,12 @@ char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * lengt
    char page1 , page2;
    if (page >10)
    {
-      page1= page/10;
-      page2= page%10;
+      page1= (page/10)+'0';
+      page2= (page%10)+'0';
    }
    else
       {
-      page1= page;
+      page1= page+'0';
       page2= 0;
       }
 
@@ -1179,12 +1179,12 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    char page1 , page2;
    if (page >10)
    {
-      page1= page/10;
-      page2= page%10;
+      page1= (page/10)+'0';
+      page2= (page%10)+'0';
    }
    else
       {
-      page1= page;
+      page1= page+'0';
       page2= 0;
       }
 

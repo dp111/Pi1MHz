@@ -1440,7 +1440,7 @@ static uint8_t scsiCommandModeSelect6(void)
    // if the length is 22 and byte is 8 then the drive descriptor is being written
    if (Buffer[3]== 8 )
    {
-     if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT dsc\r\n"), DEBUG_SUCCESS);
+     if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT cfg\r\n"), DEBUG_SUCCESS);
      // we can skip LBADescriptor 8 bytes
      start += 8;
      // update  ModePage0
