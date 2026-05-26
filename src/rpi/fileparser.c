@@ -291,8 +291,12 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
 
     if (outfile)
     {
-    // write out file
-
+        if (filesystemWriteFile(outfile, ( uint8_t * ) outbuf, outptr) != outptr)
+            {
+                LOG_DEBUG("Error writing file %s\n\r", outfile);
+                free(outbuf);
+                return 0;
+            }
     }
     free(outbuf);
 

@@ -70,11 +70,6 @@ bool filesystemTestLunStatus(uint8_t lunNumber);
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5]);
 
 void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber);
-
-bool filesystemCreateLunExtAttributes_tmp(uint8_t lunNumber);
-bool filesystemCreateLunExtAttributes_Rename(uint8_t lunNumber);
-bool filesystemCreateLunExtAttributes_WriteValues(uint8_t lunNumber);
-
 bool filesystemCheckExtAttributes( uint8_t lunNumber);
 bool filesystemHasExtAttributes( uint8_t lunNumber);
 
@@ -105,4 +100,5 @@ bool filesystemReadNextFatBlock(uint8_t *buffer);
 bool filesystemCloseFatForRead(void);
 
 uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned int max_size);
+uint32_t filesystemWriteFile(const char * filename, uint8_t *address, uint32_t max_size);
 #endif /* FILESYSTEM_H_ */
