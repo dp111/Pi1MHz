@@ -82,6 +82,8 @@ void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours);
 
 void fb_writec_buffered(char c);
 
+void fb_process_flash(void);
+
 void fb_process_vdu_queue(void);
 
 void fb_writec(char c);

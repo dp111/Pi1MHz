@@ -4,6 +4,7 @@
 #include "rpi.h"
 #include <stdio.h>
 #include <inttypes.h>
+#include "../rpi/asm-helpers.h"
 
 /*
     Interfaces to the HVS in the BCM2835
@@ -45,13 +46,12 @@ LBM memory fixed at 768  bytes per line of each plane 8 planes
 
 YUV plane = 768*8 + 768/2* 8
 */
-
+#define MAX_PLANES 8
 #define PLOYPHASE_BASE (0xf00>>2)
 #define PALETTE_BASE (0x1000)
 
-#define LBM_PLANE_SIZE (768*16)
-
 // NB 8 planes of 768 *16 gives 96K
+#define LBM_PLANE_SIZE (96*1024/MAX_PLANES)
 
 typedef struct {
     rpi_reg_rw_t ctrl;      // cppcheck-suppress unusedStructMember // 0x00
@@ -106,23 +106,23 @@ typedef struct {
     //                        0x10 = YUV 4:2:2 separate Y U V planes
 
     rpi_reg_rw_t ctrl;      // 0x00
-    //  31-24 = alpha 0xff bypasses alpha blending
-    //  23-12 = stat_y  start scan line
-    //  11-0 = stat_x  start pixel
+    // 31-24 = alpha 0xff bypasses alpha blending
+    // 23-12 = stat_y  start scan line
+    // 11- 0 = stat_x  start pixel
     rpi_reg_rw_t pos;       // 0x04
     // 27-16 = height of scaled image
     // 11-0 = width of scaled image
     rpi_reg_rw_t scale;     // 0x08
     // 31-28 = alpha modes etc
     // 27-16 = source height
-    // 11-0 = source width
-    rpi_reg_rw_t src_size;  // 0x0c
+    // 11- 0 = source width
+    rpi_reg_rw_t src_size;     // 0x0c
     rpi_reg_ro_t src_context;  // 0x10
 
-    rpi_reg_rw_t y_ptr;  // 0x14
+    rpi_reg_rw_t y_ptr;   // 0x14
     rpi_reg_rw_t cb_ptr;  // 0x18
     rpi_reg_rw_t cr_ptr;  // 0x1C
-    rpi_reg_ro_t y_ctx;  // 0x20
+    rpi_reg_ro_t y_ctx;   // 0x20
     rpi_reg_ro_t cb_ctx;  // 0x24
     rpi_reg_ro_t cr_ctx;  // 0x28
 
@@ -132,8 +132,8 @@ typedef struct {
     rpi_reg_rw_t pitch;  // 0x2C
 
     // only in YUV mode
-    //31-25 alpha stuff
-     //15:0 = pitch to next line for CB
+    // 31-25 alpha stuff
+    // 15:0 = pitch to next line for CB
     rpi_reg_rw_t pitch1;  // 0x30
     //15:0 = pitch to next line for CR
     rpi_reg_rw_t pitch2;  // 0x34
@@ -167,7 +167,7 @@ typedef struct {
     rpi_reg_rw_t vpf0;   // 0x4C
     rpi_reg_ro_t vpf0_ctx;   // 0x50
 
-        // 31 = 0 interpolate to 64 phases
+    // 31 = 0 interpolate to 64 phases
     // 30 = 0 use all four interpolated values
     // 24..8 = horizontal scaling factor
     //       =  (((1<<16)*src_width)/scl_width)
@@ -203,9 +203,9 @@ typedef struct {
     //                        0x10 = YUV 4:2:2 separate Y U V planes
 
     rpi_reg_rw_t ctrl;      // 0x00
-    //  31-24 = alpha 0xff bypasses alpha blending
-    //  23-12 = stat_y  start scan line
-    //  11-0 = stat_x  start pixel
+    // 31-24 = alpha 0xff bypasses alpha blending
+    // 23-12 = stat_y  start scan line
+    // 11-0 = stat_x  start pixel
     rpi_reg_rw_t pos;       // 0x04
     // 27-16 = height of scaled image
     // 11-0 = width of scaled image
@@ -217,17 +217,17 @@ typedef struct {
     rpi_reg_ro_t src_context;  // 0x10
 
     rpi_reg_rw_t y_ptr;  // 0x14
-    rpi_reg_ro_t y_ctx;  // 0x18
+    rpi_reg_rw_t y_ctx;  // 0x18
 
     // 31-26 = pixels to drop at the beginning of each line
     // 25 = 0 Alpha [7:0] 1 Alpha [31:24]
     // 15:0 = pitch to next line
     rpi_reg_rw_t pitch;  // 0x1C
 
-    //31:30 = 0 1bpp , 1 2bpp, 2 4bpp, 3 8bpp
-    //29..27 = initial pixel offset
-    //26 pal_order
-    //11..0 = palette base
+    // 31:30 = 0 1bpp , 1 2bpp, 2 4bpp, 3 8bpp
+    // 29..27 = initial pixel offset
+    // 26 pal_order
+    // 11..0 = palette base
     rpi_reg_rw_t palette;  // 0x20
 
     // rpi_reg_rw_t trans_rgb
@@ -267,9 +267,9 @@ typedef struct {
     //                        0xA = YUV 4:2:2 separate Y U V planes
 
     rpi_reg_rw_t ctrl;      // 0x00
-    //  31-24 = alpha 0xff bypasses alpha blending
-    //  23-12 = stat_y  start scan line
-    //  11-0 = stat_x  start pixel
+    // 31-24 = alpha 0xff bypasses alpha blending
+    // 23-12 = stat_y  start scan line
+    // 11-0 = stat_x  start pixel
     rpi_reg_rw_t pos;       // 0x04
     // 27-16 = height of scaled image
     // 11-0 = width of scaled image
@@ -377,23 +377,23 @@ static uint32_t* screen_get_nextplane( uint32_t planeno )
     uint32_t* returnplane = 0;
 
     RPI_hvs->list1 = PLANE_BASE;
-    context_memory[0] = 0x80000000; // clear the end of list bit and set invalid for other display lists
+    context_memory[0] = 0x80000000; // set end of list bit and clear valid bit for other display lists
 
     for (uint32_t i=0; i<planeno; i++)
     {
         if (plane_valid[i] == false)
         {
             // ensure previous planes are skipped if not used.
-            context_memory[ (MAX_PLANES_SIZE >>2 ) * i + PLANE_BASE ] = 0x40000000 + ((MAX_PLANES_SIZE>>2)<<24); // set invalid
+            context_memory[ (MAX_PLANES_SIZE >>2 ) * i + PLANE_BASE ] = 0x00000000 + ((MAX_PLANES_SIZE>>2)<<24); // clear valid and set list size
         }
     }
 
     plane = &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
 
-    *plane = 0x80000000; // clear the end of list bit and set invalid
+    *plane = 0x80000000; // set end of list bit and clear valid
     returnplane = plane;
     plane = plane + (MAX_PLANES_SIZE>>2); // space for 32 words in context memory
-    *plane = 0x80000000; // cset end of list bit
+    *plane = 0x80000000; // set end of list bit and clear valid
 
     return returnplane;
 }
@@ -706,7 +706,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
     plane_valid[planeno] = true;
 }
 
-void screen_set_plane_position( uint32_t planeno, int x, int y )
+void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
 {
     // we can cheat here as we are only changing the position
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];;
@@ -724,22 +724,34 @@ void screen_set_plane_position( uint32_t planeno, int x, int y )
     {
         newx = 0;
     }
-
-    LOG_DEBUG("newx %"PRId32" newy %"PRId32"\r\n", newx, newy);
-    rgb->pos = ( (uint32_t) newy << 12) +( (uint32_t) newx ) ;
+    unsigned int cpsr = _disable_interrupts_cspr();
+    _data_memory_barrier();
+  //  LOG_DEBUG("newx %"PRIi32" newy %"PRIi32"\r\n", (int32_t)newx, (int32_t)newy);
+    rgb->pos = (  ((uint32_t)newy&0xfff) << 12) +(  ((uint32_t)newx &0xfff) ) ;
+    _data_memory_barrier();
+    _restore_cpsr(cpsr);
+    LOG_DEBUG("pos %"PRIx32" buffer %"PRIx32"\r\n", rgb->pos,rgb->y_ptr);
 }
 
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    unsigned int cpsr = _disable_interrupts_cspr();
+    _data_memory_barrier();
+
     if (enable)
     {
+        rgb->y_ctx =0;
+        _data_memory_barrier();
         rgb->ctrl |= (uint32_t)0x40000000;
     }
     else
     {
         rgb->ctrl &= ~(uint32_t)0x40000000;
     }
+    _data_memory_barrier();
+    _restore_cpsr(cpsr);
+    LOG_DEBUG("ctrl %"PRIx32" buffer %"PRIx32" plane %"PRIx32"\r\n", rgb->ctrl,rgb->y_ptr, planeno);
 }
 
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
@@ -750,18 +762,23 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
     // palette 3 is flash and black is alpha 0
 
     uint32_t colour = ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
-
+    unsigned int cpsr = _disable_interrupts_cspr();
+    _data_memory_barrier();
     context_memory[(PALETTE_BASE>>2) + entry] = 0xff000000 | colour;
 
     if (colour || ((entry&255) >15 ))
         colour |= 0xff000000; // set alpha to 0xff if not black
 
     context_memory[(PALETTE_BASE>>2) + entry + (256*2)] = colour;
+    _data_memory_barrier();
+    _restore_cpsr(cpsr);
 }
 
 uint32_t screen_get_palette_entry( uint32_t entry )
 {
+    _data_memory_barrier();
     return context_memory[(PALETTE_BASE>>2) + entry];
+    _data_memory_barrier();
 }
 
 // flags
@@ -774,27 +791,31 @@ uint32_t screen_get_palette_entry( uint32_t entry )
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
-    if ( (rgb->ctrl & 0xF) != 0xD)
-        return;
-
-    uint32_t old_palette = ((rgb->palette & 0x00003fff) - PALETTE_BASE)/0x400;
-
-    switch (flags)
+    unsigned int cpsr = _disable_interrupts_cspr();
+    _data_memory_barrier();
+    if ( (rgb->ctrl & 0xF) == 0xD)
     {
-        case 0:
-            rgb->palette = ( 0xc0000000 ) | ((palette*0x400) + PALETTE_BASE);
-            break;
-        case 1:
-            rgb->palette = ( 0xc0000000 ) | ((((old_palette & 2) | palette)*0x400) + PALETTE_BASE);
-            break;
-        case 2:
-            rgb->palette = ( 0xc0000000 ) | (((old_palette | 2)*0x400) + PALETTE_BASE);
-            break;
-        case 3:
-            rgb->palette = ( 0xc0000000 ) | (((old_palette & 1 )*0x400) + PALETTE_BASE);
-            break;
-        case 4:
-            rgb->palette = ( 0xc0000000 ) | (((old_palette ^ 1 )*0x400) + PALETTE_BASE);
-            break;
+        uint32_t old_palette = ((rgb->palette & 0x00003fff) - PALETTE_BASE)/0x400;
+
+        switch (flags)
+        {
+            case 0:
+                rgb->palette = ( 0xc0000000 ) | ((palette*0x400) + PALETTE_BASE);
+                break;
+            case 1:
+                rgb->palette = ( 0xc0000000 ) | ((((old_palette & 2) | palette)*0x400) + PALETTE_BASE);
+                break;
+            case 2:
+                rgb->palette = ( 0xc0000000 ) | (((old_palette | 2)*0x400) + PALETTE_BASE);
+                break;
+            case 3:
+                rgb->palette = ( 0xc0000000 ) | (((old_palette & 1 )*0x400) + PALETTE_BASE);
+                break;
+            case 4:
+                rgb->palette = ( 0xc0000000 ) | (((old_palette ^ 1 )*0x400) + PALETTE_BASE);
+                break;
+        }
     }
+    _data_memory_barrier();
+    _restore_cpsr(cpsr);
 }

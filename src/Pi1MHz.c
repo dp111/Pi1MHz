@@ -239,11 +239,21 @@ static void Pi1MHzBus_read_Status(unsigned int gpio)
 
 // cppcheck-suppress unusedFunction
 void IRQHandler_main(void) {
-  RPI_AuxMiniUartIRQHandler();
-  // Periodically also process the VDU Queue
-  fb_process_vdu_queue();
+   RPI_AuxMiniUartIRQHandler();
+   _data_memory_barrier();
+   if (RPI_GetIrqController()->IRQ_pending_2 & RPI_VSYNC_IRQ)
+   {
+      // Clear the vsync interrupt
+      *((volatile uint32_t *)SMICTRL) = 0;
+      _data_memory_barrier();
+      mouse_redirect_move_mouse();
+      fb_process_flash();
+   }
+   // Periodically also process the VDU Queue
+   fb_process_vdu_queue();
 
-  _data_memory_barrier();
+
+   _data_memory_barrier();
 }
 
 static void init_emulator(void) {
