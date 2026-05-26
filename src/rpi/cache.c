@@ -12,7 +12,9 @@
    Reason turned out to be failure to correctly invalidate the entire data cache */
 
 volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTable[4096];
+#ifdef NUM_4K_PAGES
 volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTable2[NUM_4K_PAGES];
+#endif
 
 /* Just to keep things simple we cache all the ram (mem_info(1))*/
 #define L1_CACHED_MEM_TOP (mem_info(1)>>20)
@@ -21,10 +23,6 @@ volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTab
 #define VC_TOP ((mem_info(1)>>20)+( (RPI_PropertyGetWord(TAG_GET_VC_MEMORY, 0)->data.buffer_32[1])>>20))
 #define PERIPHERAL_END 0x80000000
 
-#define PERIPHERAL_END 0x80000000
-
-static const unsigned int bufferable = 1;
-static const unsigned int cacheable = 1;
 #if (__ARM_ARCH >= 7 )
 static const unsigned int aa0 = 0; /* note ARM ARM bit ordering is confusing */
 static const unsigned int aa6 = 1;
@@ -136,6 +134,29 @@ void _clean_cache_area(void * start, unsigned int length)
 #endif
 }
 
+void _invalidate_cache_area(void * start, unsigned int length)
+{
+#if (__ARM_ARCH >= 7 )
+   uint32_t cachelinesize;
+   char * startptr = start;
+   char * endptr;
+   asm volatile ("mrc p15, 0, %0, c0, c0,  1" : "=r" (cachelinesize));
+   cachelinesize = (cachelinesize>> 16 ) & 0xF;
+   cachelinesize = 4<<cachelinesize;
+   endptr = startptr + length;
+   // round down start address
+   startptr = (char *)(((uint32_t)start) & ~(cachelinesize - 1));
+
+   do{
+      asm volatile ("mcr     p15, 0, %0, c7, c6, 1" : : "r" (startptr));
+      startptr = startptr + cachelinesize;
+   } while ( startptr  < endptr);
+#else
+   asm volatile("mcrr p15,0,%0,%1,c6"::"r" ((uint32_t)start+length), "r" (start));
+#endif
+   _data_memory_barrier();
+}
+
 #if 0
 static void _invalidate_icache()
 {
@@ -177,7 +198,7 @@ static void _invalidate_dtlb()
 // 2      B     - bufferable    - TEX, C, B used together, see below
 // 1      1
 // 0      1
-
+#ifdef NUM_4K_PAGES
 static void _invalidate_dtlb_mva(void *address)
 {
    asm volatile ("mcr p15, 0, %0, c8, c6, 1" : : "r" (address));
@@ -197,18 +218,18 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
   //   to allow native ARM code to execute
   //   (this was the cause of issue #27)
 #if (__ARM_ARCH >= 7 )
-  PageTable2[logical] = (physical<<12) | 0x132u | (bb << 6) | (cacheable<<3) | (bufferable << 2);
+  PageTable2[logical] = (physical<<12) | 0x132u | (bb << 6) | (1<<3) | (1 << 2);
 #else
-  PageTable2[logical] = (physical<<12) | 0x133u | (bb << 6) | (cacheable<<3) | (bufferable << 2);
+  PageTable2[logical] = (physical<<12) | 0x133u | (bb << 6) | (1<<3) | (1 << 2);
 #endif
 }
-
+#endif
 void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 {
 
   LOG_DEBUG("enable_MMU_and_IDCaches\r\n");
 
-  unsigned int base;
+  unsigned int base=0;
   unsigned int end;
   unsigned int start;
 
@@ -249,10 +270,12 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // TEX = 100; C=0; B=1 (outer non cacheable, inner write-back, write allocate)
 
   // replace the first N 1MB entries with second level page tables, giving N x 256 4K pages
+  #ifdef NUM_4K_PAGES
   for ( base = 0; base < num_4k_pages >> 8; base++)
   {
     PageTable[base] = ((unsigned int) (&PageTable2[base << 8])) | 1;
   }
+  #endif
   end = L1_CACHED_MEM_TOP;
 
   for (; base < end;  base++)
@@ -284,7 +307,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   start = 0;
   for (; base <  end; base++)
      PageTable[base] = ((start++) << 20 )| 0x0C0E ;
-
+#ifdef NUM_4K_PAGES
   if ( num_4k_pages != 0 )
   {
      for (uint32_t i = 0; i < num_4k_pages >> 8; i++)
@@ -299,6 +322,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
         map_4k_page(base, base);
      }
   }
+#endif
 
 #if (__ARM_ARCH >= 8 )
   //unsigned cpuextctrl0, cpuextctrl1;
