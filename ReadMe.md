@@ -43,7 +43,7 @@ Two types of JIM expansion ram are supported:
 
 Byte mode uses the registers &FC02, &FC01, &FC00 to select the byte and FC03 to read and write the memory.
 
-Page mode uses the registers &FCFD &FCFE FCFF to select the page for &FD00--&FDFF. &FCFC is the same as FCFF but also resets &FCFD and &FCFE.
+Page mode uses the registers &FCFD &FCFE FCFF to select the page for &FD00--&FDFF.
 
 The first page of JIM ram is preloaded with build information. This can be accessed by doing PRINT $&FD00. This is RAM so can easily be over written.
 
@@ -233,7 +233,7 @@ Below isn't currently implemented
 
 There are a number helper functions built into JIM RAM so they can be over written. These are accessed by :
 
-  ?&FCFC = function number, : CALL &FD00
+  ?&FC88 = function number, : CALL &FD00
 ## Internal status and control
 
 &FCCA selects the command/status address

@@ -35,18 +35,18 @@ void helpers_bank_select(unsigned int gpio)
 }
 void helpers_init( uint8_t instance , int address)
 {
-   if (!filesystemReadFile("6502code.bin",&helper_ram[0],sizeof(helper_ram)))
+   if (filesystemReadFile("6502code.bin",&helper_ram[0],sizeof(helper_ram)))
     {
         // register call backs
         Pi1MHz_Register_Memory(WRITE_FRED, address, helpers_bank_select );
 
-        Pi1MHz_MemoryWrite(address+0, 0x8F); // STX &FCxx
+        Pi1MHz_MemoryWrite(address+0, 0x8E); // STX &FCxx
         Pi1MHz_MemoryWrite(address+1, (uint8_t) address);
         Pi1MHz_MemoryWrite(address+2, 0xFC);
         Pi1MHz_MemoryWrite(address+3, 0XEA); // NOP
         Pi1MHz_MemoryWrite(address+4, 0x4c); // JMP &FD00 // RTS
-        Pi1MHz_MemoryWrite(address+5, 0xFD);
-        Pi1MHz_MemoryWrite(address+6, 0x00);
+        Pi1MHz_MemoryWrite(address+5, 0x00);
+        Pi1MHz_MemoryWrite(address+6, 0xFD);
 
         // We also hide the help screen at &FFE000
         char hex[3];
@@ -55,32 +55,32 @@ void helpers_init( uint8_t instance , int address)
         sprintf(dec, "%d",address);
 
         char * helpscreen = ( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000] ;
-        helpscreen += strlcpy(helpscreen, "\r Pi1MHZ "RELEASENAME
-        "\r Commit ID : "GITVERSION
-        "\r Date : " __DATE__ " " __TIME__
-        "\r Pi : " , PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, "\r\n Pi1MHZ "RELEASENAME
+        "\r\n Commit ID : "GITVERSION
+        "\r\n Date : " __DATE__ " " __TIME__
+        "\r\n Pi : " , PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, get_info_string(), PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, "\r\r"
-        "\r Helper functions"
-        "\r"
-        "\r *FX147,", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, "\r\n"
+        "\r\n Helper functions"
+        "\r\n"
+        "\r\n *FX147,", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, dec, PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen,",nn <ret> or X%=nn"
-        "\r then either CALL&FC", PAGE_SIZE*16);
+        "\r\n then either\r\n CALL&FC", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen," , *GO FC", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen," , *GOIO FC", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen,
-        "\r where nn is one of the following"
-        "\r"
-        "\r 0 # This help screen"
-        "\r 1 # Enable screen redirector"
-        "\r 2 # Load ADFS into SWR"
-        "\r 3 # Load ADFS into MMFS"
-        "\r 4 # Load ADFS into MMFSv2"
-        "\r", PAGE_SIZE*16);
+        "\r\n\r\n where nn is one of the following"
+        "\r\n"
+        "\r\n 0 # This help screen"
+        "\r\n 1 # Enable screen redirector"
+        "\r\n 2 # Load ADFS into SWR"
+        "\r\n 3 # Load MMFS into SWR"
+        "\r\n 4 # Load MMFSv2 into SWR"
+        "\r\n", PAGE_SIZE*16);
         helpscreen[0] = 0;
 
     }

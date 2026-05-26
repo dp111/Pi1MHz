@@ -86,7 +86,7 @@ ORG &FD00
 ORG &FD00
     LDA #0   : STA &FCD6 ; clear byte pointer to zero.
     LDA #&E0 : STA &FCD7
-    LDX #&FF : STA &FCD8
+    LDA #&FF : STA &FCD8
 .stringloop
     LDA &FCD9 ; auto increment register
     JSR &FFEE
@@ -118,7 +118,7 @@ newoswrch = &FCD1
 }
 
 ; Page 2
-; adfs
+; ADFS
 {
 ORG &FD00
 
@@ -128,6 +128,7 @@ ORG &FD00
 .pagertsjmp
     PAGERTS; no SWR found
 .SWRfound
+    CLC:ADC #33:JSR &FFEE
     ; fopen
     LDY #0   : STY discaccess
     DEY      : STY discaccess+1
@@ -159,7 +160,7 @@ ORG &FD00
     BMI freadcheckloop
     BEQ readdone
     CMP #20
-    BNE pagerts ; file open error
+    BNE pagertsjmp ; file open error
 
 .readdone
     LDY #0   : STY discaccess
@@ -246,7 +247,7 @@ ORG &FD00
     BMI freadcheckloop
     BEQ readdone
     CMP #20
-    BNE pagerts ; file open error
+    BNE pagertsjmp ; file open error
 
 .readdone
     LDY #0   : STY discaccess
@@ -332,7 +333,7 @@ ORG &FD00
     BMI freadcheckloop
     BEQ readdone
     CMP #20
-    BNE pagerts ; file open error
+    BNE pagertsjmp ; file open error
 
 .readdone
     LDY #0   : STY discaccess
@@ -380,4 +381,4 @@ ORG &FD00
 
 .end
 
-SAVE "6502code.bin" , 0, &500
+SAVE "../firmware/6502code.bin" , 0, &500
