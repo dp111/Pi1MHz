@@ -45,14 +45,26 @@ endif()
 # Add any C compiler flags here. The C flags concerned with processor tuning
 # are in the toolchain files toolchain-arm-none-eabi-bcm2835.cmake, etc.
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2" )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wmissing-field-initializers ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wmaybe-uninitialized ")
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wredundant-decls -Wmaybe-uninitialized -Wlong-long -Wpacked -Wundef -Wshadow -Wmissing-braces -Wmultichar -Wnarrowing -Woverflow -Wlogical-not-parentheses " )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Winit-self -Wpointer-arith  -Wwrite-strings -Wunreachable-code -Wdouble-promotion  -Wformat-truncation -fstack-usage -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wnull-dereference -pedantic -Wcast-qual -Wjump-misses-init ")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wredundant-decls -Wpacked -Wundef -Wshadow -Wmissing-braces -Wmultichar")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wnarrowing -Woverflow -Wconversion -Wjump-misses-init")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wlogical-not-parentheses -Wnull-dereference -Winit-self")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wpointer-arith -Wwrite-strings -Wunreachable-code")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdouble-promotion -Wformat-truncation -fstack-usage" )
+
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wformat=2")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wcast-qual")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pedantic")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsign-conversion")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsign-compare" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wlong-long" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-field-initializers" )
+
+
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
+
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fanalyzer" )
 
