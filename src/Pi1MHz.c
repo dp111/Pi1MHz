@@ -270,7 +270,7 @@ static void init_emulator() {
    r2   = 0;
    r3   = DATABUS_TO_OUTPUTS;
    r4   = TEST_PINS_OUTPUTS;
-   r5   = 0; //TEST_MASK;                     // test pin
+   r5   = 0; // TEST_MASK;                     // test pin
 
    RPI_PropertyInit();
    RPI_PropertyAddTag(TAG_LAUNCH_VPU1, func, r0, r1, r2, r3, r4, r5);
@@ -329,7 +329,7 @@ static void init_JIM()
    fx_register[0] = (uint8_t)JIM_ram_size;  // fx addr 0 returns ram size
 
    JIM_ram = (uint8_t *) malloc(16*1024*1024*JIM_ram_size); // malloc 480Mbytes
-
+RPI_SetGpioHi(TEST_PIN); 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
    if (!filesystemReadFile("JIM_Init.bin",JIM_ram,JIM_ram_size<<24))
    {
@@ -343,9 +343,10 @@ static void init_JIM()
       ram = putstring(ram,'\n', get_info_string());
             putstring(ram,'\r', " ");
    }
-
+RPI_SetGpioHi(TEST2_PIN); 
     for( uint32_t i = 0; i < PAGE_SIZE ; i++)
        Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + i, JIM_ram[i]);
+   
 }
 
 static void init_hardware()
@@ -392,6 +393,7 @@ static void init_hardware()
    RPI_SetGpioInput(RNW_PIN);
 
    RPI_SetGpioOutput(TEST_PIN);
+   RPI_SetGpioLo(TEST_PIN); 
    RPI_SetGpioOutput(TEST2_PIN);
 
    RPI_SetGpioLo(NIRQ_PIN);   // Set outputs low ready for interrupts when pin is changed to FS_OUPTUT
@@ -404,6 +406,8 @@ static void init_hardware()
 
 void kernel_main()
 {
+   RPI_SetGpioOutput(TEST_PIN);
+   RPI_SetGpioLo(TEST_PIN); 
    RPI_AuxMiniUartInit( 115200 );
 
    enable_MMU_and_IDCaches(0);
@@ -411,9 +415,10 @@ void kernel_main()
    init_hardware();
 
    init_JIM();
-
+RPI_SetGpioHi(TEST_PIN); 
    init_emulator();
-
+   RPI_SetGpioHi(TEST_PIN); 
+   while (Pi1MHz_is_rst_active());
    do {
       if (Pi1MHz_is_rst_active())
       {
