@@ -13,7 +13,8 @@
         "functional": "c",
         "string.h": "c",
         "string_view": "c",
-        "stdlib.h": "c"
+        "stdlib.h": "c",
+        "stdio.h": "c"
     },
     "cSpell.words": [
         "ADDRBUS",
