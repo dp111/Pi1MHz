@@ -16,6 +16,69 @@ MACRO PAGESELECT
     EQUB 0,0
 ENDMACRO
 
+    MACRO  page_rom_x
+    stx    &f4
+    stx    &fe30
+    ENDMACRO
+
+MACRO FINDSWR
+    LDA &F4
+    PHA
+    LDX #15
+.romlp
+    page_rom_x
+
+;; Step 1: Test if candidate slot already contains a rom image
+;; so we don't clobber any pre-existing ROM images
+        ldy     &8007
+        lda     &8000, Y
+        bne     testram
+        lda     &8001, Y
+        cmp     #'('
+        bne     testram
+        lda     &8002, Y
+        cmp     #'C'
+        bne     testram
+        lda     &8003, Y
+        cmp     #')'
+        bne     testram
+
+;; Step 2: Test if that pre-existing rom image is SWMMFS
+;; so we re-use the same slot again and again
+     ;   lda     &b5fe
+     ;   cmp     #MAGIC0
+     ;   bne     romnxt
+     ;   lda     &b5ff
+     ;   cmp     #MAGIC1
+     ;   bne     romnxt
+
+;; Step 3: Check if slot is RAM
+.testram
+        lda     &8006
+        eor     #&FF
+        sta     &8006
+        cmp     &8006
+        php
+        eor     #&FF
+        sta     &8006
+        plp
+        beq     testdone
+.romnxt
+        dex
+        bpl     romlp
+
+.testdone
+
+        ldx     ourrom          ; page back in the source ROM
+        PLA
+        sta    &f4
+        sta    &fe30
+ENDMACRO
+
+MACRO LOADFILE
+
+ENDMACRO
+
 pagerts = &FDF0
 {
     ORG &FDB0
@@ -63,6 +126,11 @@ ORG &FD00
 ; adfs
 {
 ORG &FD00
+
+    FINDSWR
+    TXA
+    BMI pagerts
+
 
     PAGESELECT
     COPYBLOCK &FD00, &FE00, &350
