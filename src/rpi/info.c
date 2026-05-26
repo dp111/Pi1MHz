@@ -77,7 +77,7 @@ uint32_t get_speed() {
 }
 
 char *get_info_string() {
-   static int read = 0;
+   static uint8_t read = 0;
    if (!read) {
       sprintf(info_string, "%"PRIx32" %04"PRId32"/%03"PRId32"MHz %2.1fC",
          get_revision(),
@@ -91,7 +91,7 @@ char *get_info_string() {
 }
 
 static char *get_cmdline() {
-   static int read = 0;
+   static uint8_t read = 0;
    if (!read) {
       rpi_mailbox_property_t *buf;
       buf = RPI_PropertyGetBuffer( TAG_GET_COMMAND_LINE );

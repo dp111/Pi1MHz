@@ -32,7 +32,7 @@
 //  r9  temp
 //  r10 Address mask
 //  r11 VPU return data
-//  r12 doorbell reg
+//  r12 = 0
 //  r13 stack
 //  r14 return address
 FIQstart:
