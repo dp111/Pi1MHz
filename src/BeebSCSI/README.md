@@ -1,6 +1,6 @@
 # Changes from BeebSCSI
 
-These files have beeen taken from the BeebSCSI project. Fatfs has been updated to 0.13c.
+These files have beeen taken from the BeebSCSI project. Fatfs has been updated to 0.14b.
 host_interface.c has been significantly changed as it contains the equalivant of the CPLD as well, moved up a level and renamed to harddisdc_emaultor.c
 
 Filesystem.c is largely unchanged except from remove AVR specific code.
