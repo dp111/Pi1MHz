@@ -71,7 +71,7 @@ prefetch_loop:
 .macro DMB_MACRO
 
 #if defined(RPI2) || defined(RPI3)
-    dmb
+   // dmb   // Only needed on ArmV6 systems
 #else
     mov      r8, #0
     mcr      p15, 0, r8, c7, c10, 5
