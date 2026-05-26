@@ -342,7 +342,7 @@ static void music5000_rec_start()
 
 void music5000_rec_stop()
 {
-   static const char wavfmt[] = {
+   static const unsigned char wavfmt[] = {
       'R','I','F','F',
       0x00, 0x00, 0x00, 0x00,
       0x57, 0x41, 0x56, 0x45, // "WAVE"
