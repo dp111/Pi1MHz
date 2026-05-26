@@ -1343,7 +1343,7 @@ static int sd_card_init(struct block_device **dev)
    ret->scr = (struct sd_scr *)malloc(sizeof(struct sd_scr));
    if (!ret->scr)
    {
-       LOG_INFO(PSTR("SD: error allocating memory for SCR\r\n"));
+       printf("SD: error allocating memory for SCR\r\n");
        if (!dev) free(ret);
        return -1;
    }
