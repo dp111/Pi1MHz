@@ -1079,13 +1079,17 @@ void default_set_pixel_8bpp(const screen_mode_t *screen, int x, int y, pixel_t v
 }
 
 void default_set_pixel_16bpp(const screen_mode_t *screen, int x, int y, pixel_t value) {
-   uint16_t *fbptr = (uint16_t *)(fb + (screen->height - y - 1) * screen->pitch + x * 2);
-   *fbptr = (uint16_t)value;
-
+   // p is 2-byte aligned (fb page-aligned, pitch a multiple of 2, x*2 even).
+   // memcpy + assume_aligned -> a single STRH, no -Wcast-align / aliasing UB.
+   uint8_t *p = fb + (screen->height - y - 1) * screen->pitch + x * 2;
+   uint16_t v = (uint16_t)value;
+   memcpy(__builtin_assume_aligned(p, 2), &v, sizeof v);
 }
 void default_set_pixel_32bpp(const screen_mode_t *screen, int x, int y, pixel_t value) {
-   uint32_t *fbptr = (uint32_t *)(fb + (screen->height - y - 1) * screen->pitch + x * 4);
-   *fbptr = value;
+   // p is 4-byte aligned (fb page-aligned, pitch a multiple of 4, x*4).
+   // memcpy + assume_aligned -> a single STR.
+   uint8_t *p = fb + (screen->height - y - 1) * screen->pitch + x * 4;
+   memcpy(__builtin_assume_aligned(p, 4), &value, sizeof value);
 }
 
 pixel_t default_get_pixel_8bpp(const screen_mode_t *screen, int x, int y) {
@@ -1094,13 +1098,17 @@ pixel_t default_get_pixel_8bpp(const screen_mode_t *screen, int x, int y) {
 }
 
 pixel_t default_get_pixel_16bpp(const screen_mode_t *screen, int x, int y) {
-   const uint16_t *fbptr = (uint16_t *)(fb + (screen->height - y - 1) * screen->pitch + x * 2);
-   return *fbptr;
+   uint8_t *p = fb + (screen->height - y - 1) * screen->pitch + x * 2;
+   uint16_t v;
+   memcpy(&v, __builtin_assume_aligned(p, 2), sizeof v);   // single LDRH
+   return v;
 }
 
 pixel_t default_get_pixel_32bpp(const screen_mode_t *screen, int x, int y) {
-   const uint32_t *fbptr = (uint32_t *)(fb + (screen->height - y - 1) * screen->pitch + x * 4);
-   return *fbptr;
+   uint8_t *p = fb + (screen->height - y - 1) * screen->pitch + x * 4;
+   uint32_t v;
+   memcpy(&v, __builtin_assume_aligned(p, 4), sizeof v);   // single LDR
+   return v;
 }
 
 void default_write_character(screen_mode_t *screen, int c, int col, int row, pixel_t fg_col, pixel_t bg_col) {
