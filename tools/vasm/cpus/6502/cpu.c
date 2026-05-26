@@ -362,6 +362,26 @@ static char *handle_xsize16(char *s)
   return s;
 }
 
+static char *handle_longa(char *s)
+{
+  if (!strnicmp(s,"on",2))
+    return handle_asize16(s+2);
+  else if (!strnicmp(s,"off",3))
+    return handle_asize8(s+3);
+  cpu_error(9);  /* bad operand */
+  return s;
+}
+
+static char *handle_longi(char *s)
+{
+  if (!strnicmp(s,"on",2))
+    return handle_xsize16(s+2);
+  else if (!strnicmp(s,"off",3))
+    return handle_xsize8(s+3);
+  cpu_error(9);  /* bad operand */
+  return s;
+}
+
 static struct ExtraDirectives cpudirs[] = {
   "cpu",~0,handle_cpu,
   "setdp",~0,handle_setdp,
@@ -375,6 +395,8 @@ static struct ExtraDirectives cpudirs[] = {
   "al",WDC65816,handle_asize16,
   "xs",WDC65816,handle_xsize8,
   "xl",WDC65816,handle_xsize16,
+  "longa",WDC65816,handle_longa,
+  "longi",WDC65816,handle_longi,
 };
 
 

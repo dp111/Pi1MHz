@@ -7,7 +7,7 @@
   "branch destination out of range",ERROR,
   "illegal bit number",ERROR,
   "identifier expected",ERROR,
-  "",WARNING,
+  "bad operand",ERROR,
   "zero/direct-page addressing not available",ERROR,                  /* 10 */
   "operand not in zero/direct-page range",ERROR,
   "absolute-long addressing not available",ERROR,
