@@ -1535,9 +1535,12 @@ static uint8_t scsiCommandModeSense6(void)
 
 	// We do not check if the LUN is available since there (at this point) may only be a descriptor
 	// file for the LUN.  If the descriptor cannot be read we assume that the LUN is completely unavailable
+   // so create a dummy descriptor if needed
+
 
    if (!filesystemReadLunDescriptor(commandDataBlock.targetLUN)) {
       // Unable to read drive descriptor! Exit with error status
+   /*
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
 
       // Set request sense error globals
@@ -1547,6 +1550,7 @@ static uint8_t scsiCommandModeSense6(void)
 
       // Transition to the STATUS state
       return SCSI_STATUS;
+   */
    }
 
    const char * headerptr, *LBAptr, *modeptr;
