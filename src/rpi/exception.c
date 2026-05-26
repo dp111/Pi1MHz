@@ -3,7 +3,7 @@
 #include "auxuart.h"
 
 /* From here: https://www.raspberrypi.org/forums/viewtopic.php?f=72&t=53862*/
-_Noreturn static void reboot_now(void)
+_Noreturn void reboot_now(void)
 {
   const int PM_PASSWORD = 0x5a000000;
   const int PM_RSTC_WRCFG_FULL_RESET = 0x00000020;
