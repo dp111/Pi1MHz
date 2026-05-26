@@ -45,7 +45,7 @@ static char VPmode;
 // Function to handle F-Code buffer write actions
 void fcodeWriteBuffer(uint8_t lunNumber)
 {
-	uint16_t fcodeLength = 0;
+	//uint16_t fcodeLength = 0;
 	uint16_t byteCounter;
 
 	// Clear the serial read buffer (as we are sending a new F-Code)
@@ -58,7 +58,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 	for (byteCounter = 0; byteCounter < 256; byteCounter++) {
 		FCdebugStringInt8Hex_P(PSTR(" "), scsiFcodeBuffer[byteCounter], false);
 		if (scsiFcodeBuffer[byteCounter] == 0x0D) break;
-		fcodeLength++;
+		//fcodeLength++;
 	}
 	FCdebugString_P(PSTR("\r\n"));
 
