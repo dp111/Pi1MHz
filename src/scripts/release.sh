@@ -17,6 +17,7 @@ do
 done
 
 cp -a ../../firmware/kernel* "${DIR}/debug"
+cp -a ../../firmware/kernel* "../../firmware/debug"
 
 for MODEL in rpi3 rpi
 do
