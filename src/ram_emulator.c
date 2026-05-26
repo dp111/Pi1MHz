@@ -126,6 +126,7 @@ static char* putstring(char *ram, char term, const char *string)
 
 void rampage_emulator_init( uint8_t instance , int address)
 {
+   static uint8_t init = 0 ;
    // Page access register write fcfd fcfe fcff
    Pi1MHz_Register_Memory(WRITE_FRED, address + 1, ram_emulator_page_addr_high ); // high byte
    Pi1MHz_Register_Memory(WRITE_FRED, address + 2, ram_emulator_page_addr_mid ); // Mid byte
@@ -149,9 +150,11 @@ void rampage_emulator_init( uint8_t instance , int address)
    Pi1MHz->page_ram_addr = 0;
 
    fx_register[instance] = Pi1MHz->JIM_ram_size;  // fx addr 0 returns ram size
-
-   Pi1MHz->JIM_ram = (uint8_t *) malloc(16*1024*1024*Pi1MHz->JIM_ram_size); // malloc 480Mbytes
-
+   if (init == 0)
+   {
+      init = 1;
+      Pi1MHz->JIM_ram = (uint8_t *) malloc(16*1024*1024*Pi1MHz->JIM_ram_size); // malloc 480Mbytes
+   }
    filesystemInitialise(0);
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
@@ -168,7 +171,7 @@ void rampage_emulator_init( uint8_t instance , int address)
    }
 
    // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
-   filesystemReadFile("BEEB.MMB",Pi1MHz->JIM_ram+(16*1024*1024),Pi1MHz->JIM_ram_size<<24);
+  // filesystemReadFile("BEEB.MMB",Pi1MHz->JIM_ram+(16*1024*1024),Pi1MHz->JIM_ram_size<<24);
 
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[0])) );
 }
