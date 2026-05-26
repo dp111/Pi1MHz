@@ -139,6 +139,7 @@ void hd_emulator_conf(unsigned int gpio)
 
 void harddisc_emulator_init( void )
 {
+   static int PowerOn = 0 ;
    // Turn off all host adapter signals
    hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_3 | STATUS_2 | STATUS_CND | STATUS_IRQ, CLEAR);
 
@@ -155,11 +156,17 @@ void harddisc_emulator_init( void )
    Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+3, hd_emulator_IRQ );     // address FC43 write = Enable/Disable BBC nIRQ command
    Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+4, hd_emulator_conf );    // address FC44 write = Write BeebSCSI configuration byte
 
-   // Initialise the SD Card and FAT file system functions
-   filesystemInitialise();
-
-   // Initialise the SCSI emulation
-   scsiInitialise();
+   // Initialise but only at power on
+   // Fixes *SCSIJUKE surving over shift break.
+   if (!PowerOn)
+   {
+	   // Initialise the SD Card and FAT file system functions
+       filesystemInitialise();
+       // Initialise the SCSI emulation
+	   scsiInitialise();
+	   
+	   PowerOn = 1;
+   }
 
    // register polling function
    Pi1MHz_Register_Poll(scsiProcessEmulation);
