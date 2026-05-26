@@ -248,7 +248,7 @@ void Pi1MHz_LED(int led)
 static char* putstring(char *ram, char term, const char *string)
 {
    size_t length = strlen(string);
-   strcpy(ram, string);
+   strlcpy(ram, string, PAGE_SIZE);
    ram += length;
    if (term == '\n')
    {
