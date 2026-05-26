@@ -29,8 +29,8 @@ static uint8_t mouse_pointer;
 
 static void mouse_redirect_move_mouse(unsigned int gpio)
 {
-    mouse_x = Pi1MHz_MemoryRead(fred_address + 0) || (Pi1MHz_MemoryRead(fred_address+1)<<8);
-    mouse_y = Pi1MHz_MemoryRead(fred_address + 2) || (GET_DATA(gpio)<<8);
+    mouse_x = Pi1MHz_MemoryRead(fred_address + 0) | (Pi1MHz_MemoryRead(fred_address+1)<<8);
+    mouse_y = Pi1MHz_MemoryRead(fred_address + 2) | (GET_DATA(gpio)<<8);
     LOG_DEBUG("Mouse x %"PRIu32" y %"PRIu32" \r\n", mouse_x, mouse_y);
 }
 
