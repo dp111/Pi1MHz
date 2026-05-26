@@ -34,7 +34,7 @@
 #ifdef __ASSEMBLER__
 
 #if defined(RPI2) || defined(RPI3)
-    #define PERIPHERAL_BASE     0x3F000000
+    #define PERIPHERAL_BASE     0x3f000000
 #else
     #define PERIPHERAL_BASE     0x20000000
 #endif
@@ -42,7 +42,7 @@
 #else
 
 #if defined(RPI2) || defined(RPI3)
-    #define PERIPHERAL_BASE     0x3F000000UL
+    #define PERIPHERAL_BASE     0x3f000000UL
 #else
     #define PERIPHERAL_BASE     0x20000000UL
 #endif
