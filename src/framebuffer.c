@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#include <math.h>
 #include "rpi/mailbox.h"
 #include "framebuffer.h"
 #include "rpi/v3d.h"
@@ -60,6 +61,74 @@
 
 #endif
 
+#define NUM_COLOURS 256
+
+static uint32_t colour_table[NUM_COLOURS];
+
+#if defined(BPP32)
+
+#define SCREEN_DEPTH    32
+
+static inline unsigned int get_colour(unsigned int index) {
+   return colour_table[index];
+}
+
+static inline void set_colour(unsigned int index, int r, int g, int b) {
+   colour_table[index] = 0xFF000000 | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
+};
+
+static void update_palette(int offset, int num_colours) {
+}
+
+
+#elif defined (BPP16)
+
+#define SCREEN_DEPTH    16
+
+static inline unsigned int get_colour(unsigned int index) {
+   return colour_table[index];
+}
+
+// 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+// R4 R3 R2 R1 R0 G5 G4 G3 G2 G1 G0 B4 B3 B2 B1 B0
+
+static inline void set_colour(unsigned int index, int r, int g, int b) {
+   colour_table[index] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xF8) >> 3);
+}
+
+static void update_palette(int offset, int num_colours) {
+}
+
+
+#else
+
+#define SCREEN_DEPTH    8
+
+static inline unsigned int get_colour(unsigned int index) {
+   return index;
+}
+
+static inline void set_colour(unsigned int index, int r, int g, int b) {
+   colour_table[index] = 0xFF000000 | ((b & 0xFF) << 16) | ((g & 0xFF) << 8) | (r & 0xFF);
+}
+
+static void update_palette(int offset, int num_colours) {
+   RPI_PropertyInit();
+   RPI_PropertyAddTag(TAG_SET_PALETTE, offset, num_colours, colour_table);
+   // Call the Check version as doorbell and mailboxes are seperate
+   //LOG_INFO("Calling TAG_SET_PALETTE\r\n");
+   RPI_PropertyProcess();
+   //rpi_mailbox_property_t *buf = RPI_PropertyGet(TAG_SET_PALETTE);
+   //if (buf) {
+   //   LOG_INFO("TAG_SET_PALETTE returned %08x\r\n", buf->data.buffer_32[0]);
+   //} else {
+   //   LOG_INFO("TAG_SET_PALETTE returned ?\r\n");
+   //}
+}
+
+#endif
+
+/*
 #define D_RED   ((((RED & ~ALPHA)   >> 1) & RED)   | ALPHA)
 #define D_GREEN ((((GREEN & ~ALPHA) >> 1) & GREEN) | ALPHA)
 #define D_BLUE  ((((BLUE & ~ALPHA)  >> 1) & BLUE)  | ALPHA)
@@ -83,7 +152,15 @@ static uint32_t colour_table[] = {
    GREEN | BLUE,             // Cyan
    RED | GREEN | BLUE        // White
 
-};
+};*/
+
+// Fill modes:
+#define HL_LR_NB 1 // Horizontal line fill (left & right) to non-background
+#define HL_RO_BG 2 // Horizontal line fill (right only) to background
+#define HL_LR_FG 3 // Horizontal line fill (left & right) to foreground
+#define HL_RO_NF 4 // Horizontal line fill (right only) to non-foreground
+#define AF_NONBG 5 // Flood (area fill) to non-background
+#define AF_TOFGD 6 // Flood (area fill) to foreground
 
 // Character colour / cursor position
 static uint8_t c_bg_col;
@@ -240,7 +317,7 @@ static const uint8_t fontdata[] =
 };
 
 static unsigned char* fb = NULL;
-static unsigned char* fbbase = NULL;
+static unsigned char* fbcache = NULL;
 static uint16_t width, height;
 
 static int bpp, pitch;
@@ -267,8 +344,10 @@ static void fb_init_variables() {
 }
 
 static void fb_putpixel(int x, int y, unsigned int colour) {
+
    x = ((x + g_x_origin) * SCREEN_WIDTH)  / BBC_X_RESOLUTION;
    y = ((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION;
+
    if (x < 0  || x > SCREEN_WIDTH - 1) {
       return;
    }
@@ -276,23 +355,43 @@ static void fb_putpixel(int x, int y, unsigned int colour) {
       return;
    }
 #ifdef BPP32
-   *(uint32_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 4) = colour_table[colour];
+   *(uint32_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 4) = get_colour(colour);
 #endif
 #ifdef BPP16
-   *(uint16_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 2) = colour_table[colour];
+   *(uint16_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 2) = get_colour(colour);
 #endif
 #ifdef BPP8
-   *(uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 1) = colour_table[colour];
+   *(uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 1) = get_colour(colour);
+
 #endif
 #ifdef BPP4
    uint8_t *fbptr = (uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 1);
 
    if (~x&1)
-      {*fbptr = ((*fbptr) &0x0F) | colour_table[colour]<<4;}
+      {*fbptr = ((*fbptr) &0x0F) | get_colour(colour)<<4;}
    else
-      {*fbptr = ((*fbptr) &0xF0) | colour_table[colour];}
+      {*fbptr = ((*fbptr) &0xF0) | get_colour(colour);}
    return;
 #endif
+}
+
+unsigned int fb_getpixel(int x, int y) {
+   x = ((x + g_x_origin) * SCREEN_WIDTH)  / BBC_X_RESOLUTION;
+   y = ((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION;
+   if (x < 0  || x > SCREEN_WIDTH - 1) {
+      return g_bg_col;
+   }
+   if (y < 0 || y > SCREEN_HEIGHT - 1) {
+      return g_bg_col;
+   }
+#if defined(BPP32)
+   uint32_t *fbptr = (uint32_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 4);
+#elif defined(BPP16)
+   uint16_t *fbptr = (uint16_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 2);
+#else
+   uint8_t *fbptr = (uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x);
+#endif
+   return *fbptr;
 }
 
 // NB these functions can over run the buffer
@@ -328,10 +427,51 @@ static void memsetquick( void * ptr, int value, size_t num )
     *dst++ = a;
   }
 }
+static void _clean_invalidate_dcache()
+{
+   asm volatile ("mcr p15, 0, %0, c7, c14, 0" : : "r" (0));
+}
+/*
+#include "rpi/audio.h"
 
+struct bcm2708_dma_cb {
+   uint32_t info;
+   uint32_t src;
+   uint32_t dst;
+   uint32_t length;
+   uint32_t stride;
+   uint32_t next;
+   uint32_t pad[2];
+};
+NOINIT_SECTION static __attribute__ ((aligned (0x20))) struct bcm2708_dma_cb dma_memcpy_data;
+
+static void dma_memcpy( void* addr_dst, const void * addr_src, size_t length)
+{
+   dma_memcpy_data.info = BCM2708_DMA_S_INC | BCM2708_DMA_WAIT_RESP | BCM2708_DMA_S_WIDTH | BCM2708_DMA_D_WIDTH | BCM2708_DMA_D_INC | BCM2708_DMA_BURST(4);
+   dma_memcpy_data.src = ((uint32_t)addr_src) | GPU_BASE ;
+   dma_memcpy_data.dst = ((uint32_t)addr_dst) | GPU_BASE ;
+   dma_memcpy_data.length = length;
+   dma_memcpy_data.stride = 0;
+   dma_memcpy_data.next = 0;
+   dma_memcpy_data.pad[0] = 0;
+   dma_memcpy_data.pad[1] = 0;
+
+   _clean_cache_area(dma_memcpy_data, sizeof(dma_memcpy_data));
+
+   RPI_DMABase->Enable = 1<<4; // enable DMA 4
+
+   RPI_DMA4Base->CS = BCM2708_DMA_RESET;
+   RPI_WaitMicroSeconds(2);
+   RPI_DMA4Base->CS = BCM2708_DMA_INT | BCM2708_DMA_END;
+   RPI_DMA4Base->ADDR = (uint32_t)&dma_memcpy_data.info | GPU_BASE;
+   RPI_DMA4Base->Debug = 7; // clear debug error flags
+   RPI_WaitMicroSeconds(2);
+   RPI_DMA4Base->CS = 0x10880000 | BCM2708_DMA_ACTIVE;  // go, mid priority, wait for outstanding writes
+}
+*/
 static void fb_scroll() {
 
-//RPI_SetGpioHi(TEST_PIN);
+RPI_SetGpioHi(TEST_PIN);
 #if 0
    static uint32_t viewport = 0;
    viewport++;
@@ -339,16 +479,23 @@ static void fb_scroll() {
    if (viewport>40)
    {
       viewport = 0;
-      fb = fbbase;
+      fb = fbcache;
    }
    RPI_PropertySetWord( TAG_SET_VIRTUAL_OFFSET , 0 , cheight*viewport );
-   memsetquick(fbbase + (height - cheight) * pitch, 0, cheight * pitch);
+   memsetquick(fbcache + (height - cheight) * pitch, 0, cheight * pitch);
 #else
+
+  //_clean_invalidate_dcache();
+   memmovequick(fbcache, fbcache + cheight * pitch, (height - cheight) * pitch);
+  // dma_memcpy(fb, fb + cheight * pitch, (height - cheight) * pitch);
+   memsetquick(fbcache + (height - cheight) * pitch, 0, cheight * pitch);
+  _clean_invalidate_dcache();/*
+       _clean_cache_area(fb, fb + height * pitch);
    memmovequick(fb, fb + cheight * pitch, (height - cheight) * pitch);
-   memsetquick(fb + (height - cheight) * pitch, 0, cheight * pitch);
+   memsetquick(fb + (height - cheight) * pitch, 0, cheight * pitch);*/
 #endif
 
-//RPI_SetGpioLo(TEST_PIN);
+RPI_SetGpioLo(TEST_PIN);
 }
 
 static void fb_clear() {
@@ -356,7 +503,11 @@ static void fb_clear() {
    // TODO: clearing all of these may not be strictly correct
    fb_init_variables();
    // clear frame buffer *** bug here memset value is a byte so 32bpp doesn't work
-   memsetquick((void *)fb, colour_table[c_bg_col], height * pitch);
+   memsetquick((void *)fb, get_colour(c_bg_col), height * pitch);
+}
+
+int calc_radius(int x1, int y1, int x2, int y2) {
+   return (int)(sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1)) + 0.5);
 }
 
 static void fb_cursor_left() {
@@ -453,11 +604,343 @@ static void fb_fill_triangle(int x, int y, int x2, int y2, int x3, int y3, unsig
    y = SCREEN_HEIGHT - 1 - y;
    y2 = SCREEN_HEIGHT - 1 - y2;
    y3 = SCREEN_HEIGHT - 1 - y3;
-   colour = colour_table[colour];
+   colour = get_colour(colour);
    v3d_draw_triangle(x, y, x2, y2, x3, y3, colour);
 }
 
 
+void fb_draw_triangle(int x1, int y1, int x2, int y2, int x3, int y3, unsigned int colour) {
+   fb_draw_line(x1, y1, x2, y2, colour);
+   fb_draw_line(x2, y2, x3, y3, colour);
+   fb_draw_line(x3, y3, x1, y1, colour);
+}
+
+void fb_draw_circle(int xc, int yc, int r, unsigned int colour) {
+   int x=0;
+   int y=r;
+   int p=3-(2*r);
+
+   fb_putpixel(xc+x,yc-y,colour);
+
+   for(x=0;x<=y;x++)
+      {
+         if (p<0)
+            {
+               p+=4*x+6;
+            }
+         else
+            {
+               y--;
+               p+=4*(x-y)+10;
+            }
+
+         fb_putpixel(xc+x,yc-y,colour);
+         fb_putpixel(xc-x,yc-y,colour);
+         fb_putpixel(xc+x,yc+y,colour);
+         fb_putpixel(xc-x,yc+y,colour);
+         fb_putpixel(xc+y,yc-x,colour);
+         fb_putpixel(xc-y,yc-x,colour);
+         fb_putpixel(xc+y,yc+x,colour);
+         fb_putpixel(xc-y,yc+x,colour);
+      }
+}
+
+void fb_fill_circle(int xc, int yc, int r, unsigned int colour) {
+   int x=0;
+   int y=r;
+   int p=3-(2*r);
+
+   fb_putpixel(xc+x,yc-y,colour);
+
+   for(x=0;x<=y;x++)
+      {
+         if (p<0)
+            {
+               p+=4*x+6;
+            }
+         else
+            {
+               y--;
+               p+=4*(x-y)+10;
+            }
+
+         fb_draw_line(xc+x,yc-y,xc-x,yc-y,colour);
+         fb_draw_line(xc+x,yc+y,xc-x,yc+y,colour);
+         fb_draw_line(xc+y,yc-x,xc-y,yc-x,colour);
+         fb_draw_line(xc+y,yc+x,xc-y,yc+x,colour);
+      }
+}
+/* Bad rectangle due to triangle bug
+   void fb_fill_rectangle(int x1, int y1, int x2, int y2, unsigned int colour) {
+   fb_fill_triangle(x1, y1, x1, y2, x2, y2, colour);
+   fb_fill_triangle(x1, y1, x2, y1, x2, y2, colour);
+   }
+*/
+
+void fb_fill_rectangle(int x1, int y1, int x2, int y2, unsigned int colour) {
+   int y;
+   for (y = y1; y <= y2; y++) {
+      fb_draw_line(x1, y, x2, y, colour);
+   }
+}
+
+void fb_draw_rectangle(int x1, int y1, int x2, int y2, unsigned int colour) {
+   fb_draw_line(x1, y1, x2, y1, colour);
+   fb_draw_line(x2, y1, x2, y2, colour);
+   fb_draw_line(x2, y2, x1, y2, colour);
+   fb_draw_line(x1, y2, x1, y1, colour);
+}
+
+void fb_fill_parallelogram(int x1, int y1, int x2, int y2, int x3, int y3, unsigned int colour) {
+   int x4 = x3 - x2 + x1;
+   int y4 = y3 - y2 + y1;
+   fb_fill_triangle(x1, y1, x2, y2, x3, y3, colour);
+   fb_fill_triangle(x1, y1, x4, y4, x3, y3, colour);
+}
+
+void fb_draw_parallelogram(int x1, int y1, int x2, int y2, int x3, int y3, unsigned int colour) {
+   int x4 = x3 - x2 + x1;
+   int y4 = y3 - y2 + y1;
+   fb_draw_line(x1, y1, x2, y2, colour);
+   fb_draw_line(x2, y2, x3, y3, colour);
+   fb_draw_line(x3, y3, x4, y4, colour);
+   fb_draw_line(x4, y4, x1, y1, colour);
+}
+
+void fb_draw_ellipse(int xc, int yc, int width, int height, unsigned int colour) {
+   int a2 = width * width;
+   int b2 = height * height;
+   int fa2 = 4 * a2, fb2 = 4 * b2;
+   int x, y, sigma;
+
+   /* first half */
+   for (x = 0, y = height, sigma = 2*b2+a2*(1-2*height); b2*x <= a2*y; x++)
+      {
+         fb_putpixel(xc + x, yc + y, colour);
+         fb_putpixel(xc - x, yc + y, colour);
+         fb_putpixel(xc + x, yc - y, colour);
+         fb_putpixel(xc - x, yc - y, colour);
+         if (sigma >= 0)
+            {
+               sigma += fa2 * (1 - y);
+               y--;
+            }
+         sigma += b2 * ((4 * x) + 6);
+      }
+
+   /* second half */
+   for (x = width, y = 0, sigma = 2*a2+b2*(1-2*width); a2*y <= b2*x; y++)
+      {
+         fb_putpixel(xc + x, yc + y, colour);
+         fb_putpixel(xc - x, yc + y, colour);
+         fb_putpixel(xc + x, yc - y, colour);
+         fb_putpixel(xc - x, yc - y, colour);
+         if (sigma >= 0)
+            {
+               sigma += fb2 * (1 - x);
+               x--;
+            }
+         sigma += a2 * ((4 * y) + 6);
+      }
+}
+
+void fb_fill_ellipse(int xc, int yc, int width, int height, unsigned int colour) {
+   int a2 = width * width;
+   int b2 = height * height;
+   int fa2 = 4 * a2, fb2 = 4 * b2;
+   int x, y, sigma;
+
+   /* first half */
+   for (x = 0, y = height, sigma = 2*b2+a2*(1-2*height); b2*x <= a2*y; x++)
+      {
+         fb_draw_line(xc + x, yc + y, xc - x, yc + y, colour);
+         fb_draw_line(xc + x, yc - y, xc - x, yc - y, colour);
+         if (sigma >= 0)
+            {
+               sigma += fa2 * (1 - y);
+               y--;
+            }
+         sigma += b2 * ((4 * x) + 6);
+      }
+
+   /* second half */
+   for (x = width, y = 0, sigma = 2*a2+b2*(1-2*width); a2*y <= b2*x; y++)
+      {
+         fb_draw_line(xc + x, yc + y, xc - x, yc + y, colour);
+         fb_draw_line(xc + x, yc - y, xc - x, yc - y, colour);
+         if (sigma >= 0)
+            {
+               sigma += fb2 * (1 - x);
+               x--;
+            }
+         sigma += a2 * ((4 * y) + 6);
+      }
+}
+
+void fb_fill_area(int x, int y, unsigned int colour, unsigned int mode) {
+   /*   Modes:
+    * HL_LR_NB: horizontal line fill (left & right) to non-background - done
+    * HL_RO_BG: Horizontal line fill (right only) to background - done
+    * HL_LR_FG: Horizontal line fill (left & right) to foreground
+    * HL_RO_NF: Horizontal line fill (right only) to non-foreground - done
+    * AF_NONBG: Flood (area fill) to non-background
+    * AF_TOFGD: Flood (area fill) to foreground
+    */
+
+   int save_x = x;
+   int save_y = y;
+   int x_left = x;
+   int y_left = y;
+   int x_right = x;
+   int y_right = y;
+   int real_y;
+   unsigned int stop = 0;
+
+   // printf("Plot (%d,%d), colour %d, mode %d\r\n", x, y, colour, mode);
+   // printf("g_bg_col = %d, g_fg_col = %d\n\r", g_bg_col, g_fg_col);
+
+   switch(mode) {
+   case HL_LR_NB:
+      while (! stop) {
+         if (fb_getpixel(x_right,y) == get_colour(g_bg_col) && x_right <= BBC_X_RESOLUTION) {
+            x_right += BBC_X_RESOLUTION/SCREEN_WIDTH;   // speeds up but might fail if not integer
+         } else {
+            stop = 1;
+         }
+      }
+      stop = 0;
+      x = save_x - 1;
+      while (! stop) {
+         if (fb_getpixel(x_left,y) == get_colour(g_bg_col) && x_left >= 0) {
+            x_left -= BBC_X_RESOLUTION/SCREEN_WIDTH;    // speeds up but might fail if not integer
+         } else {
+            stop = 1;
+         }
+      }
+      break;
+
+   case HL_RO_BG:
+      while (! stop) {
+         if (fb_getpixel(x_right,y) != get_colour(g_bg_col) && x_right <= BBC_X_RESOLUTION) {
+            x_right += BBC_X_RESOLUTION/SCREEN_WIDTH;   // speeds up but might fail if not integer
+         } else {
+            stop = 1;
+         }
+      }
+      break;
+
+   case HL_LR_FG:
+      while (! stop) {
+         if (fb_getpixel(x_right,y) != get_colour(g_fg_col) && x_right <= BBC_X_RESOLUTION) {
+            x_right += BBC_X_RESOLUTION/SCREEN_WIDTH;   // speeds up but might fail if not integer
+         } else {
+            stop = 1;
+         }
+      }
+      stop = 0;
+      x = save_x - 1;
+      while (! stop) {
+         if (fb_getpixel(x_left,y) != get_colour(g_fg_col) && x_left >= 0) {
+            x_left -= BBC_X_RESOLUTION/SCREEN_WIDTH;    // speeds up but might fail if not integer
+         } else {
+            stop = 1;
+         }
+      }
+      break;
+
+
+   case HL_RO_NF:
+      while (! stop) {
+         if (fb_getpixel(x_right,y) != get_colour(g_fg_col) && x_right <= BBC_X_RESOLUTION) {
+            x_right += BBC_X_RESOLUTION/SCREEN_WIDTH;   // speeds up but might fail if not integer
+         } else {
+            stop = 1;
+         }
+      }
+      break;
+
+   case AF_NONBG:
+      // going up
+      while (! stop) {
+         if (fb_getpixel(x,y) == get_colour(g_bg_col) && y <= BBC_Y_RESOLUTION) {
+            fb_fill_area(x, y, colour, HL_LR_NB);
+            // As the BBC_Y_RESOLUTION is not a multiple of SCREEN_HEIGHT we have to increment
+            // y until the physical y-coordinate increases. If we don't do that and simply increment
+            // y by 2 then at some point the physical y-coordinate is the same as the previous drawn
+            // line and the floodings stops. This also speeds up drawing because each physical line
+            // is only drawn once.
+            real_y = ((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION;
+            while(((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION == real_y) {
+               y++;
+            }
+            x = (g_x_pos_last1 + g_x_pos_last2) / 2;
+         } else {
+            stop = 1;
+         }
+      }
+      // going down
+      stop = 0;
+      x = save_x;
+      y = save_y - BBC_Y_RESOLUTION/SCREEN_HEIGHT;
+      while (! stop) {
+         if (fb_getpixel(x,y) == get_colour(g_bg_col) && y >= 0) {
+            fb_fill_area(x, y, colour, HL_LR_NB);
+            real_y = ((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION;
+            while(((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION == real_y) {
+               y--;
+            }
+            x = (g_x_pos_last1 + g_x_pos_last2) / 2;
+         } else {
+            stop = 1;
+         }
+      }
+      colour = -1;  // prevents any additional line drawing
+      break;
+
+   case AF_TOFGD:
+      // going up
+      while (! stop) {
+         if (fb_getpixel(x,y) != get_colour(g_fg_col) && y <= BBC_Y_RESOLUTION) {
+            fb_fill_area(x, y, colour, HL_LR_FG);
+            real_y = ((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION;
+            while(((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION == real_y) {
+               y++;
+            }
+            x = (g_x_pos_last1 + g_x_pos_last2) / 2;
+         } else {
+            stop = 1;
+         }
+      }
+      // going down
+      stop = 0;
+      x = save_x;
+      y = save_y - BBC_Y_RESOLUTION/SCREEN_HEIGHT;
+      while (! stop) {
+         if (fb_getpixel(x,y) != get_colour(g_fg_col) && y >= 0) {
+            fb_fill_area(x, y, colour, HL_LR_NB);
+            real_y = ((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION;
+            while(((y + g_y_origin) * SCREEN_HEIGHT) / BBC_Y_RESOLUTION == real_y) {
+               y--;
+            }
+            x = (g_x_pos_last1 + g_x_pos_last2) / 2;
+         } else {
+            stop = 1;
+         }
+      }
+      colour = -1;  // prevents any additional line drawing
+      break;
+
+   default:
+      printf( "Unknown fill mode %d\r\n", mode);
+      break;
+   }
+
+      fb_draw_line(x_left, y_left, x_right, y_right, colour);
+      g_x_pos_last1 = x_left;
+      g_y_pos_last1 = y_left;
+      g_x_pos_last2 = x_right;
+      g_y_pos_last2 = y_right;
+}
 static uint32_t fb_get_address() {
    return (uint32_t) fb;
 }
@@ -474,164 +957,25 @@ static uint32_t fb_get_bpp() {
    return bpp;
 }
 
-static uint32_t palette= PALETTE_DEFAULT;
-static uint32_t active = 0;
-
-static void update_palette() {
-   int m;
-   uint32_t palette_data[258];
-   uint32_t num_colours = (bpp == 8) ? 256 : 16;
-   uint32_t j = 2;
-   palette_data[0] = 0;                        // Offset to first colour
-   palette_data[1] = num_colours;              // Number of colours
-   for (uint32_t i = 0; i < num_colours; i++) {
-      int r = (i & 1) ? 255 : 0;
-      int g = (i & 2) ? 255 : 0;
-      int b = (i & 4) ? 255 : 0;
-      switch (palette) {
-      case PALETTE_INVERSE:
-         r = 255 - r;
-         g = 255 - g;
-         b = 255 - b;
-         break;
-      case PALETTE_MONO1:
-         m = 0.299 * r + 0.587 * g + 0.114 * b;
-         r = m; g = m; b = m;
-         break;
-      case PALETTE_MONO2:
-         m = (i & 7) * 255 / 7;
-         r = m; g = m; b = m;
-         break;
-      case PALETTE_RED:
-         m = (i & 7) * 255 / 7;
-         r = m; g = 0; b = 0;
-         break;
-      case PALETTE_GREEN:
-         m = (i & 7) * 255 / 7;
-         r = 0; g = m; b = 0;
-         break;
-      case PALETTE_BLUE:
-         m = (i & 7) * 255 / 7;
-         r = 0; g = 0; b = m;
-         break;
-      case PALETTE_NOT_RED:
-         r = 0;
-         g = (i & 3) * 255 / 3;
-         b = ((i >> 2) & 1) * 255;
-         break;
-      case PALETTE_NOT_GREEN:
-         r = (i & 3) * 255 / 3;
-         g = 0;
-         b = ((i >> 2) & 1) * 255;
-         break;
-      case PALETTE_NOT_BLUE:
-         r = ((i >> 2) & 1) * 255;
-         g = (i & 3) * 255 / 3;
-         b = 0;
-         break;
-      case PALETTE_ATOM_COLOUR_NORMAL:
-         // In the Atom CPLD, colour bit 3 indicates additional colours
-         //  8 = 1000 = normal orange
-         //  9 = 1001 = bright orange
-         // 10 = 1010 = dark green text background
-         // 11 = 1011 = dark orange text background
-         if (i & 8) {
-            if ((i & 7) == 0) {
-               // orange
-               r = 160; g = 80; b = 0;
-            } else if ((i & 7) == 1) {
-               // bright orange
-               r = 255; g = 127; b = 0;
-            } else {
-               // otherwise show as black
-               r = g = b = 0;
-            }
-         }
-         break;
-      case PALETTE_ATOM_COLOUR_EXTENDED:
-         // In the Atom CPLD, colour bit 3 indicates additional colours
-         if (i & 8) {
-            if ((i & 7) == 0) {
-               // orange
-               r = 160; g = 80; b = 0;
-            } else if ((i & 7) == 1) {
-               // bright orange
-               r = 255; g = 127; b = 0;
-            } else if ((i & 7) == 2) {
-               // dark green
-               r = 0; g = 31; b = 0;
-            } else if ((i & 7) == 3) {
-               // dark orange
-               r = 31; g = 15; b = 0;
-            } else {
-               // otherwise show as black
-               r = g = b = 0;
-            }
-         }
-         break;
-      case PALETTE_ATOM_COLOUR_ACORN:
-         // In the Atom CPLD, colour bit 3 indicates additional colours
-         if (i & 8) {
-            if ((i & 6) == 0) {
-               // orange => red
-               r = 255; g = 0; b = 0;
-            } else {
-               // otherwise show as black
-               r = g = b = 0;
-            }
-         }
-         break;
-      case PALETTE_ATOM_MONO:
-         m = 0;
-         switch (i) {
-         case 3: // yellow
-         case 7: // white (buff)
-         case 9: // bright orange
-            // Y = WH (0.42V)
-            m = 255;
-            break;
-         case 2: // green
-         case 5: // magenta
-         case 6: // cyan
-         case 8: // normal orange
-            // Y = WM (0.54V)
-            m = 255 * (72 - 54) / (72 - 42);
-            break;
-         case 1: // red
-         case 4: // blue
-            // Y = WL (0.65V)
-            m = 255 * (72 - 65) / (72 - 42);
-            break;
-         default:
-            // Y = BL (0.72V)
-            m = 0;
-         }
-         r = g = b = m;
-         break;
-      }
-      if (active) {
-         if (i >= (num_colours >> 1)) {
-            palette_data[j++] = 0xFFFFFFFF;
-         } else {
-            r >>= 1; g >>= 1; b >>= 1;
-            palette_data[j++] = 0xFF000000 | (b << 16) | (g << 8) | r;
-         }
-      } else {
-         palette_data[j++] = 0xFF000000 | (b << 16) | (g << 8) | r;
-      }
-   }
-
-   // Flush the previous swapBuffer() response from the GPU->ARM mailbox
-
-   RPI_PropertySetBuffer(TAG_SET_PALETTE, palette_data, j );
-}
-
+// Fill modes:
+#define HL_LR_NB 1 // Horizontal line fill (left & right) to non-background
+#define HL_RO_BG 2 // Horizontal line fill (right only) to background
+#define HL_LR_FG 3 // Horizontal line fill (left & right) to foreground
+#define HL_RO_NF 4 // Horizontal line fill (right only) to non-foreground
+#define AF_NONBG 5 // Flood (area fill) to non-background
+#define AF_TOFGD 6 // Flood (area fill) to foreground
 
 #define NORMAL    0
-#define IN_VDU17  1
-#define IN_VDU18  2
-#define IN_VDU25  3
-#define IN_VDU29  4
+#define IN_VDU4   4
+#define IN_VDU5   5
+#define IN_VDU17  17
+#define IN_VDU18  18
+#define IN_VDU19  19
+#define IN_VDU22  22
+#define IN_VDU23  23
+#define IN_VDU25  25
+#define IN_VDU29  29
+#define IN_VDU31  31
 
 static void update_g_cursors(int16_t x, int16_t y) {
    g_x_pos_last2 = g_x_pos_last1;
@@ -667,8 +1011,8 @@ static void fb_draw_character(int c, int invert, int eor) {
       uint8_t *fbptr = fb + c_x_pos * bpp + (c_y_pos * cheight + i) * pitch;
 #endif
 
-      uint32_t c_fgol = colour_table[c_fg_col];
-      uint32_t c_bgol = colour_table[c_bg_col];
+      uint32_t c_fgol = get_colour(c_fg_col);
+      uint32_t c_bgol = get_colour(c_bg_col);
 
       for (uint32_t j = 0; j < 8; j++) {
          int col = (data & 0x80) ? c_fgol : c_bgol;
@@ -698,6 +1042,47 @@ static void fb_draw_character(int c, int invert, int eor) {
    }
 }
 
+
+void init_colour_table() {
+   // Colour  0 = Black
+   // Colour  1 = Dark Red
+   // Colour  2 = Dark Green
+   // Colour  3 = Dark Yellow
+   // Colour  4 = Dark Blue
+   // Colour  5 = Dark Magenta
+   // Colour  6 = Dark Cyan
+   // Colour  7 = Dark White
+   // Colour  8 = Dark Black
+   // Colour  9 = Red
+   // Colour 10 = Green
+   // Colour 11 = Yellow
+   // Colour 12 = Blue
+   // Colour 13 = Magenta
+   // Colour 14 = Cyan
+   // Colour 15 = White
+   // Colour 16-255 Black
+   for (int i = 0; i < 16; i++) {
+      int intensity = (i & 8) ? 255 : 127;
+      int b = (i & 4) ? intensity : 0;
+      int g = (i & 2) ? intensity : 0;
+      int r = (i & 1) ? intensity : 0;
+      if (i == 8) {
+         r = g = b = 63;
+      }
+      set_colour(i, r, g, b);
+   }
+   for (int i = 16; i < 256; i++) {
+      set_colour(i, 0, 0, 0);
+   }
+}
+
+int max(int a, int b)
+{
+   if (a>b)
+      return a;
+   else 
+      return b;
+}
 void fb_writec(int c) {
    int invert;
    static uint8_t g_mode;
@@ -707,7 +1092,16 @@ void fb_writec(int c) {
    static int16_t x_tmp;
    static int16_t y_tmp;
 
-   if (state == IN_VDU17) {
+   static int l; // logical colour
+   static int p; // physical colour
+   static int r;
+   static int g;
+   static int b;
+
+   switch (state)
+   {
+   case IN_VDU17 :
+   {
       state = NORMAL;
       if (c & 128) {
          c_bg_col = c & 15;
@@ -722,7 +1116,9 @@ void fb_writec(int c) {
       }
       return;
 
-   } else if (state == IN_VDU18) {
+   }
+   case IN_VDU18 :
+   {
       switch (count) {
       case 0:
 //         g_plotmode = c;
@@ -741,7 +1137,57 @@ void fb_writec(int c) {
       }
       return;
 
-   } else if (state == IN_VDU25) {
+   }
+   case IN_VDU19:
+   {
+      switch (count) {
+      case 0:
+         l = c;
+         break;
+      case 1:
+         p = c;
+         break;
+      case 2:
+         r = c;
+         break;
+      case 3:
+         g = c;
+         break;
+      case 4:
+         b = c;
+         if (p == 255) {
+            init_colour_table();
+            update_palette(l, NUM_COLOURS);
+         } else {
+            // See http://beebwiki.mdfs.net/VDU_19
+            if (p < 16) {
+               int i = (p & 8) ? 255 : 127;
+               b = (p & 4) ? i : 0;
+               g = (p & 2) ? i : 0;
+               r = (p & 1) ? i : 0;
+            }
+            set_colour(l, r, g, b);
+            update_palette(l, 1);
+         }
+         state = NORMAL;
+         break;
+      }
+      count++;
+      return;
+   }
+   case IN_VDU22:
+      {
+      count++;
+      if (count == 1) {
+         fb_clear();
+         state = NORMAL;
+      }
+      return;
+      }
+
+
+   case IN_VDU25:
+   {
       switch (count) {
       case 0:
          g_mode = c;
@@ -769,7 +1215,6 @@ void fb_writec(int c) {
             update_g_cursors(g_x_pos + x_tmp, g_y_pos + y_tmp);
          }
 
-
          int col;
          switch (g_mode & 3) {
          case 0:
@@ -793,9 +1238,56 @@ void fb_writec(int c) {
             } else if (g_mode >= 64 && g_mode < 72) {
                // Plot a single pixel
                fb_putpixel(g_x_pos, g_y_pos, g_fg_col);
+            } else if (g_mode >= 72 && g_mode < 80) {
+               // Horizontal line fill (left and right) to non background
+               fb_fill_area(g_x_pos, g_y_pos, col, HL_LR_NB);
             } else if (g_mode >= 80 && g_mode < 88) {
                // Fill a triangle
                fb_fill_triangle(g_x_pos_last2, g_y_pos_last2, g_x_pos_last1, g_y_pos_last1, g_x_pos, g_y_pos, col);
+            } else if (g_mode >= 88 && g_mode < 96) {
+               // Horizontal line fill (right only) to background
+               fb_fill_area(g_x_pos, g_y_pos, col, HL_RO_BG);
+            } else if (g_mode >= 96 && g_mode < 104) {
+               // Fill a rectangle
+               fb_fill_rectangle(g_x_pos_last1, g_y_pos_last1, g_x_pos, g_y_pos, col);
+            } else if (g_mode >= 104 && g_mode < 112) {
+               // Horizontal line fill (left and right) to foreground
+               fb_fill_area(g_x_pos, g_y_pos, col, HL_LR_FG);
+            } else if (g_mode >= 112 && g_mode < 120) {
+               // Fill a parallelogram
+               fb_fill_parallelogram(g_x_pos_last2, g_y_pos_last2, g_x_pos_last1, g_y_pos_last1, g_x_pos, g_y_pos, col);
+            } else if (g_mode >= 120 && g_mode < 128) {
+               // Horizontal line fill (right only) to non-foreground
+               fb_fill_area(g_x_pos, g_y_pos, col, HL_RO_NF);
+            } else if (g_mode >= 128 && g_mode < 136) {
+               // Flood fill to non-background
+               fb_fill_area(g_x_pos, g_y_pos, col, AF_NONBG);
+            } else if (g_mode >= 136 && g_mode < 144) {
+               // Flood fill to non-foreground
+               fb_fill_area(g_x_pos, g_y_pos, col, AF_TOFGD);
+            } else if (g_mode >= 144 && g_mode < 152) {
+               // Draw a circle outline
+               int radius = calc_radius(g_x_pos_last1, g_y_pos_last1, g_x_pos, g_y_pos);
+               fb_draw_circle(g_x_pos_last1, g_y_pos_last1, radius, col);
+            } else if (g_mode >= 152 && g_mode < 160) {
+               // Fill a circle
+               int radius = calc_radius(g_x_pos_last1, g_y_pos_last1, g_x_pos, g_y_pos);
+               fb_fill_circle(g_x_pos_last1, g_y_pos_last1, radius, col);
+            } else if (g_mode >= 160 && g_mode < 168) {
+               // Draw a rectangle outline
+               fb_draw_rectangle(g_x_pos, g_y_pos, g_x_pos_last1, g_y_pos_last1, col);
+            } else if (g_mode >= 168 && g_mode < 176) {
+               // Draw a parallelogram outline
+               fb_draw_parallelogram(g_x_pos, g_y_pos, g_x_pos_last1, g_y_pos_last1, g_x_pos_last2, g_y_pos_last2, col);
+            } else if (g_mode >= 176 && g_mode < 184) {
+               // Draw a triangle outline
+               fb_draw_triangle(g_x_pos, g_y_pos, g_x_pos_last1, g_y_pos_last1, g_x_pos_last2, g_y_pos_last2, col);
+            } else if (g_mode >= 192 && g_mode < 200) {
+               // Draw an ellipse
+               fb_draw_ellipse(g_x_pos_last2, g_y_pos_last2, max(/*abs(g_x_pos_last1 - g_x_pos_last2)*/0, abs(g_x_pos - g_x_pos_last2) ), max(abs(g_y_pos - g_y_pos_last2),abs(g_y_pos_last1 - g_y_pos_last2)), col);
+            } else if (g_mode >= 200 && g_mode < 208) {
+               // Fill a n ellipse
+               fb_fill_ellipse(g_x_pos_last2, g_y_pos_last2, abs(g_x_pos_last1 - g_x_pos_last2), abs(g_y_pos - g_y_pos_last2), col);
             }
          }
       }
@@ -805,7 +1297,9 @@ void fb_writec(int c) {
       }
       return;
 
-   } else if (state == IN_VDU29) {
+   }
+   case IN_VDU29:
+   {
       switch (count) {
       case 0:
          x_tmp = c;
@@ -830,7 +1324,7 @@ void fb_writec(int c) {
       }
       return;
    }
-
+}
    switch(c) {
 
    case 8:
@@ -951,7 +1445,7 @@ static void fb_initialize() {
     if( ( mp = RPI_PropertyGet( TAG_ALLOCATE_BUFFER  ) ) )
     {
         fb = (unsigned char*)(mp->data.buffer_32[0] &0x1FFFFFFF);
-        fbbase = fb;
+        fbcache = fb + 0x80000000;
 #ifdef DEBUG_FB
         printf( "Framebuffer address: %8.8X\r\n", (unsigned int)fb );
 #endif
@@ -983,12 +1477,18 @@ static void fb_initialize() {
     }
 
     // On the Pi 2/3 the mailbox returns the address with bits 31..30 set, which is wrong
-    fb = (unsigned char *)(((unsigned int) fb) & 0x3fffffff);
+  //  fb = (unsigned char *)(((unsigned int) fb) & 0x3fffffff);
 
-    update_palette();
+    //update_palette();
 
     // Change bpp from bits to bytes
-  //  bpp >>= 3;
+    //bpp >>= 3;
+
+    /* Copy default colour table */
+    init_colour_table();
+
+    /* Update the palette (only in 8-bpp modes) */
+    update_palette(0, NUM_COLOURS);
 
     fb_clear();
 

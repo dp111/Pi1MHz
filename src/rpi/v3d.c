@@ -468,8 +468,9 @@ int v3d_initialize(uint32_t fb_address, uint32_t width, uint32_t height, uint32_
    w = width;
    h = height;
    fb_bpp = bpp;
-   
+
    RPI_PropertySetWord(TAG_ENABLE_GPU, 1, 0);
+   RPI_PropertySetWord(0x00038030, 11, 0);
 
    // map v3d's registers into our address space.
    v3d = (unsigned *) (PERIPHERAL_BASE + 0xc00000);
