@@ -175,16 +175,20 @@ static void wifi_lwip_drain_rx_frames(void)
 
       packet = pbuf_alloc(PBUF_RAW, frame_length, PBUF_POOL);
       if (packet == NULL)
-         return;
+         return;                  /* pbuf pool exhausted - stop draining */
 
+      /* On a per-packet failure, drop just that packet and keep
+         draining the remaining frames from the chip; abandoning the
+         whole budget on one bad packet leaves up to 7 frames queued
+         in the chip until the next poll tick. */
       if (pbuf_take(packet, frame, frame_length) != ERR_OK) {
          pbuf_free(packet);
-         return;
+         continue;
       }
 
       if (g_wifi_lwip_context.netif.input(packet, &g_wifi_lwip_context.netif) != ERR_OK) {
          pbuf_free(packet);
-         return;
+         continue;
       }
    }
 }
@@ -294,6 +298,10 @@ void wifi_lwip_init_stack(void)
                  &g_wifi_lwip_context,
                  wifi_lwip_netif_init,
                  ethernet_input) == NULL) {
+      /* Surface the failure so the wifi boot state machine stops -
+         otherwise it would happily advance to webserver_init against
+         a netif that was never added and report the stack as ready. */
+      wifi_set_error("lwIP netif_add failed");
       return;
    }
 
@@ -314,8 +322,15 @@ void wifi_lwip_init_stack(void)
 
    if (g_wifi_lwip_context.use_dhcp) {
       dhcp_result = dhcp_start(&g_wifi_lwip_context.netif);
-      if (dhcp_result == ERR_OK)
+      if (dhcp_result == ERR_OK) {
          g_wifi_lwip_context.dhcp_started = true;
+      } else {
+         /* dhcp_start only fails on memory exhaustion at boot.  The
+            link-up timeout in wifi_lwip_poll won't catch this because
+            the link itself can come up just fine - surface it now so
+            the user isn't left guessing why no address ever arrives. */
+         wifi_set_error("lwIP dhcp_start failed");
+      }
       wifi_lwip_debug_log("dhcp_start result=%d", (int)dhcp_result);
       wifi_lwip_update_runtime_state();
       return;
