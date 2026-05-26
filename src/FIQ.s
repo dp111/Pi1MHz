@@ -21,13 +21,55 @@
 #define GPLEV0_OFFSET       0x34
 #define GPEDS0_OFFSET       0x40
 #define GPFEN0_OFFSET       0x58
-
 //-----------------------------------------------------------------------
 // Setup registers for FIQ handler
 // this gets inserted into the code after the stack is setup
 //  R11 is preset to be the GPIO base
+#define FIQ_SETUP 1
+.macro FIQ_SETUP_M
+  #if defined(RPI2) || defined(RPI3)
+  #else
+  #if 1
+  // ARMv6 lock FIQ handler into cache
+  // disable the cache
+    ldr     r8,=_start
+    ldr     r9,=FIQexit
+    mov     r10,#8
+    
+    // flush instruction cache
+    mov     r11,#0
+    mcr     p15, 0, r11, c7, c5, 0
+    
+    // 5 enable allocation to target 
+    mov     r11,#0x7
+    MCR     p15, 0, r11, c9, c0, 1 
+    
+    // 6 prefetch instructions
 
-#define FIQ_SETUP     LDR     r11,=GPFSEL0
+prefetch_loop:
+    MCR     p15, 0, r8, c7, c13, 1
+    ADD     r8,r8,#32
+    CMP     R8,R9
+    BLT     prefetch_loop
+    
+    // 7 Lock down reg
+    MCR      p15, 0, r10, c9, c0, 1
+    #if 0 
+    // lock down the TLB
+    ldr     r11,=_start
+    MCR     p15,0,r11,c8,c7,1
+    MRC     p15,0,R8,c10,c0,0
+    ORR     r8,r8,#1
+    MCR     p15,0,R8,c10,c0,0
+    LDR     r11,[r11]
+    MRC     p15,0,R8,c10,c0,0
+    BIC     R8,r8,#1
+    MCR     p15,0,R8,c10,c0,0
+    #endif
+  #endif
+  #endif
+   LDR     r11,=GPFSEL0
+.endm
 
 .macro DMB_MACRO
 
