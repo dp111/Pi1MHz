@@ -323,6 +323,8 @@ dblock *parse_string(char **str,char delim,int width)
 
   if (width & 7)
     ierror(0);
+  if (ISEOL(s))
+    return NULL;
 
   /* how many bytes do we need for the string? */
   skip_string(s,delim,&size);

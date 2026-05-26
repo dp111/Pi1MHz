@@ -2118,15 +2118,16 @@ static int execute_struct(char *name,int name_len,char *s)
             if (*opp=='\"' || *opp=='\'') {
               dblock *strdb;
 
-              strdb = parse_string(&opp,*opp,8);
-              if (strdb->size) {
-                if (strdb->size > db->size)
-                  syntax_error(24,strdb->size-db->size);  /* cut last chars */
-                memcpy(db->data,strdb->data,
-                       strdb->size > db->size ? db->size : strdb->size);
-                myfree(strdb->data);
+              if (strdb = parse_string(&opp,*opp,8)) {
+                if (strdb->size) {
+                  if (strdb->size > db->size)
+                    syntax_error(24,strdb->size-db->size); /* cut last chars */
+                  memcpy(db->data,strdb->data,
+                         strdb->size > db->size ? db->size : strdb->size);
+                  myfree(strdb->data);
+                }
+                myfree(strdb);
               }
-              myfree(strdb);
             }
             else {
               taddr val = parse_constexpr(&opp);

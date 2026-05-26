@@ -23,22 +23,22 @@
   "need 32 bits to reference a program label",WARNING,
   "option expected",ERROR,
   "absolute value expected",ERROR,
-  "operand value out of range: %ld (valid: %ld..%ld)",ERROR,         /* 25 */
+  "operand value out of range: %ld (valid: %ld..%ld)",WARNING,       /* 25 */
   "label in operand required",ERROR,
   "using signed operand as unsigned: %ld (valid: %ld..%ld), "
     "%ld to fix",WARNING,
   "branch destination out of range",ERROR,
-  "displacement out of range",ERROR,
+  "displacement out of range",WARNING,
   "absolute displacement expected",ERROR,                            /* 30 */
   "unknown option %c%c ignored",WARNING,
-  "absolute short address out of range",ERROR,
+  "absolute short address out of range",WARNING,
   "deprecated instruction alias",WARNING,
   "illegal opcode extension",FATAL|ERROR,
   "extension for unsized instruction ignored",WARNING,               /* 35 */
-  "immediate operand out of range",ERROR,
+  "immediate operand out of range",WARNING,
   "immediate operand has illegal type or size",ERROR,
   "data objects with %d bits size are not supported",ERROR,
-  "data out of range",ERROR,
+  "data out of range",WARNING,
   "data has illegal type",ERROR,                                     /* 40 */
   "illegal combination of ColdFire addressing modes",ERROR,
   "FP register required",ERROR,

@@ -89,10 +89,12 @@ static int set_cpu_type(const char *n)
     cpu_type = M6502 | M65C02 | WDC02 | WDC02ALL;
   else if (!stricmp(n,"ce02") || !stricmp(n,"65ce02"))
     cpu_type = M6502 | M65C02 | WDC02 | WDC02ALL | CSGCE02;
-  else if (!strcmp(n,"6280") || !stricmp(n,"hu6280"))
-    cpu_type = M6502 | M65C02 | WDC02 | WDC02ALL | HU6280;
   else if (!strcmp(n,"mega65") || !strnicmp(n,"m45",3) || !strncmp(n,"45",2))
     cpu_type = M6502 | M65C02 | WDC02 | CSGCE02 | M45GS02 | M45GS02Q;
+  else if (!strcmp(n,"6280") || !stricmp(n,"hu6280")) {
+    cpu_type = M6502 | M65C02 | WDC02 | WDC02ALL | HU6280;
+    dpage = 0x2000;
+  }
   else if (!strcmp(n,"816") || !strcmp(n,"802") || !strncmp(n,"658",3)) {
     cpu_type = M6502 | M65C02 | WDC02ALL | WDC65816;
     bpt = 3;
@@ -458,8 +460,7 @@ static void optimize_instruction(instruction *ip,section *sec,
           }
           if (mnemo->ext.zp_opcode && ((op->flags & OF_LO) ||
                                        (!(op->flags & (OF_HI|OF_WA)) &&
-              ((base==NULL && ((val>=0 && val<=0xff) ||
-                               ((utaddr)val>=(utaddr)dpage &&
+              ((base==NULL && (((utaddr)val>=(utaddr)dpage &&
                                 (utaddr)val<=(utaddr)dpage+0xff))) ||
                (base!=NULL && ((base->flags & ZPAGESYM) || (LOCREF(base) &&
                                (base->sec->flags & NEAR_ADDRESSING)))))
@@ -558,8 +559,7 @@ static void rangecheck(symbol *base,taddr val,operand *op)
     case LDPINDY:
     case QDPINDZ:
     case DPIND:
-      if (base==NULL && (val<0 || val>0xff) &&
-          ((utaddr)val<(utaddr)dpage || (utaddr)val>(utaddr)dpage+0xff))
+      if (base==NULL && (val<0 || val>0xff))
         cpu_error(11);   /* operand not in zero/direct page */
       break;
     case SR:
@@ -683,16 +683,14 @@ dblock *eval_instruction(instruction *ip,section *sec,taddr pc)
                 case INDIR:
                 case INDIRX:
                 case LINDIR:
-                  if ((cpu_type & WDC65816) || (op->flags&(OF_HI|OF_WA))) {
+                  if ((cpu_type & WDC65816) || (op->flags&(OF_HI|OF_WA)))
                     mask = 0xffff;
-                    val &= 0xffff;
-                  }
                   else if (op->flags & OF_LO)
                     cpu_error(2);  /* selector prefix ignored */
                   size = 16;
                   break;
                 case QDPINDZ:
-		  offs++;  /* include prefix-byte */
+                  offs++;  /* include prefix-byte */
                 case DPAGE:
                 case DPAGEX:
                 case DPAGEY:
@@ -703,13 +701,17 @@ dblock *eval_instruction(instruction *ip,section *sec,taddr pc)
                 case DPIND:
                 case LDPIND:
                 case LDPINDY:
+                  if (op->flags & OF_LO)
+                    mask = 0xff;
+                  else if (op->flags & (OF_HI|OF_WA))
+                    cpu_error(2);  /* selector prefix ignored */
+                  size = 8;
+                  if (cpu_type & WDC65816)
+                    type = REL_SECOFF;  /* 8-bit offset to DP-section */
+                  break;
                 case SR:
                 case SRINDY:
-                  if (op->flags & OF_LO) {
-                    mask = 0xff;
-                    val &= 0xff;
-                  }
-                  else if (op->flags & (OF_HI|OF_WA))
+                  if (op->flags & (OF_LO|OF_WA|OF_HI))
                     cpu_error(2);  /* selector prefix ignored */
                   size = 8;
                   break;
@@ -794,11 +796,11 @@ dblock *eval_instruction(instruction *ip,section *sec,taddr pc)
             case LDPINDY:
             case QDPINDZ:
             case LDPIND:
-            case SR:
-            case SRINDY:
               if (op->flags & OF_LO)
                 val &= 0xff;
-              else if (op->flags & (OF_HI|OF_WA))
+              else
+                val -= dpage;
+              if (op->flags & (OF_HI|OF_WA))
                 cpu_error(2);  /* selector prefix ignored */
               break;
             case ABS:
@@ -828,6 +830,10 @@ dblock *eval_instruction(instruction *ip,section *sec,taddr pc)
               break;
             case MVBANK:
               val = (val >> 16) & 0xff;
+            case SR:
+            case SRINDY:
+              if (op->flags & (OF_LO|OF_WA|OF_HI))
+                cpu_error(2);  /* selector prefix ignored */
               break;
             case IMMED8:
               if (op->flags & OF_BK)
@@ -873,18 +879,16 @@ dblock *eval_instruction(instruction *ip,section *sec,taddr pc)
 	    *d = d[-1];
 	    d[-1] = 0xea;  /* MEGA65 32-bit indirect prefix */
 	    d++;
+          case DPAGE:
+          case DPAGEX:
+          case DPAGEY:
+          case DPAGEZ:
           case LDPIND:
           case LDPINDY:
           case DPIND:
           case DPINDX:
           case DPINDY:
           case DPINDZ:
-          case DPAGE:
-          case DPAGEX:
-          case DPAGEY:
-          case DPAGEZ:
-            if ((utaddr)val>=(utaddr)dpage && (utaddr)val<=(utaddr)dpage+0xff)
-              val -= dpage;  /* get current direct page offset */
           case IMMED8:
           case REL8:
           case SR:

@@ -4879,10 +4879,18 @@ static unsigned char *write_ea_ext(dblock *db,unsigned char *d,operand *op,
             if (op->flags & FL_ExtVal0) {
               roffs++;
               rsize = 8;
+              if (op->extval[0]<-0x80 || op->extval[0]>0xff) {
+                if (typechk)
+                  cpu_error(36);  /* immediate operand out of range */
+                if (op->base[0] == NULL) {
+                  /* write a 16-bit value for out-of-range constants,
+                     to simulate the behaviour of some old assemblers */
+                  d = write_extval(0,2,db,d,op,rtype);
+                  break;
+                }
+              }
               *d++ = 0;
               d = write_extval(0,1,db,d,op,rtype);
-              if (typechk && (op->extval[0]<-0x80 || op->extval[0]>0xff))
-                cpu_error(36);  /* immediate operand out of range */
             }
             else
               cpu_error(37);  /* immediate operand has illegal type */
