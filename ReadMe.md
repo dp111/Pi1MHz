@@ -1,5 +1,8 @@
 # Raspberry Pi to Beeb 1MHz interface
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/ebe2e1bd0b1c42719c0a7ea5bec9bed2)](https://app.codacy.com/app/dominic.plunkett/Pi1MHz?utm_source=github.com&utm_medium=referral&utm_content=dp111/Pi1MHz&utm_campaign=Badge_Grade_Settings)
+
+
 This project enables a Raspberry Pi to emulate a number of existing Beeb peripherals plus some new ones:
 
 * ADFS Harddisc
