@@ -114,7 +114,10 @@ void _clean_cache_area(const void * start, unsigned int length)
 {
 #if (__ARM_ARCH >= 7 )
    uint32_t cachelinesize;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
    char * startptr = start;
+#pragma GCC diagnostic pop
    char * endptr;
    asm volatile ("mrc p15, 0, %0, c0, c0,  1" : "=r" (cachelinesize));
    cachelinesize = (cachelinesize>> 16 ) & 0xF;
@@ -139,7 +142,10 @@ void _invalidate_cache_area(const void * start, unsigned int length)
 {
 #if (__ARM_ARCH >= 7 )
    uint32_t cachelinesize;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
    char * startptr = start;
+#pragma GCC diagnostic pop
    char * endptr;
    asm volatile ("mrc p15, 0, %0, c0, c0,  1" : "=r" (cachelinesize));
    cachelinesize = (cachelinesize>> 16 ) & 0xF;
