@@ -105,12 +105,16 @@ Use https://wavedrom.com/editor.html
 #define PAN(c)       (CTL(c)&0xf)
 
 #define DEFAULT_GAIN 3
+#define M5000_DIVIDER 1024
 
 // These variables can be setup form the cmdline.txt file.
 
 static uint8_t stereo;
 static int gain;
 static uint8_t autorange;
+
+static int32_t M5000_left_error;
+static int32_t M5000_right_error;
 
 static uint8_t fx_pointer;
 
@@ -138,7 +142,7 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
    memset(&s->amplitude[0], 0, 16);
 }
 
-static int32_t audio_range;
+static int32_t M5000_audio_range;
 
 // in cmdline.txt M5000_Gain=16 set the default audio gain
 // if gain has >1000 then gain = gain - 1000 and auto ranging
@@ -257,55 +261,71 @@ static void update_channels(struct synth *s)
 
 static void music5000_store_sample(int sl, int sr, uint32_t *left, uint32_t *right)
 {
-    // the range of sleft/right is (-8031..8031) i.e. 14 bits
-    // so summing 16 channels gives an 18 bit output
-    // now times 6 as pan division has been taken out of loop
-    // so 21bits
+   int clip = 0;
+   // the range of sleft/right is (-8031..8031) i.e. 14 bits
+   // so summing 16 channels gives an 18 bit output
+   // now times 6 as pan division has been taken out of loop
+   // so 21bits
 
-    if (!stereo)
-    {
-       sl = sl + sr;
-       sr = sl;
-    }
+   if (!stereo)
+   {
+      sl = sl + sr;
+      sr = sl;
+   }
 
-    // Worst case we should divide by 256 to get 20bits down to 12.x bits.
-    // But this does loose dynamic range.
-    //
-    // Even loud tracks like In Concert by Pilgrim Beat rarely use
-    // the full 18 bits:
-    //
-    //   L:-25086..26572 (rms  3626) R:-23347..21677 (rms  3529)
-    //   L:-25795..31677 (rms  3854) R:-22592..21373 (rms  3667)
-    //   L:-20894..20989 (rms  1788) R:-22221..17949 (rms  1367)
-    //
-    // So lets try a crude adaptive clipping system, and see what feedback we get!
-    sl = ( sl * gain ) / 1024;
+   // Worst case we should divide by 256 to get 20bits down to 12.x bits.
+   // But this does loose dynamic range.
+   //
+   // Even loud tracks like In Concert by Pilgrim Beat rarely use
+   // the full 18 bits:
+   //
+   //   L:-25086..26572 (rms  3626) R:-23347..21677 (rms  3529)
+   //   L:-25795..31677 (rms  3854) R:-22592..21373 (rms  3667)
+   //   L:-20894..20989 (rms  1788) R:-22221..17949 (rms  1367)
+   //
+   // So lets try a crude adaptive clipping system, and see what feedback we get!
 
-    int clip = 0;
-    if (sl < -audio_range) {
-        sl = -audio_range;
-        clip = 1;
-    }
-    if (sl >  audio_range) {
-        sl =  audio_range;
-        clip = 1;
-    }
-    *left = (uint32_t)(sl + audio_range);
+   sl = ( sl * gain ) + ( M5000_audio_range >> 1 ) + M5000_left_error ;
 
-    sr = ( sr * gain ) / 1024;
-    if (sr < -audio_range) {
-        sr = -audio_range;
-        clip = 1;
-    }
-    if (sr >  audio_range) {
-        sr =  audio_range;
-        clip = 1;
-    }
-    *right = (uint32_t)(sr + audio_range);
-    if (clip && autorange) {
-        gain /= 2;
-        LOG_DEBUG("Music 5000 clipped, reducing gain by 3dB (divisor now %i)\r\n", gain);
-    }
+   M5000_left_error = sl % M5000_DIVIDER ;
+
+   if (sl < ( M5000_audio_range >> 1 ))
+      M5000_left_error = - M5000_left_error;
+
+   if (sl < 0) {
+      sl = 0;
+      clip = 1;
+   }
+   if (sl >  M5000_audio_range) {
+      sl = M5000_audio_range;
+      clip = 1;
+   }
+
+   *left = (uint32_t)(sl) / M5000_DIVIDER;
+
+   sr = ( sr * gain ) + ( M5000_audio_range >> 1 ) + M5000_right_error ;
+
+   M5000_right_error = sr % M5000_DIVIDER ;
+
+   if (sr < ( M5000_audio_range >> 1 ))
+      M5000_right_error = - M5000_right_error;
+
+   if (sr < 0) {
+      sr = 0;
+      clip = 1;
+   }
+   if (sr >  M5000_audio_range) {
+      sr = M5000_audio_range;
+      clip = 1;
+   }
+   *right = (uint32_t)(sr) / M5000_DIVIDER;
+
+   if (clip && autorange) {
+      M5000_left_error = 0 ;
+      M5000_right_error = 0 ;
+      gain /= 2;
+      LOG_DEBUG("Music 5000 clipped, reducing gain by 3dB (divisor now %i)\r\n", gain);
+   }
 }
 
 static bool record = 0;
@@ -439,7 +459,7 @@ void M5000_emulator_init(uint8_t instance, int address)
    synth_reset(&m5000, &JIM_ram[0x3000]);
    synth_reset(&m3000, &JIM_ram[0x5000]);
 
-   audio_range = (int)(rpi_audio_init(46875)>>1);
+   M5000_audio_range = (int)(rpi_audio_init(46875)) * M5000_DIVIDER;
 
    // register polling function
    Pi1MHz_Register_Poll(music5000_emulate);
