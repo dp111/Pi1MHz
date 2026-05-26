@@ -108,6 +108,7 @@ file( GLOB core_files
    Pi1MHz.c
    ram_emulator.c
    helpers.c
+   videoplayer.c
 )
 
 # Harddisc emulator

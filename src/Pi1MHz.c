@@ -112,6 +112,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "discaccess_emulator.h"
 #include "helpers.h"
 #include "mouseredirect.h"
+#include "videoplayer.h"
 
 typedef struct {
    const char *name;
@@ -121,6 +122,7 @@ typedef struct {
 } emulator_list;
 
 static emulator_list emulator[] = {
+   {"Videoplayer",videoplayer_init, 0x00, 1},
    {"Rampage",rampage_emulator_init, 0xFD, 1},
    {"Rambyte",rambyte_emulator_init, 0x00, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},

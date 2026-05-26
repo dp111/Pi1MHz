@@ -516,6 +516,11 @@ static void screen_scale ( uint32_t width, uint32_t height , float par, bool yuv
         else
             scale = rgb_scale ;
 
+    if (((uint32_t)(scale * (float)h_corrected)) >  h_display)
+        scale = scale/2;
+    if (((uint32_t)(scale * (float)v_corrected)) >  v_display)
+        scale = scale/2;
+
     LOG_DEBUG("scale %f\r\n", (double) scale);
     LOG_DEBUG("rgb_scale %f\r\n", (double) rgb_scale);
 
@@ -605,21 +610,32 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
 void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
     uint32_t * plane =  screen_get_nextplane( planeno);
+    LOG_DEBUG("plane %d\r\n", planeno);
     if (plane)
     {
         uint32_t scaled_width;
         uint32_t scaled_height;
         uint32_t startpos;
         screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos );
+
+        LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", scaled_width, scaled_height);
+
+        uint32_t vertical_offset = 0;
+
+        if (scaled_height < height)
+        {
+            vertical_offset = (height - scaled_height) / 2;
+        }
+
         YUV_plane_t* yuv = (YUV_plane_t*) plane;
         yuv->ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0xA; // invalid list, 32 words, YCrcb format , YUV
         yuv->pos = startpos;
         yuv->scale = (scaled_height << 16) + scaled_width;
         yuv->src_size =  (height << 16) + width;
         //yuv->src_context = 0;
-        yuv->y_ptr = buffer + 0x80000000;
-        yuv->cb_ptr = buffer + 0x80000000 + width*height;
-        yuv->cr_ptr = buffer + 0x80000000 + width*height + width*height/2;
+        yuv->y_ptr = buffer + 0x80000000 + vertical_offset*width;
+        yuv->cb_ptr = buffer + 0x80000000 + width*height + vertical_offset*width/2;
+        yuv->cr_ptr = buffer + 0x80000000 + width*height + width*height/2 + vertical_offset*width/2;
         //yuv->y_ctx = 0;
         //yuv->cb_ctx = 0;
         //yuv->cr_ctx = 0;
