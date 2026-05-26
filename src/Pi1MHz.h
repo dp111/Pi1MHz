@@ -6,7 +6,7 @@
 #include "rpi/rpi.h"
 #include "rpi/base.h"
 
-#define RELEASENAME "v1.07"
+#define RELEASENAME "v1.09"
 
 #define PAGE_SIZE    0x100
 
@@ -110,6 +110,8 @@ nPCFD IO25 Pin 22 o o Pin 21 IO9  D7
 #define D1_PIN       (3)
 #define D0_PIN       (2)
 
+#define NOE_PIN      (0)
+
 #define CLK1MHZ_MASK (1 << CLK1MHZ_PIN)
 #define NRST_MASK    (1 << NRST_PIN)
 #define NPCFD_MASK   (1 << NPCFD_PIN)
@@ -148,15 +150,11 @@ nPCFD IO25 Pin 22 o o Pin 21 IO9  D7
 #define DATABUS_SHIFT D0_PIN
 #define ADDRBUS_SHIFT A0_PIN
 
-#define NOE_PIN      (0)
-
-#define TEST_PIN     (0)
-#define TEST_MASK    (1 << TEST_PIN)
-#define TEST2_PIN    (1)
-#define TEST2_MASK   (1 << TEST2_PIN)
+#define TEST_PIN    (1)
+#define TEST_MASK   (1 << TEST_PIN)
 
 // if test pins aren't required set this to zero.
-#define TEST_PINS_OUTPUTS ((1<<(TEST2_PIN*3))|(1<<(TEST_PIN*3)))
+#define TEST_PINS_OUTPUTS (1<<(TEST_PIN*3))
 
 #define Pi1MHz_MEM_PAGE  (1<<8)
 #define Pi1MHz_MEM_RNW   (1<<9)
@@ -196,6 +194,7 @@ void Pi1MHz_SetnIRQ(bool irq);
 void Pi1MHz_SetnNMI(bool nmi);
 
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
+void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data);
 uint8_t Pi1MHz_MemoryRead(uint32_t addr);
 
 bool Pi1MHz_is_rst_active();
