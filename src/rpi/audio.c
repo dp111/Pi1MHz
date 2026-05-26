@@ -4,10 +4,6 @@
 #include "audio.h"
 #include "rpi.h"
 
-// NB Buffer size must be a multiple of 32 bytes
-// buffer contains both left and right sample words
-#define DMA_BUFFER_SIZE 512
-
 struct bcm2708_dma_cb {
    uint32_t info;
    uint32_t src;
