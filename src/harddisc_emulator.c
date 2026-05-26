@@ -137,7 +137,7 @@ void hd_emulator_conf(unsigned int gpio)
    if (databusValue == 21) debugFlag_fatfs = false;
 }
 
-void harddisc_emulator_init( void )
+void harddisc_emulator_init( uint8_t instance )
 {
    static int PowerOn = 0 ;
    // Turn off all host adapter signals
@@ -148,24 +148,29 @@ void harddisc_emulator_init( void )
    HD_IRQ_ENABLE = CLEAR;
 
    // register call backs
-
-   Pi1MHz_Register_Memory(READ_FRED,  HD_ADDR, hd_emulator_read_data ); // address FC40 read  = Read SCSI databus command
-   // status doesn't need a call back                                   // address FC41 read  = Read SCSI status byte command
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR, hd_emulator_write_data );// address FC40 write = Write SCSI databus command
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+2, hd_emulator_nSEL     );// address FC42 write = Assert SCSI nSEL command
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+3, hd_emulator_IRQ );     // address FC43 write = Enable/Disable BBC nIRQ command
-   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+4, hd_emulator_conf );    // address FC44 write = Write BeebSCSI configuration byte
+   // address FC40 read  = Read SCSI databus command
+   Pi1MHz_Register_Memory(READ_FRED,  HD_ADDR, hd_emulator_read_data );
+   // status doesn't need a call back
+   // address FC41 read  = Read SCSI status byte command
+   // address FC40 write = Write SCSI databus command
+   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR, hd_emulator_write_data );
+   // address FC42 write = Assert SCSI nSEL command
+   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+2, hd_emulator_nSEL     );
+   // address FC43 write = Enable/Disable BBC nIRQ command
+   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+3, hd_emulator_IRQ );
+   // address FC44 write = Write BeebSCSI configuration byte
+   Pi1MHz_Register_Memory(WRITE_FRED, HD_ADDR+4, hd_emulator_conf );
 
    // Initialise but only at power on
    // Fixes *SCSIJUKE surving over shift break.
    if (!PowerOn)
    {
-	   // Initialise the SD Card and FAT file system functions
+      // Initialise the SD Card and FAT file system functions
        filesystemInitialise();
        // Initialise the SCSI emulation
-	   scsiInitialise();
-	   
-	   PowerOn = 1;
+      scsiInitialise();
+
+      PowerOn = 1;
    }
 
    // register polling function
@@ -261,7 +266,7 @@ uint16_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
    uint32_t currentByte = 0;
 
    // Loop to write bytes (unless a reset condition is detected)
-   
+
    do {
       // Write the current byte to the databus and point to the next byte
       Pi1MHz_Memory[HD_ADDR] = dataBuffer[currentByte++];
@@ -294,7 +299,7 @@ uint16_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
    uint32_t currentByte = 0;
 
    // Loop to read bytes (unless a reset condition is detected)
-   
+
    do {
       // Set the REQuest signal
       hostadapterWriteRequestFlag(ACTIVE);

@@ -1025,7 +1025,7 @@ static void fb_emulator_poll()
    }
 }
 
-void fb_emulator_init()
+void fb_emulator_init(uint8_t instance)
 {
   fb_initialize();
 

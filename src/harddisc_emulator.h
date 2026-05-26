@@ -1,1 +1,1 @@
-void harddisc_emulator_init( void );
+void harddisc_emulator_init( uint8_t instance );
