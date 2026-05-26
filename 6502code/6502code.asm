@@ -381,20 +381,6 @@ ORG &FD00
     LOADFILETOSWR "Pi1MHz/ROM14.rom"
     ENDBLOCK &E00
 }
-; Page 14
-; User ROM14
-{
-ORG &FD00
-    LOADFILETOSWR "Pi1MHz/ROM14.rom"
-    ENDBLOCK &E00
-}
-; Page 14
-; User ROM14
-{
-ORG &FD00
-    LOADFILETOSWR "Pi1MHz/ROM14.rom"
-    ENDBLOCK &E00
-}
 ; Page 15
 ; User ROM15
 {
