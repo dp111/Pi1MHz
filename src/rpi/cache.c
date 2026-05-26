@@ -109,7 +109,7 @@ void CleanDataCache (void)
 }
 #endif
 
-void _clean_cache_area(void * start, unsigned int length)
+void _clean_cache_area(const void * start, unsigned int length)
 {
 #if (__ARM_ARCH >= 7 )
    uint32_t cachelinesize;
@@ -133,7 +133,7 @@ void _clean_cache_area(void * start, unsigned int length)
 #endif
 }
 
-void _invalidate_cache_area(void * start, unsigned int length)
+void _invalidate_cache_area(const void * start, unsigned int length)
 {
 #if (__ARM_ARCH >= 7 )
    uint32_t cachelinesize;
@@ -198,7 +198,7 @@ static void _invalidate_dtlb()
 // 1      1
 // 0      1
 #ifdef NUM_4K_PAGES
-static void _invalidate_dtlb_mva(void *address)
+static void _invalidate_dtlb_mva(const void *address)
 {
    asm volatile ("mcr p15, 0, %0, c8, c6, 1" : : "r" (address));
 }
