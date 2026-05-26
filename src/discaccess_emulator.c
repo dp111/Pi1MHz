@@ -75,7 +75,7 @@ static bool discaccess_buffer_ok(uint32_t offset, uint32_t length)
 static bool discaccess_string_ok(uint32_t start)
 {
    uint32_t limit = start + DISC_MAX_PATH;
-   if ((limit < start) || (limit > (uint32_t)disc_ram_max))
+   if (limit > (uint32_t)disc_ram_max)
       limit = (uint32_t)disc_ram_max;
    for (uint32_t i = start; i < limit; i++)
       if (Pi1MHz->JIM_ram[i] == 0)
