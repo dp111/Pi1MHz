@@ -130,9 +130,9 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 {
    static uint8_t init = 0 ;
    // Page access register write fcfd fcfe fcff
-   Pi1MHz_Register_Memory(WRITE_FRED, address + 1, ram_emulator_page_addr_high ); // high byte
-   Pi1MHz_Register_Memory(WRITE_FRED, address + 2, ram_emulator_page_addr_mid ); // Mid byte
-   Pi1MHz_Register_Memory(WRITE_FRED, address + 3, ram_emulator_page_addr_low ); // low byte
+   Pi1MHz_Register_Memory(WRITE_FRED, address + 0, ram_emulator_page_addr_high ); // high byte
+   Pi1MHz_Register_Memory(WRITE_FRED, address + 1, ram_emulator_page_addr_mid ); // Mid byte
+   Pi1MHz_Register_Memory(WRITE_FRED, address + 2, ram_emulator_page_addr_low ); // low byte
 
    // register every address in JIM &FD00
    for (uint32_t i=0 ; i<PAGE_SIZE; i++)

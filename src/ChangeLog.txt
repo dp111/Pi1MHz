@@ -101,3 +101,6 @@ Swap to using the SW MMFS roms
 
 V1.17
 Speed up 1MHz accesses ( change to using USB buffers)
+
+V1.18  
+Fix bug introduced in 1.13 , FRED page select note working ( Broke M5000)
