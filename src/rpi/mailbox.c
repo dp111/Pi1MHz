@@ -28,7 +28,7 @@ void RPI_Mailbox0Write( mailbox0_channel_t channel, uint32_t * ptr )
 {
     _clean_cache_area(ptr, ptr[PT_OSIZE]);
 // cppcheck-suppress constStatement
-    rpiMailbox0->Data; // empty buffer incase anything is left over.
+    rpiMailbox0->Data; // empty buffer in case anything is left over.
     /* Wait until the mailbox becomes available and then write to the mailbox
        channel */
 // cppcheck-suppress constStatement
