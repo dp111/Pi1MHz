@@ -47,6 +47,8 @@
 
  Fall back to slow seeking if the LUN is too fragmented instead of just failing over.
 
+ Add using BeebVFS for the VFS LUNs
+
 */
 
 #include <stdbool.h>
@@ -61,7 +63,7 @@
 
 #define SZ_TBL 64
 
-#define MAX_LUNS 8
+#define MAX_LUNS 16
 
 // File system state structure
 NOINIT_SECTION static struct filesystemStateStruct
@@ -73,6 +75,7 @@ NOINIT_SECTION static struct filesystemStateStruct
    bool fsMountState;      // File system mount state (true = mounted, false = dismounted)
 
    uint8_t lunDirectory;   // Current LUN directory ID
+   uint8_t lunDirectoryVFS;   // Current LUN directory ID for VFS
    bool fsLunStatus[MAX_LUNS]; // LUN image availability flags for the currently selected LUN directory (true = started, false = stopped)
    uint8_t fsLunUserCode[MAX_LUNS][5];  // LUN 5-byte User code (used for F-Code interactions - only present for laser disc images)
 
@@ -92,9 +95,9 @@ NOINIT_SECTION static FIL fileObjectFAT;
 
 static bool filesystemMount(void);
 static bool filesystemDismount(void);
-static bool filesystemCheckLunDirectory(uint8_t lunDirectory);
+static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber);
 static bool filesystemCheckLunImage(uint8_t lunNumber);
-static bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNumber, uint32_t lunFileSize);
+//static bool filesystemCreateDscFromLunImage(uint8_t lunDirectory, uint8_t lunNumber, uint32_t lunFileSize);
 
 static void filesystemPrintfserror(FRESULT fsResult)
 {
@@ -179,12 +182,12 @@ static void filesystemPrintfserror(FRESULT fsResult)
 }
 
 // Function to initialise the file system control functions (called on a cold-start of the AVR)
-void filesystemInitialise(uint8_t scsijuke)
+void filesystemInitialise(uint8_t scsijuke, uint8_t vfsjuke)
 {
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemInitialise(): Initialising file system\r\n"));
    filesystemState.lunDirectory = scsijuke;      // Default to LUN directory 0
+   filesystemState.lunDirectoryVFS = vfsjuke;      // Default to LUN directory 0
    filesystemState.fsMountState = false;  // FS default state is unmounted
-
 }
 
 // Reset the file system (called when the host signals reset)
@@ -305,7 +308,7 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
       // descriptor to ensure everything is up to date
 
       // Check that the currently selected LUN directory exists (and, if not, create it)
-      if (!filesystemCheckLunDirectory(filesystemState.lunDirectory)) {
+      if (!filesystemCheckLunDirectory(filesystemState.lunDirectory, lunNumber)) {
          // Failed!
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemSetLunStatus(): ERROR: Could not access LUN image directory!\r\n"));
          return false;
@@ -381,7 +384,7 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 }
 
 // Check that the currently selected LUN directory exists (and, if not, create it)
-static bool filesystemCheckLunDirectory(uint8_t lunDirectory)
+static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
 {
    FRESULT fsResult;
    DIR dirObject;
@@ -392,7 +395,14 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory)
    }
 
    // Does a directory exist for the currently selected LUN directory - if not, create it
-   sprintf(fileName, "/BeebSCSI%d", lunDirectory);
+   if (lunNumber < 8 )
+   {
+      sprintf(fileName, "/BeebSCSI%d", lunDirectory);
+   }
+   else
+   {
+      sprintf(fileName, "/BeebVFS%d", lunDirectory);
+   }
 
    fsResult = f_opendir(&dirObject, fileName);
 
@@ -439,7 +449,15 @@ static bool filesystemCheckLunImage(uint8_t lunNumber)
    }
 
    // Attempt to open the LUN image
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
+   if (lunNumber < 8 )
+   {
+      sprintf(fileName, "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
+   }
+   else
+   {
+      sprintf(fileName, "/BeebVFS%d/scsi%d.dat", filesystemState.lunDirectoryVFS, lunNumber & 7);
+   }
+
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCheckLunImage(): Checking for (.dat) LUN image "), (uint16_t)lunNumber, 1);
    fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName, FA_READ | FA_WRITE);
 
@@ -487,7 +505,15 @@ static bool filesystemCheckLunImage(uint8_t lunNumber)
 
    FIL fileObject;
    // Check if the LUN descriptor file (.dsc) is present
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
+   if (lunNumber < 8 )
+   {
+      sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
+   }
+   else
+   {
+      // this isn't expected to exist
+      sprintf(fileName, "/BeebVFS%d/scsi%d.dsc", filesystemState.lunDirectoryVFS, lunNumber & 7);
+   }
 
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCheckLunImage(): Checking for (.dsc) LUN descriptor "), (uint16_t)lunNumber, 1);
    fsResult = f_open(&fileObject, fileName, FA_READ);
@@ -495,13 +521,15 @@ static bool filesystemCheckLunImage(uint8_t lunNumber)
    if (fsResult != FR_OK) {
       // LUN descriptor file is not found
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): LUN descriptor not found\r\n"));
-
+#if 0
+   // don't create a dsc file as it is not needed
       // Automatically create a LUN descriptor file for the LUN image
       if (filesystemCreateDscFromLunImage(filesystemState.lunDirectory, lunNumber, lunFileSize)) {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): Automatically created .dsc for LUN image\r\n"));
       } else {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): ERROR: Automatically creating .dsc for LUN image failed\r\n"));
       }
+#endif
    } else {
       // LUN descriptor file is present
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): LUN descriptor found\r\n"));
@@ -516,9 +544,20 @@ static bool filesystemCheckLunImage(uint8_t lunNumber)
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): WARNING: File size and DSC parameters are NOT consistent\r\n"));
       }
    }
-
+   //  .ucd files hve been superceded
+#if 0
+   // this isn't expected to exist
    // Check if the LUN user code descriptor file (.ucd) is present
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.ucd", filesystemState.lunDirectory, lunNumber);
+   if (lunNumber < 8 )
+   {
+
+      sprintf(fileName, "/BeebSCSI%d/scsi%d.ucd", filesystemState.lunDirectory, lunNumber);
+   }
+   else
+   {
+      // this isn't expected to exist
+      sprintf(fileName, "/BeebVFS%d/scsi%d.ucd", filesystemState.lunDirectoryVFS, lunNumber & 7);
+   }
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): Checking for (.ucd) LUN user code descriptor\r\n"));
    fsResult = f_open(&fileObject, fileName, FA_READ);
@@ -543,7 +582,7 @@ static bool filesystemCheckLunImage(uint8_t lunNumber)
       // Read the user code from the .ucd file
       filesystemGetUserCodeFromUcd(filesystemState.lunDirectory, lunNumber);
    }
-
+#endif
    // Exit with success
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): Successful\r\n"));
    return true;
@@ -558,7 +597,15 @@ uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
    FIL fileObject;
 
    // Assemble the DSC file name
-   sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
+   if (lunNumber < 8 )
+   {
+      sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
+   }
+   else
+   {
+      // this isn't expected to exist
+      sprintf(fileName, "/BeebVFS%d/scsi%d.dsc", filesystemState.lunDirectoryVFS, lunNumber & 7);
+   }
 
    fsResult = f_open(&fileObject, fileName, FA_READ);
    if (fsResult == FR_OK) {
@@ -596,7 +643,7 @@ uint32_t filesystemGetLunSizeFromDsc( uint8_t lunNumber)
 
    return lunSize;
 }
-
+#if 0
 // Function to automatically create a DSC file based on the file size of the LUN image
 // Note, this function is specific to the BBC Micro and the ACB-4000 host adapter card
 // If the DSC is inaccurate then, for the BBC Micro, it's not that important, since the
@@ -733,12 +780,15 @@ void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber)
       }
    }
 }
-
+#endif
 // Function to set the current LUN directory (for the LUN jukeboxing functionality)
-void filesystemSetLunDirectory(uint8_t lunDirectoryNumber)
+void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber)
 {
    // Change the current LUN directory number
-   filesystemState.lunDirectory = lunDirectoryNumber;
+   if (scsiHostID == 0)
+      filesystemState.lunDirectory = lunDirectoryNumber;
+   else
+      filesystemState.lunDirectoryVFS = lunDirectoryNumber;
 }
 
 // Function to read the current LUN directory (for the LUN jukeboxing functionality)
@@ -759,6 +809,12 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
       // File opened ok - which means it already exists...
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunImage(): .dat already exists - ignoring request to create a new .dat\r\n"));
       return true;
+   }
+
+   if (lunNumber >7)
+   {
+      // VFS doesn't support creating .dat files
+      return false;
    }
 
    // Assemble the .dat file name
@@ -784,6 +840,12 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 {
    FRESULT fsResult;
    FIL fileObject;
+
+   if (lunNumber >7)
+   {
+      // VFS doesn't support creating .dsc files
+      return false;
+   }
 
    // Assemble the .dsc file name
    sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
@@ -815,6 +877,12 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber, uint8_t buffer[])
 {
    FRESULT fsResult;
    FIL fileObject;
+
+   if (lunNumber >7)
+   {
+      // VFS doesn't support .dsc files
+      return false;
+   }
 
    // Assemble the .dsc file name
    sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
@@ -849,6 +917,12 @@ bool filesystemWriteLunDescriptor(uint8_t lunNumber, uint8_t const buffer[])
 {
    FRESULT fsResult;
    FIL fileObject;
+
+   if (lunNumber >7)
+   {
+      // VFS doesn't support .dsc files
+      return false;
+   }
 
    // Assemble the .dsc file name
    sprintf(fileName, "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
@@ -885,6 +959,12 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
    FIL fileObject;
    FRESULT fsResult;
    uint8_t Buffer[22];
+
+   if (lunNumber >7)
+   {
+      // VFS doesn't support .dsc files
+      return false;
+   }
 
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemFormatLun(): Formatting LUN image "), lunNumber, true);
 

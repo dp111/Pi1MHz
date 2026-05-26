@@ -80,6 +80,8 @@
 void scsiInitialise(void);
 void scsiReset(void);
 
+void scsiJukebox (uint8_t lun);
+
 void scsiProcessEmulation(void);
 
 #endif /* SCSI_H_ */

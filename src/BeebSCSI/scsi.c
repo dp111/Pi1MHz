@@ -24,6 +24,11 @@
 
 ************************************************************************/
 
+/* internal LUNs have been increased to 16
+   0-7 are used for ADFS
+   8-15 are used for LV-DOS
+*/
+
 // Global includes
 #include "cpuspecfic.h"
 
@@ -60,7 +65,7 @@
 // Global for the emulation mode (fixed or removable drive)
 // Note: The fixed mode emulates SCSI-1 compliant hard drives for the Beeb
 // The removable mode emulates the Laser Video Disc Player (LV-DOS) for Domesday
-static uint8_t emulationMode = FIXED_EMULATION;
+// static uint8_t emulationMode = FIXED_EMULATION;
 
 
 // Request sense error codes
@@ -72,8 +77,9 @@ static uint8_t emulationMode = FIXED_EMULATION;
 #define BAD_ARG         (0x24u<<24)
 #define INTERLEAVE_ERROR (0x2Au<<24)
 
+#define MAX_SCSI_LUNS 16
 // REQUEST SENSE command error reporting structure
-static uint32_t requestSenseData[8];
+static uint32_t requestSenseData[MAX_SCSI_LUNS];
 
 // Global structure for storing SCSI CDBs
 static struct commandDataBlockStruct
@@ -86,6 +92,8 @@ static struct commandDataBlockStruct
 
 // Global for storing the current SCSI emulation state
 static uint8_t scsiState;
+
+uint8_t scsiHostID;
 
 static void scsiInformationTransferPhase(uint8_t transferPhase);
 
@@ -184,11 +192,11 @@ void scsiReset(void)
    }
 
    // Clear the request sense error globals
-   for (lunNumber = 0; lunNumber < 8; lunNumber++) {
+   for (lunNumber = 0; lunNumber < MAX_SCSI_LUNS; lunNumber++) {
       requestSenseData[lunNumber] = NO_ERROR;
    }
 
-   fcodeClearBuffer(); // clear teh FCODE buffer
+   fcodeClearBuffer(); // clear the FCODE buffer
 
    // Ensure the SCSI bus phase is BUS FREE
    scsiState = SCSI_BUSFREE;
@@ -385,16 +393,14 @@ static uint8_t scsiEmulationBusFree(void)
          if (!hostadapterReadSelectFlag()) return SCSI_BUSFREE;
 
          // Read the host ID (from the host databus)
-         #ifdef DEBUG
-            uint8_t hostIdentifier = hostadapterReadDatabus();
-         #else
-            hostadapterReadDatabus();
-         #endif
+         scsiHostID = hostadapterReadDatabus();
+
          // Set busy flag to active
          hostadapterWriteBusyFlag(true);
 
          // We are now in the selected state
-         if (debugFlag_scsiState) debugStringInt16_P(PSTR("SCSI State: Selected by host ID "), hostIdentifier, true);
+         if (debugFlag_scsiState) debugStringInt16_P(PSTR("SCSI State: Selected by host ID "), scsiHostID, true);
+         scsiHostID = (scsiHostID==1)?0:8 ; // convert to 0 or 8
          scsiEmulationBusFreestate = 0;
          break;
    }
@@ -466,7 +472,7 @@ uint8_t scsiEmulationCommand(void)
    if (debugFlag_scsiCommands) debugString_P(PSTR("\r\n"));
 
    // Decode the target LUN
-   commandDataBlock.targetLUN = (commandDataBlock.data[1] & 0xE0) >> 5;
+   commandDataBlock.targetLUN = ((commandDataBlock.data[1] & 0xE0) >> 5) + scsiHostID;
 
    // Transition to command based on received opCode (group 0 commands)
    if (group == 0) {
@@ -532,7 +538,7 @@ uint8_t scsiEmulationCommand(void)
    }
 
    // Transition to command based on received opCode (group 6 LV-DOS commands)
-   if (group == 6 /*&& emulationMode == LVDOS_EMULATION*/) { // ********** todo **********
+   if (group == 6 && (scsiHostID == 8)) {
       // Select group 6 command type
       switch (opCode) {
          case 0x0A:
@@ -1836,7 +1842,7 @@ static uint8_t scsiBeebScsiSense(void)
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: LUN directory number = "), filesystemGetLunDirectory(), true);
 
    // Byte 2 shows if we are in fixed (0) or VP415 emulation mode (1)
-   if (emulationMode == FIXED_EMULATION) {
+   if (scsiHostID == 0) {
       hostadapterWriteByte(0x00);
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Emulation mode fixed (0x00)\r\n"));
    } else {
@@ -1857,6 +1863,19 @@ static uint8_t scsiBeebScsiSense(void)
    commandDataBlock.status = 0x00; // 0x00 = Good
 
    return SCSI_STATUS;
+}
+
+void scsiJukebox (uint8_t lun) {
+    uint8_t availableLUNs = 0;
+   // Check if any LUNs are in the started state
+   for (uint8_t byteCounter = 0; byteCounter < MAX_SCSI_LUNS; byteCounter++)
+      if (filesystemReadLunStatus(byteCounter)) availableLUNs++;
+
+   // Only jukebox if no LUNs are in the started state
+   if (availableLUNs == 0) {
+      // Perform jukeboxing
+      filesystemSetLunDirectory(scsiHostID, lun);
+   }
 }
 
 // SCSI Command BeebSCSI Select (group 6 - command 0x11)
@@ -1898,13 +1917,13 @@ static uint8_t scsiBeebScsiSelect(void)
      }
 
    // Check if any LUNs are in the started state
-   for (byteCounter = 0; byteCounter < 8; byteCounter++)
+   for (byteCounter = 0; byteCounter < MAX_SCSI_LUNS; byteCounter++)
       if (filesystemReadLunStatus(byteCounter)) availableLUNs++;
 
    // Only jukebox if no LUNs are in the started state
    if (availableLUNs == 0) {
       // Perform jukeboxing
-      filesystemSetLunDirectory(Buffer[0]);
+      filesystemSetLunDirectory(scsiHostID, Buffer[0]);
 
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Jukeboxing successful - LUN directory set to "), Buffer[0], true);
    } else {
@@ -1924,6 +1943,7 @@ static uint8_t scsiBeebScsiSelect(void)
 
    return SCSI_STATUS;
 }
+
 
 
 // Vendor-specific FAT file manipulation functions --------------
