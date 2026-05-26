@@ -152,18 +152,23 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-overflow="
+#pragma GCC diagnostic ignored "-Warray-bounds"
    Pi1MHz_Memory[addr] = data;
-#pragma GCC diagnostic pop
    switch (addr & 1)
    {
    case 0: Pi1MHz_Memory_VPU[addr>>1] =      data  | (Pi1MHz_Memory[addr+1]); break;
    case 1: Pi1MHz_Memory_VPU[addr>>1] = ((uint32_t )data<<16) | (Pi1MHz_Memory[addr-1]); break;
    }
+#pragma GCC diagnostic pop
 }
 
 uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow="
+#pragma GCC diagnostic ignored "-Warray-bounds"   
    return Pi1MHz_Memory[addr];
+#pragma GCC diagnostic pop
 }
 
 // For each location in FRED and JIM which a task wants to be called for
@@ -171,7 +176,11 @@ uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 // for access variable use WRITE_FRED WRITE_JIM READ_FRED READ_JIM
 void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr function_ptr )
 {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow="
+#pragma GCC diagnostic ignored "-Warray-bounds"
    Pi1MHz_callback_table[access+addr] = function_ptr;
+#pragma GCC diagnostic pop
 }
 
 // For each task that needs to be polled during idle it must register itself.
@@ -225,8 +234,8 @@ void Pi1MHzBus_read_Status(unsigned int gpio)
 static void init_emulator() {
    LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
 
-   _enable_interrupts();
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
+   _enable_interrupts();
 
    char *prop = get_cmdline_prop("Pi1MHzDisable");
    if (prop)
