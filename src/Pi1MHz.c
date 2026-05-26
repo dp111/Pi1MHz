@@ -97,8 +97,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "rpi/gpio.h"
 #include "rpi/interrupts.h"
 #include "Pi1MHz.h"
-#include "scripts/gitversion.h"
-#include "BeebSCSI/filesystem.h"
+
 
 #include "Pi1MHzvc.c"
 
@@ -110,6 +109,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "harddisc_emulator.h"
 #include "M5000_emulator.h"
 #include "framebuffer.h"
+//#include "diskaccess.h"
 
 typedef struct {
    const char *name;
@@ -126,10 +126,6 @@ static emulator_list emulator[] = {
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
-
-uint8_t *JIM_ram; // 480M Bytes of RAM for pizero
-
-uint8_t JIM_ram_size; // Size of JIM ram in 16Mbyte steps
 
 // Memory for VPU to read FRED and JIM
 static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE;
@@ -231,6 +227,7 @@ static void init_emulator() {
    LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator ****\r\n\r\n");
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
+   RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
    _enable_interrupts();
 
    const char *prop = get_cmdline_prop("Pi1MHzDisable");
@@ -308,61 +305,6 @@ void Pi1MHz_LED(int led)
       RPI_SetGpioValue(led_pin , led);
 }
 
-static char* putstring(char *ram, char term, const char *string)
-{
-   size_t length;
-   length = strlcpy(ram, string, PAGE_SIZE);
-   ram += length;
-   if (term == '\n')
-   {
-      *ram++ ='\n';
-      for (size_t i=0 ; i <length; i++)
-         *ram++ = 8; // Cursor left
-   }
-   if (term == '\r')
-      {
-         *ram++ ='\n';
-         *ram++ ='\r';
-      }
-   return ram;
-}
-
-static void init_JIM()
-{
-   extern char _end;
-
-   RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
-   uint32_t temp = mem_info(1); // get size of ram
-   temp = temp - (unsigned int)&_end; // remove program
-   temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
-   temp = temp & 0xFF000000; // round down to 16Mbyte boundary
-   JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
-
-   fx_register[0] = JIM_ram_size;  // fx addr 0 returns ram size
-
-   JIM_ram = (uint8_t *) malloc(16*1024*1024*JIM_ram_size); // malloc 480Mbytes
-
-   // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
-   if (!filesystemReadFile("JIM_Init.bin",JIM_ram,JIM_ram_size<<24))
-   {
-       // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
-      char * ram = (char *)JIM_ram;
-      ram = putstring(ram,'\n', "");
-      ram = putstring(ram,'\n', " Pi1MHz "RELEASENAME);
-      ram = putstring(ram,'\n', " Commit ID: "GITVERSION);
-      ram = putstring(ram,'\n', " Date : " __DATE__ " " __TIME__);
-      ram = putstring(ram,0   , " Pi :");
-            putstring(ram,'\r', get_info_string());
-   }
-
-   // see if BEEB.MMB exists on the SDCARD if so load it into JIM+16Mbytes
-   filesystemReadFile("BEEB.MMB",JIM_ram+(16*1024*1024),JIM_ram_size<<24);
-
-   filesystemReadFile("6502code.bin",&JIM_ram[0xB0],JIM_ram_size<<24);
-
-   Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&JIM_ram[0])) );
-}
-
 static void init_hardware()
 {
    // enable overriding default LED option using command.txt
@@ -407,7 +349,7 @@ static void init_hardware()
    RPI_SetGpioInput(RNW_PIN);
 
    RPI_SetGpioHi(NOE_PIN);          // disable external data bus buffer
-   RPI_SetGpioOutput(NOE_PIN);      // extrernal data buffer nOE pin
+   RPI_SetGpioOutput(NOE_PIN);      // external data buffer nOE pin
 
    RPI_SetGpioOutput(TEST_PIN);
 
@@ -426,10 +368,6 @@ void kernel_main()
    enable_MMU_and_IDCaches(0);
 
    init_hardware();
-
-   filesystemInitialise(0);
-
-   init_JIM();
 
    init_emulator();
 
