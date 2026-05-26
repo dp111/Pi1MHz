@@ -71,7 +71,6 @@ struct emmc_block_dev
 	size_t block_size;
 	int use_sdma;
 	int card_removal;
-	uint32_t base_clock;
 };
 
 

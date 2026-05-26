@@ -178,7 +178,7 @@ nPCFD IO25 Pin 22 o o Pin 21 IO9  D7
 #include <stdbool.h>
 #include <stdint.h>
 // JIM_ram_size is in 16Mbyte steps
-extern uint32_t JIM_ram_size;
+extern uint8_t JIM_ram_size;
 
 extern uint8_t * JIM_ram;
 

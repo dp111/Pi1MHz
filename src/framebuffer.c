@@ -1402,7 +1402,7 @@ static void fb_initialize() {
     RPI_PropertyNewTag(TAG_SET_PHYSICAL_SIZE,2); RPI_PropertyAddTwoWords(SCREEN_WIDTH, SCREEN_HEIGHT );
     RPI_PropertyNewTag(TAG_SET_VIRTUAL_SIZE,2); RPI_PropertyAddTwoWords(SCREEN_WIDTH, SCREEN_HEIGHT *2 );
     RPI_PropertyNewTag(TAG_SET_DEPTH,1); RPI_PropertyAdd(SCREEN_DEPTH);
-    RPI_PropertyProcess();
+    RPI_PropertyProcess(true);
 
     if( ( mp = RPI_PropertyGet( TAG_ALLOCATE_BUFFER  ) ) )
     {

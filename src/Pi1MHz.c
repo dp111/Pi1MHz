@@ -128,7 +128,7 @@ static emulator_list emulator[] = {
 
 uint8_t *JIM_ram; // 480M Bytes of RAM for pizero
 
-uint32_t JIM_ram_size; // Size of JIM ram in 16Mbyte steps
+uint8_t JIM_ram_size; // Size of JIM ram in 16Mbyte steps
 
 // Memory for FRED and JIM
 static uint8_t * const Pi1MHz_Memory = (uint8_t *)0x100;
@@ -271,7 +271,7 @@ static void init_emulator() {
    RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
    RPI_PropertyAdd(TEST_PINS_OUTPUTS); // r4
    RPI_PropertyAdd(0); // r5 TEST_MASK
-   RPI_PropertyProcess();
+   RPI_PropertyProcess(false);
 
    RPI_IRQBase->FIQ_control = 0x80 + 67; // doorbell FIQ
 
@@ -317,13 +317,13 @@ static void init_JIM()
    extern char _end;
 
    RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
-   JIM_ram_size = mem_info(1); // get size of ram
-   JIM_ram_size = JIM_ram_size - (unsigned int)&_end; // remove program
-   JIM_ram_size = JIM_ram_size -( 4*1024*1024) ; // 4Mbytes for other mallocs
-   JIM_ram_size = JIM_ram_size & 0xFF000000; // round down to 16Mbyte boundary
-   JIM_ram_size = JIM_ram_size >> 24 ; // set to 16Mbyte sets
+   uint32_t temp = mem_info(1); // get size of ram
+   temp = temp - (unsigned int)&_end; // remove program
+   temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
+   temp = temp & 0xFF000000; // round down to 16Mbyte boundary
+   JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
 
-   fx_register[0] = (uint8_t)JIM_ram_size;  // fx addr 0 returns ram size
+   fx_register[0] = JIM_ram_size;  // fx addr 0 returns ram size
 
    JIM_ram = (uint8_t *) malloc(16*1024*1024*JIM_ram_size); // malloc 480Mbytes
 

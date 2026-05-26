@@ -63,7 +63,7 @@ void ram_emulator_page_addr(unsigned int gpio)
 
    if ( addr == 0xfd)
    {  if (data > (JIM_ram_size))
-         data = (uint8_t) JIM_ram_size;
+         data = JIM_ram_size;
       page_ram_addr = (page_ram_addr & 0x00FFFFFF) | data<<24;
    } else {
    if ( addr == 0xfe)
