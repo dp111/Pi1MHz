@@ -253,7 +253,7 @@ ORG &FD00
 ; ADFS
 {
 ORG &FD00
-    LOADFILETOSWR "ROMS/ADFS.rom"
+    LOADFILETOSWR "Pi1MHz/ADFS.rom"
     ENDBLOCK &300
 }
 
@@ -261,7 +261,7 @@ ORG &FD00
 ; MMFS
 {
 ORG &FD00
-    LOADFILETOSWR "ROMS/SWMMFS.rom"
+    LOADFILETOSWR "Pi1MHz/SWMMFS.rom"
     ENDBLOCK &400
 }
 
@@ -269,17 +269,17 @@ ORG &FD00
 ; MMFSv2
 {
 ORG &FD00
-    LOADFILETOSWR "ROMS/SWMMFS2.rom"
+    LOADFILETOSWR "Pi1MHZ/SWMMFS2.rom"
     ENDBLOCK &500
 }
 ; Page 6
 ; VFS
 {
 ORG &FD00
-    LOADFILETOSWR "ROMS/VFS.rom"
+    LOADFILETOSWR "Pi1MHz/BSrom.rom"
     ENDBLOCK &600
 }
 
 .end
 
-SAVE "../firmware/6502code.bin" , 0, &700
+SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &700
