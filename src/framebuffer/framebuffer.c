@@ -1780,7 +1780,7 @@ static void fb_show_splash_screen(void) {
    fb_writec(63); // White in MODE 21
 
    char screeninfo[1024];
-   helpers_screen_setup(screeninfo);
+   helpers_screen_setup(screeninfo, sizeof(screeninfo));
    for (unsigned int i = 0; i < sizeof(screeninfo); i++) {
       if (screeninfo[i] == '\0') {
          break;

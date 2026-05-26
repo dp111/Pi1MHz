@@ -16,12 +16,13 @@ NOINIT_SECTION uint8_t helper_ram[4*1024];
 
 static uint8_t helper_address;
 
-void helpers_screen_setup( char * helpscreen)
+void helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
 {
   // We also hide the help screen at &FFE000
         char hex[3];
         char dec[4];
         char M5000address[4];
+
         sprintf(hex, "%X",helper_address);
         sprintf(dec, "%d",helper_address);
         sprintf(M5000address, "%d", M5000_emulator_read_instance());
@@ -29,25 +30,33 @@ void helpers_screen_setup( char * helpscreen)
         char scsiaddress[4];
         sprintf(scsiaddress, "%d", harddisc_emulator_get_address()+1);
 
-        helpscreen += strlcpy(helpscreen, "\r\nPi1MHz "RELEASENAME" , "GITVERSION
+        size_t size;
+        size = strlcpy(helpscreen, "\r\nPi1MHz "RELEASENAME" , "GITVERSION
         "\r\nDate : " __DATE__ " " __TIME__
-        "\r\nPi : " , PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, get_info_string(), PAGE_SIZE*16);
-        sprintf(helpscreen, " %2.1fC", (double) get_temp() );
-        helpscreen += 6;
-        helpscreen += strlcpy(helpscreen, "\r\n"
+        "\r\nPi : " , helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen, get_info_string(), helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = (size_t)snprintf(helpscreen, helpscreen_size, " %2.1fC", (double) get_temp() );
+        helpscreen += size;helpscreen_size -= size;
+        size= strlcpy(helpscreen, "\r\n"
         "\r\n3 ways to start helper functions :"
-        "\r\n*FX147,", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, dec, PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen,",n <ret> *GO FD00 <ret>", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen,"\r\n*FX147,", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, dec, PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen,",n <ret> *GOIO FD00 <ret>", PAGE_SIZE*16);
+        "\r\n*FX147,", helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen, dec, helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen,",n <ret> *GO FD00 <ret>"
+        "\r\n*FX147,", helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen, dec, helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen,",n <ret> *GOIO FD00 <ret>"
+        "\r\nX%=n:CALL&FC", helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen, hex, helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
 
-        helpscreen += strlcpy(helpscreen,"\r\nX%=n:CALL&FC", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
-
-        helpscreen += strlcpy(helpscreen,
+        size = strlcpy(helpscreen,
         " <ret>\r\n\r\nwhere n is one of the following :"
         "\r\n0 # This help screen"
         "\r\n1 # Status N/A"
@@ -57,16 +66,22 @@ void helpers_screen_setup( char * helpscreen)
         "\r\n5 # Load MMFS2 into SWR"
         "\r\n6 # Load BeebSCSI helper ROM into SWR"
         "\r\n10-15 # Load User ROM10-ROM15 into SWR\r\n"
-        "\r\n*FX147,", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, scsiaddress, PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen,",n # SCSIJUKE box directory"
-            "\r\n*FX147,202,", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, M5000address, PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen,":*FX147,203,1 #Record M5000\r\n"
-                    "*FX147,202,", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, M5000address, PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen,":*FX147,203,0 #End Record\r\n", PAGE_SIZE*16);
-        helpscreen[0] = 0;
+        "\r\n*FX147,", helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+
+        size = strlcpy(helpscreen, scsiaddress, helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen,",n # SCSIJUKE box directory"
+            "\r\n*FX147,202,", helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen, M5000address, helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen,":*FX147,203,1 #Record M5000\r\n"
+                    "*FX147,202,", helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        size = strlcpy(helpscreen, M5000address, helpscreen_size);
+        helpscreen += size;helpscreen_size -= size;
+        strlcpy(helpscreen,":*FX147,203,0 #End Record\r\n", helpscreen_size);
 }
 
 static void helpers_bank_select(unsigned int gpio)
@@ -89,7 +104,7 @@ static void helpers_bank_select(unsigned int gpio)
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&helper_ram[data<<8])) );
         if (data==0)
         {
-            helpers_screen_setup(( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000]);
+            helpers_screen_setup(( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000],1024);
             //signal to beeb the help screen is setup
             Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE+1, 0x03);
         }
