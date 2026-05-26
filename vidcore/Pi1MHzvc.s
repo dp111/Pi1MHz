@@ -68,19 +68,11 @@
    or     r3, r4       # add in test pin so that it is still enabled
    mov    r6, GPFSEL0
    mov    r7, 1            # external nOE pin
-
+   mov    r9, GPCLR0_offset>>2
    mov    r13, GPU_ARM_DBELL
-   nop
-   nop
-   nop
-   nop
-   nop
-   nop
-   nop
-
 
 # poll for nPCFC or nPCFD being low
-
+.balignw 16,1 # Align with nops
 Poll_loop:
    st     r5, GPCLR0_offset(r6)  # Turn off debug signal
 
@@ -105,7 +97,7 @@ waitforclklow:                   # wait for extra half cycle to end
    btst   r12, CLK
    bne    waitforclklow
 
-.balignw 4,1 # Align with nops
+.balignw 16,1 # Align with nops
 waitforclkhigh:
 waitforclkhighloop:
    LSR    r8, r12,ADDRBUS_SHIFT
@@ -130,17 +122,12 @@ waitforclkhighloop:
    lsl    r8, DATASHIFT
    beq    writecycle
 
-
    btst   r8, OUTPUTBIT
    extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above
 
    st     r8, GPSET0_offset(r6)  # set up databus
-   beq    skipenablingbus
-
-   st     r3, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
-   st     r7, GPCLR0_offset(r6)  # set external output enable low
-
- skipenablingbus:
+   st     r3, GPFSEL0_offset(r6) # set databus to output
+   stne   r7,(r6,r9)             # set external output enable low ( only if it has been written to)
    st     r12, (r1)              # post data
    st     r12, (r13)             # ring doorbell
 
