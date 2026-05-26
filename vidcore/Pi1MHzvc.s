@@ -214,7 +214,9 @@ nOE_waitforclkhighloop:
 
    st    r8, GPSET0_offset(r6)  # set up databus
    st    r3, GPFSEL0_offset(r6) # set databus to output
-   stne  r2,(r6,r9)             # set external output enable low ( only if it has been written to)
+   beq   bytenotwrittento
+   st    r2,(r6,r9)             # set external output enable low ( only if it has been written to)
+bytenotwrittento:
    st    r12, (r1)              # post data
    st    r12, (r13)             # ring doorbell
 

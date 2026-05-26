@@ -219,34 +219,36 @@ Source: "Pi1MHzvc.s"
                             	   214: 
 00:000000D2 6837            	   215:    st    r8, GPSET0_offset(r6)  # set up databus
 00:000000D4 6330            	   216:    st    r3, GPFSEL0_offset(r6) # set databus to output
-00:000000D6 22A08930        	   217:    stne  r2,(r6,r9)             # set external output enable low ( only if it has been written to)
-00:000000DA 1C09            	   218:    st    r12, (r1)              # post data
-00:000000DC DC09            	   219:    st    r12, (r13)             # ring doorbell
-                            	   220: 
-                            	   221: .balignw 4,1 # Align with nops
-                            	   222: nOE_waitforclklow2loop:
-00:000000E0 6C2D            	   223:    ld    r12, GPLEV0_offset(r6)
-00:000000E2 BC6D            	   224:    btst  r12, CLK
-00:000000E4 FE18            	   225:    bne   nOE_waitforclklow2loop
-                            	   226: 
-00:000000E6 6237            	   227:    st    r2, GPSET0_offset(r6)  # set external output enable high
-00:000000E8 6430            	   228:    st    r4, GPFSEL0_offset(r6) # data bus to inputs except debug
-00:000000EA 683A            	   229:    st    r8, GPCLR0_offset(r6)  # clear databus low
-                            	   230: 
-00:000000EC 521F            	   231:    b      nOE_Poll_loop
+00:000000D6 0318            	   217:    beq   bytenotwrittento
+00:000000D8 22A00937        	   218:    st    r2,(r6,r9)             # set external output enable low ( only if it has been written to)
+                            	   219: bytenotwrittento:
+00:000000DC 1C09            	   220:    st    r12, (r1)              # post data
+00:000000DE DC09            	   221:    st    r12, (r13)             # ring doorbell
+                            	   222: 
+                            	   223: .balignw 4,1 # Align with nops
+                            	   224: nOE_waitforclklow2loop:
+00:000000E0 6C2D            	   225:    ld    r12, GPLEV0_offset(r6)
+00:000000E2 BC6D            	   226:    btst  r12, CLK
+00:000000E4 FE18            	   227:    bne   nOE_waitforclklow2loop
+                            	   228: 
+00:000000E6 6237            	   229:    st    r2, GPSET0_offset(r6)  # set external output enable high
+00:000000E8 6430            	   230:    st    r4, GPFSEL0_offset(r6) # data bus to inputs except debug
+00:000000EA 683A            	   231:    st    r8, GPCLR0_offset(r6)  # clear databus low
                             	   232: 
-                            	   233: nOE_writecycle:
-00:000000EE 623A            	   234:    st     r2, GPCLR0_offset(r6)  # set external output enable low
-                            	   235: nOE_waitforclkloww2:
-00:000000F0 C840            	   236:    mov    r8,r12
-00:000000F2 6C2D            	   237:    ld     r12, GPLEV0_offset(r6)
-00:000000F4 BC6D            	   238:    btst   r12, CLK
-00:000000F6 FD18            	   239:    bne    nOE_waitforclkloww2
-                            	   240: 
-00:000000F8 1809            	   241:    st     r8, (r1)         # post data
-00:000000FA D809            	   242:    st     r8, (r13)        # ring doorbell
-00:000000FC 6237            	   243:    st     r2, GPSET0_offset(r6)  # set external output enable high
-00:000000FE 491F            	   244:    b      nOE_Poll_loop
+00:000000EC 521F            	   233:    b      nOE_Poll_loop
+                            	   234: 
+                            	   235: nOE_writecycle:
+00:000000EE 623A            	   236:    st     r2, GPCLR0_offset(r6)  # set external output enable low
+                            	   237: nOE_waitforclkloww2:
+00:000000F0 C840            	   238:    mov    r8,r12
+00:000000F2 6C2D            	   239:    ld     r12, GPLEV0_offset(r6)
+00:000000F4 BC6D            	   240:    btst   r12, CLK
+00:000000F6 FD18            	   241:    bne    nOE_waitforclkloww2
+                            	   242: 
+00:000000F8 1809            	   243:    st     r8, (r1)         # post data
+00:000000FA D809            	   244:    st     r8, (r13)        # ring doorbell
+00:000000FC 6237            	   245:    st     r2, GPSET0_offset(r6)  # set external output enable high
+00:000000FE 491F            	   246:    b      nOE_Poll_loop
 
 
 Symbols by name:
@@ -265,6 +267,7 @@ OUTPUTBIT                        S:0000000F
 Poll_access_low                  A:00000020
 Poll_loop                        A:00000020
 RnW                              S:0000000A
+bytenotwrittento                 A:000000DC
 nOE_Poll_access_low              A:00000092
 nOE_Poll_loop                    A:00000090
 nOE_waitforclkhigh               A:000000B0
@@ -311,6 +314,7 @@ Symbols by value:
 000000A2 nOE_waitforclklow
 000000B0 nOE_waitforclkhigh
 000000B0 nOE_waitforclkhighloop
+000000DC bytenotwrittento
 000000E0 nOE_waitforclklow2loop
 000000EE nOE_writecycle
 000000F0 nOE_waitforclkloww2

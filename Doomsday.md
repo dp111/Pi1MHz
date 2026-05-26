@@ -3,6 +3,25 @@ Doomsday notes
 
 
 
+TODO notes in no order
+
+Check mouse offsets and fix VFS ROM bug
+*MOUSE appears to not always work see if original VFS has this bug and fix
+See if boot time can be improved
+LZ4 decompressor
+YUV frame display
+More Fcode support (including VP4 and VP5 )
+See if power consumption of the Pi can be improved
+Add Marks code for plain text description drives ( add User codes and Video X offset )
+check and fix YUV scaling
+Audio support HDMI and beeb ?
+composite video out ?
+50Hz HDMI modes
+Check 1MHz timing / add DMBs ( sometimes bad FSMAP)
+Check beeb screen offset vertical appears off by a pixel ?
+
+
+
 how to create the compressed video files
 
 /mnt/c/Archlinux/ld-decode/tools/ld-chroma-decoder/ld-chroma-decoder --decoder transform3d -p y4m -s 3000 -l 1 -q /mnt/s/domsday/south.tbc  | ffmpeg -i - -c:v v210 -f mov -top 1 -vf setfield=tff -flags +ilme+ildct -pix_fmt yuv422p -color_primaries bt470bg -color_trc bt709 -colorspace bt470bg -color_range tv -vf setdar=4/3,setfield=tff -s768x576 -c:v rawvideo image3000.yuv
