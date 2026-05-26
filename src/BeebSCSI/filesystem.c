@@ -373,7 +373,6 @@ bool filesystemTestLunStatus(uint8_t lunNumber)
 }
 
 // Function to read the user code for the specified LUN image
-// cppcheck-suppress unusedFunction
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 {
    userCode[0] = filesystemState.fsLunUserCode[lunNumber][0];
@@ -381,6 +380,12 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
    userCode[2] = filesystemState.fsLunUserCode[lunNumber][2];
    userCode[3] = filesystemState.fsLunUserCode[lunNumber][3];
    userCode[4] = filesystemState.fsLunUserCode[lunNumber][4];
+
+   userCode[0] = 0x31; // fixed code for now *** TODO ******
+   userCode[1] = 0x3D;
+   userCode[2] = 0x30;
+   userCode[3] = 0x36;
+   userCode[4] = 0x36;
 }
 
 // Check that the currently selected LUN directory exists (and, if not, create it)
