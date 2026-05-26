@@ -148,9 +148,6 @@ MACRO LOADFILETOSWR filename
     STY discaccess+4
     LDA #&7F
     STA &FE4E
-    LDA #200
-    LDX #3
-    JSR OSBYTE
     JMP (&FFFC) ; Reset
 
 
