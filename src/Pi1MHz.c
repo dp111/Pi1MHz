@@ -158,13 +158,7 @@ void Pi1MHz_SetnNMI(bool nmi)
    RPI_SetGpioPinFunction(NNMI_PIN, nmi?FS_OUTPUT:FS_INPUT);
 }
 
-#ifdef DEBUG_TUBE_GLITCH
 static uint8_t status_addr;
-
-// Variables used to check 1MHz interface for false accesses.
-
-static uint8_t status_rd_count;
-static uint8_t status_wr_count;
 
 // Enables the beeb to read and write status info
 // setup the address for status read write
@@ -177,8 +171,6 @@ void Pi1MHzBus_addr_Status(unsigned int gpio)
    switch (status_addr)
    {
       case 0: data = JIM_ram_size ; break; // status reg 0 returns JIM_ram_size
-      case 0xfe : data = status_rd_count; break;
-      case 0xff : data = status_wr_count; break;
       default : break;
    }
    Pi1MHz_Memory[addr+1] = data;
@@ -190,15 +182,13 @@ void Pi1MHzBus_write_Status(unsigned int gpio)
    uint32_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    Pi1MHz_Memory[addr] = data; // enable read back
-   status_wr_count ++;
    // writes not yet supported
 }
 
 void Pi1MHzBus_read_Status(unsigned int gpio)
 {
-   status_rd_count ++;
+
 }
-#endif
 
 static void init_emulator() {
    LOG_INFO("\r\n**** Raspberry Pi 1MHz Emulator ****\r\n");
@@ -226,19 +216,16 @@ static void init_emulator() {
 
    _enable_interrupts();
 
-#ifdef DEBUG_TUBE_GLITCH
    // Regsiter Status read back
    Pi1MHz_Register_Memory(WRITE_FRED, 0xca, Pi1MHzBus_addr_Status );
    Pi1MHz_Register_Memory(WRITE_FRED, 0xcb, Pi1MHzBus_write_Status );
    Pi1MHz_Register_Memory( READ_FRED, 0xcb, Pi1MHzBus_read_Status );
-#endif
 
    for( size_t i=0; i <sizeof(emulator_inits)/sizeof(func_ptr); i++)
    {
       emulator_inits[i]();
    }
 
-   while (Pi1MHz_is_rst_active());
 }
 
 static int led_pin;;
@@ -293,8 +280,9 @@ static void init_JIM()
 // suppress a warning as we really do want to memcpy 256,jim_ram, 256!
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wrestrict"
-   memcpy(&Pi1MHz_Memory[Pi1MHz_MEM_PAGE], &JIM_ram[0], PAGE_SIZE);
+    memcpy(&Pi1MHz_Memory[Pi1MHz_MEM_PAGE], &JIM_ram[0], PAGE_SIZE);
 #pragma GCC diagnostic pop
+
 }
 
 static void init_hardware()
@@ -359,13 +347,16 @@ void kernel_main()
 
    init_hardware();
 
-   init_emulator();
    init_JIM();
+
+   init_emulator();
 
    do {
       if (Pi1MHz_is_rst_active())
+	  {
         init_emulator();
-
+		while (Pi1MHz_is_rst_active());
+	  }
       for (size_t i=0 ; i<Pi1MHz_polls_max; i++ )
         Pi1MHz_poll_table[i]();
    } while (1);
