@@ -170,11 +170,11 @@ void discaccess_emulator_command(unsigned int gpio)
 }
 
 
-void discaccess_emulator_init( uint8_t instance , int address)
+void discaccess_emulator_init( uint8_t instance , uint8_t address)
 {
    disc_ram_addr = DISC_RAM_BASE;
 
-   ram_address = (uint8_t) address;
+   ram_address = address;
 
    // register call backs
    // byte memory address write

@@ -156,7 +156,7 @@ static void hd_emulator_conf(unsigned int gpio)
 }
 #endif
 
-void harddisc_emulator_init( uint8_t instance , int address)
+void harddisc_emulator_init( uint8_t instance , uint8_t address)
 {
    static bool PowerOn = 0 ;
 

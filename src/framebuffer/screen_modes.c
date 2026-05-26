@@ -961,11 +961,15 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
 
     // Initialise the framebuffer for real...
     RPI_PropertyStart(TAG_ALLOCATE_BUFFER, 2); RPI_PropertyAddTwoWords(FB_ALIGNMENT,0);
-    RPI_PropertyNewTag(TAG_SET_PHYSICAL_SIZE, 2); RPI_PropertyAddTwoWords( screen->width, screen->height );
-    RPI_PropertyNewTag(TAG_SET_VIRTUAL_SIZE, 2); RPI_PropertyAddTwoWords( screen->width, screen->height );
+    RPI_PropertyNewTag(TAG_SET_PHYSICAL_SIZE, 2);
+    RPI_PropertyAddTwoWords( (uint32_t) screen->width,  (uint32_t) screen->height );
+    RPI_PropertyNewTag(TAG_SET_VIRTUAL_SIZE, 2);
+    RPI_PropertyAddTwoWords(  (uint32_t) screen->width,  (uint32_t) screen->height );
     RPI_PropertyNewTag(TAG_SET_DEPTH, 1); RPI_PropertyAdd( 1 << screen->log2bpp);
 
-    RPI_PropertyNewTag(TAG_SET_OVERSCAN, 4); RPI_PropertyAddTwoWords(v_overscan, v_overscan); RPI_PropertyAddTwoWords( h_overscan, h_overscan);
+    RPI_PropertyNewTag(TAG_SET_OVERSCAN, 4);
+    RPI_PropertyAddTwoWords( (uint32_t) v_overscan,  (uint32_t) v_overscan);
+    RPI_PropertyAddTwoWords(  (uint32_t) h_overscan,  (uint32_t) h_overscan);
     RPI_PropertyProcess(TRUE);
 
     if( ( mp = RPI_PropertyGet( TAG_ALLOCATE_BUFFER ) ) )

@@ -27,10 +27,11 @@ static mailbox_t* rpiMailbox1 = (mailbox_t*)RPI_MAILBOX1_BASE;
 void RPI_Mailbox0Write( mailbox0_channel_t channel, uint32_t * ptr )
 {
     _clean_cache_area(ptr, ptr[PT_OSIZE]);
+// cppcheck-suppress constStatement
     rpiMailbox0->Data; // empty buffer incase anything is left over.
     /* Wait until the mailbox becomes available and then write to the mailbox
        channel */
-
+// cppcheck-suppress constStatement
     while ( ( rpiMailbox1->Status & ARM_MS_FULL ) != 0 ) { rpiMailbox0->Data; }
     /* Add the channel number into the lower 4 bits */
     /* Write the modified value + channel number into the write register */

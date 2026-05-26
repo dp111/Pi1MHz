@@ -182,7 +182,7 @@ nPCFD IO25 Pin 22 o o Pin 21 IO9  D7
 extern uint8_t fx_register[256];
 
 typedef void (*callback_func_ptr)( unsigned int);
-typedef void (*func_ptr_parameter)( uint8_t instance, int address);
+typedef void (*func_ptr_parameter)( uint8_t instance, uint8_t address);
 
 typedef struct
 {
@@ -198,10 +198,10 @@ typedef struct
 
 static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;
 
-#define DISC_RAM_BASE ( (Pi1MHz->JIM_ram_size - 2) * 16 * 1024 * 1024 )
+#define DISC_RAM_BASE ((uint32_t)( (Pi1MHz->JIM_ram_size - 2) * 16 * 1024 * 1024 ))
 
 void Pi1MHz_LED(int led);
-void Pi1MHz_Register_Memory(int access, int addr, callback_func_ptr function_ptr );
+void Pi1MHz_Register_Memory(int access, uint8_t addr, callback_func_ptr function_ptr );
 void Pi1MHz_Register_Poll( func_ptr function_ptr );
 void Pi1MHz_SetnIRQ(bool irq);
 void Pi1MHz_SetnNMI(bool nmi);
