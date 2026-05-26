@@ -291,7 +291,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				uint32_t pictureNumber = 0;
 				FCdebugString_P(PSTR(" = Load/Goto picture number : "));
 
-				for (byteCounter = 0; byteCounter < 7; byteCounter++) {
+				for (byteCounter = 0; byteCounter < 8; byteCounter++) {
 					if (scsiFcodeBuffer[byteCounter] == 0x0D) break;
 					if ( (char)scsiFcodeBuffer[byteCounter] >= '0' && (char)scsiFcodeBuffer[byteCounter] <= '9') {
 						pictureNumber = (uint32_t) ((uint32_t)(pictureNumber * 10) + ((uint32_t)(scsiFcodeBuffer[byteCounter] - '0')));
@@ -442,7 +442,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x56: // V, VP // VFS sends this
 			switch(scsiFcodeBuffer[1]) {
 				case 'P':
-				VPmode = scsiFcodeBuffer[1];
+				VPmode = scsiFcodeBuffer[2];
 				switch(scsiFcodeBuffer[2]) {
 					case '1':
 					FCdebugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
