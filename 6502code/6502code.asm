@@ -4,6 +4,7 @@
 
 discaccess = &FCD6
 OSBYTE = &FFF4
+OSWRCH = &FFEE
 MACRO PAGERTS
     LDX #&FF
     JMP &FC88
@@ -23,6 +24,8 @@ MACRO LOADFILETOSWR filename
 .romlp
     stx    &f4
     stx    &fe30
+    LDA    #'.'
+    JSR    OSWRCH
 ;; Step 1: Test if candidate slot already contains a rom image
 ;; so we don't clobber any pre-existing ROM images
     ldy     &8007
@@ -53,11 +56,7 @@ MACRO LOADFILETOSWR filename
     eor     #&FF
     sta     &8006
     cmp     &8006
-    PHP
-    eor     #&FF
-        sta     &8006
-        PLP
-        beq     SWRfound
+    beq     SWRfound
 .romnxt
     dex
     bpl     romlp
