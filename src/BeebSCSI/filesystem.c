@@ -1045,6 +1045,50 @@ bool filesystemCloseLunForWrite(uint8_t lunNumber)
    return false;
 }
 
+// Functions for reading SCSI attributes -------------------------------------------------------------
+
+
+char * filesystemGetInquiryData(uint8_t lunNumber)
+{
+   int index = parse_findindex("Inquiry",scsiattributes);
+	return filesystemState.keyvalues[lunNumber][index].v.string;
+}
+
+char * filesystemGetModeParamHeaderData(uint8_t lunNumber, size_t * length)
+{
+   int index = parse_findindex("ModeParamHeader",scsiattributes);
+   *length= filesystemState.keyvalues[lunNumber][index].length;
+	return filesystemState.keyvalues[lunNumber][index].v.string;
+}
+
+char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length)
+{
+   int index = parse_findindex("LBADescriptor",scsiattributes);
+   *length= filesystemState.keyvalues[lunNumber][index].length;
+	return filesystemState.keyvalues[lunNumber][index].v.string;
+}
+
+char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * length)
+{
+   char page1 , page2;
+   if (page >10)
+   {
+      page1= page/10;
+      page2= page%10;
+   }
+   else
+      {
+      page1= page;
+      page2= 0;
+      }
+
+   const char mode[] = {'M','o','d','e','P','a','g','e',page1,page2,0};
+   int index = parse_findindex(mode,scsiattributes);
+   if (index == -1)
+      return 0;
+   *length= filesystemState.keyvalues[lunNumber][index].length;
+   return filesystemState.keyvalues[lunNumber][index].v.string;
+}
 
 // Functions for FAT Transfer support --------------
 
