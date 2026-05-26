@@ -165,7 +165,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
       char hex[4];
       sprintf(hex, "%X",helpers_get_address());
       ram = putstring(ram, 0, " Use CALL &FC");
-      ram = putstring(ram,'\r', hex);
+      putstring(ram,'\r', hex);
    }
 
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[0])) );
