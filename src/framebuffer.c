@@ -116,11 +116,16 @@ static inline void set_colour(unsigned int index, int r, int g, int b) {
 }
 
 static void update_palette(int offset, int num_colours) {
-   RPI_PropertyInit();
-   RPI_PropertyAddTag(TAG_SET_PALETTE, offset, num_colours, colour_table);
+   RPI_PropertyStart(TAG_SET_PALETTE, 2 + num_colours);
+   RPI_PropertyAddTwoWords(offset , num_colours); 
+   for(uint32_t i = 0 ; i < num_colours ; i++)
+      RPI_PropertyAdd(colour_table[offset + i]);
+
+   //RPI_PropertyInit();
+   //RPI_PropertyAddTag(TAG_SET_PALETTE, offset, num_colours, colour_table);
    // Call the Check version as doorbell and mailboxes are separate
    //LOG_INFO("Calling TAG_SET_PALETTE\r\n");
-   RPI_PropertyProcess();
+   //RPI_PropertyProcess();
    //rpi_mailbox_property_t *buf = RPI_PropertyGet(TAG_SET_PALETTE);
    //if (buf) {
    //   LOG_INFO("TAG_SET_PALETTE returned %08x\r\n", buf->data.buffer_32[0]);
@@ -1393,11 +1398,10 @@ static void fb_initialize() {
     rpi_mailbox_property_t *mp;
 
     /* Initialise a framebuffer... */
-    RPI_PropertyInit();
-    RPI_PropertyAddTag(TAG_ALLOCATE_BUFFER , 64 );
-    RPI_PropertyAddTag(TAG_SET_PHYSICAL_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT );
-    RPI_PropertyAddTag(TAG_SET_VIRTUAL_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT * 2 );
-    RPI_PropertyAddTag(TAG_SET_DEPTH, SCREEN_DEPTH );
+    RPI_PropertyStart(TAG_ALLOCATE_BUFFER, 2); RPI_PropertyAddTwoWords(64,0); 
+    RPI_PropertyNewTag(TAG_SET_PHYSICAL_SIZE,2); RPI_PropertyAddTwoWords(SCREEN_WIDTH, SCREEN_HEIGHT );
+    RPI_PropertyNewTag(TAG_SET_VIRTUAL_SIZE,2); RPI_PropertyAddTwoWords(SCREEN_WIDTH, SCREEN_HEIGHT *2 );
+    RPI_PropertyNewTag(TAG_SET_DEPTH,1); RPI_PropertyAdd(SCREEN_DEPTH);
     RPI_PropertyProcess();
 
     if( ( mp = RPI_PropertyGet( TAG_ALLOCATE_BUFFER  ) ) )
