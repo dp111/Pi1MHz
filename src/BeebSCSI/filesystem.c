@@ -213,7 +213,7 @@ static void filesystemPrintfserror(FRESULT fsResult)
       break;
 
       case FR_NO_FILE:
-      debugString_P(PSTR("FR_NO_FILE\\r\n"));
+      debugString_P(PSTR("FR_NO_FILE\r\n"));
       break;
 
       case FR_OK: // This can't happen as only errors are passed in
