@@ -1192,6 +1192,7 @@ screen_mode_t *get_screen_mode(int mode_num) {
 }
 
 uint32_t get_fb_address(void) {
+//cppcheck-suppress CastAddressToIntegerAtReturn
    return (uint32_t) fb;
 }
 
