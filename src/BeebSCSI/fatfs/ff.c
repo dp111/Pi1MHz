@@ -689,7 +689,7 @@ static void st_qword (BYTE* ptr, QWORD val)	/* Store an 8-byte word in little-en
 /*-----------------------------------------------------------------------*/
 /* String functions                                                      */
 /*-----------------------------------------------------------------------*/
-
+#if (FF_CODE_PAGE == 0) || (FF_CODE_PAGE >= 900)
 /* Test if the byte is DBC 1st byte */
 static int dbc_1st (BYTE c)
 {
@@ -730,7 +730,7 @@ static int dbc_2nd (BYTE c)
 #endif
 	return 0;
 }
-
+#endif
 
 #if FF_USE_LFN
 
@@ -782,15 +782,17 @@ static DWORD tchar2uni (	/* Returns a character in UTF-16 encoding (>=0x10000 on
 	if (uc >= 0x010000) uc = 0xD800DC00 | ((uc - 0x10000) << 6 & 0x3FF0000) | (uc & 0x3FF);	/* Make a surrogate pair if needed */
 
 #else		/* ANSI/OEM input */
-	BYTE sb;
 	WCHAR wc;
 
 	wc = (BYTE)*p++;			/* Get a byte */
+#if (FF_CODE_PAGE == 0) || (FF_CODE_PAGE >= 900)
+	BYTE sb;
 	if (dbc_1st((BYTE)wc)) {	/* Is it a DBC 1st byte? */
 		sb = (BYTE)*p++;		/* Get 2nd byte */
 		if (!dbc_2nd(sb)) return 0xFFFFFFFF;	/* Invalid code? */
 		wc = (WCHAR) (wc << 8) + sb;	/* Make a DBC */
 	}
+#endif
 	if (wc != 0) {
 		wc = ff_oem2uni(wc, CODEPAGE);	/* ANSI/OEM ==> Unicode */
 		if (wc == 0) return 0xFFFFFFFF;	/* Invalid code? */
@@ -1158,7 +1160,7 @@ static FRESULT sync_fs (	/* Returns FR_OK or FR_DISK_ERR */
 /*-----------------------------------------------------------------------*/
 
 static LBA_t clst2sect (	/* !=0:Sector number, 0:Failed (invalid cluster#) */
-	FATFS* fs,		/* Filesystem object */
+	const FATFS* fs,		/* Filesystem object */
 	DWORD clst		/* Cluster# to be converted */
 )
 {
@@ -1448,7 +1450,7 @@ static FRESULT remove_chain (	/* FR_OK(0):succeeded, !=0:error */
 	DWORD pclst			/* Previous cluster of clst (0 if entire chain) */
 )
 {
-	FRESULT res = FR_OK;
+	FRESULT res ;
 	DWORD nxt;
 	FATFS *fs = obj->fs;
 #if FF_FS_EXFAT || FF_USE_TRIM
@@ -1647,14 +1649,15 @@ static DWORD clmt_clust (	/* <2:Error, >=2:Cluster number */
 	FSIZE_t ofs		/* File offset to be converted to cluster# */
 )
 {
-	DWORD cl, ncl;
-	DWORD *tbl;
-	FATFS *fs = fp->obj.fs;
+	DWORD cl;
+	const DWORD *tbl;
+	const FATFS *fs = fp->obj.fs;
 
 
 	tbl = fp->cltbl + 1;	/* Top of CLMT */
 	cl = (DWORD)(ofs / SS(fs) / fs->csize);	/* Cluster order from top of the file */
 	for (;;) {
+		DWORD ncl;
 		ncl = *tbl++;			/* Number of cluters in the fragment */
 		if (ncl == 0) return 0;	/* End of table? (error) */
 		if (cl < ncl) break;	/* In this fragment? */
@@ -1680,7 +1683,7 @@ static FRESULT dir_clear (	/* Returns FR_OK or FR_DISK_ERR */
 {
 	LBA_t sect;
 	UINT n, szb;
-	BYTE *ibuf;
+	const BYTE *ibuf;
 
 
 	if (sync_window(fs) != FR_OK) return FR_DISK_ERR;	/* Flush disk access window */
@@ -1717,7 +1720,8 @@ static FRESULT dir_sdi (	/* FR_OK(0):succeeded, !=0:error */
 	DWORD ofs		/* Offset of directory table */
 )
 {
-	DWORD csz, clst;
+	DWORD clst;
+//	cppcheck-suppress constVariablePointer
 	FATFS *fs = dp->obj.fs;
 
 
@@ -1736,7 +1740,7 @@ static FRESULT dir_sdi (	/* FR_OK(0):succeeded, !=0:error */
 		dp->sect = fs->dirbase;
 
 	} else {			/* Dynamic table (sub-directory or root-directory on the FAT32/exFAT volume) */
-		csz = (DWORD)fs->csize * SS(fs);	/* Bytes per cluster */
+		DWORD csz = (DWORD)fs->csize * SS(fs);	/* Bytes per cluster */
 		while (ofs >= csz) {				/* Follow cluster chain */
 			clst = get_fat(&dp->obj, clst);				/* Get next cluster */
 			if (clst == 0xFFFFFFFF) return FR_DISK_ERR;	/* Disk error */
@@ -1864,7 +1868,7 @@ static FRESULT dir_alloc (	/* FR_OK(0):succeeded, !=0:error */
 /*-----------------------------------------------------------------------*/
 
 static DWORD ld_clust (	/* Returns the top cluster value of the SFN entry */
-	FATFS* fs,			/* Pointer to the fs object */
+	const FATFS* fs,			/* Pointer to the fs object */
 	const BYTE* dir		/* Pointer to the key entry */
 )
 {
@@ -1881,7 +1885,7 @@ static DWORD ld_clust (	/* Returns the top cluster value of the SFN entry */
 
 #if !FF_FS_READONLY
 static void st_clust (
-	FATFS* fs,	/* Pointer to the fs object */
+	const FATFS* fs,	/* Pointer to the fs object */
 	BYTE* dir,	/* Pointer to the key entry */
 	DWORD cl	/* Value to be set */
 )
@@ -1902,11 +1906,11 @@ static void st_clust (
 
 static int cmp_lfn (		/* 1:matched, 0:not matched */
 	const WCHAR* lfnbuf,	/* Pointer to the LFN to be compared */
-	BYTE* dir				/* Pointer to the LFN entry */
+	const BYTE* dir				/* Pointer to the LFN entry */
 )
 {
 	UINT ni, di;
-	WCHAR pchr, chr;
+	WCHAR pchr;
 
 
 	if (ld_word(dir + LDIR_FstClusLO) != 0) return 0;	/* Check if LDIR_FstClusLO is 0 */
@@ -1914,7 +1918,7 @@ static int cmp_lfn (		/* 1:matched, 0:not matched */
 	ni = (UINT)((dir[LDIR_Ord] & 0x3F) - 1) * 13;	/* Offset in the name to be compared */
 
 	for (pchr = 1, di = 0; di < 13; di++) {	/* Process all characters in the entry */
-		chr = ld_word(dir + LfnOfs[di]);	/* Pick a character from the entry */
+		WCHAR chr = ld_word(dir + LfnOfs[di]);	/* Pick a character from the entry */
 		if (pchr != 0) {
 			if (ni >= FF_MAX_LFN + 1 || ff_wtoupper(chr) != ff_wtoupper(lfnbuf[ni++])) {	/* Compare it with name */
 				return 0;					/* Not matched */
@@ -1942,7 +1946,7 @@ static int pick_lfn (	/* 1:succeeded, 0:buffer overflow or invalid LFN entry */
 )
 {
 	UINT ni, di;
-	WCHAR pchr, chr;
+	WCHAR pchr;
 
 
 	if (ld_word(dir + LDIR_FstClusLO) != 0) return 0;	/* Check if LDIR_FstClusLO is 0 */
@@ -1950,7 +1954,7 @@ static int pick_lfn (	/* 1:succeeded, 0:buffer overflow or invalid LFN entry */
 	ni = (UINT)((dir[LDIR_Ord] & ~LLEF) - 1) * 13;	/* Offset in the name buffer */
 
 	for (pchr = 1, di = 0; di < 13; di++) {		/* Process all characters in the entry */
-		chr = ld_word(dir + LfnOfs[di]);		/* Pick a character from the entry */
+		WCHAR chr = ld_word(dir + LfnOfs[di]);		/* Pick a character from the entry */
 		if (pchr != 0) {
 			if (ni >= FF_MAX_LFN + 1) return 0;	/* Buffer overflow? */
 			lfnbuf[ni++] = pchr = chr;			/* Store it */
@@ -2050,10 +2054,12 @@ static void gen_numname (
 
 	/* Append the suffix to the SFN body */
 	for (j = 0; j < i && dst[j] != ' '; j++) {	/* Find the offset to append */
+#if (FF_CODE_PAGE == 0) || (FF_CODE_PAGE >= 900)
 		if (dbc_1st(dst[j])) {	/* To avoid DBC break up */
 			if (j == i - 1) break;
 			j++;
 		}
+#endif
 	}
 	do {	/* Append the suffix */
 		dst[j++] = (i < 8) ? ns[i++] : ' ';
@@ -3077,7 +3083,7 @@ static FRESULT follow_path (	/* FR_OK(0): successful, !=0: error code */
 {
 	FRESULT res;
 	BYTE ns;
-	FATFS *fs = dp->obj.fs;
+	const FATFS *fs = dp->obj.fs;
 
 
 #if FF_FS_RPATH != 0
@@ -3856,7 +3862,7 @@ FRESULT f_open (
 			}
 		}
 #endif
-
+// cppcheck-suppress duplicateCondition
 		if (res == FR_OK) {
 #if FF_FS_EXFAT
 			if (fs->fs_type == FS_EXFAT) {
@@ -4792,7 +4798,7 @@ FRESULT f_findfirst (
 /*-----------------------------------------------------------------------*/
 /* Get File Status                                                       */
 /*-----------------------------------------------------------------------*/
-
+// cppcheck-suppress unusedFunction
 FRESULT f_stat (
 	const TCHAR* path,	/* Pointer to the file path */
 	FILINFO* fno		/* Pointer to file information to return */
@@ -4827,7 +4833,7 @@ FRESULT f_stat (
 /*-----------------------------------------------------------------------*/
 /* Get Number of Free Clusters                                           */
 /*-----------------------------------------------------------------------*/
-
+// cppcheck-suppress unusedFunction
 FRESULT f_getfree (
 	const TCHAR* path,	/* Logical drive number */
 	DWORD* nclst,		/* Pointer to a variable to return number of free clusters */
@@ -4923,7 +4929,7 @@ FRESULT f_getfree (
 /*-----------------------------------------------------------------------*/
 /* Truncate File                                                         */
 /*-----------------------------------------------------------------------*/
-
+// cppcheck-suppress unusedFunction
 FRESULT f_truncate (
 	FIL* fp		/* Pointer to the file object */
 )
@@ -4973,7 +4979,7 @@ FRESULT f_truncate (
 /*-----------------------------------------------------------------------*/
 /* Delete a File/Directory                                               */
 /*-----------------------------------------------------------------------*/
-
+// cppcheck-suppress unusedFunction
 FRESULT f_unlink (
 	const TCHAR* path		/* Pointer to the file or directory path */
 )
@@ -5132,6 +5138,7 @@ FRESULT f_mkdir (
 					dj.dir[DIR_Attr] = AM_DIR;			/* Attribute */
 					fs->wflag = 1;
 				}
+// cppcheck-suppress knownConditionTrueFalse
 				if (res == FR_OK) {
 					res = sync_fs(fs);
 				}
@@ -5151,7 +5158,7 @@ FRESULT f_mkdir (
 /*-----------------------------------------------------------------------*/
 /* Rename a File/Directory                                               */
 /*-----------------------------------------------------------------------*/
-
+// cppcheck-suppress unusedFunction
 FRESULT f_rename (
 	const TCHAR* path_old,	/* Pointer to the object name to be renamed */
 	const TCHAR* path_new	/* Pointer to the new name */
