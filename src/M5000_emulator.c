@@ -367,7 +367,7 @@ static void music5000_rec_start(void)
 {
     Audio_Index = M5000_REC_BASE + sizeof(wavfmt);
     rec_started = false;
-    ram_max = M5000_REC_BASE + Pi1MHz->JIM_ram_size * 16u*1024u *1024u - M5000_REC_END;
+    ram_max = (M5000_REC_BASE + (size_t)Pi1MHz->JIM_ram_size * 16u*1024u * 1024u - M5000_REC_END) ;
 }
 
 static void music5000_rec_stop(void)

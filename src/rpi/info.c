@@ -94,8 +94,10 @@ static char *get_cmdline(void) {
    if (!read) {
       rpi_mailbox_property_t const *buf = RPI_PropertyGetBuffer( TAG_GET_COMMAND_LINE );
       if (buf) {
-         memcpy(cmdline, buf->data.buffer_8, buf->byte_length);
-         cmdline[buf->byte_length] = 0;
+         size_t n = buf->byte_length;
+         if (n >= sizeof(cmdline)) n = sizeof(cmdline) - 1;
+         memcpy(cmdline, buf->data.buffer_8, n);
+         cmdline[n] = 0;
       } else {
          cmdline[0] = 0;
       }
@@ -119,7 +121,7 @@ NOINIT_SECTION static char ret[PROP_SIZE];
             // skip the equals
             cmdptr += proplen + 1;
             // copy the property value to the return buffer
-            while (*cmdptr != ' ' && *cmdptr != '\0') {
+            while (*cmdptr != ' ' && *cmdptr != '\0' && retptr < ret + sizeof(ret) - 1) {
                *retptr++ = *cmdptr++;
             }
             *retptr = '\0';

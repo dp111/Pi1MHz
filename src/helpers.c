@@ -16,6 +16,19 @@ NOINIT_SECTION uint8_t helper_ram[4*1024];
 
 static uint8_t helper_address;
 
+static size_t strlcpylen(char *dst, const char *src, size_t dstsize)
+{
+    size_t srclen = 0;
+    while (srclen < dstsize - 1 && src[srclen]) {
+        dst[srclen] = src[srclen];
+        srclen++;
+    }
+    dst[srclen] = '\0';
+
+    return srclen;
+}
+
+
 void helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
 {
   // We also hide the help screen at &FFE000
@@ -31,32 +44,32 @@ void helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         sprintf(scsiaddress, "%d", harddisc_emulator_get_address()+1);
 
         size_t size;
-        size = strlcpy(helpscreen, "\r\nPi1MHz "RELEASENAME" , "GITVERSION
+        size = strlcpylen(helpscreen, "\r\nPi1MHz "RELEASENAME" , "GITVERSION
         "\r\nDate : " __DATE__ " " __TIME__
         "\r\nPi : " , helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen, get_info_string(), helpscreen_size);
+        size = strlcpylen(helpscreen, get_info_string(), helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
         size = (size_t)snprintf(helpscreen, helpscreen_size, " %2.1fC", (double) get_temp() );
         helpscreen += size;helpscreen_size -= size;
-        size= strlcpy(helpscreen, "\r\n"
+        size= strlcpylen(helpscreen, "\r\n"
         "\r\n3 ways to start helper functions :"
         "\r\n*FX147,", helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen, dec, helpscreen_size);
+        size = strlcpylen(helpscreen, dec, helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen,",n <ret> *GO FD00 <ret>"
+        size = strlcpylen(helpscreen,",n <ret> *GO FD00 <ret>"
         "\r\n*FX147,", helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen, dec, helpscreen_size);
+        size = strlcpylen(helpscreen, dec, helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen,",n <ret> *GOIO FD00 <ret>"
+        size = strlcpylen(helpscreen,",n <ret> *GOIO FD00 <ret>"
         "\r\nX%=n:CALL&FC", helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen, hex, helpscreen_size);
+        size = strlcpylen(helpscreen, hex, helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
 
-        size = strlcpy(helpscreen,
+        size = strlcpylen(helpscreen,
         " <ret>\r\n\r\nwhere n is one of the following :"
         "\r\n0 # This help screen"
         "\r\n1 # Status N/A"
@@ -69,19 +82,19 @@ void helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         "\r\n*FX147,", helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
 
-        size = strlcpy(helpscreen, scsiaddress, helpscreen_size);
+        size = strlcpylen(helpscreen, scsiaddress, helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen,",n # SCSIJUKE box directory"
+        size = strlcpylen(helpscreen,",n # SCSIJUKE box directory"
             "\r\n*FX147,202,", helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen, M5000address, helpscreen_size);
+        size = strlcpylen(helpscreen, M5000address, helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen,":*FX147,203,1 #Record M5000\r\n"
+        size = strlcpylen(helpscreen,":*FX147,203,1 #Record M5000\r\n"
                     "*FX147,202,", helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = strlcpy(helpscreen, M5000address, helpscreen_size);
+        size = strlcpylen(helpscreen, M5000address, helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        strlcpy(helpscreen,":*FX147,203,0 #End Record\r\n", helpscreen_size);
+        strlcpylen(helpscreen,":*FX147,203,0 #End Record\r\n", helpscreen_size);
 }
 
 static void helpers_bank_select(unsigned int gpio)

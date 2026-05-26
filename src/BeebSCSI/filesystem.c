@@ -1532,6 +1532,7 @@ bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber)
          fsResult  = f_lseek(&fileObjectFAT, blockNumber * 256);
          if (fsResult != FR_OK) {
             if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenFatForRead(): Could not seek to required block number!\r\n"));
+            f_close(&fileObjectFAT);
             return false;
          }
       }

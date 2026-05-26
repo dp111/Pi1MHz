@@ -161,16 +161,17 @@ static inline uint32_t byte_swap(uint32_t in)
 #define SD_ERR_RSVD     11
 
 #define SD_ERR_MASK_CMD_TIMEOUT     (1 << (16 + SD_ERR_CMD_TIMEOUT))
-#define SD_ERR_MASK_CMD_CRC      (1 << (16 + SD_ERR_CMD_CRC))
+#define SD_ERR_MASK_CMD_CRC         (1 << (16 + SD_ERR_CMD_CRC))
 #define SD_ERR_MASK_CMD_END_BIT     (1 << (16 + SD_ERR_CMD_END_BIT))
-#define SD_ERR_MASK_CMD_INDEX    (1 << (16 + SD_ERR_CMD_INDEX))
-#define SD_ERR_MASK_DATA_TIMEOUT (1 << (16 + SD_ERR_CMD_TIMEOUT))
-#define SD_ERR_MASK_DATA_CRC     (1 << (16 + SD_ERR_CMD_CRC))
-#define SD_ERR_MASK_DATA_END_BIT (1 << (16 + SD_ERR_CMD_END_BIT))
-#define SD_ERR_MASK_CURRENT_LIMIT   (1 << (16 + SD_ERR_CMD_CURRENT_LIMIT))
-#define SD_ERR_MASK_AUTO_CMD12      (1 << (16 + SD_ERR_CMD_AUTO_CMD12))
-#define SD_ERR_MASK_ADMA      (1 << (16 + SD_ERR_CMD_ADMA))
-#define SD_ERR_MASK_TUNING    (1 << (16 + SD_ERR_CMD_TUNING))
+#define SD_ERR_MASK_CMD_INDEX       (1 << (16 + SD_ERR_CMD_INDEX))
+
+#define SD_ERR_MASK_DATA_TIMEOUT    (1 << (16 + SD_ERR_DATA_TIMEOUT))
+#define SD_ERR_MASK_DATA_CRC        (1 << (16 + SD_ERR_DATA_CRC))
+#define SD_ERR_MASK_DATA_END_BIT    (1 << (16 + SD_ERR_DATA_END_BIT))
+#define SD_ERR_MASK_CURRENT_LIMIT   (1 << (16 + SD_ERR_CURRENT_LIMIT))
+#define SD_ERR_MASK_AUTO_CMD12      (1 << (16 + SD_ERR_AUTO_CMD12))
+#define SD_ERR_MASK_ADMA            (1 << (16 + SD_ERR_ADMA))
+#define SD_ERR_MASK_TUNING          (1 << (16 + SD_ERR_TUNING))
 
 #define SD_COMMAND_COMPLETE     1
 #define SD_TRANSFER_COMPLETE    (1U << 1)
