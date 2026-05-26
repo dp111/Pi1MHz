@@ -47,6 +47,12 @@ void debugStringInt32_P(const char *addr, uint32_t integerValue, bool newLine);
 
 void debugSectorBufferHex(const uint8_t *buffer, uint16_t numberOfBytes);
 void debugLunDescriptor(const uint8_t *buffer);
+#define FCdebugString_P(...) { if (debugFlag_scsiFcodes) debugString_P(__VA_ARGS__); }
+#define FCdebugString(...) { if (debugFlag_scsiFcodes) debugString(__VA_ARGS__); }
+#define FCdebugStringInt8Hex_P(...) { if (debugFlag_scsiFcodes) debugStringInt8Hex_P(__VA_ARGS__); }
+#define FCdebugStringInt16_P(...) { if (debugFlag_scsiFcodes) debugStringInt16_P(__VA_ARGS__); }
+#define FCdebugStringInt32_P(...) { if (debugFlag_scsiFcodes) debugStringInt32_P(__VA_ARGS__); }
+
 #else
 #define debugString_P(...) {}
 #define debugString(...) {}
@@ -56,6 +62,11 @@ void debugLunDescriptor(const uint8_t *buffer);
 #define debugSectorBufferHex(...) {}
 #define debugLunDescriptor(...) {}
 
+#define FCdebugString_P(...) {}
+#define FCdebugString(...) {}
+#define FCdebugStringInt8Hex_P(...) {}
+#define FCdebugStringInt16_P(...) {}
+#define FCdebugStringInt32_P(...) {}
 #endif
 
 #endif /* DEBUG_H_ */
