@@ -261,6 +261,7 @@ static void mouse_redirect_move_mouse_data(unsigned int gpio)
 
 static void mouse_redirect_move_mouse(unsigned int gpio)
 {
+    Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
     mouse_x = Pi1MHz_MemoryRead(fred_address + 0) | (Pi1MHz_MemoryRead(fred_address+1)<<8);
     mouse_y = Pi1MHz_MemoryRead(fred_address + 2) | (GET_DATA(gpio)<<8);
     LOG_DEBUG("Mouse x %"PRId32" y %"PRId32" \r\n", mouse_x, mouse_y);
@@ -306,7 +307,10 @@ static void mouse_redirect_move_mouse(unsigned int gpio)
 
 static void mouse_redirect_change_pointer(unsigned int gpio)
 {
-    mouse_pointer = GET_DATA(gpio);
+    if (GET_DATA(gpio) == mouse_pointer)
+        return;
+    else
+        mouse_pointer = GET_DATA(gpio);
     LOG_DEBUG("Mouse pointer %u mode %u \r\n", mouse_pointer, fb_get_current_screen_mode()->mode_num);
 
     if (mouse_pointer == 255)
@@ -316,17 +320,21 @@ static void mouse_redirect_change_pointer(unsigned int gpio)
     }
     else
     {
+        screen_plane_enable(MOUSE_PLANE, false);
         switch (fb_get_current_screen_mode()->mode_num)
         {
         case 0: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE0WIDTH, PTRMODEHEIGHT , 0.5, 256, 3, (uint32_t) &mouse_pointer_data[PTRMODE0WIDTH*PTRMODEHEIGHT*mouse_pointer]);
+                mouse_redirect_move_mouse( Pi1MHz_MemoryRead(fred_address + 3) );
                 screen_set_palette( MOUSE_PLANE, 2, 0 );
                 screen_plane_enable(MOUSE_PLANE, true);
                 break;
         case 1: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE1WIDTH, PTRMODEHEIGHT , 1.0, 256, 3, (uint32_t) &mouse_pointer_data[(PTRMODE0WIDTH*PTRMODEHEIGHT*PTRMAX) + PTRMODE1WIDTH*PTRMODEHEIGHT*mouse_pointer]);
+                mouse_redirect_move_mouse( Pi1MHz_MemoryRead(fred_address + 3) );
                 screen_set_palette( MOUSE_PLANE, 2, 0 );
                 screen_plane_enable(MOUSE_PLANE, true);
                 break;
         case 2: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE2WIDTH, PTRMODEHEIGHT , 2.0, 256, 3, (uint32_t) &mouse_pointer_data[(PTRMODE0WIDTH*PTRMODEHEIGHT*PTRMAX) + (PTRMODE1WIDTH*PTRMODEHEIGHT*PTRMAX) + PTRMODE2WIDTH*PTRMODEHEIGHT*mouse_pointer]);
+                mouse_redirect_move_mouse( Pi1MHz_MemoryRead(fred_address + 3) );
                 screen_set_palette( MOUSE_PLANE, 2, 0 );
                 screen_plane_enable(MOUSE_PLANE, true);
                 break;

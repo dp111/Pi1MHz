@@ -504,13 +504,22 @@ static void screen_scale ( uint32_t width, uint32_t height , float par, bool yuv
     if (scale_height)
         scale = (256/(float)scale_height) * rgb_scale ;
     else
-        scale = rgb_scale ;
+        if (yuv_scale <0.1f)
+        {
+            uint32_t h_scale = 2 * h_display / h_corrected;
+            uint32_t v_scale = 2 * v_display / v_corrected;
+
+            rgb_scale = (h_scale < v_scale) ? (float)h_scale/2 : (float)v_scale/2;
+            scale = rgb_scale;
+        }
+        else
+            scale = rgb_scale ;
 
     LOG_DEBUG("scale %f\r\n", (double) scale);
     LOG_DEBUG("rgb_scale %f\r\n", (double) rgb_scale);
 
-    *scaled_width = (((uint32_t)scale * h_corrected) & 0xfff);
-    *scaled_height = (((uint32_t)scale * v_corrected) & 0xfff);
+    *scaled_width = (((uint32_t)(scale * (float)h_corrected)) & 0xfff);
+    *scaled_height = (((uint32_t)(scale * (float)v_corrected)) & 0xfff);
 
     LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", *scaled_width, *scaled_height);
 
