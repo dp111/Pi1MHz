@@ -4,8 +4,6 @@
 #include <inttypes.h>
 #include <math.h>
 
-#include "../Pi1MHz.h"
-
 #include "../scripts/gitversion.h"
 #include "../rpi/info.h"
 #include "../rpi/armtimer.h"
@@ -14,9 +12,8 @@
 #include "../rpi/interrupts.h"
 #include "../rpi/asm-helpers.h"
 #include "../rpi/screen.h"
-//#include "../tube.h"
-//#include "../copro-defs.h"
-//#include "../tube-defs.h"
+
+#include "../Pi1MHz.h"
 #include "screen_modes.h"
 #include "framebuffer.h"
 #include "primitives.h"
@@ -108,7 +105,6 @@ static volatile uint8_t flash_space_time = 25;
 #define VDU_QSIZE 8192
 static volatile unsigned int vdu_wp = 0;
 static volatile unsigned int vdu_rp = 0;
-
 NOINIT_SECTION static uint8_t vdu_queue[VDU_QSIZE];
 
 #define VDU_BUF_LEN 16
@@ -336,6 +332,7 @@ static void init_variables(void) {
    set_default_colours();
    prim_set_bg_plotmode(screen, PM_NORMAL);
    prim_set_fg_plotmode(screen, PM_NORMAL);
+
    // Reset dot pattern and pattern length to defaults
    prim_set_dot_pattern_len(screen, 0);
 
@@ -347,6 +344,7 @@ static void init_variables(void) {
 
    // Cursor mode
    vdu_4(NULL);
+
    // Reset text/graphics areas and home cursors (VDU 26 actions)
    reset_areas();
 
@@ -366,7 +364,6 @@ static void reset_areas(void) {
    // (left, bottom, right, top)
    g_clip_window_t default_graphics_window = {0, 0, (int16_t)((screen->width << screen->xeigfactor) - 1), (int16_t)((screen->height << screen->yeigfactor) - 1)};
    set_graphics_area(screen, &default_graphics_window);
-
    // Home the text cursor
    c_x_pos = t_window.left;
    c_y_pos = t_window.top;
@@ -381,10 +378,7 @@ static void reset_areas(void) {
 
 // 0,0 is the top left
 static void set_text_area(const t_clip_window_t *window) {
-   if (window->left > window->right ||
-       (unsigned int )window->right > (unsigned int ) text_width - 1 ||
-       window->top > window->bottom ||
-       (unsigned int ) window->bottom > (unsigned int ) text_height - 1) {
+   if (window->left > window->right || (unsigned int )window->right > (unsigned int ) text_width - 1 || window->top > window->bottom || (unsigned int ) window->bottom > (unsigned int ) text_height - 1) {
       return;
    }
    // Shallow copy of the struct
@@ -851,8 +845,167 @@ static void vdu23_7(const uint8_t *buf) {
 }
 
 static void vdu23_8(const uint8_t *buf) {
-   // VDU 23,8,t1,t2,x1,y1,x2,x2,0,0 (Clear Block)
-   // TODO
+  // VDU 23,8,t0,t1,x0,y0,x1,y1,0,0 (Clear Block)
+   uint8_t t[2] = { buf[1], buf[2] };
+   uint8_t x[2] = { buf[3], buf[5] };
+   uint8_t y[2] = { buf[4], buf[6] };
+
+#ifdef DEBUG_VDU
+   printf("%d %d %d %d %d %d\r\n", t[0], t[1], x[0], y[0], x[1], y[1]);
+#endif
+   // Cast everything to 8-bit so maths works out correctly
+   uint8_t cx     = (uint8_t) c_x_pos;
+   uint8_t cy     = (uint8_t) c_y_pos;
+   uint8_t left   = t_window.left;
+   uint8_t top    = t_window.top;
+   uint8_t right  = t_window.right;
+   uint8_t bottom = t_window.bottom;
+
+   uint8_t off_right  = (uint8_t)(t_window.right + 1);
+
+#ifdef DEBUG_VDU
+   printf("cx=%d, cy=%d, l=%d, t=%d, r=%d, b=%d\r\n", cx, cy, left, top, right, bottom);
+#endif
+
+   // Calculate start position/end (in absolute characters cells)
+   for (int i = 0; i < 2; i++) {
+      switch (t[i]) {
+      case 0:
+         // top left of window
+         x[i] += left;
+         y[i] += top;
+         break;
+      case 1:
+         // top of cursor column
+         x[i] += cx;
+         y[i] += top;
+         break;
+      case 2:
+         // off top right of window
+         x[i] += off_right;
+         y[i] += top;
+         break;
+      case 4:
+         // left of cursor line
+         x[i] += left;
+         y[i] += cy;
+         break;
+      case 5:
+         // cursor position
+         x[i] += cx;
+         y[i] += cy;
+         break;
+      case 6:
+         // off right of cursor line
+         x[i] += off_right;
+         y[i] += cy;
+         break;
+      case 8:
+         // bottom left of window
+         x[i] += left;
+         y[i] += bottom;
+         break;
+      case 9:
+         // bottom of cursor column
+         x[i] += cx;
+         y[i] += bottom;
+         break;
+      case 10:
+         // off bottom right of window
+         x[i] += off_right;
+         y[i] += bottom;
+         break;
+      }
+
+      if (x[i] < left) {
+         x[i] = left;
+      } else if (x[i] > off_right) {
+         x[i] = off_right;
+      }
+
+      if (y[i] < top) {
+         y[i] = top;
+      } else if (y[i] > bottom) {
+         y[i] = bottom;
+      }
+   }
+
+#ifdef DEBUG_VDU
+   printf("Clear %d,%d to %d,%d inclusive\r\n", x[0], y[0], x[1], y[1]);
+#endif
+
+   // Check again if end point is before the start point
+   if (y[1] < y[0] || (y[1] == y[0] && x[1] < x[0])) {
+      // Nothing to clear
+      return;
+   }
+
+   // Make x[1] inclusive
+   // TODO: There are probably some corner cases if this wraps
+   x[1]--;
+
+   // Disable cursor to avoid artifacts
+   int tmp = disable_cursors();
+
+   t_clip_window_t window;
+
+   // Special case, both start and end on same line
+   if (y[0] == y[1]) {
+
+      window.left   = x[0];
+      window.right  = x[1];
+      window.top    = y[0];
+      window.bottom = y[0];
+      screen->clear(screen, &window, c_bg_col);
+
+   } else {
+
+      // ....................
+      // ....................
+      // ....AAAAAAAAAAAAAAAA
+      // CCCCCCCCCCCCCCCCCCCC
+      // CCCCCCCCCCCCCCCCCCCC
+      // CCCCCCCCCCCCCCCCCCCC
+      // BBBBBBBBBBB.........
+      // ....................
+      // ....................
+
+      // Clear partial top line (A above, if it exists)
+      if (x[0] > left) {
+         window.left   = x[0];
+         window.right  = right;
+         window.top    = y[0];
+         window.bottom = y[0];
+         screen->clear(screen, &window, c_bg_col);
+         // Move start row down a line
+         y[0]++;
+      }
+
+      // Clear partial bottom line (B above, if it exists)
+      if (x[1] < right) {
+         window.left   = left;
+         window.right  = x[1];
+         window.top    = y[1];
+         window.bottom = y[1];
+         screen->clear(screen, &window, c_bg_col);
+         // Move end row back a line
+         y[1]--;
+      }
+
+      // Clear any whole lines in between (C above, if it exists)
+      if (y[1] >= y[0]) {
+         window.left   = left;
+         window.right  = right;
+         window.top    = y[0];
+         window.bottom = y[1];
+         screen->clear(screen, &window, c_bg_col);
+      }
+   }
+
+   // Re-enable cursors
+   if (tmp) {
+      enable_cursors();
+   }
 }
 
 static void vdu23_9(const uint8_t *buf) {
