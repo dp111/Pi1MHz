@@ -7,6 +7,8 @@
 
 #include "Pi1MHz.h"
 
+#define DEBUG_FB
+
 #define BBC_X_RESOLUTION 1280
 #define BBC_Y_RESOLUTION 1024
 
@@ -15,7 +17,7 @@
 
 //define how many bits per pixel
 
-#define BPP4
+#define BPP8
 
 #ifdef BPP32
 #define SCREEN_DEPTH    32
@@ -102,6 +104,8 @@ static int16_t g_y_pos_last1;
 static int16_t g_y_pos_last2;
 
 // 6847 font data
+
+#define cheight 12
 
 static const uint8_t fontdata[] =
 {
@@ -236,6 +240,7 @@ static const uint8_t fontdata[] =
 };
 
 static unsigned char* fb = NULL;
+static unsigned char* fbbase = NULL;
 static uint16_t width, height;
 
 static int bpp, pitch;
@@ -271,13 +276,13 @@ static void fb_putpixel(int x, int y, unsigned int colour) {
       return;
    }
 #ifdef BPP32
-   (uint32_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 4) = colour_table[colour];
+   *(uint32_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 4) = colour_table[colour];
 #endif
 #ifdef BPP16
-   (uint16_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 2) = colour_table[colour];
+   *(uint16_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 2) = colour_table[colour];
 #endif
 #ifdef BPP8
-   (uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 1) = colour_table[colour];
+   *(uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 1) = colour_table[colour];
 #endif
 #ifdef BPP4
    uint8_t *fbptr = (uint8_t *)(fb + (SCREEN_HEIGHT - y - 1) * pitch + x * 1);
@@ -297,7 +302,7 @@ static void memmovequick( void* addr_dst, const void * addr_src, size_t length)
   const uint32_t * src = (const uint32_t *) addr_src;
   uint32_t temp = length;
   length = (length >>2)>>2;
-  if ((length<<4)<(temp)) length +=1; 
+  if ((length<<4)<(temp)) length +=1;
   for ( ; length; length--) {
     uint32_t a = *src++;
     uint32_t b = *src++;
@@ -325,8 +330,25 @@ static void memsetquick( void * ptr, int value, size_t num )
 }
 
 static void fb_scroll() {
-   memmovequick(fb, fb + 12 * pitch, (height - 12) * pitch);
-   memsetquick(fb + (height - 12) * pitch, 0, 12 * pitch);
+
+//RPI_SetGpioHi(TEST_PIN);
+#if 0
+   static uint32_t viewport = 0;
+   viewport++;
+   fb = fb + cheight * pitch;
+   if (viewport>40)
+   {
+      viewport = 0;
+      fb = fbbase;
+   }
+   RPI_PropertySetWord( TAG_SET_VIRTUAL_OFFSET , 0 , cheight*viewport );
+   memsetquick(fbbase + (height - cheight) * pitch, 0, cheight * pitch);
+#else
+   memmovequick(fb, fb + cheight * pitch, (height - cheight) * pitch);
+   memsetquick(fb + (height - cheight) * pitch, 0, cheight * pitch);
+#endif
+
+//RPI_SetGpioLo(TEST_PIN);
 }
 
 static void fb_clear() {
@@ -600,7 +622,7 @@ static void update_palette() {
    }
 
    // Flush the previous swapBuffer() response from the GPU->ARM mailbox
-   
+
    RPI_PropertySetBuffer(TAG_SET_PALETTE, palette_data, j );
 }
 
@@ -621,56 +643,54 @@ static void update_g_cursors(int16_t x, int16_t y) {
 }
 
 static void fb_draw_character(int c, int invert, int eor) {
+#ifdef BPP4
    unsigned char temp=0;
+#endif
+
    // Map the character to a section of the 6847 font data
-   c *= 12;
+   c *= cheight;
+
    if(invert) invert = 0xFF ;
    // Copy the character into the frame buffer
-   for (uint32_t i = 0; i < 12; i++) {
+   for (uint32_t i = 0; i < cheight; i++) {
       int data = fontdata[c + i] ^ invert;
-      unsigned char *fbptr = fb + c_x_pos * bpp + (c_y_pos * 12 + i) * pitch;
+#ifdef BPP32
+      uint32_t *fbptr = fb + c_x_pos * bpp + (c_y_pos * cheight + i) * pitch;
+#endif
+#ifdef BPP16
+      uint16_t *fbptr = fb + c_x_pos * bpp + (c_y_pos * cheight + i) * pitch;
+#endif
+#ifdef BPP8
+      uint8_t *fbptr = fb + c_x_pos * bpp + (c_y_pos * cheight + i) * pitch;
+#endif
+#ifdef BPP4
+      uint8_t *fbptr = fb + c_x_pos * bpp + (c_y_pos * cheight + i) * pitch;
+#endif
+
       uint32_t c_fgol = colour_table[c_fg_col];
       uint32_t c_bgol = colour_table[c_bg_col];
 
       for (uint32_t j = 0; j < 8; j++) {
          int col = (data & 0x80) ? c_fgol : c_bgol;
-#ifdef BPP32
+
          if (eor) {
-            *(uint32_t *)fbptr ^= col;
+            *fbptr++ ^= col;
          } else {
-            *(uint32_t *)fbptr = col;
+            *fbptr++ = col;
          }
-         fbptr += 4;
-#endif
-#ifdef BPP16
-         if (eor) {
-            *(uint16_t *)fbptr ^= col;
-         } else {
-            *(uint16_t *)fbptr = col;
-         }
-         fbptr += 2;
-#endif
-#ifdef BPP8
-         if (eor) {
-            *(uint8_t *)fbptr ^= col;
-         } else {
-            *(uint8_t *)fbptr = col;
-         }
-         fbptr += 1;
-#endif
 
 #ifdef BPP4
          if (eor) {
-            *(uint8_t *)fbptr ^= col; // FIX 4 bit EOR
+            *fbptr ^= col; // FIX 4 bit EOR
          } else {
-        if (j & 1)
-        {
-          *(uint8_t *)(fb + c_x_pos * bpp+(0+(j>>1)) + (c_y_pos * 12 + i) * pitch) = (temp<<4) | col;
-          fbptr += 1;
-        } else
-        {
-          temp = col;
-        }
+           if (j & 1)
+           {
+             *(uint8_t *)(fb + c_x_pos * bpp+(0+(j>>1)) + (c_y_pos * cheight + i) * pitch) = (temp<<4) | col;
+             fbptr += 1;
+           } else
+           {
+             temp = col;
+           }
          }
 #endif
          data <<= 1;
@@ -921,12 +941,23 @@ static void fb_initialize() {
     rpi_mailbox_property_t *mp;
 
     /* Initialise a framebuffer... */
-    RPI_PropertySetWord( TAG_ALLOCATE_BUFFER , 32 , 0 );
-    RPI_PropertySetWord( TAG_SET_PHYSICAL_SIZE , SCREEN_WIDTH , SCREEN_HEIGHT );
-    RPI_PropertySetWord( TAG_SET_VIRTUAL_SIZE , SCREEN_WIDTH , SCREEN_HEIGHT * 2 );
-    RPI_PropertySetWord( TAG_SET_DEPTH, SCREEN_DEPTH, 0 );
+    RPI_PropertyInit();
+    RPI_PropertyAddTag(TAG_ALLOCATE_BUFFER , 64 );
+    RPI_PropertyAddTag(TAG_SET_PHYSICAL_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT );
+    RPI_PropertyAddTag(TAG_SET_VIRTUAL_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT * 2 );
+    RPI_PropertyAddTag(TAG_SET_DEPTH, SCREEN_DEPTH );
+    RPI_PropertyProcess();
 
-    if( ( mp = RPI_PropertyGetWord( TAG_GET_PHYSICAL_SIZE , 0 ) ) )
+    if( ( mp = RPI_PropertyGet( TAG_ALLOCATE_BUFFER  ) ) )
+    {
+        fb = (unsigned char*)(mp->data.buffer_32[0] &0x1FFFFFFF);
+        fbbase = fb;
+#ifdef DEBUG_FB
+        printf( "Framebuffer address: %8.8X\r\n", (unsigned int)fb );
+#endif
+    }
+
+    if( ( mp = RPI_PropertyGetWord( TAG_GET_PHYSICAL_SIZE , 0) ) )
     {
         width = mp->data.buffer_32[0];
         height = mp->data.buffer_32[1];
@@ -935,7 +966,7 @@ static void fb_initialize() {
 #endif
     }
 
-    if( ( mp = RPI_PropertyGetWord( TAG_GET_DEPTH, 0  ) ) )
+    if( ( mp = RPI_PropertyGetWord( TAG_GET_DEPTH , 0) ) )
     {
         bpp = mp->data.buffer_32[0];
 #ifdef DEBUG_FB
@@ -943,19 +974,11 @@ static void fb_initialize() {
 #endif
     }
 
-    if( ( mp = RPI_PropertyGetWord( TAG_GET_PITCH ,  0) ) )
+    if( ( mp = RPI_PropertyGetWord( TAG_GET_PITCH , 0) ) )
     {
         pitch = mp->data.buffer_32[0];
 #ifdef DEBUG_FB
         printf( "Pitch: %d bytes\r\n", pitch );
-#endif
-    }
-
-    if( ( mp = RPI_PropertyGet( TAG_ALLOCATE_BUFFER ) ) )
-    {
-        fb = (unsigned char*)mp->data.buffer_32[0];
-#ifdef DEBUG_FB
-        printf( "Framebuffer address: %8.8X\r\n", (unsigned int)fb );
 #endif
     }
 
@@ -1004,7 +1027,7 @@ static void fb_initialize() {
 
 }
 
-#define QSIZE 8192
+#define QSIZE 4096
 
 volatile int wp = 0;
 static int rp = 0;
