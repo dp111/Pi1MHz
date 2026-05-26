@@ -1651,17 +1651,14 @@ static void fb_initialize(void) {
    RPI_ArmTimerInit();
    RPI_GetIrqController()->Enable_Basic_IRQs = RPI_BASIC_ARM_TIMER_IRQ;
 
-   // Make vsync visible
-   // Enable smi_int which is IRQ 48
-   // https://github.com/raspberrypi/firmware/issues/67
-   RPI_GetIrqController()->Enable_IRQs_2 = RPI_VSYNC_IRQ;
+   screen_set_vsync(true);
 }
 
 #if 0
 void fb_destroy(void) {
 
    // Disable the VSync Interrupt
-   RPI_GetIrqController()->Disable_IRQs_2 = RPI_VSYNC_IRQ;
+    screen_set_vsync(false);
 
    // Disable the timer interrupts (flashing colours, cursor, etc)
    RPI_GetIrqController()->Disable_Basic_IRQs = RPI_BASIC_ARM_TIMER_IRQ;
@@ -1765,12 +1762,10 @@ void fb_process_flash(void)
 }
 
 void fb_process_vdu_queue(void) {
-   _data_memory_barrier();
    if (RPI_GetIrqController()->IRQ_basic_pending & RPI_BASIC_ARM_TIMER_IRQ) {
 
       // Clear the ARM Timer interrupt
       RPI_GetArmTimer()->IRQClear = 0;
-      _data_memory_barrier();
 
       // Service the VDU Queue
       while (vdu_rp != vdu_wp) {

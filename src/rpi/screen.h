@@ -15,5 +15,7 @@ void screen_plane_enable(uint32_t planeno, bool enable);
 void screen_update_palette_entry(uint32_t entry, uint32_t r, uint32_t g, uint32_t b);
 void screen_set_palette(uint32_t planeno, uint32_t palette, uint32_t flags);
 uint32_t screen_get_palette_entry( uint32_t entry );
+void screen_set_vsync(bool enable);
+bool screen_check_vsync(void);
 
 #endif // SCREEN_H

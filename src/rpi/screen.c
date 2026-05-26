@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include "../rpi/asm-helpers.h"
+#include "../rpi/interrupts.h"
 
 /*
     Interfaces to the HVS in the BCM2835
@@ -415,7 +416,6 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     static float yuv_scale = 0.0f;
     static uint32_t offset = 0;
     // Calculate optimal overscan
-    _data_memory_barrier();
     uint32_t h_display = ( RPI_hvs->ctrl1 >> 12 ) & 0xfff;
     uint32_t v_display = ( RPI_hvs->ctrl1       ) & 0xfff;
     LOG_DEBUG("actual Display %"PRId32" x %"PRId32"\r\n", h_display, v_display);
@@ -810,10 +810,10 @@ void screen_plane_enable( uint32_t planeno , bool enable )
 {
     LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
-    _data_memory_barrier();
+
     if (enable)
     {
-        if (~(RPI_hdmi->hotplug))
+        if (~(RPI_hdmi->hotplug)&1)
             rgb->ctrl |= (uint32_t)0x40000000;
     }
     else
@@ -855,7 +855,6 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
 
 uint32_t screen_get_palette_entry( uint32_t entry )
 {
-    _data_memory_barrier();
     return context_memory[(PALETTE_BASE>>2) + entry];
 }
 
@@ -870,7 +869,6 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
     rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
     unsigned int cpsr = _disable_interrupts_cspr();
-    _data_memory_barrier();
     if ( (rgb->ctrl & 0xF) == 0xD)
     {
         uint32_t old_palette = ((rgb->palette & 0x00003fff) - PALETTE_BASE)/0x400;
@@ -895,4 +893,28 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
         }
     }
     _restore_cpsr(cpsr);
+}
+
+void screen_set_vsync( bool enable )
+{
+    if (enable)
+    {
+        RPI_hvs->ctrl |=  (1 <<9) + 1; // end of frame and enable IRQs
+        RPI_GetIrqController()->Enable_IRQs_2 = RPI_HVS_IRQ;
+    }
+    else
+    {
+        RPI_hvs->ctrl &= (uint32_t)~( (1<<9) + 1);
+        RPI_GetIrqController()->Disable_IRQs_2 = RPI_HVS_IRQ;
+    }
+}
+
+bool screen_check_vsync( void )
+{
+    if (RPI_hvs->stat & ( 1 << 16)) // check for end of frame
+    {
+        RPI_hvs->stat = ( 1 << 16); // clear the interrupt
+        return true;
+    }
+    return false;
 }
