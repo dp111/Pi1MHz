@@ -8,7 +8,7 @@ TODO notes in no order
 Check mouse offsets and fix VFS ROM bug
 *MOUSE appears to not always work see if original VFS has this bug and fix
 See if boot time can be improved
-LZ4 decompressor
+LZ4 decompressor speedup memcpy
 YUV frame display
 More Fcode support (including VP4 and VP5 )
 See if power consumption of the Pi can be improved
@@ -19,6 +19,7 @@ composite video out ?
 50Hz HDMI modes
 Check 1MHz timing / add DMBs ( sometimes bad FSMAP)
 Check beeb screen offset vertical appears off by a pixel ?
+Menu system
 
 
 
