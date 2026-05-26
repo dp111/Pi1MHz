@@ -243,6 +243,14 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                      // strip off 0x
                                      ptr+=2;
                                      len-=2;
+                                     if (len%2)
+                                         {
+                                             // odd number of digits error
+                                             LOG_DEBUG("Error odd number of digits in hex string\n\r");
+                                             len++;
+                                             ptr--;
+                                             buffer[ptr]='0'; // pad with a 0
+                                         }
                                     }
                                 // read a string number
                               //  LOG_DEBUG("Number %s\n\r" , &buffer[ptr]);
