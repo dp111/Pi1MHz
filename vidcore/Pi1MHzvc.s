@@ -65,15 +65,16 @@
    di                      # disable interrupts
    or     r3, r4           # add in test pin so that it is still enabled
    mov    r6, GPFSEL0
-   mov    r9, GPCLR0_offset>>2
+
    mov    r13, GPU_ARM_DBELL
    cmp    r2, 0
    bne    use_nOE
+   BEQ    Poll_loop
 
 # poll for nPCFC or nPCFD being low
 .balignw 16,1 # Align with nops
 Poll_loop:
-   st     r5, GPCLR0_offset(r6)  # Turn off debug signal
+   # st     r5, GPCLR0_offset(r6)  # Turn off debug signal
 
 Poll_access_low:
    ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
@@ -82,7 +83,7 @@ Poll_access_low:
    btstne r12, nPCFD
    bne    Poll_access_low
 
-   st     r5, GPSET0_offset(r6)  # Debug pin
+   # st     r5, GPSET0_offset(r6)  # Debug pin
 
    btst   r12, CLK
    beq    waitforclkhigh
@@ -121,7 +122,7 @@ waitforclkhighloop:
    lsl    r8, DATASHIFT
    beq    writecycle
 
-   btst   r8, OUTPUTBIT
+  # btst   r8, OUTPUTBIT
    extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above
 
    st     r8, GPSET0_offset(r6)  # set up databus
@@ -155,10 +156,10 @@ waitforclkloww2:
 #
 # Same as above but with nOE pin ( only for system without the screen enabled
 #
-
 use_nOE:
-
+   mov    r9, GPCLR0_offset>>2
 .balignw 16,1 # Align with nops
+
 nOE_Poll_loop:
    st     r5, GPCLR0_offset(r6)  # Turn off debug signal
 
@@ -235,9 +236,9 @@ nOE_waitforclkloww2:
    mov    r8,r12
    ld     r12, GPLEV0_offset(r6)
    btst   r12, CLK
-   bne    waitforclkloww2
+   bne    nOE_waitforclkloww2
 
    st     r8, (r1)         # post data
    st     r8, (r13)        # ring doorbell
    st     r2, GPSET0_offset(r6)  # set external output enable high
-   b      Poll_loop
+   b      nOE_Poll_loop
