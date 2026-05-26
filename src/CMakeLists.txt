@@ -45,10 +45,12 @@ endif()
 # Add any C compiler flags here. The C flags concerned with processor tuning
 # are in the toolchain files toolchain-arm-none-eabi-bcm2835.cmake, etc.
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2" )
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter -Wredundant-decls -Wnull-dereference -pedantic -Wcast-qual -Wno-maybe-uninitialized -Wno-long-long -Wpacked -Wundef -Wno-shadow  -Wno-missing-braces -Wno-sign-compare -Wno-multichar -Wnarrowing -Woverflow -Wconversion  -Wlogical-not-parentheses -Winit-self -Wpointer-arith  -Wwrite-strings -Wunreachable-code -Wshadow -Wdouble-promotion  -Wformat-truncation -fstack-usage -Wno-deprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter ")
 
-# -Wjump-misses-init
-
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wredundant-decls -Wmaybe-uninitialized -Wlong-long -Wpacked -Wundef -Wshadow  -Wmissing-braces -Wmultichar -Wnarrowing -Woverflow -Wlogical-not-parentheses " )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Winit-self -Wpointer-arith  -Wwrite-strings -Wunreachable-code -Wdouble-promotion  -Wformat-truncation -fstack-usage -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wnull-dereference -pedantic -Wcast-qual -Wjump-misses-init ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wformat=2")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsign-conversion")
 
@@ -60,7 +62,15 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _printf_float" )
 
-#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wswitch-enum")
+# needed to remove warnings in framebuffer.c
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-shadow")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-sign-compare")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-sign-conversion")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-function")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-discarded-qualifiers")
+
+# current failures
+#set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wconversion")
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-overflow=5")
 
 #set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
