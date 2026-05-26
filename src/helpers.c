@@ -61,19 +61,21 @@ void helpers_init( uint8_t instance , int address)
         "\r\n Pi : " , PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, get_info_string(), PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, "\r\n"
-        "\r\n Helper functions"
+        "\r\n Helper functions can be started in one"
+        "\r\n of three ways :"
         "\r\n"
         "\r\n *FX147,", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, dec, PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen,",nn <ret> or X%=nn"
-        "\r\n then either\r\n CALL&FC", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,",n <ret> *GO FD00 <ret>", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,"\r\n *FX147,", PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen, dec, PAGE_SIZE*16);
+        helpscreen += strlcpy(helpscreen,",n <ret> *GOIO FD00 <ret>", PAGE_SIZE*16);
+
+        helpscreen += strlcpy(helpscreen,"\r\n X%=n:CALL&FC", PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen," , *GO FC", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen," , *GOIO FC", PAGE_SIZE*16);
-        helpscreen += strlcpy(helpscreen, hex, PAGE_SIZE*16);
+
         helpscreen += strlcpy(helpscreen,
-        "\r\n\r\n where nn is one of the following"
+        " <ret>\r\n\r\n where n is one of the following"
         "\r\n"
         "\r\n 0 # This help screen"
         "\r\n 1 # Enable screen redirector"
