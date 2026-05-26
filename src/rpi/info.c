@@ -149,6 +149,28 @@ NOINIT_SECTION static clock_info_t result;
    return &result;
 }
 
+/* Fetch the Foundation-style board MAC via mailbox tag 0x10003.
+   The VC4 firmware computes this from the SoC's board-serial OTP
+   fuses during boot, so the result is stable across reboots and
+   matches what Pi-OS would use on the same hardware.  The chip's
+   own OTP MAC (a Cypress-OUI address) is unrelated and is what
+   you would get back from cur_etheraddr if no NVRAM macaddr= line
+   were patched in. */
+bool rpi_get_board_mac(uint8_t mac[6])
+{
+   rpi_mailbox_property_t *buf;
+
+   if (mac == NULL)
+      return false;
+
+   buf = RPI_PropertyGetBuffer(TAG_GET_BOARD_MAC_ADDRESS);
+   if (buf == NULL || buf->byte_length < 6u)
+      return false;
+
+   memcpy(mac, buf->data.buffer_8, 6u);
+   return true;
+}
+
 uint32_t mem_info(int size)
 {
    rpi_mailbox_property_t *buf;

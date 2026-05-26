@@ -61,12 +61,31 @@ static void wifi_dispatch_poll(void)
 
 static bool wifi_preload_images(void)
 {
+   uint8_t mac[6];
+
    if (g_wifi_images_preloaded)
       return true;
 
    wifi_debug_log("loading CYW43 firmware assets");
    if (!cyw43_preload_images())
       return false;
+
+   /* Patch the in-memory brcmfmac NVRAM with the Foundation-style
+      MAC the VC4 firmware computed from this Pi's board-serial OTP,
+      so the chip transmits with the same address Pi-OS would use on
+      the same board.  Failure is non-fatal: the chip then falls back
+      to its factory OTP MAC (a Cypress-OUI address). */
+   if (rpi_get_board_mac(mac)) {
+      if (cyw43_patch_nvram_macaddr(mac)) {
+         wifi_debug_log("NVRAM macaddr patched to %02x:%02x:%02x:%02x:%02x:%02x",
+                        (unsigned)mac[0], (unsigned)mac[1], (unsigned)mac[2],
+                        (unsigned)mac[3], (unsigned)mac[4], (unsigned)mac[5]);
+      } else {
+         wifi_debug_log("NVRAM macaddr patch failed; chip will use its OTP MAC");
+      }
+   } else {
+      wifi_debug_log("mailbox board-MAC unavailable; chip will use its OTP MAC");
+   }
 
    g_wifi_images_preloaded = true;
    wifi_note_firmware_ready();

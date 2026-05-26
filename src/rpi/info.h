@@ -4,6 +4,7 @@
 #define INFO_H
 
 #include "mailbox.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef struct {
@@ -29,5 +30,15 @@ extern void dump_useful_info(void);
 extern char *get_cmdline_prop(const char *prop);
 
 float get_temp(void);
+
+/* Foundation-style WiFi/Ethernet MAC computed by the VC4 firmware
+   from the SoC's board-serial OTP fuses.  Returns true and writes
+   six bytes if the mailbox query succeeds, false otherwise (in
+   which case the caller should fall back to its own scheme).  On
+   the Pi Zero W / Zero 2 W this is the WiFi MAC; on Pi 3B+ / 4 it
+   is the wired Ethernet MAC.  Either way the address is stable
+   across reboots and matches what Pi-OS would use for the same
+   board. */
+extern bool rpi_get_board_mac(uint8_t mac[6]);
 
 #endif
