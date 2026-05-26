@@ -476,7 +476,7 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
    if (fsResult != FR_OK) {
       if (debugFlag_filesystem) {
          debugString_P(PSTR("File system: filesystemCheckLunDirectory(): ERROR: f_opendir returned "));
-         filesystemPrintfserror(fsResult);   
+         filesystemPrintfserror(fsResult);
       }
       return false;
    }
@@ -1566,7 +1566,6 @@ bool filesystemReadNextFatBlock(uint8_t *buffer)
       for (UINT i = byteCounter; i < 256; i++) {
          buffer[i] = 0; // pad the rest of the buffer with zeros
       }
-      return false;
    }
 
    return true;

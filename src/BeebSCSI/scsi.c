@@ -83,10 +83,10 @@
 #define NO_ERROR        (0x00u<<24)
 #define UNIT_NOT_READY  (0x02u<<24)
 #define DRIVE_NOT_READY (0x04u<<24)
-#define BAD_FORMAT      (0x2Cu<<24)
+#define BAD_FORMAT      (0x1Cu<<24)
 #define ILLEGAL_ADDR    (0xA1u<<24)
 #define BAD_ARG         (0x24u<<24)
-#define INTERLEAVE_ERROR (0x2Au<<24)
+#define INTERLEAVE_ERROR (0x1Au<<24)
 
 // REQUEST SENSE command error reporting structure
 static uint32_t requestSenseData[MAX_LUNS];
@@ -819,7 +819,7 @@ static uint8_t scsiCommandReassignBlocks(void)
 	else
 		longlba=8;
 
-	uint8_t Buffer[longlba];
+	uint8_t Buffer[4];
 
 	// Set up the control signals ready for the data out phase
 	scsiInformationTransferPhase(ITPHASE_DATAOUT);
@@ -847,7 +847,7 @@ static uint8_t scsiCommandReassignBlocks(void)
 
 	if (debugFlag_scsiCommands)debugString_P(PSTR("Defective LBA List ="));
 
-	for (uint8_t byteCounter = 0; byteCounter < (list_length/longlba); byteCounter++) {
+	for (uint32_t Counter = 0; Counter < (list_length/longlba); Counter++) {
 		if (longlba==4)
 #ifdef DEBUG
          {
@@ -1220,7 +1220,7 @@ static uint8_t scsiCommandSeek(void)
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Failed
 
       // Set request sense error globals
-      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
+      requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
 
       return SCSI_STATUS;
    }
@@ -1400,7 +1400,6 @@ static uint8_t scsiCommandModeSelect6(void)
 {
    uint8_t byteCounter;
 	uint8_t length = commandDataBlock.data[4];
-   uint8_t Buffer[length];
 
    if (debugFlag_scsiCommands) {
       debugString_C("SCSI Commands: MODESELECT6 command (0x15) received\r\n", DEBUG_SCSI_COMMAND);
@@ -1412,6 +1411,8 @@ static uint8_t scsiCommandModeSelect6(void)
       requestSenseData[commandDataBlock.targetLUN] = BAD_ARG;
       return SCSI_STATUS;
    }
+
+   uint8_t Buffer[length];
 
    // Make sure the target LUN is started
    if (!filesystemCheckLunImage(commandDataBlock.targetLUN)) {
@@ -1658,7 +1659,7 @@ static uint8_t scsiCommandStartStop(void)
    }
 
    // Is this a START or STOP command?
-   if (commandDataBlock.data[4] == 0) {
+   if ((commandDataBlock.data[4] & 0x01) == 0) {
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Stopping LUN\r\n"));
 
       // Make the target LUN unavailable
@@ -1800,11 +1801,19 @@ static uint8_t scsiCommandReadCapacity(void)
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
-
       return SCSI_STATUS;
    }
 
-   uint32_t lunsize = filesystemGetLunTotalSectors(commandDataBlock.targetLUN);
+   // The ACB-4000 manual requires PMI (CDB byte 8) to be 0x00 or 0x01;
+   // any other value must be rejected with a Bad Argument (0x24) error
+   if (commandDataBlock.data[8] != 0x00 && commandDataBlock.data[8] != 0x01) {
+      if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Invalid PMI byte in READ CAPACITY\r\n"));
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+      requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // 0x24 Bad argument
+      return SCSI_STATUS;
+   }
+
+   uint32_t lunsize = filesystemGetLunTotalSectors(commandDataBlock.targetLUN)-1;
 
    // Set up the control signals ready for the data in phase
    scsiInformationTransferPhase(ITPHASE_DATAIN);
@@ -1911,6 +1920,13 @@ static uint8_t scsiCommandSendDiagnostic(void)
       debugStringInt16_P(PSTR("SCSI Commands: Allocation Length = "), commandDataBlock.data[4], true);
    }
 
+   // Set up the control signals ready for the data out phase
+   scsiInformationTransferPhase(ITPHASE_DATAOUT);
+
+   for (int byteCounter = 0; byteCounter < ((commandDataBlock.data[3]<<8) | commandDataBlock.data[4]); byteCounter++) {
+      hostadapterReadByte();
+     }
+
    // Indicate successful command in status and message
    commandDataBlock.status = SCSI_STATUS_OK; // 0x00 = Good
 
@@ -1941,7 +1957,7 @@ static uint8_t scsiWriteFCode(void)
 
       // Set request sense error globals
 
-      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
+      requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
 
       return SCSI_STATUS;
    }
@@ -1995,7 +2011,7 @@ static uint8_t scsiReadFCode(void)
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
 
       // Set request sense error globals
-      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
+      requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
 
       return SCSI_STATUS;
    }

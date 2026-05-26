@@ -1250,7 +1250,7 @@ static int sd_card_init(struct block_device **dev)
     if(FAIL(ret))
     {
           printf("SD: error sending ALL_SEND_CID\r\n");
-          if (!dev) free(ret);
+          if (*dev ==NULL) free(ret);
           return -1;
     }
 
@@ -1259,7 +1259,7 @@ static int sd_card_init(struct block_device **dev)
    if(FAIL(ret))
     {
         printf("SD: error sending SEND_RELATIVE_ADDR\r\n");
-        if (!dev) free(ret);
+        if (*dev ==NULL) free(ret);
         return -1;
     }
 
@@ -1277,28 +1277,28 @@ static int sd_card_init(struct block_device **dev)
    if(crc_error)
    {
       printf("SD: CRC error\r\n");
-      if (!dev) free(ret);
+      if (*dev ==NULL) free(ret);
       return -1;
    }
 
    if(illegal_cmd)
    {
       printf("SD: illegal command\r\n");
-      if (!dev) free(ret);
+      if (*dev ==NULL) free(ret);
       return -1;
    }
 
    if(error)
    {
       printf("SD: generic error\r\n");
-      if (!dev) free(ret);
+      if (*dev ==NULL) free(ret);
       return -1;
    }
 
    if(!ready)
    {
       printf("SD: not ready for data\r\n");
-      if (!dev) free(ret);
+      if (*dev ==NULL) free(ret);
       return -1;
    }
 
@@ -1311,7 +1311,7 @@ static int sd_card_init(struct block_device **dev)
    if(FAIL(ret))
    {
        printf("SD: error sending CMD7\r\n");
-       if (!dev) free(ret);
+       if (*dev ==NULL) free(ret);
        return -1;
    }
 
@@ -1321,7 +1321,7 @@ static int sd_card_init(struct block_device **dev)
    if((status != 3) && (status != 4))
    {
       printf("SD: invalid status (%"PRIu32")\r\n", status);
-      if (!dev) free(ret);
+      if (*dev ==NULL) free(ret);
       return -1;
    }
 
@@ -1332,7 +1332,7 @@ static int sd_card_init(struct block_device **dev)
        if(FAIL(ret))
        {
            printf("SD: error sending SET_BLOCKLEN\r\n");
-           if (!dev) free(ret);
+           if (*dev ==NULL) free(ret);
            return -1;
        }
    }
@@ -1345,7 +1345,7 @@ static int sd_card_init(struct block_device **dev)
    if (!ret->scr)
    {
        printf("SD: error allocating memory for SCR\r\n");
-       if (!dev) free(ret);
+       if (*dev ==NULL) free(ret);
        return -1;
    }
    ret->buf = &ret->scr->scr[0];
@@ -1357,11 +1357,13 @@ static int sd_card_init(struct block_device **dev)
    {
        printf("SD: error sending SEND_SCR\r\n");
        free(ret->scr);
-       if (!dev) free(ret);
+       if (*dev ==NULL) free(ret);
        printf("******************************************\r\n");
        printf("* Reinitializing SD Card Driver          *\r\n");
        printf("******************************************\r\n");
-       return sd_card_init((struct block_device **)&ret);
+       int i = sd_card_init((struct block_device **)&ret);
+       *dev = (struct block_device *)ret;
+       return i;
    }
 
    // Determine card version
@@ -1602,7 +1604,7 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
             break;
         else
         {
-            printf("SD: error sending CMD%ui, ", command);
+            printf("SD: error sending CMD%u, ", command);
             printf("error = %08"PRIu32".  ", edev->last_error);
             retry_count++;
             if(retry_count < max_retries)
