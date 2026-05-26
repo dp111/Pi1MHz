@@ -81,7 +81,7 @@ static font_t font_catalog[] = {
 
 #define NUM_FONTS (sizeof(font_catalog) / sizeof(font_t))
 
-void main() {
+int main() {
 
    int stats[8 * 16];
 
@@ -118,4 +118,5 @@ void main() {
       }
 
    }
+   return 0;
 }
