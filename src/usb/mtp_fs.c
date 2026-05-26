@@ -84,12 +84,10 @@ storage_info_t storage_info = {
 //--------------------------------------------------------------------+
 // MTP FILESYSTEM
 //--------------------------------------------------------------------+
-#define FS_INFO_BUFFER_SIZE 256u
-#define FS_INFO_NAME_OFFSET 127u
 #define FS_NAME_MAX_LEN 127u
-#define FS_SCAN_MAX_ENTRIES 4096u
 #define FS_PATH_MAX 512u
-#define FS_FIXED_DATETIME "20250808T173500.0" // "YYYYMMDDTHHMMSS.s"
+#define FS_FALLBACK_DATETIME "19800101T000000.0" // "YYYYMMDDTHHMMSS.s"
+#define FS_DATETIME_STR_LEN 18u
 #define FS_KERNEL_NOW_FALLBACK_CAPACITY (512u * 1024u)
 
 typedef struct {
@@ -97,6 +95,8 @@ typedef struct {
   uint32_t parent;
   bool is_dir;
   uint32_t size;
+  uint16_t mdate;
+  uint16_t mtime;
   char name[FS_NAME_MAX_LEN + 1];
   char path[FS_PATH_MAX];
 } fs_entry_t;
@@ -106,6 +106,8 @@ typedef struct {
   uint32_t parent;
   bool is_dir;
   uint32_t size;
+  uint16_t mdate;
+  uint16_t mtime;
   char* path;
 } fs_cache_entry_t;
 
@@ -125,7 +127,6 @@ typedef struct {
   FIL file;
   uint32_t transferred;
   uint32_t size;
-  uint8_t* data;
 } read_state_t;
 
 typedef struct {
@@ -134,8 +135,11 @@ typedef struct {
   bool is_kernel_now;
   bool file_open;
   bool size_known;
+  bool host_time_valid;
   uint16_t object_format;
   uint16_t protection_status;
+  uint16_t host_mdate;
+  uint16_t host_mtime;
   uint32_t parent;
   uint16_t association_type;
   char name[FS_NAME_MAX_LEN + 1];
@@ -203,6 +207,33 @@ static read_state_t g_read_state;
 static write_state_t g_write_state;
 static fs_cache_t g_fs_cache;
 
+static fs_op_handler_t fs_find_op_handler(uint32_t op_code) {
+  for (size_t i = 0; i < TU_ARRAY_SIZE(fs_op_handler_dict); i++) {
+    if (fs_op_handler_dict[i].op_code == op_code) {
+      return fs_op_handler_dict[i].handler;
+    }
+  }
+  return NULL;
+}
+
+static int32_t fs_dispatch_op(tud_mtp_cb_data_t* cb_data) {
+  mtp_container_info_t* io_container = &cb_data->io_container;
+  fs_op_handler_t handler = fs_find_op_handler(cb_data->command_container->header.code);
+
+  int32_t resp_code;
+  if (handler == NULL) {
+    resp_code = MTP_RESP_OPERATION_NOT_SUPPORTED;
+  } else {
+    resp_code = handler(cb_data);
+    if (resp_code > MTP_RESP_UNDEFINED) {
+      io_container->header->code = (uint16_t) resp_code;
+      tud_mtp_response_send(io_container);
+    }
+  }
+
+  return resp_code;
+}
+
 //--------------------------------------------------------------------+
 //
 //--------------------------------------------------------------------+
@@ -232,6 +263,86 @@ static void fs_utf16_to_ascii(const uint16_t utf16[], char ascii[], size_t max_c
     ascii[i] = (char) (utf16[i] & 0x00FFu);
   }
   ascii[i] = '\0';
+}
+
+static uint32_t fs_mtp_string_to_ascii(uint8_t* buf, char ascii[], size_t max_chars) {
+  if ((buf == NULL) || (ascii == NULL) || (max_chars == 0u)) {
+    return 0u;
+  }
+
+  const uint8_t nchars = buf[0];
+  const uint32_t consumed = 1u + (2u * nchars);
+
+  if (nchars == 0u) {
+    ascii[0] = '\0';
+    return consumed;
+  }
+
+  const size_t src_chars = (size_t) nchars - 1u; // exclude UTF-16 trailing null
+  const size_t copy_chars = tu_min32((uint32_t)src_chars, (uint32_t)(max_chars - 1u));
+
+  for (size_t i = 0; i < copy_chars; i++) {
+    ascii[i] = (char) buf[1u + (i * 2u)];
+  }
+  ascii[copy_chars] = '\0';
+
+  return consumed;
+}
+
+static void fs_format_mtp_datetime(uint16_t fat_date, uint16_t fat_time, char out[FS_DATETIME_STR_LEN]) {
+  if (out == NULL) {
+    return;
+  }
+
+  if (fat_date == 0u) {
+    strlcpy(out, FS_FALLBACK_DATETIME, FS_DATETIME_STR_LEN);
+    return;
+  }
+
+  const unsigned year = 1980u + ((fat_date >> 9) & 0x7Fu);
+  const unsigned month = (fat_date >> 5) & 0x0Fu;
+  const unsigned day = fat_date & 0x1Fu;
+  const unsigned hour = (fat_time >> 11) & 0x1Fu;
+  const unsigned minute = (fat_time >> 5) & 0x3Fu;
+  const unsigned second = (fat_time & 0x1Fu) * 2u;
+
+  (void) snprintf(out, FS_DATETIME_STR_LEN, "%04u%02u%02uT%02u%02u%02u.0",
+                  year, month, day, hour, minute, second);
+}
+
+static bool fs_parse_mtp_datetime(const char* value, uint16_t* fat_date, uint16_t* fat_time) {
+  if ((value == NULL) || (fat_date == NULL) || (fat_time == NULL)) {
+    return false;
+  }
+
+  if (strlen(value) < 15u || (value[8] != 'T' && value[8] != 't')) {
+    return false;
+  }
+
+  for (size_t i = 0; i < 15u; i++) {
+    if (i == 8u) {
+      continue;
+    }
+    if (!isdigit((unsigned char) value[i])) {
+      return false;
+    }
+  }
+
+  const unsigned year = (unsigned) ((value[0] - '0') * 1000 + (value[1] - '0') * 100 + (value[2] - '0') * 10 + (value[3] - '0'));
+  const unsigned month = (unsigned) ((value[4] - '0') * 10 + (value[5] - '0'));
+  const unsigned day = (unsigned) ((value[6] - '0') * 10 + (value[7] - '0'));
+  const unsigned hour = (unsigned) ((value[9] - '0') * 10 + (value[10] - '0'));
+  const unsigned minute = (unsigned) ((value[11] - '0') * 10 + (value[12] - '0'));
+  const unsigned second = (unsigned) ((value[13] - '0') * 10 + (value[14] - '0'));
+
+  if (year < 1980u || year > 2107u || month < 1u || month > 12u || day < 1u || day > 31u ||
+      hour > 23u || minute > 59u || second > 59u) {
+    return false;
+  }
+
+  *fat_date = (uint16_t) (((year - 1980u) << 9) | (month << 5) | day);
+  *fat_time = (uint16_t) ((hour << 11) | (minute << 5) | (second / 2u));
+  return true;
 }
 
 static bool fs_make_path(const char* base, const char* name, char path[], size_t max_len) {
@@ -295,6 +406,8 @@ static bool fs_walk_tree_recursive(const char* dir_path, uint32_t parent_handle,
     memset(&entry, 0, sizeof(entry));
     entry.is_dir = (fno.fattrib & AM_DIR) != 0;
     entry.size = (uint32_t)fno.fsize;
+    entry.mdate = fno.fdate;
+    entry.mtime = fno.ftime;
     strlcpy(entry.name, fno.fname, sizeof(entry.name));
     if (!fs_make_path(dir_path, fno.fname, entry.path, sizeof(entry.path))) {
       continue;
@@ -363,6 +476,8 @@ static bool fs_cache_add_entry(const fs_entry_t* entry) {
   cache_entry->parent = entry->parent;
   cache_entry->is_dir = entry->is_dir;
   cache_entry->size = entry->size;
+  cache_entry->mdate = entry->mdate;
+  cache_entry->mtime = entry->mtime;
   cache_entry->path = strdup(entry->path);
   if (cache_entry->path == NULL) {
     return false;
@@ -441,6 +556,8 @@ static bool fs_get_entry_by_handle(uint32_t handle, fs_entry_t* out_entry) {
       out_entry->parent = cache_entry->parent;
       out_entry->is_dir = cache_entry->is_dir;
       out_entry->size = cache_entry->size;
+      out_entry->mdate = cache_entry->mdate;
+      out_entry->mtime = cache_entry->mtime;
       strlcpy(out_entry->path, cache_entry->path, sizeof(out_entry->path));
       strlcpy(out_entry->name, fs_basename(cache_entry->path), sizeof(out_entry->name));
       return true;
@@ -520,6 +637,30 @@ static bool fs_get_parent_path(uint32_t parent_handle, char path[FS_PATH_MAX]) {
   return true;
 }
 
+static int32_t fs_rename_entry_to(const fs_entry_t* entry, uint32_t parent_handle, const char* target_name) {
+  char parent_path[FS_PATH_MAX];
+  if (!fs_get_parent_path(parent_handle, parent_path)) {
+    return MTP_RESP_INVALID_PARENT_OBJECT;
+  }
+
+  char dst_path[FS_PATH_MAX];
+  if (!fs_make_path(parent_path, target_name, dst_path, sizeof(dst_path))) {
+    return MTP_RESP_GENERAL_ERROR;
+  }
+
+  if (strcmp(dst_path, entry->path) == 0) {
+    return MTP_RESP_OK;
+  }
+
+  FRESULT res = f_rename(entry->path, dst_path);
+  if (res == FR_OK) {
+    fs_cache_invalidate();
+    return MTP_RESP_OK;
+  }
+
+  return MTP_RESP_GENERAL_ERROR;
+}
+
 static uint16_t fs_guess_object_format(const char* name, uint8_t status) {
   if (status == 2u) {
     return MTP_OBJ_FORMAT_ASSOCIATION;
@@ -554,10 +695,43 @@ static void fs_release_read_state(void) {
   if (g_read_state.file_open) {
     (void) f_close(&g_read_state.file);
   }
-  if (g_read_state.data != NULL) {
-    free(g_read_state.data);
-  }
   memset(&g_read_state, 0, sizeof(g_read_state));
+}
+
+static void fs_read_prepare(uint32_t obj_handle, uint32_t total_size, mtp_container_info_t* io_container) {
+  g_read_state.active = true;
+  g_read_state.handle = obj_handle;
+  g_read_state.transferred = 0;
+  g_read_state.size = total_size;
+  io_container->header->len = sizeof(mtp_container_header_t) + total_size;
+}
+
+static int32_t fs_read_send_next(mtp_container_info_t* io_container, bool send_when_empty) {
+  const uint32_t remain = (g_read_state.transferred < g_read_state.size) ?
+                          (g_read_state.size - g_read_state.transferred) : 0u;
+  const uint32_t xact_len = tu_min32(remain, io_container->payload_bytes);
+
+  if (xact_len > 0u) {
+    UINT bytes_read = 0;
+    if (f_read(&g_read_state.file, io_container->payload, xact_len, &bytes_read) != FR_OK) {
+      fs_release_read_state();
+      return MTP_RESP_GENERAL_ERROR;
+    }
+    if (bytes_read != xact_len) {
+      fs_release_read_state();
+      return MTP_RESP_GENERAL_ERROR;
+    }
+
+    g_read_state.transferred += bytes_read;
+    tud_mtp_data_send(io_container);
+    return 0;
+  }
+
+  if (send_when_empty) {
+    tud_mtp_data_send(io_container);
+  }
+
+  return 0;
 }
 
 static void fs_release_write_state(void) {
@@ -623,54 +797,11 @@ int32_t tud_mtp_request_get_device_status_cb(tud_mtp_request_cb_data_t* cb_data)
 // Bulk Only Protocol
 //--------------------------------------------------------------------+
 int32_t tud_mtp_command_received_cb(tud_mtp_cb_data_t* cb_data) {
-  const mtp_container_command_t* command = cb_data->command_container;
-  mtp_container_info_t* io_container = &cb_data->io_container;
-  fs_op_handler_t handler = NULL;
-  for (size_t i = 0; i < TU_ARRAY_SIZE(fs_op_handler_dict); i++) {
-    if (fs_op_handler_dict[i].op_code == command->header.code) {
-      handler = fs_op_handler_dict[i].handler;
-      break;
-    }
-  }
-
-  int32_t resp_code;
-  if (handler == NULL) {
-    resp_code = MTP_RESP_OPERATION_NOT_SUPPORTED;
-  } else {
-    resp_code = handler(cb_data);
-    if (resp_code > MTP_RESP_UNDEFINED) {
-      // send response if needed
-      io_container->header->code = (uint16_t)resp_code;
-      tud_mtp_response_send(io_container);
-    }
-  }
-
-  return resp_code;
+  return fs_dispatch_op(cb_data);
 }
 
 int32_t tud_mtp_data_xfer_cb(tud_mtp_cb_data_t* cb_data) {
-  const mtp_container_command_t* command = cb_data->command_container;
-  mtp_container_info_t* io_container = &cb_data->io_container;
-  fs_op_handler_t handler = NULL;
-  for (size_t i = 0; i < TU_ARRAY_SIZE(fs_op_handler_dict); i++) {
-    if (fs_op_handler_dict[i].op_code == command->header.code) {
-      handler = fs_op_handler_dict[i].handler;
-      break;
-    }
-  }
-
-  int32_t resp_code;
-  if (handler == NULL) {
-    resp_code = MTP_RESP_OPERATION_NOT_SUPPORTED;
-  } else {
-    resp_code = handler(cb_data);
-    if (resp_code > MTP_RESP_UNDEFINED) {
-      // send response if needed
-      io_container->header->code = (uint16_t)resp_code;
-      tud_mtp_response_send(io_container);
-    }
-  }
-
+  (void) fs_dispatch_op(cb_data);
   return 0;
 }
 
@@ -727,6 +858,17 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
       }
 
       if (!g_write_state.size_known || (g_write_state.transferred == g_write_state.size)) {
+        if (g_write_state.host_time_valid) {
+          FILINFO ut = {0};
+          ut.fdate = g_write_state.host_mdate;
+          ut.ftime = g_write_state.host_mtime;
+          if (f_utime(g_write_state.path, &ut) != FR_OK) {
+            resp->header->code = MTP_RESP_GENERAL_ERROR;
+            fs_release_write_state();
+            break;
+          }
+        }
+
         FILINFO fno;
         if (f_stat(g_write_state.path, &fno) != FR_OK) {
           resp->header->code = MTP_RESP_GENERAL_ERROR;
@@ -946,12 +1088,14 @@ static int32_t fs_get_object_info(tud_mtp_cb_data_t* cb_data) {
     .sequence_number = 0
   };
   uint16_t name_utf16[FS_NAME_MAX_LEN + 1];
+  char mtp_datetime[FS_DATETIME_STR_LEN];
   fs_ascii_to_utf16(entry.name, name_utf16, TU_ARRAY_SIZE(name_utf16));
+  fs_format_mtp_datetime(entry.mdate, entry.mtime, mtp_datetime);
 
   (void) mtp_container_add_raw(io_container, &obj_info_header, sizeof(obj_info_header));
   (void) mtp_container_add_string(io_container, name_utf16);
-  (void) mtp_container_add_cstring(io_container, FS_FIXED_DATETIME);
-  (void) mtp_container_add_cstring(io_container, FS_FIXED_DATETIME);
+  (void) mtp_container_add_cstring(io_container, mtp_datetime);
+  (void) mtp_container_add_cstring(io_container, mtp_datetime);
   (void) mtp_container_add_cstring(io_container, ""); // keywords, not used
   tud_mtp_data_send(io_container);
 
@@ -980,49 +1124,14 @@ static int32_t fs_get_object(tud_mtp_cb_data_t* cb_data) {
     g_read_state.file_open = true;
 
     const uint32_t actual_size = (uint32_t) f_size(&g_read_state.file);
-
-    g_read_state.active = true;
-    g_read_state.handle = obj_handle;
-    g_read_state.transferred = 0;
-    g_read_state.size = actual_size;
-
-    io_container->header->len = sizeof(mtp_container_header_t) + actual_size;
-
-    uint32_t xact_len = tu_min32(actual_size, io_container->payload_bytes);
-    if (xact_len > 0u) {
-      UINT bytes_read = 0;
-      if (f_read(&g_read_state.file, io_container->payload, xact_len, &bytes_read) != FR_OK) {
-        fs_release_read_state();
-        return MTP_RESP_GENERAL_ERROR;
-      }
-      if (bytes_read != xact_len) {
-        fs_release_read_state();
-        return MTP_RESP_GENERAL_ERROR;
-      }
-      g_read_state.transferred = bytes_read;
-    }
-
-    tud_mtp_data_send(io_container);
+    fs_read_prepare(obj_handle, actual_size, io_container);
+    return fs_read_send_next(io_container, true);
   } else if (cb_data->phase == MTP_PHASE_DATA) {
     if (!g_read_state.active || g_read_state.handle != obj_handle) {
       return MTP_RESP_GENERAL_ERROR;
     }
 
-    const uint32_t remain = (g_read_state.transferred < g_read_state.size) ? (g_read_state.size - g_read_state.transferred) : 0u;
-    const uint32_t xact_len = tu_min32(remain, io_container->payload_bytes);
-    if (xact_len > 0) {
-      UINT bytes_read = 0;
-      if (f_read(&g_read_state.file, io_container->payload, xact_len, &bytes_read) != FR_OK) {
-        fs_release_read_state();
-        return MTP_RESP_GENERAL_ERROR;
-      }
-      if (bytes_read != xact_len) {
-        fs_release_read_state();
-        return MTP_RESP_GENERAL_ERROR;
-      }
-      g_read_state.transferred += bytes_read;
-      tud_mtp_data_send(io_container);
-    }
+    return fs_read_send_next(io_container, false);
   } else {
     // nothing to do
   }
@@ -1064,48 +1173,14 @@ static int32_t fs_get_partial_object(tud_mtp_cb_data_t* cb_data) {
       return MTP_RESP_GENERAL_ERROR;
     }
 
-    g_read_state.active = true;
-    g_read_state.handle = obj_handle;
-    g_read_state.transferred = 0;
-    g_read_state.size = req_size;
-
-    io_container->header->len = sizeof(mtp_container_header_t) + req_size;
-
-    uint32_t xact_len = tu_min32(req_size, io_container->payload_bytes);
-    if (xact_len > 0u) {
-      UINT bytes_read = 0;
-      if (f_read(&g_read_state.file, io_container->payload, xact_len, &bytes_read) != FR_OK) {
-        fs_release_read_state();
-        return MTP_RESP_GENERAL_ERROR;
-      }
-      if (bytes_read != xact_len) {
-        fs_release_read_state();
-        return MTP_RESP_GENERAL_ERROR;
-      }
-      g_read_state.transferred = bytes_read;
-    }
-
-    tud_mtp_data_send(io_container);
+    fs_read_prepare(obj_handle, req_size, io_container);
+    return fs_read_send_next(io_container, true);
   } else if (cb_data->phase == MTP_PHASE_DATA) {
     if (!g_read_state.active || g_read_state.handle != obj_handle) {
       return MTP_RESP_GENERAL_ERROR;
     }
 
-    const uint32_t remain = (g_read_state.transferred < g_read_state.size) ? (g_read_state.size - g_read_state.transferred) : 0u;
-    const uint32_t xact_len = tu_min32(remain, io_container->payload_bytes);
-    if (xact_len > 0u) {
-      UINT bytes_read = 0;
-      if (f_read(&g_read_state.file, io_container->payload, xact_len, &bytes_read) != FR_OK) {
-        fs_release_read_state();
-        return MTP_RESP_GENERAL_ERROR;
-      }
-      if (bytes_read != xact_len) {
-        fs_release_read_state();
-        return MTP_RESP_GENERAL_ERROR;
-      }
-      g_read_state.transferred += bytes_read;
-      tud_mtp_data_send(io_container);
-    }
+    return fs_read_send_next(io_container, false);
   }
 
   return 0;
@@ -1153,10 +1228,24 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
       return MTP_RESP_INVALID_PARENT_OBJECT;
     }
 
-    uint16_t name_utf16[FS_NAME_MAX_LEN + 1];
+    char created_ascii[32];
+    char modified_ascii[32];
     uint8_t* buf = io_container->payload + sizeof(mtp_object_info_header_t);
-    (void) mtp_container_get_string(buf, name_utf16);
-    fs_utf16_to_ascii(name_utf16, g_write_state.name, sizeof(g_write_state.name));
+    uint32_t consumed = fs_mtp_string_to_ascii(buf, g_write_state.name, sizeof(g_write_state.name));
+    buf += consumed;
+    consumed = fs_mtp_string_to_ascii(buf, created_ascii, sizeof(created_ascii));
+    buf += consumed;
+    consumed = fs_mtp_string_to_ascii(buf, modified_ascii, sizeof(modified_ascii));
+    buf += consumed;
+
+    g_write_state.host_time_valid = false;
+    if (modified_ascii[0] != '\0') {
+      g_write_state.host_time_valid = fs_parse_mtp_datetime(modified_ascii, &g_write_state.host_mdate, &g_write_state.host_mtime);
+    }
+    if (!g_write_state.host_time_valid && created_ascii[0] != '\0') {
+      g_write_state.host_time_valid = fs_parse_mtp_datetime(created_ascii, &g_write_state.host_mdate, &g_write_state.host_mtime);
+    }
+
     if (g_write_state.name[0] == '\0') {
       return MTP_RESP_GENERAL_ERROR;
     }
@@ -1204,6 +1293,17 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
         fs_release_write_state();
         return MTP_RESP_GENERAL_ERROR;
       }
+
+      if (g_write_state.host_time_valid) {
+        FILINFO ut = {0};
+        ut.fdate = g_write_state.host_mdate;
+        ut.ftime = g_write_state.host_mtime;
+        if (f_utime(g_write_state.path, &ut) != FR_OK) {
+          fs_release_write_state();
+          return MTP_RESP_GENERAL_ERROR;
+        }
+      }
+
       send_obj_parent = g_write_state.parent;
       send_obj_handle = fs_handle_from_path(g_write_state.path);
       fs_cache_invalidate();
@@ -1340,33 +1440,16 @@ static int32_t fs_move_object(tud_mtp_cb_data_t* cb_data) {
     return MTP_RESP_INVALID_OBJECT_HANDLE;
   }
 
-  char parent_path[FS_PATH_MAX];
-  if (!fs_get_parent_path(parent_handle, parent_path)) {
-    return MTP_RESP_INVALID_PARENT_OBJECT;
-  }
-
-  char dst_path[FS_PATH_MAX];
-  if (!fs_make_path(parent_path, entry.name, dst_path, sizeof(dst_path))) {
-    return MTP_RESP_GENERAL_ERROR;
-  }
-
-  if (strcmp(dst_path, entry.path) == 0) {
-    return MTP_RESP_OK;
-  }
-
-  FRESULT res = f_rename(entry.path, dst_path);
-  if (res == FR_OK) {
-    fs_cache_invalidate();
-    return MTP_RESP_OK;
-  }
-  return MTP_RESP_GENERAL_ERROR;
+  return fs_rename_entry_to(&entry, parent_handle, entry.name);
 }
 
 static int32_t fs_get_object_props_supported(tud_mtp_cb_data_t* cb_data) {
   mtp_container_info_t* io_container = &cb_data->io_container;
   const uint16_t props[] = {
     MTP_OBJ_PROP_OBJECT_FILE_NAME,
-    MTP_OBJ_PROP_PARENT_OBJECT
+    MTP_OBJ_PROP_PARENT_OBJECT,
+    MTP_OBJ_PROP_DATE_CREATED,
+    MTP_OBJ_PROP_DATE_MODIFIED
   };
 
   (void) mtp_container_add_auint16(io_container, TU_ARRAY_SIZE(props), props);
@@ -1398,6 +1481,22 @@ static int32_t fs_get_object_prop_value(tud_mtp_cb_data_t* cb_data) {
       (void) mtp_container_add_uint32(io_container, entry.parent);
       tud_mtp_data_send(io_container);
       return 0;
+
+    case MTP_OBJ_PROP_DATE_MODIFIED: {
+      char mtp_datetime[FS_DATETIME_STR_LEN];
+      fs_format_mtp_datetime(entry.mdate, entry.mtime, mtp_datetime);
+      (void) mtp_container_add_cstring(io_container, mtp_datetime);
+      tud_mtp_data_send(io_container);
+      return 0;
+    }
+
+    case MTP_OBJ_PROP_DATE_CREATED: {
+      char mtp_datetime[FS_DATETIME_STR_LEN];
+      fs_format_mtp_datetime(entry.mdate, entry.mtime, mtp_datetime);
+      (void) mtp_container_add_cstring(io_container, mtp_datetime);
+      tud_mtp_data_send(io_container);
+      return 0;
+    }
 
     default:
       return MTP_RESP_OBJECT_PROP_NOT_SUPPORTED;
@@ -1438,26 +1537,7 @@ static int32_t fs_set_object_prop_value(tud_mtp_cb_data_t* cb_data) {
       return MTP_RESP_INVALID_OBJECT_PROP_VALUE;
     }
 
-    char parent_path[FS_PATH_MAX];
-    if (!fs_get_parent_path(entry.parent, parent_path)) {
-      return MTP_RESP_INVALID_PARENT_OBJECT;
-    }
-
-    char dst_path[FS_PATH_MAX];
-    if (!fs_make_path(parent_path, new_name, dst_path, sizeof(dst_path))) {
-      return MTP_RESP_GENERAL_ERROR;
-    }
-
-    if (strcmp(dst_path, entry.path) == 0) {
-      return MTP_RESP_OK;
-    }
-
-    FRESULT res = f_rename(entry.path, dst_path);
-    if (res == FR_OK) {
-      fs_cache_invalidate();
-      return MTP_RESP_OK;
-    }
-    return MTP_RESP_GENERAL_ERROR;
+    return fs_rename_entry_to(&entry, entry.parent, new_name);
   }
 
   if (prop_code == MTP_OBJ_PROP_PARENT_OBJECT) {
@@ -1471,26 +1551,7 @@ static int32_t fs_set_object_prop_value(tud_mtp_cb_data_t* cb_data) {
       new_parent = 0;
     }
 
-    char parent_path[FS_PATH_MAX];
-    if (!fs_get_parent_path(new_parent, parent_path)) {
-      return MTP_RESP_INVALID_PARENT_OBJECT;
-    }
-
-    char dst_path[FS_PATH_MAX];
-    if (!fs_make_path(parent_path, entry.name, dst_path, sizeof(dst_path))) {
-      return MTP_RESP_GENERAL_ERROR;
-    }
-
-    if (strcmp(dst_path, entry.path) == 0) {
-      return MTP_RESP_OK;
-    }
-
-    FRESULT res = f_rename(entry.path, dst_path);
-    if (res == FR_OK) {
-      fs_cache_invalidate();
-      return MTP_RESP_OK;
-    }
-    return MTP_RESP_GENERAL_ERROR;
+    return fs_rename_entry_to(&entry, new_parent, entry.name);
   }
 
   return MTP_RESP_OBJECT_PROP_NOT_SUPPORTED;
