@@ -18,6 +18,11 @@ volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTab
 #define L1_CACHED_MEM_TOP (mem_info(1)>>20)
 #define L2_CACHED_MEM_TOP (mem_info(1)>>20)
 
+#define VC_TOP ((mem_info(1)>>20)+( (RPI_PropertyGetWord(TAG_GET_VC_MEMORY, 0)->data.buffer_32[1])>>20))
+#define PERIPHERAL_END 0x80000000
+
+#define PERIPHERAL_END 0x80000000
+
 static const int bufferable = 1;
 static const int cachable = 1;
 #if (__ARM_ARCH >= 7 )
@@ -204,6 +209,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 
   unsigned int base;
   unsigned int end;
+  unsigned int start;
 
   // TLB 1MB Sector Descriptor format
   // 31..20 Section Base Address
@@ -258,20 +264,25 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
     PageTable[base] = base << 20 | 0x0C0E ;
   }
   end = L2_CACHED_MEM_TOP;
-  for (; base < L2_CACHED_MEM_TOP; base++)
+  for (; base < end; base++)
   {
-     PageTable[base] = base << 20 | 0x10C0E;
+     PageTable[base] = (base << 20) | 0x10C0E;
   }
   for (; base < (PERIPHERAL_BASE>>20); base++)
   {
-     PageTable[base] = base << 20 | 0x11C06 ;
+     PageTable[base] = (base << 20) | 0x11C06 ;
   }
 
-  for (; base < 4096; base++)
+  for (; base < PERIPHERAL_END>>20; base++)
   {
     // shared device, never execute storely ordered
-     PageTable[base] = base << 20 | 0x10C12;
+     PageTable[base] = (base << 20) | 0x10C12;
   }
+  // now create and uncached copy of the memory
+  end = base + VC_TOP;
+  start = 0;
+  for (; base <  end; base++)
+     PageTable[base] = ((start++) << 20 )| 0x0C0E ;
 
   if ( num_4k_pages != 0 )
   {
