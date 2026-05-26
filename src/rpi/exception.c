@@ -1,5 +1,5 @@
 #include "rpi.h"
-#include "aux.h"
+#include "auxuart.h"
 
 /* From here: https://www.raspberrypi.org/forums/viewtopic.php?f=72&t=53862*/
 static void reboot_now(void)
@@ -61,7 +61,7 @@ void dump_info(unsigned int *context, int offset, char *type) {
   /* The stacked LR points one or two words afer the exception address */
   addr = (unsigned int *)((reg[13] & ~3) - offset);
   dump_hex((unsigned int)addr);
-#ifdef HAS_MULTICORE
+#if (__ARM_ARCH >= 7 )
   dump_string(" on core ");
   dump_digit(_get_core());
 #endif

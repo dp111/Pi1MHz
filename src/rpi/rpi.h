@@ -11,13 +11,6 @@
 
 #define LOG_WARN(...) printf(__VA_ARGS__)
 
-/* Pi 2/3 Multicore options */
-#if defined(RPI2) || defined(RPI3)
-
-/* Indicate the platform has multiple cores */
-#define HAS_MULTICORE
-
-#endif
 
 /* Put large arrays in no init section saves bss time */
 
@@ -26,7 +19,7 @@
 #ifndef __ASSEMBLER__
 typedef void (*func_ptr)();
 
-#ifdef HAS_MULTICORE
+#if (__ARM_ARCH >= 7 ) 
 int _get_core(void);
 void start_core(int core, func_ptr func);
 #endif

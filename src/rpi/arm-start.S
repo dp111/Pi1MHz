@@ -37,7 +37,6 @@
 .equ    C0_ABORT_STACK,      STACK_SIZE*5
 .equ    C0_UNDEFINED_STACK,  STACK_SIZE*6
 
-.equ    SCTLR_ENABLE_DATA_CACHE,        0x4
 .equ    SCTLR_ENABLE_BRANCH_PREDICTION, 0x800
 .equ    SCTLR_ENABLE_INSTRUCTION_CACHE, 0x1000
 
@@ -117,8 +116,7 @@ _reset_:
     mov     r4, #0x40000000
     vmsr    fpexc, r4
 
-#ifdef HAS_MULTICORE
-
+#if (__ARM_ARCH >= 7 )
     // enter in HYP mode and need to force a switch to SVC mode
     //
     // The logs show:
