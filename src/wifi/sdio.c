@@ -4856,11 +4856,16 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       return false;
    }
 
-   total_length = (uint16_t)(18u + frame_length);
-   if (total_length > (uint16_t)sizeof(tx_frame)) {
+   /* Reject oversize frames BEFORE the (uint16_t)(18u + frame_length) cast,
+      which would otherwise wrap a 65519+ payload back into a small
+      total_length, slip past the size check below, and overrun the
+      1.6 KB tx_frame buffer in the memcpy that follows. */
+   if (frame_length > (uint16_t)(sizeof(tx_frame) - 18u)) {
       sdio_runtime_set_error("Ethernet frame exceeds SDIO transmit buffer");
       return false;
    }
+
+   total_length = (uint16_t)(18u + frame_length);
 
    memset(tx_frame, 0, sizeof(tx_frame));
    sdio_store_u16_le(&tx_frame[0], total_length);
