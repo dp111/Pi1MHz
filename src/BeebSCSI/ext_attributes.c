@@ -21,8 +21,6 @@
 // Token written to start of ext attributes files
 #define PREFS_TOKEN "# Drive Extended attributes - keep this line"
 
-char extAttributes_fileName[255];		// path and filename for .ext filename
-
 // INQUIRY Command default data
 static uint8_t DefaultInquiryData[] =
 {
@@ -163,6 +161,7 @@ uint16_t read_attribute(const char *token, char *buf) {
 	FRESULT fsResult;
 
 	char msg[256];
+	char extAttributes_fileName[255];		// path and filename for .ext filename
 
 	char left[MAX_PREFS_TOKEN_LEN];
 	char right[MAX_PREFS_VALUE_LEN];
@@ -220,7 +219,7 @@ uint16_t read_attribute(const char *token, char *buf) {
 			// get the token and the value from the line of data
 			token_length = (size_t)(dlim_ptr - fbuf);
 
-			if (token_length > MAX_PREFS_TOKEN_LEN){
+			if (token_length >= MAX_PREFS_TOKEN_LEN){
 				if (debugFlag_extended_attributes) debugString_C(PSTR("ext_attributes: read_attribute: token > MAX_TOKEN_LEN chars\r\n"), DEBUG_ERROR);
 				f_close(&fileObject);
 				return 0;

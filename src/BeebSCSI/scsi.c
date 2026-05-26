@@ -1397,7 +1397,6 @@ static uint8_t scsiCommandSeek(void)
 // like a physical SCSI drive) it's good to include it anyway.
 static uint8_t scsiCommandTranslate(void)
 {
-   uint8_t Buffer[22];
    uint32_t cylinderNumber;
    uint32_t headNumber;
    uint32_t bytesFromIndex;
@@ -1484,7 +1483,8 @@ static uint8_t scsiCommandTranslate(void)
    // Note: The 'bytes from index' is the number of bytes from the start of the track (to the defect)
 
    // Read the geometry description for the LUN into the sector buffer
-   if (!filesystemReadLunDescriptor(commandDataBlock.targetLUN, Buffer)) {
+
+   if (!filesystemReadLunDescriptor(commandDataBlock.targetLUN)) {
       // Unable to read drive descriptor! Exit with error status
       commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
 
@@ -1498,7 +1498,7 @@ static uint8_t scsiCommandTranslate(void)
    }
 
    // Get the number of heads per cylinder (HPC)
-   headsPerCylinder = (uint32_t)Buffer[15]; // Data head count
+   headsPerCylinder = filesystemGetheadspercylinder(commandDataBlock.targetLUN); // Data head count
 	uint32_t sectorsperTrack = filesystemGetLunSPTSize(commandDataBlock.targetLUN);
 
    // Convert LBA to CHS
@@ -1605,16 +1605,26 @@ static uint8_t scsiCommandModeSelect6(void)
 		// Parse the data
 		// get rid of any leading zeros and find the first page
 		uint8_t start = 0;
-		while ((Buffer[start]) == 0) {
+		while ((start<length) && (Buffer[start]) == 0) {
 			start++;
 		}
+      if ((start+3)>=length) {
+         // No data found
+         if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT Bad Argument error\r\n"), DEBUG_ERROR);
 
-		uint8_t PageLength =  Buffer[start+1];
-		uint8_t *dataptr;
+         // Indicate unsuccessful command in status and message
+         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+
+         // Set request sense error globals
+         requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
+         return SCSI_STATUS;
+      }
+
+		uint8_t PageLength = Buffer[start+1];
 
 		while (((uint8_t)sizeof(Buffer) >= (uint8_t)(PageLength + start + 2))) {
 			// set data pointer to the start of the block of data starting with the page
-			dataptr = Buffer + start;
+			uint8_t * dataptr = Buffer + start;
 			if ((replaceModePage(commandDataBlock.targetLUN, dataptr)) !=0) {
 		      if (debugFlag_scsiCommands)debugString_C(PSTR("SCSI Commands: Writing MODE SELECT Bad Argument error\r\n"), DEBUG_ERROR);
 
@@ -1637,8 +1647,6 @@ static uint8_t scsiCommandModeSelect6(void)
 
    }
 
-
-/*
 	// Output the geometry to debug
 	if (length == 22) {
 		if (debugFlag_scsiCommands) debugLunDescriptor(Buffer);
@@ -1660,8 +1668,6 @@ static uint8_t scsiCommandModeSelect6(void)
 	commandDataBlock.status = 0x00; // 0x00 = Good
 
 	}
-*/
-
 	return SCSI_STATUS;
 }
 

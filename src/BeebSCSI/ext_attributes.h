@@ -23,10 +23,6 @@ uint8_t setModePage(uint8_t *Data, uint8_t *retString);
 bool StartsWith(const char *a, const char *b);
 void ToHexString(char *hex, uint8_t *string, size_t len);
 void FromHexString(char *hex, char *string, size_t length);
-bool ValidHexString(char *buf);
-
-
-// Globals to track extended attributes
-extern char extAttributes_fileName[255];
+bool ValidHexString(char *HexString);
 
 #endif /* EXT_ATTRIBUTES_H_ */
