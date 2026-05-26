@@ -97,17 +97,17 @@ static const parserkey scsiattributes[] = {
 // File system state structure
 NOINIT_SECTION static struct filesystemStateStruct
 {
-   FATFS fsObject;         // FAT FS file system object
-   FIL fileObject[MAX_LUNS];         // FAT FS file objects
+   FATFS fsObject;                     // FAT FS file system object
+   FIL fileObject[MAX_LUNS];           // FAT FS file objects
    DWORD clmt[MAX_LUNS][SZ_TBL];
 
-   bool fsMountState;      // File system mount state (true = mounted, false = dismounted)
+   bool fsMountState;                  // File system mount state (true = mounted, false = dismounted)
 
    uint8_t lunDirectory;               // Current LUN directory ID
-   uint8_t lunDirectoryVFS;   // Current LUN directory ID for VFS
+   uint8_t lunDirectoryVFS;            // Current LUN directory ID for VFS
    bool fsLunStatus[MAX_LUNS];         // LUN image availability flags for the currently selected LUN directory (true = started, false = stopped)
 	struct HDGeometry fsLunGeometry[MAX_LUNS];   // Keep the geometry details for each LUN
-   parserkeyvalue keyvalues[MAX_LUNS][NUM_KEYS];
+   parserkeyvalue keyvalues[MAX_LUNS][NUM_KEYS];   // keys from .ext file for each LUN
 } filesystemState;
 
 NOINIT_SECTION static char fileName[255];       // String for storing LFN filename
@@ -1382,7 +1382,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
 
 // Write a file
 
-uint32_t filesystemWriteFile(const char * filename, uint8_t *address, uint32_t max_size)
+uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint32_t max_size)
 {
    UINT byteCounter;
    FRESULT fsResult;

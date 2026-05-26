@@ -97,7 +97,7 @@ static struct commandDataBlockStruct
 {
    uint8_t data[10];
    uint8_t targetLUN;
-
+   uint8_t originalLUN;
    uint8_t status;
 } commandDataBlock;
 
@@ -142,6 +142,8 @@ static uint8_t scsiBeebScsiSelect(void);
 static uint8_t scsiBeebScsiFatPath(void);
 static uint8_t scsiBeebScsiFatInfo(void);
 static uint8_t scsiBeebScsiFatRead(void);
+
+static uint32_t scsiTransformLUNid(uint8_t LUN);
 
 // Initialise the SCSI emulation (called on a cold-start of the AVR)
 void scsiInitialise(void)
@@ -421,9 +423,11 @@ uint8_t scsiEmulationCommand(void)
    if (debugFlag_scsiCommands) debugString_P(PSTR("\r\n"));
 
 //   // if the format Drive[1,2,4,8].0 was used, convert to to Drive 1.[0 1 2 3]
-//	commandDataBlock.data[1] = TransformLUN(commandDataBlock.data[1]);
+
+   uint32_t newLUN = scsiTransformLUNid(commandDataBlock.data[1]);
+	commandDataBlock.data[1] = (uint8_t)(newLUN & 0xFF);
    // Decode the target LUN
-   commandDataBlock.targetLUN = ((commandDataBlock.data[1] & 0xE0) >> 5) + scsiHostID;
+   commandDataBlock.targetLUN = ((newLUN & 0x1E0) >> 5);
 
    // Transition to command based on received opCode (group 0 commands)
    if (group == 0) {
@@ -489,7 +493,7 @@ uint8_t scsiEmulationCommand(void)
 
 	// prevent the requester from potentially hanging if it sends an unknown command
 	// Indicate unsuccessful command in status and message
-	commandDataBlock.status = (commandDataBlock.targetLUN << 5) | 0x02;      // 0x02 = Bad
+	commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02;      // 0x02 = Bad
    return SCSI_STATUS;
 
 }
@@ -548,7 +552,7 @@ uint8_t scsiCommandTestUnitReady(void)
    } else {
       // Indicate unsuccessful command in status and message
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Failed
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Failed
 
       // Set request sense error globals
 
@@ -582,7 +586,7 @@ static uint8_t scsiCommandRezeroUnit(void)
    } else {
       // Indicate unsuccessful command in status and message
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Failed
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Failed
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
 
@@ -682,7 +686,7 @@ static uint8_t scsiCommandFormat(void)
       if (!filesystemCreateLunImage(commandDataBlock.targetLUN)) {
          // Could not create LUN image... return with error status
          if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: ERROR: Could not create new LUN image for LUN #"), commandDataBlock.targetLUN, true);
-         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
          // Set request sense error globals
          requestSenseData[commandDataBlock.targetLUN] = BAD_FORMAT; // Unformatted or Bad format
@@ -707,7 +711,7 @@ static uint8_t scsiCommandFormat(void)
    //if (interleave > 32)
    //{
    //// Indicate unsuccessful command in status and message
-   //commandDataBlock.status = (commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+   //commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
    //
    //// Set request sense error globals
    //requestSenseData[commandDataBlock.targetLUN] = INTERLEAVE_ERROR; // Interleave Error
@@ -763,7 +767,7 @@ static uint8_t scsiCommandFormat(void)
       // Formatting failed...
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Format failed\r\n"));
 
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = BAD_FORMAT; // 1C Bad format
@@ -937,7 +941,7 @@ static uint8_t scsiCommandRead6(void)
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
          // Could not start LUN... return with error status
          if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Could not auto-start LUN #"), commandDataBlock.targetLUN, true);
-         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
          // Set request sense error globals
          requestSenseData[commandDataBlock.targetLUN] = BAD_FORMAT; // 1C Bad format
@@ -965,13 +969,13 @@ static uint8_t scsiCommandRead6(void)
    if (debugFlag_scsiCommands) {
       debugStringInt32_P(PSTR(", LBA = "), logicalBlockAddress, false);
       debugStringInt32_P(PSTR(", Blocks = "), numberOfBlocks, true);
-#if 0
+
 		if ((commandDataBlock.originalLUN & 0x1F) != (commandDataBlock.data[1] & 0x1F)){
 			char msg[256];
 			sprintf(msg, "CommandRead6: Original MSB = %d != New MSB = %d\r\n", commandDataBlock.originalLUN & 0x1F, commandDataBlock.data[1] & 0x1F);
 			debugString_C(PSTR(msg), DEBUG_ERROR);
 			}
-#endif
+
    }
 
    // Set up the control signals ready for the data in phase
@@ -981,7 +985,7 @@ static uint8_t scsiCommandRead6(void)
    if(!filesystemOpenLunForRead(commandDataBlock.targetLUN, logicalBlockAddress, numberOfBlocks)) {
       // Opening the LUN image failed... try to recover with a little grace...
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Open LUN image failed!\r\n"));
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -1000,7 +1004,7 @@ static uint8_t scsiCommandRead6(void)
       if(!filesystemReadNextSector(commandDataBlock.targetLUN, &sectorPtr)) {
          // Reading from the LUN image failed... try to recover with a little grace...
          if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Could not read next sector from LUN image!\r\n"));
-         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
          // Set request sense error globals
          requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -1090,7 +1094,7 @@ static uint8_t scsiCommandWrite6(void)
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
          // Could not start LUN... return with error status
          if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Could not auto-start LUN #"), commandDataBlock.targetLUN, true);
-         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
          // Set request sense error globals
          requestSenseData[commandDataBlock.targetLUN] = BAD_FORMAT; // 1C Bad format
@@ -1122,7 +1126,7 @@ static uint8_t scsiCommandWrite6(void)
    if(!filesystemOpenLunForWrite(commandDataBlock.targetLUN, logicalBlockAddress, numberOfBlocks)) {
       // Opening the LUN image failed... try to recover with a little grace...
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Command: ERROR: Could not open LUN image for writing!\r\n"));
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -1156,7 +1160,7 @@ static uint8_t scsiCommandWrite6(void)
       if(!filesystemWriteNextSector(commandDataBlock.targetLUN, Buffer)) {
          // Writing to the LUN image failed... try to recover with a little grace...
          if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Writing to LUN image failed!\r\n"));
-         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
          // Set request sense error globals
 
@@ -1211,7 +1215,7 @@ static uint8_t scsiCommandSeek(void)
    } else {
       // Indicate unsuccessful command in status and message
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Failed
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Failed
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
@@ -1251,7 +1255,7 @@ static uint8_t scsiCommandTranslate(void)
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -1272,7 +1276,7 @@ static uint8_t scsiCommandTranslate(void)
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
          // Could not start LUN... return with error status
          if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Could not auto-start LUN #"), commandDataBlock.targetLUN, true);
-         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
          // Set request sense error globals
          requestSenseData[commandDataBlock.targetLUN] = BAD_FORMAT; // 1C Bad format
@@ -1325,7 +1329,7 @@ static uint8_t scsiCommandTranslate(void)
 
    if (!filesystemReadLunDescriptor(commandDataBlock.targetLUN)) {
       // Unable to read drive descriptor! Exit with error status
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -1408,7 +1412,7 @@ static uint8_t scsiCommandModeSelect6(void)
       if(!filesystemCreateLunDescriptor(commandDataBlock.targetLUN)) {
          // LUN descriptor is unavailable and cannot be created... return with error status
          if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Create descriptor failed LUN #"), commandDataBlock.targetLUN, true);
-         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
          // Set request sense error globals
 
@@ -1452,7 +1456,7 @@ static uint8_t scsiCommandModeSelect6(void)
          if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT Bad Argument error\r\n"), DEBUG_ERROR);
 
          // Indicate unsuccessful command in status and message
-         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
          // Set request sense error globals
          requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
@@ -1468,7 +1472,7 @@ static uint8_t scsiCommandModeSelect6(void)
 		      if (debugFlag_scsiCommands)debugString_C(PSTR("SCSI Commands: Writing MODE SELECT Bad Argument error\r\n"), DEBUG_ERROR);
 
 				// Indicate unsuccessful command in status and message
-				commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+				commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
 				// Set request sense error globals
 				requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
@@ -1494,7 +1498,7 @@ static uint8_t scsiCommandModeSelect6(void)
 		if(!filesystemWriteLunDescriptor(commandDataBlock.targetLUN, Buffer)) {
 			// Write failed! - Indicate unsuccessful command in status and message
 			if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Writing LUN descriptor failed!\r\n"));
-			commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Error
+			commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Error
 
 			// Set request sense error globals
 			requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -1534,7 +1538,7 @@ static uint8_t scsiCommandModeSense6(void)
 
    if (!filesystemReadLunDescriptor(commandDataBlock.targetLUN)) {
       // Unable to read drive descriptor! Exit with error status
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -1554,7 +1558,7 @@ static uint8_t scsiCommandModeSense6(void)
 
    if ( (headerptr == NULL) || (LBAptr == NULL) || (modeptr == NULL)) {
       // Unable to read drive descriptor! Exit with error status
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -1640,7 +1644,7 @@ static uint8_t scsiCommandStartStop(void)
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
          // Could not start LUN... return with error status
          if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Could not start LUN #"), commandDataBlock.targetLUN, true);
-         commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+         commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
          // Set request sense error globals
          requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
@@ -1689,7 +1693,7 @@ static uint8_t scsiCommandVerify(void)
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       return SCSI_STATUS;
    }
@@ -1724,7 +1728,7 @@ static uint8_t scsiCommandVerify(void)
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Requested LBA is out-of-range for the LUN size - Verify failed\r\n"));
 
       // Set error status
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = ILLEGAL_ADDR | (logicalBlockAddress & 0x00FFFFFF); // Illegal block address
@@ -1769,7 +1773,7 @@ static uint8_t scsiCommandReadCapacity(void)
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       return SCSI_STATUS;
    }
@@ -1815,7 +1819,7 @@ static uint8_t scsiCommandReadDefectData10(void)
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       return SCSI_STATUS;
    }
@@ -1865,7 +1869,7 @@ static uint8_t scsiCommandInquiry(void)
 		if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: scsiCommandInquiry: Error reading Inquiry data\r\n"), DEBUG_ERROR);
 
 		// Indicate unsuccessful command in status and message
-		commandDataBlock.status = (commandDataBlock.targetLUN << 5) | 0x02;      // 0x02 = Bad
+		commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02;      // 0x02 = Bad
 	}
 
    return SCSI_STATUS;
@@ -1907,7 +1911,7 @@ static uint8_t scsiWriteFCode(void)
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
 
@@ -1962,7 +1966,7 @@ static uint8_t scsiReadFCode(void)
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
@@ -2020,7 +2024,7 @@ static uint8_t scsiBeebScsiSense(void)
    if (commandDataBlock.data[4] != 8) {
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Bad Argument error\r\n"));
       // Indicate unsuccessful command in status and message
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
@@ -2107,7 +2111,7 @@ static uint8_t scsiBeebScsiSelect(void)
    if (commandDataBlock.data[4] != 8) {
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Bad Argument error\r\n"));
       // Indicate unsuccessful command in status and message
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
@@ -2140,7 +2144,7 @@ static uint8_t scsiBeebScsiSelect(void)
    } else {
       // One or more LUNs are started... cannot perform jukeboxing
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Error - cannot jukebox if LUNs are started\r\n"));
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
@@ -2242,7 +2246,7 @@ static uint8_t scsiBeebScsiFatInfo(void)
    if(!filesystemGetFatFileInfo(fatFileId, Buffer)) {
       // Reading from the FAT image failed... try to recover with a little grace...
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Could not read FAT file information!\r\n"));
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -2325,7 +2329,7 @@ static uint8_t scsiBeebScsiFatRead(void)
    if(!filesystemOpenFatForRead(fatFileId, blockOffset)) {
       // Reading from the FAT image failed... try to recover with a little grace...
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: ERROR: Could not read next block from FAT image!\r\n"));
-      commandDataBlock.status = (uint8_t)(commandDataBlock.targetLUN << 5) | 0x02; // 0x02 = Bad
+      commandDataBlock.status = (commandDataBlock.originalLUN & 0xE0) | 0x02; // 0x02 = Bad
 
       // Set request sense error globals
       requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
@@ -2414,21 +2418,16 @@ static uint8_t scsiCommandCertify(void)
 // BeebSCSI works on the numbering system for
 // the BBC and Master ADFS
 //
-uint8_t TransformLUN(uint8_t LUN)
+static uint32_t scsiTransformLUNid(uint8_t LUN)
 {
-// this isn't need for beebscsi
-// if this is re instated then though to VFS is required
-// as host id 2 is use
-#if 0
 	// Need to store the original LUN the controller is using
 	// for any response messages
 	commandDataBlock.originalLUN = LUN;
 
-
 	// ensure the lower bits b0-b4 are kept as they contain other information
 
 	// Host Identifier holds the drive selected 1, 2, 4, 8 (0, 1, 2, 3)
-	switch (HostIdentifier) {
+	switch (scsiHostID) {
 	case 1:			// Drive 0 is selected
 		break;
 	case 2:			// Drive 1 is selected
@@ -2440,9 +2439,12 @@ uint8_t TransformLUN(uint8_t LUN)
 	case 8:			// Drive 3 is selected
 		return (96 | (LUN & 0x1F));  // Set LUN 3
 		break;
+   case 16:	      // VFS host id
+      return (LUN | 256);          // Set LUN = LUN + 8
+         break;
 	default:
 		break;
 	}
-#endif
+
 	return (LUN);
 }
