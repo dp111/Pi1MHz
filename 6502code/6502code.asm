@@ -202,11 +202,16 @@ ORG &FD00
 ; oswrch redirector
 {
 ORG &FD00
+  JMP setupredirectorwithmessage ; default entry point for message redirector
 
+  JSR setupredirector       ; &FD03 Entry point for non message redirector and no mode change
+  JMP oswtchredirectexit
+
+.setupredirector
   LDA &20F
   CMP #(newoswrch DIV 256)
   BNE redirectnextbyte
-  JMP oswtchredirectexit
+  RTS
 
 .redirectnextbyte
   STA newoswrch+4+1
@@ -218,6 +223,10 @@ ORG &FD00
   STA &20E
   LDA #(newoswrch DIV 256)
   STA &20F
+  RTS
+
+.setupredirectorwithmessage
+  JSR setupredirector
 
   LDA #&75:JSR OSBYTE   :\ Read VDU status
   TXA:AND #&10:CMP #&10 :\ Test shadow flag in bit 4
@@ -234,6 +243,7 @@ ORG &FD00
   PRTSTRING " Screen Redirector enabled."
   JSR OSNEWL
   JSR OSNEWL
+
 .oswtchredirectexit
   PAGERTS
 
@@ -264,7 +274,7 @@ ORG &FD00
     ENDBLOCK &500
 }
 ; Page 6
-; VFS171
+; VFS
 {
 ORG &FD00
     LOADFILETOSWR "ROMS/VFS.rom"
