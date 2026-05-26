@@ -1337,7 +1337,7 @@ static void draw_h_line_with_sector_segment_filter(screen_mode_t *sr, int xc, in
 
 static void draw_arc_or_sector_or_segment(screen_mode_t *screen, int xc, int yc, int xradius, int yradius, int start_dx, int start_dy, int end_dx, int end_dy, uint32_t colour, uint32_t action, int plot_graphop_code) {
    // For details of the arc, sector, segment plot codes, see e.g. http://www.riscos.com/support/developer ... phics.html
-   // Original Graphics ROM sector, arc and segment 6502 routines are dissasembled here: https://tobylobster.github.io/GXR-pages/gxr/S-s16.html
+   // Original Graphics ROM sector, arc and segment 6502 routines are disassembled here: https://tobylobster.github.io/GXR-pages/gxr/S-s16.html
    // This code is inspired by that logic, i.e. considering all pixels in a solid circle, but only plotting those pixels on the
    // correct side of the construction vectors; but the implementation differs probably.
    // (This implementation by M.Fairbank, July 2025)
