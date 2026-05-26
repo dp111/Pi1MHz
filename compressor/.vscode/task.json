@@ -1,0 +1,27 @@
+{
+    "type": "setting",
+    "settings": {
+      "tasks.json": {
+        "version": "2.0.0",
+        "tasks": [
+          {
+            "label": "build compressor",
+            "type": "shell",
+            "command": "gcc",
+            "args": [
+              "-g",
+              "compressor.c",
+              "-o",
+              "a.out"
+            ],
+            "group": {
+              "kind": "build",
+              "isDefault": true
+            },
+            "problemMatcher": ["$gcc"],
+            "detail": "Generated task for building the compressor.c file"
+          }
+        ]
+      }
+    }
+  }

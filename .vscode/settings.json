@@ -201,5 +201,6 @@
     "cSpell.language": "en",
     "cSpell.enableFiletypes": [
         "beebasm"
-    ]
+    ],
+    "C_Cpp.default.compilerPath": "/usr/sbin/gcc"
 }

@@ -1,0 +1,44 @@
+{
+    "type": "setting",
+    "settings": {
+      "launch.json": {
+        "version": "0.2.0",
+        "configurations": [
+          {
+            "name": "Debug compressor",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/a.out",
+            "args": ["image1", "test"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+              {
+                "description": "Enable pretty-printing for gdb",
+                "text": "-enable-pretty-printing",
+                "ignoreFailures": true
+              }
+            ],
+            "preLaunchTask": "build compressor",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "setupCommands": [
+              {
+                "description": "Enable pretty-printing for gdb",
+                "text": "-enable-pretty-printing",
+                "ignoreFailures": true
+              }
+            ],
+            "logging": {
+              "engineLogging": false,
+              "trace": false,
+              "traceResponse": false
+            },
+            "internalConsoleOptions": "openOnSessionStart"
+          }
+        ]
+      }
+    }
+  }
