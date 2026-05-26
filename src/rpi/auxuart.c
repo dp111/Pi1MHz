@@ -102,7 +102,8 @@ void RPI_AuxMiniUartInit(unsigned int baud)
   unsigned int sys_freq = get_clock_rate(CORE_CLK_ID);
 
   /* Transposed calculation from Section 2.2.1 of the ARM peripherals manual */
-  RPI_Aux->MU_BAUD = ( sys_freq / (8 * baud)) - 1;
+  // improve rounding for low dividers
+  RPI_Aux->MU_BAUD = (( sys_freq*2 / (8 * baud)) - 1)/2;
 
 #ifdef USE_IRQ
    {  extern int _interrupt_vector_h;
