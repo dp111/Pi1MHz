@@ -26,6 +26,8 @@ static void helpers_setup(uint8_t helper_address)
         "\r\n Date : " __DATE__ " " __TIME__
         "\r\n Pi : " , PAGE_SIZE*16);
         helpscreen += strlcpy(helpscreen, get_info_string(), PAGE_SIZE*16);
+        sprintf(helpscreen, " %2.1fC", (double) get_temp() );
+        helpscreen += 6;
         helpscreen += strlcpy(helpscreen, "\r\n"
         "\r\n Helper functions can be started in one"
         "\r\n of three ways :"

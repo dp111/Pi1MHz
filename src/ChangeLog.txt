@@ -103,7 +103,7 @@ V1.17
 Speed up 1MHz accesses ( change to using USB buffers)
 
 V1.18
-Fix bug introduced in 1.13 , FRED page select note working ( Broke M5000)
+Fix bug introduced in 1.13 , FRED page select not working ( Broke M5000)
 
 V1.19
 Update FatFS to 0.15a
@@ -111,4 +111,5 @@ Add loading of VFS
 Change P.$&FD00 text to direct people to CALL &FC88
 Start of mouse pointer redirector
 *FX147,65,n now is them same as *SCSIJUKE n ( NB 65 is the harddisc address base address + 1)
-Screen redirector can no be started without displaying the message.
+Screen redirector can now be started without displaying the message.
+change to using the HVS directly for the HDMI display
