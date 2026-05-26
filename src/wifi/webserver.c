@@ -624,8 +624,12 @@ static bool ws_is_root(const char *p)
 /* Forward declarations                                                */
 /* ------------------------------------------------------------------ */
 
-static void conn_close(ws_conn_t *c, bool abort_conn);
-static void conn_pump(ws_conn_t *c);
+/* conn_close / conn_pump return true if the connection was torn down
+   via tcp_abort() rather than tcp_close().  lwIP's raw-API contract
+   requires any callback that calls tcp_abort to return ERR_ABRT, so
+   ws_sent / ws_poll propagate this up. */
+static bool conn_close(ws_conn_t *c, bool abort_conn);
+static bool conn_pump(ws_conn_t *c);
 static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len);
 static bool process_request(ws_conn_t *c, int body_at);
 static bool upload_consume(ws_conn_t *c, const uint8_t *data, size_t len);
@@ -698,10 +702,12 @@ static void table_row(ws_strbuf_t *b, const char *label, const char *value)
 /* Connection lifecycle                                                */
 /* ------------------------------------------------------------------ */
 
-static void conn_close(ws_conn_t *c, bool abort_conn)
+static bool conn_close(ws_conn_t *c, bool abort_conn)
 {
+   bool aborted = false;
+
    if (c == NULL)
-      return;
+      return false;
 
    if (c->dl_open) {
       f_close(&c->dl_file);
@@ -722,13 +728,16 @@ static void conn_close(ws_conn_t *c, bool abort_conn)
       tcp_err(pcb, NULL);
       if (abort_conn) {
          tcp_abort(pcb);
+         aborted = true;
       } else if (tcp_close(pcb) != ERR_OK) {
          tcp_abort(pcb);
+         aborted = true;
       }
    }
 
    free(c->out);
    free(c);
+   return aborted;
 }
 
 /* Convert one framebuffer scanline into a 24-bit bottom-up BMP row.
@@ -777,12 +786,12 @@ static void fb_render_row(const framebuffer_export_info_t *info,
       dst[x] = 0u;
 }
 
-static void conn_pump(ws_conn_t *c)
+static bool conn_pump(ws_conn_t *c)
 {
    err_t err = ERR_OK;
 
    if (c == NULL || c->pcb == NULL)
-      return;
+      return false;
 
    /* in-memory portion (HTML body, or the HTTP header of a download) */
    while (c->out != NULL && c->out_sent < c->out_len) {
@@ -898,7 +907,9 @@ static void conn_pump(ws_conn_t *c)
    }
 
    if (c->producing_done && c->bytes_acked >= c->bytes_queued)
-      conn_close(c, false);
+      return conn_close(c, false);
+
+   return false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -907,7 +918,7 @@ static void conn_pump(ws_conn_t *c)
 
 static bool ws_oom(ws_conn_t *c)
 {
-   conn_close(c, true);
+   (void)conn_close(c, true);
    return false;
 }
 
@@ -1797,14 +1808,15 @@ static err_t ws_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
    if (err != ERR_OK) {
       if (p != NULL)
          pbuf_free(p);
-      conn_close(c, true);
+      (void)conn_close(c, true);
       return ERR_ABRT;
    }
 
    if (p == NULL) {
-      /* the remote end closed the connection */
-      conn_close(c, false);
-      return ERR_OK;
+      /* the remote end closed the connection.  If tcp_close fails it
+         falls back to tcp_abort; lwIP then requires ERR_ABRT from this
+         callback or it will keep touching the freed pcb. */
+      return conn_close(c, false) ? ERR_ABRT : ERR_OK;
    }
 
    tcp_recved(tpcb, p->tot_len);
@@ -1827,8 +1839,11 @@ static err_t ws_sent(void *arg, struct tcp_pcb *tpcb, u16_t len)
 
    c->bytes_acked += len;
    c->poll_count = 0u;
-   conn_pump(c);               /* may free c */
-   return ERR_OK;
+   /* conn_pump may close the connection and, if tcp_close fails, fall
+      back to tcp_abort.  lwIP requires the callback to return ERR_ABRT
+      whenever tcp_abort was called from within it, otherwise the stack
+      keeps touching the now-freed pcb. */
+   return conn_pump(c) ? ERR_ABRT : ERR_OK;
 }
 
 static err_t ws_poll(void *arg, struct tcp_pcb *tpcb)
@@ -1840,13 +1855,17 @@ static err_t ws_poll(void *arg, struct tcp_pcb *tpcb)
       return ERR_OK;
 
    if (++c->poll_count > WS_POLL_LIMIT) {
-      conn_close(c, true);
+      (void)conn_close(c, true);
       return ERR_ABRT;
    }
 
    if (c->state == CONN_SEND_MEM || c->state == CONN_SEND_FILE
-       || c->state == CONN_SEND_FB)
-      conn_pump(c);            /* may free c */
+       || c->state == CONN_SEND_FB) {
+      /* conn_pump may close the connection; if tcp_close fails it falls
+         back to tcp_abort, in which case lwIP requires ERR_ABRT here so
+         the stack does not touch the freed pcb. */
+      return conn_pump(c) ? ERR_ABRT : ERR_OK;
+   }
    return ERR_OK;
 }
 
