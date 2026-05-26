@@ -23,8 +23,8 @@
  *
  */
 
-#include "bsp/board_api.h"
-#include "tusb.h"
+#include "tinyusb/hw/bsp/board_api.h"
+#include "tinyusb/src/tusb.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
