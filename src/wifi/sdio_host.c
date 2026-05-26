@@ -642,25 +642,26 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
    if (cmd_reg & SD_CMD_ISDATA) {
       uint32_t *cur_buf_addr = (uint32_t *) dev->buf;
       unsigned int cur_block = 0;
-      int is_write = 0;
-      uint32_t expected_irpt;
+      int is_write;
+      //uint32_t expected_irpt;
       uint32_t ready_irpt_mask = SD_BUFFER_WRITE_READY | SD_BUFFER_READ_READY;
 
       if (cmd_reg & SD_CMD_DAT_DIR_CH)
-         expected_irpt = SD_BUFFER_READ_READY;
+        // expected_irpt = SD_BUFFER_READ_READY;
+         is_write = 0;
       else {
          is_write = 1;
-         expected_irpt = SD_BUFFER_WRITE_READY;
+       //  expected_irpt = SD_BUFFER_WRITE_READY;
       }
 
       while (cur_block < dev->blocks_to_transfer) {
          uint32_t cur_byte_no = 0;
-         uint32_t seen_ready;
+        // uint32_t seen_ready;
          uint32_t wake_or_err_mask = ready_irpt_mask | 0x8000u;
 
          TIMEOUT_WAIT(g_rpi_emmc_base->EMMC_INTERRUPT & wake_or_err_mask, timeout);
          irpts = g_rpi_emmc_base->EMMC_INTERRUPT;
-         seen_ready = irpts & ready_irpt_mask;
+        // seen_ready = irpts & ready_irpt_mask;
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0000u | ready_irpt_mask;
 
          /* Emulator workaround: if we're doing a data transfer and no interrupt

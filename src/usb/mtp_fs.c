@@ -23,8 +23,10 @@
  *
  */
 
-#include "tinyusb/hw/bsp/board_api.h"
-#include "tinyusb/src/tusb.h"
+// Short names so these resolve via the -isystem TinyUSB dirs (third-party,
+// warnings suppressed). Do NOT change back to explicit relative paths.
+#include "bsp/board_api.h"
+#include "tusb.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

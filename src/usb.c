@@ -3,8 +3,10 @@
 */
 #define LOG  2
 #include "usb/tusb_config.h"
-#include "usb/tinyusb/src/tusb.h"
-#include "usb/tinyusb/hw/bsp/board_api.h"
+// Short names so these resolve via the -isystem TinyUSB dirs (third-party,
+// warnings suppressed). Do NOT change back to explicit relative paths.
+#include "tusb.h"
+#include "bsp/board_api.h"
 #include "../rpi/interrupts.h"
 #include "Pi1MHz.h"
 #include "rpi/mailbox.h"
