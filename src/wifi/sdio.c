@@ -28,6 +28,13 @@ static bool g_runtime_started;
 static bool g_runtime_link_up;
 static uint32_t g_runtime_tx_frame_count;
 static uint32_t g_runtime_rx_frame_count;
+/* The chip's WiFi MAC (cur_etheraddr), captured at boot so the lwIP
+   netif can use the real address.  g_runtime_capture_mac is armed
+   briefly around the GET cur_etheraddr ioctl; the CDC decoder fills
+   g_runtime_chip_mac when the matching GET-VAR response arrives. */
+static uint8_t g_runtime_chip_mac[6];
+static bool g_runtime_chip_mac_valid;
+static bool g_runtime_capture_mac;
 static char g_runtime_error[96];
 static uint8_t g_runtime_data_sequence;
 static bool g_runtime_emulator_mode;
@@ -64,6 +71,11 @@ typedef enum {
    SDIO_RUNTIME_STAGE_ACK_INTERRUPTS,
    SDIO_RUNTIME_STAGE_WRITE_INTR_MASK,
    SDIO_RUNTIME_STAGE_PREPARE_JOIN,
+   /* CLM download, MAC read and the 38-step join each advance one step
+      per tick so no single poll callback stalls the main 1 MHz loop. */
+   SDIO_RUNTIME_STAGE_CLM_DOWNLOAD,
+   SDIO_RUNTIME_STAGE_QUERY_MAC,
+   SDIO_RUNTIME_STAGE_JOIN,
    SDIO_RUNTIME_STAGE_SWEEP_RX,
    SDIO_RUNTIME_STAGE_DONE,
    SDIO_RUNTIME_STAGE_ERROR
@@ -138,6 +150,7 @@ static void sdio_debug_log(const char *format, ...)
 #define SDPCM_EVENT_CHANNEL 1u
 #define SDPCM_DATA_CHANNEL 2u
 #define WLC_IOCTL_MAGIC 0x14e46c77u
+#define TKIP_ENABLED 0x0002u
 #define AES_ENABLED 0x0004u
 #define WPA_AUTH_DISABLED 0x0000u
 #define WPA2_AUTH_PSK 0x0080u
@@ -147,6 +160,9 @@ static void sdio_debug_log(const char *format, ...)
 #define WLC_SET_INFRA 20u
 #define WLC_SET_PM 86u
 #define WLC_SET_AUTH 22u
+#define WLC_SET_ANTDIV 64u
+#define WLC_SET_GMODE 110u
+#define WLC_SET_BAND 142u
 #define WLC_SET_SSID 26u
 #define WLC_SET_WSEC 134u
 #define WLC_SET_WPA_AUTH 165u
@@ -161,6 +177,7 @@ static void sdio_debug_log(const char *format, ...)
 #define WLC_GET_AUTH 21u
 #define WLC_GET_WSEC 133u
 #define WLC_GET_WPA_AUTH 164u
+#define WLC_GET_RADIO 37u
 #define WLC_SSID_MAX_LEN 32u
 #define WSEC_MAX_PSK_LEN 64u
 #define WSEC_PASSPHRASE 0x0001u
@@ -181,7 +198,7 @@ static void sdio_debug_log(const char *format, ...)
 #define CDCF_IOC_ID_SHIFT 16u
 #define TX_CONTROL_TEMPLATE_INTERFACE 0u
 #define TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH 80u
-#define TX_CONTROL_PROBE_JOIN_COMMAND_COUNT 20u
+#define TX_CONTROL_PROBE_JOIN_COMMAND_COUNT 44u
 /* "join" iovar value is wl_extjoin_params_t which is 70 bytes:
      wlc_ssid_t      ssid;          // 4 + 32 = 36 bytes
      wl_join_scan_t  scan_params;   // scan_type+pad+nprobes+active+passive+home = 20 bytes
@@ -402,17 +419,24 @@ static int sdio_runtime_finalize_boot_stage(sdio_host_t *dev,
    if (chip == NULL)
       return -1;
 
-   /* Emulator workaround: if HT_AVAIL never appeared but the register is
-      responding (has any non-zero bits), assume firmware is partially running
-      and proceed. Real hardware with firmware running will set HT_AVAIL. */
+   /* HT_AVAIL only appears once the CYW43's internal CPU is executing the
+      downloaded firmware.  If it never appears, the firmware did not start.
+      The old code treated a non-zero CSR as "must be an emulator" and
+      proceeded anyway - which silently turned a real firmware-boot failure
+      into a bogus "firmware-ready" state.  Now this is reported honestly;
+      set wifi_emulator=1 on the cmdline to keep the lenient behaviour. */
    if ((clock_csr & CYW43_HT_AVAIL) == 0u) {
-      if (clock_csr == 0u) {
-         sdio_runtime_set_error("Timed out waiting for CYW43 HT clock");
+      const wifi_config_t *cfg = wifi_get_config();
+
+      if (cfg == NULL || !cfg->allow_emulator_fallback) {
+         sdio_debug_log("CYW43 firmware did not start: HT clock unavailable, CSR=0x%02x",
+                        (unsigned int)clock_csr);
+         sdio_runtime_set_error("CYW43 firmware did not start (HT clock never became available)");
          sdio_runtime_boot_reset_state();
          return -1;
       }
       g_runtime_emulator_mode = true;
-      sdio_debug_log("emulator: HT_AVAIL not set but CSR=0x%02x; proceeding anyway",
+      sdio_debug_log("emulator: HT_AVAIL not set but CSR=0x%02x; proceeding anyway (wifi_emulator=1)",
                      (unsigned int)clock_csr);
    }
 
@@ -476,7 +500,10 @@ static int sdio_runtime_complete_boot_stage(sdio_host_t *dev,
       probe_result->sdio_core_base = chip->sdregs;
    }
 
-   cyw43_release_images();
+   /* Free the firmware + NVRAM host buffers now they are on the chip,
+      but KEEP the CLM blob - it is still needed for the clmload iovar
+      download in STAGE_PREPARE_JOIN, after the firmware has booted. */
+   cyw43_release_boot_images();
    sdio_runtime_boot_reset_state();
    return 1;
 }
@@ -1083,6 +1110,20 @@ static bool sdio_backplane_scan_ram(sdio_host_t *dev, sdio_chip_state_t *chip)
             || !sdio_backplane_write_u32(dev, chip->socramregs + CYW43_BANKPDA_OFFSET, 0u)) {
             return false;
          }
+         /* The bank loop above mis-sizes the 43430's SOCRAM on this
+            silicon revision: SOCRAM rev >= 16 (this chip reports rev 22)
+            encodes the bank count and per-bank size differently from the
+            simplified scan here, so the sum comes out as 0x8000 instead
+            of the true 0x80000.  The 43430 always has exactly 512 KiB of
+            SOCRAM - hard-code it, exactly as the cyw43-driver reference
+            does (CYW43_RAM_SIZE = 512 * 1024).
+            This matters because the NVRAM image and its trailer token
+            are placed at the top of RAM (rambase + socramsize - ...): a
+            wrong size puts them inside the firmware image and leaves the
+            real top-of-RAM token slot unwritten, so the firmware boots,
+            cannot find its NVRAM, faults early, and HT_AVAIL never
+            appears. */
+         chip->socramsize = 0x80000u;
       }
    }
 
@@ -1212,8 +1253,15 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
          }
 
          if ((io_ready & 0x04u) == 0u) {
+            const wifi_config_t *cfg = wifi_get_config();
+
+            if (cfg == NULL || !cfg->allow_emulator_fallback) {
+               sdio_runtime_set_error("CYW43 firmware did not start (SDIO function 2 never became ready)");
+               sdio_runtime_boot_reset_state();
+               return -1;
+            }
             g_runtime_emulator_mode = true;
-            sdio_debug_log("emulator: function 2 ready bit not set after %ums; proceeding anyway",
+            sdio_debug_log("emulator: function 2 ready bit not set after %ums; proceeding anyway (wifi_emulator=1)",
                            (unsigned int)g_runtime_boot_wait_attempt);
          }
 
@@ -1242,6 +1290,25 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
       return -1;
    }
 
+   /* Diagnostic: dump the enumerated core addresses.  For a BCM43430 the
+      wrapper bases should sit ~0x100000 above the core bases, e.g. ARM CM3
+      core ~0x18003000 / wrapper ~0x18103000, SOCRAM core ~0x18004000 /
+      wrapper ~0x18104000, d11 wrapper ~0x18101000.  If armctl is not a
+      plausible ARM-CM3 wrapper address, reset_core(armctl) writes to the
+      wrong registers and the CYW43 CPU is never released - which presents
+      exactly as "firmware in RAM but HT_AVAIL never appears". */
+   sdio_debug_log("cores: arm_core=0x%lx cc=0x%08lx armregs=0x%08lx armctl=0x%08lx",
+                  (unsigned long)chip.arm_core,
+                  (unsigned long)chip.chipcommon,
+                  (unsigned long)chip.armregs,
+                  (unsigned long)chip.armctl);
+   sdio_debug_log("cores: socramregs=0x%08lx socramctl=0x%08lx socramrev=%u d11ctl=0x%08lx sdregs=0x%08lx",
+                  (unsigned long)chip.socramregs,
+                  (unsigned long)chip.socramctl,
+                  (unsigned int)chip.socramrev,
+                  (unsigned long)chip.d11ctl,
+                  (unsigned long)chip.sdregs);
+
    if (chip.arm_core == CYW43_CORE_ARM_CR4_ID) {
       if (!sdio_backplane_reset_core(dev, chip.armctl, CYW43_CR4_CPUHALT, CYW43_CR4_CPUHALT)) {
          sdio_runtime_set_error("Failed to halt CYW43 CR4 core");
@@ -1257,6 +1324,16 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
       sdio_runtime_set_error("Failed to prepare CYW43 RAM");
       return -1;
    }
+
+   /* Diagnostic: a BCM43430 has exactly 512 KiB (0x00080000) of SOCRAM at
+      rambase 0.  The NVRAM image and its trailer token are placed at the
+      very top of RAM (rambase + socramsize - ...), so a wrong socramsize
+      makes the firmware boot but read its NVRAM from the wrong address,
+      fault early, and never reach HT_AVAIL.  socramsize MUST read
+      0x00080000 here for a 43430. */
+   sdio_debug_log("RAM: rambase=0x%08lx socramsize=0x%08lx (expect 0x00080000 for 43430)",
+                  (unsigned long)chip.rambase,
+                  (unsigned long)chip.socramsize);
 
    if (!sdio_function1_write_byte(dev, SDIO_CHIP_CLOCK_CSR, 0u)) {
       sdio_runtime_set_error("Failed to reset CYW43 clock request");
@@ -1316,6 +1393,50 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
       }
    }
 
+   /* Verify the firmware download landed intact.  A subtle backplane
+      window / CMD53 chunking bug corrupts SOCRAM silently: the chip ID
+      still reads back fine, but the firmware image in RAM is wrong, so
+      the CYW43's internal CPU crashes the instant it is started and
+      HT_AVAIL never appears.  Sample words spread across the image
+      (including either side of 32 KiB window boundaries, plus the last
+      word) and compare against the source, so a corrupt download is
+      reported clearly instead of resurfacing later as a mysterious
+      "firmware did not start". */
+   {
+      static const uint32_t verify_offsets[] = {
+         0x00000u, 0x04000u, 0x07ffcu, 0x08000u,
+         0x0fffcu, 0x10000u, 0x20000u, 0x30000u
+      };
+      const size_t verify_count = sizeof(verify_offsets) / sizeof(verify_offsets[0]);
+      uint32_t last_offset = (g_cyw43_firmware_length - 4u) & ~3u;
+      size_t v;
+
+      for (v = 0u; v <= verify_count; ++v) {
+         uint32_t off = (v < verify_count) ? verify_offsets[v] : last_offset;
+         uint32_t expected;
+         uint32_t got = 0u;
+
+         if (off + 4u > g_cyw43_firmware_length)
+            continue;
+
+         expected = sdio_load_u32_le(&g_cyw43_firmware_data[off]);
+         if (!sdio_backplane_read_u32(dev, chip.rambase + off, &got)) {
+            sdio_runtime_set_error("Failed to read back CYW43 firmware for verification");
+            return -1;
+         }
+         if (got != expected) {
+            sdio_debug_log("firmware verify FAILED at 0x%lx: wrote 0x%08lx read 0x%08lx",
+                           (unsigned long)off,
+                           (unsigned long)expected,
+                           (unsigned long)got);
+            sdio_runtime_set_error("CYW43 firmware download corrupted (backplane write verify failed)");
+            return -1;
+         }
+      }
+      sdio_debug_log("firmware download verified intact (%u sample points)",
+                     (unsigned int)(verify_count + 1u));
+   }
+
    condensed_nvram = malloc(g_cyw43_nvram_length + 4u);
    if (condensed_nvram == NULL) {
       sdio_runtime_set_error("Failed to allocate CYW43 NVRAM buffer");
@@ -1337,15 +1458,45 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
       return -1;
    }
 
-   free(condensed_nvram);
    nvram_token = (nvram_length / 4u) & 0xffffu;
    nvram_token |= (~nvram_token << 16);
    sdio_store_u32_le(token_buffer, nvram_token);
    if (!sdio_backplane_write_bytes(dev, chip.rambase + chip.socramsize - 4u,
                                    token_buffer, sizeof(token_buffer))) {
+      free(condensed_nvram);
       sdio_runtime_set_error("Failed to write CYW43 NVRAM token");
       return -1;
    }
+
+   /* Diagnostic: read the NVRAM trailer token and the first NVRAM word
+      back from the top of RAM and compare with what we wrote.  The
+      firmware locates its NVRAM via the token at (rambase + socramsize -
+      4): a MISMATCH means the NVRAM never reached the chip (or landed at
+      the wrong address because socramsize is wrong); an OK readback with
+      the firmware still not starting points at the NVRAM content/format
+      itself. */
+   {
+      uint32_t token_got = 0u;
+      uint32_t nvram_first_got = 0u;
+      uint32_t nvram_first_expected = sdio_load_u32_le(condensed_nvram);
+      bool token_ok = sdio_backplane_read_u32(dev, chip.rambase + chip.socramsize - 4u,
+                                              &token_got);
+      bool nvram_ok = sdio_backplane_read_u32(dev,
+                         chip.rambase + chip.socramsize - nvram_length - 4u,
+                         &nvram_first_got);
+
+      sdio_debug_log("NVRAM: len=%lu token wrote=0x%08lx read=0x%08lx %s",
+                     (unsigned long)nvram_length,
+                     (unsigned long)nvram_token,
+                     (unsigned long)token_got,
+                     (token_ok && token_got == nvram_token) ? "OK" : "MISMATCH");
+      sdio_debug_log("NVRAM: first word wrote=0x%08lx read=0x%08lx %s",
+                     (unsigned long)nvram_first_expected,
+                     (unsigned long)nvram_first_got,
+                     (nvram_ok && nvram_first_got == nvram_first_expected) ? "OK" : "MISMATCH");
+   }
+
+   free(condensed_nvram);
 
    if (chip.arm_core == CYW43_CORE_ARM_CR4_ID) {
       if (!sdio_backplane_write_u32(dev, chip.sdregs + SDIO_CORE_INT_STATUS_OFFSET, ~0u)) {
@@ -1368,6 +1519,32 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
    } else if (!sdio_backplane_reset_core(dev, chip.armctl, 0u, 0u)) {
       sdio_runtime_set_error("Failed to start CYW43 ARM core");
       return -1;
+   }
+
+   /* Diagnostic: read the ARM core wrapper back after starting it.  This
+      decisively splits the remaining failure modes:
+        - RESETCTRL bit0 == 1  -> the CPU is STILL HELD IN RESET; reset_core
+          did not take effect (armctl wrong, or the reset sequence failed).
+          The firmware-not-running cause is then on the host side.
+        - RESETCTRL bit0 == 0 and IOCTRL bit0 == 1 -> the CPU is released
+          and clocked, so it IS executing; the firmware itself is faulting
+          early (NVRAM handoff / clock / firmware-content), not the host
+          reset path. */
+   {
+      uint32_t arm_resetctrl = 0xffffffffu;
+      uint32_t arm_ioctrl = 0xffffffffu;
+
+      (void)sdio_backplane_read_u32(dev, chip.armctl + CYW43_CORE_RESETCTRL_OFFSET,
+                                    &arm_resetctrl);
+      (void)sdio_backplane_read_u32(dev, chip.armctl + CYW43_CORE_IOCTRL_OFFSET,
+                                    &arm_ioctrl);
+      sdio_debug_log("ARM core after start: armctl=0x%08lx resetctrl=0x%08lx ioctrl=0x%08lx",
+                     (unsigned long)chip.armctl,
+                     (unsigned long)arm_resetctrl,
+                     (unsigned long)arm_ioctrl);
+      sdio_debug_log("  -> resetctrl bit0=%u (0=released) ioctrl bit0=%u (1=clocked)",
+                     (unsigned int)(arm_resetctrl & 1u),
+                     (unsigned int)(arm_ioctrl & 1u));
    }
 
    if (!sdio_function1_write_byte(dev, SDIO_CHIP_CLOCK_CSR, 0u)) {
@@ -1407,94 +1584,139 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
    if (commands == NULL || command_capacity < TX_CONTROL_PROBE_JOIN_COMMAND_COUNT - 1u)
       return 0u;
 
-   /* COUNTRY iovar dropped: confirmed BCME_BADARG (-2) on this BCM43430
-      firmware build for both 'XX'/-1 and 'GB'/0.  The chip's regulatory
-      defaults are clearly fine - the chanspec readback in the heartbeat
-      shows it on channel 1, 20 MHz, 2.4 GHz - so the iovar isn't
-      necessary.  The case handler is still present in
-      sdio_prepare_tx_control_payload for one-off use. */
-   /* Force a clean DOWN state before any parameter setup.  Some
-      firmware builds latch BSS-level params at the moment of UP and
-      ignore subsequent changes; a fresh DOWN/UP cycle ensures every
-      iovar we set below is committed at the next UP. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_DOWN;
-   /* Order matches cyw43-driver / brcmfmac: WSEC and wsec_pmk MUST be
-      committed BEFORE bsscfg:sup_wpa enables the in-firmware
-      supplicant.  Turning the supplicant on with stale (zero)
-      credentials is the prime suspect for "SET_SSID acked but the
-      join state machine never starts and the chip stays silent
-      forever" on this BCM43430 firmware build.
+   /* This sequence is a faithful port of the working bare-metal PicoWi
+      driver's join_start() + join_restart() (picowi_join.c): every
+      iovar/ioctl PicoWi issues to join a WPA2 network is reproduced
+      here, in the same order, INCLUDING PicoWi's settle delays (see
+      sdio_tx_probe_post_delay_us): 150 ms after the AMPDU/aggregation
+      block, 50 ms after events_enable, 50 ms after mcast_list.
 
-      INFRA is also moved ahead of UP: some BCM43430 builds latch the
-      BSS type at the moment of UP and ignore later changes, so we
-      now do DOWN -> set BSS-level params -> UP. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_INFRA;            /* set STA mode while DOWN */
-   /* mpc=0 keeps the radio awake between UP and SET_SSID.  Default
-      mpc=1 lets the firmware power-down the radio whenever it's
-      idle, which causes scans/joins to fail silently because the
-      radio is asleep when the join state machine tries to transmit. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF;
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF;       /* Circle: wlsetint("bus:txglom",0) - bus param, fine while DOWN */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_UP;               /* WLC_UP - radio actually comes up here */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF;    /* Circle: wlcmdint(0x56,0) - PM=0 after UP */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WSEC;             /* WSEC=AES BEFORE the supplicant */
-   if (config != NULL && config->password[0] != '\0')
-      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_PMK;           /* wsec_pmk BEFORE the supplicant */
-   /* WIFI_SDIO_TX_PROBE_COMMAND_MFP intentionally omitted: the BCM43430
-      firmware (Pi Zero W silicon) doesn't implement Management Frame
-      Protection and replies to the "mfp" iovar with BCME_UNSUPPORTED
-      (-23). The error is observable in the cdc-rsp log but the worse
-      side effect is that it leaves the bsscfg in a state where the
-      subsequent JOIN ioctl is acked successfully yet never produces
-      WLC_E_LINK / WLC_E_SET_SSID events - which is exactly the silent
-      "join accepted but no association" symptom we were chasing. */
+      Two deviations were removed after the first full-port test
+      (a join that ran all 35 steps but never started - WLC_SET_SSID
+      acked, GET_SSID read back all-zero, zero events):
+        * No leading WLC_DOWN.  PicoWi's join_start does NOT issue
+          WLC_DOWN; the chip is already in its power-on (down) state
+          after firmware boot.  Sending WLC_DOWN first made the very
+          next "country" iovar return BCME_BADARG (-2).
+        * PicoWi's real inter-stage delays are restored.  The earlier
+          flat 10 ms spacing skipped the 150 ms radio/PHY settle that
+          PicoWi waits after the AMPDU block, so the radio was not
+          ready when WLC_SET_SSID fired.
+      Pi1MHz-specific extras kept on top of PicoWi: MPC_OFF /
+      POWERSAVE_OFF / ROAM_OFF (keep the radio awake and stationary)
+      and the three-form event_msgs setup (this driver's equivalent
+      of PicoWi's events_enable()). */
+
+   /* --- join_start: radio + aggregation setup.  The regulatory country
+          is deliberately NOT set here - see the WLC_UP / DOWN / COUNTRY
+          / UP block below for why it has to wait for the first UP. --- */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_ANTDIV;          /* WLC_SET_ANTDIV = 0 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF;      /* bus:txglom = 0 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_APSTA;           /* apsta = 1 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_BA_WSIZE;  /* ampdu_ba_wsize = 8 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU;      /* ampdu_mpdu = 4 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR; /* ampdu_rx_factor = 0; 150 ms settle follows */
+   /* Enable async events before the join so WLC_E_SET_SSID / _LINK /
+      _PSK_SUP are delivered.  PicoWi calls events_enable() here; this
+      driver sends the per-bsscfg + global + _ext event masks.  Order
+      matches PicoWi: events_enable BEFORE mcast_list. */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS;
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GLOBAL_EVENT_MSGS;
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_EXT;
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_VERIFY; /* 50 ms settle follows */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_MCAST_LIST;      /* mcast_list (IPv4 multicast MAC); 50 ms settle follows */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF;         /* mpc = 0: keep the radio awake */
+   /* Band / G-mode MUST be set while the interface is DOWN.  WLC_UP
+      initialises the PHY, and on the BCM43430 the PHY needs to know
+      its band and G-mode BEFORE it comes up.  The first PicoWi-order
+      port placed these AFTER WLC_UP: WLC_UP returned status 0 but the
+      interface never actually came up - a following WLC_SCAN reported
+      BCME_NOTUP (-4).  brcmfmac sets band + gmode down, then UP. */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_BAND;           /* WLC_SET_BAND = 0 (auto / 2.4 GHz) */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GMODE;          /* WLC_SET_GMODE = 1 */
+
+   /* --- join_restart: bring the interface up and configure the join.
+          WLC_UP gets a 100 ms settle (see sdio_tx_probe_post_delay_us)
+          so the PHY has finished coming up before anything else runs. --- */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_UP;             /* first WLC_UP - warms up the wlc/regulatory module */
+   /* Set the regulatory country only AFTER the interface has been
+      brought up once.  Sent cold as the first ioctl - with or without
+      a preceding WLC_DOWN - the "country" iovar SET returned
+      BCME_BADARG every single time, while the GET form always worked.
+      That GET-ok / SET-bad asymmetry means the SET handler needs the
+      wlc to have been through a WLC_UP first (brcmfmac never sets
+      country cold either).  brcm convention is to change country with
+      the interface DOWN, so: first UP (above), then DOWN, set country,
+      then UP again - the second UP re-evaluates the radio's regulatory
+      state, which should clear WL_RADIO_COUNTRY_DISABLE. */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_DOWN;
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY;        /* regulatory domain (wifi_country, default "GB") */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY;    /* diagnostic: did the SET finally take? */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_UP;             /* second WLC_UP - radio re-evaluates regulatory */
+   /* Diagnostic: read the radio-disable bitmask after the second UP.
+      0x00 = radio enabled (success); 0x08 = still country-disabled. */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO;
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF;  /* WLC_SET_PM = 0 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_PM2_SLEEP_RET;  /* pm2_sleep_ret = 0xc8 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_BCN;     /* bcn_li_bcn = 1 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_DTIM;    /* bcn_li_dtim = 1 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_ASSOC_LISTEN;   /* assoc_listen = 0x0a */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_INFRA;          /* WLC_SET_INFRA = 1 */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AUTH;           /* WLC_SET_AUTH = 0 (802.11 open) */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WSEC;           /* WLC_SET_WSEC = 6 (TKIP|AES) */
+   /* The in-firmware WPA supplicant must exist BEFORE the passphrase is
+      installed: PicoWi sets the three sup_wpa iovars, delays 2 ms, then
+      sends WLC_SET_WSEC_PMK.  The 10 ms inter-command delay in
+      sdio_probe_send_tx_control_template covers that settle time. */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA;
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA2_EAPVER;
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA_TMO;
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AUTH;             /* AUTH=0 (802.11 OPEN) */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH;         /* WPA_AUTH=WPA2_AUTH_PSK */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS;
-   /* Pair the per-bsscfg mask with the global "event_msgs" mask.
-      Some BCM43430 firmware builds AND the two together, so without
-      this the global default of all-zero gates out every event the
-      per-bsscfg mask allows.  brcmfmac sets the global mask only;
-      cyw43-driver sets the per-bsscfg one only - this driver tries
-      both. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GLOBAL_EVENT_MSGS;
-   /* Third event-mask form: the cyw43-driver-style "event_msgs_ext"
-      iovar.  Some firmware builds only honor this _ext variant for
-      events to actually fire; the simpler iovars above can return
-      status=0 yet have no effect. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_EXT;
-   /* Read the per-bsscfg event mask back so we can prove the SET above
-      actually took effect. If the response payload's 16-byte mask is
-      all-zero the iovar was a silent no-op - which is the prime suspect
-      for the "join accepted, chip silent" symptom we keep chasing. The
-      log line is "cdc rsp cmd=262 ..." with the response bytes appended. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_VERIFY;
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF;       /* Circle: wlsetint("roam_off",1) */
-   /* Use WLC_SET_SSID with the full wifi_join_params_t payload as the
-      trigger to actually start scanning and associating. The "join"
-      iovar (WLC_SET_VAR with name="join") is recognised by the
-      BCM43430 firmware's dispatcher and acked with status=0, but it
-      does not actually start the join state machine on this build -
-      the chip stays silent and no WLC_E_SET_SSID / WLC_E_LINK is
-      ever generated. WLC_SET_SSID is the older, universally
-      supported path used by brcmfmac and every Cypress production
-      driver. */
+   if (config != NULL && config->password[0] != '\0')
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_PMK;         /* WLC_SET_WSEC_PMK */
+   /* PicoWi re-issues INFRA and AUTH after the PMK, then WPA_AUTH. */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_INFRA;          /* WLC_SET_INFRA = 1 (again) */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AUTH;           /* WLC_SET_AUTH = 0 (again) */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH;       /* WLC_SET_WPA_AUTH = 0x80 (WPA2-PSK) */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF;       /* roam_off = 1 */
+   /* WLC_SET_SSID with a wlc_ssid_t triggers the actual scan + join. */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SSID;
-   /* Read the SSID back so the cdc-rsp logger's hex dump shows what
-      the chip actually has cached.  If it echoes our SSID, the SET
-      took effect at the variable level and the silent failure is
-      somewhere in the join state machine.  If it returns zeros, the
-      SET was silently dropped and that's where the silence comes from. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_SSID;
-   /* WLC_SCAN dropped: confirmed BCME_NOTUP (-4) when issued after
-      SET_SSID on this firmware - the chip considers itself busy with
-      the just-started join attempt and rejects the scan.  The case
-      handler stays around for one-off use during further bring-up. */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_SSID;       /* diagnostic readback */
+   /* No explicit WLC_SCAN here: it was only ever a radio diagnostic,
+      and now that the CLM is loaded and SET_SSID genuinely starts a
+      join, a scan issued immediately afterwards just collides with it
+      (the firmware answers BCME_BUSY).  Let the join run undisturbed. */
 
    return count;
+}
+
+static uint32_t sdio_tx_probe_post_delay_us(wifi_sdio_tx_probe_command_t command)
+{
+   /* Per-command settle delay applied AFTER the ioctl is sent and its
+      CDC response drained, matching the working PicoWi driver's
+      join_start() timing (picowi_join.c):
+        usdelay(150000) after the AMPDU / aggregation block - lets the
+                        radio + PHY finish coming up;
+        usdelay(50000)  after events_enable();
+        usdelay(50000)  after mcast_list.
+      The earlier flat 10 ms spacing skipped the 150 ms settle, which
+      left the radio not ready when WLC_SET_SSID fired (join accepted
+      but never started).  Every other command keeps the 10 ms
+      inter-ioctl spacing, which also covers PicoWi's 2 ms pause
+      between the sup_wpa iovars and WLC_SET_WSEC_PMK. */
+   switch (command) {
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
+         return 150000u;
+      case WIFI_SDIO_TX_PROBE_COMMAND_UP:
+         /* WLC_UP initialises the PHY; give it a generous settle so the
+            radio has finished coming up before WLC_SET_SSID / WLC_SCAN
+            run.  The BCM43430 PHY bring-up takes tens of ms. */
+         return 100000u;
+      case WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_VERIFY:
+      case WIFI_SDIO_TX_PROBE_COMMAND_MCAST_LIST:
+         return 50000u;
+      default:
+         return 10000u;
+   }
 }
 
 static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command)
@@ -1508,7 +1730,22 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF:
       case WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY:
       case WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF:
+      case WIFI_SDIO_TX_PROBE_COMMAND_APSTA:
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_BA_WSIZE:
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU:
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
+      case WIFI_SDIO_TX_PROBE_COMMAND_MCAST_LIST:
+      case WIFI_SDIO_TX_PROBE_COMMAND_PM2_SLEEP_RET:
+      case WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_BCN:
+      case WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_DTIM:
+      case WIFI_SDIO_TX_PROBE_COMMAND_ASSOC_LISTEN:
          return WLC_SET_VAR;
+      case WIFI_SDIO_TX_PROBE_COMMAND_ANTDIV:
+         return WLC_SET_ANTDIV;
+      case WIFI_SDIO_TX_PROBE_COMMAND_GMODE:
+         return WLC_SET_GMODE;
+      case WIFI_SDIO_TX_PROBE_COMMAND_BAND:
+         return WLC_SET_BAND;
       case WIFI_SDIO_TX_PROBE_COMMAND_PMK:
          return WLC_SET_WSEC_PMK;
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA:
@@ -1523,6 +1760,7 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_CHANSPEC:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_SUP_WPA:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY:
          return WLC_GET_VAR;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_BSSID:
          return WLC_GET_BSSID;
@@ -1534,6 +1772,8 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
          return WLC_GET_AUTH;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA:
          return WLC_GET_INFRA;
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
+         return WLC_GET_RADIO;
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
          return WLC_SCAN;
       case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
@@ -1566,7 +1806,14 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
       case WIFI_SDIO_TX_PROBE_COMMAND_JOIN:
          return TX_CONTROL_TEMPLATE_JOIN_PAYLOAD_LENGTH;
       case WIFI_SDIO_TX_PROBE_COMMAND_PMK:
-         return TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH;
+         /* wl_wsec_pmk_t is exactly u16 key_len + u16 flags +
+            u8 key[WSEC_MAX_PSK_LEN] = 68 bytes.  cyw43-driver and
+            brcmfmac send precisely this struct size; an over-length
+            WLC_SET_WSEC_PMK ioctl is rejected by some BCM43430
+            firmware builds (which would silently leave the supplicant
+            with no key).  Previously this returned the 80-byte
+            template maximum. */
+         return (uint16_t)(4u + WSEC_MAX_PSK_LEN);
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA:
          return (uint16_t)(sizeof("bsscfg:sup_wpa") + 8u);
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA2_EAPVER:
@@ -1610,6 +1857,11 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          /* "cur_etheraddr\0" + 6 zero bytes for the chip to write the
             current MAC into. */
          return (uint16_t)(sizeof("cur_etheraddr") + 6u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY:
+         /* "country\0" + 20-byte response slot.  wl_country_t is 12
+            bytes; the extra room lets us see if this firmware build
+            returns a larger struct. */
+         return (uint16_t)(sizeof("country") + 20u);
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_SUP_WPA:
          /* "bsscfg:sup_wpa\0" + bsscfg_idx (4) + 4-byte response slot.
             Per-bsscfg iovar - same shape as bsscfg:event_msgs but with
@@ -1619,6 +1871,7 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_WPA_AUTH:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_AUTH:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
          /* WLC_GET_* ioctls return a u32; send a 4-byte zero buffer
             for the chip to fill. */
          return 4u;
@@ -1638,16 +1891,22 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
             Total 66 bytes packed. */
          return 66u;
       case WIFI_SDIO_TX_PROBE_COMMAND_SSID:
-         /* wlc_ssid_t (36 bytes): length(LE u32) + SSID bytes (up to 32).
-            cyw43-driver shape - exactly what WLC_SET_SSID expects.
-            We previously sent the 50-byte wl_join_params_le shape
-            (wlc_ssid + assoc_params with broadcast bssid + chanspec_num=0)
-            on the theory the chip would interpret the trailing scan
-            params; on this BCM43430 build the firmware silently
-            ignored them, so the extra bytes were doing nothing.
-            The right way to add scan/channel hints is the dedicated
-            "join" iovar (WIFI_SDIO_TX_PROBE_COMMAND_JOIN below). */
-         return 36u;
+      {
+         /* PicoWi sends WLC_SET_SSID with EXACTLY 4 + strlen(ssid)
+            bytes - a u32 length field followed by just the SSID
+            characters, no 32-byte padding (picowi_join.c: *data = n;
+            strcpy(&data[4], ssid); ioctl_wr_data(WLC_SET_SSID, .., n+4)).
+            We previously sent the canonical 36-byte wlc_ssid_t and,
+            earlier still, a 50-byte wl_join_params_le; the chip acked
+            both but never started the join.  Copy PicoWi byte-for-byte
+            so the SET_SSID frame is identical to the known-good driver. */
+         const wifi_config_t *config = wifi_get_config();
+         size_t ssid_length = 0u;
+
+         if (config != NULL)
+            ssid_length = strnlen(config->ssid, WLC_SSID_MAX_LEN);
+         return (uint16_t)(4u + ssid_length);
+      }
       case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
       case WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH:
       case WIFI_SDIO_TX_PROBE_COMMAND_AUTH:
@@ -1660,9 +1919,34 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          return (uint16_t)(sizeof("roam_off") + 4u);
       case WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF:
          return (uint16_t)(sizeof("mpc") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_APSTA:
+         return (uint16_t)(sizeof("apsta") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_BA_WSIZE:
+         return (uint16_t)(sizeof("ampdu_ba_wsize") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU:
+         return (uint16_t)(sizeof("ampdu_mpdu") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
+         return (uint16_t)(sizeof("ampdu_rx_factor") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_PM2_SLEEP_RET:
+         return (uint16_t)(sizeof("pm2_sleep_ret") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_BCN:
+         return (uint16_t)(sizeof("bcn_li_bcn") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_DTIM:
+         return (uint16_t)(sizeof("bcn_li_dtim") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_ASSOC_LISTEN:
+         return (uint16_t)(sizeof("assoc_listen") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_MCAST_LIST:
+         /* "mcast_list\0" + maclist_t: u32 count + 10 * ether_addr (60).
+            PicoWi sends a 60-byte mcast_addr block (count=1 + one MAC,
+            the rest zero-padded) - reproduced verbatim. */
+         return (uint16_t)(sizeof("mcast_list") + 60u);
       case WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY:
-         /* "country\0" + wl_country_t (12 bytes: country_abbrev[4] +
-            int32_t rev + ccode[4]) */
+         /* "country\0" + a 12-byte wl_country_t (country_abbrev[4] +
+            int32 rev + ccode[4]) - the EXACT size brcmfmac sends.
+            We previously sent 20 bytes (PicoWi's country_data[20], i.e.
+            the struct plus 8 trailing zeros); a firmware that strictly
+            length-checks the iovar against sizeof(wl_country_t) rejects
+            that with BCME_BADARG, which is what this build keeps doing. */
          return (uint16_t)(sizeof("country") + 12u);
       case WIFI_SDIO_TX_PROBE_COMMAND_UP:
          return 0u;
@@ -1696,7 +1980,19 @@ static bool sdio_tx_probe_is_set_ioctl(wifi_sdio_tx_probe_command_t command)
          || command == WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF
          || command == WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY
          || command == WIFI_SDIO_TX_PROBE_COMMAND_SCAN
-         || command == WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF;
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_ANTDIV
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_GMODE
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_BAND
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_APSTA
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_BA_WSIZE
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_MCAST_LIST
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_PM2_SLEEP_RET
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_BCN
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_DTIM
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_ASSOC_LISTEN;
 }
 
 static uint32_t sdio_load_u32_le(const uint8_t *src)
@@ -1714,6 +2010,9 @@ static uint32_t sdio_tx_probe_payload_word0(wifi_sdio_tx_probe_command_t command
 {
    switch (command) {
       case WIFI_SDIO_TX_PROBE_COMMAND_INFRA:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GMODE:
+         /* WLC_SET_INFRA = 1 (BSS infrastructure mode);
+            WLC_SET_GMODE = 1 (GMODE_AUTO) - both match PicoWi. */
          return 1u;
       case WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH:
       {
@@ -1723,9 +2022,15 @@ static uint32_t sdio_tx_probe_payload_word0(wifi_sdio_tx_probe_command_t command
       }
       case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
       {
+         /* PicoWi sets WLC_SET_WSEC = 6 for a WPA2 network
+            (TKIP_ENABLED | AES_ENABLED): the chip's in-firmware
+            supplicant negotiates the actual cipher with the AP, so it
+            must advertise both.  An AES-only WSEC made some BCM43430
+            builds reject mixed WPA/WPA2 (TKIP group cipher) APs. */
          const wifi_config_t *config = wifi_get_config();
 
-         return (config != NULL && config->password[0] != '\0') ? AES_ENABLED : 0u;
+         return (config != NULL && config->password[0] != '\0')
+            ? (TKIP_ENABLED | AES_ENABLED) : 0u;
       }
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA:
       {
@@ -1755,6 +2060,8 @@ static uint32_t sdio_tx_probe_payload_word0(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_UP:
       case WIFI_SDIO_TX_PROBE_COMMAND_SSID:
       case WIFI_SDIO_TX_PROBE_COMMAND_JOIN:
+      case WIFI_SDIO_TX_PROBE_COMMAND_ANTDIV:  /* WLC_SET_ANTDIV = 0 (antenna 0) */
+      case WIFI_SDIO_TX_PROBE_COMMAND_BAND:    /* WLC_SET_BAND = 0 (auto / 2.4 GHz) */
       default:
          return 0u;
    }
@@ -2058,6 +2365,17 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
          /* Trailing 6 bytes already zeroed by the memset at top. */
          break;
       }
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY:
+      {
+         /* GET-VAR "country" - the chip writes back its current
+            wl_country_t (country_abbrev[4] + int32 rev + ccode[4]).
+            Trailing bytes left zero for the chip to fill. */
+         size_t name_length = sizeof("country");
+
+         memcpy(probe_result->tx_control_template_payload_bytes,
+                "country", name_length);
+         break;
+      }
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_SUP_WPA:
       {
          /* GET-VAR "bsscfg:sup_wpa\0" + bsscfg_idx(4) + 4-byte response slot.
@@ -2078,6 +2396,7 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_WPA_AUTH:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_AUTH:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
          /* WLC_GET_* ioctls write a u32 into the 4-byte response slot.
             Buffer already zeroed by the memset at the top of this
             function. */
@@ -2122,39 +2441,83 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
       case WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF:
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "mpc", 0u);
          break;
+      /* --- PicoWi join_start / join_restart radio + aggregation setup.
+             Each value is byte-for-byte what picowi_join.c sends. --- */
+      case WIFI_SDIO_TX_PROBE_COMMAND_APSTA:
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "apsta", 1u);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_BA_WSIZE:
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_ba_wsize", 8u);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU:
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_mpdu", 4u);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_rx_factor", 0u);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_PM2_SLEEP_RET:
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "pm2_sleep_ret", 0xc8u);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_BCN:
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "bcn_li_bcn", 1u);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_DTIM:
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "bcn_li_dtim", 1u);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_ASSOC_LISTEN:
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "assoc_listen", 0x0au);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_MCAST_LIST:
+      {
+         /* "mcast_list\0" + maclist_t.  PicoWi's mcast_addr block is 60
+            bytes: u32 count = 1, then ether_addr[0] = 01:00:5E:00:00:FB
+            (the IPv4 "all mDNS" multicast MAC), the remaining 9 slots
+            left zero.  Reproduced verbatim. */
+         size_t name_length = sizeof("mcast_list");
+         uint8_t *value;
+         static const uint8_t mcast_mac[6] = { 0x01u, 0x00u, 0x5Eu, 0x00u, 0x00u, 0xFBu };
+
+         memcpy(probe_result->tx_control_template_payload_bytes,
+                "mcast_list", name_length);
+         value = &probe_result->tx_control_template_payload_bytes[name_length];
+         /* count = 1 (LE u32); remaining 56 bytes already zero. */
+         sdio_store_u32_le(value, 1u);
+         memcpy(&value[4], mcast_mac, sizeof(mcast_mac));
+         break;
+      }
       case WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY:
       {
-         /* "country\0" + wl_country_t {
-              int8_t country_abbrev[4];   // "GB\0\0"
-              int32_t rev;                //  0   (use revision 0 - the
-                                          //       previous code used -1
-                                          //       which the BCM43430
-                                          //       firmware on the Pi
-                                          //       Zero W rejects with
-                                          //       BCME_BADARG, leaving
-                                          //       the regulatory subsystem
-                                          //       in a state where the
-                                          //       chip silently refuses
-                                          //       to scan or transmit)
-              int8_t ccode[4];            // "GB\0\0"
-            }
-            "GB" matches the United Kingdom regulatory domain.  This
-            iovar must be set while the chip is DOWN, so it is the very
-            first command in the join sequence (before WLC_UP). */
+         /* "country\0" followed by a 20-byte country structure, in the
+            same layout as the working PicoWi driver's country_data:
+              country_abbrev[4]  (e.g. "XX")
+              rev (int32 LE)    = -1   (0xFFFFFFFF, "use firmware default")
+              ccode[4]           (e.g. "XX")
+              + 8 trailing zero bytes
+            The country code comes from the wifi_country cmdline property
+            (config->country, default "XX" = worldwide / unrestricted).
+            PicoWi sends sizeof(country_data) = 20 bytes here and joins
+            successfully; the full 20-byte length matters - an earlier
+            12-byte struct drew BCME_BADARG from this firmware build. */
+         const wifi_config_t *config = wifi_get_config();
+         const char *country = "XX";
          size_t name_length = sizeof("country");
          uint8_t *value;
+         size_t i;
+
+         if (config != NULL && config->country[0] != '\0')
+            country = config->country;
 
          memcpy(probe_result->tx_control_template_payload_bytes, "country", name_length);
          value = &probe_result->tx_control_template_payload_bytes[name_length];
-         value[0] = 'G';
-         value[1] = 'B';
-         value[2] = 0u;
-         value[3] = 0u;
-         sdio_store_u32_le(&value[4], 0u); /* rev = 0 */
-         value[8]  = 'G';
-         value[9]  = 'B';
-         value[10] = 0u;
-         value[11] = 0u;
+         /* country_abbrev[4] and ccode[4]: copy up to 3 chars of the
+            code into both fields, leaving the 4th byte as the NUL
+            terminator (already zero from the function-entry memset). */
+         for (i = 0u; i < 3u && country[i] != '\0'; ++i) {
+            value[i]     = (uint8_t)country[i];   /* country_abbrev */
+            value[8 + i] = (uint8_t)country[i];   /* ccode */
+         }
+         sdio_store_u32_le(&value[4], 0xffffffffu); /* rev = -1 */
+         /* value[12..19] remain zero from the memset at function entry. */
          break;
       }
       default:
@@ -2492,79 +2855,73 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
       uint32_t cdc_flags = sdio_load_u32_le(&frame_buffer[header_length + 8u]);
       uint32_t cdc_status = sdio_load_u32_le(&frame_buffer[header_length + 12u]);
 
-      sdio_debug_log("cdc rsp cmd=%lu flags=0x%08lx status=%lu%s",
-                     (unsigned long)cdc_cmd,
-                     (unsigned long)cdc_flags,
-                     (unsigned long)cdc_status,
-                     (cdc_flags & CDCF_IOC_ERROR) ? " ERROR" : "");
+      /* Only an ioctl ERROR is worth a line now that the join works;
+         a stream of status=0 acks is just noise. */
+      if ((cdc_flags & CDCF_IOC_ERROR) != 0u)
+         sdio_debug_log("cdc rsp cmd=%lu status=%lu ERROR",
+                        (unsigned long)cdc_cmd, (unsigned long)cdc_status);
 
-      /* GET-style responses carry the chip's return value in the bytes
-         after the CDC header.  Dump up to 38 of those bytes so we can
-         see what the chip actually has cached - critical for
-         confirming whether SETs above were applied or silently dropped.
-         WLC_GET_VAR covers iovar reads (bsscfg:event_msgs, chanspec,
-         cur_etheraddr); WLC_GET_SSID and WLC_GET_BSSID are direct
-         commands with their own return payloads. */
-      if ((cdc_cmd == WLC_GET_VAR || cdc_cmd == WLC_GET_SSID || cdc_cmd == WLC_GET_BSSID
-           || cdc_cmd == WLC_GET_WSEC || cdc_cmd == WLC_GET_WPA_AUTH
-           || cdc_cmd == WLC_GET_AUTH || cdc_cmd == WLC_GET_INFRA)
-          && !(cdc_flags & CDCF_IOC_ERROR)) {
-         uint16_t payload_offset = (uint16_t)(header_length + CDC_HEADER_LENGTH);
-             uint16_t payload_bytes = (uint16_t)(total_length - payload_offset);
-         uint16_t dump_count = payload_bytes;
-         char dump_buf[3 * 38 + 1];
-         uint16_t i;
-         char *cursor = dump_buf;
-
-         if (dump_count > 38u)
-            dump_count = 38u;
-
-         for (i = 0u; i < dump_count; ++i) {
-            static const char hex[] = "0123456789abcdef";
-            uint8_t b = frame_buffer[payload_offset + i];
-
-            *cursor++ = hex[(b >> 4) & 0xfu];
-            *cursor++ = hex[b & 0xfu];
-            *cursor++ = ' ';
-         }
-         *cursor = '\0';
-
-         sdio_debug_log("cdc get-var len=%u: %s",
-                        (unsigned)payload_bytes, dump_buf);
+      /* Capture the chip's MAC from the cur_etheraddr GET-VAR reply.
+         g_runtime_capture_mac is armed only around that single ioctl,
+         so a non-error WLC_GET_VAR response while it is set is that
+         reply; the 6-byte MAC is the first thing after the CDC header. */
+      if (g_runtime_capture_mac && cdc_cmd == WLC_GET_VAR
+          && !(cdc_flags & CDCF_IOC_ERROR)
+          && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 6u)) {
+         memcpy(g_runtime_chip_mac,
+                &frame_buffer[header_length + CDC_HEADER_LENGTH], 6u);
+         g_runtime_chip_mac_valid = true;
+         g_runtime_capture_mac = false;
       }
       return false;
    }
 
    if (channel == SDPCM_EVENT_CHANNEL) {
-      /* Async events arrive on EVENT_CHANNEL (1). The envelope used
-         depends on firmware build:
-           Modern (cyw43439, brcmfmac): Ethernet hdr (14) + BRCM event
-             hdr (10) + event_msg (48), ethertype=0x886c, OUI=00:10:18.
-           Legacy (BCM43430 on Pi Zero W): event_msg (48) directly,
-             with no wrapper.
-         Try the modern envelope first; if its ethertype check fails,
-         fall back to decoding the payload as a bare event_msg. */
+      /* Async event frame layout, per cyw43-driver sdpcm_process_rx_packet
+         (ASYNCEVENT_HEADER):
+           SDPCM header    header_length bytes
+           BDC header      4 bytes (flags, priority, flags2, data_offset)
+           data_offset*4   padding bytes
+           Ethernet frame  dst[6] src[6] type[2]  (type = ETHER_TYPE_BRCM)
+           BRCM event      event_msg, 24 bytes into the Ethernet frame
+         The previous code read the ethertype at header_length+12 -
+         ignoring the BDC header AND its data_offset - so every real
+         event frame mis-parsed, failed the ethertype check, and was
+         silently dropped by note_event_bare's event_type sanity check.
+         That is why join events never surfaced. */
       uint16_t payload_length = (total_length > header_length)
          ? (uint16_t)(total_length - header_length) : 0u;
 
-      if (payload_length >= 14u) {
-         uint16_t ev_ethertype =
-            (uint16_t)(((uint16_t)frame_buffer[header_length + 12u] << 8)
-               | (uint16_t)frame_buffer[header_length + 13u]);
-         if (ev_ethertype == ETHER_TYPE_BRCM) {
-            sdio_runtime_note_event(frame_buffer, total_length, (uint16_t)header_length);
-            return false;
+      if (payload_length >= 4u) {
+         uint8_t bdc_data_offset = frame_buffer[header_length + 3u];
+         uint16_t ethernet_offset = (uint16_t)((uint16_t)header_length + 4u
+            + ((uint16_t)bdc_data_offset << 2));
+
+         if ((uint16_t)(ethernet_offset + 14u) <= total_length) {
+            uint16_t ev_ethertype =
+               (uint16_t)(((uint16_t)frame_buffer[ethernet_offset + 12u] << 8)
+                  | (uint16_t)frame_buffer[ethernet_offset + 13u]);
+            if (ev_ethertype == ETHER_TYPE_BRCM) {
+               sdio_runtime_note_event(frame_buffer, total_length, ethernet_offset);
+               return false;
+            }
+            /* Not the BRCM ethertype at the computed offset - log it
+               (instead of dropping silently) so a remaining offset
+               mismatch is visible rather than invisible. */
+            sdio_debug_log("ev: ch=1 ethertype=0x%04x ethoff=%u hdr=%u tot=%u",
+                           (unsigned)ev_ethertype, (unsigned)ethernet_offset,
+                           (unsigned)header_length, (unsigned)total_length);
          }
       }
 
-      /* Fall through to bare event_msg path. */
-      if (payload_length >= BRCM_EVENT_MSG_LENGTH) {
+      /* Fallback: a few firmware builds deliver the event_msg with no
+         BDC/Ethernet wrapper.  note_event_bare has its own event_type
+         sanity check, so a mis-parse here is harmless. */
+      if (payload_length >= BRCM_EVENT_MSG_LENGTH)
          sdio_runtime_note_event_bare(&frame_buffer[header_length], payload_length);
-      } else {
+      else
          sdio_debug_log("ev: short ch=1 hdr=%u tot=%u",
-                        (unsigned)header_length,
-                        (unsigned)total_length);
-      }
+                        (unsigned)header_length, (unsigned)total_length);
       return false; /* event consumed internally - no Ethernet frame for caller */
    }
 
@@ -2582,25 +2939,45 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
    }
 
    bdc_index = (uint8_t)(header_length);
-   ethertype = (uint16_t)(((uint16_t)frame_buffer[header_length + 12u + 4u] << 8)
-      | (uint16_t)frame_buffer[header_length + 13u + 4u]);
-   ethernet_length = (uint16_t)(total_length - header_length - 4u);
+   /* The Ethernet frame begins after the SDPCM header, the 4-byte BDC
+      header, AND bdc.data_offset*4 bytes of BDC padding.  The earlier
+      code used a fixed header_length+4 (data_offset assumed 0); when the
+      chip pads a received data frame that mis-frames every packet, so
+      lwIP drops them all and DHCP can never complete.  data_offset is
+      byte 3 of the BDC header - the same field the channel-1 event path
+      now honours (cyw43-driver sdpcm_process_rx_packet). */
+   {
+      uint8_t bdc_data_offset = frame_buffer[header_length + 3u];
+      uint16_t eth_offset = (uint16_t)((uint16_t)header_length + 4u
+         + ((uint16_t)bdc_data_offset << 2));
 
-   if (ethertype == ETHER_TYPE_BRCM) {
-      /* DATA_CHANNEL BRCM events have a 4-byte BDC header before the Ethernet frame. */
-      sdio_runtime_note_event(frame_buffer, total_length, (uint16_t)(header_length + 4u));
-      return false;
+      if ((uint16_t)(eth_offset + 14u) > total_length) {
+         sdio_debug_log("fn2: drop ch=2 short hdr=%u tot=%u doff=%u",
+                        (unsigned)header_length, (unsigned)total_length,
+                        (unsigned)bdc_data_offset);
+         return false;
+      }
+
+      ethertype = (uint16_t)(((uint16_t)frame_buffer[eth_offset + 12u] << 8)
+         | (uint16_t)frame_buffer[eth_offset + 13u]);
+      ethernet_length = (uint16_t)(total_length - eth_offset);
+
+      if (ethertype == ETHER_TYPE_BRCM) {
+         /* A BRCM async event delivered on the data channel. */
+         sdio_runtime_note_event(frame_buffer, total_length, eth_offset);
+         return false;
+      }
+
+      if ((uint8_t)(frame_buffer[bdc_index] >> BDC_VERSION_SHIFT) != BDC_PROTOCOL_VERSION)
+         return false;
+
+      if (frame == NULL || frame_capacity < ethernet_length) {
+         sdio_runtime_set_error("Ethernet frame exceeds receive buffer");
+         return false;
+      }
+
+      memcpy(frame, &frame_buffer[eth_offset], ethernet_length);
    }
-
-   if ((uint8_t)(frame_buffer[bdc_index] >> BDC_VERSION_SHIFT) != BDC_PROTOCOL_VERSION)
-      return false;
-
-   if (frame == NULL || frame_capacity < ethernet_length) {
-      sdio_runtime_set_error("Ethernet frame exceeds receive buffer");
-      return false;
-   }
-
-   memcpy(frame, &frame_buffer[header_length + 4u], ethernet_length);
    if (frame_length != NULL)
       *frame_length = ethernet_length;
    ++g_runtime_rx_frame_count;
@@ -2752,22 +3129,212 @@ static bool sdio_probe_send_tx_control_template(sdio_host_t *dev,
          this pair the BCM43430's RX FIFO backs up after a handful of
          ioctls and the JOIN never executes - matching the symptom
          where event_type/event_status stay at 0 and the link never
-         comes up. 10 ms is comfortably above the BCM43430's worst
-         case ack latency at 25 MHz; 5 ms turned out to race with
-         iovars that have to touch SOC memory (PMK, event_msgs). */
+         comes up. The base 10 ms is comfortably above the BCM43430's
+         worst case ack latency at 25 MHz; 5 ms turned out to race
+         with iovars that have to touch SOC memory (PMK, event_msgs).
+         sdio_tx_probe_post_delay_us() additionally restores PicoWi's
+         150 ms radio/PHY settle after the AMPDU block and the 50 ms
+         pauses after events_enable and mcast_list. */
       {
-         uint8_t consumed;
+         uint32_t post_delay_us = sdio_tx_probe_post_delay_us(join_commands[index]);
 
-         usleep(10000u);
-         consumed = sdio_drain_fn2_responses(dev);
-         sdio_debug_log("ioctl step=%u cmd=%lu drained=%u",
-                        (unsigned)(index + 1u),
-                        (unsigned long)probe_result->tx_control_template_command,
-                        (unsigned)consumed);
+         usleep(post_delay_us);
+         (void)sdio_drain_fn2_responses(dev);   /* per-step log removed - join works */
       }
    }
 
    return true;
+}
+
+/* CLM (Country Locale Matrix) download.  The CLM is the chip's regulatory
+   database.  Without it the BCM43430 firmware only has the "#n" worldwide
+   placeholder locale, rejects every "country" iovar SET with BCME_BADARG,
+   and leaves the radio in WL_RADIO_COUNTRY_DISABLE so the interface can
+   never come up.  The CLM is delivered to the already-running firmware in
+   chunks via the "clmload" iovar, each chunk prefixed by a 12-byte
+   download header (matches brcmfmac brcmf_dload_data_le and cyw43-driver
+   cyw43_clm_load):
+       u16 flag        (DLOAD_HANDLER_VER<<12) | DL_BEGIN/DL_END
+       u16 dload_type  DL_TYPE_CLM = 2
+       u32 len         chunk byte count
+       u32 crc         0 (the firmware does not check it)
+   The blob is optional: a missing file is not an error (the 43430 has a
+   minimal built-in CLM), so this never fails the boot - it just logs and
+   returns. */
+#define SDIO_CLM_DLOAD_FLAG_VER   0x1000u   /* DLOAD_HANDLER_VER(1) << DLOAD_FLAG_VER_SHIFT(12) */
+#define SDIO_CLM_DLOAD_FLAG_BEGIN 0x0002u   /* DL_BEGIN */
+#define SDIO_CLM_DLOAD_FLAG_END   0x0004u   /* DL_END   */
+#define SDIO_CLM_DLOAD_TYPE       2u        /* DL_TYPE_CLM */
+#define SDIO_CLM_CHUNK_LEN        1024u
+
+/* Per-tick boot state for the non-blocking join.  The CLM chunk
+   download, the MAC read and the 38-step join used to run inside a
+   single sdio_runtime_tick() call (~0.9 s, stalling the main 1 MHz
+   loop the whole time).  They now advance one step per tick, the
+   inter-step settle delays becoming deadline checks.  step_sent /
+   step_deadline_us are shared by the three phases, which run strictly
+   one after another (CLM -> MAC -> JOIN). */
+static wifi_sdio_tx_probe_command_t g_runtime_join_commands[TX_CONTROL_PROBE_JOIN_COMMAND_COUNT];
+static uint8_t  g_runtime_join_count;
+static uint8_t  g_runtime_join_index;
+static uint32_t g_runtime_clm_offset;
+static bool     g_runtime_step_sent;
+static uint32_t g_runtime_step_deadline_us;
+
+/* Send one CLM clmload chunk per call.  Returns 1 when the whole blob
+   is downloaded (or there is no blob), 0 while more work remains, -1 on
+   a transfer error.  See the clmload framing notes above. */
+static int sdio_runtime_clm_download_step(sdio_host_t *dev)
+{
+   uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   static const char clm_iovar[] = "clmload";
+   const uint16_t name_length = (uint16_t)sizeof(clm_iovar); /* "clmload" + NUL = 8 */
+   uint32_t clm_length = g_cyw43_clm_length;
+   uint32_t chunk_len;
+   uint16_t flag;
+   uint32_t now;
+
+   if (dev == NULL)
+      return -1;
+   if (g_cyw43_clm_data == NULL || clm_length == 0u)
+      return 1;                       /* no clm_blob - use built-in regulatory */
+   if (g_runtime_clm_offset >= clm_length)
+      return 1;                       /* done */
+
+   chunk_len = clm_length - g_runtime_clm_offset;
+   if (chunk_len > SDIO_CLM_CHUNK_LEN)
+      chunk_len = SDIO_CLM_CHUNK_LEN;
+   flag = SDIO_CLM_DLOAD_FLAG_VER;
+   if (g_runtime_clm_offset == 0u)
+      flag |= SDIO_CLM_DLOAD_FLAG_BEGIN;
+   if (g_runtime_clm_offset + chunk_len >= clm_length)
+      flag |= SDIO_CLM_DLOAD_FLAG_END;
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_step_sent) {
+      /* CDC payload = "clmload\0" + 12-byte dload header + chunk bytes. */
+      uint16_t payload_length = (uint16_t)(name_length + 12u + chunk_len);
+      uint16_t frame_size = (uint16_t)(SDPCM_CONTROL_EVENT_HEADER_LENGTH
+         + CDC_HEADER_LENGTH + payload_length);
+      uint16_t request_id = sdio_next_tx_probe_request_id();
+      uint32_t cdc_flags;
+      uint8_t *payload;
+
+      memset(tx_frame, 0, sizeof(tx_frame));
+      sdio_store_u16_le(&tx_frame[0], frame_size);
+      sdio_store_u16_le(&tx_frame[2], (uint16_t)~frame_size);
+      tx_frame[4] = sdio_next_tx_probe_sequence();
+      tx_frame[5] = SDPCM_CONTROL_CHANNEL;
+      tx_frame[7] = SDPCM_CONTROL_EVENT_HEADER_LENGTH;
+      sdio_store_u32_le(&tx_frame[12], WLC_SET_VAR);
+      sdio_store_u32_le(&tx_frame[16], (uint32_t)payload_length);
+      cdc_flags = ((uint32_t)request_id << CDCF_IOC_ID_SHIFT)
+         | ((uint32_t)TX_CONTROL_TEMPLATE_INTERFACE << CDCF_IOC_IF_SHIFT)
+         | CDCF_IOC_SET;
+      sdio_store_u32_le(&tx_frame[20], cdc_flags);
+      sdio_store_u32_le(&tx_frame[24], 0u);
+      payload = &tx_frame[SDPCM_CONTROL_EVENT_HEADER_LENGTH + CDC_HEADER_LENGTH];
+      memcpy(payload, clm_iovar, name_length);
+      sdio_store_u16_le(&payload[name_length + 0u], flag);
+      sdio_store_u16_le(&payload[name_length + 2u], (uint16_t)SDIO_CLM_DLOAD_TYPE);
+      sdio_store_u32_le(&payload[name_length + 4u], chunk_len);
+      sdio_store_u32_le(&payload[name_length + 8u], 0u);  /* crc - unused */
+      memcpy(&payload[name_length + 12u],
+             &g_cyw43_clm_data[g_runtime_clm_offset], chunk_len);
+
+      if (!sdio_function2_transfer_timeout(dev, true, tx_frame, frame_size,
+                                           SDIO_COMMAND_TIMEOUT_US)) {
+         sdio_debug_log("CLM: chunk transfer failed at offset %lu",
+                        (unsigned long)g_runtime_clm_offset);
+         return -1;
+      }
+      g_runtime_step_sent = true;
+      /* The final (DL_END) chunk makes the firmware ingest the whole
+         CLM, which takes longer than a normal iovar. */
+      g_runtime_step_deadline_us = now
+         + (((flag & SDIO_CLM_DLOAD_FLAG_END) != 0u) ? 50000u : 10000u);
+      return 0;
+   }
+
+   if ((int32_t)(now - g_runtime_step_deadline_us) < 0)
+      return 0;                       /* chunk still settling */
+
+   (void)sdio_drain_fn2_responses(dev);
+   g_runtime_clm_offset += chunk_len;
+   g_runtime_step_sent = false;
+   return (g_runtime_clm_offset >= clm_length) ? 1 : 0;
+}
+
+/* Read the chip's cur_etheraddr MAC across ticks: send the GET, wait a
+   short settle, then drain (the CDC decoder captures the MAC).  Returns
+   1 when done, 0 while in progress. */
+static int sdio_runtime_query_mac_step(sdio_host_t *dev)
+{
+   uint32_t now;
+
+   if (dev == NULL)
+      return 1;
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_step_sent) {
+      g_runtime_capture_mac = true;
+      g_runtime_chip_mac_valid = false;
+      sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                       WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC);
+      (void)sdio_probe_send_single_tx_control_template_timeout(dev,
+                                                              &g_sdio_probe_result,
+                                                              SDIO_RUNTIME_POLL_TIMEOUT_US);
+      g_runtime_step_sent = true;
+      g_runtime_step_deadline_us = now + 10000u;
+      return 0;
+   }
+
+   if ((int32_t)(now - g_runtime_step_deadline_us) < 0)
+      return 0;
+
+   (void)sdio_drain_fn2_responses(dev);
+   g_runtime_capture_mac = false;
+   g_runtime_step_sent = false;
+   return 1;
+}
+
+/* Send one join ioctl per call: prepare g_runtime_join_commands[index],
+   send it, wait out that command's settle delay, drain the reply, then
+   advance.  Returns 1 when the whole sequence is sent, 0 while more
+   remain, -1 on a send error. */
+static int sdio_runtime_join_step(sdio_host_t *dev)
+{
+   uint32_t now;
+
+   if (dev == NULL)
+      return -1;
+   if (g_runtime_join_index >= g_runtime_join_count)
+      return 1;
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_step_sent) {
+      sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                       g_runtime_join_commands[g_runtime_join_index]);
+      g_sdio_probe_result.tx_control_probe_last_command =
+         g_sdio_probe_result.tx_control_template_command;
+      if (!sdio_probe_send_single_tx_control_template(dev, &g_sdio_probe_result))
+         return -1;
+      g_runtime_step_sent = true;
+      g_runtime_step_deadline_us = now
+         + sdio_tx_probe_post_delay_us(g_runtime_join_commands[g_runtime_join_index]);
+      return 0;
+   }
+
+   if ((int32_t)(now - g_runtime_step_deadline_us) < 0)
+      return 0;                       /* command still settling */
+
+   (void)sdio_drain_fn2_responses(dev);
+   g_runtime_join_index++;
+   g_runtime_step_sent = false;
+   return (g_runtime_join_index >= g_runtime_join_count) ? 1 : 0;
 }
 
 static bool sdio_probe_sweep_rx_frames(sdio_host_t *dev,
@@ -4033,23 +4600,77 @@ bool sdio_runtime_tick(void)
             return false;
          }
 
-         sdio_debug_log("== STAGE_SWEEP_RX: starting join sequence ==");
-         /* Send all 12 join commands (UP, INFRA, SUP_WPA, ..., JOIN) to
-            the firmware via the 12-step control channel sequence. */
-         sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                          WIFI_SDIO_TX_PROBE_COMMAND_JOIN);
-         if (!sdio_probe_send_tx_control_template(&g_runtime_device,
-                                                   &g_sdio_probe_result,
-                                                   WIFI_SDIO_TX_PROBE_COMMAND_JOIN)) {
+         /* Build the join command list once.  The CLM download, the MAC
+            read and the join itself then each advance one step per tick
+            (STAGE_CLM_DOWNLOAD / QUERY_MAC / JOIN) so no single poll
+            callback stalls the main 1 MHz loop - this whole phase used
+            to run inline here as one ~0.9 s blocking call. */
+         g_runtime_join_count = sdio_tx_probe_join_commands(g_runtime_join_commands,
+            sizeof(g_runtime_join_commands) / sizeof(g_runtime_join_commands[0]));
+         g_runtime_join_index = 0u;
+         g_runtime_clm_offset = 0u;
+         g_runtime_step_sent = false;
+         if (g_cyw43_clm_data != NULL && g_cyw43_clm_length != 0u)
+            sdio_debug_log("== STAGE_CLM_DOWNLOAD: %lu bytes via clmload ==",
+                           (unsigned long)g_cyw43_clm_length);
+         else
+            sdio_debug_log("== STAGE_CLM_DOWNLOAD: no clm_blob - built-in regulatory ==");
+         g_runtime_stage = SDIO_RUNTIME_STAGE_CLM_DOWNLOAD;
+         return true;
+
+      case SDIO_RUNTIME_STAGE_CLM_DOWNLOAD:
+      {
+         int clm_result = sdio_runtime_clm_download_step(&g_runtime_device);
+
+         if (clm_result == 0)
+            return true;             /* more chunks / still settling */
+         if (clm_result < 0)
+            sdio_debug_log("CLM: download failed - continuing with built-in regulatory");
+         else if (g_cyw43_clm_data != NULL && g_cyw43_clm_length != 0u)
+            sdio_debug_log("CLM: clmload download complete (%lu bytes)",
+                           (unsigned long)g_cyw43_clm_length);
+         g_runtime_step_sent = false;
+         g_runtime_stage = SDIO_RUNTIME_STAGE_QUERY_MAC;
+         return true;
+      }
+
+      case SDIO_RUNTIME_STAGE_QUERY_MAC:
+      {
+         int mac_result = sdio_runtime_query_mac_step(&g_runtime_device);
+
+         if (mac_result == 0)
+            return true;
+         if (g_runtime_chip_mac_valid)
+            sdio_debug_log("chip MAC %02x:%02x:%02x:%02x:%02x:%02x",
+                           (unsigned)g_runtime_chip_mac[0], (unsigned)g_runtime_chip_mac[1],
+                           (unsigned)g_runtime_chip_mac[2], (unsigned)g_runtime_chip_mac[3],
+                           (unsigned)g_runtime_chip_mac[4], (unsigned)g_runtime_chip_mac[5]);
+         else
+            sdio_debug_log("chip MAC read failed - lwIP netif keeps its default address");
+         g_runtime_step_sent = false;
+         sdio_debug_log("== STAGE_JOIN: starting join sequence ==");
+         g_runtime_stage = SDIO_RUNTIME_STAGE_JOIN;
+         return true;
+      }
+
+      case SDIO_RUNTIME_STAGE_JOIN:
+      {
+         int join_result = sdio_runtime_join_step(&g_runtime_device);
+
+         if (join_result == 0)
+            return true;             /* sending / command settling */
+         g_sdio_probe_result.tx_control_probe_steps_requested = g_runtime_join_count;
+         g_sdio_probe_result.tx_control_probe_steps_completed = g_runtime_join_index;
+         if (join_result < 0)
             sdio_debug_log("join command sequence failed at step %u/%u",
-                           (unsigned int)g_sdio_probe_result.tx_control_probe_steps_completed,
-                           (unsigned int)g_sdio_probe_result.tx_control_probe_steps_requested);
-         } else {
+                           (unsigned int)g_runtime_join_index,
+                           (unsigned int)g_runtime_join_count);
+         else
             sdio_debug_log("join command sequence sent (%u steps)",
-                           (unsigned int)g_sdio_probe_result.tx_control_probe_steps_completed);
-         }
+                           (unsigned int)g_runtime_join_count);
          g_runtime_stage = SDIO_RUNTIME_STAGE_SWEEP_RX;
          return true;
+      }
 
       case SDIO_RUNTIME_STAGE_SWEEP_RX:
          sdio_debug_log("== ENTERING SWEEP_RX ==");
@@ -4109,6 +4730,18 @@ bool sdio_runtime_link_is_up(void)
    return g_runtime_started && g_runtime_link_up;
 }
 
+/* Copy the chip's WiFi MAC (read from cur_etheraddr at boot) into
+   mac_out.  Returns false if it was never captured, in which case the
+   caller should keep its own default. */
+bool sdio_runtime_get_chip_mac(uint8_t mac_out[6])
+{
+   if (mac_out == NULL || !g_runtime_chip_mac_valid)
+      return false;
+
+   memcpy(mac_out, g_runtime_chip_mac, 6u);
+   return true;
+}
+
 bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_length)
 {
    uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
@@ -4144,6 +4777,48 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
 
    ++g_runtime_tx_frame_count;
    return true;
+}
+
+/* Wake the chip's SDIO interface before a bus access.  The CYW43 lets
+   its SDIO backplane sleep when the host goes idle; the KSO bit set once
+   during boot is only a standing request - the chip still drops the
+   DEVICE_ON state, and the host must re-assert KSO and wait for
+   DEVICE_ON before each access (this is what cyw43-driver does in
+   cyw43_ll_bus_sleep()).  Without it the poll loop's fn2 reads land on a
+   sleeping interface: the firmware's asynchronous events queued while it
+   slept are missed, and eventually a CMD53 to the sleeping device times
+   out.
+
+   This is NON-BLOCKING: it never sleeps.  If the chip is already awake
+   that is a single CMD52; otherwise it asserts KSO and re-checks a
+   handful of times back-to-back (each CMD52 is tens of microseconds -
+   enough spacing for DEVICE_ON to come up).  If it has still not woken
+   it returns false WITHOUT spinning - KSO has been asserted, so the
+   caller simply skips this poll and a later one finds the bus awake.
+   The old version spun up to 32 ms here, stalling the main loop. */
+static bool sdio_runtime_wake_bus(sdio_host_t *dev)
+{
+   const uint8_t awake = (uint8_t)(SDIO_SLEEP_CSR_KEEP_WL_KSO | SDIO_SLEEP_CSR_WL_DEVON);
+   uint8_t status = 0u;
+   uint8_t attempt;
+
+   if (dev == NULL)
+      return false;
+
+   if (sdio_function1_read_byte(dev, SDIO_SLEEP_CSR, &status)
+       && (status & awake) == awake)
+      return true;   /* already awake */
+
+   (void)sdio_function1_write_byte(dev, SDIO_SLEEP_CSR,
+                                   SDIO_SLEEP_CSR_KEEP_WL_KSO);
+   for (attempt = 0u; attempt < 4u; ++attempt) {
+      status = 0u;
+      if (sdio_function1_read_byte(dev, SDIO_SLEEP_CSR, &status)
+          && (status & awake) == awake)
+         return true;
+   }
+
+   return false;
 }
 
 void sdio_runtime_poll_events(void)
@@ -4196,6 +4871,15 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
       return false;
    }
 
+   /* Wake the chip's SDIO interface before touching the bus.  It sleeps
+      when the host is idle, and a sleeping interface silently swallows
+      the firmware's asynchronous events.  wake_bus is non-blocking: if
+      the chip has not woken yet it returns false, and we skip this poll
+      entirely rather than stall the main loop - KSO has been asserted,
+      so a later poll (a few microseconds away) will find it awake. */
+   if (!sdio_runtime_wake_bus(&g_runtime_device))
+      return false;
+
    /* Ack any pending mailbox interrupts once per poll cycle, before reading
       from fn2.  This is the correct order: clear the interrupt line first so
       the firmware can re-assert it when the next frame arrives.
@@ -4210,19 +4894,6 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                         CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
                         SDIO_RUNTIME_POLL_TIMEOUT_US,
                         &int_status)) {
-         /* Log every poll where INT_STATUS is non-zero (means
-            something actually happened) plus the first few empty
-            polls for orientation. The chip is supposed to set
-            FRAME_IND for every event/data frame; if we see only one
-            FRAME_IND right after boot and then nothing for seconds,
-            the radio is silent for real - not just rate-limited
-            polling on our side. */
-         if (int_status != 0u || s_poll_count < 4u) {
-            sdio_debug_log("poll[%lu] int=0x%08lx ack=0x%08lx",
-                           (unsigned long)s_poll_count,
-                           (unsigned long)int_status,
-                           (unsigned long)int_status);
-         }
          if (int_status != 0u) {
             if (!g_runtime_emulator_mode) {
                /* Clear ALL INT_STATUS bits (write-1-to-clear), not just the
@@ -4248,90 +4919,19 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                                                          CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
                                                          0x00000002u,
                                                          SDIO_RUNTIME_POLL_TIMEOUT_US); /* SMB_INT_ACK */
-                  /* HMB is the chip's other notification path (separate
-                     from fn2 frames). Log every HMB hit - they carry
-                     state notifications like firmware-ready, deep-sleep
-                     transitions, and on some chips early association
-                     events. */
-                  sdio_debug_log("poll[%lu] hmb=0x%08lx",
-                                 (unsigned long)s_poll_count,
-                                 (unsigned long)hmb_data);
+                  (void)hmb_data;   /* HMB read+acked; not logged */
                }
             }
          }
       }
-      /* Heartbeat every 1000 polls so it's obvious polling is still
-         running even when the chip has gone silent. wifi_lwip_poll
-         is registered as a periodic poll so this fires roughly every
-         1-2 seconds depending on the main loop tick rate. */
-      if ((s_poll_count % 1000u) == 999u) {
-         sdio_debug_log("poll heartbeat: %lu polls, link_up=%u, rx_frames=%lu",
+      /* Heartbeat every 1000 polls, but ONLY while the link is still
+         down - it shows the join is still being waited on.  Once the
+         link is up the heartbeat goes silent: a working connection
+         should not stream log lines forever. */
+      if ((s_poll_count % 1000u) == 999u && !g_runtime_link_up) {
+         sdio_debug_log("poll heartbeat: %lu polls, link still down, rx_frames=%lu",
                         (unsigned long)(s_poll_count + 1u),
-                        (unsigned)(g_runtime_link_up ? 1u : 0u),
                         (unsigned long)g_runtime_rx_frame_count);
-
-         /* While the link is still down, ask the chip directly for its
-            current BSSID, chanspec, and MAC.  Responses arrive on the
-            next few poll cycles and get logged via the cdc-rsp +
-            get-var hex dump path.  Diagnostic value:
-              BSSID    - all-zero / NOTASSOCIATED == not joined
-              chanspec - shows the chip's home channel
-              MAC      - all-zero == NVRAM didn't apply at boot
-                         (which would also explain a silent radio,
-                          since PA / antenna config lives in NVRAM). */
-         if (!g_runtime_link_up && !g_runtime_emulator_mode) {
-            sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                             WIFI_SDIO_TX_PROBE_COMMAND_GET_BSSID);
-            (void)sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
-                                                                     &g_sdio_probe_result,
-                                                                     SDIO_RUNTIME_POLL_TIMEOUT_US);
-            sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                             WIFI_SDIO_TX_PROBE_COMMAND_GET_CHANSPEC);
-            (void)sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
-                                                                     &g_sdio_probe_result,
-                                                                     SDIO_RUNTIME_POLL_TIMEOUT_US);
-            sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                             WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC);
-            (void)sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
-                                                                     &g_sdio_probe_result,
-                                                                     SDIO_RUNTIME_POLL_TIMEOUT_US);
-            /* WPA / security setup readbacks - prove that the SETs in
-               the join sequence actually committed.  Each GET prints
-               via the cdc-rsp + get-var hex dump path.  Expected
-               for a WPA2-PSK join:
-                  GET_INFRA      -> cdc get-var len=4: 01 00 00 00
-                  GET_AUTH       -> cdc get-var len=4: 00 00 00 00 (open)
-                  GET_WSEC       -> cdc get-var len=4: 04 00 00 00 (AES)
-                  GET_WPA_AUTH   -> cdc get-var len=4: 80 00 00 00 (WPA2_AUTH_PSK)
-                  GET_SUP_WPA    -> cdc get-var len=22: 01 00 00 00 .. (sup_wpa=1)
-               Anything else points at the corresponding SET being a
-               silent no-op. */
-            sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                             WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA);
-            (void)sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
-                                                                     &g_sdio_probe_result,
-                                                                     SDIO_RUNTIME_POLL_TIMEOUT_US);
-            sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                             WIFI_SDIO_TX_PROBE_COMMAND_GET_AUTH);
-            (void)sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
-                                                                     &g_sdio_probe_result,
-                                                                     SDIO_RUNTIME_POLL_TIMEOUT_US);
-            sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                             WIFI_SDIO_TX_PROBE_COMMAND_GET_WSEC);
-            (void)sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
-                                                                     &g_sdio_probe_result,
-                                                                     SDIO_RUNTIME_POLL_TIMEOUT_US);
-            sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                             WIFI_SDIO_TX_PROBE_COMMAND_GET_WPA_AUTH);
-            (void)sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
-                                                                     &g_sdio_probe_result,
-                                                                     SDIO_RUNTIME_POLL_TIMEOUT_US);
-            sdio_prepare_tx_control_template(&g_sdio_probe_result,
-                                             WIFI_SDIO_TX_PROBE_COMMAND_GET_SUP_WPA);
-            (void)sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
-                                                                     &g_sdio_probe_result,
-                                                                     SDIO_RUNTIME_POLL_TIMEOUT_US);
-         }
       }
       ++s_poll_count;
    }

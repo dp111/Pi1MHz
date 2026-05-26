@@ -16,6 +16,7 @@ typedef struct {
    bool use_dhcp;
    bool has_dns;
    bool link_up;
+   bool link_established;
    bool address_ready;
    struct netif netif;
    ip4_addr_t ipaddr;

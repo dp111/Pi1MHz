@@ -44,7 +44,7 @@ The loader accepts either the new names or the legacy names from the original re
 - `wifi_enable=1`
 - `wifi_ssid=YourSSID` or `SSID=YourSSID`
 - `wifi_password=YourPassword` or `SSIDpassword=YourPassword`
-- `wifi_hostname=pi1mhz`
+- `wifi_hostname=Pi1MHz`
 - `wifi_ip=dhcp` for DHCP, or `wifi_ip=192.168.1.40` for a static address
 - `wifi_netmask=255.255.255.0` for static addressing
 - `wifi_gateway=192.168.1.1` for static addressing

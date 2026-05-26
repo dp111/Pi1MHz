@@ -244,6 +244,7 @@ bool sdio_runtime_tick(void);
 void sdio_runtime_poll_events(void);
 bool sdio_runtime_started(void);
 bool sdio_runtime_link_is_up(void);
+bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
 bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_length);
 bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                                       uint16_t *frame_length);

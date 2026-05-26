@@ -33,6 +33,13 @@ static void wifi_lwip_debug_log(const char *format, ...) __attribute__((format(p
 #define WIFI_LWIP_RX_FRAME_MAX_LEN 1600u
 #define WIFI_LWIP_RX_FRAME_BUDGET 8u
 
+/* If the WiFi link has still not associated this long after the lwIP
+   stack was brought up, treat the boot as failed: report the error and
+   stop polling.  Association is normally a sub-second operation once the
+   radio works, so this window is deliberately generous - it only needs
+   to cover a join whose WLC_E_LINK event arrives late in the poll loop. */
+#define WIFI_LWIP_LINK_TIMEOUT_US (30u * 1000000u)
+
 u32_t sys_now(void)
 {
    return RPI_GetSystemTime() / 1000u;
@@ -85,6 +92,12 @@ static void wifi_lwip_update_runtime_state(void)
       && netif_is_link_up(&g_wifi_lwip_context.netif);
    g_wifi_lwip_context.address_ready = g_wifi_lwip_context.netif_added
       && wifi_lwip_address_ready(&g_wifi_lwip_context.netif);
+
+   /* Latch the first time the link comes up.  Once set, the boot-time
+      link-up timeout in wifi_lwip_poll() is disabled, so a later
+      transient link drop keeps polling and is allowed to recover. */
+   if (g_wifi_lwip_context.link_up)
+      g_wifi_lwip_context.link_established = true;
 
    if (!g_wifi_lwip_link_logged || g_wifi_lwip_last_link_up != g_wifi_lwip_context.link_up) {
       wifi_lwip_debug_log("link %s", g_wifi_lwip_context.link_up ? "up" : "down");
@@ -174,12 +187,19 @@ static err_t wifi_lwip_netif_init(struct netif *netif)
    netif->output = etharp_output;
    netif->linkoutput = wifi_lwip_link_output;
    netif->hwaddr_len = 6;
-   netif->hwaddr[0] = 0x02;
-   netif->hwaddr[1] = 0x50;
-   netif->hwaddr[2] = 0x31;
-   netif->hwaddr[3] = 0x4d;
-   netif->hwaddr[4] = 0x48;
-   netif->hwaddr[5] = 0x7a;
+   /* Use the chip's real WiFi MAC: the firmware associates with that
+      address, so the lwIP netif must present the same one or DHCP and
+      ARP replies are addressed to a station the access point does not
+      know.  Fall back to a fixed locally-administered address only if
+      the chip MAC could not be read. */
+   if (!sdio_runtime_get_chip_mac(netif->hwaddr)) {
+      netif->hwaddr[0] = 0x02;
+      netif->hwaddr[1] = 0x50;
+      netif->hwaddr[2] = 0x31;
+      netif->hwaddr[3] = 0x4d;
+      netif->hwaddr[4] = 0x48;
+      netif->hwaddr[5] = 0x7a;
+   }
    netif->mtu = 1500;
    netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_ETHERNET;
    return ERR_OK;
@@ -300,6 +320,27 @@ void wifi_lwip_poll(void)
 {
    if (!g_wifi_lwip_context.timers_running)
       return;
+
+   /* Stop polling once the WiFi boot has failed.  There is no point
+      hammering the SDIO bus and lwIP timers when the stack can never
+      come up; timers_running latches false so this is permanent. */
+   if (wifi_get_state() == WIFI_STATE_ERROR) {
+      g_wifi_lwip_context.timers_running = false;
+      wifi_lwip_debug_log("wifi in error state - polling stopped");
+      return;
+   }
+
+   /* Boot-time link-up timeout: if the link never associated within the
+      window, the join has failed - report it as an error and stop
+      polling rather than spinning on the SDIO bus forever.  Disabled
+      once the link has come up even once (link_established). */
+   if (!g_wifi_lwip_context.link_established
+       && (RPI_GetSystemTime() - g_wifi_lwip_context.init_time_us) > WIFI_LWIP_LINK_TIMEOUT_US) {
+      wifi_lwip_debug_log("link-up timeout - WiFi join failed, polling stopped");
+      wifi_set_error("WiFi failed to associate within the boot timeout");
+      g_wifi_lwip_context.timers_running = false;
+      return;
+   }
 
    /* Keep draining BRCM async events from fn2 so we eventually see the
       WLC_E_LINK / WLC_E_SET_SSID etc. that signal join completion. */

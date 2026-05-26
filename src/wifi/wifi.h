@@ -68,6 +68,20 @@ typedef enum {
    WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF,
    WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF,
    WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY,
+   /* Pre-join radio/regulatory setup, ported from the working bare-metal
+      PicoWi driver (picowi_join.c join_start / join_restart). */
+   WIFI_SDIO_TX_PROBE_COMMAND_ANTDIV,
+   WIFI_SDIO_TX_PROBE_COMMAND_GMODE,
+   WIFI_SDIO_TX_PROBE_COMMAND_BAND,
+   WIFI_SDIO_TX_PROBE_COMMAND_APSTA,
+   WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_BA_WSIZE,
+   WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU,
+   WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR,
+   WIFI_SDIO_TX_PROBE_COMMAND_MCAST_LIST,
+   WIFI_SDIO_TX_PROBE_COMMAND_PM2_SLEEP_RET,
+   WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_BCN,
+   WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_DTIM,
+   WIFI_SDIO_TX_PROBE_COMMAND_ASSOC_LISTEN,
    /* WLC_SCAN diagnostic.  Issued at the end of the join sequence so
       we can tell whether the radio ever transmits a probe request -
       if WLC_E_ESCAN_RESULT events fire, the radio works and the
@@ -103,6 +117,23 @@ typedef enum {
    WIFI_SDIO_TX_PROBE_COMMAND_GET_AUTH,
    WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA,
    WIFI_SDIO_TX_PROBE_COMMAND_GET_SUP_WPA,
+   /* WLC_GET_RADIO readback, issued straight after WLC_UP.  The chip
+      returns a radio-disable bitmask:
+        0x0000 = radio enabled (a NOTUP after this is not the radio)
+        0x0001 = WL_RADIO_SW_DISABLE
+        0x0002 = WL_RADIO_HW_DISABLE
+        0x0004 = WL_RADIO_MPC_DISABLE   (minimum-power-consumption park)
+        0x0008 = WL_RADIO_COUNTRY_DISABLE (no valid regulatory domain)
+      This pinpoints why WLC_UP returns status 0 yet the interface
+      never actually comes up. */
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO,
+   /* GET-VAR readback of the "country" iovar, issued straight after the
+      SET.  The chip echoes back the wl_country_t it currently holds
+      (country_abbrev[4] + int32 rev + ccode[4]).  If the SET was a
+      silent no-op the readback shows the stale/empty domain; the
+      response length also reveals the exact struct size this firmware
+      build expects, which pins down why the SET returns BCME_BADARG. */
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY,
    WIFI_SDIO_TX_PROBE_COMMAND_JOIN
 } wifi_sdio_tx_probe_command_t;
 
@@ -140,6 +171,8 @@ typedef struct {
    bool ip_config_valid;
    bool sdio_probe_enabled;
    bool sdio_tx_probe_enabled;
+   bool allow_emulator_fallback;
+   char country[8];
    wifi_sdio_tx_probe_command_t sdio_tx_probe_command;
    uint8_t sdio_rx_sweep_limit;
    char ssid[WIFI_SSID_MAX_LEN + 1];

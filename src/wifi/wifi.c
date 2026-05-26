@@ -386,10 +386,31 @@ bool wifi_config_load(wifi_config_t *config)
    config->ip_mode = WIFI_IP_MODE_DHCP;
    config->ip_config_valid = true;
    config->sdio_rx_sweep_limit = 16u;
-   strlcpy(config->hostname, "pi1mhz", sizeof(config->hostname));
+   strlcpy(config->hostname, "P1MHz", sizeof(config->hostname));
    strlcpy(config->netmask, "255.255.255.0", sizeof(config->netmask));
    config->sdio_probe_enabled = wifi_cmdline_bool("wifi_sdio_probe");
    config->sdio_tx_probe_enabled = wifi_cmdline_bool("wifi_sdio_tx_probe");
+   /* wifi_emulator=1 keeps the old lenient "proceed anyway" behaviour when
+      the CYW43 firmware never reaches HT_AVAIL / fn2-ready (only useful when
+      running under a test emulator with no real chip).  On real hardware,
+      leaving it unset makes a firmware-boot failure report a clear error. */
+   config->allow_emulator_fallback = wifi_cmdline_bool("wifi_emulator");
+   /* Regulatory domain for the CYW43 "country" iovar.  Defaults to "GB":
+      the brcmfmac43430 firmware validates the country code against its
+      built-in regulatory table, which holds real ISO 3166 codes (GB,
+      US, DE, ...) but NOT the "XX" worldwide placeholder - sending "XX"
+      makes the country iovar return BCME_BADARG and leaves the radio
+      country-disabled, so WLC_UP cannot bring the interface up.
+      Override from cmdline.txt with e.g. wifi_country=US for wherever
+      the Pi physically is. */
+   {
+      const char *country_prop = get_cmdline_prop("wifi_country");
+
+      if (country_prop != NULL && country_prop[0] != '\0')
+         strlcpy(config->country, country_prop, sizeof(config->country));
+      else
+         strlcpy(config->country, "GB", sizeof(config->country));
+   }
    config->sdio_tx_probe_command = wifi_parse_sdio_tx_probe_command();
    config->sdio_rx_sweep_limit = wifi_parse_u8(get_cmdline_prop("wifi_sdio_rx_sweep_limit"),
                                                config->sdio_rx_sweep_limit);
@@ -403,7 +424,11 @@ bool wifi_config_load(wifi_config_t *config)
    (void) wifi_load_ipv4_prop(config->dns, sizeof(config->dns), "wifi_dns", NULL);
    config->ip_config_valid = wifi_parse_ip_mode(config);
 
-   config->enabled = have_ssid || have_password;
+   /* WiFi only starts when an SSID is present.  Without wifi_ssid (or
+      SSID) in cmdline.txt there is nothing to join, so the entire WiFi
+      stack stays down - no SDIO bring-up, no firmware load, no polling.
+      A password on its own is not enough to enable WiFi. */
+   config->enabled = have_ssid;
 
    port_prop = get_cmdline_prop("wifi_http_port");
    config->http_port = wifi_parse_port(port_prop, config->http_port);
