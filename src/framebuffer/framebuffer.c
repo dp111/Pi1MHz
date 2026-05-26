@@ -4,7 +4,6 @@
 #include <inttypes.h>
 #include <math.h>
 
-#include "../scripts/gitversion.h"
 #include "../rpi/info.h"
 #include "../rpi/armtimer.h"
 #include "../rpi/auxuart.h"
