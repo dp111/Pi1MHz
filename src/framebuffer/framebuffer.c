@@ -1567,7 +1567,7 @@ static void owl(int x0, int y0, int r, int col) {
 
 void fb_show_splash_screen() {
    char buffer[256];
-
+   int address = 0x88; // TODO takes this value from the helper code
    // Select the default screen mode
    fb_writec(22);
    fb_writec(DEFAULT_SCREEN_MODE);
@@ -1596,15 +1596,28 @@ void fb_show_splash_screen() {
    fb_writec(31);
    fb_writec(0);
    fb_writec(4);
+   fb_writes("\r\n\n\n");
+   fb_writes("\r\n\n\n");
+   fb_writes("\r\n\n\n");
    fb_writes("Release: "RELEASENAME"\r\n");
    fb_writes(" Commit: "GITVERSION"\r\n");
    fb_writes("Pi Info: ");
    fb_writes(get_info_string());
    fb_writes("\r\n\n\n");
 
-   sprintf(buffer, "This is mode %d: %dx%d with %u colours",
-           screen->mode_num, screen->width, screen->height, screen->ncolour + 1);
-   fb_writes(buffer);
+   fb_writes("Helper functions can be started in one  of three ways : \r\n\r\n");
+
+   sprintf(buffer, "*FX147,%d,n <ret> *GO FD00 <ret>\r\n", address); fb_writes(buffer);
+   sprintf(buffer, "*FX147,%d,n <ret> *GOIO FD00 <ret>\r\n", address); fb_writes(buffer);
+   sprintf(buffer, "X%%=n:CALL&FC%x <ret>\r\n", address); fb_writes(buffer);
+   fb_writes("\r\n where n is one of the following"
+        "\r\n"
+        "\r\n 0 # This help screen"
+        "\r\n 1 # Status N/A"
+        "\r\n 2 # Enable screen redirector"
+        "\r\n 3 # Load ADFS into SWR"
+        "\r\n 4 # Load MMFS into SWR"
+        "\r\n 5 # Load MMFS2 into SWR");
 
    select_font(0, 1, 1, 0); // Default
    fb_writec(26);
