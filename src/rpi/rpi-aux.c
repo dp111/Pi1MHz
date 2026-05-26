@@ -65,10 +65,7 @@ static void __attribute__((interrupt("IRQ"))) RPI_AuxMiniUartIRQHandler() {
 
 void RPI_AuxMiniUartInit(int baud)
 {
-  /* Data memory barrier need to be places between accesses to different peripherals
-
-     See page 7 of the BCM2853 manual
-
+  /*
    Setup GPIO 14 and 15 as alternative function 5 which is
    UART 1 TXD/RXD. These need to be set before enabling the UART */
   RPI_SetGpioPinFunction(RPI_TX_PIN, FS_ALT5);
@@ -78,8 +75,6 @@ void RPI_AuxMiniUartInit(int baud)
 
   RPI_SetPullUps((1u << RPI_TX_PIN) | (1u << RPI_RX_PIN));
 
-  _data_memory_barrier();
-
   /* As this is a mini uart the configuration is complete! Now just
    enable the uart. Note from the documentation in section 2.1.1 of
    the ARM peripherals manual:
@@ -87,8 +82,6 @@ void RPI_AuxMiniUartInit(int baud)
    If the enable bits are clear you will have no access to a
    peripheral. You can not even read or write the registers */
   RPI_Aux->ENABLES = AUX_ENA_MINIUART;
-
-  _data_memory_barrier();
 
   /* Disable flow control,enable transmitter and receiver! */
   RPI_Aux->MU_CNTL = 0;
@@ -104,7 +97,6 @@ void RPI_AuxMiniUartInit(int baud)
 
   int sys_freq = get_clock_rate(CORE_CLK_ID);
 
-  _data_memory_barrier();
   /* Transposed calculation from Section 2.2.1 of the ARM peripherals manual */
   RPI_Aux->MU_BAUD = ( sys_freq / (8 * baud)) - 1;
 
@@ -113,18 +105,14 @@ void RPI_AuxMiniUartInit(int baud)
    tx_buffer = malloc(TX_BUFFER_SIZE);
    tx_head = tx_tail = 0;
    *((unsigned int *) &_interrupt_vector_h ) = (unsigned int )&RPI_AuxMiniUartIRQHandler;
-   _data_memory_barrier();
 
    RPI_IRQBase->Enable_IRQs_1 = (1 << 29);
-   _data_memory_barrier();
    RPI_Aux->MU_IER |= AUX_MUIER_RX_INT;
    }
 #endif
 
   /* Disable flow control,enable transmitter and receiver! */
   RPI_Aux->MU_CNTL = AUX_MUCNTL_TX_ENABLE | AUX_MUCNTL_RX_ENABLE;
-
-  _data_memory_barrier();
 }
 
 void RPI_AuxMiniUartWrite(char c)
@@ -147,21 +135,15 @@ void RPI_AuxMiniUartWrite(char c)
   tx_buffer[tmp_head] = c;
   tx_head = tmp_head;
 
-  _data_memory_barrier();
-
   /* Enable TxEmpty interrupt */
   RPI_Aux->MU_IER |= AUX_MUIER_TX_INT;
 
-  _data_memory_barrier();
-
 #else
-  _data_memory_barrier();
   /* Wait until the UART has an empty space in the FIFO */
   while ((RPI_Aux->MU_LSR & AUX_MULSR_TX_EMPTY) == 0)
   {
   }
   /* Write the character to the FIFO for transmission */
   RPI_Aux->MU_IO = c;
-  _data_memory_barrier();
 #endif
 }

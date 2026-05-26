@@ -34,6 +34,7 @@
 #include <inttypes.h>
 #include "block.h"
 #include "rpi-base.h"
+#include "arm-start.h"
 
 #include "rpi-systimer.h"
 
@@ -48,9 +49,9 @@
 
 #ifdef DEBUG
 #define EMMC_DEBUG
+#else
+#define printf(...)
 #endif
-
-extern void  _data_memory_barrier();
 
 // Configuration options
 
@@ -469,18 +470,15 @@ static const uint32_t sd_acommands[] = {
 static void sd_power_off()
 {
    /* Power off the SD card */
-   _data_memory_barrier();
    uint32_t control0 = RPI_EMMCBase->EMMC_CONTROL0;
    control0 &= ~(1 << 8);  // Set SD Bus Power bit off in Power Control Register
    RPI_EMMCBase->EMMC_CONTROL0 = control0;
-   _data_memory_barrier();
 }
 
 static uint32_t sd_get_base_clock_hz()
 {
    uint32_t base_clock;
 #if SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_GENERIC
-   _data_memory_barrier();
    uint32_t capabilities_0 = RPI_EMMCBase->EMMC_CAPABILITIES_0;
    base_clock = ((capabilities_0 >> 8) & 0xff) * 1000000;
 #elif SDHCI_IMPLEMENTATION == SDHCI_IMPLEMENTATION_BCM_2708
@@ -611,7 +609,7 @@ static int sd_switch_clock_rate(uint32_t base_clock, uint32_t target_rate)
 {
     // Decide on an appropriate divider
     uint32_t divider = sd_get_clock_divider(base_clock, target_rate);
-    _data_memory_barrier();
+
     // Wait for the command inhibit (CMD and DAT) bits to clear
     while(RPI_EMMCBase->EMMC_STATUS & 0x3)
         usleep(1000);
@@ -632,7 +630,6 @@ static int sd_switch_clock_rate(uint32_t base_clock, uint32_t target_rate)
     control1 |= (1 << 2);
     RPI_EMMCBase->EMMC_CONTROL1 = control1;
     usleep(2000);
-    _data_memory_barrier();
 #ifdef EMMC_DEBUG
     printf("EMMC: successfully set clock rate to %"PRIu32" Hz\r\n", target_rate);
 #endif
@@ -642,8 +639,7 @@ static int sd_switch_clock_rate(uint32_t base_clock, uint32_t target_rate)
 // Reset the CMD line
 static int sd_reset_cmd()
 {
-    _data_memory_barrier();
-    uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
+   uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
    control1 |= SD_RESET_CMD;
    RPI_EMMCBase->EMMC_CONTROL1 = control1;
    TIMEOUT_WAIT(((RPI_EMMCBase->EMMC_CONTROL1 & SD_RESET_CMD) == 0), 1000000);
@@ -652,15 +648,13 @@ static int sd_reset_cmd()
       printf("EMMC: CMD line did not reset properly\r\n");
       return -1;
    }
-   _data_memory_barrier();
    return 0;
 }
 
 // Reset the CMD line
 static int sd_reset_dat()
 {
-   _data_memory_barrier();
-    uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
+   uint32_t control1 = RPI_EMMCBase->EMMC_CONTROL1;
    control1 |= SD_RESET_DAT;
    RPI_EMMCBase->EMMC_CONTROL1 = control1;
    TIMEOUT_WAIT((RPI_EMMCBase->EMMC_CONTROL1 & SD_RESET_DAT) == 0, 1000000);
@@ -669,13 +663,11 @@ static int sd_reset_dat()
       printf("EMMC: DAT line did not reset properly\r\n");
       return -1;
    }
-   _data_memory_barrier();
    return 0;
 }
 
 static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, uint32_t argument, useconds_t timeout)
 {
-   _data_memory_barrier();
     dev->last_cmd_reg = cmd_reg;
     dev->last_cmd_success = 0;
 
@@ -954,7 +946,6 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
 
     // Return success
     dev->last_cmd_success = 1;
-    _data_memory_barrier();
 }
 
 static void sd_handle_card_interrupt(struct emmc_block_dev *dev)
@@ -962,7 +953,6 @@ static void sd_handle_card_interrupt(struct emmc_block_dev *dev)
     // Handle a card interrupt
 
 #ifdef EMMC_DEBUG
-   _data_memory_barrier();
     uint32_t status = RPI_EMMCBase->EMMC_STATUS;
 
     printf("SD: card interrupt\r\n");
@@ -997,7 +987,6 @@ static void sd_handle_card_interrupt(struct emmc_block_dev *dev)
 
 static void sd_handle_interrupts(struct emmc_block_dev *dev)
 {
-   _data_memory_barrier();
     uint32_t irpts = RPI_EMMCBase->EMMC_INTERRUPT;
     uint32_t reset_mask = 0;
 
@@ -1086,7 +1075,6 @@ static void sd_handle_interrupts(struct emmc_block_dev *dev)
     }
 
     RPI_EMMCBase->EMMC_INTERRUPT = reset_mask;
-    _data_memory_barrier();
 }
 
 static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint32_t argument, useconds_t timeout)
@@ -1171,7 +1159,6 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
 
 int sd_card_init(struct block_device **dev)
 {
-   _data_memory_barrier();
     // Check the sanity of the sd_commands and sd_acommands structures
     if(sizeof(sd_commands) != (64 * sizeof(uint32_t)))
     {
@@ -1269,7 +1256,6 @@ int sd_card_init(struct block_device **dev)
 
    // Clear control2
    RPI_EMMCBase->EMMC_CONTROL2 = 0;
-   _data_memory_barrier();
    // Get the base clock rate
    uint32_t base_clock = sd_get_base_clock_hz();
    if(base_clock == 0)
@@ -1277,7 +1263,6 @@ int sd_card_init(struct block_device **dev)
        printf("EMMC: assuming clock rate to be 100MHz\r\n");
        base_clock = 100000000;
    }
-   _data_memory_barrier();
    // Set clock rate to something slow
 #ifdef EMMC_DEBUG
    printf("EMMC: setting clock rate\r\n");
@@ -1770,7 +1755,7 @@ int sd_card_init(struct block_device **dev)
         // Send ACMD6 to change the card's bit mode
         sd_issue_command(ret, SET_BUS_WIDTH, 0x2, 500000);
         if(FAIL(ret))
-            printf("SD: switch to 4-bit data mode failed\r\n");
+            {printf("SD: switch to 4-bit data mode failed\r\n");}
         else
         {
             // Change bit mode for Host
@@ -1796,7 +1781,6 @@ int sd_card_init(struct block_device **dev)
    RPI_EMMCBase->EMMC_INTERRUPT = 0xffffffff;
 
    *dev = (struct block_device *)ret;
-   _data_memory_barrier();
    return 0;
 }
 
@@ -1973,9 +1957,9 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
             printf("error = %08"PRIu32".  ", edev->last_error);
             retry_count++;
             if(retry_count < max_retries)
-                printf("Retrying...\r\n");
+                {printf("Retrying...\r\n");}
             else
-                printf("Giving up.\r\n");
+                {printf("Giving up.\r\n");}
         }
    }
    if(retry_count == max_retries)

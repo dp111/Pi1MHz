@@ -35,8 +35,6 @@ static uint32_t *next_buffer;
 
 size_t rpi_audio_buffer_free_space()
 {
-   _data_memory_barrier();
-
    if ((RPI_DMA5Base->SRC_ADR) < (((uint32_t)&dma_cb_data[1].buffer[0]) | GPU_BASE))
    {
       // DMA is in first buffer
@@ -72,7 +70,7 @@ void rpi_audio_samples_written(void)
       buffer_state |= 1;
    else
       buffer_state |= 2;
-   _data_memory_barrier(); // make sure the buffer is written out of cache
+   // make sure the buffer is written out of cache
    _clean_cache_area(next_buffer, sizeof(dma_cb_data[0].buffer));
 }
 
@@ -97,20 +95,16 @@ uint32_t rpi_audio_init(uint32_t samplerate)
 {
    uint32_t audio_range = 500000000 / (2 * samplerate);
 
-   _data_memory_barrier();
-
    RPI_CLKBase->PWM_CTL = PM_PASSWORD | BCM2835_PWMCLK_CNTL_KILL;
-   _data_memory_barrier();
    RPI_PWMBase->PWM_CONTROL = 0;
 
    // samplerate = 500000000 / 2 / range
 
    // Bits 0..11 Fractional Part Of Divisor = 0, Bits 12..23 Integer Part Of Divisor = 2
-   _data_memory_barrier();
 
    RPI_CLKBase->PWM_DIV = PM_PASSWORD | (0x2000);
    RPI_CLKBase->PWM_CTL = PM_PASSWORD | BCM2835_PWMCLK_CNTL_ENABLE | BCM2835_PWMCLK_CNTL_PLLD ;
-   _data_memory_barrier();
+
    usleep(1);
 
    RPI_PWMBase->PWM0_RANGE = audio_range;
@@ -128,8 +122,6 @@ uint32_t rpi_audio_init(uint32_t samplerate)
    RPI_PWMBase->PWM_CONTROL = BCM2835_PWM1_USEFIFO | BCM2835_PWM1_ENABLE |
                               BCM2835_PWM0_USEFIFO | BCM2835_PWM0_ENABLE | BCM2735_PWMx_CLRF ;
 
-   _data_memory_barrier();
-
    RPI_DMABase->Enable = 1<<5; // enable DMA 5
 
    RPI_DMA5Base->CS = BCM2708_DMA_RESET;
@@ -139,8 +131,6 @@ uint32_t rpi_audio_init(uint32_t samplerate)
    RPI_DMA5Base->Debug = 7; // clear debug error flags
    usleep(10);
    RPI_DMA5Base->CS = 0x10880000 | BCM2708_DMA_ACTIVE;  // go, mid priority, wait for outstanding writes
-
-   _data_memory_barrier();
 
    return audio_range;
 }
