@@ -161,6 +161,9 @@ static void filesystemPrintfserror(FRESULT fsResult)
       debugString_P(PSTR("FR_NO_FILE\\r\n"));
       break;
 
+      case FR_OK: // This can't happen as only errors are passed in
+      case FR_MKFS_ABORTED:
+      case FR_INVALID_PARAMETER:
       default:
       debugString_P(PSTR("unknown error\r\n"));
       break;
@@ -206,26 +209,7 @@ bool filesystemMount(void)
    if (fsResult != FR_OK) {
       if (debugFlag_filesystem) {
          debugString_P(PSTR("File system: filesystemMount(): ERROR: "));
-         switch(fsResult) {
-            case FR_INVALID_DRIVE:
-            debugString_P(PSTR("FR_INVALID_DRIVE\r\n"));
-            break;
-
-            case FR_DISK_ERR:
-            debugString_P(PSTR("FR_DISK_ERR\r\n"));
-            break;
-
-            case FR_NOT_READY:
-            debugString_P(PSTR("FR_NOT_READY - No SD Card reports not ready!\r\n"));
-            break;
-
-            case FR_NO_FILESYSTEM:
-            debugString_P(PSTR("FR_NO_FILESYSTEM - SD Card not formatted?\r\n"));
-            break;
-
-            default:
-            debugString_P(PSTR("Unknown error\r\n"));
-         }
+         filesystemPrintfserror(fsResult);
       }
 
       // Exit with error status
