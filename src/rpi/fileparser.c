@@ -352,7 +352,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
     return 1;
 }
 
-void parse_relasekeyvalues( parserkeyvalue values[], int numberofkeys )
+void parse_releasekeyvalues( parserkeyvalue values[], int numberofkeys )
 {
     for (int i = 0; i < numberofkeys ; i++)
     {

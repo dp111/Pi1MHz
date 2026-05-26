@@ -27,5 +27,5 @@ typedef struct  {
 
 int parse_findindex( const char * searchkey, const parserkey array[]);
 int parse_readfile( const char * filename , const char * outfile, const parserkey keyv[], parserkeyvalue values[]);
-void parse_relasekeyvalues( parserkeyvalue values[], int numberofkeys );
+void parse_releasekeyvalues( parserkeyvalue values[], int numberofkeys );
 #endif

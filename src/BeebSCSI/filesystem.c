@@ -299,7 +299,7 @@ bool filesystemDismount(void)
    for( uint8_t i=0 ; i < MAX_LUNS; i++ )
    {
       filesystemSetLunStatus(i, false);
-      parse_relasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
+      parse_releasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
    }
    // Dismount the SD card
      FRESULT fsResult;
@@ -376,7 +376,7 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
 
    // Transitioning from started to stopped
    f_close(&filesystemState.fileObject[lunNumber]);
-   parse_relasekeyvalues(filesystemState.keyvalues[lunNumber], NUM_KEYS);
+   parse_releasekeyvalues(filesystemState.keyvalues[lunNumber], NUM_KEYS);
    filesystemState.fsLunStatus[lunNumber] = false;
 
    if (debugFlag_filesystem) {
