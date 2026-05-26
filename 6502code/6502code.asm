@@ -1,8 +1,8 @@
 ;
 ; Pi1MHz 6502 helper code
 ;
-
-discaccess = &FCD6
+newoswrch = &FCA0
+discaccess =newoswrch+6
 OSBYTE = &FFF4
 OSWRCH = &FFEE
 MACRO PAGERTS
@@ -195,8 +195,6 @@ ORG &FD00
 ; oswrch redirector
 {
 ORG &FD00
-
-newoswrch = &FCD0
 
   LDA &20E
   STA newoswrch+4

@@ -233,11 +233,27 @@ Below isn't currently implemented
     command pointer + 0 = 20
     return Base + 4 = 0 or 1 depending on SDCARD type
 
-## helper function
+## Frame buffer
 
-There are a number helper functions built into JIM RAM so they can be over written. These are accessed by :
+This is taken from PiTubeDirect but cutdown to support just the beeb fonts. writes to &FCA0 are directed to HDMI port. OSWRCH redirection can be enabled by calling a helper function.
 
-  ?&FC88 = function number, : CALL &FD00
+## Helper function
+
+There are a number helper functions built in. These are accessed by :
+
+  ?&FC88 = function number : CALL &FD00
+  or X% = function number : CALL &FC88
+
+Helper functions include
+
+* 0 help screen
+* 1 Status ( not implemented yet )
+* 2 Screen redirector to HDMI port
+* 3 SRLOAD ADFS rom
+* 4 SRLOAD MMFS rom
+* 5 SRLOAD MMFS2 rom
+
+
 ## Internal status and control
 
 &FCCA selects the command/status address
@@ -252,10 +268,13 @@ Addresses currently defined
 * LED override : depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx where xx is the pi GPIO number
 * M5000_BeebAudio_Off=1 to turn off Audio out of the Beeb and enable stereo on the headphone jack of Pi3B+
 * M5000_Gain=xxxx : Over rides default gain of 16. Add 1000 to disable auto scaling as well. Auto scaling reduces the gain if the signal clips
-* Ram_addr=0xYY : set the base address of the byte write ram registers , -1 to disable
-* Harddisc_addr=0xYY : set the base address of the harddisc registers , -1 to disable
+* Rampage_addr=0xYY : set the base address of the page write ram registers default &FD, -1 to disable
+* Rambyte_addr=0xYY : set the base address of the byte write ram registers default &00, -1 to disable
+* Harddisc_addr=0xYY : set the base address of the harddisc registers default &40, -1 to disable
 * M5000_addr=-1 : disables the M5000 emulator
-* Framebuffer_addr=0xYY : set the base address of the frame buffer registers , -1 to disable
+* Framebuffer_addr=0xYY : set the base address of the frame buffer registers default &A0, -1 to disable
+* Discaccess_addr=0xYY : set the base address of the discaccess registers default &A6, -1 to disable
+* Helpers_addr=0xYY : set the base address of the helpers registers default &88, -1 to disable
 
 ## Making the code
 
