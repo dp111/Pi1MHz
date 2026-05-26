@@ -40,10 +40,16 @@ FIQstart:
                             // This finishes any outstanding read that might be inflight
                             // e.g. from the foreground task
    LDR      r8, [r11]       // get data posted from the VPU.
-
+#if 0
+   push {r0-r1}
+   mov r0,#1 // debug pin
+   ldr r1,=(PERIPHERAL_BASE +0x20001C) // set 
+   str r0,[r1]
+   pop {r0-r1}
+#endif
 // Stall as going off chip
 // so do something a bit useful
-   orr      r12, r12, #(PERIPHERAL_BASE + 0x00B844) & 0xff000000
+   mov      r12,      #(PERIPHERAL_BASE + 0x00B844) & 0xff000000
    orr      r12, r12, #(PERIPHERAL_BASE + 0x00B844) & 0x00ff0000
    orr      r12, r12, #(PERIPHERAL_BASE + 0x00B844) & 0x0000ff00
 
@@ -56,7 +62,13 @@ FIQstart:
    orrne    r9, r9, # Pi1MHz_MEM_RNW<<2     // set read flag ready for call back table
 
    ldr      r9, [r9, #Pi1MHz_CB_BASE]    // load call back pointer
-
+#if 0 
+   push {r0-r1}
+   mov r0,#1 // debug pin
+   ldr r1,= (PERIPHERAL_BASE+0x200028) // clear
+   str r0,[r1]
+   pop {r0-r1}
+#endif
 //stall
    mov      r12, #0
 
