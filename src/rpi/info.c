@@ -25,10 +25,7 @@ static void print_tag_value(char *name, const rpi_mailbox_property_t *buf, int h
 
 static int get_revision() {
    rpi_mailbox_property_t *buf;
-   RPI_PropertyInit();
-   RPI_PropertyAddTag(TAG_GET_BOARD_REVISION);
-   RPI_PropertyProcess();
-   buf = RPI_PropertyGet(TAG_GET_BOARD_REVISION);
+   buf = RPI_PropertyGetWord(TAG_GET_BOARD_REVISION,0);
    if (buf) {
       return buf->data.buffer_32[0];
    } else {
@@ -38,10 +35,7 @@ static int get_revision() {
 
 int get_clock_rate(int clk_id) {
    rpi_mailbox_property_t *buf;
-   RPI_PropertyInit();  
-   RPI_PropertyAddTag(TAG_GET_CLOCK_RATE, clk_id);
-   RPI_PropertyProcess();
-   buf = RPI_PropertyGet(TAG_GET_CLOCK_RATE);
+   buf = RPI_PropertyGetWord(TAG_GET_CLOCK_RATE, clk_id);
    if (buf) {
       return buf->data.buffer_32[1];
    } else {
@@ -51,10 +45,7 @@ int get_clock_rate(int clk_id) {
 
 static float get_temp() {
    rpi_mailbox_property_t *buf;
-   RPI_PropertyInit();
-   RPI_PropertyAddTag(TAG_GET_TEMPERATURE, 0);
-   RPI_PropertyProcess();
-   buf = RPI_PropertyGet(TAG_GET_TEMPERATURE);
+   buf = RPI_PropertyGetWord(TAG_GET_TEMPERATURE, 0);
    if (buf) {
       return ((float)buf->data.buffer_32[1]) / 1E3F;
    } else {
@@ -64,10 +55,7 @@ static float get_temp() {
 
 static float get_voltage(int component_id) {
    rpi_mailbox_property_t *buf;
-   RPI_PropertyInit();
-   RPI_PropertyAddTag(TAG_GET_VOLTAGE, component_id);
-   RPI_PropertyProcess();
-   buf = RPI_PropertyGet(TAG_GET_VOLTAGE);
+   buf = RPI_PropertyGetWord(TAG_GET_VOLTAGE, component_id);
    if (buf) {
       return ((float) buf->data.buffer_32[1]) / 1E6F;
    } else {
@@ -99,12 +87,9 @@ char *get_info_string() {
 static char *get_cmdline() {
    static int read = 0;
    if (!read) {
-      memset(cmdline, 0, PROP_SIZE);
+      //memset(cmdline, 0, PROP_SIZE);
       rpi_mailbox_property_t *buf;
-      RPI_PropertyInit();
-      RPI_PropertyAddTag(TAG_GET_COMMAND_LINE, 0);
-      RPI_PropertyProcess();
-      buf = RPI_PropertyGet(TAG_GET_COMMAND_LINE);
+      buf = RPI_PropertyGetBuffer( TAG_GET_COMMAND_LINE );
       if (buf) {
          memcpy(cmdline, buf->data.buffer_8, buf->byte_length);
          cmdline[buf->byte_length] = 0;
@@ -167,14 +152,11 @@ static clock_info_t * get_clock_rates(int clk_id) {
 unsigned int mem_info(int size)
 {
    rpi_mailbox_property_t *buf;
-   RPI_PropertyInit();
-   RPI_PropertyAddTag(TAG_GET_ARM_MEMORY, 0);
-   RPI_PropertyProcess();
-   buf = RPI_PropertyGet(TAG_GET_ARM_MEMORY);
+   buf = RPI_PropertyGetWord(TAG_GET_ARM_MEMORY, 0);
    if (size)
       return buf->data.buffer_32[1];
    return buf->data.buffer_32[0];
-   
+
 }
 
 void dump_useful_info() {
@@ -253,7 +235,7 @@ void dump_useful_info() {
    LOG_INFO("     SDRAM_C VOLTAGE : %6.2f V\r\n", get_voltage(COMPONENT_SDRAM_C));
    LOG_INFO("     SDRAM_P VOLTAGE : %6.2f V\r\n", get_voltage(COMPONENT_SDRAM_P));
    LOG_INFO("     SDRAM_I VOLTAGE : %6.2f V\r\n", get_voltage(COMPONENT_SDRAM_I));
-   
+
    LOG_INFO("            CMD_LINE : %s\r\n", get_cmdline());
 
 }

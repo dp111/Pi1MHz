@@ -180,6 +180,9 @@ typedef struct {
 #define MAX_CLK_ID  0x00000000a
 
 extern void RPI_PropertyInit( void );
+extern rpi_mailbox_property_t* RPI_PropertyGetWord( rpi_mailbox_tag_t tag, uint32_t data );
+extern rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag);
+extern void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data);
 extern void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... );
 extern int RPI_PropertyProcess( void );
 extern void RPI_PropertyProcessNoCheck( void );

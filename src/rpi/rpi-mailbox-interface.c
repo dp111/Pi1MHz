@@ -9,7 +9,7 @@
 /* Make sure the property tag buffer is aligned to a 16-byte boundary because
    we only have 28-bits available in the property interface protocol to pass
    the address of the buffer to the VC. */
-__attribute__((aligned(16)))  NOINIT_SECTION static uint32_t pt[PROP_BUFFER_SIZE];
+__attribute__((aligned(64)))  NOINIT_SECTION static uint32_t pt[PROP_BUFFER_SIZE];
 
 static size_t pt_index;
 
@@ -54,16 +54,47 @@ static uint32_t RPI_Mailbox0Read( mailbox0_channel_t channel )
 
 void RPI_PropertyInit( void )
 {
-    /* Fill in the size on-the-fly */
-    pt[PT_OSIZE] = 12;
-
-    /* Process request (All other values are reserved!) */
-    pt[PT_OREQUEST_OR_RESPONSE] = 0;
-
     /* First available data slot */
     pt_index = 2;
 }
 
+rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data)
+{
+    pt_index = 2;
+    pt[pt_index++] = tag;
+    pt[pt_index++] = 8;
+    pt[pt_index++] = 0; /* Request */
+    pt[pt_index++] = data;
+    pt_index += 1;
+    pt[pt_index] = 0;
+    RPI_PropertyProcess();
+    return RPI_PropertyGet(tag);
+}
+
+void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data)
+{
+    pt_index = 2;
+    pt[pt_index++] = tag;
+    pt[pt_index++] = 8;
+    pt[pt_index++] = 8; /* Request */
+    pt[pt_index++] = id;
+    pt[pt_index++] = data;
+    pt[pt_index] = 0;
+    RPI_PropertyProcess();
+}
+
+rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
+{
+    pt_index = 2;
+    pt[pt_index++] = tag;
+    /* Provide a 1024-byte buffer */
+    pt[pt_index++] = PROP_SIZE;
+    pt[pt_index++] = 0; /* Request */
+    pt_index += PROP_SIZE >> 2;
+    pt[pt_index] = 0;
+    RPI_PropertyProcess();
+    return RPI_PropertyGet(tag);
+}
 /**
     @brief Add a property tag to the current tag list. Data can be included. All data is uint32_t
     @param tag
@@ -92,7 +123,7 @@ void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... )
             break;
         case TAG_SET_POWER_STATE:
             pt[pt_index++] = 8;
-            pt[pt_index++] = 8; /* Request */
+            pt[pt_index++] = 0; /* Request */
             pt[pt_index++] = 0;
             pt[pt_index++] = va_arg( vl, int ); /* 2 off 3 on */
             pt_index += 1;
