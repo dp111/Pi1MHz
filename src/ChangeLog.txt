@@ -150,3 +150,11 @@ Start of USB device support
  Can read and write files on the SDCARD over USB using MTP
  Secret file reboot.now reboots the Pi
  kernel.now uploads a new kernel to ram and executes it.
+
+v1.26
+Fix 6502 which had copy and paste error didn't effect functionality .
+Port VDU 23,8 code from PiTubeDirect
+Port New fill sector /segment code from PiTubeDirect
+Add disk access 16 f_unlink
+Add other disc access functions.
+fix if now .cfg or dsc it was possible to used invalid block size and sectors per track
