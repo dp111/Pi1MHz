@@ -21,6 +21,11 @@ keys must start at the beginning of the line and with
 #include "rpi.h"
 #include "fileparser.h"
 
+/* Largest config file parse_readfile() will accept. Config files are only a
+ * few KB; this ceiling keeps the 4x output buffer (filesize*4) well clear of
+ * a size_t overflow and a sane allocation size. */
+#define PARSE_MAX_FILE_SIZE (256u * 1024u)
+
 /* Compare S1 and S2, ignoring case, returning less than, equal to or
    greater than zero if S1 is lexicographically less than,
    equal to or greater than S2.  */
@@ -58,7 +63,7 @@ static size_t parse_numstrlen( const uint8_t * buf , size_t ptr, size_t max,  in
     size_t len = 0;
     size_t oldptr = ptr;
     *nonnumber = 0;
-    while ((buf[ptr] > ' ') && (buf[ptr] != '#')  && (ptr < max))
+    while ( (ptr < max) && (buf[ptr] > ' ') && (buf[ptr] != '#') )
         {
             if ( ((buf[ptr] >= '0') && (buf[ptr] <= '9')) ||
                     ((buf[ptr] >= 'A') && (buf[ptr] <= 'F')) ||
@@ -87,7 +92,7 @@ static size_t parse_numstrlen( const uint8_t * buf , size_t ptr, size_t max,  in
 static size_t parse_strlen( const uint8_t * buf , size_t ptr, size_t max)
 {
     size_t len = 0;
-    while ((buf[ptr] >= ' ') && (buf[ptr] != '#')  && (ptr < max))
+    while ( (ptr < max) &&(buf[ptr] >= ' ') && (buf[ptr] != '#') )
         {
             len++;
             ptr++;
@@ -95,6 +100,16 @@ static size_t parse_strlen( const uint8_t * buf , size_t ptr, size_t max)
     return len;
 }
 
+
+/* Bounded append to parse_readfile()'s output buffer. The buffer is sized at
+ * 4x the input file; routing every write through this helper means a config
+ * file whose rewritten form is unexpectedly large drops the excess instead
+ * of overrunning the heap allocation. */
+static void out_putc(char *outbuf, size_t outcap, size_t *outptr, int c)
+{
+    if (*outptr < outcap)
+        outbuf[(*outptr)++] = (char)c;
+}
 
 //
 // Parse a file into the key value structure
@@ -109,17 +124,29 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
     size_t filesize = filesystemReadFile( filename , &buffer , 0 );
     if (filesize == 0)
         return 0;
+    // Reject absurdly large files: this bounds filesize*4 below well clear of
+    // a size_t overflow, which would otherwise yield a tiny output buffer.
+    if (filesize > PARSE_MAX_FILE_SIZE)
+    {
+        LOG_DEBUG("Config file %s too large (%u bytes) - not parsed\n\r", filename, filesize);
+        free(buffer);
+        return 0;
+    }
     LOG_DEBUG("Parsing %s File size %u\n\r",filename, filesize);
-    char * outbuf = malloc( filesize*4); // create out buffer *4 input size should be enough
+    size_t outcap = filesize*4; // out buffer is 4x input size
+    char * outbuf = malloc( outcap );
 
     if (outbuf == NULL)
+    {
+        free(buffer);
         return 0;
+    }
 
     while (ptr <filesize)
     {
         // skip white space and blank lines
         while  ((ptr < filesize) && (buffer[ptr] <= ' ') )
-            outbuf[outptr++] = buffer[ptr++];
+            out_putc(outbuf, outcap, &outptr, buffer[ptr++]);
 
         if (ptr >= filesize)
             break;
@@ -128,7 +155,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
         if (buffer[ptr] == '#')
         {
             while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )) )
-                outbuf[outptr++] = buffer[ptr++];
+                out_putc(outbuf, outcap, &outptr, buffer[ptr++]);
             continue;
         }
 
@@ -139,7 +166,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
             // key not found skip line
             LOG_DEBUG("Key not found\n\r" );
             while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )) )
-                outbuf[outptr++] = buffer[ptr++];
+                out_putc(outbuf, outcap, &outptr, buffer[ptr++]);
             continue;
         }
         else
@@ -149,7 +176,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
             LOG_DEBUG("Key found %s \r\n", keyv[keyindex].key );
             while (keylen)
                 {
-                    outbuf[outptr++] = buffer[ptr++];
+                    out_putc(outbuf, outcap, &outptr, buffer[ptr++]);
                     keylen-=1;
                 }
             bool flag = false;
@@ -157,18 +184,18 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
             {
                 if ((buffer[ptr] == ' ') || (buffer[ptr] == '\t') || (buffer[ptr] == '='))
                 {
-                    outbuf[outptr++] = buffer[ptr++];
+                    out_putc(outbuf, outcap, &outptr, buffer[ptr++]);
                     continue;
                 }
                 if (buffer[ptr] == '#')
                 {
                     while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )) )
-                        outbuf[outptr++] = buffer[ptr++];
+                        out_putc(outbuf, outcap, &outptr, buffer[ptr++]);
                     break;
                 }
                 if ((buffer[ptr] == '\n') || ( buffer[ptr] == '\r' ))
                 {
-                    outbuf[outptr++] = buffer[ptr++];
+                    out_putc(outbuf, outcap, &outptr, buffer[ptr++]);
                     break;
                 }
                 flag = true;
@@ -192,14 +219,14 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                 {
                                     char nibble = (values[keyindex].v.string[i] >> 4) & 0x0F;
                                     if (nibble < 10)
-                                        outbuf[outptr++] = (char) (nibble + '0');
+                                        out_putc(outbuf, outcap, &outptr, nibble + '0');
                                     else
-                                        outbuf[outptr++] = (char) (nibble + 'A' - 10);
+                                        out_putc(outbuf, outcap, &outptr, nibble + 'A' - 10);
                                     nibble = values[keyindex].v.string[i] & 0x0F;
                                     if (nibble < 10)
-                                        outbuf[outptr++] = (char) (nibble + '0');
+                                        out_putc(outbuf, outcap, &outptr, nibble + '0');
                                     else
-                                        outbuf[outptr++] = (char) (nibble + 'A' - 10);
+                                        out_putc(outbuf, outcap, &outptr, nibble + 'A' - 10);
                                 }
                             ptr += len;
                         }
@@ -208,14 +235,14 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                             size_t len = parse_strlen( buffer , ptr, filesize);
                             // write a string
                             for( size_t i = 0; i < values[keyindex].length; i++)
-                                outbuf[outptr++] = values[keyindex].v.string[i];
+                                out_putc(outbuf, outcap, &outptr, values[keyindex].v.string[i]);
                             ptr += len;
                         }
                         else if (keyv[keyindex].type == INTEGER)
                         {
                             size_t len = parse_strlen( buffer , ptr, filesize);
                             // write a number
-                            size_t remaining = (filesize * 4) - outptr;
+                            size_t remaining = outcap - outptr;
                             size_t outlen = (size_t) snprintf( outbuf + outptr , remaining , "%d" , *values[keyindex].v.integer);
                             if (outlen > 0 && outlen < remaining) outptr += outlen;
                             ptr += len;
@@ -224,7 +251,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
 
                         // copy the rest of the line to the output buffer
                         while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )))
-                            outbuf[outptr++] = buffer[ptr++];
+                            out_putc(outbuf, outcap, &outptr, buffer[ptr++]);
 
 
                     } else {
@@ -327,7 +354,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
 
                         // now search for the end of the line
                         while ( (ptr < filesize) && ((buffer[ptr] != '\n') && ( buffer[ptr] != '\r' )))
-                            outbuf[outptr++] = buffer[ptr++];
+                            out_putc(outbuf, outcap, &outptr, buffer[ptr++]);
                 }
             } else
             {
@@ -359,7 +386,9 @@ void parse_releasekeyvalues( parserkeyvalue values[], int numberofkeys )
         if (values[i].v.string != NULL)
         {
             free(values[i].v.string);
+            values[i].v.string = NULL;
             values[i].length = 0;
+            
         }
     }
 }

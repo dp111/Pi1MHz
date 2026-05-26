@@ -278,12 +278,12 @@ void mouse_redirect_move_mouse(void)
     mouse_y = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 2)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))<<8)));
     mouse_pointer = Pi1MHz_MemoryRead((uint32_t)(fred_address + 4));
     LOG_DEBUG("Mouse x %"PRIi32" y %"PRIi32" Pointer %u Last pointer %u\r\n", mouse_x, mouse_y, mouse_pointer, lastmouse_pointer);
-
+  
     if (lastmouse_pointer != mouse_pointer)
     {
         lastmouse_pointer = mouse_pointer;
         screen_plane_enable(MOUSE_PLANE, false);
-        if (mouse_pointer == 255u)
+        if (mouse_pointer >= PTRMAX)
             return;
         LOG_DEBUG("*** Mouse pointer %u\r\n", mouse_pointer);
         switch (fb_get_current_screen_mode()->mode_num)

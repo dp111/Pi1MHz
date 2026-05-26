@@ -29,12 +29,14 @@ volatile bool HD_IRQ_ENABLE;
 #define ACTIVE    1
 
 static uint8_t HD_status;
+static volatile uint8_t HD_IRQ;
 
 #define HD_STATUS_Read (HD_status)
+
 static void HD_STATUS_Write(uint8_t data)
 {
    HD_status = data;
-   Pi1MHz_MemoryWrite((uint32_t)(HD_ADDR+1), data);
+   Pi1MHz_MemoryWrite((uint32_t)(HD_ADDR+1), HD_status | HD_IRQ);
 }
 
 #define STATUS_CND (1<<7)
@@ -69,7 +71,20 @@ static void hd_emulator_status(uint8_t bit, bool state)
    if (state == CLEAR)
       HD_STATUS_Write( HD_STATUS_Read & (uint8_t)~bit);
    else
-      HD_STATUS_Write( HD_STATUS_Read |= (uint8_t)bit);
+      HD_STATUS_Write( HD_STATUS_Read | (uint8_t)bit);
+}
+
+static void hd_emulator_set_IRQ(void)
+{
+   HD_IRQ = STATUS_IRQ ;
+   Pi1MHz_MemoryWrite((uint32_t)(HD_ADDR+1), HD_status | STATUS_IRQ);
+
+}
+
+static void hd_emulator_clear_IRQ(void)
+{
+   HD_IRQ = 0;
+   Pi1MHz_MemoryWrite((uint32_t)(HD_ADDR+1), HD_status);
 }
 
 static void hd_emulator_IRQ(unsigned int gpio)
@@ -80,14 +95,14 @@ static void hd_emulator_IRQ(unsigned int gpio)
    {
       HD_IRQ_ENABLE = CLEAR;
       Pi1MHz_SetnIRQ(CLEAR_IRQ);
-      hd_emulator_status(STATUS_IRQ, CLEAR);
+      hd_emulator_clear_IRQ();
    } else
    {
       HD_IRQ_ENABLE = ACTIVE;
       if (HD_STATUS_Read & STATUS_REQ)
       {
          Pi1MHz_SetnIRQ(ASSERT_IRQ);
-         hd_emulator_status(STATUS_IRQ, ACTIVE);
+         hd_emulator_set_IRQ();
       }
    }
 
@@ -164,7 +179,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
 
    // Turn off all host adapter signals
    hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_3 | STATUS_2 | STATUS_CND | STATUS_IRQ, CLEAR);
-
+   hd_emulator_clear_IRQ();
    HD_ACK = CLEAR;
    HD_SEL = CLEAR;
    HD_IRQ_ENABLE = CLEAR;
@@ -442,7 +457,7 @@ void hostadapterWriteRequestFlag(bool flagState)
       if (HD_IRQ_ENABLE)
       {
          Pi1MHz_SetnIRQ(ASSERT_IRQ);
-         hd_emulator_status(STATUS_IRQ, ACTIVE);
+         hd_emulator_set_IRQ();
       }
    }
 }

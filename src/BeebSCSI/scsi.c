@@ -1476,7 +1476,7 @@ static uint8_t scsiCommandModeSelect6(void)
          uint8_t len = Buffer[start+1];
 
          if (debugFlag_scsiCommands)debugStringInt16_P(PSTR("SCSI commands: Writing MODE SELECT Page "), page, true);
-         if (start + len  > length)
+         if (start + len + 2  > length)
             {
             // No data found / bad page
             if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT Bad Argument error\r\n"), DEBUG_ERROR);

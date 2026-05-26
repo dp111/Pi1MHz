@@ -129,6 +129,7 @@ void _clean_cache_area(const void * start, unsigned int length)
       __asm volatile ("mcr     p15, 0, %0, c7, c14, 1" : : "r" (startptr));
       startptr = startptr + cachelinesize;
    } while ( startptr  < endptr);
+   _data_memory_barrier();
 #else
    __asm volatile("mcrr p15,0,%0,%1,c14"::"r" (((uint32_t)start)+length), "r" (start));
    _data_memory_barrier();

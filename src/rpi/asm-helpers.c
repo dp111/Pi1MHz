@@ -33,7 +33,7 @@ void _enable_interrupts(void)
         "CPSIE if \r\n"
     :
     :
-    :
+    :"memory"
     );
 }
 // cppcheck-suppress unusedFunction
@@ -44,7 +44,7 @@ void _disable_interrupts(void)
         "CPSID if \r\n"
     :
     :
-    :
+    :"memory"
     );
 }
 
@@ -58,8 +58,7 @@ unsigned int _disable_interrupts_cspr(void)
     :
         [result] "=r" (result)
     :
-    :
-    );
+    :"memory");
     return result;
 }
 
@@ -76,7 +75,7 @@ void _set_interrupts(unsigned int cpsr)
     :
     :
         [cpsr] "r" (cpsr)
-    :
+    : "memory"
     );
 }
 
@@ -88,7 +87,7 @@ void _restore_cpsr(unsigned int cpsr)
     :
     :
         [cpsr] "r" (cpsr)
-    :
+    : "memory"
     );
 }
 
@@ -100,16 +99,16 @@ void _data_memory_barrier(void)
         "dmb \r\n"
     :
     :
-    :
+    : "memory"
     );
 #else
-    __asm volatile ("mcr p15, 0, %0, c7, c10, 5" :: "r" (0));
+    __asm volatile ("mcr p15, 0, %0, c7, c10, 5" :: "r" (0): "memory");
 #endif
 }
 // cppcheck-suppress unusedFunction
 void _invalidate_icache(void)
 {
-    __asm volatile ("mcr p15, 0, %0, c7, c5, 0" :: "r" (0));
+    __asm volatile ("mcr p15, 0, %0, c7, c5, 0" :: "r" (0): "memory");
 }
 
 // cppcheck-suppress unusedFunction
@@ -121,10 +120,10 @@ void _data_synchronization_barrier(void)
         "dsb \r\n"
     :
     :
-    :
+    : "memory"
     );
 #else
-    __asm volatile ("mcr p15, 0, %0, c7, c10, 4" :: "r" (0));
+    __asm volatile ("mcr p15, 0, %0, c7, c10, 4" :: "r" (0): "memory");
 #endif
 }
 // cppcheck-suppress unusedFunction
