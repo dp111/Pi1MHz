@@ -237,6 +237,20 @@ void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... )
             }
             break;
 
+		case TAG_SET_PALETTE:
+		{
+            uint32_t num_colours = va_arg( vl, int);
+            pt[pt_index++] = 8 + num_colours * 4;
+            pt[pt_index++] = 0; /* Request */
+            pt[pt_index++] = 0;                        // Offset to first colour
+            pt[pt_index++] = num_colours;              // Number of colours
+            uint32_t *palette = va_arg( vl, uint32_t *);
+            for (uint32_t i = 0; i < num_colours; i++) {
+               pt[pt_index++] = palette[i];
+            }
+		}
+            break;
+
         default:
             /* Unsupported tags, just remove the tag from the list */
             pt_index--;
