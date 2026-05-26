@@ -166,7 +166,7 @@ static void hd_emulator_write_scsijuke(unsigned int gpio)
 void harddisc_emulator_init( uint8_t instance , uint8_t address)
 {
    static bool PowerOn = 0 ;
-
+   static uint8_t scsiid = 0;
    HD_ADDR = (uint8_t) address;
 
    // Turn off all host adapter signals
@@ -206,6 +206,10 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       if (prop2)
          vfsjuke = atoi(prop);
 
+      const char *prop3 = get_cmdline_prop("SCSIID");
+      if (prop3)
+      scsiid = (uint8_t) atoi(prop);
+
       // Initialise the SD Card and FAT file system functions
       filesystemInitialise((uint8_t)scsijuke, (uint8_t) vfsjuke);
       // Initialise the SCSI emulation
@@ -214,7 +218,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       PowerOn = 1;
    }
 
-   scsiReset();
+   scsiReset(scsiid);
    filesystemReset();
    // register polling function
    Pi1MHz_Register_Poll(scsiProcessEmulation);

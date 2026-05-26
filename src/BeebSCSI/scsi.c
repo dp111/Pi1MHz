@@ -109,6 +109,7 @@ static struct commandDataBlockStruct
 static uint8_t scsiState;
 
 uint8_t scsiHostID;
+uint8_t ourscsiid;
 
 static void scsiInformationTransferPhase(uint8_t transferPhase);
 
@@ -189,7 +190,8 @@ void scsiInitialise(void)
 }
 
 // Reset the SCSI emulation (called when the host signals reset)
-void scsiReset(void)
+void scsiReset(uint8_t scsiid)
+
 {
    uint8_t lunNumber;
 
@@ -217,7 +219,7 @@ void scsiReset(void)
    for (lunNumber = 0; lunNumber < MAX_LUNS; lunNumber++) {
       requestSenseData[lunNumber] = NO_ERROR;
    }
-
+   ourscsiid = scsiid; // Set the SCSI ID for this device
    fcodeClearBuffer(); // clear the FCODE buffer
 
    // Ensure the SCSI bus phase is BUS FREE
@@ -355,7 +357,10 @@ static uint8_t scsiEmulationBusFree(void)
 
          // Read the host ID (from the host databus)
          scsiHostID = hostadapterReadDatabus();
-
+         if ((ourscsiid != 0) && (scsiHostID != ourscsiid)) {
+            // SCSI ID not for us
+            return SCSI_BUSFREE;
+         }
          // Set busy flag to active
          hostadapterWriteBusyFlag(true);
 
