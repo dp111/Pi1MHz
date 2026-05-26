@@ -1341,6 +1341,12 @@ static int sd_card_init(struct block_device **dev)
 
    // Get the cards SCR register
    ret->scr = (struct sd_scr *)malloc(sizeof(struct sd_scr));
+   if (!ret->scr)
+   {
+       LOG_INFO(PSTR("SD: error allocating memory for SCR\r\n"));
+       if (!dev) free(ret);
+       return -1;
+   }
    ret->buf = &ret->scr->scr[0];
    ret->block_size = 8;
    ret->blocks_to_transfer = 1;
