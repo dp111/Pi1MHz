@@ -87,102 +87,102 @@ F00:0080          mov    r13, GPU_ARM_DBELL
                S01:0000001A:  0D E8 44 B8 00 7E
 F00:0081       
 F00:0082       # poll for nPCFC or nPCFD being low
-F00:0083       .balignw 4,1 # Align with nops
+F00:0083       
 F00:0084       Poll_loop:
 F00:0085          st     r5, GPCLR0_offset(r6)  # Turn off debug signal
                S01:00000020:  65 3A
-F00:0086       Poll_access_low:
-F00:0087          ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
-               S01:00000022:  6C 2D
-F00:0088       
-F00:0089          btst   r12, nPCFC
-               S01:00000024:  8C 6D
-F00:0090          btstne r12, nPCFD
-               S01:00000026:  8C C1 D9 60
-F00:0091          bne    Poll_access_low
-               S01:0000002A:  FC 18
-F00:0092       
-F00:0093          st     r5, GPSET0_offset(r6)  # Debug pin
-               S01:0000002C:  65 37
-F00:0094       
-F00:0095          btst   r12, CLK
-               S01:0000002E:  BC 6D
-F00:0096          beq    waitforclkhigh
-               S01:00000030:  08 18
-F00:0097       
-F00:0098       waitforclklow:                   # wait for extra half cycle to end
-F00:0099          ld     r12, GPLEV0_offset(r6)
-               S01:00000032:  6C 2D
-F00:0100          btst   r12, nPCFC
-               S01:00000034:  8C 6D
-F00:0101          btstne r12, nPCFD
-               S01:00000036:  8C C1 D9 60
-F00:0102          bne    Poll_loop
-               S01:0000003A:  F3 18
-F00:0103       
-F00:0104          btst   r12, CLK
-               S01:0000003C:  BC 6D
-F00:0105          bne    waitforclklow
-               S01:0000003E:  FA 18
-F00:0106       
-F00:0107       waitforclkhigh:
-F00:0108       
-F00:0109       waitforclkhighloop:
-F00:0110          ld     r12, GPLEV0_offset(r6)
-               S01:00000040:  6C 2D
-F00:0111          btst   r12, CLK
-               S01:00000042:  BC 6D
-F00:0112          beq    waitforclkhighloop
-               S01:00000044:  7E 18
-F00:0113       
-F00:0114       # seen rising edge of CLK
-F00:0115       # so address bus has now been setup
-F00:0116       
-F00:0117          LSR    r8, r12,ADDRBUS_SHIFT+1
-               S01:00000046:  48 C3 51 67
-F00:0118       
-F00:0119          and    r8, r10                # Isolate address bus
-               S01:0000004A:  A8 47
+F00:0086       .balignw 4,1 # Align with nops
+F00:0087       Poll_access_low:
+F00:0088          ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
+               S01:00000024:  6C 2D
+F00:0089       
+F00:0090          btst   r12, nPCFC
+               S01:00000026:  8C 6D
+F00:0091          btstne r12, nPCFD
+               S01:00000028:  8C C1 D9 60
+F00:0092          bne    Poll_access_low
+               S01:0000002C:  FC 18
+F00:0093       
+F00:0094          st     r5, GPSET0_offset(r6)  # Debug pin
+               S01:0000002E:  65 37
+F00:0095       
+F00:0096          btst   r12, CLK
+               S01:00000030:  BC 6D
+F00:0097          beq    waitforclkhigh
+               S01:00000032:  08 18
+F00:0098       
+F00:0099       waitforclklow:                   # wait for extra half cycle to end
+F00:0100          ld     r12, GPLEV0_offset(r6)
+               S01:00000034:  6C 2D
+F00:0101          btst   r12, nPCFC
+               S01:00000036:  8C 6D
+F00:0102          btstne r12, nPCFD
+               S01:00000038:  8C C1 D9 60
+F00:0103          bne    Poll_loop
+               S01:0000003C:  F2 18
+F00:0104       
+F00:0105          btst   r12, CLK
+               S01:0000003E:  BC 6D
+F00:0106          bne    waitforclklow
+               S01:00000040:  FA 18
+F00:0107       
+F00:0108       waitforclkhigh:
+F00:0109       
+F00:0110       waitforclkhighloop:
+F00:0111          LSR    r8, r12,ADDRBUS_SHIFT+1
+               S01:00000042:  48 C3 51 67
+F00:0112          and    r8, r10                # Isolate address bus
+               S01:00000046:  A8 47
+F00:0113          ld     r8, (r0,r8) # get byte to write out
+               S01:00000048:  08 A0 08 07
+F00:0114          ld     r12, GPLEV0_offset(r6)
+               S01:0000004C:  6C 2D
+F00:0115          btst   r12, CLK
+               S01:0000004E:  BC 6D
+F00:0116          beq    waitforclkhighloop
+               S01:00000050:  79 18
+F00:0117       
+F00:0118       # seen rising edge of CLK
+F00:0119       # so address bus has now been setup
 F00:0120       
-F00:0121          ld     r8, (r0,r8) # get byte to write out
-               S01:0000004C:  08 A0 08 07
+F00:0121       
 F00:0122          btst   r12, nPCFC
-               S01:00000050:  8C 6D
+               S01:00000052:  8C 6D
 F00:0123          btstne r12, nPCFD
-               S01:00000052:  8C C1 D9 60
+               S01:00000054:  8C C1 D9 60
 F00:0124          bne    Poll_loop
-               S01:00000056:  E5 18
+               S01:00000058:  E4 18
 F00:0125       # check if we are in a read or write cycle
 F00:0126       # we do this here while the read above is stalling
 F00:0127          btst   r12, RnW
-               S01:00000058:  AC 6C
+               S01:0000005A:  AC 6C
 F00:0128          beq    writecycle
-               S01:0000005A:  16 18
+               S01:0000005C:  15 18
 F00:0129       
 F00:0130          btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
-               S01:0000005C:  0C 6D
+               S01:0000005E:  0C 6D
 F00:0131          lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
-               S01:0000005E:  48 C3 CE 40
+               S01:00000060:  48 C3 CE 40
 F00:0132          lsleq  r8, DATASHIFT          # low 16 bits with databus shift
-               S01:00000062:  88 C3 42 40
+               S01:00000064:  88 C3 42 40
 F00:0133          btst   r8, OUTPUTBIT
-               S01:00000066:  F8 6C
+               S01:00000068:  F8 6C
 F00:0134          and    r8, r11     # isolate databus
-               S01:00000068:  B8 47
+               S01:0000006A:  B8 47
 F00:0135       
 F00:0136          st     r8, GPSET0_offset(r6)  # set up databus
-               S01:0000006A:  68 37
+               S01:0000006C:  68 37
 F00:0137          beq    skipenablingbus
-               S01:0000006C:  03 18
+               S01:0000006E:  03 18
 F00:0138          st     r9, GPFSEL0_offset(r6) # set databus to output ( only if it has been written to)
-               S01:0000006E:  69 30
+               S01:00000070:  69 30
 F00:0139          st     r7, GPCLR0_offset(r6)  # set external output enable low
-               S01:00000070:  67 3A
+               S01:00000072:  67 3A
 F00:0140        skipenablingbus:
 F00:0141          st     r12, (r1)              # post data
-               S01:00000072:  1C 09
+               S01:00000074:  1C 09
 F00:0142          st     r12, (r13)             # ring doorbell
-               S01:00000074:  DC 09
+               S01:00000076:  DC 09
 F00:0143       
 F00:0144       .balignw 4,1 # Align with nops
 F00:0145       waitforclklow2loop:
@@ -237,12 +237,12 @@ F00  Pi1MHzvc.s
 Symbols:
 waitforclkloww2 EXPR(136=0x88) ABS 
 waitforclklow2loop EXPR(120=0x78) ABS 
-skipenablingbus EXPR(114=0x72) ABS 
+skipenablingbus EXPR(116=0x74) ABS 
 writecycle EXPR(134=0x86) ABS 
-waitforclkhighloop EXPR(64=0x40) ABS 
-waitforclklow EXPR(50=0x32) ABS 
-waitforclkhigh EXPR(64=0x40) ABS 
-Poll_access_low EXPR(34=0x22) ABS 
+waitforclkhighloop EXPR(66=0x42) ABS 
+waitforclklow EXPR(52=0x34) ABS 
+waitforclkhigh EXPR(66=0x42) ABS 
+Poll_access_low EXPR(36=0x24) ABS 
 Poll_loop EXPR(32=0x20) ABS 
 GPU_ARM_DBELL EXPR(2113976388=0x7e00b844) 
 Pi1MHz_MEM_RNW EXPR(512=0x200) UNUSED 
