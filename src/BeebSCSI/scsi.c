@@ -1070,10 +1070,8 @@ static uint8_t scsiCommandRead6(void)
             debugString_P(PSTR(" "));
          }
       } else {
-         if (debugFlag_scsiBlocks) {
-            debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
-            debugSectorBufferHex(scsiSectorBuffer, 256);
-         }
+         debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
+         debugSectorBufferHex(scsiSectorBuffer, 256);
       }
    }
    if (debugFlag_scsiCommands || debugFlag_scsiBlocks) debugString_P(PSTR("\r\n"));
