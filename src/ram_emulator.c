@@ -37,7 +37,7 @@ Millipede PRISMA-3 (Not support)
 
 static uint8_t rambyte_address;
 
-void ram_emulator_byte_addr(unsigned int gpio)
+static void ram_emulator_byte_addr(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -53,7 +53,7 @@ void ram_emulator_byte_addr(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr, data);               // enable the address register to be read back
 }
 
-void ram_emulator_byte_write(unsigned int gpio)
+static void ram_emulator_byte_write(unsigned int gpio)
 {
    uint8_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -62,7 +62,7 @@ void ram_emulator_byte_write(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr,  data);
 }
 
-void ram_emulator_page_addr_high(unsigned int gpio)
+static void ram_emulator_page_addr_high(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -72,7 +72,7 @@ void ram_emulator_page_addr_high(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
-void ram_emulator_page_addr_mid(unsigned int gpio)
+static void ram_emulator_page_addr_mid(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -81,7 +81,7 @@ void ram_emulator_page_addr_mid(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
-void ram_emulator_page_addr_low(unsigned int gpio)
+static void ram_emulator_page_addr_low(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -97,7 +97,7 @@ void ram_emulator_page_restore(void)
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, ((uint32_t *)(&Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr])) );
 }
 
-void ram_emulator_page_write(unsigned int gpio)
+static void ram_emulator_page_write(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);

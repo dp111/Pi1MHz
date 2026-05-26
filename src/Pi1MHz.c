@@ -176,7 +176,6 @@ void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
    Pi1MHz_Memory_VPU[ad] = 0xFF00FF00 | (data>>16) | (data>>24)<<16;
 }
 
-// cppcheck-suppress unusedFunction
 uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 {
    return Pi1MHz->Memory[addr];
@@ -216,7 +215,7 @@ static uint8_t status_addr;
 
 // Enables the beeb to read and write status info
 // setup the address for status read write
-void Pi1MHzBus_addr_Status(unsigned int gpio)
+static void Pi1MHzBus_addr_Status(unsigned int gpio)
 {
    uint8_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -226,7 +225,7 @@ void Pi1MHzBus_addr_Status(unsigned int gpio)
 }
 
 // take data written by the beeb and put it to the correct place
-void Pi1MHzBus_write_Status(unsigned int gpio)
+static void Pi1MHzBus_write_Status(unsigned int gpio)
 {
    uint8_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -234,7 +233,7 @@ void Pi1MHzBus_write_Status(unsigned int gpio)
    Pi1MHz_MemoryWrite(addr, data); // enable read back
 }
 
-void Pi1MHzBus_read_Status(unsigned int gpio)
+static void Pi1MHzBus_read_Status(unsigned int gpio)
 {
 }
 

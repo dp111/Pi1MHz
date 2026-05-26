@@ -123,7 +123,7 @@ const char * type_names[] = {
 
 #endif
 
-const char *type_lookup(unsigned int type) {
+static const char *type_lookup(unsigned int type) {
    unsigned int num_types = sizeof(type_names) / sizeof(type_names[0]);
    if (type < num_types) {
       return type_names[type];

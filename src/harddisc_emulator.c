@@ -53,19 +53,19 @@ static void HD_STATUS_Write(uint8_t data)
 #define STATUS_BSY (1<<1)
 #define STATUS_MSG (1<<0)
 
-void hd_emulator_write_data(unsigned int gpio)
+static void hd_emulator_write_data(unsigned int gpio)
 {
    HD_DATA = GET_DATA(gpio);
    Pi1MHz_MemoryWrite(HD_ADDR, GET_DATA(gpio));
    HD_ACK = ACTIVE;
 }
 
-void hd_emulator_read_data(unsigned int gpio __attribute__((unused)))
+static void hd_emulator_read_data(unsigned int gpio __attribute__((unused)))
 {
    HD_ACK = ACTIVE;
 }
 
-void hd_emulator_nSEL(unsigned int gpio)
+static void hd_emulator_nSEL(unsigned int gpio)
 {
    HD_DATA = GET_DATA(gpio);
    HD_SEL = ACTIVE;
@@ -159,7 +159,8 @@ static void hd_emulator_conf(unsigned int gpio)
 
 static void hd_emulator_write_scsijuke(unsigned int gpio)
 {
-   filesystemInitialise( GET_DATA(gpio) );
+   filesystemReset();
+   filesystemSetLunDirectory(GET_DATA(gpio));
 }
 
 void harddisc_emulator_init( uint8_t instance , uint8_t address)

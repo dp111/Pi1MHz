@@ -1567,7 +1567,7 @@ static void owl(int x0, int y0, int r, int col) {
    prim_set_fg_col(screen, old_col);
 }
 
-void fb_show_splash_screen(void) {
+static void fb_show_splash_screen(void) {
    char buffer[256];
    int address = 0x88; // TODO takes this value from the helper code
    // Select the default screen mode
@@ -1630,7 +1630,7 @@ void fb_show_splash_screen(void) {
   // cursor(1);
 }
 
-void fb_initialize(void) {
+static void fb_initialize(void) {
 
    // Initialize the VDU operation table
    for (unsigned int i = 32; i < sizeof(vdu_operation_table) / sizeof(vdu_operation_t); i++) {

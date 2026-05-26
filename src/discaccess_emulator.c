@@ -27,7 +27,7 @@ static void discaccess_emulator_update_address(void)
       Pi1MHz_MemoryWrite( ram_address+2, ( disc_ram_addr >> 16 ) & 0xFF );
 }
 
-void discaccess_emulator_byte_addr(unsigned int gpio)
+static void discaccess_emulator_byte_addr(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
@@ -43,7 +43,7 @@ void discaccess_emulator_byte_addr(unsigned int gpio)
    discaccess_emulator_update_address();              // enable the address register to be read back
 }
 
-void discaccess_emulator_byte_write_inc(unsigned int gpio)
+static void discaccess_emulator_byte_write_inc(unsigned int gpio)
 {
    uint8_t data = GET_DATA(gpio);
    Pi1MHz->JIM_ram[disc_ram_addr] =  data;
@@ -52,7 +52,7 @@ void discaccess_emulator_byte_write_inc(unsigned int gpio)
    discaccess_emulator_update_address();
 }
 
-void discaccess_emulator_byte_read_inc(unsigned int gpio)
+static void discaccess_emulator_byte_read_inc(unsigned int gpio)
 {
    disc_ram_addr++;
    Pi1MHz_MemoryWrite(ram_address + 3 , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
@@ -60,7 +60,7 @@ void discaccess_emulator_byte_read_inc(unsigned int gpio)
 }
 
 
-void discaccess_emulator_command(unsigned int gpio)
+static void discaccess_emulator_command(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
