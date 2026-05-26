@@ -10,8 +10,8 @@
 # Global settings
 [all]
 force_turbo=1
+disable_poe_fan=1
 force_eeprom_read=0
-disable_poe_fan
 #hdmi_blanking=2
 #hdmi_ignore_edid=0xa5000080
 #hdmi_ignore_hotplug=1
