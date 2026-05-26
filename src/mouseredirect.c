@@ -257,8 +257,14 @@ static uint8_t lastmouse_pointer=255;
 static void mouse_redirect_move_mouse_data(unsigned int gpio)
 {
     Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
+}
+
+static void mouse_redirect_mouse_type(unsigned int gpio)
+{
+    Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
     change = true;
 }
+
 
 void mouse_redirect_move_mouse()
 {
@@ -278,12 +284,10 @@ void mouse_redirect_move_mouse()
     if (lastmouse_pointer != mouse_pointer)
     {
         lastmouse_pointer = mouse_pointer;
-        if (mouse_pointer == 255)
-        {
-            screen_plane_enable(MOUSE_PLANE, false);
-            return;
-        }
         screen_plane_enable(MOUSE_PLANE, false);
+        if (mouse_pointer == 255u)
+            return;
+        LOG_DEBUG("*** Mouse pointer %u\r\n", mouse_pointer);
         switch (fb_get_current_screen_mode()->mode_num)
         {
         case 0: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE0WIDTH, PTRMODEHEIGHT , 0.5, 256, 3, (uint32_t) &mouse_pointer_data[PTRMODE0WIDTH*PTRMODEHEIGHT*mouse_pointer]);
@@ -338,5 +342,5 @@ void mouse_redirect_init(uint8_t instance, uint8_t address)
     Pi1MHz_Register_Memory(WRITE_FRED, address+1, mouse_redirect_move_mouse_data );
     Pi1MHz_Register_Memory(WRITE_FRED, address+2, mouse_redirect_move_mouse_data );
     Pi1MHz_Register_Memory(WRITE_FRED, address+3, mouse_redirect_move_mouse_data );
-    Pi1MHz_Register_Memory(WRITE_FRED, address+4, mouse_redirect_move_mouse_data );
+    Pi1MHz_Register_Memory(WRITE_FRED, address+4, mouse_redirect_mouse_type );
 }
