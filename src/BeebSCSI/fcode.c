@@ -34,11 +34,13 @@
 #include "debug.h"
 #include "filesystem.h"
 #include "fcode.h"
+#include "../rpi/screen.h"
 
 // Global SCSI (LV-DOS) F-Code buffer (256 bytes)
 uint8_t scsiFcodeBuffer[256];
 uint8_t scsiFcodeBufferRX[256];
 
+static char VPmode;
 // Function to handle F-Code buffer write actions
 void fcodeWriteBuffer(uint8_t lunNumber)
 {
@@ -282,10 +284,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				debugString_P(PSTR(" = Video off\r\n"));
+				screen_plane_enable(0, false);
 				break;
 
 				case '1':
 				debugString_P(PSTR(" = Video on\r\n"));
+				screen_plane_enable(0, true);
 				break;
 
 				default:
@@ -295,12 +299,70 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			break;
 
 			case 0x46: // F
-			debugString_P(PSTR(" = Load/Goto picture number\r\n"));
-            // Display frame!
-            scsiFcodeBufferRX[0] = 'A';
-            scsiFcodeBufferRX[1] = '0';
+			{
+				uint32_t pictureNumber = 0;
+				char op;
+				debugString_P(PSTR(" = Load/Goto picture number : "));
 
-            scsiFcodeBufferRX[2] = 0x0D;
+				for (byteCounter = 0; byteCounter < 256; byteCounter++) {
+					if (scsiFcodeBuffer[byteCounter] == 0x0D) break;
+					if ((char)scsiFcodeBuffer[byteCounter] <= '9') {
+						pictureNumber = pictureNumber * 10 + (scsiFcodeBuffer[byteCounter] - '0');
+					}
+					else
+						{
+							op = (char) scsiFcodeBuffer[byteCounter];
+						}
+					}
+				scsiFcodeBuffer[byteCounter] = 0;
+				debugStringInt32_P(PSTR(""), pictureNumber, false);
+				debugString_P(PSTR(" op: "));
+				debugString_P(PSTR((char *)&scsiFcodeBuffer[byteCounter-1]));
+
+				switch(scsiFcodeBuffer[byteCounter-1]) {
+					case 'I':
+					debugString_P(PSTR(" = Load Picture Info register\r\n"));
+					scsiFcodeBufferRX[0] = 'A';
+					scsiFcodeBufferRX[1] = '3'; // when passed
+					break;
+
+					case 'S':
+					debugString_P(PSTR(" = Stop Register\r\n"));
+					scsiFcodeBufferRX[0] = 'A';
+					scsiFcodeBufferRX[1] = '2'; // when stops
+					break;
+
+					case 'R':
+					debugString_P(PSTR(" = Still picture\r\n"));
+					scsiFcodeBufferRX[0] = 'A';
+					scsiFcodeBufferRX[1] = '0';
+
+					break;
+
+					case 'N':
+					debugString_P(PSTR(" = Goto Picture and play normally\r\n"));
+					scsiFcodeBufferRX[0] = 'A';
+					scsiFcodeBufferRX[1] = '1'; // when complete
+
+					break;
+
+					case 'Q':
+					debugString_P(PSTR(" = Goto Picture and play in previous mode\r\n"));
+					scsiFcodeBufferRX[0] = 'A';
+					scsiFcodeBufferRX[1] = '0';
+
+					break;
+
+					default:
+					debugString_P(PSTR(" = (Invalid parameter)\r\n"));
+					scsiFcodeBufferRX[0] = 'A';
+					scsiFcodeBufferRX[1] = '0';
+					break;
+
+				}
+				// Display frame!
+				scsiFcodeBufferRX[2] = 0x0D;
+			}
 			break;
 
 			case 0x48: // H
@@ -317,6 +379,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				debugString_P(PSTR(" = Remote control routed (Invalid parameter)\r\n"));
 				break;
 			}
+
 			break;
 
 			case 0x49: // I // Domesday sends this
@@ -394,21 +457,31 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x56: // V, VP // VFS sends this
 			switch(scsiFcodeBuffer[1]) {
 				case 'P':
+				VPmode = scsiFcodeBuffer[1];
 				switch(scsiFcodeBuffer[2]) {
 					case '1':
 					debugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
+					screen_plane_enable(0, true);
+					screen_plane_enable(1, false);
+					screen_plane_enable(2, false);
+
 					break;
 
 					case '2':
 					debugString_P(PSTR(" = Video overlay mode 2 (External (computer) RGB only)\r\n"));
+					screen_set_palette( 1, 0, 3 );
+					screen_plane_enable(0, false);
+					screen_plane_enable(1, true);
+					screen_plane_enable(2, true);
+
 					break;
 
 					case '3':
 					debugString_P(PSTR(" = Video overlay mode 3 (Hard-keyed)\r\n"));
-                    scsiFcodeBufferRX[0] = 'A';
-                    scsiFcodeBufferRX[1] = 0xD;
-                    scsiFcodeBufferRX[2] = '3';
-                    scsiFcodeBufferRX[3] = 0x0D;
+					screen_set_palette( 1, 0, 2 );
+					screen_plane_enable(0, true);
+					screen_plane_enable(1, true);
+					screen_plane_enable(2, true);
 
 					break;
 
@@ -422,6 +495,10 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 					case 'X':
 					debugString_P(PSTR(" = Video overlay mode request\r\n")); // Domesday sends this
+					scsiFcodeBufferRX[0] = 'V';
+                    scsiFcodeBufferRX[1] = 'P';
+                    scsiFcodeBufferRX[2] = VPmode;
+                    scsiFcodeBufferRX[3] = 0x0D;
 					break;
 
 					default:
@@ -573,6 +650,6 @@ void fcodeReadBuffer(void)
 
 void fcodeClearBuffer(void)
 {
-    debugString_P(PSTR("fcodeClearBuffer\r\n"));
+    debugString_P(PSTR(" fcodeClearBuffer\r\n"));
     scsiFcodeBufferRX[0] = 0x0D;
 }
