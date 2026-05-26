@@ -289,7 +289,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x46: // F
 			{
 				uint32_t pictureNumber = 0;
-				char op;
 				FCdebugString_P(PSTR(" = Load/Goto picture number : "));
 
 				for (byteCounter = 0; byteCounter < 32; byteCounter++) {
@@ -297,11 +296,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					if ((char)scsiFcodeBuffer[byteCounter] <= '9') {
 						pictureNumber = pictureNumber * 10 + (scsiFcodeBuffer[byteCounter] - '0');
 					}
-					else
-						{
-							op = (char) scsiFcodeBuffer[byteCounter];
-						}
-					}
+				}
 				scsiFcodeBuffer[byteCounter] = 0;
 				FCdebugStringInt32_P(PSTR(""), pictureNumber, false);
 				FCdebugString_P(PSTR(" op: "));

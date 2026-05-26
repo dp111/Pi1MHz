@@ -732,7 +732,7 @@ static screen_mode_t screen_modes[] = {
 // ==========================================================================
 // Static methods
 // ==========================================================================
-
+// cppcheck-suppress constParameterCallback
 static void update_palette(screen_mode_t *screen, int mark) {
    static int last_mark = 0;
    if (mark < 0) {
@@ -964,7 +964,7 @@ void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_wi
       }
    }
 }
-
+// cppcheck-suppress constParameterCallback
 void default_set_colour_8bpp(screen_mode_t *screen, colour_index_t index, uint32_t r, uint32_t g, uint32_t b) {
    screen_update_palette_entry( index, r , g , b );
 }
