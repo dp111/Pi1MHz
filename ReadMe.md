@@ -229,6 +229,10 @@ Below isn't currently implemented
 
     command pointer + 0 = 15
 
+20 = SDCARD type
+    command pointer + 0 = 20
+    return Base + 4 = 0 or 1 depending on SDCARD type
+
 ## helper function
 
 There are a number helper functions built into JIM RAM so they can be over written. These are accessed by :
