@@ -898,9 +898,9 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
    index = parse_findindex("LBADescriptor", scsiattributes);
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         filesystemState.fsLunGeometry[lunNumber].BlockSize = (uint32_t)((filesystemState.keyvalues[lunNumber][index].v.string[5] << 16) +
-                                                                         (filesystemState.keyvalues[lunNumber][index].v.string[6] << 8) +
-                                                                          filesystemState.keyvalues[lunNumber][index].v.string[7]);
+         filesystemState.fsLunGeometry[lunNumber].BlockSize = (uint32_t)(((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[5] << 16) +
+                                                                         ((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[6] << 8) +
+                                                                          (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[7]);
       }
       else
       {
@@ -921,8 +921,8 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
    index = parse_findindex("ModePage0", scsiattributes);
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)(((filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
-                                                                        filesystemState.keyvalues[lunNumber][index].v.string[2]));
+      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
+                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[2]));
       filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
    }
    else
@@ -955,8 +955,8 @@ void filesystemUpdateLunGeometry(uint8_t lunNumber)
    index = parse_findindex("ModePage3", scsiattributes);
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)(((filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
-                                                                              filesystemState.keyvalues[lunNumber][index].v.string[11]));
+      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
+                                                                              (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[11]));
    }
    else
    {
@@ -970,8 +970,8 @@ void filesystemCopyPage0toPage4(uint8_t lunNumber)
    int index = parse_findindex("ModePage0", scsiattributes);
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)(((filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
-                                                                        filesystemState.keyvalues[lunNumber][index].v.string[2]));
+      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
+                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[2]));
       filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
       // now recreate Page4
       index = parse_findindex("ModePage4", scsiattributes);
@@ -990,8 +990,8 @@ void filesystemCopyPage4toPage0(uint8_t lunNumber)
    int index = parse_findindex("ModePage4", scsiattributes);
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)(((filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
-                                                                        filesystemState.keyvalues[lunNumber][index].v.string[4]));
+      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
+                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[4]));
       filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[5]);
       // now recreate Page3
       index = parse_findindex("ModePage0", scsiattributes);
@@ -1091,28 +1091,6 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 // Function to write next sector to a LUN
 bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
 {
-   /* Prevent writing when no sectors remaining */
-   if (sectorsRemaining == 0) {
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): ERROR: No sectors remaining to write!\r\n"));
-      return false;
-   }
-
-   /* If buffer is already full (possible after a previous write failure), flush it before copying */
-   if (currentBufferSector >= SECTOR_BUFFER_LENGTH) {
-      FRESULT fsResult;
-      UINT fsCounter;
-      uint32_t sectorsToWrite = currentBufferSector;
-
-      fsResult = f_write(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToWrite * 256, &fsCounter);
-      if (fsResult != FR_OK) {
-         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): ERROR: Cannot write to LUN image when flushing full buffer!\r\n"));
-         return false;
-      }
-      currentBufferSector = 0;
-      if (sectorsRemaining >= sectorsToWrite) sectorsRemaining -= sectorsToWrite; else sectorsRemaining = 0;
-      if (sectorsRemaining == 0)
-         f_sync(&filesystemState.fileObject[lunNumber]);
-   }
 
    memcpy(sectorBuffer + (currentBufferSector * 256), buffer , 256 );
    currentBufferSector++;

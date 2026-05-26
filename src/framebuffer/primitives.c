@@ -1243,7 +1243,7 @@ void prim_draw_arc(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2
    // Finds start and end quadrants and masks plotting of points
    int radius = calc_radius(xc, yc, x1, y1);
    // Don't use calc_radius for r2 as this rounds up and can lead to gaps and leakage
-   int r2 = (int)sqrt((x2-xc)*(x2-xc) + (y2-yc)*(y2-yc));
+   int r2 = (int)lround(sqrt((x2-xc)*(x2-xc) + (y2-yc)*(y2-yc))  );
 
    // Calc end point
    int x3 = xc + (x2 - xc) * radius / r2;
