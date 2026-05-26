@@ -26,7 +26,7 @@
 #  r8 - temp
 #  r9 - r9 Databus and test pin output select
 # r10 - address mask
-# r11 -
+# r11 - (0xFF<<DATASHIFT)  # clear databus low
 # r12 - GPIO pins value
 # r13 - pointer to doorbell register
 # r14 -
@@ -76,11 +76,11 @@
    mov    r6, GPFSEL0
    mov    r7, 1            # external nOE pin
    mov    r10, ((ADDRBUS_MASK>>ADDRBUS_SHIFT) | (NPCFC_MASK>>ADDRBUS_SHIFT))>>1
+   mov    r11, (0xFF<<DATASHIFT)  # clear databus low
    mov    r13, GPU_ARM_DBELL
-   b      Poll_loop
 
 # poll for nPCFC or nPCFD being low
-.align 4
+.balignw 4,1 # Align with nops
 Poll_loop:
    st     r5, GPCLR0_offset(r6)  # Turn off debug signal
 Poll_access_low:
@@ -131,7 +131,7 @@ waitforclkhighloop:
    lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
    lsleq  r8, DATASHIFT          # low 16 bits with databus shift
    btst   r8, OUTPUTBIT
-   and    r8, 255<<DATASHIFT     # isolate databus
+   and    r8, r11     # isolate databus
 
    st     r8, GPSET0_offset(r6)  # set up databus
    beq    skipenablingbus
@@ -141,9 +141,7 @@ waitforclkhighloop:
    st     r12, (r1)              # post data
    st     r12, (r13)             # ring doorbell
 
-   b waitforclklow2loop
-
-.align 4
+.balignw 4,1 # Align with nops
 waitforclklow2loop:
    ld     r12, GPLEV0_offset(r6)
    btst   r12, CLK
@@ -151,9 +149,7 @@ waitforclklow2loop:
 
    st     r7, GPSET0_offset(r6)  # set external output enable high
    st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
-
-   mov    r8, (0xFF<<DATASHIFT)  # clear databus low
-   st     r8, GPCLR0_offset(r6)  # clear databus low
+   st     r11, GPCLR0_offset(r6)  # clear databus low (0xFF<<DATASHIFT)
 
    b      Poll_loop
 
