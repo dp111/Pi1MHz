@@ -123,7 +123,6 @@ file( GLOB harddisc_emulator_files
    BeebSCSI/fatfs/ff.c
    BeebSCSI/fatfs/diskio.c
    BeebSCSI/fatfs/ffunicode.c
-   BeebSCSI/ext_attributes.c
    rpi/sdcard.c
 )
 include_directories(BeebSCSI)
