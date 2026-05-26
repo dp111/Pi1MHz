@@ -87,6 +87,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 
 #include "rpi/arm-start.h"
 #include "rpi/auxuart.h"
@@ -153,6 +154,12 @@ static uint8_t  Pi1MHz_polls_max;
 
 // *fx register buffer
 NOINIT_SECTION uint8_t fx_register[256];
+
+_Static_assert(offsetof(Pi1MHz_t, callback_table) == 0x300, "callback_table must be at offset 0x300 for FIQ.s");
+
+_Static_assert(Pi1MHz_STRUCT_VADDR + offsetof(Pi1MHz_t, callback_table) == Pi1MHz_CB_BASE, "Pi1MHz_CB_BASE must equal &Pi1MHz->callback_table[0]");
+
+_Static_assert(sizeof(Pi1MHz_t) <= 0x2000, "Pi1MHz_t must fit into low memory");
 
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 {
@@ -260,6 +267,7 @@ static void Pi1MHzBus_write_Status(unsigned int gpio)
 
 static void Pi1MHzBus_read_Status(unsigned int gpio)
 {
+   // TODO
 }
 
 // cppcheck-suppress unusedFunction
@@ -302,26 +310,22 @@ static void init_emulator(void) {
    const char *prop = get_cmdline_prop("Pi1MHzDisable");
    if (prop)
    {  // now look for a common separated values to
-      char c;
-      do {
-        int temp=atoi(prop);
-        if (temp < ( (int) (NUM_EMULATORS) ) )
-          emulator[temp].enable = 0;
-        do {
-          c = *prop++;
-          if (c == ' ') break;
-          if (c == ',') break;
-          if (c == '\0' ) break;
-        } while(1);
-      } while ( c == ',' );
+      for ( const char *p =prop; *p;) {
+        int idx=atoi(p);
+        if ((idx >0) && (idx < ( (int) (NUM_EMULATORS) ) ))
+          emulator[idx].enable = 0;
+        const char *comma = strchr(p, ',');
+        if ( !comma ) break;
+        p = comma + 1;
+      }
    }
 
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {
          char key[128]="";
          char * ptr = key;
-         ptr  += strlcpy(key,emulator[i].name,sizeof(key));
-         strlcpy(ptr,"_addr", 6);
+         size_t keysize = strlcpy(key,emulator[i].name,sizeof(key));
+         strlcpy(ptr+keysize,"_addr",sizeof(key)-keysize);
          const char *prop2 = get_cmdline_prop(key);
          if (prop2)
             {
@@ -489,11 +493,10 @@ _Noreturn void kernel_main(void)
       {
          oldreset = false;
       }
-      for (size_t i=0 ; i<Pi1MHz_polls_max; i++ )
+      for (size_t i=0 , n=Pi1MHz_polls_max ; i<n; i++ )
       {
          func_ptr poll_fn = Pi1MHz_poll_table[i];
 
-         if (poll_fn != NULL) {
             uint32_t before_us = RPI_GetSystemTime();
             poll_fn();
             {
@@ -506,7 +509,6 @@ _Noreturn void kernel_main(void)
                         (unsigned long)duration_us);
                }
             }
-         }
       }
 
       main_poll_loops++;

@@ -18,8 +18,10 @@
 
 #define Pi1MHz_VPU_RETURN (PERIPHERAL_BASE + 0x600010 )
 
+#define Pi1MHz_STRUCT_VADDR 0x100
+
 #define Pi1MHZ_MEM_SIZE (PAGE_SIZE*2)
-#define Pi1MHz_CB_BASE  0x400
+#define Pi1MHz_CB_BASE  (0x100 + 0x300u)
 #define Pi1MHz_CB_SIZE  (PAGE_SIZE*2*2*4)
 
 /* Raspberry Pi Pinout Bottom view
@@ -194,8 +196,7 @@ typedef struct
    size_t byte_ram_addr;
    uint8_t JIM_ram_size; // Pi1MHz->JIM_ram_size is in 16Mbyte steps
 
-   uint8_t Spare[PAGE_SIZE-13];
-   callback_func_ptr callback_table[PAGE_SIZE*2*2];
+   _Alignas(PAGE_SIZE)callback_func_ptr callback_table[PAGE_SIZE*2*2];
 } Pi1MHz_t;
 
 static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;

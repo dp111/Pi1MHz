@@ -74,7 +74,7 @@ FIQstart:
 //stall
    mov      r12, #0
 
-   movs     r9, r9
+   cmp     r9, #0
    DMB_MACRO r12           // check doorbell ack has actually left the core.
    subeqs   pc, lr,#4   // no callback
 
