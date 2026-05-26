@@ -312,7 +312,7 @@ static void init_emulator(void) {
    {  // now look for a common separated values to
       for ( const char *p =prop; *p;) {
         int idx=atoi(p);
-        if ((idx >0) && (idx < ( (int) (NUM_EMULATORS) ) ))
+        if ((idx >=0) && (idx < ( (int) (NUM_EMULATORS) ) ))
           emulator[idx].enable = 0;
         const char *comma = strchr(p, ',');
         if ( !comma ) break;

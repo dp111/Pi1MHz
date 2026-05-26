@@ -122,7 +122,7 @@ static uint8_t fx_pointer;
 static size_t ram_max;
 
 #define M5000_REC_BASE 0x100000u
-#define M5000_REC_END ( 2u * 16u*1024*104u)
+#define M5000_REC_END ( 2u * 16u*1024*1024u)
 
 static const unsigned char wavfmt[] = {
    'R','I','F','F',
@@ -367,7 +367,7 @@ static void music5000_rec_start(void)
 {
     Audio_Index = M5000_REC_BASE + sizeof(wavfmt);
     rec_started = false;
-    ram_max = (M5000_REC_BASE + (size_t)Pi1MHz->JIM_ram_size * 16u*1024u * 1024u - M5000_REC_END) ;
+    ram_max = (size_t)Pi1MHz->JIM_ram_size * 16u*1024u * 1024u - M5000_REC_END ;
 }
 
 static void music5000_rec_stop(void)
@@ -377,24 +377,25 @@ static void music5000_rec_stop(void)
    int number = 0;
    FIL music5000_fp;
 
-    do {
+   do {
       sprintf(fn,"Musics%.3i.wav",number);
       result = f_open( &music5000_fp, fn, FA_CREATE_NEW  | FA_WRITE);
       LOG_INFO("Music5000 Filename : %s\r\n",fn);
       if ( result == FR_EXIST)
          number++;
-    } while ( result != FR_OK );
+   } while ( result != FR_OK );
 
-    memcpy(&Pi1MHz->JIM_ram[M5000_REC_BASE], wavfmt, sizeof(wavfmt));
+   memcpy(&Pi1MHz->JIM_ram[M5000_REC_BASE], wavfmt, sizeof(wavfmt));
 
    uint32_t size = Audio_Index - M5000_REC_BASE;
-   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+4], size -8u);
+   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+4], size - 8u);
    put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+40], size - sizeof(wavfmt));
 
    UINT temp;
    f_write(&music5000_fp, &Pi1MHz->JIM_ram[M5000_REC_BASE],Audio_Index - M5000_REC_BASE , &temp);
    f_close(&music5000_fp);
-   rec_started = false;
+   record = false;
+   fx_register[fx_pointer] = 0;
 }
 
 static void store_samples(int sl, int sr)

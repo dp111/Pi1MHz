@@ -35,9 +35,9 @@ extern  volatile bool debugFlag_scsiFcodes;
 extern  volatile bool debugFlag_scsiState;
 extern  volatile bool debugFlag_fatfs;
 extern  volatile bool debugFlag_extended_attributes;
+#include "cpuspecific.h"
 
 #ifdef DEBUG
-#include "cpuspecific.h"
 /* Function prototypes */
 void debugString_P(const char *addr);
 void debugString_C(const char *addr, uint8_t style);
