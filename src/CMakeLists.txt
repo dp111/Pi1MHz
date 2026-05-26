@@ -67,7 +67,7 @@ file( GLOB core_files
    rpi/exception.c
    rpi/cache.c
    rpi/gpio.c
-   rpi/aux.c
+   rpi/auxuart.c
    rpi/mailbox.c
    rpi/systimer.c
    rpi/info.c
