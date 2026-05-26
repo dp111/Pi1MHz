@@ -3,11 +3,9 @@
 //
 // (c) Dominic Plunkett
 //
-
 // FIQ code sits at FIQ vector
-// This code is directly included at the FIQ entry 
+// This code is directly included at the FIQ entry
 // So don't put any code before it.
-
 // and is triggered by fred or jim access
 
 #include "Pi1MHz.h"
@@ -17,7 +15,7 @@
 
 #define GPFSEL0_OFFSET      0x00
 #define GPSET0_OFFSET       0x1C
-#define GPCLR0_OFFSET       0x28 
+#define GPCLR0_OFFSET       0x28
 #define GPLEV0_OFFSET       0x34
 #define GPEDS0_OFFSET       0x40
 #define GPFEN0_OFFSET       0x58
@@ -25,25 +23,25 @@
 // Setup registers for FIQ handler
 // this gets inserted into the code after the stack is setup
 //  R11 is preset to be the GPIO base
-#define FIQ_SETUP 1
+#define FIQ_SETUP_CODE 1
 .macro FIQ_SETUP_M
   #if defined(RPI2) || defined(RPI3)
+
   #else
-  #if 1
   // ARMv6 lock FIQ handler into cache
   // disable the cache
     ldr     r8,=_start
     ldr     r9,=FIQexit
     mov     r10,#8
-    
+
     // flush instruction cache
     mov     r11,#0
     mcr     p15, 0, r11, c7, c5, 0
-    
-    // 5 enable allocation to target 
+
+    // 5 enable allocation to target
     mov     r11,#0x7
-    MCR     p15, 0, r11, c9, c0, 1 
-    
+    MCR     p15, 0, r11, c9, c0, 1
+
     // 6 prefetch instructions
 
 prefetch_loop:
@@ -51,10 +49,10 @@ prefetch_loop:
     ADD     r8,r8,#32
     CMP     R8,R9
     BLT     prefetch_loop
-    
+
     // 7 Lock down reg
     MCR      p15, 0, r10, c9, c0, 1
-    #if 0 
+    #if 0
     // lock down the TLB
     ldr     r11,=_start
     MCR     p15,0,r11,c8,c7,1
@@ -66,7 +64,6 @@ prefetch_loop:
     BIC     R8,r8,#1
     MCR     p15,0,R8,c10,c0,0
     #endif
-  #endif
   #endif
    LDR     r11,=GPFSEL0
 .endm
@@ -90,7 +87,7 @@ prefetch_loop:
 //  r10 temp
 //  r11 is preset to be the GPIO base
 //  r12 gpio read
-//  r13 stack 
+//  r13 stack
 //  r14 return address
 
     DMB_MACRO
@@ -101,7 +98,7 @@ checkforvalidcycle:
     mov     r9, # NPCFD_MASK + NPCFC_MASK  // Clear event status register ( acknowledge )
     str     r9, [r11, # GPEDS0_OFFSET]
 
-    tst     r12, # CLK1MHZ_MASK    
+    tst     r12, # CLK1MHZ_MASK
     beq     waitforclkhigh
                                            // going to be a two cycle access so mask the first one
 waitforclklow:
@@ -128,13 +125,13 @@ waitforclkhigh:
 
     tst     r12, # CLK1MHZ_MASK
     beq     waitforclkhigh
-    
+
     and     r10, r9, r12, LSR # ADDRBUS_SHIFT // isolate address bus and fred or jim
-    
+
     tst     r12, # RNW_MASK
-    
+
     ldrneb  r8, [r10, #Pi1MHz_MEM_BASE]    // get byte to write out
-    
+
 // stall if writing
                                            // set databus to be outputs
     ldrne   r9, =DATABUS_TO_OUTPUTS | TEST_PINS_OUTPUTS
@@ -146,18 +143,18 @@ waitforclkhigh:
     strne   r9, [r11, # GPFSEL0_OFFSET]    // set data bus to be outputs
 
                                            // wait for clock edge
-waitforclklow2:    
+waitforclklow2:
     LDR     r9, [r11, # GPLEV0_OFFSET]     // this will be slow as we are going off chip
 
     // setup R8 in stall ready to make Data bus inputs
     mov     r8, # TEST_PINS_OUTPUTS
-    
-// 1 stall 
+
+// 1 stall
 
     tst     r9, # CLK1MHZ_MASK
     streq   r8, [ r11, # GPFSEL0_OFFSET]   // set data bus to be inputs release databus
     bne     waitforclklow2
-    
+
     mov     r10, r10 , LSL # 2
     ldr     r10, [r10, #Pi1MHz_CB_BASE]    // load call back pointer
     mov     r8, # DATABUS_MASK
