@@ -85,7 +85,7 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
 
 static int32_t audio_range;
 
-// in config.txt M5000_Gain=16 set the default audio gain
+// in cmdline.txtt M5000_Gain=16 set the default audio gain
 // if gain has >1000 then gain = gain - 1000 and auto ranging
 // is disabled
 
@@ -106,7 +106,7 @@ static void M5000_gain() {
       autorange = 1;
 }
 
-// in command.txt M5000_BeebAudio_Off=1 turns off beeb Audio
+// in cmdline.txt M5000_BeebAudio_Off=1 turns off beeb Audio
 
 static void M5000_BeebAudio() {
    char *prop = get_cmdline_prop("M5000_BeebAudio_Off");
