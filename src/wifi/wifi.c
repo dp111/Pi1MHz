@@ -59,6 +59,24 @@ static void wifi_dispatch_poll(void)
    netname_poll();
 }
 
+/* The W18-era state machine was meant to step through
+   CONFIGURED -> IMAGES_READY -> SDIO_READY -> FIRMWARE_READY in that order
+   (see the wifi_state_t enum), but wifi_preload_images() used to call
+   wifi_note_firmware_ready() the moment the images were *in host RAM* -
+   long before SDIO came up or the chip ran firmware - and the only
+   forward transitions allowed were from CONFIGURED, so IMAGES_READY and
+   SDIO_READY were skipped and /status displayed a misleading sequence.
+
+   The corrected flow:
+     wifi_preload_images       -> wifi_note_images_ready
+     WAIT_SDIO done (tick=DONE) -> wifi_note_sdio_ready + wifi_note_firmware_ready
+   and each note_* helper accepts only its direct predecessor state. */
+static void wifi_note_images_ready(void)
+{
+   if (g_wifi_state == WIFI_STATE_CONFIGURED)
+      g_wifi_state = WIFI_STATE_IMAGES_READY;
+}
+
 static bool wifi_preload_images(void)
 {
    uint8_t mac[6];
@@ -88,7 +106,7 @@ static bool wifi_preload_images(void)
    }
 
    g_wifi_images_preloaded = true;
-   wifi_note_firmware_ready();
+   wifi_note_images_ready();
    wifi_debug_log("firmware assets loaded");
    return true;
 }
@@ -563,9 +581,12 @@ void wifi_boot(void)
             }
             return;
          }
-         /* tick() returned false: reached DONE or ERROR. */
+         /* tick() returned false: reached DONE or ERROR.  The SDIO runtime
+            finishing DONE means the bus is up AND the firmware has been
+            downloaded to the chip and is running, so both notes fire here. */
          if (sdio_runtime_started()) {
             wifi_note_sdio_ready();
+            wifi_note_firmware_ready();
             wifi_debug_log("sdio runtime started");
             g_wifi_boot_stage = WIFI_BOOT_STAGE_OPTIONAL_PROBE;
          } else {
@@ -589,8 +610,9 @@ void wifi_boot(void)
          wifi_debug_log("preparing lwip");
          wifi_lwip_prepare();
          wifi_lwip_init_stack();
-         if (g_wifi_state == WIFI_STATE_CONFIGURED)
-            g_wifi_state = WIFI_STATE_IMAGES_READY;
+         /* No state nudge here: by this point the state machine has
+            already reached FIRMWARE_READY via WAIT_SDIO above; an
+            IMAGES_READY fallback would have been unreachable. */
          g_wifi_boot_stage = WIFI_BOOT_STAGE_INIT_WEBSERVER;
          return;
 
@@ -610,13 +632,13 @@ void wifi_boot(void)
 
 void wifi_note_sdio_ready(void)
 {
-   if (g_wifi_state == WIFI_STATE_CONFIGURED)
+   if (g_wifi_state == WIFI_STATE_IMAGES_READY)
       g_wifi_state = WIFI_STATE_SDIO_READY;
 }
 
 void wifi_note_firmware_ready(void)
 {
-   if (g_wifi_state == WIFI_STATE_CONFIGURED || g_wifi_state == WIFI_STATE_SDIO_READY)
+   if (g_wifi_state == WIFI_STATE_SDIO_READY)
       g_wifi_state = WIFI_STATE_FIRMWARE_READY;
 }
 
