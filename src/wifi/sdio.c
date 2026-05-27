@@ -986,7 +986,7 @@ static bool sdio_backplane_scan_cores(sdio_host_t *dev, sdio_chip_state_t *chip,
 
       if (descriptor_type == 0x01u) {
          if ((index + 7u) < sizeof(scan_buffer) && (scan_buffer[index + 4u] & 0x0fu) == 0x01u) {
-            core_id = (uint16_t)(((uint16_t)scan_buffer[index + 1u] | ((uint16_t)scan_buffer[index + 2u] << 8))
+            core_id = (uint16_t)(((unsigned)scan_buffer[index + 1u] | ((unsigned)scan_buffer[index + 2u] << 8))
                & 0x0fffu);
             index += 4u;
             core_revision = scan_buffer[index + 3u];
@@ -2874,8 +2874,8 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
 
       if (payload_length >= 4u) {
          uint8_t bdc_data_offset = frame_buffer[header_length + 3u];
-         uint16_t ethernet_offset = (uint16_t)((uint16_t)header_length + 4u
-            + ((uint16_t)bdc_data_offset << 2));
+         uint16_t ethernet_offset = (uint16_t)((unsigned)header_length + 4u
+            + ((unsigned)bdc_data_offset << 2));
 
          if ((uint16_t)(ethernet_offset + 14u) <= total_length) {
             uint16_t ev_ethertype =
@@ -2928,8 +2928,8 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
       now honours (cyw43-driver sdpcm_process_rx_packet). */
    {
       uint8_t bdc_data_offset = frame_buffer[header_length + 3u];
-      uint16_t eth_offset = (uint16_t)((uint16_t)header_length + 4u
-         + ((uint16_t)bdc_data_offset << 2));
+      uint16_t eth_offset = (uint16_t)((unsigned)header_length + 4u
+         + ((unsigned)bdc_data_offset << 2));
 
       if ((uint16_t)(eth_offset + 14u) > total_length) {
          sdio_debug_log("fn2: drop ch=2 short hdr=%u tot=%u doff=%u",
@@ -4140,11 +4140,11 @@ static bool sdio_probe_read_post_header_prefix(sdio_host_t *dev,
       probe_result->sdpcm_bdc_version = (uint8_t)(probe_result->sdpcm_bdc_flags >> BDC_VERSION_SHIFT);
       probe_result->sdpcm_bdc_version_valid = probe_result->sdpcm_bdc_version == BDC_PROTOCOL_VERSION;
       probe_result->sdpcm_bdc_data_offset_bytes = (uint8_t)(probe_result->sdpcm_bdc_data_offset << 2);
-      bytes_after_bdc = (uint16_t)(probe_result->frame_header_size - probe_result->sdpcm_expected_header_length - SDPCM_PREFIX_LENGTH);
+      bytes_after_bdc = (uint16_t)((unsigned)probe_result->frame_header_size - probe_result->sdpcm_expected_header_length - SDPCM_PREFIX_LENGTH);
       probe_result->sdpcm_bdc_data_offset_sane = probe_result->sdpcm_bdc_data_offset_bytes <= bytes_after_bdc;
       probe_result->sdpcm_bdc_header_decoded = true;
       probe_result->sdpcm_data_ethertype_probe_attempted = true;
-      ethertype_read_count = (uint16_t)probe_result->sdpcm_bdc_data_offset_bytes + ETHERNET_HEADER_LENGTH;
+      ethertype_read_count = (uint16_t)(probe_result->sdpcm_bdc_data_offset_bytes + ETHERNET_HEADER_LENGTH);
       if (probe_result->sdpcm_bdc_version_valid
          && probe_result->sdpcm_bdc_data_offset_sane
          && ethertype_read_count <= bytes_after_bdc
@@ -4158,15 +4158,15 @@ static bool sdio_probe_read_post_header_prefix(sdio_host_t *dev,
             probe_result->sdpcm_data_ethertype_probe_success = true;
             if (probe_result->sdpcm_data_ethertype == ETHER_TYPE_BRCM) {
                probe_result->sdpcm_brcm_event_probe_attempted = true;
-               brcm_event_read_count = (uint16_t)probe_result->sdpcm_bdc_data_offset_bytes
-                  + ETHERNET_HEADER_LENGTH + BRCM_EVENT_HEADER_LENGTH;
+               brcm_event_read_count = (uint16_t)(probe_result->sdpcm_bdc_data_offset_bytes
+                  + ETHERNET_HEADER_LENGTH + BRCM_EVENT_HEADER_LENGTH);
                if (brcm_event_read_count <= bytes_after_bdc
                   && brcm_event_read_count <= (uint16_t)sizeof(ethertype_buffer)) {
                   memset(ethertype_buffer, 0, sizeof(ethertype_buffer));
                   if (sdio_cmd53_execute(dev, 2u, 0u, false, false, false,
                                          brcm_event_read_count, ethertype_buffer,
                                          (uint32_t)brcm_event_read_count, NULL)) {
-                     uint16_t event_offset = (uint16_t)probe_result->sdpcm_bdc_data_offset_bytes + ETHERNET_HEADER_LENGTH;
+                     uint16_t event_offset = (uint16_t)(probe_result->sdpcm_bdc_data_offset_bytes + ETHERNET_HEADER_LENGTH);
 
                      probe_result->sdpcm_brcm_event_subtype = (uint16_t)(((uint16_t)ethertype_buffer[event_offset + 0u] << 8)
                         | (uint16_t)ethertype_buffer[event_offset + 1u]);
@@ -4184,8 +4184,8 @@ static bool sdio_probe_read_post_header_prefix(sdio_host_t *dev,
                      probe_result->sdpcm_brcm_event_version_valid = probe_result->sdpcm_brcm_event_version == BRCM_EVENT_VERSION;
                      probe_result->sdpcm_brcm_event_probe_success = true;
                      probe_result->sdpcm_brcm_event_msg_probe_attempted = true;
-                     brcm_event_msg_read_count = (uint16_t)probe_result->sdpcm_bdc_data_offset_bytes
-                        + ETHERNET_HEADER_LENGTH + BRCM_EVENT_HEADER_LENGTH + BRCM_EVENT_MSG_LENGTH;
+                     brcm_event_msg_read_count = (uint16_t)(probe_result->sdpcm_bdc_data_offset_bytes
+                        + ETHERNET_HEADER_LENGTH + BRCM_EVENT_HEADER_LENGTH + BRCM_EVENT_MSG_LENGTH);
                      if (probe_result->sdpcm_brcm_event_oui_match
                         && probe_result->sdpcm_brcm_event_version_valid
                         && brcm_event_msg_read_count <= bytes_after_bdc
@@ -4194,8 +4194,8 @@ static bool sdio_probe_read_post_header_prefix(sdio_host_t *dev,
                         if (sdio_cmd53_execute(dev, 2u, 0u, false, false, false,
                                                brcm_event_msg_read_count, ethertype_buffer,
                                                (uint32_t)brcm_event_msg_read_count, NULL)) {
-                           uint16_t event_msg_offset = (uint16_t)probe_result->sdpcm_bdc_data_offset_bytes
-                              + ETHERNET_HEADER_LENGTH + BRCM_EVENT_HEADER_LENGTH;
+                           uint16_t event_msg_offset = (uint16_t)(probe_result->sdpcm_bdc_data_offset_bytes
+                              + ETHERNET_HEADER_LENGTH + BRCM_EVENT_HEADER_LENGTH);
 
                            probe_result->sdpcm_brcm_event_msg_version = (uint16_t)(((uint16_t)ethertype_buffer[event_msg_offset + 0u] << 8)
                               | (uint16_t)ethertype_buffer[event_msg_offset + 1u]);
@@ -4273,7 +4273,7 @@ static bool sdio_probe_read_post_header_prefix(sdio_host_t *dev,
          | ((uint32_t)prefix_buffer[15] << 24);
       probe_result->sdpcm_cdc_request_length = (uint16_t)(probe_result->sdpcm_cdc_length >> 16);
       probe_result->sdpcm_cdc_response_length = (uint16_t)(probe_result->sdpcm_cdc_length & 0xffffu);
-      probe_result->sdpcm_cdc_payload_bytes_available = (uint16_t)(probe_result->frame_header_size
+      probe_result->sdpcm_cdc_payload_bytes_available = (uint16_t)((unsigned)probe_result->frame_header_size
          - probe_result->sdpcm_expected_header_length - CDC_HEADER_LENGTH);
       probe_result->sdpcm_cdc_response_length_sane = probe_result->sdpcm_cdc_response_length
          <= probe_result->sdpcm_cdc_payload_bytes_available;

@@ -68,7 +68,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunused -Wuninitialized -Wduplicated-branc
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wduplicated-cond -Wnested-externs -Wfloat-conversion ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Winline")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -Wmissing-include-dirs  ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-include-dirs  ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Woverlength-strings -Wdisabled-optimization -Wnormalized -Wformat-overflow=1 ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wrestrict -Wshift-overflow=2 -Wnull-dereference -Wmain ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstringop-overflow=4 -Wstringop-overread -Wstrict-prototypes ")
@@ -241,12 +241,6 @@ file( GLOB lwip_files
    ${LWIP_ROOT}/src/core/ipv4/ip4.c
    ${LWIP_ROOT}/src/core/ipv4/ip4_addr.c
    ${LWIP_ROOT}/src/netif/ethernet.c
-)
-
-set_source_files_properties(
-   wifi/sdio.c
-   PROPERTIES
-   COMPILE_OPTIONS "-Wno-arith-conversion"
 )
 
 set_source_files_properties(
