@@ -28,13 +28,21 @@ typedef int sys_prot_t;
    previous spin-forever swallowed the diagnostic and froze the Pi
    silently - on a board with no JTAG you'd never know why.  Print
    the failing assertion to whatever LOG_INFO is wired to (usually
-   the aux UART) and reboot so the system recovers automatically. */
+   the aux UART) and reboot so the system recovers automatically.
+
+   LWIP_ASSERT's contract (lwip/src/include/lwip/debug.h) is
+       do { if (!(assertion)) { LWIP_PLATFORM_ASSERT(message); }} while(0)
+   so by the time control reaches this macro the assertion has already
+   failed and 'x' is the message *string literal* (never a boolean).  An
+   earlier version of this override wrapped the body in 'if (!(x))',
+   which evaluated to '!(address-of-string-literal)' - always 0 - and
+   silently swallowed every assertion failure.  The body must fire
+   unconditionally, and 'x' must be passed straight to %s (no '#x'
+   stringification - that would add literal quotes around the message). */
 #define LWIP_PLATFORM_ASSERT(x) \
    do { \
-      if (!(x)) { \
-         LOG_INFO("lwIP assert: %s (%s:%d)\r\n", #x, __FILE__, __LINE__); \
-         reboot_now(); \
-      } \
+      LOG_INFO("lwIP assert: %s (%s:%d)\r\n", (x), __FILE__, __LINE__); \
+      reboot_now(); \
    } while (0)
 
 #endif
