@@ -23,6 +23,9 @@ wifi/
   wifi.{c,h}          state machine, boot stages, single-slot poll dispatcher
   wifi_lwip.{c,h}     lwIP netif glue, TX/RX path, DHCP / static config
   webserver.{c,h}     HTTP/1.1 file browser, /status, /reboot, /framebuffer
+                      + class-1 WebDAV (PROPFIND/PUT/DELETE/MKCOL/MOVE/COPY/
+                      LOCK/UNLOCK) and RFC-2617 digest auth
+  md5.{c,h}           compact public-domain MD5 (digest auth)
   netname.{c,h}       NetBIOS (UDP 137) and mDNS (UDP 5353) responders
   framebuffer_export.{c,h}   BMP encoder for /framebuffer.bmp
   cyw43.{c,h}         CYW43 firmware/NVRAM/CLM loaders + NVRAM MAC patcher
@@ -106,6 +109,9 @@ accepted alongside the `wifi_*` form.
 | `wifi_sdio_tx_probe=`                | (off)             | `1` adds a single gated function-2 CMD53 control-frame write during the SDIO probe. |
 | `wifi_sdio_tx_probe_command=`        | `version`         | Picks the diagnostic ioctl the TX probe sends: `version`, `magic`, `up`, `infra`, `auth`, `ssid`, `wpa_auth`, `wsec`, `pmk`, `join`. |
 | `wifi_sdio_rx_sweep_limit=`          | `16`              | Maximum number of function-2 frames the bounded receive sweep will decode after the TX probe. |
+| `webdav_user=`                       | (none)            | WebDAV / management UI digest-auth username.  Auth is enforced on every webserver route only when **both** `webdav_user` and `webdav_password` are set; if either is missing, the server stays anonymous (matching the legacy `/files` behaviour). |
+| `webdav_password=`                   | (none)            | Digest-auth password.  See `webdav_user`. |
+| `webdav_realm=`                      | `Pi1MHz`          | Realm string presented in the digest challenge. |
 
 Example (DHCP):
 
@@ -151,6 +157,53 @@ The HTTP layer is one request per connection (`Connection: close`),
 built directly on the lwIP raw-TCP API. URL paths are percent-decoded
 and `..` segments are rejected at the parser, so the file browser cannot
 escape the SD root.
+
+## WebDAV
+
+The webserver is also a class-1 WebDAV server (RFC 4918) with LOCK /
+UNLOCK stubs for Windows Explorer compatibility.  The WebDAV root is
+the URL root (`/`) — the SD card is the served collection.  The
+management pages (`/`, `/status`, `/files/...`, `/framebuffer`,
+`/framebuffer.bmp`, `/reboot`) keep their normal HTTP routes; every
+other URL is interpreted as an SD path by the WebDAV verbs and by the
+GET fallback (so `http://Pi1MHz/folder/file.txt` downloads from the SD
+card whether you're using a browser or a mounted WebDAV drive).
+
+Verbs implemented: `OPTIONS`, `PROPFIND` (Depth 0 or 1; "infinity" is
+capped at 1), `PUT`, `DELETE`, `MKCOL`, `COPY`, `MOVE`, `LOCK`,
+`UNLOCK`.  `LOCK` returns a well-formed response with a synthetic
+opaque-lock token so the Windows mini-redirector keeps writing; no
+server-side lock state is actually retained.  Collection-level
+recursive `COPY` is not implemented (returns `501`); recursive
+`DELETE` is similarly not implemented and the client must do its own
+depth-first walk.
+
+Mounting:
+
+- **macOS Finder**: `Cmd-K` → `http://Pi1MHz.local/` → Connect.
+- **Windows Explorer**: "This PC" → right-click → "Add a network
+  location" → custom location → `http://Pi1MHz/`.  Do not use "Map
+  Network Drive" if auth is enabled; the digest path works either way,
+  but the wizard is friendlier.
+- **Linux**: `mount.davfs http://Pi1MHz/ /mnt`.
+- **iOS / iPadOS**: Files app → "Connect to Server".
+
+### Digest authentication
+
+Set both `webdav_user=` and `webdav_password=` in `cmdline.txt`.  The
+realm defaults to `Pi1MHz` and can be overridden with `webdav_realm=`.
+When auth is enabled it is enforced on **every** webserver route, not
+just WebDAV verbs, so the `/files` browser and `/status` page also
+prompt for credentials.
+
+The implementation is RFC 2617 Digest with `qop=auth`, `algorithm=MD5`
+(both the qop-present and the legacy qop-absent forms are accepted on
+the verify path).  Nonces are valid for five minutes; an expired
+nonce triggers `stale=true` so the client transparently
+re-authenticates rather than re-prompting the user.
+
+If `webdav_user` or `webdav_password` is missing, the webserver stays
+anonymous — same behaviour as before WebDAV was added.
 
 ## Implementation Notes
 

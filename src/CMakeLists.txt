@@ -204,6 +204,8 @@ file( GLOB mouse_redirect_files
 file( GLOB wifi_files
    wifi/cyw43.c
    wifi/framebuffer_export.c
+   wifi/md5.c
+   wifi/md5.h
    wifi/sdio.c
    wifi/sdio_host.c
    wifi/wifi.c

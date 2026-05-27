@@ -475,6 +475,13 @@ bool wifi_config_load(wifi_config_t *config)
    have_ssid = wifi_copy_cmdline_prop(config->ssid, sizeof(config->ssid), "wifi_ssid", "SSID");
    have_password = wifi_copy_cmdline_prop(config->password, sizeof(config->password), "wifi_password", "SSIDpassword");
    (void) wifi_copy_cmdline_prop(config->hostname, sizeof(config->hostname), "wifi_hostname", NULL);
+   /* WebDAV digest-auth credentials.  All three are optional; if user
+      and password are both set, the webserver enforces digest auth on
+      every route, otherwise it stays unauthenticated. */
+   (void) wifi_copy_cmdline_prop(config->webdav_user, sizeof(config->webdav_user), "webdav_user", NULL);
+   (void) wifi_copy_cmdline_prop(config->webdav_password, sizeof(config->webdav_password), "webdav_password", NULL);
+   if (!wifi_copy_cmdline_prop(config->webdav_realm, sizeof(config->webdav_realm), "webdav_realm", NULL))
+      strlcpy(config->webdav_realm, "Pi1MHz", sizeof(config->webdav_realm));
    (void) wifi_load_ipv4_prop(config->ip_address, sizeof(config->ip_address), "static_ip", NULL);
    (void) wifi_load_ipv4_prop(config->netmask, sizeof(config->netmask), "wifi_netmask", NULL);
    (void) wifi_load_ipv4_prop(config->gateway, sizeof(config->gateway), "wifi_gateway", NULL);

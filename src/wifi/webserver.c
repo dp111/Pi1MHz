@@ -9,6 +9,7 @@
 
 #include "webserver.h"
 
+#include "md5.h"
 #include "wifi.h"
 #include "wifi_lwip.h"
 #include "sdio.h"
@@ -50,6 +51,13 @@
 #define WS_FB_BMP_MAX        (6u * 1024u * 1024u)  /* exported BMP size cap */
 #define WS_REBOOT_DELAY_US   (1500u * 1000u)       /* defer reboot ~1.5s */
 #define WS_FREE_REFRESH_US   (5u * 1000u * 1000u)  /* SD-free-space cache TTL */
+/* Digest auth: nonces are accepted for this long after they are issued.
+   Five minutes is enough for any UI workflow without leaving an
+   indefinite replay window. */
+#define WS_NONCE_MAX_AGE_US  (5u * 60u * 1000000u)
+/* Headers a WebDAV response may need to carry.  Sized for the worst case
+   (WWW-Authenticate digest line + DAV / Allow). */
+#define WS_AUTH_HEADER_MAX   256u
 
 /* ------------------------------------------------------------------ */
 /* Connection model                                                    */
@@ -58,6 +66,7 @@
 typedef enum {
    CONN_RECV_HEADER = 0,   /* accumulating the HTTP request headers     */
    CONN_RECV_UPLOAD,       /* streaming a multipart body to the SD card */
+   CONN_RECV_DAV_PUT,      /* streaming a WebDAV PUT body to the SD card*/
    CONN_SEND_MEM,          /* sending an in-memory response             */
    CONN_SEND_FILE,         /* sending a header then streaming a file    */
    CONN_SEND_FB            /* sending a header then streaming the framebuffer */
@@ -116,6 +125,17 @@ typedef struct {
    char     up_dir[WS_PATH_MAX];
    char     up_name[FF_LFN_BUF + 1];
    uint32_t up_bytes_written;
+
+   /* WebDAV PUT streaming (CONN_RECV_DAV_PUT).  remaining starts at
+      Content-Length and counts down as bytes are written to dav_file.
+      put_response_status / put_response_text are stashed so the 201/204
+      reply can be queued the moment the last body byte lands. */
+   bool     dav_put_open;
+   FIL      dav_file;
+   uint32_t dav_remaining;
+   int      dav_put_status;
+   const char *dav_put_status_text;
+   char     dav_put_target[WS_PATH_MAX];
 } ws_conn_t;
 
 typedef struct {
@@ -140,6 +160,17 @@ static uint32_t        g_ws_reboot_at;
 static bool            g_ws_sd_free_valid;
 static uint32_t        g_ws_sd_free_mb;
 static uint32_t        g_ws_sd_free_age_us;
+
+/* Rolling digest-auth nonce.  Regenerated lazily once it crosses
+   WS_NONCE_MAX_AGE_US; clients are challenged with stale=true and
+   re-authenticate transparently after that.  The server-side secret is
+   initialised once from the system timer so nonces are unpredictable
+   across reboots. */
+static char            g_ws_nonce[MD5_HEX_LEN + 1u];
+static uint32_t        g_ws_nonce_issued_us;
+static uint32_t        g_ws_nonce_counter;
+static uint32_t        g_ws_nonce_secret;
+static bool            g_ws_nonce_secret_initialised;
 
 static void ws_set_error(const char *message)
 {
@@ -629,6 +660,330 @@ static bool ws_is_root(const char *p)
 }
 
 /* ------------------------------------------------------------------ */
+/* Digest authentication (RFC 2617, qop=auth, MD5)                     */
+/* ------------------------------------------------------------------ */
+
+/* True if cmdline.txt set both webdav_user and webdav_password.
+   Auth is enforced on every route only in that case; otherwise the
+   webserver behaves as the legacy unauthenticated file browser. */
+static bool ws_digest_enabled(void)
+{
+   const wifi_config_t *cfg = wifi_get_config();
+
+   return cfg != NULL
+       && cfg->webdav_user[0]     != '\0'
+       && cfg->webdav_password[0] != '\0';
+}
+
+static void ws_digest_refresh_nonce(void)
+{
+   uint32_t now;
+   uint8_t  seed[12];
+   md5_ctx_t ctx;
+   uint8_t  digest[MD5_DIGEST_LEN];
+   static const char hex[] = "0123456789abcdef";
+   unsigned int i;
+
+   now = RPI_GetSystemTime();
+
+   if (!g_ws_nonce_secret_initialised) {
+      g_ws_nonce_secret = now ^ 0xA5A5A5A5u;
+      g_ws_nonce_secret_initialised = true;
+   }
+
+   if (g_ws_nonce[0] != '\0'
+       && (now - g_ws_nonce_issued_us) < WS_NONCE_MAX_AGE_US)
+      return;
+
+   ++g_ws_nonce_counter;
+   seed[ 0] = (uint8_t)(now                  );
+   seed[ 1] = (uint8_t)(now >>  8            );
+   seed[ 2] = (uint8_t)(now >> 16            );
+   seed[ 3] = (uint8_t)(now >> 24            );
+   seed[ 4] = (uint8_t)(g_ws_nonce_secret    );
+   seed[ 5] = (uint8_t)(g_ws_nonce_secret >>  8);
+   seed[ 6] = (uint8_t)(g_ws_nonce_secret >> 16);
+   seed[ 7] = (uint8_t)(g_ws_nonce_secret >> 24);
+   seed[ 8] = (uint8_t)(g_ws_nonce_counter   );
+   seed[ 9] = (uint8_t)(g_ws_nonce_counter >>  8);
+   seed[10] = (uint8_t)(g_ws_nonce_counter >> 16);
+   seed[11] = (uint8_t)(g_ws_nonce_counter >> 24);
+
+   md5_init(&ctx);
+   md5_update(&ctx, seed, sizeof seed);
+   md5_final(&ctx, digest);
+
+   for (i = 0u; i < MD5_DIGEST_LEN; ++i) {
+      g_ws_nonce[(i * 2u)     ] = hex[(digest[i] >> 4) & 0x0Fu];
+      g_ws_nonce[(i * 2u) + 1u] = hex[ digest[i]       & 0x0Fu];
+   }
+   g_ws_nonce[MD5_HEX_LEN] = '\0';
+   g_ws_nonce_issued_us = now;
+}
+
+/* True if the supplied nonce is the current one AND was issued less than
+   WS_NONCE_MAX_AGE_US ago.  A non-current-but-recent nonce is treated as
+   stale (caller signals stale=true in the challenge so the client
+   transparently re-authenticates). */
+static bool ws_digest_nonce_current(const char *nonce)
+{
+   uint32_t now;
+
+   if (nonce == NULL || g_ws_nonce[0] == '\0')
+      return false;
+   if (strcmp(nonce, g_ws_nonce) != 0)
+      return false;
+
+   now = RPI_GetSystemTime();
+   return (now - g_ws_nonce_issued_us) < WS_NONCE_MAX_AGE_US;
+}
+
+/* Extract a quoted or token value for `key` from a digest Authorization
+   header.  Returns true and writes into out[] (NUL-terminated) when
+   found.  The parser is intentionally tolerant: it accepts
+   key=value, key="value", and the various whitespace + comma layouts
+   browsers actually emit. */
+static bool ws_digest_field(const char *hdr, const char *key,
+                            char *out, size_t out_sz)
+{
+   size_t keylen = strlen(key);
+   const char *p = hdr;
+   size_t o;
+
+   while (*p != '\0') {
+      while (*p == ' ' || *p == '\t' || *p == ',')
+         ++p;
+      if (*p == '\0')
+         break;
+      if (ws_prefix_ci(p, key, keylen) && p[keylen] == '=') {
+         p += keylen + 1u;
+         o = 0u;
+         if (*p == '"') {
+            ++p;
+            while (*p != '\0' && *p != '"') {
+               if (o + 1u < out_sz)
+                  out[o++] = *p;
+               ++p;
+            }
+            if (*p == '"')
+               ++p;
+         } else {
+            while (*p != '\0' && *p != ',' && *p != ' ' && *p != '\t') {
+               if (o + 1u < out_sz)
+                  out[o++] = *p;
+               ++p;
+            }
+         }
+         out[o] = '\0';
+         return true;
+      }
+      /* skip this key=... pair */
+      while (*p != '\0' && *p != ',') {
+         if (*p == '"') {
+            ++p;
+            while (*p != '\0' && *p != '"')
+               ++p;
+            if (*p == '"')
+               ++p;
+         } else {
+            ++p;
+         }
+      }
+   }
+   return false;
+}
+
+/* Build the HA1 = MD5(user:realm:password) hex string. */
+static void ws_digest_compute_ha1(char ha1[MD5_HEX_LEN])
+{
+   const wifi_config_t *cfg = wifi_get_config();
+   const void *parts[5];
+   size_t      lens[5];
+
+   parts[0] = cfg->webdav_user;     lens[0] = strlen(cfg->webdav_user);
+   parts[1] = ":";                  lens[1] = 1u;
+   parts[2] = cfg->webdav_realm;    lens[2] = strlen(cfg->webdav_realm);
+   parts[3] = ":";                  lens[3] = 1u;
+   parts[4] = cfg->webdav_password; lens[4] = strlen(cfg->webdav_password);
+
+   md5_hex_cat(ha1, parts, lens, 5);
+}
+
+/* Build HA2 = MD5(method:uri). */
+static void ws_digest_compute_ha2(char ha2[MD5_HEX_LEN],
+                                  const char *method, const char *uri)
+{
+   const void *parts[3];
+   size_t      lens[3];
+
+   parts[0] = method; lens[0] = strlen(method);
+   parts[1] = ":";    lens[1] = 1u;
+   parts[2] = uri;    lens[2] = strlen(uri);
+
+   md5_hex_cat(ha2, parts, lens, 3);
+}
+
+/* Build the expected response hash (qop=auth flavour):
+   MD5(HA1:nonce:nc:cnonce:qop:HA2). */
+static void ws_digest_compute_response(char response[MD5_HEX_LEN],
+                                       const char *ha1, const char *nonce,
+                                       const char *nc, const char *cnonce,
+                                       const char *qop, const char *ha2)
+{
+   const void *parts[11];
+   size_t      lens[11];
+
+   parts[ 0] = ha1;    lens[ 0] = MD5_HEX_LEN;
+   parts[ 1] = ":";    lens[ 1] = 1u;
+   parts[ 2] = nonce;  lens[ 2] = strlen(nonce);
+   parts[ 3] = ":";    lens[ 3] = 1u;
+   parts[ 4] = nc;     lens[ 4] = strlen(nc);
+   parts[ 5] = ":";    lens[ 5] = 1u;
+   parts[ 6] = cnonce; lens[ 6] = strlen(cnonce);
+   parts[ 7] = ":";    lens[ 7] = 1u;
+   parts[ 8] = qop;    lens[ 8] = strlen(qop);
+   parts[ 9] = ":";    lens[ 9] = 1u;
+   parts[10] = ha2;    lens[10] = MD5_HEX_LEN;
+
+   md5_hex_cat(response, parts, lens, 11);
+}
+
+/* Build the RFC-2069 (qop-absent) response hash: MD5(HA1:nonce:HA2).
+   Some HTTP clients (older curl, some library defaults) still send no
+   qop; we accept both forms. */
+static void ws_digest_compute_response_legacy(char response[MD5_HEX_LEN],
+                                              const char *ha1,
+                                              const char *nonce,
+                                              const char *ha2)
+{
+   const void *parts[5];
+   size_t      lens[5];
+
+   parts[0] = ha1;   lens[0] = MD5_HEX_LEN;
+   parts[1] = ":";   lens[1] = 1u;
+   parts[2] = nonce; lens[2] = strlen(nonce);
+   parts[3] = ":";   lens[3] = 1u;
+   parts[4] = ha2;   lens[4] = MD5_HEX_LEN;
+
+   md5_hex_cat(response, parts, lens, 5);
+}
+
+/* Compare two MD5 hex strings case-insensitively in constant time.
+   `expected_hex` is the locally-computed digest from md5_hex_cat
+   (exactly MD5_HEX_LEN chars, NOT NUL-terminated - reading the index
+   MD5_HEX_LEN slot would be a buffer overread).  `received_hex` is
+   the value pulled out of the client's Authorization header (always
+   NUL-terminated by ws_digest_field); we require it to be exactly
+   MD5_HEX_LEN chars long. */
+static bool ws_hex_eq_ci(const char *expected_hex, const char *received_hex)
+{
+   unsigned int diff = 0u;
+   size_t i;
+
+   for (i = 0u; i < MD5_HEX_LEN; ++i) {
+      if (received_hex[i] == '\0')
+         return false;
+      diff |= (unsigned int)((unsigned char)ws_lc((unsigned char)expected_hex[i])
+                           ^ (unsigned char)ws_lc((unsigned char)received_hex[i]));
+   }
+   return diff == 0u && received_hex[MD5_HEX_LEN] == '\0';
+}
+
+typedef enum {
+   WS_AUTH_OK = 0,         /* credentials matched                       */
+   WS_AUTH_REQUIRED,       /* no/invalid Authorization, send challenge  */
+   WS_AUTH_STALE           /* hash OK but nonce expired, send stale=true*/
+} ws_auth_status_t;
+
+static ws_auth_status_t ws_digest_verify(const char *method,
+                                         const char *header_block,
+                                         size_t header_limit)
+{
+   char authz[640];
+   char field_username[WIFI_WEBDAV_USER_MAX_LEN + 1];
+   char field_realm[WIFI_WEBDAV_REALM_MAX_LEN + 1];
+   char field_nonce[MD5_HEX_LEN + 1];
+   char field_uri[WS_PATH_MAX];
+   char field_response[MD5_HEX_LEN + 1];
+   char field_qop[16];
+   char field_nc[16];
+   char field_cnonce[64];
+   const wifi_config_t *cfg = wifi_get_config();
+   char ha1[MD5_HEX_LEN];
+   char ha2[MD5_HEX_LEN];
+   char expected[MD5_HEX_LEN];
+   bool have_qop;
+
+   if (!ws_find_header(header_block, header_limit, "Authorization",
+                       authz, sizeof authz))
+      return WS_AUTH_REQUIRED;
+
+   if (!ws_prefix_ci_str(authz, "Digest "))
+      return WS_AUTH_REQUIRED;
+
+   /* Required fields */
+   if (!ws_digest_field(authz, "username", field_username, sizeof field_username)
+       || !ws_digest_field(authz, "nonce",    field_nonce,    sizeof field_nonce)
+       || !ws_digest_field(authz, "uri",      field_uri,      sizeof field_uri)
+       || !ws_digest_field(authz, "response", field_response, sizeof field_response))
+      return WS_AUTH_REQUIRED;
+
+   /* Optional realm: if present must match ours, but we don't require it. */
+   if (ws_digest_field(authz, "realm", field_realm, sizeof field_realm)) {
+      if (strcmp(field_realm, cfg->webdav_realm) != 0)
+         return WS_AUTH_REQUIRED;
+   }
+
+   if (strcmp(field_username, cfg->webdav_user) != 0)
+      return WS_AUTH_REQUIRED;
+
+   ws_digest_compute_ha1(ha1);
+   ws_digest_compute_ha2(ha2, method, field_uri);
+
+   have_qop = ws_digest_field(authz, "qop", field_qop, sizeof field_qop)
+           && field_qop[0] != '\0';
+
+   if (have_qop) {
+      if (!ws_digest_field(authz, "nc",     field_nc,     sizeof field_nc)
+          || !ws_digest_field(authz, "cnonce", field_cnonce, sizeof field_cnonce))
+         return WS_AUTH_REQUIRED;
+      ws_digest_compute_response(expected, ha1, field_nonce,
+                                 field_nc, field_cnonce, field_qop, ha2);
+   } else {
+      ws_digest_compute_response_legacy(expected, ha1, field_nonce, ha2);
+   }
+
+   if (!ws_hex_eq_ci(expected, field_response))
+      return WS_AUTH_REQUIRED;
+
+   /* The hash matched, but the nonce may be too old.  Tell the client
+      to repeat with the freshly issued one. */
+   if (!ws_digest_nonce_current(field_nonce))
+      return WS_AUTH_STALE;
+
+   return WS_AUTH_OK;
+}
+
+/* Build a WWW-Authenticate digest challenge into `out`.  Caller will
+   wedge this into a 401 response.  Returns the number of bytes
+   written (always < out_sz). */
+static size_t ws_digest_build_challenge(char *out, size_t out_sz, bool stale)
+{
+   const wifi_config_t *cfg = wifi_get_config();
+   int n;
+
+   ws_digest_refresh_nonce();
+
+   n = snprintf(out, out_sz,
+                "WWW-Authenticate: Digest realm=\"%s\", qop=\"auth\", "
+                "algorithm=MD5, nonce=\"%s\"%s\r\n",
+                cfg->webdav_realm, g_ws_nonce, stale ? ", stale=true" : "");
+   if (n < 0 || (size_t)n >= out_sz)
+      return 0u;
+   return (size_t)n;
+}
+
+/* ------------------------------------------------------------------ */
 /* Forward declarations                                                */
 /* ------------------------------------------------------------------ */
 
@@ -641,6 +996,9 @@ static bool conn_pump(ws_conn_t *c);
 static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len);
 static bool process_request(ws_conn_t *c, int body_at);
 static bool upload_consume(ws_conn_t *c, const uint8_t *data, size_t len);
+/* WebDAV body-consumer + the SD-file fallback used by the GET path. */
+static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len);
+static bool start_download(ws_conn_t *c, const char *sdpath);
 
 /* ------------------------------------------------------------------ */
 /* HTML page scaffolding                                               */
@@ -724,6 +1082,10 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
    if (c->up_file_open) {
       f_close(&c->up_file);
       c->up_file_open = false;
+   }
+   if (c->dav_put_open) {
+      f_close(&c->dav_file);
+      c->dav_put_open = false;
    }
 
    if (c->pcb != NULL) {
@@ -954,6 +1316,50 @@ static bool ws_finish_html(ws_conn_t *c, int status, const char *stext,
    if (body->len > 0u && body->data != NULL)
       sb_write(&r, body->data, body->len);
    sb_free(body);
+
+   if (r.failed) {
+      sb_free(&r);
+      return ws_oom(c);
+   }
+
+   free(c->out);
+   c->out = r.data;
+   c->out_len = r.len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
+   conn_pump(c);
+   return true;
+}
+
+/* Build a 401 Unauthorized response carrying the digest challenge.
+   Used both on the very first request (no Authorization header) and on
+   stale=true. */
+static bool ws_send_auth_challenge(ws_conn_t *c, bool stale)
+{
+   char         challenge[WS_AUTH_HEADER_MAX];
+   size_t       challenge_len = ws_digest_build_challenge(challenge,
+                                                          sizeof challenge,
+                                                          stale);
+   ws_strbuf_t  r;
+   static const char body[] =
+      "<!DOCTYPE html><html><body><h1>401 Unauthorized</h1>"
+      "<p>This resource requires authentication.</p></body></html>";
+
+   if (challenge_len == 0u)
+      return ws_oom(c);
+
+   sb_init(&r);
+   sb_printf(&r,
+             "HTTP/1.1 401 Unauthorized\r\n"
+             "%s"
+             "Content-Type: text/html; charset=utf-8\r\n"
+             "Content-Length: %u\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             challenge, (unsigned int)(sizeof(body) - 1u));
+   sb_write(&r, body, sizeof(body) - 1u);
 
    if (r.failed) {
       sb_free(&r);
@@ -1709,12 +2115,649 @@ static bool route_upload(ws_conn_t *c, const char *rawpath, int body_at)
 }
 
 /* ------------------------------------------------------------------ */
+/* WebDAV (RFC 4918, class-1 + LOCK stubs)                             */
+/* ------------------------------------------------------------------ */
+
+/* Convert the URL path coming in on a WebDAV request to an absolute
+   SD-card path.  Empty / "/" / unspecified becomes "/".  Returns false
+   for anything the path-safety check rejects (control chars, ".."). */
+static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
+                              size_t sdpath_sz)
+{
+   char decoded[WS_PATH_MAX];
+
+   ws_url_decode(rawpath, decoded, sizeof decoded);
+   ws_normalize_path(decoded, sdpath, sdpath_sz);
+   return ws_path_is_safe(sdpath);
+}
+
+/* HTTP-date (RFC 7231 IMF-fixdate) for a FatFs timestamp.  FatFs only
+   gives us the local clock; without an RTC we fudge to a fixed-epoch
+   date that clients can sort by but shouldn't trust as wall time. */
+static void dav_format_date(char *out, size_t out_sz, FSIZE_t mtime_dummy)
+{
+   (void)mtime_dummy;
+   /* Use the (project-relative) build date - the FatFs FILINFO carries
+      only DOS-style date/time and we have no RTC; sending a stable
+      placeholder is more honest than fabricating one. */
+   strlcpy(out, "Mon, 01 Jan 2024 00:00:00 GMT", out_sz);
+}
+
+/* Emit one PROPFIND <D:response> element for an SD entry.  url_path
+   must already be URL-encoded; is_dir controls the resourcetype.  size
+   is ignored for directories. */
+static void dav_emit_response(ws_strbuf_t *b, const char *url_path,
+                              bool is_dir, uint32_t size,
+                              const char *display_name)
+{
+   char datebuf[40];
+
+   dav_format_date(datebuf, sizeof datebuf, 0);
+
+   sb_puts(b, "<D:response><D:href>");
+   sb_html(b, url_path);    /* url_path is already %-encoded; sb_html escapes XML */
+   sb_puts(b, "</D:href><D:propstat><D:prop>"
+              "<D:displayname>");
+   sb_html(b, display_name);
+   sb_puts(b, "</D:displayname>"
+              "<D:getlastmodified>");
+   sb_puts(b, datebuf);
+   sb_puts(b, "</D:getlastmodified>"
+              "<D:creationdate>2024-01-01T00:00:00Z</D:creationdate>"
+              "<D:resourcetype>");
+   if (is_dir)
+      sb_puts(b, "<D:collection/>");
+   sb_puts(b, "</D:resourcetype>");
+   if (!is_dir) {
+      sb_printf(b, "<D:getcontentlength>%lu</D:getcontentlength>"
+                   "<D:getcontenttype>application/octet-stream</D:getcontenttype>",
+                (unsigned long)size);
+   }
+   sb_puts(b, "<D:supportedlock>"
+              "<D:lockentry><D:lockscope><D:exclusive/></D:lockscope>"
+              "<D:locktype><D:write/></D:locktype></D:lockentry>"
+              "</D:supportedlock>"
+              "</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>"
+              "</D:response>");
+}
+
+/* Build the "/dav-encoded" form of an SD path: every segment %-encoded
+   except '/' itself.  Used for the <D:href> field.  trailing_slash
+   appends '/' for non-root paths; the root path is already "/" and
+   needs no further suffix. */
+static void dav_append_url_path(ws_strbuf_t *b, const char *sdpath,
+                                bool trailing_slash)
+{
+   sb_urlpath(b, sdpath);
+   if (trailing_slash && (sdpath[0] != '/' || sdpath[1] != '\0'))
+      sb_putc(b, '/');
+}
+
+static bool route_dav_options(ws_conn_t *c)
+{
+   ws_strbuf_t r;
+
+   sb_init(&r);
+   sb_puts(&r,
+      "HTTP/1.1 200 OK\r\n"
+      "DAV: 1, 2\r\n"
+      "MS-Author-Via: DAV\r\n"
+      "Allow: OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, COPY, MOVE, "
+      "PROPFIND, LOCK, UNLOCK, POST\r\n"
+      "Content-Length: 0\r\n"
+      "Connection: close\r\n"
+      "\r\n");
+
+   if (r.failed) {
+      sb_free(&r);
+      return ws_oom(c);
+   }
+   free(c->out);
+   c->out = r.data;
+   c->out_len = r.len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
+   conn_pump(c);
+   return true;
+}
+
+static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
+{
+   char        sdpath[WS_PATH_MAX];
+   char        depth_hdr[16];
+   FILINFO     fno;
+   ws_strbuf_t b;
+   int         depth = 1;
+   (void)body_at;   /* PROPFIND body lists requested props; we return them all */
+
+   if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
+      return ws_error(c, 400, "Bad Request", "That path is not allowed.");
+
+   if (ws_find_header(c->reqhdr, c->reqhdr_len, "Depth",
+                      depth_hdr, sizeof depth_hdr)) {
+      /* Depth: 0 → self only; 1 → self + immediate children;
+         "infinity" or anything else → capped at 1 (we don't recurse). */
+      depth = (strcmp(depth_hdr, "0") == 0) ? 0 : 1;
+   }
+
+   bool is_root = ws_is_root(sdpath);
+   bool is_dir;
+   if (is_root) {
+      is_dir = true;
+   } else {
+      if (f_stat(sdpath, &fno) != FR_OK)
+         return ws_error(c, 404, "Not Found", "No such resource.");
+      is_dir = (fno.fattrib & AM_DIR) != 0u;
+   }
+
+   sb_init(&b);
+   sb_puts(&b,
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+      "<D:multistatus xmlns:D=\"DAV:\">");
+
+   /* Self */
+   {
+      ws_strbuf_t url;
+      sb_init(&url);
+      dav_append_url_path(&url, sdpath, is_dir);
+      if (url.data == NULL) {
+         sb_free(&b);
+         return ws_oom(c);
+      }
+      dav_emit_response(&b, url.data, is_dir,
+                        is_root ? 0u : (uint32_t)fno.fsize,
+                        is_root ? "/" : ws_basename(sdpath));
+      sb_free(&url);
+   }
+
+   /* Children at depth 1 */
+   if (depth == 1 && is_dir) {
+      DIR     dir;
+      FILINFO chld;
+      if (f_opendir(&dir, sdpath) == FR_OK) {
+         while (f_readdir(&dir, &chld) == FR_OK && chld.fname[0] != '\0') {
+            ws_strbuf_t url;
+            bool        child_is_dir = (chld.fattrib & AM_DIR) != 0u;
+
+            sb_init(&url);
+            if (!is_root) sb_urlpath(&url, sdpath);
+            sb_putc(&url, '/');
+            sb_urlpath(&url, chld.fname);
+            if (child_is_dir) sb_putc(&url, '/');
+            if (url.data != NULL) {
+               dav_emit_response(&b, url.data, child_is_dir,
+                                 (uint32_t)chld.fsize, chld.fname);
+            }
+            sb_free(&url);
+         }
+         f_closedir(&dir);
+      }
+   }
+
+   sb_puts(&b, "</D:multistatus>");
+
+   if (b.failed) {
+      sb_free(&b);
+      return ws_oom(c);
+   }
+
+   {
+      ws_strbuf_t r;
+      sb_init(&r);
+      sb_printf(&r,
+                "HTTP/1.1 207 Multi-Status\r\n"
+                "Content-Type: application/xml; charset=\"utf-8\"\r\n"
+                "Content-Length: %lu\r\n"
+                "DAV: 1, 2\r\n"
+                "MS-Author-Via: DAV\r\n"
+                "Connection: close\r\n"
+                "\r\n",
+                (unsigned long)b.len);
+      sb_write(&r, b.data, b.len);
+      sb_free(&b);
+
+      if (r.failed) {
+         sb_free(&r);
+         return ws_oom(c);
+      }
+      free(c->out);
+      c->out = r.data;
+      c->out_len = r.len;
+      c->out_sent = 0u;
+      c->bytes_queued = 0u;
+      c->bytes_acked = 0u;
+      c->state = CONN_SEND_MEM;
+      conn_pump(c);
+   }
+   return true;
+}
+
+/* Build and queue the response for the PUT that has just received its
+   last body byte.  201 Created for a new file, 204 No Content if an
+   existing file was overwritten. */
+static bool dav_put_send_response(ws_conn_t *c)
+{
+   ws_strbuf_t r;
+
+   sb_init(&r);
+   sb_printf(&r,
+             "HTTP/1.1 %d %s\r\n"
+             "Content-Length: 0\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             c->dav_put_status, c->dav_put_status_text);
+   if (r.failed) {
+      sb_free(&r);
+      return ws_oom(c);
+   }
+   free(c->out);
+   c->out = r.data;
+   c->out_len = r.len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
+   conn_pump(c);
+   return true;
+}
+
+/* Drain n bytes from `data` into the open PUT file.  When the byte
+   counter hits zero, close the file and queue the response. */
+static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
+{
+   UINT bw = 0u;
+   size_t take = (len < c->dav_remaining) ? len : c->dav_remaining;
+
+   if (c->dav_put_open && take > 0u) {
+      if (f_write(&c->dav_file, data, (UINT)take, &bw) != FR_OK || bw != take) {
+         f_close(&c->dav_file);
+         c->dav_put_open = false;
+         return ws_error(c, 507, "Insufficient Storage",
+                         "Writing to the SD card failed.");
+      }
+   }
+   c->dav_remaining -= (uint32_t)take;
+
+   if (c->dav_remaining == 0u) {
+      if (c->dav_put_open) {
+         FRESULT fr = f_close(&c->dav_file);
+         c->dav_put_open = false;
+         if (fr != FR_OK)
+            return ws_error(c, 500, "Internal Server Error",
+                            "Could not close the uploaded file.");
+      }
+      return dav_put_send_response(c);
+   }
+
+   return true;
+}
+
+static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
+{
+   char    sdpath[WS_PATH_MAX];
+   char    ctype_unused[32];
+   char    len_hdr[24];
+   FILINFO fno;
+   uint32_t content_length = 0u;
+   const char *p;
+   bool    target_existed;
+
+   if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
+      return ws_error(c, 400, "Bad Request", "That path is not allowed.");
+   if (ws_is_root(sdpath))
+      return ws_error(c, 405, "Method Not Allowed", "PUT on the root is not allowed.");
+
+   /* Content-Length is required for our streaming model. */
+   if (!ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length",
+                       len_hdr, sizeof len_hdr))
+      return ws_error(c, 411, "Length Required",
+                      "PUT requires a Content-Length.");
+   for (p = len_hdr; *p != '\0'; ++p) {
+      if (*p < '0' || *p > '9')
+         return ws_error(c, 400, "Bad Request",
+                         "Malformed Content-Length.");
+      content_length = (content_length * 10u) + (uint32_t)(*p - '0');
+   }
+   (void)ctype_unused;
+
+   target_existed = f_stat(sdpath, &fno) == FR_OK;
+   if (target_existed && (fno.fattrib & AM_DIR) != 0u)
+      return ws_error(c, 409, "Conflict",
+                      "Cannot PUT over an existing directory.");
+
+   if (f_open(&c->dav_file, sdpath, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+      return ws_error(c, 409, "Conflict",
+                      "Cannot create the target (missing parent folder?).");
+   c->dav_put_open       = true;
+   c->dav_remaining      = content_length;
+   c->dav_put_status     = target_existed ? 204 : 201;
+   c->dav_put_status_text= target_existed ? "No Content" : "Created";
+   strlcpy(c->dav_put_target, sdpath, sizeof c->dav_put_target);
+
+   c->state = CONN_RECV_DAV_PUT;
+
+   /* The HTTP-header parse may have buffered some of the body already. */
+   if ((size_t)body_at < c->reqhdr_len) {
+      size_t already = c->reqhdr_len - (size_t)body_at;
+      return dav_put_consume(c, (const uint8_t *)c->reqhdr + body_at,
+                             already);
+   }
+   /* Zero-length PUT: close + reply immediately. */
+   if (content_length == 0u)
+      return dav_put_consume(c, NULL, 0u);
+
+   return true;
+}
+
+static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
+{
+   char    sdpath[WS_PATH_MAX];
+   FILINFO fno;
+   FRESULT fr;
+
+   if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
+      return ws_error(c, 400, "Bad Request", "That path is not allowed.");
+   if (ws_is_root(sdpath))
+      return ws_error(c, 403, "Forbidden", "Refusing to delete the root.");
+   if (f_stat(sdpath, &fno) != FR_OK)
+      return ws_error(c, 404, "Not Found", "No such resource.");
+
+   /* FatFs f_unlink works for both files and empty directories.  Real
+      WebDAV DELETE on a collection is recursive; we deliberately do
+      not implement recursive delete - the client must do depth-first. */
+   fr = f_unlink(sdpath);
+   if (fr != FR_OK) {
+      if (fr == FR_DENIED)
+         return ws_error(c, 409, "Conflict",
+                         "Directory is not empty.");
+      return ws_error(c, 500, "Internal Server Error",
+                      "Delete failed.");
+   }
+
+   {
+      ws_strbuf_t r;
+      sb_init(&r);
+      sb_puts(&r,
+              "HTTP/1.1 204 No Content\r\n"
+              "Content-Length: 0\r\n"
+              "Connection: close\r\n"
+              "\r\n");
+      if (r.failed) { sb_free(&r); return ws_oom(c); }
+      free(c->out); c->out = r.data; c->out_len = r.len;
+      c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
+      c->state = CONN_SEND_MEM;
+      conn_pump(c);
+   }
+   return true;
+}
+
+static bool route_dav_mkcol(ws_conn_t *c, const char *rawpath)
+{
+   char    sdpath[WS_PATH_MAX];
+   FRESULT fr;
+
+   if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
+      return ws_error(c, 400, "Bad Request", "That path is not allowed.");
+   if (ws_is_root(sdpath))
+      return ws_error(c, 405, "Method Not Allowed",
+                      "Root already exists.");
+
+   fr = f_mkdir(sdpath);
+   if (fr == FR_EXIST)
+      return ws_error(c, 405, "Method Not Allowed",
+                      "Resource already exists.");
+   if (fr == FR_NO_PATH)
+      return ws_error(c, 409, "Conflict",
+                      "Parent collection does not exist.");
+   if (fr != FR_OK)
+      return ws_error(c, 500, "Internal Server Error", "mkdir failed.");
+
+   {
+      ws_strbuf_t r;
+      sb_init(&r);
+      sb_puts(&r,
+              "HTTP/1.1 201 Created\r\n"
+              "Content-Length: 0\r\n"
+              "Connection: close\r\n"
+              "\r\n");
+      if (r.failed) { sb_free(&r); return ws_oom(c); }
+      free(c->out); c->out = r.data; c->out_len = r.len;
+      c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
+      c->state = CONN_SEND_MEM;
+      conn_pump(c);
+   }
+   return true;
+}
+
+/* Extract the SD-path portion from a Destination: header.  The header is
+   in the form "http://host[:port]/url-path"; we strip the scheme/host
+   and URL-decode the path. */
+static bool dav_destination_sdpath(const char *dest, char *out, size_t out_sz)
+{
+   const char *p = dest;
+   const char *path;
+
+   if (ws_prefix_ci_str(p, "http://"))  p += 7;
+   else if (ws_prefix_ci_str(p, "https://")) p += 8;
+
+   /* Skip host[:port] */
+   path = strchr(p, '/');
+   if (path == NULL)
+      return false;
+
+   return dav_url_to_sdpath(path, out, out_sz);
+}
+
+static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_move)
+{
+   char    src[WS_PATH_MAX];
+   char    dst[WS_PATH_MAX];
+   char    dest_hdr[WS_PATH_MAX + 32];
+   char    over_hdr[8];
+   bool    overwrite = true;
+   FILINFO fno_src;
+   FRESULT fr;
+   bool    dst_existed;
+
+   if (!dav_url_to_sdpath(rawpath, src, sizeof src))
+      return ws_error(c, 400, "Bad Request", "Bad source path.");
+   if (!ws_find_header(c->reqhdr, c->reqhdr_len, "Destination",
+                       dest_hdr, sizeof dest_hdr))
+      return ws_error(c, 400, "Bad Request", "Missing Destination header.");
+   if (!dav_destination_sdpath(dest_hdr, dst, sizeof dst))
+      return ws_error(c, 400, "Bad Request", "Bad Destination path.");
+   if (ws_find_header(c->reqhdr, c->reqhdr_len, "Overwrite",
+                      over_hdr, sizeof over_hdr)) {
+      overwrite = (over_hdr[0] == 'T' || over_hdr[0] == 't');
+   }
+   if (ws_is_root(src) || ws_is_root(dst))
+      return ws_error(c, 403, "Forbidden", "Refusing to touch the root.");
+   if (f_stat(src, &fno_src) != FR_OK)
+      return ws_error(c, 404, "Not Found", "Source does not exist.");
+
+   {
+      FILINFO fno_dst;
+      dst_existed = f_stat(dst, &fno_dst) == FR_OK;
+   }
+   if (dst_existed && !overwrite)
+      return ws_error(c, 412, "Precondition Failed",
+                      "Destination exists and Overwrite is F.");
+   if (dst_existed) {
+      /* Best-effort: remove destination first (only works on files /
+         empty dirs - matches f_unlink semantics).  Real WebDAV
+         recursive overwrite is out of scope. */
+      (void)f_unlink(dst);
+   }
+
+   if (is_move) {
+      fr = f_rename(src, dst);
+   } else {
+      /* COPY: only files are supported (collection copy would need a
+         recursive walk).  Stream src → dst in 8 KB chunks. */
+      FIL fsrc, fdst;
+      uint8_t buf[1024];
+      UINT br, bw;
+
+      if ((fno_src.fattrib & AM_DIR) != 0u)
+         return ws_error(c, 501, "Not Implemented",
+                         "Recursive collection COPY is not supported.");
+      if (f_open(&fsrc, src, FA_READ) != FR_OK)
+         return ws_error(c, 500, "Internal Server Error",
+                         "Could not open source.");
+      if (f_open(&fdst, dst, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+         f_close(&fsrc);
+         return ws_error(c, 500, "Internal Server Error",
+                         "Could not create destination.");
+      }
+      do {
+         if (f_read(&fsrc, buf, sizeof buf, &br) != FR_OK) {
+            f_close(&fsrc); f_close(&fdst);
+            return ws_error(c, 500, "Internal Server Error",
+                            "Read failed during COPY.");
+         }
+         if (br == 0u) break;
+         if (f_write(&fdst, buf, br, &bw) != FR_OK || bw != br) {
+            f_close(&fsrc); f_close(&fdst);
+            return ws_error(c, 507, "Insufficient Storage",
+                            "Write failed during COPY.");
+         }
+      } while (br == sizeof buf);
+      f_close(&fsrc);
+      f_close(&fdst);
+      fr = FR_OK;
+   }
+
+   if (fr != FR_OK)
+      return ws_error(c, 500, "Internal Server Error",
+                      is_move ? "Rename failed." : "Copy failed.");
+
+   {
+      ws_strbuf_t r;
+      sb_init(&r);
+      sb_printf(&r,
+                "HTTP/1.1 %d %s\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: close\r\n"
+                "\r\n",
+                dst_existed ? 204 : 201,
+                dst_existed ? "No Content" : "Created");
+      if (r.failed) { sb_free(&r); return ws_oom(c); }
+      free(c->out); c->out = r.data; c->out_len = r.len;
+      c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
+      c->state = CONN_SEND_MEM;
+      conn_pump(c);
+   }
+   return true;
+}
+
+/* LOCK / UNLOCK stubs.  We are technically a class-2 server: we return a
+   well-formed lock response with a synthetic opaque-lock token so that
+   Windows Explorer's WebDAV redirector keeps writing, but no state is
+   actually retained.  Single-user device - faking it is safe. */
+static bool route_dav_lock(ws_conn_t *c, const char *rawpath)
+{
+   ws_strbuf_t body;
+   char        token[48];
+   uint32_t    nonce;
+   (void)rawpath;
+
+   nonce = RPI_GetSystemTime();
+   snprintf(token, sizeof token,
+            "opaquelocktoken:%08lx-%08lx", (unsigned long)nonce,
+            (unsigned long)(nonce ^ 0xA5A5A5A5u));
+
+   sb_init(&body);
+   sb_puts(&body,
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+      "<D:prop xmlns:D=\"DAV:\"><D:lockdiscovery><D:activelock>"
+      "<D:locktype><D:write/></D:locktype>"
+      "<D:lockscope><D:exclusive/></D:lockscope>"
+      "<D:depth>infinity</D:depth>"
+      "<D:owner><D:href>Pi1MHz</D:href></D:owner>"
+      "<D:timeout>Second-3600</D:timeout>"
+      "<D:locktoken><D:href>");
+   sb_html(&body, token);
+   sb_puts(&body,
+      "</D:href></D:locktoken>"
+      "</D:activelock></D:lockdiscovery></D:prop>");
+   if (body.failed) { sb_free(&body); return ws_oom(c); }
+
+   {
+      ws_strbuf_t r;
+      sb_init(&r);
+      sb_printf(&r,
+                "HTTP/1.1 200 OK\r\n"
+                "Lock-Token: <%s>\r\n"
+                "Content-Type: application/xml; charset=\"utf-8\"\r\n"
+                "Content-Length: %lu\r\n"
+                "Connection: close\r\n"
+                "\r\n",
+                token, (unsigned long)body.len);
+      sb_write(&r, body.data, body.len);
+      sb_free(&body);
+      if (r.failed) { sb_free(&r); return ws_oom(c); }
+      free(c->out); c->out = r.data; c->out_len = r.len;
+      c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
+      c->state = CONN_SEND_MEM;
+      conn_pump(c);
+   }
+   return true;
+}
+
+static bool route_dav_unlock(ws_conn_t *c)
+{
+   ws_strbuf_t r;
+   sb_init(&r);
+   sb_puts(&r,
+           "HTTP/1.1 204 No Content\r\n"
+           "Content-Length: 0\r\n"
+           "Connection: close\r\n"
+           "\r\n");
+   if (r.failed) { sb_free(&r); return ws_oom(c); }
+   free(c->out); c->out = r.data; c->out_len = r.len;
+   c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
+   conn_pump(c);
+   return true;
+}
+
+/* GET fallback for paths that don't match a management route: try to
+   serve the URL path as an SD file (the same view a WebDAV-mounted
+   client gets).  Returns false if the path isn't a regular file - the
+   caller then sends 404. */
+static bool route_dav_get_file(ws_conn_t *c, const char *rawpath)
+{
+   char    sdpath[WS_PATH_MAX];
+   FILINFO fno;
+
+   if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
+      return false;
+   if (ws_is_root(sdpath))
+      return false;
+   if (f_stat(sdpath, &fno) != FR_OK)
+      return false;
+   if ((fno.fattrib & AM_DIR) != 0u)
+      return false;
+
+   return start_download(c, sdpath);
+}
+
+/* ------------------------------------------------------------------ */
 /* Request dispatch                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Method-string → method type bucket.  Used by the digest check (HEAD
+   is treated as GET for hash purposes per RFC) and the dispatcher. */
+static bool ws_method_is(const char *method, const char *want)
+{
+   return strcmp(method, want) == 0;
+}
+
 static bool process_request(ws_conn_t *c, int body_at)
 {
-   char  method[8];
+   char  method[12];
    char  rawpath[WS_PATH_MAX];
    char *query;
 
@@ -1726,7 +2769,44 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (query != NULL)
       *query = '\0';
 
-   if (strcmp(method, "GET") == 0) {
+   /* Digest auth.  When configured, every route requires a valid
+      Authorization header.  OPTIONS is intentionally NOT exempt - the
+      WebDAV client sends it after authenticating, and exempting it
+      makes the realm appear to disagree on later requests. */
+   if (ws_digest_enabled()) {
+      ws_auth_status_t a = ws_digest_verify(method, c->reqhdr,
+                                            c->reqhdr_len);
+      if (a == WS_AUTH_REQUIRED)
+         return ws_send_auth_challenge(c, false);
+      if (a == WS_AUTH_STALE)
+         return ws_send_auth_challenge(c, true);
+      /* WS_AUTH_OK - fall through */
+   }
+
+   /* WebDAV verbs (RFC 4918 + LOCK stubs).  These take precedence over
+      the legacy GET/POST handlers so the WebDAV mount covers the
+      whole URL space; the management routes below only fire for the
+      handful of GET / POST paths they own. */
+   if (ws_method_is(method, "OPTIONS"))
+      return route_dav_options(c);
+   if (ws_method_is(method, "PROPFIND"))
+      return route_dav_propfind(c, rawpath, body_at);
+   if (ws_method_is(method, "PUT"))
+      return route_dav_put(c, rawpath, body_at);
+   if (ws_method_is(method, "DELETE"))
+      return route_dav_delete(c, rawpath);
+   if (ws_method_is(method, "MKCOL"))
+      return route_dav_mkcol(c, rawpath);
+   if (ws_method_is(method, "MOVE"))
+      return route_dav_move_or_copy(c, rawpath, true);
+   if (ws_method_is(method, "COPY"))
+      return route_dav_move_or_copy(c, rawpath, false);
+   if (ws_method_is(method, "LOCK"))
+      return route_dav_lock(c, rawpath);
+   if (ws_method_is(method, "UNLOCK"))
+      return route_dav_unlock(c);
+
+   if (ws_method_is(method, "GET") || ws_method_is(method, "HEAD")) {
       if (strcmp(rawpath, "/") == 0)
          return route_home(c);
       if (strcmp(rawpath, "/status") == 0)
@@ -1739,10 +2819,15 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_reboot_confirm(c);
       if (strcmp(rawpath, "/files") == 0 || ws_prefix("/files/", rawpath))
          return route_files_get(c, rawpath);
+      /* Fallback: serve the URL path as an SD file (the WebDAV "/"
+         mount view).  If the path doesn't resolve to a regular file,
+         this returns false and we 404. */
+      if (route_dav_get_file(c, rawpath))
+         return true;
       return ws_error(c, 404, "Not Found", "No such page.");
    }
 
-   if (strcmp(method, "POST") == 0) {
+   if (ws_method_is(method, "POST")) {
       if (strcmp(rawpath, "/reboot") == 0)
          return route_reboot_do(c);
       if (strcmp(rawpath, "/files") == 0 || ws_prefix("/files/", rawpath))
@@ -1750,8 +2835,7 @@ static bool process_request(ws_conn_t *c, int body_at)
       return ws_error(c, 404, "Not Found", "No such page.");
    }
 
-   return ws_error(c, 405, "Method Not Allowed",
-                   "Only GET and POST are supported.");
+   return ws_error(c, 405, "Method Not Allowed", "Unsupported method.");
 }
 
 static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
@@ -1784,6 +2868,10 @@ static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
          }
       } else if (c->state == CONN_RECV_UPLOAD) {
          if (!upload_consume(c, data + pos, len - pos))
+            return false;
+         pos = len;
+      } else if (c->state == CONN_RECV_DAV_PUT) {
+         if (!dav_put_consume(c, data + pos, len - pos))
             return false;
          pos = len;
       } else {
@@ -1892,6 +2980,10 @@ static void ws_err(void *arg, err_t err)
    if (c->up_file_open) {
       f_close(&c->up_file);
       c->up_file_open = false;
+   }
+   if (c->dav_put_open) {
+      f_close(&c->dav_file);
+      c->dav_put_open = false;
    }
    free(c->out);
    free(c);
