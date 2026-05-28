@@ -206,7 +206,12 @@ typedef struct {
    uint32_t sdpcm_brcm_event_auth_type;
    uint32_t sdpcm_brcm_event_datalen;
    uint32_t sdpcm_brcm_event_payload_bytes_available;
-   uint8_t tx_control_template_payload_bytes[80];
+   /* Scratch for the IOCTL payload bytes (iovar name + value).  80 B
+      is enough for every command we send today; the prepare path
+      asserts payload_length stays within SDIO_TX_CONTROL_PAYLOAD_MAX
+      so a future iovar with a longer name can't silently overflow. */
+#define SDIO_TX_CONTROL_PAYLOAD_MAX 80u
+   uint8_t tx_control_template_payload_bytes[SDIO_TX_CONTROL_PAYLOAD_MAX];
    uint8_t sdpcm_brcm_event_addr[6];
    char sdpcm_brcm_event_ifname[17];
    uint32_t sdpcm_cdc_length;

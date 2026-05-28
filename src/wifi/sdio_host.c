@@ -507,7 +507,12 @@ static int sdio_host_apply_clock_rate(uint32_t target_rate, uint32_t *actual_rat
    control1 &= ~(0x0Fu << 16);
    control1 |= (0x0Bu << 16);
    g_rpi_emmc_base->EMMC_CONTROL1 = control1;
-   TIMEOUT_WAIT((g_rpi_emmc_base->EMMC_CONTROL1 & 0x2u) != 0u, 0x1000000u);
+   /* Wait for the SD-clock-stable bit; the previous 0x1000000 cap was
+      ~16 s on the 1 MHz delay path - long enough that a wedged
+      controller would freeze the whole system.  100 ms is comfortably
+      above the worst observed settle time and bounds the freeze
+      cleanly. */
+   TIMEOUT_WAIT((g_rpi_emmc_base->EMMC_CONTROL1 & 0x2u) != 0u, 100000u);
    if ((g_rpi_emmc_base->EMMC_CONTROL1 & 0x2u) == 0u)
       return -1;
 
@@ -1079,7 +1084,12 @@ int sdio_host_set_clock_poll(sdio_host_t *host, uint32_t *actual_rate_hz)
             g_rpi_emmc_base->EMMC_CONTROL1 = control1;
          }
 
-         host->clock_deadline_us = now_us + 0x1000000u;
+         /* Tighten the clock-stable poll deadline from the original
+            ~16 s (0x1000000 us) to 100 ms; matches the matching
+            TIMEOUT_WAIT in the blocking sdio_host_apply_clock_rate
+            wrapper.  Without this cap a wedged controller would
+            freeze the per-tick state machine for 16 s in one go. */
+         host->clock_deadline_us = now_us + 100000u;
          host->clock_phase = SDIO_HOST_CLOCK_PHASE_WAIT_INTERNAL_STABLE;
          return 0;
 

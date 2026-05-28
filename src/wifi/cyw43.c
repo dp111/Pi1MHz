@@ -65,11 +65,17 @@ bool cyw43_preload_images(void)
 {
    cyw43_release_images();
 
+   /* Defensive: if filesystemReadFile partially populated *_data even
+      on failure (length 0) we'd leak that buffer on every retry.
+      cyw43_release_images() free()s any non-NULL slot, and we call
+      it before each early-return path so the leak window is closed
+      regardless of how filesystemReadFile reports its failures. */
    g_cyw43_firmware_length = filesystemReadFile(g_cyw43_firmware_path,
                                                 &g_cyw43_firmware_data,
                                                 0);
    if (g_cyw43_firmware_length == 0u) {
       LOG_INFO("CYW43 firmware image not found: %s\n", g_cyw43_firmware_path);
+      cyw43_release_images();
       return false;
    }
 
@@ -91,7 +97,13 @@ bool cyw43_preload_images(void)
                                            &g_cyw43_clm_data,
                                            0);
    if (g_cyw43_clm_length == 0u) {
-      g_cyw43_clm_data = NULL;
+      /* CLM is optional - if filesystemReadFile allocated then failed,
+         free that slot via the central release path before clearing
+         the pointer, so we don't leak the partial buffer. */
+      if (g_cyw43_clm_data != NULL) {
+         free(g_cyw43_clm_data);
+         g_cyw43_clm_data = NULL;
+      }
       LOG_INFO("CYW43 CLM blob not found (optional): %s\n", g_cyw43_clm_path);
    }
 

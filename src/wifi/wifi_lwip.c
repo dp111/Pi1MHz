@@ -169,14 +169,15 @@ static void wifi_lwip_drain_rx_frames(void)
 
       frame_length = 0u;
       if (!sdio_runtime_poll_ethernet_frame(frame, sizeof(frame), &frame_length))
-         return;
+         break;                   /* SDIO error: drop this cycle, retry next poll */
 
       if (frame_length == 0u)
          continue;
 
       packet = pbuf_alloc(PBUF_RAW, frame_length, PBUF_POOL);
       if (packet == NULL)
-         return;                  /* pbuf pool exhausted - stop draining */
+         break;                   /* pbuf pool exhausted: stop this cycle,
+                                     resume next poll once pbufs free up */
 
       /* On a per-packet failure, drop just that packet and keep
          draining the remaining frames from the chip; abandoning the

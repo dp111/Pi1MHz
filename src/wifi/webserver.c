@@ -67,6 +67,7 @@ typedef enum {
    CONN_RECV_HEADER = 0,   /* accumulating the HTTP request headers     */
    CONN_RECV_UPLOAD,       /* streaming a multipart body to the SD card */
    CONN_RECV_DAV_PUT,      /* streaming a WebDAV PUT body to the SD card*/
+   CONN_DAV_COPY,          /* copying SD->SD one chunk per tick         */
    CONN_SEND_MEM,          /* sending an in-memory response             */
    CONN_SEND_FILE,         /* sending a header then streaming a file    */
    CONN_SEND_FB            /* sending a header then streaming the framebuffer */
@@ -83,6 +84,12 @@ typedef struct {
    struct tcp_pcb *pcb;
    conn_state_t    state;
    uint8_t         poll_count;
+   /* HEAD response: queue exactly the same headers as GET would but
+      drop the body bytes (file / framebuffer / multistatus etc.) in
+      conn_pump.  RFC 9110 §9.3.2 - "the server MUST NOT send a
+      content".  Browsers and Windows Explorer's WebDAV redirector
+      both issue HEAD before some downloads and expect zero body. */
+   bool            is_head;
 
    /* request header buffer */
    char    reqhdr[WS_HEADER_MAX + 1u];
@@ -115,7 +122,15 @@ typedef struct {
    upload_state_t up_state;
    bool     up_complete;
    bool     up_file_open;
-   FIL      up_file;
+   /* Multipart upload and WebDAV PUT are mutually exclusive (a
+      connection is in either CONN_RECV_UPLOAD or CONN_RECV_DAV_PUT,
+      never both), so share one FIL between them and gate access via
+      the up_file_open / dav_put_open booleans.  Saves ~560 bytes
+      per ws_conn_t with no behavioural change. */
+   union {
+      FIL up;     /* CONN_RECV_UPLOAD: the multipart-decoded file */
+      FIL dav;    /* CONN_RECV_DAV_PUT: the WebDAV PUT body */
+   } write_file;
    char     up_delim[WS_BOUNDARY_MAX + 8u];   /* "\r\n--" + boundary    */
    size_t   up_delim_len;
    char     up_head[WS_UPLOAD_HEAD_MAX + 1u];
@@ -127,15 +142,27 @@ typedef struct {
    uint32_t up_bytes_written;
 
    /* WebDAV PUT streaming (CONN_RECV_DAV_PUT).  remaining starts at
-      Content-Length and counts down as bytes are written to dav_file.
-      put_response_status / put_response_text are stashed so the 201/204
-      reply can be queued the moment the last body byte lands. */
+      Content-Length and counts down as bytes are written to
+      write_file.dav.  put_response_status / put_response_text are
+      stashed so the 201/204 reply can be queued the moment the
+      last body byte lands. */
    bool     dav_put_open;
-   FIL      dav_file;
    uint32_t dav_remaining;
    int      dav_put_status;
    const char *dav_put_status_text;
    char     dav_put_target[WS_PATH_MAX];
+
+   /* WebDAV COPY streaming (CONN_DAV_COPY).  Reads from copy_src,
+      writes to copy_dst, one chunk per webserver_poll tick (reusing
+      dl_buf to keep the per-connection footprint flat).  At source
+      EOF the 201/204 status is queued via dav_put_send_response so
+      the existing reply path covers it; copy_dst_existed picks
+      which status code that uses. */
+   bool     copy_src_open;
+   bool     copy_dst_open;
+   bool     copy_dst_existed;
+   FIL      copy_src;
+   FIL      copy_dst;
 } ws_conn_t;
 
 typedef struct {
@@ -160,6 +187,13 @@ static uint32_t        g_ws_reboot_at;
 static bool            g_ws_sd_free_valid;
 static uint32_t        g_ws_sd_free_mb;
 static uint32_t        g_ws_sd_free_age_us;
+
+/* WebDAV COPY is per-tick: only one COPY may be in flight at a time
+   so the bookkeeping is trivially a single pointer.  A second COPY
+   arriving while one is active gets 503 Service Unavailable.  Cleared
+   from conn_close / ws_err so a torn-down connection mid-copy doesn't
+   leave a dangling reference. */
+static ws_conn_t      *g_ws_active_copy;
 
 /* Rolling digest-auth nonce.  Regenerated lazily once it crosses
    WS_NONCE_MAX_AGE_US; clients are challenged with stale=true and
@@ -338,22 +372,40 @@ static int ws_hexval(char c)
    return -1;
 }
 
-static void ws_url_decode(const char *src, char *dst, size_t dstsz)
+/* Decode percent-escapes (%XX) into raw bytes.  Control characters
+   (incl. NUL) decoded from %XX would let a client inject a string
+   terminator past a length check or smuggle CR/LF into a header
+   builder; reject them at decode time and replace with '_' so the
+   resulting path always survives strlen / strcmp.  ws_path_is_safe
+   later does the same control-byte check, so the two together
+   defend in depth - but every consumer of ws_url_decode benefits
+   from the early reject.
+
+   Returns true if the whole input fit in dst (NUL included); false
+   if it had to be truncated to fit.  Callers that want to surface
+   the truncation as a 400 rather than a silent 404 use the return
+   value; callers that only feed in known-bounded paths can ignore
+   it (the output is always NUL-terminated regardless). */
+static bool ws_url_decode(const char *src, char *dst, size_t dstsz)
 {
    size_t o = 0u;
    while (*src != '\0' && o + 1u < dstsz) {
+      unsigned char c;
       if (*src == '%' && src[1] != '\0' && src[2] != '\0') {
          int hi = ws_hexval(src[1]);
          int lo = ws_hexval(src[2]);
          if (hi >= 0 && lo >= 0) {
-            dst[o++] = (char)((hi << 4) | lo);
+            c = (unsigned char)((hi << 4) | lo);
+            dst[o++] = (c < 0x20u || c == 0x7Fu) ? '_' : (char)c;
             src += 3;
             continue;
          }
       }
-      dst[o++] = *src++;
+      c = (unsigned char)*src++;
+      dst[o++] = (c < 0x20u || c == 0x7Fu) ? '_' : (char)c;
    }
    dst[o] = '\0';
+   return *src == '\0';
 }
 
 static bool ws_is_unreserved(char c)
@@ -675,6 +727,29 @@ static bool ws_digest_enabled(void)
        && cfg->webdav_password[0] != '\0';
 }
 
+/* Mix the chip's WiFi MAC plus the system timer into the secret on
+   first use.  RPI_GetSystemTime at boot is highly predictable
+   (a few hundred ms) on its own, so an attacker who could time the
+   first 401 challenge could guess the secret to within a few k of
+   values.  The chip MAC (read once from cur_etheraddr by
+   sdio_runtime_get_chip_mac) is 24 bits of board-OTP entropy on top
+   of that, which is enough to push the search space out of trivial
+   range.  Still NOT cryptographically strong - digest auth over
+   plain HTTP isn't secret anyway - but materially harder. */
+static uint32_t ws_seed_secret(void)
+{
+   uint8_t  mac[6] = { 0u, 0u, 0u, 0u, 0u, 0u };
+   uint32_t s = RPI_GetSystemTime();
+   (void)sdio_runtime_get_chip_mac(mac);
+   s ^= ((uint32_t)mac[0] <<  0)
+      | ((uint32_t)mac[1] <<  8)
+      | ((uint32_t)mac[2] << 16)
+      | ((uint32_t)mac[3] << 24);
+   s ^= ((uint32_t)mac[4] <<  0) | ((uint32_t)mac[5] << 16);
+   s ^= 0xA5A5A5A5u;
+   return s;
+}
+
 static void ws_digest_refresh_nonce(void)
 {
    uint32_t now;
@@ -687,7 +762,7 @@ static void ws_digest_refresh_nonce(void)
    now = RPI_GetSystemTime();
 
    if (!g_ws_nonce_secret_initialised) {
-      g_ws_nonce_secret = now ^ 0xA5A5A5A5u;
+      g_ws_nonce_secret = ws_seed_secret();
       g_ws_nonce_secret_initialised = true;
    }
 
@@ -868,7 +943,13 @@ static void ws_digest_compute_response_legacy(char response[MD5_HEX_LEN],
    md5_hex_cat(response, parts, lens, 5);
 }
 
-/* Compare two MD5 hex strings case-insensitively in constant time.
+/* Compare two MD5 hex strings case-insensitively, OR-folding the
+   diff bit so the body of the compare doesn't short-circuit on the
+   first byte difference - a small hardening that costs nothing.
+   It is NOT a true constant-time compare: the early return on a
+   short received_hex still makes the call data-dependent in length.
+   For local-LAN digest-auth (already not secret) that's fine.
+
    `expected_hex` is the locally-computed digest from md5_hex_cat
    (exactly MD5_HEX_LEN chars, NOT NUL-terminated - reading the index
    MD5_HEX_LEN slot would be a buffer overread).  `received_hex` is
@@ -1095,13 +1176,26 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
       c->dl_open = false;
    }
    if (c->up_file_open) {
-      f_close(&c->up_file);
+      f_close(&c->write_file.up);
       c->up_file_open = false;
    }
    if (c->dav_put_open) {
-      f_close(&c->dav_file);
+      f_close(&c->write_file.dav);
       c->dav_put_open = false;
    }
+   if (c->copy_src_open) {
+      f_close(&c->copy_src);
+      c->copy_src_open = false;
+   }
+   if (c->copy_dst_open) {
+      f_close(&c->copy_dst);
+      c->copy_dst_open = false;
+   }
+   /* Clear the active-COPY slot if we were the one holding it: a
+      timeout / client-disconnect mid-COPY must release the slot so
+      the next COPY request isn't rejected with 503 forever. */
+   if (g_ws_active_copy == c)
+      g_ws_active_copy = NULL;
 
    if (c->pcb != NULL) {
       struct tcp_pcb *pcb = c->pcb;
@@ -1194,8 +1288,11 @@ static bool conn_pump(ws_conn_t *c)
       c->bytes_queued += (uint32_t)want;
    }
 
-   /* file body */
-   if (err == ERR_OK && c->state == CONN_SEND_FILE
+   /* file body - skipped entirely for HEAD requests; the matching
+      file_done condition below treats CONN_SEND_FILE + is_head as
+      "nothing more to produce" so the connection closes after the
+      headers have been ACKed. */
+   if (err == ERR_OK && !c->is_head && c->state == CONN_SEND_FILE
        && (c->out == NULL || c->out_sent >= c->out_len)) {
       while (1) {
          u16_t  avail;
@@ -1235,8 +1332,10 @@ static bool conn_pump(ws_conn_t *c)
 
    /* framebuffer body: generate BMP rows on demand, a bounded few per
       call, so the conversion is spread across ticks rather than done in
-      one long burst inside a single callback. */
-   if (err == ERR_OK && c->state == CONN_SEND_FB
+      one long burst inside a single callback.  Skipped for HEAD - the
+      caller already got the Content-Length / Content-Type headers it
+      needed. */
+   if (err == ERR_OK && !c->is_head && c->state == CONN_SEND_FB
        && (c->out == NULL || c->out_sent >= c->out_len)) {
       uint32_t row_padded = (c->fb_info.width * 3u + 3u) & ~3u;
 
@@ -1282,10 +1381,14 @@ static bool conn_pump(ws_conn_t *c)
 
    {
       bool mem_done = (c->out == NULL) || (c->out_sent >= c->out_len);
-      bool file_done = (c->state != CONN_SEND_FILE)
+      /* For HEAD, file_done and fb_done are immediately true: the
+         body branches above are skipped, so the only thing left to
+         drain is the headers in c->out (covered by mem_done).
+         conn_close will f_close the open dl_file on the way out. */
+      bool file_done = (c->state != CONN_SEND_FILE) || c->is_head
                     || ((c->dl_buf_sent >= c->dl_buf_len)
                         && (c->dl_remaining == 0u || c->dl_eof));
-      bool fb_done = (c->state != CONN_SEND_FB)
+      bool fb_done = (c->state != CONN_SEND_FB) || c->is_head
                     || ((c->dl_buf_sent >= c->dl_buf_len)
                         && c->fb_row >= c->fb_info.height);
       c->producing_done = mem_done && file_done && fb_done;
@@ -1880,7 +1983,9 @@ static bool route_files_get(ws_conn_t *c, const char *rawpath)
    char    sdpath[WS_PATH_MAX];
    FILINFO fno;
 
-   ws_url_decode(rawpath + 6, decoded, sizeof decoded);   /* skip "/files" */
+   if (!ws_url_decode(rawpath + 6, decoded, sizeof decoded))   /* skip "/files" */
+      return ws_error(c, 400, "Bad Request",
+                      "That path is too long.");
    ws_normalize_path(decoded, sdpath, sizeof sdpath);
    if (!ws_path_is_safe(sdpath))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
@@ -1905,7 +2010,7 @@ static bool upload_fail(ws_conn_t *c, const char *msg)
    ws_strbuf_t b;
 
    if (c->up_file_open) {
-      f_close(&c->up_file);
+      f_close(&c->write_file.up);
       c->up_file_open = false;
    }
    c->up_state = UP_FAILED;
@@ -1928,7 +2033,7 @@ static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
 
    if (len == 0u || !c->up_file_open)
       return true;
-   if (f_write(&c->up_file, data, (UINT)len, &bw) != FR_OK || bw != len)
+   if (f_write(&c->write_file.up, data, (UINT)len, &bw) != FR_OK || bw != len)
       return upload_fail(c, "Writing to the SD card failed "
                             "(the card may be full or write-protected).");
    c->up_bytes_written += (uint32_t)len;
@@ -1940,7 +2045,7 @@ static bool upload_finish(ws_conn_t *c)
    ws_strbuf_t b;
 
    if (c->up_file_open) {
-      FRESULT fr = f_close(&c->up_file);
+      FRESULT fr = f_close(&c->write_file.up);
       c->up_file_open = false;
       if (fr != FR_OK)
          return upload_fail(c, "The file could not be saved correctly.");
@@ -1988,7 +2093,7 @@ static bool upload_begin_part(ws_conn_t *c)
    else
       snprintf(full, sizeof full, "%s/%s", c->up_dir, base);
 
-   if (f_open(&c->up_file, full, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+   if (f_open(&c->write_file.up, full, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
       return upload_fail(c, "The file could not be created on the SD card.");
 
    c->up_file_open = true;
@@ -2095,7 +2200,9 @@ static bool route_upload(ws_conn_t *c, const char *rawpath, int body_at)
    char    boundary[WS_BOUNDARY_MAX];
    FILINFO fno;
 
-   ws_url_decode(rawpath + 6, decoded, sizeof decoded);   /* skip "/files" */
+   if (!ws_url_decode(rawpath + 6, decoded, sizeof decoded))   /* skip "/files" */
+      return ws_error(c, 400, "Bad Request",
+                      "That path is too long.");
    ws_normalize_path(decoded, dir, sizeof dir);
    if (!ws_path_is_safe(dir))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
@@ -2139,28 +2246,64 @@ static bool route_upload(ws_conn_t *c, const char *rawpath, int body_at)
 /* ------------------------------------------------------------------ */
 
 /* Convert the URL path coming in on a WebDAV request to an absolute
-   SD-card path.  Empty / "/" / unspecified becomes "/".  Returns false
-   for anything the path-safety check rejects (control chars, ".."). */
+   SD-card path.  Empty / "/" / unspecified becomes "/".  Returns
+   false if the URL didn't fit in the decode buffer (caller should
+   surface a 400 - the path is too long to handle, NOT a missing
+   resource), or if the path-safety check rejects it (control chars,
+   ".."). */
 static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
                               size_t sdpath_sz)
 {
    char decoded[WS_PATH_MAX];
 
-   ws_url_decode(rawpath, decoded, sizeof decoded);
+   if (!ws_url_decode(rawpath, decoded, sizeof decoded))
+      return false;
    ws_normalize_path(decoded, sdpath, sdpath_sz);
    return ws_path_is_safe(sdpath);
 }
 
-/* HTTP-date (RFC 7231 IMF-fixdate) for a FatFs timestamp.  FatFs only
-   gives us the local clock; without an RTC we fudge to a fixed-epoch
-   date that clients can sort by but shouldn't trust as wall time. */
+/* HTTP-date (RFC 7231 IMF-fixdate) for a FatFs timestamp.  FatFs
+   only gives us DOS-style date/time and there is no RTC, so we
+   can't produce real per-file modification times.  Use the build
+   date instead: every file gets the same stamp, but that's at least
+   monotonically newer than what the previous Pi1MHz build returned,
+   so WebDAV clients that key cache invalidation off Last-Modified
+   refresh on each new firmware.
+
+   __DATE__ is "Mmm dd yyyy" (e.g. "May 28 2026") and __TIME__ is
+   "HH:MM:SS"; we reshape into IMF-fixdate by re-emitting them.  The
+   weekday is left as "Mon" - clients accept any valid weekday
+   token and we have no way to compute the real one without an RTC. */
 static void dav_format_date(char *out, size_t out_sz, FSIZE_t mtime_dummy)
 {
+   static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+   const char *bd  = __DATE__;        /* "Mmm dd yyyy" */
+   const char *bt  = __TIME__;        /* "HH:MM:SS"    */
+   int  day  = 0;
+   char mon[4] = {bd[0], bd[1], bd[2], '\0'};
+   int  mi;
+
+   /* Parse "dd": column 4 is either a space (1-9) or a tens digit. */
+   if (bd[4] >= '0' && bd[4] <= '9')
+      day = (bd[4] - '0') * 10;
+   if (bd[5] >= '0' && bd[5] <= '9')
+      day += (bd[5] - '0');
+   for (mi = 0; mi < 12; ++mi) {
+      if (months[mi * 3] == mon[0]
+       && months[mi * 3 + 1] == mon[1]
+       && months[mi * 3 + 2] == mon[2])
+         break;
+   }
+   if (mi >= 12) {                    /* unrecognised month: fall back */
+      strlcpy(out, "Mon, 01 Jan 2024 00:00:00 GMT", out_sz);
+      (void)mtime_dummy;
+      return;
+   }
    (void)mtime_dummy;
-   /* Use the (project-relative) build date - the FatFs FILINFO carries
-      only DOS-style date/time and we have no RTC; sending a stable
-      placeholder is more honest than fabricating one. */
-   strlcpy(out, "Mon, 01 Jan 2024 00:00:00 GMT", out_sz);
+   snprintf(out, out_sz, "Mon, %02d %.3s %c%c%c%c %c%c:%c%c:%c%c GMT",
+            day, &months[mi * 3],
+            bd[7], bd[8], bd[9], bd[10],
+            bt[0], bt[1], bt[3], bt[4], bt[6], bt[7]);
 }
 
 /* Emit one PROPFIND <D:response> element for an SD entry.  url_path
@@ -2306,11 +2449,24 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
             sb_putc(&url, '/');
             sb_urlpath(&url, chld.fname);
             if (child_is_dir) sb_putc(&url, '/');
-            if (url.data != NULL) {
-               dav_emit_response(&b, url.data, child_is_dir,
-                                 (uint32_t)chld.fsize, chld.fname);
+            /* Propagate OOM: a partial multistatus would be reported
+               to the client as a complete listing, and files would
+               silently disappear from the WebDAV view.  Bail with
+               503 so the client retries. */
+            if (url.failed || url.data == NULL) {
+               sb_free(&url);
+               f_closedir(&dir);
+               sb_free(&b);
+               return ws_oom(c);
             }
+            dav_emit_response(&b, url.data, child_is_dir,
+                              (uint32_t)chld.fsize, chld.fname);
             sb_free(&url);
+            if (b.failed) {
+               f_closedir(&dir);
+               sb_free(&b);
+               return ws_oom(c);
+            }
          }
          f_closedir(&dir);
       }
@@ -2391,8 +2547,8 @@ static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
    size_t take = (len < c->dav_remaining) ? len : c->dav_remaining;
 
    if (c->dav_put_open && take > 0u) {
-      if (f_write(&c->dav_file, data, (UINT)take, &bw) != FR_OK || bw != take) {
-         f_close(&c->dav_file);
+      if (f_write(&c->write_file.dav, data, (UINT)take, &bw) != FR_OK || bw != take) {
+         f_close(&c->write_file.dav);
          c->dav_put_open = false;
          return ws_error(c, 507, "Insufficient Storage",
                          "Writing to the SD card failed.");
@@ -2402,7 +2558,7 @@ static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
 
    if (c->dav_remaining == 0u) {
       if (c->dav_put_open) {
-         FRESULT fr = f_close(&c->dav_file);
+         FRESULT fr = f_close(&c->write_file.dav);
          c->dav_put_open = false;
          if (fr != FR_OK)
             return ws_error(c, 500, "Internal Server Error",
@@ -2417,7 +2573,6 @@ static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
 static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
 {
    char    sdpath[WS_PATH_MAX];
-   char    ctype_unused[32];
    char    len_hdr[24];
    FILINFO fno;
    uint32_t content_length = 0u;
@@ -2434,20 +2589,28 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
                        len_hdr, sizeof len_hdr))
       return ws_error(c, 411, "Length Required",
                       "PUT requires a Content-Length.");
+   /* Parse the digit string into a uint32_t, rejecting both
+      non-digits and overflow.  Reject sizes >= 2 GiB up front: the
+      counter is a uint32_t and the streaming model doesn't track
+      anything bigger, so a value that wraps would let the client
+      confuse the server about where the upload should end.  An
+      explicit 413 is the right reply per RFC 9110 §15.5.14. */
    for (p = len_hdr; *p != '\0'; ++p) {
       if (*p < '0' || *p > '9')
          return ws_error(c, 400, "Bad Request",
                          "Malformed Content-Length.");
+      if (content_length > (UINT32_C(0x7FFFFFFF) - 9u) / 10u)
+         return ws_error(c, 413, "Payload Too Large",
+                         "Content-Length exceeds the PUT size limit.");
       content_length = (content_length * 10u) + (uint32_t)(*p - '0');
    }
-   (void)ctype_unused;
 
    target_existed = f_stat(sdpath, &fno) == FR_OK;
    if (target_existed && (fno.fattrib & AM_DIR) != 0u)
       return ws_error(c, 409, "Conflict",
                       "Cannot PUT over an existing directory.");
 
-   if (f_open(&c->dav_file, sdpath, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+   if (f_open(&c->write_file.dav, sdpath, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
       return ws_error(c, 409, "Conflict",
                       "Cannot create the target (missing parent folder?).");
    c->dav_put_open       = true;
@@ -2471,6 +2634,59 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
    return true;
 }
 
+/* Recursive DELETE for a collection: f_unlink only succeeds on files
+   and empty directories, so walk the tree depth-first and unlink
+   each child before unlinking its parent.  RFC 4918 §9.6.1 says
+   DELETE on a collection MUST behave as DELETE with Depth: infinity.
+   Bounded recursion (DAV_DELETE_MAX_DEPTH) keeps the stack budget
+   predictable - each level adds one DIR (~600 bytes) plus the local
+   FILINFO and the path buffer below.  Returns the first FRESULT
+   that wasn't FR_OK, or FR_OK on full success. */
+#define DAV_DELETE_MAX_DEPTH 16u
+static FRESULT dav_delete_tree(char *path, size_t path_max, unsigned depth)
+{
+   DIR     dir;
+   FILINFO fno;
+   FRESULT fr;
+   size_t  base_len;
+
+   if (depth >= DAV_DELETE_MAX_DEPTH)
+      return FR_DENIED;       /* too deep - refuse rather than overflow */
+
+   fr = f_opendir(&dir, path);
+   if (fr != FR_OK)
+      return fr;
+
+   base_len = strlen(path);
+   while ((fr = f_readdir(&dir, &fno)) == FR_OK && fno.fname[0] != '\0') {
+      size_t name_len = strlen(fno.fname);
+
+      /* path = "<base>/<child>" - bail with FR_DENIED if it doesn't fit.
+         path_max is the caller's buffer size; we need '/' + name + NUL. */
+      if (base_len + 1u + name_len + 1u > path_max) {
+         fr = FR_DENIED;
+         break;
+      }
+      path[base_len] = '/';
+      memcpy(&path[base_len + 1u], fno.fname, name_len + 1u);
+
+      if ((fno.fattrib & AM_DIR) != 0u) {
+         fr = dav_delete_tree(path, path_max, depth + 1u);
+         if (fr != FR_OK)
+            break;
+      }
+      fr = f_unlink(path);
+      if (fr != FR_OK)
+         break;
+
+      path[base_len] = '\0';
+   }
+
+   path[base_len] = '\0';
+   f_closedir(&dir);
+   return fr;
+}
+
 static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
 {
    char    sdpath[WS_PATH_MAX];
@@ -2484,14 +2700,22 @@ static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
    if (f_stat(sdpath, &fno) != FR_OK)
       return ws_error(c, 404, "Not Found", "No such resource.");
 
-   /* FatFs f_unlink works for both files and empty directories.  Real
-      WebDAV DELETE on a collection is recursive; we deliberately do
-      not implement recursive delete - the client must do depth-first. */
-   fr = f_unlink(sdpath);
+   /* RFC 4918 §9.6.1: DELETE on a collection acts as DELETE with
+      Depth: infinity.  Walk depth-first via dav_delete_tree, then
+      unlink the (now-empty) collection itself.  For a regular file
+      f_unlink does the job in one call. */
+   if ((fno.fattrib & AM_DIR) != 0u) {
+      fr = dav_delete_tree(sdpath, sizeof sdpath, 0u);
+      if (fr == FR_OK)
+         fr = f_unlink(sdpath);
+   } else {
+      fr = f_unlink(sdpath);
+   }
+
    if (fr != FR_OK) {
       if (fr == FR_DENIED)
          return ws_error(c, 409, "Conflict",
-                         "Directory is not empty.");
+                         "Could not delete - too deep, locked, or read-only.");
       return ws_error(c, 500, "Internal Server Error",
                       "Delete failed.");
    }
@@ -2570,6 +2794,90 @@ static bool dav_destination_sdpath(const char *dest, char *out, size_t out_sz)
    return dav_url_to_sdpath(path, out, out_sz);
 }
 
+/* Queue the 201 Created / 204 No Content reply after a MOVE / COPY
+   completes.  Shared between the MOVE fast path (which finishes inside
+   route_dav_move_or_copy) and the per-tick COPY pump (which finishes
+   in ws_copy_step). */
+static bool dav_move_copy_send_response(ws_conn_t *c, bool dst_existed)
+{
+   ws_strbuf_t r;
+
+   sb_init(&r);
+   sb_printf(&r,
+             "HTTP/1.1 %d %s\r\n"
+             "Content-Length: 0\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             dst_existed ? 204 : 201,
+             dst_existed ? "No Content" : "Created");
+   if (r.failed) {
+      sb_free(&r);
+      return ws_oom(c);
+   }
+   free(c->out);
+   c->out = r.data;
+   c->out_len = r.len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
+   conn_pump(c);
+   return true;
+}
+
+/* One per-tick step of an active CONN_DAV_COPY: read one chunk from
+   copy_src, write it to copy_dst, return.  At source EOF (or on any
+   error) tear down the COPY state and queue the response.  Called
+   from webserver_poll once per main-loop tick - exactly the same
+   cadence the per-tick SDIO stages use, so the cooperative 1 MHz
+   loop never sees more than one f_read + f_write per tick. */
+static void ws_copy_step(ws_conn_t *c)
+{
+   UINT     br = 0u;
+   UINT     bw = 0u;
+   FRESULT  fr;
+
+   if (c == NULL || c->state != CONN_DAV_COPY)
+      return;
+
+   fr = f_read(&c->copy_src, c->dl_buf, (UINT)sizeof c->dl_buf, &br);
+   if (fr != FR_OK) {
+      f_close(&c->copy_src); c->copy_src_open = false;
+      f_close(&c->copy_dst); c->copy_dst_open = false;
+      g_ws_active_copy = NULL;
+      (void)ws_error(c, 500, "Internal Server Error",
+                     "Read failed during COPY.");
+      return;
+   }
+
+   if (br > 0u) {
+      if (f_write(&c->copy_dst, c->dl_buf, br, &bw) != FR_OK || bw != br) {
+         f_close(&c->copy_src); c->copy_src_open = false;
+         f_close(&c->copy_dst); c->copy_dst_open = false;
+         g_ws_active_copy = NULL;
+         (void)ws_error(c, 507, "Insufficient Storage",
+                        "Write failed during COPY.");
+         return;
+      }
+      /* The TCP connection sees no traffic during a COPY, so ws_poll
+         would otherwise eventually time it out at WS_POLL_LIMIT (~30s).
+         Reset the counter on each chunk so the timeout only fires if
+         the COPY makes no progress at all (e.g. a wedged SD card),
+         not just because the file is large. */
+      c->poll_count = 0u;
+   }
+
+   /* EOF when f_read produces less than a full chunk (or zero).  This
+      matches the original do/while exit condition. */
+   if (br < (UINT)sizeof c->dl_buf) {
+      bool dst_existed = c->copy_dst_existed;
+      f_close(&c->copy_src); c->copy_src_open = false;
+      f_close(&c->copy_dst); c->copy_dst_open = false;
+      g_ws_active_copy = NULL;
+      (void)dav_move_copy_send_response(c, dst_existed);
+   }
+}
+
 static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_move)
 {
    char    src[WS_PATH_MAX];
@@ -2613,62 +2921,40 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
 
    if (is_move) {
       fr = f_rename(src, dst);
-   } else {
-      /* COPY: only files are supported (collection copy would need a
-         recursive walk).  Stream src → dst in 8 KB chunks. */
-      FIL fsrc, fdst;
-      uint8_t buf[1024];
-      UINT br, bw;
-
-      if ((fno_src.fattrib & AM_DIR) != 0u)
-         return ws_error(c, 501, "Not Implemented",
-                         "Recursive collection COPY is not supported.");
-      if (f_open(&fsrc, src, FA_READ) != FR_OK)
-         return ws_error(c, 500, "Internal Server Error",
-                         "Could not open source.");
-      if (f_open(&fdst, dst, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
-         f_close(&fsrc);
-         return ws_error(c, 500, "Internal Server Error",
-                         "Could not create destination.");
-      }
-      do {
-         if (f_read(&fsrc, buf, sizeof buf, &br) != FR_OK) {
-            f_close(&fsrc); f_close(&fdst);
-            return ws_error(c, 500, "Internal Server Error",
-                            "Read failed during COPY.");
-         }
-         if (br == 0u) break;
-         if (f_write(&fdst, buf, br, &bw) != FR_OK || bw != br) {
-            f_close(&fsrc); f_close(&fdst);
-            return ws_error(c, 507, "Insufficient Storage",
-                            "Write failed during COPY.");
-         }
-      } while (br == sizeof buf);
-      f_close(&fsrc);
-      f_close(&fdst);
-      fr = FR_OK;
+      if (fr != FR_OK)
+         return ws_error(c, 500, "Internal Server Error", "Rename failed.");
+      return dav_move_copy_send_response(c, dst_existed);
    }
 
-   if (fr != FR_OK)
+   /* COPY (per-tick).  Only one COPY may be active at a time so the
+      per-tick bookkeeping stays a single global pointer.  A second
+      COPY arriving while one is in flight gets 503 Service
+      Unavailable - the client can retry once the first one is
+      done.  The original implementation streamed src->dst
+      synchronously inside this callback; on a 10 MB file that froze
+      the cooperative poll loop (and the 1 MHz bus) for seconds.
+      The per-tick version does one ~8 KB chunk per webserver_poll
+      tick from ws_copy_step, so the worst case bus glitch is one
+      f_read+f_write per chunk (~2 ms on a typical card). */
+   if ((fno_src.fattrib & AM_DIR) != 0u)
+      return ws_error(c, 501, "Not Implemented",
+                      "Recursive collection COPY is not supported.");
+   if (g_ws_active_copy != NULL)
+      return ws_error(c, 503, "Service Unavailable",
+                      "Another COPY is in progress; try again shortly.");
+   if (f_open(&c->copy_src, src, FA_READ) != FR_OK)
       return ws_error(c, 500, "Internal Server Error",
-                      is_move ? "Rename failed." : "Copy failed.");
-
-   {
-      ws_strbuf_t r;
-      sb_init(&r);
-      sb_printf(&r,
-                "HTTP/1.1 %d %s\r\n"
-                "Content-Length: 0\r\n"
-                "Connection: close\r\n"
-                "\r\n",
-                dst_existed ? 204 : 201,
-                dst_existed ? "No Content" : "Created");
-      if (r.failed) { sb_free(&r); return ws_oom(c); }
-      free(c->out); c->out = r.data; c->out_len = r.len;
-      c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
-      c->state = CONN_SEND_MEM;
-      conn_pump(c);
+                      "Could not open source.");
+   c->copy_src_open = true;
+   if (f_open(&c->copy_dst, dst, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+      f_close(&c->copy_src); c->copy_src_open = false;
+      return ws_error(c, 500, "Internal Server Error",
+                      "Could not create destination.");
    }
+   c->copy_dst_open = true;
+   c->copy_dst_existed = dst_existed;
+   c->state = CONN_DAV_COPY;
+   g_ws_active_copy = c;
    return true;
 }
 
@@ -2680,13 +2966,21 @@ static bool route_dav_lock(ws_conn_t *c, const char *rawpath)
 {
    ws_strbuf_t body;
    char        token[48];
-   uint32_t    nonce;
+   uint32_t    a, b;
    (void)rawpath;
 
-   nonce = RPI_GetSystemTime();
+   /* Real lock state is not persisted (the chip is single-user), but
+      the token still wants to be unguessable so a client that uses
+      it in If: headers doesn't trivially collide with a different
+      session.  Mix in the chip MAC and a bumped counter on top of
+      the system timer, the same way ws_digest_refresh_nonce does. */
+   ws_digest_refresh_nonce();   /* ensures g_ws_nonce_secret is set */
+   ++g_ws_nonce_counter;
+   a = RPI_GetSystemTime() ^ g_ws_nonce_secret;
+   b = g_ws_nonce_counter ^ (g_ws_nonce_secret >> 16) ^ (g_ws_nonce_secret << 16);
    snprintf(token, sizeof token,
-            "opaquelocktoken:%08lx-%08lx", (unsigned long)nonce,
-            (unsigned long)(nonce ^ 0xA5A5A5A5u));
+            "opaquelocktoken:%08lx-%08lx",
+            (unsigned long)a, (unsigned long)b);
 
    sb_init(&body);
    sb_puts(&body,
@@ -2747,6 +3041,13 @@ static bool route_dav_unlock(ws_conn_t *c)
    serve the URL path as an SD file (the same view a WebDAV-mounted
    client gets).  Returns false if the path isn't a regular file - the
    caller then sends 404. */
+/* Returns true after queuing a response (success OR a 405 we
+   emitted ourselves); false if the path is unparseable, root, or
+   doesn't exist - in which case the caller emits the catch-all 404.
+   Distinguishing "exists but is a collection" lets us return the
+   RFC-compliant 405 ("GET on a collection is not allowed; try
+   PROPFIND") rather than misleadingly claiming the URL doesn't
+   exist. */
 static bool route_dav_get_file(ws_conn_t *c, const char *rawpath)
 {
    char    sdpath[WS_PATH_MAX];
@@ -2759,7 +3060,8 @@ static bool route_dav_get_file(ws_conn_t *c, const char *rawpath)
    if (f_stat(sdpath, &fno) != FR_OK)
       return false;
    if ((fno.fattrib & AM_DIR) != 0u)
-      return false;
+      return ws_error(c, 405, "Method Not Allowed",
+                      "GET on a collection is not supported; use PROPFIND.");
 
    return start_download(c, sdpath);
 }
@@ -2784,6 +3086,11 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (!ws_parse_request_line(c->reqhdr, method, sizeof method,
                               rawpath, sizeof rawpath))
       return ws_error(c, 400, "Bad Request", "The request was malformed.");
+
+   /* HEAD is dispatched to the same GET handlers; conn_pump consults
+      is_head to suppress the body while still sending the headers
+      (and their Content-Length / Content-Type / etc.). */
+   c->is_head = (strcmp(method, "HEAD") == 0);
 
    query = strchr(rawpath, '?');
    if (query != NULL)
@@ -2998,11 +3305,21 @@ static void ws_err(void *arg, err_t err)
       c->dl_open = false;
    }
    if (c->up_file_open) {
-      f_close(&c->up_file);
+      f_close(&c->write_file.up);
       c->up_file_open = false;
    }
+   if (c->copy_src_open) {
+      f_close(&c->copy_src);
+      c->copy_src_open = false;
+   }
+   if (c->copy_dst_open) {
+      f_close(&c->copy_dst);
+      c->copy_dst_open = false;
+   }
+   if (g_ws_active_copy == c)
+      g_ws_active_copy = NULL;
    if (c->dav_put_open) {
-      f_close(&c->dav_file);
+      f_close(&c->write_file.dav);
       c->dav_put_open = false;
    }
    free(c->out);
@@ -3071,6 +3388,13 @@ void webserver_poll(void)
        && (RPI_GetSystemTime() - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
       reboot_now();
    }
+
+   /* Advance the active WebDAV COPY by one chunk.  Only one COPY is
+      ever in flight at a time (route_dav_move_or_copy enforces this),
+      so the bookkeeping is a single pointer.  ws_copy_step itself
+      clears g_ws_active_copy when the transfer completes or fails. */
+   if (g_ws_active_copy != NULL)
+      ws_copy_step(g_ws_active_copy);
 
    if (g_ws_ready)
       webserver_refresh_sd_free();

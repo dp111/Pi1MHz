@@ -55,8 +55,13 @@
 #define MEM_SIZE                        (32 * 1024)
 #define MEMP_NUM_TCP_SEG                40
 #define MEMP_NUM_TCP_PCB                8
-#define MEMP_NUM_UDP_PCB                6   /* DHCP + DNS + NetBIOS + mDNS */
-#define MEMP_NUM_PBUF                   24
-#define PBUF_POOL_SIZE                  24
+/* DHCP + DNS + NetBIOS + mDNS = 4 in use today; 8 leaves headroom for
+   ad-hoc UDP without dipping into the unused-PCB pool. */
+#define MEMP_NUM_UDP_PCB                8
+/* WebDAV PROPFIND on a deep directory plus a concurrent download can
+   pin a few pbufs each; 32 keeps the worst case well clear of the
+   pool-exhausted path that drops DHCP/ARP. */
+#define MEMP_NUM_PBUF                   32
+#define PBUF_POOL_SIZE                  32
 
 #endif

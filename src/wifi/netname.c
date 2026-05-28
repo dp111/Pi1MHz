@@ -42,6 +42,13 @@
 #define NBNS_NAME_FIELD_LEN  34u   /* 0x20 length + 32 encoded + 0x00 */
 #define NBNS_REQUEST_MIN     50u   /* 12 header + 34 name + 4 type/class */
 #define NBNS_BUFFER_MAX      96u
+/* mDNS unsolicited A-record announcement size: 12-byte DNS header +
+   1 (host length byte) + up-to-NETNAME_HOST_MAX (host label) + 1
+   ('local' length byte) + 5 ('local') + 1 (root label NUL) + 10
+   (TYPE 2 + CLASS 2 + TTL 4 + RDLENGTH 2) + 4 (A-record IPv4).
+   Sizing the buffer off NETNAME_HOST_MAX means a later bump to that
+   cap won't silently overflow this scratch buffer. */
+#define NETNAME_MDNS_MSG_LEN (12u + 1u + NETNAME_HOST_MAX + 1u + 5u + 1u + 10u + 4u)
 
 static struct udp_pcb *g_nbns_pcb;
 static struct udp_pcb *g_mdns_pcb;
@@ -81,7 +88,7 @@ static bool netname_get_ip(uint8_t out[4])
 /* Multicast an unsolicited mDNS response advertising <hostname>.local. */
 static void netname_send_mdns(const uint8_t ip[4])
 {
-   uint8_t      msg[96];
+   uint8_t      msg[NETNAME_MDNS_MSG_LEN];
    uint32_t     len;
    struct pbuf *p;
 

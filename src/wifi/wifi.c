@@ -525,11 +525,18 @@ void wifi_emulator_init(uint8_t instance, uint8_t address)
 
 void wifi_init(void)
 {
-   /* Initialise once only.  init_emulator() is re-run on every BBC RST;
-      on the second and later calls (i.e. on a reset) this returns
-      immediately, leaving the existing WiFi connection - and its
-      registered poll hooks - running undisturbed. */
-   if (g_wifi_init_done)
+   /* Initialise once per successful boot.  init_emulator() is re-run
+      on every BBC RST; on the second and later calls this returns
+      immediately so the existing WiFi connection - and its
+      registered poll hooks - keep running undisturbed.
+
+      A transient first-boot failure (firmware preload, SDIO bring-up,
+      join timeout, ...) used to latch us into WIFI_STATE_ERROR
+      forever - the natural recovery action of a BBC RST couldn't
+      retry the bring-up.  Allow re-init from the ERROR state so a
+      reset retries; from the DISABLED state (config said no WiFi)
+      we still latch since there is nothing to retry. */
+   if (g_wifi_init_done && g_wifi_state != WIFI_STATE_ERROR)
       return;
    g_wifi_init_done = true;
 
@@ -539,8 +546,10 @@ void wifi_init(void)
    g_wifi_debug_enabled = wifi_cmdline_bool("wifi_debug");
    wifi_clear_error();
 
-   if (g_wifi_debug_enabled)
-      wifi_debug_printf("WIFI: debug enabled\r\n");
+   /* wifi_debug_log already prepends "WIFI: " and a CRLF; using it
+      keeps the prefix in one place rather than hard-coding it at
+      every caller. */
+   wifi_debug_log("debug enabled");
 
    wifi_debug_log("init enabled=%u has_ssid=%u has_password=%u ip_mode=%s http_port=%u",
                   g_wifi_config.enabled ? 1u : 0u,

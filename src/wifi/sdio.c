@@ -42,9 +42,18 @@ static uint16_t g_runtime_mac_request_id;
 /* MAC the caller (wifi.c) wants the chip to transmit with.  Pushed
    into the chip via WLC_SET_VAR("cur_etheraddr", mac) during the
    per-tick SET_MAC stage.  If invalid, SET_MAC is skipped and the
-   chip keeps its factory OTP MAC. */
+   chip keeps its factory OTP MAC.
+   *_request_pending / *_request_id mirror the GET_MAC mechanism so
+   the CDC decoder can match the SET reply by exact request_id and
+   surface the IOCTL status - silent firmware rejection of a
+   cur_etheraddr SET used to leave the chip with its OTP MAC while
+   the boot log claimed the override took. */
 static uint8_t g_runtime_desired_mac[6];
 static bool g_runtime_desired_mac_valid;
+static bool g_runtime_set_mac_request_pending;
+static uint16_t g_runtime_set_mac_request_id;
+static bool g_runtime_set_mac_ack_seen;
+static uint32_t g_runtime_set_mac_ack_status;
 static char g_runtime_error[96];
 static uint8_t g_runtime_data_sequence;
 static bool g_runtime_emulator_mode;
@@ -1575,7 +1584,6 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
    g_runtime_boot_wait_attempt = 0u;
    g_runtime_boot_deadline_us = now_us + 1000u;
    return 0;
-   return sdio_runtime_finalize_boot_stage(dev, 0u, &chip, now_us);
 }
 
 static bool sdio_tx_probe_is_join_command(wifi_sdio_tx_probe_command_t command)
@@ -2197,9 +2205,25 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
                                             wifi_sdio_tx_probe_command_t command)
 {
    uint32_t payload_word0;
+   uint16_t payload_length;
 
    if (probe_result == NULL)
       return;
+
+   /* Defensive: every per-command branch below writes into
+      tx_control_template_payload_bytes via memcpy with a length
+      derived from sdio_tx_probe_payload_length(command).  If a
+      future iovar were to declare a length > the array size, the
+      memcpy would overflow.  Refuse to prepare such a command - the
+      caller will see the unset state and bail rather than corrupting
+      adjacent fields. */
+   payload_length = sdio_tx_probe_payload_length(command);
+   if (payload_length > SDIO_TX_CONTROL_PAYLOAD_MAX) {
+      sdio_debug_log("tx_control payload length %u exceeds buffer (%u); refusing",
+                     (unsigned)payload_length,
+                     (unsigned)SDIO_TX_CONTROL_PAYLOAD_MAX);
+      return;
+   }
 
    memset(probe_result->tx_control_template_payload_bytes, 0,
           sizeof(probe_result->tx_control_template_payload_bytes));
@@ -2928,6 +2952,17 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
             g_runtime_chip_mac_valid = true;
             g_runtime_mac_request_pending = false;
          }
+         /* SET cur_etheraddr ack: same request_id correlation as
+            GET_MAC.  Record both the seen-bit and the firmware's
+            status word so the SET_MAC stage can log a clear warning
+            if the chip rejected the override (vs. accepted-but-
+            ignored, which the seen-bit alone wouldn't surface). */
+         if (g_runtime_set_mac_request_pending && cdc_cmd == WLC_SET_VAR
+             && cdc_request_id == g_runtime_set_mac_request_id) {
+            g_runtime_set_mac_ack_status = cdc_status;
+            g_runtime_set_mac_ack_seen = true;
+            g_runtime_set_mac_request_pending = false;
+         }
       }
       return false;
    }
@@ -3071,7 +3106,13 @@ static uint8_t sdio_drain_fn2_responses(sdio_host_t *dev)
    uint8_t consumed = 0u;
 
    for (i = 0u; i < SDIO_RUNTIME_MAX_RX_FRAMES_PER_POLL; ++i) {
-      /* _Alignas(4): filled by a 32-bit EMMC PIO read. */
+      /* _Alignas(4): filled by a 32-bit EMMC PIO read.
+         The SDPCM hardware header is two little-endian uint16_ts on
+         the wire; this project targets ARMv7/ARMv8 Pi cores which
+         are all little-endian, so reading them as native uint16_t
+         and comparing hwtag[0] ^ hwtag[1] == 0xFFFF works directly.
+         If the codebase is ever ported to a big-endian host, decode
+         the bytes via sdio_load_u16_le() helpers instead. */
       _Alignas(4) uint16_t hwtag[2] = { 0u, 0u };
       uint16_t scratch_length = 0u;
 
@@ -3346,11 +3387,26 @@ static int sdio_runtime_set_mac_step(sdio_host_t *dev)
    now = RPI_GetSystemTime();
 
    if (!g_runtime_step_sent) {
+      bool sent;
+      g_runtime_set_mac_ack_seen = false;
+      g_runtime_set_mac_ack_status = 0u;
       sdio_prepare_tx_control_template(&g_sdio_probe_result,
                                        WIFI_SDIO_TX_PROBE_COMMAND_SET_MAC);
-      (void)sdio_probe_send_single_tx_control_template_timeout(dev,
-                                                              &g_sdio_probe_result,
-                                                              SDIO_RUNTIME_POLL_TIMEOUT_US);
+      /* Match the SET ack by exact request_id, the same way the
+         GET_MAC capture does, so an unrelated SET_VAR reply that
+         lands in the same window can't be mistaken for ours. */
+      g_runtime_set_mac_request_id =
+         g_sdio_probe_result.tx_control_template_request_id;
+      g_runtime_set_mac_request_pending = true;
+      sent = sdio_probe_send_single_tx_control_template_timeout(dev,
+                                                                &g_sdio_probe_result,
+                                                                SDIO_RUNTIME_POLL_TIMEOUT_US);
+      if (!sent) {
+         g_runtime_set_mac_request_pending = false;
+         sdio_debug_log("SET_MAC: send failed; chip will keep its OTP MAC");
+         g_runtime_step_sent = false;
+         return 1;
+      }
       g_runtime_step_sent = true;
       g_runtime_step_deadline_us = now + 10000u;
       return 0;
@@ -3360,11 +3416,20 @@ static int sdio_runtime_set_mac_step(sdio_host_t *dev)
       return 0;
 
    (void)sdio_drain_fn2_responses(dev);
+   g_runtime_set_mac_request_pending = false;
    g_runtime_step_sent = false;
-   sdio_debug_log("SET_MAC: cur_etheraddr <- %02x:%02x:%02x:%02x:%02x:%02x",
-                  (unsigned)g_runtime_desired_mac[0], (unsigned)g_runtime_desired_mac[1],
-                  (unsigned)g_runtime_desired_mac[2], (unsigned)g_runtime_desired_mac[3],
-                  (unsigned)g_runtime_desired_mac[4], (unsigned)g_runtime_desired_mac[5]);
+
+   if (!g_runtime_set_mac_ack_seen) {
+      sdio_debug_log("SET_MAC: no ack within 10 ms; chip MAC may be unchanged");
+   } else if (g_runtime_set_mac_ack_status != 0u) {
+      sdio_debug_log("SET_MAC: chip rejected cur_etheraddr (status=%lu); keeping OTP MAC",
+                     (unsigned long)g_runtime_set_mac_ack_status);
+   } else {
+      sdio_debug_log("SET_MAC: cur_etheraddr <- %02x:%02x:%02x:%02x:%02x:%02x (accepted)",
+                     (unsigned)g_runtime_desired_mac[0], (unsigned)g_runtime_desired_mac[1],
+                     (unsigned)g_runtime_desired_mac[2], (unsigned)g_runtime_desired_mac[3],
+                     (unsigned)g_runtime_desired_mac[4], (unsigned)g_runtime_desired_mac[5]);
+   }
    return 1;
 }
 
