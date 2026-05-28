@@ -921,36 +921,51 @@ static ws_auth_status_t ws_digest_verify(const char *method,
    if (!ws_prefix_ci_str(authz, "Digest "))
       return WS_AUTH_REQUIRED;
 
-   /* Required fields */
-   if (!ws_digest_field(authz, "username", field_username, sizeof field_username)
-       || !ws_digest_field(authz, "nonce",    field_nonce,    sizeof field_nonce)
-       || !ws_digest_field(authz, "uri",      field_uri,      sizeof field_uri)
-       || !ws_digest_field(authz, "response", field_response, sizeof field_response))
-      return WS_AUTH_REQUIRED;
+   /* Step past the "Digest " scheme prefix BEFORE handing the buffer to
+      ws_digest_field.  The parser walks key=value pairs separated by
+      commas; without this skip, its first iteration treats the bare
+      "Digest" token + the first pair (e.g. Digest username="Pi1MHz") as
+      a single value because there's no comma between them, and the
+      username key is then never matched.  The HTTP-header parsing
+      guarantees ws_find_header trims leading whitespace, so authz
+      begins exactly with "Digest " (7 bytes) and an additional
+      whitespace skip handles servers that might send "Digest  " etc. */
+   {
+      const char *fields = authz + 7;            /* past "Digest " */
+      while (*fields == ' ' || *fields == '\t')
+         ++fields;
 
-   /* Optional realm: if present must match ours, but we don't require it. */
-   if (ws_digest_field(authz, "realm", field_realm, sizeof field_realm)) {
-      if (strcmp(field_realm, cfg->webdav_realm) != 0)
+      /* Required fields */
+      if (!ws_digest_field(fields, "username", field_username, sizeof field_username)
+          || !ws_digest_field(fields, "nonce",    field_nonce,    sizeof field_nonce)
+          || !ws_digest_field(fields, "uri",      field_uri,      sizeof field_uri)
+          || !ws_digest_field(fields, "response", field_response, sizeof field_response))
          return WS_AUTH_REQUIRED;
-   }
 
-   if (strcmp(field_username, cfg->webdav_user) != 0)
-      return WS_AUTH_REQUIRED;
+      /* Optional realm: if present must match ours, but we don't require it. */
+      if (ws_digest_field(fields, "realm", field_realm, sizeof field_realm)) {
+         if (strcmp(field_realm, cfg->webdav_realm) != 0)
+            return WS_AUTH_REQUIRED;
+      }
 
-   ws_digest_compute_ha1(ha1);
-   ws_digest_compute_ha2(ha2, method, field_uri);
-
-   have_qop = ws_digest_field(authz, "qop", field_qop, sizeof field_qop)
-           && field_qop[0] != '\0';
-
-   if (have_qop) {
-      if (!ws_digest_field(authz, "nc",     field_nc,     sizeof field_nc)
-          || !ws_digest_field(authz, "cnonce", field_cnonce, sizeof field_cnonce))
+      if (strcmp(field_username, cfg->webdav_user) != 0)
          return WS_AUTH_REQUIRED;
-      ws_digest_compute_response(expected, ha1, field_nonce,
-                                 field_nc, field_cnonce, field_qop, ha2);
-   } else {
-      ws_digest_compute_response_legacy(expected, ha1, field_nonce, ha2);
+
+      ws_digest_compute_ha1(ha1);
+      ws_digest_compute_ha2(ha2, method, field_uri);
+
+      have_qop = ws_digest_field(fields, "qop", field_qop, sizeof field_qop)
+              && field_qop[0] != '\0';
+
+      if (have_qop) {
+         if (!ws_digest_field(fields, "nc",     field_nc,     sizeof field_nc)
+             || !ws_digest_field(fields, "cnonce", field_cnonce, sizeof field_cnonce))
+            return WS_AUTH_REQUIRED;
+         ws_digest_compute_response(expected, ha1, field_nonce,
+                                    field_nc, field_cnonce, field_qop, ha2);
+      } else {
+         ws_digest_compute_response_legacy(expected, ha1, field_nonce, ha2);
+      }
    }
 
    if (!ws_hex_eq_ci(expected, field_response))
