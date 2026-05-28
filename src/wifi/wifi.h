@@ -101,10 +101,21 @@ typedef enum {
       being lost on the host side rather than not generated. */
    WIFI_SDIO_TX_PROBE_COMMAND_GET_BSSID,
    WIFI_SDIO_TX_PROBE_COMMAND_GET_CHANSPEC,
-   /* (GET_MAC removed - the chip's MAC is now set deterministically
-      from the SoC's board-serial OTP via a brcmfmac NVRAM macaddr=
-      patch, so there is nothing to read back: every caller already
-      knows the address before firmware boot.) */
+   /* WLC_SET_VAR cur_etheraddr - overrides the chip's factory OTP
+      MAC with the SoC's board-OTP MAC (the same address Pi-OS uses
+      on this board) at runtime, after firmware boot and before the
+      join sequence.  This is the safe alternative to rewriting the
+      brcmfmac NVRAM blob: NVRAM stays untouched so calibration data
+      is preserved, but the chip still transmits with the desired
+      address.  Only sent when wifi.c has cached a desired MAC via
+      sdio_runtime_set_desired_mac; otherwise this stage is a
+      no-op and the chip keeps its factory OTP MAC. */
+   WIFI_SDIO_TX_PROBE_COMMAND_SET_MAC,
+   /* WLC_GET_VAR cur_etheraddr - reads back the MAC the chip is
+      currently using for TX.  Run unconditionally after SET_MAC so
+      sdio_runtime_get_chip_mac can hand the actual transmit address
+      to wifi_lwip_netif_init - the value the AP will ARP/DHCP to. */
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC,
    /* Heartbeat readbacks of the WPA/security setup state.  These prove
       whether the SET_WSEC / SET_WPA_AUTH / SET_AUTH / SET_INFRA /
       bsscfg:sup_wpa SET commands during the join sequence actually

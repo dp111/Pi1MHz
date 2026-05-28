@@ -5,7 +5,6 @@
 #include "wifi.h"
 
 #include "../Pi1MHz.h"
-#include "../rpi/info.h"
 #include "../rpi/rpi.h"
 #include "../rpi/systimer.h"
 
@@ -32,6 +31,7 @@ static bool g_wifi_lwip_last_link_up;
 static bool g_wifi_lwip_address_logged;
 static bool g_wifi_lwip_last_address_ready;
 static u8_t g_wifi_lwip_last_dhcp_state = 0xFFu;   /* 0xFF = not seen yet */
+static u8_t g_wifi_lwip_last_dhcp_tries = 0xFFu;
 static void wifi_lwip_debug_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 #define WIFI_LWIP_RX_FRAME_MAX_LEN 1600u
@@ -201,19 +201,20 @@ static err_t wifi_lwip_netif_init(struct netif *netif)
    netif->output = etharp_output;
    netif->linkoutput = wifi_lwip_link_output;
    netif->hwaddr_len = 6;
-   /* The chip transmits with the MAC we patched into the brcmfmac
-      NVRAM in wifi_preload_images, so the lwIP netif must present
-      the same address or the AP's ARP/DHCP replies are sent to a
-      station the chip is not.  Ask the same source (VC4 mailbox)
-      here; fall back to a fixed locally-administered MAC only if
-      the mailbox query fails. */
-   if (!rpi_get_board_mac(netif->hwaddr)) {
-      netif->hwaddr[0] = 0x02;
-      netif->hwaddr[1] = 0x50;
-      netif->hwaddr[2] = 0x31;
-      netif->hwaddr[3] = 0x4d;
-      netif->hwaddr[4] = 0x48;
-      netif->hwaddr[5] = 0x7a;
+   /* Use the chip's real WiFi MAC: the firmware associates with that
+      address, so the lwIP netif must present the same one or DHCP and
+      ARP replies are addressed to a station the access point does not
+      know.  The MAC is captured by the per-tick QUERY_MAC stage
+      (cur_etheraddr WLC_GET_VAR) which always runs to completion before
+      wifi_lwip_init_stack is allowed to start - so reaching here with
+      no captured MAC means the SDIO state machine is broken.  Surface
+      that as a hard error rather than silently falling through to a
+      locally-administered placeholder: the placeholder would associate
+      against the wrong station and DHCP/ARP would mysteriously fail,
+      which is exactly the regression we just spent days chasing. */
+   if (!sdio_runtime_get_chip_mac(netif->hwaddr)) {
+      wifi_set_error("chip MAC unavailable; SDIO QUERY_MAC stage did not complete");
+      return ERR_IF;
    }
    netif->mtu = 1500;
    netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_ETHERNET;
@@ -302,8 +303,12 @@ void wifi_lwip_init_stack(void)
                  ethernet_input) == NULL) {
       /* Surface the failure so the wifi boot state machine stops -
          otherwise it would happily advance to webserver_init against
-         a netif that was never added and report the stack as ready. */
-      wifi_set_error("lwIP netif_add failed");
+         a netif that was never added and report the stack as ready.
+         wifi_lwip_netif_init may have already set a more specific
+         message (e.g. "chip MAC unavailable") via wifi_set_error;
+         don't clobber it. */
+      if (wifi_get_state() != WIFI_STATE_ERROR)
+         wifi_set_error("lwIP netif_add failed");
       return;
    }
 
@@ -377,10 +382,14 @@ static void wifi_lwip_log_dhcp_state(void)
 {
    struct dhcp *d = netif_dhcp_data(&g_wifi_lwip_context.netif);
 
-   if (d == NULL || d->state == g_wifi_lwip_last_dhcp_state)
+   if (d == NULL)
       return;
+   if (d->state == g_wifi_lwip_last_dhcp_state
+       && d->tries == g_wifi_lwip_last_dhcp_tries)
+      return;        /* log on every state OR tries change */
 
    g_wifi_lwip_last_dhcp_state = d->state;
+   g_wifi_lwip_last_dhcp_tries = d->tries;
    wifi_lwip_debug_log("dhcp %s  t=%lu ms  tries=%u",
                        wifi_lwip_dhcp_state_name(d->state),
                        (unsigned long)(RPI_GetSystemTime() / 1000u),

@@ -58,21 +58,25 @@ IDLE → START_SDIO → WAIT_SDIO → OPTIONAL_PROBE → INIT_LWIP → INIT_WEBS
                              OPEN_HOST → IDENTIFY_CARD → READ_CCCR → ENABLE_FUNCTIONS
                              → REQUEST_ALP → READ_POWER → WAKE_KSO → BOOT_FIRMWARE
                              → READ_MAILBOX → ACK_INTERRUPTS → WRITE_INTR_MASK
-                             → PREPARE_JOIN → CLM_DOWNLOAD → JOIN → SWEEP_RX → DONE
+                             → PREPARE_JOIN → CLM_DOWNLOAD → SET_MAC → QUERY_MAC
+                             → JOIN → SWEEP_RX → DONE
 ```
 
-### NVRAM MAC patch
+### MAC handling
 
-Before the CYW43 firmware is downloaded, `wifi_preload_images()` calls
-`rpi_get_board_mac()` (VC4 mailbox tag `0x10003`) to fetch the
-Foundation-style MAC the VC4 bootcode derived from the SoC's board-serial
-OTP — the same `B8:27:EB:xx:xx:xx` / `DC:A6:32:xx:xx:xx` Pi-OS would use
-on this board. `cyw43_patch_nvram_macaddr()` appends a `macaddr=` line to
-the in-memory brcmfmac NVRAM; the chip then transmits with that address
-and lwIP's netif advertises the same one. If the mailbox query or the
-patch fails the chip falls back to its factory Cypress-OUI OTP MAC; WiFi
-still works, the MAC just looks like a Cypress address rather than a
-Foundation one.
+`wifi_preload_images()` calls `rpi_get_board_mac()` (VC4 mailbox tag
+`0x10003`) to fetch the Foundation-style MAC the VC4 bootcode derived
+from the SoC's board-serial OTP — the same `B8:27:EB:xx:xx:xx` /
+`DC:A6:32:xx:xx:xx` Pi-OS would use on this board — and hands it to
+`sdio_runtime_set_desired_mac()`. After firmware boot and CLM download,
+the per-tick `STAGE_SET_MAC` issues a `WLC_SET_VAR("cur_etheraddr", mac)`
+IOCTL so the chip transmits with that address; `STAGE_QUERY_MAC` then
+reads `cur_etheraddr` back via `WLC_GET_VAR` and caches it in
+`g_runtime_chip_mac` for `wifi_lwip_netif_init` to populate the lwIP
+netif `hwaddr`. NVRAM is never modified, so calibration data stays
+intact. If the mailbox query fails, the `SET_MAC` stage is a no-op and
+the chip keeps its factory Cypress-OUI OTP MAC; `QUERY_MAC` still reads
+back whatever the chip is actually using.
 
 ### Join sequence
 

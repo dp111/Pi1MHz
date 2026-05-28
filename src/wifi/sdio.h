@@ -243,6 +243,12 @@ bool sdio_runtime_start(void);
 bool sdio_runtime_tick(void);
 bool sdio_runtime_started(void);
 bool sdio_runtime_link_is_up(void);
+bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
+/* Cache a 6-byte MAC the runtime should push into the chip's
+   cur_etheraddr iovar at boot.  Must be called BEFORE
+   sdio_runtime_start() so the SET_MAC stage picks it up.  Passing
+   NULL clears the cache - the chip then keeps its factory OTP MAC. */
+void sdio_runtime_set_desired_mac(const uint8_t mac[6]);
 bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_length);
 bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                                       uint16_t *frame_length);

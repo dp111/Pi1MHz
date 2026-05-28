@@ -88,21 +88,29 @@ static bool wifi_preload_images(void)
    if (!cyw43_preload_images())
       return false;
 
-   /* Patch the in-memory brcmfmac NVRAM with the Foundation-style
-      MAC the VC4 firmware computed from this Pi's board-serial OTP,
-      so the chip transmits with the same address Pi-OS would use on
-      the same board.  Failure is non-fatal: the chip then falls back
-      to its factory OTP MAC (a Cypress-OUI address). */
+   /* Push the SoC's board-OTP MAC into the SDIO runtime so the
+      per-tick SET_MAC stage can write it to the chip's cur_etheraddr
+      iovar after firmware boot but before the join sequence.
+
+      This replaces the previous NVRAM-rewriting approach (commit
+      13139ae) which corrupted brcmfmac calibration data when the
+      source NVRAM lacked a trailing newline and broke association.
+      Setting cur_etheraddr at runtime leaves the NVRAM blob
+      untouched - the chip boots with full calibration, then adopts
+      the desired MAC via a single WLC_SET_VAR IOCTL.
+
+      If the mailbox query fails (very rare), we just skip the SET
+      and the chip keeps its factory OTP MAC.  The QUERY_MAC stage
+      reads whichever address is in effect, so lwIP always advertises
+      the right one regardless of which path was taken. */
    if (rpi_get_board_mac(mac)) {
-      if (cyw43_patch_nvram_macaddr(mac)) {
-         wifi_debug_log("NVRAM macaddr patched to %02x:%02x:%02x:%02x:%02x:%02x",
-                        (unsigned)mac[0], (unsigned)mac[1], (unsigned)mac[2],
-                        (unsigned)mac[3], (unsigned)mac[4], (unsigned)mac[5]);
-      } else {
-         wifi_debug_log("NVRAM macaddr patch failed; chip will use its OTP MAC");
-      }
+      sdio_runtime_set_desired_mac(mac);
+      wifi_debug_log("cur_etheraddr SET pending: %02x:%02x:%02x:%02x:%02x:%02x",
+                     (unsigned)mac[0], (unsigned)mac[1], (unsigned)mac[2],
+                     (unsigned)mac[3], (unsigned)mac[4], (unsigned)mac[5]);
    } else {
-      wifi_debug_log("mailbox board-MAC unavailable; chip will use its OTP MAC");
+      sdio_runtime_set_desired_mac(NULL);
+      wifi_debug_log("mailbox board-MAC unavailable; chip will use factory OTP MAC");
    }
 
    g_wifi_images_preloaded = true;

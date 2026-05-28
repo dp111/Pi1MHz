@@ -1447,7 +1447,12 @@ static bool route_status(ws_conn_t *c)
       table_row(&b, "Gateway", ip);
    }
 
-   if (rpi_get_board_mac(mac)) {
+   /* Show the chip's actual transmit MAC (captured at boot via the
+      cur_etheraddr GET-VAR), not the VC4 mailbox value - they are
+      DIFFERENT addresses when NVRAM patching is off.  The chip MAC
+      is what the AP sees, and it is what lwIP advertises, so it is
+      the only one worth showing on /status. */
+   if (sdio_runtime_get_chip_mac(mac)) {
       snprintf(tmp, sizeof tmp, "%02X:%02X:%02X:%02X:%02X:%02X",
                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
       table_row(&b, "MAC address", tmp);
