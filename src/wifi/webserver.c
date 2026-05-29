@@ -72,6 +72,19 @@
    "list folder + write one file" dance is under 20 requests, so 100
    leaves headroom without making the cap meaningful in normal use. */
 #define WS_KEEP_ALIVE_MAX_REQUESTS  100u
+/* PROPFIND child-cache size and TTL.  Windows Explorer's
+   MiniRedirector follows the parent Depth:1 PROPFIND with a separate
+   Depth:0 PROPFIND for EVERY child it just saw - dozens of
+   round-trips that each used to need their own f_stat against the
+   cold FATFS window cache (~5-15 ms apiece on SD).  After a parent
+   walk we cache the FILINFO of each child by its full SD path; the
+   per-child PROPFINDs answer from this cache without touching SD.
+   Sized for a typical directory; oversize directories simply miss
+   the cache and fall back to f_stat as before.  TTL is short so a
+   stale cache cannot mislead a client that legitimately races a
+   PROPFIND with an external (non-DAV) writer. */
+#define WS_PROPFIND_CACHE_MAX_CHILDREN  128u
+#define WS_PROPFIND_CACHE_TTL_US        (5u * 1000000u)
 /* Headers a WebDAV response may need to carry.  Sized for the worst case
    (WWW-Authenticate digest line + DAV / Allow). */
 #define WS_AUTH_HEADER_MAX   256u
@@ -247,6 +260,69 @@ static uint32_t        g_ws_sd_free_mb;
 static uint64_t        g_ws_sd_total_bytes;
 static uint64_t        g_ws_sd_free_bytes;
 static uint32_t        g_ws_sd_free_age_us;
+
+/* PROPFIND child cache (see WS_PROPFIND_CACHE_* above).  Populated
+   when route_dav_propfind walks the children of a directory; queried
+   by subsequent Depth:0 PROPFINDs on those children.  Invalidated by
+   any DAV write method (route_dav_put / route_dav_delete /
+   route_dav_mkcol / route_dav_move_or_copy).  The cache deliberately
+   uses static storage to avoid heap fragmentation. */
+typedef struct {
+   char    path[WS_PATH_MAX];   /* full SD path of the child */
+   FILINFO fno;
+} ws_propfind_cache_entry_t;
+static ws_propfind_cache_entry_t g_ws_propfind_cache_entries[WS_PROPFIND_CACHE_MAX_CHILDREN];
+static size_t   g_ws_propfind_cache_count;
+static uint32_t g_ws_propfind_cache_at_us;
+static bool     g_ws_propfind_cache_valid;
+
+static void ws_propfind_cache_invalidate(void)
+{
+   g_ws_propfind_cache_count = 0u;
+   g_ws_propfind_cache_valid = false;
+}
+
+static void ws_propfind_cache_begin(void)
+{
+   ws_propfind_cache_invalidate();
+}
+
+static void ws_propfind_cache_add(const char *path, const FILINFO *fno)
+{
+   if (g_ws_propfind_cache_count >= WS_PROPFIND_CACHE_MAX_CHILDREN)
+      return;
+   ws_propfind_cache_entry_t *e =
+      &g_ws_propfind_cache_entries[g_ws_propfind_cache_count];
+   strlcpy(e->path, path, sizeof e->path);
+   e->fno = *fno;
+   ++g_ws_propfind_cache_count;
+}
+
+static void ws_propfind_cache_commit(void)
+{
+   g_ws_propfind_cache_at_us = RPI_GetSystemTime();
+   g_ws_propfind_cache_valid = true;
+}
+
+/* Returns true and fills *out if `path` is in the cache and the
+   cache has not expired. */
+static bool ws_propfind_cache_lookup(const char *path, FILINFO *out)
+{
+   if (!g_ws_propfind_cache_valid)
+      return false;
+   if ((RPI_GetSystemTime() - g_ws_propfind_cache_at_us)
+       >= WS_PROPFIND_CACHE_TTL_US) {
+      ws_propfind_cache_invalidate();
+      return false;
+   }
+   for (size_t i = 0u; i < g_ws_propfind_cache_count; ++i) {
+      if (strcmp(g_ws_propfind_cache_entries[i].path, path) == 0) {
+         *out = g_ws_propfind_cache_entries[i].fno;
+         return true;
+      }
+   }
+   return false;
+}
 
 /* WebDAV COPY is per-tick: only one COPY may be in flight at a time
    so the bookkeeping is trivially a single pointer.  A second COPY
@@ -1729,7 +1805,12 @@ static bool ws_error(ws_conn_t *c, int status, const char *stext,
                      const char *msg)
 {
    ws_strbuf_t b;
-   if (wifi_debug_enabled())
+   /* Log error responses to the debug console, but skip the 404
+      misses that Windows Explorer generates on every directory open
+      (desktop.ini, Thumbs.db, "AlbumArtSmall.jpg", "Folder.jpg" and
+      similar probes - they're entirely routine and would otherwise
+      drown the rest of the trace). */
+   if (wifi_debug_enabled() && status != 404)
       wifi_debug_printf("RESP %d %s : %s\n", status, stext, msg);
    sb_init(&b);
    page_open(&b, stext);
@@ -1740,6 +1821,50 @@ static bool ws_error(ws_conn_t *c, int status, const char *stext,
    sb_puts(&b, "</p><p><a href=\"/\">Return home</a></p></div>");
    page_close(&b);
    return ws_finish_html(c, status, stext, &b);
+}
+
+/* 405 Method Not Allowed with the RFC 9110 §10.2.1-required Allow
+   header.  Without Allow, generic HTTP clients (curl, browsers,
+   strict WebDAV stacks) cannot tell which methods would succeed
+   instead, and some hold the connection trying to puzzle out
+   alternatives.  The default Allow list ("OPTIONS, GET, HEAD,
+   PROPFIND") covers the routes accessible at every URL; callers
+   that have a tighter set (e.g. "OPTIONS, PROPFIND" on the root
+   for PUT-rejected paths) pass it through `allow_methods`. */
+static bool ws_method_not_allowed(ws_conn_t *c,
+                                  const char *allow_methods,
+                                  const char *msg)
+{
+   ws_strbuf_t b;
+   ws_strbuf_t r;
+   if (wifi_debug_enabled())
+      wifi_debug_printf("RESP 405 Method Not Allowed : %s\n", msg);
+   sb_init(&b);
+   page_open(&b, "Method Not Allowed");
+   sb_puts(&b, "<h1>405 Method Not Allowed</h1>"
+               "<div class=\"card\"><p class=\"err\">");
+   sb_html(&b, msg);
+   sb_puts(&b, "</p><p><a href=\"/\">Return home</a></p></div>");
+   page_close(&b);
+   if (b.failed) { sb_free(&b); return ws_oom(c); }
+   sb_init(&r);
+   sb_printf(&r,
+             "HTTP/1.1 405 Method Not Allowed\r\n"
+             "Allow: %s\r\n"
+             "Content-Type: text/html; charset=utf-8\r\n"
+             "Content-Length: %lu\r\n"
+             "%s"
+             "\r\n",
+             allow_methods, (unsigned long)b.len,
+             ws_connection_hdr(c));
+   sb_write(&r, b.data, b.len);
+   sb_free(&b);
+   if (r.failed) { sb_free(&r); return ws_oom(c); }
+   free(c->out); c->out = r.data; c->out_len = r.len;
+   c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
+   conn_pump(c);
+   return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2183,14 +2308,47 @@ static bool start_download(ws_conn_t *c, const char *sdpath)
       strlcpy(dname, "download", sizeof dname);
 
    sb_init(&h);
-   sb_printf(&h,
-             "HTTP/1.1 200 OK\r\n"
-             "Content-Type: application/octet-stream\r\n"
-             "Content-Length: %lu\r\n"
-             "Content-Disposition: attachment; filename=\"%s\"\r\n"
-             "%s"
-             "\r\n",
-             (unsigned long)size, dname, ws_connection_hdr(c));
+   {
+      /* Pick a Content-Type from the extension so a browser PROPFIND-
+         mounted view will preview text/images directly instead of
+         offering them as a forced download.  Anything unmapped stays
+         as application/octet-stream and gets the Content-Disposition:
+         attachment hint.  The map is intentionally small; add more
+         entries as they prove useful. */
+      const char *ext = strrchr(ws_basename(sdpath), '.');
+      const char *ctype = "application/octet-stream";
+      const char *cdisp = "attachment; ";
+      if (ext != NULL) {
+         ++ext;   /* skip the '.' */
+         if      (ws_prefix_ci_str(ext, "txt"))  { ctype = "text/plain; charset=utf-8";  cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "log"))  { ctype = "text/plain; charset=utf-8";  cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "md"))   { ctype = "text/plain; charset=utf-8";  cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "htm"))  { ctype = "text/html; charset=utf-8";   cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "html")) { ctype = "text/html; charset=utf-8";   cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "css"))  { ctype = "text/css; charset=utf-8";    cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "js"))   { ctype = "application/javascript";     cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "json")) { ctype = "application/json";           cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "xml"))  { ctype = "application/xml";            cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "png"))  { ctype = "image/png";                  cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "jpg"))  { ctype = "image/jpeg";                 cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "jpeg")) { ctype = "image/jpeg";                 cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "gif"))  { ctype = "image/gif";                  cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "svg"))  { ctype = "image/svg+xml";              cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "bmp"))  { ctype = "image/bmp";                  cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "pdf"))  { ctype = "application/pdf";            cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "wav"))  { ctype = "audio/wav";                  cdisp = "inline; "; }
+         else if (ws_prefix_ci_str(ext, "mp3"))  { ctype = "audio/mpeg";                 cdisp = "inline; "; }
+      }
+      sb_printf(&h,
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: %s\r\n"
+                "Content-Length: %lu\r\n"
+                "Content-Disposition: %sfilename=\"%s\"\r\n"
+                "%s"
+                "\r\n",
+                ctype, (unsigned long)size, cdisp, dname,
+                ws_connection_hdr(c));
+   }
    if (h.failed) {
       sb_free(&h);
       f_close(&c->dl_file);
@@ -2546,6 +2704,30 @@ static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
    return ws_path_is_safe(sdpath);
 }
 
+/* Day-of-week from a Gregorian Y/M/D via Zeller's congruence.  Used
+   to fill in the day-name field of the IMF-fixdate header below; some
+   strict client toolchains (RFC 7231 parsers in Java HttpClient and a
+   few macOS libraries) reject the header if the weekday does not
+   match the date.  Returns 0..6 = Sun..Sat. */
+static unsigned int ws_day_of_week(unsigned int year, unsigned int month,
+                                   unsigned int day)
+{
+   unsigned int y = year;
+   unsigned int m = month;
+   unsigned int K, J;
+   /* Zeller treats Jan/Feb as months 13/14 of the previous year. */
+   if (m < 3u) { m += 12u; y -= 1u; }
+   K = y % 100u;
+   J = y / 100u;
+   /* h = 0 Saturday, 1 Sunday, ..., 6 Friday */
+   {
+      unsigned int h = (day + (13u * (m + 1u)) / 5u
+                        + K + K/4u + J/4u + 5u*J) % 7u;
+      /* Re-map to 0..6 = Sun..Sat (what our days[] table expects). */
+      return (h + 6u) % 7u;
+   }
+}
+
 /* HTTP-date (RFC 7231 IMF-fixdate) for a FatFs FILINFO timestamp.
    FatFs stores date/time in DOS format:
      fdate: bits 15..9 = year - 1980, bits 8..5 = month (1-12),
@@ -2553,9 +2735,8 @@ static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
      ftime: bits 15..11 = hour, bits 10..5 = minute,
             bits 4..0  = sec/2
    Decode that into "DDD, DD Mon YYYY HH:MM:SS GMT".  The weekday is
-   left as "Mon" - WebDAV clients (Cyberduck, Finder, Windows
-   Explorer) accept any valid weekday token in the Last-Modified
-   header and we have no calendar code to compute it without an RTC.
+   computed via Zeller's congruence so strict clients that re-parse
+   the header (RFC 7231 forbids mismatching weekday/date) accept it.
 
    If fdate is 0 (file created by code that didn't set a timestamp -
    FatFs returns this when there is no RTC and no explicit time set
@@ -2566,6 +2747,7 @@ static void dav_format_date(char *out, size_t out_sz,
                             uint16_t fdate, uint16_t ftime)
 {
    static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+   static const char *days   = "SunMonTueWedThuFriSat";
 
    if (fdate != 0u) {
       unsigned int year   = ((unsigned int)fdate >> 9)  + 1980u;
@@ -2576,9 +2758,11 @@ static void dav_format_date(char *out, size_t out_sz,
       unsigned int second = ((unsigned int)ftime & 0x1Fu) * 2u;
 
       if (month >= 1u && month <= 12u) {
+         unsigned int dow = ws_day_of_week(year, month, day);
          snprintf(out, out_sz,
-                  "Mon, %02u %.3s %04u %02u:%02u:%02u GMT",
-                  day, &months[(month - 1u) * 3u], year,
+                  "%.3s, %02u %.3s %04u %02u:%02u:%02u GMT",
+                  &days[dow * 3u], day,
+                  &months[(month - 1u) * 3u], year,
                   hour, minute, second);
          return;
       }
@@ -2592,8 +2776,10 @@ static void dav_format_date(char *out, size_t out_sz,
       const char  *bd = __DATE__;
       const char  *bt = __TIME__;
       unsigned int day = 0u;
+      unsigned int year;
       char         mon[4] = {bd[0], bd[1], bd[2], '\0'};
       unsigned int mi;
+      unsigned int dow;
 
       if (bd[4] >= '0' && bd[4] <= '9')
          day = (unsigned int)(bd[4] - '0') * 10u;
@@ -2609,10 +2795,14 @@ static void dav_format_date(char *out, size_t out_sz,
          strlcpy(out, "Mon, 01 Jan 2024 00:00:00 GMT", out_sz);
          return;
       }
+      year = ((unsigned int)(bd[7] - '0') * 1000u)
+           + ((unsigned int)(bd[8] - '0') *  100u)
+           + ((unsigned int)(bd[9] - '0') *   10u)
+           +  (unsigned int)(bd[10] - '0');
+      dow = ws_day_of_week(year, mi + 1u, day);
       snprintf(out, out_sz,
-               "Mon, %02u %.3s %c%c%c%c %c%c:%c%c:%c%c GMT",
-               day, &months[mi * 3u],
-               bd[7], bd[8], bd[9], bd[10],
+               "%.3s, %02u %.3s %04u %c%c:%c%c:%c%c GMT",
+               &days[dow * 3u], day, &months[mi * 3u], year,
                bt[0], bt[1], bt[3], bt[4], bt[6], bt[7]);
    }
 }
@@ -2796,8 +2986,16 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
 
    if (ws_find_header(c->reqhdr, c->reqhdr_len, "Depth",
                       depth_hdr, sizeof depth_hdr)) {
-      /* Depth: 0 → self only; 1 → self + immediate children;
-         "infinity" or anything else → capped at 1 (we don't recurse). */
+      /* Depth: 0 -> self only; 1 -> self + immediate children;
+         "infinity" -> reject explicitly per RFC 4918 §9.1 so the
+         client knows the listing it gets back is bounded and is not
+         a complete tree.  Silently capping at 1 (the original
+         behaviour) made deep clients believe the truncated listing
+         was the whole story.  Anything else -> treat as 1. */
+      if (ws_prefix_ci_str(depth_hdr, "infinity"))
+         return ws_error(c, 403, "Forbidden",
+                         "PROPFIND with Depth: infinity is not "
+                         "supported; use Depth: 0 or 1.");
       depth = (strcmp(depth_hdr, "0") == 0) ? 0 : 1;
    }
 
@@ -2806,8 +3004,15 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
    if (is_root) {
       is_dir = true;
    } else {
-      if (f_stat(sdpath, &fno) != FR_OK)
-         return ws_error(c, 404, "Not Found", "No such resource.");
+      /* Cache hit avoids f_stat against the cold FATFS window.  For
+         Windows Explorer's per-child PROPFIND fanout (one PROPFIND
+         per directory entry after the parent walk) this is the hot
+         path - the parent walk populated the cache, every child
+         lookup is then memory-only. */
+      if (!ws_propfind_cache_lookup(sdpath, &fno)) {
+         if (f_stat(sdpath, &fno) != FR_OK)
+            return ws_error(c, 404, "Not Found", "No such resource.");
+      }
       is_dir = (fno.fattrib & AM_DIR) != 0u;
    }
 
@@ -2839,10 +3044,15 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
    if (depth == 1 && is_dir) {
       DIR     dir;
       FILINFO chld;
+      /* Start a fresh PROPFIND cache generation.  We populate it as
+         we walk the children below; the next per-child Depth:0
+         PROPFIND will hit this cache and skip its own f_stat. */
+      ws_propfind_cache_begin();
       if (f_opendir(&dir, sdpath) == FR_OK) {
          while (f_readdir(&dir, &chld) == FR_OK && chld.fname[0] != '\0') {
             ws_strbuf_t url;
             bool        child_is_dir = (chld.fattrib & AM_DIR) != 0u;
+            char        child_sdpath[WS_PATH_MAX];
 
             sb_init(&url);
             if (!is_root) sb_urlpath(&url, sdpath);
@@ -2868,9 +3078,22 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
                sb_free(&b);
                return ws_oom(c);
             }
+            /* Record the child's FILINFO for the cache.  Build the
+               decoded SD path the way ws_propfind_cache_lookup expects
+               to see from a future PROPFIND request (the same shape
+               that dav_url_to_sdpath produces). */
+            {
+               int n = is_root
+                     ? snprintf(child_sdpath, sizeof child_sdpath, "/%s", chld.fname)
+                     : snprintf(child_sdpath, sizeof child_sdpath, "%s/%s", sdpath, chld.fname);
+               if (n > 0 && (size_t)n < sizeof child_sdpath) {
+                  ws_propfind_cache_add(child_sdpath, &chld);
+               }
+            }
          }
          f_closedir(&dir);
       }
+      ws_propfind_cache_commit();
    }
 
    sb_puts(&b, "</D:multistatus>");
@@ -2957,11 +3180,6 @@ static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
    UINT bw = 0u;
    size_t take = (len < c->dav_remaining) ? len : c->dav_remaining;
 
-   if (wifi_debug_enabled())
-      wifi_debug_printf("PUT-body: +%u bytes (remaining before=%lu draining=%u)\n",
-                        (unsigned)len, (unsigned long)c->dav_remaining,
-                        (unsigned)c->dav_put_draining);
-
    if (c->dav_put_open && take > 0u) {
       if (f_write(&c->write_file.dav, data, (UINT)take, &bw) != FR_OK || bw != take) {
          f_close(&c->write_file.dav);
@@ -2994,14 +3212,9 @@ static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
          challenge.  No file work was performed; nothing on the SD
          card has been touched. */
       if (c->dav_put_draining) {
-         if (wifi_debug_enabled())
-            wifi_debug_printf("PUT: unauth drain complete, sending 401 challenge\n");
          c->dav_put_draining = false;
          return ws_send_auth_challenge(c, false);
       }
-      if (wifi_debug_enabled())
-         wifi_debug_printf("PUT: rename '%s' -> '%s'\n",
-                           c->dav_put_tmppath, c->dav_put_target);
       (void)f_unlink(c->dav_put_target);
       if (f_rename(c->dav_put_tmppath, c->dav_put_target) != FR_OK) {
          (void)f_unlink(c->dav_put_tmppath);
@@ -3024,63 +3237,18 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
    const char *p;
    bool    target_existed;
 
+   /* Any successful PUT changes a child's FILINFO; drop the per-
+      directory cache so the next PROPFIND fetches fresh data.
+      Invalidating up-front (rather than only on the success branch
+      that calls f_rename) keeps the bookkeeping local to one line. */
+   ws_propfind_cache_invalidate();
+
    if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
    if (ws_is_root(sdpath))
-      return ws_error(c, 405, "Method Not Allowed", "PUT on the root is not allowed.");
-
-   /* Diagnostic trace for PUT request reception.  Enabled by the
-      wifi_debug=1 cmdline flag.  Captures the request URL, header
-      offsets, key headers and (line by line) every header field the
-      client sent.  This is the fastest way to see what Windows
-      Explorer is actually sending when an overwrite or write fails -
-      MiniRedirector has several historical quirks (Expect:
-      100-continue, chunked, 0-byte probe, If: lock-token mismatch)
-      that need different handling.  Run with `wifi_debug=1` on the
-      cmdline and watch the serial console while the failing client
-      issues the PUT. */
-   if (wifi_debug_enabled()) {
-      char tmp_te[32]  = "";
-      char tmp_cl[24]  = "";
-      char tmp_ex[32]  = "";
-      char tmp_if[64]  = "";
-      (void)ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding",
-                           tmp_te, sizeof tmp_te);
-      (void)ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length",
-                           tmp_cl, sizeof tmp_cl);
-      (void)ws_find_header(c->reqhdr, c->reqhdr_len, "Expect",
-                           tmp_ex, sizeof tmp_ex);
-      (void)ws_find_header(c->reqhdr, c->reqhdr_len, "If",
-                           tmp_if, sizeof tmp_if);
-      wifi_debug_printf("PUT %s reqhdr_len=%u body_at=%d CL='%s' TE='%s' Expect='%s' If='%s'\n",
-                        rawpath, (unsigned)c->reqhdr_len, body_at,
-                        tmp_cl, tmp_te, tmp_ex, tmp_if);
-      /* Dump every header line, one per debug log line.  The header
-         block ends at body_at (the start of any inline body) or at
-         the buffer end if Windows kept the body in a separate TCP
-         segment - either way this gives a complete picture. */
-      {
-         size_t end = (body_at > 0 && (size_t)body_at <= c->reqhdr_len)
-                    ? (size_t)body_at : c->reqhdr_len;
-         size_t i = 0u;
-         char   line[160];
-         while (i < end) {
-            size_t k = 0u;
-            while (i < end && c->reqhdr[i] != '\n' && k + 1u < sizeof line) {
-               if (c->reqhdr[i] != '\r')
-                  line[k++] = c->reqhdr[i];
-               ++i;
-            }
-            /* skip to end of this header line */
-            while (i < end && c->reqhdr[i] != '\n')
-               ++i;
-            if (i < end) ++i;
-            line[k] = '\0';
-            if (line[0] != '\0')
-               wifi_debug_printf("PUT-hdr: %s\n", line);
-         }
-      }
-   }
+      return ws_method_not_allowed(c,
+                                   "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH",
+                                   "PUT on the root is not allowed.");
 
    /* RFC 7230 §3.3.1: if Transfer-Encoding is present we MUST use it
       and ignore Content-Length.  We don't decode chunked transfer
@@ -3220,11 +3388,9 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
           && ws_strcasestr(expect_hdr, "100-continue") != NULL) {
          static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
          if (c->pcb != NULL) {
-            err_t we = tcp_write(c->pcb, cont, (u16_t)(sizeof cont - 1u),
-                                 TCP_WRITE_FLAG_COPY);
+            (void)tcp_write(c->pcb, cont, (u16_t)(sizeof cont - 1u),
+                            TCP_WRITE_FLAG_COPY);
             (void)tcp_output(c->pcb);
-            if (wifi_debug_enabled())
-               wifi_debug_printf("PUT: sent 100 Continue (tcp_write=%d)\n", (int)we);
          }
       }
    }
@@ -3301,6 +3467,8 @@ static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
    FILINFO fno;
    FRESULT fr;
 
+   ws_propfind_cache_invalidate();
+
    if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
    if (ws_is_root(sdpath))
@@ -3349,18 +3517,35 @@ static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
 static bool route_dav_mkcol(ws_conn_t *c, const char *rawpath)
 {
    char    sdpath[WS_PATH_MAX];
+   char    cl_hdr[24];
    FRESULT fr;
+
+   ws_propfind_cache_invalidate();
 
    if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
    if (ws_is_root(sdpath))
-      return ws_error(c, 405, "Method Not Allowed",
-                      "Root already exists.");
+      return ws_method_not_allowed(c,
+                                   "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH",
+                                   "Root already exists.");
+
+   /* RFC 4918 §9.3.1: a server that does not support the body of an
+      MKCOL request MUST respond with 415 Unsupported Media Type.  We
+      do not parse extended MKCOL bodies, so reject anything with a
+      non-zero Content-Length rather than silently dropping it. */
+   if (ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length",
+                      cl_hdr, sizeof cl_hdr)
+       && cl_hdr[0] != '\0' && cl_hdr[0] != '0') {
+      return ws_error(c, 415, "Unsupported Media Type",
+                      "MKCOL request bodies are not supported.");
+   }
 
    fr = f_mkdir(sdpath);
    if (fr == FR_EXIST)
-      return ws_error(c, 405, "Method Not Allowed",
-                      "Resource already exists.");
+      return ws_method_not_allowed(c,
+                                   "OPTIONS, GET, HEAD, PUT, DELETE, COPY, "
+                                   "MOVE, PROPFIND, PROPPATCH, LOCK, UNLOCK",
+                                   "Resource already exists.");
    if (fr == FR_NO_PATH)
       return ws_error(c, 409, "Conflict",
                       "Parent collection does not exist.");
@@ -3495,6 +3680,9 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    char    dst[WS_PATH_MAX];
    char    dest_hdr[WS_PATH_MAX + 32];
    char    over_hdr[8];
+
+   ws_propfind_cache_invalidate();
+
    bool    overwrite = true;
    FILINFO fno_src;
    FRESULT fr;
@@ -3519,14 +3707,26 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    {
       FILINFO fno_dst;
       dst_existed = f_stat(dst, &fno_dst) == FR_OK;
+      if (dst_existed && !overwrite)
+         return ws_error(c, 412, "Precondition Failed",
+                         "Destination exists and Overwrite is F.");
+      /* If the destination is itself a directory we cannot replace it
+         via f_unlink + create-file; the unlink would refuse a non-
+         empty dir and we would then emit a generic "Rename failed".
+         Detect this up front and tell the client clearly so it can
+         issue DELETE on the directory first or pick a different
+         destination.  RFC 4918 §9.9.5 / §9.8.5 list this as a "MUST"
+         consideration for both MOVE and COPY. */
+      if (dst_existed && (fno_dst.fattrib & AM_DIR) != 0u)
+         return ws_error(c, 409, "Conflict",
+                         "Destination is a directory; remove it or "
+                         "choose a different name first.");
    }
-   if (dst_existed && !overwrite)
-      return ws_error(c, 412, "Precondition Failed",
-                      "Destination exists and Overwrite is F.");
    if (dst_existed) {
-      /* Best-effort: remove destination first (only works on files /
-         empty dirs - matches f_unlink semantics).  Real WebDAV
-         recursive overwrite is out of scope. */
+      /* File destination - remove it so f_rename / f_open succeed.
+         Failure here is uncommon (would be e.g. a read-only flag in
+         FatFs); leave it to the rename / open call below to surface
+         the precise reason via its own error path. */
       (void)f_unlink(dst);
    }
 
@@ -3759,8 +3959,9 @@ static bool route_dav_get_file(ws_conn_t *c, const char *rawpath)
    if (f_stat(sdpath, &fno) != FR_OK)
       return false;
    if ((fno.fattrib & AM_DIR) != 0u)
-      return ws_error(c, 405, "Method Not Allowed",
-                      "GET on a collection is not supported; use PROPFIND.");
+      return ws_method_not_allowed(c,
+                                   "OPTIONS, PROPFIND, PROPPATCH",
+                                   "GET on a collection is not supported; use PROPFIND.");
 
    return start_download(c, sdpath);
 }
@@ -3828,14 +4029,6 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (query != NULL)
       *query = '\0';
 
-   /* Dispatch-level diagnostic: log every method + path the client
-      sends.  With wifi_debug=1 this captures the full DAV exchange
-      (PROPFIND, LOCK, DELETE, PUT, UNLOCK) which is the only reliable
-      way to see what Windows Explorer's MiniRedirector is actually
-      doing when a write or overwrite fails. */
-   if (wifi_debug_enabled())
-      wifi_debug_printf("REQ %s %s\n", method, rawpath);
-
    /* Digest auth.  When configured, every route requires a valid
       Authorization header.  OPTIONS is intentionally NOT exempt - the
       WebDAV client sends it after authenticating, and exempting it
@@ -3843,11 +4036,6 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (ws_digest_enabled()) {
       ws_auth_status_t a = ws_digest_verify(method, c->reqhdr,
                                             c->reqhdr_len);
-      if (wifi_debug_enabled())
-         wifi_debug_printf("AUTH %s %s -> %s\n", method, rawpath,
-                           a == WS_AUTH_OK ? "OK"
-                         : a == WS_AUTH_STALE ? "STALE-challenge"
-                         : "REQUIRED-challenge");
       if (a == WS_AUTH_REQUIRED || a == WS_AUTH_STALE) {
          /* Windows Explorer's MiniRedirector quirk: a PUT that
             carries Expect: 100-continue + a non-zero body and gets
@@ -3907,10 +4095,6 @@ static bool process_request(ws_conn_t *c, int body_at)
                                      TCP_WRITE_FLAG_COPY);
                      (void)tcp_output(c->pcb);
                   }
-                  if (wifi_debug_enabled())
-                     wifi_debug_printf("PUT: unauth body drain CL=%lu expect=%u already=%u\n",
-                                       (unsigned long)cl, (unsigned)has_expect,
-                                       (unsigned)already);
                   c->dav_put_open      = false;
                   c->dav_put_draining  = true;
                   c->dav_remaining     = cl;
@@ -3982,7 +4166,11 @@ static bool process_request(ws_conn_t *c, int body_at)
       return ws_error(c, 404, "Not Found", "No such page.");
    }
 
-   return ws_error(c, 405, "Method Not Allowed", "Unsupported method.");
+   return ws_method_not_allowed(c,
+                                "OPTIONS, GET, HEAD, PUT, DELETE, COPY, "
+                                "MOVE, MKCOL, PROPFIND, PROPPATCH, LOCK, "
+                                "UNLOCK, POST",
+                                "Unsupported method.");
 }
 
 static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
@@ -4198,7 +4386,11 @@ static void webserver_refresh_sd_free(void)
       return;
 
    g_ws_sd_free_age_us = now;
-   if (f_getfree("/", &nclst, &fs) == FR_OK && fs != NULL) {
+   /* FatFs treats the path argument as a logical-drive prefix, not a
+      filesystem path - "" picks the default drive and is what the
+      MTP backend uses too.  Passing "/" works on this build because
+      FF_FS_RPATH is enabled, but "" is the canonical form. */
+   if (f_getfree("", &nclst, &fs) == FR_OK && fs != NULL) {
       /* FF_MAX_SS is the FatFs sector-size limit; on SD it is 512.
          Use a literal 512u here to avoid pulling in FF_MAX_SS from
          the ffconf - SD cards do not use anything else in practice
@@ -4283,6 +4475,17 @@ void webserver_init(void)
       single slot in the main Pi1MHz poll table. */
 
    g_ws_ready = true;
+   /* Pre-warm the SD-card free-space cache so the very first PROPFIND
+      a client makes already carries quota-available-bytes /
+      quota-used-bytes properties.  Without this, Windows Explorer
+      receives a no-quota response on its first request and falls
+      back to a fabricated default (the "86.8 GB free of 929 GB"
+      report) which then sticks in the Explorer UI even after later
+      PROPFINDs do include the real numbers.  f_getfree may take
+      hundreds of ms on a slow / fragmented card but this only runs
+      once at server bring-up; subsequent refreshes are gated by the
+      WS_FREE_REFRESH_US TTL in webserver_poll. */
+   webserver_refresh_sd_free();
    wifi_note_http_ready();
 }
 

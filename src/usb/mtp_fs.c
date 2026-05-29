@@ -353,6 +353,34 @@ static bool fs_parse_mtp_datetime(const char* value, uint16_t* fat_date, uint16_
   return true;
 }
 
+/* Reject filenames the host has no business sending - path
+ * separators, parent-directory escapes, control bytes and a few
+ * reserved Windows names.  Without this check a malicious or
+ * misbehaving host could SendObjectInfo with name="../foo" or
+ * name="evil/sub/file" and write outside the storage root the user
+ * thinks the device exposes.  Returns false if name is unsafe. */
+static bool fs_name_is_safe(const char* name) {
+  if (name == NULL || name[0] == '\0') {
+    return false;
+  }
+  /* leading dot would create a hidden file plus the "." / ".."
+   * cases the loop below also catches; reject up front. */
+  if (name[0] == '.' && (name[1] == '\0'
+                         || (name[1] == '.' && name[2] == '\0'))) {
+    return false;
+  }
+  for (const char* p = name; *p != '\0'; ++p) {
+    unsigned char c = (unsigned char)*p;
+    if (c < 0x20u) return false;                 /* control byte */
+    if (c == '/' || c == '\\') return false;     /* path separator */
+    if (c == ':' || c == '*' || c == '?' || c == '"'
+        || c == '<' || c == '>' || c == '|') {
+      return false;                              /* FAT-reserved */
+    }
+  }
+  return true;
+}
+
 static bool fs_make_path(const char* base, const char* name, char path[], size_t max_len) {
   if ((base == NULL) || (name == NULL) || (path == NULL) || (max_len == 0)) {
     return false;
@@ -371,27 +399,80 @@ static bool fs_make_path(const char* base, const char* name, char path[], size_t
   return true;
 }
 
-static uint32_t fs_handle_from_path(const char* path) {
-  uint32_t hash = 2166136261u;
+/* FNV-1a hash, but seeded so callers can ask for an alternate
+ * hash when the primary one collides with an existing entry. */
+static uint32_t fs_hash_path_seeded(const char* path, uint32_t seed) {
+  uint32_t hash = seed;
   const uint8_t* p = (const uint8_t*) path;
-
   while (*p != 0u) {
     hash ^= *p++;
     hash *= 16777619u;
   }
-
   if (hash == 0u || hash == 0xFFFFFFFFu) {
     hash ^= 0xA5A5A5A5u;
   }
-
   return hash;
 }
 
+static uint32_t fs_handle_from_path(const char* path) {
+  return fs_hash_path_seeded(path, 2166136261u);
+}
+
+/* Returns true when a cache entry with the given handle already
+ * exists.  Used by the cache builder to detect collisions while it
+ * is still appending - the cache is not yet sorted at that point, so
+ * a linear scan is the only safe lookup. */
+static bool fs_cache_has_handle(uint32_t handle) {
+  for (uint32_t i = 0; i < g_fs_cache.count; ++i) {
+    if (g_fs_cache.entries[i].handle == handle) return true;
+  }
+  return false;
+}
+
+/* Pick a handle for `path` that does NOT collide with anything
+ * already in the cache.  Tries the primary seed first; on collision,
+ * walks a tiny set of alternate seeds.  A path that exhausts every
+ * seed (vanishingly rare with three seeds) gets a deterministic
+ * fall-through derived from the cache index, which guarantees the
+ * cache invariant "every handle is unique" at the cost of a
+ * cache-rebuild-sensitive handle for that one entry.  This is the
+ * worst case the host would ever observe and is preferable to two
+ * files silently sharing one handle. */
+static uint32_t fs_resolve_handle(const char* path) {
+  static const uint32_t seeds[] = {
+    2166136261u,   /* FNV-1a primary */
+    0x12345678u,
+    0xDEADBEEFu,
+    0xCAFEBABEu
+  };
+  for (unsigned s = 0; s < sizeof(seeds)/sizeof(seeds[0]); ++s) {
+    uint32_t h = fs_hash_path_seeded(path, seeds[s]);
+    if (!fs_cache_has_handle(h)) return h;
+  }
+  /* All seeds collided - synthesise a unique handle from the cache
+   * index.  The handle is stable for the lifetime of this cache
+   * generation; it changes on the next fs_cache_invalidate. */
+  return 0x80000001u + g_fs_cache.count;
+}
+
+/* Cap recursion depth on tree walks so a pathological filesystem
+ * (deeply nested directories, possibly hostile) cannot blow the
+ * cooperative-poll stack.  Each level consumes a DIR (~600 B) + a
+ * FILINFO + a path buffer + the recursive frame; 16 levels keeps
+ * the worst-case under ~25 KB which is comfortably within the
+ * cooperative-loop budget.  A tree deeper than this is logged
+ * (via return false) and the cache build aborts cleanly. */
+#define MTP_WALK_MAX_DEPTH 16u
+
 static bool fs_walk_tree_recursive(const char* dir_path, uint32_t parent_handle,
-                                   fs_walk_cb_t cb, void* user_data) {
+                                   fs_walk_cb_t cb, void* user_data,
+                                   unsigned depth) {
   DIR dir;
   FILINFO fno;
 
+  if (depth >= MTP_WALK_MAX_DEPTH) {
+    return false;
+  }
   if (f_opendir(&dir, dir_path) != FR_OK) {
     return false;
   }
@@ -420,7 +501,12 @@ static bool fs_walk_tree_recursive(const char* dir_path, uint32_t parent_handle,
     if (!fs_make_path(dir_path, fno.fname, entry.path, sizeof(entry.path))) {
       continue;
     }
-    entry.handle = fs_handle_from_path(entry.path);
+    /* Use the collision-aware resolver: if the FNV hash for this
+     * path coincides with another already-cached entry, the
+     * resolver tries alternate seeds and falls back to a synthetic
+     * unique handle.  Without this two files would silently share
+     * one MTP handle and the host could not distinguish them. */
+    entry.handle = fs_resolve_handle(entry.path);
     entry.parent = parent_handle;
 
     if (!cb(&entry, user_data)) {
@@ -429,7 +515,8 @@ static bool fs_walk_tree_recursive(const char* dir_path, uint32_t parent_handle,
     }
 
     if (entry.is_dir) {
-      if (!fs_walk_tree_recursive(entry.path, entry.handle, cb, user_data)) {
+      if (!fs_walk_tree_recursive(entry.path, entry.handle, cb, user_data,
+                                  depth + 1u)) {
         (void) f_closedir(&dir);
         return false;
       }
@@ -444,7 +531,7 @@ static bool fs_walk_tree(fs_walk_cb_t cb, void* user_data) {
   if (!fs_ensure_ready()) {
     return false;
   }
-  return fs_walk_tree_recursive("/", 0, cb, user_data);
+  return fs_walk_tree_recursive("/", 0, cb, user_data, 0u);
 }
 
 static const char* fs_basename(const char* path) {
@@ -701,14 +788,41 @@ static uint16_t fs_guess_object_format(const char* name, uint8_t status) {
   }
   lower[i] = '\0';
 
+  /* Text / document */
   if (strcmp(lower, "txt") == 0) return MTP_OBJ_FORMAT_TEXT;
+  if (strcmp(lower, "log") == 0) return MTP_OBJ_FORMAT_TEXT;
+  if (strcmp(lower, "md")  == 0) return MTP_OBJ_FORMAT_TEXT;
+  if (strcmp(lower, "ini") == 0) return MTP_OBJ_FORMAT_TEXT;
+  if (strcmp(lower, "cfg") == 0) return MTP_OBJ_FORMAT_TEXT;
+  if (strcmp(lower, "htm") == 0) return MTP_OBJ_FORMAT_HTML;
+  if (strcmp(lower, "html")== 0) return MTP_OBJ_FORMAT_HTML;
+  if (strcmp(lower, "xml") == 0) return MTP_OBJ_FORMAT_XML_DOC;
+  if (strcmp(lower, "doc") == 0) return MTP_OBJ_FORMAT_DOC;
+  /* Images */
   if (strcmp(lower, "png") == 0) return MTP_OBJ_FORMAT_PNG;
   if (strcmp(lower, "jpg") == 0 || strcmp(lower, "jpeg") == 0) return MTP_OBJ_FORMAT_EXIF_JPEG;
   if (strcmp(lower, "gif") == 0) return MTP_OBJ_FORMAT_GIF;
   if (strcmp(lower, "bmp") == 0) return MTP_OBJ_FORMAT_BMP;
+  if (strcmp(lower, "tif") == 0 || strcmp(lower, "tiff") == 0) return MTP_OBJ_FORMAT_TIFF;
+  /* Audio */
   if (strcmp(lower, "mp3") == 0) return MTP_OBJ_FORMAT_MP3;
   if (strcmp(lower, "wav") == 0) return MTP_OBJ_FORMAT_WAV;
+  if (strcmp(lower, "wma") == 0) return MTP_OBJ_FORMAT_WMA;
+  if (strcmp(lower, "ogg") == 0) return MTP_OBJ_FORMAT_OGG;
+  if (strcmp(lower, "aac") == 0) return MTP_OBJ_FORMAT_AAC;
+  if (strcmp(lower, "flac")== 0) return MTP_OBJ_FORMAT_FLAC;
+  if (strcmp(lower, "m4a") == 0) return MTP_OBJ_FORMAT_AAC;
+  /* Video */
   if (strcmp(lower, "mp4") == 0) return MTP_OBJ_FORMAT_MP4;
+  if (strcmp(lower, "avi") == 0) return MTP_OBJ_FORMAT_AVI;
+  if (strcmp(lower, "wmv") == 0) return MTP_OBJ_FORMAT_WMV;
+  if (strcmp(lower, "3gp") == 0) return MTP_OBJ_FORMAT_3GP;
+  /* Code / executables - keep these as Script/Executable so the host
+   * does not assume they are docs.  Plain "bin" stays UNDEFINED. */
+  if (strcmp(lower, "exe") == 0) return MTP_OBJ_FORMAT_EXECUTABLE;
+  if (strcmp(lower, "sh")  == 0) return MTP_OBJ_FORMAT_SCRIPT;
+  if (strcmp(lower, "py")  == 0) return MTP_OBJ_FORMAT_SCRIPT;
+  if (strcmp(lower, "js")  == 0) return MTP_OBJ_FORMAT_SCRIPT;
 
   return MTP_OBJ_FORMAT_UNDEFINED;
 }
@@ -759,6 +873,25 @@ static int32_t fs_read_send_next(mtp_container_info_t* io_container, bool send_w
 static void fs_release_write_state(void) {
   if (g_write_state.file_open) {
     (void) f_close(&g_write_state.file);
+    g_write_state.file_open = false;
+  }
+  /* If the host aborted the SendObject before delivering the full
+   * Content-Length (or never delivered any body at all on a non-
+   * empty file), the SD card is left with a truncated copy of what
+   * the user thinks they uploaded.  Unlink the partial file so the
+   * on-disk view matches what actually transferred - same intent
+   * as the WebDAV temp-file + rename pattern.  Skip:
+   *   - directories (nothing to truncate)
+   *   - kernel.now (in-memory, no file on disk)
+   *   - completed writes (size_known && transferred == size) - the
+   *     success path explicitly clears the partial-write flag
+   *     before reaching here, so this check distinguishes "aborted
+   *     half way" from "finished cleanly". */
+  if (g_write_state.active && g_write_state.path[0] != '\0'
+      && !g_write_state.is_dir && !g_write_state.is_kernel_now
+      && (!g_write_state.size_known
+          || g_write_state.transferred != g_write_state.size)) {
+    (void) f_unlink(g_write_state.path);
   }
   if (g_write_state.kernel_data != NULL) {
     free(g_write_state.kernel_data);
@@ -902,6 +1035,12 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
         send_obj_handle = (handle != 0u) ? handle : send_obj_handle;
         fs_cache_invalidate();
         resp->header->code = MTP_RESP_OK;
+        /* Mark the upload as cleanly finished so fs_release_write_state
+         * does NOT treat this as an aborted transfer and unlink the
+         * file we just wrote.  Any path that falls into the else
+         * branch (or out of the size-known guard with the wrong byte
+         * count) leaves active=true so the partial file is removed. */
+        g_write_state.active = false;
       } else {
         resp->header->code = MTP_RESP_GENERAL_ERROR;
       }
@@ -1295,6 +1434,16 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
     if (g_write_state.name[0] == '\0') {
       return MTP_RESP_GENERAL_ERROR;
     }
+    /* Reject names that contain path separators, parent-directory
+     * escapes ("..") or FAT-reserved bytes BEFORE we let the rest of
+     * the handler touch the filesystem.  Catches host-side bugs and
+     * malicious crafted SendObjectInfo packets.  reboot.now and
+     * kernel.now are still allowed because they're plain filenames
+     * the safety check accepts. */
+    if (!fs_name_is_safe(g_write_state.name)) {
+      fs_release_write_state();
+      return MTP_RESP_INVALID_DATASET;
+    }
 
     if (strcmp(g_write_state.name, "reboot.now") == 0) {
       reboot_now();
@@ -1579,7 +1728,10 @@ static int32_t fs_set_object_prop_value(tud_mtp_cb_data_t* cb_data) {
     (void) mtp_container_get_string(io_container->payload, name_utf16);
     fs_utf16_to_ascii(name_utf16, new_name, sizeof(new_name));
 
-    if (new_name[0] == '\0') {
+    /* Same path-traversal guard as fs_send_object_info: a rename via
+     * SetObjectPropValue can also smuggle "/", ".." or FAT-reserved
+     * bytes into the new name.  Reject those before touching FatFs. */
+    if (!fs_name_is_safe(new_name)) {
       return MTP_RESP_INVALID_OBJECT_PROP_VALUE;
     }
 
@@ -1603,6 +1755,51 @@ static int32_t fs_set_object_prop_value(tud_mtp_cb_data_t* cb_data) {
   return MTP_RESP_OBJECT_PROP_NOT_SUPPORTED;
 }
 
+/* Depth-first delete of a directory's contents, then the directory
+ * itself.  FatFs's f_unlink only succeeds on files and empty
+ * directories, so the MTP host's "delete this folder" request used
+ * to fail outright whenever there was anything inside.  This walker
+ * matches what the WebDAV path does and matches what every desktop
+ * OS expects from MTP's DeleteObject when the target is a folder.
+ * Bounded by MTP_DELETE_MAX_DEPTH to keep the stack budget
+ * predictable; a tree deeper than the cap returns FR_DENIED. */
+#define MTP_DELETE_MAX_DEPTH 16u
+static FRESULT fs_delete_tree(const char* path, unsigned depth) {
+  DIR     dir;
+  FILINFO fno;
+  FRESULT fr;
+  char    child[FS_PATH_MAX];
+
+  if (depth >= MTP_DELETE_MAX_DEPTH) {
+    return FR_DENIED;
+  }
+  fr = f_opendir(&dir, path);
+  if (fr != FR_OK) {
+    return fr;
+  }
+  while ((fr = f_readdir(&dir, &fno)) == FR_OK && fno.fname[0] != '\0') {
+    if (strcmp(fno.fname, ".") == 0 || strcmp(fno.fname, "..") == 0) {
+      continue;
+    }
+    if (!fs_make_path(path, fno.fname, child, sizeof(child))) {
+      fr = FR_DENIED;
+      break;
+    }
+    if ((fno.fattrib & AM_DIR) != 0u) {
+      fr = fs_delete_tree(child, depth + 1u);
+      if (fr != FR_OK) break;
+    } else {
+      fr = f_unlink(child);
+      if (fr != FR_OK) break;
+    }
+  }
+  (void) f_closedir(&dir);
+  if (fr == FR_OK) {
+    fr = f_unlink(path);
+  }
+  return fr;
+}
+
 static int32_t fs_delete_object(tud_mtp_cb_data_t* cb_data) {
   const mtp_container_command_t* command = cb_data->command_container;
   const uint32_t obj_handle = command->params[0];
@@ -1616,7 +1813,12 @@ static int32_t fs_delete_object(tud_mtp_cb_data_t* cb_data) {
     return MTP_RESP_INVALID_OBJECT_HANDLE;
   }
 
-  FRESULT res = f_unlink(entry.path);
+  FRESULT res;
+  if (entry.is_dir) {
+    res = fs_delete_tree(entry.path, 0u);
+  } else {
+    res = f_unlink(entry.path);
+  }
   if (res == FR_OK) {
     fs_cache_invalidate();
     return MTP_RESP_OK;

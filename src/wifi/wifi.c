@@ -35,7 +35,6 @@ typedef enum {
 } wifi_boot_stage_t;
 
 static wifi_boot_stage_t g_wifi_boot_stage;
-static bool g_wifi_boot_poll_registered;
 static bool g_wifi_images_preloaded;
 /* WiFi is initialised exactly once.  A BBC RST re-runs init_emulator()
    - which calls every emulator's init again - but the WiFi connection
@@ -542,6 +541,17 @@ void wifi_init(void)
       pointlessly.  Defer the init-done latch to the success path
       below so a failure in wifi_config_load / wifi_validate_config
       itself does not falsely flag the system as initialised. */
+   /* init_emulator() (run on every BBC RST) zeroes the main poll
+      table before each emulator gets a chance to re-register.  Make
+      sure our dispatcher is in the new table BEFORE the early-return
+      below, otherwise after a RST a still-running WiFi stack would
+      be silently dropped from the main loop - symptom: the heartbeat
+      loops/s rate jumps ~30x because wifi_dispatch_poll (lwIP +
+      webserver_poll + netname_poll) is no longer being called.
+      Pi1MHz_Register_Poll dedupes against the existing table, so
+      this is a one-line idempotent re-add on every entry. */
+   Pi1MHz_Register_Poll(wifi_dispatch_poll);
+
    if (g_wifi_init_done
        && g_wifi_state != WIFI_STATE_ERROR
        && g_wifi_state != WIFI_STATE_DISABLED)
@@ -569,15 +579,6 @@ void wifi_init(void)
       return;
 
    wifi_debug_log("boot start state=%s", wifi_state_name(g_wifi_state));
-
-   /* Register the dispatcher with the main poll table exactly once;
-      every WiFi sub-system (wifi_boot, wifi_lwip_poll, webserver_poll,
-      netname_poll) is called from wifi_dispatch_poll instead of
-      taking its own slot. */
-   if (!g_wifi_boot_poll_registered) {
-      Pi1MHz_Register_Poll(wifi_dispatch_poll);
-      g_wifi_boot_poll_registered = true;
-   }
 
    g_wifi_boot_stage = WIFI_BOOT_STAGE_START_SDIO;
    /* Latch only now: the config loaded, validated, and the boot is
