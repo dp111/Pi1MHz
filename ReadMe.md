@@ -21,10 +21,19 @@ Pi 3A+ is expected to work but is not formally tested.
 ## Hardware Requirements
 
 - BBC Micro or BBC Master with 1MHz bus access
-- Raspberry Pi Zero/Zero W or Pi 3B+
+- Raspberry Pi Zero W, Pi Zero 2 W, Pi 3 B+, or Pi 4 (WiFi-equipped
+  variants if you want the optional WiFi/WebDAV interface; non-WiFi
+  Pis still work for everything else)
 - SD card
 - 1MHz bus level shifter
 - 5V power feed for the Pi (for example from User Port or Tube)
+
+The WiFi interface is optional but, when used, needs the brcmfmac
+firmware blobs for the Pi's specific WiFi chip placed on the SD card
+under `/Pi1MHz/wifi/`.  See [`src/wifi/README.md`](src/wifi/README.md)
+for the per-board firmware filename mapping, cmdline.txt parameters
+(`wifi_ssid=`, `wifi_password=`, `webdav_user=`, etc.) and a full
+description of the built-in webserver / WebDAV mount.
 
 ## Quick Start
 
@@ -312,6 +321,14 @@ Addresses currently defined
 * SCSIID=xx : Set the SCSI ID of the ADFS/VFS emulation. 0 is default to listens to every id
 * SCSIJUKE=xx : sets the default SCSI jukebox. 0 is default.
 * VFSJUKE=xx : sets the default VFS jukebox. 0 is default.
+
+For the optional WiFi / management-webserver / WebDAV interface,
+cmdline.txt also accepts `wifi_ssid=`, `wifi_password=`, `wifi_country=`,
+`wifi_hostname=`, `wifi_ip=`, `webdav_user=`, `webdav_password=` and
+related keys.  Those are fully documented in
+[`src/wifi/README.md`](src/wifi/README.md) alongside the per-board
+firmware-file mapping that has to be in place under `/Pi1MHz/wifi/`
+for any of them to take effect.
 
 ## Notes
 

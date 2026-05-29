@@ -96,6 +96,13 @@ All entries are optional except `wifi_ssid` (without an SSID the whole
 stack stays down). Legacy names from the original feature request are
 accepted alongside the `wifi_*` form.
 
+Before any of these matter you need the right brcmfmac firmware files
+on the SD card under `/Pi1MHz/wifi/` for the board you're booting on —
+see [Files Required on the SD Card](#files-required-on-the-sd-card)
+for the per-board filename mapping.  Without them WiFi reports a
+"firmware did not start" or "image not found" error at boot and the
+cmdline values below have nothing to act on.
+
 | Key | Default | Notes |
 |---|---|---|
 | `wifi_ssid=` / `SSID=`                | (none)            | Required; without it the WiFi stack does not start. |
@@ -236,17 +243,51 @@ anonymous — same behaviour as before WebDAV was added.
 
 ## Files Required on the SD Card
 
-```
-/Pi1MHz/wifi/
-  brcmfmac43430-sdio.bin       firmware (Cypress / brcmfmac, ~419 KB)
-  brcmfmac43430-sdio.txt       NVRAM      (the macaddr= line is added at runtime)
-  brcmfmac43430-sdio.clm_blob  CLM regulatory database (optional but recommended)
-```
+Pi1MHz needs the brcmfmac firmware blob (`bin`), NVRAM template (`txt`)
+and CLM regulatory database (`clm_blob`) for the WiFi chip on the board
+it boots on.  The toolchain pre-selects what the ARM core can run, then
+`cyw43_preload_images` loads the matching files at boot and
+`sdio_runtime_boot_firmware` writes them into chip RAM.
+
+Which filenames you need depends on the build and the board:
+
+| Build (toolchain)                  | Board                       | WiFi chip   | Files (under `/Pi1MHz/wifi/`)               |
+|------------------------------------|-----------------------------|-------------|---------------------------------------------|
+| ARMv6 — `scripts/rpi.cmake`        | Pi Zero W                   | BCM43430A1  | `brcmfmac43430-sdio.{bin,txt,clm_blob}`     |
+| ARMv8 — `scripts/rpi3.cmake`       | Pi Zero 2 W                 | BCM43430B0  | `brcmfmac43436-sdio.{bin,txt,clm_blob}`     |
+| ARMv8 — `scripts/rpi3.cmake`       | Pi 3 B+ / Pi 4              | BCM43455    | `brcmfmac43455-sdio.{bin,txt,clm_blob}`     |
+
+Notes on naming for the ARMv8 build:
+
+- The BCM43430B0 on the Pi Zero 2 W is what brcmfmac (and Pi-OS dmesg)
+  calls `brcmfmac43430b0-sdio`, but the actual blob bytes on disk in
+  the firmware-nonfree tree live under the `brcmfmac43436-sdio.bin`
+  filename — `brcmfmac43430b0-sdio.<board>.bin` is a symlink to the
+  43436 file.  We use the underlying filename so the SD-card layout is
+  unambiguous.
+- `brcmfmac43436s-sdio.*` (note trailing `s`) is a DIFFERENT blob for
+  a different sibling chip and is NOT what the Pi Zero 2 W needs.
+- The ARMv8 build preloads BOTH the 43436 and 43455 sets at boot, then
+  picks the matching one once `sdio_backplane_scan_cores` has reported
+  the chip's `chip_id` and `socramrev`.  Missing files just log "(alt)
+  not found" and don't fail the boot — you only need the trio that
+  matches the board you're actually running on.
+
+Source — all three files for each chip live in the Raspberry Pi
+Foundation's firmware-nonfree repo under
+`debian/config/brcm80211/brcm/`:
+
+> https://github.com/RPi-Distro/firmware-nonfree/tree/trixie/debian/config/brcm80211/brcm
+
+The most reliable way to get the right trio is to copy them out of a
+working Pi-OS install on the same physical Pi:
+`/lib/firmware/brcm/brcmfmac{43430,43436,43455}-sdio.{bin,txt,clm_blob}`.
 
 If `.clm_blob` is missing the chip uses its built-in minimal regulatory
 data; the WiFi stack still comes up but country-locked channels may be
-unavailable. If the `.bin` or NVRAM is missing the WiFi stack reports an
-error and stays down — everything else on the Pi1MHz keeps running.
+unavailable.  If the `.bin` or NVRAM is missing for the chip detected
+at boot, the WiFi stack reports an error and stays down — everything
+else on the Pi1MHz keeps running.
 
 ## Not Implemented
 

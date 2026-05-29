@@ -454,8 +454,18 @@ static int sdio_runtime_finalize_boot_stage(sdio_host_t *dev,
       const wifi_config_t *cfg = wifi_get_config();
 
       if (cfg == NULL || !cfg->allow_emulator_fallback) {
+         /* One-line diagnostic: chip silicon variant + the byte
+            counts of the loaded firmware / NVRAM blobs.  Most
+            HT-timeout failures in practice are a wrong-file install
+            for the board, and these four numbers are enough to
+            triangulate that against what brcmfmac / Pi-OS ship. */
          sdio_debug_log("CYW43 firmware did not start: HT clock unavailable, CSR=0x%02x",
                         (unsigned int)clock_csr);
+         sdio_debug_log("  chip_id=43430 chip_revision=%u socramrev=%u fw_bytes=%lu nvram_bytes=%lu",
+                        (unsigned int)g_runtime_boot_chip.chip_revision,
+                        (unsigned int)g_runtime_boot_chip.socramrev,
+                        (unsigned long)g_cyw43_firmware_length,
+                        (unsigned long)g_cyw43_nvram_length);
          sdio_runtime_set_error("CYW43 firmware did not start (HT clock never became available)");
          sdio_runtime_boot_reset_state();
          return -1;
@@ -1131,23 +1141,48 @@ static bool sdio_backplane_scan_ram(sdio_host_t *dev, sdio_chip_state_t *chip)
       chip->socramsize = size;
       chip->rambase = 0u;
       if (chip->chip_id == 43430u) {
-         if (!sdio_backplane_write_u32(dev, chip->socramregs + CYW43_BANKIDX_OFFSET, 3u)
-            || !sdio_backplane_write_u32(dev, chip->socramregs + CYW43_BANKPDA_OFFSET, 0u)) {
-            return false;
+         /* Power up every SOCRAM bank.  Pi Zero W's BCM43430A1 only
+            needs bank 3's BANKPDA cleared - the other three banks
+            default to powered.  Pi Zero 2 W's BCM43436S (socramrev
+            ~25) has banks that default to power-DOWN, so an early
+            firmware access to any of them locks the chip up before
+            HT_AVAIL can assert; this matches exactly the
+            "firmware in RAM, ARM released, HT clock never set"
+            symptom we previously hit.  Upstream brcmfmac walks
+            every bank unconditionally - do the same here.
+
+            'banks' was computed in the loop above from the SOCRAM
+            COREINFO register.  Loop over the same range and write
+            BANKPDA=0 to each so every bank is powered before the
+            ARM core starts fetching instructions. */
+         {
+            uint32_t bidx;
+            uint32_t bank_count = (banks == 0u) ? 4u : banks;
+            for (bidx = 0u; bidx < bank_count; ++bidx) {
+               if (!sdio_backplane_write_u32(dev,
+                                            chip->socramregs + CYW43_BANKIDX_OFFSET,
+                                            bidx)
+                || !sdio_backplane_write_u32(dev,
+                                             chip->socramregs + CYW43_BANKPDA_OFFSET,
+                                             0u)) {
+                  return false;
+               }
+            }
          }
          /* The bank loop above mis-sizes the 43430's SOCRAM on this
-            silicon revision: SOCRAM rev >= 16 (this chip reports rev 22)
-            encodes the bank count and per-bank size differently from the
-            simplified scan here, so the sum comes out as 0x8000 instead
-            of the true 0x80000.  The 43430 always has exactly 512 KiB of
-            SOCRAM - hard-code it, exactly as the cyw43-driver reference
-            does (CYW43_RAM_SIZE = 512 * 1024).
+            silicon revision: SOCRAM rev >= 16 encodes the bank count
+            and per-bank size differently from the simplified scan
+            here, so the sum comes out as 0x8000 instead of the true
+            0x80000.  Both 43430A1 (Pi Zero W) and 43436S (Pi Zero 2 W)
+            always have exactly 512 KiB of SOCRAM - hard-code it,
+            exactly as the cyw43-driver reference does (CYW43_RAM_SIZE
+            = 512 * 1024).
             This matters because the NVRAM image and its trailer token
-            are placed at the top of RAM (rambase + socramsize - ...): a
-            wrong size puts them inside the firmware image and leaves the
-            real top-of-RAM token slot unwritten, so the firmware boots,
-            cannot find its NVRAM, faults early, and HT_AVAIL never
-            appears. */
+            are placed at the top of RAM (rambase + socramsize - ...):
+            a wrong size puts them inside the firmware image and
+            leaves the real top-of-RAM token slot unwritten, so the
+            firmware boots, cannot find its NVRAM, faults early, and
+            HT_AVAIL never appears. */
          chip->socramsize = 0x80000u;
       }
    }
@@ -1248,7 +1283,14 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
             return -1;
          }
 
-         if ((clock_csr & CYW43_HT_AVAIL) == 0u && g_runtime_boot_wait_attempt < 19u) {
+         /* HT-clock wait budget.  Both the BCM43430A1 (Pi Zero W)
+            and the BCM43430B0 (Pi Zero 2 W) firmware assert HTAvail
+            within 100-300 ms once they start running.  30 * 50 ms
+            = 1.5 s is comfortably wider than the worst observed
+            settle time without dragging out failure paths (a real
+            wrong-firmware case still hits the explicit error
+            below, which logs the CSR + chip variant for triage). */
+         if ((clock_csr & CYW43_HT_AVAIL) == 0u && g_runtime_boot_wait_attempt < 30u) {
             g_runtime_boot_wait_attempt++;
             g_runtime_boot_deadline_us = now_us + 50000u;
             return 0;
@@ -1304,10 +1346,33 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
 
    chip.chip_id = (uint16_t)(chip_id_register & 0xffffu);
    chip.chip_revision = (uint8_t)((chip_id_register >> 16) & 0x0fu);
+   /* Surface chip_revision in the boot log: the 43430-family chip
+      IDs (Pi Zero W's BCM43430A1, Pi Zero 2 W's BCM43436S/43436B0)
+      all report chip_id=43430 - chip_revision is what
+      distinguishes them and what upstream brcmfmac uses to pick
+      between brcmfmac43430a0-sdio.bin, brcmfmac43430-sdio.bin,
+      brcmfmac43436b0-sdio.bin and brcmfmac43436s-sdio.bin.
+      socramrev is a useful secondary cue but doesn't fully
+      disambiguate, hence logging both. */
+   sdio_debug_log("chip: id=0x%04x (%u) revision=%u",
+                  (unsigned int)chip.chip_id,
+                  (unsigned int)chip.chip_id,
+                  (unsigned int)chip.chip_revision);
+   /* Accept 43430 family for every build; additionally accept 43455
+      (Pi 3 B+ / Pi 4) on the ARMv8 build where cyw43_preload_images
+      preloaded a 43455 alt firmware set.  ARMv6 builds (Pi Zero W
+      only) keep the strict 43430-only check. */
+#if __ARM_ARCH >= 7
+   if (chip.chip_id != 43430u && chip.chip_id != 43455u) {
+      sdio_runtime_set_error("Unsupported CYW43 chip ID");
+      return -1;
+   }
+#else
    if (chip.chip_id != 43430u) {
       sdio_runtime_set_error("Unsupported CYW43 chip ID");
       return -1;
    }
+#endif
 
    if (!sdio_backplane_read_u32(dev, CYW43_ENUM_BASE + (63u * 4u), &enumeration_address)
       || !sdio_backplane_scan_cores(dev, &chip, enumeration_address)) {
@@ -1334,6 +1399,25 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
                   (unsigned long)chip.d11ctl,
                   (unsigned long)chip.sdregs);
 
+#if __ARM_ARCH >= 7
+   /* ARMv8 build: cyw43_preload_images stashed both 43436 (the
+      blob the BCM43430B0 on Pi Zero 2 W actually uses, despite
+      brcmfmac's naming) and 43455 firmware sets.  Now that we know
+      chip_id+socramrev, pick the right one and free the loser.
+      After this returns, g_cyw43_firmware_data / _length point at
+      the matching blob for the rest of this boot. */
+   cyw43_select_chip_variant(chip.chip_id, chip.socramrev);
+   if (g_cyw43_firmware_data == NULL || g_cyw43_firmware_length == 0u
+       || g_cyw43_nvram_data == NULL || g_cyw43_nvram_length == 0u) {
+      sdio_runtime_set_error("No matching CYW43 firmware preloaded for this chip");
+      return -1;
+   }
+   sdio_debug_log("variant: chip_id=%u socramrev=%u -> firmware=%lu bytes",
+                  (unsigned int)chip.chip_id,
+                  (unsigned int)chip.socramrev,
+                  (unsigned long)g_cyw43_firmware_length);
+#endif
+
    if (chip.arm_core == CYW43_CORE_ARM_CR4_ID) {
       if (!sdio_backplane_reset_core(dev, chip.armctl, CYW43_CR4_CPUHALT, CYW43_CR4_CPUHALT)) {
          sdio_runtime_set_error("Failed to halt CYW43 CR4 core");
@@ -1356,7 +1440,10 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
       makes the firmware boot but read its NVRAM from the wrong address,
       fault early, and never reach HT_AVAIL.  socramsize MUST read
       0x00080000 here for a 43430. */
-   sdio_debug_log("RAM: rambase=0x%08lx socramsize=0x%08lx (expect 0x00080000 for 43430)",
+   /* Both the BCM43430A1 (Pi Zero W) and the BCM43430B0 (Pi Zero 2 W)
+      ship with 512 KB of SOCRAM and the same rambase, so a single
+      0x00080000 expectation covers both compile-time variants. */
+   sdio_debug_log("RAM: rambase=0x%08lx socramsize=0x%08lx (expect 0x00080000 for 43430a1/43430b0)",
                   (unsigned long)chip.rambase,
                   (unsigned long)chip.socramsize);
 
@@ -1541,9 +1628,25 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
          sdio_runtime_set_error("Failed to start CYW43 CR4 core");
          return -1;
       }
-   } else if (!sdio_backplane_reset_core(dev, chip.armctl, 0u, 0u)) {
-      sdio_runtime_set_error("Failed to start CYW43 ARM core");
-      return -1;
+   } else {
+      /* Clear any pending SDIO-core interrupt-status bits before the
+         ARM CM3 starts running.  The 43430A1 (Pi Zero W) doesn't
+         normally have anything pending at this point, so the original
+         code only did this on the CR4 path - but the 43436S
+         apparently does, and if firmware is released with an IRQ
+         already latched the Cortex-M3 services it immediately, finds
+         no handler installed yet, falls into HardFault and spins
+         there forever (cur_res never moves off 0x3, HT_AVAIL never
+         asserts).  Clear the same way the CR4 path does. */
+      if (!sdio_backplane_write_u32(dev, chip.sdregs + SDIO_CORE_INT_STATUS_OFFSET, ~0u)) {
+         sdio_runtime_set_error("Failed to clear CYW43 SDIO interrupts (CM3)");
+         return -1;
+      }
+
+      if (!sdio_backplane_reset_core(dev, chip.armctl, 0u, 0u)) {
+         sdio_runtime_set_error("Failed to start CYW43 ARM core");
+         return -1;
+      }
    }
 
    /* Diagnostic: read the ARM core wrapper back after starting it.  This
