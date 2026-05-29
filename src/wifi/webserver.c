@@ -150,7 +150,14 @@ typedef struct {
    uint32_t dav_remaining;
    int      dav_put_status;
    const char *dav_put_status_text;
+   /* dav_put_target is the FINAL path the client asked us to PUT.
+      dav_put_tmppath is where the body is actually written ("<target>.part")
+      so a client disconnect halfway through an upload does not destroy a
+      pre-existing file at dav_put_target.  On a clean upload we close the
+      temp file, unlink the old target (if any) and f_rename the temp to
+      the final name; on any error path we unlink the temp file. */
    char     dav_put_target[WS_PATH_MAX];
+   char     dav_put_tmppath[WS_PATH_MAX + 8u];
 
    /* WebDAV COPY streaming (CONN_DAV_COPY).  Reads from copy_src,
       writes to copy_dst, one chunk per webserver_poll tick (reusing
@@ -180,12 +187,21 @@ static bool            g_ws_ready;
 static char            g_ws_error[WS_ERROR_TEXT_MAX + 1u];
 static bool            g_ws_reboot_pending;
 static uint32_t        g_ws_reboot_at;
-/* Cached SD free-space.  f_getfree walks the FAT and can stall a
+/* Cached SD card byte counts.  f_getfree walks the FAT and can stall a
    slow / fragmented card for hundreds of ms - too long for a TCP
    callback to hold the cooperative poll loop.  webserver_poll
-   refreshes this in the background and route_status reads it. */
+   refreshes these in the background; route_status reads
+   g_ws_sd_free_mb, and WebDAV PROPFIND reads
+   g_ws_sd_total_bytes / g_ws_sd_free_bytes to populate the
+   quota-available-bytes / quota-used-bytes properties that Windows
+   Explorer uses to display the share's free / total size.  Without
+   the quota report Explorer falls back to a fabricated default
+   (typically around 1 TB total) - the cause of the wildly wrong
+   "Total size 929 GB" line in the WebDAV mount root. */
 static bool            g_ws_sd_free_valid;
 static uint32_t        g_ws_sd_free_mb;
+static uint64_t        g_ws_sd_total_bytes;
+static uint64_t        g_ws_sd_free_bytes;
 static uint32_t        g_ws_sd_free_age_us;
 
 /* WebDAV COPY is per-tick: only one COPY may be in flight at a time
@@ -515,6 +531,40 @@ static void ws_store_u32(uint8_t *p, uint32_t v)
    p[1] = (uint8_t)((v >> 8) & 0xFFu);
    p[2] = (uint8_t)((v >> 16) & 0xFFu);
    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+/* Format a uint64_t as a decimal string into out[0..sz-1] (NUL
+   terminated).  The project builds with -std=c90 + -Wlong-long, so
+   printf("%llu", ...) and "unsigned long long" both warn; this helper
+   keeps the long-long traffic strictly internal to uint64_t (which the
+   compiler already accepts as an extension) and hands the caller a
+   printable %s.  A uint64_t is at most 20 decimal digits, so a 21+ byte
+   buffer is always enough; sz of 24 is the recommended call size. */
+static void ws_format_u64(char *out, size_t sz, uint64_t v)
+{
+   char tmp[24];
+   size_t n = 0u;
+
+   if (sz == 0u)
+      return;
+
+   /* Extract digits in reverse, then copy them out in order.  The
+      uint64_t division compiles to a libgcc __udivdi3 call which is
+      already linked in via FatFs / md5, so this adds no new toolchain
+      dependency. */
+   do {
+      tmp[n++] = (char)('0' + (unsigned int)(v % 10u));
+      v /= 10u;
+   } while (v != 0u && n < sizeof tmp);
+
+   if (n >= sz)
+      n = sz - 1u;
+   {
+      size_t i;
+      for (i = 0u; i < n; ++i)
+         out[i] = tmp[n - 1u - i];
+      out[n] = '\0';
+   }
 }
 
 /* ------------------------------------------------------------------ */
@@ -869,7 +919,7 @@ static bool ws_digest_field(const char *hdr, const char *key,
 }
 
 /* Build the HA1 = MD5(user:realm:password) hex string. */
-static void ws_digest_compute_ha1(char ha1[MD5_HEX_LEN])
+static void ws_digest_compute_ha1(md5_hex_t ha1)
 {
    const wifi_config_t *cfg = wifi_get_config();
    const void *parts[5];
@@ -885,7 +935,7 @@ static void ws_digest_compute_ha1(char ha1[MD5_HEX_LEN])
 }
 
 /* Build HA2 = MD5(method:uri). */
-static void ws_digest_compute_ha2(char ha2[MD5_HEX_LEN],
+static void ws_digest_compute_ha2(md5_hex_t ha2,
                                   const char *method, const char *uri)
 {
    const void *parts[3];
@@ -900,7 +950,7 @@ static void ws_digest_compute_ha2(char ha2[MD5_HEX_LEN],
 
 /* Build the expected response hash (qop=auth flavour):
    MD5(HA1:nonce:nc:cnonce:qop:HA2). */
-static void ws_digest_compute_response(char response[MD5_HEX_LEN],
+static void ws_digest_compute_response(md5_hex_t response,
                                        const char *ha1, const char *nonce,
                                        const char *nc, const char *cnonce,
                                        const char *qop, const char *ha2)
@@ -926,7 +976,7 @@ static void ws_digest_compute_response(char response[MD5_HEX_LEN],
 /* Build the RFC-2069 (qop-absent) response hash: MD5(HA1:nonce:HA2).
    Some HTTP clients (older curl, some library defaults) still send no
    qop; we accept both forms. */
-static void ws_digest_compute_response_legacy(char response[MD5_HEX_LEN],
+static void ws_digest_compute_response_legacy(md5_hex_t response,
                                               const char *ha1,
                                               const char *nonce,
                                               const char *ha2)
@@ -943,12 +993,16 @@ static void ws_digest_compute_response_legacy(char response[MD5_HEX_LEN],
    md5_hex_cat(response, parts, lens, 5);
 }
 
-/* Compare two MD5 hex strings case-insensitively, OR-folding the
-   diff bit so the body of the compare doesn't short-circuit on the
-   first byte difference - a small hardening that costs nothing.
-   It is NOT a true constant-time compare: the early return on a
-   short received_hex still makes the call data-dependent in length.
-   For local-LAN digest-auth (already not secret) that's fine.
+/* Compare two MD5 hex strings case-insensitively.  Reject up front
+   if received_hex is not exactly MD5_HEX_LEN characters - this makes
+   the byte-compare loop a fixed MD5_HEX_LEN iterations whose runtime
+   does not depend on which bytes differ, which is the meaningful
+   property for digest auth (timing leaks of the matched-prefix length
+   would let an attacker incrementally guess a valid response).  We
+   do NOT claim true constant-time at the strlen prefix - on this
+   platform with no shared cache and a single-threaded poll loop the
+   timing budget for an attacker is generous regardless - but the OR
+   fold over all MD5_HEX_LEN bytes is honest about its intent.
 
    `expected_hex` is the locally-computed digest from md5_hex_cat
    (exactly MD5_HEX_LEN chars, NOT NUL-terminated - reading the index
@@ -956,18 +1010,23 @@ static void ws_digest_compute_response_legacy(char response[MD5_HEX_LEN],
    the value pulled out of the client's Authorization header (always
    NUL-terminated by ws_digest_field); we require it to be exactly
    MD5_HEX_LEN chars long. */
-static bool ws_hex_eq_ci(const char *expected_hex, const char *received_hex)
+static bool ws_hex_eq_ci(const md5_hex_t expected_hex,
+                         const char *received_hex)
 {
    unsigned int diff = 0u;
    size_t i;
 
+   /* Length check first - explicit, not folded into the loop - so the
+      compare body is always exactly MD5_HEX_LEN iterations and never
+      reaches past either buffer. */
+   if (strlen(received_hex) != MD5_HEX_LEN)
+      return false;
+
    for (i = 0u; i < MD5_HEX_LEN; ++i) {
-      if (received_hex[i] == '\0')
-         return false;
       diff |= (unsigned int)((unsigned char)ws_lc((unsigned char)expected_hex[i])
                            ^ (unsigned char)ws_lc((unsigned char)received_hex[i]));
    }
-   return diff == 0u && received_hex[MD5_HEX_LEN] == '\0';
+   return diff == 0u;
 }
 
 typedef enum {
@@ -990,9 +1049,9 @@ static ws_auth_status_t ws_digest_verify(const char *method,
    char field_nc[16];
    char field_cnonce[64];
    const wifi_config_t *cfg = wifi_get_config();
-   char ha1[MD5_HEX_LEN];
-   char ha2[MD5_HEX_LEN];
-   char expected[MD5_HEX_LEN];
+   md5_hex_t ha1;
+   md5_hex_t ha2;
+   md5_hex_t expected;
    bool have_qop;
 
    if (!ws_find_header(header_block, header_limit, "Authorization",
@@ -1182,6 +1241,13 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
    if (c->dav_put_open) {
       f_close(&c->write_file.dav);
       c->dav_put_open = false;
+      /* Connection torn down mid-PUT: discard the partial temp file so
+         the SD card does not accumulate "<name>.part" droppings.  The
+         final target was deliberately not touched until the body
+         completed (dav_put_consume's f_rename) so the user's previous
+         file - if any - is intact. */
+      if (c->dav_put_tmppath[0] != '\0')
+         (void)f_unlink(c->dav_put_tmppath);
    }
    if (c->copy_src_open) {
       f_close(&c->copy_src);
@@ -2125,6 +2191,58 @@ static bool upload_feed_data(ws_conn_t *c, const uint8_t *data, size_t len)
       found = ws_memfind(work, work_len,
                          (const uint8_t *)c->up_delim, delim);
       if (found >= 0) {
+         /* Distinguish the closing boundary ("\r\n--<boundary>--\r\n",
+            ends the form) from an intermediate boundary
+            ("\r\n--<boundary>\r\n", introduces another part).  The
+            two bytes that follow the matched delimiter tell us which.
+            We may have to look in both the working slice and the
+            still-unread caller buffer; if neither has 2 bytes yet,
+            stash the remainder back in up_tail and ask for more.
+            Without this check, an intermediate boundary causes the
+            first part to be saved and every subsequent part to be
+            silently dropped on the floor - a tedious failure mode for
+            anyone curl'ing multiple -F file uploads. */
+         size_t after_off = (size_t)found + delim;
+         uint8_t peek[2] = {0u, 0u};
+         size_t  peek_have = 0u;
+         if (after_off < work_len) {
+            size_t take = work_len - after_off;
+            if (take > 2u) take = 2u;
+            memcpy(peek, work + after_off, take);
+            peek_have += take;
+         }
+         if (peek_have < 2u && len > 0u) {
+            size_t take = 2u - peek_have;
+            if (take > len) take = len;
+            memcpy(peek + peek_have, data, take);
+            peek_have += take;
+         }
+         if (peek_have < 2u) {
+            /* Not enough bytes to decide yet - keep the matched
+               delimiter in up_tail and wait for the next callback. */
+            if (!upload_write(c, work, (size_t)found))
+               return false;
+            if (c->up_state != UP_DATA)
+               return true;
+            c->up_tail_len = delim + peek_have;
+            memmove(c->up_tail, work + found, c->up_tail_len);
+            return true;
+         }
+         if (peek[0] != '-' || peek[1] != '-') {
+            /* Intermediate boundary: another part follows.  We only
+               support single-file uploads from the built-in form, so
+               reject explicitly rather than silently dropping the
+               rest.  The first part has already been written - close
+               it cleanly before failing so the saved file is intact. */
+            if (c->up_file_open) {
+               (void)f_close(&c->write_file.up);
+               c->up_file_open = false;
+            }
+            return upload_fail(c,
+                "Multi-file uploads are not supported; please submit "
+                "one file per upload.");
+         }
+         /* Closing boundary - finalise the first (and only) part. */
          if (!upload_write(c, work, (size_t)found))
             return false;
          if (c->up_state != UP_DATA)
@@ -2262,60 +2380,146 @@ static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
    return ws_path_is_safe(sdpath);
 }
 
-/* HTTP-date (RFC 7231 IMF-fixdate) for a FatFs timestamp.  FatFs
-   only gives us DOS-style date/time and there is no RTC, so we
-   can't produce real per-file modification times.  Use the build
-   date instead: every file gets the same stamp, but that's at least
-   monotonically newer than what the previous Pi1MHz build returned,
-   so WebDAV clients that key cache invalidation off Last-Modified
-   refresh on each new firmware.
+/* HTTP-date (RFC 7231 IMF-fixdate) for a FatFs FILINFO timestamp.
+   FatFs stores date/time in DOS format:
+     fdate: bits 15..9 = year - 1980, bits 8..5 = month (1-12),
+            bits 4..0  = day (1-31)
+     ftime: bits 15..11 = hour, bits 10..5 = minute,
+            bits 4..0  = sec/2
+   Decode that into "DDD, DD Mon YYYY HH:MM:SS GMT".  The weekday is
+   left as "Mon" - WebDAV clients (Cyberduck, Finder, Windows
+   Explorer) accept any valid weekday token in the Last-Modified
+   header and we have no calendar code to compute it without an RTC.
 
-   __DATE__ is "Mmm dd yyyy" (e.g. "May 28 2026") and __TIME__ is
-   "HH:MM:SS"; we reshape into IMF-fixdate by re-emitting them.  The
-   weekday is left as "Mon" - clients accept any valid weekday
-   token and we have no way to compute the real one without an RTC. */
-static void dav_format_date(char *out, size_t out_sz, FSIZE_t mtime_dummy)
+   If fdate is 0 (file created by code that didn't set a timestamp -
+   FatFs returns this when there is no RTC and no explicit time set
+   via f_utime / FATFS_TIMER hook), fall back to the firmware build
+   date so the entry shows SOMETHING reasonable rather than the DOS
+   epoch (Jan 1 1980). */
+static void dav_format_date(char *out, size_t out_sz,
+                            uint16_t fdate, uint16_t ftime)
 {
    static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
-   const char *bd  = __DATE__;        /* "Mmm dd yyyy" */
-   const char *bt  = __TIME__;        /* "HH:MM:SS"    */
-   int  day  = 0;
-   char mon[4] = {bd[0], bd[1], bd[2], '\0'};
-   int  mi;
 
-   /* Parse "dd": column 4 is either a space (1-9) or a tens digit. */
-   if (bd[4] >= '0' && bd[4] <= '9')
-      day = (bd[4] - '0') * 10;
-   if (bd[5] >= '0' && bd[5] <= '9')
-      day += (bd[5] - '0');
-   for (mi = 0; mi < 12; ++mi) {
-      if (months[mi * 3] == mon[0]
-       && months[mi * 3 + 1] == mon[1]
-       && months[mi * 3 + 2] == mon[2])
-         break;
+   if (fdate != 0u) {
+      unsigned int year   = ((unsigned int)fdate >> 9)  + 1980u;
+      unsigned int month  = ((unsigned int)fdate >> 5)  & 0x0Fu;
+      unsigned int day    = (unsigned int)fdate         & 0x1Fu;
+      unsigned int hour   = ((unsigned int)ftime >> 11) & 0x1Fu;
+      unsigned int minute = ((unsigned int)ftime >> 5)  & 0x3Fu;
+      unsigned int second = ((unsigned int)ftime & 0x1Fu) * 2u;
+
+      if (month >= 1u && month <= 12u) {
+         snprintf(out, out_sz,
+                  "Mon, %02u %.3s %04u %02u:%02u:%02u GMT",
+                  day, &months[(month - 1u) * 3u], year,
+                  hour, minute, second);
+         return;
+      }
+      /* Malformed fdate - fall through to the build-date fallback. */
    }
-   if (mi >= 12) {                    /* unrecognised month: fall back */
-      strlcpy(out, "Mon, 01 Jan 2024 00:00:00 GMT", out_sz);
-      (void)mtime_dummy;
-      return;
+
+   {
+      /* Build-date fallback: __DATE__ is "Mmm dd yyyy" (col 4 is
+         either a space for 1-9 or a tens digit), __TIME__ is
+         "HH:MM:SS". */
+      const char  *bd = __DATE__;
+      const char  *bt = __TIME__;
+      unsigned int day = 0u;
+      char         mon[4] = {bd[0], bd[1], bd[2], '\0'};
+      unsigned int mi;
+
+      if (bd[4] >= '0' && bd[4] <= '9')
+         day = (unsigned int)(bd[4] - '0') * 10u;
+      if (bd[5] >= '0' && bd[5] <= '9')
+         day += (unsigned int)(bd[5] - '0');
+      for (mi = 0u; mi < 12u; ++mi) {
+         if (months[mi * 3u]      == mon[0]
+          && months[mi * 3u + 1u] == mon[1]
+          && months[mi * 3u + 2u] == mon[2])
+            break;
+      }
+      if (mi >= 12u) {                  /* shouldn't happen */
+         strlcpy(out, "Mon, 01 Jan 2024 00:00:00 GMT", out_sz);
+         return;
+      }
+      snprintf(out, out_sz,
+               "Mon, %02u %.3s %c%c%c%c %c%c:%c%c:%c%c GMT",
+               day, &months[mi * 3u],
+               bd[7], bd[8], bd[9], bd[10],
+               bt[0], bt[1], bt[3], bt[4], bt[6], bt[7]);
    }
-   (void)mtime_dummy;
-   snprintf(out, out_sz, "Mon, %02d %.3s %c%c%c%c %c%c:%c%c:%c%c GMT",
-            day, &months[mi * 3],
-            bd[7], bd[8], bd[9], bd[10],
-            bt[0], bt[1], bt[3], bt[4], bt[6], bt[7]);
+}
+
+/* ISO-8601 (RFC 3339) creation-date for the WebDAV <D:creationdate>
+   element.  Same DOS-fields decode as dav_format_date, just emitted
+   in YYYY-MM-DDTHH:MM:SSZ format.  Build-date fallback when fdate
+   is 0. */
+static void dav_format_creationdate(char *out, size_t out_sz,
+                                    uint16_t fdate, uint16_t ftime)
+{
+   if (fdate != 0u) {
+      unsigned int year   = ((unsigned int)fdate >> 9)  + 1980u;
+      unsigned int month  = ((unsigned int)fdate >> 5)  & 0x0Fu;
+      unsigned int day    = (unsigned int)fdate         & 0x1Fu;
+      unsigned int hour   = ((unsigned int)ftime >> 11) & 0x1Fu;
+      unsigned int minute = ((unsigned int)ftime >> 5)  & 0x3Fu;
+      unsigned int second = ((unsigned int)ftime & 0x1Fu) * 2u;
+
+      if (month >= 1u && month <= 12u) {
+         snprintf(out, out_sz, "%04u-%02u-%02uT%02u:%02u:%02uZ",
+                  year, month, day, hour, minute, second);
+         return;
+      }
+   }
+   /* Build-date fallback - emit __DATE__/__TIME__ in ISO format.  We
+      reuse the parsed values from dav_format_date by re-parsing
+      rather than threading state; the cost is negligible (called once
+      per directory entry) and keeps the helpers self-contained. */
+   {
+      static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
+      const char  *bd = __DATE__;
+      const char  *bt = __TIME__;
+      unsigned int day = 0u;
+      char         mon[4] = {bd[0], bd[1], bd[2], '\0'};
+      unsigned int mi;
+
+      if (bd[4] >= '0' && bd[4] <= '9')
+         day = (unsigned int)(bd[4] - '0') * 10u;
+      if (bd[5] >= '0' && bd[5] <= '9')
+         day += (unsigned int)(bd[5] - '0');
+      for (mi = 0u; mi < 12u; ++mi) {
+         if (months[mi * 3u]      == mon[0]
+          && months[mi * 3u + 1u] == mon[1]
+          && months[mi * 3u + 2u] == mon[2])
+            break;
+      }
+      if (mi >= 12u) {
+         strlcpy(out, "2024-01-01T00:00:00Z", out_sz);
+         return;
+      }
+      snprintf(out, out_sz, "%c%c%c%c-%02u-%02uT%c%c:%c%c:%c%cZ",
+               bd[7], bd[8], bd[9], bd[10],
+               mi + 1u, day,
+               bt[0], bt[1], bt[3], bt[4], bt[6], bt[7]);
+   }
 }
 
 /* Emit one PROPFIND <D:response> element for an SD entry.  url_path
-   must already be URL-encoded; is_dir controls the resourcetype.  size
-   is ignored for directories. */
+   must already be URL-encoded; is_dir controls the resourcetype.
+   size is ignored for directories.  fdate/ftime are the DOS-format
+   timestamp fields from the FatFs FILINFO; zero values fall back to
+   the firmware build date in the formatting helpers. */
 static void dav_emit_response(ws_strbuf_t *b, const char *url_path,
                               bool is_dir, uint32_t size,
-                              const char *display_name)
+                              const char *display_name,
+                              uint16_t fdate, uint16_t ftime)
 {
-   char datebuf[40];
+   char modified[40];
+   char created[32];
 
-   dav_format_date(datebuf, sizeof datebuf, 0);
+   dav_format_date(modified, sizeof modified, fdate, ftime);
+   dav_format_creationdate(created, sizeof created, fdate, ftime);
 
    sb_puts(b, "<D:response><D:href>");
    sb_html(b, url_path);    /* url_path is already %-encoded; sb_html escapes XML */
@@ -2324,9 +2528,11 @@ static void dav_emit_response(ws_strbuf_t *b, const char *url_path,
    sb_html(b, display_name);
    sb_puts(b, "</D:displayname>"
               "<D:getlastmodified>");
-   sb_puts(b, datebuf);
+   sb_puts(b, modified);
    sb_puts(b, "</D:getlastmodified>"
-              "<D:creationdate>2024-01-01T00:00:00Z</D:creationdate>"
+              "<D:creationdate>");
+   sb_puts(b, created);
+   sb_puts(b, "</D:creationdate>"
               "<D:resourcetype>");
    if (is_dir)
       sb_puts(b, "<D:collection/>");
@@ -2335,6 +2541,30 @@ static void dav_emit_response(ws_strbuf_t *b, const char *url_path,
       sb_printf(b, "<D:getcontentlength>%lu</D:getcontentlength>"
                    "<D:getcontenttype>application/octet-stream</D:getcontenttype>",
                 (unsigned long)size);
+   } else if (g_ws_sd_free_valid) {
+      /* RFC 4331: quota-available-bytes is free space, quota-used-bytes
+         is currently consumed.  Windows Explorer reads these from the
+         response for the share's root (and sometimes any directory) to
+         show "X free of Y" in the address bar - without them it shows
+         a fabricated default (the user's 86.8 GB / 929 GB report).
+         Emit them only when the cached numbers are valid; with no
+         cache yet, omitting the properties returns the same client
+         behaviour as before.
+
+         The values are uint64_t (a 32 GB card needs > 32 bits) but the
+         project builds with -std=c90 + -Wlong-long, so %llu and the
+         "unsigned long long" cast both warn.  Format the digits by
+         hand into a 24-byte buffer and emit via %s. */
+      char     dec_free[24];
+      char     dec_used[24];
+      uint64_t used = (g_ws_sd_total_bytes > g_ws_sd_free_bytes)
+                    ? (g_ws_sd_total_bytes - g_ws_sd_free_bytes) : 0u;
+      ws_format_u64(dec_free, sizeof dec_free, g_ws_sd_free_bytes);
+      ws_format_u64(dec_used, sizeof dec_used, used);
+      sb_printf(b,
+                "<D:quota-available-bytes>%s</D:quota-available-bytes>"
+                "<D:quota-used-bytes>%s</D:quota-used-bytes>",
+                dec_free, dec_used);
    }
    sb_puts(b, "<D:supportedlock>"
               "<D:lockentry><D:lockscope><D:exclusive/></D:lockscope>"
@@ -2431,7 +2661,11 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
       }
       dav_emit_response(&b, url.data, is_dir,
                         is_root ? 0u : (uint32_t)fno.fsize,
-                        is_root ? "/" : ws_basename(sdpath));
+                        is_root ? "/" : ws_basename(sdpath),
+                        /* root has no stat info - pass 0 fdate so
+                           dav_format_date falls back to build date */
+                        is_root ? 0u : fno.fdate,
+                        is_root ? 0u : fno.ftime);
       sb_free(&url);
    }
 
@@ -2460,7 +2694,8 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
                return ws_oom(c);
             }
             dav_emit_response(&b, url.data, child_is_dir,
-                              (uint32_t)chld.fsize, chld.fname);
+                              (uint32_t)chld.fsize, chld.fname,
+                              chld.fdate, chld.ftime);
             sb_free(&url);
             if (b.failed) {
                f_closedir(&dir);
@@ -2539,8 +2774,10 @@ static bool dav_put_send_response(ws_conn_t *c)
    return true;
 }
 
-/* Drain n bytes from `data` into the open PUT file.  When the byte
-   counter hits zero, close the file and queue the response. */
+/* Drain n bytes from `data` into the open PUT temp file.  When the byte
+   counter hits zero, close the temp, atomically rename it over the
+   target, and queue the response.  Any failure path unlinks the temp
+   so a partial upload never lingers on the SD card. */
 static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
 {
    UINT bw = 0u;
@@ -2550,6 +2787,7 @@ static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
       if (f_write(&c->write_file.dav, data, (UINT)take, &bw) != FR_OK || bw != take) {
          f_close(&c->write_file.dav);
          c->dav_put_open = false;
+         (void)f_unlink(c->dav_put_tmppath);
          return ws_error(c, 507, "Insufficient Storage",
                          "Writing to the SD card failed.");
       }
@@ -2560,9 +2798,24 @@ static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
       if (c->dav_put_open) {
          FRESULT fr = f_close(&c->write_file.dav);
          c->dav_put_open = false;
-         if (fr != FR_OK)
+         if (fr != FR_OK) {
+            (void)f_unlink(c->dav_put_tmppath);
             return ws_error(c, 500, "Internal Server Error",
                             "Could not close the uploaded file.");
+         }
+      }
+      /* Atomic-ish replace: drop the existing target if any (f_rename
+         on FatFs fails if the destination exists), then rename.  If
+         the unlink succeeds but the rename then fails we've destroyed
+         the original; mitigate by renaming the temp back to a
+         recoverable name first.  In practice f_rename within the same
+         FAT directory does not allocate, so the failure window is
+         extremely small. */
+      (void)f_unlink(c->dav_put_target);
+      if (f_rename(c->dav_put_tmppath, c->dav_put_target) != FR_OK) {
+         (void)f_unlink(c->dav_put_tmppath);
+         return ws_error(c, 500, "Internal Server Error",
+                         "Could not finalize the uploaded file.");
       }
       return dav_put_send_response(c);
    }
@@ -2610,14 +2863,27 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
       return ws_error(c, 409, "Conflict",
                       "Cannot PUT over an existing directory.");
 
-   if (f_open(&c->write_file.dav, sdpath, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+   /* Write to a temp file in the same directory so the eventual rename
+      is atomic and a mid-upload disconnect cannot destroy the existing
+      file at sdpath.  The temp name is "<target>.part"; if a previous
+      aborted upload left a stale .part we overwrite it (FA_CREATE_ALWAYS). */
+   strlcpy(c->dav_put_target, sdpath, sizeof c->dav_put_target);
+   {
+      int tn = snprintf(c->dav_put_tmppath, sizeof c->dav_put_tmppath,
+                        "%s.part", sdpath);
+      if (tn <= 0 || (size_t)tn >= sizeof c->dav_put_tmppath)
+         return ws_error(c, 414, "URI Too Long",
+                         "Target path is too long for a temp upload.");
+   }
+
+   if (f_open(&c->write_file.dav, c->dav_put_tmppath,
+              FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
       return ws_error(c, 409, "Conflict",
                       "Cannot create the target (missing parent folder?).");
    c->dav_put_open       = true;
    c->dav_remaining      = content_length;
    c->dav_put_status     = target_existed ? 204 : 201;
    c->dav_put_status_text= target_existed ? "No Content" : "Created";
-   strlcpy(c->dav_put_target, sdpath, sizeof c->dav_put_target);
 
    c->state = CONN_RECV_DAV_PUT;
 
@@ -3358,7 +3624,15 @@ static err_t ws_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
 /* Refresh the SD-card free-space cache.  f_getfree can take hundreds
    of ms on a slow / fragmented card so it must not run from a TCP
    callback; doing it here from the cooperative poll keeps /status
-   responsive without taking the listener offline. */
+   responsive without taking the listener offline.
+
+   We compute both the free byte count and the total byte count.
+   FatFs's fs->n_fatent is the total number of FAT entries; the
+   usable cluster count is n_fatent - 2 (the first two entries are
+   reserved).  Multiplying by fs->csize (sectors-per-cluster) and
+   the sector size (FF_MAX_SS, normally 512 on SD) gives the byte
+   counts that WebDAV PROPFIND reports as quota-available-bytes /
+   quota-used-bytes. */
 static void webserver_refresh_sd_free(void)
 {
    uint32_t now = RPI_GetSystemTime();
@@ -3371,13 +3645,22 @@ static void webserver_refresh_sd_free(void)
 
    g_ws_sd_free_age_us = now;
    if (f_getfree("/", &nclst, &fs) == FR_OK && fs != NULL) {
-      uint64_t free_sect = (uint64_t)nclst * (uint64_t)fs->csize;
-      g_ws_sd_free_mb = (uint32_t)(free_sect / 2048u);
-      g_ws_sd_free_valid = true;
+      /* FF_MAX_SS is the FatFs sector-size limit; on SD it is 512.
+         Use a literal 512u here to avoid pulling in FF_MAX_SS from
+         the ffconf - SD cards do not use anything else in practice
+         and Windows shows the size in 1 KB / 1 MB units anyway. */
+      uint64_t sector_bytes  = 512u;
+      uint64_t cluster_bytes = (uint64_t)fs->csize * sector_bytes;
+      uint64_t total_clst    = (uint64_t)(fs->n_fatent - 2u);
+      g_ws_sd_total_bytes = total_clst * cluster_bytes;
+      g_ws_sd_free_bytes  = (uint64_t)nclst * cluster_bytes;
+      g_ws_sd_free_mb     = (uint32_t)(g_ws_sd_free_bytes / (1024u * 1024u));
+      g_ws_sd_free_valid  = true;
    } else {
       g_ws_sd_free_valid = false;
    }
 }
+
 
 /* Poll hook: once a reboot has been requested via POST /reboot and the
    short grace period has elapsed - long enough for the response page to

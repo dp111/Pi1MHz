@@ -533,12 +533,19 @@ void wifi_init(void)
       A transient first-boot failure (firmware preload, SDIO bring-up,
       join timeout, ...) used to latch us into WIFI_STATE_ERROR
       forever - the natural recovery action of a BBC RST couldn't
-      retry the bring-up.  Allow re-init from the ERROR state so a
-      reset retries; from the DISABLED state (config said no WiFi)
-      we still latch since there is nothing to retry. */
-   if (g_wifi_init_done && g_wifi_state != WIFI_STATE_ERROR)
+      retry the bring-up.  Allow re-init from ERROR (something failed
+      mid-bring-up) AND from DISABLED (the user may have just edited
+      the config to enable wifi or fix the SSID, then reset).  In both
+      cases there is real work to retry.  Only skip when we already
+      have a healthy stack running: a state that has advanced past
+      CONFIGURED means SDIO is up and a re-init would tear it down
+      pointlessly.  Defer the init-done latch to the success path
+      below so a failure in wifi_config_load / wifi_validate_config
+      itself does not falsely flag the system as initialised. */
+   if (g_wifi_init_done
+       && g_wifi_state != WIFI_STATE_ERROR
+       && g_wifi_state != WIFI_STATE_DISABLED)
       return;
-   g_wifi_init_done = true;
 
     (void) wifi_config_load(&g_wifi_config);
    g_wifi_boot_stage = WIFI_BOOT_STAGE_IDLE;
@@ -573,6 +580,12 @@ void wifi_init(void)
    }
 
    g_wifi_boot_stage = WIFI_BOOT_STAGE_START_SDIO;
+   /* Latch only now: the config loaded, validated, and the boot is
+      scheduled.  Any failure above (including wifi_validate_config
+      returning false, which leaves us in WIFI_STATE_DISABLED) leaves
+      g_wifi_init_done unset so the next wifi_init call retries from
+      the top - matching the recovery-on-BBC-RST contract above. */
+   g_wifi_init_done = true;
    wifi_debug_log("boot scheduled");
 }
 

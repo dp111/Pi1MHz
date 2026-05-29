@@ -1406,9 +1406,10 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
       chip_id+socramrev, pick the right one and free the loser.
       After this returns, g_cyw43_firmware_data / _length point at
       the matching blob for the rest of this boot. */
-   cyw43_select_chip_variant(chip.chip_id, chip.socramrev);
-   if (g_cyw43_firmware_data == NULL || g_cyw43_firmware_length == 0u
-       || g_cyw43_nvram_data == NULL || g_cyw43_nvram_length == 0u) {
+   if (!cyw43_select_chip_variant(chip.chip_id, chip.socramrev)) {
+      /* cyw43_select_chip_variant has already LOG_INFO'd the specific
+         reason (unknown chip_id, or missing firmware blob).  Surface a
+         short error to the runtime so the boot stage halts cleanly. */
       sdio_runtime_set_error("No matching CYW43 firmware preloaded for this chip");
       return -1;
    }

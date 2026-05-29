@@ -186,7 +186,7 @@ void md5_final(md5_ctx_t *ctx, uint8_t out[MD5_DIGEST_LEN])
    md5_store_le32(&out[12], ctx->state[3]);
 }
 
-void md5_hex_cat(char out[MD5_HEX_LEN],
+void md5_hex_cat(md5_hex_t out,
                  const void *const parts[], const size_t lens[],
                  unsigned int nparts)
 {

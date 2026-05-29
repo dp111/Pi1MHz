@@ -244,7 +244,7 @@ bool cyw43_preload_images(void)
    Zero W - so seeing chip_id == 43430 with socramrev <= 22 on an
    ARMv8 boot would be a build/board mismatch.  Refuse rather than
    silently feed it the 43436 blob. */
-void cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
+bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
 {
    bool need_alt = false;
 
@@ -262,8 +262,10 @@ void cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
       /* Unknown chip_id; let sdio.c surface the "unsupported chip"
          error.  Drop the alt set so we don't keep its memory
          tied up forever. */
+      LOG_INFO("CYW43 select: unrecognised chip_id=%u; refusing to download firmware\n",
+               (unsigned int)chip_id);
       cyw43_release_alt_images();
-      return;
+      return false;
    }
 
    if (need_alt) {
@@ -287,5 +289,19 @@ void cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
       /* Keep primary (43436s); free alt (43455). */
       cyw43_release_alt_images();
    }
+
+   /* Final check: did we end up with a usable firmware+NVRAM pair?
+      A common failure mode is "ARMv8 build, but SD card only has the
+      Pi 3/Pi 4 (43455) blobs and the chip is a Pi Zero 2 W" or vice
+      versa.  Log specifically what is missing so the user does not
+      have to dig through filesystemReadFile messages. */
+   if (g_cyw43_firmware_data == NULL || g_cyw43_firmware_length == 0u
+       || g_cyw43_nvram_data == NULL || g_cyw43_nvram_length == 0u) {
+      LOG_INFO("CYW43 select: chip_id=%u needs %s firmware but it is not on the SD card\n",
+               (unsigned int)chip_id,
+               need_alt ? "43455" : "43436");
+      return false;
+   }
+   return true;
 }
 #endif

@@ -26,8 +26,14 @@ void cyw43_release_boot_images(void);
    the wrong one once the SDIO runtime has identified the chip.
    Called from sdio.c after sdio_backplane_scan_cores populates
    chip_id and socramrev.  ARMv6 builds hardcode 43430 and do not
-   expose this function. */
-void cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev);
+   expose this function.
+
+   Returns true if a firmware+NVRAM pair matching the chip survives
+   in the primary slots; false if the matching blob was not on the
+   SD card (LOG_INFO is emitted explaining which blob is missing) or
+   the chip_id is unrecognised.  The caller (sdio.c) sets the runtime
+   error string and aborts boot when false is returned. */
+bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev);
 #endif
 
 #endif
