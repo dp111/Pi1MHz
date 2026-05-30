@@ -1009,7 +1009,6 @@ static bool ws_digest_field(const char *hdr, const char *key,
 {
    size_t keylen = strlen(key);
    const char *p = hdr;
-   size_t o;
 
    while (*p != '\0') {
       while (*p == ' ' || *p == '\t' || *p == ',')
@@ -1018,7 +1017,7 @@ static bool ws_digest_field(const char *hdr, const char *key,
          break;
       if (ws_prefix_ci(p, key, keylen) && p[keylen] == '=') {
          p += keylen + 1u;
-         o = 0u;
+         size_t o = 0u;
          if (*p == '"') {
             ++p;
             while (*p != '\0' && *p != '"') {
@@ -1027,6 +1026,7 @@ static bool ws_digest_field(const char *hdr, const char *key,
                ++p;
             }
             if (*p == '"')
+               // cppcheck-suppress unreadVariable
                ++p;
          } else {
             while (*p != '\0' && *p != ',' && *p != ' ' && *p != '\t') {
@@ -1176,19 +1176,11 @@ static ws_auth_status_t ws_digest_verify(const char *method,
                                          size_t header_limit)
 {
    char authz[640];
-   char field_username[WIFI_WEBDAV_USER_MAX_LEN + 1];
-   char field_realm[WIFI_WEBDAV_REALM_MAX_LEN + 1];
    char field_nonce[MD5_HEX_LEN + 1];
-   char field_uri[WS_PATH_MAX];
    char field_response[MD5_HEX_LEN + 1];
-   char field_qop[16];
-   char field_nc[16];
-   char field_cnonce[64];
    const wifi_config_t *cfg = wifi_get_config();
-   md5_hex_t ha1;
    md5_hex_t ha2;
    md5_hex_t expected;
-   bool have_qop;
 
    if (!ws_find_header(header_block, header_limit, "Authorization",
                        authz, sizeof authz))
@@ -1207,6 +1199,12 @@ static ws_auth_status_t ws_digest_verify(const char *method,
       begins exactly with "Digest " (7 bytes) and an additional
       whitespace skip handles servers that might send "Digest  " etc. */
    {
+      char         field_username[WIFI_WEBDAV_USER_MAX_LEN + 1];
+      char         field_realm[WIFI_WEBDAV_REALM_MAX_LEN + 1];
+      char         field_uri[WS_PATH_MAX];
+      char         field_qop[16];
+      md5_hex_t    ha1;
+      bool         have_qop;
       const char *fields = authz + 7;            /* past "Digest " */
       while (*fields == ' ' || *fields == '\t')
          ++fields;
@@ -1234,6 +1232,8 @@ static ws_auth_status_t ws_digest_verify(const char *method,
               && field_qop[0] != '\0';
 
       if (have_qop) {
+         char field_nc[16];
+         char field_cnonce[64];
          if (!ws_digest_field(fields, "nc",     field_nc,     sizeof field_nc)
              || !ws_digest_field(fields, "cnonce", field_cnonce, sizeof field_cnonce))
             return WS_AUTH_REQUIRED;
@@ -1706,6 +1706,11 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
       memmove(c->reqhdr, c->reqhdr + (c->reqhdr_len - pipelined_keep),
               pipelined_keep);
       c->reqhdr_len = pipelined_keep;
+      /* pipelined_keep <= reqhdr_len, and reqhdr_len is invariantly
+         <= WS_HEADER_MAX (capped in ws_recv), so this NUL lands at the
+         last valid index at most. cppcheck cannot see the cross-function
+         cap, hence the false positive. */
+      // cppcheck-suppress arrayIndexOutOfBoundsCond
       c->reqhdr[pipelined_keep] = '\0';
    } else {
       c->reqhdr_len = 0u;
@@ -2743,6 +2748,23 @@ static unsigned int ws_day_of_week(unsigned int year, unsigned int month,
    via f_utime / FATFS_TIMER hook), fall back to the firmware build
    date so the entry shows SOMETHING reasonable rather than the DOS
    epoch (Jan 1 1980). */
+/* Decode the compiler's build date from __DATE__ ("Mmm DD YYYY", day
+   space-padded for 1-9) at compile time, so the build-date fallbacks below
+   do not parse a string constant at runtime.  Day and year are branchless
+   arithmetic; month maps the 3-letter prefix (3rd letter is unique except
+   'n' = Jan/Jun and 'r' = Mar/Apr, split by the 2nd / 1st letter). */
+#define WS_BUILD_DAY   ((unsigned)((((__DATE__[4] >> 4) & 1) * (__DATE__[4] & 0x0F)) * 10 \
+                                   + (__DATE__[5] - '0')))
+#define WS_BUILD_YEAR  ((unsigned)((__DATE__[7]-'0')*1000 + (__DATE__[8]-'0')*100 \
+                                   + (__DATE__[9]-'0')*10 + (__DATE__[10]-'0')))
+#define WS_BUILD_MONTH ((unsigned)( \
+     __DATE__[2]=='n' ? (__DATE__[1]=='a' ? 1 : 6)  \
+   : __DATE__[2]=='b' ? 2                            \
+   : __DATE__[2]=='r' ? (__DATE__[0]=='M' ? 3 : 4)  \
+   : __DATE__[2]=='y' ? 5  : __DATE__[2]=='l' ? 7   \
+   : __DATE__[2]=='g' ? 8  : __DATE__[2]=='p' ? 9   \
+   : __DATE__[2]=='t' ? 10 : __DATE__[2]=='v' ? 11 : 12))
+
 static void dav_format_date(char *out, size_t out_sz,
                             uint16_t fdate, uint16_t ftime)
 {
@@ -2770,36 +2792,14 @@ static void dav_format_date(char *out, size_t out_sz,
    }
 
    {
-      /* Build-date fallback: __DATE__ is "Mmm dd yyyy" (col 4 is
-         either a space for 1-9 or a tens digit), __TIME__ is
-         "HH:MM:SS". */
-      const char  *bd = __DATE__;
+      /* Build-date fallback: the compiler's __DATE__ is decoded at compile
+         time via the WS_BUILD_* macros above; __TIME__ is "HH:MM:SS". */
       const char  *bt = __TIME__;
-      unsigned int day = 0u;
-      unsigned int year;
-      char         mon[4] = {bd[0], bd[1], bd[2], '\0'};
-      unsigned int mi;
-      unsigned int dow;
+      unsigned int day  = WS_BUILD_DAY;
+      unsigned int mi   = WS_BUILD_MONTH - 1u;   /* 0-based index into months[] */
+      unsigned int year = WS_BUILD_YEAR;
+      unsigned int dow  = ws_day_of_week(year, mi + 1u, day);
 
-      if (bd[4] >= '0' && bd[4] <= '9')
-         day = (unsigned int)(bd[4] - '0') * 10u;
-      if (bd[5] >= '0' && bd[5] <= '9')
-         day += (unsigned int)(bd[5] - '0');
-      for (mi = 0u; mi < 12u; ++mi) {
-         if (months[mi * 3u]      == mon[0]
-          && months[mi * 3u + 1u] == mon[1]
-          && months[mi * 3u + 2u] == mon[2])
-            break;
-      }
-      if (mi >= 12u) {                  /* shouldn't happen */
-         strlcpy(out, "Mon, 01 Jan 2024 00:00:00 GMT", out_sz);
-         return;
-      }
-      year = ((unsigned int)(bd[7] - '0') * 1000u)
-           + ((unsigned int)(bd[8] - '0') *  100u)
-           + ((unsigned int)(bd[9] - '0') *   10u)
-           +  (unsigned int)(bd[10] - '0');
-      dow = ws_day_of_week(year, mi + 1u, day);
       snprintf(out, out_sz,
                "%.3s, %02u %.3s %04u %c%c:%c%c:%c%c GMT",
                &days[dow * 3u], day, &months[mi * 3u], year,
@@ -2828,35 +2828,18 @@ static void dav_format_creationdate(char *out, size_t out_sz,
          return;
       }
    }
-   /* Build-date fallback - emit __DATE__/__TIME__ in ISO format.  We
-      reuse the parsed values from dav_format_date by re-parsing
-      rather than threading state; the cost is negligible (called once
-      per directory entry) and keeps the helpers self-contained. */
+   /* Build-date fallback - emit __DATE__/__TIME__ in ISO format, decoded
+      at compile time via the shared WS_BUILD_* macros (see above). */
    {
-      static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
-      const char  *bd = __DATE__;
+      /* Build-date fallback: __DATE__/__TIME__ decoded at compile time via
+         the shared WS_BUILD_* macros above. */
       const char  *bt = __TIME__;
-      unsigned int day = 0u;
-      char         mon[4] = {bd[0], bd[1], bd[2], '\0'};
-      unsigned int mi;
+      unsigned int day   = WS_BUILD_DAY;
+      unsigned int month = WS_BUILD_MONTH;
+      unsigned int year  = WS_BUILD_YEAR;
 
-      if (bd[4] >= '0' && bd[4] <= '9')
-         day = (unsigned int)(bd[4] - '0') * 10u;
-      if (bd[5] >= '0' && bd[5] <= '9')
-         day += (unsigned int)(bd[5] - '0');
-      for (mi = 0u; mi < 12u; ++mi) {
-         if (months[mi * 3u]      == mon[0]
-          && months[mi * 3u + 1u] == mon[1]
-          && months[mi * 3u + 2u] == mon[2])
-            break;
-      }
-      if (mi >= 12u) {
-         strlcpy(out, "2024-01-01T00:00:00Z", out_sz);
-         return;
-      }
-      snprintf(out, out_sz, "%c%c%c%c-%02u-%02uT%c%c:%c%c:%c%cZ",
-               bd[7], bd[8], bd[9], bd[10],
-               mi + 1u, day,
+      snprintf(out, out_sz, "%04u-%02u-%02uT%c%c:%c%c:%c%cZ",
+               year, month, day,
                bt[0], bt[1], bt[3], bt[4], bt[6], bt[7]);
    }
 }
@@ -3052,7 +3035,6 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
          while (f_readdir(&dir, &chld) == FR_OK && chld.fname[0] != '\0') {
             ws_strbuf_t url;
             bool        child_is_dir = (chld.fattrib & AM_DIR) != 0u;
-            char        child_sdpath[WS_PATH_MAX];
 
             sb_init(&url);
             if (!is_root) sb_urlpath(&url, sdpath);
@@ -3083,6 +3065,7 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
                to see from a future PROPFIND request (the same shape
                that dav_url_to_sdpath produces). */
             {
+               char child_sdpath[WS_PATH_MAX];
                int n = is_root
                      ? snprintf(child_sdpath, sizeof child_sdpath, "/%s", chld.fname)
                      : snprintf(child_sdpath, sizeof child_sdpath, "%s/%s", sdpath, chld.fname);
@@ -3685,7 +3668,6 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
 
    bool    overwrite = true;
    FILINFO fno_src;
-   FRESULT fr;
    bool    dst_existed;
 
    if (!dav_url_to_sdpath(rawpath, src, sizeof src))
@@ -3731,7 +3713,7 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    }
 
    if (is_move) {
-      fr = f_rename(src, dst);
+      FRESULT fr = f_rename(src, dst);
       if (fr != FR_OK)
          return ws_error(c, 500, "Internal Server Error", "Rename failed.");
       return dav_move_copy_send_response(c, dst_existed);
@@ -4225,7 +4207,7 @@ static err_t ws_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
                      err_t err)
 {
    ws_conn_t   *c = (ws_conn_t *)arg;
-   struct pbuf *q;
+   const struct pbuf *q;
    bool         alive = true;
 
    if (c == NULL) {

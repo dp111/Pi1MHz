@@ -35,6 +35,8 @@ cmake_minimum_required( VERSION 3.10 )
 # cross-compiler's ability to compile a simple program because that will fail
 project( Pi1MHz C ASM )
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu23" )
 

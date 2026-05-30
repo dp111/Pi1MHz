@@ -253,6 +253,10 @@ __attribute__((used)) int _lseek(int file __attribute__((unused)),
 /* Read from a file. Minimal implementation: */
 // cppcheck-suppress unusedFunction
 __attribute__((used)) int _read(int file __attribute__((unused)),
+                                /* ptr is the destination buffer _read fills; newlib's
+                                   signature is non-const and a real implementation must
+                                   write through it. const is wrong here. */
+                                // cppcheck-suppress constParameterPointer
                                 char *ptr __attribute__((unused)),
                                 int len __attribute__((unused)))
 {

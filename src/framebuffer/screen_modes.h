@@ -149,6 +149,6 @@ screen_mode_t *get_screen_mode(int mode_num);
 
 uint32_t fb_get_address(void);
 
-int32_t fb_read_mode_variable(mode_variable_t v, screen_mode_t *screen);
+int32_t fb_read_mode_variable(mode_variable_t v, const screen_mode_t *screen);
 
 #endif

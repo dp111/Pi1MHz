@@ -693,7 +693,6 @@ static int sdio_runtime_request_alp_clock_step(sdio_host_t *dev,
                                                sdio_probe_result_t *probe_result)
 {
    uint8_t clock_csr = 0u;
-   uint8_t requested_clock_csr;
    uint32_t now_us;
 
    if (dev == NULL || probe_result == NULL)
@@ -708,7 +707,7 @@ static int sdio_runtime_request_alp_clock_step(sdio_host_t *dev,
          return -1;
 
       probe_result->chip_clock_csr_initial = clock_csr;
-      requested_clock_csr = (uint8_t)(clock_csr | SDIO_FORCE_HW_CLKREQ_OFF
+      uint8_t requested_clock_csr = (uint8_t)(clock_csr | SDIO_FORCE_HW_CLKREQ_OFF
          | SDIO_ALP_AVAIL_REQ | SDIO_FORCE_ALP);
       probe_result->chip_clock_csr_requested = requested_clock_csr;
 
@@ -812,7 +811,6 @@ static int sdio_runtime_wake_with_kso_step(sdio_host_t *dev,
 static int sdio_runtime_enable_functions_step(sdio_host_t *dev,
                                               sdio_probe_result_t *probe_result)
 {
-   uint8_t requested_io_enable;
    uint8_t io_ready = 0u;
    uint32_t now_us;
 
@@ -842,7 +840,7 @@ static int sdio_runtime_enable_functions_step(sdio_host_t *dev,
       /* Enable function 1 (backplane) only.  Function 2 (radio data path)
          cannot become ready until the firmware is downloaded over fn1
          later in sdio_runtime_boot_firmware, so we poll for fn1 only. */
-      requested_io_enable = (uint8_t)(probe_result->io_enable | 0x02u);
+      uint8_t requested_io_enable = (uint8_t)(probe_result->io_enable | 0x02u);
       probe_result->requested_io_enable = requested_io_enable;
       probe_result->function_setup_attempted = true;
 
@@ -3150,7 +3148,6 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
    uint8_t header_length;
    uint8_t bdc_index;
    uint16_t ethernet_length;
-   uint16_t ethertype;
 
    if (frame_length != NULL)
       *frame_length = 0u;
@@ -3308,7 +3305,7 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
          return false;
       }
 
-      ethertype = (uint16_t)(((uint16_t)frame_buffer[eth_offset + 12u] << 8)
+      uint16_t ethertype = (uint16_t)(((uint16_t)frame_buffer[eth_offset + 12u] << 8)
          | (uint16_t)frame_buffer[eth_offset + 13u]);
       ethernet_length = (uint16_t)(total_length - eth_offset);
 
@@ -4608,8 +4605,6 @@ static bool sdio_probe_read_post_header_prefix(sdio_host_t *dev,
       uint8_t ethertype_buffer[128];
       uint16_t bytes_after_bdc;
       uint16_t ethertype_read_count;
-      uint16_t brcm_event_read_count;
-      uint16_t brcm_event_msg_read_count;
 
       probe_result->sdpcm_bdc_flags = probe_result->sdpcm_post_header_prefix0;
       probe_result->sdpcm_bdc_priority = probe_result->sdpcm_post_header_prefix1;
@@ -4636,7 +4631,7 @@ static bool sdio_probe_read_post_header_prefix(sdio_host_t *dev,
             probe_result->sdpcm_data_ethertype_probe_success = true;
             if (probe_result->sdpcm_data_ethertype == ETHER_TYPE_BRCM) {
                probe_result->sdpcm_brcm_event_probe_attempted = true;
-               brcm_event_read_count = (uint16_t)(probe_result->sdpcm_bdc_data_offset_bytes
+               uint16_t brcm_event_read_count = (uint16_t)(probe_result->sdpcm_bdc_data_offset_bytes
                   + ETHERNET_HEADER_LENGTH + BRCM_EVENT_HEADER_LENGTH);
                if (brcm_event_read_count <= bytes_after_bdc
                   && brcm_event_read_count <= (uint16_t)sizeof(ethertype_buffer)) {
@@ -4662,7 +4657,7 @@ static bool sdio_probe_read_post_header_prefix(sdio_host_t *dev,
                      probe_result->sdpcm_brcm_event_version_valid = probe_result->sdpcm_brcm_event_version == BRCM_EVENT_VERSION;
                      probe_result->sdpcm_brcm_event_probe_success = true;
                      probe_result->sdpcm_brcm_event_msg_probe_attempted = true;
-                     brcm_event_msg_read_count = (uint16_t)(probe_result->sdpcm_bdc_data_offset_bytes
+                     uint16_t brcm_event_msg_read_count = (uint16_t)(probe_result->sdpcm_bdc_data_offset_bytes
                         + ETHERNET_HEADER_LENGTH + BRCM_EVENT_HEADER_LENGTH + BRCM_EVENT_MSG_LENGTH);
                      if (probe_result->sdpcm_brcm_event_oui_match
                         && probe_result->sdpcm_brcm_event_version_valid
@@ -5248,7 +5243,7 @@ bool sdio_runtime_tick(void)
                            (unsigned long)g_sdio_probe_result.sdpcm_brcm_event_status);
          }
 
-         sdio_debug_log("== EXITING SWEEP_RX -> STAGE_DONE: link_up=%u ==", 
+         sdio_debug_log("== EXITING SWEEP_RX -> STAGE_DONE: link_up=%u ==",
                         sdio_event_is_link_up(g_sdio_probe_result.sdpcm_brcm_event_type,
                                               g_sdio_probe_result.sdpcm_brcm_event_status,
                                               g_sdio_probe_result.sdpcm_brcm_event_reason)

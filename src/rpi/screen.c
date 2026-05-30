@@ -729,10 +729,10 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
 #endif
         setup_polyphase();
 #ifdef DEBUG
-        uint32_t *cache = (uint32_t *) (PERIPHERAL_BASE+ 0xe02000 + 0x10C);
+        const uint32_t *cache = (const uint32_t *) (PERIPHERAL_BASE+ 0xe02000 + 0x10C);
         LOG_DEBUG("cache L1 %"PRIx32"\r\n", *cache);
 
-        uint32_t *hvs = (uint32_t *) (PERIPHERAL_BASE+ 0x04000 + 0x08);
+        const uint32_t *hvs = (const uint32_t *) (PERIPHERAL_BASE+ 0x04000 + 0x08);
         LOG_DEBUG("HVS pri %"PRIx32"\r\n", *hvs);
 #endif
         //RPI_hvs->ectrl = 0x713f0000; // reduce maximum best burst to 8 beats to give time for GPU to read data

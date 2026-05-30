@@ -5,9 +5,9 @@
 #include "usb/tusb_config.h"
 // Short names so these resolve via the -isystem TinyUSB dirs (third-party,
 // warnings suppressed). Do NOT change back to explicit relative paths.
-#include "tusb.h"
-#include "bsp/board_api.h"
-#include "../rpi/interrupts.h"
+#include "usb.h"
+#include <bsp/board_api.h>
+#include "rpi/interrupts.h"
 #include "Pi1MHz.h"
 #include "rpi/mailbox.h"
 
@@ -21,7 +21,7 @@ size_t board_get_unique_id(uint8_t id[], size_t max_len)
     return 0;
   }
 
-  rpi_mailbox_property_t* serial = RPI_PropertyGetWord(TAG_GET_BOARD_SERIAL, 0);
+  const rpi_mailbox_property_t* serial = RPI_PropertyGetWord(TAG_GET_BOARD_SERIAL, 0);
   if (serial == NULL) {
     return 0;
   }

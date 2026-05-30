@@ -95,8 +95,6 @@ static bool wifi_lwip_address_ready(const struct netif *netif)
 
 static void wifi_lwip_update_runtime_state(void)
 {
-   char ipaddr_text[20];
-
    if (g_wifi_lwip_context.netif_added) {
       if (sdio_runtime_link_is_up())
          netif_set_link_up(&g_wifi_lwip_context.netif);
@@ -123,6 +121,7 @@ static void wifi_lwip_update_runtime_state(void)
 
    if (!g_wifi_lwip_address_logged || g_wifi_lwip_last_address_ready != g_wifi_lwip_context.address_ready) {
       if (g_wifi_lwip_context.address_ready) {
+         char ipaddr_text[20];
          wifi_lwip_debug_log("address ready ip=%s",
                              ip4addr_ntoa_r(netif_ip4_addr(&g_wifi_lwip_context.netif),
                                             ipaddr_text,
@@ -139,6 +138,7 @@ static void wifi_lwip_update_runtime_state(void)
       wifi_note_network_ready();
 }
 
+// cppcheck-suppress constParameterCallback
 static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
 {
    /* static: this is on the cooperative poll path and is large (~1.6 KB).
@@ -256,7 +256,6 @@ static void wifi_lwip_copy_ip4(ip4_addr_t *target, const wifi_ipv4_addr_t *sourc
 
 void wifi_lwip_prepare(void)
 {
-   const wifi_config_t *config = wifi_get_config();
    const wifi_network_config_t *network_config = wifi_get_network_config();
 
    memset(&g_wifi_lwip_context, 0, sizeof(g_wifi_lwip_context));
@@ -265,7 +264,7 @@ void wifi_lwip_prepare(void)
    g_wifi_lwip_context.use_dhcp = network_config->ip_mode == WIFI_IP_MODE_DHCP;
    g_wifi_lwip_context.prepared = network_config->valid;
 #if LWIP_NETIF_HOSTNAME
-   g_wifi_lwip_context.netif.hostname = config->hostname;
+   g_wifi_lwip_context.netif.hostname = wifi_get_config()->hostname;
 #endif
 
    ip4_addr_set_zero(&g_wifi_lwip_context.ipaddr);
@@ -305,7 +304,6 @@ void wifi_lwip_prepare(void)
 void wifi_lwip_init_stack(void)
 {
    ip_addr_t dns_address;
-   err_t dhcp_result;
 
    if (!g_wifi_lwip_context.prepared)
       return;
@@ -349,7 +347,7 @@ void wifi_lwip_init_stack(void)
    netname_init();
 
    if (g_wifi_lwip_context.use_dhcp) {
-      dhcp_result = dhcp_start(&g_wifi_lwip_context.netif);
+      err_t dhcp_result = dhcp_start(&g_wifi_lwip_context.netif);
       if (dhcp_result == ERR_OK) {
          g_wifi_lwip_context.dhcp_started = true;
       } else {

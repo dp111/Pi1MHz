@@ -1230,7 +1230,7 @@ uint32_t fb_get_address(void) {
    return (uint32_t) fb;
 }
 
-int32_t fb_read_mode_variable(mode_variable_t v, screen_mode_t *screen) {
+int32_t fb_read_mode_variable(mode_variable_t v, const screen_mode_t *screen) {
    switch (v) {
    case M_MODEFLAGS:
       // Assorted flags

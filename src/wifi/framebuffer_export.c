@@ -7,7 +7,7 @@
 
 bool framebuffer_export_get_info(framebuffer_export_info_t *info)
 {
-   screen_mode_t *mode;
+   const screen_mode_t *mode;
    uint32_t       log2bpp;
    uint32_t       width;
    uint32_t       height;

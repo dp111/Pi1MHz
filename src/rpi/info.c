@@ -158,7 +158,7 @@ NOINIT_SECTION static clock_info_t result;
    were patched in. */
 bool rpi_get_board_mac(uint8_t mac[6])
 {
-   rpi_mailbox_property_t *buf;
+   const rpi_mailbox_property_t *buf;
 
    if (mac == NULL)
       return false;

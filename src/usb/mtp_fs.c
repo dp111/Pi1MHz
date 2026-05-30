@@ -25,8 +25,8 @@
 
 // Short names so these resolve via the -isystem TinyUSB dirs (third-party,
 // warnings suppressed). Do NOT change back to explicit relative paths.
-#include "bsp/board_api.h"
-#include "tusb.h"
+#include <bsp/board_api.h>
+#include <tusb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -635,7 +635,7 @@ static uint32_t fs_find_handle_by_parent_name(uint32_t parent, const char* name)
   }
 
   for (uint32_t i = 0; i < g_fs_cache.count; i++) {
-    fs_cache_entry_t* entry = &g_fs_cache.entries[i];
+    const fs_cache_entry_t* entry = &g_fs_cache.entries[i];
     if (entry->parent == parent && strcmp(fs_basename(entry->path), name) == 0) {
       return entry->handle;
     }

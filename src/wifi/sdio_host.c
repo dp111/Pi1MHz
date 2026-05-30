@@ -31,6 +31,11 @@
    } while (time--); \
 }
 
+/* rpi_emmc_t mirrors the BCM2835 Arasan EMMC register block one-to-one:
+   each member fixes a hardware register offset, so members this driver
+   does not reference by name are intentional layout placeholders, not
+   dead fields. */
+// cppcheck-suppress-begin unusedStructMember
 typedef struct
 {
    rpi_reg_rw_t EMMC_ARG2;
@@ -55,6 +60,7 @@ typedef struct
    rpi_reg_rw_t RESERVED1;
    rpi_reg_rw_t EMMC_SLOTISR_VER;
 } rpi_emmc_t;
+// cppcheck-suppress-end unusedStructMember
 
 typedef struct {
    bool success;
@@ -243,7 +249,7 @@ static void sdio_host_prepare_wifi_pins(void)
 
 static uint32_t sdio_host_read_reg(uint32_t offset)
 {
-   volatile uint32_t *reg = (volatile uint32_t *) (EMMC_BASE + offset);
+   const volatile uint32_t *reg = (const volatile uint32_t *) (EMMC_BASE + offset);
 
    return *reg;
 }

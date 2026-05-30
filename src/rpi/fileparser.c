@@ -128,11 +128,11 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
     // a size_t overflow, which would otherwise yield a tiny output buffer.
     if (filesize > PARSE_MAX_FILE_SIZE)
     {
-        LOG_DEBUG("Config file %s too large (%u bytes) - not parsed\n\r", filename, filesize);
+        LOG_DEBUG("Config file %s too large (%zu bytes) - not parsed\n\r", filename, filesize);
         free(buffer);
         return 0;
     }
-    LOG_DEBUG("Parsing %s File size %u\n\r",filename, filesize);
+    LOG_DEBUG("Parsing %s File size %zu\n\r",filename, filesize);
     size_t outcap = filesize*4; // out buffer is 4x input size
     char * outbuf = malloc( outcap );
 
