@@ -932,6 +932,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
       if (!filesystemState.keyvalues[lunNumber][index].v.string)
       {
          LOG_INFO(PSTR("File system: filesystemLunToconfigGeometry(): ERROR: Unable to allocate memory for MODEPAGE0\r\n"));
+         return;   /* alloc failed: do not dereference NULL below */
       }
       filesystemState.keyvalues[lunNumber][index].length = 10;
    }
@@ -954,6 +955,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
       if (!filesystemState.keyvalues[lunNumber][index].v.string)
       {
          LOG_INFO(PSTR("File system: filesystemLunToconfigGeometry(): ERROR: Unable to allocate memory for MODEPAGE4\r\n"));
+         return;   /* alloc failed: do not dereference NULL below */
       }
       filesystemState.keyvalues[lunNumber][index].length = 6;
    }
@@ -997,6 +999,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
       if (!filesystemState.keyvalues[lunNumber][index].v.string)
       {
          LOG_INFO(PSTR("File system: filesystemConfigToLunGeometry(): ERROR: Unable to allocate memory for MODEPARAMHEADER\r\n"));
+         return;   /* alloc failed: do not dereference NULL below */
       }
       filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x00; // Reserved
       filesystemState.keyvalues[lunNumber][index].v.string[1] = 0x00; // Reserved
@@ -1021,6 +1024,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          if (!filesystemState.keyvalues[lunNumber][index].v.string)
          {
             LOG_INFO(PSTR("File system: filesystemConfigToLunGeometry(): ERROR: Unable to allocate memory for LBADescriptor\r\n"));
+            return;   /* alloc failed: do not dereference NULL below */
          }
          filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x00; // Reserved
          filesystemState.keyvalues[lunNumber][index].v.string[1] = 0x00; // Reserved
