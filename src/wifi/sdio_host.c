@@ -374,7 +374,11 @@ static void sdio_host_log_capabilities(uint32_t base_clock, uint32_t divider)
 static int sdio_host_reset_line(uint32_t mask)
 {
    g_rpi_emmc_base->EMMC_CONTROL1 |= mask;
-   TIMEOUT_WAIT((g_rpi_emmc_base->EMMC_CONTROL1 & mask) == 0u, 1000000u);
+   /* The controller self-clears the reset bit in microseconds on real
+      hardware; cap the busy-wait at 100 ms (was 1 s) so a wedged Arasan
+      block cannot hog the cooperative poll loop for a full second.  A
+      reset that has not completed in 100 ms has failed regardless. */
+   TIMEOUT_WAIT((g_rpi_emmc_base->EMMC_CONTROL1 & mask) == 0u, 100000u);
    return (g_rpi_emmc_base->EMMC_CONTROL1 & mask) == 0u ? 0 : -1;
 }
 

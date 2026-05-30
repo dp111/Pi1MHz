@@ -37,6 +37,18 @@ static void wifi_lwip_debug_log(const char *format, ...) __attribute__((format(p
 #define WIFI_LWIP_RX_FRAME_MAX_LEN 1600u
 #define WIFI_LWIP_RX_FRAME_BUDGET 8u
 
+/* Idle RX-poll throttle.  When frames are flowing the drain runs on every
+   main-loop poll for full throughput and minimal latency; once the chip's
+   fn2 FIFO comes up empty the drain backs off to this interval so an idle
+   WiFi link stops issuing ~3 SDIO commands (wake_bus + INT_STATUS + fn2
+   header read, each a busy-polled CMD52/CMD53) on every single iteration
+   of the 1 MHz poll loop.  Inbound frames sit in the chip FIFO until the
+   next check, so the only cost is up to this much added latency on the
+   first frame after an idle gap - negligible for the file-server workload,
+   and active transfers never see it because the drain stays at full rate
+   while frames keep arriving. */
+#define WIFI_LWIP_RX_IDLE_INTERVAL_US 1000u
+
 /* If the WiFi link has still not associated this long after the lwIP
    stack was brought up, treat the boot as failed: report the error and
    stop polling.  Association is normally a sub-second operation once the
@@ -152,7 +164,10 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
    return sdio_runtime_send_ethernet_frame(frame, offset) ? ERR_OK : ERR_IF;
 }
 
-static void wifi_lwip_drain_rx_frames(void)
+/* Returns true if the chip had at least one frame this cycle (the bus is
+   "active"), so the caller can keep draining at full rate; false when the
+   fn2 FIFO came up empty, letting the caller back off the idle poll. */
+static bool wifi_lwip_drain_rx_frames(void)
 {
    /* static: this is on the cooperative poll path and is large (~1.6 KB).
       Keeping it off the stack avoids a deep RX->TX nesting blowing the
@@ -160,16 +175,19 @@ static void wifi_lwip_drain_rx_frames(void)
    static uint8_t frame[WIFI_LWIP_RX_FRAME_MAX_LEN];
    uint16_t frame_length;
    uint8_t frame_index;
+   bool drained_any = false;
 
    if (!g_wifi_lwip_context.netif_added)
-      return;
+      return false;
 
    for (frame_index = 0u; frame_index < WIFI_LWIP_RX_FRAME_BUDGET; ++frame_index) {
       struct pbuf *packet;
 
       frame_length = 0u;
       if (!sdio_runtime_poll_ethernet_frame(frame, sizeof(frame), &frame_length))
-         break;                   /* SDIO error: drop this cycle, retry next poll */
+         break;                   /* SDIO error / FIFO empty: stop this cycle */
+
+      drained_any = true;
 
       if (frame_length == 0u)
          continue;
@@ -193,6 +211,8 @@ static void wifi_lwip_drain_rx_frames(void)
          continue;
       }
    }
+
+   return drained_any;
 }
 
 static err_t wifi_lwip_netif_init(struct netif *netif)
@@ -433,7 +453,23 @@ void wifi_lwip_poll(void)
       data frame it touched was consumed from the chip and silently
       discarded before lwIP could see it.  That crippled throughput
       (constant retransmits); draining straight into lwIP fixes it. */
-   wifi_lwip_drain_rx_frames();
+   /* Adaptive RX throttle: drain on every poll while frames are flowing
+      (full throughput, no added latency), but once the FIFO comes up empty
+      back off to WIFI_LWIP_RX_IDLE_INTERVAL_US so an idle link does not
+      issue SDIO commands on every iteration of the 1 MHz poll loop.  The
+      drain itself still processes the chip's async events, so link-state
+      changes are picked up within one idle interval. */
+   {
+      static uint32_t s_rx_next_us;   /* 0 on first call -> drains immediately */
+      uint32_t now_us = RPI_GetSystemTime();
+
+      if ((int32_t)(now_us - s_rx_next_us) >= 0) {
+         bool active = wifi_lwip_drain_rx_frames();
+
+         s_rx_next_us = active ? now_us
+                               : (now_us + WIFI_LWIP_RX_IDLE_INTERVAL_US);
+      }
+   }
    sys_check_timeouts();
    wifi_lwip_log_dhcp_state();
    g_wifi_lwip_context.last_service_time_us = RPI_GetSystemTime();

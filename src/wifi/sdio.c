@@ -14,10 +14,23 @@
 #define SDIO_RUNTIME_MAX_RX_FRAMES_PER_POLL 8u
 #define SDIO_RUNTIME_FW_CHUNKS_PER_TICK 8u
 #define SDIO_RUNTIME_HIGH_CLOCK_HZ 25000000u
-#define SDIO_COMMAND_TIMEOUT_US 500000u
+/* Worst-case CPU a single CMD52/CMD53 may busy-wait for completion.  On
+   healthy hardware a command completes in microseconds; this cap only
+   bites when the chip is unresponsive.  It was 500 ms, long enough to
+   stall the cooperative 1 MHz poll loop for half a second on a wedged
+   chip.  100 ms still leaves ~100x margin over real completion times
+   while bounding how long one tick can hog the CPU; the runtime bring-up
+   steps already re-issue across ticks, so a genuine slow path retries on
+   the next poll rather than spinning here. */
+#define SDIO_COMMAND_TIMEOUT_US 100000u
 #define SDIO_RUNTIME_POLL_TIMEOUT_US 5000u
 #define SDIO_BACKPLANE_WINDOW_SIZE 0x8000u
 #define SDIO_BACKPLANE_TRANSFER_MAX 512u
+/* Number of SDIO_BACKPLANE_TRANSFER_MAX-byte firmware chunks pushed per
+   sdio_runtime_tick() during the boot download.  32 * 512 B = 16 KiB per
+   tick keeps each tick to a couple of milliseconds while still finishing
+   a ~400 KB image in well under a second of wall-clock boot time. */
+#define SDIO_RUNTIME_BOOT_FW_CHUNKS_PER_TICK 32u
 #define SDIO_CORE_SCAN_SIZE 512u
 
 static sdio_probe_result_t g_sdio_probe_result;
@@ -69,6 +82,7 @@ typedef struct {
 
 static sdio_runtime_wait_state_t g_runtime_alp_wait;
 static sdio_runtime_wait_state_t g_runtime_kso_wait;
+static sdio_runtime_wait_state_t g_runtime_enable_wait;
 
 /* Bring-up state machine. The first version of the runtime did all of
    this sequentially in one blocking call which stalled the main loop
@@ -302,6 +316,16 @@ static bool g_runtime_boot_fw_prepared;
 static uint32_t g_runtime_boot_deadline_us;
 static uint32_t g_runtime_boot_chip_id_register;
 static unsigned int g_runtime_boot_wait_attempt;
+/* Chunked-firmware-download state.  The ~400 KB image is pushed over
+   CMD53 in SDIO_BACKPLANE_TRANSFER_MAX byte chunks; doing the whole
+   image in one sdio_runtime_tick() call stalls the 1 MHz bus loop for
+   tens of milliseconds.  g_runtime_boot_setup_done latches once the
+   one-time chip scan/setup (incl. cyw43_select_chip_variant, which
+   frees the unused firmware blob and must run exactly once) is complete,
+   so the download can resume across ticks without re-running setup;
+   g_runtime_boot_fw_offset tracks how far the download has progressed. */
+static bool g_runtime_boot_setup_done;
+static uint32_t g_runtime_boot_fw_offset;
 
 typedef enum {
    SDIO_RUNTIME_BOOT_STAGE_PREPARE = 0,
@@ -340,6 +364,8 @@ static int sdio_runtime_request_alp_clock_step(sdio_host_t *dev,
                                                sdio_probe_result_t *probe_result);
 static int sdio_runtime_wake_with_kso_step(sdio_host_t *dev,
                                            sdio_probe_result_t *probe_result);
+static int sdio_runtime_enable_functions_step(sdio_host_t *dev,
+                                              sdio_probe_result_t *probe_result);
 static bool sdio_cmd52_execute_timeout(sdio_host_t *dev, uint8_t function_number,
                                        uint32_t address, bool write,
                                        bool read_after_write, uint8_t *data,
@@ -430,6 +456,8 @@ static void sdio_runtime_boot_reset_state(void)
    g_runtime_boot_deadline_us = 0u;
    g_runtime_boot_chip_id_register = 0u;
    g_runtime_boot_wait_attempt = 0u;
+   g_runtime_boot_setup_done = false;
+   g_runtime_boot_fw_offset = 0u;
    g_runtime_boot_stage = SDIO_RUNTIME_BOOT_STAGE_PREPARE;
    memset(&g_runtime_boot_chip, 0, sizeof(g_runtime_boot_chip));
 }
@@ -770,6 +798,99 @@ static int sdio_runtime_wake_with_kso_step(sdio_host_t *dev,
    g_runtime_kso_wait.deadline_us = now_us + 1000u;
    (void)sdio_function1_write_byte(dev, SDIO_SLEEP_CSR, requested_value);
    return 0;
+}
+
+/* Cooperative form of sdio_probe_enable_functions().  The blocking
+   original polls SDIO_CCCR_IO_READY up to 100 times with a 1 ms usleep
+   between reads - as much as ~100 ms of busy-wait inside a single
+   sdio_runtime_tick() call.  This per-tick version issues the fn1
+   IO_ENABLE write once, then re-checks IO_READY on a 1 ms deadline,
+   returning 0 ("call me again") between polls so the main 1 MHz poll
+   loop keeps running.  Returns 1 when fn1 is ready and block sizes are
+   set, 0 while still waiting, <0 on error.  The blocking original is
+   left in place for the diagnostic probe path (wifi_sdio_probe=1). */
+static int sdio_runtime_enable_functions_step(sdio_host_t *dev,
+                                              sdio_probe_result_t *probe_result)
+{
+   uint8_t requested_io_enable;
+   uint8_t io_ready = 0u;
+   uint32_t now_us;
+
+   if (dev == NULL || probe_result == NULL)
+      return -1;
+
+   now_us = RPI_GetSystemTime();
+
+   if (!g_runtime_enable_wait.active) {
+      sdio_debug_log("enable_functions: OCR=0x%08lx fn_count=%u raw_response=0x%08lx",
+                     (unsigned long)probe_result->ocr.raw_ocr,
+                     (unsigned int)probe_result->ocr.function_count,
+                     (unsigned long)probe_result->response0);
+
+      /* Emulator workaround: if function count isn't encoded but response
+         is non-zero, assume a standard 2-function card. */
+      if (probe_result->ocr.function_count < 2u && probe_result->response0 != 0u) {
+         sdio_debug_log("enable_functions: working around emulator OCR encoding - accepting 2 functions");
+         probe_result->ocr.function_count = 2u;
+      }
+
+      if (probe_result->ocr.function_count < 2u) {
+         sdio_runtime_set_error("SDIO card reported fewer than 2 functions");
+         return -1;
+      }
+
+      /* Enable function 1 (backplane) only.  Function 2 (radio data path)
+         cannot become ready until the firmware is downloaded over fn1
+         later in sdio_runtime_boot_firmware, so we poll for fn1 only. */
+      requested_io_enable = (uint8_t)(probe_result->io_enable | 0x02u);
+      probe_result->requested_io_enable = requested_io_enable;
+      probe_result->function_setup_attempted = true;
+
+      if (!sdio_probe_write_byte(dev, SDIO_CCCR_IO_ENABLE, requested_io_enable))
+         return -1;
+
+      g_runtime_enable_wait.active = true;
+      g_runtime_enable_wait.attempt = 0u;
+      g_runtime_enable_wait.deadline_us = now_us;
+   }
+
+   if ((int32_t)(now_us - g_runtime_enable_wait.deadline_us) < 0)
+      return 0;
+
+   if (!sdio_probe_read_byte(dev, SDIO_CCCR_IO_READY, &io_ready)) {
+      memset(&g_runtime_enable_wait, 0, sizeof(g_runtime_enable_wait));
+      return -1;
+   }
+
+   if ((io_ready & 0x02u) != 0x02u) {
+      if (g_runtime_enable_wait.attempt >= 99u) {
+         sdio_runtime_set_error("Timed out waiting for SDIO function 1 ready");
+         memset(&g_runtime_enable_wait, 0, sizeof(g_runtime_enable_wait));
+         return -1;
+      }
+      g_runtime_enable_wait.attempt++;
+      g_runtime_enable_wait.deadline_us = now_us + 1000u;
+      return 0;
+   }
+
+   /* fn1 ready - finish the one-shot configuration. */
+   if (!sdio_probe_read_byte(dev, SDIO_CCCR_IO_ENABLE, &probe_result->configured_io_enable)) {
+      memset(&g_runtime_enable_wait, 0, sizeof(g_runtime_enable_wait));
+      return -1;
+   }
+   probe_result->configured_io_ready = io_ready;
+
+   if (!sdio_probe_set_block_size(dev, 1u, SDIO_PROBE_FUNCTION1_BLOCK_SIZE)
+      || !sdio_probe_set_block_size(dev, 2u, SDIO_PROBE_FUNCTION2_BLOCK_SIZE)) {
+      memset(&g_runtime_enable_wait, 0, sizeof(g_runtime_enable_wait));
+      return -1;
+   }
+
+   probe_result->function1_block_size = SDIO_PROBE_FUNCTION1_BLOCK_SIZE;
+   probe_result->function2_block_size = SDIO_PROBE_FUNCTION2_BLOCK_SIZE;
+   probe_result->function_setup_success = true;
+   memset(&g_runtime_enable_wait, 0, sizeof(g_runtime_enable_wait));
+   return 1;
 }
 
 static bool sdio_card_identify(sdio_host_t *dev,
@@ -1238,7 +1359,6 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
    uint32_t enumeration_address;
    uint32_t nvram_length;
    uint32_t nvram_token;
-   uint32_t firmware_offset;
    uint8_t zero_tail[4] = {0u, 0u, 0u, 0u};
    uint8_t token_buffer[4];
    uint8_t clock_csr = 0u;
@@ -1337,6 +1457,17 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
       }
 
       return sdio_runtime_finalize_boot_stage(dev, clock_csr, &chip, now_us);
+   }
+
+   /* Resume an in-progress chunked firmware download.  The one-time chip
+      scan/setup below has already run (g_runtime_boot_setup_done) and must
+      not run again - cyw43_select_chip_variant in particular frees the
+      unused firmware blob and is not idempotent - so reload the saved chip
+      state and jump straight to the download loop. */
+   if (g_runtime_boot_setup_done) {
+      chip = g_runtime_boot_chip;
+      chip_id_register = g_runtime_boot_chip_id_register;
+      goto firmware_download;
    }
 
    if (!sdio_backplane_read_u32(dev, CYW43_ENUM_BASE, &chip_id_register)) {
@@ -1493,17 +1624,41 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
    }
 
    chip.reset_vector = sdio_load_u32_le(g_cyw43_firmware_data);
-   for (firmware_offset = 0u; firmware_offset < g_cyw43_firmware_length; firmware_offset += SDIO_BACKPLANE_TRANSFER_MAX) {
-      uint32_t chunk = g_cyw43_firmware_length - firmware_offset;
 
-      if (chunk > SDIO_BACKPLANE_TRANSFER_MAX)
-         chunk = SDIO_BACKPLANE_TRANSFER_MAX;
+   /* One-time setup is complete: persist the scanned chip state so a
+      resumed tick can skip straight to the download loop below. */
+   g_runtime_boot_chip = chip;
+   g_runtime_boot_chip_id_register = chip_id_register;
+   g_runtime_boot_setup_done = true;
 
-      if (!sdio_backplane_write_bytes(dev, chip.rambase + firmware_offset,
-                                      &g_cyw43_firmware_data[firmware_offset], chunk)) {
-         sdio_runtime_set_error("Failed to upload CYW43 firmware image");
-         return -1;
+firmware_download:
+   /* Push the firmware image in bounded bursts, yielding to the poll loop
+      between bursts so no single tick stalls the 1 MHz bus.  Progress is
+      held in g_runtime_boot_fw_offset across ticks; the resume fast-path
+      above re-enters here without re-running setup. */
+   {
+      unsigned int chunks_this_tick = 0u;
+
+      while (g_runtime_boot_fw_offset < g_cyw43_firmware_length
+             && chunks_this_tick < SDIO_RUNTIME_BOOT_FW_CHUNKS_PER_TICK) {
+         uint32_t chunk = g_cyw43_firmware_length - g_runtime_boot_fw_offset;
+
+         if (chunk > SDIO_BACKPLANE_TRANSFER_MAX)
+            chunk = SDIO_BACKPLANE_TRANSFER_MAX;
+
+         if (!sdio_backplane_write_bytes(dev, chip.rambase + g_runtime_boot_fw_offset,
+                                         &g_cyw43_firmware_data[g_runtime_boot_fw_offset], chunk)) {
+            sdio_runtime_set_error("Failed to upload CYW43 firmware image");
+            sdio_runtime_boot_reset_state();
+            return -1;
+         }
+
+         g_runtime_boot_fw_offset += chunk;
+         chunks_this_tick++;
       }
+
+      if (g_runtime_boot_fw_offset < g_cyw43_firmware_length)
+         return 0;   /* more chunks next tick */
    }
 
    /* Verify the firmware download landed intact.  A subtle backplane
@@ -4808,6 +4963,7 @@ bool sdio_runtime_start(void)
    g_runtime_identify_deadline_us = 0u;
    memset(&g_runtime_alp_wait, 0, sizeof(g_runtime_alp_wait));
    memset(&g_runtime_kso_wait, 0, sizeof(g_runtime_kso_wait));
+   memset(&g_runtime_enable_wait, 0, sizeof(g_runtime_enable_wait));
    sdio_runtime_boot_reset_state();
    sdio_runtime_set_error(NULL);
    sdio_debug_log("runtime start");
@@ -4874,10 +5030,17 @@ bool sdio_runtime_tick(void)
          return true;
 
       case SDIO_RUNTIME_STAGE_ENABLE_FUNCTIONS:
-         if (!sdio_probe_enable_functions(&g_runtime_device, &g_sdio_probe_result))
+      {
+         int enable_result = sdio_runtime_enable_functions_step(&g_runtime_device,
+                                                                &g_sdio_probe_result);
+
+         if (enable_result < 0)
             return sdio_runtime_finalize_error("WiFi SDIO function enable failed");
+         if (enable_result == 0)
+            return true;
          g_runtime_stage = SDIO_RUNTIME_STAGE_REQUEST_ALP;
          return true;
+      }
 
       case SDIO_RUNTIME_STAGE_REQUEST_ALP:
       {
