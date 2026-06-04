@@ -169,3 +169,7 @@ move sdcard accesses to sdhost.
 Make build work with gcc 16.1
 Lots and lots of little fixes.
 Support Wifi on PizeroW and Pizero2W. Security is basically missing . Passwords in plain text. no https.
+
+v.1.28
+Add wifi support for Pi3B+ ( NB USB MTP doesn't work due to the way USB is wired)
+Faster main polling loop by not polling wifi as often.
