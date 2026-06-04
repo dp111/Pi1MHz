@@ -164,6 +164,12 @@ static void sdio_debug_log(const char *format, ...)
 #define SDIO_WAKEUP_CTRL 0x1001Eu
 #define SDIO_SLEEP_CSR 0x1001Fu
 #define CYW43_SDIO_CORE_BASE 0x18002000u
+/* The CYW43 SDIO core's backplane address is chip-specific: the 43430
+   family puts it at CYW43_SDIO_CORE_BASE, but the BCM43455 (Pi 3 B+ / Pi 4)
+   reports it at 0x18004000 (0x18002000 is the ARM core there).  The real
+   address is found by sdio_backplane_scan_cores and latched below; until
+   then we default to the 43430 value for the pre-scan diagnostic probe. */
+static uint32_t g_runtime_sdio_core_base = CYW43_SDIO_CORE_BASE;
 #define SDIO_CORE_INT_STATUS_OFFSET 0x20u
 #define SDIO_CORE_INT_HOST_MASK_OFFSET 0x24u
 #define SDIO_CORE_FUNCTION_INT_MASK_OFFSET 0x34u
@@ -561,6 +567,7 @@ static int sdio_runtime_complete_boot_stage(sdio_host_t *dev,
       probe_result->chip_id = chip->chip_id;
       probe_result->chip_revision = chip->chip_revision;
       probe_result->sdio_core_base = chip->sdregs;
+      g_runtime_sdio_core_base   = chip->sdregs;
    }
 
    /* Free the firmware + NVRAM host buffers now they are on the chip,
@@ -1492,7 +1499,11 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
       preloaded a 43455 alt firmware set.  ARMv6 builds (Pi Zero W
       only) keep the strict 43430-only check. */
 #if __ARM_ARCH >= 7
-   if (chip.chip_id != 43430u && chip.chip_id != 43455u) {
+   /* BCM43455 (Pi 3 B+ / Pi 4) reports ChipCommon ID 0x4345 - the BCM4345
+      base part number in hex, NOT decimal 43455.  (The 43430 family reports
+      0xA9A6, which happens to equal decimal 43430, hence the asymmetry;
+      this matches Linux brcmfmac's BRCM_CC_43455_CHIP_ID = 0x4345.) */
+   if (chip.chip_id != 43430u && chip.chip_id != 0x4345u) {
       sdio_runtime_set_error("Unsupported CYW43 chip ID");
       return -1;
    }
@@ -3795,16 +3806,16 @@ static int sdio_runtime_ack_interrupts_step(sdio_host_t *dev)
 
          g_sdio_probe_result.interrupt_ack_attempted = true;
          if (!sdio_backplane_write_u32(dev,
-                CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+                g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                 ack_value)
             || !sdio_backplane_read_u32(dev,
-                CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+                g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                 &int_status_after_ack))
             return -1;
          g_sdio_probe_result.sdio_int_status_after_ack = int_status_after_ack;
          g_sdio_probe_result.interrupt_ack_success = true;
          (void)sdio_backplane_write_u32(dev,
-                CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
+                g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
                 0x00000002u);   /* SMB_INT_ACK */
       }
       round_count = 0u;
@@ -3821,7 +3832,7 @@ static int sdio_runtime_ack_interrupts_step(sdio_host_t *dev)
       uint32_t int_status = 0u;
 
       if (!sdio_backplane_read_u32(dev,
-             CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+             g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
              &int_status)) {
          started = false;
          return 1;        /* bus read failed: stop, as the old loop did */
@@ -3831,13 +3842,13 @@ static int sdio_runtime_ack_interrupts_step(sdio_host_t *dev)
 
          no_hmb = 0u;
          (void)sdio_backplane_write_u32(dev,
-                CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+                g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                 int_status);
          (void)sdio_backplane_read_u32(dev,
-                CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET,
+                g_runtime_sdio_core_base + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET,
                 &hmb_data);
          (void)sdio_backplane_write_u32(dev,
-                CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
+                g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
                 0x00000002u);   /* SMB_INT_ACK */
          if ((hmb_data & 0x00000002u) != 0u) {   /* FWREADY */
             started = false;
@@ -3920,9 +3931,9 @@ static bool sdio_probe_read_tx_post_state(sdio_host_t *dev,
    probe_result->tx_control_post_state_probe_attempted = true;
    if (!sdio_function1_read_byte(dev, SDIO_READ_FRAME_BC_LOW, &read_frame_byte_count_low)
       || !sdio_function1_read_byte(dev, SDIO_READ_FRAME_BC_HIGH, &read_frame_byte_count_high)
-      || !sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET, &int_status)
-      || !sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET, &to_sb_mailbox)
-      || !sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET, &to_host_mailbox_data)) {
+      || !sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET, &int_status)
+      || !sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET, &to_sb_mailbox)
+      || !sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET, &to_host_mailbox_data)) {
       return false;
    }
 
@@ -4404,12 +4415,12 @@ static bool sdio_probe_read_mailbox_registers(sdio_host_t *dev,
    if (probe_result == NULL)
       return false;
 
-   probe_result->sdio_core_base = CYW43_SDIO_CORE_BASE;
+   probe_result->sdio_core_base = g_runtime_sdio_core_base;
 
-   if (!sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET, &int_status)
-      || !sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_HOST_MASK_OFFSET, &int_host_mask)
-      || !sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET, &to_sb_mailbox)
-      || !sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET, &to_host_mailbox_data)) {
+   if (!sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET, &int_status)
+      || !sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_INT_HOST_MASK_OFFSET, &int_host_mask)
+      || !sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET, &to_sb_mailbox)
+      || !sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET, &to_host_mailbox_data)) {
       return false;
    }
 
@@ -4438,8 +4449,8 @@ static bool sdio_probe_ack_interrupts(sdio_host_t *dev,
    if (ack_value != 0u) {
       /* Clear the I_HMB_SW bits captured in the mailbox snapshot. */
       probe_result->interrupt_ack_attempted = true;
-      if (!sdio_backplane_write_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET, ack_value)
-         || !sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET, &int_status_after_ack)) {
+      if (!sdio_backplane_write_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET, ack_value)
+         || !sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET, &int_status_after_ack)) {
          return false;
       }
       probe_result->sdio_int_status_after_ack = int_status_after_ack;
@@ -4449,7 +4460,7 @@ static bool sdio_probe_ack_interrupts(sdio_host_t *dev,
          send SMB_INT_ACK to TO_SB_MAILBOX.  The firmware is now stalled waiting
          for SMB_INT_ACK before it will proceed to DEVREADY→FWREADY (round 2).
          Send it now so the firmware can continue. */
-      (void)sdio_backplane_write_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
+      (void)sdio_backplane_write_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
                                      0x00000002u); /* SMB_INT_ACK */
    }
 
@@ -4468,17 +4479,17 @@ static bool sdio_probe_ack_interrupts(sdio_host_t *dev,
    for (hmb_round = 0u; hmb_round < 30u; ++hmb_round) {
       uint32_t int_status = 0u;
       usleep(10000u); /* 10 ms between polls */
-      if (!sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+      if (!sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                                    &int_status))
          break;
       if (int_status & SDIO_HOST_INTERRUPT_MASK) {
          uint32_t hmb_data = 0u;
          no_hmb_count = 0u;
-         (void)sdio_backplane_write_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+         (void)sdio_backplane_write_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                                         int_status);
-         (void)sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET,
+         (void)sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET,
                                        &hmb_data);
-         (void)sdio_backplane_write_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
+         (void)sdio_backplane_write_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
                                         0x00000002u); /* SMB_INT_ACK */
          if (hmb_data & 0x00000002u) /* FWREADY - firmware fully up */
             break;
@@ -4501,9 +4512,9 @@ static bool sdio_probe_write_interrupt_mask(sdio_host_t *dev,
 
    probe_result->interrupt_mask_write_attempted = true;
    probe_result->sdio_int_host_mask_requested = SDIO_HOST_INTERRUPT_MASK;
-   if (!sdio_backplane_write_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_HOST_MASK_OFFSET,
+   if (!sdio_backplane_write_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_INT_HOST_MASK_OFFSET,
                                  SDIO_HOST_INTERRUPT_MASK)
-      || !sdio_backplane_read_u32(dev, CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_HOST_MASK_OFFSET,
+      || !sdio_backplane_read_u32(dev, g_runtime_sdio_core_base + SDIO_CORE_INT_HOST_MASK_OFFSET,
                                   &int_host_mask_after_write)) {
       return false;
    }
@@ -5442,7 +5453,7 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
 
       uint32_t int_status = 0u;
       if (sdio_backplane_read_u32_timeout(&g_runtime_device,
-                        CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+                        g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                         SDIO_RUNTIME_POLL_TIMEOUT_US,
                         &int_status)) {
          if (int_status != 0u) {
@@ -5454,7 +5465,7 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                   This matches the cyw43-driver approach of writing back the
                   full int_status value. */
                (void)sdio_backplane_write_u32_timeout(&g_runtime_device,
-                                                      CYW43_SDIO_CORE_BASE + SDIO_CORE_INT_STATUS_OFFSET,
+                                                      g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                                                       int_status,
                                                       SDIO_RUNTIME_POLL_TIMEOUT_US);
                /* Per Circle ether4330.c intwait(): read Hostmboxdata and send
@@ -5463,11 +5474,11 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                if (int_status & 0x80u) {
                   uint32_t hmb_data = 0u;
                   (void)sdio_backplane_read_u32_timeout(&g_runtime_device,
-                                                        CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET,
+                                                        g_runtime_sdio_core_base + SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET,
                                                         SDIO_RUNTIME_POLL_TIMEOUT_US,
                                                         &hmb_data);
                   (void)sdio_backplane_write_u32_timeout(&g_runtime_device,
-                                                         CYW43_SDIO_CORE_BASE + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
+                                                         g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
                                                          0x00000002u,
                                                          SDIO_RUNTIME_POLL_TIMEOUT_US); /* SMB_INT_ACK */
                   (void)hmb_data;   /* HMB read+acked; not logged */

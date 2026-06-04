@@ -248,7 +248,7 @@ bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
 {
    bool need_alt = false;
 
-   if (chip_id == 43455u) {
+   if (chip_id == 0x4345u) {   /* BCM43455 ChipCommon ID 0x4345, not decimal 43455 */
       need_alt = true;
    } else if (chip_id == 43430u) {
       /* 43430-family.  Anything < 23 is a real BCM43430, which on
