@@ -271,9 +271,9 @@ void mouse_redirect_move_mouse(void)
     change = false;
     mouse_x = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 0)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 1))<<8)));
     mouse_y = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 2)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))<<8)));
-    mouse_pointer = Pi1MHz_MemoryRead((uint32_t)(fred_address + 4));
+    mouse_pointer = Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))>>4;
     LOG_DEBUG("Mouse x %"PRIi32" y %"PRIi32" Pointer %u Last pointer %u\r\n", mouse_x, mouse_y, mouse_pointer, lastmouse_pointer);
-  
+
     if (lastmouse_pointer != mouse_pointer)
     {
         lastmouse_pointer = mouse_pointer;

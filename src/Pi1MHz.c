@@ -137,7 +137,7 @@ static emulator_list emulator[] = {
    {"Discaccess",discaccess_emulator_init, 0xA6, 1 },
    {"Videoplayer",videoplayer_init, 0x00, 1},  // start before frame buffer , but after filesystem
    {"Framebuffer",fb_emulator_init, 0xA0, 1},
-   {"Mouseredirect",mouse_redirect_init, 0xAB, 1 },
+   {"Mouseredirect",mouse_redirect_init, 0xAC, 1 },
    {"usb",usb_init, 0x00, 1 },
    {"wifi",wifi_emulator_init, 0x00, 1 }
 };
@@ -446,7 +446,7 @@ _Noreturn void kernel_main(void)
    {
       int b = atoi(prop);
       if (b > 0)
-         baud_rate = (unsigned int) b; 
+         baud_rate = (unsigned int) b;
    }
 
    RPI_AuxMiniUartInit( baud_rate );
