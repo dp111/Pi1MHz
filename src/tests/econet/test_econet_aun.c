@@ -84,35 +84,49 @@ int main(void)
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
    uint8_t dg[12] = { AUN_TYPE_DATA, 0x99, 0x00, 0, 40,0,0,0, 9,8,7,6 };
    aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
+   assert(sent_count == 0);                       /* verdict deferred: no ACK yet */
    aun_rx_info_t info;
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK);
    assert(info.src_stn == 254 && info.src_net == 1);
    assert(info.port == 0x99 && info.ctrl == 0x80 && info.len == 4);
    assert(memcmp(rbuf, &dg[8], 4) == 0);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 40);
+   /* sender retransmits while the verdict is pending: silently absorbed */
+   aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
+   assert(sent_count == 0 && e.counters.rx_dup == 1);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);               /* held until collect */
    /* a second frame is ACKed and queued behind the held head */
    uint8_t dgB[10] = { AUN_TYPE_DATA, 0x99, 0x00, 0, 48,0,0,0, 1,2 };
-   aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
-   assert(sent[sent_count-1].buf[0] == AUN_TYPE_ACK);
+   aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);            /* queued, no ACK */
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);  /* still A */
-   assert(aun_rx_collect(&e, 0) == AUN_OK);
+   sent_count = 0;
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 40);
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 2);  /* now B */
    assert(memcmp(rbuf, &dgB[8], 2) == 0);
-   assert(aun_rx_collect(&e, 0) == AUN_OK);
+   sent_count = 0;
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 48);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
-   /* fill the queue: AUN_RX_QUEUE frames accepted, the next is NAKed */
+   /* reject verdict: a collected-but-unwanted frame NAKs the sender */
+   dgB[4] = 56;
+   aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
+   sent_count = 0;
+   assert(aun_rx_collect(&e, 0, false) == AUN_OK);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK && seq_of(0) == 56);
+   /* fill the queue: AUN_RX_QUEUE frames queued silently, next NAKs */
+   sent_count = 0;
    for (uint8_t i = 0; i < AUN_RX_QUEUE; i++) {
       dgB[4] = (uint8_t)(60 + 4*i);
       aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
-      assert(sent[sent_count-1].buf[0] == AUN_TYPE_ACK);
    }
+   assert(sent_count == 0);
    dgB[4] = 90;
    aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
    assert(sent[sent_count-1].buf[0] == AUN_TYPE_NAK);        /* queue full */
    for (uint8_t i = 0; i < AUN_RX_QUEUE; i++) {
       assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
-      assert(aun_rx_collect(&e, 0) == AUN_OK);
+      assert(aun_rx_collect(&e, 0, true) == AUN_OK);
    }
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
@@ -121,10 +135,10 @@ int main(void)
    aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
    aun_rx_info_t i2;
    assert(aun_rx_poll(&e, 0, &i2) == AUN_OK);
-   assert(aun_rx_collect(&e, 0) == AUN_OK);
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
    aun_udp_input(&e, 0x0100000A, 32768, dg, 12);             /* dup seq 52 */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
-   assert(e.counters.rx_dup == 1);
+   assert(e.counters.rx_dup == 2);   /* one pending-dup (test 5) + this */
    assert(sent[sent_count-1].buf[0] == AUN_TYPE_ACK);
 
    /* 7: no listener -> NAK */
@@ -179,6 +193,28 @@ int main(void)
    send_fail = true;
    assert(aun_tx_start(&e, 1, 254, 0x80, 1, pay, 4) == AUN_OK);
    assert(aun_tx_status(&e) == AUN_TX_NET_ERROR);
+
+   /* 14: learn mode - outbound resolve + inbound auto-map */
+   reset();
+   aun_set_addressing(&e, 0xff01a8c0, 0x1401a8c0, 0x00ffffff, 2);
+   assert(aun_tx_start(&e, 2, 70, 0x80, 0x99, pay, 4) == AUN_OK);
+   assert(sent_count == 1 && sent[0].ip == ((0x1401a8c0 & 0x00ffffff) | (70u<<24)));
+   ack(0, AUN_TYPE_ACK);
+   assert(aun_tx_status(&e) == AUN_OK);
+   uint8_t rb2[32];
+   assert(aun_rx_open(&e, 1, 0, AUN_WILDCARD, AUN_WILDCARD, rb2, 32) == AUN_OK);
+   uint8_t dgl[9] = { AUN_TYPE_DATA, 0x55, 0, 0, 8,0,0,0, 7 };
+   aun_udp_input(&e, (0x1401a8c0 & 0x00ffffff) | (44u<<24), 32768, dgl, 9);
+   aun_rx_info_t li;
+   assert(aun_rx_poll(&e, 1, &li) == AUN_OK);
+   assert(li.src_stn == 44 && li.src_net == 2);   /* auto-attributed */
+   assert(aun_rx_collect(&e, 1, true) == AUN_OK);
+
+   /* 15: subnet broadcast goes out alongside mapped peers */
+   reset();
+   aun_set_addressing(&e, 0xff01a8c0, 0x1401a8c0, 0x00ffffff, 0xFF);
+   assert(aun_broadcast(&e, 0x80, 0x9c, pay, 4) == AUN_OK);
+   assert(sent_count == 2 && sent[1].ip == 0xff01a8c0);
 
    printf("all econet_aun tests passed\n");
    return 0;

@@ -25,6 +25,7 @@
 #include "../rpi/info.h"
 #include "../rpi/systimer.h"
 #include "../Pi1MHz.h"
+#include "../econet_emulator.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
@@ -1889,8 +1890,26 @@ static bool route_home(ws_conn_t *c)
       "<p><a href=\"/files/\">Browse SD card files &rarr;</a></p>"
       "<p><a href=\"/framebuffer\">View the framebuffer &rarr;</a></p>"
       "<p><a href=\"/status\">Network status &rarr;</a></p>"
+      "<p><a href=\"/econet\">Econet status &rarr;</a></p>"
       "<p><a href=\"/reboot\">Reboot the Pi &rarr;</a></p>"
       "</div>");
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
+}
+
+static bool route_econet(ws_conn_t *c)
+{
+   /* econet_status_text() formats the AUN engine state (station, map,
+      queue depth, counters) as plain text; present it preformatted. */
+   static char eco[1536];
+   ws_strbuf_t b;
+
+   econet_status_text(eco, sizeof eco);
+   sb_init(&b);
+   page_open(&b, "Econet");
+   sb_puts(&b, "<h1>Econet</h1><div class=\"card\"><pre>");
+   sb_html(&b, eco);
+   sb_puts(&b, "</pre></div>");
    page_close(&b);
    return ws_finish_html(c, 200, "OK", &b);
 }
@@ -4124,6 +4143,8 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_home(c);
       if (strcmp(rawpath, "/status") == 0)
          return route_status(c);
+      if (strcmp(rawpath, "/econet") == 0)
+         return route_econet(c);
       if (strcmp(rawpath, "/framebuffer") == 0)
          return route_framebuffer(c);
       if (strcmp(rawpath, "/framebuffer.bmp") == 0)

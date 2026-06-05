@@ -1,0 +1,718 @@
+#!/usr/bin/env python3
+"""Lockstep integration test: the patched ANFS ROM bytes execute in a
+6502 emulator whose FRED/JIM hooks talk to the REAL Pi-side econet C
+code (harness subprocess). A scripted AUN peer validates the wire
+format and plays fileserver."""
+import os, subprocess, sys
+
+# Paths default to files alongside this script; override with env vars.
+#   ECO_ROM     - the patched ANFS ROM image (anfs-4.18-pi1mhz-fixed.rom)
+#   ECO_SYMS    - symbol file: basm.py <patched.asm> /dev/null symbols,
+#                 filtered to eco_ensure_init/eco_rx_pump/tx_begin/
+#                 svc5_irq_check (see README)
+#   ECO_HARNESS - the compiled harness binary
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROM_PATH = os.environ.get('ECO_ROM', os.path.join(HERE, 'anfs-4.18-pi1mhz.rom'))
+SYM_PATH = os.environ.get('ECO_SYMS', os.path.join(HERE, 'syms.txt'))
+HARNESS  = os.environ.get('ECO_HARNESS', os.path.join(HERE, 'harness'))
+
+ROM = open(ROM_PATH,'rb').read()
+SYM = dict((k, int(v,16)) for k,v in (l.split() for l in open(SYM_PATH)))
+
+# ---------------- harness link ----------------
+H = subprocess.Popen([HARNESS], stdin=subprocess.PIPE,
+                     stdout=subprocess.PIPE, text=True, bufsize=1)
+udp_out = []          # captured outbound datagrams (ip, port, bytes)
+def hx(cmd):
+    H.stdin.write(cmd + '\n')
+    while True:
+        line = H.stdout.readline().strip()
+        if line.startswith('O '):
+            _, ip, port, data = line.split()
+            udp_out.append((int(ip,16), int(port), bytes.fromhex(data)))
+        elif line.startswith('K '):
+            return int(line.split()[1], 16)
+        elif line.startswith('V '):
+            return int(line.split()[1], 16)
+        else:
+            raise RuntimeError(f'harness said {line!r}')
+
+# ---------------- 6502 emulator ----------------
+class CPU:
+    def __init__(self):
+        self.mem = bytearray(0x10000)
+        self.mem[0x8000:0xc000] = ROM
+        self.a = self.x = self.y = 0
+        self.sp = 0xfd
+        self.n = self.v = self.z = self.c = self.i = self.d = False
+        self.pc = 0
+        self.jim_addr = 0
+        self.tube_in = b''; self.tube_in_pos = 0
+        self.tube_out = bytearray(); self.tube_r4 = bytearray()
+        self.fred_aa = 0
+        self.instructions = 0
+
+    # FRED-aware memory access (mirrors discaccess/econet semantics)
+    def rd(self, a):
+        a &= 0xffff
+        if a == 0xfca6: return self.jim_addr & 0xff
+        if a == 0xfca7: return (self.jim_addr >> 8) & 0xff
+        if a == 0xfca8: return (self.jim_addr >> 16) & 0xff
+        if a == 0xfca9:
+            v = hx(f'G {self.jim_addr:x}')
+            self.jim_addr = (self.jim_addr + 1) & 0xffffff
+            return v
+        if a == 0xfcaa: return self.fred_aa
+        if a == 0xfc88: return hx('F')
+        if a == 0xfee5:                 # Tube R3 data: parasite -> host
+            v = self.tube_in[self.tube_in_pos] if self.tube_in_pos < len(self.tube_in) else 0
+            self.tube_in_pos += 1
+            return v
+        if a == 0xfee6: return 0xc0     # Tube R4/R1 status: always ready
+        return self.mem[a]
+    def wr(self, a, v):
+        a &= 0xffff; v &= 0xff
+        if a == 0xfca6: self.jim_addr = (self.jim_addr & 0xffff00) | v; return
+        if a == 0xfca7: self.jim_addr = (self.jim_addr & 0xff00ff) | (v<<8); return
+        if a == 0xfca8: self.jim_addr = (self.jim_addr & 0x00ffff) | (v<<16); return
+        if a == 0xfca9:
+            hx(f'P {self.jim_addr:x} {v:x}')
+            self.jim_addr = (self.jim_addr + 1) & 0xffffff
+            return
+        if a == 0xfee5:                 # Tube R3 data: host -> parasite
+            self.tube_out.append(v); return
+        if a == 0xfee7:                 # Tube R4 data: claim command stream
+            self.tube_r4.append(v); return
+        if a == 0xfcaa:
+            self.fred_aa = hx(f'C {v:x}')   # echo skipped: result is final
+            return
+        if a >= 0x8000: raise RuntimeError(f'ROM write &{a:04x} at pc=&{self.pc:04x}')
+        self.mem[a] = v
+
+    def push(self, v): self.mem[0x100 + self.sp] = v & 0xff; self.sp = (self.sp - 1) & 0xff
+    def pop(self): self.sp = (self.sp + 1) & 0xff; return self.mem[0x100 + self.sp]
+    def setnz(self, v): v &= 0xff; self.n = v >= 0x80; self.z = v == 0; return v
+    def flags(self):
+        return ((0x80 if self.n else 0)|(0x40 if self.v else 0)|0x20|0x10|
+                (8 if self.d else 0)|(4 if self.i else 0)|(2 if self.z else 0)|(1 if self.c else 0))
+    def setflags(self, p):
+        self.n = bool(p&0x80); self.v = bool(p&0x40); self.d = bool(p&8)
+        self.i = bool(p&4); self.z = bool(p&2); self.c = bool(p&1)
+
+    def adc(self, m):
+        r = self.a + m + (1 if self.c else 0)
+        self.v = (~(self.a ^ m) & (self.a ^ r) & 0x80) != 0
+        self.c = r > 0xff
+        self.a = self.setnz(r)
+    def sbc(self, m): self.adc(m ^ 0xff)
+    def cmpv(self, r, m):
+        t = (r - m) & 0x1ff
+        self.c = r >= m; self.setnz((r - m) & 0xff)
+
+    def step(self):
+        # Stubs for the relocated OS Tube routines (not present in the
+        # lockstep image, which skips ROM relocation): claim succeeds
+        # (C=1), release is a no-op. This isolates the econet Tube code.
+        if self.pc == 0x0406:           # tube_addr_data_dispatch
+            self.c = True
+            lo = self.pop(); hi = self.pop(); self.pc = ((hi<<8)|lo)+1; return
+        if self.pc == 0x0414:           # tube_release_claim
+            lo = self.pop(); hi = self.pop(); self.pc = ((hi<<8)|lo)+1; return
+        self.instructions += 1
+        op = self.rd(self.pc); pc = self.pc + 1
+        def b():  # operand byte
+            nonlocal pc; v = self.rd(pc); pc += 1; return v
+        def w():
+            nonlocal pc; v = self.rd(pc) | (self.rd(pc+1) << 8); pc += 2; return v
+        # addressing helpers returning effective address
+        def zp(): return b()
+        def zpx(): return (b() + self.x) & 0xff
+        def zpy(): return (b() + self.y) & 0xff
+        def ab(): return w()
+        def abx(): return (w() + self.x) & 0xffff
+        def aby(): return (w() + self.y) & 0xffff
+        def indx(): z = (b() + self.x) & 0xff; return self.mem[z] | (self.mem[(z+1)&0xff] << 8)
+        def indy(): z = b(); return ((self.mem[z] | (self.mem[(z+1)&0xff] << 8)) + self.y) & 0xffff
+        def br(cond):
+            nonlocal pc
+            off = b()
+            if cond: pc = (pc + (off - 256 if off >= 128 else off)) & 0xffff
+        M = {  # opcode: (kind, mode)
+        }
+        # --- decode by opcode groups (compact) ---
+        o = op
+        if o == 0xea: pass
+        elif o == 0x18: self.c = False
+        elif o == 0x38: self.c = True
+        elif o == 0x58: self.i = False
+        elif o == 0x78: self.i = True
+        elif o == 0xd8: self.d = False
+        elif o == 0xf8: self.d = True
+        elif o == 0xb8: self.v = False
+        elif o == 0x48: self.push(self.a)
+        elif o == 0x68: self.a = self.setnz(self.pop())
+        elif o == 0x08: self.push(self.flags())
+        elif o == 0x28: self.setflags(self.pop())
+        elif o == 0xaa: self.x = self.setnz(self.a)
+        elif o == 0x8a: self.a = self.setnz(self.x)
+        elif o == 0xa8: self.y = self.setnz(self.a)
+        elif o == 0x98: self.a = self.setnz(self.y)
+        elif o == 0xba: self.x = self.setnz(self.sp)
+        elif o == 0x9a: self.sp = self.x
+        elif o == 0xe8: self.x = self.setnz(self.x + 1)
+        elif o == 0xc8: self.y = self.setnz(self.y + 1)
+        elif o == 0xca: self.x = self.setnz(self.x - 1)
+        elif o == 0x88: self.y = self.setnz(self.y - 1)
+        elif o == 0x60:  # rts
+            lo = self.pop(); hi = self.pop(); pc = ((hi << 8) | lo) + 1
+        elif o == 0x20:  # jsr
+            t = w(); ret = pc - 1
+            self.push((ret >> 8) & 0xff); self.push(ret & 0xff); pc = t
+        elif o == 0x4c: pc = w()
+        elif o == 0x6c:
+            a = w(); pc = self.rd(a) | (self.rd((a & 0xff00) | ((a+1) & 0xff)) << 8)
+        elif o == 0x40:  # rti
+            self.setflags(self.pop()); lo = self.pop(); hi = self.pop(); pc = (hi << 8) | lo
+        elif o in (0x10,0x30,0x50,0x70,0x90,0xb0,0xd0,0xf0):
+            br({0x10:not self.n,0x30:self.n,0x50:not self.v,0x70:self.v,
+                0x90:not self.c,0xb0:self.c,0xd0:not self.z,0xf0:self.z}[o])
+        else:
+            grp = {  # (loader, store) per mode for each ALU op family
+            }
+            modes = {0xa9:('lda','imm'),0xa5:('lda','zp'),0xb5:('lda','zpx'),0xad:('lda','ab'),0xbd:('lda','abx'),0xb9:('lda','aby'),0xa1:('lda','indx'),0xb1:('lda','indy'),
+                     0xa2:('ldx','imm'),0xa6:('ldx','zp'),0xb6:('ldx','zpy'),0xae:('ldx','ab'),0xbe:('ldx','aby'),
+                     0xa0:('ldy','imm'),0xa4:('ldy','zp'),0xb4:('ldy','zpx'),0xac:('ldy','ab'),0xbc:('ldy','abx'),
+                     0x85:('sta','zp'),0x95:('sta','zpx'),0x8d:('sta','ab'),0x9d:('sta','abx'),0x99:('sta','aby'),0x81:('sta','indx'),0x91:('sta','indy'),
+                     0x86:('stx','zp'),0x96:('stx','zpy'),0x8e:('stx','ab'),
+                     0x84:('sty','zp'),0x94:('sty','zpx'),0x8c:('sty','ab'),
+                     0x69:('adc','imm'),0x65:('adc','zp'),0x75:('adc','zpx'),0x6d:('adc','ab'),0x7d:('adc','abx'),0x79:('adc','aby'),0x61:('adc','indx'),0x71:('adc','indy'),
+                     0xe9:('sbc','imm'),0xe5:('sbc','zp'),0xf5:('sbc','zpx'),0xed:('sbc','ab'),0xfd:('sbc','abx'),0xf9:('sbc','aby'),0xe1:('sbc','indx'),0xf1:('sbc','indy'),
+                     0x29:('and','imm'),0x25:('and','zp'),0x35:('and','zpx'),0x2d:('and','ab'),0x3d:('and','abx'),0x39:('and','aby'),0x21:('and','indx'),0x31:('and','indy'),
+                     0x09:('ora','imm'),0x05:('ora','zp'),0x15:('ora','zpx'),0x0d:('ora','ab'),0x1d:('ora','abx'),0x19:('ora','aby'),0x01:('ora','indx'),0x11:('ora','indy'),
+                     0x49:('eor','imm'),0x45:('eor','zp'),0x55:('eor','zpx'),0x4d:('eor','ab'),0x5d:('eor','abx'),0x59:('eor','aby'),0x41:('eor','indx'),0x51:('eor','indy'),
+                     0xc9:('cmp','imm'),0xc5:('cmp','zp'),0xd5:('cmp','zpx'),0xcd:('cmp','ab'),0xdd:('cmp','abx'),0xd9:('cmp','aby'),0xc1:('cmp','indx'),0xd1:('cmp','indy'),
+                     0xe0:('cpx','imm'),0xe4:('cpx','zp'),0xec:('cpx','ab'),
+                     0xc0:('cpy','imm'),0xc4:('cpy','zp'),0xcc:('cpy','ab'),
+                     0x24:('bit','zp'),0x2c:('bit','ab'),
+                     0xe6:('inc','zp'),0xf6:('inc','zpx'),0xee:('inc','ab'),0xfe:('inc','abx'),
+                     0xc6:('dec','zp'),0xd6:('dec','zpx'),0xce:('dec','ab'),0xde:('dec','abx'),
+                     0x0a:('asl','acc'),0x06:('asl','zp'),0x16:('asl','zpx'),0x0e:('asl','ab'),0x1e:('asl','abx'),
+                     0x4a:('lsr','acc'),0x46:('lsr','zp'),0x56:('lsr','zpx'),0x4e:('lsr','ab'),0x5e:('lsr','abx'),
+                     0x2a:('rol','acc'),0x26:('rol','zp'),0x36:('rol','zpx'),0x2e:('rol','ab'),0x3e:('rol','abx'),
+                     0x6a:('ror','acc'),0x66:('ror','zp'),0x76:('ror','zpx'),0x6e:('ror','ab'),0x7e:('ror','abx')}
+            if o not in modes: raise RuntimeError(f'opcode &{o:02x} at &{self.pc:04x}')
+            name, mode = modes[o]
+            if mode == 'imm':
+                m = b(); ea = None
+            elif mode == 'acc':
+                m = self.a; ea = 'A'
+            else:
+                ea = {'zp':zp,'zpx':zpx,'zpy':zpy,'ab':ab,'abx':abx,'aby':aby,'indx':indx,'indy':indy}[mode]()
+                m = None
+            def load():
+                return m if ea is None or ea == 'A' else self.rd(ea)
+            if name == 'lda': self.a = self.setnz(load())
+            elif name == 'ldx': self.x = self.setnz(load())
+            elif name == 'ldy': self.y = self.setnz(load())
+            elif name == 'sta': self.wr(ea, self.a)
+            elif name == 'stx': self.wr(ea, self.x)
+            elif name == 'sty': self.wr(ea, self.y)
+            elif name == 'adc': self.adc(load())
+            elif name == 'sbc': self.sbc(load())
+            elif name == 'and': self.a = self.setnz(self.a & load())
+            elif name == 'ora': self.a = self.setnz(self.a | load())
+            elif name == 'eor': self.a = self.setnz(self.a ^ load())
+            elif name == 'cmp': self.cmpv(self.a, load())
+            elif name == 'cpx': self.cmpv(self.x, load())
+            elif name == 'cpy': self.cmpv(self.y, load())
+            elif name == 'bit':
+                v = load(); self.z = (self.a & v) == 0; self.n = bool(v & 0x80); self.v = bool(v & 0x40)
+            elif name in ('inc','dec'):
+                v = (load() + (1 if name=='inc' else -1)) & 0xff
+                self.wr(ea, self.setnz(v))
+            else:  # shifts
+                v = load()
+                if name == 'asl': self.c = bool(v & 0x80); v = (v << 1) & 0xff
+                elif name == 'lsr': self.c = bool(v & 1); v >>= 1
+                elif name == 'rol': c0 = self.c; self.c = bool(v & 0x80); v = ((v << 1) | (1 if c0 else 0)) & 0xff
+                else: c0 = self.c; self.c = bool(v & 1); v = (v >> 1) | (0x80 if c0 else 0)
+                v = self.setnz(v)
+                if ea == 'A': self.a = v
+                else: self.wr(ea, v)
+        self.pc = pc & 0xffff
+
+    def call(self, addr, limit=2_000_000):
+        """JSR addr, run until matching RTS."""
+        sentinel = 0xff42
+        self.push((sentinel - 1) >> 8); self.push((sentinel - 1) & 0xff)
+        self.pc = addr
+        n = 0
+        while self.pc != sentinel:
+            self.step(); n += 1
+            if n > limit: raise RuntimeError(f'runaway at &{self.pc:04x}')
+        return n
+
+# ---------------- helpers ----------------
+def aun(t, port, ctrl, seq, data=b''):
+    return bytes([t, port, ctrl, 0, seq & 0xff, (seq>>8)&0xff, (seq>>16)&0xff, (seq>>24)&0xff]) + data
+
+IP10 = 0x0a01a8c0   # 192.168.1.10 network order in u32-le
+ok = 0
+def check(cond, what):
+    global ok
+    assert cond, what
+    ok += 1
+    print(f'  ok: {what}')
+
+# ---------------- scenarios ----------------
+print('== setup ==')
+hx('S econet_station=1.32 econet_map=1.254=192.168.1.10')
+hx('R 1')
+cpu = CPU()
+
+print('== 1: eco_ensure_init ==')
+cpu.call(SYM['eco_ensure_init'])
+check(not cpu.c, 'init returns carry clear')
+check(cpu.y == 32, f'station 32 from cmdline (got {cpu.y})')
+check(cpu.mem[0x0d22] == 32, 'tx_src_stn cached')
+check(cpu.mem[0x0d23] == 0x80, 'eco_init_done latched')
+
+print('== 2: transmit + ACK (data, port &99 to 1.254) ==')
+payload = b'HELLO'
+for i, ch in enumerate(payload): cpu.mem[0x3000+i] = ch
+txcb = 0xc0
+for off, v in enumerate([0x80, 0x99, 254, 1, 0x00, 0x30, 0xff, 0xff, 0x05, 0x30, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v
+cpu.mem[0xa0] = txcb; cpu.mem[0xa1] = 0
+udp_out.clear()
+import threading
+# the ACK must arrive while the 6502 spins in TX_POLL: drive it from a hook
+orig_wr = CPU.wr
+state = {'acked': False}
+def wr_hook(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and not state['acked']:
+        for ip, port, data in list(udp_out):
+            if data[0] == 2:                      # our DATA datagram seen
+                check(ip == IP10 and port == 32768, 'datagram to mapped peer 192.168.1.10:32768')
+                check(data[1] == 0x99 and data[2] == 0x00, 'AUN header port &99, ctrl bit7 stripped')
+                check(data[8:] == payload, 'payload intact')
+                hx('U %x %d %s' % (IP10, 32768, aun(3, 0x99, 0, int.from_bytes(data[4:8],"little")).hex()))
+                state['acked'] = True
+CPU.wr = wr_hook
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check(state['acked'], 'DATA datagram was emitted and ACKed')
+check(cpu.mem[txcb] == 0x00, f'TXCB result &00 success (got &{cpu.mem[txcb]:02x})')
+check(cpu.mem[0x0d60] == 0x80, 'tx_complete_flag set')
+
+print('== 3: transmit NAK -> not listening (&41) ==')
+cpu.mem[txcb] = 0x80
+state = {'acked': False}
+def wr_hook2(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and not state['acked']:
+        for ip, port, data in list(udp_out):
+            if data[0] == 2 and not state['acked']:
+                hx('U %x %d %s' % (IP10, 32768, aun(4, 0x99, 0, int.from_bytes(data[4:8],"little")).hex()))
+                state['acked'] = True
+udp_out.clear()
+CPU.wr = wr_hook2
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check(cpu.mem[txcb] == 0x41, f'TXCB result &41 not listening (got &{cpu.mem[txcb]:02x})')
+
+print('== 4: rx pump delivers a fileserver reply into the &00C0 CB ==')
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v                      # open receive, port &90, buffer &3100
+cpu.mem[0x0d61] = 0x80                         # econet_flags: &00C0 list active
+reply = b'\x05\x00FS-REPLY'
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x1000, reply).hex()))
+check(not [d for _,_,d in udp_out if d[0] == 3], 'no ACK yet: verdict deferred until a listener takes it')
+cpu.call(SYM['eco_rx_pump'])
+acks = [d for _,_,d in udp_out if d[0] == 3]
+check(len(acks) == 1 and int.from_bytes(acks[0][4:8],'little') == 0x1000, 'ACK sent at delivery (seq echoed)')
+check(cpu.mem[txcb] == 0x80, 'CB ctrl: bit7 set, wire ctrl restored')
+check(cpu.mem[txcb+1] == 0x90 and cpu.mem[txcb+2] == 254 and cpu.mem[txcb+3] == 1, 'CB port/src station/src net')
+got = bytes(cpu.mem[0x3100:0x3100+len(reply)])
+check(got == reply, 'payload copied into Beeb memory')
+end = cpu.mem[txcb+8] | (cpu.mem[txcb+9] << 8)
+check(end == 0x3100 + len(reply), f'CB end pointer = past last byte (&{end:04x})')
+
+print('== 4b: rx queue - both frames ACKed, delivered in order ==')
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v                      # re-open the CB
+frameA, frameB = b'FRAME-A', b'FRAME-B'
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x2000, frameA).hex()))
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x2004, frameB).hex()))
+check(not [d for _,_,d in udp_out if d[0] in (3,4)], 'both frames queued silently (verdicts pending)')
+cpu.call(SYM['eco_rx_pump'])                   # delivers A, ACKs it at RX_DONE
+check(bytes(cpu.mem[0x3100:0x3100+7]) == frameA, 'frame A delivered intact')
+check(len([d for _,_,d in udp_out if d[0] == 3]) == 1, 'frame A ACKed at delivery')
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v                      # re-open for the next frame
+cpu.call(SYM['eco_rx_pump'])                   # B comes straight from the queue
+check(bytes(cpu.mem[0x3100:0x3100+7]) == frameB, 'frame B delivered from the queue, no retransmission')
+check(len([d for _,_,d in udp_out if d[0] == 3]) == 2, 'frame B ACKed at its own delivery')
+
+print('== 5: no listener -> frame dropped AND sender NAKed ==')
+cpu.mem[txcb] = 0x00                           # CB closed
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x77, 0x00, 0x2100, b'XX').hex()))
+cpu.call(SYM['eco_rx_pump'])
+check(cpu.mem[txcb] == 0x00, 'closed CB untouched')
+naks = [d for _,_,d in udp_out if d[0] == 4]
+check(len(naks) == 1 and int.from_bytes(naks[0][4:8],'little') == 0x2100,
+      'sender sees a true "not listening" NAK')
+
+print('== 5b: 4K datagram delivered; oversize-for-CB frame NAKed ==')
+big = bytes((i & 0xff) for i in range(4096))
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x30, 0xff, 0xff, 0x00, 0x41, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v                      # CB buffer &3000-&40FF (cap 4352)
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x5000, big).hex()))
+cpu.call(SYM['eco_rx_pump'])
+check(bytes(cpu.mem[0x3000:0x4000]) == big, '4096-byte payload delivered intact')
+end = cpu.mem[txcb+8] | (cpu.mem[txcb+9] << 8)
+check(end == 0x4000, 'CB end pointer past the 4K payload')
+check(len([d for _,_,d in udp_out if d[0] == 3]) == 1, '4K frame ACKed at delivery')
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x30, 0xff, 0xff, 0x10, 0x30, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v                      # tiny CB: capacity 16 bytes
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x5004, b'X'*100).hex()))
+cpu.call(SYM['eco_rx_pump'])
+check(cpu.mem[txcb] == 0x7f, 'CB untouched by an oversize frame')
+naks = [d for _,_,d in udp_out if d[0] == 4]
+check(len(naks) == 1, 'oversize-for-CB frame NAKed instead of overrunning memory')
+
+print('== 6: inbound machine peek answered by the Pi ==')
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x08, 0x3000).hex()))
+reps = [d for _,_,d in udp_out if d[0] == 6]
+check(len(reps) == 1 and len(reps[0]) == 12, 'immediate reply emitted, 4-byte machine id')
+
+print('== 7: outbound machine peek (TXCB ctrl &88, port 0) ==')
+for off, v in enumerate([0x88, 0x00, 254, 1, 0x00, 0x32, 0xff, 0xff, 0x04, 0x32, 0xff, 0xff,
+                          0,0,0,0]):
+    cpu.mem[txcb+off] = v                      # reply buffer &3200-&3203
+state = {'acked': False}
+def wr_hook3(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and not state['acked']:
+        for ip, port, data in list(udp_out):
+            if data[0] == 5 and not state['acked']:
+                check(data[2] == 0x08, 'imm ctrl &88 -> wire &08')
+                hx('U %x %d %s' % (IP10, 32768,
+                    aun(6, 0, 0x08, int.from_bytes(data[4:8],'little'), b'\xaa\xbb\xcc\xdd').hex()))
+                state['acked'] = True
+udp_out.clear()
+CPU.wr = wr_hook3
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check(state['acked'], 'IMMEDIATE datagram emitted and answered')
+check(cpu.mem[txcb] == 0x00, 'TXCB result success')
+check(bytes(cpu.mem[0x3200:0x3204]) == b'\xaa\xbb\xcc\xdd', 'peek reply landed in TXCB buffer')
+
+print('== 8: broadcast (dest station &FF) completes without handshake ==')
+for off, v in enumerate([0x80, 0x9c, 0xff, 0xff, 0x00, 0x30, 0xff, 0xff, 0x04, 0x30, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v
+udp_out.clear()
+cpu.call(SYM['tx_begin'])
+bc = [(ip,d) for ip,_,d in udp_out if d[0] == 1]
+check(len(bc) == 2 and all(d[1] == 0x9c for _,d in bc), 'BROADCAST to mapped peer + subnet broadcast, port &9C')
+check(any(ip == 0xff01a8c0 for ip,_ in bc), 'subnet broadcast address 192.168.1.255 included')
+check(cpu.mem[txcb] == 0x00, 'broadcast result success')
+
+print('== 9: IRQ-driven reception via service call 5 ==')
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v                      # open receive CB, port &90
+cpu.mem[0x0d61] = 0x80
+unsolicited = b'NOTIFY!'
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x3000, unsolicited).hex()))
+hx('L')                                        # Pi main-loop turn: IRQ update
+check(hx('I') == 1, 'nIRQ asserted while a frame is queued')
+check(hx('F') & 0x80, 'FRED &FC88 bit 7 set (frame waiting)')
+cpu.call(SYM['svc5_irq_check'])                # MOS unrecognised-IRQ service
+check(cpu.a == 0, 'svc5 claimed the interrupt (A=0)')
+check(bytes(cpu.mem[0x3100:0x3100+7]) == unsolicited, 'unsolicited frame delivered by the IRQ pump')
+check(cpu.mem[txcb] == 0x80, 'CB completed (bit 7 set)')
+hx('L')
+check(hx('I') == 0, 'nIRQ released once the queue is empty')
+check(hx('F') == 0, '&FC88 cleared')
+
+print('== 9b: Econet receive event (&FE) fires like the old NMI path ==')
+# EVNTV stub at &2000: sty &71 / inc &70 / rts ; vector at &0220/1
+for i, b in enumerate([0x84, 0x71, 0xe6, 0x70, 0x60]): cpu.mem[0x2000+i] = b
+cpu.mem[0x220], cpu.mem[0x221] = 0x00, 0x20
+cpu.mem[0x70] = cpu.mem[0x71] = 0
+cpu.mem[0x0d6c] = 0x01                         # fs_flags bit 0: events enabled
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v                      # &00C0 CB -> slot &C0/12 = 16
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x4000, b'EVT').hex()))
+hx('L')
+cpu.call(SYM['svc5_irq_check'])                # IRQ -> pump -> deferred event
+check(cpu.mem[0x70] == 1, 'EVNTV called exactly once')
+check(cpu.mem[0x71] == 16, f'Y = slot 16, as the original passed it (got {cpu.mem[0x71]})')
+cpu.mem[0x0d6c] = 0x00                         # events disabled
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x4004, b'EVT').hex()))
+hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.mem[0x70] == 1, 'no event when fs_flags bit 0 is clear')
+check(cpu.mem[txcb] == 0x80, 'frame still delivered either way')
+
+print('== 9c: remote immediates - peek, poke, JSR via svc5 ==')
+# remote PEEK of &3000-&300F (payload: start addr, end addr)
+for i in range(16): cpu.mem[0x3000+i] = 0xA0 + i
+args = bytes([0x00,0x30,0xff,0xff, 0x10,0x30,0xff,0xff])
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x01, 0x6000, args).hex()))
+hx('L')
+check(hx('F') & 0x40, '&FC88 bit 6 set: immediate pending')
+cpu.call(SYM['svc5_irq_check'])
+reps = [d for _,_,d in udp_out if d[0] == 6]
+check(len(reps) == 1 and reps[0][8:] == bytes(cpu.mem[0x3000:0x3010]),
+      'PEEK reply carries our memory contents')
+check(int.from_bytes(reps[0][4:8],'little') == 0x6000, 'reply echoes the request seq')
+# remote POKE of &3200 (payload: dest addr + data)
+poke = bytes([0x00,0x32,0xff,0xff]) + b'POKED!'
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x02, 0x6004, poke).hex()))
+hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(bytes(cpu.mem[0x3200:0x3206]) == b'POKED!', 'POKE wrote our memory')
+check([d for _,_,d in udp_out if d[0] == 6], 'POKE acknowledged with an empty reply')
+# remote JSR: stub at &2100 increments &72
+for i, b in enumerate([0xe6, 0x72, 0x60]): cpu.mem[0x2100+i] = b
+cpu.mem[0x72] = 0
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x03, 0x6008, bytes([0x00,0x21])).hex()))
+hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.mem[0x72] == 1, 'remote JSR executed the target routine')
+
+print('== 9d: Tube receive - frame streamed to R3, not host memory ==')
+# CB buffer address with +6/+7 = &FE/&FF marks a Tube target
+cpu.mem[0x0d63] = 0x01                          # tube_present (set by adlc_init via OSBYTE &EA)
+cpu.mem[0x0d61] = 0x80
+# parasite target &00003000: +4=00 +5=30 +6=00 +7=00 (high byte != &FF)
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x30, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00]):
+    cpu.mem[txcb+off] = v
+cpu.tube_out = bytearray()
+tube_payload = bytes(range(0, 64))
+cpu.mem[0x3000:0x3040] = b'\xee'*64            # poison host memory
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x7000, tube_payload).hex()))
+cpu.call(SYM['eco_rx_pump'])
+check(bytes(cpu.tube_out) == tube_payload, 'rx payload streamed to Tube R3 in order')
+check(cpu.mem[0x3000] == 0xee, 'host memory untouched (data went to the Tube)')
+acks = [d for _,_,d in udp_out if d[0] == 3]
+check(acks, 'Tube-delivered frame ACKed')
+
+print('== 9e: Tube transmit - payload fetched from R3 ==')
+cpu.tube_in = bytes(range(100, 100+32)); cpu.tube_in_pos = 0
+cpu.tube_out = bytearray()
+# TXCB: ctrl &80, port &99, dest 254.1, buffer start &0000 end &0020,
+# ext bytes &FE/&FF marking Tube source
+for off, v in enumerate([0x80, 0x99, 254, 1, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00]):
+    cpu.mem[txcb+off] = v
+cpu.mem[0xa0] = txcb; cpu.mem[0xa1] = 0
+cpu.mem[0x0d63] = 0x01                          # tube_present
+state = {'acked': False}
+def wr_tube(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and not state['acked']:
+        for ip, port, data in list(udp_out):
+            if data[0] == 2 and not state['acked']:
+                check(data[8:8+32] == bytes(range(100,132)), 'tx payload came from Tube R3')
+                hx('U %x %d %s' % (IP10, 32768, aun(3, 0x99, 0, int.from_bytes(data[4:8],'little')).hex()))
+                state['acked'] = True
+udp_out.clear()
+CPU.wr = wr_tube
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check(state['acked'], 'Tube-sourced transmit completed and was ACKed')
+check(cpu.mem[txcb] == 0x00, 'TXCB result success')
+
+print('== 10: svc5 passes on a non-econet interrupt ==')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.a == 5, 'A=5 returned: interrupt passed to the next ROM')
+
+print('== 11: page-crossing copy loops (>=256 bytes everywhere) ==')
+# 11a: 1KB transmit through etb_page
+big_tx = bytes((i*7) & 0xff for i in range(1024))
+cpu.mem[0x4000:0x4400] = big_tx
+for off, v in enumerate([0x80, 0x99, 254, 1, 0x00, 0x40, 0xff, 0xff, 0x00, 0x44, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v
+cpu.mem[0xa0] = txcb; cpu.mem[0xa1] = 0
+cpu.mem[0x0d63] = 0                              # no tube: local path
+state = {'acked': False}
+def wr_big(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and not state['acked']:
+        for ip, port, data in list(udp_out):
+            if data[0] == 2 and not state['acked']:
+                check(data[8:] == big_tx, '1KB tx payload intact through the page loop')
+                hx('U %x %d %s' % (IP10, 32768, aun(3, 0x99, 0, int.from_bytes(data[4:8],'little')).hex()))
+                state['acked'] = True
+udp_out.clear()
+CPU.wr = wr_big
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check(cpu.mem[txcb] == 0x00, '1KB tx success')
+
+# 11b: 600-byte Tube receive (etso_page) and Tube transmit (etsi_page)
+cpu.mem[0x0d63] = 0x01
+cpu.mem[0x0d61] = 0x80
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x30, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00]):
+    cpu.mem[txcb+off] = v
+cpu.tube_out = bytearray()
+tp600 = bytes((i*3) & 0xff for i in range(600))
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x8000, tp600).hex()))
+cpu.call(SYM['eco_rx_pump'])
+check(bytes(cpu.tube_out) == tp600, '600-byte rx payload streamed to Tube (page loop)')
+cpu.tube_in = bytes((i*5) & 0xff for i in range(600)); cpu.tube_in_pos = 0
+for off, v in enumerate([0x80, 0x99, 254, 1, 0x00, 0x00, 0x00, 0x00, 0x58, 0x02, 0x00, 0x00]):
+    cpu.mem[txcb+off] = v                        # tube source, len &258=600
+state = {'acked': False}
+def wr_t600(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and not state['acked']:
+        for ip, port, data in list(udp_out):
+            if data[0] == 2 and not state['acked']:
+                check(data[8:] == bytes((i*5) & 0xff for i in range(600)), '600-byte Tube tx fetched via page loop')
+                hx('U %x %d %s' % (IP10, 32768, aun(3, 0x99, 0, int.from_bytes(data[4:8],'little')).hex()))
+                state['acked'] = True
+udp_out.clear()
+CPU.wr = wr_t600
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check(cpu.mem[txcb] == 0x00, '600-byte Tube tx success')
+cpu.mem[0x0d63] = 0
+
+# 11c: 600-byte remote PEEK and POKE (eih_pk_page / eih_po_page)
+for i in range(600): cpu.mem[0x4800+i] = (i*11) & 0xff
+args = bytes([0x00,0x48,0xff,0xff, 0x58,0x4a,0xff,0xff])   # &4800-&4A58
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x01, 0x9000, args).hex()))
+hx('L')
+cpu.call(SYM['svc5_irq_check'])
+reps = [d for _,_,d in udp_out if d[0] == 6]
+check(len(reps) == 1 and reps[0][8:] == bytes(cpu.mem[0x4800:0x4800+600]), '600-byte PEEK reply (page loop)')
+poke = bytes([0x00,0x4c,0xff,0xff]) + bytes((i^0x5a)&0xff for i in range(600))
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x02, 0x9004, poke).hex()))
+hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(bytes(cpu.mem[0x4c00:0x4c00+600]) == poke[4:], '600-byte POKE written (page loop)')
+
+print('== 12: workspace-slot scan (erp_next_slot / erp_try_ws) ==')
+cpu.mem[0x0d61] = 0xc0                           # both lists active
+cpu.mem[0x9f]  = 0x52                            # nfs_workspace_hi -> page &5200
+for off, v in enumerate([0x7f, 0x91, 0, 0, 0,0,0,0, 0,0,0,0]):
+    cpu.mem[txcb+off] = v                        # &00C0 CB: port &91 (mismatch)
+for off, v in enumerate([0x7f, 0x92, 0, 0, 0,0,0,0, 0,0,0,0]):
+    cpu.mem[0x5200+off] = v                      # ws slot 0: port &92 (mismatch)
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x53, 0xff, 0xff, 0x40, 0x53, 0xff, 0xff]):
+    cpu.mem[0x520c+off] = v                      # ws slot 1: port &90, buf &5300
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x9100, b'SLOT2!').hex()))
+cpu.call(SYM['eco_rx_pump'])
+check(bytes(cpu.mem[0x5300:0x5306]) == b'SLOT2!', 'frame delivered to the 2nd workspace slot')
+check(cpu.mem[0x520c] == 0x80, 'slot 1 completed; slot 0 and &00C0 CB skipped')
+check(cpu.mem[txcb] == 0x7f and cpu.mem[0x5200] == 0x7f, 'mismatching CBs untouched')
+cpu.mem[0x0d61] = 0x80
+
+print('== 13: hooks, bad ctrl, not-ready ==')
+# eco_pump_dec2: pump + DEC of the wait_net_tx_ack middle counter
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x9200, b'HOOK').hex()))
+cpu.sp = 0xf0; cpu.x = 0xf0                      # X = SP as wait_net_tx_ack's TSX
+cpu.mem[0x01f2] = 5                              # middle counter at &0102+X
+cpu.call(SYM_PUMPDEC) if False else None
+cpu.push(0xff); cpu.push(0x41)                   # manual JSR frame for call()
+cpu.pc = 0  # (placeholder; use call helper instead)
+cpu.sp = 0xf0
+cpu.x = 0xf0
+cpu.call(SYM['eco_pump_dec2'])
+check(bytes(cpu.mem[0x3100:0x3104]) == b'HOOK', 'eco_pump_dec2 pumped the frame')
+check(cpu.mem[0x01f2] == 4, 'eco_pump_dec2 decremented the middle counter')
+# eco_osw12_shim: pump + displaced instructions
+cpu.mem[0x9d] = 0x77                             # net_rx_ptr_hi
+cpu.call(SYM['eco_osw12_shim'])
+check(cpu.mem[0xab] == 0x77, 'osw12 shim ran the displaced lda/sta')
+# bad control byte (port 0, ctrl &8C -> out of immediate range)
+for off, v in enumerate([0x8c, 0x00, 254, 1, 0x00, 0x30, 0xff, 0xff, 0x04, 0x30, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v
+cpu.call(SYM['tx_begin'])
+check(cpu.mem[txcb] == 0x44, 'ctrl &8C port 0 -> &44 bad control block')
+# Pi not ready: INIT fails -> placeholder station, C=1
+hx('R 0')
+cpu.mem[0x0d23] = 0                              # force re-init
+cpu.call(SYM['eco_ensure_init'])
+check(cpu.c and cpu.y == 0xfe, 'Pi not ready: C=1, placeholder station &FE')
+hx('R 1')
+cpu.mem[0x0d23] = 0
+cpu.call(SYM['eco_ensure_init'])
+check(not cpu.c and cpu.y == 32, 'recovers once the network is back')
+
+print('== 14: outbound immediate with >256-byte reply (eti_rpage) ==')
+for off, v in enumerate([0x81, 0x00, 254, 1, 0x00, 0x56, 0xff, 0xff, 0x58, 0x58, 0xff, 0xff,
+                          0,0,0,0]):
+    cpu.mem[txcb+off] = v                        # peek, reply buffer &5600 size 600
+state = {'acked': False}
+rep600 = bytes((i*13) & 0xff for i in range(600))
+def wr_imm6(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and not state['acked']:
+        for ip, port, data in list(udp_out):
+            if data[0] == 5 and not state['acked']:
+                hx('U %x %d %s' % (IP10, 32768, aun(6, 0, 0x01, int.from_bytes(data[4:8],'little'), rep600).hex()))
+                state['acked'] = True
+udp_out.clear()
+CPU.wr = wr_imm6
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check(cpu.mem[txcb] == 0x00, 'immediate with 600-byte reply succeeded')
+check(bytes(cpu.mem[0x5600:0x5600+600]) == rep600, '600-byte reply landed (page loop)')
+
+print('== 15: remote HALT spins in svc5 until CONTINUE ==')
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x06, 0xa000).hex()))    # HALT
+hx('L')
+inj = {'reads': 0, 'done': False}
+orig_rd = CPU.rd
+def rd_inject(self, a):
+    if (a & 0xffff) == 0xfc88:
+        inj['reads'] += 1
+        if inj['reads'] == 30 and not inj['done']:
+            inj['done'] = True
+            hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x07, 0xa004).hex()))  # CONTINUE
+            hx('L')
+    return orig_rd(self, a)
+CPU.rd = rd_inject
+cpu.call(SYM['svc5_irq_check'], limit=5_000_000)
+CPU.rd = orig_rd
+check(inj['done'], 'machine stayed halted across many polls')
+check(cpu.a == 0, 'svc5 returned claimed after CONTINUE released the halt')
+check(cpu.mem[0x0d37] == 0, 'halt flag cleared')
+reps = [d for _,_,d in udp_out if d[0] == 6]
+check(len(reps) == 2, 'both HALT and CONTINUE were acknowledged')
+
+print('== 16: adlc_init (BREAK-time entry) and pump bail paths ==')
+cpu.mem[0xfff4] = 0x60                           # stub MOS OSBYTE: RTS
+cpu.mem[0x0d23] = 0x80                           # already inited: ensure_init fast path
+cpu.call(SYM['adlc_init'])
+check(cpu.mem[0x0d60] == 0x80 and cpu.mem[0x0d62] == 0x80,
+      'adlc_init sets tx_complete_flag and econet_init_flag')
+check(cpu.mem[0x0d23] == 0x80, 'engine re-validated through ensure_init')
+# erp_bail: pump is a no-op before INIT
+cpu.mem[0x0d23] = 0
+cpu.a, cpu.x, cpu.y = 0x12, 0x34, 0x56
+cpu.call(SYM['eco_rx_pump'])
+check((cpu.a, cpu.x, cpu.y) == (0x12, 0x34, 0x56), 'pump bails cleanly before INIT, registers preserved')
+cpu.mem[0x0d23] = 0x80
+
+H.stdin.write('Q\n')
+print(f'\nALL {ok} LOCKSTEP CHECKS PASSED  ({cpu.instructions} instructions executed)')

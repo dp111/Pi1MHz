@@ -2410,10 +2410,10 @@ void fb_emulator_init(uint8_t instance, uint8_t address)
 
   Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
  // Create 6 bytes of RAM for vector code
-  Pi1MHz_MemoryWrite((uint32_t)(address+0), 0x8D);
+  Pi1MHz_MemoryWrite((uint32_t)(address+0), 0x8D); // STA abs
   Pi1MHz_MemoryWrite((uint32_t)(address+1), address);
   Pi1MHz_MemoryWrite((uint32_t)(address+2), 0XFC);
-  Pi1MHz_MemoryWrite((uint32_t)(address+3), 0x4c);
+  Pi1MHz_MemoryWrite((uint32_t)(address+3), 0x4c); // JMP
 
   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 4), Pi1MHz_EmulatedMemoryByte);
   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + 5), Pi1MHz_EmulatedMemoryByte);

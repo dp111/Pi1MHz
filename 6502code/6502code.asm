@@ -315,7 +315,7 @@ ORG &FD00
 ; MMFSv2
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHZ/SWMMFS2.rom"
+    LOADFILETOSWR "Pi1MHz/SWMMFS2.rom"
     ENDBLOCK &500
 }
 ; Page 6
@@ -333,17 +333,17 @@ ORG &FD00
     ENDBLOCK &700
 }
 ; Page 8
-; Xfer program ??
+; ANFS for the BEEB
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/BSrom.rom"
+    LOADFILETOSWR "Pi1MHz/ANFSBEEB.rom"
     ENDBLOCK &800
 }
 ; Page 9
-; Remount mount program ??
+; ANFS for the M128
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/BSrom.rom"
+    LOADFILETOSWR "Pi1MHz/ANFSM128.rom"
     ENDBLOCK &900
 }
 ; Page 10

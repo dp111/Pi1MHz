@@ -208,6 +208,12 @@ static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;
 void Pi1MHz_LED(int led);
 void Pi1MHz_Register_Memory(int access, uint8_t addr, callback_func_ptr function_ptr );
 void Pi1MHz_Register_Poll( func_ptr function_ptr );
+/* Shared nIRQ line, one mask bit per requesting emulator (the line is
+ * asserted while any source bit is set). Pi1MHz_SetnIRQ() is the
+ * legacy single-source entry, used by harddisc. */
+#define PI1MHZ_IRQ_SRC_HARDDISC 0u
+#define PI1MHZ_IRQ_SRC_ECONET   1u
+void Pi1MHz_SetnIRQ_src(uint8_t src, bool assert_irq);
 void Pi1MHz_SetnIRQ(bool irq);
 void Pi1MHz_SetnNMI(bool nmi);
 

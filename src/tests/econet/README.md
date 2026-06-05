@@ -24,7 +24,7 @@ FRED/JIM hooks drive the REAL econet_emulator.c / econet_aun.c /
 econet_config.c, compiled on the host against the stub headers here.
 A scripted AUN peer validates the wire format independently.
 
-39 checks across 11 scenarios: init + cmdline config; tx/ACK with
+86 checks across 17 scenarios: init + cmdline config; tx/ACK with
 header+payload validation; NAK -> &41; rx-pump delivery with the RXCB
 completion bytes checked individually; rx-queue ordering (two frames
 both ACKed, delivered in order, no retransmission); unmatched-frame
@@ -49,3 +49,20 @@ Paths can be overridden with ECO_SRC / ECO_ROM / ECO_SYMS / ECO_HARNESS.
 - The rx single-buffer overwrite race, eliminated by the
   RX_POLL-holds / RX_DONE-pops handshake plus the per-block frame
   queue. (Lockstep scenario 4b proves ordering with no buffer reuse.)
+
+## 4. Fuzzers (run under ASan/UBSan)
+- `fuzz_engine.c` — 2M random operations against the engine: malformed
+  datagrams, hostile lengths, random API interleavings, queue/map
+  invariants asserted every iteration.
+- `fuzz_cmd.c` — 400k hostile Beeb command blocks through the real
+  dispatch (random opcodes 30-44, adversarial offsets/lengths) plus
+  random inbound traffic.
+
+    gcc -std=gnu2x -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+        -Ilockstep -o fz fuzz_engine.c ../../econet_aun.c && ./fz
+
+## Coverage
+The lockstep CPU records every executed PC; all 107 code labels in the
+econet ROM regions are exercised (the three data tables excepted),
+including every >=256-byte page-crossing copy loop, the workspace-slot
+scan, both pump hooks, halt/continue, and all error paths.

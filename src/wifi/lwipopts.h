@@ -23,8 +23,13 @@
 
 #define LWIP_IPV4                       1
 #define LWIP_IPV6                       0
-#define IP_REASSEMBLY                   0
-#define IP_FRAG                         0
+/* Econet/AUN: large fileserver bulk transfers arrive as fragmented UDP
+ * datagrams (up to AUN_MAX_DATA = 8K + headers), so reassembly and
+ * fragmentation are enabled. IP_REASS_MAX_PBUFS sized for one 8K
+ * datagram in flight (8192/PBUF_POOL_BUFSIZE + slack). */
+#define IP_REASSEMBLY                   1
+#define IP_FRAG                         1
+#define IP_REASS_MAX_PBUFS              16
 
 #define LWIP_ARP                        1
 #define LWIP_ETHERNET                   1

@@ -1,5 +1,9 @@
 svc5_irq_check 8028
+eco_rx_pump 8153
+eco_imm_handle 82e3
 tx_begin 858c
 eco_ensure_init 85c8
-eco_tx_begin 8666
-eco_rx_pump 8869
+eco_tx_begin 866c
+eco_pump_dec2 80d6
+eco_osw12_shim 80dd
+adlc_init 8074

@@ -244,9 +244,27 @@ bool Pi1MHz_is_rst_active(void) {
    return ((RPI_GpioBase->GPLEV0 & NRST_MASK) == 0);
 }
 
+/* nIRQ is a shared open-collector line; multiple emulators may want to
+ * assert it. Each caller owns one bit of the mask, so one emulator
+ * releasing its request cannot clear another's. The legacy
+ * Pi1MHz_SetnIRQ() maps to the harddisc source bit, preserving its
+ * existing behaviour exactly when it is the only user. */
+static volatile uint8_t Pi1MHz_nirq_mask;
+
+void Pi1MHz_SetnIRQ_src(uint8_t src, bool assert_irq)
+{
+   uint8_t mask = Pi1MHz_nirq_mask;
+   if (assert_irq)
+      mask |= (uint8_t)(1u << src);
+   else
+      mask &= (uint8_t)~(1u << src);
+   Pi1MHz_nirq_mask = mask;
+   RPI_SetGpioPinFunction(NIRQ_PIN, (mask != 0) ? FS_OUTPUT : FS_INPUT);
+}
+
 void Pi1MHz_SetnIRQ(bool irq)
 {
-   RPI_SetGpioPinFunction(NIRQ_PIN, irq?FS_OUTPUT:FS_INPUT);
+   Pi1MHz_SetnIRQ_src(PI1MHZ_IRQ_SRC_HARDDISC, irq);
 }
 
 void Pi1MHz_SetnNMI(bool nmi)

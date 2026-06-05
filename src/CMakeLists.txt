@@ -194,9 +194,15 @@ file( GLOB FrameBuffer_emulator_files
    rpi/interrupts.c
 )
 
-# Discaccess emulator
+# Discaccess emulator (econet commands 30+ share its command interface)
 file( GLOB discaccess_emulator_files
    discaccess_emulator.c
+   econet_aun.c
+   econet_aun.h
+   econet_config.c
+   econet_config.h
+   econet_emulator.c
+   econet_emulator.h
 )
 
 file( GLOB mouse_redirect_files
@@ -244,6 +250,7 @@ file( GLOB lwip_files
    ${LWIP_ROOT}/src/core/ipv4/icmp.c
    ${LWIP_ROOT}/src/core/ipv4/ip4.c
    ${LWIP_ROOT}/src/core/ipv4/ip4_addr.c
+   ${LWIP_ROOT}/src/core/ipv4/ip4_frag.c
    ${LWIP_ROOT}/src/netif/ethernet.c
 )
 
@@ -282,6 +289,7 @@ set_source_files_properties(
    ${LWIP_ROOT}/src/core/ipv4/icmp.c
    ${LWIP_ROOT}/src/core/ipv4/ip4.c
    ${LWIP_ROOT}/src/core/ipv4/ip4_addr.c
+   ${LWIP_ROOT}/src/core/ipv4/ip4_frag.c
    ${LWIP_ROOT}/src/netif/ethernet.c
    PROPERTIES
    COMPILE_OPTIONS "-Wno-duplicated-branches;-Wno-arith-conversion;-Wno-sign-conversion;-Wno-strict-overflow;-Wno-attributes;-Wno-packed;-Wno-conversion"
