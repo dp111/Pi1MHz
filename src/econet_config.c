@@ -50,6 +50,42 @@ bool eco_parse_station(const char *s, uint8_t *net, uint8_t *stn)
    return true;
 }
 
+bool eco_station_is_ip(const char *s, uint8_t *net, bool *net_from_ip)
+{
+   uint32_t n = 0;
+   bool from_ip = false;
+   const char *dot = NULL;
+   const char *tail;
+
+   if (s == NULL)
+      return false;
+
+   for (const char *p = s; *p != '\0'; p++)   /* split on the first '.' */
+      if (*p == '.') { dot = p; break; }
+
+   if (dot != NULL) {                /* there is a "<prefix>." part */
+      if (dot - s == 2 &&            /* prefix is "ip" -> net from IP too */
+          (s[0] == 'i' || s[0] == 'I') && (s[1] == 'p' || s[1] == 'P')) {
+         from_ip = true;
+      } else {                       /* prefix must be a literal net 0-254 */
+         const char *p = s;
+         if (!parse_num(&p, 254, &n) || p != dot)
+            return false;
+      }
+      tail = dot + 1;
+   } else {
+      tail = s;                      /* bare "ip": net defaults to 0 */
+   }
+
+   if ((tail[0] == 'i' || tail[0] == 'I') &&
+       (tail[1] == 'p' || tail[1] == 'P') && tail[2] == '\0') {
+      *net = (uint8_t)n;
+      *net_from_ip = from_ip;
+      return true;
+   }
+   return false;
+}
+
 bool eco_parse_net(const char *s, uint8_t *net)
 {
    uint32_t v;

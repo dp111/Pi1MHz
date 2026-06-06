@@ -293,11 +293,27 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       };
       uint8_t eco_stn = Pi1MHz->JIM_ram[cp + 1];
       uint8_t eco_net = Pi1MHz->JIM_ram[cp + 2];
-      if (eco_stn == 0 &&        /* 0 = "use the Pi-side configuration" */
-          !eco_parse_station(get_cmdline_prop("econet_station"),
-                             &eco_net, &eco_stn)) {
-         eco_stn = ECO_DEFAULT_STATION;
-         eco_net = ECO_DEFAULT_NET;
+      if (eco_stn == 0) {        /* 0 = "use the Pi-side configuration" */
+         const char *stn_cfg = get_cmdline_prop("econet_station");
+         uint8_t cfg_net = ECO_DEFAULT_NET;
+         bool    net_from_ip = false;
+         if (eco_station_is_ip(stn_cfg, &cfg_net, &net_from_ip)) {
+            /* econet_station=[net.]ip: station = last octet of our IPv4,
+             * and for "ip.ip" the net = the third octet. address_ready
+             * was verified above, so the netif address is valid here.
+             * lwIP stores a.b.c.d with 'a' in the low byte. */
+            uint32_t ip = ip4_addr_get_u32(netif_ip4_addr(&net->netif));
+            eco_stn = (uint8_t)(ip >> 24);          /* the 'd' of a.b.c.d */
+            eco_net = net_from_ip ? (uint8_t)(ip >> 16)  /* the 'c' */
+                                  : cfg_net;
+         } else if (!eco_parse_station(stn_cfg, &eco_net, &eco_stn)) {
+            eco_stn = ECO_DEFAULT_STATION;
+            eco_net = ECO_DEFAULT_NET;
+         }
+         if (eco_stn == 0 || eco_stn == 0xFFu) {     /* .0/.255 host octet */
+            eco_stn = ECO_DEFAULT_STATION;           /* is not a valid stn */
+            eco_net = ECO_DEFAULT_NET;
+         }
       }
       eco_irq_enabled = (Pi1MHz->JIM_ram[cp + 8] & 1u) != 0;
       bool host_imm   = (Pi1MHz->JIM_ram[cp + 8] & 2u) != 0;
