@@ -1,9 +1,9 @@
-/* econet_aun.h - AUN (Acorn Universal Networking) protocol engine.
+/* aun.h - AUN (Acorn Universal Networking) protocol engine.
  *
  * Pure C, no bare-metal or lwIP dependencies: the UDP transport and the
  * millisecond clock are injected via function pointers, so this module
  * compiles and runs unmodified on a PC host for unit testing (see
- * tests/econet/).  All platform glue lives in econet_emulator.c.
+ * tests/econet/).  All platform glue lives in aun_emulator.c.
  *
  * Wire format (one UDP datagram per AUN transaction leg, default UDP
  * port 32768):
@@ -21,8 +21,8 @@
  * as AUN/PiEconetBridge/BeebEm do.
  */
 
-#ifndef ECONET_AUN_H
-#define ECONET_AUN_H
+#ifndef AUN_H
+#define AUN_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -256,7 +256,7 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
 void aun_poll(aun_engine_t *e);
 
 /* Configure the loopback test responder (see header comment in
- * econet_aun.c). enable=false turns it off. */
+ * aun_aun.c). enable=false turns it off. */
 void aun_test_responder(aun_engine_t *e, bool enable,
                         uint8_t stn, uint8_t net);
 

@@ -266,7 +266,7 @@ def check(cond, what):
 
 # ---------------- scenarios ----------------
 print('== setup ==')
-hx('S econet_station=1.32 econet_map=1.254=192.168.1.10')
+hx('S aun_station=1.32 aun_map=1.254=192.168.1.10')
 hx('R 1')
 cpu = CPU()
 
@@ -758,6 +758,29 @@ for _ in range(40):
     cpu.step()
 check(cpu.pc == 0x8a38, 'service_handler reached restore_rom_slot after service 15')
 check(cpu.mem[0x02a1] == 0x82, 'service 15 left rom_type_table[slot] intact (P12 fix)')
+
+print('== 19: aun_station=ip / ip.ip derive station (and net) from our IPv4 ==')
+# The harness pins our address to 192.168.1.20 (the R command), so the last
+# octet is 20 and the third octet is 1.  Drive INIT (station byte 0 = "use
+# the Pi-side configuration") + STATUS straight through the command interface
+# and read back the station/net the engine resolved.
+CP = 0xff0000 | (0xe0 << 8)            # command page 0xE0 (DISC_RAM_BASE == 0)
+def init_and_status(cmdline):
+    hx('S ' + cmdline)
+    for off in range(16):              # clear the command block
+        hx('P %x 0' % (CP + off))
+    hx('P %x %x' % (CP, 30))           # AUN_CMD_INIT, station byte 0 = use Pi cfg
+    hx('C e0')
+    hx('P %x %x' % (CP, 31))           # AUN_CMD_STATUS
+    hx('C e0')
+    return hx('G %x' % (CP + 4)), hx('G %x' % (CP + 5))   # (station, net)
+
+stn, net = init_and_status('aun_station=ip')
+check(stn == 20, 'aun_station=ip -> station = last IP octet 20 (got %d)' % stn)
+check(net == 0,  'aun_station=ip -> net 0 (got %d)' % net)
+stn, net = init_and_status('aun_station=ip.ip')
+check(stn == 20, 'aun_station=ip.ip -> station 20 (got %d)' % stn)
+check(net == 1,  'aun_station=ip.ip -> net = third IP octet 1 (got %d)' % net)
 
 H.stdin.write('Q\n')
 print(f'\nALL {ok} LOCKSTEP CHECKS PASSED  ({cpu.instructions} instructions executed)')

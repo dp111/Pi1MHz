@@ -3,28 +3,29 @@
 Three layers, all host-runnable (no hardware, no cross-compiler):
 
 ## 1. AUN engine unit tests
-`test_econet_aun.c` — 14 scenarios against the pure engine with a stub
+`test_aun.c` — 14 scenarios against the pure engine with a stub
 transport and fake clock: tx ack/nak/busy/retry/timeout, no-route, rx
 delivery + wildcards + ctrl bit-7 restore, the rx queue (frames ACKed
 and ordered behind a held head, NAK only when AUN_RX_QUEUE is full),
 duplicate suppression, unknown-source drop, broadcast fan-out,
 immediates both directions, the loopback test responder, send-failure.
 
-    gcc -std=gnu2x -I../.. -o t test_econet_aun.c ../../econet_aun.c && ./t
+    gcc -std=gnu2x -I../../AUN -o t test_aun.c ../../AUN/aun.c && ./t
 
 ## 2. cmdline.txt parser unit tests
-`test_eco_config.c` — 19 cases for econet_station / econet_port /
-econet_map (valid forms, bounds, malformed entries).
+`test_aun_config.c` — 19 cases for aun_station / aun_port /
+aun_map (valid forms, bounds, malformed entries).
 
-    gcc -std=gnu2x -I../.. -o t test_eco_config.c ../../econet_config.c && ./t
+    gcc -std=gnu2x -I../../AUN -o t test_aun_config.c ../../AUN/aun_config.c && ./t
 
 ## 3. Lockstep integration test (`lockstep/`)
 The patched ANFS ROM bytes execute in a Python 6502 emulator whose
-FRED/JIM hooks drive the REAL econet_emulator.c / econet_aun.c /
-econet_config.c, compiled on the host against the stub headers here.
+FRED/JIM hooks drive the REAL AUN/aun_emulator.c / AUN/aun.c /
+AUN/aun_config.c, compiled on the host against the stub headers here.
 A scripted AUN peer validates the wire format independently.
 
-91 checks across 18 scenarios: init + cmdline config; tx/ACK with
+95 checks across 19 scenarios: init + cmdline config; IP-derived station
+(aun_station=ip / ip.ip -> station and net from our own IPv4); tx/ACK with
 header+payload validation; NAK -> &41; rx-pump delivery with the RXCB
 completion bytes checked individually; rx-queue ordering (two frames
 both ACKed, delivered in order, no retransmission); unmatched-frame
@@ -63,10 +64,8 @@ Paths can be overridden with ECO_SRC / ECO_ROM / ECO_SYMS / ECO_HARNESS.
   random inbound traffic.
 
     gcc -std=gnu2x -g -fsanitize=address,undefined -fno-sanitize-recover=all \
-        -Ilockstep -o fz fuzz_engine.c ../../econet_aun.c && ./fz
+        -Ilockstep -o fz fuzz_engine.c ../../AUN/aun.c && ./fz
 
 ## Coverage
 The lockstep CPU records every executed PC; all 107 code labels in the
-econet ROM regions are exercised (the three data tables excepted),
-including every >=256-byte page-crossing copy loop, the workspace-slot
-scan, both pump hooks, halt/continue, and all error paths.
+econet ROM

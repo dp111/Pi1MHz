@@ -1,12 +1,12 @@
-/* Lockstep harness: drives the REAL econet_emulator.c/econet_aun.c/
- * econet_config.c on the host via a line protocol on stdin/stdout.
+/* Lockstep harness: drives the REAL aun_emulator.c/aun_aun.c/
+ * aun_config.c on the host via a line protocol on stdin/stdout.
  *   S <cmdline>      set the fake cmdline.txt contents
  *   R <0|1>          set wifi address_ready
  *   P <addr> <val>   poke JIM byte (hex)
  *   G <addr>         peek JIM byte -> "V <val>"
  *   C <page>         FRED &FCAA write: command + one poll -> "K <result>"
  *   U <ip> <port> <hex>  inject inbound UDP datagram
- *   L                run econet_poll once (retries/timeouts)
+ *   L                run aun_emulator_poll once (retries/timeouts)
  *   Q                quit
  * Outbound datagrams are reported as: O <ip> <port> <hex>
  */
@@ -17,7 +17,7 @@
 #include "Pi1MHz.h"
 #include "lwip/udp.h"
 #include "wifi/wifi_lwip.h"
-#include "econet_emulator.h"
+#include "aun_emulator.h"
 
 /* ---- stub state ---- */
 static Pi1MHz_t pi;
@@ -96,7 +96,7 @@ int main(void)
    static char line[20000];
    pi.JIM_ram = calloc(1, 32u*1024u*1024u);
    pi.JIM_ram_size = 2;            /* DISC_RAM_BASE == 0 */
-   econet_emulator_init();
+   aun_emulator_init();
 
    while (fgets(line, sizeof line, stdin)) {
       char *nl = strchr(line, '\n'); if (nl) *nl = 0;
@@ -109,7 +109,7 @@ int main(void)
       case 'C': { unsigned pg; sscanf(line+2, "%x", &pg);
                   uint32_t cp = DISC_RAM_BASE | 0xFF0000u | (uint32_t)(pg << 8);
                   have_result = 0;
-                  econet_emulator_command(cp, 0xaa);
+                  aun_emulator_command(cp, 0xaa);
                   poll_fn();                       /* main-loop turn executes it */
                   printf("K %02x\n", have_result ? last_result : 0xee); break; }
       case 'U': { unsigned ip, port; static char hex[18000]; static uint8_t buf[8500]; uint32_t n = 0;

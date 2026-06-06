@@ -1,5 +1,5 @@
-/* econet_aun.c - AUN protocol engine. See econet_aun.h for the wire
- * format and the design notes; platform glue is in econet_emulator.c.
+/* aun_aun.c - AUN protocol engine. See aun.h for the wire
+ * format and the design notes; platform glue is in aun_emulator.c.
  *
  * Design constraints:
  *  - Single outstanding transmit. The 8-bit NFS performs one transmit
@@ -23,7 +23,7 @@
 
 #include <string.h>
 
-#include "econet_aun.h"
+#include "aun.h"
 
 /* ---- small helpers ------------------------------------------------------*/
 
@@ -109,11 +109,11 @@ static void build_header(uint8_t *hdr, uint8_t type, uint8_t port,
 /* Send an 8-byte ACK/NAK echoing the sequence number of the datagram it
  * answers. */
 static void send_ack_nak(aun_engine_t *e, uint32_t ip_be, uint16_t port,
-                         uint8_t type, uint8_t eco_port, uint8_t ctrl,
+                         uint8_t type, uint8_t aun_port, uint8_t ctrl,
                          uint32_t seq)
 {
    uint8_t hdr[AUN_HDR_SIZE];
-   build_header(hdr, type, eco_port, ctrl, seq);
+   build_header(hdr, type, aun_port, ctrl, seq);
    (void)udp_send(e, ip_be, port, hdr, sizeof hdr);
    if (type == AUN_TYPE_ACK)
       e->counters.ack_sent++;

@@ -171,6 +171,7 @@ set(LWIP_ROOT wifi/lwip)
 # strict warnings (same rationale as the TinyUSB includes above).
 include_directories(SYSTEM ${LWIP_ROOT}/src/include)
 include_directories(wifi)
+include_directories(AUN)
 
 # M5000 emulator
 file( GLOB M5000_emulator_files
@@ -194,15 +195,15 @@ file( GLOB FrameBuffer_emulator_files
    rpi/interrupts.c
 )
 
-# Discaccess emulator (econet commands 30+ share its command interface)
+# Discaccess emulator (AUN commands 30+ share its command interface)
 file( GLOB discaccess_emulator_files
    discaccess_emulator.c
-   econet_aun.c
-   econet_aun.h
-   econet_config.c
-   econet_config.h
-   econet_emulator.c
-   econet_emulator.h
+   AUN/aun.c
+   AUN/aun.h
+   AUN/aun_config.c
+   AUN/aun_config.h
+   AUN/aun_emulator.c
+   AUN/aun_emulator.h
 )
 
 file( GLOB mouse_redirect_files

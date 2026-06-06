@@ -1,13 +1,13 @@
 /* Fuzz the Beeb-facing command dispatch: random command blocks with
  * hostile offsets/lengths, under ASan/UBSan. Uses the real
- * econet_emulator.c via the lockstep stubs. */
+ * aun_emulator.c via the lockstep stubs. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "Pi1MHz.h"
 #include "lwip/udp.h"
 #include "wifi/wifi_lwip.h"
-#include "econet_emulator.h"
+#include "aun_emulator.h"
 
 static Pi1MHz_t pi;
 Pi1MHz_t *const Pi1MHz = &pi;
@@ -25,9 +25,9 @@ void Pi1MHz_MemoryWrite(uint32_t a, uint8_t d){ pi.Memory[a & 0x1ff] = d; }
 uint32_t RPI_GetSystemTime(void){ static uint32_t t; return t += 997; }
 char *get_cmdline_prop(const char *p){
    static char r[64];
-   if (!strcmp(p,"econet_station")) { strcpy(r,"1.32"); return r; }
-   if (!strcmp(p,"econet_map")) { strcpy(r,"1.254=10.0.0.1"); return r; }
-   if (!strcmp(p,"econet_learn")) { strcpy(r,"2"); return r; }
+   if (!strcmp(p,"aun_station")) { strcpy(r,"1.32"); return r; }
+   if (!strcmp(p,"aun_map")) { strcpy(r,"1.254=10.0.0.1"); return r; }
+   if (!strcmp(p,"aun_learn")) { strcpy(r,"2"); return r; }
    return NULL;
 }
 struct pbuf *pbuf_alloc(int l, u16_t n, int t){ (void)l;(void)t;
@@ -49,7 +49,7 @@ int main(void){
    pi.JIM_ram_size = 2;
    wctx.address_ready = true; wctx.netif_added = true;
    wctx.netif.ip = 0x1401a8c0; wctx.netif.mask = 0x00ffffff;
-   econet_emulator_init();
+   aun_emulator_init();
    for (long i = 0; i < 400000; i++) {
       uint32_t page = 0xE0 + rnd()%8;
       uint32_t cp = 0xFF0000u | (page<<8);
@@ -61,7 +61,7 @@ int main(void){
          if (r%5==0) pi.JIM_ram[cp+(uint32_t)k] = 0xff;   /* big offsets */
          if (r%7==0) pi.JIM_ram[cp+(uint32_t)k] = 0;
       }
-      econet_emulator_command(cp, 0xaa);
+      aun_emulator_command(cp, 0xaa);
       poll_fn();
       /* feed the engine some inbound traffic too */
       if (rnd()%4==0 && the_pcb.cb) {

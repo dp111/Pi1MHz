@@ -1,9 +1,9 @@
-/* econet_config.c - parsers for the econet cmdline.txt options.
- * See econet_config.h for the option syntax. Pure C, host-testable. */
+/* aun_config.c - parsers for the econet cmdline.txt options.
+ * See aun_config.h for the option syntax. Pure C, host-testable. */
 
 #include <stddef.h>
 
-#include "econet_config.h"
+#include "aun_config.h"
 
 /* Parse an unsigned decimal number, advancing *s. Returns false if no
  * digits are present or the value exceeds 'max'. */
@@ -27,7 +27,7 @@ static bool parse_num(const char **s, uint32_t max, uint32_t *out)
    return true;
 }
 
-bool eco_parse_station(const char *s, uint8_t *net, uint8_t *stn)
+bool aun_parse_station(const char *s, uint8_t *net, uint8_t *stn)
 {
    uint32_t a, b;
 
@@ -50,7 +50,7 @@ bool eco_parse_station(const char *s, uint8_t *net, uint8_t *stn)
    return true;
 }
 
-bool eco_station_is_ip(const char *s, uint8_t *net, bool *net_from_ip)
+bool aun_station_is_ip(const char *s, uint8_t *net, bool *net_from_ip)
 {
    uint32_t n = 0;
    bool from_ip = false;
@@ -60,21 +60,21 @@ bool eco_station_is_ip(const char *s, uint8_t *net, bool *net_from_ip)
    if (s == NULL)
       return false;
 
-   for (const char *p = s; *p != '\0'; p++)   /* split on the first '.' */
+   for (const char *p = s; *p != '\0'; p++)
       if (*p == '.') { dot = p; break; }
 
-   if (dot != NULL) {                /* there is a "<prefix>." part */
-      if (dot - s == 2 &&            /* prefix is "ip" -> net from IP too */
+   if (dot != NULL) {
+      if (dot - s == 2 &&
           (s[0] == 'i' || s[0] == 'I') && (s[1] == 'p' || s[1] == 'P')) {
          from_ip = true;
-      } else {                       /* prefix must be a literal net 0-254 */
+      } else {
          const char *p = s;
          if (!parse_num(&p, 254, &n) || p != dot)
             return false;
       }
       tail = dot + 1;
    } else {
-      tail = s;                      /* bare "ip": net defaults to 0 */
+      tail = s;
    }
 
    if ((tail[0] == 'i' || tail[0] == 'I') &&
@@ -86,7 +86,7 @@ bool eco_station_is_ip(const char *s, uint8_t *net, bool *net_from_ip)
    return false;
 }
 
-bool eco_parse_net(const char *s, uint8_t *net)
+bool aun_parse_net(const char *s, uint8_t *net)
 {
    uint32_t v;
 
@@ -96,7 +96,7 @@ bool eco_parse_net(const char *s, uint8_t *net)
    return true;
 }
 
-bool eco_parse_machine(const char *s, uint8_t id[4])
+bool aun_parse_machine(const char *s, uint8_t id[4])
 {
    if (s == NULL)
       return false;
@@ -114,7 +114,7 @@ bool eco_parse_machine(const char *s, uint8_t id[4])
    return *s == '\0';
 }
 
-bool eco_parse_port(const char *s, uint16_t *port)
+bool aun_parse_port(const char *s, uint16_t *port)
 {
    uint32_t v;
 
@@ -144,7 +144,7 @@ static bool parse_ip(const char **s, uint32_t *ip_be)
    return true;
 }
 
-int eco_parse_map(const char *s, eco_map_add_fn add, void *user)
+int aun_parse_map(const char *s, aun_map_add_fn add, void *user)
 {
    int count = 0;
 

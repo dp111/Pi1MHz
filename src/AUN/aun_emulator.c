@@ -1,5 +1,5 @@
-/* econet_emulator.c - glue between the discaccess command interface and
- * the AUN protocol engine (econet_aun.c), plus the lwIP UDP transport.
+/* aun_emulator.c - glue between the discaccess command interface and
+ * the AUN protocol engine (aun_aun.c), plus the lwIP UDP transport.
  *
  * The Beeb drives this exactly like the disc commands: build a command
  * block in the top 64K of disc RAM, write the block's page number to
@@ -8,8 +8,8 @@
  *
  * Execution context: the FRED write callback runs inside the FIQ
  * handler, so it must not touch lwIP or the SDIO bus (the main loop may
- * be mid-transaction). econet_emulator_command() therefore only records
- * the request in a one-slot mailbox; econet_poll() executes it from the
+ * be mid-transaction). aun_emulator_command() therefore only records
+ * the request in a one-slot mailbox; aun_emulator_poll() executes it from the
  * main loop and writes the result byte. The Beeb-side protocol: command
  * block page numbers are >= &E0, every result is < &E0, and the FIQ has
  * already echoed the page number to &FCAA - so the Beeb writes the page
@@ -40,67 +40,67 @@
  *  40 TEST        +1 enable  +2 station  +3 net   (loopback responder)
  *  41 SET_MACHINE +4 machine id [4] (machine-peek reply bytes)
  *
- * Result codes are the AUN_* values from econet_aun.h (0 = OK).
+ * Result codes are the AUN_* values from aun.h (0 = OK).
  */
 
 #include <string.h>
 
-#include "Pi1MHz.h"
-#include "econet_aun.h"
-#include "econet_config.h"
-#include "econet_emulator.h"
-#include "rpi/info.h"
+#include "../Pi1MHz.h"
+#include "aun.h"
+#include "aun_config.h"
+#include "aun_emulator.h"
+#include "../rpi/info.h"
 #include <stdio.h>
-#include "wifi/wifi.h"
-#include "rpi/systimer.h"
+#include "../wifi/wifi.h"
+#include "../rpi/systimer.h"
 
-#include "wifi/wifi_lwip.h"
+#include "../wifi/wifi_lwip.h"
 
 #include "lwip/udp.h"
 #include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
 
 static aun_engine_t aun;
-static struct udp_pcb *eco_pcb;
+static struct udp_pcb *aun_pcb;
 
 /* One-slot command mailbox: written by the FIQ-context FRED callback,
- * consumed by econet_poll() in the main loop. 'pending' is the
+ * consumed by aun_emulator_poll() in the main loop. 'pending' is the
  * handshake flag; the FIQ only ever sets it when it is clear (the Beeb
  * waits for each result before issuing the next command). */
-static volatile bool     eco_pending;
-static volatile uint32_t eco_pending_cp;
-static volatile uint32_t eco_pending_addr;
+static volatile bool     aun_pending;
+static volatile uint32_t aun_pending_cp;
+static volatile uint32_t aun_pending_addr;
 
 /* Station used when the Beeb's INIT block carries station 0 ("use the
- * Pi-side configuration") and cmdline.txt has no econet_station. */
-#define ECO_DEFAULT_STATION 32u
-#define ECO_DEFAULT_NET     0u
+ * Pi-side configuration") and cmdline.txt has no aun_station. */
+#define AUN_DEFAULT_STATION 32u
+#define AUN_DEFAULT_NET     0u
 
-#define ECO_IRQ_STATUS_REG 0x88u
-static bool    eco_irq_enabled;
-static uint8_t eco_irq_state;
+#define AUN_IRQ_STATUS_REG 0xABu
+static bool    aun_irq_enabled;
+static uint8_t aun_irq_state;
 
 /* terse event log on the shared wifi debug channel, enabled by
- * econet_debug=1 in cmdline.txt */
-static bool eco_debug;
-#define ECO_LOG(...) do { if (eco_debug) wifi_debug_printf(__VA_ARGS__); } while (0)
+ * aun_debug=1 in cmdline.txt */
+static bool aun_debug;
+#define AUN_LOG(...) do { if (aun_debug) wifi_debug_printf(__VA_ARGS__); } while (0)
 
-static void eco_irq_update(void)
+static void aun_irq_update(void)
 {
    uint8_t st = 0;
-   if (eco_irq_enabled && aun.rx[0].open && aun.rx[0].count != 0)
+   if (aun_irq_enabled && aun.rx[0].open && aun.rx[0].count != 0)
       st = (uint8_t)(0x80u | aun.rx[0].count);
-   if (eco_irq_enabled && aun.himm.active)
+   if (aun_irq_enabled && aun.himm.active)
       st |= 0x40u;              /* immediate operation awaiting the host */
-   if (st != eco_irq_state) {
-      eco_irq_state = st;
-      Pi1MHz_MemoryWrite(ECO_IRQ_STATUS_REG, st);
+   if (st != aun_irq_state) {
+      aun_irq_state = st;
+      Pi1MHz_MemoryWrite(AUN_IRQ_STATUS_REG, st);
       Pi1MHz_SetnIRQ_src(PI1MHZ_IRQ_SRC_ECONET, st != 0);
    }
 }
 
-/* aun_map_add() adapter for the econet_map cmdline parser. */
-static bool eco_map_add_cb(void *user, uint8_t net, uint8_t stn,
+/* aun_map_add() adapter for the aun_map cmdline parser. */
+static bool aun_map_add_cb(void *user, uint8_t net, uint8_t stn,
                            uint32_t ip_be, uint16_t port)
 {
    return aun_map_add((aun_engine_t *)user, net, stn, ip_be, port);
@@ -122,7 +122,7 @@ static void jim_write32(uint32_t off, uint32_t v)
 
 /* Every buffer offset/length pair from the Beeb is untrusted; keep all
  * accesses inside the disc RAM region. */
-static bool eco_buffer_ok(uint32_t offset, uint32_t length)
+static bool aun_buffer_ok(uint32_t offset, uint32_t length)
 {
    if (offset > DISC_RAM_SIZE)
       return false;
@@ -131,11 +131,11 @@ static bool eco_buffer_ok(uint32_t offset, uint32_t length)
 
 /* ---- transport: lwIP UDP -------------------------------------------------*/
 
-static bool eco_udp_send(void *user, uint32_t ip_be, uint16_t port,
+static bool aun_udp_send(void *user, uint32_t ip_be, uint16_t port,
                          const uint8_t *buf, size_t len)
 {
    (void)user;
-   if (eco_pcb == NULL)
+   if (aun_pcb == NULL)
       return false;
 
    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
@@ -147,18 +147,18 @@ static bool eco_udp_send(void *user, uint32_t ip_be, uint16_t port,
    }
    ip_addr_t dest;
    ip_addr_set_ip4_u32(&dest, ip_be);
-   err_t r = udp_sendto(eco_pcb, p, &dest, port);
+   err_t r = udp_sendto(aun_pcb, p, &dest, port);
    pbuf_free(p);
    return r == ERR_OK;
 }
 
-static uint32_t eco_now_ms(void *user)
+static uint32_t aun_now_ms(void *user)
 {
    (void)user;
    return RPI_GetSystemTime() / 1000u;   /* us -> ms */
 }
 
-static void eco_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+static void aun_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
                          const ip_addr_t *addr, u16_t port)
 {
    /* static: poll-path buffer, function never re-entered (NO_SYS=1) */
@@ -176,34 +176,34 @@ static void eco_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
 /* ---- poll hook ------------------------------------------------------------*/
 
-static void econet_execute(uint32_t cp, uint32_t addr);
+static void aun_execute(uint32_t cp, uint32_t addr);
 
-static void econet_poll(void)
+static void aun_emulator_poll(void)
 {
-   if (eco_pending) {
-      uint32_t cp   = eco_pending_cp;
-      uint32_t addr = eco_pending_addr;
-      econet_execute(cp, addr);
-      eco_pending = false;
+   if (aun_pending) {
+      uint32_t cp   = aun_pending_cp;
+      uint32_t addr = aun_pending_addr;
+      aun_execute(cp, addr);
+      aun_pending = false;
    }
    aun_poll(&aun);
-   eco_irq_update();
+   aun_irq_update();
 }
 
-void econet_emulator_init(void)
+void aun_emulator_init(void)
 {
    /* The AUN engine itself comes up on the Beeb's INIT command (the
     * network stack may not be ready yet at RST); the poll hook is
     * registered once here - Pi1MHz_Register_Poll dedupes. */
-   eco_pending     = false;
-   eco_irq_enabled = false;
-   eco_irq_state   = 0;
-   Pi1MHz_MemoryWrite(ECO_IRQ_STATUS_REG, 0);
-   Pi1MHz_Register_Poll(econet_poll);
+   aun_pending     = false;
+   aun_irq_enabled = false;
+   aun_irq_state   = 0;
+   Pi1MHz_MemoryWrite(AUN_IRQ_STATUS_REG, 0);
+   Pi1MHz_Register_Poll(aun_emulator_poll);
 }
 
 /* Plain-text status block for the web UI (webserver.c /econet). */
-void econet_status_text(char *buf, size_t size)
+void aun_status_text(char *buf, size_t size)
 {
    size_t n = 0;
    #define APPEND(...) do { if (n < size) \
@@ -211,7 +211,7 @@ void econet_status_text(char *buf, size_t size)
    APPEND("station      %u.%u\n", aun.net, aun.station);
    APPEND("initialised  %s\n", aun.initialised ? "yes" : "no");
    APPEND("irq          enabled=%u status=&%02X\n",
-          eco_irq_enabled ? 1u : 0u, eco_irq_state);
+          aun_irq_enabled ? 1u : 0u, aun_irq_state);
    APPEND("rx queue     %u frame(s) held\n", aun.rx[0].count);
    APPEND("imm pending  %s\n", aun.himm.active ? "yes" : "no");
    APPEND("learn net    %u\n", aun.learn_net);
@@ -244,22 +244,22 @@ void econet_status_text(char *buf, size_t size)
 
 /* FIQ context: queue only. The discaccess dispatcher has already echoed
  * the command page number to the FRED result register; the real result
- * (always < &E0) is written by econet_execute() from the main loop. */
-void econet_emulator_command(uint32_t cp, uint32_t addr)
+ * (always < &E0) is written by aun_execute() from the main loop. */
+void aun_emulator_command(uint32_t cp, uint32_t addr)
 {
-   eco_pending_cp   = cp;
-   eco_pending_addr = addr;
-   eco_pending      = true;
+   aun_pending_cp   = cp;
+   aun_pending_addr = addr;
+   aun_pending      = true;
 }
 
-static void econet_execute(uint32_t cp, uint32_t addr)
+static void aun_execute(uint32_t cp, uint32_t addr)
 {
    uint32_t base_addr = DISC_RAM_BASE;
    uint8_t  result    = AUN_ERR_PARAM;
 
    switch (Pi1MHz->JIM_ram[cp]) {
 
-   case ECO_CMD_INIT:
+   case AUN_CMD_INIT:
    {
       const wifi_lwip_context_t *net = wifi_lwip_get_context();
       if (!net->address_ready) {
@@ -268,61 +268,72 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       }
       uint16_t listen = (uint16_t)jim_read32(cp + 4);
       if (listen == 0 &&
-          !eco_parse_port(get_cmdline_prop("econet_port"), &listen))
+          !aun_parse_port(get_cmdline_prop("aun_port"), &listen))
          listen = (uint16_t)AUN_DEFAULT_UDP_PORT;
 
-      if (eco_pcb != NULL) {
-         udp_remove(eco_pcb);
-         eco_pcb = NULL;
+      if (aun_pcb != NULL) {
+         udp_remove(aun_pcb);
+         aun_pcb = NULL;
       }
-      eco_pcb = udp_new();
-      if (eco_pcb == NULL || udp_bind(eco_pcb, IP_ADDR_ANY, listen) != ERR_OK) {
-         if (eco_pcb != NULL) {
-            udp_remove(eco_pcb);
-            eco_pcb = NULL;
+      aun_pcb = udp_new();
+      if (aun_pcb == NULL || udp_bind(aun_pcb, IP_ADDR_ANY, listen) != ERR_OK) {
+         if (aun_pcb != NULL) {
+            udp_remove(aun_pcb);
+            aun_pcb = NULL;
          }
          result = AUN_TX_NET_ERROR;
          break;
       }
-      udp_recv(eco_pcb, eco_udp_recv, NULL);
+      udp_recv(aun_pcb, aun_udp_recv, NULL);
 
       static const aun_transport_t transport = {
-         .udp_send = eco_udp_send,
-         .now_ms   = eco_now_ms,
+         .udp_send = aun_udp_send,
+         .now_ms   = aun_now_ms,
          .user     = NULL,
       };
-      uint8_t eco_stn = Pi1MHz->JIM_ram[cp + 1];
-      uint8_t eco_net = Pi1MHz->JIM_ram[cp + 2];
-      if (eco_stn == 0 &&        /* 0 = "use the Pi-side configuration" */
-          !eco_parse_station(get_cmdline_prop("econet_station"),
-                             &eco_net, &eco_stn)) {
-         eco_stn = ECO_DEFAULT_STATION;
-         eco_net = ECO_DEFAULT_NET;
+      uint8_t aun_stn = Pi1MHz->JIM_ram[cp + 1];
+      uint8_t aun_net = Pi1MHz->JIM_ram[cp + 2];
+      if (aun_stn == 0) {        /* 0 = "use the Pi-side configuration" */
+         const char *stn_cfg = get_cmdline_prop("aun_station");
+         uint8_t cfg_net = AUN_DEFAULT_NET;
+         bool    net_from_ip = false;
+         if (aun_station_is_ip(stn_cfg, &cfg_net, &net_from_ip)) {
+            uint32_t ip = ip4_addr_get_u32(netif_ip4_addr(&net->netif));
+            aun_stn = (uint8_t)(ip >> 24);
+            aun_net = net_from_ip ? (uint8_t)(ip >> 16) : cfg_net;
+         } else if (!aun_parse_station(stn_cfg, &aun_net, &aun_stn)) {
+            aun_stn = AUN_DEFAULT_STATION;
+            aun_net = AUN_DEFAULT_NET;
+         }
+         if (aun_stn == 0 || aun_stn == 0xFFu) {
+            aun_stn = AUN_DEFAULT_STATION;
+            aun_net = AUN_DEFAULT_NET;
+         }
       }
-      eco_irq_enabled = (Pi1MHz->JIM_ram[cp + 8] & 1u) != 0;
+      aun_irq_enabled = (Pi1MHz->JIM_ram[cp + 8] & 1u) != 0;
       bool host_imm   = (Pi1MHz->JIM_ram[cp + 8] & 2u) != 0;
-      aun_init(&aun, &transport, eco_stn, eco_net);
+      aun_init(&aun, &transport, aun_stn, aun_net);
       aun_set_host_imm(&aun, host_imm);
-      eco_debug = get_cmdline_prop("econet_debug") != NULL;
+      aun_debug = get_cmdline_prop("aun_debug") != NULL;
       {
          uint8_t mid[4];
-         if (eco_parse_machine(get_cmdline_prop("econet_machine"), mid))
+         if (aun_parse_machine(get_cmdline_prop("aun_machine"), mid))
             aun_set_machine_id(&aun, mid);
       }
-      ECO_LOG("ECONET: init stn %u.%u irq=%u imm=%u\r\n",
-              eco_net, eco_stn, eco_irq_enabled ? 1u : 0u,
+      AUN_LOG("ECONET: init stn %u.%u irq=%u imm=%u\r\n",
+              aun_net, aun_stn, aun_irq_enabled ? 1u : 0u,
               host_imm ? 1u : 0u);
       /* peer map from cmdline.txt (entries are also addable later via
-       * ECO_CMD_MAP_ADD; a parse error keeps whatever was added before
+       * AUN_CMD_MAP_ADD; a parse error keeps whatever was added before
        * the bad entry) */
-      (void)eco_parse_map(get_cmdline_prop("econet_map"),
-                          eco_map_add_cb, &aun);
-      /* subnet broadcast + optional learn mode (econet_learn=<net>) */
+      (void)aun_parse_map(get_cmdline_prop("aun_map"),
+                          aun_map_add_cb, &aun);
+      /* subnet broadcast + optional learn mode (aun_learn=<net>) */
       if (net->netif_added) {
          uint32_t ip   = ip4_addr_get_u32(netif_ip4_addr(&net->netif));
          uint32_t mask = ip4_addr_get_u32(netif_ip4_netmask(&net->netif));
          uint8_t  lnet;
-         bool     learn = eco_parse_net(get_cmdline_prop("econet_learn"),
+         bool     learn = aun_parse_net(get_cmdline_prop("aun_learn"),
                                         &lnet);
          if (ip != 0 && mask != 0)
             aun_set_addressing(&aun, (ip & mask) | ~mask, ip, mask,
@@ -332,7 +343,7 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       break;
    }
 
-   case ECO_CMD_STATUS:
+   case AUN_CMD_STATUS:
    {
       const wifi_lwip_context_t *net = wifi_lwip_get_context();
       Pi1MHz->JIM_ram[cp + 4] = aun.station;
@@ -357,13 +368,13 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       break;
    }
 
-   case ECO_CMD_TX:
+   case AUN_CMD_TX:
    {
       uint32_t off = jim_read32(cp + 8);
       uint32_t len = jim_read32(cp + 12);
-      if (!eco_buffer_ok(off, len))
+      if (!aun_buffer_ok(off, len))
          break;                                   /* AUN_ERR_PARAM */
-      ECO_LOG("ECONET: tx %u.%u port %02X len %lu\r\n",
+      AUN_LOG("ECONET: tx %u.%u port %02X len %lu\r\n",
               Pi1MHz->JIM_ram[cp + 5], Pi1MHz->JIM_ram[cp + 4],
               Pi1MHz->JIM_ram[cp + 3], (unsigned long)len);
       result = aun_tx_start(&aun,
@@ -375,17 +386,17 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       break;
    }
 
-   case ECO_CMD_TX_POLL:
+   case AUN_CMD_TX_POLL:
       result = aun_tx_status(&aun);
       if (result == AUN_OK)
          jim_write32(cp + 8, aun_tx_reply_len(&aun));
       break;
 
-   case ECO_CMD_RX_OPEN:
+   case AUN_CMD_RX_OPEN:
    {
       uint32_t off  = jim_read32(cp + 8);
       uint32_t size = jim_read32(cp + 12);
-      if (!eco_buffer_ok(off, size))
+      if (!aun_buffer_ok(off, size))
          break;                                   /* AUN_ERR_PARAM */
       result = aun_rx_open(&aun,
                            Pi1MHz->JIM_ram[cp + 1],    /* handle */
@@ -393,11 +404,11 @@ static void econet_execute(uint32_t cp, uint32_t addr)
                            Pi1MHz->JIM_ram[cp + 4],    /* stn    */
                            Pi1MHz->JIM_ram[cp + 5],    /* net    */
                            &Pi1MHz->JIM_ram[base_addr + off], size);
-    
+
       break;
    }
 
-   case ECO_CMD_RX_POLL:
+   case AUN_CMD_RX_POLL:
    {
       aun_rx_info_t info;
       result = aun_rx_poll(&aun, Pi1MHz->JIM_ram[cp + 1], &info);
@@ -411,11 +422,11 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       break;
    }
 
-   case ECO_CMD_RX_CLOSE:
+   case AUN_CMD_RX_CLOSE:
       result = aun_rx_close(&aun, Pi1MHz->JIM_ram[cp + 1]);
       break;
 
-   case ECO_CMD_IMM_POLL:     /* held immediate -> block + JIM &FEA000 */
+   case AUN_CMD_IMM_POLL:     /* held immediate -> block + JIM &FEA000 */
       if (!aun.himm.active) {
          result = AUN_STATUS_PENDING;
          break;
@@ -428,19 +439,19 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       result = AUN_OK;
       break;
 
-   case ECO_CMD_IMM_REPLY:    /* +8 u32 reply offset, +12 u32 length */
+   case AUN_CMD_IMM_REPLY:    /* +8 u32 reply offset, +12 u32 length */
    {
       uint32_t off = jim_read32(cp + 8);
       uint32_t len = jim_read32(cp + 12);
-      if (!eco_buffer_ok(off, len) || len > AUN_HIMM_MAX)
+      if (!aun_buffer_ok(off, len) || len > AUN_HIMM_MAX)
          break;                                   /* AUN_ERR_PARAM */
       aun_himm_reply(&aun, &Pi1MHz->JIM_ram[base_addr + off], len);
       result = AUN_OK;
       break;
    }
 
-   case ECO_CMD_RX_DONE:
-      ECO_LOG("ECONET: rx_done h%u %s\r\n", Pi1MHz->JIM_ram[cp + 1],
+   case AUN_CMD_RX_DONE:
+      AUN_LOG("ECONET: rx_done h%u %s\r\n", Pi1MHz->JIM_ram[cp + 1],
               Pi1MHz->JIM_ram[cp + 2] == 0 ? "ack" : "nak");      /* host has copied the frame: re-arm.
                                  * +2 verdict: 0 = delivered (ACK the
                                  * sender), 1 = no listener (NAK) */
@@ -448,11 +459,11 @@ static void econet_execute(uint32_t cp, uint32_t addr)
                               Pi1MHz->JIM_ram[cp + 2] == 0);
       break;
 
-   case ECO_CMD_BCAST:
+   case AUN_CMD_BCAST:
    {
       uint32_t off = jim_read32(cp + 8);
       uint32_t len = jim_read32(cp + 12);
-      if (!eco_buffer_ok(off, len))
+      if (!aun_buffer_ok(off, len))
          break;                                   /* AUN_ERR_PARAM */
       result = aun_broadcast(&aun,
                              Pi1MHz->JIM_ram[cp + 2],  /* ctrl */
@@ -461,13 +472,13 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       break;
    }
 
-   case ECO_CMD_IMMEDIATE:
+   case AUN_CMD_IMMEDIATE:
    {
       uint32_t off       = jim_read32(cp + 8);
       uint32_t len       = jim_read32(cp + 12);
       uint32_t reply_off = jim_read32(cp + 16);
       uint32_t reply_max = jim_read32(cp + 20);
-      if (!eco_buffer_ok(off, len) || !eco_buffer_ok(reply_off, reply_max))
+      if (!aun_buffer_ok(off, len) || !aun_buffer_ok(reply_off, reply_max))
          break;                                   /* AUN_ERR_PARAM */
       result = aun_immediate(&aun,
                              Pi1MHz->JIM_ram[cp + 5],  /* dest net */
@@ -479,7 +490,7 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       break;
    }
 
-   case ECO_CMD_MAP_ADD:
+   case AUN_CMD_MAP_ADD:
    {
       uint32_t ip_be;
       memcpy(&ip_be, &Pi1MHz->JIM_ram[cp + 4], 4);   /* a.b.c.d as stored */
@@ -492,7 +503,7 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       break;
    }
 
-   case ECO_CMD_TEST:
+   case AUN_CMD_TEST:
       aun_test_responder(&aun,
                          Pi1MHz->JIM_ram[cp + 1] != 0,
                          Pi1MHz->JIM_ram[cp + 2],
@@ -500,7 +511,7 @@ static void econet_execute(uint32_t cp, uint32_t addr)
       result = AUN_OK;
       break;
 
-   case ECO_CMD_SET_MACHINE:
+   case AUN_CMD_SET_MACHINE:
       aun_set_machine_id(&aun, &Pi1MHz->JIM_ram[cp + 4]);
       result = AUN_OK;
       break;

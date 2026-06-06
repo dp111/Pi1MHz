@@ -9,7 +9,7 @@
 #include "Pi1MHz.h"
 
 #include "ram_emulator.h"
-#include "econet_emulator.h"
+#include "aun_emulator.h"
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
 #include "BeebSCSI/fatfs/diskio.h"
 #include "BeebSCSI/filesystem.h"
@@ -401,9 +401,9 @@ static void discaccess_emulator_command(unsigned int gpio)
 
     default :
         // 30..44 Econet over AUN/UDP
-        if (Pi1MHz->JIM_ram[command_pointer] >= ECO_CMD_FIRST &&
-            Pi1MHz->JIM_ram[command_pointer] <= ECO_CMD_LAST)
-            econet_emulator_command(command_pointer, addr);
+        if (Pi1MHz->JIM_ram[command_pointer] >= AUN_CMD_FIRST &&
+            Pi1MHz->JIM_ram[command_pointer] <= AUN_CMD_LAST)
+            aun_emulator_command(command_pointer, addr);
         break;
    }
 
@@ -429,7 +429,7 @@ void discaccess_emulator_init( uint8_t instance , uint8_t address)
    // command pointer
    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+4), discaccess_emulator_command );
 
-   econet_emulator_init(); // econet commands (30+) share this command interface
+   aun_emulator_init(); // econet commands (30+) share this command interface
 
    Pi1MHz_MemoryWrite((uint32_t)(ram_address+4), 0 ) ; // make sure command is null on read back
 }

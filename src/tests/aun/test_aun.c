@@ -1,8 +1,8 @@
-/* Host sanity tests for econet_aun.c - stub transport, fake clock. */
+/* Host sanity tests for aun_aun.c - stub transport, fake clock. */
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#include "econet_aun.h"
+#include "aun.h"
 
 /* ---- stub transport ---- */
 #define SENT_MAX 16
@@ -216,6 +216,6 @@ int main(void)
    assert(aun_broadcast(&e, 0x80, 0x9c, pay, 4) == AUN_OK);
    assert(sent_count == 2 && sent[1].ip == 0xff01a8c0);
 
-   printf("all econet_aun tests passed\n");
+   printf("all aun tests passed\n");
    return 0;
 }

@@ -15,8 +15,8 @@ disassembly.
 NFS/ANFS (unmodified above the NetCom layer)
    | replaced Tx/Rx primitives: FRED &FCAA command interface
 discaccess_emulator.c          command dispatch (opcodes 30..41 routed out)
-econet_emulator.c              JIM command-block parsing, lwIP UDP transport
-econet_aun.c                   pure-C AUN engine (host-testable, no deps)
+aun_emulator.c              JIM command-block parsing, lwIP UDP transport
+aun_aun.c                   pure-C AUN engine (host-testable, no deps)
 lwIP UDP  ->  WiFi             AUN datagrams, port 32768
 ```
 
@@ -29,16 +29,16 @@ the replaced transmit/receive primitives.
 
 ### Files
 
-- `econet_aun.h/.c` — AUN protocol engine. Pure C, transport and clock
+- `aun.h/.c` — AUN protocol engine. Pure C, transport and clock
   injected via `aun_transport_t`, so it compiles on a PC for unit
   testing. Single outstanding transmit (matches NFS behaviour),
   non-blocking throughout, retries/timeouts driven from the main poll
   loop, per-peer duplicate suppression, loopback test responder.
-- `econet_emulator.h/.c` — glue: command-block parsing (untrusted
+- `aun_emulator.h/.c` — glue: command-block parsing (untrusted
   offsets bounds-checked against the disc RAM region), lwIP UDP pcb,
   poll hook. Registered from `discaccess_emulator_init()`.
 - `discaccess_emulator.c` — dispatch: opcodes 30..41 forward to
-  `econet_emulator_command()`.
+  `aun_emulator_command()`.
 
 ### Command interface (FRED &FCAA, opcodes 30+)
 
@@ -64,7 +64,7 @@ offsets relative to DISC_RAM_BASE.
 | 41 | SET_MACHINE | +4 machine id[4] (machine-peek reply)                | result                               |
 | 42 | RX_DONE     | +1 handle (release held frame, re-arm)               | result                               |
 
-Result codes (`AUN_*` in econet_aun.h): 0 OK, 1 not listening, 2 net
+Result codes (`AUN_*` in aun.h): 0 OK, 1 not listening, 2 net
 error, 3 no route, 4 busy, 5 bad param, 6 not ready, 7 no such rx
 block, &80 pending.
 
@@ -81,7 +81,7 @@ data→ack/nak; ACK/NAK echo the sequence. Source station identity comes
 from reverse-lookup of sender IP:port in the station map (datagrams
 from unmapped IPs are counted and dropped). Inbound machine peek
 (wire ctrl &08) is auto-answered with the 4-byte machine id.
-Retries: 4 attempts, 250 ms each (econet_aun.h constants).
+Retries: 4 attempts, 250 ms each (aun.h constants).
 
 ### Constraints
 
@@ -132,35 +132,35 @@ station 0 = "use Pi-side configuration".
 
 ### Pi-side configuration (cmdline.txt)
 
-Parsed at ECO_INIT time (econet_config.c, host-tested). Values must
+Parsed at AUN_INIT time (aun_config.c, host-tested). Values must
 not contain spaces:
 
 ```
-econet_station=1.32
-econet_port=32768
-econet_map=1.254=192.168.1.10,1.200=192.168.1.11:32769
+aun_station=1.32
+aun_port=32768
+aun_map=1.254=192.168.1.10,1.200=192.168.1.11:32769
 ```
 
-- `econet_station` — our station as net.stn (bare "32" means net 0).
+- `aun_station` — our station as net.stn (bare "32" means net 0).
   Used when the ROM's INIT block carries station 0, which the patched
   ANFS always sends. Default 0.32.
-- `econet_port` — local AUN listen UDP port. Default 32768.
-- `econet_map` — comma-separated peer entries `net.stn=a.b.c.d[:port]`,
+- `aun_port` — local AUN listen UDP port. Default 32768.
+- `aun_map` — comma-separated peer entries `net.stn=a.b.c.d[:port]`,
   port defaulting to 32768. The `:port` suffix is only needed when
   several stations share one host IP (multiple emulator instances, or
   a PiEconetBridge exposing wire stations on per-station ports).
-  Entries are also addable at runtime via ECO_CMD_MAP_ADD (39); a
+  Entries are also addable at runtime via AUN_CMD_MAP_ADD (39); a
   malformed entry stops parsing but keeps earlier entries.
-- `econet_learn=<net>` — learn mode: resolve/attribute unmapped
+- `aun_learn=<net>` — learn mode: resolve/attribute unmapped
   stations on that net by the classic IP-last-octet convention.
-- `econet_machine=<8 hex digits>` — machine-peek reply bytes.
-- `econet_debug=1` — log econet events on the wifi debug channel.
+- `aun_machine=<8 hex digits>` — machine-peek reply bytes.
+- `aun_debug=1` — log econet events on the wifi debug channel.
 
 ### Observability
 
 `http://<pi>/econet` on the Pi web server shows live engine state
 (station, peer map incl. learned entries, rx queue depth, IRQ status,
-all counters) via `econet_status_text()`. The shared nIRQ line is now
+all counters) via `aun_status_text()`. The shared nIRQ line is now
 arbitrated per-source in Pi1MHz.c (`Pi1MHz_SetnIRQ_src`), so econet and
 harddisc requests cannot clear each other — closing former item 8.
 The ROM titles itself "AUNFS 4.18 (Pi)" and ships as `AUNFS.rom`.
@@ -258,18 +258,18 @@ jammed, &41 not listening, &43 no clock, &44 bad ctrl.
    set = frame delivered. Today the NMI scout/data handlers
    (&80BE-&84xx) fill them. Replace with:
    - `osword_11_handler` (&A5C1): after marking the slot pending,
-     issue ECO_RX_OPEN (slot # = Pi handle 0-7; port/station filter and
+     issue AUN_RX_OPEN (slot # = Pi handle 0-7; port/station filter and
      buffer range from the RXCB).
-   - a small **rx pump**: issue ECO_RX_POLL; on ready, copy payload
+   - a small **rx pump**: issue AUN_RX_POLL; on ready, copy payload
      from JIM into the RXCB buffer, fill src/ctrl/len, set bit 7 of the
      slot byte. Call it from `wait_net_tx_ack`'s poll loop (&95F4) and
-     from the OSWORD &12 read / rx-poll entry. Slot delete → ECO_RX_CLOSE.
+     from the OSWORD &12 read / rx-poll entry. Slot delete → AUN_RX_CLOSE.
 3. **`adlc_init` (&8074)** — drop the &FE18 INTOFF read, the
    `adlc_full_reset` call, the OSBYTE &8F/&0C NMI claim and the NMI
    shim copy to &0D00. Instead: issue cmd 30 (INIT), read station via
    cmd 31 into `tx_src_stn` (&0D22), set `tx_complete_flag` and
-   `econet_init_flag` to &80 as now. (Station number/map config best
-   held Pi-side: `econet.cfg` on the SD card read at INIT; ECO_MAP_ADD
+   `aun_init_flag` to &80 as now. (Station number/map config best
+   held Pi-side: `econet.cfg` on the SD card read at INIT; AUN_MAP_ADD
    kept for tests.)
 4. **`adlc_full_reset` (&8969) / `adlc_rx_listen` (&8978)** — stub to
    RTS.
@@ -286,9 +286,9 @@ jammed, &41 not listening, &43 no clock, &44 bad ctrl.
 
 All in `tests/econet/` (see its README), host-runnable, no hardware:
 
-- **Unit tests** — `test_econet_aun.c` (15 scenarios incl. the
+- **Unit tests** — `test_aun.c` (15 scenarios incl. the
   verdict flow, learn mode and subnet broadcast) and
-  `test_eco_config.c` (19 parser cases). All pass, also under
+  `test_aun_config.c` (19 parser cases). All pass, also under
   ASan/UBSan.
 - **Fuzzers** — 2M random engine operations and 400k hostile Beeb
   command blocks under ASan/UBSan with invariants asserted per
@@ -299,15 +299,15 @@ All in `tests/econet/` (see its README), host-runnable, no hardware:
   the pump hooks, remote halt/continue and the error paths.
 - **Lockstep integration test** — `tests/econet/lockstep/`: the
   patched ANFS ROM bytes execute in a Python 6502 emulator whose
-  FRED/JIM hooks drive the REAL econet_emulator/econet_aun/
-  econet_config C code compiled on the host, with a scripted AUN peer
+  FRED/JIM hooks drive the REAL aun_emulator/aun_aun/
+  aun_config C code compiled on the host, with a scripted AUN peer
   validating the wire format. 86 checks pass: init + cmdline config,
   tx/ACK, NAK→&41, rx-pump delivery with exact RXCB completion
   semantics, rx-queue ordering (both frames ACKed, delivered in order,
   no retransmission), unmatched-frame drop, machine peek both ways,
   broadcast, and IRQ-driven reception (nIRQ assert → svc5 claim →
   pump delivery → release; non-econet interrupts passed on).
-  This caught a real bug (eco_cmd_issue returned CMP-loop flags, not
+  This caught a real bug (aun_cmd_issue returned CMP-loop flags, not
   result flags — every command would have "failed" on hardware; fixed
   with ORA #0). Use `anfs-4.18-pi1mhz-fixed.rom`.
 - **Beeb-side** — planned: BASIC/asm program driving cmds 30-41 via
