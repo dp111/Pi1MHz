@@ -17,8 +17,8 @@ static func_ptr poll_fn;
 static struct udp_pcb the_pcb; static int pcb_used;
 const wifi_lwip_context_t *wifi_lwip_get_context(void){ return &wctx; }
 void Pi1MHz_Register_Poll(func_ptr f){ poll_fn = f; }
-void Pi1MHz_SetnIRQ(bool irq){ (void)irq; }
-void Pi1MHz_SetnIRQ_src(uint8_t s, bool a){ (void)s; (void)a; }
+void Pi1MHz_nIRQ_ASSERT(uint8_t s){ (void)s; }
+void Pi1MHz_nIRQ_CLEAR(uint8_t s){ (void)s; }
 bool wifi_debug_enabled(void){ return false; }
 void wifi_debug_printf(const char *format, ...){ (void)format; }
 void Pi1MHz_MemoryWrite(uint32_t a, uint8_t d){ pi.Memory[a & 0x1ff] = d; }
@@ -49,7 +49,7 @@ int main(void){
    pi.JIM_ram_size = 2;
    wctx.address_ready = true; wctx.netif_added = true;
    wctx.netif.ip = 0x1401a8c0; wctx.netif.mask = 0x00ffffff;
-   aun_emulator_init();
+   aun_emulator_init(11, 0);
    for (long i = 0; i < 400000; i++) {
       uint32_t page = 0xE0 + rnd()%8;
       uint32_t cp = 0xFF0000u | (page<<8);

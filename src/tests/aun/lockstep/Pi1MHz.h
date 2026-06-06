@@ -12,7 +12,5 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
 void Pi1MHz_Register_Poll(func_ptr f);
 #define CLEAR_IRQ 0
 #define ASSERT_IRQ 1
-void Pi1MHz_SetnIRQ(bool irq);
-#define PI1MHZ_IRQ_SRC_HARDDISC 0u
-#define PI1MHZ_IRQ_SRC_ECONET   1u
-void Pi1MHz_SetnIRQ_src(uint8_t src, bool assert_irq);
+void Pi1MHz_nIRQ_ASSERT(uint8_t src);
+void Pi1MHz_nIRQ_CLEAR(uint8_t src);

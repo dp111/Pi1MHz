@@ -22,7 +22,7 @@
 #define AUN_CMD_LAST         44u
 
 #include <stddef.h>
-void aun_emulator_init(void);
+void aun_emulator_init(uint8_t instance, uint8_t address);
 void aun_status_text(char *buf, size_t size);
 void aun_emulator_command(uint32_t command_pointer, uint32_t addr);
 

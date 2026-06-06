@@ -89,7 +89,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include <stdlib.h>
 #include <stddef.h>
 
-#include "rpi/arm-start.h"
+#include "rpi/asm-helpers.h"
 #include "rpi/auxuart.h"
 #include "rpi/cache.h"
 #include "rpi/info.h"
@@ -120,6 +120,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "videoplayer.h"
 #include "usb.h"
 #include "wifi/wifi.h"
+#include "aun/aun_emulator.h"
 
 typedef struct {
    const char *name;
@@ -139,7 +140,8 @@ static emulator_list emulator[] = {
    {"Framebuffer",fb_emulator_init, 0xA0, 1},
    {"Mouseredirect",mouse_redirect_init, 0xAC, 1 },
    {"usb",usb_init, 0x00, 1 },
-   {"wifi",wifi_emulator_init, 0x00, 1 }
+   {"wifi",wifi_emulator_init, 0x00, 1 },
+   {"aun",aun_emulator_init, 0x00, 1 }
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
@@ -245,26 +247,35 @@ bool Pi1MHz_is_rst_active(void) {
 }
 
 /* nIRQ is a shared open-collector line; multiple emulators may want to
- * assert it. Each caller owns one bit of the mask, so one emulator
- * releasing its request cannot clear another's. The legacy
- * Pi1MHz_SetnIRQ() maps to the harddisc source bit, preserving its
- * existing behaviour exactly when it is the only user. */
-static volatile uint8_t Pi1MHz_nirq_mask;
+ * assert it. Each caller owns one bit of the mask, indexed by its
+ * emulator-table slot (the 'instance' passed to <emu>_init), so one
+ * emulator releasing its request cannot clear another's.
+ *
+ * The read-modify-write (and the GPIO function-select RMW inside
+ * RPI_SetGpioPinFunction) is guarded because callers run in different
+ * contexts - harddisc from the FIQ FRED callbacks, AUN from the main
+ * loop - and a FIQ preempting the main loop must not lose an update. */
+static volatile uint32_t Pi1MHz_nirq_mask = 0;
 
-void Pi1MHz_SetnIRQ_src(uint8_t src, bool assert_irq)
+inline static void Pi1MHz_SetnIRQ_src(uint8_t src, bool assert_irq)
 {
-   uint8_t mask = Pi1MHz_nirq_mask;
+   unsigned int cpsr = _disable_interrupts_cspr();
+   uint32_t mask = Pi1MHz_nirq_mask;
    if (assert_irq)
-      mask |= (uint8_t)(1u << src);
+      mask |= (1u << src);
    else
-      mask &= (uint8_t)~(1u << src);
+      mask &= ~(1u << src);
    Pi1MHz_nirq_mask = mask;
    RPI_SetGpioPinFunction(NIRQ_PIN, (mask != 0) ? FS_OUTPUT : FS_INPUT);
+   _restore_cpsr(cpsr);
 }
 
-void Pi1MHz_SetnIRQ(bool irq)
-{
-   Pi1MHz_SetnIRQ_src(PI1MHZ_IRQ_SRC_HARDDISC, irq);
+void Pi1MHz_nIRQ_ASSERT(uint8_t src) {
+   Pi1MHz_SetnIRQ_src(src, true);
+}
+
+void Pi1MHz_nIRQ_CLEAR(uint8_t src) {
+   Pi1MHz_SetnIRQ_src(src, false);
 }
 
 void Pi1MHz_SetnNMI(bool nmi)
@@ -400,7 +411,8 @@ static void init_emulator(void) {
    RPI_IRQBase->FIQ_control = 0x80 + 67; // doorbell FIQ
 
    // make sure we aren't causing an interrupt
-   Pi1MHz_SetnIRQ(CLEAR_IRQ);
+   Pi1MHz_nirq_mask = 0;
+   Pi1MHz_nIRQ_CLEAR(0);
    Pi1MHz_SetnNMI(CLEAR_NMI);
 
    // Register Status read back

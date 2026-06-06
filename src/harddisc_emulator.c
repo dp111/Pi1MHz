@@ -18,7 +18,7 @@
 #include "BeebSCSI/scsi.h"
 
 static uint8_t HD_ADDR;
-
+static uint8_t IRQ_NUM;
 volatile bool HD_ACK;
 volatile uint8_t HD_DATA;
 
@@ -94,14 +94,14 @@ static void hd_emulator_IRQ(unsigned int gpio)
    if (! ( data & 1 ))
    {
       HD_IRQ_ENABLE = CLEAR;
-      Pi1MHz_SetnIRQ(CLEAR_IRQ);
+      Pi1MHz_nIRQ_CLEAR(IRQ_NUM);
       hd_emulator_clear_IRQ();
    } else
    {
       HD_IRQ_ENABLE = ACTIVE;
       if (HD_STATUS_Read & STATUS_REQ)
       {
-         Pi1MHz_SetnIRQ(ASSERT_IRQ);
+         Pi1MHz_nIRQ_ASSERT(IRQ_NUM);
          hd_emulator_set_IRQ();
       }
    }
@@ -176,6 +176,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    static bool PowerOn = 0 ;
    static uint8_t scsiid = 0;
    HD_ADDR = (uint8_t) address;
+   IRQ_NUM = (uint8_t) instance;
 
    // Turn off all host adapter signals
    hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_3 | STATUS_2 | STATUS_CND | STATUS_IRQ, CLEAR);
@@ -456,7 +457,7 @@ void hostadapterWriteRequestFlag(bool flagState)
       hd_emulator_status(STATUS_REQ, ACTIVE); // REQ = 0 (active)
       if (HD_IRQ_ENABLE)
       {
-         Pi1MHz_SetnIRQ(ASSERT_IRQ);
+         Pi1MHz_nIRQ_ASSERT(IRQ_NUM);
          hd_emulator_set_IRQ();
       }
    }

@@ -39,10 +39,12 @@ static int have_result;
 
 const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &wctx; }
 void Pi1MHz_Register_Poll(func_ptr f) { poll_fn = f; }
-void Pi1MHz_SetnIRQ(bool irq) { irq_line = irq; }
-void Pi1MHz_SetnIRQ_src(uint8_t src, bool a)
-{ static uint8_t mask; if (a) mask |= (uint8_t)(1u<<src); else mask &= (uint8_t)~(1u<<src);
-  irq_line = mask != 0; }
+/* Mirror the production shared-mask model (uint32_t, indexed by the
+ * emulator-table slot) so the lockstep harness exercises the real width:
+ * AUN runs at slot 11, which a uint8_t mask would have truncated to 0. */
+static uint32_t nirq_mask;
+void Pi1MHz_nIRQ_ASSERT(uint8_t src) { nirq_mask |=  (1u << src); irq_line = nirq_mask != 0; }
+void Pi1MHz_nIRQ_CLEAR(uint8_t src)  { nirq_mask &= ~(1u << src); irq_line = nirq_mask != 0; }
 bool wifi_debug_enabled(void) { return false; }
 void wifi_debug_printf(const char *format, ...) { (void)format; }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
@@ -96,7 +98,7 @@ int main(void)
    static char line[20000];
    pi.JIM_ram = calloc(1, 32u*1024u*1024u);
    pi.JIM_ram_size = 2;            /* DISC_RAM_BASE == 0 */
-   aun_emulator_init();
+   aun_emulator_init(11, 0);   /* slot 11 = AUN's real emulator-table index (IRQ source) */
 
    while (fgets(line, sizeof line, stdin)) {
       char *nl = strchr(line, '\n'); if (nl) *nl = 0;

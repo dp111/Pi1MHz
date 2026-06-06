@@ -429,7 +429,6 @@ void discaccess_emulator_init( uint8_t instance , uint8_t address)
    // command pointer
    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+4), discaccess_emulator_command );
 
-   aun_emulator_init(); // aun commands (30+) share this command interface
-
    Pi1MHz_MemoryWrite((uint32_t)(ram_address+4), 0 ) ; // make sure command is null on read back
+   Pi1MHz_MemoryWrite((uint32_t)(ram_address+5), 0 ) ; // clear IRQ register
 }

@@ -79,7 +79,7 @@ static volatile uint32_t aun_pending_addr;
 #define AUN_IRQ_STATUS_REG 0xABu
 static bool    aun_irq_enabled;
 static uint8_t aun_irq_state;
-
+static uint8_t IRQ_NUM;
 /* terse event log on the shared wifi debug channel, enabled by
  * aun_debug=1 in cmdline.txt */
 static bool aun_debug;
@@ -95,7 +95,11 @@ static void aun_irq_update(void)
    if (st != aun_irq_state) {
       aun_irq_state = st;
       Pi1MHz_MemoryWrite(AUN_IRQ_STATUS_REG, st);
-      Pi1MHz_SetnIRQ_src(PI1MHZ_IRQ_SRC_ECONET, st != 0);
+      if (st != 0)
+         Pi1MHz_nIRQ_ASSERT(IRQ_NUM);
+      else
+         Pi1MHz_nIRQ_CLEAR(IRQ_NUM);
+
    }
 }
 
@@ -190,19 +194,20 @@ static void aun_emulator_poll(void)
    aun_irq_update();
 }
 
-void aun_emulator_init(void)
+
+void aun_emulator_init(uint8_t instance, uint8_t address)
 {
+   IRQ_NUM = instance;
    /* The AUN engine itself comes up on the Beeb's INIT command (the
     * network stack may not be ready yet at RST); the poll hook is
     * registered once here - Pi1MHz_Register_Poll dedupes. */
    aun_pending     = false;
    aun_irq_enabled = false;
    aun_irq_state   = 0;
-   Pi1MHz_MemoryWrite(AUN_IRQ_STATUS_REG, 0);
    Pi1MHz_Register_Poll(aun_emulator_poll);
 }
 
-/* Plain-text status block for the web UI (webserver.c /econet). */
+/* Plain-text status block for the web UI (webserver.c /aun). */
 void aun_status_text(char *buf, size_t size)
 {
    size_t n = 0;
