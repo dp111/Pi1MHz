@@ -76,7 +76,7 @@ static volatile uint32_t eco_pending_addr;
 #define ECO_DEFAULT_STATION 32u
 #define ECO_DEFAULT_NET     0u
 
-#define ECO_IRQ_STATUS_REG 0x88u
+#define ECO_IRQ_STATUS_REG 0xABu
 static bool    eco_irq_enabled;
 static uint8_t eco_irq_state;
 
@@ -393,7 +393,7 @@ static void econet_execute(uint32_t cp, uint32_t addr)
                            Pi1MHz->JIM_ram[cp + 4],    /* stn    */
                            Pi1MHz->JIM_ram[cp + 5],    /* net    */
                            &Pi1MHz->JIM_ram[base_addr + off], size);
-    
+
       break;
    }
 
