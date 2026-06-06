@@ -135,7 +135,7 @@ int main(void)
                 printf("K ");
                 for(int i=0;i<tube_r4_n;i++) printf("%02x",tube_r4[i]);
                 printf("\n"); break;
-      case 'F': printf("K %02x\n", pi.Memory[0x88]); break;
+      case 'F': printf("K %02x\n", pi.Memory[0xab]); break;
       case 'Q': return 0;
       default: puts("K ff"); break;
       }

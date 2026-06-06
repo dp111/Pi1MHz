@@ -24,13 +24,17 @@ FRED/JIM hooks drive the REAL econet_emulator.c / econet_aun.c /
 econet_config.c, compiled on the host against the stub headers here.
 A scripted AUN peer validates the wire format independently.
 
-86 checks across 17 scenarios: init + cmdline config; tx/ACK with
+91 checks across 18 scenarios: init + cmdline config; tx/ACK with
 header+payload validation; NAK -> &41; rx-pump delivery with the RXCB
 completion bytes checked individually; rx-queue ordering (two frames
 both ACKed, delivered in order, no retransmission); unmatched-frame
 drop; machine peek inbound and outbound; broadcast; IRQ-driven
-reception (nIRQ assert -> svc5 claim -> pump -> release, FRED &FC88
-mirror); svc5 pass-on for non-econet interrupts; the Econet receive event (&FE via EVNTV, *FX52 gating and Y=slot exactly as the NMI path passed them).
+reception (nIRQ assert -> svc5 claim -> pump -> release, FRED &FCAB
+mirror); svc5 pass-on for non-econet interrupts; the Econet receive
+event (&FE via EVNTV, *FX52 gating and Y=slot exactly as the NMI path
+passed them); the service gate never declining (the *HELP/*Net bug); and
+service 15 not clearing this ROM's cached type-table entry (the P12 fix
+that stopped the Master de-servicing AUNFS after boot).
 
 To run (needs `anfs-4.18-pi1mhz.rom` and `syms.txt` in lockstep/ —
 both checked in; regenerate after ROM changes with

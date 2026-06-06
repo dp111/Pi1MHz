@@ -63,7 +63,7 @@ class CPU:
             self.jim_addr = (self.jim_addr + 1) & 0xffffff
             return v
         if a == 0xfcaa: return self.fred_aa
-        if a == 0xfc88: return hx('F')
+        if a == 0xfcab: return hx('F')
         if a == 0xfee5:                 # Tube R3 data: parasite -> host
             v = self.tube_in[self.tube_in_pos] if self.tube_in_pos < len(self.tube_in) else 0
             self.tube_in_pos += 1
@@ -433,14 +433,14 @@ unsolicited = b'NOTIFY!'
 hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x3000, unsolicited).hex()))
 hx('L')                                        # Pi main-loop turn: IRQ update
 check(hx('I') == 1, 'nIRQ asserted while a frame is queued')
-check(hx('F') & 0x80, 'FRED &FC88 bit 7 set (frame waiting)')
+check(hx('F') & 0x80, 'FRED &FCAB bit 7 set (frame waiting)')
 cpu.call(SYM['svc5_irq_check'])                # MOS unrecognised-IRQ service
 check(cpu.a == 0, 'svc5 claimed the interrupt (A=0)')
 check(bytes(cpu.mem[0x3100:0x3100+7]) == unsolicited, 'unsolicited frame delivered by the IRQ pump')
 check(cpu.mem[txcb] == 0x80, 'CB completed (bit 7 set)')
 hx('L')
 check(hx('I') == 0, 'nIRQ released once the queue is empty')
-check(hx('F') == 0, '&FC88 cleared')
+check(hx('F') == 0, '&FCAB cleared')
 
 print('== 9b: Econet receive event (&FE) fires like the old NMI path ==')
 # EVNTV stub at &2000: sty &71 / inc &70 / rts ; vector at &0220/1
@@ -471,7 +471,7 @@ args = bytes([0x00,0x30,0xff,0xff, 0x10,0x30,0xff,0xff])
 udp_out.clear()
 hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x01, 0x6000, args).hex()))
 hx('L')
-check(hx('F') & 0x40, '&FC88 bit 6 set: immediate pending')
+check(hx('F') & 0x40, '&FCAB bit 6 set: immediate pending')
 cpu.call(SYM['svc5_irq_check'])
 reps = [d for _,_,d in udp_out if d[0] == 6]
 check(len(reps) == 1 and reps[0][8:] == bytes(cpu.mem[0x3000:0x3010]),
@@ -684,7 +684,7 @@ hx('L')
 inj = {'reads': 0, 'done': False}
 orig_rd = CPU.rd
 def rd_inject(self, a):
-    if (a & 0xffff) == 0xfc88:
+    if (a & 0xffff) == 0xfcab:
         inj['reads'] += 1
         if inj['reads'] == 30 and not inj['done']:
             inj['done'] = True
@@ -713,6 +713,51 @@ cpu.a, cpu.x, cpu.y = 0x12, 0x34, 0x56
 cpu.call(SYM['eco_rx_pump'])
 check((cpu.a, cpu.x, cpu.y) == (0x12, 0x34, 0x56), 'pump bails cleanly before INIT, registers preserved')
 cpu.mem[0x0d23] = 0x80
+
+print('== 17: service gate (check_adlc_flag) never declines (the *HELP/*Net bug) ==')
+# Regression for the bug where ALL service calls were declined when
+# rom_ws_pages[slot] bit7 was set (no *HELP, *Net = Bad command).
+# Drive check_adlc_flag directly with the absent-flag bit SET and
+# confirm it falls through to handle_vectors_claimed (&8a62) instead
+# of doing the decline RTS.
+GATE = 0x8a5a; HANDLE = 0x8a62
+for flag in (0x00, 0x80, 0xff):          # incl. bit7 set = old failure
+    cpu.mem[0x0df0] = flag               # rom_ws_pages[slot 0]
+    cpu.x = 0
+    cpu.sp = 0xf0
+    cpu.push(9)                          # service number, as dispatch_service pha'd
+    cpu.pc = GATE
+    declined = False
+    for _ in range(12):
+        if cpu.pc == HANDLE: break
+        # a decline is an RTS that pops our pushed byte+return -> pc leaves the block
+        if cpu.pc < GATE or cpu.pc > HANDLE+1:
+            declined = True; break
+        cpu.step()
+    check(cpu.pc == HANDLE and not declined,
+          'gate continues with rom_ws_pages=&%02X (was the decline bug)' % flag)
+
+print('== 18: service 15 must NOT clear our ROM type-table entry (the *HELP de-service bug) ==')
+# Regression for the bug fixed by patch P12. On a Master (OSBYTE 0 returns
+# X>=3) service_handler ran "sta rom_type_table,x" with X=romsel+1, zeroing
+# this ROM's cached type byte at &02A1+slot. The Master offers service calls
+# from that cache, so AUNFS was silently dropped right after service 15 -
+# *ROMS still listed it (live &8006 intact) but *HELP/*Net never reached it.
+# P12 NOPs the 5 bytes at &8A33-&8A37. Drive service_handler with service 15,
+# stub OSBYTE 0 to report a Master, and confirm the entry is left intact.
+SVCH = 0x8a15
+cpu.mem[0xfff4] = 0xa2; cpu.mem[0xfff5] = 0x03; cpu.mem[0xfff6] = 0x60  # OSBYTE stub: LDX #3 (Master) / RTS
+cpu.mem[0xf4]   = 0x00          # romsel_copy = slot 0
+cpu.mem[0x02a1] = 0x82          # our cached ROM type byte (service + language bits)
+cpu.sp = 0xf0
+cpu.a  = 0x0f                   # service 15 (vectors claimed)
+cpu.pc = SVCH
+for _ in range(40):
+    if cpu.pc == 0x8a38:        # reached restore_rom_slot, just past the (NOPed) clear
+        break
+    cpu.step()
+check(cpu.pc == 0x8a38, 'service_handler reached restore_rom_slot after service 15')
+check(cpu.mem[0x02a1] == 0x82, 'service 15 left rom_type_table[slot] intact (P12 fix)')
 
 H.stdin.write('Q\n')
 print(f'\nALL {ok} LOCKSTEP CHECKS PASSED  ({cpu.instructions} instructions executed)')

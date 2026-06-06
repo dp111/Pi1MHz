@@ -22,6 +22,32 @@ int main(void)
     assert(!eco_parse_station("", &net, &stn));
     assert(!eco_parse_station(NULL, &net, &stn));
 
+    /* station = last octet of our IP (econet_station=ip / net.ip / ip.ip) */
+    bool from_ip;
+    net = 9; from_ip = true;
+    assert(eco_station_is_ip("ip", &net, &from_ip) && net==0 && !from_ip);
+    net = 9; from_ip = true;
+    assert(eco_station_is_ip("IP", &net, &from_ip) && net==0 && !from_ip);
+    net = 9; from_ip = true;
+    assert(eco_station_is_ip("1.ip", &net, &from_ip) && net==1 && !from_ip);
+    net = 9; from_ip = true;
+    assert(eco_station_is_ip("254.ip", &net, &from_ip) && net==254 && !from_ip);
+    from_ip = false;                               /* net from IP third octet */
+    assert(eco_station_is_ip("ip.ip", &net, &from_ip) && from_ip);
+    from_ip = false;
+    assert(eco_station_is_ip("IP.IP", &net, &from_ip) && from_ip);
+    assert(!eco_station_is_ip("32", &net, &from_ip));        /* literal station */
+    assert(!eco_station_is_ip("1.32", &net, &from_ip));      /* literal net.stn */
+    assert(!eco_station_is_ip("ipx", &net, &from_ip));       /* trailing junk */
+    assert(!eco_station_is_ip("1.ipx", &net, &from_ip));     /* trailing junk */
+    assert(!eco_station_is_ip("ipx.ip", &net, &from_ip));    /* bad prefix */
+    assert(!eco_station_is_ip("255.ip", &net, &from_ip));    /* net > 254 */
+    assert(!eco_station_is_ip("ip.ip.ip", &net, &from_ip));  /* too many */
+    assert(!eco_station_is_ip("", &net, &from_ip));
+    assert(!eco_station_is_ip(NULL, &net, &from_ip));
+    /* a literal "ip" must NOT be accepted by the numeric station parser */
+    assert(!eco_parse_station("ip", &net, &stn));
+
     /* port */
     assert(eco_parse_port("32768", &port) && port==32768);
     assert(!eco_parse_port("0", &port));
