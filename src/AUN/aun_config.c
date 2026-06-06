@@ -1,4 +1,4 @@
-/* aun_config.c - parsers for the econet cmdline.txt options.
+/* aun_config.c - parsers for the aun cmdline.txt options.
  * See aun_config.h for the option syntax. Pure C, host-testable. */
 
 #include <stddef.h>

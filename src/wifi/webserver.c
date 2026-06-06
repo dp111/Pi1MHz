@@ -1890,7 +1890,7 @@ static bool route_home(ws_conn_t *c)
       "<p><a href=\"/files/\">Browse SD card files &rarr;</a></p>"
       "<p><a href=\"/framebuffer\">View the framebuffer &rarr;</a></p>"
       "<p><a href=\"/status\">Network status &rarr;</a></p>"
-      "<p><a href=\"/aun\">Econet status &rarr;</a></p>"
+      "<p><a href=\"/aun\">AUN status &rarr;</a></p>"
       "<p><a href=\"/reboot\">Reboot the Pi &rarr;</a></p>"
       "</div>");
    page_close(&b);
@@ -1906,8 +1906,8 @@ static bool route_aun(ws_conn_t *c)
 
    aun_status_text(eco, sizeof eco);
    sb_init(&b);
-   page_open(&b, "Econet");
-   sb_puts(&b, "<h1>Econet</h1><div class=\"card\"><pre>");
+   page_open(&b, "AUN");
+   sb_puts(&b, "<h1>AUN</h1><div class=\"card\"><pre>");
    sb_html(&b, eco);
    sb_puts(&b, "</pre></div>");
    page_close(&b);
