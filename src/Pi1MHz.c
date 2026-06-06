@@ -121,6 +121,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "usb.h"
 #include "wifi/wifi.h"
 #include "aun/aun_emulator.h"
+#include "teletext_emulator.h"
 
 typedef struct {
    const char *name;
@@ -141,7 +142,8 @@ static emulator_list emulator[] = {
    {"Mouseredirect",mouse_redirect_init, 0xAC, 1 },
    {"usb",usb_init, 0x00, 1 },
    {"wifi",wifi_emulator_init, 0x00, 1 },
-   {"aun",aun_emulator_init, 0x00, 1 }
+   {"aun",aun_emulator_init, 0x00, 1 },
+   {"Teletext",teletext_emulator_init, 0x10, 1 }  // Acorn Teletext Adapter at &FC10
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))

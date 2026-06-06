@@ -1778,7 +1778,7 @@ static void fb_show_splash_screen(void) {
 #endif
    { const uint8_t c[] = { 17, 63 }; fb_writen(c, sizeof c); } // White in MODE 21
 
-   char screeninfo[1024];
+   char screeninfo[2048];
    size_t infolen = helpers_screen_setup(screeninfo, sizeof(screeninfo));
    fb_writen((const uint8_t *)screeninfo, (unsigned int)infolen);
   // cursor(1);

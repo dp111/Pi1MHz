@@ -83,6 +83,7 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         "\r\n4 # Load MMFS into SWR"
         "\r\n5 # Load MMFS2 into SWR"
         "\r\n6 # Load BeebSCSI helper ROM into SWR"
+        "\r\n7 # Load ATS ROM into SWR"
         "\r\n8 # Load AUNFSbeeb ROM into SWR"
         "\r\n9 # Load AUNFSM128 ROM into SWR"
 

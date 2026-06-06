@@ -206,6 +206,11 @@ file( GLOB discaccess_emulator_files
    AUN/aun_emulator.h
 )
 
+file( GLOB teletext_emulator_files
+   teletext_emulator.c
+   teletext_emulator.h
+)
+
 file( GLOB mouse_redirect_files
    mouseredirect.c
 )
@@ -312,6 +317,7 @@ endif()
             ${M5000_emulator_files}
             ${FrameBuffer_emulator_files}
             ${discaccess_emulator_files}
+            ${teletext_emulator_files}
             ${mouse_redirect_files}
          ${wifi_files}
          ${lwip_files}
@@ -325,6 +331,7 @@ endif()
             ${M5000_emulator_files}
             ${FrameBuffer_emulator_files}
             ${discaccess_emulator_files}
+            ${teletext_emulator_files}
             ${mouse_redirect_files}
          ${wifi_files}
          ${lwip_files}
