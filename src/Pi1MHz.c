@@ -365,7 +365,7 @@ static void init_emulator(void) {
                emulator[i].enable = 0;
             }
          else if (ov > 0)
-            LOG_DEBUG("%s address = 0x%02x\r\n", emulator[i].name, emulator[i].address);
+            {LOG_DEBUG("%s address = 0x%02x\r\n", emulator[i].name, emulator[i].address);}
       }
 
    Pi1MHz_polls_max = 0;

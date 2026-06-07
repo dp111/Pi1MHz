@@ -109,7 +109,7 @@ static bool        ttx_configured;
 static bool        ttx_debug;
 static bool        ttx_net_waiting_logged;
 
-#define TTX_LOG(...) do { if (ttx_debug) LOG_DEBUG(__VA_ARGS__); } while (0)
+#define TTX_LOG(...) do { if (ttx_debug) {LOG_DEBUG(__VA_ARGS__); } } while (0)
 
 /* ---- ring buffer (per channel) -------------------------------------------*/
 
