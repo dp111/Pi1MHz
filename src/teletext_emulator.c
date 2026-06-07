@@ -34,6 +34,7 @@
 #include "rpi/info.h"
 #include "rpi/systimer.h"
 #include "teletext_emulator.h"
+#include "config.h"
 
 #include "wifi/wifi.h"
 #include "wifi/wifi_lwip.h"
@@ -455,12 +456,12 @@ static void ttx_configure(void)
       "teletext_server1", "teletext_server2",
       "teletext_server3", "teletext_server4"
    };
-   ttx_debug = get_cmdline_prop("teletext_debug") != NULL;
+   ttx_debug = config_get("teletext_debug") != NULL;
 
    for (uint32_t i = 0u; i < TTX_CHANNELS; i++) {
       uint32_t ip_be = 0u;
       uint16_t port  = 0u;
-      if (ttx_parse_endpoint(get_cmdline_prop(names[i]), &ip_be, &port)) {
+      if (ttx_parse_endpoint(config_get(names[i]), &ip_be, &port)) {
          ttx_chan[i].ip_be = ip_be;
          ttx_chan[i].port  = port;
          TTX_LOG("TELETEXT: channel %u -> %u.%u.%u.%u:%u\r\n",

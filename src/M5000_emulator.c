@@ -83,6 +83,7 @@ Use https://wavedrom.com/editor.html
 #include "rpi/audio.h"
 #include "rpi/gpio.h"
 #include "rpi/info.h"
+#include "config.h"
 #include "BeebSCSI/fatfs/ff.h"
 
 //NB ample software access the waveform ram with bit 7 and 8 equal
@@ -186,7 +187,7 @@ static int32_t M5000_audio_range;
 // is OFF
 
 static void M5000_gain(void) {
-   const char *prop = get_cmdline_prop("M5000_Gain");
+   const char *prop = config_get("M5000_Gain");
 
    if (prop)
       gain = atoi(prop);
@@ -205,7 +206,7 @@ static void M5000_gain(void) {
 // in cmdline.txt M5000_BeebAudio_Off=1 turns off beeb Audio
 
 static void M5000_BeebAudio(void) {
-   const char *prop = get_cmdline_prop("M5000_BeebAudio_Off");
+   const char *prop = config_get("M5000_BeebAudio_Off");
 
    if (prop)
       stereo = (uint8_t)atoi(prop);

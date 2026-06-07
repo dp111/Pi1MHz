@@ -50,6 +50,7 @@
 #include "aun_config.h"
 #include "aun_emulator.h"
 #include "../rpi/info.h"
+#include "../config.h"
 #include <stdio.h>
 #include "../wifi/wifi.h"
 #include "../rpi/systimer.h"
@@ -273,7 +274,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       }
       uint16_t listen = (uint16_t)jim_read32(cp + 4);
       if (listen == 0 &&
-          !aun_parse_port(get_cmdline_prop("aun_port"), &listen))
+          !aun_parse_port(config_get("aun_port"), &listen))
          listen = (uint16_t)AUN_DEFAULT_UDP_PORT;
 
       if (aun_pcb != NULL) {
@@ -299,7 +300,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       uint8_t aun_stn = Pi1MHz->JIM_ram[cp + 1];
       uint8_t aun_net = Pi1MHz->JIM_ram[cp + 2];
       if (aun_stn == 0) {        /* 0 = "use the Pi-side configuration" */
-         const char *stn_cfg = get_cmdline_prop("aun_station");
+         const char *stn_cfg = config_get("aun_station");
          uint8_t cfg_net = AUN_DEFAULT_NET;
          bool    net_from_ip = false;
          if (aun_station_is_ip(stn_cfg, &cfg_net, &net_from_ip)) {
@@ -319,10 +320,10 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       bool host_imm   = (Pi1MHz->JIM_ram[cp + 8] & 2u) != 0;
       aun_init(&aun, &transport, aun_stn, aun_net);
       aun_set_host_imm(&aun, host_imm);
-      aun_debug = get_cmdline_prop("aun_debug") != NULL;
+      aun_debug = config_get("aun_debug") != NULL;
       {
          uint8_t mid[4];
-         if (aun_parse_machine(get_cmdline_prop("aun_machine"), mid))
+         if (aun_parse_machine(config_get("aun_machine"), mid))
             aun_set_machine_id(&aun, mid);
       }
       AUN_LOG("ECONET: init stn %u.%u irq=%u imm=%u\r\n",
@@ -331,14 +332,14 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       /* peer map from cmdline.txt (entries are also addable later via
        * AUN_CMD_MAP_ADD; a parse error keeps whatever was added before
        * the bad entry) */
-      (void)aun_parse_map(get_cmdline_prop("aun_map"),
+      (void)aun_parse_map(config_get("aun_map"),
                           aun_map_add_cb, &aun);
       /* subnet broadcast + optional learn mode (aun_learn=<net>) */
       if (net->netif_added) {
          uint32_t ip   = ip4_addr_get_u32(netif_ip4_addr(&net->netif));
          uint32_t mask = ip4_addr_get_u32(netif_ip4_netmask(&net->netif));
          uint8_t  lnet;
-         bool     learn = aun_parse_net(get_cmdline_prop("aun_learn"),
+         bool     learn = aun_parse_net(config_get("aun_learn"),
                                         &lnet);
          if (ip != 0 && mask != 0)
             aun_set_addressing(&aun, (ip & mask) | ~mask, ip, mask,

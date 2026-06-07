@@ -105,6 +105,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "scripts/gitversion.h"
 
 #include "BeebSCSI/filesystem.h"
+#include "config.h"
 
 #define Pi1MHZ_FX_CONTROL 0xCA
 
@@ -335,6 +336,12 @@ void IRQHandler_main(void) {
 static void init_emulator(void) {
    LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator %s %s " __DATE__ " " __TIME__" ****\r\n\r\n",RELEASENAME, GITVERSION);
 
+   // Load Pi1MHz.cfg from the SD card before any emulator reads its config.
+   // All emulator/option keys come from this file via config_get(); only the
+   // boot-essential keys read before this point (disk_led_gpio, baud_rate)
+   // still come from cmdline.txt. (filesystemReadFile self-mounts the FAT.)
+   config_load("/Pi1MHz/Pi1MHz.cfg");
+
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
    RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
    {
@@ -347,37 +354,18 @@ static void init_emulator(void) {
 
    _enable_interrupts();
 
-// This is an old way of disabling emulators and will be removed in the future
-
-   const char *prop = get_cmdline_prop("Pi1MHzDisable");
-   if (prop)
-   {  // now look for a common separated values to
-      for ( const char *p =prop; *p;) {
-        int idx=atoi(p);
-        if ((idx >=0) && (idx < ( (int) (NUM_EMULATORS) ) ))
-          emulator[idx].enable = 0;
-        const char *comma = strchr(p, ',');
-        if ( !comma ) break;
-        p = comma + 1;
-      }
-   }
-
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {
-         char key[128]="";
-         char * ptr = key;
-         size_t keysize = strlcpy(key,emulator[i].name,sizeof(key));
-         strlcpy(ptr+keysize,"_addr",sizeof(key)-keysize);
-         const char *prop2 = get_cmdline_prop(key);
-         if (prop2)
+         // "<name>_addr=0xNN" overrides the FRED base address; a negative
+         // value (e.g. "<name>_addr=-1") disables the emulator.
+         int ov = config_emulator_override(emulator[i].name, &emulator[i].address);
+         if (ov < 0)
             {
-               int temp=strtol(prop2,0,0);
-               LOG_DEBUG("Found : %s=0x%x\r\n", key, (unsigned int )temp);
-               if (temp<0)
-                  emulator[i].enable = 0;
-               else
-                  emulator[i].address = (uint8_t) temp;
+               LOG_DEBUG("Disabling %s\r\n", emulator[i].name);
+               emulator[i].enable = 0;
             }
+         else if (ov > 0)
+            LOG_DEBUG("%s address = 0x%02x\r\n", emulator[i].name, emulator[i].address);
       }
 
    Pi1MHz_polls_max = 0;
@@ -393,7 +381,7 @@ static void init_emulator(void) {
    RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
    RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1
 
-   prop = get_cmdline_prop("Pi1MHznOE");
+   const char *prop = config_get("Pi1MHznOE");
    if (prop)
    {
       int temp = atoi(prop);

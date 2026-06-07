@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include "Pi1MHz.h"
 #include "rpi/info.h"
+#include "config.h"
 
 #include <stdbool.h>
 
@@ -205,17 +206,17 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    // Fixes *SCSIJUKE surviving over shift break.
    if (!PowerOn)
    {
-      const char *prop = get_cmdline_prop("SCSIJUKE");
+      const char *prop = config_get("SCSIJUKE");
       int scsijuke = 0;
       if (prop)
          scsijuke = atoi(prop);
 
-      const char *prop2 = get_cmdline_prop("VFSJUKE");
+      const char *prop2 = config_get("VFSJUKE");
       int vfsjuke = 0;
       if (prop2)
          vfsjuke = atoi(prop2);
 
-      const char *prop3 = get_cmdline_prop("SCSIID");
+      const char *prop3 = config_get("SCSIID");
       if (prop3)
       scsiid = (uint8_t) atoi(prop3);
 

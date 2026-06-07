@@ -1,1 +1,0 @@
-wifi_enable=1 wifi_ssid=Network wifi_password=password webdav_user=Pi1MHz webdav_password=Pi1MHz aun_station=ip.ip aun_map=0.254=192.168.0.1

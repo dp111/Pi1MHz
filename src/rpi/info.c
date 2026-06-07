@@ -108,6 +108,9 @@ static char *get_cmdline(void) {
 
 extern char * strcasestr(const char *, const char *);
 
+// cmdline.txt is now used only for the boot-essential keys that must be read
+// before the SD card / Pi1MHz.cfg are available (disk_led_gpio, baud_rate).
+// Everything else reads from the Pi1MHz.cfg store via config_get().
 char *get_cmdline_prop(const char *prop) {
 NOINIT_SECTION static char ret[PROP_SIZE];
    char *retptr = ret;

@@ -5,6 +5,7 @@
 #include "../rpi/block.h"
 #include "../rpi/gpio.h"
 #include "../rpi/info.h"
+#include "../config.h"
 #include "../rpi/mailbox.h"
 #include "../rpi/rpi.h"
 #include "../rpi/systimer.h"
@@ -788,7 +789,7 @@ static int sdio_host_submit_arasan_command(uint32_t command,
 
 static void sdio_host_refresh_status(void)
 {
-   const char *prop = get_cmdline_prop("wifi_sdio_host");
+   const char *prop = config_get("wifi_sdio_host");
 
    g_sdio_host_backend_name = "bcm2835-arasan-emmc-wlan";
 

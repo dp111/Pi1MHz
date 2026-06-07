@@ -128,6 +128,8 @@ file( GLOB core_files
    rpi/asm-helpers.c
    rpi/screen.c
    Pi1MHz.c
+   config.c
+   config.h
    ram_emulator.c
    helpers.c
    videoplayer.c

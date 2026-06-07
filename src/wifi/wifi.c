@@ -9,6 +9,7 @@
 #include "../Pi1MHz.h"
 #include "../rpi/info.h"
 #include "../rpi/rpi.h"
+#include "../config.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -245,7 +246,7 @@ static bool wifi_parse_ipv4(const char *value, char *dest, size_t dest_size,
 
 static bool wifi_parse_ip_mode(wifi_config_t *config)
 {
-   const char *prop = get_cmdline_prop("wifi_ip");
+   const char *prop = config_get("wifi_ip");
 
    if ((prop == NULL || prop[0] == '\0') && config->ip_address[0] != '\0') {
       config->ip_mode = WIFI_IP_MODE_STATIC;
@@ -273,10 +274,10 @@ static bool wifi_parse_ip_mode(wifi_config_t *config)
 
 static bool wifi_load_ipv4_prop(char *dest, size_t dest_size, const char *key, const char *fallback)
 {
-   const char *prop = get_cmdline_prop(key);
+   const char *prop = config_get(key);
 
    if ((prop == NULL || prop[0] == '\0') && fallback != NULL)
-      prop = get_cmdline_prop(fallback);
+      prop = config_get(fallback);
 
    if (prop == NULL || prop[0] == '\0')
       return false;
@@ -320,10 +321,10 @@ static bool wifi_network_config_build(wifi_network_config_t *network_config,
 static bool wifi_copy_cmdline_prop(char *dest, size_t dest_size, const char *primary_key,
                                    const char *fallback_key)
 {
-   const char *prop = get_cmdline_prop(primary_key);
+   const char *prop = config_get(primary_key);
 
    if ((prop == NULL || prop[0] == '\0') && fallback_key != NULL)
-      prop = get_cmdline_prop(fallback_key);
+      prop = config_get(fallback_key);
 
    if (prop == NULL || prop[0] == '\0')
       return false;
@@ -380,7 +381,7 @@ static void wifi_clear_error(void)
 
 static bool wifi_cmdline_bool(const char *key)
 {
-   const char *prop = get_cmdline_prop(key);
+   const char *prop = config_get(key);
 
    return prop != NULL && prop[0] != '\0' && prop[0] != '0';
 }
@@ -422,7 +423,7 @@ static wifi_sdio_tx_probe_command_t wifi_parse_sdio_tx_probe_command(void)
       { "join", WIFI_SDIO_TX_PROBE_COMMAND_JOIN }
    };
 
-   const char *prop = get_cmdline_prop("wifi_sdio_tx_probe_command");
+   const char *prop = config_get("wifi_sdio_tx_probe_command");
    size_t index;
 
    if (prop == NULL || prop[0] == '\0')
@@ -468,7 +469,7 @@ bool wifi_config_load(wifi_config_t *config)
       Override from cmdline.txt with e.g. wifi_country=US for wherever
       the Pi physically is. */
    {
-      const char *country_prop = get_cmdline_prop("wifi_country");
+      const char *country_prop = config_get("wifi_country");
 
       if (country_prop != NULL && country_prop[0] != '\0')
          strlcpy(config->country, country_prop, sizeof(config->country));
@@ -476,7 +477,7 @@ bool wifi_config_load(wifi_config_t *config)
          strlcpy(config->country, "GB", sizeof(config->country));
    }
    config->sdio_tx_probe_command = wifi_parse_sdio_tx_probe_command();
-   config->sdio_rx_sweep_limit = wifi_parse_u8(get_cmdline_prop("wifi_sdio_rx_sweep_limit"),
+   config->sdio_rx_sweep_limit = wifi_parse_u8(config_get("wifi_sdio_rx_sweep_limit"),
                                                config->sdio_rx_sweep_limit);
 
    have_ssid = wifi_copy_cmdline_prop(config->ssid, sizeof(config->ssid), "wifi_ssid", "SSID");
@@ -501,7 +502,7 @@ bool wifi_config_load(wifi_config_t *config)
       A password on its own is not enough to enable WiFi. */
    config->enabled = have_ssid;
 
-   port_prop = get_cmdline_prop("wifi_http_port");
+   port_prop = config_get("wifi_http_port");
    config->http_port = wifi_parse_port(port_prop, config->http_port);
    config->config_present = have_ssid || have_password;
    (void) wifi_network_config_build(&g_wifi_network_config, config);
