@@ -311,55 +311,64 @@ if( ${DEBUG} )
 endif()
 
 
+    # Single source-of-truth list of everything linked into Pi1MHz. Reused below
+    # so gitversion.h's build timestamp tracks changes to any of these files.
+    set( Pi1MHz_sources
+        ${core_files}
+        ${harddisc_emulator_files}
+        ${M5000_emulator_files}
+        ${FrameBuffer_emulator_files}
+        ${discaccess_emulator_files}
+        ${teletext_emulator_files}
+        ${mouse_redirect_files}
+        ${wifi_files}
+        ${lwip_files}
+    )
+
     if( ${DEBUG} )
 
-        add_executable( Pi1MHz
-            ${core_files}
-            ${harddisc_emulator_files}
-            ${M5000_emulator_files}
-            ${FrameBuffer_emulator_files}
-            ${discaccess_emulator_files}
-            ${teletext_emulator_files}
-            ${mouse_redirect_files}
-         ${wifi_files}
-         ${lwip_files}
-        )
+        add_executable( Pi1MHz ${Pi1MHz_sources} )
 
     else()
 
-        add_executable( Pi1MHz
-            ${core_files}
-            ${harddisc_emulator_files}
-            ${M5000_emulator_files}
-            ${FrameBuffer_emulator_files}
-            ${discaccess_emulator_files}
-            ${teletext_emulator_files}
-            ${mouse_redirect_files}
-         ${wifi_files}
-         ${lwip_files}
-        )
+        add_executable( Pi1MHz ${Pi1MHz_sources} )
 
     endif()
 
 target_link_libraries (Pi1MHz m)
 
+# Kernel images always go to the top-level firmware/ directory, regardless of
+# where the build directory is (so out-of-source build/<config> dirs work).
+get_filename_component( FIRMWARE_DIR "${CMAKE_SOURCE_DIR}/../firmware" ABSOLUTE )
+
 add_custom_command(
    TARGET Pi1MHz POST_BUILD
-   COMMAND ${CMAKE_OBJCOPY} ./Pi1MHz -O binary ../../firmware/${KERNEL_NAME}
-   COMMAND ls -l ../../firmware/${KERNEL_NAME}
+   COMMAND ${CMAKE_OBJCOPY} ./Pi1MHz -O binary ${FIRMWARE_DIR}/${KERNEL_NAME}
+   COMMAND ls -l ${FIRMWARE_DIR}/${KERNEL_NAME}
    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
    COMMENT "Convert the ELF output file to a binary image" )
 
-# Generate a header file with the current git version in it
-
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
-add_custom_target(gitversion ALL)
+# Generate scripts/gitversion.h with the git commit id (+ -dirty marker) and a
+# build timestamp. The header - and therefore the embedded BUILD_DATE - is
+# regenerated only when a source file that goes into Pi1MHz changes; an
+# unchanged tree rebuilds nothing. Pure CMake, so no bash dependency.
+
+set( GITVERSION_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gitversion.h )
 
 add_custom_command(
-   TARGET gitversion PRE_BUILD
-   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/version.sh
-   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+   OUTPUT ${GITVERSION_HEADER}
+   COMMAND ${CMAKE_COMMAND}
+           -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+           -DOUT=${GITVERSION_HEADER}
+           -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gitversion.cmake
+   DEPENDS ${Pi1MHz_sources}
+   COMMENT "Generating gitversion.h"
+   VERBATIM
 )
 
-add_dependencies(Pi1MHz gitversion)
+# A target wrapper so the header is brought up to date before any Pi1MHz source
+# (which #includes it) is compiled.
+add_custom_target( gitversion DEPENDS ${GITVERSION_HEADER} )
+add_dependencies( Pi1MHz gitversion )

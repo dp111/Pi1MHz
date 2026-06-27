@@ -47,7 +47,7 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
 
         size_t size;
         size = strlcpylen(helpscreen, "\r\nPi1MHz "RELEASENAME" , "GITVERSION
-        "\r\nDate : " __DATE__ " " __TIME__
+        "\r\nDate : " BUILD_DATE
         "\r\nPi : " , helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
         size = strlcpylen(helpscreen, get_info_string(), helpscreen_size);

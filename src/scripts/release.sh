@@ -1,51 +1,51 @@
 #!/bin/bash
+#
+# Full release build: every platform, debug and release, zipped with a README.
+# Uses the CMake presets and builds each config out-of-source in src/build/.
 
 # exit on error
 set -e
 
+cd "$(dirname "$0")/.."          # src/ (where CMakePresets.json lives)
+
 NAME=Pi1MHz_$(date +"%Y%m%d_%H%M")_$USER
 
-# detect number of available CPUs for parallel make
-[ -z "$NCPUS" ] && [ ! -z "$(type -P nproc)" ] && NCPUS=$(nproc)
-[ -z "$NCPUS" ] && NCPUS=$(getconf _NPROCESSORS_ONLN) # fallback in case nproc unavailable
+# detect number of available CPUs for parallel builds
+NCPUS=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
-DIR=../../releases/${NAME}
-mkdir -p "${DIR}/debug"
+REL=../releases/${NAME}
+mkdir -p "${REL}/debug"
 
-for MODEL in rpi3 rpi
-do
-    # compile debug kernel
-    ./clobber.sh
-    ./configure_${MODEL}.sh -DDEBUG=1
-    make -B -j$NCPUS
+# from-scratch build of the whole matrix
+rm -rf build
+
+# debug kernels
+for P in rpi rpi3; do
+    cmake --preset "${P}-debug"
+    cmake --build --preset "${P}-debug" -j"$NCPUS"
 done
+cp -a ../firmware/kernel* "${REL}/debug"
+cp -a ../firmware/kernel* "../firmware/debug"
 
-cp -a ../../firmware/kernel* "${DIR}/debug"
-cp -a ../../firmware/kernel* "../../firmware/debug"
-
-for MODEL in rpi3 rpi
-do
-    # compile normal kernel
-    ./clobber.sh
-    ./configure_${MODEL}.sh
-    make -B -j$NCPUS
+# release kernels
+for P in rpi rpi3; do
+    cmake --preset "${P}"
+    cmake --build --preset "${P}" -j"$NCPUS"
 done
-
-cp -a ../../firmware/* "${DIR}"
+cp -a ../firmware/* "${REL}"
 
 # Create a simple README.txt file
-cat >"${DIR}/README.txt" <<EOF
+cat >"${REL}/README.txt" <<EOF
 Pi1MHz
 
 (c) 2020-2022  Dominic Plunkett (dp11) and other contributors
 
-  git version: $(grep GITVERSION gitversion.h  | cut -d\" -f2)
+  git version: $(grep GITVERSION scripts/gitversion.h | cut -d\" -f2)
 build version: ${NAME}
 EOF
 
-cd "../../releases/${NAME}"
+cd "../releases/${NAME}"
 zip -qr "../${NAME}.zip" .
 cd ../..
 
 unzip -l "releases/${NAME}.zip"
-

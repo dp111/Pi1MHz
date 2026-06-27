@@ -334,7 +334,7 @@ void IRQHandler_main(void) {
 }
 
 static void init_emulator(void) {
-   LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator %s %s " __DATE__ " " __TIME__" ****\r\n\r\n",RELEASENAME, GITVERSION);
+   LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator %s %s " BUILD_DATE " ****\r\n\r\n",RELEASENAME, GITVERSION);
 
    // Load Pi1MHz.cfg from the SD card before any emulator reads its config.
    // All emulator/option keys come from this file via config_get(); only the

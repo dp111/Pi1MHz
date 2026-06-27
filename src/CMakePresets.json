@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "rpi",
+      "inherits": "base",
+      "displayName": "rpi (Pi 1 / Zero, kernel.img)",
+      "toolchainFile": "${sourceDir}/scripts/rpi.cmake"
+    },
+    {
+      "name": "rpi3",
+      "inherits": "base",
+      "displayName": "rpi3 (Pi 2/3, kernel7.img)",
+      "toolchainFile": "${sourceDir}/scripts/rpi3.cmake"
+    },
+    {
+      "name": "rpi-debug",
+      "inherits": "rpi",
+      "displayName": "rpi Debug",
+      "cacheVariables": { "DEBUG": "1" }
+    },
+    {
+      "name": "rpi3-debug",
+      "inherits": "rpi3",
+      "displayName": "rpi3 Debug",
+      "cacheVariables": { "DEBUG": "1" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "rpi",        "configurePreset": "rpi" },
+    { "name": "rpi3",       "configurePreset": "rpi3" },
+    { "name": "rpi-debug",  "configurePreset": "rpi-debug" },
+    { "name": "rpi3-debug", "configurePreset": "rpi3-debug" }
+  ]
+}
