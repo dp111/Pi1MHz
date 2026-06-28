@@ -6,7 +6,11 @@
 #include "rpi/rpi.h"
 #include "rpi/base.h"
 
-#define RELEASENAME "v1.28"
+// RELEASENAME (and GITVERSION / BUILD_DATE) are generated from git into
+// scripts/gitversion.h - bump the release by creating a git tag, not here.
+// Include that header directly in the few files that need these strings; it is
+// deliberately not pulled in here to avoid recompiling the whole tree on every
+// build (the timestamp changes each time a source file changes).
 
 #define PAGE_SIZE    0x100
 

@@ -37,6 +37,7 @@
 #include "../rpi/asm-helpers.h"
 #include "../rpi/systimer.h"
 #include "../Pi1MHz.h"
+#include "../scripts/gitversion.h"   // RELEASENAME (generated from git tag)
 #include "../rpi/exceptions.h"
 
 //--------------------------------------------------------------------+

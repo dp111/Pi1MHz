@@ -27,9 +27,8 @@
 
 # CMake build environment for the Valvers Raspberry-Pi bare metal tutorials
 
-# CMake 2.8.10 Documentation: http://www.cmake.org/cmake/help/v2.8.10/cmake.html
-
-cmake_minimum_required( VERSION 3.10 )
+# Presets (CMakePresets.json) require CMake 3.21 or newer.
+cmake_minimum_required( VERSION 3.21 )
 
 # Mark the language as C so that CMake doesn't try to test the C++
 # cross-compiler's ability to compile a simple program because that will fail
@@ -37,7 +36,6 @@ project( Pi1MHz C ASM )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" )
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu23" )
 
 if(EXISTS ${PROJECT_SOURCE_DIR}/FIQ.s)
@@ -112,7 +110,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=auto")
 
 set( CMAKE_EXE_LINKER_FLAGS "-Wl,--gc-sections -Wl,--defsym=START_ADDR=0x8000 -Wl,-T,${PROJECT_SOURCE_DIR}/rpi/rpi.ld " )
 
-file( GLOB core_files
+set(core_files
    rpi/arm-start.S
    rpi/armc-cstubs.c
    rpi/exception.c
@@ -149,7 +147,7 @@ file( GLOB core_files
 
 
 # Harddisc emulator
-file( GLOB harddisc_emulator_files
+set(harddisc_emulator_files
    harddisc_emulator.c
    BeebSCSI/debug.c
    BeebSCSI/filesystem.c
@@ -176,13 +174,13 @@ include_directories(wifi)
 include_directories(AUN)
 
 # M5000 emulator
-file( GLOB M5000_emulator_files
+set(M5000_emulator_files
    rpi/audio.c
    M5000_emulator.c
 )
 
 #FrameBuffer
-file( GLOB FrameBuffer_emulator_files
+set(FrameBuffer_emulator_files
    framebuffer/framebuffer.c
    framebuffer/framebuffer.h
    framebuffer/screen_modes.c
@@ -198,7 +196,7 @@ file( GLOB FrameBuffer_emulator_files
 )
 
 # Discaccess emulator (AUN commands 30+ share its command interface)
-file( GLOB discaccess_emulator_files
+set(discaccess_emulator_files
    discaccess_emulator.c
    AUN/aun.c
    AUN/aun.h
@@ -208,16 +206,16 @@ file( GLOB discaccess_emulator_files
    AUN/aun_emulator.h
 )
 
-file( GLOB teletext_emulator_files
+set(teletext_emulator_files
    teletext_emulator.c
    teletext_emulator.h
 )
 
-file( GLOB mouse_redirect_files
+set(mouse_redirect_files
    mouseredirect.c
 )
 
-file( GLOB wifi_files
+set(wifi_files
    wifi/cyw43.c
    wifi/framebuffer_export.c
    wifi/md5.c
@@ -234,7 +232,7 @@ file( GLOB wifi_files
    wifi/netname.h
 )
 
-file( GLOB lwip_files
+set(lwip_files
    ${LWIP_ROOT}/src/core/def.c
    ${LWIP_ROOT}/src/core/dns.c
    ${LWIP_ROOT}/src/core/inet_chksum.c
@@ -304,62 +302,61 @@ set_source_files_properties(
 )
 
 
-if( ${DEBUG} )
+if( DEBUG )
 
    set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDEBUG=1 " )
 
 endif()
 
 
-    if( ${DEBUG} )
+# Single source-of-truth list of everything linked into Pi1MHz. Reused below so
+# gitversion.h's build timestamp tracks changes to any of these files.
+set( Pi1MHz_sources
+    ${core_files}
+    ${harddisc_emulator_files}
+    ${M5000_emulator_files}
+    ${FrameBuffer_emulator_files}
+    ${discaccess_emulator_files}
+    ${teletext_emulator_files}
+    ${mouse_redirect_files}
+    ${wifi_files}
+    ${lwip_files}
+)
 
-        add_executable( Pi1MHz
-            ${core_files}
-            ${harddisc_emulator_files}
-            ${M5000_emulator_files}
-            ${FrameBuffer_emulator_files}
-            ${discaccess_emulator_files}
-            ${teletext_emulator_files}
-            ${mouse_redirect_files}
-         ${wifi_files}
-         ${lwip_files}
-        )
+add_executable( Pi1MHz ${Pi1MHz_sources} )
 
-    else()
+target_link_libraries( Pi1MHz PRIVATE m )
 
-        add_executable( Pi1MHz
-            ${core_files}
-            ${harddisc_emulator_files}
-            ${M5000_emulator_files}
-            ${FrameBuffer_emulator_files}
-            ${discaccess_emulator_files}
-            ${teletext_emulator_files}
-            ${mouse_redirect_files}
-         ${wifi_files}
-         ${lwip_files}
-        )
-
-    endif()
-
-target_link_libraries (Pi1MHz m)
+# Kernel images always go to the top-level firmware/ directory, regardless of
+# where the build directory is (so out-of-source build/<config> dirs work).
+get_filename_component( FIRMWARE_DIR "${CMAKE_SOURCE_DIR}/../firmware" ABSOLUTE )
 
 add_custom_command(
    TARGET Pi1MHz POST_BUILD
-   COMMAND ${CMAKE_OBJCOPY} ./Pi1MHz -O binary ../../firmware/${KERNEL_NAME}
-   COMMAND ls -l ../../firmware/${KERNEL_NAME}
+   COMMAND ${CMAKE_OBJCOPY} ./Pi1MHz -O binary ${FIRMWARE_DIR}/${KERNEL_NAME}
+   COMMAND ls -l ${FIRMWARE_DIR}/${KERNEL_NAME}
    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
    COMMENT "Convert the ELF output file to a binary image" )
 
-# Generate a header file with the current git version in it
+# Generate scripts/gitversion.h with the git commit id (+ -dirty marker) and a
+# build timestamp. The header - and therefore the embedded BUILD_DATE - is
+# regenerated only when a source file that goes into Pi1MHz changes; an
+# unchanged tree rebuilds nothing. Pure CMake, so no bash dependency.
 
-include_directories(${CMAKE_CURRENT_BINARY_DIR})
-
-add_custom_target(gitversion ALL)
+set( GITVERSION_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gitversion.h )
 
 add_custom_command(
-   TARGET gitversion PRE_BUILD
-   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/version.sh
-   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+   OUTPUT ${GITVERSION_HEADER}
+   COMMAND ${CMAKE_COMMAND}
+           -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+           -DOUT=${GITVERSION_HEADER}
+           -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gitversion.cmake
+   DEPENDS ${Pi1MHz_sources}
+   COMMENT "Generating gitversion.h"
+   VERBATIM
 )
 
-add_dependencies(Pi1MHz gitversion)
+# A target wrapper so the header is brought up to date before any Pi1MHz source
+# (which #includes it) is compiled.
+add_custom_target( gitversion DEPENDS ${GITVERSION_HEADER} )
+add_dependencies( Pi1MHz gitversion )
