@@ -50,8 +50,14 @@ void wifi_debug_printf(const char *format, ...) { (void)format; }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 { pi.Memory[addr & 0x1ff] = data; if ((addr & 0xff) == 0xaa) { last_result = data; have_result = 1; } }
 
-uint32_t RPI_GetSystemTime(void)
-{ struct timeval tv; gettimeofday(&tv, NULL); return (uint32_t)(tv.tv_sec*1000000ull + tv.tv_usec); }
+/* Deterministic virtual clock (microseconds). It advances a fixed step on
+ * every read so the tx retransmit/timeout state machine and park-and-retry
+ * make progress during the ROM's synchronous poll spins, without depending on
+ * wall-clock timing. ~500us/read reaches the 10ms reject and 8ms park windows
+ * within a poll spin while staying reproducible. The 'T <ms>' command jumps it
+ * forward explicitly when a test wants to cross a longer timeout at once. */
+static uint64_t g_clock_us = 1000000;
+uint32_t RPI_GetSystemTime(void) { g_clock_us += 500; return (uint32_t)g_clock_us; }
 
 const char *config_get(const char *prop)
 {
@@ -123,6 +129,7 @@ int main(void)
                      the_pcb.cb(the_pcb.arg, &the_pcb, p, &a, (u16_t)port); }
                   puts("K 0"); break; }
       case 'L': poll_fn(); puts("K 0"); break;
+      case 'T': { unsigned ms; sscanf(line+2, "%u", &ms); g_clock_us += (uint64_t)ms*1000u; puts("K 0"); break; }
       case 'I': printf("K %02x\n", irq_line); break;
       case '3': /* '3 <hex>' : preload parasite tx bytes for R3 reads */
                 { char hx2[18000]; sscanf(line+2,"%s",hx2); tube_r3_in_n=0;
