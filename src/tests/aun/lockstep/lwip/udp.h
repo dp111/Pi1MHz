@@ -1,4 +1,5 @@
-#pragma once
+#ifndef LOCKSTEP_LWIP_UDP_H
+#define LOCKSTEP_LWIP_UDP_H
 #include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
 struct udp_pcb;
@@ -9,3 +10,4 @@ err_t udp_bind(struct udp_pcb *pcb, const ip_addr_t *ip, uint16_t port);
 void udp_recv(struct udp_pcb *pcb, udp_recv_fn cb, void *arg);
 void udp_remove(struct udp_pcb *pcb);
 err_t udp_sendto(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *ip, uint16_t port);
+#endif

@@ -349,6 +349,29 @@ int main(void)
    assert(e.counters.rx_too_big == 1);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);     /* nothing queued */
 
+   /* 22: a re-injected parked frame goes to the TAIL, behind a frame that
+    * queued while it was parked - so a parked (e.g. undeliverable) frame can
+    * never block or jump ahead of a fresh frame. (Confirms park is not a
+    * head-of-line hazard.) */
+   reset();
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   uint8_t fa[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 40,0,0,0, 0xA1,0xA2,0xA3,0xA4 };
+   aun_udp_input(&e, 0x0100000A, 32768, fa, 12);                 /* frame A */
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
+   assert(aun_rx_collect(&e, 0, false) == AUN_OK);               /* A parked, out of queue */
+   assert(e.parked_valid);
+   uint8_t fb[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 44,0,0,0, 0xB1,0xB2,0xB3,0xB4 };
+   aun_udp_input(&e, 0x0100000A, 32768, fb, 12);                 /* frame B queued */
+   fake_ms += AUN_PARK_DELAY_MS;
+   aun_poll(&e);                                                 /* A re-injected at tail */
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
+   assert(memcmp(pbuf, &fb[8], 4) == 0);                         /* B (queued first) delivered first */
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
+   assert(memcmp(pbuf, &fa[8], 4) == 0);                         /* then A, behind B */
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(!e.parked_valid && aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
+
    printf("all aun tests passed\n");
    return 0;
 }

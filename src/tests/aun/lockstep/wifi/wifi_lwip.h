@@ -1,4 +1,5 @@
-#pragma once
+#ifndef LOCKSTEP_WIFI_WIFI_LWIP_H
+#define LOCKSTEP_WIFI_WIFI_LWIP_H
 #include <stdbool.h>
 #include "lwip/ip_addr.h"
 struct netif { uint32_t ip; uint32_t mask; };
@@ -10,3 +11,4 @@ static inline void wifi_lwip_rx_kick(void) { }
 #define netif_ip4_addr(n) (&(n)->ip)
 #define netif_ip4_netmask(n) (&(n)->mask)
 #define ip4_addr_get_u32(p) (*(p))
+#endif
