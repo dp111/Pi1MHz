@@ -84,7 +84,44 @@ static uint8_t IRQ_NUM;
 /* terse event log on the shared wifi debug channel, enabled by
  * aun_debug=1 in cmdline.txt */
 static bool aun_debug;
-#define AUN_LOG(...) do { if (aun_debug) wifi_debug_printf(__VA_ARGS__); } while (0)
+
+#define AUN_LOG(...) do { if (aun_debug) { LOG_DEBUG(__VA_ARGS__); } } while (0)
+
+/* Per-inbound-DATA-frame diagnostic: shows the AUN sequence number, the
+ * engine's verdict, and "=prev" when the payload is byte-identical to the
+ * previous frame from the same source - which tells a retransmit apart
+ * from a genuinely new block. Installed via aun_set_trace() below. */
+/* Format the first 16 bytes of a payload as space-separated hex into out
+ * (which must hold at least 16*3 bytes), to decode fileserver headers. */
+static void aun_hex16(char *out, const uint8_t *data, uint32_t len)
+{
+   static const char hexd[] = "0123456789ABCDEF";
+   uint32_t n = len < 16u ? len : 16u;
+   uint32_t p = 0;
+   for (uint32_t i = 0; i < n; i++) {
+      out[p++] = hexd[data[i] >> 4];
+      out[p++] = hexd[data[i] & 0x0Fu];
+      out[p++] = ' ';
+   }
+   out[p ? p - 1u : 0u] = '\0';
+}
+
+static void aun_diag_trace(void *user, uint32_t seq, uint8_t port,
+                           uint32_t len, uint8_t verdict, bool same_as_prev,
+                           const uint8_t *data)
+{
+   (void)user;
+   static const char *const vname[] = { "ack", "redup", "nak", "nosrc" };
+   char hex[16 * 3 + 1];
+   aun_hex16(hex, data, len);
+   /* ackfail is the running count of ACK/NAKs the transport could not put
+    * on the wire - if it climbs in step with the far end's retransmits,
+    * our acknowledgements are being silently dropped. */
+   AUN_LOG("ECONET: rxdata seq %lu port %02X len %lu %s%s ackfail=%lu [%s]\r\n",
+           (unsigned long)seq, port, (unsigned long)len,
+           vname[verdict & 3u], same_as_prev ? " =prev" : "",
+           (unsigned long)aun.counters.ack_fail, hex);
+}
 
 static void aun_irq_update(void)
 {
@@ -154,7 +191,14 @@ static bool aun_udp_send(void *user, uint32_t ip_be, uint16_t port,
    ip_addr_set_ip4_u32(&dest, ip_be);
    err_t r = udp_sendto(aun_pcb, p, &dest, port);
    pbuf_free(p);
-   return r == ERR_OK;
+   if (r == ERR_OK) {
+      /* a sent datagram (command or ACK) usually precedes a prompt reply;
+       * keep the wifi RX draining at full rate so the reply is not held in
+       * the chip FIFO by the idle-throttle backoff and acked too late. */
+      wifi_lwip_rx_kick();
+      return true;
+   }
+   return false;
 }
 
 static uint32_t aun_now_ms(void *user)
@@ -241,8 +285,10 @@ void aun_status_text(char *buf, size_t size)
           (unsigned long)aun.counters.rx_no_block,
           (unsigned long)aun.counters.rx_unknown_source,
           (unsigned long)aun.counters.rx_too_big);
-   APPEND("ack/nak sent %lu/%lu\n", (unsigned long)aun.counters.ack_sent,
-          (unsigned long)aun.counters.nak_sent);
+   APPEND("ack/nak sent %lu/%lu  ackfail %lu\n",
+          (unsigned long)aun.counters.ack_sent,
+          (unsigned long)aun.counters.nak_sent,
+          (unsigned long)aun.counters.ack_fail);
    #undef APPEND
 }
 
@@ -321,6 +367,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       aun_init(&aun, &transport, aun_stn, aun_net);
       aun_set_host_imm(&aun, host_imm);
       aun_debug = config_get("aun_debug") != NULL;
+      aun_set_trace(&aun, aun_diag_trace, NULL);
       {
          uint8_t mid[4];
          if (aun_parse_machine(config_get("aun_machine"), mid))
@@ -380,9 +427,14 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       uint32_t len = jim_read32(cp + 12);
       if (!aun_buffer_ok(off, len))
          break;                                   /* AUN_ERR_PARAM */
-      AUN_LOG("ECONET: tx %u.%u port %02X len %lu\r\n",
-              Pi1MHz->JIM_ram[cp + 5], Pi1MHz->JIM_ram[cp + 4],
-              Pi1MHz->JIM_ram[cp + 3], (unsigned long)len);
+      {
+         char txhex[16 * 3 + 1];
+         aun_hex16(txhex, &Pi1MHz->JIM_ram[base_addr + off], len);
+         AUN_LOG("ECONET: tx %u.%u port %02X ctrl %02X len %lu [%s]\r\n",
+                 Pi1MHz->JIM_ram[cp + 5], Pi1MHz->JIM_ram[cp + 4],
+                 Pi1MHz->JIM_ram[cp + 3], Pi1MHz->JIM_ram[cp + 2],
+                 (unsigned long)len, txhex);
+      }
       result = aun_tx_start(&aun,
                             Pi1MHz->JIM_ram[cp + 5],   /* dest net */
                             Pi1MHz->JIM_ram[cp + 4],   /* dest stn */
@@ -417,13 +469,17 @@ static void aun_execute(uint32_t cp, uint32_t addr)
    case AUN_CMD_RX_POLL:
    {
       aun_rx_info_t info;
-      result = aun_rx_poll(&aun, Pi1MHz->JIM_ram[cp + 1], &info);
+      uint8_t rxh = Pi1MHz->JIM_ram[cp + 1];
+      result = aun_rx_poll(&aun, rxh, &info);
       if (result == AUN_OK) {
          Pi1MHz->JIM_ram[cp + 2] = info.ctrl;
          Pi1MHz->JIM_ram[cp + 3] = info.port;
          Pi1MHz->JIM_ram[cp + 4] = info.src_stn;
          Pi1MHz->JIM_ram[cp + 5] = info.src_net;
          jim_write32(cp + 12, info.len);
+         AUN_LOG("ECONET: rx_poll h%u port %02X ctrl %02X src %u.%u len %lu\r\n",
+                 rxh, info.port, info.ctrl, info.src_net, info.src_stn,
+                 (unsigned long)info.len);
       }
       break;
    }
