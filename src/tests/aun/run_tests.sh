@@ -11,6 +11,7 @@ trap 'rm -rf "$B"' EXIT
 stubs() {   # populate $1 with the lockstep stub headers
    mkdir -p "$1/rpi" "$1/wifi" "$1/lwip"
    cp "$HERE"/lockstep/Pi1MHz.h "$1/"
+   cp "$HERE"/lockstep/config.h "$1/"
    cp "$HERE"/lockstep/rpi/*.h  "$1/rpi/"
    cp "$HERE"/lockstep/wifi/*.h "$1/wifi/"
    cp "$HERE"/lockstep/lwip/*.h "$1/lwip/"

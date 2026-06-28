@@ -53,7 +53,7 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 uint32_t RPI_GetSystemTime(void)
 { struct timeval tv; gettimeofday(&tv, NULL); return (uint32_t)(tv.tv_sec*1000000ull + tv.tv_usec); }
 
-char *get_cmdline_prop(const char *prop)
+const char *config_get(const char *prop)
 {
    static char ret[256];
    char *p = strstr(cmdline, prop);

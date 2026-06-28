@@ -8,6 +8,7 @@ B=$(mktemp -d)
 stubs() {
    mkdir -p "$1/rpi" "$1/wifi" "$1/lwip"
    cp "$HERE"/Pi1MHz.h "$1/"
+   cp "$HERE"/config.h "$1/"
    cp "$HERE"/rpi/*.h  "$1/rpi/"
    cp "$HERE"/wifi/*.h "$1/wifi/"
    cp "$HERE"/lwip/*.h "$1/lwip/"

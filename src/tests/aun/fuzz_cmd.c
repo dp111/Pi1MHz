@@ -23,7 +23,7 @@ bool wifi_debug_enabled(void){ return false; }
 void wifi_debug_printf(const char *format, ...){ (void)format; }
 void Pi1MHz_MemoryWrite(uint32_t a, uint8_t d){ pi.Memory[a & 0x1ff] = d; }
 uint32_t RPI_GetSystemTime(void){ static uint32_t t; return t += 997; }
-char *get_cmdline_prop(const char *p){
+const char *config_get(const char *p){
    static char r[64];
    if (!strcmp(p,"aun_station")) { strcpy(r,"1.32"); return r; }
    if (!strcmp(p,"aun_map")) { strcpy(r,"1.254=10.0.0.1"); return r; }
