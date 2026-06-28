@@ -175,3 +175,4 @@ Add wifi support for Pi3B+ ( NB USB MTP doesn't work due to the way USB is wired
 Faster main polling loop by not polling wifi as often.
 Econet / AUN support . two roms included AUNFSbeeb and AUNFSM128.
 Teletext emulator using and external server
+new Pi1MHz.cfg file

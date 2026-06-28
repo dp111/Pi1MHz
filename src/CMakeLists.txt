@@ -47,7 +47,7 @@ endif()
 
 # Add any C compiler flags here. The C flags concerned with processor tuning
 # are in the toolchain files toolchain-arm-none-eabi-bcm2835.cmake, etc.
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -pipe" )
 # The following line enables using memory form 0x00000000 onwards
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --param=min-pagesize=0 ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wmaybe-uninitialized ")

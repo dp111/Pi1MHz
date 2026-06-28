@@ -545,7 +545,7 @@ _Noreturn void kernel_main(void)
       }
 
       main_poll_loops++;
-      if ((main_poll_loops % 1000000u) == 0u) {
+      if ((main_poll_loops % 10000000u) == 0u) {
          LOG_INFO("Main poll heartbeat loops=%lu callbacks=%u\r\n",
                   (unsigned long)main_poll_loops,
                   (unsigned int)Pi1MHz_polls_max);
