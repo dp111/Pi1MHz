@@ -587,10 +587,14 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
 
    case AUN_TYPE_DATA: {
       /* Diagnostic only: is this frame byte-identical to the previous
-       * DATA frame from the same source on the same Econet port? This is
-       * what distinguishes a retransmit (server missed our ACK, resent
-       * the same block under a new seq) from a genuinely new block. It
-       * never affects the verdict - the engine still decides purely on
+       * DATA frame from the same source on the same Econet port? The
+       * PiEconetBridge retransmits a lost-ACK block under the SAME seq
+       * (econet-hpbridge.c re-sends the queued packet unchanged), which
+       * the same-seq dup check below already catches and re-ACKs. This
+       * content compare instead spots a retransmit under a *new* seq -
+       * which a stricter peer (e.g. BeebEm) can do - and drives the
+       * park-drop heuristic so such a frame is not re-presented forever.
+       * It never affects the verdict - the engine still decides purely on
        * whether a listener is open. Tracked per (source, port) so the
        * fileserver's &90 replies between two &92 blocks don't clobber it. */
       aun_dbg_prev_t *dp = NULL;
