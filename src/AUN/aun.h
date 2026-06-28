@@ -173,6 +173,7 @@ typedef struct {
    uint32_t rx_dup, rx_no_block, rx_unknown_source, rx_too_big, rx_bad;
    uint32_t ack_sent, nak_sent;
    uint32_t ack_fail;          /* ACK/NAK that the transport failed to send */
+   uint32_t rx_parked_drop;    /* parked reply dropped (budget/closed/busy)  */
 } aun_counters_t;
 
 /* Inbound immediate operation held for the host to execute (remote
@@ -321,10 +322,10 @@ typedef struct {
 } aun_rx_info_t;
 uint8_t aun_rx_poll(aun_engine_t *e, uint8_t handle, aun_rx_info_t *out);
 
-/* Release the held packet and re-arm the block, delivering the
- * deferred verdict: accept=true sends the ACK the sender is waiting
- * for; accept=false (no listener took it) sends a NAK, so the sender
- * sees a true "not listening" exactly as on a real wire. */
+/* Release the held packet and re-arm the block. The ACK was already sent
+ * on receipt, so collect is silent on the wire: accept=true simply pops
+ * the head; accept=false (no listener took it) parks the frame for a few
+ * re-presentations in case its control block is armed a beat later. */
 uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept);
 
 uint8_t aun_rx_close(aun_engine_t *e, uint8_t handle);

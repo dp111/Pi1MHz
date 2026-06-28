@@ -311,6 +311,44 @@ int main(void)
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
+   /* 20: closing a receive block while a frame is parked-and-re-injected
+    * must clear the park slot, else park-and-retry is wedged for the life of
+    * the engine (parked_in_queue stuck true). */
+   reset();
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   pf[4] = 230; pf[8] = 0x11;
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
+   assert(aun_rx_collect(&e, 0, false) == AUN_OK);            /* park */
+   fake_ms += AUN_PARK_DELAY_MS;
+   aun_poll(&e);                                              /* re-inject */
+   assert(e.parked_valid && e.parked_in_queue);
+   assert(aun_rx_close(&e, 0) == AUN_OK);                     /* close while parked */
+   assert(!e.parked_valid && e.counters.rx_parked_drop == 1); /* slot cleared */
+   /* park-and-retry still works afterwards: a fresh reject parks again */
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   pf[4] = 234; pf[8] = 0x22;                                 /* distinct -> not a dup */
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
+   assert(aun_rx_collect(&e, 0, false) == AUN_OK);
+   assert(e.parked_valid);                                    /* not wedged */
+
+   /* 21: a payload larger than AUN_MAX_DATA is refused (NAK) and never
+    * overflows the fixed frame slot, even when the block's buffer is big
+    * enough for it. */
+   reset();
+   static uint8_t bigbuf[AUN_MAX_DATA + 64];
+   assert(aun_rx_open(&e, 0, 0x93, AUN_WILDCARD, AUN_WILDCARD,
+                      bigbuf, sizeof bigbuf) == AUN_OK);
+   static uint8_t bigdg[AUN_HDR_SIZE + AUN_MAX_DATA + 16];
+   memset(bigdg, 0, sizeof bigdg);
+   bigdg[0] = AUN_TYPE_DATA; bigdg[1] = 0x93; bigdg[4] = 60;  /* dlen > AUN_MAX_DATA */
+   sent_count = 0;
+   aun_udp_input(&e, 0x0100000A, 32768, bigdg, sizeof bigdg);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK);  /* refused */
+   assert(e.counters.rx_too_big == 1);
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);     /* nothing queued */
+
    printf("all aun tests passed\n");
    return 0;
 }

@@ -291,6 +291,8 @@ void aun_status_text(char *buf, size_t size)
           (unsigned long)aun.counters.ack_sent,
           (unsigned long)aun.counters.nak_sent,
           (unsigned long)aun.counters.ack_fail);
+   APPEND("rx parked drop %lu\n",
+          (unsigned long)aun.counters.rx_parked_drop);
    #undef APPEND
 }
 

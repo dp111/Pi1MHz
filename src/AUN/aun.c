@@ -300,6 +300,7 @@ uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
             e->parked_due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
          } else {
             e->parked_valid = false;        /* exhausted: drop */
+            e->counters.rx_parked_drop++;
          }
       } else if (!e->parked_valid && f->src_ip_be != 0 && !f->dup) {
          /* fresh reject of a NEW DATA reply (not a retransmit): park it for
@@ -311,8 +312,12 @@ uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
          e->parked_handle   = handle;
          e->parked_retries  = AUN_PARK_RETRIES;
          e->parked_due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
+      } else if (f->src_ip_be != 0 && !f->dup) {
+         /* a parkable reply, but the single park slot is busy with another
+          * frame: it cannot be held and no listener took it -> lost */
+         e->counters.rx_parked_drop++;
       }
-      /* else: park slot busy with another frame, or non-DATA -> just drop */
+      /* else: dup retransmit or non-DATA (broadcast/local) -> intentional drop */
       b->head = (uint8_t)((b->head + 1u) % AUN_RX_QUEUE);
       b->count--;
    }
@@ -324,6 +329,15 @@ uint8_t aun_rx_close(aun_engine_t *e, uint8_t handle)
 {
    if (handle >= AUN_RX_BLOCKS || !e->rx[handle].open)
       return AUN_ERR_NO_BLOCK;
+   /* A frame parked (or already re-injected) for this block has nowhere left
+    * to go once the block closes; clear it so park-and-retry is not wedged
+    * with parked_in_queue stuck true (rx_park_poll would early-return for the
+    * life of the engine, and no fresh frame could ever be parked again). */
+   if (e->parked_valid && e->parked_handle == handle) {
+      e->parked_valid    = false;
+      e->parked_in_queue = false;
+      e->counters.rx_parked_drop++;
+   }
    memset(&e->rx[handle], 0, sizeof e->rx[handle]);
    return AUN_OK;
 }
@@ -348,11 +362,10 @@ static aun_rx_block_t *rx_match(aun_engine_t *e, uint8_t port,
    return NULL;
 }
 
-/* Deliver a payload into a receive block; returns false if no matching
- * block could take it (caller decides whether to NAK). For DATA frames
- * the ACK is NOT sent here: the frame carries its verdict context and
- * the ACK/NAK goes out at aun_rx_collect(), so a sender only sees
- * success once a listener has truly taken the frame. */
+/* Deliver a payload into a receive block; returns NULL if no matching
+ * block could take it (caller decides whether to NAK). The ACK/NAK for a
+ * DATA frame is sent by aun_udp_input() on receipt, not here - this just
+ * stages the payload into the block's queue. */
 static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
                                   uint8_t src_stn, uint8_t src_net,
                                   const uint8_t *data, uint32_t len)
@@ -362,7 +375,10 @@ static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
       e->counters.rx_no_block++;
       return NULL;
    }
-   if (len > b->buf_size) {
+   /* Bound by both the caller's buffer AND the fixed frame slot: f->data is
+    * uint8_t[AUN_MAX_DATA], so a block opened with buf_size > AUN_MAX_DATA
+    * must not let an oversize payload overflow the slot. */
+   if (len > b->buf_size || len > AUN_MAX_DATA) {
       e->counters.rx_too_big++;
       return NULL;
    }
@@ -748,6 +764,7 @@ static void rx_park_poll(aun_engine_t *e)
    aun_rx_block_t *b = &e->rx[e->parked_handle];
    if (!b->open) {
       e->parked_valid = false;        /* nowhere left to deliver: drop */
+      e->counters.rx_parked_drop++;
       return;
    }
    if (b->count >= AUN_RX_QUEUE) {
