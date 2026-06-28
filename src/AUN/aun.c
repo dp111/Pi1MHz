@@ -114,8 +114,14 @@ static void send_ack_nak(aun_engine_t *e, uint32_t ip_be, uint16_t port,
 {
    uint8_t hdr[AUN_HDR_SIZE];
    build_header(hdr, type, aun_port, ctrl, seq);
-   (void)udp_send(e, ip_be, port, hdr, sizeof hdr);
-   if (type == AUN_TYPE_ACK)
+   /* Honour the transport result: an ACK that fails to go on the wire
+    * (pbuf exhaustion, udp_sendto error) leaves the far end waiting and
+    * retransmitting. Count those separately so a silent drop is visible
+    * instead of being miscounted as a successful ack. */
+   bool ok = udp_send(e, ip_be, port, hdr, sizeof hdr);
+   if (!ok)
+      e->counters.ack_fail++;
+   else if (type == AUN_TYPE_ACK)
       e->counters.ack_sent++;
    else
       e->counters.nak_sent++;
@@ -183,6 +189,12 @@ void aun_test_responder(aun_engine_t *e, bool enable,
 void aun_set_machine_id(aun_engine_t *e, const uint8_t id[4])
 {
    memcpy(e->machine_id, id, 4);
+}
+
+void aun_set_trace(aun_engine_t *e, aun_trace_fn fn, void *user)
+{
+   e->trace_fn   = fn;
+   e->trace_user = user;
 }
 
 void aun_set_host_imm(aun_engine_t *e, bool enable)
@@ -255,25 +267,52 @@ uint8_t aun_rx_poll(aun_engine_t *e, uint8_t handle, aun_rx_info_t *out)
 
 uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
 {
+   /* The ACK was already sent when the frame arrived (ACK-on-receipt:
+    * the engine acks into the queue immediately, like the real ADLC/NMI
+    * acks into the RXCB - this is fast enough to beat the fileserver's
+    * reply-ACK timeout, which a deferred collect-time ack is not). So a
+    * normal collect just pops the head.
+    *
+    * accept=false means the host's RXCB scan found no listener for this
+    * frame. Rather than discard it (and lose a reply that arrived a beat
+    * before its control block was armed - the ACK already went out, so the
+    * sender will not retransmit), the frame is "parked" out of the queue
+    * and re-presented a few times by aun_poll(). It is delivered the moment
+    * the host arms the matching CB, and dropped only if no one ever does. */
    if (handle >= AUN_RX_BLOCKS || !e->rx[handle].open)
       return AUN_ERR_NO_BLOCK;
    aun_rx_block_t *b = &e->rx[handle];
    if (b->count != 0) {
       aun_rx_frame_t *f = &b->q[b->head];
-      if (f->needs_verdict) {
-         send_ack_nak(e, f->src_ip_be, f->src_port,
-                      accept ? AUN_TYPE_ACK : AUN_TYPE_NAK,
-                      f->port, (uint8_t)(f->ctrl & 0x7F), f->seq);
-         if (accept) {
-            aun_map_entry_t *m = map_find_by_ip(e, f->src_ip_be,
-                                                f->src_port);
-            if (m != NULL) {
-               m->last_rx_seq = f->seq;   /* dup window moves on ACK */
-               m->seq_valid   = true;
-            }
+      bool is_parked = e->parked_valid && e->parked_in_queue &&
+                       f->src_ip_be != 0 &&
+                       e->parked.seq      == f->seq &&
+                       e->parked.src_ip_be == f->src_ip_be &&
+                       e->parked.src_port == f->src_port;
+      if (accept) {
+         if (is_parked)
+            e->parked_valid = false;        /* re-injected frame delivered */
+      } else if (is_parked) {
+         /* the re-injected frame was rejected again: retry or give up */
+         if (e->parked_retries != 0) {
+            e->parked_retries--;
+            e->parked_in_queue = false;
+            e->parked_due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
+         } else {
+            e->parked_valid = false;        /* exhausted: drop */
          }
-         f->needs_verdict = false;
+      } else if (!e->parked_valid && f->src_ip_be != 0 && !f->dup) {
+         /* fresh reject of a NEW DATA reply (not a retransmit): park it for
+          * re-presentation, in case its RXCB is armed a beat later. A 'dup'
+          * frame is a retransmit of something already handled - drop it. */
+         e->parked          = *f;
+         e->parked_valid    = true;
+         e->parked_in_queue = false;
+         e->parked_handle   = handle;
+         e->parked_retries  = AUN_PARK_RETRIES;
+         e->parked_due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
       }
+      /* else: park slot busy with another frame, or non-DATA -> just drop */
       b->head = (uint8_t)((b->head + 1u) % AUN_RX_QUEUE);
       b->count--;
    }
@@ -287,23 +326,6 @@ uint8_t aun_rx_close(aun_engine_t *e, uint8_t handle)
       return AUN_ERR_NO_BLOCK;
    memset(&e->rx[handle], 0, sizeof e->rx[handle]);
    return AUN_OK;
-}
-
-/* Is this datagram already queued awaiting its verdict? (sender
- * retransmission while the host is still collecting) */
-static bool rx_queued_dup(aun_engine_t *e, uint32_t ip_be, uint16_t port,
-                          uint32_t seq)
-{
-   for (uint32_t i = 0; i < AUN_RX_BLOCKS; i++) {
-      aun_rx_block_t *b = &e->rx[i];
-      for (uint32_t k = 0; k < b->count; k++) {
-         aun_rx_frame_t *f = &b->q[(b->head + k) % AUN_RX_QUEUE];
-         if (f->needs_verdict && f->src_ip_be == ip_be &&
-             f->src_port == port && f->seq == seq)
-            return true;
-      }
-   }
-   return false;
 }
 
 /* Find the first open receive block with queue space matching
@@ -353,7 +375,14 @@ static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
    /* present the control byte with bit 7 set again, as a real Econet
     * receive block would */
    f->ctrl    = (uint8_t)(ctrl | 0x80);
-   f->needs_verdict = false;   /* caller fills verdict context for DATA */
+   f->needs_verdict = false;
+   f->dup       = false;
+   /* identity, used by park-and-retry; the DATA path overwrites these with
+    * the real source/seq so a parked frame can be recognised. A zero
+    * src_ip_be marks a frame that must never be parked (broadcast/local). */
+   f->seq       = 0;
+   f->src_ip_be = 0;
+   f->src_port  = 0;
    b->count++;
    return f;
 }
@@ -416,7 +445,13 @@ static uint8_t tx_begin(aun_engine_t *e, uint8_t wire_type,
    if (len != 0)
       memcpy(&t->datagram[AUN_HDR_SIZE], data, len);
    t->len           = AUN_HDR_SIZE + len;
-   t->attempts_left = AUN_RETRIES;
+   /* AUN retransmit budget. An immediate is sent exactly once and only its
+    * 5 s no-response timeout applies (the spec gives immediates no retry);
+    * a data transmit may be retransmitted promptly on reject and patiently
+    * on silence. */
+   t->noresp_left    = (wire_type == AUN_TYPE_DATA) ? AUN_NORESP_RETRIES : 0u;
+   t->reject_left    = (wire_type == AUN_TYPE_DATA) ? AUN_REJECT_RETRIES : 0u;
+   t->reject_pending = false;
    t->reply_buf     = reply_buf;
    t->reply_max     = reply_max;
    t->reply_len     = 0;
@@ -427,8 +462,7 @@ static uint8_t tx_begin(aun_engine_t *e, uint8_t wire_type,
       e->counters.tx_fail++;
       return AUN_OK;             /* accepted; failure reported via status */
    }
-   t->attempts_left--;
-   t->deadline_ms = now_ms(e) + AUN_ACK_TIMEOUT_MS;
+   t->deadline_ms = now_ms(e) + AUN_NORESP_TIMEOUT_MS;
    return AUN_OK;
 }
 
@@ -514,12 +548,23 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
    case AUN_TYPE_NAK:
       if (t->state == AUN_STATUS_PENDING && seq == t->seq &&
           src_ip_be == t->ip_be && src_port == t->udp_port) {
-         /* A NAK fails any pending transaction (data or immediate);
-          * an ACK only completes a DATA transaction - an immediate
-          * completes on its IMM_REPLY. */
+         /* An ACK completes a DATA transaction (an immediate completes on
+          * its IMM_REPLY, not an ACK). A NAK is an explicit "not listening
+          * right now": per the AUN spec the sender retransmits promptly a
+          * bounded number of times before giving up, rather than failing on
+          * the first reject. */
          if (type == AUN_TYPE_NAK) {
-            t->state = AUN_TX_NOT_LISTENING;
-            e->counters.tx_fail++;
+            if (t->reject_left > 0) {
+               /* Spec: on reject, retransmit after a 1-centisecond timeout
+                * (not instantly), a bounded number of times. Schedule it on
+                * the poll timer rather than hammering the wire on receipt. */
+               t->reject_left--;
+               t->reject_pending = true;
+               t->deadline_ms    = now_ms(e) + AUN_REJECT_TIMEOUT_MS;
+            } else {
+               t->state = AUN_TX_NOT_LISTENING;
+               e->counters.tx_fail++;
+            }
          } else if (t->wire_type == AUN_TYPE_DATA) {
             t->state = AUN_OK;
             e->counters.tx_ok++;
@@ -541,6 +586,26 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
       break;
 
    case AUN_TYPE_DATA: {
+      /* Diagnostic only: is this frame byte-identical to the previous
+       * DATA frame from the same source on the same Econet port? This is
+       * what distinguishes a retransmit (server missed our ACK, resent
+       * the same block under a new seq) from a genuinely new block. It
+       * never affects the verdict - the engine still decides purely on
+       * whether a listener is open. Tracked per (source, port) so the
+       * fileserver's &90 replies between two &92 blocks don't clobber it. */
+      aun_dbg_prev_t *dp = NULL;
+      for (uint32_t i = 0; i < AUN_DBG_PREV_SLOTS; i++) {
+         aun_dbg_prev_t *s = &e->dbg_prev[i];
+         if (s->valid && s->ip_be == src_ip_be && s->udp_port == src_port &&
+             s->aun_port == port) {
+            dp = s;
+            break;
+         }
+      }
+      bool same_as_prev = (dp != NULL && dlen != 0 && dlen == dp->len &&
+                           memcmp(data, dp->data, dlen) == 0);
+      uint8_t verdict;
+
       aun_map_entry_t *m = map_find_by_ip(e, src_ip_be, src_port);
       if (m == NULL) {
          /* learn mode can attribute (and auto-map) in-subnet sources */
@@ -554,33 +619,66 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
          /* AUN carries no source station; an unmapped IP cannot be
           * attributed, so it cannot be delivered. */
          e->counters.rx_unknown_source++;
-         break;
-      }
-      if (m->seq_valid && seq == m->last_rx_seq) {
-         /* Retransmission of an already-ACKed frame: re-ACK. */
+         verdict = AUN_RXV_NOSRC;
+      } else if (m->seq_valid && seq == m->last_rx_seq) {
+         /* Retransmission of an already-ACKed frame under the SAME sequence
+          * number (our ACK was lost): re-ACK, but do not deliver it to the
+          * host a second time. This is the only duplicate suppression the
+          * AUN spec sanctions at the transport - a frame under a *new*
+          * sequence is, by definition, a new transmission, and detecting
+          * application-level duplicates is the application's job (ANFS's
+          * fileserver protocol carries its own sequencing). Content-based
+          * suppression was removed: with the same file loaded repeatedly
+          * every block is byte-identical, so it could silently drop a
+          * legitimate, distinct data block. */
          e->counters.rx_dup++;
          send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_ACK, port, ctrl, seq);
-         break;
-      }
-      if (rx_queued_dup(e, src_ip_be, src_port, seq)) {
-         /* Retransmission while the verdict is still pending: the
-          * sender keeps retrying until we ACK or NAK at collect. */
-         e->counters.rx_dup++;
-         break;
-      }
-      aun_rx_frame_t *f = rx_deliver(e, port, ctrl, m->stn, m->net,
-                                     data, dlen);
-      if (f != NULL) {
-         /* ACK deferred to aun_rx_collect(): the sender only sees
-          * success once a listener has actually taken the frame. */
-         f->needs_verdict = true;
-         f->seq           = seq;
-         f->src_ip_be     = src_ip_be;
-         f->src_port      = src_port;
-         e->counters.rx_data++;
+         verdict = AUN_RXV_REDUP;
       } else {
-         /* full queue / oversize / no open block: refuse now */
-         send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK, port, ctrl, seq);
+         aun_rx_frame_t *f = rx_deliver(e, port, ctrl, m->stn, m->net,
+                                        data, dlen);
+         if (f != NULL) {
+            /* ACK the instant the frame lands in an open block - fast enough
+             * to beat the fileserver's reply-ACK timeout (a deferred
+             * collect-time ack is not, and the server retransmits). */
+            send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_ACK, port, ctrl, seq);
+            /* stamp identity so park-and-retry can recognise this frame if
+             * the host rejects it (no RXCB armed yet) and it is re-presented.
+             * 'dup' marks a retransmit (identical to the previous frame on
+             * this port) so it is dropped on reject rather than parked - a
+             * duplicate is not an arm-race and re-presenting it just storms. */
+            f->seq       = seq;
+            f->src_ip_be = src_ip_be;
+            f->src_port  = src_port;
+            f->dup       = same_as_prev;
+            m->last_rx_seq = seq;
+            m->seq_valid   = true;
+            e->counters.rx_data++;
+            verdict = AUN_RXV_ACK;
+         } else {
+            /* no open block, queue full, or oversize: NAK = not listening */
+            send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK, port, ctrl, seq);
+            verdict = AUN_RXV_NAK;
+         }
+      }
+
+      if (e->trace_fn != NULL)
+         e->trace_fn(e->trace_user, seq, port, dlen, verdict, same_as_prev,
+                     data);
+
+      /* Remember this frame's bytes for the next comparison on this
+       * (source, port). Reuse the matching slot, else take a fresh one. */
+      if (dlen != 0 && dlen <= AUN_MAX_DATA) {
+         if (dp == NULL) {
+            dp = &e->dbg_prev[e->dbg_prev_next];
+            e->dbg_prev_next = (e->dbg_prev_next + 1u) % AUN_DBG_PREV_SLOTS;
+         }
+         dp->valid    = true;
+         dp->ip_be    = src_ip_be;
+         dp->udp_port = src_port;
+         dp->aun_port = port;
+         dp->len      = dlen;
+         memcpy(dp->data, data, dlen);
       }
       break;
    }
@@ -632,29 +730,75 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
 
 /* ---- timeouts / retries ---------------------------------------------------*/
 
+/* Re-present a parked frame once its retry timer has fired: a reply that
+ * the host rejected (no RXCB armed yet) is put back into its rx block, so
+ * the next pump delivers it if the CB is now armed. Runs every poll,
+ * independent of any transmit in flight. */
+static void rx_park_poll(aun_engine_t *e)
+{
+   if (!e->parked_valid || e->parked_in_queue)
+      return;
+   if ((int32_t)(now_ms(e) - e->parked_due_ms) < 0)
+      return;
+
+   aun_rx_block_t *b = &e->rx[e->parked_handle];
+   if (!b->open) {
+      e->parked_valid = false;        /* nowhere left to deliver: drop */
+      return;
+   }
+   if (b->count >= AUN_RX_QUEUE) {
+      e->parked_due_ms = now_ms(e) + AUN_PARK_DELAY_MS;   /* full: later */
+      return;
+   }
+   aun_rx_frame_t *f = &b->q[((uint32_t)b->head + b->count) % AUN_RX_QUEUE];
+   *f = e->parked;
+   b->count++;
+   e->parked_in_queue = true;
+}
+
 void aun_poll(aun_engine_t *e)
 {
    aun_tx_t *t = &e->tx;
 
-   if (!e->initialised || t->state != AUN_STATUS_PENDING)
+   if (!e->initialised)
+      return;
+
+   rx_park_poll(e);
+
+   if (t->state != AUN_STATUS_PENDING)
       return;
 
    if ((int32_t)(now_ms(e) - t->deadline_ms) < 0)
       return;
 
-   if (t->attempts_left == 0) {
-      /* No ACK after all attempts: the AUN equivalent of "not
-       * listening". */
+   /* A reject retransmit was scheduled one centisecond ago: send it now and
+    * wait out the silence window for the response. */
+   if (t->reject_pending) {
+      t->reject_pending = false;
+      if (!udp_send(e, t->ip_be, t->udp_port, t->datagram, t->len)) {
+         t->state = AUN_TX_NET_ERROR;
+         e->counters.tx_fail++;
+         return;
+      }
+      t->deadline_ms = now_ms(e) + AUN_NORESP_TIMEOUT_MS;
+      return;
+   }
+
+   /* Silence: neither ACK nor reject arrived within the window. The engine
+    * does not retransmit here (AUN_NORESP_RETRIES = 0) - it reports
+    * NOT_LISTENING within the ROM's synchronous poll budget and lets ANFS's
+    * NFS layer retry, as native Econet does on a missing scout-ack. */
+   if (t->noresp_left == 0) {
       t->state = AUN_TX_NOT_LISTENING;
       e->counters.tx_fail++;
       return;
    }
 
-   t->attempts_left--;
+   t->noresp_left--;
    if (!udp_send(e, t->ip_be, t->udp_port, t->datagram, t->len)) {
       t->state = AUN_TX_NET_ERROR;
       e->counters.tx_fail++;
       return;
    }
-   t->deadline_ms = now_ms(e) + AUN_ACK_TIMEOUT_MS;
+   t->deadline_ms = now_ms(e) + AUN_NORESP_TIMEOUT_MS;
 }

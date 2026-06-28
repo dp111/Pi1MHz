@@ -55,91 +55,112 @@ int main(void)
    ack(0, AUN_TYPE_ACK);
    assert(aun_tx_status(&e) == AUN_OK);
 
-   /* 2: busy while pending, then NAK -> not listening */
+   /* 2: busy while pending; an explicit reject (NAK) prompts a same-seq
+    * retransmit rather than an immediate failure (AUN spec), and only a
+    * sustained run of rejects exhausts the budget to NOT_LISTENING. */
    reset();
    assert(aun_tx_start(&e, 1, 254, 0x80, 1, pay, 4) == AUN_OK);
    assert(aun_tx_start(&e, 1, 254, 0x80, 1, pay, 4) == AUN_TX_BUSY);
    ack(0, AUN_TYPE_NAK);
-   assert(aun_tx_status(&e) == AUN_TX_NOT_LISTENING);
-
-   /* 3: retry then timeout */
-   reset();
-   assert(aun_tx_start(&e, 1, 254, 0x80, 1, pay, 4) == AUN_OK);
-   for (int i = 0; i < 10 && aun_tx_status(&e) == AUN_STATUS_PENDING; i++) {
-      fake_ms += AUN_ACK_TIMEOUT_MS + 1;
+   assert(aun_tx_status(&e) == AUN_STATUS_PENDING);   /* reject -> scheduled, not failed */
+   assert(sent_count == 1);                           /* retransmit deferred ~1 cs */
+   fake_ms += AUN_REJECT_TIMEOUT_MS + 1;
+   aun_poll(&e);
+   assert(sent_count == 2 && seq_of(1) == seq_of(0)); /* now the same-seq retransmit */
+   while (aun_tx_status(&e) == AUN_STATUS_PENDING) {  /* reject each retransmit */
+      ack(sent_count - 1, AUN_TYPE_NAK);
+      fake_ms += AUN_REJECT_TIMEOUT_MS + 1;
       aun_poll(&e);
    }
    assert(aun_tx_status(&e) == AUN_TX_NOT_LISTENING);
-   assert(sent_count == AUN_RETRIES);              /* original + retries */
-   assert(seq_of(0) == seq_of(AUN_RETRIES - 1));   /* same seq throughout */
+   assert(sent_count == AUN_REJECT_RETRIES + 1);      /* original + reject retries */
+
+   /* 3: silence -> fail after ~1 s with NO engine retransmit. The ANFS NFS
+    * layer retries the whole transmit (as native Econet does on a missing
+    * scout-ack); the engine must not emit a silence retransmit that could
+    * land mid-transaction on a single-transaction peer and abort it. */
+   reset();
+   assert(aun_tx_start(&e, 1, 254, 0x80, 1, pay, 4) == AUN_OK);
+   assert(sent_count == 1);
+   fake_ms += AUN_NORESP_TIMEOUT_MS + 1;
+   aun_poll(&e);
+   assert(aun_tx_status(&e) == AUN_TX_NOT_LISTENING);
+   assert(sent_count == 1);                            /* no retransmit on silence */
 
    /* 4: no route */
    reset();
    assert(aun_tx_start(&e, 9, 9, 0x80, 1, pay, 4) == AUN_TX_NO_ROUTE);
 
-   /* 5: rx deliver + ack, ctrl bit7 restored */
+   /* 5: rx deliver -> ACK at receipt (fast enough to beat the fileserver's
+    * reply-ACK timeout), ctrl bit7 restored. */
    reset();
    uint8_t rbuf[64];
    assert(aun_rx_open(&e, 0, 0x99, AUN_WILDCARD, AUN_WILDCARD, rbuf, 64) == AUN_OK);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
    uint8_t dg[12] = { AUN_TYPE_DATA, 0x99, 0x00, 0, 40,0,0,0, 9,8,7,6 };
    aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
-   assert(sent_count == 0);                       /* verdict deferred: no ACK yet */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 40);
    aun_rx_info_t info;
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK);
    assert(info.src_stn == 254 && info.src_net == 1);
    assert(info.port == 0x99 && info.ctrl == 0x80 && info.len == 4);
    assert(memcmp(rbuf, &dg[8], 4) == 0);
-   /* sender retransmits while the verdict is pending: silently absorbed */
-   aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
-   assert(sent_count == 0 && e.counters.rx_dup == 1);
-   assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);               /* held until collect */
-   /* a second frame is ACKed and queued behind the held head */
-   uint8_t dgB[10] = { AUN_TYPE_DATA, 0x99, 0x00, 0, 48,0,0,0, 1,2 };
-   aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);            /* queued, no ACK */
-   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);  /* still A */
+   /* same-seq retransmission (our ACK was lost): re-ACK, do not re-deliver */
    sent_count = 0;
-   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 40);
+   aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && e.counters.rx_dup == 1);
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);               /* still the one frame */
+   /* a new-seq second frame is ACKed at receipt and queued behind the head */
+   uint8_t dgB[10] = { AUN_TYPE_DATA, 0x99, 0x00, 0, 48,0,0,0, 1,2 };
+   sent_count = 0;
+   aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 48);
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);  /* still A (head) */
+   sent_count = 0;
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);            /* pop A: silent */
+   assert(sent_count == 0);
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 2);  /* now B */
    assert(memcmp(rbuf, &dgB[8], 2) == 0);
-   sent_count = 0;
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 48);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
-   /* reject verdict: a collected-but-unwanted frame NAKs the sender */
+   /* collect with accept=false is silent (frame was already ACKed at receipt) */
    dgB[4] = 56;
+   sent_count = 0;
    aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 56);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
    sent_count = 0;
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK && seq_of(0) == 56);
-   /* fill the queue: AUN_RX_QUEUE frames queued silently, next NAKs */
-   sent_count = 0;
+   assert(sent_count == 0);                                  /* collect is silent */
+   /* fill the queue: each accepted frame ACKs at receipt; a full queue NAKs.
+    * Payloads must be DISTINCT, else the dup-in-queue drop (see test 19)
+    * legitimately absorbs the repeats and the queue never fills. */
    for (uint8_t i = 0; i < AUN_RX_QUEUE; i++) {
       dgB[4] = (uint8_t)(60 + 4*i);
+      dgB[8] = (uint8_t)(0xA0 + i);                 /* distinct payload */
       aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
    }
-   assert(sent_count == 0);
    dgB[4] = 90;
+   dgB[8] = 0xBE;                                    /* distinct again */
+   sent_count = 0;
    aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
-   assert(sent[sent_count-1].buf[0] == AUN_TYPE_NAK);        /* queue full */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK);   /* queue full */
    for (uint8_t i = 0; i < AUN_RX_QUEUE; i++) {
       assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
       assert(aun_rx_collect(&e, 0, true) == AUN_OK);
    }
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
-   /* 6: duplicate -> re-ACK, no re-deliver */
-   dg[4] = 52;                                               /* fresh seq */
+   /* 6: duplicate (last accepted seq) -> re-ACK, no re-deliver */
+   dg[4] = 92;                                               /* fresh seq */
    aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
    aun_rx_info_t i2;
    assert(aun_rx_poll(&e, 0, &i2) == AUN_OK);
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
-   aun_udp_input(&e, 0x0100000A, 32768, dg, 12);             /* dup seq 52 */
-   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
-   assert(e.counters.rx_dup == 2);   /* one pending-dup (test 5) + this */
-   assert(sent[sent_count-1].buf[0] == AUN_TYPE_ACK);
+   sent_count = 0;
+   aun_udp_input(&e, 0x0100000A, 32768, dg, 12);             /* dup seq 92 */
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);   /* not re-delivered */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK);
 
    /* 7: no listener -> NAK */
    reset();
@@ -215,6 +236,80 @@ int main(void)
    aun_set_addressing(&e, 0xff01a8c0, 0x1401a8c0, 0x00ffffff, 0xFF);
    assert(aun_broadcast(&e, 0x80, 0x9c, pay, 4) == AUN_OK);
    assert(sent_count == 2 && sent[1].ip == 0xff01a8c0);
+
+   /* 16: park-and-retry. A DATA reply the host rejects (no CB armed yet)
+    * is ACKed at receipt, then held out of the queue and re-presented
+    * after a short delay - so it is delivered once the CB is armed, not
+    * lost (the AUN arm-race fix). */
+   reset();
+   uint8_t pbuf[64];
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   uint8_t pf[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 200,0,0,0, 1,2,3,4 };
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK);   /* acked at receipt */
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
+   sent_count = 0;
+   assert(aun_rx_collect(&e, 0, false) == AUN_OK);              /* host: not listening */
+   assert(sent_count == 0 && e.parked_valid);                  /* parked, no NAK */
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);      /* out of the queue */
+   aun_poll(&e);                                                /* before delay: held */
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
+   fake_ms += AUN_PARK_DELAY_MS;
+   aun_poll(&e);                                                /* re-presented */
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
+   assert(memcmp(pbuf, &pf[8], 4) == 0);
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);               /* now delivered */
+   assert(!e.parked_valid);
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
+
+   /* 17: a frame nobody ever listens for is dropped after the retry budget */
+   reset();
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   pf[4] = 220;
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
+   assert(aun_rx_collect(&e, 0, false) == AUN_OK);              /* park */
+   for (uint32_t i = 0; i < AUN_PARK_RETRIES + 2u && e.parked_valid; i++) {
+      fake_ms += AUN_PARK_DELAY_MS;
+      aun_poll(&e);                                             /* re-inject */
+      if (aun_rx_poll(&e, 0, NULL) == AUN_OK)
+         assert(aun_rx_collect(&e, 0, false) == AUN_OK);        /* reject again */
+   }
+   assert(!e.parked_valid);                                     /* eventually dropped */
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
+
+   /* 18: a duplicate retransmit (byte-identical to the previous frame on
+    * this port) is NOT parked when rejected - it is dropped, so it cannot
+    * storm the re-inject path. */
+   reset();
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   uint8_t d1[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 40,0,0,0, 5,6,7,8 };
+   aun_udp_input(&e, 0x0100000A, 32768, d1, 12);               /* first copy */
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);              /* delivered */
+   uint8_t d2[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 44,0,0,0, 5,6,7,8 };  /* same bytes, new seq */
+   aun_udp_input(&e, 0x0100000A, 32768, d2, 12);               /* retransmit (=prev) */
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
+   assert(aun_rx_collect(&e, 0, false) == AUN_OK);             /* host rejects it */
+   assert(!e.parked_valid);                                    /* dup -> NOT parked */
+
+   /* 19: content identity does NOT suppress delivery (spec: the application
+    * detects duplicates). Two byte-identical frames under different sequence
+    * numbers are BOTH delivered and ACKed, so a legitimate identical data
+    * block - e.g. the same file loaded twice - is never silently dropped. */
+   reset();
+   assert(aun_rx_open(&e, 0, 0x90, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   uint8_t q1[12] = { AUN_TYPE_DATA, 0x90, 0x00, 0, 40,0,0,0, 9,9,9,9 };
+   aun_udp_input(&e, 0x0100000A, 32768, q1, 12);               /* queued + ACK */
+   uint8_t q2[12] = { AUN_TYPE_DATA, 0x90, 0x00, 0, 44,0,0,0, 9,9,9,9 };  /* same bytes, new seq */
+   sent_count = 0;
+   aun_udp_input(&e, 0x0100000A, 32768, q2, 12);               /* also delivered + ACK */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 44);
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);   /* q1 (head) */
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);   /* q2 also present */
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
    printf("all aun tests passed\n");
    return 0;

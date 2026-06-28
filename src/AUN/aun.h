@@ -63,10 +63,43 @@
 /* ---- limits ------------------------------------------------------------- */
 
 #define AUN_MAP_MAX           32u
-#define AUN_RX_BLOCKS         8u
-#define AUN_RX_QUEUE          4u   /* frames buffered per rx block      */
-#define AUN_RETRIES           4u    /* total attempts per transmit           */
-#define AUN_ACK_TIMEOUT_MS    250u  /* per attempt                           */
+/* ANFS opens exactly one receive block (handle 0, the wildcard funnel - see
+ * eco_library.asm), through which ALL inbound frames pass before the ROM
+ * pump demultiplexes them to internal CBs. So the depth that matters is the
+ * per-block queue, not the block count. We keep a few blocks for headroom
+ * (the host test suite uses handle 1) and spend the rest of the fixed frame
+ * budget on a deeper funnel queue: 4 x 8 = the same 32 frame slots as the
+ * old 8 x 4, but handle 0 now absorbs an 8-frame burst (data + reply +
+ * completion + a few peer retransmits) before it must NAK at receipt. */
+#define AUN_RX_BLOCKS         4u
+#define AUN_RX_QUEUE          8u   /* frames buffered per rx block      */
+/* Outbound retransmit. The AUN spec (RISC OS PRM, "AUN") describes a
+ * background Net module that, on SILENCE, waits up to 5 s and retransmits
+ * while the application's SWI returns. Our ANFS ROM does NOT work that
+ * way: eco_tx_begin polls TX_POLL synchronously until the engine
+ * completes (no ROM-side timeout), so the engine's timeout IS the Beeb's
+ * foreground stall. The ROM is designed around a ~1 s budget. So:
+ *  - on an explicit REJECT, retransmit promptly, a bounded number of
+ *    times (the spec's fast reject path - cheap, stays responsive);
+ *  - on SILENCE, do NOT retransmit at the engine level. Report
+ *    NOT_LISTENING after ~1 s and let ANFS's NFS layer retry the whole
+ *    transmit, exactly as native Econet does on a missing scout-ack.
+ *    This keeps the foreground stall bounded AND means the engine never
+ *    emits a silence retransmit that could land mid-transaction on a
+ *    strictly single-transaction peer (e.g. BeebEm) and abort its
+ *    four-way. (The old 250 ms blanket retry did exactly that; the 5 s
+ *    spec value instead froze the Beeb for 5 s per lost ack.) */
+#define AUN_REJECT_RETRIES    10u   /* bounded retransmits on receipt of reject */
+#define AUN_REJECT_TIMEOUT_MS 10u   /* AUN spec: 1 centisecond between them      */
+#define AUN_NORESP_TIMEOUT_MS 1000u /* fail after ~1 s of silence (ROM budget)  */
+#define AUN_NORESP_RETRIES    0u    /* no engine silence-retransmit; NFS retries */
+
+/* park-and-retry: a DATA frame the host rejected (no RXCB armed yet) is
+ * held out of the rx queue and re-presented a few times, so a reply that
+ * arrives a beat before its control block is armed is retried rather than
+ * lost. ~16 x 8ms ~= 128ms covers ANFS arming its CB; a true stray drops. */
+#define AUN_PARK_RETRIES      16u
+#define AUN_PARK_DELAY_MS     8u
 
 #define AUN_WILDCARD          0xFFu /* in rx-block station/net filters       */
 
@@ -96,7 +129,9 @@ typedef struct {
    uint32_t len;
    uint8_t  src_stn, src_net, port, ctrl;
    bool     needs_verdict;     /* DATA frame: ACK/NAK owed at collect */
-   uint32_t seq;               /* wire seq, for the deferred ACK/NAK  */
+   bool     dup;               /* byte-identical to the previous frame on
+                                * this (src,port): a retransmit, never parked */
+   uint32_t seq;               /* wire seq, for park-and-retry identity */
    uint32_t src_ip_be;
    uint16_t src_port;
    uint8_t  data[AUN_MAX_DATA];
@@ -122,8 +157,10 @@ typedef struct {
    uint16_t udp_port;
    uint8_t  datagram[AUN_HDR_SIZE + AUN_MAX_DATA];
    uint32_t len;               /* full datagram length, kept for retries */
-   uint32_t deadline_ms;
-   uint8_t  attempts_left;
+   uint32_t deadline_ms;        /* when the current (reject/silence) timer fires */
+   uint8_t  noresp_left;        /* retransmits remaining for the silent case  */
+   uint8_t  reject_left;        /* prompt retransmits remaining after rejects */
+   bool     reject_pending;     /* a reject retransmit is scheduled at deadline */
    /* immediate-reply destination (NULL when not an immediate op) */
    uint8_t *reply_buf;
    uint32_t reply_max;
@@ -135,6 +172,7 @@ typedef struct {
    uint32_t rx_data, rx_broadcast, rx_imm;
    uint32_t rx_dup, rx_no_block, rx_unknown_source, rx_too_big, rx_bad;
    uint32_t ack_sent, nak_sent;
+   uint32_t ack_fail;          /* ACK/NAK that the transport failed to send */
 } aun_counters_t;
 
 /* Inbound immediate operation held for the host to execute (remote
@@ -150,6 +188,37 @@ typedef struct {
    uint32_t len;
    uint8_t  data[AUN_HIMM_MAX];
 } aun_host_imm_t;
+
+/* Verdict the engine reached for an inbound DATA frame, reported to the
+ * optional diagnostic trace hook below. */
+#define AUN_RXV_ACK    0u   /* delivered into an open block, ACKed       */
+#define AUN_RXV_REDUP  1u   /* same seq as last accepted: re-ACKed       */
+#define AUN_RXV_NAK    2u   /* no listener / queue full / oversize: NAK  */
+#define AUN_RXV_NOSRC  3u   /* unmapped source: dropped silently         */
+
+/* Optional diagnostic hook, fired once per inbound DATA frame. The
+ * firmware points this at its logger; host unit tests leave it NULL.
+ * 'same_as_prev' is true when this frame's payload is byte-identical to
+ * the previous DATA frame from the same IP:port on the same Econet port -
+ * the signal that tells a retransmit apart from a genuinely new block. */
+typedef void (*aun_trace_fn)(void *user, uint32_t seq, uint8_t port,
+                             uint32_t len, uint8_t verdict, bool same_as_prev,
+                             const uint8_t *data);
+
+/* Diagnostics: the previous DATA frame seen on a given (source, Econet
+ * port), kept so a new frame can be compared byte-for-byte against the
+ * last one on the *same* port - intervening frames on other ports (e.g.
+ * the fileserver's &90 replies between two &92 data blocks) must not
+ * clobber the comparison. A few slots cover the ports in play. */
+#define AUN_DBG_PREV_SLOTS 6u
+typedef struct {
+   bool     valid;
+   uint32_t ip_be;
+   uint16_t udp_port;
+   uint8_t  aun_port;
+   uint32_t len;
+   uint8_t  data[AUN_MAX_DATA];
+} aun_dbg_prev_t;
 
 typedef struct {
    bool            initialised;
@@ -172,6 +241,19 @@ typedef struct {
     * locally and echoed back through the rx path as if from it. */
    bool            test_enabled;
    uint8_t         test_stn, test_net;
+   /* diagnostics: optional per-DATA-frame trace + the previous DATA
+    * frame's bytes, kept so each new frame can be compared against it. */
+   aun_trace_fn    trace_fn;
+   void           *trace_user;
+   aun_dbg_prev_t  dbg_prev[AUN_DBG_PREV_SLOTS];
+   uint32_t        dbg_prev_next;   /* round-robin victim slot */
+   /* park-and-retry: one rejected DATA frame held for re-presentation */
+   aun_rx_frame_t  parked;
+   bool            parked_valid;
+   bool            parked_in_queue;   /* re-injected, awaiting verdict */
+   uint8_t         parked_handle;
+   uint8_t         parked_retries;
+   uint32_t        parked_due_ms;
 } aun_engine_t;
 
 /* ---- API ----------------------------------------------------------------*/
@@ -261,6 +343,9 @@ void aun_test_responder(aun_engine_t *e, bool enable,
                         uint8_t stn, uint8_t net);
 
 void aun_set_machine_id(aun_engine_t *e, const uint8_t id[4]);
+
+/* Install (or clear, fn=NULL) the inbound-DATA diagnostic trace hook. */
+void aun_set_trace(aun_engine_t *e, aun_trace_fn fn, void *user);
 
 /* Host-executed immediates: when enabled, inbound immediate ops other
  * than machine peek are held (e->himm) for the host to execute;
