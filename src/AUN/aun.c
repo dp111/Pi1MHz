@@ -445,11 +445,11 @@ static uint8_t tx_begin(aun_engine_t *e, uint8_t wire_type,
    if (len != 0)
       memcpy(&t->datagram[AUN_HDR_SIZE], data, len);
    t->len           = AUN_HDR_SIZE + len;
-   /* AUN retransmit budget. An immediate is sent exactly once and only its
-    * 5 s no-response timeout applies (the spec gives immediates no retry);
-    * a data transmit may be retransmitted promptly on reject and patiently
-    * on silence. */
-   t->noresp_left    = (wire_type == AUN_TYPE_DATA) ? AUN_NORESP_RETRIES : 0u;
+   /* AUN retransmit budget. On an explicit reject a DATA transmit is
+    * retransmitted promptly a bounded number of times; an immediate is not.
+    * Neither retransmits on silence at the engine level - AUN_NORESP_RETRIES
+    * is 0 and the ANFS NFS layer retries instead (see aun.h). */
+   t->noresp_left    = AUN_NORESP_RETRIES;
    t->reject_left    = (wire_type == AUN_TYPE_DATA) ? AUN_REJECT_RETRIES : 0u;
    t->reject_pending = false;
    t->reply_buf     = reply_buf;

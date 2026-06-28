@@ -111,7 +111,9 @@ static void aun_diag_trace(void *user, uint32_t seq, uint8_t port,
                            const uint8_t *data)
 {
    (void)user;
-   static const char *const vname[] = { "ack", "redup", "nak", "nosrc" };
+   /* unused when LOG_DEBUG compiles out (release build) */
+   static const char *const vname[] __attribute__((unused)) =
+      { "ack", "redup", "nak", "nosrc" };
    char hex[16 * 3 + 1];
    aun_hex16(hex, data, len);
    /* ackfail is the running count of ACK/NAKs the transport could not put
