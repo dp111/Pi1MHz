@@ -49,6 +49,21 @@ static void wifi_lwip_debug_log(const char *format, ...) __attribute__((format(p
    while frames keep arriving. */
 #define WIFI_LWIP_RX_IDLE_INTERVAL_US 1000u
 
+/* After the host sends a datagram it is usually about to receive a reply
+   (e.g. an Econet/AUN fileserver answer). The 1ms idle backoff above would
+   leave that first reply sitting in the chip FIFO for up to a millisecond -
+   long enough for a cycle-accurate AUN peer to time out its own ack window
+   and retransmit. So a transmit "kicks" the RX into full-rate draining for
+   this window, catching the reply with minimal latency. Idle links (no tx)
+   still back off and save SDIO bandwidth. */
+#define WIFI_LWIP_RX_KICK_US 8000u
+static uint32_t s_rx_aggressive_until_us;
+
+void wifi_lwip_rx_kick(void)
+{
+   s_rx_aggressive_until_us = RPI_GetSystemTime() + WIFI_LWIP_RX_KICK_US;
+}
+
 /* If the WiFi link has still not associated this long after the lwIP
    stack was brought up, treat the boot as failed: report the error and
    stop polling.  Association is normally a sub-second operation once the
@@ -461,7 +476,10 @@ void wifi_lwip_poll(void)
       static uint32_t s_rx_next_us;   /* 0 on first call -> drains immediately */
       uint32_t now_us = RPI_GetSystemTime();
 
-      if ((int32_t)(now_us - s_rx_next_us) >= 0) {
+      /* full-rate while a transmit expects a reply (see wifi_lwip_rx_kick) */
+      bool aggressive = (int32_t)(now_us - s_rx_aggressive_until_us) < 0;
+
+      if (aggressive || (int32_t)(now_us - s_rx_next_us) >= 0) {
          bool active = wifi_lwip_drain_rx_frames();
 
          s_rx_next_us = active ? now_us
