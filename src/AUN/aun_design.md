@@ -156,6 +156,39 @@ aun_map=1.254=192.168.1.10,1.200=192.168.1.11:32769
 - `aun_machine=<8 hex digits>` — machine-peek reply bytes.
 - `aun_debug=1` — log econet events on the wifi debug channel.
 
+### Server-side configuration (PiEconetBridge) — AUTOACK required
+
+When the peer is a PiEconetBridge, the Pi1MHz station's map line **must
+be configured `AUTOACK`**, e.g.
+
+```
+AUN MAP HOST 1.32 ON pi1mhz.local PORT 32768 AUTOACK
+AUN MAP NET  1   ON 192.168.1.0   PORT AUTO    AUTOACK
+DYNAMIC 1 AUTOACK
+```
+
+The bridge only ACKs an inbound AUN DATA frame at receipt when the
+sending station has the AUTOACK flag set (`econet-hpbridge.c`, the
+`EB_DEV_CONF_AUTOACK` test in the AUN input path). The flag defaults to
+off and the `AUTOACK | NONE` token is mandatory on every AUN map /
+`DYNAMIC` line, so the operator must choose it explicitly. With `NONE`
+the bridge sends nothing on receipt, our engine hits its ~1 s no-response
+timeout and reports NOT_LISTENING, and ANFS retries fruitlessly. (`NONE`
+is intended for AUN entries that gateway to a *real wire* station, which
+supplies the ack itself — not for a station terminated at the bridge.)
+
+Verified against PiEconetBridge `v2.2-dev`. Relevant bridge behaviour our
+client is built around:
+
+- **Retransmit window 1000 ms** (`EB_CONFIG_AUN_RETX`); up to 5 attempts
+  for DATA. So our ACK-on-receipt (and ~128 ms park-and-retry) sit well
+  inside the bridge's reply-ACK timeout.
+- **Lost-ACK DATA is resent under the SAME seq** — caught by our same-seq
+  duplicate suppression (re-ACK, no re-deliver).
+- **No inbound dedup by seq** on the bridge: a silence retransmit from us
+  would be delivered twice, which is why the engine never retransmits on
+  silence (only on an explicit reject, where nothing was delivered).
+
 ### Observability
 
 `http://<pi>/econet` on the Pi web server shows live engine state
