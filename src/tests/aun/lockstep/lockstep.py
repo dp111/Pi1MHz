@@ -560,22 +560,18 @@ CPU.wr = orig_wr
 check(state['acked'], 'Tube-sourced transmit completed and was ACKed')
 check(cpu.mem[txcb] == 0x00, 'TXCB result success')
 
-# ---------------------------------------------------------------------------
-# Tests 1-9e above pass: init, tx (ACK/NAK retransmit, page loops), the rx
-# ack-on-receipt path, machine peek, broadcast, the IRQ pump, receive events,
-# remote immediates and the Tube paths - all deterministic under the harness
-# virtual clock. Tests 10+ need per-test queue/IRQ reset: residue from an
-# earlier test (a still-queued frame holding nIRQ asserted) leaks in, so e.g.
-# svc5 claims when it should pass. A clean fix needs a harness reset hook that
-# drains the engine rx/park/IRQ state between tests without disturbing the
-# ROM<->engine init handshake. Until then, stop here.
-print('== tests 10+ skipped: pending per-test reset (queue/IRQ isolation) ==')
-import sys; sys.exit(0)
+# Tests below need a clean engine between groups: residue from an earlier
+# test (a still-queued frame holding nIRQ asserted) would otherwise leak in.
+# reset() drops the leftover rx/park/IRQ state via the harness 'D' hook,
+# keeping the ROM's open funnel block armed.
+def reset(): hx('D')
 
+reset()
 print('== 10: svc5 passes on a non-econet interrupt ==')
 cpu.call(SYM['svc5_irq_check'])
 check(cpu.a == 5, 'A=5 returned: interrupt passed to the next ROM')
 
+reset()
 print('== 11: page-crossing copy loops (>=256 bytes everywhere) ==')
 # 11a: 1KB transmit through etb_page
 big_tx = bytes((i*7) & 0xff for i in range(1024))
@@ -644,6 +640,7 @@ hx('L')
 cpu.call(SYM['svc5_irq_check'])
 check(bytes(cpu.mem[0x4c00:0x4c00+600]) == poke[4:], '600-byte POKE written (page loop)')
 
+reset()
 print('== 12: workspace-slot scan (erp_next_slot / erp_try_ws) ==')
 cpu.mem[0x0d61] = 0xc0                           # both lists active
 cpu.mem[0x9f]  = 0x52                            # nfs_workspace_hi -> page &5200
@@ -660,6 +657,7 @@ check(cpu.mem[0x520c] == 0x80, 'slot 1 completed; slot 0 and &00C0 CB skipped')
 check(cpu.mem[txcb] == 0x7f and cpu.mem[0x5200] == 0x7f, 'mismatching CBs untouched')
 cpu.mem[0x0d61] = 0x80
 
+reset()
 print('== 13: hooks, bad ctrl, not-ready ==')
 # eco_pump_dec2: pump + DEC of the wait_net_tx_ack middle counter
 for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
@@ -694,6 +692,7 @@ cpu.mem[0x0d23] = 0
 cpu.call(SYM['eco_ensure_init'])
 check(not cpu.c and cpu.y == 32, 'recovers once the network is back')
 
+reset()
 print('== 14: outbound immediate with >256-byte reply (eti_rpage) ==')
 for off, v in enumerate([0x81, 0x00, 254, 1, 0x00, 0x56, 0xff, 0xff, 0x58, 0x58, 0xff, 0xff,
                           0,0,0,0]):
@@ -714,6 +713,7 @@ CPU.wr = orig_wr
 check(cpu.mem[txcb] == 0x00, 'immediate with 600-byte reply succeeded')
 check(bytes(cpu.mem[0x5600:0x5600+600]) == rep600, '600-byte reply landed (page loop)')
 
+reset()
 print('== 15: remote HALT spins in svc5 until CONTINUE ==')
 udp_out.clear()
 hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x06, 0xa000).hex()))    # HALT
@@ -737,6 +737,7 @@ check(cpu.mem[0x0d37] == 0, 'halt flag cleared')
 reps = [d for _,_,d in udp_out if d[0] == 6]
 check(len(reps) == 2, 'both HALT and CONTINUE were acknowledged')
 
+reset()
 print('== 16: adlc_init (BREAK-time entry) and pump bail paths ==')
 cpu.mem[0xfff4] = 0x60                           # stub MOS OSBYTE: RTS
 cpu.mem[0x0d23] = 0x80                           # already inited: ensure_init fast path
@@ -751,6 +752,7 @@ cpu.call(SYM['eco_rx_pump'])
 check((cpu.a, cpu.x, cpu.y) == (0x12, 0x34, 0x56), 'pump bails cleanly before INIT, registers preserved')
 cpu.mem[0x0d23] = 0x80
 
+reset()
 print('== 17: service gate (check_adlc_flag) never declines (the *HELP/*Net bug) ==')
 # Regression for the bug where ALL service calls were declined when
 # rom_ws_pages[slot] bit7 was set (no *HELP, *Net = Bad command).
@@ -774,6 +776,7 @@ for flag in (0x00, 0x80, 0xff):          # incl. bit7 set = old failure
     check(cpu.pc == HANDLE and not declined,
           'gate continues with rom_ws_pages=&%02X (was the decline bug)' % flag)
 
+reset()
 print('== 18: service 15 must NOT clear our ROM type-table entry (the *HELP de-service bug) ==')
 # Regression for the bug fixed by patch P12. On a Master (OSBYTE 0 returns
 # X>=3) service_handler ran "sta rom_type_table,x" with X=romsel+1, zeroing
@@ -796,6 +799,7 @@ for _ in range(40):
 check(cpu.pc == 0x8a38, 'service_handler reached restore_rom_slot after service 15')
 check(cpu.mem[0x02a1] == 0x82, 'service 15 left rom_type_table[slot] intact (P12 fix)')
 
+reset()
 print('== 19: aun_station=ip / ip.ip derive station (and net) from our IPv4 ==')
 # The harness pins our address to 192.168.1.20 (the R command), so the last
 # octet is 20 and the third octet is 1.  Drive INIT (station byte 0 = "use

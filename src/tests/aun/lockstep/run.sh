@@ -17,7 +17,7 @@ mkdir -p "$B/AUN"
 cp "$AUN"/aun*.c "$AUN"/aun*.h "$B/AUN/"
 cp "$HERE"/main.c "$B/"
 stubs "$B"; stubs "$B/AUN"
-gcc -std=gnu2x -Wall -Wextra -I"$B" -I"$B/AUN" -o "$B"/harness \
+gcc -std=gnu2x -Wall -Wextra -DAUN_LOCKSTEP_TEST -I"$B" -I"$B/AUN" -o "$B"/harness \
     "$B"/main.c "$B"/AUN/aun_emulator.c "$B"/AUN/aun.c "$B"/AUN/aun_config.c
 ECO_HARNESS="$B"/harness python3 "$HERE"/lockstep.py
 rm -rf "$B"

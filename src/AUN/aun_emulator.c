@@ -143,6 +143,25 @@ static void aun_irq_update(void)
    }
 }
 
+#ifdef AUN_LOCKSTEP_TEST
+/* Test-only hook (not compiled into the firmware): drop any queued or parked
+ * inbound frames and the held host-immediate, then recompute the IRQ, so the
+ * lockstep can isolate one test from the previous test's leftover rx state.
+ * The open rx blocks themselves are kept, so the ROM's funnel stays armed. */
+void aun_emulator_test_drain(void)
+{
+   for (uint32_t i = 0; i < AUN_RX_BLOCKS; i++) {
+      aun.rx[i].count     = 0;
+      aun.rx[i].head      = 0;
+      aun.rx[i].presented = false;
+   }
+   aun.parked_valid    = false;
+   aun.parked_in_queue = false;
+   aun.himm.active     = false;
+   aun_irq_update();
+}
+#endif
+
 /* aun_map_add() adapter for the aun_map cmdline parser. */
 static bool aun_map_add_cb(void *user, uint8_t net, uint8_t stn,
                            uint32_t ip_be, uint16_t port)

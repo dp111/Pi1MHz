@@ -130,6 +130,7 @@ int main(void)
                   puts("K 0"); break; }
       case 'L': poll_fn(); puts("K 0"); break;
       case 'T': { unsigned ms; sscanf(line+2, "%u", &ms); g_clock_us += (uint64_t)ms*1000u; puts("K 0"); break; }
+      case 'D': aun_emulator_test_drain(); irq_line = nirq_mask != 0; puts("K 0"); break;
       case 'I': printf("K %02x\n", irq_line); break;
       case '3': /* '3 <hex>' : preload parasite tx bytes for R3 reads */
                 { char hx2[18000]; sscanf(line+2,"%s",hx2); tube_r3_in_n=0;

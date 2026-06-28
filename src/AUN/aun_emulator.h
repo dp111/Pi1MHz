@@ -26,4 +26,9 @@ void aun_emulator_init(uint8_t instance, uint8_t address);
 void aun_status_text(char *buf, size_t size);
 void aun_emulator_command(uint32_t command_pointer, uint32_t addr);
 
+#ifdef AUN_LOCKSTEP_TEST
+/* Test-only: drop queued/parked inbound state to isolate lockstep tests. */
+void aun_emulator_test_drain(void);
+#endif
+
 #endif
