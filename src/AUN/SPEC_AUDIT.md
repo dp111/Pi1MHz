@@ -388,3 +388,56 @@ OSBYTE/OS call (e.g. &EA tube flag, &7E ack-escape) behaves identically on OS
 1.20. This is now a **standing lockstep invariant**: the 4.18 harness counts any
 &FE34/&FE38 access and aborts on any 65C02 opcode across the whole suite (test
 20), so a regression that pulls in Master-only behaviour fails immediately.
+
+### 10.6 Second corroborating pass (independent reviews)
+Three independent reviews re-ran the spec/source/compat checks; all material
+findings confirm §10 and added the items below.
+
+**AUN spec conformance** (vs BeebEm `econet.cpp`, RISC OS PRM Ch.122/47,
+BeebWiki, stardot t=28973). Every wire item CONFORMANT: 8-byte header layout and
+LE32 seq, frame types 1–6, ctrl bit-7 strip-on-wire/set-on-deliver, immediate
+ctrl `op|&80` (MachinePeek `&88`→`&08`), ACK-on-receipt + same-seq re-ACK,
+broadcast fire-and-forget, UDP base 32768 (everything on one port; the Econet
+port travels in header byte 1 — there is no port-per-Econet-port UDP mapping),
+and `AUN_MAX_DATA`=8192. Reject timing 10×10 ms is spec-exact. Two intentional,
+documented deviations only: no silence retransmit (delegated to the NFS layer)
+and the immediate Count 0/1 gate (belongs in the SWI veneer; never reaches the
+engine). ACTIONED: corrected three stale figures in `aun_design.md` (it cited a
+1464-byte max and "4 attempts/250 ms"; now 8192 / reject 10×10 ms / no silence
+retransmit / subnet-broadcast on). NOTED: BeebEm/bridge send the four-way
+"special" immediates (Poke `&82`, OSProcCall `&85`, …) as AUN **type 2 (Data)**,
+not type 5, so the host-immediate path (type-5 only) does not catch them — they
+arrive as DATA. Spec-consistent (PRM guarantees only MachinePeek over IP);
+recorded as a known limitation, not a bug.
+
+**Bridge conformance** (engine ↔ live `eb_aun_receiver()` path, both sides read
+in full). Header, type codes, byte order, ctrl handling, sequencing,
+ACK-on-receipt, same-seq dedup, NAK semantics, broadcast/immediate/machine-peek,
+and retransmit budgets all AGREE; the design cannot produce duplicate delivery or
+a spurious same-seq retransmit (engine→bridge silence yields a new-seq NFS retry,
+never a same-seq resend). Two operational notes, no code change:
+  - **AUTOACK is a hard prerequisite.** With AUTOACK off and a successful
+    enqueue the bridge returns nothing (econet-hpbridge.c:5381); the engine then
+    times out to NOT_LISTENING on every send. The Pi1MHz station's `AUN MAP` must
+    set AUTOACK. (Already captured in project memory.)
+  - **NAKTOLERANCE=2 burst risk.** Under sustained burst that keeps the engine's
+    rx funnel (depth 8) full, the bridge drops a DATA after 3 NAKs (silent loss).
+    Mitigation: keep the funnel ≥8 and drain rx[0] promptly (current behaviour).
+
+**BBC-B compat** independently re-confirmed §10.5 (zero 65C02 opcodes, zero
+Master register/shadow/HAZEL on the 4.18 path, change surface limited to the
+low-level interface/NMI; lockstep test 20 covers the changed paths).
+
+### 10.7 Robustness tests added (IP network-delay variance)
+The end-to-end tests previously advanced the clock to a single fixed point and
+injected every ACK at zero latency. Added delay-variance coverage:
+`test_aun.c` tests 25–29 (ACK-latency sweep across the silence boundary; jitter;
+reject re-arms a fresh window; out-of-order delivery; host-immediate answered
+just under the reap deadline) and lockstep test 3b in both the 4.18 and 4.21
+harnesses (sweep the ACK delay in poll cycles 1/5/20/60 — `TX_POLL` must still
+complete &00 and not trip the F7 guard). 4.18 now 103 lockstep checks (was 99),
+4.21 105 (was 101); engine unit suite green and the model-B invariant holds.
+NOT_LISTENING is a reachable, tested state (test_aun 2 = NAK exhaustion, 3 =
+silence; lockstep 3 asserts &41): in the field it means an absent/non-listening
+peer, a missing-AUTOACK bridge, or a burst drop, after which the NFS layer
+retries the whole transaction.

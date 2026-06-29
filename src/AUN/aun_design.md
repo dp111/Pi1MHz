@@ -81,15 +81,21 @@ data→ack/nak; ACK/NAK echo the sequence. Source station identity comes
 from reverse-lookup of sender IP:port in the station map (datagrams
 from unmapped IPs are counted and dropped). Inbound machine peek
 (wire ctrl &08) is auto-answered with the 4-byte machine id.
-Retries: 4 attempts, 250 ms each (aun.h constants).
+Retries (aun.h constants): on an explicit reject (NAK) the engine
+retransmits the same datagram up to `AUN_REJECT_RETRIES` (10) times at
+`AUN_REJECT_TIMEOUT_MS` (10 ms) spacing, then reports NOT_LISTENING. On
+silence it does NOT retransmit (`AUN_NORESP_RETRIES` = 0): after
+`AUN_NORESP_TIMEOUT_MS` (1000 ms) it reports NOT_LISTENING and the NFS
+layer retries the whole transaction (a silence retransmit could land
+mid-transaction on a single-transaction peer and abort it).
 
 ### Constraints
 
-- lwIP here has `IP_FRAG`/`IP_REASSEMBLY` off → max AUN payload 1464
-  bytes (`AUN_MAX_DATA`). Fine for NFS (≤ ~1.3K bursts); peers sending
-  larger datagrams will be dropped by the stack.
-- Broadcasts are sent directed to every mapped peer (no subnet
-  broadcast yet).
+- lwIP here has IP fragmentation/reassembly ON → max AUN payload
+  `AUN_MAX_DATA` = 8192 bytes (the AUN spec maximum), reassembled across
+  fragments. Datagrams above that are dropped by the stack.
+- Broadcasts are sent directed to every mapped peer AND to the local
+  subnet broadcast address (so unmapped/learn-mode peers see them too).
 - One transmit in flight; TX while pending returns busy.
 
 ### Test responder (cmd 40)
