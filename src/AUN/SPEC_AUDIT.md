@@ -374,10 +374,19 @@ machine-peek (ctrl &88→&08, 4-byte reply) all match the live server.
 ### 10.4 Deferred (low value / would need soak or ROM work)
 - **L6** mailbox occupied-slot guard (with L5 + by-value cp/addr the corruption
   race is gone; a lost command on a protocol violation is F7-recoverable).
-- **L7** late-retransmit re-execution of a host immediate (non-idempotent for
-  poke/JSR; would need a cached last-answered reply keyed on (ip,port,seq)).
 - **Bridge F4/F5** INK type &07 / four-way immediates without the host-imm
   extension — defensible "not listening"; the bridge does not send INK to AUN.
+
+**L7 — late-retransmit re-execution of a host immediate — FIXED.** A peer that
+missed our IMM_REPLY retransmits the same immediate under the same seq; once the
+host had already answered (`himm.active` cleared), the old code re-captured and
+re-delivered it, executing a non-idempotent Poke/JSR/OSProcCall twice. The
+engine now caches the last-answered immediate keyed on (ip,port,seq) — ctrl,
+seq, peer, and the reply bytes — and replays that reply on a matching
+retransmit instead of handing it to the host again (`aun_himm_cache_t`, counter
+`himm_replay`). The fresh-seq path is unchanged; the cache is dropped on
+`aun_set_host_imm`. Test 30. Firmware cross-compiles clean (the engine struct
+grows ~2 KB for the one cache slot).
 
 ### 10.5 BBC-B (model-B) compatibility — COMPATIBLE
 Full audit of every 4.18 patch (P0–P12): zero 65C02 opcodes, zero ACCCON

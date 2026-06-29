@@ -201,20 +201,43 @@ void aun_set_host_imm(aun_engine_t *e, bool enable)
 {
    e->host_imm_enabled = enable;
    e->himm.active = false;
+   e->himm_cache.valid = false;       /* drop any stale replay on (re)config */
+}
+
+/* Send an IMM_REPLY datagram. Shared by aun_himm_reply (the host answering a
+ * held immediate) and the replay of an already-answered immediate. */
+static void send_imm_reply(aun_engine_t *e, uint32_t ip_be, uint16_t port,
+                           uint8_t ctrl, uint32_t seq,
+                           const uint8_t *data, uint32_t len)
+{
+   uint8_t dgram[AUN_HDR_SIZE + AUN_HIMM_MAX];
+   if (len > AUN_HIMM_MAX)
+      len = AUN_HIMM_MAX;
+   build_header(dgram, AUN_TYPE_IMM_REPLY, 0, ctrl, seq);
+   if (len != 0)
+      memcpy(&dgram[AUN_HDR_SIZE], data, len);
+   (void)udp_send(e, ip_be, port, dgram, AUN_HDR_SIZE + len);
 }
 
 void aun_himm_reply(aun_engine_t *e, const uint8_t *data, uint32_t len)
 {
    if (!e->himm.active)
       return;
-   uint8_t dgram[AUN_HDR_SIZE + AUN_HIMM_MAX];
    if (len > AUN_HIMM_MAX)
       len = AUN_HIMM_MAX;
-   build_header(dgram, AUN_TYPE_IMM_REPLY, 0, e->himm.ctrl, e->himm.seq);
+   send_imm_reply(e, e->himm.ip_be, e->himm.port, e->himm.ctrl, e->himm.seq,
+                  data, len);
+   /* Cache the answer keyed on (ip,port,seq): a peer that missed this reply
+    * retransmits the same immediate, and re-delivering a Poke/JSR/OSProcCall
+    * would execute it twice. The retransmit is replayed from here instead. */
+   e->himm_cache.valid = true;
+   e->himm_cache.ip_be = e->himm.ip_be;
+   e->himm_cache.port  = e->himm.port;
+   e->himm_cache.seq   = e->himm.seq;
+   e->himm_cache.ctrl  = e->himm.ctrl;
+   e->himm_cache.len   = len;
    if (len != 0)
-      memcpy(&dgram[AUN_HDR_SIZE], data, len);
-   (void)udp_send(e, e->himm.ip_be, e->himm.port, dgram,
-                  AUN_HDR_SIZE + len);
+      memcpy(e->himm_cache.data, data, len);
    e->himm.active = false;
 }
 
@@ -731,11 +754,26 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
          build_header(reply, AUN_TYPE_IMM_REPLY, port, ctrl, seq);
          memcpy(&reply[AUN_HDR_SIZE], e->machine_id, 4);
          (void)udp_send(e, src_ip_be, src_port, reply, sizeof reply);
-      } else if (e->host_imm_enabled && dlen <= AUN_HIMM_MAX &&
-                 (!e->himm.active ||
-                  (e->himm.ip_be == src_ip_be && e->himm.port == src_port &&
-                   e->himm.seq == seq))) {
-         if (!e->himm.active) {       /* retransmissions are absorbed */
+      } else if (e->host_imm_enabled && dlen <= AUN_HIMM_MAX) {
+         if (e->himm.active) {
+            /* one held at a time: absorb a retransmit of the one in flight
+             * (the host is still working on it), refuse anything else. */
+            if (!(e->himm.ip_be == src_ip_be && e->himm.port == src_port &&
+                  e->himm.seq == seq))
+               send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK,
+                            port, ctrl, seq);
+         } else if (e->himm_cache.valid &&
+                    e->himm_cache.ip_be == src_ip_be &&
+                    e->himm_cache.port == src_port &&
+                    e->himm_cache.seq == seq) {
+            /* Late retransmit of an immediate we have already answered:
+             * replay the cached reply, do NOT hand it to the host again
+             * (Poke/JSR/OSProcCall are not idempotent). */
+            send_imm_reply(e, e->himm_cache.ip_be, e->himm_cache.port,
+                           e->himm_cache.ctrl, e->himm_cache.seq,
+                           e->himm_cache.data, e->himm_cache.len);
+            e->counters.himm_replay++;
+         } else {                     /* fresh immediate: hold it for the host */
             e->himm.active = true;
             e->himm.ctrl   = ctrl;
             e->himm.seq    = seq;
@@ -747,7 +785,7 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
                memcpy(e->himm.data, data, dlen);
          }
       } else {
-         /* unsupported / busy: refuse rather than leave the peer to
+         /* unsupported / too big: refuse rather than leave the peer to
           * time out. */
          send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK, port, ctrl, seq);
       }

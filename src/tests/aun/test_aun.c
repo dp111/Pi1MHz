@@ -548,6 +548,39 @@ int main(void)
       assert(e.counters.himm_timeout == 0);            /* answered, not reaped */
    }
 
+   /* 30: a late retransmit of an ALREADY-ANSWERED host immediate is replayed
+    * from cache, not handed to the host a second time. A re-executed Poke/JSR/
+    * OSProcCall would corrupt state; the reply the host gave is cached keyed on
+    * (ip,port,seq) and re-sent on a matching retransmit. A genuinely new seq is
+    * still delivered. (L7) */
+   reset();
+   aun_set_host_imm(&e, true);
+   {
+      uint8_t imm[AUN_HDR_SIZE + 4] =        /* ctrl &02 = Poke (non-idempotent) */
+         { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x30,0,0,0, 0xde,0xad,0xbe,0xef };
+      sent_count = 0;
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* held for host */
+      assert(e.himm.active && e.himm.seq == 0x30 && sent_count == 0);
+      uint8_t rep[2] = { 0x12, 0x34 };
+      aun_himm_reply(&e, rep, 2);                              /* host executes+answers */
+      assert(!e.himm.active && e.himm_cache.valid);
+      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_IMM_REPLY);
+      assert(memcmp(&sent[0].buf[AUN_HDR_SIZE], rep, 2) == 0);
+      /* peer missed the reply and retransmits the SAME immediate (same seq) */
+      sent_count = 0;
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);
+      assert(!e.himm.active);                                  /* NOT re-delivered */
+      assert(e.counters.himm_replay == 1);
+      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_IMM_REPLY); /* replayed */
+      assert(memcmp(&sent[0].buf[AUN_HDR_SIZE], rep, 2) == 0); /* identical reply */
+      assert(seq_of(0) == 0x30);                               /* same seq echoed */
+      /* a genuinely new immediate (new seq) IS still held for the host */
+      uint8_t imm2[AUN_HDR_SIZE + 4] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x34,0,0,0, 1,2,3,4 };
+      aun_udp_input(&e, 0x0100000A, 32768, imm2, sizeof imm2);
+      assert(e.himm.active && e.himm.seq == 0x34);
+   }
+
    printf("all aun tests passed\n");
    return 0;
 }

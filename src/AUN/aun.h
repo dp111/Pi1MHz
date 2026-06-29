@@ -179,6 +179,7 @@ typedef struct {
    uint32_t ack_fail;          /* ACK/NAK that the transport failed to send */
    uint32_t rx_parked_drop;    /* parked reply dropped (budget/closed/busy)  */
    uint32_t himm_timeout;      /* held immediate reaped: host never replied  */
+   uint32_t himm_replay;       /* answered immediate retransmitted: replayed */
 } aun_counters_t;
 
 /* Inbound immediate operation held for the host to execute (remote
@@ -195,6 +196,21 @@ typedef struct {
    uint32_t due_ms;            /* reap deadline if the host never replies */
    uint8_t  data[AUN_HIMM_MAX];
 } aun_host_imm_t;
+
+/* One-slot cache of the last host immediate we answered. A peer that does not
+ * receive our IMM_REPLY retransmits the same immediate under the same seq;
+ * once the host has already executed and answered it, re-delivering it would
+ * run a non-idempotent op (Poke/JSR/OSProcCall) a second time. Keyed on
+ * (ip,port,seq); a matching retransmit is re-answered from here instead. */
+typedef struct {
+   bool     valid;
+   uint8_t  ctrl;
+   uint32_t seq;
+   uint32_t ip_be;
+   uint16_t port;
+   uint32_t len;
+   uint8_t  data[AUN_HIMM_MAX];
+} aun_himm_cache_t;
 
 /* Verdict the engine reached for an inbound DATA frame, reported to the
  * optional diagnostic trace hook below. */
@@ -244,6 +260,7 @@ typedef struct {
    uint8_t         machine_id[4];
    bool            host_imm_enabled;
    aun_host_imm_t  himm;
+   aun_himm_cache_t himm_cache;       /* last-answered immediate, for replay */
    /* loopback test responder: frames sent to this station are ACKed
     * locally and echoed back through the rx path as if from it. */
    bool            test_enabled;
