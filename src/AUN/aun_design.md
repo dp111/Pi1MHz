@@ -54,7 +54,7 @@ offsets relative to DISC_RAM_BASE.
 | 31 | STATUS      | —                                                    | +4 stn, +5 net, +6 ready flags, +8 ip[4], +12 u32 counters ×11 |
 | 32 | TX          | +2 ctrl, +3 port, +4 dest stn, +5 dest net, +8 u32 data off, +12 u32 len | result (accepted/busy/no-route) |
 | 33 | TX_POLL     | —                                                    | result: &80 pending / 0 ok / err; +8 u32 imm reply len |
-| 34 | RX_OPEN     | +1 handle 0-7, +2 port (0=any), +4 stn, +5 net (&FF=any), +8 u32 buf off, +12 u32 buf size | result |
+| 34 | RX_OPEN     | +1 handle 0-3, +2 port (0=any), +4 stn, +5 net (&FF=any), +8 u32 buf off, +12 u32 buf size | result |
 | 35 | RX_POLL     | +1 handle                                            | result: &80 waiting / 0 ready; +2 ctrl, +3 port, +4 src stn, +5 src net, +12 u32 len |
 | 36 | RX_CLOSE    | +1 handle                                            | result                               |
 | 37 | BCAST       | +2 ctrl, +3 port, +8 u32 data off, +12 u32 len       | result (completes immediately)       |
@@ -291,7 +291,7 @@ jammed, &41 not listening, &43 no clock, &44 bad ctrl.
    set = frame delivered. Today the NMI scout/data handlers
    (&80BE-&84xx) fill them. Replace with:
    - `osword_11_handler` (&A5C1): after marking the slot pending,
-     issue AUN_RX_OPEN (slot # = Pi handle 0-7; port/station filter and
+     issue AUN_RX_OPEN (slot # = Pi handle 0-3; port/station filter and
      buffer range from the RXCB).
    - a small **rx pump**: issue AUN_RX_POLL; on ready, copy payload
      from JIM into the RXCB buffer, fill src/ctrl/len, set bit 7 of the

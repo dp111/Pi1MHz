@@ -28,7 +28,7 @@
  *                 +8 u32 data offset  +12 u32 length
  *  33 TX_POLL     result = &80 pending / 0 ok / error; on a completed
  *                 immediate also fills +8 u32 reply length
- *  34 RX_OPEN     +1 handle(0-7)  +2 port(0=any)  +4 stn  +5 net
+ *  34 RX_OPEN     +1 handle(0-3)  +2 port(0=any)  +4 stn  +5 net
  *                 (&FF=any)  +8 u32 buffer offset  +12 u32 buffer size
  *  35 RX_POLL     +1 handle; when ready fills +2 ctrl  +3 port
  *                 +4 src stn  +5 src net  +12 u32 length
