@@ -7,3 +7,4 @@ eco_tx_begin 866c
 eco_pump_dec2 80e2
 eco_osw12_shim 80e9
 adlc_init 8074
+send_net_packet 983f

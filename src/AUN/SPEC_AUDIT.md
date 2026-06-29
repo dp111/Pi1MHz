@@ -440,4 +440,11 @@ complete &00 and not trip the F7 guard). 4.18 now 103 lockstep checks (was 99),
 NOT_LISTENING is a reachable, tested state (test_aun 2 = NAK exhaustion, 3 =
 silence; lockstep 3 asserts &41): in the field it means an absent/non-listening
 peer, a missing-AUTOACK bridge, or a burst drop, after which the NFS layer
-retries the whole transaction.
+retries the whole transaction. That last loss path is now itself an end-to-end
+lockstep test (3c, both 4.18 and 4.21): the first DATA is dropped, the engine
+times out to NOT_LISTENING, and the stock ANFS `send_net_packet` (&983F on 4.18,
+&9B2C on 4.21) re-issues the transmit under a fresh sequence number, which is
+then ACKed to &00 success. Confirms the design split — engine owns lost-ACK
+dedup + NAK retransmit; the NFS layer owns the Pi's send-side whole-transaction
+retry; the bridge owns its own send-side retransmit. 4.18 now 106 lockstep
+checks, 4.21 108.

@@ -380,6 +380,48 @@ for poll_delay in (1, 5, 20, 60):
           'ACK delayed %d poll cycle(s): transmit still completed &00 (got &%02x)'
           % (poll_delay, cpu.mem[txcb]))
 
+print('== 3c: dropped DATA -> engine NOT_LISTENING -> NFS layer re-issues ==')
+# True packet loss, end to end. The first DATA datagram is emitted but no ACK or
+# NAK ever returns. The Pi engine times out after AUN_NORESP_TIMEOUT_MS and
+# reports NOT_LISTENING (&41); the stock (unpatched) ANFS NFS retry loop
+# send_net_packet (&983F -> poll_adlc_tx_status -> tx_begin) classifies &41 as
+# retryable and re-issues the whole transmit under a FRESH sequence number
+# (matching the bridge's new-seq retry expectation). We drop attempt 1 (advance
+# the engine clock past its silence deadline) and ACK attempt 2, proving the ROM
+# re-sends rather than surfacing 'Not listening' on the first loss. This closes
+# the last loss path: the engine owns lost-ACK dedup + NAK retransmit, while the
+# Pi's send-side whole-transaction retry lives here in the NFS layer.
+for off, v in enumerate([0x80, 0x99, 254, 1, 0x00, 0x30, 0xff, 0xff, 0x05, 0x30, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v
+cpu.mem[txcb] = 0x80
+cpu.mem[0x9a] = txcb; cpu.mem[0x9b] = 0       # net_tx_ptr -> TXCB
+cpu.mem[0x0d6d] = 3                            # tx_retry_count = 3 (bound the test)
+cpu.mem[0x0d60] = 0x80                         # tx_complete_flag primed for the first poll
+udp_out.clear()
+st = {'handled': 0}
+def wr_hook_drop(self, a, v, st=st):
+    orig_wr(self, a, v)
+    if (a & 0xffff) != 0xfcaa:
+        return
+    datas = [d for _, _, d in udp_out if d[0] == 2]
+    if len(datas) > st['handled']:            # a new DATA datagram just went out
+        st['handled'] = len(datas)
+        seq = int.from_bytes(datas[-1][4:8], "little")
+        if st['handled'] == 1:
+            hx('T 1001')                      # attempt 1: silence past the deadline
+        else:
+            hx('U %x %d %s' % (IP10, 32768, aun(3, 0x99, 0, seq).hex()))  # attempt 2: ACK
+CPU.wr = wr_hook_drop
+cpu.call(SYM['send_net_packet'])
+CPU.wr = orig_wr
+datas = [d for _, _, d in udp_out if d[0] == 2]
+check(len(datas) >= 2,
+      'first DATA dropped -> NFS layer re-issued the transmit (%d DATA datagrams)' % len(datas))
+check(int.from_bytes(datas[0][4:8], 'little') != int.from_bytes(datas[1][4:8], 'little'),
+      'retry uses a fresh sequence number (not a same-seq resend)')
+check(cpu.mem[txcb] == 0x00,
+      'retry was ACKed -> transmit completed &00 (got &%02x)' % cpu.mem[txcb])
+
 print('== 4: rx pump delivers a fileserver reply into the &00C0 CB ==')
 for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
     cpu.mem[txcb+off] = v                      # open receive, port &90, buffer &3100
