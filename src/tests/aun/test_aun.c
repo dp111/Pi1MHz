@@ -278,20 +278,29 @@ int main(void)
    assert(!e.parked_valid);                                     /* eventually dropped */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
-   /* 18: a duplicate retransmit (byte-identical to the previous frame on
-    * this port) is NOT parked when rejected - it is dropped, so it cannot
-    * storm the re-inject path. */
+   /* 18: a NEW-sequence frame that happens to be byte-identical to its
+    * predecessor is a legitimate distinct block, NOT a retransmit (a real
+    * retransmit reuses the wire seq and is suppressed before delivery). So on
+    * an arm-race reject it must be PARKED like any other new frame - dropping
+    * it on content equality would silently lose data the peer already ACKed.
+    * (M4) */
    reset();
    assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
    uint8_t d1[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 40,0,0,0, 5,6,7,8 };
    aun_udp_input(&e, 0x0100000A, 32768, d1, 12);               /* first copy */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);              /* delivered */
-   uint8_t d2[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 44,0,0,0, 5,6,7,8 };  /* same bytes, new seq */
-   aun_udp_input(&e, 0x0100000A, 32768, d2, 12);               /* retransmit (=prev) */
+   uint8_t d2[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 44,0,0,0, 5,6,7,8 };  /* same bytes, NEW seq */
+   aun_udp_input(&e, 0x0100000A, 32768, d2, 12);               /* distinct new block */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
-   assert(aun_rx_collect(&e, 0, false) == AUN_OK);             /* host rejects it */
-   assert(!e.parked_valid);                                    /* dup -> NOT parked */
+   assert(aun_rx_collect(&e, 0, false) == AUN_OK);             /* host rejects (CB not armed) */
+   assert(e.parked_valid);                                     /* parked, not lost */
+   fake_ms += AUN_PARK_DELAY_MS;
+   aun_poll(&e);                                               /* re-presented */
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
+   assert(memcmp(pbuf, &d2[8], 4) == 0);                       /* delivered once CB armed */
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(!e.parked_valid);
 
    /* 19: content identity does NOT suppress delivery (spec: the application
     * detects duplicates). Two byte-identical frames under different sequence

@@ -253,8 +253,13 @@ static void aun_emulator_poll(void)
    if (aun_pending) {
       uint32_t cp   = aun_pending_cp;
       uint32_t addr = aun_pending_addr;
-      aun_execute(cp, addr);
+      /* Clear the slot BEFORE executing. aun_execute() writes the result byte
+       * the Beeb is polling for as its last act, so the Beeb (via the FIQ) can
+       * queue its next command the instant execute returns - clearing the slot
+       * afterwards would wipe that fresh command. cp/addr are taken by value,
+       * so a concurrent re-arm of the globals cannot disturb this execute. */
       aun_pending = false;
+      aun_execute(cp, addr);
    }
    aun_poll(&aun);
    aun_irq_update();

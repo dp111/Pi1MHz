@@ -135,8 +135,6 @@ typedef struct {
    uint32_t len;
    uint8_t  src_stn, src_net, port, ctrl;
    bool     needs_verdict;     /* DATA frame: ACK/NAK owed at collect */
-   bool     dup;               /* byte-identical to the previous frame on
-                                * this (src,port): a retransmit, never parked */
    uint32_t seq;               /* wire seq, for park-and-retry identity */
    uint32_t src_ip_be;
    uint16_t src_port;

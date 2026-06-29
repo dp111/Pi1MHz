@@ -311,22 +311,28 @@ uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
             e->parked_valid = false;        /* exhausted: drop */
             e->counters.rx_parked_drop++;
          }
-      } else if (!e->parked_valid && f->src_ip_be != 0 && !f->dup) {
-         /* fresh reject of a NEW DATA reply (not a retransmit): park it for
-          * re-presentation, in case its RXCB is armed a beat later. A 'dup'
-          * frame is a retransmit of something already handled - drop it. */
+      } else if (!e->parked_valid && f->src_ip_be != 0) {
+         /* fresh reject of a DATA reply: park it for re-presentation, in case
+          * its RXCB is armed a beat later. A true retransmit (same wire seq,
+          * our ACK lost) is already suppressed before delivery, so it never
+          * reaches here - a frame in this queue is always a distinct, new-seq
+          * frame and parking it is safe (the AUN_PARK_RETRIES budget bounds
+          * re-presentation). Content equality is NOT used: a legitimate new
+          * block can be byte-identical to its predecessor, and dropping it
+          * here on an arm-race loss would silently lose data the peer already
+          * ACKed. */
          e->parked          = *f;
          e->parked_valid    = true;
          e->parked_in_queue = false;
          e->parked_handle   = handle;
          e->parked_retries  = AUN_PARK_RETRIES;
          e->parked_due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
-      } else if (f->src_ip_be != 0 && !f->dup) {
+      } else if (f->src_ip_be != 0) {
          /* a parkable reply, but the single park slot is busy with another
           * frame: it cannot be held and no listener took it -> lost */
          e->counters.rx_parked_drop++;
       }
-      /* else: dup retransmit or non-DATA (broadcast/local) -> intentional drop */
+      /* else: non-DATA (broadcast/local, src_ip_be == 0) -> intentional drop */
       b->head = (uint8_t)((b->head + 1u) % AUN_RX_QUEUE);
       b->count--;
    }
@@ -401,7 +407,6 @@ static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
     * receive block would */
    f->ctrl    = (uint8_t)(ctrl | 0x80);
    f->needs_verdict = false;
-   f->dup       = false;
    /* identity, used by park-and-retry; the DATA path overwrites these with
     * the real source/seq so a parked frame can be recognised. A zero
     * src_ip_be marks a frame that must never be parked (broadcast/local). */
@@ -672,14 +677,10 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
              * collect-time ack is not, and the server retransmits). */
             send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_ACK, port, ctrl, seq);
             /* stamp identity so park-and-retry can recognise this frame if
-             * the host rejects it (no RXCB armed yet) and it is re-presented.
-             * 'dup' marks a retransmit (identical to the previous frame on
-             * this port) so it is dropped on reject rather than parked - a
-             * duplicate is not an arm-race and re-presenting it just storms. */
+             * the host rejects it (no RXCB armed yet) and it is re-presented. */
             f->seq       = seq;
             f->src_ip_be = src_ip_be;
             f->src_port  = src_port;
-            f->dup       = same_as_prev;
             m->last_rx_seq = seq;
             m->seq_valid   = true;
             e->counters.rx_data++;
