@@ -349,6 +349,37 @@ cpu.call(SYM['tx_begin'])
 CPU.wr = orig_wr
 check(cpu.mem[txcb] == 0x41, f'TXCB result &41 not listening (got &{cpu.mem[txcb]:02x})')
 
+print('== 3b: jittered/delayed ACK - TX_POLL tolerates a late ACK ==')
+# Test 2 injected the ACK on the very first TX_POLL read - an idealised zero-
+# latency network. Real UDP latency varies: the ACK can land several poll
+# cycles later. Sweep the delay (in poll cycles); every value within the ROM's
+# per-handshake liveness budget must still complete the transmit with &00, and
+# none may trip the F7 hang guard early. Payload HELLO is still at &3000 and
+# the 1.254 -> 192.168.1.10 peer mapping from test 2 is still live here.
+for poll_delay in (1, 5, 20, 60):
+    for off, v in enumerate([0x80, 0x99, 254, 1, 0x00, 0x30, 0xff, 0xff, 0x05, 0x30, 0xff, 0xff]):
+        cpu.mem[txcb+off] = v
+    cpu.mem[txcb] = 0x80
+    cpu.mem[0xa0] = txcb; cpu.mem[0xa1] = 0
+    udp_out.clear()
+    st = {'polls': 0, 'acked': False}
+    def wr_hook_jit(self, a, v, st=st, pd=poll_delay):
+        orig_wr(self, a, v)
+        if (a & 0xffff) == 0xfcaa and not st['acked']:
+            st['polls'] += 1
+            if st['polls'] >= pd:
+                for ip, port, data in list(udp_out):
+                    if data[0] == 2:                  # our DATA datagram seen
+                        hx('U %x %d %s' % (IP10, 32768,
+                           aun(3, 0x99, 0, int.from_bytes(data[4:8], "little")).hex()))
+                        st['acked'] = True
+    CPU.wr = wr_hook_jit
+    cpu.call(SYM['tx_begin'])
+    CPU.wr = orig_wr
+    check(st['acked'] and cpu.mem[txcb] == 0x00,
+          'ACK delayed %d poll cycle(s): transmit still completed &00 (got &%02x)'
+          % (poll_delay, cpu.mem[txcb]))
+
 print('== 4: rx pump delivers a fileserver reply into the &00C0 CB ==')
 for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
     cpu.mem[txcb+off] = v                      # open receive, port &90, buffer &3100

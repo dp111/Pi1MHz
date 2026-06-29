@@ -432,6 +432,122 @@ int main(void)
       assert(e.himm.active && e.himm.seq == 0x24);             /* not wedged */
    }
 
+   /* ---- network-delay variance (jitter / reordering / boundary sweep) ----
+    * The transmits above always advance the clock to a single fixed point.
+    * Real UDP latency varies: an ACK can land at any time within the silence
+    * window, the host polls at irregular intervals, frames can reorder, and a
+    * reply can arrive a hair under the reap deadline. These cases sweep that
+    * variance so a future change that turns a "<" into a "<=", drops the
+    * deadline re-arm, or tightens the dup filter is caught. */
+
+   /* 25: ACK-latency sweep across the silence boundary. The engine's success
+    * is purely deadline-based, so an ACK at ANY latency below
+    * AUN_NORESP_TIMEOUT_MS must complete the transfer, and one at or beyond it
+    * must be ignored - a late ACK cannot revive a transmit already failed. */
+   {
+      static const uint32_t good[] = { 0, 1, 37, 250, AUN_NORESP_TIMEOUT_MS - 1 };
+      for (unsigned k = 0; k < sizeof good / sizeof good[0]; k++) {
+         reset();
+         assert(aun_tx_start(&e, 1, 254, 0x80, 1, pay, 4) == AUN_OK);
+         fake_ms += good[k];
+         aun_poll(&e);                                /* still inside window */
+         assert(aun_tx_status(&e) == AUN_STATUS_PENDING);
+         ack(0, AUN_TYPE_ACK);                         /* ACK at latency good[k] */
+         assert(aun_tx_status(&e) == AUN_OK);
+      }
+      static const uint32_t late[] = { AUN_NORESP_TIMEOUT_MS,
+                                       AUN_NORESP_TIMEOUT_MS + 500 };
+      for (unsigned k = 0; k < sizeof late / sizeof late[0]; k++) {
+         reset();
+         assert(aun_tx_start(&e, 1, 254, 0x80, 1, pay, 4) == AUN_OK);
+         fake_ms += late[k];
+         aun_poll(&e);                                /* deadline passed -> fail */
+         assert(aun_tx_status(&e) == AUN_TX_NOT_LISTENING);
+         ack(0, AUN_TYPE_ACK);                         /* late ACK must not revive */
+         assert(aun_tx_status(&e) == AUN_TX_NOT_LISTENING);
+      }
+   }
+
+   /* 26: jitter - the host polls at irregular gaps while the peer is silent but
+    * still within the window. No gap pattern may fail the transmit early or
+    * emit a spurious silence retransmit, and an ACK on a late poll still wins. */
+   reset();
+   assert(aun_tx_start(&e, 1, 254, 0x80, 1, pay, 4) == AUN_OK);
+   {
+      static const uint32_t gaps[] = { 37, 113, 7, 200, 311, 90 };  /* sum < 1 s */
+      uint32_t acc = 0;
+      for (unsigned k = 0; k < sizeof gaps / sizeof gaps[0]; k++) {
+         fake_ms += gaps[k]; acc += gaps[k];
+         aun_poll(&e);
+         assert(aun_tx_status(&e) == AUN_STATUS_PENDING);
+         assert(sent_count == 1);                      /* no silence retransmit */
+      }
+      assert(acc < AUN_NORESP_TIMEOUT_MS);
+   }
+   ack(0, AUN_TYPE_ACK);
+   assert(aun_tx_status(&e) == AUN_OK);
+
+   /* 27: a reject schedules a same-seq retransmit and re-arms a fresh silence
+    * window; the ACK for that retransmit may itself arrive at any latency under
+    * the new window. Verify the deadline is re-armed so a delayed-but-valid ACK
+    * still completes (a missed re-arm would fail it as silence). */
+   reset();
+   assert(aun_tx_start(&e, 1, 254, 0x80, 1, pay, 4) == AUN_OK);
+   ack(0, AUN_TYPE_NAK);                               /* peer rejects */
+   assert(aun_tx_status(&e) == AUN_STATUS_PENDING);
+   fake_ms += AUN_REJECT_TIMEOUT_MS + 1;
+   aun_poll(&e);                                       /* retransmit fires */
+   assert(sent_count == 2 && seq_of(1) == seq_of(0));
+   fake_ms += AUN_NORESP_TIMEOUT_MS - 1;               /* ACK late, but in window */
+   aun_poll(&e);
+   assert(aun_tx_status(&e) == AUN_STATUS_PENDING);
+   ack(1, AUN_TYPE_ACK);
+   assert(aun_tx_status(&e) == AUN_OK);
+
+   /* 28: reordering - distinct frames that arrive out of sequence order (a
+    * higher seq before a lower one, as variable path delay can cause) are EACH
+    * new transmissions and must both be delivered. The same-seq dup filter
+    * keys only on the immediately-previous seq, so it must not drop a
+    * legitimately reordered frame. */
+   reset();
+   assert(aun_rx_open(&e, 0, 0x99, AUN_WILDCARD, AUN_WILDCARD, rbuf, 64) == AUN_OK);
+   {
+      uint8_t hi[10] = { AUN_TYPE_DATA, 0x99, 0x00, 0, 0x50,0,0,0, 0xAA,0xBB };
+      uint8_t lo[10] = { AUN_TYPE_DATA, 0x99, 0x00, 0, 0x40,0,0,0, 0xCC,0xDD };
+      sent_count = 0;
+      aun_udp_input(&e, 0x0100000A, 32768, hi, 10);    /* higher seq first */
+      aun_udp_input(&e, 0x0100000A, 32768, lo, 10);    /* lower seq after */
+      assert(sent_count == 2);                         /* both ACKed */
+      assert(e.counters.rx_dup == 0);                  /* neither suppressed */
+      assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 2);
+      assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+      assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 2);
+      assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+      assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
+   }
+
+   /* 29: a host-immediate answered just before AUN_HIMM_TIMEOUT_MS is released
+    * with an IMM_REPLY and must NOT be counted as a timeout - the reap window
+    * is a ceiling, not a fixed delay (complements test 24's never-answered
+    * case, proving the reply latency can vary right up to the boundary). */
+   reset();
+   aun_set_host_imm(&e, true);
+   {
+      uint8_t imm[AUN_HDR_SIZE + 4] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x28,0,0,0, 1,2,3,4 };
+      sent_count = 0;
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);
+      assert(e.himm.active && sent_count == 0);
+      fake_ms += AUN_HIMM_TIMEOUT_MS - 1;              /* host answers just in time */
+      aun_poll(&e);                                    /* not yet reaped */
+      assert(e.himm.active && e.counters.himm_timeout == 0);
+      uint8_t rep[4] = { 9, 8, 7, 6 };
+      aun_himm_reply(&e, rep, 4);
+      assert(!e.himm.active);
+      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_IMM_REPLY);
+      assert(e.counters.himm_timeout == 0);            /* answered, not reaped */
+   }
+
    printf("all aun tests passed\n");
    return 0;
 }
