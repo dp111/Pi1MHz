@@ -93,6 +93,12 @@
 #define AUN_REJECT_TIMEOUT_MS 10u   /* AUN spec: 1 centisecond between them      */
 #define AUN_NORESP_TIMEOUT_MS 1000u /* fail after ~1 s of silence (ROM budget)  */
 #define AUN_NORESP_RETRIES    0u    /* no engine silence-retransmit; NFS retries */
+/* A held host-immediate is released by aun_himm_reply(); if the host never
+ * replies (unimplemented op, aborted 6502 handler, the ROM's own command
+ * timeout) it must not wedge the engine - every later inbound immediate would
+ * be NAKed and nIRQ bit &40 would stay asserted. aun_poll() reaps a stale held
+ * immediate after this bound and NAKs the originator so it fails fast. */
+#define AUN_HIMM_TIMEOUT_MS   1000u
 
 /* park-and-retry: a DATA frame the host rejected (no RXCB armed yet) is
  * held out of the rx queue and re-presented a few times, so a reply that
@@ -174,6 +180,7 @@ typedef struct {
    uint32_t ack_sent, nak_sent;
    uint32_t ack_fail;          /* ACK/NAK that the transport failed to send */
    uint32_t rx_parked_drop;    /* parked reply dropped (budget/closed/busy)  */
+   uint32_t himm_timeout;      /* held immediate reaped: host never replied  */
 } aun_counters_t;
 
 /* Inbound immediate operation held for the host to execute (remote
@@ -187,6 +194,7 @@ typedef struct {
    uint32_t ip_be;
    uint16_t port;
    uint32_t len;
+   uint32_t due_ms;            /* reap deadline if the host never replies */
    uint8_t  data[AUN_HIMM_MAX];
 } aun_host_imm_t;
 

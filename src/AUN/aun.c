@@ -229,6 +229,15 @@ uint8_t aun_rx_open(aun_engine_t *e, uint8_t handle, uint8_t port,
       return AUN_ERR_PARAM;
 
    aun_rx_block_t *b = &e->rx[handle];
+   /* Drop any frame parked (or re-injected) for this handle before re-opening:
+    * its len was validated against the OLD buf_size, so re-opening with a
+    * smaller buffer would let rx_park_poll re-inject an oversize frame that
+    * aun_rx_poll then memcpy()s past the new buffer. Mirrors aun_rx_close. */
+   if (e->parked_valid && e->parked_handle == handle) {
+      e->parked_valid    = false;
+      e->parked_in_queue = false;
+      e->counters.rx_parked_drop++;
+   }
    memset(b, 0, sizeof *b);
    b->open     = true;
    b->port     = port;
@@ -732,6 +741,7 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
             e->himm.ip_be  = src_ip_be;
             e->himm.port   = src_port;
             e->himm.len    = dlen;
+            e->himm.due_ms = now_ms(e) + AUN_HIMM_TIMEOUT_MS;
             if (dlen != 0)
                memcpy(e->himm.data, data, dlen);
          }
@@ -771,6 +781,14 @@ static void rx_park_poll(aun_engine_t *e)
       e->parked_due_ms = now_ms(e) + AUN_PARK_DELAY_MS;   /* full: later */
       return;
    }
+   /* Defence in depth: never re-inject a frame larger than the block's current
+    * buffer (it would overrun in aun_rx_poll's memcpy). aun_rx_open already
+    * drops a parked frame on re-open, so this should not trigger. */
+   if (e->parked.len > b->buf_size) {
+      e->parked_valid = false;
+      e->counters.rx_parked_drop++;
+      return;
+   }
    aun_rx_frame_t *f = &b->q[((uint32_t)b->head + b->count) % AUN_RX_QUEUE];
    *f = e->parked;
    b->count++;
@@ -785,6 +803,16 @@ void aun_poll(aun_engine_t *e)
       return;
 
    rx_park_poll(e);
+
+   /* Reap a held host-immediate the host never answered: release the slot
+    * (re-enabling inbound immediates and clearing nIRQ bit &40) and NAK the
+    * originator so it fails fast instead of waiting out its own timeout. */
+   if (e->himm.active && (int32_t)(now_ms(e) - e->himm.due_ms) >= 0) {
+      send_ack_nak(e, e->himm.ip_be, e->himm.port, AUN_TYPE_NAK,
+                   0, e->himm.ctrl, e->himm.seq);
+      e->himm.active = false;
+      e->counters.himm_timeout++;
+   }
 
    if (t->state != AUN_STATUS_PENDING)
       return;

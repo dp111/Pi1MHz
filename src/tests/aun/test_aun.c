@@ -372,6 +372,57 @@ int main(void)
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
    assert(!e.parked_valid && aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
+   /* 23: re-opening a receive handle while a frame is parked must DROP the
+    * parked frame. Its len was validated against the old (larger) buffer, so
+    * re-opening with a smaller buffer would otherwise let rx_park_poll
+    * re-inject an oversize frame that aun_rx_poll then memcpy()s past the new
+    * buffer. (H1) */
+   reset();
+   static uint8_t big_rx[600];
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD,
+                      big_rx, sizeof big_rx) == AUN_OK);
+   static uint8_t dg100[AUN_HDR_SIZE + 100];
+   memset(dg100, 0, sizeof dg100);
+   dg100[0] = AUN_TYPE_DATA; dg100[1] = 0x92; dg100[4] = 0x10; /* seq */
+   for (int i = 0; i < 100; i++) dg100[AUN_HDR_SIZE + i] = (uint8_t)(i + 1);
+   aun_udp_input(&e, 0x0100000A, 32768, dg100, sizeof dg100);  /* delivered + ACKed */
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 100);
+   assert(aun_rx_collect(&e, 0, false) == AUN_OK);             /* host rejects -> park */
+   assert(e.parked_valid && e.parked.len == 100);
+   {
+      uint32_t drops = e.counters.rx_parked_drop;
+      static uint8_t small_rx[64];                             /* < parked len */
+      assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD,
+                         small_rx, sizeof small_rx) == AUN_OK);
+      assert(!e.parked_valid);                                 /* dropped on re-open */
+      assert(e.counters.rx_parked_drop == drops + 1);
+      fake_ms += AUN_PARK_DELAY_MS;
+      aun_poll(&e);                                            /* must not re-inject */
+      assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
+   }
+
+   /* 24: a held host-immediate the host never answers is reaped after
+    * AUN_HIMM_TIMEOUT_MS - NAKed and the slot freed - so later inbound
+    * immediates are not NAKed forever and nIRQ bit &40 is not pinned. (M3) */
+   reset();
+   aun_set_host_imm(&e, true);
+   {
+      uint8_t imm[AUN_HDR_SIZE + 4] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x20,0,0,0, 1,2,3,4 };
+      sent_count = 0;
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* held for the host */
+      assert(e.himm.active && sent_count == 0);                /* captured, no reply */
+      fake_ms += AUN_HIMM_TIMEOUT_MS;                          /* host never replies */
+      aun_poll(&e);
+      assert(!e.himm.active);                                  /* slot released */
+      assert(e.counters.himm_timeout == 1);
+      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK); /* originator NAKed */
+      uint8_t imm2[AUN_HDR_SIZE + 4] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x24,0,0,0, 5,6,7,8 };
+      aun_udp_input(&e, 0x0100000A, 32768, imm2, sizeof imm2); /* fresh: accepted */
+      assert(e.himm.active && e.himm.seq == 0x24);             /* not wedged */
+   }
+
    printf("all aun tests passed\n");
    return 0;
 }
