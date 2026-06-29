@@ -38,6 +38,21 @@ def hx(cmd):
             raise RuntimeError(f'harness said {line!r}')
 
 # ---------------- 6502 emulator ----------------
+# 65C02-only opcodes (undefined on the NMOS 6502 in a stock BBC B). The 4.18
+# AUNFS path must never execute one; the model-B guard in CPU.step() trips on
+# any of these. (The 4.21 Master build uses several of them - phx/phy/plx/ply,
+# trb, bra, inc a/dec a, stz, jmp (abs,x) - but runs under a different harness.)
+C02_ONLY_OPCODES = frozenset([
+    0x1a, 0x3a,                                      # inc a / dec a
+    0x5a, 0x7a, 0xda, 0xfa,                          # phy / ply / phx / plx
+    0x80,                                            # bra
+    0x89,                                            # bit #imm
+    0x04, 0x0c, 0x14, 0x1c,                          # tsb / trb
+    0x64, 0x74, 0x9c, 0x9e,                          # stz
+    0x12, 0x32, 0x52, 0x72, 0x92, 0xb2, 0xd2, 0xf2,  # (zp) zero-page indirect
+    0x7c,                                            # jmp (abs,x)
+])
+
 class CPU:
     def __init__(self):
         self.mem = bytearray(0x10000)
@@ -51,10 +66,14 @@ class CPU:
         self.tube_out = bytearray(); self.tube_r4 = bytearray()
         self.fred_aa = 0
         self.instructions = 0
+        self.master_hits = 0   # model-B: count of ACCCON/INTOFF (&FE34/&FE38) accesses
+        self.c02_hits = 0      # model-B: count of 65C02-only opcodes fetched
 
     # FRED-aware memory access (mirrors discaccess/econet semantics)
     def rd(self, a):
         a &= 0xffff
+        if a == 0xfe34 or a == 0xfe38:   # model-B: ACCCON/INTOFF are Master-only
+            self.master_hits += 1
         if a == 0xfca6: return self.jim_addr & 0xff
         if a == 0xfca7: return (self.jim_addr >> 8) & 0xff
         if a == 0xfca8: return (self.jim_addr >> 16) & 0xff
@@ -72,6 +91,8 @@ class CPU:
         return self.mem[a]
     def wr(self, a, v):
         a &= 0xffff; v &= 0xff
+        if a == 0xfe34 or a == 0xfe38:   # model-B: ACCCON/INTOFF are Master-only
+            self.master_hits += 1
         if a == 0xfca6: self.jim_addr = (self.jim_addr & 0xffff00) | v; return
         if a == 0xfca7: self.jim_addr = (self.jim_addr & 0xff00ff) | (v<<8); return
         if a == 0xfca8: self.jim_addr = (self.jim_addr & 0x00ffff) | (v<<16); return
@@ -120,6 +141,12 @@ class CPU:
             lo = self.pop(); hi = self.pop(); self.pc = ((hi<<8)|lo)+1; return
         self.instructions += 1
         op = self.rd(self.pc); pc = self.pc + 1
+        # model-B: a stock BBC B has an NMOS 6502 - no 65C02 opcodes. The 4.18
+        # AUNFS path must never fetch one (the 4.21 Master build legitimately
+        # does, but that runs under a different harness). Fail loudly if it does.
+        if op in C02_ONLY_OPCODES:
+            self.c02_hits += 1
+            raise RuntimeError(f'model-B violation: 65C02 opcode &{op:02x} at &{self.pc:04x}')
         def b():  # operand byte
             nonlocal pc; v = self.rd(pc); pc += 1; return v
         def w():
@@ -822,6 +849,15 @@ check(net == 0,  'aun_station=ip -> net 0 (got %d)' % net)
 stn, net = init_and_status('aun_station=ip.ip')
 check(stn == 20, 'aun_station=ip.ip -> station 20 (got %d)' % stn)
 check(net == 1,  'aun_station=ip.ip -> net = third IP octet 1 (got %d)' % net)
+
+print('== 20: model-B (NMOS 6502) compatibility across the whole suite ==')
+# Standing invariants accumulated over every test above: the 4.18 AUNFS path
+# must run on a stock BBC B, so across all init/tx/rx-pump/svc5/immediate/tube
+# exercises it must never touch a Master-only register or execute a 65C02 op.
+check(cpu.master_hits == 0,
+      'no ACCCON/INTOFF (&FE34/&FE38) access in %d instructions' % cpu.instructions)
+check(cpu.c02_hits == 0,
+      'no 65C02-only opcode fetched (run aborts on first if any)')
 
 H.stdin.write('Q\n')
 print(f'\nALL {ok} LOCKSTEP CHECKS PASSED  ({cpu.instructions} instructions executed)')
