@@ -1,4 +1,4 @@
-/* aun_aun.c - AUN protocol engine. See aun.h for the wire
+/* aun.c - AUN protocol engine. See aun.h for the wire
  * format and the design notes; platform glue is in aun_emulator.c.
  *
  * Design constraints:
@@ -219,6 +219,29 @@ static void send_imm_reply(aun_engine_t *e, uint32_t ip_be, uint16_t port,
    (void)udp_send(e, ip_be, port, dgram, AUN_HDR_SIZE + len);
 }
 
+/* Cache the outcome of the currently-held immediate, keyed on its
+ * (ip,port,seq), so a retransmit (lost reply / reaped request) is answered
+ * from here instead of being handed to the host a second time - a re-run of a
+ * Poke/JSR/OSProcCall is not idempotent. is_nak records a reaped (refused)
+ * immediate so its retransmit is re-refused rather than re-held. Bounded by
+ * AUN_HIMM_CACHE_MS so a peer reboot that reuses a seq is not replayed stale. */
+static void himm_cache_store(aun_engine_t *e, bool is_nak,
+                             const uint8_t *data, uint32_t len)
+{
+   if (len > AUN_HIMM_MAX)
+      len = AUN_HIMM_MAX;
+   e->himm_cache.valid  = true;
+   e->himm_cache.is_nak = is_nak;
+   e->himm_cache.ip_be  = e->himm.ip_be;
+   e->himm_cache.port   = e->himm.port;
+   e->himm_cache.seq    = e->himm.seq;
+   e->himm_cache.ctrl   = e->himm.ctrl;
+   e->himm_cache.due_ms = now_ms(e) + AUN_HIMM_CACHE_MS;
+   e->himm_cache.len    = is_nak ? 0u : len;
+   if (!is_nak && len != 0)
+      memcpy(e->himm_cache.data, data, len);
+}
+
 void aun_himm_reply(aun_engine_t *e, const uint8_t *data, uint32_t len)
 {
    if (!e->himm.active)
@@ -227,17 +250,7 @@ void aun_himm_reply(aun_engine_t *e, const uint8_t *data, uint32_t len)
       len = AUN_HIMM_MAX;
    send_imm_reply(e, e->himm.ip_be, e->himm.port, e->himm.ctrl, e->himm.seq,
                   data, len);
-   /* Cache the answer keyed on (ip,port,seq): a peer that missed this reply
-    * retransmits the same immediate, and re-delivering a Poke/JSR/OSProcCall
-    * would execute it twice. The retransmit is replayed from here instead. */
-   e->himm_cache.valid = true;
-   e->himm_cache.ip_be = e->himm.ip_be;
-   e->himm_cache.port  = e->himm.port;
-   e->himm_cache.seq   = e->himm.seq;
-   e->himm_cache.ctrl  = e->himm.ctrl;
-   e->himm_cache.len   = len;
-   if (len != 0)
-      memcpy(e->himm_cache.data, data, len);
+   himm_cache_store(e, false, data, len);
    e->himm.active = false;
 }
 
@@ -429,7 +442,6 @@ static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
    /* present the control byte with bit 7 set again, as a real Econet
     * receive block would */
    f->ctrl    = (uint8_t)(ctrl | 0x80);
-   f->needs_verdict = false;
    /* identity, used by park-and-retry; the DATA path overwrites these with
     * the real source/seq so a parked frame can be recognised. A zero
     * src_ip_be marks a frame that must never be parked (broadcast/local). */
@@ -639,28 +651,30 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
       break;
 
    case AUN_TYPE_DATA: {
-      /* Diagnostic only: is this frame byte-identical to the previous
-       * DATA frame from the same source on the same Econet port? The
-       * PiEconetBridge retransmits a lost-ACK block under the SAME seq
-       * (econet-hpbridge.c re-sends the queued packet unchanged), which
-       * the same-seq dup check below already catches and re-ACKs. This
-       * content compare instead spots a retransmit under a *new* seq -
-       * which a stricter peer (e.g. BeebEm) can do - and drives the
-       * park-drop heuristic so such a frame is not re-presented forever.
-       * It never affects the verdict - the engine still decides purely on
-       * whether a listener is open. Tracked per (source, port) so the
-       * fileserver's &90 replies between two &92 blocks don't clobber it. */
+      /* Diagnostic only: is this frame byte-identical to the previous DATA
+       * frame from the same source on the same Econet port? This feeds ONLY
+       * the optional trace hook - since M4 removed content-based dedup it no
+       * longer affects the verdict or park-and-retry (the engine decides
+       * purely on whether a listener is open, and same-seq retransmits are
+       * caught by last_rx_seq below). So the whole previous-bytes machine -
+       * including the up-to-8 KB memcmp and memcpy on this hot lwIP receive
+       * path - is skipped entirely when no trace hook is installed (the
+       * field case). Tracked per (source, port) so the fileserver's &90
+       * replies between two &92 blocks don't clobber it. */
+      bool same_as_prev = false;
       aun_dbg_prev_t *dp = NULL;
-      for (uint32_t i = 0; i < AUN_DBG_PREV_SLOTS; i++) {
-         aun_dbg_prev_t *s = &e->dbg_prev[i];
-         if (s->valid && s->ip_be == src_ip_be && s->udp_port == src_port &&
-             s->aun_port == port) {
-            dp = s;
-            break;
+      if (e->trace_fn != NULL) {
+         for (uint32_t i = 0; i < AUN_DBG_PREV_SLOTS; i++) {
+            aun_dbg_prev_t *s = &e->dbg_prev[i];
+            if (s->valid && s->ip_be == src_ip_be && s->udp_port == src_port &&
+                s->aun_port == port) {
+               dp = s;
+               break;
+            }
          }
+         same_as_prev = (dp != NULL && dlen != 0 && dlen == dp->len &&
+                         memcmp(data, dp->data, dlen) == 0);
       }
-      bool same_as_prev = (dp != NULL && dlen != 0 && dlen == dp->len &&
-                           memcmp(data, dp->data, dlen) == 0);
       uint8_t verdict;
 
       aun_map_entry_t *m = map_find_by_ip(e, src_ip_be, src_port);
@@ -715,23 +729,24 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
          }
       }
 
-      if (e->trace_fn != NULL)
+      if (e->trace_fn != NULL) {
          e->trace_fn(e->trace_user, seq, port, dlen, verdict, same_as_prev,
                      data);
-
-      /* Remember this frame's bytes for the next comparison on this
-       * (source, port). Reuse the matching slot, else take a fresh one. */
-      if (dlen != 0 && dlen <= AUN_MAX_DATA) {
-         if (dp == NULL) {
-            dp = &e->dbg_prev[e->dbg_prev_next];
-            e->dbg_prev_next = (e->dbg_prev_next + 1u) % AUN_DBG_PREV_SLOTS;
+         /* Remember this frame's bytes for the next comparison on this
+          * (source, port). Reuse the matching slot, else take a fresh one.
+          * Inside the trace guard: with no hook this copy is pure waste. */
+         if (dlen != 0 && dlen <= AUN_MAX_DATA) {
+            if (dp == NULL) {
+               dp = &e->dbg_prev[e->dbg_prev_next];
+               e->dbg_prev_next = (e->dbg_prev_next + 1u) % AUN_DBG_PREV_SLOTS;
+            }
+            dp->valid    = true;
+            dp->ip_be    = src_ip_be;
+            dp->udp_port = src_port;
+            dp->aun_port = port;
+            dp->len      = dlen;
+            memcpy(dp->data, data, dlen);
          }
-         dp->valid    = true;
-         dp->ip_be    = src_ip_be;
-         dp->udp_port = src_port;
-         dp->aun_port = port;
-         dp->len      = dlen;
-         memcpy(dp->data, data, dlen);
       }
       break;
    }
@@ -750,10 +765,8 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
    case AUN_TYPE_IMMEDIATE:
       e->counters.rx_imm++;
       if (ctrl == AUN_CTRL_MACHINE_PEEK) {
-         uint8_t reply[AUN_HDR_SIZE + 4];
-         build_header(reply, AUN_TYPE_IMM_REPLY, port, ctrl, seq);
-         memcpy(&reply[AUN_HDR_SIZE], e->machine_id, 4);
-         (void)udp_send(e, src_ip_be, src_port, reply, sizeof reply);
+         /* the engine answers a machine peek itself: 4-byte machine id */
+         send_imm_reply(e, src_ip_be, src_port, ctrl, seq, e->machine_id, 4);
       } else if (e->host_imm_enabled && dlen <= AUN_HIMM_MAX) {
          if (e->himm.active) {
             /* one held at a time: absorb a retransmit of the one in flight
@@ -763,17 +776,24 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
                send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK,
                             port, ctrl, seq);
          } else if (e->himm_cache.valid &&
+                    (int32_t)(now_ms(e) - e->himm_cache.due_ms) < 0 &&
                     e->himm_cache.ip_be == src_ip_be &&
                     e->himm_cache.port == src_port &&
                     e->himm_cache.seq == seq) {
-            /* Late retransmit of an immediate we have already answered:
-             * replay the cached reply, do NOT hand it to the host again
+            /* Retransmit of an immediate we already resolved (and not yet
+             * expired): replay the recorded outcome - the positive reply, or
+             * the NAK if it was reaped - do NOT hand it to the host again
              * (Poke/JSR/OSProcCall are not idempotent). */
-            send_imm_reply(e, e->himm_cache.ip_be, e->himm_cache.port,
-                           e->himm_cache.ctrl, e->himm_cache.seq,
-                           e->himm_cache.data, e->himm_cache.len);
+            if (e->himm_cache.is_nak)
+               send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK,
+                            port, ctrl, seq);
+            else
+               send_imm_reply(e, e->himm_cache.ip_be, e->himm_cache.port,
+                              e->himm_cache.ctrl, e->himm_cache.seq,
+                              e->himm_cache.data, e->himm_cache.len);
             e->counters.himm_replay++;
          } else {                     /* fresh immediate: hold it for the host */
+            e->himm.gen++;            /* new slot generation (gen guard) */
             e->himm.active = true;
             e->himm.ctrl   = ctrl;
             e->himm.seq    = seq;
@@ -849,6 +869,10 @@ void aun_poll(aun_engine_t *e)
    if (e->himm.active && (int32_t)(now_ms(e) - e->himm.due_ms) >= 0) {
       send_ack_nak(e, e->himm.ip_be, e->himm.port, AUN_TYPE_NAK,
                    0, e->himm.ctrl, e->himm.seq);
+      /* Seed the cache as a NAK-marker: a retransmit of this reaped immediate
+       * must be re-refused, not re-held and re-executed (the host's eventual
+       * late reply is separately dropped by the gen guard in aun_himm_reply). */
+      himm_cache_store(e, true, NULL, 0);
       e->himm.active = false;
       e->counters.himm_timeout++;
    }

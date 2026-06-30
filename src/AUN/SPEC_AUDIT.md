@@ -142,9 +142,11 @@ flagged during development. **Fix:** the content heuristic (`rx_content_queued`
 + the `same_as_prev` REDUP branch) was removed. Only exact-`seq` retransmits
 (a lost ACK) are now re-ACKed-without-redelivery; every new-sequence frame is
 delivered, and ANFS's fileserver sequencing handles application-level
-duplicates, per spec. `same_as_prev` is still computed for the park-and-retry
-gate (so a retransmit is dropped, not re-presented). Tests updated (case 19);
-suite green.
+duplicates, per spec. `same_as_prev` no longer affects the verdict or the
+park-and-retry gate at all (M4 removed that too); it survives ONLY as a flag
+for the optional trace hook, so the whole previous-frame compare/copy is now
+skipped entirely when no trace hook is installed (the field case). Tests
+updated (case 19); suite green.
 
 ### 5.2 REJECT retransmit timing — **FIXED (10 ms spacing)**
 Spec: on reject, retransmit after a 1-centisecond timeout, bounded. The engine

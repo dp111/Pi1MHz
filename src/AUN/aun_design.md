@@ -16,7 +16,7 @@ NFS/ANFS (unmodified above the NetCom layer)
    | replaced Tx/Rx primitives: FRED &FCAA command interface
 discaccess_emulator.c          command dispatch (opcodes 30..41 routed out)
 aun_emulator.c              JIM command-block parsing, lwIP UDP transport
-aun_aun.c                   pure-C AUN engine (host-testable, no deps)
+aun.c                   pure-C AUN engine (host-testable, no deps)
 lwIP UDP  ->  WiFi             AUN datagrams, port 32768
 ```
 
@@ -203,7 +203,7 @@ all counters) via `aun_status_text()`. The shared nIRQ line is now
 arbitrated per-source in Pi1MHz.c (`Pi1MHz_SetnIRQ_src`), so econet and
 harddisc requests cannot clear each other — closing former item 8.
 The ROM titles itself "AUNFS 4.18 (Pi)" and ships as `AUNFS.rom`.
-For hardware bring-up, run `tests/econet/beeb/ECOTEST.bas` on the Beeb
+For hardware bring-up, run `tests/aun/beeb/ECOTEST.bas` on the Beeb
 first (10 self-contained checks via the loopback responder), and see
 SETUP.md in the ANFS folder.
 
@@ -234,7 +234,7 @@ SETUP.md in the ANFS folder.
   (JIM state saved/restored around it), so the machine stays responsive
   during a transmit to a slow or dead peer.
 - Inbound immediate operations (remote peek/poke/JSR/halt/continue) are
-  now handled host-side (INIT +8 bit 1; &FC88 bit 6; commands 43/44),
+  now handled host-side (INIT +8 bit 1; &FCAB bit 6; commands 43/44),
   not just machine peek.
 - REMAINING: nIRQ is a shared open-collector line also driven by
   harddisc_emulator — econet only changes it on state transitions, but
@@ -248,7 +248,7 @@ SETUP.md in the ANFS folder.
   longer lost while a frame is held.
 - ~~User receive blocks only fill when the pump runs~~ FIXED: the Pi
   asserts nIRQ while frames are queued (enabled by INIT's +8 flag;
-  status mirrored at FRED &FC88, bit 7 + count). The patched ANFS
+  status mirrored at FRED &FCAB, bit 7 + count). The patched ANFS
   claims it via service call 5 (unrecognised interrupt, entry &8028)
   and drains the queue through the rx pump, so unsolicited frames
   arrive without any FS activity. Non-econet interrupts fall through
@@ -323,7 +323,7 @@ jammed, &41 not listening, &43 no clock, &44 bad ctrl.
 
 ## Testing
 
-All in `tests/econet/` (see its README), host-runnable, no hardware:
+All in `tests/aun/` (see its README), host-runnable, no hardware:
 
 - **Unit tests** — `test_aun.c` (15 scenarios incl. the
   verdict flow, learn mode and subnet broadcast) and
@@ -331,12 +331,12 @@ All in `tests/econet/` (see its README), host-runnable, no hardware:
   ASan/UBSan.
 - **Fuzzers** — 2M random engine operations and 400k hostile Beeb
   command blocks under ASan/UBSan with invariants asserted per
-  iteration: no findings (`tests/econet/fuzz_*.c`).
+  iteration: no findings (`tests/aun/fuzz_*.c`).
 - **6502 coverage** — the lockstep CPU records executed PCs: all 107
   code labels in the econet ROM regions execute under the suite,
   including every page-crossing copy loop, the workspace-slot scan,
   the pump hooks, remote halt/continue and the error paths.
-- **Lockstep integration test** — `tests/econet/lockstep/`: the
+- **Lockstep integration test** — `tests/aun/lockstep/`: the
   patched ANFS ROM bytes execute in a Python 6502 emulator whose
   FRED/JIM hooks drive the REAL aun_emulator/aun_aun/
   aun_config C code compiled on the host, with a scripted AUN peer

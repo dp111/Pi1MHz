@@ -1,5 +1,5 @@
 /* aun_emulator.c - glue between the discaccess command interface and
- * the AUN protocol engine (aun_aun.c), plus the lwIP UDP transport.
+ * the AUN protocol engine (aun.c), plus the lwIP UDP transport.
  *
  * The Beeb drives this exactly like the disc commands: build a command
  * block in the top 64K of disc RAM, write the block's page number to
@@ -20,6 +20,7 @@
  * relative to DISC_RAM_BASE, the same convention as the disc commands):
  *
  *  30 INIT        +1 station  +2 net  +4 u32 listen UDP port (0=32768)
+ *                 +8 flags (bit0 raise nIRQ on rx, bit1 host-immediates)
  *  31 STATUS      fills +4 stn  +5 net  +6 network-ready  +8 ip[4]
  *                 +12 u32 counters x11 (tx_ok, tx_fail, rx_data, rx_bcast,
  *                 rx_imm, rx_dup, rx_no_block, rx_unknown_src, rx_too_big,
@@ -28,7 +29,7 @@
  *                 +8 u32 data offset  +12 u32 length
  *  33 TX_POLL     result = &80 pending / 0 ok / error; on a completed
  *                 immediate also fills +8 u32 reply length
- *  34 RX_OPEN     +1 handle(0-3)  +2 port(0=any)  +4 stn  +5 net
+ *  34 RX_OPEN     +1 handle(0-1)  +2 port(0=any)  +4 stn  +5 net
  *                 (&FF=any)  +8 u32 buffer offset  +12 u32 buffer size
  *  35 RX_POLL     +1 handle; when ready fills +2 ctrl  +3 port
  *                 +4 src stn  +5 src net  +12 u32 length
@@ -39,6 +40,12 @@
  *  39 MAP_ADD     +1 stn  +2 net  +4 ip[4] (a.b.c.d)  +8 u32 UDP port
  *  40 TEST        +1 enable  +2 station  +3 net   (loopback responder)
  *  41 SET_MACHINE +4 machine id [4] (machine-peek reply bytes)
+ *  42 RX_DONE     +1 handle  +2 verdict (0=host took it, 1=rejected) - the
+ *                 host has copied the presented frame; re-arm / park-or-drop
+ *  43 IMM_POLL    held host-immediate -> +2 ctrl  +12 u32 len  + data at
+ *                 JIM &FEA000; PENDING when none held
+ *  44 IMM_REPLY   +8 u32 reply offset  +12 u32 length - host's answer to the
+ *                 polled immediate (dropped if the slot was reaped meanwhile)
  *
  * Result codes are the AUN_* values from aun.h (0 = OK).
  */
@@ -225,7 +232,12 @@ static bool aun_udp_send(void *user, uint32_t ip_be, uint16_t port,
 static uint32_t aun_now_ms(void *user)
 {
    (void)user;
-   return RPI_GetSystemTime() / 1000u;   /* us -> ms */
+   /* Use the FULL 64-bit microsecond timer: the low 32 bits alone wrap every
+    * ~71.6 min, so dividing them by 1000 yields a ramp that resets - not a
+    * clean mod-2^32 ms counter - and a deadline computed near the wrap can
+    * land in the unreachable gap and never expire (defeating the tx/himm/park
+    * timers). The 64-bit counter, truncated to 32-bit ms, wraps cleanly. */
+   return (uint32_t)(RPI_GetSystemTime64() / 1000u);   /* us -> ms */
 }
 
 static void aun_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
@@ -526,6 +538,9 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       if (aun.himm.len != 0)
          memcpy(&Pi1MHz->JIM_ram[base_addr + 0xFEA000u], aun.himm.data,
                 aun.himm.len);
+      /* record which slot generation the host is now executing, so a reply
+       * that arrives after a reap/refill is dropped, not mis-routed */
+      aun.himm.polled_gen = aun.himm.gen;
       result = AUN_OK;
       break;
 
@@ -535,7 +550,13 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       uint32_t len = jim_read32(cp + 12);
       if (!aun_buffer_ok(off, len) || len > AUN_HIMM_MAX)
          break;                                   /* AUN_ERR_PARAM */
-      aun_himm_reply(&aun, &Pi1MHz->JIM_ram[base_addr + off], len);
+      /* Only answer the immediate the host actually took via IMM_POLL. If the
+       * slot was reaped (and perhaps refilled with a newer immediate) since
+       * the poll, gen has moved on and this reply is for a request that is no
+       * longer held - sending it would tag the new immediate's seq with this
+       * stale payload. Drop it; the newer immediate is re-polled or reaped. */
+      if (aun.himm.active && aun.himm.gen == aun.himm.polled_gen)
+         aun_himm_reply(&aun, &Pi1MHz->JIM_ram[base_addr + off], len);
       result = AUN_OK;
       break;
    }

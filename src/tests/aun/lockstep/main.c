@@ -58,6 +58,7 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
  * forward explicitly when a test wants to cross a longer timeout at once. */
 static uint64_t g_clock_us = 1000000;
 uint32_t RPI_GetSystemTime(void) { g_clock_us += 500; return (uint32_t)g_clock_us; }
+uint64_t RPI_GetSystemTime64(void) { g_clock_us += 500; return g_clock_us; }
 
 const char *config_get(const char *prop)
 {

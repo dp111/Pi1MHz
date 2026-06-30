@@ -393,7 +393,7 @@ int main(void)
    static uint8_t dg100[AUN_HDR_SIZE + 100];
    memset(dg100, 0, sizeof dg100);
    dg100[0] = AUN_TYPE_DATA; dg100[1] = 0x92; dg100[4] = 0x10; /* seq */
-   for (int i = 0; i < 100; i++) dg100[AUN_HDR_SIZE + i] = (uint8_t)(i + 1);
+   for (unsigned i = 0; i < 100; i++) dg100[AUN_HDR_SIZE + i] = (uint8_t)(i + 1);
    aun_udp_input(&e, 0x0100000A, 32768, dg100, sizeof dg100);  /* delivered + ACKed */
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 100);
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);             /* host rejects -> park */
@@ -579,6 +579,67 @@ int main(void)
          { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x34,0,0,0, 1,2,3,4 };
       aun_udp_input(&e, 0x0100000A, 32768, imm2, sizeof imm2);
       assert(e.himm.active && e.himm.seq == 0x34);
+   }
+
+   /* 31: the ms clock MUST be derived from the full 64-bit microsecond timer
+    * (aun_emulator.c aun_now_ms -> RPI_GetSystemTime64). Deriving it from only
+    * the low 32 bits (us32/1000) makes a ramp that resets every ~71.6 min, so
+    * a deadline = now + timeout computed just before the wrap lands in a gap of
+    * ms values the clock never reaches again, and the wrap-safe compare below
+    * never fires (HIGH-1: tx/himm/park timer hangs). This guards the property
+    * the production derivation relies on. */
+   {
+      const uint64_t boundary = (uint64_t)0xFFFFFFFFu + 1u;     /* 2^32 us */
+      uint64_t start_us = boundary - 500000u;                  /* 0.5s before */
+      uint64_t late_us  = boundary + 1000000u;                 /* 1.0s after  */
+      uint32_t start_clean = (uint32_t)(start_us / 1000u);
+      uint32_t late_clean  = (uint32_t)(late_us  / 1000u);     /* 64-bit: clean */
+      uint32_t late_broken = (uint32_t)late_us / 1000u;        /* low-32: ramp  */
+      uint32_t deadline = start_clean + 1000u;                 /* engine timer  */
+      assert((int32_t)(late_clean  - deadline) >= 0);  /* clean clock: FIRES */
+      assert((int32_t)(late_broken - deadline) <  0);  /* low-32 clock: never */
+   }
+
+   /* 32: a retransmit of a REAPED host immediate is re-refused from the cache
+    * (NAK), not re-held and re-executed - a non-idempotent Poke/JSR must not
+    * run a second time just because the host was slow and the slot was reaped
+    * before it answered. (MED-1) */
+   reset();
+   aun_set_host_imm(&e, true);
+   {
+      uint8_t imm[AUN_HDR_SIZE + 4] =        /* ctrl &02 = Poke (non-idempotent) */
+         { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x40,0,0,0, 1,2,3,4 };
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* held */
+      assert(e.himm.active);
+      fake_ms += AUN_HIMM_TIMEOUT_MS;                          /* host never answers */
+      aun_poll(&e);
+      assert(!e.himm.active && e.counters.himm_timeout == 1);  /* reaped + NAKed */
+      assert(e.himm_cache.valid && e.himm_cache.is_nak);       /* NAK-marker seeded */
+      sent_count = 0;
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* originator retransmits */
+      assert(!e.himm.active);                                  /* NOT re-held/executed */
+      assert(e.counters.himm_replay == 1);
+      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK && seq_of(0) == 0x40);
+   }
+
+   /* 33: the answered-immediate cache expires after AUN_HIMM_CACHE_MS, so a
+    * peer that reboots and reuses the sequence number gets a fresh execution,
+    * not a stale replay. (MED-2) */
+   reset();
+   aun_set_host_imm(&e, true);
+   {
+      uint8_t imm[AUN_HDR_SIZE + 4] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x44,0,0,0, 1,2,3,4 };
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* held */
+      uint8_t rep[2] = { 9, 9 };
+      aun_himm_reply(&e, rep, 2);                              /* answered + cached */
+      assert(e.himm_cache.valid && !e.himm_cache.is_nak);
+      sent_count = 0;
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* within window */
+      assert(!e.himm.active && e.counters.himm_replay == 1);   /* replayed, not re-held */
+      fake_ms += AUN_HIMM_CACHE_MS;                            /* window elapses */
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* same (ip,port,seq) */
+      assert(e.himm.active && e.himm.seq == 0x44);             /* now a FRESH hold */
    }
 
    printf("all aun tests passed\n");

@@ -3,7 +3,7 @@
  * Pure C, no bare-metal or lwIP dependencies: the UDP transport and the
  * millisecond clock are injected via function pointers, so this module
  * compiles and runs unmodified on a PC host for unit testing (see
- * tests/econet/).  All platform glue lives in aun_emulator.c.
+ * tests/aun/).  All platform glue lives in aun_emulator.c.
  *
  * Wire format (one UDP datagram per AUN transaction leg, default UDP
  * port 32768):
@@ -66,12 +66,12 @@
 /* ANFS opens exactly one receive block (handle 0, the wildcard funnel - see
  * eco_library.asm), through which ALL inbound frames pass before the ROM
  * pump demultiplexes them to internal CBs. So the depth that matters is the
- * per-block queue, not the block count. We keep a few blocks for headroom
- * (the host test suite uses handle 1) and spend the rest of the fixed frame
- * budget on a deeper funnel queue: 4 x 8 = the same 32 frame slots as the
- * old 8 x 4, but handle 0 now absorbs an 8-frame burst (data + reply +
- * completion + a few peer retransmits) before it must NAK at receipt. */
-#define AUN_RX_BLOCKS         4u
+ * per-block queue, not the block count. Two blocks cover every user (handle 0
+ * in the field/ROM, handle 1 in the host test suite); each rx block is large
+ * (AUN_RX_QUEUE x AUN_MAX_DATA ~= 64 KB), so 2 rather than 4 reclaims ~131 KB.
+ * The funnel depth lives in AUN_RX_QUEUE: handle 0 absorbs an 8-frame burst
+ * (data + reply + completion + a few peer retransmits) before it NAKs. */
+#define AUN_RX_BLOCKS         2u
 #define AUN_RX_QUEUE          8u   /* frames buffered per rx block      */
 /* Outbound retransmit. The AUN spec (RISC OS PRM, "AUN") describes a
  * background Net module that, on SILENCE, waits up to 5 s and retransmits
@@ -99,6 +99,12 @@
  * be NAKed and nIRQ bit &40 would stay asserted. aun_poll() reaps a stale held
  * immediate after this bound and NAKs the originator so it fails fast. */
 #define AUN_HIMM_TIMEOUT_MS   1000u
+
+/* How long the last-answered-immediate cache (and a reap NAK-marker) stays
+ * valid for replay. Bounds the window during which a lost IMM_REPLY can be
+ * re-answered from cache; after it, a peer that reboots and reuses the seq
+ * gets a fresh execution, not a stale replay. */
+#define AUN_HIMM_CACHE_MS     2000u
 
 /* park-and-retry: a DATA frame the host rejected (no RXCB armed yet) is
  * held out of the rx queue and re-presented a few times, so a reply that
@@ -134,7 +140,6 @@ typedef struct {
 typedef struct {
    uint32_t len;
    uint8_t  src_stn, src_net, port, ctrl;
-   bool     needs_verdict;     /* DATA frame: ACK/NAK owed at collect */
    uint32_t seq;               /* wire seq, for park-and-retry identity */
    uint32_t src_ip_be;
    uint16_t src_port;
@@ -194,6 +199,8 @@ typedef struct {
    uint16_t port;
    uint32_t len;
    uint32_t due_ms;            /* reap deadline if the host never replies */
+   uint32_t gen;               /* bumped each fresh hold; identifies the slot */
+   uint32_t polled_gen;        /* gen the host last took via IMM_POLL         */
    uint8_t  data[AUN_HIMM_MAX];
 } aun_host_imm_t;
 
@@ -204,11 +211,13 @@ typedef struct {
  * (ip,port,seq); a matching retransmit is re-answered from here instead. */
 typedef struct {
    bool     valid;
+   bool     is_nak;            /* true: replay a NAK (reaped), not an IMM_REPLY */
    uint8_t  ctrl;
    uint32_t seq;
    uint32_t ip_be;
    uint16_t port;
    uint32_t len;
+   uint32_t due_ms;            /* replay only while now < due_ms (expiry)       */
    uint8_t  data[AUN_HIMM_MAX];
 } aun_himm_cache_t;
 
@@ -362,7 +371,7 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
 void aun_poll(aun_engine_t *e);
 
 /* Configure the loopback test responder (see header comment in
- * aun_aun.c). enable=false turns it off. */
+ * aun.c). enable=false turns it off. */
 void aun_test_responder(aun_engine_t *e, bool enable,
                         uint8_t stn, uint8_t net);
 
