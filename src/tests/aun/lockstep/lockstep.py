@@ -755,6 +755,23 @@ cpu.call(SYM['eco_rx_pump'])
 check(bytes(cpu.mem[0x5300:0x5306]) == b'SLOT2!', 'frame delivered to the 2nd workspace slot')
 check(cpu.mem[0x520c] == 0x80, 'slot 1 completed; slot 0 and &00C0 CB skipped')
 check(cpu.mem[txcb] == 0x7f and cpu.mem[0x5200] == 0x7f, 'mismatching CBs untouched')
+
+print('== 12b: empty &00C0 reply-CB falls through to the workspace list (F9) ==')
+# With bit7 (&00C0 list) AND bit6 (workspace list) both active but the &00C0
+# reply CB empty, the old scanner dropped the frame at the empty &00C0 entry
+# instead of trying the workspace slots - so a frame a workspace slot would
+# take was lost. Now an empty &00C0 list falls through to the workspace list.
+cpu.mem[0x0d61] = 0xc0                            # &00C0 (bit7) + workspace (bit6) active
+cpu.mem[0x9f]  = 0x52                             # workspace page &5200
+cpu.mem[0xc0]  = 0x00                             # &00C0 reply CB EMPTY
+for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x53, 0xff, 0xff, 0x40, 0x53, 0xff, 0xff]):
+    cpu.mem[0x5200+off] = v                       # ws slot 0: port &90 -> buf &5300
+for i in range(6): cpu.mem[0x5300+i] = 0
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x9b00, b'WSONLY').hex()))
+cpu.call(SYM['eco_rx_pump'])
+check(bytes(cpu.mem[0x5300:0x5306]) == b'WSONLY',
+      'empty &00C0 CB: frame delivered to the workspace slot, not dropped (F9)')
+check(cpu.mem[0x5200] == 0x80, 'workspace slot CB completed')
 cpu.mem[0x0d61] = 0x80
 
 reset()
