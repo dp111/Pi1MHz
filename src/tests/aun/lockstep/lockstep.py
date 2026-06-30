@@ -531,6 +531,40 @@ check(state['acked'], 'IMMEDIATE datagram emitted and answered')
 check(cpu.mem[txcb] == 0x00, 'TXCB result success')
 check(bytes(cpu.mem[0x3200:0x3204]) == b'\xaa\xbb\xcc\xdd', 'peek reply landed in TXCB buffer')
 
+print('== 7b: outbound immediate reply to a Tube buffer (confirms F4) ==')
+# Same machine peek as test 7, but the reply buffer is flagged as PARASITE:
+# the extended-address bytes +6/+7 are &0000, not the &FFFF host sentinel the
+# data-tx path uses. eti_reply does NOT honour that Tube target the way the
+# data-tx (etb_data) and rx (eco_rx_pump) paths do - it always copies the
+# reply into I/O-processor RAM via (open_port_buf),y - so a reply meant for a
+# second processor lands in host memory and never reaches the Tube via R3.
+# This pins the current (buggy) behaviour and proves it is reachable; when F4
+# is fixed, flip the assertion to: tube_out == reply AND host buffer untouched.
+cpu.mem[0x0d63] = 0x01                          # tube_present
+cpu.tube_out = bytearray()
+for off, v in enumerate([0x88, 0x00, 254, 1, 0x00, 0x32, 0x00, 0x00, 0x04, 0x32, 0x00, 0x00,
+                          0,0,0,0]):
+    cpu.mem[txcb+off] = v                       # reply buf &3200, +6/+7=&0000 -> parasite
+for i in range(4): cpu.mem[0x3200+i] = 0        # clear the host buffer
+state = {'acked': False}
+def wr_f4(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and not state['acked']:
+        for ip, port, data in list(udp_out):
+            if data[0] == 5 and not state['acked']:
+                hx('U %x %d %s' % (IP10, 32768,
+                    aun(6, 0, 0x08, int.from_bytes(data[4:8],'little'), b'\xaa\xbb\xcc\xdd').hex()))
+                state['acked'] = True
+udp_out.clear()
+CPU.wr = wr_f4
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check(state['acked'], 'Tube-buffer immediate emitted and answered')
+_reply = b'\xaa\xbb\xcc\xdd'
+check(bytes(cpu.mem[0x3200:0x3204]) == _reply and bytes(cpu.tube_out) != _reply,
+      'F4 CONFIRMED: reply mis-delivered to host RAM, not streamed to Tube R3')
+cpu.mem[0x0d63] = 0
+
 print('== 8: broadcast (dest station &FF) completes without handshake ==')
 for off, v in enumerate([0x80, 0x9c, 0xff, 0xff, 0x00, 0x30, 0xff, 0xff, 0x04, 0x30, 0xff, 0xff]):
     cpu.mem[txcb+off] = v

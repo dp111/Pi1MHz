@@ -493,12 +493,16 @@ Deferred, with rationale (low value / unconfirmed real-world occurrence / risk
 outweighs benefit on a working ROM):
 
 - **F4 — outbound immediate reply ignores a Tube reply buffer.** `eti_reply`
-  (and the rx `erp_match`) copy into host memory; if a Beeb with a second
-  processor issues an outbound immediate (e.g. a machine peek) whose reply
-  buffer is in the parasite, the reply lands in I/O-processor RAM. Real at the
-  code level but narrow (Tube + outbound immediate + parasite reply buffer) and
-  unconfirmed to occur in real ANFS use; the fix adds a Tube-streaming path to
-  two ROMs. Document; fix when the scenario is confirmed.
+  always copies the reply into host memory via `(open_port_buf),y`; if a Beeb
+  with a second processor issues an outbound immediate (e.g. a machine peek)
+  whose reply buffer is in the parasite (extended-address bytes != &FFFF), the
+  reply lands in I/O-processor RAM instead of streaming to the Tube via R3.
+  **Reproduced** by lockstep test 7b (both ROMs): the reply is shown landing in
+  host RAM with the Tube R3 stream empty. The bug is real and reachable; what
+  stays unconfirmed is whether real ANFS ever issues an outbound immediate with
+  a *parasite* reply buffer (narrow). The fix (mirror the data-tx/rx Tube branch
+  into `eti_reply`, both ROMs) is straightforward once that is confirmed - e.g.
+  via BeebEm with a Tube co-pro + AUN; flip test 7b green when done.
 - **T1 — slow-NAK foreground stall.** A peer that NAKs repeatedly just before
   each 1 s silence boundary can stretch the synchronous `.etb_poll` stall toward
   ~10 s (REJECT_RETRIES x ~1 s). A transaction-level reject cap would bound it;
