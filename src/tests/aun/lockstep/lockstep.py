@@ -531,15 +531,13 @@ check(state['acked'], 'IMMEDIATE datagram emitted and answered')
 check(cpu.mem[txcb] == 0x00, 'TXCB result success')
 check(bytes(cpu.mem[0x3200:0x3204]) == b'\xaa\xbb\xcc\xdd', 'peek reply landed in TXCB buffer')
 
-print('== 7b: outbound immediate reply to a Tube buffer (confirms F4) ==')
+print('== 7b: outbound immediate reply to a Tube buffer streams to R3 (F4) ==')
 # Same machine peek as test 7, but the reply buffer is flagged as PARASITE:
-# the extended-address bytes +6/+7 are &0000, not the &FFFF host sentinel the
-# data-tx path uses. eti_reply does NOT honour that Tube target the way the
-# data-tx (etb_data) and rx (eco_rx_pump) paths do - it always copies the
-# reply into I/O-processor RAM via (open_port_buf),y - so a reply meant for a
-# second processor lands in host memory and never reaches the Tube via R3.
-# This pins the current (buggy) behaviour and proves it is reachable; when F4
-# is fixed, flip the assertion to: tube_out == reply AND host buffer untouched.
+# the extended-address bytes +6/+7 are &0000, not the &FFFF host sentinel.
+# The original ANFS streamed an immediate reply to a Tube buffer (its rx and
+# immediate-data NMI paths were all Tube-aware); the AUN eti_reply dropped
+# that (F4). With the fix, eti_reply mirrors eco_rx_pump: a parasite-flagged
+# reply streams to Tube R3 and the host buffer is left untouched.
 cpu.mem[0x0d63] = 0x01                          # tube_present
 cpu.tube_out = bytearray()
 for off, v in enumerate([0x88, 0x00, 254, 1, 0x00, 0x32, 0x00, 0x00, 0x04, 0x32, 0x00, 0x00,
@@ -561,8 +559,8 @@ cpu.call(SYM['tx_begin'])
 CPU.wr = orig_wr
 check(state['acked'], 'Tube-buffer immediate emitted and answered')
 _reply = b'\xaa\xbb\xcc\xdd'
-check(bytes(cpu.mem[0x3200:0x3204]) == _reply and bytes(cpu.tube_out) != _reply,
-      'F4 CONFIRMED: reply mis-delivered to host RAM, not streamed to Tube R3')
+check(bytes(cpu.tube_out) == _reply and bytes(cpu.mem[0x3200:0x3204]) != _reply,
+      'F4 FIXED: reply streamed to Tube R3, host buffer untouched')
 cpu.mem[0x0d63] = 0
 
 print('== 8: broadcast (dest station &FF) completes without handshake ==')

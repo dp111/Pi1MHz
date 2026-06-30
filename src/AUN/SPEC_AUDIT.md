@@ -492,21 +492,27 @@ surfaced one HIGH and several MED/LOW items. Applied:
 Deferred, with rationale (low value / unconfirmed real-world occurrence / risk
 outweighs benefit on a working ROM):
 
-- **F4 — outbound immediate reply ignores a Tube reply buffer.** `eti_reply`
-  always copies the reply into host memory via `(open_port_buf),y`; if a Beeb
-  with a second processor issues an outbound immediate (e.g. a machine peek)
-  whose reply buffer is in the parasite (extended-address bytes != &FFFF), the
-  reply lands in I/O-processor RAM instead of streaming to the Tube via R3.
-  **Reproduced** by lockstep test 7b (both ROMs): the reply is shown landing in
-  host RAM with the Tube R3 stream empty. The bug is real and reachable; what
-  stays unconfirmed is whether real ANFS ever issues an outbound immediate with
-  a *parasite* reply buffer (narrow). The fix (mirror the data-tx/rx Tube branch
-  into `eti_reply`, both ROMs) is straightforward once that is confirmed - e.g.
-  via BeebEm with a Tube co-pro + AUN; flip test 7b green when done.
-- **T1 — slow-NAK foreground stall.** A peer that NAKs repeatedly just before
-  each 1 s silence boundary can stretch the synchronous `.etb_poll` stall toward
-  ~10 s (REJECT_RETRIES x ~1 s). A transaction-level reject cap would bound it;
-  low frequency, ROM work.
+- **F4 — outbound immediate reply ignored a Tube reply buffer — FIXED (it was
+  a regression).** The original ADLC-based ANFS was Tube-aware on *every* data
+  path: rx-complete (`rx_complete_update_rxcb`, &8382/&843a), data-tx (&883c),
+  and the immediate-op data NMI (`nmi_imm_data`, &8837) all stream to/from R3.
+  The Pi1MHz AUN reimplementation reproduced that for the data-tx (`etb_data`)
+  and rx (`eco_rx_pump`) paths but its `eti_reply` copied the immediate reply
+  host-only, so an outbound immediate (e.g. a machine peek) with a *parasite*
+  reply buffer lost its reply into I/O-processor RAM. `eti_reply` now mirrors
+  `erp_match`: parasite-flagged (+6/+7 != &FFFF) replies stream to Tube R3 via
+  `eco_tube_claim_tx`/`eco_tube_stream_out`, host replies copy as before. Both
+  ROMs; lockstep test 7b (flipped from confirming the bug to asserting the fix);
+  test 7 still covers the host path. Restores original ANFS behaviour.
+- **T1 — slow-NAK foreground stall — NOT a regression (left as-is).** The
+  original ANFS also did synchronous, bounded transmit retries that froze the
+  foreground (scout retransmit count x delay from the TXCB), so a stall during
+  retries is inherent to the ROM model, not new. The AUN reject path is likewise
+  bounded (REJECT_RETRIES); its ~10 s worst case needs an adversarial peer that
+  NAKs just before each 1 s silence boundary - real peers / the bridge NAK
+  promptly (reject path = ~100 ms). A transaction-level reject cap would still
+  bound the pathological case if ever wanted, but it is low-frequency ROM work
+  and not a behaviour the original lacked.
 - **T2 — Escape leaves the engine tx uncancelled.** `etb_escape` abandons the
   poll but there is no TX-cancel mailbox op, so the next transmit can read BUSY
   (-> &40) for up to ~1 s. Needs a new protocol op on both sides.
