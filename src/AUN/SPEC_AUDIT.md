@@ -459,3 +459,55 @@ then ACKed to &00 success. Confirms the design split — engine owns lost-ACK
 dedup + NAK retransmit; the NFS layer owns the Pi's send-side whole-transaction
 retry; the bridge owns its own send-side retransmit. 4.18 now 106 lockstep
 checks, 4.21 108.
+
+### 11. Post-fix code review (round 3) — fixes applied + items deferred
+
+A full algorithm review of the engine and BOTH ROMs (after the round-2 fixes)
+surfaced one HIGH and several MED/LOW items. Applied:
+
+- **HIGH — ms clock wrap-gap (FIXED).** `aun_now_ms` derived ms from the low
+  32 bits of the 1 MHz timer (`RPI_GetSystemTime`), which wraps every ~71.6 min,
+  so the ms value was a resetting ramp, not a clean mod-2^32 counter; a deadline
+  computed in the ~1 s before a wrap fell into an unreachable gap and the
+  wrap-safe compare never fired — hanging a transmit (the ROM's synchronous
+  TX_POLL spins, F7 never trips since the Pi keeps answering), defeating the M3
+  himm reap and wedging park-and-retry. Now derived from the full 64-bit timer
+  (`RPI_GetSystemTime64`). Guard test 31.
+- **MED — himm reap × L7 cache (FIXED).** A >1 s host immediate was reaped with
+  no cache seed → its retransmit re-executed; cache never expired → peer-reboot
+  seq reuse could replay stale; a late reply after a reap+refill mis-tagged a
+  newer immediate. Now: reap seeds a NAK-marker, cache carries `due_ms`
+  (AUN_HIMM_CACHE_MS), and an IMM_POLL/IMM_REPLY generation guard drops a stale
+  reply. Tests 32/33.
+- **F9 — empty &00C0 reply-CB dropped a workspace-list frame (FIXED, both ROMs).**
+  `erp_check_slot` now falls through to the workspace list on an empty &00C0
+  entry instead of dropping. Lockstep test 12b.
+- **Perf/cleanup (DONE):** dbg_prev compare/copy skipped without a trace hook;
+  `AUN_RX_BLOCKS 4->2` (-131 KB; the ROM uses only handle 0); machine-peek folded
+  into `send_imm_reply`; dead `needs_verdict` removed; doc drift fixed.
+- **4.18 svc5 X/Y (FIXED).** Pre-existing 4.18-only gap (4.21 was already safe):
+  the service-5 immediate path clobbered X (ROM slot)/Y; now bracketed NMOS-safe
+  around the sole clobberer (`eco_imm_handle`).
+
+Deferred, with rationale (low value / unconfirmed real-world occurrence / risk
+outweighs benefit on a working ROM):
+
+- **F4 — outbound immediate reply ignores a Tube reply buffer.** `eti_reply`
+  (and the rx `erp_match`) copy into host memory; if a Beeb with a second
+  processor issues an outbound immediate (e.g. a machine peek) whose reply
+  buffer is in the parasite, the reply lands in I/O-processor RAM. Real at the
+  code level but narrow (Tube + outbound immediate + parasite reply buffer) and
+  unconfirmed to occur in real ANFS use; the fix adds a Tube-streaming path to
+  two ROMs. Document; fix when the scenario is confirmed.
+- **T1 — slow-NAK foreground stall.** A peer that NAKs repeatedly just before
+  each 1 s silence boundary can stretch the synchronous `.etb_poll` stall toward
+  ~10 s (REJECT_RETRIES x ~1 s). A transaction-level reject cap would bound it;
+  low frequency, ROM work.
+- **T2 — Escape leaves the engine tx uncancelled.** `etb_escape` abandons the
+  poll but there is no TX-cancel mailbox op, so the next transmit can read BUSY
+  (-> &40) for up to ~1 s. Needs a new protocol op on both sides.
+- **E1 — TX completion polled via a full mailbox command.** A dedicated
+  TX-status FRED byte (mirroring &FCAB) would cut `.etb_poll` to a single read;
+  perf-only, and a wire-protocol change.
+- **R1 — single park slot.** A 2nd un-armed reply in a burst is dropped; fine for
+  the one-reply-in-flight load path.
