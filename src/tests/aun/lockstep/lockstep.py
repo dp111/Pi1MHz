@@ -696,6 +696,33 @@ check(cpu.mem[0x78] == 0x56 and cpu.mem[0x79] == 0x78, 'OSProc passed args X=lo,
 check([d for _, _, d in udp_out if d[0] == 6], 'OSProc immediate acknowledged')
 cpu.mem[_dod:_dod+7] = _save                    # restore the ROM entry point
 
+print('== 9c4: remote PEEK/POKE of the second processor go over the Tube (R1) ==')
+# A remote peek/poke whose target address selects the parasite (ext bytes
+# not the &FFxx host sentinel) must hit parasite memory over R3, as the
+# original ANFS did - not host RAM. Only reachable with a 2nd proc fitted.
+cpu.mem[0x0d68] = 0                              # *Unprot: ops enabled
+cpu.mem[0x0d63] = 0x01                           # tube_present
+# PEEK &00003000..&00003010: the 16 reply bytes must come from R3, not host.
+cpu.tube_in = bytes(range(0x40, 0x50)); cpu.tube_in_pos = 0
+cpu.mem[0x3000:0x3010] = b'\xee' * 16            # poison host memory (must be ignored)
+udp_out.clear()
+peek = bytes([0x00, 0x30, 0x00, 0x00, 0x10, 0x30])   # start &00003000, end &00003010
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x01, 0x7200, peek).hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+reps = [d for _, _, d in udp_out if d[0] == 6]
+check(reps and reps[0][8:8+16] == bytes(range(0x40, 0x50)),
+      'parasite PEEK reply came from Tube R3, not host memory (R1)')
+# POKE &00003200 + 6 bytes: the data must go to R3, host RAM untouched.
+cpu.tube_out = bytearray()
+cpu.mem[0x3200:0x3206] = b'\xee' * 6
+udp_out.clear()
+poke = bytes([0x00, 0x32, 0x00, 0x00]) + b'PARA!!'    # dest &00003200 + data
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x02, 0x7204, poke).hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(bytes(cpu.tube_out) == b'PARA!!', 'parasite POKE streamed data to Tube R3 (R1)')
+check(bytes(cpu.mem[0x3200:0x3206]) == b'\xee' * 6, 'parasite POKE left host memory untouched (R1)')
+cpu.mem[0x0d63] = 0                              # 2nd proc absent again for later groups
+
 print('== 9d: Tube receive - frame streamed to R3, not host memory ==')
 # CB buffer address with +6/+7 = &FE/&FF marks a Tube target
 cpu.mem[0x0d63] = 0x01                          # tube_present (set by adlc_init via OSBYTE &EA)
