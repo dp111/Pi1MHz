@@ -521,3 +521,39 @@ outweighs benefit on a working ROM):
   perf-only, and a wire-protocol change.
 - **R1 — single park slot.** A 2nd un-armed reply in a burst is dropped; fine for
   the one-reply-in-flight load path.
+
+### 12. Immediate-operation parity audit vs original ANFS (op-by-op)
+
+An op-by-op comparison of the eight Econet immediates (&81-&88), inbound and
+outbound, against the original ADLC ANFS (`anfs-4.18.asm`) found six places
+where the AUN port had silently dropped or narrowed behaviour the original had.
+All six are now restored in BOTH ROMs, each with a lockstep test:
+
+- **tx_op_type zero-init (FIXED).** `adlc_init` no longer left `&0D65` set; the
+  retained svc5 VIA-SR fallback reads it as a flag, so BREAK re-clears it.
+- **UserProc &84 / OSProc &85 dropped (FIXED, was a silent no-op).** Neither op
+  had a dispatch case; both fell through to an empty IMM_REPLY. Restored:
+  &84 -> OSEVENT 8, &85 -> `dir_op_dispatch`, both deferred like remote JSR.
+  Lockstep 9c3.
+- **`*Prot`/`*Unprot` per-op mask not enforced (FIXED).** `eco_imm_handle` now
+  gates ops &81-&86 on `prot_status` (&0D68) exactly as the original
+  `.immediate_op` did; a protected op is refused with an empty reply, never
+  executed. Lockstep 9c2.
+- **Inbound PEEK/POKE of the second processor served host-only (FIXED).** A
+  remote peek/poke whose target address selects the parasite now streams over
+  Tube R3 (mirroring `eti_reply`/`rx_pump`), not host RAM. Lockstep 9c4.
+- **Outbound POKE/PROC payload hard-wired to 4 bytes (FIXED).** `etb_imm` now
+  appends the local buffer as the data block for ops &82-&85 and sets the AUN
+  command's tx length to 4 + data; a peer's inbound POKE no longer writes 0
+  bytes. Lockstep 7c.
+- **Inbound JSR/Proc parameter block discarded (FIXED).** `eih_defer_op` now
+  copies the immediate payload past the 2-byte target into the port buffer
+  (`net_rx_ptr`), where the original `rx_imm_exec` delivered it, so the called
+  routine finds its arguments. Lockstep 9c5.
+
+Not regressions (verified equivalent or inherent): HALT/CONTINUE freeze-until-
+CONTINUE, MACHINEPEEK (Pi-side constant id), the one-immediate-in-flight
+invariant. The Tube peek/poke and JSR-param paths mirror the original convention but, like F4,
+only their R3 byte-stream shape is exercised in the emulator - confirm on real
+second-processor hardware. Lockstep totals after this pass: 4.18 128 / 4.21 130
+checks.
