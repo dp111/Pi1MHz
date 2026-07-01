@@ -650,6 +650,25 @@ hx('L')
 cpu.call(SYM['svc5_irq_check'])
 check(cpu.mem[0x72] == 1, 'remote JSR executed the target routine')
 
+print('== 9c2: *Prot-ed inbound immediate is refused (R3) ==')
+# prot_status (&0D68) bit n disables op &81+n, exactly as the original
+# .immediate_op gate did. bit2 => JSR (&83) disabled: a remote JSR must not run.
+cpu.mem[0x0d68] = 0x04                           # *Prot JSR
+for i, b in enumerate([0xe6, 0x73, 0x60]): cpu.mem[0x2100+i] = b   # stub: inc &73
+cpu.mem[0x73] = 0
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x03, 0x6100, bytes([0x00,0x21])).hex()))
+hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.mem[0x73] == 0, 'protected JSR refused: target NOT executed (R3)')
+check([d for _,_,d in udp_out if d[0] == 6], 'refused immediate still gets an (empty) reply')
+cpu.mem[0x0d68] = 0                              # *Unprot
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x03, 0x6104, bytes([0x00,0x21])).hex()))
+hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.mem[0x73] == 1, 'unprotected JSR runs again')
+
 print('== 9d: Tube receive - frame streamed to R3, not host memory ==')
 # CB buffer address with +6/+7 = &FE/&FF marks a Tube target
 cpu.mem[0x0d63] = 0x01                          # tube_present (set by adlc_init via OSBYTE &EA)
