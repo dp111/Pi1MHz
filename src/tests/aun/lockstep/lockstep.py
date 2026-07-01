@@ -752,6 +752,26 @@ check(bytes(cpu.tube_out) == b'PARA!!', 'parasite POKE streamed data to Tube R3 
 check(bytes(cpu.mem[0x3200:0x3206]) == b'\xee' * 6, 'parasite POKE left host memory untouched (R1)')
 cpu.mem[0x0d63] = 0                              # 2nd proc absent again for later groups
 
+print('== 9c5: remote JSR delivers its parameter block to the port buffer (R5) ==')
+# The original rx_imm_exec received the JSR/Proc parameter data into the port
+# buffer (net_rx_ptr) before jumping; the AUN port read only the 2-byte target
+# and discarded the params. R5 copies the payload past the target to
+# (net_rx_ptr) so the called routine finds them there.
+cpu.mem[0x0d68] = 0                              # *Unprot
+cpu.mem[0x009c] = 0x00; cpu.mem[0x009d] = 0x2a  # net_rx_ptr -> &2A00 port buffer
+cpu.mem[0x2a00:0x2a04] = b'\x00\x00\x00\x00'
+# JSR stub at &2200: ldy #0 / lda (net_rx_ptr),y / sta &76 / inc &75 / rts
+for i, b in enumerate([0xa0, 0x00, 0xb1, 0x9c, 0x85, 0x76, 0xe6, 0x75, 0x60]):
+    cpu.mem[0x2200+i] = b
+cpu.mem[0x75] = cpu.mem[0x76] = 0
+udp_out.clear()
+jsrp = bytes([0x00, 0x22]) + b'PRM'             # target &2200 + 3 param bytes
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x03, 0x7300, jsrp).hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.mem[0x75] == 1, 'remote JSR with params executed')
+check(cpu.mem[0x76] == ord('P'), 'JSR routine read its params from net_rx_ptr (R5)')
+check(bytes(cpu.mem[0x2a00:0x2a03]) == b'PRM', 'full param block landed in the port buffer (R5)')
+
 print('== 9d: Tube receive - frame streamed to R3, not host memory ==')
 # CB buffer address with +6/+7 = &FE/&FF marks a Tube target
 cpu.mem[0x0d63] = 0x01                          # tube_present (set by adlc_init via OSBYTE &EA)
