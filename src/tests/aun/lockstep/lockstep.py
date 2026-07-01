@@ -669,6 +669,33 @@ hx('L')
 cpu.call(SYM['svc5_irq_check'])
 check(cpu.mem[0x73] == 1, 'unprotected JSR runs again')
 
+print('== 9c3: remote UserProc (op 4) and OSProc (op 5) via svc5 (R2) ==')
+# The original ANFS ran two more immediates the Pi build had dropped:
+#   op 4 UserProc -> OSEVENT 8, op 5 OSProc -> dir_op_dispatch. Both defer
+# their execution to foreground (after the reply), exactly like remote JSR.
+cpu.mem[0x0d68] = 0                              # *Unprot: ops enabled
+# op 4: UserProc -> oseven (&FFBF). Stub records A(=args hi)/X(=args lo)/Y(=8).
+for i, b in enumerate([0x85, 0x74, 0x86, 0x75, 0x84, 0x76, 0x60]): cpu.mem[0xffbf+i] = b
+cpu.mem[0x74] = cpu.mem[0x75] = cpu.mem[0x76] = 0
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x04, 0x7000, bytes([0x34, 0x12])).hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.mem[0x76] == 8, 'UserProc raised OSEVENT with event number 8 (R2)')
+check(cpu.mem[0x75] == 0x34 and cpu.mem[0x74] == 0x12, 'UserProc passed args X=lo, A=hi')
+check([d for _, _, d in udp_out if d[0] == 6], 'UserProc immediate acknowledged')
+# op 5: OSProc -> dir_op_dispatch. Stub records X(=args lo)/Y(=args hi).
+_dod = SYM['dir_op_dispatch']
+_save = bytes(cpu.mem[_dod:_dod+7])
+for i, b in enumerate([0x86, 0x78, 0x84, 0x79, 0xe6, 0x77, 0x60]): cpu.mem[_dod+i] = b
+cpu.mem[0x77] = cpu.mem[0x78] = cpu.mem[0x79] = 0
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x05, 0x7004, bytes([0x56, 0x78])).hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.mem[0x77] == 1, 'OSProc invoked dir_op_dispatch (R2)')
+check(cpu.mem[0x78] == 0x56 and cpu.mem[0x79] == 0x78, 'OSProc passed args X=lo, Y=hi')
+check([d for _, _, d in udp_out if d[0] == 6], 'OSProc immediate acknowledged')
+cpu.mem[_dod:_dod+7] = _save                    # restore the ROM entry point
+
 print('== 9d: Tube receive - frame streamed to R3, not host memory ==')
 # CB buffer address with +6/+7 = &FE/&FF marks a Tube target
 cpu.mem[0x0d63] = 0x01                          # tube_present (set by adlc_init via OSBYTE &EA)
