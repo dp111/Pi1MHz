@@ -563,6 +563,35 @@ check(bytes(cpu.tube_out) == _reply and bytes(cpu.mem[0x3200:0x3204]) != _reply,
       'F4 FIXED: reply streamed to Tube R3, host buffer untouched')
 cpu.mem[0x0d63] = 0
 
+print('== 7c: outbound POKE carries its data block, not just 4 args (R4) ==')
+# The original streamed the local buffer as the poke data; the AUN port sent
+# only the 4 argument bytes, so a peer's inbound POKE wrote 0 bytes. With R4
+# the payload is [4 dest bytes][buffer data] and tx length = 4 + data length.
+cpu.mem[0x0d63] = 0                              # no 2nd proc: data from host RAM
+cpu.mem[0x3300:0x3306] = b'POKED!'              # local data to send
+# TXCB: ctrl &82 POKE, port 0, dest 254.1, buffer &3300..&3306 (6 data bytes),
+# args (+12..15) = remote dest &FFFF4000
+for off, v in enumerate([0x82, 0x00, 254, 1, 0x00, 0x33, 0xff, 0xff, 0x06, 0x33, 0xff, 0xff,
+                          0x00, 0x40, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v
+state = {'acked': False}
+def wr_poke(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and not state['acked']:
+        for ip, port, data in list(udp_out):
+            if data[0] == 5 and not state['acked']:
+                check(data[2] == 0x02, 'imm ctrl &82 -> wire &02')
+                check(data[8:] == bytes([0x00, 0x40, 0xff, 0xff]) + b'POKED!',
+                      'outbound POKE payload = 4 dest bytes + the data block (R4)')
+                hx('U %x %d %s' % (IP10, 32768,
+                    aun(6, 0, 0x02, int.from_bytes(data[4:8], 'little'), b'').hex()))
+                state['acked'] = True
+udp_out.clear()
+CPU.wr = wr_poke
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check(state['acked'], 'POKE immediate emitted and answered')
+
 print('== 8: broadcast (dest station &FF) completes without handshake ==')
 for off, v in enumerate([0x80, 0x9c, 0xff, 0xff, 0x00, 0x30, 0xff, 0xff, 0x04, 0x30, 0xff, 0xff]):
     cpu.mem[txcb+off] = v
