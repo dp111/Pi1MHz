@@ -7,9 +7,9 @@ import os, subprocess, sys
 
 # Paths default to files alongside this script; override with env vars.
 #   ECO_ROM     - the patched ANFS ROM image (anfs-4.18-pi1mhz-fixed.rom)
-#   ECO_SYMS    - symbol file: basm.py <patched.asm> /dev/null symbols,
-#                 filtered to eco_ensure_init/eco_rx_pump/tx_begin/
-#                 svc5_irq_check (see README)
+#   ECO_SYMS    - "name hexaddr" lines for the engine entry points the
+#                 tests call (svc5_irq_check, eco_rx_pump, tx_begin, the
+#                 eih_*/erp_* labels, ...); see README
 #   ECO_HARNESS - the compiled harness binary
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROM_PATH = os.environ.get('ECO_ROM', os.path.join(HERE, 'anfs-4.18-pi1mhz.rom'))
@@ -603,14 +603,10 @@ check(any(ip == 0xff01a8c0 for ip,_ in bc), 'subnet broadcast address 192.168.1.
 check(cpu.mem[txcb] == 0x00, 'broadcast result success')
 
 # ---------------------------------------------------------------------------
-# Tests 1-8 above (init, tx ACK/NAK, the rx ack-on-receipt path, machine
-# peek, broadcast) are validated. Tests 9+ (IRQ pump, immediates, Tube,
-# page-crossing copies, service gate) share ONE engine instance with no
-# per-test reset, and park-and-retry runs off the harness wall-clock - so a
-# frame left parked by an earlier test (e.g. 5b's oversize-for-CB frame)
-# leaks into a later test. Re-enabling them needs a per-test engine reset and
-# a controllable park clock in the harness. Until then, stop here so the
-# suite reflects exactly what is validated rather than reporting false fails.
+# Tests 9+ (IRQ pump, immediates, Tube, page-crossing copies, service gate)
+# share ONE engine instance with tests 1-8. Each test sets up its own control
+# block and frames, and the pump drains any frame an earlier test parked, so
+# the shared state does not leak false fails - keep new tests self-contained.
 print('== 9: IRQ-driven reception via service call 5 ==')
 for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
     cpu.mem[txcb+off] = v                      # open receive CB, port &90
@@ -830,7 +826,7 @@ check(cpu.a == 5, 'A=5 returned: interrupt passed to the next ROM')
 
 reset()
 print('== 11: page-crossing copy loops (>=256 bytes everywhere) ==')
-# 11a: 1KB transmit through etb_page
+# 11a: 1KB transmit through esb_page (etb_mem -> eco_stage_buf)
 big_tx = bytes((i*7) & 0xff for i in range(1024))
 cpu.mem[0x4000:0x4400] = big_tx
 for off, v in enumerate([0x80, 0x99, 254, 1, 0x00, 0x40, 0xff, 0xff, 0x00, 0x44, 0xff, 0xff]):
@@ -881,7 +877,7 @@ CPU.wr = orig_wr
 check(cpu.mem[txcb] == 0x00, '600-byte Tube tx success')
 cpu.mem[0x0d63] = 0
 
-# 11c: 600-byte remote PEEK and POKE (eih_pk_page / eih_po_page)
+# 11c: 600-byte remote PEEK and POKE (esb_page / eub_page)
 for i in range(600): cpu.mem[0x4800+i] = (i*11) & 0xff
 args = bytes([0x00,0x48,0xff,0xff, 0x58,0x4a,0xff,0xff])   # &4800-&4A58
 udp_out.clear()
