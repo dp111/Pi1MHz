@@ -765,7 +765,10 @@ for i, b in enumerate([0xa0, 0x00, 0xb1, 0x9c, 0x85, 0x76, 0xe6, 0x75, 0x60]):
     cpu.mem[0x2200+i] = b
 cpu.mem[0x75] = cpu.mem[0x76] = 0
 udp_out.clear()
-jsrp = bytes([0x00, 0x22]) + b'PRM'             # target &2200 + 3 param bytes
+# wire layout is [4-byte addr/arg field][param block]: target in the low two
+# bytes, two address-extension bytes, then params at offset 4 (as the original
+# ANFS delivered them and as our own etb_imm emits an outbound JSR).
+jsrp = bytes([0x00, 0x22, 0x00, 0x00]) + b'PRM'   # target &2200, ext, then params
 hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x03, 0x7300, jsrp).hex())); hx('L')
 cpu.call(SYM['svc5_irq_check'])
 check(cpu.mem[0x75] == 1, 'remote JSR with params executed')
