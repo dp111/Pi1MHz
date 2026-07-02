@@ -815,6 +815,45 @@ check(cpu.mem[0x75] == 1, 'round-tripped JSR executed the target')
 check(bytes(cpu.mem[0x2a00:0x2a03]) == b'RTP',
       'round-tripped param block arrived intact at the port buffer')
 
+print('== 9c7: PEEK immediate round-trips (8-byte [start][end] descriptor, R6) ==')
+# The original calc_peek_poke_size emitted [remote start][remote end] with
+# end = start + local reply-buffer count; the AUN port had dropped the end,
+# sending 4 bytes only, so a peer never learned how many bytes to return.
+# Capture the ROM's own outbound PEEK and replay it inbound: the inbound
+# handler must read exactly `count` bytes, proving the descriptor is whole.
+cpu.mem[0x0d63] = 0                              # no 2nd proc: host memory
+# outbound TXCB: ctrl &81 PEEK, port 0, dest 254.1, reply buffer &3500..&3510
+# (count = 16), args (+12..15) = remote start &FFFF5000 (ext FFFF = host)
+for off, v in enumerate([0x81, 0x00, 254, 1, 0x00, 0x35, 0xff, 0xff, 0x10, 0x35, 0xff, 0xff,
+                          0x00, 0x50, 0xff, 0xff]):
+    cpu.mem[txcb+off] = v
+cap = {}
+def wr_pk(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and 'd' not in cap:
+        for ip, port, data in list(udp_out):
+            if data[0] == 5:
+                check(data[2] == 0x01, 'imm ctrl &81 -> wire &01')
+                check(data[8:] == bytes([0x00,0x50,0xff,0xff, 0x10,0x50,0xff,0xff]),
+                      'outbound PEEK descriptor = [start][start+count], 8 bytes (R6)')
+                cap['d'] = data[8:]
+                hx('U %x %d %s' % (IP10, 32768,
+                    aun(6, 0, 0x01, int.from_bytes(data[4:8],'little'), b'\x11'*16).hex()))
+                break
+udp_out.clear()
+CPU.wr = wr_pk
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check('d' in cap, 'outbound PEEK immediate emitted and answered')
+# replay the captured descriptor inbound; the inbound PEEK must read 16 bytes
+cpu.mem[0x5000:0x5010] = bytes(range(0x60, 0x70))
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x01, 0x5600, cap['d']).hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+reps = [d for _, _, d in udp_out if d[0] == 6]
+check(reps and reps[0][8:8+16] == bytes(range(0x60, 0x70)),
+      'round-tripped PEEK read exactly `count` bytes from [start,end) (R6)')
+
 print('== 9d: Tube receive - frame streamed to R3, not host memory ==')
 # CB buffer address with +6/+7 = &FE/&FF marks a Tube target
 cpu.mem[0x0d63] = 0x01                          # tube_present (set by adlc_init via OSBYTE &EA)
