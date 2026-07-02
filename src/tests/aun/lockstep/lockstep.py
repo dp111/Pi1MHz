@@ -771,6 +771,50 @@ check(cpu.mem[0x75] == 1, 'remote JSR with params executed')
 check(cpu.mem[0x76] == ord('P'), 'JSR routine read its params from net_rx_ptr (R5)')
 check(bytes(cpu.mem[0x2a00:0x2a03]) == b'PRM', 'full param block landed in the port buffer (R5)')
 
+print('== 9c6: JSR immediate round-trips (etb_imm out == eih_defer_op in) ==')
+# Strongest self-consistency check: capture the ROM's OWN outbound JSR
+# datagram, then feed it straight back in as an inbound JSR. If the outbound
+# encoder (etb_imm, R4) and inbound decoder (eih_defer_op, R5) disagree by so
+# much as one byte, the params land wrong and the stub reads garbage.
+cpu.mem[0x0d68] = 0                              # *Unprot
+cpu.mem[0x0d63] = 0                              # no 2nd proc: params from host RAM
+cpu.mem[0x009c] = 0x00; cpu.mem[0x009d] = 0x2a  # net_rx_ptr -> &2A00 port buffer
+cpu.mem[0x2a00:0x2a04] = b'\x00\x00\x00\x00'
+cpu.mem[0x75] = cpu.mem[0x76] = 0
+for i, b in enumerate([0xa0, 0x00, 0xb1, 0x9c, 0x85, 0x76, 0xe6, 0x75, 0x60]):
+    cpu.mem[0x2200+i] = b                        # same JSR stub as 9c5, at &2200
+cpu.mem[0x3400:0x3403] = b'RTP'                 # local param block to transmit
+# TXCB: ctrl &83 JSR, port 0, dest 254.1, param buffer &3400..&3403 (3 bytes),
+# args (+12..15) = remote target &0000_2200 (the stub, ext bytes 0)
+for off, v in enumerate([0x83, 0x00, 254, 1, 0x00, 0x34, 0xff, 0xff, 0x03, 0x34, 0xff, 0xff,
+                          0x00, 0x22, 0x00, 0x00]):
+    cpu.mem[txcb+off] = v
+captured = {}
+def wr_rt(self, a, v):
+    orig_wr(self, a, v)
+    if (a & 0xffff) == 0xfcaa and 'payload' not in captured:
+        for ip, port, data in list(udp_out):
+            if data[0] == 5:
+                check(data[2] == 0x03, 'imm ctrl &83 -> wire &03')
+                check(data[8:] == bytes([0x00, 0x22, 0x00, 0x00]) + b'RTP',
+                      'outbound JSR payload = 4 addr bytes + param block')
+                captured['payload'] = data[8:]
+                hx('U %x %d %s' % (IP10, 32768,
+                    aun(6, 0, 0x03, int.from_bytes(data[4:8], 'little'), b'').hex()))
+                break
+udp_out.clear()
+CPU.wr = wr_rt
+cpu.call(SYM['tx_begin'])
+CPU.wr = orig_wr
+check('payload' in captured, 'outbound JSR immediate emitted and answered')
+# now replay the very bytes the ROM sent as an INBOUND JSR immediate
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x03, 0x7400, captured['payload']).hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.mem[0x75] == 1, 'round-tripped JSR executed the target')
+check(bytes(cpu.mem[0x2a00:0x2a03]) == b'RTP',
+      'round-tripped param block arrived intact at the port buffer')
+
 print('== 9d: Tube receive - frame streamed to R3, not host memory ==')
 # CB buffer address with +6/+7 = &FE/&FF marks a Tube target
 cpu.mem[0x0d63] = 0x01                          # tube_present (set by adlc_init via OSBYTE &EA)

@@ -527,10 +527,15 @@ outweighs benefit on a working ROM):
 An op-by-op comparison of the eight Econet immediates (&81-&88), inbound and
 outbound, against the original ADLC ANFS (`anfs-4.18.asm`) found six places
 where the AUN port had silently dropped or narrowed behaviour the original had.
-All six are now restored in BOTH ROMs, each with a lockstep test:
+All six are restored. Five carry a dedicated lockstep case in both ROMs; the
+tx_op_type item is an init-ordering restoration exercised indirectly by the
+svc5 tests (see its note):
 
-- **tx_op_type zero-init (FIXED).** `adlc_init` no longer left `&0D65` set; the
-  retained svc5 VIA-SR fallback reads it as a flag, so BREAK re-clears it.
+- **tx_op_type zero-init (FIXED, 4.18 path).** On 4.18 the svc5 VIA-SR fallback
+  reads `&0D65` as its dispatch flag, so `adlc_init` must re-clear it on BREAK;
+  the patch restores that clear. 4.21 has no VIA-SR fallback — it zeroes `&0D65`
+  inline in the svc5 handler (`stz tx_op_type`), so the init clear is moot there.
+  No dedicated test; covered indirectly by the svc5 dispatch tests (9, 10).
 - **UserProc &84 / OSProc &85 dropped (FIXED, was a silent no-op).** Neither op
   had a dispatch case; both fell through to an empty IMM_REPLY. Restored:
   &84 -> OSEVENT 8, &85 -> `dir_op_dispatch`, both deferred like remote JSR.
@@ -546,14 +551,32 @@ All six are now restored in BOTH ROMs, each with a lockstep test:
   appends the local buffer as the data block for ops &82-&85 and sets the AUN
   command's tx length to 4 + data; a peer's inbound POKE no longer writes 0
   bytes. Lockstep 7c.
-- **Inbound JSR/Proc parameter block discarded (FIXED).** `eih_defer_op` now
-  copies the immediate payload past the 2-byte target into the port buffer
-  (`net_rx_ptr`), where the original `rx_imm_exec` delivered it, so the called
-  routine finds its arguments. Lockstep 9c5.
+- **Inbound JSR/Proc parameter block discarded (FIXED).** The wire field is a
+  4-byte address (2-byte target + 2 ignored extension bytes) followed by the
+  parameter block. `eih_defer_op` now skips the whole 4-byte field and copies
+  the params from offset 4 into the port buffer (`net_rx_ptr`), where the
+  original `rx_imm_exec` delivered them, so the called routine finds its
+  arguments. Lockstep 9c5, and the 9c6 round-trip below.
+
+**Self-consistency proof (9c6).** The outbound encoder (`etb_imm`) and the
+inbound decoder (`eih_defer_op`) are the two halves of the JSR/Proc parameter
+path. Test 9c6 captures the ROM's own outbound JSR datagram and replays those
+exact bytes back in as an inbound JSR: the params reach the target routine
+intact, so the two halves agree byte-for-byte (not just each against the spec).
+
+**Scope — host-local, not bridge-interoperable.** This parity is between the
+Pi1MHz ROM and its own AUN engine (the local ROM<->engine path). Over a real
+AUN network the PRM only guarantees MachinePeek as an IP immediate; a live
+bridge/BeebEm carries Poke/JSR/UserProc/OSProc as AUN **type 2 (Data)**, not
+type 5, so the type-5 host-immediate path does not catch a peer's — see the
+known limitation in §10.6. The restored behaviour therefore matches the
+original ANFS semantics locally; it does not make these ops interoperable
+across a bridge.
 
 Not regressions (verified equivalent or inherent): HALT/CONTINUE freeze-until-
 CONTINUE, MACHINEPEEK (Pi-side constant id), the one-immediate-in-flight
-invariant. The Tube peek/poke and JSR-param paths mirror the original convention but, like F4,
-only their R3 byte-stream shape is exercised in the emulator - confirm on real
-second-processor hardware. Lockstep totals after this pass: 4.18 128 / 4.21 130
+invariant. Caveat on the Tube legs only: the parasite PEEK/POKE path (9c4),
+like F4, exercises only the R3 byte-stream shape in the emulator — confirm on
+real second-processor hardware. The JSR/Proc parameter path (9c5/9c6) is fully
+verified in the emulator. Lockstep totals after this pass: 4.18 133 / 4.21 135
 checks.
