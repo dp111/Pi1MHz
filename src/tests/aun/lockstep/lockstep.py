@@ -64,6 +64,7 @@ class CPU:
         self.jim_addr = 0
         self.tube_in = b''; self.tube_in_pos = 0
         self.tube_out = bytearray(); self.tube_r4 = bytearray()
+        self.tube_claim_addr = None     # 4-byte address of the last Tube claim
         self.fred_aa = 0
         self.instructions = 0
         self.master_hits = 0   # model-B: count of ACCCON/INTOFF (&FE34/&FE38) accesses
@@ -135,6 +136,10 @@ class CPU:
         # lockstep image, which skips ROM relocation): claim succeeds
         # (C=1), release is a no-op. This isolates the econet Tube code.
         if self.pc == 0x0406:           # tube_addr_data_dispatch
+            # entry: A=claim type, (Y:X) points at the 4-byte transfer address.
+            # Capture it so tests can check WHICH parasite address was claimed.
+            p = ((self.y << 8) | self.x) & 0xffff
+            self.tube_claim_addr = bytes(self.mem[p:p+4])
             self.c = True
             lo = self.pop(); hi = self.pop(); self.pc = ((hi<<8)|lo)+1; return
         if self.pc == 0x0414:           # tube_release_claim
@@ -853,6 +858,32 @@ cpu.call(SYM['svc5_irq_check'])
 reps = [d for _, _, d in udp_out if d[0] == 6]
 check(reps and reps[0][8:8+16] == bytes(range(0x60, 0x70)),
       'round-tripped PEEK read exactly `count` bytes from [start,end) (R6)')
+
+print('== 9c8: inbound parasite PEEK/POKE claim the immediate target address (R7) ==')
+# The Tube claim must use the immediate's own peek/poke address, NOT the stale
+# outbound TXCB the last transmit left behind. Poison TXCB+4..7 so a claim that
+# wrongly reads it is caught, then check the claimed 4-byte address.
+cpu.mem[0x0d63] = 0x01                            # 2nd proc fitted
+cpu.mem[txcb+4:txcb+8] = bytes([0xDE,0xAD,0xBE,0xEF])
+cpu.tube_in = bytes(range(0x40,0x50)); cpu.tube_in_pos = 0
+cpu.tube_claim_addr = None
+# PEEK &00003456..&00003466 (ext 00,00 selects the parasite), count 16
+peek = bytes([0x56,0x34,0x00,0x00, 0x66,0x34])
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x01, 0x7700, peek).hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.tube_claim_addr == bytes([0x56,0x34,0x00,0x00]),
+      'parasite PEEK claimed target &00003456, not the stale TXCB (R7)')
+# POKE &00003800 + data (ext 00,00 selects the parasite)
+cpu.tube_out = bytearray(); cpu.tube_claim_addr = None
+cpu.mem[txcb+4:txcb+8] = bytes([0xDE,0xAD,0xBE,0xEF])
+poke = bytes([0x00,0x38,0x00,0x00]) + b'HW!'
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x02, 0x7704, poke).hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.tube_claim_addr == bytes([0x00,0x38,0x00,0x00]),
+      'parasite POKE claimed target &00003800, not the stale TXCB (R7)')
+cpu.mem[0x0d63] = 0
 
 print('== 9d: Tube receive - frame streamed to R3, not host memory ==')
 # CB buffer address with +6/+7 = &FE/&FF marks a Tube target

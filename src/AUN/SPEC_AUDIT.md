@@ -525,11 +525,12 @@ outweighs benefit on a working ROM):
 ### 12. Immediate-operation parity audit vs original ANFS (op-by-op)
 
 An op-by-op comparison of the eight Econet immediates (&81-&88), inbound and
-outbound, against the original ADLC ANFS (`anfs-4.18.asm`) found six places
-where the AUN port had silently dropped or narrowed behaviour the original had.
-All six are restored. Five carry a dedicated lockstep case in both ROMs; the
-tx_op_type item is an init-ordering restoration exercised indirectly by the
-svc5 tests (see its note):
+outbound, against the original ADLC ANFS (`anfs-4.18.asm`) found eight places
+where the AUN port had silently dropped or narrowed behaviour the original had
+(six in the first pass, two more — R6/R7 — in the follow-up sweep). All eight
+are restored. All but the tx_op_type item carry a dedicated lockstep case in
+both ROMs; tx_op_type is an init-ordering restoration exercised indirectly by
+the svc5 tests (see its note):
 
 - **tx_op_type zero-init (FIXED, 4.18 path).** On 4.18 the svc5 VIA-SR fallback
   reads `&0D65` as its dispatch flag, so `adlc_init` must re-clear it on BREAK;
@@ -557,12 +558,26 @@ svc5 tests (see its note):
   the params from offset 4 into the port buffer (`net_rx_ptr`), where the
   original `rx_imm_exec` delivered them, so the called routine finds its
   arguments. Lockstep 9c5, and the 9c6 round-trip below.
+- **R6 — Outbound PEEK descriptor truncated to 4 bytes (FIXED).** The original
+  `tx_imm_op_setup`/`calc_peek_poke_size` (&85B8) sends PEEK as an 8-byte
+  `[start][end]` descriptor, `end = start + local reply-buffer count`. The AUN
+  port emitted only the 4 start bytes, so a peer never learned how many bytes to
+  return. `etb_imm` now jsr's `eti_peek_end` to append `end = start + eco_len`
+  (the helper lives in the adlc_init init-region slack). Lockstep 9c7 round-trip.
+- **R7 — Inbound parasite PEEK/POKE claimed the wrong Tube address (FIXED).**
+  `eih_peek`/`eih_poke` stashed the immediate's target at `open_port_buf` +
+  `eco_imm_args`, then called `eco_tube_claim_tx`, which claims the *outbound*
+  TXCB+4 — so on a real second processor a remote peek/poke streamed R3 against
+  whatever address the last transmit left there (wrong memory / corruption). The
+  two ext bytes now go to `&A6/A7` so `&A4..A7` form the contiguous target, and a
+  new `eco_tube_claim_imm` claims that. Lockstep 9c8 checks the claimed address.
 
-**Self-consistency proof (9c6).** The outbound encoder (`etb_imm`) and the
-inbound decoder (`eih_defer_op`) are the two halves of the JSR/Proc parameter
-path. Test 9c6 captures the ROM's own outbound JSR datagram and replays those
-exact bytes back in as an inbound JSR: the params reach the target routine
-intact, so the two halves agree byte-for-byte (not just each against the spec).
+**Self-consistency proofs (9c6/9c7).** The outbound encoder (`etb_imm`) and the
+inbound decoder (`eih_defer_op`/`eih_peek`) are the two halves of the parameter
+and descriptor paths. Tests 9c6 (JSR) and 9c7 (PEEK) capture the ROM's own
+outbound datagram and replay those exact bytes back in as an inbound immediate:
+the params/length arrive intact, so the two halves agree byte-for-byte (not just
+each against the spec).
 
 **Scope — host-local, not bridge-interoperable.** This parity is between the
 Pi1MHz ROM and its own AUN engine (the local ROM<->engine path). Over a real
@@ -575,8 +590,24 @@ across a bridge.
 
 Not regressions (verified equivalent or inherent): HALT/CONTINUE freeze-until-
 CONTINUE, MACHINEPEEK (Pi-side constant id), the one-immediate-in-flight
-invariant. Caveat on the Tube legs only: the parasite PEEK/POKE path (9c4),
-like F4, exercises only the R3 byte-stream shape in the emulator — confirm on
-real second-processor hardware. The JSR/Proc parameter path (9c5/9c6) is fully
-verified in the emulator. Lockstep totals after this pass: 4.18 133 / 4.21 135
-checks.
+invariant. Caveat on the Tube legs only: the parasite PEEK/POKE *data stream*
+(9c4), like F4, exercises only the R3 byte-stream shape in the emulator —
+confirm on real second-processor hardware (the *claimed address* is now checked
+by 9c8). The JSR/Proc parameter path (9c5/9c6) and the PEEK descriptor (9c7) are
+fully verified in the emulator. Lockstep totals after this pass: 4.18 139 /
+4.21 141 checks.
+
+Follow-up sweep — other candidates weighed and not fixed as ROM regressions:
+- **Protected inbound immediate replies empty vs original silence.** The
+  original `immediate_op` leaves a `prot_status`-blocked scout un-ACKed (remote
+  times out to Not-Listening); `eco_imm_handle` sends an empty IMM_REPLY, so a
+  peer sees "success, no effect". `eco_imm_handle` has no refuse/NAK primitive
+  for a held immediate, so a true fix needs an engine-level refuse verdict — left
+  as a documented behavioural narrowing, not a data bug.
+- **Remote HALT masks other IRQs (LOW/cosmetic).** The Pi spins in
+  `eco_svc5_claim` with I=1 until CONTINUE; the machine is frozen either way (as
+  HALT intends), but timers/other IRQs are additionally starved. Not worth the
+  churn.
+- **Outbound ctrl &80, port 0 (LOW/obscure).** Original → bad-ctrl error; the Pi
+  sends it as a normal data frame. The valid immediate range &81-&88 matches
+  exactly; only this one invalid-ctrl edge differs.
