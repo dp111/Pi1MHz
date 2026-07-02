@@ -297,7 +297,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 						pictureNumber = (uint32_t) ((uint32_t)(pictureNumber * 10) + ((uint32_t)(scsiFcodeBuffer[byteCounter] - '0')));
 					}
 				}
-				if (byteCounter == 0 || byteCounter >=7) break;
+				if (byteCounter == 0 || byteCounter >= 8) break;
 
 				scsiFcodeBuffer[byteCounter] = 0;
 				FCdebugStringInt32_P(PSTR(""), pictureNumber, false);

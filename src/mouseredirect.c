@@ -4,14 +4,12 @@ Mouse re-director
 
 Takes the Beeb mouse coordinates and displays a mouse pointer on the screen
 
-Takes 5 bytes of RAM
+Takes 4 bytes of RAM
 
 0 - X low
 1 - X high
 2 - Y low
-3 - Y high
-4 - pointer type 0 1 2 3
-  - 255 - off
+3 - bits 0-3 Y high, bits 4-7 pointer type 0 1 2 3 (>=4 - off)
 
 */
 
@@ -270,7 +268,7 @@ void mouse_redirect_move_mouse(void)
 
     change = false;
     mouse_x = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 0)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 1))<<8)));
-    mouse_y = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 2)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))<<8)));
+    mouse_y = (int32_t)((Pi1MHz_MemoryRead((uint32_t)(fred_address + 2)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))<<8)) & 0x0FFF);
     mouse_pointer = Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))>>4;
     LOG_DEBUG("Mouse x %"PRIi32" y %"PRIi32" Pointer %u Last pointer %u\r\n", mouse_x, mouse_y, mouse_pointer, lastmouse_pointer);
 

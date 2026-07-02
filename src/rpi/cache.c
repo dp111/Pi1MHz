@@ -128,7 +128,8 @@ void _clean_cache_area(const void * start, unsigned int length)
    } while ( startptr  < endptr);
    _data_memory_barrier();
 #else
-   __asm volatile("mcrr p15,0,%0,%1,c14"::"r" (((uint32_t)start)+length), "r" (start));
+   // MCRR range ops are inclusive of the line containing the end address
+   __asm volatile("mcrr p15,0,%0,%1,c14"::"r" (((uint32_t)start)+length-1), "r" (start));
    _data_memory_barrier();
 #endif
 }
@@ -152,7 +153,9 @@ void _invalidate_cache_area(const void * start, unsigned int length)
       startptr = startptr + cachelinesize;
    } while ( startptr  < endptr);
 #else
-   __asm volatile("mcrr p15,0,%0,%1,c6"::"r" ((uint32_t)start+length), "r" (start));
+   // MCRR range ops are inclusive of the line containing the end address;
+   // passing start+length would discard the line after the buffer
+   __asm volatile("mcrr p15,0,%0,%1,c6"::"r" ((uint32_t)start+length-1), "r" (start));
 #endif
    _data_memory_barrier();
 }

@@ -2224,6 +2224,9 @@ static uint8_t scsiBeebScsiFatPath(void)
       return SCSI_BUSFREE;
    }
 
+   // Ensure the host-supplied path string is terminated
+   Buffer[255] = 0;
+
    // Change the filesystem's FAT transfer directory
    filesystemSetFatDirectory(Buffer);
 
@@ -2256,7 +2259,7 @@ static uint8_t scsiBeebScsiFatPath(void)
 static uint8_t scsiBeebScsiFatInfo(void)
 {
    uint32_t fatFileId = 0;
-   uint8_t Buffer[256];
+   uint8_t Buffer[256] = {0}; // zeroed so unused bytes don't leak stack contents to the host
 
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: BSFATINFO command (G6 0x13) received\r\n"));

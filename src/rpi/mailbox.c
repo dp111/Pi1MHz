@@ -148,9 +148,9 @@ unsigned int RPI_PropertyProcess( bool wait )
        result = RPI_Mailbox0Read( MB0_TAGS_ARM_TO_VC );
     } while ((uint32_t) result != ((uint32_t) pt) >> 4);
 
-#if defined(RPI4)
+    // pt[] is in ordinary cacheable RAM: the prefetcher can refill its lines
+    // while we spin waiting for the VC response, so always discard them
     _invalidate_cache_area(pt, pt[0]);
-#endif
 
 #if( PRINT_PROP_DEBUG == 1 )
     for ( int i = 0; i < (pt[PT_OSIZE] >> 2); i++ )

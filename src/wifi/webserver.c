@@ -671,12 +671,10 @@ static void ws_store_u32(uint8_t *p, uint32_t v)
 }
 
 /* Format a uint64_t as a decimal string into out[0..sz-1] (NUL
-   terminated).  The project builds with -std=c90 + -Wlong-long, so
-   printf("%llu", ...) and "unsigned long long" both warn; this helper
-   keeps the long-long traffic strictly internal to uint64_t (which the
-   compiler already accepts as an extension) and hands the caller a
-   printable %s.  A uint64_t is at most 20 decimal digits, so a 21+ byte
-   buffer is always enough; sz of 24 is the recommended call size. */
+   terminated).  The bare-metal printf here has no %llu support, so
+   format the digits by hand and hand the caller a printable %s.
+   A uint64_t is at most 20 decimal digits, so a 21+ byte buffer is
+   always enough; sz of 24 is the recommended call size. */
 static void ws_format_u64(char *out, size_t sz, uint64_t v)
 {
    char tmp[24];
@@ -2525,7 +2523,7 @@ static bool upload_feed_data(ws_conn_t *c, const uint8_t *data, size_t len)
 
    while (len > 0u && c->up_state == UP_DATA) {
       uint8_t work[WS_UPLOAD_WORK];
-      size_t  maxslice = WS_UPLOAD_WORK - hold;
+      size_t  maxslice = WS_UPLOAD_WORK - c->up_tail_len;
       size_t  slice = (len < maxslice) ? len : maxslice;
       size_t  work_len;
       int     found;
@@ -2572,8 +2570,11 @@ static bool upload_feed_data(ws_conn_t *c, const uint8_t *data, size_t len)
                return false;
             if (c->up_state != UP_DATA)
                return true;
+            /* peek[] may include bytes taken from the caller buffer that
+               were never copied into work[], so stash it explicitly. */
             c->up_tail_len = delim + peek_have;
-            memmove(c->up_tail, work + found, c->up_tail_len);
+            memmove(c->up_tail, work + found, delim);
+            memcpy(c->up_tail + delim, peek, peek_have);
             return true;
          }
          if (peek[0] != '-' || peek[1] != '-') {
@@ -2910,8 +2911,7 @@ static void dav_emit_response(ws_strbuf_t *b, const char *url_path,
          behaviour as before.
 
          The values are uint64_t (a 32 GB card needs > 32 bits) but the
-         project builds with -std=c90 + -Wlong-long, so %llu and the
-         "unsigned long long" cast both warn.  Format the digits by
+         bare-metal printf has no %llu support.  Format the digits by
          hand into a 24-byte buffer and emit via %s. */
       char     dec_free[24];
       char     dec_used[24];

@@ -1480,6 +1480,8 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
     }
 
     if (!fs_make_path(parent_path, g_write_state.name, g_write_state.path, sizeof(g_write_state.path))) {
+      g_write_state.path[0] = '\0'; // truncated path - must never reach f_unlink
+      fs_release_write_state();
       return MTP_RESP_GENERAL_ERROR;
     }
 

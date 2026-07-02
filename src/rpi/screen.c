@@ -49,7 +49,7 @@ YUV plane = 768*8 + 768/2* 8
 // #define SCREEN_DEBUG
 
 #define MAX_PLANES 4
-#define PLOYPHASE_BASE (0xf00>>2)
+#define POLYPHASE_BASE (0xf00>>2)
 #define PALETTE_BASE (0x1000)
 
 // 48K words of plane memory
@@ -99,7 +99,7 @@ typedef struct {
 } hdmi_t;
 
 static hvs_t* const RPI_hvs = (hvs_t*) (PERIPHERAL_BASE + 0x400000);
-static uint32_t* context_memory = (uint32_t*) (PERIPHERAL_BASE+ 0x402000);
+static volatile uint32_t* context_memory = (volatile uint32_t*) (PERIPHERAL_BASE+ 0x402000);
 
 static hdmi_t* const RPI_hdmi = (hdmi_t*) (PERIPHERAL_BASE + 0x902000);
 
@@ -375,17 +375,17 @@ void screen_release_buffer(uint32_t handle) {
  * @brief Sets up the polyphase filter coefficients.
  */
 static void setup_polyphase(void) {
-    context_memory[PLOYPHASE_BASE + 0] = 0x7ebfc00;
-    context_memory[PLOYPHASE_BASE + 1] = 0x7e3edf8;
-    context_memory[PLOYPHASE_BASE + 2] = 0x4805fd;
-    context_memory[PLOYPHASE_BASE + 3] = 0x1dca432;
-    context_memory[PLOYPHASE_BASE + 4] = 0x355769b;
-    context_memory[PLOYPHASE_BASE + 5] = 0x1c6e3;
-    context_memory[PLOYPHASE_BASE + 6] = 0x355769b;
-    context_memory[PLOYPHASE_BASE + 7] = 0x1dca432;
-    context_memory[PLOYPHASE_BASE + 8] = 0x4805fd;
-    context_memory[PLOYPHASE_BASE + 9] = 0x7e3edf8;
-    context_memory[PLOYPHASE_BASE + 10] = 0x7ebfc00;
+    context_memory[POLYPHASE_BASE + 0] = 0x7ebfc00;
+    context_memory[POLYPHASE_BASE + 1] = 0x7e3edf8;
+    context_memory[POLYPHASE_BASE + 2] = 0x4805fd;
+    context_memory[POLYPHASE_BASE + 3] = 0x1dca432;
+    context_memory[POLYPHASE_BASE + 4] = 0x355769b;
+    context_memory[POLYPHASE_BASE + 5] = 0x1c6e3;
+    context_memory[POLYPHASE_BASE + 6] = 0x355769b;
+    context_memory[POLYPHASE_BASE + 7] = 0x1dca432;
+    context_memory[POLYPHASE_BASE + 8] = 0x4805fd;
+    context_memory[POLYPHASE_BASE + 9] = 0x7e3edf8;
+    context_memory[POLYPHASE_BASE + 10] = 0x7ebfc00;
 }
 
 #define MAX_PLANES_SIZE 0x80
@@ -397,9 +397,9 @@ static void setup_polyphase(void) {
  * @param planeno Plane number to get.
  * @return uint32_t* Pointer to the next available plane.
  */
-static uint32_t* screen_get_nextplane(uint32_t planeno) {
-    static uint32_t* plane;
-    uint32_t* returnplane;
+static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
+    static volatile uint32_t* plane;
+    volatile uint32_t* returnplane;
 
     RPI_hvs->list1 = PLANE_BASE;
     context_memory[0] = 0x80000000; // set end of list bit and clear valid bit for other display lists
@@ -656,7 +656,7 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
 // returns plane pointer
 void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
-    uint32_t * plane =  screen_get_nextplane( planeno);
+    volatile uint32_t * plane =  screen_get_nextplane( planeno);
     LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
     buffer |= 0xC0000000;
         uint32_t scaled_width;
@@ -672,7 +672,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         LOG_DEBUG("nsh %"PRId32"\r\n", nsh);
         LOG_DEBUG("nh %"PRId32"\r\n", nh);
 #endif
-        YUV_plane_t* yuv = (YUV_plane_t*) plane;
+        volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) plane;
         yuv->ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0xA; // invalid list, 32 words, YCrcb format , YUV
         yuv->pos = startpos;
         yuv->scale = (nsh << 16) + scaled_width;
@@ -698,10 +698,10 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         yuv->hpf1 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
         yuv->vpf1 = vc4_ppf(nh, nsh, startpos >>12, 0 );;
         //yuv->vpf1_ctx = 0;
-        yuv->pfkph0 = PLOYPHASE_BASE;
-        yuv->pfkpv0 = PLOYPHASE_BASE;
-        yuv->pfkph1 = PLOYPHASE_BASE;
-        yuv->pfkpv1 = PLOYPHASE_BASE;
+        yuv->pfkph0 = POLYPHASE_BASE;
+        yuv->pfkpv0 = POLYPHASE_BASE;
+        yuv->pfkph1 = POLYPHASE_BASE;
+        yuv->pfkpv1 = POLYPHASE_BASE;
 #if 0
         LOG_DEBUG("ctrl %"PRIx32"\r\n", yuv->ctrl);
         LOG_DEBUG("pos %"PRIx32"\r\n", yuv->pos);
@@ -743,7 +743,7 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
 // returns plane pointer
 void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height, float par , uint32_t scale_height, uint32_t colour_depth, uint32_t buffer )
 {
-    uint32_t * plane = screen_get_nextplane( planeno);
+    volatile uint32_t * plane = screen_get_nextplane( planeno);
         uint32_t scaled_width;
         uint32_t scaled_height;
         uint32_t startpos;
@@ -753,7 +753,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         buffer |= 0x80000000; // if we use &C then there is an error on the screen
         if (colour_depth == 3)
         {
-            rgb_8bit_t* rgb = (rgb_8bit_t*) plane;
+            volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) plane;
             rgb->ctrl = 0x00000000 + (0x20<<24) + (3<<11) + 0xD; // invalid list, 32 words, 8 bit RGB
             rgb->pos = startpos + 0xFF000000;
             rgb->scale = (scaled_height << 16) + scaled_width;
@@ -767,8 +767,8 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             rgb->hpf0 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
             rgb->vpf0 = vc4_ppf(height, scaled_height, startpos >>12, 0 );
             //rgb->vpf0_ctx = 0;
-            rgb->pfkph0 = PLOYPHASE_BASE;
-            rgb->pfkpv0 = PLOYPHASE_BASE;
+            rgb->pfkph0 = POLYPHASE_BASE;
+            rgb->pfkpv0 = POLYPHASE_BASE;
 
 #ifdef SCREEN_DEBUG
             LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
@@ -794,7 +794,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         }
         else
         {
-            rgb_t* rgb = (rgb_t*) plane;
+            volatile rgb_t* rgb = (volatile rgb_t*) plane;
             if (colour_depth == 4)
             {
                 rgb->ctrl = 0x00000000 + (0x20<<24) + (2<<13) + 0x4; // invalid list, 32 words, RGB format, 16 bit RGB
@@ -815,8 +815,8 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             rgb->hpf0 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
             rgb->vpf0 = vc4_ppf(height, scaled_height, startpos >>12, 0 );
             //rgb->vpf0_ctx = 0;
-            rgb->pfkph0 = PLOYPHASE_BASE;
-            rgb->pfkpv0 = PLOYPHASE_BASE;
+            rgb->pfkph0 = POLYPHASE_BASE;
+            rgb->pfkpv0 = POLYPHASE_BASE;
         }
 
 

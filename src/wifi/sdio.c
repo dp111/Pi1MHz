@@ -1685,7 +1685,7 @@ firmware_download:
          0x0fffcu, 0x10000u, 0x20000u, 0x30000u
       };
       const size_t verify_count = sizeof(verify_offsets) / sizeof(verify_offsets[0]);
-      uint32_t last_offset = (g_cyw43_firmware_length - 4u) & ~3u;
+      uint32_t last_offset = (g_cyw43_firmware_length >= 4u) ? ((g_cyw43_firmware_length - 4u) & ~3u) : 0u;
       size_t v;
 
       for (v = 0u; v <= verify_count; ++v) {
@@ -2921,6 +2921,14 @@ static void sdio_prepare_tx_control_template(sdio_probe_result_t *probe_result,
    sequence = sdio_next_tx_probe_sequence();
    payload_length = sdio_tx_probe_payload_length(command);
 
+   /* An oversized payload would make sdio_prepare_tx_control_payload()
+      refuse to fill the buffer below, but the length fields written here
+      would still be sent - leave the template unusable instead. */
+   if (payload_length > SDIO_TX_CONTROL_PAYLOAD_MAX) {
+      probe_result->tx_control_template_ready = false;
+      return;
+   }
+
    probe_result->tx_control_template_frame_size = (uint16_t)(SDPCM_CONTROL_EVENT_HEADER_LENGTH
       + CDC_HEADER_LENGTH + payload_length);
    probe_result->tx_control_template_frame_size_complement = (uint16_t)~probe_result->tx_control_template_frame_size;
@@ -3375,8 +3383,8 @@ static uint8_t sdio_drain_fn2_responses(sdio_host_t *dev)
    for (i = 0u; i < SDIO_RUNTIME_MAX_RX_FRAMES_PER_POLL; ++i) {
       /* _Alignas(4): filled by a 32-bit EMMC PIO read.
          The SDPCM hardware header is two little-endian uint16_ts on
-         the wire; this project targets ARMv7/ARMv8 Pi cores which
-         are all little-endian, so reading them as native uint16_t
+         the wire; this project targets little-endian ARM Pi cores
+         (ARM1176 and Cortex-A), so reading them as native uint16_t
          and comparing hwtag[0] ^ hwtag[1] == 0xFFFF works directly.
          If the codebase is ever ported to a big-endian host, decode
          the bytes via sdio_load_u16_le() helpers instead. */

@@ -355,8 +355,8 @@ static void music5000_store_sample(int sl, int sr, uint32_t *left, uint32_t *rig
    if (clip && autorange) {
       M5000_left_error = 0 ;
       M5000_right_error = 0 ;
-      gain /= 2;
-      LOG_DEBUG("Music 5000 clipped, reducing gain by 3dB (divisor now %i)\r\n", gain);
+      if (gain > 1) gain /= 2;
+      LOG_DEBUG("Music 5000 clipped, halving gain (multiplier now %i)\r\n", gain);
    }
 }
 

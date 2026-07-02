@@ -404,6 +404,10 @@ static void set_text_area(const t_clip_window_t *window) {
 static void invert_cursor(int x_pos, int y_pos, int start, int end) {
    int x = x_pos * font_width;
    int y = screen->height - y_pos * font_height - 1;
+   // CRTC cursor start/end registers can hold values beyond the character cell
+   if (end >= font_height) {
+      end = font_height - 1;
+   }
    for (int i = start; i <= end; i++) {
       for (int j = 0; j < font_width; j++) {
          pixel_t col = screen->get_pixel(screen, x + j, y - i);

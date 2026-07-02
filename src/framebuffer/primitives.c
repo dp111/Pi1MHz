@@ -1155,10 +1155,10 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
       if (offscreen || get_pixel(screen, x, y) != bg_col) {
          error = 1;
       } else {
-         while (get_pixel(screen, x_right + 1, y) == bg_col && x_right + 1 < g_x_max) {
+         while (x_right < g_x_max && get_pixel(screen, x_right + 1, y) == bg_col) {
             x_right++;
          }
-         while (get_pixel(screen, x_left - 1, y) == bg_col && x_left - 1 > g_x_min) {
+         while (x_left > g_x_min && get_pixel(screen, x_left - 1, y) == bg_col) {
             x_left--;
          }
          draw_hline(screen, x_left, x_right, y, colour);
@@ -1172,7 +1172,7 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
       } else if (get_pixel(screen, x, y) == bg_col) {
          error = 2;
       } else {
-         while (get_pixel(screen, x_right + 1, y) != bg_col && x_right + 1 < g_x_max) {
+         while (x_right < g_x_max && get_pixel(screen, x_right + 1, y) != bg_col) {
             x_right++;
          }
          draw_hline(screen, x_left, x_right, y, colour);
@@ -1184,10 +1184,10 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
       if (offscreen || get_pixel(screen, x, y) == fg_col) {
          error = 1;
       } else {
-         while (get_pixel(screen, x_right + 1, y) != fg_col && x_right + 1 < g_x_max) {
+         while (x_right < g_x_max && get_pixel(screen, x_right + 1, y) != fg_col) {
             x_right++;
          }
-         while (get_pixel(screen, x_left - 1, y) != fg_col && x_left - 1 > g_x_min) {
+         while (x_left > g_x_min && get_pixel(screen, x_left - 1, y) != fg_col) {
             x_left--;
          }
          draw_hline(screen, x_left, x_right, y, colour);
@@ -1201,7 +1201,7 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
       } else if (get_pixel(screen, x, y) != fg_col) {
          error = 2;
       } else {
-         while (get_pixel(screen, x_right + 1, y) == fg_col && x_right + 1 < g_x_max) {
+         while (x_right < g_x_max && get_pixel(screen, x_right + 1, y) == fg_col) {
             x_right++;
          }
          draw_hline(screen, x_left, x_right, y, colour);
@@ -1297,7 +1297,7 @@ static void draw_h_line_with_sector_segment_filter(screen_mode_t *sr, int xc, in
 
    // copy clipping logic from draw_h_line() method, but add on xc,yc to the x and y coordinates:
    // (note, y coords are negative)
-   if (xc + x1 > g_x_max || xc + x2 < g_x_min || yc - y < g_y_min || yc - y >= g_y_max) {
+   if (xc + x1 > g_x_max || xc + x2 < g_x_min || yc - y < g_y_min || yc - y > g_y_max) {
       return;
    }
    if (xc + x1 < g_x_min) {

@@ -1479,7 +1479,7 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
       sd_issue_command(edev, SELECT_CARD, edev->card_rca << 16, 500000);
       if(FAIL(edev))
       {
-         printf("SD: ensure_data_mode() no response from CMD17\r\n");
+         printf("SD: ensure_data_mode() no response from CMD7 (SELECT_CARD)\r\n");
          edev->card_rca = 0;
          return -1;
       }

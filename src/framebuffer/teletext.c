@@ -464,7 +464,7 @@ static void tt_process_controls_after(int c, int col, int row) {
       tt.doubled = TRUE;
       break;
    case TT_RELEASE:
-      // Release (and start of line) are the only things that cleat the hold flag
+      // Release (and start of line) are the only things that clear the hold flag
       tt.held = FALSE;
       // Release also resets the held mosaic to back to space
       tt.held_char = TT_SPACE;
