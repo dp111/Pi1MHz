@@ -1125,7 +1125,14 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    // Move to the correct point in the DAT file
    // Check that the file seek was OK
 
-   if (f_lseek(&filesystemState.fileObject[lunNumber], startSector * 256) != FR_OK) {
+   // Reads past the end of a growing image must not extend it (a plain
+   // f_lseek on a write-mode file allocates clusters): clamp the seek to the
+   // file size and let the short read return zeros for the unwritten sectors
+   uint32_t seekPoint = startSector * 256;
+   if (seekPoint > f_size(&filesystemState.fileObject[lunNumber]))
+      seekPoint = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+
+   if (f_lseek(&filesystemState.fileObject[lunNumber], seekPoint) != FR_OK) {
       // Something went wrong with seeking, do not retry
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForRead(): ERROR: Unable to seek to required sector in LUN image file!\r\n"));
       return false;
@@ -1159,6 +1166,13 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
          return false;
       }
 
+      // A short read means the host is reading past the end of an image that
+      // has not been grown to full geometry yet - unwritten sectors read as
+      // zeros rather than whatever the buffer last held
+      if (fsCounter < sectorsToRead * 256) {
+         memset(sectorBuffer + fsCounter, 0, (sectorsToRead * 256) - fsCounter);
+      }
+
       sectorsInBuffer = (uint8_t)sectorsToRead;
       currentBufferSector = 0;
       sectorsRemaining = sectorsRemaining - sectorsInBuffer;
@@ -1182,6 +1196,36 @@ bool filesystemCloseLunForRead(uint8_t lunNumber)
 // Function to open a LUN ready for writing
 bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t requiredNumberOfSectors)
 {
+#if FF_USE_FASTSEEK
+   FIL *fp = &filesystemState.fileObject[lunNumber];
+
+   if (fp->cltbl != 0 && startSector * 256 > f_size(fp)) {
+      // Fast seek clips seeks at the current file size and cannot allocate
+      // clusters, so a write starting beyond the end of a growing image
+      // would land at the wrong offset. Extend the file with fast seek
+      // disabled, then rebuild the link map to cover the new clusters.
+      FRESULT fsResult;
+
+      fp->cltbl = 0;
+      fsResult = f_lseek(fp, startSector * 256);
+
+      filesystemState.clmt[lunNumber][0] = SZ_TBL;
+      fp->cltbl = filesystemState.clmt[lunNumber];
+      if (f_lseek(fp, CREATE_LINKMAP) != FR_OK) {
+         // Too fragmented for the map - fall back to slow seek (as at open)
+         fp->cltbl = 0;
+         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): LUN very fragmented falling back to slow seek\r\n"));
+      }
+
+      // A seek that stopped short of the target means the SD card filled up
+      // while the image was being extended
+      if (fsResult != FR_OK || f_tell(fp) != startSector * 256) {
+         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): ERROR: Unable to grow LUN image file!\r\n"));
+         return false;
+      }
+   }
+#endif
+
    // Move to the correct point in the DAT file
    // Check that the file seek was OK
    if (f_lseek(&filesystemState.fileObject[lunNumber], startSector * 256) != FR_OK) {
@@ -1218,8 +1262,33 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
       // Write the required data
       fsResult = f_write(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToWrite * 256, &fsCounter);
 
-      // Check that the file was written OK
-      if (fsResult != FR_OK) {
+#if FF_USE_FASTSEEK
+      if (fsResult == FR_OK && fsCounter != sectorsToWrite * 256 &&
+          filesystemState.fileObject[lunNumber].cltbl != 0) {
+         // In fast seek mode f_write cannot allocate new clusters, so a write
+         // that grows the image stops at the end of the mapped cluster chain
+         // and reports a short transfer. Grow the file with fast seek
+         // disabled, then rebuild the link map to cover the new clusters.
+         FIL *fp = &filesystemState.fileObject[lunNumber];
+         UINT fsExtended = 0;
+
+         fp->cltbl = 0;
+         fsResult = f_write(fp, sectorBuffer + fsCounter, (sectorsToWrite * 256) - fsCounter, &fsExtended);
+         fsCounter += fsExtended;
+
+         filesystemState.clmt[lunNumber][0] = SZ_TBL;
+         fp->cltbl = filesystemState.clmt[lunNumber];
+         if (f_lseek(fp, CREATE_LINKMAP) != FR_OK) {
+            // Too fragmented for the map - fall back to slow seek (as at open)
+            fp->cltbl = 0;
+            if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): LUN very fragmented falling back to slow seek\r\n"));
+         }
+      }
+#endif
+
+      // Check that the file was written OK and in full (a short transfer
+      // here means the SD card is full)
+      if (fsResult != FR_OK || fsCounter != sectorsToWrite * 256) {
          // Something went wrong
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): ERROR: Cannot write to LUN image!\r\n"));
          return false;
