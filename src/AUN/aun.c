@@ -139,11 +139,12 @@ void aun_init(aun_engine_t *e, const aun_transport_t *transport,
    e->next_seq  = 4;
    e->learn_net = 0xFF;            /* learn mode off */
    e->tx.state  = AUN_OK;          /* idle reads as complete */
-   /* default machine-peek reply: machine type &0001 (BBC B),
-    * NFS version 3.60 */
+   /* default machine-peek reply: machine type &0001 (BBC B), NFS version
+    * 3.60. The version bytes are read as hex digit pairs (the ecosystem
+    * convention, e.g. &0425 = "4.25"), so 3.60 is &60,&03, not &3C,&03. */
    e->machine_id[0] = 0x01;
    e->machine_id[1] = 0x00;
-   e->machine_id[2] = 0x3C;
+   e->machine_id[2] = 0x60;
    e->machine_id[3] = 0x03;
    e->initialised = true;
 }

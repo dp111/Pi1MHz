@@ -119,6 +119,7 @@ static void aun_diag_trace(void *user, uint32_t seq, uint8_t port,
 {
    (void)user;
    /* unused when LOG_DEBUG compiles out (release build) */
+   (void)seq; (void)port; (void)verdict; (void)same_as_prev;
    static const char *const vname[] __attribute__((unused)) =
       { "ack", "redup", "nak", "nosrc" };
    char hex[16 * 3 + 1];
@@ -280,6 +281,7 @@ static void aun_emulator_poll(void)
 
 void aun_emulator_init(uint8_t instance, uint8_t address)
 {
+   (void)address;              /* emulator-table signature; AUN has no FRED base */
    IRQ_NUM = instance;
    /* The AUN engine itself comes up on the Beeb's INIT command (the
     * network stack may not be ready yet at RST); the poll hook is
