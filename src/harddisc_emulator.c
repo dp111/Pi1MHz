@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include "Pi1MHz.h"
 #include "rpi/info.h"
+#include "rpi/systimer.h"
 #include "config.h"
 
 #include <stdbool.h>
@@ -271,11 +272,25 @@ uint8_t harddisc_emulator_get_address(void)
 //#include "debug.h"
 //#include "hostadapter.h"
 
-// Timeout counter (used when interrupts are not available to ensure
-// DMA read and writes do not hang the AVR waiting for host response
-// Note: This is an unsigned 32 bit integer and should therefore be
-// smaller than 4,294,967,295
-#define TOC_MAX 1000000000
+// Maximum time to wait for the host to ACK a REQ. A healthy Beeb ACKs
+// within microseconds; this bounds recovery from a wedged host so the
+// main poll loop (audio, wifi, USB, teletext) is never frozen for seconds.
+#define HD_ACK_TIMEOUT_US 100000u
+
+// Wait for ACK (or host reset). Returns false on timeout. The system
+// timer is only read every 256th spin to keep the normal path fast.
+static bool hd_wait_ack(void)
+{
+   uint32_t counter = 0;
+   uint32_t start = RPI_GetSystemTime();
+   while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
+   {
+      if (((++counter & 0xFFu) == 0u) &&
+          ((RPI_GetSystemTime() - start) >= HD_ACK_TIMEOUT_US))
+         return false;
+   }
+   return true;
+}
 
 // Databus manipulation functions -------------------------------------------------------
 
@@ -294,15 +309,7 @@ uint8_t hostadapterReadByte(void)
    hostadapterWriteRequestFlag(ACTIVE);
 
    // Wait for ACKnowledge
-   uint32_t timeoutCounter = 0; // Reset timeout counter
-
-   while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
-   {
-      if (++timeoutCounter == TOC_MAX)
-      {
-         break;
-      }
-   }
+   hd_wait_ack();
 
    hostadapterWriteRequestFlag(CLEAR);
 
@@ -319,16 +326,7 @@ void hostadapterWriteByte(uint8_t databusValue)
    hostadapterWriteRequestFlag(ACTIVE);
 
    // Wait for ACKnowledge
-   uint32_t timeoutCounter = 0; // Reset timeout counter
-
-   while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
-   {
-      if (++timeoutCounter == TOC_MAX)
-      {
-         break;
-      }
-   }
-
+   hd_wait_ack();
 
    // Clear the REQuest signal
    hostadapterWriteRequestFlag(CLEAR);
@@ -352,15 +350,8 @@ uint32_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
       hostadapterWriteRequestFlag(ACTIVE);
 
       // Wait for ACKnowledge
-      uint32_t timeoutCounter = 0; // Reset timeout counter
-
-      while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
-      {
-         if (++timeoutCounter == TOC_MAX)
-         {
-            return currentByte - 1;
-         }
-      }
+      if (!hd_wait_ack())
+         return currentByte - 1;
 
       // Clear the REQuest signal
       hostadapterWriteRequestFlag(CLEAR);
@@ -382,15 +373,8 @@ uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
       hostadapterWriteRequestFlag(ACTIVE);
 
       // Wait for ACKnowledge
-      uint32_t timeoutCounter = 0; // Reset timeout counter
-
-      while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
-      {
-         if (++timeoutCounter == TOC_MAX)
-         {
-            return currentByte;
-         }
-      }
+      if (!hd_wait_ack())
+         return currentByte;
 
       // Read the current byte from the databus and point to the next byte
       dataBuffer[currentByte++] = HD_DATA;
