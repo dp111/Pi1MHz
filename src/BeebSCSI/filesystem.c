@@ -451,7 +451,9 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
    if (lunNumber < 8 )
       snprintf(fileName, sizeof(fileName), "/BeebSCSI%d", lunDirectory);
    else
-      snprintf(fileName, sizeof(fileName), "/BeebVFS%d", lunDirectory & 7);
+      // VFS LUNs live under the VFS jukebox directory (this must match
+      // where filesystemCheckLunImage/CheckExtAttributes open the images)
+      snprintf(fileName, sizeof(fileName), "/BeebVFS%d", filesystemState.lunDirectoryVFS);
 
    fsResult = f_opendir(&dirObject, fileName);
 

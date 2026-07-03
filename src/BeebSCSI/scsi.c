@@ -1412,7 +1412,7 @@ static uint8_t scsiCommandModeSelect6(void)
       return SCSI_STATUS;
    }
 
-   uint8_t Buffer[length];
+   uint8_t Buffer[256]; // length is a uint8_t so 256 always suffices (avoids a VLA)
 
    // Make sure the target LUN is started
    if (!filesystemCheckLunImage(commandDataBlock.targetLUN)) {
@@ -1581,6 +1581,12 @@ static uint8_t scsiCommandModeSense6(void)
       return SCSI_STATUS;
    }
 
+   if (sizerequested == 0) {
+      // Allocation length of zero: transfer no data (not an error)
+      commandDataBlock.status = SCSI_STATUS_OK;
+      return SCSI_STATUS;
+   }
+
    // Set up the control signals ready for the data in phase
    scsiInformationTransferPhase(ITPHASE_DATAIN);
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Sending Page Mode data to host\r\n"));
@@ -1600,14 +1606,18 @@ static uint8_t scsiCommandModeSense6(void)
       if (debugFlag_scsiCommands)debugStringInt16_P(PSTR(" "), (uint16_t)(length - 1), false);
    }
 
-   // send header
-   for (int i = 1; i < headerlen; i++)
+   // send header, without exceeding the allocation length (the length
+   // byte above stands in for headerptr[0] and already used one byte)
+   int sendlen = headerlen - 1;
+   if (sendlen > length - 1)
+      sendlen = length - 1;
+   for (int i = 1; i <= sendlen; i++)
    {
       hostadapterWriteByte(headerptr[i]);
       if (debugFlag_scsiCommands)debugStringInt16_P(PSTR(" "), headerptr[i], false);
    }
 
-   length -= headerlen;
+   length -= sendlen + 1;
 
    if (length < LBAlen)
          LBAlen = length;
