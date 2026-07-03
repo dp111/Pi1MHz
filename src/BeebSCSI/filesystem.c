@@ -448,6 +448,7 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
    }
 
    // Does a directory exist for the currently selected LUN directory - if not, create it
+   // (VFS is a read-only filesystem: check its directory but never create it)
    if (lunNumber < 8 )
       snprintf(fileName, sizeof(fileName), "/BeebSCSI%d", lunDirectory);
    else
@@ -461,6 +462,8 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
    if (fsResult == FR_NO_PATH) {
 
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunDirectory(): f_opendir returned FR_NO_PATH - Directory does not exist\r\n"));
+      if (lunNumber >= 8)
+         return false;
       // Create the LUN image directory - it's not present on the SD card
       // Check the result
       if (f_mkdir(fileName) != FR_OK) {
