@@ -8,9 +8,10 @@
 #include "cache.h"
 #include "asm-helpers.h"
 
-/* Make sure the property tag buffer is aligned to a 16-byte boundary because
-   we only have 28-bits available in the property interface protocol to pass
-   the address of the buffer to the VC. */
+/* The property interface protocol needs at least 16-byte alignment (only
+   28 bits carry the buffer address), but the buffer is aligned to a full
+   cache line (64) so the invalidate after the VC's response can never
+   discard adjacent data sharing a line. */
 __attribute__((aligned(64))) NOINIT_SECTION static uint32_t pt[PROP_BUFFER_SIZE];
 
 static size_t pt_index;

@@ -17,8 +17,10 @@
  * THE SOFTWARE.
  */
 
-/* Provides an interface to the EMMC controller and commands for interacting
- * with an sd card */
+/* Provides an interface to the BCM283x SDHOST controller and commands for
+ * interacting with an sd card. (This driver was originally written around
+ * the Arasan EMMC controller; some identifiers and the HCSS section
+ * references describe the SD protocol flow, not this register set.) */
 
 /* References:
  *
@@ -56,6 +58,8 @@
 #ifdef DEBUG_SD
 #define EMMC_DEBUG
 #else
+// NOTE: every printf in this file (including all error reporting) compiles
+// away to nothing in release builds - there is no output channel anyway
 #define printf(...)
 #endif
 
@@ -236,7 +240,9 @@ static inline uint32_t byte_swap(uint32_t in)
 #define SDHCFG 0x38 /* Host configuration              -  2 R/W */
 #define SDHBCT 0x3c /* Host byte count (debug)         - 32 R/W */
 #define SDDATA 0x40 /* Data to/from SD card            - 32 R/W */
-#define SDHBLC 0x50 /* Host block count (SDIO/SDHC)    -  9 R/W */
+#define SDHBLC 0x50 /* Host block count (SDIO/SDHC)    -    R/W */
+                    /* (the "9-bit" width some register maps claim is wrong
+                       in practice: multi-hundred-block transfers work) */
 
 #define SDCMD_NEW_FLAG              0x8000
 #define SDCMD_FAIL_FLAG             0x4000

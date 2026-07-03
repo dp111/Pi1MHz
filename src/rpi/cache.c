@@ -107,7 +107,10 @@ void CleanDataCache (void)
 }
 #endif
 
-//
+// NOTE: despite the name, both paths below clean AND invalidate
+// (DCCIMVAC / MCRR c14). The mailbox property interface depends on the
+// invalidate side-effect to evict the request lines before the VC writes
+// the response - do not "optimise" this to a pure clean (DCCMVAC/c10).
 void _clean_cache_area(const void * start, unsigned int length)
 {
 #if (__ARM_ARCH >= 7 )
@@ -305,7 +308,10 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
     // shared device, never execute store ordered
      PageTable[base] = (base << 20) | 0x10C12;
   }
-  // now create and uncached copy of the memory
+  // now create an alias of the memory. Note it is NOT uncached: 0x0C0E is
+  // write-back cacheable without write-allocate, so writes through the
+  // alias miss the cache and go straight to memory, but reads can hit
+  // lines cached via the primary mapping
   end = base + VC_TOP;
   start = 0;
   for (; base <  end; base++)

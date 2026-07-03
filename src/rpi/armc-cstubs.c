@@ -53,6 +53,7 @@
  interfaces. You must include errno.h, then disable the macro, like this:
  */
 #include <errno.h>
+#include <string.h>
 #undef errno
 extern int errno;
 
@@ -179,6 +180,7 @@ caddr_t _sbrk(int incr)
 // cppcheck-suppress unusedFunction
 int stat(const char *file __attribute__((unused)), struct stat *st )
 {
+  memset(st, 0, sizeof(*st)); // don't leave the other fields uninitialised
   st->st_mode = S_IFCHR;
   return 0;
 }
@@ -188,6 +190,7 @@ int stat(const char *file __attribute__((unused)), struct stat *st )
 // cppcheck-suppress constParameterPointer
 clock_t times(struct tms *buf __attribute__((unused)))
 {
+  errno = ENOSYS;
   return (clock_t)-1;
 }
 

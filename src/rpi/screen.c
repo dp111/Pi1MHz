@@ -852,6 +852,9 @@ void screen_plane_enable( uint32_t planeno , bool enable )
 
     if (enable)
     {
+        // Deliberately inverted: our direct-HVS planes only own the display
+        // when HDMI is NOT connected (hotplug bit 0 clear) - with a monitor
+        // attached the firmware drives the display instead
         if (~(RPI_hdmi->hotplug)&1)
             rgb->ctrl |= (uint32_t)0x40000000;
     }

@@ -121,14 +121,16 @@
    MTP_OP_SEND_OBJECT_INFO, \
    MTP_OP_SEND_OBJECT, \
     MTP_OP_MOVE_OBJECT, \
-   MTP_OP_RESET_DEVICE, \
     MTP_OP_GET_OBJECT_PROPS_SUPPORTED, \
     MTP_OP_GET_OBJECT_PROP_VALUE, \
     MTP_OP_SET_OBJECT_PROP_VALUE, \
    MTP_OP_GET_DEVICE_PROP_DESC, \
-   MTP_OP_GET_DEVICE_PROP_VALUE, \
-   MTP_OP_SET_DEVICE_PROP_VALUE
+   MTP_OP_GET_DEVICE_PROP_VALUE
+// (RESET_DEVICE and SET_DEVICE_PROP_VALUE are not implemented in mtp_fs.c
+// so are deliberately not advertised)
 
+// mtp_fs.c never actually raises OBJECT_ADDED, but the list cannot be
+// empty (the driver builds an array from it)
 #define CFG_TUD_MTP_DEVICEINFO_SUPPORTED_EVENTS \
     MTP_EVENT_OBJECT_ADDED
 

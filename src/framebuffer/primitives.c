@@ -998,12 +998,12 @@ static int test_pixel_bg_ecf(screen_mode_t *screen, int x, int y) {
 #endif
 
 static int test_pixel_not_bg_col(screen_mode_t *screen, int x, int y) {
-   // No need to explicitly test for the marker as the test succeed fail on marked bits anyway
+   // No need to explicitly test for the marker as the test will fail on marked bits anyway
    return get_pixel(screen, x, y) != g_bg_col;
 }
 
 static int test_pixel_not_bg_ecf(screen_mode_t *screen, int x, int y) {
-   // No need to explicitly test for the marker as the test succeed fail on marked bits anyway
+   // No need to explicitly test for the marker as the test will fail on marked bits anyway
    int ecfnum = (g_bg_plotmode >> 4) - 1;
    // Giant ECF
    if (ecfnum >= 4) {
@@ -1317,7 +1317,7 @@ static void draw_h_line_with_sector_segment_filter(screen_mode_t *sr, int xc, in
       x1=temp;
    }
 
-   // copy clipping logic from draw_h_line() method, but add on xc,yc to the x and y coordinates:
+   // same clipping logic as draw_hline(), but with xc,yc added to the x and y coordinates:
    // (note, y coords are negative)
    if (xc + x1 > g_x_max || xc + x2 < g_x_min || yc - y < g_y_min || yc - y > g_y_max) {
       return;

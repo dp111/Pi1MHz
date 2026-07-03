@@ -1796,7 +1796,7 @@ static void fb_show_splash_screen(void) {
    { const uint8_t c[] = { 22, DEFAULT_SCREEN_MODE }; fb_writen(c, sizeof c); }
    // Turn of the cursor (as there are some bugs when changing fonts)
    cursor(0);
-   select_font(12, 2, 2, 0); // Computer Font
+   select_font(12, 2, 2, 0); // font 12 ("Computer") is not in the current catalog, so this falls back to the BBC font
    fb_writes_literal("Pi1MHz VDU Driver\r\n\n");
 
 #ifdef DEBUG

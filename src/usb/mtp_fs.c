@@ -936,7 +936,7 @@ bool tud_mtp_request_device_reset_cb(tud_mtp_request_cb_data_t* cb_data) {
 // return negative to stall the request
 int32_t tud_mtp_request_get_extended_event_cb(tud_mtp_request_cb_data_t* cb_data) {
   (void) cb_data;
-  return false; // not implemented yet
+  return -1; // not implemented - stall the request (per the callback contract)
 }
 
 // Invoked when received Get DeviceStatus request. Application fill callback data's buffer for response
