@@ -156,11 +156,16 @@ typedef struct {
    /* framebuffer streaming (CONN_SEND_FB); reuses dl_buf to hold rows */
    framebuffer_export_info_t fb_info;
    uint32_t fb_row;
+   bool     fb_stale;      /* geometry changed mid-stream: blank remaining rows */
 
    /* output accounting (for the close decision) */
    uint32_t bytes_queued;
    uint32_t bytes_acked;
    bool     producing_done;
+   /* request bytes arrived while a response was in flight and were
+      discarded (we do not implement pipelining): close instead of
+      keep-alive so the client retries at once rather than stalling */
+   bool     pipelined_bytes_dropped;
 
    /* upload */
    upload_state_t up_state;
@@ -1553,10 +1558,29 @@ static bool conn_pump(ws_conn_t *c)
 
             if (c->fb_row >= c->fb_info.height)
                break;                      /* every row generated */
+            /* The framebuffer is live: a mode change mid-download can
+               shrink or move the allocation.  Re-check the geometry per
+               refill and blank the remaining rows rather than reading
+               through the stale snapshot (Content-Length has already
+               been promised, so the row count cannot change). */
+            if (!c->fb_stale) {
+               framebuffer_export_info_t cur;
+               if (!framebuffer_export_get_info(&cur)
+                   || cur.address != c->fb_info.address
+                   || cur.pitch != c->fb_info.pitch
+                   || cur.width != c->fb_info.width
+                   || cur.height != c->fb_info.height
+                   || cur.bits_per_pixel != c->fb_info.bits_per_pixel
+                   || cur.size < c->fb_info.size)
+                  c->fb_stale = true;
+            }
             while (c->fb_row < c->fb_info.height
                    && filled + row_padded <= sizeof c->dl_buf) {
-               fb_render_row(&c->fb_info, c->fb_row,
-                             &c->dl_buf[filled], row_padded);
+               if (c->fb_stale)
+                  memset(&c->dl_buf[filled], 0, row_padded);
+               else
+                  fb_render_row(&c->fb_info, c->fb_row,
+                                &c->dl_buf[filled], row_padded);
                filled += row_padded;
                c->fb_row++;
             }
@@ -1600,7 +1624,7 @@ static bool conn_pump(ws_conn_t *c)
    }
 
    if (c->producing_done && c->bytes_acked >= c->bytes_queued) {
-      if (c->keep_alive) {
+      if (c->keep_alive && !c->pipelined_bytes_dropped) {
          /* Response delivered and ACKed.  Reuse the TCP socket for
             the next request - this is what removes the "long pause"
             on Windows Explorer's body-bearing PUT (no fresh TCP
@@ -1701,6 +1725,8 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
    c->up_delim_len = 0u;
    c->up_bytes_written = 0u;
    c->fb_row = 0u;
+   c->fb_stale = false;
+   c->pipelined_bytes_dropped = false;
    if (pipelined_keep > 0u && pipelined_keep <= c->reqhdr_len) {
       memmove(c->reqhdr, c->reqhdr + (c->reqhdr_len - pipelined_keep),
               pipelined_keep);
@@ -2111,6 +2137,7 @@ static bool route_framebuffer_bmp(ws_conn_t *c)
    c->bytes_acked = 0u;
    c->fb_info = info;
    c->fb_row = 0u;
+   c->fb_stale = false;
    c->dl_buf_len = 0u;
    c->dl_buf_sent = 0u;
    c->state = CONN_SEND_FB;
@@ -4213,7 +4240,12 @@ static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
             return false;
          pos = len;
       } else {
-         /* CONN_SEND_*: ignore any further request bytes */
+         /* CONN_SEND_*: a pipelined request we do not buffer.  Remember
+            the drop so the response completion closes the connection -
+            the client then retries immediately instead of waiting on a
+            kept-alive socket that will never answer. */
+         if (pos < len)
+            c->pipelined_bytes_dropped = true;
          return true;
       }
    }
