@@ -113,6 +113,10 @@ static volatile unsigned int vdu_rp = 0;
 // (at most 10 bytes) is contiguously readable at &vdu_queue[vdu_rp] even
 // across the wrap point - the consumer hands the handler a direct pointer.
 NOINIT_SECTION static uint8_t vdu_queue[VDU_QSIZE + VDU_BUF_LEN];
+// Parameter bytes still to come for a Beeb command whose first byte the FIQ
+// producer has accepted: that space is reserved so vdu_enqueue cannot take
+// it and a partial command can never enter the queue (see fb_emulator_vdu)
+static unsigned int vdu_fiq_cmd_remaining;
 
 typedef struct {
    int len;
@@ -1947,7 +1951,8 @@ static void vdu_enqueue(const uint8_t *buf, unsigned int len) {
       // Free space: capacity is VDU_QSIZE-1 (one slot separates full from
       // empty). vdu_rp is stable here - the consumer IRQ is masked.
       unsigned int space = (vdu_rp - wp - 1u) & (VDU_QSIZE - 1);
-      if (space < chunk) {
+      // Don't take space promised to a partially received Beeb command
+      if (space < chunk + vdu_fiq_cmd_remaining) {
          _set_interrupts(irq);
          break;                          // queue full - drop the rest
       }
@@ -2401,15 +2406,35 @@ static void fb_emulator_vdu(unsigned int gpio)
 {
    // FIQ context: append one Beeb VDU byte. Writes near the ring start are
    // mirrored into the over-allocated tail (see vdu_queue).
-   unsigned int wp = vdu_wp;
-   unsigned int next = (wp + 1) & (VDU_QSIZE - 1);
-   if (next == vdu_rp)
-      return;                            // queue full - drop the byte
+   static unsigned int drop_remaining;  // bytes of a dropped command to swallow
+
    uint8_t data = (uint8_t)GET_DATA(gpio);
+
+   if (drop_remaining != 0) {
+      // The queue was full at this command's first byte: swallow the rest
+      // of the command whole so the consumer never sees a partial command
+      drop_remaining--;
+      return;
+   }
+
+   unsigned int wp = vdu_wp;
+   if (vdu_fiq_cmd_remaining == 0) {
+      // First byte of a command: accept it only if the whole command fits
+      unsigned int needed = (unsigned int)vdu_operation_table[data].len + 1u;
+      unsigned int space = (vdu_rp - wp - 1u) & (VDU_QSIZE - 1);
+      if (space < needed) {
+         drop_remaining = needed - 1u;
+         return;
+      }
+      vdu_fiq_cmd_remaining = needed - 1u;
+   } else {
+      // Parameter byte: space was reserved when the command byte was accepted
+      vdu_fiq_cmd_remaining--;
+   }
    vdu_queue[wp] = data;
    if (wp < VDU_BUF_LEN)
       vdu_queue[wp + VDU_QSIZE] = data;  // keep the mirrored tail in sync
-   vdu_wp = next;
+   vdu_wp = (wp + 1) & (VDU_QSIZE - 1);
 }
 
 void fb_emulator_init(uint8_t instance, uint8_t address)
