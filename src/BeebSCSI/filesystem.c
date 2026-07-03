@@ -702,6 +702,8 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 
    // Assemble the .cfg file name
    snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
+   // release any values from a previous parse so re-parsing doesn't leak them
+   parse_releasekeyvalues(filesystemState.keyvalues[lunNumber], NUM_KEYS);
    if(parse_readfile(fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber] ))
       return true;
 
@@ -709,6 +711,7 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): Successful\r\n"));
       // now parse the new file
+      parse_releasekeyvalues(filesystemState.keyvalues[lunNumber], NUM_KEYS);
       parse_readfile(fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber]);
       return true;
    }
@@ -899,6 +902,9 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
    else
       snprintf(extAttributes_fileName, sizeof(extAttributes_fileName), "/BeebVFS%d/scsi%d.cfg", filesystemState.lunDirectoryVFS, lunNumber & 7);
 
+   // release any values from a previous parse: this runs on every MODE SENSE
+   // and TRANSLATE, and re-parsing without freeing leaked the whole key set
+   parse_releasekeyvalues(filesystemState.keyvalues[lunNumber], NUM_KEYS);
    if (parse_readfile(extAttributes_fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber]))
    {
       // LUN extended attributes file is present
@@ -947,6 +953,8 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    filesystemState.keyvalues[lunNumber][index].v.string[7] = 0x80; // Write precompensation LSB
    filesystemState.keyvalues[lunNumber][index].v.string[8] = 0x00; // Landing zone
    filesystemState.keyvalues[lunNumber][index].v.string[9] = 0x01; // Step pulse count
+   if (filesystemState.keyvalues[lunNumber][index].length < 10)
+      filesystemState.keyvalues[lunNumber][index].length = 10;
 
    index = MODEPAGE4;
    if  (!filesystemState.keyvalues[lunNumber][index].v.string)
@@ -965,8 +973,8 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    filesystemState.keyvalues[lunNumber][index].v.string[3] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
    filesystemState.keyvalues[lunNumber][index].v.string[4] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
    filesystemState.keyvalues[lunNumber][index].v.string[5] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
-
-
+   if (filesystemState.keyvalues[lunNumber][index].length < 6)
+      filesystemState.keyvalues[lunNumber][index].length = 6;
 }
 
 void filesytemdattoconfigGeometry(uint8_t lunNumber)
@@ -1037,6 +1045,11 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].length = 8;
       }
 
+   // A short or hand-edited cfg value decodes as zero - avoid a divide by
+   // zero in the geometry calculations
+   if (filesystemState.fsLunGeometry[lunNumber].BlockSize == 0)
+      filesystemState.fsLunGeometry[lunNumber].BlockSize = DEFAULT_BLOCK_SIZE;
+
    index = MODEPAGE3;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
@@ -1047,6 +1060,8 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
    {
       filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
    }
+   if (filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack == 0)
+      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
 
    index = MODEPAGE0;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
@@ -1092,6 +1107,8 @@ void filesystemCopyPage0toPage4(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].v.string[3] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
          filesystemState.keyvalues[lunNumber][index].v.string[4] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
          filesystemState.keyvalues[lunNumber][index].v.string[5] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+         if (filesystemState.keyvalues[lunNumber][index].length < 6)
+            filesystemState.keyvalues[lunNumber][index].length = 6;
       }
    }
 }
@@ -1111,6 +1128,8 @@ void filesystemCopyPage4toPage0(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
          filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
          filesystemState.keyvalues[lunNumber][index].v.string[3] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+         if (filesystemState.keyvalues[lunNumber][index].length < 4)
+            filesystemState.keyvalues[lunNumber][index].length = 4;
       }
    }
 }
@@ -1396,25 +1415,36 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
       return 0;
 
    int windex = filesystemWritetoIndex(page);
-   if (windex != -1)
+   if (windex != -1 && filesystemState.keyvalues[lunNumber][index].v.string != NULL
+                    && filesystemState.keyvalues[lunNumber][windex].v.string != NULL)
       {
-         for ( unsigned int i=0; (i< len) && (i < filesystemState.keyvalues[lunNumber][windex].length ); i++)
+         unsigned int i;
+         for ( i=0; (i< len) && (i < filesystemState.keyvalues[lunNumber][windex].length ); i++)
          {
             filesystemState.keyvalues[lunNumber][index].v.string[i] = (char) ( (Buffer[i] & filesystemState.keyvalues[lunNumber][windex].v.string[i]) |
                       ((filesystemState.keyvalues[lunNumber][index].v.string[i] & ~filesystemState.keyvalues[lunNumber][windex].v.string[i])));
          }
+         if (filesystemState.keyvalues[lunNumber][index].length < i)
+            filesystemState.keyvalues[lunNumber][index].length = i;
          return 1;
       }
 
+   // Allocate at least the key's declared maximum (zero filled) so the
+   // fixed-offset geometry consumers and the masked write above can never
+   // overrun a page the host supplied short
+   size_t alloc = len;
+   if ((size_t)scsiattributes[index].max > alloc)
+      alloc = (size_t)scsiattributes[index].max;
    filesystemState.keyvalues[lunNumber][index].length = len;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
       free(filesystemState.keyvalues[lunNumber][index].v.string);
-   filesystemState.keyvalues[lunNumber][index].v.string = malloc(len);
+   filesystemState.keyvalues[lunNumber][index].v.string = malloc(alloc);
    if (filesystemState.keyvalues[lunNumber][index].v.string == NULL) {
       filesystemState.keyvalues[lunNumber][index].length = 0;
       LOG_INFO(PSTR("File system: filesystemWriteModePageData(): ERROR: Unable to allocate memory for mode page data\r\n"));
       return 0; /* allocation failed */
    }
+   memset(filesystemState.keyvalues[lunNumber][index].v.string, 0, alloc);
    memcpy(filesystemState.keyvalues[lunNumber][index].v.string, Buffer, len);
    return 1;
 }
@@ -1675,13 +1705,16 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
       size_t read_len;
 
       if (*address == NULL) {
-         /* allocate buffer to hold entire file */
-         *address = malloc((size_t)fileSize);
+         /* allocate buffer to hold entire file, plus a NUL terminator so
+            text consumers (fileparser key match / strtol) can never read
+            past the end of the allocation */
+         *address = malloc((size_t)fileSize + 1u);
          if (*address == NULL) {
             LOG_INFO(PSTR("File system: filesystemReadFile(): ERROR: Unable to allocate memory for file read\r\n"));
             f_close(&fileObject);
             return 0;
          }
+         (*address)[fileSize] = 0;
          read_len = (size_t)fileSize;
       } else {
          /* caller provided a buffer length in max_size; clamp to file size */

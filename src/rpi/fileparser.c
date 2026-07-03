@@ -282,16 +282,27 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                         ptr--;
                                         buffer[ptr]='0'; // pad with a 0
                                     }
-                                // read a string number
-                              //  LOG_DEBUG("Number %s\n\r" , &buffer[ptr]);
-                                values[keyindex].v.string = malloc( len/2);
+                                // read a string number, clamped to the key's
+                                // maximum. The allocation is always max bytes
+                                // and zero padded, so consumers that access
+                                // fixed offsets up to max-1 can never overrun
+                                // a value that a hand-edited file made short.
+                                size_t maxbytes = (size_t)keyv[keyindex].max;
+                                size_t nbytes = len/2;
+                                if (nbytes > maxbytes)
+                                {
+                                    LOG_DEBUG("Value too long for key - truncated\n\r");
+                                    nbytes = maxbytes;
+                                }
+                                values[keyindex].v.string = malloc( maxbytes );
                                 if (values[keyindex].v.string == NULL)
                                     {
                                     LOG_DEBUG("Error allocating memory for string number\n\r");
                                     ptr += len;
                                 } else
                                 {
-                                    for (size_t i = 0; i < len/2; i++)
+                                    memset( values[keyindex].v.string, 0, maxbytes);
+                                    for (size_t i = 0; i < nbytes; i++)
                                     {
                                         char digit = 0;
                                         if ((buffer[ptr] >= '0') && (buffer[ptr] <= '9'))
@@ -312,7 +323,8 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                         ptr++;
                                         LOG_DEBUG("%02x ", values[keyindex].v.string[i]);
                                     }
-                                    values[keyindex].length = len/2;
+                                    values[keyindex].length = nbytes;
+                                    ptr += len - (nbytes * 2); // skip any truncated digits
                                     LOG_DEBUG("\r\n" );
                                 }
                             }
@@ -320,16 +332,22 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                         else if (keyv[keyindex].type == STRING)
                         {
                             size_t len = parse_strlen( buffer , ptr, filesize);
-                            // read a string
-                            values[keyindex].v.string = malloc( len + 1);
+                            // read a string, truncated to the key's maximum
+                            size_t copylen = len;
+                            if (copylen > (size_t)keyv[keyindex].max)
+                            {
+                                LOG_DEBUG("Value too long for key - truncated\n\r");
+                                copylen = (size_t)keyv[keyindex].max;
+                            }
+                            values[keyindex].v.string = malloc( copylen + 1);
                             if (values[keyindex].v.string == NULL)
                                 {
                                 LOG_DEBUG("Error allocating memory for string\n\r");
                                 ptr += len;
                             } else {
-                                memcpy( values[keyindex].v.string , buffer + ptr , len);
-                                values[keyindex].v.string[len] = 0;
-                                values[keyindex].length = len;
+                                memcpy( values[keyindex].v.string , buffer + ptr , copylen);
+                                values[keyindex].v.string[copylen] = 0;
+                                values[keyindex].length = copylen;
                                 LOG_DEBUG("string %s\n\r" , values[keyindex].v.string);
                                 ptr += len;
                             }
@@ -345,7 +363,11 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                                 ptr += len;
                             } else
                             {
-                                *values[keyindex].v.integer = (int) strtol( (char *)buffer + ptr, 0 , 0);
+                                int parsed = (int) strtol( (char *)buffer + ptr, 0 , 0);
+                                // clamp to the key's declared range
+                                if (parsed < keyv[keyindex].min) parsed = keyv[keyindex].min;
+                                if (parsed > keyv[keyindex].max) parsed = keyv[keyindex].max;
+                                *values[keyindex].v.integer = parsed;
                                 LOG_DEBUG("number %d\n\r" , *values[keyindex].v.integer);
                                 values[keyindex].length = 1;
                                 ptr += len;
