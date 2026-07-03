@@ -31,6 +31,7 @@
 #include <stdio.h>
 
 #include "Pi1MHz.h"
+#include "rpi/asm-helpers.h"
 #include "rpi/info.h"
 #include "rpi/systimer.h"
 #include "teletext_emulator.h"
@@ -92,7 +93,12 @@ typedef struct {
 static uint8_t  TTX_ADDR;
 static uint8_t  IRQ_NUM;
 
-static uint8_t  ttx_status = TTX_ST_LINKS;
+// Cleared from the FIQ callback (ttx_clear) while the poll updates it:
+// volatile so every load/store is real, and the poll's FSYNC/DOR updates
+// run with FIQ masked. The DEW bit lives in ttx_status_DEW, owned by the
+// poll alone (DEW is not a clearable bit), and is merged at write-out.
+static volatile uint8_t ttx_status = TTX_ST_LINKS;
+static uint8_t  ttx_status_DEW = 0u;
 static bool     ttx_ints_enabled;
 static bool     ttx_enable;
 static uint8_t  ttx_channel;
@@ -152,7 +158,7 @@ static bool is_channel_open(uint8_t ch)
 
 static void ttx_status_write(void)
 {
-   Pi1MHz_MemoryWrite((uint32_t)TTX_ADDR, ttx_status);
+   Pi1MHz_MemoryWrite((uint32_t)TTX_ADDR, ttx_status | ttx_status_DEW);
 }
 
 static void ttx_preload_data(void)
@@ -358,18 +364,29 @@ static void teletext_poll(void)
    default:
    case TTX_FIELD:                               /* -> FSYNC */
       ttx_phase = TTX_FSYNC;
-      if (is_channel_open(ttx_channel))
+      if (is_channel_open(ttx_channel)) {
+         /* A ttx_clear() FIQ landing inside this RMW would be undone,
+            leaving INT stale-set and falsely latching DOR at DEW */
+         unsigned int cpsr = _disable_interrupts_cspr();
          ttx_status |= TTX_ST_FSYNC;
+         _restore_cpsr(cpsr);
+      }
       ttx_next_us = now + ((ttx_field_parity & 1u) ? TTX_US_FSYNC_ODD : TTX_US_FSYNC_EVEN);
       break;
 
    case TTX_FSYNC:                               /* -> DEW */
       ttx_phase = TTX_DEW;
       if (is_channel_open(ttx_channel)) {
-         /* DOR latches the INT state that was not cleared before DEW */
+         /* DOR latches the INT state that was not cleared before DEW.
+            Masked so a ttx_clear() FIQ cannot be undone by the
+            store-back (the Beeb would see INT+DOR it just cleared).
+            The DEW->FIELD |= INT needs no mask: a clear lost there is
+            superseded by the new INT firing the handler again. */
+         unsigned int cpsr = _disable_interrupts_cspr();
          ttx_status = (uint8_t)((ttx_status & ~TTX_ST_DOR) |
                                 ((ttx_status & TTX_ST_INT) >> 1));
-         ttx_status |= TTX_ST_DEW;
+         _restore_cpsr(cpsr);
+         ttx_status_DEW = TTX_ST_DEW;
       }
       ttx_load_field();
       ttx_next_us = now + TTX_US_DEW;
@@ -377,7 +394,7 @@ static void teletext_poll(void)
 
    case TTX_DEW:                                 /* -> FIELD */
       ttx_phase = TTX_FIELD;
-      ttx_status &= (uint8_t)~TTX_ST_DEW;
+      ttx_status_DEW = 0u;
       if (is_channel_open(ttx_channel)) {
          ttx_status |= TTX_ST_INT;               /* trailing edge of DEW */
          if (ttx_ints_enabled)
