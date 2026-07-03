@@ -637,22 +637,23 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
    irpts = g_rpi_emmc_base->EMMC_INTERRUPT;
    g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0001u;
 
-   /* Accept completion if COMMAND_COMPLETE (bit 0) fired OR STATUS shows
+   /* Error bits always fail the command: CTO/CCRC clear CMD_INHIBIT too,
+      and accepting them would return a stale RESP0 as success.  Otherwise
+      accept completion if COMMAND_COMPLETE (bit 0) fired OR STATUS shows
       CMD_INHIBIT cleared.  Emulators may never set INTERRUPT bits even
       though the command completed; STATUS is more reliable there. */
-   {
-      uint32_t status = g_rpi_emmc_base->EMMC_STATUS;
-      if (((irpts & 0xffff0001u) != 0x1u) && ((status & 0x1u) != 0u)) {
-         if ((irpts & 0xffff0000u) == 0u) {
-            dev->last_error = SD_ERR_MASK_CMD_TIMEOUT;
-            (void) sdio_host_reset_line(SD_RESET_CMD);
-         } else {
-            dev->last_error = irpts & 0xffff0000u;
-         }
-         sdio_host_log_registers("cmd wait fail");
-         dev->last_interrupt = irpts;
-         return;
-      }
+   if ((irpts & 0xffff0000u) != 0u) {
+      dev->last_error = irpts & 0xffff0000u;
+      sdio_host_log_registers("cmd error");
+      dev->last_interrupt = irpts;
+      return;
+   }
+   if (((irpts & 0x1u) == 0u) && ((g_rpi_emmc_base->EMMC_STATUS & 0x1u) != 0u)) {
+      dev->last_error = SD_ERR_MASK_CMD_TIMEOUT;
+      (void) sdio_host_reset_line(SD_RESET_CMD);
+      sdio_host_log_registers("cmd wait fail");
+      dev->last_interrupt = irpts;
+      return;
    }
 
    if (cmd_reg & SD_CMD_ISDATA) {
@@ -680,34 +681,17 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
         // seen_ready = irpts & ready_irpt_mask;
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0000u | ready_irpt_mask;
 
-         /* Emulator workaround: if we're doing a data transfer and no interrupt
-            bits appeared at all, the emulator isn't simulating data interrupts.
-            Just proceed with the transfer anyway. */
-         if ((irpts & wake_or_err_mask) == 0u) {
-            if (!(cmd_reg & SD_CMD_ISDATA)) {
-               dev->last_error = SD_ERR_MASK_CMD_TIMEOUT;
-               dev->last_interrupt = irpts;
-               return;
-            }
-            /* Data command with no interrupts - emulator doesn't set these bits,
-               so just proceed with the transfer. */
-         }
-
-         /* Emulator workaround: for data transfers, allow error bits to pass
-            through since the emulator may not fully simulate the data path
-            interrupt handling. */
+         /* Emulator workaround: if no interrupt bits appeared at all, the
+            emulator isn't simulating data interrupts - just proceed with the
+            transfer.  Genuine error bits (DCRC/DTO etc.), however, always
+            fail the transfer: draining the FIFO after a data error would
+            deliver garbage to the caller as success. */
          if ((irpts & 0xffff0000u) != 0u) {
-            /* Only return if not a data command; data commands proceed anyway */
-            if (!(cmd_reg & SD_CMD_ISDATA)) {
-               dev->last_error = irpts & 0xffff0000u;
-               dev->last_interrupt = irpts;
-               return;
-            }
+            dev->last_error = irpts & 0xffff0000u;
+            sdio_host_log_registers("data error");
+            dev->last_interrupt = irpts;
+            return;
          }
-
-         /* Suppress data-ready mismatch warnings for emulator; they occur when the
-            emulator doesn't set BUFFER_READY bits but the command still completes.
-            The workaround above already handles this case. */
 
          while (cur_byte_no < dev->block_size) {
             if (is_write)
@@ -731,17 +715,15 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
          irpts = g_rpi_emmc_base->EMMC_INTERRUPT;
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0002u;
 
+         /* TRANSFER_COMPLETE alone, or with DATA_TIMEOUT (the controller can
+            flag DTO when TC has already fired - the spec says ignore it), is
+            success.  Anything else - including error bits on a data command -
+            fails the transfer. */
          if (((irpts & 0xffff0002u) != 0x2u) && ((irpts & 0xffff0002u) != 0x100002u)) {
-            /* Emulator workaround: if this is a data transfer (CMD53) and we got
-               error bits but the register is responding, accept it anyway since
-               the emulator doesn't fully simulate data path interrupts. */
-            if ((cmd_reg & SD_CMD_ISDATA) && (irpts & 0xffff0000u) != 0u) {
-               /* Data command with error bits but register responded - proceed */
-            } else {
-               dev->last_error = irpts & 0xffff0000u;
-               dev->last_interrupt = irpts;
-               return;
-            }
+            dev->last_error = irpts & 0xffff0000u;
+            sdio_host_log_registers("xfer complete error");
+            dev->last_interrupt = irpts;
+            return;
          }
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0002u;
       }

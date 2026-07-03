@@ -769,8 +769,11 @@ static int sdio_runtime_wake_with_kso_step(sdio_host_t *dev,
       probe_result->kso_probe_attempted = true;
       probe_result->kso_control_requested = requested_value;
 
+      /* The first KSO write can fail while the core is asleep - that is why
+         it is issued twice.  Clear any latched command error from the pair. */
       (void)sdio_function1_write_byte(dev, SDIO_SLEEP_CSR, requested_value);
       (void)sdio_function1_write_byte(dev, SDIO_SLEEP_CSR, requested_value);
+      sdio_runtime_set_error(NULL);
 
       g_runtime_kso_wait.active = true;
       g_runtime_kso_wait.attempt = 0u;
@@ -803,6 +806,7 @@ static int sdio_runtime_wake_with_kso_step(sdio_host_t *dev,
    g_runtime_kso_wait.attempt++;
    g_runtime_kso_wait.deadline_us = now_us + 1000u;
    (void)sdio_function1_write_byte(dev, SDIO_SLEEP_CSR, requested_value);
+   sdio_runtime_set_error(NULL); /* retried until the attempt cap - not yet an error */
    return 0;
 }
 
@@ -3679,6 +3683,7 @@ static int sdio_runtime_set_mac_step(sdio_host_t *dev)
       if (!sent) {
          g_runtime_set_mac_request_pending = false;
          sdio_debug_log("SET_MAC: send failed; chip will keep its OTP MAC");
+         sdio_runtime_set_error(NULL); /* tolerated */
          g_runtime_step_sent = false;
          return 1;
       }
@@ -3730,9 +3735,11 @@ static int sdio_runtime_query_mac_step(sdio_host_t *dev)
       g_runtime_mac_request_id =
          g_sdio_probe_result.tx_control_template_request_id;
       g_runtime_mac_request_pending = true;
-      (void)sdio_probe_send_single_tx_control_template_timeout(dev,
+      if (!sdio_probe_send_single_tx_control_template_timeout(dev,
                                                               &g_sdio_probe_result,
-                                                              SDIO_RUNTIME_POLL_TIMEOUT_US);
+                                                              SDIO_RUNTIME_POLL_TIMEOUT_US)) {
+         sdio_runtime_set_error(NULL); /* tolerated - lwIP keeps its default MAC */
+      }
       g_runtime_step_sent = true;
       g_runtime_step_deadline_us = now + 10000u;
       return 0;
@@ -5180,8 +5187,10 @@ bool sdio_runtime_tick(void)
 
          if (clm_result == 0)
             return true;             /* more chunks / still settling */
-         if (clm_result < 0)
+         if (clm_result < 0) {
             sdio_debug_log("CLM: download failed - continuing with built-in regulatory");
+            sdio_runtime_set_error(NULL); /* tolerated - a latched command error must not shadow a later real one */
+         }
          else if (g_cyw43_clm_data != NULL && g_cyw43_clm_length != 0u)
             sdio_debug_log("CLM: clmload download complete (%lu bytes)",
                            (unsigned long)g_cyw43_clm_length);
@@ -5230,11 +5239,12 @@ bool sdio_runtime_tick(void)
             return true;             /* sending / command settling */
          g_sdio_probe_result.tx_control_probe_steps_requested = g_runtime_join_count;
          g_sdio_probe_result.tx_control_probe_steps_completed = g_runtime_join_index;
-         if (join_result < 0)
+         if (join_result < 0) {
             sdio_debug_log("join command sequence failed at step %u/%u",
                            (unsigned int)g_runtime_join_index,
                            (unsigned int)g_runtime_join_count);
-         else
+            sdio_runtime_set_error(NULL); /* tolerated - runtime still reaches DONE, join can be retried */
+         } else
             sdio_debug_log("join command sequence sent (%u steps)",
                            (unsigned int)g_runtime_join_count);
          g_runtime_stage = SDIO_RUNTIME_STAGE_SWEEP_RX;

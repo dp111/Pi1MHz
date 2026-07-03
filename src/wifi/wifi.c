@@ -614,10 +614,12 @@ void wifi_boot(void)
 
       case WIFI_BOOT_STAGE_WAIT_SDIO:
          if (sdio_runtime_tick()) {
-            /* State machine still has stages to run (including join) — come back next tick. */
-            if (sdio_runtime_last_error()[0] != '\0') {
-               wifi_boot_fail(sdio_runtime_last_error());
-            }
+            /* State machine still has stages to run (including join) — come
+               back next tick.  Don't treat a latched command error as fatal
+               here: hard failures finalize the runtime to its ERROR stage
+               (tick returns false, handled below), while stages that
+               deliberately tolerate a failure (CLM, MAC override, KSO)
+               continue past it. */
             return;
          }
          /* tick() returned false: reached DONE or ERROR.  The SDIO runtime
