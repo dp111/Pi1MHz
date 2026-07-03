@@ -1135,7 +1135,7 @@ static bool sdio_backplane_reset_core(sdio_host_t *dev, uint32_t regs, uint32_t 
 static bool sdio_backplane_scan_cores(sdio_host_t *dev, sdio_chip_state_t *chip,
                                       uint32_t enumeration_address)
 {
-   uint8_t scan_buffer[SDIO_CORE_SCAN_SIZE];
+   _Alignas(4) uint8_t scan_buffer[SDIO_CORE_SCAN_SIZE]; // filled by 32-bit EMMC PIO reads
    uint16_t core_id = 0u;
    uint8_t core_revision = 0u;
    uint32_t index;
@@ -3419,7 +3419,7 @@ static bool sdio_probe_send_single_tx_control_template_timeout(sdio_host_t *dev,
                                                                sdio_probe_result_t *probe_result,
                                                                uint32_t timeout_us)
 {
-   uint8_t tx_frame[SDPCM_CONTROL_EVENT_HEADER_LENGTH + CDC_HEADER_LENGTH + TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH];
+   _Alignas(4) uint8_t tx_frame[SDPCM_CONTROL_EVENT_HEADER_LENGTH + CDC_HEADER_LENGTH + TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH]; // drained by 32-bit EMMC PIO writes
    sdio_cmd53_result_t cmd53_result;
 
    if (dev == NULL || probe_result == NULL || !probe_result->tx_control_template_ready)
@@ -4826,7 +4826,7 @@ static bool sdio_probe_read_frame_header(sdio_host_t *dev,
       read, which is undefined behaviour on ARMv6 against a buffer
       with only uint16_t alignment. */
    _Alignas(4) uint16_t hwtag[2];
-   uint8_t sdpcm_header[8];
+   _Alignas(4) uint8_t sdpcm_header[8];
 
    if (probe_result == NULL)
       return false;
