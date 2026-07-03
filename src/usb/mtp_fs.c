@@ -151,6 +151,7 @@ typedef struct {
   FIL file;
   uint32_t transferred;
   uint32_t size;
+  uint16_t failed_resp; // non-zero: data phase failed - drain the stream, report at completion
 } write_state_t;
 
 enum {
@@ -976,6 +977,11 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
     }
 
     case MTP_OP_SEND_OBJECT: {
+      if (g_write_state.failed_resp != 0u) {
+        resp->header->code = g_write_state.failed_resp;
+        fs_release_write_state(); // closes the file, unlinks the partial upload
+        break;
+      }
       if (g_write_state.is_kernel_now) {
         uint32_t reboot_copy_len = (g_write_state.transferred + 63u) & ~63u;
 
@@ -1548,11 +1554,14 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
       const uint32_t xact_len = io_container->payload_bytes;
       uint32_t total_needed = offset + xact_len;
 
-      if (total_needed > g_write_state.kernel_capacity) {
-        return MTP_RESP_GENERAL_ERROR;
+      // The driver ignores this callback's return value in the data phase,
+      // so an error cannot stall the endpoint here: remember it, drain the
+      // rest of the stream, and report it from tud_mtp_data_complete_cb
+      if (g_write_state.failed_resp == 0u && total_needed > g_write_state.kernel_capacity) {
+        g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
       }
 
-      if (xact_len > 0u) {
+      if (g_write_state.failed_resp == 0u && xact_len > 0u) {
         memcpy(g_write_state.kernel_data + offset, io_container->payload, xact_len);
         if (total_needed > g_write_state.transferred) {
           g_write_state.transferred = total_needed;
@@ -1584,26 +1593,28 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
     }
     tud_mtp_data_receive(io_container);
   } else {
-    if (!g_write_state.file_open) {
-      return MTP_RESP_GENERAL_ERROR;
-    }
     // file contents offset is total xferred minus header size minus last received chunk
     const uint32_t offset = cb_data->total_xferred_bytes - sizeof(mtp_container_header_t) - io_container->payload_bytes;
     const uint32_t xact_len = io_container->payload_bytes;
-    if (g_write_state.size_known && ((offset + xact_len) > g_write_state.size)) {
-      return MTP_RESP_GENERAL_ERROR;
-    }
-    if (xact_len > 0u) {
-      UINT bytes_written = 0;
-      if (f_write(&g_write_state.file, io_container->payload, xact_len, &bytes_written) != FR_OK) {
-        fs_release_write_state();
-        return MTP_RESP_GENERAL_ERROR;
+    // A failure here cannot stall or respond while the host is still
+    // streaming (the driver ignores this callback's return value in the
+    // data phase): remember it, drain the rest of the stream, and report
+    // it from tud_mtp_data_complete_cb. No release here - the completion
+    // path closes the file and unlinks the partial upload.
+    if (g_write_state.failed_resp == 0u) {
+      if (!g_write_state.file_open) {
+        g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
+      } else if (g_write_state.size_known && ((offset + xact_len) > g_write_state.size)) {
+        g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
+      } else if (xact_len > 0u) {
+        UINT bytes_written = 0;
+        if ((f_write(&g_write_state.file, io_container->payload, xact_len, &bytes_written) != FR_OK)
+            || (bytes_written != xact_len)) {
+          g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
+        } else {
+          g_write_state.transferred += bytes_written;
+        }
       }
-      if (bytes_written != xact_len) {
-        fs_release_write_state();
-        return MTP_RESP_GENERAL_ERROR;
-      }
-      g_write_state.transferred += bytes_written;
     }
     if (g_write_state.size_known) {
       if (cb_data->total_xferred_bytes - sizeof(mtp_container_header_t) < g_write_state.size) {

@@ -250,6 +250,12 @@ static void update_font_size(void) {
    // Calc screen text size
    text_width = screen->width / font_width;
    text_height = screen->height / font_height;
+   // Custom modes can be smaller than one character cell, or wider than
+   // the uint8_t text window fields can address - keep the grid usable
+   if (text_width < 1)    text_width = 1;
+   if (text_width > 256)  text_width = 256;
+   if (text_height < 1)   text_height = 1;
+   if (text_height > 256) text_height = 256;
 }
 
 static void update_text_area(void) {
@@ -392,7 +398,7 @@ static void reset_areas(void) {
 
 // 0,0 is the top left
 static void set_text_area(const t_clip_window_t *window) {
-   if (window->left > window->right || (unsigned int )window->right > (unsigned int ) text_width - 1 || window->top > window->bottom || (unsigned int ) window->bottom > (unsigned int ) text_height - 1) {
+   if (window->left > window->right || (int)window->right > text_width - 1 || window->top > window->bottom || (int)window->bottom > text_height - 1) {
       return;
    }
    // Shallow copy of the struct
@@ -1249,7 +1255,7 @@ static void vdu23_22(const uint8_t *buf) {
    if (n_colours == 0) {
       n_colours = 256;
    }
-   if (x_pixels == 0 || y_pixels == 0 ) {
+   if (x_pixels < 8 || y_pixels < 8) {
       return;
    }
 
