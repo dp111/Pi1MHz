@@ -1562,11 +1562,11 @@ static uint8_t scsiCommandModeSense6(void)
    }
 
    const char * headerptr, *LBAptr, *modeptr;
-   int headerlen,LBAlen,modelen;
+   size_t headerlen_sz, LBAlen_sz, modelen_sz;
 
-   headerptr = filesystemGetModeParamHeaderData(commandDataBlock.targetLUN, (size_t * ) & headerlen);
-   LBAptr = filesystemGetLBADescriptorData(commandDataBlock.targetLUN, (size_t * ) & LBAlen);
-   modeptr = filesystemGetModePageData(commandDataBlock.targetLUN, commandDataBlock.data[2], (size_t * ) & modelen);
+   headerptr = filesystemGetModeParamHeaderData(commandDataBlock.targetLUN, &headerlen_sz);
+   LBAptr = filesystemGetLBADescriptorData(commandDataBlock.targetLUN, &LBAlen_sz);
+   modeptr = filesystemGetModePageData(commandDataBlock.targetLUN, commandDataBlock.data[2], &modelen_sz);
 
    if ( (headerptr == NULL) || (LBAptr == NULL) || (modeptr == NULL)) {
       // Unable to read drive descriptor! Exit with error status
@@ -1590,6 +1590,12 @@ static uint8_t scsiCommandModeSense6(void)
    // Set up the control signals ready for the data in phase
    scsiInformationTransferPhase(ITPHASE_DATAIN);
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Sending Page Mode data to host\r\n"));
+
+   // The getters report their sizes as size_t; the transfer arithmetic below
+   // works in int (values are a handful of bytes, so the narrowing is safe).
+   int headerlen = (int)headerlen_sz;
+   int LBAlen = (int)LBAlen_sz;
+   int modelen = (int)modelen_sz;
    int length = headerlen+LBAlen+modelen;
 
    if (sizerequested < length) {
