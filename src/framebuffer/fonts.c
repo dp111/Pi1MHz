@@ -377,5 +377,12 @@ void initialize_font_by_name(const char *name, font_t *font) {
 }
 
 void define_character(const font_t *font, uint8_t c, const uint8_t *data) {
-   copy_font_character(font, data, c, 0);
+   // VDU 23,c supplies exactly 8 rows, but copy_font_character reads
+   // font->offset + font->height bytes (e.g. 10 for the SAA5050 font) -
+   // build a blank-padded copy rather than reading past the parameter block
+   uint8_t padded[MAX_HEIGHT + 2] = {0};
+   if ((size_t)font->offset + 8u > sizeof(padded))
+      return;
+   memcpy(padded + font->offset, data, 8);
+   copy_font_character(font, padded, c, 0);
 }

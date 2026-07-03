@@ -117,6 +117,9 @@ NOINIT_SECTION static uint8_t vdu_queue[VDU_QSIZE + VDU_BUF_LEN];
 // producer has accepted: that space is reserved so vdu_enqueue cannot take
 // it and a partial command can never enter the queue (see fb_emulator_vdu)
 static unsigned int vdu_fiq_cmd_remaining;
+// VDU 21 disables the VDU drivers until VDU 6 (commands and parameters are
+// still consumed so the stream stays in sync)
+static bool vdu_enabled = true;
 
 typedef struct {
    int len;
@@ -147,6 +150,8 @@ static void vdu_26(const uint8_t *buf);
 static void vdu_27(const uint8_t *buf);
 static void vdu_28(const uint8_t *buf);
 static void vdu_29(const uint8_t *buf);
+static void vdu_6(const uint8_t *buf);
+static void vdu_21(const uint8_t *buf);
 static void vdu_nop(const uint8_t *buf);
 static void vdu_default(const uint8_t *buf);
 
@@ -159,7 +164,7 @@ static vdu_operation_t vdu_operation_table[256] = {
    { 0, vdu_nop }, // 3 -  Disable printer (do nothing)
    { 0, vdu_4   }, // 4 -  Write text at text cursor
    { 0, vdu_5   }, // 5 -  Write text at graphics cursor
-   { 0, vdu_nop }, // 6 -  TODO: Enable VDU drivers
+   { 0, vdu_6   }, // 6 -  Enable VDU drivers
    { 0, vdu_nop }, // 7 -  Make a short beep (do nothing)
    { 0, vdu_nop }, // 8 -  Backspace cursor one character
    { 0, vdu_nop }, // 9 -  Forward space cursor one character
@@ -174,7 +179,7 @@ static vdu_operation_t vdu_operation_table[256] = {
    { 2, vdu_18  }, // 18 - Define graphics colour
    { 5, vdu_19  }, // 19 - Define logical colour
    { 0, vdu_20  }, // 20 - Reset logical colours to defaults
-   { 0, vdu_nop }, // 21 - TODO: Disable VDU drivers or delete current line
+   { 0, vdu_21  }, // 21 - Disable VDU drivers (until VDU 6)
    { 1, vdu_22  }, // 22 - Select screen mode
    { 9, vdu_23  }, // 23 - Re-program display character (+many other things)
    { 8, vdu_24  }, // 24 - Define graphics window
@@ -1390,6 +1395,7 @@ static void vdu_20(const uint8_t *buf) {
 }
 
 static void vdu_22(const uint8_t *buf) {
+   vdu_enabled = true; // a mode change always re-enables the VDU drivers
    uint8_t mode = buf[1] & 0x7F; // Map MODE 128 to MODE 0, etc
    screen_mode_t *new_screen = get_screen_mode(mode);
    if (new_screen != NULL) {
@@ -1614,6 +1620,16 @@ static void vdu_26(const uint8_t *buf) {
    reset_areas();
 }
 
+static void vdu_6(const uint8_t *buf) {
+   vdu_enabled = true;
+}
+
+static void vdu_21(const uint8_t *buf) {
+   vdu_enabled = false;
+}
+
+// Deliberate extension: real BBC VDU 27 takes no parameters and does
+// nothing; here VDU 27,c is an escape used to inject the edit-cursor keys
 static void vdu_27(const uint8_t *buf) {
    uint8_t c = buf[1];
    switch (c) {
@@ -1926,7 +1942,12 @@ void fb_process_vdu_queue(void) {
          // arrived yet; it is picked up on a later call.
          if (((vdu_wp - rp) & (VDU_QSIZE - 1)) < needed)
             break;
-         vdu_op->handler(&vdu_queue[rp]);
+         // While VDU 21 has the drivers disabled, commands are consumed but
+         // not executed. VDU 6 re-enables; VDU 22 (mode) does too so that a
+         // Beeb BREAK (whose driver re-sends the mode) always recovers the
+         // display - the disable state lives here, not in the Beeb's OS.
+         if (vdu_enabled || vdu_queue[rp] == 6 || vdu_queue[rp] == 22)
+            vdu_op->handler(&vdu_queue[rp]);
          vdu_rp = (rp + needed) & (VDU_QSIZE - 1);
       }
    }
