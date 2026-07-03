@@ -1092,6 +1092,28 @@ void default_set_pixel_32bpp(const screen_mode_t *screen, int x, int y, pixel_t 
    memcpy(__builtin_assume_aligned(p, 4), &value, sizeof value);
 }
 
+void default_fill_hline_8bpp(const screen_mode_t *screen, int x1, int x2, int y, pixel_t value) {
+   uint8_t *p = fb + (screen->height - y - 1) * screen->pitch + x1;
+   memset(p, (int)(value & 0xffu), (size_t)(x2 - x1 + 1));
+}
+
+void default_fill_hline_16bpp(const screen_mode_t *screen, int x1, int x2, int y, pixel_t value) {
+   uint8_t *p = fb + (screen->height - y - 1) * screen->pitch + x1 * 2;
+   uint16_t v = (uint16_t)value;
+   for (int x = x1; x <= x2; x++) {
+      memcpy(__builtin_assume_aligned(p, 2), &v, sizeof v);   // single STRH
+      p += 2;
+   }
+}
+
+void default_fill_hline_32bpp(const screen_mode_t *screen, int x1, int x2, int y, pixel_t value) {
+   uint8_t *p = fb + (screen->height - y - 1) * screen->pitch + x1 * 4;
+   for (int x = x1; x <= x2; x++) {
+      memcpy(__builtin_assume_aligned(p, 4), &value, sizeof value);   // single STR
+      p += 4;
+   }
+}
+
 pixel_t default_get_pixel_8bpp(const screen_mode_t *screen, int x, int y) {
    const uint8_t *fbptr = (uint8_t *)(fb + (screen->height - y - 1) * screen->pitch + x);
    return *fbptr;
@@ -1188,6 +1210,7 @@ screen_mode_t *get_screen_mode(int mode_num) {
          sm->update_palette = null_handler;
          sm->set_pixel      = default_set_pixel_16bpp;
          sm->get_pixel      = default_get_pixel_16bpp;
+         sm->fill_hline     = default_fill_hline_16bpp;
          break;
       case 5:
          sm->set_colour     = default_set_colour_32bpp;
@@ -1196,6 +1219,7 @@ screen_mode_t *get_screen_mode(int mode_num) {
          sm->update_palette = null_handler;
          sm->set_pixel      = default_set_pixel_32bpp;
          sm->get_pixel      = default_get_pixel_32bpp;
+         sm->fill_hline     = default_fill_hline_32bpp;
          break;
       default:
          sm->set_colour     = default_set_colour_8bpp;
@@ -1204,6 +1228,7 @@ screen_mode_t *get_screen_mode(int mode_num) {
          sm->update_palette = update_palette;
          sm->set_pixel      = default_set_pixel_8bpp;
          sm->get_pixel      = default_get_pixel_8bpp;
+         sm->fill_hline     = default_fill_hline_8bpp;
          break;
       }
 

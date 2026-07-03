@@ -201,6 +201,28 @@ static void draw_hline(screen_mode_t *screen, int x1, int x2, int y, plotcol_t c
       x1 = x2;
       x2 = tmp;
    }
+   // Clip once here (set_pixel would otherwise re-clip per pixel)
+   if (y < g_y_min || y > g_y_max) {
+      return;
+   }
+   if (x1 < g_x_min) {
+      x1 = g_x_min;
+   }
+   if (x2 > g_x_max) {
+      x2 = g_x_max;
+   }
+   if (x1 > x2) {
+      return;
+   }
+   // Fast path: a PM_NORMAL fill is a straight row fill in the
+   // framebuffer with no per-pixel plot-mode or ECF work. This feeds
+   // every solid fill (triangles, circles, flood spans, CLG).
+   plotmode_t plotmode = (colour == PC_FG) ? g_fg_plotmode :
+                         (colour == PC_BG) ? g_bg_plotmode : PM_INVERT;
+   if (plotmode == PM_NORMAL && screen->fill_hline) {
+      screen->fill_hline(screen, x1, x2, y, (colour == PC_FG) ? g_fg_col : g_bg_col);
+      return;
+   }
    for (int x = x1; x <= x2; x++) {
       set_pixel(screen, x, y, colour);
    }

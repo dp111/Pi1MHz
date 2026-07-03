@@ -109,6 +109,9 @@ typedef struct screen_mode {
    void           (*update_palette)(struct screen_mode *screen, int mark);
    void                (*set_pixel)(const struct screen_mode *screen, int x, int y, pixel_t value);
    pixel_t             (*get_pixel)(const struct screen_mode *screen, int x, int y);
+   // Fill pixels x1..x2 (inclusive, pre-clipped) of row y with value -
+   // the fast path for solid PM_NORMAL fills (see draw_hline)
+   void               (*fill_hline)(const struct screen_mode *screen, int x1, int x2, int y, pixel_t value);
    void          (*write_character)(struct screen_mode *screen, int c, int col, int row, pixel_t fg_col, pixel_t bg_col);
    int            (*read_character)(struct screen_mode *screen,        int col, int row,                 pixel_t bg_col);
    void              (*unknown_vdu)(struct screen_mode *screen, const uint8_t *buf);
@@ -137,6 +140,9 @@ void     default_set_pixel_32bpp(const screen_mode_t *screen, int x, int y, pixe
 pixel_t   default_get_pixel_8bpp(const screen_mode_t *screen, int x, int y);
 pixel_t  default_get_pixel_16bpp(const screen_mode_t *screen, int x, int y);
 pixel_t  default_get_pixel_32bpp(const screen_mode_t *screen, int x, int y);
+void     default_fill_hline_8bpp(const screen_mode_t *screen, int x1, int x2, int y, pixel_t value);
+void    default_fill_hline_16bpp(const screen_mode_t *screen, int x1, int x2, int y, pixel_t value);
+void    default_fill_hline_32bpp(const screen_mode_t *screen, int x1, int x2, int y, pixel_t value);
 void     default_write_character(screen_mode_t *screen, int c, int col, int row, pixel_t fg_col, pixel_t bg_col);
 int       default_read_character(screen_mode_t *screen, int col, int row,                        pixel_t bg_col);
 void         default_unknown_vdu(screen_mode_t *screen, const uint8_t *buf);
