@@ -1510,6 +1510,14 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
          return ret;
    }
 
+   // Already verified in the transfer state with no failure since: skip
+   // the CMD13 round-trip that would otherwise precede every read/write.
+   // A removed card is still caught - the data command itself fails, the
+   // give-up path clears this flag and card_rca, and the next access
+   // re-verifies from scratch.
+   if (edev->in_transfer_state)
+      return 0;
+
 #ifdef EMMC_DEBUG
    printf("SD: ensure_data_mode() obtaining status register for card_rca %08"PRIu32": ",
       edev->card_rca);
@@ -1590,6 +1598,7 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
       }
    }
 
+   edev->in_transfer_state = true;
    return 0;
 }
 
@@ -1670,6 +1679,7 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
     {
         printf("Giving up.\r\n");
         edev->card_rca = 0;
+        edev->in_transfer_state = false;
         return -1;
     }
 
