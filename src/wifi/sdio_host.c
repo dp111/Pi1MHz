@@ -609,10 +609,7 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
    /* Command has been issued. Wait for completion by polling EMMC_INTERRUPT
       for COMMAND_COMPLETE (bit 0). Since this emulator may not reliably set
       INTERRUPT bits, also check if STATUS.CMD_INHIBIT clears AND we see
-      error bits set (which indicates the command processed). Give the
-      hardware a brief moment before polling to ensure command takes effect. */
-   RPI_WaitMicroSeconds(10);
-   
+      error bits set (which indicates the command processed). */
    {
       uint32_t elapsed = 0;
       while (elapsed < timeout) {
