@@ -351,7 +351,7 @@ static const uint32_t sd_commands[] = {
     SD_CMD_INDEX(3) | SD_RESP_R6,
     SD_CMD_INDEX(4),
     SD_CMD_INDEX(5) | SD_RESP_R4,
-    SD_CMD_INDEX(6) | SD_RESP_R1,
+    SD_CMD_INDEX(6) | SD_RESP_R1 | SD_DATA_READ, // CMD6 SWITCH_FUNC returns a 64-byte status block
     SD_CMD_INDEX(7) | SD_RESP_R1b,
     SD_CMD_INDEX(8) | SD_RESP_R7,
     SD_CMD_INDEX(9) | SD_RESP_R2,
@@ -1450,6 +1450,39 @@ card_reinit:
         }
 #endif
     }
+
+   // Switch the card to High Speed (50 MHz) if it supports it. CMD6 needs
+   // SD spec 1.10+; the 64-byte switch status is read at the 25 MHz clock
+   // and the host clock is only raised once the card confirms the switch.
+   if (ret->scr->sd_version >= SD_VER_1_1)
+   {
+      _Alignas(4) uint8_t switch_status[64]; // filled by 32-bit PIO reads
+      ret->buf = switch_status;
+      ret->block_size = 64;
+      ret->blocks_to_transfer = 1;
+      // Mode 0 (check), group 1 function 1 (High Speed)
+      sd_issue_command(ret, SWITCH_FUNC, 0x00fffff1, 500000);
+      // Group 1 support mask is bits 415:400 of the status: function 1 is
+      // bit 401, i.e. bit 1 of byte 13 (bytes arrive in wire order)
+      if (!FAIL(ret) && (switch_status[13] & 0x02))
+      {
+         ret->buf = switch_status;
+         ret->block_size = 64;
+         ret->blocks_to_transfer = 1;
+         // Mode 1 (set), group 1 function 1
+         sd_issue_command(ret, SWITCH_FUNC, 0x80fffff1, 500000);
+         // Bits 379:376 (low nibble of byte 16) report the selected
+         // group 1 function: 0x1 = High Speed, 0xF = switch failed
+         if (!FAIL(ret) && (switch_status[16] & 0x0f) == 0x1)
+         {
+#ifdef EMMC_DEBUG
+            printf("SD: switched to High Speed mode\r\n");
+#endif
+            sdhost_switch_clock_rate(SD_CLOCK_HIGH);
+         }
+      }
+      ret->block_size = 512;
+   }
 #ifdef EMMC_DEBUG
    printf("SD: found a valid version %s SD card\r\n", sd_versions[ret->scr->sd_version]);
    printf("SD: setup successful (status %"PRIu32")\r\n", status);
