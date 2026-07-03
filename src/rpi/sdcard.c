@@ -1119,6 +1119,7 @@ static int sd_card_init(struct block_device **dev)
 {
     // Prepare the device structure
    struct emmc_block_dev *ret;
+   int init_attempt = 0;
    if(*dev == NULL)
       ret = (struct emmc_block_dev *)malloc(sizeof(struct emmc_block_dev));
    else
@@ -1126,6 +1127,7 @@ static int sd_card_init(struct block_device **dev)
 
    assert(ret);
 
+card_reinit:
     sdhost_prepare_device_state(ret);
 
     if (sdhost_prepare_storage_controller() != 0)
@@ -1189,6 +1191,7 @@ static int sd_card_init(struct block_device **dev)
 
    // Call initialization ACMD41
    int card_is_busy = 1;
+   uint32_t acmd41_attempts = 0;
    while(card_is_busy)
    {
        uint32_t v2_flags = 0;
@@ -1232,7 +1235,12 @@ static int sd_card_init(struct block_device **dev)
        }
        else
        {
-           // Card is still busy
+           // Card is still busy - the SD spec allows 1 second for initialization
+           if (++acmd41_attempts >= 1000u)
+           {
+               if (*dev == NULL) free(ret);
+               return -1;
+           }
 #ifdef EMMC_DEBUG
             printf("SD: card is busy, retrying\r\n");
 #endif
@@ -1357,13 +1365,16 @@ static int sd_card_init(struct block_device **dev)
    {
        printf("SD: error sending SEND_SCR\r\n");
        free(ret->scr);
-       if (*dev ==NULL) free(ret);
-       printf("******************************************\r\n");
-       printf("* Reinitializing SD Card Driver          *\r\n");
-       printf("******************************************\r\n");
-       int i = sd_card_init((struct block_device **)&ret);
-       *dev = (struct block_device *)ret;
-       return i;
+       ret->scr = NULL;
+       if (++init_attempt < 3)
+       {
+           printf("******************************************\r\n");
+           printf("* Reinitializing SD Card Driver          *\r\n");
+           printf("******************************************\r\n");
+           goto card_reinit;
+       }
+       if (*dev == NULL) free(ret);
+       return -1;
    }
 
    // Determine card version
