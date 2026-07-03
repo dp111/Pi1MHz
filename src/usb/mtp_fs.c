@@ -420,43 +420,6 @@ static uint32_t fs_handle_from_path(const char* path) {
   return fs_hash_path_seeded(path, 2166136261u);
 }
 
-/* Returns true when a cache entry with the given handle already
- * exists.  Used by the cache builder to detect collisions while it
- * is still appending - the cache is not yet sorted at that point, so
- * a linear scan is the only safe lookup. */
-static bool fs_cache_has_handle(uint32_t handle) {
-  for (uint32_t i = 0; i < g_fs_cache.count; ++i) {
-    if (g_fs_cache.entries[i].handle == handle) return true;
-  }
-  return false;
-}
-
-/* Pick a handle for `path` that does NOT collide with anything
- * already in the cache.  Tries the primary seed first; on collision,
- * walks a tiny set of alternate seeds.  A path that exhausts every
- * seed (vanishingly rare with three seeds) gets a deterministic
- * fall-through derived from the cache index, which guarantees the
- * cache invariant "every handle is unique" at the cost of a
- * cache-rebuild-sensitive handle for that one entry.  This is the
- * worst case the host would ever observe and is preferable to two
- * files silently sharing one handle. */
-static uint32_t fs_resolve_handle(const char* path) {
-  static const uint32_t seeds[] = {
-    2166136261u,   /* FNV-1a primary */
-    0x12345678u,
-    0xDEADBEEFu,
-    0xCAFEBABEu
-  };
-  for (unsigned s = 0; s < sizeof(seeds)/sizeof(seeds[0]); ++s) {
-    uint32_t h = fs_hash_path_seeded(path, seeds[s]);
-    if (!fs_cache_has_handle(h)) return h;
-  }
-  /* All seeds collided - synthesise a unique handle from the cache
-   * index.  The handle is stable for the lifetime of this cache
-   * generation; it changes on the next fs_cache_invalidate. */
-  return 0x80000001u + g_fs_cache.count;
-}
-
 /* Cap recursion depth on tree walks so a pathological filesystem
  * (deeply nested directories, possibly hostile) cannot blow the
  * cooperative-poll stack.  Each level consumes a DIR (~600 B) + a
@@ -503,12 +466,10 @@ static bool fs_walk_tree_recursive(const char* dir_path, uint32_t parent_handle,
     if (!fs_make_path(dir_path, fno.fname, entry.path, sizeof(entry.path))) {
       continue;
     }
-    /* Use the collision-aware resolver: if the FNV hash for this
-     * path coincides with another already-cached entry, the
-     * resolver tries alternate seeds and falls back to a synthetic
-     * unique handle.  Without this two files would silently share
-     * one MTP handle and the host could not distinguish them. */
-    entry.handle = fs_resolve_handle(entry.path);
+    /* Handles are assigned without a per-entry collision check (that
+     * check made the cache build O(n^2) on large cards); duplicates
+     * are detected and repaired after the sort in fs_cache_ensure(). */
+    entry.handle = fs_handle_from_path(entry.path);
     entry.parent = parent_handle;
 
     if (!cb(&entry, user_data)) {
@@ -603,6 +564,40 @@ static int fs_cache_cmp_handle(const void* a, const void* b) {
   return (ha < hb) ? -1 : ((ha > hb) ? 1 : 0);
 }
 
+/* Handles are FNV-1a path hashes assigned with no per-entry collision
+ * check during the walk.  Detect duplicates as adjacent entries in the
+ * sorted array and re-hash the second of each pair with a different
+ * seed.  Collisions are vanishingly rare, so the loop body almost
+ * never executes; two files silently sharing a handle would be worse
+ * (the host could not distinguish them). */
+static void fs_cache_repair_collisions(void) {
+  for (uint32_t attempt = 1; attempt <= 8u; ++attempt) {
+    bool collided = false;
+    for (uint32_t i = 1; i < g_fs_cache.count; ++i) {
+      if (g_fs_cache.entries[i].handle == g_fs_cache.entries[i - 1u].handle) {
+        g_fs_cache.entries[i].handle =
+          fs_hash_path_seeded(g_fs_cache.entries[i].path,
+                              2166136261u + (attempt * 0x9E3779B9u));
+        collided = true;
+      }
+    }
+    if (!collided) {
+      return;
+    }
+    qsort(g_fs_cache.entries, g_fs_cache.count,
+          sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
+  }
+  /* Statistically unreachable: give any survivors synthetic handles,
+   * stable for this cache generation. */
+  for (uint32_t i = 1; i < g_fs_cache.count; ++i) {
+    if (g_fs_cache.entries[i].handle == g_fs_cache.entries[i - 1u].handle) {
+      g_fs_cache.entries[i].handle = 0x80000001u + i;
+    }
+  }
+  qsort(g_fs_cache.entries, g_fs_cache.count,
+        sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
+}
+
 static bool fs_cache_ensure(void) {
   if (g_fs_cache.valid) {
     return true;
@@ -615,12 +610,14 @@ static bool fs_cache_ensure(void) {
     fs_cache_clear();
     return false;
   }
-  /* Sort by handle so fs_get_entry_by_handle() can binary-search.
-   * The cache is only ever appended to during the walk above and never
-   * mutated afterwards, so sorting once here keeps the bsearch invariant. */
+  /* Sort by handle so fs_get_entry_by_handle() can binary-search, then
+   * repair any hash collisions (they surface as adjacent duplicates).
+   * The cache is never mutated after this point, so the bsearch
+   * invariant holds for the cache generation. */
   if (g_fs_cache.count > 1u) {
     qsort(g_fs_cache.entries, g_fs_cache.count,
           sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
+    fs_cache_repair_collisions();
   }
 
   g_fs_cache.valid = true;
