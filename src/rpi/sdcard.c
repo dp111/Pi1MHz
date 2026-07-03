@@ -594,6 +594,17 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
             dev->last_error = sdhost_translate_error(dev->last_interrupt, true);
             sdhost_log_failure("pio", opcode, argument, dev);
             sdhost_write(SDHSTS, dev->last_interrupt & SDHSTS_CLEAR_MASK);
+            if (opcode == READ_MULTIPLE_BLOCK || opcode == WRITE_MULTIPLE_BLOCK)
+            {
+                // Take the card out of the SENDING/RECEIVING data state,
+                // otherwise the caller's immediate retries of the whole
+                // command cannot succeed and force a full re-init
+                uint32_t stop_response;
+                uint32_t stop_error = 0;
+                uint32_t stop_cmd = ((uint32_t)STOP_TRANSMISSION & SDCMD_CMD_MASK) | SDCMD_BUSYWAIT;
+                (void) sdhost_issue_raw_command(stop_cmd, 0u, timeout, &stop_response, false, &stop_error);
+                (void) sdhost_wait_for_data_idle(false);
+            }
             return;
         }
 
