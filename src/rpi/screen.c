@@ -827,7 +827,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
 void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
 {
     // we can cheat here as we are only changing the position
-    rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];;
+    volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
 
 // we should clip the plane to the screen size
 
@@ -848,7 +848,7 @@ void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
     LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
-    rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
 
     if (enable)
     {
@@ -907,7 +907,7 @@ uint32_t screen_get_palette_entry( uint32_t entry )
 
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
-    rgb_8bit_t* rgb = (rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
 
     if ( (rgb->ctrl & 0xF) == 0xD)
     {
