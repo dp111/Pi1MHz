@@ -110,7 +110,7 @@ void RPI_SetGpioPull(rpi_gpio_pin_t gpio, rpi_gpio_pull pull)
 #if defined(RPI4)
   rpi_reg_rw_t* pull_reg = &RPI_GpioBase->GPPULL[gpio / 16];
 
-  rpi_reg_rw_t pull_copy = *pull_reg;
+  uint32_t pull_copy = *pull_reg;
   pull_copy &= (uint32_t)~(0x3 << ((gpio % 16) * 2));
   pull_copy |= (pull << ((gpio % 16) * 2));
   *pull_reg = pull_copy;
