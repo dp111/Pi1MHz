@@ -211,8 +211,6 @@ static void _invalidate_dtlb_mva(const void *address)
 }
 
 void map_4k_page(unsigned int logical, unsigned int physical) {
-  // Invalidate the data TLB before changing mapping
-  _invalidate_dtlb_mva((void *)(logical << 12));
   // Setup the 4K page table entry
   // Second level descriptors use extended small page format
   //  so inner/outer caching can be controlled
@@ -228,6 +226,17 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
 #else
   PageTable2[logical] = (physical<<12) | 0x133u | (1 << 6) | (1<<3) | (1 << 2);
 #endif
+  // ARM1176 TRM 3.2.13 (TTBR0) note: the processor CANNOT page table walk from the
+  // L1 data cache. The PTE just written may be sitting dirty in L1 (page tables live
+  // in inner write-back memory), so it must be cleaned to where the walker can see it
+  // BEFORE the TLB entry is invalidated, or the walker re-fetches the stale PTE.
+  // (Harmless on >=v7 too.) Order: write PTE -> clean line -> drain -> invalidate TLB.
+  // The DSB directly after the Clean-by-MVA is also the documented workaround for
+  // ARM1176 erratum 716151 (Clean DCache Line by MVA can corrupt a subsequent store
+  // to the same line under Hit-Under-Miss) - keep them adjacent.
+  __asm volatile ("mcr p15, 0, %0, c7, c10, 1" : : "r" (&PageTable2[logical]) : "memory"); // clean D$ line by MVA
+  __asm volatile ("mcr p15, 0, %0, c7, c10, 4" : : "r" (0) : "memory");                    // DSB / drain write buffer
+  _invalidate_dtlb_mva((void *)(logical << 12));
 }
 #endif
 void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
@@ -261,6 +270,13 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 
   // For cacheable RAM
   // TEX = 001; C=1; B=1 (Outer and inner write back, write allocate)
+  //
+  // NOTE (measured on Pi Zero, 2026-07): the ARM1176JZF-S L1 data cache is
+  // READ-ALLOCATE ONLY — requesting write-allocate (TEX=001) has no effect
+  // (verified: TEX=001 vs TEX=000 builds give bit-identical store timings).
+  // So 0x0C0E (WB, no-write-allocate) below is already optimal. Consequence:
+  // store-ONLY working sets never enter the cache and run at bus speed
+  // (~9-10 cyc/store); pre-touch such buffers with loads if they are hot.
 
   // For non-cacheable RAM
   // TEX = 001; C=0; B=0 (Outer and inner non-cacheable)
@@ -316,6 +332,12 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   start = 0;
   for (; base <  end; base++)
      PageTable[base] = ((start++) << 20 )| 0x0C0E ;
+
+  // Zero the remaining entries: PageTable is NOINIT, so without this the high
+  // VA range would get garbage descriptors and a stray access there would hit
+  // a random mapping instead of a clean translation fault.
+  for (; base < 4096; base++)
+     PageTable[base] = 0;
 #ifdef NUM_4K_PAGES
   if ( num_4k_pages != 0 )
   {
@@ -360,8 +382,13 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   unsigned int attr = ((aa6) << 6) | (1 << 3) | (shareable << 1) | ((aa0 ));
   __asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (attr | (unsigned) &PageTable));
 #else
-  // set TTBR0 (page table walk inner cacheable, outer non-cacheable, shareable memory)
-  __asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (0x03 | (unsigned) &PageTable));
+  // set TTBR0: C=1 (walks Inner Cacheable), S=0 (matches the tables' actual Non-shared
+  // mapping), RGN=00 (walks Outer Non-cacheable — safe wrt VC L2), P=0.
+  // ARM1176 TRM 3.2.13 note: the walker CANNOT read the L1 data cache, so with C=1 and
+  // tables in inner write-back memory, any runtime PTE modification must be cleaned from
+  // the D-cache before the walk (map_4k_page does this). Boot-time table writes here
+  // happen with the MMU/caches still off, so they are already visible to the walker.
+  __asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (0x01 | (unsigned) &PageTable));
 #endif
 
   // Invalidate entire data cache
@@ -372,10 +399,17 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // invalidate data cache and flush prefetch buffer
   __asm volatile ("mcr p15, 0, %0, c7, c5,  4" :: "r" (0) : "memory");
   __asm volatile ("mcr p15, 0, %0, c7, c6,  0" :: "r" (0) : "memory");
+  // belt-and-braces: reset state of the I-cache and TLBs is not architecturally
+  // guaranteed — invalidate both before enabling (one-off boot cost)
+  // (use invalidate-ENTIRE, c7,c5,0: the by-MVA/range/set-way forms are subject to
+  //  ARM1176 erratum 720013 "Invalidate Instruction Cache operations can fail")
+  __asm volatile ("mcr p15, 0, %0, c7, c5,  0" :: "r" (0) : "memory");  // invalidate I-cache
+  __asm volatile ("mcr p15, 0, %0, c8, c7,  0" :: "r" (0) : "memory");  // invalidate unified TLB
 #endif
 
   // enable MMU, L1 cache and instruction cache, L2 cache, write buffer,
-  //   branch prediction and extended page table on
+  //   branch prediction on. (XP, bit 23, is deliberately LEFT 0 on Pi 0/1:
+  //   ARMv4/5 backwards-compatible descriptor format — see map_4k_page.)
   unsigned sctrl;
   __asm volatile ("mrc p15,0,%0,c1,c0,0" : "=r" (sctrl));
   // Bit 12 enables the L1 instruction cache
@@ -387,4 +421,10 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   sctrl |= 0x00001805;
   sctrl |= 1<<22; // U (v6 unaligned access model)
   __asm volatile ("mcr p15,0,%0,c1,c0,0" :: "r" (sctrl) : "memory");
+  // synchronize the SCTLR change before executing further instructions
+#if (__ARM_ARCH >= 7 )
+  __asm volatile ("isb" ::: "memory");
+#else
+  __asm volatile ("mcr p15, 0, %0, c7, c5,  4" :: "r" (0) : "memory");  // flush prefetch buffer
+#endif
 }
