@@ -114,6 +114,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "ram_emulator.h"
 #include "harddisc_emulator.h"
 #include "M5000_emulator.h"
+#include "BeebSID/BeebSid.h"
 #include "framebuffer/framebuffer.h"
 #include "discaccess_emulator.h"
 #include "helpers.h"
@@ -137,6 +138,8 @@ static emulator_list emulator[] = {
    {"Rambyte",rambyte_emulator_init, 0x00, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
+   /* Default off — enable with BeebSID_addr=0x20 in Pi1MHz.cfg (disables M5000). */
+   {"BeebSID", BeebSID_emulator_init, 0x20, 0},
    {"Discaccess",discaccess_emulator_init, 0xA6, 1 },
    {"Videoplayer",videoplayer_init, 0x00, 1},  // start before frame buffer , but after filesystem
    {"Framebuffer",fb_emulator_init, 0xA0, 1},
@@ -365,8 +368,31 @@ static void init_emulator(void) {
                emulator[i].enable = 0;
             }
          else if (ov > 0)
-            {LOG_DEBUG("%s address = 0x%02x\r\n", emulator[i].name, emulator[i].address);}
+            {
+               LOG_DEBUG("%s address = 0x%02x\r\n", emulator[i].name, emulator[i].address);
+               /* Config address enables emulators that default to off (e.g. BeebSID). */
+               emulator[i].enable = 1;
+            }
       }
+
+   /* BeebSID and M5000 share AUDIO_PIN / rpi_audio — only one may run. */
+   {
+      uint8_t beebsid_on = 0;
+      for (uint8_t i = 0; i < NUM_EMULATORS; i++) {
+         if (emulator[i].enable == 1 && strcmp(emulator[i].name, "BeebSID") == 0) {
+            beebsid_on = 1;
+            break;
+         }
+      }
+      if (beebsid_on) {
+         for (uint8_t i = 0; i < NUM_EMULATORS; i++) {
+            if (strcmp(emulator[i].name, "M5000") == 0 && emulator[i].enable == 1) {
+               LOG_INFO("BeebSID enabled: disabling M5000 (shared audio path)\r\n");
+               emulator[i].enable = 0;
+            }
+         }
+      }
+   }
 
    Pi1MHz_polls_max = 0;
 

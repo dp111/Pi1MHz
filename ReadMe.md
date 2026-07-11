@@ -314,6 +314,7 @@ Addresses currently defined
 * Rambyte_addr=0xYY : set the base address of the byte write ram registers default &00, -1 to disable
 * Harddisc_addr=0xYY : set the base address of the harddisc registers default &40, -1 to disable
 * M5000_addr=-1 : disables the M5000 emulator
+* BeebSID_addr=0x20 : enables BeebSID (SID at `&FC20`, default off). Enabling BeebSID disables M5000 (shared `AUDIO_PIN` / PWM audio path). Use `BeebSID_addr=-1` to leave it off explicitly.
 * Framebuffer_addr=0xYY : set the base address of the frame buffer registers default &A0, -1 to disable
 * Discaccess_addr=0xYY : set the base address of the discaccess registers default &A6, -1 to disable
 * Helpers_addr=0xYY : set the base address of the helpers registers default &88, -1 to disable

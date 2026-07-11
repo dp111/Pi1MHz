@@ -179,6 +179,20 @@ set(M5000_emulator_files
    M5000_emulator.c
 )
 
+# BeebSID (FastSID) — shares rpi/audio.c with M5000; mutex in Pi1MHz.c
+set(BeebSID_emulator_files
+   BeebSID/BeebSid.c
+   BeebSID/BeebSid.h
+   fastsid/beebsid_sid.c
+   fastsid/fastsid.c
+)
+include_directories(fastsid)
+set_source_files_properties(
+   fastsid/fastsid.c
+   PROPERTIES
+   COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-conversion;-Wno-conversion;-Wno-float-conversion"
+)
+
 #FrameBuffer
 set(FrameBuffer_emulator_files
    framebuffer/framebuffer.c
@@ -315,6 +329,7 @@ set( Pi1MHz_sources
     ${core_files}
     ${harddisc_emulator_files}
     ${M5000_emulator_files}
+    ${BeebSID_emulator_files}
     ${FrameBuffer_emulator_files}
     ${discaccess_emulator_files}
     ${teletext_emulator_files}
