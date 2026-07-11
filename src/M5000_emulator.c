@@ -203,18 +203,10 @@ static void M5000_gain(void) {
       autorange = 1;
 }
 
-// in cmdline.txt M5000_BeebAudio_Off=1 turns off beeb Audio
-
+// BeebAudio_Off (handled globally at config time) also selects stereo output:
+// when the Beeb's own audio is muted we keep L/R separate on the Pi jack.
 static void M5000_BeebAudio(void) {
-   const char *prop = config_get("M5000_BeebAudio_Off");
-
-   if (prop)
-      stereo = (uint8_t)atoi(prop);
-   else
-      stereo = 0;
-
-   if (stereo == 1 )
-      RPI_SetGpioPinFunction(AUDIO_PIN, FS_INPUT); // Turn off Beeb audio
+   stereo = rpi_audio_beeb_muted() ? 1u : 0u;
 }
 
 static void update_channels(struct synth *s)
