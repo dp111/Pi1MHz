@@ -176,3 +176,9 @@ Faster main polling loop by not polling wifi as often.
 Econet / AUN support . two roms included AUNFSbeeb and AUNFSM128.
 Teletext emulator using and external server
 new Pi1MHz.cfg file
+
+v.1.29
+More AUN econet fixes /improvements
+Fast MTP file scanning
+BeebSID added ( thanks to afawcett for the work)
+M5000_BeebAudio_Off removed from Pi1MHz.cfg and replace with a Generic BeebAudio_Off
