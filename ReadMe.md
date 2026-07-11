@@ -308,13 +308,13 @@ Addresses currently defined
 ## cmdline.txt options
 
 * LED override : depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx where xx is the pi GPIO number
-* M5000_BeebAudio_Off=1 to turn off Audio out of the Beeb and enable stereo on the headphone jack of Pi3B+
+* BeebAudio_Off=1 to turn off Audio out of the Beeb (and, for M5000, enable stereo on the headphone jack of Pi3B+); applies to whichever PWM audio emulator is active (M5000 or BeebSID)
 * M5000_Gain=xxxx : Over rides default gain of 16. Add 1000 to disable auto scaling as well. Auto scaling reduces the gain if the signal clips
 * Rampage_addr=0xYY : set the base address of the page write ram registers default &FD, -1 to disable
 * Rambyte_addr=0xYY : set the base address of the byte write ram registers default &00, -1 to disable
 * Harddisc_addr=0xYY : set the base address of the harddisc registers default &40, -1 to disable
 * M5000_addr=-1 : disables the M5000 emulator
-* BeebSID_addr=0x20 : enables BeebSID (SID at `&FC20`, default off). Enabling BeebSID disables M5000 (shared `AUDIO_PIN` / PWM audio path). Use `BeebSID_addr=-1` to leave it off explicitly.
+* BeebSID_addr=0x20 : enables BeebSID (SID at `&FC20`, default off). Enabling BeebSID disables M5000 (shared `AUDIO_PIN` / PWM audio path). Use `BeebSID_addr=-1` to leave it off explicitly. Use `BeebAudio_Off=1` (above) to mute the Beeb's own audio while BeebSID plays.
 * Framebuffer_addr=0xYY : set the base address of the frame buffer registers default &A0, -1 to disable
 * Discaccess_addr=0xYY : set the base address of the discaccess registers default &A6, -1 to disable
 * Helpers_addr=0xYY : set the base address of the helpers registers default &88, -1 to disable

@@ -11,12 +11,10 @@ CLOCK maincpu_clk;
 static sound_t *g_psid;
 static BYTE g_sidstate[32];
 static uint32_t g_sample_rate;
-static uint32_t g_cycle_accum; /* leftover 1MHz cycles not yet turned into a frame */
 
 void beebsid_sid_init(uint32_t sample_rate_hz)
 {
     g_sample_rate = sample_rate_hz ? sample_rate_hz : 44100u;
-    g_cycle_accum = 0;
     maincpu_clk = 0;
     memset(g_sidstate, 0, sizeof(g_sidstate));
 
@@ -41,7 +39,6 @@ void beebsid_sid_reset(void)
         return;
     }
     fastsid_hooks.reset(g_psid, maincpu_clk);
-    g_cycle_accum = 0;
 }
 
 void beebsid_sid_write(uint8_t reg, uint8_t value)
@@ -53,31 +50,19 @@ void beebsid_sid_write(uint8_t reg, uint8_t value)
     g_sidstate[reg] = value;
 }
 
-size_t beebsid_sid_render(uint32_t cpu_cycles, int16_t *out, size_t max_frames)
+size_t beebsid_sid_render(int16_t *out, size_t frames)
 {
-    size_t frames;
-    int delta_t;
+    int delta_t = 0; /* unused by FastSID at factor 1000; it returns exactly `frames` */
     int written;
 
-    if (!g_psid || !out || max_frames == 0 || g_sample_rate == 0) {
+    if (!g_psid || !out || frames == 0) {
         return 0;
     }
 
-    maincpu_clk += cpu_cycles;
-    g_cycle_accum += cpu_cycles;
+    /* Keep the SID master clock advancing in 1MHz cycles so register-write
+     * timestamps stay monotonic; output rate is driven purely by `frames`. */
+    maincpu_clk += (CLOCK)(((uint64_t)frames * 1000000u) / (uint64_t)g_sample_rate);
 
-    /* frames = floor(accum * rate / 1e6) */
-    frames = (size_t)(((uint64_t)g_cycle_accum * (uint64_t)g_sample_rate) / 1000000ull);
-    if (frames > max_frames) {
-        frames = max_frames;
-    }
-    if (frames == 0) {
-        return 0;
-    }
-
-    g_cycle_accum -= (uint32_t)(((uint64_t)frames * 1000000ull) / (uint64_t)g_sample_rate);
-
-    delta_t = (int)(((uint64_t)frames * 1000000ull) / (uint64_t)g_sample_rate);
     written = fastsid_hooks.calculate_samples(g_psid, (SWORD *)out, (int)frames, 1, &delta_t);
     if (written < 0) {
         return 0;

@@ -115,6 +115,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "harddisc_emulator.h"
 #include "M5000_emulator.h"
 #include "BeebSID/BeebSid.h"
+#include "rpi/audio.h"
 #include "framebuffer/framebuffer.h"
 #include "discaccess_emulator.h"
 #include "helpers.h"
@@ -435,6 +436,13 @@ static void init_emulator(void) {
    Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL  , Pi1MHzBus_addr_Status );
    Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_write_Status );
    Pi1MHz_Register_Memory( READ_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_read_Status );
+
+   /* BeebAudio_Off routes the shared audio pin once here, so whichever PWM
+      audio emulator (M5000/BeebSID) runs doesn't have to read it itself. */
+   {
+      const char *bp = config_get("BeebAudio_Off");
+      rpi_audio_mute_beeb(bp && atoi(bp) == 1);
+   }
 
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {

@@ -4,6 +4,8 @@
 
 #include "base.h"
 #include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 // NB Buffer size must be a multiple of 32 bytes
 // buffer contains both left and right sample words
@@ -152,5 +154,18 @@ size_t rpi_audio_buffer_free_space(void);
 uint32_t * rpi_audio_buffer_pointer(void);
 void rpi_audio_samples_written(void);
 uint32_t rpi_audio_init(uint32_t samplerate );
+
+// Convert a signed 16-bit sample to a PWM word centred at mid-rail, with
+// error-feedback dithering (carry the sub-step remainder through *error) and
+// clamping to the PWM range set by the last rpi_audio_init().
+uint32_t rpi_audio_pack(int16_t sample, int32_t *error);
+
+// Mute (disconnect) or restore the Pi's PWM feed on the shared audio pin.
+// mute==true sets the pin hi-Z (turns off Beeb audio, as M5000 does);
+// mute==false routes PWM1 back to the pin. Set once at config time.
+void rpi_audio_mute_beeb(bool mute);
+
+// Last state passed to rpi_audio_mute_beeb() (true == Beeb audio muted).
+bool rpi_audio_beeb_muted(void);
 
 #endif

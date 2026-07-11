@@ -13,7 +13,7 @@
 
 static uint8_t beebsid_base;
 static uint32_t beebsid_sample_rate;
-static uint32_t beebsid_audio_range;
+static int32_t beebsid_dither_error;   /* error-feedback state for rpi_audio_pack */
 
 static void beebsid_write(unsigned int gpio)
 {
@@ -27,32 +27,12 @@ static void beebsid_write(unsigned int gpio)
     Pi1MHz_MemoryWrite(addr, data);
 }
 
-static uint32_t sample_to_pwm(int16_t s)
-{
-    int32_t mid = (int32_t)(beebsid_audio_range / 2u);
-    int32_t v;
-
-    if (mid <= 0) {
-        return 0;
-    }
-    v = mid + (((int32_t)s * mid) / 32768);
-    if (v < 0) {
-        v = 0;
-    }
-    if (v > (int32_t)beebsid_audio_range) {
-        v = (int32_t)beebsid_audio_range;
-    }
-    return (uint32_t)v;
-}
-
 static void beebsid_poll(void)
 {
     size_t space = rpi_audio_buffer_free_space() >> 1; /* stereo frames */
+    int16_t samples[DMA_BUFFER_SIZE / 2u];
     uint32_t *bufptr;
     size_t i;
-    int16_t samples[DMA_BUFFER_SIZE / 2u];
-    uint32_t cycles;
-    size_t got;
 
     if (space == 0) {
         return;
@@ -61,13 +41,11 @@ static void beebsid_poll(void)
         space = DMA_BUFFER_SIZE / 2u;
     }
 
-    cycles = (uint32_t)(((uint64_t)space * 1000000ull) / (uint64_t)beebsid_sample_rate);
-    got = beebsid_sid_render(cycles, samples, space);
+    beebsid_sid_render(samples, space);
     bufptr = rpi_audio_buffer_pointer();
 
     for (i = 0; i < space; i++) {
-        int16_t s = (i < got) ? samples[i] : 0;
-        uint32_t word = sample_to_pwm(s);
+        uint32_t word = rpi_audio_pack(samples[i], &beebsid_dither_error);
         bufptr[i * 2u] = word;
         bufptr[i * 2u + 1u] = word;
     }
@@ -81,9 +59,10 @@ void BeebSID_emulator_init(uint8_t instance, uint8_t address)
     (void)instance;
     beebsid_base = address;
     beebsid_sample_rate = BEEBSID_SAMPLE_RATE;
+    beebsid_dither_error = 0;
 
     beebsid_sid_init(beebsid_sample_rate);
-    beebsid_audio_range = rpi_audio_init(beebsid_sample_rate);
+    rpi_audio_init(beebsid_sample_rate);
 
     for (i = 0; i < 32u; i++) {
         Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + i), beebsid_write);

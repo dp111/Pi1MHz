@@ -3,6 +3,8 @@
 #include "systimer.h"
 #include "audio.h"
 #include "rpi.h"
+#include "gpio.h"
+#include "../Pi1MHz.h"   // for AUDIO_PIN
 
 struct bcm2708_dma_cb {
    uint32_t info;
@@ -28,6 +30,8 @@ buffer state dma
 
 static uint8_t buffer_state;
 static uint32_t *next_buffer;
+static uint32_t audio_range;   // PWM full-scale count, set by rpi_audio_init()
+static bool beeb_muted;        // last state set via rpi_audio_mute_beeb()
 
 size_t rpi_audio_buffer_free_space(void)
 {
@@ -99,7 +103,7 @@ uint32_t rpi_audio_init(uint32_t samplerate)
 {
    // hardcoded constant clock rate 500MHz
    // Clock is divided by two to feed the PWM block ( 250MHz )
-   uint32_t audio_range = 500000000 / (2 * samplerate) ;
+   audio_range = 500000000 / (2 * samplerate) ;
 
    RPI_CLKBase->PWM_CTL = PM_PASSWORD | BCM2835_PWMCLK_CNTL_KILL;
    RPI_PWMBase->PWM_CONTROL = 0;
@@ -139,4 +143,32 @@ uint32_t rpi_audio_init(uint32_t samplerate)
    RPI_DMA5Base->CS = 0x10880000 | BCM2708_DMA_ACTIVE;  // go, mid priority, wait for outstanding writes
 
    return audio_range;
+}
+
+uint32_t rpi_audio_pack(int16_t sample, int32_t *error)
+{
+   // Scale [-32768..32767] onto [0..audio_range] centred at mid-rail, keeping
+   // 16 fractional bits so the sub-step remainder can be fed back as dither
+   // (the PWM range is only ~10 bits, so plain truncation is audibly coarse).
+   int32_t range = (int32_t)audio_range;
+   int32_t acc   = (int32_t)sample * range + (range << 15) + *error;
+   int32_t out   = acc >> 16;
+
+   *error = acc - (out << 16);   // carry fractional part into the next sample
+   if (out < 0)          { out = 0;     *error = 0; }
+   else if (out > range) { out = range; *error = 0; }
+   return (uint32_t)out;
+}
+
+void rpi_audio_mute_beeb(bool mute)
+{
+   // The Pi's PWM audio and the Beeb's own audio share AUDIO_PIN. Setting it
+   // to an input (hi-Z) turns off Beeb audio; ALT0 routes PWM1 back to it.
+   beeb_muted = mute;
+   RPI_SetGpioPinFunction(AUDIO_PIN, mute ? FS_INPUT : FS_ALT0);
+}
+
+bool rpi_audio_beeb_muted(void)
+{
+   return beeb_muted;
 }
