@@ -23,7 +23,7 @@
 
    Functions provided
 
-   Pi1MHz_Register_Memory(int access, unsigned int addr, func_ptr *func_ptr )
+   Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, func_ptr *func_ptr )
          This needs to be called for each memory location that requires a call back
          The function will be run in FIQ mode and use the FIQ stack. If it needs to do anything
          complex e.g. allocate memory this should be put into a queue so the polled function can
@@ -224,7 +224,7 @@ void Pi1MHz_EmulatedMemoryByte(unsigned int gpio)
 // For each location in FRED and JIM which a task wants to be called for
 // it must register its interest. Only one task can be called per location
 // for access variable use WRITE_FRED WRITE_JIM READ_FRED READ_JIM
-void Pi1MHz_Register_Memory(int access, unsigned int addr, callback_func_ptr function_ptr )
+void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_func_ptr function_ptr )
 {
    Pi1MHz->callback_table[access+addr] = function_ptr;
 }

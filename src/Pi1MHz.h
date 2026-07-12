@@ -210,7 +210,7 @@ static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;
 #define DISC_RAM_BASE ((uint32_t)( ((size_t)Pi1MHz->JIM_ram_size) * JIM_RAM_STEP )- DISC_RAM_SIZE)
 
 void Pi1MHz_LED(int led);
-void Pi1MHz_Register_Memory(int access, unsigned int addr, callback_func_ptr function_ptr );
+void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_func_ptr function_ptr );
 void Pi1MHz_Register_Poll( func_ptr function_ptr );
 
 void Pi1MHz_nIRQ_ASSERT(uint8_t src);
