@@ -329,9 +329,9 @@ void mouse_redirect_init(uint8_t instance, uint8_t address)
 {
     // register call backs
     fred_address = address;
-    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+0), Pi1MHz_EmulatedMemoryByte );
-    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+1), Pi1MHz_EmulatedMemoryByte );
-    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+2), Pi1MHz_EmulatedMemoryByte );
-    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+3), Pi1MHz_EmulatedMemoryByte );
-    Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t) (address+4), mouse_redirect_mouse_type );
+    Pi1MHz_Register_Memory(WRITE_FRED, (address+0), Pi1MHz_EmulatedMemoryByte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (address+1), Pi1MHz_EmulatedMemoryByte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (address+2), Pi1MHz_EmulatedMemoryByte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (address+3), Pi1MHz_EmulatedMemoryByte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (address+4), mouse_redirect_mouse_type );
 }

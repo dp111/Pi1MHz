@@ -550,11 +550,11 @@ void teletext_emulator_init(uint8_t instance, uint8_t address)
    /* +0 status read is served from the readback memory the poll keeps
     * current; the rest need callbacks. */
    Pi1MHz_Register_Memory(WRITE_FRED, TTX_ADDR,             ttx_w_control);
-   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(TTX_ADDR + 1u), ttx_w_row);
-   Pi1MHz_Register_Memory(READ_FRED,  (uint8_t)(TTX_ADDR + 2u), ttx_r_data);
-   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(TTX_ADDR + 2u), ttx_w_data);
-   Pi1MHz_Register_Memory(READ_FRED,  (uint8_t)(TTX_ADDR + 3u), ttx_clear);
-   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(TTX_ADDR + 3u), ttx_clear);
+   Pi1MHz_Register_Memory(WRITE_FRED, (TTX_ADDR + 1u), ttx_w_row);
+   Pi1MHz_Register_Memory(READ_FRED,  (TTX_ADDR + 2u), ttx_r_data);
+   Pi1MHz_Register_Memory(WRITE_FRED, (TTX_ADDR + 2u), ttx_w_data);
+   Pi1MHz_Register_Memory(READ_FRED,  (TTX_ADDR + 3u), ttx_clear);
+   Pi1MHz_Register_Memory(WRITE_FRED, (TTX_ADDR + 3u), ttx_clear);
 
    Pi1MHz_Register_Poll(teletext_poll);
 }

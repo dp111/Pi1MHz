@@ -65,7 +65,7 @@ void BeebSID_emulator_init(uint8_t instance, uint8_t address)
     rpi_audio_init(beebsid_sample_rate);
 
     for (i = 0; i < 32u; i++) {
-        Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(address + i), beebsid_write);
+        Pi1MHz_Register_Memory(WRITE_FRED, (address + i), beebsid_write);
     }
     Pi1MHz_Register_Poll(beebsid_poll);
 }

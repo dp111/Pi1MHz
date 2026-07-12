@@ -23,7 +23,7 @@
 
    Functions provided
 
-   Pi1MHz_Register_Memory(int access, int addr, func_ptr *func_ptr )
+   Pi1MHz_Register_Memory(int access, unsigned int addr, func_ptr *func_ptr )
          This needs to be called for each memory location that requires a call back
          The function will be run in FIQ mode and use the FIQ stack. If it needs to do anything
          complex e.g. allocate memory this should be put into a queue so the polled function can
@@ -173,12 +173,16 @@ _Static_assert(sizeof(Pi1MHz_t) <= 0x2000, "Pi1MHz_t must fit into low memory");
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 {
    uint32_t da = 0xff00 | data ; // set output enable
+   // Plain read-back store first: it is independent of the volatile VPU
+   // read-modify-write below, so the CPU issues it during the VPU load's
+   // result latency instead of stalling after it (matches MemoryWrite16's
+   // ordering).
+   Pi1MHz->Memory[addr] = data;
    switch (addr & 1)
    {
    case 0: Pi1MHz_Memory_VPU[addr>>1] = da  | (Pi1MHz_Memory_VPU[addr>>1] & 0xFFFFFF00); break;
    case 1: Pi1MHz_Memory_VPU[addr>>1] = (da<<16) | (Pi1MHz_Memory_VPU[addr>>1] & 0xFF00FFFF); break;
    }
-   Pi1MHz->Memory[addr] = data;
 }
 
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
@@ -220,7 +224,7 @@ void Pi1MHz_EmulatedMemoryByte(unsigned int gpio)
 // For each location in FRED and JIM which a task wants to be called for
 // it must register its interest. Only one task can be called per location
 // for access variable use WRITE_FRED WRITE_JIM READ_FRED READ_JIM
-void Pi1MHz_Register_Memory(int access, uint8_t addr, callback_func_ptr function_ptr )
+void Pi1MHz_Register_Memory(int access, unsigned int addr, callback_func_ptr function_ptr )
 {
    Pi1MHz->callback_table[access+addr] = function_ptr;
 }

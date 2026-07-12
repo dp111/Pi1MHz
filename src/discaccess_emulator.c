@@ -420,14 +420,14 @@ void discaccess_emulator_init( uint8_t instance , uint8_t address)
 
    // register call backs
    // byte memory address write
-   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+0), discaccess_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+1), discaccess_emulator_byte_addr );
-   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+2), discaccess_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, (ram_address+0), discaccess_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, (ram_address+1), discaccess_emulator_byte_addr );
+   Pi1MHz_Register_Memory(WRITE_FRED, (ram_address+2), discaccess_emulator_byte_addr );
    // data byte
-   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+3), discaccess_emulator_byte_write_inc );
-   Pi1MHz_Register_Memory(READ_FRED , (uint8_t)(ram_address+3), discaccess_emulator_byte_read_inc );
+   Pi1MHz_Register_Memory(WRITE_FRED, (ram_address+3), discaccess_emulator_byte_write_inc );
+   Pi1MHz_Register_Memory(READ_FRED , (ram_address+3), discaccess_emulator_byte_read_inc );
    // command pointer
-   Pi1MHz_Register_Memory(WRITE_FRED, (uint8_t)(ram_address+4), discaccess_emulator_command );
+   Pi1MHz_Register_Memory(WRITE_FRED, (ram_address+4), discaccess_emulator_command );
 
    Pi1MHz_MemoryWrite((uint32_t)(ram_address+4), 0 ) ; // make sure command is null on read back
    Pi1MHz_MemoryWrite((uint32_t)(ram_address+5), 0 ) ; // clear IRQ register
