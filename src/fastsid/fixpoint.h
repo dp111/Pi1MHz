@@ -3,7 +3,9 @@
 #define VICE_FIXPOINT_H
 
 typedef float vreal_t;
-#define REAL_VALUE(x)   (x)
+/* Force float so double literals (e.g. REAL_VALUE(0.1) in dofilter) don't
+   promote the whole per-sample filter expression to double on VFP. */
+#define REAL_VALUE(x)   ((float)(x))
 #define REAL_MULT(x, y) ((x) * (y))
 #define REAL_TO_INT(x)  ((int)(x))
 

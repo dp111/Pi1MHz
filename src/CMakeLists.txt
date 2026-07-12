@@ -190,7 +190,7 @@ include_directories(fastsid)
 set_source_files_properties(
    fastsid/fastsid.c
    PROPERTIES
-   COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-conversion;-Wno-conversion;-Wno-float-conversion"
+   COMPILE_OPTIONS "-Wno-unused-parameter;-Wno-sign-conversion;-Wno-conversion;-Wno-float-conversion;-Wno-double-promotion;-Wno-shadow;-Wno-implicit-fallthrough"
 )
 
 #FrameBuffer
