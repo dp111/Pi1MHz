@@ -52,7 +52,12 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         helpscreen += size;helpscreen_size -= size;
         size = strlcpylen(helpscreen, get_info_string(), helpscreen_size);
         helpscreen += size;helpscreen_size -= size;
-        size = (size_t)snprintf(helpscreen, helpscreen_size, " %2.1fC", (double) get_temp() );
+        // Hand-formatted to tenths so this doesn't need newlib's float printf
+        // support (dtoa machinery, ~5 KB) -- see CMakeLists.txt, -u _printf_float.
+        // get_temp() cannot go negative (0.0F on failure), so no sign handling.
+        long temp_tenths = (long)(get_temp() * 10.0F + 0.5F);
+        size = (size_t)snprintf(helpscreen, helpscreen_size, " %ld.%ldC",
+                                 temp_tenths / 10, temp_tenths % 10);
         // snprintf returns the would-be length, which may exceed the buffer;
         // clamp so the running pointer/size (and the returned length) stay exact.
         if (size >= helpscreen_size) size = helpscreen_size - 1;

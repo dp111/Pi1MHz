@@ -38,6 +38,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu23" )
 
+# Replace newlib's _ctype_ table lookups for toupper/tolower with 3-instruction
+# ASCII range checks. Force-included so that source files keep using plain
+# <ctype.h> and plain toupper()/tolower() -- see lib/ascii_ctype.h.
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -include ${PROJECT_SOURCE_DIR}/lib/ascii_ctype.h" )
+
 if(EXISTS ${PROJECT_SOURCE_DIR}/FIQ.s)
 # comment out line below if FIQ code doesn't sit directly at the FIQ vector
 add_definitions( -DFIQ_VECTOR_CODE=1 )
@@ -89,9 +94,14 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostartfiles " )
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections")
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs -u _printf_float" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --specs=nosys.specs --specs=nano.specs" )
+# -u _printf_float is intentionally NOT here: the only release-build float
+# format (helpers.c, temperature display) is hand-formatted to avoid it, and
+# nano newlib's printf omits float support by default, saving the dtoa/float
+# machinery (~5 KB). The one caller that still needs %f -- dump_useful_info()
+# in rpi/info.c -- is itself compiled only under #ifdef DEBUG, so the flag is
+# added back below, only for DEBUG builds.
 
 # current failures in frame buffer.c
 # Level 2 is the highest actionable level; 3-5 are documented-noisy and
@@ -108,9 +118,38 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=auto")
 
 #set( CMAKE_EXE_LINKER_FLAGS "-Wl,--gc-sections -Wl,--print-gc-sections -Wl,-unresolved-symbols=ignore-in-object-files -Wl,-T,${PROJECT_SOURCE_DIR}/rpi.ld" )
 
-set( CMAKE_EXE_LINKER_FLAGS "-Wl,--gc-sections -Wl,--defsym=START_ADDR=0x8000 -Wl,-T,${PROJECT_SOURCE_DIR}/rpi/rpi.ld " )
+set( CMAKE_EXE_LINKER_FLAGS " -Wl,--defsym=START_ADDR=0x8000 -Wl,-T,${PROJECT_SOURCE_DIR}/rpi/rpi.ld " )
 
 set(core_files
+   # Architecture-optimised string routines, built with our real -mcpu flags.
+   # The prebuilt libc.a is compiled -Os for a weaker multilib than either
+   # target, so its memcpy/strlen/strcmp are byte loops. See lib/armstring/README.md.
+   # Each dispatch file selects its own variant; files that have nothing to
+   # offer a given target emit no symbol and fall through to libc as before.
+   lib/armstring/memcpy.S
+   lib/armstring/strcmp.S
+   lib/armstring/strlen.S
+   lib/armstring/memchr.S
+   # Ours: newlib has no memset.S for ARM at all, so libc's is a byte loop on
+   # every target. Architecture-neutral, so this one file serves both.
+   # Tested: 13152/13152 cases under qemu, see lib/armstring-pi/test/run.sh.
+   lib/armstring-pi/memset.S
+   # arm-mem (Ben Avison, 3-clause BSD) memcpy/memmove/memcmp for ARMv6 --
+   # newlib has no ARMv6 memcpy at all and no ARM memcmp for any target.
+   # rpi3 keeps newlib's NEON memcpy and the generic C memcmp; only rpi picks
+   # these up. Tested: 20632/20632 cases under qemu, see lib/armstring-pi/test/run.sh.
+   lib/armstring-pi/memcpy-arm.S
+   lib/armstring-pi/memcmp-arm.S
+   # Ours: newlib's strlen dispatch needs Thumb-2 or ARMv7-A, so ARM1176 has
+   # no fast strlen at all. rpi3 keeps newlib's NEON version.
+   # Tested: 4840/4840 cases under qemu, see lib/armstring-pi/test/run.sh.
+   lib/armstring-pi/strlen-arm1176.S
+   # newlib's own strcase* sources, recompiled here so the force-included
+   # ascii_ctype.h replaces their _ctype_ table lookups. libc's prebuilt copies
+   # reference the table directly; ours do not. See lib/newlib-str/README.md.
+   lib/newlib-str/strcasecmp.c
+   lib/newlib-str/strncasecmp.c
+   lib/newlib-str/strcasestr.c
    rpi/arm-start.S
    rpi/armc-cstubs.c
    rpi/exception.c
@@ -319,6 +358,10 @@ set_source_files_properties(
 if( DEBUG )
 
    set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDEBUG=1 " )
+   # dump_useful_info() (rpi/info.c) is only compiled in under DEBUG and is the
+   # only remaining caller of printf's float formatting -- see the comment
+   # next to --specs=nano.specs above.
+   set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -u _printf_float" )
 
 endif()
 
@@ -337,6 +380,15 @@ set( Pi1MHz_sources
     ${wifi_files}
     ${lwip_files}
 )
+
+# These are cold (config/filename handling, ~12 call sites). We recompile them
+# only to get the _ctype_ table lookups out, not for speed, so build them for
+# size -- at -O2 newlib's two-way strcasestr unrolls into ~2.5KB.
+set_source_files_properties(
+   lib/newlib-str/strcasecmp.c
+   lib/newlib-str/strncasecmp.c
+   lib/newlib-str/strcasestr.c
+   PROPERTIES COMPILE_OPTIONS "-Os" )
 
 add_executable( Pi1MHz ${Pi1MHz_sources} )
 

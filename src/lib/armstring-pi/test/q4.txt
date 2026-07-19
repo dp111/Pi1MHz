@@ -1,0 +1,6 @@
+Taking exception 16 [Semihosting call] on CPU 0
+...from EL1 to EL0
+...handling as semihosting call 0x4
+Taking exception 16 [Semihosting call] on CPU 0
+...from EL1 to EL0
+...handling as semihosting call 0x4
