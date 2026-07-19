@@ -163,8 +163,10 @@ void aun_emulator_test_drain(void)
       aun.rx[i].head      = 0;
       aun.rx[i].presented = false;
    }
-   aun.parked_valid    = false;
-   aun.parked_in_queue = false;
+   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
+      aun.parked[i].valid    = false;
+      aun.parked[i].in_queue = false;
+   }
    aun.himm.active     = false;
    aun_irq_update();
 }

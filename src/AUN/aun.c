@@ -266,14 +266,17 @@ uint8_t aun_rx_open(aun_engine_t *e, uint8_t handle, uint8_t port,
       return AUN_ERR_PARAM;
 
    aun_rx_block_t *b = &e->rx[handle];
-   /* Drop any frame parked (or re-injected) for this handle before re-opening:
-    * its len was validated against the OLD buf_size, so re-opening with a
-    * smaller buffer would let rx_park_poll re-inject an oversize frame that
-    * aun_rx_poll then memcpy()s past the new buffer. Mirrors aun_rx_close. */
-   if (e->parked_valid && e->parked_handle == handle) {
-      e->parked_valid    = false;
-      e->parked_in_queue = false;
-      e->counters.rx_parked_drop++;
+   /* Drop any frame(s) parked (or re-injected) for this handle before
+    * re-opening: their len was validated against the OLD buf_size, so
+    * re-opening with a smaller buffer would let rx_park_poll re-inject an
+    * oversize frame that aun_rx_poll then memcpy()s past the new buffer.
+    * Mirrors aun_rx_close. */
+   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
+      if (e->parked[i].valid && e->parked[i].handle == handle) {
+         e->parked[i].valid    = false;
+         e->parked[i].in_queue = false;
+         e->counters.rx_parked_drop++;
+      }
    }
    memset(b, 0, sizeof *b);
    b->open     = true;
@@ -311,6 +314,32 @@ uint8_t aun_rx_poll(aun_engine_t *e, uint8_t handle, aun_rx_info_t *out)
    return AUN_OK;
 }
 
+/* Find the parked slot currently re-injected as frame 'f' (identity match on
+ * wire seq + source), or NULL if 'f' is not a re-presented parked frame. */
+static aun_park_t *park_find_injected(aun_engine_t *e, const aun_rx_frame_t *f)
+{
+   if (f->src_ip_be == 0)
+      return NULL;
+   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
+      aun_park_t *p = &e->parked[i];
+      if (p->valid && p->in_queue &&
+          p->frame.seq == f->seq && p->frame.src_ip_be == f->src_ip_be &&
+          p->frame.src_port == f->src_port)
+         return p;
+   }
+   return NULL;
+}
+
+/* First free (not currently held) slot in the park pool, or NULL if all
+ * AUN_PARK_SLOTS are busy. */
+static aun_park_t *park_find_free(aun_engine_t *e)
+{
+   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++)
+      if (!e->parked[i].valid)
+         return &e->parked[i];
+   return NULL;
+}
+
 uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
 {
    /* The ACK was already sent when the frame arrived (ACK-on-receipt:
@@ -330,25 +359,21 @@ uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
    aun_rx_block_t *b = &e->rx[handle];
    if (b->count != 0) {
       aun_rx_frame_t *f = &b->q[b->head];
-      bool is_parked = e->parked_valid && e->parked_in_queue &&
-                       f->src_ip_be != 0 &&
-                       e->parked.seq      == f->seq &&
-                       e->parked.src_ip_be == f->src_ip_be &&
-                       e->parked.src_port == f->src_port;
+      aun_park_t *p = park_find_injected(e, f);
       if (accept) {
-         if (is_parked)
-            e->parked_valid = false;        /* re-injected frame delivered */
-      } else if (is_parked) {
+         if (p != NULL)
+            p->valid = false;               /* re-injected frame delivered */
+      } else if (p != NULL) {
          /* the re-injected frame was rejected again: retry or give up */
-         if (e->parked_retries != 0) {
-            e->parked_retries--;
-            e->parked_in_queue = false;
-            e->parked_due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
+         if (p->retries != 0) {
+            p->retries--;
+            p->in_queue = false;
+            p->due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
          } else {
-            e->parked_valid = false;        /* exhausted: drop */
+            p->valid = false;                /* exhausted: drop */
             e->counters.rx_parked_drop++;
          }
-      } else if (!e->parked_valid && f->src_ip_be != 0) {
+      } else if (f->src_ip_be != 0) {
          /* fresh reject of a DATA reply: park it for re-presentation, in case
           * its RXCB is armed a beat later. A true retransmit (same wire seq,
           * our ACK lost) is already suppressed before delivery, so it never
@@ -357,17 +382,26 @@ uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
           * re-presentation). Content equality is NOT used: a legitimate new
           * block can be byte-identical to its predecessor, and dropping it
           * here on an arm-race loss would silently lose data the peer already
-          * ACKed. */
-         e->parked          = *f;
-         e->parked_valid    = true;
-         e->parked_in_queue = false;
-         e->parked_handle   = handle;
-         e->parked_retries  = AUN_PARK_RETRIES;
-         e->parked_due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
-      } else if (f->src_ip_be != 0) {
-         /* a parkable reply, but the single park slot is busy with another
-          * frame: it cannot be held and no listener took it -> lost */
-         e->counters.rx_parked_drop++;
+          * ACKed.
+          *
+          * A pool (not one slot) matters here: a second, unrelated frame can
+          * need parking in the very same beat (e.g. a fileserver's closing
+          * reply landing one poll cycle behind the last data block, which
+          * itself needed parking) - with only one slot the second is lost
+          * for good, silently, with no reply ever reaching the Beeb. */
+         aun_park_t *free_slot = park_find_free(e);
+         if (free_slot != NULL) {
+            free_slot->frame    = *f;
+            free_slot->valid    = true;
+            free_slot->in_queue = false;
+            free_slot->handle   = handle;
+            free_slot->retries  = AUN_PARK_RETRIES;
+            free_slot->due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
+         } else {
+            /* every park slot busy: cannot be held and no listener took it
+             * -> lost */
+            e->counters.rx_parked_drop++;
+         }
       }
       /* else: non-DATA (broadcast/local, src_ip_be == 0) -> intentional drop */
       b->head = (uint8_t)((b->head + 1u) % AUN_RX_QUEUE);
@@ -381,14 +415,16 @@ uint8_t aun_rx_close(aun_engine_t *e, uint8_t handle)
 {
    if (handle >= AUN_RX_BLOCKS || !e->rx[handle].open)
       return AUN_ERR_NO_BLOCK;
-   /* A frame parked (or already re-injected) for this block has nowhere left
-    * to go once the block closes; clear it so park-and-retry is not wedged
-    * with parked_in_queue stuck true (rx_park_poll would early-return for the
-    * life of the engine, and no fresh frame could ever be parked again). */
-   if (e->parked_valid && e->parked_handle == handle) {
-      e->parked_valid    = false;
-      e->parked_in_queue = false;
-      e->counters.rx_parked_drop++;
+   /* Any frame(s) parked (or already re-injected) for this block have
+    * nowhere left to go once the block closes; clear them so park-and-retry
+    * is not wedged with in_queue stuck true (rx_park_poll would early-return
+    * for the life of the engine, and that slot could never park again). */
+   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
+      if (e->parked[i].valid && e->parked[i].handle == handle) {
+         e->parked[i].valid    = false;
+         e->parked[i].in_queue = false;
+         e->counters.rx_parked_drop++;
+      }
    }
    memset(&e->rx[handle], 0, sizeof e->rx[handle]);
    return AUN_OK;
@@ -826,33 +862,37 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
  * independent of any transmit in flight. */
 static void rx_park_poll(aun_engine_t *e)
 {
-   if (!e->parked_valid || e->parked_in_queue)
-      return;
-   if ((int32_t)(now_ms(e) - e->parked_due_ms) < 0)
-      return;
+   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
+      aun_park_t *p = &e->parked[i];
+      if (!p->valid || p->in_queue)
+         continue;
+      if ((int32_t)(now_ms(e) - p->due_ms) < 0)
+         continue;
 
-   aun_rx_block_t *b = &e->rx[e->parked_handle];
-   if (!b->open) {
-      e->parked_valid = false;        /* nowhere left to deliver: drop */
-      e->counters.rx_parked_drop++;
-      return;
+      aun_rx_block_t *b = &e->rx[p->handle];
+      if (!b->open) {
+         p->valid = false;             /* nowhere left to deliver: drop */
+         e->counters.rx_parked_drop++;
+         continue;
+      }
+      if (b->count >= AUN_RX_QUEUE) {
+         p->due_ms = now_ms(e) + AUN_PARK_DELAY_MS;   /* full: later */
+         continue;
+      }
+      /* Defence in depth: never re-inject a frame larger than the block's
+       * current buffer (it would overrun in aun_rx_poll's memcpy).
+       * aun_rx_open already drops a parked frame on re-open, so this should
+       * not trigger. */
+      if (p->frame.len > b->buf_size) {
+         p->valid = false;
+         e->counters.rx_parked_drop++;
+         continue;
+      }
+      aun_rx_frame_t *f = &b->q[((uint32_t)b->head + b->count) % AUN_RX_QUEUE];
+      *f = p->frame;
+      b->count++;
+      p->in_queue = true;
    }
-   if (b->count >= AUN_RX_QUEUE) {
-      e->parked_due_ms = now_ms(e) + AUN_PARK_DELAY_MS;   /* full: later */
-      return;
-   }
-   /* Defence in depth: never re-inject a frame larger than the block's current
-    * buffer (it would overrun in aun_rx_poll's memcpy). aun_rx_open already
-    * drops a parked frame on re-open, so this should not trigger. */
-   if (e->parked.len > b->buf_size) {
-      e->parked_valid = false;
-      e->counters.rx_parked_drop++;
-      return;
-   }
-   aun_rx_frame_t *f = &b->q[((uint32_t)b->head + b->count) % AUN_RX_QUEUE];
-   *f = e->parked;
-   b->count++;
-   e->parked_in_queue = true;
 }
 
 void aun_poll(aun_engine_t *e)

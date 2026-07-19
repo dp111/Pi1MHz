@@ -112,6 +112,26 @@
  * lost. ~16 x 8ms ~= 128ms covers ANFS arming its CB; a true stray drops. */
 #define AUN_PARK_RETRIES      16u
 #define AUN_PARK_DELAY_MS     8u
+/* Pool depth for the above: a single slot loses the SECOND frame that needs
+ * parking in the same beat (its ACK already went out, so it cannot be
+ * recovered - see aun_rx_collect). This is not rare: a fileserver's closing
+ * reply on the FS control port routinely lands one poll cycle behind the
+ * last data block on the transfer port, and if that last block also needed
+ * parking (CB armed a beat late), a lone slot silently drops the close
+ * reply, which is exactly what leaves the Beeb hanging with no reply ever
+ * arriving.
+ *
+ * A fixed small pool (originally 4) is not enough either: the fileserver
+ * paces its sends on the engine's ACK-on-receipt, not on the (much slower,
+ * real 6502) ROM pump actually re-arming the next CB, so a fast fileserver
+ * can have several distinct blocks rejected-and-awaiting-retry at once
+ * before the ROM catches up. AUN_RX_QUEUE is the hard ceiling on how many
+ * distinct frames can ever be in flight for one handle (a fuller queue is
+ * NAKed at the network layer, so the sender retransmits instead of piling
+ * up more), so sizing the pool to match guarantees a reject is never lost
+ * to pool exhaustion - only genuine abandonment (AUN_PARK_RETRIES exhausted
+ * with no listener ever arming) still drops a frame. */
+#define AUN_PARK_SLOTS        AUN_RX_QUEUE
 
 #define AUN_WILDCARD          0xFFu /* in rx-block station/net filters       */
 
@@ -145,6 +165,16 @@ typedef struct {
    uint16_t src_port;
    uint8_t  data[AUN_MAX_DATA];
 } aun_rx_frame_t;
+
+/* One held rejected frame, part of the AUN_PARK_SLOTS pool below. */
+typedef struct {
+   aun_rx_frame_t frame;
+   bool           valid;
+   bool           in_queue;   /* re-injected, awaiting verdict */
+   uint8_t        handle;
+   uint8_t        retries;
+   uint32_t       due_ms;
+} aun_park_t;
 
 typedef struct {
    bool     open;
@@ -280,13 +310,9 @@ typedef struct {
    void           *trace_user;
    aun_dbg_prev_t  dbg_prev[AUN_DBG_PREV_SLOTS];
    uint32_t        dbg_prev_next;   /* round-robin victim slot */
-   /* park-and-retry: one rejected DATA frame held for re-presentation */
-   aun_rx_frame_t  parked;
-   bool            parked_valid;
-   bool            parked_in_queue;   /* re-injected, awaiting verdict */
-   uint8_t         parked_handle;
-   uint8_t         parked_retries;
-   uint32_t        parked_due_ms;
+   /* park-and-retry: a small pool of rejected DATA frames held for
+    * re-presentation - see AUN_PARK_SLOTS. */
+   aun_park_t      parked[AUN_PARK_SLOTS];
 } aun_engine_t;
 
 /* ---- API ----------------------------------------------------------------*/
