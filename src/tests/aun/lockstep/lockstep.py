@@ -296,6 +296,11 @@ def check(cond, what):
     ok += 1
     print(f'  ok: {what}')
 
+# Drops leftover rx/park/IRQ residue between logically independent test
+# groups sharing the one engine instance (the 'D' harness hook), keeping the
+# ROM's open funnel block armed. See the 4816341 commit message.
+def reset(): hx('D')
+
 # ---------------- scenarios ----------------
 print('== setup ==')
 hx('S aun_station=1.32 aun_map=1.254=192.168.1.10')
@@ -613,6 +618,7 @@ check(cpu.mem[txcb] == 0x00, 'broadcast result success')
 # block and frames, and the pump drains any frame an earlier test parked, so
 # the shared state does not leak false fails - keep new tests self-contained.
 print('== 9: IRQ-driven reception via service call 5 ==')
+reset()
 for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
     cpu.mem[txcb+off] = v                      # open receive CB, port &90
 cpu.mem[0x0d61] = 0x80
@@ -926,12 +932,6 @@ cpu.call(SYM['tx_begin'])
 CPU.wr = orig_wr
 check(state['acked'], 'Tube-sourced transmit completed and was ACKed')
 check(cpu.mem[txcb] == 0x00, 'TXCB result success')
-
-# Tests below need a clean engine between groups: residue from an earlier
-# test (a still-queued frame holding nIRQ asserted) would otherwise leak in.
-# reset() drops the leftover rx/park/IRQ state via the harness 'D' hook,
-# keeping the ROM's open funnel block armed.
-def reset(): hx('D')
 
 reset()
 print('== 10: svc5 passes on a non-econet interrupt ==')

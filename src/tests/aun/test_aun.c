@@ -250,7 +250,7 @@ int main(void)
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
    sent_count = 0;
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);              /* host: not listening */
-   assert(sent_count == 0 && e.parked_valid);                  /* parked, no NAK */
+   assert(sent_count == 0 && e.parked[0].valid);                  /* parked, no NAK */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);      /* out of the queue */
    aun_poll(&e);                                                /* before delay: held */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
@@ -259,7 +259,7 @@ int main(void)
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
    assert(memcmp(pbuf, &pf[8], 4) == 0);
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);               /* now delivered */
-   assert(!e.parked_valid);
+   assert(!e.parked[0].valid);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
    /* 17: a frame nobody ever listens for is dropped after the retry budget */
@@ -269,13 +269,13 @@ int main(void)
    aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);              /* park */
-   for (uint32_t i = 0; i < AUN_PARK_RETRIES + 2u && e.parked_valid; i++) {
+   for (uint32_t i = 0; i < AUN_PARK_RETRIES + 2u && e.parked[0].valid; i++) {
       fake_ms += AUN_PARK_DELAY_MS;
       aun_poll(&e);                                             /* re-inject */
       if (aun_rx_poll(&e, 0, NULL) == AUN_OK)
          assert(aun_rx_collect(&e, 0, false) == AUN_OK);        /* reject again */
    }
-   assert(!e.parked_valid);                                     /* eventually dropped */
+   assert(!e.parked[0].valid);                                     /* eventually dropped */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
    /* 18: a NEW-sequence frame that happens to be byte-identical to its
@@ -294,13 +294,13 @@ int main(void)
    aun_udp_input(&e, 0x0100000A, 32768, d2, 12);               /* distinct new block */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);             /* host rejects (CB not armed) */
-   assert(e.parked_valid);                                     /* parked, not lost */
+   assert(e.parked[0].valid);                                     /* parked, not lost */
    fake_ms += AUN_PARK_DELAY_MS;
    aun_poll(&e);                                               /* re-presented */
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
    assert(memcmp(pbuf, &d2[8], 4) == 0);                       /* delivered once CB armed */
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
-   assert(!e.parked_valid);
+   assert(!e.parked[0].valid);
 
    /* 19: content identity does NOT suppress delivery (spec: the application
     * detects duplicates). Two byte-identical frames under different sequence
@@ -331,16 +331,16 @@ int main(void)
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);            /* park */
    fake_ms += AUN_PARK_DELAY_MS;
    aun_poll(&e);                                              /* re-inject */
-   assert(e.parked_valid && e.parked_in_queue);
+   assert(e.parked[0].valid && e.parked[0].in_queue);
    assert(aun_rx_close(&e, 0) == AUN_OK);                     /* close while parked */
-   assert(!e.parked_valid && e.counters.rx_parked_drop == 1); /* slot cleared */
+   assert(!e.parked[0].valid && e.counters.rx_parked_drop == 1); /* slot cleared */
    /* park-and-retry still works afterwards: a fresh reject parks again */
    assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
    pf[4] = 234; pf[8] = 0x22;                                 /* distinct -> not a dup */
    aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);
-   assert(e.parked_valid);                                    /* not wedged */
+   assert(e.parked[0].valid);                                    /* not wedged */
 
    /* 21: a payload larger than AUN_MAX_DATA is refused (NAK) and never
     * overflows the fixed frame slot, even when the block's buffer is big
@@ -368,7 +368,7 @@ int main(void)
    aun_udp_input(&e, 0x0100000A, 32768, fa, 12);                 /* frame A */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);               /* A parked, out of queue */
-   assert(e.parked_valid);
+   assert(e.parked[0].valid);
    uint8_t fb[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 44,0,0,0, 0xB1,0xB2,0xB3,0xB4 };
    aun_udp_input(&e, 0x0100000A, 32768, fb, 12);                 /* frame B queued */
    fake_ms += AUN_PARK_DELAY_MS;
@@ -379,7 +379,7 @@ int main(void)
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
    assert(memcmp(pbuf, &fa[8], 4) == 0);                         /* then A, behind B */
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
-   assert(!e.parked_valid && aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
+   assert(!e.parked[0].valid && aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
    /* 23: re-opening a receive handle while a frame is parked must DROP the
     * parked frame. Its len was validated against the old (larger) buffer, so
@@ -397,13 +397,13 @@ int main(void)
    aun_udp_input(&e, 0x0100000A, 32768, dg100, sizeof dg100);  /* delivered + ACKed */
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 100);
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);             /* host rejects -> park */
-   assert(e.parked_valid && e.parked.len == 100);
+   assert(e.parked[0].valid && e.parked[0].frame.len == 100);
    {
       uint32_t drops = e.counters.rx_parked_drop;
       static uint8_t small_rx[64];                             /* < parked len */
       assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD,
                          small_rx, sizeof small_rx) == AUN_OK);
-      assert(!e.parked_valid);                                 /* dropped on re-open */
+      assert(!e.parked[0].valid);                                 /* dropped on re-open */
       assert(e.counters.rx_parked_drop == drops + 1);
       fake_ms += AUN_PARK_DELAY_MS;
       aun_poll(&e);                                            /* must not re-inject */
@@ -641,6 +641,42 @@ int main(void)
       aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* same (ip,port,seq) */
       assert(e.himm.active && e.himm.seq == 0x44);             /* now a FRESH hold */
    }
+
+   /* 34: pool-exhaustion / starvation guard. A fast fileserver ACKs-on-
+    * receipt and paces sends on that, not on the (much slower) ROM pump
+    * re-arming each CB, so a whole burst of up to AUN_RX_QUEUE distinct
+    * frames can be rejected-and-awaiting-retry at once before any of them
+    * is delivered. AUN_PARK_SLOTS must cover that whole burst or a late
+    * frame in it (e.g. the transfer's closing reply) is dropped for good
+    * with no way back - exactly the "No reply" real-hardware regression
+    * this guards against. */
+   reset();
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   for (uint32_t i = 0; i < AUN_RX_QUEUE; i++) {
+      uint8_t f[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, (uint8_t)(50 + i),0,0,0,
+                        (uint8_t)i,(uint8_t)i,(uint8_t)i,(uint8_t)i };
+      aun_udp_input(&e, 0x0100000A, 32768, f, 12);        /* ACKed + queued */
+   }
+   for (uint32_t i = 0; i < AUN_RX_QUEUE; i++) {
+      assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
+      assert(aun_rx_collect(&e, 0, false) == AUN_OK);     /* host not listening yet */
+   }
+   assert(e.counters.rx_parked_drop == 0);                /* none lost to a full pool */
+   {
+      uint32_t held = 0;
+      for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++)
+         if (e.parked[i].valid) held++;
+      assert(held == AUN_RX_QUEUE);                       /* the whole burst is held */
+   }
+   fake_ms += AUN_PARK_DELAY_MS;
+   aun_poll(&e);                                           /* re-inject the whole burst */
+   for (uint32_t i = 0; i < AUN_RX_QUEUE; i++) {
+      assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
+      assert(pbuf[0] == i && pbuf[1] == i && pbuf[2] == i && pbuf[3] == i); /* FIFO order */
+      assert(aun_rx_collect(&e, 0, true) == AUN_OK);       /* now delivered */
+   }
+   assert(e.counters.rx_parked_drop == 0);                 /* still none lost */
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
    printf("all aun tests passed\n");
    return 0;
