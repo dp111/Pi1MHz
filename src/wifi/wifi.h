@@ -209,8 +209,8 @@ typedef struct {
       timezone-naive local time (that is what MTP writes and displays),
       but Windows' WebDAV client sends and expects getlastmodified in GMT.
       With no RTC the firmware can't derive this, so it is read from
-      cmdline.txt (webdav_utc_offset_minutes, default 0 = treat FAT time as
-      GMT, the legacy behaviour).  PROPFIND emits (local - offset) as GMT;
+      Pi1MHz.cfg (key webdav_utc_offset_minutes, default 0 = treat FAT time
+      as GMT, the legacy behaviour).  PROPFIND emits (local - offset) as GMT;
       PROPPATCH stores (GMT + offset) as local. */
    int16_t webdav_utc_offset_minutes;
 } wifi_config_t;
