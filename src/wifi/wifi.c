@@ -374,6 +374,35 @@ static uint8_t wifi_parse_u8(const char *value, uint8_t default_value)
    return (uint8_t)parsed;
 }
 
+/* Parse a signed minutes-east-of-UTC offset ("60", "-300", "+30").  Any
+   malformed value or magnitude beyond +/-14h falls back to the default. */
+static int16_t wifi_parse_utc_offset(const char *value, int16_t default_value)
+{
+   bool neg = false;
+   int  parsed = 0;
+
+   if (value == NULL || value[0] == '\0')
+      return default_value;
+
+   if (*value == '+' || *value == '-') {
+      neg = (*value == '-');
+      ++value;
+   }
+   if (*value == '\0')
+      return default_value;
+
+   while (*value != '\0') {
+      if (*value < '0' || *value > '9')
+         return default_value;
+      parsed = (parsed * 10) + (int)(*value - '0');
+      if (parsed > 14 * 60)                 /* clamp to +/-14h (max real TZ) */
+         return default_value;
+      ++value;
+   }
+
+   return (int16_t)(neg ? -parsed : parsed);
+}
+
 static void wifi_clear_error(void)
 {
    g_wifi_error[0] = '\0';
@@ -490,6 +519,8 @@ bool wifi_config_load(wifi_config_t *config)
    (void) wifi_copy_cmdline_prop(config->webdav_password, sizeof(config->webdav_password), "webdav_password", NULL);
    if (!wifi_copy_cmdline_prop(config->webdav_realm, sizeof(config->webdav_realm), "webdav_realm", NULL))
       strlcpy(config->webdav_realm, "Pi1MHz", sizeof(config->webdav_realm));
+   config->webdav_utc_offset_minutes =
+      wifi_parse_utc_offset(config_get("webdav_utc_offset_minutes"), 0);
    (void) wifi_load_ipv4_prop(config->ip_address, sizeof(config->ip_address), "static_ip", NULL);
    (void) wifi_load_ipv4_prop(config->netmask, sizeof(config->netmask), "wifi_netmask", NULL);
    (void) wifi_load_ipv4_prop(config->gateway, sizeof(config->gateway), "wifi_gateway", NULL);

@@ -254,6 +254,16 @@ typedef struct {
       the final name; on any error path we unlink the temp file. */
    char     dav_put_target[WS_PATH_MAX];
    char     dav_put_tmppath[WS_PATH_MAX + 8u];
+   /* PUT bodies arrive one ~1460-byte TCP segment at a time.  Writing
+      each segment straight to f_write forced FatFs down its single-block
+      (CMD24) path, one SD command per segment, which throttled large
+      uploads to a crawl (the ~97% "pause" the user reported).  Instead we
+      accumulate body bytes in the connection's dl_buf - idle during a PUT
+      (it only holds outbound download/framebuffer data) - and flush it in
+      whole-buffer, sector-aligned WS_FILE_CHUNK chunks so FatFs issues
+      multiblock (CMD25) writes.  dav_put_buf_len is the fill level; the
+      final partial buffer is flushed by dav_put_finish before f_close. */
+   size_t   dav_put_buf_len;
 
    /* WebDAV COPY streaming (CONN_DAV_COPY).  Reads from copy_src,
       writes to copy_dst, one chunk per webserver_poll tick (reusing
@@ -1763,6 +1773,7 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
    c->is_head = false;
    c->dav_put_draining = false;
    c->dav_put_chunked = false;
+   c->dav_put_buf_len = 0u;
    c->dav_remaining = 0u;
    c->dav_put_target[0] = '\0';
    c->dav_put_tmppath[0] = '\0';
@@ -2864,6 +2875,80 @@ static unsigned int ws_day_of_week(unsigned int year, unsigned int month,
    : __DATE__[2]=='g' ? 8  : __DATE__[2]=='p' ? 9   \
    : __DATE__[2]=='t' ? 10 : __DATE__[2]=='v' ? 11 : 12))
 
+/* Shift a FAT-packed (fdate,ftime) pair by `minutes` (may be negative),
+   rolling across day/month/year boundaries, and clamp into FAT's
+   representable range (1980..2107).  Used to translate between the
+   timezone-naive local time held in the SD directory entry and the GMT
+   that Windows' WebDAV client sends/expects (the device has no RTC or
+   timezone of its own - see webdav_utc_offset_minutes).  A zero offset,
+   or fdate == 0 (no timestamp / build-date fallback), is left untouched.
+   Uses Howard Hinnant's days<->civil algorithms for the date math. */
+static void fat_shift_minutes(uint16_t *fdate, uint16_t *ftime, int minutes)
+{
+   int  year, month, day, hh, mm, ss2;
+   long y, era, yoe, doy, doe, days, total, ndays, minofday;
+   long z, era2, doe2, yoe2, y2, doy2, mp;
+
+   if (minutes == 0 || *fdate == 0u)
+      return;
+
+   year  = 1980 + (int)(((unsigned)*fdate >> 9) & 0x7Fu);
+   month = (int)(((unsigned)*fdate >> 5) & 0x0Fu);
+   day   = (int)((unsigned)*fdate        & 0x1Fu);
+   hh    = (int)(((unsigned)*ftime >> 11) & 0x1Fu);
+   mm    = (int)(((unsigned)*ftime >> 5)  & 0x3Fu);
+   ss2   = (int)((unsigned)*ftime        & 0x1Fu);   /* seconds / 2 */
+
+   if (month < 1) month = 1;
+   if (day   < 1) day   = 1;
+
+   /* days since 1970-01-01 */
+   y   = year - (month <= 2 ? 1 : 0);
+   era = (y >= 0 ? y : y - 399) / 400;
+   yoe = y - era * 400;
+   doy = (153L * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+   doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+   days = era * 146097L + doe - 719468L;
+
+   total    = days * 1440L + (long)hh * 60L + (long)mm + (long)minutes;
+   ndays    = total / 1440L;
+   minofday = total - ndays * 1440L;
+   if (minofday < 0) { minofday += 1440L; ndays -= 1; }
+
+   hh = (int)(minofday / 60L);
+   mm = (int)(minofday % 60L);
+
+   /* civil date from day count */
+   z    = ndays + 719468L;
+   era2 = (z >= 0 ? z : z - 146096) / 146097;
+   doe2 = z - era2 * 146097L;
+   yoe2 = (doe2 - doe2 / 1460L + doe2 / 36524L - doe2 / 146096L) / 365L;
+   y2   = yoe2 + era2 * 400L;
+   doy2 = doe2 - (365L * yoe2 + yoe2 / 4L - yoe2 / 100L);
+   mp   = (5L * doy2 + 2L) / 153L;
+   day   = (int)(doy2 - (153L * mp + 2L) / 5L + 1L);
+   month = (int)(mp + (mp < 10 ? 3 : -9));
+   year  = (int)(y2 + (month <= 2 ? 1 : 0));
+
+   if (year < 1980) {
+      year = 1980; month = 1; day = 1; hh = 0; mm = 0; ss2 = 0;
+   } else if (year > 2107) {
+      year = 2107; month = 12; day = 31; hh = 23; mm = 59; ss2 = 29;
+   }
+
+   *fdate = (uint16_t)(((unsigned)(year - 1980) << 9)
+                       | ((unsigned)month << 5) | (unsigned)day);
+   *ftime = (uint16_t)(((unsigned)hh << 11)
+                       | ((unsigned)mm << 5) | (unsigned)ss2);
+}
+
+/* Minutes east of UTC configured for this device (0 when unset). */
+static int ws_utc_offset_minutes(void)
+{
+   const wifi_config_t *cfg = wifi_get_config();
+   return (cfg != NULL) ? (int)cfg->webdav_utc_offset_minutes : 0;
+}
+
 static void dav_format_date(char *out, size_t out_sz,
                             uint16_t fdate, uint16_t ftime)
 {
@@ -2955,6 +3040,10 @@ static void dav_emit_response(ws_strbuf_t *b, const char *url_path,
 {
    char modified[40];
    char created[32];
+
+   /* The FAT entry holds local time; getlastmodified/creationdate are GMT.
+      Convert local -> GMT by shifting back by the configured offset. */
+   fat_shift_minutes(&fdate, &ftime, -ws_utc_offset_minutes());
 
    dav_format_date(modified, sizeof modified, fdate, ftime);
    dav_format_creationdate(created, sizeof created, fdate, ftime);
@@ -3265,18 +3354,49 @@ static bool dav_put_send_response(ws_conn_t *c)
    (dav_put_consume_chunked) below - neither decides on its own when
    the body ends, so the "close + rename + respond" tail lives
    separately in dav_put_finish(). */
-static bool dav_put_write_bytes(ws_conn_t *c, const uint8_t *data, size_t len)
+/* Flush whatever has accumulated in the dl_buf PUT staging buffer to the
+   temp file in a single f_write.  Called both when the buffer fills to a
+   whole WS_FILE_CHUNK (sector-aligned -> FatFs multiblock CMD25) and, for
+   the trailing partial buffer, from dav_put_finish before f_close.  On a
+   write error it tears the temp file down and sends 507, matching the old
+   direct-write behaviour. */
+static bool dav_put_flush(ws_conn_t *c)
 {
    UINT bw = 0u;
 
-   if (c->dav_put_open && len > 0u) {
-      if (f_write(&c->write_file.dav, data, (UINT)len, &bw) != FR_OK || bw != len) {
-         f_close(&c->write_file.dav);
-         c->dav_put_open = false;
-         (void)f_unlink(c->dav_put_tmppath);
-         return ws_error(c, 507, "Insufficient Storage",
-                         "Writing to the SD card failed.");
-      }
+   if (c->dav_put_buf_len == 0u)
+      return true;
+   if (f_write(&c->write_file.dav, c->dl_buf, (UINT)c->dav_put_buf_len, &bw)
+          != FR_OK || bw != c->dav_put_buf_len) {
+      f_close(&c->write_file.dav);
+      c->dav_put_open = false;
+      c->dav_put_buf_len = 0u;
+      (void)f_unlink(c->dav_put_tmppath);
+      return ws_error(c, 507, "Insufficient Storage",
+                      "Writing to the SD card failed.");
+   }
+   c->dav_put_buf_len = 0u;
+   return true;
+}
+
+static bool dav_put_write_bytes(ws_conn_t *c, const uint8_t *data, size_t len)
+{
+   if (!c->dav_put_open || len == 0u)
+      return true;
+
+   /* Copy into dl_buf, flushing each time it fills to a full chunk.  A
+      single TCP segment (~1460 B) never spans more than one flush, but the
+      loop handles arbitrary len defensively. */
+   while (len > 0u) {
+      size_t space = WS_FILE_CHUNK - c->dav_put_buf_len;
+      size_t n     = (len < space) ? len : space;
+
+      memcpy(c->dl_buf + c->dav_put_buf_len, data, n);
+      c->dav_put_buf_len += n;
+      data += n;
+      len  -= n;
+      if (c->dav_put_buf_len == WS_FILE_CHUNK && !dav_put_flush(c))
+         return false;
    }
    return true;
 }
@@ -3288,7 +3408,10 @@ static bool dav_put_write_bytes(ws_conn_t *c, const uint8_t *data, size_t len)
 static bool dav_put_finish(ws_conn_t *c)
 {
    if (c->dav_put_open) {
-      FRESULT fr = f_close(&c->write_file.dav);
+      FRESULT fr;
+      if (!dav_put_flush(c))       /* trailing partial buffer; sends 507 on error */
+         return false;
+      fr = f_close(&c->write_file.dav);
       c->dav_put_open = false;
       if (fr != FR_OK) {
          (void)f_unlink(c->dav_put_tmppath);
@@ -3584,6 +3707,7 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
       return ws_error(c, 409, "Conflict",
                       "Cannot create the target (missing parent folder?).");
    c->dav_put_open       = true;
+   c->dav_put_buf_len    = 0u;
    c->dav_put_chunked    = te_chunked;
    c->dav_remaining      = content_length;      /* unused while te_chunked */
    c->dav_chunk_state    = DAV_CHUNK_SIZE;
@@ -4273,6 +4397,8 @@ static bool route_dav_proppatch(ws_conn_t *c, const char *rawpath, int body_at)
                FILINFO  fno;
                uint16_t fdate, ftime;
                if (dav_parse_http_date(val, j, &fdate, &ftime)) {
+                  /* Client sends GMT; the FAT entry holds local time. */
+                  fat_shift_minutes(&fdate, &ftime, ws_utc_offset_minutes());
                   fno.fdate = fdate;
                   fno.ftime = ftime;
                   (void)f_utime(sdpath, &fno);   /* best-effort */

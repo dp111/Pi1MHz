@@ -204,6 +204,15 @@ typedef struct {
    char webdav_user[WIFI_WEBDAV_USER_MAX_LEN + 1];
    char webdav_password[WIFI_WEBDAV_PASSWORD_MAX_LEN + 1];
    char webdav_realm[WIFI_WEBDAV_REALM_MAX_LEN + 1];
+   /* Minutes east of UTC for the device's wall-clock timezone (e.g. 60
+      for British Summer Time / CET).  The SD directory entries hold
+      timezone-naive local time (that is what MTP writes and displays),
+      but Windows' WebDAV client sends and expects getlastmodified in GMT.
+      With no RTC the firmware can't derive this, so it is read from
+      cmdline.txt (webdav_utc_offset_minutes, default 0 = treat FAT time as
+      GMT, the legacy behaviour).  PROPFIND emits (local - offset) as GMT;
+      PROPPATCH stores (GMT + offset) as local. */
+   int16_t webdav_utc_offset_minutes;
 } wifi_config_t;
 
 typedef struct {
