@@ -20,6 +20,7 @@
 #include "sdio.h"
 #include "framebuffer_export.h"
 #include "../BeebSCSI/fatfs/ff.h"
+#include "../usb/mtp_fs.h"
 #include "../rpi/screen.h"
 #include "../rpi/exceptions.h"
 #include "../rpi/info.h"
@@ -343,6 +344,18 @@ static void ws_propfind_cache_invalidate(void)
 {
    g_ws_propfind_cache_count = 0u;
    g_ws_propfind_cache_valid = false;
+}
+
+/* A DAV method just changed the SD filesystem (created, deleted, or renamed
+   a file/dir).  Drop our own PROPFIND child cache AND poke MTP so its
+   object-handle cache re-enumerates - otherwise a file deleted over WebDAV
+   lingers in the Windows MTP view until the next OpenSession.  Call this only
+   from actual mutation routes, never from the read/TTL paths (which would
+   force a needless MTP rescan on every listing). */
+static void ws_fs_mutated(void)
+{
+   ws_propfind_cache_invalidate();
+   mtp_fs_notify_fs_changed();
 }
 
 static void ws_propfind_cache_begin(void)
@@ -3589,7 +3602,7 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
       directory cache so the next PROPFIND fetches fresh data.
       Invalidating up-front (rather than only on the success branch
       that calls f_rename) keeps the bookkeeping local to one line. */
-   ws_propfind_cache_invalidate();
+   ws_fs_mutated();
 
    if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
@@ -3838,7 +3851,7 @@ static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
    FILINFO fno;
    FRESULT fr;
 
-   ws_propfind_cache_invalidate();
+   ws_fs_mutated();
 
    if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
@@ -3891,7 +3904,7 @@ static bool route_dav_mkcol(ws_conn_t *c, const char *rawpath)
    char    cl_hdr[24];
    FRESULT fr;
 
-   ws_propfind_cache_invalidate();
+   ws_fs_mutated();
 
    if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
@@ -4052,7 +4065,7 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    char    dest_hdr[WS_PATH_MAX + 32];
    char    over_hdr[8];
 
-   ws_propfind_cache_invalidate();
+   ws_fs_mutated();
 
    bool    overwrite = true;
    FILINFO fno_src;
@@ -4172,7 +4185,7 @@ static bool route_dav_lock(ws_conn_t *c, const char *rawpath)
       if (f_close(&lf) != FR_OK)
          return ws_error(c, 500, "Internal Server Error",
                          "Could not finalize lock target.");
-      ws_propfind_cache_invalidate();
+      ws_fs_mutated();
       created_placeholder = true;
       target_exists = true;
       /* RFC allows 201 for lock-null creation, but some Windows

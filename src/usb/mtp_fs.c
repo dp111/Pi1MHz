@@ -517,6 +517,17 @@ static void fs_cache_invalidate(void) {
   fs_cache_clear();
 }
 
+/* Public: another subsystem (the WebDAV server) mutated the SD filesystem
+   directly via FatFs, so the object-handle cache is now stale.  Drop it; the
+   next MTP request rebuilds it lazily via fs_cache_ensure().  Safe to call
+   from the webserver because both MTP (tud_task) and the webserver
+   (webserver_poll) run in the single cooperative main-loop poll and never
+   preempt each other, and the cache is never touched from an ISR.  See
+   mtp_fs.h. */
+void mtp_fs_notify_fs_changed(void) {
+  fs_cache_invalidate();
+}
+
 static bool fs_cache_add_entry(const fs_entry_t* entry) {
   if (g_fs_cache.count >= g_fs_cache.capacity) {
     uint32_t new_capacity = (g_fs_cache.capacity == 0u) ? 64u : (g_fs_cache.capacity * 2u);
