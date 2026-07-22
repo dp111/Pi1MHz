@@ -266,18 +266,9 @@ uint8_t aun_rx_open(aun_engine_t *e, uint8_t handle, uint8_t port,
       return AUN_ERR_PARAM;
 
    aun_rx_block_t *b = &e->rx[handle];
-   /* Drop any frame(s) parked (or re-injected) for this handle before
-    * re-opening: their len was validated against the OLD buf_size, so
-    * re-opening with a smaller buffer would let rx_park_poll re-inject an
-    * oversize frame that aun_rx_poll then memcpy()s past the new buffer.
-    * Mirrors aun_rx_close. */
-   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
-      if (e->parked[i].valid && e->parked[i].handle == handle) {
-         e->parked[i].valid    = false;
-         e->parked[i].in_queue = false;
-         e->counters.rx_parked_drop++;
-      }
-   }
+   /* Re-opening resets the whole block: queued frames (validated against
+    * the OLD buf_size - a smaller new buffer must never see them) and the
+    * deferred-stream table go together. */
    memset(b, 0, sizeof *b);
    b->open     = true;
    b->port     = port;
@@ -286,6 +277,102 @@ uint8_t aun_rx_open(aun_engine_t *e, uint8_t handle, uint8_t port,
    b->buf      = buf;
    b->buf_size = buf_size;
    return AUN_OK;
+}
+
+/* Find the defer entry for stream (Econet port, source) in block b, or
+ * NULL. Entries whose due time has passed are lazily invalidated here, so
+ * an expired deferral costs nothing and frees its slot. */
+static aun_rx_defer_t *defer_find(aun_engine_t *e, aun_rx_block_t *b,
+                                  uint8_t port, uint32_t src_ip_be,
+                                  uint16_t src_port)
+{
+   for (uint32_t i = 0; i < AUN_RX_DEFER_SLOTS; i++) {
+      aun_rx_defer_t *d = &b->defer[i];
+      if (d->valid && d->port == port && d->src_ip_be == src_ip_be &&
+          d->src_port == src_port) {
+         if ((int32_t)(now_ms(e) - d->due_ms) >= 0) {
+            d->valid = false;               /* expired */
+            return NULL;
+         }
+         return d;
+      }
+   }
+   return NULL;
+}
+
+/* Defer frame f's stream until 'due_ms'. Reuses the stream's entry, else a
+ * free one. The table cannot over-subscribe (AUN_RX_DEFER_SLOTS ==
+ * AUN_RX_QUEUE >= distinct streams in a full queue), but if it ever were
+ * full the earliest-due entry is stolen: that stream is merely re-presented
+ * early and re-deferred - nothing is lost. */
+static void defer_set(aun_engine_t *e, aun_rx_block_t *b,
+                      const aun_rx_frame_t *f, uint32_t due_ms)
+{
+   aun_rx_defer_t *victim = NULL;
+   for (uint32_t i = 0; i < AUN_RX_DEFER_SLOTS; i++) {
+      aun_rx_defer_t *d = &b->defer[i];
+      if (d->valid && d->port == f->port && d->src_ip_be == f->src_ip_be &&
+          d->src_port == f->src_port) {
+         victim = d;                        /* this stream's own entry */
+         break;
+      }
+   }
+   if (victim == NULL) {
+      victim = &b->defer[0];
+      for (uint32_t i = 0; i < AUN_RX_DEFER_SLOTS; i++) {
+         aun_rx_defer_t *d = &b->defer[i];
+         if (!d->valid || (int32_t)(now_ms(e) - d->due_ms) >= 0) {
+            victim = d;                     /* free or expired slot */
+            break;
+         }
+         if ((int32_t)(victim->due_ms - d->due_ms) > 0)
+            victim = d;                     /* earliest-due fallback */
+      }
+   }
+   victim->valid     = true;
+   victim->port      = f->port;
+   victim->src_ip_be = f->src_ip_be;
+   victim->src_port  = f->src_port;
+   victim->due_ms    = due_ms;
+}
+
+/* Is frame f presently deliverable (its stream not deferred)?
+ * Broadcast/local frames (src_ip_be == 0) are never deferred. */
+static bool rx_frame_eligible(aun_engine_t *e, aun_rx_block_t *b,
+                              const aun_rx_frame_t *f)
+{
+   if (f->src_ip_be == 0)
+      return true;
+   return defer_find(e, b, f->port, f->src_ip_be, f->src_port) == NULL;
+}
+
+/* Offset from head of the first (oldest) eligible frame, or -1 if every
+ * queued frame's stream is deferred. Scanning oldest-first is what keeps
+ * per-stream FIFO order: a stream's earliest queued frame is always the
+ * one presented. */
+static int32_t rx_first_eligible(aun_engine_t *e, aun_rx_block_t *b)
+{
+   for (uint32_t i = 0; i < b->count; i++) {
+      aun_rx_frame_t *f = &b->q[((uint32_t)b->head + i) % AUN_RX_QUEUE];
+      if (rx_frame_eligible(e, b, f))
+         return (int32_t)i;
+   }
+   return -1;
+}
+
+/* Remove the frame at logical offset 'off' from head, closing the gap.
+ * off == 0 (the common case - no stream was deferred) is a plain pop; a
+ * mid-queue removal shifts the later frames down one slot. */
+static void rx_remove_at(aun_rx_block_t *b, uint32_t off)
+{
+   if (off == 0) {
+      b->head = (uint8_t)((b->head + 1u) % AUN_RX_QUEUE);
+   } else {
+      for (uint32_t j = off; j + 1u < b->count; j++)
+         b->q[((uint32_t)b->head + j) % AUN_RX_QUEUE] =
+            b->q[((uint32_t)b->head + j + 1u) % AUN_RX_QUEUE];
+   }
+   b->count--;
 }
 
 uint8_t aun_rx_poll(aun_engine_t *e, uint8_t handle, aun_rx_info_t *out)
@@ -297,13 +384,19 @@ uint8_t aun_rx_poll(aun_engine_t *e, uint8_t handle, aun_rx_info_t *out)
    if (b->count == 0)
       return AUN_STATUS_PENDING;
 
-   aun_rx_frame_t *f = &b->q[b->head];
    if (!b->presented) {
-      /* copy the head frame into the host-visible buffer once; it
-       * stays there untouched until collected */
-      memcpy(b->buf, f->data, f->len);
+      int32_t off = rx_first_eligible(e, b);
+      if (off < 0)
+         return AUN_STATUS_PENDING;   /* all queued streams deferred */
+      b->pres_off = (uint8_t)off;
+      /* copy the frame into the host-visible buffer once; it stays there
+       * untouched until collected */
+      aun_rx_frame_t *pf =
+         &b->q[((uint32_t)b->head + (uint32_t)off) % AUN_RX_QUEUE];
+      memcpy(b->buf, pf->data, pf->len);
       b->presented = true;
    }
+   aun_rx_frame_t *f = &b->q[((uint32_t)b->head + b->pres_off) % AUN_RX_QUEUE];
    if (out != NULL) {
       out->src_stn = f->src_stn;
       out->src_net = f->src_net;
@@ -314,30 +407,16 @@ uint8_t aun_rx_poll(aun_engine_t *e, uint8_t handle, aun_rx_info_t *out)
    return AUN_OK;
 }
 
-/* Find the parked slot currently re-injected as frame 'f' (identity match on
- * wire seq + source), or NULL if 'f' is not a re-presented parked frame. */
-static aun_park_t *park_find_injected(aun_engine_t *e, const aun_rx_frame_t *f)
+uint32_t aun_rx_ready(aun_engine_t *e, uint8_t handle)
 {
-   if (f->src_ip_be == 0)
-      return NULL;
-   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
-      aun_park_t *p = &e->parked[i];
-      if (p->valid && p->in_queue &&
-          p->frame.seq == f->seq && p->frame.src_ip_be == f->src_ip_be &&
-          p->frame.src_port == f->src_port)
-         return p;
-   }
-   return NULL;
-}
-
-/* First free (not currently held) slot in the park pool, or NULL if all
- * AUN_PARK_SLOTS are busy. */
-static aun_park_t *park_find_free(aun_engine_t *e)
-{
-   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++)
-      if (!e->parked[i].valid)
-         return &e->parked[i];
-   return NULL;
+   if (handle >= AUN_RX_BLOCKS || !e->rx[handle].open)
+      return 0;
+   aun_rx_block_t *b = &e->rx[handle];
+   uint32_t n = 0;
+   for (uint32_t i = 0; i < b->count; i++)
+      if (rx_frame_eligible(e, b, &b->q[((uint32_t)b->head + i) % AUN_RX_QUEUE]))
+         n++;
+   return n;
 }
 
 uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
@@ -346,66 +425,44 @@ uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
     * the engine acks into the queue immediately, like the real ADLC/NMI
     * acks into the RXCB - this is fast enough to beat the fileserver's
     * reply-ACK timeout, which a deferred collect-time ack is not). So a
-    * normal collect just pops the head.
+    * normal collect just removes the presented frame.
     *
     * accept=false means the host's RXCB scan found no listener for this
     * frame. Rather than discard it (and lose a reply that arrived a beat
     * before its control block was armed - the ACK already went out, so the
-    * sender will not retransmit), the frame is "parked" out of the queue
-    * and re-presented a few times by aun_poll(). It is delivered the moment
-    * the host arms the matching CB, and dropped only if no one ever does. */
+    * sender will not retransmit), the frame STAYS in the queue and its
+    * stream is deferred for AUN_DEFER_DELAY_MS; frames of other streams
+    * are presented meanwhile (no head-of-line blocking), and per-stream
+    * arrival order is preserved because nothing ever leaves the queue
+    * until delivered or abandoned. A true retransmit (same wire seq, our
+    * ACK lost) is suppressed before delivery, so a queued frame is always
+    * a distinct block; content equality is NOT used to drop - a legitimate
+    * new block can be byte-identical to its predecessor. */
    if (handle >= AUN_RX_BLOCKS || !e->rx[handle].open)
       return AUN_ERR_NO_BLOCK;
    aun_rx_block_t *b = &e->rx[handle];
    if (b->count != 0) {
-      aun_rx_frame_t *f = &b->q[b->head];
-      aun_park_t *p = park_find_injected(e, f);
-      if (accept) {
-         if (p != NULL)
-            p->valid = false;               /* re-injected frame delivered */
-      } else if (p != NULL) {
-         /* the re-injected frame was rejected again: retry or give up */
-         if (p->retries != 0) {
-            p->retries--;
-            p->in_queue = false;
-            p->due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
-         } else {
-            p->valid = false;                /* exhausted: drop */
+      int32_t off = b->presented ? (int32_t)b->pres_off
+                                 : rx_first_eligible(e, b);
+      if (off >= 0) {
+         aun_rx_frame_t *f =
+            &b->q[((uint32_t)b->head + (uint32_t)off) % AUN_RX_QUEUE];
+         if (accept) {
+            rx_remove_at(b, (uint32_t)off);          /* delivered */
+         } else if (f->src_ip_be == 0) {
+            /* non-DATA (broadcast/local): reject = intentional drop */
+            rx_remove_at(b, (uint32_t)off);
+         } else if (f->rejects >= AUN_DEFER_RETRIES) {
+            /* nobody armed a CB for this stream across the whole budget
+             * (~2 s of active rejection): a genuine stray - abandon it
+             * rather than clog the funnel forever */
+            rx_remove_at(b, (uint32_t)off);
             e->counters.rx_parked_drop++;
-         }
-      } else if (f->src_ip_be != 0) {
-         /* fresh reject of a DATA reply: park it for re-presentation, in case
-          * its RXCB is armed a beat later. A true retransmit (same wire seq,
-          * our ACK lost) is already suppressed before delivery, so it never
-          * reaches here - a frame in this queue is always a distinct, new-seq
-          * frame and parking it is safe (the AUN_PARK_RETRIES budget bounds
-          * re-presentation). Content equality is NOT used: a legitimate new
-          * block can be byte-identical to its predecessor, and dropping it
-          * here on an arm-race loss would silently lose data the peer already
-          * ACKed.
-          *
-          * A pool (not one slot) matters here: a second, unrelated frame can
-          * need parking in the very same beat (e.g. a fileserver's closing
-          * reply landing one poll cycle behind the last data block, which
-          * itself needed parking) - with only one slot the second is lost
-          * for good, silently, with no reply ever reaching the Beeb. */
-         aun_park_t *free_slot = park_find_free(e);
-         if (free_slot != NULL) {
-            free_slot->frame    = *f;
-            free_slot->valid    = true;
-            free_slot->in_queue = false;
-            free_slot->handle   = handle;
-            free_slot->retries  = AUN_PARK_RETRIES;
-            free_slot->due_ms   = now_ms(e) + AUN_PARK_DELAY_MS;
          } else {
-            /* every park slot busy: cannot be held and no listener took it
-             * -> lost */
-            e->counters.rx_parked_drop++;
+            f->rejects++;
+            defer_set(e, b, f, now_ms(e) + AUN_DEFER_DELAY_MS);
          }
       }
-      /* else: non-DATA (broadcast/local, src_ip_be == 0) -> intentional drop */
-      b->head = (uint8_t)((b->head + 1u) % AUN_RX_QUEUE);
-      b->count--;
    }
    b->presented = false;
    return AUN_OK;
@@ -415,17 +472,6 @@ uint8_t aun_rx_close(aun_engine_t *e, uint8_t handle)
 {
    if (handle >= AUN_RX_BLOCKS || !e->rx[handle].open)
       return AUN_ERR_NO_BLOCK;
-   /* Any frame(s) parked (or already re-injected) for this block have
-    * nowhere left to go once the block closes; clear them so park-and-retry
-    * is not wedged with in_queue stuck true (rx_park_poll would early-return
-    * for the life of the engine, and that slot could never park again). */
-   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
-      if (e->parked[i].valid && e->parked[i].handle == handle) {
-         e->parked[i].valid    = false;
-         e->parked[i].in_queue = false;
-         e->counters.rx_parked_drop++;
-      }
-   }
    memset(&e->rx[handle], 0, sizeof e->rx[handle]);
    return AUN_OK;
 }
@@ -479,9 +525,10 @@ static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
    /* present the control byte with bit 7 set again, as a real Econet
     * receive block would */
    f->ctrl    = (uint8_t)(ctrl | 0x80);
-   /* identity, used by park-and-retry; the DATA path overwrites these with
-    * the real source/seq so a parked frame can be recognised. A zero
-    * src_ip_be marks a frame that must never be parked (broadcast/local). */
+   f->rejects = 0;
+   /* stream identity, used by defer-in-place; the DATA path overwrites
+    * these with the real source/seq. A zero src_ip_be marks a frame that
+    * is never deferred (broadcast/local). */
    f->seq       = 0;
    f->src_ip_be = 0;
    f->src_port  = 0;
@@ -856,44 +903,9 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
 
 /* ---- timeouts / retries ---------------------------------------------------*/
 
-/* Re-present a parked frame once its retry timer has fired: a reply that
- * the host rejected (no RXCB armed yet) is put back into its rx block, so
- * the next pump delivers it if the CB is now armed. Runs every poll,
- * independent of any transmit in flight. */
-static void rx_park_poll(aun_engine_t *e)
-{
-   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
-      aun_park_t *p = &e->parked[i];
-      if (!p->valid || p->in_queue)
-         continue;
-      if ((int32_t)(now_ms(e) - p->due_ms) < 0)
-         continue;
-
-      aun_rx_block_t *b = &e->rx[p->handle];
-      if (!b->open) {
-         p->valid = false;             /* nowhere left to deliver: drop */
-         e->counters.rx_parked_drop++;
-         continue;
-      }
-      if (b->count >= AUN_RX_QUEUE) {
-         p->due_ms = now_ms(e) + AUN_PARK_DELAY_MS;   /* full: later */
-         continue;
-      }
-      /* Defence in depth: never re-inject a frame larger than the block's
-       * current buffer (it would overrun in aun_rx_poll's memcpy).
-       * aun_rx_open already drops a parked frame on re-open, so this should
-       * not trigger. */
-      if (p->frame.len > b->buf_size) {
-         p->valid = false;
-         e->counters.rx_parked_drop++;
-         continue;
-      }
-      aun_rx_frame_t *f = &b->q[((uint32_t)b->head + b->count) % AUN_RX_QUEUE];
-      *f = p->frame;
-      b->count++;
-      p->in_queue = true;
-   }
-}
+/* (Deferred streams need no poll-time work: a deferral expires by itself -
+ * rx_first_eligible/aun_rx_ready simply start seeing the frame again once
+ * now_ms passes the entry's due time.) */
 
 void aun_poll(aun_engine_t *e)
 {
@@ -901,8 +913,6 @@ void aun_poll(aun_engine_t *e)
 
    if (!e->initialised)
       return;
-
-   rx_park_poll(e);
 
    /* Reap a held host-immediate the host never answered: release the slot
     * (re-enabling inbound immediates and clearing nIRQ bit &40) and NAK the

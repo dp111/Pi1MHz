@@ -136,8 +136,13 @@ static void aun_diag_trace(void *user, uint32_t seq, uint8_t port,
 static void aun_irq_update(void)
 {
    uint8_t st = 0;
-   if (aun_irq_enabled && aun.rx[0].open && aun.rx[0].count != 0)
-      st = (uint8_t)(0x80u | aun.rx[0].count);
+   /* aun_rx_ready, not the raw queue count: frames whose stream is
+    * deferred (host rejected them, re-presentation pending) must not
+    * assert nIRQ, or the ROM pump spins on AUN_STATUS_PENDING polls
+    * until the deferral expires. */
+   uint32_t ready = aun_irq_enabled ? aun_rx_ready(&aun, 0) : 0;
+   if (ready != 0)
+      st = (uint8_t)(0x80u | (ready > 0x3Fu ? 0x3Fu : ready));
    if (aun_irq_enabled && aun.himm.active)
       st |= 0x40u;              /* immediate operation awaiting the host */
    if (st != aun_irq_state) {
@@ -152,20 +157,18 @@ static void aun_irq_update(void)
 }
 
 #ifdef AUN_LOCKSTEP_TEST
-/* Test-only hook (not compiled into the firmware): drop any queued or parked
- * inbound frames and the held host-immediate, then recompute the IRQ, so the
- * lockstep can isolate one test from the previous test's leftover rx state.
- * The open rx blocks themselves are kept, so the ROM's funnel stays armed. */
+/* Test-only hook (not compiled into the firmware): drop any queued (incl.
+ * deferred) inbound frames and the held host-immediate, then recompute the
+ * IRQ, so the lockstep can isolate one test from the previous test's
+ * leftover rx state. The open rx blocks themselves are kept, so the ROM's
+ * funnel stays armed. */
 void aun_emulator_test_drain(void)
 {
    for (uint32_t i = 0; i < AUN_RX_BLOCKS; i++) {
       aun.rx[i].count     = 0;
       aun.rx[i].head      = 0;
       aun.rx[i].presented = false;
-   }
-   for (uint32_t i = 0; i < AUN_PARK_SLOTS; i++) {
-      aun.parked[i].valid    = false;
-      aun.parked[i].in_queue = false;
+      memset(aun.rx[i].defer, 0, sizeof aun.rx[i].defer);
    }
    aun.himm.active     = false;
    aun_irq_update();

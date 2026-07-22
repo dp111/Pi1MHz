@@ -55,14 +55,20 @@ is fast enough to satisfy the peer's data-ack wait. This is correct: the AUN ACK
 
 - **No-listener / queue-full / oversize → NAK** (`reject`) at receipt — spec's
   "reject message if there is currently no open receive block". ✅
-- **Arm-race tolerance** (park-and-retry): a reply that arrives a beat before
-  ANFS arms its receive control block is held out of the queue and re-presented,
-  rather than dropped. This is an implementation refinement, not a spec
-  requirement, and does not emit any extra wire packet. ✅
-- **nIRQ** is level-driven on `rx[0].count` (`aun_irq_update`), so a queued
-  frame keeps nIRQ asserted until ANFS drains it. Only `rx[0]` drives the IRQ —
-  correct because ANFS funnels all inbound frames through the single wildcard
-  block `h0` and the **ROM pump** demultiplexes to internal CBs by port/stn/net.
+- **Arm-race tolerance** (defer-in-place): a reply that arrives a beat before
+  ANFS arms its receive control block stays queued with its stream deferred
+  `AUN_DEFER_DELAY_MS` per rejection, and is re-presented once the deferral
+  expires — rather than dropped. Frames of other streams bypass it (no
+  head-of-line blocking); same-stream order is preserved. This is an
+  implementation refinement, not a spec requirement, and does not emit any
+  extra wire packet. ✅
+- **nIRQ** is level-driven on `aun_rx_ready(h0)` (`aun_irq_update`) — the count
+  of queued frames whose stream is NOT currently deferred — so a deliverable
+  frame keeps nIRQ asserted until ANFS drains it, while a queue holding only
+  deferred frames releases the line (else the pump would spin on PENDING
+  polls). Only `rx[0]` drives the IRQ — correct because ANFS funnels all
+  inbound frames through the single wildcard block `h0` and the **ROM pump**
+  demultiplexes to internal CBs by port/stn/net.
 
 ---
 
@@ -79,11 +85,12 @@ is fast enough to satisfy the peer's data-ack wait. This is correct: the AUN ACK
   writes CB+8/9 = end pointer, CB+0..3 = `ctrl|&80, port, stn, net`, sets verdict
   0 (ACK), and fires the Econet receive event (&FE) with the original slot
   gating. ✅
-- On no match / oversize: verdict 1 (reject) and `RX_DONE` pops the frame. With
-  ACK-on-receipt this does **not** put a NAK on the wire — the Pi parks (new
-  reply) or drops (duplicate). ✅
-- `RX_DONE` re-arms the Pi block exactly once per frame; the drop path also pops,
-  so the svc5 drain loop always terminates. ✅
+- On no match / oversize: verdict 1 (reject) and `RX_DONE` releases the frame.
+  With ACK-on-receipt this does **not** put a NAK on the wire — the Pi defers
+  the frame's stream in place (new reply) or drops (broadcast/local). ✅
+- `RX_DONE` re-arms the Pi block exactly once per frame; a rejected frame's
+  stream is deferred so it stops asserting nIRQ until re-presentation is due,
+  and the svc5 drain loop always terminates. ✅
 
 Transmit (`eco_tx_begin`): builds the TX command at &FFE200, issues `ECO_TX`
 (or `ECO_BCAST` for dest &FF), then **polls `TX_POLL` synchronously** in
@@ -611,3 +618,58 @@ Follow-up sweep — other candidates weighed and not fixed as ROM regressions:
 - **Outbound ctrl &80, port 0 (LOW/obscure).** Original → bad-ctrl error; the Pi
   sends it as a normal data frame. The valid immediate range &81-&88 matches
   exactly; only this one invalid-ctrl edge differs.
+
+### 13. Defer-in-place rx redesign (2026-07-22) — the residual ~1-in-500 "No reply"
+
+Field report: after the park-pool widening ("Fix AUN getting no response",
+b09a670) roughly 1 load in 500 still hung with no reply, server-dependent.
+Review of the park-and-retry design found three loss/corruption mechanisms it
+could not close, all rooted in copying rejected frames OUT of the rx queue
+into a side pool:
+
+- **Pool exhaustion (loss of ACKed data).** Parking vacated a queue slot, so
+  the ACK-on-receipt path kept accepting frames: up to AUN_RX_QUEUE queued
+  PLUS AUN_PARK_SLOTS parked distinct frames could be in flight, and the next
+  reject found no free slot and was dropped for good — its ACK had already
+  told the server "delivered". The b09a670 header comment's claimed invariant
+  ("AUN_RX_QUEUE is the hard ceiling on distinct frames in flight") was
+  false; test 34 stopped exactly AT the boundary, not past it.
+- **~128 ms retry budget (loss of ACKed data).** 16 retries x 8 ms. The pump
+  is IRQ-paced and rejects the whole queue in a few ms whenever no CB is
+  armed, so any CB-unarmed window longer than ~130 ms exhausted the budget —
+  and the ROM has a systematic 1 s window: eco_tx_begin's synchronous
+  TX_POLL silence wait after a lost server ACK, during which the server
+  (which DID get the command) is already streaming reply data.
+- **Reordering (silent corruption).** A parked frame was invisible for the
+  8 ms park delay and re-injected at the TAIL, so a newer same-port frame
+  could overtake it (bulk blocks swapped); slot recycling
+  (lowest-free-slot allocation + index-order re-injection) could also
+  re-present a later-parked frame ahead of an earlier one. The old test 22
+  asserted the swapped order as expected behaviour.
+
+**Fix (this pass):** rejected frames now STAY in the queue; the reject defers
+the frame's *stream* — (Econet port, src ip, src UDP port) — for
+AUN_DEFER_DELAY_MS (8 ms), and aun_rx_poll presents the oldest frame whose
+stream is not deferred. Cross-stream bypass is preserved (the funnel cannot
+head-of-line block on an unarmed CB — the reason parking existed), same-stream
+order is queue order by construction, there is no pool to exhaust, and the
+reject budget is per-frame AUN_DEFER_RETRIES (250) presentations ≈ 2 s of
+ACTIVE rejection — covering the 1 s TX_POLL window with margin while still
+shedding genuinely stray streams. AUN_RX_QUEUE 8→16 (restores the 16-frame
+absorb the pool provided; ~131 KB, the same amount the earlier 4→2 block
+reduction reclaimed). nIRQ/&FCAB now assert on aun_rx_ready() (deliverable
+frames), not the raw queue count, so a queue holding only deferred frames does
+not spin the pump. rx_park_poll, aun_park_t and the pool are deleted outright.
+
+Flow control note: with the pool gone, a server that runs >16 frames ahead is
+NAKed until the ROM drains a slot — recoverable (the sender retransmits;
+PiEconetBridge retries NAKed DATA for ~5 s, vs tens of ms to drain one slot),
+never silent loss. If a hung load ever shows `nak sent` bursts with
+`rx parked drop` still 0 on /aun, that server's NAK patience is the remaining
+suspect — the counters now discriminate all mechanisms.
+
+Tests: 16-18/20/22/23 rewritten for defer semantics (22 now asserts
+cross-stream bypass AND strict same-stream FIFO, including mid-queue removal);
+34 strengthened past the old cliff (17th distinct frame → NAK, nothing
+dropped, FIFO delivery); new 35 proves >1 s of continuous rejection loses
+nothing. Full stack green: unit, fuzz (ASan/UBSan), 139 lockstep checks.

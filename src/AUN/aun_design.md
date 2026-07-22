@@ -187,8 +187,9 @@ Verified against PiEconetBridge `v2.2-dev`. Relevant bridge behaviour our
 client is built around:
 
 - **Retransmit window 1000 ms** (`EB_CONFIG_AUN_RETX`); up to 5 attempts
-  for DATA. So our ACK-on-receipt (and ~128 ms park-and-retry) sit well
-  inside the bridge's reply-ACK timeout.
+  for DATA. So our ACK-on-receipt sits well inside the bridge's reply-ACK
+  timeout, and its ~5 s NAK-retry patience comfortably covers the ROM
+  pump draining a full rx queue.
 - **Lost-ACK DATA is resent under the SAME seq** — caught by our same-seq
   duplicate suppression (re-ACK, no re-deliver).
 - **No inbound dedup by seq** on the bridge: a silence retransmit from us
@@ -242,10 +243,28 @@ SETUP.md in the ANFS folder.
 - ~~Small race: a new frame could overwrite JIM &FE8000 mid-copy~~
   FIXED twice over: RX_POLL holds the presented frame until the pump
   issues RX_DONE (cmd 42), and the engine now queues up to
-  AUN_RX_QUEUE (4) frames per block in its own RAM — frames are ACKed
+  AUN_RX_QUEUE (16) frames per block in its own RAM — frames are ACKed
   and buffered like PiEconetBridge does, with NAK (sender retries)
   only when the queue is genuinely full. Queued broadcasts are no
   longer lost while a frame is held.
+- ~~Park-and-retry pool could drop ACKed frames~~ FIXED (defer-in-place
+  redesign): a frame the pump rejects (no CB armed yet) now STAYS in the
+  rx queue with its stream — (Econet port, source) — deferred for
+  `AUN_DEFER_DELAY_MS` (8 ms) per rejection, instead of being copied to
+  a side pool and re-injected. This removes three field-failure modes of
+  the pool: pool exhaustion silently dropping an ACKed frame (the pool
+  freed queue slots, so >AUN_RX_QUEUE distinct frames could be in
+  flight); the ~128 ms retry budget expiring during a long CB-unarmed
+  window (e.g. the ROM's full 1 s TX_POLL silence wait while the server
+  streams on) and dropping ACKed data — budget is now
+  `AUN_DEFER_RETRIES` (250) rejects ≈ 2 s of ACTIVE rejection; and
+  same-port reordering (a parked frame re-injected at the tail let newer
+  data blocks overtake it — bulk data arrived swapped). Frames of other
+  streams still bypass a deferred one, so the wildcard funnel has no
+  head-of-line blocking; per-stream order is queue order by
+  construction. nIRQ/&FCAB now reflect `aun_rx_ready()` (deliverable
+  frames only), not the raw count, so a queue holding only deferred
+  frames does not spin the pump.
 - ~~User receive blocks only fill when the pump runs~~ FIXED: the Pi
   asserts nIRQ while frames are queued (enabled by INIT's +8 flag;
   status mirrored at FRED &FCAB, bit 7 + count). The patched ANFS
