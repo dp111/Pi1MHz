@@ -3469,11 +3469,32 @@ static bool dav_put_finish(ws_conn_t *c)
       c->dav_put_draining = false;
       return ws_send_auth_challenge(c, false);
    }
-   (void)f_unlink(c->dav_put_target);
-   if (f_rename(c->dav_put_tmppath, c->dav_put_target) != FR_OK) {
-      (void)f_unlink(c->dav_put_tmppath);
-      return ws_error(c, 500, "Internal Server Error",
-                      "Could not finalize the uploaded file.");
+   /* Preserve the existing target's timestamp across the replace.  Windows
+      Explorer sets the file's real modification time with a PROPPATCH on the
+      LOCK-null placeholder BEFORE it sends the content PUT, so the date lives
+      on the target we are about to overwrite - but the freshly written temp
+      carries only the FF_FS_NORTC default (2026-02-04).  Without carrying the
+      old date forward the copied file always shows that default (the user's
+      report; MTP, which stamps its own SendObjectInfo date, was unaffected).
+      A later PROPPATCH, if the client sends one after the PUT, still wins via
+      dav_apply_win32_mtime.  If there is no existing target the temp keeps its
+      default, as before. */
+   {
+      FILINFO old_fno;
+      bool     had_date = (f_stat(c->dav_put_target, &old_fno) == FR_OK);
+
+      (void)f_unlink(c->dav_put_target);
+      if (f_rename(c->dav_put_tmppath, c->dav_put_target) != FR_OK) {
+         (void)f_unlink(c->dav_put_tmppath);
+         return ws_error(c, 500, "Internal Server Error",
+                         "Could not finalize the uploaded file.");
+      }
+      if (had_date) {
+         FILINFO keep;
+         keep.fdate = old_fno.fdate;
+         keep.ftime = old_fno.ftime;
+         (void)f_utime(c->dav_put_target, &keep);   /* best-effort */
+      }
    }
    /* Nudge a connected MTP host to refresh: 201 = new object, 204 = an
       existing object whose contents changed. */
