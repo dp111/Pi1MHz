@@ -3384,9 +3384,15 @@ static bool dav_put_send_response(ws_conn_t *c)
 /* Flush whatever has accumulated in the dl_buf PUT staging buffer to the
    temp file in a single f_write.  Called both when the buffer fills to a
    whole WS_FILE_CHUNK (sector-aligned -> FatFs multiblock CMD25) and, for
-   the trailing partial buffer, from dav_put_finish before f_close.  On a
-   write error it tears the temp file down and sends 507, matching the old
-   direct-write behaviour. */
+   the trailing partial buffer, from dav_put_finish before f_close.
+
+   Returns true on success.  On a write error it tears the temp file down
+   (closing it and unlinking the ".part" file, so the pre-existing target is
+   left untouched), queues a 507 response, and returns **false** so the
+   caller stops feeding the body and does NOT proceed to the target
+   unlink/rename.  Note ws_error itself returns true (response queued, keep
+   the connection to send it), so the 507 is queued and false is returned
+   explicitly - the caller must keep the connection alive, not abort it. */
 static bool dav_put_flush(ws_conn_t *c)
 {
    UINT bw = 0u;
@@ -3399,8 +3405,9 @@ static bool dav_put_flush(ws_conn_t *c)
       c->dav_put_open = false;
       c->dav_put_buf_len = 0u;
       (void)f_unlink(c->dav_put_tmppath);
-      return ws_error(c, 507, "Insufficient Storage",
-                      "Writing to the SD card failed.");
+      (void)ws_error(c, 507, "Insufficient Storage",
+                     "Writing to the SD card failed.");
+      return false;
    }
    c->dav_put_buf_len = 0u;
    return true;
@@ -3436,8 +3443,10 @@ static bool dav_put_finish(ws_conn_t *c)
 {
    if (c->dav_put_open) {
       FRESULT fr;
-      if (!dav_put_flush(c))       /* trailing partial buffer; sends 507 on error */
-         return false;
+      if (!dav_put_flush(c))
+         return true;   /* trailing flush failed: 507 queued, temp gone,
+                           target intact.  Keep the connection to send the
+                           507; do NOT fall through to the unlink/rename. */
       fr = f_close(&c->write_file.dav);
       c->dav_put_open = false;
       if (fr != FR_OK) {
@@ -3480,7 +3489,9 @@ static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
    size_t take = (len < c->dav_remaining) ? len : c->dav_remaining;
 
    if (!dav_put_write_bytes(c, data, take))
-      return false;
+      return true;   /* write failed: 507 queued, temp gone, target intact.
+                        Keep the connection (return true, NOT abort) so the
+                        507 is sent; do not decrement/finish/rename. */
    c->dav_remaining -= (uint32_t)take;
    if (c->dav_remaining == 0u)
       return dav_put_finish(c);
@@ -3571,8 +3582,10 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
             c->dav_chunk_drained += (uint32_t)take;
          }
          if (!dav_put_write_bytes(c, data + pos, take)) {
+            /* write failed: 507 queued, temp gone, target intact.  Keep the
+               connection alive to send the 507 (return true, not abort). */
             if (consumed != NULL) *consumed = pos;
-            return false;
+            return true;
          }
          pos += take;
          c->dav_chunk_remaining -= (uint32_t)take;

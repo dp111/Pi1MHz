@@ -563,8 +563,12 @@ static void fs_send_object_event(uint16_t code, uint32_t handle) {
   if (!usbd_edpt_claim(BOARD_TUD_RHPORT, MTP_EVENT_EP_ADDR)) {
     return;                          /* a prior event is still in flight */
   }
-  (void) usbd_edpt_xfer(BOARD_TUD_RHPORT, MTP_EVENT_EP_ADDR,
-                        evt_buf, (uint16_t) length, false);
+  if (!usbd_edpt_xfer(BOARD_TUD_RHPORT, MTP_EVENT_EP_ADDR,
+                      evt_buf, (uint16_t) length, false)) {
+    /* Release the claim if the transfer didn't start, otherwise the endpoint
+       stays claimed forever and every future event is silently dropped. */
+    usbd_edpt_release(BOARD_TUD_RHPORT, MTP_EVENT_EP_ADDR);
+  }
 }
 
 /* Public: the WebDAV server mutated the SD filesystem directly via FatFs, so
