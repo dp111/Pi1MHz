@@ -254,6 +254,20 @@ typedef struct {
       the final name; on any error path we unlink the temp file. */
    char     dav_put_target[WS_PATH_MAX];
    char     dav_put_tmppath[WS_PATH_MAX + 8u];
+
+   /* PROPPATCH date capture (CONN stays in send/header state; this rides
+      the keep-alive drain).  Windows Explorer sends the Win32LastModified-
+      Time XML body in a SEPARATE TCP segment from the PROPPATCH headers, so
+      the in-segment parse misses it and the copied file keeps its default
+      date.  When that happens we stash the target path, seed dl_buf (idle
+      here) with the body bytes already present, and let conn_consume's drain
+      loop append the trailing bytes; once the whole body is in we parse it
+      and stamp the FAT mtime.  pp_capture gates the whole dance and, like
+      drain_remaining, survives conn_reset_for_next_request. */
+   bool     pp_capture;
+   size_t   pp_buf_len;                  /* bytes of the body held in dl_buf */
+   char     pp_path[WS_PATH_MAX];        /* target whose mtime we will stamp */
+
    /* PUT bodies arrive one ~1460-byte TCP segment at a time.  Writing
       each segment straight to f_write forced FatFs down its single-block
       (CMD24) path, one SD command per segment, which throttled large
@@ -4366,11 +4380,44 @@ static bool dav_parse_http_date(const char *s, size_t len,
    return true;
 }
 
+/* Best-effort: locate <*:Win32LastModifiedTime>RFC1123-date</...> in a
+   PROPPATCH body and stamp it onto the FAT directory entry (converting the
+   GMT the client sends to the local time the entry holds).  Shared by the
+   in-segment fast path and the split-segment capture path.  A missing or
+   unparseable value just leaves the file's existing date untouched. */
+static void dav_apply_win32_mtime(const char *sdpath,
+                                  const char *body, size_t blen)
+{
+   const char *tag = dav_memfind(body, blen, "Win32LastModifiedTime>");
+   const char *val;
+   size_t      rem, j;
+
+   if (tag == NULL)
+      return;
+   val = tag + (sizeof "Win32LastModifiedTime>" - 1u);
+   rem = blen - (size_t)(val - body);
+   for (j = 0u; j < rem; ++j) {
+      if (val[j] == '<') {
+         FILINFO  fno;
+         uint16_t fdate, ftime;
+         if (dav_parse_http_date(val, j, &fdate, &ftime)) {
+            /* Client sends GMT; the FAT entry holds local time. */
+            fat_shift_minutes(&fdate, &ftime, ws_utc_offset_minutes());
+            fno.fdate = fdate;
+            fno.ftime = ftime;
+            (void)f_utime(sdpath, &fno);   /* best-effort */
+         }
+         return;
+      }
+   }
+}
+
 static bool route_dav_proppatch(ws_conn_t *c, const char *rawpath, int body_at)
 {
    char        sdpath[WS_PATH_MAX];
    ws_strbuf_t b;
    ws_strbuf_t url;
+   size_t      already;
 
    if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
@@ -4381,32 +4428,25 @@ static bool route_dav_proppatch(ws_conn_t *c, const char *rawpath, int body_at)
       a fixed date), so persisting Explorer's value into the FAT directory
       entry with f_utime is the only way a copied file ends up with the right
       timestamp - and PROPFIND already reads fdate/ftime back, so directory
-      listings then show it.  Best-effort: if the small XML body did not arrive
-      in the same segment as the headers, or is unparseable, the file simply
-      keeps its default date; the PROPPATCH still succeeds. */
-   if ((size_t)body_at < c->reqhdr_len) {
-      const char *body = c->reqhdr + body_at;
-      size_t      blen = c->reqhdr_len - (size_t)body_at;
-      const char *tag  = dav_memfind(body, blen, "Win32LastModifiedTime>");
-      if (tag != NULL) {
-         const char *val = tag + (sizeof "Win32LastModifiedTime>" - 1u);
-         size_t      rem = blen - (size_t)(val - body);
-         size_t      j;
-         for (j = 0u; j < rem; ++j) {
-            if (val[j] == '<') {
-               FILINFO  fno;
-               uint16_t fdate, ftime;
-               if (dav_parse_http_date(val, j, &fdate, &ftime)) {
-                  /* Client sends GMT; the FAT entry holds local time. */
-                  fat_shift_minutes(&fdate, &ftime, ws_utc_offset_minutes());
-                  fno.fdate = fdate;
-                  fno.ftime = ftime;
-                  (void)f_utime(sdpath, &fno);   /* best-effort */
-               }
-               break;
-            }
-         }
-      }
+      listings then show it.
+
+      The body often arrives in a LATER TCP segment than the headers (which
+      the keep-alive drain block flagged by setting drain_remaining > 0).
+      When it does, stash the target and the bytes present so far in dl_buf
+      (idle during PROPPATCH) and let conn_consume's drain loop append the
+      rest, stamping the date once the full body is in.  When the whole body
+      is already here, stamp it immediately. */
+   already = ((size_t)body_at < c->reqhdr_len)
+           ? (c->reqhdr_len - (size_t)body_at) : 0u;
+   if (c->drain_remaining == 0u) {
+      if (already > 0u)
+         dav_apply_win32_mtime(sdpath, c->reqhdr + body_at, already);
+   } else {
+      size_t n = (already < WS_FILE_CHUNK) ? already : WS_FILE_CHUNK;
+      memcpy(c->dl_buf, c->reqhdr + body_at, n);
+      c->pp_buf_len = n;
+      c->pp_capture = true;
+      strlcpy(c->pp_path, sdpath, sizeof c->pp_path);
    }
 
    sb_init(&b);
@@ -4792,8 +4832,25 @@ static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
          size_t avail = len - pos;
          size_t d     = (avail < c->drain_remaining) ? avail
                                                      : c->drain_remaining;
+         /* A split-segment PROPPATCH body is being drained: capture it into
+            dl_buf (up to its size) so the trailing Win32LastModifiedTime can
+            still be parsed once the whole body has arrived (see
+            route_dav_proppatch).  Overflow past dl_buf is dropped - the date
+            tag sits near the start of the body, well inside 8 KB. */
+         if (c->pp_capture && c->pp_buf_len < WS_FILE_CHUNK) {
+            size_t space = WS_FILE_CHUNK - c->pp_buf_len;
+            size_t cap   = (d < space) ? d : space;
+            memcpy(c->dl_buf + c->pp_buf_len, data + pos, cap);
+            c->pp_buf_len += cap;
+         }
          pos += d;
          c->drain_remaining -= (uint32_t)d;
+         if (c->drain_remaining == 0u && c->pp_capture) {
+            dav_apply_win32_mtime(c->pp_path, (const char *)c->dl_buf,
+                                  c->pp_buf_len);
+            c->pp_capture = false;
+            c->pp_buf_len = 0u;
+         }
          continue;
       }
       if (c->state == CONN_RECV_HEADER) {
