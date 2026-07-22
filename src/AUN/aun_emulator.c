@@ -80,7 +80,7 @@ static volatile uint32_t aun_pending_cp;
 static volatile uint32_t aun_pending_addr;
 
 /* Station used when the Beeb's INIT block carries station 0 ("use the
- * Pi-side configuration") and cmdline.txt has no aun_station. */
+ * Pi-side configuration") and Pi1MHz.cfg has no aun_station. */
 #define AUN_DEFAULT_STATION 32u
 #define AUN_DEFAULT_NET     0u
 
@@ -89,7 +89,7 @@ static bool    aun_irq_enabled;
 static uint8_t aun_irq_state;
 static uint8_t IRQ_NUM;
 /* terse event log on the shared wifi debug channel, enabled by
- * aun_debug=1 in cmdline.txt */
+ * aun_debug=1 in Pi1MHz.cfg */
 static bool aun_debug;
 
 #define AUN_LOG(...) do { if (aun_debug) { LOG_DEBUG(__VA_ARGS__); } } while (0)
@@ -172,7 +172,7 @@ void aun_emulator_test_drain(void)
 }
 #endif
 
-/* aun_map_add() adapter for the aun_map cmdline parser. */
+/* aun_map_add() adapter for the aun_map config parser. */
 static bool aun_map_add_cb(void *user, uint8_t net, uint8_t stn,
                            uint32_t ip_be, uint16_t port)
 {
@@ -420,7 +420,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       AUN_LOG("ECONET: init stn %u.%u irq=%u imm=%u\r\n",
               aun_net, aun_stn, aun_irq_enabled ? 1u : 0u,
               host_imm ? 1u : 0u);
-      /* peer map from cmdline.txt (entries are also addable later via
+      /* peer map from Pi1MHz.cfg (entries are also addable later via
        * AUN_CMD_MAP_ADD; a parse error keeps whatever was added before
        * the bad entry) */
       (void)aun_parse_map(config_get("aun_map"),

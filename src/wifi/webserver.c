@@ -975,7 +975,7 @@ static bool ws_is_root(const char *p)
 /* Digest authentication (RFC 2617, qop=auth, MD5)                     */
 /* ------------------------------------------------------------------ */
 
-/* True if cmdline.txt set both webdav_user and webdav_password.
+/* True if Pi1MHz.cfg set both webdav_user and webdav_password.
    Auth is enforced on every route only in that case; otherwise the
    webserver behaves as the legacy unauthenticated file browser. */
 static bool ws_digest_enabled(void)

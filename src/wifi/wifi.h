@@ -11,7 +11,7 @@
 #define WIFI_IPV4_TEXT_MAX_LEN 15
 #define WIFI_ERROR_TEXT_MAX_LEN 96
 /* WebDAV digest-auth credentials.  Sized generously - the actual cap
-   on a single cmdline.txt key is far less than this. */
+   on a single Pi1MHz.cfg key is far less than this. */
 #define WIFI_WEBDAV_USER_MAX_LEN     64
 #define WIFI_WEBDAV_PASSWORD_MAX_LEN 64
 #define WIFI_WEBDAV_REALM_MAX_LEN    64

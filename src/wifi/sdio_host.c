@@ -14,7 +14,7 @@
 #include <string.h>
 
 /* Verbose bring-up logging - the per-CMD launch trace, host caps, register
-   dumps - is gated behind the cmdline `wifi_debug` flag so a normal boot is
+   dumps - is gated behind the Pi1MHz.cfg `wifi_debug` flag so a normal boot is
    silent except for actual errors. */
 #define WIFI_SDIO_LOG(...) \
    do { \

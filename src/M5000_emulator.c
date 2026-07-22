@@ -109,7 +109,7 @@ Use https://wavedrom.com/editor.html
 #define DEFAULT_GAIN 3
 #define M5000_DIVIDER 1024
 
-// These variables can be setup form the cmdline.txt file.
+// These variables can be setup form the Pi1MHz.cfg file.
 
 static uint8_t stereo;
 static int gain;
@@ -182,7 +182,7 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
 
 static int32_t M5000_audio_range;
 
-// in cmdline.txt M5000_Gain=16 set the default audio gain
+// in Pi1MHz.cfg M5000_Gain=16 set the default audio gain
 // if gain has >1000 then gain = gain - 1000 and auto ranging
 // is OFF
 

@@ -134,12 +134,12 @@ static bool wifi_validate_config(void)
    }
 
    if (g_wifi_config.ssid[0] == '\0') {
-      wifi_set_error("wifi_ssid or SSID missing from cmdline.txt");
+      wifi_set_error("wifi_ssid or SSID missing from Pi1MHz.cfg");
       return false;
    }
 
    if (g_wifi_config.password[0] == '\0') {
-      wifi_set_error("wifi_password or SSIDpassword missing from cmdline.txt");
+      wifi_set_error("wifi_password or SSIDpassword missing from Pi1MHz.cfg");
       return false;
    }
 
@@ -495,7 +495,7 @@ bool wifi_config_load(wifi_config_t *config)
       US, DE, ...) but NOT the "XX" worldwide placeholder - sending "XX"
       makes the country iovar return BCME_BADARG and leaves the radio
       country-disabled, so WLC_UP cannot bring the interface up.
-      Override from cmdline.txt with e.g. wifi_country=US for wherever
+      Override in Pi1MHz.cfg with e.g. wifi_country=US for wherever
       the Pi physically is. */
    {
       const char *country_prop = config_get("wifi_country");
@@ -528,7 +528,7 @@ bool wifi_config_load(wifi_config_t *config)
    config->ip_config_valid = wifi_parse_ip_mode(config);
 
    /* WiFi only starts when an SSID is present.  Without wifi_ssid (or
-      SSID) in cmdline.txt there is nothing to join, so the entire WiFi
+      SSID) in Pi1MHz.cfg there is nothing to join, so the entire WiFi
       stack stays down - no SDIO bring-up, no firmware load, no polling.
       A password on its own is not enough to enable WiFi. */
    config->enabled = have_ssid;

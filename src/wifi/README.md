@@ -41,7 +41,7 @@ wifi/
 
 `wifi_init` is called once at startup from `Pi1MHz.c` (the `wifi` entry of
 the emulator table) and is idempotent across BBC resets. After
-`wifi_validate_config()` accepts the cmdline a single dispatcher,
+`wifi_validate_config()` accepts the config, a single dispatcher,
 `wifi_dispatch_poll()`, is registered with the main poll table. Every
 WiFi sub-system (`wifi_boot`, `wifi_lwip_poll`, `webserver_poll`,
 `netname_poll`) is called from that one dispatcher; each early-returns
@@ -101,7 +101,7 @@ on the SD card under `/Pi1MHz/wifi/` for the board you're booting on —
 see [Files Required on the SD Card](#files-required-on-the-sd-card)
 for the per-board filename mapping.  Without them WiFi reports a
 "firmware did not start" or "image not found" error at boot and the
-cmdline values below have nothing to act on.
+Pi1MHz.cfg values below have nothing to act on.
 
 | Key | Default | Notes |
 |---|---|---|
@@ -201,7 +201,7 @@ Mounting:
 
 ### Digest authentication
 
-Set both `webdav_user=` and `webdav_password=` in `cmdline.txt`.  The
+Set both `webdav_user=` and `webdav_password=` in `Pi1MHz.cfg`.  The
 realm defaults to `Pi1MHz` and can be overridden with `webdav_realm=`.
 When auth is enabled it is enforced on **every** webserver route, not
 just WebDAV verbs, so the `/files` browser and `/status` page also

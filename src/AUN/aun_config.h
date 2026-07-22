@@ -1,4 +1,4 @@
-/* aun_config.h - parsers for the sun cmdline.txt options.
+/* aun_config.h - parsers for the AUN Pi1MHz.cfg options.
  *
  * Pure C, no dependencies, host-testable. The options (values must not
  * contain spaces - get_cmdline_prop() stops at the first space):

@@ -492,7 +492,7 @@ static int sdio_runtime_finalize_boot_stage(sdio_host_t *dev,
       The old code treated a non-zero CSR as "must be an emulator" and
       proceeded anyway - which silently turned a real firmware-boot failure
       into a bogus "firmware-ready" state.  Now this is reported honestly;
-      set wifi_emulator=1 on the cmdline to keep the lenient behaviour. */
+      set wifi_emulator=1 in Pi1MHz.cfg to keep the lenient behaviour. */
    if ((clock_csr & CYW43_HT_AVAIL) == 0u) {
       const wifi_config_t *cfg = wifi_get_config();
 
@@ -2526,7 +2526,7 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
          /* Log the SSID we're about to send so a follow-up GET_SSID
             readback of all-zero is unambiguous: it means the chip
             silently dropped a real SSID, NOT that we sent nothing.
-            ssid_length=0 here means the cmdline didn't supply a
+            ssid_length=0 here means Pi1MHz.cfg didn't supply a
             wifi_ssid= property and there's no point even rebooting. */
          sdio_debug_log("SET_SSID prep len=%u ssid=\"%s\"",
                         (unsigned)ssid_length,
@@ -2838,7 +2838,7 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
               rev (int32 LE)    = -1   (0xFFFFFFFF, "use firmware default")
               ccode[4]           (e.g. "XX")
               + 8 trailing zero bytes
-            The country code comes from the wifi_country cmdline property
+            The country code comes from the wifi_country Pi1MHz.cfg property
             (config->country, default "XX" = worldwide / unrestricted).
             PicoWi sends sizeof(country_data) = 20 bytes here and joins
             successfully; the full 20-byte length matters - an earlier

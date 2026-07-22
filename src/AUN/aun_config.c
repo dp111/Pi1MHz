@@ -1,4 +1,4 @@
-/* aun_config.c - parsers for the aun cmdline.txt options.
+/* aun_config.c - parsers for the aun Pi1MHz.cfg options.
  * See aun_config.h for the option syntax. Pure C, host-testable. */
 
 #include <stddef.h>

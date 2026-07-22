@@ -136,7 +136,7 @@ scan (the &00C0 reply CB, then the NFS workspace slots) and updates
 the matched CB exactly as `rx_complete_update_rxcb` did. INIT passes
 station 0 = "use Pi-side configuration".
 
-### Pi-side configuration (cmdline.txt)
+### Pi-side configuration (Pi1MHz.cfg)
 
 Parsed at AUN_INIT time (aun_config.c, host-tested). Values must
 not contain spaces:

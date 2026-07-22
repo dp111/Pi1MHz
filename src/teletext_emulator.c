@@ -19,7 +19,7 @@
  * The broadcast stream is sourced over TCP as raw "t42" data: 16 lines
  * of 42 bytes per field, ~50 fields/s, exactly the wire format BeebEm
  * consumes, so existing teletext servers work unchanged. Up to four
- * channels (CEEFAX 1-4) are configured from cmdline.txt. A faithful
+ * channels (CEEFAX 1-4) are configured from Pi1MHz.cfg. A faithful
  * 50 Hz field state machine (FSYNC -> DEW -> INT) is driven from the
  * main-loop poll and raises the teletext interrupt on nIRQ.
  */

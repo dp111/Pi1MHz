@@ -5,7 +5,7 @@
  * (16 lines x 42 bytes per field, ~50 fields/s), the same wire format
  * BeebEm uses. Ported from BeebEm's Teletext.cpp.
  *
- * cmdline.txt options (no spaces in values):
+ * Pi1MHz.cfg options (no spaces in values):
  *   teletext_server1=a.b.c.d:port   CEEFAX channel 0 source
  *   teletext_server2=a.b.c.d:port   channel 1
  *   teletext_server3=a.b.c.d:port   channel 2
