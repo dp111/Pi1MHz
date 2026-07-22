@@ -111,6 +111,15 @@ typedef enum {
    UP_FAILED               /* upload failed, response already queued    */
 } upload_state_t;
 
+/* Transfer-Encoding: chunked (RFC 9112 §7.1) framing for a WebDAV PUT
+   body - see dav_put_consume_chunked. */
+typedef enum {
+   DAV_CHUNK_SIZE = 0,     /* reading "<hex>[;ext]" CRLF (chunk-size line) */
+   DAV_CHUNK_DATA,         /* streaming this chunk's data bytes            */
+   DAV_CHUNK_DATA_CRLF,    /* skipping the CRLF that follows chunk data    */
+   DAV_CHUNK_TRAILER       /* reading trailer field-lines / the final CRLF */
+} dav_chunk_state_t;
+
 typedef struct {
    struct tcp_pcb *pcb;
    conn_state_t    state;
@@ -166,6 +175,14 @@ typedef struct {
       discarded (we do not implement pipelining): close instead of
       keep-alive so the client retries at once rather than stalling */
    bool     pipelined_bytes_dropped;
+   /* Bytes of the current request's body still to be discarded before the
+      next request may be parsed.  Set for a body-bearing verb whose handler
+      does not consume the body (PROPFIND/PROPPATCH/LOCK/MKCOL) when the body
+      trails the headers into later segments.  Draining these keeps the
+      connection alive (avoiding a reconnect per request) without letting the
+      stray body desync the next request.  Persists across
+      conn_reset_for_next_request until it reaches zero. */
+   uint32_t drain_remaining;
 
    /* upload */
    upload_state_t up_state;
@@ -211,6 +228,22 @@ typedef struct {
       uploads from an attacker on the LAN. */
    bool     dav_put_draining;
    uint32_t dav_remaining;
+   /* Transfer-Encoding: chunked instead of a fixed Content-Length.
+      Windows Explorer's MiniRedirector uses chunked PUTs in some
+      client/registry configurations; rejecting them outright (as this
+      server used to) is exactly the generic "cannot perform the
+      requested operation" (Win32 0x8007003A) copy failure Explorer
+      shows the user - reads/PROPFIND never carry a body so are never
+      affected. dav_put_consume_chunked() decodes the chunk framing and
+      feeds the data through dav_put_write_bytes(); dav_remaining is
+      unused while chunked - the terminating chunk decides when the
+      body ends, not a byte counter. */
+   bool               dav_put_chunked;
+   dav_chunk_state_t  dav_chunk_state;
+   uint32_t           dav_chunk_remaining;  /* bytes left in this chunk, or CRLF-skip count */
+   char               dav_chunk_linebuf[24];/* chunk-size / trailer line accumulator */
+   size_t             dav_chunk_linelen;
+   uint32_t           dav_chunk_drained;    /* cumulative bytes; only enforced while draining */
    int      dav_put_status;
    const char *dav_put_status_text;
    /* dav_put_target is the FINAL path the client asked us to PUT.
@@ -1623,7 +1656,25 @@ static bool conn_pump(ws_conn_t *c)
       c->producing_done = mem_done && file_done && fb_done;
    }
 
-   if (c->producing_done && c->bytes_acked >= c->bytes_queued) {
+   /* Only a connection that is actually SENDING can be completed by an
+      ACK.  The interim "HTTP/1.1 100 Continue" is written straight to
+      the pcb while the state is still CONN_RECV_DAV_PUT, so it is not
+      accounted in c->out or c->bytes_queued.  Without this guard the
+      ACK of those 25 bytes satisfies the test below - c->out is NULL
+      so producing_done is true, and bytes_acked >= bytes_queued - and
+      conn_reset_for_next_request would tear the upload down mid-body:
+      temp file closed, .part unlinked, dav_remaining cleared, state
+      back to CONN_RECV_HEADER.  The body bytes that followed were then
+      parsed as a request line, which is what Windows Explorer (which
+      sends Expect: 100-continue on every PUT) saw as 0x8007003A.
+      Accounting the interim bytes into bytes_queued is not sufficient
+      on its own, because 0 >= 0 still passes at the top of a
+      body-receive state. */
+   bool is_sending = (c->state == CONN_SEND_MEM)
+                  || (c->state == CONN_SEND_FILE)
+                  || (c->state == CONN_SEND_FB);
+
+   if (is_sending && c->producing_done && c->bytes_acked >= c->bytes_queued) {
       if (c->keep_alive && !c->pipelined_bytes_dropped) {
          /* Response delivered and ACKed.  Reuse the TCP socket for
             the next request - this is what removes the "long pause"
@@ -1711,6 +1762,7 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
    c->poll_count = 0u;
    c->is_head = false;
    c->dav_put_draining = false;
+   c->dav_put_chunked = false;
    c->dav_remaining = 0u;
    c->dav_put_target[0] = '\0';
    c->dav_put_tmppath[0] = '\0';
@@ -3151,6 +3203,9 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
          sb_free(&r);
          return ws_oom(c);
       }
+      if (wifi_debug_enabled())
+         wifi_debug_printf("RESP 207 Multi-Status : PROPFIND '%s' depth=%d\n",
+                           sdpath, depth);
       free(c->out);
       c->out = r.data;
       c->out_len = r.len;
@@ -3204,13 +3259,18 @@ static bool dav_put_send_response(ws_conn_t *c)
    dav_put_open is false, the bytes get silently discarded, and once
    dav_remaining hits zero we send the digest challenge instead of
    201/204. */
-static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
+/* Write `len` body bytes to the open PUT temp file, or discard them if
+   dav_put_open is false (the unauthenticated-drain mode).  Shared by
+   the Content-Length sink (dav_put_consume) and the chunked-body sink
+   (dav_put_consume_chunked) below - neither decides on its own when
+   the body ends, so the "close + rename + respond" tail lives
+   separately in dav_put_finish(). */
+static bool dav_put_write_bytes(ws_conn_t *c, const uint8_t *data, size_t len)
 {
    UINT bw = 0u;
-   size_t take = (len < c->dav_remaining) ? len : c->dav_remaining;
 
-   if (c->dav_put_open && take > 0u) {
-      if (f_write(&c->write_file.dav, data, (UINT)take, &bw) != FR_OK || bw != take) {
+   if (c->dav_put_open && len > 0u) {
+      if (f_write(&c->write_file.dav, data, (UINT)len, &bw) != FR_OK || bw != len) {
          f_close(&c->write_file.dav);
          c->dav_put_open = false;
          (void)f_unlink(c->dav_put_tmppath);
@@ -3218,41 +3278,163 @@ static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
                          "Writing to the SD card failed.");
       }
    }
-   c->dav_remaining -= (uint32_t)take;
+   return true;
+}
 
-   if (c->dav_remaining == 0u) {
-      if (c->dav_put_open) {
-         FRESULT fr = f_close(&c->write_file.dav);
-         c->dav_put_open = false;
-         if (fr != FR_OK) {
-            (void)f_unlink(c->dav_put_tmppath);
-            return ws_error(c, 500, "Internal Server Error",
-                            "Could not close the uploaded file.");
-         }
-      }
-      /* Atomic-ish replace: drop the existing target if any (f_rename
-         on FatFs fails if the destination exists), then rename.  If
-         the unlink succeeds but the rename then fails we've destroyed
-         the original; mitigate by renaming the temp back to a
-         recoverable name first.  In practice f_rename within the same
-         FAT directory does not allocate, so the failure window is
-         extremely small. */
-      /* Unauthenticated drain finished: hand control to the digest
-         challenge.  No file work was performed; nothing on the SD
-         card has been touched. */
-      if (c->dav_put_draining) {
-         c->dav_put_draining = false;
-         return ws_send_auth_challenge(c, false);
-      }
-      (void)f_unlink(c->dav_put_target);
-      if (f_rename(c->dav_put_tmppath, c->dav_put_target) != FR_OK) {
+/* The PUT body has been fully received (Content-Length hit zero, or
+   the chunked terminator was seen): close the temp file, replace the
+   target, and queue the response - or, in unauthenticated-drain mode,
+   hand off to the digest challenge. */
+static bool dav_put_finish(ws_conn_t *c)
+{
+   if (c->dav_put_open) {
+      FRESULT fr = f_close(&c->write_file.dav);
+      c->dav_put_open = false;
+      if (fr != FR_OK) {
          (void)f_unlink(c->dav_put_tmppath);
          return ws_error(c, 500, "Internal Server Error",
-                         "Could not finalize the uploaded file.");
+                         "Could not close the uploaded file.");
       }
-      return dav_put_send_response(c);
    }
+   /* Atomic-ish replace: drop the existing target if any (f_rename
+      on FatFs fails if the destination exists), then rename.  If
+      the unlink succeeds but the rename then fails we've destroyed
+      the original; mitigate by renaming the temp back to a
+      recoverable name first.  In practice f_rename within the same
+      FAT directory does not allocate, so the failure window is
+      extremely small. */
+   /* Unauthenticated drain finished: hand control to the digest
+      challenge.  No file work was performed; nothing on the SD
+      card has been touched. */
+   if (c->dav_put_draining) {
+      c->dav_put_draining = false;
+      return ws_send_auth_challenge(c, false);
+   }
+   (void)f_unlink(c->dav_put_target);
+   if (f_rename(c->dav_put_tmppath, c->dav_put_target) != FR_OK) {
+      (void)f_unlink(c->dav_put_tmppath);
+      return ws_error(c, 500, "Internal Server Error",
+                      "Could not finalize the uploaded file.");
+   }
+   return dav_put_send_response(c);
+}
 
+static bool dav_put_consume(ws_conn_t *c, const uint8_t *data, size_t len)
+{
+   size_t take = (len < c->dav_remaining) ? len : c->dav_remaining;
+
+   if (!dav_put_write_bytes(c, data, take))
+      return false;
+   c->dav_remaining -= (uint32_t)take;
+   if (c->dav_remaining == 0u)
+      return dav_put_finish(c);
+   return true;
+}
+
+/* Incrementally decode an HTTP "Transfer-Encoding: chunked" PUT body
+   (RFC 9112 §7.1) across however many TCP segments it arrives in, and
+   feed the decoded data bytes to the same sink dav_put_consume uses
+   for a fixed Content-Length.  Chunk extensions are skipped and
+   trailer fields are read and discarded (RFC 9112 §7.1.2).
+
+      chunk        = chunk-size [ chunk-ext ] CRLF chunk-data CRLF
+      chunk-size   = 1*HEXDIG
+      last-chunk   = 1*("0") [ chunk-ext ] CRLF
+      trailer-part = *( field-line CRLF )
+   and the body ends at the blank line after the last-chunk / trailer-part. */
+static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
+                                    size_t len, size_t *consumed)
+{
+   size_t pos = 0u;
+
+   while (pos < len) {
+      if (c->dav_chunk_state == DAV_CHUNK_SIZE ||
+          c->dav_chunk_state == DAV_CHUNK_TRAILER) {
+         /* Accumulate one CRLF-terminated line a byte at a time; both
+            states share this loop and differ only in what a completed
+            line means (see below). */
+         while (pos < len) {
+            uint8_t ch = data[pos++];
+            if (ch != '\n') {
+               if (ch != '\r' &&
+                   c->dav_chunk_linelen < sizeof c->dav_chunk_linebuf)
+                  c->dav_chunk_linebuf[c->dav_chunk_linelen++] = (char)ch;
+               continue;
+            }
+            if (c->dav_chunk_state == DAV_CHUNK_TRAILER) {
+               bool blank = (c->dav_chunk_linelen == 0u);
+               c->dav_chunk_linelen = 0u;
+               if (blank) {
+                  if (consumed != NULL) *consumed = pos;
+                  return dav_put_finish(c);    /* trailer-part terminator */
+               }
+               break;                          /* discard, read the next line */
+            }
+            {
+               size_t   n = c->dav_chunk_linelen;
+               uint32_t size = 0u;
+               bool     bad = (n == 0u);
+               size_t   i;
+               for (i = 0u; !bad && i < n; i++) {
+                  char     h = c->dav_chunk_linebuf[i];
+                  uint32_t d;
+                  if (h == ';')
+                     break;                    /* chunk-ext: ignore the rest */
+                  if (h >= '0' && h <= '9')      d = (uint32_t)(h - '0');
+                  else if (h >= 'a' && h <= 'f') d = (uint32_t)(h - 'a' + 10);
+                  else if (h >= 'A' && h <= 'F') d = (uint32_t)(h - 'A' + 10);
+                  else { bad = true; break; }
+                  if (size > (0x7FFFFFFFu - d) / 16u) { bad = true; break; }
+                  size = size * 16u + d;
+               }
+               c->dav_chunk_linelen = 0u;
+               if (bad) {
+                  if (consumed != NULL) *consumed = pos;
+                  return ws_error(c, 400, "Bad Request",
+                                  "Malformed chunk size.");
+               }
+               c->dav_chunk_remaining = size;
+               c->dav_chunk_state = (size == 0u) ? DAV_CHUNK_TRAILER
+                                                  : DAV_CHUNK_DATA;
+            }
+            break;
+         }
+      } else if (c->dav_chunk_state == DAV_CHUNK_DATA) {
+         size_t avail = len - pos;
+         size_t take  = (avail < c->dav_chunk_remaining) ? avail
+                                                          : c->dav_chunk_remaining;
+         if (c->dav_put_draining) {
+            /* No Content-Length to size the drain up-front (unlike the
+               cl <= WS_DRAIN_MAX_BYTES check in process_request), so the
+               cap is enforced cumulatively here instead. */
+            if ((uint64_t)c->dav_chunk_drained + take > WS_DRAIN_MAX_BYTES) {
+               if (consumed != NULL) *consumed = pos;
+               return ws_error(c, 413, "Payload Too Large",
+                               "Unauthenticated PUT body exceeds the drain limit.");
+            }
+            c->dav_chunk_drained += (uint32_t)take;
+         }
+         if (!dav_put_write_bytes(c, data + pos, take)) {
+            if (consumed != NULL) *consumed = pos;
+            return false;
+         }
+         pos += take;
+         c->dav_chunk_remaining -= (uint32_t)take;
+         if (c->dav_chunk_remaining == 0u)
+            c->dav_chunk_state = DAV_CHUNK_DATA_CRLF;
+      } else {   /* DAV_CHUNK_DATA_CRLF: skip the 2 bytes after chunk-data */
+         if (c->dav_chunk_remaining == 0u)
+            c->dav_chunk_remaining = 2u;
+         size_t avail = len - pos;
+         size_t take  = (avail < c->dav_chunk_remaining) ? avail
+                                                          : c->dav_chunk_remaining;
+         pos += take;
+         c->dav_chunk_remaining -= (uint32_t)take;
+         if (c->dav_chunk_remaining == 0u)
+            c->dav_chunk_state = DAV_CHUNK_SIZE;
+      }
+   }
+   if (consumed != NULL) *consumed = pos;
    return true;
 }
 
@@ -3279,49 +3461,55 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
                                    "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH",
                                    "PUT on the root is not allowed.");
 
-   /* RFC 7230 §3.3.1: if Transfer-Encoding is present we MUST use it
-      and ignore Content-Length.  We don't decode chunked transfer
-      encoding, so reject up-front rather than mis-interpreting chunk
-      framing as body bytes (the symptom: first chunk-size hex digit
-      arrives as 1 byte, server rewrites the target with garbage at
-      rename time, then waits forever for the rest of the body before
-      the connection times out).  Windows Explorer's MiniRedirector
-      can use either Content-Length or chunked; if your client is in
-      the latter mode, switch it back via a registry tweak or use a
-      different DAV client (Cyberduck always uses Content-Length). */
-   if (ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding",
-                      te_hdr, sizeof te_hdr)
-       && ws_strcasestr(te_hdr, "chunked") != NULL) {
-      return ws_error(c, 501, "Not Implemented",
-                      "PUT with Transfer-Encoding: chunked is not supported; "
-                      "use Content-Length-delimited PUTs.");
-   }
+   /* RFC 7230 §3.3.1 / RFC 9112 §6.1: if Transfer-Encoding is present it
+      takes precedence over Content-Length.  Decoded below by
+      dav_put_consume_chunked() instead of the fixed-length sink -
+      needed because Windows Explorer's MiniRedirector uses chunked
+      PUTs in some client/registry configurations; rejecting them
+      outright (as this server used to, with a 501) surfaces to the
+      user as a generic "cannot perform the requested operation" copy
+      failure (Win32 0x8007003A) with no indication a PUT was even the
+      cause, since reads/PROPFIND never carry a body and so are never
+      affected. */
+   bool te_chunked = ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding",
+                                    te_hdr, sizeof te_hdr)
+                    && ws_strcasestr(te_hdr, "chunked") != NULL;
 
-   /* Content-Length is required for our streaming model. */
-   if (!ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length",
-                       len_hdr, sizeof len_hdr))
-      return ws_error(c, 411, "Length Required",
-                      "PUT requires a Content-Length.");
-   /* Parse the digit string into a uint32_t, rejecting both
-      non-digits and overflow.  Reject sizes >= 2 GiB up front: the
-      counter is a uint32_t and the streaming model doesn't track
-      anything bigger, so a value that wraps would let the client
-      confuse the server about where the upload should end.  An
-      explicit 413 is the right reply per RFC 9110 §15.5.14. */
-   for (p = len_hdr; *p != '\0'; ++p) {
-      if (*p < '0' || *p > '9')
-         return ws_error(c, 400, "Bad Request",
-                         "Malformed Content-Length.");
-      if (content_length > (UINT32_C(0x7FFFFFFF) - 9u) / 10u)
-         return ws_error(c, 413, "Payload Too Large",
-                         "Content-Length exceeds the PUT size limit.");
-      content_length = (content_length * 10u) + (uint32_t)(*p - '0');
+   if (!te_chunked) {
+      /* Content-Length is required for the fixed-length streaming model. */
+      if (!ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length",
+                          len_hdr, sizeof len_hdr))
+         return ws_error(c, 411, "Length Required",
+                         "PUT requires a Content-Length.");
+      /* Parse the digit string into a uint32_t, rejecting both
+         non-digits and overflow.  Reject sizes >= 2 GiB up front: the
+         counter is a uint32_t and the streaming model doesn't track
+         anything bigger, so a value that wraps would let the client
+         confuse the server about where the upload should end.  An
+         explicit 413 is the right reply per RFC 9110 §15.5.14. */
+      for (p = len_hdr; *p != '\0'; ++p) {
+         if (*p < '0' || *p > '9')
+            return ws_error(c, 400, "Bad Request",
+                            "Malformed Content-Length.");
+         if (content_length > (UINT32_C(0x7FFFFFFF) - 9u) / 10u)
+            return ws_error(c, 413, "Payload Too Large",
+                            "Content-Length exceeds the PUT size limit.");
+         content_length = (content_length * 10u) + (uint32_t)(*p - '0');
+      }
    }
 
    target_existed = f_stat(sdpath, &fno) == FR_OK;
    if (target_existed && (fno.fattrib & AM_DIR) != 0u)
       return ws_error(c, 409, "Conflict",
                       "Cannot PUT over an existing directory.");
+
+   if (wifi_debug_enabled()) {
+      wifi_debug_printf("PUT target='%s' te_chunked=%u cl=%lu existed=%u\n",
+                        sdpath,
+                        te_chunked ? 1u : 0u,
+                        (unsigned long)content_length,
+                        target_existed ? 1u : 0u);
+   }
 
    /* Windows Explorer's MiniRedirector write-permission probe.
       Before sending the real PUT body, Windows issues a PUT with
@@ -3348,8 +3536,11 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
       file does not yet exist Windows treats the 404 as evidence
       the upload "failed" and rolls back with DELETE.  Honouring
       RFC 4918 / 9110 ("PUT with empty body creates an empty
-      resource") on first creation keeps the HEAD succeeding. */
-   if (content_length == 0u && target_existed) {
+      resource") on first creation keeps the HEAD succeeding.  A
+      chunked PUT never hits this branch: its length isn't known until
+      the terminating chunk, so te_chunked always falls through to the
+      regular temp+rename path below. */
+   if (!te_chunked && content_length == 0u && target_existed) {
       ws_strbuf_t r;
       if (wifi_debug_enabled())
          wifi_debug_printf("PUT: CL=0 probe on existing target, noop reply\n");
@@ -3367,6 +3558,13 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
       conn_pump(c);
       return true;
    }
+
+   /* A CL=0 PUT on a NEW target deliberately falls through to the
+      temp+rename path below, so an empty file really is created at
+      sdpath.  Answering 204 without creating it (and virtualizing only
+      HEAD) is not enough: Explorer verifies the probe with PROPFIND,
+      which stats the filesystem and would 404, and it reads that 404 as
+      a failed upload and rolls back with DELETE. */
 
    /* Write to a temp file in the same directory so the eventual rename
       is atomic and a mid-upload disconnect cannot destroy the existing
@@ -3386,7 +3584,11 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
       return ws_error(c, 409, "Conflict",
                       "Cannot create the target (missing parent folder?).");
    c->dav_put_open       = true;
-   c->dav_remaining      = content_length;
+   c->dav_put_chunked    = te_chunked;
+   c->dav_remaining      = content_length;      /* unused while te_chunked */
+   c->dav_chunk_state    = DAV_CHUNK_SIZE;
+   c->dav_chunk_remaining= 0u;
+   c->dav_chunk_linelen  = 0u;
    c->dav_put_status     = target_existed ? 204 : 201;
    c->dav_put_status_text= target_existed ? "No Content" : "Created";
 
@@ -3427,11 +3629,13 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
    /* The HTTP-header parse may have buffered some of the body already. */
    if ((size_t)body_at < c->reqhdr_len) {
       size_t already = c->reqhdr_len - (size_t)body_at;
-      return dav_put_consume(c, (const uint8_t *)c->reqhdr + body_at,
-                             already);
+      return te_chunked
+          ? dav_put_consume_chunked(c, (const uint8_t *)c->reqhdr + body_at,
+                          already, NULL)
+           : dav_put_consume(c, (const uint8_t *)c->reqhdr + body_at, already);
    }
-   /* Zero-length PUT: close + reply immediately. */
-   if (content_length == 0u)
+   /* Zero-length PUT (Content-Length model only): close + reply immediately. */
+   if (!te_chunked && content_length == 0u)
       return dav_put_consume(c, NULL, 0u);
 
    return true;
@@ -3803,10 +4007,50 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    actually retained.  Single-user device - faking it is safe. */
 static bool route_dav_lock(ws_conn_t *c, const char *rawpath)
 {
+   char        sdpath[WS_PATH_MAX];
+   char        depth_hdr[16];
+   const char *depth_text = "infinity";
+   FILINFO     fno;
+   FIL         lf;
+   bool        target_exists = false;
+   bool        created_placeholder = false;
+   int         status = 200;
+   const char *stext = "OK";
    ws_strbuf_t body;
    char        token[48];
    uint32_t    a, b;
-   (void)rawpath;
+
+   if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
+      return ws_error(c, 400, "Bad Request", "That path is not allowed.");
+   target_exists = (f_stat(sdpath, &fno) == FR_OK);
+   if (!target_exists) {
+      /* Windows Explorer follows LOCK with PROPFIND on the same URL and
+         expects that resource lookup to succeed before it proceeds to PUT.
+         Emulate lock-null creation by materializing an empty placeholder
+         file now; the subsequent PUT atomically overwrites it. */
+      if (f_open(&lf, sdpath, FA_CREATE_NEW | FA_WRITE) != FR_OK)
+         return ws_error(c, 409, "Conflict",
+                         "Cannot lock target (missing parent folder?).");
+      if (f_close(&lf) != FR_OK)
+         return ws_error(c, 500, "Internal Server Error",
+                         "Could not finalize lock target.");
+      ws_propfind_cache_invalidate();
+      created_placeholder = true;
+      target_exists = true;
+      /* RFC allows 201 for lock-null creation, but some Windows
+         MiniRedirector builds are stricter and only proceed cleanly
+         when LOCK replies 200.  Keep 200 for compatibility. */
+      status = 200;
+      stext  = "OK";
+   }
+
+   if (ws_find_header(c->reqhdr, c->reqhdr_len, "Depth",
+                      depth_hdr, sizeof depth_hdr)) {
+      if (strcmp(depth_hdr, "0") == 0)
+         depth_text = "0";
+      else
+         depth_text = "infinity";
+   }
 
    /* Real lock state is not persisted (the chip is single-user), but
       the token still wants to be unguessable so a client that uses
@@ -3827,13 +4071,27 @@ static bool route_dav_lock(ws_conn_t *c, const char *rawpath)
       "<D:prop xmlns:D=\"DAV:\"><D:lockdiscovery><D:activelock>"
       "<D:locktype><D:write/></D:locktype>"
       "<D:lockscope><D:exclusive/></D:lockscope>"
-      "<D:depth>infinity</D:depth>"
+      "<D:depth>");
+   sb_puts(&body, depth_text);
+   sb_puts(&body,
+      "</D:depth>"
       "<D:owner><D:href>Pi1MHz</D:href></D:owner>"
       "<D:timeout>Second-3600</D:timeout>"
       "<D:locktoken><D:href>");
    sb_html(&body, token);
+   {
+      ws_strbuf_t lockurl;
+      sb_init(&lockurl);
+      dav_append_url_path(&lockurl, sdpath, false);
+      sb_puts(&body,
+         "</D:href></D:locktoken>"
+         "<D:lockroot><D:href>");
+      if (lockurl.data != NULL)
+         sb_html(&body, lockurl.data);
+      sb_free(&lockurl);
+   }
    sb_puts(&body,
-      "</D:href></D:locktoken>"
+      "</D:href></D:lockroot>"
       "</D:activelock></D:lockdiscovery></D:prop>");
    if (body.failed) { sb_free(&body); return ws_oom(c); }
 
@@ -3841,17 +4099,25 @@ static bool route_dav_lock(ws_conn_t *c, const char *rawpath)
       ws_strbuf_t r;
       sb_init(&r);
       sb_printf(&r,
-                "HTTP/1.1 200 OK\r\n"
+                "HTTP/1.1 %d %s\r\n"
                 "Lock-Token: <%s>\r\n"
+                "Timeout: Second-3600\r\n"
+                "DAV: 1, 2\r\n"
                 "Content-Type: application/xml; charset=\"utf-8\"\r\n"
                 "Content-Length: %lu\r\n"
                 "%s"
                 "\r\n",
-                token, (unsigned long)body.len,
+                status, stext, token, (unsigned long)body.len,
                 ws_connection_hdr(c));
       sb_write(&r, body.data, body.len);
       sb_free(&body);
       if (r.failed) { sb_free(&r); return ws_oom(c); }
+      if (wifi_debug_enabled())
+         wifi_debug_printf("LOCK target='%s' existed=%u created=%u -> %d %s\n",
+                           sdpath,
+                           created_placeholder ? 0u : 1u,
+                           created_placeholder ? 1u : 0u,
+                           status, stext);
       free(c->out); c->out = r.data; c->out_len = r.len;
       c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
       c->state = CONN_SEND_MEM;
@@ -3904,15 +4170,118 @@ static bool route_dav_unlock(ws_conn_t *c)
    The response body therefore does not enumerate which properties
    were "accepted"; a generic "all OK" propstat is enough to satisfy
    Windows. */
+/* Length-bounded substring search: the request body in c->reqhdr is not
+   NUL-terminated, so strstr() can't be used on it. */
+static const char *dav_memfind(const char *hay, size_t hay_len,
+                               const char *needle)
+{
+   size_t nlen = strlen(needle);
+   size_t i;
+   if (nlen == 0u || hay_len < nlen)
+      return NULL;
+   for (i = 0u; i + nlen <= hay_len; ++i)
+      if (memcmp(hay + i, needle, nlen) == 0)
+         return hay + i;
+   return NULL;
+}
+
+/* Parse an RFC1123 HTTP-date ("Wed, 22 Jul 2026 09:00:00 GMT") into the
+   FAT-packed date/time words FatFs uses.  Windows Explorer sends the file's
+   modification time in this format via PROPPATCH.  The weekday prefix and
+   the GMT suffix are ignored (FAT timestamps are timezone-naive and Windows
+   always sends GMT).  Returns false on any malformed field. */
+static bool dav_parse_http_date(const char *s, size_t len,
+                                uint16_t *fdate, uint16_t *ftime)
+{
+   static const char months[12][4] = {
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+   char         buf[40];
+   size_t       n = (len < sizeof buf - 1u) ? len : sizeof buf - 1u;
+   const char  *p;
+   const char  *comma;
+   unsigned     day = 0u, year = 0u, hh = 0u, mm = 0u, ss = 0u, month = 0u;
+   unsigned     i;
+
+   memcpy(buf, s, n);
+   buf[n] = '\0';
+
+   p = buf;
+   comma = strchr(buf, ',');            /* skip the "Wed, " weekday prefix */
+   if (comma != NULL)
+      p = comma + 1;
+   while (*p == ' ') ++p;
+
+   if (*p < '0' || *p > '9') return false;
+   while (*p >= '0' && *p <= '9') day = day * 10u + (unsigned)(*p++ - '0');
+   while (*p == ' ') ++p;
+
+   for (i = 0u; i < 12u; ++i)
+      if (strncmp(p, months[i], 3) == 0) { month = i + 1u; break; }
+   if (month == 0u) return false;
+   p += 3;
+   while (*p == ' ') ++p;
+
+   if (*p < '0' || *p > '9') return false;
+   while (*p >= '0' && *p <= '9') year = year * 10u + (unsigned)(*p++ - '0');
+   while (*p == ' ') ++p;
+
+   if (*p < '0' || *p > '9') return false;
+   while (*p >= '0' && *p <= '9') hh = hh * 10u + (unsigned)(*p++ - '0');
+   if (*p++ != ':') return false;
+   while (*p >= '0' && *p <= '9') mm = mm * 10u + (unsigned)(*p++ - '0');
+   if (*p++ != ':') return false;
+   while (*p >= '0' && *p <= '9') ss = ss * 10u + (unsigned)(*p++ - '0');
+
+   if (year < 1980u || year > 2107u || day < 1u || day > 31u
+       || hh > 23u || mm > 59u || ss > 59u)
+      return false;
+
+   *fdate = (uint16_t)(((year - 1980u) << 9) | (month << 5) | day);
+   *ftime = (uint16_t)((hh << 11) | (mm << 5) | (ss / 2u));
+   return true;
+}
+
 static bool route_dav_proppatch(ws_conn_t *c, const char *rawpath, int body_at)
 {
    char        sdpath[WS_PATH_MAX];
    ws_strbuf_t b;
    ws_strbuf_t url;
-   (void)body_at;   /* the XML body lists property updates; we accept them all */
 
    if (!dav_url_to_sdpath(rawpath, sdpath, sizeof sdpath))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
+
+   /* Windows Explorer supplies the file's real modification time here, as a
+      <*:Win32LastModifiedTime> RFC1123 date sent after the content PUT.  This
+      device has no RTC (FatFs runs FF_FS_NORTC, so every file is created with
+      a fixed date), so persisting Explorer's value into the FAT directory
+      entry with f_utime is the only way a copied file ends up with the right
+      timestamp - and PROPFIND already reads fdate/ftime back, so directory
+      listings then show it.  Best-effort: if the small XML body did not arrive
+      in the same segment as the headers, or is unparseable, the file simply
+      keeps its default date; the PROPPATCH still succeeds. */
+   if ((size_t)body_at < c->reqhdr_len) {
+      const char *body = c->reqhdr + body_at;
+      size_t      blen = c->reqhdr_len - (size_t)body_at;
+      const char *tag  = dav_memfind(body, blen, "Win32LastModifiedTime>");
+      if (tag != NULL) {
+         const char *val = tag + (sizeof "Win32LastModifiedTime>" - 1u);
+         size_t      rem = blen - (size_t)(val - body);
+         size_t      j;
+         for (j = 0u; j < rem; ++j) {
+            if (val[j] == '<') {
+               FILINFO  fno;
+               uint16_t fdate, ftime;
+               if (dav_parse_http_date(val, j, &fdate, &ftime)) {
+                  fno.fdate = fdate;
+                  fno.ftime = ftime;
+                  (void)f_utime(sdpath, &fno);   /* best-effort */
+               }
+               break;
+            }
+         }
+      }
+   }
 
    sb_init(&b);
    sb_puts(&b,
@@ -4036,6 +4405,14 @@ static bool process_request(ws_conn_t *c, int body_at)
       size_t first_line_len = (first_line_end != NULL)
                             ? (size_t)(first_line_end - c->reqhdr)
                             : c->reqhdr_len;
+      /* strchr stopped at the '\n', so first_line_len still counts the
+         CR of the CRLF terminator.  Drop it: otherwise the last eight
+         bytes are "TTP/1.1\r", the test below never matches, and
+         keep-alive is silently disabled for every compliant client -
+         HTTP/1.1 peers rely on it being the default and do not send an
+         explicit "Connection: keep-alive". */
+      if (first_line_len > 0u && c->reqhdr[first_line_len - 1u] == '\r')
+         --first_line_len;
       is_http_11 = (first_line_len >= 8u
                     && memcmp(c->reqhdr + first_line_len - 8u,
                               "HTTP/1.1", 8u) == 0);
@@ -4053,9 +4430,57 @@ static bool process_request(ws_conn_t *c, int body_at)
          c->keep_alive = false;
    }
 
+   /* Keep-alive + an unconsumed request body = connection desync.  Only PUT
+      and POST consume their bodies; every other verb (PROPFIND, PROPPATCH,
+      LOCK, MKCOL, ...) queues a response and never reads the XML body.  When
+      that body is fully present in this segment it is harmlessly discarded at
+      reset, but when it arrives in a LATER TCP segment - which Windows
+      Explorer's redirector does routinely, sending headers and body as
+      separate segments - the leftover bytes would be parsed as the next
+      request line and desync the reused connection.  curl packs headers+body
+      into one segment so it never trips this, which is why the full DAV write
+      sequence completes over curl yet Explorer stalled after LOCK.
+
+      Fix: record how many body bytes still trail so conn_consume can DRAIN
+      (discard) them before parsing the next request.  This keeps the
+      connection alive - a reconnect per body-bearing verb is what made the
+      copy pause at ~97% (each reconnect risks the multi-second SYN-loss
+      latency).  A body too large to drain sanely, or a chunked body whose
+      length we can't size up-front, falls back to closing the connection. */
+   if (c->keep_alive
+       && c->drain_remaining == 0u
+       && !ws_method_is(method, "PUT")
+       && !ws_method_is(method, "POST")) {
+      char te_hdr[32] = "";
+      char cl_hdr[24];
+      if (ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding",
+                         te_hdr, sizeof te_hdr)
+          && ws_strcasestr(te_hdr, "chunked") != NULL) {
+         c->keep_alive = false;                 /* can't size a chunked drain */
+      } else if (ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length",
+                                cl_hdr, sizeof cl_hdr)) {
+         uint32_t cl = 0u;
+         bool     cl_ok = true;
+         const char *p;
+         for (p = cl_hdr; *p != '\0'; ++p) {
+            if (*p < '0' || *p > '9') { cl_ok = false; break; }
+            cl = cl * 10u + (uint32_t)(*p - '0');
+         }
+         size_t already = ((size_t)body_at < c->reqhdr_len)
+                        ? (c->reqhdr_len - (size_t)body_at) : 0u;
+         if (!cl_ok || cl > WS_DRAIN_MAX_BYTES)
+            c->keep_alive = false;              /* unparseable / absurd length */
+         else if (cl > already)
+            c->drain_remaining = cl - (uint32_t)already;
+      }
+   }
+
    query = strchr(rawpath, '?');
    if (query != NULL)
       *query = '\0';
+
+   if (wifi_debug_enabled())
+      wifi_debug_printf("REQ %s %s\n", method, rawpath);
 
    /* Digest auth.  When configured, every route requires a valid
       Authorization header.  OPTIONS is intentionally NOT exempt - the
@@ -4090,49 +4515,72 @@ static bool process_request(ws_conn_t *c, int body_at)
          if (ws_method_is(method, "PUT")) {
             char cl_hdr[24];
             char ex_hdr[32] = "";
-            (void)ws_find_header(c->reqhdr, c->reqhdr_len, "Expect",
-                                 ex_hdr, sizeof ex_hdr);
-            if (ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length",
-                               cl_hdr, sizeof cl_hdr)) {
-               uint32_t cl = 0u;
-               const char *p;
-               bool ok = true;
-               bool has_expect = (ex_hdr[0] != '\0'
-                                  && ws_strcasestr(ex_hdr, "100-continue") != NULL);
-               for (p = cl_hdr; *p != '\0'; ++p) {
-                  if (*p < '0' || *p > '9') { ok = false; break; }
-                  if (cl > (UINT32_C(0x7FFFFFFF) - 9u) / 10u) { ok = false; break; }
-                  cl = cl * 10u + (uint32_t)(*p - '0');
+            char te_hdr2[32] = "";
+            bool chunked = ws_find_header(c->reqhdr, c->reqhdr_len,
+                                          "Transfer-Encoding", te_hdr2,
+                                          sizeof te_hdr2)
+                         && ws_strcasestr(te_hdr2, "chunked") != NULL;
+            bool have_cl = ws_find_header(c->reqhdr, c->reqhdr_len,
+                                          "Content-Length", cl_hdr,
+                                          sizeof cl_hdr);
+            uint32_t cl = 0u;
+            bool cl_ok = have_cl;
+            const char *p;
+            for (p = cl_hdr; have_cl && *p != '\0'; ++p) {
+               if (*p < '0' || *p > '9') { cl_ok = false; break; }
+               if (cl > (UINT32_C(0x7FFFFFFF) - 9u) / 10u) { cl_ok = false; break; }
+               cl = cl * 10u + (uint32_t)(*p - '0');
+            }
+            /* A chunked body has no Content-Length to size the drain
+               up-front (cl_ok/cl are meaningless then); the cumulative
+               dav_chunk_drained cap in dav_put_consume_chunked takes
+               over that job instead. */
+            if (chunked || (cl_ok && cl > 0u && cl <= WS_DRAIN_MAX_BYTES)) {
+               /* Whether or not the client sent Expect: 100-continue,
+                  MiniRedirector treats an immediate 401 on a body-
+                  bearing PUT as fatal.  Send the 100 Continue only
+                  when the client actually asked for it - sending an
+                  unsolicited 100 to a HTTP/1.0-style client may
+                  confuse its parser.  Then accept and discard the
+                  full body (Content-Length- or chunk-delimited), and
+                  only then return the 401 so the client's next
+                  connection retries cleanly with credentials. */
+               bool has_expect;
+               size_t already;
+               (void)ws_find_header(c->reqhdr, c->reqhdr_len, "Expect",
+                                    ex_hdr, sizeof ex_hdr);
+               has_expect = (ex_hdr[0] != '\0'
+                             && ws_strcasestr(ex_hdr, "100-continue") != NULL);
+               already = ((size_t)body_at < c->reqhdr_len)
+                       ? (c->reqhdr_len - (size_t)body_at) : 0u;
+               if (has_expect && c->pcb != NULL) {
+                  static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
+                  (void)tcp_write(c->pcb, cont,
+                                  (u16_t)(sizeof cont - 1u),
+                                  TCP_WRITE_FLAG_COPY);
+                  (void)tcp_output(c->pcb);
                }
-               if (ok && cl > 0u && cl <= WS_DRAIN_MAX_BYTES) {
-                  /* Whether or not the client sent Expect: 100-continue,
-                     MiniRedirector treats an immediate 401 on a body-
-                     bearing PUT as fatal.  Send the 100 Continue only
-                     when the client actually asked for it - sending an
-                     unsolicited 100 to a HTTP/1.0-style client may
-                     confuse its parser.  Then accept and discard the
-                     full Content-Length body, and only then return the
-                     401 so the client's next connection retries
-                     cleanly with credentials. */
-                  size_t already = ((size_t)body_at < c->reqhdr_len)
-                                 ? (c->reqhdr_len - (size_t)body_at) : 0u;
-                  if (has_expect && c->pcb != NULL) {
-                     static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
-                     (void)tcp_write(c->pcb, cont,
-                                     (u16_t)(sizeof cont - 1u),
-                                     TCP_WRITE_FLAG_COPY);
-                     (void)tcp_output(c->pcb);
-                  }
-                  c->dav_put_open      = false;
-                  c->dav_put_draining  = true;
-                  c->dav_remaining     = cl;
-                  c->state             = CONN_RECV_DAV_PUT;
-                  if (already > 0u)
-                     return dav_put_consume(c,
-                                            (const uint8_t *)c->reqhdr + body_at,
-                                            already);
-                  return true;
+               c->dav_put_open      = false;
+               c->dav_put_draining  = true;
+               c->dav_put_chunked   = chunked;
+               c->state             = CONN_RECV_DAV_PUT;
+               if (chunked) {
+                  c->dav_chunk_state     = DAV_CHUNK_SIZE;
+                  c->dav_chunk_remaining = 0u;
+                  c->dav_chunk_linelen   = 0u;
+                  c->dav_chunk_drained   = 0u;
+               } else {
+                  c->dav_remaining = cl;
                }
+               if (already > 0u)
+                  return chunked
+                       ? dav_put_consume_chunked(c,
+                                                 (const uint8_t *)c->reqhdr + body_at,
+                                        already, NULL)
+                       : dav_put_consume(c,
+                                         (const uint8_t *)c->reqhdr + body_at,
+                                         already);
+               return true;
             }
          }
          return ws_send_auth_challenge(c, a == WS_AUTH_STALE);
@@ -4208,6 +4656,20 @@ static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
    size_t pos = 0u;
 
    while (pos < len) {
+      /* Discard any still-trailing body of a body-bearing verb whose handler
+         did not consume it (see the drain_remaining note in process_request).
+         Done before the state dispatch because these bytes may arrive while
+         the response is still in flight (CONN_SEND_MEM) or after the
+         connection has reset for the next request (CONN_RECV_HEADER); in both
+         cases they are body, not a new request. */
+      if (c->drain_remaining > 0u) {
+         size_t avail = len - pos;
+         size_t d     = (avail < c->drain_remaining) ? avail
+                                                     : c->drain_remaining;
+         pos += d;
+         c->drain_remaining -= (uint32_t)d;
+         continue;
+      }
       if (c->state == CONN_RECV_HEADER) {
          size_t space = WS_HEADER_MAX - c->reqhdr_len;
          size_t take  = len - pos;
@@ -4236,9 +4698,30 @@ static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len)
             return false;
          pos = len;
       } else if (c->state == CONN_RECV_DAV_PUT) {
-         if (!dav_put_consume(c, data + pos, len - pos))
-            return false;
-         pos = len;
+         if (c->dav_put_chunked) {
+            size_t consumed = 0u;
+            if (!dav_put_consume_chunked(c, data + pos, len - pos, &consumed))
+               return false;
+            pos += consumed;
+         } else {
+            size_t rem = len - pos;
+            size_t take = (rem < c->dav_remaining) ? rem : c->dav_remaining;
+            /* dav_remaining == 0 here means the body is fully received but
+               more bytes are still in this segment: they belong to the next
+               (pipelined) request, which we do not buffer.  Without this
+               guard take would be 0, pos would never advance, and the
+               while (pos < len) loop would spin forever inside the lwIP
+               TCP callback - a hard lockup of the cooperative main loop.
+               Baseline's unconditional pos = len avoided this; restore that
+               safety by dropping the pipelined tail. */
+            if (take == 0u) {
+               c->pipelined_bytes_dropped = true;
+               return true;
+            }
+            if (!dav_put_consume(c, data + pos, take))
+               return false;
+            pos += take;
+         }
       } else {
          /* CONN_SEND_*: a pipelined request we do not buffer.  Remember
             the drop so the response completion closes the connection -
