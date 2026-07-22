@@ -3466,6 +3466,12 @@ static bool dav_put_finish(ws_conn_t *c)
       return ws_error(c, 500, "Internal Server Error",
                       "Could not finalize the uploaded file.");
    }
+   /* Nudge a connected MTP host to refresh: 201 = new object, 204 = an
+      existing object whose contents changed. */
+   if (c->dav_put_status == 201)
+      mtp_fs_notify_object_added(c->dav_put_target);
+   else
+      mtp_fs_notify_object_changed(c->dav_put_target);
    return dav_put_send_response(c);
 }
 
@@ -3880,6 +3886,8 @@ static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
                       "Delete failed.");
    }
 
+   mtp_fs_notify_object_removed(sdpath);
+
    {
       ws_strbuf_t r;
       sb_init(&r);
@@ -3935,6 +3943,8 @@ static bool route_dav_mkcol(ws_conn_t *c, const char *rawpath)
                       "Parent collection does not exist.");
    if (fr != FR_OK)
       return ws_error(c, 500, "Internal Server Error", "mkdir failed.");
+
+   mtp_fs_notify_object_added(sdpath);
 
    {
       ws_strbuf_t r;
@@ -4054,6 +4064,10 @@ static void ws_copy_step(ws_conn_t *c)
       f_close(&c->copy_src); c->copy_src_open = false;
       f_close(&c->copy_dst); c->copy_dst_open = false;
       g_ws_active_copy = NULL;
+      if (dst_existed)
+         mtp_fs_notify_object_changed(c->dav_put_target);
+      else
+         mtp_fs_notify_object_added(c->dav_put_target);
       (void)dav_move_copy_send_response(c, dst_existed);
    }
 }
@@ -4117,6 +4131,11 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
       FRESULT fr = f_rename(src, dst);
       if (fr != FR_OK)
          return ws_error(c, 500, "Internal Server Error", "Rename failed.");
+      mtp_fs_notify_object_removed(src);
+      if (dst_existed)
+         mtp_fs_notify_object_changed(dst);
+      else
+         mtp_fs_notify_object_added(dst);
       return dav_move_copy_send_response(c, dst_existed);
    }
 
@@ -4147,6 +4166,10 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    }
    c->copy_dst_open = true;
    c->copy_dst_existed = dst_existed;
+   /* Stash the destination path for the completion-time MTP event.  PUT and
+      COPY are mutually exclusive on a connection, so dav_put_target is idle
+      here and reused rather than adding a second WS_PATH_MAX buffer. */
+   strlcpy(c->dav_put_target, dst, sizeof c->dav_put_target);
    c->state = CONN_DAV_COPY;
    g_ws_active_copy = c;
    return true;
@@ -4185,7 +4208,8 @@ static bool route_dav_lock(ws_conn_t *c, const char *rawpath)
       if (f_close(&lf) != FR_OK)
          return ws_error(c, 500, "Internal Server Error",
                          "Could not finalize lock target.");
-      ws_fs_mutated();
+      ws_propfind_cache_invalidate();        /* our own child cache */
+      mtp_fs_notify_object_added(sdpath);     /* MTP cache + host event */
       created_placeholder = true;
       target_exists = true;
       /* RFC allows 201 for lock-null creation, but some Windows

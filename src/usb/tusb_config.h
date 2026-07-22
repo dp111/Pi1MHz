@@ -129,10 +129,13 @@
 // (RESET_DEVICE and SET_DEVICE_PROP_VALUE are not implemented in mtp_fs.c
 // so are deliberately not advertised)
 
-// mtp_fs.c never actually raises OBJECT_ADDED, but the list cannot be
-// empty (the driver builds an array from it)
+// Advertised so a host (Windows) listens on the event endpoint and refreshes
+// its cached object view when the WebDAV server mutates the card underneath
+// MTP.  Raised from mtp_fs.c's mtp_fs_notify_object_{added,removed,changed}().
 #define CFG_TUD_MTP_DEVICEINFO_SUPPORTED_EVENTS \
-    MTP_EVENT_OBJECT_ADDED
+    MTP_EVENT_OBJECT_ADDED, \
+    MTP_EVENT_OBJECT_REMOVED, \
+    MTP_EVENT_OBJECT_INFO_CHANGED
 
 #define CFG_TUD_MTP_DEVICEINFO_SUPPORTED_DEVICE_PROPERTIES  \
     MTP_DEV_PROP_DEVICE_FRIENDLY_NAME

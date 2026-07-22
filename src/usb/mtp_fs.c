@@ -204,6 +204,7 @@ fs_op_handler_dict_t fs_op_handler_dict[] = {
 };
 
 static bool is_session_opened = false;
+static uint32_t g_mtp_session_id = 0;   /* SessionID from OpenSession, for events */
 static uint32_t send_obj_handle = 0;
 static uint32_t send_obj_parent = 0;
 static read_state_t g_read_state;
@@ -517,15 +518,62 @@ static void fs_cache_invalidate(void) {
   fs_cache_clear();
 }
 
-/* Public: another subsystem (the WebDAV server) mutated the SD filesystem
-   directly via FatFs, so the object-handle cache is now stale.  Drop it; the
-   next MTP request rebuilds it lazily via fs_cache_ensure().  Safe to call
-   from the webserver because both MTP (tud_task) and the webserver
-   (webserver_poll) run in the single cooperative main-loop poll and never
-   preempt each other, and the cache is never touched from an ISR.  See
-   mtp_fs.h. */
+/* Send an asynchronous MTP event (OBJECT_ADDED / OBJECT_REMOVED /
+   OBJECT_INFO_CHANGED) over the interrupt endpoint so a connected host
+   (Windows) refreshes its cached view instead of showing a stale object
+   list.  Best-effort: skipped when no session is open, and dropped silently
+   if the event endpoint is still busy with a prior event (tud_mtp_event_send
+   fails the edpt_claim) - the cache invalidation below is the correctness
+   backstop, this only speeds up the host-side refresh.  TransactionID
+   0xFFFFFFFF marks a spontaneous, non-transaction event (PTP/ISO 15740). */
+static void fs_send_object_event(uint16_t code, uint32_t handle) {
+  if (!is_session_opened) {
+    return;
+  }
+  mtp_event_t ev;
+  memset(&ev, 0, sizeof(ev));
+  ev.code = code;
+  ev.session_id = g_mtp_session_id;
+  ev.transaction_id = 0xFFFFFFFFu;
+  ev.params[0] = handle;
+  (void) tud_mtp_event_send(&ev);
+}
+
+/* Public: the WebDAV server mutated the SD filesystem directly via FatFs, so
+   the object-handle cache is now stale.  Drop it (next MTP request rebuilds
+   lazily via fs_cache_ensure) and, for the path-specific variants, nudge the
+   host to re-enumerate via an async MTP event.  Safe to call from the
+   webserver: both MTP (tud_task) and the webserver (webserver_poll) run in
+   the single cooperative main-loop poll and never preempt each other, and
+   the cache is never touched from an ISR.  The event handle is FNV(path),
+   matching MTP's own handle scheme (fs_handle_from_path); a rare hash
+   collision that was repaired at cache-build time may not match, in which
+   case the host simply ignores that event and falls back to a later
+   re-enumeration.  See mtp_fs.h. */
 void mtp_fs_notify_fs_changed(void) {
   fs_cache_invalidate();
+}
+
+void mtp_fs_notify_object_added(const char* path) {
+  fs_cache_invalidate();
+  if (path != NULL) {
+    fs_send_object_event(MTP_EVENT_OBJECT_ADDED, fs_handle_from_path(path));
+  }
+}
+
+void mtp_fs_notify_object_removed(const char* path) {
+  uint32_t handle = (path != NULL) ? fs_handle_from_path(path) : 0u;
+  fs_cache_invalidate();
+  if (path != NULL) {
+    fs_send_object_event(MTP_EVENT_OBJECT_REMOVED, handle);
+  }
+}
+
+void mtp_fs_notify_object_changed(const char* path) {
+  fs_cache_invalidate();
+  if (path != NULL) {
+    fs_send_object_event(MTP_EVENT_OBJECT_INFO_CHANGED, fs_handle_from_path(path));
+  }
 }
 
 static bool fs_cache_add_entry(const fs_entry_t* entry) {
@@ -1118,6 +1166,7 @@ static int32_t fs_open_close_session(tud_mtp_cb_data_t* cb_data) {
       return MTP_RESP_SESSION_ALREADY_OPEN;
     }
     is_session_opened = true;
+    g_mtp_session_id = command->params[0];   /* echoed back in async events */
     fs_cache_invalidate();
     (void) fs_cache_ensure();
   } else { // close session
@@ -1125,6 +1174,7 @@ static int32_t fs_open_close_session(tud_mtp_cb_data_t* cb_data) {
       return MTP_RESP_SESSION_NOT_OPEN;
     }
     is_session_opened = false;
+    g_mtp_session_id = 0;
     fs_release_read_state();
     fs_release_write_state();
     fs_cache_clear();
