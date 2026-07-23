@@ -415,7 +415,12 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       aun_init(&aun, &transport, aun_stn, aun_net);
       aun_set_host_imm(&aun, host_imm);
       aun_debug = config_get("aun_debug") != NULL;
-      aun_set_trace(&aun, aun_diag_trace, NULL);
+      /* Install the trace hook ONLY when aun_debug is set: the hook being
+       * non-NULL is what switches on the engine's previous-bytes machinery
+       * (per-source slot scan + up-to-8 KB memcmp/memcpy per inbound DATA
+       * frame, aun.c) - dead weight on the lwIP receive path when the
+       * AUN_LOG output it feeds is disabled anyway. */
+      aun_set_trace(&aun, aun_debug ? aun_diag_trace : NULL, NULL);
       {
          uint8_t mid[4];
          if (aun_parse_machine(config_get("aun_machine"), mid))

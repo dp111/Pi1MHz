@@ -149,11 +149,40 @@
  * Budget: one reject is burned per presentation, and a deferred stream is
  * re-presented at most every AUN_DEFER_DELAY_MS, so 250 x 8 ms ~= 2 s. That
  * covers the ROM's full 1 s tx-silence window (plus foreground stalls) with
- * margin. A genuinely stray stream - one nobody ever arms a CB for - is
- * dropped (silently, never having been ACKed) rather than clogging the
- * funnel; the sender retransmits it afresh until its own budget expires. */
+ * margin.
+ *
+ * Condemned streams - shedding proven strays FAST. A frame that survives
+ * the full budget of active rejection has proven nobody listens (field
+ * shape: a duplicated fileserver reply, born of one lost bridge-ACK and an
+ * NFS command retry). Under ACK-on-collect the bridge holds each such
+ * frame at the head of its per-destination out queue, retransmitting into
+ * our silence for ~5 s before dumping it - so a ~9-frame dead reply blocks
+ * the NEXT transaction's live reply behind it for ~45 s at the bridge
+ * (2026-07 field failure #2, 184-load soak: 18 parked drops = 9 strays x 2
+ * budget deaths, nak/full/noblk all 0). Silent dropping is honest but
+ * SLOW; native Econet would have shed each stray in milliseconds with
+ * not-listening scout rejects, and NAK - the AUN analogue - is not usable
+ * for this (2 NAKs make the bridge dump its whole queue for us, including
+ * the live traffic behind).
+ *
+ * So at budget death the frame is ACK-AND-DISCARDED - the ACK releases the
+ * bridge's queue head immediately - and its stream is condemned for
+ * AUN_CONDEMN_TTL_MS: further frames of that stream get only the
+ * AUN_CONDEMN_RETRIES mini-budget (~100 ms of active rejection) before
+ * they too are ACK-shed, so the rest of the dead reply drains at close to
+ * wire speed (~150 ms/frame) instead of 5 s/frame. This is a bounded,
+ * evidence-based exception to "never ACK what wasn't delivered": it takes
+ * a full 2 s of continuous rejection to enter, and it never misfires on
+ * wanted data - a frame a CB is armed for is collected on its first
+ * presentation and never reaches any budget, and a collect on a condemned
+ * stream lifts the condemnation on the spot (the listener is back). The
+ * residual risk is a CB arm race slower than the mini-budget occurring
+ * within the TTL of a dead episode - rare squared, and bounded by the TTL. */
 #define AUN_DEFER_RETRIES     250u
 #define AUN_DEFER_DELAY_MS    8u
+#define AUN_CONDEMN_RETRIES   12u     /* mini reject budget, ~100 ms active */
+#define AUN_CONDEMN_TTL_MS    10000u  /* condemnation lifetime              */
+#define AUN_CONDEMN_SLOTS     4u      /* dead streams tracked concurrently  */
 /* Deferred-stream table depth. Each entry keys one (Econet port, src ip,
  * src UDP port) stream; a full queue can hold at most AUN_RX_QUEUE distinct
  * streams, so sizing the table to match means it cannot over-subscribe. */
@@ -204,6 +233,18 @@ typedef struct {
    uint32_t due_ms;
 } aun_rx_defer_t;
 
+/* One condemned stream: a stream whose frame burned the full reject budget
+ * (proven stray). Until until_ms, its frames get only the
+ * AUN_CONDEMN_RETRIES mini-budget before being ACK-shed - see the design
+ * notes above AUN_CONDEMN_RETRIES. */
+typedef struct {
+   bool     valid;
+   uint8_t  port;
+   uint16_t src_port;
+   uint32_t src_ip_be;
+   uint32_t until_ms;
+} aun_rx_condemn_t;
+
 typedef struct {
    bool     open;
    bool     presented;         /* presented frame copied into buf  */
@@ -242,12 +283,16 @@ typedef struct {
    uint32_t tx_ok, tx_fail;
    uint32_t rx_data, rx_broadcast, rx_imm;
    uint32_t rx_dup, rx_no_block, rx_unknown_source, rx_too_big, rx_bad;
-   uint32_t rx_full;           /* arrival dropped silently: queue full (the
-                                * sender's retransmit is the flow control)  */
+   uint32_t rx_full;           /* DATA arrival dropped silently: queue full
+                                * (the sender's retransmit is the flow
+                                * control). DATA only - broadcasts dropped
+                                * on a full queue are not counted here      */
    uint32_t ack_sent, nak_sent;
    uint32_t ack_fail;          /* ACK/NAK that the transport failed to send */
-   uint32_t rx_parked_drop;    /* deferred frame dropped: reject budget spent
-                                * (silent - it was never ACKed)             */
+   uint32_t rx_parked_drop;    /* deferred frame discarded: reject budget
+                                * spent. The discard is ACK-shed (see the
+                                * condemned-stream notes) so the sender's
+                                * queue is released immediately             */
    uint32_t himm_timeout;      /* held immediate reaped: host never replied  */
    uint32_t himm_replay;       /* answered immediate retransmitted: replayed */
 } aun_counters_t;
@@ -328,6 +373,9 @@ typedef struct {
    aun_map_entry_t map[AUN_MAP_MAX];
    uint32_t        map_count;
    aun_rx_block_t  rx[AUN_RX_BLOCKS];
+   /* streams recently proven stray (full reject budget burned): their
+    * frames are ACK-shed on the mini-budget until the TTL expires */
+   aun_rx_condemn_t condemned[AUN_CONDEMN_SLOTS];
    aun_tx_t        tx;
    aun_counters_t  counters;
    uint32_t        broadcast_ip_be;   /* 0 = none */

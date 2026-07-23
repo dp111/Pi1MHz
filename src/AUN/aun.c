@@ -341,6 +341,53 @@ static void defer_set(aun_engine_t *e, aun_rx_block_t *b,
    victim->due_ms    = due_ms;
 }
 
+/* Find the live condemnation entry for stream (port, src), lazily expiring
+ * stale ones. NULL when the stream is not (or no longer) condemned. */
+static aun_rx_condemn_t *condemn_find(aun_engine_t *e, uint8_t port,
+                                      uint32_t src_ip_be, uint16_t src_port)
+{
+   for (uint32_t i = 0; i < AUN_CONDEMN_SLOTS; i++) {
+      aun_rx_condemn_t *c = &e->condemned[i];
+      if (c->valid && c->port == port && c->src_ip_be == src_ip_be &&
+          c->src_port == src_port) {
+         if ((int32_t)(now_ms(e) - c->until_ms) >= 0) {
+            c->valid = false;               /* TTL expired */
+            return NULL;
+         }
+         return c;
+      }
+   }
+   return NULL;
+}
+
+/* Condemn stream (port, src) for AUN_CONDEMN_TTL_MS (refreshing the TTL if
+ * already condemned). If the table is full the entry closest to expiry is
+ * recycled - the recycled stream merely reverts to the full budget. */
+static void condemn_set(aun_engine_t *e, uint8_t port,
+                        uint32_t src_ip_be, uint16_t src_port)
+{
+   aun_rx_condemn_t *victim = &e->condemned[0];
+   for (uint32_t i = 0; i < AUN_CONDEMN_SLOTS; i++) {
+      aun_rx_condemn_t *c = &e->condemned[i];
+      if (c->valid && c->port == port && c->src_ip_be == src_ip_be &&
+          c->src_port == src_port) {
+         victim = c;                        /* this stream's own entry */
+         break;
+      }
+      if (!c->valid || (int32_t)(now_ms(e) - c->until_ms) >= 0) {
+         victim = c;                        /* free or expired slot */
+         break;
+      }
+      if ((int32_t)(victim->until_ms - c->until_ms) > 0)
+         victim = c;                        /* closest-to-expiry fallback */
+   }
+   victim->valid     = true;
+   victim->port      = port;
+   victim->src_ip_be = src_ip_be;
+   victim->src_port  = src_port;
+   victim->until_ms  = now_ms(e) + AUN_CONDEMN_TTL_MS;
+}
+
 /* Is frame f presently deliverable (its stream not deferred)?
  * Broadcast/local frames (src_ip_be == 0) are never deferred. */
 static bool rx_frame_eligible(aun_engine_t *e, aun_rx_block_t *b,
@@ -466,16 +513,40 @@ uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
                   m->last_rx_seq = f->seq;
                   m->seq_valid   = true;
                }
+               /* a listener took a frame of this stream: if it was
+                * condemned, that verdict is disproven - lift it */
+               aun_rx_condemn_t *c =
+                  condemn_find(e, f->port, f->src_ip_be, f->src_port);
+               if (c != NULL)
+                  c->valid = false;
             }
             rx_remove_at(b, (uint32_t)off);          /* delivered */
          } else if (f->src_ip_be == 0) {
             /* non-DATA (broadcast/local): reject = intentional drop */
             rx_remove_at(b, (uint32_t)off);
-         } else if (f->rejects >= AUN_DEFER_RETRIES) {
-            /* nobody armed a CB for this stream across the whole budget
-             * (~2 s of active rejection): a genuine stray - abandon it,
-             * silently and un-ACKed, rather than clog the funnel; the
-             * sender retransmits until its own budget expires */
+         } else if (f->rejects >= (condemn_find(e, f->port, f->src_ip_be,
+                                                f->src_port) != NULL
+                                   ? AUN_CONDEMN_RETRIES
+                                   : AUN_DEFER_RETRIES)) {
+            /* Nobody armed a CB for this frame across its whole budget
+             * (~2 s of active rejection; ~100 ms if its stream was already
+             * condemned): a proven stray. ACK-AND-DISCARD it - the ACK
+             * releases the bridge's per-destination queue head NOW, so the
+             * rest of the dead stream (and the live traffic queued behind
+             * it) is not blocked for the bridge's full 5 s retransmit
+             * budget per frame - and condemn the stream so its remaining
+             * frames shed on the mini-budget. last_rx_seq is stamped so a
+             * retransmit crossing our ACK is re-ACKed, not re-queued. See
+             * the design notes above AUN_CONDEMN_RETRIES in aun.h. */
+            send_ack_nak(e, f->src_ip_be, f->src_port, AUN_TYPE_ACK,
+                         f->port, f->ctrl, f->seq);
+            aun_map_entry_t *m =
+               map_find_by_ip(e, f->src_ip_be, f->src_port);
+            if (m != NULL) {
+               m->last_rx_seq = f->seq;
+               m->seq_valid   = true;
+            }
+            condemn_set(e, f->port, f->src_ip_be, f->src_port);
             rx_remove_at(b, (uint32_t)off);
             e->counters.rx_parked_drop++;
          } else {
@@ -566,7 +637,10 @@ static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
    aun_rx_block_t *b = rx_match(e, port, src_stn, src_net, &saw_full);
    if (b == NULL) {
       if (saw_full) {
-         e->counters.rx_full++;
+         /* rx_full is counted by the DATA caller, not here: it is the
+          * "sender-retransmit flow control engaged" field diagnostic and
+          * must not be polluted by broadcasts/local frames that also
+          * funnel through this path. */
          *why = AUN_RXV_FULL;
       } else {
          e->counters.rx_no_block++;
@@ -884,7 +958,9 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
              * the flow control (PiEconetBridge: ~1 s x 5; BeebEm behaves
              * identically when its single buffer is busy). Never NAK for
              * flow control - 2 NAKs make the bridge dump the packet and
-             * flush its queue for us. */
+             * flush its queue for us. Counted here (DATA only) so the
+             * field diagnostic is not polluted by broadcasts. */
+            e->counters.rx_full++;
             verdict = AUN_RXV_FULL;
          } else {
             /* no open block for this port/source, or oversize: genuinely

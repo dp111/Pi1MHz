@@ -277,11 +277,13 @@ int main(void)
    assert(e.rx[0].count == 0);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
-   /* 17: a frame nobody EVER listens for is dropped once the reject budget
-    * is spent (~2 s of active rejection), so a stray stream cannot clog the
-    * funnel forever - but nothing is dropped a moment sooner. The drop is
-    * SILENT and the frame was never ACKed: the sender was never told it
-    * delivered, so its own retransmit/timeout owns the recovery. */
+   /* 17: a frame nobody EVER listens for is discarded once the reject
+    * budget is spent (~2 s of active rejection), so a stray stream cannot
+    * clog the funnel forever - but nothing is dropped a moment sooner. The
+    * discard is ACK-SHED: the ACK releases the sender's per-destination
+    * queue head immediately (a silent drop would leave a PiEconetBridge
+    * retransmitting into our silence for 5 s per frame, head-of-line
+    * blocking live traffic behind it), and never a NAK. */
    reset();
    assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
    pf[4] = 220;
@@ -295,9 +297,15 @@ int main(void)
       if (aun_rx_poll(&e, 0, NULL) == AUN_OK)
          assert(aun_rx_collect(&e, 0, false) == AUN_OK);        /* reject again */
    }
-   assert(e.rx[0].count == 0);                                  /* eventually dropped */
+   assert(e.rx[0].count == 0);                                  /* eventually shed */
    assert(e.counters.rx_parked_drop == 1);
-   assert(sent_count == 0);                    /* never ACKed, never NAKed */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 220);
+   assert(e.counters.nak_sent == 0);                            /* never NAKed */
+   /* and a retransmit crossing our shed-ACK is re-ACKed, not re-queued */
+   sent_count = 0;
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK);
+   assert(e.rx[0].count == 0 && e.counters.rx_dup == 1);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
    /* 18: a NEW-sequence frame that happens to be byte-identical to its
@@ -759,11 +767,12 @@ int main(void)
    /* 36: the 2026-07 field-failure shape end to end. A dead transaction's
     * frames (nobody will ever collect them) fill the funnel; a LIVE frame
     * arriving on the full queue must be dropped SILENTLY - never NAKed, a
-    * NAK kills the bridge's whole queue for us - and once the strays burn
-    * their reject budget (silently: they were never ACKed, the sender's
-    * own dump owns them), the live frame's retransmit under the SAME seq
-    * is accepted as fresh, delivered and ACKed. Sender-retransmit recovery
-    * end to end, with not one NAK on the wire. */
+    * NAK kills the bridge's whole queue for us. The strays are then
+    * ACK-shed: the FIRST burns the full budget and condemns the stream,
+    * the REST shed on the mini-budget (fast drain - the bridge's queue is
+    * released per frame instead of blocking 5 s each). The live frame's
+    * retransmit (different port = different stream, NOT condemned) is
+    * accepted as fresh, delivered and ACKed. Not one NAK on the wire. */
    reset();
    assert(aun_rx_open(&e, 0, 0, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
    for (uint32_t i = 0; i < AUN_RX_QUEUE; i++) {       /* 16 doomed strays */
@@ -777,19 +786,31 @@ int main(void)
                            0xCA,0xFE,0xBA,0xBE };
       aun_udp_input(&e, 0x0100000A, 32768, live, 12);
       assert(sent_count == 0 && e.counters.rx_full == 1);    /* silent drop */
-      /* the pump rejects the strays until their whole budget is spent.
+      /* the pump rejects the strays until each one's budget is spent.
        * They are ONE stream, so only the head frame is presented per
-       * defer period - the budgets burn sequentially, ~2 s per frame. */
+       * defer period: the first burns the FULL budget (condemning the
+       * stream), the rest only the mini-budget. Track the drain time. */
+      uint32_t sweeps = 0;
       for (uint32_t i = 0; i < AUN_RX_QUEUE * (AUN_DEFER_RETRIES + 2u) &&
                            e.rx[0].count != 0; i++) {
          fake_ms += AUN_DEFER_DELAY_MS;
+         sweeps++;
          while (aun_rx_poll(&e, 0, NULL) == AUN_OK)
             assert(aun_rx_collect(&e, 0, false) == AUN_OK);
       }
       assert(e.rx[0].count == 0);
       assert(e.counters.rx_parked_drop == AUN_RX_QUEUE);     /* strays gone */
-      assert(sent_count == 0);                               /* all silent */
-      /* the sender retransmits the live frame (same seq): accepted fresh */
+      /* every shed sent its ACK (bridge queue released per frame) */
+      assert(sent_count == AUN_RX_QUEUE);
+      for (int k = 0; k < sent_count; k++)
+         assert(sent[k].buf[0] == AUN_TYPE_ACK);
+      /* fast drain: one full budget + 15 mini-budgets, with slack -
+       * nowhere near 16 full budgets */
+      assert(sweeps <= AUN_DEFER_RETRIES + 2u +
+                       (AUN_RX_QUEUE - 1u) * (AUN_CONDEMN_RETRIES + 2u));
+      /* the sender retransmits the live frame (same seq): its stream
+       * (port &90) was never condemned, so it is accepted fresh */
+      sent_count = 0;
       aun_udp_input(&e, 0x0100000A, 32768, live, 12);
       assert(sent_count == 0 && e.counters.rx_dup == 0);     /* not a "dup" */
       assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.port == 0x90);
@@ -798,6 +819,126 @@ int main(void)
       assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 0xF0);
       assert(e.counters.nak_sent == 0);                      /* not one NAK */
    }
+
+   /* 37: a LOST collect-ACK self-heals. If the transport fails to send the
+    * ACK at collect (wifi hiccup: counted in ack_fail), the frame is still
+    * delivered to the host and removed; the sender, never having heard the
+    * ACK, retransmits the same seq - which must be re-ACKed from
+    * last_rx_seq (stamped at collect regardless of the send result), NOT
+    * re-delivered. This is the recovery path the whole ACK-on-collect
+    * design leans on. */
+   reset();
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   pf[4] = 250; pf[8] = 0x55;
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
+   sent_count = 0;
+   send_fail = true;                                  /* ACK cannot go out */
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   send_fail = false;
+   assert(sent_count == 0 && e.counters.ack_fail == 1);
+   assert(e.rx[0].count == 0);                        /* still delivered */
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);      /* same-seq retransmit */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 250);
+   assert(e.counters.rx_dup == 1);
+   assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);  /* NOT re-delivered */
+
+   /* 38: dup-vs-full precedence, and broadcast counter hygiene. A same-seq
+    * retransmit of a frame still queued must classify as a dup (silent)
+    * even when the queue is full - never as rx_full. And a broadcast
+    * dropped on the full queue must NOT bump rx_full: that counter is the
+    * DATA flow-control field diagnostic. */
+   reset();
+   assert(aun_rx_open(&e, 0, 0, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   for (uint32_t i = 0; i < AUN_RX_QUEUE; i++) {      /* fill the queue */
+      uint8_t f[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, (uint8_t)(60 + 4*i),0,0,0,
+                        (uint8_t)i,(uint8_t)i,(uint8_t)i,(uint8_t)i };
+      aun_udp_input(&e, 0x0100000A, 32768, f, 12);
+   }
+   assert(e.rx[0].count == AUN_RX_QUEUE && sent_count == 0);
+   {  /* retransmit of a mid-queue frame while full: dup, not rx_full */
+      uint8_t f[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 68,0,0,0, 2,2,2,2 };
+      aun_udp_input(&e, 0x0100000A, 32768, f, 12);
+      assert(sent_count == 0);
+      assert(e.counters.rx_dup == 1 && e.counters.rx_full == 0);
+   }
+   {  /* broadcast onto the full queue: dropped, but rx_full untouched */
+      uint8_t b[10] = { AUN_TYPE_BROADCAST, 0x9C, 0x00, 0, 8,0,0,0, 1,2 };
+      aun_udp_input(&e, 0x0100000A, 32768, b, 10);
+      assert(sent_count == 0);                        /* never acked/naked */
+      assert(e.counters.rx_full == 0 && e.counters.rx_broadcast == 0);
+   }
+   {  /* a genuinely new DATA frame on the full queue IS counted */
+      uint8_t f[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 200,0,0,0, 7,7,7,7 };
+      aun_udp_input(&e, 0x0100000A, 32768, f, 12);
+      assert(sent_count == 0 && e.counters.rx_full == 1);
+   }
+
+   /* 39: condemned-stream lifecycle. (a) After one full-budget shed, the
+    * stream's next unwanted frame sheds on the MINI budget (~100 ms, not
+    * 2 s) - this is what un-blocks the bridge's per-destination queue when
+    * a duplicated fileserver reply dies. (b) A condemned-stream frame that
+    * a CB actually wants is collected on first presentation - condemnation
+    * never eats wanted data - and the collect LIFTS the condemnation, so
+    * (c) the stream is back on the full budget afterwards. */
+   reset();
+   assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   /* (a) first stray: full budget, shed-ACKed, stream condemned */
+   pf[4] = 60; pf[8] = 0x01;
+   sent_count = 0;
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   {
+      uint32_t sweeps = 0;
+      while (e.rx[0].count != 0 && sweeps < AUN_DEFER_RETRIES + 2u) {
+         fake_ms += AUN_DEFER_DELAY_MS;
+         sweeps++;
+         if (aun_rx_poll(&e, 0, NULL) == AUN_OK)
+            assert(aun_rx_collect(&e, 0, false) == AUN_OK);
+      }
+      assert(e.rx[0].count == 0 && sweeps >= AUN_DEFER_RETRIES);  /* full burn */
+   }
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 60);
+   /* second stray, same stream: sheds on the mini-budget */
+   pf[4] = 64; pf[8] = 0x02;
+   sent_count = 0;
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   {
+      uint32_t sweeps = 0;
+      while (e.rx[0].count != 0 && sweeps < AUN_DEFER_RETRIES) {
+         fake_ms += AUN_DEFER_DELAY_MS;
+         sweeps++;
+         if (aun_rx_poll(&e, 0, NULL) == AUN_OK)
+            assert(aun_rx_collect(&e, 0, false) == AUN_OK);
+      }
+      assert(e.rx[0].count == 0);
+      assert(sweeps <= AUN_CONDEMN_RETRIES + 2u);            /* fast shed */
+   }
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 64);
+   assert(e.counters.rx_parked_drop == 2);
+   /* (b) a frame the CB wants, still within the condemnation TTL: taken on
+    * first presentation and ACKed normally; condemnation lifted */
+   pf[4] = 68; pf[8] = 0x03;
+   sent_count = 0;
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);            /* wanted */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 68);
+   /* (c) condemnation was lifted by the collect: a fresh unwanted frame
+    * survives well past the mini-budget again */
+   pf[4] = 72; pf[8] = 0x04;
+   aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
+   {
+      uint32_t sweeps = 0;
+      while (e.rx[0].count != 0 && sweeps < 4u * AUN_CONDEMN_RETRIES) {
+         fake_ms += AUN_DEFER_DELAY_MS;
+         sweeps++;
+         if (aun_rx_poll(&e, 0, NULL) == AUN_OK)
+            assert(aun_rx_collect(&e, 0, false) == AUN_OK);
+      }
+      assert(e.rx[0].count == 1);            /* still queued: full budget */
+   }
+   assert(e.counters.rx_parked_drop == 2);   /* nothing shed early */
 
    printf("all aun tests passed\n");
    return 0;

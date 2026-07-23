@@ -728,6 +728,15 @@ silently; `aun_rx_collect(accept=true)` sends the ACK and stamps
   traffic it RECEIVES from us (our tx path, unchanged); toward us it always
   awaits our ACK. The §10.6 AUTOACK prerequisite stands as-is.
 
+Known limitation (2026-07-23 review, verified by probe, accepted): the
+lost-collect-ACK self-heal leans on the single-slot `last_rx_seq`, so a peer
+holding TWO distinct un-ACKed seqs toward us simultaneously could, if the
+first collect's ACK is lost, see its retransmit re-delivered rather than
+re-ACKed (the second collect overwrote the slot). Unreachable with
+conforming peers — PiEconetBridge holds each DATA at its queue head until
+ACKed and BeebEm is single-transaction — so not worth a per-stream seq ring
+unless such a peer ever appears.
+
 Engine ABI: JIM STATUS block unchanged (11 counters); /aun status line gains
 `full`; trace verdict table gains "full". Timing constants untouched.
 
@@ -740,3 +749,63 @@ is accepted fresh, delivered and ACKed. Lockstep 4/4b/5/5b inverted likewise
 (ROM pump drives the collect, so the ACK appears after eco_rx_pump, not after
 UDP input). Full stack green: unit (36 cases), fuzz (ASan/UBSan), 140
 lockstep checks against the real ANFS 4.18 ROM.
+
+### 15. Condemned-stream shed (2026-07-23) — the head-of-line residual of §14
+
+Field report (Ken, IBOS127 soak on the §14 build): stopped at load ~184.
+Counters: tx ok/fail 198/8, rx data 2801, dup 76, noblk/unkn/big/full all 0,
+ack/nak 2837/0, ackfail 0, rx parked drop 18. The §14 machinery behaved
+perfectly — zero NAKs, zero floods, and the arithmetic cross-checks (2837
+acks = 2783 collected + 54 re-ACKs of lost collect-ACKs; 22 pending-dups =
+retransmits landing during pump stalls; 8 tx fails ≈ the lost-bridge-ACK rate
+on WiFi). But 18 parked drops = 9 stray frames x 2 budget deaths each = one
+duplicated ~9-frame fileserver reply (same §14 trigger: lost bridge ACK →
+1 s TX_POLL stall → NFS command retry → double execution).
+
+The residual: §14 made stray drops silent and honest — which moved the clog
+from our funnel to the BRIDGE. An un-ACKed stray sits at the head of the
+bridge's per-destination out queue for its full retransmit budget (~5 s)
+before being dumped, and the dead reply's frames serialise: ~9 x 5 s ≈ 45 s
+during which the next load's live reply is queued BEHIND them. Beeb times
+out → "No reply". Native Econet never sees this because a stray data burst
+is shed in milliseconds by not-listening scout rejects; AUN's analogue (NAK)
+is unusable (2 NAKs dump the bridge's whole queue for us, §14).
+
+**Fix: ACK-shed + condemned streams.** A frame that burns the FULL reject
+budget (~2 s of continuous rejection — proof nobody listens) is now
+ACK-AND-DISCARDED instead of silently dropped: the ACK releases the bridge's
+queue head immediately. Its stream (Econet port, src ip, src UDP port) is
+condemned for AUN_CONDEMN_TTL_MS (10 s), during which further frames of that
+stream shed on a mini-budget (AUN_CONDEMN_RETRIES = 12 ≈ 100 ms of active
+rejection) — so the rest of the dead reply drains at ~150 ms/frame instead
+of 5 s/frame (~3 s total for the 9-frame episode; the live reply behind it
+then delivers and NO load fails). Guard rails:
+  - Entry requires the full 2 s burn; a CB arm race (even the 1 s TX_POLL
+    stall) cannot condemn a stream, because the budget only burns under
+    ACTIVE rejection.
+  - Condemnation never eats wanted data: a frame a CB is armed for is
+    collected on its FIRST presentation and reaches no budget at all; and a
+    collect on a condemned stream LIFTS the condemnation on the spot.
+  - The shed-ACK stamps last_rx_seq, so a retransmit crossing it is re-ACKed
+    rather than re-queued (no 2-death cycles: each stray now dies once).
+  - Residual risk: an arm race slower than the mini-budget within 10 s of a
+    dead episode on the same stream — rare squared, bounded by the TTL, and
+    the same shape §14 already accepts for nonconforming peers.
+This is a bounded, evidence-based exception to §14's "never ACK what wasn't
+delivered": the ACK-lie is told only about frames that have proven, over the
+full budget, that no one will ever collect them — the frames native Econet
+would have shed instantly.
+
+Also in this pass (2026-07-23 review findings): the diagnostic trace hook is
+installed only when aun_debug is set (previously the dbg_prev machinery — an
+up-to-8 KB memcmp+memcpy per inbound DATA frame — ran unconditionally on the
+lwIP receive path); rx_full is counted only for DATA (broadcasts dropped on
+a full queue no longer pollute the flow-control diagnostic).
+
+Tests: 17 and 36 updated to assert the shed-ACK (and 36 now bounds the drain
+time: one full budget + 15 mini-budgets, not 16 x 2 s); new 37 pins the
+lost-collect-ACK self-heal, 38 dup-vs-full precedence + broadcast counter
+hygiene, 39 the condemned lifecycle (full burn → mini-budget shed → wanted
+frame collected on first presentation lifts condemnation → full budget
+restored). Full stack green: unit (39 cases), fuzz (ASan/UBSan), 140
+lockstep checks.
