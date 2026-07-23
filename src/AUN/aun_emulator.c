@@ -40,8 +40,8 @@
  *  39 MAP_ADD     +1 stn  +2 net  +4 ip[4] (a.b.c.d)  +8 u32 UDP port
  *  40 TEST        +1 enable  +2 station  +3 net   (loopback responder)
  *  41 SET_MACHINE +4 machine id [4] (machine-peek reply bytes)
- *  42 RX_DONE     +1 handle  +2 verdict (0=host took it, 1=rejected) - the
- *                 host has copied the presented frame; re-arm / park-or-drop
+ *  42 RX_DONE     +1 handle  +2 verdict (0=host took it: ACK the sender
+ *                 and re-arm, 1=rejected: defer-in-place, silent)
  *  43 IMM_POLL    held host-immediate -> +2 ctrl  +12 u32 len  + data at
  *                 JIM &FEA000; PENDING when none held
  *  44 IMM_REPLY   +8 u32 reply offset  +12 u32 length - host's answer to the
@@ -121,7 +121,7 @@ static void aun_diag_trace(void *user, uint32_t seq, uint8_t port,
    /* unused when LOG_DEBUG compiles out (release build) */
    (void)seq; (void)port; (void)verdict; (void)same_as_prev;
    static const char *const vname[] __attribute__((unused)) =
-      { "ack", "redup", "nak", "nosrc" };
+      { "acc", "redup", "nak", "nosrc", "full" };
    char hex[16 * 3 + 1];
    aun_hex16(hex, data, len);
    /* ackfail is the running count of ACK/NAKs the transport could not put
@@ -129,7 +129,7 @@ static void aun_diag_trace(void *user, uint32_t seq, uint8_t port,
     * our acknowledgements are being silently dropped. */
    AUN_LOG("ECONET: rxdata seq %lu port %02X len %lu %s%s ackfail=%lu [%s]\r\n",
            (unsigned long)seq, port, (unsigned long)len,
-           vname[verdict & 3u], same_as_prev ? " =prev" : "",
+           vname[verdict < 5u ? verdict : 4u], same_as_prev ? " =prev" : "",
            (unsigned long)aun.counters.ack_fail, hex);
 }
 
@@ -325,11 +325,12 @@ void aun_status_text(char *buf, size_t size)
           (unsigned long)aun.counters.rx_data,
           (unsigned long)aun.counters.rx_broadcast,
           (unsigned long)aun.counters.rx_imm);
-   APPEND("rx dup/noblk/unkn/big  %lu/%lu/%lu/%lu\n",
+   APPEND("rx dup/noblk/unkn/big/full  %lu/%lu/%lu/%lu/%lu\n",
           (unsigned long)aun.counters.rx_dup,
           (unsigned long)aun.counters.rx_no_block,
           (unsigned long)aun.counters.rx_unknown_source,
-          (unsigned long)aun.counters.rx_too_big);
+          (unsigned long)aun.counters.rx_too_big,
+          (unsigned long)aun.counters.rx_full);
    APPEND("ack/nak sent %lu/%lu  ackfail %lu\n",
           (unsigned long)aun.counters.ack_sent,
           (unsigned long)aun.counters.nak_sent,
@@ -570,9 +571,10 @@ static void aun_execute(uint32_t cp, uint32_t addr)
 
    case AUN_CMD_RX_DONE:
       AUN_LOG("ECONET: rx_done h%u %s\r\n", Pi1MHz->JIM_ram[cp + 1],
-              Pi1MHz->JIM_ram[cp + 2] == 0 ? "ack" : "nak");      /* host has copied the frame: re-arm.
-                                 * +2 verdict: 0 = delivered (ACK the
-                                 * sender), 1 = no listener (NAK) */
+              Pi1MHz->JIM_ram[cp + 2] == 0 ? "ack" : "rej");      /* host has copied the frame: re-arm.
+                                 * +2 verdict: 0 = delivered (the engine
+                                 * ACKs the sender now - ACK-on-collect),
+                                 * 1 = no listener (silent defer) */
       result = aun_rx_collect(&aun, Pi1MHz->JIM_ram[cp + 1],
                               Pi1MHz->JIM_ram[cp + 2] == 0);
       break;

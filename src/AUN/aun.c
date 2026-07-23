@@ -9,9 +9,14 @@
  *    the caller polls aun_tx_status(); retries/timeouts are driven by
  *    aun_poll() from the main loop. Nothing here may stall the 1MHz
  *    bus servicing.
- *  - Duplicate suppression: a retransmitted DATA datagram (our ACK was
- *    lost) is re-ACKed but not delivered twice, tracked per map entry
- *    by the last accepted sequence number.
+ *  - ACK-on-collect: an inbound DATA frame is queued silently and ACKed
+ *    only when the host collects it (see the design notes in aun.h).
+ *  - Duplicate suppression, two-tier: a retransmitted DATA datagram whose
+ *    original is still queued awaiting collect is dropped silently (the
+ *    sender is retransmitting into our pre-ACK silence); one whose
+ *    original was already collected (our ACK was lost) is re-ACKed but
+ *    not delivered twice, tracked per map entry by the last collected
+ *    sequence number.
  *
  * Test responder: when enabled, transmits addressed to the configured
  * test station never touch the network - they are ACKed locally and the
@@ -421,23 +426,25 @@ uint32_t aun_rx_ready(aun_engine_t *e, uint8_t handle)
 
 uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
 {
-   /* The ACK was already sent when the frame arrived (ACK-on-receipt:
-    * the engine acks into the queue immediately, like the real ADLC/NMI
-    * acks into the RXCB - this is fast enough to beat the fileserver's
-    * reply-ACK timeout, which a deferred collect-time ack is not). So a
-    * normal collect just removes the presented frame.
+   /* accept=true: the host has taken the frame, so send the ACK NOW -
+    * ACK-on-collect, the BeebEm model (see aun.h). The ACK is a true
+    * delivery confirmation; the collect latency (IRQ pump + copy over the
+    * 1 MHz bus, tens of ms) is far inside the sender's retransmit timer
+    * (PiEconetBridge: 1 s), so in the common case the sender never even
+    * retransmits. Should the ACK itself fail to send (counted in
+    * ack_fail), the sender retransmits the same seq and the dup filter
+    * re-ACKs it from last_rx_seq - self-healing. last_rx_seq is stamped
+    * here, at ACK time, which is what makes the dup filter two-tier: a
+    * same-seq retransmit BEFORE collect finds its original still queued
+    * and is dropped silently instead.
     *
     * accept=false means the host's RXCB scan found no listener for this
-    * frame. Rather than discard it (and lose a reply that arrived a beat
-    * before its control block was armed - the ACK already went out, so the
-    * sender will not retransmit), the frame STAYS in the queue and its
-    * stream is deferred for AUN_DEFER_DELAY_MS; frames of other streams
-    * are presented meanwhile (no head-of-line blocking), and per-stream
-    * arrival order is preserved because nothing ever leaves the queue
-    * until delivered or abandoned. A true retransmit (same wire seq, our
-    * ACK lost) is suppressed before delivery, so a queued frame is always
-    * a distinct block; content equality is NOT used to drop - a legitimate
-    * new block can be byte-identical to its predecessor. */
+    * frame. Rather than discard it (and pay a full sender-retransmit
+    * period per CB arm race), the frame STAYS in the queue - still
+    * un-ACKed - and its stream is deferred for AUN_DEFER_DELAY_MS; frames
+    * of other streams are presented meanwhile (no head-of-line blocking),
+    * and per-stream arrival order is preserved because nothing ever
+    * leaves the queue until collected or abandoned. */
    if (handle >= AUN_RX_BLOCKS || !e->rx[handle].open)
       return AUN_ERR_NO_BLOCK;
    aun_rx_block_t *b = &e->rx[handle];
@@ -448,14 +455,27 @@ uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept)
          aun_rx_frame_t *f =
             &b->q[((uint32_t)b->head + (uint32_t)off) % AUN_RX_QUEUE];
          if (accept) {
+            if (f->src_ip_be != 0) {
+               /* DATA from the wire: confirm delivery. build_header
+                * strips the bit 7 that rx_deliver set for the host. */
+               send_ack_nak(e, f->src_ip_be, f->src_port, AUN_TYPE_ACK,
+                            f->port, f->ctrl, f->seq);
+               aun_map_entry_t *m =
+                  map_find_by_ip(e, f->src_ip_be, f->src_port);
+               if (m != NULL) {
+                  m->last_rx_seq = f->seq;
+                  m->seq_valid   = true;
+               }
+            }
             rx_remove_at(b, (uint32_t)off);          /* delivered */
          } else if (f->src_ip_be == 0) {
             /* non-DATA (broadcast/local): reject = intentional drop */
             rx_remove_at(b, (uint32_t)off);
          } else if (f->rejects >= AUN_DEFER_RETRIES) {
             /* nobody armed a CB for this stream across the whole budget
-             * (~2 s of active rejection): a genuine stray - abandon it
-             * rather than clog the funnel forever */
+             * (~2 s of active rejection): a genuine stray - abandon it,
+             * silently and un-ACKed, rather than clog the funnel; the
+             * sender retransmits until its own budget expires */
             rx_remove_at(b, (uint32_t)off);
             e->counters.rx_parked_drop++;
          } else {
@@ -476,14 +496,44 @@ uint8_t aun_rx_close(aun_engine_t *e, uint8_t handle)
    return AUN_OK;
 }
 
-/* Find the first open receive block with queue space matching
- * (port, src). */
-static aun_rx_block_t *rx_match(aun_engine_t *e, uint8_t port,
-                                uint8_t src_stn, uint8_t src_net)
+/* Is a frame with this (source, wire seq) already queued awaiting collect?
+ * With ACK-on-collect a sender retransmits into our silence while the pump
+ * works through the queue; such a retransmit must be dropped silently - its
+ * original will be ACKed at collect. (A frame already collected no longer
+ * appears here; its retransmit is instead re-ACKed via last_rx_seq.) At
+ * most AUN_RX_BLOCKS x AUN_RX_QUEUE comparisons - cheap next to the UDP
+ * receive path that leads here. */
+static bool rx_seq_pending(const aun_engine_t *e, uint32_t src_ip_be,
+                           uint16_t src_port, uint32_t seq)
 {
    for (uint32_t i = 0; i < AUN_RX_BLOCKS; i++) {
+      const aun_rx_block_t *b = &e->rx[i];
+      if (!b->open)
+         continue;
+      for (uint32_t j = 0; j < b->count; j++) {
+         const aun_rx_frame_t *f =
+            &b->q[((uint32_t)b->head + j) % AUN_RX_QUEUE];
+         if (f->src_ip_be == src_ip_be && f->src_port == src_port &&
+             f->seq == seq)
+            return true;
+      }
+   }
+   return false;
+}
+
+/* Find the first open receive block with queue space matching (port, src).
+ * *saw_full is set when a block matched the filters but its queue was full:
+ * the caller must then stay SILENT (the sender's retransmit is the flow
+ * control) rather than NAK "not listening" - a NAK is near-fatal on
+ * PiEconetBridge (2 NAKs dump the packet and flush its queue for us). */
+static aun_rx_block_t *rx_match(aun_engine_t *e, uint8_t port,
+                                uint8_t src_stn, uint8_t src_net,
+                                bool *saw_full)
+{
+   *saw_full = false;
+   for (uint32_t i = 0; i < AUN_RX_BLOCKS; i++) {
       aun_rx_block_t *b = &e->rx[i];
-      if (!b->open || b->count >= AUN_RX_QUEUE)
+      if (!b->open)
          continue;
       if (b->port != 0 && b->port != port)
          continue;
@@ -491,22 +541,37 @@ static aun_rx_block_t *rx_match(aun_engine_t *e, uint8_t port,
          continue;
       if (b->net != AUN_WILDCARD && b->net != src_net)
          continue;
+      if (b->count >= AUN_RX_QUEUE) {
+         *saw_full = true;
+         continue;
+      }
       return b;
    }
    return NULL;
 }
 
-/* Deliver a payload into a receive block; returns NULL if no matching
- * block could take it (caller decides whether to NAK). The ACK/NAK for a
- * DATA frame is sent by aun_udp_input() on receipt, not here - this just
- * stages the payload into the block's queue. */
+/* Stage a payload into a receive block's queue; no ACK is sent here - the
+ * ACK follows when the host collects the frame (aun_rx_collect). Returns
+ * NULL if no matching block could take it, with *why saying how to answer:
+ * AUN_RXV_FULL  - a listener exists but its queue is full: stay silent,
+ *                 the sender's retransmit delivers it once room appears;
+ * AUN_RXV_NAK   - genuinely nobody listening (no block matches the port/
+ *                 source, or the payload cannot ever fit): fail fast. */
 static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
                                   uint8_t src_stn, uint8_t src_net,
-                                  const uint8_t *data, uint32_t len)
+                                  const uint8_t *data, uint32_t len,
+                                  uint8_t *why)
 {
-   aun_rx_block_t *b = rx_match(e, port, src_stn, src_net);
+   bool saw_full;
+   aun_rx_block_t *b = rx_match(e, port, src_stn, src_net, &saw_full);
    if (b == NULL) {
-      e->counters.rx_no_block++;
+      if (saw_full) {
+         e->counters.rx_full++;
+         *why = AUN_RXV_FULL;
+      } else {
+         e->counters.rx_no_block++;
+         *why = AUN_RXV_NAK;
+      }
       return NULL;
    }
    /* Bound by both the caller's buffer AND the fixed frame slot: f->data is
@@ -514,8 +579,10 @@ static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
     * must not let an oversize payload overflow the slot. */
    if (len > b->buf_size || len > AUN_MAX_DATA) {
       e->counters.rx_too_big++;
+      *why = AUN_RXV_NAK;
       return NULL;
    }
+   *why = AUN_RXV_ACK;
    aun_rx_frame_t *f = &b->q[((uint32_t)b->head + b->count) % AUN_RX_QUEUE];
    memcpy(f->data, data, len);
    f->len     = len;
@@ -526,9 +593,10 @@ static aun_rx_frame_t *rx_deliver(aun_engine_t *e, uint8_t port, uint8_t ctrl,
     * receive block would */
    f->ctrl    = (uint8_t)(ctrl | 0x80);
    f->rejects = 0;
-   /* stream identity, used by defer-in-place; the DATA path overwrites
-    * these with the real source/seq. A zero src_ip_be marks a frame that
-    * is never deferred (broadcast/local). */
+   /* stream identity, keying defer-in-place, the pending-dup filter and
+    * the collect-time ACK; the DATA path overwrites these with the real
+    * source/seq. A zero src_ip_be marks a frame that is never deferred
+    * and never ACKed (broadcast/local). */
    f->seq       = 0;
    f->src_ip_be = 0;
    f->src_port  = 0;
@@ -563,8 +631,9 @@ static uint8_t tx_begin(aun_engine_t *e, uint8_t wire_type,
             memcpy(reply_buf, e->machine_id, n);
          e->tx.reply_len = n;
       } else {
+         uint8_t why;
          if (rx_deliver(e, port, ctrl, e->test_stn, e->test_net,
-                        data, len) == NULL)
+                        data, len, &why) == NULL)
             e->tx.state = AUN_TX_NOT_LISTENING;
       }
       if (e->tx.state == AUN_OK)
@@ -775,39 +844,51 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
           * attributed, so it cannot be delivered. */
          e->counters.rx_unknown_source++;
          verdict = AUN_RXV_NOSRC;
+      } else if (rx_seq_pending(e, src_ip_be, src_port, seq)) {
+         /* Retransmission of a frame still queued awaiting collect: the
+          * sender retransmitting into our pre-ACK silence while the pump
+          * works. Drop it silently - the queued original is ACKed when the
+          * host collects it. */
+         e->counters.rx_dup++;
+         verdict = AUN_RXV_REDUP;
       } else if (m->seq_valid && seq == m->last_rx_seq) {
-         /* Retransmission of an already-ACKed frame under the SAME sequence
-          * number (our ACK was lost): re-ACK, but do not deliver it to the
-          * host a second time. This is the only duplicate suppression the
-          * AUN spec sanctions at the transport - a frame under a *new*
-          * sequence is, by definition, a new transmission, and detecting
-          * application-level duplicates is the application's job (ANFS's
-          * fileserver protocol carries its own sequencing). Content-based
-          * suppression was removed: with the same file loaded repeatedly
-          * every block is byte-identical, so it could silently drop a
-          * legitimate, distinct data block. */
+         /* Retransmission of an already-COLLECTED frame under the SAME
+          * sequence number (our collect-time ACK was lost): re-ACK, but do
+          * not deliver it to the host a second time. Same-seq suppression
+          * is the only duplicate suppression the AUN spec sanctions at the
+          * transport - a frame under a *new* sequence is, by definition, a
+          * new transmission, and detecting application-level duplicates is
+          * the application's job (ANFS's fileserver protocol carries its
+          * own sequencing). Content-based suppression was removed: with
+          * the same file loaded repeatedly every block is byte-identical,
+          * so it could silently drop a legitimate, distinct data block. */
          e->counters.rx_dup++;
          send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_ACK, port, ctrl, seq);
          verdict = AUN_RXV_REDUP;
       } else {
+         uint8_t why;
          aun_rx_frame_t *f = rx_deliver(e, port, ctrl, m->stn, m->net,
-                                        data, dlen);
+                                        data, dlen, &why);
          if (f != NULL) {
-            /* ACK the instant the frame lands in an open block - fast enough
-             * to beat the fileserver's reply-ACK timeout (a deferred
-             * collect-time ack is not, and the server retransmits). */
-            send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_ACK, port, ctrl, seq);
-            /* stamp identity so park-and-retry can recognise this frame if
-             * the host rejects it (no RXCB armed yet) and it is re-presented. */
+            /* Queued, NO ack yet - the ACK goes out when the host collects
+             * (ACK-on-collect, see aun.h). Stamp the wire identity: it keys
+             * defer-in-place, the pending-dup filter above, and the
+             * collect-time ACK itself. */
             f->seq       = seq;
             f->src_ip_be = src_ip_be;
             f->src_port  = src_port;
-            m->last_rx_seq = seq;
-            m->seq_valid   = true;
             e->counters.rx_data++;
             verdict = AUN_RXV_ACK;
+         } else if (why == AUN_RXV_FULL) {
+            /* Queue full: SILENT. The sender's retransmit-into-silence is
+             * the flow control (PiEconetBridge: ~1 s x 5; BeebEm behaves
+             * identically when its single buffer is busy). Never NAK for
+             * flow control - 2 NAKs make the bridge dump the packet and
+             * flush its queue for us. */
+            verdict = AUN_RXV_FULL;
          } else {
-            /* no open block, queue full, or oversize: NAK = not listening */
+            /* no open block for this port/source, or oversize: genuinely
+             * not listening - NAK so the sender fails fast */
             send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK, port, ctrl, seq);
             verdict = AUN_RXV_NAK;
          }
@@ -841,7 +922,8 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
       aun_map_entry_t *m = map_find_by_ip(e, src_ip_be, src_port);
       uint8_t s = (m != NULL) ? m->stn : 0;
       uint8_t n = (m != NULL) ? m->net : 0;
-      if (rx_deliver(e, port, ctrl, s, n, data, dlen) != NULL)
+      uint8_t why;
+      if (rx_deliver(e, port, ctrl, s, n, data, dlen, &why) != NULL)
          e->counters.rx_broadcast++;
       break;
    }

@@ -5,7 +5,8 @@
 #include "aun.h"
 
 /* ---- stub transport ---- */
-#define SENT_MAX 16
+#define SENT_MAX 40   /* deep enough for a full-queue collect sweep (16 ACKs)
+                         plus the surrounding traffic without a reset */
 static struct { uint32_t ip; uint16_t port; uint8_t buf[1500]; size_t len; } sent[SENT_MAX];
 static int sent_count;
 static uint32_t fake_ms;
@@ -91,77 +92,82 @@ int main(void)
    reset();
    assert(aun_tx_start(&e, 9, 9, 0x80, 1, pay, 4) == AUN_TX_NO_ROUTE);
 
-   /* 5: rx deliver -> ACK at receipt (fast enough to beat the fileserver's
-    * reply-ACK timeout), ctrl bit7 restored. */
+   /* 5: rx deliver -> queued SILENTLY, the ACK goes out on collect
+    * (ACK-on-collect, the BeebEm model), ctrl bit7 restored. */
    reset();
    uint8_t rbuf[64];
    assert(aun_rx_open(&e, 0, 0x99, AUN_WILDCARD, AUN_WILDCARD, rbuf, 64) == AUN_OK);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
    uint8_t dg[12] = { AUN_TYPE_DATA, 0x99, 0x00, 0, 40,0,0,0, 9,8,7,6 };
    aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 40);
+   assert(sent_count == 0);                                  /* no ack at receipt */
    aun_rx_info_t info;
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK);
    assert(info.src_stn == 254 && info.src_net == 1);
    assert(info.port == 0x99 && info.ctrl == 0x80 && info.len == 4);
    assert(memcmp(rbuf, &dg[8], 4) == 0);
-   /* same-seq retransmission (our ACK was lost): re-ACK, do not re-deliver */
-   sent_count = 0;
+   /* same-seq retransmit while the original is still queued (the sender
+    * retransmitting into our pre-ACK silence): dropped silently */
    aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && e.counters.rx_dup == 1);
+   assert(sent_count == 0 && e.counters.rx_dup == 1);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);               /* still the one frame */
-   /* a new-seq second frame is ACKed at receipt and queued behind the head */
+   /* a new-seq second frame is queued (silently) behind the head */
    uint8_t dgB[10] = { AUN_TYPE_DATA, 0x99, 0x00, 0, 48,0,0,0, 1,2 };
-   sent_count = 0;
    aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 48);
-   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);  /* still A (head) */
-   sent_count = 0;
-   assert(aun_rx_collect(&e, 0, true) == AUN_OK);            /* pop A: silent */
    assert(sent_count == 0);
+   assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);  /* still A (head) */
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);            /* pop A: ACKs it */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 40);
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 2);  /* now B */
    assert(memcmp(rbuf, &dgB[8], 2) == 0);
+   sent_count = 0;
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 48);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
-   /* collect with accept=false is silent (frame was already ACKed at receipt) */
+   /* collect with accept=false is silent: the frame stays queued (stream
+    * deferred), still un-ACKed */
    dgB[4] = 56;
    sent_count = 0;
    aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 56);
+   assert(sent_count == 0);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
-   sent_count = 0;
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);
-   assert(sent_count == 0);                                  /* collect is silent */
+   assert(sent_count == 0);                                  /* reject is silent */
    /* the rejected frame stays queued (stream deferred); take it once the
-    * deferral expires so the fill below starts from an empty queue */
+    * deferral expires - the ACK arrives only now, at collect */
    fake_ms += AUN_DEFER_DELAY_MS;
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
-   /* fill the queue: each accepted frame ACKs at receipt; a full queue NAKs.
-    * Payloads must be DISTINCT, else the dup-in-queue drop (see test 19)
-    * legitimately absorbs the repeats and the queue never fills. */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 56);
+   /* fill the queue: every frame queues silently; the overflow frame is
+    * dropped SILENTLY too (rx_full) - never NAKed, the sender's retransmit
+    * is the flow control. Distinct seqs, so the pending-dup filter does not
+    * absorb any of them. */
    for (uint8_t i = 0; i < AUN_RX_QUEUE; i++) {
       dgB[4] = (uint8_t)(60 + 4*i);
-      dgB[8] = (uint8_t)(0xA0 + i);                 /* distinct payload */
+      dgB[8] = (uint8_t)(0xA0 + i);
       aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
    }
-   dgB[4] = 90;
-   dgB[8] = 0xBE;                                    /* distinct again */
+   dgB[4] = 130;
+   dgB[8] = 0xBE;
    sent_count = 0;
    aun_udp_input(&e, 0x0100000A, 32768, dgB, 10);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK);   /* queue full */
+   assert(sent_count == 0 && e.counters.rx_full == 1);       /* silent, counted */
+   sent_count = 0;
    for (uint8_t i = 0; i < AUN_RX_QUEUE; i++) {
       assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
-      assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+      assert(aun_rx_collect(&e, 0, true) == AUN_OK);         /* each ACKs */
    }
+   assert(sent_count == AUN_RX_QUEUE);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
-   /* 6: duplicate (last accepted seq) -> re-ACK, no re-deliver */
+   /* 6: duplicate of an already-COLLECTED seq (our ACK was lost) ->
+    * re-ACK from last_rx_seq, no re-deliver */
    dg[4] = 92;                                               /* fresh seq */
    aun_udp_input(&e, 0x0100000A, 32768, dg, 12);
    aun_rx_info_t i2;
    assert(aun_rx_poll(&e, 0, &i2) == AUN_OK);
-   assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(aun_rx_collect(&e, 0, true) == AUN_OK);            /* collected + ACKed */
    sent_count = 0;
    aun_udp_input(&e, 0x0100000A, 32768, dg, 12);             /* dup seq 92 */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);   /* not re-delivered */
@@ -243,21 +249,21 @@ int main(void)
    assert(sent_count == 2 && sent[1].ip == 0xff01a8c0);
 
    /* 16: defer-in-place. A DATA reply the host rejects (no CB armed yet)
-    * is ACKed at receipt, stays queued with its stream deferred, and is
-    * re-presented after a short delay - so it is delivered once the CB is
-    * armed, not lost (the AUN arm-race fix). While deferred it must not
-    * count as ready (aun_rx_ready feeds nIRQ: a spinning pump otherwise). */
+    * stays queued - un-ACKed - with its stream deferred, and is
+    * re-presented after a short delay: delivered AND ACKed once the CB is
+    * armed (the AUN arm-race fix, now also what keeps the collect-time ACK
+    * fast). While deferred it must not count as ready (aun_rx_ready feeds
+    * nIRQ: a spinning pump otherwise). */
    reset();
    uint8_t pbuf[64];
    assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
    uint8_t pf[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 200,0,0,0, 1,2,3,4 };
    aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK);   /* acked at receipt */
+   assert(sent_count == 0);                                     /* silent at receipt */
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
    assert(aun_rx_ready(&e, 0) == 1);
-   sent_count = 0;
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);              /* host: not listening */
-   assert(sent_count == 0 && e.rx[0].count == 1);               /* deferred, no NAK */
+   assert(sent_count == 0 && e.rx[0].count == 1);               /* deferred, silent */
    assert(aun_rx_ready(&e, 0) == 0);                            /* not ready while deferred */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
    aun_poll(&e);                                                /* before delay: held */
@@ -267,15 +273,19 @@ int main(void)
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);/* re-presented */
    assert(memcmp(pbuf, &pf[8], 4) == 0);
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);               /* now delivered */
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 200);
    assert(e.rx[0].count == 0);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
    /* 17: a frame nobody EVER listens for is dropped once the reject budget
     * is spent (~2 s of active rejection), so a stray stream cannot clog the
-    * funnel forever - but nothing is dropped a moment sooner. */
+    * funnel forever - but nothing is dropped a moment sooner. The drop is
+    * SILENT and the frame was never ACKed: the sender was never told it
+    * delivered, so its own retransmit/timeout owns the recovery. */
    reset();
    assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
    pf[4] = 220;
+   sent_count = 0;
    aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_OK);
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);              /* reject -> defer */
@@ -287,6 +297,7 @@ int main(void)
    }
    assert(e.rx[0].count == 0);                                  /* eventually dropped */
    assert(e.counters.rx_parked_drop == 1);
+   assert(sent_count == 0);                    /* never ACKed, never NAKed */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
    /* 18: a NEW-sequence frame that happens to be byte-identical to its
@@ -315,20 +326,23 @@ int main(void)
 
    /* 19: content identity does NOT suppress delivery (spec: the application
     * detects duplicates). Two byte-identical frames under different sequence
-    * numbers are BOTH delivered and ACKed, so a legitimate identical data
-    * block - e.g. the same file loaded twice - is never silently dropped. */
+    * numbers are BOTH queued and delivered - each earns its own ACK at
+    * collect - so a legitimate identical data block, e.g. the same file
+    * loaded twice, is never silently dropped. */
    reset();
    assert(aun_rx_open(&e, 0, 0x90, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
    uint8_t q1[12] = { AUN_TYPE_DATA, 0x90, 0x00, 0, 40,0,0,0, 9,9,9,9 };
-   aun_udp_input(&e, 0x0100000A, 32768, q1, 12);               /* queued + ACK */
+   aun_udp_input(&e, 0x0100000A, 32768, q1, 12);               /* queued, silent */
    uint8_t q2[12] = { AUN_TYPE_DATA, 0x90, 0x00, 0, 44,0,0,0, 9,9,9,9 };  /* same bytes, new seq */
    sent_count = 0;
-   aun_udp_input(&e, 0x0100000A, 32768, q2, 12);               /* also delivered + ACK */
-   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 44);
+   aun_udp_input(&e, 0x0100000A, 32768, q2, 12);               /* also queued, silent */
+   assert(sent_count == 0 && e.counters.rx_dup == 0);          /* not mistaken for a dup */
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);   /* q1 (head) */
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 40);
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);   /* q2 also present */
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(sent_count == 2 && sent[1].buf[0] == AUN_TYPE_ACK && seq_of(1) == 44);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
    /* 20: closing a receive block clears the whole block - queued frames,
@@ -420,7 +434,7 @@ int main(void)
    memset(dg100, 0, sizeof dg100);
    dg100[0] = AUN_TYPE_DATA; dg100[1] = 0x92; dg100[4] = 0x10; /* seq */
    for (unsigned i = 0; i < 100; i++) dg100[AUN_HDR_SIZE + i] = (uint8_t)(i + 1);
-   aun_udp_input(&e, 0x0100000A, 32768, dg100, sizeof dg100);  /* delivered + ACKed */
+   aun_udp_input(&e, 0x0100000A, 32768, dg100, sizeof dg100);  /* queued, silent */
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 100);
    assert(aun_rx_collect(&e, 0, false) == AUN_OK);             /* host rejects -> defer */
    assert(e.rx[0].count == 1 && e.rx[0].q[e.rx[0].head].len == 100);
@@ -541,12 +555,14 @@ int main(void)
       sent_count = 0;
       aun_udp_input(&e, 0x0100000A, 32768, hi, 10);    /* higher seq first */
       aun_udp_input(&e, 0x0100000A, 32768, lo, 10);    /* lower seq after */
-      assert(sent_count == 2);                         /* both ACKed */
+      assert(sent_count == 0);                         /* both queued silently */
       assert(e.counters.rx_dup == 0);                  /* neither suppressed */
       assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 2);
       assert(aun_rx_collect(&e, 0, true) == AUN_OK);
       assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 2);
       assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+      assert(sent_count == 2);                         /* each ACKed at collect */
+      assert(seq_of(0) == 0x50 && seq_of(1) == 0x40);  /* in delivery order */
       assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
    }
 
@@ -666,23 +682,23 @@ int main(void)
       assert(e.himm.active && e.himm.seq == 0x44);             /* now a FRESH hold */
    }
 
-   /* 34: burst-starvation guard. A fast fileserver paces on the engine's
-    * ACK-on-receipt, not on the (much slower) ROM pump arming CBs, so a
-    * whole burst of distinct frames can be rejected-and-waiting at once.
-    * Nothing ACKed may ever be dropped, however many frames pile up: once
-    * the queue is full, fresh sends are NAKed (the sender retransmits -
-    * recoverable flow control, not loss), and every queued frame delivers
-    * in strict arrival order when the CB finally arms. The old park pool
-    * silently dropped the 17th distinct frame here - the "No reply"
-    * real-hardware regression this guards against. */
+   /* 34: burst-absorption guard. With ACK-on-collect a spec-abiding sender
+    * paces on our collects, but a burst of distinct frames can still be
+    * rejected-and-waiting at once (several sources, crossing retransmits).
+    * Nothing QUEUED may be dropped by pressure while its budget lasts, and
+    * every queued frame delivers in strict arrival order when the CB
+    * finally arms. The overflow frame is dropped SILENTLY (rx_full) - not
+    * NAKed: a NAK is near-fatal to PiEconetBridge (2 NAKs dump the packet
+    * and flush its queue - the 2026-07 IBOS127 "No reply" field failure),
+    * whereas silence just leaves it to the sender's retransmit. */
    reset();
    assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
    for (uint32_t i = 0; i < AUN_RX_QUEUE; i++) {
       uint8_t f[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, (uint8_t)(50 + 4*i),0,0,0,
                         (uint8_t)i,(uint8_t)i,(uint8_t)i,(uint8_t)i };
       sent_count = 0;
-      aun_udp_input(&e, 0x0100000A, 32768, f, 12);        /* ACKed + queued */
-      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK);
+      aun_udp_input(&e, 0x0100000A, 32768, f, 12);        /* queued, silent */
+      assert(sent_count == 0);
    }
    /* CB not armed yet: the pump keeps rejecting whatever is presented */
    for (uint32_t r = 0; r < 3; r++) {
@@ -690,21 +706,24 @@ int main(void)
          assert(aun_rx_collect(&e, 0, false) == AUN_OK);  /* reject sweep */
       fake_ms += AUN_DEFER_DELAY_MS;                      /* deferrals expire */
    }
-   /* queue full: the 17th distinct frame is NAKed, NOT silently dropped */
+   /* queue full: the 17th distinct frame is dropped silently - no NAK */
    {
       uint8_t f[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, 150,0,0,0,
                         0xEE,0xEE,0xEE,0xEE };
       sent_count = 0;
       aun_udp_input(&e, 0x0100000A, 32768, f, 12);
-      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK);
+      assert(sent_count == 0 && e.counters.rx_full == 1);
    }
-   assert(e.counters.rx_parked_drop == 0);                /* nothing lost */
-   /* CB arms: the whole burst delivers, strictly in arrival order */
+   assert(e.counters.rx_parked_drop == 0);                /* nothing queued lost */
+   /* CB arms: the whole burst delivers, strictly in arrival order, each
+    * frame earning its ACK at collect */
+   sent_count = 0;
    for (uint32_t i = 0; i < AUN_RX_QUEUE; i++) {
       assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4);
       assert(pbuf[0] == i && pbuf[1] == i && pbuf[2] == i && pbuf[3] == i);
       assert(aun_rx_collect(&e, 0, true) == AUN_OK);      /* now delivered */
    }
+   assert(sent_count == AUN_RX_QUEUE);                    /* one ACK per frame */
    assert(e.counters.rx_parked_drop == 0);                /* still none lost */
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
 
@@ -718,6 +737,7 @@ int main(void)
    reset();
    assert(aun_rx_open(&e, 0, 0x92, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
    pf[4] = 240; pf[8] = 0x77;
+   sent_count = 0;
    aun_udp_input(&e, 0x0100000A, 32768, pf, 12);
    {  /* ~1.2 s of reject-every-time-presented */
       uint32_t t_end = fake_ms + 1200u;
@@ -729,10 +749,55 @@ int main(void)
       }
    }
    assert(e.rx[0].count == 1 && e.counters.rx_parked_drop == 0); /* survived */
+   assert(sent_count == 0);                                      /* still un-ACKed */
    assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.len == 4); /* CB arms */
    assert(memcmp(pbuf, &pf[8], 4) == 0);                         /* intact */
    assert(aun_rx_collect(&e, 0, true) == AUN_OK);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 240);
    assert(aun_rx_poll(&e, 0, NULL) == AUN_STATUS_PENDING);
+
+   /* 36: the 2026-07 field-failure shape end to end. A dead transaction's
+    * frames (nobody will ever collect them) fill the funnel; a LIVE frame
+    * arriving on the full queue must be dropped SILENTLY - never NAKed, a
+    * NAK kills the bridge's whole queue for us - and once the strays burn
+    * their reject budget (silently: they were never ACKed, the sender's
+    * own dump owns them), the live frame's retransmit under the SAME seq
+    * is accepted as fresh, delivered and ACKed. Sender-retransmit recovery
+    * end to end, with not one NAK on the wire. */
+   reset();
+   assert(aun_rx_open(&e, 0, 0, AUN_WILDCARD, AUN_WILDCARD, pbuf, 64) == AUN_OK);
+   for (uint32_t i = 0; i < AUN_RX_QUEUE; i++) {       /* 16 doomed strays */
+      uint8_t f[12] = { AUN_TYPE_DATA, 0x92, 0x00, 0, (uint8_t)(60 + 4*i),0,0,0,
+                        (uint8_t)i,(uint8_t)i,(uint8_t)i,(uint8_t)i };
+      aun_udp_input(&e, 0x0100000A, 32768, f, 12);
+   }
+   assert(sent_count == 0);
+   {  /* live frame from the next transaction: queue is full */
+      uint8_t live[12] = { AUN_TYPE_DATA, 0x90, 0x00, 0, 0xF0,0,0,0,
+                           0xCA,0xFE,0xBA,0xBE };
+      aun_udp_input(&e, 0x0100000A, 32768, live, 12);
+      assert(sent_count == 0 && e.counters.rx_full == 1);    /* silent drop */
+      /* the pump rejects the strays until their whole budget is spent.
+       * They are ONE stream, so only the head frame is presented per
+       * defer period - the budgets burn sequentially, ~2 s per frame. */
+      for (uint32_t i = 0; i < AUN_RX_QUEUE * (AUN_DEFER_RETRIES + 2u) &&
+                           e.rx[0].count != 0; i++) {
+         fake_ms += AUN_DEFER_DELAY_MS;
+         while (aun_rx_poll(&e, 0, NULL) == AUN_OK)
+            assert(aun_rx_collect(&e, 0, false) == AUN_OK);
+      }
+      assert(e.rx[0].count == 0);
+      assert(e.counters.rx_parked_drop == AUN_RX_QUEUE);     /* strays gone */
+      assert(sent_count == 0);                               /* all silent */
+      /* the sender retransmits the live frame (same seq): accepted fresh */
+      aun_udp_input(&e, 0x0100000A, 32768, live, 12);
+      assert(sent_count == 0 && e.counters.rx_dup == 0);     /* not a "dup" */
+      assert(aun_rx_poll(&e, 0, &info) == AUN_OK && info.port == 0x90);
+      assert(memcmp(pbuf, &live[8], 4) == 0);
+      assert(aun_rx_collect(&e, 0, true) == AUN_OK);         /* delivered */
+      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 0xF0);
+      assert(e.counters.nak_sent == 0);                      /* not one NAK */
+   }
 
    printf("all aun tests passed\n");
    return 0;

@@ -86,8 +86,9 @@ is fast enough to satisfy the peer's data-ack wait. This is correct: the AUN ACK
   0 (ACK), and fires the Econet receive event (&FE) with the original slot
   gating. ✅
 - On no match / oversize: verdict 1 (reject) and `RX_DONE` releases the frame.
-  With ACK-on-receipt this does **not** put a NAK on the wire — the Pi defers
-  the frame's stream in place (new reply) or drops (broadcast/local). ✅
+  A reject does **not** put a NAK on the wire — the Pi defers the frame's
+  stream in place (new reply) or drops (broadcast/local). (Since §14 the
+  frame is un-ACKed while it waits; the ACK rides the verdict-0 RX_DONE.) ✅
 - `RX_DONE` re-arms the Pi block exactly once per frame; a rejected frame's
   stream is deferred so it stops asserting nIRQ until re-presentation is due,
   and the svc5 drain loop always terminates. ✅
@@ -673,3 +674,69 @@ cross-stream bypass AND strict same-stream FIFO, including mid-queue removal);
 34 strengthened past the old cliff (17th distinct frame → NAK, nothing
 dropped, FIFO delivery); new 35 proves >1 s of continuous rejection loses
 nothing. Full stack green: unit, fuzz (ASan/UBSan), 139 lockstep checks.
+
+### 14. ACK-on-collect rework (2026-07-23) — the 1-in-150 "No reply" after §13
+
+Field report (Ken, IBOS127 soak): §13's defer-in-place shipped and the soak
+died at load ~150 with "No reply from station 254". The counters caught the
+whole mechanism — and vindicated §13's closing flow-control note, which named
+exactly this suspect: `rx parked drop 13` + `nak sent 3`, and 13 + 3 = 16 =
+AUN_RX_QUEUE, i.e. the funnel was full at the moment of death.
+
+Chain: one lost fileserver ACK → engine reports NOT_LISTENING after the 1 s
+silence window → NFS retries the command → the fileserver (which DID get the
+original) executes it TWICE and streams two ~15-frame replies. ACK-on-receipt
+acked both at wire speed — the bridge's per-destination queue wakes on each
+ACK, so early acks are what LET it stream — and the second reply became 13
+ACKed strays no CB would ever claim, pinned in the funnel for their 2 s defer
+budget. The next transaction's live frames then found the queue full and were
+NAKed; PiEconetBridge dumps a packet after only 2 NAKs
+(`EB_CONFIG_AUN_NAKTOLERANCE`) *and flushes its queue for the station*
+(econet-hpbridge.c:3753) — transaction dead, "No reply".
+
+Root-cause verdict: §13 treated the symptoms (parked frames must survive) but
+kept the disease — the receipt-time ACK is a *lie* the engine may not be able
+to honour, and every downstream failure (pool exhaustion in §13, funnel
+clogging here) was the machinery for propping that lie up. BeebEm never lies:
+it synthesises the AUN ack only after the emulated 6502 consumes the frame
+through the ADLC, drops overflow silently, and sends no flow-control NAKs; the
+bridge's `EB_CONFIG_AUN_RETX = 1000` comment shows it is explicitly built for
+that pacing ("BeebEm... does not like another packet turning up before it's
+ACKd the last one"), retransmitting into silence for ~5 s (1000 ms × 5).
+
+**Fix (this pass): move the ACK to the collect.** `aun_udp_input` queues DATA
+silently; `aun_rx_collect(accept=true)` sends the ACK and stamps
+`last_rx_seq`. Consequences, each closing a §13-era hazard:
+- The bridge holds each DATA until our ACK → it paces on the ROM pump →
+  bursts and multi-frame floods cannot form; steady-state queue depth is ~1
+  frame per active peer.
+- Nothing unwanted is ever ACKed → "ACKed strays" cannot exist; a reject-
+  budget drop (rx_parked_drop) is now an honest silence recovered by the
+  sender's retransmit, not silent data loss.
+- Queue-full → silent drop (new `rx_full` counter; verdict AUN_RXV_FULL),
+  never a flow-control NAK. NAK is reserved for genuinely-not-listening (no
+  rx block open / oversize), where fail-fast is correct.
+- Dup suppression is two-tier: same-seq while the original is still queued →
+  silent drop (rx_seq_pending scan; the sender is retransmitting into our
+  pre-ACK silence); same-seq after collect (our ACK was lost) → re-ACK from
+  `last_rx_seq`. A lost collect-ACK therefore self-heals.
+- defer-in-place survives with a new job description: it is the latency
+  hider that keeps the collect ACK tens of ms after arrival (well inside the
+  bridge's 1 s retransmit timer) across CB arm races — without it every arm
+  race would cost a full sender-retransmit period.
+- AUTOACK interaction checked: the bridge's AUTOACK config only auto-acks
+  traffic it RECEIVES from us (our tx path, unchanged); toward us it always
+  awaits our ACK. The §10.6 AUTOACK prerequisite stands as-is.
+
+Engine ABI: JIM STATUS block unchanged (11 counters); /aun status line gains
+`full`; trace verdict table gains "full". Timing constants untouched.
+
+Tests: unit 5/6/16/17/19/23/28/34/35 inverted to ACK-at-collect expectations;
+34's guarantee restated (overflow is SILENT, never NAK — nothing queued is
+dropped by pressure); new 36 replays this field failure end to end: 16 doomed
+strays fill the funnel, a live frame is dropped silently (no NAK on the wire,
+ever), the strays burn out silently, and the live frame's same-seq retransmit
+is accepted fresh, delivered and ACKed. Lockstep 4/4b/5/5b inverted likewise
+(ROM pump drives the collect, so the ACK appears after eco_rx_pump, not after
+UDP input). Full stack green: unit (36 cases), fuzz (ASan/UBSan), 140
+lockstep checks against the real ANFS 4.18 ROM.

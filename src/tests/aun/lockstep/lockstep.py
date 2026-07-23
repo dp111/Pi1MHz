@@ -439,12 +439,12 @@ cpu.mem[0x0d61] = 0x80                         # econet_flags: &00C0 list active
 reply = b'\x05\x00FS-REPLY'
 udp_out.clear()
 hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x1000, reply).hex()))
+check(not [d for _,_,d in udp_out if d[0] in (3, 4)],
+      'queued silently: no ACK/NAK at receipt (ACK-on-collect)')
+cpu.call(SYM['eco_rx_pump'])
 acks = [d for _,_,d in udp_out if d[0] == 3]
 check(len(acks) == 1 and int.from_bytes(acks[0][4:8],'little') == 0x1000,
-      'ACK sent at receipt, seq echoed (ack-on-receipt)')
-cpu.call(SYM['eco_rx_pump'])
-check(len([d for _,_,d in udp_out if d[0] == 3]) == 1,
-      'no second ACK at delivery: it was already acked on receipt')
+      'exactly one ACK, sent at delivery, seq echoed (ACK-on-collect)')
 check(cpu.mem[txcb] == 0x80, 'CB ctrl: bit7 set, wire ctrl restored')
 check(cpu.mem[txcb+1] == 0x90 and cpu.mem[txcb+2] == 254 and cpu.mem[txcb+3] == 1, 'CB port/src station/src net')
 got = bytes(cpu.mem[0x3100:0x3100+len(reply)])
@@ -459,34 +459,40 @@ frameA, frameB = b'FRAME-A', b'FRAME-B'
 udp_out.clear()
 hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x2000, frameA).hex()))
 hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x2004, frameB).hex()))
-check(len([d for _,_,d in udp_out if d[0] == 3]) == 2, 'both frames ACKed at receipt')
-check(not [d for _,_,d in udp_out if d[0] == 4], 'neither frame NAKed')
+check(not [d for _,_,d in udp_out if d[0] in (3, 4)],
+      'both frames queued silently: no ACK/NAK before delivery')
 cpu.call(SYM['eco_rx_pump'])                   # delivers A from the queue
 check(bytes(cpu.mem[0x3100:0x3100+7]) == frameA, 'frame A delivered intact')
+acks = [d for _,_,d in udp_out if d[0] == 3]
+check(len(acks) == 1 and int.from_bytes(acks[0][4:8],'little') == 0x2000,
+      "frame A's ACK sent at its delivery")
 for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x31, 0xff, 0xff, 0x7f, 0x31, 0xff, 0xff]):
     cpu.mem[txcb+off] = v                      # re-open for the next frame
 cpu.call(SYM['eco_rx_pump'])                   # B comes straight from the queue
 check(bytes(cpu.mem[0x3100:0x3100+7]) == frameB, 'frame B delivered from the queue, no retransmission')
-check(len([d for _,_,d in udp_out if d[0] == 3]) == 2, 'still just the two receipt ACKs; none added at delivery')
+acks = [d for _,_,d in udp_out if d[0] == 3]
+check(len(acks) == 2 and int.from_bytes(acks[1][4:8],'little') == 0x2004,
+      "frame B's ACK sent at its delivery - one ACK per collected frame")
 
-print('== 5: unlistened port -> funnel ACKs at receipt, ROM demux drops above ==')
+print('== 5: unlistened port -> funnel queues silently, ROM demux rejects above ==')
 # ANFS opens a wildcard funnel (handle 0) through which every inbound frame
-# passes, so the engine ACKs any port the instant it lands - fast enough to
-# beat the fileserver's reply-ACK timeout. A frame whose port has no control
-# block is therefore taken by the funnel and ACKed, then dropped by the ROM
-# demux above the AUN layer (and, for a reply arriving a beat early, held by
-# park-and-retry). It is NOT NAKed: ack-on-receipt replaced the old
-# deferred-verdict NAK. The genuine "cannot take it" NAK now comes only from
-# a full/oversize funnel (see test 5b).
+# passes, so a frame whose port has no control block is still taken by the
+# funnel - but with ACK-on-collect NOTHING is sent for it: no ACK (only a
+# collected frame is confirmed - the ACK would be a lie, the ROM demux has
+# no CB for it) and no NAK either (the frame is defer-in-place queued in
+# case a CB arms a beat later; if none ever does, its reject budget expires
+# and it is dropped silently, leaving recovery to the sender's own
+# retransmit/timeout). The genuine "not listening" NAK is reserved for a
+# closed funnel / oversize payload (engine-level, test_aun.c cases 7/21).
 cpu.mem[txcb] = 0x00                           # Beeb CB closed
 udp_out.clear()
 hx('U %x %d %s' % (IP10, 32768, aun(2, 0x77, 0x00, 0x2100, b'XX').hex()))
-acks = [d for _,_,d in udp_out if d[0] == 3]
-check(len(acks) == 1 and int.from_bytes(acks[0][4:8],'little') == 0x2100,
-      'funnel ACKs the unlistened-port frame at receipt (seq echoed)')
-check(not [d for _,_,d in udp_out if d[0] == 4], 'no NAK: ack-on-receipt, not deferred verdict')
+check(not [d for _,_,d in udp_out if d[0] in (3, 4)],
+      'nothing on the wire at receipt: neither ACK nor NAK')
 cpu.call(SYM['eco_rx_pump'])
 check(cpu.mem[txcb] == 0x00, 'closed Beeb CB untouched')
+check(not [d for _,_,d in udp_out if d[0] in (3, 4)],
+      'still silent after the pump rejected it (deferred, un-ACKed)')
 
 print('== 5b: 4K datagram delivered; frame too big for the Beeb CB is dropped ==')
 big = bytes((i & 0xff) for i in range(4096))
@@ -499,19 +505,21 @@ check(bytes(cpu.mem[0x3000:0x4000]) == big, '4096-byte payload delivered intact'
 end = cpu.mem[txcb+8] | (cpu.mem[txcb+9] << 8)
 check(end == 0x4000, 'CB end pointer past the 4K payload')
 check(len([d for _,_,d in udp_out if d[0] == 3]) == 1, '4K frame ACKed at delivery')
-# A frame that fits the 8K funnel but not the (tiny) Beeb CB is ACKed by the
-# funnel on receipt, then dropped by the ROM demux when it will not fit the
-# CB - it must NOT overrun the CB buffer. (The engine-level oversize NAK,
-# len > AUN_MAX_DATA, is covered by test_aun.c case 21.)
+# A frame that fits the 8K funnel but not the (tiny) Beeb CB is queued by
+# the funnel (silently - ACK-on-collect), then rejected by the ROM demux
+# when it will not fit the CB: no ACK is ever sent for it, and it must NOT
+# overrun the CB buffer. (The engine-level oversize NAK, len > AUN_MAX_DATA,
+# is covered by test_aun.c case 21.)
 for off, v in enumerate([0x7f, 0x90, 0, 0, 0x00, 0x30, 0xff, 0xff, 0x10, 0x30, 0xff, 0xff]):
     cpu.mem[txcb+off] = v                      # tiny CB: capacity 16 bytes
 guard = bytes(cpu.mem[0x3000:0x3010])          # snapshot to prove no overrun
 udp_out.clear()
 hx('U %x %d %s' % (IP10, 32768, aun(2, 0x90, 0x00, 0x5004, b'X'*100).hex()))
-check(len([d for _,_,d in udp_out if d[0] == 3]) == 1, 'funnel ACKs the 100-byte frame at receipt')
+check(not [d for _,_,d in udp_out if d[0] in (3, 4)], '100-byte frame queued silently')
 cpu.call(SYM['eco_rx_pump'])
 check(cpu.mem[txcb] == 0x7f, 'tiny CB control byte untouched')
 check(bytes(cpu.mem[0x3000:0x3010]) == guard, 'tiny CB buffer not overrun by the oversize payload')
+check(not [d for _,_,d in udp_out if d[0] == 3], 'never ACKed: it was never collected')
 
 print('== 6: inbound machine peek answered by the Pi ==')
 udp_out.clear()

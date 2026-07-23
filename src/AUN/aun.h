@@ -68,14 +68,17 @@
  * pump demultiplexes them to internal CBs. So the depth that matters is the
  * per-block queue, not the block count. Two blocks cover every user (handle 0
  * in the field/ROM, handle 1 in the host test suite).
- * The funnel depth lives in AUN_RX_QUEUE: handle 0 absorbs a 16-frame burst
- * (data + reply + completion + a few peer retransmits) before it NAKs. 16,
- * not 8: with ACK-on-receipt the engine ACKs into the queue at wire speed
- * while the real-6502 ROM pump drains it at block-copy speed, so a fast
- * fileserver runs a long way ahead - and frames a not-yet-armed CB has
- * rejected now stay IN the queue (see the defer notes below), so the queue
- * alone is the whole absorb budget. Once it fills, fresh frames are NAKed
- * and the sender's own retransmit provides the flow control. */
+ * With ACK-on-collect (see below) a spec-abiding sender has ONE un-ACKed
+ * DATA frame in flight per station and paces on our collect ack -
+ * PiEconetBridge holds each DATA at the head of its per-destination queue
+ * until the ACK arrives (retransmitting into silence, ~1 s x 5), and BeebEm
+ * is strictly single-transaction. So in steady state the queue holds about
+ * one frame per active peer plus the odd crossing retransmit; 16 is deep
+ * margin, not a flow-control budget. A full queue drops the arrival
+ * SILENTLY: the sender's own retransmit delivers it once room appears.
+ * (Never NAK for flow control - a NAK is "not listening", which
+ * PiEconetBridge treats as near-fatal: 2 NAKs dump the packet AND flush
+ * the rest of its queue for this station.) */
 #define AUN_RX_BLOCKS         2u
 #define AUN_RX_QUEUE          16u  /* frames buffered per rx block      */
 /* Outbound retransmit. The AUN spec (RISC OS PRM, "AUN") describes a
@@ -111,35 +114,44 @@
  * gets a fresh execution, not a stale replay. */
 #define AUN_HIMM_CACHE_MS     2000u
 
-/* defer-in-place: a DATA frame the host rejected (no RXCB armed yet) STAYS
+/* ACK-on-collect (the BeebEm model): an inbound DATA frame is queued
+ * SILENTLY, and the ACK goes out only when the host actually collects it
+ * (aun_rx_collect accept=true). The ACK is then a true delivery
+ * confirmation, exactly as in BeebEm, where the AUN ack is synthesised
+ * only after the emulated 6502 has taken the frame through the ADLC.
+ * Nothing unwanted is ever ACKed, so "ACKed strays" - frames the sender
+ * believes delivered but no CB ever collects - cannot exist; a frame we
+ * drop (queue full, reject budget spent, engine re-init) was never
+ * confirmed and the sender's own retransmit-into-silence recovers it
+ * (PiEconetBridge: ~1 s x 5 tries; the AUN spec allows up to 5 s).
+ *
+ * The earlier ACK-on-receipt design (ack at wire speed, then park/defer
+ * anything the ROM had no CB for) let the bridge stream a whole multi-frame
+ * reply ahead of the pump; a duplicated fileserver reply - born of one lost
+ * ACK and an NFS-level command retry - could then fill the funnel with
+ * already-ACKed frames no CB would ever claim, and fresh live frames were
+ * NAKed = killed (field failure, IBOS127 soak, 2026-07). ACK-on-collect
+ * removes the whole class: the sender paces on collects, so it cannot run
+ * ahead of the ROM in the first place.
+ *
+ * defer-in-place is what keeps the collect (and hence the ACK) fast despite
+ * the CB arm race: a DATA frame the host rejected (no RXCB armed yet) STAYS
  * in the rx queue, and its stream - (Econet port, source) - is deferred for
- * AUN_DEFER_DELAY_MS before the frame is presented again. This replaces the
- * old park-and-retry side pool (copy the reject out of the queue, re-inject
- * it later), which had three field-failure modes:
- *
- *  - pool exhaustion: parking vacated a queue slot, so up to
- *    AUN_RX_QUEUE + pool distinct ACKed frames could be in flight and the
- *    next reject was dropped for good (its ACK had already gone out, so the
- *    sender believed it delivered - the classic silent "No reply" hang);
- *  - a ~128 ms retry budget: any window where the CB stayed unarmed longer
- *    (e.g. the whole 1 s TX_POLL silence wait after a lost server ACK, with
- *    the server already streaming data) dropped ACKed frames;
- *  - reordering: a parked frame was invisible for the park delay and then
- *    re-injected at the TAIL, so a newer same-port frame could overtake it
- *    and bulk data blocks arrived at the ROM swapped.
- *
- * Keeping the frame in the queue kills all three by construction: nothing
- * is copied (no pool to exhaust), nothing ACKed is dropped short of the
- * generous budget below, and per-stream order is the queue order. Frames of
- * OTHER streams still bypass a deferred one (aun_rx_poll presents the first
- * frame whose stream is not deferred), so the wildcard funnel has no
- * head-of-line blocking - the reason parking existed at all.
+ * AUN_DEFER_DELAY_MS before the frame is presented again. The CB typically
+ * arms within a few re-presentations, so the ACK follows arrival by tens of
+ * milliseconds - well inside the bridge's 1 s retransmit timer - where a
+ * dropped-and-retransmitted frame would cost a full second per arm race.
+ * Frames of OTHER streams bypass a deferred one (aun_rx_poll presents the
+ * first frame whose stream is not deferred), so the wildcard funnel has no
+ * head-of-line blocking, and per-stream order is the queue order - nothing
+ * leaves the queue until collected or abandoned.
  *
  * Budget: one reject is burned per presentation, and a deferred stream is
  * re-presented at most every AUN_DEFER_DELAY_MS, so 250 x 8 ms ~= 2 s. That
  * covers the ROM's full 1 s tx-silence window (plus foreground stalls) with
- * margin, while a genuinely stray stream - one nobody ever arms a CB for -
- * is still dropped rather than clogging the funnel forever. */
+ * margin. A genuinely stray stream - one nobody ever arms a CB for - is
+ * dropped (silently, never having been ACKed) rather than clogging the
+ * funnel; the sender retransmits it afresh until its own budget expires. */
 #define AUN_DEFER_RETRIES     250u
 #define AUN_DEFER_DELAY_MS    8u
 /* Deferred-stream table depth. Each entry keys one (Econet port, src ip,
@@ -167,7 +179,7 @@ typedef struct {
    uint8_t  net, stn;          /* Econet address                  */
    uint32_t ip_be;             /* peer IPv4, network byte order   */
    uint16_t udp_port;
-   uint32_t last_rx_seq;       /* duplicate suppression           */
+   uint32_t last_rx_seq;       /* dup suppression: last COLLECTED+ACKed seq */
    bool     seq_valid;
 } aun_map_entry_t;
 
@@ -201,8 +213,9 @@ typedef struct {
    uint8_t *buf;               /* where RX_POLL presents a frame   */
    uint32_t buf_size;
    uint8_t  head, count;       /* FIFO of received frames: frames  */
-   aun_rx_frame_t q[AUN_RX_QUEUE];  /* are ACKed and queued; NAK only
-                                       when the queue is full       */
+   aun_rx_frame_t q[AUN_RX_QUEUE];  /* are queued un-ACKed; the ACK is
+                                       sent on collect. A full queue
+                                       drops arrivals silently       */
    /* streams the host rejected, awaiting re-presentation */
    aun_rx_defer_t defer[AUN_RX_DEFER_SLOTS];
 } aun_rx_block_t;
@@ -229,9 +242,12 @@ typedef struct {
    uint32_t tx_ok, tx_fail;
    uint32_t rx_data, rx_broadcast, rx_imm;
    uint32_t rx_dup, rx_no_block, rx_unknown_source, rx_too_big, rx_bad;
+   uint32_t rx_full;           /* arrival dropped silently: queue full (the
+                                * sender's retransmit is the flow control)  */
    uint32_t ack_sent, nak_sent;
    uint32_t ack_fail;          /* ACK/NAK that the transport failed to send */
-   uint32_t rx_parked_drop;    /* deferred frame dropped: reject budget spent */
+   uint32_t rx_parked_drop;    /* deferred frame dropped: reject budget spent
+                                * (silent - it was never ACKed)             */
    uint32_t himm_timeout;      /* held immediate reaped: host never replied  */
    uint32_t himm_replay;       /* answered immediate retransmitted: replayed */
 } aun_counters_t;
@@ -272,10 +288,13 @@ typedef struct {
 
 /* Verdict the engine reached for an inbound DATA frame, reported to the
  * optional diagnostic trace hook below. */
-#define AUN_RXV_ACK    0u   /* delivered into an open block, ACKed       */
-#define AUN_RXV_REDUP  1u   /* same seq as last accepted: re-ACKed       */
-#define AUN_RXV_NAK    2u   /* no listener / queue full / oversize: NAK  */
-#define AUN_RXV_NOSRC  3u   /* unmapped source: dropped silently         */
+#define AUN_RXV_ACK    0u   /* queued into an open block (ACK on collect) */
+#define AUN_RXV_REDUP  1u   /* same-seq retransmit: re-ACKed if already
+                             * collected, silently dropped if still queued */
+#define AUN_RXV_NAK    2u   /* no listener / oversize: NAK                */
+#define AUN_RXV_NOSRC  3u   /* unmapped source: dropped silently          */
+#define AUN_RXV_FULL   4u   /* queue full: dropped silently (sender's
+                             * retransmit is the flow control)            */
 
 /* Optional diagnostic hook, fired once per inbound DATA frame. The
  * firmware points this at its logger; host unit tests leave it NULL.
@@ -388,20 +407,21 @@ uint8_t aun_rx_open(aun_engine_t *e, uint8_t handle, uint8_t port,
  * available - the oldest frame whose stream is not deferred is copied into
  * the block's buffer and described in *out (may be NULL). Polling is
  * idempotent: the presented frame stays presented (and cannot be
- * overwritten) until aun_rx_collect() releases it. Frames are ACKed and
- * queued (up to AUN_RX_QUEUE); only a full queue NAKs, making the sender
- * retry. */
+ * overwritten) until aun_rx_collect() releases it. Frames are queued
+ * un-ACKed (up to AUN_RX_QUEUE; a full queue drops arrivals silently and
+ * the sender retransmits); the ACK is sent by aun_rx_collect(). */
 typedef struct {
    uint8_t  src_stn, src_net, port, ctrl;
    uint32_t len;
 } aun_rx_info_t;
 uint8_t aun_rx_poll(aun_engine_t *e, uint8_t handle, aun_rx_info_t *out);
 
-/* Release the presented packet and re-arm the block. The ACK was already
- * sent on receipt, so collect is silent on the wire: accept=true pops the
- * presented frame; accept=false (no listener took it) leaves it queued and
- * defers its stream for AUN_DEFER_DELAY_MS, in case its control block is
- * armed a beat later - frames of other streams are presented meanwhile. */
+/* Release the presented packet and re-arm the block. accept=true pops the
+ * presented frame AND sends its ACK - the ACK is the delivery confirmation
+ * (ACK-on-collect, see the design notes above). accept=false (no listener
+ * took it) is silent: the frame stays queued and its stream is deferred for
+ * AUN_DEFER_DELAY_MS, in case its control block is armed a beat later -
+ * frames of other streams are presented meanwhile. */
 uint8_t aun_rx_collect(aun_engine_t *e, uint8_t handle, bool accept);
 
 /* Number of frames presently deliverable on 'handle' (queued frames whose
