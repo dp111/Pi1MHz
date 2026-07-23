@@ -48,12 +48,15 @@
 
 #include <ctype.h>
 
-static inline int pi1mhz_ascii_toupper(int c)
+/* always_inline: at -Os / in LTO-cold callers GCC's heuristics decline to
+   inline these (tripping -Winline), but the 3-instruction body is no larger
+   than a call, and emitting it inline is the entire point of this header. */
+static inline __attribute__((always_inline)) int pi1mhz_ascii_toupper(int c)
 {
    return ((unsigned)c - (unsigned)'a') < 26u ? (c & 0xDF) : c;
 }
 
-static inline int pi1mhz_ascii_tolower(int c)
+static inline __attribute__((always_inline)) int pi1mhz_ascii_tolower(int c)
 {
    return ((unsigned)c - (unsigned)'A') < 26u ? (c | 0x20) : c;
 }

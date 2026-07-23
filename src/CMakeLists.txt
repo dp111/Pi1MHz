@@ -384,11 +384,14 @@ set( Pi1MHz_sources
 # These are cold (config/filename handling, ~12 call sites). We recompile them
 # only to get the _ctype_ table lookups out, not for speed, so build them for
 # size -- at -O2 newlib's two-way strcasestr unrolls into ~2.5KB.
+# They are vendored unmodified (see lib/newlib-str/README.md), so silence the
+# strict warnings their upstream style trips (-Wcast-qual, -Wconversion) --
+# same rationale as the SYSTEM include treatment for TinyUSB/lwIP.
 set_source_files_properties(
    lib/newlib-str/strcasecmp.c
    lib/newlib-str/strncasecmp.c
    lib/newlib-str/strcasestr.c
-   PROPERTIES COMPILE_OPTIONS "-Os" )
+   PROPERTIES COMPILE_OPTIONS "-Os;-Wno-cast-qual;-Wno-conversion" )
 
 add_executable( Pi1MHz ${Pi1MHz_sources} )
 
