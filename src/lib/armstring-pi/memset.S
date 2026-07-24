@@ -35,18 +35,17 @@ memset:
 	blo	.Lbytes			/* tiny fills are not worth any setup */
 
 	/* Replicate the fill byte across a whole word. */
-	orr	r1, r1, r1, lsl #8
-	orr	r1, r1, r1, lsl #16
-
 	/* Bring the destination up to a word boundary. r2 >= 8 here, and at
 	   most 3 bytes are consumed, so r2 cannot underflow. */
 	rsb	r3, ip, #0
+	orr	r1, r1, r1, lsl #8
 	ands	r3, r3, #3
+	orr	r1, r1, r1, lsl #16
 	beq	.Laligned
 	sub	r2, r2, r3
 .Lhead:
-	strb	r1, [ip], #1
 	subs	r3, r3, #1
+	strb	r1, [ip], #1
 	bne	.Lhead
 
 .Laligned:
