@@ -73,14 +73,21 @@
  * PiEconetBridge holds each DATA at the head of its per-destination queue
  * until the ACK arrives (retransmitting into silence, ~1 s x 5), and BeebEm
  * is strictly single-transaction. So in steady state the queue holds about
- * one frame per active peer plus the odd crossing retransmit; 16 is deep
+ * one frame per active peer plus the odd crossing retransmit; this is
  * margin, not a flow-control budget. A full queue drops the arrival
  * SILENTLY: the sender's own retransmit delivers it once room appears.
  * (Never NAK for flow control - a NAK is "not listening", which
  * PiEconetBridge treats as near-fatal: 2 NAKs dump the packet AND flush
- * the rest of its queue for this station.) */
+ * the rest of its queue for this station.)
+ * Depth 4 is the proven floor: the host-test suite's worst case (scenario
+ * 22, "no head-of-line blocking across streams") holds 4 live frames at
+ * once - two on a deferred stream plus two bypassing it - so the whole
+ * suite (unit + ASan/UBSan fuzz + 140 lockstep ROM checks) passes at 4 and
+ * fails at 3.  8 is 2x that floor: comfortable headroom for real
+ * multi-stream/retransmit bursts while each slot still costs AUN_MAX_DATA.
+ * Was 16; halved to reclaim ~131 KB of .bss (32 -> 16 frame buffers). */
 #define AUN_RX_BLOCKS         2u
-#define AUN_RX_QUEUE          16u  /* frames buffered per rx block      */
+#define AUN_RX_QUEUE          8u   /* frames buffered per rx block; floor is 4 */
 /* Outbound retransmit. The AUN spec (RISC OS PRM, "AUN") describes a
  * background Net module that, on SILENCE, waits up to 5 s and retransmits
  * while the application's SWI returns. Our ANFS ROM does NOT work that
