@@ -140,6 +140,10 @@ typedef enum {
       This pinpoints why WLC_UP returns status 0 yet the interface
       never actually comes up. */
    WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO,
+   /* WLC_GET_RSSI readback of the current signal strength (signed dBm).
+      Not part of the boot join list - issued on demand only when the
+      /status page is viewed, via sdio_runtime_rssi_poll(). */
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI,
    /* GET-VAR readback of the "country" iovar, issued straight after the
       SET.  The chip echoes back the wl_country_t it currently holds
       (country_abbrev[4] + int32 rev + ccode[4]).  If the SET was a

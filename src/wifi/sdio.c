@@ -52,6 +52,19 @@ static uint8_t g_runtime_chip_mac[6];
 static bool g_runtime_chip_mac_valid;
 static bool g_runtime_mac_request_pending;
 static uint16_t g_runtime_mac_request_id;
+/* On-demand signal-strength (RSSI) read, driven only when the /status
+   page is viewed.  The value is captured by the CDC decoder from a
+   WLC_GET_RSSI reply, matched by request_id exactly like the MAC.  The
+   query itself is a small send-settle-drain state machine run from
+   sdio_runtime_rssi_poll() on the cooperative poll path - never from the
+   TCP callback - so it stays off the RX-drain path. */
+static int32_t g_runtime_rssi;
+static bool g_runtime_rssi_valid;
+static bool g_runtime_rssi_request_pending;
+static uint16_t g_runtime_rssi_request_id;
+static bool g_runtime_rssi_query_wanted;
+static bool g_runtime_rssi_step_sent;
+static uint32_t g_runtime_rssi_step_deadline_us;
 /* MAC the caller (wifi.c) wants the chip to transmit with.  Pushed
    into the chip via WLC_SET_VAR("cur_etheraddr", mac) during the
    per-tick SET_MAC stage.  If invalid, SET_MAC is skipped and the
@@ -223,6 +236,7 @@ static uint32_t g_runtime_sdio_core_base = CYW43_SDIO_CORE_BASE;
 #define WLC_GET_WSEC 133u
 #define WLC_GET_WPA_AUTH 164u
 #define WLC_GET_RADIO 37u
+#define WLC_GET_RSSI 127u
 #define WLC_SSID_MAX_LEN 32u
 #define WSEC_MAX_PSK_LEN 64u
 #define WSEC_PASSPHRASE 0x0001u
@@ -2080,6 +2094,8 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
          return WLC_GET_INFRA;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
          return WLC_GET_RADIO;
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
+         return WLC_GET_RSSI;
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
          return WLC_SCAN;
       case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
@@ -2184,6 +2200,7 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_AUTH:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
          /* WLC_GET_* ioctls return a u32; send a 4-byte zero buffer
             for the chip to fill. */
          return 4u;
@@ -2742,6 +2759,7 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_AUTH:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
          /* WLC_GET_* ioctls write a u32 into the 4-byte response slot.
             Buffer already zeroed by the memset at the top of this
             function. */
@@ -3250,6 +3268,18 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
             g_runtime_set_mac_ack_status = cdc_status;
             g_runtime_set_mac_ack_seen = true;
             g_runtime_set_mac_request_pending = false;
+         }
+         /* WLC_GET_RSSI reply: a signed int32 dBm in the first 4 bytes
+            after the CDC header.  Same request_id correlation as the
+            MAC so a stray reply in the window can't be misread. */
+         if (g_runtime_rssi_request_pending && cdc_cmd == WLC_GET_RSSI
+             && cdc_request_id == g_runtime_rssi_request_id
+             && !(cdc_flags & CDCF_IOC_ERROR)
+             && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 4u)) {
+            g_runtime_rssi = (int32_t)sdio_load_u32_le(
+               &frame_buffer[header_length + CDC_HEADER_LENGTH]);
+            g_runtime_rssi_valid = true;
+            g_runtime_rssi_request_pending = false;
          }
       }
       return false;
@@ -5337,6 +5367,78 @@ bool sdio_runtime_get_chip_mac(uint8_t mac_out[6])
       return false;
 
    memcpy(mac_out, g_runtime_chip_mac, 6u);
+   return true;
+}
+
+/* Request a one-shot RSSI read.  Safe to call from any context - it only
+   sets a flag; no SDIO access happens here.  The read is performed later
+   by sdio_runtime_rssi_poll() on the cooperative poll path (outside the
+   RX drain), so this may safely be called from the /status TCP callback. */
+void sdio_runtime_request_rssi(void)
+{
+   g_runtime_rssi_query_wanted = true;
+}
+
+/* Cooperative-poll worker: when a read has been requested and the link is
+   up, send WLC_GET_RSSI, wait a short settle, then drain the reply into
+   the cache.  Non-blocking - the send and the drain land on separate
+   ticks, exactly like the boot MAC read (sdio_runtime_query_mac_step).
+   Costs nothing (no bus traffic) unless a read is pending, so it is only
+   ever active for a moment after /status is viewed. */
+void sdio_runtime_rssi_poll(void)
+{
+   uint32_t now;
+
+   if (!g_runtime_rssi_query_wanted)
+      return;
+
+   /* No link => nothing to read, and the boot state machine may still
+      own the shared control-template buffer.  Drop the request. */
+   if (!sdio_runtime_link_is_up()) {
+      g_runtime_rssi_query_wanted = false;
+      g_runtime_rssi_step_sent = false;
+      g_runtime_rssi_request_pending = false;
+      return;
+   }
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_rssi_step_sent) {
+      sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                       WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI);
+      g_runtime_rssi_request_id =
+         g_sdio_probe_result.tx_control_template_request_id;
+      g_runtime_rssi_request_pending = true;
+      if (!sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
+                                                              &g_sdio_probe_result,
+                                                              SDIO_RUNTIME_POLL_TIMEOUT_US)) {
+         /* Send failed - abandon this request and keep any prior value. */
+         g_runtime_rssi_request_pending = false;
+         g_runtime_rssi_query_wanted = false;
+         return;
+      }
+      g_runtime_rssi_step_sent = true;
+      g_runtime_rssi_step_deadline_us = now + 10000u;
+      return;
+   }
+
+   if ((int32_t)(now - g_runtime_rssi_step_deadline_us) < 0)
+      return;
+
+   (void)sdio_drain_fn2_responses(&g_runtime_device);
+   g_runtime_rssi_request_pending = false;
+   g_runtime_rssi_step_sent = false;
+   g_runtime_rssi_query_wanted = false;
+}
+
+/* Return the last RSSI captured (signed dBm).  False until the first
+   successful read has completed. */
+bool sdio_runtime_get_rssi(int32_t *out)
+{
+   if (out == NULL || !g_runtime_rssi_valid)
+      return false;
+
+   *out = g_runtime_rssi;
    return true;
 }
 

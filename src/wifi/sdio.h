@@ -249,6 +249,14 @@ bool sdio_runtime_tick(void);
 bool sdio_runtime_started(void);
 bool sdio_runtime_link_is_up(void);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
+/* On-demand signal-strength read.  sdio_runtime_request_rssi() just flags
+   a read (safe from the /status TCP callback); sdio_runtime_rssi_poll()
+   performs it on the cooperative poll path and must be called from
+   webserver_poll(); sdio_runtime_get_rssi() returns the cached signed dBm
+   (false until the first read completes). */
+void sdio_runtime_request_rssi(void);
+void sdio_runtime_rssi_poll(void);
+bool sdio_runtime_get_rssi(int32_t *out);
 /* Cache a 6-byte MAC the runtime should push into the chip's
    cur_etheraddr iovar at boot.  Must be called BEFORE
    sdio_runtime_start() so the SET_MAC stage picks it up.  Passing

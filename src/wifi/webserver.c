@@ -2050,6 +2050,22 @@ static bool route_status(ws_conn_t *c)
                 ? cfg->hostname : "(default)");
    table_row(&b, "Link", sdio_runtime_link_is_up() ? "up" : "down");
 
+   /* Signal strength.  Only read RSSI when this page is viewed: the
+      request is flagged here and the actual ioctl runs off the TCP
+      callback in webserver_poll -> sdio_runtime_rssi_poll.  So the first
+      view shows "(querying)" and the value appears on the next refresh,
+      the same deferred-cache pattern as SD free space below. */
+   if (sdio_runtime_link_is_up()) {
+      int32_t rssi;
+      sdio_runtime_request_rssi();
+      if (sdio_runtime_get_rssi(&rssi)) {
+         snprintf(tmp, sizeof tmp, "%ld dBm", (long)rssi);
+         table_row(&b, "Signal (RSSI)", tmp);
+      } else {
+         table_row(&b, "Signal (RSSI)", "(querying)");
+      }
+   }
+
    if (lw != NULL) {
       char ip[20];
       ws_ip_str(netif_ip4_addr(&lw->netif), ip, sizeof ip);
@@ -5199,6 +5215,10 @@ void webserver_poll(void)
 
    if (g_ws_ready)
       webserver_refresh_sd_free();
+
+   /* Perform any pending on-demand RSSI read requested by /status.
+      No-op (no SDIO traffic) unless a read is pending. */
+   sdio_runtime_rssi_poll();
 }
 
 void webserver_init(void)
