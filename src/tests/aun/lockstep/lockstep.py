@@ -38,10 +38,16 @@ def hx(cmd):
             raise RuntimeError(f'harness said {line!r}')
 
 # ---------------- 6502 emulator ----------------
+# CPU selection. Default 'nmos' = stock BBC B / B+ 6502, used by the 4.18 and
+# 3.65 builds, where the model-B guard below must trip on any 65C02 opcode.
+# ECO_CPU=65c02 enables the extra opcodes and the Master-128 Sheila scratch,
+# for the 4.21 build (Master-only). This replaces the old hard fork of this
+# file that used to live under ANFS421/pi1mhz-patch/lockstep/.
+CPU_65C02 = os.environ.get('ECO_CPU', 'nmos').lower() in ('65c02', 'c02', 'master')
+
 # 65C02-only opcodes (undefined on the NMOS 6502 in a stock BBC B). The 4.18
 # AUNFS path must never execute one; the model-B guard in CPU.step() trips on
-# any of these. (The 4.21 Master build uses several of them - phx/phy/plx/ply,
-# trb, bra, inc a/dec a, stz, jmp (abs,x) - but runs under a different harness.)
+# any of these unless CPU_65C02 is set.
 C02_ONLY_OPCODES = frozenset([
     0x1a, 0x3a,                                      # inc a / dec a
     0x5a, 0x7a, 0xda, 0xfa,                          # phy / ply / phx / plx
@@ -67,6 +73,7 @@ class CPU:
         self.tube_claim_addr = None     # 4-byte address of the last Tube claim
         self.fred_aa = 0
         self.instructions = 0
+        self.sheila = {}       # Master: ACCCON/Sheila scratch (65C02 mode only)
         self.master_hits = 0   # model-B: count of ACCCON/INTOFF (&FE34/&FE38) accesses
         self.c02_hits = 0      # model-B: count of 65C02-only opcodes fetched
 
@@ -75,6 +82,8 @@ class CPU:
         a &= 0xffff
         if a == 0xfe34 or a == 0xfe38:   # model-B: ACCCON/INTOFF are Master-only
             self.master_hits += 1
+            if CPU_65C02:                # Master: ACCCON reads back as written
+                return self.sheila.get(a, 0)
         if a == 0xfca6: return self.jim_addr & 0xff
         if a == 0xfca7: return (self.jim_addr >> 8) & 0xff
         if a == 0xfca8: return (self.jim_addr >> 16) & 0xff
@@ -94,6 +103,8 @@ class CPU:
         a &= 0xffff; v &= 0xff
         if a == 0xfe34 or a == 0xfe38:   # model-B: ACCCON/INTOFF are Master-only
             self.master_hits += 1
+            if CPU_65C02:
+                self.sheila[a] = v; return
         if a == 0xfca6: self.jim_addr = (self.jim_addr & 0xffff00) | v; return
         if a == 0xfca7: self.jim_addr = (self.jim_addr & 0xff00ff) | (v<<8); return
         if a == 0xfca8: self.jim_addr = (self.jim_addr & 0x00ffff) | (v<<16); return
@@ -151,7 +162,8 @@ class CPU:
         # does, but that runs under a different harness). Fail loudly if it does.
         if op in C02_ONLY_OPCODES:
             self.c02_hits += 1
-            raise RuntimeError(f'model-B violation: 65C02 opcode &{op:02x} at &{self.pc:04x}')
+            if not CPU_65C02:
+                raise RuntimeError(f'model-B violation: 65C02 opcode &{op:02x} at &{self.pc:04x}')
         def b():  # operand byte
             nonlocal pc; v = self.rd(pc); pc += 1; return v
         def w():
@@ -165,6 +177,7 @@ class CPU:
         def aby(): return (w() + self.y) & 0xffff
         def indx(): z = (b() + self.x) & 0xff; return self.mem[z] | (self.mem[(z+1)&0xff] << 8)
         def indy(): z = b(); return ((self.mem[z] | (self.mem[(z+1)&0xff] << 8)) + self.y) & 0xffff
+        def indzp(): z = b(); return self.mem[z] | (self.mem[(z+1)&0xff] << 8)
         def br(cond):
             nonlocal pc
             off = b()
@@ -208,6 +221,17 @@ class CPU:
         elif o in (0x10,0x30,0x50,0x70,0x90,0xb0,0xd0,0xf0):
             br({0x10:not self.n,0x30:self.n,0x50:not self.v,0x70:self.v,
                 0x90:not self.c,0xb0:self.c,0xd0:not self.z,0xf0:self.z}[o])
+        # ---- 65C02-only (Master 128 / ANFS 4.21) ----
+        elif CPU_65C02 and o == 0x5a: self.push(self.y)                  # phy
+        elif CPU_65C02 and o == 0x7a: self.y = self.setnz(self.pop())    # ply
+        elif CPU_65C02 and o == 0xda: self.push(self.x)                  # phx
+        elif CPU_65C02 and o == 0xfa: self.x = self.setnz(self.pop())    # plx
+        elif CPU_65C02 and o == 0x1a: self.a = self.setnz(self.a + 1)    # inc a
+        elif CPU_65C02 and o == 0x3a: self.a = self.setnz(self.a - 1)    # dec a
+        elif CPU_65C02 and o == 0x80: br(True)                           # bra
+        elif CPU_65C02 and o == 0x7c:                                    # jmp (abs,x)
+            a = (w() + self.x) & 0xffff
+            pc = self.rd(a) | (self.rd((a + 1) & 0xffff) << 8)
         else:
             grp = {  # (loader, store) per mode for each ALU op family
             }
@@ -232,6 +256,13 @@ class CPU:
                      0x4a:('lsr','acc'),0x46:('lsr','zp'),0x56:('lsr','zpx'),0x4e:('lsr','ab'),0x5e:('lsr','abx'),
                      0x2a:('rol','acc'),0x26:('rol','zp'),0x36:('rol','zpx'),0x2e:('rol','ab'),0x3e:('rol','abx'),
                      0x6a:('ror','acc'),0x66:('ror','zp'),0x76:('ror','zpx'),0x6e:('ror','ab'),0x7e:('ror','abx')}
+            if CPU_65C02:
+                modes.update({
+                    0x64:('stz','zp'),0x74:('stz','zpx'),0x9c:('stz','ab'),0x9e:('stz','abx'),
+                    0x14:('trb','zp'),0x1c:('trb','ab'),0x04:('tsb','zp'),0x0c:('tsb','ab'),
+                    0x12:('ora','indzp'),0x32:('and','indzp'),0x52:('eor','indzp'),
+                    0x72:('adc','indzp'),0x92:('sta','indzp'),0xb2:('lda','indzp'),
+                    0xd2:('cmp','indzp'),0xf2:('sbc','indzp')})
             if o not in modes: raise RuntimeError(f'opcode &{o:02x} at &{self.pc:04x}')
             name, mode = modes[o]
             if mode == 'imm':
@@ -239,7 +270,7 @@ class CPU:
             elif mode == 'acc':
                 m = self.a; ea = 'A'
             else:
-                ea = {'zp':zp,'zpx':zpx,'zpy':zpy,'ab':ab,'abx':abx,'aby':aby,'indx':indx,'indy':indy}[mode]()
+                ea = {'zp':zp,'zpx':zpx,'zpy':zpy,'ab':ab,'abx':abx,'aby':aby,'indx':indx,'indy':indy,'indzp':indzp}[mode]()
                 m = None
             def load():
                 return m if ea is None or ea == 'A' else self.rd(ea)
@@ -249,6 +280,11 @@ class CPU:
             elif name == 'sta': self.wr(ea, self.a)
             elif name == 'stx': self.wr(ea, self.x)
             elif name == 'sty': self.wr(ea, self.y)
+            elif name == 'stz': self.wr(ea, 0)
+            elif name == 'trb':
+                v = self.rd(ea); self.z = (v & self.a) == 0; self.wr(ea, v & (~self.a & 0xff))
+            elif name == 'tsb':
+                v = self.rd(ea); self.z = (v & self.a) == 0; self.wr(ea, v | self.a)
             elif name == 'adc': self.adc(load())
             elif name == 'sbc': self.sbc(load())
             elif name == 'and': self.a = self.setnz(self.a & load())
@@ -1192,6 +1228,41 @@ check(cpu.pc == 0x8a38, 'service_handler reached restore_rom_slot after service 
 check(cpu.mem[0x02a1] == 0x82, 'service 15 left rom_type_table[slot] intact (P12 fix)')
 
 reset()
+print('== 18b: malformed inbound immediates are NAKed, never handed to the host ==')
+# Regression test for the immediate input-validation guard (himm_len_ok in
+# aun.c). The immediate path is NOT station-map checked, so any host that can
+# reach our socket can send these. Before the guard, the ROM parsed the payload
+# by control byte and trusted the length:
+#   * a zero-length POKE underflowed (len - 4) into a ~64K wild write;
+#   * a short/reversed PEEK descriptor staged up to 64K of host memory out,
+#     sweeping &FC00-&FEFF and side-effecting every hardware register.
+# Each must now be refused at the boundary: a NAK on the wire, and crucially
+# NO immediate left pending for the host to collect (&FCAB bit 6 clear).
+hx('D')                                        # reset the engine
+for name, ctrl, payload in (
+        ('zero-length POKE (len-4 underflow)',      0x02, b''),
+        ('short POKE (1 addr byte)',                0x02, bytes([0x00])),
+        ('short PEEK (no end descriptor)',          0x01, bytes([0x00, 0x30])),
+        ('reversed PEEK (end < start)',             0x01,
+             bytes([0x00, 0x30, 0x00, 0x00, 0x00, 0x10])),
+        ('over-long JSR param block',               0x03,
+             bytes([0x00, 0x21]) + b'\xaa' * 600),
+):
+    udp_out.clear()
+    hx('U %x %d %s' % (IP10, 32768, aun(5, 0, ctrl, 0x9000, payload).hex()))
+    hx('L')
+    naks = [d for _, _, d in udp_out if d[0] == 4]
+    check(len(naks) == 1, '%s -> NAKed (got %d NAKs)' % (name, len(naks)))
+    check(not (hx('F') & 0x40),
+          '%s -> nothing left pending for the host (&FCAB bit 6 clear)' % name)
+# ...and a well-formed immediate still gets through, so the guard is not simply
+# rejecting everything (the 2-byte JSR address with no params is legal).
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x03, 0x9001, bytes([0x00, 0x21])).hex()))
+hx('L')
+check(hx('F') & 0x40, 'well-formed 2-byte JSR immediate is still accepted')
+hx('D')                                        # leave the engine clean
+
 print('== 19: aun_station=ip / ip.ip derive station (and net) from our IPv4 ==')
 # The harness pins our address to 192.168.1.20 (the R command), so the last
 # octet is 20 and the third octet is 1.  Drive INIT (station byte 0 = "use
