@@ -271,13 +271,22 @@ static volatile uint32_t Pi1MHz_nirq_mask = 0;
 inline static void Pi1MHz_SetnIRQ_src(uint8_t src, bool assert_irq)
 {
    unsigned int cpsr = _disable_interrupts_cspr();
-   uint32_t mask = Pi1MHz_nirq_mask;
+   uint32_t old  = Pi1MHz_nirq_mask;
+   uint32_t mask = old;
    if (assert_irq)
       mask |= (1u << src);
    else
       mask &= ~(1u << src);
    Pi1MHz_nirq_mask = mask;
-   RPI_SetGpioPinFunction(NIRQ_PIN, (mask != 0) ? FS_OUTPUT : FS_INPUT);
+   /* The pin function depends only on whether ANY source is asserted, so
+    * touch GPFSEL only when that changes. This matters: the SCSI DMA loops
+    * call us once per byte with the bit already set, so 255 of every 256
+    * calls used to do a read-modify-write of GPFSEL - two Strongly-Ordered
+    * (uncached, unbuffered) peripheral round trips - writing back the value
+    * just read, with FIQ masked throughout. The mask RMW above still has to
+    * be guarded, because harddisc really does call this from FIQ context. */
+   if ((old != 0u) != (mask != 0u))
+      RPI_SetGpioPinFunction(NIRQ_PIN, (mask != 0) ? FS_OUTPUT : FS_INPUT);
    _restore_cpsr(cpsr);
 }
 
@@ -564,15 +573,20 @@ _Noreturn void kernel_main(void)
       {
          oldreset = false;
       }
+      /* One system-timer read per poll, not two.  RPI_GetSystemTime() is a
+         Strongly-Ordered peripheral load the core waits on, and each poll's
+         "after" timestamp is the next poll's "before", so carrying it over
+         halves the round trips across the whole loop. */
+      uint32_t before_us = RPI_GetSystemTime();
       for (size_t i=0 , n=Pi1MHz_polls_max ; i<n; i++ )
       {
          func_ptr poll_fn = Pi1MHz_poll_table[i];
 
-            uint32_t before_us = RPI_GetSystemTime();
             poll_fn();
             {
                uint32_t after_us = RPI_GetSystemTime();
                uint32_t duration_us = after_us - before_us;
+               before_us = after_us;
 
                if (duration_us > 50000u) {
                LOG_INFO("Slow poll callback idx=%u duration_us=%lu\r\n",

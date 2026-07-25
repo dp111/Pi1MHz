@@ -480,7 +480,10 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       uint32_t len = jim_read32(cp + 12);
       if (!aun_buffer_ok(off, len))
          break;                                   /* AUN_ERR_PARAM */
-      {
+      /* Format only when the log will actually be emitted: aun_hex16 is a
+         real call that LTO does NOT fold away, so it used to run on every
+         single transmit just to have its result discarded. */
+      if (aun_debug) {
          char txhex[16 * 3 + 1];
          aun_hex16(txhex, &Pi1MHz->JIM_ram[base_addr + off], len);
          AUN_LOG("ECONET: tx %u.%u port %02X ctrl %02X len %lu [%s]\r\n",
