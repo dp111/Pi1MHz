@@ -817,6 +817,44 @@ uint32_t aun_tx_reply_len(const aun_engine_t *e)
 
 /* ---- inbound -------------------------------------------------------------*/
 
+/* Is a host-executed immediate long enough for the control byte it claims?
+ *
+ * The host ROM parses the payload by control byte and trusts the length:
+ * Peek reads an 8-byte [start][end] descriptor, and Poke / JSR / UserProc /
+ * OSProcCall each strip a 4-byte address before using the remainder. A short
+ * payload made the ROM read a stale buffer as its destination pointer and,
+ * for Poke, underflow (len - 4) into a ~64K wild write. This path is NOT
+ * station-map checked (unlike DATA), so anything that can reach our socket
+ * can send one - validate here, at the trust boundary, and NAK the rest.
+ *
+ * The exec-class ops are additionally capped at the length the original
+ * ADLC ROM allowed for a parameter block (&0182 = 386 bytes, plus the
+ * 4 address bytes), so a long payload cannot overrun the receive block. */
+static bool himm_len_ok(uint8_t ctrl, uint32_t dlen, const uint8_t *data)
+{
+   switch (ctrl) {
+   case 1:                              /* Peek: 4-byte start + 2-byte end */
+      /* Also require end >= start: the ROM computes the reply length as a
+       * 16-bit (end - start), so a reversed descriptor asked it to stage up
+       * to 64K of host memory - sweeping &FC00-&FEFF and side-effecting
+       * every hardware register on the machine. */
+      if (dlen < 6u)
+         return false;
+      return (uint16_t)(data[4] | (data[5] << 8)) >=
+             (uint16_t)(data[0] | (data[1] << 8));
+   case 2:                              /* Poke: 4-byte address + data     */
+      return dlen >= 4u;
+   case 3: case 4: case 5:              /* JSR / UserProc / OSProcCall     */
+      /* 2-byte call address, then an OPTIONAL parameter block. The ROM
+       * already guards the short case (eih_defer_op's `bcc`: a payload
+       * under 4 bytes simply carries no params), so only the address
+       * itself and the upper cap need enforcing here. */
+      return dlen >= 2u && dlen <= 4u + 386u;
+   default:                             /* Halt / Continue and the rest    */
+      return true;
+   }
+}
+
 void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
                    const uint8_t *buf, uint32_t len)
 {
@@ -1009,7 +1047,8 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
       if (ctrl == AUN_CTRL_MACHINE_PEEK) {
          /* the engine answers a machine peek itself: 4-byte machine id */
          send_imm_reply(e, src_ip_be, src_port, ctrl, seq, e->machine_id, 4);
-      } else if (e->host_imm_enabled && dlen <= AUN_HIMM_MAX) {
+      } else if (e->host_imm_enabled && dlen <= AUN_HIMM_MAX &&
+                 himm_len_ok(ctrl, dlen, data)) {
          if (e->himm.active) {
             /* one held at a time: absorb a retransmit of the one in flight
              * (the host is still working on it), refuse anything else. */
