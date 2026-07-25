@@ -90,6 +90,23 @@
 
 #define NSEED 0x7ffff8
 
+/* Pi1MHz: the $60 (pulse+saw) and $70 (pulse+saw+tri) combined waveforms have
+ * no 6581 data in upstream VICE - wave6581.h holds only waveform50_6581, and
+ * fastsid_init() fills wavetable60/70 with zeros on the 6581 path. SidModel is
+ * a compile-time 0 here (resources.h), so in this firmware those two 16 KB
+ * arrays are provably all-zero: 32 KB of .bss zeroed at boot to represent
+ * silence, plus two 8 KB memsets on the init path writing zeros over zeros.
+ *
+ * With FASTSID_COMBINED_WAVEFORMS 0 the arrays are not built and setup_voice()
+ * routes waveforms 6 and 7 to the all-zero wavetable00 with wtl = 31, exactly
+ * as its existing silent cases do - doosc() returns 0 either way, so the
+ * output is byte-identical to the tables it replaces. Set to 1 to restore
+ * upstream behaviour; that is required if 8580 selection is ever wanted, or if
+ * real sampled 6581 PS_/PST_ tables are ever ported (a real 6581 is quiet on
+ * these combinations, not silent - this is a VICE approximation, not the
+ * chip). */
+#define FASTSID_COMBINED_WAVEFORMS 0
+
 #ifdef WAVETABLES
 
 #include "wave6581.h"
@@ -101,8 +118,10 @@ static WORD wavetable20[4096];
 static WORD wavetable30[4096];
 static WORD wavetable40[8192];
 static WORD wavetable50[8192];
+#if FASTSID_COMBINED_WAVEFORMS
 static WORD wavetable60[8192];
 static WORD wavetable70[8192];
+#endif
 
 #endif
 
@@ -442,6 +461,18 @@ static void trigger_adsr(voice_t *pv)
     }
 }
 
+/* Pi1MHz: VICE's textual state dump is compiled out, not deleted, so that a
+ * future pull from upstream still diffs cleanly against the block below.
+ *
+ * Nothing in this firmware calls hooks.dump_state, and it could not have
+ * produced output if it did: print_voice() formats with %5.1f, and nano
+ * newlib's printf omits float support unless -u _printf_float is linked in,
+ * which CMakeLists.txt does only for DEBUG builds. It also costs a 1024-byte
+ * stack frame and a lib_stralloc() that nothing frees. Set to 1 (and add
+ * -u _printf_float) if you ever want it back. */
+#define FASTSID_DUMP_STATE 0
+
+#if FASTSID_DUMP_STATE
 static void print_voice(char *buf, voice_t *pv)
 {
     const char *m = "ADSRI";
@@ -483,6 +514,7 @@ static char *fastsid_dump_state(sound_t *psid)
 
     return lib_stralloc(buf);
 }
+#endif /* FASTSID_DUMP_STATE */
 
 /* update SID structure */
 inline static void setup_sid(sound_t *psid)
@@ -590,17 +622,27 @@ inline static void setup_voice(voice_t *pv)
             }
             break;
         case 6:
+#if FASTSID_COMBINED_WAVEFORMS
             pv->wt = &wavetable60[pv->wtpf = 4096 - (pv->d[2]
                                                      + (pv->d[3] & 0x0f) * 0x100)];
             pv->wtpf <<= 20;
+#else
+            pv->wt = wavetable00;   /* silent on the 6581 - see the table decls */
+            pv->wtl = 31;
+#endif
             break;
         case 7:
+#if FASTSID_COMBINED_WAVEFORMS
             pv->wt = &wavetable70[pv->wtpf = 4096 - (pv->d[2]
                                                      + (pv->d[3] & 0x0f) * 0x100)];
             pv->wtpf <<= 20;
             if (pv->d[4] & 0x04 && pv->s->newsid) {
                 pv->wtr[1] = 0x7fff;
             }
+#else
+            pv->wt = wavetable00;   /* ring mod here is newsid-gated, so dead too */
+            pv->wtl = 31;
+#endif
             break;
         case 8:
             pv->noise = 1;
@@ -923,12 +965,16 @@ static int fastsid_init(sound_t *psid, int speed, int cycles_per_sec, int factor
         wavetable40[i + 4096] = 0x7fff;
         if (psid->newsid) {
             wavetable50[i + 4096] = waveform50_8580[i] << 7;
+#if FASTSID_COMBINED_WAVEFORMS
             wavetable60[i + 4096] = waveform60_8580[i] << 7;
             wavetable70[i + 4096] = waveform70_8580[i] << 7;
+#endif
         } else {
             wavetable50[i + 4096] = waveform50_6581[i >> 3] << 7;
+#if FASTSID_COMBINED_WAVEFORMS
             wavetable60[i + 4096] = 0;
             wavetable70[i + 4096] = 0;
+#endif
         }
     }
 #endif
@@ -1091,7 +1137,11 @@ sid_engine_t fastsid_hooks =
     fastsid_reset,
     fastsid_calculate_samples,
     fastsid_prevent_clk_overflow,
+#if FASTSID_DUMP_STATE
     fastsid_dump_state,
+#else
+    NULL,                        /* Pi1MHz: dump_state compiled out, see above */
+#endif
     fastsid_resid_state_read,
     fastsid_resid_state_write
 };
@@ -1166,12 +1216,14 @@ void fastsid_state_read(struct sound_s *psid, struct sid_fastsid_snapshot_state_
         } else if (psid->v[i].wt >= &wavetable50[0] && psid->v[i].wt <= &wavetable50[8191]) {
             sid_state->v_wt[i] = 5;
             sid_state->v_wt_offset[i] = psid->v[i].wt - &wavetable50[0];
+#if FASTSID_COMBINED_WAVEFORMS
         } else if (psid->v[i].wt >= &wavetable60[0] && psid->v[i].wt <= &wavetable60[8191]) {
             sid_state->v_wt[i] = 6;
             sid_state->v_wt_offset[i] = psid->v[i].wt - &wavetable60[0];
         } else if (psid->v[i].wt >= &wavetable70[0] && psid->v[i].wt <= &wavetable70[8191]) {
             sid_state->v_wt[i] = 7;
             sid_state->v_wt_offset[i] = psid->v[i].wt - &wavetable70[0];
+#endif
         } else {
             sid_state->v_wt[i] = 0;
             sid_state->v_wt_offset[i] = 0;
@@ -1256,12 +1308,14 @@ void fastsid_state_write(struct sound_s *psid, struct sid_fastsid_snapshot_state
             case 5:
                 psid->v[i].wt = &wavetable50[sid_state->v_wt_offset[i]];
                 break;
+#if FASTSID_COMBINED_WAVEFORMS
             case 6:
                 psid->v[i].wt = &wavetable60[sid_state->v_wt_offset[i]];
                 break;
             case 7:
                 psid->v[i].wt = &wavetable70[sid_state->v_wt_offset[i]];
                 break;
+#endif
         }
 
         psid->v[i].wtpf = sid_state->v_wtpf[i];
