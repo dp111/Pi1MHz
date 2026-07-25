@@ -369,7 +369,14 @@ typedef struct {
    uint16_t udp_port;
    uint8_t  aun_port;
    uint32_t len;
-   uint8_t  data[AUN_MAX_DATA];
+   /* A hash of the payload, not the payload.  This exists only to answer
+    * "is this byte-identical to the last frame on this port?" for the
+    * diagnostic trace, and both the compare and the store already sit
+    * behind an "e->trace_fn != NULL" guard - so in a release build, where
+    * no trace hook is ever installed, keeping data[AUN_MAX_DATA] here cost
+    * 6 x 8 KB of .bss that was zeroed at boot and then never written.
+    * A collision would at worst mislabel one traced frame as a repeat. */
+   uint32_t hash;
 } aun_dbg_prev_t;
 
 typedef struct {

@@ -46,6 +46,18 @@ static void wr32le(uint8_t *p, uint32_t v)
    p[3] = (uint8_t)(v >> 24);
 }
 
+/* FNV-1a over the payload, for the trace-only "same as previous frame on
+ * this port" test (see aun_dbg_prev_t). */
+static uint32_t dbg_hash(const uint8_t *p, uint32_t len)
+{
+   uint32_t h = 2166136261u;
+   for (uint32_t i = 0; i < len; i++) {
+      h ^= p[i];
+      h *= 16777619u;
+   }
+   return h;
+}
+
 static uint32_t now_ms(aun_engine_t *e)
 {
    return e->transport.now_ms(e->transport.user);
@@ -938,7 +950,7 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
             }
          }
          same_as_prev = (dp != NULL && dlen != 0 && dlen == dp->len &&
-                         memcmp(data, dp->data, dlen) == 0);
+                         dbg_hash(data, dlen) == dp->hash);
       }
       uint8_t verdict;
 
@@ -1024,7 +1036,7 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
             dp->udp_port = src_port;
             dp->aun_port = port;
             dp->len      = dlen;
-            memcpy(dp->data, data, dlen);
+            dp->hash     = dbg_hash(data, dlen);
          }
       }
       break;
