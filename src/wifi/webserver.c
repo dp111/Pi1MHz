@@ -243,6 +243,7 @@ typedef struct {
    dav_chunk_state_t  dav_chunk_state;
    uint32_t           dav_chunk_remaining;  /* bytes left in this chunk, or CRLF-skip count */
    char               dav_chunk_linebuf[24];/* chunk-size / trailer line accumulator */
+   bool               dav_chunk_line_overflow;/* line longer than linebuf: reject, don't truncate */
    size_t             dav_chunk_linelen;
    uint32_t           dav_chunk_drained;    /* cumulative bytes; only enforced while draining */
    int      dav_put_status;
@@ -3505,6 +3506,12 @@ static bool dav_put_finish(ws_conn_t *c)
          return ws_error(c, 500, "Internal Server Error",
                          "Could not finalize the uploaded file.");
       }
+      /* The PROPFIND cache was invalidated when this request was PARSED,
+         which for a PUT is seconds before the data actually lands. Another
+         connection PROPFINDing in that window re-caches the pre-PUT size and
+         mtime, and would then serve them for the rest of the TTL. Invalidate
+         again HERE, where the filesystem really changed. */
+      ws_fs_mutated();
       if (had_date) {
          FILINFO keep;
          keep.fdate = old_fno.fdate;
@@ -3560,14 +3567,18 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
          while (pos < len) {
             uint8_t ch = data[pos++];
             if (ch != '\n') {
-               if (ch != '\r' &&
-                   c->dav_chunk_linelen < sizeof c->dav_chunk_linebuf)
-                  c->dav_chunk_linebuf[c->dav_chunk_linelen++] = (char)ch;
+               if (ch != '\r') {
+                  if (c->dav_chunk_linelen < sizeof c->dav_chunk_linebuf)
+                     c->dav_chunk_linebuf[c->dav_chunk_linelen++] = (char)ch;
+                  else
+                     c->dav_chunk_line_overflow = true;
+               }
                continue;
             }
             if (c->dav_chunk_state == DAV_CHUNK_TRAILER) {
                bool blank = (c->dav_chunk_linelen == 0u);
                c->dav_chunk_linelen = 0u;
+               c->dav_chunk_line_overflow = false;   /* trailers are discarded */
                if (blank) {
                   if (consumed != NULL) *consumed = pos;
                   return dav_put_finish(c);    /* trailer-part terminator */
@@ -3577,7 +3588,11 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
             {
                size_t   n = c->dav_chunk_linelen;
                uint32_t size = 0u;
-               bool     bad = (n == 0u);
+               /* An over-long size line must be REJECTED, not truncated:
+                  dropping the tail can leave a prefix that parses as 0,
+                  which reads as the last-chunk and would silently commit a
+                  short file as "201 Created". */
+               bool     bad = (n == 0u) || c->dav_chunk_line_overflow;
                size_t   i;
                for (i = 0u; !bad && i < n; i++) {
                   char     h = c->dav_chunk_linebuf[i];
@@ -3592,6 +3607,7 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
                   size = size * 16u + d;
                }
                c->dav_chunk_linelen = 0u;
+               c->dav_chunk_line_overflow = false;
                if (bad) {
                   if (consumed != NULL) *consumed = pos;
                   return ws_error(c, 400, "Bad Request",
@@ -4114,6 +4130,11 @@ static void ws_copy_step(ws_conn_t *c)
       f_close(&c->copy_src); c->copy_src_open = false;
       f_close(&c->copy_dst); c->copy_dst_open = false;
       g_ws_active_copy = NULL;
+      /* As with PUT: the cache was invalidated when the COPY was parsed,
+         but the destination only becomes real here. Invalidate again so a
+         PROPFIND issued during the copy cannot leave stale size/mtime
+         cached for the rest of the TTL. */
+      ws_fs_mutated();
       if (dst_existed)
          mtp_fs_notify_object_changed(c->dav_put_target);
       else
@@ -5117,6 +5138,15 @@ static void ws_err(void *arg, err_t err)
    if (c->dav_put_open) {
       f_close(&c->write_file.dav);
       c->dav_put_open = false;
+      /* Same as conn_close: discard the partial temp file. ws_err is what
+         lwIP calls on RST or a fatal error - i.e. exactly what an aborted
+         upload or a flaky link produces - so without this every failed PUT
+         leaves a "<name>.part" dropping that nothing ever collects, visible
+         in both /files/ and PROPFIND listings. The final target was never
+         touched (the rename happens only on a complete body), so the user's
+         previous file is intact either way. */
+      if (c->dav_put_tmppath[0] != '\0')
+         (void)f_unlink(c->dav_put_tmppath);
    }
    free(c->out);
    free(c);

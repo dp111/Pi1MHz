@@ -848,6 +848,15 @@ static uint8_t scsiCommandReassignBlocks(void)
 	if (debugFlag_scsiCommands)debugString_P(PSTR("Defective LBA List ="));
 
 	for (uint32_t Counter = 0; Counter < (list_length/longlba); Counter++) {
+		// list_length is built from four host-supplied bytes, so with the
+		// LongList bit set it can reach 2^32: up to ~1e9 iterations of four
+		// hostadapterReadByte() calls, each of which can burn its full ACK
+		// timeout.  Everything shares one poll loop, so that stalls audio,
+		// WiFi/AUN, USB and the 1MHz bus with it - and BREAK alone does NOT
+		// recover, because hd_wait_ack() returns immediately on reset but
+		// the loop still grinds through every remaining iteration.  Bail on
+		// reset so the per-byte timeout composes into a per-command bound.
+		if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 		if (longlba==4)
 #ifdef DEBUG
          {

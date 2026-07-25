@@ -254,6 +254,21 @@ void filesystemReset(void)
  bool filesystemMount(void)
 {
    FRESULT fsResult;
+
+   // Already mounted?  Do nothing.
+   //
+   // f_mount() on an already-registered volume clears fs_type, which defeats
+   // mount_volume()'s "already valid, reuse" fast path and forces a full
+   // remount ending in "fs->id = ++Fsid".  Every FIL/DIR opened earlier then
+   // fails validate() with FR_INVALID_OBJECT - including the per-LUN
+   // fileObject[] handles BeebSCSI opens once and holds for the life of the
+   // LUN.  fs_ensure_ready() in usb/mtp_fs.c calls this on essentially every
+   // MTP operation, so without this guard plugging the Pi into a USB host
+   // kills the emulated hard disc until the LUN is stopped and restarted -
+   // which ADFS never does on its own.  It also re-read the MBR/BPB on every
+   // MTP request.
+   if (filesystemState.fsMountState) return true;
+
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemMount(): Mounting file system\r\n"));
 
    // Mount the SD card
@@ -1220,6 +1235,15 @@ bool filesystemCloseLunForRead(uint8_t lunNumber)
 // Function to open a LUN ready for writing
 bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t requiredNumberOfSectors)
 {
+   // VFS LUNs (>= 8, the /BeebVFS* images) are READ-ONLY.  Every other
+   // mutating entry point already refuses them - filesystemFormatLun,
+   // filesystemCreateLunImage, filesystemCreateLunDescriptor and
+   // filesystemWriteAttributes all bail on lunNumber > 7 - but the WRITE6
+   // path did not, so a host that simply addressed LUN 8-15 (the SCSI id is
+   // taken straight off the databus) could overwrite a Domesday image.
+   if (lunNumber > 7)
+      return false;
+
 #if FF_USE_FASTSEEK
    FIL *fp = &filesystemState.fileObject[lunNumber];
 
