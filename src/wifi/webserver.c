@@ -207,6 +207,7 @@ typedef struct {
    size_t   up_tail_len;
    char     up_dir[WS_PATH_MAX];
    char     up_name[FF_LFN_BUF + 1];
+   uint8_t  up_lun_p1;   /* LUN this upload writes, +1 (0 = not a LUN image) */
    uint32_t up_bytes_written;
 
    /* WebDAV PUT streaming (CONN_RECV_DAV_PUT).  remaining starts at
@@ -1263,7 +1264,47 @@ typedef enum {
    WS_AUTH_STALE           /* hash OK but nonce expired, send stale=true*/
 } ws_auth_status_t;
 
+/* RFC 7616 §3.4.6: the `uri` in the Authorization header is part of what the
+   response hash covers, so the server has to check it against the actual
+   request-target. Without that, HA2 is computed from whatever the client
+   claims, the hash matches, and the request is then served against a
+   different target - so one captured header authorises that method across the
+   whole namespace until the nonce rolls.
+
+   `path` has already had its query trimmed off, so accept either form; also
+   tolerate the absolute form (http://host/path) that RFC 9112 §3.2.2 allows a
+   client to send. Anything else re-challenges, which is the safe direction. */
+static bool ws_digest_uri_matches(const char *field_uri, const char *path,
+                                  const char *query)
+{
+   size_t path_len;
+
+   if (field_uri == NULL || path == NULL)
+      return false;
+
+   /* absolute-form: skip scheme://authority, leaving the abs_path */
+   {
+      const char *scheme = strstr(field_uri, "://");
+      if (scheme != NULL) {
+         const char *slash = strchr(scheme + 3, '/');
+         field_uri = (slash != NULL) ? slash : "/";
+      }
+   }
+
+   path_len = strlen(path);
+   if (strncmp(field_uri, path, path_len) != 0)
+      return false;
+
+   if (field_uri[path_len] == '\0')
+      return true;                       /* client omitted the query */
+   if (field_uri[path_len] != '?' || query == NULL)
+      return false;
+   return strcmp(field_uri + path_len + 1u, query) == 0;
+}
+
 static ws_auth_status_t ws_digest_verify(const char *method,
+                                         const char *req_path,
+                                         const char *req_query,
                                          const char *header_block,
                                          size_t header_limit)
 {
@@ -1315,6 +1356,10 @@ static ws_auth_status_t ws_digest_verify(const char *method,
       }
 
       if (strcmp(field_username, cfg->webdav_user) != 0)
+         return WS_AUTH_REQUIRED;
+
+      /* Bind the credential to this request-target before it is hashed in. */
+      if (!ws_digest_uri_matches(field_uri, req_path, req_query))
          return WS_AUTH_REQUIRED;
 
       ws_digest_compute_ha1(ha1);
@@ -2594,6 +2639,28 @@ static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
 
    if (len == 0u || !c->up_file_open)
       return true;
+
+   /* The Beeb started the drive whose image we are writing. Stop here and
+      discard the partial rather than leave it a truncated disc: this path
+      writes the target in place, so there is no .part file to fall back on
+      and the previous contents are already gone. */
+   if (c->up_lun_p1 != 0u
+       && filesystemReadLunStatus((uint8_t)(c->up_lun_p1 - 1u))) {
+      char full[WS_PATH_MAX + FF_LFN_BUF + 2u];
+
+      f_close(&c->write_file.up);
+      c->up_file_open = false;
+      if (ws_is_root(c->up_dir))
+         snprintf(full, sizeof full, "/%s", c->up_name);
+      else
+         snprintf(full, sizeof full, "%s/%s", c->up_dir, c->up_name);
+      (void)f_unlink(full);
+      ws_fs_mutated();
+      return upload_fail(c, "The Beeb started that drive mid-upload, so the "
+                            "partial image was discarded - type *BYE and "
+                            "upload again.");
+   }
+
    if (f_write(&c->write_file.up, data, (UINT)len, &bw) != FR_OK || bw != len)
       return upload_fail(c, "Writing to the SD card failed "
                             "(the card may be full or write-protected).");
@@ -2654,8 +2721,23 @@ static bool upload_begin_part(ws_conn_t *c)
    else
       snprintf(full, sizeof full, "%s/%s", c->up_dir, base);
 
+   /* The browser upload form is a third way onto the card, alongside MTP and
+      the DAV verbs, and it writes the target in place. Same rule as those:
+      never while the Beeb has that image open. */
+   if (filesystemHostPathBusy(full))
+      return upload_fail(c, "That image is in use by the Beeb - "
+                            "type *BYE on the Beeb and upload again.");
+
    if (f_open(&c->write_file.up, full, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
       return upload_fail(c, "The file could not be created on the SD card.");
+
+   /* Remembered so upload_write() can spot the Beeb starting this LUN part
+      way through. No lock is taken: the Beeb always wins, so the test is
+      simply "has it started?" - derived state, with no lifetime to leak. */
+   {
+      int8_t upLun = filesystemLunFromHostPath(full);
+      c->up_lun_p1 = (upLun >= 0) ? (uint8_t)(upLun + 1) : 0u;
+   }
 
    c->up_file_open = true;
    c->up_bytes_written = 0u;
@@ -4825,8 +4907,9 @@ static bool process_request(ws_conn_t *c, int body_at)
       WebDAV client sends it after authenticating, and exempting it
       makes the realm appear to disagree on later requests. */
    if (ws_digest_enabled()) {
-      ws_auth_status_t a = ws_digest_verify(method, c->reqhdr,
-                                            c->reqhdr_len);
+      ws_auth_status_t a = ws_digest_verify(method, rawpath,
+                                            (query != NULL) ? query + 1 : NULL,
+                                            c->reqhdr, c->reqhdr_len);
       if (a == WS_AUTH_REQUIRED || a == WS_AUTH_STALE) {
          /* Windows Explorer's MiniRedirector quirk: a PUT that
             carries Expect: 100-continue + a non-zero body and gets
