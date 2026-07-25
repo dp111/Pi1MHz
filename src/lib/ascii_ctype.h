@@ -38,9 +38,15 @@
  * is a pure implementation swap, not a behaviour change -- which is why it is
  * safe to apply globally, including to lwip/tinyusb/FatFs.
  *
- * Only toupper/tolower are overridden. isalpha(), isdigit(), isspace() and the
- * rest still use `_ctype_`, so the table remains linked until those are dealt
- * with separately.
+ * Ten names are overridden: toupper tolower isdigit isupper islower isalpha
+ * isxdigit isspace isprint iscntrl. isalnum/ispunct/isgraph/isblank/isascii are
+ * unused tree-wide and are deliberately left on newlib.
+ *
+ * That does NOT unlink the 257-byte `_ctype_` table: `_strtol_l` is the sole
+ * remaining referrer, and it does not reach the table through the <ctype.h>
+ * macros, so recompiling it here would not help either. Removing the last of
+ * the table means writing strtol from scratch, which is a bad trade for 257
+ * bytes of rodata -- see armstring-pi/NOTES.md.
  */
 
 #ifndef PI1MHZ_ASCII_CTYPE_H

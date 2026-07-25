@@ -488,9 +488,66 @@ per `movs` is the architectural ceiling, which memset's head already hits.
 
 **Re-tested: `checks=4840 failures=0`.**
 
-Design rule to keep: `lib/armstring/` is vendored and must never be edited (re-copy
-to update); `lib/armstring-pi/` is ours. Everything arch-guarded so there stays one
-file list in CMakeLists.txt and no per-target build logic.
+### "The caller knows the alignment — why re-check it?" — already banked
+
+Recurring and reasonable idea; the numbers say leave it. Source occurrences vs
+`bl` sites surviving into the linked `rpi` image:
+
+| | in source | calls in image | eliminated |
+|---|---|---|---|
+| memset | 512 | 88 | 83% |
+| memcpy | 426 | 100 | 77% |
+| strlen | 318 | 40 | 87% |
+
+Where GCC knows size and alignment it does not call a *better* memset — it
+inlines the stores and never calls us at all. The win is already taken.
+
+Three reasons not to chase the remainder:
+
+1. **Writing these in C would not remove the check.** The parameter is `void *`
+   and carries no alignment guarantee, so the callee must handle any alignment
+   whatever language it is in — and the called path would then lose to the asm.
+2. **Only the caller can skip the head**, by picking a pre-aligned entry point.
+   That mechanism exists — EABI's `__aeabi_memset4`/`memset8` /
+   `__aeabi_memclr4`/`memclr8` — but this image references **zero** of them;
+   GCC for arm-none-eabi emits plain `memset`. Closed without a toolchain change.
+3. **The surviving sites are the wrong shape to care.** They are dominated by
+   large constant sizes — 572 (x6), 8192, 442368, 512, 128, 76, 48, 32 — where
+   the head is `rsb`/`ands`/`beq`, 3 instructions and a predicted branch.
+
+Related, and only looks like a problem: memset.S being *assembly* is opaque to
+LTO, so GCC can never inline it. That costs nothing — GCC's inlining uses its
+own `__builtin_memset` expansion and never needed to see our source. Different
+situation from the newlib LTO question above.
+
+### Checked and found clean — do not re-investigate
+
+- **No `__aeabi_mem*` references in the linked image.** GCC can emit
+  `__aeabi_memcpy`/`__aeabi_memclr` for struct copies, which would bypass all of
+  this work (newlib's are byte loops on ARMv6). It does not here — only the div
+  helpers appear. Verified by `nm` on the linked ELF.
+- **`strlen` has no PLD, deliberately.** The strings here are short filenames;
+  prefetch would be a net loss. PLD is worth ~2.9x for *memcpy*, not for this.
+
+### Harness note — correcting the "MMU harness output" section above
+
+That section says qemu must be invoked directly and never from a nested shell or
+script. **Redirecting to a file works fine from an agent tool**:
+`timeout -s TERM 45 qemu-system-arm ... -kernel x.elf > out.txt 2>&1`, then read
+`out.txt`. It is the *pipe* (`| cat`) that loses the output, not the nesting.
+
+Also: both harnesses were confirmed **non-vacuous** before trusting any PASS, by
+deliberately mutating each routine — `failures=2392` (strlen, wrong lane mask)
+and `failures=1888` (memset, wrong short/bulk threshold). Worth repeating for
+any future change: a first mutation attempt silently failed to apply and
+"passed", which is exactly how a vacuous green result looks.
+
+## Design rules to keep
+
+`lib/armstring/` is vendored and must never be edited (re-copy to update);
+`lib/armstring-pi/` is ours, except `arm-mem/` which is also vendored.
+Everything arch-guarded so there stays one file list in CMakeLists.txt and no
+per-target build logic.
 
 Every hand-written routine must clear the qemu harness over random sizes and
 alignments before it goes near master — alignment and tail-length bugs here are

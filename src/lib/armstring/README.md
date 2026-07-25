@@ -43,8 +43,9 @@ from libc as it did before — adding these files can never make a target worse.
 
 newlib has no ARMv6 implementation of `memcpy`, `strlen` or `memchr`: the fast
 paths require ARMv7-A (`memcpy-armv7a.S`) or Thumb-2 + DSP (`strlen-armv7.S`),
-and ARM1176 is neither. Those are covered by our own files in `../arm1176/`,
-guarded so they emit nothing on other targets.
+and ARM1176 is neither. Those are covered by our own files in `../armstring-pi/`
+(`memcpy-arm.S`, `memcmp-arm.S`, `strlen-arm1176.S`, `memset.S`), guarded so
+they emit nothing on other targets.
 
 ## Updating
 
