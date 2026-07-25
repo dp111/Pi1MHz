@@ -4873,6 +4873,12 @@ static bool process_request(ws_conn_t *c, int body_at)
        && !ws_method_is(method, "POST")) {
       char te_hdr[32] = "";
       char cl_hdr[24];
+      /* Bytes of this segment sitting past the header. They are this
+         request's body up to Content-Length; anything beyond that is the
+         start of a PIPELINED request, which we do not buffer. */
+      size_t already = ((size_t)body_at < c->reqhdr_len)
+                     ? (c->reqhdr_len - (size_t)body_at) : 0u;
+
       if (ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding",
                          te_hdr, sizeof te_hdr)
           && ws_strcasestr(te_hdr, "chunked") != NULL) {
@@ -4886,12 +4892,22 @@ static bool process_request(ws_conn_t *c, int body_at)
             if (*p < '0' || *p > '9') { cl_ok = false; break; }
             cl = cl * 10u + (uint32_t)(*p - '0');
          }
-         size_t already = ((size_t)body_at < c->reqhdr_len)
-                        ? (c->reqhdr_len - (size_t)body_at) : 0u;
          if (!cl_ok || cl > WS_DRAIN_MAX_BYTES)
             c->keep_alive = false;              /* unparseable / absurd length */
          else if (cl > already)
             c->drain_remaining = cl - (uint32_t)already;
+         else if (already > cl)
+            c->pipelined_bytes_dropped = true;  /* body complete, more follows */
+      } else if (already > 0u) {
+         /* No body declared, so every trailing byte is a pipelined request.
+            This is the case the existing flag did not cover: it is only set
+            when the extra bytes arrive in a LATER segment, but a client that
+            pipelines sends both requests together, so they land in the same
+            segment as the first header and were dropped silently. The
+            connection then stayed kept-alive with nothing to answer, and the
+            client waited out the ~30s poll limit. Flagging it here makes the
+            response completion close instead, so the client retries at once. */
+         c->pipelined_bytes_dropped = true;
       }
    }
 
