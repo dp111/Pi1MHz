@@ -354,6 +354,7 @@ bool filesystemDismount(void)
 // stopped LUN on its first access).
 
 static uint16_t hostLockMask;    // bit n set = LUN n is being written by the host
+static uint16_t hostRevokeMask;  // bit n set = the Beeb took LUN n back; abort that transfer
 
 // Compare up to `len` bytes case-insensitively; FAT names are not case
 // sensitive, and the host hands us whatever case the directory entry has.
@@ -438,9 +439,20 @@ int8_t filesystemLunFromHostPath(const char *path)
 // tears a transfer down must release it, including the aborted ones: a lock
 // left set by a host that vanished mid-upload would keep the LUN unstartable
 // until the next reboot.
+//
+// The lock never blocks the Beeb. When the Beeb wants a locked LUN it calls
+// filesystemHostRevokeLun(), which hands the LUN straight back and leaves a
+// revoked flag behind; the host transfer notices that in its own loop and
+// aborts itself. Refusing the Beeb instead is what hung the machine in
+// 8d8389e - ADFS's handshake spins on the status register with no timeout, so
+// every refusal became a FIQ storm that starved the main loop (see 9177fef).
 void filesystemHostLockLun(int8_t lunNumber, bool lock)
 {
    if (lunNumber < 0 || lunNumber >= MAX_LUNS) return;
+
+   // Either way the revocation is stale: a new transfer has not been revoked
+   // yet, and a finished one has nothing left to abort.
+   hostRevokeMask &= (uint16_t)~(1u << (uint8_t)lunNumber);
 
    if (lock) hostLockMask |= (uint16_t)(1u << (uint8_t)lunNumber);
    else      hostLockMask &= (uint16_t)~(1u << (uint8_t)lunNumber);
@@ -449,6 +461,25 @@ void filesystemHostLockLun(int8_t lunNumber, bool lock)
 bool filesystemLunHostLocked(uint8_t lunNumber)
 {
    return (lunNumber < MAX_LUNS) && ((hostLockMask & (uint16_t)(1u << lunNumber)) != 0u);
+}
+
+// The Beeb wants this LUN. Hand it back immediately and record that the host
+// transfer holding it must stop. Called from the SCSI start paths, so it must
+// stay trivial: no FatFs, no lwIP, no callbacks into the transfer's own
+// module - just two bits. The holder polls filesystemHostLunRevoked() from
+// its own loop, where closing files and answering the client is safe.
+void filesystemHostRevokeLun(uint8_t lunNumber)
+{
+   if (lunNumber >= MAX_LUNS) return;
+   if ((hostLockMask & (uint16_t)(1u << lunNumber)) == 0u) return;
+
+   hostLockMask   &= (uint16_t)~(1u << lunNumber);
+   hostRevokeMask |= (uint16_t)(1u << lunNumber);
+}
+
+bool filesystemHostLunRevoked(uint8_t lunNumber)
+{
+   return (lunNumber < MAX_LUNS) && ((hostRevokeMask & (uint16_t)(1u << lunNumber)) != 0u);
 }
 
 // LUN status control functions ---------------------------------------------

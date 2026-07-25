@@ -153,6 +153,7 @@ typedef struct {
   uint32_t transferred;
   uint32_t size;
   uint16_t failed_resp; // non-zero: data phase failed - drain the stream, report at completion
+  uint8_t  lun_lock_p1; // LUN held for this transfer, +1 (0 = none) so memset clears it
 } write_state_t;
 
 enum {
@@ -990,9 +991,12 @@ static void fs_release_write_state(void) {
     (void) f_unlink(g_write_state.path);
   }
   /* Release any host-write lock this transfer held on a LUN image. This runs
-   * on every teardown path - clean finish, host abort, session close - because
-   * a lock left set would keep the Beeb from ever starting that LUN again. */
-  filesystemHostLockLun(filesystemLunFromHostPath(g_write_state.path), false);
+   * on every teardown path - clean finish, host abort, session close, and the
+   * revoked case above - and also clears the revocation flag, so a lock left
+   * behind cannot leak into the next transfer. */
+  if (g_write_state.lun_lock_p1 != 0u) {
+    filesystemHostLockLun((int8_t)(g_write_state.lun_lock_p1 - 1u), false);
+  }
   if (g_write_state.kernel_data != NULL) {
     free(g_write_state.kernel_data);
   }
@@ -1622,9 +1626,15 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
       return MTP_RESP_DEVICE_BUSY;
     }
 
-    /* Claim it for the duration of the transfer, so a disc access on the Beeb
-     * cannot auto-start the LUN onto the file while we stream into it. */
-    filesystemHostLockLun(filesystemLunFromHostPath(g_write_state.path), true);
+    /* Claim it for the duration of the transfer. This does not block the Beeb:
+     * if it starts the drive anyway, the lock is revoked and the data phase
+     * above aborts. Resolved once here, not per chunk - the lookup walks all
+     * 16 LUNs building names, which has no business on the upload hot path. */
+    {
+      int8_t lockLun = filesystemLunFromHostPath(g_write_state.path);
+      filesystemHostLockLun(lockLun, true);
+      g_write_state.lun_lock_p1 = (lockLun >= 0) ? (uint8_t)(lockLun + 1) : 0u;
+    }
 
     if (f_open(&g_write_state.file, g_write_state.path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
       fs_release_write_state();
@@ -1713,7 +1723,14 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
     // it from tud_mtp_data_complete_cb. No release here - the completion
     // path closes the file and unlinks the partial upload.
     if (g_write_state.failed_resp == 0u) {
-      if (!g_write_state.file_open) {
+      /* The Beeb has taken this LUN back (it started the drive while we were
+       * streaming into its image). Stop writing now: the existing failure
+       * machinery drains the rest of the stream, closes the file and unlinks
+       * the partial upload, so the card is left with no half-written image. */
+      if (g_write_state.lun_lock_p1 != 0u
+          && filesystemHostLunRevoked((uint8_t)(g_write_state.lun_lock_p1 - 1u))) {
+        g_write_state.failed_resp = MTP_RESP_DEVICE_BUSY;
+      } else if (!g_write_state.file_open) {
         g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
       } else if (g_write_state.size_known && ((offset + xact_len) > g_write_state.size)) {
         g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;

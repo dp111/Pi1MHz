@@ -4134,6 +4134,22 @@ static void ws_copy_step(ws_conn_t *c)
    if (c == NULL || c->state != CONN_DAV_COPY)
       return;
 
+   /* The Beeb started the drive whose image we are writing, and took the LUN
+      back. Unlike PUT there is no .part file to discard - the destination is
+      being written in place - so drop the partial copy rather than leave a
+      truncated image behind. Checked here, in our own loop, because the SCSI
+      path that revokes must not reach into lwIP or FatFs itself. */
+   if (g_ws_copy_lun >= 0 && filesystemHostLunRevoked((uint8_t)g_ws_copy_lun)) {
+      f_close(&c->copy_src); c->copy_src_open = false;
+      f_close(&c->copy_dst); c->copy_dst_open = false;
+      (void)f_unlink(c->dav_put_target);
+      ws_copy_slot_release(c);
+      ws_fs_mutated();
+      (void)ws_error(c, 423, "Locked",
+                     "The Beeb took that image back mid-copy - type *BYE and retry.");
+      return;
+   }
+
    fr = f_read(&c->copy_src, c->dl_buf, (UINT)sizeof c->dl_buf, &br);
    if (fr != FR_OK) {
       f_close(&c->copy_src); c->copy_src_open = false;

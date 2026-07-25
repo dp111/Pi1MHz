@@ -955,6 +955,12 @@ static uint8_t scsiCommandRead6(void)
       // Is the requested LUN available?
       if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
 
+      // If a host transfer (MTP/WebDAV) is rewriting this image, take it back
+      // rather than refusing the Beeb: the transfer aborts itself when it
+      // notices, and the LUN starts normally here. Refusing instead is what
+      // hung the machine in 8d8389e.
+      filesystemHostRevokeLun(commandDataBlock.targetLUN);
+
       // Auto-start the LUN
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
          // Could not start LUN... return with error status
@@ -1100,6 +1106,12 @@ static uint8_t scsiCommandWrite6(void)
 
       // Is the requested LUN available?
       if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
+
+      // If a host transfer (MTP/WebDAV) is rewriting this image, take it back
+      // rather than refusing the Beeb: the transfer aborts itself when it
+      // notices, and the LUN starts normally here. Refusing instead is what
+      // hung the machine in 8d8389e.
+      filesystemHostRevokeLun(commandDataBlock.targetLUN);
 
       // Auto-start the LUN
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
@@ -1282,6 +1294,12 @@ static uint8_t scsiCommandTranslate(void)
 
       // Is the requested LUN available?
       if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
+
+      // If a host transfer (MTP/WebDAV) is rewriting this image, take it back
+      // rather than refusing the Beeb: the transfer aborts itself when it
+      // notices, and the LUN starts normally here. Refusing instead is what
+      // hung the machine in 8d8389e.
+      filesystemHostRevokeLun(commandDataBlock.targetLUN);
 
       // Auto-start the LUN
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
@@ -1691,6 +1709,11 @@ static uint8_t scsiCommandStartStop(void)
       filesystemSetLunStatus(commandDataBlock.targetLUN, false);
    } else {
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Starting LUN\r\n"));
+
+      // *MOUNT arrives here rather than through the auto-start route, so it
+      // needs the same hand-back: take the LUN off any host transfer, then
+      // start it as normal.
+      filesystemHostRevokeLun(commandDataBlock.targetLUN);
 
       // Start the LUN
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {

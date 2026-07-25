@@ -99,6 +99,8 @@ bool   filesystemHostPathBusy(const char *path);
 int8_t filesystemLunFromHostPath(const char *path);
 void   filesystemHostLockLun(int8_t lunNumber, bool lock);
 bool   filesystemLunHostLocked(uint8_t lunNumber);
+void   filesystemHostRevokeLun(uint8_t lunNumber);
+bool   filesystemHostLunRevoked(uint8_t lunNumber);
 
 bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t requiredNumberOfSectors);
 bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer);
