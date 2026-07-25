@@ -453,6 +453,41 @@ The win is small-to-medium n and branch behaviour.
 
 **Re-tested: `checks=13152 failures=0`** on the existing harness.
 
+### `strlen-arm1176.S` — branchless NUL-lane tail (96 → 104 B)
+
+The old tail re-scanned the NUL-containing word with a byte loop: up to four
+`ldrb` each paying the 3-cycle load-use latency, plus a mispredict on exit. The
+mask already identifies the lane, so it is now a `tst`/`tsteq` chain over the
+three low lanes. The **lowest set lane is always the first NUL** — a subtraction
+borrow only propagates upward, and the existing `bic` removes false hits in
+lanes whose own byte was >= 0x81. The chain self-terminates: once one `tst`
+gives NE the remaining `tsteq`s do not execute, so no further `addeq` fires.
+
+The `0x01010101` build was also hoisted above the alignment test and
+**interleaved with it exactly**. Each `orr rX, rX, rX, lsl #n` reads its own
+result as a shifted operand, which is a 2-cycle Early-Reg dependency, so each
+one needs one independent instruction after its producer: `mov r1, r0` covers
+the first, `tst r1, #3` covers the second. Putting the two `orr`s together (or
+letting `tst` fill the first gap, which never needed filling) costs a stall —
+7 cycles to the branch instead of 6.
+
+Do NOT move the `beq` above the second `orr` to shorten this: the aligned path
+branches straight into the word loop and needs r3 fully built. `orr` does not
+set flags, so it is safe between the `tst` and the `beq`. (Credit: user.)
+
+The constant cannot be made shorter — no ARM immediate encodes a repeated byte
+pattern and ARM1176 is ARMv6 (no `movw`). A literal-pool `ldr` would be one
+instruction, but the file deliberately avoids a pool; the shift chain is free
+once scheduled as above.
+
+Flag trivia worth not re-deriving: there is no way to get a third alignment bit
+per flag-setting instruction. `TEQ`, like every logical op, cannot write V at
+all (only the arithmetic ops do, and from signed overflow); its own trick is
+sign-XOR into N, and Z is redundant with N for these shifts. Two bits (N and C)
+per `movs` is the architectural ceiling, which memset's head already hits.
+
+**Re-tested: `checks=4840 failures=0`.**
+
 Design rule to keep: `lib/armstring/` is vendored and must never be edited (re-copy
 to update); `lib/armstring-pi/` is ours. Everything arch-guarded so there stays one
 file list in CMakeLists.txt and no per-target build logic.
