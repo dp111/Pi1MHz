@@ -149,9 +149,13 @@ loop. That asymmetry is why memset was the biggest remaining hole.)
 
 Written fresh: architecture-neutral plain ARM integer code, no NEON/VFP, no
 ARMv6+ opcodes. **One file serves ARM1176 and ARMv8-A** — nothing to gate.
-Assembles to 160 bytes, identical on both targets. ARM state + `bx lr`, so
-interworking-safe. Structure: byte path for n<8, replicate byte to word, align to
-word, STM of 8 registers (32 B/iter = ARM1176 cache line), word tail, byte tail.
+ARM state + `bx lr`, so interworking-safe.
+
+**Rewritten 2026-07-25** (see "Timing-model pass" below). The original was 160
+bytes: byte path for n<8, replicate byte to word, align to *word*, STM of 8
+registers (32 B/iter), word tail, byte tail. Both tails were branchy loops,
+which dominated the small-n cost. It is now **172 bytes** with a branchless
+head and tail, 16-byte alignment, and a 16 B/iter STM of 4 registers.
 
 **Added to `core_files` in CMakeLists.txt.** Both targets rebuilt clean. Final
 symbol sizes in the linked images:
@@ -404,6 +408,50 @@ history; item 4 is the only one still open.
    display (the one release-build float format) is hand-formatted to tenths
    via integer arithmetic instead. Verified: release build has no `_dtoa_r`/
    `_ldtoa_r` symbols; `-DDEBUG=1` build still does, and still links and runs.
+
+## DONE: timing-model pass over our own routines (2026-07-25)
+
+Review of `memset.S` / `strlen-arm1176.S` / `ascii_ctype.h` against the gcc17
+ARM1176 scheduler work (`/root/gcc17/arm1176-model-audit-2026-07-19.md` and the
+v11/v12 hardware timing suites). Three silicon-confirmed numbers drove it:
+
+- **load-use latency 3**, and **4 when the consumer reads the value as a
+  *shifted* operand** (Early-Reg). v12 rows 4-9 confirm the +1 three ways.
+- **ALU → shifted-operand = 2 cycles, not 1.** So every `orr rX, rX, rX, lsl #n`
+  self-chain costs 2 per step, not 1.
+- **`pop {pc}` ≈ 13.13 cycles vs `bx lr` ≈ 9.13** (v11 CALL group): load-to-PC
+  defeats the return-stack predictor, +4.
+
+### `memset.S` — branchless head/tail, 16-byte alignment (160 → 172 B)
+
+Structure now follows arm-mem's `memset-v6l.S` (already vendored, 3-clause BSD),
+because the old branchy head/tail dominated at the sizes most of the ~500 call
+sites actually use — a 16-byte fill ran ~30 instructions through ~4 conditional
+branches, and an ARM1176 mispredict is 5-7 cycles. `movs Rd, Rn, lsl #31` yields
+two alignment bits at once (N=bit0, C=bit1), `lsl #29` the next two, and the
+rest falls out as conditional stores. Now ~18 instructions and 1 branch for that
+same 16-byte fill.
+
+Two deliberate departures from arm-mem, both documented in the file header —
+**keep them**:
+1. It returns `bx lr`, not arm-mem's `pop {S, pc}`. Worth the measured 4 cycles.
+2. r0 is never the working pointer (ip is), so S need not be pushed and reloaded
+   just to return it. Only r4/lr are saved — 2 registers, not the old 6.
+
+Aligning to 16 rather than 4 means a 16-byte STM always lies wholly inside one
+32-byte ARM1176 cache line, so bulk stores stop straddling lines.
+
+The leading run is `(-ip) & 15`, so **r2 is adjusted once** rather than by a
+`sub<cond>` beside each of the four conditional stores, and the same `ands`
+doubles as the already-aligned test that a separate `tst ip, #15` used to do.
+That is 3 instructions cheaper than the arm-mem original and is why this is 172
+bytes rather than 184. (Credit: user, mid-review.)
+
+Honest limit: at large n this is a wash — the tinymembench number above
+(~1458 MB/s ≈ 2 B/cycle) says bulk fill is bus-bound, not instruction-bound.
+The win is small-to-medium n and branch behaviour.
+
+**Re-tested: `checks=13152 failures=0`** on the existing harness.
 
 Design rule to keep: `lib/armstring/` is vendored and must never be edited (re-copy
 to update); `lib/armstring-pi/` is ours. Everything arch-guarded so there stays one
