@@ -205,7 +205,15 @@ Flashing is unreliable and **reachability proves nothing**. Confirm by one of:
    hundreds means it really rebooted; a high count means it did not.
 
 Waiting ~30 s unconditionally after a flash before judging is worth it.
-Two separate occasions produced wrong conclusions from a stale image.
+Three separate occasions produced wrong conclusions from a stale image.
+
+The third had a mechanism worth knowing: `firmware/kernel.img` is **tracked**,
+so any `git checkout` touching it silently restores the committed image over
+your build, and the next flash then sends firmware that predates your change.
+It reads as "my fix did nothing" (or worse, "my fix works" — an image without
+the feature cannot exhibit the bug either). `git status firmware/` coming back
+*clean* right after a build is the tell: your build should have left it dirty.
+Check the size and mtime against what the build printed before flashing.
 
 Note the Pi's chronic **intermittent multi-second unreachability is an RF
 link problem, not firmware** — do not read a transient drop as a reboot.
