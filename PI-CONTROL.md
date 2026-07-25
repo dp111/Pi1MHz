@@ -114,6 +114,35 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass \
 
 ---
 
+## 3a. Type on the Beeb (host -> Master 128, COM9)
+
+COM9 is the Master 128's keyboard. It takes **plain text** — but one
+character at a time, with a gap between them:
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass \
+  -File 'C:\Archlinux\claude-tmp\com9-send.ps1' -Text '*CAT' [-CharDelayMs 200]
+```
+
+Two things that silently produce nothing, both of which look like a dead
+channel rather than a mistake:
+
+* **Send the characters paced, ~200 ms apart.** A back-to-back write is
+  swallowed by the keyboard emulation — `*CAT` sent as one string arrives
+  as `*aa`. `Write()` reports success either way.
+* **Assert DTR and RTS.** The COM5 capture script deliberately leaves them
+  low; copying that here means the host stack accepts the write and never
+  puts the bytes on the wire. Baud is irrelevant — it is USB CDC.
+
+There is no echo back unless the screen redirect is enabled, so **verify by
+effect, not by reply**: `*CAT` should produce `READ6` + `Attempting to
+Auto-Start LUN` in the COM5 trace (debug build), and `*BYE` should produce
+`STARTSTOP command (0x1B)` + `LUN number 0 is stopped`. Those two commands
+are the standard way to start and release a LUN for any test that needs the
+disc held open or let go. A dismount does *not* reach the firmware.
+
+---
+
 ## 4. HTTP / WebDAV (both directions)
 
 Use the host-pinned wrapper, not bare curl (the allowlist grants the
