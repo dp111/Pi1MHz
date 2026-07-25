@@ -94,6 +94,12 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber);
 bool filesystemWriteAttributes(uint8_t lunNumber);
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern);
 
+// Host-side (MTP / WebDAV) write interlock -- see filesystem.c
+bool   filesystemHostPathBusy(const char *path);
+int8_t filesystemLunFromHostPath(const char *path);
+void   filesystemHostLockLun(int8_t lunNumber, bool lock);
+bool   filesystemLunHostLocked(uint8_t lunNumber);
+
 bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t requiredNumberOfSectors);
 bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer);
 bool filesystemCloseLunForRead(uint8_t lunNumber);

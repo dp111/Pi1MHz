@@ -955,6 +955,17 @@ static uint8_t scsiCommandRead6(void)
       // Is the requested LUN available?
       if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
 
+      // A host-side transfer (MTP/WebDAV) is rewriting this LUN's image right
+      // now. Auto-starting would open the file, and build a cluster link map
+      // for it, part way through that rewrite - so report not ready instead.
+      // The next access once the transfer finishes starts the LUN normally.
+      if (filesystemLunHostLocked(commandDataBlock.targetLUN)) {
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Host transfer in progress, not starting LUN #"), commandDataBlock.targetLUN, true);
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+         requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY;
+         return SCSI_STATUS;
+      }
+
       // Auto-start the LUN
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
          // Could not start LUN... return with error status
@@ -1100,6 +1111,17 @@ static uint8_t scsiCommandWrite6(void)
 
       // Is the requested LUN available?
       if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
+
+      // A host-side transfer (MTP/WebDAV) is rewriting this LUN's image right
+      // now. Auto-starting would open the file, and build a cluster link map
+      // for it, part way through that rewrite - so report not ready instead.
+      // The next access once the transfer finishes starts the LUN normally.
+      if (filesystemLunHostLocked(commandDataBlock.targetLUN)) {
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Host transfer in progress, not starting LUN #"), commandDataBlock.targetLUN, true);
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+         requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY;
+         return SCSI_STATUS;
+      }
 
       // Auto-start the LUN
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
@@ -1282,6 +1304,17 @@ static uint8_t scsiCommandTranslate(void)
 
       // Is the requested LUN available?
       if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
+
+      // A host-side transfer (MTP/WebDAV) is rewriting this LUN's image right
+      // now. Auto-starting would open the file, and build a cluster link map
+      // for it, part way through that rewrite - so report not ready instead.
+      // The next access once the transfer finishes starts the LUN normally.
+      if (filesystemLunHostLocked(commandDataBlock.targetLUN)) {
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Host transfer in progress, not starting LUN #"), commandDataBlock.targetLUN, true);
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+         requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY;
+         return SCSI_STATUS;
+      }
 
       // Auto-start the LUN
       if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {

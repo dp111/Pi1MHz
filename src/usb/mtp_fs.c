@@ -851,6 +851,12 @@ static int32_t fs_rename_entry_to(const fs_entry_t* entry, uint32_t parent_handl
     return MTP_RESP_OK;
   }
 
+  /* Renaming either end out from under a started LUN has the same effect as
+   * deleting it - see the FA_CREATE_ALWAYS note in fs_send_object_info(). */
+  if (filesystemHostPathBusy(entry->path) || filesystemHostPathBusy(dst_path)) {
+    return MTP_RESP_DEVICE_BUSY;
+  }
+
   FRESULT res = f_rename(entry->path, dst_path);
   if (res == FR_OK) {
     fs_cache_invalidate();
@@ -983,6 +989,10 @@ static void fs_release_write_state(void) {
           || g_write_state.transferred != g_write_state.size)) {
     (void) f_unlink(g_write_state.path);
   }
+  /* Release any host-write lock this transfer held on a LUN image. This runs
+   * on every teardown path - clean finish, host abort, session close - because
+   * a lock left set would keep the Beeb from ever starting that LUN again. */
+  filesystemHostLockLun(filesystemLunFromHostPath(g_write_state.path), false);
   if (g_write_state.kernel_data != NULL) {
     free(g_write_state.kernel_data);
   }
@@ -1603,6 +1613,19 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
       return 0;
     }
 
+    /* Refuse to rewrite a LUN image the Beeb has open. FatFs does not
+     * reference-count, and FA_CREATE_ALWAYS frees the cluster chain that
+     * BeebSCSI's cluster link map still points at, so its next write would
+     * land in whatever now owns those clusters. *BYE stops the LUN. */
+    if (filesystemHostPathBusy(g_write_state.path)) {
+      fs_release_write_state();
+      return MTP_RESP_DEVICE_BUSY;
+    }
+
+    /* Claim it for the duration of the transfer, so a disc access on the Beeb
+     * cannot auto-start the LUN onto the file while we stream into it. */
+    filesystemHostLockLun(filesystemLunFromHostPath(g_write_state.path), true);
+
     if (f_open(&g_write_state.file, g_write_state.path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
       fs_release_write_state();
       return MTP_RESP_GENERAL_ERROR;
@@ -1913,6 +1936,13 @@ static int32_t fs_delete_object(tud_mtp_cb_data_t* cb_data) {
   fs_entry_t entry;
   if (!fs_get_entry_by_handle(obj_handle, &entry)) {
     return MTP_RESP_INVALID_OBJECT_HANDLE;
+  }
+
+  /* Covers the recursive case too: filesystemHostPathBusy() reports a
+   * directory that holds a started LUN's image as busy, so fs_delete_tree()
+   * cannot walk into one. */
+  if (filesystemHostPathBusy(entry.path)) {
+    return MTP_RESP_DEVICE_BUSY;
   }
 
   FRESULT res;

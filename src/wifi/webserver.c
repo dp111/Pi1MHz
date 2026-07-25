@@ -20,6 +20,7 @@
 #include "sdio.h"
 #include "framebuffer_export.h"
 #include "../BeebSCSI/fatfs/ff.h"
+#include "../BeebSCSI/filesystem.h"   /* filesystemHostPathBusy() - LUN interlock */
 #include "../usb/mtp_fs.h"
 #include "../rpi/screen.h"
 #include "../rpi/exceptions.h"
@@ -407,6 +408,22 @@ static bool ws_propfind_cache_lookup(const char *path, FILINFO *out)
    from conn_close / ws_err so a torn-down connection mid-copy doesn't
    leave a dangling reference. */
 static ws_conn_t      *g_ws_active_copy;
+
+/* LUN whose image the in-flight COPY is writing, or -1. Only one COPY runs at
+   a time (route_dav_move_or_copy refuses a second), so one slot is enough.
+   Every path that clears g_ws_active_copy goes through ws_copy_slot_release()
+   so the lock cannot leak: a leaked one would leave that LUN unstartable
+   until the next reboot. */
+static int8_t          g_ws_copy_lun = -1;
+
+static void ws_copy_slot_release(const ws_conn_t *c)
+{
+   if (g_ws_active_copy != c)
+      return;
+   g_ws_active_copy = NULL;
+   filesystemHostLockLun(g_ws_copy_lun, false);
+   g_ws_copy_lun = -1;
+}
 
 /* Rolling digest-auth nonce.  Regenerated lazily once it crosses
    WS_NONCE_MAX_AGE_US; clients are challenged with stale=true and
@@ -1475,8 +1492,7 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
    /* Clear the active-COPY slot if we were the one holding it: a
       timeout / client-disconnect mid-COPY must release the slot so
       the next COPY request isn't rejected with 503 forever. */
-   if (g_ws_active_copy == c)
-      g_ws_active_copy = NULL;
+   ws_copy_slot_release(c);
 
    if (c->pcb != NULL) {
       struct tcp_pcb *pcb = c->pcb;
@@ -1788,8 +1804,7 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
       c->copy_dst_open = false;
    }
    c->copy_dst_existed = false;
-   if (g_ws_active_copy == c)
-      g_ws_active_copy = NULL;
+   ws_copy_slot_release(c);
    free(c->out);
    c->out = NULL;
    c->out_len = 0u;
@@ -3500,6 +3515,16 @@ static bool dav_put_finish(ws_conn_t *c)
       FILINFO old_fno;
       bool     had_date = (f_stat(c->dav_put_target, &old_fno) == FR_OK);
 
+      /* A long upload streams into the .part file for seconds, and the Beeb
+         can start the LUN in that window - so re-check here rather than
+         trusting the check at PUT entry. Drop the temp and fail: better a
+         failed upload than an image replaced under a running BeebSCSI. */
+      if (filesystemHostPathBusy(c->dav_put_target)) {
+         (void)f_unlink(c->dav_put_tmppath);
+         return ws_error(c, 423, "Locked",
+                         "That image is in use by the Beeb - type *BYE first.");
+      }
+
       (void)f_unlink(c->dav_put_target);
       if (f_rename(c->dav_put_tmppath, c->dav_put_target) != FR_OK) {
          (void)f_unlink(c->dav_put_tmppath);
@@ -3682,6 +3707,14 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
       return ws_method_not_allowed(c,
                                    "OPTIONS, GET, HEAD, PROPFIND, PROPPATCH",
                                    "PUT on the root is not allowed.");
+   /* The Beeb holds a started LUN's image open with a cluster link map, and
+      FatFs does not reference-count - replacing it under BeebSCSI corrupts
+      whatever later owns those clusters. *BYE on the Beeb stops the LUN.
+      Re-checked at the rename in dav_put_finish(), since the LUN can start
+      while a long upload is still streaming into the .part file. */
+   if (filesystemHostPathBusy(sdpath))
+      return ws_error(c, 423, "Locked",
+                      "That image is in use by the Beeb - type *BYE first.");
 
    /* RFC 7230 §3.3.1 / RFC 9112 §6.1: if Transfer-Encoding is present it
       takes precedence over Content-Length.  Decoded below by
@@ -3929,6 +3962,11 @@ static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
    if (ws_is_root(sdpath))
       return ws_error(c, 403, "Forbidden", "Refusing to delete the root.");
+   /* Also covers a collection holding a started LUN's image, so the
+      depth-infinity walk below cannot descend into one. */
+   if (filesystemHostPathBusy(sdpath))
+      return ws_error(c, 423, "Locked",
+                      "That image is in use by the Beeb - type *BYE first.");
    if (f_stat(sdpath, &fno) != FR_OK)
       return ws_error(c, 404, "Not Found", "No such resource.");
 
@@ -4100,7 +4138,7 @@ static void ws_copy_step(ws_conn_t *c)
    if (fr != FR_OK) {
       f_close(&c->copy_src); c->copy_src_open = false;
       f_close(&c->copy_dst); c->copy_dst_open = false;
-      g_ws_active_copy = NULL;
+      ws_copy_slot_release(c);
       (void)ws_error(c, 500, "Internal Server Error",
                      "Read failed during COPY.");
       return;
@@ -4110,7 +4148,7 @@ static void ws_copy_step(ws_conn_t *c)
       if (f_write(&c->copy_dst, c->dl_buf, br, &bw) != FR_OK || bw != br) {
          f_close(&c->copy_src); c->copy_src_open = false;
          f_close(&c->copy_dst); c->copy_dst_open = false;
-         g_ws_active_copy = NULL;
+         ws_copy_slot_release(c);
          (void)ws_error(c, 507, "Insufficient Storage",
                         "Write failed during COPY.");
          return;
@@ -4129,7 +4167,7 @@ static void ws_copy_step(ws_conn_t *c)
       bool dst_existed = c->copy_dst_existed;
       f_close(&c->copy_src); c->copy_src_open = false;
       f_close(&c->copy_dst); c->copy_dst_open = false;
-      g_ws_active_copy = NULL;
+      ws_copy_slot_release(c);
       /* As with PUT: the cache was invalidated when the COPY was parsed,
          but the destination only becomes real here. Invalidate again so a
          PROPFIND issued during the copy cannot leave stale size/mtime
@@ -4169,6 +4207,11 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    }
    if (ws_is_root(src) || ws_is_root(dst))
       return ws_error(c, 403, "Forbidden", "Refusing to touch the root.");
+   /* Either end: moving the image away from a started LUN is as bad as
+      overwriting the one it is running from. */
+   if (filesystemHostPathBusy(src) || filesystemHostPathBusy(dst))
+      return ws_error(c, 423, "Locked",
+                      "That image is in use by the Beeb - type *BYE first.");
    if (f_stat(src, &fno_src) != FR_OK)
       return ws_error(c, 404, "Not Found", "Source does not exist.");
 
@@ -4243,6 +4286,11 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    strlcpy(c->dav_put_target, dst, sizeof c->dav_put_target);
    c->state = CONN_DAV_COPY;
    g_ws_active_copy = c;
+   /* Hold the destination LUN for the whole transfer. Unlike PUT, a COPY
+      writes the destination in place - there is no temp file and no rename
+      at the end, so a late re-check would come after the damage. */
+   g_ws_copy_lun = filesystemLunFromHostPath(dst);
+   filesystemHostLockLun(g_ws_copy_lun, true);
    return true;
 }
 
@@ -5133,8 +5181,7 @@ static void ws_err(void *arg, err_t err)
       f_close(&c->copy_dst);
       c->copy_dst_open = false;
    }
-   if (g_ws_active_copy == c)
-      g_ws_active_copy = NULL;
+   ws_copy_slot_release(c);
    if (c->dav_put_open) {
       f_close(&c->write_file.dav);
       c->dav_put_open = false;

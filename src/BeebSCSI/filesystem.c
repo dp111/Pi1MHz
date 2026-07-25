@@ -337,6 +337,120 @@ bool filesystemDismount(void)
    return true;
 }
 
+// Host-side write interlock -------------------------------------------------
+//
+// A started LUN's image is held open for the life of the LUN, with a cluster
+// link map (see filesystemOpenLunForRead()). FatFs does not reference-count:
+// unlinking, renaming or truncating a file another FIL still has open leaves
+// that FIL addressing clusters something else now owns, and with a cltbl the
+// writes bypass the FAT entirely, so nothing detects it. A host-side writer
+// (MTP, WebDAV) must therefore refuse to touch the image of a started LUN.
+// *BYE on the Beeb issues SCSI STARTSTOP (0x1B), which stops the LUN, closes
+// the handle and makes the image writable again.
+//
+// hostLockMask is the same interlock in the other direction: while a host
+// transfer is part way through rewriting an image, the Beeb must not auto-
+// start that LUN back onto the half-written file (scsi.c auto-starts any
+// stopped LUN on its first access).
+
+static uint16_t hostLockMask;    // bit n set = LUN n is being written by the host
+
+// Compare up to `len` bytes case-insensitively; FAT names are not case
+// sensitive, and the host hands us whatever case the directory entry has.
+static bool fsHostNameEqual(const char *a, const char *b, size_t len)
+{
+   for (size_t i = 0; i < len; i++) {
+      char ca = a[i];
+      char cb = b[i];
+      if (ca >= 'a' && ca <= 'z') ca = (char)(ca - ('a' - 'A'));
+      if (cb >= 'a' && cb <= 'z') cb = (char)(cb - ('a' - 'A'));
+      if (ca != cb) return false;
+      if (ca == '\0') return true;
+   }
+   return true;
+}
+
+// Assemble a LUN's directory, and the stem its files share, exactly as
+// filesystemCheckLunImage() assembles the .dat name.
+static void fsHostLunNames(uint8_t lunNumber, char *dir, size_t dirSize,
+                           char *stem, size_t stemSize)
+{
+   if (lunNumber < 8) {
+      snprintf(dir, dirSize, "/BeebSCSI%d", filesystemState.lunDirectory);
+      snprintf(stem, stemSize, "/BeebSCSI%d/scsi%d.", filesystemState.lunDirectory, lunNumber);
+   } else {
+      snprintf(dir, dirSize, "/BeebVFS%d", filesystemState.lunDirectoryVFS);
+      snprintf(stem, stemSize, "/BeebVFS%d/scsi%d.", filesystemState.lunDirectoryVFS, lunNumber & 7);
+   }
+}
+
+// True if `path` is a file of a started (or host-locked) LUN, or a directory
+// containing one. Deliberately conservative: it matches the whole "scsi<n>."
+// stem, so the descriptor and config alongside the image are covered too -
+// they are read when the LUN starts, so replacing them under a running LUN is
+// the same class of problem.
+bool filesystemHostPathBusy(const char *path)
+{
+   if (path == NULL || path[0] == '\0') return false;
+
+   size_t pathLen = strlen(path);
+   while (pathLen > 1u && path[pathLen - 1u] == '/') pathLen--;   // ignore a trailing /
+
+   for (uint8_t lunNumber = 0; lunNumber < MAX_LUNS; lunNumber++) {
+      if (!filesystemState.fsLunStatus[lunNumber] && !filesystemLunHostLocked(lunNumber))
+         continue;
+
+      char dir[24];
+      char stem[40];
+      fsHostLunNames(lunNumber, dir, sizeof(dir), stem, sizeof(stem));
+
+      // path names one of this LUN's own files
+      size_t stemLen = strlen(stem);
+      if (pathLen >= stemLen && fsHostNameEqual(path, stem, stemLen)) return true;
+
+      // path is a directory at or above the one holding them
+      size_t dirLen = strlen(dir);
+      if (pathLen <= dirLen && fsHostNameEqual(path, dir, pathLen) &&
+          (dir[pathLen] == '\0' || dir[pathLen] == '/')) return true;
+   }
+
+   return false;
+}
+
+// Which LUN's image does `path` name, if any? Unlike filesystemHostPathBusy()
+// this ignores LUN status - the caller is about to write the file and wants to
+// lock it whether or not the LUN happens to be started.
+int8_t filesystemLunFromHostPath(const char *path)
+{
+   if (path == NULL) return -1;
+
+   for (uint8_t lunNumber = 0; lunNumber < MAX_LUNS; lunNumber++) {
+      char dir[24];
+      char stem[40];
+      fsHostLunNames(lunNumber, dir, sizeof(dir), stem, sizeof(stem));
+      if (fsHostNameEqual(path, stem, strlen(stem))) return (int8_t)lunNumber;
+   }
+
+   return -1;
+}
+
+// Claim/release a LUN for the duration of a host transfer. Every path that
+// tears a transfer down must release it, including the aborted ones: a lock
+// left set by a host that vanished mid-upload would keep the LUN unstartable
+// until the next reboot.
+void filesystemHostLockLun(int8_t lunNumber, bool lock)
+{
+   if (lunNumber < 0 || lunNumber >= MAX_LUNS) return;
+
+   if (lock) hostLockMask |= (uint16_t)(1u << (uint8_t)lunNumber);
+   else      hostLockMask &= (uint16_t)~(1u << (uint8_t)lunNumber);
+}
+
+bool filesystemLunHostLocked(uint8_t lunNumber)
+{
+   return (lunNumber < MAX_LUNS) && ((hostLockMask & (uint16_t)(1u << lunNumber)) != 0u);
+}
+
 // LUN status control functions ---------------------------------------------
 
 // Function to set the status of a LUN image
