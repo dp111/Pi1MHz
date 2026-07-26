@@ -77,7 +77,7 @@ as `kernel.now`, which makes the Pi restart into it. Prints
 Use **`flash-robust.ps1`**, not `flash-fast.ps1`: the fast one grabs the MTP
 storage folder immediately, but just after a reboot the device enumerates
 before its storage child does, so it silently copies nothing and then
-reports `Sent; Pi still present after ~36s (did it reboot?)` — that message
+reports `Sent; Pi still present after ~10s (did it reboot?)` — that message
 means *the copy never happened*, not a slow reboot.
 
 ### `kernel.now` is a TRANSIENT RAM boot
