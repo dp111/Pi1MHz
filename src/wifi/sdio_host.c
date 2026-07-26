@@ -814,10 +814,11 @@ int sdio_host_open_start(sdio_host_t *host)
    /* Start power sequencing immediately so upper-level boot can overlap
       file loading with WL low/high + settle delays. */
    host->open_attempt = 0u;
+   host->open_wl_low_us = 20000u;
    RPI_PropertySetWord(TAG_SET_POWER_STATE, 0u, 3u);
    sdio_host_set_wl_reg_on(false);
    host->open_phase = SDIO_HOST_OPEN_PHASE_WL_HIGH_WAIT;
-   host->open_deadline_us = sdio_host_clock_now_us() + 20000u;
+   host->open_deadline_us = sdio_host_clock_now_us() + host->open_wl_low_us;
    return 0;
 }
 
@@ -839,7 +840,7 @@ int sdio_host_open_poll(sdio_host_t *host)
             return 0;
          RPI_PropertySetWord(TAG_SET_POWER_STATE, 0u, 3u);
          sdio_host_set_wl_reg_on(false);
-         host->open_deadline_us = now_us + 20000u;
+         host->open_deadline_us = now_us + host->open_wl_low_us;
          host->open_phase = SDIO_HOST_OPEN_PHASE_WL_HIGH_WAIT;
          return 0;
 
@@ -943,9 +944,21 @@ int sdio_host_open_poll(sdio_host_t *host)
    }
 
 open_retry_or_fail:
-   if (host->open_attempt == 0u) {
-      WIFI_SDIO_LOG("WIFI-SDIO: host open failed, attempting recovery reset\n");
-      host->open_attempt = 1u;
+   /* Retry more than once, and hold WL_REG_ON down longer each time. A single
+      attempt meant one unlucky bring-up left the Pi with no WiFi until the
+      next reboot, and the cost of trying again is a fraction of a second of
+      boot that overlaps file loading anyway.
+      The escalation targets the case 20ms cannot fix: on a warm restart the
+      chip is already powered, so REG_ON low has to discharge rails that a
+      cold boot starts with empty. Only a longer low time helps there. */
+   if (host->open_attempt < SDIO_HOST_OPEN_MAX_ATTEMPTS) {
+      static const uint32_t low_us[SDIO_HOST_OPEN_MAX_ATTEMPTS] =
+         { 20000u, 100000u, 300000u };
+
+      WIFI_SDIO_LOG("WIFI-SDIO: host open failed, recovery reset (attempt %u)\n",
+                    (unsigned)(host->open_attempt + 1u));
+      host->open_wl_low_us = low_us[host->open_attempt];
+      host->open_attempt++;
       sdio_host_force_recovery_reset();
       RPI_PropertySetWord(TAG_SET_POWER_STATE, 0u, 2u);
       host->open_deadline_us = sdio_host_clock_now_us() + 5000u;

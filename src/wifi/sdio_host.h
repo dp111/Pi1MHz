@@ -29,7 +29,13 @@ typedef struct {
    uint8_t clock_phase;
    uint8_t open_phase;
    uint8_t open_attempt;
+   /* WL_REG_ON low time for the current attempt; escalates on retry because a
+      warm restart has to discharge rails a cold boot starts with empty. */
+   uint32_t open_wl_low_us;
 } sdio_host_t;
+
+/* Attempts at bringing the SDIO host up before giving up on WiFi entirely. */
+#define SDIO_HOST_OPEN_MAX_ATTEMPTS 3u
 
 int sdio_host_open(sdio_host_t *host);
 int sdio_host_open_start(sdio_host_t *host);
