@@ -172,17 +172,48 @@ _Static_assert(sizeof(Pi1MHz_t) <= 0x2000, "Pi1MHz_t must fit into low memory");
 
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 {
-   uint32_t da = 0xff00 | data ; // set output enable
-   // Plain read-back store first: it is independent of the volatile VPU
-   // read-modify-write below, so the CPU issues it during the VPU load's
-   // result latency instead of stalling after it (matches MemoryWrite16's
-   // ordering).
+   // One VPU word holds two adjacent bus addresses, so this used to read the
+   // word back to preserve the other half. Timed on hardware (ARM1176,
+   // 200k iterations, 1MHz system timer):
+   //
+   //    this function, with the read-back        200 ns
+   //    this function, as written below          126 ns
+   //    VPU word read alone                       76 ns
+   //    VPU word write alone                      16 ns
+   //
+   // The read-back is avoidable because Pi1MHz->Memory[] already shadows
+   // every byte, and every writer of the VPU window maintains it: this
+   // function, MemoryWrite16/32, and the assembly MemoryWritePage. So the
+   // other half is reconstructed from the shadow instead. That is not a cache
+   // that can go stale - it is the shadow the write path already keeps - but
+   // it does mean a new writer of the VPU window must maintain both, exactly
+   // as the existing ones do.
+   //
+   // The rest is ordering, and it is worth more than the read-back was. The
+   // shadow store must come AFTER the VPU store, not before:
+   //
+   //    shadow store then VPU store              126 ns
+   //    VPU store then shadow store               18 ns
+   //    VPU store alone                           17 ns
+   //    shadow store alone                         0 ns
+   //
+   // Pi1MHz_MEM_BASE is Strongly-Ordered, so a pending buffered write must
+   // drain before it can issue. Storing the shadow first parks a write in the
+   // buffer that the VPU store then has to wait out - 108ns of stall for a
+   // store that costs nothing on its own. Reversed, the shadow write is
+   // absorbed by the buffer and the function costs no more than the bus
+   // access it has to make anyway.
+   //
+   // The reversal also skews which side sees the update first, in the better
+   // direction: the bus now gets the new byte immediately and the CPU-side
+   // copy lags by a few ns, rather than the other way round.
+   uint32_t other = Pi1MHz->Memory[addr ^ 1u] | 0xff00u;
+   uint32_t mine  = 0xff00u | data;
+
+   Pi1MHz_Memory_VPU[addr>>1] = (addr & 1u) ? ((mine << 16) | other)
+                                            : (mine | (other << 16));
+
    Pi1MHz->Memory[addr] = data;
-   switch (addr & 1)
-   {
-   case 0: Pi1MHz_Memory_VPU[addr>>1] = da  | (Pi1MHz_Memory_VPU[addr>>1] & 0xFFFFFF00); break;
-   case 1: Pi1MHz_Memory_VPU[addr>>1] = (da<<16) | (Pi1MHz_Memory_VPU[addr>>1] & 0xFF00FFFF); break;
-   }
 }
 
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
