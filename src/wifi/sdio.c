@@ -39,6 +39,14 @@ static uint8_t g_tx_control_probe_sequence = 0u;
 static sdio_host_t g_runtime_device;
 static bool g_runtime_started;
 static bool g_runtime_link_up;
+/* Set by WLC_E_PSK_SUP/KEYED; gates link-up on a secured network so we do not
+   announce a usable link during the 4-way handshake. Meaningless (and never
+   set) on an open network, which is why the gate only applies when a
+   passphrase is configured. */
+static bool g_runtime_psk_keyed;
+/* When the association went up, so the keyed-gate above can time out. */
+static uint32_t g_runtime_link_up_us;
+#define SDIO_PSK_KEYED_GRACE_US 3000000u
 static uint32_t g_runtime_tx_frame_count;
 static uint32_t g_runtime_rx_frame_count;
 /* The chip's WiFi MAC (cur_etheraddr), captured at boot so the lwIP
@@ -459,6 +467,18 @@ static bool sdio_event_is_link_up(uint32_t event_type,
                                   uint32_t event_reason)
 {
    return event_type == 16u && event_status == 0u && event_reason == 0u;
+}
+
+/* WLC_E_PSK_SUP with status WLC_SUP_KEYED: the WPA 4-way handshake finished
+   and the controlled port is authorised, which is the first moment the AP
+   will actually forward our data frames.
+   WLC_E_LINK (16) fires earlier, at 802.11 association, and that gap is real:
+   every boot captured on 2026-07-25 sent its first DHCP Discover between the
+   two events, had it silently dropped, and then waited out lwIP's ~1.8s retry
+   before a second Discover succeeded in ~40ms. */
+static bool sdio_event_is_psk_keyed(uint32_t event_type, uint32_t event_status)
+{
+   return event_type == 46u && event_status == 6u;
 }
 
 static bool sdio_event_is_link_down(uint32_t event_type)
@@ -3109,11 +3129,17 @@ static void sdio_runtime_note_event_bare(const uint8_t *payload, uint16_t payloa
                   (unsigned long)event_status,
                   (unsigned long)event_reason);
 
+   if (sdio_event_is_psk_keyed(event_type, event_status))
+      g_runtime_psk_keyed = true;
+
    if (sdio_event_is_link_up(event_type, event_status, event_reason))
       g_runtime_link_up = true;
 
-   if (sdio_event_is_link_down(event_type))
+   if (sdio_event_is_link_down(event_type)) {
       g_runtime_link_up = false;
+      g_runtime_psk_keyed = false;
+      g_runtime_link_up_us = 0u;
+   }
 }
 
 static void sdio_runtime_note_event(const uint8_t *frame, uint16_t frame_length,
@@ -3164,11 +3190,17 @@ static void sdio_runtime_note_event(const uint8_t *frame, uint16_t frame_length,
                   (unsigned long)event_status,
                   (unsigned long)event_reason);
 
+   if (sdio_event_is_psk_keyed(event_type, event_status))
+      g_runtime_psk_keyed = true;
+
    if (sdio_event_is_link_up(event_type, event_status, event_reason))
       g_runtime_link_up = true;
 
-   if (sdio_event_is_link_down(event_type))
+   if (sdio_event_is_link_down(event_type)) {
       g_runtime_link_up = false;
+      g_runtime_psk_keyed = false;
+      g_runtime_link_up_us = 0u;
+   }
 }
 
 /* sdio_runtime_complete_read_ethernet_frame - process a frame whose 4-byte
@@ -5024,6 +5056,8 @@ bool sdio_runtime_start(void)
    g_sdio_probe_result.attempted = true;
    g_runtime_started = false;
    g_runtime_link_up = false;
+   g_runtime_psk_keyed = false;
+   g_runtime_link_up_us = 0u;
    g_runtime_tx_frame_count = 0u;
    g_runtime_rx_frame_count = 0u;
    g_runtime_data_sequence = 0u;
@@ -5355,7 +5389,29 @@ bool sdio_runtime_started(void)
 
 bool sdio_runtime_link_is_up(void)
 {
-   return g_runtime_started && g_runtime_link_up;
+   const wifi_config_t *config = wifi_get_config();
+
+   if (!g_runtime_started || !g_runtime_link_up)
+      return false;
+
+   /* On a secured network the link is not usable until the 4-way handshake
+      has keyed the port, so hold it down until WLC_E_PSK_SUP/KEYED arrives.
+      Announcing it at WLC_E_LINK put a DHCP Discover into the handshake
+      window, where the AP drops it. Open networks never emit the event, so
+      they are not gated. */
+   if (config != NULL && config->password[0] != '\0' && !g_runtime_psk_keyed) {
+      /* Never let this gate be the reason there is no network. Only WPA-PSK
+         was observed here; a setup that authorises without ever sending
+         PSK_SUP/KEYED would otherwise stay offline forever, which is far
+         worse than the dropped packet this avoids. Associated for this long
+         with no keyed event: take the link as-is. */
+      if (g_runtime_link_up_us == 0u)
+         g_runtime_link_up_us = RPI_GetSystemTime();
+      if ((RPI_GetSystemTime() - g_runtime_link_up_us) < SDIO_PSK_KEYED_GRACE_US)
+         return false;
+   }
+
+   return true;
 }
 
 /* Copy the chip's WiFi MAC (read from cur_etheraddr at boot) into
