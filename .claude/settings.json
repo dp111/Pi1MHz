@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(arm-none-eabi-objdump *)",
+      "Bash(arm-none-eabi-size *)",
+      "Bash(arm-none-eabi-nm *)",
+      "Bash(arm-none-eabi-readelf *)",
+      "Bash(ping *)",
+      "Bash(cppcheck *)"
+    ]
+  }
+}
