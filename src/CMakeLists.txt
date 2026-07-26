@@ -415,18 +415,24 @@ add_custom_command(
 
 set( GITVERSION_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gitversion.h )
 
-add_custom_command(
-   OUTPUT ${GITVERSION_HEADER}
+# The check runs on EVERY build; the header is only rewritten when the git
+# version string changes or a source/header is newer than it, so an unchanged
+# tree still relinks nothing (which matters - the LTO link dominates a build).
+#
+# It used to be an OUTPUT rule with DEPENDS ${Pi1MHz_sources}, and that list
+# holds .c files only, so two common cases left a stale banner claiming to
+# identify an image it did not build: editing any HEADER (lwipopts.h, say)
+# recompiled the code but not the header, and committing changed HEAD without
+# touching a source at all, so the banner kept the pre-commit hash. Both were
+# hit on 2026-07-25 and cost real debugging time - the banner is the primary
+# way we identify what is actually running on the target (PI-CONTROL.md 6).
+add_custom_target( gitversion ALL
    COMMAND ${CMAKE_COMMAND}
            -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
            -DOUT=${GITVERSION_HEADER}
            -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gitversion.cmake
-   DEPENDS ${Pi1MHz_sources}
-   COMMENT "Generating gitversion.h"
+   BYPRODUCTS ${GITVERSION_HEADER}
+   COMMENT "Checking gitversion.h"
    VERBATIM
 )
-
-# A target wrapper so the header is brought up to date before any Pi1MHz source
-# (which #includes it) is compiled.
-add_custom_target( gitversion DEPENDS ${GITVERSION_HEADER} )
 add_dependencies( Pi1MHz gitversion )

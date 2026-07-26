@@ -33,6 +33,73 @@ if(NOT TAG_RESULT EQUAL 0 OR GIT_RELEASE STREQUAL "")
    set(GIT_RELEASE "dev")
 endif()
 
+# "-dirty" alone cannot tell two builds of a modified tree apart, and that is
+# the case we actually live in: editing a header changes the image but leaves
+# the describe output byte-identical, so the banner kept naming an image it did
+# not build. Fingerprint the working tree instead - the diff against HEAD plus
+# the porcelain status (which adds untracked files, whose content the diff does
+# not see) - and fold 8 hex digits of it into the version.
+#
+# Deliberately git, not a filesystem walk: globbing src/ and stat-ing every
+# file took 117 seconds on this /mnt/c tree (2267 files over 9p). git answers
+# from its index in well under a second.
+if(GIT_VERSION MATCHES "-dirty$")
+   # Pathspec matters: an unqualified "git diff HEAD" covers the whole repo,
+   # and every build rewrites the tracked firmware/kernel*.img, so the
+   # fingerprint moved on its own and each build regenerated the header and
+   # forced another LTO relink. Limit it to the source tree, and exclude the
+   # generated header itself (its BUILD_DATE would otherwise feed back in).
+   execute_process(
+      COMMAND git -C "${SRC_DIR}" diff HEAD -- . ":(exclude)scripts/gitversion.h"
+      OUTPUT_VARIABLE GIT_DIFF
+      RESULT_VARIABLE DIFF_RESULT
+      ERROR_QUIET
+   )
+   execute_process(
+      COMMAND git -C "${SRC_DIR}" status --porcelain -- . ":(exclude)scripts/gitversion.h"
+      OUTPUT_VARIABLE GIT_STATUS
+      ERROR_QUIET
+   )
+   if(DIFF_RESULT EQUAL 0)
+      string(MD5 TREE_HASH "${GIT_DIFF}${GIT_STATUS}")
+      string(SUBSTRING "${TREE_HASH}" 0 8 TREE_HASH)
+      set(GIT_VERSION "${GIT_VERSION}.${TREE_HASH}")
+   endif()
+endif()
+
+# Decide whether the header actually needs rewriting. This script runs on every
+# build, but rewriting it recompiles its three includers and forces a full LTO
+# relink, so only do it when something really changed.
+#
+# Two independent triggers, because either one alone leaves a banner that names
+# an image it did not build:
+#   1. the git version string moved - covers committing, which changes no file
+#      under src/ at all, so a source-mtime test would never notice it;
+#   2. any source OR HEADER is newer than the header - covers editing a .h,
+#      which recompiles code but changes no .c.
+set(NEED_WRITE TRUE)
+set(WHY "no existing header")
+
+if(EXISTS "${OUT}")
+   file(READ "${OUT}" OLD_HEADER)
+   string(REGEX MATCH "#define GITVERSION  \"([^\"]*)\"" _m "${OLD_HEADER}")
+   set(OLD_VERSION "${CMAKE_MATCH_1}")
+   string(REGEX MATCH "#define RELEASENAME \"([^\"]*)\"" _m2 "${OLD_HEADER}")
+   set(OLD_RELEASE "${CMAKE_MATCH_1}")
+
+   if(NOT OLD_VERSION STREQUAL GIT_VERSION OR NOT OLD_RELEASE STREQUAL GIT_RELEASE)
+      set(WHY "git version changed: ${OLD_VERSION} -> ${GIT_VERSION}")
+   else()
+      set(NEED_WRITE FALSE)
+      set(WHY "unchanged")
+   endif()
+endif()
+
+if(NOT NEED_WRITE)
+   message(STATUS "gitversion.h: up to date (${GIT_RELEASE} / ${GIT_VERSION})")
+   return()
+endif()
+
 string(TIMESTAMP BUILD_DATE "%Y-%m-%d %H:%M:%S")
 
 file(WRITE "${OUT}"
@@ -42,4 +109,4 @@ file(WRITE "${OUT}"
    "#define BUILD_DATE  \"${BUILD_DATE}\"\n"
 )
 
-message(STATUS "gitversion.h: ${GIT_RELEASE} / ${GIT_VERSION}  ${BUILD_DATE}")
+message(STATUS "gitversion.h: ${GIT_RELEASE} / ${GIT_VERSION}  ${BUILD_DATE}  (${WHY})")
