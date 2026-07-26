@@ -90,6 +90,12 @@ static bool g_runtime_set_mac_ack_seen;
 static uint32_t g_runtime_set_mac_ack_status;
 static char g_runtime_error[96];
 static uint8_t g_runtime_data_sequence;
+/* The chip's SDPCM transmit credit window, refreshed from the software header
+   of every received frame.  _valid keeps the pre-first-frame behaviour
+   unchanged rather than refusing to transmit before the chip has spoken. */
+static uint8_t g_runtime_max_seq;
+static uint8_t g_runtime_wlan_flow_control;
+static bool g_runtime_max_seq_valid;
 static bool g_runtime_emulator_mode;
 static bool g_runtime_identify_started;
 static unsigned int g_runtime_identify_attempt;
@@ -3255,6 +3261,18 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
    channel = (uint8_t)(frame_buffer[5] & SDPCM_CHANNEL_MASK);
    header_length = frame_buffer[7];
 
+   /* SDPCM bus flow control.  Every received frame carries the chip's current
+      transmit credit window in its software header: byte 8 is the wireless
+      flow-control mask, byte 9 is max_seq - the highest sequence number the
+      chip will still accept.  Writing past that window overruns the chip's
+      queues; measured effect of honouring it is that the SDIO data-CRC and
+      CMD53 error counts under a sustained bidirectional load drop from
+      hundreds to zero.  Captured on every channel because control and event
+      frames refresh the window just as data frames do. */
+   g_runtime_wlan_flow_control = frame_buffer[8];
+   g_runtime_max_seq = frame_buffer[9];
+   g_runtime_max_seq_valid = true;
+
    /* Control-channel responses (channel 0) carry the chip's reply to
       every ioctl we sent. The CDC header sits right after the SDPCM
       header and its status word at offset header_length+12 tells us
@@ -5531,6 +5549,21 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       sdio_runtime_set_error("Ethernet frame exceeds SDIO transmit buffer");
       return false;
    }
+
+   /* Respect the chip's credit window.  Refusing here is back-pressure, not an
+      error, so it deliberately does not call sdio_runtime_set_error(): the
+      sequence number is not consumed, lwIP keeps the segment on its unacked
+      queue and retransmits, and the window reopens as the chip drains.
+
+      KNOWN LIMITATION: there is no recovery if the chip's advertised max_seq
+      collapses while our sequence is already ahead of it - the gate then
+      blocks transmit indefinitely.  That has been observed (max_seq 62 vs
+      seq 165) as part of a wider chip-side wedge under 4 concurrent GETs plus
+      a chunked PUT, which this change alone does not fix. */
+   if (g_runtime_max_seq_valid
+      && (g_runtime_wlan_flow_control != 0u
+         || (int8_t)(g_runtime_data_sequence - g_runtime_max_seq) >= 0))
+      return false;
 
    total_length = (uint16_t)(18u + frame_length);
 
