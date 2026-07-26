@@ -19,6 +19,10 @@ typedef struct {
    bool link_up;
    uint32_t tx_frames;
    uint32_t rx_frames;
+   /* Times the SDPCM transmit credit window had to be rebased onto the chip's
+      advertised max_seq after staying shut.  Should be 0; a climbing count
+      means transmit is repeatedly stalling. */
+   uint32_t tx_resyncs;
 } sdio_runtime_status_t;
 
 typedef struct {

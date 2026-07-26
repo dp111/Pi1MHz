@@ -2152,6 +2152,10 @@ static bool route_status(ws_conn_t *c)
    table_row(&b, "Frames sent", tmp);
    snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.rx_frames);
    table_row(&b, "Frames received", tmp);
+   if (rs.tx_resyncs != 0u) {
+      snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.tx_resyncs);
+      table_row(&b, "Transmit resyncs", tmp);
+   }
    snprintf(tmp, sizeof tmp, "%u",
             (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
    table_row(&b, "HTTP port", tmp);

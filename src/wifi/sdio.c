@@ -35,7 +35,13 @@
 
 static sdio_probe_result_t g_sdio_probe_result;
 static uint16_t g_tx_control_probe_request_id = 1u;
-static uint8_t g_tx_control_probe_sequence = 0u;
+/* THE SDPCM sequence number, singular.  Control, event and data frames all
+   travel one bus in one sequence space, and the chip's credit accounting
+   follows whatever we stamp into software-header byte 4 - so a second counter
+   for a second channel does not give that channel its own numbering, it makes
+   the stream jump backwards every time the two are interleaved.  Every frame
+   this driver puts on fn2, whatever the channel, takes its number from here. */
+static uint8_t g_sdpcm_tx_sequence = 0u;
 static sdio_host_t g_runtime_device;
 static bool g_runtime_started;
 static bool g_runtime_link_up;
@@ -89,13 +95,17 @@ static uint16_t g_runtime_set_mac_request_id;
 static bool g_runtime_set_mac_ack_seen;
 static uint32_t g_runtime_set_mac_ack_status;
 static char g_runtime_error[96];
-static uint8_t g_runtime_data_sequence;
 /* The chip's SDPCM transmit credit window, refreshed from the software header
    of every received frame.  _valid keeps the pre-first-frame behaviour
    unchanged rather than refusing to transmit before the chip has spoken. */
 static uint8_t g_runtime_max_seq;
 static uint8_t g_runtime_wlan_flow_control;
 static bool g_runtime_max_seq_valid;
+/* Credit-window stall tracking, for the desync recovery in
+   sdio_runtime_send_ethernet_frame(). */
+static bool g_runtime_tx_stalled;
+static uint32_t g_runtime_tx_stall_since_us;
+static uint32_t g_runtime_tx_resync_count;
 static bool g_runtime_emulator_mode;
 static bool g_runtime_identify_started;
 static unsigned int g_runtime_identify_attempt;
@@ -260,6 +270,13 @@ static uint32_t g_runtime_sdio_core_base = CYW43_SDIO_CORE_BASE;
 #define SDPCM_CONTROL_EVENT_HEADER_LENGTH 12u
 #define SDPCM_DATA_HEADER_LENGTH 14u
 #define SDPCM_PREFIX_LENGTH 4u
+
+/* How long the chip's transmit credit window may stay shut before it is
+   treated as a sequence desync rather than back-pressure.  Genuine credit
+   exhaustion clears as fast as the chip drains its queue onto the air -
+   milliseconds - so a second of it means the two ends disagree about where
+   the window is, and waiting longer only prolongs a dead link. */
+#define SDPCM_TX_STALL_RESYNC_US 1000000u
 #define BDC_VERSION_SHIFT 4u
 #define BDC_PROTOCOL_VERSION 2u
 #define CDC_HEADER_LENGTH 16u
@@ -2930,11 +2947,15 @@ static uint16_t sdio_next_tx_probe_request_id(void)
    return request_id;
 }
 
-static uint8_t sdio_next_tx_probe_sequence(void)
+/* Take the next number in the shared SDPCM sequence.  Called at the point a
+   frame is actually written to fn2, never when one is merely prepared: the
+   number has to reflect the order frames reach the bus, and a control template
+   can be built one poll and sent another with data frames in between. */
+static uint8_t sdio_next_sdpcm_sequence(void)
 {
-   uint8_t sequence = g_tx_control_probe_sequence;
+   uint8_t sequence = g_sdpcm_tx_sequence;
 
-   ++g_tx_control_probe_sequence;
+   ++g_sdpcm_tx_sequence;
    return sequence;
 }
 
@@ -2969,13 +2990,11 @@ static void sdio_prepare_tx_control_template(sdio_probe_result_t *probe_result,
    uint32_t cdc_flags;
    uint16_t request_id;
    uint16_t payload_length;
-   uint8_t sequence;
 
    if (probe_result == NULL)
       return;
 
    request_id = sdio_next_tx_probe_request_id();
-   sequence = sdio_next_tx_probe_sequence();
    payload_length = sdio_tx_probe_payload_length(command);
 
    /* An oversized payload would make sdio_prepare_tx_control_payload()
@@ -2989,7 +3008,9 @@ static void sdio_prepare_tx_control_template(sdio_probe_result_t *probe_result,
    probe_result->tx_control_template_frame_size = (uint16_t)(SDPCM_CONTROL_EVENT_HEADER_LENGTH
       + CDC_HEADER_LENGTH + payload_length);
    probe_result->tx_control_template_frame_size_complement = (uint16_t)~probe_result->tx_control_template_frame_size;
-   probe_result->tx_control_template_sequence = sequence;
+   /* tx_control_template_sequence is filled in by the sender, from the shared
+      SDPCM sequence, at the moment the frame goes out. */
+   probe_result->tx_control_template_sequence = 0u;
    probe_result->tx_control_template_channel_and_flags = SDPCM_CONTROL_CHANNEL;
    probe_result->tx_control_template_next_length = 0u;
    probe_result->tx_control_template_header_length = SDPCM_CONTROL_EVENT_HEADER_LENGTH;
@@ -3520,6 +3541,7 @@ static bool sdio_probe_send_single_tx_control_template_timeout(sdio_host_t *dev,
 
    sdio_store_u16_le(&tx_frame[0], probe_result->tx_control_template_frame_size);
    sdio_store_u16_le(&tx_frame[2], probe_result->tx_control_template_frame_size_complement);
+   probe_result->tx_control_template_sequence = sdio_next_sdpcm_sequence();
    tx_frame[4] = probe_result->tx_control_template_sequence;
    tx_frame[5] = probe_result->tx_control_template_channel_and_flags;
    tx_frame[6] = probe_result->tx_control_template_next_length;
@@ -3538,6 +3560,9 @@ static bool sdio_probe_send_single_tx_control_template_timeout(sdio_host_t *dev,
                                    probe_result->tx_control_template_frame_size, tx_frame,
                                    (uint32_t)probe_result->tx_control_template_frame_size,
                                    timeout_us, &cmd53_result)) {
+      /* Nothing reached the chip, so give the number back rather than leave a
+         gap the chip would credit against a frame it never saw. */
+      --g_sdpcm_tx_sequence;
       probe_result->tx_control_probe_response0 = cmd53_result.response0;
       probe_result->tx_control_probe_interrupt = cmd53_result.interrupt;
       probe_result->tx_control_probe_error = cmd53_result.error;
@@ -3696,7 +3721,7 @@ static int sdio_runtime_clm_download_step(sdio_host_t *dev)
       memset(tx_frame, 0, sizeof(tx_frame));
       sdio_store_u16_le(&tx_frame[0], frame_size);
       sdio_store_u16_le(&tx_frame[2], (uint16_t)~frame_size);
-      tx_frame[4] = sdio_next_tx_probe_sequence();
+      tx_frame[4] = sdio_next_sdpcm_sequence();
       tx_frame[5] = SDPCM_CONTROL_CHANNEL;
       tx_frame[7] = SDPCM_CONTROL_EVENT_HEADER_LENGTH;
       sdio_store_u32_le(&tx_frame[12], WLC_SET_VAR);
@@ -3717,6 +3742,7 @@ static int sdio_runtime_clm_download_step(sdio_host_t *dev)
 
       if (!sdio_function2_transfer_timeout(dev, true, tx_frame, frame_size,
                                            SDIO_COMMAND_TIMEOUT_US)) {
+         --g_sdpcm_tx_sequence;       /* chunk never landed - reclaim its number */
          sdio_debug_log("CLM: chunk transfer failed at offset %lu",
                         (unsigned long)g_runtime_clm_offset);
          return -1;
@@ -5078,7 +5104,15 @@ bool sdio_runtime_start(void)
    g_runtime_link_up_us = 0u;
    g_runtime_tx_frame_count = 0u;
    g_runtime_rx_frame_count = 0u;
-   g_runtime_data_sequence = 0u;
+   /* Safe to rebase to 0 here and only here: this call re-powers the chip via
+      WL_REG_ON, so its own accounting starts from scratch too. */
+   g_sdpcm_tx_sequence = 0u;
+   g_runtime_max_seq = 0u;
+   g_runtime_wlan_flow_control = 0u;
+   g_runtime_max_seq_valid = false;
+   g_runtime_tx_stalled = false;
+   g_runtime_tx_stall_since_us = 0u;
+   g_runtime_tx_resync_count = 0u;
    g_runtime_emulator_mode = false;
    g_runtime_identify_started = false;
    g_runtime_identify_attempt = 0u;
@@ -5553,24 +5587,49 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
    /* Respect the chip's credit window.  Refusing here is back-pressure, not an
       error, so it deliberately does not call sdio_runtime_set_error(): the
       sequence number is not consumed, lwIP keeps the segment on its unacked
-      queue and retransmits, and the window reopens as the chip drains.
-
-      KNOWN LIMITATION: there is no recovery if the chip's advertised max_seq
-      collapses while our sequence is already ahead of it - the gate then
-      blocks transmit indefinitely.  That has been observed (max_seq 62 vs
-      seq 165) as part of a wider chip-side wedge under 4 concurrent GETs plus
-      a chunked PUT, which this change alone does not fix. */
+      queue and retransmits, and the window reopens as the chip drains. */
    if (g_runtime_max_seq_valid
       && (g_runtime_wlan_flow_control != 0u
-         || (int8_t)(g_runtime_data_sequence - g_runtime_max_seq) >= 0))
-      return false;
+         || (int8_t)(g_sdpcm_tx_sequence - g_runtime_max_seq) >= 0)) {
+      uint32_t now_us = RPI_GetSystemTime();
+
+      if (!g_runtime_tx_stalled) {
+         g_runtime_tx_stalled = true;
+         g_runtime_tx_stall_since_us = now_us;
+         return false;
+      }
+      if ((uint32_t)(now_us - g_runtime_tx_stall_since_us) < SDPCM_TX_STALL_RESYNC_US)
+         return false;
+
+      /* Sustained shut window: the two ends have lost sequence agreement and
+         nothing in the protocol reopens it, because the chip only revises
+         max_seq in response to frames it receives and the gate is what stops
+         us sending them.  Observed as max_seq 62 against our seq 165 - a
+         hundred frames past a window that had itself collapsed - after which
+         transmit never resumed even though receive kept running.
+
+         Rebase onto the chip's window one short of max_seq, which buys
+         exactly one frame: enough for the chip to re-advertise from, and
+         little enough that if it really is out of credit (or gone) we probe
+         once a second rather than flooding a queue that cannot drain.  The
+         flow-control mask is cleared for the same reason - a stale "stop"
+         that no later frame contradicts is indistinguishable from a lost
+         resume - and the next received frame re-asserts it if it still
+         holds. */
+      g_runtime_wlan_flow_control = 0u;
+      g_sdpcm_tx_sequence = (uint8_t)(g_runtime_max_seq - 1u);
+      g_runtime_tx_stall_since_us = now_us;
+      ++g_runtime_tx_resync_count;
+   } else {
+      g_runtime_tx_stalled = false;
+   }
 
    total_length = (uint16_t)(18u + frame_length);
 
    memset(tx_frame, 0, sizeof(tx_frame));
    sdio_store_u16_le(&tx_frame[0], total_length);
    sdio_store_u16_le(&tx_frame[2], (uint16_t)~total_length);
-   tx_frame[4] = g_runtime_data_sequence++;
+   tx_frame[4] = sdio_next_sdpcm_sequence();
    tx_frame[5] = SDPCM_DATA_CHANNEL;
    tx_frame[6] = 0u;
    tx_frame[7] = SDPCM_DATA_HEADER_LENGTH;
@@ -5580,6 +5639,12 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
    memcpy(&tx_frame[18], frame, frame_length);
 
    if (!sdio_function2_transfer(&g_runtime_device, true, tx_frame, total_length)) {
+      /* Give the sequence number back.  A CMD53 that never completed left no
+         frame in the chip's queue, so consuming a number the chip will never
+         acknowledge walks us permanently ahead of its credit window - which is
+         how a run of bus errors used to end in a shut window that only the
+         resync above could reopen. */
+      --g_sdpcm_tx_sequence;
       sdio_runtime_set_error("Failed to write Ethernet frame over SDIO");
       return false;
    }
@@ -5767,5 +5832,6 @@ sdio_runtime_status_t sdio_runtime_get_status(void)
    status.link_up = g_runtime_link_up;
    status.tx_frames = g_runtime_tx_frame_count;
    status.rx_frames = g_runtime_rx_frame_count;
+   status.tx_resyncs = g_runtime_tx_resync_count;
    return status;
 }
