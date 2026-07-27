@@ -208,6 +208,7 @@ unsigned int RPI_PropertyProcess( bool wait )
           result = RPI_Mailbox0Read( MB0_TAGS_ARM_TO_VC );
           if ( result == MAILBOX_READ_TIMEOUT ) {
              RPI_Mailbox0Drain();
+             pt[PT_OREQUEST_OR_RESPONSE] = 0u;   /* not a response */
              return 0;
           }
        } while ((uint32_t) result != ((uint32_t) pt) >> 4
@@ -215,6 +216,7 @@ unsigned int RPI_PropertyProcess( bool wait )
 
        if ((uint32_t) result != ((uint32_t) pt) >> 4) {
           RPI_Mailbox0Drain();
+          pt[PT_OREQUEST_OR_RESPONSE] = 0u;      /* not a response */
           return 0;
        }
     }
@@ -234,6 +236,15 @@ rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag)
 {
     /* Get the tag from the buffer. Start at the first tag position  */
     uint32_t index = 2;
+
+    /* No response bit means the VideoCore never wrote into the buffer, so the
+       tags still sitting there are our own request.  Returning one of those
+       looks to the caller exactly like a successful read - the tag matches -
+       but the value field of a GetWord request is never written, and pt is in
+       .noinit, so what comes back is whatever was in that RAM.  Callers do
+       check for NULL; give them the NULL they are checking for. */
+    if ( ( pt[PT_OREQUEST_OR_RESPONSE] & 0x80000000u ) == 0u )
+        return NULL;
 
     while ( index < ( pt[PT_OSIZE] >> 2 ) )
     {

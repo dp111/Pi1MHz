@@ -17,11 +17,36 @@ volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTab
 volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTable2[NUM_4K_PAGES];
 #endif
 
-/* Just to keep things simple we cache all the ram (mem_info(1))*/
-#define L1_CACHED_MEM_TOP (mem_info(1)>>20)
-#define L2_CACHED_MEM_TOP (mem_info(1)>>20)
+/* Just to keep things simple we cache all the ram (mem_info(1))
+ *
+ * These come from the VideoCore over the mailbox, which can fail - and this
+ * runs at the very start of boot, before the heap exists, so there is nothing
+ * to fall back on but a sane constant.  Getting it wrong is not a small
+ * matter: the sizes drive how far the page table is written, so a bogus value
+ * runs the build loops past PageTable[4096] and corrupts whatever follows.
+ * The loops are clamped as well, but the right answer is not to start from
+ * nonsense.  32 MB of ARM RAM is far below any real split and enough to boot;
+ * an unknown VC size simply means no alias mapping. */
+#define CACHE_ARM_MEM_FALLBACK_MB 32u
 
-#define VC_TOP ((mem_info(1)>>20)+( (RPI_PropertyGetWord(TAG_GET_VC_MEMORY, 0)->data.buffer_32[1])>>20))
+static unsigned int cache_arm_mem_mb(void)
+{
+   unsigned int mb = mem_info(1) >> 20;
+
+   return (mb != 0u) ? mb : CACHE_ARM_MEM_FALLBACK_MB;
+}
+
+static unsigned int cache_vc_mem_mb(void)
+{
+   const rpi_mailbox_property_t *buf = RPI_PropertyGetWord(TAG_GET_VC_MEMORY, 0);
+
+   return (buf != NULL) ? (buf->data.buffer_32[1] >> 20) : 0u;
+}
+
+#define L1_CACHED_MEM_TOP (cache_arm_mem_mb())
+#define L2_CACHED_MEM_TOP (cache_arm_mem_mb())
+
+#define VC_TOP (cache_arm_mem_mb() + cache_vc_mem_mb())
 #define PERIPHERAL_END 0x80000000
 
 #if (__ARM_ARCH >= 7 )
@@ -242,7 +267,7 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
 void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 {
 
-  LOG_DEBUG("enable_MMU_and_IDCaches  L1TOP %"PRIx32" L2TOP %"PRIx32" PerTOP %"PRIx32" VCTOP %"PRIx32"\r\n", L1_CACHED_MEM_TOP, L2_CACHED_MEM_TOP, PERIPHERAL_BASE, VC_TOP);
+  LOG_DEBUG("enable_MMU_and_IDCaches  L1TOP %x L2TOP %x PerTOP %"PRIx32" VCTOP %x\r\n", L1_CACHED_MEM_TOP, L2_CACHED_MEM_TOP, PERIPHERAL_BASE, VC_TOP);
 
   unsigned int base=0;
   unsigned int end;
@@ -299,6 +324,8 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   }
   #endif
   end = L1_CACHED_MEM_TOP;
+  if (end > 4096u)
+     end = 4096u;
 
   for (; base < end;  base++)
   {
@@ -310,6 +337,8 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
     PageTable[base] = base << 20 | 0x0C0E ;
   }
   end = L2_CACHED_MEM_TOP;
+  if (end > 4096u)
+     end = 4096u;
   for (; base < end; base++)
   {
      PageTable[base] = (base << 20) | 0x10C0E;
@@ -329,6 +358,8 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // alias miss the cache and go straight to memory, but reads can hit
   // lines cached via the primary mapping
   end = base + VC_TOP;
+  if (end > 4096u)          /* never write past the table, whatever the VC said */
+     end = 4096u;
   start = 0;
   for (; base <  end; base++)
      PageTable[base] = ((start++) << 20 )| 0x0C0E ;

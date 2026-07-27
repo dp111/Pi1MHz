@@ -25,6 +25,11 @@
    arriving.  Only a floor: normally it is serviced the moment the FIFO
    empties. */
 #define SDIO_INT_SERVICE_INTERVAL_US 20000u
+/* Resync wait when nothing is arriving to reopen the credit window.  Short,
+   because on an idle link the alternative is holding the frame until it is
+   discarded - and a resync buys exactly one frame, so this is at worst one
+   probe frame per interval. */
+#define SDPCM_TX_STALL_IDLE_RESYNC_US 20000u
 /* How recently a successful transfer counts as proof the bus is still awake.
    Well inside the chip's idle-before-sleep window. */
 #define SDIO_BUS_AWAKE_ASSUME_US 2000u
@@ -5817,7 +5822,22 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
          g_runtime_tx_stall_since_us = now_us;
          return false;
       }
-      if ((uint32_t)(now_us - g_runtime_tx_stall_since_us) < SDPCM_TX_STALL_RESYNC_US)
+      /* How long to wait before treating a shut window as a desync depends on
+         whether anything can still reopen it.  Only a received frame refreshes
+         max_seq, so when the chip's FIFO came up empty there is nothing coming
+         to do that, and waiting a whole second accomplishes nothing except
+         holding the frame until the queue discards it as stale.
+
+         That is not hypothetical: on an idle link it made the Pi lose 18% of
+         pings with a 3.8 s worst case and a ~1 s average, while the gateway
+         from the same host lost none - the echo reply was refused, held, and
+         binned at 250 ms, with only the occasional one surviving to be sent by
+         the resync a second later.  Under load the FIFO is rarely empty, so
+         the conservative wait still governs there, which is where overrunning
+         the chip actually matters. */
+      if ((uint32_t)(now_us - g_runtime_tx_stall_since_us)
+             < (g_runtime_fifo_was_empty ? SDPCM_TX_STALL_IDLE_RESYNC_US
+                                         : SDPCM_TX_STALL_RESYNC_US))
          return false;
 
       /* Sustained shut window: the two ends have lost sequence agreement and
