@@ -90,7 +90,23 @@ _start_vectors:
 arm_irq_handler:
     subs    lr, lr, #4
     push    {r0, r1, r2, r3, ip, lr}
+    // Save the caller-saved VFP state as well.  The C this calls does use it:
+    // the VDU queue is drained from here, and PLOT (vdu_25) alone compiles to
+    // ~155 VFP instructions touching s0 and s12-s18, while the main loop it
+    // interrupts uses the same registers for BeebSID's filter and other float
+    // code.  Nothing here declares floating point - the compiler reaches for
+    // spare VFP registers on its own - so this cannot be kept safe by
+    // inspecting the C, and a rebuild can reintroduce it anywhere.
+    // d8-d15 are callee-saved and the generated code pushes those itself, so
+    // d0-d7 plus FPSCR is the whole of what is at risk.  r1 is pushed purely
+    // to keep the stack 8-byte aligned for the call.
+    vpush   {d0-d7}
+    vmrs    r0, fpscr
+    push    {r0, r1}
     bl      IRQHandler_main
+    pop     {r0, r1}
+    vmsr    fpscr, r0
+    vpop    {d0-d7}
     ldm     sp!, {r0, r1, r2, r3, ip, pc}^
 
 _reset_:

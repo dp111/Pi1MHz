@@ -30,6 +30,8 @@ extern void dump_useful_info(void);
 extern char *get_cmdline_prop(const char *prop);
 
 float get_temp(void);
+/* Integer form - safe to call from FIQ, where float is not. */
+uint32_t get_temp_millidegrees(void);
 
 /* Foundation-style WiFi/Ethernet MAC computed by the VC4 firmware
    from the SoC's board-serial OTP fuses.  Returns true and writes

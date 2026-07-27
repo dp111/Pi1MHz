@@ -44,14 +44,20 @@ uint32_t get_clock_rate(uint32_t clk_id) {
    }
 }
 
-float get_temp(void) {
+/* Millidegrees, exactly as the VideoCore reports them.  Callers that only
+   want a couple of decimal places should use this rather than get_temp():
+   one of them runs in FIQ context, where touching VFP corrupts whatever the
+   interrupted code was holding. */
+uint32_t get_temp_millidegrees(void) {
    rpi_mailbox_property_t *buf;
    buf = RPI_PropertyGetWord(TAG_GET_TEMPERATURE, 0);
-   if (buf) {
-      return ((float)buf->data.buffer_32[1]) / 1E3F;
-   } else {
-      return 0.0F;
-   }
+   return (buf != NULL) ? buf->data.buffer_32[1] : 0u;
+}
+
+float get_temp(void) {
+   uint32_t milli = get_temp_millidegrees();
+
+   return ((float)milli) / 1E3F;
 }
 
 static float get_voltage(uint32_t component_id) {

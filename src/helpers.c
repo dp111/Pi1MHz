@@ -54,8 +54,11 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         helpscreen += size;helpscreen_size -= size;
         // Hand-formatted to tenths so this doesn't need newlib's float printf
         // support (dtoa machinery, ~5 KB) -- see CMakeLists.txt, -u _printf_float.
-        // get_temp() cannot go negative (0.0F on failure), so no sign handling.
-        long temp_tenths = (long)(get_temp() * 10.0F + 0.5F);
+        // Integer arithmetic on purpose: this runs in FIQ context, and FIQ.s
+        // saves no VFP state, so a float here would corrupt the registers of
+        // whatever it interrupted.  Millidegrees to tenths, rounded.
+        // Cannot go negative (0 on failure), so no sign handling.
+        long temp_tenths = (long)((get_temp_millidegrees() + 50u) / 100u);
         size = (size_t)snprintf(helpscreen, helpscreen_size, " %ld.%ldC",
                                  temp_tenths / 10, temp_tenths % 10);
         // snprintf returns the would-be length, which may exceed the buffer;
