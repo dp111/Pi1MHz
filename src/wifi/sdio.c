@@ -131,6 +131,9 @@ static uint32_t g_runtime_rejoin_count;
 static bool g_runtime_bus_four_bit;
 /* Set once the bus has been verified running at 50 MHz high speed. */
 static bool g_runtime_bus_high_speed;
+/* Set the first time a WLC_E_LINK arrives with its LINK flag set, which proves
+   this firmware populates the field - see sdio_event_is_link_down. */
+static bool g_runtime_link_flag_trusted;
 /* When the mailbox interrupt was last serviced, and whether the last poll
    found the fn2 FIFO empty - together these keep the INT_STATUS exchange out
    of the hot path without letting it starve.  See poll_ethernet_frame. */
@@ -432,7 +435,7 @@ static const char *sdio_event_name(uint32_t event_type);
 static bool sdio_event_is_link_up(uint32_t event_type,
                                   uint32_t event_status,
                                   uint32_t event_reason);
-static bool sdio_event_is_link_down(uint32_t event_type);
+static bool sdio_event_is_link_down(uint32_t event_type, uint32_t event_flags);
 static void sdio_runtime_set_error(const char *message);
 static void sdio_runtime_boot_reset_state(void);
 static int sdio_runtime_finalize_boot_stage(sdio_host_t *dev,
@@ -526,10 +529,24 @@ static const char *sdio_event_name(uint32_t event_type)
    }
 }
 
+/* WLC_E_LINK carries the actual link state in the event's flags word, not in
+   status or reason: bit 0 (WLC_EVENT_MSG_LINK) set means the link came up,
+   clear means it went away.  Association is reported with it set; losing the
+   AP without a deauth - beacon timeout, the AP simply powered off - is
+   reported with it clear, and there is no deauth or disassoc to go with it. */
+#define WLC_EVENT_MSG_LINK 0x01u
+
 static bool sdio_event_is_link_up(uint32_t event_type,
                                   uint32_t event_status,
                                   uint32_t event_reason)
 {
+   /* Deliberately NOT gated on the LINK flag.  Doing that broke association
+      outright: the boot sweep tests this against a flags word captured by a
+      different decoder, which is zero unless that path filled it in, so every
+      link-up was rejected and the Pi never got on the network.  Link-down
+      below reads flags only where they have just been parsed from the event
+      itself, and runs after this, so a flag-clear WLC_E_LINK still ends up
+      down. */
    return event_type == 16u && event_status == 0u && event_reason == 0u;
 }
 
@@ -545,8 +562,24 @@ static bool sdio_event_is_psk_keyed(uint32_t event_type, uint32_t event_status)
    return event_type == 46u && event_status == 6u;
 }
 
-static bool sdio_event_is_link_down(uint32_t event_type)
+static bool sdio_event_is_link_down(uint32_t event_type, uint32_t event_flags)
 {
+   /* Deauth and disassoc, in both their forms - and a WLC_E_LINK whose LINK
+      flag is clear, which is the only notice given when the AP disappears
+      without saying goodbye.  Missing that case left the driver believing it
+      was still associated, so the rejoin schedule kept resetting itself and
+      the Pi stayed off the network indefinitely.
+
+      The flag rule is only applied once this firmware has been seen to set
+      the flag on an association, and that caution is not theoretical: reading
+      the flag where it was never populated is what made an earlier attempt at
+      this reject every link-up and leave the Pi unable to associate at all.
+      Until a flag-set link-up has been observed, this behaves exactly as the
+      long-standing code did - deauth and disassoc only. */
+   if (event_type == 16u)
+      return g_runtime_link_flag_trusted
+             && (event_flags & WLC_EVENT_MSG_LINK) == 0u;
+
    return event_type == 5u || event_type == 6u
       || event_type == 11u || event_type == 12u;
 }
@@ -3244,7 +3277,6 @@ static bool sdio_function2_transfer_timeout(sdio_host_t *dev, bool write, uint8_
    if (length > SDIO_PROBE_FUNCTION2_BLOCK_SIZE) {
       uint16_t block_count = (uint16_t)((length + SDIO_PROBE_FUNCTION2_BLOCK_SIZE - 1u)
                                         / SDIO_PROBE_FUNCTION2_BLOCK_SIZE);
-      bool ok;
 
       if (block_count > 511u)
          block_count = 511u;
@@ -3282,6 +3314,7 @@ static void sdio_runtime_note_event_bare(const uint8_t *payload, uint16_t payloa
    uint32_t event_type;
    uint32_t event_status;
    uint32_t event_reason;
+   uint32_t event_flags;
 
    if (payload == NULL || payload_length < BRCM_EVENT_MSG_LENGTH)
       return;
@@ -3295,6 +3328,7 @@ static void sdio_runtime_note_event_bare(const uint8_t *payload, uint16_t payloa
         [16-19] auth_type
         [20-23] datalen
         ... */
+   event_flags = ((uint32_t)payload[2] << 8) | (uint32_t)payload[3];
    event_type = ((uint32_t)payload[4] << 24)
               | ((uint32_t)payload[5] << 16)
               | ((uint32_t)payload[6] << 8)
@@ -3327,10 +3361,13 @@ static void sdio_runtime_note_event_bare(const uint8_t *payload, uint16_t payloa
    if (sdio_event_is_psk_keyed(event_type, event_status))
       g_runtime_psk_keyed = true;
 
+   if (event_type == 16u && (event_flags & WLC_EVENT_MSG_LINK) != 0u)
+      g_runtime_link_flag_trusted = true;
+
    if (sdio_event_is_link_up(event_type, event_status, event_reason))
       g_runtime_link_up = true;
 
-   if (sdio_event_is_link_down(event_type)) {
+   if (sdio_event_is_link_down(event_type, event_flags)) {
       g_runtime_link_up = false;
       g_runtime_psk_keyed = false;
       g_runtime_link_up_us = 0u;
@@ -3345,6 +3382,7 @@ static void sdio_runtime_note_event(const uint8_t *frame, uint16_t frame_length,
    uint32_t event_type;
    uint32_t event_status;
    uint32_t event_reason;
+   uint32_t event_flags;
 
    if (frame == NULL || frame_length < (uint16_t)(ethernet_offset + ETHERNET_HEADER_LENGTH + BRCM_EVENT_HEADER_LENGTH + BRCM_EVENT_MSG_LENGTH))
       return;
@@ -3362,6 +3400,8 @@ static void sdio_runtime_note_event(const uint8_t *frame, uint16_t frame_length,
    }
 
    message_offset = (uint16_t)(event_offset + BRCM_EVENT_HEADER_LENGTH);
+   event_flags = ((uint32_t)frame[message_offset + 2u] << 8)
+      | (uint32_t)frame[message_offset + 3u];
    event_type = ((uint32_t)frame[message_offset + 4u] << 24)
       | ((uint32_t)frame[message_offset + 5u] << 16)
       | ((uint32_t)frame[message_offset + 6u] << 8)
@@ -3388,10 +3428,13 @@ static void sdio_runtime_note_event(const uint8_t *frame, uint16_t frame_length,
    if (sdio_event_is_psk_keyed(event_type, event_status))
       g_runtime_psk_keyed = true;
 
+   if (event_type == 16u && (event_flags & WLC_EVENT_MSG_LINK) != 0u)
+      g_runtime_link_flag_trusted = true;
+
    if (sdio_event_is_link_up(event_type, event_status, event_reason))
       g_runtime_link_up = true;
 
-   if (sdio_event_is_link_down(event_type)) {
+   if (sdio_event_is_link_down(event_type, event_flags)) {
       g_runtime_link_up = false;
       g_runtime_psk_keyed = false;
       g_runtime_link_up_us = 0u;
@@ -5285,6 +5328,7 @@ bool sdio_runtime_start(void)
    g_runtime_rejoin_count = 0u;
    g_runtime_bus_four_bit = false;
    g_runtime_bus_high_speed = false;
+   g_runtime_link_flag_trusted = false;
    g_runtime_emulator_mode = false;
    g_runtime_identify_started = false;
    g_runtime_identify_attempt = 0u;
