@@ -5786,7 +5786,20 @@ void sdio_runtime_rssi_poll(void)
          return;
       }
       g_runtime_rssi_step_sent = true;
-      g_runtime_rssi_step_deadline_us = now + 10000u;
+      /* Generous, because this no longer fetches the reply itself - it waits
+         for the ordinary RX drain to deliver it.  10 ms was inherited from
+         when this drained the FIFO synchronously, and once that was removed
+         it was tight enough that the request was routinely abandoned before
+         the reply arrived, leaving /status showing "(querying)" for ever. */
+      g_runtime_rssi_step_deadline_us = now + 250000u;
+      return;
+   }
+
+   /* The reply landed if the shared completion path matched it by request id;
+      pending is cleared there. */
+   if (!g_runtime_rssi_request_pending) {
+      g_runtime_rssi_step_sent = false;
+      g_runtime_rssi_query_wanted = false;
       return;
    }
 
