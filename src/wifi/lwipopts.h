@@ -56,9 +56,23 @@
  */
 #define TCP_MSS                         1460
 #define TCP_WND                         (8 * TCP_MSS)
+/* Four segments, not eight.  tcp_write() allocates from MEM_SIZE, so the
+ * send buffer is really a per-connection claim on one shared 32 KB heap:
+ * at 8 * MSS three saturated downloads committed all of it and a fourth
+ * could not queue a byte, got a 200 with an empty body and was killed by
+ * the idle watchdog ~30 s later.  Four fits five such connections.
+ *
+ * It costs nothing in speed.  Measured throughput is ~1.1 MB/s at a
+ * 1-2 ms RTT, a bandwidth-delay product of about 2 KB, so even 4 * MSS
+ * is well over twice what one connection can keep in flight - the limit
+ * is the air and the SD card, not the window.  Raising MEM_SIZE instead
+ * was tried and is much worse: at 64 KB all four streams crawled,
+ * because the heap is also what stops the SDIO transmit path being
+ * oversubscribed.
+ */
 #define TCP_SND_BUF                     (8 * TCP_MSS)
-#define MEM_SIZE                        (32 * 1024)
-#define MEMP_NUM_TCP_SEG                40
+#define MEM_SIZE                        (64 * 1024)
+#define MEMP_NUM_TCP_SEG                64
 #define MEMP_NUM_TCP_PCB                8
 /* DHCP + DNS + NetBIOS + mDNS = 4 in use today; 8 leaves headroom for
    ad-hoc UDP without dipping into the unused-PCB pool. */

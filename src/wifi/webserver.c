@@ -1607,6 +1607,37 @@ static void fb_render_row(const framebuffer_export_info_t *info,
       dst[x] = 0u;
 }
 
+/* Queue up to want bytes, settling for less rather than nothing.
+   tcp_write() is transactional: it queues the whole chunk or it queues
+   nothing, and it allocates from the same MEM_SIZE heap that every other
+   connection's unacked data is sitting in.  tcp_sndbuf() does not see that
+   heap - it reports TCP window space - so on a busy server the sizes it
+   blesses routinely fail to allocate.
+
+   Retrying at one segment is what stops that becoming starvation.  With
+   several concurrent downloads, two saturated senders own nearly all of the
+   32 KB heap; the rest asked for 8 KB, got ERR_MEM every time, queued not
+   one byte, and were killed ~30 s later by the idle watchdog - the client
+   seeing a 200 with an empty body.  A 1460-byte write fits in what is left,
+   and any progress at all re-arms the watchdog (ws_sent clears poll_count),
+   so the slow connections finish instead of dying.  Deliberately not fixed
+   by enlarging MEM_SIZE: 64 KB was measured to make all four streams crawl,
+   because the heap is also what limits how far the SDIO transmit path can
+   be oversubscribed. */
+static err_t ws_write_best_effort(struct tcp_pcb *pcb, const void *data,
+                                  u16_t want, u16_t *written)
+{
+   err_t err = tcp_write(pcb, data, want, TCP_WRITE_FLAG_COPY);
+
+   if (err == ERR_MEM && want > TCP_MSS) {
+      want = TCP_MSS;
+      err = tcp_write(pcb, data, want, TCP_WRITE_FLAG_COPY);
+   }
+
+   *written = (err == ERR_OK) ? want : 0u;
+   return err;
+}
+
 static bool conn_pump(ws_conn_t *c)
 {
    err_t err = ERR_OK;
@@ -1618,16 +1649,17 @@ static bool conn_pump(ws_conn_t *c)
    while (c->out != NULL && c->out_sent < c->out_len) {
       u16_t  avail = tcp_sndbuf(c->pcb);
       size_t want  = c->out_len - c->out_sent;
+      u16_t  wrote = 0u;
       if (avail == 0u)
          break;
       if (want > avail)
          want = avail;
-      err = tcp_write(c->pcb, c->out + c->out_sent, (u16_t)want,
-                      TCP_WRITE_FLAG_COPY);
+      err = ws_write_best_effort(c->pcb, c->out + c->out_sent, (u16_t)want,
+                                 &wrote);
       if (err != ERR_OK)
          break;
-      c->out_sent += want;
-      c->bytes_queued += (uint32_t)want;
+      c->out_sent += wrote;
+      c->bytes_queued += (uint32_t)wrote;
    }
 
    /* file body - skipped entirely for HEAD requests; the matching
@@ -1639,6 +1671,7 @@ static bool conn_pump(ws_conn_t *c)
       while (1) {
          u16_t  avail;
          size_t want;
+         u16_t  wrote = 0u;
 
          if (c->dl_buf_sent >= c->dl_buf_len) {
             UINT br = 0u;
@@ -1663,12 +1696,12 @@ static bool conn_pump(ws_conn_t *c)
          want = c->dl_buf_len - c->dl_buf_sent;
          if (want > avail)
             want = avail;
-         err = tcp_write(c->pcb, c->dl_buf + c->dl_buf_sent, (u16_t)want,
-                         TCP_WRITE_FLAG_COPY);
+         err = ws_write_best_effort(c->pcb, c->dl_buf + c->dl_buf_sent,
+                                    (u16_t)want, &wrote);
          if (err != ERR_OK)
             break;
-         c->dl_buf_sent += want;
-         c->bytes_queued += (uint32_t)want;
+         c->dl_buf_sent += wrote;
+         c->bytes_queued += (uint32_t)wrote;
       }
    }
 
@@ -1684,6 +1717,7 @@ static bool conn_pump(ws_conn_t *c)
       while (1) {
          u16_t  avail;
          size_t want;
+         u16_t  wrote = 0u;
 
          if (c->dl_buf_sent >= c->dl_buf_len) {
             size_t filled = 0u;
@@ -1728,12 +1762,12 @@ static bool conn_pump(ws_conn_t *c)
          want = c->dl_buf_len - c->dl_buf_sent;
          if (want > avail)
             want = avail;
-         err = tcp_write(c->pcb, c->dl_buf + c->dl_buf_sent, (u16_t)want,
-                         TCP_WRITE_FLAG_COPY);
+         err = ws_write_best_effort(c->pcb, c->dl_buf + c->dl_buf_sent,
+                                    (u16_t)want, &wrote);
          if (err != ERR_OK)
             break;
-         c->dl_buf_sent += want;
-         c->bytes_queued += (uint32_t)want;
+         c->dl_buf_sent += wrote;
+         c->bytes_queued += (uint32_t)wrote;
       }
    }
 
@@ -2156,6 +2190,11 @@ static bool route_status(ws_conn_t *c)
       snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.tx_resyncs);
       table_row(&b, "Transmit resyncs", tmp);
    }
+   if (rs.rejoins != 0u) {
+      snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.rejoins);
+      table_row(&b, "Rejoins", tmp);
+   }
+   table_row(&b, "SDIO bus", rs.bus_four_bit ? "4-bit" : "1-bit");
    snprintf(tmp, sizeof tmp, "%u",
             (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
    table_row(&b, "HTTP port", tmp);
@@ -5365,8 +5404,13 @@ static void webserver_refresh_sd_free(void)
    DWORD    nclst = 0u;
    FATFS   *fs = NULL;
 
-   if (g_ws_sd_free_valid
-       && (now - g_ws_sd_free_age_us) < WS_FREE_REFRESH_US)
+   /* The age check applies to failures too.  Gating it on _valid meant a
+      card that could not answer f_getfree - no card, a bad mount, a
+      transient error - was asked again on every single pass of the poll
+      loop, each attempt a fresh (and on a slow card, long) FAT walk from
+      the main loop.  The TTL is what makes this cheap; it has to hold
+      whichever way the call went. */
+   if ((now - g_ws_sd_free_age_us) < WS_FREE_REFRESH_US)
       return;
 
    g_ws_sd_free_age_us = now;
