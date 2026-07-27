@@ -2240,6 +2240,7 @@ static bool route_status(ws_conn_t *c)
    snprintf(tmp, sizeof tmp, "%s %s", rs.bus_four_bit ? "4-bit" : "1-bit",
             rs.bus_high_speed ? "50MHz" : "25MHz");
    table_row(&b, "SDIO bus", tmp);
+   table_row(&b, "Link-loss detect", rs.link_flag_trusted ? "armed" : "not armed");
    snprintf(tmp, sizeof tmp, "%u",
             (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
    table_row(&b, "HTTP port", tmp);

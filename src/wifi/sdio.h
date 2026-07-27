@@ -30,6 +30,9 @@ typedef struct {
    bool bus_four_bit;
    /* True when the SDIO bus is running 50 MHz high speed rather than 25 MHz. */
    bool bus_high_speed;
+   /* True once a WLC_E_LINK has been seen with its LINK flag set, which is
+      what arms detection of a link lost without a deauth. */
+   bool link_flag_trusted;
 } sdio_runtime_status_t;
 
 typedef struct {

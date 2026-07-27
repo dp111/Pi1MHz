@@ -6145,5 +6145,6 @@ sdio_runtime_status_t sdio_runtime_get_status(void)
    status.rejoins = g_runtime_rejoin_count;
    status.bus_four_bit = g_runtime_bus_four_bit;
    status.bus_high_speed = g_runtime_bus_high_speed;
+   status.link_flag_trusted = g_runtime_link_flag_trusted;
    return status;
 }
