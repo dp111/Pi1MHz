@@ -56,24 +56,47 @@
  */
 #define TCP_MSS                         1460
 #define TCP_WND                         (8 * TCP_MSS)
-/* Four segments, not eight.  tcp_write() allocates from MEM_SIZE, so the
- * send buffer is really a per-connection claim on one shared 32 KB heap:
- * at 8 * MSS three saturated downloads committed all of it and a fourth
- * could not queue a byte, got a 200 with an empty body and was killed by
- * the idle watchdog ~30 s later.  Four fits five such connections.
+/* The send window is the throughput limiter, so it is sized generously and
+ * the heap is sized to fit several connections at that size.  tcp_write()
+ * allocates from MEM_SIZE, so a send buffer is really a per-connection claim
+ * on one shared heap: at 8 * MSS against a 32 KB heap, three saturated
+ * downloads committed all of it and a fourth could not queue a byte, got a
+ * 200 with an empty body, and was killed by the idle watchdog ~30 s later.
  *
- * It costs nothing in speed.  Measured throughput is ~1.1 MB/s at a
- * 1-2 ms RTT, a bandwidth-delay product of about 2 KB, so even 4 * MSS
- * is well over twice what one connection can keep in flight - the limit
- * is the air and the SD card, not the window.  Raising MEM_SIZE instead
- * was tried and is much worse: at 64 KB all four streams crawled,
- * because the heap is also what stops the SDIO transmit path being
- * oversubscribed.
+ * Measured single-stream, same build otherwise:
+ *
+ *    32 KB heap,  4 * MSS   0.69 MB/s
+ *    32 KB heap,  8 * MSS   1.11 MB/s   (only 3 of 4 streams complete)
+ *    64 KB heap,  8 * MSS   1.13 MB/s
+ *   128 KB heap, 16 * MSS   1.64 MB/s
+ *
+ * The window matters this much because the connection is latency-bound, not
+ * bandwidth-bound: the refill waits for an ACK to be noticed by the
+ * cooperative poll loop, several times longer than the 1-2 ms ping RTT would
+ * suggest.  Aggregate across four streams exceeds single-stream throughput,
+ * which is the same thing seen from the other side.
+ *
+ * An older note here said not to raise MEM_SIZE, after 64 KB was measured
+ * making all four streams crawl.  That was before the SDPCM credit window was
+ * honoured: the driver dropped frames on a failed transfer, so the small heap
+ * was accidentally acting as an admission controller and anything larger
+ * collapsed into RTO backoff.  With flow control in place that no longer
+ * applies.
+ *
+ * MEMP_NUM_TCP_SEG has to cover TCP_SND_QUEUELEN, which lwIP derives from
+ * TCP_SND_BUF - the build fails its own sanity check otherwise.
  */
-#define TCP_SND_BUF                     (8 * TCP_MSS)
-#define MEM_SIZE                        (64 * 1024)
-#define MEMP_NUM_TCP_SEG                64
-#define MEMP_NUM_TCP_PCB                8
+#define TCP_SND_BUF                     (32 * TCP_MSS)
+#define MEM_SIZE                        (256 * 1024)
+#define MEMP_NUM_TCP_SEG                160
+/* Sixteen, not eight.  A PCB is small, and running out is not a graceful
+ * degradation: lwIP simply stops accepting, so the client gets nothing at all
+ * and cannot tell a full server from a dead one.  Eight was reachable in
+ * ordinary use - four downloads, a browser keeping connections alive and a
+ * status poller was enough, and connections then failed instantly.  TIME_WAIT
+ * makes it worse, since a closed connection holds its PCB for a while after
+ * the transfer is over. */
+#define MEMP_NUM_TCP_PCB                16
 /* DHCP + DNS + NetBIOS + mDNS = 4 in use today; 8 leaves headroom for
    ad-hoc UDP without dipping into the unused-PCB pool. */
 #define MEMP_NUM_UDP_PCB                8
