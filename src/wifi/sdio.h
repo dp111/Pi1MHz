@@ -23,6 +23,11 @@ typedef struct {
       advertised max_seq after staying shut.  Should be 0; a climbing count
       means transmit is repeatedly stalling. */
    uint32_t tx_resyncs;
+   /* Association retries since boot.  Non-zero means the link was lost (or
+      never came up at boot) and the join sequence was re-issued. */
+   uint32_t rejoins;
+   /* True when the SDIO data bus is running 4-bit rather than 1-bit. */
+   bool bus_four_bit;
 } sdio_runtime_status_t;
 
 typedef struct {
@@ -251,6 +256,11 @@ const sdio_probe_result_t *sdio_get_probe_result(void);
 bool sdio_runtime_start(void);
 bool sdio_runtime_tick(void);
 bool sdio_runtime_started(void);
+/* Re-issue the association sequence after a lost or never-established link.
+   rejoin_start() re-arms it (false if bring-up or another rejoin is running);
+   the caller then drives sdio_runtime_tick() while rejoin_busy() is true. */
+bool sdio_runtime_rejoin_start(void);
+bool sdio_runtime_rejoin_busy(void);
 bool sdio_runtime_link_is_up(void);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
 /* On-demand signal-strength read.  sdio_runtime_request_rssi() just flags

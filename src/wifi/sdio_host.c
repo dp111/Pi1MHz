@@ -987,6 +987,32 @@ int sdio_host_open(sdio_host_t *host)
    }
 }
 
+/* Select the controller's data-bus width.  The card must already have been
+   told the same width over CCCR 0x07: command and response travel on CMD and
+   are unaffected, but every data transfer after this uses DAT0 alone or
+   DAT0-3 together, so a mismatch corrupts data while CMD52 keeps working -
+   which is why the caller verifies with a data transfer, not a register read.
+
+   Only the width bit is touched.  The surrounding open path also programs the
+   data-timeout field of the same register and must not be disturbed. */
+int sdio_host_set_bus_width(sdio_host_t *host, bool four_bit)
+{
+   uint32_t control0;
+
+   if (host == NULL || !g_arasan_wifi_ready) {
+      sdio_host_set_error("Arasan EMMC WLAN host is not ready for bus width change");
+      return -1;
+   }
+
+   control0 = g_rpi_emmc_base->EMMC_CONTROL0;
+   if (four_bit)
+      control0 |= (1u << 1);
+   else
+      control0 &= ~(1u << 1);
+   g_rpi_emmc_base->EMMC_CONTROL0 = control0;
+   return 0;
+}
+
 int sdio_host_set_clock(sdio_host_t *host, uint32_t target_rate_hz, uint32_t *actual_rate_hz)
 {
    if (sdio_host_set_clock_start(host, target_rate_hz) != 0)

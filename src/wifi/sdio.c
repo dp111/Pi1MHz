@@ -106,6 +106,10 @@ static bool g_runtime_max_seq_valid;
 static bool g_runtime_tx_stalled;
 static uint32_t g_runtime_tx_stall_since_us;
 static uint32_t g_runtime_tx_resync_count;
+/* Association retries since boot - see sdio_runtime_rejoin_start(). */
+static uint32_t g_runtime_rejoin_count;
+/* Set once the 4-bit data bus has been switched to and verified. */
+static bool g_runtime_bus_four_bit;
 static bool g_runtime_emulator_mode;
 static bool g_runtime_identify_started;
 static unsigned int g_runtime_identify_attempt;
@@ -816,6 +820,78 @@ static int sdio_runtime_request_alp_clock_step(sdio_host_t *dev,
    g_runtime_alp_wait.attempt++;
    g_runtime_alp_wait.deadline_us = now_us + 1000u;
    return 0;
+}
+
+/* Move card and controller to a 4-bit data bus, reverting cleanly if that
+   turns out not to work on this board.
+
+   The bus came up 1-bit and stayed there: CCCR 0x07 was only ever read, and
+   the controller's width bit is explicitly cleared during open.  DAT1-3 are
+   already muxed and pulled up by the pin setup, and the chip supports 4-bit,
+   so three quarters of the available bandwidth was simply going unused - at
+   25 MHz that is 25 Mbit/s where 100 Mbit/s is on offer.  It is not only
+   throughput: every frame is a busy-polled transfer inside the cooperative
+   main loop, so a four-times-shorter transfer is four times less latency
+   added to everything else the Pi is doing.
+
+   The switch is verified rather than assumed.  CMD52 travels on CMD and
+   keeps working even when the data lines are misconfigured, so reading CCCR
+   back would prove nothing; instead a backplane read - a real CMD53 data
+   transfer - has to return the chip ID that was already read successfully at
+   1-bit.  If it does not, both ends go back to 1-bit and bring-up continues
+   exactly as before.  Failing safe matters here: the alternative to a
+   working WiFi link is a Pi that needs a power cycle. */
+static void sdio_runtime_try_four_bit_bus(sdio_host_t *dev)
+{
+   uint8_t bus_control = 0u;
+   uint32_t reference = 0u;
+   unsigned int check;
+
+   if (dev == NULL)
+      return;
+
+   /* Reference value, read while the bus is still known-good at 1-bit.  The
+      chip ID is not stored anywhere this early in bring-up, and hard-coding
+      one would make this stop working on the next chip variant. */
+   if (!sdio_backplane_read_u32_timeout(dev, CYW43_CHIPCOMMON_BASE,
+                                        SDIO_COMMAND_TIMEOUT_US, &reference)
+      || reference == 0u)
+      return;
+
+   if (!sdio_probe_read_byte(dev, SDIO_CCCR_BUS_INTERFACE_CONTROL, &bus_control))
+      return;
+
+   /* CCCR 0x07: bits 1:0 select the width (00 = 1-bit, 10 = 4-bit), and bit 7
+      disconnects the DAT3 card-detect pull-up, which has to go before DAT3
+      can carry data. */
+   if (!sdio_probe_write_byte(dev, SDIO_CCCR_BUS_INTERFACE_CONTROL,
+                              (uint8_t)((bus_control & ~0x03u) | 0x82u)))
+      return;
+
+   if (sdio_host_set_bus_width(dev, true) != 0) {
+      (void)sdio_probe_write_byte(dev, SDIO_CCCR_BUS_INTERFACE_CONTROL, bus_control);
+      return;
+   }
+
+   /* Several reads, not one: a single lucky transfer proves less than a
+      handful, and this is the only chance to catch a bad 4-bit bus before
+      the firmware download commits to it. */
+   for (check = 0u; check < 4u; ++check) {
+      uint32_t value = 0u;
+
+      if (!sdio_backplane_read_u32_timeout(dev, CYW43_CHIPCOMMON_BASE,
+                                           SDIO_COMMAND_TIMEOUT_US, &value)
+         || value != reference) {
+         (void)sdio_host_set_bus_width(dev, false);
+         (void)sdio_probe_write_byte(dev, SDIO_CCCR_BUS_INTERFACE_CONTROL,
+                                     bus_control);
+         sdio_debug_log("SDIO 4-bit verify failed - staying 1-bit");
+         return;
+      }
+   }
+
+   g_runtime_bus_four_bit = true;
+   sdio_debug_log("SDIO bus width 4-bit");
 }
 
 static int sdio_runtime_wake_with_kso_step(sdio_host_t *dev,
@@ -5113,6 +5189,8 @@ bool sdio_runtime_start(void)
    g_runtime_tx_stalled = false;
    g_runtime_tx_stall_since_us = 0u;
    g_runtime_tx_resync_count = 0u;
+   g_runtime_rejoin_count = 0u;
+   g_runtime_bus_four_bit = false;
    g_runtime_emulator_mode = false;
    g_runtime_identify_started = false;
    g_runtime_identify_attempt = 0u;
@@ -5228,6 +5306,7 @@ bool sdio_runtime_tick(void)
             return true;
          if (sdio_host_set_clock(&g_runtime_device, SDIO_RUNTIME_HIGH_CLOCK_HZ, NULL) != 0)
             return sdio_runtime_finalize_error("WiFi SDIO high-speed clock switch failed");
+         sdio_runtime_try_four_bit_bus(&g_runtime_device);
          sdio_debug_log("controller setup complete io_enable=0x%02x io_ready=0x%02x block1=%u block2=%u",
                         (unsigned int)g_sdio_probe_result.configured_io_enable,
                         (unsigned int)g_sdio_probe_result.configured_io_ready,
@@ -5439,6 +5518,48 @@ bool sdio_runtime_started(void)
    return g_runtime_started;
 }
 
+/* Re-arm the join sequence on a runtime that has already finished bring-up.
+   The chip does not re-associate on its own once the association is lost, and
+   the boot path runs the join exactly once, so without this a scan that comes
+   back empty at boot - or an AP that reboots an hour later - leaves the Pi off
+   the network until someone power-cycles it.  Re-entering STAGE_JOIN reuses
+   the whole existing sequence: the caller then drives sdio_runtime_tick()
+   until it returns false, exactly as the boot path does.
+
+   Only from STAGE_DONE, so this cannot cut across bring-up or a rejoin that
+   is still running.  link_up and psk_keyed are cleared because the previous
+   association is over; both are re-established from the chip's events. */
+bool sdio_runtime_rejoin_start(void)
+{
+   if (!g_runtime_started || g_runtime_emulator_mode)
+      return false;
+   if (g_runtime_stage != SDIO_RUNTIME_STAGE_DONE)
+      return false;
+
+   g_runtime_join_count = sdio_tx_probe_join_commands(g_runtime_join_commands,
+      sizeof(g_runtime_join_commands) / sizeof(g_runtime_join_commands[0]));
+   if (g_runtime_join_count == 0u)
+      return false;
+
+   g_runtime_join_index = 0u;
+   g_runtime_step_sent = false;
+   g_runtime_link_up = false;
+   g_runtime_psk_keyed = false;
+   ++g_runtime_rejoin_count;
+   sdio_debug_log("== STAGE_JOIN: rejoin attempt %lu ==",
+                  (unsigned long)g_runtime_rejoin_count);
+   g_runtime_stage = SDIO_RUNTIME_STAGE_JOIN;
+   return true;
+}
+
+/* True while a rejoin is still working through its stages.  The caller keeps
+   calling sdio_runtime_tick() until this goes false. */
+bool sdio_runtime_rejoin_busy(void)
+{
+   return g_runtime_stage == SDIO_RUNTIME_STAGE_JOIN
+       || g_runtime_stage == SDIO_RUNTIME_STAGE_SWEEP_RX;
+}
+
 bool sdio_runtime_link_is_up(void)
 {
    const wifi_config_t *config = wifi_get_config();
@@ -5533,7 +5654,15 @@ void sdio_runtime_rssi_poll(void)
    if ((int32_t)(now - g_runtime_rssi_step_deadline_us) < 0)
       return;
 
-   (void)sdio_drain_fn2_responses(&g_runtime_device);
+   /* Deliberately NOT sdio_drain_fn2_responses() here.  That helper reads
+      frames into a scratch buffer and discards them, which is right during
+      bring-up but destructive once lwIP is running: every /status view would
+      throw away up to eight inbound frames that happened to arrive in the
+      10 ms window - the same silent-discard bug that draining events into a
+      throwaway buffer used to cause, and indistinguishable from packet loss
+      on the air.  Nothing is needed here anyway: the reply is matched by
+      request id in the shared RX completion path, so the ordinary drain
+      captures the RSSI and delivers the data frames. */
    g_runtime_rssi_request_pending = false;
    g_runtime_rssi_step_sent = false;
    g_runtime_rssi_query_wanted = false;
@@ -5833,5 +5962,7 @@ sdio_runtime_status_t sdio_runtime_get_status(void)
    status.tx_frames = g_runtime_tx_frame_count;
    status.rx_frames = g_runtime_rx_frame_count;
    status.tx_resyncs = g_runtime_tx_resync_count;
+   status.rejoins = g_runtime_rejoin_count;
+   status.bus_four_bit = g_runtime_bus_four_bit;
    return status;
 }

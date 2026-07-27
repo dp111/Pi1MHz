@@ -41,6 +41,10 @@ int sdio_host_open(sdio_host_t *host);
 int sdio_host_open_start(sdio_host_t *host);
 int sdio_host_open_poll(sdio_host_t *host);
 int sdio_host_set_clock(sdio_host_t *host, uint32_t target_rate_hz, uint32_t *actual_rate_hz);
+/* Controller data-bus width.  Must be kept in step with CCCR 0x07 on the
+   card; see sdio_host_set_bus_width() for why a mismatch is invisible to
+   CMD52 and only shows up on data transfers. */
+int sdio_host_set_bus_width(sdio_host_t *host, bool four_bit);
 int sdio_host_set_clock_start(sdio_host_t *host, uint32_t target_rate_hz);
 int sdio_host_set_clock_poll(sdio_host_t *host, uint32_t *actual_rate_hz);
 int sdio_host_submit(sdio_host_t *host,
