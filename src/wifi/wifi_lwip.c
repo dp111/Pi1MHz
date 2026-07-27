@@ -78,7 +78,20 @@ void wifi_lwip_rx_kick(void)
 
 u32_t sys_now(void)
 {
-   return RPI_GetSystemTime() / 1000u;
+   /* Must be milliseconds that wrap modulo 2^32, because that is what lwIP's
+      TIME_LESS_THAN assumes.  Dividing the 32-bit microsecond counter by 1000
+      does NOT do that: it produces a ramp that climbs to 4,294,967 and snaps
+      back to zero every ~71 minutes, and after the first snap every scheduled
+      timeout looks like it is still in the future - so the whole timer chain
+      (TCP retransmit and persist, DHCP renew, ARP aging, DNS) stops running
+      until the ramp climbs back past it, most of an hour later.  A timeout
+      scheduled in the last moments before the snap is worse still: its
+      deadline is above the ramp's ceiling and can never be reached at all.
+
+      Taking the milliseconds from the 64-bit timer and truncating gives a
+      counter that really does wrap modulo 2^32.  aun_now_ms() was fixed the
+      same way for the same reason. */
+   return (u32_t)(RPI_GetSystemTime64() / 1000u);
 }
 
 u32_t sys_jiffies(void)
@@ -273,9 +286,18 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       cursor = cursor->next;
    }
 
-   /* Anything already held goes first, or this frame would overtake it. */
-   if (!wifi_lwip_tx_hold_flush())
-      return ERR_IF;
+   /* Anything already held goes first, or this frame would overtake it.  When
+      the queue cannot drain, the new frame joins the back rather than being
+      dropped - which is what makes the queue a queue.  It only ever held one
+      frame before this: the push below is reached solely when the flush
+      succeeded, so every frame refused while the head was still stuck was
+      lost, that being exactly the burst the queue exists to survive. */
+   if (!wifi_lwip_tx_hold_flush()) {
+      if (wifi_lwip_frame_self_retries(frame, offset))
+         return ERR_IF;           /* TCP resends; do not spend a slot on it */
+      wifi_lwip_tx_hold_push(frame, offset);
+      return ERR_OK;
+   }
 
    if (!sdio_runtime_send_ethernet_frame(frame, offset)) {
       /* TCP looks after itself; everything else would simply be lost. */
