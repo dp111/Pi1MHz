@@ -7,6 +7,7 @@
 #include "mailbox.h"
 #include "cache.h"
 #include "asm-helpers.h"
+#include "systimer.h"   /* bounded waits on the VideoCore - see RPI_Mailbox0Read */
 
 /* The property interface protocol needs at least 16-byte alignment (only
    28 bits carry the buffer address), but the buffer is aligned to a full
@@ -25,23 +26,52 @@ static size_t pt_index;
 static mailbox_t* rpiMailbox0 = (mailbox_t*)RPI_MAILBOX0_BASE;
 static mailbox_t* rpiMailbox1 = (mailbox_t*)RPI_MAILBOX1_BASE;
 
+/* Every wait on the VideoCore is bounded.  A healthy VC answers a property
+   call in microseconds, so this is never reached in normal operation - but
+   when it was not bounded, a VC that stayed silent hung the ARM forever in
+   init_hardware(), before UART output got past the first few info lines and
+   long before USB or WiFi came up.  The only recovery was pulling the power.
+
+   That is not hypothetical: chain-booting a new kernel over MTP leaves the
+   mailbox mid-conversation, and the reply that arrives belongs to the
+   *previous* kernel's buffer - at a different address, because it was a
+   different build.  RPI_PropertyProcess then discards it as not-ours and
+   waits for a reply that has already been and gone, one message behind for
+   the rest of the boot until a call runs out of pending messages and stops
+   dead.  Timing out turns that into a couple of unknown values in the boot
+   log and a Pi that still comes up on the network, which can be re-flashed
+   remotely instead of by hand. */
+#define MAILBOX_TIMEOUT_US 100000u
+
 static void RPI_Mailbox0Write( mailbox0_channel_t channel, const uint32_t * ptr )
 {
+    uint32_t start_us = RPI_GetSystemTime();
+
     _clean_cache_area(ptr, ptr[PT_OSIZE]);
 // cppcheck-suppress constStatement
     rpiMailbox0->Data; // empty buffer in case anything is left over.
     /* Wait until the mailbox becomes available and then write to the mailbox
        channel */
 // cppcheck-suppress constStatement
-    while ( ( rpiMailbox1->Status & ARM_MS_FULL ) != 0 ) { rpiMailbox0->Data; }
+    while ( ( rpiMailbox1->Status & ARM_MS_FULL ) != 0 ) {
+        rpiMailbox0->Data;
+        if ( ( RPI_GetSystemTime() - start_us ) > MAILBOX_TIMEOUT_US )
+            break;      /* write anyway: a stuck FULL bit is not recoverable
+                           by waiting longer, and the VC ignores overflow */
+    }
     /* Add the channel number into the lower 4 bits */
     /* Write the modified value + channel number into the write register */
    rpiMailbox1->Data = ((uint32_t)ptr ) | channel;
 }
 
+/* Returns the response (upper 28 bits) or MAILBOX_READ_TIMEOUT if the VC did
+   not answer on this channel in time. */
+#define MAILBOX_READ_TIMEOUT 0xFFFFFFFFu
+
 static uint32_t RPI_Mailbox0Read( mailbox0_channel_t channel )
 {
     uint32_t value ;
+    uint32_t start_us = RPI_GetSystemTime();
 
     /* Keep reading the register until the desired channel gives us a value */
 
@@ -49,11 +79,18 @@ static uint32_t RPI_Mailbox0Read( mailbox0_channel_t channel )
         /* Wait while the mailbox is not empty because otherwise there's no value
            to read! */
 
-        while ( rpiMailbox0->Status & ARM_MS_EMPTY ) {}
+        while ( rpiMailbox0->Status & ARM_MS_EMPTY ) {
+            if ( ( RPI_GetSystemTime() - start_us ) > MAILBOX_TIMEOUT_US )
+                return MAILBOX_READ_TIMEOUT;
+        }
         /* Extract the value from the Read register of the mailbox. The value
            is actually in the upper 28 bits */
         value = rpiMailbox0->Data;
-    } while ( ( value & 0xF ) != channel );
+    } while ( ( value & 0xF ) != channel
+              && ( RPI_GetSystemTime() - start_us ) <= MAILBOX_TIMEOUT_US );
+
+    if ( ( value & 0xF ) != channel )
+        return MAILBOX_READ_TIMEOUT;
     /* Return just the value (the upper 28-bits) */
     return value >> 4;
 }
@@ -145,9 +182,19 @@ unsigned int RPI_PropertyProcess( bool wait )
     //if (wait == false)
     //    return 0;
 
-    do { // make sure the response is for us
-       result = RPI_Mailbox0Read( MB0_TAGS_ARM_TO_VC );
-    } while ((uint32_t) result != ((uint32_t) pt) >> 4);
+    { // make sure the response is for us
+       uint32_t start_us = RPI_GetSystemTime();
+
+       do {
+          result = RPI_Mailbox0Read( MB0_TAGS_ARM_TO_VC );
+          if ( result == MAILBOX_READ_TIMEOUT )
+             return 0;      /* VC silent - caller sees no tag and carries on */
+       } while ((uint32_t) result != ((uint32_t) pt) >> 4
+                && ( RPI_GetSystemTime() - start_us ) <= MAILBOX_TIMEOUT_US);
+
+       if ((uint32_t) result != ((uint32_t) pt) >> 4)
+          return 0;         /* only ever another kernel's stale reply */
+    }
 
     // pt[] is in ordinary cacheable RAM: the prefetcher can refill its lines
     // while we spin waiting for the VC response, so always discard them
@@ -164,6 +211,13 @@ rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag)
 {
     /* Get the tag from the buffer. Start at the first tag position  */
     uint32_t index = 2;
+
+    /* No response bit means the VC never wrote into the buffer - the tags
+       still there are our own request.  Handing those back would look like
+       real data (a framebuffer address of zero, a clock rate of zero), so
+       report "not present" and let callers take their existing NULL path. */
+    if ( ( pt[PT_OREQUEST_OR_RESPONSE] & 0x80000000u ) == 0u )
+        return NULL;
 
     while ( index < ( pt[PT_OSIZE] >> 2 ) )
     {
