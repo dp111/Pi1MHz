@@ -21,6 +21,13 @@
 #define SDIO_RUNTIME_FW_CHUNKS_PER_TICK 8u
 #define SDIO_RUNTIME_HIGH_CLOCK_HZ 25000000u
 #define SDIO_RUNTIME_HIGH_SPEED_CLOCK_HZ 50000000u
+/* Longest the chip's mailbox interrupt may go unserviced while frames keep
+   arriving.  Only a floor: normally it is serviced the moment the FIFO
+   empties. */
+#define SDIO_INT_SERVICE_INTERVAL_US 20000u
+/* How recently a successful transfer counts as proof the bus is still awake.
+   Well inside the chip's idle-before-sleep window. */
+#define SDIO_BUS_AWAKE_ASSUME_US 2000u
 /* Worst-case CPU a single CMD52/CMD53 may busy-wait for completion.  On
    healthy hardware a command completes in microseconds; this cap only
    bites when the chip is unresponsive.  It was 500 ms, long enough to
@@ -119,6 +126,15 @@ static uint32_t g_runtime_rejoin_count;
 static bool g_runtime_bus_four_bit;
 /* Set once the bus has been verified running at 50 MHz high speed. */
 static bool g_runtime_bus_high_speed;
+/* When the mailbox interrupt was last serviced, and whether the last poll
+   found the fn2 FIFO empty - together these keep the INT_STATUS exchange out
+   of the hot path without letting it starve.  See poll_ethernet_frame. */
+static uint32_t g_runtime_int_service_us;
+/* When a bus transfer last completed successfully.  KSO sleep only engages
+   after an idle period, so a transfer this recent proves the interface is
+   still awake and the wake handshake can be skipped. */
+static uint32_t g_runtime_bus_active_us;
+static bool g_runtime_fifo_was_empty = true;
 static bool g_runtime_emulator_mode;
 static bool g_runtime_identify_started;
 static unsigned int g_runtime_identify_attempt;
@@ -3219,17 +3235,26 @@ static bool sdio_function2_transfer_timeout(sdio_host_t *dev, bool write, uint8_
    if (length > SDIO_PROBE_FUNCTION2_BLOCK_SIZE) {
       uint16_t block_count = (uint16_t)((length + SDIO_PROBE_FUNCTION2_BLOCK_SIZE - 1u)
                                         / SDIO_PROBE_FUNCTION2_BLOCK_SIZE);
+      bool ok;
 
       if (block_count > 511u)
          block_count = 511u;
 
-      return sdio_cmd53_execute_timeout(dev, 2u, 0u, write, true, false, block_count,
-                                        buffer, SDIO_PROBE_FUNCTION2_BLOCK_SIZE,
-                                        timeout_us, NULL);
+      ok = sdio_cmd53_execute_timeout(dev, 2u, 0u, write, true, false, block_count,
+                                      buffer, SDIO_PROBE_FUNCTION2_BLOCK_SIZE,
+                                      timeout_us, NULL);
+      if (ok)
+         g_runtime_bus_active_us = RPI_GetSystemTime();
+      return ok;
    }
 
-   return sdio_cmd53_execute_timeout(dev, 2u, 0u, write, false, false, length,
-                                     buffer, length, timeout_us, NULL);
+   {
+      bool ok = sdio_cmd53_execute_timeout(dev, 2u, 0u, write, false, false, length,
+                                           buffer, length, timeout_us, NULL);
+      if (ok)
+         g_runtime_bus_active_us = RPI_GetSystemTime();
+      return ok;
+   }
 }
 
 static bool sdio_function2_transfer(sdio_host_t *dev, bool write, uint8_t *buffer,
@@ -5876,6 +5901,15 @@ static bool sdio_runtime_wake_bus(sdio_host_t *dev)
    if (dev == NULL)
       return false;
 
+   /* A transfer that completed microseconds ago proves the interface is
+      awake, so skip the CMD52 that would ask.  KSO sleep only engages after
+      the host goes idle, and the check is self-healing: if the chip somehow
+      did sleep, the next transfer fails, the stamp stops advancing, and the
+      following poll takes the full handshake below. */
+   if ((uint32_t)(RPI_GetSystemTime() - g_runtime_bus_active_us)
+          < SDIO_BUS_AWAKE_ASSUME_US)
+      return true;
+
    if (sdio_function1_read_byte(dev, SDIO_SLEEP_CSR, &status)
        && (status & awake) == awake)
       return true;   /* already awake */
@@ -5932,16 +5966,29 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
    if (!sdio_runtime_wake_bus(&g_runtime_device))
       return false;
 
-   /* Ack any pending mailbox interrupts once per poll cycle, before reading
-      from fn2.  This is the correct order: clear the interrupt line first so
-      the firmware can re-assert it when the next frame arrives.
+   bool service_interrupts = g_runtime_fifo_was_empty
+      || (uint32_t)(RPI_GetSystemTime() - g_runtime_int_service_us)
+            > SDIO_INT_SERVICE_INTERVAL_US;
+
+   /* Ack pending mailbox interrupts.  This used to run on every poll, ahead
+      of the fn2 read, costing two backplane CMD53s (~50 us) each time - but
+      frames are not detected through INT_STATUS at all, they are found by
+      peeking fn2 below, so on a poll that has frames waiting the whole
+      exchange is pure overhead in the middle of the hot path.
+
+      So it runs when the FIFO came up empty, plus a time-based floor: under
+      sustained receive the FIFO may never be empty, and the firmware still
+      needs its mailbox handshake, so service it anyway if it has been longer
+      than SDIO_INT_SERVICE_INTERVAL_US.
+
       Note: we do NOT gate on READ_FRAME_BC here because the BCM43430 does not
       reliably update that register.  Instead we read 4 bytes directly from fn2
       (cyw43-driver approach) and treat 0x0000/0x0000 as "no frame". */
-   {
+   if (service_interrupts) {
       static uint32_t s_poll_count;
 
       uint32_t int_status = 0u;
+      g_runtime_int_service_us = RPI_GetSystemTime();
       if (sdio_backplane_read_u32_timeout(&g_runtime_device,
                         g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                         SDIO_RUNTIME_POLL_TIMEOUT_US,
@@ -6000,8 +6047,11 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                          SDIO_RUNTIME_POLL_TIMEOUT_US))
          break; /* CMD53 error */
 
-      if (hwtag[0] == 0u && hwtag[1] == 0u)
+      if (hwtag[0] == 0u && hwtag[1] == 0u) {
+         g_runtime_fifo_was_empty = true;
          break; /* fn2 FIFO empty */
+      }
+      g_runtime_fifo_was_empty = false;
 
       /* There is a frame: feed the already-consumed 4-byte header forward
          to the completion path which reads the rest and processes it. */

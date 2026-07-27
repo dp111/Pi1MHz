@@ -47,7 +47,15 @@
 /* ------------------------------------------------------------------ */
 
 #define WS_HEADER_MAX        2048u   /* max HTTP request-header bytes   */
-#define WS_FILE_CHUNK        32768u  /* SD read/write burst size */
+#define WS_FILE_CHUNK        32768u  /* staging buffer / SD write burst   */
+/* Reads are deliberately smaller than writes.  A big write burst is a win
+   because the card charges per burst, but a big read is a main-loop stall:
+   conn_pump refills on every ACK, and the RX service loop can drain several
+   ACKs in one pass, so a 32 KB read multiplies into hundreds of KB of
+   synchronous SD access in a single iteration - measured as multi-second ping
+   spikes and 10% ICMP loss during a download.  8 KB keeps each refill short
+   while still reaching FatFs's multiblock path. */
+#define WS_READ_CHUNK        8192u
 #define WS_BOUNDARY_MAX      128u    /* multipart boundary text limit   */
 #define WS_UPLOAD_HEAD_MAX   1024u   /* multipart part-header limit     */
 #define WS_UPLOAD_WORK       2048u   /* upload scan working buffer      */
@@ -1693,8 +1701,8 @@ static bool conn_pump(ws_conn_t *c)
             UINT req;
             if (c->dl_remaining == 0u || c->dl_eof)
                break;
-            req = (c->dl_remaining < WS_FILE_CHUNK)
-                  ? (UINT)c->dl_remaining : (UINT)WS_FILE_CHUNK;
+            req = (c->dl_remaining < WS_READ_CHUNK)
+                  ? (UINT)c->dl_remaining : (UINT)WS_READ_CHUNK;
             if (f_read(&c->dl_file, c->dl_buf, req, &br) != FR_OK
                 || br == 0u) {
                c->dl_eof = true;
