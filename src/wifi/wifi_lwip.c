@@ -430,6 +430,73 @@ static void wifi_lwip_log_dhcp_state(void)
                        (unsigned int)d->tries);
 }
 
+/* Association retry schedule.  The first attempt waits out the boot link-up
+   window (an association in progress must not be interrupted), then each
+   failure doubles the wait to a ceiling, so a Pi carried out of range costs
+   one join burst a minute rather than a continuous stream of ioctls. */
+/* React quickly - a deauth is over in an instant and the join burst itself
+   takes about a second, so waiting longer than this is pure downtime.  The
+   doubling is what protects the bus when there is genuinely no AP to find. */
+#define WIFI_LWIP_REJOIN_FIRST_US  (2u * 1000000u)
+#define WIFI_LWIP_REJOIN_MAX_US    (60u * 1000000u)
+
+static uint32_t s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
+static uint32_t s_rejoin_due_us;
+static bool     s_rejoin_scheduled;
+
+/* Drive association retries.  Called from wifi_lwip_poll() on every service,
+   in both the never-joined and lost-the-link cases - they differ only in
+   which timestamp starts the clock. */
+static void wifi_lwip_rejoin_service(void)
+{
+   uint32_t now_us = RPI_GetSystemTime();
+
+   /* A rejoin in flight owns the runtime state machine until it finishes.
+      tick() returning false means it has reached DONE (or ERROR); the link
+      itself is reported separately, by the chip's events. */
+   if (sdio_runtime_rejoin_busy()) {
+      (void)sdio_runtime_tick();
+      return;
+   }
+
+   if (g_wifi_lwip_context.link_up) {
+      /* Associated: reset the schedule so the next outage starts fresh. */
+      s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
+      s_rejoin_scheduled = false;
+      return;
+   }
+
+   if (!s_rejoin_scheduled) {
+      /* First time down.  Before the link has ever come up, allow the full
+         boot window - the join sequence is slow and DHCP follows it - and
+         after that, react to a drop on the normal interval. */
+      uint32_t first_wait = g_wifi_lwip_context.link_established
+                               ? s_rejoin_interval_us
+                               : WIFI_LWIP_LINK_TIMEOUT_US;
+
+      s_rejoin_due_us = (g_wifi_lwip_context.link_established
+                            ? now_us
+                            : g_wifi_lwip_context.init_time_us) + first_wait;
+      s_rejoin_scheduled = true;
+      return;
+   }
+
+   if ((int32_t)(now_us - s_rejoin_due_us) < 0)
+      return;
+
+   if (sdio_runtime_rejoin_start())
+      wifi_lwip_debug_log("link down - re-issuing join");
+
+   /* Schedule the next attempt whether or not this one could start: if the
+      runtime was busy we simply try again after the same interval. */
+   if (s_rejoin_interval_us < WIFI_LWIP_REJOIN_MAX_US) {
+      s_rejoin_interval_us *= 2u;
+      if (s_rejoin_interval_us > WIFI_LWIP_REJOIN_MAX_US)
+         s_rejoin_interval_us = WIFI_LWIP_REJOIN_MAX_US;
+   }
+   s_rejoin_due_us = now_us + s_rejoin_interval_us;
+}
+
 void wifi_lwip_poll(void)
 {
    if (!g_wifi_lwip_context.timers_running)
@@ -444,17 +511,18 @@ void wifi_lwip_poll(void)
       return;
    }
 
-   /* Boot-time link-up timeout: if the link never associated within the
-      window, the join has failed - report it as an error and stop
-      polling rather than spinning on the SDIO bus forever.  Disabled
-      once the link has come up even once (link_established). */
-   if (!g_wifi_lwip_context.link_established
-       && (RPI_GetSystemTime() - g_wifi_lwip_context.init_time_us) > WIFI_LWIP_LINK_TIMEOUT_US) {
-      wifi_lwip_debug_log("link-up timeout - WiFi join failed, polling stopped");
-      wifi_set_error("WiFi failed to associate within the boot timeout");
-      g_wifi_lwip_context.timers_running = false;
-      return;
-   }
+   /* Keep trying to associate.  The chip does not re-associate by itself and
+      the boot path issues the join exactly once, so a scan that comes back
+      empty - WLC_E_SET_SSID status 3, which one noisy moment is enough to
+      produce - used to be terminal: this code reported an error, latched
+      timers_running false, and the Pi stayed off the network until it was
+      power-cycled.  An AP rebooting an hour later ended the same way.
+
+      So the link-up timeout now schedules a retry instead of giving up, and
+      the same schedule covers a link lost long after boot.  The backoff is
+      what keeps a hopeless retry (no AP in range at all) from hammering the
+      SDIO bus: attempts start a few seconds apart and stretch to a minute. */
+   wifi_lwip_rejoin_service();
 
    /* Drain inbound frames and hand them to lwIP.  sdio_runtime_poll_-
       ethernet_frame() also processes the chip's async events (WLC_E_LINK,
