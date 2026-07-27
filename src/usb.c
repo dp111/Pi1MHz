@@ -6,6 +6,7 @@
 // Short names so these resolve via the -isystem TinyUSB dirs (third-party,
 // warnings suppressed). Do NOT change back to explicit relative paths.
 #include "usb.h"
+#include "usb/mtp_fs.h"
 #include <bsp/board_api.h>
 #include "rpi/interrupts.h"
 #include "Pi1MHz.h"
@@ -251,6 +252,9 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 
 static void usb_task(void) {
     tud_task();
+    /* A received kernel.now is flashed from here rather than from inside the
+       MTP callback - see mtp_fs_reboot_poll. */
+    mtp_fs_reboot_poll();
 }
 
 

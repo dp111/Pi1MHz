@@ -583,6 +583,57 @@ static void fs_send_object_event(uint16_t code, uint32_t handle) {
    collision that was repaired at cache-build time may not match, in which
    case the host simply ignores that event and falls back to a later
    re-enumeration.  See mtp_fs.h. */
+/* A received kernel.now waits here until the main loop can act on it.
+ *
+ * The reboot used to happen inside this callback, with interrupts off, never
+ * returning - so the host's SendObject was never answered and the device
+ * simply vanished mid-command, while USB was still connected and possibly
+ * still moving data.  Copying a new image over the running kernel and jumping
+ * into it while a controller may still touch memory is only safe if nothing
+ * is in flight, which is why flashing an idle Pi always worked and flashing
+ * one straight after a transfer left it hung with no USB and no network -
+ * reproduced deliberately: four flashes idle all succeeded, one flash
+ * immediately after a load test failed exactly that way.
+ *
+ * Deferring costs a few milliseconds and buys a clean completion for the
+ * host, a chance to disconnect USB first, and a main loop that is between
+ * poll callbacks rather than nested inside one. */
+static uint8_t *g_kernel_reboot_data;
+static uint32_t g_kernel_reboot_len;
+
+/* Main-loop half of the kernel.now flash: let the MTP response reach the host,
+   drop off the bus, then copy the image over the running kernel and jump.
+   Called from the USB poll, so by here we are between poll callbacks rather
+   than nested inside one. */
+void mtp_fs_reboot_poll(void) {
+  static uint8_t stage;
+  static uint32_t settle_us;
+
+  if (g_kernel_reboot_data == NULL)
+    return;
+
+  if (stage == 0u) {
+    /* tud_task() has queued the response by now; give it time on the wire,
+       then take the device off the bus so nothing is left in flight. */
+    settle_us = RPI_GetSystemTime() + 20000u;
+    stage = 1u;
+    return;
+  }
+  if (stage == 1u) {
+    if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
+      return;
+    tud_disconnect();
+    settle_us = RPI_GetSystemTime() + 50000u;
+    stage = 2u;
+    return;
+  }
+  if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
+    return;
+
+  _disable_interrupts();
+  _copyandreboot(g_kernel_reboot_data, (int)g_kernel_reboot_len); /* never returns */
+}
+
 void mtp_fs_notify_fs_changed(void) {
   fs_cache_invalidate();
 }
@@ -1143,10 +1194,14 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
         if (reboot_copy_len > g_write_state.transferred) {
           memset(g_write_state.kernel_data + g_write_state.transferred, 0, reboot_copy_len - g_write_state.transferred);
         }
-        _disable_interrupts();
-        _copyandreboot(g_write_state.kernel_data, (int)reboot_copy_len); // this never returns
 
-        resp->header->code = MTP_RESP_GENERAL_ERROR;
+        /* Hand the image to the main loop and answer the host normally.  The
+           buffer's ownership moves with it, so clear the pointer before the
+           release below frees it. */
+        g_kernel_reboot_data = g_write_state.kernel_data;
+        g_kernel_reboot_len = reboot_copy_len;
+        g_write_state.kernel_data = NULL;
+        resp->header->code = MTP_RESP_OK;
         fs_release_write_state();
         break;
       }
