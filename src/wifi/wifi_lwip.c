@@ -323,7 +323,14 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
 /* Returns true if the chip had at least one frame this cycle (the bus is
    "active"), so the caller can keep draining at full rate; false when the
    fn2 FIFO came up empty, letting the caller back off the idle poll. */
-static bool wifi_lwip_drain_rx_frames(void)
+/* budget_end_us: wall-clock ceiling for this drain.  Checked per frame, not
+   just per call, because the expensive part happens *inside* one iteration:
+   handing a frame to lwIP runs the TCP callbacks, and those do the webserver's
+   synchronous SD reads and writes.  Eight frames of an upload can therefore
+   chain several 32 KB f_writes before a caller-side check would ever be
+   reached - tens of milliseconds of main loop, which the Beeb's timing-
+   sensitive paths feel directly. */
+static bool wifi_lwip_drain_rx_frames(uint32_t budget_end_us)
 {
    /* static: this is on the cooperative poll path and is large (~1.6 KB).
       Keeping it off the stack avoids a deep RX->TX nesting blowing the
@@ -338,6 +345,10 @@ static bool wifi_lwip_drain_rx_frames(void)
 
    for (frame_index = 0u; frame_index < WIFI_LWIP_RX_FRAME_BUDGET; ++frame_index) {
       struct pbuf *packet;
+
+      if (frame_index != 0u
+          && (int32_t)(RPI_GetSystemTime() - budget_end_us) >= 0)
+         break;                   /* out of time; the rest waits for next poll */
 
       frame_length = 0u;
       if (!sdio_runtime_poll_ethernet_frame(frame, sizeof(frame), &frame_length))
@@ -710,7 +721,7 @@ void wifi_lwip_poll(void)
             delay it does not already tolerate, and the loop exits the moment
             the FIFO is empty - an idle link pays nothing. */
          for (;;) {
-            bool drained = wifi_lwip_drain_rx_frames();
+            bool drained = wifi_lwip_drain_rx_frames(budget_end);
 
             active = active || drained;
             (void)wifi_lwip_tx_hold_flush();

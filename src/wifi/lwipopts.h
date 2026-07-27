@@ -113,5 +113,12 @@
    which is what the pool-exhausted path used to drop. */
 #define MEMP_NUM_PBUF                   96
 #define PBUF_POOL_SIZE                  96
+/* Bound out-of-order queueing.  lwIP's default is unlimited, and every
+   out-of-order segment pins a pool pbuf: at a 44-segment receive window, two
+   lossy uploads can pin 88 of the 96 and leave nothing for the ACKs, ARP,
+   DHCP or AUN reassembly - including nothing for the retransmission that
+   would fill the hole and release them, so the connections sit pinned until
+   the idle watchdog aborts them. */
+#define TCP_OOSEQ_MAX_PBUFS             16
 
 #endif

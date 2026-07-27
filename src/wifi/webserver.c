@@ -1779,8 +1779,12 @@ static bool conn_pump(ws_conn_t *c)
                    || cur.size < c->fb_info.size)
                   c->fb_stale = true;
             }
+            /* Bound by the read chunk, not the staging buffer: dl_buf grew to
+               32 KB for SD write bursts, and letting the row renderer fill all
+               of it per refill quadrupled the main-loop stall on a path that
+               change was not about. */
             while (c->fb_row < c->fb_info.height
-                   && filled + row_padded <= sizeof c->dl_buf) {
+                   && filled + row_padded <= WS_READ_CHUNK) {
                if (c->fb_stale)
                   memset(&c->dl_buf[filled], 0, row_padded);
                else
@@ -2753,7 +2757,7 @@ static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
       programming wait for each - measured at 0.19 MB/s for a 20 MB upload,
       the slowest of the three write paths, against 1.6 MB/s for WebDAV which
       already buffered. */
-   while (len > 0u) {
+   while (len > 0u && c->up_state == UP_DATA) {
       size_t space = WS_FILE_CHUNK - c->up_buf_len;
       size_t n     = (len < space) ? len : space;
 
@@ -2778,15 +2782,18 @@ static bool upload_flush(ws_conn_t *c)
       return true;
    c->up_buf_len = 0u;
    if (f_write(&c->write_file.up, c->dl_buf, (UINT)len, &bw) != FR_OK || bw != len) {
-      /* upload_fail() queues the error page and returns TRUE (the connection
-         survives to send it), so it cannot be returned from here: the caller
-         reads false as "stop feeding the body".  Returning it directly meant a
-         card that failed mid-upload kept staging into a file that had just
-         been closed, and queued the error page a second time on top of the
-         one already in the send buffer.  dav_put_flush has this right. */
-      (void)upload_fail(c, "Writing to the SD card failed "
-                           "(the card may be full or write-protected).");
-      return false;
+      /* Returns "connection still alive", not "the write worked" - which is
+         what every caller up the chain means by false, all the way to
+         ws_recv, where false becomes ERR_ABRT and tells lwIP the pcb has
+         already been freed.  upload_fail() queues the error page and leaves
+         the connection up precisely so it can be sent, so its value is the
+         one to pass on; it only returns false if queuing the page itself ran
+         out of memory and tore the connection down.
+         What stops the body being fed is up_state going to UP_FAILED, which
+         upload_fail sets - see the loop guards below and in
+         upload_feed_data. */
+      return upload_fail(c, "Writing to the SD card failed "
+                            "(the card may be full or write-protected).");
    }
    c->up_bytes_written += (uint32_t)len;
    return true;
@@ -5560,8 +5567,14 @@ void webserver_poll(void)
       ever in flight at a time (route_dav_move_or_copy enforces this),
       so the bookkeeping is a single pointer.  ws_copy_step itself
       clears g_ws_active_copy when the transfer completes or fails. */
-   if (g_ws_active_copy != NULL)
+   if (g_ws_active_copy != NULL) {
+      /* A COPY moves data with no recv or sent callbacks to stamp the I/O
+         clock, so without this the free-space FAT walk would happily run in
+         the middle of one - the very thing the quiet window exists to
+         prevent. */
+      ws_note_io();
       ws_copy_step(g_ws_active_copy);
+   }
 
    if (g_ws_ready)
       webserver_refresh_sd_free();
