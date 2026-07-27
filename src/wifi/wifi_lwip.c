@@ -153,6 +153,46 @@ static void wifi_lwip_update_runtime_state(void)
       wifi_note_network_ready();
 }
 
+/* One frame held back when the chip's credit window is shut.
+ *
+ * Refusing to transmit is fine for TCP, which simply retransmits, but it is
+ * silent loss for everything else: an ARP reply, an ICMP echo reply or an AUN
+ * datagram is just gone, and the window is shut for a good fraction of any
+ * sustained download.  That is a large part of why pings to this Pi look lossy
+ * exactly when it is busy, while the transfer causing it completes fine.
+ *
+ * One slot rather than a queue, deliberately.  It keeps ordering intact - the
+ * held frame always goes first, and a new frame that cannot be sent is refused
+ * rather than overtaking it - and it bounds the memory and the damage.  Held
+ * frames are dropped once stale, because a ping reply or an ARP response
+ * delivered a second late is worse than useless. */
+#define WIFI_LWIP_TX_HOLD_MAX_AGE_US 250000u
+
+_Alignas(4) static uint8_t s_tx_hold_frame[WIFI_LWIP_RX_FRAME_MAX_LEN];
+static uint16_t s_tx_hold_len;
+static uint32_t s_tx_hold_since_us;
+
+/* Try to put the held frame on the wire.  Returns true when the slot is free
+ * afterwards, either because it went out, because it was stale, or because
+ * there was nothing held. */
+static bool wifi_lwip_tx_hold_flush(void)
+{
+   if (s_tx_hold_len == 0u)
+      return true;
+
+   if (sdio_runtime_send_ethernet_frame(s_tx_hold_frame, s_tx_hold_len)) {
+      s_tx_hold_len = 0u;
+      return true;
+   }
+
+   if ((RPI_GetSystemTime() - s_tx_hold_since_us) > WIFI_LWIP_TX_HOLD_MAX_AGE_US) {
+      s_tx_hold_len = 0u;             /* too old to be worth delivering */
+      return true;
+   }
+
+   return false;
+}
+
 // cppcheck-suppress constParameterCallback
 static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
 {
@@ -176,8 +216,17 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       cursor = cursor->next;
    }
 
-   if (!sdio_runtime_send_ethernet_frame(frame, offset))
+   /* Anything already held goes first, or this frame would overtake it. */
+   if (!wifi_lwip_tx_hold_flush())
       return ERR_IF;
+
+   if (!sdio_runtime_send_ethernet_frame(frame, offset)) {
+      /* Hold it for the next poll instead of dropping it on the floor. */
+      memcpy(s_tx_hold_frame, frame, offset);
+      s_tx_hold_len = offset;
+      s_tx_hold_since_us = RPI_GetSystemTime();
+      return ERR_OK;                  /* accepted: we own it now */
+   }
 
    /* Anything we send is a reason to listen harder.  The RX throttle decides
       the link is idle from *inbound* frames alone, which is precisely
@@ -567,6 +616,11 @@ void wifi_lwip_poll(void)
                                : (now_us + WIFI_LWIP_RX_IDLE_INTERVAL_US);
       }
    }
+
+   /* Retry anything the credit window refused.  Draining first is what makes
+      this work: every received frame refreshes the window, so by now the chip
+      has usually made room. */
+   (void)wifi_lwip_tx_hold_flush();
    sys_check_timeouts();
    wifi_lwip_log_dhcp_state();
    g_wifi_lwip_context.last_service_time_us = RPI_GetSystemTime();
