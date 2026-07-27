@@ -552,7 +552,29 @@ _Noreturn void kernel_main(void)
    enable_MMU_and_IDCaches(0);
 
    // Setup malloc memory
-   arm_setup_heap_limit((void *) (uintptr_t) (mem_info(1)) );
+   {
+      /* A zero here is not a small problem.  mem_info() returns 0 when its
+         mailbox query fails, arm_setup_heap_limit() then rejects it, and
+         _sbrk falls back to the 4 MB early limit - which is enough for the
+         main loop but not for TinyUSB and lwIP, so the Pi comes up with no
+         USB and no network and cannot be reached to be fixed.  That has
+         happened, and it cost an SD card swap.
+
+         So: ask more than once, and if the VC still will not answer, use a
+         figure low enough to be safe on any GPU split (the smallest leaves
+         the ARM 64 MB) and high enough to run the whole system.  Booting
+         with a modest heap and a working network beats booting unreachable. */
+      uint32_t arm_memory_bytes = mem_info(1);
+      unsigned int retry;
+
+      for (retry = 0u; arm_memory_bytes == 0u && retry < 3u; ++retry)
+         arm_memory_bytes = mem_info(1);
+
+      if (arm_memory_bytes == 0u)
+         arm_memory_bytes = 32u * 1024u * 1024u;
+
+      arm_setup_heap_limit((void *) (uintptr_t) arm_memory_bytes);
+   }
 
    init_hardware();
 
