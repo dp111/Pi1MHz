@@ -176,7 +176,20 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       cursor = cursor->next;
    }
 
-   return sdio_runtime_send_ethernet_frame(frame, offset) ? ERR_OK : ERR_IF;
+   if (!sdio_runtime_send_ethernet_frame(frame, offset))
+      return ERR_IF;
+
+   /* Anything we send is a reason to listen harder.  The RX throttle decides
+      the link is idle from *inbound* frames alone, which is precisely
+      backwards for a file server: a download is almost all outbound, and the
+      only thing coming back is the occasional ACK - so between ACKs the drain
+      keeps finding an empty FIFO and backing off, and the next ACK then waits
+      in the chip for up to the idle interval before we look.  Since the
+      download only refills its window when an ACK arrives, that delay lands
+      directly on throughput rather than merely on latency.  The AUN path
+      already kicked the drain for exactly this reason; TCP never did. */
+   wifi_lwip_rx_kick();
+   return ERR_OK;
 }
 
 /* Returns true if the chip had at least one frame this cycle (the bus is
