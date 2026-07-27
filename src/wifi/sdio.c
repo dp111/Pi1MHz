@@ -11,6 +11,12 @@
 #include <string.h>
 
 #define SDIO_RUNTIME_MAX_FRAME_SIZE 1600u
+/* Frame buffers carry a block of headroom beyond the longest frame they will
+   accept, because sdio_function2_transfer_timeout() rounds a transfer up to a
+   whole number of 512-byte blocks to keep it to a single CMD53.  The padded
+   read of a maximum-length frame body is round_up(1596, 512) = 2048 bytes
+   placed 4 bytes in, so the buffer must hold 2052. */
+#define SDIO_RUNTIME_FRAME_BUFFER_SIZE (SDIO_RUNTIME_MAX_FRAME_SIZE + 512u)
 #define SDIO_RUNTIME_MAX_RX_FRAMES_PER_POLL 8u
 #define SDIO_RUNTIME_FW_CHUNKS_PER_TICK 8u
 #define SDIO_RUNTIME_HIGH_CLOCK_HZ 25000000u
@@ -3127,43 +3133,41 @@ static void sdio_store_u32_le(uint8_t *dest, uint32_t value)
    dest[3] = (uint8_t)((value >> 24) & 0xffu);
 }
 
+/* One CMD53 per frame, by rounding up to a whole number of blocks rather
+   than sending the remainder as a second, byte-mode command.
+
+   A 1532-byte SDPCM frame used to become two transfers: 2 x 512 in block
+   mode plus 508 in byte mode.  The second command is pure overhead - its
+   command, response and completion polling cost about as much as the 508
+   bytes it carries - and every frame in both directions paid it.
+
+   Padding is safe in both directions because SDPCM frames are delimited by
+   the length in their own header, not by the size of the bus transfer: on
+   write the chip ignores the tail (tx_frame is zeroed before use, so it is
+   never stale data on the wire), and on read the extra bytes are chip
+   padding that the parser never looks at.  What that costs is buffer
+   headroom, which is why the frame buffers are a block larger than the
+   longest frame they will accept. */
 static bool sdio_function2_transfer_timeout(sdio_host_t *dev, bool write, uint8_t *buffer,
                                             uint16_t length, uint32_t timeout_us)
 {
-   uint16_t remaining = length;
-   uint8_t *cursor = buffer;
+   if (length == 0u)
+      return true;
 
-   while (remaining > 0u) {
-      uint16_t count = remaining;
-      bool block_mode = false;
-      uint32_t block_size = count;
+   if (length > SDIO_PROBE_FUNCTION2_BLOCK_SIZE) {
+      uint16_t block_count = (uint16_t)((length + SDIO_PROBE_FUNCTION2_BLOCK_SIZE - 1u)
+                                        / SDIO_PROBE_FUNCTION2_BLOCK_SIZE);
 
-      if (count > SDIO_PROBE_FUNCTION2_BLOCK_SIZE) {
-         uint16_t block_count = (uint16_t)(count / SDIO_PROBE_FUNCTION2_BLOCK_SIZE);
+      if (block_count > 511u)
+         block_count = 511u;
 
-         if (block_count > 511u)
-            block_count = 511u;
-
-         count = block_count;
-         block_mode = true;
-         block_size = SDIO_PROBE_FUNCTION2_BLOCK_SIZE;
-         remaining = (uint16_t)(remaining - (uint16_t)(block_count * SDIO_PROBE_FUNCTION2_BLOCK_SIZE));
-         if (!sdio_cmd53_execute_timeout(dev, 2u, 0u, write, true, false, count,
-                                         cursor, block_size, timeout_us, NULL)) {
-            return false;
-         }
-         cursor += block_count * SDIO_PROBE_FUNCTION2_BLOCK_SIZE;
-         continue;
-      }
-
-      remaining = 0u;
-      if (!sdio_cmd53_execute_timeout(dev, 2u, 0u, write, block_mode, false, count,
-                                      cursor, block_size, timeout_us, NULL)) {
-         return false;
-      }
+      return sdio_cmd53_execute_timeout(dev, 2u, 0u, write, true, false, block_count,
+                                        buffer, SDIO_PROBE_FUNCTION2_BLOCK_SIZE,
+                                        timeout_us, NULL);
    }
 
-   return true;
+   return sdio_cmd53_execute_timeout(dev, 2u, 0u, write, false, false, length,
+                                     buffer, length, timeout_us, NULL);
 }
 
 static bool sdio_function2_transfer(sdio_host_t *dev, bool write, uint8_t *buffer,
@@ -3327,7 +3331,7 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
       the host code's uint32_t* access can take an alignment fault on
       ARMv6.  Static uint8_t arrays only have 1-byte alignment by
       default; force 4 to match the hardware. */
-   _Alignas(4) static uint8_t frame_buffer[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   _Alignas(4) static uint8_t frame_buffer[SDIO_RUNTIME_FRAME_BUFFER_SIZE];
    uint16_t total_length;
    uint8_t channel;
    uint8_t header_length;
@@ -3339,7 +3343,7 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
 
    total_length = hwtag[0];
    if ((uint16_t)(hwtag[0] ^ hwtag[1]) != (uint16_t)0xffffu || total_length < 12u
-      || total_length > (uint16_t)sizeof(frame_buffer)) {
+      || total_length > (uint16_t)SDIO_RUNTIME_MAX_FRAME_SIZE) {
       /* Bad header: could be stale fn2 data, empty FIFO, or emulator returning dummy data.
          Don't spam logs with every bad frame in emulator mode. */
       (void)sdio_runtime_abort_function2_read(dev);
@@ -3566,7 +3570,7 @@ static uint8_t sdio_drain_fn2_responses(sdio_host_t *dev)
    /* static + _Alignas(4): same single-threaded poll-path rationale
       as the buffer in complete_read_ethernet_frame_timeout, plus the
       4-byte alignment the EMMC PIO transfer needs. */
-   _Alignas(4) static uint8_t scratch[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   _Alignas(4) static uint8_t scratch[SDIO_RUNTIME_FRAME_BUFFER_SIZE];
    uint8_t i;
    uint8_t consumed = 0u;
 
@@ -3593,7 +3597,7 @@ static uint8_t sdio_drain_fn2_responses(sdio_host_t *dev)
          CDCF_IOC_ERROR set by the firmware, and processes event-channel
          frames into g_runtime_link_up via sdio_runtime_note_event. */
       (void)sdio_runtime_complete_read_ethernet_frame(dev, hwtag, scratch,
-                                                       (uint16_t)sizeof(scratch),
+                                                       (uint16_t)SDIO_RUNTIME_MAX_FRAME_SIZE,
                                                        &scratch_length);
       ++consumed;
    }
@@ -3759,7 +3763,7 @@ static int sdio_runtime_clm_download_step(sdio_host_t *dev)
    /* static: ~1.6 KB.  Each tick rebuilds the next CLM chunk; the
       step runs from the cooperative poll path and is not re-entered,
       so the buffer can be reused across ticks from BSS. */
-   _Alignas(4) static uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   _Alignas(4) static uint8_t tx_frame[SDIO_RUNTIME_FRAME_BUFFER_SIZE];
    static const char clm_iovar[] = "clmload";
    const uint16_t name_length = (uint16_t)sizeof(clm_iovar); /* "clmload" + NUL = 8 */
    uint32_t clm_length = g_cyw43_clm_length;
@@ -5696,7 +5700,7 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       the lwIP transmit path, which is itself nested under the RX drain
       (wifi_lwip_drain_rx_frames -> lwIP -> link_output -> here), so a
       stack copy would compound an already deep call chain. */
-   _Alignas(4) static uint8_t tx_frame[SDIO_RUNTIME_MAX_FRAME_SIZE];
+   _Alignas(4) static uint8_t tx_frame[SDIO_RUNTIME_FRAME_BUFFER_SIZE];
    uint16_t total_length;
 
    if (!g_runtime_started || frame == NULL || frame_length == 0u) {
@@ -5708,7 +5712,7 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       which would otherwise wrap a 65519+ payload back into a small
       total_length, slip past the size check below, and overrun the
       1.6 KB tx_frame buffer in the memcpy that follows. */
-   if (frame_length > (uint16_t)(sizeof(tx_frame) - 18u)) {
+   if (frame_length > (uint16_t)(SDIO_RUNTIME_MAX_FRAME_SIZE - 18u)) {
       sdio_runtime_set_error("Ethernet frame exceeds SDIO transmit buffer");
       return false;
    }

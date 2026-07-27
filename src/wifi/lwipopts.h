@@ -55,7 +55,13 @@
  * so a full-size 1460-byte MSS is correct.
  */
 #define TCP_MSS                         1460
-#define TCP_WND                         (8 * TCP_MSS)
+/* The receive window governs uploads exactly as the send window governs
+ * downloads, and pushing files *to* the Pi is the common direction for a
+ * file server.  It was left at 8 * MSS while the send window grew, which
+ * capped WebDAV PUT well below what the link can carry.  Matched to
+ * TCP_SND_BUF; PBUF_POOL_SIZE below has to cover a full window of frames
+ * sitting in the pool waiting to be written to the card. */
+#define TCP_WND                         (32 * TCP_MSS)
 /* The send window is the throughput limiter, so it is sized generously and
  * the heap is sized to fit several connections at that size.  tcp_write()
  * allocates from MEM_SIZE, so a send buffer is really a per-connection claim
@@ -100,10 +106,12 @@
 /* DHCP + DNS + NetBIOS + mDNS = 4 in use today; 8 leaves headroom for
    ad-hoc UDP without dipping into the unused-PCB pool. */
 #define MEMP_NUM_UDP_PCB                8
-/* WebDAV PROPFIND on a deep directory plus a concurrent download can
-   pin a few pbufs each; 32 keeps the worst case well clear of the
-   pool-exhausted path that drops DHCP/ARP. */
-#define MEMP_NUM_PBUF                   32
-#define PBUF_POOL_SIZE                  32
+/* Received frames are pool pbufs, so an upload holds up to a full TCP_WND
+   of them until the webserver has written them to the card - and an SD
+   write stall is exactly when the pool is most needed.  Sized to cover a
+   full receive window (32 frames) with slack for PROPFIND and ARP/DHCP,
+   which is what the pool-exhausted path used to drop. */
+#define MEMP_NUM_PBUF                   48
+#define PBUF_POOL_SIZE                  48
 
 #endif

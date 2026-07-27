@@ -410,6 +410,16 @@ static bool ws_propfind_cache_lookup(const char *path, FILINFO *out)
    leave a dangling reference. */
 static ws_conn_t      *g_ws_active_copy;
 
+/* When the last byte moved on any connection.  Used to keep the free-space
+   FAT walk out of the way of active transfers - see webserver_refresh_sd_free. */
+static uint32_t        g_ws_last_io_us;
+#define WS_FREE_QUIET_US 1000000u    /* server must be idle this long first */
+
+static void ws_note_io(void)
+{
+   g_ws_last_io_us = RPI_GetSystemTime();
+}
+
 /* LUN whose image the in-flight COPY is writing, or -1. Only one COPY runs at
    a time (route_dav_move_or_copy refuses a second), so one slot is enough.
    Every path that clears g_ws_active_copy goes through ws_copy_slot_release()
@@ -5256,6 +5266,8 @@ static err_t ws_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
       return ERR_ABRT;
    }
 
+   ws_note_io();
+
    if (p == NULL) {
       /* the remote end closed the connection.  If tcp_close fails it
          falls back to tcp_abort; lwIP then requires ERR_ABRT from this
@@ -5283,6 +5295,7 @@ static err_t ws_sent(void *arg, struct tcp_pcb *tpcb, u16_t len)
 
    c->bytes_acked += len;
    c->poll_count = 0u;
+   ws_note_io();
    /* conn_pump may close the connection and, if tcp_close fails, fall
       back to tcp_abort.  lwIP requires the callback to return ERR_ABRT
       whenever tcp_abort was called from within it, otherwise the stack
@@ -5403,6 +5416,20 @@ static void webserver_refresh_sd_free(void)
    uint32_t now = RPI_GetSystemTime();
    DWORD    nclst = 0u;
    FATFS   *fs = NULL;
+
+   /* Never while data is moving.  f_getfree walks the whole FAT, which on a
+      multi-gigabyte card takes long enough to be felt: it runs synchronously
+      from the poll loop, so for its duration nothing drains the WiFi chip,
+      nothing services lwIP, and every transfer in progress stalls.  Measured
+      as uploads crawling to a few kB/s for the first attempts after a batch
+      of deletes, then recovering once the walk had happened.
+
+      Free space is a display figure for /status and PROPFIND, so it can wait
+      for a quiet moment.  The age stamp is deliberately not touched here, so
+      the refresh happens as soon as the server goes idle rather than being
+      pushed out another whole TTL. */
+   if ((now - g_ws_last_io_us) < WS_FREE_QUIET_US)
+      return;
 
    /* The age check applies to failures too.  Gating it on _valid meant a
       card that could not answer f_getfree - no card, a bad mount, a
