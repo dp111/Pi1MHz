@@ -96,6 +96,18 @@ static bool g_runtime_rssi_valid;
 static bool g_runtime_rssi_request_pending;
 static uint16_t g_runtime_rssi_request_id;
 static bool g_runtime_rssi_query_wanted;
+/* Chip-side packet counters, fetched the same way as the RSSI.  Kept so a
+   loss episode can be attributed: the chip counts frames that actually
+   arrived over the air, so rx_good moving while our own frame count does not
+   means we dropped them, and rx_good not moving at all means they never
+   arrived. */
+static uint32_t g_runtime_pktcnt[5];
+static bool g_runtime_pktcnt_valid;
+static bool g_runtime_pktcnt_query_wanted;
+static bool g_runtime_pktcnt_step_sent;
+static bool g_runtime_pktcnt_request_pending;
+static uint16_t g_runtime_pktcnt_request_id;
+static uint32_t g_runtime_pktcnt_deadline_us;
 static bool g_runtime_rssi_step_sent;
 static uint32_t g_runtime_rssi_step_deadline_us;
 /* MAC the caller (wifi.c) wants the chip to transmit with.  Pushed
@@ -305,6 +317,14 @@ static uint32_t g_runtime_sdio_core_base = CYW43_SDIO_CORE_BASE;
 #define WLC_GET_WPA_AUTH 164u
 #define WLC_GET_RADIO 37u
 #define WLC_GET_RSSI 127u
+/* Returns the chip's own packet counters: rx_good, rx_bad, tx_good, tx_bad,
+   rx_ocast_good, five little-endian u32s.  The point of asking is that the
+   chip counts what actually arrived over the air, so comparing its rx_good
+   against our own received-frame count separates "the frame never arrived"
+   from "it arrived and we lost it" - which nothing on the host side can
+   distinguish. */
+#define WLC_GET_PKTCNTS 137u
+#define WLC_PKTCNTS_BYTES 20u
 #define WLC_SSID_MAX_LEN 32u
 #define WSEC_MAX_PSK_LEN 64u
 #define WSEC_PASSPHRASE 0x0001u
@@ -2341,6 +2361,8 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
          return WLC_GET_RADIO;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
          return WLC_GET_RSSI;
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS:
+         return WLC_GET_PKTCNTS;
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
          return WLC_SCAN;
       case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
@@ -2449,6 +2471,8 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          /* WLC_GET_* ioctls return a u32; send a 4-byte zero buffer
             for the chip to fill. */
          return 4u;
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS:
+         return WLC_PKTCNTS_BYTES;   /* five u32 counters to be filled in */
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
          /* wl_scan_params (packed):
               wlc_ssid_t  ssid     36   (length=0 => broadcast scan)
@@ -3005,9 +3029,9 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
-         /* WLC_GET_* ioctls write a u32 into the 4-byte response slot.
-            Buffer already zeroed by the memset at the top of this
-            function. */
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS:
+         /* WLC_GET_* ioctls write their reply into the response slot, which
+            the memset at the top of this function has already zeroed. */
          break;
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
       {
@@ -3562,6 +3586,21 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
                &frame_buffer[header_length + CDC_HEADER_LENGTH]);
             g_runtime_rssi_valid = true;
             g_runtime_rssi_request_pending = false;
+         }
+         /* WLC_GET_PKTCNTS reply: five little-endian u32 counters, matched by
+            request id like the others. */
+         if (g_runtime_pktcnt_request_pending && cdc_cmd == WLC_GET_PKTCNTS
+             && cdc_request_id == g_runtime_pktcnt_request_id
+             && !(cdc_flags & CDCF_IOC_ERROR)
+             && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH
+                                           + WLC_PKTCNTS_BYTES)) {
+            unsigned int i;
+
+            for (i = 0u; i < 5u; ++i)
+               g_runtime_pktcnt[i] = sdio_load_u32_le(
+                  &frame_buffer[header_length + CDC_HEADER_LENGTH + (i * 4u)]);
+            g_runtime_pktcnt_valid = true;
+            g_runtime_pktcnt_request_pending = false;
          }
       }
       return false;
@@ -5745,6 +5784,79 @@ bool sdio_runtime_get_chip_mac(uint8_t mac_out[6])
 void sdio_runtime_request_rssi(void)
 {
    g_runtime_rssi_query_wanted = true;
+}
+
+void sdio_runtime_request_pktcnts(void)
+{
+   g_runtime_pktcnt_query_wanted = true;
+}
+
+bool sdio_runtime_get_pktcnts(uint32_t out[5])
+{
+   unsigned int i;
+
+   if (out == NULL || !g_runtime_pktcnt_valid)
+      return false;
+   for (i = 0u; i < 5u; ++i)
+      out[i] = g_runtime_pktcnt[i];
+   return true;
+}
+
+/* Same shape as sdio_runtime_rssi_poll: request on one tick, let the ordinary
+   RX drain deliver the reply, give up after a generous deadline. */
+void sdio_runtime_pktcnts_poll(void)
+{
+   uint32_t now;
+
+   if (!g_runtime_pktcnt_query_wanted)
+      return;
+
+   /* One ioctl at a time: sdio_prepare_tx_control_template() builds into the
+      single shared probe-result buffer, so starting this while an RSSI read
+      is in flight overwrites its request id and neither reply is ever
+      matched.  RSSI is user-driven and short; wait for it. */
+   if (g_runtime_rssi_query_wanted || g_runtime_rssi_request_pending)
+      return;
+
+   if (!sdio_runtime_link_is_up()) {
+      g_runtime_pktcnt_query_wanted = false;
+      g_runtime_pktcnt_step_sent = false;
+      g_runtime_pktcnt_request_pending = false;
+      return;
+   }
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_pktcnt_step_sent) {
+      sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                       WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS);
+      g_runtime_pktcnt_request_id =
+         g_sdio_probe_result.tx_control_template_request_id;
+      g_runtime_pktcnt_request_pending = true;
+      if (!sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
+                                                              &g_sdio_probe_result,
+                                                              SDIO_RUNTIME_POLL_TIMEOUT_US)) {
+         g_runtime_pktcnt_request_pending = false;
+         g_runtime_pktcnt_query_wanted = false;
+         return;
+      }
+      g_runtime_pktcnt_step_sent = true;
+      g_runtime_pktcnt_deadline_us = now + 250000u;
+      return;
+   }
+
+   if (!g_runtime_pktcnt_request_pending) {
+      g_runtime_pktcnt_step_sent = false;
+      g_runtime_pktcnt_query_wanted = false;
+      return;
+   }
+
+   if ((int32_t)(now - g_runtime_pktcnt_deadline_us) < 0)
+      return;
+
+   g_runtime_pktcnt_request_pending = false;
+   g_runtime_pktcnt_step_sent = false;
+   g_runtime_pktcnt_query_wanted = false;
 }
 
 /* Cooperative-poll worker: when a read has been requested and the link is

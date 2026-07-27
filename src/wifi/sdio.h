@@ -276,6 +276,13 @@ bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
 void sdio_runtime_request_rssi(void);
 void sdio_runtime_rssi_poll(void);
 bool sdio_runtime_get_rssi(int32_t *out);
+/* The chip's own packet counters: rx_good, rx_bad, tx_good, tx_bad,
+   rx_ocast_good.  Requested and polled exactly like the RSSI.  Comparing the
+   chip's rx_good against the host's received-frame count is what separates a
+   frame that never arrived from one we failed to deliver. */
+void sdio_runtime_request_pktcnts(void);
+void sdio_runtime_pktcnts_poll(void);
+bool sdio_runtime_get_pktcnts(uint32_t out[5]);
 /* Cache a 6-byte MAC the runtime should push into the chip's
    cur_etheraddr iovar at boot.  Must be called BEFORE
    sdio_runtime_start() so the SET_MAC stage picks it up.  Passing

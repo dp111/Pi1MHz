@@ -144,6 +144,7 @@ typedef enum {
       Not part of the boot join list - issued on demand only when the
       /status page is viewed, via sdio_runtime_rssi_poll(). */
    WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI,
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS,
    /* GET-VAR readback of the "country" iovar, issued straight after the
       SET.  The chip echoes back the wl_country_t it currently holds
       (country_abbrev[4] + int32 rev + ccode[4]).  If the SET was a

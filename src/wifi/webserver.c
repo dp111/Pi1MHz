@@ -2241,6 +2241,21 @@ static bool route_status(ws_conn_t *c)
             rs.bus_high_speed ? "50MHz" : "25MHz");
    table_row(&b, "SDIO bus", tmp);
    table_row(&b, "Link-loss detect", rs.link_flag_trusted ? "armed" : "not armed");
+   {
+      /* The chip's own view of the air.  rx_good is what it actually received;
+         compare its movement with "Frames received" above to tell a frame that
+         never arrived from one we failed to deliver.  rx_bad counts frames the
+         radio saw but could not decode - on-air corruption, which no host-side
+         counter can show. */
+      uint32_t pk[5];
+
+      if (sdio_runtime_get_pktcnts(pk)) {
+         snprintf(tmp, sizeof tmp, "rx %lu good / %lu bad, tx %lu good / %lu bad",
+                  (unsigned long)pk[0], (unsigned long)pk[1],
+                  (unsigned long)pk[2], (unsigned long)pk[3]);
+         table_row(&b, "Chip packet counts", tmp);
+      }
+   }
    snprintf(tmp, sizeof tmp, "%u",
             (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
    table_row(&b, "HTTP port", tmp);
@@ -5583,6 +5598,22 @@ void webserver_poll(void)
    /* Perform any pending on-demand RSSI read requested by /status.
       No-op (no SDIO traffic) unless a read is pending. */
    sdio_runtime_rssi_poll();
+   /* Keep the chip counters fresh rather than fetching them when /status is
+      rendered: the page shows the cached value and requests the next one in
+      the same breath, so a view-triggered fetch always displays the state as
+      of the previous view.  Two samples read that way make a delta span the
+      wrong window - which is exactly how these counters first appeared not to
+      track real traffic. */
+   {
+      static uint32_t s_pktcnt_next_us;
+      uint32_t now_us = RPI_GetSystemTime();
+
+      if ((int32_t)(now_us - s_pktcnt_next_us) >= 0) {
+         sdio_runtime_request_pktcnts();
+         s_pktcnt_next_us = now_us + 2000000u;
+      }
+   }
+   sdio_runtime_pktcnts_poll();
 }
 
 void webserver_init(void)
