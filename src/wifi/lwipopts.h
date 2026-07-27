@@ -61,7 +61,7 @@
  * capped WebDAV PUT well below what the link can carry.  Matched to
  * TCP_SND_BUF; PBUF_POOL_SIZE below has to cover a full window of frames
  * sitting in the pool waiting to be written to the card. */
-#define TCP_WND                         (32 * TCP_MSS)
+#define TCP_WND                         (44 * TCP_MSS)   /* 64,240: the most that fits u16_t without window scaling */
 /* The send window is the throughput limiter, so it is sized generously and
  * the heap is sized to fit several connections at that size.  tcp_write()
  * allocates from MEM_SIZE, so a send buffer is really a per-connection claim
@@ -111,7 +111,7 @@
    write stall is exactly when the pool is most needed.  Sized to cover a
    full receive window (32 frames) with slack for PROPFIND and ARP/DHCP,
    which is what the pool-exhausted path used to drop. */
-#define MEMP_NUM_PBUF                   48
-#define PBUF_POOL_SIZE                  48
+#define MEMP_NUM_PBUF                   96
+#define PBUF_POOL_SIZE                  96
 
 #endif

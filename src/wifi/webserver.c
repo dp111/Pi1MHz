@@ -47,7 +47,7 @@
 /* ------------------------------------------------------------------ */
 
 #define WS_HEADER_MAX        2048u   /* max HTTP request-header bytes   */
-#define WS_FILE_CHUNK        8192u   /* SD read size while downloading  */
+#define WS_FILE_CHUNK        32768u  /* SD read/write burst size */
 #define WS_BOUNDARY_MAX      128u    /* multipart boundary text limit   */
 #define WS_UPLOAD_HEAD_MAX   1024u   /* multipart part-header limit     */
 #define WS_UPLOAD_WORK       2048u   /* upload scan working buffer      */
@@ -2204,7 +2204,9 @@ static bool route_status(ws_conn_t *c)
       snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.rejoins);
       table_row(&b, "Rejoins", tmp);
    }
-   table_row(&b, "SDIO bus", rs.bus_four_bit ? "4-bit" : "1-bit");
+   snprintf(tmp, sizeof tmp, "%s %s", rs.bus_four_bit ? "4-bit" : "1-bit",
+            rs.bus_high_speed ? "50MHz" : "25MHz");
+   table_row(&b, "SDIO bus", tmp);
    snprintf(tmp, sizeof tmp, "%u",
             (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
    table_row(&b, "HTTP port", tmp);

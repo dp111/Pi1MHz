@@ -20,6 +20,7 @@
 #define SDIO_RUNTIME_MAX_RX_FRAMES_PER_POLL 8u
 #define SDIO_RUNTIME_FW_CHUNKS_PER_TICK 8u
 #define SDIO_RUNTIME_HIGH_CLOCK_HZ 25000000u
+#define SDIO_RUNTIME_HIGH_SPEED_CLOCK_HZ 50000000u
 /* Worst-case CPU a single CMD52/CMD53 may busy-wait for completion.  On
    healthy hardware a command completes in microseconds; this cap only
    bites when the chip is unresponsive.  It was 500 ms, long enough to
@@ -116,6 +117,8 @@ static uint32_t g_runtime_tx_resync_count;
 static uint32_t g_runtime_rejoin_count;
 /* Set once the 4-bit data bus has been switched to and verified. */
 static bool g_runtime_bus_four_bit;
+/* Set once the bus has been verified running at 50 MHz high speed. */
+static bool g_runtime_bus_high_speed;
 static bool g_runtime_emulator_mode;
 static bool g_runtime_identify_started;
 static unsigned int g_runtime_identify_attempt;
@@ -193,6 +196,9 @@ static void sdio_debug_log(const char *format, ...)
 #define SDIO_CCCR_IO_ENABLE 0x02u
 #define SDIO_CCCR_IO_READY 0x03u
 #define SDIO_CCCR_BUS_INTERFACE_CONTROL 0x07u
+#define SDIO_CCCR_SPEED_SELECT 0x13u
+#define SDIO_CCCR_SPEED_SHS 0x01u      /* card supports high speed */
+#define SDIO_CCCR_SPEED_EHS 0x02u      /* enable high speed */
 #define SDIO_CCCR_IO_ABORT 0x06u
 #define SDIO_CCCR_FUNCTION2_INFO 0x200u
 #define SDIO_FBR_BASE(function_number) ((uint32_t)(function_number) << 8)
@@ -898,6 +904,62 @@ static void sdio_runtime_try_four_bit_bus(sdio_host_t *dev)
 
    g_runtime_bus_four_bit = true;
    sdio_debug_log("SDIO bus width 4-bit");
+}
+
+/* Move the SDIO bus to high speed (50 MHz) if the card offers it.
+ *
+ * Verified the same way as the width switch, and for the same reason: CMD52
+ * keeps working on a bus whose data timing is wrong, so only a real data
+ * transfer proves the change took.
+ *
+ * The controller's HISPD bit is deliberately NOT set.  The BCM2835's Arasan
+ * shifts its output drive edge when that bit is on, which corrupts transfers;
+ * the platform's own drivers run this controller at 50 MHz with it clear, and
+ * the existing divider path already produces exactly 50 MHz from the 200 MHz
+ * base.  There is no CRC retry below TCP, so this is the one change here that
+ * trades margin for speed - the SDIO error counters are what to watch. */
+static void sdio_runtime_try_high_speed(sdio_host_t *dev)
+{
+   uint8_t speed = 0u;
+   uint32_t reference = 0u;
+   unsigned int check;
+
+   if (dev == NULL)
+      return;
+
+   if (!sdio_backplane_read_u32_timeout(dev, CYW43_CHIPCOMMON_BASE,
+                                        SDIO_COMMAND_TIMEOUT_US, &reference)
+      || reference == 0u)
+      return;
+
+   if (!sdio_probe_read_byte(dev, SDIO_CCCR_SPEED_SELECT, &speed)
+      || (speed & SDIO_CCCR_SPEED_SHS) == 0u)
+      return;                          /* card does not offer high speed */
+
+   if (!sdio_probe_write_byte(dev, SDIO_CCCR_SPEED_SELECT,
+                              (uint8_t)(speed | SDIO_CCCR_SPEED_EHS)))
+      return;
+
+   if (sdio_host_set_clock(dev, SDIO_RUNTIME_HIGH_SPEED_CLOCK_HZ, NULL) != 0) {
+      (void)sdio_probe_write_byte(dev, SDIO_CCCR_SPEED_SELECT, speed);
+      return;
+   }
+
+   for (check = 0u; check < 4u; ++check) {
+      uint32_t value = 0u;
+
+      if (!sdio_backplane_read_u32_timeout(dev, CYW43_CHIPCOMMON_BASE,
+                                           SDIO_COMMAND_TIMEOUT_US, &value)
+         || value != reference) {
+         (void)sdio_host_set_clock(dev, SDIO_RUNTIME_HIGH_CLOCK_HZ, NULL);
+         (void)sdio_probe_write_byte(dev, SDIO_CCCR_SPEED_SELECT, speed);
+         sdio_debug_log("SDIO high speed verify failed - staying at 25MHz");
+         return;
+      }
+   }
+
+   g_runtime_bus_high_speed = true;
+   sdio_debug_log("SDIO bus 50MHz high speed");
 }
 
 static int sdio_runtime_wake_with_kso_step(sdio_host_t *dev,
@@ -5195,6 +5257,7 @@ bool sdio_runtime_start(void)
    g_runtime_tx_resync_count = 0u;
    g_runtime_rejoin_count = 0u;
    g_runtime_bus_four_bit = false;
+   g_runtime_bus_high_speed = false;
    g_runtime_emulator_mode = false;
    g_runtime_identify_started = false;
    g_runtime_identify_attempt = 0u;
@@ -5311,6 +5374,7 @@ bool sdio_runtime_tick(void)
          if (sdio_host_set_clock(&g_runtime_device, SDIO_RUNTIME_HIGH_CLOCK_HZ, NULL) != 0)
             return sdio_runtime_finalize_error("WiFi SDIO high-speed clock switch failed");
          sdio_runtime_try_four_bit_bus(&g_runtime_device);
+         sdio_runtime_try_high_speed(&g_runtime_device);
          sdio_debug_log("controller setup complete io_enable=0x%02x io_ready=0x%02x block1=%u block2=%u",
                         (unsigned int)g_sdio_probe_result.configured_io_enable,
                         (unsigned int)g_sdio_probe_result.configured_io_ready,
@@ -5968,5 +6032,6 @@ sdio_runtime_status_t sdio_runtime_get_status(void)
    status.tx_resyncs = g_runtime_tx_resync_count;
    status.rejoins = g_runtime_rejoin_count;
    status.bus_four_bit = g_runtime_bus_four_bit;
+   status.bus_high_speed = g_runtime_bus_high_speed;
    return status;
 }

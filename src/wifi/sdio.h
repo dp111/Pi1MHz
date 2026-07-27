@@ -28,6 +28,8 @@ typedef struct {
    uint32_t rejoins;
    /* True when the SDIO data bus is running 4-bit rather than 1-bit. */
    bool bus_four_bit;
+   /* True when the SDIO bus is running 50 MHz high speed rather than 25 MHz. */
+   bool bus_high_speed;
 } sdio_runtime_status_t;
 
 typedef struct {
