@@ -209,6 +209,11 @@ typedef struct {
    char     up_name[FF_LFN_BUF + 1];
    uint8_t  up_lun_p1;   /* LUN this upload writes, +1 (0 = not a LUN image) */
    uint32_t up_bytes_written;
+   /* Staging for the multipart body, so the card sees whole WS_FILE_CHUNK
+      bursts rather than one f_write per scanned segment - see
+      upload_write_bytes.  Shares dl_buf, which the download and WebDAV paths
+      cannot be using at the same time (the states are exclusive). */
+   size_t   up_buf_len;
 
    /* WebDAV PUT streaming (CONN_RECV_DAV_PUT).  remaining starts at
       Content-Length and counts down as bytes are written to
@@ -2688,9 +2693,10 @@ static bool upload_fail(ws_conn_t *c, const char *msg)
    return ws_finish_html(c, 400, "Bad Request", &b);
 }
 
+static bool upload_flush(ws_conn_t *c);
+
 static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
 {
-   UINT bw = 0u;
 
    if (len == 0u || !c->up_file_open)
       return true;
@@ -2703,6 +2709,7 @@ static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
        && filesystemReadLunStatus((uint8_t)(c->up_lun_p1 - 1u))) {
       char full[WS_PATH_MAX + FF_LFN_BUF + 2u];
 
+      c->up_buf_len = 0u;            /* staged bytes die with the upload */
       f_close(&c->write_file.up);
       c->up_file_open = false;
       if (ws_is_root(c->up_dir))
@@ -2716,7 +2723,37 @@ static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
                             "upload again.");
    }
 
-   if (f_write(&c->write_file.up, data, (UINT)len, &bw) != FR_OK || bw != len)
+   /* Stage into dl_buf and write a whole chunk at a time.  Handing each
+      scanned segment straight to f_write made FatFs issue a CMD25 burst of a
+      couple of kilobytes, and the card then paid a STOP plus a full
+      programming wait for each - measured at 0.19 MB/s for a 20 MB upload,
+      the slowest of the three write paths, against 1.6 MB/s for WebDAV which
+      already buffered. */
+   while (len > 0u) {
+      size_t space = WS_FILE_CHUNK - c->up_buf_len;
+      size_t n     = (len < space) ? len : space;
+
+      memcpy(c->dl_buf + c->up_buf_len, data, n);
+      c->up_buf_len += n;
+      data += n;
+      len  -= n;
+      if (c->up_buf_len == WS_FILE_CHUNK && !upload_flush(c))
+         return false;
+   }
+   return true;
+}
+
+/* Push staged upload bytes to the card.  On failure the error response is
+   queued by upload_fail and false propagates to stop the body being fed. */
+static bool upload_flush(ws_conn_t *c)
+{
+   UINT bw = 0u;
+   size_t len = c->up_buf_len;
+
+   if (len == 0u)
+      return true;
+   c->up_buf_len = 0u;
+   if (f_write(&c->write_file.up, c->dl_buf, (UINT)len, &bw) != FR_OK || bw != len)
       return upload_fail(c, "Writing to the SD card failed "
                             "(the card may be full or write-protected).");
    c->up_bytes_written += (uint32_t)len;
@@ -2728,7 +2765,11 @@ static bool upload_finish(ws_conn_t *c)
    ws_strbuf_t b;
 
    if (c->up_file_open) {
-      FRESULT fr = f_close(&c->write_file.up);
+      FRESULT fr;
+
+      if (!upload_flush(c))          /* trailing partial chunk */
+         return false;
+      fr = f_close(&c->write_file.up);
       c->up_file_open = false;
       if (fr != FR_OK)
          return upload_fail(c, "The file could not be saved correctly.");
@@ -2796,6 +2837,7 @@ static bool upload_begin_part(ws_conn_t *c)
 
    c->up_file_open = true;
    c->up_bytes_written = 0u;
+   c->up_buf_len = 0u;
    strlcpy(c->up_name, base, sizeof c->up_name);
    return true;
 }

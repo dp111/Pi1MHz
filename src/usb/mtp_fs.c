@@ -967,7 +967,42 @@ static int32_t fs_read_send_next(mtp_container_info_t* io_container, bool send_w
   return 0;
 }
 
+/* MTP delivers the object body in CFG_TUD_MTP_EP_BUFSIZE (2 KB) transactions,
+ * and writing each one straight to f_write is what made MTP copies slow:
+ * FatFs turns every call into its own CMD25 multiblock burst, and the card
+ * then pays a STOP plus a full programming wait for 2 KB of data.  Measured
+ * on the WebDAV path, where the same change was made, the burst size is worth
+ * roughly 2x inside f_write - and MTP's bursts were four times smaller again.
+ *
+ * So accumulate into one buffer and flush a whole chunk at a time, exactly as
+ * the WebDAV PUT path does.  The buffer is static because this runs on the
+ * USB callback path with a small stack, and there is only ever one write in
+ * flight (the state machine is single-object). */
+#define MTP_WRITE_CHUNK 32768u
+static uint8_t g_mtp_write_buf[MTP_WRITE_CHUNK];
+static uint32_t g_mtp_write_buf_len;
+
+/* Push the staged bytes to the card.  Returns false on a write error, having
+ * left the caller to set the MTP failure response. */
+static bool fs_write_flush(void) {
+  UINT bytes_written = 0;
+
+  if (g_mtp_write_buf_len == 0u)
+    return true;
+  if (!g_write_state.file_open)
+    return false;
+  if (f_write(&g_write_state.file, g_mtp_write_buf, (UINT)g_mtp_write_buf_len,
+              &bytes_written) != FR_OK
+      || bytes_written != g_mtp_write_buf_len) {
+    g_mtp_write_buf_len = 0u;
+    return false;
+  }
+  g_mtp_write_buf_len = 0u;
+  return true;
+}
+
 static void fs_release_write_state(void) {
+  g_mtp_write_buf_len = 0u;   /* anything unflushed dies with the transfer */
   if (g_write_state.file_open) {
     (void) f_close(&g_write_state.file);
     g_write_state.file_open = false;
@@ -1117,6 +1152,8 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
       }
 
       if (g_write_state.file_open) {
+        if (!fs_write_flush())    /* trailing partial chunk */
+          resp->header->code = MTP_RESP_GENERAL_ERROR;
         (void) f_sync(&g_write_state.file);
         (void) f_close(&g_write_state.file);
         g_write_state.file_open = false;
@@ -1735,13 +1772,24 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
       } else if (g_write_state.size_known && ((offset + xact_len) > g_write_state.size)) {
         g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
       } else if (xact_len > 0u) {
-        UINT bytes_written = 0;
-        if ((f_write(&g_write_state.file, io_container->payload, xact_len, &bytes_written) != FR_OK)
-            || (bytes_written != xact_len)) {
-          g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
-        } else {
-          g_write_state.transferred += bytes_written;
+        const uint8_t *src = (const uint8_t *)io_container->payload;
+        uint32_t left = xact_len;
+
+        while (left > 0u) {
+          uint32_t space = MTP_WRITE_CHUNK - g_mtp_write_buf_len;
+          uint32_t n = (left < space) ? left : space;
+
+          memcpy(&g_mtp_write_buf[g_mtp_write_buf_len], src, n);
+          g_mtp_write_buf_len += n;
+          src += n;
+          left -= n;
+          if (g_mtp_write_buf_len == MTP_WRITE_CHUNK && !fs_write_flush()) {
+            g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
+            break;
+          }
         }
+        if (g_write_state.failed_resp == 0u)
+          g_write_state.transferred += xact_len;
       }
     }
     if (g_write_state.size_known) {
