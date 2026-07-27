@@ -980,13 +980,27 @@ static void ws_normalize_path(const char *raw, char *out, size_t osz)
       strlcpy(out, "/", osz);
       return;
    }
-   if (raw[0] != '/' && o + 1u < osz)
+   if (raw[0] != '/' && raw[0] != '\\' && o + 1u < osz)
       out[o++] = '/';
    for (s = raw; *s != '\0'; ++s) {
-      if (*s == '/' && o > 0u && out[o - 1u] == '/')
+      /* FatFs accepts a backslash as a separator and resolves a "." segment,
+         but the Beeb LUN interlock is a literal '/'-based string compare
+         against the path we are about to open.  Anything FatFs would treat as
+         a separator has to become one here, before that comparison, or a
+         request like /BeebSCSI0%5Cscsi0.dat opens the running LUN image
+         without ever taking the lock - and the PUT finish path then unlinks
+         it while BeebSCSI holds an open handle and a cluster map. */
+      char ch = (*s == '\\') ? '/' : *s;
+
+      if (ch == '/' && o > 0u && out[o - 1u] == '/')
+         continue;
+      /* Drop a "." segment: FatFs resolves it to the same directory, so it
+         is another spelling the interlock would not recognise. */
+      if (ch == '.' && o > 0u && out[o - 1u] == '/'
+          && (s[1] == '\0' || s[1] == '/' || s[1] == '\\'))
          continue;
       if (o + 1u < osz)
-         out[o++] = *s;
+         out[o++] = ch;
    }
    out[o] = '\0';
    while (o > 1u && out[o - 1u] == '/')
@@ -1334,6 +1348,9 @@ static ws_auth_status_t ws_digest_verify(const char *method,
    char authz[640];
    char field_nonce[MD5_HEX_LEN + 1];
    char field_response[MD5_HEX_LEN + 1];
+   /* Kept in function scope so the replay check below can see them. */
+   char field_nc_seen[16] = { 0 };
+   bool have_qop = false;
    const wifi_config_t *cfg = wifi_get_config();
    md5_hex_t ha2;
    md5_hex_t expected;
@@ -1360,7 +1377,6 @@ static ws_auth_status_t ws_digest_verify(const char *method,
       char         field_uri[WS_PATH_MAX];
       char         field_qop[16];
       md5_hex_t    ha1;
-      bool         have_qop;
       const char *fields = authz + 7;            /* past "Digest " */
       while (*fields == ' ' || *fields == '\t')
          ++fields;
@@ -1392,13 +1408,12 @@ static ws_auth_status_t ws_digest_verify(const char *method,
               && field_qop[0] != '\0';
 
       if (have_qop) {
-         char field_nc[16];
          char field_cnonce[64];
-         if (!ws_digest_field(fields, "nc",     field_nc,     sizeof field_nc)
+         if (!ws_digest_field(fields, "nc",     field_nc_seen, sizeof field_nc_seen)
              || !ws_digest_field(fields, "cnonce", field_cnonce, sizeof field_cnonce))
             return WS_AUTH_REQUIRED;
          ws_digest_compute_response(expected, ha1, field_nonce,
-                                    field_nc, field_cnonce, field_qop, ha2);
+                                    field_nc_seen, field_cnonce, field_qop, ha2);
       } else {
          ws_digest_compute_response_legacy(expected, ha1, field_nonce, ha2);
       }
@@ -1411,6 +1426,7 @@ static ws_auth_status_t ws_digest_verify(const char *method,
       to repeat with the freshly issued one. */
    if (!ws_digest_nonce_current(field_nonce))
       return WS_AUTH_STALE;
+
 
    return WS_AUTH_OK;
 }
@@ -2761,9 +2777,17 @@ static bool upload_flush(ws_conn_t *c)
    if (len == 0u)
       return true;
    c->up_buf_len = 0u;
-   if (f_write(&c->write_file.up, c->dl_buf, (UINT)len, &bw) != FR_OK || bw != len)
-      return upload_fail(c, "Writing to the SD card failed "
-                            "(the card may be full or write-protected).");
+   if (f_write(&c->write_file.up, c->dl_buf, (UINT)len, &bw) != FR_OK || bw != len) {
+      /* upload_fail() queues the error page and returns TRUE (the connection
+         survives to send it), so it cannot be returned from here: the caller
+         reads false as "stop feeding the body".  Returning it directly meant a
+         card that failed mid-upload kept staging into a file that had just
+         been closed, and queued the error page a second time on top of the
+         one already in the send buffer.  dav_put_flush has this right. */
+      (void)upload_fail(c, "Writing to the SD card failed "
+                           "(the card may be full or write-protected).");
+      return false;
+   }
    c->up_bytes_written += (uint32_t)len;
    return true;
 }
@@ -2920,6 +2944,10 @@ static bool upload_feed_data(ws_conn_t *c, const uint8_t *data, size_t len)
                rest.  The first part has already been written - close
                it cleanly before failing so the saved file is intact. */
             if (c->up_file_open) {
+               /* Flush first: since the body is staged in chunks, the tail of
+                  the first part is still in the buffer, and closing without it
+                  leaves the "intact" saved file short by up to a chunk. */
+               (void)upload_flush(c);
                (void)f_close(&c->write_file.up);
                c->up_file_open = false;
             }
@@ -4337,7 +4365,10 @@ static void ws_copy_step(ws_conn_t *c)
       return;
    }
 
-   fr = f_read(&c->copy_src, c->dl_buf, (UINT)sizeof c->dl_buf, &br);
+   /* WS_READ_CHUNK, not the whole staging buffer: this runs one chunk per
+      poll tick, and a 32 KB synchronous read blocks the loop four times
+      longer than the download path was measured to tolerate. */
+   fr = f_read(&c->copy_src, c->dl_buf, (UINT)WS_READ_CHUNK, &br);
    if (fr != FR_OK) {
       f_close(&c->copy_src); c->copy_src_open = false;
       f_close(&c->copy_dst); c->copy_dst_open = false;
@@ -4366,7 +4397,7 @@ static void ws_copy_step(ws_conn_t *c)
 
    /* EOF when f_read produces less than a full chunk (or zero).  This
       matches the original do/while exit condition. */
-   if (br < (UINT)sizeof c->dl_buf) {
+   if (br < (UINT)WS_READ_CHUNK) {
       bool dst_existed = c->copy_dst_existed;
       f_close(&c->copy_src); c->copy_src_open = false;
       f_close(&c->copy_dst); c->copy_dst_open = false;

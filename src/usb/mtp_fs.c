@@ -1152,14 +1152,22 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
       }
 
       if (g_write_state.file_open) {
-        if (!fs_write_flush())    /* trailing partial chunk */
-          resp->header->code = MTP_RESP_GENERAL_ERROR;
+        /* A failed final flush has to reach the completion test below, not
+           just set a response code the success branch then overwrites.
+           transferred counts bytes *staged*, so it still equals size after a
+           write that never landed - the host would be told the copy succeeded
+           and the short file would be left on the card rather than unlinked. */
+        if (!fs_write_flush())
+          g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
         (void) f_sync(&g_write_state.file);
         (void) f_close(&g_write_state.file);
         g_write_state.file_open = false;
       }
 
-      if (!g_write_state.size_known || (g_write_state.transferred == g_write_state.size)) {
+      if (g_write_state.failed_resp != 0u) {
+        resp->header->code = g_write_state.failed_resp;
+      } else if (!g_write_state.size_known
+                 || (g_write_state.transferred == g_write_state.size)) {
         if (g_write_state.host_time_valid) {
           FILINFO ut = {0};
           ut.fdate = g_write_state.host_mdate;
@@ -1364,6 +1372,22 @@ static int32_t fs_get_object_handles(tud_mtp_cb_data_t* cb_data) {
   uint32_t out_count = 0;
   if (!fs_collect_handles(parent_handle, obj_format, &handles, &out_count)) {
     return MTP_RESP_DEVICE_BUSY;
+  }
+
+  /* The container helper refuses an array that will not fit the endpoint
+     buffer, and refusing means it copies nothing at all - so a directory with
+     more entries than the buffer holds came back as an EMPTY listing and the
+     folder looked empty in Explorer rather than merely truncated.  Cap it to
+     what fits: showing some of a folder is wrong, showing none of it is
+     worse.  (The proper cure is splitting the array across several data
+     phases, which the driver does not do today.) */
+  {
+    const uint32_t room = (uint32_t)CFG_TUD_MTP_EP_BUFSIZE
+                          - io_container->header->len - 4u - 1u;
+    const uint32_t max_handles = room / 4u;
+
+    if (out_count > max_handles)
+      out_count = max_handles;
   }
 
   (void) mtp_container_add_auint32(io_container, out_count, handles);
