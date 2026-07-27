@@ -130,9 +130,13 @@ static bool g_runtime_bus_high_speed;
    found the fn2 FIFO empty - together these keep the INT_STATUS exchange out
    of the hot path without letting it starve.  See poll_ethernet_frame. */
 static uint32_t g_runtime_int_service_us;
-/* When a bus transfer last completed successfully.  KSO sleep only engages
-   after an idle period, so a transfer this recent proves the interface is
-   still awake and the wake handshake can be skipped. */
+/* When a frame last actually moved over the bus.  Deliberately NOT stamped by
+   the 4-byte FIFO peek: an idle link peeks every millisecond and every peek
+   succeeds, so stamping there re-armed the window on each pass and the wake
+   handshake below it never ran again - the check disabled itself precisely
+   when it mattered.  Worse, a peek at a sleeping interface returns zeros,
+   which is indistinguishable from "FIFO empty", so the driver could go blind
+   with frames queued.  Only real traffic counts as proof of wakefulness. */
 static uint32_t g_runtime_bus_active_us;
 static bool g_runtime_fifo_was_empty = true;
 static bool g_runtime_emulator_mode;
@@ -3240,21 +3244,13 @@ static bool sdio_function2_transfer_timeout(sdio_host_t *dev, bool write, uint8_
       if (block_count > 511u)
          block_count = 511u;
 
-      ok = sdio_cmd53_execute_timeout(dev, 2u, 0u, write, true, false, block_count,
-                                      buffer, SDIO_PROBE_FUNCTION2_BLOCK_SIZE,
-                                      timeout_us, NULL);
-      if (ok)
-         g_runtime_bus_active_us = RPI_GetSystemTime();
-      return ok;
+      return sdio_cmd53_execute_timeout(dev, 2u, 0u, write, true, false, block_count,
+                                        buffer, SDIO_PROBE_FUNCTION2_BLOCK_SIZE,
+                                        timeout_us, NULL);
    }
 
-   {
-      bool ok = sdio_cmd53_execute_timeout(dev, 2u, 0u, write, false, false, length,
-                                           buffer, length, timeout_us, NULL);
-      if (ok)
-         g_runtime_bus_active_us = RPI_GetSystemTime();
-      return ok;
-   }
+   return sdio_cmd53_execute_timeout(dev, 2u, 0u, write, false, false, length,
+                                     buffer, length, timeout_us, NULL);
 }
 
 static bool sdio_function2_transfer(sdio_host_t *dev, bool write, uint8_t *buffer,
@@ -3628,6 +3624,7 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
    if (frame_length != NULL)
       *frame_length = ethernet_length;
    ++g_runtime_rx_frame_count;
+   g_runtime_bus_active_us = RPI_GetSystemTime();
    return true;
 }
 
@@ -5872,6 +5869,7 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
    }
 
    ++g_runtime_tx_frame_count;
+   g_runtime_bus_active_us = RPI_GetSystemTime();
    return true;
 }
 
