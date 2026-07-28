@@ -101,6 +101,7 @@ static bool g_runtime_pm_query_wanted;
 static bool g_runtime_pm_query_sent;
 static bool g_runtime_pm_request_pending;
 static uint16_t g_runtime_pm_request_id;
+static uint32_t g_runtime_pm_deadline_us;
 static bool g_runtime_rssi_request_pending;
 static uint16_t g_runtime_rssi_request_id;
 static bool g_runtime_rssi_query_wanted;
@@ -152,6 +153,10 @@ static uint32_t g_runtime_tx_stall_since_us;
    true often enough that the idle resync fired MID-DOWNLOAD and collapsed
    throughput to zero. */
 static uint32_t g_runtime_rx_frames_at_stall;
+/* Every frame received on any channel (data, control reply, event) - stamped
+   beside the max_seq refresh.  Distinct from g_runtime_rx_frame_count, which
+   counts only Ethernet frames delivered to lwIP. */
+static uint32_t g_runtime_rx_seen_count;
 static uint32_t g_runtime_tx_resync_count;
 /* Association retries since boot - see sdio_runtime_rejoin_start(). */
 static uint32_t g_runtime_rejoin_count;
@@ -565,6 +570,7 @@ static bool sdio_function2_transfer_timeout(sdio_host_t *dev, bool write,
                                             uint8_t *buffer, uint16_t length,
                                             uint32_t timeout_us);
 static bool sdio_backplane_set_window(sdio_host_t *dev, uint32_t address);
+static bool sdio_runtime_wake_bus(sdio_host_t *dev);
 
 static bool sdio_backplane_read_u32(sdio_host_t *dev, uint32_t address, uint32_t *value);
 static bool sdio_backplane_write_u32(sdio_host_t *dev, uint32_t address, uint32_t value);
@@ -3586,6 +3592,12 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
    g_runtime_wlan_flow_control = frame_buffer[8];
    g_runtime_max_seq = frame_buffer[9];
    g_runtime_max_seq_valid = true;
+   /* Any frame, any channel: this is the "the chip is alive and talking to
+      us" count.  g_runtime_rx_frame_count below only counts delivered DATA
+      frames, so a control reply or event refreshing max_seq mid-stall would
+      otherwise leave the idle-resync guard believing the link is silent -
+      and the rebase it permits is precisely for links that are NOT alive. */
+   ++g_runtime_rx_seen_count;
 
    /* Control-channel responses (channel 0) carry the chip's reply to
       every ioctl we sent. The CDC header sits right after the SDPCM
@@ -5950,6 +5962,20 @@ void sdio_runtime_pktcnts_poll(void)
    ticks, exactly like the boot MAC read (sdio_runtime_query_mac_step).
    Costs nothing (no bus traffic) unless a read is pending, so it is only
    ever active for a moment after /status is viewed. */
+/* True while the SDPCM credit window is shut.  The optional runtime ioctls
+   (RSSI, PKTCNTS, PM) consult this and simply wait: control frames share the
+   one sequence space but bypass the credit gate, so sending them during a
+   stall burns sequence numbers the chip will not credit - and 128 of those
+   flip the gate's int8_t comparison and falsely reopen it.  The join/rejoin
+   machinery is deliberately NOT gated here; it has to be able to talk to a
+   chip whose window state is unknown. */
+static bool sdio_runtime_tx_window_shut(void)
+{
+   return g_runtime_max_seq_valid
+      && (g_runtime_wlan_flow_control != 0u
+          || (int8_t)(g_sdpcm_tx_sequence - g_runtime_max_seq) >= 0);
+}
+
 /* Re-assert "no power save" once the link is actually up.
  *
  * The join sequence already sends WLC_SET_PM = 0, but it sends it while the
@@ -6002,6 +6028,9 @@ void sdio_runtime_powersave_poll(void)
    if (!sdio_runtime_link_is_up())
       return;
 
+   if (sdio_runtime_tx_window_shut())
+      return;                    /* do not burn sequence numbers in a stall */
+
    if ((int32_t)(RPI_GetSystemTime() - g_runtime_pm_due_us) < 0)
       return;
 
@@ -6051,9 +6080,18 @@ void sdio_runtime_powersave_poll(void)
 // cppcheck-suppress unusedFunction
 void sdio_runtime_powersave_verify_poll(void)
 {
+   /* A lost reply must not park the query forever: past the deadline the
+      request is abandoned and re-armed, exactly like the RSSI poller. */
+   if (g_runtime_pm_query_sent && g_runtime_pm_request_pending
+       && (int32_t)(RPI_GetSystemTime() - g_runtime_pm_deadline_us) >= 0) {
+      g_runtime_pm_request_pending = false;
+      g_runtime_pm_query_sent = false;
+   }
    if (!g_runtime_pm_query_wanted || g_runtime_pm_query_sent)
       return;
    if (!sdio_runtime_link_is_up())
+      return;
+   if (sdio_runtime_tx_window_shut())
       return;
    if (g_runtime_rssi_query_wanted || g_runtime_rssi_request_pending
        || g_runtime_pktcnt_query_wanted || g_runtime_pktcnt_step_sent
@@ -6071,6 +6109,7 @@ void sdio_runtime_powersave_verify_poll(void)
       return;                          /* try again next poll */
    }
    g_runtime_pm_query_sent = true;
+   g_runtime_pm_deadline_us = RPI_GetSystemTime() + 250000u;
 }
 
 // cppcheck-suppress unusedFunction
@@ -6097,6 +6136,9 @@ void sdio_runtime_rssi_poll(void)
       g_runtime_rssi_request_pending = false;
       return;
    }
+
+   if (!g_runtime_rssi_step_sent && sdio_runtime_tx_window_shut())
+      return;                    /* wait for credit; the request keeps */
 
    now = RPI_GetSystemTime();
 
@@ -6206,7 +6248,7 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       if (!g_runtime_tx_stalled) {
          g_runtime_tx_stalled = true;
          g_runtime_tx_stall_since_us = now_us;
-         g_runtime_rx_frames_at_stall = g_runtime_rx_frame_count;
+         g_runtime_rx_frames_at_stall = g_runtime_rx_seen_count;
          return false;
       }
       /* How long to wait before treating a shut window as a desync depends on
@@ -6224,7 +6266,7 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
          the chip actually matters. */
       if ((uint32_t)(now_us - g_runtime_tx_stall_since_us)
              < ((g_runtime_fifo_was_empty
-                 && g_runtime_rx_frame_count == g_runtime_rx_frames_at_stall)
+                 && g_runtime_rx_seen_count == g_runtime_rx_frames_at_stall)
                     ? SDPCM_TX_STALL_IDLE_RESYNC_US
                     : SDPCM_TX_STALL_RESYNC_US))
          return false;
@@ -6247,10 +6289,23 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       g_runtime_wlan_flow_control = 0u;
       g_sdpcm_tx_sequence = (uint8_t)(g_runtime_max_seq - 1u);
       g_runtime_tx_stall_since_us = now_us;
+      /* Fresh snapshot too, or one frame received during the first second
+         pins the idle tier off for the whole remainder of the stall. */
+      g_runtime_rx_frames_at_stall = g_runtime_rx_seen_count;
       ++g_runtime_tx_resync_count;
    } else {
       g_runtime_tx_stalled = false;
    }
+
+   /* The RX path wakes the bus before touching it, but this path never did -
+      and since the interrupt gate removed the every-poll KSO side effect, an
+      idle link's first transmit could land on a sleeping interface, which
+      swallows the frame while the host sees success: sequence consumed, one
+      credit leaked, and enough of those close the window for good.  Failing
+      here consumes nothing; lwIP or the hold queue simply retries.  Under
+      traffic the recent-transfer fast path makes this a time compare. */
+   if (!sdio_runtime_wake_bus(&g_runtime_device))
+      return false;
 
    total_length = (uint16_t)(18u + frame_length);
 
@@ -6376,7 +6431,9 @@ void sdio_runtime_prepare_for_warm_reboot(void)
 // cppcheck-suppress unusedFunction
 uint32_t sdio_runtime_rx_frames_seen(void)
 {
-   return g_runtime_rx_frame_count;
+   /* The any-channel count: max_seq only moves when this does, so it is the
+      correct trigger for retrying anything the credit window refused. */
+   return g_runtime_rx_seen_count;
 }
 
 // cppcheck-suppress unusedFunction
