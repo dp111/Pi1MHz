@@ -29,6 +29,7 @@
 #include "config.h"
 #include "rpi/base.h"
 #include "rpi/rpi.h"
+#include "rpi/systimer.h"
 #include "watchdog.h"
 
 #define PM_PASSWORD            0x5a000000u
@@ -46,12 +47,25 @@ static volatile uint32_t *const PM_RSTC = (uint32_t *)(PERIPHERAL_BASE + 0x00100
 static volatile uint32_t *const PM_WDOG = (uint32_t *)(PERIPHERAL_BASE + 0x00100024u);
 
 static uint32_t watchdog_ticks;
+/* Nothing is armed until this passes.  Boot does a lot of blocking work -
+   mounting the card, loading firmware and NVRAM, the bring-up settles, the
+   join, DHCP - and arming before that has finished risks resetting mid-boot,
+   which would loop forever and be far worse than the hang this exists to
+   escape.  Steady state is only reached once all of that is done. */
+static uint32_t watchdog_arm_after_us;
+#define WATCHDOG_BOOT_GRACE_US (60u * 1000000u)
 
 /* Re-arm.  Writing WDOG then RSTC restarts the countdown, so simply calling
    this often enough is the whole mechanism - there is no separate "pet"
    register to poke. */
 static void watchdog_poll(void)
 {
+   if (watchdog_arm_after_us != 0u) {
+      if ((int32_t)(RPI_GetSystemTime() - watchdog_arm_after_us) < 0)
+         return;                    /* still booting; leave it disarmed */
+      watchdog_arm_after_us = 0u;
+   }
+
    *PM_WDOG = PM_PASSWORD | watchdog_ticks;
    *PM_RSTC = PM_PASSWORD | ((*PM_RSTC & PM_RSTC_WRCFG_CLR) | PM_RSTC_WRCFG_FULL_RESET);
 }
@@ -81,9 +95,9 @@ void watchdog_init(uint8_t instance, uint8_t address)
    if (watchdog_ticks > PM_WDOG_TIME_SET)
       watchdog_ticks = PM_WDOG_TIME_SET;
 
-   /* Arm it here rather than earlier: registration happens once the emulators
-      are up, so the slow parts of boot - firmware download, CLM, the join -
-      are already done and cannot trip it. */
-   watchdog_poll();
+   /* Registered now, armed later - see watchdog_arm_after_us.  Emulator
+      registration runs before the WiFi bring-up and DHCP have finished, so
+      "the emulators are up" is not yet steady state. */
+   watchdog_arm_after_us = RPI_GetSystemTime() + WATCHDOG_BOOT_GRACE_US;
    Pi1MHz_Register_Poll(watchdog_poll);
 }
