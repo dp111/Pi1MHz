@@ -193,6 +193,104 @@ static void wifi_lwip_update_runtime_state(void)
  *
  * Held frames are dropped once stale, because a ping reply or an ARP
  * response delivered a second late is worse than useless. */
+/* ICMP echo timing probe (diagnostic).
+ *
+ * The question this answers: when a ping takes half a second, is the request
+ * arriving at the chip late, or is the Pi slow to answer it?  Recording the
+ * arrival time of each echo request and the time its reply is handed back to
+ * the chip separates the two.  A uniform ~1 s arrival gap with a fast
+ * turnaround puts the delay on the air; bursty arrivals mean something ahead
+ * of us is buffering; a slow turnaround means it is our own loop. */
+#define WIFI_LWIP_ICMP_PROBE_DEPTH 32u
+
+typedef struct {
+   uint32_t gap_ms;              /* since the previous echo request */
+   uint32_t turnaround_us;       /* request in -> reply out */
+} wifi_lwip_icmp_probe_t;
+
+static wifi_lwip_icmp_probe_t s_icmp_probe[WIFI_LWIP_ICMP_PROBE_DEPTH];
+static uint32_t s_icmp_probe_count;
+static uint32_t s_icmp_rx_stamp_us;
+static uint32_t s_icmp_prev_rx_us;
+static bool s_icmp_pending;
+static uint32_t s_icmp_rx_seen;
+static uint32_t s_icmp_tx_seen;
+
+/* proto: 1 = ICMP; type lives at the first byte of the ICMP header, which
+   for a header-length-5 IPv4 packet in an Ethernet frame is offset 34. */
+static bool wifi_lwip_is_icmp(const uint8_t *frame, uint16_t len, uint8_t type)
+{
+   if (len < 42u)
+      return false;
+   if (frame[12] != 0x08u || frame[13] != 0x00u)
+      return false;
+   if (frame[23] != 1u)
+      return false;
+   return frame[34] == type;
+}
+
+static void wifi_lwip_icmp_probe_rx(const uint8_t *frame, uint16_t len)
+{
+   uint32_t now;
+
+   if (!wifi_lwip_is_icmp(frame, len, 8u))
+      return;                    /* not an echo request */
+
+   s_icmp_rx_seen++;
+   now = RPI_GetSystemTime();
+   s_icmp_rx_stamp_us = now;
+   s_icmp_pending = true;
+   s_icmp_prev_rx_us = (s_icmp_prev_rx_us == 0u) ? now : s_icmp_prev_rx_us;
+}
+
+static void wifi_lwip_icmp_probe_tx(const uint8_t *frame, uint16_t len)
+{
+   uint32_t now;
+   wifi_lwip_icmp_probe_t *slot;
+
+   if (!wifi_lwip_is_icmp(frame, len, 0u))
+      return;                    /* not an echo reply */
+   s_icmp_tx_seen++;
+   if (!s_icmp_pending)
+      return;                    /* no request outstanding to time it against */
+
+   now = RPI_GetSystemTime();
+   slot = &s_icmp_probe[s_icmp_probe_count % WIFI_LWIP_ICMP_PROBE_DEPTH];
+   slot->gap_ms = (s_icmp_rx_stamp_us - s_icmp_prev_rx_us) / 1000u;
+   slot->turnaround_us = now - s_icmp_rx_stamp_us;
+   s_icmp_probe_count++;
+   s_icmp_prev_rx_us = s_icmp_rx_stamp_us;
+   s_icmp_pending = false;
+}
+
+/* Copy out up to `max` of the most recent samples, newest last.  Returns the
+   number written; *total receives the lifetime count. */
+void wifi_lwip_icmp_probe_counts(uint32_t *rx_seen, uint32_t *tx_seen)
+{
+   *rx_seen = s_icmp_rx_seen;
+   *tx_seen = s_icmp_tx_seen;
+}
+
+uint32_t wifi_lwip_icmp_probe_read(uint32_t *gap_ms, uint32_t *turnaround_us,
+                                   uint32_t max, uint32_t *total)
+{
+   uint32_t have = (s_icmp_probe_count < WIFI_LWIP_ICMP_PROBE_DEPTH)
+                 ? s_icmp_probe_count : WIFI_LWIP_ICMP_PROBE_DEPTH;
+   uint32_t n = (have < max) ? have : max;
+   uint32_t i;
+
+   if (total != NULL)
+      *total = s_icmp_probe_count;
+   (void)0;
+
+   for (i = 0u; i < n; ++i) {
+      uint32_t idx = (s_icmp_probe_count - n + i) % WIFI_LWIP_ICMP_PROBE_DEPTH;
+      gap_ms[i] = s_icmp_probe[idx].gap_ms;
+      turnaround_us[i] = s_icmp_probe[idx].turnaround_us;
+   }
+   return n;
+}
+
 #define WIFI_LWIP_TX_HOLD_MAX_AGE_US 250000u
 #define WIFI_LWIP_TX_QUEUE_DEPTH 8u
 
@@ -290,6 +388,8 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       cursor = cursor->next;
    }
 
+   wifi_lwip_icmp_probe_tx(frame, offset);
+
    /* Anything already held goes first, or this frame would overtake it.  When
       the queue cannot drain, the new frame joins the back rather than being
       dropped - which is what makes the queue a queue.  It only ever held one
@@ -362,6 +462,8 @@ static bool wifi_lwip_drain_rx_frames(uint32_t budget_end_us)
 
       if (frame_length == 0u)
          continue;
+
+      wifi_lwip_icmp_probe_rx(frame, frame_length);
 
       packet = pbuf_alloc(PBUF_RAW, frame_length, PBUF_POOL);
       if (packet == NULL)

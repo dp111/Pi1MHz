@@ -158,6 +158,11 @@ static uint32_t g_runtime_int_service_us;
    which is indistinguishable from "FIFO empty", so the driver could go blind
    with frames queued.  Only real traffic counts as proof of wakefulness. */
 static uint32_t g_runtime_bus_active_us;
+/* Diagnostic: how the KSO wake path is behaving on an idle link. */
+static uint32_t g_wake_fast;        /* skipped - a transfer vouched for it */
+static uint32_t g_wake_already;     /* SLEEP_CSR already read as awake */
+static uint32_t g_wake_handshake;   /* had to write KSO and wait */
+static uint32_t g_wake_failed;      /* gave up - THE DRAIN IS SKIPPED */
 /* When a frame was last received from the chip.  A link that has silently
    stopped carrying traffic looks identical to a healthy one from every
    status the driver has - see sdio_runtime_rx_idle_us(). */
@@ -6178,23 +6183,40 @@ static bool sdio_runtime_wake_bus(sdio_host_t *dev)
       did sleep, the next transfer fails, the stamp stops advancing, and the
       following poll takes the full handshake below. */
    if ((uint32_t)(RPI_GetSystemTime() - g_runtime_bus_active_us)
-          < SDIO_BUS_AWAKE_ASSUME_US)
+          < SDIO_BUS_AWAKE_ASSUME_US) {
+      g_wake_fast++;
       return true;
+   }
 
    if (sdio_function1_read_byte(dev, SDIO_SLEEP_CSR, &status)
-       && (status & awake) == awake)
+       && (status & awake) == awake) {
+      g_wake_already++;
       return true;   /* already awake */
+   }
 
    (void)sdio_function1_write_byte(dev, SDIO_SLEEP_CSR,
                                    SDIO_SLEEP_CSR_KEEP_WL_KSO);
    for (attempt = 0u; attempt < 4u; ++attempt) {
       status = 0u;
       if (sdio_function1_read_byte(dev, SDIO_SLEEP_CSR, &status)
-          && (status & awake) == awake)
+          && (status & awake) == awake) {
+         g_wake_handshake++;
          return true;
+      }
    }
 
+   g_wake_failed++;
    return false;
+}
+
+// cppcheck-suppress unusedFunction
+void sdio_runtime_wake_counts(uint32_t *fast, uint32_t *already,
+                              uint32_t *handshake, uint32_t *failed)
+{
+   *fast = g_wake_fast;
+   *already = g_wake_already;
+   *handshake = g_wake_handshake;
+   *failed = g_wake_failed;
 }
 
 bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,

@@ -37,5 +37,8 @@ const wifi_lwip_context_t *wifi_lwip_get_context(void);
  * datagram that expects a prompt reply, so the reply is not held by the
  * idle-throttle backoff. */
 void wifi_lwip_rx_kick(void);
+void wifi_lwip_icmp_probe_counts(uint32_t *rx_seen, uint32_t *tx_seen);
+uint32_t wifi_lwip_icmp_probe_read(uint32_t *gap_ms, uint32_t *turnaround_us,
+                                  uint32_t max, uint32_t *total);
 
 #endif

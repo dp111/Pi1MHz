@@ -232,6 +232,13 @@ bool Pi1MHz_is_rst_active(void);
 extern void Pi1MHz_MemoryWritePage(uint32_t addr, const void * data);
 extern void _fast_scroll(void *dst, void *src, int num_bytes);
 extern void _copyandreboot(void *src, int num_bytes);
+
+/* Poll-loop timing, for /status: worst case per callback and how often each
+   exceeded 5 ms.  Inside the __ASSEMBLER__ guard - this header is included
+   by arm-start.S. */
+#define PI1MHZ_POLL_STATS_MAX 24
+extern uint32_t Pi1MHz_poll_max_us[PI1MHZ_POLL_STATS_MAX];
+extern uint32_t Pi1MHz_poll_over_5ms[PI1MHZ_POLL_STATS_MAX];
 #endif
 
 #endif

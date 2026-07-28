@@ -540,6 +540,10 @@ static void init_hardware(void)
 #endif
 }
 // cppcheck-suppress unusedFunction
+/* Poll-loop timing, for /status.  See the loop in kernel_main. */
+uint32_t Pi1MHz_poll_max_us[PI1MHZ_POLL_STATS_MAX];
+uint32_t Pi1MHz_poll_over_5ms[PI1MHZ_POLL_STATS_MAX];
+
 _Noreturn void kernel_main(void)
 {
    unsigned int baud_rate = 115200;
@@ -651,10 +655,15 @@ _Noreturn void kernel_main(void)
                uint32_t duration_us = after_us - before_us;
                before_us = after_us;
 
-               if (duration_us > 50000u) {
-               LOG_INFO("Slow poll callback idx=%u duration_us=%lu\r\n",
-                        (unsigned int)i,
-                        (unsigned long)duration_us);
+               /* Per-callback worst case, kept for /status.  A logged
+                  threshold only answers "did anything block for 50 ms";
+                  the question here is which callback owns the tail, and
+                  at what size, which needs the whole distribution. */
+               if (i < PI1MHZ_POLL_STATS_MAX) {
+                  if (duration_us > Pi1MHz_poll_max_us[i])
+                     Pi1MHz_poll_max_us[i] = duration_us;
+                  if (duration_us > 5000u)
+                     Pi1MHz_poll_over_5ms[i]++;
                }
             }
       }
