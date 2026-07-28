@@ -168,6 +168,7 @@ typedef struct {
    FIL      dl_file;
    uint32_t dl_remaining;
    bool     dl_eof;
+   bool     dl_bench;      /* /bench.bin: body from RAM, no SD involved */
    uint8_t  dl_buf[WS_FILE_CHUNK];
    size_t   dl_buf_len;
    size_t   dl_buf_sent;
@@ -1719,7 +1720,12 @@ static bool conn_pump(ws_conn_t *c)
                break;
             req = (c->dl_remaining < WS_READ_CHUNK)
                   ? (UINT)c->dl_remaining : (UINT)WS_READ_CHUNK;
-            if (f_read(&c->dl_file, c->dl_buf, req, &br) != FR_OK
+            if (c->dl_bench) {
+               /* Benchmark body: whatever is in dl_buf, full-rate.  The point
+                  is to measure the network path with the SD card out of the
+                  loop entirely - the file path below pays an f_read here. */
+               br = req;
+            } else if (f_read(&c->dl_file, c->dl_buf, req, &br) != FR_OK
                 || br == 0u) {
                c->dl_eof = true;
                break;
@@ -1944,6 +1950,7 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
    c->dav_put_tmppath[0] = '\0';
    c->dl_remaining = 0u;
    c->dl_eof = false;
+   c->dl_bench = false;
    c->dl_buf_len = 0u;
    c->dl_buf_sent = 0u;
    c->up_state = UP_PART_HEADER;
@@ -2774,6 +2781,46 @@ static bool start_download(ws_conn_t *c, const char *sdpath)
 
    free(c->out);
    c->out = h.data;            /* ownership transferred */
+   c->out_len = h.len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_FILE;
+   conn_pump(c);
+   return true;
+}
+
+/* GET /bench.bin - 8 MB of RAM-sourced bytes, for measuring the network path
+   alone.  Every real download interleaves FatFs reads with the send, so this
+   is the only way to tell a WiFi/lwIP ceiling from an SD one. */
+static bool route_bench(ws_conn_t *c)
+{
+   ws_strbuf_t h;
+   const uint32_t size = 8u * 1024u * 1024u;
+
+   sb_init(&h);
+   sb_printf(&h,
+             "HTTP/1.1 200 OK\r\n"
+             "Content-Type: application/octet-stream\r\n"
+             "Content-Length: %lu\r\n"
+             "Cache-Control: no-store\r\n"
+             "%s"
+             "\r\n",
+             (unsigned long)size, ws_connection_hdr(c));
+   if (h.failed) {
+      sb_free(&h);
+      return ws_oom(c);
+   }
+
+   c->dl_open = false;
+   c->dl_bench = true;
+   c->dl_remaining = size;
+   c->dl_eof = false;
+   c->dl_buf_len = 0u;
+   c->dl_buf_sent = 0u;
+
+   free(c->out);
+   c->out = h.data;
    c->out_len = h.len;
    c->out_sent = 0u;
    c->bytes_queued = 0u;
@@ -5310,6 +5357,8 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_home(c);
       if (strcmp(rawpath, "/status") == 0)
          return route_status(c);
+      if (strcmp(rawpath, "/bench.bin") == 0)
+         return route_bench(c);
       if (strcmp(rawpath, "/aun") == 0)
          return route_aun(c);
       if (strcmp(rawpath, "/framebuffer") == 0)
