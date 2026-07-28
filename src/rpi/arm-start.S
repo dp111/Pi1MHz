@@ -148,8 +148,20 @@ _reset_continue:
     // We enter execution in supervisor mode. For more information on
     // processor modes see ARM Section A2.2 (Processor Modes)
 
-    adr     r4,_start_vectors
-    mcr     p15, 0, r4, c12, c0, 0     //set vectors to beginning of this code
+    // Start from a known MMU state.  At a cold boot the GPU hands over with
+    // the MMU and caches already off, so this is a no-op.  After a kernel.now
+    // chain-boot it is not: the previous kernel is still using its own page
+    // table, whose live copy sits in ITS .noinit - and if the two images place
+    // .noinit differently, that table falls inside the range the bss clear
+    // below is about to zero.  The clear then wipes the table it is running
+    // on, sweeps on undisturbed while the TLB still covers the section being
+    // written, and dies the moment it touches an address it has to walk for -
+    // a Data Abort at exactly the next 1 MB boundary.  Turning the MMU off
+    // first makes the incoming kernel independent of whatever the outgoing one
+    // left behind.  (_copyandreboot also hands over with it off now; this is
+    // the half that protects us from an older kernel that does not.)
+    bl      _early_mmu_off_and_vectors
+    nop                                // keep this pair two instructions wide
 
     // Initialise Stack Pointers ---------------------------------------------
     ldr     r4,=STACK_BASE
@@ -286,16 +298,24 @@ finished:
 
 // Pizero Cache flush code
 
-   // clean all the cache
+   // clean and invalidate all the cache
    mov r0,#0
-   MCR p15, 0, r0, c7, c10, 0 //; clean data cache line
-   //mcr p15, 0, r0, c7, c10, 4 //drain write buffer
+   // Instruction count here is load-bearing: _fast_scroll must keep the
+   // address the outgoing kernel calls, so this block cannot grow.  The DSB
+   // that would belong here is done in _chainboot_mmu_off instead.
+   MCR p15, 0, r0, c7, c14, 0 //; clean+invalidate entire data cache
    MCR p15, 0, r0, c7, c5, 0 //; invalidate I cache and BTB
    MCR p15, 0, r0, c7, c5, 4 // flush prefetch buffer
 
 #endif
 
-    mov pc,#_start_vectors
+// Hand over with the MMU and caches off - see _chainboot_mmu_off.  This must
+// stay a single instruction: _copyandreboot_code runs IN PLACE while
+// _fast_scroll copies the new image over it, so every byte from here back to
+// _copyandreboot_code has to keep the address the outgoing kernel expects.
+// Growing this region shifts _fast_scroll and the copy overwrites the loop
+// mid-flight; the out-of-line routine lives past _fast_scroll_end instead.
+    b _chainboot_mmu_off
 
 
 // and then restart
@@ -315,6 +335,55 @@ _fast_scroll_loop:
         bne     _fast_scroll_loop
         pop     {r4, r5, r6, r8, r9, r10, r11, pc}
 _fast_scroll_end:
+
+// Everything below is deliberately placed AFTER _fast_scroll_end.
+//
+// A kernel.now flash copies the incoming image over the outgoing kernel while
+// the outgoing kernel is executing from the region being overwritten -
+// _copyandreboot_code runs in place and _fast_scroll copies straight across
+// it.  That only survives because the bytes there are the same in both images.
+// So nothing may be inserted at or before _fast_scroll_end: doing so shifts
+// the copy loop, the outgoing kernel executes whatever landed at its old
+// address, and the flash dies with no output at all.  Past _fast_scroll_end
+// the copy has already finished, so code here is free to differ.
+
+// Bring the MMU and caches down to the state the GPU hands over in at a cold
+// boot.  Then point the vector base at this image.  Called from _reset_ before
+// the .bss clear; a no-op on a cold boot, and the thing that saves us on a
+// chain-boot - see the note at the call site.
+_early_mmu_off_and_vectors:
+    mrc     p15, 0, r4, c1, c0, 0
+    bic     r4, r4, #0x0001            // M: MMU off
+    bic     r4, r4, #0x0004            // C: data cache off
+    bic     r4, r4, #0x1000            // I: instruction cache off
+    mcr     p15, 0, r4, c1, c0, 0
+    mov     r4, #0
+    mcr     p15, 0, r4, c8, c7, 0      // invalidate entire TLB
+    mcr     p15, 0, r4, c7, c5, 0      // invalidate I-cache and BTB
+    mcr     p15, 0, r4, c7, c10, 4     // DSB
+    mcr     p15, 0, r4, c7, c5, 4      // flush prefetch buffer
+    ldr     r4, =_start_vectors
+    mcr     p15, 0, r4, c12, c0, 0     // vector base = start of this image
+    bx      lr
+
+// The outgoing half of the same handover: drop the MMU before branching into
+// the freshly copied image, so it never runs a single instruction under this
+// kernel's page table.  The incoming kernel protects itself as well, but an
+// older kernel in the field does not, and this is the side that fixes it for
+// the image being replaced.  Reached by the one-instruction branch that ends
+// _copyandreboot_code; the caches were cleaned there, so the copy is in RAM
+// and not stranded in a line that turning the cache off would discard.
+_chainboot_mmu_off:
+    mrc     p15, 0, r0, c1, c0, 0
+    bic     r0, r0, #0x0001            // M: MMU off
+    bic     r0, r0, #0x0004            // C: data cache off
+    bic     r0, r0, #0x1000            // I: instruction cache off
+    mcr     p15, 0, r0, c1, c0, 0
+    mov     r0, #0
+    mcr     p15, 0, r0, c8, c7, 0      // invalidate entire TLB
+    mcr     p15, 0, r0, c7, c10, 4     // DSB
+    mcr     p15, 0, r0, c7, c5, 4      // flush prefetch buffer
+    mov     pc, #_start_vectors
 
 .section ".text._exception_handlers_", "x"
 _undefined_instruction_handler_:

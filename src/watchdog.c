@@ -58,6 +58,22 @@ static uint32_t watchdog_arm_after_us;
 /* Re-arm.  Writing WDOG then RSTC restarts the countdown, so simply calling
    this often enough is the whole mechanism - there is no separate "pet"
    register to poke. */
+/* Stop the watchdog dead.  Clearing WRCFG leaves the counter running but tells
+   the reset controller to do nothing when it expires.
+   
+   This has to be called early in boot, and not merely skipped: the PM block is
+   a peripheral, so a countdown armed before a kernel.now chain-boot keeps
+   counting straight through the handover.  The incoming kernel then spends its
+   boot grace deliberately not kicking - and gets reset part-way up by the
+   watchdog the OUTGOING kernel armed.  Seen as a flashed image booting cleanly
+   all the way to "address ready" and then vanishing back to the SD kernel with
+   no abort and nothing in the log. */
+// cppcheck-suppress unusedFunction
+void watchdog_stop(void)
+{
+   *PM_RSTC = PM_PASSWORD | (*PM_RSTC & PM_RSTC_WRCFG_CLR);
+}
+
 static void watchdog_poll(void)
 {
    if (watchdog_arm_after_us != 0u) {
@@ -75,6 +91,10 @@ void watchdog_init(uint8_t instance, uint8_t address)
 {
    const char *setting = config_get("watchdog");
    long seconds;
+
+   /* Belt and braces: kernel_main stops any inherited countdown before the
+      long part of boot, but this runs whatever the caller did. */
+   watchdog_stop();
 
    (void)instance;
    (void)address;

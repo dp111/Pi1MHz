@@ -553,6 +553,12 @@ _Noreturn void kernel_main(void)
 
    RPI_AuxMiniUartInit( baud_rate );
 
+   /* Before anything slow.  A kernel.now chain-boot inherits the previous
+      kernel's armed watchdog - the PM block does not reset on a warm jump -
+      and boot takes far longer than any sane timeout, so an inherited
+      countdown would reset us part-way up.  See watchdog_stop(). */
+   watchdog_stop();
+
    enable_MMU_and_IDCaches(0);
 
    // Setup malloc memory
