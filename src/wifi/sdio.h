@@ -279,6 +279,7 @@ bool sdio_runtime_get_powersave_mode(int32_t *mode);
 extern uint32_t g_sdio_host_data_wait_timeouts;
 void sdio_runtime_rx_int_pending(uint8_t *or_bits, uint8_t *last);
 bool sdio_runtime_rx_gate_is_armed(void);
+uint32_t sdio_runtime_rx_frames_seen(void);
 void sdio_runtime_prepare_for_warm_reboot(void);
 void sdio_runtime_rx_gate_counts(uint32_t *skips, uint32_t *sweeps,
                                  uint32_t *missed, bool *armed, uint32_t *high);

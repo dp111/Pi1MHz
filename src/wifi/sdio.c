@@ -144,6 +144,14 @@ static bool g_runtime_max_seq_valid;
    sdio_runtime_send_ethernet_frame(). */
 static bool g_runtime_tx_stalled;
 static uint32_t g_runtime_tx_stall_since_us;
+/* RX frame count captured when the stall began.  The 20 ms idle-tier resync
+   may only fire if NOTHING has been received since: an RX frame refreshes
+   max_seq, so traffic arriving while the window stays shut is genuine flow
+   control and rebasing the sequence would desync a live transfer.  Measured:
+   with refused TCP retried at main-loop rate, "FIFO momentarily empty" was
+   true often enough that the idle resync fired MID-DOWNLOAD and collapsed
+   throughput to zero. */
+static uint32_t g_runtime_rx_frames_at_stall;
 static uint32_t g_runtime_tx_resync_count;
 /* Association retries since boot - see sdio_runtime_rejoin_start(). */
 static uint32_t g_runtime_rejoin_count;
@@ -6198,6 +6206,7 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       if (!g_runtime_tx_stalled) {
          g_runtime_tx_stalled = true;
          g_runtime_tx_stall_since_us = now_us;
+         g_runtime_rx_frames_at_stall = g_runtime_rx_frame_count;
          return false;
       }
       /* How long to wait before treating a shut window as a desync depends on
@@ -6214,8 +6223,10 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
          the conservative wait still governs there, which is where overrunning
          the chip actually matters. */
       if ((uint32_t)(now_us - g_runtime_tx_stall_since_us)
-             < (g_runtime_fifo_was_empty ? SDPCM_TX_STALL_IDLE_RESYNC_US
-                                         : SDPCM_TX_STALL_RESYNC_US))
+             < ((g_runtime_fifo_was_empty
+                 && g_runtime_rx_frame_count == g_runtime_rx_frames_at_stall)
+                    ? SDPCM_TX_STALL_IDLE_RESYNC_US
+                    : SDPCM_TX_STALL_RESYNC_US))
          return false;
 
       /* Sustained shut window: the two ends have lost sequence agreement and
@@ -6360,6 +6371,12 @@ void sdio_runtime_prepare_for_warm_reboot(void)
    }
    sdio_host_set_card_interrupt(false);
    g_rx_int_armed = false;
+}
+
+// cppcheck-suppress unusedFunction
+uint32_t sdio_runtime_rx_frames_seen(void)
+{
+   return g_runtime_rx_frame_count;
 }
 
 // cppcheck-suppress unusedFunction
