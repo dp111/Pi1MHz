@@ -516,13 +516,6 @@ static bool sdio_function2_transfer_timeout(sdio_host_t *dev, bool write,
                                             uint32_t timeout_us);
 static bool sdio_backplane_set_window(sdio_host_t *dev, uint32_t address);
 
-// The last window programmed into the chip's SBWAD registers, so repeat
-// accesses to the same window (the idle RX poll, the 32 KB-granular
-// firmware download) skip the three CMD52s. Linux brcmfmac caches the
-// window the same way (sdiodev->sbwad). Invalidated whenever the chip
-// may have been reset and on any programming failure.
-static uint32_t g_backplane_window;
-static bool g_backplane_window_valid;
 static bool sdio_backplane_read_u32(sdio_host_t *dev, uint32_t address, uint32_t *value);
 static bool sdio_backplane_write_u32(sdio_host_t *dev, uint32_t address, uint32_t value);
 static bool sdio_function1_read_byte(sdio_host_t *dev, uint32_t address, uint8_t *value);
@@ -626,7 +619,6 @@ static void sdio_runtime_set_error(const char *message)
 
 static void sdio_runtime_boot_reset_state(void)
 {
-   g_backplane_window_valid = false; // chip may have been reset - reprogram SBWAD
    g_runtime_boot_fw_prepared = false;
    g_runtime_boot_deadline_us = 0u;
    g_runtime_boot_chip_id_register = 0u;
@@ -4615,21 +4607,28 @@ static bool sdio_backplane_set_window_timeout(sdio_host_t *dev, uint32_t address
    uint8_t addr_mid = (uint8_t)((window >> 8) & 0xffu);
    uint8_t addr_high = (uint8_t)((window >> 16) & 0xffu);
 
-   if (g_backplane_window_valid && g_backplane_window == window)
-      return true;
+   /* Always reprogram.  This used to cache the last window and skip the three
+      CMD52s when it had not changed - which is what Linux brcmfmac does with
+      sdiodev->sbwad - but on this chip something moves the window behind the
+      driver's back, so a cached belief goes stale and every later backplane
+      access lands at the wrong address.  Nothing errors: the CMD52s and CMD53
+      all succeed, they just read and write the wrong registers, so the mailbox
+      handshake in the RX poll silently stops working and inbound frames are
+      delivered late.
 
-   g_backplane_window_valid = false;
-   if (!(sdio_cmd52_execute_timeout(dev, 1u, SDIO_BACKPLANE_ADDRESS_LOW,
-                                    true, true, &addr_low, timeout_us, NULL)
+      Measured, idle ping over 40 packets, three runs each: with the cache
+      92-260 ms average and ~3 s worst case; without it 8-39 ms average, 0%
+      loss.  Masking the cache key to the true 32 KB window - the granularity
+      brcmfmac uses - made it no better (25-133 ms, 4 s worst case), which is
+      the tell: a coarser key means more hits, more skipped reprogramming and
+      more staleness.  Until what moves the window is understood, do not
+      reintroduce this. */
+   return sdio_cmd52_execute_timeout(dev, 1u, SDIO_BACKPLANE_ADDRESS_LOW,
+                                     true, true, &addr_low, timeout_us, NULL)
       && sdio_cmd52_execute_timeout(dev, 1u, SDIO_BACKPLANE_ADDRESS_MID,
                                     true, true, &addr_mid, timeout_us, NULL)
       && sdio_cmd52_execute_timeout(dev, 1u, SDIO_BACKPLANE_ADDRESS_HIGH,
-                                    true, true, &addr_high, timeout_us, NULL)))
-      return false;
-
-   g_backplane_window = window;
-   g_backplane_window_valid = true;
-   return true;
+                                    true, true, &addr_high, timeout_us, NULL);
 }
 
 static bool sdio_backplane_set_window(sdio_host_t *dev, uint32_t address)
