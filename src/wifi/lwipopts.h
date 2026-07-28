@@ -58,8 +58,9 @@
 /* The receive window governs uploads exactly as the send window governs
  * downloads, and pushing files *to* the Pi is the common direction for a
  * file server.  It was left at 8 * MSS while the send window grew, which
- * capped WebDAV PUT well below what the link can carry.  Matched to
- * TCP_SND_BUF; PBUF_POOL_SIZE below has to cover a full window of frames
+ * capped WebDAV PUT well below what the link can carry.  Deliberately
+ * larger than TCP_SND_BUF (44 vs 32 MSS): receive needs the headroom while
+ * frames wait on SD writes.  PBUF_POOL_SIZE below has to cover a full window of frames
  * sitting in the pool waiting to be written to the card. */
 #define TCP_WND                         (44 * TCP_MSS)   /* 64,240: the most that fits u16_t without window scaling */
 /* The send window is the throughput limiter, so it is sized generously and
@@ -109,7 +110,7 @@
 /* Received frames are pool pbufs, so an upload holds up to a full TCP_WND
    of them until the webserver has written them to the card - and an SD
    write stall is exactly when the pool is most needed.  Sized to cover a
-   full receive window (32 frames) with slack for PROPFIND and ARP/DHCP,
+   full receive window (44 frames) with slack for PROPFIND and ARP/DHCP,
    which is what the pool-exhausted path used to drop. */
 #define MEMP_NUM_PBUF                   96
 #define PBUF_POOL_SIZE                  96

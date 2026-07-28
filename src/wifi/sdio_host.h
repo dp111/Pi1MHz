@@ -62,5 +62,6 @@ bool sdio_host_card_interrupt_asserted(void);
 void sdio_host_clear_card_interrupt(void);
 const char *sdio_host_backend_name(void);
 const char *sdio_host_last_error(void);
+bool sdio_host_last_failure_precommand(void);
 
 #endif

@@ -1255,6 +1255,16 @@ const char *sdio_host_backend_name(void)
    return g_sdio_host_backend_name;
 }
 
+/* True when the last failed command died in the COMMAND phase - a CMD
+   timeout, before any data moved - so the card cannot have consumed the
+   payload.  Response-phase and data-phase errors return false: the data may
+   well have been accepted despite the host seeing a failure, and the caller
+   must not assume otherwise. */
+bool sdio_host_last_failure_precommand(void)
+{
+   return g_arasan_wifi_dev.last_error == SD_ERR_MASK_CMD_TIMEOUT;
+}
+
 const char *sdio_host_last_error(void)
 {
    sdio_host_refresh_status();

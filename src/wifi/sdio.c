@@ -153,6 +153,13 @@ static uint32_t g_runtime_tx_stall_since_us;
    true often enough that the idle resync fired MID-DOWNLOAD and collapsed
    throughput to zero. */
 static uint32_t g_runtime_rx_frames_at_stall;
+/* When the credit window first refused a frame and has not carried one
+   since.  Unlike tx_stall_since_us this is NOT reset by a resync probe -
+   only a send the bus actually accepted clears it - so it measures how long
+   transmit has been genuinely dead.  The rejoin logic watches it: RX-silence
+   alone never fires when the chip keeps receiving happily, which is exactly
+   the observed wedge state (TX dead, RX alive, power cycle needed). */
+static uint32_t g_runtime_tx_shut_since_us;
 /* Every frame received on any channel (data, control reply, event) - stamped
    beside the max_seq refresh.  Distinct from g_runtime_rx_frame_count, which
    counts only Ethernet frames delivered to lwIP. */
@@ -3894,7 +3901,14 @@ static bool sdio_probe_send_single_tx_control_template_timeout(sdio_host_t *dev,
                                    timeout_us, &cmd53_result)) {
       /* Nothing reached the chip, so give the number back rather than leave a
          gap the chip would credit against a frame it never saw. */
-      --g_sdpcm_tx_sequence;
+      /* Reclaim the number ONLY when the command phase timed out - nothing
+         reached the card, so the number is provably unused.  Any later
+         failure (response CRC, data-phase error) may have delivered the
+         frame: reclaiming then re-sends a consumed number, which the chip
+         discards without crediting - one silent step toward a permanently
+         shut window per occurrence. */
+      if (sdio_host_last_failure_precommand())
+         --g_sdpcm_tx_sequence;
       probe_result->tx_control_probe_response0 = cmd53_result.response0;
       probe_result->tx_control_probe_interrupt = cmd53_result.interrupt;
       probe_result->tx_control_probe_error = cmd53_result.error;
@@ -4074,6 +4088,13 @@ static int sdio_runtime_clm_download_step(sdio_host_t *dev)
 
       if (!sdio_function2_transfer_timeout(dev, true, tx_frame, frame_size,
                                            SDIO_COMMAND_TIMEOUT_US)) {
+         /* Reclaim the number ONLY when the command phase timed out - nothing
+         reached the card, so the number is provably unused.  Any later
+         failure (response CRC, data-phase error) may have delivered the
+         frame: reclaiming then re-sends a consumed number, which the chip
+         discards without crediting - one silent step toward a permanently
+         shut window per occurrence. */
+      if (sdio_host_last_failure_precommand())
          --g_sdpcm_tx_sequence;       /* chunk never landed - reclaim its number */
          sdio_debug_log("CLM: chunk transfer failed at offset %lu",
                         (unsigned long)g_runtime_clm_offset);
@@ -6249,6 +6270,8 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
          g_runtime_tx_stalled = true;
          g_runtime_tx_stall_since_us = now_us;
          g_runtime_rx_frames_at_stall = g_runtime_rx_seen_count;
+         if (g_runtime_tx_shut_since_us == 0u)
+            g_runtime_tx_shut_since_us = (now_us == 0u) ? 1u : now_us;
          return false;
       }
       /* How long to wait before treating a shut window as a desync depends on
@@ -6327,13 +6350,21 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
          acknowledge walks us permanently ahead of its credit window - which is
          how a run of bus errors used to end in a shut window that only the
          resync above could reopen. */
-      --g_sdpcm_tx_sequence;
+      /* Reclaim the number ONLY when the command phase timed out - nothing
+         reached the card, so the number is provably unused.  Any later
+         failure (response CRC, data-phase error) may have delivered the
+         frame: reclaiming then re-sends a consumed number, which the chip
+         discards without crediting - one silent step toward a permanently
+         shut window per occurrence. */
+      if (sdio_host_last_failure_precommand())
+         --g_sdpcm_tx_sequence;
       sdio_runtime_set_error("Failed to write Ethernet frame over SDIO");
       return false;
    }
 
    ++g_runtime_tx_frame_count;
    g_runtime_bus_active_us = RPI_GetSystemTime();
+   g_runtime_tx_shut_since_us = 0u;   /* transmit is demonstrably alive */
    return true;
 }
 
@@ -6426,6 +6457,16 @@ void sdio_runtime_prepare_for_warm_reboot(void)
    }
    sdio_host_set_card_interrupt(false);
    g_rx_int_armed = false;
+}
+
+/* How long transmit has been continuously refused, in microseconds; zero
+   while it is healthy.  See g_runtime_tx_shut_since_us. */
+// cppcheck-suppress unusedFunction
+uint32_t sdio_runtime_tx_dead_us(void)
+{
+   if (g_runtime_tx_shut_since_us == 0u)
+      return 0u;
+   return RPI_GetSystemTime() - g_runtime_tx_shut_since_us;
 }
 
 // cppcheck-suppress unusedFunction

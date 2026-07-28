@@ -213,6 +213,9 @@ static uint32_t s_icmp_probe_count;
 static uint32_t s_icmp_rx_stamp_us;
 static uint32_t s_icmp_prev_rx_us;
 static bool s_icmp_pending;
+/* Echo id+seq of the request being timed, so a reply parked in the hold
+   queue is never timed against a LATER request's arrival. */
+static uint32_t s_icmp_echo_tag;
 static uint32_t s_icmp_rx_seen;
 static uint32_t s_icmp_tx_seen;
 
@@ -239,6 +242,8 @@ static void wifi_lwip_icmp_probe_rx(const uint8_t *frame, uint16_t len)
    s_icmp_rx_seen++;
    now = RPI_GetSystemTime();
    s_icmp_rx_stamp_us = now;
+   s_icmp_echo_tag = ((uint32_t)frame[38] << 24) | ((uint32_t)frame[39] << 16)
+                   | ((uint32_t)frame[40] << 8) | frame[41];
    s_icmp_pending = true;
    s_icmp_prev_rx_us = (s_icmp_prev_rx_us == 0u) ? now : s_icmp_prev_rx_us;
 }
@@ -253,6 +258,10 @@ static void wifi_lwip_icmp_probe_tx(const uint8_t *frame, uint16_t len)
    s_icmp_tx_seen++;
    if (!s_icmp_pending)
       return;                    /* no request outstanding to time it against */
+   if ((((uint32_t)frame[38] << 24) | ((uint32_t)frame[39] << 16)
+        | ((uint32_t)frame[40] << 8) | frame[41]) != s_icmp_echo_tag)
+      return;                    /* reply to some other request - skip, do not
+                                    mis-time it against this one's arrival */
 
    now = RPI_GetSystemTime();
    slot = &s_icmp_probe[s_icmp_probe_count % WIFI_LWIP_ICMP_PROBE_DEPTH];
@@ -731,6 +740,16 @@ static void wifi_lwip_log_dhcp_state(void)
    period - broadcast and multicast traffic alone keep a real network far
    busier than this. */
 #define WIFI_LWIP_RX_SILENCE_LIMIT_US (45u * 1000000u)
+/* Transmit continuously refused for this long forces a rejoin even though RX
+   is healthy.  The wedge this covers was watched happen twice: the credit
+   window died (replayed sequence numbers are discarded uncredited, so
+   max_seq froze), RX carried on - broadcasts kept arriving - and the
+   RX-silence trigger therefore never fired; only a power cycle recovered.
+   A rejoin replays the 44-command join list, and every command's response
+   refreshes max_seq from live chip state, which re-derives the window.
+   Well past the 1 s resync probes and the 250 ms queue staleness, so it
+   only fires when those have already failed repeatedly. */
+#define WIFI_LWIP_TX_DEAD_LIMIT_US (8u * 1000000u)
 #define WIFI_LWIP_REJOIN_MAX_US    (60u * 1000000u)
 
 static uint32_t s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
@@ -753,7 +772,8 @@ static void wifi_lwip_rejoin_service(void)
    }
 
    if (g_wifi_lwip_context.link_up
-       && sdio_runtime_rx_idle_us() < WIFI_LWIP_RX_SILENCE_LIMIT_US) {
+       && sdio_runtime_rx_idle_us() < WIFI_LWIP_RX_SILENCE_LIMIT_US
+       && sdio_runtime_tx_dead_us() < WIFI_LWIP_TX_DEAD_LIMIT_US) {
       /* Associated and still hearing traffic: reset the schedule so the next
          outage starts fresh. */
       s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
