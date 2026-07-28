@@ -23,6 +23,10 @@
       } \
    } while (0)
 
+/* Data-phase waits that expired with no ready bit and no error.  See the
+   use site: the transfer proceeds regardless and delivers zeros. */
+uint32_t g_sdio_host_data_wait_timeouts;
+
 #define TIMEOUT_WAIT(stop_if_true, usec)     \
 { uint32_t time = usec; \
    do { \
@@ -675,6 +679,16 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
 
          TIMEOUT_WAIT(g_rpi_emmc_base->EMMC_INTERRUPT & wake_or_err_mask, timeout);
          irpts = g_rpi_emmc_base->EMMC_INTERRUPT;
+
+         /* Neither a ready bit nor an error: the wait timed out.  The
+            fall-through below then reads the FIFO anyway and gets zeros,
+            and a zero SDPCM header is indistinguishable from "fn2 FIFO
+            empty" - so the WiFi driver concludes there is no frame
+            waiting when there is.  Counted rather than failed here so the
+            count can be compared against the ping tail without changing
+            behaviour. */
+         if ((irpts & wake_or_err_mask) == 0u)
+            g_sdio_host_data_wait_timeouts++;
         // seen_ready = irpts & ready_irpt_mask;
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0000u | ready_irpt_mask;
 

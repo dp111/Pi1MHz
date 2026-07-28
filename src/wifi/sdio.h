@@ -273,6 +273,8 @@ uint32_t sdio_runtime_rx_idle_us(void);
 bool sdio_runtime_link_is_up(void);
 void sdio_runtime_powersave_note_link_change(bool link_up);
 void sdio_runtime_powersave_poll(void);
+/* Data-phase waits that expired silently - see sdio_host.c. */
+extern uint32_t g_sdio_host_data_wait_timeouts;
 void sdio_runtime_wake_counts(uint32_t *fast, uint32_t *already,
                               uint32_t *handshake, uint32_t *failed);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);

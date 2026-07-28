@@ -303,6 +303,13 @@ typedef struct {
 static wifi_lwip_tx_slot_t s_tx_queue[WIFI_LWIP_TX_QUEUE_DEPTH];
 static uint8_t s_tx_head;      /* next to send */
 static uint8_t s_tx_count;     /* frames waiting */
+/* Send-path diagnostics: the window between lwIP producing a frame and the
+   frame actually reaching the chip - which the ICMP turnaround probe did NOT
+   cover, because it was stamped before this queue and the credit gate. */
+static uint32_t s_tx_queued;        /* refused by the chip, parked here */
+static uint32_t s_tx_dropped_stale; /* aged out before credit appeared */
+static uint32_t s_tx_direct_fail;   /* send refused on the direct path */
+static uint32_t s_tx_hold_max_us;   /* longest a frame waited in the queue */
 
 /* Push as much of the queue as the credit window will take.  Returns true
  * when the queue is empty afterwards. */
@@ -312,12 +319,17 @@ static bool wifi_lwip_tx_hold_flush(void)
       wifi_lwip_tx_slot_t *slot = &s_tx_queue[s_tx_head];
 
       if (sdio_runtime_send_ethernet_frame(slot->data, slot->len)) {
+         uint32_t waited = RPI_GetSystemTime() - slot->stamp_us;
+         if (waited > s_tx_hold_max_us)
+            s_tx_hold_max_us = waited;
+         wifi_lwip_icmp_probe_tx(slot->data, slot->len);
          s_tx_head = (uint8_t)((s_tx_head + 1u) % WIFI_LWIP_TX_QUEUE_DEPTH);
          s_tx_count--;
          continue;
       }
 
       if ((RPI_GetSystemTime() - slot->stamp_us) > WIFI_LWIP_TX_HOLD_MAX_AGE_US) {
+         s_tx_dropped_stale++;
          s_tx_head = (uint8_t)((s_tx_head + 1u) % WIFI_LWIP_TX_QUEUE_DEPTH);
          s_tx_count--;
          continue;               /* too old to be worth delivering */
@@ -356,6 +368,7 @@ static void wifi_lwip_tx_hold_push(const uint8_t *frame, uint16_t len)
 
    if (s_tx_count >= WIFI_LWIP_TX_QUEUE_DEPTH)
       return;                    /* full: drop the newest, keep the order */
+   s_tx_queued++;
 
    slot = &s_tx_queue[((unsigned)s_tx_head + (unsigned)s_tx_count)
                       % WIFI_LWIP_TX_QUEUE_DEPTH];
@@ -363,6 +376,15 @@ static void wifi_lwip_tx_hold_push(const uint8_t *frame, uint16_t len)
    slot->len = len;
    slot->stamp_us = RPI_GetSystemTime();
    s_tx_count++;
+}
+
+void wifi_lwip_tx_path_counts(uint32_t *queued, uint32_t *stale,
+                              uint32_t *direct_fail, uint32_t *hold_max_us)
+{
+   *queued = s_tx_queued;
+   *stale = s_tx_dropped_stale;
+   *direct_fail = s_tx_direct_fail;
+   *hold_max_us = s_tx_hold_max_us;
 }
 
 // cppcheck-suppress constParameterCallback
@@ -388,8 +410,6 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       cursor = cursor->next;
    }
 
-   wifi_lwip_icmp_probe_tx(frame, offset);
-
    /* Anything already held goes first, or this frame would overtake it.  When
       the queue cannot drain, the new frame joins the back rather than being
       dropped - which is what makes the queue a queue.  It only ever held one
@@ -404,12 +424,18 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
    }
 
    if (!sdio_runtime_send_ethernet_frame(frame, offset)) {
+      s_tx_direct_fail++;
       /* TCP looks after itself; everything else would simply be lost. */
       if (wifi_lwip_frame_self_retries(frame, offset))
          return ERR_IF;
       wifi_lwip_tx_hold_push(frame, offset);
       return ERR_OK;                  /* accepted: we own it now */
    }
+
+   /* Stamped here, not on entry: the useful number is request-in to
+      frame-actually-sent, which is the window the queue and the credit gate
+      live in. */
+   wifi_lwip_icmp_probe_tx(frame, offset);
 
    /* Anything we send is a reason to listen harder.  The RX throttle decides
       the link is idle from *inbound* frames alone, which is precisely

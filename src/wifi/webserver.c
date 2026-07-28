@@ -2278,6 +2278,18 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)wf, (unsigned long)wa,
                   (unsigned long)wh, (unsigned long)wx);
          table_row(&b, "KSO wake", tmp);
+         snprintf(tmp, sizeof tmp, "%lu",
+                  (unsigned long)g_sdio_host_data_wait_timeouts);
+         table_row(&b, "SDIO data-wait timeouts", tmp);
+         {
+            uint32_t q = 0u, st = 0u, df = 0u, hm = 0u;
+            wifi_lwip_tx_path_counts(&q, &st, &df, &hm);
+            snprintf(tmp, sizeof tmp,
+                     "%lu queued / %lu stale / %lu fail / %lu us max wait",
+                     (unsigned long)q, (unsigned long)st,
+                     (unsigned long)df, (unsigned long)hm);
+            table_row(&b, "TX path", tmp);
+         }
       }
       if (total != 0u) {
          char samples[320];

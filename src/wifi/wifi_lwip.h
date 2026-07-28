@@ -38,6 +38,8 @@ const wifi_lwip_context_t *wifi_lwip_get_context(void);
  * idle-throttle backoff. */
 void wifi_lwip_rx_kick(void);
 void wifi_lwip_icmp_probe_counts(uint32_t *rx_seen, uint32_t *tx_seen);
+void wifi_lwip_tx_path_counts(uint32_t *queued, uint32_t *stale,
+                              uint32_t *direct_fail, uint32_t *hold_max_us);
 uint32_t wifi_lwip_icmp_probe_read(uint32_t *gap_ms, uint32_t *turnaround_us,
                                   uint32_t max, uint32_t *total);
 
