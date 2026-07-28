@@ -1727,6 +1727,12 @@ static bool conn_pump(ws_conn_t *c)
                br = req;
             } else if (f_read(&c->dl_file, c->dl_buf, req, &br) != FR_OK
                 || br == 0u) {
+               /* Short of the Content-Length already promised (file truncated
+                  under us via MTP or WebDAV, or a card error).  The client
+                  must see a broken transfer, not a byte-accurate lie: on a
+                  kept-alive socket the next response's bytes would be parsed
+                  as this body's tail. */
+               c->keep_alive = false;
                c->dl_eof = true;
                break;
             }
@@ -2180,7 +2186,7 @@ static bool route_status(ws_conn_t *c)
    const wifi_lwip_context_t   *lw  = wifi_lwip_get_context();
    sdio_runtime_status_t        rs  = sdio_runtime_get_status();
    ws_strbuf_t                  b;
-   char                         tmp[64];
+   char                         tmp[96];
    uint8_t                      mac[6];
 
    sb_init(&b);

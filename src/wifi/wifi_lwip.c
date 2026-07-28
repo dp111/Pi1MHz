@@ -310,6 +310,7 @@ static uint32_t s_tx_queued;        /* refused by the chip, parked here */
 static uint32_t s_tx_dropped_stale; /* aged out before credit appeared */
 static uint32_t s_tx_direct_fail;   /* send refused on the direct path */
 static uint32_t s_tx_hold_max_us;   /* longest a frame waited in the queue */
+static uint32_t s_tx_dropped_full;  /* arrived with every slot taken - LOST */
 
 /* Push as much of the queue as the credit window will take.  Returns true
  * when the queue is empty afterwards. */
@@ -366,8 +367,11 @@ static void wifi_lwip_tx_hold_push(const uint8_t *frame, uint16_t len)
 {
    wifi_lwip_tx_slot_t *slot;
 
-   if (s_tx_count >= WIFI_LWIP_TX_QUEUE_DEPTH)
+   if (s_tx_count >= WIFI_LWIP_TX_QUEUE_DEPTH) {
+      s_tx_dropped_full++;       /* this frame is LOST - count it, or a full
+                                    queue reads as "nothing wrong" on /status */
       return;                    /* full: drop the newest, keep the order */
+   }
    s_tx_queued++;
 
    slot = &s_tx_queue[((unsigned)s_tx_head + (unsigned)s_tx_count)
@@ -382,7 +386,7 @@ void wifi_lwip_tx_path_counts(uint32_t *queued, uint32_t *stale,
                               uint32_t *direct_fail, uint32_t *hold_max_us)
 {
    *queued = s_tx_queued;
-   *stale = s_tx_dropped_stale;
+   *stale = s_tx_dropped_stale + s_tx_dropped_full;
    *direct_fail = s_tx_direct_fail;
    *hold_max_us = s_tx_hold_max_us;
 }
@@ -846,6 +850,12 @@ void wifi_lwip_poll(void)
 
       /* full-rate while a transmit expects a reply (see wifi_lwip_rx_kick) */
       bool aggressive = (int32_t)(now_us - s_rx_aggressive_until_us) < 0;
+
+      /* Once expired, drag the deadline along with now: a stale deadline
+         35.8 minutes in the past would otherwise wrap the signed compare and
+         re-assert "aggressive" for half of every 71.6-minute cycle. */
+      if (!aggressive)
+         s_rx_aggressive_until_us = now_us;
 
       if (aggressive || (int32_t)(now_us - s_rx_next_us) >= 0) {
          uint32_t budget_end = now_us + WIFI_LWIP_SERVICE_BUDGET_US;
