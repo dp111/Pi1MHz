@@ -5607,6 +5607,7 @@ void webserver_poll(void)
       No-op (no SDIO traffic) unless a read is pending. */
    sdio_runtime_rssi_poll();
    sdio_runtime_pktcnts_poll();
+   sdio_runtime_powersave_poll();
 }
 
 void webserver_init(void)

@@ -271,6 +271,8 @@ bool sdio_runtime_rejoin_busy(void);
    anything, so this is the only evidence that it has. */
 uint32_t sdio_runtime_rx_idle_us(void);
 bool sdio_runtime_link_is_up(void);
+void sdio_runtime_powersave_note_link_change(bool link_up);
+void sdio_runtime_powersave_poll(void);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
 /* On-demand signal-strength read.  sdio_runtime_request_rssi() just flags
    a read (safe from the /status TCP callback); sdio_runtime_rssi_poll()

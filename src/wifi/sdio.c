@@ -5879,6 +5879,76 @@ void sdio_runtime_pktcnts_poll(void)
    ticks, exactly like the boot MAC read (sdio_runtime_query_mac_step).
    Costs nothing (no bus traffic) unless a read is pending, so it is only
    ever active for a moment after /status is viewed. */
+/* Re-assert "no power save" once the link is actually up.
+ *
+ * The join sequence already sends WLC_SET_PM = 0, but it sends it while the
+ * interface is still coming up - before WLC_UP, the country setting and the
+ * association itself.  Broadcom firmware applies PM per-interface and settles
+ * it again as part of associating, so the early write does not necessarily
+ * survive the join, and the station ends up in PM_FAST without anything
+ * failing or reporting an error.
+ *
+ * The symptom that led here: an idle ping averaged 531 ms with multi-second
+ * outliers while the firmware's own measured request-to-reply turnaround was
+ * 4 microseconds, and the chip reported no bad frames in either direction -
+ * so the requests were arriving at the chip seconds late.  Under a sustained
+ * download the same ping averaged 138 ms.  Fast when there is traffic to keep
+ * the station awake, slow when idle, is what an access point buffering for a
+ * dozing station looks like.
+ *
+ * Sent once per link-up, and again after a rejoin, since a fresh association
+ * gets a fresh PM state.  It yields to an outstanding RSSI or PKTCNTS request
+ * because all three share one control template. */
+static bool g_runtime_pm_asserted;
+static uint32_t g_runtime_pm_due_us;
+
+void sdio_runtime_powersave_note_link_change(bool link_up)
+{
+   if (!link_up) {
+      g_runtime_pm_asserted = false;
+      g_runtime_pm_due_us = 0u;
+      return;
+   }
+
+   if (!g_runtime_pm_asserted && g_runtime_pm_due_us == 0u) {
+      /* Let the association settle before writing: a PM write landing in the
+         middle of the join is exactly how the original one got lost. */
+      g_runtime_pm_due_us = RPI_GetSystemTime() + 2000000u;
+      if (g_runtime_pm_due_us == 0u)
+         g_runtime_pm_due_us = 1u;
+   }
+}
+
+// cppcheck-suppress unusedFunction
+void sdio_runtime_powersave_poll(void)
+{
+   if (g_runtime_pm_asserted || g_runtime_pm_due_us == 0u)
+      return;
+
+   if (!sdio_runtime_link_is_up())
+      return;
+
+   if ((int32_t)(RPI_GetSystemTime() - g_runtime_pm_due_us) < 0)
+      return;
+
+   /* The control template is shared by RSSI, PKTCNTS and this - do not step
+      on any read in flight.  Overwriting the template mid-request is what
+      previously coincided with a link loss. */
+   if (g_runtime_rssi_query_wanted || g_runtime_rssi_request_pending
+       || g_runtime_pktcnt_query_wanted || g_runtime_pktcnt_step_sent
+       || g_runtime_pktcnt_request_pending)
+      return;
+
+   sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                    WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF);
+   if (!sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
+                                                           &g_sdio_probe_result,
+                                                           SDIO_RUNTIME_POLL_TIMEOUT_US))
+      return;                   /* try again on the next poll */
+
+   g_runtime_pm_asserted = true;
+}
+
 void sdio_runtime_rssi_poll(void)
 {
    uint32_t now;

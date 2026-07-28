@@ -146,6 +146,10 @@ static void wifi_lwip_update_runtime_state(void)
    if (g_wifi_lwip_context.link_up)
       g_wifi_lwip_context.link_established = true;
 
+   /* A fresh association gets a fresh power-save state, so tell the driver
+      to re-assert it - see sdio_runtime_powersave_note_link_change(). */
+   sdio_runtime_powersave_note_link_change(g_wifi_lwip_context.link_up);
+
    if (!g_wifi_lwip_link_logged || g_wifi_lwip_last_link_up != g_wifi_lwip_context.link_up) {
       wifi_lwip_debug_log("link %s", g_wifi_lwip_context.link_up ? "up" : "down");
       g_wifi_lwip_last_link_up = g_wifi_lwip_context.link_up;
