@@ -34,6 +34,7 @@
 #include <ctype.h>
 
 #include "../BeebSCSI/filesystem.h"
+#include "../wifi/sdio.h"
 #include "../BeebSCSI/fatfs/ff.h"
 #include "../rpi/asm-helpers.h"
 #include "../rpi/systimer.h"
@@ -629,6 +630,11 @@ void mtp_fs_reboot_poll(void) {
   }
   if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
     return;
+
+  /* The chip keeps power across the warm jump, so tell it to stop signalling
+     on DAT1 (CCCR 0x04, HOSTINTMASK) and hide the controller latch before the
+     incoming kernel starts its bring-up over that same line. */
+  sdio_runtime_prepare_for_warm_reboot();
 
   _disable_interrupts();
   _copyandreboot(g_kernel_reboot_data, (int)g_kernel_reboot_len); /* never returns */

@@ -1214,6 +1214,41 @@ int sdio_host_submit(sdio_host_t *host,
    return 0;
 }
 
+void sdio_host_set_card_interrupt(bool visible)
+{
+   /* Guard on readiness, not the pointer: g_rpi_emmc_base is a compile-time
+      constant, and touching an unclocked BCM2835 peripheral hangs the bus. */
+   if (!g_arasan_wifi_ready)
+      return;
+   if (visible)
+      g_rpi_emmc_base->EMMC_IRPT_MASK = 0xffffffffu;
+   else
+      g_rpi_emmc_base->EMMC_IRPT_MASK = ~SD_CARD_INTERRUPT;
+}
+
+bool sdio_host_card_interrupt_asserted(void)
+{
+   if (!g_arasan_wifi_ready)
+      return false;
+   return (g_rpi_emmc_base->EMMC_INTERRUPT & SD_CARD_INTERRUPT) != 0u;
+}
+
+void sdio_host_clear_card_interrupt(void)
+{
+   if (!g_arasan_wifi_ready)
+      return;
+   /* The card-interrupt status bit is NOT write-1-clear like the others: it is
+      a latch that only re-arms when its enable is dropped and re-raised, which
+      is why Linux's sdhci_enable_sdio_irq disables around servicing instead of
+      ever writing the status bit.  Measured here: with W1C alone the bit read
+      asserted on 138k consecutive polls while CCCR 0x05 said no function was
+      pending.  Toggle the enable, with the W1C in the middle for the latch
+      revisions that do honour it. */
+   g_rpi_emmc_base->EMMC_IRPT_MASK = ~SD_CARD_INTERRUPT;
+   g_rpi_emmc_base->EMMC_INTERRUPT = SD_CARD_INTERRUPT;
+   g_rpi_emmc_base->EMMC_IRPT_MASK = 0xffffffffu;
+}
+
 const char *sdio_host_backend_name(void)
 {
    sdio_host_refresh_status();

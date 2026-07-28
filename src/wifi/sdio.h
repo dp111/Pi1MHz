@@ -277,6 +277,11 @@ void sdio_runtime_powersave_verify_poll(void);
 bool sdio_runtime_get_powersave_mode(int32_t *mode);
 /* Data-phase waits that expired silently - see sdio_host.c. */
 extern uint32_t g_sdio_host_data_wait_timeouts;
+void sdio_runtime_rx_int_pending(uint8_t *or_bits, uint8_t *last);
+bool sdio_runtime_rx_gate_is_armed(void);
+void sdio_runtime_prepare_for_warm_reboot(void);
+void sdio_runtime_rx_gate_counts(uint32_t *skips, uint32_t *sweeps,
+                                 uint32_t *missed, bool *armed, uint32_t *high);
 void sdio_runtime_wake_counts(uint32_t *fast, uint32_t *already,
                               uint32_t *handshake, uint32_t *failed);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);

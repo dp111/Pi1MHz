@@ -50,6 +50,16 @@ int sdio_host_set_clock_poll(sdio_host_t *host, uint32_t *actual_rate_hz);
 int sdio_host_submit(sdio_host_t *host,
                      const sdio_host_command_t *command,
                      sdio_host_result_t *result);
+/* Show or hide the in-band SDIO interrupt (DAT1) in EMMC_INTERRUPT.  Must stay
+   hidden until the chip's firmware is running: the card signals by pulling
+   DAT1 LOW, so a powered-down chip reads as permanently asserted. */
+void sdio_host_set_card_interrupt(bool visible);
+bool sdio_host_card_interrupt_asserted(void);
+/* Write-1-clear the controller's card-interrupt latch.  EMMC_INTERRUPT is a
+   LATCH, not a level: without this, the first genuine assertion reads as
+   asserted forever - which is exactly what the earlier gate attempts measured
+   (145k polls high, ~0 clear).  Call after servicing the card. */
+void sdio_host_clear_card_interrupt(void);
 const char *sdio_host_backend_name(void);
 const char *sdio_host_last_error(void);
 

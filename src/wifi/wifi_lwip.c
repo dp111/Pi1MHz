@@ -879,8 +879,15 @@ void wifi_lwip_poll(void)
                break;
          }
 
+         /* With the SDIO interrupt gate armed, an idle drain costs one MMIO
+            read - so there is nothing left to throttle, and every main-loop
+            pass may look.  A frame is then collected the moment the chip
+            raises the line rather than up to a full idle interval later.
+            Unarmed (boot, emulator, arming failure) the old backoff stands. */
          s_rx_next_us = active ? RPI_GetSystemTime()
-                               : (now_us + WIFI_LWIP_RX_IDLE_INTERVAL_US);
+                               : (now_us + (sdio_runtime_rx_gate_is_armed()
+                                            ? 0u
+                                            : WIFI_LWIP_RX_IDLE_INTERVAL_US));
       } else {
          /* Not draining this pass, but a frame the window refused must still
             get its retry rather than waiting for the next drain. */

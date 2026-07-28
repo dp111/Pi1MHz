@@ -2278,6 +2278,23 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)wf, (unsigned long)wa,
                   (unsigned long)wh, (unsigned long)wx);
          table_row(&b, "KSO wake", tmp);
+         {
+            uint32_t sk = 0u, sw = 0u, ms = 0u, hi = 0u;
+            bool armed = false;
+            sdio_runtime_rx_gate_counts(&sk, &sw, &ms, &armed, &hi);
+            snprintf(tmp, sizeof tmp,
+                     "%s %lu high / %lu skipped / %lu sweeps / %lu MISSED",
+                     armed ? "armed:" : "OFF:", (unsigned long)hi,
+                     (unsigned long)sk, (unsigned long)sw, (unsigned long)ms);
+            table_row(&b, "RX interrupt gate", tmp);
+            {
+               uint8_t po = 0u, pl = 0u;
+               sdio_runtime_rx_int_pending(&po, &pl);
+               snprintf(tmp, sizeof tmp, "or=%02x last=%02x",
+                        (unsigned)po, (unsigned)pl);
+               table_row(&b, "CCCR INT pending", tmp);
+            }
+         }
          snprintf(tmp, sizeof tmp, "%lu",
                   (unsigned long)g_sdio_host_data_wait_timeouts);
          table_row(&b, "SDIO data-wait timeouts", tmp);

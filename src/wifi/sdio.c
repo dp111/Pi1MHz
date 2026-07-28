@@ -176,6 +176,30 @@ static uint32_t g_wake_failed;      /* gave up - THE DRAIN IS SKIPPED */
    status the driver has - see sdio_runtime_rx_idle_us(). */
 static uint32_t g_runtime_last_rx_us;
 static bool g_runtime_fifo_was_empty = true;
+/* Gating of the fn2 peek on the chip's in-band SDIO interrupt.  Armed at
+   link-up.  g_rx_int_missed is the trust metric: frames the safety sweep found
+   while the line was NOT asserted - zero means the signal can be relied on.
+   The sweep runs at the old idle poll rate, so an untrusted signal costs
+   nothing over the previous behaviour. */
+static bool g_rx_int_armed;
+static bool g_rx_sweeping;
+static uint32_t g_rx_sweep_us;
+static uint32_t g_rx_int_skips;
+static uint32_t g_rx_sweeps;
+static uint32_t g_rx_int_missed;
+static uint32_t g_rx_int_high;
+/* Which function CCCR 0x05 blames while the line is asserted.  Sampled once
+   every 1024 asserted polls - a CMD52 costs ~15 us, so sampling every poll
+   would double the idle bus traffic this gate exists to remove. */
+static uint8_t g_rx_int_pending_or;
+static uint8_t g_rx_int_pending_last;
+/* 10 ms: the sweep is a safety net, not the transport.  Measured with the
+   sweep at 1 ms and the gate armed: 1 frame missed out of 3718 - the line
+   announces essentially everything, so sweeping at the old 1 ms poll rate
+   just spent ~1000 CMD53s a second confirming the FIFO was empty.  A missed
+   frame now waits at most 10 ms, and g_rx_int_missed on /status says how
+   often that actually happens. */
+#define SDIO_RX_SWEEP_INTERVAL_US 10000u
 static bool g_runtime_emulator_mode;
 static bool g_runtime_identify_started;
 static unsigned int g_runtime_identify_attempt;
@@ -252,6 +276,15 @@ static void sdio_debug_log(const char *format, ...)
 #define SDIO_CCCR_CCCR_SDIO_REV 0x00u
 #define SDIO_CCCR_IO_ENABLE 0x02u
 #define SDIO_CCCR_IO_READY 0x03u
+#define SDIO_CCCR_INT_ENABLE 0x04u        /* bit 0 = master, bit n = function n */
+#define SDIO_CORE_HOST_INT_MASK_OFFSET 0x24u
+/* I_XMTDATA_AVAIL: "the chip has data to transmit to the host" = a frame is
+   waiting.  Chosen by measurement (77597-poll intstatus split): it was the
+   only bit present when a frame was waiting and absent across every empty
+   poll.  I_HMB_FRAME_IND (0x40) is permanently set on this chip and
+   I_CHIPACTIVE is on for as long as the chip runs - neither can gate. */
+#define SDIO_HOST_INT_MASK_VALUE 0x00800000u   /* I_XMTDATA_AVAIL */
+#define SDIO_CCCR_INT_PENDING 0x05u   /* bit n = function n is asserting */
 #define SDIO_CCCR_BUS_INTERFACE_CONTROL 0x07u
 #define SDIO_CCCR_SPEED_SELECT 0x13u
 #define SDIO_CCCR_SPEED_SHS 0x01u      /* card supports high speed */
@@ -628,6 +661,9 @@ static void sdio_runtime_set_error(const char *message)
 
 static void sdio_runtime_boot_reset_state(void)
 {
+   /* A powered-down chip holds DAT1 low, which reads as permanently asserted. */
+   sdio_host_set_card_interrupt(false);
+   g_rx_int_armed = false;
    g_runtime_boot_fw_prepared = false;
    g_runtime_boot_deadline_us = 0u;
    g_runtime_boot_chip_id_register = 0u;
@@ -5978,6 +6014,28 @@ void sdio_runtime_powersave_poll(void)
 
    g_runtime_pm_asserted = true;
    g_runtime_pm_query_wanted = true;   /* now confirm it actually took */
+
+   /* Arm the in-band interrupt gate.  Here rather than at fn2-ready because
+      the boot state machine calls boot_reset_state() on its way through and
+      would silently disarm it.  Mask the chip's sources first or it asserts
+      for everything; clear the controller's stale latch last, because DAT1
+      has been flapping through bring-up and whatever it latched is history. */
+   if (!g_rx_int_armed) {
+      uint8_t int_enable = 0x01u | 0x04u;   /* IENM (master) + IEN2 */
+
+      if (sdio_backplane_write_u32_timeout(&g_runtime_device,
+                                           g_runtime_sdio_core_base
+                                              + SDIO_CORE_HOST_INT_MASK_OFFSET,
+                                           SDIO_HOST_INT_MASK_VALUE,
+                                           SDIO_RUNTIME_POLL_TIMEOUT_US)
+          && sdio_probe_write_byte(&g_runtime_device, SDIO_CCCR_INT_ENABLE,
+                                   int_enable)) {
+         sdio_host_set_card_interrupt(true);
+         sdio_host_clear_card_interrupt();
+         g_rx_sweep_us = RPI_GetSystemTime();
+         g_rx_int_armed = true;
+      }
+   }
 }
 
 /* Read PM back.  Same one-shot shape as the RSSI poll, and it yields to the
@@ -6272,6 +6330,52 @@ static bool sdio_runtime_wake_bus(sdio_host_t *dev)
 }
 
 // cppcheck-suppress unusedFunction
+void sdio_runtime_rx_gate_counts(uint32_t *skips, uint32_t *sweeps,
+                                 uint32_t *missed, bool *armed, uint32_t *high)
+{
+   *skips = g_rx_int_skips;
+   *sweeps = g_rx_sweeps;
+   *missed = g_rx_int_missed;
+   *armed = g_rx_int_armed;
+   *high = g_rx_int_high;
+}
+
+/* Undo everything the interrupt gate told the CHIP before a warm reboot.
+   WL_REG_ON stays high across a kernel.now jump, so CCCR 0x04 and HOSTINTMASK
+   survive into the next kernel - which then has the chip driving DAT1 low
+   into the middle of its bring-up, on the same line its firmware download
+   uses.  Observed as the incoming kernel dying silently and the watchdog
+   falling back to the SD kernel; masking only the controller bit was not
+   enough, because the chip was still signalling.  Failures here are ignored:
+   the bus may already be wedged, and the reboot must happen regardless. */
+// cppcheck-suppress unusedFunction
+void sdio_runtime_prepare_for_warm_reboot(void)
+{
+   if (g_runtime_started && !g_runtime_emulator_mode) {
+      (void)sdio_probe_write_byte(&g_runtime_device, SDIO_CCCR_INT_ENABLE, 0u);
+      (void)sdio_backplane_write_u32_timeout(&g_runtime_device,
+                                             g_runtime_sdio_core_base
+                                                + SDIO_CORE_HOST_INT_MASK_OFFSET,
+                                             0u, SDIO_RUNTIME_POLL_TIMEOUT_US);
+   }
+   sdio_host_set_card_interrupt(false);
+   g_rx_int_armed = false;
+}
+
+// cppcheck-suppress unusedFunction
+bool sdio_runtime_rx_gate_is_armed(void)
+{
+   return g_rx_int_armed;
+}
+
+// cppcheck-suppress unusedFunction
+void sdio_runtime_rx_int_pending(uint8_t *or_bits, uint8_t *last)
+{
+   *or_bits = g_rx_int_pending_or;
+   *last = g_rx_int_pending_last;
+}
+
+// cppcheck-suppress unusedFunction
 void sdio_runtime_wake_counts(uint32_t *fast, uint32_t *already,
                               uint32_t *handshake, uint32_t *failed)
 {
@@ -6390,6 +6494,33 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
       ++s_poll_count;
    }
 
+   /* Ask the cheap question first: one MMIO read against ~50 us of CMD53.
+      The periodic sweep still runs regardless, at the old idle poll rate, so
+      a missed assertion costs nothing. */
+   if (g_rx_int_armed) {
+      uint32_t gate_now_us = RPI_GetSystemTime();
+
+      if (sdio_host_card_interrupt_asserted()) {
+         g_rx_int_high++;
+         if ((g_rx_int_high & 0x3ffu) == 1u) {
+            uint8_t pend = 0u;
+            if (sdio_probe_read_byte(&g_runtime_device, SDIO_CCCR_INT_PENDING,
+                                     &pend)) {
+               g_rx_int_pending_or |= pend;
+               g_rx_int_pending_last = pend;
+            }
+         }
+         g_rx_sweeping = false;
+      } else if ((uint32_t)(gate_now_us - g_rx_sweep_us) < SDIO_RX_SWEEP_INTERVAL_US) {
+         g_rx_int_skips++;
+         return false;
+      } else {
+         g_rx_sweep_us = gate_now_us;
+         g_rx_sweeps++;
+         g_rx_sweeping = true;
+      }
+   }
+
    /* Read up to MAX_RX_FRAMES_PER_POLL frames from fn2. Each iteration peeks
       at the 4-byte SDPCM header: if 0x0000/0x0000 the FIFO is empty and we
       stop, otherwise we pass the already-consumed header to the completion
@@ -6403,10 +6534,22 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
          break; /* CMD53 error */
 
       if (hwtag[0] == 0u && hwtag[1] == 0u) {
+         /* FIFO drained and the chip-side intstatus was cleared by the
+            service block above, so re-arm the controller's latch.  This is
+            the line every earlier attempt was missing: EMMC_INTERRUPT is
+            write-1-to-clear, and without clearing it here the first genuine
+            assertion reads as asserted for ever after - measured as 145k
+            consecutive "high" polls.  If the chip still has a pending
+            condition it re-asserts immediately and the next poll sees it,
+            so nothing can be lost here. */
+         if (g_rx_int_armed)
+            sdio_host_clear_card_interrupt();
          g_runtime_fifo_was_empty = true;
          break; /* fn2 FIFO empty */
       }
       g_runtime_fifo_was_empty = false;
+      if (g_rx_sweeping && frame_index == 0u)
+         g_rx_int_missed++;            /* the sweep found what the line did not say */
 
       /* There is a frame: feed the already-consumed 4-byte header forward
          to the completion path which reads the rest and processes it. */
