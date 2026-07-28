@@ -125,6 +125,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "wifi/wifi.h"
 #include "aun/aun_emulator.h"
 #include "teletext_emulator.h"
+#include "watchdog.h"
 
 typedef struct {
    const char *name;
@@ -148,7 +149,10 @@ static emulator_list emulator[] = {
    {"usb",usb_init, 0x00, 1 },
    {"wifi",wifi_emulator_init, 0x00, 1 },
    {"aun",aun_emulator_init, 0x00, 1 },
-   {"Teletext",teletext_emulator_init, 0x10, 1 }  // Acorn Teletext Adapter at &FC10
+   {"Teletext",teletext_emulator_init, 0x10, 1 },  // Acorn Teletext Adapter at &FC10
+   /* Last, so its poll callback re-arms the watchdog only after every other
+      emulator has had its turn - a poll that stops responding still trips it. */
+   {"Watchdog",watchdog_init, 0x00, 1 }
 };
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))

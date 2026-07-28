@@ -158,6 +158,10 @@ static uint32_t g_runtime_int_service_us;
    which is indistinguishable from "FIFO empty", so the driver could go blind
    with frames queued.  Only real traffic counts as proof of wakefulness. */
 static uint32_t g_runtime_bus_active_us;
+/* When a frame was last received from the chip.  A link that has silently
+   stopped carrying traffic looks identical to a healthy one from every
+   status the driver has - see sdio_runtime_rx_idle_us(). */
+static uint32_t g_runtime_last_rx_us;
 static bool g_runtime_fifo_was_empty = true;
 static bool g_runtime_emulator_mode;
 static bool g_runtime_identify_started;
@@ -3712,6 +3716,7 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
       *frame_length = ethernet_length;
    ++g_runtime_rx_frame_count;
    g_runtime_bus_active_us = RPI_GetSystemTime();
+   g_runtime_last_rx_us = g_runtime_bus_active_us;
    return true;
 }
 
@@ -5732,6 +5737,15 @@ bool sdio_runtime_rejoin_start(void)
 
 /* True while a rejoin is still working through its stages.  The caller keeps
    calling sdio_runtime_tick() until this goes false. */
+/* How long since anything arrived from the chip.  Zero until the first frame,
+   so a caller cannot mistake "nothing yet" for "silent for ages". */
+uint32_t sdio_runtime_rx_idle_us(void)
+{
+   if (g_runtime_last_rx_us == 0u)
+      return 0u;
+   return RPI_GetSystemTime() - g_runtime_last_rx_us;
+}
+
 bool sdio_runtime_rejoin_busy(void)
 {
    return g_runtime_stage == SDIO_RUNTIME_STAGE_JOIN

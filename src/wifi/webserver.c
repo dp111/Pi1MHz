@@ -2196,6 +2196,14 @@ static bool route_status(ws_conn_t *c)
    if (sdio_runtime_link_is_up()) {
       int32_t rssi;
       sdio_runtime_request_rssi();
+      /* Requested per view rather than on a timer.  A timer meant a control
+         ioctl every couple of seconds forever, and control frames bypass the
+         SDPCM credit window - continuous uninvited traffic into the chip is
+         not something a diagnostic should introduce.  The cost is that the
+         figure shown is the one fetched for the previous view: refresh twice
+         when taking a reading, and never treat two consecutive views as a
+         delta over the interval between them. */
+      sdio_runtime_request_pktcnts();
       if (sdio_runtime_get_rssi(&rssi)) {
          snprintf(tmp, sizeof tmp, "%ld dBm", (long)rssi);
          table_row(&b, "Signal (RSSI)", tmp);
@@ -5598,21 +5606,6 @@ void webserver_poll(void)
    /* Perform any pending on-demand RSSI read requested by /status.
       No-op (no SDIO traffic) unless a read is pending. */
    sdio_runtime_rssi_poll();
-   /* Keep the chip counters fresh rather than fetching them when /status is
-      rendered: the page shows the cached value and requests the next one in
-      the same breath, so a view-triggered fetch always displays the state as
-      of the previous view.  Two samples read that way make a delta span the
-      wrong window - which is exactly how these counters first appeared not to
-      track real traffic. */
-   {
-      static uint32_t s_pktcnt_next_us;
-      uint32_t now_us = RPI_GetSystemTime();
-
-      if ((int32_t)(now_us - s_pktcnt_next_us) >= 0) {
-         sdio_runtime_request_pktcnts();
-         s_pktcnt_next_us = now_us + 2000000u;
-      }
-   }
    sdio_runtime_pktcnts_poll();
 }
 

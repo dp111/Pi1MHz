@@ -261,6 +261,7 @@ set(discaccess_emulator_files
 
 set(teletext_emulator_files
    teletext_emulator.c
+   watchdog.c
    teletext_emulator.h
 )
 

@@ -266,6 +266,10 @@ bool sdio_runtime_started(void);
    the caller then drives sdio_runtime_tick() while rejoin_busy() is true. */
 bool sdio_runtime_rejoin_start(void);
 bool sdio_runtime_rejoin_busy(void);
+/* Microseconds since the last frame arrived from the chip (0 before the
+   first).  A link can stop carrying traffic without the firmware reporting
+   anything, so this is the only evidence that it has. */
+uint32_t sdio_runtime_rx_idle_us(void);
 bool sdio_runtime_link_is_up(void);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
 /* On-demand signal-strength read.  sdio_runtime_request_rssi() just flags

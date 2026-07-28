@@ -590,6 +590,11 @@ static void wifi_lwip_log_dhcp_state(void)
    takes about a second, so waiting longer than this is pure downtime.  The
    doubling is what protects the bus when there is genuinely no AP to find. */
 #define WIFI_LWIP_REJOIN_FIRST_US  (2u * 1000000u)
+/* How long the chip may deliver nothing at all before the link is presumed
+   dead regardless of what it claims.  Generously above any normal quiet
+   period - broadcast and multicast traffic alone keep a real network far
+   busier than this. */
+#define WIFI_LWIP_RX_SILENCE_LIMIT_US (45u * 1000000u)
 #define WIFI_LWIP_REJOIN_MAX_US    (60u * 1000000u)
 
 static uint32_t s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
@@ -611,12 +616,23 @@ static void wifi_lwip_rejoin_service(void)
       return;
    }
 
-   if (g_wifi_lwip_context.link_up) {
-      /* Associated: reset the schedule so the next outage starts fresh. */
+   if (g_wifi_lwip_context.link_up
+       && sdio_runtime_rx_idle_us() < WIFI_LWIP_RX_SILENCE_LIMIT_US) {
+      /* Associated and still hearing traffic: reset the schedule so the next
+         outage starts fresh. */
       s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
       s_rejoin_scheduled = false;
       return;
    }
+
+   /* Falling through with link_up still set means the chip has gone quiet
+      without saying so.  That happens: observed with USB and the main loop
+      healthy, no link-down event, no deauth, and nothing arriving for
+      minutes - so every status the driver owns said the link was fine while
+      no traffic moved, and an event-driven rejoin could never fire.  Total
+      silence is the evidence, and it is trustworthy here because a LAN
+      carries broadcast traffic continuously; this Pi sees tens of frames a
+      second even with nothing talking to it. */
 
    if (!s_rejoin_scheduled) {
       /* First time down.  Before the link has ever come up, allow the full
