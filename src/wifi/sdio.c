@@ -93,6 +93,14 @@ static uint16_t g_runtime_mac_request_id;
    TCP callback - so it stays off the RX-drain path. */
 static int32_t g_runtime_rssi;
 static bool g_runtime_rssi_valid;
+/* WLC_GET_PM readback: what the chip says its power-save mode actually is.
+   0 = off (what we ask for), 1 = PM_MAX, 2 = PM_FAST. */
+static int32_t g_runtime_pm_value = -1;
+static bool g_runtime_pm_value_valid;
+static bool g_runtime_pm_query_wanted;
+static bool g_runtime_pm_query_sent;
+static bool g_runtime_pm_request_pending;
+static uint16_t g_runtime_pm_request_id;
 static bool g_runtime_rssi_request_pending;
 static uint16_t g_runtime_rssi_request_id;
 static bool g_runtime_rssi_query_wanted;
@@ -326,6 +334,7 @@ static uint32_t g_runtime_sdio_core_base = CYW43_SDIO_CORE_BASE;
 #define WLC_GET_WPA_AUTH 164u
 #define WLC_GET_RADIO 37u
 #define WLC_GET_RSSI 127u
+#define WLC_GET_PM 85u
 /* Returns the chip's own packet counters: rx_good, rx_bad, tx_good, tx_bad,
    rx_ocast_good, five little-endian u32s.  The point of asking is that the
    chip counts what actually arrived over the air, so comparing its rx_good
@@ -2362,6 +2371,8 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
          return WLC_GET_RADIO;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
          return WLC_GET_RSSI;
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_PM:
+         return WLC_GET_PM;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS:
          return WLC_GET_PKTCNTS;
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
@@ -2469,6 +2480,7 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_PM:
          /* WLC_GET_* ioctls return a u32; send a 4-byte zero buffer
             for the chip to fill. */
          return 4u;
@@ -3030,6 +3042,7 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_INFRA:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_PM:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS:
          /* WLC_GET_* ioctls write their reply into the response slot, which
             the memset at the top of this function has already zeroed. */
@@ -3587,6 +3600,16 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
                &frame_buffer[header_length + CDC_HEADER_LENGTH]);
             g_runtime_rssi_valid = true;
             g_runtime_rssi_request_pending = false;
+         }
+         /* WLC_GET_PM reply: the chip's current power-save mode as a u32. */
+         if (g_runtime_pm_request_pending && cdc_cmd == WLC_GET_PM
+             && cdc_request_id == g_runtime_pm_request_id
+             && !(cdc_flags & CDCF_IOC_ERROR)
+             && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 4u)) {
+            g_runtime_pm_value = (int32_t)sdio_load_u32_le(
+               &frame_buffer[header_length + CDC_HEADER_LENGTH]);
+            g_runtime_pm_value_valid = true;
+            g_runtime_pm_request_pending = false;
          }
          /* WLC_GET_PKTCNTS reply: five little-endian u32 counters, matched by
             request id like the others. */
@@ -5911,6 +5934,9 @@ void sdio_runtime_powersave_note_link_change(bool link_up)
    if (!link_up) {
       g_runtime_pm_asserted = false;
       g_runtime_pm_due_us = 0u;
+      g_runtime_pm_query_wanted = false;
+      g_runtime_pm_query_sent = false;
+      g_runtime_pm_value_valid = false;
       return;
    }
 
@@ -5951,6 +5977,43 @@ void sdio_runtime_powersave_poll(void)
       return;                   /* try again on the next poll */
 
    g_runtime_pm_asserted = true;
+   g_runtime_pm_query_wanted = true;   /* now confirm it actually took */
+}
+
+/* Read PM back.  Same one-shot shape as the RSSI poll, and it yields to the
+   other readers for the same reason - one shared control template. */
+// cppcheck-suppress unusedFunction
+void sdio_runtime_powersave_verify_poll(void)
+{
+   if (!g_runtime_pm_query_wanted || g_runtime_pm_query_sent)
+      return;
+   if (!sdio_runtime_link_is_up())
+      return;
+   if (g_runtime_rssi_query_wanted || g_runtime_rssi_request_pending
+       || g_runtime_pktcnt_query_wanted || g_runtime_pktcnt_step_sent
+       || g_runtime_pktcnt_request_pending)
+      return;
+
+   sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                    WIFI_SDIO_TX_PROBE_COMMAND_GET_PM);
+   g_runtime_pm_request_id = g_sdio_probe_result.tx_control_template_request_id;
+   g_runtime_pm_request_pending = true;
+   if (!sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
+                                                           &g_sdio_probe_result,
+                                                           SDIO_RUNTIME_POLL_TIMEOUT_US)) {
+      g_runtime_pm_request_pending = false;
+      return;                          /* try again next poll */
+   }
+   g_runtime_pm_query_sent = true;
+}
+
+// cppcheck-suppress unusedFunction
+bool sdio_runtime_get_powersave_mode(int32_t *mode)
+{
+   if (!g_runtime_pm_value_valid)
+      return false;
+   *mode = g_runtime_pm_value;
+   return true;
 }
 
 void sdio_runtime_rssi_poll(void)

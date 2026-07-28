@@ -145,6 +145,12 @@ typedef enum {
       /status page is viewed, via sdio_runtime_rssi_poll(). */
    WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI,
    WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS,
+   /* WLC_GET_PM readback.  The join sequence sets PM = 0 and
+      sdio_runtime_powersave_poll() re-asserts it after association, but
+      neither confirms it stuck - and a station the AP thinks is dozing gets
+      its traffic buffered, which looks exactly like a slow link with no
+      errors anywhere.  Issued once per link-up, after the re-assert. */
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_PM,
    /* GET-VAR readback of the "country" iovar, issued straight after the
       SET.  The chip echoes back the wl_country_t it currently holds
       (country_abbrev[4] + int32 rev + ccode[4]).  If the SET was a

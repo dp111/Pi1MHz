@@ -2309,6 +2309,16 @@ static bool route_status(ws_conn_t *c)
    snprintf(tmp, sizeof tmp, "%s %s", rs.bus_four_bit ? "4-bit" : "1-bit",
             rs.bus_high_speed ? "50MHz" : "25MHz");
    table_row(&b, "SDIO bus", tmp);
+   {
+      int32_t pm = -1;
+      if (sdio_runtime_get_powersave_mode(&pm)) {
+         snprintf(tmp, sizeof tmp, "%ld%s", (long)pm,
+                  (pm == 0) ? " (off, as requested)" : " (ON - AP will buffer!)");
+      } else {
+         snprintf(tmp, sizeof tmp, "%s", "(not read back yet)");
+      }
+      table_row(&b, "Power save (WLC_GET_PM)", tmp);
+   }
    table_row(&b, "Link-loss detect", rs.link_flag_trusted ? "armed" : "not armed");
    {
       /* The chip's own view of the air.  rx_good is what it actually received;
@@ -5669,6 +5679,7 @@ void webserver_poll(void)
    sdio_runtime_rssi_poll();
    sdio_runtime_pktcnts_poll();
    sdio_runtime_powersave_poll();
+   sdio_runtime_powersave_verify_poll();
 }
 
 void webserver_init(void)
