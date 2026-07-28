@@ -1029,6 +1029,13 @@ static int32_t fs_read_send_next(mtp_container_info_t* io_container, bool send_w
  * the WebDAV PUT path does.  The buffer is static because this runs on the
  * USB callback path with a small stack, and there is only ever one write in
  * flight (the state machine is single-object). */
+/* Little-endian 32-bit load from a byte buffer, without assuming alignment. */
+static uint32_t sdio_load_u32_le_bytes(const uint8_t *p)
+{
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+       | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
 #define MTP_WRITE_CHUNK 32768u
 static uint8_t g_mtp_write_buf[MTP_WRITE_CHUNK];
 static uint32_t g_mtp_write_buf_len;
@@ -1193,6 +1200,20 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
 
         if (reboot_copy_len > g_write_state.transferred) {
           memset(g_write_state.kernel_data + g_write_state.transferred, 0, reboot_copy_len - g_write_state.transferred);
+        }
+
+        /* Refuse to jump into something that is not a kernel.  Every image
+           this project builds begins with an ARM branch at offset 0 (the
+           vector table's "b _reset_"), so a first word that is not one means
+           the transfer arrived damaged - and jumping into it produces a Pi
+           that is silent before UART init and needs a power cycle, which has
+           happened repeatedly.  Refusing costs a failed flash and leaves the
+           machine running. */
+        if ((sdio_load_u32_le_bytes(g_write_state.kernel_data) & 0xff000000u)
+            != 0xea000000u) {
+          resp->header->code = MTP_RESP_GENERAL_ERROR;
+          fs_release_write_state();
+          break;
         }
 
         /* Hand the image to the main loop and answer the host normally.  The
