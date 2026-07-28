@@ -6416,6 +6416,40 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
       return false;
    }
 
+   /* Ask the cheap question before ANY bus traffic.  This must come ahead of
+      the KSO wake check and the INT_STATUS service, not just ahead of the
+      peek: measured with it placed after them, an idle main loop still spent
+      a KSO CMD52 plus a full backplane INT_STATUS exchange on every one of
+      ~50k passes a second, and the gate was only saving the peek.  A skipped
+      poll must cost one MMIO read and nothing else.  The sweeps and asserted
+      polls fall through and do the housekeeping, which keeps the mailbox
+      serviced at worst every SDIO_RX_SWEEP_INTERVAL_US - comfortably inside
+      the 20 ms floor the service logic wants. */
+   if (g_rx_int_armed) {
+      uint32_t gate_now_us = RPI_GetSystemTime();
+
+      if (sdio_host_card_interrupt_asserted()) {
+         g_rx_int_high++;
+         if ((g_rx_int_high & 0x3ffu) == 1u) {
+            uint8_t pend = 0u;
+            if (sdio_probe_read_byte(&g_runtime_device, SDIO_CCCR_INT_PENDING,
+                                     &pend)) {
+               g_rx_int_pending_or |= pend;
+               g_rx_int_pending_last = pend;
+            }
+         }
+         g_rx_sweeping = false;
+      } else if ((uint32_t)(gate_now_us - g_rx_sweep_us) < SDIO_RX_SWEEP_INTERVAL_US) {
+         g_rx_int_skips++;
+         return false;
+      } else {
+         g_rx_sweep_us = gate_now_us;
+         g_rx_sweeps++;
+         g_rx_sweeping = true;
+      }
+   }
+
+
    /* Wake the chip's SDIO interface before touching the bus.  It sleeps
       when the host is idle, and a sleeping interface silently swallows
       the firmware's asynchronous events.  wake_bus is non-blocking: if
@@ -6492,33 +6526,6 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                         (unsigned long)g_runtime_rx_frame_count);
       }
       ++s_poll_count;
-   }
-
-   /* Ask the cheap question first: one MMIO read against ~50 us of CMD53.
-      The periodic sweep still runs regardless, at the old idle poll rate, so
-      a missed assertion costs nothing. */
-   if (g_rx_int_armed) {
-      uint32_t gate_now_us = RPI_GetSystemTime();
-
-      if (sdio_host_card_interrupt_asserted()) {
-         g_rx_int_high++;
-         if ((g_rx_int_high & 0x3ffu) == 1u) {
-            uint8_t pend = 0u;
-            if (sdio_probe_read_byte(&g_runtime_device, SDIO_CCCR_INT_PENDING,
-                                     &pend)) {
-               g_rx_int_pending_or |= pend;
-               g_rx_int_pending_last = pend;
-            }
-         }
-         g_rx_sweeping = false;
-      } else if ((uint32_t)(gate_now_us - g_rx_sweep_us) < SDIO_RX_SWEEP_INTERVAL_US) {
-         g_rx_int_skips++;
-         return false;
-      } else {
-         g_rx_sweep_us = gate_now_us;
-         g_rx_sweeps++;
-         g_rx_sweeping = true;
-      }
    }
 
    /* Read up to MAX_RX_FRAMES_PER_POLL frames from fn2. Each iteration peeks
