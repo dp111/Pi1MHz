@@ -782,6 +782,14 @@ static uint8_t s_rejoins_since_healthy;
    minute) as the only retry.  Observed uncapped: a restart thrash loop
    dense enough to starve the main loop into a crawl. */
 static uint8_t s_full_restarts_since_healthy;
+/* When the current stretch of health began; 0 while unhealthy.  The restart
+   budget refunds only after 30 s of it - past both the 8 s rejoin and 25 s
+   restart ladders - because one optimistic pass is free after any restart
+   that associates (the freshness clocks are zeroed), and refunding on that
+   pass let a TX-side wedge cycle restart -> join -> "healthy" -> re-wedge ->
+   restart forever, which is the thrash the cap exists to stop. */
+static uint32_t s_healthy_since_us;
+#define WIFI_LWIP_HEALTH_DWELL_US (30u * 1000000u)
 #define WIFI_LWIP_REJOIN_MAX_US    (60u * 1000000u)
 
 static uint32_t s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
@@ -836,9 +844,14 @@ static void wifi_lwip_rejoin_service(void)
       s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
       s_rejoin_scheduled = false;
       s_rejoins_since_healthy = 0u;
-      s_full_restarts_since_healthy = 0u;
+      if (s_healthy_since_us == 0u)
+         s_healthy_since_us = (now_us == 0u) ? 1u : now_us;
+      if ((uint32_t)(now_us - s_healthy_since_us) >= WIFI_LWIP_HEALTH_DWELL_US)
+         s_full_restarts_since_healthy = 0u;
       return;
    }
+
+   s_healthy_since_us = 0u;
 
    /* Falling through with link_up still set means the chip has gone quiet
       without saying so.  That happens: observed with USB and the main loop
@@ -867,7 +880,13 @@ static void wifi_lwip_rejoin_service(void)
    if ((int32_t)(now_us - s_rejoin_due_us) < 0)
       return;
 
-   if ((sdio_runtime_tx_dead_us() >= WIFI_LWIP_TX_DEAD_RESTART_US
+   /* "!started" makes a FAILED restart re-eligible: sdio_runtime_start()
+      zeroes both dead-clocks at entry and rejoin_start() refuses from
+      STAGE_ERROR, so without this trigger a bring-up that errors out mid-way
+      left NOTHING able to fire again - an absorbing dead state, found in
+      review before it was ever hit in the field. */
+   if ((!sdio_runtime_started()
+        || sdio_runtime_tx_dead_us() >= WIFI_LWIP_TX_DEAD_RESTART_US
         || s_rejoins_since_healthy >= 3u)
        && s_full_restarts_since_healthy < 3u) {
       /* Rejoins are not reviving transmit: re-power the chip.  The firmware
@@ -883,7 +902,6 @@ static void wifi_lwip_rejoin_service(void)
          wifi_lwip_debug_log("firmware re-preload failed; will retry");
       } else if (sdio_runtime_start()) {
          s_full_restart_active = true;
-         s_rejoins_since_healthy = 0u;
          s_full_restarts_since_healthy++;
          return;
       }
@@ -894,13 +912,15 @@ static void wifi_lwip_rejoin_service(void)
    }
 
    /* Schedule the next attempt whether or not this one could start: if the
-      runtime was busy we simply try again after the same interval. */
+      runtime was busy we simply try again after the same interval.  Schedule
+      first, THEN grow the backoff, so the first retry really does use the
+      first interval - doubling before scheduling quietly made it 4 s. */
+   s_rejoin_due_us = now_us + s_rejoin_interval_us;
    if (s_rejoin_interval_us < WIFI_LWIP_REJOIN_MAX_US) {
       s_rejoin_interval_us *= 2u;
       if (s_rejoin_interval_us > WIFI_LWIP_REJOIN_MAX_US)
          s_rejoin_interval_us = WIFI_LWIP_REJOIN_MAX_US;
    }
-   s_rejoin_due_us = now_us + s_rejoin_interval_us;
 }
 
 void wifi_lwip_poll(void)

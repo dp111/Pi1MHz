@@ -145,14 +145,15 @@ static bool g_runtime_max_seq_valid;
    sdio_runtime_send_ethernet_frame(). */
 static bool g_runtime_tx_stalled;
 static uint32_t g_runtime_tx_stall_since_us;
-/* RX frame count captured when the stall began.  The 20 ms idle-tier resync
-   may only fire if NOTHING has been received since: an RX frame refreshes
-   max_seq, so traffic arriving while the window stays shut is genuine flow
-   control and rebasing the sequence would desync a live transfer.  Measured:
-   with refused TCP retried at main-loop rate, "FIFO momentarily empty" was
-   true often enough that the idle resync fired MID-DOWNLOAD and collapsed
-   throughput to zero. */
-static uint32_t g_runtime_rx_frames_at_stall;
+/* When ANY frame last arrived on ANY channel (data, control reply, event) -
+   stamped beside the max_seq refresh, never zero once stamped.  The 20 ms
+   idle-tier resync may only fire if nothing has arrived since the stall
+   began: an RX frame refreshes max_seq, so traffic arriving while the window
+   stays shut is genuine flow control, and rebasing the sequence would desync
+   a live transfer.  Measured: with refused TCP retried at main-loop rate,
+   "FIFO momentarily empty" was true often enough that the idle resync fired
+   MID-DOWNLOAD and collapsed throughput to zero. */
+static uint32_t g_runtime_last_any_rx_us;
 /* When the credit window first refused a frame and has not carried one
    since.  Unlike tx_stall_since_us this is NOT reset by a resync probe -
    only a send the bus actually accepted clears it - so it measures how long
@@ -160,10 +161,6 @@ static uint32_t g_runtime_rx_frames_at_stall;
    alone never fires when the chip keeps receiving happily, which is exactly
    the observed wedge state (TX dead, RX alive, power cycle needed). */
 static uint32_t g_runtime_tx_shut_since_us;
-/* Every frame received on any channel (data, control reply, event) - stamped
-   beside the max_seq refresh.  Distinct from g_runtime_rx_frame_count, which
-   counts only Ethernet frames delivered to lwIP. */
-static uint32_t g_runtime_rx_seen_count;
 static uint32_t g_runtime_tx_resync_count;
 /* Association retries since boot - see sdio_runtime_rejoin_start(). */
 static uint32_t g_runtime_rejoin_count;
@@ -567,6 +564,7 @@ static bool sdio_function2_transfer_timeout(sdio_host_t *dev, bool write,
                                             uint32_t timeout_us);
 static bool sdio_backplane_set_window(sdio_host_t *dev, uint32_t address);
 static bool sdio_runtime_wake_bus(sdio_host_t *dev);
+static bool sdio_runtime_tx_window_shut(void);
 
 static bool sdio_backplane_read_u32(sdio_host_t *dev, uint32_t address, uint32_t *value);
 static bool sdio_backplane_write_u32(sdio_host_t *dev, uint32_t address, uint32_t value);
@@ -3592,15 +3590,12 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
       our next frame and no flow-control stop, transmit is demonstrably
       alive - this is the ONLY place that may clear the TX-dead clock,
       because it is the only signal the chip itself vouches for. */
-   if (g_runtime_wlan_flow_control == 0u
-       && (int8_t)(g_sdpcm_tx_sequence - g_runtime_max_seq) < 0)
+   if (!sdio_runtime_tx_window_shut())
       g_runtime_tx_shut_since_us = 0u;
-   /* Any frame, any channel: this is the "the chip is alive and talking to
-      us" count.  g_runtime_rx_frame_count below only counts delivered DATA
-      frames, so a control reply or event refreshing max_seq mid-stall would
-      otherwise leave the idle-resync guard believing the link is silent -
-      and the rebase it permits is precisely for links that are NOT alive. */
-   ++g_runtime_rx_seen_count;
+   /* Any frame, any channel: proof the chip is alive and talking to us.
+      Distinct from g_runtime_last_rx_us, which stamps only delivered DATA
+      frames and is load-bearing for the 45 s RX-silence trigger. */
+   g_runtime_last_any_rx_us = RPI_GetSystemTime() | 1u;
 
    /* Control-channel responses (channel 0) carry the chip's reply to
       every ioctl we sent. The CDC header sits right after the SDPCM
@@ -4091,10 +4086,10 @@ static int sdio_runtime_clm_download_step(sdio_host_t *dev)
          discards without crediting - one silent step toward a permanently
          shut window per occurrence. */
       if (sdio_host_last_failure_precommand())
-         --g_sdpcm_tx_sequence;       /* chunk never landed - reclaim its number */
-         sdio_debug_log("CLM: chunk transfer failed at offset %lu",
-                        (unsigned long)g_runtime_clm_offset);
-         return -1;
+         --g_sdpcm_tx_sequence;    /* chunk never landed - reclaim its number */
+      sdio_debug_log("CLM: chunk transfer failed at offset %lu",
+                     (unsigned long)g_runtime_clm_offset);
+      return -1;
       }
       g_runtime_step_sent = true;
       /* The final (DL_END) chunk makes the firmware ingest the whole
@@ -5474,6 +5469,7 @@ bool sdio_runtime_start(void)
       silence on a link that has been up for a second. */
    g_runtime_tx_shut_since_us = 0u;
    g_runtime_last_rx_us = 0u;
+   g_runtime_last_any_rx_us = 0u;
    g_runtime_tx_resync_count = 0u;
    g_runtime_rejoin_count = 0u;
    g_runtime_bus_four_bit = false;
@@ -5945,6 +5941,14 @@ void sdio_runtime_pktcnts_poll(void)
       return;
    }
 
+   /* Do not burn a sequence number the chip will not credit - see the
+      window-shut note above the helper.  The request keeps; the counters
+      simply refresh once the window reopens. */
+   if (!g_runtime_pktcnt_step_sent && sdio_runtime_tx_window_shut()) {
+      g_runtime_pktcnt_request_pending = false;
+      return;
+   }
+
    now = RPI_GetSystemTime();
 
    if (!g_runtime_pktcnt_step_sent) {
@@ -6263,15 +6267,12 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       error, so it deliberately does not call sdio_runtime_set_error(): the
       sequence number is not consumed, lwIP keeps the segment on its unacked
       queue and retransmits, and the window reopens as the chip drains. */
-   if (g_runtime_max_seq_valid
-      && (g_runtime_wlan_flow_control != 0u
-         || (int8_t)(g_sdpcm_tx_sequence - g_runtime_max_seq) >= 0)) {
+   if (sdio_runtime_tx_window_shut()) {
       uint32_t now_us = RPI_GetSystemTime();
 
       if (!g_runtime_tx_stalled) {
          g_runtime_tx_stalled = true;
          g_runtime_tx_stall_since_us = now_us;
-         g_runtime_rx_frames_at_stall = g_runtime_rx_seen_count;
          if (g_runtime_tx_shut_since_us == 0u)
             g_runtime_tx_shut_since_us = (now_us == 0u) ? 1u : now_us;
          return false;
@@ -6291,7 +6292,8 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
          the chip actually matters. */
       if ((uint32_t)(now_us - g_runtime_tx_stall_since_us)
              < ((g_runtime_fifo_was_empty
-                 && g_runtime_rx_seen_count == g_runtime_rx_frames_at_stall)
+                 && (int32_t)(g_runtime_last_any_rx_us
+                              - g_runtime_tx_stall_since_us) < 0)
                     ? SDPCM_TX_STALL_IDLE_RESYNC_US
                     : SDPCM_TX_STALL_RESYNC_US))
          return false;
@@ -6314,9 +6316,9 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       g_runtime_wlan_flow_control = 0u;
       g_sdpcm_tx_sequence = (uint8_t)(g_runtime_max_seq - 1u);
       g_runtime_tx_stall_since_us = now_us;
-      /* Fresh snapshot too, or one frame received during the first second
-         pins the idle tier off for the whole remainder of the stall. */
-      g_runtime_rx_frames_at_stall = g_runtime_rx_seen_count;
+      /* Refreshing stall_since IS the snapshot refresh: the idle tier
+         compares the last-RX stamp against it, so each rebase starts a
+         fresh observation window automatically. */
       ++g_runtime_tx_resync_count;
    } else {
       g_runtime_tx_stalled = false;

@@ -275,17 +275,11 @@ void sdio_runtime_powersave_note_link_change(bool link_up);
 void sdio_runtime_powersave_poll(void);
 void sdio_runtime_powersave_verify_poll(void);
 bool sdio_runtime_get_powersave_mode(int32_t *mode);
-/* Data-phase waits that expired silently - see sdio_host.c. */
-extern uint32_t g_sdio_host_data_wait_timeouts;
-void sdio_runtime_rx_int_pending(uint8_t *or_bits, uint8_t *last);
 bool sdio_runtime_rx_gate_is_armed(void);
-uint32_t sdio_runtime_rx_frames_seen(void);
 uint32_t sdio_runtime_tx_dead_us(void);
 void sdio_runtime_prepare_for_warm_reboot(void);
 void sdio_runtime_rx_gate_counts(uint32_t *skips, uint32_t *sweeps,
                                  uint32_t *missed, bool *armed, uint32_t *high);
-void sdio_runtime_wake_counts(uint32_t *fast, uint32_t *already,
-                              uint32_t *handshake, uint32_t *failed);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
 /* On-demand signal-strength read.  sdio_runtime_request_rssi() just flags
    a read (safe from the /status TCP callback); sdio_runtime_rssi_poll()
