@@ -233,7 +233,7 @@ void netname_poll(void)
    if (!netname_get_ip(ip))
       return;                            /* no address assigned yet */
 
-   now = RPI_GetSystemTime();
+   now = Pi1MHz_now_us;      /* announce interval is seconds */
    if (g_announced && (now - g_last_announce_us) < NETNAME_ANNOUNCE_US)
       return;
 

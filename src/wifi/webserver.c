@@ -5606,7 +5606,7 @@ static err_t ws_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    quota-used-bytes. */
 static void webserver_refresh_sd_free(void)
 {
-   uint32_t now = RPI_GetSystemTime();
+   uint32_t now = Pi1MHz_now_us;   /* 5 s cache TTL */
    DWORD    nclst = 0u;
    FATFS   *fs = NULL;
 
@@ -5662,7 +5662,7 @@ static void webserver_refresh_sd_free(void)
 void webserver_poll(void)
 {
    if (g_ws_reboot_pending
-       && (RPI_GetSystemTime() - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
+       && (Pi1MHz_now_us - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
       reboot_now();
    }
 

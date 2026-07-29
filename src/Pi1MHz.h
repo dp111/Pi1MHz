@@ -232,6 +232,13 @@ bool Pi1MHz_is_rst_active(void);
 extern void Pi1MHz_MemoryWritePage(uint32_t addr, const void * data);
 extern void _fast_scroll(void *dst, void *src, int num_bytes);
 extern void _copyandreboot(void *src, int num_bytes);
+
+/* The system time in microseconds, sampled once per poll-loop pass.  Pollers
+   whose deadlines are milliseconds or longer should read this instead of
+   calling RPI_GetSystemTime(): that is a Strongly-Ordered peripheral load
+   costing ~47 cycles, and a dozen of them per pass was a fifth of the idle
+   loop spent discovering nothing was due.  Stale by at most one pass. */
+extern uint32_t Pi1MHz_now_us;
 #endif
 
 #endif

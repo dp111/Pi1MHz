@@ -537,6 +537,94 @@ static void init_hardware(void)
 #endif
 }
 // cppcheck-suppress unusedFunction
+/* Published once per poll-loop pass; see the loop in kernel_main. */
+uint32_t Pi1MHz_now_us;
+
+/* Poll-loop cycle profiler.  Off by default; set to 1, rebuild, and the
+   firmware prints a per-callback cycle breakdown once after
+   POLL_PROFILE_PASSES passes and then stops.  Uses the ARM1176 cycle counter
+   (CP15 c15,c12) rather than RPI_GetSystemTime(), because the system timer is
+   a Strongly-Ordered peripheral read - reading it per callback would cost more
+   than most callbacks do. */
+#define POLL_PROFILE 0
+#define POLL_PROFILE_PASSES 200000u
+
+/* The ARM1176 cycle counter, ticking once per 64 processor cycles (the /64
+   divider keeps a 32-bit counter from wrapping inside any interval we care
+   about: ~275 s at 1 GHz).  A CP15 register read costs a couple of cycles
+   against 47 for RPI_GetSystemTime(), which is a Strongly-Ordered peripheral
+   load - and the slow-poll check wants a timestamp per callback, so seven
+   peripheral reads per pass were costing ~330 cycles, over 10% of the idle
+   loop, purely to police a 50 ms threshold. */
+#define POLL_TICKS_PER_MS 15625u          /* 1 GHz / 64 / 1000 */
+#define POLL_SLOW_TICKS (50u * POLL_TICKS_PER_MS)
+
+static inline uint32_t poll_ticks(void)
+{
+   uint32_t v;
+   __asm volatile ("mrc p15,0,%0,c15,c12,1" : "=r" (v));
+   return v;
+}
+
+static void poll_ticks_start(void)
+{
+   /* enable counters, reset them, reset CCNT, /64 divider on */
+   uint32_t ctrl = 0x000Fu;
+   __asm volatile ("mcr p15,0,%0,c15,c12,0" :: "r" (ctrl) : "memory");
+}
+
+#if POLL_PROFILE
+static uint32_t poll_prof_cycles[NUM_EMULATORS];
+static uint32_t poll_prof_overhead;
+static uint32_t poll_prof_passes;
+
+static inline uint32_t poll_prof_ccnt(void)
+{
+   uint32_t v;
+   __asm volatile ("mrc p15,0,%0,c15,c12,1" : "=r" (v));
+   return v;
+}
+
+static void poll_prof_start(void)
+{
+   /* enable counters + reset CCNT; divider bit (8) left clear so CCNT counts
+      every cycle rather than every 64th */
+   uint32_t ctrl = 0x0007u;
+   __asm volatile ("mcr p15,0,%0,c15,c12,0" :: "r" (ctrl) : "memory");
+}
+
+static void poll_prof_report(void)
+{
+   uint32_t total = poll_prof_overhead;
+   for (unsigned int i = 0; i < Pi1MHz_polls_max; i++)
+      total += poll_prof_cycles[i];
+
+   LOG_INFO("POLL PROFILE over %lu passes, %u callbacks\r\n",
+            (unsigned long)poll_prof_passes, (unsigned int)Pi1MHz_polls_max);
+   for (unsigned int i = 0; i < Pi1MHz_polls_max; i++)
+      LOG_INFO("  idx %2u @%08lx: %6lu cycles/pass\r\n", i,
+               (unsigned long)(uintptr_t)Pi1MHz_poll_table[i],
+               (unsigned long)(poll_prof_cycles[i] / poll_prof_passes));
+   LOG_INFO("  loop overhead: %6lu cycles/pass\r\n",
+            (unsigned long)(poll_prof_overhead / poll_prof_passes));
+   LOG_INFO("  TOTAL: %lu cycles/pass\r\n",
+            (unsigned long)(total / poll_prof_passes));
+
+   /* What does one system-timer read actually cost?  It is a
+      Strongly-Ordered peripheral load, so the core cannot proceed until the
+      peripheral bus answers - and the pollers call it repeatedly per pass. */
+   {
+      uint32_t t0 = poll_prof_ccnt();
+      uint32_t sink = 0u;
+      for (unsigned int i = 0; i < 1000u; i++)
+         sink += RPI_GetSystemTime();
+      LOG_INFO("  RPI_GetSystemTime: %lu cycles each (sink %lu)\r\n",
+               (unsigned long)((poll_prof_ccnt() - t0) / 1000u),
+               (unsigned long)(sink & 1u));
+   }
+}
+#endif
+
 _Noreturn void kernel_main(void)
 {
    unsigned int baud_rate = 115200;
@@ -588,6 +676,12 @@ _Noreturn void kernel_main(void)
    filesystemInitialise(0,0); // default filesystem
 
    init_emulator();
+#if POLL_PROFILE
+   poll_prof_start();
+#else
+   poll_ticks_start();
+#endif
+
    bool oldreset = Pi1MHz_is_rst_active();
    uint32_t main_poll_loops = 0u;
    do {
@@ -607,24 +701,54 @@ _Noreturn void kernel_main(void)
          Strongly-Ordered peripheral load the core waits on, and each poll's
          "after" timestamp is the next poll's "before", so carrying it over
          halves the round trips across the whole loop. */
-      uint32_t before_us = RPI_GetSystemTime();
+#if POLL_PROFILE
+      {
+         uint32_t pass_start = poll_prof_ccnt();
+         uint32_t mark = pass_start;
+
+         for (size_t i = 0, n = Pi1MHz_polls_max; i < n; i++) {
+            uint32_t after;
+            Pi1MHz_poll_table[i]();
+            after = poll_prof_ccnt();
+            poll_prof_cycles[i] += after - mark;
+            mark = after;
+         }
+         poll_prof_overhead += poll_prof_ccnt() - mark;
+
+         if (++poll_prof_passes >= POLL_PROFILE_PASSES) {
+            poll_prof_report();
+            poll_prof_passes = 0u;
+            poll_prof_overhead = 0u;
+            for (unsigned int i = 0; i < NUM_EMULATORS; i++)
+               poll_prof_cycles[i] = 0u;
+         }
+      }
+#else
+      /* One peripheral clock read per pass, published for the pollers whose
+         deadlines are measured in milliseconds or longer - see
+         Pi1MHz_now_us.  Anything needing sub-pass precision (teletext field
+         phases, SDIO command timeouts) still reads the timer itself. */
+      Pi1MHz_now_us = RPI_GetSystemTime();
+
+      uint32_t before_ticks = poll_ticks();
       for (size_t i=0 , n=Pi1MHz_polls_max ; i<n; i++ )
       {
          func_ptr poll_fn = Pi1MHz_poll_table[i];
 
             poll_fn();
             {
-               uint32_t after_us = RPI_GetSystemTime();
-               uint32_t duration_us = after_us - before_us;
-               before_us = after_us;
+               uint32_t after_ticks = poll_ticks();
+               uint32_t duration_ticks = after_ticks - before_ticks;
+               before_ticks = after_ticks;
 
-               if (duration_us > 50000u) {
+               if (duration_ticks > POLL_SLOW_TICKS) {
                LOG_INFO("Slow poll callback idx=%u duration_us=%lu\r\n",
                         (unsigned int)i,
-                        (unsigned long)duration_us);
+                        (unsigned long)(duration_ticks / (POLL_TICKS_PER_MS / 1000u)));
                }
             }
       }
+#endif
 
       main_poll_loops++;
       if ((main_poll_loops % 10000000u) == 0u) {

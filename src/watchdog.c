@@ -47,6 +47,14 @@ static volatile uint32_t *const PM_RSTC = (uint32_t *)(PERIPHERAL_BASE + 0x00100
 static volatile uint32_t *const PM_WDOG = (uint32_t *)(PERIPHERAL_BASE + 0x00100024u);
 
 static uint32_t watchdog_ticks;
+/* When the hardware was last re-armed.  The poll runs ~290,000 times a
+   second, but the shortest timeout the config allows is one second, so
+   kicking on every pass spent three peripheral accesses (~590 cycles, 19% of
+   the whole idle loop) to service a deadline measured in seconds.  Kicking at
+   4 Hz leaves at least three quarters of the timeout as margin even at the
+   1 s setting, and costs one system-timer read. */
+static uint32_t watchdog_last_kick_us;
+#define WATCHDOG_KICK_INTERVAL_US 250000u
 /* Nothing is armed until this passes.  Boot does a lot of blocking work -
    mounting the card, loading firmware and NVRAM, the bring-up settles, the
    join, DHCP - and arming before that has finished risks resetting mid-boot,
@@ -76,11 +84,19 @@ void watchdog_stop(void)
 
 static void watchdog_poll(void)
 {
+   /* Shared per-pass clock: a 250 ms interval does not need better. */
+   uint32_t now = Pi1MHz_now_us;
+
    if (watchdog_arm_after_us != 0u) {
-      if ((int32_t)(RPI_GetSystemTime() - watchdog_arm_after_us) < 0)
+      if ((int32_t)(now - watchdog_arm_after_us) < 0)
          return;                    /* still booting; leave it disarmed */
       watchdog_arm_after_us = 0u;
+      watchdog_last_kick_us = now - WATCHDOG_KICK_INTERVAL_US;   /* kick now */
    }
+
+   if ((uint32_t)(now - watchdog_last_kick_us) < WATCHDOG_KICK_INTERVAL_US)
+      return;
+   watchdog_last_kick_us = now;
 
    *PM_WDOG = PM_PASSWORD | watchdog_ticks;
    *PM_RSTC = PM_PASSWORD | ((*PM_RSTC & PM_RSTC_WRCFG_CLR) | PM_RSTC_WRCFG_FULL_RESET);
