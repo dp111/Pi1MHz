@@ -2,6 +2,7 @@
 
 #include "netname.h"
 #include "sdio.h"
+#include "cyw43.h"
 #include "wifi.h"
 
 #include "../Pi1MHz.h"
@@ -750,6 +751,29 @@ static void wifi_lwip_log_dhcp_state(void)
    Well past the 1 s resync probes and the 250 ms queue staleness, so it
    only fires when those have already failed repeatedly. */
 #define WIFI_LWIP_TX_DEAD_LIMIT_US (8u * 1000000u)
+/* If rejoins have not revived transmit by this point, escalate to a full
+   chip restart (sdio_runtime_start: WL_REG_ON power cycle, firmware
+   re-download, fresh sequence space on both sides).  A rejoin cannot cure a
+   poisoned sequence window - its own 38 commands travel through that same
+   window and the chip discards them; watched happen: "rejoin attempt 8",
+   every command sent, event_type=0, link still down.  Only re-powering the
+   chip resets its side of the sequence space. */
+#define WIFI_LWIP_TX_DEAD_RESTART_US (25u * 1000000u)
+static bool s_full_restart_active;
+/* Rejoins issued since the link was last seen healthy.  Escalation must not
+   depend on WHY the link is dead: one wedge flavour poisons the credit
+   window (rejoin commands are discarded), another wedges the bus itself
+   (rejoin commands fail at CMD53) - and any future flavour will be a third
+   thing.  Three failed rejoins mean rejoining is not the cure, whatever the
+   disease. */
+static uint8_t s_rejoins_since_healthy;
+/* Full restarts since the link was last healthy.  Capped: a restart takes
+   several seconds of bus-heavy bring-up, and if three in a row have not
+   revived the link the fault is not something a fourth will fix - stop
+   escalating and leave the ordinary rejoin backoff (which tops out at a
+   minute) as the only retry.  Observed uncapped: a restart thrash loop
+   dense enough to starve the main loop into a crawl. */
+static uint8_t s_full_restarts_since_healthy;
 #define WIFI_LWIP_REJOIN_MAX_US    (60u * 1000000u)
 
 static uint32_t s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
@@ -762,6 +786,31 @@ static bool     s_rejoin_scheduled;
 static void wifi_lwip_rejoin_service(void)
 {
    uint32_t now_us = RPI_GetSystemTime();
+
+   /* A full restart in flight owns the state machine outright: drive it to
+      DONE (started) or ERROR (give up this round; the schedule below retries
+      with its usual backoff). */
+   if (s_full_restart_active) {
+      if (!sdio_runtime_started()) {
+         if (sdio_runtime_tick())
+            return;               /* still working through bring-up */
+         if (!sdio_runtime_started()) {
+            s_full_restart_active = false;   /* ERROR: fall through, retry later */
+            wifi_lwip_debug_log("full restart failed; will retry");
+            return;
+         }
+      }
+      s_full_restart_active = false;
+      /* Fresh schedule with a grace period: the join and DHCP need time
+         before "still not healthy" may mean anything.  Without this the
+         stale pre-restart schedule fired the escalation again on the very
+         next pass - watched loop: restart, complete, restart, forever. */
+      s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
+      s_rejoin_scheduled = true;
+      s_rejoin_due_us = now_us + 20u * 1000000u;
+      s_rejoins_since_healthy = 0u;
+      wifi_lwip_debug_log("full restart complete");
+   }
 
    /* A rejoin in flight owns the runtime state machine until it finishes.
       tick() returning false means it has reached DONE (or ERROR); the link
@@ -778,6 +827,8 @@ static void wifi_lwip_rejoin_service(void)
          outage starts fresh. */
       s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
       s_rejoin_scheduled = false;
+      s_rejoins_since_healthy = 0u;
+      s_full_restarts_since_healthy = 0u;
       return;
    }
 
@@ -808,8 +859,31 @@ static void wifi_lwip_rejoin_service(void)
    if ((int32_t)(now_us - s_rejoin_due_us) < 0)
       return;
 
-   if (sdio_runtime_rejoin_start())
+   if ((sdio_runtime_tx_dead_us() >= WIFI_LWIP_TX_DEAD_RESTART_US
+        || s_rejoins_since_healthy >= 3u)
+       && s_full_restarts_since_healthy < 3u) {
+      /* Rejoins are not reviving transmit: re-power the chip.  The firmware
+         and NVRAM images persist in RAM (cyw43_release_images is never
+         called), so the whole bring-up can rerun without touching the SD. */
+      wifi_lwip_debug_log("transmit dead through rejoins - full chip restart");
+      /* The boot images were freed after the first download to reclaim RAM
+         (cyw43_release_boot_images), so a restart must re-read them from the
+         SD first.  Blocking the loop for the ~0.5 s read is fine here: this
+         path only runs when the network has already been dead for tens of
+         seconds. */
+      if (!cyw43_preload_images()) {
+         wifi_lwip_debug_log("firmware re-preload failed; will retry");
+      } else if (sdio_runtime_start()) {
+         s_full_restart_active = true;
+         s_rejoins_since_healthy = 0u;
+         s_full_restarts_since_healthy++;
+         return;
+      }
+      /* preload or start failed: fall through to the schedule and retry */
+   } else if (sdio_runtime_rejoin_start()) {
+      s_rejoins_since_healthy++;
       wifi_lwip_debug_log("link down - re-issuing join");
+   }
 
    /* Schedule the next attempt whether or not this one could start: if the
       runtime was busy we simply try again after the same interval. */

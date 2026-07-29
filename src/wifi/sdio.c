@@ -3599,6 +3599,13 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
    g_runtime_wlan_flow_control = frame_buffer[8];
    g_runtime_max_seq = frame_buffer[9];
    g_runtime_max_seq_valid = true;
+   /* The chip has just told us where the window stands.  If it has room for
+      our next frame and no flow-control stop, transmit is demonstrably
+      alive - this is the ONLY place that may clear the TX-dead clock,
+      because it is the only signal the chip itself vouches for. */
+   if (g_runtime_wlan_flow_control == 0u
+       && (int8_t)(g_sdpcm_tx_sequence - g_runtime_max_seq) < 0)
+      g_runtime_tx_shut_since_us = 0u;
    /* Any frame, any channel: this is the "the chip is alive and talking to
       us" count.  g_runtime_rx_frame_count below only counts delivered DATA
       frames, so a control reply or event refreshing max_seq mid-stall would
@@ -5472,6 +5479,12 @@ bool sdio_runtime_start(void)
    g_runtime_max_seq_valid = false;
    g_runtime_tx_stalled = false;
    g_runtime_tx_stall_since_us = 0u;
+   /* Both freshness clocks, or a runtime restart inherits a dead past: a
+      stale tx_shut re-fires the escalation the instant the restart
+      completes, and a stale last_rx makes rx_idle_us() read minutes of
+      silence on a link that has been up for a second. */
+   g_runtime_tx_shut_since_us = 0u;
+   g_runtime_last_rx_us = 0u;
    g_runtime_tx_resync_count = 0u;
    g_runtime_rejoin_count = 0u;
    g_runtime_bus_four_bit = false;
@@ -6358,13 +6371,27 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
          shut window per occurrence. */
       if (sdio_host_last_failure_precommand())
          --g_sdpcm_tx_sequence;
+      /* A bus-level failure is TX-dead evidence too.  One observed wedge
+         flavour never touches the credit gate at all: the chip holds DAT1
+         low outside the interrupt period, the controller reports the data
+         lines busy, and every CMD53 fails - so gate-based accounting reads
+         "healthy" while nothing can be sent. */
+      if (g_runtime_tx_shut_since_us == 0u) {
+         uint32_t fail_now_us = RPI_GetSystemTime();
+         g_runtime_tx_shut_since_us = (fail_now_us == 0u) ? 1u : fail_now_us;
+      }
       sdio_runtime_set_error("Failed to write Ethernet frame over SDIO");
       return false;
    }
 
    ++g_runtime_tx_frame_count;
    g_runtime_bus_active_us = RPI_GetSystemTime();
-   g_runtime_tx_shut_since_us = 0u;   /* transmit is demonstrably alive */
+   /* Deliberately NOT clearing g_runtime_tx_shut_since_us here.  A CMD53 the
+      host sees succeed proves only that the bus took the bytes - the resync
+      probe "succeeds" this way once a second while the chip discards every
+      frame uncredited, and clearing on it kept the TX-dead clock forever
+      young through a genuinely dead window.  Life is declared where the chip
+      proves it: max_seq moving our window open, in the RX refresh path. */
    return true;
 }
 
