@@ -194,6 +194,7 @@ static void wifi_lwip_update_runtime_state(void)
  *
  * Held frames are dropped once stale, because a ping reply or an ARP
  * response delivered a second late is worse than useless. */
+#if WIFI_LWIP_ICMP_PROBE_DIAG
 /* ICMP echo timing probe (diagnostic).
  *
  * The question this answers: when a ping takes half a second, is the request
@@ -300,6 +301,7 @@ uint32_t wifi_lwip_icmp_probe_read(uint32_t *gap_ms, uint32_t *turnaround_us,
    }
    return n;
 }
+#endif /* WIFI_LWIP_ICMP_PROBE_DIAG */
 
 #define WIFI_LWIP_TX_HOLD_MAX_AGE_US 250000u
 #define WIFI_LWIP_TX_QUEUE_DEPTH 8u
@@ -313,9 +315,9 @@ typedef struct {
 static wifi_lwip_tx_slot_t s_tx_queue[WIFI_LWIP_TX_QUEUE_DEPTH];
 static uint8_t s_tx_head;      /* next to send */
 static uint8_t s_tx_count;     /* frames waiting */
-/* Send-path diagnostics: the window between lwIP producing a frame and the
-   frame actually reaching the chip - which the ICMP turnaround probe did NOT
-   cover, because it was stamped before this queue and the credit gate. */
+/* Send-path counters: what happened between lwIP producing a frame and the
+   frame actually reaching the chip - refusals, queueing, staleness, and the
+   longest wait.  This span covers the hold queue and the credit gate. */
 static uint32_t s_tx_queued;        /* refused by the chip, parked here */
 static uint32_t s_tx_dropped_stale; /* aged out before credit appeared */
 static uint32_t s_tx_direct_fail;   /* send refused on the direct path */
@@ -333,7 +335,9 @@ static bool wifi_lwip_tx_hold_flush(void)
          uint32_t waited = RPI_GetSystemTime() - slot->stamp_us;
          if (waited > s_tx_hold_max_us)
             s_tx_hold_max_us = waited;
+#if WIFI_LWIP_ICMP_PROBE_DIAG
          wifi_lwip_icmp_probe_tx(slot->data, slot->len);
+#endif
          s_tx_head = (uint8_t)((s_tx_head + 1u) % WIFI_LWIP_TX_QUEUE_DEPTH);
          s_tx_count--;
          continue;
@@ -446,10 +450,12 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       return ERR_OK;                  /* accepted: we own it now */
    }
 
+#if WIFI_LWIP_ICMP_PROBE_DIAG
    /* Stamped here, not on entry: the useful number is request-in to
       frame-actually-sent, which is the window the queue and the credit gate
       live in. */
    wifi_lwip_icmp_probe_tx(frame, offset);
+#endif
 
    /* Anything we send is a reason to listen harder.  The RX throttle decides
       the link is idle from *inbound* frames alone, which is precisely
@@ -503,7 +509,9 @@ static bool wifi_lwip_drain_rx_frames(uint32_t budget_end_us)
       if (frame_length == 0u)
          continue;
 
+#if WIFI_LWIP_ICMP_PROBE_DIAG
       wifi_lwip_icmp_probe_rx(frame, frame_length);
+#endif
 
       packet = pbuf_alloc(PBUF_RAW, frame_length, PBUF_POOL);
       if (packet == NULL)

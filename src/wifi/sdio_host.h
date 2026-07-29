@@ -64,4 +64,15 @@ const char *sdio_host_backend_name(void);
 const char *sdio_host_last_error(void);
 bool sdio_host_last_failure_precommand(void);
 
+/* Diagnostic, normally compiled out.  Counts data-phase waits that expired
+   with neither a ready bit nor an error - the fall-through then reads the
+   FIFO and delivers zeros, which the WiFi RX path cannot tell from "FIFO
+   empty".  Measured zero across the 2026-07 campaign, but the hazard is
+   structural; re-enable this before trusting any new "driver went deaf"
+   report. */
+#define SDIO_HOST_DATA_WAIT_DIAG 0
+#if SDIO_HOST_DATA_WAIT_DIAG
+extern uint32_t g_sdio_host_data_wait_timeouts;
+#endif
+
 #endif

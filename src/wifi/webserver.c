@@ -2259,95 +2259,31 @@ static bool route_status(ws_conn_t *c)
       table_row(&b, "Rejoins", tmp);
    }
    {
-      /* Diagnostic: per-ping arrival gap and our turnaround.  See
-         wifi_lwip_icmp_probe_read(). */
-      uint32_t gap[16], turn[16], total = 0u;
-      uint32_t n = wifi_lwip_icmp_probe_read(gap, turn, 16u, &total);
-      uint32_t rx_seen = 0u, tx_seen = 0u;
-      wifi_lwip_icmp_probe_counts(&rx_seen, &tx_seen);
-      snprintf(tmp, sizeof tmp, "%lu req in / %lu reply out",
-               (unsigned long)rx_seen, (unsigned long)tx_seen);
-      table_row(&b, "Ping probe", tmp);
-      {
-         /* Worst case per poll callback, and how often each exceeded 5 ms.
-            Answers whether a latency tail is the main loop blocking at all. */
-         char pt[320];
-         size_t used = 0u;
-         unsigned i;
-         pt[0] = '\0';
-         for (i = 0u; i < PI1MHZ_POLL_STATS_MAX && used + 24u < sizeof pt; ++i) {
-            if (Pi1MHz_poll_max_us[i] == 0u)
-               continue;
-            used += (size_t)snprintf(pt + used, sizeof pt - used, "%u:%lu/%lu ",
-                                     i, (unsigned long)Pi1MHz_poll_max_us[i],
-                                     (unsigned long)Pi1MHz_poll_over_5ms[i]);
-         }
-         table_row(&b, "Poll idx:max_us/over5ms", pt);
-      }
-      {
-         uint32_t wf = 0u, wa = 0u, wh = 0u, wx = 0u;
-         sdio_runtime_wake_counts(&wf, &wa, &wh, &wx);
-         snprintf(tmp, sizeof tmp, "%lu fast / %lu awake / %lu woke / %lu SKIPPED",
-                  (unsigned long)wf, (unsigned long)wa,
-                  (unsigned long)wh, (unsigned long)wx);
-         table_row(&b, "KSO wake", tmp);
-         {
-            uint32_t sk = 0u, sw = 0u, ms = 0u, hi = 0u;
-            bool armed = false;
-            sdio_runtime_rx_gate_counts(&sk, &sw, &ms, &armed, &hi);
-            snprintf(tmp, sizeof tmp,
-                     "%s %lu high / %lu skipped / %lu sweeps / %lu MISSED",
-                     armed ? "armed:" : "OFF:", (unsigned long)hi,
-                     (unsigned long)sk, (unsigned long)sw, (unsigned long)ms);
-            table_row(&b, "RX interrupt gate", tmp);
-            {
-               uint8_t po = 0u, pl = 0u;
-               sdio_runtime_rx_int_pending(&po, &pl);
-               snprintf(tmp, sizeof tmp, "or=%02x last=%02x",
-                        (unsigned)po, (unsigned)pl);
-               table_row(&b, "CCCR INT pending", tmp);
-            }
-         }
-         snprintf(tmp, sizeof tmp, "%lu",
-                  (unsigned long)g_sdio_host_data_wait_timeouts);
-         table_row(&b, "SDIO data-wait timeouts", tmp);
-         {
-            uint32_t q = 0u, st = 0u, df = 0u, hm = 0u;
-            wifi_lwip_tx_path_counts(&q, &st, &df, &hm);
-            snprintf(tmp, sizeof tmp,
-                     "%lu queued / %lu stale / %lu fail / %lu us max wait",
-                     (unsigned long)q, (unsigned long)st,
-                     (unsigned long)df, (unsigned long)hm);
-            table_row(&b, "TX path", tmp);
-         }
-      }
-      if (total != 0u) {
-         char samples[320];
-         size_t used = 0u;
-         uint32_t i;
-         samples[0] = '\0';
-         for (i = 0u; i < n && used + 20u < sizeof samples; ++i)
-            used += (size_t)snprintf(samples + used, sizeof samples - used,
-                                     "%lu/%lu ", (unsigned long)gap[i],
-                                     (unsigned long)turn[i]);
-         table_row(&b, "Ping gap_ms/turn_us", samples);
-         snprintf(tmp, sizeof tmp, "%lu", (unsigned long)total);
-         table_row(&b, "Pings answered", tmp);
-      }
+      uint32_t sk = 0u, sw = 0u, ms = 0u, hi = 0u;
+      bool armed = false;
+      sdio_runtime_rx_gate_counts(&sk, &sw, &ms, &armed, &hi);
+      snprintf(tmp, sizeof tmp,
+               "%s %lu high / %lu skipped / %lu sweeps / %lu MISSED",
+               armed ? "armed:" : "OFF:", (unsigned long)hi,
+               (unsigned long)sk, (unsigned long)sw, (unsigned long)ms);
+      table_row(&b, "RX interrupt gate", tmp);
    }
-
-   snprintf(tmp, sizeof tmp, "%s %s", rs.bus_four_bit ? "4-bit" : "1-bit",
-            rs.bus_high_speed ? "50MHz" : "25MHz");
-   table_row(&b, "SDIO bus", tmp);
+   {
+      uint32_t q = 0u, stale_n = 0u, df = 0u, hm = 0u;
+      wifi_lwip_tx_path_counts(&q, &stale_n, &df, &hm);
+      snprintf(tmp, sizeof tmp,
+               "%lu queued / %lu stale / %lu fail / %lu us max wait",
+               (unsigned long)q, (unsigned long)stale_n,
+               (unsigned long)df, (unsigned long)hm);
+      table_row(&b, "TX path", tmp);
+   }
    {
       int32_t pm = -1;
       if (sdio_runtime_get_powersave_mode(&pm)) {
          snprintf(tmp, sizeof tmp, "%ld%s", (long)pm,
                   (pm == 0) ? " (off, as requested)" : " (ON - AP will buffer!)");
-      } else {
-         snprintf(tmp, sizeof tmp, "%s", "(not read back yet)");
+         table_row(&b, "Power save (WLC_GET_PM)", tmp);
       }
-      table_row(&b, "Power save (WLC_GET_PM)", tmp);
    }
    table_row(&b, "Link-loss detect", rs.link_flag_trusted ? "armed" : "not armed");
    {

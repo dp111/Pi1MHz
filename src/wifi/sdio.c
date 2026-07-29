@@ -186,11 +186,6 @@ static uint32_t g_runtime_int_service_us;
    which is indistinguishable from "FIFO empty", so the driver could go blind
    with frames queued.  Only real traffic counts as proof of wakefulness. */
 static uint32_t g_runtime_bus_active_us;
-/* Diagnostic: how the KSO wake path is behaving on an idle link. */
-static uint32_t g_wake_fast;        /* skipped - a transfer vouched for it */
-static uint32_t g_wake_already;     /* SLEEP_CSR already read as awake */
-static uint32_t g_wake_handshake;   /* had to write KSO and wait */
-static uint32_t g_wake_failed;      /* gave up - THE DRAIN IS SKIPPED */
 /* When a frame was last received from the chip.  A link that has silently
    stopped carrying traffic looks identical to a healthy one from every
    status the driver has - see sdio_runtime_rx_idle_us(). */
@@ -208,11 +203,6 @@ static uint32_t g_rx_int_skips;
 static uint32_t g_rx_sweeps;
 static uint32_t g_rx_int_missed;
 static uint32_t g_rx_int_high;
-/* Which function CCCR 0x05 blames while the line is asserted.  Sampled once
-   every 1024 asserted polls - a CMD52 costs ~15 us, so sampling every poll
-   would double the idle bus traffic this gate exists to remove. */
-static uint8_t g_rx_int_pending_or;
-static uint8_t g_rx_int_pending_last;
 /* 10 ms: the sweep is a safety net, not the transport.  Measured with the
    sweep at 1 ms and the gate armed: 1 frame missed out of 3718 - the line
    announces essentially everything, so sweeping at the old 1 ms poll rate
@@ -304,7 +294,6 @@ static void sdio_debug_log(const char *format, ...)
    poll.  I_HMB_FRAME_IND (0x40) is permanently set on this chip and
    I_CHIPACTIVE is on for as long as the chip runs - neither can gate. */
 #define SDIO_HOST_INT_MASK_VALUE 0x00800000u   /* I_XMTDATA_AVAIL */
-#define SDIO_CCCR_INT_PENDING 0x05u   /* bit n = function n is asserting */
 #define SDIO_CCCR_BUS_INTERFACE_CONTROL 0x07u
 #define SDIO_CCCR_SPEED_SELECT 0x13u
 #define SDIO_CCCR_SPEED_SHS 0x01u      /* card supports high speed */
@@ -6427,29 +6416,22 @@ static bool sdio_runtime_wake_bus(sdio_host_t *dev)
       did sleep, the next transfer fails, the stamp stops advancing, and the
       following poll takes the full handshake below. */
    if ((uint32_t)(RPI_GetSystemTime() - g_runtime_bus_active_us)
-          < SDIO_BUS_AWAKE_ASSUME_US) {
-      g_wake_fast++;
+          < SDIO_BUS_AWAKE_ASSUME_US)
       return true;
-   }
 
    if (sdio_function1_read_byte(dev, SDIO_SLEEP_CSR, &status)
-       && (status & awake) == awake) {
-      g_wake_already++;
+       && (status & awake) == awake)
       return true;   /* already awake */
-   }
 
    (void)sdio_function1_write_byte(dev, SDIO_SLEEP_CSR,
                                    SDIO_SLEEP_CSR_KEEP_WL_KSO);
    for (attempt = 0u; attempt < 4u; ++attempt) {
       status = 0u;
       if (sdio_function1_read_byte(dev, SDIO_SLEEP_CSR, &status)
-          && (status & awake) == awake) {
-         g_wake_handshake++;
+          && (status & awake) == awake)
          return true;
-      }
    }
 
-   g_wake_failed++;
    return false;
 }
 
@@ -6497,34 +6479,9 @@ uint32_t sdio_runtime_tx_dead_us(void)
 }
 
 // cppcheck-suppress unusedFunction
-uint32_t sdio_runtime_rx_frames_seen(void)
-{
-   /* The any-channel count: max_seq only moves when this does, so it is the
-      correct trigger for retrying anything the credit window refused. */
-   return g_runtime_rx_seen_count;
-}
-
-// cppcheck-suppress unusedFunction
 bool sdio_runtime_rx_gate_is_armed(void)
 {
    return g_rx_int_armed;
-}
-
-// cppcheck-suppress unusedFunction
-void sdio_runtime_rx_int_pending(uint8_t *or_bits, uint8_t *last)
-{
-   *or_bits = g_rx_int_pending_or;
-   *last = g_rx_int_pending_last;
-}
-
-// cppcheck-suppress unusedFunction
-void sdio_runtime_wake_counts(uint32_t *fast, uint32_t *already,
-                              uint32_t *handshake, uint32_t *failed)
-{
-   *fast = g_wake_fast;
-   *already = g_wake_already;
-   *handshake = g_wake_handshake;
-   *failed = g_wake_failed;
 }
 
 bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
@@ -6572,14 +6529,6 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
 
       if (sdio_host_card_interrupt_asserted()) {
          g_rx_int_high++;
-         if ((g_rx_int_high & 0x3ffu) == 1u) {
-            uint8_t pend = 0u;
-            if (sdio_probe_read_byte(&g_runtime_device, SDIO_CCCR_INT_PENDING,
-                                     &pend)) {
-               g_rx_int_pending_or |= pend;
-               g_rx_int_pending_last = pend;
-            }
-         }
          g_rx_sweeping = false;
       } else if ((uint32_t)(gate_now_us - g_rx_sweep_us) < SDIO_RX_SWEEP_INTERVAL_US) {
          g_rx_int_skips++;

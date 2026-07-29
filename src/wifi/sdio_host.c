@@ -23,9 +23,11 @@
       } \
    } while (0)
 
+#if SDIO_HOST_DATA_WAIT_DIAG
 /* Data-phase waits that expired with no ready bit and no error.  See the
    use site: the transfer proceeds regardless and delivers zeros. */
 uint32_t g_sdio_host_data_wait_timeouts;
+#endif
 
 #define TIMEOUT_WAIT(stop_if_true, usec)     \
 { uint32_t time = usec; \
@@ -687,8 +689,10 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
             waiting when there is.  Counted rather than failed here so the
             count can be compared against the ping tail without changing
             behaviour. */
+#if SDIO_HOST_DATA_WAIT_DIAG
          if ((irpts & wake_or_err_mask) == 0u)
             g_sdio_host_data_wait_timeouts++;
+#endif
         // seen_ready = irpts & ready_irpt_mask;
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0000u | ready_irpt_mask;
 
