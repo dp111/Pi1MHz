@@ -153,7 +153,10 @@ static uint32_t scsiTransformLUNid(uint8_t LUN);
 // Initialise the SCSI emulation (called on a cold-start of the AVR)
 void scsiInitialise(void)
 {
-#if 0
+/* Upstream's cold-start banner; compiled out with a named gate rather than
+   deleted so future BeebSCSI diffs stay clean. */
+#define BEEBSCSI_STARTUP_BANNER 0
+#if BEEBSCSI_STARTUP_BANNER
    // On a cold-start we always output debug information (ignoring the setting of the
    // debug flags) - as this is useful for initial board testing
 /*
@@ -197,7 +200,7 @@ void scsiReset(uint8_t scsiid)
 
    if (debugFlag_scsiState) {
       debugString_P(PSTR("\r\n\r\nSCSI State: Resetting SCSI emulation\r\n"));
-#if 0
+#if BEEBSCSI_STARTUP_BANNER
    // this won't have changed from last time so don't both
       debugString_P(PSTR("SCSI State: Firmware: "));
       debugString_P(PSTR(FIRMWARE_STRING));
@@ -857,30 +860,26 @@ static uint8_t scsiCommandReassignBlocks(void)
 		// the loop still grinds through every remaining iteration.  Bail on
 		// reset so the per-byte timeout composes into a per-command bound.
 		if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
+		/* The bus bytes MUST be consumed regardless of build flavour and debug
+		   flags: an earlier form had the hostadapterReadByte() calls inside
+		   if (debugFlag_scsiCommands), so a DEBUG build with the flag off never
+		   took the defect-list bytes off the bus and desynced the protocol -
+		   against a host whose handshake has no timeout.  Read always; only
+		   the display is conditional. */
 		if (longlba==4)
-#ifdef DEBUG
          {
-         if (debugFlag_scsiCommands) {
 			uint32_t logicalBlockAddress =
 				((uint32_t)hostadapterReadByte() << 24) |
 				((uint32_t)hostadapterReadByte() << 16) |
 				((uint32_t)hostadapterReadByte() << 8) |
 				((uint32_t)hostadapterReadByte());
 
-			// Show received byte value
-			debugStringInt32_P(PSTR(" "), logicalBlockAddress, false);
-         }
+			if (debugFlag_scsiCommands)
+				debugStringInt32_P(PSTR(" "), logicalBlockAddress, false);
+			(void)logicalBlockAddress;
       }
-#else
-         {
-            for (uint8_t i=0; i<4; i++)
-               hostadapterReadByte();
-         }
-#endif
 		else
-#ifdef DEBUG
 		{
-         if (debugFlag_scsiCommands) {
 			uint64_t logicalBlockAddress64 =
 				((uint64_t)hostadapterReadByte() << 56) |
 				((uint64_t)hostadapterReadByte() << 48) |
@@ -891,17 +890,12 @@ static uint8_t scsiCommandReassignBlocks(void)
 				((uint64_t)hostadapterReadByte() <<  8) |
 				((uint64_t)hostadapterReadByte());
 
-			// Show received byte value
-			debugStringInt32_P(PSTR(" "), (uint32_t)(logicalBlockAddress64 >> 32), false);
-			debugStringInt32_P(PSTR(""), (uint32_t)(logicalBlockAddress64 & 0x00000000FFFFFFFF), false);
+			if (debugFlag_scsiCommands) {
+				debugStringInt32_P(PSTR(" "), (uint32_t)(logicalBlockAddress64 >> 32), false);
+				debugStringInt32_P(PSTR(""), (uint32_t)(logicalBlockAddress64 & 0x00000000FFFFFFFF), false);
          }
+			(void)logicalBlockAddress64;
       }
-#else
-         {
-            for (uint8_t i=0; i<8; i++)
-               hostadapterReadByte();
-         }
-#endif
 		}
 	if (debugFlag_scsiCommands)debugString_P(PSTR("\r\n"));
 
@@ -1931,9 +1925,15 @@ static uint8_t scsiCommandInquiry(void)
       debugString_C(PSTR("SCSI Commands: CommandInquiry (0x12) received\r\n"), DEBUG_SCSI_COMMAND);
 //      debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
 //      debugStringInt16_P(PSTR("SCSI Commands: Length = "),commandDataBlock.data[4], true);
+#ifdef DEBUG
+		/* Debug builds only: the sprintf is real work even though the
+		   debugString_C below compiles away, and debugFlag_scsiCommands is a
+		   runtime flag the Beeb can flip - a release build must not pay a
+		   100-byte format per INQUIRY for output that goes nowhere. */
 		char msg[100];
 		sprintf(msg, "SCSI Commands: Target LUN = %d  Length = %d\r\n", commandDataBlock.targetLUN, commandDataBlock.data[4]);
-		debugString_C(PSTR(msg), DEBUG_INFO);
+		debugString_C(msg, DEBUG_INFO);
+#endif
    }
    size_t inqLen;
    const char * buf = filesystemGetInquiryData(commandDataBlock.targetLUN,&inqLen);

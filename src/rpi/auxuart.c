@@ -40,8 +40,7 @@ void RPI_AuxMiniUartIRQHandler(void)
       /* Forward all received characters*/
       FORWARD_IRQ_CHARACTER(RPI_Aux->MU_IO);
 #else
-      /* Else just echo characters */
-      /* RPI_AuxMiniUartWrite(RPI_Aux->MU_IO & 0xFF); */
+      /* Else just consume the character. */
       // cppcheck-suppress constStatement
       RPI_Aux->MU_IO; /* read char and dump to clear irq? */
 #endif

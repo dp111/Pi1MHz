@@ -1,7 +1,6 @@
 /*
   usb
 */
-#define LOG  2
 #include "usb/tusb_config.h"
 // Short names so these resolve via the -isystem TinyUSB dirs (third-party,
 // warnings suppressed). Do NOT change back to explicit relative paths.

@@ -398,9 +398,6 @@ static void init_emulator(void) {
    RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
    {
       uint32_t *ico = (uint32_t *)0x20002000;
-      //for(int i=0; i<(0x38/4); i++)
-      //   LOG_DEBUG("ICO %d %08x\r\n",i,ico[i]);
-
       ico[0x20/4] = 0x00000000;// disable HVS interrupts going to the VPU
    }
 
@@ -591,36 +588,6 @@ _Noreturn void kernel_main(void)
    filesystemInitialise(0,0); // default filesystem
 
    init_emulator();
-#if 0
-   {
-   uint32_t *ico = (uint32_t *)0x20002000;
-   for(int i=0; i<(0x38/4); i++)
-      LOG_DEBUG("ICO %x %08x\r\n",i*4,ico[i]);
-
-   ico[0x20/4] = 0x00000000; // hvs
-   ico[0x14/4] = 0x00000000;
-   ico[0x1C/4] = 0x00000000; // undefined is required
-
-   for(int i=0; i<(0x38/4); i++)
-      ico[i] =0;
-   }
-
-   {
-      uint32_t *ico = (uint32_t *)0x20002800;
-      for(int i=0; i<(0x38/4); i++)
-         LOG_DEBUG("IC1 %x %08x\r\n",i*4,ico[i]);
-      }
-
-   uint32_t * fsel_reg = &RPI_GpioBase->GPFSEL[0];
-   for(int i=0; i<0x94/4; i++)
-      LOG_DEBUG("GPIO %x %08x\r\n",i*4,fsel_reg[i]);
-
-      uint32_t * irq_reg = (uint32_t *) 0x2000B200;
-      for(int i=0; i<0x24/4; i++)
-         LOG_DEBUG("IRQ %x %08x\r\n",i*4,irq_reg[i]);
-
-#endif
-
    bool oldreset = Pi1MHz_is_rst_active();
    uint32_t main_poll_loops = 0u;
    do {

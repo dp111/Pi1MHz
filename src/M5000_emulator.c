@@ -376,7 +376,7 @@ static void music5000_rec_stop(void)
    do {
       sprintf(fn,"Musics%.3i.wav",number);
       result = f_open( &music5000_fp, fn, FA_CREATE_NEW  | FA_WRITE);
-      LOG_INFO("Music5000 Filename : %s\r\n",fn);
+      LOG_DEBUG("Music5000 Filename : %s\r\n",fn);
       number++;
    } while ( result != FR_OK && number < 1000 );
 

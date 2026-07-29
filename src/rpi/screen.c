@@ -944,7 +944,6 @@ void screen_set_vsync( bool enable )
     if (enable)
     {
         RPI_hvs->ctrl = (RPI_hvs->ctrl &0xffff0000) | ((1 <<9) + ( 1<<2 )+ 1); // end of frame and enable IRQs
-        //LOG_INFO("Enable VSYNC %x\r\n", RPI_hvs->ctrl);
         RPI_GetIrqController()->Enable_IRQs_2 = RPI_HVS_IRQ;
     }
     else

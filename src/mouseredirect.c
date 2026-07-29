@@ -313,8 +313,6 @@ void mouse_redirect_move_mouse(void)
     default : break;
     }
 
-  //  LOG_DEBUG("calc Mouse x %"PRIi32" y %"PRIi32" \r\n", mouse_x, mouse_y);
-
     screen_set_plane_position( MOUSE_PLANE, mouse_x, mouse_y );
     screen_plane_enable(MOUSE_PLANE, true);
 }

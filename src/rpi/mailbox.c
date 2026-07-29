@@ -248,7 +248,6 @@ rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag)
 
     while ( index < ( pt[PT_OSIZE] >> 2 ) )
     {
-        // LOG_DEBUG( "Test Tag: [%d] %8.8X\r\n", index, pt[index] );
         if ( pt[index] == tag )
         {
             /* Return the required data */

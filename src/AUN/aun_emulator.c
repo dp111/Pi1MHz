@@ -94,6 +94,7 @@ static bool aun_debug;
 
 #define AUN_LOG(...) do { if (aun_debug) { LOG_DEBUG(__VA_ARGS__); } } while (0)
 
+#ifdef DEBUG
 /* Per-inbound-DATA-frame diagnostic: shows the AUN sequence number, the
  * engine's verdict, and "=prev" when the payload is byte-identical to the
  * previous frame from the same source - which tells a retransmit apart
@@ -132,6 +133,7 @@ static void aun_diag_trace(void *user, uint32_t seq, uint8_t port,
            vname[verdict < 5u ? verdict : 4u], same_as_prev ? " =prev" : "",
            (unsigned long)aun.counters.ack_fail, hex);
 }
+#endif /* DEBUG - the only references are debug-gated too */
 
 static void aun_irq_update(void)
 {
@@ -420,7 +422,15 @@ static void aun_execute(uint32_t cp, uint32_t addr)
        * (per-source slot scan + up-to-8 KB memcmp/memcpy per inbound DATA
        * frame, aun.c) - dead weight on the lwIP receive path when the
        * AUN_LOG output it feeds is disabled anyway. */
+#ifdef DEBUG
       aun_set_trace(&aun, aun_debug ? aun_diag_trace : NULL, NULL);
+#else
+      /* Release: the AUN_LOG the hook feeds compiles to nothing, so the
+         hook must stay NULL even with aun_debug=1 in the config - or the
+         per-frame slot-scan/hash runs on the lwIP receive path purely to
+         discard its result. */
+      aun_set_trace(&aun, NULL, NULL);
+#endif
       {
          uint8_t mid[4];
          if (aun_parse_machine(config_get("aun_machine"), mid))
@@ -483,6 +493,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       /* Format only when the log will actually be emitted: aun_hex16 is a
          real call that LTO does NOT fold away, so it used to run on every
          single transmit just to have its result discarded. */
+#ifdef DEBUG
       if (aun_debug) {
          char txhex[16 * 3 + 1];
          aun_hex16(txhex, &Pi1MHz->JIM_ram[base_addr + off], len);
@@ -491,6 +502,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
                  Pi1MHz->JIM_ram[cp + 3], Pi1MHz->JIM_ram[cp + 2],
                  (unsigned long)len, txhex);
       }
+#endif
       result = aun_tx_start(&aun,
                             Pi1MHz->JIM_ram[cp + 5],   /* dest net */
                             Pi1MHz->JIM_ram[cp + 4],   /* dest stn */

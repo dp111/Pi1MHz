@@ -33,7 +33,6 @@ static bool localstrcasecmp(const char *s1, const char *s2 )
 {
     while(1)
     {
-        //printf("compare : %c %c\n\r",*s1,*s2);
         if ((*s1 == '\0') && ((*s2 == '\0') || (*s2 == '\n') || (*s2 == '\r') || (*s2 == ' ') || (*s2 == '\t') || (*s2 == '#') || (*s2 == '=')))
             return true;
         if ( tolower(*s1++) != tolower(*s2++) )

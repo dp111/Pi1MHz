@@ -790,7 +790,10 @@ uint32_t filesystemGetLunTotalSectors( uint8_t lunNumber)
 // Function to return the cylinders and heads from the LUN descriptor file parameters
 // into the buffer
 //
-#if 0
+/* Upstream helper with no caller here; named gate, not deletion, so future
+   BeebSCSI diffs stay clean. */
+#define BEEBSCSI_GET_CYL_HEADS 0
+#if BEEBSCSI_GET_CYL_HEADS
 void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf)
 {
 	returnbuf[3] = ((uint8_t)((filesystemState.fsLunGeometry[lunNumber].Cylinders & 0x0000FF00) >> 8));

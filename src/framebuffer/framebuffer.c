@@ -1610,7 +1610,13 @@ static void vdu_25(const uint8_t *buf) {
          prim_draw_sprite(screen, current_sprite, x_pos, y_pos);
          break;
       default:
+#ifdef DEBUG_VDU
+         /* This dispatch runs in IRQ context (the VDU queue drains from
+            IRQHandler_main), and printf blocks on the 115200-baud UART - so
+            an unimplemented PLOT issued in a loop by the Beeb must not be
+            allowed to print per call in release builds. */
          printf("Unsupported plot code: %d\r\n", g_mode);
+#endif
          break;
       }
    }
@@ -2418,7 +2424,11 @@ uint8_t fb_get_gcol_from_colnum(uint8_t colnum) {
       // The      VDU gcol number format is B3 B2 G3 G2 R3 R2 T1 T0
       return (uint8_t)((colnum & 0x87) | ((colnum & 0x70) >> 1) | ((colnum & 0x08) << 3));
    } else {
+#ifdef DEBUG_VDU
+      /* Any plausible caller is IRQ-context rendering code; keep the
+         complaint out of release builds. */
       printf("Illegal use of get_gcol_from_colnum()\n\r");
+#endif
       return 0;
    }
 }

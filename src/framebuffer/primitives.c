@@ -1162,8 +1162,6 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
    int x_left = x;
    int x_right = x;
 
-   // printf("Plot (%d,%d), colour %d, mode %d\r\n", x, y, colour, mode);
-   // printf("g_bg_col = %d, g_fg_col = %d\n\r", g_bg_col, g_fg_col);
 
    pixel_t fg_col = g_fg_col;
    pixel_t bg_col = g_bg_col;
@@ -1240,7 +1238,11 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
       return; // Don't update the graphics cursors
 
    default:
+#ifdef DEBUG_VDU
+      /* IRQ context via the plot dispatch - see framebuffer.c; no release
+         printing from here. */
       printf( "Unknown fill mode %d\r\n", mode);
+#endif
       return; // Don't update the graphics cursors
    }
 

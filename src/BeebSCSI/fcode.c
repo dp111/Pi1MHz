@@ -583,11 +583,15 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			break;
 		}
 
-	// Send the F-Code to the serial UART
-//	printf("<FCODE>");
-//	for (byteCounter = 0; byteCounter < fcodeLength; byteCounter++)
-//		printf("%c", scsiFcodeBuffer[byteCounter]);
-//	printf("</FCODE>\r\n");
+	// Send the F-Code to the serial UART - upstream's AVR behaviour, compiled
+	// out with a named gate rather than deleted so future diffs stay clean.
+#define BEEBSCSI_FCODE_TO_UART 0
+#if BEEBSCSI_FCODE_TO_UART
+	printf("<FCODE>");
+	for (byteCounter = 0; byteCounter < fcodeLength; byteCounter++)
+		printf("%c", scsiFcodeBuffer[byteCounter]);
+	printf("</FCODE>\r\n");
+#endif
 }
 
 // Function to copy the UART serial buffer into the fcodeBuffer
