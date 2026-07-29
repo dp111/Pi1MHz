@@ -42,6 +42,9 @@
 
 #define WATCHDOG_DEFAULT_SECONDS 10u
 #define WATCHDOG_MAX_SECONDS     15u
+/* Boot runs unconfigured - Pi1MHz.cfg has not been read yet - so the boot
+   watchdog uses the longest timeout the hardware offers. */
+#define WATCHDOG_BOOT_SECONDS    WATCHDOG_MAX_SECONDS
 
 static volatile uint32_t *const PM_RSTC = (uint32_t *)(PERIPHERAL_BASE + 0x0010001cu);
 static volatile uint32_t *const PM_WDOG = (uint32_t *)(PERIPHERAL_BASE + 0x00100024u);
@@ -61,11 +64,39 @@ static uint32_t watchdog_last_kick_us;
    which would loop forever and be far worse than the hang this exists to
    escape.  Steady state is only reached once all of that is done. */
 static uint32_t watchdog_arm_after_us;
-#define WATCHDOG_BOOT_GRACE_US (60u * 1000000u)
+/* Short, and only to cover the gap between watchdog_init() and the poll loop
+   starting - the emulators after this one in the table still have to
+   initialise.  It used to be 60 s, from when boot ran with the watchdog off
+   and needed protecting from its own slowness; boot now kicks the watchdog
+   itself, so the machine is never unguarded and the grace only has to span a
+   few emulator inits. */
+#define WATCHDOG_BOOT_GRACE_US (5u * 1000000u)
 
 /* Re-arm.  Writing WDOG then RSTC restarts the countdown, so simply calling
    this often enough is the whole mechanism - there is no separate "pet"
    register to poke. */
+/* Arm the watchdog for the boot itself, and kick it.
+ *
+ * This exists because the opposite - stopping the watchdog at the top of
+ * kernel_main - left the machine unprotected for the whole of boot plus the
+ * arming grace, which is exactly when the lockups happen: a kernel.now
+ * chain-boot that dies before USB enumerates used to sit there until someone
+ * pulled the power.  The inherited-countdown problem that motivated stopping
+ * it is real, but the answer is to take the countdown over, not to switch it
+ * off: this re-arms at the hardware maximum and boot kicks it as it goes.
+ *
+ * Deliberately unconditional - the config that might disable the watchdog has
+ * not been read at this point, and watchdog_init() turns it off again if the
+ * user does not want one.  The cost of being wrong is a reset on a machine
+ * whose boot stalled for 15 s, which is not a machine that was going to
+ * finish booting. */
+// cppcheck-suppress unusedFunction
+void watchdog_boot_kick(void)
+{
+   *PM_WDOG = PM_PASSWORD | (WATCHDOG_BOOT_SECONDS * PM_WDOG_TICKS_PER_SEC);
+   *PM_RSTC = PM_PASSWORD | ((*PM_RSTC & PM_RSTC_WRCFG_CLR) | PM_RSTC_WRCFG_FULL_RESET);
+}
+
 /* Stop the watchdog dead.  Clearing WRCFG leaves the counter running but tells
    the reset controller to do nothing when it expires.
    
@@ -108,19 +139,24 @@ void watchdog_init(uint8_t instance, uint8_t address)
    const char *setting = config_get("watchdog");
    long seconds;
 
-   /* Belt and braces: kernel_main stops any inherited countdown before the
-      long part of boot, but this runs whatever the caller did. */
-   watchdog_stop();
+   /* Not watchdog_stop() here: boot armed the watchdog and has been kicking
+      it, and dropping the guard now would reopen the window this whole
+      arrangement exists to close.  Only an explicit "no watchdog" in the
+      config disarms it, below. */
 
    (void)instance;
    (void)address;
 
-   if (setting == NULL || setting[0] == '\0')
-      return;                       /* not configured: leave the watchdog off */
+   if (setting == NULL || setting[0] == '\0') {
+      watchdog_stop();              /* not configured: stand the boot dog down */
+      return;
+   }
 
    seconds = strtol(setting, NULL, 10);
-   if (seconds <= 0)
-      return;                       /* explicitly disabled */
+   if (seconds <= 0) {
+      watchdog_stop();              /* explicitly disabled */
+      return;
+   }
 
    if (seconds > (long)WATCHDOG_MAX_SECONDS)
       seconds = (long)WATCHDOG_MAX_SECONDS;

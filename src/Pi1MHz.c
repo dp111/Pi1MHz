@@ -392,7 +392,9 @@ static void init_emulator(void) {
    // All emulator/option keys come from this file via config_get(); only the
    // boot-essential keys read before this point (disk_led_gpio, baud_rate)
    // still come from cmdline.txt. (filesystemReadFile self-mounts the FAT.)
+   watchdog_boot_kick();       /* the card mount inside here can be slow */
    config_load("/Pi1MHz/Pi1MHz.cfg");
+   watchdog_boot_kick();
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
    RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
@@ -492,6 +494,9 @@ static void init_emulator(void) {
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {
          LOG_DEBUG("Init %s at 0x%02x\r\n",emulator[i].name, emulator[i].address);
+         /* Each emulator's init is well under the boot timeout, but the
+            sequence as a whole is not - so feed the dog between them. */
+         watchdog_boot_kick();
          if (emulator[i].enable == 1) emulator[i].init(i, emulator[i].address);
       }
 }
@@ -638,11 +643,12 @@ _Noreturn void kernel_main(void)
 
    RPI_AuxMiniUartInit( baud_rate );
 
-   /* Before anything slow.  A kernel.now chain-boot inherits the previous
-      kernel's armed watchdog - the PM block does not reset on a warm jump -
-      and boot takes far longer than any sane timeout, so an inherited
-      countdown would reset us part-way up.  See watchdog_stop(). */
-   watchdog_stop();
+   /* Take over any inherited countdown rather than switching it off.  A
+      kernel.now chain-boot inherits the previous kernel's armed watchdog (the
+      PM block does not reset on a warm jump); stopping it used to leave the
+      machine unguarded for the whole of boot, which is exactly when a failed
+      chain-boot dies.  See watchdog_boot_kick(). */
+   watchdog_boot_kick();
 
    enable_MMU_and_IDCaches(0);
 
