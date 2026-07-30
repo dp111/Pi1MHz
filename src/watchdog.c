@@ -63,14 +63,12 @@ static uint32_t watchdog_last_kick_us;
    join, DHCP - and arming before that has finished risks resetting mid-boot,
    which would loop forever and be far worse than the hang this exists to
    escape.  Steady state is only reached once all of that is done. */
-static uint32_t watchdog_arm_after_us;
-/* Short, and only to cover the gap between watchdog_init() and the poll loop
-   starting - the emulators after this one in the table still have to
-   initialise.  It used to be 60 s, from when boot ran with the watchdog off
-   and needed protecting from its own slowness; boot now kicks the watchdog
-   itself, so the machine is never unguarded and the grace only has to span a
-   few emulator inits. */
-#define WATCHDOG_BOOT_GRACE_US (5u * 1000000u)
+/* No arming grace any more.  It existed because boot ran with the watchdog
+   OFF and had to be protected from its own slowness; boot now arms the
+   watchdog at the hardware maximum and kicks it between every emulator init,
+   so the dog is fed continuously from the first instruction and there is
+   nothing left for a grace period to cover.  Keeping one would only create a
+   window where neither boot nor the poll loop was feeding it. */
 
 /* Re-arm.  Writing WDOG then RSTC restarts the countdown, so simply calling
    this often enough is the whole mechanism - there is no separate "pet"
@@ -118,13 +116,6 @@ static void watchdog_poll(void)
    /* Shared per-pass clock: a 250 ms interval does not need better. */
    uint32_t now = Pi1MHz_now_us;
 
-   if (watchdog_arm_after_us != 0u) {
-      if ((int32_t)(now - watchdog_arm_after_us) < 0)
-         return;                    /* still booting; leave it disarmed */
-      watchdog_arm_after_us = 0u;
-      watchdog_last_kick_us = now - WATCHDOG_KICK_INTERVAL_US;   /* kick now */
-   }
-
    if ((uint32_t)(now - watchdog_last_kick_us) < WATCHDOG_KICK_INTERVAL_US)
       return;
    watchdog_last_kick_us = now;
@@ -167,9 +158,8 @@ void watchdog_init(uint8_t instance, uint8_t address)
    if (watchdog_ticks > PM_WDOG_TIME_SET)
       watchdog_ticks = PM_WDOG_TIME_SET;
 
-   /* Registered now, armed later - see watchdog_arm_after_us.  Emulator
-      registration runs before the WiFi bring-up and DHCP have finished, so
-      "the emulators are up" is not yet steady state. */
-   watchdog_arm_after_us = RPI_GetSystemTime() + WATCHDOG_BOOT_GRACE_US;
+   /* Take over from the boot watchdog seamlessly: stamp the kick clock as
+      already due so the first poll re-arms with the configured timeout. */
+   watchdog_last_kick_us = RPI_GetSystemTime() - WATCHDOG_KICK_INTERVAL_US;
    Pi1MHz_Register_Poll(watchdog_poll);
 }

@@ -6291,9 +6291,8 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
          the conservative wait still governs there, which is where overrunning
          the chip actually matters. */
       if ((uint32_t)(now_us - g_runtime_tx_stall_since_us)
-             < ((g_runtime_fifo_was_empty
-                 && (int32_t)(g_runtime_last_any_rx_us
-                              - g_runtime_tx_stall_since_us) < 0)
+             < (((int32_t)(g_runtime_last_any_rx_us
+                           - g_runtime_tx_stall_since_us) < 0)
                     ? SDPCM_TX_STALL_IDLE_RESYNC_US
                     : SDPCM_TX_STALL_RESYNC_US))
          return false;

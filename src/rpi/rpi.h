@@ -27,6 +27,7 @@ void RPI_MailboxInit( void );
    .noinit, which a watchdog reset does not clear. */
 typedef enum {
    BOOT_STAGE_ENTRY = 1,      /* kernel_main reached                        */
+   BOOT_STAGE_MAILBOX,        /* inherited mailbox drained                  */
    BOOT_STAGE_MMU,            /* MMU and caches enabled                     */
    BOOT_STAGE_HEAP,           /* heap sized                                 */
    BOOT_STAGE_INFO,           /* dump_useful_info done (DEBUG builds)       */

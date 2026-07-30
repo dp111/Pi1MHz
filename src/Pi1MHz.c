@@ -667,6 +667,7 @@ _Noreturn void kernel_main(void)
    /* Before any property request: a chain-boot inherits the VideoCore's
       mailbox state, and a stale reply desynchronises every later call. */
    RPI_MailboxInit();
+   RPI_BootStage(BOOT_STAGE_MAILBOX);
 
    enable_MMU_and_IDCaches(0);
    RPI_BootStage(BOOT_STAGE_MMU);
