@@ -395,6 +395,17 @@ static void init_emulator(void) {
    watchdog_boot_kick();       /* the card mount inside here can be slow */
    config_load("/Pi1MHz/Pi1MHz.cfg");
    watchdog_boot_kick();
+   RPI_BootStage(BOOT_STAGE_CONFIG);
+
+   /* Report the previous attempt, now the config is up.  Anything short of
+      BOOT_STAGE_RUNNING means the last boot died there - and unlike the
+      serial log, this survives the reset and does not depend on how far the
+      64 KB TX ring had drained. */
+   {
+      boot_stage_t prev = RPI_BootStagePrevious();
+      if (prev != 0u && prev != BOOT_STAGE_RUNNING)
+         LOG_WARN("PREVIOUS BOOT DIED AT STAGE %u\r\n", (unsigned int)prev);
+   }
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
    RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
@@ -499,6 +510,7 @@ static void init_emulator(void) {
          watchdog_boot_kick();
          if (emulator[i].enable == 1) emulator[i].init(i, emulator[i].address);
       }
+   RPI_BootStage(BOOT_STAGE_EMULATORS);
 }
 
 static uint8_t led_pin;
@@ -540,6 +552,7 @@ static void init_hardware(void)
 #ifdef DEBUG
    dump_useful_info();
 #endif
+   RPI_BootStage(BOOT_STAGE_INFO);
 }
 // cppcheck-suppress unusedFunction
 /* Published once per poll-loop pass; see the loop in kernel_main. */
@@ -649,12 +662,14 @@ _Noreturn void kernel_main(void)
       machine unguarded for the whole of boot, which is exactly when a failed
       chain-boot dies.  See watchdog_boot_kick(). */
    watchdog_boot_kick();
+   RPI_BootStage(BOOT_STAGE_ENTRY);
 
    /* Before any property request: a chain-boot inherits the VideoCore's
       mailbox state, and a stale reply desynchronises every later call. */
    RPI_MailboxInit();
 
    enable_MMU_and_IDCaches(0);
+   RPI_BootStage(BOOT_STAGE_MMU);
 
    // Setup malloc memory
    {
@@ -679,6 +694,7 @@ _Noreturn void kernel_main(void)
          arm_memory_bytes = 32u * 1024u * 1024u;
 
       arm_setup_heap_limit((void *) (uintptr_t) arm_memory_bytes);
+      RPI_BootStage(BOOT_STAGE_HEAP);
    }
 
    init_hardware();
@@ -691,6 +707,7 @@ _Noreturn void kernel_main(void)
 #else
    poll_ticks_start();
 #endif
+   RPI_BootStage(BOOT_STAGE_RUNNING);
 
    bool oldreset = Pi1MHz_is_rst_active();
    uint32_t main_poll_loops = 0u;

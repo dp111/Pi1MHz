@@ -117,6 +117,39 @@ void RPI_MailboxInit( void )
    RPI_Mailbox0Drain();
 }
 
+/* A FIXED address, deliberately not .noinit.  The whole point of this marker
+   is that the image which dies and the image which reports are DIFFERENT
+   builds - and .noinit lands wherever the linker puts it, which moves the
+   moment .text changes size.  Measured the hard way: the first version used
+   .noinit, a deliberately hung build wrote its stage, and the reporting
+   kernel read a different address entirely and saw nothing.  (The same trap
+   as PageTable[] in the chain-boot handover.)  0x7C00 is a KB of low RAM
+   below the 0x8000 kernel load address, clear of the vectors at 0 and the
+   ATAGS at 0x100, and not touched by anything else here. */
+#define BOOT_STAGE_BASE 0x00007C00u
+#define boot_stage_magic    (((volatile uint32_t *)BOOT_STAGE_BASE)[0])
+#define boot_stage_current  (((volatile uint32_t *)BOOT_STAGE_BASE)[1])
+#define boot_stage_previous (((volatile uint32_t *)BOOT_STAGE_BASE)[2])
+#define BOOT_STAGE_MAGIC 0x8007ADE5u
+
+void RPI_BootStage( boot_stage_t stage )
+{
+   if (boot_stage_magic != BOOT_STAGE_MAGIC) {
+      /* First boot after a power cycle: nothing to report, start recording. */
+      boot_stage_magic = BOOT_STAGE_MAGIC;
+      boot_stage_previous = 0u;
+   } else if (stage == BOOT_STAGE_ENTRY) {
+      /* A reset got us here; carry over how far the last attempt reached. */
+      boot_stage_previous = boot_stage_current;
+   }
+   boot_stage_current = (uint32_t)stage;
+}
+
+boot_stage_t RPI_BootStagePrevious( void )
+{
+   return (boot_stage_t)boot_stage_previous;
+}
+
 static void RPI_Mailbox0Drain( void )
 {
     uint32_t start_us = RPI_GetSystemTime();
