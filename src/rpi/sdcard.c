@@ -1154,19 +1154,25 @@ card_reinit:
    printf("EMMC: device structure created\r\n");
 #endif
 #ifdef RESET_CONTROLLER
-   /* Abort anything the card is still doing before trying to reset it.  This
-      driver deliberately leaves multiblock transfers open (in_transfer_state,
-      so a read or write can skip the CMD13 round trip), and a kernel.now warm
-      jump can therefore hand the next kernel a card mid-transfer with the DAT
-      lines busy - which does not answer CMD0.  The read that follows then
-      fails, and because a failure clears card_rca every later access re-runs
-      this whole init: three retries at a 5 s command timeout is 15 s, which is
-      the boot watchdog interval, so the machine resets part-way up.  That is
-      the boot lockup - caught by the stage marker reporting STAGE 4 (the info
-      dump completed, config_load did not) on six of thirty flashes.
+   /* Abort whatever the card may still be doing before trying to reset it.
+      A kernel.now warm jump leaves the card powered and selected in whatever
+      state the previous kernel had it in, and CMD0 alone does not reliably
+      bring it back: the first data command then fails, failure clears
+      card_rca, and every later access re-runs this whole init - three retries
+      at a 5 s command timeout is 15 s, exactly the boot watchdog interval, so
+      the machine resets part-way up.
 
-      CMD12 is fire-and-forget: it fails harmlessly on an idle card, which is
-      the common case, and there is nothing useful to do about a failure. */
+      MEASURED, thirty flashes each way: warm boots 19-27 s -> 5-6 s (the 15 s
+      is the three timeouts), and boot deaths reported at the FAT-mount stage
+      5 -> 1.  The effect is not in doubt.  The exact card state is: multiblock
+      transfers are stopped on completion and the device struct is malloc'd
+      fresh, so "left mid-transfer" is NOT the explanation - most likely the
+      card is left selected in the transfer state and CMD12 with BUSYWAIT is
+      what resynchronises the controller-card handshake.  Inferred, not proven.
+
+      CMD12 is fire-and-forget: on an idle card - the normal fast-boot case,
+      where the card is already powered and ready - it fails harmlessly and
+      costs a single command. */
    sd_issue_command(ret, STOP_TRANSMISSION, 0, 500000);
 
    // Send CMD0 to the card (reset to idle state)
@@ -1665,7 +1671,13 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
        command = is_write ? WRITE_BLOCK : READ_SINGLE_BLOCK;
 
    int retry_count = 0;
-   int max_retries = 3;
+   /* Two attempts, not three.  The per-command timeout is 5 s, so three
+      attempts is a 15 s budget - exactly the boot watchdog interval, which
+      meant a boot-time retry could never finish: the machine reset part-way
+      through its own recovery and nobody found out whether the later attempt
+      would have succeeded.  Two keeps the budget at 10 s with 5 s of margin,
+      and leaves this driver knowing nothing about watchdogs. */
+   int max_retries = 2;
    while(retry_count < max_retries)
    {
 #ifdef SDMA_SUPPORT
