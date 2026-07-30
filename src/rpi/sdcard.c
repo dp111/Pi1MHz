@@ -1154,6 +1154,21 @@ card_reinit:
    printf("EMMC: device structure created\r\n");
 #endif
 #ifdef RESET_CONTROLLER
+   /* Abort anything the card is still doing before trying to reset it.  This
+      driver deliberately leaves multiblock transfers open (in_transfer_state,
+      so a read or write can skip the CMD13 round trip), and a kernel.now warm
+      jump can therefore hand the next kernel a card mid-transfer with the DAT
+      lines busy - which does not answer CMD0.  The read that follows then
+      fails, and because a failure clears card_rca every later access re-runs
+      this whole init: three retries at a 5 s command timeout is 15 s, which is
+      the boot watchdog interval, so the machine resets part-way up.  That is
+      the boot lockup - caught by the stage marker reporting STAGE 4 (the info
+      dump completed, config_load did not) on six of thirty flashes.
+
+      CMD12 is fire-and-forget: it fails harmlessly on an idle card, which is
+      the common case, and there is nothing useful to do about a failure. */
+   sd_issue_command(ret, STOP_TRANSMISSION, 0, 500000);
+
    // Send CMD0 to the card (reset to idle state)
    sd_issue_command(ret, GO_IDLE_STATE, 0, 500000);
    if(FAIL(ret))
