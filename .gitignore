@@ -23,3 +23,9 @@ src/scripts/diss1
 /src/build
 6502code/.vscode/tasks.json
 src/.vscode/tasks.json
+
+# Machine-specific GCC-17 build wrapper. Needs a toolchain that only exists
+# on the build host (/root/gcc17/toolchain-consolidated), so it is deliberately
+# not committed. Its companion toolchain-gcc17-allpatches.cmake is already
+# covered by the *.cmake rule above.
+/build-gcc17.sh
