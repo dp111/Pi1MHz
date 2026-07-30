@@ -650,6 +650,10 @@ _Noreturn void kernel_main(void)
       chain-boot dies.  See watchdog_boot_kick(). */
    watchdog_boot_kick();
 
+   /* Before any property request: a chain-boot inherits the VideoCore's
+      mailbox state, and a stale reply desynchronises every later call. */
+   RPI_MailboxInit();
+
    enable_MMU_and_IDCaches(0);
 
    // Setup malloc memory

@@ -102,6 +102,21 @@ static uint32_t RPI_Mailbox0Read( mailbox0_channel_t channel )
 /* Throw away anything still queued, so a call that gave up does not leave a
    late reply to be mistaken for the next call's answer.  Without this one
    timeout would put every later transaction permanently one message behind. */
+/* Discard anything the VideoCore left in the mailbox before the first
+   property call of this kernel.  A kernel.now chain-boot inherits whatever
+   the previous kernel had in flight - the mailbox is VideoCore state and does
+   not reset on a warm jump - and a stale response puts every later exchange
+   one message behind: each then reads the previous call's reply, mismatches,
+   and pays the full 3 s timeout before recovering.  Observed as a debug boot
+   stopping dead part-way through dump_useful_info() and sitting there for
+   17 s (five timeouts) until the watchdog reset it. */
+static void RPI_Mailbox0Drain( void );
+
+void RPI_MailboxInit( void )
+{
+   RPI_Mailbox0Drain();
+}
+
 static void RPI_Mailbox0Drain( void )
 {
     uint32_t start_us = RPI_GetSystemTime();

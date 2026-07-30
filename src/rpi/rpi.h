@@ -13,6 +13,10 @@
 #define LOG_INFO(...) printf(__VA_ARGS__)
 
 #define LOG_WARN(...) printf(__VA_ARGS__)
+
+/* Drain any stale VideoCore mailbox response inherited from a previous
+   kernel; call once before the first property request.  See mailbox.c. */
+void RPI_MailboxInit( void );
 #endif
 
 
