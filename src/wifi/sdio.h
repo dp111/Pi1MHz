@@ -19,9 +19,11 @@ typedef struct {
    bool link_up;
    uint32_t tx_frames;
    uint32_t rx_frames;
-   /* Times the SDPCM transmit credit window had to be rebased onto the chip's
-      advertised max_seq after staying shut.  Should be 0; a climbing count
-      means transmit is repeatedly stalling. */
+   /* Times a sustained shut transmit window turned out to be a stale
+      flow-control stop and was reopened by clearing the cached mask.  (The
+      sequence number is never rewritten; a window shut on credit falls to
+      the recovery ladder instead.)  Should be 0; a climbing count means
+      transmit is repeatedly stalling. */
    uint32_t tx_resyncs;
    /* Association retries since boot.  Non-zero means the link was lost (or
       never came up at boot) and the join sequence was re-issued. */

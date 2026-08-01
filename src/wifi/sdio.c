@@ -27,8 +27,9 @@
 #define SDIO_INT_SERVICE_INTERVAL_US 20000u
 /* Resync wait when nothing is arriving to reopen the credit window.  Short,
    because on an idle link the alternative is holding the frame until it is
-   discarded - and a resync buys exactly one frame, so this is at worst one
-   probe frame per interval. */
+   discarded.  A resync only clears a stale flow-control stop (it never
+   touches the sequence number), so at worst this is one gate re-check per
+   interval. */
 #define SDPCM_TX_STALL_IDLE_RESYNC_US 20000u
 /* How recently a successful transfer counts as proof the bus is still awake.
    Well inside the chip's idle-before-sleep window. */
@@ -6297,28 +6298,42 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
                     : SDPCM_TX_STALL_RESYNC_US))
          return false;
 
-      /* Sustained shut window: the two ends have lost sequence agreement and
-         nothing in the protocol reopens it, because the chip only revises
-         max_seq in response to frames it receives and the gate is what stops
-         us sending them.  Observed as max_seq 62 against our seq 165 - a
-         hundred frames past a window that had itself collapsed - after which
-         transmit never resumed even though receive kept running.
+      /* Sustained shut window.  Two distinct faults land here, and only one
+         of them is curable from the host side:
 
-         Rebase onto the chip's window one short of max_seq, which buys
-         exactly one frame: enough for the chip to re-advertise from, and
-         little enough that if it really is out of credit (or gone) we probe
-         once a second rather than flooding a queue that cannot drain.  The
-         flow-control mask is cleared for the same reason - a stale "stop"
-         that no later frame contradicts is indistinguishable from a lost
-         resume - and the next received frame re-asserts it if it still
-         holds. */
+         - A stale flow-control stop: the chip's "pause" arrived in a frame
+           header and the matching "resume" was lost.  Nothing later
+           contradicts it, so the cached mask holds the gate shut forever.
+           Clearing it is safe - the next received frame re-asserts the
+           stop if it still holds.
+
+         - Genuine credit exhaustion: (int8_t)(seq - max_seq) >= 0 with the
+           chip advertising no more.  Everything below max_seq is sequence
+           space the chip has ALREADY consumed.  The old recovery here
+           rewrote g_sdpcm_tx_sequence to max_seq - 1: the chip discards a
+           replayed sequence number without crediting and without advancing
+           max_seq, so every later pass rebased onto the same dead number
+           and transmit stayed dead forever while receive ran on (RX needs
+           no host credits).  Twice that ended in a physical power cycle.
+
+         So: clear the flow-control mask, then re-ask the gate.  If it is
+         still shut the stall is real credit exhaustion, and the only exits
+         run through the recovery ladder, which is already armed - the
+         TX-dead clock (g_runtime_tx_shut_since_us) has been counting since
+         the first refusal: rejoins from 8 s dead, and a full chip restart
+         (WL_REG_ON cycle, firmware re-download, fresh sequence space on
+         BOTH sides) at 25 s or three failed rejoins.  Only the restart
+         cures a poisoned window - a rejoin's own commands travel through
+         it and are discarded like everything else.  NEVER rewrite the
+         sequence number. */
       g_runtime_wlan_flow_control = 0u;
-      g_sdpcm_tx_sequence = (uint8_t)(g_runtime_max_seq - 1u);
       g_runtime_tx_stall_since_us = now_us;
       /* Refreshing stall_since IS the snapshot refresh: the idle tier
-         compares the last-RX stamp against it, so each rebase starts a
+         compares the last-RX stamp against it, so each pass starts a
          fresh observation window automatically. */
-      ++g_runtime_tx_resync_count;
+      if (sdio_runtime_tx_window_shut())
+         return false;      /* out of credit for real - the ladder recovers */
+      ++g_runtime_tx_resync_count;   /* a stale flow-control stop was cleared */
    } else {
       g_runtime_tx_stalled = false;
    }
