@@ -25,17 +25,22 @@
 
 #if SDIO_HOST_DATA_WAIT_DIAG
 /* Data-phase waits that expired with no ready bit and no error.  See the
-   use site: the transfer proceeds regardless and delivers zeros. */
+   use site: on hardware the transfer now fails (SD_ERR_MASK_DATA_TIMEOUT);
+   only emulator mode still proceeds and delivers zeros. */
 uint32_t g_sdio_host_data_wait_timeouts;
 #endif
 
+/* Wall-clock, not an iteration count: RPI_WaitMicroSeconds(1) costs 1-2 us
+   and each condition test adds MMIO reads, so counting iterations ran every
+   wedged wait 1.5-3x past its nominal cap - and those overshoots multiply
+   through per-block loops and retry loops above.  usec now means usec. */
 #define TIMEOUT_WAIT(stop_if_true, usec)     \
-{ uint32_t time = usec; \
+{ uint32_t tw_deadline_us = RPI_GetSystemTime() + (usec); \
    do { \
       if (stop_if_true) \
          break; \
       RPI_WaitMicroSeconds(1); \
-   } while (time--); \
+   } while ((int32_t)(RPI_GetSystemTime() - tw_deadline_us) < 0); \
 }
 
 /* rpi_emmc_t mirrors the BCM2835 Arasan EMMC register block one-to-one:
@@ -99,6 +104,13 @@ typedef struct {
 #define SD_CMD_DAT_DIR_CH  (1 << 4)
 
 #define SD_ERR_MASK_CMD_TIMEOUT     (1 << 16)
+/* Data-phase wait expiry.  Deliberately NOT SD_ERR_MASK_CMD_TIMEOUT: the
+   command phase completed, so the card may have consumed the payload, and
+   sdio_host_last_failure_precommand() must stay false or the SDPCM layer
+   would reclaim a sequence number the chip already counted - the exact
+   poison the removed max_seq rebase used to inject.  Bit 20 is the
+   controller's own DTO position, so it flows naturally in last_error. */
+#define SD_ERR_MASK_DATA_TIMEOUT    (1 << 20)
 
 #define SD_COMMAND_COMPLETE     1
 #define SD_TRANSFER_COMPLETE    (1U << 1)
@@ -117,6 +129,17 @@ typedef struct {
 static rpi_emmc_t * const g_rpi_emmc_base = (rpi_emmc_t *) EMMC_BASE;
 static struct emmc_block_dev g_arasan_wifi_dev;
 static bool g_arasan_wifi_ready;
+
+/* Bus-fault holdoff.  When a command dies of a bus-level timeout the
+   silicon is not answering, and every further command would spin its own
+   full timeout against it - the multiplier behind the observed 64 s and
+   274 s single-pass poll stalls (32 firmware chunks in one tick, or a
+   32-segment TCP window, each command paying hundreds of ms; each also
+   paying the ~0.5-0.9 s lazy re-open below).  While the holdoff is armed,
+   commands fail instantly instead: one bounded real probe per window
+   keeps recovery alive, and any success disarms it.  Nonzero = armed. */
+#define SDIO_HOST_FAULT_HOLDOFF_US 100000u
+static uint32_t g_arasan_fault_holdoff_until_us;
 
 static char g_sdio_host_error[96];
 
@@ -546,10 +569,10 @@ static int sdio_host_apply_clock_rate(uint32_t target_rate, uint32_t *actual_rat
 
 static int sdio_host_wait_status_clear(uint32_t mask, uint32_t timeout_us)
 {
-   uint32_t wait_loops = timeout_us;
+   uint32_t deadline_us = RPI_GetSystemTime() + timeout_us;
 
    while ((g_rpi_emmc_base->EMMC_STATUS & mask) != 0u) {
-      if (wait_loops-- == 0u)
+      if ((int32_t)(RPI_GetSystemTime() - deadline_us) >= 0)
          return -1;
       usleep(1);
    }
@@ -557,9 +580,24 @@ static int sdio_host_wait_status_clear(uint32_t mask, uint32_t timeout_us)
    return 0;
 }
 
+/* Budget left before deadline_us, clamped at zero, for handing one
+   command's single overall deadline down to its per-stage waits. */
+static uint32_t sdio_host_remaining_us(uint32_t deadline_us)
+{
+   int32_t remain = (int32_t)(deadline_us - RPI_GetSystemTime());
+   return (remain > 0) ? (uint32_t)remain : 0u;
+}
+
 static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, uint32_t argument, uint32_t timeout)
 {
    uint32_t irpts;
+   /* One deadline for the WHOLE command.  `timeout` used to be applied per
+      wait stage, and a command has up to 4 + blocks_to_transfer of those -
+      so a "100 ms" CMD53 carrying a 112-block NVRAM write could legally
+      spin for 11.5 s, and did, whenever the chip stopped answering.  On
+      healthy silicon every stage completes in microseconds, so a shared
+      budget changes nothing there. */
+   uint32_t deadline_us = RPI_GetSystemTime() + timeout;
 
    dev->last_cmd_success = 0;
    dev->last_error = 0u;
@@ -570,7 +608,7 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
    if (sdio_host_wait_status_clear(0x1u, timeout) != 0) {
       (void) sdio_host_reset_line(SD_RESET_CMD);
       usleep(1000u);
-      if (sdio_host_wait_status_clear(0x1u, timeout) != 0) {
+      if (sdio_host_wait_status_clear(0x1u, sdio_host_remaining_us(deadline_us)) != 0) {
          dev->last_error = SD_ERR_MASK_CMD_TIMEOUT;
          dev->last_interrupt = g_rpi_emmc_base->EMMC_INTERRUPT;
          return;
@@ -579,7 +617,7 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
 
    if ((cmd_reg & SD_CMD_RSPNS_TYPE_MASK) == SD_CMD_RSPNS_TYPE_48B) {
       if ((cmd_reg & SD_CMD_TYPE_MASK) != SD_CMD_TYPE_ABORT) {
-         if (sdio_host_wait_status_clear(0x2u, timeout) != 0) {
+         if (sdio_host_wait_status_clear(0x2u, sdio_host_remaining_us(deadline_us)) != 0) {
             dev->last_error = SD_ERR_MASK_CMD_TIMEOUT;
             dev->last_interrupt = g_rpi_emmc_base->EMMC_INTERRUPT;
             return;
@@ -617,23 +655,21 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
       INTERRUPT bits, also check if STATUS.CMD_INHIBIT clears AND we see
       error bits set (which indicates the command processed). */
    {
-      uint32_t elapsed = 0;
-      while (elapsed < timeout) {
+      while ((int32_t)(RPI_GetSystemTime() - deadline_us) < 0) {
          irpts = g_rpi_emmc_base->EMMC_INTERRUPT;
-         
+
          /* Primary: check for COMMAND_COMPLETE or error bits */
          if (irpts & 0xffff0001u)
             break;
-            
+
          /* Fallback: if we see both STATUS.CMD_INHIBIT clear AND error bits,
             the emulator has likely processed the command (error bits indicate
             response was attempted). */
          uint32_t status = g_rpi_emmc_base->EMMC_STATUS;
          if ((status & 0x1u) == 0u && (irpts & 0xffff0000u) != 0u)
             break;
-            
+
          RPI_WaitMicroSeconds(1);
-         elapsed++;
       }
    }
 
@@ -679,16 +715,10 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
         // uint32_t seen_ready;
          uint32_t wake_or_err_mask = ready_irpt_mask | 0x8000u;
 
-         TIMEOUT_WAIT(g_rpi_emmc_base->EMMC_INTERRUPT & wake_or_err_mask, timeout);
+         TIMEOUT_WAIT(g_rpi_emmc_base->EMMC_INTERRUPT & wake_or_err_mask,
+                      sdio_host_remaining_us(deadline_us));
          irpts = g_rpi_emmc_base->EMMC_INTERRUPT;
 
-         /* Neither a ready bit nor an error: the wait timed out.  The
-            fall-through below then reads the FIFO anyway and gets zeros,
-            and a zero SDPCM header is indistinguishable from "fn2 FIFO
-            empty" - so the WiFi driver concludes there is no frame
-            waiting when there is.  Counted rather than failed here so the
-            count can be compared against the ping tail without changing
-            behaviour. */
 #if SDIO_HOST_DATA_WAIT_DIAG
          if ((irpts & wake_or_err_mask) == 0u)
             g_sdio_host_data_wait_timeouts++;
@@ -696,16 +726,34 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
         // seen_ready = irpts & ready_irpt_mask;
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0000u | ready_irpt_mask;
 
-         /* Emulator workaround: if no interrupt bits appeared at all, the
-            emulator isn't simulating data interrupts - just proceed with the
-            transfer.  Genuine error bits (DCRC/DTO etc.), however, always
-            fail the transfer: draining the FIFO after a data error would
-            deliver garbage to the caller as success. */
+         /* Genuine error bits (DCRC/DTO etc.) always fail the transfer:
+            draining the FIFO after a data error would deliver garbage to
+            the caller as success. */
          if ((irpts & 0xffff0000u) != 0u) {
             dev->last_error = irpts & 0xffff0000u;
             sdio_host_log_registers("data error");
             dev->last_interrupt = irpts;
             return;
+         }
+
+         /* Neither a ready bit nor an error: the wait timed out.  On real
+            hardware that is a wedged transfer, and it used to be the slow
+            path AND a silent one - the fall-through read the FIFO anyway,
+            got zeros, and a zero SDPCM header is indistinguishable from
+            "fn2 FIFO empty", so the command reported success after paying
+            the maximum possible time.  Fail it instead, so the enclosing
+            retry loops abort instead of running to their full count.
+            Emulator test rigs don't simulate data interrupts at all, so
+            only they keep the old proceed-anyway behaviour. */
+         if ((irpts & wake_or_err_mask) == 0u) {
+            const wifi_config_t *cfg = wifi_get_config();
+
+            if (cfg == NULL || !cfg->allow_emulator_fallback) {
+               dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
+               sdio_host_log_registers("data wait timeout");
+               dev->last_interrupt = irpts;
+               return;
+            }
          }
 
          while (cur_byte_no < dev->block_size) {
@@ -726,7 +774,8 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
       if ((g_rpi_emmc_base->EMMC_STATUS & 0x2u) == 0u)
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0002u;
       else {
-         TIMEOUT_WAIT(g_rpi_emmc_base->EMMC_INTERRUPT & 0x8002u, timeout);
+         TIMEOUT_WAIT(g_rpi_emmc_base->EMMC_INTERRUPT & 0x8002u,
+                      sdio_host_remaining_us(deadline_us));
          irpts = g_rpi_emmc_base->EMMC_INTERRUPT;
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffff0002u;
 
@@ -765,14 +814,52 @@ static int sdio_host_submit_arasan_command(uint32_t command,
       result->error = 0u;
    }
 
-   if (!g_arasan_wifi_ready && sdio_host_open_arasan_path() != 0)
+   if (g_arasan_fault_holdoff_until_us != 0u
+       && (int32_t)(RPI_GetSystemTime() - g_arasan_fault_holdoff_until_us) < 0) {
+      /* Fail exactly as a command-phase timeout would: the command was
+         never put on the bus, so the card cannot have consumed anything
+         and sdio_host_last_failure_precommand() must read true. */
+      g_arasan_wifi_dev.last_cmd_success = 0;
+      g_arasan_wifi_dev.last_error = SD_ERR_MASK_CMD_TIMEOUT;
+      g_arasan_wifi_dev.last_interrupt = 0u;
+      if (result != NULL)
+         result->error = SD_ERR_MASK_CMD_TIMEOUT;
       return -1;
+   }
+
+   if (!g_arasan_wifi_ready && sdio_host_open_arasan_path() != 0) {
+      /* The re-open is itself a bus recovery attempt costing ~0.5-0.9 s;
+         arm the holdoff so a dead bus pays it once per window, not once
+         per command.  Stamp the same never-issued error state as above -
+         this path used to return with STALE last_error/last_cmd_success
+         from the previous command. */
+      g_arasan_fault_holdoff_until_us =
+         (RPI_GetSystemTime() + SDIO_HOST_FAULT_HOLDOFF_US) | 1u;
+      g_arasan_wifi_dev.last_cmd_success = 0;
+      g_arasan_wifi_dev.last_error = SD_ERR_MASK_CMD_TIMEOUT;
+      g_arasan_wifi_dev.last_interrupt = 0u;
+      if (result != NULL)
+         result->error = SD_ERR_MASK_CMD_TIMEOUT;
+      return -1;
+   }
 
    g_arasan_wifi_dev.buf = buffer;
    g_arasan_wifi_dev.block_size = block_size != 0u ? block_size : 512u;
    g_arasan_wifi_dev.blocks_to_transfer = blocks_to_transfer != 0u ? blocks_to_transfer : 1u;
    g_arasan_wifi_dev.use_sdma = false;
    sdio_host_issue_command_int(&g_arasan_wifi_dev, command, argument, timeout_us);
+
+   /* Arm the holdoff only on a pure timeout - synthetic (wait expired) or
+      a lone controller CTO/DTO - which means silicon that is not
+      answering.  CRC-class errors and mixed error sets do not compare
+      equal and do not arm: that chip is alive, just noisy. */
+   if (SUCCESS(&g_arasan_wifi_dev)) {
+      g_arasan_fault_holdoff_until_us = 0u;
+   } else if (g_arasan_wifi_dev.last_error == SD_ERR_MASK_CMD_TIMEOUT
+              || g_arasan_wifi_dev.last_error == SD_ERR_MASK_DATA_TIMEOUT) {
+      g_arasan_fault_holdoff_until_us =
+         (RPI_GetSystemTime() + SDIO_HOST_FAULT_HOLDOFF_US) | 1u;
+   }
 
    if (result != NULL) {
       result->success = SUCCESS(&g_arasan_wifi_dev);
@@ -828,6 +915,10 @@ int sdio_host_open_start(sdio_host_t *host)
    memset(host, 0, sizeof(*host));
    sdio_host_set_error(NULL);
    g_arasan_wifi_ready = false;
+   /* Fresh WL_REG_ON power cycle: whatever wedged the bus is being reset,
+      so bring-up's first command deserves a real probe, not a stale
+      instant-fail. */
+   g_arasan_fault_holdoff_until_us = 0u;
 
    /* Start power sequencing immediately so upper-level boot can overlap
       file loading with WL low/high + settle delays. */
