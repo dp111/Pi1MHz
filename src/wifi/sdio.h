@@ -263,6 +263,7 @@ const sdio_probe_result_t *sdio_get_probe_result(void);
 bool sdio_runtime_start(void);
 bool sdio_runtime_tick(void);
 bool sdio_runtime_started(void);
+bool sdio_runtime_ready(void);
 /* Re-issue the association sequence after a lost or never-established link.
    rejoin_start() re-arms it (false if bring-up or another rejoin is running);
    the caller then drives sdio_runtime_tick() while rejoin_busy() is true. */

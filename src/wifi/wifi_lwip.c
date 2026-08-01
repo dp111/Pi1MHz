@@ -804,17 +804,21 @@ static void wifi_lwip_rejoin_service(void)
    uint32_t now_us = RPI_GetSystemTime();
 
    /* A full restart in flight owns the state machine outright: drive it to
-      DONE (started) or ERROR (give up this round; the schedule below retries
-      with its usual backoff). */
+      DONE or ERROR.  The tick itself is the progress test - NOT
+      sdio_runtime_started(), which goes true at WRITE_INTR_MASK, five
+      stages before the join has run.  Gating the tick on started()
+      abandoned the bring-up at PREPARE_JOIN: "full restart complete" with
+      no SSID ever sent, no link possible, and - because rejoin_start()
+      refuses off STAGE_DONE and every escalation trigger read satisfied -
+      no ladder rung left able to fire.  An absorbing zombie, 2 of 2 on
+      hardware. */
    if (s_full_restart_active) {
-      if (!sdio_runtime_started()) {
-         if (sdio_runtime_tick())
-            return;               /* still working through bring-up */
-         if (!sdio_runtime_started()) {
-            s_full_restart_active = false;   /* ERROR: fall through, retry later */
-            wifi_lwip_debug_log("full restart failed; will retry");
-            return;
-         }
+      if (sdio_runtime_tick())
+         return;                  /* still working through bring-up */
+      if (!sdio_runtime_ready()) {
+         s_full_restart_active = false;   /* ERROR: fall through, retry later */
+         wifi_lwip_debug_log("full restart failed; will retry");
+         return;
       }
       s_full_restart_active = false;
       /* Fresh schedule with a grace period: the join and DHCP need time
@@ -880,12 +884,14 @@ static void wifi_lwip_rejoin_service(void)
    if ((int32_t)(now_us - s_rejoin_due_us) < 0)
       return;
 
-   /* "!started" makes a FAILED restart re-eligible: sdio_runtime_start()
+   /* "!ready" makes a FAILED restart re-eligible: sdio_runtime_start()
       zeroes both dead-clocks at entry and rejoin_start() refuses from
       STAGE_ERROR, so without this trigger a bring-up that errors out mid-way
       left NOTHING able to fire again - an absorbing dead state, found in
-      review before it was ever hit in the field. */
-   if ((!sdio_runtime_started()
+      review before it was ever hit in the field.  ready(), not started():
+      a stage that errors AFTER the firmware boot leaves started() true
+      with the machine parked at STAGE_ERROR - the same absorbing shape. */
+   if ((!sdio_runtime_ready()
         || sdio_runtime_tx_dead_us() >= WIFI_LWIP_TX_DEAD_RESTART_US
         || s_rejoins_since_healthy >= 3u)
        && s_full_restarts_since_healthy < 3u) {

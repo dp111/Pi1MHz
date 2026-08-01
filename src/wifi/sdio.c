@@ -5467,10 +5467,15 @@ bool sdio_runtime_start(void)
    /* Both freshness clocks, or a runtime restart inherits a dead past: a
       stale tx_shut re-fires the escalation the instant the restart
       completes, and a stale last_rx makes rx_idle_us() read minutes of
-      silence on a link that has been up for a second. */
+      silence on a link that has been up for a second.  The RX clocks are
+      stamped with now rather than 0: rx_idle_us() reads 0 as "nothing
+      yet, count as fresh", which made a restart that came up deaf look
+      fresh FOREVER - the 45 s silence trigger could never fire and the
+      ladder disarmed on a dead link.  Stamped, silence accrues from the
+      restart itself.  (|1 keeps the stamp from aliasing the sentinel.) */
    g_runtime_tx_shut_since_us = 0u;
-   g_runtime_last_rx_us = 0u;
-   g_runtime_last_any_rx_us = 0u;
+   g_runtime_last_rx_us = RPI_GetSystemTime() | 1u;
+   g_runtime_last_any_rx_us = g_runtime_last_rx_us;
    g_runtime_tx_resync_count = 0u;
    g_runtime_rejoin_count = 0u;
    g_runtime_bus_four_bit = false;
@@ -5802,6 +5807,17 @@ bool sdio_runtime_tick(void)
 bool sdio_runtime_started(void)
 {
    return g_runtime_started;
+}
+
+/* True only once the bring-up state machine has run all the way to
+   STAGE_DONE.  Not the same thing as sdio_runtime_started(): that goes
+   true at WRITE_INTR_MASK - "firmware booted" - five stages before the
+   CLM download, MAC programming and join have run, and it STAYS true if
+   a later stage finalizes to STAGE_ERROR.  Anything deciding whether a
+   restart or boot actually finished must use this, not started(). */
+bool sdio_runtime_ready(void)
+{
+   return g_runtime_stage == SDIO_RUNTIME_STAGE_DONE;
 }
 
 /* Re-arm the join sequence on a runtime that has already finished bring-up.
