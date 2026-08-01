@@ -90,7 +90,7 @@ the three-form event-mask setup, and read-back diagnostics for
 (150 ms after the AMPDU block, 100 ms after each `WLC_UP`, 50 ms after
 events_enable and mcast_list, 10 ms inter-ioctl elsewhere).
 
-## Cmdline Parameters
+## Pi1MHz.cfg Parameters
 
 All entries are optional except `wifi_ssid` (without an SSID the whole
 stack stays down). Legacy names from the original feature request are

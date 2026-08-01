@@ -31,7 +31,7 @@ Pi 3A+ is expected to work but is not formally tested.
 The WiFi interface is optional but, when used, needs the brcmfmac
 firmware blobs for the Pi's specific WiFi chip placed on the SD card
 under `/Pi1MHz/wifi/`.  See [`src/wifi/README.md`](src/wifi/README.md)
-for the per-board firmware filename mapping, cmdline.txt parameters
+for the per-board firmware filename mapping, the Pi1MHz.cfg keys
 (`wifi_ssid=`, `wifi_password=`, `webdav_user=`, etc.) and a full
 description of the built-in webserver / WebDAV mount.
 
@@ -62,7 +62,7 @@ Read speed appears to be about 100K/sec.
 
 The emulation can play sounds through the computers internal speaker. If you are using the pi3B+ you can use the headphone jack. Currently if an ADFS access occurs while playing music the music will be interrupted briefly.
 
-See the cmdline.txt section for various configuration options
+See the Pi1MHz.cfg section for various configuration options
 
 ## Expansion Ram Emulation
 
@@ -84,7 +84,7 @@ If a file called "JIM_Init.bin" exists it will be loaded starting at the beginni
 A simplified access to the Pi's SDCARD is provided. This can be used to access local files and could for instance by used by mmfs2. A 16Mbyte buffer is provided that can be split up into various different ways. Multiple files maybe open at the same time , but they must be unique files. A 24 bit pointer is provided with autoincrement. Using this address space a file system e.g. MMFS may "cache" the entire drive and not need to raise PAGE. The buffer also hold the FAT command that is going to be executed.
 It is suggested the first 4Mbytes be reserved for the currently active Filesystem. 8Mbyte to 14 Mbytes be reserved for the currently active program.
 
-    Base address = &FCD6
+    Base address = &FCA6
 
     Base + 0 = lower 8bits of the 24bit address pointer
     Base + 1 = middle 8bits of the 24bit address pointer
@@ -101,9 +101,9 @@ It is suggested the first 4Mbytes be reserved for the currently active Filesyste
 
             Suggested code
                     LDA # command
-                    STA &FCDA
+                    STA &FCAA
             .complete_check_loop
-                    LDA &FCDA
+                    LDA &FCAA
                     BMI complete_check_loop
                     BNE command_error
 
@@ -294,6 +294,11 @@ Helper functions include
 * 3 SRLOAD ADFS rom
 * 4 SRLOAD MMFS rom
 * 5 SRLOAD MMFS2 rom
+* 6 SRLOAD BeebSCSI helper rom
+* 7 SRLOAD ATS rom
+* 8 SRLOAD AUNFS (BBC B) rom
+* 9 SRLOAD AUNFS (Master 128) rom
+* 10-15 SRLOAD user rom ROM10-ROM15
 
 
 ## Internal status and control
@@ -305,11 +310,20 @@ Addresses currently defined
 
 * &00 : Read only : JIM RAM size in 16Mbyte steps
 
-## cmdline.txt options
+## Pi1MHz.cfg options
+
+Configuration lives in `/Pi1MHz/Pi1MHz.cfg` on the SD card (a commented
+template ships in the firmware). Only two keys are still read from
+cmdline.txt, because they are needed before the SD card is mounted:
 
 * LED override : depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx where xx is the pi GPIO number
+* baud_rate=xxxx : serial debug port baud rate
+
+Everything below goes in Pi1MHz.cfg:
+
 * BeebAudio_Off=1 to turn off Audio out of the Beeb (and, for M5000, enable stereo on the headphone jack of Pi3B+); applies to whichever PWM audio emulator is active (M5000 or BeebSID)
-* M5000_Gain=xxxx : Over rides default gain of 16. Add 1000 to disable auto scaling as well. Auto scaling reduces the gain if the signal clips
+* M5000_Gain=xxxx : Over rides default gain of 3. Add 1000 to disable auto scaling as well. Auto scaling reduces the gain if the signal clips
+* watchdog=xx : hardware watchdog timeout in seconds (1-15); 0 or unset leaves it off after boot
 * Rampage_addr=0xYY : set the base address of the page write ram registers default &FD, -1 to disable
 * Rambyte_addr=0xYY : set the base address of the byte write ram registers default &00, -1 to disable
 * Harddisc_addr=0xYY : set the base address of the harddisc registers default &40, -1 to disable
@@ -318,13 +332,13 @@ Addresses currently defined
 * Framebuffer_addr=0xYY : set the base address of the frame buffer registers default &A0, -1 to disable
 * Discaccess_addr=0xYY : set the base address of the discaccess registers default &A6, -1 to disable
 * Helpers_addr=0xYY : set the base address of the helpers registers default &88, -1 to disable
-* Pi1MHZnOE=0 : Disables external nOE pin on the buffers,  =1 supports multiple devices on the 1MHz bus
+* Pi1MHznOE=0 : Disables external nOE pin on the buffers,  =1 supports multiple devices on the 1MHz bus
 * SCSIID=xx : Set the SCSI ID of the ADFS/VFS emulation. 0 is default to listens to every id
 * SCSIJUKE=xx : sets the default SCSI jukebox. 0 is default.
 * VFSJUKE=xx : sets the default VFS jukebox. 0 is default.
 
 For the optional WiFi / management-webserver / WebDAV interface,
-cmdline.txt also accepts `wifi_ssid=`, `wifi_password=`, `wifi_country=`,
+Pi1MHz.cfg also accepts `wifi_ssid=`, `wifi_password=`, `wifi_country=`,
 `wifi_hostname=`, `wifi_ip=`, `webdav_user=`, `webdav_password=` and
 related keys.  Those are fully documented in
 [`src/wifi/README.md`](src/wifi/README.md) alongside the per-board
