@@ -16,13 +16,28 @@ The emulated adapter appears at the real adapter's addresses
   run by teletext enthusiasts - the same servers used with BeebEm's
   teletext support work with Pi1MHz. The vhs-teletext community is a
   good place to find current ones.
-- Teletext software on the Beeb. The Advanced Teletext System ROM is
-  shipped on the SD card - load it with helper 7
-  (see [Loading ROMs](helpers-and-roms.md)):
+- Teletext software on the Beeb - see the next section.
 
-  ```
-  X%=7 : CALL &FC88
-  ```
+## The ATS ROM
+
+Pi1MHz ships the BBC's own Advanced Teletext System ROM ((C) BBC
+1988), the period software for the Acorn Teletext Adapter, as
+`/Pi1MHz/ATS.rom` on the SD card. Load it into sideways RAM with
+helper 7 (see [Loading ROMs](helpers-and-roms.md)):
+
+```
+X%=7 : CALL &FC88
+```
+
+or `*FX147,136,7` then `*GO FD00` (`*GOIO FD00` with a Tube second
+processor), followed by **CTRL-BREAK** so the OS notices the ROM.
+
+It provides the full ATS command set: `*TELETEXT` starts the page
+viewer (channel, magazine and page selection from the keyboard), and
+commands such as `*PAGE`, `*MAGAZINE`, `*DATE` and `*TELESOFT` /
+`*TRANSFER` fetch pages and download telesoftware from the stream.
+Because the emulated adapter behaves like the real hardware, other
+period teletext software works too - ATS is simply the one included.
 
 ## Configuration
 

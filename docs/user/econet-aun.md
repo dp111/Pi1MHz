@@ -56,8 +56,9 @@ or, equivalently, from the command line:
 *GO FD00
 ```
 
-(`*GOIO FD00` on a Master, and `9` in place of `8` for the Master
-ROM.) The loader scans the sideways slots from 15 downwards and loads
+(use `*GOIO FD00` on a machine with a Tube second processor, and `9`
+in place of `8` for the Master ROM.) The loader scans the sideways
+slots from 15 downwards and loads
 into the first empty writable one; `No SWR` means it found no free
 sideways RAM, `No ROM` means the ROM file is missing from `/Pi1MHz` on
 the Pi's SD card.

@@ -21,9 +21,9 @@ command line:
 *GO FD00
 ```
 
-(on a Master, `*GOIO FD00`). `*FX147,136,n` pokes the helper number
-into `&FC88` and `*GO FD00` runs the helper code that Pi1MHz supplies
-through its JIM window.
+(on a machine with a Tube second processor, `*GOIO FD00`).
+`*FX147,136,n` pokes the helper number into `&FC88` and `*GO FD00`
+runs the helper code that Pi1MHz supplies through its JIM window.
 
 The helpers need the file `/Pi1MHz/6502code.bin` on the SD card - it is
 part of the standard firmware set.
@@ -48,26 +48,10 @@ After loading a ROM press **CTRL-BREAK** so the OS notices it.
 
 ## MMFS and MMFS2
 
-MMFS is the popular DFS-compatible filing system that serves ordinary
-DFS disc images (`.ssd`/`.dsd`) from an SD card, so classic
-disc-based software runs unmodified. It is a separate project
-(<https://github.com/hoglet67/MMFS>); Pi1MHz ships its Pi1MHz-specific
-sideways-RAM builds and loads them with helpers 4 and 5:
-
-- **`SWMMFS.rom`** (helper 4) - MMFS built for Pi1MHz: instead of a
-  separate SD card wired to the user port, it reads its `BEEB.MMB`
-  image store from the **Pi's** SD card through the Pi1MHz FAT
-  service. Put a `BEEB.MMB` file (created with the standard MMB tools)
-  in the SD card root, load the ROM, press CTRL-BREAK, then use the
-  usual MMFS commands (`*CARD`, `*DCAT`, `*DIN <n>`, `*CAT`).
-- **`SWMMFS2.rom`** (helper 5) - the same idea using MMFS2, the newer
-  generation of MMFS. See the MMFS project's documentation for what it
-  adds over the original.
-
-Since the disc images live on the Pi's SD card, you can drop new
-`.ssd` images into the MMB (or replace the whole `BEEB.MMB`) over
-[WiFi/WebDAV](web-interface.md) or [USB](usb-file-access.md) without
-removing the card.
+Helpers 4 and 5 load the Pi1MHz builds of MMFS - the DFS-compatible
+filing system that serves classic DFS disc images from the Pi's SD
+card. See [MMFS and MMFS2](mmfs.md) for the disc-image files, the
+`BEEB.MMB` store and how to use them.
 
 ## Your own ROMs
 

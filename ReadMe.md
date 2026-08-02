@@ -50,7 +50,7 @@ To check the build information and get help type one of the following:
 
 X%=0 :CALL &FC88
 *fx147,136,0 : *GO &FD00
-*fx147,136,0 : *GOIO &FD00
+*fx147,136,0 : *GOIO &FD00   (on a machine with a Tube second processor)
 
 ## ADFS Harddisc Emulation
 
