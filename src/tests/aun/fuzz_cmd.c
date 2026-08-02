@@ -22,6 +22,7 @@ bool services_register(uint8_t first, uint8_t last, service_command_fn handler)
 { (void)first; (void)last; (void)handler; return true; }
 void Pi1MHz_nIRQ_ASSERT(uint8_t s){ (void)s; }
 void Pi1MHz_nIRQ_CLEAR(uint8_t s){ (void)s; }
+void services_irq(uint8_t s, uint8_t st){ (void)s; (void)st; }
 bool wifi_debug_enabled(void){ return false; }
 void wifi_debug_printf(const char *format, ...){ (void)format; }
 void Pi1MHz_MemoryWrite(uint32_t a, uint8_t d){ pi.Memory[a & 0x1ff] = d; }

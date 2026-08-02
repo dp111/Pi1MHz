@@ -50,6 +50,11 @@ bool services_register(uint8_t first, uint8_t last, service_command_fn handler)
 static uint32_t nirq_mask;
 void Pi1MHz_nIRQ_ASSERT(uint8_t src) { nirq_mask |=  (1u << src); irq_line = nirq_mask != 0; }
 void Pi1MHz_nIRQ_CLEAR(uint8_t src)  { nirq_mask &= ~(1u << src); irq_line = nirq_mask != 0; }
+/* Mirror the production services_irq(): the port owns the IRQ status
+ * register (base+5 = 0xAB in the default config) and the nIRQ line. */
+void services_irq(uint8_t source, uint8_t status)
+{ Pi1MHz_MemoryWrite(0xabu, status);
+  if (status != 0u) Pi1MHz_nIRQ_ASSERT(source); else Pi1MHz_nIRQ_CLEAR(source); }
 bool wifi_debug_enabled(void) { return false; }
 void wifi_debug_printf(const char *format, ...) { (void)format; }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)

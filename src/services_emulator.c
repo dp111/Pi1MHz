@@ -51,6 +51,19 @@ bool services_register(uint8_t first, uint8_t last, service_command_fn handler)
    return true;
 }
 
+void services_irq(uint8_t source, uint8_t status)
+{
+   /* The IRQ status register is base+5, so it moves with a relocated
+      services port rather than being hard-coded (it used to be 0xAB in AUN,
+      i.e. the default 0xA6 base + 5).  The framework also owns the shared
+      nIRQ line so services do not each reach for it directly. */
+   Pi1MHz_MemoryWrite((uint32_t)(ram_address + 5u), status);
+   if (status != 0u)
+      Pi1MHz_nIRQ_ASSERT(source);
+   else
+      Pi1MHz_nIRQ_CLEAR(source);
+}
+
 static void services_emulator_update_address(void)
 {
    // Write the low 16 bits of the address back for the Beeb to read, and

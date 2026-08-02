@@ -92,7 +92,6 @@ static volatile uint32_t aun_pending_addr;
 #define AUN_DEFAULT_STATION 32u
 #define AUN_DEFAULT_NET     0u
 
-#define AUN_IRQ_STATUS_REG 0xABu
 static bool    aun_irq_enabled;
 static uint8_t aun_irq_state;
 static uint8_t IRQ_NUM;
@@ -157,12 +156,11 @@ static void aun_irq_update(void)
       st |= 0x40u;              /* immediate operation awaiting the host */
    if (st != aun_irq_state) {
       aun_irq_state = st;
-      Pi1MHz_MemoryWrite(AUN_IRQ_STATUS_REG, st);
-      if (st != 0)
-         Pi1MHz_nIRQ_ASSERT(IRQ_NUM);
-      else
-         Pi1MHz_nIRQ_CLEAR(IRQ_NUM);
-
+      /* Publish through the services port: it owns the IRQ status register
+       * (base+5, = &FCAB in the default config - AUN's grandfathered ABI
+       * byte layout: bit7 data ready, bit6 immediate pending, bits0-5 frame
+       * count) and drives the shared nIRQ line for our source. */
+      services_irq(IRQ_NUM, st);
    }
 }
 

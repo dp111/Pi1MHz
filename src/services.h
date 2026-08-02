@@ -37,6 +37,19 @@ typedef void (*service_command_fn)(uint32_t command_pointer, uint32_t addr,
    ignored, exactly as unknown command numbers always were. */
 bool services_register(uint8_t first, uint8_t last, service_command_fn handler);
 
+/* Services-port IRQ support.  The port owns its IRQ status register at
+   base+5 (so it tracks a relocated Services_addr instead of a hard-coded
+   address) and the shared nIRQ line.  A service publishes a status byte and
+   raises/clears its nIRQ contribution in one call, keyed by the nIRQ source
+   id it was handed at init (the emulator-table `instance`).  status 0
+   publishes 0 and clears the source.
+
+   The single status byte currently carries AUN's AUNFS-ROM layout; a second
+   service that needs nIRQ but must not disturb that byte should read its own
+   state through its command (the FujiNet PROCEED-then-STATUS model) and this
+   API can grow a line-only variant when that lands. */
+void services_irq(uint8_t source, uint8_t status);
+
 void services_emulator_init(uint8_t instance, uint8_t address);
 
 /* The FAT/SD service (commands 0-20 today; the range reserves up to 29). */
