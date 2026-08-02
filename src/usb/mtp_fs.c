@@ -232,10 +232,15 @@ static int32_t fs_dispatch_op(tud_mtp_cb_data_t* cb_data) {
     resp_code = MTP_RESP_OPERATION_NOT_SUPPORTED;
   } else {
     resp_code = handler(cb_data);
-    if (resp_code > MTP_RESP_UNDEFINED) {
-      io_container->header->code = (uint16_t) resp_code;
-      tud_mtp_response_send(io_container);
-    }
+  }
+
+  /* Send the response OUTSIDE the else, so an unsupported operation still
+     gets an OPERATION_NOT_SUPPORTED reply instead of leaving the host
+     waiting for a response that never comes (it would hang, then reset the
+     interface).  Matches upstream TinyUSB example fix 9a03a16c8. */
+  if (resp_code > MTP_RESP_UNDEFINED) {
+    io_container->header->code = (uint16_t) resp_code;
+    tud_mtp_response_send(io_container);
   }
 
   return resp_code;
