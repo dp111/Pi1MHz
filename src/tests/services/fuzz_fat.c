@@ -25,6 +25,8 @@ static callback_func_ptr read_cb[256];
 void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_func_ptr fn)
 { if (access == WRITE_FRED) write_cb[addr & 0xff] = fn; else read_cb[addr & 0xff] = fn; }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)  { pi.Memory[addr & 0x1ff] = data; }
+void Pi1MHz_nIRQ_ASSERT(uint8_t src) { (void)src; }
+void Pi1MHz_nIRQ_CLEAR(uint8_t src) { (void)src; }
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
 { pi.Memory[addr & 0x1ff] = (uint8_t)data; pi.Memory[(addr + 1u) & 0x1ff] = (uint8_t)(data >> 8); }
 

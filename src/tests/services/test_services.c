@@ -31,6 +31,8 @@ void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_fun
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)  { pi.Memory[addr & 0x1ff] = data; }
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
 { pi.Memory[addr & 0x1ff] = (uint8_t)data; pi.Memory[(addr + 1u) & 0x1ff] = (uint8_t)(data >> 8); }
+void Pi1MHz_nIRQ_ASSERT(uint8_t src) { (void)src; }
+void Pi1MHz_nIRQ_CLEAR(uint8_t src) { (void)src; }
 
 /* ---- FatFs stubs: record calls, results settable per test ---- */
 static FRESULT open_result = FR_OK;
