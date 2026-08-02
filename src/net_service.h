@@ -45,11 +45,18 @@
                      [3..6] remote IPv4, [7..8] remote port,
                      [9..11] bytes waiting in the RX ring
 
-  Every result is a single byte written back to the command register:
-  0 = OK, bit 7 set = still in progress (poll again), the NET_ERR_* range
-  (0x20..0x3F) for errors - kept clear of the FatFs FR_* codes (0..20) and
-  the AUN codes (0..7) so a mixed-service Beeb error handler can tell the
-  families apart.
+  Every result is a single byte read back from the command register:
+    0x00        OK
+    0x80        NET_BUSY - the command is latched but the poll has not run
+                yet; spin (the FAT-service "BMI wait" idiom), clears in one
+                poll pass
+    0x01        NET_PENDING - async op still in progress; RE-ISSUE the command
+                to poll again (bit-7-clear so the spin exits first)
+    0x20        NET_EOF
+    0x21..0x3F  NET_ERR_* errors
+  The error range is kept clear of the FatFs FR_* codes (0..20) and the AUN
+  codes (0..7) so a mixed-service Beeb error handler can tell the families
+  apart.
 */
 
 #include <stdint.h>
@@ -88,7 +95,15 @@ void net_service_init(uint8_t instance, uint8_t address);
 #define NET_ERR_NOMEM        0x26u /* out of pcbs / heap                     */
 #define NET_ERR_UNSUPPORTED  0x27u /* command not implemented (yet)          */
 #define NET_ERR_DISABLED     0x28u /* net_enable=0 in Pi1MHz.cfg             */
-#define NET_PENDING          0x80u /* bit 7: in progress, re-issue to poll   */
+/* NET_PENDING is bit-7-CLEAR on purpose.  Bit 7 set means "the command was
+   latched in FIQ but the main-loop poll has not produced a result yet" - the
+   Beeb spins on it (the FAT-service "BMI wait" idiom) and it clears within one
+   poll pass.  An async operation (connect/dns/close) that is still in progress
+   must therefore report a bit-7-CLEAR code so the spin exits; the Beeb then
+   RE-ISSUES the command to poll again.  A busy-spin that never cleared would
+   deadlock, since the Pi only re-evaluates on a fresh dispatch. */
+#define NET_PENDING          0x01u /* async in progress: re-issue the command */
+#define NET_BUSY             0x80u /* transient: poll has not run yet (spin)  */
 
 /* status [1] - handle state. */
 typedef enum {

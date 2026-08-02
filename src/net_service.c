@@ -650,13 +650,14 @@ static void net_update_irq(void)
 static void net_service_command(uint32_t command_pointer, uint32_t addr,
                                 uint8_t data)
 {
-   /* FIQ context: latch only.  Publish NET_PENDING so a Beeb that reads the
-      result register before the poll runs sees "busy", not a stale value. */
+   /* FIQ context: latch only.  Publish NET_BUSY (bit 7) so a Beeb that reads
+      the result register before the poll runs spins rather than seeing a
+      stale value; the poll overwrites it with the real result. */
    net_pending_cp   = command_pointer;
    net_pending_addr = addr;
    net_pending_data = data;
    net_pending      = true;
-   Pi1MHz_MemoryWrite(addr, NET_PENDING);
+   Pi1MHz_MemoryWrite(addr, NET_BUSY);
 }
 
 static void net_service_poll(void)
