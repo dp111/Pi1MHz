@@ -58,7 +58,7 @@ plus `_addr`:
 | `Harddisc_addr` | `0x40` | SCSI hard disc at `&FC40-&FC43` |
 | `M5000_addr` | (none) | Music 5000/3000 (uses JIM paging, no FRED base) |
 | `BeebSID_addr` | `0x20`, **off by default** | SID chip at `&FC20` - set an address to enable |
-| `Discaccess_addr` | `0xA6` | SD card / FAT access at `&FCA6-&FCAA` |
+| `Services_addr` | `0xA6` | The services port at `&FCA6-&FCAA`: SD card / FAT access plus the Econet AUN commands |
 | `Videoplayer_addr` | (none) | Video background plane |
 | `Framebuffer_addr` | `0xA0` | HDMI framebuffer / VDU port at `&FCA0` |
 | `Mouseredirect_addr` | `0xAC` | Mouse pointer registers at `&FCAC-&FCAF` |

@@ -79,7 +79,14 @@ The first page of JIM ram is preloaded with build information. This can be acces
 
 If a file called "JIM_Init.bin" exists it will be loaded starting at the beginning of JIM on wards ( NB over writes build info). This enables future very large programs which, with clever programming could all run in JIM RAM.
 
-## SDCARD / Fat Access
+## Services port: SDCARD / FAT access and more
+
+The registers below form a general command port: the first byte of a
+command block selects a service by number. Commands 0-29 are the SDCARD
+/ FAT service documented here; commands 30-44 are the Econet AUN
+service (used by the AUNFS ROMs); the allocation map lives in
+`src/services.h`. In Pi1MHz.cfg the port is configured with
+`Services_addr=`.
 
 A simplified access to the Pi's SDCARD is provided. This can be used to access local files and could for instance by used by mmfs2. A 16Mbyte buffer is provided that can be split up into various different ways. Multiple files maybe open at the same time , but they must be unique files. A 24 bit pointer is provided with autoincrement. Using this address space a file system e.g. MMFS may "cache" the entire drive and not need to raise PAGE. The buffer also hold the FAT command that is going to be executed.
 It is suggested the first 4Mbytes be reserved for the currently active Filesystem. 8Mbyte to 14 Mbytes be reserved for the currently active program.
@@ -330,7 +337,7 @@ Everything below goes in Pi1MHz.cfg:
 * M5000_addr=-1 : disables the M5000 emulator
 * BeebSID_addr=0x20 : enables BeebSID (SID at `&FC20`, default off). Enabling BeebSID disables M5000 (shared `AUDIO_PIN` / PWM audio path). Use `BeebSID_addr=-1` to leave it off explicitly. Use `BeebAudio_Off=1` (above) to mute the Beeb's own audio while BeebSID plays.
 * Framebuffer_addr=0xYY : set the base address of the frame buffer registers default &A0, -1 to disable
-* Discaccess_addr=0xYY : set the base address of the discaccess registers default &A6, -1 to disable
+* Services_addr=0xYY : set the base address of the services port (SD/FAT + AUN commands) default &A6, -1 to disable
 * Helpers_addr=0xYY : set the base address of the helpers registers default &88, -1 to disable
 * Pi1MHznOE=0 : Disables external nOE pin on the buffers,  =1 supports multiple devices on the 1MHz bus
 * SCSIID=xx : Set the SCSI ID of the ADFS/VFS emulation. 0 is default to listens to every id

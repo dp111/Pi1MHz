@@ -19,6 +19,10 @@ stubs() {   # populate $1 with the lockstep stub headers
 mkdir -p "$B/AUN"
 cp "$AUN"/aun*.c "$AUN"/aun*.h "$B/AUN/"
 cp "$HERE"/test_aun.c "$HERE"/test_aun_config.c "$HERE"/test_irq_mask.c "$HERE"/fuzz_engine.c "$HERE"/fuzz_cmd.c "$B/"
+# services.h is real (the command-range map), not a stub: aun_emulator.c
+# includes it as ../services.h for the range registration.
+cp "$AUN"/../services.h "$B/"
+cp "$AUN"/../services.h "$B/AUN/"
 stubs "$B"; stubs "$B/AUN"
 I="-I$B -I$B/AUN"
 

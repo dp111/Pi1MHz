@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "Pi1MHz.h"
+#include "services.h"
 #include "lwip/udp.h"
 #include "wifi/wifi_lwip.h"
 #include "aun_emulator.h"
@@ -17,6 +18,8 @@ static func_ptr poll_fn;
 static struct udp_pcb the_pcb; static int pcb_used;
 const wifi_lwip_context_t *wifi_lwip_get_context(void){ return &wctx; }
 void Pi1MHz_Register_Poll(func_ptr f){ poll_fn = f; }
+bool services_register(uint8_t first, uint8_t last, service_command_fn handler)
+{ (void)first; (void)last; (void)handler; return true; }
 void Pi1MHz_nIRQ_ASSERT(uint8_t s){ (void)s; }
 void Pi1MHz_nIRQ_CLEAR(uint8_t s){ (void)s; }
 bool wifi_debug_enabled(void){ return false; }
@@ -62,7 +65,7 @@ int main(void){
          if (r%5==0) pi.JIM_ram[cp+(uint32_t)k] = 0xff;   /* big offsets */
          if (r%7==0) pi.JIM_ram[cp+(uint32_t)k] = 0;
       }
-      aun_emulator_command(cp, 0xaa);
+      aun_emulator_command(cp, 0xaa, 0);
       poll_fn();
       /* feed the engine some inbound traffic too */
       if (rnd()%4==0 && the_pcb.cb) {

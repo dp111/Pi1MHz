@@ -248,9 +248,11 @@ set(FrameBuffer_emulator_files
    rpi/interrupts.c
 )
 
-# Discaccess emulator (AUN commands 30+ share its command interface)
-set(discaccess_emulator_files
-   discaccess_emulator.c
+# Services port (&FCA6 command mailbox): FAT/SD service plus the AUN
+# service, which claims commands 30-44 on it (allocation map: services.h)
+set(services_emulator_files
+   services_emulator.c
+   fat_service.c
    AUN/aun.c
    AUN/aun.h
    AUN/aun_config.c
@@ -375,7 +377,7 @@ set( Pi1MHz_sources
     ${M5000_emulator_files}
     ${BeebSID_emulator_files}
     ${FrameBuffer_emulator_files}
-    ${discaccess_emulator_files}
+    ${services_emulator_files}
     ${teletext_emulator_files}
     ${mouse_redirect_files}
     ${wifi_files}

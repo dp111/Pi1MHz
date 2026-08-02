@@ -117,7 +117,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "BeebSID/BeebSid.h"
 #include "rpi/audio.h"
 #include "framebuffer/framebuffer.h"
-#include "discaccess_emulator.h"
+#include "services.h"
 #include "helpers.h"
 #include "mouseredirect.h"
 #include "videoplayer.h"
@@ -142,7 +142,9 @@ static emulator_list emulator[] = {
    {"M5000",M5000_emulator_init, 0, 1},
    /* Default off — enable with BeebSID_addr=0x20 in Pi1MHz.cfg (disables M5000). */
    {"BeebSID", BeebSID_emulator_init, 0x20, 0},
-   {"Discaccess",discaccess_emulator_init, 0xA6, 1 },
+   /* The services port: FAT/SD commands plus the ranges other services
+      (AUN) claim via services_register(). */
+   {"Services",services_emulator_init, 0xA6, 1 },
    {"Videoplayer",videoplayer_init, 0x00, 1},  // start before frame buffer , but after filesystem
    {"Framebuffer",fb_emulator_init, 0xA0, 1},
    {"Mouseredirect",mouse_redirect_init, 0xAC, 1 },

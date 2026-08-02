@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/time.h>
 #include "Pi1MHz.h"
+#include "services.h"
 #include "lwip/udp.h"
 #include "wifi/wifi_lwip.h"
 #include "aun_emulator.h"
@@ -39,6 +40,10 @@ static int have_result;
 
 const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &wctx; }
 void Pi1MHz_Register_Poll(func_ptr f) { poll_fn = f; }
+/* services-port registration is a no-op here: the harness invokes
+ * aun_emulator_command() directly rather than through the dispatcher. */
+bool services_register(uint8_t first, uint8_t last, service_command_fn handler)
+{ (void)first; (void)last; (void)handler; return true; }
 /* Mirror the production shared-mask model (uint32_t, indexed by the
  * emulator-table slot) so the lockstep harness exercises the real width:
  * AUN runs at slot 11, which a uint8_t mask would have truncated to 0. */
@@ -118,7 +123,7 @@ int main(void)
       case 'C': { unsigned pg; sscanf(line+2, "%x", &pg);
                   uint32_t cp = DISC_RAM_BASE | 0xFF0000u | (uint32_t)(pg << 8);
                   have_result = 0;
-                  aun_emulator_command(cp, 0xaa);
+                  aun_emulator_command(cp, 0xaa, 0);
                   poll_fn();                       /* main-loop turn executes it */
                   printf("K %02x\n", have_result ? last_result : 0xee); break; }
       case 'U': { unsigned ip, port; static char hex[18000]; static uint8_t buf[8500]; uint32_t n = 0;
