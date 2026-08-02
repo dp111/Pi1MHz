@@ -116,7 +116,9 @@ see the hard disc pause during the reboot.)
 ## Getting more information out of it
 
 The release firmware prints nothing at all - that is normal. For real
-diagnosis there are debug builds on the card:
+diagnosis you need a debug build of the firmware (built from source
+with `DEBUG=1`, or included with some releases), placed on the card as
+`debug/kernel.img` (and/or `debug/kernel7.img`):
 
 1. Edit `config.txt` in the SD root and un-comment the
    `kernel=debug/kernel.img` line (for a Pi Zero; the equivalent line

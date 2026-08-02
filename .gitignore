@@ -36,3 +36,10 @@ src/.vscode/tasks.json
 /src/*Code_Review*.md
 /src/*code_review*.md
 /src/*compliance*.md
+
+# Only firmware/kernel.img and firmware/kernel7.img ship in the repo.
+# Debug builds and experimental image variants stay local.
+/firmware/debug/kernel.img
+/firmware/debug/kernel7.img
+/firmware/kernel.*.img
+/firmware/kernel7.*.img
