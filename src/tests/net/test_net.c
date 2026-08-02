@@ -15,6 +15,7 @@
 #include "config.h"
 #include "wifi/wifi_lwip.h"
 #include "lwip/altcp.h"
+#include "lwip/udp.h"
 #include "lwip/dns.h"
 #include "lwip/pbuf.h"
 #include "lwip/ip_addr.h"
@@ -90,6 +91,38 @@ void altcp_recved(struct altcp_pcb *c, u16_t len) { c->t_recved += len; }
 err_t altcp_close(struct altcp_pcb *c) { c->t_closed = 1; return ERR_OK; }
 void altcp_abort(struct altcp_pcb *c) { c->t_closed = 1; }
 
+/* udp stub machinery */
+static struct udp_pcb *g_upcbs[64];
+static int g_nupcbs;
+static struct udp_pcb *g_last_upcb;
+static uint8_t  g_udp_tx[2048];
+static uint16_t g_udp_tx_len;
+static u32_t    g_udp_tx_ip;
+static u16_t    g_udp_tx_port;
+
+struct udp_pcb *udp_new(void)
+{
+   struct udp_pcb *p = calloc(1, sizeof *p);
+   g_upcbs[g_nupcbs++] = p; g_last_upcb = p; return p;
+}
+err_t udp_bind(struct udp_pcb *pcb, const ip_addr_t *ip, u16_t port)
+{ (void)ip; pcb->bound_port = port; return ERR_OK; }
+void udp_recv(struct udp_pcb *pcb, udp_recv_fn f, void *arg)
+{ pcb->recv = f; pcb->arg = arg; }
+err_t udp_sendto(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst,
+                 u16_t port)
+{
+   (void)pcb;
+   g_udp_tx_len = 0;
+   for (struct pbuf *q = p; q; q = q->next) {
+      if (g_udp_tx_len + q->len <= sizeof g_udp_tx)
+      { memcpy(g_udp_tx + g_udp_tx_len, q->payload, q->len); g_udp_tx_len += q->len; }
+   }
+   g_udp_tx_ip = dst ? dst->addr : 0; g_udp_tx_port = port;
+   return ERR_OK;                 /* does NOT free p (caller frees) */
+}
+void udp_remove(struct udp_pcb *pcb) { pcb->removed = 1; }
+
 /* dns stub */
 static int       g_dns_sync;
 static ip_addr_t g_dns_result;
@@ -120,6 +153,10 @@ u8_t pbuf_free(struct pbuf *p)
    while (p) { struct pbuf *n = p->next; free(p->payload); free(p); g_pbuf_live--; p = n; }
    return 1;
 }
+struct pbuf *pbuf_alloc(pbuf_layer l, u16_t len, pbuf_type t)
+{ (void)l; (void)t; return make_pbuf(NULL, len); }
+err_t pbuf_take(struct pbuf *b, const void *data, u16_t len)
+{ memcpy(b->payload, data, len); return ERR_OK; }
 
 /* ---- test framework ------------------------------------------------------ */
 static int checks, fails;
@@ -183,8 +220,8 @@ int main(void)
    jwr8(CP(0) + 1u, NET_TYPE_TCP);
    CHECK(issue(NET_CMD_OPEN, 0) == NET_ERR_INUSE, "re-open same handle -> INUSE");
    jwr8(CP(1) + 1u, NET_TYPE_UDP);
-   CHECK(issue(NET_CMD_OPEN, 1) == NET_ERR_UNSUPPORTED, "open UDP -> UNSUPPORTED (stage 1)");
-   CHECK(issue(NET_CMD_UDP_SENDTO, 1) == NET_ERR_UNSUPPORTED, "udp_sendto -> UNSUPPORTED");
+   CHECK(issue(NET_CMD_OPEN, 1) == NET_OK, "open UDP -> OK");
+   CHECK(issue(NET_CMD_LISTEN, 1) == NET_ERR_UNSUPPORTED, "listen -> UNSUPPORTED (later stage)");
 
    printf("== disabled gate ==\n");
    world_reset();
@@ -347,8 +384,62 @@ int main(void)
       CHECK(jrd8(CP(0)+1) == NET_ST_FREE, "handle FREE after reset");
    }
 
+   printf("== UDP send ==\n");
+   world_reset();
+   jwr8(CP(2)+1, NET_TYPE_UDP);
+   CHECK(issue(NET_CMD_OPEN, 2) == NET_OK, "open UDP -> OK");
+   CHECK(g_last_upcb != NULL && g_last_upcb->recv != NULL, "udp pcb created + recv registered");
+   {
+      static const uint8_t dg[] = "ntp-request";
+      uint16_t len = (uint16_t)(sizeof dg - 1u);
+      memcpy(&Pi1MHz->JIM_ram[0x8000], dg, len);
+      jwr8(CP(2)+1,192); jwr8(CP(2)+2,168); jwr8(CP(2)+3,0); jwr8(CP(2)+4,1);
+      jwr8(CP(2)+5,123); jwr8(CP(2)+6,0);        /* :123 */
+      jwr24(CP(2)+7, len); jwr32(CP(2)+10, 0x8000);
+      CHECK(issue(NET_CMD_UDP_SENDTO, 2) == NET_OK, "udp_sendto -> OK");
+      CHECK(g_udp_tx_len == len && memcmp(g_udp_tx, dg, len) == 0, "datagram payload sent");
+      CHECK(g_udp_tx_port == 123, "datagram sent to port 123");
+      CHECK(g_udp_tx_ip == (192u | (168u<<8) | (0u<<16) | (1u<<24)), "datagram sent to 192.168.0.1");
+   }
+
+   printf("== UDP recvfrom ==\n");
+   world_reset();
+   jwr8(CP(2)+1, NET_TYPE_UDP); issue(NET_CMD_OPEN, 2);
+   jwr8(CP(2)+1, 88); jwr8(CP(2)+2, 0); issue(NET_CMD_BIND, 2);   /* bind :88 */
+   {
+      static const uint8_t reply[] = "PONG";
+      struct pbuf *p = make_pbuf(reply, 4);
+      ip_addr_t peer; IP_ADDR4(&peer, 10, 0, 0, 5);
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, p, &peer, 4000);
+      jwr24(CP(2)+7, 64); jwr32(CP(2)+10, 0x9000);
+      CHECK(issue(NET_CMD_UDP_RECVFROM, 2) == NET_OK, "udp_recvfrom -> OK");
+      CHECK(jrd8(CP(2)+1)==10 && jrd8(CP(2)+4)==5, "peer IP 10.0.0.5 reported");
+      CHECK((jrd8(CP(2)+5) | (jrd8(CP(2)+6)<<8)) == 4000, "peer port 4000 reported");
+      CHECK(jrd24(CP(2)+7) == 4, "datagram length 4 reported");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x9000], reply, 4) == 0, "datagram payload copied to JIM");
+      jwr24(CP(2)+7, 64); jwr32(CP(2)+10, 0x9000);
+      issue(NET_CMD_UDP_RECVFROM, 2);
+      CHECK(jrd24(CP(2)+7) == 0, "second recvfrom -> length 0 (empty)");
+   }
+
+   printf("== nIRQ on RX data ==\n");
+   world_reset();
+   connect_handle(0);
+   CHECK(g_nirq_asserted == 0, "nIRQ clear with no data");
+   {
+      static const uint8_t data[] = "async-data";
+      struct pbuf *p = make_pbuf(data, 10);
+      g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p, ERR_OK);
+      g_poll();
+      CHECK(g_nirq_asserted == 1, "nIRQ asserted once data is buffered");
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      issue(NET_CMD_RECV, 0);          /* drain (poll recomputes nIRQ) */
+      CHECK(g_nirq_asserted == 0, "nIRQ cleared after the Beeb drains");
+   }
+
    /* free the last test's pcbs so LSan is clean */
    for (int i = 0; i < g_npcbs; i++) free(g_pcbs[i]);
+   for (int i = 0; i < g_nupcbs; i++) free(g_upcbs[i]);
    CHECK(g_pbuf_live == 0, "no pbuf leaked across the suite");
 
    printf("\n%d checks, %d failures\n", checks, fails);

@@ -10,4 +10,5 @@ typedef struct { u32_t addr; } ip_addr_t;
                | ((u32_t)(c) << 16) | ((u32_t)(d) << 24))
 static inline const ip_addr_t *ip_2_ip4(const ip_addr_t *ip) { return ip; }
 static inline u32_t ip4_addr_get_u32(const ip_addr_t *ip) { return ip->addr; }
+#define IP_ANY_TYPE ((const ip_addr_t *)0)
 #endif

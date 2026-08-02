@@ -34,6 +34,12 @@
                 out: [1..3] bytes actually read (0 = none yet; result NET_EOF
                      once the peer closed and the ring has drained)
     recv_avail(52) out: [1..3] bytes waiting in the RX ring
+    bind  (48)  in : [1..2] local UDP port (0 = ephemeral)
+    udp_sendto(55) in : [1..4] IPv4, [5..6] port, [7..9] length,
+                        [10..13] JIM source offset;  out: [7..9] length sent
+    udp_recvfrom(56) in : [7..9] max length, [10..13] JIM dest offset
+                     out: [1..4] peer IPv4, [5..6] peer port, [7..9] length
+                          (0 = nothing waiting)
     close (53)  -  graceful close (NET_PENDING until FIN/timeout)
     status(54)  out: [1] state (net_state_t), [2] flags (NET_FLAG_*),
                      [3..6] remote IPv4, [7..8] remote port,

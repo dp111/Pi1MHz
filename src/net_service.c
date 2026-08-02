@@ -26,6 +26,7 @@
 #include "wifi/wifi_lwip.h"        /* wifi_lwip_get_context, wifi_lwip_rx_kick */
 #include "lwip/altcp.h"
 #include "lwip/tcp.h"              /* struct tcp_pcb fields (rcv_wnd clamp)  */
+#include "lwip/udp.h"
 #include "lwip/dns.h"
 #include "lwip/pbuf.h"
 #include "lwip/ip_addr.h"
@@ -43,11 +44,14 @@ typedef struct {
    bool              dns_done;      /* a resolve completed, result waiting  */
    bool              dns_ok;        /* that resolve succeeded               */
    struct altcp_pcb *tpcb;          /* TCP pcb, NULL once freed by lwIP     */
+   struct udp_pcb   *upcb;          /* UDP pcb                              */
    ip_addr_t         remote_ip;
    uint16_t          remote_port;
    ip_addr_t         dns_ip;        /* dns_gethostbyname target             */
-   /* RX ring: single-context (recv_cb and the recv command both run on the
-      main loop), so no locking.  count distinguishes full from empty. */
+   /* RX ring: single-context (the lwIP recv callbacks and the recv commands
+      all run on the main loop), so no locking.  count distinguishes full
+      from empty.  For TCP it is a byte stream; for UDP it holds datagram
+      records: [4 ip][2 port][2 len][len payload]. */
    uint16_t          rx_head;
    uint16_t          rx_tail;
    uint16_t          rx_count;
@@ -142,6 +146,26 @@ static uint32_t ring_get(net_handle_t *h, uint32_t jim_dst, uint32_t max)
    h->rx_count = (uint16_t)(h->rx_count - n);
    return n;
 }
+/* Append raw bytes to the ring (UDP record framing).  Caller ensures fit. */
+static void ring_put_mem(net_handle_t *h, const uint8_t *src, uint16_t len)
+{
+   uint8_t *ring = net_rx_ring[h - net_h];
+   for (uint16_t i = 0; i < len; i++) {
+      ring[h->rx_head] = src[i];
+      h->rx_head = (uint16_t)((h->rx_head + 1u) & (NET_RX_RING_SIZE - 1u));
+   }
+   h->rx_count = (uint16_t)(h->rx_count + len);
+}
+/* Read len bytes from the ring into a local buffer (UDP record header). */
+static void ring_get_mem(net_handle_t *h, uint8_t *dst, uint16_t len)
+{
+   const uint8_t *ring = net_rx_ring[h - net_h];
+   for (uint16_t i = 0; i < len; i++) {
+      dst[i] = ring[h->rx_tail];
+      h->rx_tail = (uint16_t)((h->rx_tail + 1u) & (NET_RX_RING_SIZE - 1u));
+   }
+   h->rx_count = (uint16_t)(h->rx_count - len);
+}
 
 /* ---- IPv4 <-> wire (network-order octets [b0,b1,b2,b3]) ------------------ */
 static void net_ip_from_wire(ip_addr_t *ip, uint32_t off)
@@ -181,6 +205,34 @@ static void net_pcb_release(net_handle_t *h, bool abort_pcb)
       else if (altcp_close(pcb) != ERR_OK)
          altcp_abort(pcb);
    }
+   if (h->upcb != NULL) {           /* UDP has no graceful close */
+      udp_remove(h->upcb);
+      h->upcb = NULL;
+   }
+}
+
+/* Append an inbound datagram to the ring as [4 ip][2 port][2 len][payload],
+   or drop it whole if the record would not fit (UDP has no back-pressure). */
+static void net_udp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                         const ip_addr_t *addr, u16_t port)
+{
+   net_handle_t *h = (net_handle_t *)arg;
+   (void)pcb;
+   if (h == NULL || p == NULL) {
+      if (p != NULL) pbuf_free(p);
+      return;
+   }
+   if ((uint32_t)p->tot_len + 8u <= ring_free(h)) {
+      uint8_t hdr[8];
+      uint32_t u = ip4_addr_get_u32(ip_2_ip4(addr));
+      hdr[0] = (uint8_t)u; hdr[1] = (uint8_t)(u >> 8);
+      hdr[2] = (uint8_t)(u >> 16); hdr[3] = (uint8_t)(u >> 24);
+      hdr[4] = (uint8_t)port; hdr[5] = (uint8_t)(port >> 8);
+      hdr[6] = (uint8_t)p->tot_len; hdr[7] = (uint8_t)(p->tot_len >> 8);
+      ring_put_mem(h, hdr, 8u);
+      ring_put_pbuf(h, p);
+   }
+   pbuf_free(p);
 }
 
 static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
@@ -279,11 +331,102 @@ static uint8_t do_open(net_handle_t *h, uint32_t cp)
    uint8_t type = jim_rd8(cp + 1u);
    if (h->state != NET_ST_FREE)
       return NET_ERR_INUSE;
-   if (type != NET_TYPE_TCP)        /* UDP arrives in a later stage */
-      return NET_ERR_UNSUPPORTED;
+   if (type != NET_TYPE_TCP && type != NET_TYPE_UDP)
+      return NET_ERR_PARAM;
    net_handle_reset(h);
    h->type  = type;
    h->state = NET_ST_IDLE;
+   if (type == NET_TYPE_UDP) {
+      h->upcb = udp_new();
+      if (h->upcb == NULL) {
+         net_handle_reset(h);
+         return NET_ERR_NOMEM;
+      }
+      udp_recv(h->upcb, net_udp_recv, h);
+   }
+   return NET_OK;
+}
+
+/* UDP: bind a local port so inbound datagrams reach this handle (+1..2). */
+static uint8_t do_bind(net_handle_t *h, uint32_t cp)
+{
+   uint16_t port = (uint16_t)(jim_rd8(cp + 1u) | (jim_rd8(cp + 2u) << 8));
+   if (h->type != NET_TYPE_UDP || h->upcb == NULL)
+      return NET_ERR_NOTOPEN;
+   if (udp_bind(h->upcb, IP_ANY_TYPE, port) != ERR_OK)
+      return NET_ERR_CONN;
+   return NET_OK;
+}
+
+/* UDP send: +1..4 IPv4, +5..6 port, +7..9 length, +10..13 JIM source. */
+static uint8_t do_udp_sendto(net_handle_t *h, uint32_t cp)
+{
+   ip_addr_t ip;
+   uint16_t  port = (uint16_t)(jim_rd8(cp + 5u) | (jim_rd8(cp + 6u) << 8));
+   uint32_t  len    = jim_rd24(cp + 7u);
+   uint32_t  jimoff = jim_rd32(cp + 10u);
+   struct pbuf *p;
+
+   if (h->type != NET_TYPE_UDP || h->upcb == NULL)
+      return NET_ERR_NOTOPEN;
+   if (len > 0xFFFFu || !net_buffer_ok(jimoff, len))
+      return NET_ERR_PARAM;
+   if (!wifi_lwip_get_context()->address_ready)
+      return NET_PENDING;
+
+   net_ip_from_wire(&ip, cp + 1u);
+   p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
+   if (p == NULL)
+      return NET_ERR_NOMEM;
+   pbuf_take(p, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], (u16_t)len);
+   {
+      err_t e = udp_sendto(h->upcb, p, &ip, port);
+      pbuf_free(p);
+      if (e != ERR_OK)
+         return NET_ERR_CONN;
+   }
+   wifi_lwip_rx_kick();
+   jim_wr24(cp + 7u, len);
+   return NET_OK;
+}
+
+/* UDP receive one datagram: out +1..4 peer IPv4, +5..6 port, +7..9 length,
+   payload into the JIM offset at +10..13.  length 0 = nothing waiting. */
+static uint8_t do_udp_recvfrom(net_handle_t *h, uint32_t cp)
+{
+   uint32_t jimoff = jim_rd32(cp + 10u);
+   uint32_t maxlen = jim_rd24(cp + 7u);
+   uint8_t  hdr[8];
+   uint16_t dglen;
+
+   if (h->type != NET_TYPE_UDP)
+      return NET_ERR_NOTOPEN;
+   if (!net_buffer_ok(jimoff, maxlen))
+      return NET_ERR_PARAM;
+   if (h->rx_count < 8u) {           /* no complete record */
+      jim_wr24(cp + 7u, 0u);
+      return NET_OK;
+   }
+   ring_get_mem(h, hdr, 8u);
+   Pi1MHz->JIM_ram[cp + 1u] = hdr[0]; Pi1MHz->JIM_ram[cp + 2u] = hdr[1];
+   Pi1MHz->JIM_ram[cp + 3u] = hdr[2]; Pi1MHz->JIM_ram[cp + 4u] = hdr[3];
+   Pi1MHz->JIM_ram[cp + 5u] = hdr[4]; Pi1MHz->JIM_ram[cp + 6u] = hdr[5];
+   dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
+   {
+      uint32_t copy = (dglen < maxlen) ? dglen : maxlen;
+      ring_get(h, jimoff + DISC_RAM_BASE, copy);
+      /* discard any of the datagram that didn't fit the caller's buffer */
+      if (dglen > copy) {
+         uint8_t junk[64];
+         uint16_t left = (uint16_t)(dglen - copy);
+         while (left > 0u) {
+            uint16_t n = (left < sizeof junk) ? left : (uint16_t)sizeof junk;
+            ring_get_mem(h, junk, n);
+            left = (uint16_t)(left - n);
+         }
+      }
+      jim_wr24(cp + 7u, copy);
+   }
    return NET_OK;
 }
 
@@ -471,15 +614,34 @@ static uint8_t net_dispatch(uint32_t cp, uint8_t data)
    h = &net_h[handle];
 
    switch (cmd) {
-      case NET_CMD_OPEN:       return do_open(h, cp);
-      case NET_CMD_DNS:        return do_dns(h, cp);
-      case NET_CMD_CONNECT:    return do_connect(h, cp);
-      case NET_CMD_SEND:       return do_send(h, cp);
-      case NET_CMD_RECV:       return do_recv(h, cp);
-      case NET_CMD_RECV_AVAIL: return do_recv_avail(h, cp);
-      case NET_CMD_CLOSE:      return do_close(h);
-      case NET_CMD_STATUS:     return do_status(h, cp);
-      default:                 return NET_ERR_UNSUPPORTED;
+      case NET_CMD_OPEN:         return do_open(h, cp);
+      case NET_CMD_DNS:          return do_dns(h, cp);
+      case NET_CMD_CONNECT:      return do_connect(h, cp);
+      case NET_CMD_BIND:         return do_bind(h, cp);
+      case NET_CMD_SEND:         return do_send(h, cp);
+      case NET_CMD_RECV:         return do_recv(h, cp);
+      case NET_CMD_RECV_AVAIL:   return do_recv_avail(h, cp);
+      case NET_CMD_CLOSE:        return do_close(h);
+      case NET_CMD_STATUS:       return do_status(h, cp);
+      case NET_CMD_UDP_SENDTO:   return do_udp_sendto(h, cp);
+      case NET_CMD_UDP_RECVFROM: return do_udp_recvfrom(h, cp);
+      default:                   return NET_ERR_UNSUPPORTED;
+   }
+}
+
+/* Drive the shared nIRQ line: assert whenever any handle has buffered RX the
+   Beeb has not drained (level-triggered; the Beeb reads status/recv to learn
+   which handle and clears it by draining).  Terminal states (EOF/error with
+   no data) are discovered by polling and do not raise nIRQ in this stage. */
+static uint8_t net_irq_state;
+static void net_update_irq(void)
+{
+   uint8_t any = 0u;
+   for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
+      if (net_h[i].rx_count != 0u) { any = 1u; break; }
+   if (any != net_irq_state) {
+      services_irq_set(net_source, any != 0u);
+      net_irq_state = any;
    }
 }
 
@@ -519,6 +681,8 @@ static void net_service_poll(void)
       net_pending = false;
       Pi1MHz_MemoryWrite(addr, net_dispatch(cp, data));
    }
+
+   net_update_irq();
 }
 
 void net_service_init(uint8_t instance, uint8_t address)
