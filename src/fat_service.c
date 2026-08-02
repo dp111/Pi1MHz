@@ -477,6 +477,14 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
 
 void fat_service_init(void)
 {
+   /* Runs on every BBC RST (init_emulator re-runs the whole table).  The
+      Beeb-side filing system restarts on reset and abandons whatever it had
+      open through this service, so drop the open-file tracking and the
+      raw-sector (BEEB.MMB) latch: otherwise the webserver's in-use
+      interlock would report ghosts of a pre-reset session as busy until the
+      Pi itself rebooted.  If the Beeb re-opens files after the reset, the
+      tracking simply re-populates. */
+   fat_open_clear_all();
    (void)services_register(SERVICE_CMD_FAT_FIRST, SERVICE_CMD_FAT_LAST,
                            fat_service_command);
 }

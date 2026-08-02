@@ -204,6 +204,20 @@ int main(void)
    (void)do_simple(0, 15);          /* unmount clears everything */
    ok(!fat_service_file_in_use("/BEEB.MMB"), "unmount clears the raw flag");
 
+   puts("== Beeb reset (re-init) releases stale locks ==");
+   /* A BBC RST re-runs init_emulator(), which re-runs services_emulator_init
+      -> fat_service_init(): the Beeb has abandoned whatever it held open, so
+      the interlock must not report ghosts of the pre-reset session forever. */
+   ok(do_open(2, "/discs/held.ssd") == FR_OK, "open a file before reset");
+   (void)do_simple(0, 0);           /* raw sector access: BEEB.MMB latched */
+   ok(fat_service_file_in_use("/discs/held.ssd")
+      && fat_service_file_in_use("/BEEB.MMB"),
+      "both locks held before reset");
+   services_emulator_init(0, SVC_BASE);   /* the reset */
+   ok(!fat_service_file_in_use("/discs/held.ssd"), "reset releases the open-file lock");
+   ok(!fat_service_file_in_use("/BEEB.MMB"), "reset releases the raw-sector latch");
+   ok(do_simple(0, 20) == 42, "FAT service still dispatches after reset");
+
    printf("\n%d checks, %d failures\n", checks, fails);
    return fails ? 1 : 0;
 }
