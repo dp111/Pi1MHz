@@ -42,13 +42,34 @@ single discs trivial to add, rename or back up - they are just files.
 See the MMFS project's documentation for its disc-selection commands
 and where it looks for the image files.
 
-## Managing images without pulling the card
+## Changing images from another computer
 
-Because everything lives on the Pi's SD card, you can add or replace
-disc images (or the whole `BEEB.MMB`) from another computer over
-[WiFi/WebDAV](web-interface.md) or [USB](usb-file-access.md) - no need
-to remove the card, and no MMB tooling needed for MMFS2's loose image
-files.
+Because everything lives on the Pi's SD card, disc images (or the
+whole `BEEB.MMB`) can be added and replaced over
+[WiFi/WebDAV](web-interface.md) or [USB](usb-file-access.md) without
+removing the card - but do it carefully. Unlike the hard disc images
+(which the web server refuses to overwrite while the Beeb has them
+open), there is **no interlock** on the files MMFS uses: nothing stops
+a file being replaced while MMFS has it open, and the Beeb keeps its
+own cached idea of the catalogue either way. Replacing an image under
+a live filing system is a recipe for a corrupted disc image, on either
+side.
+
+The procedure that works:
+
+1. **On the Beeb, finish with the disc first.** Close any open files
+   (`*CLOSE`), and put the filing system down - select another one
+   (`*TAPE` is always there) or just press CTRL-BREAK.
+2. Upload or replace the image / `BEEB.MMB`.
+3. **On the Beeb, restart the filing system** so it re-reads
+   everything instead of trusting stale state: CTRL-BREAK, select
+   MMFS again, and re-mount the disc. Don't skip this - a catalogue
+   cached from before the upload will happily write old sector maps
+   over your new image.
+
+Adding a *new* image file (rather than replacing one in use) is safe
+at any time; the Beeb just cannot see it until the disc/catalogue is
+re-read.
 
 ## Notes
 
