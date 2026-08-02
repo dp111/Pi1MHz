@@ -143,8 +143,9 @@ To release a LUN so its image can be replaced:
   nothing to "re-enable" afterwards - but do get the upload finished
   before poking the drive on the Beeb, or the re-check above will
   refuse the swap.
-- Selecting a different disc set (`*FX147,65,n` / `SCSIJUKE`) also
-  releases the previous set's images.
+- Switching disc sets (`*FX147,65,n`) is refused while any LUN is
+  started, for the same reason - `*BYE` first, then jukebox; the old
+  set's images are then free to manage.
 
 Images in disc sets the Beeb is *not* currently using, and brand-new
 files, can be managed freely at any time.
