@@ -182,3 +182,20 @@ More AUN econet fixes /improvements
 Fast MTP file scanning
 BeebSID added ( thanks to afawcett for the work)
 M5000_BeebAudio_Off removed from Pi1MHz.cfg and replace with a Generic BeebAudio_Off
+
+v.1.30
+Lots of fixes and improvements
+Docs directory added with user guide and configuration guide
+Splits disc access so we now have services helper. so the same method can be used for both FAT access and AUN access.
+Lots of AUN bugs removed.
+Watchdog now covers boot; several boot-lockup fixes.
+File access safety: WebDAV / MTP / USB now refuse to overwrite, delete or
+    move a disc image the Beeb has open - started hard-disc LUNs and MMFS
+    images / BEEB.MMB - preventing corruption.
+WiFi reliability: automatic recovery ladder (rejoin, then full chip restart)
+  after a transmit stall; SDIO transmit and credit-window fixes; no more
+  network wedge after heavy transfers.
+MTP: correctly answer unsupported operations (Windows no longer stalls);
+  DeviceInfo serial fix.
+/status web page shows signal strength and TX link rate.
+CREDITS.md added listing sources and contributors.
