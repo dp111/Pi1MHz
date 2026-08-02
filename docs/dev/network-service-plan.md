@@ -55,9 +55,13 @@ level down. Nothing new is invented at the bus level.
   (idle/resolving/connecting/connected/listening/closing/error), a Pi-side
   **RX ring** (frames arrive asynchronously; the Beeb drains on its own
   clock), and - for the `N:` device - a protocol-adapter context.
-- **nIRQ** (the services port's `+5` IRQ register, already wired for AUN)
-  signals "data available / state changed" so the Beeb can be
-  interrupt-driven instead of polling.
+- **nIRQ** signals "data available / state changed" so the Beeb can be
+  interrupt-driven instead of polling. This is a **services-framework**
+  concern (a `services_irq_set()` helper arbitrating the shared nIRQ line),
+  not a per-service FRED byte; on an interrupt the Beeb issues the service's
+  status command to learn what happened (FujiNet's PROCEED-then-STATUS
+  model). The services port's `+5` register (`&FCAB`) stays AUN's
+  grandfathered ABI. See the stage plan's cross-stage decisions.
 
 ## Data flow
 
