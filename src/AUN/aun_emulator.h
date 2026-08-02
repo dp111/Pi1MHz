@@ -24,7 +24,8 @@
 #include <stddef.h>
 void aun_emulator_init(uint8_t instance, uint8_t address);
 void aun_status_text(char *buf, size_t size);
-void aun_emulator_command(uint32_t command_pointer, uint32_t addr);
+/* services-port handler signature; the command-register value is unused. */
+void aun_emulator_command(uint32_t command_pointer, uint32_t addr, uint8_t data);
 
 #ifdef AUN_LOCKSTEP_TEST
 /* Test-only: drop queued/parked inbound state to isolate lockstep tests. */

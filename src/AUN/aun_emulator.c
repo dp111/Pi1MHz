@@ -53,9 +53,17 @@
 #include <string.h>
 
 #include "../Pi1MHz.h"
+#include "../services.h"
 #include "aun.h"
 #include "aun_config.h"
 #include "aun_emulator.h"
+
+/* The AUN_CMD_* numbers are ABI with the AUNFS ROMs; the services port's
+   allocation map must agree with them. */
+_Static_assert(AUN_CMD_FIRST == SERVICE_CMD_AUN_FIRST,
+               "AUN command range out of step with services.h");
+_Static_assert(AUN_CMD_LAST == SERVICE_CMD_AUN_LAST,
+               "AUN command range out of step with services.h");
 #include "../rpi/info.h"
 #include "../config.h"
 #include <stdio.h>
@@ -296,6 +304,10 @@ void aun_emulator_init(uint8_t instance, uint8_t address)
    aun_pending     = false;
    aun_irq_enabled = false;
    aun_irq_state   = 0;
+   /* Claim our range on the services port (&FCA6 command mailbox).  The
+      services emulator initialises earlier in the table, so the port is
+      up; disabling AUN leaves 30-44 unclaimed and ignored. */
+   (void)services_register(AUN_CMD_FIRST, AUN_CMD_LAST, aun_emulator_command);
    Pi1MHz_Register_Poll(aun_emulator_poll);
 }
 
@@ -347,8 +359,9 @@ void aun_status_text(char *buf, size_t size)
 /* FIQ context: queue only. The discaccess dispatcher has already echoed
  * the command page number to the FRED result register; the real result
  * (always < &E0) is written by aun_execute() from the main loop. */
-void aun_emulator_command(uint32_t cp, uint32_t addr)
+void aun_emulator_command(uint32_t cp, uint32_t addr, uint8_t data)
 {
+   (void)data;
    aun_pending_cp   = cp;
    aun_pending_addr = addr;
    aun_pending      = true;
