@@ -155,12 +155,19 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    {
       init = 1;
       Pi1MHz->JIM_ram = (uint8_t *) malloc(((size_t)Pi1MHz->JIM_ram_size<<24)); // malloc up to 480Mbytes
-      if (!Pi1MHz->JIM_ram)
-      {
-         LOG_INFO("No RAM - disabling RAM page emulator\r\n");
-         Pi1MHz->JIM_ram_size = 0;
-         return;
-      }
+   }
+
+   /* Tested on every call, not just the first: a BBC RST re-runs this and
+      re-advertises a nonzero JIM_ram_size above, but the one-time malloc is
+      not retried.  If it failed, JIM_ram is still NULL, and without this the
+      code below would index/write through NULL with a multi-hundred-MB size.
+      Keep the emulator disabled (size 0) whenever there is no buffer. */
+   if (!Pi1MHz->JIM_ram)
+   {
+      LOG_INFO("No RAM - disabling RAM page emulator\r\n");
+      Pi1MHz->JIM_ram_size = 0;
+      fx_register[instance] = 0;
+      return;
    }
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory

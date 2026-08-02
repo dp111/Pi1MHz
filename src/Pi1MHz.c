@@ -487,9 +487,15 @@ static void init_emulator(void) {
 
    RPI_IRQBase->FIQ_control = 0x80 + 67; // doorbell FIQ
 
-   // make sure we aren't causing an interrupt
+   // make sure we aren't causing an interrupt.  On a BBC RST this runs
+   // again while nIRQ may currently be ASSERTED (some source - SCSI, AUN,
+   // teletext - had it driven low at the instant of reset).  Force the pin
+   // back to an input directly: zeroing Pi1MHz_nirq_mask first and then
+   // calling Pi1MHz_nIRQ_CLEAR() would see no asserted->idle transition
+   // (old==0, new==0) and never touch GPFSEL, leaving the pin an output
+   // driving nIRQ low into the freshly-reset Beeb.
    Pi1MHz_nirq_mask = 0;
-   Pi1MHz_nIRQ_CLEAR(0);
+   RPI_SetGpioPinFunction(NIRQ_PIN, FS_INPUT);
    Pi1MHz_SetnNMI(CLEAR_NMI);
 
    // Register Status read back

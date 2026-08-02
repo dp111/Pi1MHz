@@ -565,14 +565,20 @@ void wifi_init(void)
       join timeout, ...) used to latch us into WIFI_STATE_ERROR
       forever - the natural recovery action of a BBC RST couldn't
       retry the bring-up.  Allow re-init from ERROR (something failed
-      mid-bring-up) AND from DISABLED (the user may have just edited
-      the config to enable wifi or fix the SSID, then reset).  In both
-      cases there is real work to retry.  Only skip when we already
-      have a healthy stack running: a state that has advanced past
-      CONFIGURED means SDIO is up and a re-init would tear it down
-      pointlessly.  Defer the init-done latch to the success path
-      below so a failure in wifi_config_load / wifi_validate_config
-      itself does not falsely flag the system as initialised. */
+      mid-bring-up) AND from DISABLED.  Only skip when we already have a
+      healthy stack running: a state that has advanced past CONFIGURED
+      means SDIO is up and a re-init would tear it down pointlessly.
+      Defer the init-done latch to the success path below so a failure in
+      wifi_config_load / wifi_validate_config itself does not falsely flag
+      the system as initialised.
+
+      NB the retry re-runs bring-up with the CONFIG AS IT WAS AT BOOT:
+      config_load() is latched (config.c) and Pi1MHz.cfg is never re-read
+      within one Pi uptime, and several emulators retain const char*
+      pointers into the parsed buffer, so it cannot safely be re-parsed.
+      A BBC RST therefore retries transient hardware/join failures; fixing
+      a wrong SSID or enabling wifi in the config needs a full power
+      cycle, not a BREAK. */
    /* init_emulator() (run on every BBC RST) zeroes the main poll
       table before each emulator gets a chance to re-register.  Make
       sure our dispatcher is in the new table BEFORE the early-return

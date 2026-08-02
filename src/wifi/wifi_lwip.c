@@ -27,6 +27,12 @@
 #include <string.h>
 
 static wifi_lwip_context_t g_wifi_lwip_context;
+/* True once lwip_init() + netif_add() have run.  Kept OUTSIDE the context
+   (which wifi_lwip_prepare memsets) so it survives a BBC RST re-init: the
+   lwIP core and the netif are set up exactly once per Pi uptime, and a
+   reset-retry reuses them instead of re-initialising - see the comments in
+   wifi_lwip_prepare / wifi_lwip_init_stack. */
+static bool s_lwip_core_up;
 static bool g_wifi_lwip_link_logged;
 static bool g_wifi_lwip_last_link_up;
 static bool g_wifi_lwip_address_logged;
@@ -624,6 +630,21 @@ void wifi_lwip_prepare(void)
 {
    const wifi_network_config_t *network_config = wifi_get_network_config();
 
+   /* A BBC RST re-runs the whole WiFi bring-up (wifi_init allows re-init
+      from ERROR/DISABLED - the natural way a user retries after a boot-time
+      failure).  If a previous attempt already stood the lwIP core up, the
+      netif is live and linked into lwIP's netif_list, the webserver holds a
+      listen PCB and netname holds mDNS/NBNS PCBs - all from the lwIP memp
+      pools.  Re-running from here would memset the live netif in place, then
+      lwip_init() would wipe those pools under everything still pointing into
+      them, and netif_add() would re-add a netif already in the list -> lwIP's
+      "netif already added" assert, which this build turns into reboot_now().
+      A reset meant to RETRY WiFi would instead reboot the whole Pi mid-
+      session.  So once the core is up, leave the existing stack untouched;
+      init_stack() below just re-arms address acquisition. */
+   if (s_lwip_core_up)
+      return;
+
    memset(&g_wifi_lwip_context, 0, sizeof(g_wifi_lwip_context));
    g_wifi_lwip_link_logged = false;
    g_wifi_lwip_address_logged = false;
@@ -674,6 +695,23 @@ void wifi_lwip_init_stack(void)
    if (!g_wifi_lwip_context.prepared)
       return;
 
+   if (s_lwip_core_up) {
+      /* Reset-retry (see wifi_lwip_prepare): the lwIP core and netif already
+         exist - do NOT lwip_init()/netif_add() again.  Just restart the
+         address acquisition that failed the first time round.  DHCP is the
+         only part that can fail after netif_add (memory exhaustion); static
+         config cannot, so there is nothing to redo there. */
+      /* wifi_init() already cleared any prior error at the start of this
+         re-init, so a successful dhcp_start here simply lets the state
+         machine proceed. */
+      if (g_wifi_lwip_context.use_dhcp && !g_wifi_lwip_context.dhcp_started) {
+         if (dhcp_start(&g_wifi_lwip_context.netif) == ERR_OK)
+            g_wifi_lwip_context.dhcp_started = true;
+      }
+      wifi_lwip_update_runtime_state();
+      return;
+   }
+
    lwip_init();
    wifi_lwip_debug_log("lwip core initialised");
    g_wifi_lwip_context.initialized = true;
@@ -698,6 +736,11 @@ void wifi_lwip_init_stack(void)
    }
 
    g_wifi_lwip_context.netif_added = true;
+   /* Core is now up: from here on a reset-retry reuses this netif rather
+      than rebuilding lwIP (see wifi_lwip_prepare).  Set before dhcp_start
+      so that if THAT fails and the user resets, the retry takes the reuse
+      path instead of the assert-reboot one. */
+   s_lwip_core_up = true;
    netif_set_default(&g_wifi_lwip_context.netif);
    netif_set_up(&g_wifi_lwip_context.netif);
    netif_set_link_down(&g_wifi_lwip_context.netif);

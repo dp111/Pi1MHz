@@ -230,6 +230,13 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    }
 
    scsiReset(scsiid);
+   /* Runs on every BBC RST.  filesystemReset() remounts the card, which
+      bumps the FatFs volume id and so invalidates any file handle the
+      webserver or USB/MTP had open - a web/WebDAV/MTP transfer in flight
+      when the Beeb is reset is aborted (a truncated upload, possibly a few
+      lost clusters reclaimed on the next fsck).  Accepted: the FatFs id
+      check makes this a clean abort, not corruption, and "a Beeb reset
+      cancels an in-progress upload" is reasonable - the Beeb owns the card. */
    filesystemReset();
    // register polling function
    Pi1MHz_Register_Poll(scsiProcessEmulation);
