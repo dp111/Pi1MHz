@@ -5894,6 +5894,15 @@ uint32_t sdio_runtime_rx_idle_us(void)
    return RPI_GetSystemTime() - g_runtime_last_rx_us;
 }
 
+/* Opaque freshness stamp: changes whenever ANYTHING arrives from the chip -
+   data, control or event, since every SDPCM header carries max_seq and so
+   refreshes the credit window.  For pacing TX retries against that window:
+   compare stamps for equality, don't interpret the value. */
+uint32_t sdio_runtime_last_any_rx_stamp(void)
+{
+   return g_runtime_last_any_rx_us;
+}
+
 bool sdio_runtime_rejoin_busy(void)
 {
    return g_runtime_stage == SDIO_RUNTIME_STAGE_JOIN

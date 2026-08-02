@@ -304,17 +304,32 @@ uint32_t wifi_lwip_icmp_probe_read(uint32_t *gap_ms, uint32_t *turnaround_us,
 #endif /* WIFI_LWIP_ICMP_PROBE_DIAG */
 
 #define WIFI_LWIP_TX_HOLD_MAX_AGE_US 250000u
-#define WIFI_LWIP_TX_QUEUE_DEPTH 8u
+#define WIFI_LWIP_TX_QUEUE_DEPTH 16u
+/* TCP may take at most this many slots, so ARP/ICMP/DHCP - the traffic with
+   no second chance - always find a free one.  Queueing TCP with no cap
+   measured 23% ping loss during a download; the reservation is the fix. */
+#define WIFI_LWIP_TX_QUEUE_TCP_MAX 12u
 
 typedef struct {
    uint32_t stamp_us;
    uint16_t len;
+   bool is_tcp;
    _Alignas(4) uint8_t data[WIFI_LWIP_RX_FRAME_MAX_LEN];
 } wifi_lwip_tx_slot_t;
 
 static wifi_lwip_tx_slot_t s_tx_queue[WIFI_LWIP_TX_QUEUE_DEPTH];
 static uint8_t s_tx_head;      /* next to send */
 static uint8_t s_tx_count;     /* frames waiting */
+static uint8_t s_tx_tcp_count; /* of which TCP (capped at TCP_MAX) */
+/* Retry pacing.  Only a received frame can reopen the credit window (max_seq
+   rides in every SDPCM header), so once a flush attempt is refused there is
+   no point re-asking until something new has arrived.  The first failed
+   attempt (16-slot queue, no pacing) retried on every main-loop pass and
+   turned a brief window-shut into a ~292k/s hammering loop; this bounds it
+   to one attempt per received frame - ACK-paced under load, and during
+   total RX silence the queue simply ages out at 250 ms. */
+static bool s_tx_flush_blocked;
+static uint32_t s_tx_flush_rx_stamp;
 /* Send-path counters: what happened between lwIP producing a frame and the
    frame actually reaching the chip - refusals, queueing, staleness, and the
    longest wait.  This span covers the hold queue and the credit gate. */
@@ -324,12 +339,37 @@ static uint32_t s_tx_direct_fail;   /* send refused on the direct path */
 static uint32_t s_tx_hold_max_us;   /* longest a frame waited in the queue */
 static uint32_t s_tx_dropped_full;  /* arrived with every slot taken - LOST */
 
+/* Pop the head slot's bookkeeping (shared by the sent, stale and aged-out
+   paths). */
+static void wifi_lwip_tx_hold_pop(void)
+{
+   if (s_tx_queue[s_tx_head].is_tcp && s_tx_tcp_count > 0u)
+      s_tx_tcp_count--;
+   s_tx_head = (uint8_t)((s_tx_head + 1u) % WIFI_LWIP_TX_QUEUE_DEPTH);
+   s_tx_count--;
+}
+
 /* Push as much of the queue as the credit window will take.  Returns true
  * when the queue is empty afterwards. */
 static bool wifi_lwip_tx_hold_flush(void)
 {
+   uint32_t rx_stamp = sdio_runtime_last_any_rx_stamp();
+
    while (s_tx_count > 0u) {
       wifi_lwip_tx_slot_t *slot = &s_tx_queue[s_tx_head];
+
+      /* Age out first, so a stuck head cannot pin the queue while the
+         pacing gate below is holding sends back. */
+      if ((RPI_GetSystemTime() - slot->stamp_us) > WIFI_LWIP_TX_HOLD_MAX_AGE_US) {
+         s_tx_dropped_stale++;
+         wifi_lwip_tx_hold_pop();
+         continue;               /* too old to be worth delivering */
+      }
+
+      /* Refused before and nothing has arrived since: the window cannot
+         have reopened, so asking again only burns a wake_bus + gate probe. */
+      if (s_tx_flush_blocked && rx_stamp == s_tx_flush_rx_stamp)
+         return false;
 
       if (sdio_runtime_send_ethernet_frame(slot->data, slot->len)) {
          uint32_t waited = RPI_GetSystemTime() - slot->stamp_us;
@@ -338,32 +378,27 @@ static bool wifi_lwip_tx_hold_flush(void)
 #if WIFI_LWIP_ICMP_PROBE_DIAG
          wifi_lwip_icmp_probe_tx(slot->data, slot->len);
 #endif
-         s_tx_head = (uint8_t)((s_tx_head + 1u) % WIFI_LWIP_TX_QUEUE_DEPTH);
-         s_tx_count--;
+         s_tx_flush_blocked = false;
+         wifi_lwip_tx_hold_pop();
          continue;
       }
 
-      if ((RPI_GetSystemTime() - slot->stamp_us) > WIFI_LWIP_TX_HOLD_MAX_AGE_US) {
-         s_tx_dropped_stale++;
-         s_tx_head = (uint8_t)((s_tx_head + 1u) % WIFI_LWIP_TX_QUEUE_DEPTH);
-         s_tx_count--;
-         continue;               /* too old to be worth delivering */
-      }
-
-      return false;              /* still no credit; try again next poll */
+      s_tx_flush_blocked = true;
+      s_tx_flush_rx_stamp = rx_stamp;
+      return false;              /* no credit; retry when something arrives */
    }
 
+   s_tx_flush_blocked = false;
    return true;
 }
 
-/* True for frames that carry their own retransmission.  TCP segments are
-   deliberately NOT queued: lwIP already keeps them on its unacked queue and
-   will resend, so holding a copy here buys nothing and actively harms - a
-   saturated download refuses frames constantly, and queued segments then fill
-   every slot and crowd out the ARP and ICMP replies this queue exists to
-   protect.  Measured: with TCP queued, ping loss during a download was 23%
-   with spikes over a second; the queue must stay for the traffic that has no
-   second chance. */
+/* True for frames that carry their own retransmission.  TCP is admitted to
+   the queue but capped (WIFI_LWIP_TX_QUEUE_TCP_MAX): a refused segment
+   returned to lwIP as ERR_IF is not re-offered until the next ACK arrives,
+   which wastes the very credit-refill moment - 17% of transmit attempts
+   during a download died that way.  The cap keeps the last four slots for
+   the traffic with no second chance (ARP, ICMP, DHCP); TCP past the cap
+   still gets ERR_IF and rides lwIP's own unacked queue. */
 static bool wifi_lwip_frame_self_retries(const uint8_t *frame, uint16_t len)
 {
    uint16_t ethertype;
@@ -376,16 +411,18 @@ static bool wifi_lwip_frame_self_retries(const uint8_t *frame, uint16_t len)
    return frame[23] == 6u;       /* IPv4 protocol 6 = TCP */
 }
 
-/* Take ownership of a frame the chip would not accept. */
-static void wifi_lwip_tx_hold_push(const uint8_t *frame, uint16_t len)
+/* Take ownership of a frame the chip would not accept.  Returns false when
+   the frame was NOT taken (queue full, or TCP over its reservation) - the
+   caller must then report the loss to lwIP or count it. */
+static bool wifi_lwip_tx_hold_push(const uint8_t *frame, uint16_t len,
+                                   bool is_tcp)
 {
    wifi_lwip_tx_slot_t *slot;
 
-   if (s_tx_count >= WIFI_LWIP_TX_QUEUE_DEPTH) {
-      s_tx_dropped_full++;       /* this frame is LOST - count it, or a full
-                                    queue reads as "nothing wrong" on /status */
-      return;                    /* full: drop the newest, keep the order */
-   }
+   if (s_tx_count >= WIFI_LWIP_TX_QUEUE_DEPTH)
+      return false;              /* full: refuse the newest, keep the order */
+   if (is_tcp && s_tx_tcp_count >= WIFI_LWIP_TX_QUEUE_TCP_MAX)
+      return false;              /* reservation: TCP rides lwIP's own queue */
    s_tx_queued++;
 
    slot = &s_tx_queue[((unsigned)s_tx_head + (unsigned)s_tx_count)
@@ -393,7 +430,11 @@ static void wifi_lwip_tx_hold_push(const uint8_t *frame, uint16_t len)
    memcpy(slot->data, frame, len);
    slot->len = len;
    slot->stamp_us = RPI_GetSystemTime();
+   slot->is_tcp = is_tcp;
+   if (is_tcp)
+      s_tx_tcp_count++;
    s_tx_count++;
+   return true;
 }
 
 void wifi_lwip_tx_path_counts(uint32_t *queued, uint32_t *stale,
@@ -430,24 +471,28 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
 
    /* Anything already held goes first, or this frame would overtake it.  When
       the queue cannot drain, the new frame joins the back rather than being
-      dropped - which is what makes the queue a queue.  It only ever held one
-      frame before this: the push below is reached solely when the flush
-      succeeded, so every frame refused while the head was still stuck was
-      lost, that being exactly the burst the queue exists to survive. */
+      dropped - which is what makes the queue a queue.  A queued frame is
+      reported ERR_OK, so for TCP a later stale-drop is real loss recovered
+      only by RTO - acceptable because staleness means 250 ms of shut
+      window, which is already an outage. */
    if (!wifi_lwip_tx_hold_flush()) {
-      if (wifi_lwip_frame_self_retries(frame, offset))
-         return ERR_IF;           /* TCP resends; do not spend a slot on it */
-      wifi_lwip_tx_hold_push(frame, offset);
-      return ERR_OK;
+      bool tcp = wifi_lwip_frame_self_retries(frame, offset);
+      if (wifi_lwip_tx_hold_push(frame, offset, tcp))
+         return ERR_OK;
+      if (!tcp)
+         s_tx_dropped_full++;     /* LOST - count it, or a full queue reads
+                                     as "nothing wrong" on /status */
+      return ERR_IF;              /* TCP resends; others are counted lost */
    }
 
    if (!sdio_runtime_send_ethernet_frame(frame, offset)) {
       s_tx_direct_fail++;
-      /* TCP looks after itself; everything else would simply be lost. */
-      if (wifi_lwip_frame_self_retries(frame, offset))
-         return ERR_IF;
-      wifi_lwip_tx_hold_push(frame, offset);
-      return ERR_OK;                  /* accepted: we own it now */
+      bool tcp = wifi_lwip_frame_self_retries(frame, offset);
+      if (wifi_lwip_tx_hold_push(frame, offset, tcp))
+         return ERR_OK;           /* accepted: we own it now */
+      if (!tcp)
+         s_tx_dropped_full++;
+      return ERR_IF;
    }
 
 #if WIFI_LWIP_ICMP_PROBE_DIAG

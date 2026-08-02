@@ -273,6 +273,7 @@ bool sdio_runtime_rejoin_busy(void);
    first).  A link can stop carrying traffic without the firmware reporting
    anything, so this is the only evidence that it has. */
 uint32_t sdio_runtime_rx_idle_us(void);
+uint32_t sdio_runtime_last_any_rx_stamp(void);
 bool sdio_runtime_link_is_up(void);
 void sdio_runtime_powersave_note_link_change(bool link_up);
 void sdio_runtime_powersave_poll(void);
