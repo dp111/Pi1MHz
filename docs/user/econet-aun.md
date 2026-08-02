@@ -27,6 +27,56 @@ and the fileserver is, say, a Raspberry Pi elsewhere in the house.
   the Master 128 version has had much less validation and should be
   considered experimental.
 
+### The filing-system ROMs
+
+Both ROMs are ports of Acorn's own Econet network filing system, with
+the Econet hardware layer replaced by Pi1MHz AUN commands - so to the
+machine (and to fileserver software) they behave like the genuine
+article:
+
+| File on the SD card | Machine | Based on | Announces itself as |
+|---|---|---|---|
+| `/Pi1MHz/AUNFSbeeb.rom` | BBC B / B+ | Acorn NFS 3.65 (the 8K NFS) | `AUN 3.65` |
+| `/Pi1MHz/AUNFSM128.rom` | Master 128 | Acorn ANFS 4.26 | `AUNFS 4.26` |
+
+### Installing the ROM with the helper
+
+The machine needs writable sideways RAM (a Master has it built in; a
+BBC B needs a sideways RAM board or fitted RAM). From BASIC:
+
+```
+X%=8 : CALL &FC88      loads AUNFSbeeb.rom  (BBC B)
+X%=9 : CALL &FC88      loads AUNFSM128.rom  (Master 128)
+```
+
+or, equivalently, from the command line:
+
+```
+*FX147,136,8
+*GO FD00
+```
+
+(`*GOIO FD00` on a Master, and `9` in place of `8` for the Master
+ROM.) The loader scans the sideways slots from 15 downwards and loads
+into the first empty writable one; `No SWR` means it found no free
+sideways RAM, `No ROM` means the ROM file is missing from `/Pi1MHz` on
+the Pi's SD card.
+
+Then press **CTRL-BREAK** so the OS notices the new ROM. `*HELP`
+should now list it (`AUN 3.65` or `AUNFS 4.26`).
+
+### Using it
+
+The standard Econet commands work as they always did: `*NET` to select
+the filing system, `*I AM <user>` to log on, `*CAT`, `LOAD`/`SAVE`,
+`*LOGOFF` and friends. Because these are real Acorn filing systems
+underneath, software that talks to NFS or ANFS - boot options,
+fileserver utilities, network games - sees what it expects.
+
+The ROMs can also be installed as physical EPROMs or via any other
+sideways ROM mechanism - the images are ordinary 16K ROM files and
+nothing about them requires the helper loader.
+
 - Something to talk to: an AUN fileserver or bridge on your network.
 
 ## Configuration

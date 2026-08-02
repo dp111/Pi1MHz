@@ -46,6 +46,29 @@ part of the standard firmware set.
 
 After loading a ROM press **CTRL-BREAK** so the OS notices it.
 
+## MMFS and MMFS2
+
+MMFS is the popular DFS-compatible filing system that serves ordinary
+DFS disc images (`.ssd`/`.dsd`) from an SD card, so classic
+disc-based software runs unmodified. It is a separate project
+(<https://github.com/hoglet67/MMFS>); Pi1MHz ships its Pi1MHz-specific
+sideways-RAM builds and loads them with helpers 4 and 5:
+
+- **`SWMMFS.rom`** (helper 4) - MMFS built for Pi1MHz: instead of a
+  separate SD card wired to the user port, it reads its `BEEB.MMB`
+  image store from the **Pi's** SD card through the Pi1MHz FAT
+  service. Put a `BEEB.MMB` file (created with the standard MMB tools)
+  in the SD card root, load the ROM, press CTRL-BREAK, then use the
+  usual MMFS commands (`*CARD`, `*DCAT`, `*DIN <n>`, `*CAT`).
+- **`SWMMFS2.rom`** (helper 5) - the same idea using MMFS2, the newer
+  generation of MMFS. See the MMFS project's documentation for what it
+  adds over the original.
+
+Since the disc images live on the Pi's SD card, you can drop new
+`.ssd` images into the MMB (or replace the whole `BEEB.MMB`) over
+[WiFi/WebDAV](web-interface.md) or [USB](usb-file-access.md) without
+removing the card.
+
 ## Your own ROMs
 
 Copy any 16K sideways ROM image onto the SD card as `/Pi1MHz/ROM10.rom`

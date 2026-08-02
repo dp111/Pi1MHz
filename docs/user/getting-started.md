@@ -90,7 +90,7 @@ Two equivalent ways to reach the same screen:
 *GO FD00
 ```
 
-or on a Master:
+or on a Tube:
 
 ```
 *FX147,136,0

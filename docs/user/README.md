@@ -1,15 +1,15 @@
 # Pi1MHz User Guide
 
-Pi1MHz turns a Raspberry Pi Zero into a multi-function expansion for the
-BBC Micro and BBC Master. It plugs into the 1MHz bus and provides, all at
-once:
+Pi1MHz turns a Raspberry Pi into a multi-function expansion for the
+BBC Micro and BBC Master. It plugs into the 1MHz bus via a buffer board and
+provides, all at once:
 
 - **Hard discs** for ADFS (BeebSCSI-compatible SCSI emulation, up to 8
   drives from image files on the SD card), plus read-only VFS/LaserDisc
   volumes for Domesday-style software
 - **Music 5000 / Music 3000** synthesiser emulation, and an optional
-  SID chip (BeebSID)
-- **RAM expansion** - up to hundreds of megabytes of JIM paged RAM
+  **SID chip (BeebSID)**
+- **RAM expansion** - hundreds of megabytes of JIM paged RAM
 - **HDMI output** - a screen redirector so the Beeb's output can appear
   on a modern monitor, with a mouse pointer overlay
 - **WiFi** (on WiFi-equipped Pis) with a built-in web interface, so you
