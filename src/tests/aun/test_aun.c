@@ -462,8 +462,11 @@ int main(void)
    reset();
    aun_set_host_imm(&e, true);
    {
-      uint8_t imm[AUN_HDR_SIZE + 4] =
-         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x20,0,0,0, 1,2,3,4 };
+      /* A Peek needs a well-formed 6-byte descriptor (4-byte start plus
+       * 2-byte end, end >= start) or himm_len_ok() NAKs it at the trust
+       * boundary instead of holding it - which is itself covered below. */
+      uint8_t imm[AUN_HDR_SIZE + 6] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x20,0,0,0, 0x00,0x10,0,0, 0x00,0x20 };
       sent_count = 0;
       aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* held for the host */
       assert(e.himm.active && sent_count == 0);                /* captured, no reply */
@@ -472,8 +475,8 @@ int main(void)
       assert(!e.himm.active);                                  /* slot released */
       assert(e.counters.himm_timeout == 1);
       assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK); /* originator NAKed */
-      uint8_t imm2[AUN_HDR_SIZE + 4] =
-         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x24,0,0,0, 5,6,7,8 };
+      uint8_t imm2[AUN_HDR_SIZE + 6] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x24,0,0,0, 0x00,0x10,0,0, 0x00,0x20 };
       aun_udp_input(&e, 0x0100000A, 32768, imm2, sizeof imm2); /* fresh: accepted */
       assert(e.himm.active && e.himm.seq == 0x24);             /* not wedged */
    }
@@ -581,8 +584,8 @@ int main(void)
    reset();
    aun_set_host_imm(&e, true);
    {
-      uint8_t imm[AUN_HDR_SIZE + 4] =
-         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x28,0,0,0, 1,2,3,4 };
+      uint8_t imm[AUN_HDR_SIZE + 6] =   /* well-formed Peek: see test 24 */
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x28,0,0,0, 0x00,0x10,0,0, 0x00,0x20 };
       sent_count = 0;
       aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);
       assert(e.himm.active && sent_count == 0);
