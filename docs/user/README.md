@@ -37,6 +37,7 @@ Start here:
 Then one guide per feature:
 
 - [Hard discs (ADFS / BeebSCSI)](hard-discs.md)
+- [SCSI drive descriptors (scsi.cfg)](scsi-cfg.md)
 - [MMFS and MMFS2 (DFS disc images)](mmfs.md)
 - [Loading ROMs and the helper functions](helpers-and-roms.md)
 - [Sound: Music 5000/3000 and BeebSID](sound.md)

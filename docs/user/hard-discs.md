@@ -27,7 +27,8 @@ ADFS drives 0-7 come from a directory in the SD card root called
 - The `.cfg` file is optional and overrides low-level SCSI details for
   that one drive. Defaults for all drives come from
   `/Pi1MHz/defscsi.cfg`, which emulates a 21MB Rodime RO652 (the drive
-  in an Acorn FileStore E20). Most people never touch either file.
+  in an Acorn FileStore E20). Most people never touch either file - if
+  you want to, see [SCSI drive descriptors](scsi-cfg.md).
 
 You only need the drives you actually use - a single `scsi0.dat` is a
 perfectly good start. `/BeebSCSI0` is created automatically if missing.
