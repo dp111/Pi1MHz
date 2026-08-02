@@ -1268,10 +1268,16 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
           g_write_state.failed_resp = MTP_RESP_DEVICE_BUSY;
         } else {
           (void) f_unlink(g_write_state.path);        /* f_rename needs it free */
-          if (f_rename(g_write_state.tmp_path, g_write_state.path) != FR_OK)
+          if (f_rename(g_write_state.tmp_path, g_write_state.path) != FR_OK) {
+            /* Target already unlinked and rename failed: the .part temp is the
+               only copy of the uploaded data, so keep it (clear tmp_active so
+               fs_release_write_state does not unlink it) rather than lose both.
+               Tiny window - a same-directory FAT rename does not allocate. */
             g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
-          else
+            g_write_state.tmp_active = false;
+          } else {
             g_write_state.tmp_active = false;          /* real file lives at path now */
+          }
         }
       }
 

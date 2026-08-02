@@ -2987,8 +2987,17 @@ static bool upload_finish(ws_conn_t *c)
       if (ws_beeb_path_busy(full))
          return upload_fail(c, WS_BUSY_MSG);
       (void)f_unlink(full);                 /* f_rename needs a free target */
-      if (f_rename(tmp, full) != FR_OK)
-         return upload_fail(c, "The file could not be saved correctly.");
+      if (f_rename(tmp, full) != FR_OK) {
+         /* Target already unlinked and the rename failed, so the ".part" temp
+            is now the only copy of the uploaded data - keep it rather than
+            discard both (clear the flag so the abort cleanup leaves it on the
+            card).  This window is tiny: an f_rename within one FAT directory
+            does not allocate, so it essentially only fails on media error. */
+         c->up_temp_exists = false;
+         ws_fs_mutated();
+         return upload_fail(c, "The file could not be saved; the uploaded data "
+                               "was kept as a \".part\" file on the card.");
+      }
       c->up_temp_exists = false;
       ws_fs_mutated();                       /* the directory really changed */
    }
@@ -3133,17 +3142,11 @@ static bool upload_feed_data(ws_conn_t *c, const uint8_t *data, size_t len)
          if (peek[0] != '-' || peek[1] != '-') {
             /* Intermediate boundary: another part follows.  We only
                support single-file uploads from the built-in form, so
-               reject explicitly rather than silently dropping the
-               rest.  The first part has already been written - close
-               it cleanly before failing so the saved file is intact. */
-            if (c->up_file_open) {
-               /* Flush first: since the body is staged in chunks, the tail of
-                  the first part is still in the buffer, and closing without it
-                  leaves the "intact" saved file short by up to a chunk. */
-               (void)upload_flush(c);
-               (void)f_close(&c->write_file.up);
-               c->up_file_open = false;
-            }
+               reject explicitly rather than silently dropping the rest.
+               upload_fail closes the file and discards the ".part" temp, so
+               the partial multi-part write is thrown away and any pre-existing
+               target is left intact - there is no point flushing the staged
+               tail into a temp we are about to unlink. */
             return upload_fail(c,
                 "Multi-file uploads are not supported; please submit "
                 "one file per upload.");
@@ -5618,6 +5621,12 @@ static void ws_err(void *arg, err_t err)
       f_close(&c->write_file.up);
       c->up_file_open = false;
    }
+   /* Same reason as the dav_put block below: ws_err is lwIP's RST / fatal-
+      error callback - the real mid-upload disconnect - and it frees the conn
+      without going through conn_close, so the multipart ".part" temp must be
+      dropped here too or a reset upload leaves a dropping nothing collects.
+      The real target was never touched (rename happens only on completion). */
+   upload_discard_temp(c);
    if (c->copy_src_open) {
       f_close(&c->copy_src);
       c->copy_src_open = false;
