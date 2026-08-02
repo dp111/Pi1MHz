@@ -10,6 +10,8 @@ page on the same network.
 - **Pi Zero W / WH** (CYW43438, BCM43430 firmware) — the primary target.
 - **Pi Zero 2 W** (CYW43436, same SDIO-side bring-up) — works with the same
   firmware path.
+- **Pi 3 B+** (CYW43455, BCM43455 firmware) — supported; see the
+  per-board firmware table below.
 - **Pi Zero (no W)** — no onboard radio; this subsystem stays disabled.
 
 The WiFi SDIO controller uses the bcm2835 Arasan EMMC block on GPIO34–GPIO39;
@@ -92,9 +94,10 @@ events_enable and mcast_list, 10 ms inter-ioctl elsewhere).
 
 ## Pi1MHz.cfg Parameters
 
-All entries are optional except `wifi_ssid` (without an SSID the whole
-stack stays down). Legacy names from the original feature request are
-accepted alongside the `wifi_*` form.
+All entries are optional except `wifi_ssid` and `wifi_password` — both
+are required, and validation fails the stack if either is missing (open
+networks are not supported). Legacy names from the original feature
+request are accepted alongside the `wifi_*` form.
 
 Before any of these matter you need the right brcmfmac firmware files
 on the SD card under `/Pi1MHz/wifi/` for the board you're booting on —
@@ -106,10 +109,11 @@ Pi1MHz.cfg values below have nothing to act on.
 | Key | Default | Notes |
 |---|---|---|
 | `wifi_ssid=` / `SSID=`                | (none)            | Required; without it the WiFi stack does not start. |
-| `wifi_password=` / `SSIDpassword=`   | (none)            | WPA2-PSK passphrase, 8–63 ASCII characters. |
+| `wifi_password=` / `SSIDpassword=`   | (none)            | Required. WPA2-PSK passphrase, 8–63 ASCII characters. |
 | `wifi_hostname=`                     | `Pi1MHz`          | NetBIOS / mDNS name; embedded `.` is mapped to `-`. |
 | `wifi_country=`                      | `GB`              | ISO 3166 country code for the brcmfmac regulatory iovar (e.g. `US`, `DE`). |
 | `wifi_ip=`                           | `dhcp`            | `dhcp` or a literal IPv4 address (e.g. `192.168.1.40`). |
+| `static_ip=`                         | (none)            | Alternative to `wifi_ip=` for a static address; setting it alone selects static mode. |
 | `wifi_netmask=`                      | `255.255.255.0`   | Only used with static `wifi_ip=`. |
 | `wifi_gateway=`                      | (none)            | Only used with static `wifi_ip=`. |
 | `wifi_dns=`                          | (none)            | Only used with static `wifi_ip=`. |
@@ -123,6 +127,8 @@ Pi1MHz.cfg values below have nothing to act on.
 | `webdav_user=`                       | (none)            | WebDAV / management UI digest-auth username.  Auth is enforced on every webserver route only when **both** `webdav_user` and `webdav_password` are set; if either is missing, the server stays anonymous (matching the legacy `/files` behaviour). |
 | `webdav_password=`                   | (none)            | Digest-auth password.  See `webdav_user`. |
 | `webdav_realm=`                      | `Pi1MHz`          | Realm string presented in the digest challenge. |
+| `webdav_utc_offset_minutes=`         | `0`               | Minutes east of UTC (e.g. `60` for BST) applied to WebDAV file timestamps; `0` treats FAT times as GMT. |
+| `wifi_sdio_host=`                    | (auto)            | Override the SDIO host backend name (diagnostic; leave unset). |
 
 Example (DHCP):
 
@@ -154,15 +160,18 @@ wifi_ssid=PiNet wifi_password=secret123 wifi_ip=192.168.1.40 wifi_netmask=255.25
 ## Web Pages
 
 - `/`                — home page with links.
-- `/status`          — WiFi / network state, MAC, IP, gateway, frame
-                       counters, SD-card free space (cached on a 5 s TTL
-                       so the TCP callback is not stalled by FatFs).
+- `/status`          — WiFi / network state, MAC, IP, gateway, signal
+                       (RSSI), TX link rate, frame counters, SD-card free
+                       space (cached on a 5 s TTL so the TCP callback is
+                       not stalled by FatFs).
 - `/files/...`       — browse the SD card, download files, upload files
                        (`multipart/form-data`, streamed straight to FatFs).
 - `/framebuffer`     — preview the live BBC VDU output as an embedded BMP.
 - `/framebuffer.bmp` — 24-bit BMP of the current framebuffer (rows
                        streamed on demand to keep TCP buffers bounded).
 - `/reboot`          — confirm + POST → defer ~1.5 s → `reboot_now()`.
+- `/aun`             — AUN/Econet engine state and packet counters.
+- `/bench.bin`       — RAM-sourced large download for throughput testing.
 
 The HTTP layer is one request per connection (`Connection: close`),
 built directly on the lwIP raw-TCP API. URL paths are percent-decoded
@@ -185,9 +194,9 @@ capped at 1), `PUT`, `DELETE`, `MKCOL`, `COPY`, `MOVE`, `LOCK`,
 `UNLOCK`.  `LOCK` returns a well-formed response with a synthetic
 opaque-lock token so the Windows mini-redirector keeps writing; no
 server-side lock state is actually retained.  Collection-level
-recursive `COPY` is not implemented (returns `501`); recursive
-`DELETE` is similarly not implemented and the client must do its own
-depth-first walk.
+recursive `COPY` is not implemented (returns `501`).  Recursive
+`DELETE` (Depth: infinity on a collection) IS implemented per RFC 4918
+§9.6.1.
 
 Mounting:
 

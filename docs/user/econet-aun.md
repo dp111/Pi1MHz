@@ -75,8 +75,9 @@ underneath, software that talks to NFS or ANFS - boot options,
 fileserver utilities, network games - sees what it expects.
 
 The ROMs can also be installed as physical EPROMs or via any other
-sideways ROM mechanism - the images are ordinary 16K ROM files and
-nothing about them requires the helper loader.
+sideways ROM mechanism - the images are ordinary ROM files (the BBC B
+NFS is 8K, the Master 128 ANFS 16K) and nothing about them requires the
+helper loader.
 
 - Something to talk to: an AUN fileserver or bridge on your network.
 

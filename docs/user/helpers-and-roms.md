@@ -38,7 +38,7 @@ part of the standard firmware set.
 | 3 | Loads ADFS into sideways RAM | `/Pi1MHz/ADFS.rom` |
 | 4 | Loads MMFS into sideways RAM | `/Pi1MHz/SWMMFS.rom` |
 | 5 | Loads MMFS2 into sideways RAM | `/Pi1MHz/SWMMFS2.rom` |
-| 6 | Loads the BeebSCSI helper ROM (BeebSCSI utility commands) | `/Pi1MHz/BSrom.rom` |
+| 6 | Loads the BeebSCSI helper ROM (BeebSCSI utility commands) | `/Pi1MHz/BSRom.rom` |
 | 7 | Loads the ATS teletext software ROM | `/Pi1MHz/ATS.rom` |
 | 8 | Loads the Econet-over-WiFi filing system for the BBC B | `/Pi1MHz/AUNFSbeeb.rom` |
 | 9 | Loads the Econet-over-WiFi filing system for the Master 128 | `/Pi1MHz/AUNFSM128.rom` |

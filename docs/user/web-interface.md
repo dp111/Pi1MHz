@@ -9,7 +9,7 @@ address - and you get a home page linking to everything below.
 | Address | What it does |
 |---|---|
 | `/` | Home page with links |
-| `/status` | WiFi and network details (network name, addresses, traffic counters) and SD card free space |
+| `/status` | WiFi and network details (network name, addresses, signal strength, link rate, traffic counters) and SD card free space |
 | `/files/` | Browse the SD card: download files, upload files, create and delete |
 | `/framebuffer` | A live snapshot of the Pi's HDMI screen (see [Screen and video](screen-and-video.md)); refresh the page for a new one |
 | `/framebuffer.bmp` | The same snapshot as a plain BMP image you can save |
@@ -22,9 +22,11 @@ Any other address is treated as a path on the SD card, so
 directly.
 
 Uploading through `/files/` is the everyday way to get a disc image or
-ROM onto the card without pulling it out of the Pi. Note the server
-will refuse to overwrite a hard disc image that the Beeb currently has
-in use.
+ROM onto the card without pulling it out of the Pi. The server refuses
+to overwrite, delete or move any file the Beeb currently has open -
+a started hard-disc image, or an [MMFS](mmfs.md) disc image / `BEEB.MMB`
+open through the FAT service. Release it on the Beeb first (`*BYE` for a
+hard disc; for MMFS see [that page](mmfs.md#changing-images-from-another-computer)).
 
 ## WebDAV: the SD card as a network drive
 
@@ -40,11 +42,12 @@ the root of the SD card.
   file manager's "connect to server")
 - **iOS/iPadOS**: Files app → "Connect to Server"
 
-Copying, renaming, deleting and creating folders all work. Two
-limitations to know about: copying or deleting a **whole folder tree**
-in one operation is not supported by the server (your computer's file
-manager usually walks the tree itself, in which case it works anyway),
-and transfers are plain unencrypted HTTP.
+Copying, renaming, deleting and creating folders all work, including
+deleting a whole folder tree in one operation. Two limitations to know
+about: copying a **whole folder tree** in one operation is not
+supported by the server (your computer's file manager usually walks the
+tree itself, in which case it works anyway), and transfers are plain
+unencrypted HTTP.
 
 File date-stamps shown over WebDAV are in UTC unless you set your
 timezone, e.g. `webdav_utc_offset_minutes=60` in `Pi1MHz.cfg`.

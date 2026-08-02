@@ -19,7 +19,10 @@ see [cmdline.txt settings](#cmdlinetxt-settings) at the end.
   line (a line starting with a space or tab is ignored).
 - `key=value` or `key value` both work. The value is the rest of the
   line and may contain spaces.
-- `#` starts a comment, either a whole line or after a value.
+- `#` starts a comment, either a whole line or after a value. This means
+  a value **cannot contain a `#`** - everything from the first `#` is
+  cut off. Watch out for it in passwords (`wifi_password`,
+  `webdav_password`).
 - Keys are not case-sensitive.
 - A key on its own (no value) counts as "set" - some debug switches
   work this way.
@@ -57,16 +60,23 @@ plus `_addr`:
 | `Rambyte_addr` | `0x00` | Byte-access RAM registers at `&FC00-&FC03` |
 | `Harddisc_addr` | `0x40` | SCSI hard disc at `&FC40-&FC43` |
 | `M5000_addr` | (none) | Music 5000/3000 (uses JIM paging, no FRED base) |
-| `BeebSID_addr` | `0x20`, **off by default** | SID chip at `&FC20` - set an address to enable |
-| `Services_addr` | `0xA6` | The services port at `&FCA6-&FCAA`: SD card / FAT access plus the Econet AUN commands |
+| `BeebSID_addr` | `0x20`, **off by default** | SID chip at `&FC20-&FC3F` - set an address to enable |
+| `Services_addr` | `0xA6` | The services port at `&FCA6-&FCAB`: SD card / FAT access plus the Econet AUN commands |
 | `Videoplayer_addr` | (none) | Video background plane |
-| `Framebuffer_addr` | `0xA0` | HDMI framebuffer / VDU port at `&FCA0` |
-| `Mouseredirect_addr` | `0xAC` | Mouse pointer registers at `&FCAC-&FCAF` |
+| `Framebuffer_addr` | `0xA0` | HDMI framebuffer / VDU port at `&FCA0-&FCA5` |
+| `Mouseredirect_addr` | `0xAC` | Mouse pointer registers at `&FCAC-&FCB0` |
 | `usb_addr` | (none) | USB MTP file access |
 | `wifi_addr` | (none) | WiFi stack |
 | `aun_addr` | (none) | Econet-over-WiFi engine |
 | `Teletext_addr` | `0x10` | Acorn Teletext Adapter at `&FC10-&FC13` |
 | `Watchdog_addr` | (none) | Watchdog (use the `watchdog` key below instead) |
+
+**Two bases you should not move:** `Framebuffer_addr` (default `&FCA0`)
+and `Services_addr` (default `&FCA6`) are hard-wired into the built-in
+6502 helper code and the AUN filing systems. Moving either breaks the
+helper functions (including ROM loading and the help screen) and Econet
+over AUN. Leave both at their defaults unless you know exactly what you
+are doing.
 
 Example - you have real hardware at `&FC40` and want the Pi1MHz hard
 disc out of the way:

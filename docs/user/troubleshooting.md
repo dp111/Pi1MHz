@@ -40,7 +40,8 @@
 - If you changed `SCSIJUKE`, the drive images are being looked for in
   `/BeebSCSI<that number>` instead of `/BeebSCSI0`.
 - `*FX147,65,0` switches back to disc set 0 if something has jukeboxed
-  away from it.
+  away from it - but jukeboxing only works while every drive is
+  stopped, so `*BYE` first if a disc is in use.
 
 ## Discs behave strangely / errors after heavy use
 
@@ -79,9 +80,14 @@ point a metre often transforms it.
 
 ## Web pages load but uploads fail
 
-- The server refuses to overwrite the image file of a hard disc drive
-  the Beeb currently has open. Press CTRL-BREAK on the Beeb (or `*BYE`
-  in ADFS) to release it, then retry.
+- The server refuses to overwrite, delete or move any file the Beeb
+  currently has open - a started hard-disc image, or a file (or
+  `BEEB.MMB`) that [MMFS](mmfs.md) has open through the FAT service.
+  WebDAV clients see "423 Locked"; MTP reports the device busy.
+- For a **hard disc**, `*BYE` in ADFS stops the drive and releases it.
+  (CTRL-BREAK does *not* - the Beeb re-accesses the disc on reset and
+  restarts the drive.) For **MMFS**, see
+  [changing images from another computer](mmfs.md#changing-images-from-another-computer).
 - Very large uploads over marginal WiFi can simply take a long time -
   try `/bench.bin` to gauge your actual speed.
 

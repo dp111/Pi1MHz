@@ -53,35 +53,37 @@ currently holds open through the FAT service (the same protection the
 hard disc images have), so the worst accidents are blocked. `BEEB.MMB`
 gets extra protection: MMFS reads it by raw sector number, not through
 a file handle, so once MMFS has touched the card the MMB is treated as
-in use until the Pi restarts - replacing it mid-session would corrupt
-it even with nothing "open". The
-refusal is not the whole story though: the Beeb keeps its own cached
-idea of the catalogue, and the Pi only knows a file has been released
-when the Beeb-side software actually closes it - pressing BREAK does
-not tell the Pi anything.
+in use - replacing it mid-session would corrupt it even with nothing
+formally "open".
+
+The Pi releases these locks when MMFS lets go: it drops all of them on
+a filing-system re-mount, on a **Beeb reset** (BREAK restarts the
+firmware's services and clears the tracking), or on a Pi reboot. The
+catch is that MMFS *also* restarts on BREAK and re-reads `BEEB.MMB` the
+moment you next touch the card from the Beeb, which re-locks it. So the
+rule is: leave the filing system down while you upload.
 
 The procedure that works:
 
 1. **On the Beeb, finish with the disc first.** Close any open files
-   (`*CLOSE`), and put the filing system down - select another one
-   (`*TAPE` is always there) or just press CTRL-BREAK.
-2. Upload or replace the image / `BEEB.MMB`.
-3. **On the Beeb, restart the filing system** so it re-reads
-   everything instead of trusting stale state: CTRL-BREAK, select
-   MMFS again, and re-mount the disc. Don't skip this - a catalogue
-   cached from before the upload will happily write old sector maps
-   over your new image.
+   (`*CLOSE`), then press CTRL-BREAK and select another filing system
+   (`*TAPE` is always there). BREAK clears the Pi's lock; selecting
+   another filing system keeps MMFS from immediately re-taking it.
+2. Upload or replace the image / `BEEB.MMB` now, while MMFS is down.
+3. **Then go back into MMFS** (`*MMFS`, re-mount the disc). It re-reads
+   everything from the card - which is exactly what you want, because a
+   catalogue cached from before the upload would otherwise write old
+   sector maps over your new image.
 
 Adding a *new* image file (rather than replacing one in use) is safe
 at any time; the Beeb just cannot see it until the disc/catalogue is
 re-read.
 
 If an upload keeps being refused with "in use by the Beeb" and nothing
-on the Beeb seems to be using the file, the Beeb-side software is
-holding it open (or was interrupted before it could close it).
-Re-selecting the filing system on the Beeb usually re-opens things
-cleanly; failing that, reboot the Pi from the web interface - the lock
-does not survive a restart.
+on the Beeb seems to be using the file, MMFS is still holding it (it
+re-locks on any card access). Drop to another filing system as in step 1
+and try again; a Pi reboot from the web interface clears everything as a
+last resort.
 
 ## Notes
 

@@ -52,7 +52,7 @@ up.
 ## BeebSID
 
 Pi1MHz can emulate a SID chip (the Commodore 64 sound chip) appearing
-at `&FC20-&FC38`, compatible with BeebSID software.
+at `&FC20-&FC3F`, compatible with BeebSID software.
 
 It is **off by default**. Enable it in `/Pi1MHz/Pi1MHz.cfg`:
 

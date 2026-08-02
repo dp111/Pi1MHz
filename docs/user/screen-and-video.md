@@ -30,7 +30,7 @@ live snapshot at `http://Pi1MHz/framebuffer`.
 
 Pi1MHz can overlay a mouse pointer on the HDMI picture - this is used
 by VFS/Domesday software (`*MOUSE`), and your own programs can drive it
-too. Four bytes at `&FCAC-&FCAF` control it:
+too. It occupies `&FCAC-&FCB0`:
 
 | Address | Contents |
 |---|---|
@@ -38,6 +38,7 @@ too. Four bytes at `&FCAC-&FCAF` control it:
 | `&FCAD` | X position, high byte |
 | `&FCAE` | Y position, low byte |
 | `&FCAF` | bits 0-3: Y position high bits; bits 4-7: pointer shape 0-3 (4 or more = pointer off) |
+| `&FCB0` | pointer type select |
 
 ## Video background (experimental)
 

@@ -18,6 +18,11 @@ both ways without removing the card and without WiFi.
 MTP is a "one side at a time" protocol: the Pi stays in control of the
 card, so this is safe to use while the system is running.
 
+Like the [web interface](web-interface.md), MTP refuses to overwrite,
+delete or move a file the Beeb currently has open - a started hard-disc
+image, or an [MMFS](mmfs.md) disc image / `BEEB.MMB` - reporting the
+device as busy. Release it on the Beeb first (`*BYE` for a hard disc).
+
 ## A special file: kernel.now
 
 Copying a firmware image to the device under the name `kernel.now`
