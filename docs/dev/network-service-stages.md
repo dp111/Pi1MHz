@@ -22,21 +22,30 @@ These were settled during planning and bind all stages:
   net service does **not** define its own status byte: on an event it just
   raises the shared nIRQ through a services helper, and the Beeb - exactly
   like FujiNet's PROCEED-then-STATUS model - responds by issuing
-  `net_status` (command 54) to find which handle fired. So `services.h`
-  grows a small framework API, e.g.
+  `net_status` (command 54) to find which handle fired.
 
-      /* Raise/lower this service's contribution to the shared nIRQ line.
-         The framework ORs sources and drives Pi1MHz_nIRQ_ASSERT/CLEAR. */
-      void services_irq_set(uint8_t source_bit, bool asserted);
+  **What already exists (as of the services-IRQ refactor, commit e139813):**
+  `services.h`/`services_emulator.c` provide
 
-  and `services_emulator.c` owns the arbitration. **AUN is the grandfathered
-  exception:** its `&FCAB` byte (bit7 ready, bit6 immediate, bits0-5 frame
-  count) is fixed AUNFS-ROM ABI and stays exactly as-is - AUN keeps writing
-  its own status byte and its own nIRQ source. New services route their IRQ
-  through `services_irq_set` and expose detail via their own status command,
-  never a new FRED byte. (If a services-wide IRQ *status* register is ever
-  wanted, it should be designed into the framework from the start, with AUN
-  remaining the legacy carve-out.)
+      /* Publishes `status` to the IRQ register (base+5, = &FCAB) AND
+         asserts/clears nIRQ for `source`.  This is AUN's path - it writes
+         the shared status byte. */
+      void services_irq(uint8_t source, uint8_t status);
+
+  AUN calls this (its `&FCAB` byte - bit7 ready, bit6 immediate, bits0-5
+  frame count - is fixed AUNFS-ROM ABI and stays exactly as-is). The net
+  service must **not** write that byte, so Stage 1 adds the anticipated
+  line-only variant (the `services.h` comment already earmarks it):
+
+      /* Raise/lower this service's contribution to the shared nIRQ line
+         WITHOUT touching the &FCAB status byte.  The framework ORs sources
+         and drives Pi1MHz_nIRQ_ASSERT/CLEAR. */
+      void services_irq_set(uint8_t source, bool asserted);
+
+  New services route their IRQ through `services_irq_set` and expose detail
+  via their own status command, never a new FRED byte. (If a services-wide
+  IRQ *status* register is ever wanted, design it into the framework from
+  the start, with AUN remaining the legacy carve-out.)
 - **Write the socket layer against lwIP's `altcp` API from day one**
   (`altcp_new`/`altcp_connect`/`altcp_write`/`altcp_recv`/`altcp_close`,
   `struct altcp_pcb *`). With `LWIP_ALTCP=0` this compiles to plain `tcp_*`
