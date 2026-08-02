@@ -53,6 +53,9 @@ And when things go wrong:
 
 - [Troubleshooting](troubleshooting.md)
 
+For programming Pi1MHz directly from 6502 code (registers and command
+protocols), see the [Advanced / programming reference](../advanced.md).
+
 Pi1MHz is free software (GPL-3.0) and builds on the work of many other
 projects - see [CREDITS.md](../../CREDITS.md) for the full acknowledgements.
 

@@ -2,349 +2,71 @@
 
 [![Codacy Badge](https://api.codacy.com/project/badge/Grade/ebe2e1bd0b1c42719c0a7ea5bec9bed2)](https://app.codacy.com/app/dominic.plunkett/Pi1MHz?utm_source=github.com&utm_medium=referral&utm_content=dp111/Pi1MHz&utm_campaign=Badge_Grade_Settings)
 
-Pi1MHz is a Raspberry Pi bare-metal interface for the BBC Micro/Master 1MHz bus.
-
-It emulates:
-
-- ADFS hard disk (based on BeebSCSI)
-- Hybrid Music 5000/3000 functionality
-- Large JIM RAM expansion
-- FAT/SD transfer services for host software
-
-Supported hardware (project-tested):
-
-- Raspberry Pi Zero / Zero W
-- Raspberry Pi Zero2W / 3B+
-
-Pi 3A+ is expected to work but is not formally tested.
-
-## Hardware Requirements
-
-- BBC Micro or BBC Master with 1MHz bus access
-- Raspberry Pi Zero W, Pi Zero 2 W, Pi 3 B+, or Pi 4 (WiFi-equipped
-  variants if you want the optional WiFi/WebDAV interface; non-WiFi
-  Pis still work for everything else)
-- SD card
-- 1MHz bus level shifter
-- 5V power feed for the Pi (for example from User Port or Tube)
-
-The WiFi interface is optional but, when used, needs the brcmfmac
-firmware blobs for the Pi's specific WiFi chip placed on the SD card
-under `/Pi1MHz/wifi/`.  See [`src/wifi/README.md`](src/wifi/README.md)
-for the per-board firmware filename mapping, the Pi1MHz.cfg keys
-(`wifi_ssid=`, `wifi_password=`, `webdav_user=`, etc.) and a full
-description of the built-in webserver / WebDAV mount.
-
-## Quick Start
-
-1. Copy the contents of firmware/ to the root of the SD card.
-2. Optionally add a prepared BeebSCSI image set:
-   - https://www.domesday86.com/wp-content/uploads/2019/03/BeebSCSI_Quickstart_LUN_2_5.zip
-3. Insert SD card into the Pi.
-4. Connect the level shifter and 1MHz bus interface carefully.
-5. Power the Pi and boot the BBC.
-
-On fast beeb boot plus slow SD cards, an extra CTRL-BREAK may be required.
-
-To check the build information and get help type one of the following:
-
-X%=0 :CALL &FC88
-*fx147,136,0 : *GO FD00
-*fx147,136,0 : *GOIO FD00   (on a machine with a Tube second processor)
-
-## ADFS Harddisc Emulation
-
-ADFS Harddisc emulation is based on BeebSCSI. For more information goto : <https://www.domesday86.com/?page_id=400> . If you have a Master then you will have ADFS already in ROM. If you have a Beeb you will need ADFS. It is possible if the computer boots very fast and the SD-CARD is slow that the computer boots faster than the Pi in this case an extra CTRL-BREAK will be required.
-
-Read speed appears to be about 100K/sec.
-
-## Music 5000 / 3000 Emulation
-
-The emulation can play sounds through the computers internal speaker. If you are using the pi3B+ you can use the headphone jack. Currently if an ADFS access occurs while playing music the music will be interrupted briefly.
-
-See the Pi1MHz.cfg section for various configuration options
-
-## Expansion Ram Emulation
-
-Two types of JIM expansion ram are supported:
-
-* Byte mode : 16Mbytes <http://www.sprow.co.uk/bbc/ramdisc.htm>
-* Page mode : 480Mbytes for PiZero, 992Mbytes Pi3B+
-
-Byte mode uses the registers &FC02, &FC01, &FC00 to select the byte and FC03 to read and write the memory.
-
-Page mode uses the registers &FCFD &FCFE FCFF to select the page for &FD00--&FDFF.
-
-The first page of JIM ram is preloaded with a short greeting (pointing at the CALL &FC88 help). This can be accessed by doing PRINT $&FD00. This is RAM so can easily be over written.
-
-If a file called "JIM_Init.bin" exists it will be loaded starting at the beginning of JIM on wards ( NB over writes build info). This enables future very large programs which, with clever programming could all run in JIM RAM.
-
-## Services port: SDCARD / FAT access and more
-
-The registers below form a general command port: the first byte of a
-command block selects a service by number. Commands 0-29 are the SDCARD
-/ FAT service documented here; commands 30-44 are the Econet AUN
-service (used by the AUNFS ROMs); the allocation map lives in
-`src/services.h`. In Pi1MHz.cfg the port is configured with
-`Services_addr=`.
-
-A simplified access to the Pi's SDCARD is provided. This can be used to access local files and could for instance by used by mmfs2. A 16Mbyte buffer is provided that can be split up into various different ways. Multiple files maybe open at the same time , but they must be unique files. A 24 bit pointer is provided with autoincrement. Using this address space a file system e.g. MMFS may "cache" the entire drive and not need to raise PAGE. The buffer also hold the FAT command that is going to be executed.
-It is suggested the first 4Mbytes be reserved for the currently active Filesystem. 8Mbyte to 14 Mbytes be reserved for the currently active program.
-
-    Base address = &FCA6
-
-    Base + 0 = lower 8bits of the 24bit address pointer
-    Base + 1 = middle 8bits of the 24bit address pointer
-    Base + 2 = top 8bits of the 24bits address pointer
-    Base + 3 = data register ( with auto address increment)
-    Base + 4 = command pointer (&F0-FF).
-            command = &F0 points to a command at 0xFFF000 in the buffer
-            command = &F1 points to a command at 0xFFF100 in the buffer
-            ...
-            command = &FF points to a command at 0xFFFF00 in the buffer
-    Base + 5 = IRQ status (used by services that raise nIRQ, e.g. AUN)
-
-            Each command pointer can only be used for one FAT file/ directory
-            When the command is complete the the command pointer returns success or and error code
-
-            Suggested code
-                    LDA # command
-                    STA &FCAA
-            .complete_check_loop
-                    LDA &FCAA
-                    BMI complete_check_loop
-                    BNE command_error
-
-
-
- 	FR_OK = 0,				/* (0) Succeeded */
-	FR_DISK_ERR,			/* (1) A hard error occurred in the low level disk I/O layer */
-	FR_INT_ERR,				/* (2) Assertion failed */
-	FR_NOT_READY,			/* (3) The physical drive cannot work */
-	FR_NO_FILE,				/* (4) Could not find the file */
-	FR_NO_PATH,				/* (5) Could not find the path */
-	FR_INVALID_NAME,		/* (6) The path name format is invalid */
-	FR_DENIED,				/* (7) Access denied due to prohibited access or directory full */
-	FR_EXIST,				/* (8) Access denied due to prohibited access */
-	FR_INVALID_OBJECT,		/* (9) The file/directory object is invalid */
-	FR_WRITE_PROTECTED,		/* (10) The physical drive is write protected */
-	FR_INVALID_DRIVE,		/* (11) The logical drive number is invalid */
-	FR_NOT_ENABLED,			/* (12) The volume has no work area */
-	FR_NO_FILESYSTEM,		/* (13) There is no valid FAT volume */
-	FR_MKFS_ABORTED,		/* (14) The f_mkfs() aborted due to any problem */
-	FR_TIMEOUT,				/* (15) Could not get a grant to access the volume within defined period */
-	FR_LOCKED,				/* (16) The operation is rejected according to the file sharing policy */
-	FR_NOT_ENOUGH_CORE,		/* (17) LFN working buffer could not be allocated */
-	FR_TOO_MANY_OPEN_FILES,	/* (18) Number of open files > FF_FS_LOCK */
-	FR_INVALID_PARAMETER	/* (19) Given parameter is invalid */
-                                (20) Short fread/fwrite
-
-
-SDCARD / FAT commands are the first byte of the command buffer
-
-0 = Read sector
-
-    command pointer + 0 = 0
-    command pointer + 1 = 0
-    command pointer + 2 = 0
-    command pointer + 3 = 0
-    command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
-    command pointer + 8,9,10,11 4 bytes , start sector in LBA
-    command pointer + 12,13,14,15 4 bytes , number of sectors to read
-
-1 = Write sector
-
-    command pointer + 0 = 1
-    command pointer + 1 = 0
-    command pointer + 2 = 0
-    command pointer + 3 = 0
-    command pointer + 4,5,6,7 4 bytes of source address in buffer NB top byte must be zero.
-    command pointer + 8,9,10,11 4 bytes , start sector in LBA
-    command pointer + 12,13,14,15 4 bytes , number of sectors to write
-
-2 = fopen
-
-    command pointer + 0 = 2
-    command pointer + 1 = 0
-    command pointer + 2 =
-        #define	FA_READ				0x01
-        #define	FA_WRITE			0x02
-        #define	FA_OPEN_EXISTING	0x00
-        #define	FA_CREATE_NEW		0x04
-        #define	FA_CREATE_ALWAYS	0x08
-        #define	FA_OPEN_ALWAYS		0x10
-        #define	FA_OPEN_APPEND		0x30
-    command pointer + 3 = filename zero terminated
-
-3 = fclose
-
-    command pointer + 0 = 3
-
-4 = fread ( with implicit lseek)
-
-    command pointer + 0 = 4
-    command pointer + 1,2,3 3 bytes of length to read. Once complete this returns the actually number of byte read
-                The command pointer register = 20 if the read was short
-    command pointer + 4,5,6,7 4 bytes of destination address in buffer NB top byte must be zero.
-    command pointer + 8,9,10,11 4 byte pointer within file to start the read from
-
-5 = fwrite ( with implicit lseek , fsync)
-
-    command pointer + 0 = 5
-    command pointer + 1,2,3 3 bytes of length to write. Once complete this returns the actually number of byte read
-                 The command pointer register = 20 if the write was short
-    command pointer + 4,5,6,7 4 bytes of source address in buffer NB top byte must be zero.
-    command pointer + 8,9,10,11 4 byte pointer within file to start the write from
-
-6 = fsize
-
-    command pointer + 0 = 6
-    returns :
-    command pointer + 8,9,10,11 4 bytes size of file
-
-7 = fopendir
-
-    command pointer + 0 = 7
-    command pointer + 1 ...  = directory name zero terminated
-
-8 = fclosedir
-
-    command pointer + 0 = 8
-
-9 = readdir
-
-    Each read returns the next entry's name in the directory until there
-    are no more entries, at which point it returns 20. The zero-terminated
-    filename is written back into the command block at command_pointer + 4.
-    (Only the name is returned; size, dates and attributes are not.)
-
-    command pointer + 0 = 9
-    command pointer + 4 ... = filename of the next entry (zero terminated)
-
-    return type is FR_OK if read ok, 20 if no more files
-
-10 = fmkdir
-
-    command pointer + 0 = 10
-    command pointer + 1 ... = directory name ( zero terminated)
-
-11 = fchdir change directory
-
-    command pointer + 0 = 11
-    command pointer + 1 ... = directory name ( zero terminated)
-
-    /* Change current directory of the current drive ("dir1" under root directory) */
-    f_chdir("/dir1");
-
-    /* Change current directory of the drive "flash" and set it as current drive (at Unix style volume ID) */
-    f_chdir("/flash/dir1");
-
-12 = frename
-
-    command pointer + 0 = 12
-    command pointer + 1 ... =  old name ( zero terminated)
-    command pointer + ..newname ( zero terminated)
-
-13 = fgetfree
-
-    command pointer + 0 = 13
-
-    return
-    command pointer + 8,9,10,11 4 bytes freespace in bytes / 256
-
-14 = fmount ( not sure how this works yet ) ( this could support swapping SDCARDs while running)
-
-    command pointer + 0 = 14
-
-15 = funmount ( not sure how this works yet )
-
-    command pointer + 0 = 15
-
-16 = funlnk ( delete a file or directory)
-
-    command pointer + 0 = 16
-    command pointer + 1 = filename zero terminated
-
-20 = SDCARD type
-    command pointer + 0 = 20
-    return Base + 4 = 0 or 1 depending on SDCARD type
-
-## Frame buffer
-
-This is taken from PiTubeDirect but cutdown to support just the beeb fonts. writes to &FCA0 are directed to HDMI port. OSWRCH redirection can be enabled by calling a helper function.
-
-## Helper function
-
-There are a number helper functions built in. These are accessed by :
-
-  ?&FC88 = function number : CALL &FD00
-  or X% = function number : CALL &FC88
-
-Helper functions include
-
-* 0 help screen
-* 1 Status ( not implemented yet )
-* 2 Screen redirector to HDMI port
-* 3 SRLOAD ADFS rom
-* 4 SRLOAD MMFS rom
-* 5 SRLOAD MMFS2 rom
-* 6 SRLOAD BeebSCSI helper rom
-* 7 SRLOAD ATS rom
-* 8 SRLOAD AUNFS (BBC B) rom
-* 9 SRLOAD AUNFS (Master 128) rom
-* 10-15 SRLOAD user rom ROM10-ROM15
-
-
-## Internal status and control
-
-&FCCA selects the command/status address
-&FCCB is the return status / command write.
-
-Addresses currently defined
-
-* &00 : Read only : JIM RAM size in 16Mbyte steps
-
-## Pi1MHz.cfg options
-
-Configuration lives in `/Pi1MHz/Pi1MHz.cfg` on the SD card (a commented
-template ships in the firmware). Only two keys are still read from
-cmdline.txt, because they are needed before the SD card is mounted:
-
-* LED override : depending on the pi use either bcm2708.disk_led_gpio=xx or bcm2709.disk_led_gpio=xx where xx is the pi GPIO number
-* baud_rate=xxxx : serial debug port baud rate
-
-Everything below goes in Pi1MHz.cfg:
-
-* BeebAudio_Off=1 to turn off Audio out of the Beeb (and, for M5000, enable stereo on the headphone jack of Pi3B+); applies to whichever PWM audio emulator is active (M5000 or BeebSID)
-* M5000_Gain=xxxx : Over rides default gain of 3. Add 1000 to disable auto scaling as well. Auto scaling reduces the gain if the signal clips
-* watchdog=xx : hardware watchdog timeout in seconds (1-15); 0 or unset leaves it off after boot
-* Rampage_addr=0xYY : set the base address of the page write ram registers default &FD, -1 to disable
-* Rambyte_addr=0xYY : set the base address of the byte write ram registers default &00, -1 to disable
-* Harddisc_addr=0xYY : set the base address of the harddisc registers default &40, -1 to disable
-* M5000_addr=-1 : disables the M5000 emulator
-* BeebSID_addr=0x20 : enables BeebSID (SID at `&FC20`, default off). Enabling BeebSID disables M5000 (shared `AUDIO_PIN` / PWM audio path). Use `BeebSID_addr=-1` to leave it off explicitly. Use `BeebAudio_Off=1` (above) to mute the Beeb's own audio while BeebSID plays.
-* Framebuffer_addr=0xYY : set the base address of the frame buffer registers default &A0, -1 to disable
-* Services_addr=0xYY : set the base address of the services port (SD/FAT + AUN commands) default &A6, -1 to disable
-* Helpers_addr=0xYY : set the base address of the helpers registers default &88, -1 to disable
-* Pi1MHznOE=0 : Disables external nOE pin on the buffers,  =1 supports multiple devices on the 1MHz bus
-* SCSIID=xx : Set the SCSI ID of the ADFS/VFS emulation. 0 is default to listens to every id
-* SCSIJUKE=xx : sets the default SCSI jukebox. 0 is default.
-* VFSJUKE=xx : sets the default VFS jukebox. 0 is default.
-
-For the optional WiFi / management-webserver / WebDAV interface,
-Pi1MHz.cfg also accepts `wifi_ssid=`, `wifi_password=`, `wifi_country=`,
-`wifi_hostname=`, `wifi_ip=`, `webdav_user=`, `webdav_password=` and
-related keys.  Those are fully documented in
-[`src/wifi/README.md`](src/wifi/README.md) alongside the per-board
-firmware-file mapping that has to be in place under `/Pi1MHz/wifi/`
-for any of them to take effect.
+Pi1MHz is a Raspberry Pi bare-metal interface for the BBC Micro / Master
+1MHz bus. A Pi plugged into the 1MHz bus (through a level-shifter board)
+becomes, all at once:
+
+- **Hard discs** - ADFS via BeebSCSI-compatible SCSI emulation, up to 8
+  drives from image files on the SD card, plus read-only VFS/LaserDisc
+  volumes for Domesday software
+- **MMFS / MMFS2** - DFS disc images served from the SD card
+- **Music 5000 / 3000** synthesiser, and an optional **SID** chip (BeebSID)
+- **JIM RAM expansion** - hundreds of megabytes of paged RAM
+- **HDMI output** - a screen redirector with a mouse-pointer overlay
+- **WiFi** (on WiFi-equipped Pis) - a built-in web interface and WebDAV
+  mount for the SD card
+- **Econet over WiFi** (AUN) and **Teletext** (from an internet stream)
+- **USB file access** (MTP) - the Pi appears as a portable device
+
+Everything is driven from image files and a single plain-text config file
+on the SD card - nothing to compile.
+
+## Supported hardware
+
+- BBC Micro (B / B+) or BBC Master with a 1MHz bus, plus a Pi1MHz
+  level-shifter board.
+- Raspberry Pi Zero / Zero W, Pi Zero 2 W, or Pi 3B+. A plain Pi Zero
+  works for everything except WiFi; the Pi 3A+ is expected to work but is
+  not formally tested.
+- An SD card, and 5V power for the Pi (often taken from the BBC).
+
+WiFi additionally needs the brcmfmac firmware blobs for the Pi's chip
+under `/Pi1MHz/wifi/` on the SD card (the standard firmware set includes
+them).
+
+## Getting started
+
+Copy the contents of `firmware/` to the root of the SD card, insert it,
+connect the interface, and power on. Then, from BASIC:
+
+    X%=0 : CALL &FC88
+
+should show the help screen - proof the Pi is alive on the bus. (On a
+fast machine with a slow SD card, an extra CTRL-BREAK may be needed.)
+
+The full walk-through is in the [Getting started](docs/user/getting-started.md)
+guide.
+
+## Documentation
+
+- **[User guide](docs/user/README.md)** - getting started, the full
+  `Pi1MHz.cfg` reference, and a page per feature (hard discs, MMFS,
+  sound, RAM, screen, WiFi, WebDAV, Econet/AUN, teletext, USB).
+- **[Advanced / programming reference](docs/advanced.md)** - the
+  memory-mapped registers and command protocols for writing 6502 software
+  that talks to Pi1MHz directly (JIM RAM, the SD/FAT services port, the
+  helper calling convention, `kernel.now`/`reboot.now`).
+- **[WiFi / webserver internals](src/wifi/README.md)** - per-board WiFi
+  firmware mapping and the webserver/WebDAV implementation.
+- **[Credits](CREDITS.md)** - third-party sources, licences and
+  contributors.
 
 ## Notes
 
-- PCB space is limited for a dedicated serial debug connector on some builds.
-- A custom 3-pin header (0V, TX, RX) can be fitted under a Pi Zero.
+- PCB space is limited for a dedicated serial debug connector on some
+  builds; a custom 3-pin header (0V, TX, RX) can be fitted under a Pi Zero.
 
-## Credits and Acknowledgements
+## Credits and acknowledgements
 
 Pi1MHz builds on FatFs, lwIP, TinyUSB, VICE's FastSID, BeebSCSI,
 PiTubeDirect, PicoWi and others, and ships third-party firmware and ROMs.
@@ -352,16 +74,24 @@ See [CREDITS.md](CREDITS.md) for the full list with sources and licences.
 
 ## Donations
 
-Donations are welcome, especially from commercial kit/board sellers using this project.
+Donations are welcome, especially from commercial kit/board sellers using
+this project.
 
-## SAST Tools
+## SAST tools
 
 - [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source): static analyzer for C, C++, C#, and Java.
 
 ## License
 
-Pi1MHz is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+Pi1MHz is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version.
 
-Pi1MHz is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+Pi1MHz is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+details.
 
-You should have received a copy of the GNU General Public License along with Pi1MHz. If not, see http://www.gnu.org/licenses/.
+You should have received a copy of the GNU General Public License along
+with Pi1MHz. If not, see http://www.gnu.org/licenses/.
