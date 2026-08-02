@@ -871,18 +871,35 @@ static uint8_t s_rejoins_since_healthy;
    dense enough to starve the main loop into a crawl. */
 static uint8_t s_full_restarts_since_healthy;
 /* When the current stretch of health began; 0 while unhealthy.  The restart
-   budget refunds only after 30 s of it - past both the 8 s rejoin and 25 s
-   restart ladders - because one optimistic pass is free after any restart
-   that associates (the freshness clocks are zeroed), and refunding on that
-   pass let a TX-side wedge cycle restart -> join -> "healthy" -> re-wedge ->
-   restart forever, which is the thrash the cap exists to stop. */
+   budget refunds only after this dwell - past the 8 s rejoin and 25 s restart
+   ladders - because one optimistic pass is free after any restart that
+   associates (the freshness clocks are zeroed), and refunding on that pass
+   let a TX-side wedge cycle restart -> join -> "healthy" -> re-wedge ->
+   restart forever, which is the thrash the cap exists to stop.  The dwell
+   must also clear the RX-silence window: a chip that associates but then
+   hears nothing reads "healthy" (link_up, tx not yet dead) for up to
+   RX_SILENCE_LIMIT, so a shorter dwell would refund the budget mid-window
+   and re-arm three restarts every ~50 s.  Keep it strictly past that limit. */
 static uint32_t s_healthy_since_us;
-#define WIFI_LWIP_HEALTH_DWELL_US (30u * 1000000u)
+#define WIFI_LWIP_HEALTH_DWELL_US (WIFI_LWIP_RX_SILENCE_LIMIT_US + 5u * 1000000u)
 #define WIFI_LWIP_REJOIN_MAX_US    (60u * 1000000u)
 
 static uint32_t s_rejoin_interval_us = WIFI_LWIP_REJOIN_FIRST_US;
 static uint32_t s_rejoin_due_us;
 static bool     s_rejoin_scheduled;
+
+/* Arm the next association attempt and grow the backoff.  Schedule first,
+   THEN double, so the first retry really uses the first interval (doubling
+   before scheduling quietly made it 4 s). */
+static void wifi_lwip_schedule_next_rejoin(uint32_t now_us)
+{
+   s_rejoin_due_us = now_us + s_rejoin_interval_us;
+   if (s_rejoin_interval_us < WIFI_LWIP_REJOIN_MAX_US) {
+      s_rejoin_interval_us *= 2u;
+      if (s_rejoin_interval_us > WIFI_LWIP_REJOIN_MAX_US)
+         s_rejoin_interval_us = WIFI_LWIP_REJOIN_MAX_US;
+   }
+}
 
 /* Drive association retries.  Called from wifi_lwip_poll() on every service,
    in both the never-joined and lost-the-link cases - they differ only in
@@ -904,8 +921,14 @@ static void wifi_lwip_rejoin_service(void)
       if (sdio_runtime_tick())
          return;                  /* still working through bring-up */
       if (!sdio_runtime_ready()) {
-         s_full_restart_active = false;   /* ERROR: fall through, retry later */
+         /* ERROR: pace the next attempt on the rejoin backoff rather than
+            re-entering bring-up on the very next pass.  A full restart is
+            several seconds of bus-heavy work; back-to-back failed restarts
+            with no gap are exactly the thrash that starves the main loop -
+            so space them (2 s stretching to a minute) before retrying. */
+         s_full_restart_active = false;
          wifi_lwip_debug_log("full restart failed; will retry");
+         wifi_lwip_schedule_next_rejoin(now_us);
          return;
       }
       s_full_restart_active = false;
@@ -979,10 +1002,20 @@ static void wifi_lwip_rejoin_service(void)
       review before it was ever hit in the field.  ready(), not started():
       a stage that errors AFTER the firmware boot leaves started() true
       with the machine parked at STAGE_ERROR - the same absorbing shape. */
+   /* The restart cap stops *thrash*, but must never leave the machine wedged.
+      When the runtime is parked at STAGE_ERROR a rejoin cannot run at all
+      (sdio_runtime_rejoin_start refuses off a non-DONE stage), so a restart
+      is the ONLY rung that can recover - the cap must not veto it, or three
+      failed restarts latch an absorbing dead state the counter never clears
+      (it only refunds after 30 s+ of health, unreachable at ERROR).  Failed
+      restarts are now backoff-paced above, so uncapped retries here cannot
+      thrash.  The cap therefore only bites when the runtime is still ready
+      and a rejoin remains a viable fallback (TX-wedged / three failed
+      rejoins) - exactly the thrash it was written for. */
    if ((!sdio_runtime_ready()
         || sdio_runtime_tx_dead_us() >= WIFI_LWIP_TX_DEAD_RESTART_US
         || s_rejoins_since_healthy >= 3u)
-       && s_full_restarts_since_healthy < 3u) {
+       && (s_full_restarts_since_healthy < 3u || !sdio_runtime_ready())) {
       /* Rejoins are not reviving transmit: re-power the chip.  The firmware
          and NVRAM images persist in RAM (cyw43_release_images is never
          called), so the whole bring-up can rerun without touching the SD. */
@@ -1006,15 +1039,8 @@ static void wifi_lwip_rejoin_service(void)
    }
 
    /* Schedule the next attempt whether or not this one could start: if the
-      runtime was busy we simply try again after the same interval.  Schedule
-      first, THEN grow the backoff, so the first retry really does use the
-      first interval - doubling before scheduling quietly made it 4 s. */
-   s_rejoin_due_us = now_us + s_rejoin_interval_us;
-   if (s_rejoin_interval_us < WIFI_LWIP_REJOIN_MAX_US) {
-      s_rejoin_interval_us *= 2u;
-      if (s_rejoin_interval_us > WIFI_LWIP_REJOIN_MAX_US)
-         s_rejoin_interval_us = WIFI_LWIP_REJOIN_MAX_US;
-   }
+      runtime was busy we simply try again after the same interval. */
+   wifi_lwip_schedule_next_rejoin(now_us);
 }
 
 void wifi_lwip_poll(void)

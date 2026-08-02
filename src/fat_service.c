@@ -149,9 +149,13 @@ bool fat_service_file_in_use(const char *host_path)
    const char *q = fat_path_norm(host_path);
    size_t qlen = strlen(q);
 
-   /* The raw-sector client's store (see fat_raw_sector_seen above).  Any
-      BEEB.MMB, and any directory containing one, counts - the sector
-      numbers MMFS cached do not care which path the file was reached by. */
+   /* The raw-sector client's store (see fat_raw_sector_seen above).  MMFS
+      reads BEEB.MMB from the ROOT of the card (its own minimal FAT reader
+      scans the root directory for that fixed name), so the file can only
+      live there - matching a BEEB.MMB basename (case-insensitive) and the
+      root path covers it.  We do not need to walk parent directories: MMFS
+      cannot reach an MMB in a subdirectory, so no such directory can hold
+      the sectors it cached. */
    if (fat_raw_sector_seen) {
       static const char mmb[] = "BEEB.MMB";
       size_t base = qlen;
