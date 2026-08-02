@@ -118,6 +118,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "rpi/audio.h"
 #include "framebuffer/framebuffer.h"
 #include "services.h"
+#include "net_service.h"
 #include "helpers.h"
 #include "mouseredirect.h"
 #include "videoplayer.h"
@@ -151,6 +152,10 @@ static emulator_list emulator[] = {
    {"usb",usb_init, 0x00, 1 },
    {"wifi",wifi_emulator_init, 0x00, 1 },
    {"aun",aun_emulator_init, 0x00, 1 },
+   /* IP sockets on the services port (commands 45-79). After wifi and aun so
+      its poll runs once lwIP has drained inbound frames; off unless
+      net_enable=1 in Pi1MHz.cfg. */
+   {"net",net_service_init, 0x00, 1 },
    {"Teletext",teletext_emulator_init, 0x10, 1 },  // Acorn Teletext Adapter at &FC10
    /* Last, so its poll callback re-arms the watchdog only after every other
       emulator has had its turn - a poll that stops responding still trips it. */

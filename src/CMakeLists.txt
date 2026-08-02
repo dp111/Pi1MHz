@@ -253,6 +253,8 @@ set(FrameBuffer_emulator_files
 set(services_emulator_files
    services_emulator.c
    fat_service.c
+   net_service.c
+   net_service.h
    AUN/aun.c
    AUN/aun.h
    AUN/aun_config.c

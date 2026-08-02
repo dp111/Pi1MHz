@@ -20,7 +20,9 @@
 #define SERVICE_CMD_FAT_LAST    29u
 #define SERVICE_CMD_AUN_FIRST   30u   /* Econet over AUN/UDP - AUN/        */
 #define SERVICE_CMD_AUN_LAST    44u
-/* 45..255 unallocated */
+#define SERVICE_CMD_NET_FIRST   45u   /* IP sockets / N: device - net_service.c */
+#define SERVICE_CMD_NET_LAST    79u   /* raw sockets 45-56, N: device 60-65    */
+/* 80..255 unallocated */
 
 /* Handler for one service's command range.  FIQ context: called from the
    FRED write callback, so anything slow must be queued for the main loop
@@ -49,6 +51,14 @@ bool services_register(uint8_t first, uint8_t last, service_command_fn handler);
    state through its command (the FujiNet PROCEED-then-STATUS model) and this
    API can grow a line-only variant when that lands. */
 void services_irq(uint8_t source, uint8_t status);
+
+/* Line-only nIRQ: raise/lower this service's contribution to the shared
+   nIRQ line WITHOUT touching the base+5 status byte (that byte is AUN's
+   AUNFS-ROM ABI).  A service that signals events this way exposes the detail
+   through its own status command (the FujiNet PROCEED-then-STATUS model)
+   rather than a shared status register.  This is the path new services (the
+   IP/net service) use; AUN keeps services_irq(). */
+void services_irq_set(uint8_t source, bool asserted);
 
 void services_emulator_init(uint8_t instance, uint8_t address);
 

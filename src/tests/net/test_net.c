@@ -1,0 +1,357 @@
+/*
+  Host tests for the IP/net service (net_service.c).  lwIP, the Pi1MHz core
+  and the services framework are stubbed (stubs/), so the tests drive the real
+  FRED command dispatch and replay lwIP events (connected/recv/sent/err/dns)
+  to exercise the full socket lifecycle under ASan/UBSan.  Mirrors the
+  tests/services harness.
+*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "Pi1MHz.h"
+#include "services.h"
+#include "net_service.h"
+#include "config.h"
+#include "wifi/wifi_lwip.h"
+#include "lwip/altcp.h"
+#include "lwip/dns.h"
+#include "lwip/pbuf.h"
+#include "lwip/ip_addr.h"
+#include "lwip/err.h"
+
+/* ---- harness state / stub implementations -------------------------------- */
+static Pi1MHz_t g_pi;
+Pi1MHz_t *Pi1MHz = &g_pi;
+
+static uint8_t   g_reg[256];
+static func_ptr  g_poll;
+static service_command_fn g_cmd;
+static int       g_nirq_asserted;
+
+void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data) { g_reg[addr & 0xffu] = data; }
+void Pi1MHz_Register_Poll(func_ptr f) { g_poll = f; }
+void Pi1MHz_nIRQ_ASSERT(uint8_t src) { (void)src; g_nirq_asserted = 1; }
+void Pi1MHz_nIRQ_CLEAR (uint8_t src) { (void)src; g_nirq_asserted = 0; }
+
+bool services_register(uint8_t first, uint8_t last, service_command_fn h)
+{ (void)first; (void)last; g_cmd = h; return true; }
+void services_irq_set(uint8_t source, bool asserted)
+{ (void)source; g_nirq_asserted = asserted ? 1 : 0; }
+
+static const char *g_net_enable = "1";
+const char *config_get(const char *prop)
+{ return (strcmp(prop, "net_enable") == 0) ? g_net_enable : NULL; }
+
+static wifi_lwip_context_t g_ctx;
+static int g_kicks;
+const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &g_ctx; }
+void wifi_lwip_rx_kick(void) { g_kicks++; }
+
+/* altcp stub machinery */
+static struct altcp_pcb *g_pcbs[64];
+static int g_npcbs;
+static struct altcp_pcb *g_last_pcb;
+static int   g_force_new_null;
+static u16_t g_default_sndbuf = 4096u;
+static err_t g_connect_ret = ERR_OK;
+static uint8_t g_tx[65536];
+static uint32_t g_tx_len;
+
+struct altcp_pcb *altcp_new_ip_type(void *a, u8_t t)
+{
+   (void)a; (void)t;
+   if (g_force_new_null) return NULL;
+   struct altcp_pcb *p = calloc(1, sizeof *p);
+   p->t_sndbuf = g_default_sndbuf;
+   p->t_write_err = ERR_OK;
+   g_pcbs[g_npcbs++] = p;
+   g_last_pcb = p;
+   return p;
+}
+void altcp_arg (struct altcp_pcb *c, void *a) { c->arg = a; }
+void altcp_recv(struct altcp_pcb *c, altcp_recv_fn f) { c->recv = f; }
+void altcp_sent(struct altcp_pcb *c, altcp_sent_fn f) { c->sent = f; }
+void altcp_poll(struct altcp_pcb *c, altcp_poll_fn f, u8_t i) { (void)i; c->poll = f; }
+void altcp_err (struct altcp_pcb *c, altcp_err_fn f) { c->err = f; }
+err_t altcp_connect(struct altcp_pcb *c, const ip_addr_t *ip, u16_t port,
+                    altcp_connected_fn f)
+{ (void)ip; (void)port; c->connected = f; return g_connect_ret; }
+u16_t altcp_sndbuf(struct altcp_pcb *c) { return c->t_sndbuf; }
+err_t altcp_write(struct altcp_pcb *c, const void *d, u16_t len, u8_t fl)
+{
+   (void)fl;
+   if (c->t_write_err != ERR_OK) return c->t_write_err;
+   if (g_tx_len + len <= sizeof g_tx) { memcpy(g_tx + g_tx_len, d, len); g_tx_len += len; }
+   return ERR_OK;
+}
+void altcp_output(struct altcp_pcb *c) { (void)c; }
+void altcp_recved(struct altcp_pcb *c, u16_t len) { c->t_recved += len; }
+err_t altcp_close(struct altcp_pcb *c) { c->t_closed = 1; return ERR_OK; }
+void altcp_abort(struct altcp_pcb *c) { c->t_closed = 1; }
+
+/* dns stub */
+static int       g_dns_sync;
+static ip_addr_t g_dns_result;
+static const char *g_dns_name;
+static dns_found_callback g_dns_cb;
+static void      *g_dns_arg;
+err_t dns_gethostbyname(const char *name, ip_addr_t *addr, dns_found_callback cb,
+                        void *arg)
+{
+   g_dns_name = name; g_dns_cb = cb; g_dns_arg = arg;
+   if (g_dns_sync) { *addr = g_dns_result; return ERR_OK; }
+   return ERR_INPROGRESS;
+}
+
+/* pbuf stub */
+static int g_pbuf_live;
+static struct pbuf *make_pbuf(const void *data, u16_t len)
+{
+   struct pbuf *p = calloc(1, sizeof *p);
+   p->payload = malloc(len ? len : 1u);
+   if (data) memcpy(p->payload, data, len);
+   p->len = p->tot_len = len;
+   g_pbuf_live++;
+   return p;
+}
+u8_t pbuf_free(struct pbuf *p)
+{
+   while (p) { struct pbuf *n = p->next; free(p->payload); free(p); g_pbuf_live--; p = n; }
+   return 1;
+}
+
+/* ---- test framework ------------------------------------------------------ */
+static int checks, fails;
+#define CHECK(cond, msg) do { checks++; \
+   if (!(cond)) { fails++; printf("  FAIL: %s\n", (msg)); } \
+   else printf("  ok: %s\n", (msg)); } while (0)
+
+#define RES 0xA6u
+static uint32_t CP(unsigned h) { return 0x100u + h * 0x100u; }
+
+static void jwr8 (uint32_t o, uint8_t v)  { Pi1MHz->JIM_ram[o] = v; }
+static void jwr24(uint32_t o, uint32_t v) { uint8_t *p=&Pi1MHz->JIM_ram[o]; p[0]=v; p[1]=v>>8; p[2]=v>>16; }
+static void jwr32(uint32_t o, uint32_t v) { uint8_t *p=&Pi1MHz->JIM_ram[o]; p[0]=v; p[1]=v>>8; p[2]=v>>16; p[3]=v>>24; }
+static uint8_t  jrd8 (uint32_t o) { return Pi1MHz->JIM_ram[o]; }
+static uint32_t jrd24(uint32_t o) { const uint8_t*p=&Pi1MHz->JIM_ram[o]; return p[0]|(p[1]<<8)|(p[2]<<16); }
+
+/* Issue a command on handle h and return the result byte. */
+static uint8_t issue(uint8_t cmd, unsigned h)
+{
+   jwr8(CP(h), cmd);
+   g_cmd(CP(h), RES, (uint8_t)h);
+   g_poll();
+   return g_reg[RES];
+}
+
+static void world_reset(void)
+{
+   /* Do NOT free pcbs here: the net_h handle table (static in net_service.c)
+      still points at the previous test's pcbs, and the reset teardown run by
+      net_service_init below will abort them - freeing first would be a
+      use-after-free.  Every pcb ever allocated is tracked in g_pcbs and freed
+      once at program exit. */
+   memset(&g_pi, 0, sizeof g_pi);
+   memset(g_reg, 0, sizeof g_reg);
+   g_tx_len = 0; g_kicks = 0; g_force_new_null = 0;
+   g_default_sndbuf = 4096u; g_connect_ret = ERR_OK; g_dns_sync = 0;
+   g_net_enable = "1"; g_ctx.address_ready = true;
+   net_service_init(3u, 0u);
+   g_poll();                 /* clear the initial reset_pending */
+}
+
+/* Open handle h as TCP and drive it to CONNECTED. */
+static void connect_handle(unsigned h)
+{
+   jwr8(CP(h) + 1u, NET_TYPE_TCP); issue(NET_CMD_OPEN, h);
+   jwr8(CP(h)+1,1); jwr8(CP(h)+2,2); jwr8(CP(h)+3,3); jwr8(CP(h)+4,4);
+   jwr8(CP(h)+5,0x50); jwr8(CP(h)+6,0);   /* 1.2.3.4:80 */
+   issue(NET_CMD_CONNECT, h);             /* -> CONNECTING */
+   g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+   issue(NET_CMD_CONNECT, h);             /* poll -> CONNECTED */
+}
+
+int main(void)
+{
+   printf("== net service: open / status / gate ==\n");
+   world_reset();
+   jwr8(CP(0) + 1u, NET_TYPE_TCP);
+   CHECK(issue(NET_CMD_OPEN, 0) == NET_OK, "open TCP handle 0 -> OK");
+   CHECK(issue(NET_CMD_STATUS, 0) == NET_OK, "status -> OK");
+   CHECK(jrd8(CP(0) + 1u) == NET_ST_IDLE, "status state = IDLE after open");
+   jwr8(CP(0) + 1u, NET_TYPE_TCP);
+   CHECK(issue(NET_CMD_OPEN, 0) == NET_ERR_INUSE, "re-open same handle -> INUSE");
+   jwr8(CP(1) + 1u, NET_TYPE_UDP);
+   CHECK(issue(NET_CMD_OPEN, 1) == NET_ERR_UNSUPPORTED, "open UDP -> UNSUPPORTED (stage 1)");
+   CHECK(issue(NET_CMD_UDP_SENDTO, 1) == NET_ERR_UNSUPPORTED, "udp_sendto -> UNSUPPORTED");
+
+   printf("== disabled gate ==\n");
+   world_reset();
+   g_net_enable = NULL; net_service_init(3u, 0u); g_poll();
+   jwr8(CP(0) + 1u, NET_TYPE_TCP);
+   CHECK(issue(NET_CMD_OPEN, 0) == NET_ERR_DISABLED, "net_enable off -> DISABLED");
+
+   printf("== connect lifecycle ==\n");
+   world_reset();
+   jwr8(CP(0) + 1u, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+   g_ctx.address_ready = false;
+   CHECK(issue(NET_CMD_CONNECT, 0) == NET_PENDING, "connect with no IP -> PENDING (no pcb)");
+   CHECK(g_npcbs == 0, "no pcb created before address_ready");
+   g_ctx.address_ready = true;
+   jwr8(CP(0)+1,93); jwr8(CP(0)+2,184); jwr8(CP(0)+3,216); jwr8(CP(0)+4,34);
+   jwr8(CP(0)+5,0x50); jwr8(CP(0)+6,0);
+   CHECK(issue(NET_CMD_CONNECT, 0) == NET_PENDING, "connect -> PENDING (CONNECTING)");
+   CHECK(g_npcbs == 1 && g_last_pcb->connected != NULL, "pcb created, connected cb registered");
+   CHECK(g_last_pcb->rcv_wnd == NET_RX_RING_SIZE, "rcv_wnd clamped to ring size");
+   g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+   CHECK(issue(NET_CMD_CONNECT, 0) == NET_OK, "after connected cb -> OK");
+   issue(NET_CMD_STATUS, 0);
+   CHECK(jrd8(CP(0)+1) == NET_ST_CONNECTED, "status state CONNECTED");
+   CHECK((jrd8(CP(0)+2) & NET_FLAG_CONNECTED) != 0, "status flag CONNECTED set");
+   CHECK(jrd8(CP(0)+3)==93 && jrd8(CP(0)+6)==34, "status reports remote IP 93.184.216.34");
+
+   printf("== connect failure ==\n");
+   world_reset();
+   jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+   jwr8(CP(0)+1,1); jwr8(CP(0)+5,0x50);
+   issue(NET_CMD_CONNECT, 0);
+   g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_ABRT);  /* refused */
+   CHECK(issue(NET_CMD_CONNECT, 0) == NET_ERR_CONN, "connect refused -> ERR_CONN");
+
+   printf("== send ==\n");
+   world_reset();
+   connect_handle(0);
+   {
+      static const uint8_t payload[] = "GET / HTTP/1.0\r\n\r\n";
+      uint32_t len = (uint32_t)sizeof payload - 1u;
+      memcpy(&Pi1MHz->JIM_ram[0x8000], payload, len);
+      jwr24(CP(0)+1, len); jwr32(CP(0)+4, 0x8000);
+      CHECK(issue(NET_CMD_SEND, 0) == NET_OK, "send -> OK");
+      CHECK(jrd24(CP(0)+1) == len, "send reports full length queued");
+      CHECK(g_tx_len == len && memcmp(g_tx, payload, len) == 0, "TX bytes match payload");
+      CHECK(g_kicks > 0, "send kicked the RX drain");
+   }
+   g_last_pcb->t_sndbuf = 0;
+   jwr24(CP(0)+1, 10); jwr32(CP(0)+4, 0x8000);
+   issue(NET_CMD_SEND, 0);
+   CHECK(jrd24(CP(0)+1) == 0, "send with full sndbuf reports 0 queued");
+
+   printf("== recv + ring ==\n");
+   world_reset();
+   connect_handle(0);
+   {
+      static const uint8_t data[] = "HTTP/1.0 200 OK";
+      uint16_t len = (uint16_t)(sizeof data - 1u);
+      struct pbuf *p = make_pbuf(data, len);
+      err_t r = g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p, ERR_OK);
+      CHECK(r == ERR_OK, "recv_cb accepted the segment");
+      CHECK(g_last_pcb->t_recved == len, "recv_cb acked the whole segment");
+      issue(NET_CMD_RECV_AVAIL, 0);
+      CHECK(jrd24(CP(0)+1) == len, "recv_avail reports the buffered bytes");
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_RECV, 0) == NET_OK, "recv -> OK");
+      CHECK(jrd24(CP(0)+1) == len, "recv returns the byte count");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x9000], data, len) == 0, "recv copied the bytes to JIM");
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      issue(NET_CMD_RECV, 0);
+      CHECK(jrd24(CP(0)+1) == 0, "second recv returns 0 (ring drained)");
+   }
+
+   printf("== back-pressure (ERR_MEM park, redeliver) ==\n");
+   world_reset();
+   connect_handle(0);
+   {
+      uint8_t *big = malloc(6000); memset(big, 'A', 6000);
+      struct pbuf *p1 = make_pbuf(big, 6000);
+      CHECK(g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p1, ERR_OK) == ERR_OK,
+            "first 6000-byte segment fits");
+      struct pbuf *p2 = make_pbuf(big, 6000);
+      CHECK(g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p2, ERR_OK) == ERR_MEM,
+            "second segment does not fit -> ERR_MEM (parked)");
+      issue(NET_CMD_RECV_AVAIL, 0);
+      CHECK(jrd24(CP(0)+1) == 6000, "ring still holds only the first segment");
+      jwr24(CP(0)+1, 6000); jwr32(CP(0)+4, 0x2000);
+      issue(NET_CMD_RECV, 0);
+      CHECK(jrd24(CP(0)+1) == 6000, "drained the first segment");
+      CHECK(g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p2, ERR_OK) == ERR_OK,
+            "redelivered parked segment now fits");
+      free(big);
+   }
+
+   printf("== FIN / EOF ==\n");
+   world_reset();
+   connect_handle(0);
+   {
+      static const uint8_t tail[] = "bye";
+      struct pbuf *p = make_pbuf(tail, 3);
+      g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p, ERR_OK);
+      CHECK(g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, NULL, ERR_OK) == ERR_OK,
+            "recv_cb NULL pbuf (FIN) accepted");
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_RECV, 0) == NET_OK, "recv drains the last 3 bytes -> OK");
+      CHECK(jrd24(CP(0)+1) == 3, "got the 3 trailing bytes");
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_RECV, 0) == NET_EOF, "recv after drain + FIN -> NET_EOF");
+      issue(NET_CMD_STATUS, 0);
+      CHECK((jrd8(CP(0)+2) & NET_FLAG_RX_EOF) != 0, "status flag RX_EOF set");
+   }
+
+   printf("== DNS ==\n");
+   world_reset();
+   jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+   g_dns_sync = 1; IP_ADDR4(&g_dns_result, 8, 8, 8, 8);
+   memcpy(&Pi1MHz->JIM_ram[CP(0)+1], "dns.test", 9);
+   CHECK(issue(NET_CMD_DNS, 0) == NET_OK, "dns cache hit -> OK");
+   CHECK(jrd8(CP(0)+4)==8 && jrd8(CP(0)+7)==8, "resolved IP 8.8.8.8 written back");
+   world_reset();
+   jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+   g_dns_sync = 0;
+   memcpy(&Pi1MHz->JIM_ram[CP(0)+1], "slow.test", 10);
+   CHECK(issue(NET_CMD_DNS, 0) == NET_PENDING, "dns async -> PENDING");
+   {
+      ip_addr_t ip; IP_ADDR4(&ip, 1, 1, 1, 1);
+      g_dns_cb(g_dns_name, &ip, g_dns_arg);
+   }
+   CHECK(issue(NET_CMD_DNS, 0) == NET_OK, "dns after callback -> OK");
+   CHECK(jrd8(CP(0)+4)==1 && jrd8(CP(0)+7)==1, "resolved async IP 1.1.1.1 written back");
+
+   printf("== bounds checks ==\n");
+   world_reset();
+   connect_handle(0);
+   jwr24(CP(0)+1, 100); jwr32(CP(0)+4, 0xFFFFF0);   /* offset past region */
+   CHECK(issue(NET_CMD_SEND, 0) == NET_ERR_PARAM, "send with OOB JIM offset -> PARAM");
+   jwr24(CP(0)+1, 100); jwr32(CP(0)+4, 0xFFFFF0);
+   CHECK(issue(NET_CMD_RECV, 0) == NET_ERR_PARAM, "recv with OOB JIM offset -> PARAM");
+
+   printf("== close ==\n");
+   world_reset();
+   connect_handle(0);
+   {
+      struct altcp_pcb *pcb = g_last_pcb;
+      CHECK(issue(NET_CMD_CLOSE, 0) == NET_OK, "close -> OK");
+      CHECK(pcb->t_closed == 1, "pcb was closed");
+      issue(NET_CMD_STATUS, 0);
+      CHECK(jrd8(CP(0)+1) == NET_ST_FREE, "handle FREE after close");
+   }
+
+   printf("== BBC reset teardown ==\n");
+   world_reset();
+   connect_handle(0);
+   {
+      struct altcp_pcb *pcb = g_last_pcb;
+      net_service_init(3u, 0u);     /* simulate a BBC reset re-running init */
+      g_poll();                     /* first poll does the teardown */
+      CHECK(pcb->t_closed == 1, "reset aborted the live pcb");
+      issue(NET_CMD_STATUS, 0);
+      CHECK(jrd8(CP(0)+1) == NET_ST_FREE, "handle FREE after reset");
+   }
+
+   /* free the last test's pcbs so LSan is clean */
+   for (int i = 0; i < g_npcbs; i++) free(g_pcbs[i]);
+   CHECK(g_pbuf_live == 0, "no pbuf leaked across the suite");
+
+   printf("\n%d checks, %d failures\n", checks, fails);
+   printf(fails ? "NET SERVICE TESTS FAILED\n" : "NET SERVICE TESTS PASSED\n");
+   return fails ? 1 : 0;
+}

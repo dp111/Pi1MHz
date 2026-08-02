@@ -64,6 +64,19 @@ void services_irq(uint8_t source, uint8_t status)
       Pi1MHz_nIRQ_CLEAR(source);
 }
 
+void services_irq_set(uint8_t source, bool asserted)
+{
+   /* Line-only: raise/lower this service's nIRQ contribution without touching
+      the base+5 status byte (that byte is AUN's grandfathered ABI).  The
+      Pi1MHz nIRQ layer already ORs sources by id, so a new service signals an
+      event here and the Beeb reads the detail back through the service's own
+      status command (the FujiNet PROCEED-then-STATUS model). */
+   if (asserted)
+      Pi1MHz_nIRQ_ASSERT(source);
+   else
+      Pi1MHz_nIRQ_CLEAR(source);
+}
+
 static void services_emulator_update_address(void)
 {
    // Write the low 16 bits of the address back for the Beeb to read, and
