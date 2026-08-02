@@ -34,7 +34,10 @@
                 out: [1..3] bytes actually read (0 = none yet; result NET_EOF
                      once the peer closed and the ring has drained)
     recv_avail(52) out: [1..3] bytes waiting in the RX ring
-    bind  (48)  in : [1..2] local UDP port (0 = ephemeral)
+    bind  (48)  in : [1..2] local port (UDP: bind now; TCP: kept for listen)
+    listen(49)  -  first call opens the listener (NET_PENDING); each later
+                   call yields the next accepted connection's handle in [1]
+                   (NET_OK), or NET_PENDING while none is waiting
     udp_sendto(55) in : [1..4] IPv4, [5..6] port, [7..9] length,
                         [10..13] JIM source offset;  out: [7..9] length sent
     udp_recvfrom(56) in : [7..9] max length, [10..13] JIM dest offset
@@ -70,8 +73,8 @@ void net_service_init(uint8_t instance, uint8_t address);
 #define NET_CMD_OPEN         45u
 #define NET_CMD_DNS          46u
 #define NET_CMD_CONNECT      47u
-#define NET_CMD_BIND         48u   /* UDP / listen (later stage)             */
-#define NET_CMD_LISTEN       49u   /* inbound TCP (later stage)              */
+#define NET_CMD_BIND         48u   /* set local port (UDP bind / TCP listen) */
+#define NET_CMD_LISTEN       49u   /* accept inbound TCP on the bound port    */
 #define NET_CMD_SEND         50u
 #define NET_CMD_RECV         51u
 #define NET_CMD_RECV_AVAIL   52u

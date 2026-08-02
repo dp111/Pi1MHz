@@ -15,6 +15,7 @@ typedef err_t (*altcp_sent_fn)(void *arg, struct altcp_pcb *conn, u16_t len);
 typedef err_t (*altcp_poll_fn)(void *arg, struct altcp_pcb *conn);
 typedef void  (*altcp_err_fn)(void *arg, err_t err);
 typedef err_t (*altcp_connected_fn)(void *arg, struct altcp_pcb *conn, err_t err);
+typedef err_t (*altcp_accept_fn)(void *arg, struct altcp_pcb *new_conn, err_t err);
 
 struct altcp_pcb {
    void            *arg;
@@ -23,6 +24,9 @@ struct altcp_pcb {
    altcp_poll_fn    poll;
    altcp_err_fn     err;
    altcp_connected_fn connected;
+   altcp_accept_fn  accept;
+   u16_t            bound_port;
+   int              listening;
    u16_t            rcv_wnd;
    u16_t            rcv_ann_wnd;
    /* test control / capture */
@@ -41,6 +45,9 @@ void  altcp_poll (struct altcp_pcb *conn, altcp_poll_fn poll, u8_t interval);
 void  altcp_err  (struct altcp_pcb *conn, altcp_err_fn err);
 err_t altcp_connect(struct altcp_pcb *conn, const ip_addr_t *ipaddr,
                     u16_t port, altcp_connected_fn connected);
+err_t altcp_bind(struct altcp_pcb *conn, const ip_addr_t *ipaddr, u16_t port);
+struct altcp_pcb *altcp_listen(struct altcp_pcb *conn);
+void  altcp_accept(struct altcp_pcb *conn, altcp_accept_fn accept);
 u16_t altcp_sndbuf(struct altcp_pcb *conn);
 err_t altcp_write(struct altcp_pcb *conn, const void *dataptr, u16_t len,
                   u8_t apiflags);

@@ -78,6 +78,10 @@ void altcp_err (struct altcp_pcb *c, altcp_err_fn f) { c->err = f; }
 err_t altcp_connect(struct altcp_pcb *c, const ip_addr_t *ip, u16_t port,
                     altcp_connected_fn f)
 { (void)ip; (void)port; c->connected = f; return g_connect_ret; }
+err_t altcp_bind(struct altcp_pcb *c, const ip_addr_t *ip, u16_t port)
+{ (void)ip; c->bound_port = port; return ERR_OK; }
+struct altcp_pcb *altcp_listen(struct altcp_pcb *c) { c->listening = 1; return c; }
+void altcp_accept(struct altcp_pcb *c, altcp_accept_fn f) { c->accept = f; }
 u16_t altcp_sndbuf(struct altcp_pcb *c) { return c->t_sndbuf; }
 err_t altcp_write(struct altcp_pcb *c, const void *d, u16_t len, u8_t fl)
 {
@@ -221,7 +225,7 @@ int main(void)
    CHECK(issue(NET_CMD_OPEN, 0) == NET_ERR_INUSE, "re-open same handle -> INUSE");
    jwr8(CP(1) + 1u, NET_TYPE_UDP);
    CHECK(issue(NET_CMD_OPEN, 1) == NET_OK, "open UDP -> OK");
-   CHECK(issue(NET_CMD_LISTEN, 1) == NET_ERR_UNSUPPORTED, "listen -> UNSUPPORTED (later stage)");
+   CHECK(issue(NET_CMD_LISTEN, 1) == NET_ERR_NOTOPEN, "listen on a UDP handle -> NOTOPEN");
 
    printf("== disabled gate ==\n");
    world_reset();
@@ -435,6 +439,29 @@ int main(void)
       jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
       issue(NET_CMD_RECV, 0);          /* drain (poll recomputes nIRQ) */
       CHECK(g_nirq_asserted == 0, "nIRQ cleared after the Beeb drains");
+   }
+
+   printf("== listen / accept ==\n");
+   world_reset();
+   jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+   jwr8(CP(0)+1, 0x40); jwr8(CP(0)+2, 0x1F);        /* bind port 8000 = 0x1F40 */
+   CHECK(issue(NET_CMD_BIND, 0) == NET_OK, "bind port 8000 -> OK");
+   CHECK(issue(NET_CMD_LISTEN, 0) == NET_PENDING, "listen -> PENDING (listener up)");
+   {
+      struct altcp_pcb *lp = g_last_pcb;
+      struct altcp_pcb *np;
+      uint8_t nh;
+      CHECK(lp->listening && lp->accept != NULL, "listen pcb created, accept cb set");
+      CHECK(lp->bound_port == 8000u, "listener bound to port 8000");
+      CHECK(issue(NET_CMD_LISTEN, 0) == NET_PENDING, "listen poll -> PENDING (no conn yet)");
+      np = altcp_new_ip_type(NULL, 0u);              /* simulate an inbound conn */
+      CHECK(lp->accept(lp->arg, np, ERR_OK) == ERR_OK, "accept cb accepted the connection");
+      CHECK(issue(NET_CMD_LISTEN, 0) == NET_OK, "listen poll -> OK (connection ready)");
+      nh = jrd8(CP(0)+1);
+      CHECK(nh != 0u && nh < NET_MAX_HANDLES, "yielded a fresh handle index");
+      CHECK(np->arg != NULL, "new pcb's arg wired to the accepted handle");
+      issue(NET_CMD_STATUS, nh);
+      CHECK(jrd8(CP(nh)+1) == NET_ST_CONNECTED, "accepted handle is CONNECTED");
    }
 
    /* free the last test's pcbs so LSan is clean */

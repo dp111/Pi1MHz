@@ -47,6 +47,9 @@ typedef struct {
    struct udp_pcb   *upcb;          /* UDP pcb                              */
    ip_addr_t         remote_ip;
    uint16_t          remote_port;
+   uint16_t          bind_port;     /* local port for TCP listen / UDP bind */
+   bool              accept_ready;  /* a listener has an accepted conn ready*/
+   uint8_t           accept_h;      /* its handle index (when accept_ready) */
    ip_addr_t         dns_ip;        /* dns_gethostbyname target             */
    /* RX ring: single-context (the lwIP recv callbacks and the recv commands
       all run on the main loop), so no locking.  count distinguishes full
@@ -291,6 +294,48 @@ static void net_tcp_err(void *arg, err_t err)
    h->state = NET_ST_ERROR;
 }
 
+/* Attach this service's callbacks (and the ring-sized receive window) to a
+   TCP pcb - shared by an outbound connect and an inbound accept. */
+static void net_tcp_bind_callbacks(net_handle_t *h, struct altcp_pcb *pcb)
+{
+#if !LWIP_ALTCP
+   pcb->rcv_wnd     = NET_RX_RING_SIZE;
+   pcb->rcv_ann_wnd = NET_RX_RING_SIZE;
+#endif
+   altcp_arg (pcb, h);
+   altcp_recv(pcb, net_tcp_recv);
+   altcp_sent(pcb, net_tcp_sent);
+   altcp_poll(pcb, net_tcp_poll, 4u);
+   altcp_err (pcb, net_tcp_err);
+}
+
+/* Inbound connection on a listening handle: claim a FREE handle for it and
+   record it in the listener's one-deep backlog for the Beeb to collect. */
+static err_t net_tcp_accept(void *arg, struct altcp_pcb *newpcb, err_t err)
+{
+   net_handle_t *lh = (net_handle_t *)arg;   /* the listening handle */
+   net_handle_t *nh = NULL;
+   unsigned int  idx = 0;
+
+   if (lh == NULL || err != ERR_OK || newpcb == NULL)
+      return ERR_VAL;
+   if (lh->accept_ready)                      /* backlog full: refuse */
+      { altcp_abort(newpcb); return ERR_ABRT; }
+   for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
+      if (net_h[i].state == NET_ST_FREE) { nh = &net_h[i]; idx = i; break; }
+   if (nh == NULL)                            /* no free handle: refuse */
+      { altcp_abort(newpcb); return ERR_ABRT; }
+
+   net_handle_reset(nh);
+   nh->type  = NET_TYPE_TCP;
+   nh->tpcb  = newpcb;
+   nh->state = NET_ST_CONNECTED;
+   net_tcp_bind_callbacks(nh, newpcb);
+   lh->accept_ready = true;
+   lh->accept_h     = (uint8_t)idx;
+   return ERR_OK;
+}
+
 static err_t net_tcp_connected(void *arg, struct altcp_pcb *pcb, err_t err)
 {
    net_handle_t *h = (net_handle_t *)arg;
@@ -351,11 +396,51 @@ static uint8_t do_open(net_handle_t *h, uint32_t cp)
 static uint8_t do_bind(net_handle_t *h, uint32_t cp)
 {
    uint16_t port = (uint16_t)(jim_rd8(cp + 1u) | (jim_rd8(cp + 2u) << 8));
-   if (h->type != NET_TYPE_UDP || h->upcb == NULL)
+   if (h->state == NET_ST_FREE)
       return NET_ERR_NOTOPEN;
-   if (udp_bind(h->upcb, IP_ANY_TYPE, port) != ERR_OK)
-      return NET_ERR_CONN;
+   h->bind_port = port;              /* TCP: kept for a later listen */
+   if (h->type == NET_TYPE_UDP) {
+      if (h->upcb == NULL || udp_bind(h->upcb, IP_ANY_TYPE, port) != ERR_OK)
+         return NET_ERR_CONN;
+   }
    return NET_OK;
+}
+
+/* listen (49): start accepting inbound TCP on the bound port.  First call
+   opens the listener (NET_PENDING); each later call yields the next accepted
+   connection's handle index in [1] (NET_OK), or NET_PENDING while none. */
+static uint8_t do_listen(net_handle_t *h, uint32_t cp)
+{
+   if (h->type != NET_TYPE_TCP || h->state == NET_ST_FREE)
+      return NET_ERR_NOTOPEN;
+
+   if (h->state == NET_ST_IDLE) {
+      struct altcp_pcb *lp = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
+      if (lp == NULL)
+         return NET_ERR_NOMEM;
+      if (altcp_bind(lp, IP_ANY_TYPE, h->bind_port) != ERR_OK) {
+         altcp_close(lp);
+         return NET_ERR_CONN;
+      }
+      h->tpcb = altcp_listen(lp);   /* consumes lp, returns the listen pcb */
+      if (h->tpcb == NULL) {
+         altcp_close(lp);
+         return NET_ERR_NOMEM;
+      }
+      altcp_arg(h->tpcb, h);
+      altcp_accept(h->tpcb, net_tcp_accept);
+      h->state = NET_ST_LISTENING;
+      return NET_PENDING;
+   }
+   if (h->state == NET_ST_LISTENING) {
+      if (h->accept_ready) {
+         h->accept_ready = false;
+         Pi1MHz->JIM_ram[cp + 1u] = h->accept_h;
+         return NET_OK;
+      }
+      return NET_PENDING;
+   }
+   return NET_ERR_NOTOPEN;
 }
 
 /* UDP send: +1..4 IPv4, +5..6 port, +7..9 length, +10..13 JIM source. */
@@ -482,19 +567,10 @@ static uint8_t do_connect(net_handle_t *h, uint32_t cp)
    h->tpcb = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
    if (h->tpcb == NULL)
       return NET_ERR_NOMEM;
-#if !LWIP_ALTCP
-   /* Advertise a window no larger than the ring so the peer can't outrun the
-      Beeb's drain (the ERR_MEM park keeps it drop-free even if lwIP resets
-      these; this just cuts wasted retransmits).  Direct field access is a
-      LWIP_ALTCP==0 shortcut - revisit for TLS.  TODO: Wireshark-verify. */
-   h->tpcb->rcv_wnd     = NET_RX_RING_SIZE;
-   h->tpcb->rcv_ann_wnd = NET_RX_RING_SIZE;
-#endif
-   altcp_arg (h->tpcb, h);
-   altcp_recv(h->tpcb, net_tcp_recv);
-   altcp_sent(h->tpcb, net_tcp_sent);
-   altcp_poll(h->tpcb, net_tcp_poll, 4u);
-   altcp_err (h->tpcb, net_tcp_err);
+   /* The ring-sized window (see net_tcp_bind_callbacks) keeps the peer from
+      outrunning the Beeb's drain; the ERR_MEM park keeps it drop-free even if
+      lwIP resets it.  TODO: Wireshark-verify the advertised window. */
+   net_tcp_bind_callbacks(h, h->tpcb);
 
    if (altcp_connect(h->tpcb, &h->remote_ip, h->remote_port,
                      net_tcp_connected) != ERR_OK) {
@@ -618,6 +694,7 @@ static uint8_t net_dispatch(uint32_t cp, uint8_t data)
       case NET_CMD_DNS:          return do_dns(h, cp);
       case NET_CMD_CONNECT:      return do_connect(h, cp);
       case NET_CMD_BIND:         return do_bind(h, cp);
+      case NET_CMD_LISTEN:       return do_listen(h, cp);
       case NET_CMD_SEND:         return do_send(h, cp);
       case NET_CMD_RECV:         return do_recv(h, cp);
       case NET_CMD_RECV_AVAIL:   return do_recv_avail(h, cp);
