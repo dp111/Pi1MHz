@@ -2217,11 +2217,22 @@ static bool route_status(ws_conn_t *c)
          when taking a reading, and never treat two consecutive views as a
          delta over the interval between them. */
       sdio_runtime_request_pktcnts();
+      sdio_runtime_request_rate();
       if (sdio_runtime_get_rssi(&rssi)) {
          snprintf(tmp, sizeof tmp, "%ld dBm", (long)rssi);
          table_row(&b, "Signal (RSSI)", tmp);
       } else {
          table_row(&b, "Signal (RSSI)", "(querying)");
+      }
+      {
+         int32_t rate;
+         if (sdio_runtime_get_rate(&rate) && rate > 0) {
+            snprintf(tmp, sizeof tmp, "%ld.%ld Mbit/s",
+                     (long)(rate / 2), (long)((rate & 1) * 5));
+            table_row(&b, "Link rate (TX)", tmp);
+         } else {
+            table_row(&b, "Link rate (TX)", "(querying)");
+         }
       }
    }
 
@@ -5686,6 +5697,7 @@ void webserver_poll(void)
       No-op (no SDIO traffic) unless a read is pending. */
    sdio_runtime_rssi_poll();
    sdio_runtime_pktcnts_poll();
+   sdio_runtime_rate_poll();
    sdio_runtime_powersave_poll();
    sdio_runtime_powersave_verify_poll();
 }

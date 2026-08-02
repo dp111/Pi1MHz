@@ -145,6 +145,7 @@ typedef enum {
       /status page is viewed, via sdio_runtime_rssi_poll(). */
    WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI,
    WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS,
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_RATE,
    /* WLC_GET_PM readback.  The join sequence sets PM = 0 and
       sdio_runtime_powersave_poll() re-asserts it after association, but
       neither confirms it stuck - and a station the AP thinks is dozing gets

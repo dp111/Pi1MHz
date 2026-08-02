@@ -299,6 +299,12 @@ bool sdio_runtime_get_rssi(int32_t *out);
 void sdio_runtime_request_pktcnts(void);
 void sdio_runtime_pktcnts_poll(void);
 bool sdio_runtime_get_pktcnts(uint32_t out[5]);
+
+/* On-demand WLC_GET_RATE read, same pattern.  The cached value is the
+   chip's current TX rate in 500 kbit/s units (-1 = auto/unknown). */
+void sdio_runtime_request_rate(void);
+void sdio_runtime_rate_poll(void);
+bool sdio_runtime_get_rate(int32_t *rate_500kbps_out);
 /* Cache a 6-byte MAC the runtime should push into the chip's
    cur_etheraddr iovar at boot.  Must be called BEFORE
    sdio_runtime_start() so the SET_MAC stage picks it up.  Passing

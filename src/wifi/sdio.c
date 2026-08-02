@@ -118,6 +118,15 @@ static bool g_runtime_pktcnt_step_sent;
 static bool g_runtime_pktcnt_request_pending;
 static uint16_t g_runtime_pktcnt_request_id;
 static uint32_t g_runtime_pktcnt_deadline_us;
+
+/* WLC_GET_RATE one-shot, same shape as RSSI/PKTCNTS above. */
+static int32_t g_runtime_rate_500kbps;
+static bool g_runtime_rate_valid;
+static bool g_runtime_rate_query_wanted;
+static bool g_runtime_rate_step_sent;
+static bool g_runtime_rate_request_pending;
+static uint16_t g_runtime_rate_request_id;
+static uint32_t g_runtime_rate_deadline_us;
 static bool g_runtime_rssi_step_sent;
 static uint32_t g_runtime_rssi_step_deadline_us;
 /* MAC the caller (wifi.c) wants the chip to transmit with.  Pushed
@@ -375,6 +384,10 @@ static uint32_t g_runtime_sdio_core_base = CYW43_SDIO_CORE_BASE;
 #define WLC_GET_RADIO 37u
 #define WLC_GET_RSSI 127u
 #define WLC_GET_PM 85u
+/* Current transmit rate in units of 500 kbit/s.  The one number that
+   separates "the link itself is slow" (rate ~= the observed TCP ceiling,
+   an RF problem) from "the link is fast and the host is the bottleneck". */
+#define WLC_GET_RATE 12u
 /* Returns the chip's own packet counters: rx_good, rx_bad, tx_good, tx_bad,
    rx_ocast_good, five little-endian u32s.  The point of asking is that the
    chip counts what actually arrived over the air, so comparing its rx_good
@@ -2420,6 +2433,8 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
          return WLC_GET_PM;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS:
          return WLC_GET_PKTCNTS;
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_RATE:
+         return WLC_GET_RATE;
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
          return WLC_SCAN;
       case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
@@ -2526,6 +2541,7 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_PM:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_RATE:
          /* WLC_GET_* ioctls return a u32; send a 4-byte zero buffer
             for the chip to fill. */
          return 4u;
@@ -3089,6 +3105,7 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RSSI:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_PM:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_RATE:
          /* WLC_GET_* ioctls write their reply into the response slot, which
             the memset at the top of this function has already zeroed. */
          break;
@@ -3680,6 +3697,18 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
                   &frame_buffer[header_length + CDC_HEADER_LENGTH + (i * 4u)]);
             g_runtime_pktcnt_valid = true;
             g_runtime_pktcnt_request_pending = false;
+         }
+
+         /* WLC_GET_RATE reply: one little-endian int32, units of
+            500 kbit/s (-1 = auto/unknown). */
+         if (g_runtime_rate_request_pending && cdc_cmd == WLC_GET_RATE
+             && cdc_request_id == g_runtime_rate_request_id
+             && !(cdc_flags & CDCF_IOC_ERROR)
+             && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 4u)) {
+            g_runtime_rate_500kbps = (int32_t)sdio_load_u32_le(
+               &frame_buffer[header_length + CDC_HEADER_LENGTH]);
+            g_runtime_rate_valid = true;
+            g_runtime_rate_request_pending = false;
          }
       }
       return false;
@@ -5998,6 +6027,79 @@ void sdio_runtime_pktcnts_poll(void)
    g_runtime_pktcnt_request_pending = false;
    g_runtime_pktcnt_step_sent = false;
    g_runtime_pktcnt_query_wanted = false;
+}
+
+/* Same shape again; lowest priority of the three, so it defers to both an
+   RSSI and a PKTCNTS request in flight (all share one control template). */
+void sdio_runtime_rate_poll(void)
+{
+   uint32_t now;
+
+   if (!g_runtime_rate_query_wanted)
+      return;
+
+   if (g_runtime_rssi_query_wanted || g_runtime_rssi_request_pending
+       || g_runtime_pktcnt_query_wanted || g_runtime_pktcnt_request_pending)
+      return;
+
+   if (!sdio_runtime_link_is_up()) {
+      g_runtime_rate_query_wanted = false;
+      g_runtime_rate_step_sent = false;
+      g_runtime_rate_request_pending = false;
+      return;
+   }
+
+   if (!g_runtime_rate_step_sent && sdio_runtime_tx_window_shut()) {
+      g_runtime_rate_request_pending = false;
+      return;
+   }
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_rate_step_sent) {
+      sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                       WIFI_SDIO_TX_PROBE_COMMAND_GET_RATE);
+      g_runtime_rate_request_id =
+         g_sdio_probe_result.tx_control_template_request_id;
+      g_runtime_rate_request_pending = true;
+      if (!sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
+                                                              &g_sdio_probe_result,
+                                                              SDIO_RUNTIME_POLL_TIMEOUT_US)) {
+         g_runtime_rate_request_pending = false;
+         g_runtime_rate_query_wanted = false;
+         return;
+      }
+      g_runtime_rate_step_sent = true;
+      g_runtime_rate_deadline_us = now + 250000u;
+      return;
+   }
+
+   if (!g_runtime_rate_request_pending) {
+      g_runtime_rate_step_sent = false;
+      g_runtime_rate_query_wanted = false;
+      return;
+   }
+
+   if ((int32_t)(now - g_runtime_rate_deadline_us) < 0)
+      return;
+
+   g_runtime_rate_request_pending = false;
+   g_runtime_rate_step_sent = false;
+   g_runtime_rate_query_wanted = false;
+}
+
+void sdio_runtime_request_rate(void)
+{
+   g_runtime_rate_query_wanted = true;
+}
+
+bool sdio_runtime_get_rate(int32_t *rate_500kbps_out)
+{
+   if (rate_500kbps_out == NULL || !g_runtime_rate_valid)
+      return false;
+
+   *rate_500kbps_out = g_runtime_rate_500kbps;
+   return true;
 }
 
 /* Cooperative-poll worker: when a read has been requested and the link is
