@@ -218,6 +218,13 @@ typedef struct {
    char     up_dir[WS_PATH_MAX];
    char     up_name[FF_LFN_BUF + 1];
    uint8_t  up_lun_p1;   /* LUN this upload writes, +1 (0 = not a LUN image) */
+   /* True while a "<target>.part" temp exists on the card for this upload.
+      The body streams into the temp and the real target is not touched until
+      the transfer completes and a re-check passes (mirrors the WebDAV PUT
+      path), so a disconnect or a Beeb open mid-upload cannot destroy a
+      pre-existing file.  The temp path is rebuilt from up_dir+up_name rather
+      than stored, so every site agrees on the name. */
+   bool     up_temp_exists;
    uint32_t up_bytes_written;
    /* Staging for the multipart body, so the card sees whole WS_FILE_CHUNK
       bursts rather than one f_write per scanned segment - see
@@ -1473,6 +1480,7 @@ static size_t ws_digest_build_challenge(char *out, size_t out_sz, bool stale)
    ws_sent / ws_poll propagate this up. */
 static bool conn_close(ws_conn_t *c, bool abort_conn);
 static bool conn_pump(ws_conn_t *c);
+static void upload_discard_temp(ws_conn_t *c);
 static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len);
 static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep);
 static bool process_request(ws_conn_t *c, int body_at);
@@ -1564,6 +1572,7 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
       f_close(&c->write_file.up);
       c->up_file_open = false;
    }
+   upload_discard_temp(c);   /* mid-upload teardown: drop the .part, keep target */
    if (c->dav_put_open) {
       if (wifi_debug_enabled())
          wifi_debug_printf("PUT: conn_close mid-PUT (dav_remaining=%lu target='%s')\n",
@@ -1935,6 +1944,7 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
       f_close(&c->write_file.up);
       c->up_file_open = false;
    }
+   upload_discard_temp(c);   /* mid-upload reset: drop the .part, keep target */
    if (c->dav_put_open) {
       f_close(&c->write_file.dav);
       c->dav_put_open = false;
@@ -2823,6 +2833,38 @@ static bool route_files_get(ws_conn_t *c, const char *rawpath)
 /* File upload (multipart/form-data)                                   */
 /* ------------------------------------------------------------------ */
 
+/* Buffers big enough for up_dir + '/' + up_name + NUL, and for that plus the
+   ".part" suffix, so neither snprintf below can truncate. */
+#define WS_UP_FULL_MAX (WS_PATH_MAX + FF_LFN_BUF + 2u)
+#define WS_UP_TMP_MAX  (WS_PATH_MAX + FF_LFN_BUF + 8u)
+
+/* Rebuild the upload's final target and its "<target>.part" temp.  Every
+   site (begin, finalise, abort cleanup) derives both from up_dir+up_name so
+   they always agree on the names without storing an extra path per conn. */
+static void upload_build_paths(const ws_conn_t *c,
+                               char *full, size_t full_sz,
+                               char *tmp,  size_t tmp_sz)
+{
+   if (ws_is_root(c->up_dir))
+      snprintf(full, full_sz, "/%s", c->up_name);
+   else
+      snprintf(full, full_sz, "%s/%s", c->up_dir, c->up_name);
+   snprintf(tmp, tmp_sz, "%s.part", full);
+}
+
+/* Drop the streaming temp on any abort path, leaving a pre-existing target
+   untouched.  No-op unless a temp is actually open. */
+static void upload_discard_temp(ws_conn_t *c)
+{
+   if (c->up_temp_exists) {
+      char full[WS_UP_FULL_MAX];
+      char tmp[WS_UP_TMP_MAX];
+      upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
+      (void)f_unlink(tmp);
+      c->up_temp_exists = false;
+   }
+}
+
 static bool upload_fail(ws_conn_t *c, const char *msg)
 {
    ws_strbuf_t b;
@@ -2831,6 +2873,7 @@ static bool upload_fail(ws_conn_t *c, const char *msg)
       f_close(&c->write_file.up);
       c->up_file_open = false;
    }
+   upload_discard_temp(c);       /* leave any pre-existing target intact */
    c->up_state = UP_FAILED;
 
    sb_init(&b);
@@ -2853,26 +2896,16 @@ static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
    if (len == 0u || !c->up_file_open)
       return true;
 
-   /* The Beeb started the drive whose image we are writing. Stop here and
-      discard the partial rather than leave it a truncated disc: this path
-      writes the target in place, so there is no .part file to fall back on
-      and the previous contents are already gone. */
+   /* The Beeb started the drive whose image we are replacing.  We have only
+      written the .part temp - the live image is untouched - so just drop the
+      temp and stop (upload_fail closes the file and discards it).  An early
+      out; the completion re-check would refuse the rename anyway. */
    if (c->up_lun_p1 != 0u
        && filesystemReadLunStatus((uint8_t)(c->up_lun_p1 - 1u))) {
-      char full[WS_PATH_MAX + FF_LFN_BUF + 2u];
-
       c->up_buf_len = 0u;            /* staged bytes die with the upload */
-      f_close(&c->write_file.up);
-      c->up_file_open = false;
-      if (ws_is_root(c->up_dir))
-         snprintf(full, sizeof full, "/%s", c->up_name);
-      else
-         snprintf(full, sizeof full, "%s/%s", c->up_dir, c->up_name);
-      (void)f_unlink(full);
-      ws_fs_mutated();
       return upload_fail(c, "The Beeb started that drive mid-upload, so the "
-                            "partial image was discarded - type *BYE and "
-                            "upload again.");
+                            "upload was cancelled - the existing image is "
+                            "unchanged. Type *BYE and upload again.");
    }
 
    /* Stage into dl_buf and write a whole chunk at a time.  Handing each
@@ -2937,6 +2970,29 @@ static bool upload_finish(ws_conn_t *c)
       if (fr != FR_OK)
          return upload_fail(c, "The file could not be saved correctly.");
    }
+
+   /* Promote the completed .part to the real name.  Re-check busy first: the
+      body streamed for seconds and the Beeb can have opened the target in
+      that window, so trust a check here rather than the one at begin (same
+      reasoning as the WebDAV PUT finalise).  On any failure upload_fail drops
+      the temp, leaving a pre-existing target intact.  The unlink-then-rename
+      has the same small window the DAV path documents: f_rename within one
+      FAT directory does not allocate, so a failure after the unlink is
+      extremely unlikely. */
+   if (c->up_temp_exists) {
+      char full[WS_UP_FULL_MAX];
+      char tmp[WS_UP_TMP_MAX];
+
+      upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
+      if (ws_beeb_path_busy(full))
+         return upload_fail(c, WS_BUSY_MSG);
+      (void)f_unlink(full);                 /* f_rename needs a free target */
+      if (f_rename(tmp, full) != FR_OK)
+         return upload_fail(c, "The file could not be saved correctly.");
+      c->up_temp_exists = false;
+      ws_fs_mutated();                       /* the directory really changed */
+   }
+
    c->up_complete = true;
    c->up_state = UP_EPILOGUE;
 
@@ -2960,7 +3016,7 @@ static bool upload_begin_part(ws_conn_t *c)
    const char *s;
    /* Big enough for up_dir (up to WS_PATH_MAX-1) + '/' + base (up to
       FF_LFN_BUF) + NUL, so the snprintf below can never truncate. */
-   char        full[WS_PATH_MAX + FF_LFN_BUF + 2u];
+   char        full[WS_UP_FULL_MAX];
 
    if (!ws_extract_filename(c->up_head, fname, sizeof fname)
        || fname[0] == '\0')
@@ -2975,23 +3031,31 @@ static bool upload_begin_part(ws_conn_t *c)
          return upload_fail(c, "The uploaded file has an invalid name.");
    }
 
-   if (ws_is_root(c->up_dir))
-      snprintf(full, sizeof full, "/%s", base);
-   else
-      snprintf(full, sizeof full, "%s/%s", c->up_dir, base);
+   /* Record the name now so upload_build_paths (and upload_discard_temp on
+      any abort) rebuild the target and its .part temp consistently. */
+   strlcpy(c->up_name, base, sizeof c->up_name);
 
-   /* The browser upload form is a third way onto the card, alongside MTP and
-      the DAV verbs, and it writes the target in place. Same rule as those:
-      never while the Beeb has that image open. */
-   if (ws_beeb_path_busy(full))
-      return upload_fail(c, WS_BUSY_MSG);
+   {
+      char tmp[WS_UP_TMP_MAX];
+      upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
 
-   if (f_open(&c->write_file.up, full, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
-      return upload_fail(c, "The file could not be created on the SD card.");
+      /* The browser upload form is a third way onto the card, alongside MTP
+         and the DAV verbs.  Like WebDAV PUT it streams into a "<name>.part"
+         temp and only replaces the real target at completion, after a
+         re-check - so a disconnect, or the Beeb opening the file mid-upload,
+         cannot destroy a pre-existing file.  Still refuse up front if the
+         Beeb already holds it open. */
+      if (ws_beeb_path_busy(full))
+         return upload_fail(c, WS_BUSY_MSG);
+
+      if (f_open(&c->write_file.up, tmp, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+         return upload_fail(c, "The file could not be created on the SD card.");
+      c->up_temp_exists = true;
+   }
 
    /* Remembered so upload_write() can spot the Beeb starting this LUN part
-      way through. No lock is taken: the Beeb always wins, so the test is
-      simply "has it started?" - derived state, with no lifetime to leak. */
+      way through - now only an early-out, since the completion re-check is
+      the real guard and the live image is never touched until the rename. */
    {
       int8_t upLun = filesystemLunFromHostPath(full);
       c->up_lun_p1 = (upLun >= 0) ? (uint8_t)(upLun + 1) : 0u;
@@ -3000,7 +3064,6 @@ static bool upload_begin_part(ws_conn_t *c)
    c->up_file_open = true;
    c->up_bytes_written = 0u;
    c->up_buf_len = 0u;
-   strlcpy(c->up_name, base, sizeof c->up_name);
    return true;
 }
 

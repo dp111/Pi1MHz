@@ -149,6 +149,13 @@ typedef struct {
   uint16_t association_type;
   char name[FS_NAME_MAX_LEN + 1];
   char path[FS_PATH_MAX];
+  /* The body streams into "<path>.part" and the real target is not touched
+     until a clean finish re-checks busy and renames (mirrors the WebDAV PUT
+     and browser-upload paths), so an aborted or mid-transfer-contended write
+     cannot destroy a pre-existing file.  tmp_active is true while that temp
+     exists on the card and should be dropped on any teardown. */
+  char tmp_path[FS_PATH_MAX + 8u];
+  bool tmp_active;
   uint8_t* kernel_data;
   uint32_t kernel_capacity;
   FIL file;
@@ -1078,23 +1085,14 @@ static void fs_release_write_state(void) {
     (void) f_close(&g_write_state.file);
     g_write_state.file_open = false;
   }
-  /* If the host aborted the SendObject before delivering the full
-   * Content-Length (or never delivered any body at all on a non-
-   * empty file), the SD card is left with a truncated copy of what
-   * the user thinks they uploaded.  Unlink the partial file so the
-   * on-disk view matches what actually transferred - same intent
-   * as the WebDAV temp-file + rename pattern.  Skip:
-   *   - directories (nothing to truncate)
-   *   - kernel.now (in-memory, no file on disk)
-   *   - completed writes (size_known && transferred == size) - the
-   *     success path explicitly clears the partial-write flag
-   *     before reaching here, so this check distinguishes "aborted
-   *     half way" from "finished cleanly". */
-  if (g_write_state.active && g_write_state.path[0] != '\0'
-      && !g_write_state.is_dir && !g_write_state.is_kernel_now
-      && (!g_write_state.size_known
-          || g_write_state.transferred != g_write_state.size)) {
-    (void) f_unlink(g_write_state.path);
+  /* Drop the streaming temp on any teardown.  The body was written to
+   * "<path>.part", not the real target, so an aborted transfer leaves a
+   * pre-existing file untouched (the WebDAV temp-file + rename pattern).  A
+   * clean finish renames the temp into place and clears tmp_active before
+   * getting here, so this only fires on the aborted path. */
+  if (g_write_state.tmp_active && g_write_state.tmp_path[0] != '\0') {
+    (void) f_unlink(g_write_state.tmp_path);
+    g_write_state.tmp_active = false;
   }
   /* Release any host-write lock this transfer held on a LUN image. This runs
    * on every teardown path - clean finish, host abort, session close, and the
@@ -1251,6 +1249,30 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
         (void) f_sync(&g_write_state.file);
         (void) f_close(&g_write_state.file);
         g_write_state.file_open = false;
+      }
+
+      /* Promote the completed .part to the real target before reporting.  The
+         body streamed for a while, so re-check busy here - the Beeb may have
+         opened or started the target since SendObjectInfo (same finalize
+         re-check as the WebDAV and browser-upload paths).  Any failure sets
+         failed_resp, so fs_release_write_state drops the temp below and the
+         pre-existing target stays intact.  The unlink-then-rename has the same
+         small window WebDAV documents: an f_rename within one FAT directory
+         does not allocate, so a failure after the unlink is very unlikely. */
+      if (g_write_state.failed_resp == 0u
+          && g_write_state.tmp_active
+          && (!g_write_state.size_known
+              || g_write_state.transferred == g_write_state.size)) {
+        if (filesystemHostPathBusy(g_write_state.path)
+            || fat_service_file_in_use(g_write_state.path)) {
+          g_write_state.failed_resp = MTP_RESP_DEVICE_BUSY;
+        } else {
+          (void) f_unlink(g_write_state.path);        /* f_rename needs it free */
+          if (f_rename(g_write_state.tmp_path, g_write_state.path) != FR_OK)
+            g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
+          else
+            g_write_state.tmp_active = false;          /* real file lives at path now */
+        }
       }
 
       if (g_write_state.failed_resp != 0u) {
@@ -1777,21 +1799,34 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
       return MTP_RESP_DEVICE_BUSY;
     }
 
-    /* Claim it for the duration of the transfer. This does not block the Beeb:
-     * if it starts the drive anyway, the lock is revoked and the data phase
-     * above aborts. Resolved once here, not per chunk - the lookup walks all
-     * 16 LUNs building names, which has no business on the upload hot path. */
+    /* Stream into "<path>.part"; the real target is replaced only at a clean
+     * finish, after a re-check (see the SEND_OBJECT completion). */
+    {
+      int n = snprintf(g_write_state.tmp_path, sizeof(g_write_state.tmp_path),
+                       "%s.part", g_write_state.path);
+      if (n < 0 || (size_t)n >= sizeof(g_write_state.tmp_path)) {
+        fs_release_write_state();
+        return MTP_RESP_GENERAL_ERROR;
+      }
+    }
+
+    /* Claim the LUN for the duration of the transfer. This does not block the
+     * Beeb: if it starts the drive anyway, the lock is revoked and the data
+     * phase aborts (the temp is then discarded, real image intact). Resolved
+     * once here, not per chunk - the lookup walks all 16 LUNs building names,
+     * which has no business on the upload hot path. */
     {
       int8_t lockLun = filesystemLunFromHostPath(g_write_state.path);
       filesystemHostLockLun(lockLun, true);
       g_write_state.lun_lock_p1 = (lockLun >= 0) ? (uint8_t)(lockLun + 1) : 0u;
     }
 
-    if (f_open(&g_write_state.file, g_write_state.path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+    if (f_open(&g_write_state.file, g_write_state.tmp_path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
       fs_release_write_state();
       return MTP_RESP_GENERAL_ERROR;
     }
     g_write_state.file_open = true;
+    g_write_state.tmp_active = true;
     fs_cache_invalidate();
 
     send_obj_parent = g_write_state.parent;
