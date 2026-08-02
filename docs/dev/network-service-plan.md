@@ -57,11 +57,14 @@ level down. Nothing new is invented at the bus level.
   clock), and - for the `N:` device - a protocol-adapter context.
 - **nIRQ** signals "data available / state changed" so the Beeb can be
   interrupt-driven instead of polling. This is a **services-framework**
-  concern (a `services_irq_set()` helper arbitrating the shared nIRQ line),
-  not a per-service FRED byte; on an interrupt the Beeb issues the service's
-  status command to learn what happened (FujiNet's PROCEED-then-STATUS
-  model). The services port's `+5` register (`&FCAB`) stays AUN's
-  grandfathered ABI. See the stage plan's cross-stage decisions.
+  concern: `services_irq(source, status)` (already in `services_emulator.c`,
+  used by AUN) owns the shared `+5` status register and the nIRQ line, keyed
+  by the service's nIRQ source id - not a per-service FRED byte. The `+5`
+  register (`&FCAB`) carries AUN's grandfathered ABI byte, so the net
+  service should signal nIRQ through the same source but read its own state
+  via its status command (FujiNet's PROCEED-then-STATUS model) rather than
+  disturbing that byte; grow `services_irq` a line-only variant when that
+  lands. See the stage plan's cross-stage decisions.
 
 ## Data flow
 
