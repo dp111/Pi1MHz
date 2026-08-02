@@ -139,10 +139,19 @@ under the 1200 µs budget); pbuf-pool sharing (window clamp caps pinning at
 ~6 pbufs/handle); the `rcv_wnd` clamp touches lwIP fields (pin the version,
 verify with a Wireshark window capture on hardware).
 
+**Beeb-side client (see the plan doc's "Beeb-side client" decision):** Stage 1
+ships a **BBC BASIC helper library** (`PROCnet_open`/`FNnet_connect`/... over
+the command block, spinning the bit-7 poll) plus 2-3 self-contained examples
+(telnet/BBS, NTP set, gopher or HTTP GET). This *is* the Stage-1 on-hardware
+validation vehicle - it drives the real FRED dispatch from the Beeb - and gives
+users something usable on day one. No 6502: the ROM `*`-command API waits for
+Stages 2-3, once the verbs have stopped moving.
+
 Tasks: ABI/range (0.5) · skeleton+gate+RST (0.5) · handle table+open/close/
 status/bind (1) · RX ring+recv (1) · TX+sent (0.5) · connect+dns (0.5) ·
-UDP (0.5) · listen/accept (0.5) · nIRQ (0.5) · host tests TDD (2) · hardware
-validation (1) · web-UI/doc (0.5). **~9 d.**
+UDP (0.5) · listen/accept (0.5) · nIRQ (0.5) · host tests TDD (2) · Beeb-side
+BASIC helper lib + telnet/NTP/gopher examples = the on-HW validation vehicle
+(1.5) · web-UI/doc (0.5). **~10.5 d.**
 
 ---
 
@@ -205,7 +214,9 @@ until-close, 404/302, split status lines, header overflow, POST echo),
 Tasks: adapter.h+URL parse (0.5) · net_url.c dispatch+deferred completion
 (1) · adapter_tcp pass-through (0.5) · http_parse+http_chunk ports (1) ·
 adapter_http GET (1.5) · chunked+POST/PUT/DELETE (1) · status/timeouts/nIRQ/
-RST (0.5) · host tests+fuzz (1.5) · NETTEST.bas hardware (0.5). **~8 d.**
+RST (0.5) · host tests+fuzz (1.5) · NETTEST.bas hardware (0.5) · **begin the
+sideways-ROM `*`-command API** (`*NOPEN`/`*NCONNECT`/... over the now-stable
+raw+`N:` verbs, loaded via the ROM helper) (1). **~8-9 d.**
 
 Risks: malformed-HTTP robustness (port the hardened logic verbatim + fuzz);
 per-pass streaming budget (cap bytes/pass/handle, rely on the Stage-1
@@ -259,7 +270,9 @@ and on-target vs `tnfsd` + a public telnet BBS.
 Tasks: UDP+tests (1) · telnet filter/escape+tests (1.5) · adapter_telnet
 glue (0.5) · tnfs_proto+ctx+retry engine vs stub builders (1.5) · file verbs
 +deferred completion (1.5) · dir enumeration (1) · fake-peer tests+fuzz (1) ·
-real wire + tnfsd validation (1-1.5). **~8-9.5 d.**
+real wire + tnfsd validation (1-1.5) · **finish the ROM API** (OSWORD entry +
+`N:`/TNFS `*` verbs; the ROM ABI crystallises here, verbs now stable) (1).
+**~9-10.5 d.**
 
 Risks: UDP retry storms (bounded backoff + seq matching); telnet option
 pathologies (respond-once + SB cap); session leakage on Beeb RST (`net_url_init`
@@ -364,14 +377,19 @@ ecosystem instead of forking one.
 
 | Stage | Scope | Effort |
 |---|---|---|
-| 1 | Raw TCP/UDP sockets (altcp-based) | ~9 d |
-| 2 | `N:` device + HTTP (FujiNet verbs) | ~8 d |
-| 3 | UDP scheme + TELNET + TNFS | ~8-9.5 d |
+| 1 | Raw TCP/UDP sockets (altcp) + BBC BASIC client & examples | ~10.5 d |
+| 2 | `N:` device + HTTP (FujiNet verbs); begin the ROM `*`-cmd API | ~8-9 d |
+| 3 | UDP scheme + TELNET + TNFS; finish the ROM API | ~9-10.5 d |
 | 4 | TLS/HTTPS (gated on a 2-d spike) | ~9-11 d |
 | 5 | fujinet-lib `bbc` bus shim + upstream | ~ few d |
 
-Stages 1-3 (~25 d) deliver a fully useful networked Beeb (telnet/BBS,
+Beeb-side client threads through: **BASIC helper + examples in Stage 1** (also
+the validation vehicle), **promoted into a sideways ROM `*`-command/OSWORD API
+across Stages 2-3** once the verbs stabilise, **fujinet-lib source-compat in
+Stage 5**. So IP support is usable from BASIC on day one, not only at the end.
+
+Stages 1-3 (~28 d) deliver a fully useful networked Beeb (telnet/BBS,
 HTTP fetch/POST, remote TNFS filesystems, IRC/NTP/gopher, and the substrate
-for a FidoNet mailer). Stage 4 adds HTTPS. Stage 5 plugs into the FujiNet
-ecosystem. Each stage is independently shippable and independently
-hardware-validated.
+for a FidoNet mailer) with both a BASIC library and a native ROM API. Stage 4
+adds HTTPS. Stage 5 plugs into the FujiNet ecosystem. Each stage is
+independently shippable and independently hardware-validated.

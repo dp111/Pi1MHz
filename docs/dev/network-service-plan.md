@@ -149,12 +149,40 @@ Beeb-side over `net_open TCP`/`N:TCP://`, or as a Pi-side gateway that polls
 a hub and drops packets as files the Beeb reads via the FAT service - the
 latter fits Pi1MHz's FatFs nature and needs only layer 1.
 
+## Beeb-side client (DECIDED: BASIC first, ROM when stable, fujinet-lib last)
+
+The Pi side is only half the feature - something on the Beeb has to drive the
+services-port command block. Strategy, so IP support is *usable* as each stage
+lands rather than only at the very end:
+
+- **Stage 1 - a BASIC helper library + example clients.** A set of `PROC`/`FN`
+  wrappers (`PROCnet_open`, `FNnet_connect`, `FNnet_recv`, ...) that poke the
+  page-aligned command block with `?`/`!` and spin the poll-for-completion
+  (bit 7) loop, plus 2-3 self-contained example programs (a telnet/BBS client,
+  an NTP time-set, a gopher or simple HTTP GET). This is the **reference
+  client and the Stage-1 hardware-validation vehicle in one** - it exercises
+  the real FRED dispatch from the Beeb. Pure BBC BASIC: no 6502 assembly, no
+  toolchain, trivial to ship (a `.bas` / library file on the SD card) and to
+  iterate while the ABI is still settling. Slow, but fine for interactive
+  telnet/BBS/gopher.
+- **Stages 2-3 - promote the stable verbs into a sideways ROM.** Once the
+  command set has stopped changing, wrap it in a small ROM exposing a `*`
+  command set (`*NOPEN`/`*NCONNECT`/...) and/or an OSWORD API, loaded via the
+  existing ROM helper exactly like AUN/MMFS. This is the clean end-user API and
+  matches FujiNet's `N:`-device shape. Deliberately *after* BASIC-first: a ROM
+  ABI is expensive to churn, so it should only crystallise once the verbs have.
+- **Stage 5 - the fujinet-lib BBC bus shim** (unchanged) for source-compat with
+  the FujiNet ecosystem.
+
+Rationale for BASIC-first over ROM-first: the async poll-for-completion ABI is
+fiddly, and a readable BASIC implementation is the fastest way to shake out
+ABI bugs from the Beeb side during Stage 1 - and users get something usable on
+day one without waiting for the ROM.
+
 ## Open decisions
 
 - **Native verbs vs FujiNet compatibility** (phase 5) - ecosystem
   compatibility vs. implementation cost. Needs the protocol read first.
-- **Blocking model on the Beeb** - all commands are poll-for-completion
-  (bit 7 busy), matching FAT/AUN; a thin blocking wrapper can live in a ROM.
 - **JIM buffer sharing** - the net service shares the 16 MB services buffer
   with FAT. Define non-overlapping regions, or give net its own address
   window, to avoid a download and a socket transfer colliding.
