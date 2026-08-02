@@ -17,7 +17,7 @@ Licensed under the GNU General Public License v3 (see `ReadMe.md`).
 | **FatFs** R0.16 — FAT filesystem | ChaN, <http://elm-chan.org/fsw/ff/> | BSD-style (1-clause) | `src/BeebSCSI/fatfs/` |
 | **lwIP** — TCP/IP stack | Swedish Institute of Computer Science; Adam Dunkels and contributors | BSD-3-Clause | `src/wifi/lwip/` |
 | **TinyUSB** — USB device stack (MTP) | Ha Thach, <https://tinyusb.org> | MIT | `src/usb/tinyusb/` |
-| **FastSID** — MOS6581/8580 SID emulation | Teemu Rantanen, Michael Schwendt, Ettore Perazzoli; vendored from **VICE** 3.1 | GPL-2.0 | `src/fastsid/` (see `ORIGIN.md`) |
+| **FastSID** — MOS6581/8580 SID emulation | Teemu Rantanen, Michael Schwendt, Ettore Perazzoli; vendored from **VICE** 3.1. Ported into Pi1MHz as BeebSID by **Andrew Fawcett**. | GPL-2.0 | `src/fastsid/`, `src/BeebSID/` (see `src/fastsid/ORIGIN.md`) |
 | **Newlib** ARM string routines | Red Hat / newlib `machine/arm`, pulled via the arm-none-eabi toolchain | BSD-style | `src/lib/armstring-pi/` (see `NOTES.md`) |
 
 ## Derived code
@@ -26,8 +26,13 @@ Licensed under the GNU General Public License v3 (see `ReadMe.md`).
   BeebSCSI (Domesday86), GPL-3.0. <https://www.domesday86.com/?page_id=400> ·
   `src/BeebSCSI/`
 - **PiTubeDirect** — the HDMI screen renderer and BBC fonts are cut down from
-  PiTubeDirect (David Banks / hoglet67 and contributors). The teletext
-  renderer carries additions by Hoglet (Feb 2021). `src/framebuffer/`
+  PiTubeDirect (David Banks / hoglet67 and contributors). `src/framebuffer/`
+- **Teletext (MODE 7)** — the SAA5050 teletext renderer in
+  `src/framebuffer/teletext.c` is by **Rod Thomas** (original, Jan 2021)
+  with significant additions by **Hoglet** (Feb 2021), via PiTubeDirect.
+- **Teletext adapter (ATS)** — the Acorn Teletext Adapter emulation
+  (`src/teletext_emulator.c`, `&FC10-&FC13`) is a port of the **BeebEm**
+  project's `Teletext.cpp` to the Pi1MHz bus by Dominic Plunkett.
 - **PicoWi** — the CYW43 WiFi join/association sequence is a faithful port of
   Jeremy Bentham's bare-metal PicoWi driver (`picowi_join.c`), including its
   ioctl ordering and settle delays. <https://iosoft.blog> · `src/wifi/sdio.c`
