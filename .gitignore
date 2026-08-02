@@ -29,3 +29,10 @@ src/.vscode/tasks.json
 # not committed. Its companion toolchain-gcc17-allpatches.cmake is already
 # covered by the *.cmake rule above.
 /build-gcc17.sh
+
+# Local working notes - review documents and the Claude session runbook.
+# Kept on disk for the sessions that use them, never for upstream.
+/PI-CONTROL.md
+/src/*Code_Review*.md
+/src/*code_review*.md
+/src/*compliance*.md
