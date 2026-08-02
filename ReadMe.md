@@ -357,6 +357,12 @@ for any of them to take effect.
 - PCB space is limited for a dedicated serial debug connector on some builds.
 - A custom 3-pin header (0V, TX, RX) can be fitted under a Pi Zero.
 
+## Credits and Acknowledgements
+
+Pi1MHz builds on FatFs, lwIP, TinyUSB, VICE's FastSID, BeebSCSI,
+PiTubeDirect, PicoWi and others, and ships third-party firmware and ROMs.
+See [CREDITS.md](CREDITS.md) for the full list with sources and licences.
+
 ## Donations
 
 Donations are welcome, especially from commercial kit/board sellers using this project.

@@ -52,6 +52,9 @@ And when things go wrong:
 
 - [Troubleshooting](troubleshooting.md)
 
+Pi1MHz is free software (GPL-3.0) and builds on the work of many other
+projects - see [CREDITS.md](../../CREDITS.md) for the full acknowledgements.
+
 ## Conventions used in these guides
 
 - `&FC00`-style numbers are hexadecimal addresses, as on the Beeb.
