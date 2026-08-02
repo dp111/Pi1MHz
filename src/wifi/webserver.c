@@ -21,6 +21,7 @@
 #include "framebuffer_export.h"
 #include "../BeebSCSI/fatfs/ff.h"
 #include "../BeebSCSI/filesystem.h"   /* filesystemHostPathBusy() - LUN interlock */
+#include "../services.h"              /* fat_service_file_in_use() - MMFS/FAT interlock */
 #include "../usb/mtp_fs.h"
 #include "../rpi/screen.h"
 #include "../rpi/exceptions.h"
@@ -1021,6 +1022,17 @@ static void ws_parent_path(const char *sdpath, char *out, size_t osz)
       *slash = '\0';            /* "/a/b" -> "/a" */
    else
       strlcpy(out, "/", osz);
+}
+
+/* A path is busy while the Beeb holds it open either as a started SCSI
+   LUN image or through the FAT service (MMFS disc images, BEEB.MMB) -
+   or when it is a directory containing such a file.  The advice differs
+   per filing system, so the shared message names both. */
+#define WS_BUSY_MSG "That file is in use by the Beeb - release it first " \
+                    "(*BYE in ADFS; close it or CTRL-BREAK in MMFS)."
+static bool ws_beeb_path_busy(const char *path)
+{
+   return filesystemHostPathBusy(path) || fat_service_file_in_use(path);
 }
 
 static bool ws_is_root(const char *p)
@@ -2971,9 +2983,8 @@ static bool upload_begin_part(ws_conn_t *c)
    /* The browser upload form is a third way onto the card, alongside MTP and
       the DAV verbs, and it writes the target in place. Same rule as those:
       never while the Beeb has that image open. */
-   if (filesystemHostPathBusy(full))
-      return upload_fail(c, "That image is in use by the Beeb - "
-                            "type *BYE on the Beeb and upload again.");
+   if (ws_beeb_path_busy(full))
+      return upload_fail(c, WS_BUSY_MSG);
 
    if (f_open(&c->write_file.up, full, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
       return upload_fail(c, "The file could not be created on the SD card.");
@@ -3853,10 +3864,9 @@ static bool dav_put_finish(ws_conn_t *c)
          can start the LUN in that window - so re-check here rather than
          trusting the check at PUT entry. Drop the temp and fail: better a
          failed upload than an image replaced under a running BeebSCSI. */
-      if (filesystemHostPathBusy(c->dav_put_target)) {
+      if (ws_beeb_path_busy(c->dav_put_target)) {
          (void)f_unlink(c->dav_put_tmppath);
-         return ws_error(c, 423, "Locked",
-                         "That image is in use by the Beeb - type *BYE first.");
+         return ws_error(c, 423, "Locked", WS_BUSY_MSG);
       }
 
       (void)f_unlink(c->dav_put_target);
@@ -4046,9 +4056,8 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
       whatever later owns those clusters. *BYE on the Beeb stops the LUN.
       Re-checked at the rename in dav_put_finish(), since the LUN can start
       while a long upload is still streaming into the .part file. */
-   if (filesystemHostPathBusy(sdpath))
-      return ws_error(c, 423, "Locked",
-                      "That image is in use by the Beeb - type *BYE first.");
+   if (ws_beeb_path_busy(sdpath))
+      return ws_error(c, 423, "Locked", WS_BUSY_MSG);
 
    /* RFC 7230 §3.3.1 / RFC 9112 §6.1: if Transfer-Encoding is present it
       takes precedence over Content-Length.  Decoded below by
@@ -4298,9 +4307,8 @@ static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
       return ws_error(c, 403, "Forbidden", "Refusing to delete the root.");
    /* Also covers a collection holding a started LUN's image, so the
       depth-infinity walk below cannot descend into one. */
-   if (filesystemHostPathBusy(sdpath))
-      return ws_error(c, 423, "Locked",
-                      "That image is in use by the Beeb - type *BYE first.");
+   if (ws_beeb_path_busy(sdpath))
+      return ws_error(c, 423, "Locked", WS_BUSY_MSG);
    if (f_stat(sdpath, &fno) != FR_OK)
       return ws_error(c, 404, "Not Found", "No such resource.");
 
@@ -4562,9 +4570,8 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
       return ws_error(c, 403, "Forbidden", "Refusing to touch the root.");
    /* Either end: moving the image away from a started LUN is as bad as
       overwriting the one it is running from. */
-   if (filesystemHostPathBusy(src) || filesystemHostPathBusy(dst))
-      return ws_error(c, 423, "Locked",
-                      "That image is in use by the Beeb - type *BYE first.");
+   if (ws_beeb_path_busy(src) || ws_beeb_path_busy(dst))
+      return ws_error(c, 423, "Locked", WS_BUSY_MSG);
    if (f_stat(src, &fno_src) != FR_OK)
       return ws_error(c, 404, "Not Found", "Source does not exist.");
 

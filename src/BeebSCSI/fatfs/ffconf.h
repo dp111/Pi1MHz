@@ -153,7 +153,11 @@
 /  on character encoding. When LFN is not enabled, these options have no effect. */
 
 
-#define FF_FS_RPATH		1
+/* 2, not 1: f_getcwd() is needed by the FAT service's open-file
+   interlock, which records absolute paths for the webserver's
+   in-use check (relative opens are joined against a cwd cache
+   refreshed on each chdir). */
+#define FF_FS_RPATH		2
 /* This option configures support for relative path feature.
 /
 /   0: Disable relative path and remove related API functions.

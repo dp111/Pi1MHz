@@ -5,6 +5,7 @@
   available as the transfer buffer; command blocks live in its top pages.
 */
 
+#include <stdio.h>
 #include <string.h>
 #include "Pi1MHz.h"
 
@@ -76,6 +77,123 @@ static bool discaccess_string_ok(uint32_t start)
    return false;
 }
 
+/* ---- open-file tracking for the webserver's in-use interlock ------------
+   The Beeb opens files here (FIQ context); the webserver asks from the main
+   loop whether a path is one of them before overwriting, deleting or moving
+   it - the same protection the SCSI LUN images already have.  Paths are
+   recorded absolute: relative opens are joined against a cwd cache that is
+   refreshed on the rare chdir (f_getcwd walks directories, so it is not
+   called per open).  The valid flag is set last on open and cleared first
+   on close, so a torn read from the main loop cannot see a half-written
+   path as valid.  A path too long to record, or an open under an unknown
+   cwd, is left unrecorded: the interlock fails open rather than ever
+   matching the wrong file. */
+#define FAT_OPEN_PATH_MAX 130u
+static volatile bool fat_open_valid[16];
+static char fat_open_path[16][FAT_OPEN_PATH_MAX];
+static char fat_cwd[FAT_OPEN_PATH_MAX] = "/";
+static bool fat_cwd_known = true;
+/* MMFS does NOT keep its image store open: it resolves BEEB.MMB to a start
+   sector once and then reads and writes RAW SECTORS (commands 0/1), which
+   file-handle tracking cannot see - and which assumes the file never moves.
+   So once raw sector access has been used, BEEB.MMB is reported busy until
+   a remount or reboot: replacing it would re-allocate clusters under a
+   filing system holding absolute sector numbers. */
+static volatile bool fat_raw_sector_seen;
+
+static void fat_open_record(unsigned int handle, const char *name)
+{
+   char joined[FAT_OPEN_PATH_MAX];
+   const char *path = name;
+
+   fat_open_valid[handle] = false;
+   if (name[0] != '/') {
+      int n;
+      if (!fat_cwd_known)
+         return;
+      n = snprintf(joined, sizeof joined, "%s/%s",
+                   (fat_cwd[0] == '/' && fat_cwd[1] == '\0') ? "" : fat_cwd,
+                   name);
+      if (n < 0 || (size_t)n >= sizeof joined)
+         return;
+      path = joined;
+   }
+   if (strlen(path) >= sizeof fat_open_path[0])
+      return;
+   strcpy(fat_open_path[handle], path);
+   fat_open_valid[handle] = true;
+}
+
+static void fat_open_clear_all(void)
+{
+   for (unsigned int i = 0; i < 16u; i++)
+      fat_open_valid[i] = false;
+   strcpy(fat_cwd, "/");
+   fat_cwd_known = true;
+   fat_raw_sector_seen = false;
+}
+
+/* FAT names are case-insensitive, and either side may carry a "0:" drive
+   prefix or leading slashes. */
+static const char *fat_path_norm(const char *p)
+{
+   if (p[0] == '0' && p[1] == ':')
+      p += 2;
+   while (*p == '/')
+      p++;
+   return p;
+}
+
+bool fat_service_file_in_use(const char *host_path)
+{
+   const char *q = fat_path_norm(host_path);
+   size_t qlen = strlen(q);
+
+   /* The raw-sector client's store (see fat_raw_sector_seen above).  Any
+      BEEB.MMB, and any directory containing one, counts - the sector
+      numbers MMFS cached do not care which path the file was reached by. */
+   if (fat_raw_sector_seen) {
+      static const char mmb[] = "BEEB.MMB";
+      size_t base = qlen;
+      while (base > 0u && q[base - 1u] != '/')
+         base--;
+      if (qlen == 0u)
+         return true;              /* the root holds BEEB.MMB */
+      if (qlen - base == sizeof mmb - 1u) {
+         size_t k;
+         for (k = 0; k < sizeof mmb - 1u; k++) {
+            char c = q[base + k];
+            if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+            if (c != mmb[k])
+               break;
+         }
+         if (k == sizeof mmb - 1u)
+            return true;
+      }
+   }
+
+   for (unsigned int i = 0; i < 16u; i++) {
+      const char *p;
+      size_t j;
+
+      if (!fat_open_valid[i])
+         continue;
+      p = fat_path_norm(fat_open_path[i]);
+      for (j = 0; j < qlen; j++) {
+         char ca = p[j], cb = q[j];
+         if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 32);
+         if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 32);
+         if (ca != cb)
+            break;
+      }
+      /* Equal - or host_path is a directory containing the open file, so
+         a recursive DELETE/MOVE of the folder is refused too. */
+      if (j == qlen && (p[qlen] == '\0' || p[qlen] == '/' || qlen == 0u))
+         return true;
+   }
+   return false;
+}
+
 static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t data)
 {
    uint32_t base_addr = DISC_RAM_BASE ;
@@ -86,6 +204,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     {
         uint32_t buf_off = jim_read32(command_pointer+4);
         uint32_t sectors = jim_read32(command_pointer+12);
+        fat_raw_sector_seen = true;
         // disk_read transfers 'sectors' x 512-byte blocks into the buffer
         if ((sectors > (DISC_RAM_SIZE / DISC_SECTOR_SIZE)) ||
             !discaccess_buffer_ok(buf_off, sectors * DISC_SECTOR_SIZE))
@@ -105,6 +224,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     {
         uint32_t buf_off = jim_read32(command_pointer+4);
         uint32_t sectors = jim_read32(command_pointer+12);
+        fat_raw_sector_seen = true;
         // disk_write transfers 'sectors' x 512-byte blocks from the buffer
         if ((sectors > (DISC_RAM_SIZE / DISC_SECTOR_SIZE)) ||
             !discaccess_buffer_ok(buf_off, sectors * DISC_SECTOR_SIZE))
@@ -121,17 +241,24 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         break;
     }
     case 2 :
+    {
+        FRESULT result;
         // Filename defined to be zero terminated string at command_pointer+3, mode in command_pointer+2
         if (!discaccess_string_ok(command_pointer+3))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
-        Pi1MHz_MemoryWrite(addr,
-            f_open( &fileObject[data & 15], (char * )&Pi1MHz->JIM_ram[command_pointer+3]
-                    , Pi1MHz->JIM_ram[command_pointer+2] ) );
+        fat_open_valid[data & 15] = false;   /* re-open replaces any record */
+        result = f_open( &fileObject[data & 15], (char * )&Pi1MHz->JIM_ram[command_pointer+3]
+                    , Pi1MHz->JIM_ram[command_pointer+2] );
+        if (result == FR_OK)
+            fat_open_record(data & 15, (char * )&Pi1MHz->JIM_ram[command_pointer+3]);
+        Pi1MHz_MemoryWrite(addr, result);
         break;
+    }
     case 3 :
+        fat_open_valid[data & 15] = false;
         Pi1MHz_MemoryWrite(addr,
              f_close( &fileObject[data & 15] ) );
         break;
@@ -255,14 +382,19 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         break;
 
     case 11 : // fchdir
+    {
+        FRESULT result;
         if (!discaccess_string_ok(command_pointer + 1))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
-        Pi1MHz_MemoryWrite(addr,
-             f_chdir( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
+        result = f_chdir( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] );
+        if (result == FR_OK)
+            fat_cwd_known = (f_getcwd(fat_cwd, sizeof fat_cwd) == FR_OK);
+        Pi1MHz_MemoryWrite(addr, result);
         break;
+    }
 
     case 12 : // f_rename
     {
@@ -302,6 +434,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     }
 
     case 14 : // f mount
+        fat_open_clear_all();
         if (filesystemMount())
          {
             Pi1MHz_MemoryWrite(addr, FR_OK);
@@ -313,6 +446,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         break;
 
     case 15 : // f unmount
+        fat_open_clear_all();
         if (filesystemDismount())
         {
             Pi1MHz_MemoryWrite(addr, FR_OK);

@@ -47,13 +47,18 @@ and where it looks for the image files.
 Because everything lives on the Pi's SD card, disc images (or the
 whole `BEEB.MMB`) can be added and replaced over
 [WiFi/WebDAV](web-interface.md) or [USB](usb-file-access.md) without
-removing the card - but do it carefully. Unlike the hard disc images
-(which the web server refuses to overwrite while the Beeb has them
-open), there is **no interlock** on the files MMFS uses: nothing stops
-a file being replaced while MMFS has it open, and the Beeb keeps its
-own cached idea of the catalogue either way. Replacing an image under
-a live filing system is a recipe for a corrupted disc image, on either
-side.
+removing the card - but do it carefully. The web server, WebDAV and
+USB/MTP all refuse to overwrite, delete or move a file the Beeb
+currently holds open through the FAT service (the same protection the
+hard disc images have), so the worst accidents are blocked. `BEEB.MMB`
+gets extra protection: MMFS reads it by raw sector number, not through
+a file handle, so once MMFS has touched the card the MMB is treated as
+in use until the Pi restarts - replacing it mid-session would corrupt
+it even with nothing "open". The
+refusal is not the whole story though: the Beeb keeps its own cached
+idea of the catalogue, and the Pi only knows a file has been released
+when the Beeb-side software actually closes it - pressing BREAK does
+not tell the Pi anything.
 
 The procedure that works:
 
@@ -70,6 +75,13 @@ The procedure that works:
 Adding a *new* image file (rather than replacing one in use) is safe
 at any time; the Beeb just cannot see it until the disc/catalogue is
 re-read.
+
+If an upload keeps being refused with "in use by the Beeb" and nothing
+on the Beeb seems to be using the file, the Beeb-side software is
+holding it open (or was interrupted before it could close it).
+Re-selecting the filing system on the Beeb usually re-opens things
+cleanly; failing that, reboot the Pi from the web interface - the lock
+does not survive a restart.
 
 ## Notes
 

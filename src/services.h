@@ -42,4 +42,10 @@ void services_emulator_init(uint8_t instance, uint8_t address);
 /* The FAT/SD service (commands 0-20 today; the range reserves up to 29). */
 void fat_service_init(void);
 
+/* True while the Beeb holds host_path open through the FAT service, or
+   host_path is a directory containing such a file.  Advisory (fails open
+   for unrecordable paths) - the webserver's counterpart to
+   filesystemHostPathBusy() for the SCSI LUN images. */
+bool fat_service_file_in_use(const char *host_path);
+
 #endif

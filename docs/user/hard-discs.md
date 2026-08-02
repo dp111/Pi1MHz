@@ -118,8 +118,33 @@ every ID, which is what you want in the normal one-adapter case.
 
 ## Managing images without pulling the card
 
-With [WiFi](wifi.md) set up you can download, upload and rename disc
-images from another computer through the
+With [WiFi](wifi.md) set up you can download, upload, rename and
+delete disc images from another computer through the
 [web interface or a WebDAV mount](web-interface.md), or over
-[USB](usb-file-access.md). The web server refuses to overwrite the
-image of a drive that is currently in use by the Beeb.
+[USB](usb-file-access.md) - the drive the Beeb is using lives at
+`/BeebSCSI0/scsi0.dat` like any other file. Backing up a drive is
+simply downloading its `.dat` (and `.dsc`) files.
+
+All three routes respect the same interlock: an image belonging to a
+**started** LUN - one the Beeb currently has open - cannot be
+overwritten, deleted or moved, and neither can a folder containing
+one. The upload is refused with "in use by the Beeb" (WebDAV clients
+see a 423 Locked; MTP reports the device busy). A long upload is also
+re-checked at the end: if the Beeb starts the LUN while the transfer
+is still streaming, the partial file is discarded rather than swapped
+in under a running filing system.
+
+To release a LUN so its image can be replaced:
+
+- **`*BYE`** (in ADFS) parks the drives and stops the LUN - the clean
+  way before swapping an image.
+- A stopped LUN starts again automatically the next time the Beeb
+  accesses it (the next `*CAT` or CTRL-BREAK + `*ADFS`), so there is
+  nothing to "re-enable" afterwards - but do get the upload finished
+  before poking the drive on the Beeb, or the re-check above will
+  refuse the swap.
+- Selecting a different disc set (`*FX147,65,n` / `SCSIJUKE`) also
+  releases the previous set's images.
+
+Images in disc sets the Beeb is *not* currently using, and brand-new
+files, can be managed freely at any time.
