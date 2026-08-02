@@ -575,15 +575,30 @@ uint32_t Pi1MHz_now_us;
 #define POLL_PROFILE 0
 #define POLL_PROFILE_PASSES 200000u
 
-/* The ARM1176 cycle counter, ticking once per 64 processor cycles (the /64
-   divider keeps a 32-bit counter from wrapping inside any interval we care
-   about: ~275 s at 1 GHz).  A CP15 register read costs a couple of cycles
-   against 47 for RPI_GetSystemTime(), which is a Strongly-Ordered peripheral
-   load - and the slow-poll check wants a timestamp per callback, so seven
-   peripheral reads per pass were costing ~330 cycles, over 10% of the idle
-   loop, purely to police a 50 ms threshold. */
+#if (__ARM_ARCH >= 7)
+/* Cortex-A53 (kernel7.img): the ARM1176 CP15 c15 performance-monitor
+   registers do NOT exist on the A53 and every access faults as an Undefined
+   Instruction - this crashed every kernel7 boot at STAGE 2, latent until a
+   Pi Zero 2 was actually run (kernel7 had only ever been built, never
+   booted, on real A53 silicon).  The c15 counter was purely an arm1176
+   micro-optimisation to dodge the Strongly-Ordered system-timer read per
+   callback; here just use the 1 MHz system timer.  poll_ticks is measured in
+   microseconds, so POLL_TICKS_PER_MS is 1000 and the reported duration and
+   the 50 ms threshold below both come out correct without further scaling. */
+#define POLL_TICKS_PER_MS 1000u
+static inline uint32_t poll_ticks(void) { return RPI_GetSystemTime(); }
+static void poll_ticks_start(void) { }
+
+#else
+/* ARM1176 (kernel.img): the low-overhead CP15 c15 cycle counter, ticking
+   once per 64 processor cycles (the /64 divider keeps a 32-bit counter from
+   wrapping inside any interval we care about: ~275 s at 1 GHz).  A CP15
+   register read costs a couple of cycles against 47 for RPI_GetSystemTime(),
+   which is a Strongly-Ordered peripheral load - and the slow-poll check
+   wants a timestamp per callback, so seven peripheral reads per pass were
+   costing ~330 cycles, over 10% of the idle loop, purely to police a 50 ms
+   threshold. */
 #define POLL_TICKS_PER_MS 15625u          /* 1 GHz / 64 / 1000 */
-#define POLL_SLOW_TICKS (50u * POLL_TICKS_PER_MS)
 
 static inline uint32_t poll_ticks(void)
 {
@@ -598,8 +613,14 @@ static void poll_ticks_start(void)
    uint32_t ctrl = 0x000Fu;
    __asm volatile ("mcr p15,0,%0,c15,c12,0" :: "r" (ctrl) : "memory");
 }
+#endif
+
+#define POLL_SLOW_TICKS (50u * POLL_TICKS_PER_MS)
 
 #if POLL_PROFILE
+#if (__ARM_ARCH >= 7)
+#error "POLL_PROFILE uses the ARM1176 CP15 c15 cycle counter, which faults on the A53 (kernel7). Profile on kernel.img (rpi) instead."
+#endif
 static uint32_t poll_prof_cycles[NUM_EMULATORS];
 static uint32_t poll_prof_overhead;
 static uint32_t poll_prof_passes;
