@@ -13,6 +13,7 @@
 #include "services.h"
 #include "net_service.h"
 #include "net_tnfs.h"
+#include "net_telnet.h"
 #include "config.h"
 #include "wifi/wifi_lwip.h"
 #include "lwip/altcp.h"
@@ -153,6 +154,16 @@ static struct pbuf *make_pbuf(const void *data, u16_t len)
    p->len = p->tot_len = len;
    g_pbuf_live++;
    return p;
+}
+
+u16_t pbuf_copy_partial(const struct pbuf *p, void *dst, u16_t len, u16_t offset)
+{
+   u16_t avail, n;
+   if (p == NULL || offset >= p->tot_len) return 0u;
+   avail = (u16_t)(p->tot_len - offset);
+   n = (len < avail) ? len : avail;
+   memcpy(dst, (const uint8_t *)p->payload + offset, n);
+   return n;
 }
 u8_t pbuf_free(struct pbuf *p)
 {
@@ -760,6 +771,26 @@ int main(void)
       issue(NET_CMD_URL_OPEN, 0);
       jwr24(CP(0)+1, 4); jwr32(CP(0)+4, 0x8000);
       CHECK(issue(NET_CMD_URL_WRITE, 0) == NET_ERR_NOTOPEN, "url_write on a read-only TNFS handle -> NOTOPEN");
+   }
+
+   printf("== N: device - TELNET scheme (IAC filter) ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TELNET://1.2.3.4:23");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "url_open TELNET -> PENDING (connecting)");
+   g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "url_open TELNET -> OK (connected)");
+   {
+      /* server stream: "Hi" IAC WILL ECHO "!" -> clean "Hi!" + a DO ECHO reply */
+      uint8_t seg[] = { 'H','i', TN_IAC, TN_WILL, TN_OPT_ECHO, '!' };
+      g_tx_len = 0;
+      CHECK(g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, make_pbuf(seg, sizeof seg), ERR_OK) == ERR_OK,
+            "recv_cb accepts + filters the TELNET segment");
+      CHECK(g_tx_len == 3 && g_tx[0] == TN_IAC && g_tx[1] == TN_DO && g_tx[2] == TN_OPT_ECHO,
+            "negotiation reply IAC DO ECHO sent back to the server");
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_OK, "url_read TELNET -> OK");
+      CHECK(jrd24(CP(0)+1) == 3 && memcmp(&Pi1MHz->JIM_ram[0x9000], "Hi!", 3) == 0,
+            "IAC command stripped: the Beeb sees clean text \"Hi!\"");
    }
 
    printf("== N: device - HTTP scheme ==\n");

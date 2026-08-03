@@ -23,6 +23,7 @@
 #include "services.h"
 #include "net_service.h"
 #include "net_tnfs.h"
+#include "net_telnet.h"
 #include "config.h"
 #include "rpi/systimer.h"          /* RPI_GetSystemTime64 (ms clock for TNFS) */
 
@@ -85,6 +86,7 @@ typedef struct {
    uint32_t          tnfs_deadline; /* ms: resend/timeout deadline          */
    uint16_t          tnfs_req_len;  /* outstanding request length           */
    uint8_t           tnfs_req[256]; /* buffered request, for resend         */
+   telnet_ctx_t      telnet;        /* TELNET: IAC filter state (zeroed = reset) */
 } net_handle_t;
 
 /* TNFS session phases (net_handle_t.tnfs_phase) */
@@ -308,6 +310,36 @@ static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
       h->rx_parked = true;
       return ERR_MEM;
    }
+   if (h->is_url && h->url_adapter == NET_URL_TELNET) {
+      /* Run the segment through the TELNET IAC filter: clean text to the ring,
+         option-negotiation replies straight back to the server.  Filtered
+         output is <= input, so it always fits the ring we just checked. */
+      uint16_t off = 0;
+      uint8_t  reply[96];
+      size_t   rtotal = 0;
+      while (off < p->tot_len) {
+         uint8_t chunk[256];
+         uint8_t clean[256];
+         uint8_t rep[64];
+         size_t  cl, rl;
+         uint16_t want = (uint16_t)(p->tot_len - off);
+         if (want > sizeof chunk) want = (uint16_t)sizeof chunk;
+         want = pbuf_copy_partial(p, chunk, want, off);
+         if (want == 0u) break;
+         telnet_filter(&h->telnet, chunk, want, clean, sizeof clean, &cl,
+                       rep, sizeof rep, &rl);
+         if (cl != 0u) ring_put_mem(h, clean, (uint16_t)cl);
+         { size_t k; for (k = 0; k < rl && rtotal < sizeof reply; k++) reply[rtotal++] = rep[k]; }
+         off = (uint16_t)(off + want);
+      }
+      if (rtotal != 0u && h->tpcb != NULL
+          && altcp_write(h->tpcb, reply, (u16_t)rtotal, TCP_WRITE_FLAG_COPY) == ERR_OK)
+         altcp_output(h->tpcb);
+      h->rx_parked = false;
+      altcp_recved(pcb, p->tot_len);
+      pbuf_free(p);
+      return ERR_OK;
+   }
    ring_put_pbuf(h, p);
    h->rx_parked = false;
    altcp_recved(pcb, p->tot_len);
@@ -466,6 +498,7 @@ static bool net_url_parse(const char *url, net_url_t *out,
       else if (net_ci_eq(url, sl, "TCP"))  { out->adapter = NET_URL_TCP;  out->port = 0u;  }
       else if (net_ci_eq(url, sl, "UDP"))  { out->adapter = NET_URL_UDP;  out->port = 0u;  }
       else if (net_ci_eq(url, sl, "TNFS")) { out->adapter = NET_URL_TNFS; out->port = (uint16_t)TNFS_PORT; }
+      else if (net_ci_eq(url, sl, "TELNET")) { out->adapter = NET_URL_TELNET; out->port = (uint16_t)TELNET_PORT; }
       else return false;
    }
    h = sep + 3;

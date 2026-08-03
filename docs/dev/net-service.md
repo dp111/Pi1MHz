@@ -72,8 +72,12 @@ UMOUNT; a path ending in `/` (`TNFS://host/dir/`) does OPENDIR instead, and each
 `url_read` returns one directory entry name until end-of-directory (EOF).
 Opening a TNFS file with the `url_open` write bit (`[1]` bit 3) does OPEN
 `O_WRONLY|O_CREAT|O_TRUNC`, and `url_write` sends WRITE chunks (returns bytes
-written); a read-only handle refuses writes. HTTP POST/chunked and `TELNET:`
-are not implemented yet. TCP:/UDP: need an explicit `:port` (TNFS: 16384).
+written); a read-only handle refuses writes. `TELNET:` is a raw TCP stream
+(default port 23) run through an IAC filter: server option negotiation is
+answered minimally (accept `WILL ECHO`/`WILL SGA`, refuse the rest), `IAC IAC`
+unescapes to `0xFF`, subnegotiations and `CR NUL` are dropped, so `url_read`
+gives the Beeb clean text - for BBSs/MUDs. HTTP POST/chunked is not implemented
+yet. TCP:/UDP: need an explicit `:port` (TNFS: 16384, TELNET: 23).
 
 ## Design notes
 
@@ -105,7 +109,7 @@ are not implemented yet. TCP:/UDP: need an explicit `:port` (TNFS: 16384).
   HELLO.TXT + README) and read a 36-byte file (OPEN/READ/EOF) off a TNFS server
   over the 1MHz bus, with correct MOUNT/UMOUNT sessions; the codec
   (`src/net_tnfs.[ch]`) is separately unit-tested. Host tests: `src/tests/net`,
-  170 + 35 checks under ASan/UBSan incl. a fuzzer. See `beeb/net/NETTNFS.BAS`.
+  176 + 35 + 14 checks under ASan/UBSan incl. a fuzzer. See `beeb/net/NETTNFS.BAS`.
 - **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
   nIRQ froze the Beeb when asserted for a polling client, fixed 2026-08-03.
-- Not started: TLS/HTTPS, TELNET, a native sideways-ROM `*`-command API.
+- Not started: TLS/HTTPS, a native sideways-ROM `*`-command API.

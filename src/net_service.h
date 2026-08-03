@@ -99,6 +99,7 @@ void net_service_init(uint8_t instance, uint8_t address);
 #define NET_URL_UDP          1u
 #define NET_URL_HTTP         2u
 #define NET_URL_TNFS         3u
+#define NET_URL_TELNET       4u
 
 /* Result byte. */
 #define NET_OK               0x00u
