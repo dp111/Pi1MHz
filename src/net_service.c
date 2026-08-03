@@ -217,6 +217,7 @@ static void net_pcb_release(net_handle_t *h, bool abort_pcb)
       altcp_sent(pcb, NULL);
       altcp_poll(pcb, NULL, 0);
       altcp_err(pcb, NULL);
+      altcp_accept(pcb, NULL);      /* a listener's accept cb too (harmless otherwise) */
       if (abort_pcb)
          altcp_abort(pcb);
       else if (altcp_close(pcb) != ERR_OK)
@@ -1151,7 +1152,12 @@ static void net_service_poll(void)
       }
       net_irq_armed = false;         /* a reset removes any Beeb IRQ handler */
       net_reset_pending = false;
-      net_pending = false;           /* drop any command latched pre-reset */
+      /* Deliberately do NOT clear net_pending here.  A command the FIQ latches
+         *during* this teardown loop would otherwise be dropped, stranding the
+         NET_BUSY byte the FIQ wrote to the result register forever - the Beeb
+         spins on bit 7 and never re-issues, so only a reflash recovers.  Let it
+         fall through to be dispatched below: every handle is FREE now, so it
+         returns a clean bit-7-clear result and BUSY always clears. */
    }
 
    if (net_pending) {
@@ -1175,9 +1181,12 @@ void net_service_init(uint8_t instance, uint8_t address)
       net_enabled = (v != NULL) && (v[0] == '1' || v[0] == 'y' || v[0] == 't');
    }
 
-   /* Defer all pcb teardown to the first poll (see net_service_poll). */
+   /* Defer all pcb teardown to the first poll (see net_service_poll).  Do NOT
+      clear net_pending here either: a command latched around a BBC-reset
+      re-init must be dispatched (against the freshly-reset, all-FREE handles),
+      never dropped - dropping strands NET_BUSY in the result register.  It is
+      already 0 on the first-ever boot (BSS, before the service is registered). */
    net_reset_pending = true;
-   net_pending       = false;
 
    /* Both dedupe, so re-running on a BBC reset is safe. */
    (void)services_register(SERVICE_CMD_NET_FIRST, SERVICE_CMD_NET_LAST,

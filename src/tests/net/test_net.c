@@ -525,6 +525,22 @@ int main(void)
       CHECK(leaked == 0, "every TCP pcb closed/aborted after listen/accept churn");
    }
 
+   printf("== reset teardown must not drop a command latched during it ==\n");
+   /* The hardware wedge: a BBC reset arms the teardown, and if the FIQ latches
+      a command (writing NET_BUSY) *during* the teardown pass, the old code
+      cleared net_pending and the command was never dispatched - NET_BUSY stayed
+      set in the result register forever and the Beeb spun on bit 7.  Reproduce
+      it: re-arm net_reset_pending with a bare net_service_init (no trailing
+      poll, unlike world_reset), so the next issue() latches AND tears down in
+      the same poll. */
+   world_reset();
+   net_service_init(3u, 0u);
+   jwr8(CP(0)+1, NET_TYPE_TCP);
+   CHECK(issue(NET_CMD_OPEN, 0) == NET_OK,
+         "command latched during reset teardown is dispatched, not dropped (no stuck NET_BUSY)");
+   issue(NET_CMD_STATUS, 0);
+   CHECK(jrd8(CP(0)+1) == NET_ST_IDLE, "and the handle actually opened through the teardown");
+
    printf("== N: device - TCP scheme ==\n");
    world_reset();
    strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TCP://1.2.3.4:5000");
