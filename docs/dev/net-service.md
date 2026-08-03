@@ -98,11 +98,12 @@ need an explicit `:port` (TNFS: defaults to 16384).
   peer IP/port decoded), all over the bus. See `beeb/net/NETUDP.BAS`.
 - **N: device (60-64): host-tested + hardware-validated** - HTTP GET on a real
   Master against a controlled LAN server: body returned with response headers
-  stripped, HTTP status 200, clean EOF. UDP: and TNFS: schemes host-tested (the
-  TNFS mount/open/read/close handshake + reliable-UDP retry engine drive against
-  a scripted peer; `src/net_tnfs.[ch]` codec is separately unit-tested). Host
-  tests: `src/tests/net`, 156 + 31 checks under ASan/UBSan incl. a fuzzer.
-  TNFS not yet hardware-validated.
+  stripped, HTTP status 200, clean EOF. UDP: host-tested. **TNFS:
+  hardware-validated** - a real BBC Master listed a share (OPENDIR/READDIR of
+  HELLO.TXT + README) and read a 36-byte file (OPEN/READ/EOF) off a TNFS server
+  over the 1MHz bus, with correct MOUNT/UMOUNT sessions; the codec
+  (`src/net_tnfs.[ch]`) is separately unit-tested. Host tests: `src/tests/net`,
+  156 + 31 checks under ASan/UBSan incl. a fuzzer. See `beeb/net/NETTNFS.BAS`.
 - **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
   nIRQ froze the Beeb when asserted for a polling client, fixed 2026-08-03.
 - Not started: TLS/HTTPS, TELNET, TNFS write, a native sideways-ROM `*`-command API.
