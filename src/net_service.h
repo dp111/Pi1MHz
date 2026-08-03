@@ -80,12 +80,23 @@ void net_service_init(uint8_t instance, uint8_t address);
 #define NET_CMD_RECV_AVAIL   52u
 #define NET_CMD_CLOSE        53u
 #define NET_CMD_STATUS       54u
-#define NET_CMD_UDP_SENDTO   55u   /* UDP (later stage)                      */
-#define NET_CMD_UDP_RECVFROM 56u   /* UDP (later stage)                      */
+#define NET_CMD_UDP_SENDTO   55u
+#define NET_CMD_UDP_RECVFROM 56u
+/* Layer 2 - the N: device: open a URL like a file (Stage 2). */
+#define NET_CMD_URL_OPEN     60u   /* in [2..] URL (0-term); scheme picks adapter */
+#define NET_CMD_URL_READ     61u   /* like recv, on the URL's stream              */
+#define NET_CMD_URL_WRITE    62u   /* like send                                   */
+#define NET_CMD_URL_CLOSE    63u
+#define NET_CMD_URL_STATUS   64u   /* [1] state, [2] flags, [3..4] HTTP code      */
 
 /* Socket type (open [1]). */
 #define NET_TYPE_TCP         0u
 #define NET_TYPE_UDP         1u
+
+/* URL adapter (chosen from the scheme by net_url_open). */
+#define NET_URL_TCP          0u
+#define NET_URL_UDP          1u
+#define NET_URL_HTTP         2u
 
 /* Result byte. */
 #define NET_OK               0x00u

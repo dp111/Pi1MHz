@@ -16,6 +16,7 @@
 */
 
 #include <string.h>
+#include <stdio.h>
 
 #include "Pi1MHz.h"
 #include "ram_emulator.h"          /* DISC_RAM_BASE, DISC_RAM_SIZE, JIM_ram */
@@ -35,6 +36,13 @@
 /* Longest hostname accepted from the host, and the bound on the NUL scan. */
 #define NET_MAX_HOSTNAME 256u
 
+/* net_handle_t.url_phase - the N: device open state machine. */
+#define URL_START      0u
+#define URL_RESOLVING  1u
+#define URL_CONNECTING 2u
+#define URL_READY      3u
+#define URL_FAIL       4u
+
 typedef struct {
    uint8_t           state;         /* net_state_t                          */
    uint8_t           type;          /* NET_TYPE_TCP / NET_TYPE_UDP          */
@@ -43,6 +51,11 @@ typedef struct {
    bool              rx_parked;     /* a pbuf was ERR_MEM-parked            */
    bool              dns_done;      /* a resolve completed, result waiting  */
    bool              dns_ok;        /* that resolve succeeded               */
+   bool              is_url;        /* opened via net_url_open (N: device)  */
+   uint8_t           url_adapter;   /* NET_URL_* for a URL handle           */
+   uint8_t           url_phase;     /* url_phase_t: the open state machine   */
+   bool              http_hdr_done; /* HTTP adapter: response headers eaten */
+   uint16_t          http_code;     /* HTTP adapter: parsed status code     */
    struct altcp_pcb *tpcb;          /* TCP pcb, NULL once freed by lwIP     */
    struct udp_pcb   *upcb;          /* UDP pcb                              */
    ip_addr_t         remote_ip;
@@ -369,6 +382,85 @@ static void net_dns_found(const char *name, const ip_addr_t *ipaddr, void *arg)
       h->state = NET_ST_IDLE;
 }
 
+/* ---- N: device (Stage 2): URL parsing ------------------------------------ */
+
+typedef struct { uint8_t adapter; uint16_t port; } net_url_t;
+
+/* Case-insensitive compare of s[0..len) against an upper-case NUL literal. */
+static bool net_ci_eq(const char *s, size_t len, const char *lit)
+{
+   size_t i;
+   for (i = 0; i < len && lit[i] != '\0'; i++) {
+      char c = s[i];
+      if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+      if (c != lit[i]) return false;
+   }
+   return i == len && lit[i] == '\0';
+}
+
+/* "a.b.c.d" -> ip_addr_t; false if not a dotted quad. */
+static bool net_parse_dotted(const char *s, ip_addr_t *ip)
+{
+   unsigned int oct[4], n = 0, v = 0, digits = 0;
+   for (; ; s++) {
+      if (*s >= '0' && *s <= '9') {
+         v = v * 10u + (unsigned int)(*s - '0');
+         if (v > 255u || ++digits > 3u) return false;
+      } else if (*s == '.' || *s == '\0') {
+         if (digits == 0u || n >= 4u) return false;
+         oct[n++] = v; v = 0; digits = 0;
+         if (*s == '\0') break;
+      } else {
+         return false;
+      }
+   }
+   if (n != 4u) return false;
+   IP_ADDR4(ip, oct[0], oct[1], oct[2], oct[3]);
+   return true;
+}
+
+/* Parse "scheme://host[:port][/path]" into adapter/port + copies of host and
+   path (NUL-terminated; path defaults to "/").  false on malformed/overflow. */
+static bool net_url_parse(const char *url, net_url_t *out,
+                          char *host, size_t host_sz, char *path, size_t path_sz)
+{
+   const char *sep = strstr(url, "://");
+   const char *h, *e;
+   size_t i;
+   if (sep == NULL) return false;
+   {
+      size_t sl = (size_t)(sep - url);
+      if      (net_ci_eq(url, sl, "HTTP")) { out->adapter = NET_URL_HTTP; out->port = 80u; }
+      else if (net_ci_eq(url, sl, "TCP"))  { out->adapter = NET_URL_TCP;  out->port = 0u;  }
+      else if (net_ci_eq(url, sl, "UDP"))  { out->adapter = NET_URL_UDP;  out->port = 0u;  }
+      else return false;
+   }
+   h = sep + 3;
+   for (e = h; *e != '\0' && *e != ':' && *e != '/'; e++) { }
+   if (e == h || (size_t)(e - h) >= host_sz) return false;
+   for (i = 0; h + i < e; i++) host[i] = h[i];
+   host[i] = '\0';
+
+   if (*e == ':') {
+      uint32_t port = 0u;
+      for (e++; *e >= '0' && *e <= '9'; e++) port = port * 10u + (uint32_t)(*e - '0');
+      if (port == 0u || port > 65535u) return false;
+      out->port = (uint16_t)port;
+   }
+   if (out->port == 0u) return false;          /* TCP/UDP need an explicit port */
+
+   if (*e == '/') {
+      if (strlen(e) >= path_sz) return false;
+      strcpy(path, e);
+   } else if (*e == '\0') {
+      if (path_sz < 2u) return false;
+      path[0] = '/'; path[1] = '\0';
+   } else {
+      return false;
+   }
+   return true;
+}
+
 /* ---- command handlers (main-loop context) -------------------------------- */
 
 static uint8_t do_open(net_handle_t *h, uint32_t cp)
@@ -545,6 +637,26 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
    }
 }
 
+/* Create a pcb and start an outbound connect to h->remote_ip:remote_port.
+   Returns NET_PENDING (CONNECTING) or an error.  The ring-sized rcv_wnd (see
+   net_tcp_bind_callbacks) plus the ERR_MEM park keep RX drop-free. */
+static uint8_t net_start_connect(net_handle_t *h)
+{
+   h->tpcb = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
+   if (h->tpcb == NULL)
+      return NET_ERR_NOMEM;
+   net_tcp_bind_callbacks(h, h->tpcb);
+   if (altcp_connect(h->tpcb, &h->remote_ip, h->remote_port,
+                     net_tcp_connected) != ERR_OK) {
+      net_pcb_release(h, true);
+      h->state = NET_ST_ERROR;
+      h->last_err = NET_ERR_CONN;
+      return NET_ERR_CONN;
+   }
+   h->state = NET_ST_CONNECTING;
+   return NET_PENDING;
+}
+
 static uint8_t do_connect(net_handle_t *h, uint32_t cp)
 {
    if (h->type != NET_TYPE_TCP || h->state == NET_ST_FREE)
@@ -563,24 +675,7 @@ static uint8_t do_connect(net_handle_t *h, uint32_t cp)
 
    net_ip_from_wire(&h->remote_ip, cp + 1u);
    h->remote_port = (uint16_t)(jim_rd8(cp + 5u) | (jim_rd8(cp + 6u) << 8));
-
-   h->tpcb = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
-   if (h->tpcb == NULL)
-      return NET_ERR_NOMEM;
-   /* The ring-sized window (see net_tcp_bind_callbacks) keeps the peer from
-      outrunning the Beeb's drain; the ERR_MEM park keeps it drop-free even if
-      lwIP resets it.  TODO: Wireshark-verify the advertised window. */
-   net_tcp_bind_callbacks(h, h->tpcb);
-
-   if (altcp_connect(h->tpcb, &h->remote_ip, h->remote_port,
-                     net_tcp_connected) != ERR_OK) {
-      net_pcb_release(h, true);
-      h->state = NET_ST_ERROR;
-      h->last_err = NET_ERR_CONN;
-      return NET_ERR_CONN;
-   }
-   h->state = NET_ST_CONNECTING;
-   return NET_PENDING;
+   return net_start_connect(h);
 }
 
 static uint8_t do_send(net_handle_t *h, uint32_t cp)
@@ -676,6 +771,177 @@ static uint8_t do_status(net_handle_t *h, uint32_t cp)
    return NET_OK;
 }
 
+/* ---- N: device adapters -------------------------------------------------- */
+
+/* HTTP: send "GET <path> HTTP/1.0" with Host + Connection: close. */
+static uint8_t net_http_send_request(net_handle_t *h, const char *host,
+                                     const char *path)
+{
+   char req[NET_MAX_HOSTNAME + 256u];
+   int n = snprintf(req, sizeof req,
+                    "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
+                    path, host);
+   if (n < 0 || (size_t)n >= sizeof req)
+      return NET_ERR_PARAM;
+   if (h->tpcb == NULL)
+      return NET_ERR_CONN;
+   if (altcp_write(h->tpcb, req, (u16_t)n, TCP_WRITE_FLAG_COPY) != ERR_OK)
+      return NET_ERR_NOMEM;
+   altcp_output(h->tpcb);
+   wifi_lwip_rx_kick();
+   return NET_OK;
+}
+
+/* Bytes of headers (incl. the terminating CRLFCRLF) waiting in the ring, or 0
+   if the end-of-headers has not arrived yet. */
+static uint16_t net_http_find_headers(const net_handle_t *h)
+{
+   const uint8_t *ring = net_rx_ring[h - net_h];
+   uint16_t i;
+   if (h->rx_count < 4u)
+      return 0u;
+   for (i = 0; (unsigned int)i + 4u <= (unsigned int)h->rx_count; i++) {
+      uint16_t t = (uint16_t)(((unsigned int)h->rx_tail + i) & (NET_RX_RING_SIZE - 1u));
+      if (ring[t] == '\r'
+          && ring[(uint16_t)((t + 1u) & (NET_RX_RING_SIZE - 1u))] == '\n'
+          && ring[(uint16_t)((t + 2u) & (NET_RX_RING_SIZE - 1u))] == '\r'
+          && ring[(uint16_t)((t + 3u) & (NET_RX_RING_SIZE - 1u))] == '\n')
+         return (uint16_t)(i + 4u);
+   }
+   return 0u;
+}
+
+/* Parse the status code from the ring's first line ("HTTP/1.x NNN ..."). */
+static void net_http_parse_status(net_handle_t *h)
+{
+   const uint8_t *ring = net_rx_ring[h - net_h];
+   uint16_t i, code = 0u;
+   bool after_space = false;
+   for (i = 0; i < h->rx_count && i < 64u; i++) {
+      uint8_t c = ring[(uint16_t)(((unsigned int)h->rx_tail + i) & (NET_RX_RING_SIZE - 1u))];
+      if (!after_space) {
+         if (c == ' ') after_space = true;
+      } else if (c >= '0' && c <= '9') {
+         code = (uint16_t)(code * 10u + (uint16_t)(c - '0'));
+      } else {
+         break;
+      }
+   }
+   h->http_code = code;
+}
+
+/* ---- N: device commands -------------------------------------------------- */
+
+static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
+{
+   char       host[NET_MAX_HOSTNAME];
+   char       path[192];
+   net_url_t  u;
+   const char *url;
+
+   if (h->url_phase == URL_READY) return NET_OK;
+   if (h->url_phase == URL_FAIL)  return h->last_err ? h->last_err : NET_ERR_CONN;
+
+   if (!net_string_ok(cp + 2u))   return NET_ERR_PARAM;
+   url = (const char *)&Pi1MHz->JIM_ram[cp + 2u];
+   if (!net_url_parse(url, &u, host, sizeof host, path, sizeof path)) {
+      h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM;
+   }
+
+   switch (h->url_phase) {
+      case URL_START:
+         if (h->state != NET_ST_FREE)  return NET_ERR_INUSE;
+         if (u.adapter == NET_URL_UDP) {          /* UDP scheme not yet wired */
+            h->url_phase = URL_FAIL; h->last_err = NET_ERR_UNSUPPORTED;
+            return NET_ERR_UNSUPPORTED;
+         }
+         if (!wifi_lwip_get_context()->address_ready)
+            return NET_PENDING;                   /* no IP yet - keep polling */
+         net_handle_reset(h);
+         h->is_url = true; h->url_adapter = u.adapter;
+         h->type = NET_TYPE_TCP; h->state = NET_ST_IDLE;
+         h->remote_port = u.port;
+         if (net_parse_dotted(host, &h->remote_ip)) {
+            h->url_phase = URL_CONNECTING;
+            return net_start_connect(h);
+         }
+         {
+            err_t e = dns_gethostbyname(host, &h->dns_ip, net_dns_found, h);
+            if (e == ERR_OK) {
+               h->remote_ip = h->dns_ip; h->url_phase = URL_CONNECTING;
+               return net_start_connect(h);
+            }
+            if (e == ERR_INPROGRESS) {
+               h->url_phase = URL_RESOLVING; h->state = NET_ST_RESOLVING;
+               return NET_PENDING;
+            }
+            h->url_phase = URL_FAIL; h->last_err = NET_ERR_DNS; return NET_ERR_DNS;
+         }
+      case URL_RESOLVING:
+         if (!h->dns_done) return NET_PENDING;
+         h->dns_done = false;
+         if (!h->dns_ok) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_DNS; return NET_ERR_DNS; }
+         h->remote_ip = h->dns_ip; h->state = NET_ST_IDLE;
+         h->url_phase = URL_CONNECTING;
+         return net_start_connect(h);
+      case URL_CONNECTING:
+         if (h->state == NET_ST_CONNECTING) return NET_PENDING;
+         if (h->state == NET_ST_ERROR) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN; }
+         if (h->state == NET_ST_CONNECTED) {
+            if (h->url_adapter == NET_URL_HTTP) {
+               uint8_t r = net_http_send_request(h, host, path);
+               if (r != NET_OK) { h->url_phase = URL_FAIL; h->last_err = r; return r; }
+            }
+            h->url_phase = URL_READY;
+            return NET_OK;
+         }
+         return NET_PENDING;
+      default:
+         return NET_PENDING;
+   }
+}
+
+static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
+{
+   uint32_t max    = jim_rd24(cp + 1u);
+   uint32_t jimoff = jim_rd32(cp + 4u);
+   uint32_t got;
+
+   if (h->state == NET_ST_FREE) return NET_ERR_NOTOPEN;
+   if (!net_buffer_ok(jimoff, max)) return NET_ERR_PARAM;
+
+   if (h->url_adapter == NET_URL_HTTP && !h->http_hdr_done) {
+      uint16_t hdr = net_http_find_headers(h);
+      if (hdr == 0u) {                       /* headers not complete yet */
+         jim_wr24(cp + 1u, 0u);
+         return (h->rx_count == 0u && h->rx_eof) ? NET_EOF : NET_OK;
+      }
+      net_http_parse_status(h);
+      { uint8_t junk[64]; uint16_t left = hdr;
+        while (left != 0u) { uint16_t k = (left < sizeof junk) ? left : (uint16_t)sizeof junk;
+                             ring_get_mem(h, junk, k); left = (uint16_t)(left - k); } }
+      h->http_hdr_done = true;
+   }
+   got = ring_get(h, jimoff + DISC_RAM_BASE, max);
+   jim_wr24(cp + 1u, got);
+   if (got == 0u && h->rx_count == 0u && h->rx_eof) return NET_EOF;
+   return NET_OK;
+}
+
+static uint8_t do_url_status(net_handle_t *h, uint32_t cp)
+{
+   uint8_t flags = 0u;
+   if (h->url_phase == URL_READY)               flags |= NET_FLAG_CONNECTED;
+   if (h->rx_eof)                               flags |= NET_FLAG_RX_EOF;
+   if (h->url_phase == URL_FAIL || h->state == NET_ST_ERROR) flags |= NET_FLAG_ERROR;
+   if (h->rx_count != 0u)                       flags |= NET_FLAG_RX_READY;
+   Pi1MHz->JIM_ram[cp + 1u] = h->state;
+   Pi1MHz->JIM_ram[cp + 2u] = flags;
+   Pi1MHz->JIM_ram[cp + 3u] = (uint8_t)h->http_code;
+   Pi1MHz->JIM_ram[cp + 4u] = (uint8_t)(h->http_code >> 8);
+   return NET_OK;
+}
+
 /* Dispatch one latched command; returns the result byte for the Beeb. */
 static uint8_t net_dispatch(uint32_t cp, uint8_t data)
 {
@@ -702,6 +968,11 @@ static uint8_t net_dispatch(uint32_t cp, uint8_t data)
       case NET_CMD_STATUS:       return do_status(h, cp);
       case NET_CMD_UDP_SENDTO:   return do_udp_sendto(h, cp);
       case NET_CMD_UDP_RECVFROM: return do_udp_recvfrom(h, cp);
+      case NET_CMD_URL_OPEN:     return do_url_open(h, cp);
+      case NET_CMD_URL_READ:     return do_url_read(h, cp);
+      case NET_CMD_URL_WRITE:    return do_send(h, cp);   /* same block layout */
+      case NET_CMD_URL_CLOSE:    return do_close(h);
+      case NET_CMD_URL_STATUS:   return do_url_status(h, cp);
       default:                   return NET_ERR_UNSUPPORTED;
    }
 }

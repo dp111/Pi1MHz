@@ -464,6 +464,49 @@ int main(void)
       CHECK(jrd8(CP(nh)+1) == NET_ST_CONNECTED, "accepted handle is CONNECTED");
    }
 
+   printf("== N: device - TCP scheme ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TCP://1.2.3.4:5000");
+   { int before = g_npcbs;
+     CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "url_open TCP:// -> PENDING (connecting)");
+     CHECK(g_npcbs == before + 1, "dotted IP skipped DNS, went straight to connect"); }
+   g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "url_open TCP:// -> OK after connect");
+   issue(NET_CMD_URL_STATUS, 0);
+   CHECK((jrd8(CP(0)+2) & NET_FLAG_CONNECTED) != 0, "url status CONNECTED");
+
+   printf("== N: device - HTTP scheme ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "HTTP://1.2.3.4/index.html");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "url_open HTTP:// -> PENDING");
+   g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "url_open HTTP:// -> OK (request sent)");
+   g_tx[g_tx_len] = 0;
+   CHECK(strstr((char *)g_tx, "GET /index.html HTTP/1.0") != NULL, "HTTP GET line sent");
+   CHECK(strstr((char *)g_tx, "Host: 1.2.3.4") != NULL, "Host header sent");
+   {
+      static const char resp[] =
+         "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n<html>hi</html>";
+      struct pbuf *p = make_pbuf(resp, (u16_t)(sizeof resp - 1u));
+      g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p, ERR_OK);
+   }
+   jwr24(CP(0)+1, 200); jwr32(CP(0)+4, 0x9000);
+   CHECK(issue(NET_CMD_URL_READ, 0) == NET_OK, "url_read -> OK");
+   {
+      uint32_t n = jrd24(CP(0)+1);
+      CHECK(n == strlen("<html>hi</html>"), "url_read returned only the body (headers stripped)");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x9000], "<html>hi</html>", n) == 0, "body bytes correct");
+   }
+   issue(NET_CMD_URL_STATUS, 0);
+   CHECK((jrd8(CP(0)+3) | (jrd8(CP(0)+4)<<8)) == 200u, "url status reports HTTP 200");
+
+   printf("== N: device - malformed URL ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "notaurl");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_PARAM, "malformed URL -> PARAM");
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TCP://host.only");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_PARAM, "TCP:// without a port -> PARAM");
+
    /* free the last test's pcbs so LSan is clean */
    for (int i = 0; i < g_npcbs; i++) free(g_pcbs[i]);
    for (int i = 0; i < g_nupcbs; i++) free(g_upcbs[i]);
