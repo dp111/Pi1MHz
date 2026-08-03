@@ -10,6 +10,11 @@ its own files; the summaries below point at those.
 Written and maintained by Dominic Plunkett (dp111) and contributors.
 Licensed under the GNU General Public License v3 (see `ReadMe.md`).
 
+## Thanks
+
+With thanks to Ken Lowe, Mark Usher, Hoglet, BigEd and others in the BBC
+Micro community for their testing, advice and contributions.
+
 ## Vendored libraries
 
 | Component | Source / author | Licence | In tree |
