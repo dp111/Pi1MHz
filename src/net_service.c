@@ -438,19 +438,30 @@ static bool net_url_parse(const char *url, net_url_t *out,
    h = sep + 3;
    for (e = h; *e != '\0' && *e != ':' && *e != '/'; e++) { }
    if (e == h || (size_t)(e - h) >= host_sz) return false;
-   for (i = 0; h + i < e; i++) host[i] = h[i];
+   for (i = 0; h + i < e; i++) {
+      if ((unsigned char)h[i] < 0x20u || (unsigned char)h[i] == 0x7Fu)
+         return false;                          /* no control chars in host */
+      host[i] = h[i];
+   }
    host[i] = '\0';
 
    if (*e == ':') {
       uint32_t port = 0u;
-      for (e++; *e >= '0' && *e <= '9'; e++) port = port * 10u + (uint32_t)(*e - '0');
-      if (port == 0u || port > 65535u) return false;
+      for (e++; *e >= '0' && *e <= '9'; e++) {
+         port = port * 10u + (uint32_t)(*e - '0');
+         if (port > 65535u) return false;       /* reject before it wraps */
+      }
+      if (port == 0u) return false;
       out->port = (uint16_t)port;
    }
    if (out->port == 0u) return false;          /* TCP/UDP need an explicit port */
 
    if (*e == '/') {
+      const char *q;
       if (strlen(e) >= path_sz) return false;
+      for (q = e; *q != '\0'; q++)
+         if ((unsigned char)*q < 0x20u || (unsigned char)*q == 0x7Fu)
+            return false;                        /* no control chars in path */
       strcpy(path, e);
    } else if (*e == '\0') {
       if (path_sz < 2u) return false;
@@ -832,6 +843,17 @@ static void net_http_parse_status(net_handle_t *h)
 
 /* ---- N: device commands -------------------------------------------------- */
 
+/* Start the URL handle's connect and advance to URL_CONNECTING; on any
+   immediate failure (e.g. pcb exhaustion) land in URL_FAIL rather than a
+   stuck URL_CONNECTING that polls NET_PENDING forever. */
+static uint8_t url_begin_connect(net_handle_t *h)
+{
+   uint8_t r = net_start_connect(h);
+   if (r == NET_PENDING) h->url_phase = URL_CONNECTING;
+   else { h->url_phase = URL_FAIL; h->last_err = r; }
+   return r;
+}
+
 static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
 {
    char       host[NET_MAX_HOSTNAME];
@@ -861,15 +883,13 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
          h->is_url = true; h->url_adapter = u.adapter;
          h->type = NET_TYPE_TCP; h->state = NET_ST_IDLE;
          h->remote_port = u.port;
-         if (net_parse_dotted(host, &h->remote_ip)) {
-            h->url_phase = URL_CONNECTING;
-            return net_start_connect(h);
-         }
+         if (net_parse_dotted(host, &h->remote_ip))
+            return url_begin_connect(h);
          {
             err_t e = dns_gethostbyname(host, &h->dns_ip, net_dns_found, h);
             if (e == ERR_OK) {
-               h->remote_ip = h->dns_ip; h->url_phase = URL_CONNECTING;
-               return net_start_connect(h);
+               h->remote_ip = h->dns_ip;
+               return url_begin_connect(h);
             }
             if (e == ERR_INPROGRESS) {
                h->url_phase = URL_RESOLVING; h->state = NET_ST_RESOLVING;
@@ -882,8 +902,7 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
          h->dns_done = false;
          if (!h->dns_ok) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_DNS; return NET_ERR_DNS; }
          h->remote_ip = h->dns_ip; h->state = NET_ST_IDLE;
-         h->url_phase = URL_CONNECTING;
-         return net_start_connect(h);
+         return url_begin_connect(h);
       case URL_CONNECTING:
          if (h->state == NET_ST_CONNECTING) return NET_PENDING;
          if (h->state == NET_ST_ERROR) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN; }
@@ -912,9 +931,17 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
 
    if (h->url_adapter == NET_URL_HTTP && !h->http_hdr_done) {
       uint16_t hdr = net_http_find_headers(h);
-      if (hdr == 0u) {                       /* headers not complete yet */
+      if (hdr == 0u) {                       /* end-of-headers not seen yet */
          jim_wr24(cp + 1u, 0u);
-         return (h->rx_count == 0u && h->rx_eof) ? NET_EOF : NET_OK;
+         /* Ring full without CRLFCRLF = oversized/non-HTTP headers: fail
+            rather than deadlock (a full ring parks all further RX, so the
+            terminator - and the FIN - can never arrive). */
+         if (h->rx_count >= NET_RX_RING_SIZE - 1u) {
+            h->last_err = NET_ERR_CONN;
+            return NET_ERR_CONN;
+         }
+         if (h->rx_eof) return NET_EOF;      /* peer closed before end-of-headers */
+         return NET_OK;                       /* wait for more header bytes */
       }
       net_http_parse_status(h);
       { uint8_t junk[64]; uint16_t left = hdr;

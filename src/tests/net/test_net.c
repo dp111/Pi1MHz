@@ -506,6 +506,34 @@ int main(void)
    CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_PARAM, "malformed URL -> PARAM");
    strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TCP://host.only");
    CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_PARAM, "TCP:// without a port -> PARAM");
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TCP://h:99999");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_PARAM, "port > 65535 -> PARAM");
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TCP://h:4294967297");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_PARAM, "port that would wrap -> PARAM");
+   { char *u = (char *)&Pi1MHz->JIM_ram[CP(0) + 2u];
+     strcpy(u, "TCP://haXst:80"); u[8] = '\r';       /* control char in host */
+     CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_PARAM, "control char in host -> PARAM"); }
+
+   printf("== N: device - oversized HTTP headers don't deadlock ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "HTTP://1.2.3.4/");
+   issue(NET_CMD_URL_OPEN, 0);
+   g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+   issue(NET_CMD_URL_OPEN, 0);
+   { uint8_t *big = malloc(NET_RX_RING_SIZE); memset(big, 'A', NET_RX_RING_SIZE);
+     struct pbuf *p = make_pbuf(big, (u16_t)NET_RX_RING_SIZE);
+     if (g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p, ERR_OK) == ERR_MEM) pbuf_free(p);
+     free(big); }
+   jwr24(CP(0)+1, 200); jwr32(CP(0)+4, 0x9000);
+   CHECK(issue(NET_CMD_URL_READ, 0) == NET_ERR_CONN, "ring-full-without-CRLFCRLF -> ERR (not deadlock)");
+
+   printf("== N: device - connect NOMEM doesn't wedge ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TCP://1.2.3.4:5000");
+   g_force_new_null = 1;                              /* pcb exhaustion */
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_NOMEM, "url_open with no free pcb -> NOMEM");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_NOMEM, "re-issue stays NOMEM (not stuck PENDING)");
+   g_force_new_null = 0;
 
    printf("== fuzz: random command blocks + RX (ASan/UBSan) ==\n");
    {
