@@ -159,14 +159,45 @@ static struct pbuf *make_pbuf(const void *data, u16_t len)
    return p;
 }
 
+/* Build a pbuf CHAIN from one buffer, cutting it into <=seg-byte links, so the
+   tests can exercise the multi-pbuf path (real lwIP hands segments as chains).
+   tot_len on the head is the whole length, as lwIP guarantees. */
+static struct pbuf *make_pbuf_split(const void *data, u16_t len, u16_t seg)
+{
+   const uint8_t *src = data;
+   struct pbuf *head = NULL, *tail = NULL;
+   u16_t done = 0;
+   if (seg == 0u) seg = 1u;
+   do {
+      u16_t n = (u16_t)(len - done);
+      struct pbuf *p;
+      if (n > seg) n = seg;
+      p = make_pbuf(src ? src + done : NULL, n);
+      p->tot_len = (u16_t)(len - done);         /* remaining length, lwIP-style */
+      if (tail) tail->next = p; else head = p;
+      tail = p;
+      done = (u16_t)(done + n);
+   } while (done < len);
+   return head;
+}
+
+/* Chain-walking copy, matching lwIP's pbuf_copy_partial (the earlier single-
+   buffer stub silently mis-read chains). */
 u16_t pbuf_copy_partial(const struct pbuf *p, void *dst, u16_t len, u16_t offset)
 {
-   u16_t avail, n;
-   if (p == NULL || offset >= p->tot_len) return 0u;
-   avail = (u16_t)(p->tot_len - offset);
-   n = (len < avail) ? len : avail;
-   memcpy(dst, (const uint8_t *)p->payload + offset, n);
-   return n;
+   uint8_t *out = dst;
+   u16_t copied = 0;
+   if (p == NULL || dst == NULL) return 0u;
+   for (; len != 0u && p != NULL; p = p->next) {
+      if (offset >= p->len) { offset = (u16_t)(offset - p->len); continue; }
+      u16_t n = (u16_t)(p->len - offset);
+      if (n > len) n = len;
+      memcpy(out + copied, (const uint8_t *)p->payload + offset, n);
+      copied = (u16_t)(copied + n);
+      len = (u16_t)(len - n);
+      offset = 0u;
+   }
+   return copied;
 }
 u8_t pbuf_free(struct pbuf *p)
 {
@@ -869,6 +900,45 @@ int main(void)
         CHECK(jrd8(CP(0)+3) == 1u && jrd8(CP(0)+4) == 0u, "DVSTAT connected=1, error=0"); }
    }
 
+   printf("== TELNET over a >256B pbuf chain, IAC straddling boundaries ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TELNET://1.2.3.4:23");
+   issue(NET_CMD_URL_OPEN, 0);
+   g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "TELNET connected");
+   {
+      /* 280-byte stream: 255 'A', then IAC WILL SGA (the IAC is byte 255 - the
+         last of the filter's first 256-byte chunk - so the command spans the
+         internal chunk boundary), 'B' 'C', IAC IAC (-> one 0xFF), 18 'D'. */
+      uint8_t in[280]; size_t n = 0, k;
+      for (k = 0; k < 255u; k++) in[n++] = 'A';
+      in[n++] = TN_IAC; in[n++] = TN_WILL; in[n++] = TN_OPT_SGA;   /* 255,256,257 */
+      in[n++] = 'B'; in[n++] = 'C';
+      in[n++] = TN_IAC; in[n++] = TN_IAC;                          /* -> literal 0xFF */
+      while (n < sizeof in) in[n++] = 'D';                         /* pad to 280 */
+
+      g_tx_len = 0;
+      /* feed it as a chain of 64-byte pbufs: the IAC at byte 255 also lands on a
+         pbuf boundary (WILL is the first byte of the 5th pbuf) */
+      CHECK(g_last_pcb->recv(g_last_pcb->arg, g_last_pcb,
+                             make_pbuf_split(in, (u16_t)n, 64), ERR_OK) == ERR_OK,
+            "recv_cb filters a chained >256B TELNET segment");
+      CHECK(g_tx_len == 3 && g_tx[0] == TN_IAC && g_tx[1] == TN_DO && g_tx[2] == TN_OPT_SGA,
+            "WILL SGA (spanning chunk+pbuf boundary) answered with DO SGA");
+
+      jwr24(CP(0)+1, 0x400); jwr32(CP(0)+4, 0x9000);              /* read up to 1024 */
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_OK, "url_read the filtered stream -> OK");
+      {
+         uint32_t got = jrd24(CP(0)+1);
+         const uint8_t *o = &Pi1MHz->JIM_ram[0x9000];
+         int a_ok = 1; unsigned i;
+         for (i = 0; i < 255u; i++) if (o[i] != 'A') a_ok = 0;
+         CHECK(got == 276u, "filtered length = 276 (3-byte cmd stripped, IAC IAC folded)");
+         CHECK(a_ok && o[255] == 'B' && o[256] == 'C' && o[257] == 0xFFu && o[275] == 'D',
+               "chained filter output byte-correct across both boundaries");
+      }
+   }
+
    printf("== N: device - TNFS aux modes (FujiNet-aligned) ==\n");
    world_reset();
    jwr8(CP(0)+1, NET_OPEN_DIR);                             /* mode 13 -> directory */
@@ -987,6 +1057,75 @@ int main(void)
       }
       #undef RND
       CHECK(1, "40000 random command blocks + RX survived (no crash / UB / leak)");
+   }
+
+   /* The command-block fuzzer above rarely forms a "TELNET://" or "TNFS://"
+      URL from random bytes, so it barely touches those adapters' recv paths.
+      These two loops set the adapter up deterministically, then hammer its
+      recv callback with adversarial input. */
+   printf("== fuzz: TELNET IAC filter over random chained segments ==\n");
+   {
+      uint32_t s = 0x9E3779B9u;
+      #define RND() (s = s * 1103515245u + 12345u, (uint8_t)(s >> 17))
+      for (int it = 0; it < 8000; it++) {
+         world_reset();
+         for (int i = 0; i < g_npcbs; i++) free(g_pcbs[i]);
+         g_npcbs = 0; g_last_pcb = NULL;
+         strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TELNET://1.2.3.4:23");
+         issue(NET_CMD_URL_OPEN, 0);
+         if (g_last_pcb != NULL && g_last_pcb->connected != NULL)
+            g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+         issue(NET_CMD_URL_OPEN, 0);                        /* -> READY */
+
+         for (int r = 0; r < 3 && g_last_pcb != NULL && g_last_pcb->recv != NULL; r++) {
+            uint16_t len = (uint16_t)(((RND() << 8) | RND()) % 400u);
+            uint16_t seg = (uint16_t)(1u + RND() % 80u);
+            struct pbuf *p = make_pbuf_split(NULL, len, seg);
+            for (struct pbuf *q = p; q != NULL; q = q->next)
+               for (uint16_t k = 0; k < q->len; k++) ((uint8_t *)q->payload)[k] = RND();
+            if (g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p, ERR_OK) == ERR_MEM)
+               pbuf_free(p);                                /* parked: harness owns it */
+            if (RND() & 1u) { jwr24(CP(0)+1, 0x400); jwr32(CP(0)+4, 0x9000);
+                              issue(NET_CMD_URL_READ, 0); } /* drain the ring */
+         }
+      }
+      #undef RND
+      /* Do NOT free g_pcbs here: the handle table still points at the last
+         pcb; the final suite cleanup (after the last world_reset) frees it. */
+      CHECK(1, "TELNET filter survived random chained segments (no crash / UB / leak)");
+   }
+
+   printf("== fuzz: TNFS reply parser over random datagrams ==\n");
+   {
+      uint32_t s = 0xB5297A4Du;
+      #define RND() (s = s * 1103515245u + 12345u, (uint8_t)(s >> 17))
+      for (int it = 0; it < 8000; it++) {
+         world_reset();
+         for (int i = 0; i < g_nupcbs; i++) free(g_upcbs[i]);
+         g_nupcbs = 0; g_last_upcb = NULL;
+         strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/f");
+         issue(NET_CMD_URL_OPEN, 0);                        /* MOUNT sent -> PENDING */
+
+         for (int r = 0; r < 4 && g_last_upcb != NULL && g_last_upcb->recv != NULL; r++) {
+            ip_addr_t peer; IP_ADDR4(&peer, 192, 168, 0, 9);
+            uint16_t len = (uint16_t)(RND() % 64u);
+            struct pbuf *p = make_pbuf(NULL, len);
+            for (uint16_t k = 0; k < len; k++) ((uint8_t *)p->payload)[k] = RND();
+            /* half the time echo the seq/cmd we last sent so parse gets deeper
+               (past the seq/cmd gate) into the status/body handling */
+            if (len >= 4u && (RND() & 1u)) {
+               ((uint8_t *)p->payload)[2] = g_udp_tx[2];
+               ((uint8_t *)p->payload)[3] = g_udp_tx[3];
+            }
+            g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, p, &peer, (u16_t)TNFS_PORT);
+            g_now_us += (uint64_t)RND() * 5000ull;          /* sometimes cross a deadline */
+            issue(NET_CMD_URL_OPEN, 0);
+         }
+      }
+      #undef RND
+      /* Same as above: leave g_upcbs for the final cleanup (no teardown runs
+         after it), so the live handle->upcb ref is never touched post-free. */
+      CHECK(1, "TNFS parser survived random datagrams (no crash / UB / leak)");
    }
 
    /* free the last test's pcbs so LSan is clean */
