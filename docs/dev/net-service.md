@@ -85,9 +85,9 @@ POST/chunked and dir enumeration are not implemented yet.
 ## Status
 
 - **Raw sockets (45-56): DONE, host-tested + hardware-validated** on a real
-  BBC Master + Pi - TCP connect over WiFi, send, live DNS resolve, and a raw
-  connect to a LAN server, all over the bus. (UDP 55/56 host-tested; the same
-  lwIP UDP path is hardware-proven via AUN.)
+  BBC Master + Pi - TCP connect over WiFi, send, live DNS resolve, a raw connect
+  to a LAN server, and a UDP `sendto`/`recvfrom` echo round-trip (payload back,
+  peer IP/port decoded), all over the bus. See `beeb/net/NETUDP.BAS`.
 - **N: device (60-64): host-tested + hardware-validated** - HTTP GET on a real
   Master against a controlled LAN server: body returned with response headers
   stripped, HTTP status 200, clean EOF. Host tests: `src/tests/net`, 104 checks

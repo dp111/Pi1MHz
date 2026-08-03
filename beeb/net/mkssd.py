@@ -120,8 +120,9 @@ def main():
     boot_txt = (
         "*BASIC\r"
         'PRINT"Pi1MHz net test disc"\r'
-        'PRINT"*EXEC NETDEMO  - raw sockets"\r'
+        'PRINT"*EXEC NETDEMO  - raw TCP sockets"\r'
         'PRINT"*EXEC NETHTTP  - N: HTTP GET"\r'
+        'PRINT"*EXEC NETUDP   - raw UDP echo"\r'
         'PRINT"(set net_enable=1 in Pi1MHz.cfg)"\r'
     )
 
@@ -129,6 +130,7 @@ def main():
         File("!BOOT", boot_txt.encode("latin1")),
         File("NETDEMO", to_cr(read("NETDEMO.BAS"))),
         File("NETHTTP", to_cr(read("NETHTTP.BAS"))),
+        File("NETUDP", to_cr(read("NETUDP.BAS"))),
     ]
 
     img = build("Pi1MHz NET", files, boot_option=3)   # *OPT4,3 = EXEC !BOOT
@@ -136,7 +138,7 @@ def main():
     # self-check: parse it back, confirm every file survived intact
     title, boot, cat = parse(img)
     names = {c[0].split(".", 1)[1] for c in cat}
-    expected = {"!BOOT", "NETDEMO", "NETHTTP"}
+    expected = {f.name for f in files}
     assert names == expected, "round-trip mismatch: %r" % names
     assert boot == 3, "boot option lost"
 
