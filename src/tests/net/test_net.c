@@ -658,6 +658,50 @@ int main(void)
       CHECK(r == NET_ERR_CONN, "retries exhausted -> ERR_CONN");
    }
 
+   printf("== N: device - TNFS directory listing ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/games/");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "url_open TNFS dir -> PENDING (MOUNT)");
+   {
+      ip_addr_t peer; IP_ADDR4(&peer, 192, 168, 0, 9);
+      uint8_t sm = g_udp_tx[2];
+      uint8_t mrep[] = { 0x55,0x00, sm, TNFS_CMD_MOUNT, TNFS_OK, 0x02,0x01, 0x2C,0x01 };
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(mrep, sizeof mrep), &peer, (u16_t)TNFS_PORT);
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "after MOUNT -> PENDING (OPENDIR sent)");
+      CHECK(g_udp_tx[3] == TNFS_CMD_OPENDIR, "a trailing-slash URL sends OPENDIR, not OPEN");
+      {
+         uint8_t so = g_udp_tx[2];
+         uint8_t orep[] = { 0x55,0x00, so, TNFS_CMD_OPENDIR, TNFS_OK, 0x03 };  /* dir handle 3 */
+         g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(orep, sizeof orep), &peer, (u16_t)TNFS_PORT);
+      }
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "OPENDIR reply -> READY");
+
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_PENDING, "url_read dir -> PENDING (READDIR sent)");
+      CHECK(g_udp_tx[3] == TNFS_CMD_READDIR && g_udp_tx[4] == 0x03, "READDIR carries the dir handle");
+      {
+         uint8_t sd = g_udp_tx[2];
+         uint8_t drep[] = { 0x55,0x00, sd, TNFS_CMD_READDIR, TNFS_OK, 'G','A','M','E','.','D','S','K', 0 };
+         g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(drep, sizeof drep), &peer, (u16_t)TNFS_PORT);
+      }
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_OK, "readdir delivers an entry -> OK");
+      CHECK(jrd24(CP(0)+1) == 8, "entry name length 8");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x9000], "GAME.DSK", 8) == 0, "entry name delivered (no NUL)");
+
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_PENDING, "next url_read -> PENDING (READDIR sent)");
+      {
+         uint8_t sd2 = g_udp_tx[2];
+         uint8_t erep[] = { 0x55,0x00, sd2, TNFS_CMD_READDIR, TNFS_EOF };
+         g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(erep, sizeof erep), &peer, (u16_t)TNFS_PORT);
+      }
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_EOF, "readdir at end of directory -> NET_EOF");
+
+      CHECK(issue(NET_CMD_URL_CLOSE, 0) == NET_OK, "url_close dir -> OK");
+      CHECK(g_udp_tx[3] == TNFS_CMD_UMOUNT, "UMOUNT sent last on dir close (CLOSEDIR before it)");
+   }
+
    printf("== N: device - HTTP scheme ==\n");
    world_reset();
    strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "HTTP://1.2.3.4/index.html");

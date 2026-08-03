@@ -68,7 +68,7 @@ the URL's host:port; `url_write` sends a datagram there, `url_read` returns the
 next datagram's payload, no EOF), and `TNFS:` (read a file off a TNFS server;
 `url_open TNFS://host[:port]/path` does MOUNT `/` -> OPEN read-only over UDP
 :16384, `url_read` does READ chunks until EOF, `url_close` does CLOSE + UMOUNT).
-HTTP POST/chunked, TNFS write/dir enumeration and `TELNET:` are not implemented
+HTTP POST/chunked, TNFS write and `TELNET:` are not implemented
 yet. TCP:/UDP: need an explicit `:port` (TNFS: defaults to 16384).
 
 ## Design notes

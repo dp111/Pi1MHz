@@ -76,7 +76,8 @@ typedef struct {
    /* TNFS (N:TNFS://) session + one in-flight request, for the retry engine */
    uint8_t           tnfs_phase;    /* TNFS_PH_*                            */
    uint8_t           tnfs_seq;      /* sequence of the outstanding request  */
-   uint8_t           tnfs_fd;       /* open file descriptor (from OPEN)     */
+   uint8_t           tnfs_fd;       /* open file / directory handle         */
+   uint8_t           tnfs_is_dir;   /* URL path ended in '/': a directory   */
    uint8_t           tnfs_retries;  /* resends left on the outstanding req  */
    uint16_t          tnfs_connid;   /* session id (from MOUNT)              */
    uint16_t          tnfs_retry_ms; /* base resend timeout (from MOUNT)     */
@@ -797,7 +798,10 @@ static uint8_t do_close(net_handle_t *h)
       uint8_t  req[16];
       size_t   n;
       if (h->tnfs_phase == TNFS_PH_READY || h->tnfs_phase == TNFS_PH_READING) {
-         n = tnfs_build_close(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq, h->tnfs_fd);
+         if (h->tnfs_is_dir)
+            n = tnfs_build_closedir(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq, h->tnfs_fd);
+         else
+            n = tnfs_build_close(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq, h->tnfs_fd);
          net_tnfs_send_raw(h, req, (uint16_t)n);
       }
       n = tnfs_build_umount(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq);
@@ -1113,20 +1117,28 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                h->last_err = net_tnfs_status(rep.status);
                return h->last_err;
             }
-            if (h->tnfs_phase == TNFS_PH_MOUNT) {      /* mounted -> now OPEN the file */
+            if (h->tnfs_phase == TNFS_PH_MOUNT) {      /* mounted -> OPEN the file/dir */
                uint16_t rms = 0;
+               size_t   plen = strlen(path);
                size_t   n;
                (void)tnfs_reply_mount(&rep, NULL, &rms);
                h->tnfs_connid = rep.connid;
                if (rms >= 100u && rms <= 5000u) h->tnfs_retry_ms = rms;
+               /* a URL path ending in '/' selects the directory (OPENDIR) */
+               h->tnfs_is_dir = (plen != 0u && path[plen - 1u] == '/') ? 1u : 0u;
                h->tnfs_seq++;
-               n = tnfs_build_open(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                   h->tnfs_seq, TNFS_O_RDONLY, 0u, path);
+               if (h->tnfs_is_dir)
+                  n = tnfs_build_opendir(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
+                                         h->tnfs_seq, path);
+               else
+                  n = tnfs_build_open(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
+                                      h->tnfs_seq, TNFS_O_RDONLY, 0u, path);
                if (n == 0u) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM; }
                return net_tnfs_start(h, TNFS_PH_OPEN, n);
             }
-            /* TNFS_PH_OPEN: file is open -> READY */
-            (void)tnfs_reply_open(&rep, &h->tnfs_fd);
+            /* TNFS_PH_OPEN: file/dir is open -> READY */
+            if (h->tnfs_is_dir) (void)tnfs_reply_opendir(&rep, &h->tnfs_fd);
+            else                (void)tnfs_reply_open(&rep, &h->tnfs_fd);
             h->tnfs_phase = TNFS_PH_READY;
             h->url_phase  = URL_READY;
             return NET_OK;
@@ -1161,13 +1173,18 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       tnfs_reply_t rep;
       uint8_t      r;
       jim_wr24(cp + 1u, 0u);                     /* default: 0 bytes read */
-      if (h->tnfs_phase == TNFS_PH_READY) {       /* start a new READ */
-         uint16_t want = (max > TNFS_READ_CHUNK) ? (uint16_t)TNFS_READ_CHUNK : (uint16_t)max;
-         size_t   n;
-         if (want == 0u) return NET_OK;
+      if (h->tnfs_phase == TNFS_PH_READY) {       /* start a READ / READDIR */
+         size_t n;
          h->tnfs_seq++;
-         n = tnfs_build_read(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                             h->tnfs_seq, h->tnfs_fd, want);
+         if (h->tnfs_is_dir) {                    /* one directory entry per read */
+            n = tnfs_build_readdir(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
+                                   h->tnfs_seq, h->tnfs_fd);
+         } else {
+            uint16_t want = (max > TNFS_READ_CHUNK) ? (uint16_t)TNFS_READ_CHUNK : (uint16_t)max;
+            if (want == 0u) return NET_OK;
+            n = tnfs_build_read(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
+                                h->tnfs_seq, h->tnfs_fd, want);
+         }
          return net_tnfs_start(h, TNFS_PH_READING, n);
       }
       if (h->tnfs_phase != TNFS_PH_READING) return NET_ERR_NOTOPEN;
@@ -1175,9 +1192,17 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       if (r == NET_PENDING) return NET_PENDING;
       h->tnfs_phase = TNFS_PH_READY;             /* transaction over either way */
       if (r != NET_OK) return r;                 /* timed out */
-      if (rep.status == TNFS_EOF) return NET_EOF;
+      if (rep.status == TNFS_EOF) return NET_EOF; /* end of file / end of directory */
       if (rep.status != TNFS_OK)  return net_tnfs_status(rep.status);
-      {
+      if (h->tnfs_is_dir) {                       /* deliver the entry name */
+         const char *name;
+         uint32_t    copy;
+         if (!tnfs_reply_readdir(&rep, &name)) return NET_ERR_CONN;
+         copy = (uint32_t)strlen(name);
+         if (copy > max) copy = max;
+         memcpy(&Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], name, copy);
+         jim_wr24(cp + 1u, copy);
+      } else {                                    /* deliver file bytes */
          const uint8_t *data;
          uint16_t       dlen;
          uint32_t       copy;
