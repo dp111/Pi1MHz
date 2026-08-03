@@ -9,7 +9,8 @@
  * the reply echoes seq and (for MOUNT) fills in the session connid.  Build
  * functions write a full request into the caller's buffer and return its
  * length (0 = would overflow / bad argument).  Parse functions validate a
- * reply against the expected (connid, seq, cmd) and extract the body fields.
+ * reply against the expected (seq, cmd) and extract the body fields; the
+ * caller matches the session connid (0 on MOUNT, fixed thereafter).
  */
 #ifndef NET_TNFS_H
 #define NET_TNFS_H

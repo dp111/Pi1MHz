@@ -15,8 +15,8 @@
   set); the Beeb re-issues the same command to poll for completion, exactly
   like the AUN TX/TX_POLL and FAT idioms.
 
-  Stage 1 (this file): raw TCP client sockets + DNS.  UDP, listen/accept and
-  the N: device verbs slot into the reserved range in later stages.
+  Implemented here: raw TCP/UDP sockets + DNS + listen/accept (45-57), and the
+  N: device verbs (60-64) with TCP/HTTP/UDP/TNFS/TELNET adapters.
 
   ---- Command block layout (offsets from the page-aligned command pointer,
        multi-byte fields little-endian) --------------------------------------
@@ -88,7 +88,8 @@ void net_service_init(uint8_t instance, uint8_t address);
 #define NET_CMD_URL_READ     61u   /* like recv, on the URL's stream              */
 #define NET_CMD_URL_WRITE    62u   /* like send                                   */
 #define NET_CMD_URL_CLOSE    63u
-#define NET_CMD_URL_STATUS   64u   /* [1] state, [2] flags, [3..4] HTTP code      */
+#define NET_CMD_URL_STATUS   64u   /* [1..4] DVSTAT {waiting_lo,hi,connected,error},
+                                      [5] state, [6] flags, [7..8] HTTP code       */
 
 /* Socket type (open [1]). */
 #define NET_TYPE_TCP         0u

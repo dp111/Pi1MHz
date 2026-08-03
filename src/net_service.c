@@ -81,6 +81,7 @@ typedef struct {
    uint8_t           tnfs_is_dir;   /* URL path ended in '/': a directory   */
    uint8_t           tnfs_wr;       /* url_open mode had the write bit      */
    uint8_t           tnfs_retries;  /* resends left on the outstanding req  */
+   uint8_t           tnfs_eagain;   /* server-busy (EAGAIN) budget left     */
    uint16_t          tnfs_connid;   /* session id (from MOUNT)              */
    uint16_t          tnfs_retry_ms; /* base resend timeout (from MOUNT)     */
    uint32_t          tnfs_deadline; /* ms: resend/timeout deadline          */
@@ -99,6 +100,7 @@ typedef struct {
 #define TNFS_REQ_MAX     256u
 #define TNFS_PKT_MAX     600u /* largest reply datagram we parse       */
 #define TNFS_RETRIES     4u   /* resends before giving up              */
+#define TNFS_EAGAIN_MAX  8u   /* server-busy backoffs before giving up */
 #define TNFS_TIMEOUT_MS  800u /* fallback resend timeout               */
 #define TNFS_READ_CHUNK  512u /* cap a READ so its reply fits a datagram */
 #define TNFS_WRITE_CHUNK 240u /* cap a WRITE so req (data + 7 hdr) fits tnfs_req */
@@ -315,12 +317,10 @@ static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
          option-negotiation replies straight back to the server.  Filtered
          output is <= input, so it always fits the ring we just checked. */
       uint16_t off = 0;
-      uint8_t  reply[96];
-      size_t   rtotal = 0;
       while (off < p->tot_len) {
          uint8_t chunk[256];
          uint8_t clean[256];
-         uint8_t rep[64];
+         uint8_t rep[300];         /* a 256-byte chunk yields at most ~255 reply bytes */
          size_t  cl, rl;
          uint16_t want = (uint16_t)(p->tot_len - off);
          if (want > sizeof chunk) want = (uint16_t)sizeof chunk;
@@ -329,12 +329,11 @@ static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
          telnet_filter(&h->telnet, chunk, want, clean, sizeof clean, &cl,
                        rep, sizeof rep, &rl);
          if (cl != 0u) ring_put_mem(h, clean, (uint16_t)cl);
-         { size_t k; for (k = 0; k < rl && rtotal < sizeof reply; k++) reply[rtotal++] = rep[k]; }
+         if (rl != 0u && h->tpcb != NULL             /* flush this chunk's replies */
+             && altcp_write(h->tpcb, rep, (u16_t)rl, TCP_WRITE_FLAG_COPY) == ERR_OK)
+            altcp_output(h->tpcb);
          off = (uint16_t)(off + want);
       }
-      if (rtotal != 0u && h->tpcb != NULL
-          && altcp_write(h->tpcb, reply, (u16_t)rtotal, TCP_WRITE_FLAG_COPY) == ERR_OK)
-         altcp_output(h->tpcb);
       h->rx_parked = false;
       altcp_recved(pcb, p->tot_len);
       pbuf_free(p);
@@ -407,6 +406,8 @@ static err_t net_tcp_accept(void *arg, struct altcp_pcb *newpcb, err_t err)
    nh->type  = NET_TYPE_TCP;
    nh->tpcb  = newpcb;
    nh->state = NET_ST_CONNECTED;
+   nh->remote_ip   = newpcb->remote_ip;      /* peer, for URL_STATUS (see rcv_wnd */
+   nh->remote_port = newpcb->remote_port;    /* clamp above: altcp_pcb is tcp_pcb) */
    net_tcp_bind_callbacks(nh, newpcb);
    lh->accept_ready = true;
    lh->accept_h     = (uint8_t)idx;
@@ -1022,6 +1023,7 @@ static uint8_t net_tnfs_start(net_handle_t *h, uint8_t phase, size_t req_len)
    h->tnfs_phase   = phase;
    h->tnfs_req_len = (uint16_t)req_len;
    h->tnfs_retries = TNFS_RETRIES;
+   h->tnfs_eagain  = TNFS_EAGAIN_MAX;
    net_tnfs_fire(h);
    return NET_PENDING;
 }
@@ -1037,9 +1039,17 @@ static uint8_t net_tnfs_poll(net_handle_t *h, uint8_t *pkt, size_t pktcap,
    uint8_t cmd = h->tnfs_req[3];                /* the command we sent */
    if (h->rx_count >= 8u) {
       uint16_t plen = net_udp_pop(h, pkt, pktcap);
-      if (plen != 0u && tnfs_parse_reply(pkt, plen, h->tnfs_seq, cmd, rep)) {
+      /* Accept only a well-formed reply to our seq/cmd on this session - a
+         reply carrying a different connid (once one is assigned) is not ours,
+         so it is drained and ignored (defence-in-depth: the pcb is also
+         udp_connect'd to the server, so foreign sources never arrive). */
+      if (plen != 0u && tnfs_parse_reply(pkt, plen, h->tnfs_seq, cmd, rep)
+          && (h->tnfs_connid == 0u || rep->connid == h->tnfs_connid)) {
          if (rep->status == TNFS_EAGAIN) {       /* server busy: back off, resend */
             uint32_t back = rep->backoff_ms ? rep->backoff_ms : h->tnfs_retry_ms;
+            if (h->tnfs_eagain == 0u) return NET_ERR_CONN;   /* bound sustained EAGAIN */
+            h->tnfs_eagain--;
+            h->tnfs_retries = TNFS_RETRIES;      /* link is proven up - restore loss budget */
             h->tnfs_deadline = net_now_ms() + (back ? back : TNFS_TIMEOUT_MS);
             return NET_PENDING;
          }
@@ -1076,6 +1086,10 @@ static uint8_t net_tnfs_begin(net_handle_t *h)
       udp_remove(h->upcb); h->upcb = NULL;
       h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN;
    }
+   /* Only accept datagrams from the TNFS server itself - a session id lives in
+      every reply, so an off-path spoof of the ephemeral port must not be able
+      to hijack the mount.  (udp_sendto below still overrides the destination.) */
+   (void)udp_connect(h->upcb, &h->remote_ip, h->remote_port);
    h->type          = NET_TYPE_UDP;
    h->state         = NET_ST_CONNECTED;
    h->tnfs_retry_ms = TNFS_TIMEOUT_MS;          /* until MOUNT tells us better */
@@ -1222,6 +1236,7 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       jim_wr24(cp + 1u, 0u);                     /* default: 0 bytes read */
       if (h->tnfs_phase == TNFS_PH_READY) {       /* start a READ / READDIR */
          size_t n;
+         if (max == 0u) return NET_OK;            /* no room - don't burn a dir entry */
          h->tnfs_seq++;
          if (h->tnfs_is_dir) {                    /* one directory entry per read */
             n = tnfs_build_readdir(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,

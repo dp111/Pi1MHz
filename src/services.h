@@ -21,7 +21,7 @@
 #define SERVICE_CMD_AUN_FIRST   30u   /* Econet over AUN/UDP - AUN/        */
 #define SERVICE_CMD_AUN_LAST    44u
 #define SERVICE_CMD_NET_FIRST   45u   /* IP sockets / N: device - net_service.c */
-#define SERVICE_CMD_NET_LAST    79u   /* raw sockets 45-56, N: device 60-65    */
+#define SERVICE_CMD_NET_LAST    79u   /* sockets 45-56, IRQ 57, N: dev 60-65   */
 /* 80..255 unallocated */
 
 /* Handler for one service's command range.  FIQ context: called from the

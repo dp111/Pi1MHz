@@ -91,7 +91,7 @@ size_t tnfs_build_write(uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
    if (pos == 0u) return 0u;
    if (!put_u8 (buf, cap, &pos, fd))  return 0u;
    if (!put_u16(buf, cap, &pos, len)) return 0u;
-   if ((size_t)len != 0u) {
+   if (len != 0u && data != NULL) {
       if (pos + len > cap) return 0u;
       memcpy(buf + pos, data, len);
       pos += len;

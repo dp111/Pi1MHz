@@ -128,6 +128,9 @@ err_t udp_sendto(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst,
    g_udp_tx_ip = dst ? dst->addr : 0; g_udp_tx_port = port;
    return ERR_OK;                 /* does NOT free p (caller frees) */
 }
+err_t udp_connect(struct udp_pcb *pcb, const ip_addr_t *ip, u16_t port)
+{ pcb->connected_ip = ip ? ip->addr : 0u; pcb->connected_port = port; return ERR_OK; }
+void udp_disconnect(struct udp_pcb *pcb) { pcb->connected_port = 0u; }
 void udp_remove(struct udp_pcb *pcb) { pcb->removed = 1; }
 
 /* dns stub */
@@ -771,6 +774,62 @@ int main(void)
       issue(NET_CMD_URL_OPEN, 0);
       jwr24(CP(0)+1, 4); jwr32(CP(0)+4, 0x8000);
       CHECK(issue(NET_CMD_URL_WRITE, 0) == NET_ERR_NOTOPEN, "url_write on a read-only TNFS handle -> NOTOPEN");
+   }
+
+   printf("== TNFS ignores replies from a foreign session (connid) ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/f.dat");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "url_open -> PENDING (MOUNT)");
+   {
+      ip_addr_t peer; IP_ADDR4(&peer, 192, 168, 0, 9);
+      uint8_t sm = g_udp_tx[2];
+      uint8_t mrep[] = { 0x77,0x00, sm, TNFS_CMD_MOUNT, TNFS_OK, 0x02,0x01, 0x2C,0x01 };
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(mrep, sizeof mrep), &peer, (u16_t)TNFS_PORT);
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "after MOUNT -> PENDING (OPEN sent)");
+      CHECK((g_udp_tx[0] | (g_udp_tx[1] << 8)) == 0x0077, "OPEN carries the session id 0x0077");
+      {
+         uint8_t so = g_udp_tx[2];
+         /* right seq+cmd, WRONG connid: a stray/spoofed datagram - must be dropped */
+         uint8_t bad[]  = { 0x99,0x99, so, TNFS_CMD_OPEN, TNFS_OK, 0x04 };
+         g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(bad, sizeof bad), &peer, (u16_t)TNFS_PORT);
+         CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "foreign-connid reply ignored -> still PENDING");
+         uint8_t good[] = { 0x77,0x00, so, TNFS_CMD_OPEN, TNFS_OK, 0x04 };
+         g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(good, sizeof good), &peer, (u16_t)TNFS_PORT);
+      }
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "matching-connid reply -> READY");
+   }
+
+   printf("== TNFS bounds sustained EAGAIN (server busy) then gives up ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/busy.dat");
+   issue(NET_CMD_URL_OPEN, 0);
+   {
+      ip_addr_t peer; IP_ADDR4(&peer, 192, 168, 0, 9);
+      uint8_t sm = g_udp_tx[2];
+      uint8_t mrep[] = { 0x88,0x00, sm, TNFS_CMD_MOUNT, TNFS_OK, 0x02,0x01, 0x2C,0x01 };
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(mrep, sizeof mrep), &peer, (u16_t)TNFS_PORT);
+      issue(NET_CMD_URL_OPEN, 0);
+      { uint8_t so = g_udp_tx[2]; uint8_t orep[] = { 0x88,0x00, so, TNFS_CMD_OPEN, TNFS_OK, 0x04 };
+        g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(orep, sizeof orep), &peer, (u16_t)TNFS_PORT); }
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "READY");
+
+      jwr24(CP(0)+1, 5); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_PENDING, "url_read -> PENDING (READ sent)");
+      {
+         /* feed EAGAIN forever: each is re-issued as PENDING until the budget
+            (TNFS_EAGAIN_MAX) runs out, then the read fails rather than hanging */
+         uint8_t r = NET_PENDING;
+         int busy = 0, i;
+         for (i = 0; i < 20 && r == NET_PENDING; i++) {
+            uint8_t sr = g_udp_tx[2];
+            uint8_t eagain[] = { 0x88,0x00, sr, TNFS_CMD_READ, TNFS_EAGAIN };
+            g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(eagain, sizeof eagain), &peer, (u16_t)TNFS_PORT);
+            r = issue(NET_CMD_URL_READ, 0);
+            if (r == NET_PENDING) busy++;
+         }
+         CHECK(r == NET_ERR_CONN, "sustained EAGAIN eventually -> ERR_CONN (no infinite spin)");
+         CHECK(busy >= 1 && busy <= 8, "EAGAIN budget (TNFS_EAGAIN_MAX=8) bounded the backoffs");
+      }
    }
 
    printf("== N: device - TELNET scheme (IAC filter) ==\n");

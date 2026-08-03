@@ -23,6 +23,7 @@ static void reply(telnet_ctx_t *ctx, uint8_t *rep, size_t cap, size_t *len,
 {
    uint8_t mask = (uint8_t)(1u << (opt & 7u));
    if (ctx->seen[opt >> 3] & mask) return;
+   if (*len + 3u > cap) return;      /* no room now - leave unmarked so we reply later */
    ctx->seen[opt >> 3] |= mask;
    emit(rep, cap, len, TN_IAC);
    emit(rep, cap, len, cmd);

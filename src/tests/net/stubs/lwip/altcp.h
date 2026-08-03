@@ -29,6 +29,8 @@ struct altcp_pcb {
    int              listening;
    u16_t            rcv_wnd;
    u16_t            rcv_ann_wnd;
+   ip_addr_t        remote_ip;     /* peer (tcp_pcb field at LWIP_ALTCP==0)  */
+   u16_t            remote_port;
    /* test control / capture */
    u16_t            t_sndbuf;      /* value altcp_sndbuf returns             */
    err_t            t_write_err;   /* value altcp_write returns              */
