@@ -25,8 +25,13 @@ for one implementer.
   body with headers stripped, status 200, clean EOF; `beeb/net/NETHTTP.BAS`).
   Not yet: HTTP POST/PUT/DELETE, chunked decoding, the UDP: scheme, dir enum.
 - Stages 3-5 (UDP scheme/TELNET/TNFS, TLS, FujiNet compat): not started.
-- Known follow-up: heavy churn of aborted TCP listeners can wedge the service's
-  poll (needs a reflash to clear) - investigate the listener/reset teardown.
+- Known follow-up: heavy churn of aborted TCP listeners once wedged the service
+  on hardware (FNopen spun on NET_BUSY forever; a reflash cleared it). A 40-cycle
+  listen/accept/reset **churn stress test** (`src/tests/net`) shows the net
+  teardown *logic* is sound - no stuck handles, no leaked pcbs - so the wedge is
+  NOT in net_service.c's teardown. It points at the main-loop/lwIP timing under
+  abnormal churn (not reproducible in the synchronous host harness); needs
+  on-hardware main-loop instrumentation to pin down.
 
 The per-stage detail below is the original plan.
 

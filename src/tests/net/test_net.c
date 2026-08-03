@@ -50,7 +50,7 @@ const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &g_ctx; }
 void wifi_lwip_rx_kick(void) { g_kicks++; }
 
 /* altcp stub machinery */
-static struct altcp_pcb *g_pcbs[64];
+static struct altcp_pcb *g_pcbs[1024];
 static int g_npcbs;
 static struct altcp_pcb *g_last_pcb;
 static int   g_force_new_null;
@@ -491,6 +491,38 @@ int main(void)
       CHECK(np->arg != NULL, "new pcb's arg wired to the accepted handle");
       issue(NET_CMD_STATUS, nh);
       CHECK(jrd8(CP(nh)+1) == NET_ST_CONNECTED, "accepted handle is CONNECTED");
+   }
+
+   printf("== stress: listen/accept/reset churn (teardown invariants) ==\n");
+   {
+      int stuck = 0, leaked = 0, base = g_npcbs;
+      for (int cycle = 0; cycle < 40; cycle++) {
+         world_reset();
+         jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+         jwr8(CP(0)+1, 0x40); jwr8(CP(0)+2, 0x1F);
+         issue(NET_CMD_BIND, 0);
+         issue(NET_CMD_LISTEN, 0);                 /* listener up */
+         struct altcp_pcb *lp = g_last_pcb;
+         /* fire several inbound connections; collect some, leave some in the
+            backlog, feed one a segment - then abandon the lot for teardown */
+         for (int k = 0; k < 6; k++) {
+            struct altcp_pcb *np = altcp_new_ip_type(NULL, 0u);
+            lp->accept(lp->arg, np, ERR_OK);        /* accepted or refused */
+            if ((k & 1) && np->recv)                /* poke half with data */
+               np->recv(np->arg, np, make_pbuf("x", 1), ERR_OK);
+            if (k == 2) issue(NET_CMD_LISTEN, 0);   /* collect one accepted handle */
+         }
+         /* no closes: the next world_reset()'s teardown must reclaim it all */
+      }
+      world_reset();                               /* final teardown */
+      for (unsigned i = 0; i < NET_MAX_HANDLES; i++) {
+         issue(NET_CMD_STATUS, i);
+         if (jrd8(CP(i)+1) != NET_ST_FREE) stuck++;
+      }
+      for (int i = base; i < g_npcbs; i++)
+         if (!g_pcbs[i]->t_closed) leaked++;
+      CHECK(stuck == 0, "every handle back to FREE after listen/accept churn");
+      CHECK(leaked == 0, "every TCP pcb closed/aborted after listen/accept churn");
    }
 
    printf("== N: device - TCP scheme ==\n");
