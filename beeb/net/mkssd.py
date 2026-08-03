@@ -136,6 +136,7 @@ def main():
         File("NETSRV", to_cr(read("NETSRV.BAS"))),
         File("NETTNFS", to_cr(read("NETTNFS.BAS"))),
         File("NETTNFW", to_cr(read("NETTNFSW.BAS"))),
+        File("NETTEL", to_cr(read("NETTEL.BAS"))),
     ]
 
     img = build("Pi1MHz NET", files, boot_option=3)   # *OPT4,3 = EXEC !BOOT

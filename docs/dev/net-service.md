@@ -109,8 +109,11 @@ yet. TCP:/UDP: need an explicit `:port` (TNFS: 16384, TELNET: 23).
   HELLO.TXT + README), read a 36-byte file (OPEN/READ/EOF), and wrote a 31-byte
   file then read it back (OPEN-for-write/WRITE/CLOSE, then OPEN/READ) off a TNFS
   server over the 1MHz bus, with correct MOUNT/UMOUNT sessions; the codec
-  (`src/net_tnfs.[ch]`) is separately unit-tested. Host tests: `src/tests/net`,
-  176 + 35 + 14 checks under ASan/UBSan incl. a fuzzer. See `beeb/net/NETTNFS.BAS`.
+  (`src/net_tnfs.[ch]`) is separately unit-tested. **TELNET: hardware-validated**
+  - a real Master connected to a telnet server, showed the IAC-stripped banner
+  (`IAC IAC` -> one `0xFF`), and its negotiation replies were exactly
+  `DO ECHO`/`DO SGA`/`WONT NAWS`. Host tests: `src/tests/net`, 179 + 35 + 17
+  checks under ASan/UBSan incl. a fuzzer. See `beeb/net/NETTNFS.BAS`, `NETTEL.BAS`.
 - **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
   nIRQ froze the Beeb when asserted for a polling client, fixed 2026-08-03.
 - Not started: TLS/HTTPS, a native sideways-ROM `*`-command API.
