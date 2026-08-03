@@ -1,6 +1,7 @@
 # Econet test suite
 
-Three layers, all host-runnable (no hardware, no cross-compiler):
+Four layers, all host-runnable (no hardware, no cross-compiler). The
+fourth is optional and skips itself when its prerequisite is absent:
 
 ## 1. AUN engine unit tests
 `test_aun.c` — 14 scenarios against the pure engine with a stub
@@ -46,6 +47,37 @@ svc5_irq_check):
     ./lockstep/run.sh
 
 Paths can be overridden with ECO_SRC / ECO_ROM / ECO_SYMS / ECO_HARNESS.
+
+## 4. Interop with a real PiEconetBridge (`interop/`) — optional
+Layers 1–3 all judge the engine against a peer we wrote, so they can only
+prove self-consistency: if our reading of the wire convention is wrong,
+the unit tests, the fuzzers and the lockstep peer are wrong the same way.
+This layer removes that blind spot — it runs Chris Royle's
+PiEconetBridge on loopback (`-l`, IP-only, no Econet hardware) and lets
+*it* judge our datagrams.
+
+`interop.c` asserts the bytes we emit (machine peek `&88` still going as
+a type-5 two-way; `*NOTIFY` as DATA to port 0; POKE's spliced byte
+count); `run.sh` then greps the bridge's own debug log for the NOTIFY
+string it reassembled from those datagrams — the third-party half, and
+the point of the layer.
+
+    ./interop/run.sh                       # or via run_tests.sh
+
+It needs a compiled `econet-hpbridge`, which most machines will not have,
+so with none present it prints `skipped` and exits 0 — never a hard
+dependency. Point it at one with `PEB_BRIDGE=<path>` (a stale value falls
+back to the search), or build one:
+
+    cd PiEconetBridge/utilities && touch .noexplain && make econet-hpbridge
+
+(`.noexplain` links without `libexplain`, which is often not packaged.)
+
+Known quirk, deliberately not a failure: the bridge does not acknowledge
+port-0 traffic to a local emulator station — its own TODO in
+`econet-hpbridge.c` — so it decodes and acts on the NOTIFY, then stays
+quiet, and our transmit ends NOT_LISTENING. A real Beeb behind the bridge
+completes the four-way on the wire and the bridge relays a proper ACK.
 
 ## Bugs these tests have caught
 - `eco_cmd_issue` returned with flags from its CMP #&E0 loop guard

@@ -1,0 +1,47 @@
+{
+  "general":{
+    "fw":"BRIDGE"
+  },
+  "econets":[
+  ],
+  "virtuals":[
+    {
+      "net":1,
+      "diverts":[
+        {
+          "station":254,
+          "hellow":{ "msg":"Hello from the test bridge, " }
+        }
+      ]
+    }
+  ],
+  "trunks":[
+  ],
+  "multitrunks":[
+  ],
+  "pools":[
+  ],
+  "aun":[
+    {
+      "net":2,
+      "stations":[
+        {
+          "station":42,
+          "host":"127.0.0.1",
+          "port":40042,
+          "autoack":true
+        }
+      ]
+    }
+  ],
+  "exposures":[
+  ],
+  "firewall-chains":[
+    {
+      "name":"BRIDGE",
+      "accept":true,
+      "entries":[
+      ]
+    }
+  ]
+}

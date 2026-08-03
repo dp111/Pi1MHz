@@ -49,4 +49,10 @@ gcc -std=gnu2x -g -fsanitize=address,undefined -fno-sanitize-recover=all $I -o "
 echo "== lockstep (ROM x C x AUN peer) =="
 "$HERE/lockstep/run.sh"
 
+# Optional: the real engine against a real PiEconetBridge. Skips itself
+# (exit 0) when no econet-hpbridge binary is present, so this stays a
+# nice-to-have rather than a dependency - see interop/run.sh.
+echo "== interop (engine x real PiEconetBridge) =="
+"$HERE/interop/run.sh"
+
 echo "ALL TEST LAYERS PASSED"
