@@ -15,13 +15,15 @@
   150 MODE 7 : PRINT "Pi1MHz N: HTTP demo" : PRINT
   160 R=FNurl_open(H,url$)
   170 IF R<>0 THEN PRINT "open failed, code &";~R : END
-  180 PRINT "HTTP status ";FNurl_httpcode(H)
+  180 REM  the HTTP status code is only known after the first read parses
+  185 REM  the response headers, so print it after the body loop, not before
   190 PRINT "--- body ---"
   200 REPEAT
   210   R=FNurl_read(H,rxb,200)
   220   IF nlen>0 THEN PROCaddr(rxb):FOR I=1 TO nlen:VDU ?dat:NEXT
   230 UNTIL R>=nEOF
-  240 PRINT : PRINT "--- end (code &";~R;") ---"
+  235 PRINT : PRINT "HTTP status ";FNurl_httpcode(H)
+  240 PRINT "--- end (code &";~R;") ---"
   250 PROCurl_close(H)
   260 END
   270 :
