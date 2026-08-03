@@ -507,6 +507,37 @@ int main(void)
    strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TCP://host.only");
    CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_ERR_PARAM, "TCP:// without a port -> PARAM");
 
+   printf("== fuzz: random command blocks + RX (ASan/UBSan) ==\n");
+   {
+      uint32_t s = 0x1234567u;
+      #define RND() (s = s * 1103515245u + 12345u, (uint8_t)(s >> 17))
+      for (int it = 0; it < 40000; it++) {
+         unsigned h = it & 7u;
+         world_reset();                 /* teardown uses last round's pcbs... */
+         for (int i = 0; i < g_npcbs; i++) free(g_pcbs[i]);   /* ...now free */
+         g_npcbs = 0; g_last_pcb = NULL;
+
+         /* random command block for handle h, then dispatch it */
+         for (int b = 0; b < 40; b++) Pi1MHz->JIM_ram[CP(h) + (uint32_t)b] = RND();
+         Pi1MHz->JIM_ram[CP(h)] = (uint8_t)(45u + (RND() % 20u));  /* a net command */
+         g_cmd(CP(h), RES, (uint8_t)(RND() & 0x0Fu));
+         g_poll();
+
+         /* sometimes shove a random inbound segment at whatever pcb exists */
+         if (g_last_pcb != NULL && g_last_pcb->recv != NULL && (RND() & 1u)) {
+            uint16_t n = (uint16_t)(RND() % 48u);
+            struct pbuf *p = make_pbuf(NULL, n);
+            for (uint16_t k = 0; k < n; k++) ((uint8_t *)p->payload)[k] = RND();
+            if (g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p, ERR_OK) == ERR_MEM)
+               pbuf_free(p);            /* parked: the harness still owns it */
+         } else if (g_last_pcb != NULL && g_last_pcb->recv != NULL && (RND() & 1u)) {
+            g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, NULL, ERR_OK);  /* FIN */
+         }
+      }
+      #undef RND
+      CHECK(1, "40000 random command blocks + RX survived (no crash / UB / leak)");
+   }
+
    /* free the last test's pcbs so LSan is clean */
    for (int i = 0; i < g_npcbs; i++) free(g_pcbs[i]);
    for (int i = 0; i < g_nupcbs; i++) free(g_upcbs[i]);
