@@ -11,7 +11,7 @@ for one implementer.
   recv_avail/close/status + udp_sendto/udp_recvfrom + irq(57), an 8 KB per-handle
   NOINIT RX ring with drop-free ERR_MEM back-pressure, and an **opt-in** nIRQ via
   `services_irq_set` (default disarmed - a stuck nIRQ froze the Beeb, fixed
-  2026-08-03). Host-tested (`src/tests/net`, 104 checks + fuzzer, ASan/UBSan)
+  2026-08-03). Host-tested (the `src/tests/net` suite + a fuzzer, under ASan/UBSan)
   **and HARDWARE-VALIDATED** on a real BBC Master + Pi across the whole surface:
   TCP connect/send/recv + live DNS, a **UDP sendto/recvfrom echo** round-trip,
   and the **Beeb as a TCP server** (bind/listen/accept + recv of inbound data,
@@ -24,14 +24,21 @@ for one implementer.
   tested and hardware-validated (HTTP GET on a real Master against a LAN server:
   body with headers stripped, status 200, clean EOF; `beeb/net/NETHTTP.BAS`).
   Not yet: HTTP POST/PUT/DELETE, chunked decoding, the UDP: scheme, dir enum.
-- **Stage 3 - in progress:** the `UDP:` N: scheme is done + host-tested, and the
-  **`TNFS:` read path is implemented + host-tested** - `net_tnfs.[ch]` wire codec
-  (unit-tested) + a reliable-UDP transaction engine (seq/deadline/resend/EAGAIN)
-  driving MOUNT->OPEN->READ->CLOSE/UMOUNT, wired as `N:TNFS://host/path` and
-  tested against a scripted peer (mount/open/read/EOF/close + retry-on-silence +
-  give-up). Not yet: TNFS write + directory enumeration, TELNET, on-hardware TNFS
-  validation vs a real `tnfsd`. TNFS is the FujiNet-ecosystem interop lever.
-- Stages 4-5 (TLS, FujiNet compat): not started.
+- **Stage 3 - DONE + HW-validated.** N: schemes now cover `UDP:`, `TNFS:`
+  (read / browse / write) and `TELNET:`. `net_tnfs.[ch]` wire codec + a
+  reliable-UDP transaction engine (seq/deadline/resend/EAGAIN) driving MOUNT/
+  OPEN/READ/WRITE/OPENDIR/READDIR/CLOSE/UMOUNT; `net_telnet.[ch]` IAC filter
+  (+ outbound escape). **Hardware-validated** on a real Master: TNFS listed a
+  share + read a file + wrote a file and read it back; TELNET showed an
+  IAC-filtered banner with correct negotiation replies. **The codec is validated
+  byte-for-byte against real FujiNet `tnfsd`** (`src/tests/net/tnfs_live.c`).
+  **FujiNet conformance pass done:** `url_status` leads with the 4-byte DVSTAT,
+  `url_open` uses FujiNet aux1 open modes (4/8/12/13). Host tests: 184 + 35
+  (codec) + 17 (telnet), 0 failures. Not yet: HTTP POST, on-hardware runs
+  against public TNFS/telnet servers (WSL networking blocked those locally).
+- **Stage 4 (TLS/HTTPS) / Stage 5 (FujiNet client-lib port): not started.**
+  Stage 5's pickup plan and its blockers (licensing + toolchain + coordinating
+  with fenrock) are written up in `fujinet-collaboration.md`.
 - **Reset-teardown wedge: FOUND + FIXED (f7fce2a).** Heavy aborted-listener
   churn once wedged the service on hardware (FNopen spun on NET_BUSY forever;
   reflash-only recovery). Root cause was a FIQ-vs-main-loop race, not a leak:

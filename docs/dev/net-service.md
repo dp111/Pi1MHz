@@ -112,7 +112,7 @@ yet. TCP:/UDP: need an explicit `:port` (TNFS: 16384, TELNET: 23).
   (`src/net_tnfs.[ch]`) is separately unit-tested. **TELNET: hardware-validated**
   - a real Master connected to a telnet server, showed the IAC-stripped banner
   (`IAC IAC` -> one `0xFF`), and its negotiation replies were exactly
-  `DO ECHO`/`DO SGA`/`WONT NAWS`. Host tests: `src/tests/net`, 179 + 35 + 17
+  `DO ECHO`/`DO SGA`/`WONT NAWS`. Host tests: `src/tests/net`, 184 + 35 + 17
   checks under ASan/UBSan incl. a fuzzer. See `beeb/net/NETTNFS.BAS`, `NETTEL.BAS`.
 - **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
   nIRQ froze the Beeb when asserted for a polling client, fixed 2026-08-03.
