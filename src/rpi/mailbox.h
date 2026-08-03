@@ -65,6 +65,13 @@ typedef enum {
     /* Config */
     TAG_GET_COMMAND_LINE = 0x50001,
 
+    /* VCHIQ - hands the bus address of the ARM-side slot memory to the
+       firmware so the kernel-to-VideoCore message channel (and with it the
+       MMAL services, e.g. the hardware H264 decoder) can start. Only
+       present in the FULL start.elf; the cut-down start_cd.elf returns an
+       error, which vchiq.c treats as "no decoder available". */
+    TAG_VCHIQ_INIT = 0x48010,
+
     /* Shared resource management */
     TAG_GET_DMA_CHANNELS = 0x60001,
 

@@ -19,3 +19,16 @@ display_auto_detect=0
 #hdmi_ignore_hotplug=1
 boot_delay=0
 gpu_mem=16
+
+# ---- Hardware H264 video player (video.pvf) --------------------------------
+# The shipped start_cd.elf is the CUT-DOWN firmware: tiny, but it has no
+# VCHIQ/MMAL, so the hardware H264 decoder is unavailable and the video
+# player falls back to the static frame. To enable hardware video:
+#   1. copy the FULL start.elf + fixup.dat from the matching Raspberry Pi
+#      firmware release onto the card (keep start_cd.elf around),
+#   2. uncomment the three lines below.
+# gpu_mem=64 leaves 448MB for the ARM on a 512MB Zero and is enough for
+# the decoder plus the player's frame buffers.
+#start_file=start.elf
+#fixup_file=fixup.dat
+#gpu_mem=64

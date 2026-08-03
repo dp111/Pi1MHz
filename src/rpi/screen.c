@@ -740,6 +740,66 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
     plane_valid[planeno] = true;
 }
 
+/* 4:2:0 3-plane variant (HVS pixel format 8) for the hardware H264
+   decoder, whose output is I420: a full-size Y plane followed by
+   quarter-size Cb then Cr planes. Identical to the 4:2:2 path except the
+   chroma pointers/pitches address half-HEIGHT planes and the chroma
+   vertical scale factor doubles (src rows are half the luma's).
+   Scaler channel 0 is chroma (that is why the 4:2:2 code computes hpf0
+   from scaled_width*2 - same ratio trick used here vertically). */
+void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
+{
+    volatile uint32_t * plane =  screen_get_nextplane( planeno);
+    LOG_DEBUG("plane %"PRIu32" (420)\r\n", planeno);
+    buffer |= 0xC0000000;
+        uint32_t scaled_width;
+        uint32_t scaled_height;
+        uint32_t startpos;
+        uint32_t nsh;
+        uint32_t nh;
+        uint32_t vertical_offset = screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos, &nsh, &nh);
+
+        volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) plane;
+        yuv->ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0x8; // invalid list, 32 words, YCrCb order, YUV420 3-plane
+        yuv->pos = startpos;
+        yuv->scale = (nsh << 16) + scaled_width;
+        yuv->src_size =  ((nh) << 16) + width;
+        // I420 memory order is Y, Cb (U), Cr (V); chroma planes are
+        // width/2 x height/2
+        yuv->y_ptr =  buffer + vertical_offset*width;
+        yuv->cb_ptr = buffer + width*height + (vertical_offset/2)*(width/2);
+        yuv->cr_ptr = buffer + width*height + (width/2)*(height/2) + (vertical_offset/2)*(width/2);
+        yuv->pitch = width;
+        yuv->pitch1 = width/2;
+        yuv->pitch2 = width/2;
+        yuv->csc0 = 0x00F00000;
+        yuv->csc1 = 0xe73304A8;
+        yuv->csc2 = 0x00066604;
+        yuv->LBM = (LBM_PLANE_SIZE * planeno);
+        yuv->hpf0 = vc4_ppf(width, scaled_width*2, startpos & 0xFFF, 0 );  // chroma H: (w/2)/sw
+        yuv->vpf0 = vc4_ppf(nh, nsh*2, startpos >>12, 0 );                 // chroma V: (h/2)/sh
+        yuv->hpf1 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );    // luma H
+        yuv->vpf1 = vc4_ppf(nh, nsh, startpos >>12, 0 );                   // luma V
+        yuv->pfkph0 = POLYPHASE_BASE;
+        yuv->pfkpv0 = POLYPHASE_BASE;
+        yuv->pfkph1 = POLYPHASE_BASE;
+        yuv->pfkpv1 = POLYPHASE_BASE;
+        setup_polyphase();
+    plane_valid[planeno] = true;
+}
+
+/* Retarget an existing YUV plane at a new frame - the video player's
+   page flip. Pass PHYSICAL addresses (the 0xC0000000 alias is added
+   here). Takes effect at the next HVS frame fetch; call around vsync
+   (screen_check_vsync) for tear-free flips. */
+void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr )
+{
+    volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    yuv->y_ptr  = y  | 0xC0000000;
+    yuv->cb_ptr = cb | 0xC0000000;
+    yuv->cr_ptr = cr | 0xC0000000;
+}
+
 // returns plane pointer
 void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height, float par , uint32_t scale_height, uint32_t colour_depth, uint32_t buffer )
 {

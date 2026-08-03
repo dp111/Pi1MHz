@@ -36,7 +36,7 @@ project( Pi1MHz C ASM )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu23" )
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu2x" )
 
 # Replace newlib's _ctype_ table lookups for toupper/tolower with 3-instruction
 # ASCII range checks. Force-included so that source files keep using plain
@@ -82,7 +82,7 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wstrict-aliasing=3 -Wunsafe-loop-optimizat
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Walloc-zero -Wdiscarded-qualifiers -Wtrampolines -Wbad-function-cast ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Waddress-of-packed-member -Wsuggest-attribute=noreturn ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdiscarded-array-qualifiers -Wmissing-noreturn ")
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wflex-array-member-not-at-end -ftabstop=8  ")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ftabstop=8  ")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 
@@ -164,6 +164,12 @@ set(core_files
    rpi/rpi.c
    rpi/asm-helpers.c
    rpi/screen.c
+   # Hardware H264 decode path: VCHIQ transport, MMAL client, decoder
+   # wrapper (needs the full start.elf + gpu_mem=64 at runtime; compiles
+   # and no-ops harmlessly with start_cd.elf)
+   rpi/vchiq.c
+   rpi/mmal_vc.c
+   rpi/h264dec.c
    Pi1MHz.c
    config.c
    config.h
