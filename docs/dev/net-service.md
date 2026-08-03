@@ -65,11 +65,13 @@ Layer 2 - the N: device (open a URL like a file):
 Schemes: `TCP:` (raw stream wrapper), `HTTP:` (GET + header-strip + status),
 `UDP:` (connectionless - `url_open` binds an ephemeral local port and remembers
 the URL's host:port; `url_write` sends a datagram there, `url_read` returns the
-next datagram's payload, no EOF), and `TNFS:` (read a file off a TNFS server;
-`url_open TNFS://host[:port]/path` does MOUNT `/` -> OPEN read-only over UDP
-:16384, `url_read` does READ chunks until EOF, `url_close` does CLOSE + UMOUNT).
-HTTP POST/chunked, TNFS write and `TELNET:` are not implemented
-yet. TCP:/UDP: need an explicit `:port` (TNFS: defaults to 16384).
+next datagram's payload, no EOF), and `TNFS:` (a TNFS server over UDP :16384).
+For TNFS a URL path naming a file (`TNFS://host/path/file`) does MOUNT `/` ->
+OPEN read-only, `url_read` reads chunks until EOF, `url_close` does CLOSE +
+UMOUNT; a path ending in `/` (`TNFS://host/dir/`) does OPENDIR instead, and each
+`url_read` returns one directory entry name until end-of-directory (EOF).
+HTTP POST/chunked, TNFS write and `TELNET:` are not implemented yet. TCP:/UDP:
+need an explicit `:port` (TNFS: defaults to 16384).
 
 ## Design notes
 
@@ -99,8 +101,8 @@ yet. TCP:/UDP: need an explicit `:port` (TNFS: defaults to 16384).
   stripped, HTTP status 200, clean EOF. UDP: and TNFS: schemes host-tested (the
   TNFS mount/open/read/close handshake + reliable-UDP retry engine drive against
   a scripted peer; `src/net_tnfs.[ch]` codec is separately unit-tested). Host
-  tests: `src/tests/net`, 143 + 31 checks under ASan/UBSan incl. a fuzzer.
+  tests: `src/tests/net`, 156 + 31 checks under ASan/UBSan incl. a fuzzer.
   TNFS not yet hardware-validated.
 - **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
   nIRQ froze the Beeb when asserted for a polling client, fixed 2026-08-03.
-- Not started: TLS/HTTPS, TELNET, TNFS, a native sideways-ROM `*`-command API.
+- Not started: TLS/HTTPS, TELNET, TNFS write, a native sideways-ROM `*`-command API.
