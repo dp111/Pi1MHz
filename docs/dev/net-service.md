@@ -106,8 +106,9 @@ yet. TCP:/UDP: need an explicit `:port` (TNFS: 16384, TELNET: 23).
   Master against a controlled LAN server: body returned with response headers
   stripped, HTTP status 200, clean EOF. UDP: host-tested. **TNFS:
   hardware-validated** - a real BBC Master listed a share (OPENDIR/READDIR of
-  HELLO.TXT + README) and read a 36-byte file (OPEN/READ/EOF) off a TNFS server
-  over the 1MHz bus, with correct MOUNT/UMOUNT sessions; the codec
+  HELLO.TXT + README), read a 36-byte file (OPEN/READ/EOF), and wrote a 31-byte
+  file then read it back (OPEN-for-write/WRITE/CLOSE, then OPEN/READ) off a TNFS
+  server over the 1MHz bus, with correct MOUNT/UMOUNT sessions; the codec
   (`src/net_tnfs.[ch]`) is separately unit-tested. Host tests: `src/tests/net`,
   176 + 35 + 14 checks under ASan/UBSan incl. a fuzzer. See `beeb/net/NETTNFS.BAS`.
 - **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
