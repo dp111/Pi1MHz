@@ -536,6 +536,40 @@ int main(void)
    issue(NET_CMD_URL_STATUS, 0);
    CHECK((jrd8(CP(0)+2) & NET_FLAG_CONNECTED) != 0, "url status CONNECTED");
 
+   printf("== N: device - UDP scheme ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "UDP://192.168.0.9:5300");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "url_open UDP:// -> OK (connectionless, no connect)");
+   CHECK(g_last_upcb != NULL && g_last_upcb->recv != NULL, "UDP url created a bound pcb + recv cb");
+   issue(NET_CMD_URL_STATUS, 0);
+   CHECK((jrd8(CP(0)+2) & NET_FLAG_CONNECTED) != 0, "UDP url status ready (CONNECTED flag)");
+   {
+      static const uint8_t msg[]   = "hello-udp-url";
+      static const uint8_t reply[] = "UDP-REPLY";
+      uint16_t len = (uint16_t)(sizeof msg - 1u);
+      struct pbuf *p;
+      ip_addr_t peer;
+      memcpy(&Pi1MHz->JIM_ram[0x8000], msg, len);
+      jwr24(CP(0)+1, len); jwr32(CP(0)+4, 0x8000);
+      CHECK(issue(NET_CMD_URL_WRITE, 0) == NET_OK, "url_write UDP -> OK");
+      CHECK(g_udp_tx_len == len && memcmp(g_udp_tx, msg, len) == 0, "url_write sent the payload");
+      CHECK(g_udp_tx_port == 5300, "url_write went to the URL port 5300");
+      CHECK(g_udp_tx_ip == (192u|(168u<<8)|(0u<<16)|(9u<<24)), "url_write went to the URL host");
+      /* inbound datagram -> url_read returns the payload only (peer header dropped) */
+      p = make_pbuf(reply, 9);
+      IP_ADDR4(&peer, 192, 168, 0, 9);
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, p, &peer, 5300);
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_OK, "url_read UDP -> OK");
+      CHECK(jrd24(CP(0)+1) == 9, "url_read reported the datagram length");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x9000], reply, 9) == 0, "url_read returned the payload, no peer header");
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      issue(NET_CMD_URL_READ, 0);
+      CHECK(jrd24(CP(0)+1) == 0, "second url_read -> 0 (ring drained)");
+      CHECK(issue(NET_CMD_URL_CLOSE, 0) == NET_OK, "url_close UDP -> OK");
+      CHECK(g_last_upcb->removed == 1, "UDP url pcb removed on close");
+   }
+
    printf("== N: device - HTTP scheme ==\n");
    world_reset();
    strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "HTTP://1.2.3.4/index.html");

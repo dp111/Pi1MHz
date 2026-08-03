@@ -62,8 +62,11 @@ Layer 2 - the N: device (open a URL like a file):
 | 63 | url_close | |
 | 64 | url_status | `[1]` state, `[2]` flags, `[3..4]` HTTP status code |
 
-Schemes: `TCP:` (raw wrapper), `HTTP:` (GET + header-strip + status). `UDP:`,
-POST/chunked and dir enumeration are not implemented yet.
+Schemes: `TCP:` (raw stream wrapper), `HTTP:` (GET + header-strip + status),
+`UDP:` (connectionless - `url_open` binds an ephemeral local port and remembers
+the URL's host:port; `url_write` sends a datagram there, `url_read` returns the
+next datagram's payload, no EOF). HTTP POST/chunked, `TNFS:`/`TELNET:` and dir
+enumeration are not implemented yet. TCP:/UDP: need an explicit `:port`.
 
 ## Design notes
 
@@ -90,7 +93,7 @@ POST/chunked and dir enumeration are not implemented yet.
   peer IP/port decoded), all over the bus. See `beeb/net/NETUDP.BAS`.
 - **N: device (60-64): host-tested + hardware-validated** - HTTP GET on a real
   Master against a controlled LAN server: body returned with response headers
-  stripped, HTTP status 200, clean EOF. Host tests: `src/tests/net`, 104 checks
+  stripped, HTTP status 200, clean EOF. Host tests: `src/tests/net`, 119 checks
   under ASan/UBSan incl. a 40 k-iteration fuzzer.
 - **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
   nIRQ froze the Beeb when asserted for a polling client, fixed 2026-08-03.

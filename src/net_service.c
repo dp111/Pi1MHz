@@ -860,6 +860,35 @@ static uint8_t url_begin_connect(net_handle_t *h)
    return r;
 }
 
+/* UDP: scheme - connectionless, so once the peer address is resolved there is
+   nothing to connect: bind an ephemeral local port so replies come back, and
+   go straight to READY.  url_write sends to the URL's host:port; url_read
+   returns the next datagram's payload. */
+static uint8_t net_udp_url_ready(net_handle_t *h)
+{
+   h->upcb = udp_new();
+   if (h->upcb == NULL) {
+      h->url_phase = URL_FAIL; h->last_err = NET_ERR_NOMEM; return NET_ERR_NOMEM;
+   }
+   udp_recv(h->upcb, net_udp_recv, h);
+   if (udp_bind(h->upcb, IP_ANY_TYPE, 0u) != ERR_OK) {   /* ephemeral local port */
+      udp_remove(h->upcb); h->upcb = NULL;
+      h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN;
+   }
+   h->state = NET_ST_CONNECTED;      /* the N: handle is ready to send/recv */
+   h->url_phase = URL_READY;
+   return NET_OK;
+}
+
+/* Once the URL's host is resolved into remote_ip, hand off to the adapter:
+   UDP opens a datagram socket; everything else does a TCP connect. */
+static uint8_t url_after_resolve(net_handle_t *h)
+{
+   if (h->url_adapter == NET_URL_UDP)
+      return net_udp_url_ready(h);
+   return url_begin_connect(h);
+}
+
 static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
 {
    char       host[NET_MAX_HOSTNAME];
@@ -879,23 +908,20 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
    switch (h->url_phase) {
       case URL_START:
          if (h->state != NET_ST_FREE)  return NET_ERR_INUSE;
-         if (u.adapter == NET_URL_UDP) {          /* UDP scheme not yet wired */
-            h->url_phase = URL_FAIL; h->last_err = NET_ERR_UNSUPPORTED;
-            return NET_ERR_UNSUPPORTED;
-         }
          if (!wifi_lwip_get_context()->address_ready)
             return NET_PENDING;                   /* no IP yet - keep polling */
          net_handle_reset(h);
          h->is_url = true; h->url_adapter = u.adapter;
-         h->type = NET_TYPE_TCP; h->state = NET_ST_IDLE;
+         h->type = (u.adapter == NET_URL_UDP) ? NET_TYPE_UDP : NET_TYPE_TCP;
+         h->state = NET_ST_IDLE;
          h->remote_port = u.port;
          if (net_parse_dotted(host, &h->remote_ip))
-            return url_begin_connect(h);
+            return url_after_resolve(h);
          {
             err_t e = dns_gethostbyname(host, &h->dns_ip, net_dns_found, h);
             if (e == ERR_OK) {
                h->remote_ip = h->dns_ip;
-               return url_begin_connect(h);
+               return url_after_resolve(h);
             }
             if (e == ERR_INPROGRESS) {
                h->url_phase = URL_RESOLVING; h->state = NET_ST_RESOLVING;
@@ -908,7 +934,7 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
          h->dns_done = false;
          if (!h->dns_ok) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_DNS; return NET_ERR_DNS; }
          h->remote_ip = h->dns_ip; h->state = NET_ST_IDLE;
-         return url_begin_connect(h);
+         return url_after_resolve(h);
       case URL_CONNECTING:
          if (h->state == NET_ST_CONNECTING) return NET_PENDING;
          if (h->state == NET_ST_ERROR) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN; }
@@ -934,6 +960,31 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
 
    if (h->state == NET_ST_FREE) return NET_ERR_NOTOPEN;
    if (!net_buffer_ok(jimoff, max)) return NET_ERR_PARAM;
+
+   if (h->url_adapter == NET_URL_UDP) {
+      /* Return one datagram's payload; the peer is the fixed URL host, so the
+         [4 ip][2 port] record header is dropped.  No connection => no EOF; a
+         client polls and terminates on its own (timeout/count). */
+      uint8_t  hdr[8];
+      uint16_t dglen;
+      uint32_t copy;
+      if (h->rx_count < 8u) { jim_wr24(cp + 1u, 0u); return NET_OK; }
+      ring_get_mem(h, hdr, 8u);
+      dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
+      copy  = (dglen < max) ? dglen : max;
+      ring_get(h, jimoff + DISC_RAM_BASE, copy);
+      if (dglen > copy) {                        /* discard the tail that didn't fit */
+         uint8_t  junk[64];
+         uint16_t left = (uint16_t)(dglen - copy);
+         while (left != 0u) {
+            uint16_t k = (left < sizeof junk) ? left : (uint16_t)sizeof junk;
+            ring_get_mem(h, junk, k);
+            left = (uint16_t)(left - k);
+         }
+      }
+      jim_wr24(cp + 1u, copy);
+      return NET_OK;
+   }
 
    if (h->url_adapter == NET_URL_HTTP && !h->http_hdr_done) {
       uint16_t hdr = net_http_find_headers(h);
@@ -963,6 +1014,39 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       if (h->rx_eof)                 return NET_EOF;
       if (h->state == NET_ST_ERROR)  return h->last_err ? h->last_err : NET_ERR_CONN;
    }
+   return NET_OK;
+}
+
+/* url_write (62): UDP sends the payload to the URL's host:port; TCP/HTTP reuse
+   the stream send (same [1..3] len, [4..7] JIM src command-block layout). */
+static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
+{
+   uint32_t     len;
+   uint32_t     jimoff;
+   struct pbuf *p;
+
+   if (h->type != NET_TYPE_UDP)
+      return do_send(h, cp);
+
+   len    = jim_rd24(cp + 1u);
+   jimoff = jim_rd32(cp + 4u);
+   if (h->upcb == NULL)
+      return NET_ERR_NOTOPEN;
+   if (len > 0xFFFFu || !net_buffer_ok(jimoff, len))
+      return NET_ERR_PARAM;
+
+   p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
+   if (p == NULL)
+      return NET_ERR_NOMEM;
+   pbuf_take(p, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], (u16_t)len);
+   {
+      err_t e = udp_sendto(h->upcb, p, &h->remote_ip, h->remote_port);
+      pbuf_free(p);
+      if (e != ERR_OK)
+         return NET_ERR_CONN;
+   }
+   wifi_lwip_rx_kick();
+   jim_wr24(cp + 1u, len);
    return NET_OK;
 }
 
@@ -1010,7 +1094,7 @@ static uint8_t net_dispatch(uint32_t cp, uint8_t data)
                                  return NET_OK;
       case NET_CMD_URL_OPEN:     return do_url_open(h, cp);
       case NET_CMD_URL_READ:     return do_url_read(h, cp);
-      case NET_CMD_URL_WRITE:    return do_send(h, cp);   /* same block layout */
+      case NET_CMD_URL_WRITE:    return do_url_write(h, cp);
       case NET_CMD_URL_CLOSE:    return do_close(h);
       case NET_CMD_URL_STATUS:   return do_url_status(h, cp);
       default:                   return NET_ERR_UNSUPPORTED;
