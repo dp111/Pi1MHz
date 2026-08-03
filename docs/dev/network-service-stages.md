@@ -24,14 +24,18 @@ for one implementer.
   tested and hardware-validated (HTTP GET on a real Master against a LAN server:
   body with headers stripped, status 200, clean EOF; `beeb/net/NETHTTP.BAS`).
   Not yet: HTTP POST/PUT/DELETE, chunked decoding, the UDP: scheme, dir enum.
-- Stages 3-5 (UDP scheme/TELNET/TNFS, TLS, FujiNet compat): not started.
-- Known follow-up: heavy churn of aborted TCP listeners once wedged the service
-  on hardware (FNopen spun on NET_BUSY forever; a reflash cleared it). A 40-cycle
-  listen/accept/reset **churn stress test** (`src/tests/net`) shows the net
-  teardown *logic* is sound - no stuck handles, no leaked pcbs - so the wedge is
-  NOT in net_service.c's teardown. It points at the main-loop/lwIP timing under
-  abnormal churn (not reproducible in the synchronous host harness); needs
-  on-hardware main-loop instrumentation to pin down.
+- **Stage 3 - started:** the `UDP:` N: scheme is implemented + host-tested
+  (`url_open UDP://host:port` binds ephemeral, `url_write`/`url_read` datagrams).
+  TELNET and TNFS not started (TNFS is the FujiNet-interop lever - see below).
+- Stages 4-5 (TLS, FujiNet compat): not started.
+- **Reset-teardown wedge: FOUND + FIXED (f7fce2a).** Heavy aborted-listener
+  churn once wedged the service on hardware (FNopen spun on NET_BUSY forever;
+  reflash-only recovery). Root cause was a FIQ-vs-main-loop race, not a leak:
+  `net_service_poll`'s reset teardown ended with an unconditional
+  `net_pending = false`, dropping a command the FIQ latched *during* the
+  teardown - so NET_BUSY was never overwritten. Fixed by not dropping the latch
+  (it dispatches against the now-FREE handles). A regression test reproduces it
+  in the harness (issue() latches+polls in one pass after arming the teardown).
 
 The per-stage detail below is the original plan.
 
@@ -207,8 +211,13 @@ they compile and test host-side with a scripted fake socket, exactly the
 exists (`url_open`≈fopen, `url_read`≈fread, `url_write`≈fwrite,
 `url_dir`≈readdir, result 20 = EOF/end-of-dir), **but the verb *semantics*
 follow FujiNet** for fujinet-lib compatibility:
-- `url_open` aux/mode byte uses FujiNet's encoding: read/write/dir bits and
-  the HTTP-method overload (GET=4, POST=13, PUT=8, DELETE=5).
+- `url_open` aux/mode byte uses FujiNet's encoding, but note the **correction**
+  (2026-08-03 research): FujiNet aux1 4/8/12/13 are open *directions*
+  (read / write / read-write / **directory**), **not** HTTP methods - GET is
+  mode **12** (mode 4 URL-encodes the path), and POST/PUT/DELETE are selected by
+  a *subsequent* channel command, not the open mode. So carry the HTTP method
+  separately (channel mode below), not as the open aux - that matches FujiNet
+  and avoids collisions.
 - `url_status` (64) writes FujiNet's **4-byte DVSTAT**
   `{bytes_waiting_lo, bytes_waiting_hi, connected, error}` (plus our
   extended fields after it for native callers) - this is what fujinet-lib's
@@ -401,6 +410,26 @@ Coordinate via FujiNet's `#acorn-and-beebs` Discord and fenrock so the
 `fujinet-lib` BBC target standardises on the Pi1MHz mailbox rather than a
 serial link. Effort: the shim is small (days); the value is joining a live
 ecosystem instead of forking one.
+
+### Correction from the 2026-08-03 FujiNet research (reprioritise this stage)
+
+The two moves above conflate two *different* meanings of "compatibility", and
+over-weight the wrong one:
+- **USE the ecosystem** (reach FujiNet's TNFS servers / disk-image hosts):
+  needs a **TNFS client adapter and nothing from the FujiNet project** - no
+  upstreaming, no coordination. High value, low effort, zero external
+  dependency. **This is the real FujiNet-interop lever**, and it currently sits
+  in Stage 3, not here. TNFS (UDP :16384) + the HTTP adapter Pi1MHz already has
+  is what lets a Beeb consume real FujiNet content.
+- **BE a FujiNet device** (FujiNet host software runs against Pi1MHz): the wire
+  ABI is SIO framing, not our JIM mailbox, so nothing is binary-compatible, and
+  there is ~no BBC FujiNet host software to run. The `fujinet-lib` `bbc` shim
+  (move 2) only buys *source-level* portability of *future* apps and is gated on
+  an external cc65 target + Discord coordination + a supply of portable apps -
+  optional icing, **not** the headline. Do it only after TNFS/UDP/TELNET exist.
+So: promote the **TNFS client** (Stage 3) to *the* FujiNet deliverable; treat
+move 2 as speculative. Full assessment + TNFS opcode/error details in the
+session notes ([[fujinet-tnfs-assessment]] memory).
 
 ---
 
