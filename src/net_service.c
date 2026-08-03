@@ -738,8 +738,13 @@ static uint8_t do_recv(net_handle_t *h, uint32_t cp)
 
    got = ring_get(h, jimoff + DISC_RAM_BASE, max);
    jim_wr24(cp + 1u, got);
-   if (got == 0u && h->rx_count == 0u && h->rx_eof)
-      return NET_EOF;
+   /* Once the ring is fully drained, surface the stream end so the Beeb's
+      read loop terminates: a clean FIN as EOF, a reset as the error code
+      (otherwise a reset with no FIN reads as OK/0 bytes forever). */
+   if (got == 0u && h->rx_count == 0u) {
+      if (h->rx_eof)                 return NET_EOF;
+      if (h->state == NET_ST_ERROR)  return h->last_err ? h->last_err : NET_ERR_CONN;
+   }
    return NET_OK;
 }
 
@@ -941,6 +946,8 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
             return NET_ERR_CONN;
          }
          if (h->rx_eof) return NET_EOF;      /* peer closed before end-of-headers */
+         if (h->state == NET_ST_ERROR)       /* reset before end-of-headers */
+            return h->last_err ? h->last_err : NET_ERR_CONN;
          return NET_OK;                       /* wait for more header bytes */
       }
       net_http_parse_status(h);
@@ -951,7 +958,10 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
    }
    got = ring_get(h, jimoff + DISC_RAM_BASE, max);
    jim_wr24(cp + 1u, got);
-   if (got == 0u && h->rx_count == 0u && h->rx_eof) return NET_EOF;
+   if (got == 0u && h->rx_count == 0u) {
+      if (h->rx_eof)                 return NET_EOF;
+      if (h->state == NET_ST_ERROR)  return h->last_err ? h->last_err : NET_ERR_CONN;
+   }
    return NET_OK;
 }
 

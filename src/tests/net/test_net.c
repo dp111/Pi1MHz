@@ -338,6 +338,22 @@ int main(void)
       CHECK((jrd8(CP(0)+2) & NET_FLAG_RX_EOF) != 0, "status flag RX_EOF set");
    }
 
+   printf("== reset surfaces on recv ==\n");
+   world_reset();
+   connect_handle(0);
+   {
+      static const uint8_t part[] = "data";
+      struct pbuf *p = make_pbuf(part, 4);
+      g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p, ERR_OK);
+      /* peer RSTs: lwIP frees the pcb and calls the err callback (no FIN) */
+      g_last_pcb->err(g_last_pcb->arg, ERR_ABRT);
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_RECV, 0) == NET_OK, "recv drains buffered bytes despite reset -> OK");
+      CHECK(jrd24(CP(0)+1) == 4, "got the 4 buffered bytes before signalling the error");
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_RECV, 0) == NET_ERR_CONN, "recv after drain + reset -> ERR_CONN");
+   }
+
    printf("== DNS ==\n");
    world_reset();
    jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);

@@ -81,6 +81,6 @@ POST/chunked and dir enumeration are not implemented yet.
 
 - **Raw sockets (45-56): DONE, host-tested + hardware-validated** on a real
   BBC Master + Pi (connect over WiFi, send, live DNS resolve over the bus).
-- **N: device (60-64): host-tested** (`src/tests/net`, 92 checks under
+- **N: device (60-64): host-tested** (`src/tests/net`, 101 checks under
   ASan/UBSan incl. a 40 k-iteration fuzzer); not yet hardware-validated.
 - Not started: TLS/HTTPS, TELNET, TNFS, a native sideways-ROM `*`-command API.
