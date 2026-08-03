@@ -22,6 +22,7 @@ from the Beeb side while it is still settling.
 | `NETTNFS`  | N: device   | `TNFS://` directory list + file read |
 | `NETTNFSW` | N: device   | `TNFS://` file write |
 | `NETTEL`   | N: device   | `TELNET://` session (firmware IAC filter) |
+| `NETAUN`   | AUN/Econet  | immediate ops: machine peek, `*NOTIFY`, peek, poke |
 
 The N: device (`FNurl_open("SCHEME://host/path")` then `FNurl_read`/`FNurl_write`)
 picks an adapter from the URL scheme; edit `url$`/`H` and `RUN`.
@@ -32,6 +33,19 @@ picks an adapter from the URL scheme; edit `url$`/`H` and `RUN`.
 - **`net_enable=1` in `/Pi1MHz/Pi1MHz.cfg`** — the service is OFF by default.
   With it off, every command returns `NET_ERR_DISABLED` (`&28`).
 - WiFi configured and associated (the demo waits for an IP).
+
+`NETAUN` is the exception: it tests Econet-over-AUN, not the net service, so
+it needs neither `net_enable=1` nor the `N:` device. What it does need is an
+**AUNFS ROM fitted** (Pi1MHz helper 8/9 loads one into sideways RAM) and
+`aun_station` / `aun_map` set in `Pi1MHz.cfg`, so that `*NET` is recognised.
+Log in to the fileserver first (`*I AM SYST`) if you want it served from
+there rather than off the SSD; set `stn`/`net` on line 150 to the peer you
+are testing against.
+
+Because it drives the ROM's `OSWORD &10` path, it exercises the ROM and the
+firmware AUN engine together — including the 4-way immediates (`&82`–`&85`)
+that `*NOTIFY`, `*REMOTE` and `*VIEW` are built on, which the firmware
+carries as DATA datagrams to port 0 (see `src/AUN/aun_design.md`).
 
 ## Running the demo
 

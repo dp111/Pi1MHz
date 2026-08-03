@@ -127,6 +127,7 @@ def main():
         'PRINT"*EXEC NETTNFS  - TNFS list + read"\r'
         'PRINT"*EXEC NETTNFW  - TNFS write"\r'
         'PRINT"*EXEC NETTEL   - TELNET (IAC filter)"\r'
+        'PRINT"*EXEC NETAUN   - AUN immediates (needs AUNFS ROM)"\r'
         'PRINT"(set net_enable=1 in Pi1MHz.cfg)"\r'
     )
 
@@ -139,6 +140,7 @@ def main():
         File("NETTNFS", to_cr(read("NETTNFS.BAS"))),
         File("NETTNFW", to_cr(read("NETTNFSW.BAS"))),
         File("NETTEL", to_cr(read("NETTEL.BAS"))),
+        File("NETAUN", to_cr(read("NETAUN.BAS"))),
     ]
 
     img = build("Pi1MHz NET", files, boot_option=3)   # *OPT4,3 = EXEC !BOOT
