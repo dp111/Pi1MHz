@@ -791,6 +791,16 @@ int main(void)
       CHECK(issue(NET_CMD_URL_READ, 0) == NET_OK, "url_read TELNET -> OK");
       CHECK(jrd24(CP(0)+1) == 3 && memcmp(&Pi1MHz->JIM_ram[0x9000], "Hi!", 3) == 0,
             "IAC command stripped: the Beeb sees clean text \"Hi!\"");
+
+      /* url_write escapes a literal 0xFF as IAC IAC on the wire */
+      { uint8_t data[] = { 'X', 0xFF, 'Y' };
+        memcpy(&Pi1MHz->JIM_ram[0x8000], data, 3);
+        jwr24(CP(0)+1, 3); jwr32(CP(0)+4, 0x8000);
+        g_tx_len = 0;
+        CHECK(issue(NET_CMD_URL_WRITE, 0) == NET_OK, "url_write TELNET -> OK");
+        CHECK(jrd24(CP(0)+1) == 3, "url_write reports 3 input bytes consumed");
+        CHECK(g_tx_len == 4 && g_tx[0]=='X' && g_tx[1]==0xFF && g_tx[2]==0xFF && g_tx[3]=='Y',
+              "outbound 0xFF escaped to IAC IAC on the wire"); }
    }
 
    printf("== N: device - HTTP scheme ==\n");

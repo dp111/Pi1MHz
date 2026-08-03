@@ -86,3 +86,22 @@ void telnet_filter(telnet_ctx_t *ctx,
       }
    }
 }
+
+size_t telnet_escape(const uint8_t *in, size_t in_len,
+                     uint8_t *out, size_t out_cap, size_t *consumed)
+{
+   size_t i = 0, o = 0;
+   while (i < in_len) {
+      if (in[i] == TN_IAC) {
+         if (o + 2u > out_cap) break;         /* need room for both 0xFF bytes */
+         out[o++] = TN_IAC;
+         out[o++] = TN_IAC;
+      } else {
+         if (o + 1u > out_cap) break;
+         out[o++] = in[i];
+      }
+      i++;
+   }
+   *consumed = i;
+   return o;
+}

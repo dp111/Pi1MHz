@@ -56,4 +56,11 @@ void telnet_filter(telnet_ctx_t *ctx,
                    uint8_t *out, size_t out_cap, size_t *out_len,
                    uint8_t *rep, size_t rep_cap, size_t *rep_len);
 
+/* Escape outbound data: each literal 0xFF becomes IAC IAC (0xFF 0xFF) so it is
+   not taken as a command.  Writes the escaped bytes to out (up to out_cap),
+   returns the escaped length, and reports how many input bytes were consumed
+   (fewer than in_len if out filled - the caller sends the rest next time). */
+size_t telnet_escape(const uint8_t *in, size_t in_len,
+                     uint8_t *out, size_t out_cap, size_t *consumed);
+
 #endif /* NET_TELNET_H */

@@ -76,7 +76,7 @@ written); a read-only handle refuses writes. `TELNET:` is a raw TCP stream
 (default port 23) run through an IAC filter: server option negotiation is
 answered minimally (accept `WILL ECHO`/`WILL SGA`, refuse the rest), `IAC IAC`
 unescapes to `0xFF`, subnegotiations and `CR NUL` are dropped, so `url_read`
-gives the Beeb clean text - for BBSs/MUDs. HTTP POST/chunked is not implemented
+gives the Beeb clean text - for BBSs/MUDs; url_write escapes outbound 0xFF as IAC IAC. HTTP POST/chunked is not implemented
 yet. TCP:/UDP: need an explicit `:port` (TNFS: 16384, TELNET: 23).
 
 ## Design notes

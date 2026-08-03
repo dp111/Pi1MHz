@@ -1348,6 +1348,31 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
       return NET_OK;
    }
 
+   if (h->url_adapter == NET_URL_TELNET) {        /* escape 0xFF as IAC IAC, then send */
+      uint8_t esc[512];
+      size_t  consumed = 0u, elen;
+      u16_t   avail, oc;
+      len    = jim_rd24(cp + 1u);
+      jimoff = jim_rd32(cp + 4u);
+      if (h->type != NET_TYPE_TCP || h->tpcb == NULL || h->state != NET_ST_CONNECTED)
+         return NET_ERR_NOTOPEN;
+      if (!net_buffer_ok(jimoff, len))
+         return NET_ERR_PARAM;
+      avail = altcp_sndbuf(h->tpcb);
+      oc = (avail < sizeof esc) ? avail : (u16_t)sizeof esc;
+      if (oc == 0u) { jim_wr24(cp + 1u, 0u); return NET_OK; }   /* sndbuf full - retry */
+      elen = telnet_escape(&Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], len, esc, oc, &consumed);
+      if (elen != 0u) {
+         err_t e = altcp_write(h->tpcb, esc, (u16_t)elen, TCP_WRITE_FLAG_COPY);
+         if (e == ERR_MEM) { jim_wr24(cp + 1u, 0u); return NET_OK; }
+         if (e != ERR_OK)  return NET_ERR_CONN;
+         altcp_output(h->tpcb);
+         wifi_lwip_rx_kick();
+      }
+      jim_wr24(cp + 1u, (uint32_t)consumed);      /* input bytes consumed */
+      return NET_OK;
+   }
+
    if (h->type != NET_TYPE_UDP)
       return do_send(h, cp);
 

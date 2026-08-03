@@ -99,6 +99,18 @@ int main(void)
      run(a, sizeof a); CHECK(OL == 2 && OUT[1]==0x0D, "chunk1 ends with CR");
      run(b, sizeof b); CHECK(OL == 1 && OUT[0]=='w', "chunk2: NUL swallowed, then 'w'"); }
 
+   /* --- outbound escaping --- */
+   { uint8_t in[] = { 'a', 0xFF, 'b', 0xFF }; uint8_t out[16]; size_t cons, n;
+     n = telnet_escape(in, sizeof in, out, sizeof out, &cons);
+     CHECK(n == 6 && cons == 4 && out[0]=='a' && out[1]==0xFF && out[2]==0xFF
+           && out[3]=='b' && out[4]==0xFF && out[5]==0xFF, "escape: 0xFF -> IAC IAC"); }
+   { uint8_t in[] = "hi"; uint8_t out[8]; size_t cons, n;
+     n = telnet_escape(in, 2, out, sizeof out, &cons);
+     CHECK(n == 2 && cons == 2 && memcmp(out, "hi", 2) == 0, "escape: plain text unchanged"); }
+   { uint8_t in[] = { 0xFF, 0xFF }; uint8_t out[3]; size_t cons, n;
+     n = telnet_escape(in, sizeof in, out, sizeof out, &cons);
+     CHECK(n == 2 && cons == 1, "escape: stops when the IAC pair won't fit (partial consume)"); }
+
    printf("\n%d checks, %d failures\n", checks, failures);
    if (failures) { printf("TELNET FILTER TESTS FAILED\n"); return 1; }
    printf("TELNET FILTER TESTS PASSED\n");
