@@ -10,6 +10,11 @@ firmware net service. A native sideways-ROM `*`-command API comes in a later
 stage; this BASIC library is deliberately first so the ABI can be shaken out
 from the Beeb side while it is still settling.
 
+`NETHTTP.BAS` is a smaller companion that uses the **N: device** (Stage 2, URL
+verbs 60-64): `FNurl_open("HTTP://host/path")` then `FNurl_read` — the firmware
+sends the request and strips the response headers, so a whole HTTP GET is a few
+lines. Edit `url$`/`H` and `RUN`.
+
 ## Prerequisites
 
 - A Pi1MHz build with the net service (`src/net_service.c`).

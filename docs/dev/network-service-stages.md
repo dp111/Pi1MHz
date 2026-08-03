@@ -1,8 +1,28 @@
 # Network service - stage-by-stage implementation plan
 
 Detailed plan behind [network-service-plan.md](network-service-plan.md).
-Status: **proposal**. Each stage is self-contained and shippable; effort
-estimates are person-days for one implementer.
+Each stage is self-contained and shippable; effort estimates are person-days
+for one implementer.
+
+## Implementation status (2026-08-03)
+
+- **Stage 1 - raw TCP/UDP sockets + DNS: DONE.** `src/net_service.c` (commands
+  45-56): open/dns/connect/bind/listen/send/recv/recv_avail/close/status +
+  udp_sendto/udp_recvfrom, an 8 KB per-handle NOINIT RX ring with drop-free
+  ERR_MEM back-pressure, and level-triggered nIRQ via `services_irq_set`.
+  Host-tested (`src/tests/net`, ASan/UBSan) **and HARDWARE-VALIDATED** on a real
+  BBC Master + Pi: dispatch/open/close/status over the bus, TCP connect over
+  WiFi, an 18-byte send, and a live DNS resolve returning a real IP over the
+  bus. Gated by `net_enable=1` (off by default). Beeb client:
+  `beeb/net/NETDEMO.BAS`.
+- **Stage 2 - N: device: IN PROGRESS.** `url_open/read/write/close/status`
+  (60-64), a `scheme://host[:port][/path]` parser, and the **TCP:** and
+  **HTTP:** adapters (HTTP GET with header-strip + status-code parse). Host-
+  tested. Not yet: HTTP POST/PUT/DELETE, chunked decoding, the UDP: scheme,
+  and dir enumeration.
+- Stages 3-5 (UDP scheme/TELNET/TNFS, TLS, FujiNet compat): not started.
+
+The per-stage detail below is the original plan.
 
 ## Cross-stage decisions (apply to every stage)
 
