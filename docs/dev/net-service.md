@@ -85,7 +85,13 @@ POST/chunked and dir enumeration are not implemented yet.
 ## Status
 
 - **Raw sockets (45-56): DONE, host-tested + hardware-validated** on a real
-  BBC Master + Pi (connect over WiFi, send, live DNS resolve over the bus).
-- **N: device (60-64): host-tested** (`src/tests/net`, 104 checks under
-  ASan/UBSan incl. a 40 k-iteration fuzzer); not yet hardware-validated.
+  BBC Master + Pi - TCP connect over WiFi, send, live DNS resolve, and a raw
+  connect to a LAN server, all over the bus. (UDP 55/56 host-tested; the same
+  lwIP UDP path is hardware-proven via AUN.)
+- **N: device (60-64): host-tested + hardware-validated** - HTTP GET on a real
+  Master against a controlled LAN server: body returned with response headers
+  stripped, HTTP status 200, clean EOF. Host tests: `src/tests/net`, 104 checks
+  under ASan/UBSan incl. a 40 k-iteration fuzzer.
+- **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
+  nIRQ froze the Beeb when asserted for a polling client, fixed 2026-08-03.
 - Not started: TLS/HTTPS, TELNET, TNFS, a native sideways-ROM `*`-command API.
