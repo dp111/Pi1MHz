@@ -24,9 +24,13 @@ for one implementer.
   tested and hardware-validated (HTTP GET on a real Master against a LAN server:
   body with headers stripped, status 200, clean EOF; `beeb/net/NETHTTP.BAS`).
   Not yet: HTTP POST/PUT/DELETE, chunked decoding, the UDP: scheme, dir enum.
-- **Stage 3 - started:** the `UDP:` N: scheme is implemented + host-tested
-  (`url_open UDP://host:port` binds ephemeral, `url_write`/`url_read` datagrams).
-  TELNET and TNFS not started (TNFS is the FujiNet-interop lever - see below).
+- **Stage 3 - in progress:** the `UDP:` N: scheme is done + host-tested, and the
+  **`TNFS:` read path is implemented + host-tested** - `net_tnfs.[ch]` wire codec
+  (unit-tested) + a reliable-UDP transaction engine (seq/deadline/resend/EAGAIN)
+  driving MOUNT->OPEN->READ->CLOSE/UMOUNT, wired as `N:TNFS://host/path` and
+  tested against a scripted peer (mount/open/read/EOF/close + retry-on-silence +
+  give-up). Not yet: TNFS write + directory enumeration, TELNET, on-hardware TNFS
+  validation vs a real `tnfsd`. TNFS is the FujiNet-ecosystem interop lever.
 - Stages 4-5 (TLS, FujiNet compat): not started.
 - **Reset-teardown wedge: FOUND + FIXED (f7fce2a).** Heavy aborted-listener
   churn once wedged the service on hardware (FNopen spun on NET_BUSY forever;

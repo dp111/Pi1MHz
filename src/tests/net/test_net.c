@@ -12,6 +12,7 @@
 #include "Pi1MHz.h"
 #include "services.h"
 #include "net_service.h"
+#include "net_tnfs.h"
 #include "config.h"
 #include "wifi/wifi_lwip.h"
 #include "lwip/altcp.h"
@@ -29,6 +30,7 @@ static uint8_t   g_reg[256];
 static func_ptr  g_poll;
 static service_command_fn g_cmd;
 static int       g_nirq_asserted;
+uint64_t         g_now_us;        /* the mock system clock (see stubs/rpi/systimer.h) */
 
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data) { g_reg[addr & 0xffu] = data; }
 void Pi1MHz_Register_Poll(func_ptr f) { g_poll = f; }
@@ -584,6 +586,76 @@ int main(void)
       CHECK(jrd24(CP(0)+1) == 0, "second url_read -> 0 (ring drained)");
       CHECK(issue(NET_CMD_URL_CLOSE, 0) == NET_OK, "url_close UDP -> OK");
       CHECK(g_last_upcb->removed == 1, "UDP url pcb removed on close");
+   }
+
+   printf("== N: device - TNFS scheme (mount/open/read/close) ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/games/game.dsk");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "url_open TNFS -> PENDING (MOUNT sent)");
+   CHECK(g_last_upcb != NULL, "TNFS opened a UDP socket");
+   CHECK(g_udp_tx_port == (u16_t)TNFS_PORT, "MOUNT sent to TNFS port 16384");
+   CHECK(g_udp_tx[3] == TNFS_CMD_MOUNT, "first datagram is MOUNT");
+   {
+      ip_addr_t peer; IP_ADDR4(&peer, 192, 168, 0, 9);
+      uint8_t sm = g_udp_tx[2];
+      uint8_t mrep[] = { 0x42,0x00, sm, TNFS_CMD_MOUNT, TNFS_OK, 0x02,0x01, 0x2C,0x01 };
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(mrep, sizeof mrep), &peer, (u16_t)TNFS_PORT);
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "after MOUNT reply -> PENDING (OPEN sent)");
+      CHECK(g_udp_tx[3] == TNFS_CMD_OPEN, "second datagram is OPEN");
+      CHECK((g_udp_tx[0] | (g_udp_tx[1] << 8)) == 0x0042, "OPEN carries the session id from MOUNT");
+      {
+         uint8_t so = g_udp_tx[2];
+         uint8_t orep[] = { 0x42,0x00, so, TNFS_CMD_OPEN, TNFS_OK, 0x07 };
+         g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(orep, sizeof orep), &peer, (u16_t)TNFS_PORT);
+      }
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "after OPEN reply -> READY (OK)");
+      issue(NET_CMD_URL_STATUS, 0);
+      CHECK((jrd8(CP(0)+2) & NET_FLAG_CONNECTED) != 0, "TNFS url status READY");
+
+      /* url_read: first call sends a READ, second delivers the data */
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_PENDING, "url_read -> PENDING (READ sent)");
+      CHECK(g_udp_tx[3] == TNFS_CMD_READ && g_udp_tx[4] == 0x07, "READ carries the fd");
+      {
+         uint8_t sr = g_udp_tx[2];
+         uint8_t rrep[] = { 0x42,0x00, sr, TNFS_CMD_READ, TNFS_OK, 0x05,0x00, 'H','e','l','l','o' };
+         g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(rrep, sizeof rrep), &peer, (u16_t)TNFS_PORT);
+      }
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_OK, "url_read delivers the data -> OK");
+      CHECK(jrd24(CP(0)+1) == 5, "url_read returned 5 bytes");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x9000], "Hello", 5) == 0, "TNFS file bytes delivered to JIM");
+
+      /* next read hits EOF */
+      jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_PENDING, "next url_read -> PENDING (READ sent)");
+      {
+         uint8_t sr2 = g_udp_tx[2];
+         uint8_t erep[] = { 0x42,0x00, sr2, TNFS_CMD_READ, TNFS_EOF };
+         g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(erep, sizeof erep), &peer, (u16_t)TNFS_PORT);
+      }
+      CHECK(issue(NET_CMD_URL_READ, 0) == NET_EOF, "url_read at end of file -> NET_EOF");
+
+      /* close fires a best-effort CLOSE + UMOUNT */
+      CHECK(issue(NET_CMD_URL_CLOSE, 0) == NET_OK, "url_close TNFS -> OK");
+      CHECK(g_udp_tx[3] == TNFS_CMD_UMOUNT, "UMOUNT sent to the server on close");
+   }
+
+   printf("== TNFS retry on silence, then give up ==\n");
+   world_reset();
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/f");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "url_open TNFS -> PENDING (MOUNT sent)");
+   {
+      uint8_t sm = g_udp_tx[2];
+      uint8_t r  = NET_PENDING;
+      int i;
+      g_udp_tx_len = 0;
+      g_now_us += 1000000ull;                    /* past the 800 ms deadline */
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "timeout with no reply -> PENDING (resend)");
+      CHECK(g_udp_tx_len != 0 && g_udp_tx[3] == TNFS_CMD_MOUNT && g_udp_tx[2] == sm,
+            "MOUNT resent with the same sequence");
+      for (i = 0; i < 8 && r == NET_PENDING; i++) { g_now_us += 1000000ull; r = issue(NET_CMD_URL_OPEN, 0); }
+      CHECK(r == NET_ERR_CONN, "retries exhausted -> ERR_CONN");
    }
 
    printf("== N: device - HTTP scheme ==\n");

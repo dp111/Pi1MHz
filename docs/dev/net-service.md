@@ -65,8 +65,11 @@ Layer 2 - the N: device (open a URL like a file):
 Schemes: `TCP:` (raw stream wrapper), `HTTP:` (GET + header-strip + status),
 `UDP:` (connectionless - `url_open` binds an ephemeral local port and remembers
 the URL's host:port; `url_write` sends a datagram there, `url_read` returns the
-next datagram's payload, no EOF). HTTP POST/chunked, `TNFS:`/`TELNET:` and dir
-enumeration are not implemented yet. TCP:/UDP: need an explicit `:port`.
+next datagram's payload, no EOF), and `TNFS:` (read a file off a TNFS server;
+`url_open TNFS://host[:port]/path` does MOUNT `/` -> OPEN read-only over UDP
+:16384, `url_read` does READ chunks until EOF, `url_close` does CLOSE + UMOUNT).
+HTTP POST/chunked, TNFS write/dir enumeration and `TELNET:` are not implemented
+yet. TCP:/UDP: need an explicit `:port` (TNFS: defaults to 16384).
 
 ## Design notes
 
@@ -93,8 +96,11 @@ enumeration are not implemented yet. TCP:/UDP: need an explicit `:port`.
   peer IP/port decoded), all over the bus. See `beeb/net/NETUDP.BAS`.
 - **N: device (60-64): host-tested + hardware-validated** - HTTP GET on a real
   Master against a controlled LAN server: body returned with response headers
-  stripped, HTTP status 200, clean EOF. Host tests: `src/tests/net`, 119 checks
-  under ASan/UBSan incl. a 40 k-iteration fuzzer.
+  stripped, HTTP status 200, clean EOF. UDP: and TNFS: schemes host-tested (the
+  TNFS mount/open/read/close handshake + reliable-UDP retry engine drive against
+  a scripted peer; `src/net_tnfs.[ch]` codec is separately unit-tested). Host
+  tests: `src/tests/net`, 143 + 31 checks under ASan/UBSan incl. a fuzzer.
+  TNFS not yet hardware-validated.
 - **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
   nIRQ froze the Beeb when asserted for a polling client, fixed 2026-08-03.
 - Not started: TLS/HTTPS, TELNET, TNFS, a native sideways-ROM `*`-command API.

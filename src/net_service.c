@@ -22,7 +22,9 @@
 #include "ram_emulator.h"          /* DISC_RAM_BASE, DISC_RAM_SIZE, JIM_ram */
 #include "services.h"
 #include "net_service.h"
+#include "net_tnfs.h"
 #include "config.h"
+#include "rpi/systimer.h"          /* RPI_GetSystemTime64 (ms clock for TNFS) */
 
 #include "wifi/wifi_lwip.h"        /* wifi_lwip_get_context, wifi_lwip_rx_kick */
 #include "lwip/altcp.h"
@@ -71,7 +73,31 @@ typedef struct {
    uint16_t          rx_head;
    uint16_t          rx_tail;
    uint16_t          rx_count;
+   /* TNFS (N:TNFS://) session + one in-flight request, for the retry engine */
+   uint8_t           tnfs_phase;    /* TNFS_PH_*                            */
+   uint8_t           tnfs_seq;      /* sequence of the outstanding request  */
+   uint8_t           tnfs_fd;       /* open file descriptor (from OPEN)     */
+   uint8_t           tnfs_retries;  /* resends left on the outstanding req  */
+   uint16_t          tnfs_connid;   /* session id (from MOUNT)              */
+   uint16_t          tnfs_retry_ms; /* base resend timeout (from MOUNT)     */
+   uint32_t          tnfs_deadline; /* ms: resend/timeout deadline          */
+   uint16_t          tnfs_req_len;  /* outstanding request length           */
+   uint8_t           tnfs_req[256]; /* buffered request, for resend         */
 } net_handle_t;
+
+/* TNFS session phases (net_handle_t.tnfs_phase) */
+#define TNFS_PH_IDLE     0u
+#define TNFS_PH_MOUNT    1u   /* MOUNT sent, awaiting reply            */
+#define TNFS_PH_OPEN     2u   /* OPEN sent, awaiting reply             */
+#define TNFS_PH_READY    3u   /* mounted + file open                   */
+#define TNFS_PH_READING  4u   /* READ sent, awaiting reply             */
+#define TNFS_REQ_MAX     256u
+#define TNFS_PKT_MAX     600u /* largest reply datagram we parse       */
+#define TNFS_RETRIES     4u   /* resends before giving up              */
+#define TNFS_TIMEOUT_MS  800u /* fallback resend timeout               */
+#define TNFS_READ_CHUNK  512u /* cap a READ so its reply fits a datagram */
+
+static void net_tnfs_send_raw(net_handle_t *h, const uint8_t *req, uint16_t len);
 
 /* Handle table in BSS (zeroed at boot: all NET_ST_FREE, tpcb NULL - so the
    first reset teardown finds nothing live to abort).  The 8x8 KB RX rings
@@ -435,6 +461,7 @@ static bool net_url_parse(const char *url, net_url_t *out,
       if      (net_ci_eq(url, sl, "HTTP")) { out->adapter = NET_URL_HTTP; out->port = 80u; }
       else if (net_ci_eq(url, sl, "TCP"))  { out->adapter = NET_URL_TCP;  out->port = 0u;  }
       else if (net_ci_eq(url, sl, "UDP"))  { out->adapter = NET_URL_UDP;  out->port = 0u;  }
+      else if (net_ci_eq(url, sl, "TNFS")) { out->adapter = NET_URL_TNFS; out->port = (uint16_t)TNFS_PORT; }
       else return false;
    }
    h = sep + 3;
@@ -762,6 +789,20 @@ static uint8_t do_close(net_handle_t *h)
 {
    if (h->state == NET_ST_FREE)
       return NET_OK;
+   /* TNFS: best-effort CLOSE (if a file is open) + UMOUNT before dropping the
+      socket, so the server reclaims the fd/session promptly.  Fire-and-forget:
+      a lost teardown just leaves the server to time the session out. */
+   if (h->is_url && h->url_adapter == NET_URL_TNFS
+       && h->upcb != NULL && h->tnfs_connid != 0u) {
+      uint8_t  req[16];
+      size_t   n;
+      if (h->tnfs_phase == TNFS_PH_READY || h->tnfs_phase == TNFS_PH_READING) {
+         n = tnfs_build_close(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq, h->tnfs_fd);
+         net_tnfs_send_raw(h, req, (uint16_t)n);
+      }
+      n = tnfs_build_umount(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq);
+      net_tnfs_send_raw(h, req, (uint16_t)n);
+   }
    net_pcb_release(h, false);       /* graceful (falls back to abort) */
    net_handle_reset(h);
    return NET_OK;
@@ -881,12 +922,136 @@ static uint8_t net_udp_url_ready(net_handle_t *h)
    return NET_OK;
 }
 
+/* ---- TNFS (N:TNFS://) reliable-transaction engine ------------------------ */
+
+static uint32_t net_now_ms(void)
+{
+   return (uint32_t)(RPI_GetSystemTime64() / 1000u);
+}
+
+/* Pop one datagram's payload from the RX ring (dropping the [ip][port] record
+   header net_udp_recv prepends) into dst.  Returns the payload length, or 0 if
+   no complete record is buffered. */
+static uint16_t net_udp_pop(net_handle_t *h, uint8_t *dst, size_t cap)
+{
+   uint8_t  hdr[8];
+   uint16_t dglen, copy;
+   if (h->rx_count < 8u) return 0u;
+   ring_get_mem(h, hdr, 8u);
+   dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
+   copy  = (dglen < cap) ? dglen : (uint16_t)cap;
+   ring_get_mem(h, dst, copy);
+   if (dglen > copy) {                          /* discard what didn't fit */
+      uint8_t  junk[64];
+      uint16_t left = (uint16_t)(dglen - copy);
+      while (left != 0u) {
+         uint16_t k = (left < sizeof junk) ? left : (uint16_t)sizeof junk;
+         ring_get_mem(h, junk, k);
+         left = (uint16_t)(left - k);
+      }
+   }
+   return copy;
+}
+
+/* Fire a datagram at the mounted server, no retry bookkeeping (close/umount). */
+static void net_tnfs_send_raw(net_handle_t *h, const uint8_t *req, uint16_t len)
+{
+   struct pbuf *p;
+   if (h->upcb == NULL || len == 0u) return;
+   p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
+   if (p == NULL) return;
+   pbuf_take(p, req, len);
+   (void)udp_sendto(h->upcb, p, &h->remote_ip, h->remote_port);
+   pbuf_free(p);
+   wifi_lwip_rx_kick();
+}
+
+/* (Re)transmit the buffered request and (re)arm the resend/timeout deadline. */
+static void net_tnfs_fire(net_handle_t *h)
+{
+   net_tnfs_send_raw(h, h->tnfs_req, h->tnfs_req_len);
+   h->tnfs_deadline = net_now_ms()
+                    + (h->tnfs_retry_ms ? h->tnfs_retry_ms : TNFS_TIMEOUT_MS);
+}
+
+/* Begin a new transaction: the caller has already built the request into
+   h->tnfs_req[] with sequence h->tnfs_seq.  Sends it and enters `phase`. */
+static uint8_t net_tnfs_start(net_handle_t *h, uint8_t phase, size_t req_len)
+{
+   if (req_len == 0u || req_len > TNFS_REQ_MAX) return NET_ERR_PARAM;
+   h->tnfs_phase   = phase;
+   h->tnfs_req_len = (uint16_t)req_len;
+   h->tnfs_retries = TNFS_RETRIES;
+   net_tnfs_fire(h);
+   return NET_PENDING;
+}
+
+/* Poll the outstanding transaction.  Fills *pkt (caller-owned, so the reply
+   body pointers in *rep stay valid after return) and returns:
+   NET_OK  - a matching reply arrived (rep->status may still be an error),
+   NET_PENDING - still waiting / backing off / just resent,
+   NET_ERR_CONN - retries exhausted with no reply. */
+static uint8_t net_tnfs_poll(net_handle_t *h, uint8_t *pkt, size_t pktcap,
+                             tnfs_reply_t *rep)
+{
+   uint8_t cmd = h->tnfs_req[3];                /* the command we sent */
+   if (h->rx_count >= 8u) {
+      uint16_t plen = net_udp_pop(h, pkt, pktcap);
+      if (plen != 0u && tnfs_parse_reply(pkt, plen, h->tnfs_seq, cmd, rep)) {
+         if (rep->status == TNFS_EAGAIN) {       /* server busy: back off, resend */
+            uint32_t back = rep->backoff_ms ? rep->backoff_ms : h->tnfs_retry_ms;
+            h->tnfs_deadline = net_now_ms() + (back ? back : TNFS_TIMEOUT_MS);
+            return NET_PENDING;
+         }
+         return NET_OK;
+      }
+      /* a stale/duplicate/foreign datagram - ignore it and keep waiting */
+   }
+   if ((int32_t)(net_now_ms() - h->tnfs_deadline) >= 0) {
+      if (h->tnfs_retries == 0u) return NET_ERR_CONN;   /* gave up */
+      h->tnfs_retries--;
+      net_tnfs_fire(h);
+   }
+   return NET_PENDING;
+}
+
+/* Map a TNFS status byte to a net result code. */
+static uint8_t net_tnfs_status(uint8_t status)
+{
+   if (status == TNFS_OK)  return NET_OK;
+   if (status == TNFS_EOF) return NET_EOF;
+   return NET_ERR_CONN;
+}
+
+/* TNFS url_open step 1: create the UDP socket to the server and send MOUNT. */
+static uint8_t net_tnfs_begin(net_handle_t *h)
+{
+   size_t n;
+   h->upcb = udp_new();
+   if (h->upcb == NULL) {
+      h->url_phase = URL_FAIL; h->last_err = NET_ERR_NOMEM; return NET_ERR_NOMEM;
+   }
+   udp_recv(h->upcb, net_udp_recv, h);
+   if (udp_bind(h->upcb, IP_ANY_TYPE, 0u) != ERR_OK) {
+      udp_remove(h->upcb); h->upcb = NULL;
+      h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN;
+   }
+   h->type          = NET_TYPE_UDP;
+   h->state         = NET_ST_CONNECTED;
+   h->tnfs_retry_ms = TNFS_TIMEOUT_MS;          /* until MOUNT tells us better */
+   h->tnfs_seq      = 1u;
+   n = tnfs_build_mount(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_seq, "/", NULL, NULL);
+   if (n == 0u) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM; }
+   h->url_phase = URL_CONNECTING;               /* reuse: "TNFS handshaking" */
+   return net_tnfs_start(h, TNFS_PH_MOUNT, n);
+}
+
 /* Once the URL's host is resolved into remote_ip, hand off to the adapter:
-   UDP opens a datagram socket; everything else does a TCP connect. */
+   UDP opens a datagram socket, TNFS mounts, everything else does a TCP connect. */
 static uint8_t url_after_resolve(net_handle_t *h)
 {
-   if (h->url_adapter == NET_URL_UDP)
-      return net_udp_url_ready(h);
+   if (h->url_adapter == NET_URL_UDP)  return net_udp_url_ready(h);
+   if (h->url_adapter == NET_URL_TNFS) return net_tnfs_begin(h);
    return url_begin_connect(h);
 }
 
@@ -937,6 +1102,35 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
          h->remote_ip = h->dns_ip; h->state = NET_ST_IDLE;
          return url_after_resolve(h);
       case URL_CONNECTING:
+         if (h->url_adapter == NET_URL_TNFS) {
+            uint8_t      pkt[TNFS_PKT_MAX];
+            tnfs_reply_t rep;
+            uint8_t      r = net_tnfs_poll(h, pkt, sizeof pkt, &rep);
+            if (r == NET_PENDING) return NET_PENDING;
+            if (r != NET_OK) { h->url_phase = URL_FAIL; h->last_err = r; return r; }
+            if (rep.status != TNFS_OK) {
+               h->url_phase = URL_FAIL;
+               h->last_err = net_tnfs_status(rep.status);
+               return h->last_err;
+            }
+            if (h->tnfs_phase == TNFS_PH_MOUNT) {      /* mounted -> now OPEN the file */
+               uint16_t rms = 0;
+               size_t   n;
+               (void)tnfs_reply_mount(&rep, NULL, &rms);
+               h->tnfs_connid = rep.connid;
+               if (rms >= 100u && rms <= 5000u) h->tnfs_retry_ms = rms;
+               h->tnfs_seq++;
+               n = tnfs_build_open(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
+                                   h->tnfs_seq, TNFS_O_RDONLY, 0u, path);
+               if (n == 0u) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM; }
+               return net_tnfs_start(h, TNFS_PH_OPEN, n);
+            }
+            /* TNFS_PH_OPEN: file is open -> READY */
+            (void)tnfs_reply_open(&rep, &h->tnfs_fd);
+            h->tnfs_phase = TNFS_PH_READY;
+            h->url_phase  = URL_READY;
+            return NET_OK;
+         }
          if (h->state == NET_ST_CONNECTING) return NET_PENDING;
          if (h->state == NET_ST_ERROR) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN; }
          if (h->state == NET_ST_CONNECTED) {
@@ -961,6 +1155,39 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
 
    if (h->state == NET_ST_FREE) return NET_ERR_NOTOPEN;
    if (!net_buffer_ok(jimoff, max)) return NET_ERR_PARAM;
+
+   if (h->url_adapter == NET_URL_TNFS) {
+      uint8_t      pkt[TNFS_PKT_MAX];
+      tnfs_reply_t rep;
+      uint8_t      r;
+      jim_wr24(cp + 1u, 0u);                     /* default: 0 bytes read */
+      if (h->tnfs_phase == TNFS_PH_READY) {       /* start a new READ */
+         uint16_t want = (max > TNFS_READ_CHUNK) ? (uint16_t)TNFS_READ_CHUNK : (uint16_t)max;
+         size_t   n;
+         if (want == 0u) return NET_OK;
+         h->tnfs_seq++;
+         n = tnfs_build_read(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
+                             h->tnfs_seq, h->tnfs_fd, want);
+         return net_tnfs_start(h, TNFS_PH_READING, n);
+      }
+      if (h->tnfs_phase != TNFS_PH_READING) return NET_ERR_NOTOPEN;
+      r = net_tnfs_poll(h, pkt, sizeof pkt, &rep);
+      if (r == NET_PENDING) return NET_PENDING;
+      h->tnfs_phase = TNFS_PH_READY;             /* transaction over either way */
+      if (r != NET_OK) return r;                 /* timed out */
+      if (rep.status == TNFS_EOF) return NET_EOF;
+      if (rep.status != TNFS_OK)  return net_tnfs_status(rep.status);
+      {
+         const uint8_t *data;
+         uint16_t       dlen;
+         uint32_t       copy;
+         if (!tnfs_reply_read(&rep, &data, &dlen)) return NET_ERR_CONN;
+         copy = (dlen < max) ? dlen : max;
+         memcpy(&Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], data, copy);
+         jim_wr24(cp + 1u, copy);
+      }
+      return NET_OK;
+   }
 
    if (h->url_adapter == NET_URL_UDP) {
       /* Return one datagram's payload; the peer is the fixed URL host, so the

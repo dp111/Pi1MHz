@@ -17,7 +17,7 @@ SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
 echo "== net service: full command lifecycle =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g $SAN \
     -I"$B" -o "$B/t" \
-    "$B/test_net.c" "$B/net_service.c"
+    "$B/test_net.c" "$B/net_service.c" "$B/net_tnfs.c"
 "$B/t"
 
 echo "== TNFS wire codec =="
