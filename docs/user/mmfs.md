@@ -90,6 +90,22 @@ re-locks on any card access). Drop to another filing system as in step 1
 and try again; a Pi reboot from the web interface clears everything as a
 last resort.
 
+## Write-protecting the card from the Beeb
+
+Add **`Beeb_write_protect=1`** to `/Pi1MHz/Pi1MHz.cfg` to stop the Beeb
+changing anything on the SD card. Every write the Beeb makes - MMFS/MMFS2
+`*SAVE`/`*DELETE`, ADFS writes to the [hard disc images](hard-discs.md),
+even a `*FORM`/format - is silently ignored and reported back as success,
+so nothing on the card changes and the Beeb sees no error. Reads are
+unaffected, so all your discs still load normally.
+
+This only blocks the **Beeb**. Uploads over
+[WiFi/WebDAV](web-interface.md) and [USB](usb-file-access.md) still write
+the card as usual - so you can curate the images from a PC while the Beeb
+can only read them. The key is off by default (the Beeb can write). It has
+no effect on the read-only [VFS](hard-discs.md) discs, which never take
+Beeb writes anyway.
+
 ## Notes
 
 - Both shipped ROMs are BBC Model B sideways-RAM builds; they need

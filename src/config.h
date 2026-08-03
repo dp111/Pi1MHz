@@ -18,6 +18,7 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -42,5 +43,11 @@ int config_emulator_override(const char *name, uint8_t *addr);
  * remain live for as long as the store is used; buf[len] must be a valid
  * writable byte. Exposed for host testing. */
 void config_parse(char *buf, size_t len);
+
+/* True if "Beeb_write_protect" is set (1/y/t, case-insensitive) in the
+ * config. When true, every write the Beeb initiates to the SD card is a
+ * silent no-op (USB/MTP and web/WebDAV writes are unaffected). Parsed once
+ * and cached. Default (key absent) is false. */
+bool config_beeb_write_protected(void);
 
 #endif

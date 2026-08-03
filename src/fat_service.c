@@ -11,6 +11,7 @@
 
 #include "ram_emulator.h"
 #include "services.h"
+#include "config.h"				/* Beeb_write_protect */
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
 #include "BeebSCSI/fatfs/diskio.h"
 #include "BeebSCSI/filesystem.h"
@@ -230,6 +231,11 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         uint32_t sectors = jim_read32(command_pointer+12);
         fat_raw_sector_seen = true;
         // disk_write transfers 'sectors' x 512-byte blocks from the buffer
+        if (config_beeb_write_protected())      // Beeb writes ignored: report OK
+        {
+            Pi1MHz_MemoryWrite(addr, RES_OK);
+            break;
+        }
         if ((sectors > (DISC_RAM_SIZE / DISC_SECTOR_SIZE)) ||
             !discaccess_buffer_ok(buf_off, sectors * DISC_SECTOR_SIZE))
         {
@@ -254,8 +260,11 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         fat_open_valid[data & 15] = false;   /* re-open replaces any record */
+        BYTE mode = Pi1MHz->JIM_ram[command_pointer+2];
+        if (config_beeb_write_protected())
+            mode = FA_READ;                  /* strip write/create bits: read-only open */
         result = f_open( &fileObject[data & 15], (char * )&Pi1MHz->JIM_ram[command_pointer+3]
-                    , Pi1MHz->JIM_ram[command_pointer+2] );
+                    , mode );
         if (result == FR_OK)
             fat_open_record(data & 15, (char * )&Pi1MHz->JIM_ram[command_pointer+3]);
         Pi1MHz_MemoryWrite(addr, result);
@@ -307,6 +316,12 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         if (!discaccess_buffer_ok(buf_off, buf_len))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
+            break;
+        }
+        if (config_beeb_write_protected())      // Beeb write ignored: claim it all landed
+        {
+            jim_write32(command_pointer, (buf_len << 8 ) | Pi1MHz->JIM_ram[command_pointer]);
+            Pi1MHz_MemoryWrite(addr, FR_OK);
             break;
         }
         result = f_lseek( &fileObject[data & 15], jim_read32(command_pointer+8) );
@@ -381,7 +396,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
-        Pi1MHz_MemoryWrite(addr,
+        Pi1MHz_MemoryWrite(addr, config_beeb_write_protected() ? FR_OK :
              f_mkdir( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
         break;
 
@@ -415,7 +430,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
-        Pi1MHz_MemoryWrite(addr,
+        Pi1MHz_MemoryWrite(addr, config_beeb_write_protected() ? FR_OK :
              f_rename( (char * )&Pi1MHz->JIM_ram[name1] ,
                        (char * )&Pi1MHz->JIM_ram[name2] ) );
         break;
@@ -466,7 +481,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
-        Pi1MHz_MemoryWrite(addr,
+        Pi1MHz_MemoryWrite(addr, config_beeb_write_protected() ? FR_OK :
              f_unlink( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
         break;
 

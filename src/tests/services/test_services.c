@@ -11,9 +11,14 @@
 
 #include "Pi1MHz.h"
 #include "services.h"
+#include "config.h"
 #include "BeebSCSI/fatfs/ff.h"
 #include "BeebSCSI/fatfs/diskio.h"
 #include "BeebSCSI/filesystem.h"
+
+/* config.c (linked in for the Beeb_write_protect tests) calls this. */
+uint32_t filesystemReadFile(const char *f, uint8_t **a, unsigned int m)
+{ (void)f; (void)a; (void)m; return 0; }
 
 /* ---- Pi1MHz stubs ---- */
 static Pi1MHz_t pi;
@@ -41,26 +46,30 @@ static FRESULT chdir_result = FR_OK;
 static char    cwd_value[128] = "/";
 static FRESULT getcwd_result = FR_OK;
 
+/* write-observing counters + open-mode capture (for Beeb_write_protect) */
+static int f_write_calls, disk_write_calls, f_mkdir_calls, f_unlink_calls, f_rename_calls;
+static uint8_t last_open_mode;
+
 FRESULT f_open(FIL *fp, const char *path, uint8_t mode)
-{ (void)fp; (void)mode; snprintf(last_open_path, sizeof last_open_path, "%s", path); return open_result; }
+{ (void)fp; last_open_mode = mode; snprintf(last_open_path, sizeof last_open_path, "%s", path); return open_result; }
 FRESULT f_close(FIL *fp) { (void)fp; return FR_OK; }
 FRESULT f_read(FIL *fp, void *b, UINT n, UINT *r) { (void)fp; (void)b; *r = n; return FR_OK; }
-FRESULT f_write(FIL *fp, const void *b, UINT n, UINT *w) { (void)fp; (void)b; *w = n; return FR_OK; }
+FRESULT f_write(FIL *fp, const void *b, UINT n, UINT *w) { (void)fp; (void)b; f_write_calls++; *w = n; return FR_OK; }
 FRESULT f_lseek(FIL *fp, uint32_t ofs) { (void)fp; (void)ofs; return FR_OK; }
 FRESULT f_opendir(DIR *dp, const char *p) { (void)dp; (void)p; return FR_OK; }
 FRESULT f_closedir(DIR *dp) { (void)dp; return FR_OK; }
 FRESULT f_readdir(DIR *dp, FILINFO *fno) { (void)dp; fno->fname[0] = 0; return FR_OK; }
-FRESULT f_mkdir(const char *p) { (void)p; return FR_OK; }
+FRESULT f_mkdir(const char *p) { (void)p; f_mkdir_calls++; return FR_OK; }
 FRESULT f_chdir(const char *p) { (void)p; return chdir_result; }
 FRESULT f_getcwd(char *buff, UINT len) { snprintf(buff, len, "%s", cwd_value); return getcwd_result; }
-FRESULT f_rename(const char *a, const char *b) { (void)a; (void)b; return FR_OK; }
+FRESULT f_rename(const char *a, const char *b) { (void)a; (void)b; f_rename_calls++; return FR_OK; }
 FRESULT f_getfree(const char *p, DWORD *n, FATFS **f) { (void)p; (void)n; (void)f; return FR_DISK_ERR; }
-FRESULT f_unlink(const char *p) { (void)p; return FR_OK; }
+FRESULT f_unlink(const char *p) { (void)p; f_unlink_calls++; return FR_OK; }
 
 DRESULT disk_read(uint8_t d, uint8_t *b, uint32_t s, unsigned int c)
 { (void)d; (void)b; (void)s; (void)c; return RES_OK; }
 DRESULT disk_write(uint8_t d, const uint8_t *b, uint32_t s, unsigned int c)
-{ (void)d; (void)b; (void)s; (void)c; return RES_OK; }
+{ (void)d; (void)b; (void)s; (void)c; disk_write_calls++; return RES_OK; }
 unsigned char disk_type(void) { return 42; }
 
 bool filesystemMount(void) { return true; }
@@ -219,6 +228,35 @@ int main(void)
    ok(!fat_service_file_in_use("/discs/held.ssd"), "reset releases the open-file lock");
    ok(!fat_service_file_in_use("/BEEB.MMB"), "reset releases the raw-sector latch");
    ok(do_simple(0, 20) == 42, "FAT service still dispatches after reset");
+
+   puts("== Beeb_write_protect ==");
+   {
+      /* Baseline (key absent -> accessor false): Beeb writes reach FatFs. */
+      ok(!config_beeb_write_protected(), "accessor false when the key is absent");
+      f_write_calls = disk_write_calls = f_mkdir_calls = f_unlink_calls = f_rename_calls = 0;
+      ok(do_simple(0, 1)  == RES_OK && disk_write_calls == 1, "off: disk_write happens");
+      ok(do_simple(0, 5)  == FR_OK && f_write_calls   == 1,   "off: f_write happens");
+      ok(do_simple(0, 10) == FR_OK && f_mkdir_calls   == 1,   "off: f_mkdir happens");
+      ok(do_simple(0, 12) == FR_OK && f_rename_calls  == 1,   "off: f_rename happens");
+      ok(do_simple(0, 16) == FR_OK && f_unlink_calls  == 1,   "off: f_unlink happens");
+      ok(do_open(9, "/rw.dat") == FR_OK && last_open_mode == 0x03u,
+         "off: open keeps the requested read/write mode");
+
+      /* Turn write-protect on: every Beeb write is now a silent success. */
+      static char wp[] = "Beeb_write_protect=1\n";
+      config_parse(wp, sizeof wp - 1);
+      ok(config_beeb_write_protected(), "accessor true once the key is set");
+
+      f_write_calls = disk_write_calls = f_mkdir_calls = f_unlink_calls = f_rename_calls = 0;
+      ok(do_simple(0, 1)  == RES_OK && disk_write_calls == 0, "on: disk_write ignored, reports OK");
+      ok(do_simple(0, 5)  == FR_OK && f_write_calls   == 0,   "on: f_write ignored, reports OK");
+      ok(do_simple(0, 10) == FR_OK && f_mkdir_calls   == 0,   "on: f_mkdir ignored, reports OK");
+      ok(do_simple(0, 12) == FR_OK && f_rename_calls  == 0,   "on: f_rename ignored, reports OK");
+      ok(do_simple(0, 16) == FR_OK && f_unlink_calls  == 0,   "on: f_unlink ignored, reports OK");
+      ok(do_open(9, "/rw.dat") == FR_OK && last_open_mode == FA_READ,
+         "on: open downgraded to read-only (write/create bits stripped)");
+      ok(do_simple(0, 20) == 42, "on: reads/queries unaffected (disk_type)");
+   }
 
    printf("\n%d checks, %d failures\n", checks, fails);
    return fails ? 1 : 0;
