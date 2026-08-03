@@ -123,6 +123,7 @@ def main():
         'PRINT"*EXEC NETDEMO  - raw TCP sockets"\r'
         'PRINT"*EXEC NETHTTP  - N: HTTP GET"\r'
         'PRINT"*EXEC NETUDP   - raw UDP echo"\r'
+        'PRINT"*EXEC NETSRV   - TCP server (listen)"\r'
         'PRINT"(set net_enable=1 in Pi1MHz.cfg)"\r'
     )
 
@@ -131,6 +132,7 @@ def main():
         File("NETDEMO", to_cr(read("NETDEMO.BAS"))),
         File("NETHTTP", to_cr(read("NETHTTP.BAS"))),
         File("NETUDP", to_cr(read("NETUDP.BAS"))),
+        File("NETSRV", to_cr(read("NETSRV.BAS"))),
     ]
 
     img = build("Pi1MHz NET", files, boot_option=3)   # *OPT4,3 = EXEC !BOOT

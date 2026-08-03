@@ -6,21 +6,27 @@ for one implementer.
 
 ## Implementation status (2026-08-03)
 
-- **Stage 1 - raw TCP/UDP sockets + DNS: DONE.** `src/net_service.c` (commands
-  45-56): open/dns/connect/bind/listen/send/recv/recv_avail/close/status +
-  udp_sendto/udp_recvfrom, an 8 KB per-handle NOINIT RX ring with drop-free
-  ERR_MEM back-pressure, and level-triggered nIRQ via `services_irq_set`.
-  Host-tested (`src/tests/net`, ASan/UBSan) **and HARDWARE-VALIDATED** on a real
-  BBC Master + Pi: dispatch/open/close/status over the bus, TCP connect over
-  WiFi, an 18-byte send, and a live DNS resolve returning a real IP over the
-  bus. Gated by `net_enable=1` (off by default). Beeb client:
-  `beeb/net/NETDEMO.BAS`.
-- **Stage 2 - N: device: IN PROGRESS.** `url_open/read/write/close/status`
+- **Stage 1 - raw TCP/UDP sockets + DNS: DONE + fully HW-validated.**
+  `src/net_service.c` (commands 45-57): open/dns/connect/bind/listen/send/recv/
+  recv_avail/close/status + udp_sendto/udp_recvfrom + irq(57), an 8 KB per-handle
+  NOINIT RX ring with drop-free ERR_MEM back-pressure, and an **opt-in** nIRQ via
+  `services_irq_set` (default disarmed - a stuck nIRQ froze the Beeb, fixed
+  2026-08-03). Host-tested (`src/tests/net`, 104 checks + fuzzer, ASan/UBSan)
+  **and HARDWARE-VALIDATED** on a real BBC Master + Pi across the whole surface:
+  TCP connect/send/recv + live DNS, a **UDP sendto/recvfrom echo** round-trip,
+  and the **Beeb as a TCP server** (bind/listen/accept + recv of inbound data,
+  clean EOF). Gated by `net_enable=1` (off by default). Beeb clients:
+  `beeb/net/NETDEMO.BAS` (client), `NETUDP.BAS` (UDP), `NETSRV.BAS` (server);
+  built onto an .ssd with `beeb/net/mkssd.py`.
+- **Stage 2 - N: device: DONE + HW-validated.** `url_open/read/write/close/status`
   (60-64), a `scheme://host[:port][/path]` parser, and the **TCP:** and
   **HTTP:** adapters (HTTP GET with header-strip + status-code parse). Host-
-  tested. Not yet: HTTP POST/PUT/DELETE, chunked decoding, the UDP: scheme,
-  and dir enumeration.
+  tested and hardware-validated (HTTP GET on a real Master against a LAN server:
+  body with headers stripped, status 200, clean EOF; `beeb/net/NETHTTP.BAS`).
+  Not yet: HTTP POST/PUT/DELETE, chunked decoding, the UDP: scheme, dir enum.
 - Stages 3-5 (UDP scheme/TELNET/TNFS, TLS, FujiNet compat): not started.
+- Known follow-up: heavy churn of aborted TCP listeners can wedge the service's
+  poll (needs a reflash to clear) - investigate the listener/reset teardown.
 
 The per-stage detail below is the original plan.
 
