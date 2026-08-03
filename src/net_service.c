@@ -82,6 +82,7 @@ NOINIT_SECTION static uint8_t net_rx_ring[NET_MAX_HANDLES][NET_RX_RING_SIZE];
 
 static uint8_t  net_source;         /* nIRQ source id (emulator instance)   */
 static bool     net_enabled;        /* net_enable=1 in Pi1MHz.cfg           */
+static bool     net_irq_armed;      /* nIRQ opt-in (NET_CMD_IRQ); see below  */
 
 /* One-slot command mailbox latched in FIQ, drained by the poll. */
 static volatile bool     net_pending;
@@ -1005,6 +1006,8 @@ static uint8_t net_dispatch(uint32_t cp, uint8_t data)
       case NET_CMD_STATUS:       return do_status(h, cp);
       case NET_CMD_UDP_SENDTO:   return do_udp_sendto(h, cp);
       case NET_CMD_UDP_RECVFROM: return do_udp_recvfrom(h, cp);
+      case NET_CMD_IRQ:          net_irq_armed = (jim_rd8(cp + 1u) != 0u);
+                                 return NET_OK;
       case NET_CMD_URL_OPEN:     return do_url_open(h, cp);
       case NET_CMD_URL_READ:     return do_url_read(h, cp);
       case NET_CMD_URL_WRITE:    return do_send(h, cp);   /* same block layout */
@@ -1017,13 +1020,19 @@ static uint8_t net_dispatch(uint32_t cp, uint8_t data)
 /* Drive the shared nIRQ line: assert whenever any handle has buffered RX the
    Beeb has not drained (level-triggered; the Beeb reads status/recv to learn
    which handle and clears it by draining).  Terminal states (EOF/error with
-   no data) are discovered by polling and do not raise nIRQ in this stage. */
+   no data) are discovered by polling and do not raise nIRQ in this stage.
+
+   nIRQ is OPT-IN (NET_CMD_IRQ, default disarmed).  A purely polling client
+   installs no IRQ handler, so a level-triggered nIRQ that stays asserted while
+   RX sits unread would lock the Beeb in an IRQ storm - disarmed by default,
+   the line is held clear no matter how much RX is buffered. */
 static uint8_t net_irq_state;
 static void net_update_irq(void)
 {
    uint8_t any = 0u;
-   for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
-      if (net_h[i].rx_count != 0u) { any = 1u; break; }
+   if (net_irq_armed)
+      for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
+         if (net_h[i].rx_count != 0u) { any = 1u; break; }
    if (any != net_irq_state) {
       services_irq_set(net_source, any != 0u);
       net_irq_state = any;
@@ -1056,6 +1065,7 @@ static void net_service_poll(void)
          net_pcb_release(&net_h[i], true);
          net_handle_reset(&net_h[i]);
       }
+      net_irq_armed = false;         /* a reset removes any Beeb IRQ handler */
       net_reset_pending = false;
       net_pending = false;           /* drop any command latched pre-reset */
    }

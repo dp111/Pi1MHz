@@ -442,7 +442,7 @@ int main(void)
       CHECK(jrd24(CP(2)+7) == 0, "second recvfrom -> length 0 (empty)");
    }
 
-   printf("== nIRQ on RX data ==\n");
+   printf("== nIRQ is opt-in (disarmed by default) ==\n");
    world_reset();
    connect_handle(0);
    CHECK(g_nirq_asserted == 0, "nIRQ clear with no data");
@@ -451,10 +451,23 @@ int main(void)
       struct pbuf *p = make_pbuf(data, 10);
       g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p, ERR_OK);
       g_poll();
-      CHECK(g_nirq_asserted == 1, "nIRQ asserted once data is buffered");
+      /* Disarmed default: buffered RX must NOT raise nIRQ (a polling client
+         installs no handler; a stuck level-triggered nIRQ freezes the Beeb). */
+      CHECK(g_nirq_asserted == 0, "disarmed: buffered RX does NOT assert nIRQ");
+
+      jwr8(CP(0)+1, 1); issue(NET_CMD_IRQ, 0);   /* arm */
+      CHECK(g_nirq_asserted == 1, "armed: nIRQ asserts while RX is buffered");
       jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
       issue(NET_CMD_RECV, 0);          /* drain (poll recomputes nIRQ) */
       CHECK(g_nirq_asserted == 0, "nIRQ cleared after the Beeb drains");
+
+      /* re-buffer, then disarm: the line must drop even with data waiting */
+      struct pbuf *p2 = make_pbuf(data, 10);
+      g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p2, ERR_OK);
+      g_poll();
+      CHECK(g_nirq_asserted == 1, "still armed: nIRQ back up with new RX");
+      jwr8(CP(0)+1, 0); issue(NET_CMD_IRQ, 0);   /* disarm */
+      CHECK(g_nirq_asserted == 0, "disarm drops nIRQ even with RX buffered");
    }
 
    printf("== listen / accept ==\n");

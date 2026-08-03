@@ -50,6 +50,7 @@ Layer 1 - raw sockets (handle = command-register low nibble, like a FAT file):
 | 54 | status | `[1]` state, `[2]` flags, `[3..6]` remote IP, `[7..8]` port, `[9..11]` rx_avail |
 | 55 | udp_sendto | `[1..4]` IP, `[5..6]` port, `[7..9]` len, `[10..13]` JIM src |
 | 56 | udp_recvfrom | → `[1..4]` peer IP, `[5..6]` port, `[7..9]` len, payload to `[10..13]` JIM dst |
+| 57 | irq | `[1]` 0=disarm (default) / 1=arm nIRQ — only arm if a handler is installed |
 
 Layer 2 - the N: device (open a URL like a file):
 
@@ -70,8 +71,12 @@ POST/chunked and dir enumeration are not implemented yet.
   `[4 ip][2 port][2 len][payload]` records. Drop-free back-pressure - `recv_cb`
   returns `ERR_MEM` (without freeing) to park a pbuf lwIP re-presents once the
   Beeb drains, and the advertised window is clamped to the ring.
-- **nIRQ**: level-triggered via `services_irq_set` - asserted while any handle
-  has unread RX, cleared when drained; the Beeb polls status to learn which.
+- **nIRQ**: **opt-in** (`irq`, command 57) and **disarmed by default**. When
+  armed it is level-triggered via `services_irq_set` - asserted while any handle
+  has unread RX, cleared when drained. A purely polling client (NETDEMO/NETHTTP)
+  installs no IRQ handler, so it must leave nIRQ disarmed: a level-triggered
+  line that stayed asserted with RX unread would lock the Beeb in an IRQ storm.
+  A Beeb reset disarms it (the handler is gone). Found on hardware.
 - **BBC reset**: all pcbs are torn down from the poll (never lwIP from
   init/FIQ); the handle table (BSS) is clean on first boot.
 - Every JIM offset/length and the hostname/URL strings are bounds-checked
@@ -81,6 +86,6 @@ POST/chunked and dir enumeration are not implemented yet.
 
 - **Raw sockets (45-56): DONE, host-tested + hardware-validated** on a real
   BBC Master + Pi (connect over WiFi, send, live DNS resolve over the bus).
-- **N: device (60-64): host-tested** (`src/tests/net`, 101 checks under
+- **N: device (60-64): host-tested** (`src/tests/net`, 104 checks under
   ASan/UBSan incl. a 40 k-iteration fuzzer); not yet hardware-validated.
 - Not started: TLS/HTTPS, TELNET, TNFS, a native sideways-ROM `*`-command API.
