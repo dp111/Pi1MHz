@@ -621,6 +621,10 @@ print('== 7c: outbound POKE carries its data block, not just 4 args (R4) ==')
 # The original streamed the local buffer as the poke data; the AUN port sent
 # only the 4 argument bytes, so a peer's inbound POKE wrote 0 bytes. With R4
 # the payload is [4 dest bytes][buffer data] and tx length = 4 + data length.
+# POKE is one of the 4-way immediates (wire ctrl 2-5), which the engine
+# carries as DATA to port 0 (the PEB/BeebEm interop encoding) with the byte
+# count (the real-ROM scout convention) spliced in after the start; it
+# completes on the DATA ACK.
 cpu.mem[0x0d63] = 0                              # no 2nd proc: data from host RAM
 cpu.mem[0x3300:0x3306] = b'POKED!'              # local data to send
 # TXCB: ctrl &82 POKE, port 0, dest 254.1, buffer &3300..&3306 (6 data bytes),
@@ -633,12 +637,14 @@ def wr_poke(self, a, v):
     orig_wr(self, a, v)
     if (a & 0xffff) == 0xfcaa and not state['acked']:
         for ip, port, data in list(udp_out):
-            if data[0] == 5 and not state['acked']:
-                check(data[2] == 0x02, 'imm ctrl &82 -> wire &02')
-                check(data[8:] == bytes([0x00, 0x40, 0xff, 0xff]) + b'POKED!',
-                      'outbound POKE payload = 4 dest bytes + the data block (R4)')
+            if data[0] == 2 and not state['acked']:
+                check(data[1] == 0x00, 'POKE rides port 0')
+                check(data[2] == 0x02, 'imm ctrl &82 -> wire &02, type DATA')
+                check(data[8:] == bytes([0x00, 0x40, 0xff, 0xff]) +
+                                  bytes([0x06, 0x00, 0x00, 0x00]) + b'POKED!',
+                      'outbound POKE payload = [start][byte count][data]')
                 hx('U %x %d %s' % (IP10, 32768,
-                    aun(6, 0, 0x02, int.from_bytes(data[4:8], 'little'), b'').hex()))
+                    aun(3, 0, 0x02, int.from_bytes(data[4:8], 'little'), b'').hex()))
                 state['acked'] = True
 udp_out.clear()
 CPU.wr = wr_poke
@@ -774,6 +780,25 @@ cpu.call(SYM['svc5_irq_check'])
 check(cpu.mem[0x77] == 1, 'OSProc invoked dir_op_dispatch (R2)')
 check(cpu.mem[0x78] == 0x56 and cpu.mem[0x79] == 0x78, 'OSProc passed args X=lo, Y=hi')
 check([d for _, _, d in udp_out if d[0] == 6], 'OSProc immediate acknowledged')
+# The same OSProc arriving in the DATA-to-port-0 form - the PEB/BeebEm 4-way
+# encoding, and byte-for-byte the per-character datagram a *NOTIFY sender
+# emits (4 scout args [0,0,char,&0F] then the char as the data phase). Must
+# be held and executed identically, and answered with a DATA ACK echoing the
+# seq - never an IMM_REPLY.
+cpu.mem[0x009c] = 0x00; cpu.mem[0x009d] = 0x2a   # net_rx_ptr -> &2A00
+cpu.mem[0x2a00] = 0
+cpu.mem[0x77] = cpu.mem[0x78] = cpu.mem[0x79] = 0
+udp_out.clear()
+hx('U %x %d %s' % (IP10, 32768,
+    aun(2, 0, 0x05, 0x7008, bytes([0, 0, 0x4e, 0x0f]) + b'N').hex())); hx('L')
+cpu.call(SYM['svc5_irq_check'])
+check(cpu.mem[0x77] == 1, 'NOTIFY-as-DATA invoked dir_op_dispatch')
+check(cpu.mem[0x78] == 0 and cpu.mem[0x79] == 0, 'NOTIFY args X=Y=0 (OSProc 0)')
+check(cpu.mem[0x2a00] == 0x4e, 'NOTIFY char (data phase) at the port buffer')
+_acks = [d for _, _, d in udp_out if d[0] == 3]
+check(len(_acks) == 1 and int.from_bytes(_acks[0][4:8], 'little') == 0x7008,
+      'NOTIFY-as-DATA answered with an ACK echoing the seq')
+check(not [d for _, _, d in udp_out if d[0] == 6], 'no IMM_REPLY for the DATA form')
 cpu.mem[_dod:_dod+7] = _save                    # restore the ROM entry point
 
 print('== 9c4: remote PEEK/POKE of the second processor go over the Tube (R1) ==')
@@ -849,22 +874,24 @@ def wr_rt(self, a, v):
     orig_wr(self, a, v)
     if (a & 0xffff) == 0xfcaa and 'payload' not in captured:
         for ip, port, data in list(udp_out):
-            if data[0] == 5:
-                check(data[2] == 0x03, 'imm ctrl &83 -> wire &03')
+            if data[0] == 2:
+                check(data[1] == 0x00, 'JSR rides port 0')
+                check(data[2] == 0x03, 'imm ctrl &83 -> wire &03, type DATA')
                 check(data[8:] == bytes([0x00, 0x22, 0x00, 0x00]) + b'RTP',
                       'outbound JSR payload = 4 addr bytes + param block')
                 captured['payload'] = data[8:]
                 hx('U %x %d %s' % (IP10, 32768,
-                    aun(6, 0, 0x03, int.from_bytes(data[4:8], 'little'), b'').hex()))
+                    aun(3, 0, 0x03, int.from_bytes(data[4:8], 'little'), b'').hex()))
                 break
 udp_out.clear()
 CPU.wr = wr_rt
 cpu.call(SYM['tx_begin'])
 CPU.wr = orig_wr
 check('payload' in captured, 'outbound JSR immediate emitted and answered')
-# now replay the very bytes the ROM sent as an INBOUND JSR immediate
+# now replay the very bytes the ROM sent as an INBOUND JSR - in the same
+# DATA-to-port-0 form it was sent in, driving the rx_imm4_data path
 udp_out.clear()
-hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x03, 0x7400, captured['payload']).hex())); hx('L')
+hx('U %x %d %s' % (IP10, 32768, aun(2, 0, 0x03, 0x7400, captured['payload']).hex())); hx('L')
 cpu.call(SYM['svc5_irq_check'])
 check(cpu.mem[0x75] == 1, 'round-tripped JSR executed the target')
 check(bytes(cpu.mem[0x2a00:0x2a03]) == b'RTP',

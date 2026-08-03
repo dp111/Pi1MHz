@@ -81,6 +81,41 @@ data→ack/nak; ACK/NAK echo the sequence. Source station identity comes
 from reverse-lookup of sender IP:port in the station map (datagrams
 from unmapped IPs are counted and dropped). Inbound machine peek
 (wire ctrl &08) is auto-answered with the 4-byte machine id.
+
+The "funky 4-way immediates" — Poke &82 / JSR &83 / UserProc &84 /
+OSProc &85, the ops behind *NOTIFY / *REMOTE / *VIEW (which are
+fileserver library utilities issuing OSWORD &10 with port 0) — carry
+extra scout bytes AND a data phase on native Econet, which type
+5/6 cannot express. The ecosystem convention (PiEconetBridge, whose
+kernel module strips/packs them at the wire, and BeebEm, which enforces
+it on receive) carries them as **DATA datagrams to port 0** — normally
+illegal in AUN — with the scout extras first in the payload, then the
+data phase: Poke 8 extras `[start×4][byte count×4]` (the count, NOT an
+end address — the real ROM's `calc_peek_poke_size` writes `end−start`
+into the scout and the bridges ferry it verbatim), the proc family 4
+extras `[address/args×4]`. They complete on the ordinary DATA ACK (none
+returns a payload). The engine translates both directions
+transparently: outbound, `aun_immediate` re-types wire ctrl 2–5 as DATA
+port 0 (splicing the byte count into Poke); inbound, `rx_imm4_data`
+routes DATA-port-0 ctrl 2–5 into the held-immediate slot (collapsing
+Poke's `[start][count]` back to the ROM's `[start][data]` layout) and
+the host's IMM_REPLY becomes an ACK echoing the seq
+(`himm.from_data`). A second 4-way arriving while one is held is
+dropped silently, never NAKed (a NAK inside PEB's tolerance triggers an
+immediate retransmission); the answered-immediate cache holds 6 s to
+outlive PEB's full ~1 s × 5 same-seq retransmit window. Inbound ctrl is
+masked with &7F before classification (the real wire keeps bit 7 set).
+Peek &81, Halt &86, Continue &87 and machine peek &88 remain ordinary
+two-way type-5 immediates. A NOTIFY character on the wire is: DATA,
+port 0, ctrl &05, payload `00 00 <char> 0F <char>`. OSProc subcodes
+(first arg byte): 0 = NOTIFY, 1 = *REMOTE, 2 = *VIEW.
+
+Known caveat: type-5 Peek payloads. The Pi1MHz port and PEB's local
+emulators both read the descriptor as `[start×4][end...]`, but a real
+ROM's wire scout (ferried verbatim by the bridges) carries
+`[start×4][count×4]` — so a *VIEW Peek stream between a Pi1MHz station
+and a real/BeebEm ROM station mis-sizes. Ecosystem-wide inconsistency,
+tracked separately; not addressed here.
 Retries (aun.h constants): on an explicit reject (NAK) the engine
 retransmits the same datagram up to `AUN_REJECT_RETRIES` (10) times at
 `AUN_REJECT_TIMEOUT_MS` (10 ms) spacing, then reports NOT_LISTENING. On

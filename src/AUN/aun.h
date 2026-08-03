@@ -48,6 +48,27 @@
  * (bit 7 stripped: &88 -> &08). */
 #define AUN_CTRL_MACHINE_PEEK 0x08u
 
+/* The "funky 4-way immediates" - Poke &82 / JSR &83 / UserProc &84 /
+ * OSProc &85 (wire ctrl &02-&05) - carry extra bytes on their native
+ * Econet scout AND a data phase, which the AUN immediate/imm-reply pair
+ * cannot express. The ecosystem convention (PiEconetBridge and BeebEm,
+ * which BeebEm also enforces on receive) is to carry them as DATA
+ * datagrams to port 0 - normally illegal in AUN - with the scout extras
+ * first in the payload, then the data phase:
+ *   Poke  &82: 8 extras [start addr x4][byte count x4], then the data
+ *   &83-&85:   4 extras [address/args x4],              then the data
+ * (Poke's second word is the SIZE, not an end address: the real ROM's
+ * calc_peek_poke_size writes end-start there and the bridges ferry the
+ * bytes verbatim between wire scout and AUN payload.)
+ * The transaction completes on the normal DATA ACK (none of these ops
+ * returns a payload; Peek &81 and machine peek &88, which do, remain
+ * ordinary two-way immediates). *NOTIFY / *REMOTE / *VIEW are built on
+ * these ops, so interop with bridged/emulated stations depends on this
+ * encoding. */
+#define AUN_CTRL_IMM4_FIRST   0x02u
+#define AUN_CTRL_IMM4_LAST    0x05u
+#define AUN_CTRL_POKE         0x02u
+
 /* ---- status codes (also what the Beeb sees) ----------------------------- */
 
 #define AUN_OK                0u
@@ -116,10 +137,14 @@
 #define AUN_HIMM_TIMEOUT_MS   1000u
 
 /* How long the last-answered-immediate cache (and a reap NAK-marker) stays
- * valid for replay. Bounds the window during which a lost IMM_REPLY can be
- * re-answered from cache; after it, a peer that reboots and reuses the seq
- * gets a fresh execution, not a stale replay. */
-#define AUN_HIMM_CACHE_MS     2000u
+ * valid for replay. Bounds the window during which a lost IMM_REPLY/ACK can
+ * be re-answered from cache; after it, a peer that reboots and reuses the
+ * seq gets a fresh execution, not a stale replay. Must outlive the sender's
+ * full same-seq retransmit window or a late retransmit re-runs a
+ * non-idempotent Poke/OSProc: PiEconetBridge retransmits at ~1 s spacing up
+ * to 5 times (EB_CONFIG_AUN_RETX/RETRIES), so retransmits arrive out to
+ * ~5 s - 6 s covers that with margin. */
+#define AUN_HIMM_CACHE_MS     6000u
 
 /* ACK-on-collect (the BeebEm model): an inbound DATA frame is queued
  * SILENTLY, and the ACK goes out only when the host actually collects it
@@ -310,6 +335,9 @@ typedef struct {
 #define AUN_HIMM_MAX 2048u
 typedef struct {
    bool     active;
+   bool     from_data;         /* arrived as a DATA-to-port-0 4-way immediate
+                                * (see AUN_CTRL_IMM4_*): completion is an ACK
+                                * echoing the seq, not an IMM_REPLY */
    uint8_t  ctrl;              /* wire ctrl &01-&07 */
    uint32_t seq;
    uint32_t ip_be;
@@ -329,6 +357,7 @@ typedef struct {
 typedef struct {
    bool     valid;
    bool     is_nak;            /* true: replay a NAK (reaped), not an IMM_REPLY */
+   bool     from_data;         /* held via DATA-to-port-0: replay is an ACK */
    uint8_t  ctrl;
    uint32_t seq;
    uint32_t ip_be;

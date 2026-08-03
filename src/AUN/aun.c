@@ -250,6 +250,7 @@ static void himm_cache_store(aun_engine_t *e, bool is_nak,
       len = AUN_HIMM_MAX;
    e->himm_cache.valid  = true;
    e->himm_cache.is_nak = is_nak;
+   e->himm_cache.from_data = e->himm.from_data;
    e->himm_cache.ip_be  = e->himm.ip_be;
    e->himm_cache.port   = e->himm.port;
    e->himm_cache.seq    = e->himm.seq;
@@ -266,6 +267,16 @@ void aun_himm_reply(aun_engine_t *e, const uint8_t *data, uint32_t len)
       return;
    if (len > AUN_HIMM_MAX)
       len = AUN_HIMM_MAX;
+   if (e->himm.from_data) {
+      /* A 4-way-as-DATA immediate (see AUN_CTRL_IMM4_*) completes with the
+       * DATA ACK echoing its seq; these ops carry no reply payload, so the
+       * host's (always empty) reply is not sent anywhere. */
+      send_ack_nak(e, e->himm.ip_be, e->himm.port, AUN_TYPE_ACK,
+                   0, e->himm.ctrl, e->himm.seq);
+      himm_cache_store(e, false, NULL, 0);
+      e->himm.active = false;
+      return;
+   }
    send_imm_reply(e, e->himm.ip_be, e->himm.port, e->himm.ctrl, e->himm.seq,
                   data, len);
    himm_cache_store(e, false, data, len);
@@ -782,6 +793,31 @@ uint8_t aun_immediate(aun_engine_t *e, uint8_t dest_net, uint8_t dest_stn,
                       uint8_t ctrl, const uint8_t *data, uint32_t len,
                       uint8_t *reply_buf, uint32_t reply_max)
 {
+   uint8_t c = (uint8_t)(ctrl & 0x7Fu);
+
+   /* The 4-way immediates (Poke/JSR/UserProc/OSProc) go on the wire as
+    * DATA to port 0 - the PEB/BeebEm interop encoding, see AUN_CTRL_IMM4_*
+    * in aun.h. They complete on the DATA ACK and return no payload. */
+   if (c >= AUN_CTRL_IMM4_FIRST && c <= AUN_CTRL_IMM4_LAST) {
+      if (c == AUN_CTRL_POKE) {
+         /* Caller supplies [start addr x4][data] (the TXCB arg layout);
+          * the wire wants the BYTE COUNT spliced in after the start -
+          * the real ROM's calc_peek_poke_size puts end-start (the size)
+          * in scout extras 4-7, and PEB/BeebEm ferry those bytes to the
+          * receiving ROM verbatim. (PEB's own econet-poke.c sends
+          * start+len there instead; that disagrees with the ROMs.) */
+         if (data == NULL || len < 4u || len > AUN_MAX_DATA - 4u)
+            return AUN_ERR_PARAM;
+         uint8_t poke[AUN_MAX_DATA];   /* stack frame, as aun_broadcast's */
+         memcpy(poke, data, 4);
+         wr32le(&poke[4], len - 4u);
+         memcpy(&poke[8], &data[4], len - 4u);
+         return tx_begin(e, AUN_TYPE_DATA, dest_net, dest_stn, ctrl, 0,
+                         poke, len + 4u, NULL, 0);
+      }
+      return tx_begin(e, AUN_TYPE_DATA, dest_net, dest_stn, ctrl, 0,
+                      data, len, NULL, 0);
+   }
    return tx_begin(e, AUN_TYPE_IMMEDIATE, dest_net, dest_stn, ctrl, 0,
                    data, len, reply_buf, reply_max);
 }
@@ -867,6 +903,78 @@ static bool himm_len_ok(uint8_t ctrl, uint32_t dlen, const uint8_t *data)
    }
 }
 
+/* Inbound 4-way immediate carried as DATA to port 0 (the PEB/BeebEm
+ * interop encoding, see AUN_CTRL_IMM4_* in aun.h). Mirrors the
+ * AUN_TYPE_IMMEDIATE hold logic, with two differences: the payload is
+ * normalised to the host layout first (Poke: the wire's [start][end]
+ * extras collapse to [start] - the received data length is authoritative,
+ * exactly as himm_len_ok trusts it for the type-5 form), and every
+ * outcome is signalled with an ACK/NAK echoing the seq, never an
+ * IMM_REPLY. Like type-5 immediates this path is not station-map checked,
+ * so it validates at the trust boundary. */
+static void rx_imm4_data(aun_engine_t *e, uint32_t src_ip_be,
+                         uint16_t src_port, uint8_t ctrl, uint32_t seq,
+                         const uint8_t *data, uint32_t dlen)
+{
+   e->counters.rx_imm++;
+
+   bool ok = e->host_imm_enabled;
+   uint32_t hold_len = dlen;
+   if (ctrl == AUN_CTRL_POKE) {
+      /* wire [start x4][byte count x4][data] -> held [start x4][data]
+       * (the received data length is authoritative, the count redundant) */
+      ok = ok && dlen >= 8u;
+      hold_len = dlen - 4u;
+   } else {
+      ok = ok && himm_len_ok(ctrl, dlen, data);
+   }
+   if (!ok || hold_len > AUN_HIMM_MAX) {
+      send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK, 0, ctrl, seq);
+      return;
+   }
+
+   if (e->himm.active) {
+      /* One held at a time: a retransmit of the one in flight is absorbed
+       * (the host is still working on it), and anything else is dropped
+       * SILENTLY - not NAKed. A NAK inside PiEconetBridge's tolerance
+       * triggers an IMMEDIATE retransmission (last_tx reset), so NAKing
+       * "busy" just hammers the slot; silence lets the sender's paced
+       * ~1 s retransmit find the slot free. */
+      return;
+   }
+
+   if (e->himm_cache.valid && e->himm_cache.from_data &&
+       (int32_t)(now_ms(e) - e->himm_cache.due_ms) < 0 &&
+       e->himm_cache.ip_be == src_ip_be &&
+       e->himm_cache.port == src_port && e->himm_cache.seq == seq) {
+      /* Retransmit of an immediate already resolved (our ACK was lost):
+       * replay the outcome, do NOT re-execute (Poke/OSProcCall are not
+       * idempotent). */
+      send_ack_nak(e, src_ip_be, src_port,
+                   e->himm_cache.is_nak ? AUN_TYPE_NAK : AUN_TYPE_ACK,
+                   0, ctrl, seq);
+      e->counters.himm_replay++;
+      return;
+   }
+
+   e->himm.gen++;                /* new slot generation (gen guard) */
+   e->himm.active    = true;
+   e->himm.from_data = true;
+   e->himm.ctrl      = ctrl;
+   e->himm.seq       = seq;
+   e->himm.ip_be     = src_ip_be;
+   e->himm.port      = src_port;
+   e->himm.len       = hold_len;
+   e->himm.due_ms    = now_ms(e) + AUN_HIMM_TIMEOUT_MS;
+   if (ctrl == AUN_CTRL_POKE) {
+      memcpy(e->himm.data, data, 4);
+      if (hold_len > 4u)
+         memcpy(&e->himm.data[4], &data[8], hold_len - 4u);
+   } else if (hold_len != 0) {
+      memcpy(e->himm.data, data, hold_len);
+   }
+}
+
 void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
                    const uint8_t *buf, uint32_t len)
 {
@@ -877,7 +985,11 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
 
    uint8_t  type = buf[0];
    uint8_t  port = buf[1];
-   uint8_t  ctrl = buf[2];
+   /* ctrl arrives bit-7-stripped from spec-abiding AUN peers (we strip on
+    * send too), but the bit is set on the real wire and PEB keeps it set
+    * internally/on trunks - mask defensively so a bit-7-set sender still
+    * classifies correctly (delivery restores it for the host). */
+   uint8_t  ctrl = (uint8_t)(buf[2] & 0x7Fu);
    uint32_t seq  = rd32le(&buf[4]);
    const uint8_t *data = &buf[AUN_HDR_SIZE];
    uint32_t dlen = len - AUN_HDR_SIZE;
@@ -928,6 +1040,13 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
       break;
 
    case AUN_TYPE_DATA: {
+      /* 4-way immediates arrive as DATA to port 0 (PEB/BeebEm interop
+       * encoding): host-executed operations, not funnel traffic. */
+      if (port == 0u && ctrl >= AUN_CTRL_IMM4_FIRST &&
+          ctrl <= AUN_CTRL_IMM4_LAST) {
+         rx_imm4_data(e, src_ip_be, src_port, ctrl, seq, data, dlen);
+         break;
+      }
       /* Diagnostic only: is this frame byte-identical to the previous DATA
        * frame from the same source on the same Econet port? This feeds ONLY
        * the optional trace hook - since M4 removed content-based dedup it no
@@ -1068,7 +1187,7 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
                   e->himm.seq == seq))
                send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK,
                             port, ctrl, seq);
-         } else if (e->himm_cache.valid &&
+         } else if (e->himm_cache.valid && !e->himm_cache.from_data &&
                     (int32_t)(now_ms(e) - e->himm_cache.due_ms) < 0 &&
                     e->himm_cache.ip_be == src_ip_be &&
                     e->himm_cache.port == src_port &&
@@ -1088,6 +1207,7 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
          } else {                     /* fresh immediate: hold it for the host */
             e->himm.gen++;            /* new slot generation (gen guard) */
             e->himm.active = true;
+            e->himm.from_data = false;
             e->himm.ctrl   = ctrl;
             e->himm.seq    = seq;
             e->himm.ip_be  = src_ip_be;

@@ -943,6 +943,125 @@ int main(void)
    }
    assert(e.counters.rx_parked_drop == 2);   /* nothing shed early */
 
+   /* 40: outbound 4-way immediates (JSR/UserProc/OSProc, wire ctrl 3-5) go
+    * as DATA to port 0 - the PEB/BeebEm interop encoding - with the payload
+    * ([4 args][data]) passed through untouched, completing on the DATA ACK
+    * with no reply payload. A NAK gets the DATA-style reject retransmit. */
+   reset();
+   uint8_t nfy[5] = { 0, 0, 'A', 0x0F, 'A' };       /* one *NOTIFY char */
+   assert(aun_immediate(&e, 1, 254, 0x85, nfy, 5, NULL, 0) == AUN_OK);
+   assert(sent_count == 1 && sent[0].len == 13);
+   assert(sent[0].buf[0] == AUN_TYPE_DATA && sent[0].buf[1] == 0x00);
+   assert(sent[0].buf[2] == 0x05);                  /* ctrl bit7 stripped */
+   assert(memcmp(&sent[0].buf[8], nfy, 5) == 0);
+   assert(aun_tx_status(&e) == AUN_STATUS_PENDING);
+   ack(0, AUN_TYPE_NAK);                            /* reject: retransmit.. */
+   assert(aun_tx_status(&e) == AUN_STATUS_PENDING);
+   fake_ms += AUN_REJECT_TIMEOUT_MS + 1;
+   aun_poll(&e);
+   assert(sent_count == 2 && seq_of(1) == seq_of(0));
+   ack(1, AUN_TYPE_ACK);                            /* ..then the ACK lands */
+   assert(aun_tx_status(&e) == AUN_OK && aun_tx_reply_len(&e) == 0);
+
+   /* 41: outbound Poke (wire ctrl 2). The caller's [start x4][data] gains
+    * the BYTE COUNT (the real-ROM scout convention, NOT an end address)
+    * spliced in after the start. */
+   reset();
+   uint8_t pk[7] = { 0x00, 0x10, 0x20, 0x00, 0xAA, 0xBB, 0xCC };
+   assert(aun_immediate(&e, 1, 254, 0x82, pk, 7, NULL, 0) == AUN_OK);
+   assert(sent_count == 1 && sent[0].len == 19);
+   assert(sent[0].buf[0] == AUN_TYPE_DATA && sent[0].buf[1] == 0x00);
+   assert(sent[0].buf[2] == 0x02);
+   assert(memcmp(&sent[0].buf[8], pk, 4) == 0);     /* start */
+   static const uint8_t pk_cnt[4] = { 0x03, 0x00, 0x00, 0x00 }; /* 3 bytes */
+   assert(memcmp(&sent[0].buf[12], pk_cnt, 4) == 0);
+   assert(memcmp(&sent[0].buf[16], &pk[4], 3) == 0);
+   ack(0, AUN_TYPE_ACK);
+   assert(aun_tx_status(&e) == AUN_OK);
+   assert(aun_immediate(&e, 1, 254, 0x82, pk, 3, NULL, 0) == AUN_ERR_PARAM);
+
+   /* 42: an inbound NOTIFY character - DATA to port 0, ctrl 5 - is held for
+    * the host exactly like a type-5 immediate (payload untouched: the ROM
+    * expects [4 args][params]); the host's reply turns into an ACK echoing
+    * the seq, and a retransmit after a lost ACK replays the ACK from the
+    * cache without re-executing. */
+   reset();
+   aun_set_host_imm(&e, true);
+   uint8_t n4[13] = { AUN_TYPE_DATA, 0, 0x05, 0, 80,0,0,0, 0,0,'B',0x0F,'B' };
+   aun_udp_input(&e, 0x0100000A, 32768, n4, 13);
+   assert(sent_count == 0);                         /* held, not answered */
+   assert(e.himm.active && e.himm.from_data);
+   assert(e.himm.ctrl == 0x05 && e.himm.len == 5);
+   assert(memcmp(e.himm.data, &n4[8], 5) == 0);
+   aun_himm_reply(&e, NULL, 0);
+   assert(!e.himm.active);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 80);
+   aun_udp_input(&e, 0x0100000A, 32768, n4, 13);    /* lost-ACK retransmit */
+   assert(!e.himm.active && e.counters.himm_replay == 1);
+   assert(sent_count == 2 && sent[1].buf[0] == AUN_TYPE_ACK && seq_of(1) == 80);
+   /* not station-map checked (like type-5 immediates): an unmapped source
+    * can notify us too */
+   n4[4] = 96;
+   aun_udp_input(&e, 0x0500000A, 41000, n4, 13);
+   assert(e.himm.active && e.himm.from_data && e.himm.seq == 96);
+   aun_himm_reply(&e, NULL, 0);
+   assert(sent_count == 3 && sent[2].buf[0] == AUN_TYPE_ACK &&
+          sent[2].ip == 0x0500000A && sent[2].port == 41000);
+
+   /* 43: inbound Poke wire form [start x4][count x4][data] is normalised to
+    * the host layout [start x4][data]; too-short frames are NAKed; a second
+    * 4-way while one is held is dropped SILENTLY (a NAK inside PEB's
+    * tolerance triggers an immediate retransmission - silence lets its
+    * paced ~1 s retransmit find the slot free); disabled host-imms NAK. */
+   reset();
+   aun_set_host_imm(&e, true);
+   uint8_t p4[18] = { AUN_TYPE_DATA, 0, 0x02, 0, 84,0,0,0,
+                      0x00,0x10,0,0, 0x02,0,0,0, 0xDE,0xAD };
+   aun_udp_input(&e, 0x0100000A, 32768, p4, 18);
+   assert(e.himm.active && e.himm.from_data && e.himm.ctrl == 0x02);
+   assert(e.himm.len == 6);
+   static const uint8_t p4_host[6] = { 0x00,0x10,0,0, 0xDE,0xAD };
+   assert(memcmp(e.himm.data, p4_host, 6) == 0);
+   uint8_t j4[12] = { AUN_TYPE_DATA, 0, 0x03, 0, 88,0,0,0, 0,0x30,0,0 };
+   aun_udp_input(&e, 0x0100000A, 32768, j4, 12);    /* busy: silent drop */
+   assert(sent_count == 0);
+   assert(e.himm.active && e.himm.seq == 84);       /* still holding Poke */
+   aun_udp_input(&e, 0x0100000A, 32768, p4, 18);    /* in-flight retransmit */
+   assert(sent_count == 0 && e.himm.seq == 84);     /* absorbed silently */
+   aun_himm_reply(&e, NULL, 0);
+   assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_ACK && seq_of(0) == 84);
+   uint8_t shortpoke[12] = { AUN_TYPE_DATA, 0, 0x02, 0, 92,0,0,0, 1,2,3,4 };
+   aun_udp_input(&e, 0x0100000A, 32768, shortpoke, 12);
+   assert(!e.himm.active);
+   assert(sent_count == 2 && sent[1].buf[0] == AUN_TYPE_NAK && seq_of(1) == 92);
+   aun_set_host_imm(&e, false);
+   n4[4] = 100;
+   aun_udp_input(&e, 0x0100000A, 32768, n4, 13);
+   assert(sent_count == 3 && sent[2].buf[0] == AUN_TYPE_NAK);
+   /* bit-7-set ctrl from a non-stripping sender still classifies: same
+    * NOTIFY with ctrl &85 on the wire is a 4-way, not funnel data */
+   aun_set_host_imm(&e, true);
+   uint8_t n7[13] = { AUN_TYPE_DATA, 0, 0x85, 0, 116,0,0,0, 0,0,'D',0x0F,'D' };
+   aun_udp_input(&e, 0x0100000A, 32768, n7, 13);
+   assert(e.himm.active && e.himm.ctrl == 0x05 && e.himm.seq == 116);
+
+   /* 44: routing hygiene. DATA to port 0 with a non-4-way ctrl still goes
+    * to the funnel; a 4-way ctrl on a NON-zero port is ordinary data; and
+    * the 4-way path never touches the funnel queue or its counters. */
+   reset();
+   aun_set_host_imm(&e, true);
+   assert(aun_rx_open(&e, 0, 0, AUN_WILDCARD, AUN_WILDCARD, rbuf, 64) == AUN_OK);
+   uint8_t d0[10] = { AUN_TYPE_DATA, 0, 0x00, 0, 104,0,0,0, 5,6 };
+   aun_udp_input(&e, 0x0100000A, 32768, d0, 10);    /* port 0, ctrl 0 */
+   assert(e.counters.rx_data == 1 && !e.himm.active);
+   uint8_t d5[10] = { AUN_TYPE_DATA, 0x9F, 0x05, 0, 108,0,0,0, 7,8 };
+   aun_udp_input(&e, 0x0100000A, 32768, d5, 10);    /* ctrl 5, port &9F */
+   assert(e.counters.rx_data == 2 && !e.himm.active);
+   uint8_t i5[13] = { AUN_TYPE_DATA, 0, 0x05, 0, 112,0,0,0, 0,0,'C',0x0F,'C' };
+   aun_udp_input(&e, 0x0100000A, 32768, i5, 13);    /* a real 4-way */
+   assert(e.himm.active && e.counters.rx_data == 2 && e.counters.rx_imm == 1);
+   assert(aun_rx_ready(&e, 0) == 2);                /* funnel has only d0,d5 */
+
    printf("all aun tests passed\n");
    return 0;
 }
