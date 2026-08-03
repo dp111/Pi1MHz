@@ -101,6 +101,12 @@ void net_service_init(uint8_t instance, uint8_t address);
 #define NET_URL_TNFS         3u
 #define NET_URL_TELNET       4u
 
+/* url_open open-mode byte ([1]) - FujiNet aux1 encoding (network_open) */
+#define NET_OPEN_READ        4u    /* read-only  (0 also treated as read)  */
+#define NET_OPEN_WRITE       8u    /* write / create / truncate            */
+#define NET_OPEN_RW          12u   /* read-write / create                  */
+#define NET_OPEN_DIR         13u   /* directory (also: a trailing '/' path) */
+
 /* Result byte. */
 #define NET_OK               0x00u
 #define NET_EOF              0x20u /* peer closed and the RX ring is drained */

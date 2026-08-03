@@ -563,7 +563,7 @@ int main(void)
    g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
    CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "url_open TCP:// -> OK after connect");
    issue(NET_CMD_URL_STATUS, 0);
-   CHECK((jrd8(CP(0)+2) & NET_FLAG_CONNECTED) != 0, "url status CONNECTED");
+   CHECK(jrd8(CP(0)+3) == 1u, "url status CONNECTED");
 
    printf("== N: device - UDP scheme ==\n");
    world_reset();
@@ -571,7 +571,7 @@ int main(void)
    CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "url_open UDP:// -> OK (connectionless, no connect)");
    CHECK(g_last_upcb != NULL && g_last_upcb->recv != NULL, "UDP url created a bound pcb + recv cb");
    issue(NET_CMD_URL_STATUS, 0);
-   CHECK((jrd8(CP(0)+2) & NET_FLAG_CONNECTED) != 0, "UDP url status ready (CONNECTED flag)");
+   CHECK(jrd8(CP(0)+3) == 1u, "UDP url status ready (CONNECTED flag)");
    {
       static const uint8_t msg[]   = "hello-udp-url";
       static const uint8_t reply[] = "UDP-REPLY";
@@ -621,7 +621,7 @@ int main(void)
       }
       CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "after OPEN reply -> READY (OK)");
       issue(NET_CMD_URL_STATUS, 0);
-      CHECK((jrd8(CP(0)+2) & NET_FLAG_CONNECTED) != 0, "TNFS url status READY");
+      CHECK(jrd8(CP(0)+3) == 1u, "TNFS url status READY");
 
       /* url_read: first call sends a READ, second delivers the data */
       jwr24(CP(0)+1, 64); jwr32(CP(0)+4, 0x9000);
@@ -801,6 +801,41 @@ int main(void)
         CHECK(jrd24(CP(0)+1) == 3, "url_write reports 3 input bytes consumed");
         CHECK(g_tx_len == 4 && g_tx[0]=='X' && g_tx[1]==0xFF && g_tx[2]==0xFF && g_tx[3]=='Y',
               "outbound 0xFF escaped to IAC IAC on the wire"); }
+
+      /* url_status DVSTAT: bytes_waiting (rx) + connected byte */
+      { static const uint8_t seg[] = "abcde";
+        g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, make_pbuf(seg, 5), ERR_OK);
+        issue(NET_CMD_URL_STATUS, 0);
+        CHECK((jrd8(CP(0)+1) | (jrd8(CP(0)+2)<<8)) == 5u, "DVSTAT bytes_waiting reflects the RX ring");
+        CHECK(jrd8(CP(0)+3) == 1u && jrd8(CP(0)+4) == 0u, "DVSTAT connected=1, error=0"); }
+   }
+
+   printf("== N: device - TNFS aux modes (FujiNet-aligned) ==\n");
+   world_reset();
+   jwr8(CP(0)+1, NET_OPEN_DIR);                             /* mode 13 -> directory */
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/games");  /* no trailing / */
+   issue(NET_CMD_URL_OPEN, 0);
+   {
+      ip_addr_t peer; IP_ADDR4(&peer, 192, 168, 0, 9);
+      uint8_t sm = g_udp_tx[2];
+      uint8_t mrep[] = { 0x77,0x00, sm, TNFS_CMD_MOUNT, TNFS_OK, 0x02,0x01, 0x2C,0x01 };
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(mrep, sizeof mrep), &peer, (u16_t)TNFS_PORT);
+      issue(NET_CMD_URL_OPEN, 0);
+      CHECK(g_udp_tx[3] == TNFS_CMD_OPENDIR, "open mode 13 -> OPENDIR (no trailing slash needed)");
+   }
+   world_reset();
+   jwr8(CP(0)+1, NET_OPEN_RW);                              /* mode 12 -> read-write */
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/rw.dat");
+   issue(NET_CMD_URL_OPEN, 0);
+   {
+      ip_addr_t peer; IP_ADDR4(&peer, 192, 168, 0, 9);
+      uint8_t sm = g_udp_tx[2];
+      uint8_t mrep[] = { 0x77,0x00, sm, TNFS_CMD_MOUNT, TNFS_OK, 0x02,0x01, 0x2C,0x01 };
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(mrep, sizeof mrep), &peer, (u16_t)TNFS_PORT);
+      issue(NET_CMD_URL_OPEN, 0);
+      CHECK(g_udp_tx[3] == TNFS_CMD_OPEN
+            && (g_udp_tx[4] | (g_udp_tx[5]<<8)) == (TNFS_O_RDWR | TNFS_O_CREAT),
+            "open mode 12 -> OPEN O_RDWR|O_CREAT (no truncate)");
    }
 
    printf("== N: device - HTTP scheme ==\n");
@@ -826,7 +861,8 @@ int main(void)
       CHECK(memcmp(&Pi1MHz->JIM_ram[0x9000], "<html>hi</html>", n) == 0, "body bytes correct");
    }
    issue(NET_CMD_URL_STATUS, 0);
-   CHECK((jrd8(CP(0)+3) | (jrd8(CP(0)+4)<<8)) == 200u, "url status reports HTTP 200");
+   CHECK((jrd8(CP(0)+7) | (jrd8(CP(0)+8)<<8)) == 200u, "url status reports HTTP 200 (+7..8)");
+   CHECK(jrd8(CP(0)+3) == 1u, "DVSTAT connected byte set");
 
    printf("== N: device - malformed URL ==\n");
    world_reset();

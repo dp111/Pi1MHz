@@ -49,9 +49,10 @@
   470 R=FNurl_go(N):PROCaddr(FNblk(N)+1):nlen=FNrd24
   480 =R
   490 :
-  500 REM  HTTP status code from the last opened URL handle (url_status +3..4)
+  500 REM  HTTP status code from the last opened URL handle (url_status +7..8;
+  505 REM  +1..4 are the FujiNet DVSTAT, +5=state +6=flags +7..8=HTTP code)
   510 DEF FNurl_httpcode(N)
   520 LOCAL R,l,h : PROCaddr(FNblk(N)):PROCwr(64):R=FNurl_go(N)
-  530 PROCaddr(FNblk(N)+3):l=?dat:h=?dat:=l+h*256
+  530 PROCaddr(FNblk(N)+7):l=?dat:h=?dat:=l+h*256
   540 :
   550 DEF PROCurl_close(N) : PROCaddr(FNblk(N)):PROCwr(63):R=FNurl_go(N):ENDPROC

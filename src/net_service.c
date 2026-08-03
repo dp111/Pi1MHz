@@ -1118,7 +1118,8 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
             return NET_PENDING;                   /* no IP yet - keep polling */
          net_handle_reset(h);
          h->is_url = true; h->url_adapter = u.adapter;
-         h->tnfs_wr = (jim_rd8(cp + 1u) & 0x08u) ? 1u : 0u;  /* open-mode write bit */
+         { uint8_t m = jim_rd8(cp + 1u);                     /* FujiNet aux1 open mode */
+           h->tnfs_wr = (m == NET_OPEN_WRITE || m == NET_OPEN_RW) ? 1u : 0u; }
          h->type = (u.adapter == NET_URL_UDP) ? NET_TYPE_UDP : NET_TYPE_TCP;
          h->state = NET_ST_IDLE;
          h->remote_port = u.port;
@@ -1161,16 +1162,20 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                (void)tnfs_reply_mount(&rep, NULL, &rms);
                h->tnfs_connid = rep.connid;
                if (rms >= 100u && rms <= 5000u) h->tnfs_retry_ms = rms;
-               /* a URL path ending in '/' selects the directory (OPENDIR) */
-               h->tnfs_is_dir = (plen != 0u && path[plen - 1u] == '/') ? 1u : 0u;
+               /* directory if the mode is DIR (13) or the path ends in '/' */
+               uint8_t m = jim_rd8(cp + 1u);
+               h->tnfs_is_dir = ((plen != 0u && path[plen - 1u] == '/')
+                                 || m == NET_OPEN_DIR) ? 1u : 0u;
                h->tnfs_seq++;
                if (h->tnfs_is_dir) {
                   n = tnfs_build_opendir(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
                                          h->tnfs_seq, path);
                } else {
-                  uint16_t oflags = h->tnfs_wr
-                     ? (uint16_t)(TNFS_O_WRONLY | TNFS_O_CREAT | TNFS_O_TRUNC)
-                     : (uint16_t)TNFS_O_RDONLY;
+                  uint16_t oflags = (m == NET_OPEN_RW)
+                        ? (uint16_t)(TNFS_O_RDWR | TNFS_O_CREAT)
+                        : h->tnfs_wr
+                              ? (uint16_t)(TNFS_O_WRONLY | TNFS_O_CREAT | TNFS_O_TRUNC)
+                              : (uint16_t)TNFS_O_RDONLY;
                   uint16_t omode = h->tnfs_wr ? 0x01A4u : 0u;   /* 0644 on create */
                   n = tnfs_build_open(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
                                       h->tnfs_seq, oflags, omode, path);
@@ -1401,14 +1406,24 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
 static uint8_t do_url_status(net_handle_t *h, uint32_t cp)
 {
    uint8_t flags = 0u;
+   uint8_t err   = 0u;
    if (h->url_phase == URL_READY)               flags |= NET_FLAG_CONNECTED;
    if (h->rx_eof)                               flags |= NET_FLAG_RX_EOF;
-   if (h->url_phase == URL_FAIL || h->state == NET_ST_ERROR) flags |= NET_FLAG_ERROR;
+   if (h->url_phase == URL_FAIL || h->state == NET_ST_ERROR) {
+      flags |= NET_FLAG_ERROR;
+      err = h->last_err ? h->last_err : NET_ERR_CONN;
+   }
    if (h->rx_count != 0u)                       flags |= NET_FLAG_RX_READY;
-   Pi1MHz->JIM_ram[cp + 1u] = h->state;
-   Pi1MHz->JIM_ram[cp + 2u] = flags;
-   Pi1MHz->JIM_ram[cp + 3u] = (uint8_t)h->http_code;
-   Pi1MHz->JIM_ram[cp + 4u] = (uint8_t)(h->http_code >> 8);
+   /* [1..4] = FujiNet DVSTAT {bytes_waiting_lo, hi, connected, error} - what
+      fujinet-lib's network_status() reads; [5..8] are our native extensions. */
+   Pi1MHz->JIM_ram[cp + 1u] = (uint8_t)h->rx_count;
+   Pi1MHz->JIM_ram[cp + 2u] = (uint8_t)(h->rx_count >> 8);
+   Pi1MHz->JIM_ram[cp + 3u] = (h->url_phase == URL_READY) ? 1u : 0u;
+   Pi1MHz->JIM_ram[cp + 4u] = err;
+   Pi1MHz->JIM_ram[cp + 5u] = h->state;
+   Pi1MHz->JIM_ram[cp + 6u] = flags;
+   Pi1MHz->JIM_ram[cp + 7u] = (uint8_t)h->http_code;
+   Pi1MHz->JIM_ram[cp + 8u] = (uint8_t)(h->http_code >> 8);
    return NET_OK;
 }
 

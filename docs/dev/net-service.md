@@ -56,11 +56,11 @@ Layer 2 - the N: device (open a URL like a file):
 
 | # | Command | Notes |
 |---|---------|-------|
-| 60 | url_open | `[1]` open mode (bit 3 = write), `[2..]` `scheme://host[:port][/path]`; async |
+| 60 | url_open | `[1]` open mode (FujiNet aux: 4=read, 8=write, 12=read-write, 13=dir), `[2..]` `scheme://host[:port][/path]`; async |
 | 61 | url_read | like recv; the HTTP adapter strips response headers, returns only the body |
 | 62 | url_write | like send |
 | 63 | url_close | |
-| 64 | url_status | `[1]` state, `[2]` flags, `[3..4]` HTTP status code |
+| 64 | url_status | `[1..4]` FujiNet **DVSTAT** {bytes_waiting_lo, hi, connected, error}; then native `[5]` state, `[6]` flags, `[7..8]` HTTP code |
 
 Schemes: `TCP:` (raw stream wrapper), `HTTP:` (GET + header-strip + status),
 `UDP:` (connectionless - `url_open` binds an ephemeral local port and remembers
