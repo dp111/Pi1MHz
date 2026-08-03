@@ -42,6 +42,11 @@ single discs trivial to add, rename or back up - they are just files.
 See the MMFS project's documentation for its disc-selection commands
 and where it looks for the image files.
 
+MMFS2 reads those files by name through the Pi1MHz FAT service, so the
+Pi's **SD card must be formatted FAT32** (as it must be for Pi1MHz in
+general - see [Getting started](getting-started.md)). exFAT or NTFS
+cards are not read, and MMFS2 will find no disc images on one.
+
 ## Changing images from another computer
 
 Because everything lives on the Pi's SD card, disc images (or the
