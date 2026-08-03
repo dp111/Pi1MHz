@@ -255,6 +255,8 @@ set(services_emulator_files
    fat_service.c
    net_service.c
    net_service.h
+   net_tnfs.c
+   net_tnfs.h
    AUN/aun.c
    AUN/aun.h
    AUN/aun_config.c
