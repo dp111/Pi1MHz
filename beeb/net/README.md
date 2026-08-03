@@ -1,8 +1,8 @@
 # Pi1MHz net service — BBC BASIC client
 
 `NETDEMO.BAS` is a BBC BASIC library + demo that drives the Pi1MHz IP/net
-service (the `&FCA6` services port, commands 45–56) — the Stage-1
-outbound-TCP/UDP + DNS socket layer described in
+service (the `&FCA6` services port, commands 45–65) — the raw-socket layer
+(45–57) plus the `N:` device URL verbs (60–65) described in
 [../../docs/dev/network-service-stages.md](../../docs/dev/network-service-stages.md).
 
 It is the reference Beeb-side client and the vehicle for hardware-testing the
@@ -10,10 +10,21 @@ firmware net service. A native sideways-ROM `*`-command API comes in a later
 stage; this BASIC library is deliberately first so the ABI can be shaken out
 from the Beeb side while it is still settling.
 
-`NETHTTP.BAS` is a smaller companion that uses the **N: device** (Stage 2, URL
-verbs 60-64): `FNurl_open("HTTP://host/path")` then `FNurl_read` — the firmware
-sends the request and strips the response headers, so a whole HTTP GET is a few
-lines. Edit `url$`/`H` and `RUN`.
+`mkssd.py` packs all of the demos below into a bootable SSD (`*OPT4,3` runs a
+`!BOOT` menu). Each is a plain-text listing — `*EXEC <name>` or paste it in:
+
+| Demo | Layer | Does |
+|------|-------|------|
+| `NETDEMO`  | raw sockets | TCP connect / send / recv / DNS |
+| `NETUDP`   | raw sockets | UDP send + recvfrom (echo) |
+| `NETSRV`   | raw sockets | TCP server: bind / listen / accept |
+| `NETHTTP`  | N: device   | `HTTP://` GET (headers stripped by firmware) |
+| `NETTNFS`  | N: device   | `TNFS://` directory list + file read |
+| `NETTNFSW` | N: device   | `TNFS://` file write |
+| `NETTEL`   | N: device   | `TELNET://` session (firmware IAC filter) |
+
+The N: device (`FNurl_open("SCHEME://host/path")` then `FNurl_read`/`FNurl_write`)
+picks an adapter from the URL scheme; edit `url$`/`H` and `RUN`.
 
 ## Prerequisites
 

@@ -125,6 +125,8 @@ def main():
         'PRINT"*EXEC NETUDP   - raw UDP echo"\r'
         'PRINT"*EXEC NETSRV   - TCP server (listen)"\r'
         'PRINT"*EXEC NETTNFS  - TNFS list + read"\r'
+        'PRINT"*EXEC NETTNFW  - TNFS write"\r'
+        'PRINT"*EXEC NETTEL   - TELNET (IAC filter)"\r'
         'PRINT"(set net_enable=1 in Pi1MHz.cfg)"\r'
     )
 

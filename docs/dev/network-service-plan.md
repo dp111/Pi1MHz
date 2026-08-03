@@ -1,6 +1,8 @@
 # Network Service - design plan (FujiNet-style `N:` device + raw sockets)
 
-Status: **proposal / planning**. Not yet implemented.
+Status: **implemented** (raw TCP/UDP sockets, listen/accept, and the `N:`
+device with TCP/HTTP/UDP/TNFS/TELNET adapters). This file is the original
+design plan; see `network-service-stages.md` for what actually shipped.
 
 Goal: give the Beeb internet access through the existing services port, in
 two layers that share one implementation:

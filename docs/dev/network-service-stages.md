@@ -56,8 +56,8 @@ These were settled during planning and bind all stages:
 
 - **Command map.** One service, `net_service.c`, claims the whole
   `SERVICE_CMD_NET_FIRST..LAST = 45..79` range in `services.h`. Raw sockets
-  = 45-56; the `N:` device = 60-65; 57-59 and 66-79 answer
-  `NET_ERR_UNSUPPORTED` so later stages slot in without re-registering.
+  = 45-56; nIRQ arm/disarm = 57; the `N:` device = 60-65; 58-59 and 66-79
+  answer `NET_ERR_UNSUPPORTED` so later stages slot in without re-registering.
   Emulator-table entry `{"net", net_service_init, 0xA6, 1}` shares the
   services base and goes **after** `wifi` and `aun` (poll order = table
   order, so `net_poll` runs after lwIP has drained frames).
