@@ -84,6 +84,21 @@ size_t tnfs_build_read(uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
    return pos;
 }
 
+size_t tnfs_build_write(uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
+                        uint8_t fd, const uint8_t *data, uint16_t len)
+{
+   size_t pos = put_hdr(buf, cap, connid, seq, TNFS_CMD_WRITE);
+   if (pos == 0u) return 0u;
+   if (!put_u8 (buf, cap, &pos, fd))  return 0u;
+   if (!put_u16(buf, cap, &pos, len)) return 0u;
+   if ((size_t)len != 0u) {
+      if (pos + len > cap) return 0u;
+      memcpy(buf + pos, data, len);
+      pos += len;
+   }
+   return pos;
+}
+
 size_t tnfs_build_close(uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
                         uint8_t fd)
 {
@@ -163,6 +178,13 @@ bool tnfs_reply_open(const tnfs_reply_t *r, uint8_t *fd)
 {
    if (!r->ok || r->status != TNFS_OK || r->body_len < 1u) return false;
    if (fd) *fd = r->body[0];
+   return true;
+}
+
+bool tnfs_reply_write(const tnfs_reply_t *r, uint16_t *written)
+{
+   if (!r->ok || r->status != TNFS_OK || r->body_len < 2u) return false;
+   if (written) *written = rd_u16(r->body);
    return true;
 }
 

@@ -59,6 +59,8 @@ size_t tnfs_build_open    (uint8_t *buf, size_t cap, uint16_t connid, uint8_t se
                            uint16_t flags, uint16_t mode, const char *path);
 size_t tnfs_build_read    (uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
                            uint8_t fd, uint16_t size);
+size_t tnfs_build_write   (uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
+                           uint8_t fd, const uint8_t *data, uint16_t len);
 size_t tnfs_build_close   (uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
                            uint8_t fd);
 size_t tnfs_build_opendir (uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
@@ -95,6 +97,8 @@ bool tnfs_parse_reply(const uint8_t *pkt, size_t len,
  * MOUNT: server version + minimum retry-timeout ms; the session id is out->connid. */
 bool tnfs_reply_mount (const tnfs_reply_t *r, uint16_t *server_ver, uint16_t *retry_ms);
 bool tnfs_reply_open  (const tnfs_reply_t *r, uint8_t *fd);
+/* WRITE: the number of bytes the server actually accepted. */
+bool tnfs_reply_write (const tnfs_reply_t *r, uint16_t *written);
 bool tnfs_reply_opendir(const tnfs_reply_t *r, uint8_t *dirhandle);
 /* READ: point `data`/`data_len` at the file bytes; caller copies them out. */
 bool tnfs_reply_read  (const tnfs_reply_t *r, const uint8_t **data, uint16_t *data_len);

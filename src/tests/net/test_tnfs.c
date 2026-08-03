@@ -41,6 +41,13 @@ int main(void)
    CHECK(n == 7u && buf[4] == 0x07u && buf[5] == 0x00 && buf[6] == 0x02,
          "read = hdr + fd + size(512) LE");
 
+   /* WRITE: fd + size LE + data */
+   n = tnfs_build_write(buf, sizeof buf, 0x0001u, 8u, 0x02u, (const uint8_t *)"DATA", 4u);
+   CHECK(n == 4u + 1u + 2u + 4u, "write = hdr + fd + size + data");
+   CHECK(buf[3] == TNFS_CMD_WRITE && buf[4] == 0x02u && buf[5] == 0x04 && buf[6] == 0x00,
+         "write fd + size(4) LE");
+   CHECK(memcmp(buf + 7, "DATA", 4) == 0, "write payload");
+
    /* CLOSE / READDIR / CLOSEDIR: hdr + one handle byte */
    n = tnfs_build_close(buf, sizeof buf, 1u, 6u, 0x07u);
    CHECK(n == 5u && buf[3] == TNFS_CMD_CLOSE && buf[4] == 0x07u, "close = hdr + fd");
@@ -85,6 +92,11 @@ int main(void)
       { uint8_t orep[] = { 0x99, 0x00, 0x03, TNFS_CMD_OPEN, TNFS_OK, 0x07 };
         CHECK(tnfs_parse_reply(orep, sizeof orep, 0x03u, TNFS_CMD_OPEN, &r)
               && tnfs_reply_open(&r, &fd) && fd == 0x07u, "open reply -> fd 7"); }
+
+      /* WRITE reply -> bytes written */
+      { uint16_t wrote = 0; uint8_t wrep[] = { 0x99,0x00, 0x08, TNFS_CMD_WRITE, TNFS_OK, 0x04,0x00 };
+        CHECK(tnfs_parse_reply(wrep, sizeof wrep, 0x08u, TNFS_CMD_WRITE, &r)
+              && tnfs_reply_write(&r, &wrote) && wrote == 4u, "write reply -> 4 bytes written"); }
 
       /* READ reply -> length + data window */
       { uint8_t rrep[] = { 0x99, 0x00, 0x04, TNFS_CMD_READ, TNFS_OK,

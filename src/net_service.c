@@ -78,6 +78,7 @@ typedef struct {
    uint8_t           tnfs_seq;      /* sequence of the outstanding request  */
    uint8_t           tnfs_fd;       /* open file / directory handle         */
    uint8_t           tnfs_is_dir;   /* URL path ended in '/': a directory   */
+   uint8_t           tnfs_wr;       /* url_open mode had the write bit      */
    uint8_t           tnfs_retries;  /* resends left on the outstanding req  */
    uint16_t          tnfs_connid;   /* session id (from MOUNT)              */
    uint16_t          tnfs_retry_ms; /* base resend timeout (from MOUNT)     */
@@ -92,11 +93,13 @@ typedef struct {
 #define TNFS_PH_OPEN     2u   /* OPEN sent, awaiting reply             */
 #define TNFS_PH_READY    3u   /* mounted + file open                   */
 #define TNFS_PH_READING  4u   /* READ sent, awaiting reply             */
+#define TNFS_PH_WRITING  5u   /* WRITE sent, awaiting reply            */
 #define TNFS_REQ_MAX     256u
 #define TNFS_PKT_MAX     600u /* largest reply datagram we parse       */
 #define TNFS_RETRIES     4u   /* resends before giving up              */
 #define TNFS_TIMEOUT_MS  800u /* fallback resend timeout               */
 #define TNFS_READ_CHUNK  512u /* cap a READ so its reply fits a datagram */
+#define TNFS_WRITE_CHUNK 240u /* cap a WRITE so req (data + 7 hdr) fits tnfs_req */
 
 static void net_tnfs_send_raw(net_handle_t *h, const uint8_t *req, uint16_t len);
 
@@ -1082,6 +1085,7 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
             return NET_PENDING;                   /* no IP yet - keep polling */
          net_handle_reset(h);
          h->is_url = true; h->url_adapter = u.adapter;
+         h->tnfs_wr = (jim_rd8(cp + 1u) & 0x08u) ? 1u : 0u;  /* open-mode write bit */
          h->type = (u.adapter == NET_URL_UDP) ? NET_TYPE_UDP : NET_TYPE_TCP;
          h->state = NET_ST_IDLE;
          h->remote_port = u.port;
@@ -1127,12 +1131,17 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                /* a URL path ending in '/' selects the directory (OPENDIR) */
                h->tnfs_is_dir = (plen != 0u && path[plen - 1u] == '/') ? 1u : 0u;
                h->tnfs_seq++;
-               if (h->tnfs_is_dir)
+               if (h->tnfs_is_dir) {
                   n = tnfs_build_opendir(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
                                          h->tnfs_seq, path);
-               else
+               } else {
+                  uint16_t oflags = h->tnfs_wr
+                     ? (uint16_t)(TNFS_O_WRONLY | TNFS_O_CREAT | TNFS_O_TRUNC)
+                     : (uint16_t)TNFS_O_RDONLY;
+                  uint16_t omode = h->tnfs_wr ? 0x01A4u : 0u;   /* 0644 on create */
                   n = tnfs_build_open(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                      h->tnfs_seq, TNFS_O_RDONLY, 0u, path);
+                                      h->tnfs_seq, oflags, omode, path);
+               }
                if (n == 0u) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM; }
                return net_tnfs_start(h, TNFS_PH_OPEN, n);
             }
@@ -1277,6 +1286,34 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
    uint32_t     len;
    uint32_t     jimoff;
    struct pbuf *p;
+
+   if (h->url_adapter == NET_URL_TNFS) {         /* WRITE a chunk to the file */
+      uint8_t      pkt[TNFS_PKT_MAX];
+      tnfs_reply_t rep;
+      uint8_t      r;
+      len    = jim_rd24(cp + 1u);
+      jimoff = jim_rd32(cp + 4u);
+      if (!h->tnfs_wr)                 return NET_ERR_NOTOPEN;   /* read-only open */
+      if (!net_buffer_ok(jimoff, len)) return NET_ERR_PARAM;
+      if (h->tnfs_phase == TNFS_PH_READY) {
+         uint16_t want = (len > TNFS_WRITE_CHUNK) ? (uint16_t)TNFS_WRITE_CHUNK : (uint16_t)len;
+         size_t   n;
+         jim_wr24(cp + 1u, 0u);
+         if (want == 0u) return NET_OK;
+         h->tnfs_seq++;
+         n = tnfs_build_write(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid, h->tnfs_seq,
+                              h->tnfs_fd, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], want);
+         return net_tnfs_start(h, TNFS_PH_WRITING, n);
+      }
+      if (h->tnfs_phase != TNFS_PH_WRITING) { jim_wr24(cp + 1u, 0u); return NET_ERR_NOTOPEN; }
+      r = net_tnfs_poll(h, pkt, sizeof pkt, &rep);
+      if (r == NET_PENDING) { jim_wr24(cp + 1u, 0u); return NET_PENDING; }
+      h->tnfs_phase = TNFS_PH_READY;
+      if (r != NET_OK) { jim_wr24(cp + 1u, 0u); return r; }
+      if (rep.status != TNFS_OK) { jim_wr24(cp + 1u, 0u); return net_tnfs_status(rep.status); }
+      { uint16_t wrote = 0u; (void)tnfs_reply_write(&rep, &wrote); jim_wr24(cp + 1u, wrote); }
+      return NET_OK;
+   }
 
    if (h->type != NET_TYPE_UDP)
       return do_send(h, cp);

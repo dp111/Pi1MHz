@@ -702,6 +702,66 @@ int main(void)
       CHECK(g_udp_tx[3] == TNFS_CMD_UMOUNT, "UMOUNT sent last on dir close (CLOSEDIR before it)");
    }
 
+   printf("== N: device - TNFS write ==\n");
+   world_reset();
+   jwr8(CP(0)+1, 0x08);                                     /* open-mode write bit */
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/out.dat");
+   CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "url_open TNFS write -> PENDING (MOUNT)");
+   {
+      ip_addr_t peer; IP_ADDR4(&peer, 192, 168, 0, 9);
+      uint8_t sm = g_udp_tx[2];
+      uint8_t mrep[] = { 0x66,0x00, sm, TNFS_CMD_MOUNT, TNFS_OK, 0x02,0x01, 0x2C,0x01 };
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(mrep, sizeof mrep), &peer, (u16_t)TNFS_PORT);
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING, "after MOUNT -> PENDING (OPEN sent)");
+      CHECK(g_udp_tx[3] == TNFS_CMD_OPEN, "OPEN sent for a write handle");
+      CHECK((g_udp_tx[4] | (g_udp_tx[5] << 8)) == (TNFS_O_WRONLY | TNFS_O_CREAT | TNFS_O_TRUNC),
+            "OPEN flags = WRONLY|CREAT|TRUNC");
+      {
+         uint8_t so = g_udp_tx[2];
+         uint8_t orep[] = { 0x66,0x00, so, TNFS_CMD_OPEN, TNFS_OK, 0x04 };  /* fd 4 */
+         g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(orep, sizeof orep), &peer, (u16_t)TNFS_PORT);
+      }
+      CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK, "OPEN reply -> READY");
+
+      {
+         static const uint8_t payload[] = "SAVE-ME";
+         memcpy(&Pi1MHz->JIM_ram[0x8000], payload, 7);
+         jwr24(CP(0)+1, 7); jwr32(CP(0)+4, 0x8000);
+         CHECK(issue(NET_CMD_URL_WRITE, 0) == NET_PENDING, "url_write -> PENDING (WRITE sent)");
+         CHECK(g_udp_tx[3] == TNFS_CMD_WRITE && g_udp_tx[4] == 0x04, "WRITE carries the fd");
+         CHECK((g_udp_tx[5] | (g_udp_tx[6] << 8)) == 7, "WRITE size = 7");
+         CHECK(memcmp(&g_udp_tx[7], payload, 7) == 0, "WRITE payload sent");
+         {
+            uint8_t sw = g_udp_tx[2];
+            uint8_t wrep[] = { 0x66,0x00, sw, TNFS_CMD_WRITE, TNFS_OK, 0x07,0x00 };
+            g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(wrep, sizeof wrep), &peer, (u16_t)TNFS_PORT);
+         }
+         jwr24(CP(0)+1, 7); jwr32(CP(0)+4, 0x8000);
+         CHECK(issue(NET_CMD_URL_WRITE, 0) == NET_OK, "WRITE reply -> OK");
+         CHECK(jrd24(CP(0)+1) == 7, "url_write reports 7 bytes written");
+      }
+      CHECK(issue(NET_CMD_URL_CLOSE, 0) == NET_OK, "url_close TNFS write -> OK");
+      CHECK(g_udp_tx[3] == TNFS_CMD_UMOUNT, "UMOUNT sent on close");
+   }
+
+   /* a read-only TNFS handle refuses url_write */
+   world_reset();
+   jwr8(CP(0)+1, 0x00);                                     /* read mode */
+   strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "TNFS://192.168.0.9/ro.dat");
+   issue(NET_CMD_URL_OPEN, 0);
+   {
+      ip_addr_t peer; IP_ADDR4(&peer, 192, 168, 0, 9);
+      uint8_t sm = g_udp_tx[2];
+      uint8_t mrep[] = { 0x66,0x00, sm, TNFS_CMD_MOUNT, TNFS_OK, 0x02,0x01, 0x2C,0x01 };
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(mrep, sizeof mrep), &peer, (u16_t)TNFS_PORT);
+      issue(NET_CMD_URL_OPEN, 0);
+      { uint8_t so = g_udp_tx[2]; uint8_t orep[] = { 0x66,0x00, so, TNFS_CMD_OPEN, TNFS_OK, 0x04 };
+        g_last_upcb->recv(g_last_upcb->arg, g_last_upcb, make_pbuf(orep, sizeof orep), &peer, (u16_t)TNFS_PORT); }
+      issue(NET_CMD_URL_OPEN, 0);
+      jwr24(CP(0)+1, 4); jwr32(CP(0)+4, 0x8000);
+      CHECK(issue(NET_CMD_URL_WRITE, 0) == NET_ERR_NOTOPEN, "url_write on a read-only TNFS handle -> NOTOPEN");
+   }
+
    printf("== N: device - HTTP scheme ==\n");
    world_reset();
    strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u], "HTTP://1.2.3.4/index.html");
