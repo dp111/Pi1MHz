@@ -124,7 +124,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "videoplayer.h"
 #include "usb.h"
 #include "wifi/wifi.h"
-#include "aun/aun_emulator.h"
+#include "AUN/aun_emulator.h"
 #include "teletext_emulator.h"
 #include "watchdog.h"
 

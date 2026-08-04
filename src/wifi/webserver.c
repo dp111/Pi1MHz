@@ -28,7 +28,7 @@
 #include "../rpi/info.h"
 #include "../rpi/systimer.h"
 #include "../Pi1MHz.h"
-#include "../aun/aun_emulator.h"
+#include "../AUN/aun_emulator.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"

@@ -35,6 +35,7 @@
 #include "filesystem.h"
 #include "fcode.h"
 #include "../rpi/screen.h"
+#include "../videoplayer.h"
 
 // Global SCSI (LV-DOS) F-Code buffer (256 bytes)
 uint8_t scsiFcodeBuffer[256];
@@ -121,16 +122,28 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				case 0x0D:
 				// No parameter, assume default
 				FCdebugString_P(PSTR(" = Halt (still mode)\r\n"));
+				videoplayer_halt();
 				break;
 
 				default:
 				FCdebugString_P(PSTR(" = Repetitive halt and jump\r\n"));
+				videoplayer_halt();
 				break;
 			}
 			break;
 
 			case 0x2B: // + yy ( yy = 1..50) // VFS sends this
 			FCdebugString_P(PSTR(" = Instant jump forwards\r\n"));
+			{
+				int jump = 0;
+				for (byteCounter = 1; byteCounter < 3; byteCounter++) { // yy = 1..50, 2 digits max
+					char c = (char)scsiFcodeBuffer[byteCounter];
+					if (c < '0' || c > '9') break;
+					jump = jump * 10 + (c - '0');
+				}
+				if (jump && videoplayer_active())
+					videoplayer_goto(videoplayer_picture_number() + (uint32_t)jump, 'Q');
+			}
 			break;
 
 			case 0x2C: // ,
@@ -151,10 +164,22 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x2D: // - yy ( yy = 1..50)
 			FCdebugString_P(PSTR(" = Instant jump backwards\r\n"));
+			{
+				int jump = 0;
+				for (byteCounter = 1; byteCounter < 3; byteCounter++) { // yy = 1..50, 2 digits max
+					char c = (char)scsiFcodeBuffer[byteCounter];
+					if (c < '0' || c > '9') break;
+					jump = jump * 10 + (c - '0');
+				}
+				uint32_t pic = videoplayer_picture_number();
+				if (jump && videoplayer_active() && pic > (uint32_t)jump)
+					videoplayer_goto(pic - (uint32_t)jump, 'Q');
+			}
 			break;
 
 			case 0x2F: // /
 			FCdebugString_P(PSTR(" = Pause (halt + all muted)\r\n"));
+			videoplayer_pause();
 			break;
 
 			case 0x3A: // :
@@ -165,6 +190,15 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case 'F': // response Fxxxxx X if not available O if open
 				FCdebugString_P(PSTR(" = Picture number request\r\n"));
+				if (videoplayer_active()) {
+					uint32_t pic = videoplayer_picture_number();
+					scsiFcodeBufferRX[0] = 'F';
+					for (int digit = 5; digit >= 1; digit--) {
+						scsiFcodeBufferRX[digit] = (uint8_t)('0' + (pic % 10));
+						pic /= 10;
+					}
+					scsiFcodeBufferRX[6] = 0x0D;
+				}
 				break;
 
 				case 'C': // response C xx X if not available O if open
@@ -204,10 +238,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Audio-1 off\r\n"));
+				videoplayer_audio_enable(0, false);
 				break;
 
 				case '1':
 				FCdebugString_P(PSTR(" = Audio-1 on\r\n"));
+				videoplayer_audio_enable(0, true);
                     scsiFcodeBufferRX[0] = 'A';
                     scsiFcodeBufferRX[1] = 0x0D;
 				break;
@@ -222,10 +258,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Audio-2 off\r\n"));
+				videoplayer_audio_enable(1, false);
 				break;
 
 				case '1':
 				FCdebugString_P(PSTR(" = Audio-2 on\r\n"));
+				videoplayer_audio_enable(1, true);
                     scsiFcodeBufferRX[0] = 'A';
                     scsiFcodeBufferRX[1] = 0x0D;
 				break;
@@ -307,18 +345,21 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				switch(scsiFcodeBuffer[byteCounter-1]) {
 					case 'I':
 					FCdebugString_P(PSTR(" = Load Picture Info register\r\n"));
+					videoplayer_goto(pictureNumber, 'I');
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '3'; // when passed
 					break;
 
 					case 'S':
 					FCdebugString_P(PSTR(" = Stop Register\r\n"));
+					videoplayer_goto(pictureNumber, 'S');
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '2'; // when stops
 					break;
 
 					case 'R':
 					FCdebugString_P(PSTR(" = Still picture\r\n"));
+					videoplayer_goto(pictureNumber, 'R');
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '0';
 
@@ -326,6 +367,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 					case 'N':
 					FCdebugString_P(PSTR(" = Goto Picture and play normally\r\n"));
+					videoplayer_goto(pictureNumber, 'N');
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '1'; // when complete
 
@@ -333,6 +375,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 					case 'Q':
 					FCdebugString_P(PSTR(" = Goto Picture and play in previous mode\r\n"));
+					videoplayer_goto(pictureNumber, 'Q');
 					scsiFcodeBufferRX[0] = 'A';
 					scsiFcodeBufferRX[1] = '0';
 
@@ -405,18 +448,22 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x4C: // L // VFS sends this
 			FCdebugString_P(PSTR(" = Still forward\r\n"));
+			videoplayer_step(1);
 			break;
 
 			case 0x4D: // M // VFS sends this
 			FCdebugString_P(PSTR(" = Still reverse\r\n"));
+			videoplayer_step(-1);
 			break;
 
 			case 0x4E: // N // VFS sends this
 			FCdebugString_P(PSTR(" = Play forward\r\n"));
+			videoplayer_play_fwd();
 			break;
 
 			case 0x4F: // O // VFS sends this
 			FCdebugString_P(PSTR(" = Play reverse\r\n"));
+			videoplayer_play_rev();
 			break;
 
 			case 0x51: // Q // VFS sends this
