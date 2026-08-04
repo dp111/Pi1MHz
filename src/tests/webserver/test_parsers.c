@@ -424,6 +424,60 @@ int main(void)
       }
    }
 
+   puts("== ws_parse_range ==");
+   {
+      uint32_t s, l;
+
+      ok(ws_parse_range("bytes=0-99", 1000u, &s, &l) == WS_RANGE_OK
+         && s == 0u && l == 100u, "plain first-last");
+      ok(ws_parse_range("bytes=500-", 1000u, &s, &l) == WS_RANGE_OK
+         && s == 500u && l == 500u, "open-ended range");
+      ok(ws_parse_range("bytes=-200", 1000u, &s, &l) == WS_RANGE_OK
+         && s == 800u && l == 200u, "suffix range");
+      ok(ws_parse_range("bytes=-2000", 1000u, &s, &l) == WS_RANGE_OK
+         && s == 0u && l == 1000u, "oversize suffix clamps to whole file");
+      ok(ws_parse_range("bytes=990-1999", 1000u, &s, &l) == WS_RANGE_OK
+         && s == 990u && l == 10u, "last clamps to size-1");
+      ok(ws_parse_range("bytes=999-999", 1000u, &s, &l) == WS_RANGE_OK
+         && s == 999u && l == 1u, "single final byte");
+      ok(ws_parse_range("BYTES = 0 - 9", 1000u, &s, &l) == WS_RANGE_OK
+         && s == 0u && l == 10u, "case-blind unit, tolerant whitespace");
+
+      ok(ws_parse_range("bytes=1000-", 1000u, &s, &l) == WS_RANGE_UNSAT,
+         "first at size unsatisfiable");
+      ok(ws_parse_range("bytes=5000000000-", 1000u, &s, &l)
+         == WS_RANGE_UNSAT, "first past 2^32 saturates to unsatisfiable");
+      ok(ws_parse_range("bytes=-0", 1000u, &s, &l) == WS_RANGE_UNSAT,
+         "zero suffix unsatisfiable");
+      ok(ws_parse_range("bytes=0-", 0u, &s, &l) == WS_RANGE_UNSAT,
+         "any range on an empty file unsatisfiable");
+      ok(ws_parse_range("bytes=-5", 0u, &s, &l) == WS_RANGE_UNSAT,
+         "suffix on an empty file unsatisfiable");
+
+      ok(ws_parse_range("bytes=9-5", 1000u, &s, &l) == WS_RANGE_NONE,
+         "last before first ignored");
+      ok(ws_parse_range("bytes=0-5,10-15", 1000u, &s, &l) == WS_RANGE_NONE,
+         "multi-range list ignored");
+      ok(ws_parse_range("bytes=-", 1000u, &s, &l) == WS_RANGE_NONE,
+         "bare dash ignored");
+      ok(ws_parse_range("bytes=", 1000u, &s, &l) == WS_RANGE_NONE,
+         "empty spec ignored");
+      ok(ws_parse_range("items=0-5", 1000u, &s, &l) == WS_RANGE_NONE,
+         "unknown unit ignored");
+      ok(ws_parse_range("bytes 0-5", 1000u, &s, &l) == WS_RANGE_NONE,
+         "missing '=' ignored");
+      ok(ws_parse_range("bytes=0-5 junk", 1000u, &s, &l) == WS_RANGE_NONE,
+         "trailing junk ignored");
+      ok(ws_parse_range("bytes=0x10-20", 1000u, &s, &l) == WS_RANGE_NONE,
+         "hex digits ignored");
+      ok(ws_parse_range("", 1000u, &s, &l) == WS_RANGE_NONE,
+         "empty header value ignored");
+      /* huge last-byte-pos saturates and clamps instead of wrapping */
+      ok(ws_parse_range("bytes=0-99999999999999999999", 1000u, &s, &l)
+         == WS_RANGE_OK && s == 0u && l == 1000u,
+         "overlong last saturates then clamps");
+   }
+
    printf("\n%d checks, %d failures\n", checks, fails);
    return fails ? 1 : 0;
 }

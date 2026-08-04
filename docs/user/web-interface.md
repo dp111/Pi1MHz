@@ -19,7 +19,36 @@ address - and you get a home page linking to everything below.
 
 Any other address is treated as a path on the SD card, so
 `http://pi1mhz.local/BeebSCSI0/scsi0.dat` downloads that file
-directly.
+directly. Downloads support HTTP Range requests (`curl -r`,
+download-manager resume, media seeking), which is also what makes the
+disc image viewer below fast.
+
+## Looking inside disc images
+
+The file browser shows a **[view contents]** link next to Acorn disc
+images: `.ssd` and `.dsd` (DFS floppies), `.mmb` (MMFS bundles),
+`.adf`/`.adm` (ADFS old-map) and `scsi*.dat` (BeebSCSI hard-disc
+images). It opens `/Pi1MHz/disc.html`, a viewer that runs entirely in
+your browser:
+
+- list a disc's catalogue - files, load/exec addresses, sizes, locked
+  flags, boot option; for an MMB, the whole slot list, and each
+  formatted slot's catalogue a click deeper; for a hard disc, walk the
+  ADFS directory tree
+- download an individual file straight out of the image (with an
+  optional `.inf` sidecar carrying its addresses), or peek at it as a
+  hex dump
+- download one MMB slot as a standalone `.ssd`
+
+Because the browser fetches only the byte ranges it needs, listing the
+catalogue of even a 500 MB `scsi.dat` moves a few hundred bytes over
+the WiFi, and extracting a file costs just that file's size. The
+viewer is read-only - to change an image, download it, edit it with
+your usual tools, and upload it back.
+
+The page itself lives on the SD card at `/Pi1MHz/disc.html`, so it can
+be updated by copying a new file there - no reflash needed. You can
+also open it directly and type any image path into its form.
 
 Uploading through `/files/` is the everyday way to get a disc image or
 ROM onto the card without pulling it out of the Pi. The server refuses

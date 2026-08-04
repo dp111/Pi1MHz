@@ -173,6 +173,20 @@ int main(void)
          free(o);
       }
 
+      /* Range header: a WS_RANGE_OK window always sits inside the file */
+      {
+         uint32_t size = rnd();
+         if ((rnd() & 3u) == 0u)
+            size &= 0xFFu;              /* exercise tiny / zero sizes too */
+         uint32_t start = 0xDEADBEEFu, rlen = 0xDEADBEEFu;
+         if (ws_parse_range(s, size, &start, &rlen) == WS_RANGE_OK) {
+            assert(size > 0u);
+            assert(rlen >= 1u);
+            assert(start < size);
+            assert((uint64_t)start + rlen <= size);
+         }
+      }
+
       /* Digest fields + uri binding + hex compare */
       {
          size_t osz = 1u + rnd() % 48u;

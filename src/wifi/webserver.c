@@ -952,6 +952,102 @@ static bool ws_extract_filename(const char *parthdr, char *out, size_t osz)
 }
 
 /* ------------------------------------------------------------------ */
+/* HTTP Range parsing (RFC 9110 §14)                                   */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+   WS_RANGE_NONE = 0,   /* no usable range - serve the whole file (200) */
+   WS_RANGE_OK,         /* single satisfiable range - serve 206         */
+   WS_RANGE_UNSAT       /* valid syntax but nothing satisfiable - 416   */
+} ws_range_result_t;
+
+/* Parse a Range header value against a resource of `size` bytes and
+   return the byte window to serve in *start / *len.
+   Only a SINGLE range is honoured: a multi-range request would need a
+   multipart/byteranges body, which is not worth its complexity here, so
+   it (like any malformed value) yields WS_RANGE_NONE and the caller
+   serves the whole file - always a correct response per RFC 9110 §14.2
+   ("a server MAY ignore the Range header field").  WS_RANGE_UNSAT is
+   returned only for a syntactically valid range that selects no bytes,
+   which the caller must answer with 416. */
+static ws_range_result_t ws_parse_range(const char *value, uint32_t size,
+                                        uint32_t *start, uint32_t *len)
+{
+   const char *p = value;
+   bool     have_first = false;
+   bool     have_last = false;
+   /* Accumulate into 64 bits and stop growing once past 32: any
+      first/last position >= 2^32 is beyond every FAT file size and just
+      needs to compare as "huge", not be numerically exact. */
+   uint64_t first = 0u;
+   uint64_t last = 0u;
+
+   while (*p == ' ' || *p == '\t')
+      ++p;
+   if (!ws_prefix_ci(p, "bytes", 5u))
+      return WS_RANGE_NONE;
+   p += 5;
+   while (*p == ' ' || *p == '\t')
+      ++p;
+   if (*p != '=')
+      return WS_RANGE_NONE;
+   ++p;
+   while (*p == ' ' || *p == '\t')
+      ++p;
+
+   if (*p >= '0' && *p <= '9') {
+      have_first = true;
+      for (; *p >= '0' && *p <= '9'; ++p) {
+         if ((first >> 32) == 0u)
+            first = first * 10u + (uint64_t)(*p - '0');
+      }
+   }
+   while (*p == ' ' || *p == '\t')
+      ++p;
+   if (*p != '-')
+      return WS_RANGE_NONE;
+   ++p;
+   while (*p == ' ' || *p == '\t')
+      ++p;
+   if (*p >= '0' && *p <= '9') {
+      have_last = true;
+      for (; *p >= '0' && *p <= '9'; ++p) {
+         if ((last >> 32) == 0u)
+            last = last * 10u + (uint64_t)(*p - '0');
+      }
+   }
+   while (*p == ' ' || *p == '\t')
+      ++p;
+   if (*p != '\0')
+      return WS_RANGE_NONE;      /* trailing junk or a multi-range list */
+
+   if (!have_first) {
+      /* suffix range "bytes=-N": the final N bytes */
+      uint64_t n;
+      if (!have_last || last == 0u || size == 0u)
+         return (!have_last) ? WS_RANGE_NONE : WS_RANGE_UNSAT;
+      n = (last > size) ? size : last;
+      *start = size - (uint32_t)n;
+      *len = (uint32_t)n;
+      return WS_RANGE_OK;
+   }
+   if (first >= size)
+      return WS_RANGE_UNSAT;     /* also catches size == 0 */
+   if (have_last) {
+      if (last < first)
+         return WS_RANGE_NONE;   /* invalid per the RFC grammar: ignore */
+      if (last > size - 1u)
+         last = size - 1u;
+      *start = (uint32_t)first;
+      *len = (uint32_t)(last - first + 1u);
+      return WS_RANGE_OK;
+   }
+   *start = (uint32_t)first;
+   *len = size - (uint32_t)first;
+   return WS_RANGE_OK;
+}
+
+/* ------------------------------------------------------------------ */
 /* SD path helpers                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -2552,6 +2648,24 @@ static int ws_entry_cmp(const void *pa, const void *pb)
    return ws_stricmp(a->name, b->name);
 }
 
+/* True for filenames the /Pi1MHz/disc.html viewer knows how to open:
+   DFS floppy images, MMB bundles, non-interleaved ADFS images and
+   BeebSCSI LUN images (scsi*.dat).  Used to decorate the file browser
+   listing with a [view] link; the viewer re-checks the actual format
+   signatures itself, so a false positive here costs one error page. */
+static bool ws_is_disc_image_name(const char *name)
+{
+   const char *ext = strrchr(name, '.');
+   if (ext == NULL)
+      return false;
+   ++ext;
+   if (ws_stricmp(ext, "ssd") == 0 || ws_stricmp(ext, "dsd") == 0
+       || ws_stricmp(ext, "mmb") == 0 || ws_stricmp(ext, "adf") == 0
+       || ws_stricmp(ext, "adm") == 0)
+      return true;
+   return ws_stricmp(ext, "dat") == 0 && ws_prefix_ci(name, "scsi", 4u);
+}
+
 static bool render_listing(ws_conn_t *c, const char *sdpath)
 {
    DIR             dir;
@@ -2637,7 +2751,18 @@ static bool render_listing(ws_conn_t *c, const char *sdpath)
       sb_html(&b, entries[i].name);
       if (entries[i].is_dir)
          sb_putc(&b, '/');
-      sb_puts(&b, "</a></td><td class=\"r\">");
+      sb_puts(&b, "</a>");
+      if (!entries[i].is_dir && ws_is_disc_image_name(entries[i].name)) {
+         /* sb_urlpath also percent-encodes '&' and '=', so the path is
+            safe inside a query-string value. */
+         sb_puts(&b, " <a class=\"muted\" href=\"/Pi1MHz/disc.html?img=");
+         if (!ws_is_root(sdpath))
+            sb_urlpath(&b, sdpath);
+         sb_putc(&b, '/');
+         sb_urlpath(&b, entries[i].name);
+         sb_puts(&b, "\">[view&nbsp;contents]</a>");
+      }
+      sb_puts(&b, "</td><td class=\"r\">");
       if (entries[i].is_dir) {
          sb_puts(&b, "&lt;DIR&gt;");
       } else {
@@ -2677,6 +2802,9 @@ static bool start_download(ws_conn_t *c, const char *sdpath)
 {
    FRESULT     fr;
    uint32_t    size;
+   uint32_t    body_start = 0u;
+   uint32_t    body_len;
+   bool        ranged = false;
    char        dname[FF_LFN_BUF + 1];
    const char *src;
    size_t      o = 0u;
@@ -2688,7 +2816,70 @@ static bool start_download(ws_conn_t *c, const char *sdpath)
                       "The file could not be opened.");
    c->dl_open = true;
    size = (uint32_t)f_size(&c->dl_file);
-   c->dl_remaining = size;
+   body_len = size;
+
+   /* Range: bytes=... - a single satisfiable range is served as a 206
+      so clients can pull sectors out of large disc images (the /Pi1MHz/
+      disc.html viewer's whole mode of operation) and resume interrupted
+      downloads.  Range is only defined for GET (RFC 9110 §14.2), so a
+      HEAD reports the full length.  A truncation-sized header value is
+      ignored rather than half-parsed: ws_find_header cuts silently at
+      the buffer, and a cut multi-range list could otherwise read as a
+      valid single range. */
+   if (!c->is_head) {
+      char range_hdr[96];
+      if (ws_find_header(c->reqhdr, c->reqhdr_len, "Range",
+                         range_hdr, sizeof range_hdr)
+          && strlen(range_hdr) + 2u <= sizeof range_hdr) {
+         switch (ws_parse_range(range_hdr, size, &body_start, &body_len)) {
+            case WS_RANGE_OK:
+               ranged = true;
+               break;
+            case WS_RANGE_UNSAT: {
+               static const char rbody[] = "Requested range not satisfiable.\n";
+               f_close(&c->dl_file);
+               c->dl_open = false;
+               sb_init(&h);
+               sb_printf(&h,
+                         "HTTP/1.1 416 Range Not Satisfiable\r\n"
+                         "Content-Type: text/plain; charset=utf-8\r\n"
+                         "Content-Length: %u\r\n"
+                         "Content-Range: bytes */%lu\r\n"
+                         "%s"
+                         "\r\n",
+                         (unsigned int)(sizeof rbody - 1u),
+                         (unsigned long)size,
+                         ws_connection_hdr(c));
+               sb_write(&h, rbody, sizeof rbody - 1u);
+               if (h.failed) {
+                  sb_free(&h);
+                  return ws_oom(c);
+               }
+               free(c->out);
+               c->out = h.data;
+               c->out_len = h.len;
+               c->out_sent = 0u;
+               c->bytes_queued = 0u;
+               c->bytes_acked = 0u;
+               c->state = CONN_SEND_MEM;
+               conn_pump(c);
+               return true;
+            }
+            case WS_RANGE_NONE:
+            default:
+               break;
+         }
+      }
+   }
+
+   if (ranged && f_lseek(&c->dl_file, body_start) != FR_OK) {
+      f_close(&c->dl_file);
+      c->dl_open = false;
+      return ws_error(c, 500, "Internal Server Error",
+                      "Seeking within the file failed.");
+   }
+
+   c->dl_remaining = body_len;
    c->dl_eof = false;
    c->dl_buf_len = 0u;
    c->dl_buf_sent = 0u;
@@ -2738,13 +2929,22 @@ static bool start_download(ws_conn_t *c, const char *sdpath)
          else if (ws_prefix_ci_str(ext, "mp3"))  { ctype = "audio/mpeg";                 cdisp = "inline; "; }
       }
       sb_printf(&h,
-                "HTTP/1.1 200 OK\r\n"
+                "HTTP/1.1 %s\r\n"
                 "Content-Type: %s\r\n"
-                "Content-Length: %lu\r\n"
+                "Content-Length: %lu\r\n",
+                ranged ? "206 Partial Content" : "200 OK",
+                ctype, (unsigned long)body_len);
+      if (ranged)
+         sb_printf(&h, "Content-Range: bytes %lu-%lu/%lu\r\n",
+                   (unsigned long)body_start,
+                   (unsigned long)(body_start + (body_len - 1u)),
+                   (unsigned long)size);
+      sb_printf(&h,
+                "Accept-Ranges: bytes\r\n"
                 "Content-Disposition: %sfilename=\"%s\"\r\n"
                 "%s"
                 "\r\n",
-                ctype, (unsigned long)size, cdisp, dname,
+                cdisp, dname,
                 ws_connection_hdr(c));
    }
    if (h.failed) {
