@@ -17,7 +17,7 @@ echo "== services port + FAT interlock =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/t" \
-    "$B/test_services.c" "$B/services_emulator.c" "$B/fat_service.c"
+    "$B/test_services.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/config.c"
 "$B/t"
 
 echo "== config parser =="
@@ -31,7 +31,7 @@ echo "== fuzz: FAT commands (ASan/UBSan) =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/f" \
-    "$B/fuzz_fat.c" "$B/services_emulator.c" "$B/fat_service.c"
+    "$B/fuzz_fat.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/config.c"
 "$B/f"
 
 echo "SERVICES TESTS PASSED"

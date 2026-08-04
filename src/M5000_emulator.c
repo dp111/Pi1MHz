@@ -368,6 +368,12 @@ static void music5000_rec_start(void)
 
 static void music5000_rec_stop(void)
 {
+   if (config_beeb_write_protected()) {     // write-protect: don't record to the SD card
+      record = false;
+      fx_register[fx_pointer] = 0;
+      return;
+   }
+
    char fn[22];
    FRESULT result;
    int number = 0;

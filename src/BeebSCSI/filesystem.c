@@ -64,6 +64,7 @@
 #include "scsi.h"
 #include "fatfs/ff.h"
 #include "filesystem.h"
+#include "../config.h"			/* Beeb_write_protect */
 #include "../rpi/rpi.h"
 #include "../rpi/fileparser.h"
 
@@ -622,8 +623,8 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
    if (fsResult == FR_NO_PATH) {
 
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunDirectory(): f_opendir returned FR_NO_PATH - Directory does not exist\r\n"));
-      if (lunNumber >= 8)
-         return false;
+      if (lunNumber >= 8 || config_beeb_write_protected())
+         return false;                        // no LUN-dir auto-create under write-protect
       // Create the LUN image directory - it's not present on the SD card
       // Check the result
       if (f_mkdir(fileName) != FR_OK) {
@@ -829,6 +830,8 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
    FRESULT fsResult;
    FIL fileObject;
 
+   if (config_beeb_write_protected()) return false;   // no .dat auto-create under write-protect
+
    if (filesystemCheckLunImage(lunNumber)) {
       // File opened ok - which means it already exists...
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunImage(): .dat already exists - ignoring request to create a new .dat\r\n"));
@@ -862,9 +865,9 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
 // Function to create a new LUN descriptor (makes an default .cfg file)
 bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 {
-   if (lunNumber >7)
+   if (lunNumber >7 || config_beeb_write_protected())
    {
-      // VFS doesn't support creating .cfg files
+      // VFS never creates .cfg; write-protect blocks .cfg auto-create too
       return false;
    }
 
@@ -965,6 +968,9 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
 // Function to write a LUN descriptor
 bool filesystemWriteAttributes(uint8_t lunNumber)
 {
+   // Write-protect: ignore the .cfg overwrite but report success (true, NOT
+   // the VFS branch's false) so a mounted ADFS never sees a CHECK_COND.
+   if (config_beeb_write_protected()) return true;
    if (lunNumber >7)
    {
       // VFS doesn't support write to .cfg files
@@ -997,6 +1003,10 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 {
    FIL fileObject;
    FRESULT fsResult;
+
+   // Write-protect: ignore FORMAT (which would truncate via FA_CREATE_ALWAYS),
+   // report success. Gated before any f_open so nothing is destroyed.
+   if (config_beeb_write_protected()) return true;
 
    if (lunNumber >7)
    {
@@ -1441,6 +1451,9 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 // Function to write next sector to a LUN
 bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
 {
+   // Beeb_write_protect: swallow the sector, report success, write nothing.
+   // Returning true (never false) keeps a mounted ADFS from seeing an error.
+   if (config_beeb_write_protected()) return true;
 
    memcpy(sectorBuffer + (currentBufferSector * 256), buffer , 256 );
    currentBufferSector++;

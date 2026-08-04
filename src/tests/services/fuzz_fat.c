@@ -64,6 +64,10 @@ unsigned char disk_type(void) { return 1; }
 bool filesystemMount(void) { return true; }
 bool filesystemDismount(void) { return true; }
 
+/* config.c (linked for config_beeb_write_protected) references this. */
+uint32_t filesystemReadFile(const char *f, uint8_t **a, unsigned int m)
+{ (void)f; (void)a; (void)m; return 0; }
+
 /* xorshift, deterministic */
 static uint32_t rng = 0x1234567u;
 static uint32_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }

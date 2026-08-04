@@ -71,6 +71,14 @@ int main(void)
    eq(config_get("MIXEDCASE"), "match", "lookup upper vs stored mixed");
    eq(config_get("SIMPLE"), "1", "lookup upper vs stored lower");
 
+   puts("== Beeb_write_protect accessor ==");
+   ok(!config_beeb_write_protected(), "false when the key is absent");
+   {
+      static char wp[] = "Beeb_write_protect=yes\n";
+      config_parse(wp, sizeof wp - 1);
+   }
+   ok(config_beeb_write_protected(), "true once the key is set");
+
    puts("== emulator overrides ==");
    {
       uint8_t addr = 0xEE;

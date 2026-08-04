@@ -15,6 +15,15 @@ typedef enum {
    FR_TOO_MANY_OPEN_FILES, FR_INVALID_PARAMETER
 } FRESULT;
 
+/* f_open mode flags (match ff.h) */
+#define FA_READ          0x01
+#define FA_WRITE         0x02
+#define FA_OPEN_EXISTING 0x00
+#define FA_CREATE_NEW    0x04
+#define FA_CREATE_ALWAYS 0x08
+#define FA_OPEN_ALWAYS   0x10
+#define FA_OPEN_APPEND   0x30
+
 typedef struct { uint32_t fsize; } FIL;
 typedef struct { int dummy; } DIR;
 typedef struct { char fname[256]; } FILINFO;
