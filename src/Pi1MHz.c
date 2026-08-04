@@ -522,6 +522,14 @@ static void init_emulator(void) {
             sequence as a whole is not - so feed the dog between them. */
          watchdog_boot_kick();
          if (emulator[i].enable == 1) emulator[i].init(i, emulator[i].address);
+         /* watchdog_init() is what takes ownership of the boot watchdog -
+            it either registers the kicking poll or stands the dog down. If
+            the config disabled this entry ("Watchdog_addr=-1", the documented
+            way to disable any device) its init never ran, so the 15 s boot
+            watchdog stays armed with nothing to feed it: the Pi full-resets,
+            reboots, re-arms, and resets again for ever, recoverable only by
+            editing the SD card on another machine. Stand it down here. */
+         else if (emulator[i].init == watchdog_init) watchdog_stop();
       }
    RPI_BootStage(BOOT_STAGE_EMULATORS);
 }
