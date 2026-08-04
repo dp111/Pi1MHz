@@ -22,6 +22,9 @@ ADFS drives 0-7 come from a directory in the SD card root called
 ```
 
 - The `.dat` file is the disc itself - the raw contents, byte for byte.
+  You can browse its ADFS directory tree and extract files from a web
+  browser without downloading it - see
+  [the disc image viewer](disc-viewer.md).
 - The `.dsc` file describes the drive's shape (cylinders and heads).
   Formatting tools create it; ready-made image sets include it.
 - The `.cfg` file is optional and overrides low-level SCSI details for

@@ -24,11 +24,14 @@ ws_strcasestr,ws_hexval,ws_url_decode,ws_memfind,ws_find_header_end,\
 ws_basename,ws_parse_request_line,ws_find_header,ws_extract_boundary,\
 ws_extract_filename,ws_path_is_safe,ws_normalize_path,ws_parent_path,\
 ws_is_root,ws_digest_field,ws_hex_eq_ci,ws_digest_uri_matches,\
-dav_url_to_sdpath,dav_destination_sdpath,dav_memfind,dav_parse_http_date"
+dav_url_to_sdpath,dav_destination_sdpath,dav_memfind,dav_parse_http_date,\
+ws_parse_range,ws_query_param"
 
 awk -v defs="WS_HEADER_MAX,WS_FILE_CHUNK,WS_BOUNDARY_MAX,WS_UPLOAD_HEAD_MAX,WS_PATH_MAX,WS_DRAIN_MAX_BYTES" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_defines.inc"
-awk -v fns="$PARSER_FNS" \
+# types= rides along so ws_range_result_t lands ahead of ws_parse_range
+# (the awk emits in file order, and the typedef precedes the function).
+awk -v fns="$PARSER_FNS" -v types="ws_range_result_t" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_parsers.inc"
 awk -v types="conn_state_t,upload_state_t,dav_chunk_state_t,ws_conn_t" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_conn.inc"

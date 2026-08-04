@@ -1,0 +1,1610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pi1MHz disc image viewer</title>
+<!--
+  Client-side viewer for Acorn disc images stored on the Pi1MHz SD card.
+
+  Understands:
+    .ssd            Acorn DFS, single sided
+    .dsd            Acorn DFS, double sided (track-interleaved)
+    .mmb            MMFS disc bundle (catalogue of up to 511 SSDs)
+    .adf/.adm/.adl  ADFS old map (.adl's cylinder order IS the logical
+                    sector order, so all three read as flat images)
+    scsi*.dat       BeebSCSI LUN image (ADFS old map)
+
+  Per file: download, .inf sidecar, hex dump, a text view that
+  detokenises BBC BASIC programs, and a 65C02 disassembly rooted at
+  the file's load address.  Whole catalogues (a DFS side, an MMB slot,
+  an ADFS folder tree) can be exported as a store-method .zip with
+  .inf sidecars, and a .dsd side can be saved as a plain .ssd.
+  Files whose extension is not a known disc image (and images opened
+  with ?view=hex) get a paged raw hex dump instead, making this page a
+  general-purpose hex viewer for anything on the SD card.
+
+  With firmware that supports in-place writes (PUT ?offset=, shipped
+  alongside Range support - its presence is probed via Accept-Ranges),
+  DFS catalogues become editable: add a file (with optional .inf
+  sidecar), delete a file, and insert/replace whole MMB slots from a
+  local .ssd or one side of a .dsd.  Writes are ordered so an
+  interrupted transfer never leaves a valid-looking half-written
+  catalogue.  ADFS images stay read-only: a free-space-map mistake
+  would corrupt a hard disc image, so that is deliberately out of
+  scope here.
+
+  All format parsing happens HERE, in the browser.  The Pi only serves
+  byte ranges of the image file (HTTP Range requests), so listing a
+  catalogue costs a few hundred bytes of WiFi traffic even from a
+  500 MB scsi.dat.  If the firmware predates Range support the page
+  falls back to downloading the whole image, but only for small files.
+
+  This file lives on the SD card at /Pi1MHz/disc.html and is served by
+  the Pi1MHz webserver; the /files browser links here with
+  ?img=<sd path>.  It has no external dependencies, so it also works
+  opened from anywhere else on the LAN.
+-->
+<style>
+:root{color-scheme:light dark}
+body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;
+background:#f4f4f6;color:#1d1d1f}
+header{background:#1d1d2e;color:#fff;padding:14px 20px;font-size:18px;
+font-weight:600}
+header a{color:#9db8ff;text-decoration:none;font-size:14px;font-weight:400;
+margin-left:14px}
+main{max-width:880px;margin:0 auto;padding:20px}
+h1{font-size:20px;margin:0 0 14px;word-break:break-all}
+a{color:#2c5fd6}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;
+overflow:hidden}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid #e6e6ea;
+font-size:14px}
+th{background:#ececf0}
+tr:last-child td{border-bottom:none}
+td.r,th.r{text-align:right;color:#666;white-space:nowrap}
+td.m,th.m{font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}
+.card{background:#fff;border-radius:8px;padding:16px;margin-bottom:16px}
+.err{color:#c0271a}
+.muted{color:#777;font-size:13px}
+.crumbs{margin:0 0 12px;font-size:14px;word-break:break-all}
+.actions a{margin-right:10px;white-space:nowrap}
+pre.hex{background:#fff;border-radius:8px;padding:12px;overflow-x:auto;
+font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;
+line-height:1.5}
+input[type=text]{padding:7px 9px;font-size:14px;border:1px solid #c9c9d0;
+border-radius:6px;width:60%}
+input[type=submit],button{background:#2c5fd6;color:#fff;border:0;
+border-radius:6px;padding:8px 16px;font-size:14px;cursor:pointer}
+#status{margin:10px 0;font-size:13px;color:#777}
+@media (prefers-color-scheme:dark){
+body{background:#17171c;color:#e4e4e8}
+header{background:#0e0e16}
+a{color:#7da2ff}
+table,.card,pre.hex{background:#1f1f26}
+th{background:#2a2a33}
+th,td{border-bottom-color:#33333c}
+td.r,th.r{color:#9a9aa5}
+.err{color:#ff6b5e}
+.muted{color:#9a9aa5}
+#status{color:#9a9aa5}
+input[type=text]{background:#26262e;color:#e4e4e8;border-color:#44444e}
+}
+</style>
+</head>
+<body>
+<header>Pi1MHz
+<a href="/">Home</a><a href="/files/">Files</a>
+<a href="/framebuffer">Screen</a><a href="/status">Status</a>
+</header>
+<main>
+<h1 id="title">Disc image viewer</h1>
+<div id="status"></div>
+<div id="content"></div>
+</main>
+<script>
+'use strict';
+
+/* ---------------------------------------------------------------- */
+/* Small helpers                                                     */
+/* ---------------------------------------------------------------- */
+
+const $status = document.getElementById('status');
+const $content = document.getElementById('content');
+const $title = document.getElementById('title');
+
+function el(tag, attrs, ...children) {
+   const e = document.createElement(tag);
+   for (const k in (attrs || {})) {
+      if (attrs[k] == null) continue;   /* null/undefined: no attribute */
+      if (k === 'onclick') e.addEventListener('click', attrs[k]);
+      else e.setAttribute(k, attrs[k]);
+   }
+   for (const c of children)
+      e.append(c);
+   return e;
+}
+
+function setStatus(msg) { $status.textContent = msg || ''; }
+
+function showError(msg) {
+   setStatus('');
+   $content.replaceChildren(
+      el('div', {class: 'card'}, el('p', {class: 'err'}, msg)));
+}
+
+function hex(v, digits) {
+   return (v >>> 0).toString(16).toUpperCase().padStart(digits, '0');
+}
+
+function humanSize(n) {
+   if (n < 1024) return n + ' B';
+   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+   return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+/* Encode an SD path for use in a URL, keeping '/' separators. */
+function encodePath(p) {
+   return p.split('/').map(encodeURIComponent).join('/');
+}
+
+function saveBlob(bytes, filename) {
+   const a = document.createElement('a');
+   a.href = URL.createObjectURL(new Blob([bytes]));
+   a.download = filename;
+   a.click();
+   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+/* Turn a Beeb filename into something FAT/host-filesystem safe.  Disc
+   images are untrusted input, so this also neutralises control bytes
+   and the '.'/'..' names that would make a zip entry escape its
+   folder (zip-slip) - a crafted image can name a directory ".." even
+   though real ADFS never would. */
+function safeName(n) {
+   const s = n.replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g, '_');
+   return /^\.{0,2}$/.test(s) ? '_' : s;
+}
+
+/* ---------------------------------------------------------------- */
+/* Ranged access to the image                                        */
+/* ---------------------------------------------------------------- */
+
+const params = new URLSearchParams(location.search);
+const imgPath = params.get('img');
+let imgUrl = null;
+let imgSize = 0;
+/* Fallback cache when the firmware has no Range support: the whole
+   image, downloaded once.  Only used below WHOLE_FILE_CAP. */
+let wholeFile = null;
+const WHOLE_FILE_CAP = 4 * 1024 * 1024;
+
+/* True once the server has advertised Accept-Ranges: bytes.  The
+   in-place write endpoint (PUT ?offset=) shipped in the same firmware
+   as Range support, so this doubles as the write-capability probe -
+   critical, because an OLD firmware's PUT ignores the query string
+   and would replace the whole image with the patch body.  All write
+   UI is hidden until this is true. */
+let serverHasRanges = false;
+
+async function headSize(url) {
+   const r = await fetch(url, {method: 'HEAD'});
+   if (!r.ok) throw new Error('HTTP ' + r.status + ' for ' + url);
+   serverHasRanges =
+      (r.headers.get('Accept-Ranges') || '').includes('bytes');
+   return parseInt(r.headers.get('Content-Length') || '0', 10);
+}
+
+/* Write data into the image at a byte offset (in place, no truncate).
+   Server-side this is bounded to the file's current size and refused
+   while the Beeb holds the image open. */
+async function writeBytes(offset, data) {
+   if (!serverHasRanges)
+      throw new Error('This firmware cannot write in place - update the ' +
+                      'Pi1MHz firmware to edit images from the browser.');
+   const r = await fetch(imgUrl + '?offset=' + offset,
+                         {method: 'PUT', body: data});
+   wholeFile = null;                       /* invalidate any read cache */
+   if (r.status === 423)
+      throw new Error('The Beeb has this image open - release it first ' +
+                      '(*BYE in ADFS; close it or CTRL-BREAK in MMFS).');
+   if (r.status === 204 || r.status === 201)
+      return;
+   throw new Error('Write failed: HTTP ' + r.status);
+}
+
+/* Read [start, start+len) of the image.  Prefers a Range request; a
+   200 reply means the firmware predates Range support, in which case
+   small images are buffered whole and sliced locally. */
+/* Slice the whole-file cache, refusing to hand back short data the
+   way the Range path refuses a short 206. */
+function wholeFileSlice(start, len) {
+   const s = wholeFile.subarray(start, start + len);
+   if (s.length !== len)
+      throw new Error('read past the end of the image (truncated file?)');
+   return s;
+}
+
+async function readBytes(start, len) {
+   if (len <= 0) return new Uint8Array(0);
+   if (wholeFile) return wholeFileSlice(start, len);
+   const r = await fetch(imgUrl,
+      {headers: {'Range': 'bytes=' + start + '-' + (start + len - 1)}});
+   if (r.status === 206) {
+      const b = new Uint8Array(await r.arrayBuffer());
+      if (b.length !== len)
+         throw new Error('short range reply (' + b.length + ' of ' + len + ')');
+      return b;
+   }
+   if (r.status === 200) {
+      const b = new Uint8Array(await r.arrayBuffer());
+      if (b.length > WHOLE_FILE_CAP)
+         throw new Error('This firmware has no HTTP Range support and the ' +
+            'image is too large to download whole - update the Pi1MHz ' +
+            'firmware to browse it.');
+      wholeFile = b;
+      return wholeFileSlice(start, len);
+   }
+   throw new Error('HTTP ' + r.status + ' reading the image');
+}
+
+/* ---------------------------------------------------------------- */
+/* Store-method .zip writer                                          */
+/* ---------------------------------------------------------------- */
+
+const CRC_TABLE = (() => {
+   const t = new Uint32Array(256);
+   for (let n = 0; n < 256; ++n) {
+      let c = n;
+      for (let k = 0; k < 8; ++k)
+         c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c >>> 0;
+   }
+   return t;
+})();
+
+function crc32(data) {
+   let c = 0xFFFFFFFF;
+   for (let i = 0; i < data.length; ++i)
+      c = CRC_TABLE[(c ^ data[i]) & 0xFF] ^ (c >>> 8);
+   return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+/* entries: [{name, data}] with '/'-separated names.  Uncompressed
+   ("store") entries only - Beeb files are tiny and this keeps the
+   writer dependency-free. */
+function makeZip(entries) {
+   const enc = new TextEncoder();
+   const DOSDATE = 0x0021;                    /* 1980-01-01, time 0 */
+   const parts = [], central = [];
+   let offset = 0;
+   for (const e of entries) {
+      const nb = enc.encode(e.name);
+      const crc = crc32(e.data);
+      const lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034B50, true);
+      lh.setUint16(4, 20, true);              /* version needed */
+      lh.setUint16(12, DOSDATE, true);
+      lh.setUint32(14, crc, true);
+      lh.setUint32(18, e.data.length, true);
+      lh.setUint32(22, e.data.length, true);
+      lh.setUint16(26, nb.length, true);
+      parts.push(new Uint8Array(lh.buffer), nb, e.data);
+      const ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0, 0x02014B50, true);
+      ch.setUint16(4, 20, true);              /* version made by */
+      ch.setUint16(6, 20, true);              /* version needed  */
+      ch.setUint16(14, DOSDATE, true);
+      ch.setUint32(16, crc, true);
+      ch.setUint32(20, e.data.length, true);
+      ch.setUint32(24, e.data.length, true);
+      ch.setUint16(28, nb.length, true);
+      ch.setUint32(42, offset, true);
+      central.push(new Uint8Array(ch.buffer), nb);
+      offset += 30 + nb.length + e.data.length;
+   }
+   let cdSize = 0;
+   for (const c of central) cdSize += c.length;
+   const end = new DataView(new ArrayBuffer(22));
+   end.setUint32(0, 0x06054B50, true);
+   end.setUint16(8, entries.length, true);
+   end.setUint16(10, entries.length, true);
+   end.setUint32(12, cdSize, true);
+   end.setUint32(16, offset, true);
+   const all = parts.concat(central, [new Uint8Array(end.buffer)]);
+   let total = 0;
+   for (const p of all) total += p.length;
+   const out = new Uint8Array(total);
+   let o = 0;
+   for (const p of all) { out.set(p, o); o += p.length; }
+   return out;
+}
+
+/* Reserve a unique zip entry name ("X", "X(2)", ...). */
+function zipName(used, name) {
+   let n = name, i = 2;
+   while (used.has(n.toLowerCase())) n = name + '(' + i++ + ')';
+   used.add(n.toLowerCase());
+   return n;
+}
+
+/* The basename of the open image without its extension - used to name
+   .zip / .ssd exports. */
+function exportBase(suffix) {
+   const b = imgPath.split('/').pop().replace(/\.[^.]*$/, '');
+   return safeName(b + (suffix || ''));
+}
+
+/* ---------------------------------------------------------------- */
+/* BBC BASIC detokeniser                                             */
+/* ---------------------------------------------------------------- */
+
+const BASIC_TOKENS = (
+   'AND,DIV,EOR,MOD,OR,ERROR,LINE,OFF,' +
+   'STEP,SPC,TAB(,ELSE,THEN,,OPENIN,PTR,' +
+   'PAGE,TIME,LOMEM,HIMEM,ABS,ACS,ADVAL,ASC,' +
+   'ASN,ATN,BGET,COS,COUNT,DEG,ERL,ERR,' +
+   'EVAL,EXP,EXT,FALSE,FN,GET,INKEY,INSTR(,' +
+   'INT,LEN,LN,LOG,NOT,OPENUP,OPENOUT,PI,' +
+   'POINT(,POS,RAD,RND,SGN,SIN,SQR,TAN,' +
+   'TO,TRUE,USR,VAL,VPOS,CHR$,GET$,INKEY$,' +
+   'LEFT$(,MID$(,RIGHT$(,STR$,STRING$(,EOF,AUTO,DELETE,' +
+   'LOAD,LIST,NEW,OLD,RENUMBER,SAVE,EDIT,PTR,' +
+   'PAGE,TIME,LOMEM,HIMEM,SOUND,BPUT,CALL,CHAIN,' +
+   'CLEAR,CLOSE,CLG,CLS,DATA,DEF,DIM,DRAW,' +
+   'END,ENDPROC,ENVELOPE,FOR,GOSUB,GOTO,GCOL,IF,' +
+   'INPUT,LET,LOCAL,MODE,MOVE,NEXT,ON,VDU,' +
+   'PLOT,PRINT,PROC,READ,REM,REPEAT,REPORT,RESTORE,' +
+   'RETURN,RUN,STOP,COLOUR,TRACE,UNTIL,WIDTH,OSCLI').split(',');
+
+/* Detokenise a BBC BASIC program (<CR><hi><lo><len><tokens...>...,
+   terminated by <CR><FF>).  Returns the LISTing as a string, or null
+   if the bytes are not a well-formed tokenised program. */
+function detokenise(data) {
+   let out = '';
+   let i = 0;
+   for (;;) {
+      if (i >= data.length || data[i] !== 0x0D)
+         return null;
+      if (data[i + 1] === 0xFF)
+         return out;
+      if (i + 4 > data.length)
+         return null;
+      const lineNo = (data[i + 1] << 8) | data[i + 2];
+      const len = data[i + 3];
+      if (len < 4 || i + len > data.length)
+         return null;
+      let s = '';
+      for (let j = i + 4; j < i + len; ++j) {
+         const b = data[j];
+         if (b === 0x8D && j + 3 < i + len) {
+            /* encoded line-number reference (GOTO/GOSUB targets) */
+            const b1 = data[j + 1] ^ 0x54;
+            const lo = (data[j + 2] & 0x3F) | ((b1 << 2) & 0xC0);
+            const hi = (data[j + 3] & 0x3F) | ((b1 << 4) & 0xC0);
+            s += (hi << 8) | lo;
+            j += 3;
+         } else if (b >= 0x80) {
+            s += BASIC_TOKENS[b - 0x80];
+         } else {
+            s += String.fromCharCode(b);
+         }
+      }
+      out += lineNo + ' ' + s + '\n';
+      i += len;
+   }
+}
+
+/* ---------------------------------------------------------------- */
+/* Acorn DFS (.ssd / .dsd / MMB slot)                                */
+/* ---------------------------------------------------------------- */
+
+/* A "side" is anything that can read logical DFS sectors:
+     ssd       : the image itself
+     dsd       : one side of a track-interleaved pair
+     mmb slot  : an ssd at a fixed offset inside the bundle */
+
+function dsdPhysOffset(side, s) {
+   /* 10 sectors of 256 bytes per track; tracks alternate side 0/1. */
+   const track = Math.floor(s / 10);
+   return ((track * 2 + side) * 10 + (s % 10)) * 256;
+}
+
+async function readDfsSectors(side, start, count) {
+   if (side.kind === 'dsd') {
+      /* Fetch the covering physical span in ONE range request (at most
+         ~2x the payload plus a track), then pick the sectors out - far
+         fewer round-trips than per-track fetches on slow WiFi. */
+      const first = dsdPhysOffset(side.n, start);
+      const last = dsdPhysOffset(side.n, start + count - 1) + 255;
+      const span = await readBytes(first, last - first + 1);
+      const out = new Uint8Array(count * 256);
+      for (let j = 0; j < count; ++j) {
+         const o = dsdPhysOffset(side.n, start + j) - first;
+         out.set(span.subarray(o, o + 256), j * 256);
+      }
+      return out;
+   }
+   return readBytes(side.base + start * 256, count * 256);
+}
+
+function dfsText(bytes, off, len) {
+   let s = '';
+   for (let i = 0; i < len; ++i) {
+      const c = bytes[off + i] & 0x7F;
+      if (c === 0 || c === 0x0D) break;
+      s += String.fromCharCode(c);
+   }
+   return s.replace(/ +$/, '');
+}
+
+/* Parse the two catalogue sectors of one DFS side. */
+function parseDfsCatalogue(cat) {
+   const count = cat[0x105] >> 3;
+   const disc = {
+      title: dfsText(cat, 0, 8) + dfsText(cat, 0x100, 4),
+      cycle: cat[0x104],
+      boot: (cat[0x106] >> 4) & 3,
+      sectors: cat[0x107] | ((cat[0x106] & 3) << 8),
+      files: []
+   };
+   for (let i = 0; i < count; ++i) {
+      const b = 8 + i * 8, e = 0x108 + i * 8;
+      const x = cat[e + 6];
+      let load = (cat[e] | (cat[e + 1] << 8) | (((x >> 2) & 3) << 16)) >>> 0;
+      let exec = (cat[e + 2] | (cat[e + 3] << 8) | (((x >> 6) & 3) << 16)) >>> 0;
+      if (((x >> 2) & 3) === 3) load = (load | 0xFFFF0000) >>> 0;
+      if (((x >> 6) & 3) === 3) exec = (exec | 0xFFFF0000) >>> 0;
+      disc.files.push({
+         name: dfsText(cat, b, 7),
+         dir: String.fromCharCode(cat[b + 7] & 0x7F),
+         locked: (cat[b + 7] & 0x80) !== 0,
+         load, exec,
+         length: cat[e + 4] | (cat[e + 5] << 8) | (((x >> 4) & 3) << 16),
+         start: cat[e + 7] | ((x & 3) << 8)
+      });
+   }
+   return disc;
+}
+
+const BOOT_NAMES = ['off', '*LOAD !BOOT', '*RUN !BOOT', '*EXEC !BOOT'];
+
+/* ---------------------------------------------------------------- */
+/* DFS write support                                                 */
+/* ---------------------------------------------------------------- */
+
+/* Write logical DFS sectors.  For a .dsd side the data is split at
+   track boundaries so each ranged PUT lands inside one physical
+   track of the interleaved layout. */
+async function writeDfsSectors(side, start, data) {
+   if (side.kind === 'dsd') {
+      const count = Math.ceil(data.length / 256);
+      for (let j = 0; j < count;) {
+         const s = start + j;
+         const run = Math.min(count - j, 10 - (s % 10));
+         const chunk = data.subarray(j * 256,
+                                     Math.min(data.length, (j + run) * 256));
+         await writeBytes(dsdPhysOffset(side.n, s), chunk);
+         j += run;
+      }
+      return;
+   }
+   await writeBytes(side.base + start * 256, data);
+}
+
+/* Serialise a parsed catalogue back to its two sectors. */
+function buildDfsCatalogue(disc) {
+   const cat = new Uint8Array(512);
+   const putText = (off, s, n) => {
+      for (let i = 0; i < n; ++i)
+         cat[off + i] = i < s.length ? s.charCodeAt(i) & 0x7F : 0x20;
+   };
+   putText(0, disc.title.slice(0, 8), 8);
+   putText(0x100, disc.title.slice(8, 12), 4);
+   cat[0x104] = disc.cycle;
+   cat[0x105] = disc.files.length * 8;
+   cat[0x106] = ((disc.boot & 3) << 4) | ((disc.sectors >> 8) & 3);
+   cat[0x107] = disc.sectors & 0xFF;
+   /* DFS requires catalogue entries ordered by start sector, highest
+      first. */
+   const sorted = [...disc.files].sort((a, b) => b.start - a.start);
+   sorted.forEach((f, i) => {
+      const b = 8 + i * 8, e = 0x108 + i * 8;
+      putText(b, f.name.slice(0, 7), 7);
+      cat[b + 7] = (f.dir.charCodeAt(0) & 0x7F) | (f.locked ? 0x80 : 0);
+      cat[e] = f.load & 0xFF;
+      cat[e + 1] = (f.load >> 8) & 0xFF;
+      cat[e + 2] = f.exec & 0xFF;
+      cat[e + 3] = (f.exec >> 8) & 0xFF;
+      cat[e + 4] = f.length & 0xFF;
+      cat[e + 5] = (f.length >> 8) & 0xFF;
+      cat[e + 6] = ((f.start >> 8) & 3) | (((f.load >> 16) & 3) << 2)
+                 | (((f.length >> 16) & 3) << 4) | (((f.exec >> 16) & 3) << 6);
+      cat[e + 7] = f.start & 0xFF;
+   });
+   return cat;
+}
+
+/* The catalogue cycle count is BCD. */
+function bcdInc(v) {
+   let lo = (v & 0x0F) + 1, hi = (v >> 4) & 0x0F;
+   if (lo > 9) { lo = 0; ++hi; }
+   if (hi > 9) hi = 0;
+   return (hi << 4) | lo;
+}
+
+/* First-fit allocation: DFS files are contiguous, data starts at
+   sector 2.  Returns a start sector or throws. */
+function dfsAllocate(disc, sectorsNeeded) {
+   const extents = disc.files
+      .map(f => ({start: f.start, n: Math.max(1, Math.ceil(f.length / 256))}))
+      .sort((a, b) => a.start - b.start);
+   let at = 2;
+   for (const x of extents) {
+      if (x.start - at >= sectorsNeeded)
+         return at;
+      at = Math.max(at, x.start + x.n);
+   }
+   if (disc.sectors - at >= sectorsNeeded)
+      return at;
+   throw new Error('Not enough contiguous free space on the disc (' +
+                   (disc.sectors - at) + ' sectors at the end, ' +
+                   sectorsNeeded + ' needed).');
+}
+
+/* Byte just past the physical location of logical sectors [0, end). */
+function dfsPhysEnd(side, end) {
+   if (side.kind === 'dsd')
+      return dsdPhysOffset(side.n, end - 1) + 256;
+   return side.base + end * 256;
+}
+
+/* Refuse edits on discs whose data would not survive them.  Watford
+   62-file DFS keeps a second catalogue in sectors 2-3 (marked by
+   eight &AA bytes at the start of sector 2); files listed only there
+   look like free space to the standard catalogue, so an add here
+   would silently destroy them. */
+async function ensureEditableDfs(side) {
+   if (dfsPhysEnd(side, 3) > imgSize)
+      return;                            /* no sector 2: nothing hidden */
+   const s2 = await readDfsSectors(side, 2, 1);
+   if (s2.subarray(0, 8).every(b => b === 0xAA))
+      throw new Error('This is a Watford 62-file disc - its extended ' +
+                      'catalogue lives in sectors the standard catalogue ' +
+                      'calls free, so editing it here would corrupt it.');
+}
+
+/* Guard against a concurrent editor (another tab, a script): compare
+   the catalogue's cycle and count against the snapshot this edit was
+   planned from, immediately before overwriting it.  Not a true
+   compare-and-swap - the server has no such primitive - but it
+   shrinks the race window from "the whole data transfer" to one
+   round-trip. */
+async function dfsCheckUnchanged(side, disc) {
+   const now = parseDfsCatalogue(await readDfsSectors(side, 0, 2));
+   if (now.cycle !== disc.cycle || now.files.length !== disc.files.length)
+      throw new Error('The disc changed underneath this edit (another ' +
+                      'tab?) - reload and try again.');
+}
+
+/* Add one file: data sectors first, catalogue (with bumped cycle)
+   last, so an interrupted transfer never leaves a catalogue entry
+   pointing at half-written data. */
+async function dfsAddFile(side, disc, entry, bytes) {
+   if (disc.files.length >= 31)
+      throw new Error('The catalogue is full (31 files).');
+   if (bytes.length > 0x3FFFF)
+      throw new Error('DFS files cannot exceed 256 KB.');
+   if (disc.files.some(f => f.dir.toUpperCase() === entry.dir.toUpperCase()
+         && f.name.toUpperCase() === entry.name.toUpperCase()))
+      throw new Error(entry.dir + '.' + entry.name +
+                      ' already exists - delete it first.');
+   await ensureEditableDfs(side);
+   entry.length = bytes.length;
+   const sectors = Math.max(1, Math.ceil(bytes.length / 256));
+   entry.start = dfsAllocate(disc, sectors);
+   /* Truncated images are common (trimmed to the last used sector):
+      catch the mismatch here with a clear message instead of letting
+      the server's bounds check surface as a bare HTTP 416. */
+   if (dfsPhysEnd(side, entry.start + sectors) > imgSize)
+      throw new Error('The image file is shorter than its catalogue ' +
+                      'claims, and the free space is past its physical ' +
+                      'end - pad the image to full size first.');
+   if (bytes.length > 0)
+      await writeDfsSectors(side, entry.start, bytes);
+   await dfsCheckUnchanged(side, disc);
+   const next = {...disc, cycle: bcdInc(disc.cycle),
+                 files: disc.files.concat(entry)};
+   await writeDfsSectors(side, 0, buildDfsCatalogue(next));
+}
+
+/* Delete = a catalogue-only change: the entry vanishes and its
+   sectors are implicitly free again. */
+async function dfsDeleteFile(side, disc, victim) {
+   await ensureEditableDfs(side);
+   await dfsCheckUnchanged(side, disc);
+   const next = {...disc, cycle: bcdInc(disc.cycle),
+                 files: disc.files.filter(f => f !== victim)};
+   await writeDfsSectors(side, 0, buildDfsCatalogue(next));
+}
+
+/* Parse a ".inf" sidecar ("[$.]NAME LOAD EXEC [LEN] [L]"). */
+function parseInf(text) {
+   const t = text.trim().split(/\s+/);
+   if (t.length < 3) return null;
+   /* validate BEFORE >>>0: NaN>>>0 is 0, which would silently accept
+      a malformed sidecar as load/exec zero */
+   const load = parseInt(t[1], 16), exec = parseInt(t[2], 16);
+   if (isNaN(load) || isNaN(exec)) return null;
+   const out = {name: t[0], load: load >>> 0, exec: exec >>> 0,
+                locked: t.slice(3).some(x => /^L(ocked)?$/i.test(x))};
+   if (out.name.length > 2 && out.name[1] === '.') {
+      out.dir = out.name[0];
+      out.name = out.name.slice(2);
+   }
+   return out;
+}
+
+/* Strip a host filename down to a legal DFS name (7 chars). */
+function dfsNameFromFilename(fname) {
+   return fname.replace(/\.[^.]*$/, '').replace(/[.:"#* ]/g, '')
+          .slice(0, 7).toUpperCase() || 'FILE';
+}
+
+function infFor(fullname, f) {
+   return fullname + ' ' + hex(f.load, 6) + ' ' + hex(f.exec, 6) + ' ' +
+          hex(f.length, 6) + (f.locked ? ' L' : '') + '\n';
+}
+
+function dfsFileRow(side, f, refresh) {
+   const fullname = f.dir + '.' + f.name;
+   const actions = el('td', {class: 'actions'},
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         withAction('Fetching ' + fullname + '…', async () => {
+            const data = await readDfsSectors(side, f.start,
+                                              Math.ceil(f.length / 256));
+            saveBlob(data.subarray(0, f.length), safeName(f.name));
+         });
+      }}, 'download'),
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         saveBlob(new TextEncoder().encode(infFor(fullname, f)),
+                  safeName(f.name) + '.inf');
+      }}, '.inf'),
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         withAction('Fetching ' + fullname + '…', async () => {
+            const n = Math.min(f.length, HEX_CAP);
+            const data = await readDfsSectors(side, f.start,
+                                              Math.ceil(n / 256));
+            showTextView(fullname, data.subarray(0, n), f.length);
+         });
+      }}, 'text'),
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         withAction('Fetching ' + fullname + '…', async () => {
+            const n = Math.min(f.length, HEX_CAP);
+            const data = await readDfsSectors(side, f.start,
+                                              Math.ceil(n / 256));
+            showHexView(fullname, data.subarray(0, n), f.length);
+         });
+      }}, 'hex'),
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         withAction('Fetching ' + fullname + '…', async () => {
+            const n = Math.min(f.length, HEX_CAP);
+            const data = await readDfsSectors(side, f.start,
+                                              Math.ceil(n / 256));
+            showAsmView(fullname, data.subarray(0, n), f.length,
+                        f.load & 0xFFFF);
+         });
+      }}, 'asm'));
+   if (serverHasRanges && refresh)
+      actions.append(el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         if (!confirm('Delete ' + fullname + ' from the disc?'))
+            return;
+         withStatus('Deleting ' + fullname + '…', async () => {
+            /* re-read so a stale view can't resurrect other changes */
+            const fresh = parseDfsCatalogue(await readDfsSectors(side, 0, 2));
+            const victim = fresh.files.find(x =>
+               x.dir === f.dir && x.name === f.name && x.start === f.start);
+            if (!victim)
+               throw new Error(fullname + ' is no longer in the catalogue.');
+            await dfsDeleteFile(side, fresh, victim);
+            refresh();
+         }, e => alert(e.message || String(e)));
+      }}, 'delete'));
+   return el('tr', null,
+      el('td', {class: 'm'}, fullname + (f.locked ? ' \u{1F512}' : '')),
+      el('td', {class: 'm r'}, hex(f.load, 6)),
+      el('td', {class: 'm r'}, hex(f.exec, 6)),
+      el('td', {class: 'r'}, f.length.toLocaleString()),
+      actions);
+}
+
+/* Fetch every file of one DFS catalogue and save them (plus their
+   .inf sidecars) as a single .zip. */
+async function dfsZipAll(side, disc, base) {
+   const used = new Set();
+   const entries = [];
+   const enc = new TextEncoder();
+   for (const f of disc.files) {
+      const fullname = f.dir + '.' + f.name;
+      setStatus('Fetching ' + fullname + '…');
+      const data = (await readDfsSectors(side, f.start,
+                                         Math.ceil(f.length / 256)))
+                   .subarray(0, f.length);
+      const stored = zipName(used,
+         safeName(f.dir === '$' ? f.name : fullname));
+      entries.push({name: stored, data});
+      entries.push({name: zipName(used, stored + '.inf'),
+                    data: enc.encode(infFor(fullname, f))});
+   }
+   saveBlob(makeZip(entries), base + '.zip');
+}
+
+/* Inline "add a file to this disc" form.  A .inf sidecar can ride
+   along in the same file picker to supply name and addresses. */
+function dfsAddForm(side, refresh) {
+   const fileIn = el('input', {type: 'file', multiple: ''});
+   const nameIn = el('input', {type: 'text', placeholder: '$.NAME',
+                               size: '10', maxlength: '9'});
+   const loadIn = el('input', {type: 'text', value: '000000', size: '9'});
+   const execIn = el('input', {type: 'text', value: '000000', size: '9'});
+   const lockIn = el('input', {type: 'checkbox'});
+   const err = el('p', {class: 'err'});
+   const pick = () => {
+      const files = Array.from(fileIn.files || []);
+      return {data: files.find(f => !/\.inf$/i.test(f.name)),
+              inf: files.find(f => /\.inf$/i.test(f.name))};
+   };
+   fileIn.addEventListener('change', async () => {
+      const {data, inf} = pick();
+      if (data) nameIn.value = '$.' + dfsNameFromFilename(data.name);
+      if (inf) {
+         const meta = parseInf(await inf.text());
+         if (meta) {
+            nameIn.value = (meta.dir || '$') + '.' + meta.name.slice(0, 7);
+            loadIn.value = hex(meta.load, 6);
+            execIn.value = hex(meta.exec, 6);
+            lockIn.checked = meta.locked;
+         }
+      }
+   });
+   const form = el('form', null,
+      el('p', null, 'File: ', fileIn),
+      el('p', null, 'Name: ', nameIn, '  Load &', loadIn,
+         '  Exec &', execIn, '  ',
+         el('label', null, lockIn, ' locked'), '  ',
+         el('input', {type: 'submit', value: 'Add to disc'})),
+      el('p', {class: 'muted'},
+         'Select the file (plus an optional .inf sidecar). ' +
+         'Name is DIR.NAME, up to 7 characters.'),
+      err);
+   form.addEventListener('submit', ev => {
+      ev.preventDefault();
+      err.textContent = '';
+      const {data} = pick();
+      const m = /^(?:(.)\.)?([^.]{1,7})$/.exec(nameIn.value.trim());
+      const load = parseInt(loadIn.value.replace(/^[&$]|^0x/i, ''), 16);
+      const exec = parseInt(execIn.value.replace(/^[&$]|^0x/i, ''), 16);
+      if (!data) { err.textContent = 'Choose a file to add.'; return; }
+      if (!m) { err.textContent = 'Bad name - use e.g. $.GAME (7 chars max).'; return; }
+      if (isNaN(load) || isNaN(exec)) {
+         err.textContent = 'Load / exec must be hex.';
+         return;
+      }
+      withStatus('Adding ' + nameIn.value + '…', async () => {
+         const bytes = new Uint8Array(await data.arrayBuffer());
+         const fresh = parseDfsCatalogue(await readDfsSectors(side, 0, 2));
+         await dfsAddFile(side, fresh,
+                          {dir: m[1] || '$', name: m[2],
+                           load: load >>> 0, exec: exec >>> 0,
+                           locked: lockIn.checked},
+                          bytes);
+         refresh();
+      }, e => { err.textContent = e.message || String(e); });
+   });
+   return el('div', {class: 'card'},
+      el('p', null, el('b', null, 'Add a file')), form);
+}
+
+function dfsDiscCard(label, disc, side, base, refresh) {
+   const head = el('tr', null,
+      el('th', null, 'File'), el('th', {class: 'r'}, 'Load'),
+      el('th', {class: 'r'}, 'Exec'), el('th', {class: 'r'}, 'Bytes'),
+      el('th', null, ''));
+   const table = el('table', null, head);
+   for (const f of disc.files)
+      table.append(dfsFileRow(side, f, refresh));
+   const info = 'title "' + disc.title + '" · ' +
+      disc.sectors + ' sectors (' + humanSize(disc.sectors * 256) +
+      ') · boot ' + BOOT_NAMES[disc.boot] +
+      ' · ' + disc.files.length + ' file' +
+      (disc.files.length === 1 ? '' : 's');
+   const line = el('p', null, el('b', null, label), ' — ', info);
+   if (disc.files.length)
+      line.append(' · ', el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         withAction('Building zip…', () => dfsZipAll(side, disc, base));
+      }}, 'download all (.zip)'));
+   if (side.kind === 'dsd') {
+      /* Save this side as a plain single-sided image.  The catalogue's
+         sector count sizes the output, clamped both against garbage
+         values and against the image's PHYSICAL size - truncated .dsd
+         files whose catalogue claims 80 tracks are common, and the
+         export should carry what exists rather than fail. */
+      let sectors = Math.min(Math.max(disc.sectors, 2), 800);
+      while (sectors > 2 && dsdPhysOffset(side.n, sectors - 1) + 256 > imgSize)
+         --sectors;
+      line.append(' · ', el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         withAction('Extracting side…', async () => {
+            saveBlob(await readDfsSectors(side, 0, sectors),
+                     base + '.ssd');
+         });
+      }}, 'this side as .ssd'));
+   }
+   const frag = document.createDocumentFragment();
+   frag.append(el('div', {class: 'card'}, line,
+      disc.files.length ? table : el('p', {class: 'muted'}, 'No files.')));
+   if (serverHasRanges && refresh)
+      frag.append(dfsAddForm(side, refresh));
+   return frag;
+}
+
+async function showDfs(kind) {
+   const sides = (kind === 'dsd')
+      ? [{kind: 'dsd', n: 0}, {kind: 'dsd', n: 1}]
+      : [{kind: 'ssd', base: 0}];
+   const refresh = () => withStatus('Reloading…', () => showDfs(kind));
+   const cards = [];
+   for (let i = 0; i < sides.length; ++i) {
+      const cat = await readDfsSectors(sides[i], 0, 2);
+      cards.push(dfsDiscCard(sides.length > 1 ? 'Side ' + i * 2 : 'Catalogue',
+                             parseDfsCatalogue(cat), sides[i],
+                             exportBase(sides.length > 1 ? '-side' + i * 2
+                                                         : ''),
+                             refresh));
+   }
+   $content.replaceChildren(...cards);
+}
+
+/* ---------------------------------------------------------------- */
+/* MMB bundles                                                       */
+/* ---------------------------------------------------------------- */
+
+const MMB_CAT = 8192, MMB_DISC = 204800;
+
+function mmbEntry(name, status) {
+   const e = new Uint8Array(16);
+   for (let i = 0; i < 12 && i < name.length; ++i)
+      e[i] = name.charCodeAt(i) & 0x7F;
+   e[15] = status;
+   return e;
+}
+
+/* Cheap sanity check that a buffer starts with a plausible DFS
+   catalogue before it is inserted into an MMB slot. */
+function dfsPlausible(cat) {
+   const secs = cat[0x107] | ((cat[0x106] & 3) << 8);
+   return (cat[0x105] & 7) === 0 && cat[0x105] / 8 <= 31
+       && secs >= 2 && secs <= 800;
+}
+
+/* De-interleave one side of a local .dsd into a 200 KB SSD buffer. */
+function localDsdSide(buf, sideN) {
+   const out = new Uint8Array(MMB_DISC);
+   for (let s = 0; s < 800; ++s) {
+      const o = ((Math.floor(s / 10) * 2 + sideN) * 10 + (s % 10)) * 256;
+      if (o + 256 <= buf.length)
+         out.set(buf.subarray(o, o + 256), s * 256);
+   }
+   return out;
+}
+
+/* Insert / replace one MMB slot.  Write order makes an interruption
+   benign: the slot is marked unformatted first, then the 200 KB of
+   disc data lands, and only then is the entry (name + read/write
+   status) written - so a dropped connection leaves an "unformatted"
+   slot, never a valid-looking half-disc. */
+async function mmbWriteSlot(n, name, ssd, finalStatus) {
+   const entryOff = 16 * (n + 1);
+   await writeBytes(entryOff, mmbEntry(name, 0xF0));
+   await writeBytes(MMB_CAT + n * MMB_DISC, ssd);
+   await writeBytes(entryOff, mmbEntry(name, finalStatus));
+}
+
+function mmbInsertForm(n, existingName, existingStatus, refresh) {
+   const fileIn = el('input', {type: 'file', accept: '.ssd,.dsd'});
+   const nameIn = el('input', {type: 'text', size: '14', maxlength: '12',
+                               value: existingName || ''});
+   const sideSel = el('select', null,
+      el('option', {value: '0'}, 'side 0'),
+      el('option', {value: '1'}, 'side 2'));
+   const sideWrap = el('span', {style: 'display:none'}, ' Side: ', sideSel);
+   const err = el('p', {class: 'err'});
+   fileIn.addEventListener('change', () => {
+      const f = fileIn.files[0];
+      if (!f) return;
+      sideWrap.style.display = /\.dsd$/i.test(f.name) ? '' : 'none';
+      if (!nameIn.value)
+         nameIn.value = f.name.replace(/\.[^.]*$/, '')
+                        .slice(0, 12).toUpperCase();
+   });
+   const form = el('form', null,
+      el('p', null, 'Disc image (.ssd or .dsd): ', fileIn, sideWrap),
+      el('p', null, 'Slot name: ', nameIn, '  ',
+         el('input', {type: 'submit', value: 'Write to slot ' + n})),
+      err);
+   form.addEventListener('submit', ev => {
+      ev.preventDefault();
+      err.textContent = '';
+      const f = fileIn.files[0];
+      if (!f) { err.textContent = 'Choose a disc image.'; return; }
+      /* Replace really is destructive: the old slot data starts being
+         overwritten before the new disc has fully arrived. */
+      if (existingName
+          && !confirm('Replace slot ' + n + ' ("' + existingName + '")? ' +
+                      'Its current contents are destroyed even if the ' +
+                      'transfer fails part-way.'))
+         return;
+      withStatus('Writing slot ' + n + '…', async () => {
+         const buf = new Uint8Array(await f.arrayBuffer());
+         let ssd;
+         if (/\.dsd$/i.test(f.name)) {
+            ssd = localDsdSide(buf, parseInt(sideSel.value, 10));
+         } else {
+            ssd = new Uint8Array(MMB_DISC);
+            ssd.set(buf.subarray(0, Math.min(buf.length, MMB_DISC)));
+         }
+         if (!dfsPlausible(ssd))
+            throw new Error('That does not look like a DFS disc image.');
+         /* keep an existing read-only slot read-only */
+         await mmbWriteSlot(n, nameIn.value.trim() || 'DISC' + n, ssd,
+                            existingStatus === 0x00 ? 0x00 : 0x0F);
+         refresh();
+      }, e => { err.textContent = e.message || String(e); });
+   });
+   return el('div', {class: 'card'},
+      el('p', null, el('b', null,
+         (existingName ? 'Replace' : 'Insert into') + ' slot ' + n)), form);
+}
+
+async function showMmb() {
+   const slots = Math.min(511,
+      Math.max(0, Math.floor((imgSize - MMB_CAT) / MMB_DISC)));
+   const cat = await readBytes(0, Math.min(imgSize, MMB_CAT));
+   const table = el('table', null, el('tr', null,
+      el('th', {class: 'r'}, 'Slot'), el('th', null, 'Name'),
+      el('th', null, 'Status'), el('th', null, '')));
+   const formBox = el('div');
+   const refresh = () => withStatus('Reloading…', showMmb);
+   let formatted = 0;
+   for (let n = 0; n < slots; ++n) {
+      const e = 16 * (n + 1);
+      const st = cat[e + 15];
+      const name = st === 0xFF ? '' : dfsText(cat, e, 12);
+      const usable = (st === 0x00 || st === 0x0F);
+      let stText = st === 0x00 ? 'read-only'
+                 : st === 0x0F ? 'read/write'
+                 : st === 0xF0 ? 'unformatted'
+                 : st === 0xFF ? 'empty'
+                 : '?? &' + hex(st, 2);
+      if (usable) ++formatted;
+      const slotSide = {kind: 'ssd', base: MMB_CAT + n * MMB_DISC};
+      const actions = el('td', {class: 'actions'});
+      if (usable)
+         actions.append(el('a', {href: '#', onclick: ev => {
+            ev.preventDefault();
+            withAction('Fetching slot ' + n + ' (200 KB)…', async () => {
+               saveBlob(await readBytes(slotSide.base, MMB_DISC),
+                        safeName(name || ('disc' + n)) + '.ssd');
+            });
+         }}, 'download .ssd'));
+      if (serverHasRanges)
+         actions.append(' ', el('a', {href: '#', onclick: ev => {
+            ev.preventDefault();
+            formBox.replaceChildren(
+               mmbInsertForm(n, usable ? name : '', st, refresh));
+            formBox.scrollIntoView({block: 'nearest'});
+         }}, usable ? 'replace…' : 'insert…'));
+      table.append(el('tr', null,
+         el('td', {class: 'r m'}, String(n)),
+         el('td', {class: 'm'}, usable
+            ? el('a', {href: '#', onclick: ev => {
+                 ev.preventDefault();
+                 openMmbSlot(n, name, slotSide);
+              }}, name || '(unnamed)')
+            : (name || '—')),
+         el('td', null, stText),
+         actions));
+   }
+   $content.replaceChildren(
+      el('div', {class: 'card'},
+         el('p', null, el('b', null, slots + ' slots'),
+            ' · ' + formatted + ' formatted')),
+      table, formBox);
+}
+
+function openMmbSlot(n, name, side) {
+   withStatus('Reading catalogue of slot ' + n + '…', async () => {
+      const cat = await readDfsSectors(side, 0, 2);
+      const disc = parseDfsCatalogue(cat);
+      const back = el('p', {class: 'crumbs'},
+         el('a', {href: '#', onclick: ev => {
+            ev.preventDefault();
+            withStatus('Reading MMB catalogue…', showMmb);
+         }}, '← all slots'));
+      $content.replaceChildren(back,
+         dfsDiscCard('Slot ' + n + (name ? ' · ' + name : ''),
+                     disc, side, exportBase('-slot' + n),
+                     () => openMmbSlot(n, name, side)));
+   });
+}
+
+/* ---------------------------------------------------------------- */
+/* ADFS old map (scsi*.dat / .adf / .adm)                            */
+/* ---------------------------------------------------------------- */
+
+const ADFS_DIR_LEN = 1280;                     /* old "Hugo" directory */
+
+function adfsText(bytes, off, len) {
+   let s = '';
+   for (let i = 0; i < len; ++i) {
+      const c = bytes[off + i] & 0x7F;
+      if (c < 0x20) break;                     /* CR / NUL terminated */
+      s += String.fromCharCode(c);
+   }
+   return s.replace(/ +$/, '');
+}
+
+function u32le(b, o) {
+   return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+}
+
+async function adfsReadDir(sector) {
+   const d = await readBytes(sector * 256, ADFS_DIR_LEN);
+   if (String.fromCharCode(d[1], d[2], d[3], d[4]) !== 'Hugo')
+      throw new Error('No ADFS "Hugo" directory at sector ' + sector +
+                      ' - not an old-map ADFS image?');
+   const entries = [];
+   for (let off = 5; off + 26 <= ADFS_DIR_LEN - 52; off += 26) {
+      if (d[off] === 0) break;                 /* end of entries */
+      entries.push({
+         name: adfsText(d, off, 10),
+         readable: (d[off] & 0x80) !== 0,
+         writable: (d[off + 1] & 0x80) !== 0,
+         locked: (d[off + 2] & 0x80) !== 0,
+         isDir: (d[off + 3] & 0x80) !== 0,
+         load: u32le(d, off + 10),
+         exec: u32le(d, off + 14),
+         length: u32le(d, off + 18),
+         sector: d[off + 22] | (d[off + 23] << 8) | (d[off + 24] << 16)
+      });
+   }
+   return entries;
+}
+
+function adfsAttr(f) {
+   return (f.readable ? 'R' : '') + (f.writable ? 'W' : '') +
+          (f.locked ? 'L' : '') + (f.isDir ? 'D' : '');
+}
+
+let adfsDiscInfo = '';
+
+/* Recursively fetch every file under `sector` into zip entries.
+   `rel` is the '/'-separated path inside the zip, `acorn` the
+   '.'-separated ADFS path used in the .inf sidecars.  A visited-set
+   plus depth cap keeps a corrupt directory chain from looping. */
+async function adfsCollect(sector, rel, acorn, entries, used, visited, depth) {
+   if (depth > 12 || visited.has(sector))
+      return;
+   visited.add(sector);
+   const enc = new TextEncoder();
+   for (const f of await adfsReadDir(sector)) {
+      const path = acorn + '.' + f.name;
+      if (f.isDir) {
+         await adfsCollect(f.sector, rel + safeName(f.name) + '/', path,
+                           entries, used, visited, depth + 1);
+         continue;
+      }
+      setStatus('Fetching ' + path + '…');
+      const data = await readBytes(f.sector * 256, f.length);
+      const stored = zipName(used, rel + safeName(f.name));
+      entries.push({name: stored, data});
+      entries.push({name: zipName(used, stored + '.inf'),
+                    data: enc.encode(path + ' ' + hex(f.load, 8) + ' ' +
+                                     hex(f.exec, 8) + ' ' + hex(f.length, 6) +
+                                     (f.locked ? ' L' : '') + '\n')});
+   }
+}
+
+async function adfsZipDir(crumbs) {
+   const entries = [];
+   await adfsCollect(crumbs[crumbs.length - 1].sector, '',
+                     crumbs.map(c => c.name).join('.'),
+                     entries, new Set(), new Set(), 0);
+   if (!entries.length)
+      throw new Error('Nothing to export - the folder tree holds no files.');
+   const suffix = crumbs.slice(1).map(c => '-' + safeName(c.name)).join('');
+   saveBlob(makeZip(entries), exportBase(suffix) + '.zip');
+}
+
+/* crumbs: [{name, sector}, ...] - crumbs[0] is the root ('$'). */
+function showAdfsDir(crumbs) {
+   withStatus('Reading directory…', async () => {
+      const cur = crumbs[crumbs.length - 1];
+      const entries = await adfsReadDir(cur.sector);
+      const trail = el('p', {class: 'crumbs'});
+      crumbs.forEach((c, i) => {
+         if (i) trail.append('.');
+         if (i === crumbs.length - 1)
+            trail.append(el('b', null, c.name));
+         else
+            trail.append(el('a', {href: '#', onclick: ev => {
+               ev.preventDefault();
+               showAdfsDir(crumbs.slice(0, i + 1));
+            }}, c.name));
+      });
+      const table = el('table', null, el('tr', null,
+         el('th', null, 'Name'), el('th', null, 'Attr'),
+         el('th', {class: 'r'}, 'Load'), el('th', {class: 'r'}, 'Exec'),
+         el('th', {class: 'r'}, 'Bytes'), el('th', null, '')));
+      for (const f of entries) {
+         const nameCell = f.isDir
+            ? el('a', {href: '#', onclick: ev => {
+                 ev.preventDefault();
+                 showAdfsDir(crumbs.concat({name: f.name, sector: f.sector}));
+              }}, f.name)
+            : f.name;
+         const path = crumbs.map(c => c.name).join('.') + '.' + f.name;
+         const actions = el('td', {class: 'actions'});
+         if (!f.isDir) {
+            actions.append(
+               el('a', {href: '#', onclick: ev => {
+                  ev.preventDefault();
+                  withAction('Fetching ' + path + '…', async () => {
+                     saveBlob(await readBytes(f.sector * 256, f.length),
+                              safeName(f.name));
+                  });
+               }}, 'download'), ' ',
+               el('a', {href: '#', onclick: ev => {
+                  ev.preventDefault();
+                  saveBlob(new TextEncoder().encode(
+                     path + ' ' + hex(f.load, 8) + ' ' + hex(f.exec, 8) +
+                     ' ' + hex(f.length, 6) + (f.locked ? ' L' : '') + '\n'),
+                     safeName(f.name) + '.inf');
+               }}, '.inf'), ' ',
+               el('a', {href: '#', onclick: ev => {
+                  ev.preventDefault();
+                  withAction('Fetching ' + path + '…', async () => {
+                     const n = Math.min(f.length, HEX_CAP);
+                     showTextView(path, await readBytes(f.sector * 256, n),
+                                  f.length);
+                  });
+               }}, 'text'), ' ',
+               el('a', {href: '#', onclick: ev => {
+                  ev.preventDefault();
+                  withAction('Fetching ' + path + '…', async () => {
+                     const n = Math.min(f.length, HEX_CAP);
+                     showHexView(path, await readBytes(f.sector * 256, n),
+                                 f.length);
+                  });
+               }}, 'hex'), ' ',
+               el('a', {href: '#', onclick: ev => {
+                  ev.preventDefault();
+                  withAction('Fetching ' + path + '…', async () => {
+                     const n = Math.min(f.length, HEX_CAP);
+                     showAsmView(path, await readBytes(f.sector * 256, n),
+                                 f.length, f.load & 0xFFFF);
+                  });
+               }}, 'asm'));
+         }
+         table.append(el('tr', null,
+            el('td', {class: 'm'}, nameCell),
+            el('td', {class: 'm'}, adfsAttr(f)),
+            el('td', {class: 'm r'}, f.isDir ? '' : hex(f.load, 8)),
+            el('td', {class: 'm r'}, f.isDir ? '' : hex(f.exec, 8)),
+            el('td', {class: 'r'}, f.isDir ? '' : f.length.toLocaleString()),
+            actions));
+      }
+      trail.append('   ', el('a', {class: 'muted', href: '#', onclick: ev => {
+         ev.preventDefault();
+         withAction('Building zip…', () => adfsZipDir(crumbs));
+      }}, '[download folder as .zip]'));
+      $content.replaceChildren(trail,
+         adfsDiscInfo ? el('p', {class: 'muted'}, adfsDiscInfo) : '',
+         entries.length ? table
+                        : el('div', {class: 'card'},
+                             el('p', {class: 'muted'}, 'Empty directory.')));
+   });
+}
+
+async function showAdfs() {
+   /* Old-map free space map: total disc size in sectors, 3 bytes LE at
+      &FC of sector 0.  Purely informational here. */
+   const fsm = await readBytes(0, 256);
+   const total = fsm[0xFC] | (fsm[0xFD] << 8) | (fsm[0xFE] << 16);
+   adfsDiscInfo = 'ADFS disc: ' + total + ' sectors (' +
+                  humanSize(total * 256) + ')';
+   showAdfsDir([{name: '$', sector: 2}]);
+}
+
+/* ---------------------------------------------------------------- */
+/* 6502 / 65C02 disassembler                                         */
+/* ---------------------------------------------------------------- */
+
+/* Bytes per instruction for each addressing mode. */
+const ASM_LEN = {imp: 1, acc: 1, imm: 2, zp: 2, zpx: 2, zpy: 2, inx: 2,
+                 iny: 2, izp: 2, rel: 2, abs: 3, abx: 3, aby: 3, ind: 3,
+                 iax: 3, zpr: 3};
+
+/* Full 65C02 opcode map: NMOS 6502 base set, the CMOS additions
+   (BRA/PHX/PLX/PHY/PLY/STZ/TRB/TSB, (zp) modes, JMP (abs,X), BIT
+   extensions, INC/DEC A), the Rockwell bit instructions
+   (RMB/SMB/BBR/BBS) and WDC's STP/WAI.  Anything else is data on any
+   65C02 and is emitted as EQUB. */
+const ASM_OPS = (() => {
+   const t = {};
+   const def = (mn, spec) => {
+      for (const [op, mode] of spec) t[op] = [mn, mode];
+   };
+   def('ADC', [[0x69, 'imm'], [0x65, 'zp'], [0x75, 'zpx'], [0x6D, 'abs'],
+               [0x7D, 'abx'], [0x79, 'aby'], [0x61, 'inx'], [0x71, 'iny'],
+               [0x72, 'izp']]);
+   def('AND', [[0x29, 'imm'], [0x25, 'zp'], [0x35, 'zpx'], [0x2D, 'abs'],
+               [0x3D, 'abx'], [0x39, 'aby'], [0x21, 'inx'], [0x31, 'iny'],
+               [0x32, 'izp']]);
+   def('ASL', [[0x0A, 'acc'], [0x06, 'zp'], [0x16, 'zpx'], [0x0E, 'abs'],
+               [0x1E, 'abx']]);
+   def('BCC', [[0x90, 'rel']]);
+   def('BCS', [[0xB0, 'rel']]);
+   def('BEQ', [[0xF0, 'rel']]);
+   def('BMI', [[0x30, 'rel']]);
+   def('BNE', [[0xD0, 'rel']]);
+   def('BPL', [[0x10, 'rel']]);
+   def('BVC', [[0x50, 'rel']]);
+   def('BVS', [[0x70, 'rel']]);
+   def('BRA', [[0x80, 'rel']]);
+   def('BIT', [[0x24, 'zp'], [0x2C, 'abs'], [0x89, 'imm'], [0x34, 'zpx'],
+               [0x3C, 'abx']]);
+   def('BRK', [[0x00, 'imp']]);
+   def('CLC', [[0x18, 'imp']]);
+   def('CLD', [[0xD8, 'imp']]);
+   def('CLI', [[0x58, 'imp']]);
+   def('CLV', [[0xB8, 'imp']]);
+   def('CMP', [[0xC9, 'imm'], [0xC5, 'zp'], [0xD5, 'zpx'], [0xCD, 'abs'],
+               [0xDD, 'abx'], [0xD9, 'aby'], [0xC1, 'inx'], [0xD1, 'iny'],
+               [0xD2, 'izp']]);
+   def('CPX', [[0xE0, 'imm'], [0xE4, 'zp'], [0xEC, 'abs']]);
+   def('CPY', [[0xC0, 'imm'], [0xC4, 'zp'], [0xCC, 'abs']]);
+   def('DEC', [[0x3A, 'acc'], [0xC6, 'zp'], [0xD6, 'zpx'], [0xCE, 'abs'],
+               [0xDE, 'abx']]);
+   def('DEX', [[0xCA, 'imp']]);
+   def('DEY', [[0x88, 'imp']]);
+   def('EOR', [[0x49, 'imm'], [0x45, 'zp'], [0x55, 'zpx'], [0x4D, 'abs'],
+               [0x5D, 'abx'], [0x59, 'aby'], [0x41, 'inx'], [0x51, 'iny'],
+               [0x52, 'izp']]);
+   def('INC', [[0x1A, 'acc'], [0xE6, 'zp'], [0xF6, 'zpx'], [0xEE, 'abs'],
+               [0xFE, 'abx']]);
+   def('INX', [[0xE8, 'imp']]);
+   def('INY', [[0xC8, 'imp']]);
+   def('JMP', [[0x4C, 'abs'], [0x6C, 'ind'], [0x7C, 'iax']]);
+   def('JSR', [[0x20, 'abs']]);
+   def('LDA', [[0xA9, 'imm'], [0xA5, 'zp'], [0xB5, 'zpx'], [0xAD, 'abs'],
+               [0xBD, 'abx'], [0xB9, 'aby'], [0xA1, 'inx'], [0xB1, 'iny'],
+               [0xB2, 'izp']]);
+   def('LDX', [[0xA2, 'imm'], [0xA6, 'zp'], [0xB6, 'zpy'], [0xAE, 'abs'],
+               [0xBE, 'aby']]);
+   def('LDY', [[0xA0, 'imm'], [0xA4, 'zp'], [0xB4, 'zpx'], [0xAC, 'abs'],
+               [0xBC, 'abx']]);
+   def('LSR', [[0x4A, 'acc'], [0x46, 'zp'], [0x56, 'zpx'], [0x4E, 'abs'],
+               [0x5E, 'abx']]);
+   def('NOP', [[0xEA, 'imp']]);
+   def('ORA', [[0x09, 'imm'], [0x05, 'zp'], [0x15, 'zpx'], [0x0D, 'abs'],
+               [0x1D, 'abx'], [0x19, 'aby'], [0x01, 'inx'], [0x11, 'iny'],
+               [0x12, 'izp']]);
+   def('PHA', [[0x48, 'imp']]);
+   def('PHP', [[0x08, 'imp']]);
+   def('PHX', [[0xDA, 'imp']]);
+   def('PHY', [[0x5A, 'imp']]);
+   def('PLA', [[0x68, 'imp']]);
+   def('PLP', [[0x28, 'imp']]);
+   def('PLX', [[0xFA, 'imp']]);
+   def('PLY', [[0x7A, 'imp']]);
+   def('ROL', [[0x2A, 'acc'], [0x26, 'zp'], [0x36, 'zpx'], [0x2E, 'abs'],
+               [0x3E, 'abx']]);
+   def('ROR', [[0x6A, 'acc'], [0x66, 'zp'], [0x76, 'zpx'], [0x6E, 'abs'],
+               [0x7E, 'abx']]);
+   def('RTI', [[0x40, 'imp']]);
+   def('RTS', [[0x60, 'imp']]);
+   def('SBC', [[0xE9, 'imm'], [0xE5, 'zp'], [0xF5, 'zpx'], [0xED, 'abs'],
+               [0xFD, 'abx'], [0xF9, 'aby'], [0xE1, 'inx'], [0xF1, 'iny'],
+               [0xF2, 'izp']]);
+   def('SEC', [[0x38, 'imp']]);
+   def('SED', [[0xF8, 'imp']]);
+   def('SEI', [[0x78, 'imp']]);
+   def('STA', [[0x85, 'zp'], [0x95, 'zpx'], [0x8D, 'abs'], [0x9D, 'abx'],
+               [0x99, 'aby'], [0x81, 'inx'], [0x91, 'iny'], [0x92, 'izp']]);
+   def('STX', [[0x86, 'zp'], [0x96, 'zpy'], [0x8E, 'abs']]);
+   def('STY', [[0x84, 'zp'], [0x94, 'zpx'], [0x8C, 'abs']]);
+   def('STZ', [[0x64, 'zp'], [0x74, 'zpx'], [0x9C, 'abs'], [0x9E, 'abx']]);
+   def('TAX', [[0xAA, 'imp']]);
+   def('TAY', [[0xA8, 'imp']]);
+   def('TRB', [[0x14, 'zp'], [0x1C, 'abs']]);
+   def('TSB', [[0x04, 'zp'], [0x0C, 'abs']]);
+   def('TSX', [[0xBA, 'imp']]);
+   def('TXA', [[0x8A, 'imp']]);
+   def('TXS', [[0x9A, 'imp']]);
+   def('TYA', [[0x98, 'imp']]);
+   def('STP', [[0xDB, 'imp']]);
+   def('WAI', [[0xCB, 'imp']]);
+   for (let b = 0; b < 8; ++b) {
+      def('RMB' + b, [[0x07 + b * 0x10, 'zp']]);
+      def('SMB' + b, [[0x87 + b * 0x10, 'zp']]);
+      def('BBR' + b, [[0x0F + b * 0x10, 'zpr']]);
+      def('BBS' + b, [[0x8F + b * 0x10, 'zpr']]);
+   }
+   return t;
+})();
+
+/* Disassemble data with the first byte at address `org`.  Returns a
+   BBC-style listing: address, raw bytes, mnemonic with &-hex operands
+   and resolved branch targets. */
+function disassemble(data, org) {
+   let out = '';
+   let i = 0;
+   while (i < data.length) {
+      const pc = (org + i) & 0xFFFF;
+      const opcode = data[i];
+      const op = ASM_OPS[opcode];
+      const len = op ? ASM_LEN[op[1]] : 1;
+      let used = len;
+      let text;
+      if (!op || i + len > data.length) {
+         text = 'EQUB &' + hex(data[i], 2);
+         used = 1;
+         i += 1;
+      } else {
+         const b1 = data[i + 1], b2 = data[i + 2];
+         const w = b1 | (b2 << 8);
+         const mode = op[1];
+         let operand = '';
+         switch (mode) {
+            case 'acc': operand = 'A'; break;
+            case 'imm': operand = '#&' + hex(b1, 2); break;
+            case 'zp':  operand = '&' + hex(b1, 2); break;
+            case 'zpx': operand = '&' + hex(b1, 2) + ',X'; break;
+            case 'zpy': operand = '&' + hex(b1, 2) + ',Y'; break;
+            case 'inx': operand = '(&' + hex(b1, 2) + ',X)'; break;
+            case 'iny': operand = '(&' + hex(b1, 2) + '),Y'; break;
+            case 'izp': operand = '(&' + hex(b1, 2) + ')'; break;
+            case 'abs': operand = '&' + hex(w, 4); break;
+            case 'abx': operand = '&' + hex(w, 4) + ',X'; break;
+            case 'aby': operand = '&' + hex(w, 4) + ',Y'; break;
+            case 'ind': operand = '(&' + hex(w, 4) + ')'; break;
+            case 'iax': operand = '(&' + hex(w, 4) + ',X)'; break;
+            case 'rel':
+               operand = '&' + hex((pc + 2 + (b1 << 24 >> 24)) & 0xFFFF, 4);
+               break;
+            case 'zpr':
+               operand = '&' + hex(b1, 2) + ',&' +
+                         hex((pc + 3 + (b2 << 24 >> 24)) & 0xFFFF, 4);
+               break;
+         }
+         text = op[0] + (operand ? ' ' + operand : '');
+         i += len;
+      }
+      let bytes = '';
+      for (let j = i - used; j < i; ++j)
+         bytes += hex(data[j], 2) + ' ';
+      out += hex(pc, 4) + '  ' + bytes.padEnd(12) + text + '\n';
+   }
+   return out;
+}
+
+function showAsmView(name, data, fullLength, org) {
+   const back = el('p', {class: 'crumbs'},
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         start();
+      }}, '← back'), '  ', el('b', null, name));
+   const notes = [el('p', {class: 'muted'},
+      'Disassembled as 65C02 from &' + hex(org, 4) +
+      ' (the file’s load address). Data bytes appear as EQUB.')];
+   if (fullLength > data.length)
+      notes.push(el('p', {class: 'muted'},
+         'Showing the first ' + humanSize(data.length) + ' of ' +
+         humanSize(fullLength) + ' - use download for the whole file.'));
+   $content.replaceChildren(back, ...notes,
+      el('pre', {class: 'hex'}, disassemble(data, org)));
+   setStatus('');
+}
+
+/* ---------------------------------------------------------------- */
+/* Hex viewer                                                        */
+/* ---------------------------------------------------------------- */
+
+const HEX_CAP = 65536;
+
+/* Text view: tokenised BBC BASIC gets a proper LISTing; anything else
+   is shown as plain text with control bytes tamed. */
+function showTextView(name, data, fullLength) {
+   const back = el('p', {class: 'crumbs'},
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         start();
+      }}, '← back'), '  ', el('b', null, name));
+   const basic = (fullLength === data.length) ? detokenise(data) : null;
+   let text = basic;
+   if (text === null) {
+      text = '';
+      for (let i = 0; i < data.length; ++i) {
+         const b = data[i];
+         if (b === 0x0D) text += '\n';
+         else if (b === 0x0A) { if (i === 0 || data[i - 1] !== 0x0D) text += '\n'; }
+         else if (b === 0x09 || (b >= 0x20 && b < 0x7F)) text += String.fromCharCode(b);
+         else text += '·';
+      }
+   }
+   const notes = [el('p', {class: 'muted'}, basic !== null
+      ? 'Tokenised BBC BASIC, shown as a LISTing.'
+      : 'Not a tokenised BASIC program - shown as plain text.')];
+   if (fullLength > data.length)
+      notes.push(el('p', {class: 'muted'},
+         'Showing the first ' + humanSize(data.length) + ' of ' +
+         humanSize(fullLength) + ' - use download for the whole file.'));
+   $content.replaceChildren(back, ...notes, el('pre', {class: 'hex'}, text));
+   setStatus('');
+}
+
+function hexDump(data, base, digits) {
+   let out = '';
+   for (let o = 0; o < data.length; o += 16) {
+      let hx = '', tx = '';
+      for (let i = 0; i < 16; ++i) {
+         if (o + i < data.length) {
+            const b = data[o + i];
+            hx += hex(b, 2) + ' ';
+            tx += (b >= 0x20 && b < 0x7F) ? String.fromCharCode(b) : '.';
+         } else {
+            hx += '   ';
+         }
+      }
+      out += hex(base + o, digits) + '  ' + hx + ' ' + tx + '\n';
+   }
+   return out;
+}
+
+function showHexView(name, data, fullLength) {
+   const back = el('p', {class: 'crumbs'},
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         start();                       /* re-enter at the catalogue */
+      }}, '← back'), '  ', el('b', null, name));
+   const notes = [];
+   if (fullLength > data.length)
+      notes.push(el('p', {class: 'muted'},
+         'Showing the first ' + humanSize(data.length) + ' of ' +
+         humanSize(fullLength) + ' - use download for the whole file.'));
+   $content.replaceChildren(back, ...notes,
+      el('pre', {class: 'hex'}, hexDump(data, 0, 6)));
+   setStatus('');
+}
+
+/* Raw hex view of the WHOLE opened file, paged HEX_CAP bytes at a
+   time so even a multi-hundred-MB image costs one range request per
+   page.  Reached via ?view=hex, or automatically for any file whose
+   extension the viewer does not recognise - which makes this page a
+   general-purpose hex viewer for anything on the SD card. */
+function showRawHex(offset) {
+   withStatus('Fetching…', async () => {
+      offset = Math.max(0, Math.min(offset, imgSize - 1 || 0));
+      offset &= ~15;                    /* keep rows aligned across pages */
+      const n = Math.min(HEX_CAP, imgSize - offset);
+      const data = imgSize ? await readBytes(offset, n) : new Uint8Array(0);
+      const digits = imgSize > 0xFFFFFF ? 8 : 6;
+      const nav = el('p', {class: 'crumbs'});
+      if (offset > 0)
+         nav.append(el('a', {href: '#', onclick: ev => {
+            ev.preventDefault();
+            showRawHex(offset - HEX_CAP);
+         }}, '← previous 64 KB'), '   ');
+      nav.append(el('b', null, imgSize
+         ? '&' + hex(offset, digits) + ' – &' + hex(offset + n - 1, digits) +
+           ' of ' + humanSize(imgSize)
+         : 'empty file'));
+      if (offset + n < imgSize)
+         nav.append('   ', el('a', {href: '#', onclick: ev => {
+            ev.preventDefault();
+            showRawHex(offset + HEX_CAP);
+         }}, 'next 64 KB →'));
+      $content.replaceChildren(nav,
+         el('pre', {class: 'hex'}, hexDump(data, offset, digits)));
+   });
+}
+
+/* ---------------------------------------------------------------- */
+/* Entry point                                                       */
+/* ---------------------------------------------------------------- */
+
+/* Like withStatus, but a failure interrupts only the ACTION (alert),
+   leaving the catalogue view on screen - used for per-file fetches
+   and exports, where wiping the whole page over a transient error
+   strands the user. */
+function withAction(msg, fn) {
+   return withStatus(msg, fn, e => alert(e.message || String(e)));
+}
+
+function withStatus(msg, fn, onError) {
+   setStatus(msg);
+   return Promise.resolve().then(fn).then(() => {
+      if ($status.textContent === msg) setStatus('');
+   }).catch(e => {
+      if (onError) { setStatus(''); onError(e); }
+      else showError(e.message || String(e));
+   });
+}
+
+function detectType(path) {
+   const base = path.split('/').pop().toLowerCase();
+   const ext = base.includes('.') ? base.split('.').pop() : '';
+   if (ext === 'ssd') return 'ssd';
+   if (ext === 'dsd') return 'dsd';
+   if (ext === 'mmb') return 'mmb';
+   /* .adl (ADFS L, interleaved) needs no remapping: its cylinder
+      order on disc is exactly ADFS's logical sector order. */
+   if (ext === 'adf' || ext === 'adm' || ext === 'adl') return 'adfs';
+   if (ext === 'dat' && base.startsWith('scsi')) return 'adfs';
+   return null;
+}
+
+function showOpenForm() {
+   $content.replaceChildren(el('div', {class: 'card'},
+      el('p', null, 'Enter the SD-card path of a disc image ' +
+         '(.ssd, .dsd, .mmb, .adf, .adm, .adl or scsi*.dat). ' +
+         'Any other file opens as a raw hex dump:'),
+      el('form', null,
+         el('input', {type: 'text', id: 'path',
+                      placeholder: '/discs/games.ssd'}), ' ',
+         el('input', {type: 'submit', value: 'Open'}))));
+   $content.querySelector('form').addEventListener('submit', ev => {
+      ev.preventDefault();
+      const p = $content.querySelector('#path').value.trim();
+      if (p) location.search = '?img=' + encodeURIComponent(p);
+   });
+}
+
+function start() {
+   withStatus('Opening image…', async () => {
+      const type = detectType(imgPath);
+      imgSize = await headSize(imgUrl);
+      /* Unrecognised files are shown as raw hex rather than refused,
+         and ?view=hex forces it for recognised images too. */
+      if (!type || params.get('view') === 'hex')
+         return showRawHex(0);
+      if (type === 'mmb') return showMmb();
+      if (type === 'adfs') return showAdfs();
+      return showDfs(type);
+   });
+}
+
+if (!imgPath) {
+   showOpenForm();
+} else {
+   imgUrl = encodePath(imgPath);
+   $title.textContent = imgPath.split('/').pop();
+   document.title = $title.textContent + ' - Pi1MHz disc viewer';
+   if (detectType(imgPath) && params.get('view') !== 'hex')
+      $title.append(' ', el('a', {
+         style: 'font-size:13px;font-weight:400',
+         href: '?img=' + encodeURIComponent(imgPath) + '&view=hex'
+      }, '[raw hex]'));
+   start();
+}
+</script>
+</body>
+</html>

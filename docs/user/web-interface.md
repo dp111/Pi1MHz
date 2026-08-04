@@ -2,7 +2,9 @@
 
 With [WiFi](wifi.md) set up, Pi1MHz runs a small web server. Point a
 browser at the Pi - `http://pi1mhz.local/`, `http://Pi1MHz/` or its IP
-address - and you get a home page linking to everything below.
+address - and you get a home page linking to everything below. All the
+pages (including the disc viewer) follow your browser or operating
+system's light/dark theme preference automatically.
 
 ## Pages
 
@@ -19,7 +21,21 @@ address - and you get a home page linking to everything below.
 
 Any other address is treated as a path on the SD card, so
 `http://pi1mhz.local/BeebSCSI0/scsi0.dat` downloads that file
-directly.
+directly. Downloads support HTTP Range requests (`curl -r`,
+download-manager resume, media seeking), which is also what makes the
+disc image viewer below fast.
+
+## Looking inside disc images
+
+The file browser shows a **[view contents]** link next to Acorn disc
+images (`.ssd`, `.dsd`, `.mmb`, `.adf`/`.adm`/`.adl`, `scsi*.dat`).
+It opens a viewer that runs entirely in your browser: list catalogues,
+extract files (with `.inf` sidecars), view BASIC listings, hex dumps
+and 65C02 disassembly, export to `.zip` - and edit DFS discs in
+place, including adding files to discs inside an MMB and inserting
+whole MMB slots. It doubles as a paged hex viewer for any SD file.
+See [the disc image viewer and editor](disc-viewer.md) for the full
+guide.
 
 Uploading through `/files/` is the everyday way to get a disc image or
 ROM onto the card without pulling it out of the Pi. The server refuses

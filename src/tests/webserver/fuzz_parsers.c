@@ -173,11 +173,34 @@ int main(void)
          free(o);
       }
 
+      /* Range header: a WS_RANGE_OK window always sits inside the file */
+      {
+         uint32_t size = rnd();
+         if ((rnd() & 3u) == 0u)
+            size &= 0xFFu;              /* exercise tiny / zero sizes too */
+         uint32_t start = 0xDEADBEEFu, rlen = 0xDEADBEEFu;
+         if (ws_parse_range(s, size, &start, &rlen) == WS_RANGE_OK) {
+            assert(size > 0u);
+            assert(rlen >= 1u);
+            assert(start < size);
+            assert((uint64_t)start + rlen <= size);
+         }
+      }
+
       /* Digest fields + uri binding + hex compare */
       {
          size_t osz = 1u + rnd() % 48u;
          char  *o   = outbuf(osz);
          if (ws_digest_field(s, digest_keys[rnd() % 10u], o, osz))
+            assert(strlen(o) < osz);
+         free(o);
+      }
+
+      /* Query-string parameter extraction */
+      {
+         size_t osz = 1u + rnd() % 24u;
+         char  *o   = outbuf(osz);
+         if (ws_query_param(s, "offset", o, osz))
             assert(strlen(o) < osz);
          free(o);
       }

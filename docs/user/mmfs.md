@@ -49,6 +49,10 @@ cards are not read, and MMFS2 will find no disc images on one.
 
 ## Changing images from another computer
 
+You can look inside `BEEB.MMB` and the disc images - browse slots,
+extract files, add files to a disc, insert whole discs into slots -
+from a web browser: see [the disc image viewer](disc-viewer.md).
+
 Because everything lives on the Pi's SD card, disc images (or the
 whole `BEEB.MMB`) can be added and replaced over
 [WiFi/WebDAV](web-interface.md) or [USB](usb-file-access.md) without

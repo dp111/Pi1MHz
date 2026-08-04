@@ -166,6 +166,13 @@ wifi_ssid=PiNet wifi_password=secret123 wifi_ip=192.168.1.40 wifi_netmask=255.25
                        not stalled by FatFs).
 - `/files/...`       — browse the SD card, download files, upload files
                        (`multipart/form-data`, streamed straight to FatFs).
+                       Disc images (`.ssd`/`.dsd`/`.mmb`/`.adf`/`.adm`/
+                       `.adl`/`scsi*.dat`) get a [view contents] link into
+                       the client-side viewer at `/Pi1MHz/disc.html`.
+                       File GETs honour single-range `Range:` headers
+                       (206/416, `Accept-Ranges: bytes`) so the viewer can
+                       pull catalogue sectors out of large images without
+                       downloading them whole; see `ws_parse_range`.
 - `/framebuffer`     — preview the live BBC VDU output as an embedded BMP.
 - `/framebuffer.bmp` — 24-bit BMP of the current framebuffer (rows
                        streamed on demand to keep TCP buffers bounded).
@@ -191,7 +198,13 @@ card whether you're using a browser or a mounted WebDAV drive).
 
 Verbs implemented: `OPTIONS`, `PROPFIND` (Depth 0 or 1; "infinity" is
 capped at 1), `PUT`, `DELETE`, `MKCOL`, `COPY`, `MOVE`, `LOCK`,
-`UNLOCK`.  `LOCK` returns a well-formed response with a synthetic
+`UNLOCK`.  `PUT` with an `?offset=N` query switches to an in-place
+ranged write: the body is written into the EXISTING file at that byte
+offset (no temp file, no truncate, never creates or extends; requires
+Content-Length; bounds-checked against the file's current size).  The
+disc viewer uses this to patch disc images - insert an MMB slot, add
+a DFS catalogue entry - without re-uploading the whole image.  Same
+digest auth and Beeb-busy interlocks as a normal PUT.  `LOCK` returns a well-formed response with a synthetic
 opaque-lock token so the Windows mini-redirector keeps writing; no
 server-side lock state is actually retained.  Collection-level
 recursive `COPY` is not implemented (returns `501`).  Recursive
