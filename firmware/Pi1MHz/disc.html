@@ -15,10 +15,14 @@
                     sector order, so all three read as flat images)
     scsi*.dat       BeebSCSI LUN image (ADFS old map)
 
-  Per file: download, .inf sidecar, hex dump, and a text view that
-  detokenises BBC BASIC programs.  Whole catalogues (a DFS side, an MMB
-  slot, an ADFS folder tree) can be exported as a store-method .zip
-  with .inf sidecars, and a .dsd side can be saved as a plain .ssd.
+  Per file: download, .inf sidecar, hex dump, a text view that
+  detokenises BBC BASIC programs, and a 65C02 disassembly rooted at
+  the file's load address.  Whole catalogues (a DFS side, an MMB slot,
+  an ADFS folder tree) can be exported as a store-method .zip with
+  .inf sidecars, and a .dsd side can be saved as a plain .ssd.
+  Files whose extension is not a known disc image (and images opened
+  with ?view=hex) get a paged raw hex dump instead, making this page a
+  general-purpose hex viewer for anything on the SD card.
 
   All format parsing happens HERE, in the browser.  The Pi only serves
   byte ranges of the image file (HTTP Range requests), so listing a
@@ -436,7 +440,17 @@ function dfsFileRow(side, f) {
                                               Math.ceil(n / 256));
             showHexView(fullname, data.subarray(0, n), f.length);
          });
-      }}, 'hex'));
+      }}, 'hex'),
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         withStatus('Fetching ' + fullname + '…', async () => {
+            const n = Math.min(f.length, HEX_CAP);
+            const data = await readDfsSectors(side, f.start,
+                                              Math.ceil(n / 256));
+            showAsmView(fullname, data.subarray(0, n), f.length,
+                        f.load & 0xFFFF);
+         });
+      }}, 'asm'));
    return el('tr', null,
       el('td', {class: 'm'}, fullname + (f.locked ? ' \u{1F512}' : '')),
       el('td', {class: 'm r'}, hex(f.load, 6)),
@@ -732,7 +746,15 @@ function showAdfsDir(crumbs) {
                      showHexView(path, await readBytes(f.sector * 256, n),
                                  f.length);
                   });
-               }}, 'hex'));
+               }}, 'hex'), ' ',
+               el('a', {href: '#', onclick: ev => {
+                  ev.preventDefault();
+                  withStatus('Fetching ' + path + '…', async () => {
+                     const n = Math.min(f.length, HEX_CAP);
+                     showAsmView(path, await readBytes(f.sector * 256, n),
+                                 f.length, f.load & 0xFFFF);
+                  });
+               }}, 'asm'));
          }
          table.append(el('tr', null,
             el('td', {class: 'm'}, nameCell),
@@ -762,6 +784,197 @@ async function showAdfs() {
    adfsDiscInfo = 'ADFS disc: ' + total + ' sectors (' +
                   humanSize(total * 256) + ')';
    showAdfsDir([{name: '$', sector: 2}]);
+}
+
+/* ---------------------------------------------------------------- */
+/* 6502 / 65C02 disassembler                                         */
+/* ---------------------------------------------------------------- */
+
+/* Bytes per instruction for each addressing mode. */
+const ASM_LEN = {imp: 1, acc: 1, imm: 2, zp: 2, zpx: 2, zpy: 2, inx: 2,
+                 iny: 2, izp: 2, rel: 2, abs: 3, abx: 3, aby: 3, ind: 3,
+                 iax: 3, zpr: 3};
+
+/* Full 65C02 opcode map: NMOS 6502 base set, the CMOS additions
+   (BRA/PHX/PLX/PHY/PLY/STZ/TRB/TSB, (zp) modes, JMP (abs,X), BIT
+   extensions, INC/DEC A), the Rockwell bit instructions
+   (RMB/SMB/BBR/BBS) and WDC's STP/WAI.  Anything else is data on any
+   65C02 and is emitted as EQUB. */
+const ASM_OPS = (() => {
+   const t = {};
+   const def = (mn, spec) => {
+      for (const [op, mode] of spec) t[op] = [mn, mode];
+   };
+   def('ADC', [[0x69, 'imm'], [0x65, 'zp'], [0x75, 'zpx'], [0x6D, 'abs'],
+               [0x7D, 'abx'], [0x79, 'aby'], [0x61, 'inx'], [0x71, 'iny'],
+               [0x72, 'izp']]);
+   def('AND', [[0x29, 'imm'], [0x25, 'zp'], [0x35, 'zpx'], [0x2D, 'abs'],
+               [0x3D, 'abx'], [0x39, 'aby'], [0x21, 'inx'], [0x31, 'iny'],
+               [0x32, 'izp']]);
+   def('ASL', [[0x0A, 'acc'], [0x06, 'zp'], [0x16, 'zpx'], [0x0E, 'abs'],
+               [0x1E, 'abx']]);
+   def('BCC', [[0x90, 'rel']]);
+   def('BCS', [[0xB0, 'rel']]);
+   def('BEQ', [[0xF0, 'rel']]);
+   def('BMI', [[0x30, 'rel']]);
+   def('BNE', [[0xD0, 'rel']]);
+   def('BPL', [[0x10, 'rel']]);
+   def('BVC', [[0x50, 'rel']]);
+   def('BVS', [[0x70, 'rel']]);
+   def('BRA', [[0x80, 'rel']]);
+   def('BIT', [[0x24, 'zp'], [0x2C, 'abs'], [0x89, 'imm'], [0x34, 'zpx'],
+               [0x3C, 'abx']]);
+   def('BRK', [[0x00, 'imp']]);
+   def('CLC', [[0x18, 'imp']]);
+   def('CLD', [[0xD8, 'imp']]);
+   def('CLI', [[0x58, 'imp']]);
+   def('CLV', [[0xB8, 'imp']]);
+   def('CMP', [[0xC9, 'imm'], [0xC5, 'zp'], [0xD5, 'zpx'], [0xCD, 'abs'],
+               [0xDD, 'abx'], [0xD9, 'aby'], [0xC1, 'inx'], [0xD1, 'iny'],
+               [0xD2, 'izp']]);
+   def('CPX', [[0xE0, 'imm'], [0xE4, 'zp'], [0xEC, 'abs']]);
+   def('CPY', [[0xC0, 'imm'], [0xC4, 'zp'], [0xCC, 'abs']]);
+   def('DEC', [[0x3A, 'acc'], [0xC6, 'zp'], [0xD6, 'zpx'], [0xCE, 'abs'],
+               [0xDE, 'abx']]);
+   def('DEX', [[0xCA, 'imp']]);
+   def('DEY', [[0x88, 'imp']]);
+   def('EOR', [[0x49, 'imm'], [0x45, 'zp'], [0x55, 'zpx'], [0x4D, 'abs'],
+               [0x5D, 'abx'], [0x59, 'aby'], [0x41, 'inx'], [0x51, 'iny'],
+               [0x52, 'izp']]);
+   def('INC', [[0x1A, 'acc'], [0xE6, 'zp'], [0xF6, 'zpx'], [0xEE, 'abs'],
+               [0xFE, 'abx']]);
+   def('INX', [[0xE8, 'imp']]);
+   def('INY', [[0xC8, 'imp']]);
+   def('JMP', [[0x4C, 'abs'], [0x6C, 'ind'], [0x7C, 'iax']]);
+   def('JSR', [[0x20, 'abs']]);
+   def('LDA', [[0xA9, 'imm'], [0xA5, 'zp'], [0xB5, 'zpx'], [0xAD, 'abs'],
+               [0xBD, 'abx'], [0xB9, 'aby'], [0xA1, 'inx'], [0xB1, 'iny'],
+               [0xB2, 'izp']]);
+   def('LDX', [[0xA2, 'imm'], [0xA6, 'zp'], [0xB6, 'zpy'], [0xAE, 'abs'],
+               [0xBE, 'aby']]);
+   def('LDY', [[0xA0, 'imm'], [0xA4, 'zp'], [0xB4, 'zpx'], [0xAC, 'abs'],
+               [0xBC, 'abx']]);
+   def('LSR', [[0x4A, 'acc'], [0x46, 'zp'], [0x56, 'zpx'], [0x4E, 'abs'],
+               [0x5E, 'abx']]);
+   def('NOP', [[0xEA, 'imp']]);
+   def('ORA', [[0x09, 'imm'], [0x05, 'zp'], [0x15, 'zpx'], [0x0D, 'abs'],
+               [0x1D, 'abx'], [0x19, 'aby'], [0x01, 'inx'], [0x11, 'iny'],
+               [0x12, 'izp']]);
+   def('PHA', [[0x48, 'imp']]);
+   def('PHP', [[0x08, 'imp']]);
+   def('PHX', [[0xDA, 'imp']]);
+   def('PHY', [[0x5A, 'imp']]);
+   def('PLA', [[0x68, 'imp']]);
+   def('PLP', [[0x28, 'imp']]);
+   def('PLX', [[0xFA, 'imp']]);
+   def('PLY', [[0x7A, 'imp']]);
+   def('ROL', [[0x2A, 'acc'], [0x26, 'zp'], [0x36, 'zpx'], [0x2E, 'abs'],
+               [0x3E, 'abx']]);
+   def('ROR', [[0x6A, 'acc'], [0x66, 'zp'], [0x76, 'zpx'], [0x6E, 'abs'],
+               [0x7E, 'abx']]);
+   def('RTI', [[0x40, 'imp']]);
+   def('RTS', [[0x60, 'imp']]);
+   def('SBC', [[0xE9, 'imm'], [0xE5, 'zp'], [0xF5, 'zpx'], [0xED, 'abs'],
+               [0xFD, 'abx'], [0xF9, 'aby'], [0xE1, 'inx'], [0xF1, 'iny'],
+               [0xF2, 'izp']]);
+   def('SEC', [[0x38, 'imp']]);
+   def('SED', [[0xF8, 'imp']]);
+   def('SEI', [[0x78, 'imp']]);
+   def('STA', [[0x85, 'zp'], [0x95, 'zpx'], [0x8D, 'abs'], [0x9D, 'abx'],
+               [0x99, 'aby'], [0x81, 'inx'], [0x91, 'iny'], [0x92, 'izp']]);
+   def('STX', [[0x86, 'zp'], [0x96, 'zpy'], [0x8E, 'abs']]);
+   def('STY', [[0x84, 'zp'], [0x94, 'zpx'], [0x8C, 'abs']]);
+   def('STZ', [[0x64, 'zp'], [0x74, 'zpx'], [0x9C, 'abs'], [0x9E, 'abx']]);
+   def('TAX', [[0xAA, 'imp']]);
+   def('TAY', [[0xA8, 'imp']]);
+   def('TRB', [[0x14, 'zp'], [0x1C, 'abs']]);
+   def('TSB', [[0x04, 'zp'], [0x0C, 'abs']]);
+   def('TSX', [[0xBA, 'imp']]);
+   def('TXA', [[0x8A, 'imp']]);
+   def('TXS', [[0x9A, 'imp']]);
+   def('TYA', [[0x98, 'imp']]);
+   def('STP', [[0xDB, 'imp']]);
+   def('WAI', [[0xCB, 'imp']]);
+   for (let b = 0; b < 8; ++b) {
+      def('RMB' + b, [[0x07 + b * 0x10, 'zp']]);
+      def('SMB' + b, [[0x87 + b * 0x10, 'zp']]);
+      def('BBR' + b, [[0x0F + b * 0x10, 'zpr']]);
+      def('BBS' + b, [[0x8F + b * 0x10, 'zpr']]);
+   }
+   return t;
+})();
+
+/* Disassemble data with the first byte at address `org`.  Returns a
+   BBC-style listing: address, raw bytes, mnemonic with &-hex operands
+   and resolved branch targets. */
+function disassemble(data, org) {
+   let out = '';
+   let i = 0;
+   while (i < data.length) {
+      const pc = (org + i) & 0xFFFF;
+      const opcode = data[i];
+      const op = ASM_OPS[opcode];
+      const len = op ? ASM_LEN[op[1]] : 1;
+      let used = len;
+      let text;
+      if (!op || i + len > data.length) {
+         text = 'EQUB &' + hex(data[i], 2);
+         used = 1;
+         i += 1;
+      } else {
+         const b1 = data[i + 1], b2 = data[i + 2];
+         const w = b1 | (b2 << 8);
+         const mode = op[1];
+         let operand = '';
+         switch (mode) {
+            case 'acc': operand = 'A'; break;
+            case 'imm': operand = '#&' + hex(b1, 2); break;
+            case 'zp':  operand = '&' + hex(b1, 2); break;
+            case 'zpx': operand = '&' + hex(b1, 2) + ',X'; break;
+            case 'zpy': operand = '&' + hex(b1, 2) + ',Y'; break;
+            case 'inx': operand = '(&' + hex(b1, 2) + ',X)'; break;
+            case 'iny': operand = '(&' + hex(b1, 2) + '),Y'; break;
+            case 'izp': operand = '(&' + hex(b1, 2) + ')'; break;
+            case 'abs': operand = '&' + hex(w, 4); break;
+            case 'abx': operand = '&' + hex(w, 4) + ',X'; break;
+            case 'aby': operand = '&' + hex(w, 4) + ',Y'; break;
+            case 'ind': operand = '(&' + hex(w, 4) + ')'; break;
+            case 'iax': operand = '(&' + hex(w, 4) + ',X)'; break;
+            case 'rel':
+               operand = '&' + hex((pc + 2 + (b1 << 24 >> 24)) & 0xFFFF, 4);
+               break;
+            case 'zpr':
+               operand = '&' + hex(b1, 2) + ',&' +
+                         hex((pc + 3 + (b2 << 24 >> 24)) & 0xFFFF, 4);
+               break;
+         }
+         text = op[0] + (operand ? ' ' + operand : '');
+         i += len;
+      }
+      let bytes = '';
+      for (let j = i - used; j < i; ++j)
+         bytes += hex(data[j], 2) + ' ';
+      out += hex(pc, 4) + '  ' + bytes.padEnd(12) + text + '\n';
+   }
+   return out;
+}
+
+function showAsmView(name, data, fullLength, org) {
+   const back = el('p', {class: 'crumbs'},
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         start();
+      }}, '← back'), '  ', el('b', null, name));
+   const notes = [el('p', {class: 'muted'},
+      'Disassembled as 65C02 from &' + hex(org, 4) +
+      ' (the file’s load address). Data bytes appear as EQUB.')];
+   if (fullLength > data.length)
+      notes.push(el('p', {class: 'muted'},
+         'Showing the first ' + humanSize(data.length) + ' of ' +
+         humanSize(fullLength) + ' - use download for the whole file.'));
+   $content.replaceChildren(back, ...notes,
+      el('pre', {class: 'hex'}, disassemble(data, org)));
+   setStatus('');
 }
 
 /* ---------------------------------------------------------------- */
@@ -801,12 +1014,7 @@ function showTextView(name, data, fullLength) {
    setStatus('');
 }
 
-function showHexView(name, data, fullLength) {
-   const back = el('p', {class: 'crumbs'},
-      el('a', {href: '#', onclick: ev => {
-         ev.preventDefault();
-         start();                       /* re-enter at the catalogue */
-      }}, '← back'), '  ', el('b', null, name));
+function hexDump(data, base, digits) {
    let out = '';
    for (let o = 0; o < data.length; o += 16) {
       let hx = '', tx = '';
@@ -819,15 +1027,57 @@ function showHexView(name, data, fullLength) {
             hx += '   ';
          }
       }
-      out += hex(o, 6) + '  ' + hx + ' ' + tx + '\n';
+      out += hex(base + o, digits) + '  ' + hx + ' ' + tx + '\n';
    }
+   return out;
+}
+
+function showHexView(name, data, fullLength) {
+   const back = el('p', {class: 'crumbs'},
+      el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         start();                       /* re-enter at the catalogue */
+      }}, '← back'), '  ', el('b', null, name));
    const notes = [];
    if (fullLength > data.length)
       notes.push(el('p', {class: 'muted'},
          'Showing the first ' + humanSize(data.length) + ' of ' +
          humanSize(fullLength) + ' - use download for the whole file.'));
-   $content.replaceChildren(back, ...notes, el('pre', {class: 'hex'}, out));
+   $content.replaceChildren(back, ...notes,
+      el('pre', {class: 'hex'}, hexDump(data, 0, 6)));
    setStatus('');
+}
+
+/* Raw hex view of the WHOLE opened file, paged HEX_CAP bytes at a
+   time so even a multi-hundred-MB image costs one range request per
+   page.  Reached via ?view=hex, or automatically for any file whose
+   extension the viewer does not recognise - which makes this page a
+   general-purpose hex viewer for anything on the SD card. */
+function showRawHex(offset) {
+   withStatus('Fetching…', async () => {
+      offset = Math.max(0, Math.min(offset, imgSize - 1 || 0));
+      offset &= ~15;                    /* keep rows aligned across pages */
+      const n = Math.min(HEX_CAP, imgSize - offset);
+      const data = imgSize ? await readBytes(offset, n) : new Uint8Array(0);
+      const digits = imgSize > 0xFFFFFF ? 8 : 6;
+      const nav = el('p', {class: 'crumbs'});
+      if (offset > 0)
+         nav.append(el('a', {href: '#', onclick: ev => {
+            ev.preventDefault();
+            showRawHex(offset - HEX_CAP);
+         }}, '← previous 64 KB'), '   ');
+      nav.append(el('b', null, imgSize
+         ? '&' + hex(offset, digits) + ' – &' + hex(offset + n - 1, digits) +
+           ' of ' + humanSize(imgSize)
+         : 'empty file'));
+      if (offset + n < imgSize)
+         nav.append('   ', el('a', {href: '#', onclick: ev => {
+            ev.preventDefault();
+            showRawHex(offset + HEX_CAP);
+         }}, 'next 64 KB →'));
+      $content.replaceChildren(nav,
+         el('pre', {class: 'hex'}, hexDump(data, offset, digits)));
+   });
 }
 
 /* ---------------------------------------------------------------- */
@@ -857,7 +1107,8 @@ function detectType(path) {
 function showOpenForm() {
    $content.replaceChildren(el('div', {class: 'card'},
       el('p', null, 'Enter the SD-card path of a disc image ' +
-         '(.ssd, .dsd, .mmb, .adf, .adm, .adl or scsi*.dat):'),
+         '(.ssd, .dsd, .mmb, .adf, .adm, .adl or scsi*.dat). ' +
+         'Any other file opens as a raw hex dump:'),
       el('form', {onsubmit: null},
          el('input', {type: 'text', id: 'path',
                       placeholder: '/discs/games.ssd'}), ' ',
@@ -872,10 +1123,11 @@ function showOpenForm() {
 function start() {
    withStatus('Opening image…', async () => {
       const type = detectType(imgPath);
-      if (!type)
-         throw new Error('Unrecognised image type - supported: .ssd, ' +
-                         '.dsd, .mmb, .adf, .adm, .adl, scsi*.dat');
       imgSize = await headSize(imgUrl);
+      /* Unrecognised files are shown as raw hex rather than refused,
+         and ?view=hex forces it for recognised images too. */
+      if (!type || params.get('view') === 'hex')
+         return showRawHex(0);
       if (type === 'mmb') return showMmb();
       if (type === 'adfs') return showAdfs();
       return showDfs(type);
@@ -888,6 +1140,11 @@ if (!imgPath) {
    imgUrl = encodePath(imgPath);
    $title.textContent = imgPath.split('/').pop();
    document.title = $title.textContent + ' - Pi1MHz disc viewer';
+   if (detectType(imgPath) && params.get('view') !== 'hex')
+      $title.append(' ', el('a', {
+         style: 'font-size:13px;font-weight:400',
+         href: '?img=' + encodeURIComponent(imgPath) + '&view=hex'
+      }, '[raw hex]'));
    start();
 }
 </script>

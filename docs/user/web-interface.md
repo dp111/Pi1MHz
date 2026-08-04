@@ -37,8 +37,10 @@ entirely in your browser:
   ADFS directory tree
 - download an individual file straight out of the image (with an
   optional `.inf` sidecar carrying its addresses), view it as text -
-  tokenised BBC BASIC programs are shown as a proper LISTing - or peek
-  at it as a hex dump
+  tokenised BBC BASIC programs are shown as a proper LISTing - peek at
+  it as a hex dump, or disassemble it as 65C02 machine code (the full
+  CMOS set including the Rockwell bit instructions), rooted at the
+  file's load address
 - export a whole catalogue (a DFS disc, an MMB slot, or an ADFS folder
   tree) as a `.zip` of the files with their `.inf` sidecars
 - download one MMB slot as a standalone `.ssd`, or save one side of a
@@ -49,6 +51,12 @@ catalogue of even a 500 MB `scsi.dat` moves a few hundred bytes over
 the WiFi, and extracting a file costs just that file's size. The
 viewer is read-only - to change an image, download it, edit it with
 your usual tools, and upload it back.
+
+The viewer doubles as a **hex viewer for any SD file**: open a path
+whose extension it does not recognise (or add `&view=hex` to the URL,
+or use the "[raw hex]" link shown on image pages) and it shows a raw
+hex dump, paged 64 KB at a time - browsing the far end of a huge image
+costs one small request per page.
 
 The page itself lives on the SD card at `/Pi1MHz/disc.html`, so it can
 be updated by copying a new file there - no reflash needed. You can
