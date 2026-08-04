@@ -794,7 +794,12 @@ hx('U %x %d %s' % (IP10, 32768,
 cpu.call(SYM['svc5_irq_check'])
 check(cpu.mem[0x77] == 1, 'NOTIFY-as-DATA invoked dir_op_dispatch')
 check(cpu.mem[0x78] == 0 and cpu.mem[0x79] == 0, 'NOTIFY args X=Y=0 (OSProc 0)')
-check(cpu.mem[0x2a00] == 0x4e, 'NOTIFY char (data phase) at the port buffer')
+# +0x82, not the page base: rx_imm_exec preset port_buf_len to &82 and the
+# NMI bulk store used it as the initial write cursor, so lang_0_insert_key
+# reads the keypress from (net_rx_ptr),&82. Hardware 2026-08-04: a stash at
+# +0 made every inbound *NOTIFY character print as &00 on a real Master.
+check(cpu.mem[0x2a82] == 0x4e, 'NOTIFY char (data phase) at port buffer +&82')
+check(cpu.mem[0x2a00] != 0x4e, 'NOTIFY char NOT at the page base (old bug)')
 _acks = [d for _, _, d in udp_out if d[0] == 3]
 check(len(_acks) == 1 and int.from_bytes(_acks[0][4:8], 'little') == 0x7008,
       'NOTIFY-as-DATA answered with an ACK echoing the seq')
@@ -836,8 +841,11 @@ print('== 9c5: remote JSR delivers its parameter block to the port buffer (R5) =
 cpu.mem[0x0d68] = 0                              # *Unprot
 cpu.mem[0x009c] = 0x00; cpu.mem[0x009d] = 0x2a  # net_rx_ptr -> &2A00 port buffer
 cpu.mem[0x2a00:0x2a04] = b'\x00\x00\x00\x00'
-# JSR stub at &2200: ldy #0 / lda (net_rx_ptr),y / sta &76 / inc &75 / rts
-for i, b in enumerate([0xa0, 0x00, 0xb1, 0x9c, 0x85, 0x76, 0xe6, 0x75, 0x60]):
+cpu.mem[0x2a82:0x2a86] = b'\x00\x00\x00\x00'
+# JSR stub at &2200: ldy #&82 / lda (net_rx_ptr),y / sta &76 / inc &75 / rts
+# (+&82 is where the original NMI bulk store put the data phase - the offset
+# real remote-JSR routines were written against, see lang_0_insert_key)
+for i, b in enumerate([0xa0, 0x82, 0xb1, 0x9c, 0x85, 0x76, 0xe6, 0x75, 0x60]):
     cpu.mem[0x2200+i] = b
 cpu.mem[0x75] = cpu.mem[0x76] = 0
 udp_out.clear()
@@ -848,8 +856,8 @@ jsrp = bytes([0x00, 0x22, 0x00, 0x00]) + b'PRM'   # target &2200, ext, then para
 hx('U %x %d %s' % (IP10, 32768, aun(5, 0, 0x03, 0x7300, jsrp).hex())); hx('L')
 cpu.call(SYM['svc5_irq_check'])
 check(cpu.mem[0x75] == 1, 'remote JSR with params executed')
-check(cpu.mem[0x76] == ord('P'), 'JSR routine read its params from net_rx_ptr (R5)')
-check(bytes(cpu.mem[0x2a00:0x2a03]) == b'PRM', 'full param block landed in the port buffer (R5)')
+check(cpu.mem[0x76] == ord('P'), 'JSR routine read its params at net_rx_ptr+&82 (R5)')
+check(bytes(cpu.mem[0x2a82:0x2a85]) == b'PRM', 'full param block landed at port buffer +&82 (R5)')
 
 print('== 9c6: JSR immediate round-trips (etb_imm out == eih_defer_op in) ==')
 # Strongest self-consistency check: capture the ROM's OWN outbound JSR
@@ -860,8 +868,9 @@ cpu.mem[0x0d68] = 0                              # *Unprot
 cpu.mem[0x0d63] = 0                              # no 2nd proc: params from host RAM
 cpu.mem[0x009c] = 0x00; cpu.mem[0x009d] = 0x2a  # net_rx_ptr -> &2A00 port buffer
 cpu.mem[0x2a00:0x2a04] = b'\x00\x00\x00\x00'
+cpu.mem[0x2a82:0x2a86] = b'\x00\x00\x00\x00'
 cpu.mem[0x75] = cpu.mem[0x76] = 0
-for i, b in enumerate([0xa0, 0x00, 0xb1, 0x9c, 0x85, 0x76, 0xe6, 0x75, 0x60]):
+for i, b in enumerate([0xa0, 0x82, 0xb1, 0x9c, 0x85, 0x76, 0xe6, 0x75, 0x60]):
     cpu.mem[0x2200+i] = b                        # same JSR stub as 9c5, at &2200
 cpu.mem[0x3400:0x3403] = b'RTP'                 # local param block to transmit
 # TXCB: ctrl &83 JSR, port 0, dest 254.1, param buffer &3400..&3403 (3 bytes),
@@ -894,8 +903,8 @@ udp_out.clear()
 hx('U %x %d %s' % (IP10, 32768, aun(2, 0, 0x03, 0x7400, captured['payload']).hex())); hx('L')
 cpu.call(SYM['svc5_irq_check'])
 check(cpu.mem[0x75] == 1, 'round-tripped JSR executed the target')
-check(bytes(cpu.mem[0x2a00:0x2a03]) == b'RTP',
-      'round-tripped param block arrived intact at the port buffer')
+check(bytes(cpu.mem[0x2a82:0x2a85]) == b'RTP',
+      'round-tripped param block arrived intact at port buffer +&82')
 
 print('== 9c7: PEEK immediate round-trips (8-byte [start][end] descriptor, R6) ==')
 # The original calc_peek_poke_size emitted [remote start][remote end] with
