@@ -116,6 +116,7 @@ const $title = document.getElementById('title');
 function el(tag, attrs, ...children) {
    const e = document.createElement(tag);
    for (const k in (attrs || {})) {
+      if (attrs[k] == null) continue;   /* null/undefined: no attribute */
       if (k === 'onclick') e.addEventListener('click', attrs[k]);
       else e.setAttribute(k, attrs[k]);
    }
@@ -155,9 +156,14 @@ function saveBlob(bytes, filename) {
    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
-/* Turn a Beeb filename into something FAT/host-filesystem safe. */
+/* Turn a Beeb filename into something FAT/host-filesystem safe.  Disc
+   images are untrusted input, so this also neutralises control bytes
+   and the '.'/'..' names that would make a zip entry escape its
+   folder (zip-slip) - a crafted image can name a directory ".." even
+   though real ADFS never would. */
 function safeName(n) {
-   return n.replace(/[\\/:*?"<>|]/g, '_') || '_';
+   const s = n.replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g, '_');
+   return /^\.{0,2}$/.test(s) ? '_' : s;
 }
 
 /* ---------------------------------------------------------------- */
@@ -210,9 +216,18 @@ async function writeBytes(offset, data) {
 /* Read [start, start+len) of the image.  Prefers a Range request; a
    200 reply means the firmware predates Range support, in which case
    small images are buffered whole and sliced locally. */
+/* Slice the whole-file cache, refusing to hand back short data the
+   way the Range path refuses a short 206. */
+function wholeFileSlice(start, len) {
+   const s = wholeFile.subarray(start, start + len);
+   if (s.length !== len)
+      throw new Error('read past the end of the image (truncated file?)');
+   return s;
+}
+
 async function readBytes(start, len) {
    if (len <= 0) return new Uint8Array(0);
-   if (wholeFile) return wholeFile.subarray(start, start + len);
+   if (wholeFile) return wholeFileSlice(start, len);
    const r = await fetch(imgUrl,
       {headers: {'Range': 'bytes=' + start + '-' + (start + len - 1)}});
    if (r.status === 206) {
@@ -228,7 +243,7 @@ async function readBytes(start, len) {
             'image is too large to download whole - update the Pi1MHz ' +
             'firmware to browse it.');
       wholeFile = b;
-      return wholeFile.subarray(start, start + len);
+      return wholeFileSlice(start, len);
    }
    throw new Error('HTTP ' + r.status + ' reading the image');
 }
@@ -537,6 +552,41 @@ function dfsAllocate(disc, sectorsNeeded) {
                    sectorsNeeded + ' needed).');
 }
 
+/* Byte just past the physical location of logical sectors [0, end). */
+function dfsPhysEnd(side, end) {
+   if (side.kind === 'dsd')
+      return dsdPhysOffset(side.n, end - 1) + 256;
+   return side.base + end * 256;
+}
+
+/* Refuse edits on discs whose data would not survive them.  Watford
+   62-file DFS keeps a second catalogue in sectors 2-3 (marked by
+   eight &AA bytes at the start of sector 2); files listed only there
+   look like free space to the standard catalogue, so an add here
+   would silently destroy them. */
+async function ensureEditableDfs(side) {
+   if (dfsPhysEnd(side, 3) > imgSize)
+      return;                            /* no sector 2: nothing hidden */
+   const s2 = await readDfsSectors(side, 2, 1);
+   if (s2.subarray(0, 8).every(b => b === 0xAA))
+      throw new Error('This is a Watford 62-file disc - its extended ' +
+                      'catalogue lives in sectors the standard catalogue ' +
+                      'calls free, so editing it here would corrupt it.');
+}
+
+/* Guard against a concurrent editor (another tab, a script): compare
+   the catalogue's cycle and count against the snapshot this edit was
+   planned from, immediately before overwriting it.  Not a true
+   compare-and-swap - the server has no such primitive - but it
+   shrinks the race window from "the whole data transfer" to one
+   round-trip. */
+async function dfsCheckUnchanged(side, disc) {
+   const now = parseDfsCatalogue(await readDfsSectors(side, 0, 2));
+   if (now.cycle !== disc.cycle || now.files.length !== disc.files.length)
+      throw new Error('The disc changed underneath this edit (another ' +
+                      'tab?) - reload and try again.');
+}
+
 /* Add one file: data sectors first, catalogue (with bumped cycle)
    last, so an interrupted transfer never leaves a catalogue entry
    pointing at half-written data. */
@@ -545,14 +595,24 @@ async function dfsAddFile(side, disc, entry, bytes) {
       throw new Error('The catalogue is full (31 files).');
    if (bytes.length > 0x3FFFF)
       throw new Error('DFS files cannot exceed 256 KB.');
-   if (disc.files.some(f => f.dir === entry.dir
+   if (disc.files.some(f => f.dir.toUpperCase() === entry.dir.toUpperCase()
          && f.name.toUpperCase() === entry.name.toUpperCase()))
       throw new Error(entry.dir + '.' + entry.name +
                       ' already exists - delete it first.');
+   await ensureEditableDfs(side);
    entry.length = bytes.length;
-   entry.start = dfsAllocate(disc, Math.max(1, Math.ceil(bytes.length / 256)));
+   const sectors = Math.max(1, Math.ceil(bytes.length / 256));
+   entry.start = dfsAllocate(disc, sectors);
+   /* Truncated images are common (trimmed to the last used sector):
+      catch the mismatch here with a clear message instead of letting
+      the server's bounds check surface as a bare HTTP 416. */
+   if (dfsPhysEnd(side, entry.start + sectors) > imgSize)
+      throw new Error('The image file is shorter than its catalogue ' +
+                      'claims, and the free space is past its physical ' +
+                      'end - pad the image to full size first.');
    if (bytes.length > 0)
       await writeDfsSectors(side, entry.start, bytes);
+   await dfsCheckUnchanged(side, disc);
    const next = {...disc, cycle: bcdInc(disc.cycle),
                  files: disc.files.concat(entry)};
    await writeDfsSectors(side, 0, buildDfsCatalogue(next));
@@ -561,6 +621,8 @@ async function dfsAddFile(side, disc, entry, bytes) {
 /* Delete = a catalogue-only change: the entry vanishes and its
    sectors are implicitly free again. */
 async function dfsDeleteFile(side, disc, victim) {
+   await ensureEditableDfs(side);
+   await dfsCheckUnchanged(side, disc);
    const next = {...disc, cycle: bcdInc(disc.cycle),
                  files: disc.files.filter(f => f !== victim)};
    await writeDfsSectors(side, 0, buildDfsCatalogue(next));
@@ -570,10 +632,12 @@ async function dfsDeleteFile(side, disc, victim) {
 function parseInf(text) {
    const t = text.trim().split(/\s+/);
    if (t.length < 3) return null;
-   const out = {name: t[0], load: parseInt(t[1], 16) >>> 0,
-                exec: parseInt(t[2], 16) >>> 0,
+   /* validate BEFORE >>>0: NaN>>>0 is 0, which would silently accept
+      a malformed sidecar as load/exec zero */
+   const load = parseInt(t[1], 16), exec = parseInt(t[2], 16);
+   if (isNaN(load) || isNaN(exec)) return null;
+   const out = {name: t[0], load: load >>> 0, exec: exec >>> 0,
                 locked: t.slice(3).some(x => /^L(ocked)?$/i.test(x))};
-   if (isNaN(out.load) || isNaN(out.exec)) return null;
    if (out.name.length > 2 && out.name[1] === '.') {
       out.dir = out.name[0];
       out.name = out.name.slice(2);
@@ -597,7 +661,7 @@ function dfsFileRow(side, f, refresh) {
    const actions = el('td', {class: 'actions'},
       el('a', {href: '#', onclick: ev => {
          ev.preventDefault();
-         withStatus('Fetching ' + fullname + '…', async () => {
+         withAction('Fetching ' + fullname + '…', async () => {
             const data = await readDfsSectors(side, f.start,
                                               Math.ceil(f.length / 256));
             saveBlob(data.subarray(0, f.length), safeName(f.name));
@@ -610,7 +674,7 @@ function dfsFileRow(side, f, refresh) {
       }}, '.inf'),
       el('a', {href: '#', onclick: ev => {
          ev.preventDefault();
-         withStatus('Fetching ' + fullname + '…', async () => {
+         withAction('Fetching ' + fullname + '…', async () => {
             const n = Math.min(f.length, HEX_CAP);
             const data = await readDfsSectors(side, f.start,
                                               Math.ceil(n / 256));
@@ -619,7 +683,7 @@ function dfsFileRow(side, f, refresh) {
       }}, 'text'),
       el('a', {href: '#', onclick: ev => {
          ev.preventDefault();
-         withStatus('Fetching ' + fullname + '…', async () => {
+         withAction('Fetching ' + fullname + '…', async () => {
             const n = Math.min(f.length, HEX_CAP);
             const data = await readDfsSectors(side, f.start,
                                               Math.ceil(n / 256));
@@ -628,7 +692,7 @@ function dfsFileRow(side, f, refresh) {
       }}, 'hex'),
       el('a', {href: '#', onclick: ev => {
          ev.preventDefault();
-         withStatus('Fetching ' + fullname + '…', async () => {
+         withAction('Fetching ' + fullname + '…', async () => {
             const n = Math.min(f.length, HEX_CAP);
             const data = await readDfsSectors(side, f.start,
                                               Math.ceil(n / 256));
@@ -764,16 +828,20 @@ function dfsDiscCard(label, disc, side, base, refresh) {
    if (disc.files.length)
       line.append(' · ', el('a', {href: '#', onclick: ev => {
          ev.preventDefault();
-         withStatus('Building zip…', () => dfsZipAll(side, disc, base));
+         withAction('Building zip…', () => dfsZipAll(side, disc, base));
       }}, 'download all (.zip)'));
    if (side.kind === 'dsd') {
       /* Save this side as a plain single-sided image.  The catalogue's
-         sector count sizes the output; clamp the copy to what the disc
-         can actually hold in case the field is garbage. */
-      const sectors = Math.min(Math.max(disc.sectors, 2), 800);
+         sector count sizes the output, clamped both against garbage
+         values and against the image's PHYSICAL size - truncated .dsd
+         files whose catalogue claims 80 tracks are common, and the
+         export should carry what exists rather than fail. */
+      let sectors = Math.min(Math.max(disc.sectors, 2), 800);
+      while (sectors > 2 && dsdPhysOffset(side.n, sectors - 1) + 256 > imgSize)
+         --sectors;
       line.append(' · ', el('a', {href: '#', onclick: ev => {
          ev.preventDefault();
-         withStatus('Extracting side…', async () => {
+         withAction('Extracting side…', async () => {
             saveBlob(await readDfsSectors(side, 0, sectors),
                      base + '.ssd');
          });
@@ -842,14 +910,14 @@ function localDsdSide(buf, sideN) {
    disc data lands, and only then is the entry (name + read/write
    status) written - so a dropped connection leaves an "unformatted"
    slot, never a valid-looking half-disc. */
-async function mmbWriteSlot(n, name, ssd) {
+async function mmbWriteSlot(n, name, ssd, finalStatus) {
    const entryOff = 16 * (n + 1);
    await writeBytes(entryOff, mmbEntry(name, 0xF0));
    await writeBytes(MMB_CAT + n * MMB_DISC, ssd);
-   await writeBytes(entryOff, mmbEntry(name, 0x0F));
+   await writeBytes(entryOff, mmbEntry(name, finalStatus));
 }
 
-function mmbInsertForm(n, existingName, refresh) {
+function mmbInsertForm(n, existingName, existingStatus, refresh) {
    const fileIn = el('input', {type: 'file', accept: '.ssd,.dsd'});
    const nameIn = el('input', {type: 'text', size: '14', maxlength: '12',
                                value: existingName || ''});
@@ -876,6 +944,13 @@ function mmbInsertForm(n, existingName, refresh) {
       err.textContent = '';
       const f = fileIn.files[0];
       if (!f) { err.textContent = 'Choose a disc image.'; return; }
+      /* Replace really is destructive: the old slot data starts being
+         overwritten before the new disc has fully arrived. */
+      if (existingName
+          && !confirm('Replace slot ' + n + ' ("' + existingName + '")? ' +
+                      'Its current contents are destroyed even if the ' +
+                      'transfer fails part-way.'))
+         return;
       withStatus('Writing slot ' + n + '…', async () => {
          const buf = new Uint8Array(await f.arrayBuffer());
          let ssd;
@@ -887,7 +962,9 @@ function mmbInsertForm(n, existingName, refresh) {
          }
          if (!dfsPlausible(ssd))
             throw new Error('That does not look like a DFS disc image.');
-         await mmbWriteSlot(n, nameIn.value.trim() || 'DISC' + n, ssd);
+         /* keep an existing read-only slot read-only */
+         await mmbWriteSlot(n, nameIn.value.trim() || 'DISC' + n, ssd,
+                            existingStatus === 0x00 ? 0x00 : 0x0F);
          refresh();
       }, e => { err.textContent = e.message || String(e); });
    });
@@ -922,7 +999,7 @@ async function showMmb() {
       if (usable)
          actions.append(el('a', {href: '#', onclick: ev => {
             ev.preventDefault();
-            withStatus('Fetching slot ' + n + ' (200 KB)…', async () => {
+            withAction('Fetching slot ' + n + ' (200 KB)…', async () => {
                saveBlob(await readBytes(slotSide.base, MMB_DISC),
                         safeName(name || ('disc' + n)) + '.ssd');
             });
@@ -931,7 +1008,7 @@ async function showMmb() {
          actions.append(' ', el('a', {href: '#', onclick: ev => {
             ev.preventDefault();
             formBox.replaceChildren(
-               mmbInsertForm(n, usable ? name : '', refresh));
+               mmbInsertForm(n, usable ? name : '', st, refresh));
             formBox.scrollIntoView({block: 'nearest'});
          }}, usable ? 'replace…' : 'insert…'));
       table.append(el('tr', null,
@@ -1089,7 +1166,7 @@ function showAdfsDir(crumbs) {
             actions.append(
                el('a', {href: '#', onclick: ev => {
                   ev.preventDefault();
-                  withStatus('Fetching ' + path + '…', async () => {
+                  withAction('Fetching ' + path + '…', async () => {
                      saveBlob(await readBytes(f.sector * 256, f.length),
                               safeName(f.name));
                   });
@@ -1103,7 +1180,7 @@ function showAdfsDir(crumbs) {
                }}, '.inf'), ' ',
                el('a', {href: '#', onclick: ev => {
                   ev.preventDefault();
-                  withStatus('Fetching ' + path + '…', async () => {
+                  withAction('Fetching ' + path + '…', async () => {
                      const n = Math.min(f.length, HEX_CAP);
                      showTextView(path, await readBytes(f.sector * 256, n),
                                   f.length);
@@ -1111,7 +1188,7 @@ function showAdfsDir(crumbs) {
                }}, 'text'), ' ',
                el('a', {href: '#', onclick: ev => {
                   ev.preventDefault();
-                  withStatus('Fetching ' + path + '…', async () => {
+                  withAction('Fetching ' + path + '…', async () => {
                      const n = Math.min(f.length, HEX_CAP);
                      showHexView(path, await readBytes(f.sector * 256, n),
                                  f.length);
@@ -1119,7 +1196,7 @@ function showAdfsDir(crumbs) {
                }}, 'hex'), ' ',
                el('a', {href: '#', onclick: ev => {
                   ev.preventDefault();
-                  withStatus('Fetching ' + path + '…', async () => {
+                  withAction('Fetching ' + path + '…', async () => {
                      const n = Math.min(f.length, HEX_CAP);
                      showAsmView(path, await readBytes(f.sector * 256, n),
                                  f.length, f.load & 0xFFFF);
@@ -1136,7 +1213,7 @@ function showAdfsDir(crumbs) {
       }
       trail.append('   ', el('a', {class: 'muted', href: '#', onclick: ev => {
          ev.preventDefault();
-         withStatus('Building zip…', () => adfsZipDir(crumbs));
+         withAction('Building zip…', () => adfsZipDir(crumbs));
       }}, '[download folder as .zip]'));
       $content.replaceChildren(trail,
          adfsDiscInfo ? el('p', {class: 'muted'}, adfsDiscInfo) : '',
@@ -1454,6 +1531,14 @@ function showRawHex(offset) {
 /* Entry point                                                       */
 /* ---------------------------------------------------------------- */
 
+/* Like withStatus, but a failure interrupts only the ACTION (alert),
+   leaving the catalogue view on screen - used for per-file fetches
+   and exports, where wiping the whole page over a transient error
+   strands the user. */
+function withAction(msg, fn) {
+   return withStatus(msg, fn, e => alert(e.message || String(e)));
+}
+
 function withStatus(msg, fn, onError) {
    setStatus(msg);
    return Promise.resolve().then(fn).then(() => {
@@ -1482,7 +1567,7 @@ function showOpenForm() {
       el('p', null, 'Enter the SD-card path of a disc image ' +
          '(.ssd, .dsd, .mmb, .adf, .adm, .adl or scsi*.dat). ' +
          'Any other file opens as a raw hex dump:'),
-      el('form', {onsubmit: null},
+      el('form', null,
          el('input', {type: 'text', id: 'path',
                       placeholder: '/discs/games.ssd'}), ' ',
          el('input', {type: 'submit', value: 'Open'}))));

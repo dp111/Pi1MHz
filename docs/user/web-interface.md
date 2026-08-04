@@ -66,7 +66,10 @@ even inside a 100 MB MMB an operation takes a fraction of a second:
   name of your choice
 
 Writes are refused with a clear message while the Beeb has the image
-open (release it with `*BYE`, or CTRL-BREAK out of MMFS, first), and
+open (release it with `*BYE`, or CTRL-BREAK out of MMFS, first) -
+checked continuously during the transfer, not just at the start - and
+Watford 62-file discs are detected and refused (their extended
+catalogue lives in sectors a standard catalogue edit would reuse), and
 are ordered so a dropped connection cannot leave a half-written disc
 looking valid: an interrupted slot insert shows as "unformatted", an
 interrupted file add never reaches the catalogue. ADFS images

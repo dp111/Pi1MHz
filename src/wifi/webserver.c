@@ -277,9 +277,13 @@ typedef struct {
       temp, no truncate, no rename - so a client can patch a region of
       a large disc image (an MMB slot, a DFS catalogue) without
       re-uploading the whole file.  Bounded strictly to the file's
-      current size at entry; never creates or extends.  When set,
+      current size; never creates or extends.  The Beeb-busy interlock
+      is re-checked per flush (the bytes cannot be rolled back), the
+      target's timestamp is preserved across the patch, and
       dav_put_finish skips the whole unlink/rename tail. */
    bool     dav_put_in_place;
+   uint16_t dav_put_keep_fdate;   /* in-place: target's pre-patch mtime */
+   uint16_t dav_put_keep_ftime;
    /* dav_put_target is the FINAL path the client asked us to PUT.
       dav_put_tmppath is where the body is actually written ("<target>.part")
       so a client disconnect halfway through an upload does not destroy a
@@ -1674,7 +1678,6 @@ static void page_open(ws_strbuf_t *b, const char *title)
       "td.r,th.r{color:#9a9aa5}"
       ".err{color:#ff6b5e}"
       ".muted{color:#9a9aa5}"
-      "input[type=text]{background:#26262e;color:#e4e4e8;border-color:#44444e}"
       "}"
       "</style></head><body><header>Pi1MHz"
       "<a href=\"/\">Home</a><a href=\"/files/\">Files</a>"
@@ -4100,6 +4103,21 @@ static bool dav_put_flush(ws_conn_t *c)
 
    if (c->dav_put_buf_len == 0u)
       return true;
+   /* In-place mode patches the live target, so the entry-time busy
+      check is not enough: a long body streams for seconds and the
+      Beeb can start the LUN (or MMFS can open the MMB) mid-transfer.
+      Re-check before every 32 KB burst - a string compare - and stop
+      with 423 rather than keep interleaving writes under BeebSCSI.
+      Bytes already flushed have patched the file (there is no temp
+      to roll back), but stopping bounds the damage and the client's
+      write ordering keeps the catalogue consistent. */
+   if (c->dav_put_in_place && ws_beeb_path_busy(c->dav_put_target)) {
+      f_close(&c->write_file.dav);
+      c->dav_put_open = false;
+      c->dav_put_buf_len = 0u;
+      (void)ws_error(c, 423, "Locked", WS_BUSY_MSG);
+      return false;
+   }
    if (f_write(&c->write_file.dav, c->dl_buf, (UINT)c->dav_put_buf_len, &bw)
           != FR_OK || bw != c->dav_put_buf_len) {
       f_close(&c->write_file.dav);
@@ -4154,7 +4172,8 @@ static bool dav_put_finish(ws_conn_t *c)
       fr = f_close(&c->write_file.dav);
       c->dav_put_open = false;
       if (fr != FR_OK) {
-         (void)f_unlink(c->dav_put_tmppath);
+         if (c->dav_put_tmppath[0] != '\0')      /* in-place has no temp */
+            (void)f_unlink(c->dav_put_tmppath);
          return ws_error(c, 500, "Internal Server Error",
                          "Could not close the uploaded file.");
       }
@@ -4173,10 +4192,16 @@ static bool dav_put_finish(ws_conn_t *c)
       c->dav_put_draining = false;
       return ws_send_auth_challenge(c, false);
    }
-   /* In-place ranged write: the bytes are already in the target file;
-      there is no temp to rename and the timestamp-preservation dance
-      does not apply.  Just invalidate the caches and reply. */
+   /* In-place ranged write: the bytes are already in the target file
+      and there is no temp to rename - but the f_close above stamped
+      the FF_FS_NORTC default date, so restore the mtime captured at
+      entry (best-effort, mirroring the rename path), then invalidate
+      the caches and reply. */
    if (c->dav_put_in_place) {
+      FILINFO keep;
+      keep.fdate = c->dav_put_keep_fdate;
+      keep.ftime = c->dav_put_keep_ftime;
+      (void)f_utime(c->dav_put_target, &keep);
       c->dav_put_in_place = false;
       ws_fs_mutated();
       mtp_fs_notify_object_changed(c->dav_put_target);
@@ -4389,12 +4414,26 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
       for (p = off_str; *p != '\0'; ++p) {
          if (*p < '0' || *p > '9')
             return ws_error(c, 400, "Bad Request", "Malformed offset.");
-         if (offset > (UINT32_C(0x7FFFFFFF) - 9u) / 10u)
-            return ws_error(c, 416, "Range Not Satisfiable",
-                            "Offset is beyond any file on this card.");
+         /* Saturate rather than reject: FAT files run to 4 GiB-1, so
+            any 32-bit offset can be legal; a saturated (or merely
+            huge) value is rejected by the honest past-end-of-file
+            check below. */
+         if (offset > (UINT32_MAX - 9u) / 10u) {
+            offset = UINT32_MAX;
+            continue;
+         }
          offset = (offset * 10u) + (uint32_t)(*p - '0');
       }
       in_place = true;
+   } else if (query != NULL && query[0] != '\0') {
+      /* A PUT with a query string it does not understand is far more
+         likely a mistyped ?offset than a whole-file upload: refusing
+         is cheap, silently replacing a 100 MB image with a 256-byte
+         patch body is not.  Ordinary WebDAV clients never send a
+         query on PUT, so nothing legitimate is turned away. */
+      return ws_error(c, 400, "Bad Request",
+                      "Unrecognised query on PUT - an in-place write "
+                      "needs ?offset=N.");
    }
 
    /* Any successful PUT changes a child's FILINFO; drop the per-
@@ -4474,8 +4513,9 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
       chunked body's size isn't known up front, so its bounds can't be
       pre-checked).  Used by /Pi1MHz/disc.html to patch disc images
       (insert an MMB slot, add a DFS file) without re-uploading the
-      whole image.  The busy interlock above already refused anything
-      the Beeb holds open. */
+      whole image.  The busy interlock above gates entry; because
+      in-place bytes cannot be rolled back the way the temp+rename
+      path's can, dav_put_flush re-checks it before every burst. */
    if (in_place) {
       if (te_chunked)
          return ws_error(c, 400, "Bad Request",
@@ -4506,6 +4546,11 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
       }
       strlcpy(c->dav_put_target, sdpath, sizeof c->dav_put_target);
       c->dav_put_tmppath[0] = '\0';          /* nothing to unlink on abort */
+      /* The patch's f_close restamps the FF_FS_NORTC default date; keep
+         the target's real mtime (often set by a client PROPPATCH) the
+         same way the rename path does. */
+      c->dav_put_keep_fdate = fno.fdate;
+      c->dav_put_keep_ftime = fno.ftime;
       if (f_open(&c->write_file.dav, sdpath,
                  FA_WRITE | FA_OPEN_EXISTING) != FR_OK)
          return ws_error(c, 409, "Conflict",
