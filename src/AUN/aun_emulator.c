@@ -320,6 +320,11 @@ void aun_status_text(char *buf, size_t size)
    APPEND("irq          enabled=%u status=&%02X\n",
           aun_irq_enabled ? 1u : 0u, aun_irq_state);
    APPEND("rx queue     %u frame(s) held\n", aun.rx[0].count);
+   /* host_imm is the switch the ROM's INIT sets (block +8 bit 1). With it
+      off every inbound immediate - including a *NOTIFY - is NAKed, which
+      looks exactly like "can send but cannot receive", so it belongs on the
+      page next to the counters that tell the other causes apart. */
+   APPEND("host imm     %s\n", aun.host_imm_enabled ? "enabled" : "DISABLED");
    APPEND("imm pending  %s\n", aun.himm.active ? "yes" : "no");
    APPEND("learn net    %u\n", aun.learn_net);
    APPEND("map          %lu entries\n", (unsigned long)aun.map_count);
@@ -349,6 +354,12 @@ void aun_status_text(char *buf, size_t size)
           (unsigned long)aun.counters.ack_fail);
    APPEND("rx parked drop %lu\n",
           (unsigned long)aun.counters.rx_parked_drop);
+   /* A held immediate the host never answered (timeout) vs one re-answered
+      from the cache (replay): the two ways an inbound *NOTIFY can fail
+      AFTER the engine has correctly accepted it. */
+   APPEND("imm timeout/replay %lu/%lu\n",
+          (unsigned long)aun.counters.himm_timeout,
+          (unsigned long)aun.counters.himm_replay);
    #undef APPEND
 }
 
