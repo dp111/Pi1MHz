@@ -478,6 +478,31 @@ int main(void)
          "overlong last saturates then clamps");
    }
 
+   puts("== ws_query_param ==");
+   {
+      char v[16];
+      ok(ws_query_param("offset=8192", "offset", v, sizeof v)
+         && streq(v, "8192"), "single param");
+      ok(ws_query_param("a=1&offset=42&b=2", "offset", v, sizeof v)
+         && streq(v, "42"), "middle of list");
+      ok(ws_query_param("OFFSET=7", "offset", v, sizeof v) && streq(v, "7"),
+         "key is case-blind");
+      ok(!ws_query_param("xoffset=5", "offset", v, sizeof v),
+         "prefix of a longer key does not match");
+      ok(!ws_query_param("offsetx=5", "offset", v, sizeof v),
+         "longer key does not match");
+      ok(!ws_query_param("offset", "offset", v, sizeof v),
+         "key without '=' does not match");
+      ok(ws_query_param("offset=", "offset", v, sizeof v) && streq(v, ""),
+         "empty value returned as empty string");
+      ok(ws_query_param("offset=1&offset=2", "offset", v, sizeof v)
+         && streq(v, "1"), "first occurrence wins");
+      ok(!ws_query_param("", "offset", v, sizeof v), "empty query");
+      ok(!ws_query_param(NULL, "offset", v, sizeof v), "NULL query");
+      ok(ws_query_param("offset=123456789012345678", "offset", v, 4u)
+         && streq(v, "123"), "value truncated to the buffer, terminated");
+   }
+
    printf("\n%d checks, %d failures\n", checks, fails);
    return fails ? 1 : 0;
 }

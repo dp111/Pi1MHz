@@ -54,6 +54,27 @@ the WiFi, and extracting a file costs just that file's size. The
 viewer is read-only - to change an image, download it, edit it with
 your usual tools, and upload it back.
 
+With current firmware the viewer can also **edit DFS discs in
+place** - each write patches just the affected bytes of the image, so
+even inside a 100 MB MMB an operation takes a fraction of a second:
+
+- add a file to a `.ssd`, a `.dsd` side, or a disc inside an `.mmb`
+  (pick the file, optionally alongside its `.inf` sidecar to carry
+  the name and load/exec addresses), and delete files
+- insert or replace a whole MMB slot from a local `.ssd` - or from
+  one side of a `.dsd`, de-interleaved automatically - with a slot
+  name of your choice
+
+Writes are refused with a clear message while the Beeb has the image
+open (release it with `*BYE`, or CTRL-BREAK out of MMFS, first), and
+are ordered so a dropped connection cannot leave a half-written disc
+looking valid: an interrupted slot insert shows as "unformatted", an
+interrupted file add never reaches the catalogue. ADFS images
+(`scsi*.dat`, `.adf`, `.adm`, `.adl`) remain read-only - editing the
+ADFS free-space map risks corrupting a hard disc image, so that is
+deliberately not offered. The editing controls only appear when the
+firmware is new enough to support in-place writes.
+
 The viewer doubles as a **hex viewer for any SD file**: open a path
 whose extension it does not recognise (or add `&view=hex` to the URL,
 or use the "[raw hex]" link shown on image pages) and it shows a raw

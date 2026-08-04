@@ -198,7 +198,13 @@ card whether you're using a browser or a mounted WebDAV drive).
 
 Verbs implemented: `OPTIONS`, `PROPFIND` (Depth 0 or 1; "infinity" is
 capped at 1), `PUT`, `DELETE`, `MKCOL`, `COPY`, `MOVE`, `LOCK`,
-`UNLOCK`.  `LOCK` returns a well-formed response with a synthetic
+`UNLOCK`.  `PUT` with an `?offset=N` query switches to an in-place
+ranged write: the body is written into the EXISTING file at that byte
+offset (no temp file, no truncate, never creates or extends; requires
+Content-Length; bounds-checked against the file's current size).  The
+disc viewer uses this to patch disc images - insert an MMB slot, add
+a DFS catalogue entry - without re-uploading the whole image.  Same
+digest auth and Beeb-busy interlocks as a normal PUT.  `LOCK` returns a well-formed response with a synthetic
 opaque-lock token so the Windows mini-redirector keeps writing; no
 server-side lock state is actually retained.  Collection-level
 recursive `COPY` is not implemented (returns `501`).  Recursive

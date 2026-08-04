@@ -272,6 +272,14 @@ typedef struct {
    uint32_t           dav_chunk_drained;    /* cumulative bytes; only enforced while draining */
    int      dav_put_status;
    const char *dav_put_status_text;
+   /* In-place ranged write (PUT with ?offset=N).  The body is written
+      straight into the EXISTING file at the given byte offset - no
+      temp, no truncate, no rename - so a client can patch a region of
+      a large disc image (an MMB slot, a DFS catalogue) without
+      re-uploading the whole file.  Bounded strictly to the file's
+      current size at entry; never creates or extends.  When set,
+      dav_put_finish skips the whole unlink/rename tail. */
+   bool     dav_put_in_place;
    /* dav_put_target is the FINAL path the client asked us to PUT.
       dav_put_tmppath is where the body is actually written ("<target>.part")
       so a client disconnect halfway through an upload does not destroy a
@@ -1045,6 +1053,39 @@ static ws_range_result_t ws_parse_range(const char *value, uint32_t size,
    *start = (uint32_t)first;
    *len = size - (uint32_t)first;
    return WS_RANGE_OK;
+}
+
+/* Extract the value of `key` from a raw query string ("k=v&k2=v2",
+   the text after '?', percent-encoding left as-is).  Keys match
+   case-insensitively and only at parameter starts, so "xoffset=1"
+   never satisfies a lookup for "offset".  Returns true and fills out
+   (NUL-terminated, silently truncated to osz) when found. */
+static bool ws_query_param(const char *query, const char *key,
+                           char *out, size_t osz)
+{
+   size_t klen = strlen(key);
+   const char *p = query;
+
+   if (query == NULL)
+      return false;
+   while (*p != '\0') {
+      if (ws_prefix_ci(p, key, klen) && p[klen] == '=') {
+         const char *v = p + klen + 1u;
+         size_t o = 0u;
+         while (*v != '\0' && *v != '&') {
+            if (o + 1u < osz)
+               out[o++] = *v;
+            ++v;
+         }
+         out[o] = '\0';
+         return true;
+      }
+      while (*p != '\0' && *p != '&')
+         ++p;
+      if (*p == '&')
+         ++p;
+   }
+   return false;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2084,6 +2125,7 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
    c->is_head = false;
    c->dav_put_draining = false;
    c->dav_put_chunked = false;
+   c->dav_put_in_place = false;
    c->dav_put_buf_len = 0u;
    c->dav_remaining = 0u;
    c->dav_put_target[0] = '\0';
@@ -4063,7 +4105,10 @@ static bool dav_put_flush(ws_conn_t *c)
       f_close(&c->write_file.dav);
       c->dav_put_open = false;
       c->dav_put_buf_len = 0u;
-      (void)f_unlink(c->dav_put_tmppath);
+      /* In-place mode has no temp: tmppath is empty then, and the
+         target (partially patched, but at least present) is kept. */
+      if (c->dav_put_tmppath[0] != '\0')
+         (void)f_unlink(c->dav_put_tmppath);
       (void)ws_error(c, 507, "Insufficient Storage",
                      "Writing to the SD card failed.");
       return false;
@@ -4127,6 +4172,15 @@ static bool dav_put_finish(ws_conn_t *c)
    if (c->dav_put_draining) {
       c->dav_put_draining = false;
       return ws_send_auth_challenge(c, false);
+   }
+   /* In-place ranged write: the bytes are already in the target file;
+      there is no temp to rename and the timestamp-preservation dance
+      does not apply.  Just invalidate the caches and reply. */
+   if (c->dav_put_in_place) {
+      c->dav_put_in_place = false;
+      ws_fs_mutated();
+      mtp_fs_notify_object_changed(c->dav_put_target);
+      return dav_put_send_response(c);
    }
    /* Preserve the existing target's timestamp across the replace.  Windows
       Explorer sets the file's real modification time with a PROPPATCH on the
@@ -4311,15 +4365,37 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
    return true;
 }
 
-static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
+static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
+                          const char *query)
 {
    char    sdpath[WS_PATH_MAX];
    char    len_hdr[24];
    char    te_hdr[32];
+   char    off_str[16];
    FILINFO fno;
    uint32_t content_length = 0u;
+   uint32_t offset = 0u;
+   bool    in_place = false;
    const char *p;
    bool    target_existed;
+
+   /* ?offset=N selects the in-place ranged-write mode (see the
+      dav_put_in_place field).  Parse it up front so a malformed value
+      is a clean 400 rather than a whole-file replace the client did
+      not ask for. */
+   if (ws_query_param(query, "offset", off_str, sizeof off_str)) {
+      if (off_str[0] == '\0')
+         return ws_error(c, 400, "Bad Request", "Malformed offset.");
+      for (p = off_str; *p != '\0'; ++p) {
+         if (*p < '0' || *p > '9')
+            return ws_error(c, 400, "Bad Request", "Malformed offset.");
+         if (offset > (UINT32_C(0x7FFFFFFF) - 9u) / 10u)
+            return ws_error(c, 416, "Range Not Satisfiable",
+                            "Offset is beyond any file on this card.");
+         offset = (offset * 10u) + (uint32_t)(*p - '0');
+      }
+      in_place = true;
+   }
 
    /* Any successful PUT changes a child's FILINFO; drop the per-
       directory cache so the next PROPFIND fetches fresh data.
@@ -4384,11 +4460,87 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at)
                       "Cannot PUT over an existing directory.");
 
    if (wifi_debug_enabled()) {
-      wifi_debug_printf("PUT target='%s' te_chunked=%u cl=%lu existed=%u\n",
+      wifi_debug_printf("PUT target='%s' te_chunked=%u cl=%lu existed=%u off=%lu\n",
                         sdpath,
                         te_chunked ? 1u : 0u,
                         (unsigned long)content_length,
-                        target_existed ? 1u : 0u);
+                        target_existed ? 1u : 0u,
+                        in_place ? (unsigned long)offset : 0ul);
+   }
+
+   /* In-place mode: write the body into the existing file at `offset`.
+      Deliberately narrower than a normal PUT - it never creates a
+      file, never grows one, and requires an exact Content-Length (a
+      chunked body's size isn't known up front, so its bounds can't be
+      pre-checked).  Used by /Pi1MHz/disc.html to patch disc images
+      (insert an MMB slot, add a DFS file) without re-uploading the
+      whole image.  The busy interlock above already refused anything
+      the Beeb holds open. */
+   if (in_place) {
+      if (te_chunked)
+         return ws_error(c, 400, "Bad Request",
+                         "A ranged PUT requires a Content-Length.");
+      if (!target_existed)
+         return ws_error(c, 404, "Not Found",
+                         "Ranged PUT cannot create a file.");
+      if (offset > (uint32_t)fno.fsize
+          || content_length > (uint32_t)fno.fsize - offset)
+         return ws_error(c, 416, "Range Not Satisfiable",
+                         "The write would run past the end of the file.");
+      if (content_length == 0u) {
+         /* nothing to do - answer like the CL=0 probe below */
+         ws_strbuf_t r;
+         sb_init(&r);
+         sb_printf(&r,
+                   "HTTP/1.1 204 No Content\r\n"
+                   "Content-Length: 0\r\n"
+                   "%s"
+                   "\r\n",
+                   ws_connection_hdr(c));
+         if (r.failed) { sb_free(&r); return ws_oom(c); }
+         free(c->out); c->out = r.data; c->out_len = r.len;
+         c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
+         c->state = CONN_SEND_MEM;
+         conn_pump(c);
+         return true;
+      }
+      strlcpy(c->dav_put_target, sdpath, sizeof c->dav_put_target);
+      c->dav_put_tmppath[0] = '\0';          /* nothing to unlink on abort */
+      if (f_open(&c->write_file.dav, sdpath,
+                 FA_WRITE | FA_OPEN_EXISTING) != FR_OK)
+         return ws_error(c, 409, "Conflict",
+                         "Could not open the file for writing.");
+      if (f_lseek(&c->write_file.dav, offset) != FR_OK) {
+         f_close(&c->write_file.dav);
+         return ws_error(c, 500, "Internal Server Error",
+                         "Seeking within the file failed.");
+      }
+      c->dav_put_open       = true;
+      c->dav_put_in_place   = true;
+      c->dav_put_buf_len    = 0u;
+      c->dav_put_chunked    = false;
+      c->dav_remaining      = content_length;
+      c->dav_put_status     = 204;
+      c->dav_put_status_text= "No Content";
+      c->state = CONN_RECV_DAV_PUT;
+      {
+         char expect_hdr[32];
+         if (ws_find_header(c->reqhdr, c->reqhdr_len, "Expect",
+                            expect_hdr, sizeof expect_hdr)
+             && ws_strcasestr(expect_hdr, "100-continue") != NULL
+             && c->pcb != NULL) {
+            static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
+            (void)tcp_write(c->pcb, cont, (u16_t)(sizeof cont - 1u),
+                            TCP_WRITE_FLAG_COPY);
+            (void)tcp_output(c->pcb);
+         }
+      }
+      if ((size_t)body_at < c->reqhdr_len) {
+         size_t already = c->reqhdr_len - (size_t)body_at;
+         return dav_put_consume(c, (const uint8_t *)c->reqhdr + body_at,
+                                already);
+      }
+      return true;
    }
 
    /* Windows Explorer's MiniRedirector write-permission probe.
@@ -5580,7 +5732,8 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (ws_method_is(method, "PROPPATCH"))
       return route_dav_proppatch(c, rawpath, body_at);
    if (ws_method_is(method, "PUT"))
-      return route_dav_put(c, rawpath, body_at);
+      return route_dav_put(c, rawpath, body_at,
+                           (query != NULL) ? query + 1 : NULL);
    if (ws_method_is(method, "DELETE"))
       return route_dav_delete(c, rawpath);
    if (ws_method_is(method, "MKCOL"))

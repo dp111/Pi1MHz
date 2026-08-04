@@ -24,6 +24,16 @@
   with ?view=hex) get a paged raw hex dump instead, making this page a
   general-purpose hex viewer for anything on the SD card.
 
+  With firmware that supports in-place writes (PUT ?offset=, shipped
+  alongside Range support - its presence is probed via Accept-Ranges),
+  DFS catalogues become editable: add a file (with optional .inf
+  sidecar), delete a file, and insert/replace whole MMB slots from a
+  local .ssd or one side of a .dsd.  Writes are ordered so an
+  interrupted transfer never leaves a valid-looking half-written
+  catalogue.  ADFS images stay read-only: a free-space-map mistake
+  would corrupt a hard disc image, so that is deliberately out of
+  scope here.
+
   All format parsing happens HERE, in the browser.  The Pi only serves
   byte ranges of the image file (HTTP Range requests), so listing a
   catalogue costs a few hundred bytes of WiFi traffic even from a
@@ -163,10 +173,38 @@ let imgSize = 0;
 let wholeFile = null;
 const WHOLE_FILE_CAP = 4 * 1024 * 1024;
 
+/* True once the server has advertised Accept-Ranges: bytes.  The
+   in-place write endpoint (PUT ?offset=) shipped in the same firmware
+   as Range support, so this doubles as the write-capability probe -
+   critical, because an OLD firmware's PUT ignores the query string
+   and would replace the whole image with the patch body.  All write
+   UI is hidden until this is true. */
+let serverHasRanges = false;
+
 async function headSize(url) {
    const r = await fetch(url, {method: 'HEAD'});
    if (!r.ok) throw new Error('HTTP ' + r.status + ' for ' + url);
+   serverHasRanges =
+      (r.headers.get('Accept-Ranges') || '').includes('bytes');
    return parseInt(r.headers.get('Content-Length') || '0', 10);
+}
+
+/* Write data into the image at a byte offset (in place, no truncate).
+   Server-side this is bounded to the file's current size and refused
+   while the Beeb holds the image open. */
+async function writeBytes(offset, data) {
+   if (!serverHasRanges)
+      throw new Error('This firmware cannot write in place - update the ' +
+                      'Pi1MHz firmware to edit images from the browser.');
+   const r = await fetch(imgUrl + '?offset=' + offset,
+                         {method: 'PUT', body: data});
+   wholeFile = null;                       /* invalidate any read cache */
+   if (r.status === 423)
+      throw new Error('The Beeb has this image open - release it first ' +
+                      '(*BYE in ADFS; close it or CTRL-BREAK in MMFS).');
+   if (r.status === 204 || r.status === 201)
+      return;
+   throw new Error('Write failed: HTTP ' + r.status);
 }
 
 /* Read [start, start+len) of the image.  Prefers a Range request; a
@@ -416,12 +454,145 @@ function parseDfsCatalogue(cat) {
 
 const BOOT_NAMES = ['off', '*LOAD !BOOT', '*RUN !BOOT', '*EXEC !BOOT'];
 
+/* ---------------------------------------------------------------- */
+/* DFS write support                                                 */
+/* ---------------------------------------------------------------- */
+
+/* Write logical DFS sectors.  For a .dsd side the data is split at
+   track boundaries so each ranged PUT lands inside one physical
+   track of the interleaved layout. */
+async function writeDfsSectors(side, start, data) {
+   if (side.kind === 'dsd') {
+      const count = Math.ceil(data.length / 256);
+      for (let j = 0; j < count;) {
+         const s = start + j;
+         const run = Math.min(count - j, 10 - (s % 10));
+         const chunk = data.subarray(j * 256,
+                                     Math.min(data.length, (j + run) * 256));
+         await writeBytes(dsdPhysOffset(side.n, s), chunk);
+         j += run;
+      }
+      return;
+   }
+   await writeBytes(side.base + start * 256, data);
+}
+
+/* Serialise a parsed catalogue back to its two sectors. */
+function buildDfsCatalogue(disc) {
+   const cat = new Uint8Array(512);
+   const putText = (off, s, n) => {
+      for (let i = 0; i < n; ++i)
+         cat[off + i] = i < s.length ? s.charCodeAt(i) & 0x7F : 0x20;
+   };
+   putText(0, disc.title.slice(0, 8), 8);
+   putText(0x100, disc.title.slice(8, 12), 4);
+   cat[0x104] = disc.cycle;
+   cat[0x105] = disc.files.length * 8;
+   cat[0x106] = ((disc.boot & 3) << 4) | ((disc.sectors >> 8) & 3);
+   cat[0x107] = disc.sectors & 0xFF;
+   /* DFS requires catalogue entries ordered by start sector, highest
+      first. */
+   const sorted = [...disc.files].sort((a, b) => b.start - a.start);
+   sorted.forEach((f, i) => {
+      const b = 8 + i * 8, e = 0x108 + i * 8;
+      putText(b, f.name.slice(0, 7), 7);
+      cat[b + 7] = (f.dir.charCodeAt(0) & 0x7F) | (f.locked ? 0x80 : 0);
+      cat[e] = f.load & 0xFF;
+      cat[e + 1] = (f.load >> 8) & 0xFF;
+      cat[e + 2] = f.exec & 0xFF;
+      cat[e + 3] = (f.exec >> 8) & 0xFF;
+      cat[e + 4] = f.length & 0xFF;
+      cat[e + 5] = (f.length >> 8) & 0xFF;
+      cat[e + 6] = ((f.start >> 8) & 3) | (((f.load >> 16) & 3) << 2)
+                 | (((f.length >> 16) & 3) << 4) | (((f.exec >> 16) & 3) << 6);
+      cat[e + 7] = f.start & 0xFF;
+   });
+   return cat;
+}
+
+/* The catalogue cycle count is BCD. */
+function bcdInc(v) {
+   let lo = (v & 0x0F) + 1, hi = (v >> 4) & 0x0F;
+   if (lo > 9) { lo = 0; ++hi; }
+   if (hi > 9) hi = 0;
+   return (hi << 4) | lo;
+}
+
+/* First-fit allocation: DFS files are contiguous, data starts at
+   sector 2.  Returns a start sector or throws. */
+function dfsAllocate(disc, sectorsNeeded) {
+   const extents = disc.files
+      .map(f => ({start: f.start, n: Math.max(1, Math.ceil(f.length / 256))}))
+      .sort((a, b) => a.start - b.start);
+   let at = 2;
+   for (const x of extents) {
+      if (x.start - at >= sectorsNeeded)
+         return at;
+      at = Math.max(at, x.start + x.n);
+   }
+   if (disc.sectors - at >= sectorsNeeded)
+      return at;
+   throw new Error('Not enough contiguous free space on the disc (' +
+                   (disc.sectors - at) + ' sectors at the end, ' +
+                   sectorsNeeded + ' needed).');
+}
+
+/* Add one file: data sectors first, catalogue (with bumped cycle)
+   last, so an interrupted transfer never leaves a catalogue entry
+   pointing at half-written data. */
+async function dfsAddFile(side, disc, entry, bytes) {
+   if (disc.files.length >= 31)
+      throw new Error('The catalogue is full (31 files).');
+   if (bytes.length > 0x3FFFF)
+      throw new Error('DFS files cannot exceed 256 KB.');
+   if (disc.files.some(f => f.dir === entry.dir
+         && f.name.toUpperCase() === entry.name.toUpperCase()))
+      throw new Error(entry.dir + '.' + entry.name +
+                      ' already exists - delete it first.');
+   entry.length = bytes.length;
+   entry.start = dfsAllocate(disc, Math.max(1, Math.ceil(bytes.length / 256)));
+   if (bytes.length > 0)
+      await writeDfsSectors(side, entry.start, bytes);
+   const next = {...disc, cycle: bcdInc(disc.cycle),
+                 files: disc.files.concat(entry)};
+   await writeDfsSectors(side, 0, buildDfsCatalogue(next));
+}
+
+/* Delete = a catalogue-only change: the entry vanishes and its
+   sectors are implicitly free again. */
+async function dfsDeleteFile(side, disc, victim) {
+   const next = {...disc, cycle: bcdInc(disc.cycle),
+                 files: disc.files.filter(f => f !== victim)};
+   await writeDfsSectors(side, 0, buildDfsCatalogue(next));
+}
+
+/* Parse a ".inf" sidecar ("[$.]NAME LOAD EXEC [LEN] [L]"). */
+function parseInf(text) {
+   const t = text.trim().split(/\s+/);
+   if (t.length < 3) return null;
+   const out = {name: t[0], load: parseInt(t[1], 16) >>> 0,
+                exec: parseInt(t[2], 16) >>> 0,
+                locked: t.slice(3).some(x => /^L(ocked)?$/i.test(x))};
+   if (isNaN(out.load) || isNaN(out.exec)) return null;
+   if (out.name.length > 2 && out.name[1] === '.') {
+      out.dir = out.name[0];
+      out.name = out.name.slice(2);
+   }
+   return out;
+}
+
+/* Strip a host filename down to a legal DFS name (7 chars). */
+function dfsNameFromFilename(fname) {
+   return fname.replace(/\.[^.]*$/, '').replace(/[.:"#* ]/g, '')
+          .slice(0, 7).toUpperCase() || 'FILE';
+}
+
 function infFor(fullname, f) {
    return fullname + ' ' + hex(f.load, 6) + ' ' + hex(f.exec, 6) + ' ' +
           hex(f.length, 6) + (f.locked ? ' L' : '') + '\n';
 }
 
-function dfsFileRow(side, f) {
+function dfsFileRow(side, f, refresh) {
    const fullname = f.dir + '.' + f.name;
    const actions = el('td', {class: 'actions'},
       el('a', {href: '#', onclick: ev => {
@@ -465,6 +636,22 @@ function dfsFileRow(side, f) {
                         f.load & 0xFFFF);
          });
       }}, 'asm'));
+   if (serverHasRanges && refresh)
+      actions.append(el('a', {href: '#', onclick: ev => {
+         ev.preventDefault();
+         if (!confirm('Delete ' + fullname + ' from the disc?'))
+            return;
+         withStatus('Deleting ' + fullname + '…', async () => {
+            /* re-read so a stale view can't resurrect other changes */
+            const fresh = parseDfsCatalogue(await readDfsSectors(side, 0, 2));
+            const victim = fresh.files.find(x =>
+               x.dir === f.dir && x.name === f.name && x.start === f.start);
+            if (!victim)
+               throw new Error(fullname + ' is no longer in the catalogue.');
+            await dfsDeleteFile(side, fresh, victim);
+            refresh();
+         }, e => alert(e.message || String(e)));
+      }}, 'delete'));
    return el('tr', null,
       el('td', {class: 'm'}, fullname + (f.locked ? ' \u{1F512}' : '')),
       el('td', {class: 'm r'}, hex(f.load, 6)),
@@ -494,14 +681,80 @@ async function dfsZipAll(side, disc, base) {
    saveBlob(makeZip(entries), base + '.zip');
 }
 
-function dfsDiscCard(label, disc, side, base) {
+/* Inline "add a file to this disc" form.  A .inf sidecar can ride
+   along in the same file picker to supply name and addresses. */
+function dfsAddForm(side, refresh) {
+   const fileIn = el('input', {type: 'file', multiple: ''});
+   const nameIn = el('input', {type: 'text', placeholder: '$.NAME',
+                               size: '10', maxlength: '9'});
+   const loadIn = el('input', {type: 'text', value: '000000', size: '9'});
+   const execIn = el('input', {type: 'text', value: '000000', size: '9'});
+   const lockIn = el('input', {type: 'checkbox'});
+   const err = el('p', {class: 'err'});
+   const pick = () => {
+      const files = Array.from(fileIn.files || []);
+      return {data: files.find(f => !/\.inf$/i.test(f.name)),
+              inf: files.find(f => /\.inf$/i.test(f.name))};
+   };
+   fileIn.addEventListener('change', async () => {
+      const {data, inf} = pick();
+      if (data) nameIn.value = '$.' + dfsNameFromFilename(data.name);
+      if (inf) {
+         const meta = parseInf(await inf.text());
+         if (meta) {
+            nameIn.value = (meta.dir || '$') + '.' + meta.name.slice(0, 7);
+            loadIn.value = hex(meta.load, 6);
+            execIn.value = hex(meta.exec, 6);
+            lockIn.checked = meta.locked;
+         }
+      }
+   });
+   const form = el('form', null,
+      el('p', null, 'File: ', fileIn),
+      el('p', null, 'Name: ', nameIn, '  Load &', loadIn,
+         '  Exec &', execIn, '  ',
+         el('label', null, lockIn, ' locked'), '  ',
+         el('input', {type: 'submit', value: 'Add to disc'})),
+      el('p', {class: 'muted'},
+         'Select the file (plus an optional .inf sidecar). ' +
+         'Name is DIR.NAME, up to 7 characters.'),
+      err);
+   form.addEventListener('submit', ev => {
+      ev.preventDefault();
+      err.textContent = '';
+      const {data} = pick();
+      const m = /^(?:(.)\.)?([^.]{1,7})$/.exec(nameIn.value.trim());
+      const load = parseInt(loadIn.value.replace(/^[&$]|^0x/i, ''), 16);
+      const exec = parseInt(execIn.value.replace(/^[&$]|^0x/i, ''), 16);
+      if (!data) { err.textContent = 'Choose a file to add.'; return; }
+      if (!m) { err.textContent = 'Bad name - use e.g. $.GAME (7 chars max).'; return; }
+      if (isNaN(load) || isNaN(exec)) {
+         err.textContent = 'Load / exec must be hex.';
+         return;
+      }
+      withStatus('Adding ' + nameIn.value + '…', async () => {
+         const bytes = new Uint8Array(await data.arrayBuffer());
+         const fresh = parseDfsCatalogue(await readDfsSectors(side, 0, 2));
+         await dfsAddFile(side, fresh,
+                          {dir: m[1] || '$', name: m[2],
+                           load: load >>> 0, exec: exec >>> 0,
+                           locked: lockIn.checked},
+                          bytes);
+         refresh();
+      }, e => { err.textContent = e.message || String(e); });
+   });
+   return el('div', {class: 'card'},
+      el('p', null, el('b', null, 'Add a file')), form);
+}
+
+function dfsDiscCard(label, disc, side, base, refresh) {
    const head = el('tr', null,
       el('th', null, 'File'), el('th', {class: 'r'}, 'Load'),
       el('th', {class: 'r'}, 'Exec'), el('th', {class: 'r'}, 'Bytes'),
       el('th', null, ''));
    const table = el('table', null, head);
    for (const f of disc.files)
-      table.append(dfsFileRow(side, f));
+      table.append(dfsFileRow(side, f, refresh));
    const info = 'title "' + disc.title + '" · ' +
       disc.sectors + ' sectors (' + humanSize(disc.sectors * 256) +
       ') · boot ' + BOOT_NAMES[disc.boot] +
@@ -526,21 +779,27 @@ function dfsDiscCard(label, disc, side, base) {
          });
       }}, 'this side as .ssd'));
    }
-   return el('div', {class: 'card'}, line,
-      disc.files.length ? table : el('p', {class: 'muted'}, 'No files.'));
+   const frag = document.createDocumentFragment();
+   frag.append(el('div', {class: 'card'}, line,
+      disc.files.length ? table : el('p', {class: 'muted'}, 'No files.')));
+   if (serverHasRanges && refresh)
+      frag.append(dfsAddForm(side, refresh));
+   return frag;
 }
 
 async function showDfs(kind) {
    const sides = (kind === 'dsd')
       ? [{kind: 'dsd', n: 0}, {kind: 'dsd', n: 1}]
       : [{kind: 'ssd', base: 0}];
+   const refresh = () => withStatus('Reloading…', () => showDfs(kind));
    const cards = [];
    for (let i = 0; i < sides.length; ++i) {
       const cat = await readDfsSectors(sides[i], 0, 2);
       cards.push(dfsDiscCard(sides.length > 1 ? 'Side ' + i * 2 : 'Catalogue',
                              parseDfsCatalogue(cat), sides[i],
                              exportBase(sides.length > 1 ? '-side' + i * 2
-                                                         : '')));
+                                                         : ''),
+                             refresh));
    }
    $content.replaceChildren(...cards);
 }
@@ -551,6 +810,92 @@ async function showDfs(kind) {
 
 const MMB_CAT = 8192, MMB_DISC = 204800;
 
+function mmbEntry(name, status) {
+   const e = new Uint8Array(16);
+   for (let i = 0; i < 12 && i < name.length; ++i)
+      e[i] = name.charCodeAt(i) & 0x7F;
+   e[15] = status;
+   return e;
+}
+
+/* Cheap sanity check that a buffer starts with a plausible DFS
+   catalogue before it is inserted into an MMB slot. */
+function dfsPlausible(cat) {
+   const secs = cat[0x107] | ((cat[0x106] & 3) << 8);
+   return (cat[0x105] & 7) === 0 && cat[0x105] / 8 <= 31
+       && secs >= 2 && secs <= 800;
+}
+
+/* De-interleave one side of a local .dsd into a 200 KB SSD buffer. */
+function localDsdSide(buf, sideN) {
+   const out = new Uint8Array(MMB_DISC);
+   for (let s = 0; s < 800; ++s) {
+      const o = ((Math.floor(s / 10) * 2 + sideN) * 10 + (s % 10)) * 256;
+      if (o + 256 <= buf.length)
+         out.set(buf.subarray(o, o + 256), s * 256);
+   }
+   return out;
+}
+
+/* Insert / replace one MMB slot.  Write order makes an interruption
+   benign: the slot is marked unformatted first, then the 200 KB of
+   disc data lands, and only then is the entry (name + read/write
+   status) written - so a dropped connection leaves an "unformatted"
+   slot, never a valid-looking half-disc. */
+async function mmbWriteSlot(n, name, ssd) {
+   const entryOff = 16 * (n + 1);
+   await writeBytes(entryOff, mmbEntry(name, 0xF0));
+   await writeBytes(MMB_CAT + n * MMB_DISC, ssd);
+   await writeBytes(entryOff, mmbEntry(name, 0x0F));
+}
+
+function mmbInsertForm(n, existingName, refresh) {
+   const fileIn = el('input', {type: 'file', accept: '.ssd,.dsd'});
+   const nameIn = el('input', {type: 'text', size: '14', maxlength: '12',
+                               value: existingName || ''});
+   const sideSel = el('select', null,
+      el('option', {value: '0'}, 'side 0'),
+      el('option', {value: '1'}, 'side 2'));
+   const sideWrap = el('span', {style: 'display:none'}, ' Side: ', sideSel);
+   const err = el('p', {class: 'err'});
+   fileIn.addEventListener('change', () => {
+      const f = fileIn.files[0];
+      if (!f) return;
+      sideWrap.style.display = /\.dsd$/i.test(f.name) ? '' : 'none';
+      if (!nameIn.value)
+         nameIn.value = f.name.replace(/\.[^.]*$/, '')
+                        .slice(0, 12).toUpperCase();
+   });
+   const form = el('form', null,
+      el('p', null, 'Disc image (.ssd or .dsd): ', fileIn, sideWrap),
+      el('p', null, 'Slot name: ', nameIn, '  ',
+         el('input', {type: 'submit', value: 'Write to slot ' + n})),
+      err);
+   form.addEventListener('submit', ev => {
+      ev.preventDefault();
+      err.textContent = '';
+      const f = fileIn.files[0];
+      if (!f) { err.textContent = 'Choose a disc image.'; return; }
+      withStatus('Writing slot ' + n + '…', async () => {
+         const buf = new Uint8Array(await f.arrayBuffer());
+         let ssd;
+         if (/\.dsd$/i.test(f.name)) {
+            ssd = localDsdSide(buf, parseInt(sideSel.value, 10));
+         } else {
+            ssd = new Uint8Array(MMB_DISC);
+            ssd.set(buf.subarray(0, Math.min(buf.length, MMB_DISC)));
+         }
+         if (!dfsPlausible(ssd))
+            throw new Error('That does not look like a DFS disc image.');
+         await mmbWriteSlot(n, nameIn.value.trim() || 'DISC' + n, ssd);
+         refresh();
+      }, e => { err.textContent = e.message || String(e); });
+   });
+   return el('div', {class: 'card'},
+      el('p', null, el('b', null,
+         (existingName ? 'Replace' : 'Insert into') + ' slot ' + n)), form);
+}
+
 async function showMmb() {
    const slots = Math.min(511,
       Math.max(0, Math.floor((imgSize - MMB_CAT) / MMB_DISC)));
@@ -558,19 +903,37 @@ async function showMmb() {
    const table = el('table', null, el('tr', null,
       el('th', {class: 'r'}, 'Slot'), el('th', null, 'Name'),
       el('th', null, 'Status'), el('th', null, '')));
+   const formBox = el('div');
+   const refresh = () => withStatus('Reloading…', showMmb);
    let formatted = 0;
    for (let n = 0; n < slots; ++n) {
       const e = 16 * (n + 1);
       const st = cat[e + 15];
-      if (st === 0xFF) continue;               /* invalid / empty slot */
-      const name = dfsText(cat, e, 12);
+      const name = st === 0xFF ? '' : dfsText(cat, e, 12);
       const usable = (st === 0x00 || st === 0x0F);
       let stText = st === 0x00 ? 'read-only'
                  : st === 0x0F ? 'read/write'
                  : st === 0xF0 ? 'unformatted'
+                 : st === 0xFF ? 'empty'
                  : '?? &' + hex(st, 2);
       if (usable) ++formatted;
       const slotSide = {kind: 'ssd', base: MMB_CAT + n * MMB_DISC};
+      const actions = el('td', {class: 'actions'});
+      if (usable)
+         actions.append(el('a', {href: '#', onclick: ev => {
+            ev.preventDefault();
+            withStatus('Fetching slot ' + n + ' (200 KB)…', async () => {
+               saveBlob(await readBytes(slotSide.base, MMB_DISC),
+                        safeName(name || ('disc' + n)) + '.ssd');
+            });
+         }}, 'download .ssd'));
+      if (serverHasRanges)
+         actions.append(' ', el('a', {href: '#', onclick: ev => {
+            ev.preventDefault();
+            formBox.replaceChildren(
+               mmbInsertForm(n, usable ? name : '', refresh));
+            formBox.scrollIntoView({block: 'nearest'});
+         }}, usable ? 'replace…' : 'insert…'));
       table.append(el('tr', null,
          el('td', {class: 'r m'}, String(n)),
          el('td', {class: 'm'}, usable
@@ -580,21 +943,13 @@ async function showMmb() {
               }}, name || '(unnamed)')
             : (name || '—')),
          el('td', null, stText),
-         el('td', {class: 'actions'}, usable
-            ? el('a', {href: '#', onclick: ev => {
-                 ev.preventDefault();
-                 withStatus('Fetching slot ' + n + ' (200 KB)…', async () => {
-                    saveBlob(await readBytes(slotSide.base, MMB_DISC),
-                             safeName(name || ('disc' + n)) + '.ssd');
-                 });
-              }}, 'download .ssd')
-            : '')));
+         actions));
    }
    $content.replaceChildren(
       el('div', {class: 'card'},
          el('p', null, el('b', null, slots + ' slots'),
             ' · ' + formatted + ' formatted')),
-      table);
+      table, formBox);
 }
 
 function openMmbSlot(n, name, side) {
@@ -608,7 +963,8 @@ function openMmbSlot(n, name, side) {
          }}, '← all slots'));
       $content.replaceChildren(back,
          dfsDiscCard('Slot ' + n + (name ? ' · ' + name : ''),
-                     disc, side, exportBase('-slot' + n)));
+                     disc, side, exportBase('-slot' + n),
+                     () => openMmbSlot(n, name, side)));
    });
 }
 
@@ -1098,11 +1454,14 @@ function showRawHex(offset) {
 /* Entry point                                                       */
 /* ---------------------------------------------------------------- */
 
-function withStatus(msg, fn) {
+function withStatus(msg, fn, onError) {
    setStatus(msg);
-   Promise.resolve().then(fn).then(() => {
+   return Promise.resolve().then(fn).then(() => {
       if ($status.textContent === msg) setStatus('');
-   }).catch(e => showError(e.message || String(e)));
+   }).catch(e => {
+      if (onError) { setStatus(''); onError(e); }
+      else showError(e.message || String(e));
+   });
 }
 
 function detectType(path) {

@@ -195,6 +195,15 @@ int main(void)
             assert(strlen(o) < osz);
          free(o);
       }
+
+      /* Query-string parameter extraction */
+      {
+         size_t osz = 1u + rnd() % 24u;
+         char  *o   = outbuf(osz);
+         if (ws_query_param(s, "offset", o, osz))
+            assert(strlen(o) < osz);
+         free(o);
+      }
       {
          char *q = rnd_str(rnd() % 40u);
          (void)ws_digest_uri_matches(s, q, ((rnd() & 1u) != 0u) ? q : NULL);
