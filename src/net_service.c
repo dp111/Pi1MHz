@@ -370,14 +370,18 @@ static void net_tcp_err(void *arg, err_t err)
    h->state = NET_ST_ERROR;
 }
 
-/* Attach this service's callbacks (and the ring-sized receive window) to a
-   TCP pcb - shared by an outbound connect and an inbound accept. */
+/* Attach this service's callbacks to a TCP pcb - shared by an outbound
+   connect and an inbound accept. */
 static void net_tcp_bind_callbacks(net_handle_t *h, struct altcp_pcb *pcb)
 {
-#if !LWIP_ALTCP
-   pcb->rcv_wnd     = NET_RX_RING_SIZE;
-   pcb->rcv_ann_wnd = NET_RX_RING_SIZE;
-#endif
+   /* Deliberately NOT narrowing rcv_wnd to the ring size. It never worked
+    * on the connect path - tcp_connect() reassigns rcv_wnd/rcv_ann_wnd from
+    * TCP_WND unconditionally (lwip/src/core/tcp.c) - and where it DID stick,
+    * on an accepted pcb, it was actively harmful: tcp_close_shutdown() sends
+    * an RST instead of a FIN whenever rcv_wnd != TCP_WND_MAX(pcb), so every
+    * close of an inbound connection reset the peer and discarded whatever
+    * was still queued. The ERR_MEM park in net_tcp_recv() is the real
+    * back-pressure: lwIP re-presents a refused pbuf, so nothing is lost. */
    altcp_arg (pcb, h);
    altcp_recv(pcb, net_tcp_recv);
    altcp_sent(pcb, net_tcp_sent);
@@ -716,8 +720,8 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
 }
 
 /* Create a pcb and start an outbound connect to h->remote_ip:remote_port.
-   Returns NET_PENDING (CONNECTING) or an error.  The ring-sized rcv_wnd (see
-   net_tcp_bind_callbacks) plus the ERR_MEM park keep RX drop-free. */
+   Returns NET_PENDING (CONNECTING) or an error.  The ERR_MEM park in
+   net_tcp_recv() is what keeps RX drop-free (see net_tcp_bind_callbacks). */
 static uint8_t net_start_connect(net_handle_t *h)
 {
    h->tpcb = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
@@ -825,8 +829,13 @@ static uint8_t do_recv_avail(net_handle_t *h, uint32_t cp)
 
 static uint8_t do_close(net_handle_t *h)
 {
-   if (h->state == NET_ST_FREE)
+   if (h->state == NET_ST_FREE) {
+      /* Nothing to tear down, but clear any latched N: state so CLOSE is
+       * always a way back to a usable handle. */
+      h->url_phase = URL_START;
+      h->last_err  = NET_OK;
       return NET_OK;
+   }
    /* TNFS: best-effort CLOSE (if a file is open) + UMOUNT before dropping the
       socket, so the server reclaims the fd/session promptly.  Fire-and-forget:
       a lost teardown just leaves the server to time the session out. */
@@ -955,6 +964,15 @@ static uint8_t net_udp_url_ready(net_handle_t *h)
    }
    udp_recv(h->upcb, net_udp_recv, h);
    if (udp_bind(h->upcb, IP_ANY_TYPE, 0u) != ERR_OK) {   /* ephemeral local port */
+      udp_remove(h->upcb); h->upcb = NULL;
+      h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN;
+   }
+   /* Filter to the URL's host:port, as the TNFS engine does. url_read hands
+      the Beeb the payload with no source address attached, so without this an
+      off-path datagram that guessed the ephemeral port would be consumed as
+      though the server had sent it. (The raw-socket path is free to stay
+      unconnected: recvfrom reports the peer, so the caller can judge.) */
+   if (udp_connect(h->upcb, &h->remote_ip, h->remote_port) != ERR_OK) {
       udp_remove(h->upcb); h->upcb = NULL;
       h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN;
    }
@@ -1122,7 +1140,16 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
    if (!net_string_ok(cp + 2u))   return NET_ERR_PARAM;
    url = (const char *)&Pi1MHz->JIM_ram[cp + 2u];
    if (!net_url_parse(url, &u, host, sizeof host, path, sizeof path)) {
-      h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM;
+      /* Only latch the failure once this open OWNS the handle. A malformed
+       * URL on a still-FREE handle must not stick: URL_FAIL is answered
+       * before anything else on the next poll, and do_close() returns early
+       * on a FREE handle, so latching here would kill the handle for every
+       * later N: verb until a machine reset. */
+      if (h->state != NET_ST_FREE) {
+         h->url_phase = URL_FAIL;
+         h->last_err  = NET_ERR_PARAM;
+      }
+      return NET_ERR_PARAM;
    }
 
    switch (h->url_phase) {
@@ -1307,8 +1334,15 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
          jim_wr24(cp + 1u, 0u);
          /* Ring full without CRLFCRLF = oversized/non-HTTP headers: fail
             rather than deadlock (a full ring parks all further RX, so the
-            terminator - and the FIN - can never arrive). */
-         if (h->rx_count >= NET_RX_RING_SIZE - 1u) {
+            terminator - and the FIN - can never arrive).
+            rx_parked is the exact signal: back-pressure works at SEGMENT
+            granularity (net_tcp_recv refuses a whole chain that will not
+            fit), so rx_count plateaus wherever the next segment stopped
+            fitting - typically ~7 KB, never the 8191 a byte-count test
+            waits for. While the headers are incomplete we return 0 bytes
+            to the Beeb, so nothing will ever drain the ring and release
+            the parked pbuf: that is the deadlock, and this is it arriving. */
+         if (h->rx_parked || h->rx_count >= NET_RX_RING_SIZE - 1u) {
             h->last_err = NET_ERR_CONN;
             return NET_ERR_CONN;
          }
@@ -1364,7 +1398,16 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
       h->tnfs_phase = TNFS_PH_READY;
       if (r != NET_OK) { jim_wr24(cp + 1u, 0u); return r; }
       if (rep.status != TNFS_OK) { jim_wr24(cp + 1u, 0u); return net_tnfs_status(rep.status); }
-      { uint16_t wrote = 0u; (void)tnfs_reply_write(&rep, &wrote); jim_wr24(cp + 1u, wrote); }
+      /* Clamp the server's count to the most we can ever have sent: a hostile
+         or buggy server answering a 240-byte WRITE with "wrote 65535" would
+         underflow a Beeb-side `rem% -= wrote%` loop and walk its pointer off
+         the end. The request was issued on an earlier poll, so bound it by
+         TNFS_WRITE_CHUNK - true regardless of what the command block holds
+         now - rather than by a re-read length. */
+      { uint16_t wrote = 0u;
+        if (!tnfs_reply_write(&rep, &wrote)) wrote = 0u;
+        if (wrote > (uint16_t)TNFS_WRITE_CHUNK) wrote = (uint16_t)TNFS_WRITE_CHUNK;
+        jim_wr24(cp + 1u, wrote); }
       return NET_OK;
    }
 

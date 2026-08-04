@@ -294,7 +294,14 @@ int main(void)
    jwr8(CP(0)+5,0x50); jwr8(CP(0)+6,0);
    CHECK(issue(NET_CMD_CONNECT, 0) == NET_PENDING, "connect -> PENDING (CONNECTING)");
    CHECK(g_npcbs == 1 && g_last_pcb->connected != NULL, "pcb created, connected cb registered");
-   CHECK(g_last_pcb->rcv_wnd == NET_RX_RING_SIZE, "rcv_wnd clamped to ring size");
+   /* rcv_wnd is deliberately LEFT ALONE. Narrowing it to the ring size did
+    * nothing on this path anyway (real lwIP's tcp_connect reassigns
+    * rcv_wnd/rcv_ann_wnd from TCP_WND, which this stub does not model), and
+    * on an accepted pcb it made tcp_close_shutdown() send an RST instead of
+    * a FIN - rcv_wnd != TCP_WND_MAX(pcb) selects the reset branch - so every
+    * close of an inbound connection discarded queued data. The ERR_MEM park
+    * in net_tcp_recv() is the real back-pressure. */
+   CHECK(g_last_pcb->rcv_wnd != NET_RX_RING_SIZE, "rcv_wnd left at the lwIP default");
    g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
    CHECK(issue(NET_CMD_CONNECT, 0) == NET_OK, "after connected cb -> OK");
    issue(NET_CMD_STATUS, 0);

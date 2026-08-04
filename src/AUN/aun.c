@@ -389,7 +389,13 @@ static aun_rx_condemn_t *condemn_find(aun_engine_t *e, uint8_t port,
 static void condemn_set(aun_engine_t *e, uint8_t port,
                         uint32_t src_ip_be, uint16_t src_port)
 {
-   aun_rx_condemn_t *victim = &e->condemned[0];
+   /* Two passes, as defer_set does, and for the same reason: the stream's
+    * own entry must win outright. Fusing the searches would let a free slot
+    * at a LOWER index end the scan early, so the stream would be written a
+    * second time - and condemn_find/the collect-time lift only ever clear
+    * the first match, leaving a stale duplicate to hold the stream on the
+    * mini-budget and ACK-shed frames a listener was waiting for. */
+   aun_rx_condemn_t *victim = NULL;
    for (uint32_t i = 0; i < AUN_CONDEMN_SLOTS; i++) {
       aun_rx_condemn_t *c = &e->condemned[i];
       if (c->valid && c->port == port && c->src_ip_be == src_ip_be &&
@@ -397,12 +403,18 @@ static void condemn_set(aun_engine_t *e, uint8_t port,
          victim = c;                        /* this stream's own entry */
          break;
       }
-      if (!c->valid || (int32_t)(now_ms(e) - c->until_ms) >= 0) {
-         victim = c;                        /* free or expired slot */
-         break;
+   }
+   if (victim == NULL) {
+      victim = &e->condemned[0];
+      for (uint32_t i = 0; i < AUN_CONDEMN_SLOTS; i++) {
+         aun_rx_condemn_t *c = &e->condemned[i];
+         if (!c->valid || (int32_t)(now_ms(e) - c->until_ms) >= 0) {
+            victim = c;                     /* free or expired slot */
+            break;
+         }
+         if ((int32_t)(victim->until_ms - c->until_ms) > 0)
+            victim = c;                     /* closest-to-expiry fallback */
       }
-      if ((int32_t)(victim->until_ms - c->until_ms) > 0)
-         victim = c;                        /* closest-to-expiry fallback */
    }
    victim->valid     = true;
    victim->port      = port;
@@ -727,6 +739,14 @@ static uint8_t tx_begin(aun_engine_t *e, uint8_t wire_type,
          if (reply_buf != NULL)
             memcpy(reply_buf, e->machine_id, n);
          e->tx.reply_len = n;
+      } else if (port == 0 && ctrl >= AUN_CTRL_IMM4_FIRST &&
+                 ctrl <= AUN_CTRL_IMM4_LAST) {
+         /* A 4-way immediate (carried as DATA to port 0). It is still an
+          * immediate operation, not funnel traffic: completing it here
+          * mirrors the ACK a real peer sends. Delivering it into the rx
+          * block instead would queue a payload on Econet port 0 that no
+          * control block can ever claim. */
+         e->tx.reply_len = 0;
       } else {
          uint8_t why;
          if (rx_deliver(e, port, ctrl, e->test_stn, e->test_net,
@@ -881,15 +901,22 @@ uint32_t aun_tx_reply_len(const aun_engine_t *e)
 static bool himm_len_ok(uint8_t ctrl, uint32_t dlen, const uint8_t *data)
 {
    switch (ctrl) {
-   case 1:                              /* Peek: 4-byte start + 2-byte end */
-      /* Also require end >= start: the ROM computes the reply length as a
-       * 16-bit (end - start), so a reversed descriptor asked it to stage up
-       * to 64K of host memory - sweeping &FC00-&FEFF and side-effecting
-       * every hardware register on the machine. */
+   case 1: {                            /* Peek: 4-byte start + 2-byte end */
+      /* The ROM computes the reply length as a 16-bit (end - start) and
+       * stages that many bytes of host memory. Bound the SPAN, not just its
+       * direction: a reversed descriptor and a merely huge forward one do
+       * the same damage - sweeping &FC00-&FEFF and side-effecting every
+       * hardware register on the machine. Anything over AUN_HIMM_MAX is
+       * refused here rather than swept and then discarded, because the
+       * reply could not be delivered anyway (aun_emulator.c rejects an
+       * IMM_REPLY longer than AUN_HIMM_MAX, which would leave the slot held
+       * until the reaper fires). */
       if (dlen < 6u)
          return false;
-      return (uint16_t)(data[4] | (data[5] << 8)) >=
-             (uint16_t)(data[0] | (data[1] << 8));
+      uint16_t start = (uint16_t)(data[0] | (data[1] << 8));
+      uint16_t end   = (uint16_t)(data[4] | (data[5] << 8));
+      return end >= start && (uint32_t)(end - start) <= AUN_HIMM_MAX;
+   }
    case 2:                              /* Poke: 4-byte address + data     */
       return dlen >= 4u;
    case 3: case 4: case 5:              /* JSR / UserProc / OSProcCall     */
@@ -933,16 +960,10 @@ static void rx_imm4_data(aun_engine_t *e, uint32_t src_ip_be,
       return;
    }
 
-   if (e->himm.active) {
-      /* One held at a time: a retransmit of the one in flight is absorbed
-       * (the host is still working on it), and anything else is dropped
-       * SILENTLY - not NAKed. A NAK inside PiEconetBridge's tolerance
-       * triggers an IMMEDIATE retransmission (last_tx reset), so NAKing
-       * "busy" just hammers the slot; silence lets the sender's paced
-       * ~1 s retransmit find the slot free. */
-      return;
-   }
-
+   /* The cache is consulted BEFORE the busy test: a retransmit of an
+    * immediate we already answered must be re-answered from here even while
+    * a newer one is held, or the peer keeps retransmitting a resolved
+    * request for its whole ~5 s budget while we drop it as "busy". */
    if (e->himm_cache.valid && e->himm_cache.from_data &&
        (int32_t)(now_ms(e) - e->himm_cache.due_ms) < 0 &&
        e->himm_cache.ip_be == src_ip_be &&
@@ -954,6 +975,16 @@ static void rx_imm4_data(aun_engine_t *e, uint32_t src_ip_be,
                    e->himm_cache.is_nak ? AUN_TYPE_NAK : AUN_TYPE_ACK,
                    0, ctrl, seq);
       e->counters.himm_replay++;
+      return;
+   }
+
+   if (e->himm.active) {
+      /* One held at a time. A retransmit of the one in flight is absorbed
+       * (the host is still working on it), and anything else is dropped
+       * SILENTLY - not NAKed. A NAK inside PiEconetBridge's tolerance
+       * triggers an IMMEDIATE retransmission (last_tx reset), so NAKing
+       * "busy" just hammers the slot; silence lets the sender's paced
+       * ~1 s retransmit find the slot free. */
       return;
    }
 

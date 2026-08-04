@@ -463,10 +463,11 @@ int main(void)
    aun_set_host_imm(&e, true);
    {
       /* A Peek needs a well-formed 6-byte descriptor (4-byte start plus
-       * 2-byte end, end >= start) or himm_len_ok() NAKs it at the trust
-       * boundary instead of holding it - which is itself covered below. */
+       * 2-byte end, with end >= start and the span within AUN_HIMM_MAX) or
+       * himm_len_ok() NAKs it at the trust boundary instead of holding it -
+       * which is itself covered below. The span here is 1 KB. */
       uint8_t imm[AUN_HDR_SIZE + 6] =
-         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x20,0,0,0, 0x00,0x10,0,0, 0x00,0x20 };
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x20,0,0,0, 0x00,0x10,0,0, 0x00,0x14 };
       sent_count = 0;
       aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* held for the host */
       assert(e.himm.active && sent_count == 0);                /* captured, no reply */
@@ -476,9 +477,21 @@ int main(void)
       assert(e.counters.himm_timeout == 1);
       assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK); /* originator NAKed */
       uint8_t imm2[AUN_HDR_SIZE + 6] =
-         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x24,0,0,0, 0x00,0x10,0,0, 0x00,0x20 };
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x24,0,0,0, 0x00,0x10,0,0, 0x00,0x14 };
       aun_udp_input(&e, 0x0100000A, 32768, imm2, sizeof imm2); /* fresh: accepted */
       assert(e.himm.active && e.himm.seq == 0x24);             /* not wedged */
+      /* An oversize FORWARD span is refused too, not just a reversed one:
+       * the ROM would sweep that much host memory - including the &FC00-&FEFF
+       * I/O registers, where reads have side effects - and the reply could
+       * never be delivered anyway (aun_emulator rejects an IMM_REPLY longer
+       * than AUN_HIMM_MAX), leaving the slot held until the reaper fires. */
+      aun_himm_reply(&e, NULL, 0);                             /* clear the slot */
+      sent_count = 0;
+      uint8_t big[AUN_HDR_SIZE + 6] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x28,0,0,0, 0x00,0x00,0,0, 0xFF,0xFF };
+      aun_udp_input(&e, 0x0100000A, 32768, big, sizeof big);
+      assert(!e.himm.active);                                  /* never held */
+      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_NAK);
    }
 
    /* ---- network-delay variance (jitter / reordering / boundary sweep) ----
@@ -585,7 +598,7 @@ int main(void)
    aun_set_host_imm(&e, true);
    {
       uint8_t imm[AUN_HDR_SIZE + 6] =   /* well-formed Peek: see test 24 */
-         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x28,0,0,0, 0x00,0x10,0,0, 0x00,0x20 };
+         { AUN_TYPE_IMMEDIATE, 0, 0x01, 0, 0x28,0,0,0, 0x00,0x10,0,0, 0x00,0x14 };
       sent_count = 0;
       aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);
       assert(e.himm.active && sent_count == 0);
