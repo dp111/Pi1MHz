@@ -1598,6 +1598,7 @@ static void page_open(ws_strbuf_t *b, const char *title)
    sb_html(b, title);
    sb_puts(b,
       "</title><style>"
+      ":root{color-scheme:light dark}"
       "body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;"
       "background:#f4f4f6;color:#1d1d1f}"
       "header{background:#1d1d2e;color:#fff;padding:14px 20px;font-size:18px;"
@@ -1619,6 +1620,21 @@ static void page_open(ws_strbuf_t *b, const char *title)
       ".muted{color:#777;font-size:13px}"
       "input[type=submit]{background:#2c5fd6;color:#fff;border:0;"
       "border-radius:6px;padding:8px 16px;font-size:14px;cursor:pointer}"
+      /* Dark theme, following the browser / OS setting.  Kept to the
+         same accent colours as the light palette; the header is
+         already dark so only its shade changes. */
+      "@media (prefers-color-scheme:dark){"
+      "body{background:#17171c;color:#e4e4e8}"
+      "header{background:#0e0e16}"
+      "a{color:#7da2ff}"
+      "table,.card{background:#1f1f26}"
+      "th{background:#2a2a33}"
+      "th,td{border-bottom-color:#33333c}"
+      "td.r,th.r{color:#9a9aa5}"
+      ".err{color:#ff6b5e}"
+      ".muted{color:#9a9aa5}"
+      "input[type=text]{background:#26262e;color:#e4e4e8;border-color:#44444e}"
+      "}"
       "</style></head><body><header>Pi1MHz"
       "<a href=\"/\">Home</a><a href=\"/files/\">Files</a>"
       "<a href=\"/framebuffer\">Screen</a><a href=\"/status\">Status</a>"

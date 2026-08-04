@@ -2,7 +2,9 @@
 
 With [WiFi](wifi.md) set up, Pi1MHz runs a small web server. Point a
 browser at the Pi - `http://pi1mhz.local/`, `http://Pi1MHz/` or its IP
-address - and you get a home page linking to everything below.
+address - and you get a home page linking to everything below. All the
+pages (including the disc viewer) follow your browser or operating
+system's light/dark theme preference automatically.
 
 ## Pages
 
