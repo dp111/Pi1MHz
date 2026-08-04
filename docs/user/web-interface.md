@@ -27,18 +27,22 @@ disc image viewer below fast.
 
 The file browser shows a **[view contents]** link next to Acorn disc
 images: `.ssd` and `.dsd` (DFS floppies), `.mmb` (MMFS bundles),
-`.adf`/`.adm` (ADFS old-map) and `scsi*.dat` (BeebSCSI hard-disc
-images). It opens `/Pi1MHz/disc.html`, a viewer that runs entirely in
-your browser:
+`.adf`/`.adm`/`.adl` (ADFS old-map) and `scsi*.dat` (BeebSCSI
+hard-disc images). It opens `/Pi1MHz/disc.html`, a viewer that runs
+entirely in your browser:
 
 - list a disc's catalogue - files, load/exec addresses, sizes, locked
   flags, boot option; for an MMB, the whole slot list, and each
   formatted slot's catalogue a click deeper; for a hard disc, walk the
   ADFS directory tree
 - download an individual file straight out of the image (with an
-  optional `.inf` sidecar carrying its addresses), or peek at it as a
-  hex dump
-- download one MMB slot as a standalone `.ssd`
+  optional `.inf` sidecar carrying its addresses), view it as text -
+  tokenised BBC BASIC programs are shown as a proper LISTing - or peek
+  at it as a hex dump
+- export a whole catalogue (a DFS disc, an MMB slot, or an ADFS folder
+  tree) as a `.zip` of the files with their `.inf` sidecars
+- download one MMB slot as a standalone `.ssd`, or save one side of a
+  `.dsd` as a plain `.ssd`
 
 Because the browser fetches only the byte ranges it needs, listing the
 catalogue of even a 500 MB `scsi.dat` moves a few hundred bytes over

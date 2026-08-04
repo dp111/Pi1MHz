@@ -167,8 +167,8 @@ wifi_ssid=PiNet wifi_password=secret123 wifi_ip=192.168.1.40 wifi_netmask=255.25
 - `/files/...`       — browse the SD card, download files, upload files
                        (`multipart/form-data`, streamed straight to FatFs).
                        Disc images (`.ssd`/`.dsd`/`.mmb`/`.adf`/`.adm`/
-                       `scsi*.dat`) get a [view contents] link into the
-                       client-side viewer at `/Pi1MHz/disc.html`.
+                       `.adl`/`scsi*.dat`) get a [view contents] link into
+                       the client-side viewer at `/Pi1MHz/disc.html`.
                        File GETs honour single-range `Range:` headers
                        (206/416, `Accept-Ranges: bytes`) so the viewer can
                        pull catalogue sectors out of large images without

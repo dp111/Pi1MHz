@@ -2649,8 +2649,8 @@ static int ws_entry_cmp(const void *pa, const void *pb)
 }
 
 /* True for filenames the /Pi1MHz/disc.html viewer knows how to open:
-   DFS floppy images, MMB bundles, non-interleaved ADFS images and
-   BeebSCSI LUN images (scsi*.dat).  Used to decorate the file browser
+   DFS floppy images, MMB bundles, old-map ADFS images and BeebSCSI
+   LUN images (scsi*.dat).  Used to decorate the file browser
    listing with a [view] link; the viewer re-checks the actual format
    signatures itself, so a false positive here costs one error page. */
 static bool ws_is_disc_image_name(const char *name)
@@ -2661,7 +2661,7 @@ static bool ws_is_disc_image_name(const char *name)
    ++ext;
    if (ws_stricmp(ext, "ssd") == 0 || ws_stricmp(ext, "dsd") == 0
        || ws_stricmp(ext, "mmb") == 0 || ws_stricmp(ext, "adf") == 0
-       || ws_stricmp(ext, "adm") == 0)
+       || ws_stricmp(ext, "adm") == 0 || ws_stricmp(ext, "adl") == 0)
       return true;
    return ws_stricmp(ext, "dat") == 0 && ws_prefix_ci(name, "scsi", 4u);
 }
