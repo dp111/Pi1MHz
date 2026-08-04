@@ -28,65 +28,14 @@ disc image viewer below fast.
 ## Looking inside disc images
 
 The file browser shows a **[view contents]** link next to Acorn disc
-images: `.ssd` and `.dsd` (DFS floppies), `.mmb` (MMFS bundles),
-`.adf`/`.adm`/`.adl` (ADFS old-map) and `scsi*.dat` (BeebSCSI
-hard-disc images). It opens `/Pi1MHz/disc.html`, a viewer that runs
-entirely in your browser:
-
-- list a disc's catalogue - files, load/exec addresses, sizes, locked
-  flags, boot option; for an MMB, the whole slot list, and each
-  formatted slot's catalogue a click deeper; for a hard disc, walk the
-  ADFS directory tree
-- download an individual file straight out of the image (with an
-  optional `.inf` sidecar carrying its addresses), view it as text -
-  tokenised BBC BASIC programs are shown as a proper LISTing - peek at
-  it as a hex dump, or disassemble it as 65C02 machine code (the full
-  CMOS set including the Rockwell bit instructions), rooted at the
-  file's load address
-- export a whole catalogue (a DFS disc, an MMB slot, or an ADFS folder
-  tree) as a `.zip` of the files with their `.inf` sidecars
-- download one MMB slot as a standalone `.ssd`, or save one side of a
-  `.dsd` as a plain `.ssd`
-
-Because the browser fetches only the byte ranges it needs, listing the
-catalogue of even a 500 MB `scsi.dat` moves a few hundred bytes over
-the WiFi, and extracting a file costs just that file's size. The
-viewer is read-only - to change an image, download it, edit it with
-your usual tools, and upload it back.
-
-With current firmware the viewer can also **edit DFS discs in
-place** - each write patches just the affected bytes of the image, so
-even inside a 100 MB MMB an operation takes a fraction of a second:
-
-- add a file to a `.ssd`, a `.dsd` side, or a disc inside an `.mmb`
-  (pick the file, optionally alongside its `.inf` sidecar to carry
-  the name and load/exec addresses), and delete files
-- insert or replace a whole MMB slot from a local `.ssd` - or from
-  one side of a `.dsd`, de-interleaved automatically - with a slot
-  name of your choice
-
-Writes are refused with a clear message while the Beeb has the image
-open (release it with `*BYE`, or CTRL-BREAK out of MMFS, first) -
-checked continuously during the transfer, not just at the start - and
-Watford 62-file discs are detected and refused (their extended
-catalogue lives in sectors a standard catalogue edit would reuse), and
-are ordered so a dropped connection cannot leave a half-written disc
-looking valid: an interrupted slot insert shows as "unformatted", an
-interrupted file add never reaches the catalogue. ADFS images
-(`scsi*.dat`, `.adf`, `.adm`, `.adl`) remain read-only - editing the
-ADFS free-space map risks corrupting a hard disc image, so that is
-deliberately not offered. The editing controls only appear when the
-firmware is new enough to support in-place writes.
-
-The viewer doubles as a **hex viewer for any SD file**: open a path
-whose extension it does not recognise (or add `&view=hex` to the URL,
-or use the "[raw hex]" link shown on image pages) and it shows a raw
-hex dump, paged 64 KB at a time - browsing the far end of a huge image
-costs one small request per page.
-
-The page itself lives on the SD card at `/Pi1MHz/disc.html`, so it can
-be updated by copying a new file there - no reflash needed. You can
-also open it directly and type any image path into its form.
+images (`.ssd`, `.dsd`, `.mmb`, `.adf`/`.adm`/`.adl`, `scsi*.dat`).
+It opens a viewer that runs entirely in your browser: list catalogues,
+extract files (with `.inf` sidecars), view BASIC listings, hex dumps
+and 65C02 disassembly, export to `.zip` - and edit DFS discs in
+place, including adding files to discs inside an MMB and inserting
+whole MMB slots. It doubles as a paged hex viewer for any SD file.
+See [the disc image viewer and editor](disc-viewer.md) for the full
+guide.
 
 Uploading through `/files/` is the everyday way to get a disc image or
 ROM onto the card without pulling it out of the Pi. The server refuses

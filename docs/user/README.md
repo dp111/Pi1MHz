@@ -45,6 +45,7 @@ Then one guide per feature:
 - [HDMI screen, mouse pointer and video](screen-and-video.md)
 - [WiFi setup](wifi.md)
 - [The web interface and WebDAV](web-interface.md)
+- [The disc image viewer and editor](disc-viewer.md)
 - [Econet over WiFi (AUN)](econet-aun.md)
 - [Teletext](teletext.md)
 - [USB file access (MTP)](usb-file-access.md)
