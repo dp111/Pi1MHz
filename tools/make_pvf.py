@@ -89,6 +89,21 @@ def encode_audio(args, pcm_path):
         return False
 
 
+def split_nal_types(au):
+    """NAL types present in one access unit."""
+    out, i = [], 0
+    while i + 3 < len(au):
+        if au[i:i + 3] == b"\0\0\1":
+            out.append(au[i + 3] & 0x1F)
+            i += 3
+        elif i + 4 < len(au) and au[i:i + 4] == b"\0\0\0\1":
+            out.append(au[i + 4] & 0x1F)
+            i += 4
+        else:
+            i += 1
+    return out
+
+
 def split_access_units(data):
     """Split an Annex-B byte stream into access units.
 
@@ -177,6 +192,17 @@ def main():
 
         frame_count = len(aus)
         print(f"{frame_count} access units")
+
+        # Every AU must be standalone-decodable: at least one IDR slice
+        # (type 5) and no non-IDR slices (types 1-4). A leading SEI-only
+        # "AU" (possible if the stream did not start with an SPS) or any
+        # inter-coded slice would stall the player's frame accounting.
+        for i, au in enumerate(aus):
+            types = split_nal_types(au)
+            if 5 not in types or any(t in (1, 2, 3, 4) for t in types):
+                sys.exit(f"error: access unit {i} is not a standalone IDR "
+                         f"picture (NAL types {types}) - encoder settings "
+                         "changed?")
 
         # Per-frame audio slice sizes (fractional accumulation keeps sync
         # for frame rates that do not divide the sample rate)

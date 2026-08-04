@@ -98,6 +98,14 @@ static void init_dma_buffer(size_t buf, uint32_t buffer_init)
    _clean_cache_area(&dma_cb_data[buf], sizeof(dma_cb_data[buf]));
 }
 
+// True once rpi_audio_init() has run - i.e. some emulator (Music 5000,
+// BeebSID, video player) already owns the PWM/DMA path. Later would-be
+// users check this and stand down rather than fight over the buffers.
+bool rpi_audio_active(void)
+{
+   return audio_range != 0;
+}
+
 // return the sample range
 uint32_t rpi_audio_init(uint32_t samplerate)
 {

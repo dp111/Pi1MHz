@@ -208,9 +208,13 @@ Buffer traffic, the part worth understanding:
   is complete when the matching `BULK_RX_DONE` lands. Empty returns
   (input buffer released, flush residue) complete immediately. Tiny
   payloads (<=128 B) can arrive inline in `short_data`.
-* **Port flush** uses `PORT_FLUSH` msgid with the same dummy-bulk pairing
-  so a flush cannot overtake in-flight payload (VC >= major 15 supports
-  this; the version handshake checks).
+* **Port flush** has two variants, gated exactly like the reference
+  client: `PORT_FLUSH` with the dummy-bulk pairing for ports that have
+  carried host->VC payload (input, once streaming - it cannot overtake
+  in-flight payload; VC >= major 15, the version handshake checks), and
+  a plain `PORT_ACTION_FLUSH` for ports that have not (decoder output) -
+  on those the VC side may not be set up for bulk and the dummy would
+  desynchronise the message/bulk pairing.
 
 ## 4. The decoder component (src/rpi/h264dec.c)
 
@@ -305,9 +309,16 @@ change.
   (play), `O` (play reverse), `L`/`M` (step), `*` (halt), `/` (pause),
   `+yy`/`-yy` (instant jump), `A0/A1`, `B0/B1` (audio channels), and
   `?F` now answers with the real picture number `Fxxxxx`.
-* Audio shares the PWM path with Music 5000/BeebSID - fine for a
-  Domesday build where those are idle; do not run both. (A mixer would
-  be the proper fix if ever needed.)
+* Audio shares the PWM path with Music 5000/BeebSID. Ownership is
+  enforced: whoever calls `rpi_audio_init()` first owns it
+  (`rpi_audio_active()`), and the player stands down with a log message
+  when the path is taken. The M5000 is enabled by default, so video
+  sound needs `M5000_addr=-1` in Pi1MHz.cfg. (A mixer would be the
+  proper fix if ever needed.)
+* A Beeb reset re-runs every emulator init; `videoplayer_init` detects
+  the warm restart, calls `h264dec_reset()` to detach the frame buffers
+  from the live component BEFORE releasing them, and frees the previous
+  index/audio-ring allocations - Break during playback is safe.
 
 ## 8. Bring-up / test plan (in order, on real hardware)
 

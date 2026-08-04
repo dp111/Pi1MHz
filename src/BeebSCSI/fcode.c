@@ -136,7 +136,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			FCdebugString_P(PSTR(" = Instant jump forwards\r\n"));
 			{
 				int jump = 0;
-				for (byteCounter = 1; byteCounter < 4; byteCounter++) {
+				for (byteCounter = 1; byteCounter < 3; byteCounter++) { // yy = 1..50, 2 digits max
 					char c = (char)scsiFcodeBuffer[byteCounter];
 					if (c < '0' || c > '9') break;
 					jump = jump * 10 + (c - '0');
@@ -166,7 +166,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			FCdebugString_P(PSTR(" = Instant jump backwards\r\n"));
 			{
 				int jump = 0;
-				for (byteCounter = 1; byteCounter < 4; byteCounter++) {
+				for (byteCounter = 1; byteCounter < 3; byteCounter++) { // yy = 1..50, 2 digits max
 					char c = (char)scsiFcodeBuffer[byteCounter];
 					if (c < '0' || c > '9') break;
 					jump = jump * 10 + (c - '0');

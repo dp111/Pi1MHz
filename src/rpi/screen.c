@@ -329,6 +329,12 @@ static uint32_t yoffset = 0;
 
 static bool plane_valid[8];
 
+/* Per-plane byte offsets (Y, Cb, Cr) that screen_create_YUV*_plane baked
+   into the pointers for the vertical-overscan crop - screen_set_YUV_pointers
+   must re-apply them or the picture jumps on displays where the scaled
+   image exceeds the screen height. */
+static uint32_t yuv_ptr_offset[MAX_PLANES][3];
+
 /**
  * @brief Allocates a buffer from CMA aligned to a 4K page boundary.
  *
@@ -678,6 +684,9 @@ void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height,
         yuv->scale = (nsh << 16) + scaled_width;
         yuv->src_size =  ((nh) << 16) + width;
         //yuv->src_context = 0;
+        yuv_ptr_offset[planeno][0] = vertical_offset*width;
+        yuv_ptr_offset[planeno][1] = vertical_offset*width/2;
+        yuv_ptr_offset[planeno][2] = vertical_offset*width/2;
         yuv->y_ptr =  buffer + vertical_offset*width;
         yuv->cb_ptr = buffer + width*height + width*height/2 + vertical_offset*width/2;
         yuv->cr_ptr = buffer + width*height + vertical_offset*width/2;
@@ -766,6 +775,9 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         yuv->src_size =  ((nh) << 16) + width;
         // I420 memory order is Y, Cb (U), Cr (V); chroma planes are
         // width/2 x height/2
+        yuv_ptr_offset[planeno][0] = vertical_offset*width;
+        yuv_ptr_offset[planeno][1] = (vertical_offset/2)*(width/2);
+        yuv_ptr_offset[planeno][2] = (vertical_offset/2)*(width/2);
         yuv->y_ptr =  buffer + vertical_offset*width;
         yuv->cb_ptr = buffer + width*height + (vertical_offset/2)*(width/2);
         yuv->cr_ptr = buffer + width*height + (width/2)*(height/2) + (vertical_offset/2)*(width/2);
@@ -795,9 +807,10 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
 void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr )
 {
     volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
-    yuv->y_ptr  = y  | 0xC0000000;
-    yuv->cb_ptr = cb | 0xC0000000;
-    yuv->cr_ptr = cr | 0xC0000000;
+    // re-apply the vertical-overscan crop baked in at plane creation
+    yuv->y_ptr  = (y  + yuv_ptr_offset[planeno][0]) | 0xC0000000;
+    yuv->cb_ptr = (cb + yuv_ptr_offset[planeno][1]) | 0xC0000000;
+    yuv->cr_ptr = (cr + yuv_ptr_offset[planeno][2]) | 0xC0000000;
 }
 
 // returns plane pointer

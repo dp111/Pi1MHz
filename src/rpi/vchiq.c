@@ -203,7 +203,6 @@ static struct {
 
     bulk_queue_t bulk_tx;
     bulk_queue_t bulk_rx;
-    uint32_t bulk_seq;               /* which pagelist to use next (round robin) */
 } vc;
 
 static uint8_t *slot_ptr(uint32_t index)
@@ -253,11 +252,15 @@ bool vchiq_connected(void)
 
 /* How many TX slot-queue entries are valid. The VideoCore extends this by
    recycling slots we have transmitted: it appends their indexes to OUR
-   local->slot_queue and advances local->slot_queue_recycle. */
+   local->slot_queue and advances local->slot_queue_recycle. The trailing
+   barrier matters: the queue ENTRY the VC wrote must not be read (or
+   speculated) before the counter that published it - a control dependency
+   does not order loads on ARM. */
 static void refresh_tx_slots(void)
 {
     _data_memory_barrier();
     vc.slot_queue_available = (uint32_t)vc.local->slot_queue_recycle;
+    _data_memory_barrier();
 }
 
 /* Reserve 'stride' bytes in the TX stream, inserting a padding message and
@@ -279,10 +282,17 @@ static volatile vchiq_header_t *reserve_space(uint32_t stride)
         tx_pos += slot_space;
     }
 
-    /* Starting a fresh slot? Make sure we own one. */
-    if ((tx_pos / VCHIQ_SLOT_SIZE) >= vc.slot_queue_available) {
+    /* Starting a fresh slot? Make sure we own one. Both tx_pos and
+       slot_queue_available are monotonic mod-2^32 counters, so the test
+       must be the wrap-consistent EQUALITY form the Linux driver uses
+       ("consumed everything granted"), not an ordered compare - a >=
+       would misjudge once tx_pos wraps at 4 GiB of stream (~3 days of
+       continuous playback). Mid-slot positions need no check: the slot
+       was granted when we entered it. */
+    if ((tx_pos & VCHIQ_SLOT_MASK) == 0 &&
+        tx_pos == vc.slot_queue_available * VCHIQ_SLOT_SIZE) {
         refresh_tx_slots();
-        if ((tx_pos / VCHIQ_SLOT_SIZE) >= vc.slot_queue_available)
+        if (tx_pos == vc.slot_queue_available * VCHIQ_SLOT_SIZE)
             return NULL;             /* all slots in flight; try again later */
     }
 
@@ -331,21 +341,13 @@ bool vchiq_queue_message(const void *msg, unsigned int size)
                              msg, size, NULL, 0);
 }
 
-bool vchiq_queue_message2(const void *hdr, unsigned int hdr_size,
-                          const void *body, unsigned int body_size)
-{
-    if (!vc.open)
-        return false;
-    return queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_DATA, vc.localport, vc.remoteport),
-                             hdr, hdr_size, body, body_size);
-}
-
 /* ------------------------------------------------------------------ */
 /* Bulk transfers                                                     */
 /* ------------------------------------------------------------------ */
 
-static bool queue_bulk(bulk_queue_t *q, int msg_type, uint32_t pl_type,
-                       uint32_t busaddr, unsigned int size, void *user)
+static bool queue_bulk(bulk_queue_t *q, uint32_t pl_index_base, int msg_type,
+                       uint32_t pl_type, uint32_t busaddr, unsigned int size,
+                       void *user)
 {
     if (!vc.open)
         return false;
@@ -353,8 +355,15 @@ static bool queue_bulk(bulk_queue_t *q, int msg_type, uint32_t pl_type,
         return false;
 
     /* Build a one-run pagelist. The buffer must be physically contiguous,
-       which everything from vchiq_alloc_shared() is. */
-    uint32_t idx = vc.bulk_seq++ & (2 * BULK_QUEUE_DEPTH - 1u);
+       which everything from vchiq_alloc_shared() is.
+
+       A pagelist stays owned by the VideoCore until its BULK_*_DONE, so
+       each direction gets its own bank of BULK_QUEUE_DEPTH pagelists
+       indexed by the queue tail: with at most BULK_QUEUE_DEPTH transfers
+       outstanding per direction, a slot cannot be reused before its DONE
+       has retired it (and a failed send below leaves tail - and hence
+       this slot - unclaimed for the retry). */
+    uint32_t idx = pl_index_base + (q->tail & (BULK_QUEUE_DEPTH - 1u));
     volatile vchiq_pagelist_t *pl =
         (volatile vchiq_pagelist_t *)(uintptr_t)(vc.pagelist_base + idx * PAGELIST_STRIDE);
     uint32_t pl_bus = vc.pagelist_base_bus + idx * PAGELIST_STRIDE;
@@ -385,14 +394,24 @@ static bool queue_bulk(bulk_queue_t *q, int msg_type, uint32_t pl_type,
 
 bool vchiq_bulk_transmit(uint32_t busaddr, unsigned int size, void *user)
 {
-    return queue_bulk(&vc.bulk_tx, VCHIQ_MSG_BULK_TX, PAGELIST_WRITE,
+    return queue_bulk(&vc.bulk_tx, 0, VCHIQ_MSG_BULK_TX, PAGELIST_WRITE,
                       busaddr, size, user);
 }
 
 bool vchiq_bulk_receive(uint32_t busaddr, unsigned int size, void *user)
 {
-    return queue_bulk(&vc.bulk_rx, VCHIQ_MSG_BULK_RX, PAGELIST_READ,
-                      busaddr, size, user);
+    return queue_bulk(&vc.bulk_rx, BULK_QUEUE_DEPTH, VCHIQ_MSG_BULK_RX,
+                      PAGELIST_READ, busaddr, size, user);
+}
+
+bool vchiq_bulk_tx_space(void)
+{
+    return vc.open && (vc.bulk_tx.tail - vc.bulk_tx.head) < BULK_QUEUE_DEPTH;
+}
+
+bool vchiq_bulk_rx_space(void)
+{
+    return vc.open && (vc.bulk_rx.tail - vc.bulk_rx.head) < BULK_QUEUE_DEPTH;
 }
 
 /* ------------------------------------------------------------------ */
@@ -447,6 +466,10 @@ static void parse_message(volatile vchiq_header_t *h)
 
     case VCHIQ_MSG_CLOSE:
         LOG_INFO("vchiq: service closed by VC\r\n");
+        /* complete the close handshake so the VC side can free the port */
+        queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_CLOSE, vc.localport,
+                                         VCHIQ_MSG_SRCPORT(msgid)),
+                          NULL, 0, NULL, 0);
         vc.open = false;
         break;
 
@@ -464,7 +487,9 @@ static void parse_message(volatile vchiq_header_t *h)
         break;
 
     case VCHIQ_MSG_PAUSE:
-        /* We never initiate PAUSE and always ask to carry on. */
+        /* Protocol: acknowledge a PAUSE with a PAUSE, then send RESUME
+           to carry on - we never want to stay paused. */
+        queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_PAUSE, 0, 0), NULL, 0, NULL, 0);
         queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_RESUME, 0, 0), NULL, 0, NULL, 0);
         break;
 

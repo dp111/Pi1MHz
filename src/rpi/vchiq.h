@@ -64,13 +64,10 @@ bool vchiq_init(void);
 bool vchiq_open_service(uint32_t fourcc, short version, short version_min,
                         const vchiq_callbacks_t *callbacks);
 
-/* Queue a DATA message on the open service, optionally from two gathered
-   pieces (header + payload), as MMAL likes to send them. Copies into the
-   shared slot, so the buffers may live in ordinary cached ARM memory.
-   Returns false if no TX slot space is available (caller retries). */
+/* Queue a DATA message on the open service. Copies into the shared slot,
+   so the buffer may live in ordinary cached ARM memory. Returns false if
+   no TX slot space is available (caller retries). */
 bool vchiq_queue_message(const void *msg, unsigned int size);
-bool vchiq_queue_message2(const void *hdr, unsigned int hdr_size,
-                          const void *body, unsigned int body_size);
 
 /* Queue a bulk transfer. 'busaddr' is a VideoCore bus address
    (0xC0000000-alias) of a buffer INSIDE the VC heap region (uncached from
@@ -80,6 +77,12 @@ bool vchiq_queue_message2(const void *hdr, unsigned int hdr_size,
    Transfers of each direction complete strictly in queue order. */
 bool vchiq_bulk_transmit(uint32_t busaddr, unsigned int size, void *user);
 bool vchiq_bulk_receive(uint32_t busaddr, unsigned int size, void *user);
+
+/* True when another bulk of that direction can be queued right now.
+   Callers that must pair a control message with a bulk transfer check
+   this BEFORE sending the message, so the pair can never be split. */
+bool vchiq_bulk_tx_space(void);
+bool vchiq_bulk_rx_space(void);
 
 /* Pump the channel: parse received messages (dispatching callbacks),
    recycle consumed slots, replenish TX slots. Call frequently. */

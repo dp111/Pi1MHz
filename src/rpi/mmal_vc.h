@@ -375,7 +375,11 @@ bool mmal_vc_port_info_get(uint32_t component, uint32_t port_type,
 bool mmal_vc_port_set_format(mmal_vc_port_t *port);
 bool mmal_vc_port_enable(mmal_vc_port_t *port);
 bool mmal_vc_port_disable(mmal_vc_port_t *port);
+/* Flush variants: _flush uses the dummy-bulk handshake and is only valid
+   on ports that have carried host->VC payload; _flush_normal is the plain
+   PORT_ACTION flush for ports that have not (e.g. decoder output). */
 bool mmal_vc_port_flush(mmal_vc_port_t *port);
+bool mmal_vc_port_flush_normal(mmal_vc_port_t *port);
 bool mmal_vc_port_parameter_set(mmal_vc_port_t *port,
                                 const void *param, uint32_t size);
 /* Submit a buffer. Input buffers carry data (length > 0, or EOS);

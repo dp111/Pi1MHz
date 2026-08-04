@@ -46,6 +46,8 @@ static struct {
     bool running;                    /* component up, input port enabled */
     bool output_enabled;
     bool reconfigure_pending;        /* FORMAT_CHANGED seen, work deferred */
+    bool eos_pending;                /* EOS marker owed but no slot was free */
+    bool sent_input;                 /* input port has carried real payload */
     uint32_t width, height;
     uint32_t frame_bytes;
 
@@ -91,9 +93,10 @@ static void on_buffer_done(mmal_vc_buffer_t *buf)
             if (dec.frame_cb)
                 dec.frame_cb(buf->busaddr & 0x3FFFFFFFu, buf->pts, eos);
         } else if (eos && buf->length == 0) {
-            /* bare EOS marker - nothing to display, poll re-arms it */
+            /* Bare EOS marker - nothing to display (phys 0 tells the
+               caller so), and the poll loop re-arms the buffer */
             if (dec.frame_cb)
-                dec.frame_cb(buf->busaddr & 0x3FFFFFFFu, buf->pts, true);
+                dec.frame_cb(0, buf->pts, true);
         } else if (buf->length) {
             LOG_INFO("h264: short frame %"PRIu32"\r\n", buf->length);
         }
@@ -308,10 +311,14 @@ void h264dec_recycle_output(uint32_t phys)
     for (int i = 0; i < H264DEC_MAX_OUTPUT; i++) {
         output_slot_t *o = &dec.out[i];
         if (o->registered && (o->buf.busaddr & 0x3FFFFFFFu) == phys) {
-            o->with_caller = false;
-            o->with_component = false;
-            o->buf.in_flight = false;
-            arm_output_buffers();
+            /* Only a buffer the caller actually holds may be recycled -
+               anything else (e.g. a stale phys after a flush already
+               returned the buffer) must not clobber with_component /
+               in_flight while the VC still owns it. */
+            if (o->with_caller) {
+                o->with_caller = false;
+                arm_output_buffers();
+            }
             return;
         }
     }
@@ -337,6 +344,28 @@ void h264dec_cancel_input(void)
     dec.in_borrowed = -1;
 }
 
+/* Send the zero-length EOS marker that pushes the last picture out of the
+   decoder (the freeze-frame trick). Needs a free input slot AND bulk
+   space; when either is missing the debt is remembered in eos_pending
+   and retried from h264dec_poll() as slots come back. */
+static void try_send_eos(void)
+{
+    for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++) {
+        if (dec.in[i].free && i != dec.in_borrowed) {
+            input_slot_t *e = &dec.in[i];
+            e->buf.length = 0;
+            e->buf.offset = 0;
+            e->buf.pts = MMAL_TIME_UNKNOWN;
+            e->buf.flags = MMAL_BUFFER_HEADER_FLAG_EOS;
+            if (mmal_vc_submit_buffer(&dec.port_in, &e->buf)) {
+                e->free = false;
+                dec.eos_pending = false;
+            }
+            return;                  /* on failure eos_pending stays set */
+        }
+    }
+}
+
 bool h264dec_submit_input(uint32_t length, int64_t pts, bool eos)
 {
     if (!dec.running || dec.in_borrowed < 0 || length > H264DEC_INPUT_BUF_SIZE)
@@ -349,27 +378,20 @@ bool h264dec_submit_input(uint32_t length, int64_t pts, bool eos)
     s->buf.flags = MMAL_BUFFER_HEADER_FLAG_FRAME_END |
                    MMAL_BUFFER_HEADER_FLAG_KEYFRAME;
 
-    if (!mmal_vc_submit_buffer(&dec.port_in, &s->buf))
+    if (!mmal_vc_submit_buffer(&dec.port_in, &s->buf)) {
+        /* Transient (no VCHIQ TX slot / bulk slot). Drop the borrowed
+           buffer so the caller can retry with a fresh read - leaving it
+           borrowed would starve input forever. */
+        h264dec_cancel_input();
         return false;
+    }
     s->free = false;
     dec.in_borrowed = -1;
+    dec.sent_input = true;
 
     if (eos) {
-        /* Zero-length EOS pushes the frame out of the decoder without
-           waiting for a successor - the freeze-frame trick. Reuse any
-           free slot; if none is free the AU above will release one. */
-        for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++) {
-            if (dec.in[i].free) {
-                input_slot_t *e = &dec.in[i];
-                e->buf.length = 0;
-                e->buf.offset = 0;
-                e->buf.pts = MMAL_TIME_UNKNOWN;
-                e->buf.flags = MMAL_BUFFER_HEADER_FLAG_EOS;
-                if (mmal_vc_submit_buffer(&dec.port_in, &e->buf))
-                    e->free = false;
-                break;
-            }
-        }
+        dec.eos_pending = true;
+        try_send_eos();              /* poll retries if nothing was free */
     }
     return true;
 }
@@ -378,13 +400,54 @@ bool h264dec_resume(void)
 {
     if (!dec.running)
         return false;
-    bool ok = mmal_vc_port_flush(&dec.port_in);
+    dec.eos_pending = false;         /* a flush supersedes any owed EOS */
+    /* Input: the bulk-synced flush, but only once real payload has been
+       sent on the port (before that the VC side may not be set up to
+       receive the dummy bulk - same gating as the reference client).
+       Output: always the plain flush; that port never carries host->VC
+       payload, so the dummy-bulk variant would desynchronise pairing. */
+    bool ok = dec.sent_input ? mmal_vc_port_flush(&dec.port_in)
+                             : mmal_vc_port_flush_normal(&dec.port_in);
     if (dec.output_enabled)
-        ok = mmal_vc_port_flush(&dec.port_out) && ok;
+        ok = mmal_vc_port_flush_normal(&dec.port_out) && ok;
     /* Flushed output buffers come back with length 0; on_buffer_done has
        already cleared with_component, so just re-arm them. */
     arm_output_buffers();
     return ok;
+}
+
+/* Detach everything for a warm restart (Beeb reset re-runs the emulator
+   inits): return all buffers to us, forget the output registrations so
+   the caller can free/reallocate its frame buffers, and leave the
+   component enabled with a fresh input port ready for the next AU. */
+void h264dec_reset(void)
+{
+    if (!dec.running)
+        return;
+
+    bool was_enabled = dec.output_enabled;
+    mmal_vc_port_disable(&dec.port_in);
+    if (dec.output_enabled) {
+        mmal_vc_port_disable(&dec.port_out);
+        dec.output_enabled = false;
+    }
+
+    for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++)
+        dec.in[i].free = true;
+    dec.in_borrowed = -1;
+    dec.eos_pending = false;
+    for (int i = 0; i < H264DEC_MAX_OUTPUT; i++) {
+        dec.out[i].registered = false;
+        dec.out[i].with_component = false;
+        dec.out[i].with_caller = false;
+        dec.out[i].buf.in_flight = false;
+    }
+
+    mmal_vc_port_enable(&dec.port_in);
+    /* If the output was up before, its format is already known - re-enable
+       it from the poll loop once the caller has registered new buffers,
+       without waiting for another FORMAT_CHANGED. */
+    dec.reconfigure_pending = was_enabled;
 }
 
 void h264dec_poll(void)
@@ -399,6 +462,9 @@ void h264dec_poll(void)
         if (!reconfigure_output())
             dec.reconfigure_pending = true;   /* retry next poll */
     }
+
+    if (dec.eos_pending)
+        try_send_eos();
 
     arm_output_buffers();
 }

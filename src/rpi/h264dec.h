@@ -69,6 +69,12 @@ void h264dec_cancel_input(void);
    this discards anything in flight so the next submit starts clean. */
 bool h264dec_resume(void);
 
+/* Warm restart (e.g. Beeb reset re-running emulator inits): return all
+   buffers, forget output registrations (so the caller may free its frame
+   buffers), keep the component alive ready for new input. After this,
+   re-register output buffers with h264dec_add_output_buffer(). */
+void h264dec_reset(void);
+
 /* Pump the decoder; call from the player poll task. */
 void h264dec_poll(void);
 

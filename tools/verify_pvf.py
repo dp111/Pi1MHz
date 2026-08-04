@@ -18,11 +18,12 @@ import sys
 
 def nal_types(au):
     out, i = [], 0
-    while i < len(au) - 4:
+    # bound admits a 3-byte start code ending exactly at the buffer tail
+    while i + 3 < len(au):
         if au[i:i + 3] == b"\0\0\1":
             out.append(au[i + 3] & 0x1F)
             i += 3
-        elif au[i:i + 4] == b"\0\0\0\1":
+        elif i + 4 < len(au) and au[i:i + 4] == b"\0\0\0\1":
             out.append(au[i + 4] & 0x1F)
             i += 4
         else:
@@ -52,6 +53,8 @@ def main():
      idx_off, data_off, maxv) = hdr[:13]
     if magic != 0x31465650 or ver != 1:
         sys.exit("bad magic/version - not a PVF1 file")
+    if fc == 0:
+        sys.exit("FAIL: zero frames")
     print(f"{w}x{h} @ {fn}/{fd} fps, {fc} frames, "
           f"audio {ar} Hz x{ac} ({abpf} B/frame), max AU {maxv} B")
     if w % 32 or h % 16:

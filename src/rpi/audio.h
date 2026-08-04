@@ -155,6 +155,10 @@ uint32_t * rpi_audio_buffer_pointer(void);
 void rpi_audio_samples_written(void);
 uint32_t rpi_audio_init(uint32_t samplerate );
 
+// True once rpi_audio_init() has been called by anyone - the PWM/DMA
+// path has a single owner; check before claiming it.
+bool rpi_audio_active(void);
+
 // Convert a signed 16-bit sample to a PWM word centred at mid-rail, with
 // error-feedback dithering (carry the sub-step remainder through *error) and
 // clamping to the PWM range set by the last rpi_audio_init().

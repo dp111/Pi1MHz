@@ -184,7 +184,9 @@ static void legacy_still_init(void)
 
 static uint32_t audio_ring_level(void)
 {
-    return (vp.audio_wr - vp.audio_rd) & (vp.audio_ring_size - 1u);
+    /* wr/rd are monotonic, so the level is the plain difference - masking
+       it would alias a completely full ring to "empty" */
+    return vp.audio_wr - vp.audio_rd;
 }
 
 static void audio_ring_write(const uint8_t *data, uint32_t len)
@@ -207,13 +209,17 @@ static void audio_pump(void)
     if (!vp.audio_inited)
         return;
 
-    bool muted = !(vp.audio_on[0] || vp.audio_on[1]) || vp.mode != VP_PLAY;
+    /* When playing, ALWAYS consume the ring at the DMA rate - muting only
+       silences the output. Consuming while muted keeps audio in sync with
+       the pictures, so A1 after A0 resumes at the right place instead of
+       replaying a third of a second of stale sound. */
+    bool playing = (vp.mode == VP_PLAY);
 
     while (rpi_audio_buffer_free_space()) {
         uint32_t *dst = rpi_audio_buffer_pointer();
         for (uint32_t i = 0; i < DMA_BUFFER_SIZE / 2; i++) {
             int16_t l = 0, r = 0;
-            if (!muted && audio_ring_level() >= 4) {
+            if (playing && audio_ring_level() >= 4) {
                 uint32_t rd = vp.audio_rd & (vp.audio_ring_size - 1u);
                 l = (int16_t)(vp.audio_ring[rd] | (vp.audio_ring[rd + 1] << 8));
                 r = (int16_t)(vp.audio_ring[rd + 2] | (vp.audio_ring[rd + 3] << 8));
@@ -226,7 +232,7 @@ static void audio_pump(void)
             *dst++ = rpi_audio_pack(r, &vp.audio_err_r);
         }
         rpi_audio_samples_written();
-        if (muted)
+        if (!playing)
             break;
     }
 }
@@ -330,6 +336,10 @@ static void videoplayer_poll(void)
 
     h264dec_poll();
 
+    /* Feed the PWM before any SD work: the DMA runway is only ~9.5 ms
+       and a seek-burst of AU reads below can exceed that */
+    audio_pump();
+
     /* Pending random access? Flush whatever is mid-pipeline first. */
     if (vp.seek_frame >= 0) {
         uint32_t target = (uint32_t)vp.seek_frame;
@@ -366,9 +376,14 @@ static void videoplayer_poll(void)
             vp.next_frame_due += vp.frame_period_us;
         }
 
-        /* End of play range -> still on the last picture */
+        /* End of play range -> still on the last picture. The stop
+           register is one-shot, as on the real player: reaching it clears
+           it, so a later bare 'N' plays on rather than instantly
+           re-stilling. */
         if (vp.cur_picture >= limit && !vp.in_flight && !vp.pending_phys) {
             vp.mode = VP_STILL;
+            if (vp.stop_picture && vp.cur_picture >= vp.stop_picture)
+                vp.stop_picture = 0;
             h264dec_resume();
         }
         break;
@@ -523,6 +538,9 @@ static bool pvf_open_file(void)
         n != sizeof(vp.hdr) ||
         vp.hdr.magic != PVF_MAGIC || vp.hdr.version != PVF_VERSION ||
         vp.hdr.frame_count == 0 ||
+        vp.hdr.frame_count > 400000 ||   /* bounds the index malloc too */
+        vp.hdr.fps_num == 0 || vp.hdr.fps_den == 0 ||
+        vp.hdr.audio_bytes_per_frame > 65536 ||
         vp.hdr.width == 0 || vp.hdr.width > 1920 ||
         vp.hdr.height == 0 || vp.hdr.height > 1088) {
         LOG_INFO("videoplayer: bad " PVF_FILENAME " header\r\n");
@@ -547,12 +565,29 @@ static bool pvf_open_file(void)
     return true;
 }
 
+/* Survives the memset of vp below: whether THIS module claimed the PWM
+   audio path on a previous init (a Beeb reset re-runs every emulator
+   init, and we must recognise our own claim as ours). */
+static bool audio_owned_by_player;
+
 void videoplayer_init(uint8_t instance, uint8_t address)
 {
     (void)instance;
     (void)address;
 
     screen_plane_enable(YUV_PLANE, false);
+
+    /* Warm re-init (Beeb reset re-runs emulator inits): tear the previous
+       instance down FIRST. h264dec_reset() detaches the frame buffers
+       from the still-running decoder - without it, releasing the GPU
+       buffers below would leave the VideoCore free to DMA into freed
+       memory. Then release the heap the old instance held. */
+    if (vp.open) {
+        h264dec_reset();
+        f_close(&vp.file);
+    }
+    free(vp.index);
+    free(vp.audio_ring);
 
     memset(&vp, 0, sizeof(vp));
     vp.seek_frame = -1;
@@ -589,7 +624,9 @@ void videoplayer_init(uint8_t instance, uint8_t address)
         return;
     }
 
-    uint32_t handles[NUM_FRAME_BUFFERS];
+    /* Zeroed: screen_allocate_buffer does not write the handle when the
+       allocation tag itself fails, and the cleanup below tests them */
+    uint32_t handles[NUM_FRAME_BUFFERS] = {0};
     for (int i = 0; i < NUM_FRAME_BUFFERS; i++) {
         vp.buf_phys[i] = screen_allocate_buffer(vp.frame_bytes, &handles[i]);
         if (!vp.buf_phys[i]) {
@@ -608,7 +645,17 @@ void videoplayer_init(uint8_t instance, uint8_t address)
         memset(p, 0x10, vp.hdr.width * vp.hdr.height);
         memset(p + vp.hdr.width * vp.hdr.height, 0x80,
                vp.hdr.width * vp.hdr.height / 2u);
-        h264dec_add_output_buffer(vp.buf_phys[i], vp.frame_bytes);
+        if (!h264dec_add_output_buffer(vp.buf_phys[i], vp.frame_bytes))
+            LOG_INFO("videoplayer: output buffer %d not registered\r\n", i);
+    }
+
+    /* A previous still-frame kernel (or the legacy path of this one) may
+       have left its 4:2:2 buffer allocated - not needed while the video
+       player owns the plane, so give the ~864 KB back to the GPU pool. */
+    if (videobuf_magic == VIDEOBUF_MAGIC && videobuf_handle != 0u) {
+        screen_release_buffer(videobuf_handle);
+        videobuf_handle = 0u;
+        videobuf_magic = 0u;
     }
 
     videobuf_magic2 = VIDEOBUF_MAGIC2;
@@ -621,16 +668,22 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     screen_plane_enable(YUV_PLANE, true);
 
     vp.audio_present = (vp.hdr.audio_rate != 0);
+    if (vp.audio_present && rpi_audio_active() && !audio_owned_by_player) {
+        /* The Music 5000 (enabled by default) or BeebSID already owns the
+           PWM/DMA path, and its poll fills the same buffers - two writers
+           means garbled audio, so stand down. Disable the other emulator
+           (M5000_addr=-1 in Pi1MHz.cfg) to give the video its sound. */
+        LOG_INFO("videoplayer: audio disabled - PWM in use (set M5000_addr=-1 for video sound)\r\n");
+        vp.audio_present = false;
+    }
     if (vp.audio_present) {
         vp.audio_ring_size = 1;
         while (vp.audio_ring_size < vp.hdr.audio_bytes_per_frame * AUDIO_RING_FRAMES)
             vp.audio_ring_size <<= 1;             /* power of two for the masks */
         vp.audio_ring = malloc(vp.audio_ring_size);
         if (vp.audio_ring) {
-            /* NOTE: shares the PWM with the Music 5000 / BeebSID - for a
-               Domesday player build those are idle, but do not enable
-               both at once. */
             rpi_audio_init(vp.hdr.audio_rate);
+            audio_owned_by_player = true;
             vp.audio_inited = true;
             vp.audio_on[0] = vp.audio_on[1] = true;
         } else {

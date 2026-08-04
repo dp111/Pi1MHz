@@ -107,6 +107,14 @@ static void handle_buffer_to_host(const mmal_worker_buffer_from_host_t *msg)
             buf->offset = 0;
             buf->length = msg->payload_in_message;
             complete_buffer(buf);
+        } else {
+            /* "impossible" per the reference - but never leave the buffer
+               stranded in flight */
+            LOG_INFO("mmal: invalid short payload %"PRIu32"\r\n",
+                     msg->payload_in_message);
+            buf->length = 0;
+            buf->flags |= MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED;
+            complete_buffer(buf);
         }
     } else {
         /* No payload - e.g. an input buffer being released */
@@ -132,10 +140,15 @@ static void on_data(const void *data, unsigned int size)
         const mmal_worker_event_to_host_t *ev =
             (const mmal_worker_event_to_host_t *)data;
         if (ev->length > MMAL_WORKER_EVENT_SPACE) {
-            /* Larger events arrive by bulk into pre-registered event
-               buffers, which this client does not provide - nothing the
-               decoder needs sends one. */
-            LOG_INFO("mmal: oversize event 0x%"PRIx32" dropped\r\n", ev->cmd);
+            /* Larger events arrive by bulk - and the VC has ALREADY queued
+               its side of that transfer, so it must be received or every
+               later bulk pairs one-off. Sink it into the scratch page
+               (the VC transfers min(sizes), so a short receive is fine);
+               nothing video_decode emits is this big. */
+            LOG_INFO("mmal: oversize event 0x%"PRIx32" sunk\r\n", ev->cmd);
+            uint32_t len = (ev->length + 3u) & ~3u;
+            vchiq_bulk_receive(client.dummy_bus, len > 4096u ? 4096u : len,
+                               NULL);
             return;
         }
         if (client.cb.event)
@@ -157,6 +170,8 @@ static void on_data(const void *data, unsigned int size)
 static void bulk_rx_done(void *user, int actual)
 {
     mmal_vc_buffer_t *buf = (mmal_vc_buffer_t *)user;
+    if (!buf)
+        return;                      /* sunk transfer (oversize event) */
     if (actual < 0) {
         buf->length = 0;
         buf->flags |= MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED;
@@ -263,7 +278,7 @@ bool mmal_vc_init(const mmal_vc_client_callbacks_t *callbacks)
     /* Version handshake - purely a sanity check */
     mmal_worker_version_t ver;
     memset(&ver, 0, sizeof(ver));
-    if (sendwait(&ver.header, sizeof(mmal_worker_msg_header_t),
+    if (sendwait(&ver.header, sizeof(ver),
                  MMAL_WORKER_GET_VERSION, &ver, sizeof(ver))) {
         LOG_DEBUG("mmal: VC version %"PRIu32".%"PRIu32" (min %"PRIu32")\r\n",
                   ver.major, ver.minor, ver.minimum);
@@ -365,7 +380,8 @@ bool mmal_vc_port_set_format(mmal_vc_port_t *port)
     if (reply.status != MMAL_STATUS_SUCCESS)
         return false;
 
-    port->handle = reply.port_handle;
+    /* Keep the port handle from PORT_INFO_GET - the reference client never
+       reads it from a SET reply, so do not trust that field here. */
     port->port = reply.port;
     port->format = reply.format;
     port->es = reply.es;
@@ -405,8 +421,17 @@ bool mmal_vc_port_disable(mmal_vc_port_t *port)
     return port_action(port, MMAL_WORKER_PORT_ACTION_DISABLE, false);
 }
 
+/* Plain flush via PORT_ACTION. Correct for ports that have never carried
+   host->VC payload (e.g. video_decode's output port) - the reference
+   warns the other end may not even be set up for bulk on such ports. */
+bool mmal_vc_port_flush_normal(mmal_vc_port_t *port)
+{
+    return port_action(port, MMAL_WORKER_PORT_ACTION_FLUSH, false);
+}
+
 /* Flush with the dummy-bulk handshake so the flush cannot overtake
-   payload that is still crossing as a bulk transfer. */
+   payload that is still crossing as a bulk transfer. Use ONLY on ports
+   that have sent payload (input ports); see mmal_vc_port_flush_normal. */
 bool mmal_vc_port_flush(mmal_vc_port_t *port)
 {
     mmal_worker_buffer_from_host_t msg;
@@ -417,7 +442,6 @@ bool mmal_vc_port_flush(mmal_vc_port_t *port)
     msg.drvbuf.port_handle = port->handle;
     msg.drvbuf.client_context = 0;
 
-    /* message first, dummy bulk second, exactly like sendwait+bulk */
     msg.header.magic = MMAL_MAGIC;
     msg.header.msgid = MMAL_WORKER_PORT_FLUSH;
     if (++client.next_context == 0)
@@ -426,17 +450,25 @@ bool mmal_vc_port_flush(mmal_vc_port_t *port)
     client.wait_context = msg.header.context;
     client.reply_ready = false;
 
+    /* Secure the bulk slot BEFORE the message goes out: once the message
+       is sent the VC expects the dummy bulk, and failing to deliver it
+       would desynchronise the pairing for every later transfer. */
     uint32_t start = RPI_GetSystemTime();
+    while (!vchiq_bulk_tx_space()) {
+        vchiq_poll();
+        if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US)
+            goto fail;
+    }
     while (!vchiq_queue_message(&msg, sizeof(msg))) {
         vchiq_poll();
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US)
             goto fail;
     }
-    while (!vchiq_bulk_transmit(client.dummy_bus, 8, NULL)) {
-        vchiq_poll();
-        if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US)
-            goto fail;
-    }
+    /* Single-threaded: the slot reserved above is still free, so this
+       cannot fail unless the service died - in which case pairing is
+       moot anyway. */
+    vchiq_bulk_transmit(client.dummy_bus, 8, NULL);
+
     while (!client.reply_ready) {
         vchiq_poll();
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
@@ -512,18 +544,25 @@ bool mmal_vc_submit_buffer(mmal_vc_port_t *port, mmal_vc_buffer_t *buf)
     msg.header.msgid = msgid;
     msg.header.context = 0;
 
-    /* Never split the message/bulk pair: make sure the bulk queue has
-       room BEFORE the message goes out. */
+    /* Never split the message/bulk pair: secure the bulk slot BEFORE the
+       message goes out (single-threaded, so it cannot be stolen between
+       the check and the transmit). If there is no room the caller simply
+       retries - unlike an unbounded drain loop here, that cannot wedge
+       the whole poll loop when the channel dies. */
+    bool needs_bulk = (bulk_len != 0) ||
+                      (msgid == MMAL_WORKER_BUFFER_FROM_HOST_ZEROLEN);
+    if (needs_bulk && !vchiq_bulk_tx_space()) {
+        vchiq_poll();
+        return false;
+    }
+
     if (!vchiq_queue_message(&msg, sizeof(msg)))
         return false;
 
-    if (bulk_len) {
-        while (!vchiq_bulk_transmit(buf->busaddr + buf->offset, bulk_len, buf))
-            vchiq_poll();            /* drain until a bulk slot frees up */
-    } else if (msgid == MMAL_WORKER_BUFFER_FROM_HOST_ZEROLEN) {
-        while (!vchiq_bulk_transmit(client.dummy_bus, 8, NULL))
-            vchiq_poll();
-    }
+    if (bulk_len)
+        vchiq_bulk_transmit(buf->busaddr + buf->offset, bulk_len, buf);
+    else if (msgid == MMAL_WORKER_BUFFER_FROM_HOST_ZEROLEN)
+        vchiq_bulk_transmit(client.dummy_bus, 8, NULL);
 
     buf->port = port;
     buf->in_flight = true;
