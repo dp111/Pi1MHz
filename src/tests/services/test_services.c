@@ -96,7 +96,7 @@ static uint8_t do_open(uint8_t h, const char *name)
 {
    uint32_t cp = cp_of((uint8_t)(0xF0u + h));
    Pi1MHz->JIM_ram[cp] = 2;
-   Pi1MHz->JIM_ram[cp + 2] = 0x03;
+   Pi1MHz->JIM_ram[cp + 2] = FA_READ | FA_WRITE;
    strcpy((char *)&Pi1MHz->JIM_ram[cp + 3], name);
    return dispatch((uint8_t)(0xF0u + h));
 }
@@ -229,6 +229,9 @@ int main(void)
    ok(!fat_service_file_in_use("/BEEB.MMB"), "reset releases the raw-sector latch");
    ok(do_simple(0, 20) == 42, "FAT service still dispatches after reset");
 
+   /* KEEP THIS BLOCK LAST: it sets Beeb_write_protect in the shared config
+      store and there is no config_reset(), so anything appended after it would
+      silently inherit write-protect ON. */
    puts("== Beeb_write_protect ==");
    {
       /* Baseline (key absent -> accessor false): Beeb writes reach FatFs. */
@@ -239,7 +242,7 @@ int main(void)
       ok(do_simple(0, 10) == FR_OK && f_mkdir_calls   == 1,   "off: f_mkdir happens");
       ok(do_simple(0, 12) == FR_OK && f_rename_calls  == 1,   "off: f_rename happens");
       ok(do_simple(0, 16) == FR_OK && f_unlink_calls  == 1,   "off: f_unlink happens");
-      ok(do_open(9, "/rw.dat") == FR_OK && last_open_mode == 0x03u,
+      ok(do_open(9, "/rw.dat") == FR_OK && last_open_mode == (FA_READ | FA_WRITE),
          "off: open keeps the requested read/write mode");
 
       /* Turn write-protect on: every Beeb write is now a silent success. */
@@ -256,6 +259,21 @@ int main(void)
       ok(do_open(9, "/rw.dat") == FR_OK && last_open_mode == FA_READ,
          "on: open downgraded to read-only (write/create bits stripped)");
       ok(do_simple(0, 20) == 42, "on: reads/queries unaffected (disk_type)");
+
+      /* an f_write with a real length must report the FULL length "written"
+         (the caller believes it succeeded) while touching no FatFs. */
+      {
+         uint32_t cp = cp_of(0xF0u);
+         memset(&Pi1MHz->JIM_ram[cp], 0, 64);
+         Pi1MHz->JIM_ram[cp]     = 5;      /* f_write */
+         Pi1MHz->JIM_ram[cp + 1] = 0x40;   /* buf_len = 0x40 (24-bit at cp[1..3]) */
+         uint8_t r = dispatch(0xF0u);
+         uint32_t echoed = Pi1MHz->JIM_ram[cp + 1]
+                         | ((uint32_t)Pi1MHz->JIM_ram[cp + 2] << 8)
+                         | ((uint32_t)Pi1MHz->JIM_ram[cp + 3] << 16);
+         ok(r == FR_OK && f_write_calls == 0 && echoed == 0x40u,
+            "on: f_write echoes the full length without writing");
+      }
    }
 
    printf("\n%d checks, %d failures\n", checks, fails);

@@ -44,10 +44,14 @@ int config_emulator_override(const char *name, uint8_t *addr);
  * writable byte. Exposed for host testing. */
 void config_parse(char *buf, size_t len);
 
-/* True if "Beeb_write_protect" is set (1/y/t, case-insensitive) in the
- * config. When true, every write the Beeb initiates to the SD card is a
- * silent no-op (USB/MTP and web/WebDAV writes are unaffected). Parsed once
- * and cached. Default (key absent) is false. */
+/* Interpret a key's value as a boolean flag: true if present and its value
+ * begins with 1/y/Y/t/T, else false (absent or anything else). Read from the
+ * store on each call (not cached). */
+bool config_get_bool(const char *key);
+
+/* True if "Beeb_write_protect" is set. When true, every write the Beeb
+ * initiates to the SD card is a silent no-op (USB/MTP and web/WebDAV writes
+ * are unaffected). Default (key absent) is false. */
 bool config_beeb_write_protected(void);
 
 #endif

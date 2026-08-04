@@ -71,13 +71,25 @@ int main(void)
    eq(config_get("MIXEDCASE"), "match", "lookup upper vs stored mixed");
    eq(config_get("SIMPLE"), "1", "lookup upper vs stored lower");
 
-   puts("== Beeb_write_protect accessor ==");
-   ok(!config_beeb_write_protected(), "false when the key is absent");
+   puts("== config_get_bool / write-protect accessor ==");
+   ok(!config_get_bool("bool_absent"), "absent key -> false");
    {
-      static char wp[] = "Beeb_write_protect=yes\n";
-      config_parse(wp, sizeof wp - 1);
+      /* distinct keys so config_get's first-match/append store can hold every
+         value at once */
+      static char bools[] =
+         "b_one=1\n" "b_yl=y\n" "b_yu=Y\n" "b_tl=t\n" "b_tu=T\n"
+         "b_zero=0\n" "b_no=n\n" "b_word=on\n";
+      config_parse(bools, sizeof bools - 1);
    }
-   ok(config_beeb_write_protected(), "true once the key is set");
+   ok(config_get_bool("b_one") && config_get_bool("b_yl") && config_get_bool("b_yu")
+      && config_get_bool("b_tl") && config_get_bool("b_tu"),
+      "values 1/y/Y/t/T -> true");
+   ok(!config_get_bool("b_zero") && !config_get_bool("b_no") && !config_get_bool("b_word"),
+      "values 0/n/on -> false");
+
+   ok(!config_beeb_write_protected(), "write-protect false when its key is absent");
+   { static char wp[] = "Beeb_write_protect=Y\n"; config_parse(wp, sizeof wp - 1); }
+   ok(config_beeb_write_protected(), "write-protect true once the key is set");
 
    puts("== emulator overrides ==");
    {

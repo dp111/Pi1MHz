@@ -46,6 +46,9 @@ void services_irq_set(uint8_t source, bool asserted)
 static const char *g_net_enable = "1";
 const char *config_get(const char *prop)
 { return (strcmp(prop, "net_enable") == 0) ? g_net_enable : NULL; }
+bool config_get_bool(const char *key)
+{ const char *v = config_get(key);
+  return v && (v[0]=='1'||v[0]=='y'||v[0]=='Y'||v[0]=='t'||v[0]=='T'); }
 
 static wifi_lwip_context_t g_ctx;
 static int g_kicks;

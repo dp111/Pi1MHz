@@ -824,6 +824,11 @@ uint8_t filesystemGetLunDirectory(void)
 
 // Functions for creating LUNs and LUN descriptors ---------------------------------------------------------------------------
 
+// Beeb_write_protect rule of thumb for the functions below and their write
+// siblings: a write to an ALREADY-mounted LUN (WriteNextSector, WriteAttributes,
+// FormatLun) must return SUCCESS (true) so a live ADFS never sees a CHECK_COND;
+// a first-time CREATE (image/descriptor/directory) returns false, refusing to
+// bring a new LUN into existence.  Keep new write paths on the right side of it.
 // Function to create a new LUN image (makes an empty .dat file)
 bool filesystemCreateLunImage(uint8_t lunNumber)
 {

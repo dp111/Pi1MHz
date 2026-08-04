@@ -148,13 +148,15 @@ void config_load(const char *filename)
    LOG_DEBUG("CONFIG: %s parsed, %d key(s)\r\n", filename, config_count);
 }
 
-bool config_beeb_write_protected(void)
+bool config_get_bool(const char *key)
 {
-   /* Not cached: the config table is tiny and this is only hit on Beeb write
-    * commands (SD I/O dwarfs the lookup), and leaving it un-cached keeps it
-    * correct if the store is (re)parsed - e.g. under host tests. */
-   const char *v = config_get("Beeb_write_protect");
+   const char *v = config_get(key);
    return (v != NULL) &&
           (v[0] == '1' || v[0] == 'y' || v[0] == 'Y' ||
            v[0] == 't' || v[0] == 'T');
+}
+
+bool config_beeb_write_protected(void)
+{
+   return config_get_bool("Beeb_write_protect");
 }

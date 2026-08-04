@@ -1554,8 +1554,7 @@ void net_service_init(uint8_t instance, uint8_t address)
    net_source = instance;
 
    {
-      const char *v = config_get("net_enable");
-      net_enabled = (v != NULL) && (v[0] == '1' || v[0] == 'y' || v[0] == 't');
+      net_enabled = config_get_bool("net_enable");
    }
 
    /* Defer all pcb teardown to the first poll (see net_service_poll).  Do NOT
