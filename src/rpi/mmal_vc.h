@@ -12,9 +12,10 @@
 
     The API here is the smallest possible subset: create/enable a
     component, get/set port formats, enable ports, exchange buffers.
-    Payload data travels by VCHIQ bulk transfer straight between the
-    caller's VC-heap buffers and the component - the ARM never touches
-    the pixels.
+    Every port runs in zero-copy mode: payload never crosses the wire at
+    all. A buffer travels as a VideoCore memory handle (see vcsm.h) and
+    the component reads or writes the caller's VC-heap memory itself -
+    the ARM never touches the pixels.
 */
 
 #ifndef RPI_MMAL_VC_H
@@ -33,6 +34,9 @@
 #define MMAL_ENCODING_I420      MMAL_FOURCC('I','4','2','0')
 
 #define MMAL_STATUS_SUCCESS     0u
+
+/* Common port parameters (mmal_parameters_common.h; group COMMON = 0) */
+#define MMAL_PARAMETER_ZERO_COPY 4u  /* MMAL_PARAMETER_BOOLEAN_T */
 
 /* Buffer header flags (mmal_buffer.h) */
 #define MMAL_BUFFER_HEADER_FLAG_EOS          (1u << 0)
@@ -342,9 +346,13 @@ typedef struct {
 } mmal_vc_port_t;
 
 /* A payload buffer. 'busaddr' must point into the VC heap
-   (vchiq_alloc_shared) so transfers bypass the ARM caches. */
+   (vchiq_alloc_shared / screen_allocate_buffer) so the VideoCore can read
+   and write it directly and the ARM sees it uncached. */
 typedef struct mmal_vc_buffer {
     uint32_t busaddr;
+    uint32_t vc_handle;              /* SMEM handle for this memory
+                                        (vcsm_import) - how the VideoCore
+                                        names the buffer on the wire */
     uint32_t alloc_size;
     uint32_t length;
     uint32_t offset;
@@ -353,7 +361,6 @@ typedef struct mmal_vc_buffer {
     uint32_t cmd;
     mmal_vc_port_t *port;            /* which port it was last sent to */
     bool in_flight;
-    void *user;
 } mmal_vc_buffer_t;
 
 typedef struct {
@@ -375,15 +382,18 @@ bool mmal_vc_port_info_get(uint32_t component, uint32_t port_type,
 bool mmal_vc_port_set_format(mmal_vc_port_t *port);
 bool mmal_vc_port_enable(mmal_vc_port_t *port);
 bool mmal_vc_port_disable(mmal_vc_port_t *port);
-/* Flush variants: _flush uses the dummy-bulk handshake and is only valid
-   on ports that have carried host->VC payload; _flush_normal is the plain
-   PORT_ACTION flush for ports that have not (e.g. decoder output). */
+/* Discard anything in flight on the port (PORT_ACTION flush). */
 bool mmal_vc_port_flush(mmal_vc_port_t *port);
-bool mmal_vc_port_flush_normal(mmal_vc_port_t *port);
 bool mmal_vc_port_parameter_set(mmal_vc_port_t *port,
                                 const void *param, uint32_t size);
+/* Switch a port to zero-copy: payloads stay in the VC heap and buffers
+   cross as memory handles (buf->vc_handle) instead of being copied.
+   Required on every port used here; call between port_info_get and
+   port_enable. */
+bool mmal_vc_port_set_zero_copy(mmal_vc_port_t *port);
 /* Submit a buffer. Input buffers carry data (length > 0, or EOS);
-   output buffers are registered empty and come back filled. */
+   output buffers are registered empty and come back filled. The buffer
+   must carry a valid vc_handle. */
 bool mmal_vc_submit_buffer(mmal_vc_port_t *port, mmal_vc_buffer_t *buf);
 /* Pump VCHIQ and dispatch MMAL callbacks. */
 void mmal_vc_poll(void);

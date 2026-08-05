@@ -2,10 +2,8 @@
 
 How Pi1MHz uses the VideoCore IV's hardware H264 decoder from bare metal:
 what the hardware actually is, why the only viable route is speaking the
-firmware's VCHIQ/MMAL protocols, exactly how those protocols work, how the
-code in this repo implements them, and what still needs validating on real
-hardware. Written to be sufficient for someone (or some Claude session) to
-continue the work without re-deriving anything.
+firmware's VCHIQ/MMAL protocols, exactly how those protocols work, and how
+the code in this repo implements them.
 
 ## TL;DR
 
@@ -16,31 +14,40 @@ continue the work without re-deriving anything.
   RPC). MMAL "the library" is Linux userspace, but the *wire protocol*
   underneath is simple and fully reimplemented here in ~1500 lines.
 * Requires the **full `start.elf`** (the shipped `start_cd.elf` cut-down
-  firmware has no codec/VCHIQ support) and **`gpu_mem=64`**. See the
-  commented block in `firmware/config.txt`.
+  firmware has no codec/VCHIQ support), **`gpu_mem=64`** and
+  **`vd_use_vpu0=1`**. See the commented block in `firmware/config.txt`
+  and §1 below.
 * Source material is prepared **offline** by `tools/make_pvf.py` into a
   `.pvf` file: all-intra Annex-B H264 (every frame = SPS+PPS+IDR) plus
   46875 Hz PCM audio plus a frame index. All-intra makes random access,
   freeze frame, step and reverse trivial: any frame decodes on its own.
+* Frames are delivered **zero-copy**: the decoder writes each picture
+  straight into the buffer the HVS is scanning out, and only a memory
+  handle crosses VCHIQ. No pixel ever travels over the channel, in
+  either direction.
 * Steady-state ARM cost per frame is tiny: one SD read of ~20-60 KB into
   an uncached staging buffer, ~300 bytes of message writes, and three HVS
   register pokes to flip the displayed frame. The VideoCore does all
-  pixel work and DMA. No ARM cache maintenance anywhere (all shared
-  buffers live in the VC heap, which the ARM maps uncached).
+  pixel work. No ARM cache maintenance anywhere (all shared buffers live
+  in the VC heap, which the ARM maps uncached).
+* Measured 152 fps on a Pi Zero W decoding a 768x576 all-intra clip with
+  the 1MHz bus handler running as usual, against the 25 fps the player
+  needs.
 
 ## File map
 
 | file | role |
 |---|---|
-| `src/rpi/vchiq.c/.h` | bare-metal VCHIQ client: slot memory, doorbell, messages, bulk pagelists |
+| `src/rpi/vchiq.c/.h` | bare-metal VCHIQ client: slot memory, doorbell, messages |
 | `src/rpi/mmal_vc.c/.h` | MMAL wire structs + client: components, ports, formats, buffer exchange |
+| `src/rpi/vcsm.c/.h` | SMEM service client: registers our buffers so MMAL will accept them |
 | `src/rpi/h264dec.c/.h` | `ril.video_decode` wrapper: format-changed handshake, buffer plumbing |
 | `src/pvf.h` | container format shared with the offline tool |
 | `src/videoplayer.c` | the player: index, goto/still/play/step/reverse, audio, HVS flips |
 | `src/BeebSCSI/fcode.c` | LaserVision F-codes now call into `videoplayer_*` |
 | `src/rpi/screen.c` | new: 4:2:0 3-plane HVS support + `screen_set_YUV_pointers()` page flip |
 | `tools/make_pvf.py` | offline encoder/muxer |
-| `firmware/config.txt` | commented lines to switch to full start.elf + gpu_mem=64 |
+| `firmware/config.txt` | commented lines to switch to full start.elf + gpu_mem=64 + vd_use_vpu0=1 |
 
 ## 1. Why it has to be VCHIQ + MMAL
 
@@ -69,25 +76,30 @@ smaller because we need exactly one component.
 * `start_cd.elf` (currently shipped) has **no VCHIQ, no MMAL, no codecs**.
   The full `start.elf` + `fixup.dat` from the same firmware release as
   the shipped `bootcode.bin` must be copied to the card, and
-  `start_file=start.elf`, `fixup_file=fixup.dat`, `gpu_mem=64` set
-  (prepared, commented, in `firmware/config.txt`). Everything degrades
-  gracefully without it: `vchiq_init()`'s mailbox call fails, and
-  `videoplayer.c` falls back to the old `frame.lz` still.
+  `start_file=start.elf`, `fixup_file=fixup.dat`, `gpu_mem=64` and
+  `vd_use_vpu0=1` set (prepared, commented, in `firmware/config.txt`).
+  Everything degrades gracefully without it: `vchiq_init()`'s mailbox
+  call fails, and `videoplayer.c` falls back to the old `frame.lz`
+  still.
 * H264 needs **no licence key** (unlike MPEG-2/VC-1).
 * `gpu_mem=64`: the decoder needs VC-side memory for its reference frame,
   bitstream FIFOs and its own copies of the buffer pools (~10-15 MB for
   768x576), plus our shared allocations (~2.8 MB, listed in §5).
 
-### Known risk: VPU core 1
+### VPU core 1 and `vd_use_vpu0=1`
 
 Pi1MHz launches its 1MHz bus handler onto VPU core 1 with mailbox tag
-`0x30013` (`TAG_LAUNCH_VPU1`, `Pi1MHz.c:471`). With `start_cd.elf` the
-firmware never wants that core. The full `start.elf` is *believed* to run
-its RTOS and the codec control on core 0 only, but this is the single
-biggest thing to validate on hardware: if video decode stalls or the bus
-handler glitches with the full firmware, the fallback is to run the 1MHz
-interface on the ARM FIQ path instead of the VPU while video is active.
-Test order in §8 isolates this early.
+`0x30013` (`TAG_LAUNCH_VPU1` in `Pi1MHz.c`), where it spins with
+interrupts off and never yields. With `start_cd.elf` the firmware never
+wants that core; the full `start.elf` does, and by default it schedules
+its H264 decode work there. The two cannot share it: with the bus
+handler loaded the component accepts access units and reports no error,
+but never issues the decode.
+
+`vd_use_vpu0=1` in `config.txt` tells the firmware to decode on VPU core
+0 instead. That is all it takes - **it is required for hardware video**,
+and with it set the decoder and the 1MHz bus run together at full speed
+(the 152 fps in the TL;DR was measured with the bus handler running).
 
 ## 2. VCHIQ: the transport (src/rpi/vchiq.c)
 
@@ -110,9 +122,8 @@ slots 2..16       master data slots       (VC -> ARM messages)
 slot 17           slave sync slot         (unused)
 slots 18..32      slave data slots        (ARM -> VC messages)
 + 4 KB            fragment pool (64 x 64B, for the VC's cache-line
-                  workaround on unaligned bulk - unused because we keep
-                  all bulk 32-byte aligned, but the VC expects it)
-+ 4 KB            our bulk pagelists (8 x 32 B)
+                  workaround on bulk transfers - unused, since this
+                  client makes none, but the VC expects it to exist)
 ```
 
 Each `vchiq_shared_state` carries: the slot range it owns, `tx_pos` (a
@@ -141,25 +152,30 @@ trigger/recycle/sync events.
   side be woken - a poller does not need them).
 
 Message types used: `CONNECT`(1) handshake, `OPEN`(2)/`OPENACK`(3) for
-the `'mmal'` service, `DATA`(5) for everything MMAL, `BULK_RX`(6)/
-`BULK_TX`(7) requests + `_DONE`(8/9) completions, `PAUSE`(10)/`RESUME`(11)
-(answered, never initiated).
+the `'mmal'` and `'SMEM'` services, `DATA`(5) for everything else, and
+`PAUSE`(10)/`RESUME`(11) (answered, never initiated). The protocol's
+bulk-transfer messages (6-9) are never used - see below.
 
-### Bulk transfers
+### No bulk transfers: everything is zero-copy
 
-The ARM is the VCHIQ *slave* on BCM2835 - it never DMAs. To move payload:
+The protocol also defines *bulk* transfers, where the ARM posts a
+pagelist describing a buffer and the VideoCore (the bus master - the ARM
+never DMAs here) copies the payload with its own DMA. This client makes
+none. Every MMAL port is put into zero-copy mode instead, so a buffer is
+identified on the wire by a VideoCore memory handle and the codec reads
+and writes that memory directly: the access unit is fetched out of our
+staging buffer, and the decoded picture is written into the buffer the
+HVS is already scanning out. That removes ~650 KB of DMA per frame, and
+with it the pagelist machinery, the bulk queues and the message/bulk
+pairing rules that go with them.
 
-1. build a *pagelist* `{u32 length; u16 type (0=VC-reads/1=VC-writes);
-   u16 offset; u32 addrs[]}` where each `addrs[]` entry is a page-aligned
-   bus address with the low 12 bits holding "number of following
-   consecutive pages" - one entry covers a whole physically contiguous
-   buffer;
-2. send `BULK_TX` (host->VC data) or `BULK_RX` (VC->host) with payload
-   `{pagelist bus address, size}`;
-3. the VideoCore does the copy with its DMA and answers
-   `BULK_TX_DONE`/`BULK_RX_DONE` `{actual}`. Completions per direction
-   are strictly in queue order, which is what lets `mmal_vc.c` match
-   them FIFO-style.
+The handles come from the firmware's **SMEM** service (`src/rpi/vcsm.c`,
+VCHIQ fourcc `SMEM`), because MMAL will not accept a handle from the
+mailbox allocator. We use its `IMPORT` operation rather than `ALLOC`:
+the memory stays ours, allocated exactly as before, and the import only
+tells the VideoCore it may decode into it. The display plane layout is
+therefore unchanged - the Y/Cb/Cr pointers the HVS uses are still the
+ones `screen.c` set up.
 
 ### Memory & caches - why there is no cache maintenance anywhere
 
@@ -167,13 +183,16 @@ The ARM is the VCHIQ *slave* on BCM2835 - it never DMAs. To move payload:
 the ARM/VC memory split and the peripherals (i.e. the VC heap, where
 `screen_allocate_buffer()`-style allocations land, descriptor `0x11C06`)
 effectively uncached. Every buffer VCHIQ touches - slot memory,
-pagelists, bitstream staging, decoded frames - is allocated from the VC
-heap (`vchiq_alloc_shared()`, same mailbox flags as the screen code) and
+bitstream staging, decoded frames - is allocated from the VC heap
+(`vchiq_alloc_shared()`, same mailbox flags as the screen code) and
 accessed by the ARM through that uncached window. Bus addresses handed
-to the VC use the `0xC0000000` uncached alias, like the rest of Pi1MHz.
-Result: full coherency by construction, zero clean/invalidate calls, and
-bulk transfers that never trigger the VC's fragment workaround (we also
-round all bulk lengths to 32 bytes).
+to the VC use `vchiq_bus_addr()`: the `0x40000000` **L2-coherent** alias
+on BCM2835 (Pi 1 / Zero), where the ARM's memory port is routed through
+the VideoCore L2 and the `0xC` alias gives the two sides torn views of
+the slot ring; the `0xC0000000` uncached alias on Pi 2/3, where the ARM
+bypasses that cache.
+Result: full coherency by construction and zero clean/invalidate calls,
+on both sides of every buffer the decoder touches.
 
 ## 3. MMAL: the RPC layer (src/rpi/mmal_vc.c)
 
@@ -186,50 +205,59 @@ struct mmal_worker_msg_header { u32 magic='mmal'; u32 msgid;
 ```
 
 Synchronous calls (create/enable/port-info/actions/parameters) set
-`context` to a cookie; the reply echoes it. Only three message kinds
-arrive unsolicited: `BUFFER_TO_HOST`, `EVENT_TO_HOST`, and bulk DONEs at
-the VCHIQ level. The wire structs in `mmal_vc.h` are byte-exact copies
+`context` to a cookie; the reply echoes it. Only two message kinds
+arrive unsolicited: `BUFFER_TO_HOST` and `EVENT_TO_HOST`. The wire
+structs in `mmal_vc.h` are byte-exact copies
 of userland's `mmal_vc_msgs.h` with pointers as `u32` (they are opaque
 cookies on the wire); `_Static_assert`s pin the layouts.
 
-Buffer traffic, the part worth understanding:
+Buffer traffic, the part worth understanding. Both ports are switched to
+zero-copy first, with a `MMAL_PARAMETER_ZERO_COPY` parameter set between
+`PORT_INFO_GET` and `PORT_ACTION ENABLE`. That has to be re-asserted
+after every `PORT_INFO_GET`, because re-reading the port rebuilds our
+copy of its state and the VideoCore forgets the mode with it.
 
 * **Host -> VC** (`mmal_vc_submit_buffer`): send `BUFFER_FROM_HOST`
   carrying `drvbuf {magic, component_handle, port_handle,
-  client_context}` plus a serialized buffer header (length/flags/pts),
-  then *immediately* queue a VCHIQ bulk transmit of the payload. The VC
-  pairs message and bulk by arrival order, so the pair must never be
-  interleaved with another buffer's pair (single-threaded here, so
-  guaranteed). A zero-length EOS buffer instead uses msgid
-  `BUFFER_FROM_HOST_ZEROLEN` + a dummy 8-byte bulk.
+  client_context}` plus a serialized buffer header, with
+  `is_zero_copy = 1` and the header's `data` field holding the buffer's
+  SMEM handle instead of an address. Nothing follows it; the component
+  reads the access unit out of that memory itself.
 * **VC -> Host**: a `BUFFER_TO_HOST` message arrives with our
-  `client_context` cookie and the updated header. If it carries payload
-  the host must queue a VCHIQ bulk *receive* into the buffer; the buffer
-  is complete when the matching `BULK_RX_DONE` lands. Empty returns
-  (input buffer released, flush residue) complete immediately. Tiny
-  payloads (<=128 B) can arrive inline in `short_data`.
-* **Port flush** has two variants, gated exactly like the reference
-  client: `PORT_FLUSH` with the dummy-bulk pairing for ports that have
-  carried host->VC payload (input, once streaming - it cannot overtake
-  in-flight payload; VC >= major 15, the version handshake checks), and
-  a plain `PORT_ACTION_FLUSH` for ports that have not (decoder output) -
-  on those the VC side may not be set up for bulk and the dummy would
-  desynchronise the message/bulk pairing.
+  `client_context` cookie and the updated header (length, flags, pts).
+  The picture is already in our buffer, so the buffer is complete the
+  moment the message lands. Empty returns - an input buffer being
+  released, flush residue - look exactly the same.
+* A zero-length **EOS** marker is an ordinary `BUFFER_FROM_HOST`. The
+  `BUFFER_FROM_HOST_ZEROLEN` msgid exists only to carry a dummy bulk
+  transfer, and the reference client excludes zero-copy ports from it.
+* **Port flush** is the plain `PORT_ACTION_FLUSH`. The separate
+  `PORT_FLUSH` message exists to order a flush against payload still
+  crossing as a bulk transfer, which a zero-copy port never has.
 
 ## 4. The decoder component (src/rpi/h264dec.c)
 
 `ril.video_decode` has 1 input, 1 output port. Bring-up sequence:
 
 1. `COMPONENT_CREATE "ril.video_decode"` -> component handle.
-2. `PORT_INFO_GET` input; set format `video/H264` 768x576, buffer_num=2,
-   buffer_size=512K; `PORT_INFO_SET`; `COMPONENT_ENABLE`; `PORT_ACTION
-   ENABLE` (echoing the port struct).
-3. Feed access units. The component parses the SPS and raises
-   `MMAL_EVENT_FORMAT_CHANGED` on the output port.
-4. On that event (deferred to `h264dec_poll()` - MMAL calls must not run
-   inside a VCHIQ callback): `PORT_INFO_GET` output, force encoding
-   `I420` at 768x576, `PORT_INFO_SET`, `PORT_ACTION ENABLE`, then submit
-   the display buffers as output buffers.
+2. `PORT_INFO_GET` input; zero-copy; set format `video/H264` 768x576,
+   buffer_num=2, buffer_size=512K; `PORT_INFO_SET`; `COMPONENT_ENABLE`;
+   `PORT_ACTION ENABLE` (echoing the port struct).
+3. **Configure and enable the output port immediately**, at the format we
+   already know (these streams are always 768x576 I420): `PORT_INFO_GET`
+   output, zero-copy, force encoding `I420`, `PORT_INFO_SET`,
+   `PORT_ACTION ENABLE`, then submit the display buffers as output
+   buffers.
+
+   Doing this up front is not an optimisation, it is required. MMAL
+   delivers `MMAL_EVENT_FORMAT_CHANGED` *as a buffer on the output port*,
+   so waiting for that event with the output port disabled deadlocks: the
+   component has no buffer in which to tell us anything. (The ffmpeg MMAL
+   decoder enables its output up front for the same reason.)
+4. Feed access units. The component parses the SPS and raises
+   `MMAL_EVENT_FORMAT_CHANGED`; the handler re-runs step 3 - deferred to
+   `h264dec_poll()`, because MMAL calls must not run inside a VCHIQ
+   callback.
 5. Every decoded frame comes back as a filled output buffer =
    **I420 written by the VC directly into the buffer the HVS scans out**.
 
@@ -240,10 +268,7 @@ or the VC pads the stride and the plane pointer arithmetic changes.
 Freeze frame / stills: submit the one AU with `FRAME_END|KEYFRAME`, then
 a zero-length `EOS` buffer. The EOS forces the decoder to emit the
 picture without waiting for a successor. `h264dec_resume()` (flush both
-ports) clears the EOS state before the next feed. Note: x264 with
-`bframes=0` emits `pic_order_cnt_type=2` streams, which decoders may
-output with zero reorder delay even without EOS - if that holds on real
-hardware the EOS+flush dance for stills can be dropped (test #6 in §8).
+ports) clears the EOS state before the next feed.
 
 `pts` is (ab)used to carry the frame number through the decoder, so the
 display side knows which picture it is showing with no other bookkeeping.
@@ -252,8 +277,7 @@ display side knows which picture it is showing with no other bookkeeping.
 
 | allocation | size | where |
 |---|---|---|
-| VCHIQ slots + fragments + pagelists | 144 KB | VC heap, uncached |
-| MMAL dummy-bulk scratch | 4 KB | VC heap |
+| VCHIQ slots + fragment pool | 136 KB | VC heap, uncached |
 | input staging x2 | 1 MB | VC heap |
 | frame buffers x2 (display + decode) | 1.3 MB | VC heap |
 | frame index (54000 frames) | 216 KB | ARM heap |
@@ -320,34 +344,30 @@ change.
   from the live component BEFORE releasing them, and frees the previous
   index/audio-ring allocations - Break during playback is safe.
 
-## 8. Bring-up / test plan (in order, on real hardware)
+## 8. Troubleshooting
 
-1. **Full start.elf, no video**: swap firmware per config.txt comments,
-   confirm Pi1MHz still boots, 1MHz bus + VPU1 handler still work, HVS
-   planes still display with HDMI unplugged/plugged. This isolates the
-   firmware swap and the VPU1 risk (§1) before any new code runs.
-2. **VCHIQ connect**: boot with a `video.pvf` present; expect
-   `vchiq: connected` then `mmal: VC version ...` on the debug UART.
-   Failure here = slot_zero layout/doorbell issues; dump
-   `slave.tx_pos`/`master.tx_pos`.
-3. **Component create**: expect `h264: video_decode created (1 in, 1 out)`.
-4. **First frame**: `videoplayer: video.pvf ... frames` then picture 1 on
-   screen. Failure modes: no FORMAT_CHANGED (check input format/AU
-   integrity - try a stream from `ffmpeg -f lavfi -i testsrc`), green
-   frame (plane pointer order - swap Cb/Cr in `flip_pending`), wrong
-   colours (CSC constants), stripes (stride - width%32).
-5. **Stills/steps**: `F123R`, `L`, `M` from the Beeb (or serial F-code
-   injection); check picture numbers via `?F`.
-6. **EOS-less stills**: comment the `eos` argument in the seek path to
-   test whether pic_order_cnt_type=2 gives zero-delay output; if yes,
-   drop the EOS+flush for snappier seeks.
-7. **Play + audio**: `N`, watch for 25 fps cadence, audio drift over
-   minutes (ring level creep => nudge `frame_period_us` or move to
-   audio-mastered pacing), SD throughput margin.
-8. **Soak**: hours of play + random seeks; watch VCHIQ slot recycling
-   (stalls = leak in recycle path) and `h264dec_frames_decoded()`.
-9. **Chain-boot**: `kernel.now` reboot loop with video running - the
-   'VBF2' handle stash must keep GPU memory from leaking.
+Symptoms and where to look, if a card ever comes up without video:
+
+* **`vchiq: firmware rejected init`** - the card is still booting
+  `start_cd.elf`, or `start.elf`/`fixup.dat` do not match each other.
+* **Decoder starts but the frame count on `/status` stays 0** -
+  `vd_use_vpu0=1` is missing from `config.txt` (§1).
+* **`h264: no SMEM service`** - the firmware predates the `SMEM` service;
+  zero-copy is the only frame path, so the player falls back to the
+  still frame.
+* **No `FORMAT_CHANGED`, nothing decodes** - suspect the stream: every
+  access unit must be a complete SPS+PPS+IDR. `tools/verify_pvf.py`
+  checks the container; `ffmpeg -f lavfi -i testsrc` makes a known-good
+  clip.
+* **Green picture** - Cb/Cr plane pointers swapped in `flip_pending`.
+  **Stripes** - stride, i.e. a width that is not a multiple of 32.
+* **Video works but the Beeb interface is dead** - something other than
+  `vd_use_vpu0` took VPU core 1; check `TAG_LAUNCH_VPU1` succeeded.
+
+Note that `kernel.now` chain-booting does not work with video: it is an
+ARM-only warm restart, so the VideoCore keeps the previous connection
+state and ignores the new kernel's CONNECT. Video kernels must boot from
+SD.
 
 ## 9. Performance budget (Pi Zero, 1 GHz ARM1176)
 
@@ -357,13 +377,13 @@ Per frame at 25 fps (40 ms):
 |---|---|---|
 | SD read ~30 KB AU (+7.5 KB audio) | ~1-3 ms | ARM (FatFS, fastseek cltbl) |
 | VCHIQ msgs (~300 B uncached writes) | ~10 us | ARM |
-| bulk AU host->VC | ~0.2 ms | VC DMA |
-| decode 768x576 intra | ~5-10 ms | VC hardware |
-| bulk frame VC->host (664 KB) | ~2-4 ms | VC DMA |
+| decode 768x576 intra into our buffer | ~6.6 ms | VC hardware |
 | HVS pointer flip + poll overhead | ~10 us | ARM |
 
-ARM load is a few percent, dominated by the SD read - the "Pi has lots
-of other tasks" requirement is met by construction. If SD contention
+Measured end to end: 152 fps free-run (6.6 ms/frame) with the 1MHz bus
+handler running, against the 40 ms budget of 25 fps. ARM load is a few
+percent, dominated by the SD read - the "Pi has lots of other tasks"
+requirement is met by construction. If SD contention
 with BeebSCSI ever bites, raise the pipeline depth (in_flight limit and
 `H264DEC_INPUT_BUFFERS`) to ride through longer stalls.
 
@@ -380,11 +400,17 @@ with BeebSCSI ever bites, raise the pipeline depth (in_flight limit and
 * **OpenMAX IL instead of MMAL**: same transport, clunkier RPC (it is
   what hello_video uses); MMAL's worker protocol is the simpler wire
   format, which is why it was chosen.
-* **Zero-copy output (VC_SM opaque buffers)**: would skip the 664 KB
-  VC-side copy per frame by scanning out the decoder's own buffers, but
-  needs the vcsm service and dispmanx-style handle import - significant
-  extra protocol for ~3 ms/frame of VC (not ARM) time. Revisit only if
-  VC-side bandwidth becomes the bottleneck.
+* **Bulk frame transfers** (the obvious first implementation): copy each
+  decoded picture from the VideoCore into our buffers with a per-frame
+  VCHIQ bulk DMA. It works and is bit-identical, but costs ~650 KB of
+  DMA per frame and about 5% of the total decode rate, and it needs the
+  pagelist/bulk-queue half of the VCHIQ client plus the message/bulk
+  pairing rules throughout MMAL. Zero-copy via `SMEM` replaced it.
+* **Zero-copy by letting the decoder allocate** (`SMEM` `ALLOC` rather
+  than `IMPORT`): simpler on the face of it, but the frame buffers would
+  then be the firmware's, with its choice of plane layout, and the HVS
+  scan-out setup in `screen.c` would have to follow it. Importing our own
+  buffers keeps the display side unchanged.
 
 ## 11. Protocol references
 

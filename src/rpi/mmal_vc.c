@@ -7,20 +7,19 @@
       - control messages are VCHIQ DATA messages on the 'mmal' service;
         each starts with mmal_worker_msg_header_t. Synchronous calls set
         header.context to a cookie; the reply echoes it back.
-      - a buffer with payload is a BUFFER_FROM_HOST message IMMEDIATELY
-        followed by a VCHIQ bulk transmit of the payload; the VC matches
-        the two by arrival order per service, so the pair must never be
-        split (single-threaded here, so it cannot be).
-      - the VC returns buffers with BUFFER_TO_HOST; if there is payload
-        the host must queue a bulk receive, and the buffer completes when
-        the matching BULK_RX_DONE arrives.
-      - a zero-length EOS buffer uses BUFFER_FROM_HOST_ZEROLEN + a dummy
-        8-byte bulk transmit (VC versions >= 12.2, i.e. everything now).
-      - PORT_FLUSH (msgid 25) with a dummy bulk keeps a flush ordered
-        against in-flight bulk data (VC versions >= 15).
+      - every port here runs in zero-copy mode, so payload never crosses
+        the wire. A buffer is submitted as a BUFFER_FROM_HOST message
+        whose 'data' field carries the buffer's VideoCore memory handle
+        (minted by the SMEM service, see vcsm.c); the component reads or
+        writes that memory itself and returns the buffer, with its length
+        and flags updated, in a BUFFER_TO_HOST message.
+      - a zero-length EOS buffer is an ordinary BUFFER_FROM_HOST on a
+        zero-copy port (the reference client excludes such ports from the
+        ZEROLEN variant).
 */
 
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
@@ -32,10 +31,15 @@
 
 #define MMAL_CONTROL_FOURCC VCHIQ_FOURCC('m','m','a','l')
 
-#define REPLY_TIMEOUT_US 2000000u
+/* A healthy VideoCore replies in well under a millisecond, so half a second
+   is still an enormous margin - but it bounds how long the main poll loop
+   can be held up by a VC that has stopped answering. */
+#define REPLY_TIMEOUT_US 500000u
 
 static struct {
     bool inited;
+    bool dead;                       /* latched on the first timeout */
+    int  service;                    /* VCHIQ service id */
     mmal_vc_client_callbacks_t cb;
 
     /* one synchronous call at a time */
@@ -44,14 +48,58 @@ static struct {
     uint8_t  reply[MMAL_WORKER_MAX_MSG_LEN];
     uint32_t reply_size;
     uint32_t next_context;
-
-    /* scratch for the dummy bulk transfers (EOS / flush) in the VC heap */
-    uint32_t dummy_bus;
 } client;
+
+/* Buffers currently submitted to the VideoCore. A BUFFER_TO_HOST message
+   names its buffer by the host pointer we put in client_context, and that
+   pointer is dereferenced and written through - so it is checked against
+   this registry rather than trusted. The decoder never has more than five
+   buffers out (2 input + 3 output); the spare entries are headroom. */
+#define MMAL_MAX_INFLIGHT 8
+static mmal_vc_buffer_t *inflight[MMAL_MAX_INFLIGHT];
+
+/* Latched on a failure that leaves a VCHIQ service open: the service
+   cannot be taken back (the protocol's CLOSE handshake is VC-initiated
+   here), so a retry would burn the last free service slot. */
+static bool mmal_failed;
 
 /* ------------------------------------------------------------------ */
 /* VCHIQ callbacks                                                    */
 /* ------------------------------------------------------------------ */
+
+static bool inflight_add(mmal_vc_buffer_t *buf)
+{
+    int free_slot = -1;
+    if (!buf)
+        return false;
+    for (int i = 0; i < MMAL_MAX_INFLIGHT; i++) {
+        if (inflight[i] == buf)
+            return true;                 /* already registered */
+        if (!inflight[i] && free_slot < 0)
+            free_slot = i;
+    }
+    if (free_slot < 0)
+        return false;
+    inflight[free_slot] = buf;
+    return true;
+}
+
+static void inflight_remove(mmal_vc_buffer_t *buf)
+{
+    for (int i = 0; i < MMAL_MAX_INFLIGHT; i++)
+        if (inflight[i] == buf)
+            inflight[i] = NULL;
+}
+
+static bool inflight_known(const mmal_vc_buffer_t *buf)
+{
+    if (!buf)                            /* an empty slot is also NULL */
+        return false;
+    for (int i = 0; i < MMAL_MAX_INFLIGHT; i++)
+        if (inflight[i] == buf)
+            return true;
+    return false;
+}
 
 static void complete_buffer(mmal_vc_buffer_t *buf)
 {
@@ -63,10 +111,14 @@ static void complete_buffer(mmal_vc_buffer_t *buf)
 static void handle_buffer_to_host(const mmal_worker_buffer_from_host_t *msg)
 {
     mmal_vc_buffer_t *buf = (mmal_vc_buffer_t *)(uintptr_t)msg->drvbuf.client_context;
-    if (!buf) {
-        LOG_INFO("mmal: buffer_to_host with no context\r\n");
+    /* client_context comes back off the wire; a garbled message must not
+       be able to write through it to arbitrary ARM memory. */
+    if (!inflight_known(buf)) {
+        LOG_DEBUG("mmal: buffer_to_host with unknown context\r\n");
         return;
     }
+    /* Off the books before the callback, which may resubmit it. */
+    inflight_remove(buf);
 
     buf->cmd    = msg->buffer_header.cmd;
     buf->offset = msg->buffer_header.offset;
@@ -74,7 +126,9 @@ static void handle_buffer_to_host(const mmal_worker_buffer_from_host_t *msg)
     buf->flags  = msg->buffer_header.flags;
     buf->pts    = msg->buffer_header.pts;
 
-    if (msg->buffer_header.offset + msg->buffer_header.length > buf->alloc_size) {
+    /* Written as two tests: offset + length would wrap. */
+    if (msg->buffer_header.length > buf->alloc_size ||
+        msg->buffer_header.offset > buf->alloc_size - msg->buffer_header.length) {
         LOG_INFO("mmal: returned buffer too big (%"PRIu32")\r\n",
                  msg->buffer_header.length);
         buf->length = 0;
@@ -83,43 +137,10 @@ static void handle_buffer_to_host(const mmal_worker_buffer_from_host_t *msg)
         return;
     }
 
-    if (!msg->is_zero_copy &&
-        (msg->buffer_header.length != 0 ||
-         (msg->buffer_header.flags & MMAL_BUFFER_HEADER_FLAG_EOS))) {
-        uint32_t len = (msg->buffer_header.length + 3u) & ~3u;
-        if (!len)
-            len = 8;                 /* dummy transfer accompanies bare EOS */
-
-        if (msg->payload_in_message == 0) {
-            /* Data follows by bulk into our buffer; completion arrives as
-               BULK_RX_DONE (bulk_rx_done() below) with 'buf' as the tag. */
-            if (!vchiq_bulk_receive(buf->busaddr + msg->buffer_header.offset,
-                                    len, buf)) {
-                LOG_INFO("mmal: bulk receive queue full\r\n");
-                buf->length = 0;
-                buf->flags |= MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED;
-                complete_buffer(buf);
-            }
-        } else if (msg->payload_in_message <= MMAL_VC_SHORT_DATA) {
-            /* Tiny payload came inside the message itself */
-            memcpy((void *)(uintptr_t)(buf->busaddr & 0x3FFFFFFFu),
-                   msg->short_data, msg->payload_in_message);
-            buf->offset = 0;
-            buf->length = msg->payload_in_message;
-            complete_buffer(buf);
-        } else {
-            /* "impossible" per the reference - but never leave the buffer
-               stranded in flight */
-            LOG_INFO("mmal: invalid short payload %"PRIu32"\r\n",
-                     msg->payload_in_message);
-            buf->length = 0;
-            buf->flags |= MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED;
-            complete_buffer(buf);
-        }
-    } else {
-        /* No payload - e.g. an input buffer being released */
-        complete_buffer(buf);
-    }
+    /* Zero-copy: any payload is already in the buffer's own memory, which
+       the component wrote directly. The message carries only the updated
+       header, so the buffer is complete as soon as it arrives. */
+    complete_buffer(buf);
 }
 
 static void on_data(const void *data, unsigned int size)
@@ -131,7 +152,18 @@ static void on_data(const void *data, unsigned int size)
         return;
     }
 
+    /* The casts below read structures out of the message, so the message
+       must actually be long enough for the fields that get read - a short
+       one would read (and, through client_context, write) past its end.
+       The bound is the offset of the first field NOT read, never sizeof:
+       the VideoCore returns a buffer in 292 bytes (hardware-measured, VC
+       version 16.1) because the struct's trailing alignment padding, and
+       the unused short_data tail, do not travel. */
     if (h->msgid == MMAL_WORKER_BUFFER_TO_HOST) {
+        if (size < offsetof(mmal_worker_buffer_from_host_t, short_data)) {
+            LOG_DEBUG("mmal: short buffer_to_host (%u)\r\n", size);
+            return;
+        }
         handle_buffer_to_host((const mmal_worker_buffer_from_host_t *)data);
         return;
     }
@@ -139,18 +171,15 @@ static void on_data(const void *data, unsigned int size)
     if (h->msgid == MMAL_WORKER_EVENT_TO_HOST) {
         const mmal_worker_event_to_host_t *ev =
             (const mmal_worker_event_to_host_t *)data;
-        if (ev->length > MMAL_WORKER_EVENT_SPACE) {
-            /* Larger events arrive by bulk - and the VC has ALREADY queued
-               its side of that transfer, so it must be received or every
-               later bulk pairs one-off. Sink it into the scratch page
-               (the VC transfers min(sizes), so a short receive is fine);
-               nothing video_decode emits is this big. */
-            LOG_INFO("mmal: oversize event 0x%"PRIx32" sunk\r\n", ev->cmd);
-            uint32_t len = (ev->length + 3u) & ~3u;
-            vchiq_bulk_receive(client.dummy_bus, len > 4096u ? 4096u : len,
-                               NULL);
+        if (size < offsetof(mmal_worker_event_to_host_t, data)) {
+            LOG_DEBUG("mmal: short event_to_host (%u)\r\n", size);
             return;
         }
+        /* Events larger than the inline space are delivered by bulk, which
+           this client never uses. Nothing video_decode emits is that big;
+           drop it rather than pass on data we do not have. */
+        if (ev->length > MMAL_WORKER_EVENT_SPACE)
+            return;
         if (client.cb.event)
             client.cb.event(ev->port_type, ev->port_num, ev->cmd,
                             ev->data, ev->length);
@@ -167,26 +196,6 @@ static void on_data(const void *data, unsigned int size)
     }
 }
 
-static void bulk_rx_done(void *user, int actual)
-{
-    mmal_vc_buffer_t *buf = (mmal_vc_buffer_t *)user;
-    if (!buf)
-        return;                      /* sunk transfer (oversize event) */
-    if (actual < 0) {
-        buf->length = 0;
-        buf->flags |= MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED;
-    }
-    complete_buffer(buf);
-}
-
-static void bulk_tx_done(void *user, int actual)
-{
-    /* Input payload has been fetched by the VC. The buffer itself is
-       released later via BUFFER_TO_HOST, so nothing to do here. */
-    (void)user;
-    (void)actual;
-}
-
 /* ------------------------------------------------------------------ */
 /* Synchronous call helper                                            */
 /* ------------------------------------------------------------------ */
@@ -194,7 +203,10 @@ static void bulk_tx_done(void *user, int actual)
 static bool sendwait(mmal_worker_msg_header_t *msg, uint32_t size, uint32_t msgid,
                      void *reply, uint32_t reply_size)
 {
-    if (!client.inited)
+    /* Once a call has timed out the VC side is not coming back for this
+       session: fail every later call immediately rather than spending
+       another REPLY_TIMEOUT_US each time stalling the main loop. */
+    if (!client.inited || client.dead)
         return false;
 
     msg->magic = MMAL_MAGIC;
@@ -211,10 +223,11 @@ static bool sendwait(mmal_worker_msg_header_t *msg, uint32_t size, uint32_t msgi
 
     /* TX slots can transiently run out while the VC is busy - retry. */
     uint32_t start = RPI_GetSystemTime();
-    while (!vchiq_queue_message(msg, size)) {
+    while (!vchiq_queue_message(client.service, msg, size)) {
         vchiq_poll();
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
             client.wait_context = 0;
+            client.dead = true;
             return false;
         }
     }
@@ -224,6 +237,7 @@ static bool sendwait(mmal_worker_msg_header_t *msg, uint32_t size, uint32_t msgi
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
             LOG_INFO("mmal: reply timeout (msgid %"PRIu32")\r\n", msgid);
             client.wait_context = 0;
+            client.dead = true;
             return false;
         }
     }
@@ -250,6 +264,12 @@ bool mmal_vc_init(const mmal_vc_client_callbacks_t *callbacks)
     if (client.inited)
         return true;
 
+    /* A previous attempt left an 'mmal' service open on the VCHIQ side.
+       There are only two service slots, so trying again would strand the
+       one vcsm still needs. */
+    if (mmal_failed)
+        return false;
+
     if (!vchiq_init())
         return false;
 
@@ -258,20 +278,13 @@ bool mmal_vc_init(const mmal_vc_client_callbacks_t *callbacks)
 
     static const vchiq_callbacks_t vcb = {
         .on_data = on_data,
-        .on_bulk_tx_done = bulk_tx_done,
-        .on_bulk_rx_done = bulk_rx_done,
     };
     /* on_data captures 'client' statically; safe to pass const struct */
-    if (!vchiq_open_service(MMAL_CONTROL_FOURCC,
-                            MMAL_WORKER_VER_MAJOR, MMAL_WORKER_VER_MINIMUM,
-                            &vcb))
+    client.service = vchiq_open_service(MMAL_CONTROL_FOURCC,
+                                        MMAL_WORKER_VER_MAJOR,
+                                        MMAL_WORKER_VER_MINIMUM, &vcb);
+    if (client.service < 0)
         return false;
-
-    uint32_t handle;
-    uint32_t dummy_phys = vchiq_alloc_shared(4096, &handle);
-    if (!dummy_phys)
-        return false;
-    client.dummy_bus = vchiq_bus_addr(dummy_phys);
 
     client.inited = true;
 
@@ -285,10 +298,12 @@ bool mmal_vc_init(const mmal_vc_client_callbacks_t *callbacks)
         if (ver.major < 12) {
             LOG_INFO("mmal: VC MMAL too old (%"PRIu32")\r\n", ver.major);
             client.inited = false;
+            mmal_failed = true;
             return false;
         }
     } else {
         client.inited = false;
+        mmal_failed = true;
         return false;
     }
 
@@ -343,8 +358,15 @@ bool mmal_vc_port_info_get(uint32_t component, uint32_t port_type,
     if (!sendwait(&msg.header, sizeof(msg), MMAL_WORKER_PORT_INFO_GET,
                   &reply, sizeof(reply)))
         return false;
-    if (reply.status != MMAL_STATUS_SUCCESS || !reply.found)
+    /* Current firmware answers with the full port description but leaves
+       'found' as 0 (hardware-observed, VC version 16.1) - so judge by the
+       evidence: success status and a port of the requested type. */
+    if (reply.status != MMAL_STATUS_SUCCESS ||
+        (!reply.found && reply.port.type != port_type)) {
+        LOG_INFO("mmal: no port type %"PRIu32" index %"PRIu32"\r\n",
+                 port_type, index);
         return false;
+    }
 
     port->component = component;
     port->type = port_type;
@@ -421,69 +443,12 @@ bool mmal_vc_port_disable(mmal_vc_port_t *port)
     return port_action(port, MMAL_WORKER_PORT_ACTION_DISABLE, false);
 }
 
-/* Plain flush via PORT_ACTION. Correct for ports that have never carried
-   host->VC payload (e.g. video_decode's output port) - the reference
-   warns the other end may not even be set up for bulk on such ports. */
-bool mmal_vc_port_flush_normal(mmal_vc_port_t *port)
-{
-    return port_action(port, MMAL_WORKER_PORT_ACTION_FLUSH, false);
-}
-
-/* Flush with the dummy-bulk handshake so the flush cannot overtake
-   payload that is still crossing as a bulk transfer. Use ONLY on ports
-   that have sent payload (input ports); see mmal_vc_port_flush_normal. */
+/* Discard whatever the port is holding. Plain PORT_ACTION flush: the
+   MMAL_WORKER_PORT_FLUSH message exists to order a flush against payload
+   still crossing as a bulk transfer, which zero-copy ports never have. */
 bool mmal_vc_port_flush(mmal_vc_port_t *port)
 {
-    mmal_worker_buffer_from_host_t msg;
-    mmal_worker_reply_t reply;
-    memset(&msg, 0, sizeof(msg));
-    msg.drvbuf.magic = MMAL_MAGIC;
-    msg.drvbuf.component_handle = port->component;
-    msg.drvbuf.port_handle = port->handle;
-    msg.drvbuf.client_context = 0;
-
-    msg.header.magic = MMAL_MAGIC;
-    msg.header.msgid = MMAL_WORKER_PORT_FLUSH;
-    if (++client.next_context == 0)
-        client.next_context = 1;
-    msg.header.context = client.next_context;
-    client.wait_context = msg.header.context;
-    client.reply_ready = false;
-
-    /* Secure the bulk slot BEFORE the message goes out: once the message
-       is sent the VC expects the dummy bulk, and failing to deliver it
-       would desynchronise the pairing for every later transfer. */
-    uint32_t start = RPI_GetSystemTime();
-    while (!vchiq_bulk_tx_space()) {
-        vchiq_poll();
-        if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US)
-            goto fail;
-    }
-    while (!vchiq_queue_message(&msg, sizeof(msg))) {
-        vchiq_poll();
-        if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US)
-            goto fail;
-    }
-    /* Single-threaded: the slot reserved above is still free, so this
-       cannot fail unless the service died - in which case pairing is
-       moot anyway. */
-    vchiq_bulk_transmit(client.dummy_bus, 8, NULL);
-
-    while (!client.reply_ready) {
-        vchiq_poll();
-        if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
-            LOG_INFO("mmal: flush timeout\r\n");
-            goto fail;
-        }
-    }
-    client.wait_context = 0;
-    memcpy(&reply, client.reply,
-           (client.reply_size < sizeof(reply)) ? client.reply_size : sizeof(reply));
-    return reply.status == MMAL_STATUS_SUCCESS;
-
-fail:
-    client.wait_context = 0;
-    return false;
+    return port_action(port, MMAL_WORKER_PORT_ACTION_FLUSH, false);
 }
 
 bool mmal_vc_port_parameter_set(mmal_vc_port_t *port,
@@ -497,7 +462,12 @@ bool mmal_vc_port_parameter_set(mmal_vc_port_t *port,
     memset(&msg, 0, sizeof(msg.header) + 8u);
     msg.component_handle = port->component;
     msg.port_handle = port->handle;
-    memcpy(&msg.param, param, size);
+    /* The value bytes continue past the header into 'space' - copy in two
+       steps so the compiler sees each write bounded by its own member. */
+    memcpy(&msg.param, param, sizeof(msg.param));
+    if (size > sizeof(msg.param))
+        memcpy(msg.space, (const uint8_t *)param + sizeof(msg.param),
+               size - sizeof(msg.param));
 
     uint32_t msg_len = (uint32_t)(sizeof(msg) - sizeof(msg.space)) + size
                        - (uint32_t)sizeof(mmal_parameter_header_t);
@@ -507,13 +477,23 @@ bool mmal_vc_port_parameter_set(mmal_vc_port_t *port,
     return reply.status == MMAL_STATUS_SUCCESS;
 }
 
+bool mmal_vc_port_set_zero_copy(mmal_vc_port_t *port)
+{
+    struct {
+        mmal_parameter_header_t hdr;
+        uint32_t enable;
+    } p = { { MMAL_PARAMETER_ZERO_COPY, sizeof(p) }, 1 };
+
+    return mmal_vc_port_parameter_set(port, &p, sizeof(p));
+}
+
 bool mmal_vc_submit_buffer(mmal_vc_port_t *port, mmal_vc_buffer_t *buf)
 {
     mmal_worker_buffer_from_host_t msg;
-    uint32_t msgid = MMAL_WORKER_BUFFER_FROM_HOST;
-    uint32_t bulk_len = 0;
 
-    if (!client.inited)
+    /* Zero-copy: 'data' carries the VC memory handle instead of an
+       address, so a buffer with no handle can never be submitted. */
+    if (!client.inited || !buf->vc_handle)
         return false;
 
     memset(&msg, 0, sizeof(msg));
@@ -524,7 +504,7 @@ bool mmal_vc_submit_buffer(mmal_vc_port_t *port, mmal_vc_buffer_t *buf)
     msg.drvbuf.client_context = (uint32_t)(uintptr_t)buf;
 
     msg.buffer_header.cmd = 0;
-    msg.buffer_header.data = buf->busaddr;
+    msg.buffer_header.data = buf->vc_handle;
     msg.buffer_header.alloc_size = buf->alloc_size;
     msg.buffer_header.length = buf->length;
     msg.buffer_header.offset = 0;
@@ -532,37 +512,23 @@ bool mmal_vc_submit_buffer(mmal_vc_port_t *port, mmal_vc_buffer_t *buf)
     msg.buffer_header.pts = buf->pts;
     msg.buffer_header.dts = MMAL_TIME_UNKNOWN;
     msg.payload_in_message = 0;
+    msg.is_zero_copy = 1;
 
-    if (buf->length) {
-        bulk_len = buf->length;
-    } else if (buf->flags & MMAL_BUFFER_HEADER_FLAG_EOS) {
-        /* zero-length EOS: special message + 8-byte dummy bulk */
-        msgid = MMAL_WORKER_BUFFER_FROM_HOST_ZEROLEN;
-        bulk_len = 0;
-    }
-
-    msg.header.msgid = msgid;
+    /* A zero-length EOS marker goes as an ordinary BUFFER_FROM_HOST here:
+       the ZEROLEN variant exists only to carry its dummy bulk transfer,
+       and the reference client excludes zero-copy ports from it. */
+    msg.header.msgid = MMAL_WORKER_BUFFER_FROM_HOST;
     msg.header.context = 0;
 
-    /* Never split the message/bulk pair: secure the bulk slot BEFORE the
-       message goes out (single-threaded, so it cannot be stolen between
-       the check and the transmit). If there is no room the caller simply
-       retries - unlike an unbounded drain loop here, that cannot wedge
-       the whole poll loop when the channel dies. */
-    bool needs_bulk = (bulk_len != 0) ||
-                      (msgid == MMAL_WORKER_BUFFER_FROM_HOST_ZEROLEN);
-    if (needs_bulk && !vchiq_bulk_tx_space()) {
-        vchiq_poll();
+    /* Only a buffer on this list is accepted back from the VideoCore. */
+    if (!inflight_add(buf))
+        return false;
+
+    /* A full TX slot is transient; the caller simply retries. */
+    if (!vchiq_queue_message(client.service, &msg, sizeof(msg))) {
+        inflight_remove(buf);
         return false;
     }
-
-    if (!vchiq_queue_message(&msg, sizeof(msg)))
-        return false;
-
-    if (bulk_len)
-        vchiq_bulk_transmit(buf->busaddr + buf->offset, bulk_len, buf);
-    else if (msgid == MMAL_WORKER_BUFFER_FROM_HOST_ZEROLEN)
-        vchiq_bulk_transmit(client.dummy_bus, 8, NULL);
 
     buf->port = port;
     buf->in_flight = true;

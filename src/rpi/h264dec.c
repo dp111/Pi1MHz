@@ -9,9 +9,9 @@
       3. the component parses the SPS and raises MMAL_EVENT_FORMAT_CHANGED
          on the output port; we then set the output format to I420 at the
          advertised size, enable the port and hand it our display buffers
-      4. every filled output buffer arrives back via BUFFER_TO_HOST +
-         bulk; we pass its address up and re-arm the buffer when the
-         caller recycles it
+      4. every filled output buffer arrives back via BUFFER_TO_HOST; the
+         picture is already in our memory (zero-copy), so we pass its
+         address up and re-arm the buffer when the caller recycles it
 
     The reconfigure in (3) must not run inside a VCHIQ callback (it makes
     synchronous MMAL calls of its own), so the event only sets a flag and
@@ -26,12 +26,14 @@
 #include "rpi.h"
 #include "systimer.h"
 #include "vchiq.h"
+#include "vcsm.h"
 #include "mmal_vc.h"
 #include "h264dec.h"
 
 typedef struct {
     mmal_vc_buffer_t buf;
     uint8_t *arm_ptr;                /* ARM view (input buffers only) */
+    uint32_t mem_handle;             /* GPU handle of that memory */
     bool free;
 } input_slot_t;
 
@@ -47,7 +49,6 @@ static struct {
     bool output_enabled;
     bool reconfigure_pending;        /* FORMAT_CHANGED seen, work deferred */
     bool eos_pending;                /* EOS marker owed but no slot was free */
-    bool sent_input;                 /* input port has carried real payload */
     uint32_t width, height;
     uint32_t frame_bytes;
 
@@ -62,6 +63,13 @@ static struct {
     h264dec_frame_cb frame_cb;
     uint32_t frames;
 } dec;
+
+/* Outside 'dec' so it survives the memset() in h264dec_init(): once
+   bring-up has failed with the component already created, everything it
+   allocated (GPU memory, SMEM imports, the component itself) is stranded
+   with no record of it. A Beeb reset re-runs every emulator init, so
+   without this latch the same set would be stranded again on each one. */
+static bool init_failed;
 
 /* ------------------------------------------------------------------ */
 /* MMAL callbacks (called from inside mmal_vc_poll)                   */
@@ -83,6 +91,15 @@ static void on_buffer_done(mmal_vc_buffer_t *buf)
         if (buf != &o->buf)
             continue;
         o->with_component = false;
+
+        if (buf->cmd) {
+            /* An event delivered as an output buffer (that is how MMAL
+               sends FORMAT_CHANGED); not a frame. The poll loop re-arms
+               the buffer. */
+            if (buf->cmd == MMAL_EVENT_FORMAT_CHANGED)
+                dec.reconfigure_pending = true;
+            return;
+        }
 
         bool eos = (buf->flags & MMAL_BUFFER_HEADER_FLAG_EOS) != 0;
         if (buf->length >= dec.frame_bytes) {
@@ -161,6 +178,13 @@ static bool reconfigure_output(void)
                                &dec.port_out))
         return false;
 
+    /* Re-asserted on every reconfigure: port_info_get rebuilt our port
+       struct, and the VC forgets the mode with it. */
+    if (!mmal_vc_port_set_zero_copy(&dec.port_out)) {
+        LOG_INFO("h264: output zero-copy rejected\r\n");
+        return false;
+    }
+
     dec.port_out.format.type = MMAL_ES_TYPE_VIDEO;
     dec.port_out.format.encoding = MMAL_ENCODING_I420;
     dec.port_out.format.encoding_variant = 0;
@@ -205,6 +229,9 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
     if (dec.running)
         return true;
 
+    if (init_failed)
+        return false;
+
     /* I420 needs mod-32 width / mod-16 height or the VC pads the planes
        and the HVS pointer arithmetic in the player goes wrong. 768x576
        fits exactly. */
@@ -227,6 +254,14 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
     if (!mmal_vc_init(&cbs))
         return false;
 
+    /* Buffers are named to the component by SMEM handle, so without that
+       service every submission would be rejected: fail here rather than
+       start a decoder that can never produce a frame. */
+    if (!vcsm_init()) {
+        LOG_INFO("h264: no SMEM service\r\n");
+        return false;
+    }
+
     uint32_t inputs, outputs;
     if (!mmal_vc_component_create("ril.video_decode", &dec.component,
                                   &inputs, &outputs))
@@ -240,18 +275,49 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
         uint32_t phys = vchiq_alloc_shared(H264DEC_INPUT_BUF_SIZE, &handle);
         if (!phys) {
             LOG_INFO("h264: no memory for input buffers\r\n");
+            init_failed = true;
             return false;
         }
+        dec.in[i].mem_handle = handle;
         dec.in[i].arm_ptr = (uint8_t *)(uintptr_t)phys;
         dec.in[i].buf.busaddr = vchiq_bus_addr(phys);
         dec.in[i].buf.alloc_size = H264DEC_INPUT_BUF_SIZE;
         dec.in[i].free = true;
+        /* Register the staging buffer with SMEM: the component is told
+           the handle, and reads the access unit out of this memory. */
+        dec.in[i].buf.vc_handle =
+            vcsm_import(dec.in[i].buf.busaddr, H264DEC_INPUT_BUF_SIZE,
+                        "pi1mhz-au");
+        if (!dec.in[i].buf.vc_handle) {
+            LOG_INFO("h264: input buffer import refused\r\n");
+            init_failed = true;
+            return false;
+        }
+    }
+
+    /* Control port: userland clients enable it for component events; the
+       firmware may gate event/notification delivery on it. */
+    {
+        mmal_vc_port_t control;
+        if (mmal_vc_port_info_get(dec.component, MMAL_PORT_TYPE_CONTROL, 0,
+                                  &control)) {
+            /* Not fatal - the decoder streams either way. */
+            (void)mmal_vc_port_enable(&control);
+        }
     }
 
     /* Input port: H264 at our fixed size */
     if (!mmal_vc_port_info_get(dec.component, MMAL_PORT_TYPE_INPUT, 0,
-                               &dec.port_in))
+                               &dec.port_in)) {
+        init_failed = true;
         return false;
+    }
+
+    if (!mmal_vc_port_set_zero_copy(&dec.port_in)) {
+        LOG_INFO("h264: input zero-copy rejected\r\n");
+        init_failed = true;
+        return false;
+    }
 
     dec.port_in.format.type = MMAL_ES_TYPE_VIDEO;
     dec.port_in.format.encoding = MMAL_ENCODING_H264;
@@ -268,6 +334,7 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
 
     if (!mmal_vc_port_set_format(&dec.port_in)) {
         LOG_INFO("h264: input set_format failed\r\n");
+        init_failed = true;
         return false;
     }
     dec.port_in.port.buffer_num = H264DEC_INPUT_BUFFERS;
@@ -275,11 +342,25 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
 
     if (!mmal_vc_component_enable(dec.component)) {
         LOG_INFO("h264: component enable failed\r\n");
+        init_failed = true;
         return false;
     }
 
     if (!mmal_vc_port_enable(&dec.port_in)) {
         LOG_INFO("h264: input enable failed\r\n");
+        init_failed = true;
+        return false;
+    }
+
+    /* Enable the output port NOW, at the format we already know (our
+       streams are fixed 768x576 I420). MMAL delivers FORMAT_CHANGED as
+       a buffer on the OUTPUT port, so waiting for the event with the
+       output disabled deadlocks: the component cannot tell us anything
+       until the port has buffers to say it with (hardware-observed; the
+       ffmpeg MMAL decoder enables output up front for the same reason). */
+    if (!reconfigure_output()) {
+        LOG_INFO("h264: initial output enable failed\r\n");
+        init_failed = true;
         return false;
     }
 
@@ -291,12 +372,21 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
 
 bool h264dec_add_output_buffer(uint32_t phys, uint32_t size)
 {
+    if (!dec.running)
+        return false;
     if (size < dec.frame_bytes)
         return false;
     for (int i = 0; i < H264DEC_MAX_OUTPUT; i++) {
         output_slot_t *o = &dec.out[i];
         if (!o->registered) {
             o->buf.busaddr = vchiq_bus_addr(phys);
+            /* The frame buffers stay ours - and stay the HVS scan-out
+               planes; importing only tells the VideoCore about memory it
+               is then allowed to decode straight into. */
+            o->buf.vc_handle = vcsm_import(o->buf.busaddr, size,
+                                           "pi1mhz-frame");
+            if (!o->buf.vc_handle)
+                return false;
             o->buf.alloc_size = dec.frame_bytes;
             o->registered = true;
             arm_output_buffers();
@@ -345,9 +435,9 @@ void h264dec_cancel_input(void)
 }
 
 /* Send the zero-length EOS marker that pushes the last picture out of the
-   decoder (the freeze-frame trick). Needs a free input slot AND bulk
-   space; when either is missing the debt is remembered in eos_pending
-   and retried from h264dec_poll() as slots come back. */
+   decoder (the freeze-frame trick). Needs a free input slot; when there
+   is none the debt is remembered in eos_pending and retried from
+   h264dec_poll() as slots come back. */
 static void try_send_eos(void)
 {
     for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++) {
@@ -379,15 +469,14 @@ bool h264dec_submit_input(uint32_t length, int64_t pts, bool eos)
                    MMAL_BUFFER_HEADER_FLAG_KEYFRAME;
 
     if (!mmal_vc_submit_buffer(&dec.port_in, &s->buf)) {
-        /* Transient (no VCHIQ TX slot / bulk slot). Drop the borrowed
-           buffer so the caller can retry with a fresh read - leaving it
-           borrowed would starve input forever. */
+        /* Transient (no VCHIQ TX slot). Drop the borrowed buffer so the
+           caller can retry with a fresh read - leaving it borrowed would
+           starve input forever. */
         h264dec_cancel_input();
         return false;
     }
     s->free = false;
     dec.in_borrowed = -1;
-    dec.sent_input = true;
 
     if (eos) {
         dec.eos_pending = true;
@@ -401,15 +490,9 @@ bool h264dec_resume(void)
     if (!dec.running)
         return false;
     dec.eos_pending = false;         /* a flush supersedes any owed EOS */
-    /* Input: the bulk-synced flush, but only once real payload has been
-       sent on the port (before that the VC side may not be set up to
-       receive the dummy bulk - same gating as the reference client).
-       Output: always the plain flush; that port never carries host->VC
-       payload, so the dummy-bulk variant would desynchronise pairing. */
-    bool ok = dec.sent_input ? mmal_vc_port_flush(&dec.port_in)
-                             : mmal_vc_port_flush_normal(&dec.port_in);
+    bool ok = mmal_vc_port_flush(&dec.port_in);
     if (dec.output_enabled)
-        ok = mmal_vc_port_flush_normal(&dec.port_out) && ok;
+        ok = mmal_vc_port_flush(&dec.port_out) && ok;
     /* Flushed output buffers come back with length 0; on_buffer_done has
        already cleared with_component, so just re-arm them. */
     arm_output_buffers();
@@ -437,6 +520,17 @@ void h264dec_reset(void)
     dec.in_borrowed = -1;
     dec.eos_pending = false;
     for (int i = 0; i < H264DEC_MAX_OUTPUT; i++) {
+        /* Drop the VideoCore's registration too, not just our record of
+           it: the caller frees these frame buffers straight after this
+           call, and a surviving import would leave the VC holding a
+           handle for memory that has gone back to the GPU pool - and
+           would leak an SMEM resource on every warm restart. Safe here
+           because the output port is disabled above, so the component
+           has already returned every buffer. */
+        if (dec.out[i].buf.vc_handle) {
+            vcsm_free(dec.out[i].buf.vc_handle);
+            dec.out[i].buf.vc_handle = 0;
+        }
         dec.out[i].registered = false;
         dec.out[i].with_component = false;
         dec.out[i].with_caller = false;

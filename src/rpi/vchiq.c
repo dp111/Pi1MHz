@@ -13,10 +13,11 @@
       - consumed RX slots are recycled by appending their index to the
         REMOTE side's slot_queue at slot_queue_recycle and bumping that
         counter; the remote replenishes our TX pool the same way
-      - bulk payloads never travel through slots: the slave posts a
-        BULK_TX/BULK_RX message whose 8-byte payload is {pagelist bus
-        address, size}; the VideoCore (bus master) does the copy with its
-        own DMA and answers BULK_TX_DONE/BULK_RX_DONE {actual}
+
+    Only messages are used. The protocol also defines bulk (DMA) transfers
+    for moving payload, but the MMAL client runs every port in zero-copy
+    mode - a buffer travels as a VideoCore memory handle and the codec
+    reads and writes that memory directly - so none of that is needed.
 
     Everything shared with the VideoCore lives in the VC heap, which the
     ARM maps effectively uncached (cache.c maps arm_mem..PERIPHERAL_BASE
@@ -53,7 +54,8 @@
    with VCHIQ_ENABLE_DEBUG so debug[] has 11 entries. */
 #define VCHIQ_DEBUG_MAX 11
 
-/* Message types (high byte of msgid) */
+/* Message types (high byte of msgid). The full protocol set is listed for
+   reference; the BULK_* ids are never sent or expected here. */
 #define VCHIQ_MSG_PADDING            0
 #define VCHIQ_MSG_CONNECT            1
 #define VCHIQ_MSG_OPEN               2
@@ -134,18 +136,6 @@ typedef struct {
     int16_t version_min;
 } vchiq_open_payload_t;
 
-/* Bulk pagelist, as built by the Linux driver. addrs[] entries are bus
-   addresses of page runs; the low 12 bits hold (number of FOLLOWING
-   consecutive pages), so one entry describes a whole contiguous buffer. */
-#define PAGELIST_WRITE               0   /* host -> VC (VC reads our memory) */
-#define PAGELIST_READ                1   /* VC -> host (VC writes our memory) */
-typedef struct {
-    uint32_t length;
-    uint16_t type;
-    uint16_t offset;                 /* offset of data within the first page */
-    uint32_t addrs[1];
-} vchiq_pagelist_t;
-
 #define MAX_FRAGMENTS      64        /* 2 * VCHIQ_NUM_CURRENT_BULKS */
 #define FRAGMENT_SIZE      64        /* 2 cache lines of 32 bytes */
 
@@ -156,11 +146,10 @@ typedef struct {
 /* 1 slot_zero slot + 2 * 16 slots (one sync + 15 data each side) */
 #define NUM_SLOTS          33u
 #define SLOT_MEM_SIZE      (NUM_SLOTS * VCHIQ_SLOT_SIZE)
-#define FRAG_MEM_SIZE      4096u     /* 64 * 64 bytes, page rounded */
-#define BULK_QUEUE_DEPTH   4u        /* per direction, power of two */
-#define PAGELIST_STRIDE    32u       /* room for one run entry, padded */
-#define PAGELIST_MEM_SIZE  4096u
-#define SHARED_MEM_SIZE    (SLOT_MEM_SIZE + FRAG_MEM_SIZE + PAGELIST_MEM_SIZE)
+/* The fragment pool, page rounded, derived from the constants above so
+   the two cannot drift apart. */
+#define FRAG_MEM_SIZE      (((MAX_FRAGMENTS * FRAGMENT_SIZE) + 4095u) & ~4095u)
+#define SHARED_MEM_SIZE    (SLOT_MEM_SIZE + FRAG_MEM_SIZE)
 
 /* Doorbells: DT node 0x7e00b840. Writing BELL2 interrupts the VideoCore. */
 #define VCHIQ_BELL_BASE    (PERIPHERAL_BASE + 0xB840u)
@@ -170,16 +159,6 @@ typedef struct {
 /* Client state                                                       */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
-    void *user;
-} bulk_pending_t;
-
-typedef struct {
-    bulk_pending_t pend[BULK_QUEUE_DEPTH];
-    uint32_t head;                   /* next to complete */
-    uint32_t tail;                   /* next free */
-} bulk_queue_t;
-
 static struct {
     bool inited;
     bool connected;
@@ -188,22 +167,30 @@ static struct {
     volatile vchiq_shared_state_t *remote;   /* master (VideoCore) */
     uint8_t *slot_base;              /* ARM view of slot memory */
     uint32_t slot_base_bus;          /* VC view (0xC0000000 alias) */
-    uint8_t *pagelist_base;          /* 8 pagelists, PAGELIST_STRIDE apart */
-    uint32_t pagelist_base_bus;
 
     int32_t  rx_pos;                 /* our read position in remote's stream */
     int32_t  tx_pos;                 /* cached copy of local->tx_pos */
     uint32_t slot_queue_available;   /* how many entries of local->slot_queue are usable */
 
-    /* single service */
-    uint32_t localport;
-    uint32_t remoteport;
-    bool     open;
-    vchiq_callbacks_t cb;
-
-    bulk_queue_t bulk_tx;
-    bulk_queue_t bulk_rx;
+    /* Open services. Ports are 1-based (index + 1) and never reused, so a
+       message for a closed service simply matches nothing. */
+    struct {
+        uint32_t remoteport;
+        bool     open;
+        vchiq_callbacks_t cb;
+    } svc[VCHIQ_MAX_SERVICES];
 } vc;
+
+/* Kept OUTSIDE 'vc' so they survive the memset() in vchiq_init(): the
+   shared block is allocated once and, if the VideoCore was ever told
+   about it, can never be given back. */
+static uint32_t shared_phys;         /* ARM-visible address of the block */
+static uint32_t shared_handle;       /* its GPU memory handle */
+static bool     vchiq_condemned;     /* VC owns the block but we gave up */
+
+#define SVC_VALID(s)   ((s) >= 0 && (s) < VCHIQ_MAX_SERVICES)
+#define SVC_PORT(s)    ((uint32_t)(s) + 1u)      /* local port of service s */
+#define PORT_SVC(p)    ((int)(p) - 1)            /* inverse; may be invalid */
 
 static uint8_t *slot_ptr(uint32_t index)
 {
@@ -239,6 +226,22 @@ uint32_t vchiq_alloc_shared(uint32_t size, uint32_t *handle)
             return mp->data.buffer_32[0] & 0x3FFFFFFFu;
     }
     return 0;
+}
+
+void vchiq_free_shared(uint32_t handle)
+{
+    if (!handle)
+        return;
+    /* Unlock then release, exactly as screen_release_buffer() does - the
+       allocation above locked the block. */
+    RPI_PropertyStart(TAG_UNLOCK_MEMORY, 1);
+    RPI_PropertyAdd(handle);
+    RPI_PropertyProcess(true);
+    if (RPI_PropertyGet(TAG_UNLOCK_MEMORY)) {
+        RPI_PropertyStart(TAG_RELEASE_MEMORY, 1);
+        RPI_PropertyAdd(handle);
+        RPI_PropertyProcess(false);
+    }
 }
 
 bool vchiq_connected(void)
@@ -333,103 +336,18 @@ static bool queue_message_raw(uint32_t msgid,
     return true;
 }
 
-bool vchiq_queue_message(const void *msg, unsigned int size)
+bool vchiq_queue_message(int service, const void *msg, unsigned int size)
 {
-    if (!vc.open)
+    if (!SVC_VALID(service) || !vc.svc[service].open)
         return false;
-    return queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_DATA, vc.localport, vc.remoteport),
+    return queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_DATA, SVC_PORT(service),
+                                            vc.svc[service].remoteport),
                              msg, size, NULL, 0);
-}
-
-/* ------------------------------------------------------------------ */
-/* Bulk transfers                                                     */
-/* ------------------------------------------------------------------ */
-
-static bool queue_bulk(bulk_queue_t *q, uint32_t pl_index_base, int msg_type,
-                       uint32_t pl_type, uint32_t busaddr, unsigned int size,
-                       void *user)
-{
-    if (!vc.open)
-        return false;
-    if (q->tail - q->head >= BULK_QUEUE_DEPTH)
-        return false;
-
-    /* Build a one-run pagelist. The buffer must be physically contiguous,
-       which everything from vchiq_alloc_shared() is.
-
-       A pagelist stays owned by the VideoCore until its BULK_*_DONE, so
-       each direction gets its own bank of BULK_QUEUE_DEPTH pagelists
-       indexed by the queue tail: with at most BULK_QUEUE_DEPTH transfers
-       outstanding per direction, a slot cannot be reused before its DONE
-       has retired it (and a failed send below leaves tail - and hence
-       this slot - unclaimed for the retry). */
-    uint32_t idx = pl_index_base + (q->tail & (BULK_QUEUE_DEPTH - 1u));
-    volatile vchiq_pagelist_t *pl =
-        (volatile vchiq_pagelist_t *)(uintptr_t)(vc.pagelist_base + idx * PAGELIST_STRIDE);
-    uint32_t pl_bus = vc.pagelist_base_bus + idx * PAGELIST_STRIDE;
-
-    /* Round to 32 bytes so the VideoCore never needs the fragment
-       workaround for partially owned cache lines (and we have no ARM
-       cache lines to worry about anyway - the memory is uncached). */
-    uint32_t xfer = (size + 31u) & ~31u;
-    uint32_t first_page = busaddr & ~0xFFFu;
-    uint32_t offset = busaddr & 0xFFFu;
-    uint32_t npages = (offset + xfer + 4095u) / 4096u;
-
-    pl->length = xfer;
-    pl->type = (uint16_t)pl_type;
-    pl->offset = (uint16_t)offset;
-    pl->addrs[0] = first_page | (npages - 1u);
-    _data_memory_barrier();
-
-    uint32_t payload[2] = { pl_bus, xfer };
-    if (!queue_message_raw(VCHIQ_MAKE_MSG((uint32_t)msg_type, vc.localport, vc.remoteport),
-                           payload, sizeof(payload), NULL, 0))
-        return false;
-
-    q->pend[q->tail & (BULK_QUEUE_DEPTH - 1u)].user = user;
-    q->tail++;
-    return true;
-}
-
-bool vchiq_bulk_transmit(uint32_t busaddr, unsigned int size, void *user)
-{
-    return queue_bulk(&vc.bulk_tx, 0, VCHIQ_MSG_BULK_TX, PAGELIST_WRITE,
-                      busaddr, size, user);
-}
-
-bool vchiq_bulk_receive(uint32_t busaddr, unsigned int size, void *user)
-{
-    return queue_bulk(&vc.bulk_rx, BULK_QUEUE_DEPTH, VCHIQ_MSG_BULK_RX,
-                      PAGELIST_READ, busaddr, size, user);
-}
-
-bool vchiq_bulk_tx_space(void)
-{
-    return vc.open && (vc.bulk_tx.tail - vc.bulk_tx.head) < BULK_QUEUE_DEPTH;
-}
-
-bool vchiq_bulk_rx_space(void)
-{
-    return vc.open && (vc.bulk_rx.tail - vc.bulk_rx.head) < BULK_QUEUE_DEPTH;
 }
 
 /* ------------------------------------------------------------------ */
 /* RX path                                                            */
 /* ------------------------------------------------------------------ */
-
-static void bulk_done(bulk_queue_t *q, int actual,
-                      void (*fn)(void *user, int actual))
-{
-    if (q->head == q->tail) {
-        LOG_INFO("vchiq: unexpected bulk done\r\n");
-        return;
-    }
-    void *user = q->pend[q->head & (BULK_QUEUE_DEPTH - 1u)].user;
-    q->head++;
-    if (fn)
-        fn(user, actual);
-}
 
 /* Give a fully consumed remote slot back to the VideoCore. */
 static void recycle_slot(uint32_t slot_index)
@@ -457,34 +375,34 @@ static void parse_message(volatile vchiq_header_t *h)
         vc.connected = true;
         break;
 
-    case VCHIQ_MSG_OPENACK:
-        if (VCHIQ_MSG_DSTPORT(msgid) == vc.localport) {
-            vc.remoteport = VCHIQ_MSG_SRCPORT(msgid);
-            vc.open = true;
+    case VCHIQ_MSG_OPENACK: {
+        int s = PORT_SVC(VCHIQ_MSG_DSTPORT(msgid));
+        if (SVC_VALID(s)) {
+            vc.svc[s].remoteport = VCHIQ_MSG_SRCPORT(msgid);
+            vc.svc[s].open = true;
         }
         break;
+    }
 
-    case VCHIQ_MSG_CLOSE:
-        LOG_INFO("vchiq: service closed by VC\r\n");
+    case VCHIQ_MSG_CLOSE: {
+        int s = PORT_SVC(VCHIQ_MSG_DSTPORT(msgid));
+        LOG_INFO("vchiq: service %d closed by VC\r\n", s);
         /* complete the close handshake so the VC side can free the port */
-        queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_CLOSE, vc.localport,
+        queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_CLOSE,
+                                         VCHIQ_MSG_DSTPORT(msgid),
                                          VCHIQ_MSG_SRCPORT(msgid)),
                           NULL, 0, NULL, 0);
-        vc.open = false;
+        if (SVC_VALID(s))
+            vc.svc[s].open = false;
         break;
+    }
 
-    case VCHIQ_MSG_DATA:
-        if (VCHIQ_MSG_DSTPORT(msgid) == vc.localport && vc.cb.on_data)
-            vc.cb.on_data(payload, size);
+    case VCHIQ_MSG_DATA: {
+        int s = PORT_SVC(VCHIQ_MSG_DSTPORT(msgid));
+        if (SVC_VALID(s) && vc.svc[s].open && vc.svc[s].cb.on_data)
+            vc.svc[s].cb.on_data(payload, size);
         break;
-
-    case VCHIQ_MSG_BULK_TX_DONE:
-        bulk_done(&vc.bulk_tx, *(const int32_t *)payload, vc.cb.on_bulk_tx_done);
-        break;
-
-    case VCHIQ_MSG_BULK_RX_DONE:
-        bulk_done(&vc.bulk_rx, *(const int32_t *)payload, vc.cb.on_bulk_rx_done);
-        break;
+    }
 
     case VCHIQ_MSG_PAUSE:
         /* Protocol: acknowledge a PAUSE with a PAUSE, then send RESUME
@@ -503,6 +421,10 @@ void vchiq_poll(void)
     if (!vc.inited)
         return;
 
+    /* Acknowledge any pending VC->ARM doorbell: the ISR on Linux reads
+       BELL0 to clear it; without this the bell stays pending forever. */
+    (void)*(volatile uint32_t *)(VCHIQ_BELL_BASE + 0x0u);
+
     _data_memory_barrier();
     while (vc.rx_pos != vc.remote->tx_pos) {
         uint32_t rx_pos = (uint32_t)vc.rx_pos;
@@ -512,8 +434,14 @@ void vchiq_poll(void)
             (slot_ptr(slot_index) + (rx_pos & VCHIQ_SLOT_MASK));
         _data_memory_barrier();
 
-        uint32_t stride = CALC_STRIDE(h->size);
-        if (stride > VCHIQ_SLOT_SIZE - (rx_pos & VCHIQ_SLOT_MASK)) {
+        /* A size that cannot fit in a slot is corruption, and one close to
+           UINT32_MAX would wrap CALC_STRIDE to zero - which the bounds
+           test below would wave through, leaving rx_pos stuck and this
+           loop spinning forever. Reject it up front. */
+        uint32_t size = h->size;
+        uint32_t stride = CALC_STRIDE(size);
+        if (size > VCHIQ_SLOT_SIZE - VCHIQ_HEADER_SIZE ||
+            stride > VCHIQ_SLOT_SIZE - (rx_pos & VCHIQ_SLOT_MASK)) {
             LOG_INFO("vchiq: corrupt rx stream at %"PRIx32"\r\n", rx_pos);
             vc.inited = false;       /* fail safe: stop processing */
             return;
@@ -545,19 +473,30 @@ bool vchiq_init(void)
     if (vc.inited)
         return true;
 
-    uint32_t handle;
-    uint32_t phys = vchiq_alloc_shared(SHARED_MEM_SIZE, &handle);
-    if (!phys) {
-        LOG_INFO("vchiq: no shared memory\r\n");
+    /* The VideoCore was handed the slot memory and then let us down: it
+       may still write there, so that block can never be reused or freed,
+       and allocating another one on every Beeb reset would eat the GPU
+       heap. One failure is final. */
+    if (vchiq_condemned)
         return false;
+
+    /* Re-init (a Beeb reset re-runs the emulator inits) reuses the block
+       we already own rather than leaking it and taking another. */
+    uint32_t handle = shared_handle;
+    uint32_t phys = shared_phys;
+    if (!phys) {
+        phys = vchiq_alloc_shared(SHARED_MEM_SIZE, &handle);
+        if (!phys) {
+            LOG_INFO("vchiq: no shared memory\r\n");
+            return false;
+        }
+        shared_phys = phys;
+        shared_handle = handle;
     }
 
     memset(&vc, 0, sizeof(vc));
     vc.slot_base = (uint8_t *)(uintptr_t)phys;
     vc.slot_base_bus = vchiq_bus_addr(phys);
-    vc.pagelist_base = vc.slot_base + SLOT_MEM_SIZE + FRAG_MEM_SIZE;
-    vc.pagelist_base_bus = vc.slot_base_bus + SLOT_MEM_SIZE + FRAG_MEM_SIZE;
-    vc.localport = 1;
 
     /* --- build slot zero ------------------------------------------ */
     memset(vc.slot_base, 0, SHARED_MEM_SIZE);
@@ -574,9 +513,9 @@ bool vchiq_init(void)
     z->max_slots = VCHIQ_MAX_SLOTS;
     z->max_slots_per_side = VCHIQ_MAX_SLOTS_PER_SIDE;
 
-    /* Fragment pool for the VC's bulk cache-line workaround. We always
-       hand over 32-byte aligned transfers so it should go unused, but the
-       firmware expects it to exist. */
+    /* Fragment pool for the VC's cache-line workaround. Unused - it only
+       serves bulk transfers, which we never make - but the firmware
+       expects slot zero to describe one. */
     z->platform_data[0] = (int32_t)(vc.slot_base_bus + SLOT_MEM_SIZE);
     z->platform_data[1] = MAX_FRAGMENTS;
 
@@ -610,6 +549,11 @@ bool vchiq_init(void)
     mp = RPI_PropertyGet(TAG_VCHIQ_INIT);
     if (!mp || mp->data.buffer_32[0] != 0) {
         LOG_INFO("vchiq: firmware rejected init (start_cd.elf? need full start.elf)\r\n");
+        /* The firmware never took the address, so the block is ours to
+           give back. Do not latch: a retry costs one mailbox round trip. */
+        vchiq_free_shared(handle);
+        shared_phys = 0;
+        shared_handle = 0;
         return false;
     }
 
@@ -624,6 +568,12 @@ bool vchiq_init(void)
     if (!vc.connected) {
         LOG_INFO("vchiq: no CONNECT from VideoCore\r\n");
         vc.inited = false;
+        /* TAG_VCHIQ_INIT succeeded, so the VideoCore holds slot_base_bus
+           and may write to it at any time: the block must NOT be freed,
+           and no second one may ever be taken. */
+        shared_phys = phys;
+        shared_handle = handle;
+        vchiq_condemned = true;
         return false;
     }
 
@@ -631,14 +581,26 @@ bool vchiq_init(void)
     return true;
 }
 
-bool vchiq_open_service(uint32_t fourcc, short version, short version_min,
-                        const vchiq_callbacks_t *callbacks)
+int vchiq_open_service(uint32_t fourcc, short version, short version_min,
+                       const vchiq_callbacks_t *callbacks)
 {
     if (!vc.inited || !vc.connected)
-        return false;
+        return -1;
 
-    vc.cb = *callbacks;
-    vc.open = false;
+    int s = -1;
+    for (int i = 0; i < VCHIQ_MAX_SERVICES; i++) {
+        if (!vc.svc[i].open) {
+            s = i;
+            break;
+        }
+    }
+    if (s < 0) {
+        LOG_INFO("vchiq: no free service slot\r\n");
+        return -1;
+    }
+
+    vc.svc[s].cb = *callbacks;
+    vc.svc[s].open = false;
 
     vchiq_open_payload_t open = {
         .fourcc = (int32_t)fourcc,
@@ -646,23 +608,23 @@ bool vchiq_open_service(uint32_t fourcc, short version, short version_min,
         .version = version,
         .version_min = version_min,
     };
-    if (!queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_OPEN, vc.localport, 0),
+    if (!queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_OPEN, SVC_PORT(s), 0),
                            &open, sizeof(open), NULL, 0))
-        return false;
+        return -1;
 
     uint32_t start = RPI_GetSystemTime();
-    while (!vc.open && (RPI_GetSystemTime() - start) < 500000u)
+    while (!vc.svc[s].open && (RPI_GetSystemTime() - start) < 500000u)
         vchiq_poll();
 
-    if (!vc.open) {
+    if (!vc.svc[s].open) {
         LOG_INFO("vchiq: OPEN '%c%c%c%c' not acknowledged\r\n",
                  (char)(fourcc >> 24), (char)(fourcc >> 16),
                  (char)(fourcc >> 8), (char)fourcc);
-        return false;
+        return -1;
     }
 
     /* Give the service a moment to settle (matches Linux behaviour of
        processing any immediately queued messages). */
     poll_for(1000);
-    return true;
+    return s;
 }

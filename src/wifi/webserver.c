@@ -24,6 +24,7 @@
 #include "../services.h"              /* fat_service_file_in_use() - MMFS/FAT interlock */
 #include "../usb/mtp_fs.h"
 #include "../rpi/screen.h"
+#include "../rpi/h264dec.h"           /* frame count on /status */
 #include "../rpi/exceptions.h"
 #include "../rpi/info.h"
 #include "../rpi/systimer.h"
@@ -2476,6 +2477,11 @@ static bool route_status(ws_conn_t *c)
       }
    }
    table_row(&b, "Link-loss detect", rs.link_flag_trusted ? "armed" : "not armed");
+   if (h264dec_running()) {
+      snprintf(tmp, sizeof tmp, "running, %lu frames decoded",
+               (unsigned long)h264dec_frames_decoded());
+      table_row(&b, "H264 decoder", tmp);
+   }
    {
       /* The chip's own view of the air.  rx_good is what it actually received;
          compare its movement with "Frames received" above to tell a frame that

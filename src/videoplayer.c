@@ -570,6 +570,26 @@ static bool pvf_open_file(void)
    init, and we must recognise our own claim as ours). */
 static bool audio_owned_by_player;
 
+/* Abandon the hardware-decode path part way through bring-up and come up
+   as a still frame instead. The order matters: h264dec_reset() first, so
+   the decoder drops its SMEM imports and disables the output port, before
+   any frame buffer goes back to the GPU pool - otherwise the VideoCore
+   could still be armed to decode into memory we have just returned. */
+static void video_fallback_to_still(uint32_t handles[NUM_FRAME_BUFFERS])
+{
+    h264dec_reset();
+    for (int i = 0; i < NUM_FRAME_BUFFERS; i++)
+        if (handles[i]) {
+            screen_release_buffer(handles[i]);
+            handles[i] = 0;
+        }
+    free(vp.index);
+    vp.index = NULL;
+    f_close(&vp.file);
+    vp.open = false;
+    legacy_still_init();
+}
+
 void videoplayer_init(uint8_t instance, uint8_t address)
 {
     (void)instance;
@@ -631,13 +651,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
         vp.buf_phys[i] = screen_allocate_buffer(vp.frame_bytes, &handles[i]);
         if (!vp.buf_phys[i]) {
             LOG_INFO("videoplayer: no GPU memory for frames (gpu_mem too small?)\r\n");
-            for (int j = 0; j <= i; j++)
-                if (handles[j])
-                    screen_release_buffer(handles[j]);
-            free(vp.index);
-            vp.index = NULL;
-            f_close(&vp.file);
-            legacy_still_init();
+            video_fallback_to_still(handles);
             return;
         }
         /* black I420 */
@@ -645,8 +659,14 @@ void videoplayer_init(uint8_t instance, uint8_t address)
         memset(p, 0x10, vp.hdr.width * vp.hdr.height);
         memset(p + vp.hdr.width * vp.hdr.height, 0x80,
                vp.hdr.width * vp.hdr.height / 2u);
-        if (!h264dec_add_output_buffer(vp.buf_phys[i], vp.frame_bytes))
+        if (!h264dec_add_output_buffer(vp.buf_phys[i], vp.frame_bytes)) {
+            /* Without every output buffer the decoder can never produce a
+               frame, so carrying on would leave the screen permanently
+               black - fall back to the still frame instead. */
             LOG_INFO("videoplayer: output buffer %d not registered\r\n", i);
+            video_fallback_to_still(handles);
+            return;
+        }
     }
 
     /* A previous still-frame kernel (or the legacy path of this one) may

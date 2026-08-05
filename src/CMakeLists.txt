@@ -168,6 +168,7 @@ set(core_files
    # wrapper (needs the full start.elf + gpu_mem=64 at runtime; compiles
    # and no-ops harmlessly with start_cd.elf)
    rpi/vchiq.c
+   rpi/vcsm.c
    rpi/mmal_vc.c
    rpi/h264dec.c
    Pi1MHz.c

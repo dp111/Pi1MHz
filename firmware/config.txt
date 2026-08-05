@@ -26,9 +26,22 @@ gpu_mem=16
 # player falls back to the static frame. To enable hardware video:
 #   1. copy the FULL start.elf + fixup.dat from the matching Raspberry Pi
 #      firmware release onto the card (keep start_cd.elf around),
-#   2. uncomment the three lines below.
+#   2. uncomment the lines below.
 # gpu_mem=64 leaves 448MB for the ARM on a 512MB Zero and is enough for
 # the decoder plus the player's frame buffers.
 #start_file=start.elf
 #fixup_file=fixup.dat
 #gpu_mem=64
+# vd_use_vpu0=1 is REQUIRED for hardware video. Pi1MHz runs its 1MHz bus
+# handler on VPU core 1; without this key the firmware wants that core for
+# H264 decoding too and no frame is ever produced. With it the decoder
+# uses core 0, and video and the Beeb interface run together.
+#vd_use_vpu0=1
+# vd_isp_disable=1 makes the decoder convert its output format on the VPU
+# instead of the ISP block - about 5% faster, with the output differing
+# only by 1-4/255 rounding. Recommended when video is enabled.
+#vd_isp_disable=1
+#isp_use_vpu0=1
+# Needed only if the display is plugged in after boot (e.g. a USB capture
+# dongle) - without it the firmware never initialises HDMI:
+#hdmi_force_hotplug=1
