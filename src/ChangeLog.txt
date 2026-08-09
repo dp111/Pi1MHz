@@ -204,3 +204,4 @@ v.1.31
 Beeb_write_protect config option: ignore all writes from the Beeb to the SD card (MMFS/MMFS2 and ADFS), while USB and web/WebDAV access stay read-write.
 AUN Fix * notify etc
 Add a web browser for viewing/modifying .ssd .dsd .mmb files scsi.dat can only be viewed.
+Update 43455 WiFi firmware to 7.45.265 (Pi 3B+/4/CM4).
