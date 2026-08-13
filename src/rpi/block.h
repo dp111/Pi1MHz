@@ -54,13 +54,9 @@ struct emmc_block_dev
 	uint32_t last_interrupt;
 	uint32_t last_error;
 
-	struct sd_scr *scr;
-
 	bool failed_voltage_switch;
 
 	bool last_cmd_success;
-	bool use_sdma;
-	bool card_removal;
 	// sd_ensure_data_mode() has verified the card is in the transfer state
 	// and no command has failed since (cleared by the init memset and on
 	// data-command give-up, so a removed/replaced card re-verifies)

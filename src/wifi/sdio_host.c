@@ -426,7 +426,6 @@ static int sdio_host_open_arasan_path(void)
    memset(&g_arasan_wifi_dev, 0, sizeof(g_arasan_wifi_dev));
    g_arasan_wifi_dev.block_size = 512u;
    g_arasan_wifi_dev.blocks_to_transfer = 1u;
-   g_arasan_wifi_dev.use_sdma = false;
 
    /* Warm reboot recovery: fully power-cycle the Arasan block before
       reinitializing clocks and resets so stale inhibit state is cleared. */
@@ -846,7 +845,6 @@ static int sdio_host_submit_arasan_command(uint32_t command,
    g_arasan_wifi_dev.buf = buffer;
    g_arasan_wifi_dev.block_size = block_size != 0u ? block_size : 512u;
    g_arasan_wifi_dev.blocks_to_transfer = blocks_to_transfer != 0u ? blocks_to_transfer : 1u;
-   g_arasan_wifi_dev.use_sdma = false;
    sdio_host_issue_command_int(&g_arasan_wifi_dev, command, argument, timeout_us);
 
    /* Arm the holdoff only on a pure timeout - synthetic (wait expired) or
@@ -975,7 +973,6 @@ int sdio_host_open_poll(sdio_host_t *host)
          memset(&g_arasan_wifi_dev, 0, sizeof(g_arasan_wifi_dev));
          g_arasan_wifi_dev.block_size = 512u;
          g_arasan_wifi_dev.blocks_to_transfer = 1u;
-         g_arasan_wifi_dev.use_sdma = false;
 
          sdio_host_prepare_wifi_pins();
          g_rpi_emmc_base->EMMC_INTERRUPT = 0xffffffffu;

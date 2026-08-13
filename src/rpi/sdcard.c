@@ -32,9 +32,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 #include <inttypes.h>
-#include <assert.h>
 #include "block.h"
 #include "base.h"
 #include "arm-start.h"
@@ -82,13 +80,6 @@
 // Requires 150 mA power so disabled on the RPi for now
 //#define SDXC_MAXIMUM_PERFORMANCE
 
-// Enable SDMA support
-//#define SDMA_SUPPORT
-
-// SDMA buffer address
-#define SDMA_BUFFER     0x6000
-#define SDMA_BUFFER_PA  (SDMA_BUFFER + 0xC0000000UL)
-
 // Enable card interrupts
 //#define SD_CARD_INTERRUPTS
 
@@ -105,13 +96,6 @@
 #define SDHCI_IMPLEMENTATION_GENERIC        0
 #define SDHCI_IMPLEMENTATION_BCM_2708       1
 #define SDHCI_IMPLEMENTATION                SDHCI_IMPLEMENTATION_BCM_2708
-
-struct sd_scr
-{
-    uint32_t    scr[2];
-    uint32_t    sd_bus_widths;
-    int         sd_version;
-};
 
 // Support for BE to LE conversion
 #ifdef __GNUC__
@@ -218,13 +202,6 @@ static inline uint32_t byte_swap(uint32_t in)
 #define ADMA_ERROR(a)       (FAIL(a) && (a->last_error & (1 << 25)))
 #define TUNING_ERROR(a)     (FAIL(a) && (a->last_error & (1 << 26)))
 
-#define SD_VER_UNKNOWN      0
-#define SD_VER_1            1
-#define SD_VER_1_1          2
-#define SD_VER_2            3
-#define SD_VER_3            4
-#define SD_VER_4            5
-
 #define SDHOST_BASE                 (PERIPHERAL_BASE + 0x202000UL)
 #define SDCMD  0x00 /* Command to SD card              - 16 R/W */
 #define SDARG  0x04 /* Argument to SD card             - 32 R/W */
@@ -299,9 +276,6 @@ static inline uint32_t byte_swap(uint32_t in)
 #define SDDATA_FIFO_PIO_BURST       8u
 
 #ifdef EMMC_DEBUG
-static const char *sd_versions[] = { "unknown", "1.0 and 1.01", "1.10",
-    "2.00", "3.0x", "4.xx" };
-
 static const char *err_irpts[] = { "CMD_TIMEOUT", "CMD_CRC", "CMD_END_BIT", "CMD_INDEX",
    "DATA_TIMEOUT", "DATA_CRC", "DATA_END_BIT", "CURRENT_LIMIT",
    "AUTO_CMD12", "ADMA", "TUNING", "RSVD" };
@@ -669,13 +643,6 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
 static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint32_t argument, uint32_t timeout)
 {
     _data_memory_barrier();
-
-    // Stop the command issue if it was the card remove interrupt that was handled
-    if(dev->card_removal)
-    {
-        dev->last_cmd_success = 0;
-        return;
-    }
 
     // Now run the appropriate commands by calling sd_issue_command_int()
     if(command & IS_APP_CMD)
@@ -1135,14 +1102,13 @@ static void sdhost_prepare_device_state(struct emmc_block_dev *dev)
 static int sd_card_init(struct block_device **dev)
 {
     // Prepare the device structure
-   struct emmc_block_dev *ret;
+   // The caller owns the device structure (diskio.c holds the only one, in
+   // static storage), so this driver never allocates
+   struct emmc_block_dev *ret = (struct emmc_block_dev *)*dev;
+   // The SCR is only needed during initialisation, so it lives on the stack
+   // (declared ahead of card_reinit as the retry path jumps back over it)
+   _Alignas(4) uint32_t scr[2]; // SCR register, filled by 32-bit PIO reads
    int init_attempt = 0;
-   if(*dev == NULL)
-      ret = (struct emmc_block_dev *)malloc(sizeof(struct emmc_block_dev));
-   else
-      ret = (struct emmc_block_dev *)*dev;
-
-   assert(ret);
 
 card_reinit:
     sdhost_prepare_device_state(ret);
@@ -1165,7 +1131,7 @@ card_reinit:
       MEASURED, thirty flashes each way: warm boots 19-27 s -> 5-6 s (the 15 s
       is the three timeouts), and boot deaths reported at the FAT-mount stage
       5 -> 1.  The effect is not in doubt.  The exact card state is: multiblock
-      transfers are stopped on completion and the device struct is malloc'd
+      transfers are stopped on completion and the device struct is wiped
       fresh, so "left mid-transfer" is NOT the explanation - most likely the
       card is left selected in the transfer state and CMD12 with BUSYWAIT is
       what resynchronises the controller-card handshake.  Inferred, not proven.
@@ -1276,7 +1242,6 @@ card_reinit:
            // Card is still busy - the SD spec allows 1 second for initialization
            if (++acmd41_attempts >= 1000u)
            {
-               if (*dev == NULL) free(ret);
                return -1;
            }
 #ifdef EMMC_DEBUG
@@ -1296,7 +1261,6 @@ card_reinit:
     if(FAIL(ret))
     {
           printf("SD: error sending ALL_SEND_CID\r\n");
-          if (*dev ==NULL) free(ret);
           return -1;
     }
 
@@ -1305,7 +1269,6 @@ card_reinit:
    if(FAIL(ret))
     {
         printf("SD: error sending SEND_RELATIVE_ADDR\r\n");
-        if (*dev ==NULL) free(ret);
         return -1;
     }
 
@@ -1323,28 +1286,24 @@ card_reinit:
    if(crc_error)
    {
       printf("SD: CRC error\r\n");
-      if (*dev ==NULL) free(ret);
       return -1;
    }
 
    if(illegal_cmd)
    {
       printf("SD: illegal command\r\n");
-      if (*dev ==NULL) free(ret);
       return -1;
    }
 
    if(error)
    {
       printf("SD: generic error\r\n");
-      if (*dev ==NULL) free(ret);
       return -1;
    }
 
    if(!ready)
    {
       printf("SD: not ready for data\r\n");
-      if (*dev ==NULL) free(ret);
       return -1;
    }
 
@@ -1357,7 +1316,6 @@ card_reinit:
    if(FAIL(ret))
    {
        printf("SD: error sending CMD7\r\n");
-       if (*dev ==NULL) free(ret);
        return -1;
    }
 
@@ -1367,7 +1325,6 @@ card_reinit:
    if((status != 3) && (status != 4))
    {
       printf("SD: invalid status (%"PRIu32")\r\n", status);
-      if (*dev ==NULL) free(ret);
       return -1;
    }
 
@@ -1378,7 +1335,6 @@ card_reinit:
        if(FAIL(ret))
        {
            printf("SD: error sending SET_BLOCKLEN\r\n");
-           if (*dev ==NULL) free(ret);
            return -1;
        }
    }
@@ -1387,14 +1343,7 @@ card_reinit:
     sdhost_write(SDHBLC, 1u);
 
    // Get the cards SCR register
-   ret->scr = (struct sd_scr *)malloc(sizeof(struct sd_scr));
-   if (!ret->scr)
-   {
-       printf("SD: error allocating memory for SCR\r\n");
-       if (*dev ==NULL) free(ret);
-       return -1;
-   }
-   ret->buf = &ret->scr->scr[0];
+   ret->buf = &scr[0];
    ret->block_size = 8;
    ret->blocks_to_transfer = 1;
    sd_issue_command(ret, SEND_SCR, 0, 500000);
@@ -1402,8 +1351,6 @@ card_reinit:
    if(FAIL(ret))
    {
        printf("SD: error sending SEND_SCR\r\n");
-       free(ret->scr);
-       ret->scr = NULL;
        if (++init_attempt < 3)
        {
            printf("******************************************\r\n");
@@ -1411,48 +1358,26 @@ card_reinit:
            printf("******************************************\r\n");
            goto card_reinit;
        }
-       if (*dev == NULL) free(ret);
        return -1;
    }
 
-   // Determine card version
-   // Note that the SCR is big-endian
-   uint32_t scr0 = byte_swap(ret->scr->scr[0]);
-   ret->scr->sd_version = SD_VER_UNKNOWN;
-   uint32_t sd_spec = (scr0 >> (56 - 32)) & 0xf;
-   uint32_t sd_spec3 = (scr0 >> (47 - 32)) & 0x1;
-   uint32_t sd_spec4 = (scr0 >> (42 - 32)) & 0x1;
-   ret->scr->sd_bus_widths = (scr0 >> (48 - 32)) & 0xf;
-   if(sd_spec == 0)
-        ret->scr->sd_version = SD_VER_1;
-    else if(sd_spec == 1)
-        ret->scr->sd_version = SD_VER_1_1;
-    else if(sd_spec == 2)
-    {
-        if(sd_spec3 == 0)
-            ret->scr->sd_version = SD_VER_2;
-        else
-        {
-            if(sd_spec4 == 0)
-                ret->scr->sd_version = SD_VER_3;
-            else
-                ret->scr->sd_version = SD_VER_4;
-        }
-    }
+   // Note that the SCR is big-endian.  Only two fields are of any interest: the supported bus widths, and
+   // SD_SPEC, which gates CMD6 (0 = 1.0/1.01, 1 = 1.10, 2 = 2.00 and later)
+   uint32_t scr0 = byte_swap(scr[0]);
+   uint32_t sd_bus_widths = (scr0 >> (48 - 32)) & 0xf;
+   bool supports_switch_func = ((scr0 >> (56 - 32)) & 0xf) >= 1;
 
 #ifdef EMMC_DEBUG
-    printf("SD: &scr: %p\r\n", (void *)&ret->scr->scr[0]);
-    printf("SD: SCR[0]: %08"PRIu32", SCR[1]: %08"PRIu32"\r\n", ret->scr->scr[0], ret->scr->scr[1]);;
-    printf("SD: SCR: %08"PRIu32"%08"PRIu32"\r\n", byte_swap(ret->scr->scr[0]), byte_swap(ret->scr->scr[1]));
-    printf("SD: SCR: version %s, bus_widths %01"PRIu32"\r\n", sd_versions[ret->scr->sd_version],
-           ret->scr->sd_bus_widths);
+    printf("SD: SCR: %08"PRIx32"%08"PRIx32"\r\n", scr0, byte_swap(scr[1]));
+    printf("SD: SCR: SD_SPEC %01"PRIu32", bus_widths %01"PRIu32"\r\n",
+           (scr0 >> (56 - 32)) & 0xf, sd_bus_widths);
 #endif
 
    // Keep identification timing through RCA assignment and SCR read, then
    // switch to the normal SDR12 transfer clock for the remaining setup.
    sdhost_switch_clock_rate(SD_CLOCK_NORMAL);
 
-    if(ret->scr->sd_bus_widths & 0x4)
+    if(sd_bus_widths & 0x4)
     {
         // Set 4-bit transfer mode (ACMD6)
         // See HCSS 3.4 for the algorithm
@@ -1481,7 +1406,7 @@ card_reinit:
    // Switch the card to High Speed (50 MHz) if it supports it. CMD6 needs
    // SD spec 1.10+; the 64-byte switch status is read at the 25 MHz clock
    // and the host clock is only raised once the card confirms the switch.
-   if (ret->scr->sd_version >= SD_VER_1_1)
+   if (supports_switch_func)
    {
       _Alignas(4) uint8_t switch_status[64]; // filled by 32-bit PIO reads
       ret->buf = switch_status;
@@ -1511,7 +1436,6 @@ card_reinit:
       ret->block_size = 512;
    }
 #ifdef EMMC_DEBUG
-   printf("SD: found a valid version %s SD card\r\n", sd_versions[ret->scr->sd_version]);
    printf("SD: setup successful (status %"PRIu32")\r\n", status);
 #endif
 #endif
@@ -1629,17 +1553,6 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
    return 0;
 }
 
-#ifdef SDMA_SUPPORT
-// We only support DMA transfers to buffers aligned on a 4 kiB boundary
-static int sd_suitable_for_dma(void *buf)
-{
-    if((uintptr_t)buf & 0xfff)
-        return 0;
-    else
-        return 1;
-}
-#endif
-
 static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t *buf, size_t buf_size, uint32_t block_no)
 {
    // PLSS table 4.20 - SDSC cards use byte addresses rather than block addresses
@@ -1680,21 +1593,6 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
    int max_retries = 2;
    while(retry_count < max_retries)
    {
-#ifdef SDMA_SUPPORT
-       // use SDMA for the first try only
-       if((retry_count == 0) && sd_suitable_for_dma(buf))
-            edev->use_sdma = 1;
-        else
-        {
-#ifdef EMMC_DEBUG
-            printf("SD: retrying without SDMA\r\n");
-#endif
-            edev->use_sdma = 0;
-        }
-#else
-        edev->use_sdma = 0;
-#endif
-
         sd_issue_command(edev, command, block_no, 5000000);
 
         if(SUCCESS(edev))
