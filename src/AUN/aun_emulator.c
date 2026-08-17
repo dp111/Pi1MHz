@@ -213,6 +213,14 @@ static bool aun_buffer_ok(uint32_t offset, uint32_t length)
    return length <= (DISC_RAM_SIZE - offset);
 }
 
+/* IMM_POLL stages the held immediate at a fixed offset in the disc RAM
+ * window (agreed with the ROM). Unlike the Beeb-supplied offsets this one
+ * is a constant, so assert once that it plus the largest immediate stays
+ * inside the window rather than bounds-checking it per call. */
+#define AUN_IMM_STAGE_OFF 0xFEA000u
+_Static_assert(AUN_IMM_STAGE_OFF + AUN_HIMM_MAX <= DISC_RAM_SIZE,
+               "immediate-poll staging buffer overflows the disc RAM window");
+
 /* ---- transport: lwIP UDP -------------------------------------------------*/
 
 static bool aun_udp_send(void *user, uint32_t ip_be, uint16_t port,
@@ -408,6 +416,14 @@ static void aun_execute(uint32_t cp, uint32_t addr)
          result = AUN_TX_NET_ERROR;
          break;
       }
+      /* aun_broadcast() may send to the local subnet-broadcast address.
+       * lwIP only lets a pcb emit broadcasts if IP_SOF_BROADCAST is off
+       * (the current lwipopts default) OR the pcb carries SOF_BROADCAST;
+       * set it so the subnet-broadcast leg keeps working if that option
+       * is ever enabled. Guarded: the host-test stubs lack it. */
+#ifdef SOF_BROADCAST
+      ip_set_option(aun_pcb, SOF_BROADCAST);
+#endif
       udp_recv(aun_pcb, aun_udp_recv, NULL);
 
       static const aun_transport_t transport = {
@@ -586,7 +602,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       Pi1MHz->JIM_ram[cp + 2] = aun.himm.ctrl;
       jim_write32(cp + 12, aun.himm.len);
       if (aun.himm.len != 0)
-         memcpy(&Pi1MHz->JIM_ram[base_addr + 0xFEA000u], aun.himm.data,
+         memcpy(&Pi1MHz->JIM_ram[base_addr + AUN_IMM_STAGE_OFF], aun.himm.data,
                 aun.himm.len);
       /* record which slot generation the host is now executing, so a reply
        * that arrives after a reap/refill is dropped, not mis-routed */

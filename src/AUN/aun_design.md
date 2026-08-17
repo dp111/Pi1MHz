@@ -244,7 +244,7 @@ client is built around:
 
 ### Observability
 
-`http://<pi>/econet` on the Pi web server shows live engine state
+`http://<pi>/aun` on the Pi web server shows live engine state
 (station, peer map incl. learned entries, rx queue depth, IRQ status,
 all counters) via `aun_status_text()`. The shared nIRQ line is now
 arbitrated per-source in Pi1MHz.c (`Pi1MHz_SetnIRQ_src`), so econet and
