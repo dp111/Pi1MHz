@@ -47,16 +47,12 @@ video plane behind the Beeb graphics, showing the Domesday LaserDisc
 frames, driven by the same player commands ("F-codes") the VFS software
 sends to a real Philips player.
 
-What works today: if a file called `frame.lz` (an LZ4-compressed
-768x576 YUV frame) is present in the SD card root, it is displayed as
-the background image at power-on.
-
-If there is no `frame.lz` the background is simply black, and none of
+If there is no video file the background is simply black, and none of
 this affects anything else.
 
 ## Hardware video player
 
-Beyond the single still frame, Pi1MHz contains a full-motion video
+Pi1MHz contains a full-motion video
 player that uses the Pi's **hardware H264 decoder**: video with sound,
 plus LaserDisc-style random access - goto picture, freeze frame,
 step forward/back, play, reverse - driven by the same F-codes the
@@ -108,8 +104,8 @@ To use it you need three things:
    the F-codes (`Fxxxxx R/N/S`, `N`, `O`, `L`, `M`, `*`, `/`, `A1`,
    `B1`, `?F`, ...).
 
-Without the full firmware or without `video.pvf`, everything quietly
-falls back to the `frame.lz` behaviour above. A missing `vd_use_vpu0=1`
+Without the full firmware or without `video.pvf`, the video plane
+simply stays off and the Beeb display is unaffected. A missing `vd_use_vpu0=1`
 is the one setting that does *not* fall back: the decoder starts
 normally but never produces a picture, so the screen stays black. If
 that happens, check that line in `config.txt` first - `/status` will

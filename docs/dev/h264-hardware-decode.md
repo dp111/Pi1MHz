@@ -79,8 +79,7 @@ smaller because we need exactly one component.
   `start_file=start.elf`, `fixup_file=fixup.dat`, `gpu_mem=64` and
   `vd_use_vpu0=1` set (prepared, commented, in `firmware/config.txt`).
   Everything degrades gracefully without it: `vchiq_init()`'s mailbox
-  call fails, and `videoplayer.c` falls back to the old `frame.lz`
-  still.
+  call fails, and `videoplayer.c` leaves the video plane disabled.
 * H264 needs **no licence key** (unlike MPEG-2/VC-1).
 * `gpu_mem=64`: the decoder needs VC-side memory for its reference frame,
   bitstream FIFOs and its own copies of the buffer pools (~10-15 MB for
@@ -318,9 +317,9 @@ change.
 * `videoplayer_init()` (runs after the filesystem, before the frame
   buffer, as before): if `video.pvf` opens and `h264dec_init()`
   succeeds, it creates the **4:2:0** HVS plane (new
-  `screen_create_YUV420_plane()`, HVS pixel format 8 - the existing
-  4:2:2 path uses format 0xA), registers a Pi1MHz poll task and shows
-  picture 1. Otherwise: the classic `frame.lz` 4:2:2 still, unchanged.
+  `screen_create_YUV420_plane()`, HVS pixel format 8), registers a
+  Pi1MHz poll task and shows picture 1. Otherwise the plane stays
+  disabled.
 * The poll task runs the whole pipeline: pending-seek handling (flush,
   feed, still-or-play), keeping <=2 AUs in flight during play, pacing
   flips with the system timer (40 ms), reverse play as backwards-stepped

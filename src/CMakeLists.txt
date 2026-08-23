@@ -177,7 +177,6 @@ set(core_files
    ram_emulator.c
    helpers.c
    videoplayer.c
-   rpi/decompress.S
    rpi/fileparser.c
    usb.c
    usb/board_millis.c

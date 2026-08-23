@@ -659,103 +659,12 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
 }
 #endif
 
-// returns plane pointer
-void screen_create_YUV_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
-{
-    volatile uint32_t * plane =  screen_get_nextplane( planeno);
-    LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
-    buffer |= 0xC0000000;
-        uint32_t scaled_width;
-        uint32_t scaled_height;
-        uint32_t startpos;
-        uint32_t nsh;
-        uint32_t nh;
-        uint32_t vertical_offset = screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos, &nsh, &nh);
-#if 0
-        LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", scaled_width, scaled_height);
-
-        LOG_DEBUG("startpos %"PRIx32"\r\n", startpos);
-        LOG_DEBUG("nsh %"PRId32"\r\n", nsh);
-        LOG_DEBUG("nh %"PRId32"\r\n", nh);
-#endif
-        volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) plane;
-        yuv->ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0xA; // invalid list, 32 words, YCrcb format , YUV
-        yuv->pos = startpos;
-        yuv->scale = (nsh << 16) + scaled_width;
-        yuv->src_size =  ((nh) << 16) + width;
-        //yuv->src_context = 0;
-        yuv_ptr_offset[planeno][0] = vertical_offset*width;
-        yuv_ptr_offset[planeno][1] = vertical_offset*width/2;
-        yuv_ptr_offset[planeno][2] = vertical_offset*width/2;
-        yuv->y_ptr =  buffer + vertical_offset*width;
-        yuv->cb_ptr = buffer + width*height + width*height/2 + vertical_offset*width/2;
-        yuv->cr_ptr = buffer + width*height + vertical_offset*width/2;
-        //yuv->y_ctx = 0;
-        //yuv->cb_ctx = 0;
-        //yuv->cr_ctx = 0;
-        yuv->pitch = width;
-        yuv->pitch1 = width/2;
-        yuv->pitch2 = width/2;
-        yuv->csc0 = 0x00F00000;
-        yuv->csc1 = 0xe73304A8;
-        yuv->csc2 = 0x00066604;
-        yuv->LBM = (LBM_PLANE_SIZE * planeno);
-        yuv->hpf0 = vc4_ppf(width, scaled_width*2, startpos & 0xFFF, 0 );
-        yuv->vpf0 = vc4_ppf(nh, nsh, startpos >>12, 0 );
-        //yuv->vpf0_ctx = 0;
-
-        yuv->hpf1 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
-        yuv->vpf1 = vc4_ppf(nh, nsh, startpos >>12, 0 );;
-        //yuv->vpf1_ctx = 0;
-        yuv->pfkph0 = POLYPHASE_BASE;
-        yuv->pfkpv0 = POLYPHASE_BASE;
-        yuv->pfkph1 = POLYPHASE_BASE;
-        yuv->pfkpv1 = POLYPHASE_BASE;
-#if 0
-        LOG_DEBUG("ctrl %"PRIx32"\r\n", yuv->ctrl);
-        LOG_DEBUG("pos %"PRIx32"\r\n", yuv->pos);
-        LOG_DEBUG("scale %"PRIx32"\r\n", yuv->scale);
-        LOG_DEBUG("src_size %"PRIx32"\r\n", yuv->src_size);
-
-        LOG_DEBUG("y_ptr %"PRIx32"\r\n", yuv->y_ptr);
-        LOG_DEBUG("cb_ptr %"PRIx32"\r\n", yuv->cb_ptr);
-        LOG_DEBUG("cr_ptr %"PRIx32"\r\n", yuv->cr_ptr);
-        LOG_DEBUG("pitch %"PRIx32"\r\n", yuv->pitch);
-        LOG_DEBUG("pitch1 %"PRIx32"\r\n", yuv->pitch1);
-        LOG_DEBUG("pitch2 %"PRIx32"\r\n", yuv->pitch2);
-        LOG_DEBUG("csc0 %"PRIx32"\r\n", yuv->csc0);
-        LOG_DEBUG("csc1 %"PRIx32"\r\n", yuv->csc1);
-        LOG_DEBUG("csc2 %"PRIx32"\r\n", yuv->csc2);
-        LOG_DEBUG("LBM %"PRIx32"\r\n", yuv->LBM);
-        LOG_DEBUG("hpf0 %"PRIx32"\r\n", yuv->hpf0);
-        LOG_DEBUG("vpf0 %"PRIx32"\r\n", yuv->vpf0);
-        LOG_DEBUG("hpf1 %"PRIx32"\r\n", yuv->hpf1);
-        LOG_DEBUG("vpf1 %"PRIx32"\r\n", yuv->vpf1);
-        LOG_DEBUG("pfkph0 %"PRIx32"\r\n", yuv->pfkph0);
-        LOG_DEBUG("pfkpv0 %"PRIx32"\r\n", yuv->pfkpv0);
-        LOG_DEBUG("pfkph1 %"PRIx32"\r\n", yuv->pfkph1);
-        LOG_DEBUG("pfkpv1 %"PRIx32"\r\n", yuv->pfkpv1);
-#endif
-        setup_polyphase();
-#ifdef DEBUG
-        const uint32_t *cache = (const uint32_t *) (PERIPHERAL_BASE+ 0xe02000 + 0x10C);
-        LOG_DEBUG("cache L1 %"PRIx32"\r\n", *cache);
-
-        const uint32_t *hvs = (const uint32_t *) (PERIPHERAL_BASE+ 0x04000 + 0x08);
-        LOG_DEBUG("HVS pri %"PRIx32"\r\n", *hvs);
-#endif
-        //RPI_hvs->ectrl = 0x713f0000; // reduce maximum best burst to 8 beats to give time for GPU to read data
-
-    plane_valid[planeno] = true;
-}
-
-/* 4:2:0 3-plane variant (HVS pixel format 8) for the hardware H264
-   decoder, whose output is I420: a full-size Y plane followed by
-   quarter-size Cb then Cr planes. Identical to the 4:2:2 path except the
-   chroma pointers/pitches address half-HEIGHT planes and the chroma
-   vertical scale factor doubles (src rows are half the luma's).
-   Scaler channel 0 is chroma (that is why the 4:2:2 code computes hpf0
-   from scaled_width*2 - same ratio trick used here vertically). */
+/* 4:2:0 3-plane plane (HVS pixel format 8) for the hardware H264 decoder,
+   whose output is I420: a full-size Y plane followed by quarter-size Cb
+   then Cr planes. Scaler channel 0 is chroma and channel 1 luma, so the
+   chroma phase factors are computed against doubled scaled dimensions -
+   horizontally because the chroma plane is half-width, vertically
+   because it is also half-height. */
 void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
     volatile uint32_t * plane =  screen_get_nextplane( planeno);

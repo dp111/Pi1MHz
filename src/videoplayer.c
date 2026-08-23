@@ -2,28 +2,25 @@
 
     Take video from SDCARD and display it on the screen
 
-    Two personalities:
+    Hardware video player: a "video.pvf" file (built offline by
+    tools/make_pvf.py: all-intra H264 + 46875 Hz PCM + frame index) is
+    decoded with the VideoCore hardware H264 decoder (rpi/h264dec.c,
+    MMAL-over-VCHIQ) into two GPU frame buffers that double as the HVS
+    4:2:0 plane sources. The ARM never touches pixel data: it reads
+    ~30 KB of bitstream per frame from SD into an uncached staging
+    buffer and flips three HVS pointer registers per frame. Everything
+    runs from a Pi1MHz poll task; the decoder needs the FULL start.elf
+    and gpu_mem=64 (see docs/dev/h264-hardware-decode.md).
 
-    1. Legacy still frame: no "video.pvf" on the card -> load "frame.lz"
-       (LZ4, 768x576 4:2:2 planar) into a GPU buffer and show it on the
-       4:2:2 YUV plane. Unchanged behaviour.
+    Playback control mirrors a Philips LaserVision player: the F-code
+    layer (BeebSCSI/fcode.c) calls the videoplayer_* functions below
+    for goto/still/play/step, which is what the Domesday VFS ROM
+    drives. Every frame is an IDR picture so any picture number can be
+    shown with a single seek + single decode; freeze frame is simply
+    "stop feeding the decoder".
 
-    2. Hardware video player: "video.pvf" present (built offline by
-       tools/make_pvf.py: all-intra H264 + 46875 Hz PCM + frame index)
-       -> decode with the VideoCore hardware H264 decoder (rpi/h264dec.c,
-       MMAL-over-VCHIQ) into two GPU frame buffers that double as the HVS
-       4:2:0 plane sources. The ARM never touches pixel data: it reads
-       ~30 KB of bitstream per frame from SD into an uncached staging
-       buffer and flips three HVS pointer registers per frame. Everything
-       runs from a Pi1MHz poll task; the decoder needs the FULL start.elf
-       and gpu_mem=64 (see docs/dev/h264-hardware-decode.md).
-
-       Playback control mirrors a Philips LaserVision player: the F-code
-       layer (BeebSCSI/fcode.c) calls the videoplayer_* functions below
-       for goto/still/play/step, which is what the Domesday VFS ROM
-       drives. Every frame is an IDR picture so any picture number can be
-       shown with a single seek + single decode; freeze frame is simply
-       "stop feeding the decoder".
+    With no video file, or without the firmware to decode one, the
+    video plane stays disabled and the Beeb display is unchanged.
 
 */
 
@@ -33,9 +30,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include "rpi/screen.h"
-#include "BeebSCSI/filesystem.h"
 #include "BeebSCSI/fatfs/ff.h"
-#include "rpi/decompress.h"
 #include "rpi/rpi.h"
 #include "rpi/systimer.h"
 #include "rpi/audio.h"
@@ -54,8 +49,12 @@
  * restart and the allocating and releasing kernels are different builds,
  * so the handles live at a fixed low-RAM address, not in .noinit.
  *
- * [0] magic 'VBUF', [1] legacy still buffer handle
+ * [0] magic 'VBUF', [1] still-frame buffer handle of a PRE-1.31 kernel
  * [2] magic 'VBF2', [3][4] the two H264 frame buffer handles
+ *
+ * Word [1] is only ever released here, never written: the 4:2:2 still
+ * frame it belonged to is gone, but chain-booting from an older kernel
+ * would otherwise leak its 864 KB out of the pool the decoder needs.
  */
 #define VIDEOBUF_PERSIST_BASE 0x00007C20u
 #define videobuf_magic    (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[0])
@@ -114,67 +113,6 @@ static struct {
     uint32_t audio_wr, audio_rd;     /* byte positions (mod size) */
     int32_t  audio_err_l, audio_err_r;   /* rpi_audio_pack dither state */
 } vp;
-
-/* ------------------------------------------------------------------ */
-/* Legacy still-frame path (frame.lz)                                 */
-/* ------------------------------------------------------------------ */
-
-static void legacy_still_init(void)
-{
-    static uint32_t handle;
-    static uint32_t buffer;
-
-    if (!handle)
-    {
-        if (videobuf_magic == VIDEOBUF_MAGIC && videobuf_handle != 0u)
-        {
-            screen_release_buffer(videobuf_handle);
-            videobuf_handle = 0u;
-        }
-
-        buffer = screen_allocate_buffer( 768*576*2, &handle );
-
-        if (!buffer)
-        {
-            /* A missing video plane is a far better outcome than a
-               destroyed kernel: never memset through a NULL buffer. */
-            if (handle)
-            {
-                screen_release_buffer(handle);
-                handle = 0;
-            }
-            LOG_INFO("videoplayer_init: no GPU buffer; video plane disabled\r\n");
-            return;
-        }
-
-        videobuf_magic  = VIDEOBUF_MAGIC;
-        videobuf_handle = handle;
-
-        uint8_t * buf = malloc(768*576*2);
-        if (buf)
-        {
-            LOG_DEBUG("videoplayer_init frame\r\n");
-            if (filesystemReadFile("frame.lz",&buf,768*576*2))
-                decompress_lz4(buf, ( uint8_t*) buffer);
-            else
-            {
-                // Create a black planar YCbCr frame (Y=0, Cb=128, Cr=128)
-                uint8_t *dst = (uint8_t *)(uintptr_t)buffer;
-                memset(dst, 0, 768*576);                  // Y plane
-                memset(dst + 768*576, 0x80, 768*576);     // Cr + Cb planes
-            }
-
-            free(buf);
-        }
-        else
-        {
-            LOG_INFO("videoplayer_init: ERROR: Unable to allocate memory for video frame\r\n");
-        }
-   }
-
-    screen_create_YUV_plane( YUV_PLANE, 768, 576, buffer );
-    screen_plane_enable(YUV_PLANE, true);
-}
 
 /* ------------------------------------------------------------------ */
 /* Audio                                                              */
@@ -570,12 +508,13 @@ static bool pvf_open_file(void)
    init, and we must recognise our own claim as ours). */
 static bool audio_owned_by_player;
 
-/* Abandon the hardware-decode path part way through bring-up and come up
-   as a still frame instead. The order matters: h264dec_reset() first, so
-   the decoder drops its SMEM imports and disables the output port, before
-   any frame buffer goes back to the GPU pool - otherwise the VideoCore
-   could still be armed to decode into memory we have just returned. */
-static void video_fallback_to_still(uint32_t handles[NUM_FRAME_BUFFERS])
+/* Abandon the hardware-decode path part way through bring-up: give
+   everything back and leave the video plane disabled. The order matters:
+   h264dec_reset() first, so the decoder drops its SMEM imports and
+   disables the output port, before any frame buffer goes back to the GPU
+   pool - otherwise the VideoCore could still be armed to decode into
+   memory we have just returned. */
+static void video_give_up(uint32_t handles[NUM_FRAME_BUFFERS])
 {
     h264dec_reset();
     for (int i = 0; i < NUM_FRAME_BUFFERS; i++)
@@ -587,7 +526,7 @@ static void video_fallback_to_still(uint32_t handles[NUM_FRAME_BUFFERS])
     vp.index = NULL;
     f_close(&vp.file);
     vp.open = false;
-    legacy_still_init();
+    screen_plane_enable(YUV_PLANE, false);
 }
 
 void videoplayer_init(uint8_t instance, uint8_t address)
@@ -612,6 +551,14 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     memset(&vp, 0, sizeof(vp));
     vp.seek_frame = -1;
 
+    /* An older kernel's 4:2:2 still-frame buffer, if we chain-booted from
+       one: the still is gone, so just give the memory back. */
+    if (videobuf_magic == VIDEOBUF_MAGIC && videobuf_handle != 0u) {
+        screen_release_buffer(videobuf_handle);
+        videobuf_handle = 0u;
+        videobuf_magic = 0u;
+    }
+
     /* Release H264 frame buffers a previous chain-booted kernel leaked */
     if (videobuf_magic2 == VIDEOBUF_MAGIC2) {
         for (int i = 0; i < NUM_FRAME_BUFFERS; i++)
@@ -623,9 +570,9 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     }
 
     if (!pvf_open_file()) {
-        /* No video file: classic still-frame behaviour */
-        legacy_still_init();
-        LOG_DEBUG("videoplayer_init done (still)\r\n");
+        /* No video file: leave the plane off, the Beeb display is all
+           there is to show. */
+        LOG_DEBUG("videoplayer_init: no " PVF_FILENAME "\r\n");
         return;
     }
 
@@ -634,13 +581,12 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     vp.frame_period_us = (uint32_t)period;
 
     /* Start the hardware decoder first - if the firmware is start_cd.elf
-       this fails cleanly and we fall back to the still frame. */
+       this fails cleanly and the video plane simply stays off. */
     if (!h264dec_init(vp.hdr.width, vp.hdr.height, frame_decoded)) {
         LOG_INFO("videoplayer: no hardware decoder - check start.elf/gpu_mem\r\n");
         free(vp.index);
         vp.index = NULL;
         f_close(&vp.file);
-        legacy_still_init();
         return;
     }
 
@@ -651,7 +597,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
         vp.buf_phys[i] = screen_allocate_buffer(vp.frame_bytes, &handles[i]);
         if (!vp.buf_phys[i]) {
             LOG_INFO("videoplayer: no GPU memory for frames (gpu_mem too small?)\r\n");
-            video_fallback_to_still(handles);
+            video_give_up(handles);
             return;
         }
         /* black I420 */
@@ -662,20 +608,11 @@ void videoplayer_init(uint8_t instance, uint8_t address)
         if (!h264dec_add_output_buffer(vp.buf_phys[i], vp.frame_bytes)) {
             /* Without every output buffer the decoder can never produce a
                frame, so carrying on would leave the screen permanently
-               black - fall back to the still frame instead. */
+               black - give everything back instead. */
             LOG_INFO("videoplayer: output buffer %d not registered\r\n", i);
-            video_fallback_to_still(handles);
+            video_give_up(handles);
             return;
         }
-    }
-
-    /* A previous still-frame kernel (or the legacy path of this one) may
-       have left its 4:2:2 buffer allocated - not needed while the video
-       player owns the plane, so give the ~864 KB back to the GPU pool. */
-    if (videobuf_magic == VIDEOBUF_MAGIC && videobuf_handle != 0u) {
-        screen_release_buffer(videobuf_handle);
-        videobuf_handle = 0u;
-        videobuf_magic = 0u;
     }
 
     videobuf_magic2 = VIDEOBUF_MAGIC2;
