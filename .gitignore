@@ -43,3 +43,4 @@ src/.vscode/tasks.json
 /firmware/debug/kernel7.img
 /firmware/kernel.*.img
 /firmware/kernel7.*.img
+__pycache__/

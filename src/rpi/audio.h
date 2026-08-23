@@ -167,6 +167,9 @@ typedef struct {
                                  AUDIO_DMA_FRAMES. A synth wants small
                                  blocks (latency); a player with a deep
                                  ring wants big ones (SD latency spikes) */
+   bool mono;                 /* producer writes the SAME full-scale sample
+                                 to L and R: the Beeb pin takes it directly
+                                 instead of summing (which would clip) */
 } audio_producer_t;
 
 /* Become the producer. Supersedes whoever held it: their audio_write_ptr()

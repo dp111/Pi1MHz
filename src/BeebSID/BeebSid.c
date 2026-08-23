@@ -30,6 +30,7 @@ static const audio_producer_t beebsid_producer = {
     .rate = BEEBSID_SAMPLE_RATE,
     .latency_frames = AUDIO_DMA_FRAMES,      /* one block of lead, as M5000 */
     .name = "BeebSID",
+    .mono = true,                            /* pin takes the sample as-is */
 };
 
 static void beebsid_poll(void)
@@ -46,12 +47,12 @@ static void beebsid_poll(void)
     }
 
     beebsid_sid_render(mono, space);
-    /* The SID is mono and the Beeb pin carries L+R, so half into each
-       channel keeps the level on the pin exactly what it was. */
+    /* Full scale into both channels: the producer's mono flag stops the
+       Beeb-pin path from summing them (which would clip), and the jack
+       and HDMI get the full-level sample on both sides as before. */
     for (uint32_t i = 0; i < space; i++) {
-        int16_t h = (int16_t)(mono[i] / 2);
-        out[i * 2u] = h;
-        out[i * 2u + 1u] = h;
+        out[i * 2u] = mono[i];
+        out[i * 2u + 1u] = mono[i];
     }
     audio_commit(space);
 }

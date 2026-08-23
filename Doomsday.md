@@ -33,12 +33,18 @@ VFS6 Eco disc side 2 Usercode NONE
 VFS7 country side 1 Usercode 1=991
 VFS8 country side 2 Usercode 1=992
 
-VFS7 Volcanoes Usercode 1=986 *** duplicate User code ***
-VFS8 The city Disc Usercode
-VFS9 North Polar Expedition Usercode NONE
-VFS10 The World, the UN and you Usercode
-VFS11 British Garden Birds side 1 Usercode NONE
-VFS12 British Garden Birds side 2 Usercode NONE
+VFS9 Volcanoes Usercode 1=986 *** duplicate User code ***
+VFS10
+VFS11 The city Disc Usercode
+VFS12
+VFS13 North Polar Expedition Usercode NONE
+VFS14
+VFS15 The World, the UN and you Usercode
+VFS16
+VFS17 British Garden Birds side 1 Usercode NONE
+VFS18
+VFS17 British Garden Birds side 2 Usercode NONE
+
 
 
 

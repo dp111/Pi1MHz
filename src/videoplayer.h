@@ -27,10 +27,10 @@ void videoplayer_halt(void);         /* F-code '*'       */
 void videoplayer_pause(void);        /* F-code '/' (halt + mute) */
 void videoplayer_step(int delta);    /* F-codes 'L'/'M'  */
 
-/* F-code 'S<n>': the speed register. Interpreted as on a VP415: the
-   number of TV fields each picture is shown for in slow motion (2 =
-   normal 25 fps), and pictures-per-step/2 for fast. */
-void videoplayer_speed(uint32_t value);
+/* F-code 'SxxxF' / 'SxxxS' (VP415 manual): two registers. Fast: 2..40,
+   speed = xxx/2 x normal. Slow: 2..250, speed = 2/xxx x normal (250 =
+   5 s per picture). */
+void videoplayer_speed(uint32_t value, bool fast);
 void videoplayer_slow_fwd(void);     /* F-code 'U'       */
 void videoplayer_slow_rev(void);     /* F-code 'V' bare  */
 void videoplayer_fast_fwd(void);     /* F-code 'W'       */

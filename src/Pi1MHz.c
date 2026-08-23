@@ -641,7 +641,8 @@ uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset)
    uint32_t t = poll_max_ticks[idx];
    if (reset)
       poll_max_ticks[idx] = 0;
-   return t / (POLL_TICKS_PER_MS / 1000u);
+   /* exact us whatever POLL_TICKS_PER_MS is (15625 does not divide by 1000) */
+   return (uint32_t)((uint64_t)t * 1000u / POLL_TICKS_PER_MS);
 }
 
 unsigned int Pi1MHz_poll_count(void)

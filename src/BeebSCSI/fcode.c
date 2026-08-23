@@ -479,14 +479,16 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x53: // S // VFS sends this
 			FCdebugString_P(PSTR(" = Set fast/slow speed value\r\n"));
 			{
+				/* SxxxF = fast register (2..40, xxx/2 x normal),
+				   SxxxS = slow register (2..250, 2/xxx x normal) */
 				uint32_t v = 0;
-				for (byteCounter = 1; byteCounter < 4; byteCounter++) {
+				for (byteCounter = 1; byteCounter < 5; byteCounter++) {
 					char c = (char)scsiFcodeBuffer[byteCounter];
 					if (c < '0' || c > '9') break;
 					v = v * 10u + (uint32_t)(c - '0');
 				}
 				if (v)
-					videoplayer_speed(v);
+					videoplayer_speed(v, scsiFcodeBuffer[byteCounter] == 'F');
 			}
 			break;
 

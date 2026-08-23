@@ -2180,8 +2180,13 @@ bool scsiJukebox (uint8_t lun) {
       if (filesystemReadLunStatus(byteCounter)) return false;
 
    // Only jukebox if no LUNs are in the started state
+   uint8_t old_vfs = filesystemGetLunDirectoryVFS();
    filesystemSetLunDirectory(scsiHostID, lun);
-   videoplayer_media_changed();     // the video lives in the VFS directory
+   // The video lives in the VFS jukebox directory: notify only when THAT
+   // directory changed - an ADFS *SCSIJUKE (internal host) or reselecting
+   // the same directory must not rewind a playing video to picture 1.
+   if (filesystemGetLunDirectoryVFS() != old_vfs)
+      videoplayer_media_changed();
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Jukeboxing successful - LUN directory set to "), lun, true);
    return true;
 }

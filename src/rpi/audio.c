@@ -95,14 +95,22 @@ static size_t dma_free_space(dma_sink_t *s)
    return s->frames;
 }
 
-static void dma_samples_written(dma_sink_t *s)
+/* Mark the just-filled buffer ready. 'frames' may be SHORT of the block
+   size: the control block's length is set to match, so a partial fill
+   plays for exactly as long as the audio it carries - no silence padding
+   and therefore no drift between the ring and the wall clock when a fill
+   is cut short (an aborted pump, or simply a low ring). */
+static void dma_samples_written(dma_sink_t *s, uint32_t frames)
 {
+   struct bcm2708_dma_cb *cb =
+      (s->next_buffer < &s->cb[1].buffer[0]) ? &s->cb[0] : &s->cb[1];
+   cb->length = frames * 2u * sizeof(uint32_t);
    if (s->next_buffer < &s->cb[1].buffer[0])
       s->buffer_state |= 1;
    else
       s->buffer_state |= 2;
-   // make sure the buffer is written out of cache
-   _clean_cache_area(s->next_buffer, s->frames * 2u * sizeof(uint32_t));
+   // the header (length) and the samples both have to reach memory
+   _clean_cache_area(cb, sizeof(*cb) - sizeof(cb->buffer) + cb->length);
 }
 
 static void dma_init_buffer(dma_sink_t *s, size_t buf, uint32_t fill)
@@ -236,6 +244,7 @@ NOINIT_SECTION static int16_t ring[RING_FRAMES * 2];
 static uint32_t ring_wr, ring_rd;             /* monotonic frame counts */
 
 static const audio_producer_t *owner;
+static bool owner_mono;
 static bool mute_l, mute_r;
 static int32_t err_l, err_r;                  /* pwm_pack dither state */
 static uint32_t hdmi_rate;
@@ -267,7 +276,14 @@ void audio_flush(void)
 
 void audio_claim(const audio_producer_t *p)
 {
+   /* NOINIT ring: never let /audio.wav serve whatever was in RAM */
+   static bool ring_zeroed;
+   if (!ring_zeroed) {
+      memset(ring, 0, sizeof(ring));
+      ring_zeroed = true;
+   }
    owner = p;
+   owner_mono = p->mono;
    audio_flush();
    mute_l = mute_r = false;
    err_l = err_r = 0;
@@ -403,23 +419,33 @@ void audio_pump_until(volatile const bool *abort)
       uint32_t blk = s->frames;
       uint32_t n = avail < blk ? avail : blk;
       uint32_t pos = ring_rd & (RING_FRAMES - 1u);
+      uint32_t done = 0;
 
-      for (uint32_t i = 0; i < blk; i++) {
-         int32_t l = 0, r = 0;
-         if (abort && (i & 15u) == 0u && *abort) {
-            /* Whoever we were waiting for has arrived: the rest of this
-               block is silence (a dropout, not a desync) and the frames
-               not taken stay in the ring. */
-            n = i < n ? i : n;
+      if (n == 0) {
+         /* Nothing queued: one whole block of silence so an idle
+            producer's output stays clean */
+         for (uint32_t i = 0; i < blk; i++) {
+            if (s == &hdmi_sink) {
+               hdmi_audio_pack(0, 0, dst);
+               dst += 2;
+            } else {
+               uint32_t w = pwm_pack(0, &err_l);
+               *dst++ = w;
+               *dst++ = w;
+            }
          }
-         if (i < n) {
-            l = ring[pos * 2u];
-            r = ring[pos * 2u + 1u];
-            pos = (pos + 1u) & (RING_FRAMES - 1u);
-            if (mute_l) l = 0;
-            if (mute_r) r = 0;
-         }
-         /* past the data: silence pads the block */
+         dma_samples_written(s, blk);
+         break;
+      }
+
+      while (done < n) {
+         if (abort && (done & 15u) == 0u && *abort)
+            break;                   /* answer whoever we were waiting on */
+         int32_t l = ring[pos * 2u];
+         int32_t r = ring[pos * 2u + 1u];
+         pos = (pos + 1u) & (RING_FRAMES - 1u);
+         if (mute_l) l = 0;
+         if (mute_r) r = 0;
 
          if (s == &hdmi_sink) {
             hdmi_audio_pack((int16_t)l, (int16_t)r, dst);
@@ -428,6 +454,12 @@ void audio_pump_until(volatile const bool *abort)
             /* pin hi-Z: L/R separately, stereo on a Pi 3B+ jack */
             *dst++ = pwm_pack(l, &err_l);
             *dst++ = pwm_pack(r, &err_r);
+         } else if (owner_mono) {
+            /* a mono producer (BeebSID) put the same full-scale sample
+               in both slots: the pin takes it as-is, no summing */
+            uint32_t w = pwm_pack(l, &err_l);
+            *dst++ = w;
+            *dst++ = w;
          } else {
             /* the Beeb pin (PWM1) is mono: it gets L+R, unhalved and
                saturated, as the Music 5000 has always summed */
@@ -437,14 +469,15 @@ void audio_pump_until(volatile const bool *abort)
             *dst++ = w;
             *dst++ = w;
          }
+         done++;
       }
-      ring_rd += n;
-      dma_samples_written(s);
 
-      /* Nothing queued: the buffer just written is silence; do not fill
-         the second one too or a producer that writes a moment later waits
-         two buffers before it is heard */
-      if (avail == 0 || (abort && *abort))
+      if (done == 0)
+         return;                     /* aborted before anything was packed */
+      ring_rd += done;
+      dma_samples_written(s, done);  /* short blocks play short: no drift */
+
+      if (avail <= done || (abort && *abort))
          break;
    }
 }

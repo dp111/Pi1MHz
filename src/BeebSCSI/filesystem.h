@@ -123,5 +123,15 @@ bool filesystemReadNextFatBlock(uint8_t *buffer);
 bool filesystemCloseFatForRead(void);
 
 uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned int max_size);
+
+/* Attach a FatFs fast-seek cluster link map to an open file, sized to the
+   file's real fragmentation (FatFs's CREATE_LINKMAP size-negotiation is
+   wrapped here so callers never touch cltbl[] themselves). The map lives
+   in *map/ *entries, which the caller owns across reopens; returns false
+   if the file must fall back to slow seeks. (Only declared for callers
+   that already include ff.h - most filesystem.h users do not.) */
+#ifdef FF_DEFINED
+bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries);
+#endif
 uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint32_t max_size);
 #endif /* FILESYSTEM_H_ */

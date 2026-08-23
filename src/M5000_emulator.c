@@ -179,11 +179,13 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
    memset(&s->amplitude[0], 0, 16);
 }
 
-/* Mix domain -> int16, 16.16 fixed point. The audio core used to hand us
-   a PWM range and full scale was 1024*range; keep that clip point exactly
-   (so M5000_Gain and autorange behave as before) by scaling against the
-   range the PWM has at 46875 Hz, independent of what sink is now active:
-   K = 32768 * 65536 / (1024 * range) = 2^21 / range. */
+/* Mix domain -> int16, 16.16 fixed point. The old PWM path clipped the
+   mix at +/-(512*range) around mid-rail (full span 1024*range), so that
+   AMPLITUDE maps to int16 full scale with
+   K = 32768 * 65536 / (512 * range) = 2^22 / range,
+   referenced to the range the PWM has at 46875 Hz whatever sink is
+   active. (2^21 - "full scale was 1024*range" - halved the output by
+   confusing the span with the amplitude.) */
 static int32_t M5000_s16_scale;
 
 static const audio_producer_t m5000_producer = {
@@ -214,6 +216,12 @@ static void M5000_gain(void) {
    }
    else
       autorange = 1;
+
+   /* Bound the multiplier: v*gain is computed in 32 bits before widening,
+      and the mix reaches ~2^22, so anything above this wraps into
+      opposite-sign full-scale clicks. Far beyond any musical setting. */
+   if (gain > 256)
+      gain = 256;
 }
 
 static void update_channels(struct synth *s)
@@ -334,6 +342,15 @@ static void music5000_store_sample(int sl, int sr, int16_t *out)
 
    out[0] = music5000_to_s16(sl, &M5000_left_error,  &clip);
    out[1] = music5000_to_s16(sr, &M5000_right_error, &clip);
+
+   /* The Beeb pin carries L+R summed (saturated silently by the sink),
+      so the pin clips before either channel does on correlated content:
+      autorange must watch the sum, as the old mono path effectively did. */
+   {
+      int32_t sum = (int32_t)out[0] + out[1];
+      if (sum > 32767 || sum < -32768)
+         clip = 1;
+   }
 
    if (clip && autorange) {
       M5000_left_error = 0 ;
@@ -471,7 +488,7 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
    synth_reset(&m5000, &Pi1MHz->JIM_ram[0x3000]);
    synth_reset(&m3000, &Pi1MHz->JIM_ram[0x5000]);
 
-   M5000_s16_scale = (int32_t)((1 << 21) / (250000000 / M5000_SAMPLE_RATE));
+   M5000_s16_scale = (int32_t)((1 << 22) / (250000000 / M5000_SAMPLE_RATE));
    M5000_left_error = M5000_right_error = 0;
    audio_claim(&m5000_producer);
 

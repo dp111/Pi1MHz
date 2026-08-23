@@ -69,7 +69,6 @@
 #include "../rpi/rpi.h"
 #include "../rpi/fileparser.h"
 
-#define SZ_TBL 64
 
 static const parserkey scsiattributes[] = {
    { "Title"           , 0 , 39 , STRING},
@@ -122,7 +121,8 @@ static struct filesystemStateStruct
 {
    FATFS fsObject;                     // FAT FS file system object
    FIL fileObject[MAX_LUNS];           // FAT FS file objects
-   DWORD clmt[MAX_LUNS][SZ_TBL];
+   DWORD *clmt[MAX_LUNS];              // fast-seek link maps, grown to fit by filesystemAttachLinkMap
+   uint32_t clmtEntries[MAX_LUNS];
 
    bool fsMountState;                  // File system mount state (true = mounted, false = dismounted)
 
@@ -248,8 +248,6 @@ void filesystemReset(void)
    filesystemDismount();
    // Now Mount the filesystem
    filesystemMount();
-   // every FIL anyone held is now invalid - the video player's included
-   videoplayer_media_changed();
 }
 
 // File system mount and dismount functions --------------------------------------------------------------------
@@ -320,6 +318,11 @@ bool filesystemDismount(void)
       filesystemSetLunStatus(i, false);
       parse_releasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
    }
+   // every FIL anyone held is now invalid - the video player's included.
+   // (Here rather than in filesystemReset so the fat_service / MTP
+   // dismount paths notify too.)
+   videoplayer_media_changed();
+
    // Dismount the SD card
      FRESULT fsResult;
    fsResult = f_mount(&filesystemState.fsObject, "", 0);
@@ -692,12 +695,9 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
    }
 
 #if FF_USE_FASTSEEK
-   filesystemState.clmt[lunNumber][0] = SZ_TBL;
-   ((FIL*)(&filesystemState.fileObject[lunNumber]))->cltbl = filesystemState.clmt[lunNumber];
-   if (f_lseek(&filesystemState.fileObject[lunNumber], CREATE_LINKMAP) != FR_OK ){
-       // if f_lseek fails then file is very fragmented.
-       // fall back to slow seek.
-       ((FIL*)(&filesystemState.fileObject[lunNumber]))->cltbl = 0;
+   if (!filesystemAttachLinkMap(&filesystemState.fileObject[lunNumber],
+                                &filesystemState.clmt[lunNumber],
+                                &filesystemState.clmtEntries[lunNumber])) {
           if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): LUN very fragmented falling back to slow seek "));
    }
 #endif
@@ -900,6 +900,37 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
       return true;
    }
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): ERROR: Could not create new .cfg file!\r\n"));
+   return false;
+}
+
+/* Attach a fast-seek cluster link map, growing it to the size FatFs asks
+   for. FatFs's protocol: cltbl[0] = table size in entries; f_lseek(fp,
+   CREATE_LINKMAP) builds the map, or fails with FR_NOT_ENOUGH_CORE after
+   writing the REQUIRED size into cltbl[0]. Without a map every f_lseek on
+   a fragmented file walks the FAT chain from the start - tens of ms. */
+bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries)
+{
+   if (!*map) {
+      *entries = 256;
+      *map = malloc(*entries * sizeof(DWORD));
+   }
+   file->cltbl = NULL;
+   for (int attempt = 0; *map && attempt < 2; attempt++) {
+      (*map)[0] = *entries;
+      file->cltbl = *map;
+      FRESULT r = f_lseek(file, CREATE_LINKMAP);
+      if (r == FR_OK)
+         return true;
+      file->cltbl = NULL;
+      uint32_t needed = (uint32_t)(*map)[0];   /* before free() reuses it */
+      if (r == FR_NOT_ENOUGH_CORE && needed > *entries && needed < 65536u) {
+         free(*map);
+         *entries = needed;
+         *map = malloc(*entries * sizeof(DWORD));
+         continue;
+      }
+      break;
+   }
    return false;
 }
 
@@ -1428,11 +1459,9 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
       fp->cltbl = 0;
       fsResult = f_lseek(fp, startSector * 256);
 
-      filesystemState.clmt[lunNumber][0] = SZ_TBL;
-      fp->cltbl = filesystemState.clmt[lunNumber];
-      if (f_lseek(fp, CREATE_LINKMAP) != FR_OK) {
+      if (!filesystemAttachLinkMap(fp, &filesystemState.clmt[lunNumber],
+                                   &filesystemState.clmtEntries[lunNumber])) {
          // Too fragmented for the map - fall back to slow seek (as at open)
-         fp->cltbl = 0;
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): LUN very fragmented falling back to slow seek\r\n"));
       }
 
@@ -1498,11 +1527,9 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
          fsResult = f_write(fp, sectorBuffer + fsCounter, (sectorsToWrite * 256) - fsCounter, &fsExtended);
          fsCounter += fsExtended;
 
-         filesystemState.clmt[lunNumber][0] = SZ_TBL;
-         fp->cltbl = filesystemState.clmt[lunNumber];
-         if (f_lseek(fp, CREATE_LINKMAP) != FR_OK) {
+         if (!filesystemAttachLinkMap(fp, &filesystemState.clmt[lunNumber],
+                                      &filesystemState.clmtEntries[lunNumber])) {
             // Too fragmented for the map - fall back to slow seek (as at open)
-            fp->cltbl = 0;
             if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): LUN very fragmented falling back to slow seek\r\n"));
          }
       }

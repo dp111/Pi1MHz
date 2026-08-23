@@ -2488,13 +2488,16 @@ static bool route_status(ws_conn_t *c)
       table_row(&b, "H264 decoder", tmp);
       table_row(&b, "Video player", videoplayer_status());
    }
-   snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s mai %08lx hsm %lu pix %lu",
-            audio_owner_name(), (unsigned long)audio_rate(), (unsigned long)audio_peak(),
-            (unsigned long)audio_queued_frames(), (unsigned long)audio_blocks_played(),
-            (unsigned long)audio_underruns(), audio_sink_name(),
+   snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s",
+            audio_owner_name(), (unsigned long)audio_rate(),
+            (unsigned long)audio_queued_frames(), (unsigned long)audio_peak(),
+            (unsigned long)audio_blocks_played(),
+            (unsigned long)audio_underruns(), audio_sink_name());
+   table_row(&b, "Audio", tmp);
+   snprintf(tmp, sizeof tmp, "mai %08lx hsm %lu pix %lu",
             (unsigned long)hdmi_audio_mai_ctl(), (unsigned long)hdmi_audio_hsm_hz(),
             (unsigned long)hdmi_audio_pixel_hz());
-   table_row(&b, "Audio", tmp);
+   table_row(&b, "HDMI audio", tmp);
    {
       snprintf(tmp, sizeof tmp, "%lu ACK timeouts, audio service max %lu us, ACK wait max %lu us",
                (unsigned long)hd_ack_timeouts, (unsigned long)hd_service_max_us,

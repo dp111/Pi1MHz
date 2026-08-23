@@ -96,7 +96,8 @@ static struct {
 
     vp_mode_t mode;
     vp_mode_t prev_mode;             /* for the 'Q' goto op */
-    uint32_t speed;                  /* S register: fields per picture, 2 = normal */
+    uint32_t speed_fast;             /* SxxxF: speed = value/2 x normal, 2..40 */
+    uint32_t speed_slow;             /* SxxxS: speed = 2/value x normal, 2..250 */
     uint32_t stride;                 /* pictures per displayed frame (fast play) */
     bool play_audio;                 /* slow/fast motion runs silent */
     bool show_picture;               /* D1: draw the picture number overlay */
@@ -486,8 +487,22 @@ static void pvf_reopen(void)
     vp.pending_phys = 0;
     vp.stop_picture = 0;
 
+    uint32_t old_w = vp.hdr.width, old_h = vp.hdr.height;
     if (!pvf_open_file()) {
         /* nothing in the new directory: hold the last picture */
+        return;
+    }
+    if (vp.hdr.width != old_w || vp.hdr.height != old_h) {
+        /* The decoder and the GPU frame buffers were sized at boot;
+           decoding a different geometry into them corrupts GPU memory.
+           A dimension change needs a Beeb reset (full re-init). */
+        LOG_INFO("videoplayer: %s is %"PRIu32"x%"PRIu32", player is %"PRIu32"x%"PRIu32" - reset to switch\r\n",
+                 pvf_path, vp.hdr.width, vp.hdr.height, old_w, old_h);
+        f_close(&vp.file);
+        free(vp.index);
+        vp.index = NULL;
+        vp.hdr.width = old_w;
+        vp.hdr.height = old_h;
         return;
     }
     vp.frame_period_us = (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num);
@@ -614,15 +629,19 @@ void videoplayer_step(int delta)
     videoplayer_goto((uint32_t)target, 'R');
 }
 
-void videoplayer_speed(uint32_t value)
+void videoplayer_speed(uint32_t value, bool fast)
 {
-    /* VP415 semantics: fields each picture is displayed for. 2 = the
-       nominal 25 fps; smaller is meaningless, bigger is slower. */
     if (value < 2u)
         value = 2u;
-    if (value > 250u)
-        value = 250u;
-    vp.speed = value;
+    if (fast) {
+        if (value > 40u)
+            value = 40u;
+        vp.speed_fast = value;
+    } else {
+        if (value > 250u)
+            value = 250u;
+        vp.speed_slow = value;
+    }
 }
 
 /* Slow motion: every picture held for 'speed' fields, silent */
@@ -643,23 +662,27 @@ static void start_motion(vp_mode_t mode, uint32_t period_us, uint32_t stride)
     vp.next_frame_due = RPI_GetSystemTime() + period_us;
 }
 
+/* Slow: 2/xxx x normal -> each picture held xxx/2 frame times, i.e. a
+   period of 20000*xxx us (xxx=2 is the nominal 40 ms). */
 void videoplayer_slow_fwd(void)
 {
-    start_motion(VP_PLAY, 20000u * (vp.speed ? vp.speed : 2u), 1u);
+    start_motion(VP_PLAY, 20000u * (vp.speed_slow ? vp.speed_slow : 6u), 1u);
 }
 
 void videoplayer_slow_rev(void)
 {
-    start_motion(VP_PLAY_REV, 20000u * (vp.speed ? vp.speed : 2u), 1u);
+    start_motion(VP_PLAY_REV, 20000u * (vp.speed_slow ? vp.speed_slow : 6u), 1u);
 }
 
-/* Fast: skip pictures at the nominal rate - speed/2 pictures per frame
-   shown (S=6 -> 3x), silent. Every picture is an IDR so any stride works. */
+/* Fast: xxx/2 x normal. The SD card sustains barely more than 25 AUs/s,
+   so speed comes from skipping pictures (every one is an IDR): stride =
+   xxx/2 at the nominal frame rate. Fractional factors round down, so
+   S3F (1.5x) plays at normal speed - a documented approximation. */
 void videoplayer_fast_fwd(void)
 {
-    uint32_t stride = (vp.speed ? vp.speed : 6u) / 2u;
-    if (stride < 2u)
-        stride = 2u;
+    uint32_t stride = (vp.speed_fast ? vp.speed_fast : 6u) / 2u;
+    if (stride < 1u)
+        stride = 1u;
     start_motion(VP_PLAY,
                  (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num),
                  stride);
@@ -667,9 +690,9 @@ void videoplayer_fast_fwd(void)
 
 void videoplayer_fast_rev(void)
 {
-    uint32_t stride = (vp.speed ? vp.speed : 6u) / 2u;
-    if (stride < 2u)
-        stride = 2u;
+    uint32_t stride = (vp.speed_fast ? vp.speed_fast : 6u) / 2u;
+    if (stride < 1u)
+        stride = 1u;
     start_motion(VP_PLAY_REV, (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num), stride);
 }
 
@@ -692,6 +715,11 @@ void videoplayer_show_picture_number(bool on)
 
 void videoplayer_audio_enable(int channel, bool on)
 {
+    /* audio_set_channel_mute is a core-wide control: without a video
+       open the audio belongs to a synth, and an A0 sent at a bare VFS
+       LUN must not silence the Music 5000. */
+    if (!vp.open)
+        return;
     if (channel >= 0 && channel < 2)
         vp.audio_on[channel] = on;
     audio_set_channel_mute(!vp.audio_on[0], !vp.audio_on[1]);
@@ -712,37 +740,13 @@ static bool pvf_open_file(void)
             return false;
     }
 
-    /* Random access seeks constantly; give FatFS a cluster link map so
-       f_lseek is O(1) instead of walking the FAT chain from the start
-       for every seek (FF_USE_FASTSEEK is enabled). A 2.9 GB side uploaded
-       over WebDAV onto a used card is far more fragmented than a fixed
-       table allows, and the fallback - walking 90k clusters of FAT per
-       *FRAME - was measured at 50-80 ms, starving the audio DMA. So size
-       the map to the file: FatFs reports the entries it needs. */
+    /* Random access seeks constantly: a fast-seek link map makes f_lseek
+       O(1) instead of a FAT-chain walk (50-80 ms per *FRAME on a 2.9 GB
+       side, enough to starve the audio DMA). Sized by the filesystem
+       helper to the file's real fragmentation. */
     static DWORD *clmt;
     static uint32_t clmt_entries;
-    if (!clmt) {
-        clmt_entries = 256;
-        clmt = malloc(clmt_entries * sizeof(DWORD));
-    }
-    vp.file.cltbl = NULL;
-    for (int attempt = 0; clmt && attempt < 2; attempt++) {
-        clmt[0] = clmt_entries;
-        vp.file.cltbl = clmt;
-        FRESULT r = f_lseek(&vp.file, CREATE_LINKMAP);
-        if (r == FR_OK)
-            break;
-        vp.file.cltbl = NULL;
-        if (r == FR_NOT_ENOUGH_CORE && clmt[0] > clmt_entries && clmt[0] < 65536u) {
-            /* clmt[0] now holds the size needed */
-            free(clmt);
-            clmt_entries = clmt[0];
-            clmt = malloc(clmt_entries * sizeof(DWORD));
-            continue;
-        }
-        break;
-    }
-    if (!vp.file.cltbl)
+    if (!filesystemAttachLinkMap(&vp.file, &clmt, &clmt_entries))
         LOG_INFO("videoplayer: %s: no cluster map; seeks will be slow\r\n", pvf_path);
     vp.clmt_entries = clmt_entries;
 
@@ -910,7 +914,8 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     vp.open = true;
     vp.mode = VP_STILL;
     vp.cur_picture = 1;
-    vp.speed = 6;
+    vp.speed_fast = 6;               /* 3x, the VP415 default */
+    vp.speed_slow = 6;               /* 1/3x, the VP415 default */
     vp.stride = 1;
     vp.play_audio = true;
 
