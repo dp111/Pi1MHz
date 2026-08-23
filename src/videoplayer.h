@@ -27,6 +27,19 @@ void videoplayer_halt(void);         /* F-code '*'       */
 void videoplayer_pause(void);        /* F-code '/' (halt + mute) */
 void videoplayer_step(int delta);    /* F-codes 'L'/'M'  */
 
+/* F-code 'S<n>': the speed register. Interpreted as on a VP415: the
+   number of TV fields each picture is shown for in slow motion (2 =
+   normal 25 fps), and pictures-per-step/2 for fast. */
+void videoplayer_speed(uint32_t value);
+void videoplayer_slow_fwd(void);     /* F-code 'U'       */
+void videoplayer_slow_rev(void);     /* F-code 'V' bare  */
+void videoplayer_fast_fwd(void);     /* F-code 'W'       */
+void videoplayer_fast_rev(void);     /* F-code 'Z'       */
+void videoplayer_clear(void);        /* F-code 'X': stop/info registers */
+
+/* F-codes D0/D1: the player's own picture-number display */
+void videoplayer_show_picture_number(bool on);
+
 /* F-codes A0/A1 (channel 0) and B0/B1 (channel 1) */
 void videoplayer_audio_enable(int channel, bool on);
 

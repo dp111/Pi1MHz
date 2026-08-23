@@ -294,10 +294,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Picture number/time code display off\r\n"));
+				videoplayer_show_picture_number(false);
 				break;
 
 				case '1':
 				FCdebugString_P(PSTR(" = Picture number/time code display on\r\n"));
+				videoplayer_show_picture_number(true);
 				break;
 
 				default:
@@ -476,6 +478,16 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x53: // S // VFS sends this
 			FCdebugString_P(PSTR(" = Set fast/slow speed value\r\n"));
+			{
+				uint32_t v = 0;
+				for (byteCounter = 1; byteCounter < 4; byteCounter++) {
+					char c = (char)scsiFcodeBuffer[byteCounter];
+					if (c < '0' || c > '9') break;
+					v = v * 10u + (uint32_t)(c - '0');
+				}
+				if (v)
+					videoplayer_speed(v);
+			}
 			break;
 
 			case 0x54: // T
@@ -484,6 +496,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x55: // U // VFS sends this
 			FCdebugString_P(PSTR(" = Slow motion forward\r\n"));
+			videoplayer_slow_fwd();
 			break;
 
 			case 0x56: // V, VP // VFS sends this
@@ -491,11 +504,13 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				case 'P':
 				VPmode = scsiFcodeBuffer[2];
 				switch(scsiFcodeBuffer[2]) {
+					/* Plane 2 is the MOUSE POINTER (mouseredirect.c), not part
+					   of the LaserVision overlay - the VP modes must leave it
+					   alone or selecting a mode makes a pointer appear. */
 					case '1':
 					FCdebugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
 					screen_plane_enable(0, true);
 					screen_plane_enable(1, false);
-					screen_plane_enable(2, false);
 
 					break;
 
@@ -504,7 +519,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_set_palette( 1, 0, 3 );
 					screen_plane_enable(0, false);
 					screen_plane_enable(1, true);
-					screen_plane_enable(2, true);
 
 					break;
 
@@ -513,7 +527,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_set_palette( 1, 0, 2 );
 					screen_plane_enable(0, true);
 					screen_plane_enable(1, true);
-					screen_plane_enable(2, true);
 
 					break;
 
@@ -541,6 +554,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 				case 0x0D:
 				FCdebugString_P(PSTR(" = Slow motion reverse\r\n"));
+				videoplayer_slow_rev();
 				break;
 
 				default:
@@ -551,14 +565,17 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x57: // W // VFS sends this
 			FCdebugString_P(PSTR(" = Fast forward\r\n"));
+			videoplayer_fast_fwd();
 			break;
 
 			case 0x58: // X
 			FCdebugString_P(PSTR(" = Clear\r\n"));
+			videoplayer_clear();
 			break;
 
 			case 0x5A: // Z // VFS sends this
 			FCdebugString_P(PSTR(" = Fast reverse\r\n"));
+			videoplayer_fast_rev();
 			break;
 
 			case 0x5B: // [0, [1

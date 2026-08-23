@@ -96,6 +96,10 @@ static struct {
 
     vp_mode_t mode;
     vp_mode_t prev_mode;             /* for the 'Q' goto op */
+    uint32_t speed;                  /* S register: fields per picture, 2 = normal */
+    uint32_t stride;                 /* pictures per displayed frame (fast play) */
+    bool play_audio;                 /* slow/fast motion runs silent */
+    bool show_picture;               /* D1: draw the picture number overlay */
     uint32_t cur_picture;            /* 1-based, on screen */
     uint32_t next_frame;             /* 0-based, next to feed the decoder */
     uint32_t stop_picture;           /* stop register, 0 = none */
@@ -255,6 +259,46 @@ static void frame_decoded(uint32_t phys, int64_t pts, bool eos)
     vp.pending_pts = pts;
 }
 
+/* 8x8 digit glyphs (rows top to bottom, MSB = leftmost pixel) for the
+   VP415-style on-screen picture number (F-codes D0/D1). */
+static const uint8_t digit_font[10][8] = {
+    {0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00}, /* 0 */
+    {0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00}, /* 1 */
+    {0x3C,0x66,0x06,0x1C,0x30,0x60,0x7E,0x00}, /* 2 */
+    {0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00}, /* 3 */
+    {0x0C,0x1C,0x3C,0x6C,0x7E,0x0C,0x0C,0x00}, /* 4 */
+    {0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0x00}, /* 5 */
+    {0x1C,0x30,0x60,0x7C,0x66,0x66,0x3C,0x00}, /* 6 */
+    {0x7E,0x06,0x0C,0x18,0x30,0x30,0x30,0x00}, /* 7 */
+    {0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00}, /* 8 */
+    {0x3C,0x66,0x66,0x3E,0x06,0x0C,0x38,0x00}, /* 9 */
+};
+
+/* Draw the 5-digit picture number into a frame's Y plane, 2x scaled, at
+   the top left - the frame buffers are in the VC heap (uncached), so the
+   HVS sees the pixels immediately. Chroma is left alone: white text. */
+static void draw_picture_number(uint32_t phys, uint32_t picture)
+{
+    uint8_t *y = (uint8_t *)(uintptr_t)phys;
+    uint32_t w = vp.hdr.width;
+    uint32_t x0 = 32, y0 = 28;
+
+    for (int digit = 4; digit >= 0; digit--) {
+        uint32_t d = picture % 10u;
+        picture /= 10u;
+        uint32_t dx = x0 + (uint32_t)digit * 20u;
+        for (uint32_t row = 0; row < 8; row++) {
+            uint8_t bits = digit_font[d][row];
+            for (uint32_t col = 0; col < 8; col++) {
+                uint8_t v = (bits & (0x80u >> col)) ? 0xEB : 0x10;
+                uint8_t *p = y + (y0 + row * 2u) * w + dx + col * 2u;
+                p[0] = p[1] = v;
+                p[w] = p[w + 1] = v;
+            }
+        }
+    }
+}
+
 /* Put the pending decoded frame on screen and recycle the old one. */
 static void flip_pending(void)
 {
@@ -262,6 +306,9 @@ static void flip_pending(void)
     if (!phys)
         return;
     vp.pending_phys = 0;
+
+    if (vp.show_picture)
+        draw_picture_number(phys, (uint32_t)vp.pending_pts + 1u);
 
     uint32_t w = vp.hdr.width, h = vp.hdr.height;
     screen_set_YUV_pointers(YUV_PLANE,
@@ -282,6 +329,7 @@ static void flip_pending(void)
 
 static void pvf_reopen(void);
 static bool pvf_open_file(void);
+static void reset_speed(void);
 
 static void videoplayer_poll(void)
 {
@@ -318,6 +366,8 @@ static void videoplayer_poll(void)
 
         bool play = (vp.seek_op == 'N') ||
                     (vp.seek_op == 'Q' && vp.prev_mode == VP_PLAY);
+        if (play)
+            reset_speed();           /* goto-and-play is normal speed with sound */
         if (feed_frame(target, play, !play)) {
             vp.seek_frame = -1;
             vp.next_frame = target + 1u;
@@ -332,9 +382,9 @@ static void videoplayer_poll(void)
         /* Keep the decoder pipeline primed (up to 2 AUs deep) */
         uint32_t limit = vp.stop_picture ? vp.stop_picture : vp.hdr.frame_count;
         while (vp.in_flight < 2 && vp.next_frame < limit) {
-            if (!feed_frame(vp.next_frame, true, false))
+            if (!feed_frame(vp.next_frame, vp.play_audio, false))
                 break;
-            vp.next_frame++;
+            vp.next_frame += vp.stride ? vp.stride : 1u;
         }
         /* The decoder emits a picture only when the next one arrives, so
            the last picture of the range needs a pusher: submit it again
@@ -374,11 +424,14 @@ static void videoplayer_poll(void)
             flip_pending();
         if ((int32_t)(RPI_GetSystemTime() - vp.next_frame_due) >= 0 &&
             vp.in_flight == 0) {
-            if (vp.cur_picture > 1) {
-                if (feed_frame(vp.cur_picture - 2u, false, true))
-                    vp.next_frame_due += vp.frame_period_us;
-            } else {
-                vp.mode = VP_STILL;
+            {
+                uint32_t back = 1u + (vp.stride ? vp.stride : 1u);
+                if (vp.cur_picture > back) {
+                    if (feed_frame(vp.cur_picture - back, false, true))
+                        vp.next_frame_due += vp.frame_period_us;
+                } else {
+                    vp.mode = VP_STILL;
+                }
             }
         }
         break;
@@ -496,10 +549,20 @@ void videoplayer_goto(uint32_t picture, char op)
     }
 }
 
+/* Normal-speed transport: back to nominal pacing with sound */
+static void reset_speed(void)
+{
+    uint64_t period = (uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num;
+    vp.frame_period_us = (uint32_t)period;
+    vp.stride = 1;
+    vp.play_audio = true;
+}
+
 void videoplayer_play_fwd(void)
 {
     if (!vp.open)
         return;
+    reset_speed();
     if (vp.mode != VP_PLAY) {
         vp.next_frame = vp.cur_picture;      /* picture is 1-based */
         vp.in_flight = 0;
@@ -516,6 +579,7 @@ void videoplayer_play_rev(void)
 {
     if (!vp.open)
         return;
+    reset_speed();
     h264dec_resume();
     vp.in_flight = 0;
     vp.dup_owed = 0;
@@ -548,6 +612,82 @@ void videoplayer_step(int delta)
     if (target < 1)
         target = 1;
     videoplayer_goto((uint32_t)target, 'R');
+}
+
+void videoplayer_speed(uint32_t value)
+{
+    /* VP415 semantics: fields each picture is displayed for. 2 = the
+       nominal 25 fps; smaller is meaningless, bigger is slower. */
+    if (value < 2u)
+        value = 2u;
+    if (value > 250u)
+        value = 250u;
+    vp.speed = value;
+}
+
+/* Slow motion: every picture held for 'speed' fields, silent */
+static void start_motion(vp_mode_t mode, uint32_t period_us, uint32_t stride)
+{
+    if (!vp.open)
+        return;
+    h264dec_resume();
+    vp.in_flight = 0;
+    vp.dup_owed = 0;
+    vp.tail_pushed = false;
+    audio_flush();
+    vp.frame_period_us = period_us;
+    vp.stride = stride;
+    vp.play_audio = false;
+    vp.next_frame = vp.cur_picture;  /* picture is 1-based -> next record */
+    vp.mode = mode;
+    vp.next_frame_due = RPI_GetSystemTime() + period_us;
+}
+
+void videoplayer_slow_fwd(void)
+{
+    start_motion(VP_PLAY, 20000u * (vp.speed ? vp.speed : 2u), 1u);
+}
+
+void videoplayer_slow_rev(void)
+{
+    start_motion(VP_PLAY_REV, 20000u * (vp.speed ? vp.speed : 2u), 1u);
+}
+
+/* Fast: skip pictures at the nominal rate - speed/2 pictures per frame
+   shown (S=6 -> 3x), silent. Every picture is an IDR so any stride works. */
+void videoplayer_fast_fwd(void)
+{
+    uint32_t stride = (vp.speed ? vp.speed : 6u) / 2u;
+    if (stride < 2u)
+        stride = 2u;
+    start_motion(VP_PLAY,
+                 (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num),
+                 stride);
+}
+
+void videoplayer_fast_rev(void)
+{
+    uint32_t stride = (vp.speed ? vp.speed : 6u) / 2u;
+    if (stride < 2u)
+        stride = 2u;
+    start_motion(VP_PLAY_REV, (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num), stride);
+}
+
+void videoplayer_clear(void)
+{
+    vp.stop_picture = 0;
+    vp.info_picture = 0;
+}
+
+void videoplayer_show_picture_number(bool on)
+{
+    if (vp.show_picture == on)
+        return;
+    vp.show_picture = on;
+    /* On a still the digits are already burnt into the displayed buffer
+       (or missing from it): re-decode the current picture to repaint. */
+    if (vp.open && vp.mode == VP_STILL && vp.cur_picture)
+        videoplayer_goto(vp.cur_picture, 'R');
 }
 
 void videoplayer_audio_enable(int channel, bool on)
@@ -770,6 +910,9 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     vp.open = true;
     vp.mode = VP_STILL;
     vp.cur_picture = 1;
+    vp.speed = 6;
+    vp.stride = 1;
+    vp.play_audio = true;
 
     /* Show picture 1 so there is something on screen immediately */
     videoplayer_goto(1, 'R');
