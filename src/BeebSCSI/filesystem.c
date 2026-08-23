@@ -64,6 +64,7 @@
 #include "scsi.h"
 #include "fatfs/ff.h"
 #include "filesystem.h"
+#include "../videoplayer.h"
 #include "../config.h"			/* Beeb_write_protect */
 #include "../rpi/rpi.h"
 #include "../rpi/fileparser.h"
@@ -247,6 +248,8 @@ void filesystemReset(void)
    filesystemDismount();
    // Now Mount the filesystem
    filesystemMount();
+   // every FIL anyone held is now invalid - the video player's included
+   videoplayer_media_changed();
 }
 
 // File system mount and dismount functions --------------------------------------------------------------------
@@ -820,6 +823,11 @@ void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber)
 uint8_t filesystemGetLunDirectory(void)
 {
    return filesystemState.lunDirectory;
+}
+
+uint8_t filesystemGetLunDirectoryVFS(void)
+{
+   return filesystemState.lunDirectoryVFS;
 }
 
 // Functions for creating LUNs and LUN descriptors ---------------------------------------------------------------------------

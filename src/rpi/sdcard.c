@@ -273,7 +273,12 @@ static inline uint32_t byte_swap(uint32_t in)
 
 #define FIFO_READ_THRESHOLD         4u
 #define FIFO_WRITE_THRESHOLD        4u
-#define SDDATA_FIFO_PIO_BURST       8u
+/* The data FIFO is 16 words deep; SDEDM bits 4..8 report its occupancy */
+#define SDDATA_FIFO_WORDS           16u
+
+/* Transfer statistics for /status: bytes moved and time spent inside the
+   PIO loop, so the real SD data rate can be read off the web */
+uint32_t sd_pio_bytes, sd_pio_us;
 
 #ifdef EMMC_DEBUG
 static const char *err_irpts[] = { "CMD_TIMEOUT", "CMD_CRC", "CMD_END_BIT", "CMD_INDEX",
@@ -908,11 +913,20 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
 {
     uint32_t *cursor = (uint32_t *)dev->buf;
     uint32_t total_words = (uint32_t)((dev->block_size * dev->blocks_to_transfer) / sizeof(uint32_t));
+    uint32_t t0 = RPI_GetSystemTime();
+    sd_pio_bytes += total_words * 4u;
 
+    /* One SDEDM read tells how many words the FIFO holds (read) or has
+       room for (write); move exactly that many, then look again. The
+       register is a Strongly-Ordered read, so ask once per FIFO-full
+       rather than once per 8 words, and spin rather than usleep on an
+       empty FIFO. Measured against the old 8-word/usleep loop on the
+       same boot workload: 2033 KB in 788 vs 794 ms - under 1%, the card
+       dominates - so this is kept for tidiness, not speed. */
     while (total_words > 0u)
     {
-        uint32_t burst_words = SDDATA_FIFO_PIO_BURST;
-        uint32_t wait_loops = 500000u;
+        uint32_t burst_words = SDDATA_FIFO_WORDS;
+        uint32_t wait_loops = 50000000u;
 
         if (burst_words > total_words)
             burst_words = total_words;
@@ -963,7 +977,6 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
                     }
                 }
 
-                usleep(1);
                 continue;
             }
 
@@ -985,6 +998,7 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
     }
 
     uint32_t final_hsts = sdhost_read(SDHSTS);
+    sd_pio_us += RPI_GetSystemTime() - t0;
     if ((final_hsts & SDHSTS_ERROR_MASK) != 0u)
     {
         dev->last_error = sdhost_translate_error(final_hsts, true);

@@ -7,19 +7,16 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// NB Buffer size must be a multiple of 32 bytes
-// buffer contains both left and right sample words
-// @46875Hz
-// buffer of 2048 21.84ms
-// buffer of 1024 10.92ms
-// buffer of  512  5.46ms
-// buffer of  256  2.73ms
-
-// Music 5000 updates @ 10mS
-// so we ideally want to be <5ms so lets choose a buffer of 448 with is 4.779mS
-// buffer size must be a multiple of 4 due to init code.
-// NB b-em has a buffer of 1500 which is a delay of 32ms
-#define DMA_BUFFER_SIZE 448
+// PWM DMA buffer, in stereo frames (one frame = one PWM0 word + one PWM1
+// word). Must be a multiple of 2 frames (init code) and of 8 words (DMA
+// burst). Two buffers ring, so total runway is twice this.
+//
+//   @48000Hz   256 frames = 5.33ms
+//   @46875Hz   224 frames = 4.78ms  (the Music 5000 updates every 10ms;
+//                                    well under 5ms keeps it responsive)
+#define AUDIO_DMA_FRAMES 224
+/* The largest block a producer may ask for (dma_frames below) */
+#define AUDIO_DMA_FRAMES_MAX 1024
 
 #define PWM_BASE          (PERIPHERAL_BASE + 0x20C000) /* PWM controller */
 #define CLOCK_BASE        (PERIPHERAL_BASE + 0x101000)
@@ -150,26 +147,76 @@ static rpi_dma_t* const RPI_DMABase = (rpi_dma_t*) (DMA_CONTROLLER_BASE + 0xFE0)
 #define BCM2708_DMA_END             (1<<1 )
 #define BCM2708_DMA_NO_WIDE_BURSTS  (1<<26)
 
-size_t rpi_audio_buffer_free_space(void);
-uint32_t * rpi_audio_buffer_pointer(void);
-void rpi_audio_samples_written(void);
-uint32_t rpi_audio_init(uint32_t samplerate );
+/* ---------------------------------------------------------------------
+   Audio core: one producer at a time writes int16 stereo PCM into a ring;
+   audio_pump() drains the ring into the active sink (PWM today; HDMI is
+   the audio plan's next step). Producers never see the sink's format.
 
-// True once rpi_audio_init() has been called by anyone - the PWM/DMA
-// path has a single owner; check before claiming it.
-bool rpi_audio_active(void);
+   The Beeb pin (PWM1, GPIO13) always carries L+R summed. With
+   BeebAudio_Off=1 the pin is hi-Z and L/R go out separately, which on a
+   Pi 3B+ is stereo on the headphone jack - the same rule the Music 5000
+   used to apply itself.
+   --------------------------------------------------------------------- */
 
-// Convert a signed 16-bit sample to a PWM word centred at mid-rail, with
-// error-feedback dithering (carry the sub-step remainder through *error) and
-// clamping to the PWM range set by the last rpi_audio_init().
-uint32_t rpi_audio_pack(int16_t sample, int32_t *error);
+typedef struct {
+   uint32_t rate;             /* Hz - the producer's native rate          */
+   uint32_t latency_frames;   /* how far ahead of the sink it may write;
+                                 audio_free_frames() never offers more     */
+   const char *name;          /* for /status                              */
+   uint32_t dma_frames;       /* DMA block size to run the sink with, 0 =
+                                 AUDIO_DMA_FRAMES. A synth wants small
+                                 blocks (latency); a player with a deep
+                                 ring wants big ones (SD latency spikes) */
+} audio_producer_t;
 
-// Mute (disconnect) or restore the Pi's PWM feed on the shared audio pin.
-// mute==true sets the pin hi-Z (turns off Beeb audio, as M5000 does);
-// mute==false routes PWM1 back to the pin. Set once at config time.
+/* Become the producer. Supersedes whoever held it: their audio_write_ptr()
+   returns NULL from now on. Re-programs the sink if the rate changed. */
+void audio_claim(const audio_producer_t *p);
+/* Give it back (no-op unless p is the owner). The sink keeps running. */
+void audio_release(const audio_producer_t *p);
+bool audio_owner_is(const audio_producer_t *p);
+
+/* Frames the owner may write now - ring space capped by latency_frames. */
+uint32_t audio_free_frames(void);
+/* Pointer to the next write position and how many frames fit before the
+   ring wraps (<= audio_free_frames()). NULL if not the owner. Write
+   interleaved L,R int16 pairs, then audio_commit(). */
+int16_t *audio_write_ptr(const audio_producer_t *p, uint32_t *contig_frames);
+void audio_commit(uint32_t frames);
+/* Discard everything queued (a seek). */
+void audio_flush(void);
+uint32_t audio_queued_frames(void);
+
+/* Mute a channel at the output, without affecting what is queued - the
+   LaserDisc A/B soundtrack switches, which must stay in sync when
+   re-enabled. Both false by default. */
+void audio_set_channel_mute(bool left, bool right);
+
+/* Move PCM from the ring into the sink. Called from the idle poll; safe
+   to call from anywhere that is merely spinning (it touches no FatFs and
+   no producer state). */
+void audio_pump(void);
+/* As audio_pump, but gives up as soon as *abort becomes true (checked
+   every few samples), padding the block with silence. For use inside a
+   wait where the thing being waited for must be answered within a
+   microsecond or two once it arrives. */
+void audio_pump_until(volatile const bool *abort);
+
+/* Mute (disconnect) or restore the Pi's PWM feed on the shared audio pin.
+   mute==true sets the pin hi-Z (turns off Beeb audio, as M5000 does);
+   mute==false routes PWM1 back to the pin. Set once at config time. */
 void rpi_audio_mute_beeb(bool mute);
-
-// Last state passed to rpi_audio_mute_beeb() (true == Beeb audio muted).
 bool rpi_audio_beeb_muted(void);
+
+/* Diagnostics for /status */
+const char *audio_owner_name(void);
+const char *audio_sink_name(void);
+uint32_t audio_rate(void);
+uint32_t audio_underruns(void);
+uint32_t audio_peak(void);        /* recent |sample| maximum, 0..32767 */
+/* Copy the last max_frames written to the ring (interleaved L/R) into
+   dst; returns frames copied. For /audio.wav. */
+uint32_t audio_ring_snapshot(int16_t *dst, uint32_t max_frames);
+uint32_t audio_blocks_played(void);
 
 #endif

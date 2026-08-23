@@ -12,8 +12,8 @@
         ringing doorbell 2 (ARM -> VC); incoming work is discovered by
         comparing the shared tx_pos/recycle counters, so the VC -> ARM
         doorbell interrupt is never enabled.
-      - messages only: payloads never cross the wire, so there is no bulk
-        DMA machinery here. The MMAL client runs its ports in zero-copy
+      - messages, plus bulk TRANSMIT for the audio service's PCM (the VC
+        DMAs from our buffer). The MMAL client runs its ports in zero-copy
         mode, where a buffer is identified by a VideoCore memory handle
         and the codec reads and writes that memory itself.
       - all shared memory (slot memory, fragment pool) lives in the
@@ -50,6 +50,9 @@ typedef struct {
        rx slot and are only valid for the duration of the call - copy out
        anything needed later. */
     void (*on_data)(const void *data, unsigned int size);
+    /* A queued bulk transmit completed ('actual' = bytes transferred,
+       negative on abort). The buffer may be reused from here on. */
+    void (*on_bulk_tx_done)(void *user, int actual);
 } vchiq_callbacks_t;
 
 /* Bring the channel up: allocate shared memory, tell the firmware where it
@@ -57,8 +60,8 @@ typedef struct {
    firmware has no VCHIQ (e.g. start_cd.elf) - safe to call anyway. */
 bool vchiq_init(void);
 
-/* How many services may be open at once (MMAL + SMEM). */
-#define VCHIQ_MAX_SERVICES 2
+/* How many services may be open at once (MMAL + SMEM + AUDS). */
+#define VCHIQ_MAX_SERVICES 3
 
 /* Open a service, e.g. VCHIQ_FOURCC('m','m','a','l'). Version pair is the
    service protocol version (MMAL: 16/10). Returns a service id (>= 0) to
@@ -70,6 +73,17 @@ int vchiq_open_service(uint32_t fourcc, short version, short version_min,
    buffer may live in ordinary cached ARM memory. Returns false if no TX
    slot space is available (caller retries). */
 bool vchiq_queue_message(int service, const void *msg, unsigned int size);
+
+/* Queue a bulk transmit (host -> VC): the VideoCore DMAs 'size' bytes from
+   'busaddr' (a vchiq_bus_addr() of physically contiguous memory - e.g. a
+   vchiq_alloc_shared() block) and answers with on_bulk_tx_done. Up to
+   VCHIQ_BULK_DEPTH may be in flight; false when the queue is full or the
+   control message could not be sent (retry). The audio service sends its
+   PCM this way; MMAL is zero-copy and never uses it. */
+#define VCHIQ_BULK_DEPTH 4u
+bool vchiq_bulk_transmit(int service, uint32_t busaddr, unsigned int size,
+                         void *user);
+bool vchiq_bulk_tx_space(void);
 
 /* Pump the channel: parse received messages (dispatching callbacks),
    recycle consumed slots, replenish TX slots. Call frequently. */

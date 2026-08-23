@@ -169,6 +169,7 @@ set(core_files
    # and no-ops harmlessly with start_cd.elf)
    rpi/vchiq.c
    rpi/vcsm.c
+   rpi/hdmi_audio.c
    rpi/mmal_vc.c
    rpi/h264dec.c
    Pi1MHz.c

@@ -630,6 +630,25 @@ static void poll_ticks_start(void)
 
 #define POLL_SLOW_TICKS (50u * POLL_TICKS_PER_MS)
 
+/* Longest single run of each poll callback since last read, for /status:
+   the way to find out which poller is starving the audio DMA. */
+static uint32_t poll_max_ticks[NUM_EMULATORS];
+
+uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset)
+{
+   if (idx >= Pi1MHz_polls_max)
+      return 0;
+   uint32_t t = poll_max_ticks[idx];
+   if (reset)
+      poll_max_ticks[idx] = 0;
+   return t / (POLL_TICKS_PER_MS / 1000u);
+}
+
+unsigned int Pi1MHz_poll_count(void)
+{
+   return Pi1MHz_polls_max;
+}
+
 #if POLL_PROFILE
 #if (__ARM_ARCH >= 7)
 #error "POLL_PROFILE uses the ARM1176 CP15 c15 cycle counter, which faults on the A53 (kernel7). Profile on kernel.img (rpi) instead."
@@ -811,6 +830,8 @@ _Noreturn void kernel_main(void)
                uint32_t duration_ticks = after_ticks - before_ticks;
                before_ticks = after_ticks;
 
+               if (duration_ticks > poll_max_ticks[i])
+                  poll_max_ticks[i] = duration_ticks;
                if (duration_ticks > POLL_SLOW_TICKS) {
                LOG_INFO("Slow poll callback idx=%u duration_us=%lu\r\n",
                         (unsigned int)i,

@@ -66,6 +66,7 @@ bool filesystemCheckLunImage(uint8_t lunNumber);
 
 void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber);
 uint8_t filesystemGetLunDirectory(void);
+uint8_t filesystemGetLunDirectoryVFS(void);
 
 bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus);
 bool filesystemReadLunStatus(uint8_t lunNumber);

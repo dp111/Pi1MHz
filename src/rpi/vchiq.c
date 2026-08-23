@@ -14,10 +14,13 @@
         REMOTE side's slot_queue at slot_queue_recycle and bumping that
         counter; the remote replenishes our TX pool the same way
 
-    Only messages are used. The protocol also defines bulk (DMA) transfers
-    for moving payload, but the MMAL client runs every port in zero-copy
-    mode - a buffer travels as a VideoCore memory handle and the codec
-    reads and writes that memory directly - so none of that is needed.
+    Messages carry all control traffic. The MMAL client runs every port
+    in zero-copy mode (a buffer travels as a VideoCore memory handle and
+    the codec reads and writes that memory directly), so the only bulk
+    (DMA) transfers are the audio service's PCM: the slave posts a
+    BULK_TX message whose payload is {pagelist bus address, size}; the
+    VideoCore, as bus master, DMAs from our memory and answers
+    BULK_TX_DONE {actual}. Bulk receive is not implemented.
 
     Everything shared with the VideoCore lives in the VC heap, which the
     ARM maps effectively uncached (cache.c maps arm_mem..PERIPHERAL_BASE
@@ -136,8 +139,21 @@ typedef struct {
     int16_t version_min;
 } vchiq_open_payload_t;
 
+/* Bulk pagelist, as built by the Linux driver. addrs[] entries are bus
+   addresses of page runs; the low 12 bits hold (number of FOLLOWING
+   consecutive pages), so one entry describes a whole contiguous buffer. */
+#define PAGELIST_WRITE               0   /* host -> VC (VC reads our memory) */
+typedef struct {
+    uint32_t length;
+    uint16_t type;
+    uint16_t offset;                 /* offset of data within the first page */
+    uint32_t addrs[1];
+} vchiq_pagelist_t;
+
 #define MAX_FRAGMENTS      64        /* 2 * VCHIQ_NUM_CURRENT_BULKS */
 #define FRAGMENT_SIZE      64        /* 2 cache lines of 32 bytes */
+#define PAGELIST_STRIDE    32u       /* room for one run entry, padded */
+#define PAGELIST_MEM_SIZE  4096u
 
 /* ------------------------------------------------------------------ */
 /* Layout of our single shared allocation                             */
@@ -149,7 +165,7 @@ typedef struct {
 /* The fragment pool, page rounded, derived from the constants above so
    the two cannot drift apart. */
 #define FRAG_MEM_SIZE      (((MAX_FRAGMENTS * FRAGMENT_SIZE) + 4095u) & ~4095u)
-#define SHARED_MEM_SIZE    (SLOT_MEM_SIZE + FRAG_MEM_SIZE)
+#define SHARED_MEM_SIZE    (SLOT_MEM_SIZE + FRAG_MEM_SIZE + PAGELIST_MEM_SIZE)
 
 /* Doorbells: DT node 0x7e00b840. Writing BELL2 interrupts the VideoCore. */
 #define VCHIQ_BELL_BASE    (PERIPHERAL_BASE + 0xB840u)
@@ -167,6 +183,19 @@ static struct {
     volatile vchiq_shared_state_t *remote;   /* master (VideoCore) */
     uint8_t *slot_base;              /* ARM view of slot memory */
     uint32_t slot_base_bus;          /* VC view (0xC0000000 alias) */
+    uint8_t *pagelist_base;          /* VCHIQ_BULK_DEPTH pagelists, PAGELIST_STRIDE apart */
+    uint32_t pagelist_base_bus;
+
+    /* One bulk-transmit queue for the whole channel: only the audio
+       service transmits, and transfers complete in strict order, so the
+       pending ring needs no per-service split. A pagelist stays owned by
+       the VideoCore until its BULK_TX_DONE, so the ring index doubles as
+       the pagelist index. */
+    struct {
+        void *user[VCHIQ_BULK_DEPTH];
+        uint32_t head;               /* next to complete */
+        uint32_t tail;               /* next free */
+    } bulk_tx;
 
     int32_t  rx_pos;                 /* our read position in remote's stream */
     int32_t  tx_pos;                 /* cached copy of local->tx_pos */
@@ -345,6 +374,52 @@ bool vchiq_queue_message(int service, const void *msg, unsigned int size)
                              msg, size, NULL, 0);
 }
 
+bool vchiq_bulk_transmit(int service, uint32_t busaddr, unsigned int size,
+                         void *user)
+{
+    if (!SVC_VALID(service) || !vc.svc[service].open)
+        return false;
+    if (vc.bulk_tx.tail - vc.bulk_tx.head >= VCHIQ_BULK_DEPTH)
+        return false;
+
+    /* One-run pagelist: the buffer must be physically contiguous, which
+       everything from vchiq_alloc_shared() is. A failed send below leaves
+       tail - and hence this pagelist - unclaimed for the retry. */
+    uint32_t idx = vc.bulk_tx.tail & (VCHIQ_BULK_DEPTH - 1u);
+    volatile vchiq_pagelist_t *pl =
+        (volatile vchiq_pagelist_t *)(uintptr_t)(vc.pagelist_base + idx * PAGELIST_STRIDE);
+    uint32_t pl_bus = vc.pagelist_base_bus + idx * PAGELIST_STRIDE;
+
+    /* Exact size, like the reference driver: the VC pairs this transfer
+       with the peer's posted size and a LARGER sender aborts the bulk
+       (hardware-observed: 32-byte rounding here made every bulk fail
+       with actual=-1). Our buffers are uncached, so no fragment games. */
+    uint32_t first_page = busaddr & ~0xFFFu;
+    uint32_t offset = busaddr & 0xFFFu;
+    uint32_t npages = (offset + size + 4095u) / 4096u;
+
+    pl->length = size;
+    pl->type = PAGELIST_WRITE;
+    pl->offset = (uint16_t)offset;
+    pl->addrs[0] = first_page | (npages - 1u);
+    _data_memory_barrier();
+
+    uint32_t payload[2] = { pl_bus, size };
+    if (!queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_BULK_TX, SVC_PORT(service),
+                                          vc.svc[service].remoteport),
+                           payload, sizeof(payload), NULL, 0))
+        return false;
+
+    vc.bulk_tx.user[idx] = user;
+    vc.bulk_tx.tail++;
+    return true;
+}
+
+bool vchiq_bulk_tx_space(void)
+{
+    return (vc.bulk_tx.tail - vc.bulk_tx.head) < VCHIQ_BULK_DEPTH;
+}
+
 /* ------------------------------------------------------------------ */
 /* RX path                                                            */
 /* ------------------------------------------------------------------ */
@@ -401,6 +476,19 @@ static void parse_message(volatile vchiq_header_t *h)
         int s = PORT_SVC(VCHIQ_MSG_DSTPORT(msgid));
         if (SVC_VALID(s) && vc.svc[s].open && vc.svc[s].cb.on_data)
             vc.svc[s].cb.on_data(payload, size);
+        break;
+    }
+
+    case VCHIQ_MSG_BULK_TX_DONE: {
+        int s = PORT_SVC(VCHIQ_MSG_DSTPORT(msgid));
+        if (vc.bulk_tx.head == vc.bulk_tx.tail) {
+            LOG_INFO("vchiq: unexpected bulk done\r\n");
+            break;
+        }
+        void *user = vc.bulk_tx.user[vc.bulk_tx.head & (VCHIQ_BULK_DEPTH - 1u)];
+        vc.bulk_tx.head++;
+        if (SVC_VALID(s) && vc.svc[s].cb.on_bulk_tx_done)
+            vc.svc[s].cb.on_bulk_tx_done(user, *(const int32_t *)payload);
         break;
     }
 
@@ -497,6 +585,8 @@ bool vchiq_init(void)
     memset(&vc, 0, sizeof(vc));
     vc.slot_base = (uint8_t *)(uintptr_t)phys;
     vc.slot_base_bus = vchiq_bus_addr(phys);
+    vc.pagelist_base = vc.slot_base + SLOT_MEM_SIZE + FRAG_MEM_SIZE;
+    vc.pagelist_base_bus = vc.slot_base_bus + SLOT_MEM_SIZE + FRAG_MEM_SIZE;
 
     /* --- build slot zero ------------------------------------------ */
     memset(vc.slot_base, 0, SHARED_MEM_SIZE);

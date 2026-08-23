@@ -107,11 +107,10 @@ Use https://wavedrom.com/editor.html
 #define PAN(c)       (CTL(c)&0xf)
 
 #define DEFAULT_GAIN 3
-#define M5000_DIVIDER 1024
+#define M5000_SAMPLE_RATE 46875   /* 6 MHz master clock / 128 */
 
 // These variables can be setup form the Pi1MHz.cfg file.
 
-static uint8_t stereo;
 static int gain;
 static uint8_t autorange;
 
@@ -180,7 +179,21 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
    memset(&s->amplitude[0], 0, 16);
 }
 
-static int32_t M5000_audio_range;
+/* Mix domain -> int16, 16.16 fixed point. The audio core used to hand us
+   a PWM range and full scale was 1024*range; keep that clip point exactly
+   (so M5000_Gain and autorange behave as before) by scaling against the
+   range the PWM has at 46875 Hz, independent of what sink is now active:
+   K = 32768 * 65536 / (1024 * range) = 2^21 / range. */
+static int32_t M5000_s16_scale;
+
+static const audio_producer_t m5000_producer = {
+   .rate = M5000_SAMPLE_RATE,
+   /* One DMA block of lead: enough that a block is always ready when the
+      DMA frees one, no more - every extra frame here is delay between a
+      register write and the speaker. */
+   .latency_frames = AUDIO_DMA_FRAMES,
+   .name = "Music 5000",
+};
 
 // in Pi1MHz.cfg M5000_Gain=16 set the default audio gain
 // if gain has >1000 then gain = gain - 1000 and auto ranging
@@ -201,12 +214,6 @@ static void M5000_gain(void) {
    }
    else
       autorange = 1;
-}
-
-// BeebAudio_Off (handled globally at config time) also selects stereo output:
-// when the Beeb's own audio is muted we keep L/R separate on the Pi jack.
-static void M5000_BeebAudio(void) {
-   stereo = rpi_audio_beeb_muted() ? 1u : 0u;
 }
 
 static void update_channels(struct synth *s)
@@ -289,20 +296,16 @@ static void update_channels(struct synth *s)
     s->modulate = modulate;
 }
 
-static void music5000_store_sample(int sl, int sr, uint32_t *left, uint32_t *right)
+/* One channel of the mix to int16 with error-feedback dither. The sum for
+   the Beeb's mono pin, and the stereo split for a Pi 3B+ jack, are the
+   audio core's job now (rpi/audio.c): the synth always emits L and R. */
+static inline int16_t music5000_to_s16(int v, int32_t *err, int *clip)
 {
-   int clip = 0;
    // the range of sleft/right is (-8031..8031) i.e. 14 bits
    // so summing 16 channels gives an 18 bit output
    // now times 6 as pan division has been taken out of loop
    // so 21bits
-
-   if (!stereo)
-   {
-      sl = sl + sr;
-      sr = sl;
-   }
-
+   //
    // Worst case we should divide by 256 to get 20bits down to 12.x bits.
    // But this does loose dynamic range.
    //
@@ -314,35 +317,23 @@ static void music5000_store_sample(int sl, int sr, uint32_t *left, uint32_t *rig
    //   L:-20894..20989 (rms  1788) R:-22221..17949 (rms  1367)
    //
    // So lets try a crude adaptive clipping system, and see what feedback we get!
+   // 64-bit: the 21-bit mix times gain times the 9-bit scale can pass
+   // 2^31 on a loud clip, and it is those samples that must saturate,
+   // not wrap. One SMULL on ARM.
+   int64_t acc = (int64_t)(v * gain) * M5000_s16_scale + *err;
+   int32_t out = (int32_t)(acc >> 16);
+   *err = (int32_t)(acc - ((int64_t)out << 16));
+   if (out < -32768) { out = -32768; *err = 0; *clip = 1; }
+   if (out >  32767) { out =  32767; *err = 0; *clip = 1; }
+   return (int16_t)out;
+}
 
-   sl = ( sl * gain ) + ( M5000_audio_range >> 1 ) + M5000_left_error ;
+static void music5000_store_sample(int sl, int sr, int16_t *out)
+{
+   int clip = 0;
 
-   M5000_left_error = sl % M5000_DIVIDER ;
-
-   if (sl < 0) {
-      sl = 0;
-      clip = 1;
-   }
-   if (sl >  M5000_audio_range) {
-      sl = M5000_audio_range;
-      clip = 1;
-   }
-
-   *left = (uint32_t)(sl) / M5000_DIVIDER;
-
-   sr = ( sr * gain ) + ( M5000_audio_range >> 1 ) + M5000_right_error ;
-
-   M5000_right_error = sr % M5000_DIVIDER ;
-
-   if (sr < 0) {
-      sr = 0;
-      clip = 1;
-   }
-   if (sr >  M5000_audio_range) {
-      sr = M5000_audio_range;
-      clip = 1;
-   }
-   *right = (uint32_t)(sr) / M5000_DIVIDER;
+   out[0] = music5000_to_s16(sl, &M5000_left_error,  &clip);
+   out[1] = music5000_to_s16(sr, &M5000_right_error, &clip);
 
    if (clip && autorange) {
       M5000_left_error = 0 ;
@@ -436,22 +427,24 @@ static void music5000_emulate(void)
       music5000_rec_stop();
    }
 
-   size_t space = rpi_audio_buffer_free_space()>>1;
-   if (space)
+   /* Not the audio owner (the video player has the output): synthesise
+      nothing - this loop is where the Music 5000's CPU time goes. */
+   uint32_t space;
+   int16_t *bufptr = audio_write_ptr(&m5000_producer, &space);
+   if (bufptr && space)
    {
-      uint32_t *bufptr = rpi_audio_buffer_pointer();
       for (size_t sample = space; sample !=0 ; sample--) {
          update_channels(&m5000);
          update_channels(&m3000);
          int sl = m5000.sleft  + m3000.sleft;
          int sr = m5000.sright + m3000.sright;
 
-         music5000_store_sample(sl, sr, bufptr, bufptr + 1);
+         music5000_store_sample(sl, sr, bufptr);
          if (record)
             store_samples(sl, sr);
          bufptr += 2;
       }
-      rpi_audio_samples_written();
+      audio_commit(space);
    }
 }
 
@@ -474,12 +467,13 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
    }
 
    M5000_gain();
-   M5000_BeebAudio();
 
    synth_reset(&m5000, &Pi1MHz->JIM_ram[0x3000]);
    synth_reset(&m3000, &Pi1MHz->JIM_ram[0x5000]);
 
-   M5000_audio_range = (int)(rpi_audio_init(46875)) * M5000_DIVIDER;
+   M5000_s16_scale = (int32_t)((1 << 21) / (250000000 / M5000_SAMPLE_RATE));
+   M5000_left_error = M5000_right_error = 0;
+   audio_claim(&m5000_producer);
 
    // register polling function
    Pi1MHz_Register_Poll(music5000_emulate);

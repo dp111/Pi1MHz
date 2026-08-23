@@ -12,6 +12,10 @@ void videoplayer_init(uint8_t instance, uint8_t address);
    When false the F-code layer keeps its old (static frame) behaviour. */
 bool videoplayer_active(void);
 
+/* The VFS jukebox directory changed or the card was remounted: reopen
+   /BeebVFS<n>/video.pvf from the poll task. Safe from any context. */
+void videoplayer_media_changed(void);
+
 /* Fxxxxx<op>: op = 'R' goto & still, 'N' goto & play, 'Q' goto & resume
    previous mode, 'S' load stop register, 'I' load info register.
    Pictures are 1-based, as on the disc. */
@@ -28,5 +32,8 @@ void videoplayer_audio_enable(int channel, bool on);
 
 /* Current picture number for the ?F status request (0 = unknown) */
 uint32_t videoplayer_picture_number(void);
+
+/* One-line state dump for /status */
+const char *videoplayer_status(void);
 
 #endif

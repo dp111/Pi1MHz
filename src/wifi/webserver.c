@@ -25,6 +25,11 @@
 #include "../usb/mtp_fs.h"
 #include "../rpi/screen.h"
 #include "../rpi/h264dec.h"           /* frame count on /status */
+#include "../rpi/audio.h"             /* owner/rate/underruns on /status */
+#include "../rpi/hdmi_audio.h"
+#include "../rpi/block.h"
+#include "../videoplayer.h"
+#include "../harddisc_emulator.h"     /* SCSI transfer diagnostics */
 #include "../rpi/exceptions.h"
 #include "../rpi/info.h"
 #include "../rpi/systimer.h"
@@ -2481,7 +2486,37 @@ static bool route_status(ws_conn_t *c)
       snprintf(tmp, sizeof tmp, "running, %lu frames decoded",
                (unsigned long)h264dec_frames_decoded());
       table_row(&b, "H264 decoder", tmp);
+      table_row(&b, "Video player", videoplayer_status());
    }
+   snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s mai %08lx hsm %lu pix %lu",
+            audio_owner_name(), (unsigned long)audio_rate(), (unsigned long)audio_peak(),
+            (unsigned long)audio_queued_frames(), (unsigned long)audio_blocks_played(),
+            (unsigned long)audio_underruns(), audio_sink_name(),
+            (unsigned long)hdmi_audio_mai_ctl(), (unsigned long)hdmi_audio_hsm_hz(),
+            (unsigned long)hdmi_audio_pixel_hz());
+   table_row(&b, "Audio", tmp);
+   {
+      snprintf(tmp, sizeof tmp, "%lu ACK timeouts, audio service max %lu us, ACK wait max %lu us",
+               (unsigned long)hd_ack_timeouts, (unsigned long)hd_service_max_us,
+               (unsigned long)hd_ack_wait_max_us);
+      table_row(&b, "SCSI", tmp);
+   }
+   {
+      /* max run per poll slot, reset on read */
+      size_t o = 0;
+      for (unsigned int i = 0; i < Pi1MHz_poll_count() && o < sizeof tmp - 12; i++)
+         o += (size_t)snprintf(tmp + o, sizeof tmp - o, "%u:%lu ", i,
+                               (unsigned long)Pi1MHz_poll_max_us(i, true));
+      table_row(&b, "Poll max us", tmp);
+   }
+   {
+      /* KB/s without a 64-bit constant: bytes/ms = ~KB/s within 2.4% */
+      uint32_t ms = sd_pio_us / 1000u;
+      snprintf(tmp, sizeof tmp, "%lu KB in %lu ms = %lu KB/s (PIO loop only)",
+               (unsigned long)(sd_pio_bytes / 1024u), (unsigned long)ms,
+               ms ? (unsigned long)(sd_pio_bytes / 1024u * 1000u / ms) : 0ul);
+   }
+   table_row(&b, "SD data", tmp);
    {
       /* The chip's own view of the air.  rx_good is what it actually received;
          compare its movement with "Frames received" above to tell a frame that
@@ -2653,6 +2688,67 @@ static bool route_framebuffer_bmp(ws_conn_t *c)
    c->dl_buf_len = 0u;
    c->dl_buf_sent = 0u;
    c->state = CONN_SEND_FB;
+   conn_pump(c);
+   return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* /audio.wav - the last ~0.35 s the audio producer wrote, as a WAV    */
+/* ------------------------------------------------------------------ */
+
+#define WS_AUDIO_WAV_FRAMES 16384u
+
+static bool route_audio_wav(ws_conn_t *c)
+{
+   uint32_t rate = audio_rate();
+   if (rate == 0u)
+      return ws_error(c, 503, "Service Unavailable", "No audio producer is active.");
+
+   uint32_t pcm_bytes = WS_AUDIO_WAV_FRAMES * 4u;
+   ws_strbuf_t r;
+   sb_init(&r);
+   sb_printf(&r,
+             "HTTP/1.1 200 OK\r\n"
+             "Content-Type: audio/wav\r\n"
+             "Content-Length: %lu\r\n"
+             "Cache-Control: no-store\r\n"
+             "%s"
+             "\r\n",
+             (unsigned long)(44u + pcm_bytes), ws_connection_hdr(c));
+
+   uint8_t hdr[44];
+   memcpy(hdr, "RIFF", 4);      ws_store_u32(&hdr[4], 36u + pcm_bytes);
+   memcpy(&hdr[8], "WAVEfmt ", 8); ws_store_u32(&hdr[16], 16u);
+   hdr[20] = 1; hdr[21] = 0;    /* PCM */
+   hdr[22] = 2; hdr[23] = 0;    /* stereo */
+   ws_store_u32(&hdr[24], rate);
+   ws_store_u32(&hdr[28], rate * 4u);
+   hdr[32] = 4; hdr[33] = 0;    /* block align */
+   hdr[34] = 16; hdr[35] = 0;   /* bits */
+   memcpy(&hdr[36], "data", 4); ws_store_u32(&hdr[40], pcm_bytes);
+   sb_write(&r, (const char *)hdr, sizeof hdr);
+
+   int16_t *pcm = malloc(pcm_bytes);
+   if (pcm == NULL || r.failed) {
+      free(pcm);
+      sb_free(&r);
+      return ws_oom(c);
+   }
+   audio_ring_snapshot(pcm, WS_AUDIO_WAV_FRAMES);
+   sb_write(&r, (const char *)pcm, pcm_bytes);
+   free(pcm);
+   if (r.failed) {
+      sb_free(&r);
+      return ws_oom(c);
+   }
+
+   free(c->out);
+   c->out = r.data;
+   c->out_len = r.len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
    conn_pump(c);
    return true;
 }
@@ -4483,16 +4579,18 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
          return ws_error(c, 411, "Length Required",
                          "PUT requires a Content-Length.");
       /* Parse the digit string into a uint32_t, rejecting both
-         non-digits and overflow.  Reject sizes >= 2 GiB up front: the
-         counter is a uint32_t and the streaming model doesn't track
-         anything bigger, so a value that wraps would let the client
-         confuse the server about where the upload should end.  An
+         non-digits and overflow.  Reject sizes that would wrap the
+         counter up front: it is a uint32_t and the streaming model
+         doesn't track anything bigger, so a value that wraps would let
+         the client confuse the server about where the upload should
+         end.  Anything below 4 GiB fits - which is also FAT32's file
+         size limit, and a Domesday side's video.pvf is ~2.9 GB.  An
          explicit 413 is the right reply per RFC 9110 §15.5.14. */
       for (p = len_hdr; *p != '\0'; ++p) {
          if (*p < '0' || *p > '9')
             return ws_error(c, 400, "Bad Request",
                             "Malformed Content-Length.");
-         if (content_length > (UINT32_C(0x7FFFFFFF) - 9u) / 10u)
+         if (content_length > (UINT32_C(0xFFFFFFFF) - 9u) / 10u)
             return ws_error(c, 413, "Payload Too Large",
                             "Content-Length exceeds the PUT size limit.");
          content_length = (content_length * 10u) + (uint32_t)(*p - '0');
@@ -5811,6 +5909,8 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_framebuffer(c);
       if (strcmp(rawpath, "/framebuffer.bmp") == 0)
          return route_framebuffer_bmp(c);
+      if (strcmp(rawpath, "/audio.wav") == 0)
+         return route_audio_wav(c);
       if (strcmp(rawpath, "/reboot") == 0)
          return route_reboot_confirm(c);
       if (strcmp(rawpath, "/files") == 0 || ws_prefix("/files/", rawpath))

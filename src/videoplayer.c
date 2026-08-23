@@ -31,6 +31,7 @@
 #include <inttypes.h>
 #include "rpi/screen.h"
 #include "BeebSCSI/fatfs/ff.h"
+#include "BeebSCSI/filesystem.h"
 #include "rpi/rpi.h"
 #include "rpi/systimer.h"
 #include "rpi/audio.h"
@@ -41,7 +42,11 @@
 
 #define YUV_PLANE 0
 
+/* The video for the current VFS jukebox directory, same convention as
+   the scsi0.dat LUN images: /BeebVFS<n>/video.pvf. The card root is
+   tried second so a standalone demo card (no VFS volume) still plays. */
 #define PVF_FILENAME "video.pvf"
+static char pvf_path[32];
 
 /* Where the GPU buffer handles are parked so the NEXT kernel can hand them
  * back over a kernel.now chain-boot - see the detailed rationale in git
@@ -104,76 +109,21 @@ static struct {
     uint32_t frame_period_us;
     uint32_t next_frame_due;         /* systimer target for the next flip */
 
-    /* audio */
+    /* audio: the PCM goes straight from the .pvf record into the audio
+       core's ring; channel mutes (A/B soundtracks) are applied at the
+       output by the core so they stay in sync */
     bool audio_present;
-    bool audio_on[2];
-    bool audio_inited;
-    uint8_t *audio_ring;             /* s16le stereo, ring buffer */
-    uint32_t audio_ring_size;
-    uint32_t audio_wr, audio_rd;     /* byte positions (mod size) */
-    int32_t  audio_err_l, audio_err_r;   /* rpi_audio_pack dither state */
+    bool audio_on[2];                /* F-codes A0/A1, B0/B1 */
+    audio_producer_t producer;
+
+    bool reopen;                     /* the VFS directory changed / card remounted */
+    uint32_t dup_owed;               /* still's duplicate AU not yet sent (record+1) */
+    bool tail_pushed;                /* end of play range: last picture's pusher sent */
+
+    /* diagnostics */
+    uint32_t feeds, feed_fail, frames_back, flips, resume_max_us, feed_max_us;
+    uint32_t clmt_entries;           /* cluster link map size in use (0 = none) */
 } vp;
-
-/* ------------------------------------------------------------------ */
-/* Audio                                                              */
-/* ------------------------------------------------------------------ */
-
-#define AUDIO_RING_FRAMES 8          /* of video, ~320 ms */
-
-static uint32_t audio_ring_level(void)
-{
-    /* wr/rd are monotonic, so the level is the plain difference - masking
-       it would alias a completely full ring to "empty" */
-    return vp.audio_wr - vp.audio_rd;
-}
-
-static void audio_ring_write(const uint8_t *data, uint32_t len)
-{
-    for (uint32_t i = 0; i < len; i++) {
-        vp.audio_ring[vp.audio_wr & (vp.audio_ring_size - 1u)] = data[i];
-        vp.audio_wr++;
-    }
-}
-
-static void audio_ring_reset(void)
-{
-    vp.audio_rd = vp.audio_wr = 0;
-}
-
-/* Move samples from the ring into the PWM DMA buffer. Each DMA refill is
-   DMA_BUFFER_SIZE words = DMA_BUFFER_SIZE/2 stereo sample pairs. */
-static void audio_pump(void)
-{
-    if (!vp.audio_inited)
-        return;
-
-    /* When playing, ALWAYS consume the ring at the DMA rate - muting only
-       silences the output. Consuming while muted keeps audio in sync with
-       the pictures, so A1 after A0 resumes at the right place instead of
-       replaying a third of a second of stale sound. */
-    bool playing = (vp.mode == VP_PLAY);
-
-    while (rpi_audio_buffer_free_space()) {
-        uint32_t *dst = rpi_audio_buffer_pointer();
-        for (uint32_t i = 0; i < DMA_BUFFER_SIZE / 2; i++) {
-            int16_t l = 0, r = 0;
-            if (playing && audio_ring_level() >= 4) {
-                uint32_t rd = vp.audio_rd & (vp.audio_ring_size - 1u);
-                l = (int16_t)(vp.audio_ring[rd] | (vp.audio_ring[rd + 1] << 8));
-                r = (int16_t)(vp.audio_ring[rd + 2] | (vp.audio_ring[rd + 3] << 8));
-                vp.audio_rd += 4;
-            }
-            /* Channel mutes emulate the LaserDisc A/B tracks */
-            if (!vp.audio_on[0]) l = 0;
-            if (!vp.audio_on[1]) r = 0;
-            *dst++ = rpi_audio_pack(l, &vp.audio_err_l);
-            *dst++ = rpi_audio_pack(r, &vp.audio_err_r);
-        }
-        rpi_audio_samples_written();
-        if (!playing)
-            break;
-    }
-}
 
 /* ------------------------------------------------------------------ */
 /* SD reading / decoder feeding                                       */
@@ -182,7 +132,30 @@ static void audio_pump(void)
 /* Read record 'frame' (0-based) and submit its access unit. Audio PCM is
    pulled into the ring when 'with_audio'. 'eos' forces the decoder to
    emit the picture immediately (used for stills/steps). */
-static bool feed_frame(uint32_t frame, bool with_audio, bool eos)
+/* Read 'len' bytes of the current record into 'dst' in pieces, keeping the
+   audio DMA fed between them: an 80 KB access unit after a random seek
+   was measured at ~54 ms (two reads, ~1.5 MB/s on this path) against a
+   9.5 ms runway, so even 16 KB pieces starved it - 4 KB keeps each gap
+   under 3 ms. This is the one long read in the loop. */
+static bool read_chunked(void *dst, uint32_t len)
+{
+    uint8_t *p = dst;
+    UINT n;
+    while (len) {
+        uint32_t piece = len < 4096u ? len : 4096u;
+        if (f_read(&vp.file, p, piece, &n) != FR_OK || n != piece)
+            return false;
+        p += piece;
+        len -= piece;
+        audio_pump();
+    }
+    return true;
+}
+
+/* Submit the access unit of record 'frame' (0-based) as one input buffer;
+   the audio PCM goes into the ring when 'with_audio'. Returns false when
+   no staging buffer is free or the read failed. */
+static bool submit_au(uint32_t frame, bool with_audio, bool count)
 {
     if (frame >= vp.hdr.frame_count)
         return false;
@@ -203,27 +176,65 @@ static bool feed_frame(uint32_t frame, bool with_audio, bool eos)
     }
 
     uint32_t vlen = (rec.video_len + 3u) & ~3u;
-    if (f_read(&vp.file, staging, vlen, &n) != FR_OK || n != vlen) {
+    if (!read_chunked(staging, vlen)) {
         h264dec_cancel_input();
+        vp.feed_fail++;
         return false;
     }
 
-    if (with_audio && vp.audio_present && rec.audio_len &&
-        rec.audio_len <= vp.audio_ring_size - audio_ring_level()) {
-        /* Reuse the tail of the staging buffer for the audio hop - it is
-           big enough (max_video_len + audio << buffer size) */
-        uint8_t *ah = staging + vlen;
-        if (rec.audio_len <= max - vlen &&
-            f_read(&vp.file, ah, rec.audio_len, &n) == FR_OK && n == rec.audio_len)
-            audio_ring_write(ah, rec.audio_len);
+    if (with_audio && vp.audio_present && rec.audio_len) {
+        /* Straight from SD into the audio ring, in one or two pieces if
+           it wraps. A frame that does not fit (ring full) is skipped -
+           the pacing loop never lets that happen in practice. */
+        uint32_t frames = rec.audio_len / 4u;
+        if (frames <= audio_free_frames()) {
+            while (frames) {
+                uint32_t contig;
+                int16_t *dst = audio_write_ptr(&vp.producer, &contig);
+                if (!dst || !contig)
+                    break;
+                if (contig > frames)
+                    contig = frames;
+                if (f_read(&vp.file, dst, contig * 4u, &n) != FR_OK || n != contig * 4u)
+                    break;
+                audio_commit(contig);
+                frames -= contig;
+            }
+        }
     }
 
     /* pts carries the frame number so the display side knows what it is
-       looking at without any other bookkeeping */
-    if (!h264dec_submit_input(rec.video_len, (int64_t)frame, eos))
+       looking at without any other bookkeeping. Never an EOS: after one
+       the component takes nothing until it is flushed, and a flush was
+       found not to be enough to get it decoding again. */
+    if (!h264dec_submit_input(rec.video_len, (int64_t)frame, false)) {
+        vp.feed_fail++;
         return false;
+    }
+    if (count)
+        vp.in_flight++;
+    vp.feeds++;
+    return true;
+}
 
-    vp.in_flight++;
+/* Feed record 'frame'. A still ('eos' - the name is historical) is made
+   the way the decoder naturally works: it emits picture N when picture
+   N+1 arrives, so the same access unit is submitted twice. The duplicate
+   is not counted in in_flight - it stays inside the decoder until the
+   next flush (a seek, play, or reverse step), which is what h264dec_
+   resume() in those paths is for. If both staging buffers are not free
+   the duplicate is owed and the poll task sends it. */
+static bool feed_frame(uint32_t frame, bool with_audio, bool eos)
+{
+    uint32_t t0 = RPI_GetSystemTime();
+    if (!submit_au(frame, with_audio, true))
+        return false;
+    if (eos) {
+        if (!submit_au(frame, false, false))
+            vp.dup_owed = frame + 1u;   /* 1-based so 0 = none */
+    }
+    uint32_t dt = RPI_GetSystemTime() - t0;
+    if (dt > vp.feed_max_us) vp.feed_max_us = dt;
     return true;
 }
 
@@ -232,6 +243,7 @@ static void frame_decoded(uint32_t phys, int64_t pts, bool eos)
 {
     if (eos && !phys)
         return;
+    vp.frames_back++;
     if (vp.in_flight > 0)
         vp.in_flight--;
     if (vp.pending_phys && vp.pending_phys != vp.displayed_phys) {
@@ -260,6 +272,7 @@ static void flip_pending(void)
     if (vp.displayed_phys && vp.displayed_phys != phys)
         h264dec_recycle_output(vp.displayed_phys);
     vp.displayed_phys = phys;
+    vp.flips++;
     vp.cur_picture = (uint32_t)vp.pending_pts + 1u;
 }
 
@@ -267,24 +280,41 @@ static void flip_pending(void)
 /* Poll task                                                          */
 /* ------------------------------------------------------------------ */
 
+static void pvf_reopen(void);
+static bool pvf_open_file(void);
+
 static void videoplayer_poll(void)
 {
+    if (vp.reopen) {
+        vp.reopen = false;
+        pvf_reopen();
+    }
     if (!vp.open)
         return;
 
     h264dec_poll();
 
-    /* Feed the PWM before any SD work: the DMA runway is only ~9.5 ms
-       and a seek-burst of AU reads below can exceed that */
+    if (vp.dup_owed) {
+        if (submit_au(vp.dup_owed - 1u, false, false))
+            vp.dup_owed = 0;
+    }
+
+    /* Feed the PWM before any SD work: the DMA runway is short and a
+       seek-burst of AU reads below can exceed it (the core also pumps
+       from its own poll; this is the early call) */
     audio_pump();
 
     /* Pending random access? Flush whatever is mid-pipeline first. */
     if (vp.seek_frame >= 0) {
         uint32_t target = (uint32_t)vp.seek_frame;
-        if (vp.in_flight)
-            h264dec_resume();        /* discard stale pictures */
+        uint32_t t0 = RPI_GetSystemTime();
+        h264dec_resume();            /* discard stale pictures and a held still duplicate */
+        uint32_t dt = RPI_GetSystemTime() - t0;
+        if (dt > vp.resume_max_us) vp.resume_max_us = dt;
         vp.in_flight = 0;
-        audio_ring_reset();
+        vp.dup_owed = 0;
+        vp.tail_pushed = false;
+        audio_flush();
 
         bool play = (vp.seek_op == 'N') ||
                     (vp.seek_op == 'Q' && vp.prev_mode == VP_PLAY);
@@ -306,6 +336,14 @@ static void videoplayer_poll(void)
                 break;
             vp.next_frame++;
         }
+        /* The decoder emits a picture only when the next one arrives, so
+           the last picture of the range needs a pusher: submit it again
+           (uncounted, like a still's duplicate) once everything else is
+           in. The flush below discards the duplicate. */
+        if (vp.next_frame >= limit && vp.in_flight == 1 && !vp.tail_pushed) {
+            if (submit_au(limit - 1u, false, false))
+                vp.tail_pushed = true;
+        }
 
         /* Display at the frame rate */
         if (vp.pending_phys &&
@@ -320,6 +358,8 @@ static void videoplayer_poll(void)
            re-stilling. */
         if (vp.cur_picture >= limit && !vp.in_flight && !vp.pending_phys) {
             vp.mode = VP_STILL;
+            vp.tail_pushed = false;
+            audio_flush();
             if (vp.stop_picture && vp.cur_picture >= vp.stop_picture)
                 vp.stop_picture = 0;
             h264dec_resume();
@@ -363,9 +403,71 @@ bool videoplayer_active(void)
     return vp.open;
 }
 
+void videoplayer_media_changed(void)
+{
+    /* Called from the jukebox/remount paths, possibly in FIQ context: just
+       note it; the poll task does the file work. */
+    vp.reopen = true;
+}
+
+/* The VFS jukebox directory changed, or the card was remounted (which
+   invalidates every open FIL): drop the file and index, reopen whatever
+   video the new directory holds, and show its picture 1. The decoder and
+   the frame buffers stay up. */
+static void pvf_reopen(void)
+{
+    if (!h264dec_running())
+        return;                      /* never came up: nothing to reopen into */
+
+    if (vp.open) {
+        h264dec_resume();            /* discard anything in flight */
+        vp.in_flight = 0;
+        audio_flush();
+        f_close(&vp.file);
+        free(vp.index);
+        vp.index = NULL;
+        vp.open = false;
+    }
+    vp.mode = VP_STILL;
+    vp.seek_frame = -1;
+    vp.pending_phys = 0;
+    vp.stop_picture = 0;
+
+    if (!pvf_open_file()) {
+        /* nothing in the new directory: hold the last picture */
+        return;
+    }
+    vp.frame_period_us = (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num);
+    vp.audio_present = (vp.hdr.audio_rate != 0);
+    if (vp.audio_present) {
+        vp.producer.rate = vp.hdr.audio_rate;
+        vp.producer.latency_frames = (vp.hdr.audio_bytes_per_frame / 4u) * 8u;
+        vp.producer.name = "video";
+        vp.producer.dma_frames = AUDIO_DMA_FRAMES_MAX;
+        audio_claim(&vp.producer);
+        vp.audio_on[0] = vp.audio_on[1] = true;
+    }
+    vp.open = true;
+    vp.cur_picture = 1;
+    videoplayer_goto(1, 'R');
+}
+
 uint32_t videoplayer_picture_number(void)
 {
     return vp.cur_picture;
+}
+
+const char *videoplayer_status(void)
+{
+    static char buf[160];
+    snprintf(buf, sizeof buf, "%s mode %d pic %lu seek %ld inflight %ld feeds %lu fail %lu back %lu flips %lu resume_max %luus feed_max %luus clmt %lu%s",
+             vp.open ? pvf_path : "closed", (int)vp.mode, (unsigned long)vp.cur_picture,
+             (long)vp.seek_frame, (long)vp.in_flight, (unsigned long)vp.feeds,
+             (unsigned long)vp.feed_fail, (unsigned long)vp.frames_back,
+             (unsigned long)vp.flips, (unsigned long)vp.resume_max_us,
+             (unsigned long)vp.feed_max_us, (unsigned long)vp.clmt_entries,
+             vp.file.cltbl ? "" : " (slow seeks)");
+    return buf;
 }
 
 void videoplayer_goto(uint32_t picture, char op)
@@ -401,8 +503,10 @@ void videoplayer_play_fwd(void)
     if (vp.mode != VP_PLAY) {
         vp.next_frame = vp.cur_picture;      /* picture is 1-based */
         vp.in_flight = 0;
+        vp.dup_owed = 0;
+        vp.tail_pushed = false;
         h264dec_resume();
-        audio_ring_reset();
+        audio_flush();
         vp.mode = VP_PLAY;
         vp.next_frame_due = RPI_GetSystemTime() + vp.frame_period_us;
     }
@@ -412,9 +516,10 @@ void videoplayer_play_rev(void)
 {
     if (!vp.open)
         return;
-    if (vp.in_flight)
-        h264dec_resume();
+    h264dec_resume();
     vp.in_flight = 0;
+    vp.dup_owed = 0;
+    audio_flush();
     vp.mode = VP_PLAY_REV;
     vp.next_frame_due = RPI_GetSystemTime() + vp.frame_period_us;
 }
@@ -424,6 +529,7 @@ void videoplayer_halt(void)
     if (!vp.open)
         return;
     vp.mode = VP_STILL;
+    audio_flush();                   /* sound stops with the picture */
 }
 
 void videoplayer_pause(void)
@@ -431,6 +537,7 @@ void videoplayer_pause(void)
     if (!vp.open)
         return;
     vp.mode = VP_STILL;
+    audio_flush();
 }
 
 void videoplayer_step(int delta)
@@ -447,6 +554,7 @@ void videoplayer_audio_enable(int channel, bool on)
 {
     if (channel >= 0 && channel < 2)
         vp.audio_on[channel] = on;
+    audio_set_channel_mute(!vp.audio_on[0], !vp.audio_on[1]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -456,21 +564,47 @@ void videoplayer_audio_enable(int channel, bool on)
 static bool pvf_open_file(void)
 {
     UINT n;
-    if (f_open(&vp.file, PVF_FILENAME, FA_READ) != FR_OK)
-        return false;
+    snprintf(pvf_path, sizeof(pvf_path), "/BeebVFS%d/" PVF_FILENAME,
+             filesystemGetLunDirectoryVFS());
+    if (f_open(&vp.file, pvf_path, FA_READ) != FR_OK) {
+        snprintf(pvf_path, sizeof(pvf_path), "/" PVF_FILENAME);
+        if (f_open(&vp.file, pvf_path, FA_READ) != FR_OK)
+            return false;
+    }
 
     /* Random access seeks constantly; give FatFS a cluster link map so
        f_lseek is O(1) instead of walking the FAT chain from the start
-       for every backwards seek (FF_USE_FASTSEEK is enabled). 256 entries
-       cover 127 fragments - plenty for a file copied onto the card in
-       one go; if the file is more fragmented fall back to slow seeks. */
-    static DWORD clmt[256];
-    clmt[0] = sizeof(clmt) / sizeof(clmt[0]);
-    vp.file.cltbl = clmt;
-    if (f_lseek(&vp.file, CREATE_LINKMAP) != FR_OK) {
-        LOG_INFO("videoplayer: " PVF_FILENAME " heavily fragmented; seeks will be slow\r\n");
-        vp.file.cltbl = NULL;
+       for every seek (FF_USE_FASTSEEK is enabled). A 2.9 GB side uploaded
+       over WebDAV onto a used card is far more fragmented than a fixed
+       table allows, and the fallback - walking 90k clusters of FAT per
+       *FRAME - was measured at 50-80 ms, starving the audio DMA. So size
+       the map to the file: FatFs reports the entries it needs. */
+    static DWORD *clmt;
+    static uint32_t clmt_entries;
+    if (!clmt) {
+        clmt_entries = 256;
+        clmt = malloc(clmt_entries * sizeof(DWORD));
     }
+    vp.file.cltbl = NULL;
+    for (int attempt = 0; clmt && attempt < 2; attempt++) {
+        clmt[0] = clmt_entries;
+        vp.file.cltbl = clmt;
+        FRESULT r = f_lseek(&vp.file, CREATE_LINKMAP);
+        if (r == FR_OK)
+            break;
+        vp.file.cltbl = NULL;
+        if (r == FR_NOT_ENOUGH_CORE && clmt[0] > clmt_entries && clmt[0] < 65536u) {
+            /* clmt[0] now holds the size needed */
+            free(clmt);
+            clmt_entries = clmt[0];
+            clmt = malloc(clmt_entries * sizeof(DWORD));
+            continue;
+        }
+        break;
+    }
+    if (!vp.file.cltbl)
+        LOG_INFO("videoplayer: %s: no cluster map; seeks will be slow\r\n", pvf_path);
+    vp.clmt_entries = clmt_entries;
 
     if (f_read(&vp.file, &vp.hdr, sizeof(vp.hdr), &n) != FR_OK ||
         n != sizeof(vp.hdr) ||
@@ -502,11 +636,6 @@ static bool pvf_open_file(void)
     }
     return true;
 }
-
-/* Survives the memset of vp below: whether THIS module claimed the PWM
-   audio path on a previous init (a Beeb reset re-runs every emulator
-   init, and we must recognise our own claim as ours). */
-static bool audio_owned_by_player;
 
 /* Abandon the hardware-decode path part way through bring-up: give
    everything back and leave the video plane disabled. The order matters:
@@ -544,9 +673,9 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     if (vp.open) {
         h264dec_reset();
         f_close(&vp.file);
+        audio_release(&vp.producer);
     }
     free(vp.index);
-    free(vp.audio_ring);
 
     memset(&vp, 0, sizeof(vp));
     vp.seek_frame = -1;
@@ -625,27 +754,17 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     screen_plane_enable(YUV_PLANE, true);
 
     vp.audio_present = (vp.hdr.audio_rate != 0);
-    if (vp.audio_present && rpi_audio_active() && !audio_owned_by_player) {
-        /* The Music 5000 (enabled by default) or BeebSID already owns the
-           PWM/DMA path, and its poll fills the same buffers - two writers
-           means garbled audio, so stand down. Disable the other emulator
-           (M5000_addr=-1 in Pi1MHz.cfg) to give the video its sound. */
-        LOG_INFO("videoplayer: audio disabled - PWM in use (set M5000_addr=-1 for video sound)\r\n");
-        vp.audio_present = false;
-    }
     if (vp.audio_present) {
-        vp.audio_ring_size = 1;
-        while (vp.audio_ring_size < vp.hdr.audio_bytes_per_frame * AUDIO_RING_FRAMES)
-            vp.audio_ring_size <<= 1;             /* power of two for the masks */
-        vp.audio_ring = malloc(vp.audio_ring_size);
-        if (vp.audio_ring) {
-            rpi_audio_init(vp.hdr.audio_rate);
-            audio_owned_by_player = true;
-            vp.audio_inited = true;
-            vp.audio_on[0] = vp.audio_on[1] = true;
-        } else {
-            vp.audio_present = false;
-        }
+        /* Take the audio output. Supersedes the Music 5000 (which cannot
+           run alongside VFS anyway) or BeebSID; they get it back on the
+           next Beeb reset if the video is gone. ~8 video frames of lead
+           rides out SD seek bursts. */
+        vp.producer.rate = vp.hdr.audio_rate;
+        vp.producer.latency_frames = (vp.hdr.audio_bytes_per_frame / 4u) * 8u;
+        vp.producer.name = "video";
+        vp.producer.dma_frames = AUDIO_DMA_FRAMES_MAX;   /* ride out SD latency spikes */
+        audio_claim(&vp.producer);
+        vp.audio_on[0] = vp.audio_on[1] = true;
     }
 
     vp.open = true;
@@ -658,6 +777,6 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     Pi1MHz_Register_Poll(videoplayer_poll);
 
     LOG_INFO("videoplayer: %s %"PRIu32"x%"PRIu32" %"PRIu32" frames%s\r\n",
-             PVF_FILENAME, vp.hdr.width, vp.hdr.height, vp.hdr.frame_count,
+             pvf_path, vp.hdr.width, vp.hdr.height, vp.hdr.frame_count,
              vp.audio_present ? " + audio" : "");
 }

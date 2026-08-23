@@ -7,6 +7,7 @@
 
 #include <stdlib.h>
 #include "Pi1MHz.h"
+#include "rpi/audio.h"
 #include "rpi/info.h"
 #include "rpi/systimer.h"
 #include "config.h"
@@ -286,17 +287,54 @@ uint8_t harddisc_emulator_get_address(void)
 
 // Wait for ACK (or host reset). Returns false on timeout. The system
 // timer is only read every 256th spin to keep the normal path fast.
+uint32_t hd_ack_timeouts;        // transfers abandoned: host never ACKed
+uint32_t hd_service_max_us;      // longest audio_pump() inside a transfer
+uint32_t hd_ack_wait_max_us;     // longest single wait for the host's ACK
+
 static bool hd_wait_ack(void)
 {
    uint32_t counter = 0;
    uint32_t start = RPI_GetSystemTime();
    while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
    {
-      if (((++counter & 0xFFu) == 0u) &&
-          ((RPI_GetSystemTime() - start) >= HD_ACK_TIMEOUT_US))
-         return false;
+      if ((++counter & 0xFFu) == 0u)
+      {
+         uint32_t waited = RPI_GetSystemTime() - start;
+         if (waited > hd_ack_wait_max_us)
+            hd_ack_wait_max_us = waited;
+         if (waited >= HD_ACK_TIMEOUT_US)
+         {
+            hd_ack_timeouts++;
+            return false;
+         }
+         /* The host is slow on this byte (the VFS ROM's F-code exchange
+            takes ~60 us per byte, 16 ms per command) - keep the audio
+            DMA fed meanwhile. Only after 100 us: ADFS's sector loop ACKs
+            within ~5 us and must never see us busy when it does (a pause
+            between its bytes hangs it), so the pump also aborts the
+            instant ACK arrives. */
+         if (waited > 100u)
+            audio_pump_until(&HD_ACK);
+      }
    }
    return true;
+}
+
+// Keep the audio DMA fed during a multi-sector transfer, which holds the
+// main loop far longer than its runway. This is for the video player, whose
+// ring holds hundreds of ms (Domesday reads the disc constantly while
+// playing); the synths keep only one block of lead and are allowed to
+// glitch during disc access. Called by the SCSI layer BETWEEN sectors only:
+// ADFS tolerates a pause there (the SD card is already read there), but a
+// pause between the bytes of a sector loses the host - the 6502 loop
+// assumes a controller that always keeps up, and hangs.
+void hd_audio_service(void)
+{
+   uint32_t t0 = RPI_GetSystemTime();
+   audio_pump();
+   uint32_t dt = RPI_GetSystemTime() - t0;
+   if (dt > hd_service_max_us)
+      hd_service_max_us = dt;
 }
 
 // Databus manipulation functions -------------------------------------------------------

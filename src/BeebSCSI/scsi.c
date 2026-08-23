@@ -138,6 +138,8 @@ static uint8_t scsiCommandInquiry(void);
 static uint8_t scsiCommandSendDiagnostic(void);
 
 #include "fcode.h"
+#include "../harddisc_emulator.h"
+#include "../videoplayer.h"
 static uint8_t scsiWriteFCode(void);
 static uint8_t scsiReadFCode(void);
 
@@ -1030,6 +1032,7 @@ static uint8_t scsiCommandRead6(void)
       cli();
       DEBUG_bytesTransferred(hostadapterPerformReadDMA(sectorPtr));
       sei();
+      hd_audio_service();              // between sectors only
 
       // Check for a host reset condition
       if (hostadapterReadResetFlag()) {
@@ -1162,6 +1165,7 @@ static uint8_t scsiCommandWrite6(void)
       cli();
       DEBUG_bytesTransferred(hostadapterPerformWriteDMA(Buffer));
       sei();
+      hd_audio_service();              // between sectors only
 
       // Check for a host reset condition
       if (hostadapterReadResetFlag()) {
@@ -2177,6 +2181,7 @@ bool scsiJukebox (uint8_t lun) {
 
    // Only jukebox if no LUNs are in the started state
    filesystemSetLunDirectory(scsiHostID, lun);
+   videoplayer_media_changed();     // the video lives in the VFS directory
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Jukeboxing successful - LUN directory set to "), lun, true);
    return true;
 }
