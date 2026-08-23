@@ -190,6 +190,12 @@ void audio_commit(uint32_t frames);
 void audio_flush(void);
 uint32_t audio_queued_frames(void);
 
+/* True when Audio_out=hdmi is configured (before any claim has resolved
+   whether HDMI is actually available): producers whose native rate is
+   not a standard HDMI rate use this to pick 48000 - HDMI sinks play a
+   46875 Hz stream 2.4% sharp rather than resampling it. */
+bool audio_out_is_hdmi(void);
+
 /* Mute a channel at the output, without affecting what is queued - the
    LaserDisc A/B soundtrack switches, which must stay in sync when
    re-enabled. Both false by default. */

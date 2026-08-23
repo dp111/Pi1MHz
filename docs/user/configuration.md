@@ -100,6 +100,7 @@ Harddisc_addr=-1
 | `Pi1MHznOE` | `1` | Set `0` if your interface board has no external output-enable (nOE) pin on its data bus buffer. `1` (the default) drives the nOE pin, which also lets Pi1MHz share the 1MHz bus with other devices. Which one you need depends on the board - if the shipped default works, leave it alone. |
 | `watchdog` | off | A number of seconds (1-15). If set, the Pi's hardware watchdog reboots it automatically should the firmware ever lock up. `0` or absent = off. `watchdog=10` is a sensible value if you want it. |
 | `BeebAudio_Off` | off | `1` mutes the emulated audio path into the BBC's internal speaker. For the Music 5000 on a Pi 3B+ this also enables proper stereo on the Pi's headphone jack. Applies to whichever audio emulator is running (Music 5000 or BeebSID). |
+| `Audio_out` | `beeb` | `hdmi` sends the sound (Music 5000, BeebSID or the video player) out of the HDMI port instead of the Beeb pin/jack. Needs the display link in HDMI mode - `hdmi_drive=2` in `config.txt` if the screen's EDID does not advertise audio. |
 
 ## Hard disc settings
 

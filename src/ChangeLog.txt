@@ -207,3 +207,8 @@ Add a web browser for viewing/modifying .ssd .dsd .mmb files scsi.dat can only b
 Update 43455 WiFi firmware to 7.45.265 (Pi 3B+/4/CM4).
 Hardware H264 video player for the Domesday LaserDisc emulation (needs the full start.elf, gpu_mem=64 and vd_use_vpu0=1).
 Removed the frame.lz still-frame background, its LZ4 decompressor and the 4:2:2 YUV plane - superseded by the video player.
+Audio rework: one audio core (int16 ring) shared by Music 5000, BeebSID and the video player; Beeb pin always carries the proper mono mix; Audio_out=hdmi plays over HDMI (direct MAI, no firmware service).
+Video player: video.pvf lives in /BeebVFSn next to the volume, follows the VFS jukebox, and reopens on remount; stills/steps fixed after the first; VP415 speed F-codes (SxxxF/SxxxS, U/V/W/Z), X, and the D0/D1 picture number display.
+Audio no longer clicks during disc activity: transfers keep the DMA fed and the player rides out SD latency spikes.
+Web /status: audio, video player, SD throughput and per-poll timing diagnostics; /audio.wav returns the last third of a second of sound; PUT size limit raised to 4GB for video uploads.
+

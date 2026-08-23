@@ -291,6 +291,12 @@ void filesystemReset(void)
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemMount(): Successful\r\n"));
    filesystemState.fsMountState = true;
 
+   // Every FIL held across the (dis)mount is invalid, and this is the
+   // first moment a reopen can succeed - notify the video player here,
+   // never at dismount (a reopen attempted while unmounted fails and the
+   // one-shot flag would be spent).
+   videoplayer_media_changed();
+
    // Note: ADFS does not send a SCSI STARTSTOP command on reboot... it assumes that LUN 0 is already started.
    // This is theoretically incorrect... the host should not assume anything about the state of a SCSI LUN.
    // However, in order to support this buggy implementation we have to start LUN 0 here.
@@ -318,11 +324,6 @@ bool filesystemDismount(void)
       filesystemSetLunStatus(i, false);
       parse_releasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
    }
-   // every FIL anyone held is now invalid - the video player's included.
-   // (Here rather than in filesystemReset so the fat_service / MTP
-   // dismount paths notify too.)
-   videoplayer_media_changed();
-
    // Dismount the SD card
      FRESULT fsResult;
    fsResult = f_mount(&filesystemState.fsObject, "", 0);

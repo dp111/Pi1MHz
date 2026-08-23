@@ -264,6 +264,12 @@ static void sink_select(void)
    sink = (p && strcasecmp(p, "hdmi") == 0) ? SINK_HDMI : SINK_PWM;
 }
 
+bool audio_out_is_hdmi(void)
+{
+   sink_select();
+   return sink == SINK_HDMI;
+}
+
 uint32_t audio_queued_frames(void)
 {
    return ring_wr - ring_rd;
@@ -407,77 +413,86 @@ void audio_set_channel_mute(bool left, bool right)
 /* Ring -> sink                                                       */
 /* ------------------------------------------------------------------ */
 
+/* One frame into the active sink's format. Shared by the data and the
+   silence paths so they cannot diverge (mute/mono/dither all in one
+   place). */
+static inline uint32_t *pack_frame(dma_sink_t *s, int32_t l, int32_t r, uint32_t *dst)
+{
+   if (mute_l) l = 0;
+   if (mute_r) r = 0;
+   if (s == &hdmi_sink) {
+      hdmi_audio_pack((int16_t)l, (int16_t)r, dst);
+      return dst + 2;
+   }
+   if (beeb_muted) {
+      /* pin hi-Z: L/R separately, stereo on a Pi 3B+ jack */
+      *dst++ = pwm_pack(l, &err_l);
+      *dst++ = pwm_pack(r, &err_r);
+      return dst;
+   }
+   uint32_t w;
+   if (owner_mono) {
+      /* a mono producer (BeebSID) put the same full-scale sample in both
+         slots: the pin takes it as-is, no summing */
+      w = pwm_pack(l, &err_l);
+   } else {
+      /* the Beeb pin (PWM1) is mono: it gets L+R, unhalved and saturated,
+         as the Music 5000 has always summed */
+      int32_t sum = l + r;
+      if (sum > 32767) sum = 32767; else if (sum < -32768) sum = -32768;
+      w = pwm_pack(sum, &err_l);
+   }
+   *dst++ = w;
+   *dst++ = w;
+   return dst;
+}
+
 void audio_pump_until(volatile const bool *abort)
 {
    dma_sink_t *s = active;
    if (!s)
       return;
 
+   /* Only FULL blocks are committed: a stalled main loop then replays a
+      full block (a stutter, as the old design), never a sub-millisecond
+      fragment (an audible buzz), and the two-buffer runway keeps its
+      full length. Less than a block in the ring means wait - the synths
+      refill within a poll, the video player's ring holds hundreds of ms.
+      The one exception is the abort path, where answering the host beats
+      everything: its partial block plays short (no timeline drift) and
+      the window for it to be replayed is small. */
    while (dma_free_space(s)) {
       uint32_t *dst = s->next_buffer;
       uint32_t avail = ring_wr - ring_rd;
       uint32_t blk = s->frames;
-      uint32_t n = avail < blk ? avail : blk;
       uint32_t pos = ring_rd & (RING_FRAMES - 1u);
       uint32_t done = 0;
 
-      if (n == 0) {
+      if (avail == 0) {
          /* Nothing queued: one whole block of silence so an idle
             producer's output stays clean */
-         for (uint32_t i = 0; i < blk; i++) {
-            if (s == &hdmi_sink) {
-               hdmi_audio_pack(0, 0, dst);
-               dst += 2;
-            } else {
-               uint32_t w = pwm_pack(0, &err_l);
-               *dst++ = w;
-               *dst++ = w;
-            }
-         }
+         for (uint32_t i = 0; i < blk; i++)
+            dst = pack_frame(s, 0, 0, dst);
          dma_samples_written(s, blk);
          break;
       }
+      if (avail < blk)
+         break;                      /* wait for a full block's worth */
 
-      while (done < n) {
+      while (done < blk) {
          if (abort && (done & 15u) == 0u && *abort)
             break;                   /* answer whoever we were waiting on */
-         int32_t l = ring[pos * 2u];
-         int32_t r = ring[pos * 2u + 1u];
+         dst = pack_frame(s, ring[pos * 2u], ring[pos * 2u + 1u], dst);
          pos = (pos + 1u) & (RING_FRAMES - 1u);
-         if (mute_l) l = 0;
-         if (mute_r) r = 0;
-
-         if (s == &hdmi_sink) {
-            hdmi_audio_pack((int16_t)l, (int16_t)r, dst);
-            dst += 2;
-         } else if (beeb_muted) {
-            /* pin hi-Z: L/R separately, stereo on a Pi 3B+ jack */
-            *dst++ = pwm_pack(l, &err_l);
-            *dst++ = pwm_pack(r, &err_r);
-         } else if (owner_mono) {
-            /* a mono producer (BeebSID) put the same full-scale sample
-               in both slots: the pin takes it as-is, no summing */
-            uint32_t w = pwm_pack(l, &err_l);
-            *dst++ = w;
-            *dst++ = w;
-         } else {
-            /* the Beeb pin (PWM1) is mono: it gets L+R, unhalved and
-               saturated, as the Music 5000 has always summed */
-            int32_t sum = l + r;
-            if (sum > 32767) sum = 32767; else if (sum < -32768) sum = -32768;
-            uint32_t w = pwm_pack(sum, &err_l);
-            *dst++ = w;
-            *dst++ = w;
-         }
          done++;
       }
 
       if (done == 0)
          return;                     /* aborted before anything was packed */
       ring_rd += done;
-      dma_samples_written(s, done);  /* short blocks play short: no drift */
+      dma_samples_written(s, done);  /* == blk except on abort */
 
-      if (avail <= done || (abort && *abort))
+      if (abort && *abort)
          break;
    }
 }

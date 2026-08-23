@@ -480,15 +480,20 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			FCdebugString_P(PSTR(" = Set fast/slow speed value\r\n"));
 			{
 				/* SxxxF = fast register (2..40, xxx/2 x normal),
-				   SxxxS = slow register (2..250, 2/xxx x normal) */
+				   SxxxS = slow register (2..250, 2/xxx x normal).
+				   Anything else after the digits is not this command -
+				   a malformed value must not reprogram a register. */
 				uint32_t v = 0;
 				for (byteCounter = 1; byteCounter < 5; byteCounter++) {
 					char c = (char)scsiFcodeBuffer[byteCounter];
 					if (c < '0' || c > '9') break;
 					v = v * 10u + (uint32_t)(c - '0');
 				}
-				if (v)
-					videoplayer_speed(v, scsiFcodeBuffer[byteCounter] == 'F');
+				uint8_t term = scsiFcodeBuffer[byteCounter];
+				if (v && (term == 'F' || term == 'S'))
+					videoplayer_speed(v, term == 'F');
+				else
+					FCdebugString_P(PSTR(" (Invalid parameter)\r\n"));
 			}
 			break;
 

@@ -87,12 +87,27 @@ To use it you need three things:
    (1.3% of pixels differ by 1-4 levels out of 255, i.e. rounding in the
    colour conversion).
 
-2. **A `video.pvf` file** in the SD card root, made from any video
-   with the offline tool:
+   The firmware must be recent enough to know `vd_use_vpu0` (2026
+   releases are; a firmware from before the option silently decodes
+   nothing - the decoder starts but the frame count on `/status` stays
+   at 0).
+
+2. **A `video.pvf` file** in the VFS jukebox directory -
+   `/BeebVFS0/video.pvf` next to the volume's `scsi0.dat` (the card
+   root is also tried, for a demo card with no VFS volume). Made from
+   any video with the offline tool:
 
    ```
    tools/make_pvf.py mydisc.mkv video.pvf
    tools/verify_pvf.py video.pvf
+   ```
+
+   For a LaserDisc capture decoded with ld-decode, use the `.pcm` file
+   alongside the `.tbc` for the sound and deinterlace:
+
+   ```
+   tools/make_pvf.py disc.mkv video.pvf --audio-input disc.pcm \
+       --vf "bwdif=mode=0:parity=0,scale=768:576"
    ```
 
    The tool re-encodes to 768x576 all-intra H264 (every frame
@@ -101,8 +116,13 @@ To use it you need three things:
    A Domesday disc side comes to roughly 2 GB.
 
 3. Nothing else - at boot the player shows picture 1 and then follows
-   the F-codes (`Fxxxxx R/N/S`, `N`, `O`, `L`, `M`, `*`, `/`, `A1`,
-   `B1`, `?F`, ...).
+   the F-codes: `Fxxxxx R/N/Q/S/I`, `N`, `O`, `L`, `M`, `*`, `/`,
+   `A0/A1`, `B0/B1`, `?F`, `+yy`/`-yy`, `X`, the VP415 speed set
+   (`SxxxF`/`SxxxS` with `U`/`V`/`W`/`Z` slow and fast motion), and
+   `D0`/`D1` for the player's own on-screen picture number. With the
+   VFS ROM loaded that is `*FRAME`, `*PLAY`, `*STEP`, `*SLOW`, `*FCODE`
+   and friends. Sound follows `Audio_out` in `Pi1MHz.cfg`: the Beeb
+   (default) or `hdmi`.
 
 Without the full firmware or without `video.pvf`, the video plane
 simply stays off and the Beeb display is unaffected. A missing `vd_use_vpu0=1`

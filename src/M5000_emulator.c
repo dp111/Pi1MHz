@@ -188,7 +188,13 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
    confusing the span with the amplitude.) */
 static int32_t M5000_s16_scale;
 
-static const audio_producer_t m5000_producer = {
+/* .rate is set at init: the hardware's own 46875 Hz normally, or 48000
+   when the sound goes to HDMI - HDMI sinks assume a standard rate and
+   play 46875 a quartertone (2.4%) sharp. 46875/48000 = 125/128 exactly,
+   so pitch is preserved by scaling every channel's phase increment by
+   125/128 (m5000_freq_mul below); the error is under 1 LSB of the
+   24-bit accumulator, well below a cent. */
+static audio_producer_t m5000_producer = {
    .rate = M5000_SAMPLE_RATE,
    /* One DMA block of lead: enough that a block is always ready when the
       DMA frees one, no more - every extra frame here is delay between a
@@ -196,6 +202,13 @@ static const audio_producer_t m5000_producer = {
    .latency_frames = AUDIO_DMA_FRAMES,
    .name = "Music 5000",
 };
+
+/* Phase increments are (FREQ * mul) >> 7: 128 = native rate (exact
+   no-op), 125 = running the synth at 48000. */
+static uint32_t m5000_freq_mul = 128;
+/* True when the output path sums L+R onto the Beeb pin (autorange must
+   then watch the sum); HDMI and the hi-Z jack keep the channels apart. */
+static bool m5000_pin_sums;
 
 // in Pi1MHz.cfg M5000_Gain=16 set the default audio gain
 // if gain has >1000 then gain = gain - 1000 and auto ranging
@@ -235,7 +248,7 @@ static void update_channels(struct synth *s)
       const uint8_t * c = s->ram + I_WFTOP + modulate + i;
       if  (!PHASESET(c))
          {
-            uint32_t sum = (uint32_t)FREQ(c) + s->phaseRAM[i];
+            uint32_t sum = (((uint32_t)FREQ(c) * m5000_freq_mul) >> 7) + s->phaseRAM[i];
             s->phaseRAM[i] = sum & 0xffffff;
             c4d = sum & ( 1 << 24 );
             // only if there is a carry ( waveform crossing ) do we update the amplitude
@@ -244,7 +257,7 @@ static void update_channels(struct synth *s)
          }
          else
          {
-            s->phaseRAM[i] = (uint32_t)FREQ(c);
+            s->phaseRAM[i] = ((uint32_t)FREQ(c) * m5000_freq_mul) >> 7;
             c4d = 0;
          }
 
@@ -345,8 +358,11 @@ static void music5000_store_sample(int sl, int sr, int16_t *out)
 
    /* The Beeb pin carries L+R summed (saturated silently by the sink),
       so the pin clips before either channel does on correlated content:
-      autorange must watch the sum, as the old mono path effectively did. */
-   {
+      autorange must watch the sum - but ONLY where summing happens.
+      HDMI and the hi-Z stereo jack carry the channels separately, and
+      autorange is a one-way ratchet: a false trigger costs 6 dB for the
+      session. */
+   if (m5000_pin_sums) {
       int32_t sum = (int32_t)out[0] + out[1];
       if (sum > 32767 || sum < -32768)
          clip = 1;
@@ -488,8 +504,18 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
    synth_reset(&m5000, &Pi1MHz->JIM_ram[0x3000]);
    synth_reset(&m3000, &Pi1MHz->JIM_ram[0x5000]);
 
+   /* The clip point stays referenced to the PWM range at the native
+      rate whatever rate the synth actually runs at */
    M5000_s16_scale = (int32_t)((1 << 22) / (250000000 / M5000_SAMPLE_RATE));
    M5000_left_error = M5000_right_error = 0;
+   if (audio_out_is_hdmi()) {
+      m5000_producer.rate = 48000;
+      m5000_freq_mul = 125;
+   } else {
+      m5000_producer.rate = M5000_SAMPLE_RATE;
+      m5000_freq_mul = 128;
+   }
+   m5000_pin_sums = !audio_out_is_hdmi() && !rpi_audio_beeb_muted();
    audio_claim(&m5000_producer);
 
    // register polling function

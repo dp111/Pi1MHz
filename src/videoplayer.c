@@ -260,20 +260,10 @@ static void frame_decoded(uint32_t phys, int64_t pts, bool eos)
     vp.pending_pts = pts;
 }
 
-/* 8x8 digit glyphs (rows top to bottom, MSB = leftmost pixel) for the
-   VP415-style on-screen picture number (F-codes D0/D1). */
-static const uint8_t digit_font[10][8] = {
-    {0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00}, /* 0 */
-    {0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00}, /* 1 */
-    {0x3C,0x66,0x06,0x1C,0x30,0x60,0x7E,0x00}, /* 2 */
-    {0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00}, /* 3 */
-    {0x0C,0x1C,0x3C,0x6C,0x7E,0x0C,0x0C,0x00}, /* 4 */
-    {0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0x00}, /* 5 */
-    {0x1C,0x30,0x60,0x7C,0x66,0x66,0x3C,0x00}, /* 6 */
-    {0x7E,0x06,0x0C,0x18,0x30,0x30,0x30,0x00}, /* 7 */
-    {0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00}, /* 8 */
-    {0x3C,0x66,0x66,0x3E,0x06,0x0C,0x38,0x00}, /* 9 */
-};
+/* The Beeb's own 8x8 glyphs (framebuffer/fonts/bbc.fnt.h, 8 bytes per
+   character, MSB = leftmost pixel) render the VP415-style on-screen
+   picture number - one font in the image, not two. */
+extern const uint8_t fontbbc[];
 
 /* Draw the 5-digit picture number into a frame's Y plane, 2x scaled, at
    the top left - the frame buffers are in the VC heap (uncached), so the
@@ -288,8 +278,9 @@ static void draw_picture_number(uint32_t phys, uint32_t picture)
         uint32_t d = picture % 10u;
         picture /= 10u;
         uint32_t dx = x0 + (uint32_t)digit * 20u;
+        const uint8_t *glyph = &fontbbc[(uint32_t)('0' + d) * 8u];
         for (uint32_t row = 0; row < 8; row++) {
-            uint8_t bits = digit_font[d][row];
+            uint8_t bits = glyph[row];
             for (uint32_t col = 0; col < 8; col++) {
                 uint8_t v = (bits & (0x80u >> col)) ? 0xEB : 0x10;
                 uint8_t *p = y + (y0 + row * 2u) * w + dx + col * 2u;
@@ -407,7 +398,10 @@ static void videoplayer_poll(void)
            register is one-shot, as on the real player: reaching it clears
            it, so a later bare 'N' plays on rather than instantly
            re-stilling. */
-        if (vp.cur_picture >= limit && !vp.in_flight && !vp.pending_phys) {
+        /* With a stride the last displayed picture can fall short of the
+           limit by up to stride-1 - the range still ended */
+        if (vp.cur_picture + (vp.stride ? vp.stride : 1u) > limit &&
+            !vp.in_flight && !vp.pending_phys) {
             vp.mode = VP_STILL;
             vp.tail_pushed = false;
             audio_flush();
@@ -427,7 +421,10 @@ static void videoplayer_poll(void)
             vp.in_flight == 0) {
             {
                 uint32_t back = 1u + (vp.stride ? vp.stride : 1u);
-                if (vp.cur_picture > back) {
+                /* record cur_picture-back is valid exactly when
+                   cur_picture >= back (records are 0-based, pictures
+                   1-based): '>' stopped reverse play on picture 2 */
+                if (vp.cur_picture >= back) {
                     if (feed_frame(vp.cur_picture - back, false, true))
                         vp.next_frame_due += vp.frame_period_us;
                 } else {
@@ -503,6 +500,9 @@ static void pvf_reopen(void)
         vp.index = NULL;
         vp.hdr.width = old_w;
         vp.hdr.height = old_h;
+        if (vp.audio_present)
+            audio_release(&vp.producer);   /* the synths get the sound back */
+        vp.audio_present = false;
         return;
     }
     vp.frame_period_us = (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num);
@@ -564,11 +564,18 @@ void videoplayer_goto(uint32_t picture, char op)
     }
 }
 
+/* The .pvf's own frame period; only meaningful with a file open */
+static uint32_t nominal_period_us(void)
+{
+    if (!vp.hdr.fps_num)
+        return 40000;                /* no file: any sane value */
+    return (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num);
+}
+
 /* Normal-speed transport: back to nominal pacing with sound */
 static void reset_speed(void)
 {
-    uint64_t period = (uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num;
-    vp.frame_period_us = (uint32_t)period;
+    vp.frame_period_us = nominal_period_us();
     vp.stride = 1;
     vp.play_audio = true;
 }
@@ -649,6 +656,8 @@ static void start_motion(vp_mode_t mode, uint32_t period_us, uint32_t stride)
 {
     if (!vp.open)
         return;
+    if (!period_us)
+        period_us = nominal_period_us();
     h264dec_resume();
     vp.in_flight = 0;
     vp.dup_owed = 0;
@@ -678,23 +687,16 @@ void videoplayer_slow_rev(void)
    so speed comes from skipping pictures (every one is an IDR): stride =
    xxx/2 at the nominal frame rate. Fractional factors round down, so
    S3F (1.5x) plays at normal speed - a documented approximation. */
-void videoplayer_fast_fwd(void)
+static void fast_motion(vp_mode_t mode)
 {
     uint32_t stride = (vp.speed_fast ? vp.speed_fast : 6u) / 2u;
     if (stride < 1u)
         stride = 1u;
-    start_motion(VP_PLAY,
-                 (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num),
-                 stride);
+    start_motion(mode, 0, stride);   /* 0 = nominal period */
 }
 
-void videoplayer_fast_rev(void)
-{
-    uint32_t stride = (vp.speed_fast ? vp.speed_fast : 6u) / 2u;
-    if (stride < 1u)
-        stride = 1u;
-    start_motion(VP_PLAY_REV, (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num), stride);
-}
+void videoplayer_fast_fwd(void)  { fast_motion(VP_PLAY); }
+void videoplayer_fast_rev(void)  { fast_motion(VP_PLAY_REV); }
 
 void videoplayer_clear(void)
 {
@@ -715,10 +717,10 @@ void videoplayer_show_picture_number(bool on)
 
 void videoplayer_audio_enable(int channel, bool on)
 {
-    /* audio_set_channel_mute is a core-wide control: without a video
-       open the audio belongs to a synth, and an A0 sent at a bare VFS
-       LUN must not silence the Music 5000. */
-    if (!vp.open)
+    /* audio_set_channel_mute is a core-wide control: unless THIS player
+       claimed the audio (open, with a sound track), the core belongs to
+       a synth and an A0 sent at a bare VFS LUN must not silence it. */
+    if (!vp.open || !vp.audio_present)
         return;
     if (channel >= 0 && channel < 2)
         vp.audio_on[channel] = on;

@@ -26,7 +26,10 @@ static void beebsid_write(unsigned int gpio)
     Pi1MHz_MemoryWrite(addr, data);
 }
 
-static const audio_producer_t beebsid_producer = {
+/* .rate is corrected at init: 48000 when the sound goes to HDMI (a
+   46875 stream plays 2.4% sharp there); FastSID resamples internally to
+   any rate, so no other change is needed. */
+static audio_producer_t beebsid_producer = {
     .rate = BEEBSID_SAMPLE_RATE,
     .latency_frames = AUDIO_DMA_FRAMES,      /* one block of lead, as M5000 */
     .name = "BeebSID",
@@ -63,7 +66,8 @@ void BeebSID_emulator_init(uint8_t instance, uint8_t address)
 
     (void)instance;
     beebsid_base = address;
-    beebsid_sample_rate = BEEBSID_SAMPLE_RATE;
+    beebsid_sample_rate = audio_out_is_hdmi() ? 48000u : BEEBSID_SAMPLE_RATE;
+    beebsid_producer.rate = beebsid_sample_rate;
 
     beebsid_sid_init(beebsid_sample_rate);
     audio_claim(&beebsid_producer);
