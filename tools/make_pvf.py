@@ -9,9 +9,10 @@ Takes any video ffmpeg can read and produces a single seekable file:
     decode - which is what gives the player LaserDisc-style goto/still/
     step/reverse for free. High profile, CABAC, decoded in hardware by
     the Pi Zero's VideoCore (fine up to 1080p; the target is 768x576).
-  - audio: s16le stereo resampled to 46875 Hz, the native rate of the
-    Pi1MHz PWM audio path, sliced per video frame (25 fps -> exactly
-    1875 samples per frame, no resampling on the Pi).
+  - audio: s16le stereo resampled to --audio-rate (default 48000 Hz, a
+    standard HDMI rate; the PWM path runs at any rate), sliced per video
+    frame (25 fps -> exactly 1920 samples per frame, no resampling on
+    the Pi).
   - a frame index (u32 file offset per frame) the player loads into RAM.
 
 Typical use for a Domesday/LaserDisc capture (see Doomsday.md for the
@@ -35,7 +36,7 @@ import tempfile
 
 PVF_MAGIC = 0x31465650          # 'PVF1'
 PVF_VERSION = 1
-AUDIO_RATE = 46875              # native Pi1MHz PWM DMA rate
+AUDIO_RATE = 48000              # default; see --audio-rate
 AUDIO_CHANNELS = 2
 AUDIO_BYTES_PER_SAMPLE = 2
 
@@ -50,9 +51,12 @@ def encode_video(args, h264_path):
         "keyint=1:min-keyint=1:scenecut=0:repeat-headers=1:"
         "bframes=0:ref=1:rc-lookahead=0:threads=auto"
     )
-    cmd = ["ffmpeg", "-y", "-i", args.input]
+    # -ss BEFORE -i: input seeking, so ffmpeg jumps rather than decoding
+    # (and, over a network drive, reading) everything before the start
+    cmd = ["ffmpeg", "-y"]
     if args.start:
         cmd += ["-ss", str(args.start)]
+    cmd += ["-i", args.input]
     if args.frames:
         cmd += ["-frames:v", str(args.frames)]
     vf = args.vf if args.vf else f"scale={args.width}:{args.height}"
@@ -72,12 +76,25 @@ def encode_video(args, h264_path):
 
 
 def encode_audio(args, pcm_path):
-    cmd = ["ffmpeg", "-y", "-i", args.input]
+    cmd = ["ffmpeg", "-y"]
     if args.start:
         cmd += ["-ss", str(args.start)]
+    if args.audio_input:
+        # A separate audio file, e.g. the raw .pcm that ld-decode writes
+        # alongside the .tbc: far cheaper than re-reading a huge FFV1
+        # capture just for its sound track. Raw PCM needs its format
+        # given up front.
+        if args.audio_input.lower().endswith(".pcm"):
+            cmd += ["-f", "s16le", "-ar", str(args.audio_input_rate), "-ac", "2"]
+        cmd += ["-i", args.audio_input]
+    else:
+        cmd += ["-i", args.input]
+    if args.frames:
+        # match the video's duration exactly
+        cmd += ["-t", f"{args.frames * args.fps_den / args.fps_num:.6f}"]
     cmd += [
         "-vn", "-sn",
-        "-ar", str(AUDIO_RATE),
+        "-ar", str(args.audio_rate),
         "-ac", str(AUDIO_CHANNELS),
         "-f", "s16le", pcm_path,
     ]
@@ -170,6 +187,14 @@ def main():
     p.add_argument("--start", default=None, help="ffmpeg -ss start point")
     p.add_argument("--frames", type=int, default=None, help="limit frame count")
     p.add_argument("--no-audio", action="store_true")
+    p.add_argument("--audio-input", default=None,
+                   help="take the sound track from this file instead of the "
+                        "video input (a .pcm is read as raw s16le stereo)")
+    p.add_argument("--audio-input-rate", type=int, default=44100,
+                   help="sample rate of a raw .pcm --audio-input")
+    p.add_argument("--audio-rate", type=int, default=AUDIO_RATE,
+                   help="PCM sample rate in Hz (48000 for HDMI; 46875 was the "
+                        "original PWM-only rate)")
     args = p.parse_args()
 
     if args.width % 32 or args.height % 16:
@@ -208,11 +233,11 @@ def main():
         # for frame rates that do not divide the sample rate)
         bytes_per_sample_pair = AUDIO_CHANNELS * AUDIO_BYTES_PER_SAMPLE
         def audio_slice(i):
-            s0 = i * AUDIO_RATE * args.fps_den // args.fps_num
-            s1 = (i + 1) * AUDIO_RATE * args.fps_den // args.fps_num
+            s0 = i * args.audio_rate * args.fps_den // args.fps_num
+            s1 = (i + 1) * args.audio_rate * args.fps_den // args.fps_num
             return s0 * bytes_per_sample_pair, s1 * bytes_per_sample_pair
 
-        nominal = (AUDIO_RATE * args.fps_den // args.fps_num) * bytes_per_sample_pair
+        nominal = (args.audio_rate * args.fps_den // args.fps_num) * bytes_per_sample_pair
 
         header_size = 64
         index_offset = header_size
@@ -247,7 +272,7 @@ def main():
             args.width, args.height,
             args.fps_num, args.fps_den,
             frame_count,
-            AUDIO_RATE if has_audio else 0,
+            args.audio_rate if has_audio else 0,
             AUDIO_CHANNELS if has_audio else 0,
             nominal if has_audio else 0,
             index_offset, data_offset,
@@ -266,7 +291,7 @@ def main():
               f"{total / 1e6:.1f} MB total, "
               f"largest AU {max_video} bytes, "
               f"avg {total // max(frame_count,1)} bytes/frame"
-              f"{', audio 46875 Hz' if has_audio else ''}")
+              f"{f', audio {args.audio_rate} Hz' if has_audio else ''}")
         if max_video > 512 * 1024:
             print("WARNING: an access unit exceeds the player's 512 KB "
                   "staging buffer (H264DEC_INPUT_BUF_SIZE) - raise --crf")
