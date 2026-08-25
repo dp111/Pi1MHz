@@ -259,12 +259,13 @@ static void mouse_redirect_mouse_type(unsigned int gpio)
 
 void mouse_redirect_move_mouse(void)
 {
-    int32_t mouse_x;
-    int32_t mouse_y;
-    uint8_t mouse_pointer;
 
     if (!change)
         return;
+
+    int32_t mouse_x;
+    int32_t mouse_y;
+    uint8_t mouse_pointer;
 
     change = false;
     mouse_x = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 0)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 1))<<8)));
@@ -330,6 +331,5 @@ void mouse_redirect_init(uint8_t instance, uint8_t address)
     Pi1MHz_Register_Memory(WRITE_FRED, (address+0u), Pi1MHz_EmulatedMemoryByte );
     Pi1MHz_Register_Memory(WRITE_FRED, (address+1u), Pi1MHz_EmulatedMemoryByte );
     Pi1MHz_Register_Memory(WRITE_FRED, (address+2u), Pi1MHz_EmulatedMemoryByte );
-    Pi1MHz_Register_Memory(WRITE_FRED, (address+3u), Pi1MHz_EmulatedMemoryByte );
-    Pi1MHz_Register_Memory(WRITE_FRED, (address+4u), mouse_redirect_mouse_type );
+    Pi1MHz_Register_Memory(WRITE_FRED, (address+3u), mouse_redirect_mouse_type );
 }
