@@ -235,6 +235,8 @@ static void M5000_gain(void) {
       opposite-sign full-scale clicks. Far beyond any musical setting. */
    if (gain > 256)
       gain = 256;
+   if (gain < 0)
+      gain = 0;       /* a negative M5000_Gain= would wrap in the mixer */
 }
 
 static void update_channels(struct synth *s)
