@@ -382,6 +382,8 @@ static void videoplayer_poll(void)
     case VP_PLAY: {
         /* Keep the decoder pipeline primed (up to 2 AUs deep) */
         uint32_t limit = vp.stop_picture ? vp.stop_picture : vp.hdr.frame_count;
+        if (limit > vp.hdr.frame_count)
+            limit = vp.hdr.frame_count;   /* register set before the file was open */
         while (vp.in_flight < 2 && vp.next_frame < limit) {
             if (!feed_frame(vp.next_frame, vp.play_audio, false))
                 break;
@@ -611,19 +613,35 @@ static void vp_ensure(void)
 
 void videoplayer_goto(uint32_t picture, char op)
 {
+    if (picture == 0)
+        return;
+
+    switch (op) {
+    /* The registers only store a number: programming them must not wake
+       the lazy player (no file access until a display command). With the
+       player closed the header is unknown, so the play path clamps the
+       stop register against frame_count at its point of use. */
+    case 'S':                        /* stop register */
+        if (vp.open && picture > vp.hdr.frame_count)
+            picture = vp.hdr.frame_count;
+        vp.stop_picture = picture;
+        return;
+    case 'I':                        /* info register */
+        if (vp.open && picture > vp.hdr.frame_count)
+            picture = vp.hdr.frame_count;
+        vp.info_picture = picture;
+        return;
+    default:
+        break;
+    }
+
     vp_ensure();
-    if (!vp.open || picture == 0)
+    if (!vp.open)
         return;
     if (picture > vp.hdr.frame_count)
         picture = vp.hdr.frame_count;
 
     switch (op) {
-    case 'S':                        /* stop register */
-        vp.stop_picture = picture;
-        return;
-    case 'I':                        /* info register */
-        vp.info_picture = picture;
-        return;
     case 'R':                        /* goto & still */
     case 'N':                        /* goto & play */
     case 'Q':                        /* goto & previous mode */
@@ -684,9 +702,12 @@ void videoplayer_play_rev(void)
     vp.next_frame_due = RPI_GetSystemTime() + vp.frame_period_us;
 }
 
+/* Halt/pause stop motion that is already showing: on a closed player
+   there is nothing to stop, and the VFS ROM sends '*' from its own init
+   path - so neither may wake the lazy player (5s of SD/GPU bring-up
+   inside one poll pass starves the Beeb's FS handshake). */
 void videoplayer_halt(void)
 {
-    vp_ensure();
     if (!vp.open)
         return;
     vp.mode = VP_STILL;
@@ -695,7 +716,6 @@ void videoplayer_halt(void)
 
 void videoplayer_pause(void)
 {
-    vp_ensure();
     if (!vp.open)
         return;
     vp.mode = VP_STILL;
@@ -715,7 +735,6 @@ void videoplayer_step(int delta)
 
 void videoplayer_speed(uint32_t value, bool fast)
 {
-    vp_ensure();
     if (value < 2u)
         value = 2u;
     if (fast) {
@@ -787,7 +806,6 @@ void videoplayer_clear(void)
 
 void videoplayer_show_picture_number(bool on)
 {
-    vp_ensure();
     if (vp.show_picture == on)
         return;
     vp.show_picture = on;
@@ -799,7 +817,6 @@ void videoplayer_show_picture_number(bool on)
 
 void videoplayer_audio_enable(int channel, bool on)
 {
-    vp_ensure();
     /* audio_set_channel_mute is a core-wide control: unless THIS player
        claimed the audio (open, with a sound track), the core belongs to
        a synth and an A0 sent at a bare VFS LUN must not silence it. */
@@ -1022,8 +1039,9 @@ static void vp_bring_up(void)
     vp.open = true;
     vp.mode = VP_STILL;
     vp.cur_picture = 1;
-    vp.speed_fast = 6;               /* 3x, the VP415 default */
-    vp.speed_slow = 6;               /* 1/3x, the VP415 default */
+    /* Speeds are NOT reset here: an S F-code may legally arrive before the
+       first display command, and bring-up must not clobber it. Zero (the
+       init memset) means the VP415 default via the use-site `? : 6u`s. */
     vp.stride = 1;
     vp.play_audio = true;
 
