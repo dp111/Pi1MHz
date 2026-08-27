@@ -114,6 +114,37 @@ emulation) also uses the Pi's HDMI output - see
 [Screen and video](screen-and-video.md); parts of that are still a work
 in progress.
 
+### Building a disc menu
+
+To switch discs from a menu program running under VFS: stop the volume,
+jukebox, remount, boot -
+
+```
+*BYE
+*FX147,65,5        switch to /BeebVFS5 (write &FC41; from a pure VFS
+                   session this jukeboxes the VFS directory, and the
+                   video.pvf follows automatically)
+*MOUNT 0
+*!BOOT
+```
+
+A `/BeebVFS<n>` directory counts as an installed disc when it holds a
+`video.pvf`. With a `scsi<n>.dat` alongside it is a full LV-ROM volume
+(bootable software plus video); with only the video it is a video-only
+disc, which the menu drives directly with the player F-codes
+(play/still/step/goto and friends). Either kind may carry a `scsi0.cfg`
+whose `Title=` and `Description=` name it in the menu - for a video-only
+disc that cfg is the only way to give it a proper name.
+
+Two F-code extensions let the menu list what is installed: jukebox to
+each directory in turn (`*BYE` / `*FX147,65,n` / `*MOUNT 0`), then query
+the disc (send with `*FCODE`, read the reply as usual):
+
+| F-code | Meaning | Reply |
+|---|---|---|
+| `?T` | Title of the mounted disc (`Title=` in its `scsi0.cfg`) | `T<title>`, `X` if absent |
+| `?Y` | Synopsis of the mounted disc (`Description=`) | `Y<text>`, `X` if absent |
+
 ## Two adapters on a Master
 
 `SCSIID=n` in `Pi1MHz.cfg` makes the emulation answer only that SCSI

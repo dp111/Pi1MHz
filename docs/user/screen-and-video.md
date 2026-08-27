@@ -93,8 +93,7 @@ To use it you need three things:
    at 0).
 
 2. **A `video.pvf` file** in the VFS jukebox directory -
-   `/BeebVFS0/video.pvf` next to the volume's `scsi0.dat` (the card
-   root is also tried, for a demo card with no VFS volume). Made from
+   `/BeebVFS0/video.pvf` next to the volume's `scsi0.dat`. Made from
    any video with the offline tool:
 
    ```
