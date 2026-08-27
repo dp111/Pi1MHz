@@ -19,6 +19,7 @@
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
 #include "lwip/timeouts.h"
+#include "lwip/udp.h"
 #include "lwip/etharp.h"
 #include "netif/ethernet.h"
 
@@ -46,7 +47,15 @@ static u8_t g_wifi_lwip_last_dhcp_tries = 0xFFu;
 static void wifi_lwip_debug_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 
 #define WIFI_LWIP_RX_FRAME_MAX_LEN 1600u
-#define WIFI_LWIP_RX_FRAME_BUDGET 8u
+/* Frames per drain slice.  The service pass repeats drain+flush until the
+   FIFO is empty or the 1.2 ms wall-clock budget runs out, so this is not
+   a per-pass RX cap - the time budget is.  It IS the flush cadence: the
+   TX hold queue flushes after each slice, so with the coalescing feed a
+   slice's worth of ACKs (x2 segments each) is what one superframe can
+   carry.  8 capped that at ~16 segments in principle but ~4-7 in
+   practice (ACKs arrive interleaved); 16 lets a full glom-16 batch form
+   from one slice while the wall clock still bounds the pass. */
+#define WIFI_LWIP_RX_FRAME_BUDGET 16u
 
 /* Idle RX-poll throttle.  When frames are flowing the drain runs on every
    main-loop poll for full throughput and minimal latency; once the chip's
@@ -316,11 +325,22 @@ uint32_t wifi_lwip_icmp_probe_read(uint32_t *gap_ms, uint32_t *turnaround_us,
 #endif /* WIFI_LWIP_ICMP_PROBE_DIAG */
 
 #define WIFI_LWIP_TX_HOLD_MAX_AGE_US 250000u
-#define WIFI_LWIP_TX_QUEUE_DEPTH 16u
-/* TCP may take at most this many slots, so ARP/ICMP/DHCP - the traffic with
-   no second chance - always find a free one.  Queueing TCP with no cap
-   measured 23% ping loss during a download; the reservation is the fix. */
-#define WIFI_LWIP_TX_QUEUE_TCP_MAX 12u
+/* 32: deep enough to feed a full 16-frame superframe and keep a second
+   batch forming behind it.  The original 16 was sized for the
+   frame-at-a-time path; the glom-of-4 bench showed throughput is bound
+   by frames-per-credit-refill, so the queue must hold at least one max
+   batch plus headroom or the batch assembler starves. */
+#define WIFI_LWIP_TX_QUEUE_DEPTH 32u
+/* Capped traffic may take at most this many slots, so ARP and ICMP - the
+   traffic with no second chance - always find a free one.  Queueing TCP
+   with no cap measured 23% ping loss during a download; the reservation
+   is the fix (4 reserved slots, scaled with the deeper queue).  Without
+   glom batching only TCP is flagged for the cap (the original
+   behaviour); with batching on, the coalescing feed flags UDP bulk too,
+   so a blast cannot take the reserve either - the cost is that DHCP
+   (UDP) also counts against the cap then, refused only when 28 bulk
+   frames are already parked, and the DHCP client retries. */
+#define WIFI_LWIP_TX_QUEUE_TCP_MAX 28u
 
 typedef struct {
    uint32_t stamp_us;
@@ -350,6 +370,11 @@ static uint32_t s_tx_dropped_stale; /* aged out before credit appeared */
 static uint32_t s_tx_direct_fail;   /* send refused on the direct path */
 static uint32_t s_tx_hold_max_us;   /* longest a frame waited in the queue */
 static uint32_t s_tx_dropped_full;  /* arrived with every slot taken - LOST */
+static uint32_t s_tx_batch_lost;    /* dropped after a superframe CMD53
+                                       completion failure - the card may hold
+                                       any prefix, so a retry would replay
+                                       consumed sequence numbers.  LOST (TCP
+                                       rides RTO). */
 
 /* Pop the head slot's bookkeeping (shared by the sent, stale and aged-out
    paths). */
@@ -366,6 +391,7 @@ static void wifi_lwip_tx_hold_pop(void)
 static bool wifi_lwip_tx_hold_flush(void)
 {
    uint32_t rx_stamp = sdio_runtime_last_any_rx_stamp();
+   uint8_t batch_limit = sdio_runtime_txglom_batch_limit();
 
    while (s_tx_count > 0u) {
       wifi_lwip_tx_slot_t *slot = &s_tx_queue[s_tx_head];
@@ -382,6 +408,79 @@ static bool wifi_lwip_tx_hold_flush(void)
          have reopened, so asking again only burns a wake_bus + gate probe. */
       if (s_tx_flush_blocked && rx_stamp == s_tx_flush_rx_stamp)
          return false;
+
+      /* Glom batching: when TX glom is negotiated and more than one frame
+         is waiting, hand a contiguous run of fresh head frames to the
+         superframe path in one call.  Only frames ALREADY queued in this
+         same service pass are batched - never a wait for a partner - so
+         the added latency is zero by construction.  Ordering, age-out and
+         the RX-paced retry latch behave exactly as the single path. */
+      if (batch_limit >= 2u && s_tx_count >= 2u) {
+         const uint8_t *frames[SDIO_RUNTIME_TXGLOM_MAX];
+         uint16_t lens[SDIO_RUNTIME_TXGLOM_MAX];
+         uint32_t stamps[SDIO_RUNTIME_TXGLOM_MAX];
+         uint32_t now_us = RPI_GetSystemTime();
+         uint8_t gather = 0u;
+
+         while (gather < batch_limit && gather < s_tx_count) {
+            const wifi_lwip_tx_slot_t *cand =
+               &s_tx_queue[((unsigned)s_tx_head + gather)
+                           % WIFI_LWIP_TX_QUEUE_DEPTH];
+
+            if ((now_us - cand->stamp_us) > WIFI_LWIP_TX_HOLD_MAX_AGE_US)
+               break;            /* stale mid-run: send what precedes it */
+            frames[gather] = cand->data;
+            lens[gather] = cand->len;
+            stamps[gather] = cand->stamp_us;
+            ++gather;
+         }
+
+         if (gather >= 2u) {
+            int8_t sent = sdio_runtime_send_ethernet_frames(frames, lens,
+                                                            gather);
+
+            if (sent > 0) {
+               uint32_t sent_at = RPI_GetSystemTime();
+               uint8_t i;
+
+               for (i = 0u; i < (uint8_t)sent; ++i) {
+                  uint32_t waited = sent_at - stamps[i];
+
+                  if (waited > s_tx_hold_max_us)
+                     s_tx_hold_max_us = waited;
+#if WIFI_LWIP_ICMP_PROBE_DIAG
+                  wifi_lwip_icmp_probe_tx(frames[i], lens[i]);
+#endif
+                  wifi_lwip_tx_hold_pop();
+               }
+               s_tx_flush_blocked = false;
+               continue;         /* a partial send loops back for the rest */
+            }
+            if (sent < 0) {
+               /* Superframe CMD53 failed after the command phase: the
+                  card may hold any prefix and the sequence numbers stay
+                  consumed, so these frames are unretryable - drop and
+                  count them (TCP recovers by RTO). */
+               uint8_t drop = (uint8_t)-sent;
+               uint8_t i;
+
+               for (i = 0u; i < drop; ++i)
+                  wifi_lwip_tx_hold_pop();
+               s_tx_batch_lost += drop;
+               s_tx_flush_blocked = true;
+               s_tx_flush_rx_stamp = rx_stamp;
+               return false;
+            }
+            /* Refused (credit window / bus asleep): nothing consumed -
+               the same back-pressure latch as the single path. */
+            s_tx_flush_blocked = true;
+            s_tx_flush_rx_stamp = rx_stamp;
+            return false;
+         }
+         /* gather < 2 (a stale frame right behind the head): fall through,
+            the single path sends the head and the stale one ages out on
+            the next loop iteration. */
+      }
 
       if (sdio_runtime_send_ethernet_frame(slot->data, slot->len)) {
          uint32_t waited = RPI_GetSystemTime() - slot->stamp_us;
@@ -423,6 +522,22 @@ static bool wifi_lwip_frame_self_retries(const uint8_t *frame, uint16_t len)
    return frame[23] == 6u;       /* IPv4 protocol 6 = TCP */
 }
 
+/* IPv4 TCP or UDP: the bulk traffic worth coalescing into superframes
+   when glom batching is on.  Everything else (ARP, ICMP, non-IPv4)
+   keeps the low-latency direct path - it gains nothing from batching
+   and some of it has no second chance. */
+static bool wifi_lwip_frame_is_bulk(const uint8_t *frame, uint16_t len)
+{
+   uint16_t ethertype;
+
+   if (len < 34u)
+      return false;
+   ethertype = (uint16_t)(((uint16_t)frame[12] << 8) | frame[13]);
+   if (ethertype != 0x0800u)
+      return false;
+   return frame[23] == 6u || frame[23] == 17u;   /* TCP or UDP */
+}
+
 /* Take ownership of a frame the chip would not accept.  Returns false when
    the frame was NOT taken (queue full, or TCP over its reservation) - the
    caller must then report the loss to lwIP or count it. */
@@ -435,7 +550,6 @@ static bool wifi_lwip_tx_hold_push(const uint8_t *frame, uint16_t len,
       return false;              /* full: refuse the newest, keep the order */
    if (is_tcp && s_tx_tcp_count >= WIFI_LWIP_TX_QUEUE_TCP_MAX)
       return false;              /* reservation: TCP rides lwIP's own queue */
-   s_tx_queued++;
 
    slot = &s_tx_queue[((unsigned)s_tx_head + (unsigned)s_tx_count)
                       % WIFI_LWIP_TX_QUEUE_DEPTH];
@@ -453,10 +567,197 @@ void wifi_lwip_tx_path_counts(uint32_t *queued, uint32_t *stale,
                               uint32_t *direct_fail, uint32_t *hold_max_us)
 {
    *queued = s_tx_queued;
-   *stale = s_tx_dropped_stale + s_tx_dropped_full;
+   *stale = s_tx_dropped_stale + s_tx_dropped_full + s_tx_batch_lost;
    *direct_fail = s_tx_direct_fail;
    *hold_max_us = s_tx_hold_max_us;
 }
+
+/* ------------------------------------------------------------------ */
+/* UDP blast test rig.  /udpblast primes it, the poll loop drains it.  */
+/* Takes lwIP TCP (ACK clocking, snd_buf) out of the loop entirely:    */
+/* the rate the RECEIVER counts is pure driver+SDPCM capacity.  The    */
+/* datagrams still travel the ordinary link_output -> hold-queue ->    */
+/* credit-gate path, which is the point: same bottleneck, no TCP.      */
+/* Payload 1472 bytes -> exactly one 1500-byte IP packet per datagram. */
+/* Idle cost: one s_blast_remaining check per service pass.            */
+/* ------------------------------------------------------------------ */
+static struct udp_pcb *s_blast_pcb;
+/* Source tag for the per-pass feed histograms: true while the blast poll
+   is emitting, so its frames are attributed to "udpblast" rather than
+   "other" in wifi_lwip_pass_count_tx(). */
+static bool s_in_blast_poll;
+static ip_addr_t s_blast_dst;
+static uint16_t s_blast_port;
+static uint32_t s_blast_remaining;   /* datagrams still to send */
+static uint32_t s_blast_sent;
+static uint32_t s_blast_start_us, s_blast_end_us;
+/* Datagrams emitted per service pass.  4 was the original fixed burst;
+   /udpblast?burst=N raises it as the clean pipeline-capability test -
+   the producer then demonstrably offers N frames per pass, so whatever
+   batch size the flush forms is the pipeline's doing, not starvation. */
+#define WIFI_LWIP_UDPBLAST_BURST_DEFAULT 4u
+#define WIFI_LWIP_UDPBLAST_BURST_MAX 16u
+static uint8_t s_blast_burst = WIFI_LWIP_UDPBLAST_BURST_DEFAULT;
+
+void wifi_lwip_udpblast_start(const ip_addr_t *dst, uint16_t port,
+                              uint32_t datagrams, uint8_t burst)
+{
+   if (s_blast_pcb == NULL)
+      s_blast_pcb = udp_new();
+   if (s_blast_pcb == NULL)
+      return;
+   s_blast_dst = *dst;
+   s_blast_port = port;
+   if (burst == 0u)
+      burst = WIFI_LWIP_UDPBLAST_BURST_DEFAULT;
+   if (burst > WIFI_LWIP_UDPBLAST_BURST_MAX)
+      burst = WIFI_LWIP_UDPBLAST_BURST_MAX;
+   s_blast_burst = burst;
+   s_blast_remaining = datagrams;
+   s_blast_sent = 0u;
+   s_blast_start_us = RPI_GetSystemTime();
+   s_blast_end_us = s_blast_start_us;
+}
+
+static void wifi_lwip_udpblast_poll(void)
+{
+   uint8_t burst;
+
+   /* A few per pass: enough to saturate, bounded so the Beeb-facing
+      main loop never stalls. */
+   s_in_blast_poll = true;
+   for (burst = 0u; burst < s_blast_burst && s_blast_remaining != 0u; ++burst) {
+      struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, 1472u, PBUF_RAM);
+      if (p == NULL)
+         break;                  /* pool pressure: try next pass */
+      memset(p->payload, 0x55, 1472u);
+      if (udp_sendto(s_blast_pcb, p, &s_blast_dst, s_blast_port) == ERR_OK) {
+         ++s_blast_sent;
+         --s_blast_remaining;
+         s_blast_end_us = RPI_GetSystemTime();
+      }
+      pbuf_free(p);
+      if (s_blast_remaining == 0u)
+         break;                  /* done: end stamp already taken */
+   }
+   s_in_blast_poll = false;
+}
+
+void wifi_lwip_udpblast_stats(uint32_t *sent, uint32_t *remaining,
+                              uint32_t *elapsed_us)
+{
+   *sent = s_blast_sent;
+   *remaining = s_blast_remaining;
+   *elapsed_us = s_blast_end_us - s_blast_start_us;
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-pass feed diagnostics (wifi_diag=1).  The 3D bench showed glom   */
+/* batches pin at ~4 because only ~4 frames reach the TX path per       */
+/* service pass; these histograms prove where that number comes from.  */
+/* Buckets 0 / 1 / 2-3 / 4-7 / 8-15 / 16+.  A pass is recorded only    */
+/* when it moved at least one frame in that direction, so idle passes  */
+/* do not swamp bucket 0: in the three TX-source histograms, bucket 0  */
+/* means "a productive pass in which this source contributed nothing". */
+/* ------------------------------------------------------------------ */
+static bool s_pass_diag;            /* cached once per service pass */
+static uint8_t s_pass_tx_tcp;
+static uint8_t s_pass_tx_blast;
+static uint8_t s_pass_tx_other;
+static uint8_t s_pass_rx_frames;
+static uint32_t s_feed_hist_tcp[6];
+static uint32_t s_feed_hist_blast[6];
+static uint32_t s_feed_hist_other[6];
+static uint32_t s_rx_pass_hist[6];
+
+static uint8_t wifi_lwip_pass_bucket(uint8_t n)
+{
+   return (n == 0u) ? 0u
+        : (n == 1u) ? 1u
+        : (n <= 3u) ? 2u
+        : (n <= 7u) ? 3u
+        : (n <= 15u) ? 4u : 5u;
+}
+
+/* One frame handed to the TX path (queued or sent direct), attributed to
+   its producer.  Saturating add: a runaway pass must not wrap. */
+static void wifi_lwip_pass_count_tx(const uint8_t *frame, uint16_t len)
+{
+   uint8_t *counter;
+
+   if (!s_pass_diag)
+      return;
+   counter = s_in_blast_poll ? &s_pass_tx_blast
+           : wifi_lwip_frame_self_retries(frame, len) ? &s_pass_tx_tcp
+           : &s_pass_tx_other;
+   if (*counter != 0xffu)
+      ++(*counter);
+}
+
+/* Called at the end of every service pass: fold the pass counters into
+   the histograms and reset them. */
+static void wifi_lwip_pass_diag_fold(void)
+{
+   if (!s_pass_diag)
+      return;
+   if ((uint8_t)(s_pass_tx_tcp | s_pass_tx_blast | s_pass_tx_other) != 0u) {
+      ++s_feed_hist_tcp[wifi_lwip_pass_bucket(s_pass_tx_tcp)];
+      ++s_feed_hist_blast[wifi_lwip_pass_bucket(s_pass_tx_blast)];
+      ++s_feed_hist_other[wifi_lwip_pass_bucket(s_pass_tx_other)];
+   }
+   if (s_pass_rx_frames != 0u)
+      ++s_rx_pass_hist[wifi_lwip_pass_bucket(s_pass_rx_frames)];
+   s_pass_tx_tcp = 0u;
+   s_pass_tx_blast = 0u;
+   s_pass_tx_other = 0u;
+   s_pass_rx_frames = 0u;
+}
+
+bool wifi_lwip_pass_diag_read(uint32_t tcp_hist[6], uint32_t blast_hist[6],
+                              uint32_t other_hist[6], uint32_t rx_hist[6])
+{
+   unsigned int i;
+
+   if (!sdio_runtime_diag_enabled())
+      return false;
+   for (i = 0u; i < 6u; ++i) {
+      tcp_hist[i] = s_feed_hist_tcp[i];
+      blast_hist[i] = s_feed_hist_blast[i];
+      other_hist[i] = s_feed_hist_other[i];
+      rx_hist[i] = s_rx_pass_hist[i];
+   }
+   return true;
+}
+
+#if WIFI_LWIP_RX_PROFILE
+#if (__ARM_ARCH >= 7)
+#error "WIFI_LWIP_RX_PROFILE uses the ARM1176 CP15 c15 cycle counter, which faults on the A53 (kernel7). Profile on kernel.img (rpi) instead."
+#endif
+/* CCNT/64 ticks; the counter is started once at boot (poll_ticks_start in
+   Pi1MHz.c), so reads here are free-running.  Same mechanism and caveats
+   as POLL_PROFILE. */
+static inline uint32_t wifi_lwip_ccnt(void)
+{
+   uint32_t v;
+   __asm volatile ("mrc p15,0,%0,c15,c12,1" : "=r" (v));
+   return v;
+}
+static uint32_t s_rxprof_sdio_ticks;   /* CMD53 peek+body fetch */
+static uint32_t s_rxprof_lwip_ticks;   /* pbuf + netif input (TCP callbacks) */
+static uint32_t s_rxprof_frames;
+
+void wifi_lwip_rx_profile_read(uint32_t *sdio_cycles_avg,
+                               uint32_t *lwip_cycles_avg, uint32_t *frames)
+{
+   uint32_t n = s_rxprof_frames;
+
+   *frames = n;
+   *sdio_cycles_avg = (n != 0u)
+      ? (uint32_t)((uint64_t)s_rxprof_sdio_ticks * 64u / n) : 0u;
+   *lwip_cycles_avg = (n != 0u)
+      ? (uint32_t)((uint64_t)s_rxprof_lwip_ticks * 64u / n) : 0u;
+}
+#endif /* WIFI_LWIP_RX_PROFILE */
 
 // cppcheck-suppress constParameterCallback
 static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
@@ -481,6 +782,31 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       cursor = cursor->next;
    }
 
+   /* Coalescing feed: while glom batching is negotiated, bulk traffic
+      (IPv4 TCP/UDP) always rides the hold queue - never the direct
+      path - so a burst emitted within one service pass (segments from
+      several ACKs, a blast burst) leaves as ONE superframe at the
+      pass's flush points instead of N glom-of-1 CMD53s.  This is what
+      lets batches form deeper than the credit-shut leftovers: the
+      direct path used to peel off every frame the open window would
+      take, one CMD53 each.  Added latency is bounded at one flush
+      point - the service pass flushes after every drain slice and on
+      non-drain passes - and the frame is flagged for the bulk cap so
+      a UDP flood cannot take the 4 reserved no-second-chance slots.
+      With wifi_txglom < 2 (or glom not negotiated) this branch never
+      runs and the path below is exactly the pre-glom behaviour. */
+   if (sdio_runtime_txglom_batch_limit() >= 2u
+       && wifi_lwip_frame_is_bulk(frame, offset)) {
+      if (wifi_lwip_tx_hold_push(frame, offset, true)) {
+         wifi_lwip_pass_count_tx(frame, offset);
+         wifi_lwip_rx_kick();
+         return ERR_OK;
+      }
+      /* Queue full or over the bulk cap: fall through to the legacy
+         path - its flush makes room, and its refusal semantics
+         (ERR_IF, drop accounting) already handle the rest. */
+   }
+
    /* Anything already held goes first, or this frame would overtake it.  When
       the queue cannot drain, the new frame joins the back rather than being
       dropped - which is what makes the queue a queue.  A queued frame is
@@ -489,8 +815,11 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       window, which is already an outage. */
    if (!wifi_lwip_tx_hold_flush()) {
       bool tcp = wifi_lwip_frame_self_retries(frame, offset);
-      if (wifi_lwip_tx_hold_push(frame, offset, tcp))
+      if (wifi_lwip_tx_hold_push(frame, offset, tcp)) {
+         s_tx_queued++;           /* parked after a refusal */
+         wifi_lwip_pass_count_tx(frame, offset);
          return ERR_OK;
+      }
       if (!tcp)
          s_tx_dropped_full++;     /* LOST - count it, or a full queue reads
                                      as "nothing wrong" on /status */
@@ -500,12 +829,16 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
    if (!sdio_runtime_send_ethernet_frame(frame, offset)) {
       s_tx_direct_fail++;
       bool tcp = wifi_lwip_frame_self_retries(frame, offset);
-      if (wifi_lwip_tx_hold_push(frame, offset, tcp))
+      if (wifi_lwip_tx_hold_push(frame, offset, tcp)) {
+         s_tx_queued++;           /* parked after a refusal */
+         wifi_lwip_pass_count_tx(frame, offset);
          return ERR_OK;           /* accepted: we own it now */
+      }
       if (!tcp)
          s_tx_dropped_full++;
       return ERR_IF;
    }
+   wifi_lwip_pass_count_tx(frame, offset);
 
 #if WIFI_LWIP_ICMP_PROBE_DIAG
    /* Stamped here, not on entry: the useful number is request-in to
@@ -525,6 +858,30 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       already kicked the drain for exactly this reason; TCP never did. */
    wifi_lwip_rx_kick();
    return ERR_OK;
+}
+
+/* Hand one received frame to lwIP.  Returns false only when the pbuf pool
+   is exhausted (the caller stops this drain cycle and resumes next poll).
+   On a per-packet failure it drops just that packet and returns true so
+   the caller keeps draining the remaining frames from the chip;
+   abandoning the whole budget on one bad packet leaves the rest queued
+   in the chip until the next poll tick. */
+static bool wifi_lwip_deliver_rx_frame(const uint8_t *frame,
+                                       uint16_t frame_length)
+{
+   struct pbuf *packet = pbuf_alloc(PBUF_RAW, frame_length, PBUF_POOL);
+
+   if (packet == NULL)
+      return false;
+
+   if (pbuf_take(packet, frame, frame_length) != ERR_OK) {
+      pbuf_free(packet);
+      return true;
+   }
+
+   if (g_wifi_lwip_context.netif.input(packet, &g_wifi_lwip_context.netif) != ERR_OK)
+      pbuf_free(packet);
+   return true;
 }
 
 /* Returns true if the chip had at least one frame this cycle (the bus is
@@ -551,43 +908,53 @@ static bool wifi_lwip_drain_rx_frames(uint32_t budget_end_us)
       return false;
 
    for (frame_index = 0u; frame_index < WIFI_LWIP_RX_FRAME_BUDGET; ++frame_index) {
-      struct pbuf *packet;
-
       if (frame_index != 0u
           && (int32_t)(RPI_GetSystemTime() - budget_end_us) >= 0)
          break;                   /* out of time; the rest waits for next poll */
 
       frame_length = 0u;
+#if WIFI_LWIP_RX_PROFILE
+      {
+         uint32_t t0 = wifi_lwip_ccnt();
+         bool got = sdio_runtime_poll_ethernet_frame(frame, sizeof(frame),
+                                                     &frame_length);
+         s_rxprof_sdio_ticks += wifi_lwip_ccnt() - t0;
+         if (!got)
+            break;                /* SDIO error / FIFO empty: stop this cycle */
+      }
+#else
       if (!sdio_runtime_poll_ethernet_frame(frame, sizeof(frame), &frame_length))
          break;                   /* SDIO error / FIFO empty: stop this cycle */
+#endif
 
       drained_any = true;
 
       if (frame_length == 0u)
          continue;
 
+      if (s_pass_diag && s_pass_rx_frames != 0xffu)
+         ++s_pass_rx_frames;      /* delivered data frames this pass */
+
 #if WIFI_LWIP_ICMP_PROBE_DIAG
       wifi_lwip_icmp_probe_rx(frame, frame_length);
 #endif
 
-      packet = pbuf_alloc(PBUF_RAW, frame_length, PBUF_POOL);
-      if (packet == NULL)
+#if WIFI_LWIP_RX_PROFILE
+      {
+         uint32_t t1 = wifi_lwip_ccnt();
+         bool room = wifi_lwip_deliver_rx_frame(frame, frame_length);
+
+         s_rxprof_lwip_ticks += wifi_lwip_ccnt() - t1;
+         ++s_rxprof_frames;
+         if (!room)
+            break;                /* pbuf pool exhausted: stop this cycle,
+                                     resume next poll once pbufs free up */
+      }
+#else
+      if (!wifi_lwip_deliver_rx_frame(frame, frame_length))
          break;                   /* pbuf pool exhausted: stop this cycle,
                                      resume next poll once pbufs free up */
-
-      /* On a per-packet failure, drop just that packet and keep
-         draining the remaining frames from the chip; abandoning the
-         whole budget on one bad packet leaves up to 7 frames queued
-         in the chip until the next poll tick. */
-      if (pbuf_take(packet, frame, frame_length) != ERR_OK) {
-         pbuf_free(packet);
-         continue;
-      }
-
-      if (g_wifi_lwip_context.netif.input(packet, &g_wifi_lwip_context.netif) != ERR_OK) {
-         pbuf_free(packet);
-         continue;
-      }
+#endif
    }
 
    return drained_any;
@@ -1085,6 +1452,10 @@ void wifi_lwip_poll(void)
    if (!g_wifi_lwip_context.timers_running)
       return;
 
+   /* Cache the diag gate once per pass: the per-frame counting sites then
+      test one static bool instead of calling into sdio.c. */
+   s_pass_diag = sdio_runtime_diag_enabled();
+
    /* Keep trying to associate.  The chip does not re-associate by itself and
       the boot path issues the join exactly once, so a scan that comes back
       empty - WLC_E_SET_SSID status 3, which one noisy moment is enough to
@@ -1174,8 +1545,11 @@ void wifi_lwip_poll(void)
          (void)wifi_lwip_tx_hold_flush();
       }
    }
+   if (s_blast_remaining != 0u)
+      wifi_lwip_udpblast_poll();
    sys_check_timeouts();
    wifi_lwip_log_dhcp_state();
+   wifi_lwip_pass_diag_fold();
    g_wifi_lwip_context.last_service_time_us = RPI_GetSystemTime();
    g_wifi_lwip_context.service_calls++;
    wifi_lwip_update_runtime_state();

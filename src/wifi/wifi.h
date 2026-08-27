@@ -65,6 +65,13 @@ typedef enum {
    WIFI_SDIO_TX_PROBE_COMMAND_PMK,
    WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF,
    WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF,
+   /* Host->device TX glom negotiation (iovar names are from the DEVICE's
+      perspective, so "bus:rxglom = 1" = "the device may RECEIVE glommed
+      transfers" = host TX glom).  Sent by the TXGLOM bring-up stage only
+      when wifi_txglom is nonzero; bus:txglomalign advises the firmware of
+      the host's 4-byte subframe alignment. */
+   WIFI_SDIO_TX_PROBE_COMMAND_TXGLOMALIGN,
+   WIFI_SDIO_TX_PROBE_COMMAND_RXGLOM,
    /* mpc=0 forces the radio to stay powered on regardless of association
       state.  Default mpc=1 lets the firmware park the radio in low-power
       mode when not associated, which on some BCM43430 builds causes
@@ -197,6 +204,14 @@ typedef struct {
    bool sdio_probe_enabled;
    bool sdio_tx_probe_enabled;
    bool allow_emulator_fallback;
+   /* wifi_diag=1: credit-window histograms on /status (sdio.c).  Off by
+      default so release builds carry no per-frame instrumentation work. */
+   bool diag_enabled;
+   /* wifi_txglom=N (0=off, default): maximum frames per SDPCM TX
+      superframe.  0 keeps the TX path byte-identical to the pre-glom
+      driver; nonzero enables the bring-up iovar negotiation and, if the
+      firmware accepts it, the 20-byte glom-form headers. */
+   uint8_t txglom;
    char country[8];
    wifi_sdio_tx_probe_command_t sdio_tx_probe_command;
    uint8_t sdio_rx_sweep_limit;

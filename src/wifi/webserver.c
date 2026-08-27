@@ -2492,6 +2492,174 @@ static bool route_status(ws_conn_t *c)
       table_row(&b, "TX path", tmp);
    }
    {
+      /* TX glom row: shown when wifi_txglom is configured, or when the
+         channel-3 tripwire has ever fired (which must be visible even on
+         a build where glom was later turned off). */
+      uint8_t  glom_cfg = 0u;
+      bool     glom_active = false;
+      uint32_t g_supers = 0u, g_subs = 0u, g_falls = 0u, g_ch3 = 0u;
+
+      sdio_runtime_txglom_status(&glom_cfg, &glom_active,
+                                 &g_supers, &g_subs, &g_falls, &g_ch3);
+      if (glom_cfg != 0u || g_ch3 != 0u) {
+         char big[128];
+
+         snprintf(big, sizeof big,
+                  "%s limit %u - supers %lu / subs %lu / fallbacks %lu / ch3 %lu%s",
+                  glom_active ? "active," : "OFF (not negotiated),",
+                  (unsigned)glom_cfg,
+                  (unsigned long)g_supers, (unsigned long)g_subs,
+                  (unsigned long)g_falls, (unsigned long)g_ch3,
+                  (g_ch3 != 0u) ? " TRIPWIRE!" : "");
+         table_row(&b, "TX glom", big);
+      }
+   }
+   {
+      /* Glom feed diagnostics (wifi_diag=1): which batch sizes actually
+         went out, and frames carried per credit refill - the number that
+         governs throughput once CMD53 count stops mattering. */
+      uint32_t bh[5];
+      uint32_t refills = 0u;
+
+      if (sdio_runtime_txglom_diag(bh, &refills)) {
+         char   big[160];
+         size_t off;
+
+         off = (size_t)snprintf(big, sizeof big,
+                  "1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
+                  (unsigned long)bh[0], (unsigned long)bh[1],
+                  (unsigned long)bh[2], (unsigned long)bh[3],
+                  (unsigned long)bh[4]);
+         if (refills != 0u && off < sizeof big)
+            snprintf(big + off, sizeof big - off,
+                     " - %lu refills, %lu.%02lu frames/refill",
+                     (unsigned long)refills,
+                     (unsigned long)(rs.tx_frames / refills),
+                     (unsigned long)(((uint64_t)rs.tx_frames * 100u
+                                      / refills) % 100u));
+         table_row(&b, "TX glom batches", big);
+      }
+   }
+   {
+      /* Per-pass feed histograms (wifi_diag=1): how many frames each
+         producer hands the TX path per service pass, and how many RX
+         frames a pass drains - the numbers that say why glom batches
+         are the size they are. */
+      uint32_t th[6], blh[6], oh[6], rxh[6];
+
+      if (wifi_lwip_pass_diag_read(th, blh, oh, rxh)) {
+         char big[192];
+
+         snprintf(big, sizeof big,
+                  "0:%lu 1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
+                  (unsigned long)th[0], (unsigned long)th[1],
+                  (unsigned long)th[2], (unsigned long)th[3],
+                  (unsigned long)th[4], (unsigned long)th[5]);
+         table_row(&b, "TX feed/pass (TCP)", big);
+         snprintf(big, sizeof big,
+                  "0:%lu 1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
+                  (unsigned long)blh[0], (unsigned long)blh[1],
+                  (unsigned long)blh[2], (unsigned long)blh[3],
+                  (unsigned long)blh[4], (unsigned long)blh[5]);
+         table_row(&b, "TX feed/pass (udpblast)", big);
+         snprintf(big, sizeof big,
+                  "0:%lu 1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
+                  (unsigned long)oh[0], (unsigned long)oh[1],
+                  (unsigned long)oh[2], (unsigned long)oh[3],
+                  (unsigned long)oh[4], (unsigned long)oh[5]);
+         table_row(&b, "TX feed/pass (other)", big);
+         snprintf(big, sizeof big,
+                  "1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
+                  (unsigned long)rxh[1], (unsigned long)rxh[2],
+                  (unsigned long)rxh[3], (unsigned long)rxh[4],
+                  (unsigned long)rxh[5]);
+         table_row(&b, "RX drained/pass", big);
+      }
+   }
+#if WIFI_LWIP_RX_PROFILE
+   {
+      uint32_t sdio_avg = 0u, lwip_avg = 0u, prof_frames = 0u;
+
+      wifi_lwip_rx_profile_read(&sdio_avg, &lwip_avg, &prof_frames);
+      snprintf(tmp, sizeof tmp, "sdio %lu / lwip %lu cycles avg over %lu",
+               (unsigned long)sdio_avg, (unsigned long)lwip_avg,
+               (unsigned long)prof_frames);
+      table_row(&b, "RX cost/frame", tmp);
+   }
+#endif
+   {
+      /* Credit-window instrumentation rows: only when wifi_diag=1 (the
+         getter refuses while disabled, so a release /status is unchanged). */
+      uint32_t dh[7];
+      uint32_t rh[6];
+      uint8_t  dmin = 0u;
+      uint32_t rmax = 0u;
+
+      if (sdio_runtime_credit_diag(dh, &dmin, rh, &rmax)) {
+         char big[160];
+
+         snprintf(big, sizeof big,
+                  "0:%lu 1:%lu 2:%lu 3:%lu 4-7:%lu 8-15:%lu 16+:%lu min:%u",
+                  (unsigned long)dh[0], (unsigned long)dh[1],
+                  (unsigned long)dh[2], (unsigned long)dh[3],
+                  (unsigned long)dh[4], (unsigned long)dh[5],
+                  (unsigned long)dh[6], (unsigned)dmin);
+         table_row(&b, "Credit depth (RX refresh)", big);
+         snprintf(big, sizeof big,
+                  "<100us:%lu <500us:%lu <1ms:%lu <5ms:%lu "
+                  "<20ms:%lu 20ms+:%lu max:%lu us",
+                  (unsigned long)rh[0], (unsigned long)rh[1],
+                  (unsigned long)rh[2], (unsigned long)rh[3],
+                  (unsigned long)rh[4], (unsigned long)rh[5],
+                  (unsigned long)rmax);
+         table_row(&b, "Credit reopen latency", big);
+      }
+   }
+   {
+      /* Grant-loop latency (wifi_diag=1): how quickly the host collects
+         an asserted DAT1, against how often the dongle grants credits.
+         Latency a visible fraction of the interval = host is late;
+         otherwise the dongle's own cadence governs. */
+      uint32_t gh[6], gp[6];
+
+      if (sdio_runtime_grant_diag(gh, gp)) {
+         char big[160];
+
+         snprintf(big, sizeof big,
+                  "<50us:%lu <100us:%lu <250us:%lu <1ms:%lu <5ms:%lu 5ms+:%lu",
+                  (unsigned long)gh[0], (unsigned long)gh[1],
+                  (unsigned long)gh[2], (unsigned long)gh[3],
+                  (unsigned long)gh[4], (unsigned long)gh[5]);
+         table_row(&b, "RX gate service latency", big);
+         snprintf(big, sizeof big,
+                  "<500us:%lu <1ms:%lu <2ms:%lu <5ms:%lu <10ms:%lu 10ms+:%lu",
+                  (unsigned long)gp[0], (unsigned long)gp[1],
+                  (unsigned long)gp[2], (unsigned long)gp[3],
+                  (unsigned long)gp[4], (unsigned long)gp[5]);
+         table_row(&b, "Grant interval", big);
+      }
+   }
+   {
+      uint32_t dpf = sdio_runtime_tx_data_phase_fails();
+
+      if (dpf != 0u) {
+         snprintf(tmp, sizeof tmp, "%lu", (unsigned long)dpf);
+         table_row(&b, "TX data-phase fails", tmp);
+      }
+   }
+   {
+      uint32_t bl_sent = 0u, bl_rem = 0u, bl_us = 0u;
+
+      wifi_lwip_udpblast_stats(&bl_sent, &bl_rem, &bl_us);
+      if (bl_sent != 0u || bl_rem != 0u) {
+         snprintf(tmp, sizeof tmp, "%lu sent / %lu left / %lu.%03lu s",
+                  (unsigned long)bl_sent, (unsigned long)bl_rem,
+                  (unsigned long)(bl_us / 1000000u),
+                  (unsigned long)((bl_us / 1000u) % 1000u));
+         table_row(&b, "UDP blast", tmp);
+      }
+   }
+   {
       int32_t pm = -1;
       if (sdio_runtime_get_powersave_mode(&pm)) {
          snprintf(tmp, sizeof tmp, "%ld%s", (long)pm,
@@ -3249,6 +3417,62 @@ static bool route_bench(ws_conn_t *c)
    c->state = CONN_SEND_FILE;
    conn_pump(c);
    return true;
+}
+
+/* GET /udpblast?host=a.b.c.d&port=5001&mb=8 - prime the UDP blast rig
+   (wifi_lwip.c).  Takes lwIP TCP out of the throughput measurement: the
+   datagrams travel the ordinary link_output -> hold-queue -> credit-gate
+   path, but nothing waits for ACKs.  Measure at the receiver (its byte
+   count over its own clock); the /status "UDP blast" row is the
+   cross-check.  host is required; port defaults to 5001, mb to 8. */
+static bool route_udpblast(ws_conn_t *c, const char *query)
+{
+   char        val[40];
+   ip_addr_t   dst;
+   long        parsed;
+   uint16_t    port = 5001u;
+   uint32_t    mb = 8u;
+   uint32_t    burst = 0u;      /* 0 = rig default (4/pass) */
+   uint32_t    datagrams;
+   ws_strbuf_t b;
+
+   if (!ws_query_param(query, "host", val, sizeof val)
+       || !ipaddr_aton(val, &dst))
+      return ws_error(c, 400, "Bad Request",
+                      "Usage: /udpblast?host=a.b.c.d&port=5001&mb=8&burst=4");
+   if (ws_query_param(query, "port", val, sizeof val)) {
+      parsed = strtol(val, NULL, 10);
+      if (parsed <= 0 || parsed > 65535)
+         return ws_error(c, 400, "Bad Request", "Bad port.");
+      port = (uint16_t)parsed;
+   }
+   if (ws_query_param(query, "mb", val, sizeof val)) {
+      parsed = strtol(val, NULL, 10);
+      if (parsed <= 0 || parsed > 1024)
+         return ws_error(c, 400, "Bad Request", "Bad mb (1-1024).");
+      mb = (uint32_t)parsed;
+   }
+   if (ws_query_param(query, "burst", val, sizeof val)) {
+      parsed = strtol(val, NULL, 10);
+      if (parsed <= 0 || parsed > 16)
+         return ws_error(c, 400, "Bad Request", "Bad burst (1-16).");
+      burst = (uint32_t)parsed;
+   }
+   datagrams = (mb * 1024u * 1024u) / 1472u;
+   wifi_lwip_udpblast_start(&dst, port, datagrams, (uint8_t)burst);
+
+   sb_init(&b);
+   page_open(&b, "UDP blast");
+   sb_printf(&b,
+             "<h1>UDP blast</h1><div class=\"card\"><p>Sending %lu datagrams "
+             "(%lu MB of 1472-byte payloads, %lu per pass) to %s port %u.  "
+             "Progress is on <a href=\"/status\">/status</a>; measure at the "
+             "receiver (e.g. iperf -s -u -p %u -i 1).</p></div>",
+             (unsigned long)datagrams, (unsigned long)mb,
+             (unsigned long)((burst == 0u) ? 4u : burst), ipaddr_ntoa(&dst),
+             (unsigned)port, (unsigned)port);
+   page_close(&b);
+   return ws_finish_html(c, 200, "OK", &b);
 }
 
 static bool route_files_get(ws_conn_t *c, const char *rawpath)
@@ -5992,6 +6216,8 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_status(c);
       if (strcmp(rawpath, "/bench.bin") == 0)
          return route_bench(c);
+      if (strcmp(rawpath, "/udpblast") == 0)
+         return route_udpblast(c, (query != NULL) ? query + 1 : NULL);
       if (strcmp(rawpath, "/aun") == 0)
          return route_aun(c);
       if (strcmp(rawpath, "/framebuffer") == 0)

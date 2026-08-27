@@ -172,6 +172,67 @@ static uint32_t g_runtime_last_any_rx_us;
    the observed wedge state (TX dead, RX alive, power cycle needed). */
 static uint32_t g_runtime_tx_shut_since_us;
 static uint32_t g_runtime_tx_resync_count;
+/* Credit-window instrumentation (wifi_diag=1 in Pi1MHz.cfg).  Two
+   histograms, both sampled only where the chip's own header speaks:
+   - depth: on every RX header refresh, how many more frames the chip
+     would accept at that instant.  Buckets 0,1,2,3,4-7,8-15,>=16;
+     bucket 0 also counts flow-control stops.  Bounds the useful TX
+     glom size.
+   - reopen: how long the TX window had been shut when the refresh
+     proved it open again.  Buckets <100us,<500us,<1ms,<5ms,<20ms,>=20ms.
+   Gated by g_runtime_diag_enabled so the release hot path pays one
+   predictable branch per received frame when off, nothing more. */
+static bool g_runtime_diag_enabled;
+static uint32_t g_credit_depth_hist[7];
+static uint8_t g_credit_depth_min = 0xffu;
+static uint32_t g_credit_reopen_hist[6];
+static uint32_t g_credit_reopen_max_us;
+/* Grant-loop latency (wifi_diag=1).  gate_latency: interval from the
+   last gate check that found DAT1 LOW to the first that found it HIGH -
+   an upper bound on assert->service latency, tight because the gate is
+   read once per main-loop pass.  Only low->high transitions are
+   bucketed, so a line held high through a burst does not pollute the
+   histogram.  grant_gap: inter-arrival time of credit refills (RX
+   refreshes that advanced max_seq).  If gate latency is a visible
+   fraction of the grant gap, the host is late collecting grants; if
+   not, the dongle's own cadence governs. */
+static uint32_t g_gate_latency_hist[6];  /* <50us,<100,<250,<1ms,<5ms,5ms+ */
+static uint32_t g_gate_last_low_us;
+static bool g_gate_prev_high;
+static uint32_t g_grant_gap_hist[6];     /* <500us,<1,<2,<5,<10,10ms+ */
+static uint32_t g_grant_last_us;
+/* Data-path CMD53 failures where the completion phase failed (the card may
+   already hold the frame, so the sequence number was deliberately NOT
+   reclaimed).  Not diag-gated: it only ticks on a failure path. */
+static uint32_t g_tx_data_phase_fail;
+/* TX glom state.  _config is the wifi_txglom limit (0 = off, the default),
+   set once at boot before sdio_runtime_start(); _active latches only when
+   the bring-up negotiation succeeds (bus:txglom = 0 pin confirmed AND
+   bus:rxglom = 1 accepted), and is cleared by a full chip restart so the
+   re-downloaded firmware is re-negotiated from scratch.  While _active,
+   EVERY host->device frame (data and control alike) uses the 20-byte
+   glom-form header. */
+static uint8_t g_sdpcm_txglom_config;
+static bool g_sdpcm_txglom_active;
+static uint32_t g_txglom_superframes;    /* multi-frame supers sent */
+static uint32_t g_txglom_subframes;      /* frames carried inside them */
+static uint32_t g_txglom_fallbacks;      /* superframe CMD53 failures */
+static uint32_t g_glom_rx_channel3;      /* tripwire: RX glom-desc frames */
+/* wifi_diag-gated glom feed diagnostics: how deep the batches that
+   actually reach the bus are (buckets 1, 2-3, 4-7, 8-15, 16+ - bucket 1
+   counts every single-frame data send, glommed or not), and how often
+   the chip advances the credit window (an RX refresh whose max_seq
+   moved forward).  frames-sent / refills = frames carried per
+   credit-refill round trip, the number the deep-glom experiment is
+   trying to raise. */
+static uint32_t g_txglom_batch_hist[5];
+static uint32_t g_credit_refills;
+/* Negotiation sub-state for the TXGLOM bring-up stage. */
+static uint8_t g_runtime_txglom_step;
+static bool g_runtime_glom_request_pending;
+static uint16_t g_runtime_glom_request_id;
+static bool g_runtime_glom_ack_seen;
+static uint32_t g_runtime_glom_ack_status;
 /* Association retries since boot - see sdio_runtime_rejoin_start(). */
 static uint32_t g_runtime_rejoin_count;
 /* Set once the 4-bit data bus has been switched to and verified. */
@@ -256,6 +317,12 @@ typedef enum {
       one step per tick so no single poll callback stalls the main 1 MHz
       loop. */
    SDIO_RUNTIME_STAGE_CLM_DOWNLOAD,
+   /* TX glom iovar negotiation (bus:txglomalign / bus:txglom = 0 pin /
+      bus:rxglom = 1).  Deliberately AFTER the CLM download - the CLM
+      chunk sender always uses the 12-byte header form, which is only
+      correct while glom is not yet active - and a no-op unless
+      wifi_txglom is nonzero. */
+   SDIO_RUNTIME_STAGE_TXGLOM,
    /* Pushes wifi.c's cached desired MAC (the SoC board OTP MAC) into
       the chip's cur_etheraddr iovar via WLC_SET_VAR.  Skipped when no
       MAC was cached - the chip then keeps its factory OTP MAC.  Must
@@ -353,6 +420,33 @@ static uint32_t g_runtime_sdio_core_base = CYW43_SDIO_CORE_BASE;
 #define SDPCM_CONTROL_CHANNEL 0u
 #define SDPCM_EVENT_CHANNEL 1u
 #define SDPCM_DATA_CHANNEL 2u
+/* Device->host glom descriptor channel.  We pin device->host glom OFF at
+   bring-up (bus:txglom = 0), so a frame ever arriving on this channel means
+   the pin did not hold - counted as a tripwire and dropped. */
+#define SDPCM_GLOM_CHANNEL 3u
+/* TX glom (host->device superframes).  With glom mode negotiated, every
+   host->device frame carries a 20-byte header: 4-byte hw frame tag,
+   8-byte hardware extension header (word0 = (sublen - 4) | lastfrm << 24,
+   word1 = tail_pad << 16), 8-byte software header.  The glom-form data
+   header is 22 (20 + 2 pad, mirroring the non-glom 12 + 2 = 14): BDC at
+   22, payload at 26. */
+#define SDPCM_HWEXT_LENGTH 8u
+#define SDPCM_GLOM_DATA_HEADER_LENGTH 22u
+/* Compile-time ceiling on frames per superframe; wifi_txglom is clamped
+   to it.  16, because the glom-of-4 bench showed the governor is the
+   credit-refill cadence (~540 refills/s), not CMD53 count - the win is
+   carrying more frames per refill round trip, and the chip's grants
+   reach 16+ routinely (credit-depth histogram).  Defined in sdio.h
+   (SDIO_RUNTIME_TXGLOM_MAX) so wifi_lwip.c can size its gather arrays
+   to match. */
+#define SDPCM_TXGLOM_MAX SDIO_RUNTIME_TXGLOM_MAX
+/* Superframe assembly buffer.  Worst case is SDPCM_TXGLOM_MAX subframes
+   of 26 + 1574 = 1600 bytes each (each padded to 4, the last one padded
+   to a whole 512-byte block): 16 * 1600 = 25600, already a block
+   multiple; one block of slack on top for the arithmetic ever
+   shifting. */
+#define SDPCM_TXGLOM_BUF_SIZE (SDPCM_TXGLOM_MAX * 1600u + 512u)
+static _Alignas(4) uint8_t g_txglom_buf[SDPCM_TXGLOM_BUF_SIZE];
 #define WLC_IOCTL_MAGIC 0x14e46c77u
 #define TKIP_ENABLED 0x0002u
 #define AES_ENABLED 0x0004u
@@ -2379,6 +2473,8 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF:
          return WLC_SET_PM;
       case WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TXGLOMALIGN:
+      case WIFI_SDIO_TX_PROBE_COMMAND_RXGLOM:
       case WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF:
       case WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY:
       case WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF:
@@ -2587,6 +2683,10 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          return 4u;
       case WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF:
          return (uint16_t)(sizeof("bus:txglom") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_TXGLOMALIGN:
+         return (uint16_t)(sizeof("bus:txglomalign") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_RXGLOM:
+         return (uint16_t)(sizeof("bus:rxglom") + 4u);
       case WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF:
          return (uint16_t)(sizeof("roam_off") + 4u);
       case WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF:
@@ -2649,6 +2749,8 @@ static bool sdio_tx_probe_is_set_ioctl(wifi_sdio_tx_probe_command_t command)
          || command == WIFI_SDIO_TX_PROBE_COMMAND_PMK
          || command == WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF
          || command == WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_TXGLOMALIGN
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_RXGLOM
          || command == WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF
          || command == WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY
          || command == WIFI_SDIO_TX_PROBE_COMMAND_SCAN
@@ -3143,6 +3245,15 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
       case WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF:
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "bus:txglom", 0u);
          break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_TXGLOMALIGN:
+         /* Advises the firmware of the host's subframe alignment (we lay
+            subframes at 4-byte boundaries, brcmfmac's default). */
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "bus:txglomalign", 4u);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_RXGLOM:
+         /* Device may RECEIVE glommed transfers = host TX glom enable. */
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "bus:rxglom", 1u);
+         break;
       case WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF:
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "roam_off", 1u);
          break;
@@ -3351,6 +3462,44 @@ static void sdio_store_u32_le(uint8_t *dest, uint32_t value)
    dest[1] = (uint8_t)((value >> 8) & 0xffu);
    dest[2] = (uint8_t)((value >> 16) & 0xffu);
    dest[3] = (uint8_t)((value >> 24) & 0xffu);
+}
+
+/* Bus length of a glom-mode transfer whose subframes total len bytes:
+   whole 512-byte blocks when block mode will carry it, else 4-byte
+   aligned (brcmfmac's roundup rule).  Unlike the non-glom path - where
+   the frame tag stays at the true length and the CMD53's rounding tail
+   is ignored by the chip - a superframe's first frame tag is REWRITTEN
+   to the full padded total, so the pad must be explicit, zeroed, and
+   declared in the last subframe's hwext tail_pad field for the firmware
+   to strip. */
+static uint16_t sdio_glom_padded_total(uint16_t len)
+{
+   if (len > (uint16_t)SDIO_PROBE_FUNCTION2_BLOCK_SIZE)
+      return (uint16_t)((len + 511u) & (uint16_t)~511u);
+   return (uint16_t)((len + 3u) & (uint16_t)~3u);
+}
+
+/* Write the 20-byte glom-form SDPCM header for one subframe.
+   sublen = the subframe's true (unpadded) length including this header;
+   tail_pad = zero bytes appended after the subframe (alignment, plus the
+   block round-up on the last subframe); doffset = where the payload
+   (BDC header) starts, from the subframe start.  The sequence number is
+   taken here, at the moment the frame is committed to the wire order. */
+static void sdio_glom_write_header(uint8_t *dest, uint16_t tag_len,
+                                   uint16_t sublen, uint16_t tail_pad,
+                                   bool last_frame, uint8_t channel,
+                                   uint8_t doffset)
+{
+   sdio_store_u16_le(&dest[0], tag_len);
+   sdio_store_u16_le(&dest[2], (uint16_t)~tag_len);
+   sdio_store_u32_le(&dest[4], (uint32_t)(sublen - 4u)
+                                  | (last_frame ? (1ul << 24) : 0ul));
+   sdio_store_u32_le(&dest[8], (uint32_t)tail_pad << 16);
+   dest[12] = sdio_next_sdpcm_sequence();
+   dest[13] = channel;
+   dest[14] = 0u;               /* next-length: always 0 on TX */
+   dest[15] = doffset;
+   sdio_store_u32_le(&dest[16], 0u);
 }
 
 /* One CMD53 per frame, by rounding up to a whole number of blocks rather
@@ -3601,15 +3750,59 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
       CMD53 error counts under a sustained bidirectional load drop from
       hundreds to zero.  Captured on every channel because control and event
       frames refresh the window just as data frames do. */
+   if (g_runtime_diag_enabled && g_runtime_max_seq_valid
+       && (int8_t)(frame_buffer[9] - g_runtime_max_seq) > 0) {
+      uint32_t grant_now_us = RPI_GetSystemTime();
+
+      ++g_credit_refills;   /* the chip advanced the credit window */
+      if (g_grant_last_us != 0u) {
+         uint32_t gap = grant_now_us - g_grant_last_us;
+
+         ++g_grant_gap_hist[(gap < 500u) ? 0u
+                            : (gap < 1000u) ? 1u
+                            : (gap < 2000u) ? 2u
+                            : (gap < 5000u) ? 3u
+                            : (gap < 10000u) ? 4u : 5u];
+      }
+      g_grant_last_us = grant_now_us | 1u;
+   }
    g_runtime_wlan_flow_control = frame_buffer[8];
    g_runtime_max_seq = frame_buffer[9];
    g_runtime_max_seq_valid = true;
+   if (g_runtime_diag_enabled) {
+      /* Sample the window depth at the only place truth arrives.  How many
+         credits does the chip actually grant at a time?  That number bounds
+         how large a TX glom could ever usefully be. */
+      int8_t depth = (int8_t)(g_runtime_max_seq - g_sdpcm_tx_sequence);
+      uint8_t d = (depth <= 0 || g_runtime_wlan_flow_control != 0u)
+                     ? 0u : (uint8_t)depth;
+      ++g_credit_depth_hist[(d == 0u) ? 0u
+                            : (d <= 3u) ? d
+                            : (d <= 7u) ? 4u
+                            : (d <= 15u) ? 5u : 6u];
+      if (d < g_credit_depth_min)
+         g_credit_depth_min = d;
+   }
    /* The chip has just told us where the window stands.  If it has room for
       our next frame and no flow-control stop, transmit is demonstrably
       alive - this is the ONLY place that may clear the TX-dead clock,
       because it is the only signal the chip itself vouches for. */
-   if (!sdio_runtime_tx_window_shut())
+   if (!sdio_runtime_tx_window_shut()) {
+      if (g_runtime_diag_enabled && g_runtime_tx_shut_since_us != 0u) {
+         /* Shut->reopen latency, bucketed at the clear.  Mass in the
+            <500us buckets = fast ACK-paced refills (glom helps); mass at
+            >=5ms = the chip itself is slow to credit. */
+         uint32_t shut_us = RPI_GetSystemTime() - g_runtime_tx_shut_since_us;
+         ++g_credit_reopen_hist[(shut_us < 100u) ? 0u
+                                : (shut_us < 500u) ? 1u
+                                : (shut_us < 1000u) ? 2u
+                                : (shut_us < 5000u) ? 3u
+                                : (shut_us < 20000u) ? 4u : 5u];
+         if (shut_us > g_credit_reopen_max_us)
+            g_credit_reopen_max_us = shut_us;
+      }
       g_runtime_tx_shut_since_us = 0u;
+   }
    /* Any frame, any channel: proof the chip is alive and talking to us.
       Distinct from g_runtime_last_rx_us, which stamps only delivered DATA
       frames and is load-bearing for the 45 s RX-silence trigger. */
@@ -3660,6 +3853,18 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
             g_runtime_set_mac_ack_status = cdc_status;
             g_runtime_set_mac_ack_seen = true;
             g_runtime_set_mac_request_pending = false;
+         }
+         /* TX glom negotiation acks (bus:txglomalign / bus:txglom /
+            bus:rxglom), matched by exact request_id like the others.  The
+            ERROR flag is folded into the recorded status so a firmware
+            that errors with status 0 still reads as a refusal. */
+         if (g_runtime_glom_request_pending && cdc_cmd == WLC_SET_VAR
+             && cdc_request_id == g_runtime_glom_request_id) {
+            g_runtime_glom_ack_status =
+               ((cdc_flags & CDCF_IOC_ERROR) != 0u && cdc_status == 0u)
+                  ? 1u : cdc_status;
+            g_runtime_glom_ack_seen = true;
+            g_runtime_glom_request_pending = false;
          }
          /* WLC_GET_RSSI reply: a signed int32 dBm in the first 4 bytes
             after the CDC header.  Same request_id correlation as the
@@ -3769,6 +3974,12 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
          data frame. Worth surfacing during debug because it usually
          means we lost SDPCM framing - e.g. our hwtag read landed
          partway through a previous frame. */
+      /* Channel 3 = device->host glom descriptor.  We pin that OFF at
+         bring-up (bus:txglom = 0); a frame here means the pin did not
+         hold on this firmware - the /status tripwire that says TX glom
+         must not be trusted on (this driver cannot deglom RX). */
+      if (channel == SDPCM_GLOM_CHANNEL)
+         ++g_glom_rx_channel3;
       sdio_debug_log("fn2: drop ch=%u hdr=%u tot=%u",
                      (unsigned)channel,
                      (unsigned)header_length,
@@ -3889,8 +4100,14 @@ static bool sdio_probe_send_single_tx_control_template_timeout(sdio_host_t *dev,
                                                                sdio_probe_result_t *probe_result,
                                                                uint32_t timeout_us)
 {
-   _Alignas(4) uint8_t tx_frame[SDPCM_CONTROL_EVENT_HEADER_LENGTH + CDC_HEADER_LENGTH + TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH]; // drained by 32-bit EMMC PIO writes
+   /* +HWEXT+4: room for the glom-form header (8 bytes wider) and its
+      4-byte-alignment tail pad, both zero-filled by the memset below. */
+   _Alignas(4) uint8_t tx_frame[SDPCM_CONTROL_EVENT_HEADER_LENGTH + SDPCM_HWEXT_LENGTH
+                                + CDC_HEADER_LENGTH + TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH
+                                + 4u]; // drained by 32-bit EMMC PIO writes
    sdio_cmd53_result_t cmd53_result;
+   uint16_t wire_length;
+   uint8_t cdc_at;
 
    if (dev == NULL || probe_result == NULL || !probe_result->tx_control_template_ready)
       return false;
@@ -3899,26 +4116,52 @@ static bool sdio_probe_send_single_tx_control_template_timeout(sdio_host_t *dev,
    memset(&cmd53_result, 0, sizeof(cmd53_result));
    probe_result->tx_control_probe_attempted = true;
 
-   sdio_store_u16_le(&tx_frame[0], probe_result->tx_control_template_frame_size);
-   sdio_store_u16_le(&tx_frame[2], probe_result->tx_control_template_frame_size_complement);
-   probe_result->tx_control_template_sequence = sdio_next_sdpcm_sequence();
-   tx_frame[4] = probe_result->tx_control_template_sequence;
-   tx_frame[5] = probe_result->tx_control_template_channel_and_flags;
-   tx_frame[6] = probe_result->tx_control_template_next_length;
-   tx_frame[7] = probe_result->tx_control_template_header_length;
-   tx_frame[8] = probe_result->tx_control_template_wireless_flow_control;
-   tx_frame[9] = probe_result->tx_control_template_bus_data_credit;
-   sdio_store_u32_le(&tx_frame[12], probe_result->tx_control_template_command);
-   sdio_store_u32_le(&tx_frame[16], probe_result->tx_control_template_cdc_length);
-   sdio_store_u32_le(&tx_frame[20], probe_result->tx_control_template_cdc_flags);
-   sdio_store_u32_le(&tx_frame[24], probe_result->tx_control_template_cdc_status);
+   if (g_sdpcm_txglom_active) {
+      /* Glom mode: EVERY host->device frame - control included - takes the
+         20-byte header form, as a glom-of-1 with the frame tag rewritten
+         to the padded total (brcmfmac's tx_ctrlframe path). */
+      uint16_t sublen = (uint16_t)(probe_result->tx_control_template_frame_size
+                                   + SDPCM_HWEXT_LENGTH);
+
+      wire_length = sdio_glom_padded_total(sublen);
+      sdio_store_u16_le(&tx_frame[0], wire_length);
+      sdio_store_u16_le(&tx_frame[2], (uint16_t)~wire_length);
+      sdio_store_u32_le(&tx_frame[4], (uint32_t)(sublen - 4u) | (1ul << 24));
+      sdio_store_u32_le(&tx_frame[8], (uint32_t)(wire_length - sublen) << 16);
+      probe_result->tx_control_template_sequence = sdio_next_sdpcm_sequence();
+      tx_frame[12] = probe_result->tx_control_template_sequence;
+      tx_frame[13] = probe_result->tx_control_template_channel_and_flags;
+      tx_frame[14] = probe_result->tx_control_template_next_length;
+      tx_frame[15] = (uint8_t)(probe_result->tx_control_template_header_length
+                               + SDPCM_HWEXT_LENGTH);
+      tx_frame[16] = probe_result->tx_control_template_wireless_flow_control;
+      tx_frame[17] = probe_result->tx_control_template_bus_data_credit;
+      cdc_at = (uint8_t)(SDPCM_CONTROL_EVENT_HEADER_LENGTH + SDPCM_HWEXT_LENGTH);
+   } else {
+      wire_length = probe_result->tx_control_template_frame_size;
+      sdio_store_u16_le(&tx_frame[0], probe_result->tx_control_template_frame_size);
+      sdio_store_u16_le(&tx_frame[2], probe_result->tx_control_template_frame_size_complement);
+      probe_result->tx_control_template_sequence = sdio_next_sdpcm_sequence();
+      tx_frame[4] = probe_result->tx_control_template_sequence;
+      tx_frame[5] = probe_result->tx_control_template_channel_and_flags;
+      tx_frame[6] = probe_result->tx_control_template_next_length;
+      tx_frame[7] = probe_result->tx_control_template_header_length;
+      tx_frame[8] = probe_result->tx_control_template_wireless_flow_control;
+      tx_frame[9] = probe_result->tx_control_template_bus_data_credit;
+      cdc_at = SDPCM_CONTROL_EVENT_HEADER_LENGTH;
+   }
+   sdio_store_u32_le(&tx_frame[cdc_at], probe_result->tx_control_template_command);
+   sdio_store_u32_le(&tx_frame[cdc_at + 4u], probe_result->tx_control_template_cdc_length);
+   sdio_store_u32_le(&tx_frame[cdc_at + 8u], probe_result->tx_control_template_cdc_flags);
+   sdio_store_u32_le(&tx_frame[cdc_at + 12u], probe_result->tx_control_template_cdc_status);
    if (probe_result->tx_control_template_payload_length > 0u)
-      memcpy(&tx_frame[28], probe_result->tx_control_template_payload_bytes,
+      memcpy(&tx_frame[cdc_at + CDC_HEADER_LENGTH],
+             probe_result->tx_control_template_payload_bytes,
              probe_result->tx_control_template_payload_length);
 
    if (!sdio_cmd53_execute_timeout(dev, 2u, 0u, true, false, false,
-                                   probe_result->tx_control_template_frame_size, tx_frame,
-                                   (uint32_t)probe_result->tx_control_template_frame_size,
+                                   wire_length, tx_frame,
+                                   (uint32_t)wire_length,
                                    timeout_us, &cmd53_result)) {
       /* Nothing reached the chip, so give the number back rather than leave a
          gap the chip would credit against a frame it never saw. */
@@ -4136,6 +4379,113 @@ static int sdio_runtime_clm_download_step(sdio_host_t *dev)
    g_runtime_clm_offset += chunk_len;
    g_runtime_step_sent = false;
    return (g_runtime_clm_offset >= clm_length) ? 1 : 0;
+}
+
+/* TX glom negotiation, one iovar per settle window (plan section 5.4).
+   Runs only when wifi_txglom is nonzero; returns 1 when the stage is
+   finished (whether or not glom ended up active), 0 while in flight.
+
+   Step 0: bus:txglomalign = 4  - advisory; failure tolerated (brcmfmac
+           behaves the same way).
+   Step 1: bus:txglom = 0       - pins device->host glom OFF.  This one
+           must be CONFIRMED (status-0 ack): brcmfmac only exercises the
+           write on SDIO core rev < 12, so it is unverified that this
+           firmware honours it - and if it does not hold, we could be
+           handed RX superframes this driver cannot parse.  No ack, or an
+           error ack, aborts the negotiation and leaves everything
+           exactly as today.  (The join burst re-asserts the same pin.)
+   Step 2: bus:rxglom = 1       - "the device may RECEIVE glommed
+           transfers" = host TX glom.  A status-0 ack activates the
+           20-byte header form for every subsequent host->device frame;
+           any refusal is brcmfmac's own tolerated-failure path and we
+           stay frame-at-a-time.  The channel-3 tripwire
+           (g_glom_rx_channel3) then guards the unverified pin at
+           runtime. */
+static int sdio_runtime_txglom_step(sdio_host_t *dev)
+{
+   uint32_t now;
+
+   if (dev == NULL)
+      return 1;
+   if (g_sdpcm_txglom_config == 0u)
+      return 1;                       /* wifi_txglom off: nothing to do */
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_step_sent) {
+      wifi_sdio_tx_probe_command_t command;
+      bool sent;
+
+      switch (g_runtime_txglom_step) {
+         case 0u:
+            command = WIFI_SDIO_TX_PROBE_COMMAND_TXGLOMALIGN;
+            break;
+         case 1u:
+            command = WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF;
+            break;
+         default:
+            command = WIFI_SDIO_TX_PROBE_COMMAND_RXGLOM;
+            break;
+      }
+      g_runtime_glom_ack_seen = false;
+      g_runtime_glom_ack_status = 0u;
+      sdio_prepare_tx_control_template(&g_sdio_probe_result, command);
+      g_runtime_glom_request_id =
+         g_sdio_probe_result.tx_control_template_request_id;
+      g_runtime_glom_request_pending = true;
+      sent = sdio_probe_send_single_tx_control_template_timeout(dev,
+                                                                &g_sdio_probe_result,
+                                                                SDIO_RUNTIME_POLL_TIMEOUT_US);
+      if (!sent) {
+         g_runtime_glom_request_pending = false;
+         sdio_debug_log("TXGLOM: iovar send failed at step %u - glom stays off",
+                        (unsigned)g_runtime_txglom_step);
+         sdio_runtime_set_error(NULL);   /* tolerated */
+         g_runtime_step_sent = false;
+         return 1;
+      }
+      g_runtime_step_sent = true;
+      g_runtime_step_deadline_us = now + 10000u;
+      return 0;
+   }
+
+   if ((int32_t)(now - g_runtime_step_deadline_us) < 0)
+      return 0;
+
+   (void)sdio_drain_fn2_responses(dev);
+   g_runtime_glom_request_pending = false;
+   g_runtime_step_sent = false;
+
+   switch (g_runtime_txglom_step) {
+      case 0u:
+         /* Alignment advisory: continue regardless of the outcome. */
+         if (!g_runtime_glom_ack_seen || g_runtime_glom_ack_status != 0u)
+            sdio_debug_log("TXGLOM: bus:txglomalign not confirmed (seen=%u status=%lu) - continuing",
+                           (unsigned)(g_runtime_glom_ack_seen ? 1u : 0u),
+                           (unsigned long)g_runtime_glom_ack_status);
+         g_runtime_txglom_step = 1u;
+         return 0;
+      case 1u:
+         if (!g_runtime_glom_ack_seen || g_runtime_glom_ack_status != 0u) {
+            sdio_debug_log("TXGLOM: bus:txglom=0 pin NOT confirmed (seen=%u status=%lu) - glom stays off",
+                           (unsigned)(g_runtime_glom_ack_seen ? 1u : 0u),
+                           (unsigned long)g_runtime_glom_ack_status);
+            return 1;                 /* cannot risk unparseable RX supers */
+         }
+         g_runtime_txglom_step = 2u;
+         return 0;
+      default:
+         if (g_runtime_glom_ack_seen && g_runtime_glom_ack_status == 0u) {
+            g_sdpcm_txglom_active = true;
+            sdio_debug_log("TXGLOM: bus:rxglom accepted - glom headers active, limit %u",
+                           (unsigned)g_sdpcm_txglom_config);
+         } else {
+            sdio_debug_log("TXGLOM: bus:rxglom refused (seen=%u status=%lu) - staying frame-at-a-time",
+                           (unsigned)(g_runtime_glom_ack_seen ? 1u : 0u),
+                           (unsigned long)g_runtime_glom_ack_status);
+         }
+         return 1;
+   }
 }
 
 /* Push wifi.c's cached desired MAC into the chip's cur_etheraddr iovar
@@ -5491,6 +5841,13 @@ bool sdio_runtime_start(void)
    g_runtime_max_seq = 0u;
    g_runtime_wlan_flow_control = 0u;
    g_runtime_max_seq_valid = false;
+   /* Glom mode does not survive a chip restart: the re-downloaded firmware
+      boots with default iovars, so the 20-byte header form must stay off
+      until the TXGLOM stage renegotiates it. */
+   g_sdpcm_txglom_active = false;
+   g_runtime_txglom_step = 0u;
+   g_runtime_glom_request_pending = false;
+   g_runtime_glom_ack_seen = false;
    g_runtime_tx_stalled = false;
    g_runtime_tx_stall_since_us = 0u;
    /* Both freshness clocks, or a runtime restart inherits a dead past: a
@@ -5728,6 +6085,21 @@ bool sdio_runtime_tick(void)
          else if (g_cyw43_clm_data != NULL && g_cyw43_clm_length != 0u)
             sdio_debug_log("CLM: clmload download complete (%lu bytes)",
                            (unsigned long)g_cyw43_clm_length);
+         g_runtime_step_sent = false;
+         g_runtime_txglom_step = 0u;
+         if (g_sdpcm_txglom_config != 0u)
+            sdio_debug_log("== STAGE_TXGLOM: negotiating TX glom (wifi_txglom=%u) ==",
+                           (unsigned)g_sdpcm_txglom_config);
+         g_runtime_stage = SDIO_RUNTIME_STAGE_TXGLOM;
+         return true;
+      }
+
+      case SDIO_RUNTIME_STAGE_TXGLOM:
+      {
+         int glom_result = sdio_runtime_txglom_step(&g_runtime_device);
+
+         if (glom_result == 0)
+            return true;
          g_runtime_step_sent = false;
          if (g_runtime_desired_mac_valid)
             sdio_debug_log("== STAGE_SET_MAC: cur_etheraddr override pending ==");
@@ -6371,29 +6743,13 @@ void sdio_runtime_set_desired_mac(const uint8_t mac[6])
    g_runtime_desired_mac_valid = true;
 }
 
-bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_length)
+/* Credit-window gate plus the stall/resync ladder, shared verbatim by the
+   single-frame and superframe transmit paths (it was the body of
+   sdio_runtime_send_ethernet_frame until the superframe path needed the
+   identical behaviour).  Returns true when the caller may put at least
+   one frame on the bus; false is back-pressure, not an error. */
+static bool sdio_runtime_tx_gate_pass(void)
 {
-   /* static: keeps this ~1.6 KB buffer off the stack.  This runs inside
-      the lwIP transmit path, which is itself nested under the RX drain
-      (wifi_lwip_drain_rx_frames -> lwIP -> link_output -> here), so a
-      stack copy would compound an already deep call chain. */
-   _Alignas(4) static uint8_t tx_frame[SDIO_RUNTIME_FRAME_BUFFER_SIZE];
-   uint16_t total_length;
-
-   if (!g_runtime_started || frame == NULL || frame_length == 0u) {
-      sdio_runtime_set_error("WiFi SDIO runtime is not ready for transmit");
-      return false;
-   }
-
-   /* Reject oversize frames BEFORE the (uint16_t)(18u + frame_length) cast,
-      which would otherwise wrap a 65519+ payload back into a small
-      total_length, slip past the size check below, and overrun the
-      1.6 KB tx_frame buffer in the memcpy that follows. */
-   if (frame_length > (uint16_t)(SDIO_RUNTIME_MAX_FRAME_SIZE - 18u)) {
-      sdio_runtime_set_error("Ethernet frame exceeds SDIO transmit buffer");
-      return false;
-   }
-
    /* Respect the chip's credit window.  Refusing here is back-pressure, not an
       error, so it deliberately does not call sdio_runtime_set_error(): the
       sequence number is not consumed, lwIP keeps the segment on its unacked
@@ -6475,6 +6831,39 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       g_runtime_tx_stalled = false;
    }
 
+   return true;
+}
+
+bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_length)
+{
+   /* static: keeps this ~1.6 KB buffer off the stack.  This runs inside
+      the lwIP transmit path, which is itself nested under the RX drain
+      (wifi_lwip_drain_rx_frames -> lwIP -> link_output -> here), so a
+      stack copy would compound an already deep call chain. */
+   _Alignas(4) static uint8_t tx_frame[SDIO_RUNTIME_FRAME_BUFFER_SIZE];
+   uint16_t total_length;
+
+   if (!g_runtime_started || frame == NULL || frame_length == 0u) {
+      sdio_runtime_set_error("WiFi SDIO runtime is not ready for transmit");
+      return false;
+   }
+
+   /* Reject oversize frames BEFORE the (uint16_t)(18u + frame_length) cast,
+      which would otherwise wrap a 65519+ payload back into a small
+      total_length, slip past the size check below, and overrun the
+      1.6 KB tx_frame buffer in the memcpy that follows.  The glom header
+      form costs 8 bytes more, and its block round-up stays inside the
+      buffer: round_up(26 + (1600 - 26), 512) = 2048 <= 2112. */
+   if (frame_length > (uint16_t)(SDIO_RUNTIME_MAX_FRAME_SIZE
+                                 - (g_sdpcm_txglom_active ? 26u : 18u))) {
+      sdio_runtime_set_error("Ethernet frame exceeds SDIO transmit buffer");
+      return false;
+   }
+
+   /* Credit gate + stall ladder (shared with the superframe path). */
+   if (!sdio_runtime_tx_gate_pass())
+      return false;
+
    /* The RX path wakes the bus before touching it, but this path never did -
       and since the interrupt gate removed the every-poll KSO side effect, an
       idle link's first transmit could land on a sleeping interface, which
@@ -6485,19 +6874,36 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
    if (!sdio_runtime_wake_bus(&g_runtime_device))
       return false;
 
-   total_length = (uint16_t)(18u + frame_length);
-
    memset(tx_frame, 0, sizeof(tx_frame));
-   sdio_store_u16_le(&tx_frame[0], total_length);
-   sdio_store_u16_le(&tx_frame[2], (uint16_t)~total_length);
-   tx_frame[4] = sdio_next_sdpcm_sequence();
-   tx_frame[5] = SDPCM_DATA_CHANNEL;
-   tx_frame[6] = 0u;
-   tx_frame[7] = SDPCM_DATA_HEADER_LENGTH;
-   tx_frame[8] = 0u;
-   tx_frame[9] = 0u;
-   tx_frame[14] = (uint8_t)(BDC_PROTOCOL_VERSION << BDC_VERSION_SHIFT);
-   memcpy(&tx_frame[18], frame, frame_length);
+   if (g_sdpcm_txglom_active) {
+      /* Glom-of-1 superframe: same wire format as an N-frame superframe
+         with one, last, subframe.  The frame tag carries the PADDED total
+         (the transfer length must match it exactly in glom mode); the
+         hwext header carries the true subframe length and the tail pad
+         for the firmware to strip.  BDC at 22, payload at 26. */
+      uint16_t sublen = (uint16_t)(26u + frame_length);
+      uint16_t padded = sdio_glom_padded_total(sublen);
+
+      sdio_glom_write_header(tx_frame, padded, sublen,
+                             (uint16_t)(padded - sublen), true,
+                             SDPCM_DATA_CHANNEL,
+                             SDPCM_GLOM_DATA_HEADER_LENGTH);
+      tx_frame[22] = (uint8_t)(BDC_PROTOCOL_VERSION << BDC_VERSION_SHIFT);
+      memcpy(&tx_frame[26], frame, frame_length);
+      total_length = padded;
+   } else {
+      total_length = (uint16_t)(18u + frame_length);
+      sdio_store_u16_le(&tx_frame[0], total_length);
+      sdio_store_u16_le(&tx_frame[2], (uint16_t)~total_length);
+      tx_frame[4] = sdio_next_sdpcm_sequence();
+      tx_frame[5] = SDPCM_DATA_CHANNEL;
+      tx_frame[6] = 0u;
+      tx_frame[7] = SDPCM_DATA_HEADER_LENGTH;
+      tx_frame[8] = 0u;
+      tx_frame[9] = 0u;
+      tx_frame[14] = (uint8_t)(BDC_PROTOCOL_VERSION << BDC_VERSION_SHIFT);
+      memcpy(&tx_frame[18], frame, frame_length);
+   }
 
    if (!sdio_function2_transfer(&g_runtime_device, true, tx_frame, total_length)) {
       /* Give the sequence number back.  A CMD53 that never completed left no
@@ -6513,6 +6919,8 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
          shut window per occurrence. */
       if (sdio_host_last_failure_precommand())
          --g_sdpcm_tx_sequence;
+      else
+         ++g_tx_data_phase_fail;   /* number kept: the card may hold the frame */
       /* A bus-level failure is TX-dead evidence too.  One observed wedge
          flavour never touches the credit gate at all: the chip holds DAT1
          low outside the interrupt period, the controller reports the data
@@ -6527,6 +6935,8 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
    }
 
    ++g_runtime_tx_frame_count;
+   if (g_runtime_diag_enabled)
+      ++g_txglom_batch_hist[0];   /* a batch of one */
    g_runtime_bus_active_us = RPI_GetSystemTime();
    /* Deliberately NOT clearing g_runtime_tx_shut_since_us here.  A CMD53 the
       host sees succeed proves only that the bus took the bytes - the resync
@@ -6535,6 +6945,150 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
       young through a genuinely dead window.  Life is declared where the chip
       proves it: max_seq moving our window open, in the RX refresh path. */
    return true;
+}
+
+/* See sdio.h.  1 unless glom is negotiated, a multi-frame limit is
+   configured, and the belt-and-braces failure cap has not tripped (three
+   superframe CMD53 failures stop batching until reboot - the credit
+   system needs no such cap, this is for unknown-unknowns). */
+// cppcheck-suppress unusedFunction
+uint8_t sdio_runtime_txglom_batch_limit(void)
+{
+   if (!g_sdpcm_txglom_active || g_sdpcm_txglom_config < 2u
+       || g_txglom_fallbacks >= 3u)
+      return 1u;
+   return g_sdpcm_txglom_config;   /* already clamped to SDPCM_TXGLOM_MAX */
+}
+
+/* Send up to n Ethernet frames as one SDPCM superframe (see sdio.h for
+   the return contract).  The frames are packed in order, each as a
+   glom-form subframe consuming one sequence number; the batch is clamped
+   to the configured limit AND the chip's advertised credit depth, so a
+   partially-open window sends a prefix and leaves the rest queued - the
+   same back-pressure semantics as the single-frame path. */
+// cppcheck-suppress unusedFunction
+int8_t sdio_runtime_send_ethernet_frames(const uint8_t *const frames[],
+                                         const uint16_t lens[], uint8_t n)
+{
+   uint8_t limit = sdio_runtime_txglom_batch_limit();
+   uint8_t count;
+   uint8_t i;
+   uint16_t offset;
+
+   if (!g_runtime_started || frames == NULL || lens == NULL || n == 0u) {
+      sdio_runtime_set_error("WiFi SDIO runtime is not ready for transmit");
+      return 0;
+   }
+
+   /* A batch of one, or glom unavailable: the single-frame path is the
+      proven code for that shape (and the only correct one when the
+      20-byte header form is not active). */
+   if (n == 1u || limit < 2u)
+      return sdio_runtime_send_ethernet_frame(frames[0], lens[0]) ? 1 : 0;
+
+   for (i = 0u; i < n; ++i) {
+      if (lens[i] == 0u
+          || lens[i] > (uint16_t)(SDIO_RUNTIME_MAX_FRAME_SIZE - 26u)) {
+         sdio_runtime_set_error("Ethernet frame exceeds SDIO transmit buffer");
+         return 0;
+      }
+   }
+
+   /* Credit gate + stall ladder, exactly as the single-frame path. */
+   if (!sdio_runtime_tx_gate_pass())
+      return 0;
+
+   count = (n < limit) ? n : limit;
+   if (g_runtime_max_seq_valid) {
+      /* One credit per subframe: never pack more than the chip has
+         advertised room for.  The gate just proved depth >= 1 (or that
+         the chip has not spoken yet, in which case stay at one frame -
+         the pre-first-frame behaviour of the single path). */
+      int8_t depth = (int8_t)(g_runtime_max_seq - g_sdpcm_tx_sequence);
+
+      if (depth < 1)
+         depth = 1;
+      if ((int8_t)count > depth)
+         count = (uint8_t)depth;
+   } else {
+      count = 1u;
+   }
+   if (count == 1u)
+      return sdio_runtime_send_ethernet_frame(frames[0], lens[0]) ? 1 : 0;
+
+   if (!sdio_runtime_wake_bus(&g_runtime_device))
+      return 0;
+
+   /* Pack the superframe.  Each subframe: 20-byte glom header + 2 pad +
+      4-byte BDC + payload, tail-padded to 4 bytes (the last one to the
+      full block round-up), pad zeroed and declared in its hwext header.
+      Subframe tags carry each subframe's true length; subframe 0's tag
+      is rewritten to the padded total afterwards. */
+   offset = 0u;
+   for (i = 0u; i < count; ++i) {
+      uint8_t *sub = &g_txglom_buf[offset];
+      uint16_t sublen = (uint16_t)(26u + lens[i]);
+      bool last = (i == (uint8_t)(count - 1u));
+      uint16_t padded_sub;
+
+      if (last)
+         padded_sub = (uint16_t)(sdio_glom_padded_total((uint16_t)(offset + sublen))
+                                 - offset);
+      else
+         padded_sub = (uint16_t)((sublen + 3u) & (uint16_t)~3u);
+
+      sdio_glom_write_header(sub, sublen, sublen,
+                             (uint16_t)(padded_sub - sublen), last,
+                             SDPCM_DATA_CHANNEL,
+                             SDPCM_GLOM_DATA_HEADER_LENGTH);
+      sub[20] = 0u;
+      sub[21] = 0u;
+      sub[22] = (uint8_t)(BDC_PROTOCOL_VERSION << BDC_VERSION_SHIFT);
+      sub[23] = 0u;
+      sub[24] = 0u;
+      sub[25] = 0u;
+      memcpy(&sub[26], frames[i], lens[i]);
+      memset(&sub[26u + lens[i]], 0, (size_t)(padded_sub - sublen));
+      offset = (uint16_t)(offset + padded_sub);
+   }
+   sdio_store_u16_le(&g_txglom_buf[0], offset);
+   sdio_store_u16_le(&g_txglom_buf[2], (uint16_t)~offset);
+
+   if (!sdio_function2_transfer(&g_runtime_device, true, g_txglom_buf, offset)) {
+      uint32_t fail_now_us;
+
+      ++g_txglom_fallbacks;
+      /* Same TX-dead evidence stamping as the single-frame path: a
+         bus-level failure counts even though the gate read healthy. */
+      fail_now_us = RPI_GetSystemTime();
+      if (g_runtime_tx_shut_since_us == 0u)
+         g_runtime_tx_shut_since_us = (fail_now_us == 0u) ? 1u : fail_now_us;
+      sdio_runtime_set_error("Failed to write Ethernet superframe over SDIO");
+      if (sdio_host_last_failure_precommand()) {
+         /* Nothing reached the card: all `count` numbers are provably
+            unused, so the whole batch may be retried. */
+         g_sdpcm_tx_sequence = (uint8_t)(g_sdpcm_tx_sequence - count);
+         return 0;
+      }
+      /* Completion-phase failure: the card may hold any prefix of the
+         superframe.  Reclaim NOTHING - guessing walks into sequence
+         replay - and tell the caller to drop the batch (TCP rides RTO,
+         the rest is counted). */
+      ++g_tx_data_phase_fail;
+      return (int8_t)-(int8_t)count;
+   }
+
+   g_runtime_tx_frame_count += count;
+   ++g_txglom_superframes;
+   g_txglom_subframes += count;
+   if (g_runtime_diag_enabled)
+      ++g_txglom_batch_hist[(count <= 3u) ? 1u
+                            : (count <= 7u) ? 2u
+                            : (count <= 15u) ? 3u : 4u];
+   g_runtime_bus_active_us = RPI_GetSystemTime();
+   /* As in the single path: NOT clearing the TX-dead clock here - only
+      the chip's own RX refresh may do that. */
+   return (int8_t)count;
 }
 
 /* Wake the chip's SDIO interface before a bus access.  The CYW43 lets
@@ -6597,6 +7151,117 @@ void sdio_runtime_rx_gate_counts(uint32_t *skips, uint32_t *sweeps,
    *missed = g_rx_int_missed;
    *armed = g_rx_int_armed;
    *high = g_rx_int_high;
+}
+
+/* Cache the wifi_txglom limit (0 = off).  Called once at boot from wifi.c
+   BEFORE sdio_runtime_start() so the TXGLOM bring-up stage sees it; the
+   value survives chip restarts (only the negotiated _active flag is
+   reset, and the restart's bring-up renegotiates). */
+// cppcheck-suppress unusedFunction
+void sdio_runtime_set_txglom(uint8_t max_frames)
+{
+   if (max_frames > (uint8_t)SDPCM_TXGLOM_MAX)
+      max_frames = (uint8_t)SDPCM_TXGLOM_MAX;
+   g_sdpcm_txglom_config = max_frames;
+}
+
+/* TX glom state for /status: the configured limit (0 = off), whether the
+   bring-up negotiation activated glom headers, and the counters -
+   superframes / subframes carried / superframe CMD53 failures / the
+   channel-3 RX tripwire (nonzero = the bus:txglom=0 pin did not hold and
+   glom must not be trusted on). */
+// cppcheck-suppress unusedFunction
+void sdio_runtime_txglom_status(uint8_t *config, bool *active,
+                                uint32_t *supers, uint32_t *subs,
+                                uint32_t *fallbacks, uint32_t *rx_channel3)
+{
+   *config = g_sdpcm_txglom_config;
+   *active = g_sdpcm_txglom_active;
+   *supers = g_txglom_superframes;
+   *subs = g_txglom_subframes;
+   *fallbacks = g_txglom_fallbacks;
+   *rx_channel3 = g_glom_rx_channel3;
+}
+
+/* wifi_diag-gated glom feed snapshot: the sent-batch-size histogram
+   (buckets 1, 2-3, 4-7, 8-15, 16+) and the credit-refill count.  Returns
+   false (outputs untouched) while the instrumentation is disabled. */
+// cppcheck-suppress unusedFunction
+bool sdio_runtime_txglom_diag(uint32_t batch_hist[5], uint32_t *credit_refills)
+{
+   unsigned int i;
+
+   if (!g_runtime_diag_enabled)
+      return false;
+   for (i = 0u; i < 5u; ++i)
+      batch_hist[i] = g_txglom_batch_hist[i];
+   *credit_refills = g_credit_refills;
+   return true;
+}
+
+/* Enable the credit-window instrumentation (wifi_diag=1).  Called once at
+   boot from wifi.c, before any traffic; there is deliberately no way to
+   toggle it at runtime, so the histograms never mix gated and ungated
+   periods. */
+// cppcheck-suppress unusedFunction
+void sdio_runtime_set_diag(bool enabled)
+{
+   g_runtime_diag_enabled = enabled;
+}
+
+/* For wifi_lwip.c's own wifi_diag-gated counters, so the gate lives in
+   exactly one place. */
+// cppcheck-suppress unusedFunction
+bool sdio_runtime_diag_enabled(void)
+{
+   return g_runtime_diag_enabled;
+}
+
+/* Snapshot of the credit-window histograms.  Returns false (outputs
+   untouched) when the instrumentation is disabled, so /status can skip the
+   rows entirely. */
+// cppcheck-suppress unusedFunction
+bool sdio_runtime_credit_diag(uint32_t depth_hist[7], uint8_t *depth_min,
+                              uint32_t reopen_hist[6], uint32_t *reopen_max_us)
+{
+   unsigned int i;
+
+   if (!g_runtime_diag_enabled)
+      return false;
+   for (i = 0u; i < 7u; ++i)
+      depth_hist[i] = g_credit_depth_hist[i];
+   *depth_min = g_credit_depth_min;
+   for (i = 0u; i < 6u; ++i)
+      reopen_hist[i] = g_credit_reopen_hist[i];
+   *reopen_max_us = g_credit_reopen_max_us;
+   return true;
+}
+
+/* wifi_diag-gated grant-loop snapshot: DAT1 low->high service latency
+   buckets (<50us,<100,<250,<1ms,<5ms,5ms+) and credit-refill
+   inter-arrival buckets (<500us,<1ms,<2,<5,<10,10ms+).  False while the
+   instrumentation is disabled. */
+// cppcheck-suppress unusedFunction
+bool sdio_runtime_grant_diag(uint32_t gate_hist[6], uint32_t gap_hist[6])
+{
+   unsigned int i;
+
+   if (!g_runtime_diag_enabled)
+      return false;
+   for (i = 0u; i < 6u; ++i) {
+      gate_hist[i] = g_gate_latency_hist[i];
+      gap_hist[i] = g_grant_gap_hist[i];
+   }
+   return true;
+}
+
+/* Data-path CMD53 completion-phase failures (sequence number kept, frame
+   possibly consumed by the card).  Always counted - it quantifies how often
+   the no-reclaim branch of the landed fix actually triggers. */
+// cppcheck-suppress unusedFunction
+uint32_t sdio_runtime_tx_data_phase_fails(void)
+{
+   return g_tx_data_phase_fail;
 }
 
 /* Undo everything the interrupt gate told the CHIP before a warm reboot.
@@ -6682,14 +7347,34 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
 
       if (sdio_host_card_interrupt_asserted()) {
          g_rx_int_high++;
+         if (g_runtime_diag_enabled) {
+            if (!g_gate_prev_high && g_gate_last_low_us != 0u) {
+               uint32_t gate_lat = gate_now_us - g_gate_last_low_us;
+
+               ++g_gate_latency_hist[(gate_lat < 50u) ? 0u
+                                     : (gate_lat < 100u) ? 1u
+                                     : (gate_lat < 250u) ? 2u
+                                     : (gate_lat < 1000u) ? 3u
+                                     : (gate_lat < 5000u) ? 4u : 5u];
+            }
+            g_gate_prev_high = true;
+         }
          g_rx_sweeping = false;
       } else if ((uint32_t)(gate_now_us - g_rx_sweep_us) < SDIO_RX_SWEEP_INTERVAL_US) {
          g_rx_int_skips++;
+         if (g_runtime_diag_enabled) {
+            g_gate_last_low_us = (gate_now_us == 0u) ? 1u : gate_now_us;
+            g_gate_prev_high = false;
+         }
          return false;
       } else {
          g_rx_sweep_us = gate_now_us;
          g_rx_sweeps++;
          g_rx_sweeping = true;
+         if (g_runtime_diag_enabled) {
+            g_gate_last_low_us = (gate_now_us == 0u) ? 1u : gate_now_us;
+            g_gate_prev_high = false;
+         }
       }
    }
 

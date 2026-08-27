@@ -284,6 +284,55 @@ uint32_t sdio_runtime_tx_dead_us(void);
 void sdio_runtime_prepare_for_warm_reboot(void);
 void sdio_runtime_rx_gate_counts(uint32_t *skips, uint32_t *sweeps,
                                  uint32_t *missed, bool *armed, uint32_t *high);
+/* Credit-window instrumentation (wifi_diag=1 in Pi1MHz.cfg).  set_diag is
+   called once at boot; credit_diag returns false while disabled so /status
+   can skip the rows.  depth_hist buckets: 0,1,2,3,4-7,8-15,>=16 (0 includes
+   flow-control stops); reopen_hist buckets: <100us,<500us,<1ms,<5ms,<20ms,
+   >=20ms. */
+void sdio_runtime_set_diag(bool enabled);
+bool sdio_runtime_diag_enabled(void);
+bool sdio_runtime_credit_diag(uint32_t depth_hist[7], uint8_t *depth_min,
+                              uint32_t reopen_hist[6], uint32_t *reopen_max_us);
+/* Grant-loop latency (wifi_diag=1): DAT1 low->high service-latency
+   histogram (<50us,<100,<250,<1ms,<5ms,5ms+) and credit-refill
+   inter-arrival histogram (<500us,<1ms,<2,<5,<10,10ms+). */
+bool sdio_runtime_grant_diag(uint32_t gate_hist[6], uint32_t gap_hist[6]);
+/* Completion-phase data CMD53 failures (sequence deliberately not
+   reclaimed).  Always counted; /status shows it only when nonzero. */
+uint32_t sdio_runtime_tx_data_phase_fails(void);
+/* TX glom (SDPCM superframes).  set_txglom caches the wifi_txglom limit
+   (0 = off, default; clamped to the compile-time ceiling) - must be called
+   before sdio_runtime_start().  txglom_status reports the configured
+   limit, whether the bring-up iovar negotiation activated glom headers,
+   and supers/subs/fallbacks plus the channel-3 RX tripwire counter. */
+#define SDIO_RUNTIME_TXGLOM_MAX 16u
+void sdio_runtime_set_txglom(uint8_t max_frames);
+/* How many frames the TX hold-queue flush may hand
+   sdio_runtime_send_ethernet_frames() in one call right now: 1 while glom
+   is off / not negotiated / belt-and-braces disabled after repeated
+   superframe failures, else the configured wifi_txglom limit. */
+uint8_t sdio_runtime_txglom_batch_limit(void);
+/* Send up to n Ethernet frames as ONE SDPCM superframe, in order, one
+   credit per subframe.  Returns:
+     >0  that many frames (a prefix of the input, clamped to the batch
+         limit and the chip's credit depth) were accepted by the bus;
+      0  refused - credit window shut, bus asleep, or a command-phase
+         CMD53 failure whose sequence numbers were reclaimed: NOTHING was
+         consumed and the caller retries later;
+     <0  -(frames packed): the CMD53 failed after the command phase, the
+         card may hold any prefix and the sequence numbers stay consumed -
+         the caller MUST drop those frames (a retry would replay consumed
+         sequence numbers). */
+int8_t sdio_runtime_send_ethernet_frames(const uint8_t *const frames[],
+                                         const uint16_t lens[], uint8_t n);
+void sdio_runtime_txglom_status(uint8_t *config, bool *active,
+                                uint32_t *supers, uint32_t *subs,
+                                uint32_t *fallbacks, uint32_t *rx_channel3);
+/* wifi_diag-gated glom feed diagnostics: histogram of the batch sizes
+   actually sent (buckets 1, 2-3, 4-7, 8-15, 16+; bucket 1 includes every
+   single-frame data send) and the count of credit refills (RX refreshes
+   that advanced max_seq).  False while wifi_diag is off. */
+bool sdio_runtime_txglom_diag(uint32_t batch_hist[5], uint32_t *credit_refills);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
 /* On-demand signal-strength read.  sdio_runtime_request_rssi() just flags
    a read (safe from the /status TCP callback); sdio_runtime_rssi_poll()
