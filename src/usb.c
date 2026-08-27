@@ -254,6 +254,7 @@ static void usb_task(void) {
     /* A received kernel.now is flashed from here rather than from inside the
        MTP callback - see mtp_fs_reboot_poll. */
     mtp_fs_reboot_poll();
+    mtp_fs_cache_poll();
 }
 
 

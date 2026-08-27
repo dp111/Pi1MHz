@@ -436,38 +436,108 @@ static uint32_t fs_handle_from_path(const char* path) {
   return fs_hash_path_seeded(path, 2166136261u);
 }
 
-/* Cap recursion depth on tree walks so a pathological filesystem
- * (deeply nested directories, possibly hostile) cannot blow the
- * cooperative-poll stack.  Each level consumes a DIR (~600 B) + a
- * FILINFO + a path buffer + the recursive frame; 16 levels keeps
- * the worst-case under ~25 KB which is comfortably within the
- * cooperative-loop budget.  A tree deeper than this is logged
- * (via return false) and the cache build aborts cleanly. */
+/* Cap descent depth on tree walks so a pathological filesystem
+ * (deeply nested directories, possibly hostile) cannot exhaust the
+ * walker's per-level state.  A tree deeper than this aborts the cache
+ * build cleanly. */
 #define MTP_WALK_MAX_DEPTH 16u
 
-static bool fs_walk_tree_recursive(const char* dir_path, uint32_t parent_handle,
-                                   fs_walk_cb_t cb, void* user_data,
-                                   unsigned depth) {
-  DIR dir;
+/* ---- Sliced background rebuild of the object cache ------------------
+ * The full-tree walk takes ~3 s on this card, and it used to run
+ * synchronously inside an MTP request callback (tud_task) - a 3 s
+ * main-loop stall that starves the Beeb's SCSI servicing whenever the
+ * USB host re-enumerates after a WebDAV write invalidated the cache
+ * (the twice-measured 3,044,3xx us usb_task stalls).  The walk now
+ * runs as an explicit state machine: fs_cache_invalidate() arms it
+ * (debounced), mtp_fs_cache_poll() advances it a time-boxed slice per
+ * pass, and a request that arrives mid-rebuild drains the same
+ * machine inline - one walker, no duplicated traversal logic. */
+typedef struct {
+  DIR dir[MTP_WALK_MAX_DEPTH];          /* open directory per level */
+  uint32_t parent[MTP_WALK_MAX_DEPTH];  /* MTP parent handle per level */
+  uint16_t plen[MTP_WALK_MAX_DEPTH];    /* dir_path length at this level */
+  unsigned depth;                       /* open levels; 0 = finished */
+  char dir_path[FS_PATH_MAX];           /* current directory */
+} fs_cache_bg_t;
+
+static fs_cache_bg_t* g_fs_cache_bg;    /* NULL = no rebuild in flight */
+static bool     g_fs_cache_bg_armed;    /* debounced start pending */
+static uint32_t g_fs_cache_bg_arm_at;
+
+static void fs_cache_clear(void);
+static bool fs_cache_add_entry(const fs_entry_t* entry);
+static void fs_cache_repair_collisions(void);
+static int  fs_cache_cmp_handle(const void* a, const void* b);
+
+static void fs_cache_bg_abort(void) {
+  if (g_fs_cache_bg != NULL) {
+    while (g_fs_cache_bg->depth > 0u) {
+      g_fs_cache_bg->depth--;
+      (void) f_closedir(&g_fs_cache_bg->dir[g_fs_cache_bg->depth]);
+    }
+    free(g_fs_cache_bg);
+    g_fs_cache_bg = NULL;
+  }
+}
+
+static bool fs_cache_bg_start(void) {
+  fs_cache_bg_abort();
+  fs_cache_clear();
+  if (!fs_ensure_ready()) {
+    return false;
+  }
+  g_fs_cache_bg = (fs_cache_bg_t*) malloc(sizeof(fs_cache_bg_t));
+  if (g_fs_cache_bg == NULL) {
+    return false;
+  }
+  strlcpy(g_fs_cache_bg->dir_path, "/", sizeof(g_fs_cache_bg->dir_path));
+  if (f_opendir(&g_fs_cache_bg->dir[0], g_fs_cache_bg->dir_path) != FR_OK) {
+    free(g_fs_cache_bg);
+    g_fs_cache_bg = NULL;
+    return false;
+  }
+  g_fs_cache_bg->parent[0] = 0u;
+  g_fs_cache_bg->plen[0] = 1u;
+  g_fs_cache_bg->depth = 1u;
+  return true;
+}
+
+/* Advance the rebuild until done or the budget expires (0 = no budget:
+ * run to completion).  Returns true when the cache became valid.  On
+ * any failure the walker is torn down and the cache left invalid - the
+ * next request retries from scratch. */
+static bool fs_cache_bg_step(uint32_t budget_us) {
   FILINFO fno;
+  uint32_t deadline = RPI_GetSystemTime() + budget_us;
 
-  if (depth >= MTP_WALK_MAX_DEPTH) {
+  if (g_fs_cache_bg == NULL) {
     return false;
   }
-  if (f_opendir(&dir, dir_path) != FR_OK) {
-    return false;
-  }
+  while (budget_us == 0u || (int32_t)(RPI_GetSystemTime() - deadline) < 0) {
+    fs_cache_bg_t* bg = g_fs_cache_bg;
+    DIR* d = &bg->dir[bg->depth - 1u];
 
-  while (true) {
-    if (f_readdir(&dir, &fno) != FR_OK) {
-      (void) f_closedir(&dir);
+    if (f_readdir(d, &fno) != FR_OK) {
+      fs_cache_bg_abort();
+      fs_cache_clear();
       return false;
     }
-
-    if (fno.fname[0] == '\0') {
-      break;
+    if (fno.fname[0] == '\0') {          /* directory exhausted: ascend */
+      bg->depth--;
+      (void) f_closedir(d);
+      if (bg->depth == 0u) {             /* walk complete: publish */
+        fs_cache_bg_abort();
+        if (g_fs_cache.count > 1u) {
+          qsort(g_fs_cache.entries, g_fs_cache.count,
+                sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
+          fs_cache_repair_collisions();
+        }
+        g_fs_cache.valid = true;
+        return true;
+      }
+      bg->dir_path[bg->plen[bg->depth - 1u]] = '\0';
+      continue;
     }
-
     if ((strcmp(fno.fname, ".") == 0) || (strcmp(fno.fname, "..") == 0)) {
       continue;
     }
@@ -479,38 +549,34 @@ static bool fs_walk_tree_recursive(const char* dir_path, uint32_t parent_handle,
     entry.mdate = fno.fdate;
     entry.mtime = fno.ftime;
     strlcpy(entry.name, fno.fname, sizeof(entry.name));
-    if (!fs_make_path(dir_path, fno.fname, entry.path, sizeof(entry.path))) {
+    if (!fs_make_path(bg->dir_path, fno.fname, entry.path, sizeof(entry.path))) {
       continue;
     }
     /* Handles are assigned without a per-entry collision check (that
      * check made the cache build O(n^2) on large cards); duplicates
-     * are detected and repaired after the sort in fs_cache_ensure(). */
+     * are detected and repaired after the sort on completion. */
     entry.handle = fs_handle_from_path(entry.path);
-    entry.parent = parent_handle;
+    entry.parent = bg->parent[bg->depth - 1u];
 
-    if (!cb(&entry, user_data)) {
-      (void) f_closedir(&dir);
-      return true;
+    if (!fs_cache_add_entry(&entry)) {
+      fs_cache_bg_abort();
+      fs_cache_clear();
+      return false;
     }
-
     if (entry.is_dir) {
-      if (!fs_walk_tree_recursive(entry.path, entry.handle, cb, user_data,
-                                  depth + 1u)) {
-        (void) f_closedir(&dir);
+      if (bg->depth >= MTP_WALK_MAX_DEPTH ||
+          f_opendir(&bg->dir[bg->depth], entry.path) != FR_OK) {
+        fs_cache_bg_abort();
+        fs_cache_clear();
         return false;
       }
+      bg->parent[bg->depth] = entry.handle;
+      strlcpy(bg->dir_path, entry.path, sizeof(bg->dir_path));
+      bg->plen[bg->depth] = (uint16_t)strlen(bg->dir_path);
+      bg->depth++;
     }
   }
-
-  (void) f_closedir(&dir);
-  return true;
-}
-
-static bool fs_walk_tree(fs_walk_cb_t cb, void* user_data) {
-  if (!fs_ensure_ready()) {
-    return false;
-  }
-  return fs_walk_tree_recursive("/", 0, cb, user_data, 0u);
+  return false;                          /* budget spent, still running */
 }
 
 static const char* fs_basename(const char* path) {
@@ -530,7 +596,14 @@ static void fs_cache_clear(void) {
 }
 
 static void fs_cache_invalidate(void) {
+  fs_cache_bg_abort();
   fs_cache_clear();
+  /* Rebuild eagerly but debounced: a WebDAV upload is a burst of
+     mutations, so each one restarts the timer and the walk begins
+     after a second of quiet - the next MTP request then finds the
+     cache warm instead of paying the full-tree walk inside tud_task. */
+  g_fs_cache_bg_armed = true;
+  g_fs_cache_bg_arm_at = RPI_GetSystemTime() + 1000000u;
 }
 
 /* Interrupt (event) endpoint address - must match EPNUM_MTP_EVT in usb.c's
@@ -655,6 +728,23 @@ void mtp_fs_reboot_poll(void) {
   _copyandreboot(g_kernel_reboot_data, (int)g_kernel_reboot_len); /* never returns */
 }
 
+/* Main-loop half of the sliced cache rebuild: start a debounced rebuild
+   when due, and advance an in-flight one by a bounded slice per pass so
+   tud_task never carries the whole tree walk. */
+void mtp_fs_cache_poll(void) {
+  if (g_fs_cache_bg != NULL) {
+    (void) fs_cache_bg_step(2000u);
+    return;
+  }
+  if (g_fs_cache_bg_armed &&
+      (int32_t)(RPI_GetSystemTime() - g_fs_cache_bg_arm_at) >= 0) {
+    g_fs_cache_bg_armed = false;
+    if (!g_fs_cache.valid) {
+      (void) fs_cache_bg_start();
+    }
+  }
+}
+
 void mtp_fs_notify_fs_changed(void) {
   fs_cache_invalidate();
 }
@@ -709,19 +799,6 @@ static bool fs_cache_add_entry(const fs_entry_t* entry) {
   return true;
 }
 
-typedef struct {
-  bool ok;
-} fs_cache_build_ctx_t;
-
-static bool fs_cache_build_cb(const fs_entry_t* entry, void* user_data) {
-  fs_cache_build_ctx_t* ctx = (fs_cache_build_ctx_t*) user_data;
-  if (!fs_cache_add_entry(entry)) {
-    ctx->ok = false;
-    return false;
-  }
-  return true;
-}
-
 static int fs_cache_cmp_handle(const void* a, const void* b) {
   const uint32_t ha = ((const fs_cache_entry_t*)a)->handle;
   const uint32_t hb = ((const fs_cache_entry_t*)b)->handle;
@@ -766,26 +843,14 @@ static bool fs_cache_ensure(void) {
   if (g_fs_cache.valid) {
     return true;
   }
-  fs_cache_clear();
-  fs_cache_build_ctx_t ctx = {
-    .ok = true
-  };
-  if (!fs_walk_tree(fs_cache_build_cb, &ctx) || !ctx.ok) {
+  /* A request beat the background rebuild: finish it inline (or start
+     one) with no budget - same walker either way. */
+  g_fs_cache_bg_armed = false;
+  if (g_fs_cache_bg == NULL && !fs_cache_bg_start()) {
     fs_cache_clear();
     return false;
   }
-  /* Sort by handle so fs_get_entry_by_handle() can binary-search, then
-   * repair any hash collisions (they surface as adjacent duplicates).
-   * The cache is never mutated after this point, so the bsearch
-   * invariant holds for the cache generation. */
-  if (g_fs_cache.count > 1u) {
-    qsort(g_fs_cache.entries, g_fs_cache.count,
-          sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
-    fs_cache_repair_collisions();
-  }
-
-  g_fs_cache.valid = true;
-  return true;
+  return fs_cache_bg_step(0u);
 }
 
 static uint32_t fs_find_handle_by_parent_name(uint32_t parent, const char* name) {

@@ -12,6 +12,7 @@
 void mtp_fs_notify_fs_changed(void);
 /* Poll hook: performs a pending kernel.now flash from the main loop. */
 void mtp_fs_reboot_poll(void);
+void mtp_fs_cache_poll(void);   /* sliced object-cache rebuild - see mtp_fs.c */
 
 /* As above, but also emit an asynchronous MTP event so a connected host
    (Windows Explorer) refreshes its own cached view immediately rather than
