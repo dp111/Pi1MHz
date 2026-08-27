@@ -275,6 +275,13 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
 #ifdef DEBUG
    Pi1MHz_Register_Memory(WRITE_FRED, (HD_ADDR+4u), hd_emulator_conf );
 #endif
+
+   /* VFS jukebox gets reset every break typically back to the menu*/
+   const char *prop2 = config_get("VFSJUKE");
+   int vfsjuke = 0;
+   if (prop2)
+      vfsjuke = atoi(prop2);
+
    // Initialise but only at power on
    // Fixes *SCSIJUKE surviving over shift break.
    if (!PowerOn)
@@ -283,11 +290,6 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       int scsijuke = 0;
       if (prop)
          scsijuke = atoi(prop);
-
-      const char *prop2 = config_get("VFSJUKE");
-      int vfsjuke = 0;
-      if (prop2)
-         vfsjuke = atoi(prop2);
 
       const char *prop3 = config_get("SCSIID");
       if (prop3)
@@ -300,6 +302,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
 
       PowerOn = 1;
    }
+
 
    scsiReset(scsiid);
    /* Runs on every BBC RST.  filesystemReset() remounts the card, which
