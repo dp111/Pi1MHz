@@ -211,6 +211,7 @@ static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;
 
 void Pi1MHz_LED(int led);
 void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_func_ptr function_ptr );
+const char *Pi1MHz_EmulatorName(unsigned int idx);
 void Pi1MHz_Register_Poll( func_ptr function_ptr );
 /* Longest run of poll slot idx (us) since the last read with reset */
 uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset);

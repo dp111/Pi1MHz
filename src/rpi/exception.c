@@ -1,6 +1,22 @@
 #include "rpi.h"
 #include "asm-helpers.h"
 #include "auxuart.h"
+#include "cache.h"
+
+/* Persistent crash record, sharing the .noinit boot-stage block
+   (rpi/mailbox.c, words 4-11): .noinit survives the watchdog reset that
+   ends dump_info and is untouched by the loader and BSS zeroing.  Read
+   back by the /status page - the serial dump below needs a cable this Pi
+   does not usually have attached.
+   Layout: magic, type char, faulting pc, spsr, DFAR, DFSR, boot stage at the
+   time, count of faults since power-on. */
+#define CRASH_BASE (RPI_BootStageBlock() + 4)
+#define CRASH_MAGIC 0xC7A54ADEu
+
+const volatile unsigned int *RPI_LastCrash(void)
+{
+   return (CRASH_BASE[0] == CRASH_MAGIC) ? (const volatile unsigned int *)CRASH_BASE : 0;
+}
 
 /* From here: https://www.raspberrypi.org/forums/viewtopic.php?f=72&t=53862*/
 _Noreturn void reboot_now(void)
@@ -58,6 +74,26 @@ _Noreturn void dump_info(unsigned int *context, int offset, const char *type) {
 
   /* context point into the exception stack, at flags, followed by registers 0 .. 13 */
   reg = context + 1;
+
+  /* Record the crash where the next boot can report it, before attempting
+     the UART dump (whose FIFO polling could itself wedge). */
+  {
+    uint32_t dfar, dfsr;
+    __asm__ volatile ("mrc p15, 0, %0, c6, c0, 0" : "=r" (dfar));
+    __asm__ volatile ("mrc p15, 0, %0, c5, c0, 0" : "=r" (dfsr));
+    CRASH_BASE[1] = (uint32_t)(unsigned char)type[0];   /* U/P/D/S */
+    CRASH_BASE[2] = (reg[13] & ~3u) - (uint32_t)offset; /* faulting pc */
+    CRASH_BASE[3] = *context;                           /* spsr */
+    CRASH_BASE[4] = dfar;
+    CRASH_BASE[5] = dfsr;
+    CRASH_BASE[6] = RPI_BootStageBlock()[1];               /* boot stage */
+    CRASH_BASE[7] = (CRASH_BASE[0] == CRASH_MAGIC) ? CRASH_BASE[7] + 1u : 1u;
+    CRASH_BASE[0] = CRASH_MAGIC;
+    {
+      const volatile unsigned int *blk = RPI_BootStageBlock();
+      _clean_cache_area((const void *)(uintptr_t)blk, 64);
+    }
+  }
   dump_string("\r\n\r\n");
   dump_string(type);
   dump_string(" at ");
@@ -79,16 +115,26 @@ _Noreturn void dump_info(unsigned int *context, int offset, const char *type) {
     dump_string("\r\n");
   }
   dump_string("Memory:\r\n");
-  for (int i = -4; i <= 4; i++) {
-    dump_string("  ");
-    dump_hex((unsigned int) (addr + i));
-    RPI_AuxMiniUartWriteForce('=');
-    dump_hex(*(addr + i));
-    if (i == 0) {
-      dump_string(" <<<<<< \r\n");
-    } else {
-      dump_string("\r\n");
+  /* Only dereference the window when the faulting pc lies in kernel RAM: a
+     wild pc (a common crash class) would make these reads fault again -
+     recursing into dump_info in ABT mode and overwriting the crash
+     record's pc with our own - or wedge the bus on a strongly-ordered
+     peripheral read. 512 MB is the largest SDRAM any supported Pi has;
+     the crash record above is already written and cache-cleaned. */
+  if ((uint32_t)addr >= 0x8000u && (uint32_t)addr < 0x20000000u) {
+    for (int i = -4; i <= 4; i++) {
+      dump_string("  ");
+      dump_hex((unsigned int) (addr + i));
+      RPI_AuxMiniUartWriteForce('=');
+      dump_hex(*(addr + i));
+      if (i == 0) {
+        dump_string(" <<<<<< \r\n");
+      } else {
+        dump_string("\r\n");
+      }
     }
+  } else {
+    dump_string("  (pc outside RAM - window skipped)\r\n");
   }
   /* The flags are pointed to by context, before the registers */
   flags = *context;

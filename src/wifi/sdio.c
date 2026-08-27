@@ -5876,6 +5876,9 @@ bool sdio_runtime_rejoin_start(void)
    g_runtime_step_sent = false;
    g_runtime_link_up = false;
    g_runtime_psk_keyed = false;
+   g_runtime_link_up_us = 0u; /* an RX-silence rejoin never saw a link-down
+      event, so the old stamp survives - without clearing it the 3s PSK
+      grace reads as already expired and DHCP fires mid-4-way-handshake */
    ++g_runtime_rejoin_count;
    sdio_debug_log("== STAGE_JOIN: rejoin attempt %lu ==",
                   (unsigned long)g_runtime_rejoin_count);
@@ -6398,11 +6401,18 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
    if (sdio_runtime_tx_window_shut()) {
       uint32_t now_us = RPI_GetSystemTime();
 
+      /* Arm the TX-dead clock on EVERY refusal while the window is shut,
+         not only the first of a stall episode: an RX header can reopen the
+         window (clearing this clock) and a later header shut it again
+         before any send attempt clears g_runtime_tx_stalled - the arming
+         must not depend on that flag or the recovery ladder goes blind to
+         a fresh stall (TX dead, RX alive - its whole reason to exist). */
+      if (g_runtime_tx_shut_since_us == 0u)
+         g_runtime_tx_shut_since_us = (now_us == 0u) ? 1u : now_us;
+
       if (!g_runtime_tx_stalled) {
          g_runtime_tx_stalled = true;
          g_runtime_tx_stall_since_us = now_us;
-         if (g_runtime_tx_shut_since_us == 0u)
-            g_runtime_tx_shut_since_us = (now_us == 0u) ? 1u : now_us;
          return false;
       }
       /* How long to wait before treating a shut window as a desync depends on

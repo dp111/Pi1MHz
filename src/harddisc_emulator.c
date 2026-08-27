@@ -6,6 +6,7 @@
 */
 
 #include <stdlib.h>
+#include "rpi/asm-helpers.h"
 #include "Pi1MHz.h"
 #include "rpi/audio.h"
 #include "rpi/info.h"
@@ -34,6 +35,13 @@ volatile bool HD_IRQ_ENABLE;
 static uint8_t HD_status;
 static volatile uint8_t HD_IRQ;
 
+/* /status diagnostics: bus flags + last status register value */
+uint32_t hd_diag_flags(void)
+{
+   return (uint32_t)HD_status | ((uint32_t)HD_SEL << 8) | ((uint32_t)HD_ACK << 9) |
+          ((uint32_t)HD_IRQ << 10) | ((uint32_t)HD_DATA << 16);
+}
+
 #define HD_STATUS_Read (HD_status)
 
 static void HD_STATUS_Write(uint8_t data)
@@ -51,22 +59,36 @@ static void HD_STATUS_Write(uint8_t data)
 #define STATUS_BSY (1<<1)
 #define STATUS_MSG (1<<0)
 
+/* Bus-event counters for /status: how many data writes / data reads /
+   selects the Beeb has performed. A wedged VFS with all three static means
+   the Beeb never even reached the adapter (FRED reads returning &7F). */
+uint32_t hd_ev_writes, hd_ev_reads, hd_ev_sel;
+
 static void hd_emulator_write_data(unsigned int gpio)
 {
    HD_DATA = GET_DATA(gpio);
    Pi1MHz_MemoryWrite(HD_ADDR, GET_DATA(gpio));
    HD_ACK = ACTIVE;
+#ifdef DEBUG
+   hd_ev_writes++;
+#endif
 }
 
 static void hd_emulator_read_data(unsigned int gpio __attribute__((unused)))
 {
    HD_ACK = ACTIVE;
+#ifdef DEBUG
+   hd_ev_reads++;
+#endif
 }
 
 static void hd_emulator_nSEL(unsigned int gpio)
 {
    HD_DATA = GET_DATA(gpio);
    HD_SEL = ACTIVE;
+#ifdef DEBUG
+   hd_ev_sel++;
+#endif
 }
 
 static void hd_emulator_status(uint8_t bit, bool state)
@@ -168,10 +190,58 @@ static void hd_emulator_conf(unsigned int gpio)
 #endif
 
 
+/* The &FC41 jukebox poke arrives in FIQ context, but filesystemReset() and
+   scsiJukebox() do real FatFs/SD work (dismount, directory change, the
+   videoplayer notification).  Milliseconds of card I/O inside the FIQ
+   starves the VPU bus handler and the whole bus event path dies - the Beeb
+   then polls a status register that reads &7F forever (a wedge that struck
+   whenever the poke landed mid video/SD activity).  So the FIQ only
+   latches the request; hd_juke_service(), called at the head of the SCSI
+   poll, does the work in the main loop.  The Beeb's following *MOUNT is
+   still ordered correctly: its SELECT is processed by the same poll, after
+   the pending jukebox. */
+static volatile uint16_t hd_juke_pending;      /* 0x100 | directory */
+
+/* Request a jukebox switch from main-loop code (the eject simulation in
+   fcode.c): same latch the FIQ poke uses, serviced by hd_juke_service at
+   the head of the next SCSI poll. */
+void hd_juke_request(uint8_t dir)
+{
+   unsigned int cpsr = _disable_interrupts_cspr();
+   hd_juke_pending = 0x100u | (uint16_t)dir;
+   _restore_cpsr(cpsr);
+}
+
+void hd_juke_service(void)
+{
+   /* Common case (nothing latched) costs a single test. Only when a poke
+      is pending do we pay the masked read+clear, which prevents a poke
+      landing between the read and the clear from being lost. */
+   if (!hd_juke_pending)
+      return;
+   unsigned int cpsr = _disable_interrupts_cspr();
+   uint16_t p = hd_juke_pending;
+   hd_juke_pending = 0;
+   _restore_cpsr(cpsr);
+   if (!p)
+      return;
+   uint8_t dir = (uint8_t)(p & 0xFFu);
+   /* Reselecting the directory that is already current is a no-op: the
+      full reset below remounts the FAT, which invalidates every open FIL
+      and forces a video reopen - a Domesday player re-poking its own
+      directory must not have its disc rewound (scsiJukebox's same-dir
+      check runs too late to prevent that: the remount notify has already
+      fired by then). */
+   if (dir == ((scsiHostID >= 16) ? filesystemGetLunDirectoryVFS()
+                                  : filesystemGetLunDirectory()))
+      return;
+   filesystemReset();
+   scsiJukebox(dir);
+}
+
 static void hd_emulator_write_scsijuke(unsigned int gpio)
 {
-   filesystemReset();
-   scsiJukebox(GET_DATA(gpio));
+   hd_juke_pending = 0x100u | (uint16_t)GET_DATA(gpio);
 }
 
 void harddisc_emulator_init( uint8_t instance , uint8_t address)
@@ -187,6 +257,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    HD_ACK = CLEAR;
    HD_SEL = CLEAR;
    HD_IRQ_ENABLE = CLEAR;
+   hd_juke_pending = 0;          /* a poke latched just before a BREAK must not fire after the re-init */
 
    // register call backs
    // address FC40 read  = Read SCSI databus command
@@ -287,9 +358,11 @@ uint8_t harddisc_emulator_get_address(void)
 
 // Wait for ACK (or host reset). Returns false on timeout. The system
 // timer is only read every 256th spin to keep the normal path fast.
+#ifdef DEBUG
 uint32_t hd_ack_timeouts;        // transfers abandoned: host never ACKed
 uint32_t hd_service_max_us;      // longest audio_pump() inside a transfer
 uint32_t hd_ack_wait_max_us;     // longest single wait for the host's ACK
+#endif
 
 static bool hd_wait_ack(void)
 {
@@ -300,11 +373,15 @@ static bool hd_wait_ack(void)
       if ((++counter & 0xFFu) == 0u)
       {
          uint32_t waited = RPI_GetSystemTime() - start;
+#ifdef DEBUG
          if (waited > hd_ack_wait_max_us)
             hd_ack_wait_max_us = waited;
+#endif
          if (waited >= HD_ACK_TIMEOUT_US)
          {
+#ifdef DEBUG
             hd_ack_timeouts++;
+#endif
             return false;
          }
          /* The host is slow on this byte (the VFS ROM's F-code exchange
@@ -330,11 +407,15 @@ static bool hd_wait_ack(void)
 // assumes a controller that always keeps up, and hangs.
 void hd_audio_service(void)
 {
+#ifdef DEBUG
    uint32_t t0 = RPI_GetSystemTime();
+#endif
    audio_pump();
+#ifdef DEBUG
    uint32_t dt = RPI_GetSystemTime() - t0;
    if (dt > hd_service_max_us)
       hd_service_max_us = dt;
+#endif
 }
 
 // Databus manipulation functions -------------------------------------------------------

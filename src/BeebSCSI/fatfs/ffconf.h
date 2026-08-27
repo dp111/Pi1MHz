@@ -272,7 +272,11 @@
 /  set 1, the file created time is available in FILINFO structure. */
 
 
-#define FF_FS_NOFSINFO	0
+/* 3: trust neither the FSINFO free-cluster count nor the last-allocated
+   hint. This card's FSINFO went stale (free space reported 1.7GB then 24GB
+   with no card change) and large uploads truncated at the same time -
+   full FAT scans are slower but immune. (2026-08-25) */
+#define FF_FS_NOFSINFO	3
 /* If you need to know the correct free space on the FAT32 volume, set bit 0 of
 /  this option, and f_getfree() on the first time after volume mount will force
 /  a full FAT scan. Bit 1 controls the use of last allocated cluster number.

@@ -170,6 +170,17 @@ static uint32_t pwm_frames;
 
 static void pwm_start(uint32_t samplerate, uint32_t frames)
 {
+   /* Same rate, different block size (a producer handover): restart only
+      the DMA. The full path below KILLs the CM PWM clock for a moment,
+      and the whole FRED/JIM read window rides on that clock - a Beeb
+      polling a status register during the gap reads &7F. */
+   if (audio_range != 0 && pwm_rate == samplerate) {
+      pwm_frames = frames;
+      dma_stop(&pwm_sink);
+      dma_start(&pwm_sink, samplerate, audio_range >> 1, frames);
+      return;
+   }
+
    pwm_frames = frames;
    // hardcoded constant clock rate 500MHz
    // Clock is divided by two to feed the PWM block ( 250MHz )
@@ -334,6 +345,7 @@ void audio_release(const audio_producer_t *p)
    }
 }
 
+
 bool audio_owner_is(const audio_producer_t *p)
 {
    return owner == p;
@@ -353,8 +365,15 @@ uint32_t audio_free_frames(void)
 int16_t *audio_write_ptr(const audio_producer_t *p, uint32_t *contig_frames)
 {
    if (p != owner) {
-      *contig_frames = 0;
-      return NULL;
+      if (owner != NULL || p == NULL) {
+         *contig_frames = 0;
+         return NULL;
+      }
+      /* Ownerless core (the video player released it - jukebox to an
+         empty directory, or close): the first producer that tries to
+         write takes over, so the Music 5000 / BeebSID come back without
+         a reboot. A video open still supersedes via audio_claim(). */
+      audio_claim(p);
    }
    uint32_t pos = ring_wr & (RING_FRAMES - 1u);
    uint32_t free = audio_free_frames();

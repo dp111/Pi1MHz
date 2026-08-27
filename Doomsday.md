@@ -1,68 +1,51 @@
 Doomsday notes
 
 
-
-
 TODO notes in no order
 
 Check mouse offsets and fix VFS ROM bug
 *MOUSE appears to not always work, see if original VFS has this bug and fix
 See if boot time can be improved
-LZ4 decompressor speedup memcpy
-YUV frame display
+
 More Fcode support (including VP4 and VP5 )
 See if power consumption of the Pi can be improved
 check and fix YUV scaling
-Audio support HDMI and beeb ?
 composite video out ?
 50Hz HDMI modes
 Check 1MHz timing / add DMBs ( sometimes bad FSMAP)
 Check beeb screen offset vertical appears off by a pixel ?
 Menu system
-
-
+Eject sort out
 
 Default VFS layout
-VFS0 Menu Disk
-VFS1 Community disc South Usercode 1=066
-VFS2 Community disc North Usercode 1=067
-VFS3 National disc A Usercode 1=986
-VFS4 National disc B Usercode 1=987
-VFS5 Eco disc side 1 Usercode 1=988
-VFS6 Eco disc side 2 Usercode NONE
-VFS7 country side 1 Usercode 1=991
-VFS8 country side 2 Usercode 1=992
 
-VFS9 Volcanoes Usercode 1=986 *** duplicate User code ***
-VFS10
-VFS11 The city Disc Usercode
-VFS12
-VFS13 North Polar Expedition Usercode NONE
-VFS14
-VFS15 The World, the UN and you Usercode
-VFS16
-VFS17 British Garden Birds side 1 Usercode NONE
-VFS18
-VFS17 British Garden Birds side 2 Usercode NONE
-
-
-
-
-how to create the compressed video files
-
-/mnt/c/Archlinux/ld-decode/tools/ld-chroma-decoder/ld-chroma-decoder --decoder transform3d -p y4m -s 3000 -l 1 -q /mnt/s/domsday/south.tbc  | ffmpeg -i - -c:v v210 -f mov -top 1 -vf setfield=tff -flags +ilme+ildct -pix_fmt yuv422p -color_primaries bt470bg -color_trc bt709 -colorspace bt470bg -color_range tv -vf setdar=4/3,setfield=tff -s768x576 -c:v rawvideo image3000.yuv
+  ┌───────────┬────────────────────────────────────────┬─────────────┐
+  │ BeebVFS   │                  Disc                  │    Code     │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 1 / 2     │ Community South / North                │ 1066 / 1067 │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 3 / 4     │ National A / B (B cfg-only, video CLV) │ 1986 / 1987 │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 5 / (6)   │ Volcanoes / spare                      │ 1986        │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 7 / 8     │ EcoDisc S1 / S2 (S2 cfg-only)          │ 1988 / NONE │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 9 / 10    │ Countryside S1 / S2                    │ 1991 / 1992 │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 11 / (12) │ Financial 1 / reserved                 │ 1993        │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 13 / (14) │ Financial 2 / reserved                 │ 1994        │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 15 / 16   │ Culture 1 sides 1+2                    │ 1995        │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 17 / (18) │ Culture 2 / reserved                   │ 1996        │
+  ├───────────┼────────────────────────────────────────┼─────────────┤
+  │ 19 / 20   │ BGB 1 / 2 (cfg-only)                   │ NONE        │
+  └───────────┴────────────────────────────────────────┴─────────────┘
 
 
-truncate :
-dd if=image3000d.yuv iflag=skip_bytes,count_bytes,fullblock bs=4096 skip=36 count=884736 of=image3000cor.yuv
-
-compress
-lz4 -12 image3000cor.yuv image3000cor.lz4
-
-there is a 7 byte header which we don't need so remove that
-
-dd if=image3000cor.lz4 iflag=skip_bytes,count_bytes,fullblock bs=4096 skip=7 of=image3000cor.lz
-
+The World, the UN and you Usercode NONE
+North Polar Expedition Usercode NONE
 
 Fcodes that need supporting to boot
 

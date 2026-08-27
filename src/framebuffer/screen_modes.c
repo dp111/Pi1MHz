@@ -890,8 +890,15 @@ void default_reset_screen(screen_mode_t *screen) {
     /* Update the palette (this is a no-op in 8-bpp modes) */
     screen->update_palette(screen, 0);
 
-    /* Initialize the font */
+    /* Initialize the font. Restore the default rendering too: the splash
+       screen leaves font_normal at scale 2 (select_font(12,2,2,0)) and a
+       user VDU 23,19 can do the same - a MODE change must return to the
+       mode's native text grid, or every later mode renders double-width
+       (the "20 column" corruption seen after any framebuffer re-init). */
     font_t *font = screen->font;
+    font->set_scale_w(font, 1);
+    font->set_scale_h(font, 1);
+    font->set_spacing_w(font, 0);
     font->set_spacing_h(font, (screen->mode_flags & (F_BBC_GAP | F_GAP)) ? 2 : 0);
 }
 

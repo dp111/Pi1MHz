@@ -164,6 +164,11 @@ static emulator_list emulator[] = {
 
 #define NUM_EMULATORS (sizeof(emulator)/sizeof(emulator_list))
 
+const char *Pi1MHz_EmulatorName(unsigned int idx)
+{
+   return (idx < NUM_EMULATORS) ? emulator[idx].name : "?";
+}
+
 // Memory for VPU to read FRED and JIM
 static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE;
 
@@ -218,6 +223,17 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
    // The reversal also skews which side sees the update first, in the better
    // direction: the bus now gets the new byte immediately and the CPU-side
    // copy lags by a few ns, rather than the other way round.
+   // The compose-from-shadow makes this a critical section: the FIQ writes
+   // the NEIGHBOUR byte of the same VPU word (the SCSI data port &FC40
+   // pairs with the status byte &FC41 the main loop writes). A FIQ landing
+   // between the neighbour read below and the two stores makes one side
+   // write back a stale byte: a reverted data byte corrupts a transfer
+   // (ADFS "Bad sum"/"Bad map"), a reverted status byte leaves BSY set in
+   // the VPU word while the ARM copy says busfree - VFS then polls that
+   // stale status forever (the post-BREAK *VFS wedge). ~4 instructions of
+   // CPSID here; the FIQ itself cannot be preempted, so masking only this
+   // side makes both directions atomic.
+   unsigned int cpsr = _disable_interrupts_cspr();
    uint32_t other = Pi1MHz->Memory[addr ^ 1u] | 0xff00u;
    uint32_t mine  = 0xff00u | data;
 
@@ -225,6 +241,7 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
                                             : (mine | (other << 16));
 
    Pi1MHz->Memory[addr] = data;
+   _restore_cpsr(cpsr);
 }
 
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
@@ -521,6 +538,7 @@ static void init_emulator(void) {
          /* Each emulator's init is well under the boot timeout, but the
             sequence as a whole is not - so feed the dog between them. */
          watchdog_boot_kick();
+         RPI_BootDetail(i + 1u);   /* a death here names emulator[i] on the next boot */
          if (emulator[i].enable == 1) emulator[i].init(i, emulator[i].address);
          /* watchdog_init() is what takes ownership of the boot watchdog -
             it either registers the kicking poll or stands the dog down. If
@@ -780,7 +798,12 @@ _Noreturn void kernel_main(void)
          if (oldreset == false)
          {
             LOG_INFO("Reset detected\r\n");
+            RPI_BootDetail(0xFEu);  /* re-init pass marker: a death in config_load shows FE */
             init_emulator();
+            /* Re-stamp RUNNING: without this the session runs forever at
+               "stage 7" after a BREAK re-init and every later runtime death
+               is misreported as an init death. */
+            RPI_BootStage(BOOT_STAGE_RUNNING);
             oldreset = true;
          }
       } else
@@ -825,6 +848,7 @@ _Noreturn void kernel_main(void)
       {
          func_ptr poll_fn = Pi1MHz_poll_table[i];
 
+            RPI_BootDetail((uint32_t)(i + 1u) << 8);  /* runtime hang -> names the callback */
             poll_fn();
             {
                uint32_t after_ticks = poll_ticks();
@@ -842,6 +866,7 @@ _Noreturn void kernel_main(void)
       }
 #endif
 
+      RPI_BootDetail(0u);
       main_poll_loops++;
       if ((main_poll_loops % 10000000u) == 0u) {
          LOG_INFO("Main poll heartbeat loops=%lu callbacks=%u\r\n",

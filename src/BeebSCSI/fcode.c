@@ -26,6 +26,7 @@
 
 // Global includes
 #include <stdbool.h>
+#include "../harddisc_emulator.h"   /* hd_juke_request - the eject/disc-flip swap */
 #include <stdint.h>
 #include <stdio.h>
 
@@ -40,6 +41,22 @@
 // Global SCSI (LV-DOS) F-Code buffer (256 bytes)
 uint8_t scsiFcodeBuffer[256];
 uint8_t scsiFcodeBufferRX[256];
+
+/* Last exchange, for /status: the VFS ROM's *FCODE never shows replies,
+   so this is the only way to see one without writing OSWORD &62 code */
+const char *fcodeLastExchange(void)
+{
+    static char buf[96];
+    size_t o = 0;
+    o += (size_t)snprintf(buf + o, sizeof buf - o, "tx ");
+    for (int i = 0; i < 24 && scsiFcodeBuffer[i] != 0x0D && scsiFcodeBuffer[i]; i++)
+        if (o < sizeof buf - 2) buf[o++] = (char)scsiFcodeBuffer[i];
+    o += (size_t)snprintf(buf + o, sizeof buf - o, " rx ");
+    for (int i = 0; i < 48 && scsiFcodeBufferRX[i] != 0x0D && scsiFcodeBufferRX[i]; i++)
+        if (o < sizeof buf - 2) buf[o++] = (char)scsiFcodeBufferRX[i];
+    buf[o] = 0;
+    return buf;
+}
 
 
 static char VPmode;
@@ -98,7 +115,24 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x27: // ' // VFS sends this
 			FCdebugString_P(PSTR(" = Eject (open the front-loader tray)\r\n"));
-            // Response O when open
+			{
+				/* The AIV disc-flip: eject means "turn the disc over", so
+				   swap to the partner side's directory (odd <-> even:
+				   1<->2, 3<->4, ...). Directory 0 is the menu - no partner.
+				   The switch itself runs in hd_juke_service on the next
+				   SCSI poll, exactly like a jukebox poke. */
+				uint8_t cur = (uint8_t)filesystemGetLunDirectoryVFS();
+				if (cur >= 1) {
+					uint8_t partner = (cur & 1u) ? (uint8_t)(cur + 1u)
+					                             : (uint8_t)(cur - 1u);
+					/* Single-sided disc: no partner directory - the tray
+					   opens and the same side is "reinserted". */
+					if (filesystemVFSDirPresent(partner))
+						hd_juke_request(partner);
+				}
+				scsiFcodeBufferRX[0] = 'O';   /* tray open acknowledge */
+				scsiFcodeBufferRX[1] = 0x0D;
+			}
 			break;
 
 			case 0x29: // )0, )1
@@ -154,6 +188,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 				case '1': // response S or O if tray open
 				FCdebugString_P(PSTR(" = On (load)\r\n"));
+				scsiFcodeBufferRX[0] = 'S';   /* loaded and standing by */
+				scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				default:
@@ -184,6 +220,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x3A: // :
 			FCdebugString_P(PSTR(" = Reset to default values\r\n"));
+			videoplayer_clear();
 			break;
 
 			case 0x3F: // ?
@@ -198,6 +235,10 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 						pic /= 10;
 					}
 					scsiFcodeBufferRX[6] = 0x0D;
+				} else {
+					/* VP415: 'X' = function not available (no disc playing) */
+					scsiFcodeBufferRX[0] = 'X';
+					scsiFcodeBufferRX[1] = 0x0D;
 				}
 				break;
 
@@ -226,6 +267,59 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 				case '=':
 				FCdebugString_P(PSTR(" = Revision level request\r\n"));
+				break;
+
+				/* BeebSCSI extensions for the disc menu: ?T / ?Y return the
+				   mounted disc's Title / Description (from the scsi0.cfg
+				   parsed at mount) as 'T<text>' / 'Y<text>', or 'X' when
+				   absent - the menu jukeboxes to each directory, remounts
+				   and queries. */
+				/* ?V - disc type for the menu scan: 'V1' = full disc
+				   (scsi0.dat in the jukeboxed directory), 'V0' = video-only
+				   volume (video.pvf, no image), 'X' = no disc. Replaces the
+				   menu's OSWORD sector-0 probe, which needed a LUN start and
+				   trusted VFS's error reporting. */
+				case 'V':
+				if (filesystemVFSDatPresent()) {
+					scsiFcodeBufferRX[0] = 'V';
+					scsiFcodeBufferRX[1] = '1';
+				} else if (filesystemVFSVolumePresent()) {
+					scsiFcodeBufferRX[0] = 'V';
+					scsiFcodeBufferRX[1] = '0';
+				} else {
+					scsiFcodeBufferRX[0] = 'X';
+					scsiFcodeBufferRX[1] = 0x0D;
+				}
+				scsiFcodeBufferRX[2] = 0x0D;
+				break;
+
+				case 'T':
+				case 'Y':
+				{
+					char text[240];
+					bool ok = filesystemReadVFSCfgText(
+					              scsiFcodeBuffer[1] == 'T' ? TITLE : DESCRIPTION,
+					              text, sizeof(text));
+					/* A video-only volume (video.pvf, no scsi0.dat/cfg) still
+					   exists: reply 'T'/'Y' with empty text so the menu can
+					   tell "video-only disc" from "no disc" ('X'). */
+					if (!ok && (filesystemVFSVolumePresent() || filesystemVFSDatPresent())) {
+						text[0] = '\0';
+						ok = true;
+					}
+					if (ok) {
+						scsiFcodeBufferRX[0] = scsiFcodeBuffer[1];
+						uint16_t n = 0;
+						while (n < 240 && text[n]) {
+							scsiFcodeBufferRX[1 + n] = (uint8_t)text[n];
+							n++;
+						}
+						scsiFcodeBufferRX[1 + n] = 0x0D;
+					} else {
+						scsiFcodeBufferRX[0] = 'X';
+						scsiFcodeBufferRX[1] = 0x0D;
+					}
+				}
 				break;
 
 				default:
@@ -317,7 +411,11 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 				case '1':
 				FCdebugString_P(PSTR(" = Video on\r\n"));
-				screen_plane_enable(0, true);
+				/* Same rule as the VP modes: with no video open (data-only
+				   side) the plane stays off - E1 on a stale VideoCore buffer
+				   painted noise over the whole screen. The player's first
+				   real frame enables the plane. */
+				screen_plane_enable(0, videoplayer_active());
 				break;
 
 				default:
@@ -516,9 +614,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					   alone or selecting a mode makes a pointer appear. */
 					case '1':
 					FCdebugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
-					screen_plane_enable(0, true);
+					/* No video open (data-only side): keep the plane off so the
+					   screen is black, not a stale buffer. The player's first
+					   real frame enables it. */
+					screen_plane_enable(0, videoplayer_active());
 					screen_plane_enable(1, false);
-
+					screen_plane_alpha(1, 0xFF);
 					break;
 
 					case '2':
@@ -526,23 +627,36 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_set_palette( 1, 0, 3 );
 					screen_plane_enable(0, false);
 					screen_plane_enable(1, true);
-
+					screen_plane_alpha(1, 0xFF);
 					break;
 
 					case '3':
 					FCdebugString_P(PSTR(" = Video overlay mode 3 (Hard-keyed)\r\n"));
 					screen_set_palette( 1, 0, 2 );
-					screen_plane_enable(0, true);
+					screen_plane_enable(0, videoplayer_active());
 					screen_plane_enable(1, true);
-
+					screen_plane_alpha(1, 0xFF);
 					break;
 
+					/* Modes 4/5 on the VP415 mix external RGB translucently
+					   over the video (4) / with contour enhancement (5).
+					   The HVS fixed-nonzero alpha mode gives a true mix:
+					   black stays transparent (palette alpha 0), graphics
+					   pixels blend over the video at the fixed level. */
 					case '4':
-					FCdebugString_P(PSTR(" = Video overlay mode 4 (Mixed)\r\n"));
+					FCdebugString_P(PSTR(" = Video overlay mode 4 (Mixed - translucent)\r\n"));
+					screen_set_palette( 1, 0, 2 );
+					screen_plane_enable(0, videoplayer_active());
+					screen_plane_enable(1, true);
+					screen_plane_alpha(1, 0x80);
 					break;
 
 					case '5':
-					FCdebugString_P(PSTR(" = Video overlay mode 5 (Enhanced)\r\n"));
+					FCdebugString_P(PSTR(" = Video overlay mode 5 (Enhanced - graphics-forward mix)\r\n"));
+					screen_set_palette( 1, 0, 2 );
+					screen_plane_enable(0, videoplayer_active());
+					screen_plane_enable(1, true);
+					screen_plane_alpha(1, 0xC0);
 					break;
 
 					case 'X':

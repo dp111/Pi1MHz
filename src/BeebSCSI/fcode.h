@@ -36,4 +36,6 @@ void fcodeWriteBuffer(uint8_t lunNumber);
 void fcodeReadBuffer(void);
 void fcodeClearBuffer(void);
 
+const char *fcodeLastExchange(void);
+
 #endif /* FCODE_H_ */

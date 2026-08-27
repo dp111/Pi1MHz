@@ -43,8 +43,7 @@
 #define YUV_PLANE 0
 
 /* The video for the current VFS jukebox directory, same convention as
-   the scsi0.dat LUN images: /BeebVFS<n>/video.pvf. The card root is
-   tried second so a standalone demo card (no VFS volume) still plays. */
+   the scsi0.dat LUN images: /BeebVFS<n>/video.pvf - and only there. */
 #define PVF_FILENAME "video.pvf"
 static char pvf_path[32];
 
@@ -121,7 +120,9 @@ static struct {
     bool audio_on[2];                /* F-codes A0/A1, B0/B1 */
     audio_producer_t producer;
 
-    bool reopen;                     /* the VFS directory changed / card remounted */
+    bool reopen;
+    bool     lazy_pending;       /* bring-up deferred until first player use */
+    bool     plane_on;           /* YUV plane enabled (first real frame shown) */
     uint32_t dup_owed;               /* still's duplicate AU not yet sent (record+1) */
     bool tail_pushed;                /* end of play range: last picture's pusher sent */
 
@@ -308,6 +309,10 @@ static void flip_pending(void)
                             phys + w * h,               /* Cb (U) */
                             phys + w * h + (w / 2) * (h / 2)); /* Cr (V) */
 
+    if (!vp.plane_on) {
+        screen_plane_enable(YUV_PLANE, true);
+        vp.plane_on = true;
+    }
     if (vp.displayed_phys && vp.displayed_phys != phys)
         h264dec_recycle_output(vp.displayed_phys);
     vp.displayed_phys = phys;
@@ -320,6 +325,7 @@ static void flip_pending(void)
 /* ------------------------------------------------------------------ */
 
 static void pvf_reopen(void);
+static void vp_bring_up(void);
 static bool pvf_open_file(void);
 static void reset_speed(void);
 
@@ -327,7 +333,10 @@ static void videoplayer_poll(void)
 {
     if (vp.reopen) {
         vp.reopen = false;
-        pvf_reopen();
+        if (vp.open)
+            pvf_reopen();
+        else
+            vp.lazy_pending = true;  /* new directory: bring up on first use */
     }
     if (!vp.open)
         return;
@@ -470,9 +479,15 @@ static void pvf_reopen(void)
     if (!h264dec_running())
         return;                      /* never came up: nothing to reopen into */
 
+    bool     was_open = vp.open;
+    uint32_t prev_pic = vp.cur_picture;
+    char     prev_path[sizeof(pvf_path)];
+    memcpy(prev_path, pvf_path, sizeof(prev_path));
+
     if (vp.open) {
         h264dec_resume();            /* discard anything in flight */
         vp.in_flight = 0;
+        vp.dup_owed = 0;             /* the old file's owed still is void */
         audio_flush();
         f_close(&vp.file);
         free(vp.index);
@@ -486,7 +501,13 @@ static void pvf_reopen(void)
 
     uint32_t old_w = vp.hdr.width, old_h = vp.hdr.height;
     if (!pvf_open_file()) {
-        /* nothing in the new directory: hold the last picture */
+        /* Reopen failed (no video in the new directory): blank the plane -
+           consistent with the no-automatic-display rule. */
+        screen_plane_enable(YUV_PLANE, false);
+        vp.plane_on = false;
+        if (vp.audio_present)
+            audio_release(&vp.producer);
+        vp.audio_present = false;
         return;
     }
     if (vp.hdr.width != old_w || vp.hdr.height != old_h) {
@@ -500,13 +521,34 @@ static void pvf_reopen(void)
         vp.index = NULL;
         vp.hdr.width = old_w;
         vp.hdr.height = old_h;
+        screen_plane_enable(YUV_PLANE, false);   /* never a stale frame */
+        vp.plane_on = false;
         if (vp.audio_present)
             audio_release(&vp.producer);   /* the synths get the sound back */
         vp.audio_present = false;
         return;
     }
+    /* A DIFFERENT disc side (VFS jukebox / eject flip): blank the h264
+       frame buffers to black I420 so a later plane enable (E1/VP-mode from
+       the new side's boot software) can never re-show the previous disc's
+       last frame.  A same-path reopen (card remount, repoke of the current
+       directory) keeps its frames - blanking there would black out a
+       playing disc for nothing. */
+    if (strcmp(prev_path, pvf_path) != 0) {
+        for (int i = 0; i < NUM_FRAME_BUFFERS; i++) {
+            if (vp.buf_phys[i]) {
+                uint8_t *bp = (uint8_t *)(uintptr_t)vp.buf_phys[i];
+                memset(bp, 0x10, vp.hdr.width * vp.hdr.height);
+                memset(bp + vp.hdr.width * vp.hdr.height, 0x80,
+                       vp.hdr.width * vp.hdr.height / 2u);
+            }
+        }
+    }
+
     vp.frame_period_us = (uint32_t)((uint64_t)1000000 * vp.hdr.fps_den / vp.hdr.fps_num);
-    vp.audio_present = (vp.hdr.audio_rate != 0);
+    /* audio_rate is the one header field nothing else validates: a corrupt
+       value must not reach the PWM/HDMI clock divisors */
+    vp.audio_present = (vp.hdr.audio_rate >= 8000 && vp.hdr.audio_rate <= 192000);
     if (vp.audio_present) {
         vp.producer.rate = vp.hdr.audio_rate;
         vp.producer.latency_frames = (vp.hdr.audio_bytes_per_frame / 4u) * 8u;
@@ -516,8 +558,19 @@ static void pvf_reopen(void)
         vp.audio_on[0] = vp.audio_on[1] = true;
     }
     vp.open = true;
-    vp.cur_picture = 1;
-    videoplayer_goto(1, 'R');
+    /* Reselecting the same video (an ADFS-side jukebox, or a poke naming
+       the current directory, both of which remount and so invalidate the
+       old FIL) must not rewind a playing disc: reopen at the old picture. */
+    uint32_t start_pic = 1;
+    if (was_open && strcmp(prev_path, pvf_path) == 0 &&
+        prev_pic >= 1 && prev_pic <= vp.hdr.frame_count)
+        start_pic = prev_pic;
+    vp.cur_picture = start_pic;
+    /* No automatic display: after a media change the old frame is stale -
+       blank the plane and wait for the Beeb's next player command. */
+    vp.mode = VP_STILL;
+    screen_plane_enable(YUV_PLANE, false);
+    vp.plane_on = false;
 }
 
 uint32_t videoplayer_picture_number(void)
@@ -538,8 +591,27 @@ const char *videoplayer_status(void)
     return buf;
 }
 
+
+/* First player use: perform the deferred bring-up once. */
+static void vp_ensure(void)
+{
+    if (!vp.open && vp.lazy_pending) {
+        vp.lazy_pending = false;     /* one attempt; media change re-arms */
+        if (h264dec_running() && vp.buf_phys[0] != 0)
+            pvf_reopen();            /* decoder AND its output buffers still
+                                        live (jukebox path): a second bring-up
+                                        would double-register buffers */
+        else
+            vp_bring_up();           /* fresh, or post-BREAK: videoplayer_init
+                                        released the buffers (buf_phys zeroed
+                                        by its memset) though the decoder
+                                        component may still be running */
+    }
+}
+
 void videoplayer_goto(uint32_t picture, char op)
 {
+    vp_ensure();
     if (!vp.open || picture == 0)
         return;
     if (picture > vp.hdr.frame_count)
@@ -582,6 +654,7 @@ static void reset_speed(void)
 
 void videoplayer_play_fwd(void)
 {
+    vp_ensure();
     if (!vp.open)
         return;
     reset_speed();
@@ -599,6 +672,7 @@ void videoplayer_play_fwd(void)
 
 void videoplayer_play_rev(void)
 {
+    vp_ensure();
     if (!vp.open)
         return;
     reset_speed();
@@ -612,6 +686,7 @@ void videoplayer_play_rev(void)
 
 void videoplayer_halt(void)
 {
+    vp_ensure();
     if (!vp.open)
         return;
     vp.mode = VP_STILL;
@@ -620,6 +695,7 @@ void videoplayer_halt(void)
 
 void videoplayer_pause(void)
 {
+    vp_ensure();
     if (!vp.open)
         return;
     vp.mode = VP_STILL;
@@ -628,6 +704,7 @@ void videoplayer_pause(void)
 
 void videoplayer_step(int delta)
 {
+    vp_ensure();
     if (!vp.open || vp.cur_picture == 0)
         return;
     int32_t target = (int32_t)vp.cur_picture + delta;   /* new picture, 1-based */
@@ -638,6 +715,7 @@ void videoplayer_step(int delta)
 
 void videoplayer_speed(uint32_t value, bool fast)
 {
+    vp_ensure();
     if (value < 2u)
         value = 2u;
     if (fast) {
@@ -675,11 +753,13 @@ static void start_motion(vp_mode_t mode, uint32_t period_us, uint32_t stride)
    period of 20000*xxx us (xxx=2 is the nominal 40 ms). */
 void videoplayer_slow_fwd(void)
 {
+    vp_ensure();
     start_motion(VP_PLAY, 20000u * (vp.speed_slow ? vp.speed_slow : 6u), 1u);
 }
 
 void videoplayer_slow_rev(void)
 {
+    vp_ensure();
     start_motion(VP_PLAY_REV, 20000u * (vp.speed_slow ? vp.speed_slow : 6u), 1u);
 }
 
@@ -689,6 +769,7 @@ void videoplayer_slow_rev(void)
    S3F (1.5x) plays at normal speed - a documented approximation. */
 static void fast_motion(vp_mode_t mode)
 {
+    vp_ensure();
     uint32_t stride = (vp.speed_fast ? vp.speed_fast : 6u) / 2u;
     if (stride < 1u)
         stride = 1u;
@@ -706,6 +787,7 @@ void videoplayer_clear(void)
 
 void videoplayer_show_picture_number(bool on)
 {
+    vp_ensure();
     if (vp.show_picture == on)
         return;
     vp.show_picture = on;
@@ -717,6 +799,7 @@ void videoplayer_show_picture_number(bool on)
 
 void videoplayer_audio_enable(int channel, bool on)
 {
+    vp_ensure();
     /* audio_set_channel_mute is a core-wide control: unless THIS player
        claimed the audio (open, with a sound track), the core belongs to
        a synth and an A0 sent at a bare VFS LUN must not silence it. */
@@ -736,11 +819,10 @@ static bool pvf_open_file(void)
     UINT n;
     snprintf(pvf_path, sizeof(pvf_path), "/BeebVFS%d/" PVF_FILENAME,
              filesystemGetLunDirectoryVFS());
-    if (f_open(&vp.file, pvf_path, FA_READ) != FR_OK) {
-        snprintf(pvf_path, sizeof(pvf_path), "/" PVF_FILENAME);
-        if (f_open(&vp.file, pvf_path, FA_READ) != FR_OK)
-            return false;
-    }
+    /* Only the jukeboxed directory's own video: a jukebox to an empty
+       directory must stay cheap - no SD work beyond this failed open. */
+    if (f_open(&vp.file, pvf_path, FA_READ) != FR_OK)
+        return false;
 
     /* Random access seeks constantly: a fast-seek link map makes f_lseek
        O(1) instead of a FAT-chain walk (50-80 ms per *FRAME on a 2.9 GB
@@ -802,6 +884,7 @@ static void video_give_up(uint32_t handles[NUM_FRAME_BUFFERS])
     f_close(&vp.file);
     vp.open = false;
     screen_plane_enable(YUV_PLANE, false);
+    vp.plane_on = false;
 }
 
 void videoplayer_init(uint8_t instance, uint8_t address)
@@ -816,8 +899,14 @@ void videoplayer_init(uint8_t instance, uint8_t address)
        from the still-running decoder - without it, releasing the GPU
        buffers below would leave the VideoCore free to DMA into freed
        memory. Then release the heap the old instance held. */
+    if (h264dec_running())
+        h264dec_reset();   /* detach the frame buffers from the decoder even
+                              when the player is closed (e.g. a reopen that
+                              failed into an empty directory leaves the
+                              decoder up with buffers registered) - the
+                              release below must never free memory the
+                              VideoCore still holds armed */
     if (vp.open) {
-        h264dec_reset();
         f_close(&vp.file);
         audio_release(&vp.producer);
     }
@@ -844,6 +933,21 @@ void videoplayer_init(uint8_t instance, uint8_t address)
         videobuf_magic2 = 0;
     }
 
+    /* LAZY BRING-UP (2026-08-25): opening the video file, starting the
+       hardware decoder and allocating GPU frame buffers used to happen right
+       here - at every cold boot AND at every BBC BREAK re-init - putting
+       seconds of SD/GPU work (and any SD stall) inside the boot watchdog
+       window and the Beeb's FS-probe race. The clean forensics traced a
+       watchdog death to videoplayer_poll after a BREAK. Now nothing is
+       touched until the Beeb actually uses the player: the first F-code
+       player command performs the bring-up (vp_ensure). */
+    vp.lazy_pending = true;
+    Pi1MHz_Register_Poll(videoplayer_poll);
+}
+
+/* The deferred bring-up: everything videoplayer_init used to do inline. */
+static void vp_bring_up(void)
+{
     if (!pvf_open_file()) {
         /* No video file: leave the plane off, the Beeb display is all
            there is to show. */
@@ -897,9 +1001,11 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     screen_create_YUV420_plane(YUV_PLANE, vp.hdr.width, vp.hdr.height,
                                vp.buf_phys[0]);
     vp.displayed_phys = 0;           /* nothing decoded on it yet */
-    screen_plane_enable(YUV_PLANE, true);
+    /* Plane stays OFF: nothing is decoded yet - enabling now would put a
+       black rectangle over the Beeb display. flip_pending() turns it on
+       when the first commanded frame is ready. */
 
-    vp.audio_present = (vp.hdr.audio_rate != 0);
+    vp.audio_present = (vp.hdr.audio_rate >= 8000 && vp.hdr.audio_rate <= 192000);
     if (vp.audio_present) {
         /* Take the audio output. Supersedes the Music 5000 (which cannot
            run alongside VFS anyway) or BeebSID; they get it back on the
@@ -920,9 +1026,6 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     vp.speed_slow = 6;               /* 1/3x, the VP415 default */
     vp.stride = 1;
     vp.play_audio = true;
-
-    /* Show picture 1 so there is something on screen immediately */
-    videoplayer_goto(1, 'R');
 
     Pi1MHz_Register_Poll(videoplayer_poll);
 

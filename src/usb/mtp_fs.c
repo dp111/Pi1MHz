@@ -569,15 +569,17 @@ static void fs_send_object_event(uint16_t code, uint32_t handle) {
   const uint16_t type   = MTP_CONTAINER_TYPE_EVENT_BLOCK;
   const uint32_t txid   = 0xFFFFFFFFu;
 
+  /* Claim BEFORE filling: evt_buf is shared with any event still in flight,
+     and writing it first corrupts that event's bytes on the wire. */
+  if (!usbd_edpt_claim(BOARD_TUD_RHPORT, MTP_EVENT_EP_ADDR)) {
+    return;                          /* a prior event is still in flight */
+  }
   memcpy(evt_buf + 0,  &length, 4);
   memcpy(evt_buf + 4,  &type,   2);
   memcpy(evt_buf + 6,  &code,   2);
   memcpy(evt_buf + 8,  &txid,   4);
   memcpy(evt_buf + 12, &handle, 4);
 
-  if (!usbd_edpt_claim(BOARD_TUD_RHPORT, MTP_EVENT_EP_ADDR)) {
-    return;                          /* a prior event is still in flight */
-  }
   if (!usbd_edpt_xfer(BOARD_TUD_RHPORT, MTP_EVENT_EP_ADDR,
                       evt_buf, (uint16_t) length, false)) {
     /* Release the claim if the transfer didn't start, otherwise the endpoint
@@ -1263,8 +1265,21 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
           && g_write_state.tmp_active
           && (!g_write_state.size_known
               || g_write_state.transferred == g_write_state.size)) {
-        if (filesystemHostPathBusy(g_write_state.path)
-            || fat_service_file_in_use(g_write_state.path)) {
+        /* When this transfer holds the LUN's host lock itself,
+           filesystemHostPathBusy would see OUR OWN lock and fail the promote
+           every time (upload streamed fine, then DEVICE_BUSY and the data
+           discarded).  For the locked case the questions that matter are:
+           did the Beeb revoke us, or is the LUN started?  (Mirrors the
+           WebDAV COPY path's check.) */
+        bool promote_busy;
+        if (g_write_state.lun_lock_p1 != 0u) {
+          uint8_t lun = (uint8_t)(g_write_state.lun_lock_p1 - 1u);
+          promote_busy = filesystemHostLunRevoked(lun)
+                      || filesystemReadLunStatus(lun);
+        } else {
+          promote_busy = filesystemHostPathBusy(g_write_state.path);
+        }
+        if (promote_busy || fat_service_file_in_use(g_write_state.path)) {
           g_write_state.failed_resp = MTP_RESP_DEVICE_BUSY;
         } else {
           (void) f_unlink(g_write_state.path);        /* f_rename needs it free */

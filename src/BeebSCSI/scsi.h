@@ -92,6 +92,11 @@ void scsiReset(uint8_t scsiid);
 
 bool scsiJukebox (uint8_t lun);
 
+extern uint8_t scsiHostID;   /* last SELECT host id (16+ = VFS) */
 void scsiProcessEmulation(void);
+uint8_t scsiDiagState(void);
+extern uint8_t scsiDiagCdb[6];
+extern uint32_t scsiDiagXfer;
+extern uint32_t scsiDiagCmdCount;
 
 #endif /* SCSI_H_ */

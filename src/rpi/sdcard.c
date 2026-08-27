@@ -576,7 +576,14 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
         if (sdhost_transfer_pio(dev, is_write) != 0)
         {
             dev->last_interrupt = sdhost_read(SDHSTS);
-            dev->last_error = sdhost_translate_error(dev->last_interrupt, true);
+            {
+               /* A wedged-but-error-free controller leaves SDHSTS clean;
+                  translating that to 0 overwrote the DATA_TIMEOUT the PIO
+                  loop just recorded and the give-up log read err=00000000. */
+               uint32_t hw_err = sdhost_translate_error(dev->last_interrupt, true);
+               if (hw_err != 0u)
+                  dev->last_error = hw_err;
+            }
             sdhost_log_failure("pio", opcode, argument, dev);
             sdhost_write(SDHSTS, dev->last_interrupt & SDHSTS_CLEAR_MASK);
             if (opcode == READ_MULTIPLE_BLOCK || opcode == WRITE_MULTIPLE_BLOCK)
@@ -926,7 +933,12 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
     while (total_words > 0u)
     {
         uint32_t burst_words = SDDATA_FIFO_WORDS;
-        uint32_t wait_loops = 50000000u;
+        /* Empty-FIFO timeout by wall clock, not iteration count: 50M
+           register-read spins is 10-25 s on a dead card, long enough to
+           trip the watchdog before the error return. Time is sampled
+           every 4096 spins so the hot path stays a single SDEDM read. */
+        uint32_t wait_spins = 0u;
+        uint32_t wait_start_us = 0u;
 
         if (burst_words > total_words)
             burst_words = total_words;
@@ -941,10 +953,16 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
                 uint32_t fsm_state;
                 uint32_t hsts;
 
-                if (wait_loops-- == 0u)
+                if ((++wait_spins & 4095u) == 0u)
                 {
-                    dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
-                    return -1;
+                    uint32_t now = RPI_GetSystemTime() | 1u;
+                    if (wait_start_us == 0u)
+                        wait_start_us = now;
+                    else if (now - wait_start_us > 1000000u)
+                    {
+                        dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
+                        return -1;
+                    }
                 }
 
                 fsm_state = edm & SDEDM_FSM_MASK;

@@ -21,6 +21,7 @@
 #include "framebuffer_export.h"
 #include "../BeebSCSI/fatfs/ff.h"
 #include "../BeebSCSI/filesystem.h"   /* filesystemHostPathBusy() - LUN interlock */
+#include "../BeebSCSI/fatfs/diskio.h"  /* disk_read - incremental FAT free scan */
 #include "../services.h"              /* fat_service_file_in_use() - MMFS/FAT interlock */
 #include "../usb/mtp_fs.h"
 #include "../rpi/screen.h"
@@ -28,8 +29,12 @@
 #include "../rpi/audio.h"             /* owner/rate/underruns on /status */
 #include "../rpi/hdmi_audio.h"
 #include "../rpi/block.h"
+#include "../rpi/rpi.h"               /* boot stage + crash record on /status */
+#include "../rpi/cache.h"              /* clean the boot-stage block before a deliberate reboot */
 #include "../videoplayer.h"
-#include "../harddisc_emulator.h"     /* SCSI transfer diagnostics */
+#include "../BeebSCSI/fcode.h"
+#include "../harddisc_emulator.h"
+#include "../BeebSCSI/scsi.h"
 #include "../rpi/exceptions.h"
 #include "../rpi/info.h"
 #include "../rpi/systimer.h"
@@ -363,6 +368,17 @@ static uint32_t        g_ws_reboot_at;
    (typically around 1 TB total) - the cause of the wildly wrong
    "Total size 929 GB" line in the WebDAV mount root. */
 static bool            g_ws_sd_free_valid;
+static bool            g_ws_sd_free_wanted;  /* someone asked (/status or
+   PROPFIND quota): refresh on demand only - no standing periodic sweep */
+
+/* Mark the free-space figure as wanted and say whether the cache holds one.
+   Callers that display it use this so a sweep is (re)started in the
+   background only when somebody is actually looking. */
+static bool ws_sd_free_want(void)
+{
+   g_ws_sd_free_wanted = true;
+   return g_ws_sd_free_valid;
+}
 static uint32_t        g_ws_sd_free_mb;
 static uint64_t        g_ws_sd_total_bytes;
 static uint64_t        g_ws_sd_free_bytes;
@@ -457,7 +473,9 @@ static uint32_t        g_ws_last_io_us;
 
 static void ws_note_io(void)
 {
-   g_ws_last_io_us = RPI_GetSystemTime();
+   g_ws_last_io_us = Pi1MHz_now_us; /* same domain as the compare in
+      webserver_refresh_sd_free - a fresh timer read here always exceeds the
+      pass-cached Pi1MHz_now_us and the unsigned gate wraps, reading 'idle' */
 }
 
 /* LUN whose image the in-flight COPY is writing, or -1. Only one COPY runs at
@@ -2371,7 +2389,7 @@ static bool route_status(ws_conn_t *c)
    const wifi_lwip_context_t   *lw  = wifi_lwip_get_context();
    sdio_runtime_status_t        rs  = sdio_runtime_get_status();
    ws_strbuf_t                  b;
-   char                         tmp[96];
+   char                         tmp[144];   /* the Bus diag row peaks ~120 chars with 10-digit counters */
    uint8_t                      mac[6];
 
    sb_init(&b);
@@ -2487,6 +2505,7 @@ static bool route_status(ws_conn_t *c)
                (unsigned long)h264dec_frames_decoded());
       table_row(&b, "H264 decoder", tmp);
       table_row(&b, "Video player", videoplayer_status());
+      table_row(&b, "F-code", fcodeLastExchange());
    }
    snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s",
             audio_owner_name(), (unsigned long)audio_rate(),
@@ -2498,11 +2517,71 @@ static bool route_status(ws_conn_t *c)
             (unsigned long)hdmi_audio_mai_ctl(), (unsigned long)hdmi_audio_hsm_hz(),
             (unsigned long)hdmi_audio_pixel_hz());
    table_row(&b, "HDMI audio", tmp);
+#ifdef DEBUG
    {
       snprintf(tmp, sizeof tmp, "%lu ACK timeouts, audio service max %lu us, ACK wait max %lu us",
                (unsigned long)hd_ack_timeouts, (unsigned long)hd_service_max_us,
                (unsigned long)hd_ack_wait_max_us);
       table_row(&b, "SCSI", tmp);
+   }
+#endif
+   {
+#ifdef DEBUG
+      /* SCSI bus diagnostics: event counters, engine state, last CDB. */
+      snprintf(tmp, sizeof tmp,
+               "sel %lu wr %lu rd %lu st %u fl %06lx cdb %02x%02x%02x%02x%02x%02x n%lu x%lu",
+               (unsigned long)hd_ev_sel, (unsigned long)hd_ev_writes, (unsigned long)hd_ev_reads,
+               (unsigned int)scsiDiagState(), (unsigned long)hd_diag_flags(),
+               scsiDiagCdb[0], scsiDiagCdb[1], scsiDiagCdb[2], scsiDiagCdb[3], scsiDiagCdb[4], scsiDiagCdb[5],
+               (unsigned long)scsiDiagCmdCount, (unsigned long)scsiDiagXfer);
+      table_row(&b, "Bus diag", tmp);
+#endif
+
+      {
+         /* Lockup forensics: where the previous boot attempt died (only shown
+            when it did die short of the main loop), and the last CPU fault
+            since power-on, persisted across the post-exception reboot. */
+         boot_stage_t prev = RPI_BootStagePrevious();
+         uint32_t det = RPI_BootDetailPrevious();
+         if (prev != 0u && prev != BOOT_STAGE_RUNNING) {
+            if (det != 0u && det < 256u)
+               snprintf(tmp, sizeof tmp, "PREVIOUS BOOT DIED AT STAGE %u of %u in init %lu (%s)",
+                        (unsigned int)prev, (unsigned int)BOOT_STAGE_RUNNING,
+                        (unsigned long)(det - 1u), Pi1MHz_EmulatorName((unsigned int)(det - 1u)));
+            else
+               snprintf(tmp, sizeof tmp, "PREVIOUS BOOT DIED AT STAGE %u of %u",
+                        (unsigned int)prev, (unsigned int)BOOT_STAGE_RUNNING);
+            table_row(&b, "Boot", tmp);
+         } else if (prev == BOOT_STAGE_RUNNING && det != 0u && det != 0xFDu) {
+            /* The previous session ended by reset while running. Decode where
+               it was: poll callback (det>=256), the RST re-init pass entry
+               (0xFE = in config_load), or an init during that pass. 0xFD is
+               the deliberate-/reboot marker - silent. */
+            if (det >= 256u)
+               snprintf(tmp, sizeof tmp, "previous session died in poll callback %lu",
+                        (unsigned long)((det >> 8) - 1u));
+            else if (det == 0xFEu)
+               snprintf(tmp, sizeof tmp, "previous session died in RST re-init (config load)");
+            else
+               snprintf(tmp, sizeof tmp, "previous session died in RST re-init at init %lu (%s)",
+                        (unsigned long)(det - 1u), Pi1MHz_EmulatorName((unsigned int)(det - 1u)));
+            table_row(&b, "Boot", tmp);
+         }
+         {
+            unsigned int rr = RPI_ResetReason();
+            snprintf(tmp, sizeof tmp, "%03x%s", rr, (rr & 0x20u) ? " (watchdog)" : "");
+            table_row(&b, "Reset reason", tmp);
+         }
+         const volatile unsigned int *cr = RPI_LastCrash();
+         if (cr) {
+            snprintf(tmp, sizeof tmp,
+                     "%c at pc %08lx spsr %08lx dfar %08lx dfsr %08lx stage %lu count %lu",
+                     (char)cr[1], (unsigned long)cr[2], (unsigned long)cr[3],
+                     (unsigned long)cr[4], (unsigned long)cr[5],
+                     (unsigned long)cr[6], (unsigned long)cr[7]);
+            table_row(&b, "Last fault", tmp);
+         }
+      }
    }
    {
       /* max run per poll slot, reset on read */
@@ -2539,7 +2618,7 @@ static bool route_status(ws_conn_t *c)
             (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
    table_row(&b, "HTTP port", tmp);
 
-   if (g_ws_sd_free_valid) {
+   if (ws_sd_free_want()) {   /* /status shows it: refresh in background */
       snprintf(tmp, sizeof tmp, "%lu MB free",
                (unsigned long)g_ws_sd_free_mb);
       table_row(&b, "SD card", tmp);
@@ -2787,7 +2866,8 @@ static bool route_reboot_do(ws_conn_t *c)
    /* Defer the reboot: webserver_poll() carries it out once the delay
       has elapsed, by which time this response page has been sent. */
    g_ws_reboot_pending = true;
-   g_ws_reboot_at = RPI_GetSystemTime();
+   g_ws_reboot_at = Pi1MHz_now_us; /* same clock domain as the deferral
+      compare in webserver_poll (pass-cached), or the 1.5s wait never happens */
 
    sb_init(&b);
    page_open(&b, "Rebooting");
@@ -3904,7 +3984,7 @@ static void dav_emit_response(ws_strbuf_t *b, const char *url_path,
       sb_printf(b, "<D:getcontentlength>%lu</D:getcontentlength>"
                    "<D:getcontenttype>application/octet-stream</D:getcontenttype>",
                 (unsigned long)size);
-   } else if (g_ws_sd_free_valid) {
+   } else if (ws_sd_free_want()) {
       /* RFC 4331: quota-available-bytes is free space, quota-used-bytes
          is currently consumed.  Windows Explorer reads these from the
          response for the share's root (and sometimes any directory) to
@@ -4242,8 +4322,14 @@ static bool dav_put_flush(ws_conn_t *c)
 
 static bool dav_put_write_bytes(ws_conn_t *c, const uint8_t *data, size_t len)
 {
-   if (!c->dav_put_open || len == 0u)
+   if (len == 0u)
       return true;
+   if (!c->dav_put_open)
+      /* Deliberate unauthenticated drain swallows the body; any OTHER
+         closed-file state here means the temp file went away mid-transfer
+         (write failure already reported, or the Beeb revoked the LUN).
+         Failing keeps a truncated upload from finishing with 201. */
+      return c->dav_put_draining;
 
    /* Copy into dl_buf, flushing each time it fills to a full chunk.  A
       single TCP segment (~1460 B) never spans more than one flush, but the
@@ -6217,57 +6303,126 @@ static err_t ws_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    the sector size (FF_MAX_SS, normally 512 on SD) gives the byte
    counts that WebDAV PROPFIND reports as quota-available-bytes /
    quota-used-bytes. */
+/* Incremental FAT free-cluster scan.
+   f_getfree walks the whole FAT synchronously - since FF_FS_NOFSINFO=3
+   that is the real FAT, ~3 s on a 32 GB card - and it runs from the poll
+   loop, freezing everything: WiFi transfers stall, and a mounted ADFS
+   mid-sector transfer (whose 6502 loop has no timeout) hangs the Beeb.
+   Observed live: "Slow poll callback 3170929us" during the post-BREAK
+   ADFS mount = wedged Master.
+
+   So the walk is now chunked: SDSCAN_SECTS_PER_PASS FAT sectors per poll
+   pass (~1 ms of PIO), totals published when the sweep completes.  A
+   remount or FAT-geometry change mid-sweep abandons the sweep; the next
+   TTL expiry starts a fresh one.  FAT12 (tiny cards, tiny FATs) keeps the
+   direct f_getfree - it is microseconds there. */
+#define SDSCAN_SECTS_PER_PASS 4u
+static struct {
+   bool     running;
+   uint32_t next_sect;    /* offset into the FAT, in sectors */
+   uint32_t free_clst;    /* free clusters counted so far */
+   uint32_t ent;          /* next FAT entry index */
+   /* geometry snapshot for mid-sweep invalidation */
+   uint8_t  fs_type;
+   uint32_t fatbase, fsize, n_fatent;
+} g_sdscan;
+static uint32_t g_sdscan_buf[SDSCAN_SECTS_PER_PASS * 128u]; /* word-aligned */
+
 static void webserver_refresh_sd_free(void)
 {
-   uint32_t now = Pi1MHz_now_us;   /* 5 s cache TTL */
-   DWORD    nclst = 0u;
-   FATFS   *fs = NULL;
+   uint32_t now = Pi1MHz_now_us;
+   FATFS *fs = filesystemGetFsObject();
 
-   /* Never while data is moving.  f_getfree walks the whole FAT, which on a
-      multi-gigabyte card takes long enough to be felt: it runs synchronously
-      from the poll loop, so for its duration nothing drains the WiFi chip,
-      nothing services lwIP, and every transfer in progress stalls.  Measured
-      as uploads crawling to a few kB/s for the first attempts after a batch
-      of deletes, then recovering once the walk had happened.
+   if (fs == NULL) {
+      g_sdscan.running = false;
+      g_ws_sd_free_valid = false;
+      return;
+   }
 
-      Free space is a display figure for /status and PROPFIND, so it can wait
-      for a quiet moment.  The age stamp is deliberately not touched here, so
-      the refresh happens as soon as the server goes idle rather than being
-      pushed out another whole TTL. */
+   /* Never while HTTP data is moving - the scan chunks cost ~1 ms each and
+      free space is a display figure; it can wait for a quiet moment. */
    if ((now - g_ws_last_io_us) < WS_FREE_QUIET_US)
       return;
 
-   /* The age check applies to failures too.  Gating it on _valid meant a
-      card that could not answer f_getfree - no card, a bad mount, a
-      transient error - was asked again on every single pass of the poll
-      loop, each attempt a fresh (and on a slow card, long) FAT walk from
-      the main loop.  The TTL is what makes this cheap; it has to hold
-      whichever way the call went. */
-   if ((now - g_ws_sd_free_age_us) < WS_FREE_REFRESH_US)
+   if (!g_sdscan.running) {
+      if (!g_ws_sd_free_wanted)
+         return;              /* nobody has asked since the last sweep */
+      /* TTL applies to starting a sweep, and to failed attempts too. */
+      if ((now - g_ws_sd_free_age_us) < WS_FREE_REFRESH_US)
+         return;
+      g_ws_sd_free_wanted = false;
+      g_ws_sd_free_age_us = now;
+      if (fs->fs_type != FS_FAT16 && fs->fs_type != FS_FAT32) {
+         /* FAT12: FAT fits in a few sectors, the walk is trivial */
+         DWORD nclst = 0u;
+         FATFS *vfs = NULL;
+         if (f_getfree("", &nclst, &vfs) == FR_OK && vfs != NULL) {
+            uint64_t cluster_bytes = (uint64_t)vfs->csize * 512u;
+            g_ws_sd_total_bytes = (uint64_t)(vfs->n_fatent - 2u) * cluster_bytes;
+            g_ws_sd_free_bytes  = (uint64_t)nclst * cluster_bytes;
+            g_ws_sd_free_mb     = (uint32_t)(g_ws_sd_free_bytes / (1024u * 1024u));
+            g_ws_sd_free_valid  = true;
+         } else {
+            g_ws_sd_free_valid = false;
+         }
+         return;
+      }
+      g_sdscan.running   = true;
+      g_sdscan.next_sect = 0u;
+      g_sdscan.free_clst = 0u;
+      g_sdscan.ent       = 0u;
+      g_sdscan.fs_type   = fs->fs_type;
+      g_sdscan.fatbase   = (uint32_t)fs->fatbase;
+      g_sdscan.fsize     = (uint32_t)fs->fsize;
+      g_sdscan.n_fatent  = fs->n_fatent;
       return;
+   }
 
-   g_ws_sd_free_age_us = now;
-   /* FatFs treats the path argument as a logical-drive prefix, not a
-      filesystem path - "" picks the default drive and is what the
-      MTP backend uses too.  Passing "/" works on this build because
-      FF_FS_RPATH is enabled, but "" is the canonical form. */
-   if (f_getfree("", &nclst, &fs) == FR_OK && fs != NULL) {
-      /* FF_MAX_SS is the FatFs sector-size limit; on SD it is 512.
-         Use a literal 512u here to avoid pulling in FF_MAX_SS from
-         the ffconf - SD cards do not use anything else in practice
-         and Windows shows the size in 1 KB / 1 MB units anyway. */
-      uint64_t sector_bytes  = 512u;
-      uint64_t cluster_bytes = (uint64_t)fs->csize * sector_bytes;
-      uint64_t total_clst    = (uint64_t)(fs->n_fatent - 2u);
-      g_ws_sd_total_bytes = total_clst * cluster_bytes;
-      g_ws_sd_free_bytes  = (uint64_t)nclst * cluster_bytes;
+   /* Remount / geometry change mid-sweep: abandon, restart after the TTL. */
+   if (fs->fs_type != g_sdscan.fs_type ||
+       (uint32_t)fs->fatbase != g_sdscan.fatbase ||
+       (uint32_t)fs->fsize != g_sdscan.fsize ||
+       fs->n_fatent != g_sdscan.n_fatent) {
+      g_sdscan.running = false;
+      return;
+   }
+
+   uint32_t sects = g_sdscan.fsize - g_sdscan.next_sect;
+   if (sects > SDSCAN_SECTS_PER_PASS)
+      sects = SDSCAN_SECTS_PER_PASS;
+
+   if (sects != 0u) {
+      if (disk_read(fs->pdrv, (BYTE *)g_sdscan_buf,
+                    (LBA_t)fs->fatbase + g_sdscan.next_sect, (UINT)sects) != RES_OK) {
+         g_sdscan.running = false;    /* transient error: retry after the TTL */
+         g_ws_sd_free_valid = false;
+         return;
+      }
+      g_sdscan.next_sect += sects;
+      if (g_sdscan.fs_type == FS_FAT32) {
+         uint32_t n = sects * 128u;
+         for (uint32_t i = 0u; i < n && g_sdscan.ent < g_sdscan.n_fatent; i++, g_sdscan.ent++)
+            if (g_sdscan.ent >= 2u && (g_sdscan_buf[i] & 0x0FFFFFFFu) == 0u)
+               g_sdscan.free_clst++;
+      } else {
+         const uint16_t *e = (const uint16_t *)(const void *)g_sdscan_buf;
+         uint32_t n = sects * 256u;
+         for (uint32_t i = 0u; i < n && g_sdscan.ent < g_sdscan.n_fatent; i++, g_sdscan.ent++)
+            if (g_sdscan.ent >= 2u && e[i] == 0u)
+               g_sdscan.free_clst++;
+      }
+   }
+
+   if (g_sdscan.next_sect >= g_sdscan.fsize || g_sdscan.ent >= g_sdscan.n_fatent) {
+      uint64_t cluster_bytes = (uint64_t)fs->csize * 512u;
+      g_ws_sd_total_bytes = (uint64_t)(g_sdscan.n_fatent - 2u) * cluster_bytes;
+      g_ws_sd_free_bytes  = (uint64_t)g_sdscan.free_clst * cluster_bytes;
       g_ws_sd_free_mb     = (uint32_t)(g_ws_sd_free_bytes / (1024u * 1024u));
       g_ws_sd_free_valid  = true;
-   } else {
-      g_ws_sd_free_valid = false;
+      g_ws_sd_free_age_us = Pi1MHz_now_us;  /* age counts from completion */
+      g_sdscan.running    = false;
    }
 }
-
 
 /* Poll hook: once a reboot has been requested via POST /reboot and the
    short grace period has elapsed - long enough for the response page to
@@ -6276,6 +6431,13 @@ void webserver_poll(void)
 {
    if (g_ws_reboot_pending
        && (Pi1MHz_now_us - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
+#ifdef DEBUG
+      RPI_BootDetail(0xFDu);  /* deliberate reboot - not a death */
+      {
+         const volatile unsigned int *blk = RPI_BootStageBlock();
+         _clean_cache_area((const void *)(uintptr_t)blk, 64); /* reboot_now never flushes */
+      }
+#endif
       reboot_now();
    }
 
@@ -6360,6 +6522,7 @@ void webserver_init(void)
       hundreds of ms on a slow / fragmented card but this only runs
       once at server bring-up; subsequent refreshes are gated by the
       WS_FREE_REFRESH_US TTL in webserver_poll. */
+   g_ws_sd_free_wanted = true;   /* pre-warm for the first PROPFIND */
    webserver_refresh_sd_free();
    wifi_note_http_ready();
 }

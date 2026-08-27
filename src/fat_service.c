@@ -385,7 +385,15 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
                 break;
         }
 
-        memcpy(&Pi1MHz->JIM_ram[command_pointer + 4], fileInfo.fname, strlen(fileInfo.fname)+1);
+        {
+            /* Cap to the 252 bytes left in this 256-byte command page: a
+               255-char LFN + NUL otherwise spills 4 bytes into the next
+               page's command block. */
+            size_t nlen = strlen(fileInfo.fname);
+            if (nlen > 251) nlen = 251;
+            memcpy(&Pi1MHz->JIM_ram[command_pointer + 4], fileInfo.fname, nlen);
+            Pi1MHz->JIM_ram[command_pointer + 4 + nlen] = 0;
+        }
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }

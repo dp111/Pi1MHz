@@ -26,6 +26,10 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Doubling backoff for full re-init attempts from WIFI_STATE_ERROR;
+   reset once the stack is healthy again. */
+static uint32_t s_err_backoff_us;
+
 static wifi_lwip_context_t g_wifi_lwip_context;
 /* True once lwip_init() + netif_add() have run.  Kept OUTSIDE the context
    (which wifi_lwip_prepare memsets) so it survives a BBC RST re-init: the
@@ -150,8 +154,10 @@ static void wifi_lwip_update_runtime_state(void)
    /* Latch the first time the link comes up.  Once set, the boot-time
       link-up timeout in wifi_lwip_poll() is disabled, so a later
       transient link drop keeps polling and is allowed to recover. */
-   if (g_wifi_lwip_context.link_up)
+   if (g_wifi_lwip_context.link_up) {
       g_wifi_lwip_context.link_established = true;
+      s_err_backoff_us = 0;      /* healthy again: reset the ERROR-retry backoff */
+   }
 
    /* A fresh association gets a fresh power-save state, so tell the driver
       to re-assert it - see sdio_runtime_powersave_note_link_change(). */
@@ -1045,17 +1051,39 @@ static void wifi_lwip_rejoin_service(void)
 
 void wifi_lwip_poll(void)
 {
-   if (!g_wifi_lwip_context.timers_running)
-      return;
-
-   /* Stop polling once the WiFi boot has failed.  There is no point
-      hammering the SDIO bus and lwIP timers when the stack can never
-      come up; timers_running latches false so this is permanent. */
+   /* This must run BEFORE the timers_running gate: an ERROR latched during
+      first bring-up (SDIO failure, netif_add) happens with timers_running
+      still false, and is exactly the case this retry exists for. */
+   /* ERROR used to be an absorbing stop ("permanent").  But the recovery
+      ladder's last rung - the full chip restart - re-runs the bring-up
+      stages at RUNTIME, and a transient failure there (chip MAC query,
+      lwIP netif_add, dhcp_start) latched ERROR and killed polling: the
+      network then stayed dead until a BBC RST re-ran wifi_init().  Do the
+      same thing from a timer instead: retry the whole init on a doubling
+      backoff (1 min .. 10 min).  Genuine config errors (bad SSID) refail
+      fast and just idle in ERROR between attempts. */
    if (wifi_get_state() == WIFI_STATE_ERROR) {
-      g_wifi_lwip_context.timers_running = false;
-      wifi_lwip_debug_log("wifi in error state - polling stopped");
+      static uint32_t err_since_us;
+      uint32_t now = RPI_GetSystemTime();
+      if (s_err_backoff_us == 0u)
+         s_err_backoff_us = 60000000u;
+      if (err_since_us == 0u) {
+         err_since_us = now | 1u;
+         wifi_lwip_debug_log("wifi error state - retry in %lus",
+                             (unsigned long)(s_err_backoff_us / 1000000u));
+      } else if (now - err_since_us >= s_err_backoff_us) {
+         err_since_us = 0u;
+         s_err_backoff_us <<= 1;
+         if (s_err_backoff_us > 600000000u)
+            s_err_backoff_us = 600000000u;
+         wifi_lwip_debug_log("wifi error state - retrying full init");
+         wifi_init();
+      }
       return;
    }
+
+   if (!g_wifi_lwip_context.timers_running)
+      return;
 
    /* Keep trying to associate.  The chip does not re-associate by itself and
       the boot path issues the join exactly once, so a scan that comes back

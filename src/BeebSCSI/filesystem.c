@@ -67,6 +67,7 @@
 #include "../videoplayer.h"
 #include "../config.h"			/* Beeb_write_protect */
 #include "../rpi/rpi.h"
+#include "../rpi/systimer.h"
 #include "../rpi/fileparser.h"
 
 
@@ -92,28 +93,15 @@ static const parserkey scsiattributes[] = {
    { NULL , 0 ,0, 0} // end of list
 };
 
-enum parserkeyvalueenum {
-    TITLE,
-    DESCRIPTION,
-    INQUIRY,
-    MODEPARAMHEADER,
-    LBADESCRIPTOR,
-    MODEPAGE0,
-    MODEPAGE1,
-    MODEPAGE3,
-    WRITPAGE3,
-    MODEPAGE4,
-    MODEPAGE32,
-    MODEPAGE33,
-    MODEPAGE35,
-    MODEPAGE36,
-    MODEPAGE37,
-    MODEPAGE38,
-    LDUSERCODE,
-    LDVIDEOXOFFSET
-};
-
 #define NUM_KEYS (sizeof(scsiattributes)/sizeof(parserkey))
+
+/* The public enum (filesystem.h) indexes this table: pin the ordering */
+_Static_assert(LDVIDEOXOFFSET + 2 == NUM_KEYS,
+               "parserkeyvalueenum out of step with scsiattributes[]");
+
+/* VFS volume-present cache - see filesystemVFSVolumePresent() */
+static int16_t vfs_vol_cached_dir = -1;
+static bool    vfs_vol_present;
 
 // File system state structure
 //NOINIT_SECTION
@@ -142,6 +130,22 @@ NOINIT_SECTION static uint8_t sectorBuffer[SECTOR_BUFFER_SIZE];   // Buffer for 
 static uint8_t sectorsInBuffer = 0;
 static uint8_t currentBufferSector = 0;
 static uint32_t sectorsRemaining = 0;
+
+#ifdef DEBUG
+/* Bad-FS-map hunt: when a LUN read starts at sector 0, verify the ADFS map
+   checksums of the bytes we are about to serve and report on serial - lets a
+   headless session see whether the Pi served a valid map on each mount. */
+static bool map_check_pending;
+static uint8_t adfs_map_cksum(const uint8_t *sec)
+{
+   uint32_t a = 255;
+   for (int i = 254; i >= 0; i--) {
+      if (a > 255) a = (a + 1u) & 0xFFu;
+      a += sec[i];
+   }
+   return (uint8_t)(a & 0xFFu);
+}
+#endif
 
 NOINIT_SECTION static FIL fileObjectFAT;
 
@@ -243,6 +247,7 @@ void filesystemReset(void)
 
    // Reset the default FAT transfer directory
    snprintf(fatDirectory, sizeof(fatDirectory), "/Transfer");
+   vfs_vol_cached_dir = -1;          /* re-stat the VFS volume marker */
 
    // ensure the file-system is closed on reset
    filesystemDismount();
@@ -660,6 +665,70 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
 
 // Function to scan for SCSI LUN image file on the mounted file system
 // and check the image is valid.
+/* Is the current /BeebVFS<n> a real LaserDisc volume? The marker is its
+   video.pvf: no directory, or a directory without one, means "drive
+   empty". One f_stat, cached per jukebox directory, so a failing VFS
+   *MOUNT gets its CHECK CONDITION in microseconds - the old path re-ran
+   the whole cfg/defscsi fallback churn on every retried command and the
+   accumulated SD stalls could wedge VFS mid error handshake. */
+bool filesystemVFSVolumePresent(void)
+{
+   bool stale = (int16_t)filesystemState.lunDirectoryVFS != vfs_vol_cached_dir;
+   /* An "absent" verdict also expires after a second, so a video.pvf
+      uploaded over WebDAV/USB into the CURRENT directory is seen without
+      a jukebox or reboot. A "present" verdict never re-stats (zero cost
+      on the hot path; deleting the video mid-session is not a case worth
+      an SD access per command). */
+   if (!stale && !vfs_vol_present) {
+      static uint32_t last_stat_us;
+      uint32_t now = RPI_GetSystemTime();
+      if (now - last_stat_us > 1000000u) {
+         last_stat_us = now;
+         stale = true;
+      }
+   }
+   if (stale) {
+      FILINFO fno;
+      snprintf(fileName, sizeof(fileName), "/BeebVFS%d/video.pvf",
+               filesystemState.lunDirectoryVFS);
+      vfs_vol_present = (f_stat(fileName, &fno) == FR_OK);
+      vfs_vol_cached_dir = (int16_t)filesystemState.lunDirectoryVFS;
+   }
+   return vfs_vol_present;
+}
+
+/* Does the current /BeebVFS<n> hold a scsi0.dat? Distinguishes a full
+   VFS disc from a video-only volume for the menu's ?V F-code. Uncached -
+   only the menu scan asks, once per directory. */
+bool filesystemVFSDatPresent(void)
+{
+   FILINFO fno;
+   snprintf(fileName, sizeof(fileName), "/BeebVFS%d/scsi0.dat",
+            filesystemState.lunDirectoryVFS);
+   return f_stat(fileName, &fno) == FR_OK;
+}
+
+/* The mounted FatFs object, or NULL when no card is mounted.  Read-only
+   access to FAT geometry for the webserver's incremental free-space scan. */
+FATFS *filesystemGetFsObject(void)
+{
+   return filesystemState.fsMountState ? &filesystemState.fsObject : NULL;
+}
+
+/* Does /BeebVFS<dir> hold mountable media (video.pvf or scsi0.dat)?
+   Used to validate an eject/disc-flip target BEFORE latching the jukebox:
+   a single-sided disc must not flip into an empty drive. Main loop only
+   (f_stat) - never callable from the FIQ poke path. */
+bool filesystemVFSDirPresent(uint8_t dir)
+{
+   FILINFO fno;
+   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/video.pvf", dir);
+   if (f_stat(fileName, &fno) == FR_OK)
+      return true;
+   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/scsi0.dat", dir);
+   return f_stat(fileName, &fno) == FR_OK;
+}
+
 bool filesystemCheckLunImage(uint8_t lunNumber)
 {
    uint32_t lunFileSize;
@@ -669,6 +738,13 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): Lun already open\r\n"));
       return true;
    }
+
+   // A VFS drive is present when its directory holds a video.pvf OR a
+   // scsi0.dat - real AIV data sides (e.g. Community South) have no video
+   // file, only the data image. Refuse only when neither exists, so an
+   // empty/absent directory still reads as "drive empty" instantly.
+   if (lunNumber >= 8 && !filesystemVFSVolumePresent() && !filesystemVFSDatPresent())
+      return false;
 
    // Attempt to open the LUN image
    if (lunNumber < 8 )
@@ -808,13 +884,13 @@ void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf)
 #endif
 
 // Function to set the current LUN directory (for the LUN jukeboxing functionality)
-void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber)
+void filesystemSetLunDirectory(uint8_t hostID, uint8_t lunDirectoryNumber)
 {
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemSetLunDirectory(): setting lun directory\r\n"), lunDirectoryNumber, 0);
-   if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemSetLunDirectory(): setting scsihostid directory\r\n"), scsiHostID, 0);
+   if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemSetLunDirectory(): setting scsihostid directory\r\n"), hostID, 0);
 
    // Change the current LUN directory number
-   if (scsiHostID < 16)
+   if (hostID < 16)
       filesystemState.lunDirectory = lunDirectoryNumber;
    else
       filesystemState.lunDirectoryVFS = lunDirectoryNumber;
@@ -843,6 +919,11 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
 {
    FRESULT fsResult;
    FIL fileObject;
+
+   /* A VFS volume (/BeebVFS*, LUN >= 8) is read-only LaserDisc media: the
+      firmware must never create images there. An ADFS-style format sequence
+      once grew 57 MB scsi0.dat files inside video-only directories. */
+   if (lunNumber >= 8) return false;
 
    if (config_beeb_write_protected()) return false;   // no .dat auto-create under write-protect
 
@@ -879,6 +960,8 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
 // Function to create a new LUN descriptor (makes an default .cfg file)
 bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 {
+   if (lunNumber >= 8) return false;   /* VFS volumes are read-only */
+
    if (lunNumber >7 || config_beeb_write_protected())
    {
       // VFS never creates .cfg; write-protect blocks .cfg auto-create too
@@ -935,9 +1018,58 @@ bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries)
    return false;
 }
 
+/* Read a single text Key= value ("Title" / "Description") for the disc
+   menu, straight from the mounted VFS disc's already-parsed attributes:
+   the VFS LUN's mount fills keyvalues[8] from its scsi0.cfg (a BeebVFS
+   directory only ever holds scsi0), and the cache cannot be stale -
+   every jukebox path is gated on all LUNs being stopped, and stopping
+   releases the values. The menu scans discs by jukeboxing to each
+   directory and remounting, so no separate file read is needed. */
+bool filesystemReadVFSCfgText(enum parserkeyvalueenum key, char *out, uint32_t maxLen)
+{
+   if (!maxLen)
+      return false;
+   out[0] = '\0';
+
+   /* Mounted disc: the values were parsed at mount - serve the cache. */
+   const parserkeyvalue *v = &filesystemState.keyvalues[8][key];
+   if (v->v.string && v->length) {
+      uint32_t n = v->length < maxLen - 1 ? (uint32_t)v->length : maxLen - 1;
+      memcpy(out, v->v.string, n);
+      out[n] = '\0';
+      return true;
+   }
+
+   /* Video-only disc (video.pvf, no scsi0.dat): it never mounts, so the
+      cache never fills - but its directory may still carry a scsi0.cfg
+      naming it for the menu. One parse through the shared fileparser into
+      a temporary set, released before returning; the scan asks once per
+      disc so the SD cost is negligible. */
+   if (!filesystemVFSVolumePresent() && !filesystemVFSDatPresent())
+      return false;
+
+   parserkeyvalue values[NUM_KEYS] = {0};
+   bool found = false;
+   snprintf(fileName, sizeof(fileName), "/BeebVFS%d/scsi0.cfg",
+            filesystemState.lunDirectoryVFS);
+   if (parse_readfile(fileName, 0, scsiattributes, values)) {
+      if (values[key].v.string && values[key].length) {
+         uint32_t n = values[key].length < maxLen - 1 ?
+                      (uint32_t)values[key].length : maxLen - 1;
+         memcpy(out, values[key].v.string, n);
+         out[n] = '\0';
+         found = true;
+      }
+      parse_releasekeyvalues(values, NUM_KEYS);
+   }
+   return found;
+}
+
 // Function to read a LUN descriptor
 bool filesystemReadLunDescriptor(uint8_t lunNumber)
 {
+   if (lunNumber >= 8 && !filesystemVFSVolumePresent() && !filesystemVFSDatPresent())
+      return false;                  /* drive empty: no cfg churn */
    if (!filesystemCheckExtAttributes(lunNumber))
    {
       FIL fileObject;
@@ -1381,6 +1513,9 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    }
    sectorsRemaining = requiredNumberOfSectors;
    sectorsInBuffer = 0;
+#ifdef DEBUG
+   map_check_pending = (startSector == 0 && lunNumber < 8);
+#endif
 
    // Exit with success
    filesystemState.fsLunStatus[lunNumber] = true;
@@ -1418,6 +1553,16 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
       sectorsInBuffer = (uint8_t)sectorsToRead;
       currentBufferSector = 0;
       sectorsRemaining = sectorsRemaining - sectorsInBuffer;
+#ifdef DEBUG
+      if (map_check_pending && fsCounter >= 512u) {
+         map_check_pending = false;
+         uint8_t c0 = adfs_map_cksum(sectorBuffer);
+         uint8_t c1 = adfs_map_cksum(sectorBuffer + 256);
+         LOG_INFO("MAPCHECK: s0 %02x/%02x s1 %02x/%02x %s\r\n",
+                  sectorBuffer[255], c0, sectorBuffer[511], c1,
+                  (sectorBuffer[255] == c0 && sectorBuffer[511] == c1) ? "OK" : "BAD");
+      }
+#endif
    }
    // return pointer to buffer with sector
    *buffer = sectorBuffer + (currentBufferSector * 256);

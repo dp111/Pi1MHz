@@ -38,6 +38,27 @@ typedef enum {
 
 void RPI_BootStage( boot_stage_t stage );
 boot_stage_t RPI_BootStagePrevious( void );
+
+/* Fine-grained death marker (rpi/mailbox.c): during boot, emulator-init
+   index+1; at runtime, (poll-callback index+1)<<8. 0 = between markers.
+   DEBUG builds only - the per-poll-callback stamp has no place in the
+   release hot loop; release keeps just the boot-stage breadcrumbs and the
+   crash record (both off the hot path). */
+#ifdef DEBUG
+void RPI_BootDetail( unsigned int detail );
+unsigned int RPI_BootDetailPrevious( void );
+#else
+#define RPI_BootDetail(detail) ((void)0)
+#define RPI_BootDetailPrevious() (0u)
+#endif
+unsigned int RPI_ResetReason( void );
+volatile unsigned int *RPI_BootStageBlock( void ); /* words 4..11 = crash record */
+
+/* Crash record persisted across the post-exception reboot (rpi/exception.c).
+   NULL if no fault since power-on; else words: [1]=type char U/P/D/S,
+   [2]=faulting pc, [3]=spsr, [4]=DFAR, [5]=DFSR, [6]=boot stage when it hit,
+   [7]=fault count since power-on. */
+const volatile unsigned int *RPI_LastCrash(void);
 #endif
 
 

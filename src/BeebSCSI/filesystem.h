@@ -68,6 +68,41 @@ void filesystemSetLunDirectory(uint8_t scsiHostID, uint8_t lunDirectoryNumber);
 uint8_t filesystemGetLunDirectory(void);
 uint8_t filesystemGetLunDirectoryVFS(void);
 
+// Indexes into the scsiattributes key table (and each LUN's parsed
+// keyvalues) - must match the table order in filesystem.c
+enum parserkeyvalueenum {
+    TITLE,
+    DESCRIPTION,
+    INQUIRY,
+    MODEPARAMHEADER,
+    LBADESCRIPTOR,
+    MODEPAGE0,
+    MODEPAGE1,
+    MODEPAGE3,
+    WRITPAGE3,
+    MODEPAGE4,
+    MODEPAGE32,
+    MODEPAGE33,
+    MODEPAGE35,
+    MODEPAGE36,
+    MODEPAGE37,
+    MODEPAGE38,
+    LDUSERCODE,
+    LDVIDEOXOFFSET
+};
+
+/* Read one value (TITLE or DESCRIPTION) of the mounted VFS disc from
+   its already-parsed attributes into out (NUL-terminated, maxLen incl
+   NUL). False if not mounted / key absent. For the disc menu. */
+bool filesystemReadVFSCfgText(enum parserkeyvalueenum key, char *out, uint32_t maxLen);
+
+/* True when the current /BeebVFS<n> holds a video.pvf - the volume-present
+   marker. Cheap (cached); used by the F-code path so a video-only disc
+   (no scsi0.dat) can still be driven by the player F-codes. */
+bool filesystemVFSVolumePresent(void);
+bool filesystemVFSDatPresent(void);
+bool filesystemVFSDirPresent(uint8_t dir);
+
 bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus);
 bool filesystemReadLunStatus(uint8_t lunNumber);
 bool filesystemTestLunStatus(uint8_t lunNumber);
@@ -132,6 +167,9 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
    that already include ff.h - most filesystem.h users do not.) */
 #ifdef FF_DEFINED
 bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries);
+/* The mounted FatFs object (read-only geometry access for the webserver's
+   incremental free-space scan), or NULL when no card is mounted. */
+FATFS *filesystemGetFsObject(void);
 #endif
 uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint32_t max_size);
 #endif /* FILESYSTEM_H_ */

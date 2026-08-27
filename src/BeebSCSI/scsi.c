@@ -68,9 +68,9 @@
 #ifdef DEBUG
 #include <stdio.h>
 #include "uart.h"
-#define DEBUG_bytesTransferred(x)   uint32_t bytesTransferred =(x)
+#define DEBUG_bytesTransferred(x)   uint32_t bytesTransferred =(x); scsiDiagXfer += bytesTransferred
 #else
-#define DEBUG_bytesTransferred(x)  x
+#define DEBUG_bytesTransferred(x)  (void)(x)
 #endif
 
 // Global for the emulation mode (fixed or removable drive)
@@ -84,6 +84,7 @@
 #define UNIT_NOT_READY  (0x02u<<24)
 #define DRIVE_NOT_READY (0x04u<<24)
 #define BAD_FORMAT      (0x1Cu<<24)
+#define WRITE_FAULT     (0x03u<<24)
 #define ILLEGAL_ADDR    (0xA1u<<24)
 #define BAD_ARG         (0x24u<<24)
 #define INTERLEAVE_ERROR (0x1Au<<24)
@@ -107,6 +108,15 @@ static struct commandDataBlockStruct
 
 // Global for storing the current SCSI emulation state
 static uint8_t scsiState;
+
+/* /status diagnostics: where the state machine sits (SCSI_BUSFREE=0 etc.) */
+uint8_t scsiDiagState(void) { return scsiState; }
+
+/* Wedge forensics: the last CDB seen and the data bytes moved by the last
+   data-phase transfer - read from /status while a hang is live. */
+uint8_t  scsiDiagCdb[6];
+uint32_t scsiDiagXfer;
+uint32_t scsiDiagCmdCount;
 
 uint8_t scsiHostID;
 uint8_t ourscsiid;
@@ -337,6 +347,7 @@ static void scsiInformationTransferPhase(uint8_t transferPhase)
 static uint8_t scsiEmulationBusFree(void)
 {
    static uint8_t scsiEmulationBusFreestate = 0;
+
    switch (scsiEmulationBusFreestate)
    {
       case 0:
@@ -357,6 +368,13 @@ static uint8_t scsiEmulationBusFree(void)
          scsiEmulationBusFreestate=1; // fall through
 
       case 1:
+         /* Service a FIQ-latched jukebox poke here: the machine parks in
+            this sub-state on every idle poll, and selection has not been
+            accepted yet (BSY still clear), so the filesystem reset inside
+            can never close a FIL an in-flight command is using. Placing it
+            in case 0 would delay service until after the NEXT command
+            completes, letting a mount sequence interleave two discs. */
+         hd_juke_service();
 
          if (!hostadapterReadSelectFlag()) return SCSI_BUSFREE;
       //   if (hostadapterReadResetFlag()) {scsiEmulationBusFreestate=0; return SCSI_BUSFREE;}
@@ -440,6 +458,10 @@ uint8_t scsiEmulationCommand(void)
 
    uint32_t newLUN = scsiTransformLUNid(commandDataBlock.data[1]);
 	commandDataBlock.data[1] = (uint8_t)(newLUN & 0xFF);
+#ifdef DEBUG
+   memcpy(scsiDiagCdb, commandDataBlock.data, sizeof(scsiDiagCdb));
+   scsiDiagCmdCount++;
+#endif
    // Decode the target LUN
    commandDataBlock.targetLUN = ((newLUN & 0x1E0) >> 5);
 
@@ -691,6 +713,14 @@ static uint8_t scsiCommandFormat(void)
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: FORMAT command (0x04) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
+   }
+
+   /* VFS write-protect: never create or format a LUN >= 8. No legitimate
+      sender exists (VFS ROM never emits FORMAT) - refuse as a tripwire. */
+   if (commandDataBlock.targetLUN >= 8) {
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+      requestSenseData[commandDataBlock.targetLUN] = WRITE_FAULT;
+      return SCSI_STATUS;
    }
 
    // Make sure the target LUN is started
@@ -1094,6 +1124,16 @@ static uint8_t scsiCommandWrite6(void)
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, false);
    }
 
+   /* VFS write-protect: LUN >= 8 is read-only LaserDisc media and the VFS
+      ROM never issues WRITE6 (ADFS-multi-target HD_SCSI_VFS build emits only
+      READ6/STARTSTOP/FCODE; FS-level writes die with 'Disc read only').
+      Refuse at command phase - a tripwire for any unexpected writer. */
+   if (commandDataBlock.targetLUN >= 8) {
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+      requestSenseData[commandDataBlock.targetLUN] = WRITE_FAULT;
+      return SCSI_STATUS;
+   }
+
    // Make sure the target LUN is started
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // Target LUN is not started.  If the LUN is present, then start it, otherwise
@@ -1439,6 +1479,14 @@ static uint8_t scsiCommandModeSelect6(void)
 
    uint8_t Buffer[256]; // length is a uint8_t so 256 always suffices (avoids a VLA)
 
+   /* VFS write-protect: never create a descriptor or store parameters for
+      LUN >= 8. The VFS ROM never issues MODESELECT6 - refuse (tripwire). */
+   if (commandDataBlock.targetLUN >= 8) {
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+      requestSenseData[commandDataBlock.targetLUN] = WRITE_FAULT;
+      return SCSI_STATUS;
+   }
+
    // Make sure the target LUN is started
    if (!filesystemCheckLunImage(commandDataBlock.targetLUN)) {
       // If the target LUN is unavailable then the host is probably attempting to MODESELECT
@@ -1474,6 +1522,7 @@ static uint8_t scsiCommandModeSelect6(void)
 
    // we skip the 4 byte header
    uint8_t start = 4;
+
 
    // if the length is 22 and byte is 8 then the drive descriptor is being written
    if ((length == 22) && Buffer[3]== 8 )
@@ -1705,6 +1754,18 @@ static uint8_t scsiCommandStartStop(void)
 
       // Make the target LUN unavailable
       filesystemSetLunStatus(commandDataBlock.targetLUN, false);
+
+      // SCSI eject (LoEj, byte 4 bit 1) on a VFS LUN = the AIV disc flip:
+      // swap to the partner side's directory (odd <-> even), same as the
+      // F-code eject.
+      if ((commandDataBlock.data[4] & 0x02) && commandDataBlock.targetLUN >= 8) {
+         uint8_t cur = (uint8_t)filesystemGetLunDirectoryVFS();
+         if (cur >= 1) {
+            uint8_t partner = (cur & 1u) ? (uint8_t)(cur + 1u) : (uint8_t)(cur - 1u);
+            if (filesystemVFSDirPresent(partner)) /* single-sided: no flip */
+               hd_juke_request(partner);
+         }
+      }
    } else {
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Starting LUN\r\n"));
 
@@ -2001,8 +2062,11 @@ static uint8_t scsiWriteFCode(void)
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
    }
 
-   // Make sure the target LUN is started
-   if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
+   // The F-codes drive the video player, which only needs the VFS volume
+   // (its video.pvf): a video-only disc has no scsi0.dat, so no startable
+   // LUN, yet play/pause/goto must still work from the menu.
+   if (!filesystemReadLunStatus(commandDataBlock.targetLUN) &&
+       !(commandDataBlock.targetLUN >= 8 && (filesystemVFSVolumePresent() || filesystemVFSDatPresent()))) {
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
@@ -2056,8 +2120,11 @@ static uint8_t scsiReadFCode(void)
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
    }
 
-   // Make sure the target LUN is started
-   if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
+   // The F-codes drive the video player, which only needs the VFS volume
+   // (its video.pvf): a video-only disc has no scsi0.dat, so no startable
+   // LUN, yet play/pause/goto must still work from the menu.
+   if (!filesystemReadLunStatus(commandDataBlock.targetLUN) &&
+       !(commandDataBlock.targetLUN >= 8 && (filesystemVFSVolumePresent() || filesystemVFSDatPresent()))) {
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad

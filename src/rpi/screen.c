@@ -827,6 +827,26 @@ void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
     rgb->pos = (  ((uint32_t)newy&0xfff) << 12) +(  ((uint32_t)newx &0xfff) ) ;
 }
 
+/* Overlay translucency for the palettized (8-bit) plane.
+   alpha = 0xFF: per-pixel palette alpha only (hard key - black clear,
+   graphics opaque). alpha < 0xFF: HVS fixed-nonzero mode - the fixed
+   alpha is applied to every pixel whose palette alpha is non-zero, so
+   black stays fully transparent and graphics mix over the video at
+   alpha/255. Used by the VP415 VP4/VP5 superimpose modes. */
+void screen_plane_alpha( uint32_t planeno, uint32_t alpha )
+{
+    volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+
+    if ( (rgb->ctrl & 0xF) != 0xD)
+        return; // only the palettized overlay carries per-pixel alpha
+
+    unsigned int cpsr = _disable_interrupts_cspr();
+    rgb->pos = (rgb->pos & 0x00FFFFFFu) | ((alpha & 0xFFu) << 24);
+    uint32_t mode = (alpha >= 0xFFu) ? 0u : 2u; // per-pixel : fixed-nonzero
+    rgb->src_size = (rgb->src_size & 0x3FFFFFFFu) | (mode << 30);
+    _restore_cpsr(cpsr);
+}
+
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
     LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");

@@ -152,6 +152,7 @@ set(core_files
    lib/newlib-str/strcasestr.c
    rpi/arm-start.S
    rpi/armc-cstubs.c
+   rpi/bootstage.c
    rpi/exception.c
    rpi/cache.c
    rpi/gpio.c
