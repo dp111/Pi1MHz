@@ -42,6 +42,10 @@
 
 #define YUV_PLANE 0
 
+/* Why the last lazy bring-up failed, for /status - release builds have no
+   other way to see it ("-" = never failed / cleared by success). */
+static const char *vp_fail = "-";
+
 /* The video for the current VFS jukebox directory, same convention as
    the scsi0.dat LUN images: /BeebVFS<n>/video.pvf - and only there. */
 #define PVF_FILENAME "video.pvf"
@@ -583,8 +587,11 @@ uint32_t videoplayer_picture_number(void)
 const char *videoplayer_status(void)
 {
     static char buf[160];
+    static char closed[40];
+    snprintf(closed, sizeof closed, "closed d%d arm%d last:%s",
+             filesystemGetLunDirectoryVFS(), vp.lazy_pending ? 1 : 0, vp_fail);
     snprintf(buf, sizeof buf, "%s mode %d pic %lu seek %ld inflight %ld feeds %lu fail %lu back %lu flips %lu resume_max %luus feed_max %luus clmt %lu%s",
-             vp.open ? pvf_path : "closed", (int)vp.mode, (unsigned long)vp.cur_picture,
+             vp.open ? pvf_path : closed, (int)vp.mode, (unsigned long)vp.cur_picture,
              (long)vp.seek_frame, (long)vp.in_flight, (unsigned long)vp.feeds,
              (unsigned long)vp.feed_fail, (unsigned long)vp.frames_back,
              (unsigned long)vp.flips, (unsigned long)vp.resume_max_us,
@@ -598,7 +605,7 @@ const char *videoplayer_status(void)
 static void vp_ensure(void)
 {
     if (!vp.open && vp.lazy_pending) {
-        vp.lazy_pending = false;     /* one attempt; media change re-arms */
+        vp.lazy_pending = false;
         if (h264dec_running() && vp.buf_phys[0] != 0)
             pvf_reopen();            /* decoder AND its output buffers still
                                         live (jukebox path): a second bring-up
@@ -608,6 +615,11 @@ static void vp_ensure(void)
                                         released the buffers (buf_phys zeroed
                                         by its memset) though the decoder
                                         component may still be running */
+        /* A failed attempt re-arms: only display F-codes reach here, so
+           retries are user-paced - a latched-dead player just looks like
+           a broken SPACE key on the menu's player screen. */
+        if (!vp.open)
+            vp.lazy_pending = true;
     }
 }
 
@@ -631,8 +643,13 @@ void videoplayer_goto(uint32_t picture, char op)
             picture = vp.hdr.frame_count;
         vp.info_picture = picture;
         return;
+    case 'R':                        /* goto & still */
+    case 'N':                        /* goto & play */
+    case 'Q':                        /* goto & previous mode */
+        break;                       /* the display ops - the only ones
+                                        allowed to wake the lazy player */
     default:
-        break;
+        return;
     }
 
     vp_ensure();
@@ -641,17 +658,9 @@ void videoplayer_goto(uint32_t picture, char op)
     if (picture > vp.hdr.frame_count)
         picture = vp.hdr.frame_count;
 
-    switch (op) {
-    case 'R':                        /* goto & still */
-    case 'N':                        /* goto & play */
-    case 'Q':                        /* goto & previous mode */
-        vp.prev_mode = (vp.mode == VP_PLAY) ? VP_PLAY : VP_STILL;
-        vp.seek_frame = (int32_t)(picture - 1u);
-        vp.seek_op = op;
-        return;
-    default:
-        return;
-    }
+    vp.prev_mode = (vp.mode == VP_PLAY) ? VP_PLAY : VP_STILL;
+    vp.seek_frame = (int32_t)(picture - 1u);
+    vp.seek_op = op;
 }
 
 /* The .pvf's own frame period; only meaningful with a file open */
@@ -838,8 +847,10 @@ static bool pvf_open_file(void)
              filesystemGetLunDirectoryVFS());
     /* Only the jukeboxed directory's own video: a jukebox to an empty
        directory must stay cheap - no SD work beyond this failed open. */
-    if (f_open(&vp.file, pvf_path, FA_READ) != FR_OK)
+    if (f_open(&vp.file, pvf_path, FA_READ) != FR_OK) {
+        vp_fail = "open";
         return false;
+    }
 
     /* Random access seeks constantly: a fast-seek link map makes f_lseek
        O(1) instead of a FAT-chain walk (50-80 ms per *FRAME on a 2.9 GB
@@ -861,12 +872,14 @@ static bool pvf_open_file(void)
         vp.hdr.width == 0 || vp.hdr.width > 1920 ||
         vp.hdr.height == 0 || vp.hdr.height > 1088) {
         LOG_INFO("videoplayer: bad " PVF_FILENAME " header\r\n");
+        vp_fail = "header";
         f_close(&vp.file);
         return false;
     }
 
     vp.index = malloc(vp.hdr.frame_count * sizeof(uint32_t));
     if (!vp.index) {
+        vp_fail = "nomem";
         f_close(&vp.file);
         return false;
     }
@@ -874,6 +887,7 @@ static bool pvf_open_file(void)
         f_read(&vp.file, vp.index, vp.hdr.frame_count * sizeof(uint32_t), &n) != FR_OK ||
         n != vp.hdr.frame_count * sizeof(uint32_t)) {
         LOG_INFO("videoplayer: bad " PVF_FILENAME " index\r\n");
+        vp_fail = "index";
         free(vp.index);
         vp.index = NULL;
         f_close(&vp.file);
@@ -980,6 +994,7 @@ static void vp_bring_up(void)
        this fails cleanly and the video plane simply stays off. */
     if (!h264dec_init(vp.hdr.width, vp.hdr.height, frame_decoded)) {
         LOG_INFO("videoplayer: no hardware decoder - check start.elf/gpu_mem\r\n");
+        vp_fail = "decoder";
         free(vp.index);
         vp.index = NULL;
         f_close(&vp.file);
@@ -993,6 +1008,7 @@ static void vp_bring_up(void)
         vp.buf_phys[i] = screen_allocate_buffer(vp.frame_bytes, &handles[i]);
         if (!vp.buf_phys[i]) {
             LOG_INFO("videoplayer: no GPU memory for frames (gpu_mem too small?)\r\n");
+            vp_fail = "gpumem";
             video_give_up(handles);
             return;
         }
@@ -1037,6 +1053,7 @@ static void vp_bring_up(void)
     }
 
     vp.open = true;
+    vp_fail = "-";
     vp.mode = VP_STILL;
     vp.cur_picture = 1;
     /* Speeds are NOT reset here: an S F-code may legally arrive before the

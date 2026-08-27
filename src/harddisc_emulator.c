@@ -64,10 +64,22 @@ static void HD_STATUS_Write(uint8_t data)
    the Beeb never even reached the adapter (FRED reads returning &7F). */
 uint32_t hd_ev_writes, hd_ev_reads, hd_ev_sel;
 
+static void hd_emulator_status(uint8_t bit, bool state);
+
+/* Data-taken callbacks: drop REQ here in FIQ, as the real adapter does
+   combinationally. Leaving it to the main loop's post-ACK clear leaves a
+   stale REQ visible whenever the ARM is delayed (an IRQ, a poll-pass
+   boundary between the status and message phases) - the 2 MHz host loops
+   round in ~5 us, sees the stale REQ with stale phase bits, re-accesses
+   the data register, and the byte stream desyncs by one, stranding the
+   VFS ROM's timeout-less wait_for_scsi_REQ (the pause-freeze). REQ is
+   cleared before ACK is latched so the main loop always wakes to a
+   consistent register. */
 static void hd_emulator_write_data(unsigned int gpio)
 {
    HD_DATA = GET_DATA(gpio);
    Pi1MHz_MemoryWrite(HD_ADDR, GET_DATA(gpio));
+   hd_emulator_status(STATUS_REQ, CLEAR);
    HD_ACK = ACTIVE;
 #ifdef DEBUG
    hd_ev_writes++;
@@ -76,6 +88,7 @@ static void hd_emulator_write_data(unsigned int gpio)
 
 static void hd_emulator_read_data(unsigned int gpio __attribute__((unused)))
 {
+   hd_emulator_status(STATUS_REQ, CLEAR);
    HD_ACK = ACTIVE;
 #ifdef DEBUG
    hd_ev_reads++;
@@ -93,10 +106,15 @@ static void hd_emulator_nSEL(unsigned int gpio)
 
 static void hd_emulator_status(uint8_t bit, bool state)
 {
+   /* RMW shared between the main loop (phase flags, REQ raise/clear) and
+      the data-taken FIQ callbacks (REQ clear): without the mask, a FIQ
+      landing mid-RMW has its clear overwritten by the stale write-back. */
+   unsigned int cpsr = _disable_interrupts_cspr();
    if (state == CLEAR)
       HD_STATUS_Write( HD_STATUS_Read & (uint8_t)~bit);
    else
       HD_STATUS_Write( HD_STATUS_Read | (uint8_t)bit);
+   _restore_cpsr(cpsr);
 }
 
 static void hd_emulator_set_IRQ(void)
@@ -281,7 +299,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    int vfsjuke = 0;
    if (prop2)
       vfsjuke = atoi(prop2);
-
+   filesystemInitialiseVFS((uint8_t) vfsjuke);
    // Initialise but only at power on
    // Fixes *SCSIJUKE surviving over shift break.
    if (!PowerOn)
@@ -296,7 +314,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       scsiid = (uint8_t) atoi(prop3);
 
       // Initialise the SD Card and FAT file system functions
-      filesystemInitialise((uint8_t)scsijuke, (uint8_t) vfsjuke);
+      filesystemInitialise((uint8_t)scsijuke);
       // Initialise the SCSI emulation
       scsiInitialise();
 

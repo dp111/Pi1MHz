@@ -64,6 +64,17 @@ static struct {
     uint32_t frames;
 } dec;
 
+/* Host-side pts pairing. The codec stamps an emitted picture with the pts
+   of the input that TRIGGERED it - it emits picture N only when N+1
+   arrives - so during play every readback (?F, the D overlay) is one
+   frame ahead. All-intra input is emitted strictly in submission order,
+   so a FIFO of submitted pts, popped per emitted frame and cleared on
+   every flush, is the true label. Duplicate/tail-push submissions leave
+   a stale entry behind; every mode change flushes, which clears it. */
+#define PTSQ_DEPTH 16u
+static int64_t ptsq[PTSQ_DEPTH];
+static uint8_t ptsq_r, ptsq_w;
+
 /* Outside 'dec' so it survives the memset() in h264dec_init(): once
    bring-up has failed with the component already created, everything it
    allocated (GPU memory, SMEM imports, the component itself) is stranded
@@ -107,8 +118,11 @@ static void on_buffer_done(mmal_vc_buffer_t *buf)
                until h264dec_recycle_output() hands it back */
             dec.frames++;
             o->with_caller = true;
-            if (dec.frame_cb)
-                dec.frame_cb(buf->busaddr & 0x3FFFFFFFu, buf->pts, eos);
+            if (dec.frame_cb) {
+                int64_t fpts = (ptsq_r != ptsq_w) ? ptsq[ptsq_r++ % PTSQ_DEPTH]
+                                                  : buf->pts;
+                dec.frame_cb(buf->busaddr & 0x3FFFFFFFu, fpts, eos);
+            }
         } else if (eos && buf->length == 0) {
             /* Bare EOS marker - nothing to display (phys 0 tells the
                caller so), and the poll loop re-arms the buffer */
@@ -477,6 +491,9 @@ bool h264dec_submit_input(uint32_t length, int64_t pts, bool eos)
     }
     s->free = false;
     dec.in_borrowed = -1;
+    if ((uint8_t)(ptsq_w - ptsq_r) >= PTSQ_DEPTH)
+        ptsq_r++;                    /* overflow: drop the oldest */
+    ptsq[ptsq_w++ % PTSQ_DEPTH] = pts;
 
     if (eos) {
         dec.eos_pending = true;
@@ -496,6 +513,7 @@ bool h264dec_resume(void)
     /* Flushed output buffers come back with length 0; on_buffer_done has
        already cleared with_component, so just re-arm them. */
     arm_output_buffers();
+    ptsq_r = ptsq_w = 0;             /* queued labels died with the flush */
     return ok;
 }
 
@@ -519,6 +537,7 @@ void h264dec_reset(void)
         dec.in[i].free = true;
     dec.in_borrowed = -1;
     dec.eos_pending = false;
+    ptsq_r = ptsq_w = 0;
     for (int i = 0; i < H264DEC_MAX_OUTPUT; i++) {
         /* Drop the VideoCore's registration too, not just our record of
            it: the caller frees these frame buffers straight after this

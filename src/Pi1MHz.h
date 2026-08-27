@@ -219,6 +219,7 @@ unsigned int Pi1MHz_poll_count(void);
 
 void Pi1MHz_nIRQ_ASSERT(uint8_t src);
 void Pi1MHz_nIRQ_CLEAR(uint8_t src);
+uint32_t Pi1MHz_nIRQ_diag(void);   /* assert mask | pin-level<<31, for /status */
 
 void Pi1MHz_SetnNMI(bool nmi);
 

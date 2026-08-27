@@ -2672,9 +2672,11 @@ static bool route_status(ws_conn_t *c)
       snprintf(tmp, sizeof tmp, "running, %lu frames decoded",
                (unsigned long)h264dec_frames_decoded());
       table_row(&b, "H264 decoder", tmp);
-      table_row(&b, "Video player", videoplayer_status());
-      table_row(&b, "F-code", fcodeLastExchange());
    }
+   /* Always shown: with the decoder not running these are the only view of
+      why a lazy bring-up refused (and of the last F-code the Beeb sent). */
+   table_row(&b, "Video player", videoplayer_status());
+   table_row(&b, "F-code", fcodeLastExchange());
    snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s",
             audio_owner_name(), (unsigned long)audio_rate(),
             (unsigned long)audio_queued_frames(), (unsigned long)audio_peak(),
@@ -2702,6 +2704,14 @@ static bool route_status(ws_conn_t *c)
                (unsigned int)scsiDiagState(), (unsigned long)hd_diag_flags(),
                scsiDiagCdb[0], scsiDiagCdb[1], scsiDiagCdb[2], scsiDiagCdb[3], scsiDiagCdb[4], scsiDiagCdb[5],
                (unsigned long)scsiDiagCmdCount, (unsigned long)scsiDiagXfer);
+      table_row(&b, "Bus diag", tmp);
+#else
+      /* Release: just the live engine state and adapter flags - reading them
+         costs nothing, and during a wedge this row is the only witness to
+         which side of the handshake dropped the completion. */
+      snprintf(tmp, sizeof tmp, "st %u fl %06lx nirq %08lx",
+               (unsigned int)scsiDiagState(), (unsigned long)hd_diag_flags(),
+               (unsigned long)Pi1MHz_nIRQ_diag());
       table_row(&b, "Bus diag", tmp);
 #endif
 

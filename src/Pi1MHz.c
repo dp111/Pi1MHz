@@ -327,6 +327,16 @@ bool Pi1MHz_is_rst_active(void) {
  * loop - and a FIQ preempting the main loop must not lose an update. */
 static volatile uint32_t Pi1MHz_nirq_mask = 0;
 
+/* /status forensics: the per-source assert mask and the real pin level
+   (0 = line pulled low = interrupting the Beeb). A wedge with the mask
+   clear but the line low - or the reverse - is a driver-side bug; both
+   clear and high exonerates the Pi's IRQ path entirely. */
+uint32_t Pi1MHz_nIRQ_diag(void)
+{
+   return Pi1MHz_nirq_mask |
+          ((RPI_GpioBase->GPLEV0 & NIRQ_MASK) ? (1u << 31) : 0u);
+}
+
 inline static void Pi1MHz_SetnIRQ_src(uint8_t src, bool assert_irq)
 {
    unsigned int cpsr = _disable_interrupts_cspr();
@@ -780,7 +790,8 @@ _Noreturn void kernel_main(void)
 
    init_hardware();
 
-   filesystemInitialise(0,0); // default filesystem
+   filesystemInitialise(0); // default filesystem
+   filesystemInitialiseVFS(0);
 
    init_emulator();
 #if POLL_PROFILE

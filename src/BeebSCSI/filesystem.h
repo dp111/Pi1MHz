@@ -56,7 +56,8 @@ struct HDGeometry
 };
 
 // External prototypes
-void filesystemInitialise(uint8_t scsijuke, uint8_t vfsjuke);
+void filesystemInitialise(uint8_t scsijuke);
+void filesystemInitialiseVFS(uint8_t vfsjuke);
 void filesystemReset(void);
 
 bool filesystemMount(void);
