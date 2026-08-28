@@ -116,6 +116,10 @@ static struct {
     /* pacing */
     uint32_t frame_period_us;
     uint32_t next_frame_due;         /* systimer target for the next flip */
+    uint32_t last_flip_vsync;        /* screen_vsync_count() at the last flip */
+    uint32_t flip_wait_since;        /* when the current frame was armed */
+    int64_t  armed_pts;              /* pts of the frame handed to the IRQ */
+    uint8_t  flip_gap_min, flip_gap_max;   /* refreshes per picture, for /status */
 
     /* audio: the PCM goes straight from the .pvf record into the audio
        core's ring; channel mutes (A/B soundtracks) are applied at the
@@ -296,32 +300,97 @@ static void draw_picture_number(uint32_t phys, uint32_t picture)
     }
 }
 
-/* Put the pending decoded frame on screen and recycle the old one. */
-static void flip_pending(void)
+/* Showing a picture is split across two contexts, because the timing has to
+   be exact but the work around it cannot run in an interrupt.
+ *
+ *   arm  (poll loop) - draw the picture number, hand the buffer over
+ *   commit (vsync IRQ) - three register writes, nothing else
+ *   reap (poll loop)  - recycle the previous buffer through MMAL, count it
+ *
+ * The commit must happen inside the end-of-frame interrupt: the HVS latches
+ * the plane pointers at its next fetch, so writing them during blanking gives
+ * the picture a whole number of refreshes and cannot tear.  Writing them from
+ * the poll loop - even gated on "a vsync has happened" - lands wherever the
+ * loop happens to be, up to a poll pass (tens of ms) later, which is halfway
+ * down a frame: torn, and 1, 2 or 3 refreshes per picture at random.  At
+ * 50 Hz with 25 fps material a correct commit is every second refresh,
+ * exactly, which the "gap" figures in /status report. */
+static volatile uint32_t vp_armed_phys;      /* handed to the IRQ */
+static volatile uint32_t vp_committed_phys;  /* what the IRQ programmed */
+/* Cadence is measured AT THE COMMIT, not when the poll loop notices it:
+   sampling in the poll loop measures poll jitter (1-3 refreshes) and says
+   nothing about what the display did. */
+static volatile uint32_t vp_commit_vsync;    /* count at the last commit */
+static volatile uint8_t  vp_gap_min, vp_gap_max;
+static volatile uint32_t vp_commit_irq, vp_commit_poll;
+
+/* IRQ context (and the poll-loop fallback below): register writes only. */
+void videoplayer_vsync_flip(void)
+{
+    uint32_t phys = vp_armed_phys;
+    if (!phys)
+        return;
+    vp_armed_phys = 0;
+    {
+        uint32_t v = screen_vsync_count();
+        uint32_t gap = v - vp_commit_vsync;      /* refreshes the last one held */
+        if (vp_commit_vsync && gap && gap < 255u) {
+            if (!vp_gap_min || gap < vp_gap_min) vp_gap_min = (uint8_t)gap;
+            if (gap > vp_gap_max) vp_gap_max = (uint8_t)gap;
+        }
+        vp_commit_vsync = v;
+    }
+    vp_commit_irq++;
+    uint32_t w = vp.hdr.width, h = vp.hdr.height;
+    screen_set_YUV_pointers(YUV_PLANE,
+                            phys,
+                            phys + w * h,                      /* Cb (U) */
+                            phys + w * h + (w / 2) * (h / 2)); /* Cr (V) */
+    vp_committed_phys = phys;
+}
+
+/* Poll loop: prepare the next picture and hand it to the interrupt. */
+static void arm_flip(void)
 {
     uint32_t phys = vp.pending_phys;
     if (!phys)
         return;
     vp.pending_phys = 0;
-
     if (vp.show_picture)
         draw_picture_number(phys, (uint32_t)vp.pending_pts + 1u);
+    vp.armed_pts = vp.pending_pts;
+    vp.flip_wait_since = RPI_GetSystemTime();
+    vp_armed_phys = phys;
+}
 
-    uint32_t w = vp.hdr.width, h = vp.hdr.height;
-    screen_set_YUV_pointers(YUV_PLANE,
-                            phys,
-                            phys + w * h,               /* Cb (U) */
-                            phys + w * h + (w / 2) * (h / 2)); /* Cr (V) */
+/* Poll loop: pick up what the interrupt showed - MMAL calls and the
+   bookkeeping cannot run in interrupt context.  Also covers the case where
+   the end-of-frame interrupt is not running at all (the framebuffer disables
+   it in some modes): after a frame period, commit from here instead, so the
+   video can never freeze waiting for an edge that will not come. */
+static void reap_flip(void)
+{
+    if (vp_armed_phys) {
+        uint32_t limit = vp.frame_period_us ? vp.frame_period_us : 40000u;
+        if ((int32_t)(RPI_GetSystemTime() - vp.flip_wait_since) >= (int32_t)limit) {
+            vp_commit_poll++;                  /* no vsync IRQ: don't stall */
+            videoplayer_vsync_flip();
+        }
+    }
+
+    uint32_t phys = vp_committed_phys;
+    if (!phys || phys == vp.displayed_phys)
+        return;
 
     if (!vp.plane_on) {
-        screen_plane_enable(YUV_PLANE, true);
+        screen_plane_enable(YUV_PLANE, true);  /* first real frame is up */
         vp.plane_on = true;
     }
-    if (vp.displayed_phys && vp.displayed_phys != phys)
+    if (vp.displayed_phys)
         h264dec_recycle_output(vp.displayed_phys);
     vp.displayed_phys = phys;
     vp.flips++;
-    vp.cur_picture = (uint32_t)vp.pending_pts + 1u;
+    vp.cur_picture = (uint32_t)vp.armed_pts + 1u;
 }
 
 /* ------------------------------------------------------------------ */
@@ -346,6 +415,7 @@ static void videoplayer_poll(void)
         return;
 
     h264dec_poll();
+    reap_flip();                     /* pick up whatever the IRQ showed */
 
     if (vp.dup_owed) {
         if (submit_au(vp.dup_owed - 1u, false, false))
@@ -402,11 +472,14 @@ static void videoplayer_poll(void)
                 vp.tail_pushed = true;
         }
 
-        /* Display at the frame rate */
-        if (vp.pending_phys &&
-            (int32_t)(RPI_GetSystemTime() - vp.next_frame_due) >= 0) {
-            flip_pending();
-            vp.next_frame_due += vp.frame_period_us;
+        /* Display at the frame rate, on a frame boundary */
+        {
+            uint32_t now = RPI_GetSystemTime();
+            if (vp.pending_phys && !vp_armed_phys &&
+                (int32_t)(now - vp.next_frame_due) >= 0) {
+                arm_flip();                       /* the IRQ shows it */
+                vp.next_frame_due += vp.frame_period_us;
+            }
         }
 
         /* End of play range -> still on the last picture. The stop
@@ -430,8 +503,8 @@ static void videoplayer_poll(void)
     case VP_PLAY_REV:
         /* Reverse play = random-access stills marched backwards. Each is
            an independent IDR decode, so this sustains full rate. */
-        if (vp.pending_phys)
-            flip_pending();
+        if (vp.pending_phys && !vp_armed_phys)
+            arm_flip();
         if ((int32_t)(RPI_GetSystemTime() - vp.next_frame_due) >= 0 &&
             vp.in_flight == 0) {
             {
@@ -452,8 +525,8 @@ static void videoplayer_poll(void)
     case VP_STILL:
     case VP_IDLE:
     default:
-        if (vp.pending_phys)
-            flip_pending();          /* show seek/step results at once */
+        if (vp.pending_phys && !vp_armed_phys)
+            arm_flip();              /* shown at the next frame boundary */
         break;
     }
 
@@ -503,6 +576,8 @@ static void pvf_reopen(void)
     vp.mode = VP_STILL;
     vp.seek_frame = -1;
     vp.pending_phys = 0;
+    vp_armed_phys = 0;               /* buffers are about to go back */
+    vp_committed_phys = 0;
     vp.stop_picture = 0;
 
     uint32_t old_w = vp.hdr.width, old_h = vp.hdr.height;
@@ -586,15 +661,18 @@ uint32_t videoplayer_picture_number(void)
 
 const char *videoplayer_status(void)
 {
-    static char buf[160];
+    static char buf[192];
     static char closed[40];
     snprintf(closed, sizeof closed, "closed d%d arm%d last:%s",
              filesystemGetLunDirectoryVFS(), vp.lazy_pending ? 1 : 0, vp_fail);
-    snprintf(buf, sizeof buf, "%s mode %d pic %lu seek %ld inflight %ld feeds %lu fail %lu back %lu flips %lu resume_max %luus feed_max %luus clmt %lu%s",
+    snprintf(buf, sizeof buf, "%s mode %d pic %lu seek %ld inflight %ld feeds %lu fail %lu back %lu flips %lu gap %u-%u irq %lu late %lu resume_max %luus feed_max %luus clmt %lu%s",
              vp.open ? pvf_path : closed, (int)vp.mode, (unsigned long)vp.cur_picture,
              (long)vp.seek_frame, (long)vp.in_flight, (unsigned long)vp.feeds,
              (unsigned long)vp.feed_fail, (unsigned long)vp.frames_back,
-             (unsigned long)vp.flips, (unsigned long)vp.resume_max_us,
+             (unsigned long)vp.flips,
+             (unsigned int)vp_gap_min, (unsigned int)vp_gap_max,
+             (unsigned long)vp_commit_irq, (unsigned long)vp_commit_poll,
+             (unsigned long)vp.resume_max_us,
              (unsigned long)vp.feed_max_us, (unsigned long)vp.clmt_entries,
              vp.file.cltbl ? "" : " (slow seeks)");
     return buf;
@@ -693,6 +771,7 @@ void videoplayer_play_fwd(void)
         h264dec_resume();
         audio_flush();
         vp.mode = VP_PLAY;
+        vp_gap_min = vp_gap_max = 0;             /* fresh cadence stats */
         vp.next_frame_due = RPI_GetSystemTime() + vp.frame_period_us;
     }
 }
@@ -973,6 +1052,11 @@ void videoplayer_init(uint8_t instance, uint8_t address)
        touched until the Beeb actually uses the player: the first F-code
        player command performs the bring-up (vp_ensure). */
     vp.lazy_pending = true;
+    /* Beeb reset returns the video mixer to power-on state: VP gates
+       cleared (all layers shown again) and normal keyed palettes - a
+       BREAK during VP1/VP5 must not leave layers hidden or the inverted
+       highlight palette armed. */
+    screen_mixer_reset();
     Pi1MHz_Register_Poll(videoplayer_poll);
 }
 
@@ -1035,7 +1119,7 @@ static void vp_bring_up(void)
                                vp.buf_phys[0]);
     vp.displayed_phys = 0;           /* nothing decoded on it yet */
     /* Plane stays OFF: nothing is decoded yet - enabling now would put a
-       black rectangle over the Beeb display. flip_pending() turns it on
+       black rectangle over the Beeb display. reap_flip() turns it on
        when the first commanded frame is ready. */
 
     vp.audio_present = (vp.hdr.audio_rate >= 8000 && vp.hdr.audio_rate <= 192000);

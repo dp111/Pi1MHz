@@ -63,6 +63,7 @@ FRESULT f_mkdir(const char *p) { (void)p; f_mkdir_calls++; return FR_OK; }
 FRESULT f_chdir(const char *p) { (void)p; return chdir_result; }
 FRESULT f_getcwd(char *buff, UINT len) { snprintf(buff, len, "%s", cwd_value); return getcwd_result; }
 FRESULT f_rename(const char *a, const char *b) { (void)a; (void)b; f_rename_calls++; return FR_OK; }
+bool webserver_sd_space_now(uint64_t *t, uint64_t *f) { *t = 0; *f = 0; return false; }
 FRESULT f_getfree(const char *p, DWORD *n, FATFS **f) { (void)p; (void)n; (void)f; return FR_DISK_ERR; }
 FRESULT f_unlink(const char *p) { (void)p; f_unlink_calls++; return FR_OK; }
 

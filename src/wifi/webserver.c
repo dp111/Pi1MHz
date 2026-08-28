@@ -379,9 +379,48 @@ static bool ws_sd_free_want(void)
    g_ws_sd_free_wanted = true;
    return g_ws_sd_free_valid;
 }
+
 static uint32_t        g_ws_sd_free_mb;
 static uint64_t        g_ws_sd_total_bytes;
 static uint64_t        g_ws_sd_free_bytes;
+/* For MTP's GetStorageInfo: hand out the background-computed figures and
+   queue a refresh.  f_getfree walks the whole FAT (~3 s on this card with
+   FF_FS_NOFSINFO=3) - the exact stall this cache exists to avoid, and MTP
+   used to pay it inline in tud_task on every storage query. */
+bool webserver_sd_space(uint64_t* total, uint64_t* free_bytes)
+{
+   bool valid = ws_sd_free_want();
+   *total = g_ws_sd_total_bytes;
+   *free_bytes = g_ws_sd_free_bytes;
+   return valid;
+}
+
+/* For callers that must answer NOW - the Beeb's FAT free-space service
+   call and MTP GetStorageInfo - both of which used to run f_getfree
+   inline and stall the whole poll loop for seconds on every query
+   (FF_FS_NOFSINFO=3 means a full FAT walk).  They get the background
+   sweep's figures instead; only if no sweep has ever completed is one
+   blocking scan paid, and its result is cached, so the walk happens at
+   most once rather than per query.  A refresh is queued either way, so
+   the numbers converge on fresh ones.  False = no figure at all (no
+   card): the caller reports an error rather than inventing zeroes. */
+bool webserver_sd_space_now(uint64_t* total, uint64_t* free_bytes)
+{
+   if (!ws_sd_free_want()) {
+      FATFS *fs = NULL;
+      DWORD nclst = 0u;
+      if (f_getfree("", &nclst, &fs) == FR_OK && fs != NULL) {
+         uint64_t cluster_bytes = (uint64_t)fs->csize * 512u;
+         g_ws_sd_total_bytes = (uint64_t)(fs->n_fatent - 2u) * cluster_bytes;
+         g_ws_sd_free_bytes  = (uint64_t)nclst * cluster_bytes;
+         g_ws_sd_free_mb     = (uint32_t)(g_ws_sd_free_bytes / (1024u * 1024u));
+         g_ws_sd_free_valid  = true;
+      }
+   }
+   *total = g_ws_sd_total_bytes;
+   *free_bytes = g_ws_sd_free_bytes;
+   return g_ws_sd_free_valid;
+}
 static uint32_t        g_ws_sd_free_age_us;
 
 /* PROPFIND child cache (see WS_PROPFIND_CACHE_* above).  Populated
@@ -2675,6 +2714,30 @@ static bool route_status(ws_conn_t *c)
    }
    /* Always shown: with the decoder not running these are the only view of
       why a lazy bring-up refused (and of the last F-code the Beeb sent). */
+   {
+      /* HVS plane geometry - ground truth for the overlay rectangles */
+      size_t o = 0;
+      uint32_t dw = 0, dh = 0;
+      for (uint32_t pl = 0; pl < 3u && o < sizeof tmp - 40; pl++) {
+         uint32_t x, y, w, h, sw, sh;
+         screen_geometry_report(pl, &dw, &dh, &x, &y, &w, &h, &sw, &sh);
+         if (!w && !h)
+            continue;
+         o += (size_t)snprintf(tmp + o, sizeof tmp - o, "%lu:%lux%lu@%lu,%lu src %lux%lu  ",
+                               (unsigned long)pl, (unsigned long)w, (unsigned long)h,
+                               (unsigned long)x, (unsigned long)y,
+                               (unsigned long)sw, (unsigned long)sh);
+      }
+      {
+         uint32_t mhz = screen_refresh_mhz();
+         o += (size_t)snprintf(tmp + o, sizeof tmp - o, "display %lux%lu",
+                               (unsigned long)dw, (unsigned long)dh);
+         if (mhz)
+            snprintf(tmp + o, sizeof tmp - o, " @ %lu.%02lu Hz",
+                     (unsigned long)(mhz / 1000u), (unsigned long)((mhz % 1000u) / 10u));
+      }
+      table_row(&b, "Planes", tmp);
+   }
    table_row(&b, "Video player", videoplayer_status());
    table_row(&b, "F-code", fcodeLastExchange());
    snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s",

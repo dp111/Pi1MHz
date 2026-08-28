@@ -42,6 +42,7 @@
 #include "../Pi1MHz.h"
 #include "../scripts/gitversion.h"   // RELEASENAME (generated from git tag)
 #include "../rpi/exceptions.h"
+#include "../wifi/webserver.h"   /* webserver_sd_space: cached FAT free-space sweep */
 
 //--------------------------------------------------------------------+
 // Dataset
@@ -122,8 +123,6 @@ typedef struct {
   uint32_t count;
   uint32_t capacity;
 } fs_cache_t;
-
-typedef bool (*fs_walk_cb_t)(const fs_entry_t* entry, void* user_data);
 
 typedef struct {
   bool active;
@@ -464,7 +463,23 @@ static fs_cache_bg_t* g_fs_cache_bg;    /* NULL = no rebuild in flight */
 static bool     g_fs_cache_bg_armed;    /* debounced start pending */
 static uint32_t g_fs_cache_bg_arm_at;
 
-static void fs_cache_clear(void);
+/* Stale-while-rebuilding: the walker builds into this staging cache while
+   g_fs_cache stays live and answers requests with (possibly stale) data -
+   handles are path hashes, stable across generations, so stale answers
+   stay coherent.  On completion the staging cache is swapped in whole.
+   Without this, a WebDAV write invalidates the cache AND its MTP change
+   event makes Windows re-query within milliseconds - every rebuild then
+   ran synchronously inside tud_task after all. */
+static fs_cache_t g_fs_cache_stage;
+
+static void fs_cache_free(fs_cache_t* c);
+static void fs_cache_stage_clear(void);
+
+/* Debounced (re)start of the background rebuild - the single arm point. */
+static void fs_cache_bg_arm(void) {
+  g_fs_cache_bg_armed = true;
+  g_fs_cache_bg_arm_at = RPI_GetSystemTime() + 1000000u;
+}
 static bool fs_cache_add_entry(const fs_entry_t* entry);
 static void fs_cache_repair_collisions(void);
 static int  fs_cache_cmp_handle(const void* a, const void* b);
@@ -480,11 +495,31 @@ static void fs_cache_bg_abort(void) {
   }
 }
 
+/* A rebuild died mid-flight (SD error, depth cap, OOM): drop the stage and
+   RE-ARM - the live cache stays valid-but-stale, so without a retry the
+   host would see pre-mutation contents forever. */
+static void fs_cache_bg_fail(void) {
+  fs_cache_bg_abort();
+  fs_cache_stage_clear();
+  fs_cache_bg_arm();
+}
+
 static bool fs_cache_bg_start(void) {
   fs_cache_bg_abort();
-  fs_cache_clear();
+  fs_cache_stage_clear();
   if (!fs_ensure_ready()) {
     return false;
+  }
+  /* Seed the stage with the previous generation's size: skips the
+     log2(n/64) realloc-copy ladder on every rebuild. Failure is fine -
+     fs_cache_add_entry grows as before. */
+  if (g_fs_cache.count > 0u) {
+    uint32_t cap = g_fs_cache.count + 16u;
+    g_fs_cache_stage.entries =
+        (fs_cache_entry_t*) malloc(cap * sizeof(fs_cache_entry_t));
+    if (g_fs_cache_stage.entries != NULL) {
+      g_fs_cache_stage.capacity = cap;
+    }
   }
   g_fs_cache_bg = (fs_cache_bg_t*) malloc(sizeof(fs_cache_bg_t));
   if (g_fs_cache_bg == NULL) {
@@ -503,30 +538,37 @@ static bool fs_cache_bg_start(void) {
 }
 
 /* Advance the rebuild until done or the budget expires (0 = no budget:
- * run to completion).  Returns true when the cache became valid.  On
- * any failure the walker is torn down and the cache left invalid - the
- * next request retries from scratch. */
+ * run to completion).  Returns true when the (re)built cache went live.
+ * On failure the walker is torn down and a retry is re-armed; the live
+ * cache, if any, stays valid-but-stale in the meantime. */
 static bool fs_cache_bg_step(uint32_t budget_us) {
   FILINFO fno;
   uint32_t deadline = RPI_GetSystemTime() + budget_us;
+  uint32_t entries_left = 24u;     /* tail bound: the time budget is only
+      checked between entries, and a subdirectory descent does a from-root
+      f_opendir - cap the per-pass work so one slice cannot stretch far
+      past the deadline on a slow card */
 
   if (g_fs_cache_bg == NULL) {
     return false;
   }
-  while (budget_us == 0u || (int32_t)(RPI_GetSystemTime() - deadline) < 0) {
+  while (budget_us == 0u ||
+         ((int32_t)(RPI_GetSystemTime() - deadline) < 0 && entries_left--)) {
     fs_cache_bg_t* bg = g_fs_cache_bg;
     DIR* d = &bg->dir[bg->depth - 1u];
 
     if (f_readdir(d, &fno) != FR_OK) {
-      fs_cache_bg_abort();
-      fs_cache_clear();
+      fs_cache_bg_fail();
       return false;
     }
     if (fno.fname[0] == '\0') {          /* directory exhausted: ascend */
       bg->depth--;
       (void) f_closedir(d);
-      if (bg->depth == 0u) {             /* walk complete: publish */
+      if (bg->depth == 0u) {             /* walk complete: swap in */
         fs_cache_bg_abort();
+        fs_cache_free(&g_fs_cache);
+        g_fs_cache = g_fs_cache_stage;
+        memset(&g_fs_cache_stage, 0, sizeof(g_fs_cache_stage));
         if (g_fs_cache.count > 1u) {
           qsort(g_fs_cache.entries, g_fs_cache.count,
                 sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
@@ -559,15 +601,13 @@ static bool fs_cache_bg_step(uint32_t budget_us) {
     entry.parent = bg->parent[bg->depth - 1u];
 
     if (!fs_cache_add_entry(&entry)) {
-      fs_cache_bg_abort();
-      fs_cache_clear();
+      fs_cache_bg_fail();
       return false;
     }
     if (entry.is_dir) {
       if (bg->depth >= MTP_WALK_MAX_DEPTH ||
           f_opendir(&bg->dir[bg->depth], entry.path) != FR_OK) {
-        fs_cache_bg_abort();
-        fs_cache_clear();
+        fs_cache_bg_fail();
         return false;
       }
       bg->parent[bg->depth] = entry.handle;
@@ -584,26 +624,27 @@ static const char* fs_basename(const char* path) {
   return (p != NULL) ? (p + 1) : path;
 }
 
-static void fs_cache_clear(void) {
-  if (g_fs_cache.entries != NULL) {
-    for (uint32_t i = 0; i < g_fs_cache.count; i++) {
-      free(g_fs_cache.entries[i].path);
+static void fs_cache_free(fs_cache_t* c) {
+  if (c->entries != NULL) {
+    for (uint32_t i = 0; i < c->count; i++) {
+      free(c->entries[i].path);
     }
-    free(g_fs_cache.entries);
+    free(c->entries);
   }
+  memset(c, 0, sizeof(*c));
+}
 
-  memset(&g_fs_cache, 0, sizeof(g_fs_cache));
+static void fs_cache_stage_clear(void) {
+  fs_cache_free(&g_fs_cache_stage);
 }
 
 static void fs_cache_invalidate(void) {
+  /* The live cache stays up and keeps answering (stale): the MTP change
+     event we send makes Windows re-query within milliseconds, so tearing
+     the cache down here would put the full-tree walk right back inside
+     tud_task.  A debounced background rebuild replaces it wholesale. */
   fs_cache_bg_abort();
-  fs_cache_clear();
-  /* Rebuild eagerly but debounced: a WebDAV upload is a burst of
-     mutations, so each one restarts the timer and the walk begins
-     after a second of quiet - the next MTP request then finds the
-     cache warm instead of paying the full-tree walk inside tud_task. */
-  g_fs_cache_bg_armed = true;
-  g_fs_cache_bg_arm_at = RPI_GetSystemTime() + 1000000u;
+  fs_cache_bg_arm();
 }
 
 /* Interrupt (event) endpoint address - must match EPNUM_MTP_EVT in usb.c's
@@ -732,17 +773,101 @@ void mtp_fs_reboot_poll(void) {
    when due, and advance an in-flight one by a bounded slice per pass so
    tud_task never carries the whole tree walk. */
 void mtp_fs_cache_poll(void) {
+  /* No USB host attached = nobody to serve: don't walk the card, don't
+     retry mounts, don't hold two cache generations - the arm stays set
+     and fires when a host appears. */
+  if (!tud_mounted()) {
+    return;
+  }
   if (g_fs_cache_bg != NULL) {
     (void) fs_cache_bg_step(2000u);
     return;
   }
+  /* Warm the cache when a host is present so its first enumeration never
+     pays the walk inline. */
+  if (!g_fs_cache_bg_armed && !g_fs_cache.valid) {
+    fs_cache_bg_arm();
+  }
   if (g_fs_cache_bg_armed &&
       (int32_t)(RPI_GetSystemTime() - g_fs_cache_bg_arm_at) >= 0) {
     g_fs_cache_bg_armed = false;
-    if (!g_fs_cache.valid) {
-      (void) fs_cache_bg_start();
+    if (!fs_cache_bg_start()) {
+      fs_cache_bg_arm();   /* SD not ready / OOM: retry in a second */
     }
   }
+}
+
+/* Keep the live (stale-while-rebuilding) cache coherent for objects we
+   KNOW changed: SendObject/WebDAV hand the host a path-hash handle
+   immediately, so it must resolve before the background rebuild lands. */
+static void fs_cache_live_upsert(const char* path) {
+  FILINFO fno;
+  if (!g_fs_cache.valid || path == NULL || f_stat(path, &fno) != FR_OK) {
+    return;
+  }
+  uint32_t handle = fs_handle_from_path(path);
+  uint32_t lo = 0, hi = g_fs_cache.count;
+  while (lo < hi) {
+    uint32_t mid = (lo + hi) / 2u;
+    if (g_fs_cache.entries[mid].handle < handle) lo = mid + 1u; else hi = mid;
+  }
+  if (lo < g_fs_cache.count && g_fs_cache.entries[lo].handle == handle) {
+    fs_cache_entry_t* e = &g_fs_cache.entries[lo];   /* refresh in place */
+    e->is_dir = (fno.fattrib & AM_DIR) != 0;
+    e->size = (uint32_t)fno.fsize;
+    e->mdate = fno.fdate;
+    e->mtime = fno.ftime;
+    return;
+  }
+  if (g_fs_cache.count >= g_fs_cache.capacity) {
+    uint32_t ncap = (g_fs_cache.capacity == 0u) ? 64u : g_fs_cache.capacity * 2u;
+    fs_cache_entry_t* ne = (fs_cache_entry_t*)
+        realloc(g_fs_cache.entries, ncap * sizeof(fs_cache_entry_t));
+    if (ne == NULL) return;              /* the rebuild will catch up */
+    g_fs_cache.entries = ne;
+    g_fs_cache.capacity = ncap;
+  }
+  char* pcopy = strdup(path);
+  if (pcopy == NULL) return;
+  memmove(&g_fs_cache.entries[lo + 1u], &g_fs_cache.entries[lo],
+          (g_fs_cache.count - lo) * sizeof(g_fs_cache.entries[0]));
+  fs_cache_entry_t* e = &g_fs_cache.entries[lo];
+  memset(e, 0, sizeof(*e));
+  e->handle = handle;
+  {
+    char dir[FS_PATH_MAX];
+    strlcpy(dir, path, sizeof(dir));
+    char* sl = strrchr(dir, '/');
+    if (sl != NULL && sl != dir) {
+      *sl = '\0';
+      e->parent = fs_handle_from_path(dir);  /* matches the walk's scheme */
+    }                                        /* else root: parent 0 */
+  }
+  e->is_dir = (fno.fattrib & AM_DIR) != 0;
+  e->size = (uint32_t)fno.fsize;
+  e->mdate = fno.fdate;
+  e->mtime = fno.ftime;
+  e->path = pcopy;
+  g_fs_cache.count++;
+}
+
+static void fs_cache_live_remove(const char* path) {
+  if (!g_fs_cache.valid || path == NULL) {
+    return;
+  }
+  uint32_t handle = fs_handle_from_path(path);
+  uint32_t lo = 0, hi = g_fs_cache.count;
+  while (lo < hi) {
+    uint32_t mid = (lo + hi) / 2u;
+    if (g_fs_cache.entries[mid].handle < handle) lo = mid + 1u; else hi = mid;
+  }
+  if (lo >= g_fs_cache.count || g_fs_cache.entries[lo].handle != handle) {
+    return;
+  }
+  free(g_fs_cache.entries[lo].path);
+  memmove(&g_fs_cache.entries[lo], &g_fs_cache.entries[lo + 1u],
+          (g_fs_cache.count - lo - 1u) * sizeof(g_fs_cache.entries[0]));
+  g_fs_cache.count--;
 }
 
 void mtp_fs_notify_fs_changed(void) {
@@ -750,6 +875,7 @@ void mtp_fs_notify_fs_changed(void) {
 }
 
 void mtp_fs_notify_object_added(const char* path) {
+  fs_cache_live_upsert(path);
   fs_cache_invalidate();
   if (path != NULL) {
     fs_send_object_event(MTP_EVENT_OBJECT_ADDED, fs_handle_from_path(path));
@@ -758,6 +884,7 @@ void mtp_fs_notify_object_added(const char* path) {
 
 void mtp_fs_notify_object_removed(const char* path) {
   uint32_t handle = (path != NULL) ? fs_handle_from_path(path) : 0u;
+  fs_cache_live_remove(path);
   fs_cache_invalidate();
   if (path != NULL) {
     fs_send_object_event(MTP_EVENT_OBJECT_REMOVED, handle);
@@ -765,6 +892,7 @@ void mtp_fs_notify_object_removed(const char* path) {
 }
 
 void mtp_fs_notify_object_changed(const char* path) {
+  fs_cache_live_upsert(path);
   fs_cache_invalidate();
   if (path != NULL) {
     fs_send_object_event(MTP_EVENT_OBJECT_INFO_CHANGED, fs_handle_from_path(path));
@@ -772,17 +900,17 @@ void mtp_fs_notify_object_changed(const char* path) {
 }
 
 static bool fs_cache_add_entry(const fs_entry_t* entry) {
-  if (g_fs_cache.count >= g_fs_cache.capacity) {
-    uint32_t new_capacity = (g_fs_cache.capacity == 0u) ? 64u : (g_fs_cache.capacity * 2u);
-    fs_cache_entry_t* new_entries = (fs_cache_entry_t*) realloc(g_fs_cache.entries, new_capacity * sizeof(fs_cache_entry_t));
+  if (g_fs_cache_stage.count >= g_fs_cache_stage.capacity) {
+    uint32_t new_capacity = (g_fs_cache_stage.capacity == 0u) ? 64u : (g_fs_cache_stage.capacity * 2u);
+    fs_cache_entry_t* new_entries = (fs_cache_entry_t*) realloc(g_fs_cache_stage.entries, new_capacity * sizeof(fs_cache_entry_t));
     if (new_entries == NULL) {
       return false;
     }
-    g_fs_cache.entries = new_entries;
-    g_fs_cache.capacity = new_capacity;
+    g_fs_cache_stage.entries = new_entries;
+    g_fs_cache_stage.capacity = new_capacity;
   }
 
-  fs_cache_entry_t* cache_entry = &g_fs_cache.entries[g_fs_cache.count];
+  fs_cache_entry_t* cache_entry = &g_fs_cache_stage.entries[g_fs_cache_stage.count];
   memset(cache_entry, 0, sizeof(*cache_entry));
   cache_entry->handle = entry->handle;
   cache_entry->parent = entry->parent;
@@ -795,7 +923,7 @@ static bool fs_cache_add_entry(const fs_entry_t* entry) {
     return false;
   }
 
-  g_fs_cache.count++;
+  g_fs_cache_stage.count++;
   return true;
 }
 
@@ -843,11 +971,12 @@ static bool fs_cache_ensure(void) {
   if (g_fs_cache.valid) {
     return true;
   }
-  /* A request beat the background rebuild: finish it inline (or start
-     one) with no budget - same walker either way. */
+  /* Only reachable before the first-ever build completes (the live cache
+     is kept, stale, through rebuilds and across sessions): drain the
+     warm-up walker inline - same walker, no budget, so at worst the
+     REMAINDER of the boot walk, not a fresh one. */
   g_fs_cache_bg_armed = false;
   if (g_fs_cache_bg == NULL && !fs_cache_bg_start()) {
-    fs_cache_clear();
     return false;
   }
   return fs_cache_bg_step(0u);
@@ -998,6 +1127,8 @@ static int32_t fs_rename_entry_to(const fs_entry_t* entry, uint32_t parent_handl
 
   FRESULT res = f_rename(entry->path, dst_path);
   if (res == FR_OK) {
+    fs_cache_live_remove(entry->path);
+    fs_cache_live_upsert(dst_path);
     fs_cache_invalidate();
     return MTP_RESP_OK;
   }
@@ -1384,6 +1515,7 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
         }
         uint32_t handle = fs_find_handle_by_parent_name(send_obj_parent, g_write_state.name);
         send_obj_handle = (handle != 0u) ? handle : send_obj_handle;
+        fs_cache_live_upsert(g_write_state.path);   /* resolvable immediately */
         fs_cache_invalidate();
         resp->header->code = MTP_RESP_OK;
         /* Mark the upload as cleanly finished so fs_release_write_state
@@ -1454,8 +1586,13 @@ static int32_t fs_open_close_session(tud_mtp_cb_data_t* cb_data) {
       return MTP_RESP_SESSION_ALREADY_OPEN;
     }
     is_session_opened = true;
-    fs_cache_invalidate();
-    (void) fs_cache_ensure();
+    /* Refresh an existing cache in the background - queries are answered
+       stale rather than walking inline. If the first build (boot warm-up)
+       is still in flight, leave it running: aborting it here would force
+       the session's first query to pay a fresh full walk inline. */
+    if (g_fs_cache.valid) {
+      fs_cache_invalidate();
+    }
   } else { // close session
     if (!is_session_opened) {
       return MTP_RESP_SESSION_NOT_OPEN;
@@ -1463,7 +1600,9 @@ static int32_t fs_open_close_session(tud_mtp_cb_data_t* cb_data) {
     is_session_opened = false;
     fs_release_read_state();
     fs_release_write_state();
-    fs_cache_clear();
+    /* The cache (and any rebuild in flight) survives the session: hosts
+       close/reopen sessions freely, and a cleared cache would make the
+       next open's first query pay the full tree walk inline. */
   }
   return MTP_RESP_OK;
 }
@@ -1486,19 +1625,18 @@ static int32_t fs_get_storage_info(tud_mtp_cb_data_t* cb_data) {
     return MTP_RESP_STORE_NOT_AVAILABLE;
   }
   {
-    FATFS*   fs = NULL;
-    DWORD    free_clusters = 0;
+    /* The webserver's background FAT sweep supplies these: f_getfree here
+       walked the whole FAT inline (~3 s with FF_FS_NOFSINFO=3), stalling
+       the main loop inside tud_task on every storage query - the long
+       standing "3-second usb_task stall". Slightly stale figures are fine
+       for a size bar, and the helper pays at most one scan ever. */
     uint64_t total_bytes = 0, free_bytes = 0;
-
-    if (f_getfree("", &free_clusters, &fs) == FR_OK && fs != NULL) {
-      const uint64_t bytes_per_cluster = (uint64_t)fs->csize * 512u;  /* FF_*_SS == 512 */
-      total_bytes = (uint64_t)(fs->n_fatent - 2u) * bytes_per_cluster;
-      free_bytes  = (uint64_t)free_clusters       * bytes_per_cluster;
-    }
+    (void) webserver_sd_space_now(&total_bytes, &free_bytes);
     storage_info.max_capacity_in_bytes = total_bytes;
     storage_info.free_space_in_bytes   = free_bytes;
     storage_info.free_space_in_objects = 0xFFFFFFFFu;  /* unknown — no object cap */
   }
+
   (void) mtp_container_add_raw(io_container, &storage_info, sizeof(storage_info));
   tud_mtp_data_send(io_container);
   return 0;
@@ -1870,6 +2008,7 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
 
       send_obj_parent = g_write_state.parent;
       send_obj_handle = fs_handle_from_path(g_write_state.path);
+      fs_cache_live_upsert(g_write_state.path);   /* resolvable immediately */
       fs_cache_invalidate();
       fs_release_write_state();
       return 0;
@@ -2252,6 +2391,7 @@ static int32_t fs_delete_object(tud_mtp_cb_data_t* cb_data) {
     res = f_unlink(entry.path);
   }
   if (res == FR_OK) {
+    fs_cache_live_remove(entry.path);
     fs_cache_invalidate();
     return MTP_RESP_OK;
   }

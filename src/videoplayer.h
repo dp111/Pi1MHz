@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 void videoplayer_init(uint8_t instance, uint8_t address);
+void videoplayer_vsync_flip(void);   /* vsync IRQ: commit the armed frame */
 
 /* ---- LaserDisc-player control surface, driven by the F-codes ---------- */
 

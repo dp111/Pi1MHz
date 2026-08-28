@@ -410,6 +410,7 @@ void IRQHandler_main(void) {
    RPI_AuxMiniUartIRQHandler();
    if (screen_check_vsync())
    {
+      videoplayer_vsync_flip();   /* plane pointers, during blanking: tear-free */
       mouse_redirect_move_mouse();
       fb_process_flash();
    }
@@ -662,6 +663,14 @@ static void poll_ticks_start(void)
    the way to find out which poller is starving the audio DMA. */
 static uint32_t poll_max_ticks[NUM_EMULATORS];
 
+/* ticks -> microseconds, exact for any POLL_TICKS_PER_MS (15625 neither
+   divides by 1000 nor is divisible by it - truncating either way skews
+   the figure by 4%). */
+static inline uint32_t poll_ticks_to_us(uint32_t ticks)
+{
+   return (uint32_t)((uint64_t)ticks * 1000u / POLL_TICKS_PER_MS);
+}
+
 uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset)
 {
    if (idx >= Pi1MHz_polls_max)
@@ -669,8 +678,7 @@ uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset)
    uint32_t t = poll_max_ticks[idx];
    if (reset)
       poll_max_ticks[idx] = 0;
-   /* exact us whatever POLL_TICKS_PER_MS is (15625 does not divide by 1000) */
-   return (uint32_t)((uint64_t)t * 1000u / POLL_TICKS_PER_MS);
+   return poll_ticks_to_us(t);
 }
 
 unsigned int Pi1MHz_poll_count(void)
@@ -871,7 +879,7 @@ _Noreturn void kernel_main(void)
                if (duration_ticks > POLL_SLOW_TICKS) {
                LOG_INFO("Slow poll callback idx=%u duration_us=%lu\r\n",
                         (unsigned int)i,
-                        (unsigned long)(duration_ticks / (POLL_TICKS_PER_MS / 1000u)));
+                        (unsigned long)poll_ticks_to_us(duration_ticks));
                }
             }
       }

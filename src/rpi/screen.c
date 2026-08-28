@@ -6,6 +6,7 @@
 #include "rpi.h"
 #include "../rpi/asm-helpers.h"
 #include "../rpi/interrupts.h"
+#include "../rpi/systimer.h"   /* RPI_GetSystemTime - refresh-rate measurement */
 
 /*
     Interfaces to the HVS in the BCM2835
@@ -678,6 +679,13 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         uint32_t vertical_offset = screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos, &nsh, &nh);
 
         volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) plane;
+        /* Pixel order (bits 13-14), established empirically on Test Card F
+           against a PC decode of the same access unit: with order 1 the
+           HVS reads the SECOND pointer as Cr (the old code fed it Cb, so
+           everything displayed with U/V swapped); order 2 fixes the
+           chroma reading but kills luma (bit 14 evidently means something
+           else). So: keep order 1 and load the chroma pointers Cr-first
+           below and in screen_set_YUV_pointers. */
         yuv->ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0x8; // invalid list, 32 words, YCrCb order, YUV420 3-plane
         yuv->pos = startpos;
         yuv->scale = (nsh << 16) + scaled_width;
@@ -688,8 +696,10 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         yuv_ptr_offset[planeno][1] = (vertical_offset/2)*(width/2);
         yuv_ptr_offset[planeno][2] = (vertical_offset/2)*(width/2);
         yuv->y_ptr =  buffer + vertical_offset*width;
-        yuv->cb_ptr = buffer + width*height + (vertical_offset/2)*(width/2);
-        yuv->cr_ptr = buffer + width*height + (width/2)*(height/2) + (vertical_offset/2)*(width/2);
+        /* Cr-first: the HVS's second pointer is Cr in this order mode (see
+           the ctrl comment above); the decoder's I420 memory is Y,Cb,Cr */
+        yuv->cb_ptr = buffer + width*height + (width/2)*(height/2) + (vertical_offset/2)*(width/2);
+        yuv->cr_ptr = buffer + width*height + (vertical_offset/2)*(width/2);
         yuv->pitch = width;
         yuv->pitch1 = width/2;
         yuv->pitch2 = width/2;
@@ -718,11 +728,15 @@ void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_
     volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
     // re-apply the vertical-overscan crop baked in at plane creation
     yuv->y_ptr  = (y  + yuv_ptr_offset[planeno][0]) | 0xC0000000;
-    yuv->cb_ptr = (cb + yuv_ptr_offset[planeno][1]) | 0xC0000000;
-    yuv->cr_ptr = (cr + yuv_ptr_offset[planeno][2]) | 0xC0000000;
+    /* Cr-first slot order - see the ctrl comment in screen_create_YUV420 */
+    yuv->cb_ptr = (cr + yuv_ptr_offset[planeno][1]) | 0xC0000000;
+    yuv->cr_ptr = (cb + yuv_ptr_offset[planeno][2]) | 0xC0000000;
 }
 
 // returns plane pointer
+static void dim_frame_paint( void );
+static bool dim_frame_on;
+
 void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height, float par , uint32_t scale_height, uint32_t colour_depth, uint32_t buffer )
 {
     volatile uint32_t * plane = screen_get_nextplane( planeno);
@@ -751,6 +765,12 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             //rgb->vpf0_ctx = 0;
             rgb->pfkph0 = POLYPHASE_BASE;
             rgb->pfkpv0 = POLYPHASE_BASE;
+            /* a MODE change moves the computer's rectangle: keep the VP5
+               dim frame's hole aligned with it */
+            if (dim_frame_on && planeno == 1u) {
+                plane_valid[planeno] = true;
+                dim_frame_paint();
+            }
 
 #ifdef SCREEN_DEBUG
             LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
@@ -847,11 +867,63 @@ void screen_plane_alpha( uint32_t planeno, uint32_t alpha )
     _restore_cpsr(cpsr);
 }
 
+/* Two layers of visibility, kept separate so neither has to know about
+   the other: screen_plane_enable() is what a plane's OWNER wants
+   (framebuffer MODE changes, mouseredirect pointer moves, the video
+   player's first frame), and screen_plane_gate() is what the VP415
+   video mixer allows - VP1 gates the computer planes, VP2 gates the
+   video plane. A plane is shown only when wanted AND not gated, so an
+   owner re-asserting its plane (a pointer move, a MODE change) can
+   never resurface a layer the mixer has hidden. */
+static bool plane_wanted[MAX_PLANES];
+static bool plane_gated[MAX_PLANES];
+
+static void screen_plane_apply( uint32_t planeno )
+{
+    volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    bool show = plane_wanted[planeno] && !plane_gated[planeno];
+
+    /* Never touch the display list slot of a plane that has not been
+       created: at boot the context memory still belongs to the GPU
+       bootloader's own list, and an uncreated slot holds skip/end
+       markers that must stay intact. The wanted/gated flags are already
+       recorded; creation + the owner's enable will honour them. */
+    if (!plane_valid[planeno])
+        return;
+
+    if (show)
+    {
+        // Deliberately inverted: our direct-HVS planes only own the display
+        // when HDMI is NOT connected (hotplug bit 0 clear) - with a monitor
+        // attached the firmware drives the display instead
+        if (~(RPI_hdmi->hotplug)&1)
+            rgb->ctrl |= (uint32_t)0x40000000;
+    }
+    else
+    {
+        rgb->ctrl &= ~(uint32_t)0x40000000;
+    }
+}
+
+void screen_plane_gate( uint32_t planeno, bool gated )
+{
+    if (planeno >= MAX_PLANES)
+        return;
+    plane_gated[planeno] = gated;
+    screen_plane_apply(planeno);
+}
+
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
     LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
     volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
 
+    if (planeno < MAX_PLANES) {
+        plane_wanted[planeno] = enable;
+        if (!plane_valid[planeno])
+            return;              /* flag recorded; slot not ours to touch */
+        enable = enable && !plane_gated[planeno];
+    }
     if (enable)
     {
         // Deliberately inverted: our direct-HVS planes only own the display
@@ -881,21 +953,199 @@ void screen_plane_enable( uint32_t planeno , bool enable )
 #endif
 }
 
+/* VP5 *VOHIGHLIGHT (AIV User Guide p.33): the player's picture is dimmed
+   EXCEPT where the computer's image is non-black - the graphic is a
+   stencil that spotlights the video, not a layer drawn over it. In
+   highlight mode the keyed palette inverts: black entries become
+   half-opaque black (they dim the video) and every colour becomes fully
+   transparent (the video shows through at full brightness). */
+static bool screen_highlight;
+
+static uint32_t palette_keyed_entry( uint32_t entry, uint32_t colour )
+{
+    bool black = (colour == 0) && ((entry & 255u) <= 15u);
+    if (screen_highlight)
+        return black ? 0x80000000u : 0u;
+    return black ? colour : (0xff000000u | colour);
+}
+
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
 {
     // palette 0 is normal colours
     // palette 1 is flash colours
-    // palette 2 is black is alpha 0
+    // palette 2 is black is alpha 0 (or the VP5 highlight inverse)
     // palette 3 is flash and black is alpha 0
 
     uint32_t colour = ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
 
     context_memory[(PALETTE_BASE>>2) + entry] = 0xff000000 | colour;
 
-    if (colour || ((entry&255) >15 ))
-        colour |= 0xff000000; // set alpha to 0xff if not black
+    context_memory[(PALETTE_BASE>>2) + entry + (256*2)] =
+        palette_keyed_entry(entry, colour);
+}
 
-    context_memory[(PALETTE_BASE>>2) + entry + (256*2)] = colour;
+/* ------------------------------------------------------------------ */
+/* VP5 dim frame                                                       */
+/*                                                                     */
+/* *VOHIGHLIGHT dims the video wherever the computer's picture is
+   black. On a real AIV that includes everything outside the computer's
+   active raster - out there the computer signal is blanking, i.e.
+   black - but our computer plane is a smaller box than the video, so
+   the surrounding band had no plane to dim it.
+   This is that missing band: a plane covering the whole display whose
+   source is BLACK in the border and a never-black index in the middle.
+   It shares the inverted highlight palette, so black becomes the
+   half-opaque dimming and the middle becomes fully transparent - the
+   computer plane underneath keeps doing its own dimming and brightup
+   windows. Only enabled in VP5.
+   The source is scaled up by DIM_FRAME_SCALE, so the HVS reads a few KB
+   per frame instead of a full screen: at 1280x720 that is 160x90 = 14 KB
+   (~0.9 MB/s at 60 Hz) against the video plane's ~36 MB/s. The scaler
+   feathers the hole edge over about DIM_FRAME_SCALE pixels, which on a
+   dimming boundary reads as a soft vignette rather than an artefact. */
+void screen_geometry_report( uint32_t planeno, uint32_t *disp_w, uint32_t *disp_h,
+                             uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h,
+                             uint32_t *src_w, uint32_t *src_h );
+void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags );
+
+#define DIM_FRAME_PLANE  3u
+#define DIM_FRAME_SCALE  8u
+#define DIM_FRAME_BORDER 0u    /* palette 0 = black -> dims in highlight */
+#define DIM_FRAME_HOLE   16u   /* >15 is never "black" -> transparent */
+
+static uint32_t dim_frame_handle;
+static uint32_t dim_frame_buffer;
+static uint32_t dim_frame_w, dim_frame_h;
+
+static void dim_frame_paint( void )
+{
+    uint32_t disp_w, disp_h, x, y, w, h, sw, sh;
+    screen_geometry_report(1u, &disp_w, &disp_h, &x, &y, &w, &h, &sw, &sh);
+    if (!dim_frame_buffer || !w || !h)
+        return;
+
+    uint8_t *px = (uint8_t *)(uintptr_t)dim_frame_buffer;
+    /* hole = the computer plane's rectangle, in source pixels (nearest) */
+    uint32_t hx0 = (x + DIM_FRAME_SCALE/2u) / DIM_FRAME_SCALE;
+    uint32_t hy0 = (y + DIM_FRAME_SCALE/2u) / DIM_FRAME_SCALE;
+    uint32_t hx1 = (x + w + DIM_FRAME_SCALE/2u) / DIM_FRAME_SCALE;
+    uint32_t hy1 = (y + h + DIM_FRAME_SCALE/2u) / DIM_FRAME_SCALE;
+    if (hx1 > dim_frame_w) hx1 = dim_frame_w;
+    if (hy1 > dim_frame_h) hy1 = dim_frame_h;
+
+    for (uint32_t i = 0; i < dim_frame_w * dim_frame_h; i++)
+        px[i] = (uint8_t)DIM_FRAME_BORDER;
+    for (uint32_t row = hy0; row < hy1; row++)
+        for (uint32_t col = hx0; col < hx1; col++)
+            px[row * dim_frame_w + col] = (uint8_t)DIM_FRAME_HOLE;
+}
+
+void screen_dim_frame( bool on )
+{
+    if (on == dim_frame_on && (!on || dim_frame_buffer))
+        return;
+
+    if (!on) {
+        dim_frame_on = false;
+        screen_plane_enable(DIM_FRAME_PLANE, false);
+        return;
+    }
+
+    uint32_t disp_w, disp_h, x, y, w, h, sw, sh;
+    screen_geometry_report(1u, &disp_w, &disp_h, &x, &y, &w, &h, &sw, &sh);
+    if (!disp_w || !disp_h || !w || !h)
+        return;                       /* no computer plane: nothing to frame */
+
+    uint32_t src_w = disp_w / DIM_FRAME_SCALE;
+    uint32_t src_h = disp_h / DIM_FRAME_SCALE;
+    if (!src_w || !src_h)
+        return;
+
+    if (dim_frame_w != src_w || dim_frame_h != src_h || !dim_frame_buffer) {
+        if (dim_frame_handle) {
+            screen_release_buffer(dim_frame_handle);
+            dim_frame_handle = 0;
+            dim_frame_buffer = 0;
+        }
+        dim_frame_buffer = screen_allocate_buffer(src_w * src_h, &dim_frame_handle);
+        if (!dim_frame_buffer)
+            return;
+        dim_frame_w = src_w;
+        dim_frame_h = src_h;
+    }
+    dim_frame_paint();
+
+    volatile uint32_t *plane = screen_get_nextplane(DIM_FRAME_PLANE);
+    volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) plane;
+    rgb->ctrl = 0x00000000 + (0x20<<24) + (3<<11) + 0xD;   /* 8 bit palette */
+    rgb->pos = 0xFF000000;                                  /* per-pixel alpha, origin 0,0 */
+    rgb->scale = (disp_h << 16) + disp_w;
+    rgb->src_size = (src_h << 16) + src_w;
+    rgb->y_ptr = dim_frame_buffer | 0x80000000u;
+    rgb->pitch = src_w;
+    rgb->palette = 0xC0000000 + PALETTE_BASE;
+    rgb->LBM = (LBM_PLANE_SIZE * DIM_FRAME_PLANE);
+    rgb->hpf0 = vc4_ppf(src_w, disp_w, 0, 0);
+    rgb->vpf0 = vc4_ppf(src_h, disp_h, 0, 0);
+    rgb->pfkph0 = POLYPHASE_BASE;
+    rgb->pfkpv0 = POLYPHASE_BASE;
+    plane_valid[DIM_FRAME_PLANE] = true;
+
+    screen_set_palette(DIM_FRAME_PLANE, 0, 2);   /* the keyed (alpha) bank */
+    dim_frame_on = true;
+    screen_plane_enable(DIM_FRAME_PLANE, true);
+}
+
+/* /status forensics: the display size and each plane's source/destination
+   rectangle, straight from the HVS display list - the only ground truth
+   for overlay geometry (an HDMI capture may scale what it shows). */
+void screen_geometry_report( uint32_t planeno, uint32_t *disp_w, uint32_t *disp_h,
+                             uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h,
+                             uint32_t *src_w, uint32_t *src_h )
+{
+    *disp_w = ( RPI_hvs->ctrl1 >> 12 ) & 0xfff;
+    *disp_h = ( RPI_hvs->ctrl1       ) & 0xfff;
+    if (planeno >= MAX_PLANES || !plane_valid[planeno]) {
+        *x = *y = *w = *h = *src_w = *src_h = 0;
+        return;
+    }
+    volatile YUV_plane_t* p = (volatile YUV_plane_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    *x = p->pos & 0xFFF;
+    *y = (p->pos >> 12) & 0xFFF;
+    *w = p->scale & 0xFFF;
+    *h = (p->scale >> 16) & 0xFFF;
+    *src_w = p->src_size & 0xFFF;
+    *src_h = (p->src_size >> 16) & 0xFFF;
+}
+
+void screen_set_highlight( bool on );
+
+/* Beeb reset: the mixer state (VP gates + highlight palette) returns to
+   the power-on default - all layers shown, normal keying. */
+void screen_mixer_reset( void )
+{
+    for (uint32_t planeno = 0; planeno < MAX_PLANES; planeno++)
+        screen_plane_gate(planeno, false);
+    screen_dim_frame(false);
+    screen_set_highlight(false);
+}
+
+void screen_set_highlight( bool on )
+{
+    if (screen_highlight == on)
+        return;
+    screen_highlight = on;
+    /* Recast BOTH keyed banks (normal + flash twin: entries 0-511 map to
+       banks 2 and 3) from the colour banks, or the framebuffer's flash
+       timer alternates the plane between an inverted and an un-inverted
+       palette and the whole overlay blinks.  A VDU 19 issued in either
+       mode stays consistent (screen_update_palette_entry consults the
+       flag for later changes). */
+    for (uint32_t entry = 0; entry < 512u; entry++) {
+        uint32_t colour = context_memory[(PALETTE_BASE>>2) + entry] & 0x00FFFFFFu;
+        context_memory[(PALETTE_BASE>>2) + entry + (256*2)] =
+            palette_keyed_entry(entry, colour);
+    }
 }
 
 uint32_t screen_get_palette_entry( uint32_t entry )
@@ -955,12 +1205,44 @@ void screen_set_vsync( bool enable )
     }
 }
 
+/* Measured refresh rate.  The pixel clock alone cannot tell 1080p50 from
+   1080p60 (both are 148.5 MHz - only the blanking differs), and the whole
+   point of a 50 Hz mode here is that 25 fps video then maps to exactly two
+   refreshes per frame. Counting the end-of-frame interrupts says which
+   mode actually negotiated. */
+static uint32_t vsync_count;
+static uint32_t vsync_window_start_us;
+static uint32_t vsync_window_count;
+static uint32_t vsync_rate_mhz;      /* refresh in millihertz */
+
 bool screen_check_vsync( void )
 {
     if (RPI_hvs->stat & ( 1 << 16)) // check for end of frame
     {
         RPI_hvs->stat = ( 1 << 16); // clear the interrupt
+        vsync_count++;
         return true;
     }
     return false;
+}
+
+/* End-of-frame count: the video player flips on a change of this, so each
+   picture starts at a frame boundary. */
+uint32_t screen_vsync_count( void )
+{
+    return vsync_count;
+}
+
+/* Refresh in millihertz, 0 until the first second has been measured. */
+uint32_t screen_refresh_mhz( void )
+{
+    uint32_t now = RPI_GetSystemTime();
+    uint32_t elapsed = now - vsync_window_start_us;
+    if (elapsed >= 1000000u) {
+        uint32_t frames = vsync_count - vsync_window_count;
+        vsync_rate_mhz = (uint32_t)(((uint64_t)frames * 1000000000u) / elapsed);
+        vsync_window_start_us = now;
+        vsync_window_count = vsync_count;
+    }
+    return vsync_rate_mhz;
 }

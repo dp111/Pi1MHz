@@ -51,6 +51,7 @@ FRESULT f_chdir(const char *p) { touch_read(p, strlen(p) + 1); return (p[0] & 1)
 FRESULT f_getcwd(char *buff, UINT len) { snprintf(buff, len, "/fuzzdir"); return FR_OK; }
 FRESULT f_rename(const char *a, const char *b)
 { touch_read(a, strlen(a) + 1); touch_read(b, strlen(b) + 1); return FR_OK; }
+bool webserver_sd_space_now(uint64_t *t, uint64_t *f) { *t = 0; *f = 0; return false; }
 FRESULT f_getfree(const char *p, DWORD *n, FATFS **f)
 { (void)p; static FATFS fs = { 8 }; *n = 1000; *f = &fs; return FR_OK; }
 FRESULT f_unlink(const char *p) { touch_read(p, strlen(p) + 1); return FR_OK; }

@@ -15,6 +15,7 @@
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
 #include "BeebSCSI/fatfs/diskio.h"
 #include "BeebSCSI/filesystem.h"
+#include "wifi/webserver.h"			/* cached SD free space - see case 13 */
 
 NOINIT_SECTION static FIL fileObject[16];
 NOINIT_SECTION static DIR dirObject[16];
@@ -446,16 +447,21 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
 
     case 13 : // fgetfree
     {
-        FATFS *fs;
-        DWORD fre_clust;
-        FRESULT result = f_getfree("", &fre_clust, &fs);
-        if (result)
+        /* The Beeb blocks on this, but so does everything else: f_getfree
+           walks the whole FAT (FF_FS_NOFSINFO=3) and used to freeze the
+           poll loop - audio, video and SCSI servicing included - for
+           seconds each time a program asked for free space. Answer from
+           the webserver's background sweep, which pays at most one
+           blocking scan ever and refreshes itself afterwards. The figure
+           can lag recent writes; it is advisory (a free-space display),
+           and the alternative is a multi-second stall per query. */
+        uint64_t total_bytes = 0, free_bytes = 0;
+        if (!webserver_sd_space_now(&total_bytes, &free_bytes))
             {
-                Pi1MHz_MemoryWrite(addr, result);
+                Pi1MHz_MemoryWrite(addr, FR_DISK_ERR);
                 break;
             }
-        // assumes sector size of 512 bytes
-        jim_write32(command_pointer+8, (fs->csize * fre_clust) * 2);  // return free space in bytes/256
+        jim_write32(command_pointer+8, (uint32_t)(free_bytes / 256u));  // free space in bytes/256
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }

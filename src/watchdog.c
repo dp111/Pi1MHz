@@ -143,7 +143,15 @@ void watchdog_init(uint8_t instance, uint8_t address)
       return;
    }
 
-   seconds = strtol(setting, NULL, 10);
+   {
+      /* Tell "watchdog=0" (deliberately off) from "watchdog=yes" (a typo
+         strtol also reads as 0): a mistyped setting must not silently
+         disarm the guard, so an unparsable value takes the default. */
+      char *end = NULL;
+      seconds = strtol(setting, &end, 10);
+      if (end == setting)
+         seconds = (long)WATCHDOG_DEFAULT_SECONDS;
+   }
    if (seconds <= 0) {
       watchdog_stop();              /* explicitly disabled */
       return;
@@ -151,8 +159,6 @@ void watchdog_init(uint8_t instance, uint8_t address)
 
    if (seconds > (long)WATCHDOG_MAX_SECONDS)
       seconds = (long)WATCHDOG_MAX_SECONDS;
-   if (seconds < 1)
-      seconds = (long)WATCHDOG_DEFAULT_SECONDS;
 
    watchdog_ticks = (uint32_t)seconds * PM_WDOG_TICKS_PER_SEC;
    if (watchdog_ticks > PM_WDOG_TIME_SET)

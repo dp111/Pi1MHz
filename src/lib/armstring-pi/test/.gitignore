@@ -1,0 +1,4 @@
+# run.sh build/run debris - regenerate with ./run.sh (needs qemu-system-arm
+# and arm-none-eabi-gcc); the sources beside this file are the test.
+*.elf
+q*.txt
