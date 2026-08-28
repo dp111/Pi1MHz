@@ -2718,7 +2718,7 @@ static bool route_status(ws_conn_t *c)
       /* HVS plane geometry - ground truth for the overlay rectangles */
       size_t o = 0;
       uint32_t dw = 0, dh = 0;
-      for (uint32_t pl = 0; pl < 3u && o < sizeof tmp - 40; pl++) {
+      for (uint32_t pl = 0; pl < 7u && o < sizeof tmp - 40; pl++) {
          uint32_t x, y, w, h, sw, sh;
          screen_geometry_report(pl, &dw, &dh, &x, &y, &w, &h, &sw, &sh);
          if (!w && !h)

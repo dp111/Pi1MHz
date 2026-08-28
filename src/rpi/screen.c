@@ -49,12 +49,24 @@ YUV plane = 768*8 + 768/2* 8
 
 // #define SCREEN_DEBUG
 
-#define MAX_PLANES 4
+#define MAX_PLANES 7
 #define POLYPHASE_BASE (0xf00>>2)
 #define PALETTE_BASE (0x1000)
 
-// 48K words of plane memory
-#define LBM_PLANE_SIZE (48*1024/MAX_PLANES)
+/* Line-buffer memory for vertical scaling, 48K words in total.  It is NOT
+   divided evenly: the video, computer and pointer planes keep the 12K each
+   they were designed around (shrinking them corrupts the video plane), and
+   the four VP5 dim strips get 512 words apiece - they scale a handful of
+   constant source pixels, so they need almost nothing. */
+#define LBM_PLANE_SIZE (12*1024)
+#define LBM_STRIP_SIZE (512u)
+
+static uint32_t screen_lbm_base(uint32_t planeno)
+{
+    if (planeno < 3u)
+        return LBM_PLANE_SIZE * planeno;
+    return (LBM_PLANE_SIZE * 3u) + ((planeno - 3u) * LBM_STRIP_SIZE);
+}
 
 typedef struct {
     rpi_reg_rw_t ctrl;      // 0x00
@@ -706,7 +718,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         yuv->csc0 = 0x00F00000;
         yuv->csc1 = 0xe73304A8;
         yuv->csc2 = 0x00066604;
-        yuv->LBM = (LBM_PLANE_SIZE * planeno);
+        yuv->LBM = screen_lbm_base(planeno);
         yuv->hpf0 = vc4_ppf(width, scaled_width*2, startpos & 0xFFF, 0 );  // chroma H: (w/2)/sw
         yuv->vpf0 = vc4_ppf(nh, nsh*2, startpos >>12, 0 );                 // chroma V: (h/2)/sh
         yuv->hpf1 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );    // luma H
@@ -734,9 +746,6 @@ void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_
 }
 
 // returns plane pointer
-static void dim_frame_paint( void );
-static bool dim_frame_on;
-
 void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height, float par , uint32_t scale_height, uint32_t colour_depth, uint32_t buffer )
 {
     volatile uint32_t * plane = screen_get_nextplane( planeno);
@@ -759,19 +768,12 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
           //  rgb->y_ctx = buffer;
             rgb->pitch = width;
             rgb->palette = 0xC0000000 + PALETTE_BASE; // 8 bit palette
-            rgb->LBM = (LBM_PLANE_SIZE * planeno);
+            rgb->LBM = screen_lbm_base(planeno);
             rgb->hpf0 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
             rgb->vpf0 = vc4_ppf(height, scaled_height, startpos >>12, 0 );
             //rgb->vpf0_ctx = 0;
             rgb->pfkph0 = POLYPHASE_BASE;
             rgb->pfkpv0 = POLYPHASE_BASE;
-            /* a MODE change moves the computer's rectangle: keep the VP5
-               dim frame's hole aligned with it */
-            if (dim_frame_on && planeno == 1u) {
-                plane_valid[planeno] = true;
-                dim_frame_paint();
-            }
-
 #ifdef SCREEN_DEBUG
             LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
             LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", scaled_width, scaled_height);
@@ -813,7 +815,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             //rgb->src_context = 0;
             rgb->y_ptr = buffer;
 
-            rgb->LBM = (LBM_PLANE_SIZE * planeno);
+            rgb->LBM = screen_lbm_base(planeno);
             rgb->hpf0 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
             rgb->vpf0 = vc4_ppf(height, scaled_height, startpos >>12, 0 );
             //rgb->vpf0_ctx = 0;
@@ -961,11 +963,21 @@ void screen_plane_enable( uint32_t planeno , bool enable )
    transparent (the video shows through at full brightness). */
 static bool screen_highlight;
 
+/* How far *VOHIGHLIGHT dims the video outside the computer's image, as the
+   alpha of the black it lays over it: 0x80 is a half-and-half mix (only a
+   2:1 brightup, which reads as "not very highlighted"), 0xC0 leaves a
+   quarter of the picture for a 4:1 contrast against the windows. */
+#define VP5_DIM_ALPHA 0xA0u
+
+/* The video player dims the frame outside the computer's box by the same
+   amount, in software - see dim_frame_border() there. */
+uint32_t screen_highlight_alpha( void ) { return VP5_DIM_ALPHA; }
+
 static uint32_t palette_keyed_entry( uint32_t entry, uint32_t colour )
 {
     bool black = (colour == 0) && ((entry & 255u) <= 15u);
     if (screen_highlight)
-        return black ? 0x80000000u : 0u;
+        return black ? (VP5_DIM_ALPHA << 24) : 0u;
     return black ? colour : (0xff000000u | colour);
 }
 
@@ -985,115 +997,96 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
 }
 
 /* ------------------------------------------------------------------ */
-/* VP5 dim frame                                                       */
+/* VP5 dim strips                                                      */
 /*                                                                     */
-/* *VOHIGHLIGHT dims the video wherever the computer's picture is
-   black. On a real AIV that includes everything outside the computer's
-   active raster - out there the computer signal is blanking, i.e.
-   black - but our computer plane is a smaller box than the video, so
-   the surrounding band had no plane to dim it.
-   This is that missing band: a plane covering the whole display whose
-   source is BLACK in the border and a never-black index in the middle.
-   It shares the inverted highlight palette, so black becomes the
-   half-opaque dimming and the middle becomes fully transparent - the
-   computer plane underneath keeps doing its own dimming and brightup
-   windows. Only enabled in VP5.
-   The source is scaled up by DIM_FRAME_SCALE, so the HVS reads a few KB
-   per frame instead of a full screen: at 1280x720 that is 160x90 = 14 KB
-   (~0.9 MB/s at 60 Hz) against the video plane's ~36 MB/s. The scaler
-   feathers the hole edge over about DIM_FRAME_SCALE pixels, which on a
-   dimming boundary reads as a soft vignette rather than an artefact. */
+/* *VOHIGHLIGHT dims the video wherever the computer's picture is black,
+   which on a real AIV includes everything outside the computer's raster -
+   the signal there is blanking.  Inside its rectangle the computer plane
+   does that itself; these four planes cover the band around it.
+   A plane's RECTANGLE edge is hard - only content edges inside a scaled
+   plane are feathered - so each strip is a few constant source pixels
+   blown up to fill its rect: a hard, pixel-exact border for 16 bytes of
+   source, no filtering artefacts, and nothing written into the decoder's
+   frame buffers.  Earlier attempts at one big mask plane (scaled: soft
+   edge; 1:1: the HVS runs out of per-line fetch and drops the right of
+   every line) and at dimming the decoded frame in software (races with
+   the VideoCore still writing it - visible as streaks) are why this is
+   done with plane geometry instead. */
 void screen_geometry_report( uint32_t planeno, uint32_t *disp_w, uint32_t *disp_h,
                              uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h,
                              uint32_t *src_w, uint32_t *src_h );
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags );
 
-#define DIM_FRAME_PLANE  3u
-#define DIM_FRAME_SCALE  8u
-#define DIM_FRAME_BORDER 0u    /* palette 0 = black -> dims in highlight */
-#define DIM_FRAME_HOLE   16u   /* >15 is never "black" -> transparent */
+#define DIM_STRIP_FIRST  3u
+#define DIM_STRIP_COUNT  4u
+#define DIM_STRIP_SRC    4u     /* 4x4 constant source, scaled to the rect */
 
-static uint32_t dim_frame_handle;
-static uint32_t dim_frame_buffer;
-static uint32_t dim_frame_w, dim_frame_h;
+static uint32_t dim_strip_handle;
+static uint32_t dim_strip_buffer;
+static bool     dim_strips_on;
 
-static void dim_frame_paint( void )
+static void dim_strip_place(uint32_t planeno, uint32_t x, uint32_t y,
+                            uint32_t w, uint32_t h)
 {
-    uint32_t disp_w, disp_h, x, y, w, h, sw, sh;
-    screen_geometry_report(1u, &disp_w, &disp_h, &x, &y, &w, &h, &sw, &sh);
-    if (!dim_frame_buffer || !w || !h)
+    if (!w || !h) {                       /* empty band: nothing to show */
+        screen_plane_enable(planeno, false);
         return;
-
-    uint8_t *px = (uint8_t *)(uintptr_t)dim_frame_buffer;
-    /* hole = the computer plane's rectangle, in source pixels (nearest) */
-    uint32_t hx0 = (x + DIM_FRAME_SCALE/2u) / DIM_FRAME_SCALE;
-    uint32_t hy0 = (y + DIM_FRAME_SCALE/2u) / DIM_FRAME_SCALE;
-    uint32_t hx1 = (x + w + DIM_FRAME_SCALE/2u) / DIM_FRAME_SCALE;
-    uint32_t hy1 = (y + h + DIM_FRAME_SCALE/2u) / DIM_FRAME_SCALE;
-    if (hx1 > dim_frame_w) hx1 = dim_frame_w;
-    if (hy1 > dim_frame_h) hy1 = dim_frame_h;
-
-    for (uint32_t i = 0; i < dim_frame_w * dim_frame_h; i++)
-        px[i] = (uint8_t)DIM_FRAME_BORDER;
-    for (uint32_t row = hy0; row < hy1; row++)
-        for (uint32_t col = hx0; col < hx1; col++)
-            px[row * dim_frame_w + col] = (uint8_t)DIM_FRAME_HOLE;
+    }
+    volatile uint32_t *plane = screen_get_nextplane(planeno);
+    volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) plane;
+    rgb->ctrl = 0x00000000 + (0x20<<24) + (3<<11) + 0xD;   /* 8 bit palette */
+    rgb->pos = 0xFF000000 | ((y & 0xFFFu) << 12) | (x & 0xFFFu);
+    rgb->scale = (h << 16) + w;
+    rgb->src_size = (DIM_STRIP_SRC << 16) + DIM_STRIP_SRC;
+    rgb->y_ptr = dim_strip_buffer | 0x80000000u;
+    rgb->pitch = DIM_STRIP_SRC;
+    rgb->palette = 0xC0000000 + PALETTE_BASE;
+    rgb->LBM = screen_lbm_base(planeno);
+    rgb->hpf0 = vc4_ppf(DIM_STRIP_SRC, w, x, 0);
+    rgb->vpf0 = vc4_ppf(DIM_STRIP_SRC, h, y, 0);
+    rgb->pfkph0 = POLYPHASE_BASE;
+    rgb->pfkpv0 = POLYPHASE_BASE;
+    plane_valid[planeno] = true;
+    screen_set_palette(planeno, 0, 2);    /* the keyed (alpha) bank */
+    screen_plane_enable(planeno, true);
 }
 
-void screen_dim_frame( bool on )
+void screen_dim_strips( bool on )
 {
-    if (on == dim_frame_on && (!on || dim_frame_buffer))
-        return;
-
     if (!on) {
-        dim_frame_on = false;
-        screen_plane_enable(DIM_FRAME_PLANE, false);
+        if (dim_strips_on) {
+            for (uint32_t i = 0; i < DIM_STRIP_COUNT; i++)
+                screen_plane_enable(DIM_STRIP_FIRST + i, false);
+            dim_strips_on = false;
+        }
         return;
     }
 
     uint32_t disp_w, disp_h, x, y, w, h, sw, sh;
     screen_geometry_report(1u, &disp_w, &disp_h, &x, &y, &w, &h, &sw, &sh);
     if (!disp_w || !disp_h || !w || !h)
-        return;                       /* no computer plane: nothing to frame */
+        return;                           /* no computer plane to frame */
 
-    uint32_t src_w = disp_w / DIM_FRAME_SCALE;
-    uint32_t src_h = disp_h / DIM_FRAME_SCALE;
-    if (!src_w || !src_h)
-        return;
-
-    if (dim_frame_w != src_w || dim_frame_h != src_h || !dim_frame_buffer) {
-        if (dim_frame_handle) {
-            screen_release_buffer(dim_frame_handle);
-            dim_frame_handle = 0;
-            dim_frame_buffer = 0;
-        }
-        dim_frame_buffer = screen_allocate_buffer(src_w * src_h, &dim_frame_handle);
-        if (!dim_frame_buffer)
+    if (!dim_strip_buffer) {
+        dim_strip_buffer = screen_allocate_buffer(DIM_STRIP_SRC * DIM_STRIP_SRC,
+                                                  &dim_strip_handle);
+        if (!dim_strip_buffer)
             return;
-        dim_frame_w = src_w;
-        dim_frame_h = src_h;
+        /* palette 0 is black: transparent in the keyed bank normally, the
+           dimming value once highlight inverts it */
+        uint8_t *px = (uint8_t *)(uintptr_t)dim_strip_buffer;
+        for (uint32_t i = 0; i < DIM_STRIP_SRC * DIM_STRIP_SRC; i++)
+            px[i] = 0u;
     }
-    dim_frame_paint();
 
-    volatile uint32_t *plane = screen_get_nextplane(DIM_FRAME_PLANE);
-    volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) plane;
-    rgb->ctrl = 0x00000000 + (0x20<<24) + (3<<11) + 0xD;   /* 8 bit palette */
-    rgb->pos = 0xFF000000;                                  /* per-pixel alpha, origin 0,0 */
-    rgb->scale = (disp_h << 16) + disp_w;
-    rgb->src_size = (src_h << 16) + src_w;
-    rgb->y_ptr = dim_frame_buffer | 0x80000000u;
-    rgb->pitch = src_w;
-    rgb->palette = 0xC0000000 + PALETTE_BASE;
-    rgb->LBM = (LBM_PLANE_SIZE * DIM_FRAME_PLANE);
-    rgb->hpf0 = vc4_ppf(src_w, disp_w, 0, 0);
-    rgb->vpf0 = vc4_ppf(src_h, disp_h, 0, 0);
-    rgb->pfkph0 = POLYPHASE_BASE;
-    rgb->pfkpv0 = POLYPHASE_BASE;
-    plane_valid[DIM_FRAME_PLANE] = true;
-
-    screen_set_palette(DIM_FRAME_PLANE, 0, 2);   /* the keyed (alpha) bank */
-    dim_frame_on = true;
-    screen_plane_enable(DIM_FRAME_PLANE, true);
+    uint32_t right = x + w, bottom = y + h;
+    dim_strip_place(DIM_STRIP_FIRST + 0u, 0u, 0u, disp_w, y);                 /* top */
+    dim_strip_place(DIM_STRIP_FIRST + 1u, 0u, bottom, disp_w,
+                    (bottom < disp_h) ? (disp_h - bottom) : 0u);              /* bottom */
+    dim_strip_place(DIM_STRIP_FIRST + 2u, 0u, y, x, h);                       /* left */
+    dim_strip_place(DIM_STRIP_FIRST + 3u, right, y,
+                    (right < disp_w) ? (disp_w - right) : 0u, h);             /* right */
+    dim_strips_on = true;
 }
 
 /* /status forensics: the display size and each plane's source/destination
@@ -1126,7 +1119,7 @@ void screen_mixer_reset( void )
 {
     for (uint32_t planeno = 0; planeno < MAX_PLANES; planeno++)
         screen_plane_gate(planeno, false);
-    screen_dim_frame(false);
+    screen_dim_strips(false);
     screen_set_highlight(false);
 }
 

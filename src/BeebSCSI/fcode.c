@@ -618,7 +618,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					   gated and mixed exactly like the screen, while keeping
 					   its per-pixel key so it never gains an opaque surround. */
 					case '1':
-					screen_dim_frame(false);
+					screen_dim_strips(false);
 					FCdebugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
 					screen_set_highlight(false);
 					/* No video open (data-only side): keep the plane off so the
@@ -632,7 +632,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					break;
 
 					case '2':
-					screen_dim_frame(false);
+					screen_dim_strips(false);
 					FCdebugString_P(PSTR(" = Video overlay mode 2 (External (computer) RGB only)\r\n"));
 					screen_set_highlight(false);
 					screen_set_palette( 1, 0, 3 );
@@ -645,7 +645,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					break;
 
 					case '3':
-					screen_dim_frame(false);
+					screen_dim_strips(false);
 					FCdebugString_P(PSTR(" = Video overlay mode 3 (Hard-keyed)\r\n"));
 					screen_set_highlight(false);
 					screen_set_palette( 1, 0, 2 );
@@ -659,7 +659,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					break;
 
 					case '4':
-					screen_dim_frame(false);
+					screen_dim_strips(false);
 					/* *VOTRANSPARENT (AIV User Guide p.33): "mixes the two
 					   signals together ... like laying two sheets of tracing
 					   paper on top of one another" - an analog A/B mix of the
@@ -695,7 +695,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_set_palette( 1, 0, 2 );
 					/* dim the band outside the computer's raster too - out
 					   there the computer signal is blanking, i.e. black */
-					screen_dim_frame(true);
+					screen_dim_strips(true);
 					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, false);
