@@ -239,6 +239,34 @@ static void M5000_gain(void) {
       gain = 0;       /* a negative M5000_Gain= would wrap in the mixer */
 }
 
+/* How often the at-rest test below is repeated inside one block: 128
+   frames is under 3 ms at either sample rate, so a note that starts
+   while the synth is being skipped is never audibly late, and the test
+   costs ~1 byte read per frame against the 16 channel updates it drops. */
+#define M5000_REST_RECHECK 128u
+
+/* False when the synth is at rest: every channel silent (latched
+   amplitude zero) and stopped (frequency zero, so the phase accumulator
+   cannot move and no carry can latch a new amplitude), with modulation
+   off in both the register bank and the carried state.  update_channels()
+   is then a no-op returning zero however many samples are asked for, and
+   only a Beeb register write can change that - so the whole block's worth
+   of channel updates can be skipped.  This is the resting state: the
+   Music 5000 costs nothing until something plays through it. */
+static bool synth_running(const struct synth *s)
+{
+   if (s->modulate)             /* stale bank select - take the slow path */
+      return true;
+
+   const uint8_t *c = s->ram + I_WFTOP;
+   for (int i = 0; i < 16; i++, c++)
+      if (s->amplitude[i] | I_FREQlo(c) | I_FREQmid(c) | I_FREQhi(c) |
+          (CTL(c) & 0x20))
+         return true;
+
+   return false;
+}
+
 static void update_channels(struct synth *s)
 {
     int sleft = 0;
@@ -262,6 +290,18 @@ static void update_channels(struct synth *s)
             s->phaseRAM[i] = ((uint32_t)FREQ(c) * m5000_freq_mul) >> 7;
             c4d = 0;
          }
+
+      /* A channel at amplitude zero cannot contribute: the log-domain
+         add below leaves the sign bit unchanged, so the accumulate is
+         never reached.  The only other thing the rest of the body
+         produces is `modulate`, which is zero anyway when MODULATE is
+         clear, so everything after the phase update can be skipped.
+         Released voices sit here, and so do all 32 channels whenever no
+         Beeb software is driving the synth. */
+      if (s->amplitude[i] == 0 && !MODULATE(c)) {
+         modulate = 0;
+         continue;
+      }
 
       int sample = s->ram[ I_WAVEFORM( WAVESEL(c) , ( s->phaseRAM[i] >> 17) ) ];
       int sign = sample & 0x80;
@@ -468,16 +508,38 @@ static void music5000_emulate(void)
    int16_t *bufptr = audio_write_ptr(&m5000_producer, &space);
    if (bufptr && space)
    {
-      for (size_t sample = space; sample !=0 ; sample--) {
-         update_channels(&m5000);
-         update_channels(&m3000);
-         int sl = m5000.sleft  + m3000.sleft;
-         int sr = m5000.sright + m3000.sright;
+      for (uint32_t left = space; left != 0; ) {
+         /* At rest a synth is unchanged by any number of
+            update_channels() calls, so a whole run of samples can skip
+            its 16 channel updates on one test instead of paying for
+            them.  The run is capped rather than being the whole block:
+            a block is several milliseconds' worth whenever another poll
+            task has stalled the loop, and a synth woken by a register
+            write part-way through must not have its first note deferred
+            to the next block. */
+         uint32_t n = left > M5000_REST_RECHECK ? M5000_REST_RECHECK : left;
+         left -= n;
 
-         music5000_store_sample(sl, sr, bufptr);
-         if (record)
-            store_samples(sl, sr);
-         bufptr += 2;
+         const bool run5 = synth_running(&m5000);
+         const bool run3 = synth_running(&m3000);
+         if (!run5)
+            m5000.sleft = m5000.sright = 0;
+         if (!run3)
+            m3000.sleft = m3000.sright = 0;
+
+         for (size_t sample = n; sample !=0 ; sample--) {
+            if (run5)
+               update_channels(&m5000);
+            if (run3)
+               update_channels(&m3000);
+            int sl = m5000.sleft  + m3000.sleft;
+            int sr = m5000.sright + m3000.sright;
+
+            music5000_store_sample(sl, sr, bufptr);
+            if (record)
+               store_samples(sl, sr);
+            bufptr += 2;
+         }
       }
       audio_commit(space);
    }
