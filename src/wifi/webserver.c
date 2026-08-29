@@ -2715,28 +2715,49 @@ static bool route_status(ws_conn_t *c)
    /* Always shown: with the decoder not running these are the only view of
       why a lazy bring-up refused (and of the last F-code the Beeb sent). */
    {
-      /* HVS plane geometry - ground truth for the overlay rectangles */
+      /* HVS plane geometry - ground truth for the overlay rectangles.
+         Its own buffer: seven planes plus the display line need ~250
+         chars, and sharing the 144-byte tmp silently truncated the row
+         after four planes - which reads as "the VP5 side strips were
+         never created" and cost an evening chasing a reporting artefact. */
+      char planes[288];
       size_t o = 0;
       uint32_t dw = 0, dh = 0;
-      for (uint32_t pl = 0; pl < 7u && o < sizeof tmp - 40; pl++) {
+      for (uint32_t pl = 0; pl < 7u && o < sizeof planes - 40; pl++) {
          uint32_t x, y, w, h, sw, sh;
          screen_geometry_report(pl, &dw, &dh, &x, &y, &w, &h, &sw, &sh);
          if (!w && !h)
             continue;
-         o += (size_t)snprintf(tmp + o, sizeof tmp - o, "%lu:%lux%lu@%lu,%lu src %lux%lu  ",
+         o += (size_t)snprintf(planes + o, sizeof planes - o, "%lu:%lux%lu@%lu,%lu src %lux%lu  ",
                                (unsigned long)pl, (unsigned long)w, (unsigned long)h,
                                (unsigned long)x, (unsigned long)y,
                                (unsigned long)sw, (unsigned long)sh);
+         /* snprintf returns what it WOULD have written, so o can run past
+            the buffer and make the next "sizeof - o" underflow */
+         if (o >= sizeof planes) o = sizeof planes - 1u;
       }
       {
          uint32_t mhz = screen_refresh_mhz();
-         o += (size_t)snprintf(tmp + o, sizeof tmp - o, "display %lux%lu",
+         o += (size_t)snprintf(planes + o, sizeof planes - o, "display %lux%lu",
                                (unsigned long)dw, (unsigned long)dh);
+         if (o >= sizeof planes) o = sizeof planes - 1u;
          if (mhz)
-            snprintf(tmp + o, sizeof tmp - o, " @ %lu.%02lu Hz",
+            snprintf(planes + o, sizeof planes - o, " @ %lu.%02lu Hz",
                      (unsigned long)(mhz / 1000u), (unsigned long)((mhz % 1000u) / 10u));
       }
-      table_row(&b, "Planes", tmp);
+      table_row(&b, "Planes", planes);
+
+      /* VP5 strips: the rectangle they were built around, against plane 1's
+         live geometry above - a disagreement means a MODE change moved the
+         computer plane and the reframe hook did not follow it. */
+      uint32_t g[6];
+      bool on = screen_dim_strips_report(g);
+      snprintf(tmp, sizeof tmp, "%s framed %lux%lu box %lu,%lu %lux%lu",
+               on ? "on" : "off",
+               (unsigned long)g[0], (unsigned long)g[1],
+               (unsigned long)g[2], (unsigned long)g[3],
+               (unsigned long)g[4], (unsigned long)g[5]);
+      table_row(&b, "VP5 strips", tmp);
    }
    table_row(&b, "Video player", videoplayer_status());
    table_row(&b, "F-code", fcodeLastExchange());

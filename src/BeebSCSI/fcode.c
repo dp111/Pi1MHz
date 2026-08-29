@@ -635,50 +635,58 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_dim_strips(false);
 					FCdebugString_P(PSTR(" = Video overlay mode 2 (External (computer) RGB only)\r\n"));
 					screen_set_highlight(false);
-					screen_set_palette( 1, 0, 3 );
 					screen_plane_gate(0, true);
 					screen_plane_gate(1, false);
 					screen_plane_gate(2, false);
 					screen_plane_enable(1, true);
-					screen_plane_alpha(1, 0xFF);
-					screen_plane_alpha(2, 0xFF);
+					/* the pointer stays KEYED here: it composites onto the
+					   screen, and an opaque surround would paint a box */
+					screen_plane_treatment(1, 3, 0xFF);
+					screen_plane_treatment(2, 6, 0xFF);
 					break;
 
 					case '3':
 					screen_dim_strips(false);
 					FCdebugString_P(PSTR(" = Video overlay mode 3 (Hard-keyed)\r\n"));
 					screen_set_highlight(false);
-					screen_set_palette( 1, 0, 2 );
 					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, false);
 					screen_plane_gate(2, false);
 					screen_plane_enable(1, true);
-					screen_plane_alpha(1, 0xFF);
-					screen_plane_alpha(2, 0xFF);
+					screen_plane_treatment(1, 2, 0xFF);
+					screen_plane_treatment(2, 6, 0xFF);
 					break;
 
 					case '4':
 					screen_dim_strips(false);
-					/* *VOTRANSPARENT (AIV User Guide p.33): "mixes the two
-					   signals together ... like laying two sheets of tracing
-					   paper on top of one another" - an analog A/B mix of the
-					   WHOLE frames, so the video is dimmed under the
-					   computer's black too. Normal (all-opaque) palette +
-					   fixed alpha = every pixel, black included, mixes 50%.
-					   The pointer mixes at the same level but stays keyed
-					   (its surround is an overlay artifact, not screen
-					   content, so an opaque mix would draw a grey box). */
+					/* *VOTRANSPARENT: the computer's BLACK is fully
+					   transparent - it must not dim the video at all - and
+					   every other colour is see-through, mixed over it.
+					   So: keyed palette (black = alpha 0) + fixed alpha,
+					   which is the HVS fixed-nonzero mode - the fixed alpha
+					   applies only where the palette alpha is non-zero, so
+					   black stays clear and graphics mix at alpha/255.
+					   NOT the all-opaque bank: that mixes black too and
+					   dims the picture inside the computer's rectangle,
+					   which is visible as a box against the surround.
+					   The pointer mixes at the same level and is keyed for
+					   the same reason (its surround is an overlay artifact,
+					   not screen content - an opaque mix draws a grey box). */
 					FCdebugString_P(PSTR(" = Video overlay mode 4 (Transparent - both mixed)\r\n"));
 					screen_set_highlight(false);
-					screen_set_palette( 1, 0, 3 );
+					/* The mix is in the palette (premultiplied), not in the
+					   plane's fixed-alpha stage, so the scaler interpolates
+					   correct data and glyph edges get no dark outline. The
+					   pointer shares the bank for the same reason. */
 					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, false);
 					screen_plane_gate(2, false);
 					screen_plane_enable(1, true);
-					screen_plane_alpha(1, 0x80);
-					screen_plane_alpha(2, 0x80);
+					/* alpha comes from the palette, so the plane runs at 0xFF */
+					screen_plane_treatment(1, 5, 0xFF);
+					screen_plane_treatment(2, 5, 0xFF);
 					break;
 
 					case '5':
@@ -692,7 +700,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					   small extra dim patch - accepted artifact). */
 					FCdebugString_P(PSTR(" = Video overlay mode 5 (Highlight - LaserVision enhanced by computer)\r\n"));
 					screen_set_highlight(true);
-					screen_set_palette( 1, 0, 2 );
 					/* dim the band outside the computer's raster too - out
 					   there the computer signal is blanking, i.e. black */
 					screen_dim_strips(true);
@@ -701,8 +708,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_plane_gate(1, false);
 					screen_plane_gate(2, false);
 					screen_plane_enable(1, true);
-					screen_plane_alpha(1, 0xFF);
-					screen_plane_alpha(2, 0xFF);
+					screen_plane_treatment(1, 2, 0xFF);
+					screen_plane_treatment(2, 6, 0xFF);
 					break;
 
 					case 'X':

@@ -446,6 +446,13 @@ static void videoplayer_poll(void)
         if (feed_frame(target, play, !play)) {
             vp.seek_frame = -1;
             vp.next_frame = target + 1u;
+            /* The player is logically AT this picture the moment the AU is
+               fed, not when the flip reaches the screen - reap_flip sets
+               the same value a frame later. Without this, a transport
+               command arriving in between resumes from the previous
+               position (or 0 before anything has been displayed), which is
+               what made *PLAY after a *FRAME restart the disc. */
+            vp.cur_picture = target + 1u;
             vp.mode = play ? VP_PLAY : VP_STILL;
             vp.next_frame_due = RPI_GetSystemTime() + vp.frame_period_us;
         }
@@ -513,8 +520,13 @@ static void videoplayer_poll(void)
                    cur_picture >= back (records are 0-based, pictures
                    1-based): '>' stopped reverse play on picture 2 */
                 if (vp.cur_picture >= back) {
-                    if (feed_frame(vp.cur_picture - back, false, true))
+                    uint32_t rec = vp.cur_picture - back;
+                    if (feed_frame(rec, false, true)) {
+                        /* keep the forward position in step, so a later
+                           *PLAY resumes where reverse play left off */
+                        vp.next_frame = rec + 1u;
                         vp.next_frame_due += vp.frame_period_us;
+                    }
                 } else {
                     vp.mode = VP_STILL;
                 }
@@ -647,6 +659,7 @@ static void pvf_reopen(void)
         prev_pic >= 1 && prev_pic <= vp.hdr.frame_count)
         start_pic = prev_pic;
     vp.cur_picture = start_pic;
+    vp.next_frame  = start_pic;      /* see vp_bring_up */
     /* No automatic display: after a media change the old frame is stale -
        blank the plane and wait for the Beeb's next player command. */
     vp.mode = VP_STILL;
@@ -763,7 +776,23 @@ void videoplayer_play_fwd(void)
     if (!vp.open)
         return;
     reset_speed();
+
+    /* A goto is still queued: make it a goto-and-play and let the poll's
+       seek branch run it. Starting the play here instead is undone a
+       moment later - that branch re-derives the mode from seek_op, and an
+       'R' goto resolves to VP_STILL, silently swallowing the play. */
+    if (vp.seek_frame >= 0) {
+        vp.seek_op = 'N';
+        return;
+    }
+
     if (vp.mode != VP_PLAY) {
+        /* Resume from the picture on screen. This path discards whatever is
+           mid-pipeline (in_flight = 0 + h264dec_resume below), and the play
+           loop runs up to 2 AUs ahead of the display, so resuming from
+           next_frame instead would skip the pictures it throws away - a
+           dropped frame on every pause/resume. The seek branch keeps
+           cur_picture current, so the stale-position case is covered there. */
         vp.next_frame = vp.cur_picture;      /* picture is 1-based */
         vp.in_flight = 0;
         vp.dup_owed = 0;
@@ -851,7 +880,7 @@ static void start_motion(vp_mode_t mode, uint32_t period_us, uint32_t stride)
     vp.frame_period_us = period_us;
     vp.stride = stride;
     vp.play_audio = false;
-    vp.next_frame = vp.cur_picture;  /* picture is 1-based -> next record */
+    vp.next_frame = vp.cur_picture;  /* see videoplayer_play_fwd */
     vp.mode = mode;
     vp.next_frame_due = RPI_GetSystemTime() + period_us;
 }
@@ -1140,6 +1169,9 @@ static void vp_bring_up(void)
     vp_fail = "-";
     vp.mode = VP_STILL;
     vp.cur_picture = 1;
+    /* next_frame is the position the resume commands read; bring-up
+       establishes it here because it does not go through the seek path */
+    vp.next_frame = vp.cur_picture;
     /* Speeds are NOT reset here: an S F-code may legally arrive before the
        first display command, and bring-up must not clobber it. Zero (the
        init memset) means the VP415 default via the use-site `? : 6u`s. */

@@ -413,6 +413,7 @@ void IRQHandler_main(void) {
       videoplayer_vsync_flip();   /* plane pointers, during blanking: tear-free */
       mouse_redirect_move_mouse();
       fb_process_flash();
+      screen_plane_commit();      /* last: the two above only mark their planes */
    }
    // Periodically also process the VDU Queue
    fb_process_vdu_queue();

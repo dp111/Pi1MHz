@@ -283,13 +283,10 @@ void mouse_redirect_move_mouse(void)
         switch (fb_get_current_screen_mode()->mode_num)
         {
         case 0: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE0WIDTH, PTRMODEHEIGHT , 0.5, 256, 3, (uint32_t) &mouse_pointer_data[PTRMODE0WIDTH*PTRMODEHEIGHT*mouse_pointer]);
-                screen_set_palette( MOUSE_PLANE, 2, 0 );
                 break;
         case 1: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE1WIDTH, PTRMODEHEIGHT , 1.0, 256, 3, (uint32_t) &mouse_pointer_data[(PTRMODE0WIDTH*PTRMODEHEIGHT*PTRMAX) + PTRMODE1WIDTH*PTRMODEHEIGHT*mouse_pointer]);
-                screen_set_palette( MOUSE_PLANE, 2, 0 );
                 break;
         case 2: screen_create_RGB_plane(MOUSE_PLANE,PTRMODE2WIDTH, PTRMODEHEIGHT , 2.0, 256, 3, (uint32_t) &mouse_pointer_data[(PTRMODE0WIDTH*PTRMODEHEIGHT*PTRMAX) + (PTRMODE1WIDTH*PTRMODEHEIGHT*PTRMAX) + PTRMODE2WIDTH*PTRMODEHEIGHT*mouse_pointer]);
-                screen_set_palette( MOUSE_PLANE, 2, 0 );
                 break;
         default:
             return;
@@ -297,21 +294,17 @@ void mouse_redirect_move_mouse(void)
         }
     }
 
-// BBC coordinates are 0-1279, 0-1023 origin bottom left
-// Screen coordinates are 0-319, 0-255 origin top left
-
-    switch (fb_get_current_screen_mode()->mode_num)
+    /* BBC coordinates are 0-1279, 0-1023, origin bottom left; screen
+       coordinates are 0..width-1, 0..height-1, origin top left. Scale from
+       the mode table rather than a divisor per mode: the hardcoded switch
+       had MODE 0's y at /2, which maps 0-1023 onto 0-511 and so puts most
+       of the range off the top of a 256-line screen (the pointer clamped
+       high), and MODE 2's x at /4 on a 160-wide screen. */
     {
-    case 0: mouse_y = 255 - (mouse_y / 2);
-            mouse_x = mouse_x / 2;
-            break;
-    case 1: mouse_y = 255 - (mouse_y / 4);
-            mouse_x = mouse_x / 4;
-            break;
-    case 2: mouse_y = 255 - (mouse_y / 4);
-            mouse_x = mouse_x / 4;
-            break;
-    default : break;
+        const int32_t w = (int32_t)fb_get_current_screen_mode()->width;
+        const int32_t h = (int32_t)fb_get_current_screen_mode()->height;
+        mouse_x = (mouse_x * w) / 1280;
+        mouse_y = (h - 1) - ((mouse_y * h) / 1024);
     }
 
     screen_set_plane_position( MOUSE_PLANE, mouse_x, mouse_y );
