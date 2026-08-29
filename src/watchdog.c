@@ -167,5 +167,5 @@ void watchdog_init(uint8_t instance, uint8_t address)
    /* Take over from the boot watchdog seamlessly: stamp the kick clock as
       already due so the first poll re-arms with the configured timeout. */
    watchdog_last_kick_us = RPI_GetSystemTime() - WATCHDOG_KICK_INTERVAL_US;
-   Pi1MHz_Register_Poll(watchdog_poll);
+   Pi1MHz_Register_Poll(watchdog_poll, "watchdog");
 }

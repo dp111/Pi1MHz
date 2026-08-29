@@ -273,5 +273,5 @@ void usb_init(uint8_t instance , uint8_t address) {
   // The IRQ handler is already attached in IRQHandler_main() - see Pi1MHz.c
   RPI_GetIrqController()->Enable_IRQs_1 = (1 << 9);
 
-  Pi1MHz_Register_Poll(usb_task);
+  Pi1MHz_Register_Poll(usb_task, "usb");
 }

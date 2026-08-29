@@ -174,6 +174,7 @@ static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE
 
 // Table of polling functions to call while idle
 NOINIT_SECTION static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
+NOINIT_SECTION static const char *Pi1MHz_poll_names[NUM_EMULATORS];
 // holds the total number of polling functions to call
 static uint8_t  Pi1MHz_polls_max;
 
@@ -290,7 +291,14 @@ void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_fun
 
 // For each task that needs to be polled during idle it must register itself.
 // is can only register once
-void Pi1MHz_Register_Poll( func_ptr function_ptr )
+const char *Pi1MHz_poll_name(unsigned int idx)
+{
+   if (idx >= Pi1MHz_polls_max || Pi1MHz_poll_names[idx] == NULL)
+      return "?";
+   return Pi1MHz_poll_names[idx];
+}
+
+void Pi1MHz_Register_Poll( func_ptr function_ptr, const char *name )
 {
    uint8_t i;
 
@@ -309,6 +317,7 @@ void Pi1MHz_Register_Poll( func_ptr function_ptr )
    }
 
    Pi1MHz_poll_table[Pi1MHz_polls_max] = function_ptr;
+   Pi1MHz_poll_names[Pi1MHz_polls_max] = (name != NULL) ? name : "?";
    Pi1MHz_polls_max++;
 }
 

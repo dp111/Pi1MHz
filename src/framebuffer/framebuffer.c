@@ -2484,5 +2484,5 @@ void fb_emulator_init(uint8_t instance, uint8_t address)
   Pi1MHz_Register_Memory(WRITE_FRED, (address + 4u), Pi1MHz_EmulatedMemoryByte);
   Pi1MHz_Register_Memory(WRITE_FRED, (address + 5u), Pi1MHz_EmulatedMemoryByte);
 
- // Pi1MHz_Register_Poll(fb_emulator_poll);
+ // Pi1MHz_Register_Poll(fb_emulator_poll, "fb");
 }

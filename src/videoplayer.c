@@ -1121,7 +1121,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
        BREAK during VP1/VP5 must not leave layers hidden or the inverted
        highlight palette armed. */
     screen_mixer_reset();
-    Pi1MHz_Register_Poll(videoplayer_poll);
+    Pi1MHz_Register_Poll(videoplayer_poll, "video");
 }
 
 /* The deferred bring-up: everything videoplayer_init used to do inline. */
@@ -1213,7 +1213,7 @@ static void vp_bring_up(void)
     vp.stride = 1;
     vp.play_audio = true;
 
-    Pi1MHz_Register_Poll(videoplayer_poll);
+    Pi1MHz_Register_Poll(videoplayer_poll, "video");
 
     LOG_INFO("videoplayer: %s %"PRIu32"x%"PRIu32" %"PRIu32" frames%s\r\n",
              pvf_path, vp.hdr.width, vp.hdr.height, vp.hdr.frame_count,

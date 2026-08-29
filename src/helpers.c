@@ -11,6 +11,7 @@
 #include "BeebSCSI/filesystem.h"
 #include "scripts/gitversion.h"
 #include "rpi/info.h"
+#include "videoplayer.h"
 
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
 _Alignas(4) NOINIT_SECTION uint8_t helper_ram[4*1024];
@@ -149,6 +150,19 @@ static void helpers_bank_select(unsigned int gpio)
     }
 }
 
+/* The help screen is assembled in FIQ (a Beeb write to FRED), and the
+   mailbox is main-loop only - one static property buffer, no locking. So
+   everything the screen prints must already be cached. Refresh here, and
+   only while the player is idle: a mailbox exchange can block the poll loop
+   (bounded only by the 3 s mailbox timeout) and stalling it mid-playback
+   starves the Beeb's SCSI handshake. */
+static void helpers_poll(void)
+{
+   if (videoplayer_active())
+      return;
+   info_refresh_cached();
+}
+
 void helpers_init( uint8_t instance , uint8_t address)
 {
    uint8_t *helper = &helper_ram[0];
@@ -157,6 +171,11 @@ void helpers_init( uint8_t instance , uint8_t address)
     {
         // register call backs
         Pi1MHz_Register_Memory(WRITE_FRED, address, helpers_bank_select );
+        /* Prime once here, before anything can be playing, so the FIQ path
+           can never be the first to touch the mailbox - then keep it fresh
+           from the poll loop. */
+        info_refresh_cached();
+        Pi1MHz_Register_Poll(helpers_poll, "helpers");
 
         Pi1MHz_MemoryWrite((uint32_t)(address+0), 0x8E); // STX &FCxx
         Pi1MHz_MemoryWrite((uint32_t)(address+1), (uint8_t) address);

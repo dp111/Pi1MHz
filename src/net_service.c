@@ -1610,7 +1610,7 @@ void net_service_init(uint8_t instance, uint8_t address)
    /* Both dedupe, so re-running on a BBC reset is safe. */
    (void)services_register(SERVICE_CMD_NET_FIRST, SERVICE_CMD_NET_LAST,
                            net_service_command);
-   Pi1MHz_Register_Poll(net_service_poll);
+   Pi1MHz_Register_Poll(net_service_poll, "net");
 
    services_irq_set(net_source, false);   /* start with our nIRQ line clear */
 }

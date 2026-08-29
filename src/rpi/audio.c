@@ -334,7 +334,7 @@ void audio_claim(const audio_producer_t *p)
       active = &pwm_sink;
    /* The core drains the ring from the idle loop itself, whoever the
       producer is (registration is idempotent). */
-   Pi1MHz_Register_Poll(audio_pump);
+   Pi1MHz_Register_Poll(audio_pump, "audio");
 }
 
 void audio_release(const audio_producer_t *p)

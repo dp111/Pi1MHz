@@ -306,7 +306,7 @@ void aun_emulator_init(uint8_t instance, uint8_t address)
       services emulator initialises earlier in the table, so the port is
       up; disabling AUN leaves 30-44 unclaimed and ignored. */
    (void)services_register(AUN_CMD_FIRST, AUN_CMD_LAST, aun_emulator_command);
-   Pi1MHz_Register_Poll(aun_emulator_poll);
+   Pi1MHz_Register_Poll(aun_emulator_poll, "aun");
 }
 
 /* Plain-text status block for the web UI (webserver.c /aun). */

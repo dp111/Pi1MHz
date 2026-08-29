@@ -332,7 +332,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       cancels an in-progress upload" is reasonable - the Beeb owns the card. */
    filesystemReset();
    // register polling function
-   Pi1MHz_Register_Poll(scsiProcessEmulation);
+   Pi1MHz_Register_Poll(scsiProcessEmulation, "scsi");
 }
 
 uint8_t harddisc_emulator_get_address(void)

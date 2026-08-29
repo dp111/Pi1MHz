@@ -2,6 +2,7 @@
 #include <string.h>
 #include <inttypes.h>
 #include "info.h"
+#include "../Pi1MHz.h"   /* Pi1MHz_now_us - the poll loop's clock read */
 #include "rpi.h"
 
 NOINIT_SECTION static char cmdline[PROP_SIZE];
@@ -44,14 +45,45 @@ uint32_t get_clock_rate(uint32_t clk_id) {
    }
 }
 
-/* Millidegrees, exactly as the VideoCore reports them.  Callers that only
-   want a couple of decimal places should use this rather than get_temp():
-   one of them runs in FIQ context, where touching VFP corrupts whatever the
-   interrupted code was holding. */
+/* The VideoCore mailbox has ONE static property buffer and no locking, so it
+   is MAIN-LOOP ONLY: a FIQ caller would overwrite a request the main loop had
+   already posted and was spinning for, and the main loop would then parse the
+   wrong reply - the "framebuffer allocated at address 0" class of fault.
+   helpers.c builds the help screen in FIQ (a Beeb write to FRED), so what it
+   needs is cached here and refreshed from the poll loop instead. */
+static volatile uint32_t temp_milli_cached;
+
+/* Millidegrees, exactly as the VideoCore reports them.  FIQ-safe: this only
+   reads the cache. Callers that want a couple of decimal places should use
+   this rather than get_temp(), which returns a float - FIQ.s saves no VFP
+   state, so a float there corrupts whatever it interrupted. */
 uint32_t get_temp_millidegrees(void) {
-   rpi_mailbox_property_t *buf;
-   buf = RPI_PropertyGetWord(TAG_GET_TEMPERATURE, 0);
-   return (buf != NULL) ? buf->data.buffer_32[1] : 0u;
+   return temp_milli_cached;
+}
+
+/* Main loop only. Refreshes the temperature at most once a second and primes
+   the info string, so neither costs a mailbox exchange from FIQ.
+   Uses Pi1MHz_now_us - the poll loop's one clock read per pass, published
+   for exactly this: deadlines measured in milliseconds or longer have no
+   business paying 47 cycles for a timer read of their own. Declining costs
+   a compare. */
+void info_refresh_cached(void) {
+   static uint32_t last_us;
+   static bool primed;
+   uint32_t now = Pi1MHz_now_us;
+
+   if (primed && (now - last_us) < 1000000u)
+      return;
+   last_us = now;
+   primed = true;
+
+   rpi_mailbox_property_t *buf = RPI_PropertyGetWord(TAG_GET_TEMPERATURE, 0);
+   temp_milli_cached = (buf != NULL) ? buf->data.buffer_32[1] : 0u;
+
+   /* Self-caching, but its FIRST call does three mailbox exchanges
+      (revision + two clock rates) - and helpers.c is its only caller, in
+      FIQ. Priming it here means FIQ never reaches that path. */
+   (void)get_info_string();
 }
 
 float get_temp(void) {

@@ -2857,8 +2857,11 @@ static bool route_status(ws_conn_t *c)
    {
       /* max run per poll slot, reset on read */
       size_t o = 0;
-      for (unsigned int i = 0; i < Pi1MHz_poll_count() && o < sizeof tmp - 12; i++)
-         o += (size_t)snprintf(tmp + o, sizeof tmp - o, "%u:%lu ", i,
+      /* Named, not numbered: the row is positional, so adding any poller
+         renumbers the rest and the reader has to decode the init order. */
+      for (unsigned int i = 0; i < Pi1MHz_poll_count() && o < sizeof tmp - 20; i++)
+         o += (size_t)snprintf(tmp + o, sizeof tmp - o, "%s:%lu ",
+                               Pi1MHz_poll_name(i),
                                (unsigned long)Pi1MHz_poll_max_us(i, true));
       table_row(&b, "Poll max us", tmp);
    }
@@ -5573,6 +5576,13 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
       return ws_error(c, 423, "Locked", WS_BUSY_MSG);
    if (f_stat(src, &fno_src) != FR_OK)
       return ws_error(c, 404, "Not Found", "Source does not exist.");
+   /* Same file both ends: RFC 4918 forbids it, and letting it through
+      would unlink the destination - which IS the source - and then fail
+      the rename, destroying the file outright. Case-insensitive because
+      FAT is: "/A/x" and "/a/x" are one object. */
+   if (ws_prefix_ci_str(src, dst) && ws_prefix_ci_str(dst, src))
+      return ws_error(c, 403, "Forbidden",
+                      "Source and destination are the same.");
 
    {
       FILINFO fno_dst;
@@ -5592,15 +5602,13 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
                          "Destination is a directory; remove it or "
                          "choose a different name first.");
    }
-   if (dst_existed) {
-      /* File destination - remove it so f_rename / f_open succeed.
-         Failure here is uncommon (would be e.g. a read-only flag in
-         FatFs); leave it to the rename / open call below to surface
-         the precise reason via its own error path. */
-      (void)f_unlink(dst);
-   }
-
    if (is_move) {
+      /* Only now, with every precondition passed: f_rename will not
+         overwrite, so the destination has to go first. Failure here is
+         uncommon (a read-only flag); the rename below surfaces the
+         precise reason via its own error path. */
+      if (dst_existed)
+         (void)f_unlink(dst);
       FRESULT fr = f_rename(src, dst);
       if (fr != FR_OK)
          return ws_error(c, 500, "Internal Server Error", "Rename failed.");
@@ -5632,6 +5640,9 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
       return ws_error(c, 500, "Internal Server Error",
                       "Could not open source.");
    c->copy_src_open = true;
+   /* No f_unlink for COPY: FA_CREATE_ALWAYS truncates, and reaching it
+      only after the source opened means a failed COPY cannot destroy an
+      existing destination. */
    if (f_open(&c->copy_dst, dst, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
       f_close(&c->copy_src); c->copy_src_open = false;
       return ws_error(c, 500, "Internal Server Error",

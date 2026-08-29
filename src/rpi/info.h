@@ -31,7 +31,8 @@ extern char *get_cmdline_prop(const char *prop);
 
 float get_temp(void);
 /* Integer form - safe to call from FIQ, where float is not. */
-uint32_t get_temp_millidegrees(void);
+uint32_t get_temp_millidegrees(void);   /* FIQ-safe: cached */
+void info_refresh_cached(void);         /* main loop only: does the mailbox work */
 
 /* Foundation-style WiFi/Ethernet MAC computed by the VC4 firmware
    from the SoC's board-serial OTP fuses.  Returns true and writes

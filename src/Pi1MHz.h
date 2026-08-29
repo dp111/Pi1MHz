@@ -212,7 +212,11 @@ static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;
 void Pi1MHz_LED(int led);
 void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_func_ptr function_ptr );
 const char *Pi1MHz_EmulatorName(unsigned int idx);
-void Pi1MHz_Register_Poll( func_ptr function_ptr );
+/* name: short, static, shown against this slot in /status's "Poll max us"
+   row. The row is positional, so without it every added poller silently
+   renumbers the others and the row has to be decoded from the init order. */
+void Pi1MHz_Register_Poll( func_ptr function_ptr, const char *name );
+const char *Pi1MHz_poll_name(unsigned int idx);
 /* Longest run of poll slot idx (us) since the last read with reset */
 uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset);
 unsigned int Pi1MHz_poll_count(void);

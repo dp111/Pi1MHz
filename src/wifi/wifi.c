@@ -597,7 +597,7 @@ void wifi_init(void)
       webserver_poll + netname_poll) is no longer being called.
       Pi1MHz_Register_Poll dedupes against the existing table, so
       this is a one-line idempotent re-add on every entry. */
-   Pi1MHz_Register_Poll(wifi_dispatch_poll);
+   Pi1MHz_Register_Poll(wifi_dispatch_poll, "wifi");
 
    if (g_wifi_init_done
        && g_wifi_state != WIFI_STATE_ERROR

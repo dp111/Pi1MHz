@@ -556,5 +556,5 @@ void teletext_emulator_init(uint8_t instance, uint8_t address)
    Pi1MHz_Register_Memory(READ_FRED,  (TTX_ADDR + 3u), ttx_clear);
    Pi1MHz_Register_Memory(WRITE_FRED, (TTX_ADDR + 3u), ttx_clear);
 
-   Pi1MHz_Register_Poll(teletext_poll);
+   Pi1MHz_Register_Poll(teletext_poll, "teletext");
 }

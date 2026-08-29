@@ -521,7 +521,7 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
    audio_claim(&m5000_producer);
 
    // register polling function
-   Pi1MHz_Register_Poll(music5000_emulate);
+   Pi1MHz_Register_Poll(music5000_emulate, "m5000");
 }
 
 uint8_t M5000_emulator_read_instance(void)
