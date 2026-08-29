@@ -2423,7 +2423,6 @@ static bool route_aun(ws_conn_t *c)
 
 static bool route_status(ws_conn_t *c)
 {
-   wifi_status_t                st  = wifi_get_status();
    const wifi_config_t         *cfg = wifi_get_config();
    const wifi_lwip_context_t   *lw  = wifi_lwip_get_context();
    sdio_runtime_status_t        rs  = sdio_runtime_get_status();
@@ -2435,13 +2434,11 @@ static bool route_status(ws_conn_t *c)
    page_open(&b, "Status");
    sb_puts(&b, "<h1>Status</h1><div class=\"card\"><table>");
 
-   table_row(&b, "WiFi state", wifi_state_name(st.state));
    table_row(&b, "SSID",
              (cfg != NULL && cfg->ssid[0] != '\0') ? cfg->ssid : "(not set)");
    table_row(&b, "Hostname",
              (cfg != NULL && cfg->hostname[0] != '\0')
                 ? cfg->hostname : "(default)");
-   table_row(&b, "Link", sdio_runtime_link_is_up() ? "up" : "down");
 
    /* Signal strength.  Only read RSSI when this page is viewed: the
       request is flagged here and the actual ioctl runs off the TCP
