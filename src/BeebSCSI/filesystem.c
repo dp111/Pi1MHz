@@ -88,7 +88,10 @@ static const parserkey scsiattributes[] = {
    { "ModePage36"      , 0 ,  4 , NUMSTRING},
    { "ModePage37"      , 0 ,  6 , NUMSTRING},
    { "ModePage38"      , 0 ,  6 , NUMSTRING},
-   { "LDUserCode"      , 0 ,  4 , STRING },
+   /* 5: the LaserVision user code carries the '=' (e.g. "1=986").
+      At 4 the parser truncated it to "1=98", and filesystemReadLunUserCode
+      read string[4] off the end of the 4-byte allocation. */
+   { "LDUserCode"      , 0 ,  5 , STRING },
    { "LDVideoXoffset"  , -768 , 768 , INTEGER },
    { NULL , 0 ,0, 0} // end of list
 };

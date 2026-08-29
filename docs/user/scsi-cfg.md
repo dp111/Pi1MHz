@@ -97,7 +97,7 @@ You can add or remove `ModePageNN` lines; they must keep the
 
 | Key | Type | Range | Meaning |
 |---|---|---|---|
-| `LDUserCode` | text | 4 chars | LaserDisc user code for VFS/Domesday volumes. |
+| `LDUserCode` | text | 5 chars | LaserDisc user code for VFS/Domesday volumes, including the `=` (e.g. `1=986`). |
 | `LDVideoXoffset` | integer | -768 … 768 | Horizontal offset of the Domesday video overlay. |
 
 ## Editing safely
