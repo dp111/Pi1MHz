@@ -99,6 +99,12 @@ static const parserkey scsiattributes[] = {
 _Static_assert(LDVIDEOXOFFSET + 2 == NUM_KEYS,
                "parserkeyvalueenum out of step with scsiattributes[]");
 
+/* One-side cache of a scsi0.cfg's text, so the menu's ?T and ?Y for the
+   same side share a single parse - see filesystemReadVFSCfgTextDir(). */
+static int16_t vfs_cfg_dir = -1;
+static char    vfs_cfg_title[128];
+static char    vfs_cfg_desc[240];
+
 /* VFS volume-present cache - see filesystemVFSVolumePresent() */
 static int16_t vfs_vol_cached_dir = -1;
 static bool    vfs_vol_present;
@@ -714,6 +720,22 @@ bool filesystemVFSDatPresent(void)
    return f_stat(fileName, &fno) == FR_OK;
 }
 
+/* What /BeebVFS<dir> holds, without jukeboxing to it: 2 = full disc
+   (scsi0.dat), 1 = video-only volume (video.pvf), 0 = nothing. The menu's
+   rescan asks this for every side; making it take the directory is what
+   lets it stop remounting each one just to look. */
+uint8_t filesystemVFSDirType(uint8_t dir)
+{
+   FILINFO fno;
+   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/scsi0.dat", dir);
+   if (f_stat(fileName, &fno) == FR_OK)
+      return 2;
+   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/video.pvf", dir);
+   if (f_stat(fileName, &fno) == FR_OK)
+      return 1;
+   return 0;
+}
+
 /* The mounted FatFs object, or NULL when no card is mounted.  Read-only
    access to FAT geometry for the webserver's incremental free-space scan. */
 FATFS *filesystemGetFsObject(void)
@@ -1031,44 +1053,67 @@ bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries)
    every jukebox path is gated on all LUNs being stopped, and stopping
    releases the values. The menu scans discs by jukeboxing to each
    directory and remounting, so no separate file read is needed. */
-bool filesystemReadVFSCfgText(enum parserkeyvalueenum key, char *out, uint32_t maxLen)
+/* Read a side's Title/Description WITHOUT jukeboxing to it: a jukebox is a
+   remount, and the menu's rescan was paying one per side purely to read a
+   name. */
+bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key,
+                                 char *out, uint32_t maxLen)
 {
    if (!maxLen)
       return false;
    out[0] = '\0';
 
-   /* Mounted disc: the values were parsed at mount - serve the cache. */
-   const parserkeyvalue *v = &filesystemState.keyvalues[8][key];
-   if (v->v.string && v->length) {
-      uint32_t n = v->length < maxLen - 1 ? (uint32_t)v->length : maxLen - 1;
-      memcpy(out, v->v.string, n);
-      out[n] = '\0';
-      return true;
-   }
-
-   /* Video-only disc (video.pvf, no scsi0.dat): it never mounts, so the
-      cache never fills - but its directory may still carry a scsi0.cfg
-      naming it for the menu. One parse through the shared fileparser into
-      a temporary set, released before returning; the scan asks once per
-      disc so the SD cost is negligible. */
-   if (!filesystemVFSVolumePresent() && !filesystemVFSDatPresent())
-      return false;
-
-   parserkeyvalue values[NUM_KEYS] = {0};
-   bool found = false;
-   snprintf(fileName, sizeof(fileName), "/BeebVFS%d/scsi0.cfg",
-            filesystemState.lunDirectoryVFS);
-   if (parse_readfile(fileName, 0, scsiattributes, values)) {
-      if (values[key].v.string && values[key].length) {
-         uint32_t n = values[key].length < maxLen - 1 ?
-                      (uint32_t)values[key].length : maxLen - 1;
-         memcpy(out, values[key].v.string, n);
+   /* The mounted side's values were parsed at mount - serve that cache. */
+   if (dir == (uint8_t)filesystemState.lunDirectoryVFS) {
+      const parserkeyvalue *v = &filesystemState.keyvalues[8][key];
+      if (v->v.string && v->length) {
+         uint32_t n = v->length < maxLen - 1 ? (uint32_t)v->length : maxLen - 1;
+         memcpy(out, v->v.string, n);
          out[n] = '\0';
-         found = true;
+         return true;
       }
-      parse_releasekeyvalues(values, NUM_KEYS);
    }
-   return found;
+
+   /* Any other side, and a video-only disc (video.pvf, no scsi0.dat) which
+      never mounts so its cache never fills: parse that directory's
+      scsi0.cfg. No presence check first - parse_readfile simply fails if
+      the file is not there, and an f_stat costs the same LFN directory
+      walk that made the scan slow in the first place.
+      The menu asks ?T then ?Y for the SAME side, so one entry of cache
+      makes the pair share a parse. Keeping it to ONE entry means a rescan
+      still re-reads every side, so an edited cfg can never be stale by
+      more than the side currently being asked about. */
+   if ((int16_t)dir != vfs_cfg_dir) {
+      parserkeyvalue values[NUM_KEYS] = {0};
+      vfs_cfg_dir = (int16_t)dir;
+      vfs_cfg_title[0] = '\0';
+      vfs_cfg_desc[0]  = '\0';
+      snprintf(fileName, sizeof(fileName), "/BeebVFS%u/scsi0.cfg", dir);
+      if (parse_readfile(fileName, 0, scsiattributes, values)) {
+         if (values[TITLE].v.string && values[TITLE].length) {
+            uint32_t n = values[TITLE].length < sizeof(vfs_cfg_title) - 1 ?
+                         (uint32_t)values[TITLE].length : sizeof(vfs_cfg_title) - 1;
+            memcpy(vfs_cfg_title, values[TITLE].v.string, n);
+            vfs_cfg_title[n] = '\0';
+         }
+         if (values[DESCRIPTION].v.string && values[DESCRIPTION].length) {
+            uint32_t n = values[DESCRIPTION].length < sizeof(vfs_cfg_desc) - 1 ?
+                         (uint32_t)values[DESCRIPTION].length : sizeof(vfs_cfg_desc) - 1;
+            memcpy(vfs_cfg_desc, values[DESCRIPTION].v.string, n);
+            vfs_cfg_desc[n] = '\0';
+         }
+         parse_releasekeyvalues(values, NUM_KEYS);
+      }
+   }
+
+   const char *src = (key == TITLE) ? vfs_cfg_title : vfs_cfg_desc;
+   if (!src[0])
+      return false;
+   uint32_t n = (uint32_t)strlen(src);
+   if (n > maxLen - 1) n = maxLen - 1;
+   memcpy(out, src, n);
+   out[n] = '\0';
+   return true;
 }
 
 // Function to read a LUN descriptor

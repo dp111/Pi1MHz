@@ -554,11 +554,17 @@ bool videoplayer_active(void)
     return vp.open;
 }
 
+/* The VFS directory a bring-up has already failed on. Retrying it costs an
+   SD directory walk inside the SCSI poll on EVERY display F-code, and on a
+   menu side (no video.pvf at all) that is the normal steady state. */
+static int32_t vp_failed_dir = -1;
+
 void videoplayer_media_changed(void)
 {
     /* Called from the jukebox/remount paths, possibly in FIQ context: just
        note it; the poll task does the file work. */
     vp.reopen = true;
+    vp_failed_dir = -1;          /* a new side is worth trying again */
 }
 
 /* The VFS jukebox directory changed, or the card was remounted (which
@@ -696,6 +702,9 @@ const char *videoplayer_status(void)
 static void vp_ensure(void)
 {
     if (!vp.open && vp.lazy_pending) {
+        int32_t dir = (int32_t)filesystemGetLunDirectoryVFS();
+        if (dir == vp_failed_dir)
+            return;                  /* known to have no video: fail free */
         vp.lazy_pending = false;
         if (h264dec_running() && vp.buf_phys[0] != 0)
             pvf_reopen();            /* decoder AND its output buffers still
@@ -706,11 +715,15 @@ static void vp_ensure(void)
                                         released the buffers (buf_phys zeroed
                                         by its memset) though the decoder
                                         component may still be running */
-        /* A failed attempt re-arms: only display F-codes reach here, so
-           retries are user-paced - a latched-dead player just looks like
-           a broken SPACE key on the menu's player screen. */
-        if (!vp.open)
+        /* A failed attempt re-arms, but only for a DIFFERENT side: the
+           re-arm exists so a jukebox to a side that does have video works
+           without a Beeb reset, and videoplayer_media_changed clears the
+           latch for exactly that case. Re-probing the same empty directory
+           buys nothing and starves the Beeb. */
+        if (!vp.open) {
             vp.lazy_pending = true;
+            vp_failed_dir = dir;
+        }
     }
 }
 

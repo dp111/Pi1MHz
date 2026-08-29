@@ -60,6 +60,25 @@ const char *fcodeLastExchange(void)
 
 
 static char VPmode;
+
+/* ?Vnn / ?Tnn / ?Ynn - query side nn WITHOUT jukeboxing to it. A jukebox is
+   a remount, and the menu's rescan was paying one per side purely to read
+   its name. Missing or malformed digits are a bad request, answered 'X'. */
+static bool fcodeDirParam(uint8_t *dir)
+{
+	uint32_t v = 0;
+	int digits = 0;
+	for (int i = 2; i < 5; i++) {
+		char c = (char)scsiFcodeBuffer[i];
+		if (c < '0' || c > '9') break;
+		v = (v * 10u) + (uint32_t)(c - '0');
+		digits++;
+	}
+	if (!digits || v > 255u)
+		return false;
+	*dir = (uint8_t)v;
+	return true;
+}
 // Function to handle F-Code buffer write actions
 void fcodeWriteBuffer(uint8_t lunNumber)
 {
@@ -280,30 +299,36 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				   menu's OSWORD sector-0 probe, which needed a LUN start and
 				   trusted VFS's error reporting. */
 				case 'V':
-				if (filesystemVFSDatPresent()) {
-					scsiFcodeBufferRX[0] = 'V';
-					scsiFcodeBufferRX[1] = '1';
-				} else if (filesystemVFSVolumePresent()) {
-					scsiFcodeBufferRX[0] = 'V';
-					scsiFcodeBufferRX[1] = '0';
-				} else {
-					scsiFcodeBufferRX[0] = 'X';
-					scsiFcodeBufferRX[1] = 0x0D;
+				{
+					uint8_t dir;
+					uint8_t type = fcodeDirParam(&dir) ? filesystemVFSDirType(dir) : 0u;
+					if (type) {
+						scsiFcodeBufferRX[0] = 'V';
+						scsiFcodeBufferRX[1] = (type == 2u) ? '1' : '0';
+					} else {
+						scsiFcodeBufferRX[0] = 'X';
+						scsiFcodeBufferRX[1] = 0x0D;
+					}
+					scsiFcodeBufferRX[2] = 0x0D;
 				}
-				scsiFcodeBufferRX[2] = 0x0D;
 				break;
 
 				case 'T':
 				case 'Y':
 				{
 					char text[240];
-					bool ok = filesystemReadVFSCfgText(
-					              scsiFcodeBuffer[1] == 'T' ? TITLE : DESCRIPTION,
-					              text, sizeof(text));
+					enum parserkeyvalueenum key =
+					        (scsiFcodeBuffer[1] == 'T') ? TITLE : DESCRIPTION;
+					uint8_t dir = 0;
+					bool haveDir = fcodeDirParam(&dir);
+					bool ok = haveDir &&
+					          filesystemReadVFSCfgTextDir(dir, key, text, sizeof(text));
 					/* A video-only volume (video.pvf, no scsi0.dat/cfg) still
 					   exists: reply 'T'/'Y' with empty text so the menu can
-					   tell "video-only disc" from "no disc" ('X'). */
-					if (!ok && (filesystemVFSVolumePresent() || filesystemVFSDatPresent())) {
+					   tell "video-only disc" from "no disc" ('X'). Only worth
+					   the two f_stats when the cfg gave us nothing - an
+					   f_stat is the LFN directory walk we are avoiding. */
+					if (!ok && haveDir && filesystemVFSDirType(dir) != 0u) {
 						text[0] = '\0';
 						ok = true;
 					}

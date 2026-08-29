@@ -95,7 +95,8 @@ enum parserkeyvalueenum {
 /* Read one value (TITLE or DESCRIPTION) of the mounted VFS disc from
    its already-parsed attributes into out (NUL-terminated, maxLen incl
    NUL). False if not mounted / key absent. For the disc menu. */
-bool filesystemReadVFSCfgText(enum parserkeyvalueenum key, char *out, uint32_t maxLen);
+bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key, char *out, uint32_t maxLen);
+uint8_t filesystemVFSDirType(uint8_t dir);   /* 2 = scsi0.dat, 1 = video.pvf, 0 = none */
 
 /* True when the current /BeebVFS<n> holds a video.pvf - the volume-present
    marker. Cheap (cached); used by the F-code path so a video-only disc
