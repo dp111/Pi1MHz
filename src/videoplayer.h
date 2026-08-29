@@ -12,6 +12,8 @@ void videoplayer_vsync_flip(void);   /* vsync IRQ: commit the armed frame */
 /* True when a .pvf video is open and the hardware decoder is running.
    When false the F-code layer keeps its old (static frame) behaviour. */
 bool videoplayer_active(void);
+bool videoplayer_seeking(void);            /* ?P: goto outstanding */
+bool videoplayer_audio_enabled(int channel);
 
 /* The VFS jukebox directory changed or the card was remounted: reopen
    /BeebVFS<n>/video.pvf from the poll task. Safe from any context. */

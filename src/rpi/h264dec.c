@@ -563,6 +563,28 @@ void h264dec_reset(void)
     dec.reconfigure_pending = was_enabled;
 }
 
+/* /status forensics: the output-port handshake, which is what breaks when a
+   BREAK resets the decoder and the port is re-enabled either side of the
+   caller registering its new buffers. "feeds N, back 0" with no armed
+   buffers says the arm happened too early; with the port disabled it says
+   the reconfigure never ran. Three counters, no cost. */
+void h264dec_output_state(bool *enabled, bool *reconf,
+                          uint32_t *registered, uint32_t *armed)
+{
+    uint32_t r = 0, a = 0;
+    for (int i = 0; i < H264DEC_MAX_OUTPUT; i++) {
+        if (!dec.out[i].registered)
+            continue;
+        r++;
+        if (dec.out[i].with_component)
+            a++;
+    }
+    *enabled    = dec.output_enabled;
+    *reconf     = dec.reconfigure_pending;
+    *registered = r;
+    *armed      = a;
+}
+
 void h264dec_poll(void)
 {
     if (!dec.running)

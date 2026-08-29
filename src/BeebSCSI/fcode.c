@@ -35,7 +35,6 @@
 #include "debug.h"
 #include "filesystem.h"
 #include "fcode.h"
-#include "../rpi/systimer.h"   /* RPI_GetSystemTime - F-code history timing */
 #include "../rpi/screen.h"
 #include "../videoplayer.h"
 
@@ -60,53 +59,14 @@ const char *fcodeLastExchange(void)
 }
 
 
-/* A short history of what the Beeb sent, with the gap before each one, so a
-   sequence can be read back without a debug build: "is this slow play, or
-   the software stepping frame by frame as fast as it can?" is not
-   answerable from the single last-exchange row. One small copy per F-code -
-   the same class of always-on forensics as the Bus diag row. */
-#define FCODE_HIST 28
-typedef struct { char tx[10]; uint16_t dt_ms; } fcode_hist_t;
-static fcode_hist_t fcode_hist[FCODE_HIST];
-static uint8_t  fcode_hist_w;      /* next slot to write */
-static uint8_t  fcode_hist_n;      /* entries held, <= FCODE_HIST */
-static uint32_t fcode_hist_last_us;
-
-static void fcodeHistoryAdd(void)
-{
-    uint32_t now = RPI_GetSystemTime();
-    uint32_t dt  = fcode_hist_n ? ((now - fcode_hist_last_us) / 1000u) : 0u;
-    fcode_hist_last_us = now;
-
-    fcode_hist_t *e = &fcode_hist[fcode_hist_w];
-    size_t o = 0;
-    for (int i = 0; i < 9 && scsiFcodeBuffer[i] != 0x0D && scsiFcodeBuffer[i]; i++)
-        e->tx[o++] = (char)scsiFcodeBuffer[i];
-    e->tx[o] = 0;
-    e->dt_ms = (dt > 9999u) ? 9999u : (uint16_t)dt;
-
-    fcode_hist_w = (uint8_t)((fcode_hist_w + 1u) % FCODE_HIST);
-    if (fcode_hist_n < FCODE_HIST) fcode_hist_n++;
-}
-
-/* Oldest first, each as "<code>+<gap in ms>". */
-const char *fcodeHistory(void)
-{
-    static char buf[420];
-    size_t o = 0;
-    uint8_t idx = (uint8_t)((fcode_hist_w + FCODE_HIST - fcode_hist_n) % FCODE_HIST);
-    for (uint8_t k = 0; k < fcode_hist_n && o < sizeof buf - 20; k++) {
-        o += (size_t)snprintf(buf + o, sizeof buf - o, "%s+%u ",
-                              fcode_hist[idx].tx,
-                              (unsigned)fcode_hist[idx].dt_ms);
-        if (o >= sizeof buf) { o = sizeof buf - 1; break; }
-        idx = (uint8_t)((idx + 1u) % FCODE_HIST);
-    }
-    buf[o] = 0;
-    return buf;
-}
-
 static char VPmode;
+
+/* Latched by their own F-codes purely so ?P can report them (the ROM's
+   player-status bits 4.4/4.3/4.2 and 5.3). Nothing else consumes them. */
+static bool fc_delay_on;      /* ) transmission delay */
+static bool fc_rc_computer;   /* H remote control routed to computer */
+static bool fc_remote_on;     /* J remote control enabled */
+static bool fc_teletext_on;   /* _ teletext from disc */
 
 /* ?Vnn / ?Tnn / ?Ynn - query side nn WITHOUT jukeboxing to it. A jukebox is
    a remount, and the menu's rescan was paying one per side purely to read
@@ -134,8 +94,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 	// Clear the serial read buffer (as we are sending a new F-Code)
 	//uartFlush(); // Flushes the UART Rx buffer
-
-	fcodeHistoryAdd();
 
 	// Output the F-Code bytes to debug
 	FCdebugString_P(PSTR("F-Code: Received bytes:"));
@@ -166,9 +124,9 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x24: // $0, $1
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
+				/* No reply: the VP415 command set lists none for $0/$1. The
+				   'A' that used to go here was a guess. */
 				FCdebugString_P(PSTR(" = Replay switch disable\r\n")); // VFS sends this
-                scsiFcodeBufferRX[0] = 'A'; // Open ?
-                scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				case '1':
@@ -207,10 +165,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Transmission delay off\r\n"));
+				fc_delay_on = false;
 				break;
 
 				case '1':
 				FCdebugString_P(PSTR(" = Transmission delay on\r\n"));
+				fc_delay_on = true;
 				break;
 
 				default:
@@ -311,15 +271,49 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				break;
 
 				case 'C': // response C xx X if not available O if open
+				/* No reply: the ROM uses 'X' for ?F and ?D only, and ?P
+				   already reports "chapter numbers exist" = 0, which is how
+				   the host is meant to know not to ask. */
 				FCdebugString_P(PSTR(" = Chapter number request\r\n"));
 				break;
 
 				case 'D':
 				FCdebugString_P(PSTR(" = Disc program status request\r\n"));
+				scsiFcodeBufferRX[0] = 'X';   /* not known */
+				scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				case 'P':
+				/* Five status characters, each '@' with bits OR-ed in, per
+				   the VP415 ROM's command set. Replay is reported off and
+				   the picture always frame-locked (owner's call); chapters
+				   and CLV do not apply - our discs are CAV. */
 				FCdebugString_P(PSTR(" = Player status request\r\n"));
+				{
+					uint8_t st[5];
+					bool loaded = filesystemVFSVolumePresent() ||
+					              filesystemVFSDatPresent();
+					st[0] = (uint8_t)('@'
+					      | (loaded ? 0x20u : 0u)                  /* disc loaded */
+					      /* bits 1-0 are the goto-action field; the ROM
+					         notes record no encoding for it, so this
+					         asserts only "a goto is outstanding" */
+					      | (videoplayer_seeking() ? 0x01u : 0u));
+					st[1] = (uint8_t)('@' | 0x01u);                /* CAV, no chapters */
+					st[2] = (uint8_t)('@' | 0x01u);                /* frame lock, replay off */
+					st[3] = (uint8_t)('@'
+					      | (fc_delay_on    ? 0x10u : 0u)
+					      | (fc_remote_on   ? 0x08u : 0u)
+					      | (fc_rc_computer ? 0x04u : 0u));        /* local never set */
+					st[4] = (uint8_t)('@'
+					      | (videoplayer_audio_enabled(1) ? 0x20u : 0u)
+					      | (videoplayer_audio_enabled(0) ? 0x10u : 0u)
+					      | (fc_teletext_on ? 0x08u : 0u));
+					scsiFcodeBufferRX[0] = 'P';
+					for (int i = 0; i < 5; i++)
+						scsiFcodeBufferRX[1 + i] = st[i];
+					scsiFcodeBufferRX[6] = 0x0D;
+				}
 				break;
 
 				case 'U':
@@ -334,6 +328,9 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				break;
 
 				case '=':
+				/* No reply: the real player returns its firmware revision
+				   here and 'X' is not documented for it - answering either
+				   would be inventing a version number. */
 				FCdebugString_P(PSTR(" = Revision level request\r\n"));
 				break;
 
@@ -571,10 +568,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Remote control not routed to computer\r\n"));
+				fc_rc_computer = false;
 				break;
 
 				case '1':
 				FCdebugString_P(PSTR(" = Remote control routed to computer\r\n"));
+				fc_rc_computer = true;
 				break;
 
 				default:
@@ -587,9 +586,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x49: // I // Domesday sends this
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
+				/* No reply: the command set lists none for I0/I1. */
 				FCdebugString_P(PSTR(" = Local front panel buttons disabled\r\n"));
-                scsiFcodeBufferRX[0] = 'A';
-                scsiFcodeBufferRX[1] = 0x0D;
 				break;
 
 				case '1':
@@ -605,13 +603,14 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x4A: // J // Domesday sends this
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
+				/* No reply: the command set lists none for J0/J1. */
 				FCdebugString_P(PSTR(" = Remote control disabled for player control\r\n"));
-                scsiFcodeBufferRX[0] = 'A';
-                scsiFcodeBufferRX[1] = 0x0D;
+				fc_remote_on = false;
 				break;
 
 				case '1':
 				FCdebugString_P(PSTR(" = Remote control enabled for player control\r\n"));
+				fc_remote_on = true;
 				break;
 
 				default:
@@ -878,10 +877,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Teletext from disc off\r\n"));
+				fc_teletext_on = false;
 				break;
 
 				case '1':
 				FCdebugString_P(PSTR(" = Teletext from disc on\r\n"));
+				fc_teletext_on = true;
 				break;
 
 				default:

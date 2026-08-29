@@ -437,6 +437,16 @@ static void videoplayer_poll(void)
         vp.in_flight = 0;
         vp.dup_owed = 0;
         vp.tail_pushed = false;
+        /* A decoded picture still waiting for a display slot belongs to the
+           position we are leaving: arm_flip would put it on screen for a
+           refresh or two before the sought one lands - a visible flash of
+           the wrong frame. Hand its buffer back.
+           vp_armed_phys is deliberately NOT touched: the vsync IRQ already
+           has it and the HVS may be scanning it, so cancelling would race
+           the compositor and could recycle a buffer still on screen. */
+        if (vp.pending_phys && vp.pending_phys != vp.displayed_phys)
+            h264dec_recycle_output(vp.pending_phys);
+        vp.pending_phys = 0;
         audio_flush();
 
         bool play = (vp.seek_op == 'N') ||
@@ -552,6 +562,18 @@ static void videoplayer_poll(void)
 bool videoplayer_active(void)
 {
     return vp.open;
+}
+
+/* For the ?P player-status reply: a goto is outstanding until the poll
+   loop has serviced it. */
+bool videoplayer_seeking(void)
+{
+    return vp.seek_frame >= 0;
+}
+
+bool videoplayer_audio_enabled(int channel)
+{
+    return (channel >= 0 && channel < 2) ? vp.audio_on[channel] : false;
 }
 
 /* The VFS directory a bring-up has already failed on. Retrying it costs an
@@ -680,7 +702,7 @@ uint32_t videoplayer_picture_number(void)
 
 const char *videoplayer_status(void)
 {
-    static char buf[192];
+    static char buf[256];
     static char closed[40];
     snprintf(closed, sizeof closed, "closed d%d arm%d last:%s",
              filesystemGetLunDirectoryVFS(), vp.lazy_pending ? 1 : 0, vp_fail);

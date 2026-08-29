@@ -87,6 +87,8 @@ void h264dec_poll(void);
 
 /* Diagnostics (shown on /status) */
 bool h264dec_running(void);
+/* /status: output-port enable, pending reconfigure, registered/armed buffers */
+void h264dec_output_state(bool *enabled, bool *reconf, uint32_t *registered, uint32_t *armed);
 uint32_t h264dec_frames_decoded(void);
 
 #endif /* RPI_H264DEC_H */

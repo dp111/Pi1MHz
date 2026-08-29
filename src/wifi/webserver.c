@@ -2708,8 +2708,17 @@ static bool route_status(ws_conn_t *c)
    }
    table_row(&b, "Link-loss detect", rs.link_flag_trusted ? "armed" : "not armed");
    if (h264dec_running()) {
-      snprintf(tmp, sizeof tmp, "running, %lu frames decoded",
-               (unsigned long)h264dec_frames_decoded());
+      bool     out_en = false, reconf = false;
+      uint32_t nreg = 0, narm = 0;
+      h264dec_output_state(&out_en, &reconf, &nreg, &narm);
+      /* out/reg/armed is the handshake that strands the decoder after a
+         BREAK: "feeds N back 0" with armed 0 says nothing is waiting for a
+         picture, and out=0 says the port never came back up. */
+      snprintf(tmp, sizeof tmp,
+               "running, %lu frames decoded, out %s%s reg %lu armed %lu",
+               (unsigned long)h264dec_frames_decoded(),
+               out_en ? "on" : "OFF", reconf ? " reconf-pending" : "",
+               (unsigned long)nreg, (unsigned long)narm);
       table_row(&b, "H264 decoder", tmp);
    }
    /* Always shown: with the decoder not running these are the only view of
@@ -2761,10 +2770,6 @@ static bool route_status(ws_conn_t *c)
    }
    table_row(&b, "Video player", videoplayer_status());
    table_row(&b, "F-code", fcodeLastExchange());
-   /* fcodeHistory() returns its own static - do NOT copy it onto the stack,
-      route_status already carries planes[288] + tmp[144] and this row is
-      420 bytes more. */
-   table_row(&b, "F-code history", fcodeHistory());
    snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s",
             audio_owner_name(), (unsigned long)audio_rate(),
             (unsigned long)audio_queued_frames(), (unsigned long)audio_peak(),
