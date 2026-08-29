@@ -37,5 +37,6 @@ void fcodeReadBuffer(void);
 void fcodeClearBuffer(void);
 
 const char *fcodeLastExchange(void);
+const char *fcodeHistory(void);   /* recent F-codes, oldest first, with gaps in ms */
 
 #endif /* FCODE_H_ */

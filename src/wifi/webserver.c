@@ -2761,6 +2761,10 @@ static bool route_status(ws_conn_t *c)
    }
    table_row(&b, "Video player", videoplayer_status());
    table_row(&b, "F-code", fcodeLastExchange());
+   /* fcodeHistory() returns its own static - do NOT copy it onto the stack,
+      route_status already carries planes[288] + tmp[144] and this row is
+      420 bytes more. */
+   table_row(&b, "F-code history", fcodeHistory());
    snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s",
             audio_owner_name(), (unsigned long)audio_rate(),
             (unsigned long)audio_queued_frames(), (unsigned long)audio_peak(),

@@ -35,6 +35,7 @@
 #include "debug.h"
 #include "filesystem.h"
 #include "fcode.h"
+#include "../rpi/systimer.h"   /* RPI_GetSystemTime - F-code history timing */
 #include "../rpi/screen.h"
 #include "../videoplayer.h"
 
@@ -58,6 +59,52 @@ const char *fcodeLastExchange(void)
     return buf;
 }
 
+
+/* A short history of what the Beeb sent, with the gap before each one, so a
+   sequence can be read back without a debug build: "is this slow play, or
+   the software stepping frame by frame as fast as it can?" is not
+   answerable from the single last-exchange row. One small copy per F-code -
+   the same class of always-on forensics as the Bus diag row. */
+#define FCODE_HIST 28
+typedef struct { char tx[10]; uint16_t dt_ms; } fcode_hist_t;
+static fcode_hist_t fcode_hist[FCODE_HIST];
+static uint8_t  fcode_hist_w;      /* next slot to write */
+static uint8_t  fcode_hist_n;      /* entries held, <= FCODE_HIST */
+static uint32_t fcode_hist_last_us;
+
+static void fcodeHistoryAdd(void)
+{
+    uint32_t now = RPI_GetSystemTime();
+    uint32_t dt  = fcode_hist_n ? ((now - fcode_hist_last_us) / 1000u) : 0u;
+    fcode_hist_last_us = now;
+
+    fcode_hist_t *e = &fcode_hist[fcode_hist_w];
+    size_t o = 0;
+    for (int i = 0; i < 9 && scsiFcodeBuffer[i] != 0x0D && scsiFcodeBuffer[i]; i++)
+        e->tx[o++] = (char)scsiFcodeBuffer[i];
+    e->tx[o] = 0;
+    e->dt_ms = (dt > 9999u) ? 9999u : (uint16_t)dt;
+
+    fcode_hist_w = (uint8_t)((fcode_hist_w + 1u) % FCODE_HIST);
+    if (fcode_hist_n < FCODE_HIST) fcode_hist_n++;
+}
+
+/* Oldest first, each as "<code>+<gap in ms>". */
+const char *fcodeHistory(void)
+{
+    static char buf[420];
+    size_t o = 0;
+    uint8_t idx = (uint8_t)((fcode_hist_w + FCODE_HIST - fcode_hist_n) % FCODE_HIST);
+    for (uint8_t k = 0; k < fcode_hist_n && o < sizeof buf - 20; k++) {
+        o += (size_t)snprintf(buf + o, sizeof buf - o, "%s+%u ",
+                              fcode_hist[idx].tx,
+                              (unsigned)fcode_hist[idx].dt_ms);
+        if (o >= sizeof buf) { o = sizeof buf - 1; break; }
+        idx = (uint8_t)((idx + 1u) % FCODE_HIST);
+    }
+    buf[o] = 0;
+    return buf;
+}
 
 static char VPmode;
 
@@ -87,6 +134,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 	// Clear the serial read buffer (as we are sending a new F-Code)
 	//uartFlush(); // Flushes the UART Rx buffer
+
+	fcodeHistoryAdd();
 
 	// Output the F-Code bytes to debug
 	FCdebugString_P(PSTR("F-Code: Received bytes:"));
