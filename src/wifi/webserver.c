@@ -68,6 +68,12 @@
    spikes and 10% ICMP loss during a download.  8 KB keeps each refill short
    while still reaching FatFs's multiblock path. */
 #define WS_READ_CHUNK        8192u
+/* Downloads read a whole staging buffer at a time: dl_buf is already
+   WS_FILE_CHUNK, and a sector-aligned 32 KB read is one FatFs multiblock
+   CMD18 instead of four, the same reasoning the upload path uses for its
+   write bursts.  Deliberately NOT the shared WS_READ_CHUNK - ws_copy_step
+   runs one synchronous chunk per poll tick and wants the smaller one. */
+#define WS_DL_READ_CHUNK     WS_FILE_CHUNK
 #define WS_BOUNDARY_MAX      128u    /* multipart boundary text limit   */
 #define WS_UPLOAD_HEAD_MAX   1024u   /* multipart part-header limit     */
 #define WS_UPLOAD_WORK       2048u   /* upload scan working buffer      */
@@ -1948,6 +1954,16 @@ static bool conn_pump(ws_conn_t *c)
       headers have been ACKed. */
    if (err == ERR_OK && !c->is_head && c->state == CONN_SEND_FILE
        && (c->out == NULL || c->out_sent >= c->out_len)) {
+      /* One card read per pump call.  ws_sent re-enters conn_pump on every
+         ACK - far more often than the card needs to keep TCP_SND_BUF full -
+         so bounding it here does not slow the transfer.  Without it a single
+         ACK cascades into a whole send buffer's worth of back-to-back reads
+         (TCP_SND_BUF is 32*MSS = 46,720) and that runs inside the wifi
+         drain budget, which is where that budget's overrun came from: the
+         budget bounds frames handled, not the work one frame's delivery
+         synchronously triggers. */
+      bool did_card_read = false;
+
       while (1) {
          u16_t  avail;
          size_t want;
@@ -1958,13 +1974,15 @@ static bool conn_pump(ws_conn_t *c)
             UINT req;
             if (c->dl_remaining == 0u || c->dl_eof)
                break;
-            req = (c->dl_remaining < WS_READ_CHUNK)
-                  ? (UINT)c->dl_remaining : (UINT)WS_READ_CHUNK;
+            req = (c->dl_remaining < WS_DL_READ_CHUNK)
+                  ? (UINT)c->dl_remaining : (UINT)WS_DL_READ_CHUNK;
             if (c->dl_bench) {
                /* Benchmark body: whatever is in dl_buf, full-rate.  The point
                   is to measure the network path with the SD card out of the
                   loop entirely - the file path below pays an f_read here. */
                br = req;
+            } else if (did_card_read) {
+               break;
             } else if (f_read(&c->dl_file, c->dl_buf, req, &br) != FR_OK
                 || br == 0u) {
                /* Short of the Content-Length already promised (file truncated
@@ -1975,6 +1993,8 @@ static bool conn_pump(ws_conn_t *c)
                c->keep_alive = false;
                c->dl_eof = true;
                break;
+            } else {
+               did_card_read = true;
             }
             c->dl_buf_len = br;
             c->dl_buf_sent = 0u;
