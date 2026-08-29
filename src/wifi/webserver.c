@@ -3218,9 +3218,11 @@ static bool render_listing(ws_conn_t *c, const char *sdpath)
 
    fr = f_opendir(&dir, sdpath);
    if (fr != FR_OK) {
+      /* Also the miss path for a file: route_files_get now tries the open
+         first and falls through to here, so word this for both. */
       if (fr == FR_NO_PATH || fr == FR_NO_FILE || fr == FR_INVALID_NAME)
          return ws_error(c, 404, "Not Found",
-                         "That folder does not exist on the SD card.");
+                         "That file or folder does not exist on the SD card.");
       return ws_error(c, 503, "Service Unavailable",
                       "The SD card could not be read.");
    }
@@ -3335,9 +3337,13 @@ static bool render_listing(ws_conn_t *c, const char *sdpath)
 /* File download                                                       */
 /* ------------------------------------------------------------------ */
 
+/* c->dl_file must already be open and c->dl_open set: the callers open it
+   themselves so that a successful open doubles as the "is this a regular
+   file?" test.  f_stat and f_open each walk the directory chain linearly -
+   ~14 ms apiece on this card's root - and doing both was the single
+   biggest stall the web server put on the poll loop. */
 static bool start_download(ws_conn_t *c, const char *sdpath)
 {
-   FRESULT     fr;
    uint32_t    size;
    uint32_t    body_start = 0u;
    uint32_t    body_len;
@@ -3347,11 +3353,6 @@ static bool start_download(ws_conn_t *c, const char *sdpath)
    size_t      o = 0u;
    ws_strbuf_t h;
 
-   fr = f_open(&c->dl_file, sdpath, FA_READ);
-   if (fr != FR_OK)
-      return ws_error(c, 404, "Not Found",
-                      "The file could not be opened.");
-   c->dl_open = true;
    size = (uint32_t)f_size(&c->dl_file);
    body_len = size;
 
@@ -3602,7 +3603,6 @@ static bool route_files_get(ws_conn_t *c, const char *rawpath)
 {
    char    decoded[WS_PATH_MAX];
    char    sdpath[WS_PATH_MAX];
-   FILINFO fno;
 
    if (!ws_url_decode(rawpath + 6, decoded, sizeof decoded))   /* skip "/files" */
       return ws_error(c, 400, "Bad Request",
@@ -3614,12 +3614,16 @@ static bool route_files_get(ws_conn_t *c, const char *rawpath)
    if (ws_is_root(sdpath))
       return render_listing(c, sdpath);
 
-   if (f_stat(sdpath, &fno) != FR_OK)
-      return ws_error(c, 404, "Not Found",
-                      "That file or folder does not exist.");
-   if ((fno.fattrib & AM_DIR) != 0u)
-      return render_listing(c, sdpath);
-   return start_download(c, sdpath);
+   /* One directory walk, not two.  A successful open IS the "regular
+      file" test - FatFs answers FR_NO_FILE for a directory opened
+      FA_READ - so the common case resolves the path once.  Anything else
+      falls through to the listing, which does its own f_opendir and
+      returns 404 when the path does not exist at all. */
+   if (f_open(&c->dl_file, sdpath, FA_READ) == FR_OK) {
+      c->dl_open = true;
+      return start_download(c, sdpath);
+   }
+   return render_listing(c, sdpath);
 }
 
 /* ------------------------------------------------------------------ */
@@ -6062,6 +6066,12 @@ static bool route_dav_get_file(ws_conn_t *c, const char *rawpath)
       return false;
    if (ws_is_root(sdpath))
       return false;
+   /* As in route_files_get: the open is the regular-file test, so a real
+      file costs one directory walk instead of two. */
+   if (f_open(&c->dl_file, sdpath, FA_READ) == FR_OK) {
+      c->dl_open = true;
+      return start_download(c, sdpath);
+   }
    if (f_stat(sdpath, &fno) != FR_OK)
       return false;
    if ((fno.fattrib & AM_DIR) != 0u)
@@ -6069,7 +6079,7 @@ static bool route_dav_get_file(ws_conn_t *c, const char *rawpath)
                                    "OPTIONS, PROPFIND, PROPPATCH",
                                    "GET on a collection is not supported; use PROPFIND.");
 
-   return start_download(c, sdpath);
+   return false;
 }
 
 /* ------------------------------------------------------------------ */
