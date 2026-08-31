@@ -17,6 +17,15 @@ __attribute__((aligned(64))) NOINIT_SECTION static uint32_t pt[PROP_BUFFER_SIZE]
 
 static size_t pt_index;
 
+/* Set when a request has been posted but its reply not yet collected, i.e.
+   RPI_PropertyProcess(false).  There is only ONE property buffer, so pt[]
+   must not be refilled while the VideoCore may still be writing a reply into
+   it - that is what produced the stale 0.0C temperature described below.
+   Every entry point that refills pt[] settles first. */
+static bool pt_pending;
+
+static void mailbox_settle( void );
+
 #define PRINT_PROP_DEBUG 0
 
     /* For information about accessing mailboxes, see:
@@ -131,6 +140,7 @@ static void RPI_Mailbox0Drain( void )
 
 rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data)
 {
+    mailbox_settle();   /* pt[] may still be owned by a deferred reply */
     pt_index = 2;
     pt[pt_index++] = tag;
     pt[pt_index++] = 8;
@@ -146,6 +156,7 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
 
 void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data)
 {
+    mailbox_settle();   /* pt[] may still be owned by a deferred reply */
     pt_index = 2;
     pt[pt_index++] = tag;
     pt[pt_index++] = 8;
@@ -157,6 +168,7 @@ void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data)
 
 rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
 {
+    mailbox_settle();   /* pt[] may still be owned by a deferred reply */
     pt_index = 2;
     pt[pt_index++] = tag;
     /* Provide a 1024-byte buffer */
@@ -172,6 +184,7 @@ rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
 
 void RPI_PropertyStart(rpi_mailbox_tag_t tag, uint32_t length)
 {
+    mailbox_settle();   /* pt[] may still be owned by a deferred reply */
     pt_index = 2;
     pt[pt_index++] = tag;
     pt[pt_index++] = length * 4;
@@ -196,25 +209,12 @@ void RPI_PropertyNewTag(rpi_mailbox_tag_t tag, uint32_t length)
     pt[pt_index++] = 0; /* Request */
 }
 
-unsigned int RPI_PropertyProcess( bool wait )
+/* Collect the reply for the exchange already posted.  Split out of
+   RPI_PropertyProcess so a deferred request can be settled later by exactly
+   the same acceptance rule. */
+static unsigned int mailbox_collect( void )
 {
     unsigned int result;
-
-    /* Fill in the size of the buffer */
-    pt[PT_OSIZE] = ( pt_index + 1 ) << 2;
-    pt[PT_OREQUEST_OR_RESPONSE] = 0;
-    /* Make sure the tags are 0 terminated to end the list and update the buffer size */
-    pt[pt_index] = 0;
-
-#if( PRINT_PROP_DEBUG == 1 )
-    LOG_INFO( "%s Length: %"PRIx32"\r\n", __func__, pt[PT_OSIZE] );
-    for ( int i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
-        LOG_INFO( "Request: %3d %8.8"PRIx32"\r\n", i, pt[i] );
-#endif
-    RPI_Mailbox0Write( MB0_TAGS_ARM_TO_VC, pt );
-
-    //if (wait == false)
-    //    return 0;
 
     { // make sure the response is for us
        uint32_t start_us = RPI_GetSystemTime();
@@ -258,6 +258,43 @@ unsigned int RPI_PropertyProcess( bool wait )
         LOG_INFO( "Response: %3d %8.8"PRIx32"\r\n", i, pt[i] );
 #endif
     return result;
+}
+
+/* Finish a deferred exchange so pt[] can be reused.  Cheap when idle. */
+static void mailbox_settle( void )
+{
+    if ( !pt_pending )
+        return;
+    pt_pending = false;
+    (void)mailbox_collect();
+}
+
+unsigned int RPI_PropertyProcess( bool wait )
+{
+    /* A previous deferred request may still own pt[]. */
+    mailbox_settle();
+
+    /* Fill in the size of the buffer */
+    pt[PT_OSIZE] = ( pt_index + 1 ) << 2;
+    pt[PT_OREQUEST_OR_RESPONSE] = 0;
+    /* Make sure the tags are 0 terminated to end the list and update the buffer size */
+    pt[pt_index] = 0;
+
+#if( PRINT_PROP_DEBUG == 1 )
+    LOG_INFO( "%s Length: %"PRIx32"\r\n", __func__, pt[PT_OSIZE] );
+    for ( int i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
+        LOG_INFO( "Request: %3d %8.8"PRIx32"\r\n", i, pt[i] );
+#endif
+    RPI_Mailbox0Write( MB0_TAGS_ARM_TO_VC, pt );
+
+    if ( !wait ) {
+        /* Posted, reply uncollected: the VideoCore may still be writing into
+           pt[], so the next caller must settle before refilling it. */
+        pt_pending = true;
+        return 0;
+    }
+
+    return mailbox_collect();
 }
 
 rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag)
