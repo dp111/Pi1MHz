@@ -50,18 +50,41 @@ if(GIT_VERSION MATCHES "-dirty$")
    # forced another LTO relink. Limit it to the source tree, and exclude the
    # generated header itself (its BUILD_DATE would otherwise feed back in).
    execute_process(
-      COMMAND git -C "${SRC_DIR}" diff HEAD -- . ":(exclude)scripts/gitversion.h"
+      COMMAND git -C "${SRC_DIR}" diff --ignore-submodules=dirty HEAD -- . ":(exclude)scripts/gitversion.h" ":(exclude)third_party/**"
       OUTPUT_VARIABLE GIT_DIFF
       RESULT_VARIABLE DIFF_RESULT
       ERROR_QUIET
    )
    execute_process(
-      COMMAND git -C "${SRC_DIR}" status --porcelain -- . ":(exclude)scripts/gitversion.h"
+      COMMAND git -C "${SRC_DIR}" status --porcelain --ignore-submodules=dirty -- . ":(exclude)scripts/gitversion.h" ":(exclude)third_party/**"
       OUTPUT_VARIABLE GIT_STATUS
       ERROR_QUIET
    )
-   if(DIFF_RESULT EQUAL 0)
-      string(MD5 TREE_HASH "${GIT_DIFF}${GIT_STATUS}")
+   # Porcelain status records only the names of untracked integration files.
+   # Hash their contents as well, otherwise editing an already-untracked
+   # service overlay leaves *VERSION naming the previous kernel image.
+   execute_process(
+      COMMAND git -C "${SRC_DIR}" ls-files --others --exclude-standard -- . ":(exclude)scripts/gitversion.h" ":(exclude)third_party/**"
+      OUTPUT_VARIABLE GIT_UNTRACKED_FILES
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE UNTRACKED_RESULT
+      ERROR_QUIET
+   )
+   set(GIT_UNTRACKED_CONTENT "")
+   if(UNTRACKED_RESULT EQUAL 0 AND NOT GIT_UNTRACKED_FILES STREQUAL "")
+      string(REPLACE "\n" ";" GIT_UNTRACKED_LIST "${GIT_UNTRACKED_FILES}")
+      foreach(UNTRACKED_FILE IN LISTS GIT_UNTRACKED_LIST)
+         if(EXISTS "${SRC_DIR}/${UNTRACKED_FILE}" AND
+            NOT IS_DIRECTORY "${SRC_DIR}/${UNTRACKED_FILE}")
+            file(SHA256 "${SRC_DIR}/${UNTRACKED_FILE}" UNTRACKED_HASH)
+            string(APPEND GIT_UNTRACKED_CONTENT
+               "${UNTRACKED_FILE}:${UNTRACKED_HASH}\n")
+         endif()
+      endforeach()
+   endif()
+   if(DIFF_RESULT EQUAL 0 AND UNTRACKED_RESULT EQUAL 0)
+      string(MD5 TREE_HASH
+         "${GIT_DIFF}${GIT_STATUS}${GIT_UNTRACKED_CONTENT}")
       string(SUBSTRING "${TREE_HASH}" 0 8 TREE_HASH)
       set(GIT_VERSION "${GIT_VERSION}.${TREE_HASH}")
    endif()
