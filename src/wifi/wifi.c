@@ -44,6 +44,52 @@ static bool g_wifi_init_done;
 static void wifi_debug_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 static bool wifi_equals_ignore_case(const char *left, const char *right);
 
+static bool wifi_hex_key(const char *value, size_t length)
+{
+   size_t index;
+
+   for (index = 0u; index < length; ++index) {
+      char c = value[index];
+      if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')
+            || (c >= 'a' && c <= 'f')))
+         return false;
+   }
+   return true;
+}
+
+bool wifi_profile_is_valid(const char *ssid, const char *password,
+                           wifi_security_t security)
+{
+   size_t password_length;
+
+   if (ssid == NULL || password == NULL || ssid[0] == '\0')
+      return false;
+   if (strnlen(ssid, sizeof(g_wifi_config.ssid)) >= sizeof(g_wifi_config.ssid)
+       || strnlen(password, sizeof(g_wifi_config.password))
+          >= sizeof(g_wifi_config.password))
+      return false;
+   if (security > WIFI_SECURITY_WPA2)
+      return false;
+
+   password_length = strlen(password);
+   switch (security) {
+      case WIFI_SECURITY_OPEN:
+         return password_length == 0u;
+      case WIFI_SECURITY_AUTO:
+         return password_length == 0u
+             || (password_length >= 8u && password_length <= 63u);
+      case WIFI_SECURITY_WPA:
+      case WIFI_SECURITY_WPA2:
+         return password_length >= 8u && password_length <= 63u;
+      case WIFI_SECURITY_WEP:
+         return password_length == 5u || password_length == 13u
+             || ((password_length == 10u || password_length == 26u)
+                 && wifi_hex_key(password, password_length));
+      default:
+         return false;
+   }
+}
+
 /* Single poll entry-point for the whole WiFi stack: the four sub-poll
    functions all have early-exit guards (boot stage IDLE,
    timers_running, reboot_pending, g_ready), so calling them
@@ -138,8 +184,16 @@ static bool wifi_validate_config(void)
       return false;
    }
 
-   if (g_wifi_config.password[0] == '\0') {
-      wifi_set_error("wifi_password or SSIDpassword missing from Pi1MHz.cfg");
+   if (g_wifi_config.security != WIFI_SECURITY_OPEN
+       && g_wifi_config.security != WIFI_SECURITY_AUTO
+       && g_wifi_config.password[0] == '\0') {
+      wifi_set_error("selected WiFi security requires a key/password");
+      return false;
+   }
+
+   if (!wifi_profile_is_valid(g_wifi_config.ssid, g_wifi_config.password,
+                              g_wifi_config.security)) {
+      wifi_set_error("invalid WiFi SSID, key or security mode");
       return false;
    }
 
@@ -476,6 +530,7 @@ bool wifi_config_load(wifi_config_t *config)
       return false;
 
    memset(config, 0, sizeof(*config));
+   config->security = WIFI_SECURITY_AUTO;
    config->http_port = 80;
    config->ip_mode = WIFI_IP_MODE_DHCP;
    config->ip_config_valid = true;
@@ -513,6 +568,16 @@ bool wifi_config_load(wifi_config_t *config)
          strlcpy(config->country, country_prop, sizeof(config->country));
       else
          strlcpy(config->country, "GB", sizeof(config->country));
+   }
+   {
+      const char *security_prop = config_get("wifi_security");
+      if (security_prop != NULL && security_prop[0] != '\0') {
+         if (strcasecmp(security_prop, "open") == 0) config->security = WIFI_SECURITY_OPEN;
+         else if (strcasecmp(security_prop, "wep") == 0) config->security = WIFI_SECURITY_WEP;
+         else if (strcasecmp(security_prop, "wpa") == 0) config->security = WIFI_SECURITY_WPA;
+         else if (strcasecmp(security_prop, "wpa2") == 0) config->security = WIFI_SECURITY_WPA2;
+         else config->security = WIFI_SECURITY_AUTO;
+      }
    }
    config->sdio_tx_probe_command = wifi_parse_sdio_tx_probe_command();
    config->sdio_rx_sweep_limit = wifi_parse_u8(config_get("wifi_sdio_rx_sweep_limit"),
@@ -673,7 +738,7 @@ void wifi_boot(void)
          /* tick() returned false: reached DONE or ERROR.  The SDIO runtime
             finishing DONE means the bus is up AND the firmware has been
             downloaded to the chip and is running, so both notes fire here. */
-         if (sdio_runtime_started()) {
+         if (sdio_runtime_ready()) {
             wifi_note_sdio_ready();
             wifi_note_firmware_ready();
             wifi_debug_log("sdio runtime started");
@@ -757,6 +822,98 @@ void wifi_set_error(const char *message)
 
    strlcpy(g_wifi_error, message, sizeof(g_wifi_error));
    wifi_debug_log("error: %s", g_wifi_error);
+}
+
+bool wifi_reconfigure_and_rejoin(const char *ssid, const char *password,
+                                 wifi_security_t security)
+{
+   if (!wifi_profile_is_valid(ssid, password, security))
+      return false;
+
+   strlcpy(g_wifi_config.ssid, ssid, sizeof(g_wifi_config.ssid));
+   strlcpy(g_wifi_config.password, password, sizeof(g_wifi_config.password));
+   g_wifi_config.security = security;
+   g_wifi_config.enabled = true;
+   g_wifi_config.config_present = true;
+   sdio_runtime_rejoin_enable();
+
+   /* ElkWiFi credentials may come from the SD-card override after wifi_init()
+      found no SSID in Pi1MHz.cfg but before wifi_boot() has polled.  Schedule
+      the initial bring-up in that case; a running chip uses the rejoin path. */
+   if (!sdio_runtime_started()) {
+      g_wifi_state = WIFI_STATE_CONFIGURED;
+      g_wifi_boot_stage = WIFI_BOOT_STAGE_START_SDIO;
+      g_wifi_init_done = true;
+      return true;
+   }
+   if (g_wifi_state == WIFI_STATE_DISABLED) {
+      if (!sdio_runtime_radio_enable())
+         return false;
+      g_wifi_state = WIFI_STATE_FIRMWARE_READY;
+      wifi_clear_error();
+   }
+   return sdio_runtime_rejoin_start();
+}
+
+bool wifi_enable_radio(void)
+{
+   /* ElkWiFi starts in discovery mode: *WIFI ON and *LAP must work before
+      the user has supplied an SSID.  The SDIO state machine already stops
+      cleanly at STAGE_DONE when the SSID is empty; schedule that radio-only
+      bring-up here instead of treating an empty Pi1MHz.cfg as absent
+      hardware.  A genuine firmware/SDIO failure remains latched as ERROR. */
+   if (sdio_runtime_started()) {
+      if (g_wifi_state == WIFI_STATE_DISABLED) {
+         if (!sdio_runtime_radio_enable())
+            return false;
+         g_wifi_config.enabled = true;
+         g_wifi_state = WIFI_STATE_FIRMWARE_READY;
+         wifi_clear_error();
+         if (g_wifi_config.ssid[0] != '\0') {
+            sdio_runtime_rejoin_enable();
+            if (!sdio_runtime_rejoin_start())
+               return false;
+         }
+      }
+      return true;
+   }
+
+   if (g_wifi_state == WIFI_STATE_ERROR)
+      return false;
+
+   if (g_wifi_state == WIFI_STATE_DISABLED) {
+      g_wifi_config.enabled = true;
+      g_wifi_state = WIFI_STATE_CONFIGURED;
+      g_wifi_boot_stage = WIFI_BOOT_STAGE_START_SDIO;
+      g_wifi_init_done = true;
+      wifi_clear_error();
+      wifi_debug_log("radio-only boot scheduled by ElkWiFi host");
+   }
+
+   return g_wifi_state >= WIFI_STATE_CONFIGURED
+       && g_wifi_state < WIFI_STATE_ERROR;
+}
+
+bool wifi_disconnect(void)
+{
+   if (!sdio_runtime_disconnect())
+      return false;
+   wifi_lwip_disconnect();
+   if (g_wifi_state >= WIFI_STATE_NETWORK_READY
+       && g_wifi_state < WIFI_STATE_ERROR)
+      g_wifi_state = WIFI_STATE_FIRMWARE_READY;
+   return true;
+}
+
+bool wifi_disable_radio(void)
+{
+   if (!sdio_runtime_radio_disable())
+      return false;
+   wifi_lwip_disconnect();
+   g_wifi_config.enabled = false;
+   g_wifi_state = WIFI_STATE_DISABLED;
+   wifi_clear_error();
+   return true;
 }
 
 const wifi_config_t *wifi_get_config(void)

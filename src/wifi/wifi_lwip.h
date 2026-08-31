@@ -32,6 +32,8 @@ void wifi_lwip_prepare(void);
 void wifi_lwip_init_stack(void);
 void wifi_lwip_poll(void);
 const wifi_lwip_context_t *wifi_lwip_get_context(void);
+/* Drop the live lease and addresses while retaining the reusable lwIP core. */
+void wifi_lwip_disconnect(void);
 
 /* Drain the RX at full rate for a short window: call after transmitting a
  * datagram that expects a prompt reply, so the reply is not held by the

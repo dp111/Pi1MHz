@@ -35,7 +35,22 @@ typedef struct {
    /* True once a WLC_E_LINK has been seen with its LINK flag set, which is
       what arms detection of a link lost without a deauth. */
    bool link_flag_trusted;
+   bool join_busy;
+   uint32_t last_event_type;
+   uint32_t last_event_status;
+   uint32_t last_event_reason;
 } sdio_runtime_status_t;
+
+#define SDIO_WIFI_SCAN_MAX_RESULTS 4u
+#define SDIO_WIFI_SCAN_SSID_MAX 32u
+
+typedef struct {
+   char ssid[SDIO_WIFI_SCAN_SSID_MAX + 1u];
+   uint8_t bssid[6];
+   int16_t rssi;
+   uint8_t channel;
+   uint8_t security;
+} sdio_wifi_scan_result_t;
 
 typedef struct {
    bool success;
@@ -226,7 +241,7 @@ typedef struct {
       is enough for every command we send today; the prepare path
       asserts payload_length stays within SDIO_TX_CONTROL_PAYLOAD_MAX
       so a future iovar with a longer name can't silently overflow. */
-#define SDIO_TX_CONTROL_PAYLOAD_MAX 80u
+#define SDIO_TX_CONTROL_PAYLOAD_MAX 164u
    uint8_t tx_control_template_payload_bytes[SDIO_TX_CONTROL_PAYLOAD_MAX];
    uint8_t sdpcm_brcm_event_addr[6];
    char sdpcm_brcm_event_ifname[17];
@@ -269,6 +284,15 @@ bool sdio_runtime_ready(void);
    the caller then drives sdio_runtime_tick() while rejoin_busy() is true. */
 bool sdio_runtime_rejoin_start(void);
 bool sdio_runtime_rejoin_busy(void);
+/* Re-enable automatic association when the host supplies a new JOIN. */
+void sdio_runtime_rejoin_enable(void);
+/* Disassociate after *LEAVE without taking the radio down, and suppress the
+   recovery loop until a subsequent explicit JOIN. */
+bool sdio_runtime_disconnect(void);
+/* WLC_DOWN/WLC_UP controls used by *WIFI OFF and *WIFI ON. The SDIO bus and
+   firmware remain resident so the services mailbox can bring the radio back. */
+bool sdio_runtime_radio_disable(void);
+bool sdio_runtime_radio_enable(void);
 /* Microseconds since the last frame arrived from the chip (0 before the
    first).  A link can stop carrying traffic without the firmware reporting
    anything, so this is the only evidence that it has. */
@@ -334,6 +358,15 @@ void sdio_runtime_txglom_status(uint8_t *config, bool *active,
    that advanced max_seq).  False while wifi_diag is off. */
 bool sdio_runtime_txglom_diag(uint32_t batch_hist[5], uint32_t *credit_refills);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
+/* Start a real CYW43 enhanced scan. Results arrive as WLC_E_ESCAN_RESULT
+   events through the normal RX poller, so this API never blocks Pi1MHz's
+   cooperative main loop. */
+bool sdio_runtime_scan_start(void);
+void sdio_runtime_scan_cancel(void);
+bool sdio_runtime_scan_busy(void);
+bool sdio_runtime_scan_complete(void);
+uint8_t sdio_runtime_scan_results(sdio_wifi_scan_result_t *out,
+                                  uint8_t capacity);
 /* On-demand signal-strength read.  sdio_runtime_request_rssi() just flags
    a read (safe from the /status TCP callback); sdio_runtime_rssi_poll()
    performs it on the cooperative poll path and must be called from

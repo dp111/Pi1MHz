@@ -149,10 +149,22 @@ static bool wifi_lwip_address_ready(const struct netif *netif)
 static void wifi_lwip_update_runtime_state(void)
 {
    if (g_wifi_lwip_context.netif_added) {
-      if (sdio_runtime_link_is_up())
+      if (sdio_runtime_link_is_up()) {
          netif_set_link_up(&g_wifi_lwip_context.netif);
-      else
+         if (g_wifi_lwip_context.use_dhcp
+             && !g_wifi_lwip_context.dhcp_started) {
+            if (dhcp_start(&g_wifi_lwip_context.netif) == ERR_OK)
+               g_wifi_lwip_context.dhcp_started = true;
+         } else if (!g_wifi_lwip_context.use_dhcp
+                    && g_wifi_lwip_context.static_configured) {
+            netif_set_addr(&g_wifi_lwip_context.netif,
+                           &g_wifi_lwip_context.ipaddr,
+                           &g_wifi_lwip_context.netmask,
+                           &g_wifi_lwip_context.gateway);
+         }
+      } else {
          netif_set_link_down(&g_wifi_lwip_context.netif);
+      }
    }
 
    g_wifi_lwip_context.link_up = g_wifi_lwip_context.netif_added
@@ -195,6 +207,27 @@ static void wifi_lwip_update_runtime_state(void)
 
    if (g_wifi_lwip_context.address_ready)
       wifi_note_network_ready();
+}
+
+void wifi_lwip_disconnect(void)
+{
+   if (!g_wifi_lwip_context.netif_added)
+      return;
+
+   if (g_wifi_lwip_context.use_dhcp
+       && g_wifi_lwip_context.dhcp_started) {
+      dhcp_release_and_stop(&g_wifi_lwip_context.netif);
+      g_wifi_lwip_context.dhcp_started = false;
+   }
+   netif_set_link_down(&g_wifi_lwip_context.netif);
+   ip_addr_set_zero_ip4(&g_wifi_lwip_context.netif.ip_addr);
+   ip_addr_set_zero_ip4(&g_wifi_lwip_context.netif.netmask);
+   ip_addr_set_zero_ip4(&g_wifi_lwip_context.netif.gw);
+   g_wifi_lwip_context.link_up = false;
+   g_wifi_lwip_context.address_ready = false;
+   g_wifi_lwip_last_link_up = false;
+   g_wifi_lwip_last_address_ready = false;
+   wifi_lwip_debug_log("association and address state cleared");
 }
 
 /* Frames held back when the chip's credit window is shut.

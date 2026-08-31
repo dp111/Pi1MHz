@@ -129,6 +129,12 @@ static uint16_t g_runtime_rate_request_id;
 static uint32_t g_runtime_rate_deadline_us;
 static bool g_runtime_rssi_step_sent;
 static uint32_t g_runtime_rssi_step_deadline_us;
+static sdio_wifi_scan_result_t
+   g_runtime_scan_results[SDIO_WIFI_SCAN_MAX_RESULTS];
+static uint8_t g_runtime_scan_result_count;
+static bool g_runtime_scan_active;
+static bool g_runtime_scan_done;
+static uint32_t g_runtime_scan_deadline_us;
 /* MAC the caller (wifi.c) wants the chip to transmit with.  Pushed
    into the chip via WLC_SET_VAR("cur_etheraddr", mac) during the
    per-tick SET_MAC stage.  If invalid, SET_MAC is skipped and the
@@ -235,6 +241,7 @@ static bool g_runtime_glom_ack_seen;
 static uint32_t g_runtime_glom_ack_status;
 /* Association retries since boot - see sdio_runtime_rejoin_start(). */
 static uint32_t g_runtime_rejoin_count;
+static bool g_runtime_rejoin_allowed = true;
 /* Set once the 4-bit data bus has been switched to and verified. */
 static bool g_runtime_bus_four_bit;
 /* Set once the bus has been verified running at 50 MHz high speed. */
@@ -450,7 +457,9 @@ static _Alignas(4) uint8_t g_txglom_buf[SDPCM_TXGLOM_BUF_SIZE];
 #define WLC_IOCTL_MAGIC 0x14e46c77u
 #define TKIP_ENABLED 0x0002u
 #define AES_ENABLED 0x0004u
+#define WEP_ENABLED 0x0001u
 #define WPA_AUTH_DISABLED 0x0000u
+#define WPA_AUTH_PSK 0x0004u
 #define WPA2_AUTH_PSK 0x0080u
 #define WLC_GET_MAGIC 0u
 #define WLC_GET_VERSION 1u
@@ -463,6 +472,7 @@ static _Alignas(4) uint8_t g_txglom_buf[SDPCM_TXGLOM_BUF_SIZE];
 #define WLC_SET_BAND 142u
 #define WLC_SET_SSID 26u
 #define WLC_SET_WSEC 134u
+#define WLC_SET_KEY 45u
 #define WLC_SET_WPA_AUTH 165u
 #define WLC_SET_VAR 263u
 #define WLC_GET_VAR 262u
@@ -470,6 +480,7 @@ static _Alignas(4) uint8_t g_txglom_buf[SDPCM_TXGLOM_BUF_SIZE];
 #define WLC_SCAN 50u
 #define WLC_GET_BSSID 23u
 #define WLC_DOWN 3u
+#define WLC_DISASSOC 52u
 #define WLC_GET_SSID 25u
 #define WLC_GET_INFRA 19u
 #define WLC_GET_AUTH 21u
@@ -499,6 +510,14 @@ static _Alignas(4) uint8_t g_txglom_buf[SDPCM_TXGLOM_BUF_SIZE];
 #define SDPCM_CONTROL_EVENT_HEADER_LENGTH 12u
 #define SDPCM_DATA_HEADER_LENGTH 14u
 #define SDPCM_PREFIX_LENGTH 4u
+#define WLC_E_SCAN_COMPLETE 26u
+#define WLC_E_ESCAN_RESULT 69u
+#define WLC_E_STATUS_PARTIAL 8u
+#define ESCAN_VERSION 1u
+#define ESCAN_ACTION_START 1u
+#define ESCAN_SYNC_ID 0x4c45u
+#define ESCAN_RESULT_HEADER_LENGTH 12u
+#define BSS_INFO_MIN_LENGTH 78u
 
 /* How long the chip's transmit credit window may stay shut before it is
    treated as a sequence desync rather than back-pressure.  Genuine credit
@@ -516,7 +535,14 @@ static _Alignas(4) uint8_t g_txglom_buf[SDPCM_TXGLOM_BUF_SIZE];
 #define CDCF_IOC_ID_MASK 0xffff0000u
 #define CDCF_IOC_ID_SHIFT 16u
 #define TX_CONTROL_TEMPLATE_INTERFACE 0u
-#define TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH 80u
+#define TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH 164u
+#define WSEC_KEY_PAYLOAD_LENGTH 164u
+#define WSEC_KEY_DATA_OFFSET 8u
+#define WSEC_KEY_ALGO_OFFSET 112u
+#define WSEC_KEY_FLAGS_OFFSET 116u
+#define WSEC_PRIMARY_KEY 2u
+#define CRYPTO_ALGO_WEP1 1u
+#define CRYPTO_ALGO_WEP128 3u
 #define TX_CONTROL_PROBE_JOIN_COMMAND_COUNT 44u
 /* "join" iovar value is wl_extjoin_params_t which is 70 bytes:
      wlc_ssid_t      ssid;          // 4 + 32 = 36 bytes
@@ -705,6 +731,8 @@ static const char *sdio_event_name(uint32_t event_type)
       case 12u: return "DISASSOC_IND";
       case 16u: return "LINK";
       case 46u: return "PSK_SUP";
+      case WLC_E_SCAN_COMPLETE: return "SCAN_COMPLETE";
+      case WLC_E_ESCAN_RESULT: return "ESCAN_RESULT";
       default: return "OTHER";
    }
 }
@@ -762,6 +790,65 @@ static bool sdio_event_is_link_down(uint32_t event_type, uint32_t event_flags)
 
    return event_type == 5u || event_type == 6u
       || event_type == 11u || event_type == 12u;
+}
+
+static void sdio_runtime_note_scan_event(uint32_t event_type,
+                                         uint32_t event_status,
+                                         const uint8_t *data,
+                                         uint32_t data_length)
+{
+   if (!g_runtime_scan_active)
+      return;
+
+   if (event_type == WLC_E_SCAN_COMPLETE) {
+      g_runtime_scan_active = false;
+      g_runtime_scan_done = true;
+      return;
+   }
+   if (event_type != WLC_E_ESCAN_RESULT)
+      return;
+   if (event_status != WLC_E_STATUS_PARTIAL) {
+      g_runtime_scan_active = false;
+      g_runtime_scan_done = true;
+      return;
+   }
+
+   /* wl_escan_result_t is a 12-byte header followed by one wl_bss_info.
+      The fields used below are stable in versions 107/108/109: BSSID at 8,
+      capability at 16, SSID length/data at 18/19, chanspec at 72 and RSSI
+      at 76. Ignore malformed/truncated firmware events. */
+   if (data == NULL || data_length < ESCAN_RESULT_HEADER_LENGTH + BSS_INFO_MIN_LENGTH
+       || g_runtime_scan_result_count >= SDIO_WIFI_SCAN_MAX_RESULTS)
+      return;
+   const uint8_t *bss = data + ESCAN_RESULT_HEADER_LENGTH;
+   uint32_t bss_length = sdio_load_u32_le(&bss[4]);
+   uint8_t ssid_length = bss[18];
+   if (bss_length < BSS_INFO_MIN_LENGTH || bss_length > data_length - ESCAN_RESULT_HEADER_LENGTH
+       || ssid_length > SDIO_WIFI_SCAN_SSID_MAX)
+      return;
+
+   sdio_wifi_scan_result_t *result =
+      &g_runtime_scan_results[g_runtime_scan_result_count];
+   memset(result, 0, sizeof *result);
+   memcpy(result->bssid, &bss[8], sizeof result->bssid);
+   memcpy(result->ssid, &bss[19], ssid_length);
+   result->ssid[ssid_length] = '\0';
+   result->channel = bss[72];
+   result->rssi = (int16_t)((uint16_t)bss[76] | ((uint16_t)bss[77] << 8));
+   result->security = ((((uint16_t)bss[16] | ((uint16_t)bss[17] << 8))
+      & (uint16_t)0x0010u) != 0u) ? (uint8_t)3u : (uint8_t)0u;
+
+   /* Firmware may report the same BSSID more than once during an active
+      scan. Keep the strongest copy and don't waste the Acorn's 240-byte
+      response window on duplicates. */
+   for (uint8_t i = 0u; i < g_runtime_scan_result_count; ++i) {
+      if (memcmp(g_runtime_scan_results[i].bssid, result->bssid, 6u) == 0) {
+         if (result->rssi > g_runtime_scan_results[i].rssi)
+            g_runtime_scan_results[i] = *result;
+         return;
+      }
+   }
+   ++g_runtime_scan_result_count;
 }
 
 static void sdio_runtime_set_error(const char *message)
@@ -2325,6 +2412,7 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
                                            size_t command_capacity)
 {
    const wifi_config_t *config = wifi_get_config();
+   bool use_psk;
    uint8_t count = 0u;
 
    if (commands == NULL || command_capacity < TX_CONTROL_PROBE_JOIN_COMMAND_COUNT - 1u)
@@ -2409,24 +2497,36 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_ASSOC_LISTEN;   /* assoc_listen = 0x0a */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_INFRA;          /* WLC_SET_INFRA = 1 */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AUTH;           /* WLC_SET_AUTH = 0 (802.11 open) */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WSEC;           /* WLC_SET_WSEC = 6 (TKIP|AES) */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WSEC;
+   use_psk = config != NULL && config->password[0] != '\0'
+      && config->security != WIFI_SECURITY_WEP
+      && config->security != WIFI_SECURITY_OPEN;
    /* The in-firmware WPA supplicant must exist BEFORE the passphrase is
       installed: PicoWi sets the three sup_wpa iovars, delays 2 ms, then
       sends WLC_SET_WSEC_PMK.  The 10 ms inter-command delay in
       sdio_probe_send_tx_control_template covers that settle time. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA;
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA2_EAPVER;
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA_TMO;
-   if (config != NULL && config->password[0] != '\0')
+   if (use_psk) {
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA;
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA2_EAPVER;
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA_TMO;
       commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_PMK;         /* WLC_SET_WSEC_PMK */
+   } else if (config != NULL && config->security == WIFI_SECURITY_WEP) {
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WEP_KEY;
+   }
    /* PicoWi re-issues INFRA and AUTH after the PMK, then WPA_AUTH. */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_INFRA;          /* WLC_SET_INFRA = 1 (again) */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AUTH;           /* WLC_SET_AUTH = 0 (again) */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH;       /* WLC_SET_WPA_AUTH = 0x80 (WPA2-PSK) */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_MFP;            /* mfp = capable for WPA2, none otherwise */
+   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH;       /* WLC_SET_WPA_AUTH */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_ROAM_OFF;       /* roam_off = 1 */
-   /* WLC_SET_SSID with a wlc_ssid_t triggers the actual scan + join. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SSID;
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_SSID;       /* diagnostic readback */
+   /* Radio-only startup still needs the complete CLM/country, WLC_UP and
+      event-mask sequence above so *LAP can discover access points.  Skip
+      only the final association commands when no profile is configured. */
+   if (config != NULL && config->ssid[0] != '\0') {
+      /* WLC_SET_SSID with a wlc_ssid_t triggers the actual scan + join. */
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SSID;
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_SSID;    /* diagnostic readback */
+   }
    /* No explicit WLC_SCAN here: it was only ever a radio diagnostic,
       and now that the CLM is loaded and SET_SSID genuinely starts a
       join, a scan issued immediately afterwards just collides with it
@@ -2497,6 +2597,8 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
          return WLC_SET_BAND;
       case WIFI_SDIO_TX_PROBE_COMMAND_PMK:
          return WLC_SET_WSEC_PMK;
+      case WIFI_SDIO_TX_PROBE_COMMAND_WEP_KEY:
+         return WLC_SET_KEY;
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA:
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA2_EAPVER:
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA_TMO:
@@ -2532,7 +2634,7 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_RATE:
          return WLC_GET_RATE;
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
-         return WLC_SCAN;
+         return WLC_SET_VAR;
       case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
          return WLC_SET_WSEC;
       case WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH:
@@ -2547,6 +2649,8 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
          return WLC_UP;
       case WIFI_SDIO_TX_PROBE_COMMAND_DOWN:
          return WLC_DOWN;
+      case WIFI_SDIO_TX_PROBE_COMMAND_DISASSOC:
+         return WLC_DISASSOC;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_SSID:
          return WLC_GET_SSID;
       case WIFI_SDIO_TX_PROBE_COMMAND_MAGIC:
@@ -2571,6 +2675,8 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
             with no key).  Previously this returned the 80-byte
             template maximum. */
          return (uint16_t)(4u + WSEC_MAX_PSK_LEN);
+      case WIFI_SDIO_TX_PROBE_COMMAND_WEP_KEY:
+         return WSEC_KEY_PAYLOAD_LENGTH;
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA:
          return (uint16_t)(sizeof("bsscfg:sup_wpa") + 8u);
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA2_EAPVER:
@@ -2601,6 +2707,8 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          return 36u;
       case WIFI_SDIO_TX_PROBE_COMMAND_DOWN:
          /* WLC_DOWN takes no payload; send a single zero word. */
+         return 4u;
+      case WIFI_SDIO_TX_PROBE_COMMAND_DISASSOC:
          return 4u;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_BSSID:
          /* WLC_GET_BSSID returns a 6-byte BSSID.  Send a 6-byte zero
@@ -2644,7 +2752,7 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_PKTCNTS:
          return WLC_PKTCNTS_BYTES;   /* five u32 counters to be filled in */
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
-         /* wl_scan_params (packed):
+         /* "escan\0" + version/action/sync-id + wl_scan_params (packed):
               wlc_ssid_t  ssid     36   (length=0 => broadcast scan)
               ether_addr  bssid     6   (FF:FF:FF:FF:FF:FF = any)
               int8_t      bss_type  1   (2 = ANY)
@@ -2656,25 +2764,14 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
               int32_t     channel_n 4   (0 = scan all channels of the
                                           configured regulatory domain)
               chanspec_t  chans[1]  2   (unused when channel_num=0)
-            Total 66 bytes packed. */
-         return 66u;
+            Total 6 + 8 + 66 bytes packed. */
+         return (uint16_t)(sizeof("escan") + 8u + 66u);
       case WIFI_SDIO_TX_PROBE_COMMAND_SSID:
-      {
-         /* PicoWi sends WLC_SET_SSID with EXACTLY 4 + strlen(ssid)
-            bytes - a u32 length field followed by just the SSID
-            characters, no 32-byte padding (picowi_join.c: *data = n;
-            strcpy(&data[4], ssid); ioctl_wr_data(WLC_SET_SSID, .., n+4)).
-            We previously sent the canonical 36-byte wlc_ssid_t and,
-            earlier still, a 50-byte wl_join_params_le; the chip acked
-            both but never started the join.  Copy PicoWi byte-for-byte
-            so the SET_SSID frame is identical to the known-good driver. */
-         const wifi_config_t *config = wifi_get_config();
-         size_t ssid_length = 0u;
-
-         if (config != NULL)
-            ssid_length = strnlen(config->ssid, WLC_SSID_MAX_LEN);
-         return (uint16_t)(4u + ssid_length);
-      }
+         /* cyw43_ll_wifi_join caches and sends a complete wlc_ssid_t:
+            u32 length plus the 32-byte, zero-padded SSID field.  Some
+            BCM43430 firmware accepts a shortened buffer but later reports
+            WLC_E_SET_SSID/FAIL, so always send the canonical 36 bytes. */
+         return 36u;
       case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
       case WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH:
       case WIFI_SDIO_TX_PROBE_COMMAND_AUTH:
@@ -2742,11 +2839,13 @@ static bool sdio_tx_probe_is_set_ioctl(wifi_sdio_tx_probe_command_t command)
          || command == WIFI_SDIO_TX_PROBE_COMMAND_GLOBAL_EVENT_MSGS
          || command == WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_EXT
          || command == WIFI_SDIO_TX_PROBE_COMMAND_DOWN
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_DISASSOC
          || command == WIFI_SDIO_TX_PROBE_COMMAND_JOIN
          || command == WIFI_SDIO_TX_PROBE_COMMAND_SSID
          || command == WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH
          || command == WIFI_SDIO_TX_PROBE_COMMAND_WSEC
          || command == WIFI_SDIO_TX_PROBE_COMMAND_PMK
+         || command == WIFI_SDIO_TX_PROBE_COMMAND_WEP_KEY
          || command == WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF
          || command == WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF
          || command == WIFI_SDIO_TX_PROBE_COMMAND_TXGLOMALIGN
@@ -2791,8 +2890,15 @@ static uint32_t sdio_tx_probe_payload_word0(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH:
       {
          const wifi_config_t *config = wifi_get_config();
-
-         return (config != NULL && config->password[0] != '\0') ? WPA2_AUTH_PSK : WPA_AUTH_DISABLED;
+         if (config == NULL || config->password[0] == '\0'
+             || config->security == WIFI_SECURITY_OPEN
+             || config->security == WIFI_SECURITY_WEP)
+            return WPA_AUTH_DISABLED;
+         if (config->security == WIFI_SECURITY_WPA) return WPA_AUTH_PSK;
+         if (config->security == WIFI_SECURITY_WPA2) return WPA2_AUTH_PSK;
+         /* AUTO is the stock two-argument JOIN form. Prefer the modern
+            WPA2-PSK setting; WPA1 remains explicitly selectable with WPA:. */
+         return WPA2_AUTH_PSK;
       }
       case WIFI_SDIO_TX_PROBE_COMMAND_WSEC:
       {
@@ -2803,20 +2909,27 @@ static uint32_t sdio_tx_probe_payload_word0(wifi_sdio_tx_probe_command_t command
             builds reject mixed WPA/WPA2 (TKIP group cipher) APs. */
          const wifi_config_t *config = wifi_get_config();
 
-         return (config != NULL && config->password[0] != '\0')
-            ? (TKIP_ENABLED | AES_ENABLED) : 0u;
+         if (config == NULL) return 0u;
+         if (config->security == WIFI_SECURITY_WEP) return WEP_ENABLED;
+         if (config->security == WIFI_SECURITY_WPA) return TKIP_ENABLED;
+         if (config->security == WIFI_SECURITY_WPA2) return AES_ENABLED;
+         return config->password[0] != '\0' ? AES_ENABLED : 0u;
       }
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA:
       {
          const wifi_config_t *config = wifi_get_config();
 
-         return (config != NULL && config->password[0] != '\0') ? 1u : 0u;
+         return (config != NULL && config->password[0] != '\0'
+                 && config->security != WIFI_SECURITY_OPEN
+                 && config->security != WIFI_SECURITY_WEP) ? 1u : 0u;
       }
       case WIFI_SDIO_TX_PROBE_COMMAND_MFP:
       {
          const wifi_config_t *config = wifi_get_config();
 
-         return (config != NULL && config->password[0] != '\0') ? MFP_CAPABLE : MFP_NONE;
+         return (config != NULL && config->password[0] != '\0'
+                 && config->security != WIFI_SECURITY_WPA
+                 && config->security != WIFI_SECURITY_WEP) ? MFP_CAPABLE : MFP_NONE;
       }
       case WIFI_SDIO_TX_PROBE_COMMAND_PMK:
       {
@@ -2944,6 +3057,42 @@ static void sdio_prepare_tx_control_join_payload(sdio_probe_result_t *probe_resu
    sdio_store_u32_le(&probe_result->tx_control_template_payload_bytes[name_length + 64u], 0u);
 }
 
+static int sdio_hex_nibble(char value)
+{
+   if (value >= '0' && value <= '9') return value - '0';
+   if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+   if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+   return -1;
+}
+
+static void sdio_prepare_wep_key_payload(sdio_probe_result_t *probe_result)
+{
+   const wifi_config_t *config = wifi_get_config();
+   uint8_t *payload = probe_result->tx_control_template_payload_bytes;
+   size_t input_length;
+   size_t key_length;
+   bool hexadecimal;
+
+   if (config == NULL) return;
+   input_length = strnlen(config->password, WIFI_PASSWORD_MAX_LEN);
+   hexadecimal = input_length == 10u || input_length == 26u;
+   key_length = hexadecimal ? input_length / 2u : input_length;
+   sdio_store_u32_le(&payload[0], 0u); /* default key index */
+   sdio_store_u32_le(&payload[4], (uint32_t)key_length);
+   if (hexadecimal) {
+      for (size_t i = 0u; i < key_length; i++) {
+         int high = sdio_hex_nibble(config->password[i * 2u]);
+         int low = sdio_hex_nibble(config->password[i * 2u + 1u]);
+         payload[WSEC_KEY_DATA_OFFSET + i] = (uint8_t)((high << 4) | low);
+      }
+   } else {
+      memcpy(&payload[WSEC_KEY_DATA_OFFSET], config->password, key_length);
+   }
+   sdio_store_u32_le(&payload[WSEC_KEY_ALGO_OFFSET],
+                     key_length == 5u ? CRYPTO_ALGO_WEP1 : CRYPTO_ALGO_WEP128);
+   sdio_store_u32_le(&payload[WSEC_KEY_FLAGS_OFFSET], WSEC_PRIMARY_KEY);
+}
+
 static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
                                             wifi_sdio_tx_probe_command_t command)
 {
@@ -3018,6 +3167,9 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
             memcpy(&probe_result->tx_control_template_payload_bytes[4], config->password, password_length);
          break;
       }
+      case WIFI_SDIO_TX_PROBE_COMMAND_WEP_KEY:
+         sdio_prepare_wep_key_payload(probe_result);
+         break;
       case WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA:
          sdio_prepare_tx_control_iovar_u32_u32_payload(probe_result,
                                                        "bsscfg:sup_wpa",
@@ -3213,11 +3365,16 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
          break;
       case WIFI_SDIO_TX_PROBE_COMMAND_SCAN:
       {
-         /* wl_scan_params - "scan all channels, any AP, active probe".
-            Diagnostic only: if WLC_E_ESCAN_RESULT events fire after
-            this we know the radio works and the post-SET_SSID silence
-            is specific to the join state machine. */
+         /* Enhanced active scan. WLC_E_ESCAN_RESULT carries each BSS record
+            back through the ordinary event receive path for *LAP. */
          uint8_t *p = probe_result->tx_control_template_payload_bytes;
+         size_t name_length = sizeof("escan");
+
+         memcpy(p, "escan", name_length);
+         sdio_store_u32_le(&p[name_length], ESCAN_VERSION);
+         sdio_store_u16_le(&p[name_length + 4u], ESCAN_ACTION_START);
+         sdio_store_u16_le(&p[name_length + 6u], ESCAN_SYNC_ID);
+         p += name_length + 8u;
 
          /* wlc_ssid_t at [0..35]: length=0 => broadcast scan.
             All bytes already zero from the memset at function start. */
@@ -3607,6 +3764,16 @@ static void sdio_runtime_note_event_bare(const uint8_t *payload, uint16_t payloa
                   (unsigned long)event_status,
                   (unsigned long)event_reason);
 
+   {
+      uint32_t event_data_length = ((uint32_t)payload[20] << 24)
+         | ((uint32_t)payload[21] << 16) | ((uint32_t)payload[22] << 8)
+         | (uint32_t)payload[23];
+      uint32_t available = (uint32_t)payload_length - BRCM_EVENT_MSG_LENGTH;
+      if (event_data_length > available) event_data_length = available;
+      sdio_runtime_note_scan_event(event_type, event_status,
+         &payload[BRCM_EVENT_MSG_LENGTH], event_data_length);
+   }
+
    if (sdio_event_is_psk_keyed(event_type, event_status))
       g_runtime_psk_keyed = true;
 
@@ -3673,6 +3840,18 @@ static void sdio_runtime_note_event(const uint8_t *frame, uint16_t frame_length,
                   (unsigned long)event_type,
                   (unsigned long)event_status,
                   (unsigned long)event_reason);
+
+   {
+      uint32_t event_data_length = ((uint32_t)frame[message_offset + 20u] << 24)
+         | ((uint32_t)frame[message_offset + 21u] << 16)
+         | ((uint32_t)frame[message_offset + 22u] << 8)
+         | (uint32_t)frame[message_offset + 23u];
+      uint32_t data_offset = (uint32_t)message_offset + BRCM_EVENT_MSG_LENGTH;
+      uint32_t available = (uint32_t)frame_length - data_offset;
+      if (event_data_length > available) event_data_length = available;
+      sdio_runtime_note_scan_event(event_type, event_status,
+         &frame[data_offset], event_data_length);
+   }
 
    if (sdio_event_is_psk_keyed(event_type, event_status))
       g_runtime_psk_keyed = true;
@@ -4580,7 +4759,7 @@ static int sdio_runtime_query_mac_step(sdio_host_t *dev)
          sdio_runtime_set_error(NULL); /* tolerated - lwIP keeps its default MAC */
       }
       g_runtime_step_sent = true;
-      g_runtime_step_deadline_us = now + 10000u;
+      g_runtime_step_deadline_us = now + 250000u;
       return 0;
    }
 
@@ -6040,14 +6219,6 @@ bool sdio_runtime_tick(void)
 
       case SDIO_RUNTIME_STAGE_PREPARE_JOIN:
          config = wifi_get_config();
-         if (config == NULL || config->ssid[0] == '\0') {
-            /* No SSID configured - stop here, leave the runtime up so
-               other code (lwip, webserver) can still query state. */
-            g_runtime_stage = SDIO_RUNTIME_STAGE_DONE;
-            sdio_debug_log("== STAGE_DONE: runtime ready (no SSID configured) ==");
-            return false;
-         }
-
          if (g_runtime_emulator_mode) {
             g_runtime_stage = SDIO_RUNTIME_STAGE_DONE;
             sdio_debug_log("== STAGE_DONE: emulator mode, skipping join burst to keep polling responsive ==");
@@ -6221,6 +6392,67 @@ bool sdio_runtime_ready(void)
    return g_runtime_stage == SDIO_RUNTIME_STAGE_DONE;
 }
 
+bool sdio_runtime_scan_start(void)
+{
+   if (!g_runtime_started || g_runtime_emulator_mode
+       || g_runtime_stage != SDIO_RUNTIME_STAGE_DONE || g_runtime_scan_active)
+      return false;
+   if (g_runtime_rssi_query_wanted || g_runtime_rssi_request_pending
+       || g_runtime_pktcnt_query_wanted || g_runtime_pktcnt_request_pending
+       || g_runtime_rate_query_wanted || g_runtime_rate_request_pending)
+      return false;
+
+   memset(g_runtime_scan_results, 0, sizeof g_runtime_scan_results);
+   g_runtime_scan_result_count = 0u;
+   g_runtime_scan_done = false;
+   sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                    WIFI_SDIO_TX_PROBE_COMMAND_SCAN);
+   if (!sdio_probe_send_single_tx_control_template_timeout(
+          &g_runtime_device, &g_sdio_probe_result, SDIO_RUNTIME_POLL_TIMEOUT_US))
+      return false;
+   g_runtime_scan_active = true;
+   g_runtime_scan_deadline_us = RPI_GetSystemTime() + 8000000u;
+   return true;
+}
+
+void sdio_runtime_scan_cancel(void)
+{
+   /* Enhanced-scan results arrive asynchronously through the event poller.
+      Dropping the active flag makes those late events inert and permits a
+      later LAP to create a fresh result set. The firmware scan itself is
+      bounded by its existing deadline and needs no blocking abort ioctl. */
+   g_runtime_scan_active = false;
+   g_runtime_scan_done = false;
+   g_runtime_scan_result_count = 0u;
+}
+
+bool sdio_runtime_scan_busy(void)
+{
+   if (g_runtime_scan_active
+       && (int32_t)(RPI_GetSystemTime() - g_runtime_scan_deadline_us) >= 0) {
+      g_runtime_scan_active = false;
+      g_runtime_scan_done = true;
+   }
+   return g_runtime_scan_active;
+}
+
+bool sdio_runtime_scan_complete(void)
+{
+   (void)sdio_runtime_scan_busy();
+   return g_runtime_scan_done;
+}
+
+uint8_t sdio_runtime_scan_results(sdio_wifi_scan_result_t *out,
+                                  uint8_t capacity)
+{
+   uint8_t count = g_runtime_scan_result_count;
+   if (count > capacity) count = capacity;
+   if (out != NULL && count != 0u)
+      memcpy(out, g_runtime_scan_results,
+             (size_t)count * sizeof g_runtime_scan_results[0]);
+   return count;
+}
+
 /* Re-arm the join sequence on a runtime that has already finished bring-up.
    The chip does not re-associate on its own once the association is lost, and
    the boot path runs the join exactly once, so without this a scan that comes
@@ -6235,6 +6467,8 @@ bool sdio_runtime_ready(void)
 bool sdio_runtime_rejoin_start(void)
 {
    if (!g_runtime_started || g_runtime_emulator_mode)
+      return false;
+   if (!g_runtime_rejoin_allowed)
       return false;
    if (g_runtime_stage != SDIO_RUNTIME_STAGE_DONE)
       return false;
@@ -6284,6 +6518,83 @@ bool sdio_runtime_rejoin_busy(void)
        || g_runtime_stage == SDIO_RUNTIME_STAGE_SWEEP_RX;
 }
 
+void sdio_runtime_rejoin_enable(void)
+{
+   g_runtime_rejoin_allowed = true;
+}
+
+bool sdio_runtime_disconnect(void)
+{
+   bool sent;
+
+   if (!g_runtime_started)
+      return true;
+   if (g_runtime_emulator_mode || g_runtime_stage != SDIO_RUNTIME_STAGE_DONE)
+      return false;
+
+   sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                    WIFI_SDIO_TX_PROBE_COMMAND_DISASSOC);
+   sent = sdio_probe_send_single_tx_control_template_timeout(
+      &g_runtime_device, &g_sdio_probe_result, SDIO_RUNTIME_POLL_TIMEOUT_US);
+   if (!sent)
+      return false;
+
+   g_runtime_link_up = false;
+   g_runtime_psk_keyed = false;
+   g_runtime_link_up_us = 0u;
+   g_runtime_rejoin_allowed = false;
+   sdio_debug_log("WLC_DISASSOC: station disconnected by host; auto-rejoin paused");
+   return true;
+}
+
+bool sdio_runtime_radio_disable(void)
+{
+   bool sent;
+
+   if (!g_runtime_started)
+      return true;
+   if (g_runtime_emulator_mode || g_runtime_stage != SDIO_RUNTIME_STAGE_DONE)
+      return false;
+
+   sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                    WIFI_SDIO_TX_PROBE_COMMAND_DOWN);
+   sent = sdio_probe_send_single_tx_control_template_timeout(
+      &g_runtime_device, &g_sdio_probe_result, SDIO_RUNTIME_POLL_TIMEOUT_US);
+   if (!sent)
+      return false;
+
+   g_runtime_link_up = false;
+   g_runtime_psk_keyed = false;
+   g_runtime_link_up_us = 0u;
+   g_runtime_rejoin_allowed = false;
+   sdio_debug_log("WLC_DOWN: radio disabled by ElkWiFi host");
+   return true;
+}
+
+bool sdio_runtime_radio_enable(void)
+{
+   bool sent;
+
+   if (!g_runtime_started)
+      return false;
+   if (g_runtime_emulator_mode || g_runtime_stage != SDIO_RUNTIME_STAGE_DONE)
+      return false;
+
+   sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                    WIFI_SDIO_TX_PROBE_COMMAND_UP);
+   sent = sdio_probe_send_single_tx_control_template_timeout(
+      &g_runtime_device, &g_sdio_probe_result, SDIO_RUNTIME_POLL_TIMEOUT_US);
+   if (!sent)
+      return false;
+
+   g_runtime_link_up = false;
+   g_runtime_psk_keyed = false;
+   g_runtime_link_up_us = 0u;
+   g_runtime_rejoin_allowed = true;
+   sdio_debug_log("WLC_UP: radio enabled by ElkWiFi host");
+   return true;
+}
+
 bool sdio_runtime_link_is_up(void)
 {
    const wifi_config_t *config = wifi_get_config();
@@ -6296,7 +6607,10 @@ bool sdio_runtime_link_is_up(void)
       Announcing it at WLC_E_LINK put a DHCP Discover into the handshake
       window, where the AP drops it. Open networks never emit the event, so
       they are not gated. */
-   if (config != NULL && config->password[0] != '\0' && !g_runtime_psk_keyed) {
+   if (config != NULL && config->password[0] != '\0'
+       && config->security != WIFI_SECURITY_WEP
+       && config->security != WIFI_SECURITY_OPEN
+       && !g_runtime_psk_keyed) {
       /* Never let this gate be the reason there is no network. Only WPA-PSK
          was observed here; a setup that authorises without ever sending
          PSK_SUP/KEYED would otherwise stay offline forever, which is far
@@ -6311,16 +6625,23 @@ bool sdio_runtime_link_is_up(void)
    return true;
 }
 
-/* Copy the chip's WiFi MAC (read from cur_etheraddr at boot) into
-   mac_out.  Returns false if it was never captured, in which case the
-   caller should keep its own default. */
+/* Copy the chip's WiFi MAC into mac_out. A missed cur_etheraddr response
+   falls back to the desired board MAC that SET_MAC requested, so scan/join
+   is not disabled merely because diagnostic read-back was late. */
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6])
 {
-   if (mac_out == NULL || !g_runtime_chip_mac_valid)
+   if (mac_out == NULL)
       return false;
 
-   memcpy(mac_out, g_runtime_chip_mac, 6u);
-   return true;
+   if (g_runtime_chip_mac_valid) {
+      memcpy(mac_out, g_runtime_chip_mac, 6u);
+      return true;
+   }
+   if (g_runtime_desired_mac_valid) {
+      memcpy(mac_out, g_runtime_desired_mac, 6u);
+      return true;
+   }
+   return false;
 }
 
 /* Request a one-shot RSSI read.  Safe to call from any context - it only
@@ -7518,5 +7839,9 @@ sdio_runtime_status_t sdio_runtime_get_status(void)
    status.bus_four_bit = g_runtime_bus_four_bit;
    status.bus_high_speed = g_runtime_bus_high_speed;
    status.link_flag_trusted = g_runtime_link_flag_trusted;
+   status.join_busy = sdio_runtime_rejoin_busy();
+   status.last_event_type = g_sdio_probe_result.sdpcm_brcm_event_type;
+   status.last_event_status = g_sdio_probe_result.sdpcm_brcm_event_status;
+   status.last_event_reason = g_sdio_probe_result.sdpcm_brcm_event_reason;
    return status;
 }

@@ -22,6 +22,14 @@ typedef enum {
 } wifi_ip_mode_t;
 
 typedef enum {
+   WIFI_SECURITY_AUTO = 0, /* open with no key; otherwise WPA/WPA2-PSK */
+   WIFI_SECURITY_OPEN,
+   WIFI_SECURITY_WEP,
+   WIFI_SECURITY_WPA,
+   WIFI_SECURITY_WPA2
+} wifi_security_t;
+
+typedef enum {
    WIFI_SDIO_TX_PROBE_COMMAND_VERSION = 0,
    WIFI_SDIO_TX_PROBE_COMMAND_MAGIC,
    /* Issue WLC_DOWN at the very start of the join sequence so the chip
@@ -29,6 +37,7 @@ typedef enum {
       convention; required by some firmware builds before BSS-level
       params can be safely committed. */
    WIFI_SDIO_TX_PROBE_COMMAND_DOWN,
+   WIFI_SDIO_TX_PROBE_COMMAND_DISASSOC,
    WIFI_SDIO_TX_PROBE_COMMAND_UP,
    WIFI_SDIO_TX_PROBE_COMMAND_INFRA,
    WIFI_SDIO_TX_PROBE_COMMAND_SUP_WPA,
@@ -62,6 +71,7 @@ typedef enum {
    WIFI_SDIO_TX_PROBE_COMMAND_GET_SSID,
    WIFI_SDIO_TX_PROBE_COMMAND_WPA_AUTH,
    WIFI_SDIO_TX_PROBE_COMMAND_WSEC,
+   WIFI_SDIO_TX_PROBE_COMMAND_WEP_KEY,
    WIFI_SDIO_TX_PROBE_COMMAND_PMK,
    WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF,
    WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF,
@@ -217,6 +227,7 @@ typedef struct {
    uint8_t sdio_rx_sweep_limit;
    char ssid[WIFI_SSID_MAX_LEN + 1];
    char password[WIFI_PASSWORD_MAX_LEN + 1];
+   wifi_security_t security;
    char hostname[WIFI_HOSTNAME_MAX_LEN + 1];
    wifi_ip_mode_t ip_mode;
    char ip_address[WIFI_IPV4_TEXT_MAX_LEN + 1];
@@ -269,6 +280,13 @@ void wifi_note_http_ready(void);
 void wifi_set_error(const char *message);
 
 const wifi_config_t *wifi_get_config(void);
+bool wifi_profile_is_valid(const char *ssid, const char *password,
+                           wifi_security_t security);
+bool wifi_reconfigure_and_rejoin(const char *ssid, const char *password,
+                                 wifi_security_t security);
+bool wifi_enable_radio(void);
+bool wifi_disable_radio(void);
+bool wifi_disconnect(void);
 const wifi_network_config_t *wifi_get_network_config(void);
 wifi_status_t wifi_get_status(void);
 wifi_state_t wifi_get_state(void);
