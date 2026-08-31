@@ -36,7 +36,14 @@ project( Pi1MHz C ASM )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu2x" )
+# gnu23 is the ratified spelling; gnu2x is the pre-ratification name older
+# compilers still need.  CodeQL autobuilds on ubuntu-latest with whatever GCC
+# the runner ships, so neither can be assumed.
+if(CMAKE_C_COMPILER_VERSION VERSION_LESS 16)
+   set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu2x" )
+else()
+   set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu23" )
+endif()
 
 # Replace newlib's _ctype_ table lookups for toupper/tolower with 3-instruction
 # ASCII range checks. Force-included so that source files keep using plain
@@ -86,7 +93,12 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ftabstop=8  ")
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdeprecated-declarations -Wfloat-equal -Wmissing-format-attribute " )
 
-set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wenum-int-mismatch -Wxor-used-as-pow -fstrict-flex-arrays -Warray-bounds=2")
+set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fstrict-flex-arrays -Warray-bounds=2")
+# -Wenum-int-mismatch and -Wxor-used-as-pow arrived in GCC 13; an older
+# compiler rejects the unknown flag outright rather than ignoring it.
+if(NOT CMAKE_C_COMPILER_VERSION VERSION_LESS 14)
+   set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wenum-int-mismatch -Wxor-used-as-pow")
+endif()
 
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Warith-conversion ")
 

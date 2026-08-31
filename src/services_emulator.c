@@ -37,7 +37,21 @@ static unsigned int s_service_count;
 
 bool services_register(uint8_t first, uint8_t last, service_command_fn handler)
 {
-   if (handler == NULL || first > last || s_service_count >= SERVICES_MAX)
+   if (handler == NULL || first > last)
+      return false;
+
+   /* A service re-registers its own range on every BBC reset.  That is an
+      identical claim, not a conflict, so report success: it already owns the
+      range and the existing table entry still serves it.  Answering false
+      made "did my registration take?" unanswerable for a caller that checks.
+      Tested before the capacity check so a full table cannot turn a renewal
+      into a failure. */
+   for (unsigned int i = 0; i < s_service_count; i++)
+      if (first == s_services[i].first && last == s_services[i].last &&
+          handler == s_services[i].handler)
+         return true;
+
+   if (s_service_count >= SERVICES_MAX)
       return false;
 
    for (unsigned int i = 0; i < s_service_count; i++)
