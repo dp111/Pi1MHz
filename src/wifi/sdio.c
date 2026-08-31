@@ -6219,6 +6219,19 @@ bool sdio_runtime_tick(void)
 
       case SDIO_RUNTIME_STAGE_PREPARE_JOIN:
          config = wifi_get_config();
+         /* No SSID configured - stop here, leave the runtime up so other
+            code (lwip, webserver) can still query state.  Without a profile
+            there is nothing to associate to, so the CLM download and the MAC
+            read that follow are both wasted boot time.  A host-driven join
+            does need the radio up before any SSID is known; that belongs
+            with the change that adds such a caller, and should be
+            conditional on one rather than dropping this outright. */
+         if (config == NULL || config->ssid[0] == '\0') {
+            g_runtime_stage = SDIO_RUNTIME_STAGE_DONE;
+            sdio_debug_log("== STAGE_DONE: runtime ready (no SSID configured) ==");
+            return false;
+         }
+
          if (g_runtime_emulator_mode) {
             g_runtime_stage = SDIO_RUNTIME_STAGE_DONE;
             sdio_debug_log("== STAGE_DONE: emulator mode, skipping join burst to keep polling responsive ==");
