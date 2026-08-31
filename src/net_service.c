@@ -21,6 +21,7 @@
 #include "Pi1MHz.h"
 #include "ram_emulator.h"          /* DISC_RAM_BASE, DISC_RAM_SIZE, JIM_ram */
 #include "services.h"
+#include "scripts/gitversion.h"
 #include "net_service.h"
 #include "net_tnfs.h"
 #include "net_telnet.h"
@@ -59,6 +60,9 @@ typedef struct {
    uint8_t           url_phase;     /* url_phase_t: the open state machine   */
    bool              http_hdr_done; /* HTTP adapter: response headers eaten */
    uint16_t          http_code;     /* HTTP adapter: parsed status code     */
+   bool              http_has_length;
+   uint32_t          http_content_length;
+   uint32_t          http_body_read;
    struct altcp_pcb *tpcb;          /* TCP pcb, NULL once freed by lwIP     */
    struct udp_pcb   *upcb;          /* UDP pcb                              */
    ip_addr_t         remote_ip;
@@ -358,15 +362,31 @@ static err_t net_tcp_poll(void *arg, struct altcp_pcb *pcb)
    return ERR_OK;
 }
 
+/* Preserve the useful part of lwIP's TCP failure instead of collapsing every
+   route, timeout, reset and interface error into NET_ERR_CONN.  These values
+   cross the host ABI and make field failures diagnosable from the Electron. */
+static uint8_t net_tcp_result(err_t err)
+{
+   switch (err) {
+      case ERR_MEM:     return NET_ERR_NOMEM;
+      case ERR_RTE:     return NET_ERR_TCP_ROUTE;
+      case ERR_TIMEOUT: return NET_ERR_TCP_TIMEOUT;
+      case ERR_RST:     return NET_ERR_TCP_RESET;
+      case ERR_ABRT:    return NET_ERR_TCP_ABORT;
+      case ERR_CLSD:    return NET_ERR_TCP_CLOSED;
+      case ERR_IF:      return NET_ERR_TCP_IF;
+      default:          return NET_ERR_CONN;
+   }
+}
+
 static void net_tcp_err(void *arg, err_t err)
 {
    net_handle_t *h = (net_handle_t *)arg;
-   (void)err;
    if (h == NULL)
       return;
    /* lwIP has already freed the pcb - NULL it, never touch it again. */
    h->tpcb = NULL;
-   h->last_err = NET_ERR_CONN;
+   h->last_err = net_tcp_result(err);
    h->state = NET_ST_ERROR;
 }
 
@@ -428,7 +448,7 @@ static err_t net_tcp_connected(void *arg, struct altcp_pcb *pcb, err_t err)
       h->state = NET_ST_CONNECTED;
    else {
       h->tpcb = NULL;              /* connect failure frees the pcb */
-      h->last_err = NET_ERR_CONN;
+      h->last_err = net_tcp_result(err);
       h->state = NET_ST_ERROR;
    }
    return ERR_OK;
@@ -728,12 +748,16 @@ static uint8_t net_start_connect(net_handle_t *h)
    if (h->tpcb == NULL)
       return NET_ERR_NOMEM;
    net_tcp_bind_callbacks(h, h->tpcb);
-   if (altcp_connect(h->tpcb, &h->remote_ip, h->remote_port,
-                     net_tcp_connected) != ERR_OK) {
-      net_pcb_release(h, true);
-      h->state = NET_ST_ERROR;
-      h->last_err = NET_ERR_CONN;
-      return NET_ERR_CONN;
+   {
+      err_t err = altcp_connect(h->tpcb, &h->remote_ip, h->remote_port,
+                                net_tcp_connected);
+      if (err != ERR_OK) {
+         uint8_t result = net_tcp_result(err);
+         net_pcb_release(h, true);
+         h->state = NET_ST_ERROR;
+         h->last_err = result;
+         return result;
+      }
    }
    h->state = NET_ST_CONNECTING;
    return NET_PENDING;
@@ -746,7 +770,7 @@ static uint8_t do_connect(net_handle_t *h, uint32_t cp)
    if (h->state == NET_ST_CONNECTED)
       return NET_OK;
    if (h->state == NET_ST_ERROR)
-      return NET_ERR_CONN;
+      return h->last_err ? h->last_err : NET_ERR_CONN;
    if (h->state == NET_ST_CONNECTING)
       return NET_PENDING;
    if (h->state != NET_ST_IDLE)
@@ -886,9 +910,10 @@ static uint8_t do_status(net_handle_t *h, uint32_t cp)
 static uint8_t net_http_send_request(net_handle_t *h, const char *host,
                                      const char *path)
 {
-   char req[NET_MAX_HOSTNAME + 256u];
+   char req[NET_MAX_HOSTNAME + 288u];
    int n = snprintf(req, sizeof req,
-                    "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
+                    "GET %s HTTP/1.0\r\nHost: %s\r\n"
+                    "User-Agent: Pi1MHz/" RELEASENAME "\r\nConnection: close\r\n\r\n",
                     path, host);
    if (n < 0 || (size_t)n >= sizeof req)
       return NET_ERR_PARAM;
@@ -921,13 +946,36 @@ static uint16_t net_http_find_headers(const net_handle_t *h)
 }
 
 /* Parse the status code from the ring's first line ("HTTP/1.x NNN ..."). */
-static void net_http_parse_status(net_handle_t *h)
+static uint8_t net_http_header_byte(const net_handle_t *h, uint16_t offset)
 {
    const uint8_t *ring = net_rx_ring[h - net_h];
+   return ring[(uint16_t)(((unsigned int)h->rx_tail + offset)
+                         & (NET_RX_RING_SIZE - 1u))];
+}
+
+static bool net_http_header_name(const net_handle_t *h, uint16_t offset,
+                                 uint16_t header_length, const char *name)
+{
+   uint16_t i;
+   for (i = 0u; name[i] != '\0'; i++) {
+      uint8_t actual;
+      if ((uint32_t)offset + i >= header_length)
+         return false;
+      actual = net_http_header_byte(h, (uint16_t)(offset + i));
+      if (actual >= 'A' && actual <= 'Z')
+         actual = (uint8_t)(actual + ('a' - 'A'));
+      if (actual != (uint8_t)name[i])
+         return false;
+   }
+   return true;
+}
+
+static void net_http_parse_headers(net_handle_t *h, uint16_t header_length)
+{
    uint16_t i, code = 0u;
    bool after_space = false;
-   for (i = 0; i < h->rx_count && i < 64u; i++) {
-      uint8_t c = ring[(uint16_t)(((unsigned int)h->rx_tail + i) & (NET_RX_RING_SIZE - 1u))];
+   for (i = 0; i < header_length && i < 64u; i++) {
+      uint8_t c = net_http_header_byte(h, i);
       if (!after_space) {
          if (c == ' ') after_space = true;
       } else if (c >= '0' && c <= '9') {
@@ -937,6 +985,37 @@ static void net_http_parse_status(net_handle_t *h)
       }
    }
    h->http_code = code;
+
+   for (i = 0u; i < header_length; i++) {
+      uint16_t value_pos;
+      uint32_t value = 0u;
+      bool have_digit = false;
+      bool line_start = i == 0u
+         || (i >= 2u && net_http_header_byte(h, (uint16_t)(i - 2u)) == '\r'
+             && net_http_header_byte(h, (uint16_t)(i - 1u)) == '\n');
+      if (!line_start
+          || !net_http_header_name(h, i, header_length, "content-length:"))
+         continue;
+      value_pos = (uint16_t)(i + sizeof("content-length:") - 1u);
+      while (value_pos < header_length
+             && (net_http_header_byte(h, value_pos) == ' '
+                 || net_http_header_byte(h, value_pos) == '\t'))
+         value_pos++;
+      while (value_pos < header_length) {
+         uint8_t c = net_http_header_byte(h, value_pos++);
+         if (c < '0' || c > '9')
+            break;
+         have_digit = true;
+         if (value > (UINT32_MAX - (uint32_t)(c - '0')) / 10u)
+            return;
+         value = value * 10u + (uint32_t)(c - '0');
+      }
+      if (have_digit) {
+         h->http_has_length = true;
+         h->http_content_length = value;
+      }
+      return;
+   }
 }
 
 /* ---- N: device commands -------------------------------------------------- */
@@ -1232,7 +1311,10 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
             return NET_OK;
          }
          if (h->state == NET_ST_CONNECTING) return NET_PENDING;
-         if (h->state == NET_ST_ERROR) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN; }
+         if (h->state == NET_ST_ERROR) {
+            h->url_phase = URL_FAIL;
+            return h->last_err ? h->last_err : NET_ERR_CONN;
+         }
          if (h->state == NET_ST_CONNECTED) {
             if (h->url_adapter == NET_URL_HTTP) {
                uint8_t r = net_http_send_request(h, host, path);
@@ -1255,6 +1337,12 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
 
    if (h->state == NET_ST_FREE) return NET_ERR_NOTOPEN;
    if (!net_buffer_ok(jimoff, max)) return NET_ERR_PARAM;
+   if (h->url_adapter == NET_URL_HTTP && h->http_hdr_done
+       && h->http_has_length
+       && h->http_body_read >= h->http_content_length) {
+      jim_wr24(cp + 1u, 0u);
+      return NET_EOF;
+   }
 
    if (h->url_adapter == NET_URL_TNFS) {
       uint8_t      pkt[TNFS_PKT_MAX];
@@ -1351,16 +1439,41 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
             return h->last_err ? h->last_err : NET_ERR_CONN;
          return NET_OK;                       /* wait for more header bytes */
       }
-      net_http_parse_status(h);
+      net_http_parse_headers(h, hdr);
+      /* A completed TCP request is not a successful WGET when the server
+         returned an error page or redirect. Do not pass HTML diagnostics to
+         the host as payload and then report WGET OK. Redirect following needs
+         an explicit bounded policy, so all non-2xx responses currently fail. */
+      if (h->http_code < 200u || h->http_code >= 300u) {
+         h->last_err = NET_ERR_HTTP_STATUS;
+         return NET_ERR_HTTP_STATUS;
+      }
       { uint8_t junk[64]; uint16_t left = hdr;
         while (left != 0u) { uint16_t k = (left < sizeof junk) ? left : (uint16_t)sizeof junk;
                              ring_get_mem(h, junk, k); left = (uint16_t)(left - k); } }
       h->http_hdr_done = true;
    }
+   if (h->url_adapter == NET_URL_HTTP && h->http_has_length) {
+      uint32_t remaining = h->http_content_length - h->http_body_read;
+      if (max > remaining)
+         max = remaining;
+   }
    got = ring_get(h, jimoff + DISC_RAM_BASE, max);
+   if (h->url_adapter == NET_URL_HTTP)
+      h->http_body_read += got;
    jim_wr24(cp + 1u, got);
    if (got == 0u && h->rx_count == 0u) {
-      if (h->rx_eof)                 return NET_EOF;
+      if (h->rx_eof) {
+         /* EOF is success only after the declared HTTP body has arrived.
+            Treat an early FIN as a transport failure so WGET cannot report
+            success for a truncated UEF which WiCFS will reject much later. */
+         if (h->url_adapter == NET_URL_HTTP && h->http_has_length &&
+             h->http_body_read < h->http_content_length) {
+            h->last_err = NET_ERR_TCP_CLOSED;
+            return NET_ERR_TCP_CLOSED; /* declared HTTP body ended early */
+         }
+         return NET_EOF;
+      }
       if (h->state == NET_ST_ERROR)  return h->last_err ? h->last_err : NET_ERR_CONN;
    }
    return NET_OK;

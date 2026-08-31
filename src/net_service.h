@@ -119,6 +119,13 @@ void net_service_init(uint8_t instance, uint8_t address);
 #define NET_ERR_NOMEM        0x26u /* out of pcbs / heap                     */
 #define NET_ERR_UNSUPPORTED  0x27u /* command not implemented (yet)          */
 #define NET_ERR_DISABLED     0x28u /* net_enable=0 in Pi1MHz.cfg             */
+#define NET_ERR_TCP_ROUTE    0x2Au /* lwIP could not route the TCP connection */
+#define NET_ERR_TCP_TIMEOUT  0x2Bu /* TCP handshake or stream timed out       */
+#define NET_ERR_TCP_RESET    0x2Cu /* peer reset the TCP connection            */
+#define NET_ERR_TCP_ABORT    0x2Du /* local TCP stack aborted the connection    */
+#define NET_ERR_TCP_CLOSED   0x2Eu /* connection closed unexpectedly            */
+#define NET_ERR_TCP_IF       0x2Fu /* network interface rejected the operation  */
+#define NET_ERR_HTTP_STATUS  0x30u /* HTTP response was not successful          */
 /* NET_PENDING is bit-7-CLEAR on purpose.  Bit 7 set means "the command was
    latched in FIQ but the main-loop poll has not produced a result yet" - the
    Beeb spins on it (the FAT-service "BMI wait" idiom) and it clears within one
