@@ -12,8 +12,10 @@ Licensed under the GNU General Public License v3 (see `ReadMe.md`).
 
 ## Thanks
 
-With thanks to Ken Lowe, Mark Usher, Hoglet, BigEd and others in the BBC
+With thanks to Ken Lowe, Mark Usher, Hoglet, BigEd, Peter Clarke and others in the BBC
 Micro community for their testing, advice and contributions.
+
+The Raspberrypi Engineers who have helped me with this project.
 
 ## Vendored libraries
 
