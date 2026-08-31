@@ -66,6 +66,8 @@
 
 /* Emulator-table init: instance = nIRQ source id, address = services base. */
 void net_service_init(uint8_t instance, uint8_t address);
+void net_service_command(uint32_t command_pointer, uint32_t address,
+                         uint8_t data);
 
 /* ---- ABI constants (shared with the Beeb-side client and the tests) ----- */
 

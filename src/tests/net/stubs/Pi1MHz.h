@@ -10,6 +10,8 @@ typedef void (*func_ptr)(void);
 
 /* Small JIM window for tests: DISC_RAM_BASE 0, DISC_RAM_SIZE 64 KB (see
    ram_emulator.h), plus room for command blocks below the region. */
+/* Include the services-page address used by net_debug_mark as well as the
+   public test buffers. ASan can then detect a genuinely invalid access. */
 #ifdef COPY_PUBLIC_NONZERO_ONLY
 #define TEST_JIM_SIZE 0x1100000u
 #else

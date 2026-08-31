@@ -31,7 +31,11 @@ typedef struct {
    service_command_fn handler;
 } service_range_t;
 
-#define SERVICES_MAX 4u
+/* Four sufficed for disc, FAT, AUN and net.  The 1MHz-WiFi ROM support adds
+   ElkWiFi and FTP, and SSH when PI1MHZ_SSH is on, so the table would overflow
+   and a service would silently fail to claim its range.  Eight entries cost
+   32 bytes of BSS. */
+#define SERVICES_MAX 8u
 static service_range_t s_services[SERVICES_MAX];
 static unsigned int s_service_count;
 
