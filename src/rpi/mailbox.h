@@ -200,6 +200,11 @@ extern void RPI_PropertyNewTag(rpi_mailbox_tag_t tag, uint32_t length);
 extern void RPI_PropertyAdd(uint32_t data);
 extern void RPI_PropertyAddTwoWords(uint32_t data, uint32_t data2);
 extern unsigned int RPI_PropertyProcess( bool wait );
+/* Collect the reply for a request posted with RPI_PropertyProcess(false).
+   Blocks; check RPI_PropertyReplyWaiting() first to avoid stalling. */
+extern void RPI_PropertySettle( void );
+/* True when RPI_PropertySettle() would not block. */
+extern bool RPI_PropertyReplyWaiting( void );
 extern void RPI_PropertyProcessNoCheck( void );
 extern rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag );
 

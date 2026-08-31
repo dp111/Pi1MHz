@@ -24,7 +24,6 @@ static size_t pt_index;
    Every entry point that refills pt[] settles first. */
 static bool pt_pending;
 
-static void mailbox_settle( void );
 
 #define PRINT_PROP_DEBUG 0
 
@@ -140,7 +139,7 @@ static void RPI_Mailbox0Drain( void )
 
 rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data)
 {
-    mailbox_settle();   /* pt[] may still be owned by a deferred reply */
+    RPI_PropertySettle();   /* pt[] may still be owned by a deferred reply */
     pt_index = 2;
     pt[pt_index++] = tag;
     pt[pt_index++] = 8;
@@ -156,7 +155,7 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
 
 void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data)
 {
-    mailbox_settle();   /* pt[] may still be owned by a deferred reply */
+    RPI_PropertySettle();   /* pt[] may still be owned by a deferred reply */
     pt_index = 2;
     pt[pt_index++] = tag;
     pt[pt_index++] = 8;
@@ -168,7 +167,7 @@ void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data)
 
 rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
 {
-    mailbox_settle();   /* pt[] may still be owned by a deferred reply */
+    RPI_PropertySettle();   /* pt[] may still be owned by a deferred reply */
     pt_index = 2;
     pt[pt_index++] = tag;
     /* Provide a 1024-byte buffer */
@@ -184,7 +183,7 @@ rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
 
 void RPI_PropertyStart(rpi_mailbox_tag_t tag, uint32_t length)
 {
-    mailbox_settle();   /* pt[] may still be owned by a deferred reply */
+    RPI_PropertySettle();   /* pt[] may still be owned by a deferred reply */
     pt_index = 2;
     pt[pt_index++] = tag;
     pt[pt_index++] = length * 4;
@@ -260,8 +259,11 @@ static unsigned int mailbox_collect( void )
     return result;
 }
 
-/* Finish a deferred exchange so pt[] can be reused.  Cheap when idle. */
-static void mailbox_settle( void )
+/* Collect the reply for a request posted with RPI_PropertyProcess(false), so
+   pt[] can be reused.  Cheap when nothing is outstanding.  Blocks until the
+   VideoCore answers; pair with RPI_PropertyReplyWaiting() if the caller must
+   not stall. */
+void RPI_PropertySettle( void )
 {
     if ( !pt_pending )
         return;
@@ -269,10 +271,21 @@ static void mailbox_settle( void )
     (void)mailbox_collect();
 }
 
+/* True when a deferred reply can be collected without blocking - either
+   nothing is outstanding, or the VideoCore has already written back.  Lets a
+   poll callback defer a slow property request and pick the answer up on a
+   later pass instead of waiting for it. */
+bool RPI_PropertyReplyWaiting( void )
+{
+    if ( !pt_pending )
+        return true;
+    return ( rpiMailbox0->Status & ARM_MS_EMPTY ) == 0;
+}
+
 unsigned int RPI_PropertyProcess( bool wait )
 {
     /* A previous deferred request may still own pt[]. */
-    mailbox_settle();
+    RPI_PropertySettle();
 
     /* Fill in the size of the buffer */
     pt[PT_OSIZE] = ( pt_index + 1 ) << 2;

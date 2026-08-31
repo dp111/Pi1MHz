@@ -258,11 +258,25 @@ static void usb_task(void) {
 }
 
 
-void usb_init(uint8_t instance , uint8_t address) {
-   // enable usb power via mail box
-  RPI_PropertySetWord(TAG_SET_POWER_STATE, POWER_DEVICE_USB_HCD, 0x00000003); // device on, wait for stable
+/* Second half of usb_init, run from the poll loop.
+ *
+ * Powering the USB host controller takes the VideoCore ~527 ms, and waiting
+ * for it in init held up the whole poll loop - and so the first SCSI service
+ * to the Beeb - by that long, on a machine whose ADFS writes have no
+ * timeout.  The request is posted in usb_init and collected here instead, so
+ * the loop is already running and serving while the domain comes up.
+ *
+ * tusb_init must not touch the controller before the domain is up: doing so
+ * leaves USB dead with no error, which is what the reply gates.  The wait is
+ * split rather than removed.
+ */
+static void usb_boot_task(void)
+{
+  if (!RPI_PropertyReplyWaiting())
+     return;                       /* still powering - try again next pass */
 
-  // init device stack on configured roothub port
+  RPI_PropertySettle();            /* the answer is here; this will not block */
+
   tusb_rhport_init_t dev_init = {
     .role = TUSB_ROLE_DEVICE,
     .speed = TUSB_SPEED_AUTO
@@ -273,5 +287,14 @@ void usb_init(uint8_t instance , uint8_t address) {
   // The IRQ handler is already attached in IRQHandler_main() - see Pi1MHz.c
   RPI_GetIrqController()->Enable_IRQs_1 = (1 << 9);
 
-  Pi1MHz_Register_Poll(usb_task, "usb");
+  /* Swap in the steady-state callback, in place: no later pass then tests
+     whether start-up has finished. */
+  Pi1MHz_Replace_Poll(usb_boot_task, usb_task, "usb");
+}
+
+void usb_init(uint8_t instance , uint8_t address) {
+  /* Posted, not waited for - see usb_boot_task. */
+  RPI_PropertySetWord(TAG_SET_POWER_STATE, POWER_DEVICE_USB_HCD, 0x00000003);
+
+  Pi1MHz_Register_Poll(usb_boot_task, "usb-boot");
 }
