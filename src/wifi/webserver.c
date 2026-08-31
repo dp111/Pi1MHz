@@ -2891,6 +2891,49 @@ static bool route_status(ws_conn_t *c)
    }
    table_row(&b, "SD data", tmp);
    {
+      /* Boot timing, stamped during init and read on demand.  Pre-kernel is
+         the free-running system timer's value on entry to kernel_main: the
+         GPU firmware load and the kernel image read, neither of which any
+         other counter here can see. */
+      unsigned long pre  = (unsigned long)(Pi1MHz_boot_entry_us / 1000u);
+      unsigned long init = (unsigned long)((Pi1MHz_boot_poll_us
+                                            - Pi1MHz_boot_entry_us) / 1000u);
+      /* Only meaningful from a cold or watchdog boot: a kernel.now chain-boot
+         inherits a timer that has been running since the original power-on,
+         so the entry stamp is an uptime, not a firmware load. */
+      if (pre > 60000ul)
+         snprintf(tmp, sizeof tmp,
+                  "pre-kernel n/a (chain-boot), kernel->poll %lu ms", init);
+      else
+         snprintf(tmp, sizeof tmp, "pre-kernel %lu ms, kernel->poll %lu ms",
+                  pre, init);
+      table_row(&b, "Boot time", tmp);
+   }
+   {
+      /* Every emulator whose init took a millisecond or more, worst first -
+         the ones that decide when the Beeb can first be served. */
+      unsigned int n = Pi1MHz_emulator_count();
+      unsigned int order[32];
+      unsigned int cnt = 0u;
+      size_t o = 0u;
+      for (unsigned int i = 0u; i < n && cnt < 32u; i++)
+         if (Pi1MHz_boot_init_us[i] >= 1000u)
+            order[cnt++] = i;
+      for (unsigned int i = 0u; i + 1u < cnt; i++)
+         for (unsigned int j = i + 1u; j < cnt; j++)
+            if (Pi1MHz_boot_init_us[order[j]] > Pi1MHz_boot_init_us[order[i]]) {
+               unsigned int t = order[i]; order[i] = order[j]; order[j] = t;
+            }
+      tmp[0] = '\0';
+      for (unsigned int i = 0u; i < cnt && o < sizeof tmp - 24u; i++)
+         o += (size_t)snprintf(tmp + o, sizeof tmp - o, "%s:%lu ",
+                               Pi1MHz_emulator_name(order[i]),
+                               (unsigned long)(Pi1MHz_boot_init_us[order[i]] / 1000u));
+      if (cnt == 0u)
+         snprintf(tmp, sizeof tmp, "(none over 1 ms)");
+      table_row(&b, "Boot init ms", tmp);
+   }
+   {
       /* The chip's own view of the air.  rx_good is what it actually received;
          compare its movement with "Frames received" above to tell a frame that
          never arrived from one we failed to deliver.  rx_bad counts frames the

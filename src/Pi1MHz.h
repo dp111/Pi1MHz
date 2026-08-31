@@ -225,6 +225,15 @@ void Pi1MHz_Register_Poll( func_ptr function_ptr, const char *name );
 bool Pi1MHz_Replace_Poll( func_ptr old_fn, func_ptr new_fn, const char *name );
 
 const char *Pi1MHz_poll_name(unsigned int idx);
+
+/* Boot timing, stamped once during init (see Pi1MHz.c).  The system timer
+   free-runs from the GPU's start, so _entry_us also measures the firmware
+   load and kernel read that precede us. */
+extern uint32_t Pi1MHz_boot_entry_us;
+extern uint32_t Pi1MHz_boot_poll_us;
+extern uint32_t Pi1MHz_boot_init_us[];
+const char *Pi1MHz_emulator_name(unsigned int idx);
+unsigned int Pi1MHz_emulator_count(void);
 /* Longest run of poll slot idx (us) since the last read with reset */
 uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset);
 unsigned int Pi1MHz_poll_count(void);

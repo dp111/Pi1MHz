@@ -178,6 +178,14 @@ NOINIT_SECTION static const char *Pi1MHz_poll_names[NUM_EMULATORS];
 // holds the total number of polling functions to call
 static uint8_t  Pi1MHz_polls_max;
 
+/* Boot timing, captured once during init and read on demand by /status.
+   The BCM system timer free-runs from the GPU's own start, so the value
+   read at kernel entry also measures everything before us - the firmware
+   load and the kernel image read - which no other counter here sees. */
+uint32_t Pi1MHz_boot_entry_us;      /* system time on entry to kernel_main */
+uint32_t Pi1MHz_boot_poll_us;       /* ... on entry to the main poll loop  */
+uint32_t Pi1MHz_boot_init_us[NUM_EMULATORS];  /* per-emulator init cost    */
+
 // *fx register buffer
 NOINIT_SECTION uint8_t fx_register[256];
 
@@ -291,6 +299,17 @@ void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_fun
 
 // For each task that needs to be polled during idle it must register itself.
 // is can only register once
+/* Emulator table accessors, so /status can name a slow init without the
+   table being visible outside this file. */
+const char *Pi1MHz_emulator_name(unsigned int idx)
+{
+   if (idx >= NUM_EMULATORS)
+      return "?";
+   return emulator[idx].name;
+}
+
+unsigned int Pi1MHz_emulator_count(void) { return NUM_EMULATORS; }
+
 const char *Pi1MHz_poll_name(unsigned int idx)
 {
    if (idx >= Pi1MHz_polls_max || Pi1MHz_poll_names[idx] == NULL)
@@ -560,7 +579,11 @@ static void init_emulator(void) {
             sequence as a whole is not - so feed the dog between them. */
          watchdog_boot_kick();
          RPI_BootDetail(i + 1u);   /* a death here names emulator[i] on the next boot */
-         if (emulator[i].enable == 1) emulator[i].init(i, emulator[i].address);
+         if (emulator[i].enable == 1) {
+            uint32_t t0 = RPI_GetSystemTime();
+            emulator[i].init(i, emulator[i].address);
+            Pi1MHz_boot_init_us[i] = RPI_GetSystemTime() - t0;
+         }
          /* watchdog_init() is what takes ownership of the boot watchdog -
             it either registers the kicking poll or stands the dog down. If
             the config disabled this entry ("Watchdog_addr=-1", the documented
@@ -802,6 +825,8 @@ static void poll_prof_report(void)
 
 _Noreturn void kernel_main(void)
 {
+   Pi1MHz_boot_entry_us = RPI_GetSystemTime();
+
    unsigned int baud_rate = 115200;
    const char * const prop = get_cmdline_prop("baud_rate");
    if (prop)
@@ -866,6 +891,8 @@ _Noreturn void kernel_main(void)
 #else
    poll_ticks_start();
 #endif
+   Pi1MHz_boot_poll_us = RPI_GetSystemTime();
+
    RPI_BootStage(BOOT_STAGE_RUNNING);
 
    bool oldreset = Pi1MHz_is_rst_active();
