@@ -35,6 +35,7 @@
 #include "debug.h"
 #include "filesystem.h"
 #include "fcode.h"
+#include "../rpi/systimer.h"   /* timestamps for the F-code history */
 #include "../rpi/screen.h"
 #include "../videoplayer.h"
 
@@ -44,6 +45,94 @@ uint8_t scsiFcodeBufferRX[256];
 
 /* Last exchange, for /status: the VFS ROM's *FCODE never shows replies,
    so this is the only way to see one without writing OSWORD &62 code */
+/* Acknowledgements the VP415 gives when the ACTION completes, not when the
+   command is accepted.  The manual is explicit for both cases used here:
+   FxxxxxS - "the player halts at the specified picture number when it is
+   reached ... and the acknowledgement is then given"; ' (eject) - "Response:
+   O when the tray is opened".  Answering on receipt told the host a
+   60-second play had finished in 17 ms, so it cut the audio and moved on,
+   and told it a disc side was loaded before the jukebox had switched.
+   While one is outstanding the reply buffer is empty, which is what a host
+   polling a real player sees. */
+typedef enum { FC_ACK_IDLE = 0, FC_ACK_JUKE, FC_ACK_STOP } fc_ack_t;
+static fc_ack_t fc_ack_wait;
+static char     fc_ack_reply[2];
+
+static void fcode_ack_when(fc_ack_t on_what, char r0, char r1)
+{
+   fc_ack_wait     = on_what;
+   fc_ack_reply[0] = r0;
+   fc_ack_reply[1] = r1;
+   scsiFcodeBufferRX[0] = 0x0D;      /* nothing to report yet */
+}
+
+/* Called from the SCSI poll, beside hd_juke_service. */
+void fcodePoll(void)
+{
+   bool done;
+
+   if (fc_ack_wait == FC_ACK_IDLE)
+      return;
+
+   switch (fc_ack_wait) {
+      case FC_ACK_JUKE: done = !hd_juke_busy();                 break;
+      case FC_ACK_STOP: done = videoplayer_take_stop_reached(); break;
+      default:          done = true;                            break;
+   }
+   if (!done)
+      return;
+
+   scsiFcodeBufferRX[0] = (uint8_t)fc_ack_reply[0];
+   if (fc_ack_reply[1] != 0) {
+      scsiFcodeBufferRX[1] = (uint8_t)fc_ack_reply[1];
+      scsiFcodeBufferRX[2] = 0x0D;
+   } else {
+      scsiFcodeBufferRX[1] = 0x0D;
+   }
+   fc_ack_wait = FC_ACK_IDLE;
+}
+
+/* Recent F-code exchanges, newest last, for diagnosing a sequence the Beeb
+   drives (a play range, a jukebox change) where the last exchange alone says
+   nothing.  Written once per exchange - the Beeb sends these at human rate,
+   so the cost is a memcpy per command, not a hot path.  Read out over
+   /fcodes rather than a /status row, because those share one 144-byte
+   buffer and truncate silently. */
+#define FCODE_HIST 320
+typedef struct { uint32_t ms; char tx[20]; char rx[28]; } fcode_hist_t;
+static fcode_hist_t fcode_hist[FCODE_HIST];
+static uint16_t fcode_hist_count;      /* total ever recorded; index = %FCODE_HIST */
+
+static void fcode_hist_record(void)
+{
+   fcode_hist_t *h = &fcode_hist[fcode_hist_count % FCODE_HIST];
+   size_t o = 0u;
+   h->ms = RPI_GetSystemTime() / 1000u;
+   for (int i = 0; i < 24 && scsiFcodeBuffer[i] != 0x0D && scsiFcodeBuffer[i]; i++)
+      if (o < sizeof h->tx - 1u) h->tx[o++] = (char)scsiFcodeBuffer[i];
+   h->tx[o] = 0;
+   o = 0u;
+   for (int i = 0; i < 48 && scsiFcodeBufferRX[i] != 0x0D && scsiFcodeBufferRX[i]; i++)
+      if (o < sizeof h->rx - 1u) h->rx[o++] = (char)scsiFcodeBufferRX[i];
+   h->rx[o] = 0;
+   fcode_hist_count++;
+}
+
+/* Oldest first, one "<ms> <tx> -> <rx>" per line.  Returns bytes written. */
+size_t fcodeHistoryText(char *out, size_t max)
+{
+   size_t o = 0u;
+   uint16_t n = (fcode_hist_count < FCODE_HIST) ? fcode_hist_count : FCODE_HIST;
+   uint16_t first = (fcode_hist_count < FCODE_HIST)
+                  ? 0u : (uint16_t)(fcode_hist_count % FCODE_HIST);
+   for (uint16_t k = 0u; k < n && o < max - 1u; k++) {
+      const fcode_hist_t *h = &fcode_hist[(first + k) % FCODE_HIST];
+      o += (size_t)snprintf(out + o, max - o, "%lu %s -> %s\n",
+                            (unsigned long)h->ms, h->tx, h->rx);
+   }
+   return o;
+}
+
 const char *fcodeLastExchange(void)
 {
     static char buf[96];
@@ -156,8 +245,10 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					if (filesystemVFSDirPresent(partner))
 						hd_juke_request(partner);
 				}
-				scsiFcodeBufferRX[0] = 'O';   /* tray open acknowledge */
-				scsiFcodeBufferRX[1] = 0x0D;
+				/* "Response: O when the tray is opened" - the swap runs in
+				   hd_juke_service on the next SCSI poll, so the host must not
+				   be told the new side is in until it has. */
+				fcode_ack_when(FC_ACK_JUKE, 'O', 0);
 			}
 			break;
 
@@ -477,7 +568,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			switch(scsiFcodeBuffer[1]) {
 				case '0':
 				FCdebugString_P(PSTR(" = Video off\r\n"));
-				screen_plane_enable(0, false);
+				videoplayer_set_video(false);
 				break;
 
 				case '1':
@@ -486,7 +577,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 				   side) the plane stays off - E1 on a stale VideoCore buffer
 				   painted noise over the whole screen. The player's first
 				   real frame enables the plane. */
-				screen_plane_enable(0, videoplayer_active());
+				videoplayer_set_video(true);
 				break;
 
 				default:
@@ -524,8 +615,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					case 'S':
 					FCdebugString_P(PSTR(" = Stop Register\r\n"));
 					videoplayer_goto(pictureNumber, 'S');
-					scsiFcodeBufferRX[0] = 'A';
-					scsiFcodeBufferRX[1] = '2'; // when stops
+					/* A2 is owed when the picture is REACHED, not now. */
+					fcode_ack_when(FC_ACK_STOP, 'A', '2');
 					break;
 
 					case 'R':
@@ -905,6 +996,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 		printf("%c", scsiFcodeBuffer[byteCounter]);
 	printf("</FCODE>\r\n");
 #endif
+
+	fcode_hist_record();   /* tx and rx are both final here */
 }
 
 // Function to copy the UART serial buffer into the fcodeBuffer

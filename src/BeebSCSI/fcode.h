@@ -34,8 +34,12 @@ extern uint8_t scsiFcodeBufferRX[256];
 // Function prototypes
 void fcodeWriteBuffer(uint8_t lunNumber);
 void fcodeReadBuffer(void);
+/* Deliver any acknowledgement whose action has now completed. */
+void fcodePoll(void);
 void fcodeClearBuffer(void);
 
 const char *fcodeLastExchange(void);
+/* Recent exchanges, oldest first, "<ms> <tx> -> <rx>" per line. */
+size_t fcodeHistoryText(char *out, size_t max);
 
 #endif /* FCODE_H_ */

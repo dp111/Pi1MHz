@@ -2250,6 +2250,46 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
 /* Wrap an HTML body strbuf in a complete HTTP response and start it.
    Always consumes `body`.  Returns false only if the connection had to
    be aborted (out of memory). */
+/* As ws_finish_html but text/plain, for machine-read diagnostics. */
+static bool ws_finish_text(ws_conn_t *c, int status, const char *stext,
+                           ws_strbuf_t *body)
+{
+   ws_strbuf_t r;
+
+   if (body->failed) {
+      sb_free(body);
+      return ws_oom(c);
+   }
+
+   sb_init(&r);
+   sb_printf(&r,
+             "HTTP/1.1 %d %s\r\n"
+             "Content-Type: text/plain; charset=utf-8\r\n"
+             "Content-Length: %lu\r\n"
+             "%s"
+             "\r\n",
+             status, stext, (unsigned long)body->len,
+             ws_connection_hdr(c));
+   if (body->len > 0u && body->data != NULL)
+      sb_write(&r, body->data, body->len);
+   sb_free(body);
+
+   if (r.failed) {
+      sb_free(&r);
+      return ws_oom(c);
+   }
+
+   free(c->out);
+   c->out = r.data;
+   c->out_len = r.len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = CONN_SEND_MEM;
+   conn_pump(c);
+   return true;
+}
+
 static bool ws_finish_html(ws_conn_t *c, int status, const char *stext,
                            ws_strbuf_t *body)
 {
@@ -2439,6 +2479,23 @@ static bool route_aun(ws_conn_t *c)
    sb_puts(&b, "</pre></div>");
    page_close(&b);
    return ws_finish_html(c, 200, "OK", &b);
+}
+
+/* GET /fcodes - the recent F-code exchanges as plain text, oldest first.
+   Deliberately its own route rather than a /status row: those share one
+   144-byte buffer and a long list would be truncated without saying so. */
+static bool route_fcodes(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+   char *text = malloc(24576);
+   if (text == NULL)
+      return ws_oom(c);
+   text[0] = '\0';
+   (void)fcodeHistoryText(text, 24576u);
+   sb_init(&b);
+   sb_puts(&b, text);
+   free(text);
+   return ws_finish_text(c, 200, "OK", &b);
 }
 
 static bool route_status(ws_conn_t *c)
@@ -6396,6 +6453,8 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (ws_method_is(method, "GET") || ws_method_is(method, "HEAD")) {
       if (strcmp(rawpath, "/") == 0)
          return route_home(c);
+      if (strcmp(rawpath, "/fcodes") == 0)
+         return route_fcodes(c);
       if (strcmp(rawpath, "/status") == 0)
          return route_status(c);
       if (strcmp(rawpath, "/bench.bin") == 0)

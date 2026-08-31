@@ -139,6 +139,13 @@ static struct {
     uint32_t clmt_entries;           /* cluster link map size in use (0 = none) */
 } vp;
 
+/* Host video gate (F-code E0/E1) and the stop-register completion latch.
+   Both belong to the player's own output, which is all the F-code layer may
+   touch. */
+static bool vp_video_off;
+static bool vp_stop_reached;
+
+
 /* ------------------------------------------------------------------ */
 /* SD reading / decoder feeding                                       */
 /* ------------------------------------------------------------------ */
@@ -383,8 +390,12 @@ static void reap_flip(void)
         return;
 
     if (!vp.plane_on) {
-        screen_plane_enable(YUV_PLANE, true);  /* first real frame is up */
+        /* A real frame exists now.  Show it unless the host has switched the
+           disc video off with E0 - the plane still may not be enabled
+           without a frame, so the two conditions are separate. */
         vp.plane_on = true;
+        if (!vp_video_off)
+            screen_plane_enable(YUV_PLANE, true);
     }
     if (vp.displayed_phys)
         h264dec_recycle_output(vp.displayed_phys);
@@ -510,8 +521,10 @@ static void videoplayer_poll(void)
             vp.mode = VP_STILL;
             vp.tail_pushed = false;
             audio_flush();
-            if (vp.stop_picture && vp.cur_picture >= vp.stop_picture)
+            if (vp.stop_picture && vp.cur_picture >= vp.stop_picture) {
                 vp.stop_picture = 0;
+                vp_stop_reached = true;  /* the F-code layer owes an A2 */
+            }
             h264dec_resume();
         }
         break;
@@ -558,6 +571,24 @@ static void videoplayer_poll(void)
 /* ------------------------------------------------------------------ */
 /* F-code control surface                                             */
 /* ------------------------------------------------------------------ */
+
+/* E0 / E1 - switch the disc video off or on.  Independent of plane_on: the
+   plane is still only enabled once a real decoded frame exists. */
+void videoplayer_set_video(bool on)
+{
+    vp_video_off = !on;
+    if (vp.plane_on)
+        screen_plane_enable(YUV_PLANE, on);
+}
+
+/* True once, when the stop register has been reached.  The VP415 gives the
+   stop acknowledgement then, not when the register is loaded. */
+bool videoplayer_take_stop_reached(void)
+{
+    bool hit = vp_stop_reached;
+    vp_stop_reached = false;
+    return hit;
+}
 
 bool videoplayer_active(void)
 {

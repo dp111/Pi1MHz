@@ -47,6 +47,8 @@ void videoplayer_show_picture_number(bool on);
 void videoplayer_audio_enable(int channel, bool on);
 
 /* Current picture number for the ?F status request (0 = unknown) */
+void videoplayer_set_video(bool on);        /* F-codes E0 / E1  */
+bool videoplayer_take_stop_reached(void);  /* stop register hit, once */
 uint32_t videoplayer_picture_number(void);
 
 /* One-line state dump for /status */

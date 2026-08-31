@@ -375,6 +375,7 @@ static uint8_t scsiEmulationBusFree(void)
             in case 0 would delay service until after the NEXT command
             completes, letting a mount sequence interleave two discs. */
          hd_juke_service();
+         fcodePoll();      /* deliver any completed F-code acknowledgement */
 
          if (!hostadapterReadSelectFlag()) return SCSI_BUSFREE;
       //   if (hostadapterReadResetFlag()) {scsiEmulationBusFreestate=0; return SCSI_BUSFREE;}
