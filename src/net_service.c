@@ -75,9 +75,10 @@ typedef struct {
       all run on the main loop), so no locking.  count distinguishes full
       from empty.  For TCP it is a byte stream; for UDP it holds datagram
       records: [4 ip][2 port][2 len][len payload]. */
-   uint16_t          rx_head;
-   uint16_t          rx_tail;
-   uint16_t          rx_count;
+   uint32_t          rx_head;
+   uint32_t          rx_tail;
+   uint32_t          rx_count;
+   uint32_t          rx_size;       /* capacity of the ring in use (pow2)   */
    /* TNFS (N:TNFS://) session + one in-flight request, for the retry engine */
    uint8_t           tnfs_phase;    /* TNFS_PH_*                            */
    uint8_t           tnfs_seq;      /* sequence of the outstanding request  */
@@ -117,6 +118,10 @@ static void net_tnfs_send_raw(net_handle_t *h, const uint8_t *req, uint16_t len)
    on open, so their contents never matter. */
 static net_handle_t net_h[NET_MAX_HANDLES];
 NOINIT_SECTION static uint8_t net_rx_ring[NET_MAX_HANDLES][NET_RX_RING_SIZE];
+/* The shared large ring, and the handle index currently borrowing it (-1 when
+   free).  NOINIT for the same reason as the per-handle rings. */
+NOINIT_SECTION static uint8_t net_rx_big[NET_RX_RING_LARGE];
+static int net_rx_big_owner = -1;
 
 static uint8_t  net_source;         /* nIRQ source id (emulator instance)   */
 static bool     net_enabled;        /* net_enable=1 in Pi1MHz.cfg           */
@@ -171,55 +176,86 @@ static bool net_string_ok(uint32_t start)
 }
 
 /* ---- RX ring ------------------------------------------------------------- */
-static inline uint16_t ring_free(const net_handle_t *h)
+/* The buffer this handle is currently using, and its power-of-two mask. */
+static inline uint8_t *ring_buf(const net_handle_t *h)
 {
-   return (uint16_t)(NET_RX_RING_SIZE - h->rx_count);
+   return (net_rx_big_owner == (int)(h - net_h)) ? net_rx_big
+                                                 : net_rx_ring[h - net_h];
+}
+static inline uint32_t ring_mask(const net_handle_t *h)
+{
+   return h->rx_size - 1u;
+}
+/* Borrow the shared ring for this handle, carrying any buffered bytes over.
+   No-op if it is already borrowed - by this handle or another one. */
+static void ring_claim_large(net_handle_t *h)
+{
+   if (net_rx_big_owner >= 0) return;          /* in use, or already ours */
+   if (h->rx_size >= NET_RX_RING_LARGE) return;
+   uint32_t n = h->rx_count;
+   const uint8_t *src = net_rx_ring[h - net_h];
+   for (uint32_t i = 0; i < n; i++)
+      net_rx_big[i] = src[(h->rx_tail + i) & (h->rx_size - 1u)];
+   net_rx_big_owner = (int)(h - net_h);
+   h->rx_size = NET_RX_RING_LARGE;
+   h->rx_tail = 0u;
+   h->rx_head = n;
+}
+/* Give the shared ring back.  Only called once the handle is finished with it,
+   so buffered bytes do not need carrying back. */
+static void ring_release_large(const net_handle_t *h)
+{
+   if (net_rx_big_owner == (int)(h - net_h)) net_rx_big_owner = -1;
+}
+static inline uint32_t ring_free(const net_handle_t *h)
+{
+   return h->rx_size - h->rx_count;
 }
 /* Copy a whole pbuf chain into the ring.  Caller guarantees it fits. */
 static void ring_put_pbuf(net_handle_t *h, const struct pbuf *p)
 {
-   uint8_t *ring = net_rx_ring[h - net_h];
+   uint8_t *ring = ring_buf(h);
    for (const struct pbuf *q = p; q != NULL; q = q->next) {
       const uint8_t *src = (const uint8_t *)q->payload;
       uint16_t n = q->len;
       for (uint16_t i = 0; i < n; i++) {
          ring[h->rx_head] = src[i];
-         h->rx_head = (uint16_t)((h->rx_head + 1u) & (NET_RX_RING_SIZE - 1u));
+         h->rx_head = (h->rx_head + 1u) & ring_mask(h);
       }
-      h->rx_count = (uint16_t)(h->rx_count + n);
+      h->rx_count += n;
    }
 }
 /* Drain up to max bytes from the ring into a JIM destination. */
 static uint32_t ring_get(net_handle_t *h, uint32_t jim_dst, uint32_t max)
 {
-   const uint8_t *ring = net_rx_ring[h - net_h];
+   const uint8_t *ring = ring_buf(h);
    uint32_t n = (max < h->rx_count) ? max : h->rx_count;
    for (uint32_t i = 0; i < n; i++) {
       Pi1MHz->JIM_ram[jim_dst + i] = ring[h->rx_tail];
-      h->rx_tail = (uint16_t)((h->rx_tail + 1u) & (NET_RX_RING_SIZE - 1u));
+      h->rx_tail = (h->rx_tail + 1u) & ring_mask(h);
    }
-   h->rx_count = (uint16_t)(h->rx_count - n);
+   h->rx_count -= n;
    return n;
 }
 /* Append raw bytes to the ring (UDP record framing).  Caller ensures fit. */
 static void ring_put_mem(net_handle_t *h, const uint8_t *src, uint16_t len)
 {
-   uint8_t *ring = net_rx_ring[h - net_h];
+   uint8_t *ring = ring_buf(h);
    for (uint16_t i = 0; i < len; i++) {
       ring[h->rx_head] = src[i];
-      h->rx_head = (uint16_t)((h->rx_head + 1u) & (NET_RX_RING_SIZE - 1u));
+      h->rx_head = (h->rx_head + 1u) & ring_mask(h);
    }
-   h->rx_count = (uint16_t)(h->rx_count + len);
+   h->rx_count += len;
 }
 /* Read len bytes from the ring into a local buffer (UDP record header). */
 static void ring_get_mem(net_handle_t *h, uint8_t *dst, uint16_t len)
 {
-   const uint8_t *ring = net_rx_ring[h - net_h];
+   const uint8_t *ring = ring_buf(h);
    for (uint16_t i = 0; i < len; i++) {
       dst[i] = ring[h->rx_tail];
-      h->rx_tail = (uint16_t)((h->rx_tail + 1u) & (NET_RX_RING_SIZE - 1u));
+      h->rx_tail = (h->rx_tail + 1u) & ring_mask(h);
    }
-   h->rx_count = (uint16_t)(h->rx_count - len);
+   h->rx_count -= len;
 }
 
 /* ---- IPv4 <-> wire (network-order octets [b0,b1,b2,b3]) ------------------ */
@@ -240,7 +276,9 @@ static void net_ip_to_wire(const ip_addr_t *ip, uint32_t off)
 
 static void net_handle_reset(net_handle_t *h)
 {
+   ring_release_large(h);
    memset(h, 0, sizeof *h);        /* NET_ST_FREE, tpcb NULL, ring empty */
+   h->rx_size = NET_RX_RING_SIZE;  /* back to the handle's own ring */
 }
 
 /* Detach every callback and drop the pcb without a use-after-free, then mark
@@ -313,8 +351,16 @@ static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
       fits, else return ERR_MEM WITHOUT freeing and WITHOUT acking - lwIP
       parks the pbuf and re-presents it once the Beeb has drained the ring. */
    if (p->tot_len > ring_free(h)) {
-      h->rx_parked = true;
-      return ERR_MEM;
+      /* Parking is correct while the host has yet to drain, but a chain
+         larger than the ring itself can never fit: lwIP re-presents the
+         whole chain, not a prefix, so that would park for ever.  Borrow the
+         shared ring for those, and only those. */
+      if ((uint32_t)p->tot_len > h->rx_size)
+         ring_claim_large(h);
+      if (p->tot_len > ring_free(h)) {
+         h->rx_parked = true;
+         return ERR_MEM;
+      }
    }
    if (h->is_url && h->url_adapter == NET_URL_TELNET) {
       /* Run the segment through the TELNET IAC filter: clean text to the ring,
@@ -930,16 +976,16 @@ static uint8_t net_http_send_request(net_handle_t *h, const char *host,
    if the end-of-headers has not arrived yet. */
 static uint16_t net_http_find_headers(const net_handle_t *h)
 {
-   const uint8_t *ring = net_rx_ring[h - net_h];
+   const uint8_t *ring = ring_buf(h);
    uint16_t i;
    if (h->rx_count < 4u)
       return 0u;
    for (i = 0; (unsigned int)i + 4u <= (unsigned int)h->rx_count; i++) {
-      uint16_t t = (uint16_t)(((unsigned int)h->rx_tail + i) & (NET_RX_RING_SIZE - 1u));
+      uint32_t t = (h->rx_tail + i) & ring_mask(h);
       if (ring[t] == '\r'
-          && ring[(uint16_t)((t + 1u) & (NET_RX_RING_SIZE - 1u))] == '\n'
-          && ring[(uint16_t)((t + 2u) & (NET_RX_RING_SIZE - 1u))] == '\r'
-          && ring[(uint16_t)((t + 3u) & (NET_RX_RING_SIZE - 1u))] == '\n')
+          && ring[(t + 1u) & ring_mask(h)] == '\n'
+          && ring[(t + 2u) & ring_mask(h)] == '\r'
+          && ring[(t + 3u) & ring_mask(h)] == '\n')
          return (uint16_t)(i + 4u);
    }
    return 0u;
@@ -948,9 +994,9 @@ static uint16_t net_http_find_headers(const net_handle_t *h)
 /* Parse the status code from the ring's first line ("HTTP/1.x NNN ..."). */
 static uint8_t net_http_header_byte(const net_handle_t *h, uint16_t offset)
 {
-   const uint8_t *ring = net_rx_ring[h - net_h];
+   const uint8_t *ring = ring_buf(h);
    return ring[(uint16_t)(((unsigned int)h->rx_tail + offset)
-                         & (NET_RX_RING_SIZE - 1u))];
+                         & ring_mask(h))];
 }
 
 static bool net_http_header_name(const net_handle_t *h, uint16_t offset,
@@ -1430,7 +1476,7 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
             waits for. While the headers are incomplete we return 0 bytes
             to the Beeb, so nothing will ever drain the ring and release
             the parked pbuf: that is the deadlock, and this is it arriving. */
-         if (h->rx_parked || h->rx_count >= NET_RX_RING_SIZE - 1u) {
+         if (h->rx_parked || h->rx_count >= h->rx_size - 1u) {
             h->last_err = NET_ERR_CONN;
             return NET_ERR_CONN;
          }
@@ -1719,6 +1765,12 @@ void net_service_init(uint8_t instance, uint8_t address)
       never dropped - dropping strands NET_BUSY in the result register.  It is
       already 0 on the first-ever boot (BSS, before the service is registered). */
    net_reset_pending = true;
+
+   /* The handle table is BSS, so rx_size starts 0.  Give every handle its own
+      ring up front: nothing may index a ring with a zero mask. */
+   for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
+      net_h[i].rx_size = NET_RX_RING_SIZE;
+   net_rx_big_owner = -1;
 
    /* Both dedupe, so re-running on a BBC reset is safe. */
    (void)services_register(SERVICE_CMD_NET_FIRST, SERVICE_CMD_NET_LAST,
