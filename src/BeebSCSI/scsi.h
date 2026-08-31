@@ -92,7 +92,6 @@ void scsiReset(uint8_t scsiid);
 
 bool scsiJukebox (uint8_t lun);
 /* Slow SCSI calls (>=1 ms), oldest first, for diagnosing a stalled host. */
-size_t scsiSlowLogText(char *out, size_t max);
 
 extern uint8_t scsiHostID;   /* last SELECT host id (16+ = VFS) */
 void scsiProcessEmulation(void);

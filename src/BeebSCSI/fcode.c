@@ -36,6 +36,7 @@
 #include "filesystem.h"
 #include "fcode.h"
 #include "../rpi/systimer.h"   /* timestamps for the F-code history */
+#include "../config.h"         /* fcode_log= */
 #include "../rpi/screen.h"
 #include "../videoplayer.h"
 
@@ -46,17 +47,32 @@ uint8_t scsiFcodeBufferRX[256];
 /* Last exchange, for /status: the VFS ROM's *FCODE never shows replies,
    so this is the only way to see one without writing OSWORD &62 code */
 /* Acknowledgements the VP415 gives when the ACTION completes, not when the
-   command is accepted.  The manual is explicit for both cases used here:
-   FxxxxxS - "the player halts at the specified picture number when it is
-   reached ... and the acknowledgement is then given"; ' (eject) - "Response:
-   O when the tray is opened".  Answering on receipt told the host a
-   60-second play had finished in 17 ms, so it cut the audio and moved on,
-   and told it a disc side was loaded before the jukebox had switched.
+   command is accepted.  The manual is explicit: FxxxxxS - "the player halts
+   at the specified picture number when it is reached ... and the
+   acknowledgement is then given".  Answering on receipt told the host a
+   60-second play had finished in 17 ms, so it cut the audio and moved on.
    While one is outstanding the reply buffer is empty, which is what a host
-   polling a real player sees. */
-typedef enum { FC_ACK_IDLE = 0, FC_ACK_JUKE, FC_ACK_STOP } fc_ack_t;
+   polling a real player sees.  (Eject does NOT belong here - it is a state,
+   not a completion event; see fc_tray_open below.) */
+typedef enum { FC_ACK_IDLE = 0, FC_ACK_STOP } fc_ack_t;
 static fc_ack_t fc_ack_wait;
 static char     fc_ack_reply[2];
+
+/* Tray-open is a STATE, not a one-shot reply.  The manual lists O as "the
+   negative acknowledgement returned for several commands" and says ' leaves
+   the player in standby with the tray open, so a real player answers O to
+   everything until the disc is back.  Modelling it as a single reply loses
+   it: the AIV app consumes it as the answer to ', then sends its
+   VP2/I0/J0/$0 re-init burst, and only then starts polling - by which point
+   a one-shot O has long been cleared, which is the "Ejecting ..." hang.
+   The host does NOT ask for the disc back - it waits for the player to
+   report it, so the tray must shut on its own.  FC_TRAY_OPEN_US is how long
+   the flip takes: long enough that the host's re-init burst has finished and
+   its poll has seen the tray open (shutting sooner is indistinguishable from
+   never opening, and hangs), short enough not to stall the application. */
+static bool     fc_tray_open;
+static uint32_t fc_tray_open_us;
+#define FC_TRAY_OPEN_US 2000000u
 
 static void fcode_ack_when(fc_ack_t on_what, char r0, char r1)
 {
@@ -75,7 +91,6 @@ void fcodePoll(void)
       return;
 
    switch (fc_ack_wait) {
-      case FC_ACK_JUKE: done = !hd_juke_busy();                 break;
       case FC_ACK_STOP: done = videoplayer_take_stop_reached(); break;
       default:          done = true;                            break;
    }
@@ -97,14 +112,27 @@ void fcodePoll(void)
    nothing.  Written once per exchange - the Beeb sends these at human rate,
    so the cost is a memcpy per command, not a hot path.  Read out over
    /fcodes rather than a /status row, because those share one 144-byte
-   buffer and truncate silently. */
+   buffer and truncate silently.
+
+   Off unless fcode_log=1 in Pi1MHz.cfg: when off the hot path is one test
+   and a return.  Deliberately runtime-gated rather than #ifdef DEBUG - a
+   debug kernel floods the UART hard enough to starve the 1MHz bus, so the
+   AIV software cannot run on one, and the bug this was built for is only
+   reproducible on a release build. */
 #define FCODE_HIST 320
 typedef struct { uint32_t ms; char tx[20]; char rx[28]; } fcode_hist_t;
 static fcode_hist_t fcode_hist[FCODE_HIST];
 static uint16_t fcode_hist_count;      /* total ever recorded; index = %FCODE_HIST */
 
+static int8_t fcode_log = -1;          /* -1 = not yet read from the cfg */
+
 static void fcode_hist_record(void)
 {
+   if (fcode_log < 0)
+      fcode_log = config_get_bool("fcode_log") ? 1 : 0;
+   if (!fcode_log)
+      return;
+
    fcode_hist_t *h = &fcode_hist[fcode_hist_count % FCODE_HIST];
    size_t o = 0u;
    h->ms = RPI_GetSystemTime() / 1000u;
@@ -122,7 +150,12 @@ static void fcode_hist_record(void)
 size_t fcodeHistoryText(char *out, size_t max)
 {
    size_t o = 0u;
-   uint16_t n = (fcode_hist_count < FCODE_HIST) ? fcode_hist_count : FCODE_HIST;
+   uint16_t n;
+   if (fcode_log <= 0)
+      return (size_t)snprintf(out, max,
+                              "F-code logging is off - set fcode_log=1 in "
+                              "Pi1MHz.cfg and reboot.\n");
+   n = (fcode_hist_count < FCODE_HIST) ? fcode_hist_count : FCODE_HIST;
    uint16_t first = (fcode_hist_count < FCODE_HIST)
                   ? 0u : (uint16_t)(fcode_hist_count % FCODE_HIST);
    for (uint16_t k = 0u; k < n && o < max - 1u; k++) {
@@ -245,10 +278,11 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					if (filesystemVFSDirPresent(partner))
 						hd_juke_request(partner);
 				}
-				/* "Response: O when the tray is opened" - the swap runs in
-				   hd_juke_service on the next SCSI poll, so the host must not
-				   be told the new side is in until it has. */
-				fcode_ack_when(FC_ACK_JUKE, 'O', 0);
+				/* Enter the tray-open state: every read answers O until the
+				   flip has happened, which is what the host sees from a real
+				   player and what its post-eject poll is waiting for. */
+				fc_tray_open    = true;
+				fc_tray_open_us = RPI_GetSystemTime();
 			}
 			break;
 
@@ -1003,6 +1037,24 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 // Function to copy the UART serial buffer into the fcodeBuffer
 void fcodeReadBuffer(void)
 {
+    /* While the tray is open the player answers O to everything, including
+       the host's poll.  Re-asserted on every read because the read path
+       empties the buffer once the host has taken it. */
+    if (fc_tray_open) {
+       /* Time alone.  The swap runs in hd_juke_service, which is called in
+          BUSFREE before selection is accepted, so it has always finished
+          long before this expires; gating on the swap as well only adds a
+          term that can latch the shut-condition off forever (it did). */
+       if ((RPI_GetSystemTime() - fc_tray_open_us) > FC_TRAY_OPEN_US) {
+          /* Flip done, disc back: "S - loaded and standing by". */
+          fc_tray_open = false;
+          scsiFcodeBufferRX[0] = 'S';
+          scsiFcodeBufferRX[1] = 0x0D;
+       } else {
+          scsiFcodeBufferRX[0] = 'O';
+          scsiFcodeBufferRX[1] = 0x0D;
+       }
+    }
     FCdebugString_P(PSTR("fcodeReadBuffer\r\n"));
     for (uint16_t byteCounter = 0; byteCounter < 7; byteCounter++) {
 		FCdebugStringInt8Hex_P(PSTR(" "), scsiFcodeBufferRX[byteCounter], false);

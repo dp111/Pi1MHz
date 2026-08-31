@@ -230,13 +230,6 @@ void hd_juke_request(uint8_t dir)
    _restore_cpsr(cpsr);
 }
 
-/* True while a jukebox switch is latched but not yet serviced.  The eject
-   F-code must not acknowledge before the swap has happened. */
-bool hd_juke_busy(void)
-{
-   return hd_juke_pending != 0u;
-}
-
 void hd_juke_service(void)
 {
    /* Common case (nothing latched) costs a single test. Only when a poke

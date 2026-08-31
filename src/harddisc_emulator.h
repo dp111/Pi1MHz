@@ -10,7 +10,6 @@ void hd_audio_service(void);
 /* Transfer diagnostics for /status */
 void hd_juke_service(void);
 void hd_juke_request(uint8_t dir);
-bool hd_juke_busy(void);
 uint32_t hd_diag_flags(void);
 extern uint32_t hd_ev_writes, hd_ev_reads, hd_ev_sel;
 extern uint32_t hd_ack_timeouts;     /* host never ACKed: transfer abandoned */
