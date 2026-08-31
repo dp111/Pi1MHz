@@ -1056,11 +1056,9 @@ int main(void)
          memcpy(wire, header, sizeof header - 1u);
          for (size_t i = 0u; i < TITLES_LENGTH; i++)
             wire[sizeof header - 1u + i] = (uint8_t)(i * 37u + 11u);
-         /* NOTE: the coalesced-single-chain delivery shape is deliberately
-            not exercised here.  It needs an RX ring at least as large as
-            TCP_WND, which is a separate change with a real RAM cost - see
-            the ring discussion on PR #19.  The segmented shape below is
-            what the current 8 KB ring supports. */
+         /* The segmented shape first; the coalesced single-chain shape is
+            exercised separately below, now that a handle can borrow the
+            shared ring for a chain too large for its own. */
          while (sent < wire_length) {
             u16_t length = (u16_t)(wire_length - sent);
             struct pbuf *p;
@@ -1131,6 +1129,56 @@ int main(void)
          CHECK(total == TITLES_LENGTH, "TITLES returns exactly 11498 bytes");
          CHECK(memcmp(received, wire + sizeof header - 1u,
                       TITLES_LENGTH) == 0, "TITLES payload is byte-exact");
+
+         /* The same payload delivered as ONE coalesced chain.  The CYW43 path
+            can present several TCP segments that way, and lwIP re-presents the
+            whole chain rather than a prefix, so a receiver sized for a single
+            Ethernet segment refuses it for ever however much the host drains.
+            This is the shape an 8 KB ring cannot accept. */
+         world_reset();
+         strcpy((char *)&Pi1MHz->JIM_ram[CP(0) + 2u],
+                "HTTP://acornelectron.nl/uefarchive/TITLES");
+         g_dns_sync = 1;
+         IP_ADDR4(&g_dns_result, 192, 0, 2, 80);
+         CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_PENDING,
+               "coalesced TITLES open -> PENDING");
+         g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+         CHECK(issue(NET_CMD_URL_OPEN, 0) == NET_OK,
+               "coalesced TITLES open -> OK");
+         {
+            struct pbuf *whole = make_pbuf_split(wire, (u16_t)wire_length,
+                                                 SEGMENT);
+            err_t accepted = g_last_pcb->recv(g_last_pcb->arg, g_last_pcb,
+                                              whole, ERR_OK);
+            CHECK(accepted == ERR_OK,
+                  "TITLES fits as one coalesced lwIP pbuf chain");
+            if (accepted == ERR_OK) {
+               size_t one_total = 0u;
+               unsigned reads = 256u;
+               g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, NULL, ERR_OK);
+               while (one_total < TITLES_LENGTH && reads-- != 0u) {
+                  uint32_t got;
+                  jwr24(CP(0) + 1u, READ_MAX);
+                  jwr32(CP(0) + 4u, 0x9000u);
+                  CHECK(issue(NET_CMD_URL_READ, 0) == NET_OK,
+                        "coalesced TITLES read completes");
+                  got = jrd24(CP(0) + 1u);
+                  CHECK(got != 0u && one_total + got <= TITLES_LENGTH,
+                        "coalesced TITLES read makes bounded progress");
+                  if (got == 0u || one_total + got > TITLES_LENGTH) break;
+                  CHECK(memcmp(wire + (sizeof header - 1u) + one_total,
+                               &Pi1MHz->JIM_ram[0x9000], got) == 0,
+                        "coalesced TITLES bytes are exact");
+                  one_total += got;
+               }
+               CHECK(one_total == TITLES_LENGTH,
+                     "coalesced TITLES returns exactly 11498 bytes");
+            } else {
+               pbuf_free(whole);
+            }
+            CHECK(issue(NET_CMD_URL_CLOSE, 0) == NET_OK,
+                  "coalesced TITLES closes cleanly");
+         }
       }
       free(received);
       free(wire);

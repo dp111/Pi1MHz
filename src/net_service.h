@@ -156,5 +156,11 @@ typedef enum {
 
 #define NET_MAX_HANDLES      8u    /* hard cap < MEMP_NUM_TCP_PCB (16)       */
 #define NET_RX_RING_SIZE     8192u /* per-handle byte-stream ring            */
+/* One shared ring, claimed by whichever handle meets a chain too large for its
+   own.  lwIP re-presents a whole chain rather than a prefix, so a chain bigger
+   than the ring can never fit however much the host drains - it would park for
+   ever.  TCP_WND is 44*TCP_MSS = 64,240, so 65536 accepts any single chain.
+   Sized once and shared because nothing requires two such chains at once. */
+#define NET_RX_RING_LARGE   65536u /* shared, claimed on demand              */
 
 #endif /* NET_SERVICE_H */
