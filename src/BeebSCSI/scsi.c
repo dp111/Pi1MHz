@@ -54,6 +54,7 @@
 #include "filesystem.h"
 #include "statusled.h"
 #include "scsi.h"
+#include "../rpi/systimer.h"   /* timing the slow-call log */
 
 // Define the major and minor firmware version number returned
 // by the BSSENSE command
@@ -242,8 +243,47 @@ void scsiReset(uint8_t scsiid)
 }
 
 // Process the SCSI emulation
+/* Slow SCSI calls: which state was entered, which command block was in
+   flight, and how long the call took.  Only calls of a millisecond or more
+   are kept - the ordinary ones are microseconds and would fill the ring.
+   Read out over /scsilog.  Written at most once per poll pass. */
+#define SCSI_SLOW_HIST 64
+typedef struct {
+   uint32_t ms;      /* when */
+   uint32_t us;      /* how long the call took */
+   uint32_t lba;     /* command block LBA */
+   uint8_t  state;   /* state on entry */
+   uint8_t  op;      /* opcode */
+   uint8_t  lun;
+} scsi_slow_t;
+static scsi_slow_t scsi_slow[SCSI_SLOW_HIST];
+static uint16_t    scsi_slow_count;
+
+/* Oldest first, one line each. */
+size_t scsiSlowLogText(char *out, size_t max)
+{
+   size_t o = 0u;
+   uint16_t n = (scsi_slow_count < SCSI_SLOW_HIST) ? scsi_slow_count : SCSI_SLOW_HIST;
+   uint16_t first = (scsi_slow_count < SCSI_SLOW_HIST)
+                  ? 0u : (uint16_t)(scsi_slow_count % SCSI_SLOW_HIST);
+   o += (size_t)snprintf(out + o, max - o,
+                         "total slow calls %u\nms state op lun lba us\n",
+                         (unsigned int)scsi_slow_count);
+   for (uint16_t k = 0u; k < n && o < max - 1u; k++) {
+      const scsi_slow_t *e = &scsi_slow[(first + k) % SCSI_SLOW_HIST];
+      o += (size_t)snprintf(out + o, max - o, "%lu %u 0x%02x %u %lu %lu\n",
+                            (unsigned long)e->ms, (unsigned int)e->state,
+                            (unsigned int)e->op, (unsigned int)e->lun,
+                            (unsigned long)e->lba, (unsigned long)e->us);
+   }
+   return o;
+}
+
 void scsiProcessEmulation(void)
 {
+   const uint8_t  entry_state = (uint8_t)scsiState;
+   const uint32_t entry_us    = RPI_GetSystemTime();
+
    // Process SCSI emulation state
    switch (scsiState) {
       // Handle SCSI bus states:
@@ -287,6 +327,22 @@ void scsiProcessEmulation(void)
 
       default:
       if (debugFlag_scsiState) debugString_P(PSTR("SCSI State: ERROR: Invalid SCSI state!\r\n"));
+   }
+
+   {
+      uint32_t took = RPI_GetSystemTime() - entry_us;
+      if (took >= 1000u) {
+         scsi_slow_t *e = &scsi_slow[scsi_slow_count % SCSI_SLOW_HIST];
+         e->ms    = entry_us / 1000u;
+         e->us    = took;
+         e->state = entry_state;
+         e->op    = commandDataBlock.data[0];
+         e->lun   = commandDataBlock.targetLUN;
+         e->lba   = ((uint32_t)(commandDataBlock.data[1] & 0x1Fu) << 16)
+                  | ((uint32_t)commandDataBlock.data[2] << 8)
+                  |  (uint32_t)commandDataBlock.data[3];
+         scsi_slow_count++;
+      }
    }
 
    // Show activity using the status LED on whenever we are not in the bus free state

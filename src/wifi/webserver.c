@@ -2484,6 +2484,21 @@ static bool route_aun(ws_conn_t *c)
 /* GET /fcodes - the recent F-code exchanges as plain text, oldest first.
    Deliberately its own route rather than a /status row: those share one
    144-byte buffer and a long list would be truncated without saying so. */
+/* GET /scsilog - SCSI calls that took a millisecond or more. */
+static bool route_scsilog(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+   char *text = malloc(8192);
+   if (text == NULL)
+      return ws_oom(c);
+   text[0] = '\0';
+   (void)scsiSlowLogText(text, 8192u);
+   sb_init(&b);
+   sb_puts(&b, text);
+   free(text);
+   return ws_finish_text(c, 200, "OK", &b);
+}
+
 static bool route_fcodes(ws_conn_t *c)
 {
    ws_strbuf_t b;
@@ -6455,6 +6470,8 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_home(c);
       if (strcmp(rawpath, "/fcodes") == 0)
          return route_fcodes(c);
+      if (strcmp(rawpath, "/scsilog") == 0)
+         return route_scsilog(c);
       if (strcmp(rawpath, "/status") == 0)
          return route_status(c);
       if (strcmp(rawpath, "/bench.bin") == 0)
