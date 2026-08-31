@@ -216,6 +216,14 @@ const char *Pi1MHz_EmulatorName(unsigned int idx);
    row. The row is positional, so without it every added poller silently
    renumbers the others and the row has to be decoded from the init order. */
 void Pi1MHz_Register_Poll( func_ptr function_ptr, const char *name );
+/* Swap a registered callback for another in the same slot, so a task with a
+   slow start-up can register a boot callback, return from init at once, and
+   later replace it with the steady-state one.  Keeps table length, slot
+   identity and poll order fixed; clears that slot's recorded maximum.
+   False (and no change) if new_fn is NULL, old_fn is not registered, or
+   new_fn is already registered elsewhere. */
+bool Pi1MHz_Replace_Poll( func_ptr old_fn, func_ptr new_fn, const char *name );
+
 const char *Pi1MHz_poll_name(unsigned int idx);
 /* Longest run of poll slot idx (us) since the last read with reset */
 uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset);

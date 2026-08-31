@@ -681,6 +681,55 @@ static inline uint32_t poll_ticks_to_us(uint32_t ticks)
    return (uint32_t)((uint64_t)ticks * 1000u / POLL_TICKS_PER_MS);
 }
 
+/* Swap one registered callback for another IN PLACE.
+ *
+ * The use is a task with a slow start-up: register a boot callback from
+ * init and return at once so the poll loop begins, then replace it with the
+ * steady-state callback when the start-up finishes.  Every later pass then
+ * calls the real work directly, with no "am I still starting?" test.
+ *
+ * Deliberately a replace rather than a deregister-and-re-register.  Both
+ * dispatch loops cache the table length on entry, so removing an entry
+ * mid-pass would leave them walking a compacted table to a stale count.
+ * Removal would also move the slot, and the slot is the identity used by
+ * Pi1MHz_poll_name() and the poll_max_ticks[] statistics - and re-adding at
+ * the end would change poll ORDER, which matters here (net must poll after
+ * wifi has drained inbound frames).  Replacing keeps the length, the
+ * position and the order fixed.
+ *
+ * The slot's recorded maximum is cleared: it belongs to the callback that
+ * has just left, and carrying it over would attribute one task's stall to
+ * another on the /status row.
+ *
+ * Returns false, changing nothing, if new_fn is NULL, if old_fn is not
+ * registered, or if new_fn is already registered in another slot - that
+ * last case would break the one-entry-per-callback rule Register_Poll
+ * maintains. Replacing a callback with itself succeeds and only renames.
+ */
+bool Pi1MHz_Replace_Poll( func_ptr old_fn, func_ptr new_fn, const char *name )
+{
+   uint8_t i;
+   uint8_t slot = NUM_EMULATORS;
+
+   if (old_fn == NULL || new_fn == NULL)
+      return false;
+
+   for (i = 0u; i < Pi1MHz_polls_max; ++i) {
+      if (Pi1MHz_poll_table[i] == old_fn)
+         slot = i;
+      else if (Pi1MHz_poll_table[i] == new_fn)
+         return false;            /* already registered elsewhere */
+   }
+
+   if (slot >= NUM_EMULATORS)
+      return false;               /* old_fn was never registered */
+
+   Pi1MHz_poll_table[slot] = new_fn;
+   Pi1MHz_poll_names[slot] = (name != NULL) ? name : "?";
+   poll_max_ticks[slot] = 0u;
+   return true;
+}
+
 uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset)
 {
    if (idx >= Pi1MHz_polls_max)
