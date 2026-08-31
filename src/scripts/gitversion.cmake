@@ -36,14 +36,39 @@ endif()
 # "-dirty" alone cannot tell two builds of a modified tree apart, and that is
 # the case we actually live in: editing a header changes the image but leaves
 # the describe output byte-identical, so the banner kept naming an image it did
-# not build. Fingerprint the working tree instead - the diff against HEAD plus
-# the porcelain status (which adds untracked files, whose content the diff does
-# not see) - and fold 8 hex digits of it into the version.
+# not build. Fingerprint the working tree instead - the diff against HEAD, the
+# porcelain status, and the contents of any untracked file (which neither of
+# the other two sees) - and fold 8 hex digits of it into the version.
 #
 # Deliberately git, not a filesystem walk: globbing src/ and stat-ing every
 # file took 117 seconds on this /mnt/c tree (2267 files over 9p). git answers
 # from its index in well under a second.
-if(GIT_VERSION MATCHES "-dirty$")
+#
+# The untracked list is gathered BEFORE the gate below, because it is also what
+# decides whether the gate opens: "git describe --dirty" reports only tracked
+# modifications, so a tree whose sole difference from HEAD is an untracked
+# source file - a service overlay named in CMakeLists, say - describes clean.
+# Gating the fingerprint on "-dirty" alone therefore stamped two such trees
+# identically while they built different images, which is the case this whole
+# block exists to prevent.
+#
+# third_party is excluded throughout: a vendored dependency is a nested git
+# repo, so it surfaces here as one untracked "third_party/" entry and would
+# churn the fingerprint on every build without saying anything about Pi1MHz.
+execute_process(
+   COMMAND git -C "${SRC_DIR}" ls-files --others --exclude-standard -- . ":(exclude)scripts/gitversion.h" ":(exclude)third_party/**"
+   OUTPUT_VARIABLE GIT_UNTRACKED_FILES
+   OUTPUT_STRIP_TRAILING_WHITESPACE
+   RESULT_VARIABLE UNTRACKED_RESULT
+   ERROR_QUIET
+)
+if(NOT UNTRACKED_RESULT EQUAL 0)
+   # Treat a failed query as "nothing untracked" rather than discarding the
+   # whole fingerprint: a partial identity still beats none.
+   set(GIT_UNTRACKED_FILES "")
+endif()
+
+if(GIT_VERSION MATCHES "-dirty$" OR NOT GIT_UNTRACKED_FILES STREQUAL "")
    # Pathspec matters: an unqualified "git diff HEAD" covers the whole repo,
    # and every build rewrites the tracked firmware/kernel*.img, so the
    # fingerprint moved on its own and each build regenerated the header and
@@ -60,18 +85,14 @@ if(GIT_VERSION MATCHES "-dirty$")
       OUTPUT_VARIABLE GIT_STATUS
       ERROR_QUIET
    )
-   # Porcelain status records only the names of untracked integration files.
-   # Hash their contents as well, otherwise editing an already-untracked
-   # service overlay leaves *VERSION naming the previous kernel image.
-   execute_process(
-      COMMAND git -C "${SRC_DIR}" ls-files --others --exclude-standard -- . ":(exclude)scripts/gitversion.h" ":(exclude)third_party/**"
-      OUTPUT_VARIABLE GIT_UNTRACKED_FILES
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-      RESULT_VARIABLE UNTRACKED_RESULT
-      ERROR_QUIET
-   )
+   # Porcelain status records only the NAMES of untracked files, so editing an
+   # already-untracked service overlay left *VERSION naming the previous kernel
+   # image. Hash their contents too. Only untracked files reach this loop -
+   # normally none at all - so it does not reintroduce the filesystem walk the
+   # comment above rejects; a deliberately huge file dropped under src/ would
+   # be read on every build, which is the one case worth knowing about.
    set(GIT_UNTRACKED_CONTENT "")
-   if(UNTRACKED_RESULT EQUAL 0 AND NOT GIT_UNTRACKED_FILES STREQUAL "")
+   if(NOT GIT_UNTRACKED_FILES STREQUAL "")
       string(REPLACE "\n" ";" GIT_UNTRACKED_LIST "${GIT_UNTRACKED_FILES}")
       foreach(UNTRACKED_FILE IN LISTS GIT_UNTRACKED_LIST)
          if(EXISTS "${SRC_DIR}/${UNTRACKED_FILE}" AND
@@ -82,10 +103,18 @@ if(GIT_VERSION MATCHES "-dirty$")
          endif()
       endforeach()
    endif()
-   if(DIFF_RESULT EQUAL 0 AND UNTRACKED_RESULT EQUAL 0)
+   if(DIFF_RESULT EQUAL 0)
       string(MD5 TREE_HASH
          "${GIT_DIFF}${GIT_STATUS}${GIT_UNTRACKED_CONTENT}")
       string(SUBSTRING "${TREE_HASH}" 0 8 TREE_HASH)
+      # Keep the suffix regular. A tree that differs from HEAD only by
+      # untracked content still builds a different image, and git describe
+      # will not have marked it, so mark it here: the version is always
+      # either "<describe>" or "<describe>-dirty.<hash>", never a bare
+      # "<describe>.<hash>" that no git command would ever produce.
+      if(NOT GIT_VERSION MATCHES "-dirty$")
+         set(GIT_VERSION "${GIT_VERSION}-dirty")
+      endif()
       set(GIT_VERSION "${GIT_VERSION}.${TREE_HASH}")
    endif()
 endif()
