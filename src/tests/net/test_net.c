@@ -502,6 +502,33 @@ int main(void)
       CHECK(jrd24(CP(2)+7) == 0, "second recvfrom -> length 0 (empty)");
    }
 
+   printf("== connected UDP compatibility path ==\n");
+   world_reset();
+   jwr8(CP(2)+1, NET_TYPE_UDP); issue(NET_CMD_OPEN, 2);
+   jwr8(CP(2)+1,192); jwr8(CP(2)+2,0); jwr8(CP(2)+3,2); jwr8(CP(2)+4,1);
+   jwr8(CP(2)+5,0x39); jwr8(CP(2)+6,0x30);       /* :12345 */
+   CHECK(issue(NET_CMD_CONNECT, 2) == NET_OK, "connected UDP connect -> OK");
+   CHECK(g_last_upcb->connected_port == 12345, "connected UDP records peer port");
+   {
+      static const uint8_t request[] = "request";
+      static const uint8_t response[] = "response";
+      ip_addr_t peer; IP_ADDR4(&peer, 192, 0, 2, 1);
+      uint32_t len = (uint32_t)sizeof request - 1u;
+      memcpy(&Pi1MHz->JIM_ram[0x8000], request, len);
+      jwr24(CP(2)+1, len); jwr32(CP(2)+4, 0x8000);
+      CHECK(issue(NET_CMD_SEND, 2) == NET_OK, "connected UDP generic send -> OK");
+      CHECK(g_udp_tx_len == len && memcmp(g_udp_tx, request, len) == 0,
+            "connected UDP generic send payload exact");
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb,
+                        make_pbuf(response, sizeof response - 1u), &peer, 12345);
+      jwr24(CP(2)+1, 64); jwr32(CP(2)+4, 0x9000);
+      CHECK(issue(NET_CMD_RECV, 2) == NET_OK, "connected UDP generic recv -> OK");
+      CHECK(jrd24(CP(2)+1) == sizeof response - 1u,
+            "connected UDP generic recv reports payload length");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x9000], response, sizeof response - 1u) == 0,
+            "connected UDP generic recv strips peer record header");
+   }
+
    printf("== nIRQ is opt-in (disarmed by default) ==\n");
    world_reset();
    connect_handle(0);
