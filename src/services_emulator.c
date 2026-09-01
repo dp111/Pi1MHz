@@ -31,7 +31,11 @@ typedef struct {
    service_command_fn handler;
 } service_range_t;
 
-#define SERVICES_MAX 4u
+/* Four covers disc, FAT, AUN and net. Optional services registering on top of
+   those overflow the table, and services_register then returns false at a call
+   site that usually discards it, so the range is silently never claimed.
+   Eight entries cost 32 bytes of BSS. */
+#define SERVICES_MAX 8u
 static service_range_t s_services[SERVICES_MAX];
 static unsigned int s_service_count;
 

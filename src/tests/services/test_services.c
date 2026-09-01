@@ -137,11 +137,17 @@ int main(void)
    puts("== registration ==");
    ok(services_register(SERVICE_CMD_AUN_FIRST, SERVICE_CMD_AUN_LAST, test_aun_handler),
       "AUN range registers");
+   ok(services_register(SERVICE_CMD_AUN_FIRST, SERVICE_CMD_AUN_LAST, test_aun_handler),
+      "identical reset-time claim renews without consuming a slot");
    ok(!services_register(25, 35, test_aun_handler), "overlapping range refused");
    ok(!services_register(10, 5, test_aun_handler), "inverted range refused");
    ok(services_register(50, 59, test_aun_handler), "third range registers");
    ok(services_register(60, 69, test_aun_handler), "fourth range registers");
-   ok(!services_register(70, 79, test_aun_handler), "table full refused");
+   ok(services_register(70, 79, test_aun_handler), "fifth range registers");
+   ok(services_register(80, 89, test_aun_handler), "sixth range registers");
+   ok(services_register(90, 99, test_aun_handler), "seventh range registers");
+   ok(services_register(100, 109, test_aun_handler), "eighth range registers");
+   ok(!services_register(110, 119, test_aun_handler), "table full refused");
 
    puts("== dispatch ==");
    ok(do_simple(0, 20) == 42, "FAT command 20 reaches disk_type");
