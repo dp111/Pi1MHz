@@ -2,6 +2,8 @@
 # Host tests for the IP/net service (net_service.c).  Mirrors the firmware
 # layout in a temp tree - the REAL net_service.c/net_service.h/services.h plus
 # stub Pi1MHz/lwIP/wifi headers - and runs under ASan/UBSan.
+# NB: set -e here too - the shebang -e is ignored under "sh script.sh".
+set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)

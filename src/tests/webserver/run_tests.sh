@@ -7,6 +7,8 @@
 # .inc files that the test translation units include.  The extraction
 # fails loudly if any expected function / type / #define is no longer
 # found, so the tests always run against the real code or not at all.
+# NB: set -e here too - the shebang -e is ignored under "sh script.sh".
+set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)

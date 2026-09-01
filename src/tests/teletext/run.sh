@@ -2,6 +2,8 @@
 # Host build + run of the teletext adapter tests. Builds the real
 # teletext_emulator.c against minimal stub headers (mirroring the Pi1MHz
 # bus / lwIP / wifi APIs) so it can run on a PC. From tests/teletext/.
+# NB: set -e here too - the shebang -e is ignored under "sh script.sh".
+set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=${SRC:-$HERE/../..}
 B=$(mktemp -d)
@@ -31,6 +33,14 @@ EOF
 echo 'char *get_cmdline_prop(const char *prop);' > "$B/rpi/info.h"
 printf '#pragma once\n#include <stdint.h>\nuint32_t RPI_GetSystemTime(void);\n' > "$B/rpi/systimer.h"
 echo 'void wifi_debug_printf(const char *fmt, ...);' > "$B/wifi/wifi.h"
+# teletext_emulator.c reads its endpoints through config_get() (the Pi1MHz.cfg
+# store) and brackets the ring-buffer updates with the interrupt helpers.
+printf '#pragma once\nconst char *config_get(const char *key);\n' > "$B/config.h"
+cat > "$B/rpi/asm-helpers.h" <<'EOF'
+#pragma once
+unsigned int _disable_interrupts_cspr(void);
+void _restore_cpsr(unsigned int cpsr);
+EOF
 cat > "$B/wifi/wifi_lwip.h" <<'EOF'
 #pragma once
 #include <stdbool.h>

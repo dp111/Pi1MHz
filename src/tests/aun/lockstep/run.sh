@@ -2,6 +2,9 @@
 # Build the lockstep harness against the REAL AUN sources and run the
 # full suite. Mirrors the firmware layout (AUN/ subdir + stub headers)
 # so the sources' "../" includes resolve to the stubs.
+# 'set -e' as well as in the shebang: the shebang's -e is ignored when this
+# is invoked as "sh run.sh".
+set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 AUN=${AUN_SRC:-$HERE/../../../AUN}
 B=$(mktemp -d)

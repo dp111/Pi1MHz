@@ -1,5 +1,7 @@
 #!/bin/sh -e
 # Host build + run of the Pi1MHz.cfg parser test. From tests/config/.
+# NB: set -e here too - the shebang -e is ignored under "sh script.sh".
+set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=${SRC:-$HERE/../..}
 B=$(mktemp -d)
