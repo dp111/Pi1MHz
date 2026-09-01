@@ -529,6 +529,20 @@ int main(void)
             "connected UDP generic recv strips peer record header");
    }
 
+   printf("== connect keeps an explicitly bound local port ==\n");
+   world_reset();
+   jwr8(CP(2)+1, NET_TYPE_UDP); issue(NET_CMD_OPEN, 2);
+   jwr8(CP(2)+1, 0x42); jwr8(CP(2)+2, 0x1f);     /* bind :8002 */
+   CHECK(issue(NET_CMD_BIND, 2) == NET_OK, "UDP bind -> OK");
+   CHECK(g_last_upcb->bound_port == 8002u, "bind took local port 8002");
+   jwr8(CP(2)+1,192); jwr8(CP(2)+2,0); jwr8(CP(2)+3,2); jwr8(CP(2)+4,1);
+   jwr8(CP(2)+5,0x39); jwr8(CP(2)+6,0x30);       /* :12345 */
+   CHECK(issue(NET_CMD_CONNECT, 2) == NET_OK, "connect after bind -> OK");
+   CHECK(g_last_upcb->bound_port == 8002u,
+         "connect preserves the bound port (no ephemeral rebind)");
+   CHECK(g_last_upcb->connected_port == 12345,
+         "connect still records the peer port");
+
    printf("== nIRQ is opt-in (disarmed by default) ==\n");
    world_reset();
    connect_handle(0);

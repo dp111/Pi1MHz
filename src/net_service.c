@@ -830,8 +830,14 @@ static uint8_t do_connect(net_handle_t *h, uint32_t cp)
    if (h->type == NET_TYPE_UDP) {
       if (h->upcb == NULL || h->remote_port == 0u)
          return NET_ERR_NOTOPEN;
-      if (udp_bind(h->upcb, IP_ANY_TYPE, 0u) != ERR_OK
-          || udp_connect(h->upcb, &h->remote_ip, h->remote_port) != ERR_OK)
+      /* Only take an ephemeral local port when the caller has not already
+         chosen one with NET_CMD_BIND.  Rebinding unconditionally would move
+         the handle off the bound port, and inbound datagrams addressed to it
+         would silently stop arriving. */
+      if (h->bind_port == 0u
+          && udp_bind(h->upcb, IP_ANY_TYPE, 0u) != ERR_OK)
+         return NET_ERR_CONN;
+      if (udp_connect(h->upcb, &h->remote_ip, h->remote_port) != ERR_OK)
          return NET_ERR_CONN;
       h->state = NET_ST_CONNECTED;
       return NET_OK;
