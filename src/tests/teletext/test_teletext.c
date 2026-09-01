@@ -34,11 +34,15 @@ void Pi1MHz_nIRQ_CLEAR(uint8_t src){ irq_mask &= ~(1u<<src); }
 uint32_t RPI_GetSystemTime(void){ return now_us; }
 void wifi_debug_printf(const char *fmt, ...){ (void)fmt; }
 const wifi_lwip_context_t *wifi_lwip_get_context(void){ return &ctx; }
-char *get_cmdline_prop(const char *p){
-   static char r[32];
-   if (!strcmp(p,"teletext_server1")){ strcpy(r,"1.2.3.4:1234"); return r; }
+/* The emulator reads its endpoints through the Pi1MHz.cfg store, not the
+   old cmdline property list. */
+const char *config_get(const char *key){
+   if (!strcmp(key,"teletext_server1")) return "1.2.3.4:1234";
    return NULL;
 }
+/* teletext_emulator.c brackets its ring-buffer updates with these. */
+unsigned int _disable_interrupts_cspr(void){ return 0u; }
+void _restore_cpsr(unsigned int cpsr){ (void)cpsr; }
 struct tcp_pcb *tcp_new(void){ return &the_pcb; }
 void tcp_arg(struct tcp_pcb*p, void*a){ (void)p; tcp_arg_saved=a; }
 void tcp_recv(struct tcp_pcb*p, tcp_recv_fn cb){ (void)p; recv_cb=cb; }

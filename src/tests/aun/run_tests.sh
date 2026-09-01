@@ -3,6 +3,10 @@
 # Builds in a temp tree that mirrors the firmware layout (sources under
 # AUN/, stub headers alongside) so the AUN sources resolve their headers
 # whether they are included as "Pi1MHz.h" or "../Pi1MHz.h".
+# NB: 'set -e' here as well as in the shebang - the shebang's -e is ignored
+# when the script is run as "sh run_tests.sh", which previously let a failed
+# layer slip through to the final "ALL TEST LAYERS PASSED".
+set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 AUN=${AUN_SRC:-$HERE/../../AUN}
 B=$(mktemp -d)

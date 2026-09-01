@@ -3,6 +3,8 @@
 # Mirrors the firmware layout in a temp tree (real services_emulator.c,
 # fat_service.c and services.h; stub Pi1MHz/FatFs headers) and runs the
 # suite under ASan/UBSan.
+# NB: set -e here too - the shebang -e is ignored under "sh script.sh".
+set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
