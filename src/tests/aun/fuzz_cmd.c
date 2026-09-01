@@ -17,7 +17,7 @@ static wifi_lwip_context_t wctx;
 static func_ptr poll_fn;
 static struct udp_pcb the_pcb; static int pcb_used;
 const wifi_lwip_context_t *wifi_lwip_get_context(void){ return &wctx; }
-void Pi1MHz_Register_Poll(func_ptr f){ poll_fn = f; }
+void Pi1MHz_Register_Poll(func_ptr f, const char *name){ (void)name; poll_fn = f; }
 bool services_register(uint8_t first, uint8_t last, service_command_fn handler)
 { (void)first; (void)last; (void)handler; return true; }
 void Pi1MHz_nIRQ_ASSERT(uint8_t s){ (void)s; }

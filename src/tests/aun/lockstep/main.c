@@ -39,7 +39,7 @@ static uint8_t tube_r4[64]; static int tube_r4_n;
 static int have_result;
 
 const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &wctx; }
-void Pi1MHz_Register_Poll(func_ptr f) { poll_fn = f; }
+void Pi1MHz_Register_Poll(func_ptr f, const char *name) { (void)name; poll_fn = f; }
 /* services-port registration is a no-op here: the harness invokes
  * aun_emulator_command() directly rather than through the dispatcher. */
 bool services_register(uint8_t first, uint8_t last, service_command_fn handler)

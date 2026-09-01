@@ -9,7 +9,7 @@ extern Pi1MHz_t *const Pi1MHz;
 #define DISC_RAM_BASE ((uint32_t)(((size_t)Pi1MHz->JIM_ram_size)*JIM_RAM_STEP)-DISC_RAM_SIZE)
 typedef void (*func_ptr)(void);
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
-void Pi1MHz_Register_Poll(func_ptr f);
+void Pi1MHz_Register_Poll(func_ptr f, const char *name);
 #define CLEAR_IRQ 0
 #define ASSERT_IRQ 1
 void Pi1MHz_nIRQ_ASSERT(uint8_t src);

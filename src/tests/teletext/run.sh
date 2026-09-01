@@ -25,7 +25,7 @@ cat > "$B/Pi1MHz.h" <<'EOF'
 typedef void (*callback_func_ptr)(unsigned int);
 typedef void (*func_ptr)(void);
 void Pi1MHz_Register_Memory(int access, uint8_t addr, callback_func_ptr fn);
-void Pi1MHz_Register_Poll(func_ptr fn);
+void Pi1MHz_Register_Poll(func_ptr fn, const char *name);
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
 void Pi1MHz_nIRQ_ASSERT(uint8_t src);
 void Pi1MHz_nIRQ_CLEAR(uint8_t src);

@@ -27,7 +27,7 @@ static struct tcp_pcb { int x; } the_pcb;
 
 void Pi1MHz_Register_Memory(int access, uint8_t addr, callback_func_ptr fn)
 { if (access & READ_FRED) rd_cb[addr]=fn; else wr_cb[addr]=fn; }
-void Pi1MHz_Register_Poll(func_ptr fn){ poll_fn=fn; }
+void Pi1MHz_Register_Poll(func_ptr fn, const char *name){ (void)name; poll_fn=fn; }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data){ mem[addr&0xff]=data; }
 void Pi1MHz_nIRQ_ASSERT(uint8_t src){ irq_mask |= (1u<<src); }
 void Pi1MHz_nIRQ_CLEAR(uint8_t src){ irq_mask &= ~(1u<<src); }
