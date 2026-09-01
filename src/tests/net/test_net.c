@@ -502,6 +502,37 @@ int main(void)
       CHECK(jrd24(CP(2)+7) == 0, "second recvfrom -> length 0 (empty)");
    }
 
+   printf("== oversize datagram truncates and discards its tail ==\n");
+   world_reset();
+   jwr8(CP(2)+1, NET_TYPE_UDP); issue(NET_CMD_OPEN, 2);
+   jwr8(CP(2)+1, 88); jwr8(CP(2)+2, 0); issue(NET_CMD_BIND, 2);
+   {
+      static uint8_t big[100];
+      static const uint8_t next[] = "SECOND";
+      ip_addr_t peer; IP_ADDR4(&peer, 10, 0, 0, 9);
+      for (unsigned i = 0; i < sizeof big; i++) big[i] = (uint8_t)(i + 1u);
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb,
+                        make_pbuf(big, sizeof big), &peer, 4001);
+      g_last_upcb->recv(g_last_upcb->arg, g_last_upcb,
+                        make_pbuf(next, sizeof next - 1u), &peer, 4002);
+      /* read the first with a buffer far too small */
+      jwr24(CP(2)+7, 16); jwr32(CP(2)+10, 0x9000);
+      CHECK(issue(NET_CMD_UDP_RECVFROM, 2) == NET_OK, "oversize recvfrom -> OK");
+      CHECK(jrd24(CP(2)+7) == 16, "oversize recvfrom reports the truncated length");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x9000], big, 16) == 0,
+            "truncated payload is the datagram's first bytes");
+      /* the discarded 84-byte tail must not desync the ring: the NEXT
+         datagram has to read back whole and from the right peer */
+      jwr24(CP(2)+7, 64); jwr32(CP(2)+10, 0x9100);
+      CHECK(issue(NET_CMD_UDP_RECVFROM, 2) == NET_OK, "following recvfrom -> OK");
+      CHECK((jrd8(CP(2)+5) | (jrd8(CP(2)+6)<<8)) == 4002,
+            "following datagram reports its own peer port");
+      CHECK(jrd24(CP(2)+7) == sizeof next - 1u,
+            "following datagram length intact after the discard");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x9100], next, sizeof next - 1u) == 0,
+            "following datagram payload intact after the discard");
+   }
+
    printf("== connected UDP compatibility path ==\n");
    world_reset();
    jwr8(CP(2)+1, NET_TYPE_UDP); issue(NET_CMD_OPEN, 2);

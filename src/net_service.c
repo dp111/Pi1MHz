@@ -257,6 +257,38 @@ static void ring_get_mem(net_handle_t *h, uint8_t *dst, uint16_t len)
    }
    h->rx_count -= len;
 }
+/* Discard up to len bytes.  Clamped, unlike ring_get_mem: a record length
+   that ever exceeded what is buffered would otherwise drive rx_count below
+   zero and desync the ring for every later read. */
+static void ring_skip(net_handle_t *h, uint32_t len)
+{
+   if (len > h->rx_count)
+      len = h->rx_count;
+   h->rx_tail = (h->rx_tail + len) & ring_mask(h);
+   h->rx_count -= len;
+}
+
+/* Consume one queued UDP record ([4 ip][2 port][2 len][payload]): copy up to
+   max payload bytes to jim_dst, hand back the 6-byte peer address when the
+   caller wants it, and discard whatever did not fit.  The caller must have
+   checked that a whole record header is present.  Returns the payload bytes
+   actually delivered.  Shared by recvfrom (which reports the peer) and the
+   generic recv on a connected UDP handle (which does not). */
+static uint32_t udp_record_get(net_handle_t *h, uint8_t peer[6],
+                               uint32_t jim_dst, uint32_t max)
+{
+   uint8_t  hdr[8];
+   uint16_t dglen;
+   uint32_t got;
+
+   ring_get_mem(h, hdr, sizeof hdr);
+   if (peer != NULL)
+      memcpy(peer, hdr, 6u);
+   dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
+   got   = ring_get(h, jim_dst, (dglen < max) ? dglen : max);
+   ring_skip(h, (uint32_t)dglen - got);      /* rest of this datagram */
+   return got;
+}
 
 /* ---- IPv4 <-> wire (network-order octets [b0,b1,b2,b3]) ------------------ */
 static void net_ip_from_wire(ip_addr_t *ip, uint32_t off)
@@ -721,8 +753,8 @@ static uint8_t do_udp_recvfrom(net_handle_t *h, uint32_t cp)
 {
    uint32_t jimoff = jim_rd32(cp + 10u);
    uint32_t maxlen = jim_rd24(cp + 7u);
-   uint8_t  hdr[8];
-   uint16_t dglen;
+   uint8_t  peer[6];
+   uint32_t got;
 
    if (h->type != NET_TYPE_UDP)
       return NET_ERR_NOTOPEN;
@@ -732,26 +764,9 @@ static uint8_t do_udp_recvfrom(net_handle_t *h, uint32_t cp)
       jim_wr24(cp + 7u, 0u);
       return NET_OK;
    }
-   ring_get_mem(h, hdr, 8u);
-   Pi1MHz->JIM_ram[cp + 1u] = hdr[0]; Pi1MHz->JIM_ram[cp + 2u] = hdr[1];
-   Pi1MHz->JIM_ram[cp + 3u] = hdr[2]; Pi1MHz->JIM_ram[cp + 4u] = hdr[3];
-   Pi1MHz->JIM_ram[cp + 5u] = hdr[4]; Pi1MHz->JIM_ram[cp + 6u] = hdr[5];
-   dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
-   {
-      uint32_t copy = (dglen < maxlen) ? dglen : maxlen;
-      ring_get(h, jimoff + DISC_RAM_BASE, copy);
-      /* discard any of the datagram that didn't fit the caller's buffer */
-      if (dglen > copy) {
-         uint8_t junk[64];
-         uint16_t left = (uint16_t)(dglen - copy);
-         while (left > 0u) {
-            uint16_t n = (left < sizeof junk) ? left : (uint16_t)sizeof junk;
-            ring_get_mem(h, junk, n);
-            left = (uint16_t)(left - n);
-         }
-      }
-      jim_wr24(cp + 7u, copy);
-   }
+   got = udp_record_get(h, peer, jimoff + DISC_RAM_BASE, maxlen);
+   memcpy(&Pi1MHz->JIM_ram[cp + 1u], peer, sizeof peer);   /* [4 ip][2 port] */
+   jim_wr24(cp + 7u, got);
    return NET_OK;
 }
 
@@ -912,27 +927,13 @@ static uint8_t do_recv(net_handle_t *h, uint32_t cp)
       return NET_ERR_PARAM;
 
    if (h->type == NET_TYPE_UDP) {
-      uint8_t hdr[8];
-      uint16_t dglen;
-      uint32_t copy;
-      if (h->rx_count < sizeof hdr) {
+      /* A connected UDP handle reads one whole datagram per call, with the
+         peer record header stripped - see udp_record_get(). */
+      if (h->rx_count < 8u) {        /* no complete record */
          jim_wr24(cp + 1u, 0u);
          return NET_OK;
       }
-      ring_get_mem(h, hdr, sizeof hdr);
-      dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
-      copy = (dglen < max) ? dglen : max;
-      ring_get(h, jimoff + DISC_RAM_BASE, copy);
-      if (dglen > copy) {
-         uint8_t junk[64];
-         uint32_t left = (uint32_t)dglen - copy;
-         while (left != 0u) {
-            uint16_t n = (uint16_t)((left < sizeof junk) ? left : sizeof junk);
-            ring_get_mem(h, junk, n);
-            left -= n;
-         }
-      }
-      jim_wr24(cp + 1u, copy);
+      jim_wr24(cp + 1u, udp_record_get(h, NULL, jimoff + DISC_RAM_BASE, max));
       return NET_OK;
    }
 
