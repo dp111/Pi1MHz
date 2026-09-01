@@ -811,7 +811,7 @@ static uint8_t net_start_connect(net_handle_t *h)
 
 static uint8_t do_connect(net_handle_t *h, uint32_t cp)
 {
-   if (h->type != NET_TYPE_TCP || h->state == NET_ST_FREE)
+   if (h->state == NET_ST_FREE)
       return NET_ERR_NOTOPEN;
    if (h->state == NET_ST_CONNECTED)
       return NET_OK;
@@ -827,6 +827,15 @@ static uint8_t do_connect(net_handle_t *h, uint32_t cp)
 
    net_ip_from_wire(&h->remote_ip, cp + 1u);
    h->remote_port = (uint16_t)(jim_rd8(cp + 5u) | (jim_rd8(cp + 6u) << 8));
+   if (h->type == NET_TYPE_UDP) {
+      if (h->upcb == NULL || h->remote_port == 0u)
+         return NET_ERR_NOTOPEN;
+      if (udp_bind(h->upcb, IP_ANY_TYPE, 0u) != ERR_OK
+          || udp_connect(h->upcb, &h->remote_ip, h->remote_port) != ERR_OK)
+         return NET_ERR_CONN;
+      h->state = NET_ST_CONNECTED;
+      return NET_OK;
+   }
    return net_start_connect(h);
 }
 
@@ -837,11 +846,30 @@ static uint8_t do_send(net_handle_t *h, uint32_t cp)
    uint32_t want;
    u16_t    avail;
 
-   if (h->type != NET_TYPE_TCP || h->tpcb == NULL
-       || h->state != NET_ST_CONNECTED)
+   if (h->state != NET_ST_CONNECTED)
       return NET_ERR_NOTOPEN;
    if (!net_buffer_ok(jimoff, len))
       return NET_ERR_PARAM;
+
+   if (h->type == NET_TYPE_UDP) {
+      struct pbuf *p;
+      err_t e;
+      if (h->upcb == NULL || len > 0xFFFFu)
+         return NET_ERR_PARAM;
+      p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
+      if (p == NULL)
+         return NET_ERR_NOMEM;
+      pbuf_take(p, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], (u16_t)len);
+      e = udp_sendto(h->upcb, p, &h->remote_ip, h->remote_port);
+      pbuf_free(p);
+      if (e != ERR_OK)
+         return NET_ERR_CONN;
+      wifi_lwip_rx_kick();
+      jim_wr24(cp + 1u, len);
+      return NET_OK;
+   }
+   if (h->type != NET_TYPE_TCP || h->tpcb == NULL)
+      return NET_ERR_NOTOPEN;
 
    avail = altcp_sndbuf(h->tpcb);
    want  = len;
@@ -876,6 +904,31 @@ static uint8_t do_recv(net_handle_t *h, uint32_t cp)
       return NET_ERR_NOTOPEN;
    if (!net_buffer_ok(jimoff, max))
       return NET_ERR_PARAM;
+
+   if (h->type == NET_TYPE_UDP) {
+      uint8_t hdr[8];
+      uint16_t dglen;
+      uint32_t copy;
+      if (h->rx_count < sizeof hdr) {
+         jim_wr24(cp + 1u, 0u);
+         return NET_OK;
+      }
+      ring_get_mem(h, hdr, sizeof hdr);
+      dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
+      copy = (dglen < max) ? dglen : max;
+      ring_get(h, jimoff + DISC_RAM_BASE, copy);
+      if (dglen > copy) {
+         uint8_t junk[64];
+         uint32_t left = (uint32_t)dglen - copy;
+         while (left != 0u) {
+            uint16_t n = (uint16_t)((left < sizeof junk) ? left : sizeof junk);
+            ring_get_mem(h, junk, n);
+            left -= n;
+         }
+      }
+      jim_wr24(cp + 1u, copy);
+      return NET_OK;
+   }
 
    got = ring_get(h, jimoff + DISC_RAM_BASE, max);
    jim_wr24(cp + 1u, got);
