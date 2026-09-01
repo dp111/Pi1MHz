@@ -232,7 +232,6 @@ const char *Pi1MHz_poll_name(unsigned int idx);
 extern uint32_t Pi1MHz_boot_entry_us;
 extern uint32_t Pi1MHz_boot_poll_us;
 extern uint32_t Pi1MHz_boot_init_us[];
-const char *Pi1MHz_emulator_name(unsigned int idx);
 unsigned int Pi1MHz_emulator_count(void);
 /* Longest run of poll slot idx (us) since the last read with reset */
 uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset);

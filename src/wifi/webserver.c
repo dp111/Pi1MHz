@@ -2984,7 +2984,7 @@ static bool route_status(ws_conn_t *c)
       tmp[0] = '\0';
       for (unsigned int i = 0u; i < cnt && o < sizeof tmp - 24u; i++)
          o += (size_t)snprintf(tmp + o, sizeof tmp - o, "%s:%lu ",
-                               Pi1MHz_emulator_name(order[i]),
+                               Pi1MHz_EmulatorName(order[i]),
                                (unsigned long)(Pi1MHz_boot_init_us[order[i]] / 1000u));
       if (cnt == 0u)
          snprintf(tmp, sizeof tmp, "(none over 1 ms)");

@@ -299,15 +299,9 @@ void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_fun
 
 // For each task that needs to be polled during idle it must register itself.
 // is can only register once
-/* Emulator table accessors, so /status can name a slow init without the
-   table being visible outside this file. */
-const char *Pi1MHz_emulator_name(unsigned int idx)
-{
-   if (idx >= NUM_EMULATORS)
-      return "?";
-   return emulator[idx].name;
-}
-
+/* Emulator table accessor, so /status can size the boot-timing row without
+   the table being visible outside this file.  Names come from the existing
+   Pi1MHz_EmulatorName() above. */
 unsigned int Pi1MHz_emulator_count(void) { return NUM_EMULATORS; }
 
 const char *Pi1MHz_poll_name(unsigned int idx)
