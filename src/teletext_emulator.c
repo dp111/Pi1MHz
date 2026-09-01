@@ -99,9 +99,14 @@ static uint8_t  IRQ_NUM;
 // poll alone (DEW is not a clearable bit), and is merged at write-out.
 static volatile uint8_t ttx_status = TTX_ST_LINKS;
 static uint8_t  ttx_status_DEW = 0u;
-static bool     ttx_ints_enabled;
-static bool     ttx_enable;
-static uint8_t  ttx_channel;
+static volatile bool     ttx_ints_enabled;
+/* Written by ttx_w_control in FIQ and read by the poll, so the same rule as
+   ttx_status above applies: volatile keeps the load real (with -flto the
+   compiler can otherwise prove the poll never writes them and hoist it out
+   of the main loop, so a channel change would never be seen).  The poll
+   takes ONE copy of each per pass - see teletext_poll. */
+static volatile bool    ttx_enable;
+static volatile uint8_t ttx_channel;
 static uint8_t  ttx_row_ptr;
 static uint8_t  ttx_col_ptr;
 static uint8_t  ttx_row[TTX_ROWS][TTX_ROW_STRIDE];
@@ -150,11 +155,6 @@ static bool ring_pop_field(ttx_chan_t *c, uint8_t out[TTX_FIELD_BYTES])
 }
 
 /* ---- adapter register helpers --------------------------------------------*/
-
-static bool is_channel_open(uint8_t ch)
-{
-   return ch < TTX_CHANNELS && ttx_chan[ch].connected;
-}
 
 static void ttx_status_write(void)
 {
@@ -329,29 +329,6 @@ static void ttx_net_poll(void)
 
 /* ---- field state machine + data delivery ---------------------------------*/
 
-static void ttx_load_field(void)
-{
-   if (!is_channel_open(ttx_channel))
-      return;
-
-   uint8_t field[TTX_FIELD_BYTES];
-   if (!ring_pop_field(&ttx_chan[ttx_channel], field))
-      return;                                    /* underrun: keep last page */
-   if (!ttx_enable)
-      return;
-
-   for (uint32_t i = 0u; i < TTX_ROWS; i++) {
-      const uint8_t *line = &field[i * TTX_ROW_BYTES];
-      if (line[0] != 0u) {                       /* non-empty line */
-         ttx_row[i][0] = 0x27u;                  /* row marker the ROM expects */
-         memcpy(&ttx_row[i][1], line, TTX_ROW_BYTES);
-      }
-   }
-   ttx_row_ptr = 0u;
-   ttx_col_ptr = 0u;
-   ttx_preload_data();
-}
-
 static void teletext_poll(void)
 {
    ttx_net_poll();
@@ -360,11 +337,20 @@ static void teletext_poll(void)
    if ((int32_t)(now - ttx_next_us) < 0)
       return;
 
+   /* One consistent view for the whole pass.  Re-reading ttx_channel between
+      the open test and the ring access would let a ttx_w_control FIQ landing
+      in between validate one channel and pop a field from another.  No bounds
+      test is needed: TTX_CTL_CHAN masks the write to 0-3.  Read after
+      ttx_net_poll(), which is what changes 'connected'. */
+   const uint8_t ch     = ttx_channel;
+   const bool    open   = ttx_chan[ch].connected;
+   const bool    enable = ttx_enable;
+
    switch (ttx_phase) {
    default:
    case TTX_FIELD:                               /* -> FSYNC */
       ttx_phase = TTX_FSYNC;
-      if (is_channel_open(ttx_channel)) {
+      if (open) {
          /* A ttx_clear() FIQ landing inside this RMW would be undone,
             leaving INT stale-set and falsely latching DOR at DEW */
          unsigned int cpsr = _disable_interrupts_cspr();
@@ -376,7 +362,7 @@ static void teletext_poll(void)
 
    case TTX_FSYNC:                               /* -> DEW */
       ttx_phase = TTX_DEW;
-      if (is_channel_open(ttx_channel)) {
+      if (open) {
          /* DOR latches the INT state that was not cleared before DEW.
             Masked so a ttx_clear() FIQ cannot be undone by the
             store-back (the Beeb would see INT+DOR it just cleared).
@@ -387,15 +373,31 @@ static void teletext_poll(void)
                                 ((ttx_status & TTX_ST_INT) >> 1));
          _restore_cpsr(cpsr);
          ttx_status_DEW = TTX_ST_DEW;
+
+         /* Load the field.  The pop happens even when the adapter is
+            disabled, so the ring cannot run ahead of the field clock; an
+            underrun leaves the last page standing. */
+         uint8_t field[TTX_FIELD_BYTES];
+         if (ring_pop_field(&ttx_chan[ch], field) && enable) {
+            for (uint32_t i = 0u; i < TTX_ROWS; i++) {
+               const uint8_t *line = &field[i * TTX_ROW_BYTES];
+               if (line[0] != 0u) {                 /* non-empty line */
+                  ttx_row[i][0] = 0x27u;            /* row marker the ROM expects */
+                  memcpy(&ttx_row[i][1], line, TTX_ROW_BYTES);
+               }
+            }
+            ttx_row_ptr = 0u;
+            ttx_col_ptr = 0u;
+            ttx_preload_data();
+         }
       }
-      ttx_load_field();
       ttx_next_us = now + TTX_US_DEW;
       break;
 
    case TTX_DEW:                                 /* -> FIELD */
       ttx_phase = TTX_FIELD;
       ttx_status_DEW = 0u;
-      if (is_channel_open(ttx_channel)) {
+      if (open) {
          ttx_status |= TTX_ST_INT;               /* trailing edge of DEW */
          if (ttx_ints_enabled)
             Pi1MHz_nIRQ_ASSERT(IRQ_NUM);
