@@ -316,7 +316,11 @@ static void ttx_net_poll(void)
    }
    ttx_net_waiting_logged = false;
 
-   uint32_t now = RPI_GetSystemTime();
+   /* The reconnect deadline is TTX_US_RECONNECT (2 s) away, so the pass-start
+      timestamp is ample - firing up to one pass late against 2 s is not
+      measurable, and it keeps the whole teletext slot free of peripheral
+      reads on the passes that do no work. */
+   uint32_t now = Pi1MHz_now_us;
    for (uint32_t i = 0u; i < TTX_CHANNELS; i++) {
       ttx_chan_t *c = &ttx_chan[i];
       if (c->ip_be == 0u || c->pcb != NULL)
@@ -333,9 +337,17 @@ static void teletext_poll(void)
 {
    ttx_net_poll();
 
-   uint32_t now = RPI_GetSystemTime();
-   if ((int32_t)(now - ttx_next_us) < 0)
+   /* Cheap test first.  Pi1MHz_now_us is the pass-start timestamp the main
+      loop already paid for, so it is at most one pass old: this can only
+      ever decide "not yet" one pass late, never early, against a 290 us
+      shortest phase.  Only pay for the Strongly-Ordered peripheral read
+      once the deadline has passed and the phase timing actually matters -
+      at ~13000 passes per 50 Hz field, three of which do work, that is
+      99.98% of calls that no longer touch the system timer at all. */
+   if ((int32_t)(Pi1MHz_now_us - ttx_next_us) < 0)
       return;
+
+   uint32_t now = RPI_GetSystemTime();
 
    /* One consistent view for the whole pass.  Re-reading ttx_channel between
       the open test and the ring access would let a ttx_w_control FIQ landing
