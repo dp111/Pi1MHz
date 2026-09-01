@@ -6,15 +6,16 @@ stack. Interoperates with PiEconetBridge, BeebEm/B-Em AUN mode and
 RISC OS AUN stations.
 
 Two work items: (1) Pi1MHz support — **implemented, this tree**;
-(2) Econet ROM modifications — planned below, pending the NFS/ANFS
-disassembly.
+(2) ~~Econet ROM modifications — planned below, pending the NFS/ANFS
+disassembly~~ — **also implemented**: see "ROM side" below; the patched
+ROMs ship as `firmware/Pi1MHz/AUNFSbeeb.rom` and `AUNFSM128.rom`.
 
 ## Architecture
 
 ```
 NFS/ANFS (unmodified above the NetCom layer)
    | replaced Tx/Rx primitives: FRED &FCAA command interface
-discaccess_emulator.c          command dispatch (opcodes 30..41 routed out)
+discaccess_emulator.c          command dispatch (opcodes 30..44 routed out)
 aun_emulator.c              JIM command-block parsing, lwIP UDP transport
 aun.c                   pure-C AUN engine (host-testable, no deps)
 lwIP UDP  ->  WiFi             AUN datagrams, port 32768
@@ -37,7 +38,8 @@ the replaced transmit/receive primitives.
 - `aun_emulator.h/.c` — glue: command-block parsing (untrusted
   offsets bounds-checked against the disc RAM region), lwIP UDP pcb,
   poll hook. Registered from `discaccess_emulator_init()`.
-- `discaccess_emulator.c` — dispatch: opcodes 30..41 forward to
+- `discaccess_emulator.c` — dispatch: opcodes 30..44
+  (`SERVICE_CMD_AUN_FIRST..LAST` in services.h) forward to
   `aun_emulator_command()`.
 
 ### Command interface (FRED &FCAA, opcodes 30+)
@@ -54,7 +56,7 @@ offsets relative to DISC_RAM_BASE.
 | 31 | STATUS      | —                                                    | +4 stn, +5 net, +6 ready flags, +8 ip[4], +12 u32 counters ×11 |
 | 32 | TX          | +2 ctrl, +3 port, +4 dest stn, +5 dest net, +8 u32 data off, +12 u32 len | result (accepted/busy/no-route) |
 | 33 | TX_POLL     | —                                                    | result: &80 pending / 0 ok / err; +8 u32 imm reply len |
-| 34 | RX_OPEN     | +1 handle 0-3, +2 port (0=any), +4 stn, +5 net (&FF=any), +8 u32 buf off, +12 u32 buf size | result |
+| 34 | RX_OPEN     | +1 handle 0..AUN_RX_BLOCKS-1 (currently 0-1), +2 port (0=any), +4 stn, +5 net (&FF=any), +8 u32 buf off, +12 u32 buf size | result |
 | 35 | RX_POLL     | +1 handle                                            | result: &80 waiting / 0 ready; +2 ctrl, +3 port, +4 src stn, +5 src net, +12 u32 len |
 | 36 | RX_CLOSE    | +1 handle                                            | result                               |
 | 37 | BCAST       | +2 ctrl, +3 port, +8 u32 data off, +12 u32 len       | result (completes immediately)       |
@@ -62,7 +64,9 @@ offsets relative to DISC_RAM_BASE.
 | 39 | MAP_ADD     | +1 stn, +2 net, +4 ip[4] a.b.c.d, +8 u32 UDP port    | result                               |
 | 40 | TEST        | +1 enable, +2 stn, +3 net                            | result                               |
 | 41 | SET_MACHINE | +4 machine id[4] (machine-peek reply)                | result                               |
-| 42 | RX_DONE     | +1 handle (release held frame, re-arm)               | result                               |
+| 42 | RX_DONE     | +1 handle, +2 verdict (0=delivered: ACK + re-arm, 1=rejected: defer in place) | result             |
+| 43 | IMM_POLL    | —                                                    | held host-immediate: +2 ctrl, +12 u32 len, data at JIM &FEA000; &80 pending when none held |
+| 44 | IMM_REPLY   | +8 u32 reply off, +12 u32 len (host's answer to the polled immediate) | result               |
 
 Result codes (`AUN_*` in aun.h): 0 OK, 1 not listening, 2 net
 error, 3 no route, 4 busy, 5 bad param, 6 not ready, 7 no such rx
@@ -141,12 +145,16 @@ that station; immediates answer with the machine id. Closes the whole
 Beeb → JIM → command → engine → rx-block → Beeb loop with no second
 station, no fileserver, no network.
 
-## ROM side — IMPLEMENTED (anfs-4.18-pi1mhz.asm / .rom, ANFS418 folder)
+## ROM side — IMPLEMENTED
 
 The patches below are applied; the patched ROM assembles byte-exact
 outside the intended regions (verified against the disassembly's
-per-line byte comments by `pi1mhz-patch/basm.py`, regenerable via
-`pi1mhz-patch/apply.py`). Changed regions: &8028-&802C (svc5 econet IRQ
+per-line byte comments). NOTE: the assembler source and patch scripts
+(`anfs-4.18-pi1mhz.asm`, the `ANFS418` folder, `pi1mhz-patch/basm.py`,
+`pi1mhz-patch/apply.py`) are NOT in this repo — only the assembled
+binaries are: `firmware/Pi1MHz/AUNFSbeeb.rom`, `AUNFSM128.rom`, and
+`src/tests/aun/lockstep/anfs-4.18-pi1mhz.rom` for the lockstep harness.
+Changed regions: &8028-&802C (svc5 econet IRQ
 check), &8074-&80BC (init), &80BE-&80FC and &80FD-&84BA (the dead scout/
 NMI-rx handlers, now the rx pump, svc5 handler, immediate-op handler and
 Tube helpers), &858C-&89C9 (engine library over the dead NMI tx chain),
@@ -249,10 +257,11 @@ client is built around:
 all counters) via `aun_status_text()`. The shared nIRQ line is now
 arbitrated per-source in Pi1MHz.c (`Pi1MHz_SetnIRQ_src`), so econet and
 harddisc requests cannot clear each other — closing former item 8.
-The ROM titles itself "AUNFS 4.18 (Pi)" and ships as `AUNFS.rom`.
-For hardware bring-up, run `tests/aun/beeb/ECOTEST.bas` on the Beeb
-first (10 self-contained checks via the loopback responder), and see
-SETUP.md in the ANFS folder.
+The ROM titles itself "AUNFS 4.18 (Pi)" and ships as
+`firmware/Pi1MHz/AUNFSbeeb.rom` (and `AUNFSM128.rom` for the Master).
+For hardware bring-up, run `src/tests/aun/beeb/ECOTEST.bas` on the Beeb
+first (self-contained checks via the loopback responder). (There is no
+SETUP.md / ANFS folder in this repo.)
 
 ### Status of the milestone-1 limitations (all now addressed except the shared-IRQ caveat)
 
@@ -289,7 +298,7 @@ SETUP.md in the ANFS folder.
 - ~~Small race: a new frame could overwrite JIM &FE8000 mid-copy~~
   FIXED twice over: RX_POLL holds the presented frame until the pump
   issues RX_DONE (cmd 42), and the engine now queues up to
-  AUN_RX_QUEUE (16) frames per block in its own RAM. (Since the 2026-07
+  AUN_RX_QUEUE (8) frames per block in its own RAM. (Since the 2026-07
   ACK-on-collect rework below, frames queue un-ACKed and a full queue
   drops arrivals silently - the sender's retransmit is the flow
   control.) Queued broadcasts are no longer lost while a frame is held.
@@ -346,8 +355,10 @@ SETUP.md in the ANFS folder.
   open-collector line also driven by harddisc_emulator — econet only
   changes it on state transitions, but simultaneous heavy use of both
   is untested.
-- IRQs are masked for the duration of a transmit (worst case ~1 s if
-  the peer is down — comparable to the old NMI-driven behaviour).
+- ~~IRQs are masked for the duration of a transmit (worst case ~1 s if
+  the peer is down)~~ SUPERSEDED: this is the same limitation as the
+  "IRQs masked for the whole of a slow transmit" item above, which the
+  per-iteration TX_POLL IRQ window mitigated.
 
 ## Original patch plan (from anfs-4.18.asm disassembly)
 
@@ -409,24 +420,25 @@ jammed, &41 not listening, &43 no clock, &44 bad ctrl.
 
 ## Testing
 
-All in `tests/aun/` (see its README), host-runnable, no hardware:
+All in `src/tests/aun/` (see its README), host-runnable, no hardware;
+run every layer with `src/tests/aun/run_tests.sh`:
 
-- **Unit tests** — `test_aun.c` (15 scenarios incl. the
-  verdict flow, learn mode and subnet broadcast) and
-  `test_aun_config.c` (19 parser cases). All pass, also under
-  ASan/UBSan.
+- **Unit tests** — `test_aun.c` (44 scenarios incl. the
+  verdict flow, learn mode and subnet broadcast),
+  `test_aun_config.c` (parser cases) and `test_irq_mask.c` (the
+  shared-nIRQ slot-width regression). All pass, also under ASan/UBSan.
 - **Fuzzers** — 2M random engine operations and 400k hostile Beeb
   command blocks under ASan/UBSan with invariants asserted per
-  iteration: no findings (`tests/aun/fuzz_*.c`).
+  iteration: no findings (`src/tests/aun/fuzz_*.c`).
 - **6502 coverage** — the lockstep CPU records executed PCs: all 107
   code labels in the econet ROM regions execute under the suite,
   including every page-crossing copy loop, the workspace-slot scan,
   the pump hooks, remote halt/continue and the error paths.
-- **Lockstep integration test** — `tests/aun/lockstep/`: the
+- **Lockstep integration test** — `src/tests/aun/lockstep/`: the
   patched ANFS ROM bytes execute in a Python 6502 emulator whose
-  FRED/JIM hooks drive the REAL aun_emulator/aun_aun/
+  FRED/JIM hooks drive the REAL aun_emulator/aun/
   aun_config C code compiled on the host, with a scripted AUN peer
-  validating the wire format. 86 checks pass: init + cmdline config,
+  validating the wire format. 159 checks pass: init + config,
   tx/ACK, NAK→&41, rx-pump delivery with exact RXCB completion
   semantics, rx-queue ordering (both frames ACKed, delivered in order,
   no retransmission), unmatched-frame drop, machine peek both ways,
@@ -434,11 +446,22 @@ All in `tests/aun/` (see its README), host-runnable, no hardware:
   pump delivery → release; non-econet interrupts passed on).
   This caught a real bug (aun_cmd_issue returned CMP-loop flags, not
   result flags — every command would have "failed" on hardware; fixed
-  with ORA #0). Use `anfs-4.18-pi1mhz-fixed.rom`.
-- **Beeb-side** — planned: BASIC/asm program driving cmds 30-41 via
-  FRED &FCAA against the test responder (no network), then against a
-  BeebEm AUN instance / PiEconetBridge fileserver.
-- **First milestone** — `*I AM` round-trip against PiEconetBridge's
-  fileserver: register Pi1MHz there as an AUN host
-  (`A <net> <stn> <ip> 32768`); note v2.1+ requires non-zero network
-  numbers in config (it substitutes net 0 on the wire).
+  with ORA #0). Uses `anfs-4.18-pi1mhz.rom`.
+- **Interop layer** — `src/tests/aun/interop/`: the real engine against
+  a real PiEconetBridge (`econet-hpbridge`). `interop.c` asserts the
+  bytes we emit and `run.sh` greps the bridge's debug output for what it
+  made of them. OPTIONAL: with no bridge binary it prints "skipped" and
+  exits 0, so it is never a hard dependency (point it at one with
+  `PEB_BRIDGE=/path/to/econet-hpbridge`).
+- ~~**Beeb-side** — planned: BASIC/asm program driving the commands via
+  FRED &FCAA against the test responder~~ DONE:
+  `src/tests/aun/beeb/ECOTEST.bas`.
+- ~~**First milestone** — `*I AM` round-trip against PiEconetBridge's
+  fileserver~~ DONE — see the interop layer above and the bridge
+  conformance pass in `SPEC_AUDIT.md` §10.1. Registration syntax for
+  PiEconetBridge v2.x is
+  `AUN MAP HOST <net>.<stn> ON <ip> PORT <port> AUTOACK`
+  (NOT the older `A <net> <stn> <ip> 32768` form). **AUTOACK is a hard
+  prerequisite** — without it the bridge sends no receipt-ACK and our
+  transmits time out as "not listening". Network numbers must be
+  non-zero; the bridge substitutes net 0 on the wire.
