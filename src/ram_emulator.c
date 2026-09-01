@@ -141,34 +141,28 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 
    // Initialise JIM RAM
 
-   uint32_t temp = mem_info(1); // get size of ram
-   temp = temp - (uint32_t)&_end; // remove program
-   temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
-   temp = temp & 0xFF000000; // round down to 16Mbyte boundary
-   Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
-
-   Pi1MHz->byte_ram_addr = ((size_t)Pi1MHz->JIM_ram_size - 1)<<24; // 16Mbyte boundary
-   Pi1MHz->page_ram_addr = 0;
-
-   fx_register[instance] = Pi1MHz->JIM_ram_size;  // fx addr 0 returns ram size
    if (init == 0)
    {
       init = 1;
+      uint32_t temp = mem_info(1); // get size of ram
+      temp = temp - (uint32_t)&_end; // remove program
+      temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
+      temp = temp & 0xFF000000; // round down to 16Mbyte boundary
+      Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
       Pi1MHz->JIM_ram = (uint8_t *) malloc(((size_t)Pi1MHz->JIM_ram_size<<24)); // malloc up to 480Mbytes
    }
 
-   /* Tested on every call, not just the first: a BBC RST re-runs this and
-      re-advertises a nonzero JIM_ram_size above, but the one-time malloc is
-      not retried.  If it failed, JIM_ram is still NULL, and without this the
-      code below would index/write through NULL with a multi-hundred-MB size.
-      Keep the emulator disabled (size 0) whenever there is no buffer. */
-   if (!Pi1MHz->JIM_ram)
+   if (!Pi1MHz->JIM_ram || (Pi1MHz->JIM_ram_size < 2) )
    {
       LOG_INFO("No RAM - disabling RAM page emulator\r\n");
       Pi1MHz->JIM_ram_size = 0;
       fx_register[instance] = 0;
       return;
    }
+
+   Pi1MHz->byte_ram_addr = ((size_t)Pi1MHz->JIM_ram_size - 1)<<24; // 16Mbyte boundary
+   Pi1MHz->page_ram_addr = 0;
+   fx_register[instance] = Pi1MHz->JIM_ram_size;  // fx addr 0 returns ram size
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
    if (!filesystemReadFile("JIM_Init.bin",&Pi1MHz->JIM_ram,((size_t)Pi1MHz->JIM_ram_size<<24)))
