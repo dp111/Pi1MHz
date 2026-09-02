@@ -326,6 +326,7 @@ set(lwip_files
    ${LWIP_ROOT}/src/core/pbuf.c
    ${LWIP_ROOT}/src/core/stats.c
    ${LWIP_ROOT}/src/core/sys.c
+   ${LWIP_ROOT}/src/core/raw.c
    ${LWIP_ROOT}/src/core/tcp.c
    ${LWIP_ROOT}/src/core/tcp_in.c
    ${LWIP_ROOT}/src/core/tcp_out.c
@@ -365,6 +366,7 @@ set_source_files_properties(
    ${LWIP_ROOT}/src/core/pbuf.c
    ${LWIP_ROOT}/src/core/stats.c
    ${LWIP_ROOT}/src/core/sys.c
+   ${LWIP_ROOT}/src/core/raw.c
    ${LWIP_ROOT}/src/core/tcp.c
    ${LWIP_ROOT}/src/core/tcp_in.c
    ${LWIP_ROOT}/src/core/tcp_out.c
@@ -408,6 +410,7 @@ set( Pi1MHz_sources
     ${mouse_redirect_files}
     ${wifi_files}
     ${lwip_files}
+    elkwifi_service.c
 )
 
 # These are cold (config/filename handling, ~12 call sites). We recompile them
