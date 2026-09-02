@@ -87,9 +87,7 @@ static void ram_emulator_page_addr_low(unsigned int gpio)
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0xFFFF00FF) | ((size_t)data<<8));
-   // RPI_SetGpioHi(TEST_PIN);
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
-   // RPI_SetGpioLo(TEST_PIN);
    Pi1MHz_MemoryWrite(addr,data); // enable the address register to be read back
 }
 
