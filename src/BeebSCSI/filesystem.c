@@ -991,8 +991,6 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
 // Function to create a new LUN descriptor (makes an default .cfg file)
 bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 {
-   if (lunNumber >= 8) return false;   /* VFS volumes are read-only */
-
    if (lunNumber >7 || config_beeb_write_protected())
    {
       // VFS never creates .cfg; write-protect blocks .cfg auto-create too
