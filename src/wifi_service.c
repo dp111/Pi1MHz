@@ -37,12 +37,21 @@
 #include "rpi/asm-helpers.h"
 
 #define WIFI_SVC_TEXT_MAX 240u
-#define WIFI_FILE "/Pi1MHz/ElkWiFi.wifi"
-/* On-SD data, so these keep the ROM's spelling: the header is the magic in
-   a profile already written to a card, and the filenames are what a user
-   sees next to their other Pi1MHz files. */
-#define WIFI_PROFILE_HEADER "ELKWIFI1"
-#define LAPOPT_FILE "/Pi1MHz/ElkWiFi.lapopt"
+/* Two small files this service owns, next to Pi1MHz.cfg on the card.  They
+   are named for what they hold rather than for the ROM that asks for them,
+   and both are plain text so they can be read, edited or deleted by hand.
+
+   WiFi.profile is written by JOIN and applied at every init, so it overrides
+   the wifi_ssid / wifi_password in Pi1MHz.cfg - delete it to go back to the
+   configured network.  Its first line is a format tag: WIFIPROF1 means the
+   four-line form below, and anything else is read as the original two-line
+   ssid/password form.  A profile written before the rename says ELKWIFI1, so
+   that tag is still accepted - without this, carrying an old file across
+   under the new name would parse the tag itself as the SSID. */
+#define WIFI_FILE "/Pi1MHz/WiFi.profile"
+#define WIFI_PROFILE_HEADER "WIFIPROF1"
+#define WIFI_PROFILE_HEADER_OLD "ELKWIFI1"
+#define LAPOPT_FILE "/Pi1MHz/WiFi.scanopt"
 /* AP5 exposes the standard 64K JIM window selected by &FCFF; it does not
  * forward Pi1MHz's extension selectors at &FCFD/&FCFE, and JIM page 0 is the
  * host's service reply buffer (OSWORD &65 clients read up to 241 contiguous
@@ -281,7 +290,8 @@ static void wifi_credentials_load(void)
    while (split < length && (data[split] == '\r' || data[split] == '\n'))
       split++;
    ssid = (const char *)data;
-   if (strcmp(ssid, WIFI_PROFILE_HEADER) == 0) {
+   if (strcmp(ssid, WIFI_PROFILE_HEADER) == 0
+       || strcmp(ssid, WIFI_PROFILE_HEADER_OLD) == 0) {
       uint32_t mode_end = split;
       while (mode_end < length && data[mode_end] != '\r' && data[mode_end] != '\n')
          mode_end++;
