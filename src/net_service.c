@@ -1765,6 +1765,27 @@ static void net_update_irq(void)
 
 /* ---- FIQ latch + main-loop poll ----------------------------------------- */
 
+/* Bring-up breadcrumb: the last stage the net service reached, for a Beeb
+   that is spinning on NET_BUSY with no serial and no way to ask the Pi.  It
+   lives at the fixed command page + 0xFF - beyond NET_IO_MAX, so no command
+   payload can overwrite it - and the client reads it through the NET_COMMAND
+   JIM selection it already has.  Stages: 1 FIQ latched, 2 poll entered,
+   3/4 reset teardown started/finished, 5/6 dispatch started/finished.
+
+   Compiled out unless NET_DEBUG_MARKS is defined (add it to the build's
+   compile options for a bring-up kernel).  Stage 2 is the first thing every
+   main-loop pass does, so leaving it in would put a JIM store on the hot
+   path of every poll - release builds carry no diagnostic cost. */
+#ifdef NET_DEBUG_MARKS
+static void net_debug_mark(uint8_t stage)
+{
+   uint32_t p = (DISC_RAM_BASE | 0xFF0000u | (0xF0u << 8)) + 0xFFu;
+   Pi1MHz->JIM_ram[p] = stage;
+}
+#else
+static inline void net_debug_mark(uint8_t stage) { (void)stage; }
+#endif
+
 static void net_service_command(uint32_t command_pointer, uint32_t addr,
                                 uint8_t data)
 {
@@ -1776,21 +1797,25 @@ static void net_service_command(uint32_t command_pointer, uint32_t addr,
    net_pending_data = data;
    net_pending      = true;
    Pi1MHz_MemoryWrite(addr, NET_BUSY);
+   net_debug_mark(1u);
 }
 
 static void net_service_poll(void)
 {
+   net_debug_mark(2u);
    if (net_reset_pending) {
       /* A BBC reset re-ran net_service_init.  Tear down every live pcb here,
          on the main loop - never from init/FIQ (lwIP may not be up at init,
          and is never callable from FIQ).  The table is valid (BSS), so on the
          first boot this finds only NET_ST_FREE handles and aborts nothing. */
+      net_debug_mark(3u);
       for (unsigned int i = 0; i < NET_MAX_HANDLES; i++) {
          net_pcb_release(&net_h[i], true);
          net_handle_reset(&net_h[i]);
       }
       net_irq_armed = false;         /* a reset removes any Beeb IRQ handler */
       net_reset_pending = false;
+      net_debug_mark(4u);
       /* Deliberately do NOT clear net_pending here.  A command the FIQ latches
          *during* this teardown loop would otherwise be dropped, stranding the
          NET_BUSY byte the FIQ wrote to the result register forever - the Beeb
@@ -1804,7 +1829,9 @@ static void net_service_poll(void)
       uint32_t addr = net_pending_addr;
       uint8_t  data = net_pending_data;
       net_pending = false;
+      net_debug_mark(5u);
       Pi1MHz_MemoryWrite(addr, net_dispatch(cp, data));
+      net_debug_mark(6u);
    }
 
    net_update_irq();
