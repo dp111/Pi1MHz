@@ -48,20 +48,24 @@
    hand.  JOIN writes it and every init applies it, so it overrides the
    wifi_ssid / wifi_password in Pi1MHz.cfg - delete it to go back to those. */
 #define WIFI_FILE "/Pi1MHz/WiFi.profile"
-#define LAPOPT_FILE "/Pi1MHz/WiFi.scanopt"
 
 enum {
    WIFI_KEY_SSID = 0,
    WIFI_KEY_PASSWORD,
    WIFI_KEY_SECURITY,
+   WIFI_KEY_SCANFIELDS,
    WIFI_KEY_COUNT
 };
 
 static const parserkey wifi_profile_keys[] = {
-   { "ssid"     , 0, WIFI_SSID_MAX_LEN    , STRING },
-   { "password" , 0, WIFI_PASSWORD_MAX_LEN, STRING },
-   { "security" , 0, 8                    , STRING },   /* AUTO/OPEN/WEP/WPA/WPA2 */
-   { NULL       , 0, 0                    , STRING }
+   { "ssid"       , 0, WIFI_SSID_MAX_LEN    , STRING },
+   { "password"   , 0, WIFI_PASSWORD_MAX_LEN, STRING },
+   { "security"   , 0, 8                    , STRING },  /* AUTO/OPEN/WEP/WPA/WPA2 */
+   /* How much detail LAP prints per access point: 127 every field, 7 just
+      security/ssid/rssi.  The parser clamps to this range; only those two
+      values mean anything, so anything else falls back to the default. */
+   { "scanfields" , 7, 127                  , INTEGER },
+   { NULL         , 0, 0                    , STRING }
 };
 /* The enum above indexes this table: pin the ordering. */
 _Static_assert(sizeof wifi_profile_keys / sizeof wifi_profile_keys[0]
@@ -292,6 +296,12 @@ static void wifi_credentials_load(void)
    if (!parse_readfile(WIFI_FILE, 0, wifi_profile_keys, values))
       return;                              /* no profile saved on this card */
 
+   if (values[WIFI_KEY_SCANFIELDS].length) {
+      int fields = *values[WIFI_KEY_SCANFIELDS].v.integer;
+      if (fields == 7 || fields == 127)
+         scan_fields = (uint8_t)fields;
+   }
+
    ssid     = values[WIFI_KEY_SSID].length     ? values[WIFI_KEY_SSID].v.string : NULL;
    password = values[WIFI_KEY_PASSWORD].length ? values[WIFI_KEY_PASSWORD].v.string : "";
    if (values[WIFI_KEY_SECURITY].length
@@ -313,41 +323,42 @@ static void wifi_credentials_load(void)
    parse_releasekeyvalues(values, WIFI_KEY_COUNT);
 }
 
-/* Write the joined network back to the card.  Always a fresh file: the
-   parser substitutes values into an existing one but cannot add a key that
-   is not already there, so rewriting in place would silently drop a field a
-   hand-edit had removed.  This is machine-written state - a comment added
-   here does not survive the next JOIN. */
+/* Write the profile back to the card.  Always a fresh file with every key
+   present: the parser substitutes values into a file that already has the
+   key but cannot add one that is missing, so an in-place rewrite of a
+   profile someone had hand-edited down would silently drop the field it no
+   longer mentioned and still report success.  This is machine-written state
+   - a comment added here does not survive the next write. */
 static bool wifi_profile_save(const char *ssid, const char *password,
-                              wifi_security_t security)
+                              wifi_security_t security, uint8_t scanfields)
 {
-   char text[WIFI_SSID_MAX_LEN + WIFI_PASSWORD_MAX_LEN + 192u];
+   char text[WIFI_SSID_MAX_LEN + WIFI_PASSWORD_MAX_LEN + 256u];
    int length = snprintf(text, sizeof text,
-                         "# Written by the Beeb's JOIN command.  Overrides\n"
+                         "# Written by the Beeb.  The network here overrides\n"
                          "# wifi_ssid / wifi_password in Pi1MHz.cfg; delete\n"
                          "# this file to go back to those.\n"
-                         "ssid=%s\npassword=%s\nsecurity=%s\n",
-                         ssid, password, security_name(security));
+                         "ssid=%s\npassword=%s\nsecurity=%s\n"
+                         "# LAP detail: 127 every field, 7 security/ssid/rssi.\n"
+                         "scanfields=%u\n",
+                         ssid, password, security_name(security),
+                         (unsigned)scanfields);
+   /* Verified write-and-swap: this file is the only copy of the network the
+      Beeb joined, and losing it to a truncated write means a Pi that comes
+      back up on the wrong network, or none. */
    return length > 0 && (size_t)length < sizeof text
-       && filesystemWriteFile(WIFI_FILE, (const uint8_t *)text,
-                              (uint32_t)length) == (uint32_t)length;
+       && filesystemWriteFileSafe(WIFI_FILE, (const uint8_t *)text,
+                                  (uint32_t)length);
 }
 
-static void lapopt_load(void)
+/* The scan setting shares the profile file, so persisting it rewrites the
+   whole thing - hence the live credentials rather than just the one value. */
+static bool wifi_scanfields_save(uint8_t scanfields)
 {
-   uint8_t storage[8];
-   uint8_t *data = storage;
-   uint32_t length = filesystemReadFile(LAPOPT_FILE, &data,
-                                        (unsigned int)(sizeof storage - 1u));
-   if (length == 0u || length >= sizeof storage)
-      return;
-   data[length] = '\0';
-   while (length != 0u && (data[length - 1u] == '\r' || data[length - 1u] == '\n'))
-      data[--length] = '\0';
-   if (strcmp((const char *)data, "7") == 0)
-      scan_fields = 7u;
-   else if (strcmp((const char *)data, "127") == 0)
-      scan_fields = 127u;
+   const wifi_config_t *current = wifi_get_config();
+   return wifi_profile_save(current != NULL ? current->ssid : "",
+                            current != NULL ? current->password : "",
+                            current != NULL ? current->security : WIFI_SECURITY_AUTO,
+                            scanfields);
 }
 
 static void response_printf(uint32_t cp, const char *format, ...)
@@ -440,7 +451,7 @@ static uint8_t wifi_join(uint32_t cp)
       return WIFI_SVC_ERR_PARAM;
    if (!wifi_profile_is_valid(ssid, password, security))
       return WIFI_SVC_ERR_PARAM;
-   if (!wifi_profile_save(ssid, password, security))
+   if (!wifi_profile_save(ssid, password, security, scan_fields))
       return WIFI_SVC_ERR_IO;
    if (!wifi_reconfigure_and_rejoin(ssid, password, security))
       return WIFI_SVC_ERR_NETWORK;
@@ -622,13 +633,8 @@ static uint8_t process_request(uint32_t cp)
              && Pi1MHz->JIM_ram[cp + 1u] != 127u)
             return WIFI_SVC_ERR_PARAM;
          scan_fields = Pi1MHz->JIM_ram[cp + 1u];
-         {
-            const char *option = scan_fields == 7u ? "7\n" : "127\n";
-            uint32_t length = (uint32_t)strlen(option);
-            if (filesystemWriteFile(LAPOPT_FILE, (const uint8_t *)option,
-                                    length) != length)
-               return WIFI_SVC_ERR_IO;
-         }
+         if (!wifi_scanfields_save(scan_fields))
+            return WIFI_SVC_ERR_IO;
          response_printf(cp, "+CWLAPOPT:%u\r\n\r\nOK\r\n",
                          (unsigned)scan_fields);
          return WIFI_SVC_OK;
@@ -717,7 +723,6 @@ void wifi_service_init(uint8_t instance, uint8_t address)
       one-shot failure when another optional service filled the old table. */
    if (!service_initialised) {
       service_initialised = true;
-      lapopt_load();
       time_utc_offset_minutes = utc_offset_parse(
          config_get("wifi_service_utc_offset_minutes"));
    }
