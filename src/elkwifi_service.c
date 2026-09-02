@@ -23,15 +23,9 @@
 #include "wifi/sdio.h"
 #include "wifi/wifi.h"
 #include "wifi/wifi_lwip.h"
+#include "net_service.h"
 #include "rpi/systimer.h"
 #include "rpi/asm-helpers.h"
-#include "lwip/def.h"
-#include "lwip/dns.h"
-#include "lwip/inet_chksum.h"
-#include "lwip/pbuf.h"
-#include "lwip/prot/icmp.h"
-#include "lwip/raw.h"
-#include "lwip/udp.h"
 
 #define ELKWIFI_TEXT_MAX 240u
 #define WIFI_FILE "/Pi1MHz/ElkWiFi.wifi"
@@ -64,253 +58,66 @@ static bool service_initialised;
 static bool scan_waiting;
 static uint8_t scan_fields = 127u;
 
-typedef enum {
-   NETOP_IDLE = 0,
-   NETOP_DNS,
-   NETOP_WAITING,
-   NETOP_DONE,
-   NETOP_FAILED
-} netop_state_t;
-
-#define ELKWIFI_NET_TIMEOUT_US 4000000u
-#define ELKWIFI_PING_ID 0x454cu
+/* PING and DATETIME are served by net_service's async utilities: the
+   mechanism is IP, so it lives with lwIP.  Kept here: the reply the ROM
+   expects, and the UTC offset, which is this service's configuration. */
 #define NTP_UNIX_EPOCH 2208988800u
-
-static netop_state_t ping_state;
-static struct raw_pcb *ping_pcb;
-static ip_addr_t ping_address;
-static char ping_host[ELKWIFI_TEXT_MAX + 1u];
-static uint16_t ping_sequence;
-static uint32_t ping_started_us;
-static uint32_t ping_deadline_us;
-static uint32_t ping_elapsed_ms;
-static uint32_t ping_generation;
-
-static netop_state_t time_state;
-static struct udp_pcb *time_pcb;
-static ip_addr_t time_address;
-static uint32_t time_deadline_us;
-static uint32_t time_ntp_seconds;
+#define NTP_SERVER "pool.ntp.org"
+static uint32_t network_time_seconds;
 static int16_t time_utc_offset_minutes;
-static uint32_t time_generation;
 
 static void response_string(uint32_t cp, const char *value);
 static void response_printf(uint32_t cp, const char *format, ...)
    __attribute__((format(printf, 2, 3)));
 static bool command_string(uint32_t cp, const char **value);
 
-static bool deadline_expired(uint32_t deadline)
-{
-   return (int32_t)(RPI_GetSystemTime() - deadline) >= 0;
-}
 
-static void ping_close(void)
-{
-   if (ping_pcb != NULL) {
-      raw_remove(ping_pcb);
-      ping_pcb = NULL;
-   }
-}
 
-static void time_close(void)
-{
-   if (time_pcb != NULL) {
-      udp_remove(time_pcb);
-      time_pcb = NULL;
-   }
-}
 
 static void asynchronous_close(void)
 {
-   /* Invalidate DNS/packet callbacks before releasing their PCBs. A late
-      callback from a cancelled request must never complete a newer command
-      which has reused the same static state. */
-   ping_generation++;
-   time_generation++;
-   ping_close();
-   ping_state = NETOP_IDLE;
-   time_close();
-   time_state = NETOP_IDLE;
+   /* The ROM's CANCEL covers the whole command range, so it has to abort
+      work owned by both layers: the two IP utilities live in net_service
+      (each invalidates its own lwIP callbacks as it closes), the scan is
+      ours. */
+   net_ping_cancel();
+   net_time_cancel();
    sdio_runtime_scan_cancel();
    scan_waiting = false;
 }
 
-static u8_t ping_receive(void *arg, struct raw_pcb *pcb, struct pbuf *p,
-                         const ip_addr_t *address)
-{
-   uint8_t first;
-   uint16_t ip_header_length;
-   struct icmp_echo_hdr echo;
-   (void)pcb;
-   (void)address;
-   if ((uint32_t)(uintptr_t)arg != ping_generation
-       || ping_state != NETOP_WAITING || p == NULL || p->tot_len < 28u)
-      return 0u;
-   if (pbuf_copy_partial(p, &first, 1u, 0u) != 1u)
-      return 0u;
-   ip_header_length = (uint16_t)((first & 0x0fu) * 4u);
-   if (ip_header_length < 20u
-       || pbuf_copy_partial(p, &echo, sizeof echo, ip_header_length) != sizeof echo)
-      return 0u;
-   if (ICMPH_TYPE(&echo) != ICMP_ER || echo.id != ELKWIFI_PING_ID
-       || echo.seqno != lwip_htons(ping_sequence))
-      return 0u;
-   ping_elapsed_ms = (RPI_GetSystemTime() - ping_started_us + 500u) / 1000u;
-   ping_state = NETOP_DONE;
-   pbuf_free(p);
-   return 1u;
-}
 
-static void ping_send(void)
-{
-   struct pbuf *p;
-   struct icmp_echo_hdr *echo;
-   const uint16_t length = (uint16_t)(sizeof(*echo) + 24u);
-   ping_pcb = raw_new(IP_PROTO_ICMP);
-   if (ping_pcb == NULL) {
-      ping_state = NETOP_FAILED;
-      return;
-   }
-   raw_recv(ping_pcb, ping_receive, (void *)(uintptr_t)ping_generation);
-   raw_bind(ping_pcb, IP_ADDR_ANY);
-   p = pbuf_alloc(PBUF_IP, length, PBUF_RAM);
-   if (p == NULL || p->len != p->tot_len) {
-      if (p != NULL) pbuf_free(p);
-      ping_close();
-      ping_state = NETOP_FAILED;
-      return;
-   }
-   echo = (struct icmp_echo_hdr *)p->payload;
-   memset(echo, 0, length);
-   ICMPH_TYPE_SET(echo, ICMP_ECHO);
-   ICMPH_CODE_SET(echo, 0u);
-   echo->id = ELKWIFI_PING_ID;
-   echo->seqno = lwip_htons(++ping_sequence);
-   for (uint16_t i = sizeof(*echo); i < length; i++)
-      ((uint8_t *)echo)[i] = (uint8_t)i;
-   echo->chksum = inet_chksum(echo, length);
-   ping_started_us = RPI_GetSystemTime();
-   if (raw_sendto(ping_pcb, p, &ping_address) != ERR_OK) {
-      pbuf_free(p);
-      ping_close();
-      ping_state = NETOP_FAILED;
-      return;
-   }
-   pbuf_free(p);
-   ping_state = NETOP_WAITING;
-   wifi_lwip_rx_kick();
-}
 
-static void ping_dns_found(const char *name, const ip_addr_t *address, void *arg)
-{
-   (void)name;
-   if ((uint32_t)(uintptr_t)arg != ping_generation
-       || ping_state != NETOP_DNS)
-      return;
-   if (address == NULL) {
-      ping_state = NETOP_FAILED;
-      return;
-   }
-   ip_addr_copy(ping_address, *address);
-   ping_send();
-}
 
 static uint8_t wifi_ping(uint32_t cp)
 {
-   const char *host;
-   if (ping_state == NETOP_IDLE) {
-      err_t result;
-      if (!sdio_runtime_link_is_up() || !command_string(cp, &host)
-          || host[0] == '\0')
+   uint32_t elapsed_ms = 0u;
+
+   switch (net_ping_poll(&elapsed_ms)) {
+      case NET_UTIL_IDLE: {
+         const char *host;
+         if (!sdio_runtime_link_is_up() || !command_string(cp, &host)
+             || host[0] == '\0' || !net_ping_start(host))
+            return ELKWIFI_ERR_NETWORK;
+         return ELKWIFI_BUSY;
+      }
+      case NET_UTIL_DONE:
+         response_printf(cp, "+%lu\r\n", (unsigned long)elapsed_ms);
+         return ELKWIFI_OK;
+      /* A ping that goes unanswered is a result, not a fault: the ROM
+         prints it. */
+      case NET_UTIL_TIMEOUT:
+         response_string(cp, "+timeout\r\n");
+         return ELKWIFI_OK;
+      case NET_UTIL_FAILED:
          return ELKWIFI_ERR_NETWORK;
-      strlcpy(ping_host, host, sizeof ping_host);
-      ping_generation++;
-      ping_deadline_us = RPI_GetSystemTime() + ELKWIFI_NET_TIMEOUT_US;
-      result = dns_gethostbyname(ping_host, &ping_address, ping_dns_found,
-                                 (void *)(uintptr_t)ping_generation);
-      if (result == ERR_OK)
-         ping_send();
-      else if (result == ERR_INPROGRESS)
-         ping_state = NETOP_DNS;
-      else
-         ping_state = NETOP_FAILED;
+      default:
+         return ELKWIFI_BUSY;
    }
-   if ((ping_state == NETOP_DNS || ping_state == NETOP_WAITING)
-       && deadline_expired(ping_deadline_us)) {
-      ping_close();
-      ping_state = NETOP_IDLE;
-      response_string(cp, "+timeout\r\n");
-      return ELKWIFI_OK;
-   }
-   if (ping_state == NETOP_DONE) {
-      ping_close();
-      ping_state = NETOP_IDLE;
-      response_printf(cp, "+%lu\r\n", (unsigned long)ping_elapsed_ms);
-      return ELKWIFI_OK;
-   }
-   if (ping_state == NETOP_FAILED) {
-      ping_close();
-      ping_state = NETOP_IDLE;
-      return ELKWIFI_ERR_NETWORK;
-   }
-   return ELKWIFI_BUSY;
 }
 
-static void time_udp_receive(void *arg, struct udp_pcb *pcb, struct pbuf *p,
-                             const ip_addr_t *address, u16_t port)
-{
-   uint8_t packet[48];
-   (void)pcb;
-   (void)address;
-   if ((uint32_t)(uintptr_t)arg == time_generation
-       && time_state == NETOP_WAITING && p != NULL && port == 123u
-       && p->tot_len >= sizeof packet
-       && pbuf_copy_partial(p, packet, sizeof packet, 0u) == sizeof packet
-       && (packet[0] & 7u) == 4u && packet[1] != 0u) {
-      time_ntp_seconds = ((uint32_t)packet[40] << 24)
-                       | ((uint32_t)packet[41] << 16)
-                       | ((uint32_t)packet[42] << 8) | packet[43];
-      time_state = time_ntp_seconds >= NTP_UNIX_EPOCH ? NETOP_DONE : NETOP_FAILED;
-   }
-   if (p != NULL) pbuf_free(p);
-}
 
-static void time_send(void)
-{
-   uint8_t packet[48] = {0};
-   struct pbuf *p;
-   time_pcb = udp_new();
-   if (time_pcb == NULL) {
-      time_state = NETOP_FAILED;
-      return;
-   }
-   udp_recv(time_pcb, time_udp_receive, (void *)(uintptr_t)time_generation);
-   packet[0] = 0x1bu;
-   p = pbuf_alloc(PBUF_TRANSPORT, sizeof packet, PBUF_RAM);
-   if (p == NULL || pbuf_take(p, packet, sizeof packet) != ERR_OK
-       || udp_sendto(time_pcb, p, &time_address, 123u) != ERR_OK) {
-      if (p != NULL) pbuf_free(p);
-      time_state = NETOP_FAILED;
-      return;
-   }
-   pbuf_free(p);
-   time_state = NETOP_WAITING;
-   wifi_lwip_rx_kick();
-}
 
-static void time_dns_found(const char *name, const ip_addr_t *address, void *arg)
-{
-   (void)name;
-   if ((uint32_t)(uintptr_t)arg != time_generation
-       || time_state != NETOP_DNS)
-      return;
-   if (address == NULL) {
-      time_state = NETOP_FAILED;
-      return;
-   }
-   ip_addr_copy(time_address, *address);
-   time_send();
-}
 
 static bool leap_year(uint32_t year)
 {
@@ -339,7 +146,7 @@ static int16_t utc_offset_parse(const char *value)
 static void format_network_time(uint32_t cp, bool date)
 {
    static const uint8_t month_days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-   int64_t adjusted = (int64_t)(time_ntp_seconds - NTP_UNIX_EPOCH)
+   int64_t adjusted = (int64_t)(network_time_seconds - NTP_UNIX_EPOCH)
                     + (int64_t)time_utc_offset_minutes * 60;
    uint32_t seconds = adjusted < 0 ? 0u : (uint32_t)adjusted;
    uint32_t days = seconds / 86400u;
@@ -368,33 +175,22 @@ static void format_network_time(uint32_t cp, bool date)
 static uint8_t wifi_datetime(uint32_t cp)
 {
    bool date = Pi1MHz->JIM_ram[cp + 1u] == 0u;
-   if (time_state == NETOP_IDLE) {
-      err_t result;
-      if (!sdio_runtime_link_is_up()) return ELKWIFI_ERR_NETWORK;
-      time_generation++;
-      time_deadline_us = RPI_GetSystemTime() + ELKWIFI_NET_TIMEOUT_US;
-      result = dns_gethostbyname("pool.ntp.org", &time_address,
-                                 time_dns_found,
-                                 (void *)(uintptr_t)time_generation);
-      if (result == ERR_OK) time_send();
-      else if (result == ERR_INPROGRESS) time_state = NETOP_DNS;
-      else time_state = NETOP_FAILED;
+
+   switch (net_time_poll(&network_time_seconds)) {
+      case NET_UTIL_IDLE:
+         if (!sdio_runtime_link_is_up() || !net_time_start(NTP_SERVER))
+            return ELKWIFI_ERR_NETWORK;
+         return ELKWIFI_BUSY;
+      case NET_UTIL_DONE:
+         format_network_time(cp, date);
+         return ELKWIFI_OK;
+      /* Unlike ping, a clock the ROM cannot read is an error, not a reply. */
+      case NET_UTIL_TIMEOUT:
+      case NET_UTIL_FAILED:
+         return ELKWIFI_ERR_NETWORK;
+      default:
+         return ELKWIFI_BUSY;
    }
-   if ((time_state == NETOP_DNS || time_state == NETOP_WAITING)
-       && deadline_expired(time_deadline_us))
-      time_state = NETOP_FAILED;
-   if (time_state == NETOP_DONE) {
-      time_close();
-      format_network_time(cp, date);
-      time_state = NETOP_IDLE;
-      return ELKWIFI_OK;
-   }
-   if (time_state == NETOP_FAILED) {
-      time_close();
-      time_state = NETOP_IDLE;
-      return ELKWIFI_ERR_NETWORK;
-   }
-   return ELKWIFI_BUSY;
 }
 
 static const char *security_name(wifi_security_t security)

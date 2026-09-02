@@ -67,6 +67,29 @@
 /* Emulator-table init: instance = nIRQ source id, address = services base. */
 void net_service_init(uint8_t instance, uint8_t address);
 
+/* ---- async network utilities (firmware-internal, not a Beeb ABI) --------
+   ICMP echo and SNTP for whichever Beeb-facing service wants to offer them:
+   the mechanism is IP, so it lives with lwIP rather than in a ROM service.
+   One of each may be in flight - the host is synchronous - so there is no
+   handle.  Start one, then poll it until it leaves NET_UTIL_BUSY; poll
+   reports a terminal state once and returns to NET_UTIL_IDLE, releasing the
+   PCB, so the caller starts the next request when it next sees IDLE. */
+typedef enum {
+   NET_UTIL_IDLE = 0,   /* nothing in flight                                 */
+   NET_UTIL_BUSY,       /* resolving, or waiting for the reply               */
+   NET_UTIL_DONE,       /* result written to the out parameter               */
+   NET_UTIL_TIMEOUT,    /* no reply inside the deadline                      */
+   NET_UTIL_FAILED      /* DNS said no, or lwIP refused to send              */
+} net_util_state_t;
+
+bool net_ping_start(const char *host);              /* false: could not start */
+net_util_state_t net_ping_poll(uint32_t *elapsed_ms);
+void net_ping_cancel(void);
+
+bool net_time_start(const char *server);
+net_util_state_t net_time_poll(uint32_t *ntp_seconds);
+void net_time_cancel(void);
+
 /* ---- ABI constants (shared with the Beeb-side client and the tests) ----- */
 
 /* Command numbers (must lie within SERVICE_CMD_NET_FIRST..LAST). */

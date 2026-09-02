@@ -19,6 +19,8 @@
 #include "wifi/wifi_lwip.h"
 #include "lwip/altcp.h"
 #include "lwip/udp.h"
+#include "lwip/raw.h"
+#include "lwip/prot/icmp.h"
 #include "lwip/dns.h"
 #include "lwip/pbuf.h"
 #include "lwip/ip_addr.h"
@@ -137,6 +139,39 @@ err_t udp_connect(struct udp_pcb *pcb, const ip_addr_t *ip, u16_t port)
 void udp_disconnect(struct udp_pcb *pcb) { pcb->connected_port = 0u; }
 void udp_remove(struct udp_pcb *pcb) { pcb->removed = 1; }
 
+/* raw stub machinery (ICMP echo) */
+static struct raw_pcb *g_rpcbs[64];
+static int      g_nrpcbs;
+static struct raw_pcb *g_last_rpcb;
+static void    *g_raw_arg;
+static uint8_t  g_raw_tx[128];
+static uint16_t g_raw_tx_len;
+static u32_t    g_raw_tx_ip;
+
+struct raw_pcb *raw_new(u8_t proto)
+{
+   struct raw_pcb *p = calloc(1, sizeof *p);
+   p->proto = proto;
+   g_rpcbs[g_nrpcbs++] = p; g_last_rpcb = p; return p;
+}
+void raw_recv(struct raw_pcb *pcb, raw_recv_fn f, void *arg)
+{ pcb->recv = f; pcb->arg = arg; g_raw_arg = arg; }
+err_t raw_bind(struct raw_pcb *pcb, const ip_addr_t *ip) { (void)pcb; (void)ip; return ERR_OK; }
+err_t raw_sendto(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *dst)
+{
+   (void)pcb;
+   g_raw_tx_len = 0;
+   for (struct pbuf *q = p; q; q = q->next) {
+      if (g_raw_tx_len + q->len <= sizeof g_raw_tx)
+      { memcpy(g_raw_tx + g_raw_tx_len, q->payload, q->len); g_raw_tx_len = (uint16_t)(g_raw_tx_len + q->len); }
+   }
+   g_raw_tx_ip = dst ? dst->addr : 0;
+   return ERR_OK;                 /* does NOT free p (caller frees) */
+}
+void raw_remove(struct raw_pcb *pcb) { pcb->removed = 1; }
+
+u16_t inet_chksum(const void *dataptr, u16_t len) { (void)dataptr; (void)len; return 0u; }
+
 /* dns stub */
 static int       g_dns_sync;
 static ip_addr_t g_dns_result;
@@ -213,8 +248,49 @@ struct pbuf *pbuf_alloc(pbuf_layer l, u16_t len, pbuf_type t)
 err_t pbuf_take(struct pbuf *b, const void *data, u16_t len)
 { memcpy(b->payload, data, len); return ERR_OK; }
 
+static void deliver_echo(struct raw_pcb *pcb, void *arg, u16_t id, u16_t seqno,
+                         u8_t type)
+{
+   uint8_t frame[20 + sizeof(struct icmp_echo_hdr)];
+   struct icmp_echo_hdr hdr;
+   struct pbuf *p;
+   memset(frame, 0, sizeof frame);
+   frame[0] = 0x45u;                    /* IPv4, IHL 5 -> 20-byte header */
+   memset(&hdr, 0, sizeof hdr);
+   hdr.type = type; hdr.id = id; hdr.seqno = seqno;
+   memcpy(frame + 20, &hdr, sizeof hdr);
+   p = make_pbuf(frame, sizeof frame);
+   if (!pcb->recv(arg, pcb, p, NULL))
+      pbuf_free(p);
+}
+
+static void deliver_ntp(u16_t port, uint32_t seconds, uint8_t li_vn_mode,
+                        uint8_t stratum)
+{
+   uint8_t packet[48];
+   memset(packet, 0, sizeof packet);
+   packet[0] = li_vn_mode;
+   packet[1] = stratum;
+   packet[40] = (uint8_t)(seconds >> 24); packet[41] = (uint8_t)(seconds >> 16);
+   packet[42] = (uint8_t)(seconds >> 8);  packet[43] = (uint8_t)seconds;
+   g_last_upcb->recv(g_last_upcb->arg, g_last_upcb,
+                     make_pbuf(packet, sizeof packet), NULL, port);
+}
+
 /* ---- test framework ------------------------------------------------------ */
 static int checks, fails;
+
+#define NTP_EPOCH 2208988800u   /* 1900 -> 1970, as an SNTP reply carries it */
+
+/* Hand the firmware an ICMP echo reply the way lwIP would: a 20-byte IPv4
+   header followed by the echo header.  The callback frees the pbuf when it
+   claims the packet, so free it here only when it does not. */
+static void deliver_echo(struct raw_pcb *pcb, void *arg, u16_t id, u16_t seqno,
+                         u8_t type);
+/* An SNTP reply; that receive callback always takes the pbuf. */
+static void deliver_ntp(u16_t port, uint32_t seconds, uint8_t li_vn_mode,
+                        uint8_t stratum);
+
 #define CHECK(cond, msg) do { checks++; \
    if (!(cond)) { fails++; printf("  FAIL: %s\n", (msg)); } \
    else printf("  ok: %s\n", (msg)); } while (0)
@@ -1393,9 +1469,94 @@ int main(void)
       CHECK(1, "TNFS parser survived random datagrams (no crash / UB / leak)");
    }
 
+   /* ---- async network utilities: ICMP echo and SNTP --------------------
+      These moved here from the Beeb-facing wifi service, which now calls
+      them: the mechanism is IP, so it belongs with the file that owns lwIP.
+      The generation counter is the part worth pinning down - a reply that
+      arrives after a cancel must never complete the request that replaced
+      it. */
+   printf("== async utilities (ping / SNTP) ==\n");
+   {
+      struct icmp_echo_hdr sent;
+      struct raw_pcb *stale_pcb;
+      void *stale_arg;
+      uint32_t ms = 0u, secs = 0u;
+
+      net_ping_cancel();
+      net_time_cancel();
+      g_dns_sync = 1;
+      IP_ADDR4(&g_dns_result, 192, 168, 0, 1);
+
+      CHECK(net_ping_start("host.example") == true, "ping starts");
+      CHECK(net_ping_poll(&ms) == NET_UTIL_BUSY, "ping is busy while waiting");
+      memcpy(&sent, g_raw_tx, sizeof sent);
+      CHECK(g_raw_tx_len == sizeof(struct icmp_echo_hdr) + 24u
+            && ICMPH_TYPE(&sent) == ICMP_ECHO, "an echo request went out");
+
+      g_now_us += 3000ull;
+      deliver_echo(g_last_rpcb, g_raw_arg, sent.id, sent.seqno, ICMP_ER);
+      CHECK(net_ping_poll(&ms) == NET_UTIL_DONE && ms == 3u,
+            "the reply completes the request, with its elapsed ms");
+      CHECK(net_ping_poll(&ms) == NET_UTIL_IDLE, "a result is reported once");
+
+      CHECK(net_ping_start("host.example") == true, "ping starts again");
+      memcpy(&sent, g_raw_tx, sizeof sent);
+      deliver_echo(g_last_rpcb, g_raw_arg, sent.id,
+                   (u16_t)(sent.seqno ^ 0xffffu), ICMP_ER);
+      CHECK(net_ping_poll(&ms) == NET_UTIL_BUSY,
+            "a reply for another sequence number is ignored");
+      deliver_echo(g_last_rpcb, g_raw_arg, (u16_t)(sent.id ^ 0xffffu),
+                   sent.seqno, ICMP_ER);
+      CHECK(net_ping_poll(&ms) == NET_UTIL_BUSY,
+            "a reply carrying another id is ignored");
+      net_ping_cancel();
+      CHECK(net_ping_poll(&ms) == NET_UTIL_IDLE, "cancel returns it to idle");
+
+      CHECK(net_ping_start("host.example") == true, "ping starts for the timeout");
+      g_now_us += 5000000ull;                    /* past the 4 s deadline */
+      CHECK(net_ping_poll(&ms) == NET_UTIL_TIMEOUT,
+            "no reply inside the deadline times out");
+      CHECK(net_ping_poll(&ms) == NET_UTIL_IDLE, "the timeout is reported once");
+
+      CHECK(net_ping_start("host.example") == true, "ping starts (to be cancelled)");
+      stale_pcb = g_last_rpcb;
+      stale_arg = g_raw_arg;
+      net_ping_cancel();
+      CHECK(net_ping_start("host.example") == true, "a replacement ping starts");
+      memcpy(&sent, g_raw_tx, sizeof sent);
+      deliver_echo(stale_pcb, stale_arg, sent.id, sent.seqno, ICMP_ER);
+      CHECK(net_ping_poll(&ms) == NET_UTIL_BUSY,
+            "a reply to the cancelled request cannot complete its replacement");
+      deliver_echo(g_last_rpcb, g_raw_arg, sent.id, sent.seqno, ICMP_ER);
+      CHECK(net_ping_poll(&ms) == NET_UTIL_DONE, "the live request still completes");
+
+      CHECK(net_time_start("pool.ntp.org") == true, "time request starts");
+      CHECK(net_time_poll(&secs) == NET_UTIL_BUSY, "time is busy while waiting");
+      CHECK(g_udp_tx_len == 48u && g_udp_tx_port == 123u,
+            "a 48-byte SNTP query went to port 123");
+      deliver_ntp(1024u, NTP_EPOCH + 100u, 0x24u, 2u);
+      CHECK(net_time_poll(&secs) == NET_UTIL_BUSY,
+            "a datagram from another port is ignored");
+      deliver_ntp(123u, NTP_EPOCH + 100u, 0x24u, 0u);
+      CHECK(net_time_poll(&secs) == NET_UTIL_BUSY,
+            "an unsynchronised server (stratum 0) is ignored");
+      deliver_ntp(123u, NTP_EPOCH + 100u, 0x24u, 2u);
+      CHECK(net_time_poll(&secs) == NET_UTIL_DONE && secs == NTP_EPOCH + 100u,
+            "a valid reply completes with the NTP seconds");
+
+      CHECK(net_time_start("pool.ntp.org") == true, "time request starts again");
+      deliver_ntp(123u, 100u, 0x24u, 2u);        /* timestamp before 1970 */
+      CHECK(net_time_poll(&secs) == NET_UTIL_FAILED, "a pre-epoch timestamp is refused");
+
+      CHECK(net_time_start("pool.ntp.org") == true, "time request starts for the timeout");
+      g_now_us += 5000000ull;
+      CHECK(net_time_poll(&secs) == NET_UTIL_TIMEOUT, "an unanswered SNTP query times out");
+   }
+
    /* free the last test's pcbs so LSan is clean */
    for (int i = 0; i < g_npcbs; i++) free(g_pcbs[i]);
    for (int i = 0; i < g_nupcbs; i++) free(g_upcbs[i]);
+   for (int i = 0; i < g_nrpcbs; i++) free(g_rpcbs[i]);
    CHECK(g_pbuf_live == 0, "no pbuf leaked across the suite");
 
    printf("\n%d checks, %d failures\n", checks, fails);

@@ -4,4 +4,5 @@
 #include <stdint.h>
 extern uint64_t g_now_us;               /* defined in test_net.c */
 static inline uint64_t RPI_GetSystemTime64(void) { return g_now_us; }
+static inline uint32_t RPI_GetSystemTime(void) { return (uint32_t)g_now_us; }
 #endif

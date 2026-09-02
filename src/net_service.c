@@ -30,6 +30,10 @@
 
 #include "wifi/wifi_lwip.h"        /* wifi_lwip_get_context, wifi_lwip_rx_kick */
 #include "lwip/altcp.h"
+#include "lwip/def.h"              /* lwip_htons (ICMP echo sequence)        */
+#include "lwip/inet_chksum.h"      /* inet_chksum (ICMP echo)                */
+#include "lwip/prot/icmp.h"        /* struct icmp_echo_hdr                   */
+#include "lwip/raw.h"              /* raw PCB for ICMP echo - needs LWIP_RAW */
 #include "lwip/tcp.h"              /* struct tcp_pcb fields (rcv_wnd clamp)  */
 #include "lwip/udp.h"
 #include "lwip/dns.h"
@@ -1763,6 +1767,317 @@ static void net_update_irq(void)
    }
 }
 
+/* ---- small async network utilities (ICMP echo, SNTP) --------------------
+
+   A Beeb-facing ROM service exposes "ping" and "date/time" commands, but the
+   mechanism behind them is IP, not radio: a raw PCB, a UDP PCB, DNS and the
+   LWIP_RAW option all belong to the file that owns lwIP.  So they live here,
+   and the ROM service calls them - ordinary C calls inside the firmware, not
+   a Beeb ABI - then formats the answer in whatever vocabulary its ROM wants.
+
+   One of each may be in flight: the 8-bit host issues services-port commands
+   synchronously, so neither needs a handle.  Each carries a generation
+   counter which its lwIP callbacks check, so a reply arriving after a
+   cancel or a timeout can never complete the request that replaced it.
+
+   poll() reports a terminal state exactly once and returns to IDLE, closing
+   the PCB as it goes; the caller starts the next request when it sees IDLE. */
+
+#define NET_UTIL_TIMEOUT_US   4000000u
+#define NET_UTIL_PING_ID      0x454cu   /* 'EL' - matched on the echo reply */
+#define NET_UTIL_PING_PAYLOAD 24u
+#define NET_NTP_UNIX_EPOCH    2208988800u
+#define NET_UTIL_HOST_MAX     256u
+
+typedef enum {
+   UTIL_IDLE = 0,
+   UTIL_DNS,
+   UTIL_WAITING,
+   UTIL_DONE,
+   UTIL_FAILED
+} util_stage_t;
+
+static util_stage_t    netutil_ping_stage;
+static struct raw_pcb *netutil_ping_pcb;
+static ip_addr_t       netutil_ping_addr;
+static char            netutil_ping_host[NET_UTIL_HOST_MAX];
+static uint16_t        netutil_ping_seq;
+static uint32_t        netutil_ping_started_us;
+static uint32_t        netutil_ping_deadline_us;
+static uint32_t        netutil_ping_elapsed_ms;
+static uint32_t        netutil_ping_generation;
+
+static util_stage_t    netutil_time_stage;
+static struct udp_pcb *netutil_time_pcb;
+static ip_addr_t       netutil_time_addr;
+static uint32_t        netutil_time_deadline_us;
+static uint32_t        netutil_time_seconds;
+static uint32_t        netutil_time_generation;
+
+static bool netutil_expired(uint32_t deadline)
+{
+   return (int32_t)(RPI_GetSystemTime() - deadline) >= 0;
+}
+
+/* ---- ICMP echo ---------------------------------------------------------- */
+
+static u8_t netutil_ping_receive(void *arg, struct raw_pcb *pcb,
+                                 struct pbuf *p, const ip_addr_t *address)
+{
+   uint8_t first;
+   uint16_t ip_header_length;
+   struct icmp_echo_hdr echo;
+   (void)pcb;
+   (void)address;
+   if ((uint32_t)(uintptr_t)arg != netutil_ping_generation
+       || netutil_ping_stage != UTIL_WAITING || p == NULL || p->tot_len < 28u)
+      return 0u;
+   if (pbuf_copy_partial(p, &first, 1u, 0u) != 1u)
+      return 0u;
+   ip_header_length = (uint16_t)((first & 0x0fu) * 4u);
+   if (ip_header_length < 20u
+       || pbuf_copy_partial(p, &echo, sizeof echo, ip_header_length) != sizeof echo)
+      return 0u;
+   if (ICMPH_TYPE(&echo) != ICMP_ER || echo.id != NET_UTIL_PING_ID
+       || echo.seqno != lwip_htons(netutil_ping_seq))
+      return 0u;
+   netutil_ping_elapsed_ms =
+      (RPI_GetSystemTime() - netutil_ping_started_us + 500u) / 1000u;
+   netutil_ping_stage = UTIL_DONE;
+   pbuf_free(p);
+   return 1u;
+}
+
+static void netutil_ping_send(void)
+{
+   struct pbuf *p;
+   struct icmp_echo_hdr *echo;
+   const uint16_t length = (uint16_t)(sizeof(*echo) + NET_UTIL_PING_PAYLOAD);
+   netutil_ping_pcb = raw_new(IP_PROTO_ICMP);
+   if (netutil_ping_pcb == NULL) {
+      netutil_ping_stage = UTIL_FAILED;
+      return;
+   }
+   raw_recv(netutil_ping_pcb, netutil_ping_receive,
+            (void *)(uintptr_t)netutil_ping_generation);
+   raw_bind(netutil_ping_pcb, IP_ADDR_ANY);
+   p = pbuf_alloc(PBUF_IP, length, PBUF_RAM);
+   if (p == NULL || p->len != p->tot_len) {
+      if (p != NULL) pbuf_free(p);
+      net_ping_cancel();
+      netutil_ping_stage = UTIL_FAILED;
+      return;
+   }
+   echo = (struct icmp_echo_hdr *)p->payload;
+   memset(echo, 0, length);
+   ICMPH_TYPE_SET(echo, ICMP_ECHO);
+   ICMPH_CODE_SET(echo, 0u);
+   echo->id = NET_UTIL_PING_ID;
+   netutil_ping_seq++;
+   echo->seqno = lwip_htons(netutil_ping_seq);
+   for (uint16_t i = sizeof(*echo); i < length; i++)
+      ((uint8_t *)echo)[i] = (uint8_t)i;
+   echo->chksum = inet_chksum(echo, length);
+   netutil_ping_started_us = RPI_GetSystemTime();
+   if (raw_sendto(netutil_ping_pcb, p, &netutil_ping_addr) != ERR_OK) {
+      pbuf_free(p);
+      net_ping_cancel();
+      netutil_ping_stage = UTIL_FAILED;
+      return;
+   }
+   pbuf_free(p);
+   netutil_ping_stage = UTIL_WAITING;
+   wifi_lwip_rx_kick();
+}
+
+static void netutil_ping_dns_found(const char *name, const ip_addr_t *address,
+                                   void *arg)
+{
+   (void)name;
+   if ((uint32_t)(uintptr_t)arg != netutil_ping_generation
+       || netutil_ping_stage != UTIL_DNS)
+      return;
+   if (address == NULL) {
+      netutil_ping_stage = UTIL_FAILED;
+      return;
+   }
+   ip_addr_copy(netutil_ping_addr, *address);
+   netutil_ping_send();
+}
+
+void net_ping_cancel(void)
+{
+   if (netutil_ping_pcb != NULL) {
+      raw_remove(netutil_ping_pcb);
+      netutil_ping_pcb = NULL;
+   }
+   netutil_ping_generation++;          /* orphan any callback still to come */
+   netutil_ping_stage = UTIL_IDLE;
+}
+
+bool net_ping_start(const char *host)
+{
+   err_t result;
+
+   if (host == NULL || host[0] == '\0')
+      return false;
+   net_ping_cancel();
+   strlcpy(netutil_ping_host, host, sizeof netutil_ping_host);
+   netutil_ping_deadline_us = RPI_GetSystemTime() + NET_UTIL_TIMEOUT_US;
+   netutil_ping_stage = UTIL_DNS;
+   result = dns_gethostbyname(netutil_ping_host, &netutil_ping_addr,
+                              netutil_ping_dns_found,
+                              (void *)(uintptr_t)netutil_ping_generation);
+   if (result == ERR_OK)
+      netutil_ping_send();             /* cached: send straight away */
+   else if (result != ERR_INPROGRESS)
+      netutil_ping_stage = UTIL_FAILED;
+   if (netutil_ping_stage == UTIL_FAILED) {
+      net_ping_cancel();
+      return false;
+   }
+   return true;
+}
+
+net_util_state_t net_ping_poll(uint32_t *elapsed_ms)
+{
+   switch (netutil_ping_stage) {
+      case UTIL_IDLE:
+         return NET_UTIL_IDLE;
+      case UTIL_DNS:
+      case UTIL_WAITING:
+         if (!netutil_expired(netutil_ping_deadline_us))
+            return NET_UTIL_BUSY;
+         net_ping_cancel();
+         return NET_UTIL_TIMEOUT;
+      case UTIL_DONE:
+         if (elapsed_ms != NULL)
+            *elapsed_ms = netutil_ping_elapsed_ms;
+         net_ping_cancel();
+         return NET_UTIL_DONE;
+      default:
+         net_ping_cancel();
+         return NET_UTIL_FAILED;
+   }
+}
+
+/* ---- SNTP --------------------------------------------------------------- */
+
+static void netutil_time_receive(void *arg, struct udp_pcb *pcb,
+                                 struct pbuf *p, const ip_addr_t *address,
+                                 u16_t port)
+{
+   uint8_t packet[48];
+   (void)pcb;
+   (void)address;
+   if ((uint32_t)(uintptr_t)arg == netutil_time_generation
+       && netutil_time_stage == UTIL_WAITING && p != NULL && port == 123u
+       && p->tot_len >= sizeof packet
+       && pbuf_copy_partial(p, packet, sizeof packet, 0u) == sizeof packet
+       && (packet[0] & 7u) == 4u && packet[1] != 0u) {
+      netutil_time_seconds = ((uint32_t)packet[40] << 24)
+                           | ((uint32_t)packet[41] << 16)
+                           | ((uint32_t)packet[42] << 8) | packet[43];
+      netutil_time_stage = netutil_time_seconds >= NET_NTP_UNIX_EPOCH
+                         ? UTIL_DONE : UTIL_FAILED;
+   }
+   if (p != NULL) pbuf_free(p);
+}
+
+static void netutil_time_send(void)
+{
+   uint8_t packet[48] = {0};
+   struct pbuf *p;
+   netutil_time_pcb = udp_new();
+   if (netutil_time_pcb == NULL) {
+      netutil_time_stage = UTIL_FAILED;
+      return;
+   }
+   udp_recv(netutil_time_pcb, netutil_time_receive,
+            (void *)(uintptr_t)netutil_time_generation);
+   packet[0] = 0x1bu;                  /* LI 0, VN 3, mode 3 (client) */
+   p = pbuf_alloc(PBUF_TRANSPORT, sizeof packet, PBUF_RAM);
+   if (p == NULL || pbuf_take(p, packet, sizeof packet) != ERR_OK
+       || udp_sendto(netutil_time_pcb, p, &netutil_time_addr, 123u) != ERR_OK) {
+      if (p != NULL) pbuf_free(p);
+      netutil_time_stage = UTIL_FAILED;
+      return;
+   }
+   pbuf_free(p);
+   netutil_time_stage = UTIL_WAITING;
+   wifi_lwip_rx_kick();
+}
+
+static void netutil_time_dns_found(const char *name, const ip_addr_t *address,
+                                   void *arg)
+{
+   (void)name;
+   if ((uint32_t)(uintptr_t)arg != netutil_time_generation
+       || netutil_time_stage != UTIL_DNS)
+      return;
+   if (address == NULL) {
+      netutil_time_stage = UTIL_FAILED;
+      return;
+   }
+   ip_addr_copy(netutil_time_addr, *address);
+   netutil_time_send();
+}
+
+void net_time_cancel(void)
+{
+   if (netutil_time_pcb != NULL) {
+      udp_remove(netutil_time_pcb);
+      netutil_time_pcb = NULL;
+   }
+   netutil_time_generation++;
+   netutil_time_stage = UTIL_IDLE;
+}
+
+bool net_time_start(const char *server)
+{
+   err_t result;
+
+   if (server == NULL || server[0] == '\0')
+      return false;
+   net_time_cancel();
+   netutil_time_deadline_us = RPI_GetSystemTime() + NET_UTIL_TIMEOUT_US;
+   netutil_time_stage = UTIL_DNS;
+   result = dns_gethostbyname(server, &netutil_time_addr,
+                              netutil_time_dns_found,
+                              (void *)(uintptr_t)netutil_time_generation);
+   if (result == ERR_OK)
+      netutil_time_send();
+   else if (result != ERR_INPROGRESS)
+      netutil_time_stage = UTIL_FAILED;
+   if (netutil_time_stage == UTIL_FAILED) {
+      net_time_cancel();
+      return false;
+   }
+   return true;
+}
+
+net_util_state_t net_time_poll(uint32_t *ntp_seconds)
+{
+   switch (netutil_time_stage) {
+      case UTIL_IDLE:
+         return NET_UTIL_IDLE;
+      case UTIL_DNS:
+      case UTIL_WAITING:
+         if (!netutil_expired(netutil_time_deadline_us))
+            return NET_UTIL_BUSY;
+         net_time_cancel();
+         return NET_UTIL_TIMEOUT;
+      case UTIL_DONE:
+         if (ntp_seconds != NULL)
+            *ntp_seconds = netutil_time_seconds;
+         net_time_cancel();
+         return NET_UTIL_DONE;
+      default:
+         net_time_cancel();
+         return NET_UTIL_FAILED;
+   }
+}
+
 /* ---- FIQ latch + main-loop poll ----------------------------------------- */
 
 /* Bring-up breadcrumb: the last stage the net service reached, for a Beeb
@@ -1813,6 +2128,8 @@ static void net_service_poll(void)
          net_pcb_release(&net_h[i], true);
          net_handle_reset(&net_h[i]);
       }
+      net_ping_cancel();             /* and any utility still in flight      */
+      net_time_cancel();
       net_irq_armed = false;         /* a reset removes any Beeb IRQ handler */
       net_reset_pending = false;
       net_debug_mark(4u);
