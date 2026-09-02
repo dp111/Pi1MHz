@@ -32,6 +32,9 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data){ mem[addr&0xff]=data; }
 void Pi1MHz_nIRQ_ASSERT(uint8_t src){ irq_mask |= (1u<<src); }
 void Pi1MHz_nIRQ_CLEAR(uint8_t src){ irq_mask &= ~(1u<<src); }
 uint32_t RPI_GetSystemTime(void){ return now_us; }
+/* The firmware's main loop refreshes this once per pass; the tests move time
+   with now_us, so keep the published value in step with it. */
+uint32_t Pi1MHz_now_us;
 void wifi_debug_printf(const char *fmt, ...){ (void)fmt; }
 const wifi_lwip_context_t *wifi_lwip_get_context(void){ return &ctx; }
 /* The emulator reads its endpoints through the Pi1MHz.cfg store, not the
@@ -60,11 +63,15 @@ uint8_t pbuf_free(struct pbuf*p){ (void)p; return 1; }
 
 #define IRQ_SLOT 12u
 static int irq_line(void){ return (irq_mask & (1u<<IRQ_SLOT)) != 0; }
-static void step(void){ now_us += 100000u; poll_fn(); }   /* force phase deadline */
+/* The firmware refreshes Pi1MHz_now_us once per main-loop pass, before the
+   poll callbacks run; do the same here so the emulator's deadline arithmetic
+   sees the time this test has moved to. */
+static void step(void){ now_us += 100000u; Pi1MHz_now_us = now_us; poll_fn(); }
 
 int main(void)
 {
    now_us = 0;
+   Pi1MHz_now_us = 0;
    teletext_emulator_init(IRQ_SLOT, 0x10);
 
    step();                                  /* connect channel 0 */
