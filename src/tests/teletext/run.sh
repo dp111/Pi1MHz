@@ -29,6 +29,9 @@ void Pi1MHz_Register_Poll(func_ptr fn, const char *name);
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
 void Pi1MHz_nIRQ_ASSERT(uint8_t src);
 void Pi1MHz_nIRQ_CLEAR(uint8_t src);
+/* The pass-start timestamp the main loop publishes; teletext_emulator.c reads
+   it instead of calling RPI_GetSystemTime() on the poll path. */
+extern uint32_t Pi1MHz_now_us;
 EOF
 echo 'char *get_cmdline_prop(const char *prop);' > "$B/rpi/info.h"
 printf '#pragma once\n#include <stdint.h>\nuint32_t RPI_GetSystemTime(void);\n' > "$B/rpi/systimer.h"
