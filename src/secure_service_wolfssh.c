@@ -7,6 +7,7 @@
 #include "secure_service_wolfssh.h"
 
 #include "BeebSCSI/fatfs/ff.h"
+#include "BeebSCSI/filesystem.h"   /* filesystemWriteFileSafe */
 #include "rpi/base.h"
 #include "rpi/systimer.h"
 #include "wifi/wifi_lwip.h"
@@ -36,8 +37,6 @@
 #define SSH_PRIVATE SSH_DIR "/id_ed25519"
 #define SSH_PUBLIC SSH_DIR "/id_ed25519.pub"
 #define SSH_HOSTS SSH_DIR "/known_hosts"
-#define SSH_HOSTS_TMP SSH_DIR "/known_hosts.tmp"
-#define SSH_HOSTS_BAK SSH_DIR "/known_hosts.bak"
 
 #define NTS_ERR_DNS 0x24u
 #define NTS_ERR_INUSE 0x21u
@@ -218,20 +217,6 @@ static int read_file(const char *path, uint8_t *buffer, size_t maximum,
     return 0;
 }
 
-static int write_file(const char *path, const uint8_t *data, size_t length)
-{
-    FIL file;
-    UINT wrote = 0;
-    if (length > UINT_MAX ||
-        f_open(&file, path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return -1;
-    if (f_write(&file, data, (UINT)length, &wrote) != FR_OK ||
-        wrote != (UINT)length || f_sync(&file) != FR_OK) {
-        (void)f_close(&file);
-        return -1;
-    }
-    return f_close(&file) == FR_OK ? 0 : -1;
-}
-
 static void free_keys(void)
 {
     if (client.private_key != NULL) {
@@ -325,7 +310,9 @@ static int persist_known_host(void)
 {
     FILINFO info;
     size_t length = 0;
+    size_t total;
     int count;
+    bool ok;
     bool had_old = f_stat(SSH_HOSTS, &info) == FR_OK;
     if (had_old && read_file(SSH_HOSTS, file_buffer, SSH_FILE_SIZE, &length) != 0)
         return -1;
@@ -333,20 +320,13 @@ static int persist_known_host(void)
                      "%s %s %s\n", client.host_id, client.host_key_type,
                      client.host_key);
     if (count <= 0 || (size_t)count >= sizeof(file_buffer) - length) return -1;
-    if (write_file(SSH_HOSTS_TMP, file_buffer, length + (size_t)count) != 0)
-        return -1;
-    memset(file_buffer, 0, length + (size_t)count);
-    (void)f_unlink(SSH_HOSTS_BAK);
-    if (had_old && f_rename(SSH_HOSTS, SSH_HOSTS_BAK) != FR_OK) goto fail;
-    if (f_rename(SSH_HOSTS_TMP, SSH_HOSTS) != FR_OK) {
-        if (had_old) (void)f_rename(SSH_HOSTS_BAK, SSH_HOSTS);
-        goto fail;
-    }
-    if (had_old) (void)f_unlink(SSH_HOSTS_BAK);
-    return 0;
-fail:
-    (void)f_unlink(SSH_HOSTS_TMP);
-    return -1;
+    /* Appending to known_hosts rewrites the whole file, so a failed write
+       would otherwise lose every host already trusted.  The shared helper
+       writes a .new, reads it back to check it, and only then swaps it in. */
+    total = length + (size_t)count;      /* bounded by sizeof file_buffer */
+    ok = filesystemWriteFileSafe(SSH_HOSTS, file_buffer, (uint32_t)total);
+    memset(file_buffer, 0, total);
+    return ok ? 0 : -1;
 }
 
 static int hostkey_callback(const byte *key, word32 key_size, void *opaque)

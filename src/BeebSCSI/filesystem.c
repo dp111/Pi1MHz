@@ -2184,34 +2184,17 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
  *
  * Main loop only, like every other FatFs call here.
  */
-bool filesystemWriteFileSafe(const char * filename, const uint8_t *address, uint32_t length)
+/* Read a file back and compare it with what was meant to be written. */
+static bool filesystemFileMatches(const char * filename, const uint8_t *address,
+                                  uint32_t length)
 {
-   char newname[256];
-   char bakname[256];
-   FILINFO fno;
    FIL fileObject;
-   bool had_old;
-   bool ok = true;
    uint32_t offset = 0;
+   bool ok;
 
-   if (filename == NULL || address == NULL)
+   if (f_open(&fileObject, filename, FA_READ) != FR_OK)
       return false;
-   if (snprintf(newname, sizeof newname, "%s.new", filename) >= (int)sizeof newname
-    || snprintf(bakname, sizeof bakname, "%s.bak", filename) >= (int)sizeof bakname)
-      return false;
-
-   if (filesystemWriteFile(newname, address, length) != length) {
-      (void)f_unlink(newname);
-      return false;
-   }
-
-   /* Verify before anything irreversible happens to the original. */
-   if (f_open(&fileObject, newname, FA_READ) != FR_OK) {
-      (void)f_unlink(newname);
-      return false;
-   }
-   if (f_size(&fileObject) != length)
-      ok = false;
+   ok = (f_size(&fileObject) == length);
    while (ok && offset < length) {
       uint8_t buffer[256];
       UINT got;
@@ -2224,28 +2207,44 @@ bool filesystemWriteFileSafe(const char * filename, const uint8_t *address, uint
          offset += got;
    }
    f_close(&fileObject);
-   if (!ok) {
-      (void)f_unlink(newname);
-      return false;
-   }
+   return ok;
+}
 
-   had_old = (f_stat(filename, &fno) == FR_OK);
-   if (had_old) {
-      (void)f_unlink(bakname);                 /* may not exist - do not care */
-      if (f_rename(filename, bakname) != FR_OK) {
-         (void)f_unlink(newname);
-         return false;
-      }
-   }
-   if (f_rename(newname, filename) != FR_OK) {
-      if (had_old)
-         (void)f_rename(bakname, filename);    /* put the original back */
-      (void)f_unlink(newname);
+bool filesystemWriteFileSafe(const char * filename, const uint8_t *address, uint32_t length)
+{
+   char newname[256];
+   char bakname[256];
+   FILINFO fno;
+   bool moved_old = false;
+
+   if (filename == NULL || address == NULL)
       return false;
+   if (snprintf(newname, sizeof newname, "%s.new", filename) >= (int)sizeof newname
+    || snprintf(bakname, sizeof bakname, "%s.bak", filename) >= (int)sizeof bakname)
+      return false;
+
+   /* Verify before anything irreversible happens to the original. */
+   if (filesystemWriteFile(newname, address, length) != length
+       || !filesystemFileMatches(newname, address, length))
+      goto fail;
+
+   if (f_stat(filename, &fno) == FR_OK) {
+      (void)f_unlink(bakname);                 /* may not exist - do not care */
+      if (f_rename(filename, bakname) != FR_OK)
+         goto fail;
+      moved_old = true;
    }
-   if (had_old)
+   if (f_rename(newname, filename) != FR_OK)
+      goto fail;
+   if (moved_old)
       (void)f_unlink(bakname);
    return true;
+
+fail:
+   (void)f_unlink(newname);
+   if (moved_old)
+      (void)f_rename(bakname, filename);       /* put the original back */
+   return false;
 }
 
 uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint32_t max_size)
