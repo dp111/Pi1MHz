@@ -22,11 +22,11 @@
 #define SERVICE_CMD_AUN_LAST    44u
 #define SERVICE_CMD_NET_FIRST   45u   /* IP sockets / N: device - net_service.c */
 #define SERVICE_CMD_NET_LAST    79u   /* sockets 45-56, IRQ 57, N: dev 60-65   */
-#define SERVICE_CMD_ELKWIFI_FIRST 80u /* ElkWiFi compatibility service        */
+#define SERVICE_CMD_WIFI_FIRST 80u /* ElkWiFi compatibility service        */
 /* Two commands are held for the UEF cluster's return: 86 (guard image) sits
-   INSIDE the claimed range and is answered ELKWIFI_ERR_UNSUPPORTED for now;
+   INSIDE the claimed range and is answered WIFI_SVC_ERR_UNSUPPORTED for now;
    93 (UEF stream) sits just past it, which is why the range stops at 92. */
-#define SERVICE_CMD_ELKWIFI_LAST  92u
+#define SERVICE_CMD_WIFI_LAST  92u
 #define SERVICE_CMD_SECURE_FIRST  94u /* RNG and managed SSH - secure_service.c */
 #define SERVICE_CMD_SECURE_LAST  113u
 /* 93 held (see above); 114..255 unallocated */
@@ -38,12 +38,12 @@
 _Static_assert(SERVICE_CMD_FAT_FIRST     <= SERVICE_CMD_FAT_LAST,     "FAT range inverted");
 _Static_assert(SERVICE_CMD_AUN_FIRST     <= SERVICE_CMD_AUN_LAST,     "AUN range inverted");
 _Static_assert(SERVICE_CMD_NET_FIRST     <= SERVICE_CMD_NET_LAST,     "net range inverted");
-_Static_assert(SERVICE_CMD_ELKWIFI_FIRST <= SERVICE_CMD_ELKWIFI_LAST, "ElkWiFi range inverted");
+_Static_assert(SERVICE_CMD_WIFI_FIRST <= SERVICE_CMD_WIFI_LAST, "ElkWiFi range inverted");
 _Static_assert(SERVICE_CMD_SECURE_FIRST  <= SERVICE_CMD_SECURE_LAST,  "secure range inverted");
 _Static_assert(SERVICE_CMD_FAT_LAST     < SERVICE_CMD_AUN_FIRST,     "FAT overlaps AUN");
 _Static_assert(SERVICE_CMD_AUN_LAST     < SERVICE_CMD_NET_FIRST,     "AUN overlaps net");
-_Static_assert(SERVICE_CMD_NET_LAST     < SERVICE_CMD_ELKWIFI_FIRST, "net overlaps ElkWiFi");
-_Static_assert(SERVICE_CMD_ELKWIFI_LAST < SERVICE_CMD_SECURE_FIRST,  "ElkWiFi overlaps secure");
+_Static_assert(SERVICE_CMD_NET_LAST     < SERVICE_CMD_WIFI_FIRST, "net overlaps ElkWiFi");
+_Static_assert(SERVICE_CMD_WIFI_LAST < SERVICE_CMD_SECURE_FIRST,  "ElkWiFi overlaps secure");
 
 /* What a Beeb sees when a service is not there.  Three states, deliberately
    distinguishable, because a ROM has to tell them apart:

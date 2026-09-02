@@ -124,7 +124,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "videoplayer.h"
 #include "usb.h"
 #include "wifi/wifi.h"
-#include "elkwifi_service.h"
+#include "wifi_service.h"
 #ifdef PI1MHZ_SSH
 #include "secure_service.h"
 #endif
@@ -160,8 +160,8 @@ static emulator_list emulator[] = {
       its poll runs once lwIP has drained inbound frames; off unless
       net_enable=1 in Pi1MHz.cfg. */
    {"net",net_service_init, 0x00, 1 },
-   /* Off unless elkwifi_enable=1 in Pi1MHz.cfg (checked in its init). */
-   {"ElkWiFi",elkwifi_service_init, 0x00, 1 },
+   /* Off unless wifi_service_enable=1 in Pi1MHz.cfg (checked in its init). */
+   {"WiFiSvc",wifi_service_init, 0x00, 1 },
 #ifdef PI1MHZ_SSH
    /* Only built when -DPI1MHZ_SSH=ON supplied wolfSSL/wolfSSH; its init
       claims 94..113 and registers a poll slot. */

@@ -416,7 +416,7 @@ set( Pi1MHz_sources
     ${mouse_redirect_files}
     ${wifi_files}
     ${lwip_files}
-    elkwifi_service.c
+    wifi_service.c
 )
 
 # These are cold (config/filename handling, ~12 call sites). We recompile them

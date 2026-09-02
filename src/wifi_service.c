@@ -1,4 +1,13 @@
-/* Pi1MHz-side service for the ElkWiFi-compatible ROM.
+/* Pi1MHz-side WiFi control service, speaking the ElkWiFi ROM's ABI.
+ *
+ * Radio on/off, scan, join/leave, interface config and link status for a
+ * Beeb-side ROM.  The command numbers and the layout of each command block
+ * are the ROM's, not ours: they can only change in lockstep with it, which
+ * is why services.h pins the range and this file asserts the two agree.  The
+ * names in here are local and mean nothing to the ROM.
+ *
+ * PING and DATETIME are in this range too, but the mechanism for them lives
+ * in net_service.c, which owns lwIP - this file only formats their replies.
  *
  * The AP5 passes &FCA0-&FCAF, &FCFF and JIM to its 1 MHz connector. Pi1MHz's
  * existing services mailbox at &FCA6 therefore works on an unmodified AP5;
@@ -17,7 +26,7 @@
 #include "scripts/gitversion.h"
 #include "BeebSCSI/filesystem.h"
 #include "config.h"
-#include "elkwifi_service.h"
+#include "wifi_service.h"
 #include "ram_emulator.h"
 #include "services.h"
 #include "wifi/sdio.h"
@@ -27,8 +36,11 @@
 #include "rpi/systimer.h"
 #include "rpi/asm-helpers.h"
 
-#define ELKWIFI_TEXT_MAX 240u
+#define WIFI_SVC_TEXT_MAX 240u
 #define WIFI_FILE "/Pi1MHz/ElkWiFi.wifi"
+/* On-SD data, so these keep the ROM's spelling: the header is the magic in
+   a profile already written to a card, and the filenames are what a user
+   sees next to their other Pi1MHz files. */
 #define WIFI_PROFILE_HEADER "ELKWIFI1"
 #define LAPOPT_FILE "/Pi1MHz/ElkWiFi.lapopt"
 /* AP5 exposes the standard 64K JIM window selected by &FCFF; it does not
@@ -36,19 +48,19 @@
  * host's service reply buffer (OSWORD &65 clients read up to 241 contiguous
  * bytes of it).  The UEF stream's JIM layout notes travel with the UEF
  * cluster, which is held back from this submission. */
-#define ELKWIFI_VERSION_RESPONSE \
+#define WIFI_SVC_VERSION_RESPONSE \
    "Pi1MHz ElkWiFi 0.1.67, kernel " GITVERSION "\r\n\r\nOK\r\n"
 
-_Static_assert(ELKWIFI_CMD_FIRST == SERVICE_CMD_ELKWIFI_FIRST,
+_Static_assert(WIFI_SVC_CMD_FIRST == SERVICE_CMD_WIFI_FIRST,
                "ElkWiFi service range start disagrees with services.h");
-_Static_assert(ELKWIFI_CMD_LAST == SERVICE_CMD_ELKWIFI_LAST,
+_Static_assert(WIFI_SVC_CMD_LAST == SERVICE_CMD_WIFI_LAST,
                "ElkWiFi service range end disagrees with services.h");
 
-/* Off unless elkwifi_enable=1 in Pi1MHz.cfg.  When off, init returns before
+/* Off unless wifi_service_enable=1 in Pi1MHz.cfg.  When off, init returns before
    registering anything, so the command range stays unclaimed (the dispatcher
    echoes, exactly what the ElkWiFi ROM sees on a Pi without the service), no
    poll slot is taken and no profile is read from the card. */
-static bool elkwifi_enabled;
+static bool wifi_service_enabled;
 
 static volatile bool request_pending;
 static volatile bool request_cancel;
@@ -98,21 +110,21 @@ static uint8_t wifi_ping(uint32_t cp)
          const char *host;
          if (!sdio_runtime_link_is_up() || !command_string(cp, &host)
              || host[0] == '\0' || !net_ping_start(host))
-            return ELKWIFI_ERR_NETWORK;
-         return ELKWIFI_BUSY;
+            return WIFI_SVC_ERR_NETWORK;
+         return WIFI_SVC_BUSY;
       }
       case NET_UTIL_DONE:
          response_printf(cp, "+%lu\r\n", (unsigned long)elapsed_ms);
-         return ELKWIFI_OK;
+         return WIFI_SVC_OK;
       /* A ping that goes unanswered is a result, not a fault: the ROM
          prints it. */
       case NET_UTIL_TIMEOUT:
          response_string(cp, "+timeout\r\n");
-         return ELKWIFI_OK;
+         return WIFI_SVC_OK;
       case NET_UTIL_FAILED:
-         return ELKWIFI_ERR_NETWORK;
+         return WIFI_SVC_ERR_NETWORK;
       default:
-         return ELKWIFI_BUSY;
+         return WIFI_SVC_BUSY;
    }
 }
 
@@ -179,17 +191,17 @@ static uint8_t wifi_datetime(uint32_t cp)
    switch (net_time_poll(&network_time_seconds)) {
       case NET_UTIL_IDLE:
          if (!sdio_runtime_link_is_up() || !net_time_start(NTP_SERVER))
-            return ELKWIFI_ERR_NETWORK;
-         return ELKWIFI_BUSY;
+            return WIFI_SVC_ERR_NETWORK;
+         return WIFI_SVC_BUSY;
       case NET_UTIL_DONE:
          format_network_time(cp, date);
-         return ELKWIFI_OK;
+         return WIFI_SVC_OK;
       /* Unlike ping, a clock the ROM cannot read is an error, not a reply. */
       case NET_UTIL_TIMEOUT:
       case NET_UTIL_FAILED:
-         return ELKWIFI_ERR_NETWORK;
+         return WIFI_SVC_ERR_NETWORK;
       default:
-         return ELKWIFI_BUSY;
+         return WIFI_SVC_BUSY;
    }
 }
 
@@ -329,14 +341,14 @@ static void lapopt_load(void)
 
 static void response_printf(uint32_t cp, const char *format, ...)
 {
-   char value[ELKWIFI_TEXT_MAX + 1u];
+   char value[WIFI_SVC_TEXT_MAX + 1u];
    va_list args;
    va_start(args, format);
    int length = vsnprintf(value, sizeof value, format, args);
    va_end(args);
    if (length < 0)
       value[0] = '\0';
-   value[ELKWIFI_TEXT_MAX] = '\0';
+   value[WIFI_SVC_TEXT_MAX] = '\0';
    response_string(cp, value);
 }
 
@@ -379,53 +391,53 @@ static uint8_t wifi_join(uint32_t cp)
       while others pass the literal question-mark byte through. Both spell
       the same standard association query. */
    if (operation == (uint8_t)'?')
-      operation = ELKWIFI_JOIN_QUERY;
+      operation = WIFI_SVC_JOIN_QUERY;
 
-   if (operation == ELKWIFI_JOIN_QUERY) {
+   if (operation == WIFI_SVC_JOIN_QUERY) {
       if (sdio_runtime_rejoin_busy()) {
          response_string(cp, "WIFI CONNECTING\r\n\r\nOK\r\n");
-         return ELKWIFI_OK;
+         return WIFI_SVC_OK;
       }
       if (!sdio_runtime_link_is_up()) {
          response_string(cp, "No AP\r\n\r\nOK\r\n");
-         return ELKWIFI_OK;
+         return WIFI_SVC_OK;
       }
       response_printf(cp, "+CWJAP:\"%s\"\r\n\r\nOK\r\n", config->ssid);
-      return ELKWIFI_OK;
+      return WIFI_SVC_OK;
    }
-   if (operation == ELKWIFI_JOIN_LEAVE) {
+   if (operation == WIFI_SVC_JOIN_LEAVE) {
       if (!wifi_disconnect())
-         return ELKWIFI_ERR_NETWORK;
+         return WIFI_SVC_ERR_NETWORK;
       response_string(cp, "WIFI DISCONNECT\r\n\r\nOK\r\n");
-      return ELKWIFI_OK;
+      return WIFI_SVC_OK;
    }
-   if (operation == ELKWIFI_JOIN_RADIO_OFF) {
+   if (operation == WIFI_SVC_JOIN_RADIO_OFF) {
       if (!wifi_disable_radio())
-         return ELKWIFI_ERR_NETWORK;
+         return WIFI_SVC_ERR_NETWORK;
       response_string(cp, "WIFI OFF\r\n\r\nOK\r\n");
-      return ELKWIFI_OK;
+      return WIFI_SVC_OK;
    }
-   if (operation != ELKWIFI_JOIN_SET)
-      return ELKWIFI_ERR_PARAM;
+   if (operation != WIFI_SVC_JOIN_SET)
+      return WIFI_SVC_ERR_PARAM;
 
    const char *ssid;
    const char *password;
    wifi_security_t security;
    if (!two_strings(cp + 2u, &ssid, &password) || ssid[0] == '\0')
-      return ELKWIFI_ERR_PARAM;
+      return WIFI_SVC_ERR_PARAM;
    if (!join_password_parse(password, &password, &security))
-      return ELKWIFI_ERR_PARAM;
+      return WIFI_SVC_ERR_PARAM;
    if (!wifi_profile_is_valid(ssid, password, security))
-      return ELKWIFI_ERR_PARAM;
+      return WIFI_SVC_ERR_PARAM;
    char persisted[WIFI_SSID_MAX_LEN + WIFI_PASSWORD_MAX_LEN + 32u];
    int length = snprintf(persisted, sizeof persisted, "%s\n%s\n%s\n%s\n",
                          WIFI_PROFILE_HEADER, security_name(security), ssid, password);
    if (length < 0 || (size_t)length >= sizeof persisted
        || filesystemWriteFile(WIFI_FILE, (const uint8_t *)persisted,
                               (uint32_t)length) != (uint32_t)length)
-      return ELKWIFI_ERR_IO;
+      return WIFI_SVC_ERR_IO;
    if (!wifi_reconfigure_and_rejoin(ssid, password, security))
-      return ELKWIFI_ERR_NETWORK;
+      return WIFI_SVC_ERR_NETWORK;
    /* Association runs in the cooperative WiFi poll and owns the SDIO runtime
       for dozens of setup ioctls. Never keep the shared ElkWiFi command page
       pending across that work: a host timeout followed by LAP/IFCFG would
@@ -433,7 +445,7 @@ static uint8_t wifi_join(uint32_t cp)
       immediately; JOIN ? and IFCFG expose its live outcome. */
    response_printf(cp, "WIFI CONNECTING %s\r\n\r\nOK\r\n",
                    security_name(security));
-   return ELKWIFI_OK;
+   return WIFI_SVC_OK;
 }
 
 static uint8_t wifi_ifcfg(uint32_t cp)
@@ -462,7 +474,7 @@ static uint8_t wifi_ifcfg(uint32_t cp)
       "\r\nOK\r\n",
       ip, (unsigned)mac[0], (unsigned)mac[1], (unsigned)mac[2],
       (unsigned)mac[3], (unsigned)mac[4], (unsigned)mac[5]);
-   return ELKWIFI_OK;
+   return WIFI_SVC_OK;
 }
 
 static uint8_t wifi_online(uint32_t cp)
@@ -476,7 +488,7 @@ static uint8_t wifi_online(uint32_t cp)
          response_printf(cp, "ONLINE %u.%u.%u.%u\r\n",
                          ip4_addr1(address), ip4_addr2(address),
                          ip4_addr3(address), ip4_addr4(address));
-         return ELKWIFI_OK;
+         return WIFI_SVC_OK;
       }
    }
    if (radio.join_busy || radio.link_up)
@@ -487,26 +499,26 @@ static uint8_t wifi_online(uint32_t cp)
       response_string(cp, "OFFLINE ERROR\r\n");
    else
       response_string(cp, "OFFLINE\r\n");
-   return ELKWIFI_OK;
+   return WIFI_SVC_OK;
 }
 
 static uint8_t wifi_scan(uint32_t cp)
 {
    sdio_wifi_scan_result_t results[SDIO_WIFI_SCAN_MAX_RESULTS];
-   char response[ELKWIFI_TEXT_MAX + 1u];
+   char response[WIFI_SVC_TEXT_MAX + 1u];
    size_t used = 0u;
 
    if (!scan_waiting) {
       if (!sdio_runtime_scan_start())
-         return ELKWIFI_ERR_NETWORK;
+         return WIFI_SVC_ERR_NETWORK;
       scan_waiting = true;
-      return ELKWIFI_BUSY;
+      return WIFI_SVC_BUSY;
    }
    if (sdio_runtime_scan_busy())
-      return ELKWIFI_BUSY;
+      return WIFI_SVC_BUSY;
    if (!sdio_runtime_scan_complete()) {
       scan_waiting = false;
-      return ELKWIFI_ERR_NETWORK;
+      return WIFI_SVC_ERR_NETWORK;
    }
 
    uint8_t count = sdio_runtime_scan_results(results,
@@ -537,7 +549,7 @@ static uint8_t wifi_scan(uint32_t cp)
       (void)snprintf(&response[used], sizeof response - used, "\r\nOK\r\n");
    response_string(cp, response);
    scan_waiting = false;
-   return ELKWIFI_OK;
+   return WIFI_SVC_OK;
 }
 
 static bool command_string(uint32_t cp, const char **value)
@@ -546,7 +558,7 @@ static bool command_string(uint32_t cp, const char **value)
    if (cp + 1u >= limit)
       return false;
    for (uint32_t pos = cp + 1u;
-        pos < limit && pos <= cp + ELKWIFI_TEXT_MAX + 1u; pos++) {
+        pos < limit && pos <= cp + WIFI_SVC_TEXT_MAX + 1u; pos++) {
       if (Pi1MHz->JIM_ram[pos] == 0u || Pi1MHz->JIM_ram[pos] == '\r') {
          Pi1MHz->JIM_ram[pos] = 0u;
          *value = (const char *)&Pi1MHz->JIM_ram[cp + 1u];
@@ -559,7 +571,7 @@ static bool command_string(uint32_t cp, const char **value)
 static void response_string(uint32_t cp, const char *value)
 {
    size_t length = 0u;
-   while (length < ELKWIFI_TEXT_MAX && value[length] != '\0')
+   while (length < WIFI_SVC_TEXT_MAX && value[length] != '\0')
       length++;
    memcpy(&Pi1MHz->JIM_ram[cp + 1u], value, length);
    Pi1MHz->JIM_ram[cp + 1u + length] = 0u;
@@ -569,80 +581,80 @@ static uint8_t process_request(uint32_t cp)
 {
    uint8_t command = Pi1MHz->JIM_ram[cp];
    switch (command) {
-      case ELKWIFI_CMD_STATUS:
+      case WIFI_SVC_CMD_STATUS:
          /* Version discovery identifies the installed Pi service. It is not
           * a radio-health probe and must remain available while CYW43 setup,
           * association or DHCP is incomplete. Radio control has its own
           * command and IFCFG/ONLINE expose the live network state. */
-         response_string(cp, ELKWIFI_VERSION_RESPONSE);
-         return ELKWIFI_OK;
+         response_string(cp, WIFI_SVC_VERSION_RESPONSE);
+         return WIFI_SVC_OK;
 
-      case ELKWIFI_CMD_RADIO:
+      case WIFI_SVC_CMD_RADIO:
          /* Public function 24 must return promptly. Start radio setup here,
           * but do not make the caller wait for firmware or association. */
          if (wifi_get_state() == WIFI_STATE_DISABLED && !wifi_enable_radio())
-            return ELKWIFI_ERR_NO_WIFI;
+            return WIFI_SVC_ERR_NO_WIFI;
          if (wifi_get_state() == WIFI_STATE_ERROR)
-            return ELKWIFI_ERR_NO_WIFI;
+            return WIFI_SVC_ERR_NO_WIFI;
          response_string(cp, "OK\r\n");
-         return ELKWIFI_OK;
+         return WIFI_SVC_OK;
 
-      case ELKWIFI_CMD_SCAN:
+      case WIFI_SVC_CMD_SCAN:
          return wifi_scan(cp);
 
-      case ELKWIFI_CMD_JOIN:
+      case WIFI_SVC_CMD_JOIN:
          return wifi_join(cp);
 
-      case ELKWIFI_CMD_IFCFG:
+      case WIFI_SVC_CMD_IFCFG:
          return wifi_ifcfg(cp);
 
-      case ELKWIFI_CMD_ONLINE:
+      case WIFI_SVC_CMD_ONLINE:
          return wifi_online(cp);
 
-      case ELKWIFI_CMD_LAPOPT:
+      case WIFI_SVC_CMD_LAPOPT:
          if (Pi1MHz->JIM_ram[cp + 1u] != 7u
              && Pi1MHz->JIM_ram[cp + 1u] != 127u)
-            return ELKWIFI_ERR_PARAM;
+            return WIFI_SVC_ERR_PARAM;
          scan_fields = Pi1MHz->JIM_ram[cp + 1u];
          {
             const char *option = scan_fields == 7u ? "7\n" : "127\n";
             uint32_t length = (uint32_t)strlen(option);
             if (filesystemWriteFile(LAPOPT_FILE, (const uint8_t *)option,
                                     length) != length)
-               return ELKWIFI_ERR_IO;
+               return WIFI_SVC_ERR_IO;
          }
          response_printf(cp, "+CWLAPOPT:%u\r\n\r\nOK\r\n",
                          (unsigned)scan_fields);
-         return ELKWIFI_OK;
+         return WIFI_SVC_OK;
 
-      case ELKWIFI_CMD_PING:
+      case WIFI_SVC_CMD_PING:
          return wifi_ping(cp);
 
-      case ELKWIFI_CMD_DATETIME:
+      case WIFI_SVC_CMD_DATETIME:
          return wifi_datetime(cp);
 
-      case ELKWIFI_CMD_CANCEL:
+      case WIFI_SVC_CMD_CANCEL:
          asynchronous_close();
          response_string(cp, "OK\r\n");
-         return ELKWIFI_OK;
+         return WIFI_SVC_OK;
 
       default:
-         return ELKWIFI_ERR_UNSUPPORTED;
+         return WIFI_SVC_ERR_UNSUPPORTED;
    }
 }
 
-void elkwifi_service_command(uint32_t cp, uint32_t addr, uint8_t data)
+void wifi_service_command(uint32_t cp, uint32_t addr, uint8_t data)
 {
    (void)data;
-   if (Pi1MHz->JIM_ram[cp] == ELKWIFI_CMD_CANCEL) {
+   if (Pi1MHz->JIM_ram[cp] == WIFI_SVC_CMD_CANCEL) {
       request_pointer = cp;
       request_status_address = addr;
       request_cancel = true;
-      Pi1MHz_MemoryWrite(addr, ELKWIFI_BUSY);
+      Pi1MHz_MemoryWrite(addr, WIFI_SVC_BUSY);
       return;
    }
    if (request_pending) {
-      Pi1MHz_MemoryWrite(addr, ELKWIFI_BUSY);
+      Pi1MHz_MemoryWrite(addr, WIFI_SVC_BUSY);
       return;
    }
 
@@ -650,18 +662,18 @@ void elkwifi_service_command(uint32_t cp, uint32_t addr, uint8_t data)
       memory reply and can complete in the FIQ callback even while radio setup
       is in progress or has failed. All filesystem, scan and network work
       remains deferred below. */
-   if (Pi1MHz->JIM_ram[cp] == ELKWIFI_CMD_STATUS) {
-      response_string(cp, ELKWIFI_VERSION_RESPONSE);
-      Pi1MHz_MemoryWrite(addr, ELKWIFI_OK);
+   if (Pi1MHz->JIM_ram[cp] == WIFI_SVC_CMD_STATUS) {
+      response_string(cp, WIFI_SVC_VERSION_RESPONSE);
+      Pi1MHz_MemoryWrite(addr, WIFI_SVC_OK);
       return;
    }
    request_pointer = cp;
    request_status_address = addr;
    request_pending = true;
-   Pi1MHz_MemoryWrite(addr, ELKWIFI_BUSY);
+   Pi1MHz_MemoryWrite(addr, WIFI_SVC_BUSY);
 }
 
-static void elkwifi_poll(void)
+static void wifi_service_poll(void)
 {
    uint32_t cp, addr;
    if (request_cancel) {
@@ -671,7 +683,7 @@ static void elkwifi_poll(void)
       request_pending = false;
       request_cancel = false;
       response_string(cp, "OK\r\n");
-      Pi1MHz_MemoryWrite(addr, ELKWIFI_OK);
+      Pi1MHz_MemoryWrite(addr, WIFI_SVC_OK);
       return;
    }
    if (!request_pending)
@@ -679,19 +691,19 @@ static void elkwifi_poll(void)
    cp = request_pointer;
    addr = request_status_address;
    uint8_t result = process_request(cp);
-   if (result == ELKWIFI_BUSY)
+   if (result == WIFI_SVC_BUSY)
       return;
    request_pending = false;
    request_cancel = false;
    Pi1MHz_MemoryWrite(addr, result);
 }
 
-void elkwifi_service_init(uint8_t instance, uint8_t address)
+void wifi_service_init(uint8_t instance, uint8_t address)
 {
    (void)instance;
    (void)address;
-   elkwifi_enabled = config_get_bool("elkwifi_enable");
-   if (!elkwifi_enabled)
+   wifi_service_enabled = config_get_bool("wifi_service_enable");
+   if (!wifi_service_enabled)
       return;
    /* Pi1MHz clears its main poll table on every BBC reset.  The services
       registry is idempotent, so renew this claim on every init as well: this
@@ -701,23 +713,23 @@ void elkwifi_service_init(uint8_t instance, uint8_t address)
       service_initialised = true;
       lapopt_load();
       time_utc_offset_minutes = utc_offset_parse(
-         config_get("elkwifi_utc_offset_minutes"));
+         config_get("wifi_service_utc_offset_minutes"));
    }
    /* Re-read the saved profile on every host reset, but credentials_load
     * preserves an already-running association when the profile is unchanged. */
    wifi_credentials_load();
-   (void)services_register(ELKWIFI_CMD_STATUS, ELKWIFI_CMD_LAST,
-                           elkwifi_service_command);
+   (void)services_register(WIFI_SVC_CMD_STATUS, WIFI_SVC_CMD_LAST,
+                           wifi_service_command);
    /* A host reset abandons the old OSWORD/star-command caller. Complete any
       request latched during reset reinitialisation with a bounded error before
       clearing it, so FCAA can never be left at BUSY. */
    asynchronous_close();
    unsigned int cpsr = _disable_interrupts_cspr();
    if (request_pending || request_cancel)
-      Pi1MHz_MemoryWrite(request_status_address, ELKWIFI_ERR_NETWORK);
+      Pi1MHz_MemoryWrite(request_status_address, WIFI_SVC_ERR_NETWORK);
    request_pending = false;
    request_cancel = false;
    scan_waiting = false;
    _restore_cpsr(cpsr);
-   Pi1MHz_Register_Poll(elkwifi_poll, "elkwifi");
+   Pi1MHz_Register_Poll(wifi_service_poll, "wifisvc");
 }
