@@ -271,6 +271,61 @@ int main(void)
       parse_releasekeyvalues(v, K_COUNT);
    }
 
+   puts("== structure ==");
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("Title=first\nTitle=second\n");
+      (void)parse_readfile("f", 0, keys, v);
+      ok(v[K_TITLE].length == 6 && strcmp(v[K_TITLE].v.string, "second") == 0,
+         "a repeated key takes the last value");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("   Title=indented\n");
+      (void)parse_readfile("f", 0, keys, v);
+      ok(v[K_TITLE].length == 8, "an indented key is still matched");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("Titles=notours\nSize=8\n");
+      (void)parse_readfile("f", 0, keys, v);
+      ok(v[K_TITLE].length == 0, "a longer key that starts with ours does not match");
+      ok(v[K_SIZE].length == 1, "and the line after it still parses");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("Title=one\rSize=9\r");          /* CR only */
+      (void)parse_readfile("f", 0, keys, v);
+      ok(v[K_TITLE].length == 3 && v[K_SIZE].length == 1
+         && *v[K_SIZE].v.integer == 9, "CR-only line endings parse");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("Title=a=b=c\n");
+      (void)parse_readfile("f", 0, keys, v);
+      ok(v[K_TITLE].length == 5 && strcmp(v[K_TITLE].v.string, "a=b=c") == 0,
+         "a value may contain further = signs");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+   {
+      /* The output buffer is 4x the input.  A caller supplying a value far
+         longer than the file it is rewriting hits that ceiling - what
+         happens then is worth knowing, because the result gets written. */
+      parserkeyvalue v[K_COUNT] = {0};
+      char big[200];
+      memset(big, 'x', sizeof big);
+      set_file("Title=a\n");                    /* 8 bytes in, cap 32 */
+      v[K_TITLE].v.string = big;
+      v[K_TITLE].length = sizeof big;
+      ok(parse_readfile("f", "f", keys, v) != 0, "a value far longer than the file rewrites");
+      ok(strstr(written(), "\n") != NULL && g_written_len >= sizeof big,
+         "and the whole value lands - the buffer grew to fit it");
+   }
+
    printf("\n%d checks, %d failures\n", checks, fails);
    printf(fails ? "FILEPARSER TESTS FAILED\n" : "FILEPARSER TESTS PASSED\n");
    return fails != 0;

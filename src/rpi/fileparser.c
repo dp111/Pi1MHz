@@ -107,6 +107,7 @@ typedef struct {
     char    * out;       /* rewrite buffer - always allocated */
     size_t    outcap;
     size_t    outptr;
+    bool      overflow;  /* the buffer filled: the rewrite is incomplete */
 } parse_state;
 
 /* Bounded append to the output buffer. The buffer is sized at 4x the input
@@ -117,6 +118,8 @@ static void emit(parse_state * st, int c)
 {
     if (st->outptr < st->outcap)
         st->out[st->outptr++] = (char)c;
+    else
+        st->overflow = true;
 }
 
 static void emit_nibble(parse_state * st, int nibble)
@@ -330,6 +333,17 @@ static void store_integer(parse_state * st, const parserkey * key,
 static void store_value(parse_state * st, const parserkey * key,
                         parserkeyvalue * value)
 {
+    /* A key repeated in the file - easily done by hand-editing a .cfg and
+       forgetting to delete the old line - overwrites the first value, so
+       release that one or its allocation is lost.  Callers pass a zeroed or
+       freshly released array, so this is either NULL or ours. */
+    if (value->v.string != NULL)
+    {
+        free(value->v.string);
+        value->v.string = NULL;
+        value->length = 0;
+    }
+
     switch (key->type)
     {
         case NUMSTRING: store_numstring(st, key, value); break;
@@ -372,7 +386,19 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
 
     st.in = buffer;
     st.insize = filesize;
-    st.outcap = filesize * 4;           // out buffer is 4x input size
+    /* 4x the input, plus room for the values the caller is substituting in:
+       a long value written into a short file - a 255 byte Description over a
+       one-line .cfg - would otherwise not fit, and the rewrite would be
+       silently truncated.  Two bytes per byte covers NUMSTRING's hex. */
+    st.outcap = filesize * 4;
+    if (outfile)
+    {
+        size_t extra = 0;
+        for (int k = 0; keyv[k].key != NULL; k++)
+            if (values[k].length && (extra < PARSE_MAX_FILE_SIZE))
+                extra += values[k].length * 2u;
+        st.outcap += extra + 64u;
+    }
     st.out = malloc(st.outcap);
     if (st.out == NULL)
     {
@@ -428,6 +454,18 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
     }
 
     free(buffer);
+
+    if (outfile && st.overflow)
+    {
+        /* Never install a half-written config.  The buffer is sized above so
+           this should not happen; if it ever does, failing is the only safe
+           answer - the caller usually passes outfile == filename, and the
+           verified write beneath us would faithfully replace a good file
+           with a truncated one. */
+        LOG_DEBUG("Rewrite of %s did not fit - not written\n\r", outfile);
+        free(st.out);
+        return 0;
+    }
 
     if (outfile)
     {
