@@ -99,18 +99,6 @@ static void response_printf(uint32_t cp, const char *format, ...)
    __attribute__((format(printf, 2, 3)));
 static bool command_string(uint32_t cp, const char **value);
 
-
-
-
-
-
-
-
-
-
-
-
-
 static bool deadline_expired(uint32_t deadline)
 {
    return (int32_t)(RPI_GetSystemTime() - deadline) >= 0;
