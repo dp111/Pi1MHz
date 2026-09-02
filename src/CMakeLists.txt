@@ -216,6 +216,7 @@ set(harddisc_emulator_files
    harddisc_emulator.c
    BeebSCSI/debug.c
    BeebSCSI/filesystem.c
+   BeebSCSI/filesystem_safewrite.c
    BeebSCSI/scsi.c
    BeebSCSI/fcode.c
    BeebSCSI/fatfs/ff.c
