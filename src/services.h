@@ -45,6 +45,24 @@ _Static_assert(SERVICE_CMD_AUN_LAST     < SERVICE_CMD_NET_FIRST,     "AUN overla
 _Static_assert(SERVICE_CMD_NET_LAST     < SERVICE_CMD_ELKWIFI_FIRST, "net overlaps ElkWiFi");
 _Static_assert(SERVICE_CMD_ELKWIFI_LAST < SERVICE_CMD_SECURE_FIRST,  "ElkWiFi overlaps secure");
 
+/* What a Beeb sees when a service is not there.  Three states, deliberately
+   distinguishable, because a ROM has to tell them apart:
+
+     - Range never claimed - the service is absent from the build, or tested
+       its config key BEFORE services_register() and returned.  The dispatcher
+       echoes the command byte back untouched, which a ROM reads as "this Pi
+       has no such service".  The ElkWiFi ROM depends on exactly that.
+     - Range claimed, service disabled at run time - it registered and then
+       refuses, returning its own error code (net_service answers
+       NET_ERR_DISABLED).  A Beeb can then distinguish "present but switched
+       off" from "not present at all".
+     - Range claimed and live - the handler's own result byte.
+
+   So where a service tests its config key is an ABI decision, not a style
+   one: before the claim to disappear, after it to refuse.  Disappearing also
+   costs no poll slot, which is why a service with per-boot setup work (a
+   profile read, a socket table) prefers it. */
+
 /* Handler for one service's command range.  FIQ context: called from the
    FRED write callback, so anything slow must be queued for the main loop
    (the AUN service is the pattern).  command_pointer is the absolute JIM
