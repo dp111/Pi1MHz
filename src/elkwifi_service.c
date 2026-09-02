@@ -37,26 +37,11 @@
 #define WIFI_FILE "/Pi1MHz/ElkWiFi.wifi"
 #define WIFI_PROFILE_HEADER "ELKWIFI1"
 #define LAPOPT_FILE "/Pi1MHz/ElkWiFi.lapopt"
-/* AP5 exposes the standard 64K JIM window selected by &FCFF. It does not
- * forward Pi1MHz's extension selectors at &FCFD/&FCFE. Keep UEF data in the
- * first 64K so the host and Pi always refer to the same physical bytes. */
-/* Every JIM page carries the host's filing-vector trampoline at the same
- * offset, so a vector entry point is reachable whatever the page selector
- * holds. The host's RAM gateway below &0800 and the MOS extended vector
- * table at &0D9F are both inside the region cassette loaders reuse; JIM is
- * not, because the Pi serves it. The published stream therefore stops at
- * the trampoline, leaving 160 bytes per page, and &FDF0-&FDFF stays clear
- * for the stream length trailer in the last two bytes of page &FF. */
-/* JIM page 0 belongs to the host's service reply buffer, which ElkChat and
- * other OSWORD &65 clients read as up to 241 contiguous bytes. Publishing
- * the stream from page 1 keeps the two apart, so a reply arriving while a
- * UEF is being read can no longer overwrite bytes WiCFS has not reached:
- * an "ERR" reply used to be read back as chunk type &5245. */
-/* The flat window reserves page 0 for the service reply buffer, which the
- * OSWORD &65 clients read in full, and the last page for the length trailer. */
-/* A published guard occupies the top of every page, so the stream gives those
- * bytes up and is laid out in short runs instead. The guard ends exactly at
- * the page top, which is what leaves the length trailer intact. */
+/* AP5 exposes the standard 64K JIM window selected by &FCFF; it does not
+ * forward Pi1MHz's extension selectors at &FCFD/&FCFE, and JIM page 0 is the
+ * host's service reply buffer (OSWORD &65 clients read up to 241 contiguous
+ * bytes of it).  The UEF stream's JIM layout notes travel with the UEF
+ * cluster, which is held back from this submission. */
 #define ELKWIFI_VERSION_RESPONSE \
    "Pi1MHz ElkWiFi 0.1.67, kernel " GITVERSION "\r\n\r\nOK\r\n"
 
@@ -64,6 +49,12 @@ _Static_assert(ELKWIFI_CMD_FIRST == SERVICE_CMD_ELKWIFI_FIRST,
                "ElkWiFi service range start disagrees with services.h");
 _Static_assert(ELKWIFI_CMD_LAST == SERVICE_CMD_ELKWIFI_LAST,
                "ElkWiFi service range end disagrees with services.h");
+
+/* Off unless elkwifi_enable=1 in Pi1MHz.cfg.  When off, init returns before
+   registering anything, so the command range stays unclaimed (the dispatcher
+   echoes, exactly what the ElkWiFi ROM sees on a Pi without the service), no
+   poll slot is taken and no profile is read from the card. */
+static bool elkwifi_enabled;
 
 static volatile bool request_pending;
 static volatile bool request_cancel;
@@ -915,6 +906,9 @@ void elkwifi_service_init(uint8_t instance, uint8_t address)
 {
    (void)instance;
    (void)address;
+   elkwifi_enabled = config_get_bool("elkwifi_enable");
+   if (!elkwifi_enabled)
+      return;
    /* Pi1MHz clears its main poll table on every BBC reset.  The services
       registry is idempotent, so renew this claim on every init as well: this
       recovers if a future reset path also clears the registry and avoids a

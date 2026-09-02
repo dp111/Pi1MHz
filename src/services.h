@@ -23,8 +23,9 @@
 #define SERVICE_CMD_NET_FIRST   45u   /* IP sockets / N: device - net_service.c */
 #define SERVICE_CMD_NET_LAST    79u   /* sockets 45-56, IRQ 57, N: dev 60-65   */
 #define SERVICE_CMD_ELKWIFI_FIRST 80u /* ElkWiFi compatibility service        */
-/* 93 (UEF stream) and 86 (guard image) are deliberately unclaimed while the
-   UEF cluster is held back; leaving the range at 92 keeps them free. */
+/* Two commands are held for the UEF cluster's return: 86 (guard image) sits
+   INSIDE the claimed range and is answered ELKWIFI_ERR_UNSUPPORTED for now;
+   93 (UEF stream) sits just past it, which is why the range stops at 92. */
 #define SERVICE_CMD_ELKWIFI_LAST  92u
 /* 94..255 unallocated */
 

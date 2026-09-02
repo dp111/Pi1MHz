@@ -19,9 +19,9 @@ void elkwifi_service_command(uint32_t command_pointer, uint32_t address,
 #define ELKWIFI_CMD_CANCEL       90u
 #define ELKWIFI_CMD_RADIO        91u
 #define ELKWIFI_CMD_ONLINE       92u
-/* 86 and 93 are deliberately left unclaimed: they carried the UEF stream and
-   guard-image commands, which are held back until a resumable inflater makes
-   the stream affordable. */
+/* 86 (guard image, inside the range - answered ERR_UNSUPPORTED) and 93 (UEF
+   stream, just past it) are held for the UEF cluster, which returns once a
+   resumable inflater makes the stream affordable. */
 #define ELKWIFI_CMD_LAST         ELKWIFI_CMD_ONLINE
 
 #define ELKWIFI_OK               0x00u

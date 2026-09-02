@@ -157,6 +157,7 @@ static emulator_list emulator[] = {
       its poll runs once lwIP has drained inbound frames; off unless
       net_enable=1 in Pi1MHz.cfg. */
    {"net",net_service_init, 0x00, 1 },
+   /* Off unless elkwifi_enable=1 in Pi1MHz.cfg (checked in its init). */
    {"ElkWiFi",elkwifi_service_init, 0x00, 1 },
    {"Teletext",teletext_emulator_init, 0x10, 1 },  // Acorn Teletext Adapter at &FC10
    /* Last, so its poll callback re-arms the watchdog only after every other
