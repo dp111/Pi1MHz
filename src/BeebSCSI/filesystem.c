@@ -2166,6 +2166,88 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
 
 // Write a file
 
+/* Replace a file without risking the copy already on the card.
+ *
+ * filesystemWriteFile() opens FA_CREATE_ALWAYS, which truncates what is there
+ * before the first byte of the replacement is written: a power cut, a card
+ * pulled, or a short write leaves nothing behind.  Survivable for a scratch
+ * file; not for a .cfg, where the file being replaced is the only copy of a
+ * LUN's geometry or of the WiFi credentials, and losing it can mean a Pi that
+ * no longer joins a network or a disc that no longer describes itself.
+ *
+ * So write "<name>.new", read it back and compare it byte for byte - this
+ * card has silently short-changed a write before - and only then swap it in.
+ * The previous copy is held as "<name>.bak" across the rename, so even the
+ * short window where the canonical name does not exist has two complete
+ * files on the card either side of it.  On any failure the original is left
+ * exactly as it was.
+ *
+ * Main loop only, like every other FatFs call here.
+ */
+bool filesystemWriteFileSafe(const char * filename, const uint8_t *address, uint32_t length)
+{
+   char newname[256];
+   char bakname[256];
+   FILINFO fno;
+   FIL fileObject;
+   bool had_old;
+   bool ok = true;
+   uint32_t offset = 0;
+
+   if (filename == NULL || address == NULL)
+      return false;
+   if (snprintf(newname, sizeof newname, "%s.new", filename) >= (int)sizeof newname
+    || snprintf(bakname, sizeof bakname, "%s.bak", filename) >= (int)sizeof bakname)
+      return false;
+
+   if (filesystemWriteFile(newname, address, length) != length) {
+      (void)f_unlink(newname);
+      return false;
+   }
+
+   /* Verify before anything irreversible happens to the original. */
+   if (f_open(&fileObject, newname, FA_READ) != FR_OK) {
+      (void)f_unlink(newname);
+      return false;
+   }
+   if (f_size(&fileObject) != length)
+      ok = false;
+   while (ok && offset < length) {
+      uint8_t buffer[256];
+      UINT got;
+      UINT want = (length - offset) > sizeof buffer
+                ? (UINT)sizeof buffer : (UINT)(length - offset);
+      if (f_read(&fileObject, buffer, want, &got) != FR_OK || got != want
+          || memcmp(buffer, address + offset, want) != 0)
+         ok = false;
+      else
+         offset += got;
+   }
+   f_close(&fileObject);
+   if (!ok) {
+      (void)f_unlink(newname);
+      return false;
+   }
+
+   had_old = (f_stat(filename, &fno) == FR_OK);
+   if (had_old) {
+      (void)f_unlink(bakname);                 /* may not exist - do not care */
+      if (f_rename(filename, bakname) != FR_OK) {
+         (void)f_unlink(newname);
+         return false;
+      }
+   }
+   if (f_rename(newname, filename) != FR_OK) {
+      if (had_old)
+         (void)f_rename(bakname, filename);    /* put the original back */
+      (void)f_unlink(newname);
+      return false;
+   }
+   if (had_old)
+      (void)f_unlink(bakname);
+   return true;
+}
+
 uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint32_t max_size)
 {
    UINT byteCounter;

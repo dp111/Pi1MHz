@@ -388,7 +388,10 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
 
     if (outfile)
     {
-        if (filesystemWriteFile(outfile, ( uint8_t * ) outbuf, outptr) != outptr)
+        /* Verified write-and-swap: a half-written scsi0.cfg is a LUN that no
+           longer describes itself, and this is often called with outfile ==
+           filename, i.e. rewriting the only copy in place. */
+        if (!filesystemWriteFileSafe(outfile, ( uint8_t * ) outbuf, outptr))
             {
                 LOG_DEBUG("Error writing file %s\n\r", outfile);
                 free(outbuf);

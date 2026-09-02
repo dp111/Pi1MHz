@@ -174,4 +174,8 @@ bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries);
 FATFS *filesystemGetFsObject(void);
 #endif
 uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint32_t max_size);
+/* Verified write-and-swap for files whose existing copy matters (.cfg and
+   the like): writes <name>.new, reads it back to check it, then renames.
+   See the comment on the definition. */
+bool filesystemWriteFileSafe(const char * filename, const uint8_t *address, uint32_t length);
 #endif /* FILESYSTEM_H_ */
