@@ -37,6 +37,9 @@ for one implementer.
   (codec) + 17 (telnet), 0 failures. Not yet: HTTP POST, on-hardware runs
   against public TNFS/telnet servers (WSL networking blocked those locally).
 - **Stage 4 (TLS/HTTPS) / Stage 5 (FujiNet client-lib port): not started.**
+  (2026-09-02: still not started, but the ground has shifted - PR #20 brought
+  wolfSSL/wolfSSH behind `PI1MHZ_SSH`, the hardware RNG, and SNTP. See the
+  note in Stage 4 before picking up the mbedTLS verdict.)
   Stage 5's pickup plan and its blockers (licensing + toolchain + coordinating
   with fenrock) are written up in `fujinet-collaboration.md`.
 - **Reset-teardown wedge: FOUND + FIXED (f7fce2a).** Heavy aborted-listener
@@ -360,11 +363,18 @@ runs incrementally off `net_poll`'s existing timer/RX pumping; the handle
 sits in `connecting` (bit-7 busy) across passes - no new state machine. The
 HTTP adapter above is byte-for-byte unchanged (TLS is invisible).
 
-**New pieces**: `src/rpi/rng.c` - the BCM2835 hardware RNG (same block on
-both SoCs) exposed as `mbedtls_hardware_poll` via `MBEDTLS_ENTROPY_HARDWARE_ALT`
-(~40 lines, satisfies mbedTLS's mandatory-entropy requirement). No RTC/NTP,
-so leave `MBEDTLS_HAVE_TIME` off → X.509 skips notBefore/notAfter (signature
-chain still checked); document it, add SNTP later to turn date checks on.
+**New pieces**: the BCM2835 hardware RNG, to satisfy the mandatory-entropy
+requirement. Written as `src/rpi/rng.c` here, but it has since arrived inside
+`secure_service_wolfssh.c` (PR #20) driving wolfCrypt rather than mbedTLS -
+so it is a lift-and-share, not new work.
+
+> **Revisit before starting (2026-09-02).** Two of this stage's premises have
+> moved. wolfSSL is now wired into the build behind `PI1MHZ_SSH` for the SSH
+> service, so adding mbedTLS would mean a second crypto library in one kernel -
+> weigh `altcp_tls` against wolfSSL's own TLS layer before committing to the
+> verdict below. And SNTP now exists (`net_time_start/poll` in
+> `net_service.c`), so the "no RTC/NTP, leave `MBEDTLS_HAVE_TIME` off" caveat
+> no longer holds: X.509 date checks can be turned on.
 
 **Trust store, three cfg tiers**: `net_tls_verify = none` (encryption
 without auth - honest and adequate for a retro toy on a trusted LAN;

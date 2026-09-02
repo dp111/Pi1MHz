@@ -1,5 +1,11 @@
 # LaserDisc video integration — plan
 
+> **STATUS 2026-09-02: implemented and hardware-proven.** The Beeb drives
+> Domesday video end to end - `videoplayer.c` plus the F-code layer in
+> `BeebSCSI/fcode.c` - including the transport codes section 4.2 below was
+> written to say were missing. Sections below are the original design record;
+> where they disagree with the code, the code is right.
+
 Turning the working H264 decoder into a LaserDisc player the Domesday VFS ROM
 can actually drive: the Beeb sends F-codes over SCSI, they control **which
 frame** is on screen and **how it is overlaid**, and playback streams the
@@ -301,34 +307,23 @@ Do this **after** WP1-WP3 are stable on hardware, and be ready to revert it: it
 is the one change here that can make a currently-working ROM hang, and the
 current optimistic behaviour is known to work.
 
-### 4.2 Transport F-codes still unimplemented
+### 4.2 Transport F-codes — done
 
-All present in `fcode.c` as debug-only cases, all sent by VFS:
+This section listed the transport codes as unimplemented debug-only cases.
+They are implemented, and the approach it recommended is the one that was
+taken: every frame is an IDR, so "fast" strides the index and "slow"
+stretches the pacing interval. `vp` carries `speed_fast` / `speed_slow` and a
+`stride`, `start_motion()` applies them, and `fcode.c` drives it through
+`videoplayer_speed()`, `videoplayer_slow_fwd/_rev()`,
+`videoplayer_fast_fwd/_rev()` and `videoplayer_clear()`. `?P` answers from
+the player state (`videoplayer_seeking()`); `?D` answers from `fcode.c`.
 
-| code | meaning | work |
-|---|---|---|
-| `S xx` | set fast/slow speed value | store the multiplier |
-| `R` | slow/fast read | apply the multiplier to `frame_period_us` |
-| `U` | slow motion forward | play with a stretched frame period |
-| `V` (bare) | slow motion reverse | reverse-step with a stretched period |
-| `W` | fast forward | play with a shortened period, skipping frames |
-| `Z` | fast reverse | reverse, skipping frames |
-| `X` | clear | clear stop/info registers |
-| `?P` | player status | derive from the player state machine |
-| `?D` | disc program status | static answer |
-
-All of these are cheap in the current architecture: every frame is an IDR, so
-"fast" is *stride the index* and "slow" is *stretch the pacing interval*. Add a
-`speed_num/speed_den` (or a signed frame stride plus a period multiplier) to
-`vp` and let the existing `VP_PLAY` / `VP_PLAY_REV` cases honour it.
-
-Chapters (`Q`, `?C`, `C0/C1`) need a chapter→picture table the `.pvf` does not
-carry. Either extend the container with an optional chapter table (a new
-optional section, `version` stays 1 as long as readers key off
-`reserved[]`/offsets being zero), or declare chapters unsupported and answer
-`?C` with `X` (not available). **Recommend: unsupported for now** — the
-Domesday discs are driven by picture number, and inventing a chapter table
-offline is real work in `make_pvf.py` for no known caller.
+Chapters remain unsupported, deliberately and as recommended below: the
+`.pvf` carries no chapter→picture table, so `?D` reports CAV with no
+chapters and the Domesday discs are driven by picture number as they always
+were. Extending the container with an optional chapter table stays possible
+(`version` stays 1 as long as readers key off `reserved[]`/offsets being
+zero) if a caller ever needs it.
 
 Time code (`T`) is the same story: the container has no time codes, and
 picture number ÷ 25 is a lie on a disc that was never 25 fps in the first

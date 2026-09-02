@@ -1,5 +1,11 @@
 # Serial redirect + modem emulation — plan
 
+> **STATUS 2026-09-02: not started.** Nothing in this plan is implemented -
+> there is no `src/serial_modem.c` and no FRED range is claimed for it. The
+> pieces it builds on do now exist: `net_service.c` provides the TCP sockets
+> the modem would dial through, and `services.h` records which command ranges
+> are already taken.
+
 Redirect both directions of the BBC's RS423 traffic to Pi1MHz, then put a
 Hayes-style modem behind it so `ATDT <ip>` opens a TCP connection instead of
 dialling.
