@@ -153,6 +153,51 @@ int main(void)
       parse_releasekeyvalues(v, K_COUNT);
    }
 
+   puts("== NUMSTRING corners ==");
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("Inquiry=0xA1B2\n");
+      (void)parse_readfile("f", 0, keys, v);
+      ok(v[K_INQUIRY].length == 2 && (uint8_t)v[K_INQUIRY].v.string[0] == 0xA1u
+         && (uint8_t)v[K_INQUIRY].v.string[1] == 0xB2u, "a 0x prefix is stripped");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("Inquiry=A1B\n");               /* odd digit count */
+      (void)parse_readfile("f", 0, keys, v);
+      ok(v[K_INQUIRY].length == 2 && (uint8_t)v[K_INQUIRY].v.string[0] == 0x0Au
+         && (uint8_t)v[K_INQUIRY].v.string[1] == 0x1Bu,
+         "an odd digit count is padded from the left");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("Inquiry=A1B2C3D4E5F6\n");      /* max is 4 bytes */
+      (void)parse_readfile("f", 0, keys, v);
+      ok(v[K_INQUIRY].length == 4 && (uint8_t)v[K_INQUIRY].v.string[3] == 0xD4u,
+         "an over-long NUMSTRING is truncated to the key maximum");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("Inquiry=A1\n");
+      (void)parse_readfile("f", 0, keys, v);
+      /* The allocation is always max bytes, zero filled, so a consumer that
+         reads a fixed offset cannot overrun a short hand-edited value -
+         ASan checks that claim here. */
+      ok(v[K_INQUIRY].length == 1 && v[K_INQUIRY].v.string[3] == 0,
+         "a short NUMSTRING is zero padded to the key maximum");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      set_file("Inquiry=zzzz\n");
+      (void)parse_readfile("f", 0, keys, v);
+      ok(v[K_INQUIRY].length == 0, "a malformed NUMSTRING stores nothing");
+      parse_releasekeyvalues(v, K_COUNT);
+   }
+
    puts("== rewriting ==");
    {
       parserkeyvalue v[K_COUNT] = {0};
