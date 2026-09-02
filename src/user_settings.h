@@ -1,0 +1,75 @@
+#ifndef NETTOOLS_WOLFSSL_USER_SETTINGS_H
+#define NETTOOLS_WOLFSSL_USER_SETTINGS_H
+
+/* wolfCrypt-only profile for the Pi1MHz SSH v2 client. */
+#define SINGLE_THREADED
+#define WOLFCRYPT_ONLY
+#define WOLFSSL_WOLFSSH
+#define WOLFSSL_NO_SOCK
+#define WOLFSSL_USER_IO
+#define NO_WRITEV
+#define NO_FILESYSTEM
+#define WOLFSSL_IGNORE_FILE_WARN
+#define SIZEOF_LONG_LONG 8
+#define WOLFSSL_GENERAL_ALIGNMENT 4
+
+#define WOLFSSH_USER_IO
+#define WOLFSSH_NO_SERVER
+#define NO_WOLFSSH_SERVER
+#define WOLFSSH_NO_DH_GEX_SHA256
+#define WOLFSSH_TERM
+#define WOLFSSH_SFTP
+#define WOLFSSH_FATFS
+#define WOLFSSH_MAX_SFTP_RW 256
+#define WOLFSSH_MAX_SFTP_RECV 4096
+#define WOLFSSH_MAX_SFTP_NAME 4096
+#define NO_TERMIOS
+#define DEFAULT_WINDOW_SZ 4096
+
+#define WOLFSSL_BASE64_ENCODE
+#define WOLFSSL_ASN_TEMPLATE
+#define WOLFSSL_PUBLIC_MP
+#define WOLFSSL_AES_COUNTER
+#define WOLFSSL_AES_DIRECT
+#define HAVE_AESGCM
+#define GCM_SMALL
+#define WOLFSSL_AES_SMALL_TABLES
+
+#define HAVE_CURVE25519
+#define HAVE_ED25519
+#define WOLFSSL_ED25519_STREAMING_VERIFY
+#define HAVE_ECC
+#define ECC_USER_CURVES
+#define ECC_TIMING_RESISTANT
+#define WOLFSSL_SHA512
+#define WOLFSSL_SHA384
+
+#define WOLFSSL_SP_MATH
+#define WOLFSSL_SP_SMALL
+#define WOLFSSL_HAVE_SP_RSA
+#define WOLFSSL_HAVE_SP_DH
+#define WOLFSSL_HAVE_SP_ECC
+#define TFM_TIMING_RESISTANT
+#define WC_RSA_BLINDING
+#define RSA_LOW_MEM
+#define WC_NO_RSA_OAEP
+#define NO_DSA
+
+#define WC_NO_HASHDRBG
+extern int nts_bcm_random_block(unsigned char *out, unsigned int length);
+#define CUSTOM_RAND_GENERATE_BLOCK nts_bcm_random_block
+
+#define NO_RC4
+#define NO_MD4
+#define NO_MD5
+#define NO_DES3
+#define NO_DES3_TLS_SUITES
+#define NO_PSK
+#define NO_PKCS12
+#define NO_PWDBASED
+#define NO_ERROR_STRINGS
+#define NO_SESSION_CACHE
+#define NO_OLD_TLS
+#define WC_NO_ASYNC_THREADING
+
+#endif

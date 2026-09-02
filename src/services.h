@@ -22,7 +22,23 @@
 #define SERVICE_CMD_AUN_LAST    44u
 #define SERVICE_CMD_NET_FIRST   45u   /* IP sockets / N: device - net_service.c */
 #define SERVICE_CMD_NET_LAST    79u   /* sockets 45-56, IRQ 57, N: dev 60-65   */
-/* 80..255 unallocated */
+/* 80..93 are held for the ElkWiFi compatibility service, which lands
+   separately; the secure service starts above them so either order works. */
+#define SERVICE_CMD_SECURE_FIRST  94u /* RNG and managed SSH - secure_service.c */
+#define SERVICE_CMD_SECURE_LAST  113u
+/* 114..255 unallocated */
+
+/* services_register() rejects an overlapping claim at run time, which is the
+   backstop.  These catch the same mistake when the ranges above are edited -
+   at compile time, in every build, rather than when a Beeb command silently
+   reaches the wrong service. */
+_Static_assert(SERVICE_CMD_FAT_FIRST    <= SERVICE_CMD_FAT_LAST,    "FAT range inverted");
+_Static_assert(SERVICE_CMD_AUN_FIRST    <= SERVICE_CMD_AUN_LAST,    "AUN range inverted");
+_Static_assert(SERVICE_CMD_NET_FIRST    <= SERVICE_CMD_NET_LAST,    "net range inverted");
+_Static_assert(SERVICE_CMD_SECURE_FIRST <= SERVICE_CMD_SECURE_LAST, "secure range inverted");
+_Static_assert(SERVICE_CMD_FAT_LAST < SERVICE_CMD_AUN_FIRST,    "FAT overlaps AUN");
+_Static_assert(SERVICE_CMD_AUN_LAST < SERVICE_CMD_NET_FIRST,    "AUN overlaps net");
+_Static_assert(SERVICE_CMD_NET_LAST < SERVICE_CMD_SECURE_FIRST, "net overlaps secure");
 
 /* Handler for one service's command range.  FIQ context: called from the
    FRED write callback, so anything slow must be queued for the main loop
