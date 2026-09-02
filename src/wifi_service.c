@@ -35,23 +35,37 @@
 #include "net_service.h"
 #include "rpi/systimer.h"
 #include "rpi/asm-helpers.h"
+#include "rpi/fileparser.h"
 
 #define WIFI_SVC_TEXT_MAX 240u
-/* Two small files this service owns, next to Pi1MHz.cfg on the card.  They
-   are named for what they hold rather than for the ROM that asks for them,
-   and both are plain text so they can be read, edited or deleted by hand.
+/* Two small files this service owns, next to Pi1MHz.cfg on the card, named
+   for what they hold rather than for the ROM that asks for them.
 
-   WiFi.profile is written by JOIN and applied at every init, so it overrides
-   the wifi_ssid / wifi_password in Pi1MHz.cfg - delete it to go back to the
-   configured network.  Its first line is a format tag: WIFIPROF1 means the
-   four-line form below, and anything else is read as the original two-line
-   ssid/password form.  A profile written before the rename says ELKWIFI1, so
-   that tag is still accepted - without this, carrying an old file across
-   under the new name would parse the tag itself as the SSID. */
+   WiFi.profile is an ordinary Pi1MHz key=value file, read through the shared
+   parser rather than a format of its own: it gets the same comment handling,
+   the same "key I do not know, leave the line alone" behaviour and the same
+   length limits as every other .cfg here, and it can be read or edited by
+   hand.  JOIN writes it and every init applies it, so it overrides the
+   wifi_ssid / wifi_password in Pi1MHz.cfg - delete it to go back to those. */
 #define WIFI_FILE "/Pi1MHz/WiFi.profile"
-#define WIFI_PROFILE_HEADER "WIFIPROF1"
-#define WIFI_PROFILE_HEADER_OLD "ELKWIFI1"
 #define LAPOPT_FILE "/Pi1MHz/WiFi.scanopt"
+
+enum {
+   WIFI_KEY_SSID = 0,
+   WIFI_KEY_PASSWORD,
+   WIFI_KEY_SECURITY,
+   WIFI_KEY_COUNT
+};
+
+static const parserkey wifi_profile_keys[] = {
+   { "ssid"     , 0, WIFI_SSID_MAX_LEN    , STRING },
+   { "password" , 0, WIFI_PASSWORD_MAX_LEN, STRING },
+   { "security" , 0, 8                    , STRING },   /* AUTO/OPEN/WEP/WPA/WPA2 */
+   { NULL       , 0, 0                    , STRING }
+};
+/* The enum above indexes this table: pin the ordering. */
+_Static_assert(sizeof wifi_profile_keys / sizeof wifi_profile_keys[0]
+               == WIFI_KEY_COUNT + 1u, "wifi_profile_keys out of step");
 /* AP5 exposes the standard 64K JIM window selected by &FCFF; it does not
  * forward Pi1MHz's extension selectors at &FCFD/&FCFE, and JIM page 0 is the
  * host's service reply buffer (OSWORD &65 clients read up to 241 contiguous
@@ -270,66 +284,53 @@ static bool join_password_parse(const char *input, const char **password,
  * the no-Pi1MHz.cfg-SSID case by scheduling initial SDIO bring-up. */
 static void wifi_credentials_load(void)
 {
-   uint8_t storage[WIFI_SSID_MAX_LEN + WIFI_PASSWORD_MAX_LEN + 32u];
-   uint8_t *data = storage;
-   uint32_t length = filesystemReadFile(WIFI_FILE, &data,
-                                        (unsigned int)(sizeof storage - 1u));
-   uint32_t split = 0u;
+   parserkeyvalue values[WIFI_KEY_COUNT] = {0};
    wifi_security_t security = WIFI_SECURITY_AUTO;
    const char *ssid;
    const char *password;
 
-   if (length == 0u || length >= sizeof storage)
-      return;
-   data[length] = '\0';
-   while (split < length && data[split] != '\r' && data[split] != '\n')
-      split++;
-   if (split == 0u || split == length)
-      return;
-   data[split++] = '\0';
-   while (split < length && (data[split] == '\r' || data[split] == '\n'))
-      split++;
-   ssid = (const char *)data;
-   if (strcmp(ssid, WIFI_PROFILE_HEADER) == 0
-       || strcmp(ssid, WIFI_PROFILE_HEADER_OLD) == 0) {
-      uint32_t mode_end = split;
-      while (mode_end < length && data[mode_end] != '\r' && data[mode_end] != '\n')
-         mode_end++;
-      if (mode_end == length) return;
-      data[mode_end++] = '\0';
-      if (!security_parse((const char *)&data[split], &security)) return;
-      while (mode_end < length && (data[mode_end] == '\r' || data[mode_end] == '\n'))
-         mode_end++;
-      ssid = (const char *)&data[mode_end];
-      split = mode_end;
-      while (split < length && data[split] != '\r' && data[split] != '\n') split++;
-      if (split == length) return;
-      data[split++] = '\0';
-      while (split < length && (data[split] == '\r' || data[split] == '\n')) split++;
+   if (!parse_readfile(WIFI_FILE, 0, wifi_profile_keys, values))
+      return;                              /* no profile saved on this card */
+
+   ssid     = values[WIFI_KEY_SSID].length     ? values[WIFI_KEY_SSID].v.string : NULL;
+   password = values[WIFI_KEY_PASSWORD].length ? values[WIFI_KEY_PASSWORD].v.string : "";
+   if (values[WIFI_KEY_SECURITY].length
+       && !security_parse(values[WIFI_KEY_SECURITY].v.string, &security))
+      ssid = NULL;                         /* unreadable: ignore the profile */
+
+   if (ssid != NULL && ssid[0] != '\0') {
+      /* A BBC/Electron reset re-registers this service but does not reset the
+       * Pi or CYW43. Do not turn an already-live association into a full
+       * rejoin merely because the saved profile was read again. That rejoin
+       * can take more than a minute on a busy access point and was the slow
+       * reset regression. Changed credentials still take the normal path. */
+      const wifi_config_t *current = sdio_runtime_started() ? wifi_get_config() : NULL;
+      if (current == NULL || strcmp(current->ssid, ssid) != 0
+          || strcmp(current->password, password) != 0
+          || current->security != security)
+         (void)wifi_reconfigure_and_rejoin(ssid, password, security);
    }
-   if (strlen(ssid) == 0u || strlen(ssid) > WIFI_SSID_MAX_LEN) return;
-   {
-      uint32_t end = split;
-      while (end < length && data[end] != '\r' && data[end] != '\n')
-         end++;
-      if (end - split > WIFI_PASSWORD_MAX_LEN)
-         return;
-      data[end] = '\0';
-   }
-   password = (const char *)&data[split];
-   /* A BBC/Electron reset re-registers this service but does not reset the
-    * Pi or CYW43. Do not turn an already-live association into a full rejoin
-    * merely because the saved profile was read again. That rejoin can take
-    * more than a minute on a busy access point and was the slow-reset
-    * regression. Changed credentials still take the normal rejoin path. */
-   if (sdio_runtime_started()) {
-      const wifi_config_t *current = wifi_get_config();
-      if (current != NULL && strcmp(current->ssid, ssid) == 0
-          && strcmp(current->password, password) == 0
-          && current->security == security)
-         return;
-   }
-   (void)wifi_reconfigure_and_rejoin(ssid, password, security);
+   parse_releasekeyvalues(values, WIFI_KEY_COUNT);
+}
+
+/* Write the joined network back to the card.  Always a fresh file: the
+   parser substitutes values into an existing one but cannot add a key that
+   is not already there, so rewriting in place would silently drop a field a
+   hand-edit had removed.  This is machine-written state - a comment added
+   here does not survive the next JOIN. */
+static bool wifi_profile_save(const char *ssid, const char *password,
+                              wifi_security_t security)
+{
+   char text[WIFI_SSID_MAX_LEN + WIFI_PASSWORD_MAX_LEN + 192u];
+   int length = snprintf(text, sizeof text,
+                         "# Written by the Beeb's JOIN command.  Overrides\n"
+                         "# wifi_ssid / wifi_password in Pi1MHz.cfg; delete\n"
+                         "# this file to go back to those.\n"
+                         "ssid=%s\npassword=%s\nsecurity=%s\n",
+                         ssid, password, security_name(security));
+   return length > 0 && (size_t)length < sizeof text
+       && filesystemWriteFile(WIFI_FILE, (const uint8_t *)text,
+                              (uint32_t)length) == (uint32_t)length;
 }
 
 static void lapopt_load(void)
@@ -439,12 +440,7 @@ static uint8_t wifi_join(uint32_t cp)
       return WIFI_SVC_ERR_PARAM;
    if (!wifi_profile_is_valid(ssid, password, security))
       return WIFI_SVC_ERR_PARAM;
-   char persisted[WIFI_SSID_MAX_LEN + WIFI_PASSWORD_MAX_LEN + 32u];
-   int length = snprintf(persisted, sizeof persisted, "%s\n%s\n%s\n%s\n",
-                         WIFI_PROFILE_HEADER, security_name(security), ssid, password);
-   if (length < 0 || (size_t)length >= sizeof persisted
-       || filesystemWriteFile(WIFI_FILE, (const uint8_t *)persisted,
-                              (uint32_t)length) != (uint32_t)length)
+   if (!wifi_profile_save(ssid, password, security))
       return WIFI_SVC_ERR_IO;
    if (!wifi_reconfigure_and_rejoin(ssid, password, security))
       return WIFI_SVC_ERR_NETWORK;
