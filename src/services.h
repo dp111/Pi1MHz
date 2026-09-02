@@ -22,7 +22,11 @@
 #define SERVICE_CMD_AUN_LAST    44u
 #define SERVICE_CMD_NET_FIRST   45u   /* IP sockets / N: device - net_service.c */
 #define SERVICE_CMD_NET_LAST    79u   /* sockets 45-56, IRQ 57, N: dev 60-65   */
-/* 80..255 unallocated */
+#define SERVICE_CMD_ELKWIFI_FIRST 80u /* ElkWiFi compatibility service        */
+/* 93 (UEF stream) and 86 (guard image) are deliberately unclaimed while the
+   UEF cluster is held back; leaving the range at 92 keeps them free. */
+#define SERVICE_CMD_ELKWIFI_LAST  92u
+/* 94..255 unallocated */
 
 /* Handler for one service's command range.  FIQ context: called from the
    FRED write callback, so anything slow must be queued for the main loop

@@ -124,6 +124,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "videoplayer.h"
 #include "usb.h"
 #include "wifi/wifi.h"
+#include "elkwifi_service.h"
 #include "AUN/aun_emulator.h"
 #include "teletext_emulator.h"
 #include "watchdog.h"
@@ -156,6 +157,7 @@ static emulator_list emulator[] = {
       its poll runs once lwIP has drained inbound frames; off unless
       net_enable=1 in Pi1MHz.cfg. */
    {"net",net_service_init, 0x00, 1 },
+   {"ElkWiFi",elkwifi_service_init, 0x00, 1 },
    {"Teletext",teletext_emulator_init, 0x10, 1 },  // Acorn Teletext Adapter at &FC10
    /* Last, so its poll callback re-arms the watchdog only after every other
       emulator has had its turn - a poll that stops responding still trips it. */
