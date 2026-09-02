@@ -216,8 +216,11 @@ int main(void)
    {
       parserkeyvalue v[K_COUNT] = {0};
       set_file("Title=Old\n");
-      ok(parse_readfile("f", "f", keys, v) != 0 && g_write_called,
-         "a rewrite with no values supplied still writes");
+      ok(parse_readfile("f", "f", keys, v) != 0 && !g_write_called,
+         "rewriting a file in place with nothing changed does not write");
+      set_file("Title=Old\n");
+      ok(parse_readfile("f", "other", keys, v) != 0 && g_write_called,
+         "but writing to a different file always writes (the template case)");
       ok(strstr(written(), "Title=Old") != NULL, "and reproduces the file it read");
       parse_releasekeyvalues(v, K_COUNT);
    }
@@ -232,10 +235,14 @@ int main(void)
    }
    {
       parserkeyvalue v[K_COUNT] = {0};
+      char crlf[] = "New";
       set_file("Title=Old\r\nSize=7\r\n");
+      v[K_TITLE].v.string = crlf; v[K_TITLE].length = 3;   /* force a write */
       (void)parse_readfile("f", "f", keys, v);
       ok(strstr(written(), "\r\n") != NULL, "CRLF line endings survive a rewrite");
-      parse_releasekeyvalues(v, K_COUNT);
+      /* No release here: with an outfile the parser allocates nothing, and
+         the one value in the array is the caller's own stack buffer -
+         parse_releasekeyvalues() would free it.  See the note in the header. */
    }
    {
       parserkeyvalue v[K_COUNT] = {0};

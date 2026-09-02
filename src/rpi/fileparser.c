@@ -453,6 +453,21 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
         copy_to_eol(&st);
     }
 
+    if (outfile != NULL && filename != NULL && strcmp(filename, outfile) == 0
+        && !st.overflow && st.outptr == filesize
+        && memcmp(st.out, buffer, filesize) == 0)
+    {
+        /* Rewriting a file with what it already says.  SCSI MODE SELECT does
+           exactly this for a LUN's .cfg while ADFS mounts - same geometry
+           back again - and the write beneath us is a 9 KB write, a full
+           readback and two renames with the Beeb waiting on the handshake.
+           Comparing costs no I/O: we have both halves in hand. */
+        LOG_DEBUG("Rewrite of %s changes nothing - not written\n\r", outfile);
+        free(buffer);
+        free(st.out);
+        return 1;
+    }
+
     free(buffer);
 
     if (outfile && st.overflow)
