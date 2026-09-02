@@ -27,7 +27,9 @@
    INSIDE the claimed range and is answered ELKWIFI_ERR_UNSUPPORTED for now;
    93 (UEF stream) sits just past it, which is why the range stops at 92. */
 #define SERVICE_CMD_ELKWIFI_LAST  92u
-/* 93 held (see above); 94..255 unallocated */
+#define SERVICE_CMD_SECURE_FIRST  94u /* RNG and managed SSH - secure_service.c */
+#define SERVICE_CMD_SECURE_LAST  113u
+/* 93 held (see above); 114..255 unallocated */
 
 /* services_register() rejects an overlapping claim at run time, which is the
    backstop.  These catch the same mistake when the ranges above are edited -
@@ -37,9 +39,11 @@ _Static_assert(SERVICE_CMD_FAT_FIRST     <= SERVICE_CMD_FAT_LAST,     "FAT range
 _Static_assert(SERVICE_CMD_AUN_FIRST     <= SERVICE_CMD_AUN_LAST,     "AUN range inverted");
 _Static_assert(SERVICE_CMD_NET_FIRST     <= SERVICE_CMD_NET_LAST,     "net range inverted");
 _Static_assert(SERVICE_CMD_ELKWIFI_FIRST <= SERVICE_CMD_ELKWIFI_LAST, "ElkWiFi range inverted");
+_Static_assert(SERVICE_CMD_SECURE_FIRST  <= SERVICE_CMD_SECURE_LAST,  "secure range inverted");
 _Static_assert(SERVICE_CMD_FAT_LAST     < SERVICE_CMD_AUN_FIRST,     "FAT overlaps AUN");
 _Static_assert(SERVICE_CMD_AUN_LAST     < SERVICE_CMD_NET_FIRST,     "AUN overlaps net");
 _Static_assert(SERVICE_CMD_NET_LAST     < SERVICE_CMD_ELKWIFI_FIRST, "net overlaps ElkWiFi");
+_Static_assert(SERVICE_CMD_ELKWIFI_LAST < SERVICE_CMD_SECURE_FIRST,  "ElkWiFi overlaps secure");
 
 /* Handler for one service's command range.  FIQ context: called from the
    FRED write callback, so anything slow must be queued for the main loop

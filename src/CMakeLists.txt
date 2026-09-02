@@ -36,6 +36,12 @@ project( Pi1MHz C ASM )
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# SSH/SFTP needs wolfSSL and wolfSSH under src/third_party, which this
+# repository does not carry and does not fetch.  Default OFF so a plain
+# checkout configures and builds; the 1MHzWifi installer turns it on after
+# installing and verifying the pinned revisions.
+option(PI1MHZ_SSH "Build the SSH/SFTP secure service (needs third_party/wolfssl and wolfssh)" OFF)
+
 # gnu23 is the ratified spelling; gnu2x is the pre-ratification name older
 # compilers still need.  CodeQL autobuilds on ubuntu-latest with whatever GCC
 # the runner ships, so neither can be assumed.
@@ -425,9 +431,56 @@ set_source_files_properties(
    lib/newlib-str/strcasestr.c
    PROPERTIES COMPILE_OPTIONS "-Os;-Wno-cast-qual;-Wno-conversion" )
 
+if(PI1MHZ_SSH)
+   if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/wolfssl/CMakeLists.txt"
+      OR NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/wolfssh/src/ssh.c")
+      message(FATAL_ERROR
+         "PI1MHZ_SSH=ON needs wolfSSL in src/third_party/wolfssl and wolfSSH in "
+         "src/third_party/wolfssh.  Neither is carried or fetched by this "
+         "repository; install the pinned revisions first, or configure with "
+         "-DPI1MHZ_SSH=OFF.")
+   endif()
+
+   list(APPEND Pi1MHz_sources
+      secure_service.c secure_service.h
+      secure_service_core.c secure_service_core.h
+      secure_service_wolfssh.c secure_service_wolfssh.h)
+
+   # Pinned crypto-only wolfCrypt and wolfSSH client. Their source revisions are
+   # installed and verified by the 1MHzWifi Pi1MHz installer.
+   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+   set(WOLFSSL_USER_SETTINGS yes CACHE STRING "" FORCE)
+   set(WOLFSSL_EXAMPLES no CACHE STRING "" FORCE)
+   set(WOLFSSL_CRYPT_TESTS no CACHE STRING "" FORCE)
+   add_subdirectory(third_party/wolfssl wolfssl-build EXCLUDE_FROM_ALL)
+   target_include_directories(wolfssl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+   target_compile_options(wolfssl PRIVATE -w -Os -fno-lto)
+
+   add_library(nettools_wolfssh STATIC
+      third_party/wolfssh/src/ssh.c
+      third_party/wolfssh/src/internal.c
+      third_party/wolfssh/src/log.c
+      third_party/wolfssh/src/io.c
+      third_party/wolfssh/src/port.c
+      third_party/wolfssh/src/wolfterm.c
+      third_party/wolfssh/src/ossh.c
+      third_party/wolfssh/src/wolfsftp.c)
+   target_include_directories(nettools_wolfssh PUBLIC
+      third_party/wolfssh third_party/wolfssl ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/BeebSCSI/fatfs)
+   target_compile_definitions(nettools_wolfssh PRIVATE
+      BUILDING_WOLFSSH WOLFSSL_USER_SETTINGS)
+   target_compile_options(nettools_wolfssh PRIVATE -w -Os -fno-lto)
+   target_link_libraries(nettools_wolfssh PUBLIC wolfssl)
+endif()
+
 add_executable( Pi1MHz ${Pi1MHz_sources} )
 
 target_link_libraries( Pi1MHz PRIVATE m )
+if(PI1MHZ_SSH)
+   target_compile_definitions(Pi1MHz PRIVATE WOLFSSL_USER_SETTINGS PI1MHZ_SSH)
+   target_link_libraries( Pi1MHz PRIVATE nettools_wolfssh wolfssl )
+endif()
 
 # Kernel images always go to the top-level firmware/ directory, regardless of
 # where the build directory is (so out-of-source build/<config> dirs work).

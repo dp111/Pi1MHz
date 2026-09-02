@@ -125,6 +125,9 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "usb.h"
 #include "wifi/wifi.h"
 #include "elkwifi_service.h"
+#ifdef PI1MHZ_SSH
+#include "secure_service.h"
+#endif
 #include "AUN/aun_emulator.h"
 #include "teletext_emulator.h"
 #include "watchdog.h"
@@ -159,6 +162,11 @@ static emulator_list emulator[] = {
    {"net",net_service_init, 0x00, 1 },
    /* Off unless elkwifi_enable=1 in Pi1MHz.cfg (checked in its init). */
    {"ElkWiFi",elkwifi_service_init, 0x00, 1 },
+#ifdef PI1MHZ_SSH
+   /* Only built when -DPI1MHZ_SSH=ON supplied wolfSSL/wolfSSH; its init
+      claims 94..113 and registers a poll slot. */
+   {"secure",secure_service_init, 0x00, 1 },
+#endif
    {"Teletext",teletext_emulator_init, 0x10, 1 },  // Acorn Teletext Adapter at &FC10
    /* Last, so its poll callback re-arms the watchdog only after every other
       emulator has had its turn - a poll that stops responding still trips it. */
