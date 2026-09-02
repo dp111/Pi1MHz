@@ -434,12 +434,6 @@ void screen_plane_commit( void )
     }
 }
 
-/* Per-plane byte offsets (Y, Cb, Cr) that screen_create_YUV*_plane baked
-   into the pointers for the vertical-overscan crop - screen_set_YUV_pointers
-   must re-apply them or the picture jumps on displays where the scaled
-   image exceeds the screen height. */
-static uint32_t yuv_ptr_offset[MAX_PLANES][3];
-
 /**
  * @brief Allocates a buffer from CMA aligned to a 4K page boundary.
  *
@@ -564,12 +558,10 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
  * @param startpos Pointer to store the start position.
  * @param nsh Pointer to store the new scaled height.
  * @param nh Pointer to store the new height.
- * @return uint32_t Vertical offset.
  */
-static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh)
+static void screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh)
 {
     static float yuv_scale = 0.0f;
-    static uint32_t offset = 0;
     // Calculate optimal overscan
     uint32_t h_display = ( RPI_hvs->ctrl1 >> 12 ) & 0xfff;
     uint32_t v_display = ( RPI_hvs->ctrl1       ) & 0xfff;
@@ -631,19 +623,19 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
             rgb_scale = yuv_scale*2;
         }
 
-        *scaled_width = (((uint32_t)(yuv_scale * (float)h_corrected)) & 0xfff);
-        *scaled_height = (((uint32_t)(yuv_scale * (float)v_corrected)) & 0xfff);
-
-        if (*scaled_height > v_display)
-        {
-            offset = (uint32_t) ((float )(( *scaled_height -v_display) /2) /yuv_scale);
-
-            *nsh = v_display;
-            *nh = (uint32_t)((float)v_display/yuv_scale);
-            uint32_t h_overscan = (h_display - *scaled_width) / 2;
-            *startpos = (h_overscan & 0xfff);
-            return offset;
-        }
+        /* The table above serves the computer overlay: rgb_scale is derived
+           from it so the Beeb's raster lands on integer factors.  The video
+           plane is not bound by that - the HVS polyphase scaler takes any
+           factor - and it must show the WHOLE frame at the file's own aspect
+           (a 768x576 square-pixel PVF is 4:3), so fit it to the display and
+           centre it.  On 1080 lines that is 1440x1080 at x=240; the old
+           yuv_scale of 2 gave 1536x1152 and cropped 18 lines off each end,
+           which reads on screen as a picture stretched tall. */
+        float fit_h = (float)h_display / (float)h_corrected;
+        float fit_v = (float)v_display / (float)v_corrected;
+        float fit   = (fit_h < fit_v) ? fit_h : fit_v;
+        *scaled_width  = ((uint32_t)(fit * (float)h_corrected + 0.5f)) & 0xfff;
+        *scaled_height = ((uint32_t)(fit * (float)v_corrected + 0.5f)) & 0xfff;
 
         *nsh = *scaled_height;
         *nh = height;
@@ -651,7 +643,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
         uint32_t v_overscan = (v_display - *scaled_height) / 2;
 
         *startpos = ((v_overscan & 0xfff)<<12) + (h_overscan & 0xfff);
-        return offset;
+        return;
     }
 
     if ( rgb_scale < 0.1f)
@@ -718,7 +710,6 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
         xoffset = h_overscan;
         yoffset = v_overscan;
     }
-    return 0;
 }
 
 /* phase magnitude bits */
@@ -813,7 +804,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         uint32_t startpos;
         uint32_t nsh;
         uint32_t nh;
-        uint32_t vertical_offset = screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos, &nsh, &nh);
+        screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos, &nsh, &nh);
 
         volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) plane;
         /* Pixel order (bits 13-14), established empirically on Test Card F
@@ -834,14 +825,11 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
                                                   (nsh << 16) + scaled_width };
         // I420 memory order is Y, Cb (U), Cr (V); chroma planes are
         // width/2 x height/2
-        yuv_ptr_offset[planeno][0] = vertical_offset*width;
-        yuv_ptr_offset[planeno][1] = (vertical_offset/2)*(width/2);
-        yuv_ptr_offset[planeno][2] = (vertical_offset/2)*(width/2);
-        yuv->y_ptr =  buffer + vertical_offset*width;
+        yuv->y_ptr =  buffer;
         /* Cr-first: the HVS's second pointer is Cr in this order mode (see
            the ctrl comment above); the decoder's I420 memory is Y,Cb,Cr */
-        yuv->cb_ptr = buffer + width*height + (width/2)*(height/2) + (vertical_offset/2)*(width/2);
-        yuv->cr_ptr = buffer + width*height + (vertical_offset/2)*(width/2);
+        yuv->cb_ptr = buffer + width*height + (width/2)*(height/2);
+        yuv->cr_ptr = buffer + width*height;
         yuv->pitch = width;
         yuv->pitch1 = width/2;
         yuv->pitch2 = width/2;
@@ -868,11 +856,10 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
 void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr )
 {
     volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
-    // re-apply the vertical-overscan crop baked in at plane creation
-    yuv->y_ptr  = (y  + yuv_ptr_offset[planeno][0]) | 0xC0000000;
+    yuv->y_ptr  = y  | 0xC0000000;
     /* Cr-first slot order - see the ctrl comment in screen_create_YUV420 */
-    yuv->cb_ptr = (cr + yuv_ptr_offset[planeno][1]) | 0xC0000000;
-    yuv->cr_ptr = (cb + yuv_ptr_offset[planeno][2]) | 0xC0000000;
+    yuv->cb_ptr = cr | 0xC0000000;
+    yuv->cr_ptr = cb | 0xC0000000;
 }
 
 // returns plane pointer
