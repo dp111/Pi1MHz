@@ -78,7 +78,7 @@ static void hd_emulator_status(uint8_t bit, bool state);
 static void hd_emulator_write_data(unsigned int gpio)
 {
    HD_DATA = GET_DATA(gpio);
-   Pi1MHz_MemoryWrite(HD_ADDR, GET_DATA(gpio));
+   Pi1MHz_MemoryWrite_FIQ(HD_ADDR, GET_DATA(gpio));
    hd_emulator_status(STATUS_REQ, CLEAR);
    HD_ACK = ACTIVE;
 #ifdef DEBUG

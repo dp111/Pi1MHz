@@ -244,6 +244,10 @@ uint32_t Pi1MHz_nIRQ_diag(void);   /* assert mask | pin-level<<31, for /status *
 void Pi1MHz_SetnNMI(bool nmi);
 
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
+/* For callers already in FIQ context ONLY (FRED/JIM callbacks): skips the
+   interrupt mask, which FIQ-in-FIQ makes redundant.  From the main loop it
+   reintroduces the reverted-neighbour-byte races - use Pi1MHz_MemoryWrite. */
+void Pi1MHz_MemoryWrite_FIQ(uint32_t addr, uint8_t data);
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data);
 void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data);
 uint8_t Pi1MHz_MemoryRead(uint32_t addr);

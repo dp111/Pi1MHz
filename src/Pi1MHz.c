@@ -206,6 +206,17 @@ _Static_assert(Pi1MHz_STRUCT_VADDR + offsetof(Pi1MHz_t, callback_table) == Pi1MH
 
 _Static_assert(sizeof(Pi1MHz_t) <= 0x2000, "Pi1MHz_t must fit into low memory");
 
+static inline void mem_write_raw(uint32_t addr, uint8_t data)
+{
+   uint32_t other = Pi1MHz->Memory[addr ^ 1u] | 0xff00u;
+   uint32_t mine  = 0xff00u | data;
+
+   Pi1MHz_Memory_VPU[addr>>1] = (addr & 1u) ? ((mine << 16) | other)
+                                            : (mine | (other << 16));
+
+   Pi1MHz->Memory[addr] = data;
+}
+
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
 {
    // One VPU word holds two adjacent bus addresses, so this used to read the
@@ -254,14 +265,18 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)
    // CPSID here; the FIQ itself cannot be preempted, so masking only this
    // side makes both directions atomic.
    unsigned int cpsr = _disable_interrupts_cspr();
-   uint32_t other = Pi1MHz->Memory[addr ^ 1u] | 0xff00u;
-   uint32_t mine  = 0xff00u | data;
-
-   Pi1MHz_Memory_VPU[addr>>1] = (addr & 1u) ? ((mine << 16) | other)
-                                            : (mine | (other << 16));
-
-   Pi1MHz->Memory[addr] = data;
+   mem_write_raw(addr, data);
    _restore_cpsr(cpsr);
+}
+
+/* The same write for callers already IN FIQ context (the FRED/JIM
+   callbacks).  FIQ cannot preempt FIQ, so the mask above buys nothing
+   there and its mrs/cpsid/msr are pure overhead on the bus-service path.
+   Never call this from the main loop - that reintroduces the reverted
+   data/status byte races the comment above describes. */
+void Pi1MHz_MemoryWrite_FIQ(uint32_t addr, uint8_t data)
+{
+   mem_write_raw(addr, data);
 }
 
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
@@ -270,10 +285,13 @@ void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
    // destination is 2-byte aligned. memcpy + assume_aligned lets the
    // compiler emit a single STRH on every CPU (incl. ARMv6) with no
    // aliasing UB and no -Wcast-align warning.
+   // VPU store first, shadow second - same ordering rule as
+   // Pi1MHz_MemoryWrite above: a buffered shadow store issued first must
+   // drain before the Strongly-Ordered VPU store can, costing ~108 ns.
+   Pi1MHz_Memory_VPU[addr >> 1] = 0xFF00FF00 | (data&0xFF) | (data<<8);
+
    uint16_t v = (uint16_t) data;
    memcpy(__builtin_assume_aligned(&Pi1MHz->Memory[addr], 2), &v, sizeof v);
-
-   Pi1MHz_Memory_VPU[addr >> 1] = 0xFF00FF00 | (data&0xFF) | (data<<8);
 }
 
 // cppcheck-suppress unusedFunction
@@ -282,12 +300,15 @@ void Pi1MHz_MemoryWrite32(uint32_t addr, uint32_t data)
    // addr is always a multiple of 4, so the destination is 4-byte aligned.
    // memcpy + assume_aligned -> a single STR on every CPU (incl. ARMv6),
    // no aliasing UB, no -Wcast-align warning.
-   memcpy(__builtin_assume_aligned(&Pi1MHz->Memory[addr], 4), &data, sizeof data);
-
+   // VPU stores first, shadow second (see Pi1MHz_MemoryWrite's ordering
+   // rule; the first VPU store would otherwise stall behind the buffered
+   // shadow store).
    uint32_t ad = addr >> 1;
 
    Pi1MHz_Memory_VPU[ad++] = 0xFF00FF00 | (data&0xFF) | (data<<8);
    Pi1MHz_Memory_VPU[ad] = 0xFF00FF00 | (data>>16) | (data>>24)<<16;
+
+   memcpy(__builtin_assume_aligned(&Pi1MHz->Memory[addr], 4), &data, sizeof data);
 }
 
 uint8_t Pi1MHz_MemoryRead(uint32_t addr)
@@ -297,7 +318,7 @@ uint8_t Pi1MHz_MemoryRead(uint32_t addr)
 
 void Pi1MHz_EmulatedMemoryByte(unsigned int gpio)
 {
-   Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
+   Pi1MHz_MemoryWrite_FIQ(GET_ADDR(gpio), GET_DATA(gpio));
 }
 
 // For each location in FRED and JIM which a task wants to be called for
@@ -414,8 +435,8 @@ static void Pi1MHzBus_addr_Status(unsigned int gpio)
    uint8_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    status_addr = data;
-   Pi1MHz_MemoryWrite(addr, data); // enable read back
-   Pi1MHz_MemoryWrite(addr+1, fx_register[data]);
+   Pi1MHz_MemoryWrite_FIQ(addr, data); // enable read back
+   Pi1MHz_MemoryWrite_FIQ(addr+1, fx_register[data]);
 }
 
 // take data written by the beeb and put it to the correct place
@@ -424,7 +445,7 @@ static void Pi1MHzBus_write_Status(unsigned int gpio)
    uint8_t data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    fx_register[status_addr] = data;
-   Pi1MHz_MemoryWrite(addr, data); // enable read back
+   Pi1MHz_MemoryWrite_FIQ(addr, data); // enable read back
 }
 
 static void Pi1MHzBus_read_Status(unsigned int gpio)

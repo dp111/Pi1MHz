@@ -50,8 +50,8 @@ static void ram_emulator_byte_addr(unsigned int gpio)
       default: Pi1MHz->byte_ram_addr = ((Pi1MHz->byte_ram_addr & 0xFF00FFFF) | ((size_t)data<<16)); break;
    }
 
-   Pi1MHz_MemoryWrite((uint32_t)(rambyte_address + 3) , Pi1MHz->JIM_ram[Pi1MHz->byte_ram_addr]); // setup new data now the address has changed;
-   Pi1MHz_MemoryWrite(addr, data);               // enable the address register to be read back
+   Pi1MHz_MemoryWrite_FIQ((uint32_t)(rambyte_address + 3) , Pi1MHz->JIM_ram[Pi1MHz->byte_ram_addr]); // setup new data now the address has changed;
+   Pi1MHz_MemoryWrite_FIQ(addr, data);           // enable the address register to be read back
 }
 
 static void ram_emulator_byte_write(unsigned int gpio)
@@ -60,7 +60,7 @@ static void ram_emulator_byte_write(unsigned int gpio)
    uint32_t addr = GET_ADDR(gpio);
 
    Pi1MHz->JIM_ram[Pi1MHz->byte_ram_addr] =  data;
-   Pi1MHz_MemoryWrite(addr,  data);
+   Pi1MHz_MemoryWrite_FIQ(addr,  data);
 }
 
 static void ram_emulator_page_addr_high(unsigned int gpio)
@@ -103,7 +103,7 @@ static void ram_emulator_page_write(unsigned int gpio)
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
    Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr + addr] = data;
-   Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE + addr, data);
+   Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE + addr, data);
 }
 
 static char* putstring(char *ram, char term, const char *string)
