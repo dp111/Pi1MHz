@@ -9,10 +9,22 @@
  *   - blank lines are ignored
  *
  * The file is read and parsed once (config_load); thereafter lookups are
- * a simple table search - the file is never re-parsed. Each emulation
- * module keeps owning its own keys: it just reads them with the existing
- * get_cmdline_prop(), which now transparently falls back to this store
- * (a key in cmdline.txt still overrides the file).
+ * a simple table search - the file is never re-parsed. Each emulation module
+ * keeps owning its own keys and reads them with config_get().
+ *
+ * THIS STORE AND cmdline.txt DO NOT CHAIN.  config_get() searches only
+ * Pi1MHz.cfg, and get_cmdline_prop() (rpi/info.h) searches only the kernel
+ * command line; neither falls back to the other, so a key works in exactly
+ * one of the two files and is silently ignored in the other.  Two settings
+ * are still read from cmdline.txt and belong there because they are needed
+ * before, or independently of, the SD card being mounted:
+ *
+ *     baud_rate       - the debug UART, brought up before the filesystem
+ *     disk_led_gpio   - board wiring, and conventionally spelled
+ *                       bcm2708.disk_led_gpio / bcm2709.disk_led_gpio
+ *
+ * Everything else lives here.  Putting net_enable in cmdline.txt, or
+ * baud_rate in Pi1MHz.cfg, does nothing at all.
  */
 
 #ifndef CONFIG_H
