@@ -122,7 +122,13 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
     uint8_t * buffer = 0 ;
     size_t filesize = filesystemReadFile( filename , &buffer , 0 );
     if (filesize == 0)
+    {
+        /* A zero-length read still allocated: filesystemReadFile() mallocs
+           fileSize+1 before it reads, so an empty .cfg leaked a byte on
+           every open of the LUN it belongs to. */
+        free(buffer);
         return 0;
+    }
     // Reject absurdly large files: this bounds filesize*4 below well clear of
     // a size_t overflow, which would otherwise yield a tiny output buffer.
     if (filesize > PARSE_MAX_FILE_SIZE)
@@ -331,8 +337,19 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
                         else if (keyv[keyindex].type == STRING)
                         {
                             size_t len = parse_strlen( buffer , ptr, filesize);
+                            /* Blanks between the value and a trailing comment
+                               are layout, not data: "ssid=Home   # mine" must
+                               not join a network called "Home   ".  Only the
+                               stored value is trimmed - ptr still advances
+                               over the whole run, so a rewrite keeps the
+                               spacing the file had. */
+                            size_t valuelen = len;
+                            while (valuelen != 0
+                                   && ((buffer[ptr + valuelen - 1u] == ' ')
+                                    || (buffer[ptr + valuelen - 1u] == '\t')))
+                                valuelen--;
                             // read a string, truncated to the key's maximum
-                            size_t copylen = len;
+                            size_t copylen = valuelen;
                             if (copylen > (size_t)keyv[keyindex].max)
                             {
                                 LOG_DEBUG("Value too long for key - truncated\n\r");
