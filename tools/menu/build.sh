@@ -11,7 +11,7 @@ set -e
 cd "$(dirname "$0")"
 BT=${BASICTOOL:-basictool}
 
-"$BT" -t --output-binary MENU.txt MENU.tok
+"$BT" -t MENU.txt MENU.tok
 # round-trip check: detokenised output must match the source
 "$BT" --input-tokenised -a MENU.tok - | sed 's/^ *//' | \
     diff - <(tr -d '\r' < MENU.txt | sed 's/^ *//')
