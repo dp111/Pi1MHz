@@ -58,6 +58,50 @@ static mailbox_t* rpiMailbox1 = (mailbox_t*)RPI_MAILBOX1_BASE;
    response is a 28-bit buffer address, so this cannot collide with one. */
 #define MAILBOX_READ_TIMEOUT 0xFFFFFFFFu
 
+/* The VideoCore can stop answering altogether - its firmware faults, or a
+   chain-boot leaves the MMAL/VCHIQ side somewhere it never comes back from.
+   Every property call then pays the full MAILBOX_TIMEOUT_US, and a caller on
+   the poll loop turns that into a main loop that stalls for seconds at a
+   time: info_refresh_cached() alone costs two timeouts a pass, so the loop
+   runs at 6 s per pass and nothing else in it gets a turn.  The Beeb's SCSI
+   handshake has no timeout, so it starves and ADFS/VFS hang - a dead VC
+   presents as a dead Pi when the bus emulation is in fact fine.
+
+   So after two consecutive misses stop waiting on it: answer callers at once
+   with the response bit clear, which is exactly what a timeout leaves behind
+   and what every caller already checks for (see RPI_PropertyGet).  One call
+   is let through every MAILBOX_RETRY_US so a VC that does come back is
+   picked up again, and any success clears the state.  Two strikes, not one,
+   because a cold boot's first exchange is legitimately slow. */
+#define MAILBOX_DEAD_STRIKES 2u
+#define MAILBOX_RETRY_US     10000000u
+
+static uint32_t mailbox_misses;
+static uint32_t mailbox_probe_at_us;
+
+/* True when the VC is presumed dead and this exchange must not wait for it. */
+static bool mailbox_silent( void )
+{
+    if ( mailbox_misses < MAILBOX_DEAD_STRIKES )
+        return false;
+    if ( (int32_t)( RPI_GetSystemTime() - mailbox_probe_at_us ) >= 0 )
+        return false;                  /* due a probe: let this one through */
+    return true;
+}
+
+static void mailbox_missed( void )
+{
+    if ( mailbox_misses < MAILBOX_DEAD_STRIKES )
+        mailbox_misses++;
+    mailbox_probe_at_us = RPI_GetSystemTime() + MAILBOX_RETRY_US;
+}
+
+/* /status: has the VideoCore stopped answering property calls? */
+bool RPI_MailboxSilent( void )
+{
+    return mailbox_misses >= MAILBOX_DEAD_STRIKES;
+}
+
 static void RPI_Mailbox0Write( mailbox0_channel_t channel, const uint32_t * ptr )
 {
     uint32_t start_us = RPI_GetSystemTime();
@@ -224,6 +268,7 @@ static unsigned int mailbox_collect( void )
           if ( result == MAILBOX_READ_TIMEOUT ) {
              RPI_Mailbox0Drain();
              pt[PT_OREQUEST_OR_RESPONSE] = 0u;   /* not a response */
+             mailbox_missed();
              return 0;
           }
           if ((uint32_t) result == ((uint32_t) pt) >> 4) {
@@ -244,8 +289,10 @@ static unsigned int mailbox_collect( void )
        if (!accepted) {
           RPI_Mailbox0Drain();
           pt[PT_OREQUEST_OR_RESPONSE] = 0u;      /* not a response */
+          mailbox_missed();
           return 0;
        }
+       mailbox_misses = 0;              /* it answered: it is alive */
     }
 
     // pt[] is in ordinary cacheable RAM: the prefetcher can refill its lines
@@ -286,6 +333,11 @@ unsigned int RPI_PropertyProcess( bool wait )
 {
     /* A previous deferred request may still own pt[]. */
     RPI_PropertySettle();
+
+    if ( mailbox_silent() ) {
+        pt[PT_OREQUEST_OR_RESPONSE] = 0u;       /* not a response */
+        return 0;
+    }
 
     /* Fill in the size of the buffer */
     pt[PT_OSIZE] = ( pt_index + 1 ) << 2;

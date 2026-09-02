@@ -18,6 +18,11 @@
    kernel; call once before the first property request.  See mailbox.c. */
 void RPI_MailboxInit( void );
 
+/* True once the VideoCore has stopped answering property calls (mailbox.c).
+   Worth a /status row: a wedged VC starves the poll loop of everything it
+   would otherwise spend on timeouts, and looks from the Beeb like a dead Pi. */
+bool RPI_MailboxSilent( void );
+
 /* Boot progress marker.  Stamped at each milestone and reported on the NEXT
    boot, because the serial log cannot answer "where did it stop": printf
    buffers into a 64 KB ring drained only by the TX interrupt, so early boot

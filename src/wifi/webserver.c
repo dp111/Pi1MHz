@@ -2917,6 +2917,8 @@ static bool route_status(ws_conn_t *c)
             snprintf(tmp, sizeof tmp, "%03x%s", rr, (rr & 0x20u) ? " (watchdog)" : "");
             table_row(&b, "Reset reason", tmp);
          }
+         if (RPI_MailboxSilent())
+            table_row(&b, "VideoCore", "not answering (property calls skipped)");
          const volatile unsigned int *cr = RPI_LastCrash();
          if (cr) {
             snprintf(tmp, sizeof tmp,
