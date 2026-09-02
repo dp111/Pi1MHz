@@ -456,6 +456,14 @@ static void Pi1MHzBus_read_Status(unsigned int gpio)
 // cppcheck-suppress unusedFunction
 void IRQHandler_main(void) {
    _data_memory_barrier();
+
+   /* nRST fell: hand the SCSI side back to BUS FREE now, not whenever the
+      poll loop next comes round to noticing the reset. */
+   if (RPI_GpioBase->GPEDS0 & NRST_MASK) {
+      RPI_GpioBase->GPEDS0 = NRST_MASK;    /* write 1 clears, before the work */
+      hd_emulator_bus_reset();
+   }
+
    // Check for USB IRQ (IRQ #9 in Enable_IRQs_1)
    if (RPI_GetIrqController()->IRQ_pending_1 & (1 << 9)) {
       tud_int_handler(0);
@@ -574,6 +582,17 @@ static void init_emulator(void) {
    RPI_PropertyProcess(false);
 
    RPI_IRQBase->FIQ_control = 0x80 + 67; // doorbell FIQ
+
+   /* nRST edge -> interrupt.  The SCSI teardown has to happen while nRST is
+      still asserted; the poll loop cannot promise that, because one pass can
+      run to 20 ms and a reset ADFS selects us long before then.  GPFEN latches
+      the falling edge in GPEDS and raises gpio_int[0] (IRQ 49), so
+      hd_emulator_bus_reset() runs microseconds after the Beeb resets.  The
+      latch is sticky, so a pulse shorter than a poll pass cannot be missed
+      either. */
+   RPI_GpioBase->GPEDS0 = NRST_MASK;              /* drop any stale latch    */
+   RPI_GpioBase->GPFEN0 |= NRST_MASK;             /* falling edge = asserted */
+   RPI_GetIrqController()->Enable_IRQs_2 = 1u << (49u - 32u);   /* gpio_int[0] */
 
    // make sure we aren't causing an interrupt.  On a BBC RST this runs
    // again while nIRQ may currently be ASSERTED (some source - SCSI, AUN,

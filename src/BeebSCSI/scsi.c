@@ -129,6 +129,12 @@ static uint8_t scsiEmulationCommand(void);
 static uint8_t scsiEmulationStatus(void);
 static uint8_t scsiEmulationMessage(void);
 
+/* BUS FREE's sub-state, at file scope so a forced return to BUS FREE (see
+   scsiProcessEmulation) can send it through case 0's bus clear instead of
+   resuming in case 1 with BSY and REQ still up from the abandoned command. */
+static uint8_t scsiEmulationBusFreestate = 0;
+
+
 static uint8_t scsiCommandTestUnitReady(void);
 static uint8_t scsiCommandRezeroUnit(void);
 static uint8_t scsiCommandRequestSense(void);
@@ -240,11 +246,29 @@ void scsiReset(uint8_t scsiid)
 
    // Ensure the SCSI bus phase is BUS FREE
    scsiState = SCSI_BUSFREE;
+   scsiEmulationBusFreestate = 0;
 }
 
 // Process the SCSI emulation
 void scsiProcessEmulation(void)
 {
+   /* A selection can only be made from BUS FREE: the host raises SEL, we
+      answer with BSY, and SEL drops (hostadapterWriteBusyFlag).  So SEL seen
+      while we are in any other state has exactly one meaning - the host has
+      restarted underneath us, a CTRL-BREAK mid-transfer, and is now waiting
+      for BSY on a command we still believe is in progress.  ADFS has no
+      timeout, so nothing else would ever end that wait.  Abandon ours and go
+      through BUS FREE's full clear so the selection is taken cleanly.
+
+      This is what makes recovery independent of how promptly anyone noticed
+      the reset: the nRST interrupt tears the bus down within microseconds,
+      but the poll loop can be inside a handler when it fires, and this rule
+      holds whether that teardown was early, late, or never happened. */
+   if (scsiState != SCSI_BUSFREE && hostadapterReadSelectFlag()) {
+      scsiState = SCSI_BUSFREE;
+      scsiEmulationBusFreestate = 0;
+   }
+
    // Process SCSI emulation state
    switch (scsiState) {
       // Handle SCSI bus states:
@@ -347,7 +371,6 @@ static void scsiInformationTransferPhase(uint8_t transferPhase)
 // SCSI Bus free state
 static uint8_t scsiEmulationBusFree(void)
 {
-   static uint8_t scsiEmulationBusFreestate = 0;
 
    switch (scsiEmulationBusFreestate)
    {

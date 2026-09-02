@@ -262,20 +262,53 @@ static void hd_emulator_write_scsijuke(unsigned int gpio)
    hd_juke_pending = 0x100u | (uint16_t)GET_DATA(gpio);
 }
 
-void harddisc_emulator_init( uint8_t instance , uint8_t address)
-{
-   static bool PowerOn = 0 ;
-   static uint8_t scsiid = 0;
-   HD_ADDR = (uint8_t) address;
-   IRQ_NUM = (uint8_t) instance;
+static uint8_t scsiid = 0;
 
-   // Turn off all host adapter signals
+/* Put the host adapter and the SCSI engine back to BUS FREE.
+ *
+ * Called from the nRST interrupt, microseconds after the Beeb resets and
+ * while it still cannot drive the bus, so nothing cleared here can belong to
+ * a command it has already begun.  That timing is the whole point: the poll
+ * loop's re-init is far too late - one pass can be 20 ms, by which time a
+ * freshly reset ADFS has already selected us, and clearing then throws its
+ * selection away.  ADFS has no timeout, so it waits for a handshake step
+ * nobody will drive and the machine sits there until the next reset.
+ *
+ * Register and variable writes only - no filesystem, no logging - because
+ * this runs in interrupt context ahead of the ordinary re-init.  FIQ is
+ * masked so a bus callback cannot land mid-clear and leave half of it. */
+void hd_emulator_bus_reset(void)
+{
+   unsigned int cpsr = _disable_interrupts_cspr();
    hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_3 | STATUS_2 | STATUS_CND | STATUS_IRQ, CLEAR);
    hd_emulator_clear_IRQ();
    HD_ACK = CLEAR;
    HD_SEL = CLEAR;
    HD_IRQ_ENABLE = CLEAR;
    hd_juke_pending = 0;          /* a poke latched just before a BREAK must not fire after the re-init */
+   scsiReset(scsiid);
+   _restore_cpsr(cpsr);
+}
+
+void harddisc_emulator_init( uint8_t instance , uint8_t address)
+{
+   static bool PowerOn = 0 ;
+   HD_ADDR = (uint8_t) address;
+   IRQ_NUM = (uint8_t) instance;
+
+   /* On a BBC reset the nRST interrupt has already done this, and doing it
+      again here - after the milliseconds this function spends on the card -
+      would discard whatever the Beeb has started since.  First boot has had
+      no interrupt yet, so it still needs the clear. */
+   if (!PowerOn)
+   {
+      hd_emulator_status(STATUS_MSG | STATUS_BSY | STATUS_REQ | STATUS_INO | STATUS_3 | STATUS_2 | STATUS_CND | STATUS_IRQ, CLEAR);
+      hd_emulator_clear_IRQ();
+      HD_ACK = CLEAR;
+      HD_SEL = CLEAR;
+      HD_IRQ_ENABLE = CLEAR;
+      hd_juke_pending = 0;
+   }
 
    // register call backs
    // address FC40 read  = Read SCSI databus command
@@ -319,10 +352,8 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       scsiInitialise();
 
       PowerOn = 1;
+      scsiReset(scsiid);         /* only now is the engine there to reset */
    }
-
-
-   scsiReset(scsiid);
    /* Runs on every BBC RST.  filesystemReset() remounts the card, which
       bumps the FatFs volume id and so invalidates any file handle the
       webserver or USB/MTP had open - a web/WebDAV/MTP transfer in flight
@@ -389,7 +420,9 @@ static bool hd_wait_ack(void)
 {
    uint32_t counter = 0;
    uint32_t start = RPI_GetSystemTime();
-   while ((HD_ACK == CLEAR) && !Pi1MHz_is_rst_active())
+   /* A selection arriving mid-wait means the host restarted: stop waiting
+      for an ACK it will never send, rather than sitting out the timeout. */
+   while ((HD_ACK == CLEAR) && (HD_SEL == CLEAR) && !Pi1MHz_is_rst_active())
    {
       if ((++counter & 0xFFu) == 0u)
       {

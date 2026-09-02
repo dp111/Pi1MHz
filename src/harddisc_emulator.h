@@ -2,6 +2,8 @@
 #include <stdint.h>
 
 void harddisc_emulator_init( uint8_t instance , uint8_t address);
+/* Fast SCSI teardown, driven by the nRST edge interrupt - see the .c */
+void hd_emulator_bus_reset(void);
 uint8_t harddisc_emulator_get_address(void);
 
 /* Service the audio between sectors of a long transfer (see .c) */
