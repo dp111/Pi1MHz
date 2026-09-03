@@ -484,6 +484,19 @@ void screen_release_buffer(uint32_t handle) {
 
 /**
  * @brief Sets up the polyphase filter coefficients.
+ *
+ * Each word packs three 9-bit signed coefficients; the table is c0..c16
+ * rising, a pad, then the triples of c0..c14 again in reverse order, which
+ * the HVS reads as a symmetric 32-tap prototype.  These are the
+ * Mitchell-Netravali coefficients, the same ones Linux's vc4 driver uses.
+ *
+ * 2026-09-03: these coefficients appear to have NO effect on the computer
+ * plane.  Replacing them with a box (nearest-neighbour) kernel, with builds
+ * and flashes verified by a control change that visibly moved the plane,
+ * left the output identical to the byte on both axes - as did writing all
+ * four kernel pointers instead of two.  CTL0 selects PPF on both axes and
+ * the offset field takes a raw word index, so the list looks right; what
+ * actually filters this plane has not been found.
  */
 static void setup_polyphase(void) {
     context_memory[POLYPHASE_BASE + 0] = 0x7ebfc00;
@@ -497,6 +510,7 @@ static void setup_polyphase(void) {
     context_memory[POLYPHASE_BASE + 8] = 0x4805fd;
     context_memory[POLYPHASE_BASE + 9] = 0x7e3edf8;
     context_memory[POLYPHASE_BASE + 10] = 0x7ebfc00;
+
 }
 
 /**
@@ -732,6 +746,8 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
 
 /* phase magnitude bits */
 #define PHASE_BITS 6
+
+
 // entry width or height, scaled width or height, x or y position, 1 for cbcr 0 for y
 /**
  * @brief Calculates the phase magnitude bits for the VC4.
@@ -764,6 +780,17 @@ static uint32_t vc4_ppf(uint32_t src, uint32_t dst, uint32_t xy, int channel) {
 		 * display list's x value
 		 */
 		offset = (xy & 0xffff) >> (16 - PHASE_BITS);
+		/* Upstream starts the phase half a source pixel back, which centres
+		   the kernel over the gap between source pixels.  On an integer
+		   upscale of a computer raster that puts the FIRST output row half a
+		   pixel above the picture, so it straddles the guard line instead of
+		   sitting on row 0 - the chopped top row.  Start on the pixel
+		   instead.  (It does not change how soft the rest is: at 2x a
+		   smooth kernel still blends every other row.  That needs a
+		   different kernel, not a different phase.) */
+		/* Half a pixel back, as upstream.  Starting on the pixel instead,
+		   and nudging by a fraction of one, were both tried on hardware in
+		   2026-09 to square up the picture's top row: neither helped. */
 		offset += -(1 << PHASE_BITS >> 1);
 
 		/*
@@ -930,11 +957,12 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t nsh;
         uint32_t nh;
         screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh);
+
         buffer |= 0x80000000; // if we use &C then there is an error on the screen
         if (colour_depth == 3)
         {
             volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) plane;
-            uint32_t ctrl = 0x00000000 + (0x20<<24) + (3<<11) + 0xD; // invalid list, 32 words, 8 bit RGB
+            uint32_t ctrl = 0x00000000 + (0x20<<24) + (3<<11)+ 0xD; // invalid list, 32 words, 8 bit RGB
             uint32_t pos  = startpos + 0xFF000000;
             /* Every entry of every palette bank is either alpha 0 with
                RGB 0, or fully opaque, or (highlight) alpha with RGB 0 -
@@ -942,7 +970,12 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
                alphas but makes the SCALER's interpolation correct; without
                it edge pixels lose alpha AND get dragged toward the key
                colour's black, which is a dark outline around every glyph. */
-            uint32_t ssz  = (((height + 1) << 16) + width)  // +1 guard line at top
+            /* The picture only.  The framebuffer keeps one spare line ABOVE
+               y_ptr for the vertical filter's pre-roll to sample, but that
+               line must never be rendered: including it in src_size drew it
+               as a duplicate row at the top and pushed everything real one
+               source line down the screen. */
+            uint32_t ssz  = ((height << 16) + width)
                           | SCALER_POS2_ALPHA_PREMULT;
             uint32_t pal  = 0xC0000000 + PALETTE_BASE;     // 8 bit palette
             rgb->ctrl = ctrl;
@@ -960,8 +993,16 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             rgb->hpf0 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
             rgb->vpf0 = vc4_ppf(height, scaled_height, startpos >>12, 0 );
             //rgb->vpf0_ctx = 0;
-            rgb->pfkph0 = POLYPHASE_BASE;
-            rgb->pfkpv0 = POLYPHASE_BASE;
+            rgb->pfkph0 = POLYPHASE_BASE | 0x80000000u;
+            rgb->pfkpv0 = POLYPHASE_BASE | 0x80000000u;
+            /* The HVS reads FOUR kernel pointers whenever PPF scaling is on,
+               even for a single-plane format - Linux's vc4_plane.c writes all
+               four unconditionally.  Writing only two left the other two as
+               whatever the list already held. */
+            {   volatile uint32_t *k = (volatile uint32_t *)&rgb->pfkpv0;
+                k[1] = POLYPHASE_BASE | 0x80000000u;
+                k[2] = POLYPHASE_BASE | 0x80000000u;
+            }
 #ifdef SCREEN_DEBUG
             LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
             LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", scaled_width, scaled_height);
@@ -1000,7 +1041,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
                 rgb->ctrl = ctrl;
                 rgb->pitch = width <<2;
             }
-            uint32_t ssz = ((height + 1) << 16) + width;  // +1 for guard line at top
+            uint32_t ssz = (height << 16) + width;   /* picture only - see above */
             rgb->pos = startpos;
             rgb->scale = (scaled_height << 16) + scaled_width;
             rgb->src_size = ssz;
@@ -1013,8 +1054,16 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
             rgb->hpf0 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );
             rgb->vpf0 = vc4_ppf(height, scaled_height, startpos >>12, 0 );
             //rgb->vpf0_ctx = 0;
-            rgb->pfkph0 = POLYPHASE_BASE;
-            rgb->pfkpv0 = POLYPHASE_BASE;
+            rgb->pfkph0 = POLYPHASE_BASE | 0x80000000u;
+            rgb->pfkpv0 = POLYPHASE_BASE | 0x80000000u;
+            /* The HVS reads FOUR kernel pointers whenever PPF scaling is on,
+               even for a single-plane format - Linux's vc4_plane.c writes all
+               four unconditionally.  Writing only two left the other two as
+               whatever the list already held. */
+            {   volatile uint32_t *k = (volatile uint32_t *)&rgb->pfkpv0;
+                k[1] = POLYPHASE_BASE | 0x80000000u;
+                k[2] = POLYPHASE_BASE | 0x80000000u;
+            }
         }
 
 
