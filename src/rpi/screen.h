@@ -7,7 +7,11 @@
 // Function declarations
 uint32_t screen_allocate_buffer( uint32_t buffer_size, uint32_t * handle );
 void screen_release_buffer( uint32_t handle );
-void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer );
+/* par = the source's pixel aspect ratio (width of a pixel / its height):
+   1.0 for square-pixel material, 12/13 for a 832x576 PAL frame sampled on
+   the Beeb's 16 MHz grid.  The plane is fitted to the display at the
+   resulting picture shape. */
+void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, float par, uint32_t buffer );
 void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr );
 void screen_create_RGB_plane( uint32_t planeno, uint32_t width , uint32_t height, float par, uint32_t scale_height, uint32_t colour_depth, uint32_t buffer );
 void screen_release_plane( uint32_t planeno );

@@ -1210,7 +1210,11 @@ static void vp_bring_up(void)
     for (int i = 0; i < NUM_FRAME_BUFFERS; i++)
         videobuf_handle2(i) = handles[i];
 
-    screen_create_YUV420_plane(YUV_PLANE, vp.hdr.width, vp.hdr.height,
+    /* Files written before make_pvfv2.py carry 0/0 here and are square. */
+    float par = 1.0f;
+    if (vp.hdr.par_num && vp.hdr.par_den)
+        par = (float)vp.hdr.par_num / (float)vp.hdr.par_den;
+    screen_create_YUV420_plane(YUV_PLANE, vp.hdr.width, vp.hdr.height, par,
                                vp.buf_phys[0]);
     vp.displayed_phys = 0;           /* nothing decoded on it yet */
     /* Plane stays OFF: nothing is decoded yet - enabling now would put a

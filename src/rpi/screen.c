@@ -788,7 +788,7 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
    chroma phase factors are computed against doubled scaled dimensions -
    horizontally because the chroma plane is half-width, vertically
    because it is also half-height. */
-void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
+void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, float par, uint32_t buffer )
 {
     /* Before anything touches the slot: a deferred write still pending from
        the old contents would otherwise be committed by the end-of-frame IRQ
@@ -804,7 +804,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         uint32_t startpos;
         uint32_t nsh;
         uint32_t nh;
-        screen_scale(width, height , 1.0f, true,0, &scaled_width, &scaled_height, &startpos, &nsh, &nh);
+        screen_scale(width, height , par, true,0, &scaled_width, &scaled_height, &startpos, &nsh, &nh);
 
         volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) plane;
         /* Pixel order (bits 13-14), established empirically on Test Card F
