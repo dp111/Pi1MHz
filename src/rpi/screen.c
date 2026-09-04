@@ -490,13 +490,16 @@ void screen_release_buffer(uint32_t handle) {
  * the HVS reads as a symmetric 32-tap prototype.  These are the
  * Mitchell-Netravali coefficients, the same ones Linux's vc4 driver uses.
  *
- * 2026-09-03: these coefficients appear to have NO effect on the computer
- * plane.  Replacing them with a box (nearest-neighbour) kernel, with builds
- * and flashes verified by a control change that visibly moved the plane,
- * left the output identical to the byte on both axes - as did writing all
- * four kernel pointers instead of two.  CTL0 selects PPF on both axes and
- * the offset field takes a raw word index, so the list looks right; what
- * actually filters this plane has not been found.
+ * These are live only because the kernel pointers carry the uncached bit
+ * (see screen_create_RGB_plane): the HVS caches kernel data, so without it
+ * this table was written correctly and never read, and the plane filtered
+ * with whatever the GPU firmware had loaded.
+ *
+ * A box kernel here would give hard pixel edges at 2x instead of blending
+ * every other row, but it cannot be expressed: sweeping a single live band
+ * across the table shows a 4-entry band renders and a 2-entry band blanks at
+ * every position, so the hardware interpolates between adjacent entries
+ * rather than reading them as discrete taps.  Tried and rejected 2026-09.
  */
 static void setup_polyphase(void) {
     context_memory[POLYPHASE_BASE + 0] = 0x7ebfc00;
@@ -780,14 +783,6 @@ static uint32_t vc4_ppf(uint32_t src, uint32_t dst, uint32_t xy, int channel) {
 		 * display list's x value
 		 */
 		offset = (xy & 0xffff) >> (16 - PHASE_BITS);
-		/* Upstream starts the phase half a source pixel back, which centres
-		   the kernel over the gap between source pixels.  On an integer
-		   upscale of a computer raster that puts the FIRST output row half a
-		   pixel above the picture, so it straddles the guard line instead of
-		   sitting on row 0 - the chopped top row.  Start on the pixel
-		   instead.  (It does not change how soft the rest is: at 2x a
-		   smooth kernel still blends every other row.  That needs a
-		   different kernel, not a different phase.) */
 		/* Half a pixel back, as upstream.  Starting on the pixel instead,
 		   and nudging by a fraction of one, were both tried on hardware in
 		   2026-09 to square up the picture's top row: neither helped. */
@@ -962,7 +957,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         if (colour_depth == 3)
         {
             volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) plane;
-            uint32_t ctrl = 0x00000000 + (0x20<<24) + (3<<11)+ 0xD; // invalid list, 32 words, 8 bit RGB
+            uint32_t ctrl = 0x00000000 + (0x20<<24) + (3<<11) + 0xD; // invalid list, 32 words, 8 bit RGB
             uint32_t pos  = startpos + 0xFF000000;
             /* Every entry of every palette bank is either alpha 0 with
                RGB 0, or fully opaque, or (highlight) alpha with RGB 0 -
