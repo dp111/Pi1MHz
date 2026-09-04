@@ -864,13 +864,11 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
    mouse_redirect_mouseoff();
    screen_release_buffer(handle); // doesn't do anything if fb is NULL
    screen->pitch = (screen->width << (uint32_t) screen->log2bpp) >>3;
-   // Allocate 1 extra line at top as a guard line for the PPF scaler's pre-roll
-   uint32_t temp = screen_allocate_buffer((uint32_t)((uint32_t)screen->pitch * (uint32_t)(screen->height + 1)) , &handle);
-   fb = (unsigned char *) (temp + (uint32_t) screen->pitch);
-   /* Point the plane at the PICTURE, not the guard line below it in memory.
-      The scaler clamps at its source edge rather than reading outside it, so
-      the guard is never sampled and must never be rendered either - including
-      it drew a duplicate row at the top. */
+   /* No guard line: the scaler clamps at its source edge and never reads
+      outside the picture - proven by filling the guard with the background
+      instead of a copy of row 0, which changed the output by not one level. */
+   uint32_t temp = screen_allocate_buffer((uint32_t)((uint32_t)screen->pitch * (uint32_t)screen->height) , &handle);
+   fb = (unsigned char *) temp;
    screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
 
     // Initialize colour table and palette
@@ -880,15 +878,6 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
     /* Clear the screen to the background colour */
     screen->clear(screen, NULL, 0);
 
-    /* The guard line is the vertical filter's pre-roll, sampled but never
-       displayed.  Fill it with logical colour 0 - the background, whatever
-       the palette maps it to - NOT a copy of row 0.  Copying row 0 makes the
-       tap above the picture equal to the picture, so the top line renders at
-       full strength while every other single-pixel row gets a half-lit row
-       above it: the top of the screen comes out fatter and harder than the
-       rest.  Feathering into the background is also what a real Beeb does,
-       where the first line meets the border. */
-    memset(fb - screen->pitch, 0, (size_t) screen->pitch);
 
     screen_plane_enable(SCREEN_PLANE, true);
 
@@ -925,8 +914,6 @@ void default_clear_screen(const screen_mode_t *screen, const t_clip_window_t *te
          screen->set_pixel(screen, x, y, col);
       }
    }
-   // Guard line above fb: the filter's pre-roll, background - see default_init_screen
-   memset(fb - screen->pitch, 0, (size_t) screen->pitch);
 }
 
 void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_window, pixel_t bg_col, scroll_dir_t dir) {
@@ -1006,8 +993,6 @@ void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_wi
          screen->set_pixel(screen, x, y, col);
       }
    }
-   // Guard line above fb: the filter's pre-roll, background - see default_init_screen
-   memset(fb - screen->pitch, 0, (size_t) screen->pitch);
 }
 // cppcheck-suppress constParameterCallback
 void default_set_colour_8bpp(screen_mode_t *screen, colour_index_t index, uint32_t r, uint32_t g, uint32_t b) {
