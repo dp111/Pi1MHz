@@ -1853,9 +1853,11 @@ void prim_draw_character(screen_mode_t *screen, int c, int x_pos, int y_pos, plo
       int data = font->buffer[p++];
       for (int j = 0; j < width; j++) {
          if (data & mask) {
+            // As in default_write_char: y is the top scanline of the cell and
+            // the row loop walks downwards, so the scale expands downwards too
             for (int sx = 0; sx < scale_w; sx++) {
                for (int sy = 0; sy < scale_h; sy++) {
-                  set_pixel(screen, x + sx, y + sy, colour);
+                  set_pixel(screen, x + sx, y - sy, colour);
                }
             }
          }

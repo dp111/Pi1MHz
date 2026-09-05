@@ -253,9 +253,11 @@ static void default_write_char(font_t *font, screen_mode_t *screen, int c, int x
       int data = font->buffer[p++];
       for (int j = 0; j < width; j++) {
          pixel_t col = (data & mask) ? fg_col : bg_col;
+         // y is the top scanline of the cell and the row loop walks downwards,
+         // so the vertical scale must expand downwards too (no-op at scale 1)
          for (int sx = 0; sx < font->scale_w; sx++) {
             for (int sy = 0; sy < font->scale_h; sy++) {
-               screen->set_pixel(screen, x + sx, y + sy, col);
+               screen->set_pixel(screen, x + sx, y - sy, col);
             }
          }
          x += font->scale_w;
