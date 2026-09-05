@@ -940,18 +940,23 @@ void prim_draw_line(screen_mode_t *screen, int x1, int y1, int x2, int y2, plotc
       }
       dx2 = 0;
    }
-   int numerator = longest >> 1 ;
+   // dx2/dy2 is the step along the major axis, so their sum is its direction.
+   // The OS starts the error term one lower when the major axis runs in the
+   // positive direction; that asymmetry is what makes a real Beeb draw A to B
+   // and B to A as exactly the same pixels.  Measured against OS 1.20 + GXR.
+   int major_dir = dx2 + dy2;
+   int numerator = (major_dir > 0) ? ((longest - 1) >> 1) : (longest >> 1);
    int x = x1;
    int y = y1;
-   if (omit_last) {
-      longest--;
-   }
+   // "longest" sets the Bresenham step ratio, so omitting the last point must
+   // shorten the loop, not longest itself - decrementing it re-slopes the line
+   int count = omit_last ? longest - 1 : longest;
    int start = 0;
    // restart the dot pattern if the first point is plotted
    if (dotted && !omit_first) {
       g_dot_pattern_index = 0;
    }
-   for (int i = start; i <= longest; i++) {
+   for (int i = start; i <= count; i++) {
       if (i > start || !omit_first) {
          if (dotted) {
             if (g_dot_pattern[g_dot_pattern_index++]) {

@@ -1520,7 +1520,7 @@ static void vdu_25(const uint8_t *buf) {
          prim_draw_line(screen, x_pos_last1, y_pos_last1, x_pos, y_pos, colour, g_mode);
          break;
       case 40:
-         // Plot solid line (final endpoint omitted)
+         // Plot solid line (both endpoints omitted)
          prim_draw_line(screen, x_pos_last1, y_pos_last1, x_pos, y_pos, colour, g_mode);
          break;
       case 48:
@@ -1528,7 +1528,7 @@ static void vdu_25(const uint8_t *buf) {
          prim_draw_line(screen, x_pos_last1, y_pos_last1, x_pos, y_pos, colour, g_mode);
          break;
       case 56:
-         // Plot dotted line (final endpoint omitted)
+         // Plot dotted line (both endpoints omitted)
          prim_draw_line(screen, x_pos_last1, y_pos_last1, x_pos, y_pos, colour, g_mode);
          break;
       case 64:
