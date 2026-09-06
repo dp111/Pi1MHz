@@ -1,12 +1,13 @@
 # Testing the VDU/PLOT code against a real BBC Micro
 
-> **STATUS 2026-09-06: harness working, lines conformant.** `tools/vdutest/`
+> **STATUS 2026-09-06: harness working; lines and circles conformant.** `tools/vdutest/`
 > builds Pi1MHz's own `src/framebuffer/*` for the PC and diffs it, pixel for
 > pixel, against a real OS 1.20 + GXR 1.20 running under beebjit. The line
 > PLOT codes (0-63) were brought to an exact match by commits `ce0bc82` and
-> `2c6ef25`; the other PLOT families now have coverage, and **22 of 35 cases
-> match** - see "Where each PLOT family stands" at the end for the four
-> differences that remain, none of which has been fixed yet.
+> `2c6ef25`, and the circle codes by the commit that added this line;
+> **24 of 35 cases match**. Two families are still wrong - see "Still to do"
+> at the end, where the triangle rule is already worked out and only needs
+> building.
 
 ## Why
 
@@ -112,19 +113,19 @@ Findings that came out of this, all confirmed on the ROM:
 
 ## Where each PLOT family stands
 
-From `tools/vdutest/vdutest.py` as of 2026-09-06 (22/35 cases matching).
+From `tools/vdutest/vdutest.py` as of 2026-09-06 (24/35 cases matching).
 
 | PLOT | family | status |
 |------|--------|--------|
 | 0-63 | lines, all 8 dotted/omit variants | **exact** - and 864 further line instances were compared pixel for pixel while fixing `2c6ef25` |
 | 64-71 | point | **exact** |
 | 72-79, 88-95, 104-111, 120-127 | horizontal line fills | `93` exact; `77` differs only because the triangle it fills against differs |
-| 80-87 | triangle | **differs** - see below |
+| 80-87 | triangle | **differs** - rule known, see below |
 | 96-103 | rectangle | **exact**, both corner orders |
-| 112-119 | parallelogram | **differs**, same edge behaviour as the triangle it is built from |
+| 112-119 | parallelogram | **differs**, because it is built from two triangles |
 | 128-143 | flood fill | differs only by the triangle edge it floods up to |
-| 144-151 | circle outline | exact at r=7 and r=10; **differs at r=4 and r=1** |
-| 152-159 | filled circle | **exact** at r=5 and r=10 |
+| 144-151 | circle outline | **exact** - 20/20 radii, and 8/8 off-axis radius points |
+| 152-159 | filled circle | **exact** - 20/20 radii |
 | 160-167 | arc | **exact** |
 | 168-175 | chord | **exact** |
 | 176-183 | sector | **exact** |
@@ -132,34 +133,58 @@ From `tools/vdutest/vdutest.py` as of 2026-09-06 (22/35 cases matching).
 | 192-207 | ellipse, outline and filled | **differs** - one pixel too tall |
 | 232-239 | sprite | **not tested** - GXR sprites need VDU 23,27 definitions the harness does not yet generate |
 
-### The four open differences
+### What the circle fix was
 
-1. **A degenerate triangle loses most of its span.** Three collinear points
-   (`MOVE 4,4 : MOVE 20,4 : PLOT 85,26,4`) draw 23 pixels on a Beeb and 7
-   here. In `prim_fill_triangle`, when all three y values are equal the
-   sort leaves `y1 == y2 == y3`, `fill_bottom_flat_triangle` takes its
-   `y1 == y2` branch and draws `draw_hline(x2, x3, y1)` - `x1` is never
-   looked at, so the span is whatever two vertices happen to sort last.
-   This one is a plain bug rather than a rasterisation difference.
+The OS's circle is the disc **x*x + y*y <= (R + 1/2)^2**, where R is the
+*exact, unrounded* pixel distance to the point PLOT was given. Two separate
+things were wrong: the half pixel, and `calc_radius` rounding the radius to a
+whole pixel before drawing. The squared distance is an exact integer, so the
+limit is too:
 
-2. **Triangle edges include different pixels.** Non-degenerate triangles
-   have the right shape and nearly the right area (e.g. 304 pixels on the
-   Beeb vs 299 here) but disagree along the sloped edges.
-   `fill_bottom_flat_triangle` interpolates in `float` with a `+ 0.5` bias
-   and truncates toward zero; the OS does not. This is what also shows up
-   in the parallelogram (built from two triangles) and in the fills that
-   run up to a triangle edge.
+```c
+int d2  = dx*dx + dy*dy;
+int lim = d2 + (int)(sqrtf((float)d2) + 0.25F);   // x*x + y*y <= lim
+```
 
-3. **Small circles differ.** r=7 and r=10 are exact, r=4 and r=1 are not:
-   the OS's r=4 ring passes through (+-2,+-4) and (+-4,+-2) where our
-   midpoint circle gives (+-2,+-3) and (+-3,+-2), and its r=1 circle is a
-   full 8-pixel ring where ours is only the 4 axis points.
+The old `p = 3 - 2r` midpoint Bresenham is `round(sqrt(r*r - x*x))` - a disc of
+radius R rather than R + 1/2 - and scored 8/20 on outlines and 8/20 on fills.
 
-4. **Ellipses are one pixel too tall.** Outline and filled alike, our top
-   and bottom rows sit one pixel beyond the OS's, so the shape is two
-   pixels taller overall. Consistent across wide, tall and sheared cases.
+## Still to do
 
-None of these is likely to matter for the Domesday/AIV workload, which draws
-text and video rather than BASIC graphics - they are recorded here so the
-next person does not have to rediscover them, and so the harness has a
-known-good baseline to regress against.
+### Triangles - the rule is known, it just needs building
+
+**The OS's filled triangle is exactly the span-fill of its own three edges
+drawn as ordinary PLOT lines**: for each row, everything between the leftmost
+and rightmost edge pixel. Measured identical on 8/8 triangles, the degenerate
+collinear case included. Since `prim_draw_line` now matches the OS exactly,
+walking the three edges with that same stepper reproduces the OS *by
+construction*, and fixes four things at once:
+
+* the degenerate-triangle bug - three collinear points
+  (`MOVE 4,4 : MOVE 20,4 : PLOT 85,26,4`) draw 23 pixels on a Beeb and 7 here,
+  because `fill_bottom_flat_triangle` never looks at `x1` when all three y
+  values are equal, so the span is whatever two vertices happen to sort last;
+* the edge pixels, where `fill_bottom_flat_triangle` interpolates in `float`
+  with a `+ 0.5` bias and truncates toward zero and the OS does not;
+* `prim_fill_parallelogram`, which is two triangles;
+* the PLOT 72-127 fills that run up to a triangle edge.
+
+It was left undone because it is a refactor rather than a patch: the Bresenham
+stepping has to come out of `prim_draw_line` into a stepper the triangle can
+share, and it needs per-row min/max x scratch - about 4 KB, or band the rows
+to bound it. There is precedent for the scratch (`flood_queue_x/y` are two
+32 KB `.noinit` arrays).
+
+### Ellipses - do not go looking for a closed form
+
+Ours is one pixel too tall, and the obvious guess - the same `+ 1/2` that
+fixed the circle - is wrong. Over 45 ellipses, semi-axes `(a + 1/2, b)` fit
+only 27, and **13 fit no exact conic at all** on a 0.25-step grid of both
+semi-axes. The OS's ellipse is an incremental integer algorithm whose
+accumulated rounding is not any exact ellipse, so it needs its recurrence
+fitted against ROM data the way the line rule was, not a formula guessed.
+
+### Sprites
+
+PLOT 232-239 are untested; the harness needs to learn to emit the
+`VDU 23,27` sprite definitions first.

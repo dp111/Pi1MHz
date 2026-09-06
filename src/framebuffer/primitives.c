@@ -122,6 +122,29 @@ static int calc_radius(int x1, int y1, int x2, int y2) {
     return (int)(calc_radius_float(x1, y1, x2, y2) + 0.5F);
 }
 
+// The OS's circle is the set of pixels inside x*x + y*y <= (R + 1/2)^2, where
+// R is the *exact* distance to the point PLOT was given - not rounded to a
+// whole pixel first.  The squared distance is an exact integer, so that limit
+// is floor(d2 + sqrt(d2) + 1/4) = d2 + (int)(sqrt(d2) + 1/4), which keeps the
+// whole test in integers.  Measured against OS 1.20 + GXR.
+static int calc_radius_limit(int x1, int y1, int x2, int y2) {
+   int d2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
+   return d2 + (int)(sqrtf((float)d2) + 0.25F);
+}
+
+// The outermost y on the circle: the largest y with y*y <= limit
+static int circle_top(int limit) {
+   float root = sqrtf((float)limit);
+   int y = (int)root;
+   while (y > 0 && y * y > limit) {
+      y--;
+   }
+   while ((y + 1) * (y + 1) <= limit) {
+      y++;
+   }
+   return y;
+}
+
 static pixel_t get_pixel(screen_mode_t *screen, int x, int y) {
    if (x < g_x_min  || x > g_x_max || y < g_y_min || y > g_y_max) {
       // Return the graphics background colour if off the screen
@@ -369,61 +392,47 @@ static int arc_point(unsigned int q, quadrant_t state, int x, int y, int xs, int
 }
 #endif
 
-static void draw_circle(screen_mode_t *screen, int xc, int yc, int r, plotcol_t colour) {
+static void draw_circle(screen_mode_t *screen, int xc, int yc, int limit, plotcol_t colour) {
+   int y = circle_top(limit);
    int x = 0;
-   int y = r;
-   int p = 3 - (2 * r);
-   while (x < y) {
+   // Walk one column at a time keeping y the largest value still inside the
+   // circle, and mirror into the other seven octants.  The guards stop a
+   // pixel being plotted twice where the octants meet, which would undo
+   // itself under XOR.
+   while (x <= y) {
       set_pixel(screen, xc + x, yc + y, colour);
       set_pixel(screen, xc + x, yc - y, colour);
-      set_pixel(screen, xc + y, yc + x, colour);
-      set_pixel(screen, xc - y, yc + x, colour);
       if (x > 0) {
          set_pixel(screen, xc - x, yc + y, colour);
          set_pixel(screen, xc - x, yc - y, colour);
-         set_pixel(screen, xc + y, yc - x, colour);
-         set_pixel(screen, xc - y, yc - x, colour);
       }
-      if (p < 0) {
-         p += 4 * x + 6;
-         x++;
-      } else {
-         p += 4 * (x - y) + 10;
-         x++;
+      if (x != y) {
+         set_pixel(screen, xc + y, yc + x, colour);
+         set_pixel(screen, xc - y, yc + x, colour);
+         if (x > 0) {
+            set_pixel(screen, xc + y, yc - x, colour);
+            set_pixel(screen, xc - y, yc - x, colour);
+         }
+      }
+      x++;
+      while (y >= 0 && x * x + y * y > limit) {
          y--;
       }
-   }
-   if (x == y) {
-      set_pixel(screen, xc + x, yc + y, colour);
-      set_pixel(screen, xc - x, yc + y, colour);
-      set_pixel(screen, xc + x, yc - y, colour);
-      set_pixel(screen, xc - x, yc - y, colour);
    }
 }
 
-static void fill_circle(screen_mode_t *screen, int xc, int yc, int r, plotcol_t colour) {
+static void fill_circle(screen_mode_t *screen, int xc, int yc, int limit, plotcol_t colour) {
    int x = 0;
-   int y = r;
-   int p = 3 - (2 * r);
-   while (x < y) {
-      draw_hline(screen, xc + y, xc - y, yc + x, colour);
-      if (x > 0) {
-         draw_hline(screen, xc + y, xc - y, yc - x, colour);
-      }
-      if (p < 0) {
-         p += 4 * x + 6;
+   // Same circle, walked a row at a time; x only ever grows, so the inner
+   // loop costs O(radius) over the whole fill.
+   for (int y = circle_top(limit); y >= 0; y--) {
+      while ((x + 1) * (x + 1) + y * y <= limit) {
          x++;
-      } else {
-         draw_hline(screen, xc + x, xc - x, yc - y, colour);
-         draw_hline(screen, xc + x, xc - x, yc + y, colour);
-         p += 4 * (x - y) + 10;
-         x++;
-         y--;
       }
-   }
-   if (x == y) {
-      draw_hline(screen, xc + x, xc - x, yc - y, colour);
-      draw_hline(screen, xc + x, xc - x, yc + y, colour);
+      draw_hline(screen, xc - x, xc + x, yc + y, colour);
+      if (y > 0) {
+         draw_hline(screen, xc - x, xc + x, yc - y, colour);
+      }
    }
 }
 
@@ -1799,8 +1808,7 @@ void prim_draw_circle(screen_mode_t *screen, int xc, int yc, int xr, int yr, plo
    // Draw the circle
    if (screen->xeigfactor == screen->yeigfactor) {
       // Square pixels
-      int r = calc_radius(xc, yc, xr, yr);
-      draw_circle(screen, xc, yc, r, colour);
+      draw_circle(screen, xc, yc, calc_radius_limit(xc, yc, xr, yr), colour);
    } else {
       // Rectangular pixels
       int r = calc_radius(xc << screen->xeigfactor, yc << screen->yeigfactor, xr << screen->xeigfactor, yr << screen->yeigfactor);
@@ -1814,8 +1822,7 @@ void prim_fill_circle(screen_mode_t *screen, int xc, int yc, int xr, int yr, plo
    // Fill the circle
    if (screen->xeigfactor == screen->yeigfactor) {
       // Square pixels
-      int r = calc_radius(xc, yc, xr, yr);
-      fill_circle(screen, xc, yc, r, colour);
+      fill_circle(screen, xc, yc, calc_radius_limit(xc, yc, xr, yr), colour);
    } else {
       int r = calc_radius(xc << screen->xeigfactor, yc << screen->yeigfactor, xr << screen->xeigfactor, yr << screen->yeigfactor);
       int width  = r >> screen->xeigfactor;
