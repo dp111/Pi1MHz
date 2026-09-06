@@ -2081,21 +2081,22 @@ static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *pro
                   (unsigned long)chip.sdregs);
 
 #if __ARM_ARCH >= 7
-   /* ARMv8 build: cyw43_preload_images stashed both 43436 (the
-      blob the BCM43430B0 on Pi Zero 2 W actually uses, despite
-      brcmfmac's naming) and 43455 firmware sets.  Now that we know
-      chip_id+socramrev, pick the right one and free the loser.
-      After this returns, g_cyw43_firmware_data / _length point at
-      the matching blob for the rest of this boot. */
-   if (!cyw43_select_chip_variant(chip.chip_id, chip.socramrev)) {
+   /* ARMv8 build: cyw43_preload_images stashed all four candidate
+      firmware sets - 43430 (Pi 3 B), 43436 and 43436s (the two
+      Pi Zero 2 W radios) and 43455 (Pi 3 B+ / Pi 4).  Now that we
+      know chip_id+chip_revision+socramrev, pick the right one and
+      free the losers.  After this returns, g_cyw43_firmware_data /
+      _length point at the matching blob for the rest of this boot. */
+   if (!cyw43_select_chip_variant(chip.chip_id, chip.chip_revision, chip.socramrev)) {
       /* cyw43_select_chip_variant has already LOG_INFO'd the specific
          reason (unknown chip_id, or missing firmware blob).  Surface a
          short error to the runtime so the boot stage halts cleanly. */
       sdio_runtime_set_error("No matching CYW43 firmware preloaded for this chip");
       return -1;
    }
-   sdio_debug_log("variant: chip_id=%u socramrev=%u -> firmware=%lu bytes",
+   sdio_debug_log("variant: chip_id=%u rev=%u socramrev=%u -> firmware=%lu bytes",
                   (unsigned int)chip.chip_id,
+                  (unsigned int)chip.chip_revision,
                   (unsigned int)chip.socramrev,
                   (unsigned long)g_cyw43_firmware_length);
 #endif

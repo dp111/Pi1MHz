@@ -28,18 +28,38 @@
      slot stays empty and cyw43_select_chip_variant errors out
      cleanly.
 
-     Note on naming.  Pi-OS dmesg says
-       brcmf_fw_alloc_request: using brcm/brcmfmac43430b0-sdio for
-       chip BCM43430/2
-     but the actual file on disk in the trixie firmware-nonfree
-     tree is brcmfmac43436-sdio.bin - the brcmfmac43430b0-sdio.*
-     names are symlinks (specifically
-     brcmfmac43430b0-sdio.raspberrypi,model-zero-2-w.bin -> the
-     43436-sdio.bin underlying blob).  The 43436S sibling
-     (note: trailing 's') is a DIFFERENT blob used on different
-     boards and is NOT what the Pi Zero 2 W needs.  Use the
-     underlying-blob filenames here so it's obvious which file
-     the SD card actually has to contain. */
+     Note on naming, and on the two Pi Zero 2 W radios.  Linux
+     picks the blob in two stages.  First chip_revision selects a
+     base name, through a bitmask table in brcmfmac's sdio.c where
+     bit N means revision N:
+
+       BRCMF_FW_ENTRY(43430, 0x00000001, 43430A0)  rev 0
+       BRCMF_FW_ENTRY(43430, 0x00000002, 43430A1)  rev 1  -> brcmfmac43430-sdio
+       BRCMF_FW_ENTRY(43430, 0xFFFFFFFC, 43430B0)  rev>=2 -> brcmfmac43430b0-sdio
+
+     Then the board's device-tree compatible string is appended -
+     <base>.<board>.bin, falling back to <base>.bin - and in the
+     Pi firmware tree those board-suffixed names are symlinks onto
+     the blobs that actually exist:
+
+       brcmfmac43430-sdio.raspberrypi,model-zero-2-w.bin
+                                       -> brcmfmac43436s-sdio.bin
+       brcmfmac43430b0-sdio.raspberrypi,model-zero-2-w.bin
+                                       -> brcmfmac43436-sdio.bin
+
+     So the Pi Zero 2 W ships with two different radios and
+     chip_revision is what tells them apart: revision 1 wants
+     43436s, revision 2 and up want 43436.  Neither 43436 name is
+     ever reached from the chip ID alone.  Use the underlying-blob
+     filenames here so it's obvious which file the SD card has to
+     contain.
+
+     We do not read a device tree, so the one thing stage 2 does
+     that we cannot is separate a Pi 3 B (also chip 43430
+     revision 1, but wanting the plain brcmfmac43430-sdio.bin)
+     from a Zero 2 W revision 1.  socramrev still does that: the
+     Pi 3 B's BCM43430A1 reports socramrev < 23, both Zero 2 W
+     radios report >= 23. */
 #if __ARM_ARCH >= 7
 const char g_cyw43_firmware_path[] = "Pi1MHz/wifi/brcmfmac43436-sdio.bin";
 const char g_cyw43_nvram_path[]    = "Pi1MHz/wifi/brcmfmac43436-sdio.txt";
@@ -55,6 +75,18 @@ static uint8_t *g_cyw43_alt_clm_data;
 static uint32_t g_cyw43_alt_firmware_length;
 static uint32_t g_cyw43_alt_nvram_length;
 static uint32_t g_cyw43_alt_clm_length;
+/* Second Pi Zero 2 W set: the revision-1 radio, which Linux reaches
+   as brcmfmac43430-sdio.raspberrypi,model-zero-2-w.bin.  Chosen over
+   the primary 43436 set by chip_revision, not by chip_id. */
+static const char g_cyw43_s_firmware_path[] = "Pi1MHz/wifi/brcmfmac43436s-sdio.bin";
+static const char g_cyw43_s_nvram_path[]    = "Pi1MHz/wifi/brcmfmac43436s-sdio.txt";
+static const char g_cyw43_s_clm_path[]      = "Pi1MHz/wifi/brcmfmac43436s-sdio.clm_blob";
+static uint8_t *g_cyw43_s_firmware_data;
+static uint8_t *g_cyw43_s_nvram_data;
+static uint8_t *g_cyw43_s_clm_data;
+static uint32_t g_cyw43_s_firmware_length;
+static uint32_t g_cyw43_s_nvram_length;
+static uint32_t g_cyw43_s_clm_length;
 /* Legacy ARMv8 set: the original Pi 3B uses the same BCM43430-class
    firmware as Zero W, but must still run the ARMv8 kernel7 image. */
 static const char g_cyw43_legacy_firmware_path[] = "Pi1MHz/wifi/brcmfmac43430-sdio.bin";
@@ -101,6 +133,19 @@ static void cyw43_release_alt_images(void)
    g_cyw43_alt_clm_length = 0u;
 }
 
+static void cyw43_release_s_images(void)
+{
+   free(g_cyw43_s_firmware_data);
+   free(g_cyw43_s_nvram_data);
+   free(g_cyw43_s_clm_data);
+   g_cyw43_s_firmware_data = NULL;
+   g_cyw43_s_nvram_data = NULL;
+   g_cyw43_s_clm_data = NULL;
+   g_cyw43_s_firmware_length = 0u;
+   g_cyw43_s_nvram_length = 0u;
+   g_cyw43_s_clm_length = 0u;
+}
+
 static void cyw43_release_legacy_images(void)
 {
    free(g_cyw43_legacy_firmware_data);
@@ -114,6 +159,28 @@ static void cyw43_release_legacy_images(void)
    g_cyw43_legacy_clm_length = 0u;
 }
 #endif
+
+static void cyw43_release_primary_images(void)
+{
+   if (g_cyw43_firmware_data != NULL) {
+      free(g_cyw43_firmware_data);
+      g_cyw43_firmware_data = NULL;
+   }
+
+   if (g_cyw43_nvram_data != NULL) {
+      free(g_cyw43_nvram_data);
+      g_cyw43_nvram_data = NULL;
+   }
+
+   if (g_cyw43_clm_data != NULL) {
+      free(g_cyw43_clm_data);
+      g_cyw43_clm_data = NULL;
+   }
+
+   g_cyw43_firmware_length = 0u;
+   g_cyw43_nvram_length = 0u;
+   g_cyw43_clm_length = 0u;
+}
 
 void cyw43_release_images(void)
 {
@@ -138,6 +205,7 @@ void cyw43_release_images(void)
 
 #if __ARM_ARCH >= 7
    cyw43_release_alt_images();
+   cyw43_release_s_images();
    cyw43_release_legacy_images();
 #endif
 }
@@ -173,42 +241,60 @@ bool cyw43_preload_images(void)
       cyw43_release_images() free()s any non-NULL slot, and we call
       it before each early-return path so the leak window is closed
       regardless of how filesystemReadFile reports its failures. */
+   /* Load the primary set the same way as the other candidates below: a
+      miss leaves the slot empty rather than failing outright.  On the
+      ARMv8 build this set is only one of four, and a card prepared for
+      another board legitimately has no 43436 blob - bailing out here
+      would deny WiFi to a perfectly good Pi 3 B+ or revision-1 Zero 2 W
+      card.  cyw43_select_chip_variant makes the final call once the chip
+      has said what it is.  ARMv6 has no other candidate, so the check
+      below still fails the preload there. */
    g_cyw43_firmware_length = filesystemReadFile(g_cyw43_firmware_path,
                                                 &g_cyw43_firmware_data,
                                                 0);
    if (g_cyw43_firmware_length == 0u) {
-      LOG_INFO("CYW43 firmware image not found: %s\n", g_cyw43_firmware_path);
-      cyw43_release_images();
-      return false;
-   }
-
-   g_cyw43_nvram_length = filesystemReadFile(g_cyw43_nvram_path,
-                                             &g_cyw43_nvram_data,
-                                             0);
-   if (g_cyw43_nvram_length == 0u) {
-      LOG_INFO("CYW43 NVRAM image not found: %s\n", g_cyw43_nvram_path);
-      cyw43_release_images();
-      return false;
-   }
-
-   /* The CLM (Country Locale Matrix - the chip's regulatory database) is
-      optional: if the blob is absent the firmware falls back to its
-      built-in minimal regulatory data, so a missing file must NOT fail
-      the boot.  When present it is downloaded to the chip via the
-      "clmload" iovar so the "country" setting has a full country table. */
-   g_cyw43_clm_length = filesystemReadFile(g_cyw43_clm_path,
-                                           &g_cyw43_clm_data,
-                                           0);
-   if (g_cyw43_clm_length == 0u) {
-      /* CLM is optional - if filesystemReadFile allocated then failed,
-         free that slot via the central release path before clearing
-         the pointer, so we don't leak the partial buffer. */
-      if (g_cyw43_clm_data != NULL) {
-         free(g_cyw43_clm_data);
-         g_cyw43_clm_data = NULL;
+      if (g_cyw43_firmware_data != NULL) {
+         free(g_cyw43_firmware_data);
+         g_cyw43_firmware_data = NULL;
       }
-      LOG_INFO("CYW43 CLM blob not found (optional): %s\n", g_cyw43_clm_path);
+      LOG_INFO("CYW43 firmware image not found: %s\n", g_cyw43_firmware_path);
+   } else {
+      g_cyw43_nvram_length = filesystemReadFile(g_cyw43_nvram_path,
+                                                &g_cyw43_nvram_data,
+                                                0);
+      if (g_cyw43_nvram_length == 0u) {
+         LOG_INFO("CYW43 NVRAM image not found: %s\n", g_cyw43_nvram_path);
+         cyw43_release_primary_images();
+      } else {
+         /* The CLM (Country Locale Matrix - the chip's regulatory database)
+            is optional: if the blob is absent the firmware falls back to its
+            built-in minimal regulatory data, so a missing file must NOT fail
+            the boot.  When present it is downloaded to the chip via the
+            "clmload" iovar so the "country" setting has a full country
+            table. */
+         g_cyw43_clm_length = filesystemReadFile(g_cyw43_clm_path,
+                                                 &g_cyw43_clm_data,
+                                                 0);
+         if (g_cyw43_clm_length == 0u) {
+            /* CLM is optional - if filesystemReadFile allocated then failed,
+               free that slot before clearing the pointer so we don't leak
+               the partial buffer. */
+            if (g_cyw43_clm_data != NULL) {
+               free(g_cyw43_clm_data);
+               g_cyw43_clm_data = NULL;
+            }
+            LOG_INFO("CYW43 CLM blob not found (optional): %s\n", g_cyw43_clm_path);
+         }
+      }
    }
+
+#if __ARM_ARCH < 7
+   /* Pi Zero W: this is the only firmware set there is. */
+   if (g_cyw43_firmware_length == 0u || g_cyw43_nvram_length == 0u) {
+      cyw43_release_images();
+      return false;
+   }
+#endif
 
 #if __ARM_ARCH >= 7
    /* ARMv8 build: optimistically try to load the BCM43455 firmware
@@ -249,6 +335,35 @@ bool cyw43_preload_images(void)
                      g_cyw43_alt_clm_path);
          }
       }
+   }
+
+   /* The Pi Zero 2 W ships with two radios: chip_revision 1 wants the
+      43436s blob, revision 2 and up the 43436 blob already in primary.
+      Preload the revision-1 candidate; a card carrying only one of the
+      two still boots on the board it was prepared for, because
+      cyw43_select_chip_variant reports the missing blob by name. */
+   g_cyw43_s_firmware_length = filesystemReadFile(g_cyw43_s_firmware_path,
+                                                  &g_cyw43_s_firmware_data, 0);
+   if (g_cyw43_s_firmware_length != 0u) {
+      g_cyw43_s_nvram_length = filesystemReadFile(g_cyw43_s_nvram_path,
+                                                  &g_cyw43_s_nvram_data, 0);
+      if (g_cyw43_s_nvram_length == 0u) {
+         LOG_INFO("CYW43 NVRAM (43436s) not found: %s\n", g_cyw43_s_nvram_path);
+         cyw43_release_s_images();
+      } else {
+         g_cyw43_s_clm_length = filesystemReadFile(g_cyw43_s_clm_path,
+                                                   &g_cyw43_s_clm_data, 0);
+         if (g_cyw43_s_clm_length == 0u && g_cyw43_s_clm_data != NULL) {
+            free(g_cyw43_s_clm_data);
+            g_cyw43_s_clm_data = NULL;
+         }
+      }
+   } else {
+      if (g_cyw43_s_firmware_data != NULL) {
+         free(g_cyw43_s_firmware_data);
+         g_cyw43_s_firmware_data = NULL;
+      }
+      LOG_INFO("CYW43 firmware (43436s) not found: %s\n", g_cyw43_s_firmware_path);
    }
 
    /* The original Pi 3B is ARMv8 but carries the older BCM43430-class
@@ -293,15 +408,23 @@ bool cyw43_preload_images(void)
 
    The original Pi 3B is an ARMv8 host with the older BCM43430-class
    radio, so an ARMv8 image must retain a third 43430 firmware set. */
-bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
+bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t chip_revision, uint8_t socramrev)
 {
    bool need_alt = false;
    bool need_legacy = false;
+   bool need_s = false;
 
    if (chip_id == 0x4345u) {   /* BCM43455 ChipCommon ID 0x4345, not decimal 43455 */
       need_alt = true;
    } else if (chip_id == 43430u) {
+      /* socramrev separates a Pi 3 B's BCM43430A1 (< 23) from either of
+         the Pi Zero 2 W radios (>= 23) - the job device-tree board
+         matching does for Linux.  Among the Zero 2 W pair it is
+         chip_revision that decides, exactly as brcmfmac's revision-mask
+         table does: revision 1 is the 43436s part, revision 2 and up the
+         43436 already sitting in the primary slots. */
       need_legacy = socramrev < 23u;
+      need_s = !need_legacy && chip_revision < 2u;
    } else {
       /* Unknown chip_id; let sdio.c surface the "unsupported chip"
          error.  Drop the alt set so we don't keep its memory
@@ -309,6 +432,7 @@ bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
       LOG_INFO("CYW43 select: unrecognised chip_id=%u; refusing to download firmware\n",
                (unsigned int)chip_id);
       cyw43_release_alt_images();
+      cyw43_release_s_images();
       cyw43_release_legacy_images();
       return false;
    }
@@ -330,6 +454,7 @@ bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
       g_cyw43_alt_firmware_length = 0u;
       g_cyw43_alt_nvram_length    = 0u;
       g_cyw43_alt_clm_length      = 0u;
+      cyw43_release_s_images();
       cyw43_release_legacy_images();
    } else if (need_legacy) {
       free(g_cyw43_firmware_data);
@@ -348,9 +473,30 @@ bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
       g_cyw43_legacy_nvram_length = 0u;
       g_cyw43_legacy_clm_length = 0u;
       cyw43_release_alt_images();
-   } else {
-      /* Keep primary (43436); free the Pi 3 candidates. */
+      cyw43_release_s_images();
+   } else if (need_s) {
+      /* Pi Zero 2 W, revision-1 radio: swap the 43436s set into primary. */
+      free(g_cyw43_firmware_data);
+      free(g_cyw43_nvram_data);
+      free(g_cyw43_clm_data);
+      g_cyw43_firmware_data    = g_cyw43_s_firmware_data;
+      g_cyw43_nvram_data       = g_cyw43_s_nvram_data;
+      g_cyw43_clm_data         = g_cyw43_s_clm_data;
+      g_cyw43_firmware_length  = g_cyw43_s_firmware_length;
+      g_cyw43_nvram_length     = g_cyw43_s_nvram_length;
+      g_cyw43_clm_length       = g_cyw43_s_clm_length;
+      g_cyw43_s_firmware_data = NULL;
+      g_cyw43_s_nvram_data = NULL;
+      g_cyw43_s_clm_data = NULL;
+      g_cyw43_s_firmware_length = 0u;
+      g_cyw43_s_nvram_length = 0u;
+      g_cyw43_s_clm_length = 0u;
       cyw43_release_alt_images();
+      cyw43_release_legacy_images();
+   } else {
+      /* Keep primary (43436); free the other three candidates. */
+      cyw43_release_alt_images();
+      cyw43_release_s_images();
       cyw43_release_legacy_images();
    }
 
@@ -361,9 +507,9 @@ bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t socramrev)
       have to dig through filesystemReadFile messages. */
    if (g_cyw43_firmware_data == NULL || g_cyw43_firmware_length == 0u
        || g_cyw43_nvram_data == NULL || g_cyw43_nvram_length == 0u) {
-      LOG_INFO("CYW43 select: chip_id=%u needs %s firmware but it is not on the SD card\n",
-               (unsigned int)chip_id,
-               need_alt ? "43455" : need_legacy ? "43430" : "43436");
+      LOG_INFO("CYW43 select: chip_id=%u rev=%u needs %s firmware but it is not on the SD card\n",
+               (unsigned int)chip_id, (unsigned int)chip_revision,
+               need_alt ? "43455" : need_legacy ? "43430" : need_s ? "43436s" : "43436");
       return false;
    }
    return true;
