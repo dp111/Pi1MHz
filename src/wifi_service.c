@@ -27,6 +27,7 @@
 #include "BeebSCSI/filesystem.h"
 #include "config.h"
 #include "wifi_service.h"
+#include "uef_service.h"
 #include "ram_emulator.h"
 #include "services.h"
 #include "wifi/sdio.h"
@@ -105,7 +106,7 @@ static uint8_t scan_fields = 127u;
 static uint32_t network_time_seconds;
 static int16_t time_utc_offset_minutes;
 
-static void response_string(uint32_t cp, const char *value);
+void response_string(uint32_t cp, const char *value);
 static void response_printf(uint32_t cp, const char *format, ...)
    __attribute__((format(printf, 2, 3)));
 static bool command_string(uint32_t cp, const char **value);
@@ -585,7 +586,7 @@ static bool command_string(uint32_t cp, const char **value)
    return false;
 }
 
-static void response_string(uint32_t cp, const char *value)
+void response_string(uint32_t cp, const char *value)
 {
    size_t length = 0u;
    while (length < WIFI_SVC_TEXT_MAX && value[length] != '\0')
@@ -649,6 +650,14 @@ static uint8_t process_request(uint32_t cp)
          asynchronous_close();
          response_string(cp, "OK\r\n");
          return WIFI_SVC_OK;
+
+      /* The tape half of the service lives in uef_service.c - it is a state
+         machine with its own lifetime and owns heap while a tape is open. */
+      case WIFI_SVC_CMD_UEF:
+         return uef_service_stream_command(cp);
+
+      case WIFI_SVC_CMD_GUARD:
+         return uef_service_guard_command(cp);
 
       default:
          return WIFI_SVC_ERR_UNSUPPORTED;
@@ -729,6 +738,10 @@ void wifi_service_init(uint8_t instance, uint8_t address)
    /* Re-read the saved profile on every host reset, but credentials_load
     * preserves an already-running association when the profile is unchanged. */
    wifi_credentials_load();
+   /* The Beeb that opened a tape is gone, and its JIM window with it, so
+      drop the tape rather than leave its heap held for a host that will
+      never CLOSE it. */
+   uef_service_reset();
    (void)services_register(WIFI_SVC_CMD_STATUS, WIFI_SVC_CMD_LAST,
                            wifi_service_command);
    /* A host reset abandons the old OSWORD/star-command caller. Complete any

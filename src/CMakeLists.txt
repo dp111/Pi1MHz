@@ -294,6 +294,8 @@ set(services_emulator_files
    AUN/aun_emulator.h
    uef_stream.c
    uef_stream.h
+   uef_service.c
+   uef_service.h
 )
 
 # uzlib - vendored DEFLATE decompressor, see src/uzlib/NOTES.md.  Only the

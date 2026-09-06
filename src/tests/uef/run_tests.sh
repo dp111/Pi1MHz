@@ -18,7 +18,9 @@ trap 'rm -rf "$B"' EXIT
 mkdir -p "$B/uzlib"
 cp "$SRC"/uef_stream.c "$SRC"/uef_stream.h "$B/"
 cp "$SRC"/uzlib/*.c "$SRC"/uzlib/*.h "$B/uzlib/"
-cp "$HERE"/test_uef_stream.c "$B/"
+cp "$HERE"/test_uef_stream.c "$HERE"/test_uef_service.c "$B/"
+cp "$SRC"/uef_service.c "$SRC"/uef_service.h "$SRC"/wifi_service.h "$SRC"/services.h "$B/"
+cp -r "$HERE"/stubs/. "$B/"
 
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
 
@@ -50,6 +52,10 @@ if [ -n "$UEF_CORPUS" ] && [ -d "$UEF_CORPUS" ]; then
    find "$UEF_CORPUS" -iname '*.uef' -exec cp {} "$B/corpus/" \; 2>/dev/null || true
 fi
 
+gcc -std=gnu2x -Wall -Wextra -g $SAN -I"$B" -o "$B/svc" \
+    "$B/test_uef_service.c" "$B/uef_service.c" "$B/uef_stream.c" \
+    "$B/tinflate.o" "$B/crc32.o" "$B/adler32.o"
+
 echo "== UEF stream: bytes match gunzip, rewind repeats, CRC verifies =="
 pass=0
 fail=0
@@ -75,3 +81,15 @@ done
 echo
 echo "$pass ok, $fail bad"
 [ "$fail" -eq 0 ]
+
+# The service protocol, driven the way the ROM drives it, against a fake JIM.
+echo
+for f in "$B"/corpus/*.uef; do
+   [ -e "$f" ] || continue
+   if [ "$(dd if="$f" bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
+      gzip -dc "$f" > "$B/ref.bin"
+   else
+      cp "$f" "$B/ref.bin"
+   fi
+   "$B/svc" "$f" "$B/ref.bin"
+done

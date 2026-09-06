@@ -23,13 +23,12 @@
 #define SERVICE_CMD_NET_FIRST   45u   /* IP sockets / N: device - net_service.c */
 #define SERVICE_CMD_NET_LAST    79u   /* sockets 45-56, IRQ 57, N: dev 60-65   */
 #define SERVICE_CMD_WIFI_FIRST 80u /* ElkWiFi compatibility service        */
-/* Two commands are held for the UEF cluster's return: 86 (guard image) sits
-   INSIDE the claimed range and is answered WIFI_SVC_ERR_UNSUPPORTED for now;
-   93 (UEF stream) sits just past it, which is why the range stops at 92. */
-#define SERVICE_CMD_WIFI_LAST  92u
+/* The UEF cluster is now in: 86 (guard image) sits inside the range and 93
+   (UEF stream) is its top, both handled by uef_service.c. */
+#define SERVICE_CMD_WIFI_LAST  93u
 #define SERVICE_CMD_SECURE_FIRST  94u /* RNG and managed SSH - secure_service.c */
 #define SERVICE_CMD_SECURE_LAST  113u
-/* 93 held (see above); 114..255 unallocated */
+/* 114..255 unallocated */
 
 /* services_register() rejects an overlapping claim at run time, which is the
    backstop.  These catch the same mistake when the ranges above are edited -

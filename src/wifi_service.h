@@ -23,10 +23,13 @@ void wifi_service_command(uint32_t command_pointer, uint32_t address,
 #define WIFI_SVC_CMD_CANCEL       90u
 #define WIFI_SVC_CMD_RADIO        91u
 #define WIFI_SVC_CMD_ONLINE       92u
-/* 86 (guard image, inside the range - answered ERR_UNSUPPORTED) and 93 (UEF
-   stream, just past it) are held for the UEF cluster, which returns once a
-   resumable inflater makes the stream affordable. */
-#define WIFI_SVC_CMD_LAST         WIFI_SVC_CMD_ONLINE
+/* The UEF cluster, handled in uef_service.c.  86 sits inside the range; 93
+   sits one past ONLINE, which is why the range now ends there rather than at
+   92.  Both were held vacant until a resumable inflater made the tape stream
+   affordable - see src/uzlib/NOTES.md. */
+#define WIFI_SVC_CMD_GUARD        86u
+#define WIFI_SVC_CMD_UEF          93u
+#define WIFI_SVC_CMD_LAST         WIFI_SVC_CMD_UEF
 
 #define WIFI_SVC_OK               0x00u
 #define WIFI_SVC_BUSY             0x80u
