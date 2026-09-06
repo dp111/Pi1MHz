@@ -292,6 +292,23 @@ set(services_emulator_files
    AUN/aun_config.h
    AUN/aun_emulator.c
    AUN/aun_emulator.h
+   uef_stream.c
+   uef_stream.h
+)
+
+# uzlib - vendored DEFLATE decompressor, see src/uzlib/NOTES.md.  Only the
+# decompression half is built; the compressor is present so the tree matches
+# upstream.  Warnings are silenced per-file rather than by editing vendored
+# source, the same way fastsid is handled above.
+set(uzlib_files
+   uzlib/tinflate.c
+   uzlib/crc32.c
+   uzlib/adler32.c
+)
+set_source_files_properties(
+   ${uzlib_files}
+   PROPERTIES
+   COMPILE_OPTIONS "-Wno-sign-conversion;-Wno-conversion;-Wno-shadow;-Wno-unused-parameter;-Wno-cast-qual;-Wno-sign-compare;-Wno-implicit-fallthrough"
 )
 
 set(teletext_emulator_files
@@ -413,6 +430,7 @@ set( Pi1MHz_sources
     ${BeebSID_emulator_files}
     ${FrameBuffer_emulator_files}
     ${services_emulator_files}
+    ${uzlib_files}
     ${teletext_emulator_files}
     ${mouse_redirect_files}
     ${wifi_files}
