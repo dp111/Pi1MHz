@@ -2133,6 +2133,28 @@ static bool ws_oom(ws_conn_t *c)
    return false;
 }
 
+/* Install a fully built response as the connection's output and start
+   sending it.  Takes ownership of r's buffer.  This is the one place the
+   OOM contract is enforced: a buffer that failed to grow closes the
+   connection (ws_oom) instead of being sent truncated.  Returns what the
+   route should return. */
+static bool ws_install_response(ws_conn_t *c, ws_strbuf_t *r, conn_state_t state)
+{
+   if (r->failed) {
+      sb_free(r);
+      return ws_oom(c);
+   }
+   free(c->out);
+   c->out = r->data;
+   c->out_len = r->len;
+   c->out_sent = 0u;
+   c->bytes_queued = 0u;
+   c->bytes_acked = 0u;
+   c->state = state;
+   conn_pump(c);
+   return true;
+}
+
 /* Returns the Connection: header line every response should include.
    When this connection has been kept alive for the next request the
    client gets "Connection: keep-alive\r\n"; otherwise "close\r\n" so
@@ -2236,8 +2258,8 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
    Always consumes `body`.  Returns false only if the connection had to
    be aborted (out of memory). */
 /* As ws_finish_html but text/plain, for machine-read diagnostics. */
-static bool ws_finish_text(ws_conn_t *c, int status, const char *stext,
-                           ws_strbuf_t *body)
+static bool ws_finish_typed(ws_conn_t *c, int status, const char *stext,
+                            const char *ctype, ws_strbuf_t *body)
 {
    ws_strbuf_t r;
 
@@ -2249,70 +2271,32 @@ static bool ws_finish_text(ws_conn_t *c, int status, const char *stext,
    sb_init(&r);
    sb_printf(&r,
              "HTTP/1.1 %d %s\r\n"
-             "Content-Type: text/plain; charset=utf-8\r\n"
+             "Content-Type: %s\r\n"
              "Content-Length: %lu\r\n"
              "%s"
              "\r\n",
-             status, stext, (unsigned long)body->len,
+             status, stext, ctype, (unsigned long)body->len,
              ws_connection_hdr(c));
    if (body->len > 0u && body->data != NULL)
       sb_write(&r, body->data, body->len);
    sb_free(body);
 
-   if (r.failed) {
-      sb_free(&r);
-      return ws_oom(c);
-   }
+   return ws_install_response(c, &r, CONN_SEND_MEM);
+}
 
-   free(c->out);
-   c->out = r.data;
-   c->out_len = r.len;
-   c->out_sent = 0u;
-   c->bytes_queued = 0u;
-   c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
-   conn_pump(c);
-   return true;
+/* text/plain and text/html bodies differ only in the Content-Type. */
+static bool ws_finish_text(ws_conn_t *c, int status, const char *stext,
+                           ws_strbuf_t *body)
+{
+   return ws_finish_typed(c, status, stext, "text/plain; charset=utf-8", body);
 }
 
 static bool ws_finish_html(ws_conn_t *c, int status, const char *stext,
                            ws_strbuf_t *body)
 {
-   ws_strbuf_t r;
-
-   if (body->failed) {
-      sb_free(body);
-      return ws_oom(c);
-   }
-
-   sb_init(&r);
-   sb_printf(&r,
-             "HTTP/1.1 %d %s\r\n"
-             "Content-Type: text/html; charset=utf-8\r\n"
-             "Content-Length: %lu\r\n"
-             "%s"
-             "\r\n",
-             status, stext, (unsigned long)body->len,
-             ws_connection_hdr(c));
-   if (body->len > 0u && body->data != NULL)
-      sb_write(&r, body->data, body->len);
-   sb_free(body);
-
-   if (r.failed) {
-      sb_free(&r);
-      return ws_oom(c);
-   }
-
-   free(c->out);
-   c->out = r.data;
-   c->out_len = r.len;
-   c->out_sent = 0u;
-   c->bytes_queued = 0u;
-   c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
-   conn_pump(c);
-   return true;
+   return ws_finish_typed(c, status, stext, "text/html; charset=utf-8", body);
 }
+
 
 /* Build a 401 Unauthorized response carrying the digest challenge.
    Used both on the very first request (no Authorization header) and on
@@ -2343,20 +2327,7 @@ static bool ws_send_auth_challenge(ws_conn_t *c, bool stale)
              ws_connection_hdr(c));
    sb_write(&r, body, sizeof(body) - 1u);
 
-   if (r.failed) {
-      sb_free(&r);
-      return ws_oom(c);
-   }
-
-   free(c->out);
-   c->out = r.data;
-   c->out_len = r.len;
-   c->out_sent = 0u;
-   c->bytes_queued = 0u;
-   c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
-   conn_pump(c);
-   return true;
+   return ws_install_response(c, &r, CONN_SEND_MEM);
 }
 
 static bool ws_error(ws_conn_t *c, int status, const char *stext,
@@ -2417,12 +2388,7 @@ static bool ws_method_not_allowed(ws_conn_t *c,
              ws_connection_hdr(c));
    sb_write(&r, b.data, b.len);
    sb_free(&b);
-   if (r.failed) { sb_free(&r); return ws_oom(c); }
-   free(c->out); c->out = r.data; c->out_len = r.len;
-   c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
-   conn_pump(c);
-   return true;
+   return ws_install_response(c, &r, CONN_SEND_MEM);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3197,20 +3163,7 @@ static bool route_audio_wav(ws_conn_t *c)
    audio_ring_snapshot(pcm, WS_AUDIO_WAV_FRAMES);
    sb_write(&r, (const char *)pcm, pcm_bytes);
    free(pcm);
-   if (r.failed) {
-      sb_free(&r);
-      return ws_oom(c);
-   }
-
-   free(c->out);
-   c->out = r.data;
-   c->out_len = r.len;
-   c->out_sent = 0u;
-   c->bytes_queued = 0u;
-   c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
-   conn_pump(c);
-   return true;
+   return ws_install_response(c, &r, CONN_SEND_MEM);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3476,19 +3429,7 @@ static bool start_download(ws_conn_t *c, const char *sdpath)
                          (unsigned long)size,
                          ws_connection_hdr(c));
                sb_write(&h, rbody, sizeof rbody - 1u);
-               if (h.failed) {
-                  sb_free(&h);
-                  return ws_oom(c);
-               }
-               free(c->out);
-               c->out = h.data;
-               c->out_len = h.len;
-               c->out_sent = 0u;
-               c->bytes_queued = 0u;
-               c->bytes_acked = 0u;
-               c->state = CONN_SEND_MEM;
-               conn_pump(c);
-               return true;
+               return ws_install_response(c, &h, CONN_SEND_MEM);
             }
             case WS_RANGE_NONE:
             default:
@@ -4516,19 +4457,7 @@ static bool route_dav_options(ws_conn_t *c)
       "%s"
       "\r\n", ws_connection_hdr(c));
 
-   if (r.failed) {
-      sb_free(&r);
-      return ws_oom(c);
-   }
-   free(c->out);
-   c->out = r.data;
-   c->out_len = r.len;
-   c->out_sent = 0u;
-   c->bytes_queued = 0u;
-   c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
-   conn_pump(c);
-   return true;
+   return ws_install_response(c, &r, CONN_SEND_MEM);
 }
 
 static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
@@ -4711,19 +4640,7 @@ static bool dav_put_send_response(ws_conn_t *c)
              "\r\n",
              c->dav_put_status, c->dav_put_status_text,
              ws_connection_hdr(c));
-   if (r.failed) {
-      sb_free(&r);
-      return ws_oom(c);
-   }
-   free(c->out);
-   c->out = r.data;
-   c->out_len = r.len;
-   c->out_sent = 0u;
-   c->bytes_queued = 0u;
-   c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
-   conn_pump(c);
-   return true;
+   return ws_install_response(c, &r, CONN_SEND_MEM);
 }
 
 /* Drain n bytes from `data` into the open PUT temp file.  When the byte
@@ -5203,12 +5120,7 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
                    "%s"
                    "\r\n",
                    ws_connection_hdr(c));
-         if (r.failed) { sb_free(&r); return ws_oom(c); }
-         free(c->out); c->out = r.data; c->out_len = r.len;
-         c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
-         c->state = CONN_SEND_MEM;
-         conn_pump(c);
-         return true;
+         return ws_install_response(c, &r, CONN_SEND_MEM);
       }
       strlcpy(c->dav_put_target, sdpath, sizeof c->dav_put_target);
       c->dav_put_tmppath[0] = '\0';          /* nothing to unlink on abort */
@@ -5294,12 +5206,7 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
                 "%s"
                 "\r\n",
                 ws_connection_hdr(c));
-      if (r.failed) { sb_free(&r); return ws_oom(c); }
-      free(c->out); c->out = r.data; c->out_len = r.len;
-      c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
-      c->state = CONN_SEND_MEM;
-      conn_pump(c);
-      return true;
+      return ws_install_response(c, &r, CONN_SEND_MEM);
    }
 
    /* A CL=0 PUT on a NEW target deliberately falls through to the
@@ -5488,11 +5395,8 @@ static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
                 "%s"
                 "\r\n",
                 ws_connection_hdr(c));
-      if (r.failed) { sb_free(&r); return ws_oom(c); }
-      free(c->out); c->out = r.data; c->out_len = r.len;
-      c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
-      c->state = CONN_SEND_MEM;
-      conn_pump(c);
+      if (!ws_install_response(c, &r, CONN_SEND_MEM))
+         return false;
    }
    return true;
 }
@@ -5546,11 +5450,8 @@ static bool route_dav_mkcol(ws_conn_t *c, const char *rawpath)
                 "%s"
                 "\r\n",
                 ws_connection_hdr(c));
-      if (r.failed) { sb_free(&r); return ws_oom(c); }
-      free(c->out); c->out = r.data; c->out_len = r.len;
-      c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
-      c->state = CONN_SEND_MEM;
-      conn_pump(c);
+      if (!ws_install_response(c, &r, CONN_SEND_MEM))
+         return false;
    }
    return true;
 }
@@ -5591,19 +5492,7 @@ static bool dav_move_copy_send_response(ws_conn_t *c, bool dst_existed)
              dst_existed ? 204 : 201,
              dst_existed ? "No Content" : "Created",
              ws_connection_hdr(c));
-   if (r.failed) {
-      sb_free(&r);
-      return ws_oom(c);
-   }
-   free(c->out);
-   c->out = r.data;
-   c->out_len = r.len;
-   c->out_sent = 0u;
-   c->bytes_queued = 0u;
-   c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
-   conn_pump(c);
-   return true;
+   return ws_install_response(c, &r, CONN_SEND_MEM);
 }
 
 /* One per-tick step of an active CONN_DAV_COPY: read one chunk from
@@ -5972,12 +5861,7 @@ static bool route_dav_unlock(ws_conn_t *c)
              "%s"
              "\r\n",
              ws_connection_hdr(c));
-   if (r.failed) { sb_free(&r); return ws_oom(c); }
-   free(c->out); c->out = r.data; c->out_len = r.len;
-   c->out_sent = 0u; c->bytes_queued = 0u; c->bytes_acked = 0u;
-   c->state = CONN_SEND_MEM;
-   conn_pump(c);
-   return true;
+   return ws_install_response(c, &r, CONN_SEND_MEM);
 }
 
 /* PROPPATCH stub.  Windows Explorer's MiniRedirector issues PROPPATCH
