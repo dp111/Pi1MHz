@@ -445,6 +445,11 @@ static void Pi1MHzBus_addr_Status(unsigned int gpio)
    Pi1MHz_MemoryWrite_FIQ(addr+1, fx_register[data]);
 }
 
+/* Set by init_emulator from the emulator table: the nRST edge handler runs
+   in IRQ context and must not walk the table to find out whether the SCSI
+   emulator is enabled. */
+static volatile bool harddisc_enabled;
+
 // take data written by the beeb and put it to the correct place
 static void Pi1MHzBus_write_Status(unsigned int gpio)
 {
@@ -462,7 +467,10 @@ void IRQHandler_main(void) {
       poll loop next comes round to noticing the reset. */
    if (RPI_GpioBase->GPEDS0 & NRST_MASK) {
       RPI_GpioBase->GPEDS0 = NRST_MASK;    /* write 1 clears, before the work */
-      hd_emulator_bus_reset();
+      /* With Harddisc_addr=-1 this used to write SCSI status to &FC00/&FC01
+         and clear the Helpers slot's nIRQ mask on every BREAK. */
+      if (harddisc_enabled)
+         hd_emulator_bus_reset();
    }
 
    // Check for USB IRQ (IRQ #9 in Enable_IRQs_1)
@@ -531,6 +539,11 @@ static void init_emulator(void) {
                emulator[i].enable = 1;
             }
       }
+
+   harddisc_enabled = false;
+   for (uint8_t i = 0; i < NUM_EMULATORS; i++)
+      if (emulator[i].enable == 1 && strcmp(emulator[i].name, "Harddisc") == 0)
+         harddisc_enabled = true;
 
    /* BeebSID and M5000 share AUDIO_PIN / rpi_audio — only one may run. */
    {
