@@ -1791,6 +1791,11 @@ void prim_move_copy_rectangle(screen_mode_t *screen, int x1, int y1, int x2, int
       int sx2 = (x2 < g_x_max) ? x2 : g_x_max;
       int sy1 = (y1 > g_y_min) ? y1 : g_y_min;
       int sy2 = (y2 < g_y_max) ? y2 : g_y_max;
+      // The common case - source and destination both inside the window -
+      // walked every in-window source pixel above; nothing to clear here.
+      if (sx1 >= cx1 && sx2 <= cx2 && sy1 >= cy1 && sy2 <= cy2) {
+         return;
+      }
       for (int sy = sy1; sy <= sy2; sy++) {
          for (int sx = sx1; sx <= sx2; sx++) {
             if (sx >= cx1 && sx <= cx2 && sy >= cy1 && sy <= cy2) {
