@@ -607,13 +607,22 @@ bool filesystemTestLunStatus(uint8_t lunNumber)
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 {
    int index = LDUSERCODE;
+   /* Copy at most .length bytes, not a fixed five.  LDUserCode is a STRING
+      key and store_string() allocates copylen + 1 - only NUMSTRING allocates
+      key->max - so a short value like "LDUserCode=12" gives a 3-byte block
+      and reading [2]..[4] ran off the end of the heap, handing adjacent heap
+      to the Domesday AIV software as the disc's user code.  The key table's
+      comment shows this was found once and "fixed" by bumping max 4->5, which
+      only covers values that are exactly five characters long.  Pad the rest
+      with zeroes, as the not-found path below does. */
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      userCode[0] = filesystemState.keyvalues[lunNumber][index].v.string[0];
-      userCode[1] = filesystemState.keyvalues[lunNumber][index].v.string[1];
-      userCode[2] = filesystemState.keyvalues[lunNumber][index].v.string[2];
-      userCode[3] = filesystemState.keyvalues[lunNumber][index].v.string[3];
-      userCode[4] = filesystemState.keyvalues[lunNumber][index].v.string[4];
+      size_t have = filesystemState.keyvalues[lunNumber][index].length;
+      if (have > 5u) have = 5u;
+      for (size_t i = 0; i < have; i++)
+         userCode[i] = (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[i];
+      for (size_t i = have; i < 5u; i++)
+         userCode[i] = 0;
       return;
    }
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReadLunUserCode(): ERROR: Unable to find LDUserCode in attributes\r\n"));

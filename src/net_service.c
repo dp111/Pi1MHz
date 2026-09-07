@@ -75,6 +75,10 @@ typedef struct {
    bool              accept_ready;  /* a listener has an accepted conn ready*/
    uint8_t           accept_h;      /* its handle index (when accept_ready) */
    ip_addr_t         dns_ip;        /* dns_gethostbyname target             */
+   uint16_t          dns_gen;       /* bumped per request and per reset - see
+                                       net_dns_found; lwIP cannot cancel a
+                                       resolve, so the reply must be able to
+                                       prove which request it belongs to    */
    /* RX ring: single-context (the lwIP recv callbacks and the recv commands
       all run on the main loop), so no locking.  count distinguishes full
       from empty.  For TCP it is a byte stream; for UDP it holds datagram
@@ -294,9 +298,12 @@ static void net_ip_to_wire(const ip_addr_t *ip, uint32_t off)
 
 static void net_handle_reset(net_handle_t *h)
 {
+   uint16_t dns_gen = (uint16_t)(h->dns_gen + 1u);   /* invalidate any resolve
+                                                        still in flight */
    ring_release_large(h);
    memset(h, 0, sizeof *h);        /* NET_ST_FREE, tpcb NULL, ring empty */
    h->rx_size = NET_RX_RING_SIZE;  /* back to the handle's own ring */
+   h->dns_gen = dns_gen;           /* NOT zeroed: see net_dns_found */
 }
 
 /* Detach every callback and drop the pcb without a use-after-free, then mark
@@ -518,12 +525,26 @@ static err_t net_tcp_connected(void *arg, struct altcp_pcb *pcb, err_t err)
    return ERR_OK;
 }
 
+/* lwIP's dns_gethostbyname cannot be cancelled, and do_close() ->
+   net_handle_reset() just memsets the handle - so without a guard a resolve
+   issued for one URL could complete into the handle after it had been closed
+   and reopened for a DIFFERENT URL: do_url_open's URL_RESOLVING case takes
+   h->dns_ip unconditionally, so the connection went to the OLD host while
+   Host: and the request path named the new one.  Carry the handle index and
+   its generation in arg and check both, exactly as netutil_ping_generation
+   does for the utility path ("a reply arriving after a cancel or a timeout
+   can never complete the request that replaced it"). */
 static void net_dns_found(const char *name, const ip_addr_t *ipaddr, void *arg)
 {
-   net_handle_t *h = (net_handle_t *)arg;
+   uint32_t      tag = (uint32_t)(uintptr_t)arg;
+   unsigned int  idx = tag >> 16;
+   net_handle_t *h;
    (void)name;
-   if (h == NULL)
+   if (idx >= NET_MAX_HANDLES)
       return;
+   h = &net_h[idx];
+   if (h->dns_gen != (uint16_t)tag)
+      return;                      /* a resolve this handle no longer wants */
    h->dns_done = true;
    if (ipaddr != NULL) {
       h->dns_ip = *ipaddr;
@@ -773,7 +794,10 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
       return NET_ERR_PARAM;
    {
       const char *name = (const char *)&Pi1MHz->JIM_ram[cp + 1u];
-      err_t e = dns_gethostbyname(name, &h->dns_ip, net_dns_found, h);
+      h->dns_gen++;
+      err_t e = dns_gethostbyname(name, &h->dns_ip, net_dns_found,
+                                  (void *)(uintptr_t)(((uint32_t)(h - net_h) << 16)
+                                                      | h->dns_gen));
       if (e == ERR_OK) {            /* cache hit, resolved synchronously */
          net_ip_to_wire(&h->dns_ip, cp + 4u);
          return NET_OK;
@@ -968,6 +992,21 @@ static uint8_t do_close(net_handle_t *h)
       }
       n = tnfs_build_umount(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq);
       net_tnfs_send_raw(h, req, (uint16_t)n);
+   }
+   /* A listener with an accepted connection nobody has collected: close that
+      too.  The accepted handle's index lives ONLY in this listener's one-deep
+      accept_h, so closing the listener without it left the handle
+      NET_ST_CONNECTED with a live pcb - permanently busy (a later
+      NET_CMD_OPEN on it returns NET_ERR_INUSE) and the peer never closed.
+      Seven of those and the service is out of handles until a BBC reset. */
+   if (h->accept_ready) {
+      unsigned int aidx = h->accept_h;
+      h->accept_ready = false;
+      if (aidx < NET_MAX_HANDLES && &net_h[aidx] != h
+          && net_h[aidx].state != NET_ST_FREE) {
+         net_pcb_release(&net_h[aidx], true);   /* nobody ever owned it: abort */
+         net_handle_reset(&net_h[aidx]);
+      }
    }
    net_pcb_release(h, false);       /* graceful (falls back to abort) */
    net_handle_reset(h);
@@ -1338,7 +1377,10 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
          if (net_parse_dotted(host, &h->remote_ip))
             return url_after_resolve(h);
          {
-            err_t e = dns_gethostbyname(host, &h->dns_ip, net_dns_found, h);
+            h->dns_gen++;
+            err_t e = dns_gethostbyname(host, &h->dns_ip, net_dns_found,
+                                        (void *)(uintptr_t)(((uint32_t)(h - net_h) << 16)
+                                                            | h->dns_gen));
             if (e == ERR_OK) {
                h->remote_ip = h->dns_ip;
                return url_after_resolve(h);
@@ -2153,9 +2195,23 @@ void net_service_init(uint8_t instance, uint8_t address)
    net_reset_pending = true;
 
    /* The handle table is BSS, so rx_size starts 0.  Give every handle its own
-      ring up front: nothing may index a ring with a zero mask. */
-   for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
-      net_h[i].rx_size = NET_RX_RING_SIZE;
+      ring up front: nothing may index a ring with a zero mask.
+
+      The head/tail/count MUST be reset with it.  The actual teardown is
+      deferred to net_service_poll (net_reset_pending above), and the "wifi"
+      poll is registered before "net" - so lwIP delivers RX to these
+      half-reset handles first.  For the handle that had borrowed the 64 KB
+      ring, head/tail could still be up to 65535 and count up to 65536 while
+      rx_size was back to 8192: ring_free() computes rx_size - rx_count, which
+      then wraps to ~4.29e9, the fit test passes, and ring_put_pbuf writes at
+      net_rx_ring[i][40000] - 32 KB past that row, over its neighbours and
+      into net_rx_big. */
+   for (unsigned int i = 0; i < NET_MAX_HANDLES; i++) {
+      net_h[i].rx_size  = NET_RX_RING_SIZE;
+      net_h[i].rx_head  = 0;
+      net_h[i].rx_tail  = 0;
+      net_h[i].rx_count = 0;
+   }
    net_rx_big_owner = -1;
 
    /* Both dedupe, so re-running on a BBC reset is safe. */

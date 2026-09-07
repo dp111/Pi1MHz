@@ -112,6 +112,22 @@ static void services_emulator_update_address(void)
    }
 }
 
+/* Advance the auto-increment pointer, wrapping where the Beeb can actually
+   see it.  DISC_RAM_SIZE is 32 MB but the three FRED address registers cover
+   only bits 0-23, so testing against disc_ram_max let the pointer step from
+   BASE+0xFFFFFF to BASE+0x1000000 without wrapping - and bit 24 then stayed
+   set for the rest of the session, with every later address-register write
+   ORing into a base 16 MB too high.  The +0/+1/+2 read-back only publishes
+   bits 0-23, so the Beeb could not even see it had happened; only a BBC
+   reset recovered.  Wrap on the 24-bit boundary the registers define. */
+static inline size_t services_emulator_next_addr(size_t addr)
+{
+   addr++;
+   if (addr >= disc_ram_max || ((addr - DISC_RAM_BASE) & ~(size_t)0xFFFFFF) != 0)
+      addr = DISC_RAM_BASE;
+   return addr;
+}
+
 static void services_emulator_byte_addr(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
@@ -132,16 +148,14 @@ static void services_emulator_byte_write_inc(unsigned int gpio)
 {
    uint8_t data = GET_DATA(gpio);
    Pi1MHz->JIM_ram[disc_ram_addr] =  data;
-   disc_ram_addr++;
-   if (disc_ram_addr >= disc_ram_max) disc_ram_addr = DISC_RAM_BASE;
+   disc_ram_addr = services_emulator_next_addr(disc_ram_addr);
    Pi1MHz_MemoryWrite((uint32_t)(ram_address + 3) , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
    services_emulator_update_address();
 }
 
 static void services_emulator_byte_read_inc(unsigned int gpio)
 {
-   disc_ram_addr++;
-   if (disc_ram_addr >= disc_ram_max) disc_ram_addr = DISC_RAM_BASE;
+   disc_ram_addr = services_emulator_next_addr(disc_ram_addr);
    Pi1MHz_MemoryWrite((uint32_t)(ram_address + 3) , Pi1MHz->JIM_ram[disc_ram_addr]); // setup new data now the address has changed;
    services_emulator_update_address();
 }

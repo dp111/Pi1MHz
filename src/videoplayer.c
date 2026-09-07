@@ -646,6 +646,17 @@ static void pvf_reopen(void)
     }
     vp.mode = VP_STILL;
     vp.seek_frame = -1;
+    /* Hand the pending frame buffer back before dropping the reference.
+       pending_phys names a buffer the decoder returned, so its slot is
+       with_caller = true and arm_output_buffers skips it - dropping the name
+       leaked it.  With NUM_FRAME_BUFFERS == 2 one media change during
+       playback (the play loop runs up to 2 AUs ahead, so pending_phys is
+       usually set) left the decoder single-buffered, and a second left it
+       with none: the picture freezes until a Beeb BREAK.  frame_decoded()
+       and the seek branch both recycle first, the latter with a comment
+       explaining exactly why; this path did not. */
+    if (vp.pending_phys && vp.pending_phys != vp.displayed_phys)
+       h264dec_recycle_output(vp.pending_phys);
     vp.pending_phys = 0;
     vp_armed_phys = 0;               /* buffers are about to go back */
     vp_committed_phys = 0;
