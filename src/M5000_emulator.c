@@ -432,6 +432,22 @@ static void music5000_rec_start(void)
     record = true;
 }
 
+/* Stopping a recording flushes the JIM capture to a WAV on the card.  That
+   used to be one f_open loop and one f_write from this poll callback: five
+   minutes of music is ~56 MB, a full buffer ~384 MB, and at the card's bulk
+   rate a long session blocked the cooperative loop for tens of seconds -
+   past the watchdog - with the Beeb unable to reach the disc meanwhile.
+   The flush is now a small state machine driven one step per poll: a few
+   name probes per pass while picking the file, then one slice per pass.
+   A new recording cannot start until the flush has released the buffer. */
+static FIL music5000_rec_fp;
+static enum { REC_FLUSH_IDLE, REC_FLUSH_OPEN, REC_FLUSH_WRITE } rec_flush = REC_FLUSH_IDLE;
+static uint32_t rec_flush_pos;
+static uint32_t rec_flush_end;
+static uint32_t rec_flush_name;
+#define M5000_REC_FLUSH_SLICE  (64u * 1024u)   /* ~4 ms of card time per poll pass */
+#define M5000_REC_FLUSH_PROBES 8u              /* Musics%03d.wav names tried per pass */
+
 static void music5000_rec_stop(void)
 {
    if (config_beeb_write_protected()) {     // write-protect: don't record to the SD card
@@ -440,35 +456,61 @@ static void music5000_rec_stop(void)
       return;
    }
 
-   char fn[22];
-   FRESULT result;
-   int number = 0;
-   FIL music5000_fp;
+   memcpy(&Pi1MHz->JIM_ram[M5000_REC_BASE], wavfmt, sizeof(wavfmt));
 
-   do {
-      sprintf(fn,"Musics%.3i.wav",number);
-      result = f_open( &music5000_fp, fn, FA_CREATE_NEW  | FA_WRITE);
-      LOG_DEBUG("Music5000 Filename : %s\r\n",fn);
-      number++;
-   } while ( result != FR_OK && number < 1000 );
+   uint32_t size = Audio_Index - M5000_REC_BASE;
+   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+4], size - 8u);
+   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+40], size - 44u);
 
-   if ( result != FR_OK )
-   {
-      LOG_DEBUG("Music5000 recording stopped as we could not create a file\r\n");
-   }
-   else {
-      memcpy(&Pi1MHz->JIM_ram[M5000_REC_BASE], wavfmt, sizeof(wavfmt));
+   rec_flush_pos = M5000_REC_BASE;
+   rec_flush_end = Audio_Index;
+   rec_flush_name = 0;
+   rec_flush = REC_FLUSH_OPEN;
 
-      uint32_t size = Audio_Index - M5000_REC_BASE;
-      put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+4], size - 8u);
-      put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+40], size - 44u);
-
-      UINT temp;
-      f_write(&music5000_fp, &Pi1MHz->JIM_ram[M5000_REC_BASE],Audio_Index - M5000_REC_BASE , &temp);
-      f_close(&music5000_fp);
-   }
    record = false;
    fx_register[fx_pointer] = 0;
+}
+
+static void music5000_rec_flush(void)
+{
+   switch (rec_flush) {
+   case REC_FLUSH_IDLE:
+      break;
+
+   case REC_FLUSH_OPEN:
+      for (uint32_t n = 0; n < M5000_REC_FLUSH_PROBES; n++) {
+         char fn[22];
+         sprintf(fn, "Musics%.3lu.wav", (unsigned long)rec_flush_name++);
+         FRESULT result = f_open(&music5000_rec_fp, fn, FA_CREATE_NEW | FA_WRITE);
+         LOG_DEBUG("Music5000 Filename : %s\r\n", fn);
+         if (result == FR_OK) {
+            rec_flush = REC_FLUSH_WRITE;
+            break;
+         }
+         // Only a name clash is worth another probe; a missing card or a
+         // full directory will not change between names.
+         if (result != FR_EXIST || rec_flush_name >= 1000u) {
+            LOG_DEBUG("Music5000 recording stopped as we could not create a file\r\n");
+            rec_flush = REC_FLUSH_IDLE;
+            break;
+         }
+      }
+      break;
+
+   case REC_FLUSH_WRITE: {
+      uint32_t n = rec_flush_end - rec_flush_pos;
+      if (n > M5000_REC_FLUSH_SLICE)
+         n = M5000_REC_FLUSH_SLICE;
+      UINT written = 0;
+      FRESULT result = f_write(&music5000_rec_fp, &Pi1MHz->JIM_ram[rec_flush_pos], n, &written);
+      rec_flush_pos += written;
+      if (result != FR_OK || written != n || rec_flush_pos >= rec_flush_end) {
+         f_close(&music5000_rec_fp);
+         rec_flush = REC_FLUSH_IDLE;
+      }
+      break;
+   }
+   }
 }
 
 static void store_samples(int sl, int sr)
@@ -492,7 +534,10 @@ static void store_samples(int sl, int sr)
 
 static void music5000_emulate(void)
 {
-   if ((record == false ) && (fx_register[fx_pointer] != 0))
+   music5000_rec_flush();
+
+   // The capture buffer is still being flushed: the start waits for it
+   if ((record == false ) && (fx_register[fx_pointer] != 0) && (rec_flush == REC_FLUSH_IDLE))
    {
       music5000_rec_start();
    }
