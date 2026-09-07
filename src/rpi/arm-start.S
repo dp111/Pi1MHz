@@ -244,6 +244,7 @@ _copyandreboot_code:
 #if (__ARM_ARCH >= 7 )
 
     mrc     p15, 1, r0, c0, c0, 1      @ Read CLIDR (Cache Level ID Register)
+    and     r3, r0, #0x07000000        @ Extract LoC (Bits 26:24)
     mov     r10, #0                    @ Start at Cache Level 0
 
 loop_level:
