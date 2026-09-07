@@ -45,7 +45,7 @@ static uint8_t helper_address;
    "Pi %s %ld.%ldC\r\n"                                                  \
    "\r\n"                                                                \
    "Run helper n:  X%%=n:CALL &FC%X\r\n"                                 \
-   "  or *FX147,%d,n then *GO[IO] FD00\r\n"                              \
+   "  or *FX147,%d,n then *GO/GOIO FD00\r\n"                             \
    "\r\n"                                                                \
    " n  Helper    (CTRL-BREAK after a ROM)\r\n"                          \
    " 0  This help\r\n"                                                   \
