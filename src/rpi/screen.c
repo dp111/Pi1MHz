@@ -586,10 +586,16 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
  * @param nh Pointer to store the new height.
  * @return uint32_t Vertical offset.
  */
-static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh)
+static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh, uint32_t *h_crop_out)
 {
+    uint32_t h_crop = 0;
     static float yuv_scale = 0.0f;
-    static uint32_t offset = 0;
+    /* Not static.  This is the crop this call decided on; keeping it in a
+       function static meant the no-crop path returned whatever a PREVIOUS
+       call had left, cropping and vertically shifting a picture that needed
+       no crop.  Reachable on an HDMI mode change: yuv_scale is latched on
+       first use while v_display is re-read every call. */
+    uint32_t offset = 0;
     // Calculate optimal overscan
     uint32_t h_display = ( RPI_hvs->ctrl1 >> 12 ) & 0xfff;
     uint32_t v_display = ( RPI_hvs->ctrl1       ) & 0xfff;
@@ -602,6 +608,9 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
 
     uint32_t h_corrected;
     uint32_t v_corrected;
+
+    /* Default for the paths that do not crop horizontally (every RGB one). */
+    *h_crop_out = 0;
 
     if (par > 1.0f) {
        // Wide pixels
@@ -661,11 +670,16 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
            the video plane off the side of the screen while videoplayer_active()
            and /status both still reported it healthy.  Only the 16:9 modes
            came out positive, which is why it stayed hidden.
-           Clamp the overscan to zero instead: the HVS clips a plane wider than
-           the display, so the picture is left-aligned and loses its right edge
-           rather than disappearing.  Centring it would need the horizontal
-           analogue of the vertical source crop below, which the YUV plane
-           setup does not have yet. */
+
+           Crop the SOURCE horizontally and centre what is left, exactly as
+           the vertical path below does: take off half the excess at each
+           side, so the middle of the picture stays in the middle of the
+           screen instead of the right-hand edge falling off. */
+        if (*scaled_width > h_display)
+        {
+            h_crop = (uint32_t)((float)((*scaled_width - h_display) / 2) / yuv_scale);
+            *scaled_width = h_display;
+        }
 
         if (*scaled_height > v_display)
         {
@@ -676,6 +690,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
             uint32_t h_overscan = (*scaled_width >= h_display)
                                   ? 0u : (h_display - *scaled_width) / 2;
             *startpos = (h_overscan & 0xfff);
+            *h_crop_out = h_crop;
             return offset;
         }
 
@@ -687,6 +702,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
                               ? 0u : (v_display - *scaled_height) / 2;
 
         *startpos = ((v_overscan & 0xfff)<<12) + (h_overscan & 0xfff);
+        *h_crop_out = h_crop;
         return offset;
     }
 
@@ -789,19 +805,17 @@ static uint32_t vc4_ppf(uint32_t src, uint32_t dst, uint32_t xy, int channel) {
 	 * Start the phase at 1/2 pixel from the 1st pixel at src_x.
 	 * 1/4 pixel for YUV.
 	 */
+	/* Upstream is handed xy as a 16.16 value and extracts its FRACTION here.
+	   We pass an integer pixel position, which has no fraction, so the
+	   position contributes nothing.  Reading bits 10-11 of a pixel COUNT, as
+	   this used to, injected 1-3 spurious units of phase whenever the
+	   overscan reached 1024 px. */
+	(void) xy;
+	offset = 0;
 	if (channel) {
-		/*
-		 * The phase is relative to scale_src->x, so shift it for
-		 * display list's x value
-		 */
-		offset = (xy & 0x1ffff) >> (16 - PHASE_BITS) >> 1;
+		/* Chroma is sited a quarter pixel back. */
 		offset += -(1 << PHASE_BITS >> 2);
 	} else {
-		/*
-		 * The phase is relative to scale_src->x, so shift it for
-		 * display list's x value
-		 */
-		offset = (xy & 0xffff) >> (16 - PHASE_BITS);
 		/* Half a pixel back, as upstream.  Starting on the pixel instead,
 		   and nudging by a fraction of one, were both tried on hardware in
 		   2026-09 to square up the picture's top row: neither helped. */
@@ -819,7 +833,16 @@ static uint32_t vc4_ppf(uint32_t src, uint32_t dst, uint32_t xy, int channel) {
 	 * There may be a also small error introduced by precision of scale.
 	 * Add half of that as a compromise
 	 */
-	offset2 = (int) src - (int) dst * (int) scale;
+	/* The division remainder, in 16.16 - upstream receives src ALREADY in
+	   16.16 and computes scale = src/dst, so this term is (src - dst*scale),
+	   a value in [0,dst).  The port fixed the scale line above to (src<<16)/dst
+	   but left this one using the raw integer src, making offset2 about
+	   -src*65535; after the shifts its surviving low bits were -(src & 3)*32,
+	   i.e. exactly zero when src % 4 == 0 - which every mode width is, and
+	   every mode height except .height = 250.  Those five modes got vpf0 phase
+	   +32 instead of -32: the half-pixel pre-roll became a half-pixel forward
+	   shift, one source line of vertical displacement. */
+	offset2 = (int)((src << 16) - dst * scale);
 	offset2 >>= 16 - PHASE_BITS;
 	phase = offset + (offset2 >> 1);
 
@@ -876,9 +899,11 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
            A 832x576 file lands at exactly 1:1 with the grid (the scaling the
            table was built for); a 768x576 one is resampled 768 -> 1664
            instead of 1536 and registers just as well, with no re-encode. */
+        uint32_t grid_h_crop;
         uint32_t grid_offset = screen_scale(VIDEO_GRID_WIDTH, VIDEO_GRID_HEIGHT,
                                             1.0f, true, 0, &scaled_width,
-                                            &scaled_height, &startpos, &nsh, &nh);
+                                            &scaled_height, &startpos, &nsh, &nh,
+                                            &grid_h_crop);
 
         /* Carry the grid's vertical overscan crop across to the file's own
            line count, and keep it even: the chroma planes are half height,
@@ -887,6 +912,16 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         uint32_t vertical_offset =
             (uint32_t)(((uint64_t)grid_offset * height) / VIDEO_GRID_HEIGHT) & ~1u;
         nh = height - 2u * vertical_offset;
+
+        /* Same again for the horizontal axis, which the 4:3 display modes
+           need: the grid is 832 wide against a 4:3 display's 768-equivalent,
+           so the picture has to lose a slice from each side rather than fall
+           off the right-hand edge.  Even, for the same reason as the vertical
+           offset - the chroma planes are half width, so an odd offset would
+           put luma and chroma on different source columns. */
+        uint32_t horizontal_offset =
+            (uint32_t)(((uint64_t)grid_h_crop * width) / VIDEO_GRID_WIDTH) & ~1u;
+        uint32_t nw = width - 2u * horizontal_offset;
 
         volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) plane;
         /* Pixel order (bits 13-14), established empirically on Test Card F
@@ -898,7 +933,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
            below and in screen_set_YUV_pointers. */
         // invalid list, 32 words, YCrCb order, YUV420 3-plane
         uint32_t ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0x8;
-        uint32_t ssz  = ((nh) << 16) + width;
+        uint32_t ssz  = ((nh) << 16) + nw;
         yuv->ctrl = ctrl;
         yuv->pos = startpos;
         yuv->scale = (nsh << 16) + scaled_width;
@@ -907,14 +942,14 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
                                                   (nsh << 16) + scaled_width };
         // I420 memory order is Y, Cb (U), Cr (V); chroma planes are
         // width/2 x height/2
-        yuv_ptr_offset[planeno][0] = vertical_offset*width;
-        yuv_ptr_offset[planeno][1] = (vertical_offset/2)*(width/2);
-        yuv_ptr_offset[planeno][2] = (vertical_offset/2)*(width/2);
-        yuv->y_ptr =  buffer + vertical_offset*width;
+        yuv_ptr_offset[planeno][0] = vertical_offset*width + horizontal_offset;
+        yuv_ptr_offset[planeno][1] = (vertical_offset/2)*(width/2) + horizontal_offset/2;
+        yuv_ptr_offset[planeno][2] = (vertical_offset/2)*(width/2) + horizontal_offset/2;
+        yuv->y_ptr =  buffer + vertical_offset*width + horizontal_offset;
         /* Cr-first: the HVS's second pointer is Cr in this order mode (see
            the ctrl comment above); the decoder's I420 memory is Y,Cb,Cr */
-        yuv->cb_ptr = buffer + width*height + (width/2)*(height/2) + (vertical_offset/2)*(width/2);
-        yuv->cr_ptr = buffer + width*height + (vertical_offset/2)*(width/2);
+        yuv->cb_ptr = buffer + width*height + (width/2)*(height/2) + (vertical_offset/2)*(width/2) + horizontal_offset/2;
+        yuv->cr_ptr = buffer + width*height + (vertical_offset/2)*(width/2) + horizontal_offset/2;
         yuv->pitch = width;
         yuv->pitch1 = width/2;
         yuv->pitch2 = width/2;
@@ -922,14 +957,28 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         yuv->csc1 = 0xe73304A8;
         yuv->csc2 = 0x00066604;
         yuv->LBM = screen_lbm_base(planeno);
-        yuv->hpf0 = vc4_ppf(width, scaled_width*2, startpos & 0xFFF, 0 );  // chroma H: (w/2)/sw
-        yuv->vpf0 = vc4_ppf(nh, nsh*2, startpos >>12, 0 );                 // chroma V: (h/2)/sh
-        yuv->hpf1 = vc4_ppf(width, scaled_width, startpos & 0xFFF, 0 );    // luma H
-        yuv->vpf1 = vc4_ppf(nh, nsh, startpos >>12, 0 );                   // luma V
-        yuv->pfkph0 = POLYPHASE_BASE;
-        yuv->pfkpv0 = POLYPHASE_BASE;
-        yuv->pfkph1 = POLYPHASE_BASE;
-        yuv->pfkpv1 = POLYPHASE_BASE;
+        /* channel = 1 on the chroma pair.  It was 0 at every call site in the
+           file, so the quarter-pixel chroma siting was dead code and both
+           chroma factors got the luma half-pixel phase instead - a half
+           chroma-sample colour/luma registration error, worst on high
+           contrast edges.  The doubled destination still carries the
+           half-width/half-height scale factor; only the phase changes. */
+        yuv->hpf0 = vc4_ppf(nw, scaled_width*2, startpos & 0xFFF, 1 );  // chroma H: (w/2)/sw
+        yuv->vpf0 = vc4_ppf(nh, nsh*2, startpos >>12, 1 );              // chroma V: (h/2)/sh
+        yuv->hpf1 = vc4_ppf(nw, scaled_width, startpos & 0xFFF, 0 );    // luma H
+        yuv->vpf1 = vc4_ppf(nh, nsh, startpos >>12, 0 );                // luma V
+        /* The uncached bit, as setup_polyphase() requires and both RGB paths
+           already do: the HVS caches kernel data, so without it the table is
+           written correctly and never read, and the plane filters with
+           whatever the GPU firmware last loaded.  This is the plane doing the
+           LARGEST resample (768->1664 H, 576->1152 V), so it was the one most
+           in need of the table - and it meant the video and computer planes
+           filtered with two different kernels, which undoes the point of
+           registering them to one grid. */
+        yuv->pfkph0 = POLYPHASE_BASE | 0x80000000u;
+        yuv->pfkpv0 = POLYPHASE_BASE | 0x80000000u;
+        yuv->pfkph1 = POLYPHASE_BASE | 0x80000000u;
+        yuv->pfkpv1 = POLYPHASE_BASE | 0x80000000u;
         setup_polyphase();
     plane_valid[planeno] = true;
 }
@@ -970,7 +1019,10 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t startpos;
         uint32_t nsh;
         uint32_t nh;
-        screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh);
+        {   /* horizontal cropping is a YUV-path concept; ignore it here */
+            uint32_t rgb_hcrop;
+            screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh, &rgb_hcrop);
+        }
 
         buffer |= 0x80000000; // if we use &C then there is an error on the screen
         if (colour_depth == 3)
@@ -1447,8 +1499,18 @@ static bool dim_strip_place(uint32_t planeno, uint32_t x, uint32_t y,
     rgb->LBM = screen_lbm_base(planeno);
     rgb->hpf0 = vc4_ppf(DIM_STRIP_SRC, w, x, 0);
     rgb->vpf0 = vc4_ppf(DIM_STRIP_SRC, h, y, 0);
-    rgb->pfkph0 = POLYPHASE_BASE;
-    rgb->pfkpv0 = POLYPHASE_BASE;
+    /* Uncached bit, and all FOUR kernel pointers: the HVS reads four whenever
+       PPF scaling is on, even for a single-plane format, and this entry was
+       zeroed by screen_get_nextplane - so the other two pointed at
+       context_memory[0], the display-list header, and the strips filtered
+       with coefficients read out of it.  screen_create_RGB_plane documents
+       both traps; dim_strip_place had neither. */
+    rgb->pfkph0 = POLYPHASE_BASE | 0x80000000u;
+    rgb->pfkpv0 = POLYPHASE_BASE | 0x80000000u;
+    {   volatile uint32_t *k = (volatile uint32_t *)&rgb->pfkpv0;
+        k[1] = POLYPHASE_BASE | 0x80000000u;
+        k[2] = POLYPHASE_BASE | 0x80000000u;
+    }
     plane_valid[planeno] = true;
     screen_plane_enable(planeno, true);
     return true;
@@ -1541,8 +1603,13 @@ bool screen_dim_strips_report( uint32_t g[6] )
 }
 
 /* /status forensics: the display size and each plane's source/destination
-   rectangle, straight from the HVS display list - the only ground truth
-   for overlay geometry (an HDMI capture may scale what it shows). */
+   rectangle, from the per-plane SHADOW.  Not from the live display list:
+   that memory is written by the HVS mid-composite, and pos has been read
+   back as 2061,1 on a 1920-wide display - see screen_dim_strips.  Reading it
+   here could not corrupt anything, but it made this row disagree with
+   screen_dim_strips_report() next to it, which always used the shadow, and
+   an operator would conclude a reframe had been missed when nothing was
+   wrong. */
 void screen_geometry_report( uint32_t planeno, uint32_t *disp_w, uint32_t *disp_h,
                              uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h,
                              uint32_t *src_w, uint32_t *src_h )
@@ -1553,7 +1620,7 @@ void screen_geometry_report( uint32_t planeno, uint32_t *disp_w, uint32_t *disp_
         *x = *y = *w = *h = *src_w = *src_h = 0;
         return;
     }
-    volatile YUV_plane_t* p = (volatile YUV_plane_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
+    const plane_shadow_t *p = &plane_shadow[planeno];
     *x = p->pos & 0xFFF;
     *y = (p->pos >> 12) & 0xFFF;
     *w = p->scale & 0xFFF;
