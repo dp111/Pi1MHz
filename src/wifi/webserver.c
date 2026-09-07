@@ -375,15 +375,15 @@ static uint32_t        g_ws_reboot_at;
    (typically around 1 TB total) - the cause of the wildly wrong
    "Total size 929 GB" line in the WebDAV mount root. */
 static bool            g_ws_sd_free_valid;
-static bool            g_ws_sd_free_wanted;  /* someone asked (/status or
+static bool            g_ws_sd_free_requested;  /* someone asked (/status or
    PROPFIND quota): refresh on demand only - no standing periodic sweep */
 
 /* Mark the free-space figure as wanted and say whether the cache holds one.
    Callers that display it use this so a sweep is (re)started in the
    background only when somebody is actually looking. */
-static bool ws_sd_free_want(void)
+static bool ws_sd_free_request(void)
 {
-   g_ws_sd_free_wanted = true;
+   g_ws_sd_free_requested = true;
    return g_ws_sd_free_valid;
 }
 
@@ -396,7 +396,7 @@ static uint64_t        g_ws_sd_free_bytes;
    used to pay it inline in tud_task on every storage query. */
 bool webserver_sd_space(uint64_t* total, uint64_t* free_bytes)
 {
-   bool valid = ws_sd_free_want();
+   bool valid = ws_sd_free_request();
    *total = g_ws_sd_total_bytes;
    *free_bytes = g_ws_sd_free_bytes;
    return valid;
@@ -429,7 +429,7 @@ static bool ws_sd_read_free(void)
 
 bool webserver_sd_space_now(uint64_t* total, uint64_t* free_bytes)
 {
-   if (!ws_sd_free_want())
+   if (!ws_sd_free_request())
       (void)ws_sd_read_free();
    *total = g_ws_sd_total_bytes;
    *free_bytes = g_ws_sd_free_bytes;
@@ -2971,7 +2971,7 @@ static bool route_status(ws_conn_t *c)
             (unsigned int)((cfg != NULL) ? cfg->http_port : 80u));
    table_row(&b, "HTTP port", tmp);
 
-   if (ws_sd_free_want()) {   /* /status shows it: refresh in background */
+   if (ws_sd_free_request()) {   /* /status shows it: refresh in background */
       snprintf(tmp, sizeof tmp, "%lu MB free",
                (unsigned long)g_ws_sd_free_mb);
       table_row(&b, "SD card", tmp);
@@ -4415,7 +4415,7 @@ static void dav_emit_response(ws_strbuf_t *b, const char *url_path,
       sb_printf(b, "<D:getcontentlength>%lu</D:getcontentlength>"
                    "<D:getcontenttype>application/octet-stream</D:getcontenttype>",
                 (unsigned long)size);
-   } else if (ws_sd_free_want()) {
+   } else if (ws_sd_free_request()) {
       /* RFC 4331: quota-available-bytes is free space, quota-used-bytes
          is currently consumed.  Windows Explorer reads these from the
          response for the share's root (and sometimes any directory) to
@@ -6745,12 +6745,12 @@ static void webserver_refresh_sd_free(void)
       return;
 
    if (!g_sdscan.running) {
-      if (!g_ws_sd_free_wanted)
+      if (!g_ws_sd_free_requested)
          return;              /* nobody has asked since the last sweep */
       /* TTL applies to starting a sweep, and to failed attempts too. */
       if ((now - g_ws_sd_free_age_us) < WS_FREE_REFRESH_US)
          return;
-      g_ws_sd_free_wanted = false;
+      g_ws_sd_free_requested = false;
       g_ws_sd_free_age_us = now;
       if (fs->fs_type != FS_FAT16 && fs->fs_type != FS_FAT32) {
          /* FAT12: FAT fits in a few sectors, the walk is trivial */
@@ -6913,7 +6913,7 @@ void webserver_init(void)
       hundreds of ms on a slow / fragmented card but this only runs
       once at server bring-up; subsequent refreshes are gated by the
       WS_FREE_REFRESH_US TTL in webserver_poll. */
-   g_ws_sd_free_wanted = true;   /* pre-warm for the first PROPFIND */
+   g_ws_sd_free_requested = true;   /* pre-warm for the first PROPFIND */
    webserver_refresh_sd_free();
    wifi_note_http_ready();
 }
