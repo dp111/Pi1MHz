@@ -76,11 +76,20 @@ typedef struct font {
    order and the first member after them must lie beyond the copy.  Reorder
    or insert on either side and this fails to compile instead of silently
    corrupting every font. */
-_Static_assert(offsetof(font_t, name)      == offsetof(font_catalog_t, name) &&
-               offsetof(font_t, data)      == offsetof(font_catalog_t, data) &&
-               offsetof(font_t, height)    == offsetof(font_catalog_t, height) &&
-               offsetof(font_t, scale_h)   == offsetof(font_catalog_t, scale_h) &&
-               offsetof(font_t, rounding)  >= sizeof(font_catalog_t),
+_Static_assert(
+               offsetof(font_t, name          ) == offsetof(font_catalog_t, name) &&
+               offsetof(font_t, data          ) == offsetof(font_catalog_t, data) &&
+               offsetof(font_t, bytes_per_char) == offsetof(font_catalog_t, bytes_per_char) &&
+               offsetof(font_t, num_chars     ) == offsetof(font_catalog_t, num_chars) &&
+               offsetof(font_t, offset        ) == offsetof(font_catalog_t, offset) &&
+               offsetof(font_t, shift         ) == offsetof(font_catalog_t, shift) &&
+               offsetof(font_t, width         ) == offsetof(font_catalog_t, width) &&
+               offsetof(font_t, height        ) == offsetof(font_catalog_t, height) &&
+               offsetof(font_t, spacing_w     ) == offsetof(font_catalog_t, spacing_w) &&
+               offsetof(font_t, spacing_h     ) == offsetof(font_catalog_t, spacing_h) &&
+               offsetof(font_t, scale_w       ) == offsetof(font_catalog_t, scale_w) &&
+               offsetof(font_t, scale_h       ) == offsetof(font_catalog_t, scale_h) &&
+               offsetof(font_t, rounding) >= sizeof(font_catalog_t),
                "font_t must start with font_catalog_t's members (initialize_font memcpy)");
 
 const char * get_font_name(uint32_t num);
