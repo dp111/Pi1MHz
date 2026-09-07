@@ -3,6 +3,7 @@
 #include "../rpi/arm-start.h"
 #include "../rpi/base.h"
 #include "../rpi/block.h"
+#include "../rpi/emmc_regs.h"
 #include "../rpi/gpio.h"
 #include "../rpi/info.h"
 #include "../config.h"
@@ -95,31 +96,13 @@ typedef struct {
 #define SD_CLOCK_ID         400000
 #define SD_HIGH_CLOCK_ID    25000000u
 
-#define SD_CMD_TYPE_ABORT  (3 << 22)
-#define SD_CMD_TYPE_MASK    (3 << 22)
-#define SD_CMD_ISDATA      (1 << 21)
-#define SD_CMD_RSPNS_TYPE_136 (1 << 16)
-#define SD_CMD_RSPNS_TYPE_48B (3 << 16)
-#define SD_CMD_RSPNS_TYPE_MASK  (3 << 16)
-#define SD_CMD_DAT_DIR_CH  (1 << 4)
-
-#define SD_ERR_MASK_CMD_TIMEOUT     (1 << 16)
-/* Data-phase wait expiry.  Deliberately NOT SD_ERR_MASK_CMD_TIMEOUT: the
-   command phase completed, so the card may have consumed the payload, and
+/* Data-phase wait expiry is SD_ERR_MASK_DATA_TIMEOUT (bit 20, the controller's
+   own DTO position) and deliberately NOT SD_ERR_MASK_CMD_TIMEOUT: the command
+   phase completed, so the card may have consumed the payload, and
    sdio_host_last_failure_precommand() must stay false or the SDPCM layer
    would reclaim a sequence number the chip already counted - the exact
-   poison the removed max_seq rebase used to inject.  Bit 20 is the
-   controller's own DTO position, so it flows naturally in last_error. */
-#define SD_ERR_MASK_DATA_TIMEOUT    (1 << 20)
+   poison the removed max_seq rebase used to inject. */
 
-#define SD_COMMAND_COMPLETE     1
-#define SD_TRANSFER_COMPLETE    (1U << 1)
-#define SD_BUFFER_WRITE_READY   (1U << 4)
-#define SD_BUFFER_READ_READY    (1U << 5)
-#define SD_CARD_INTERRUPT       (1U << 8)
-
-#define SD_RESET_CMD            (1u << 25)
-#define SD_RESET_DAT            (1u << 26)
 #define PI_EXP_GPIO_BASE        128u
 #define PI3_WIFI_POWER_EXP_GPIO (PI_EXP_GPIO_BASE + 1u)
 #define WIFI_POWER_GPIO         RPI_GPIO41
