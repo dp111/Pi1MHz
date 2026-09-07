@@ -1188,6 +1188,18 @@ static void vdu23_19(const uint8_t *buf) {
 
    font_t *font = &font_normal;
 
+   // The text layer writes glyphs unclipped (set_pixel is too hot to carry a
+   // bounds test), relying on the grid: text_width*font_width <= width and
+   // likewise for height. That holds whenever one cell fits the screen, so a
+   // request that grows the cell past the screen is refused here - the one
+   // place the metrics change - and the previous font/metrics come back.
+   uint32_t old_number    = font->get_number(font);
+   char     old_scale_w   = font->get_scale_w(font);
+   char     old_scale_h   = font->get_scale_h(font);
+   char     old_spacing_w = font->get_spacing_w(font);
+   char     old_spacing_h = font->get_spacing_h(font);
+   char     old_rounding  = font->get_rounding(font);
+
    if (buf[0] >= 'A' && buf[0] <= 'Z') {
       // Select the font by name (up to 8 upper case characters)
       initialize_font_by_name((const char *)buf, font);
@@ -1240,6 +1252,16 @@ static void vdu23_19(const uint8_t *buf) {
          fb_writes(get_font_name(buf[1]));
          break;
       }
+   }
+   if (font->get_overall_w(font) > screen->width || font->get_overall_h(font) > screen->height) {
+      if (font->get_number(font) != old_number) {
+         initialize_font_by_number(old_number, font);
+      }
+      font->set_scale_w(font, old_scale_w);
+      font->set_scale_h(font, old_scale_h);
+      font->set_spacing_w(font, old_spacing_w);
+      font->set_spacing_h(font, old_spacing_h);
+      font->set_rounding(font, old_rounding);
    }
 #ifdef DEBUG_VDU
    if (font != NULL)
