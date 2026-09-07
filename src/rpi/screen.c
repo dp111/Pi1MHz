@@ -597,9 +597,11 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
    square pixels wide, so each grid sample is 768/832 = 12/13 as wide as it is
    tall - the same 12/13 the PVF header carries.  That factor is a property of
    the grid, not of any display mode, so it is applied to every mode's
-   horizontal scale below: with it, the video is a 4:3 frame and the Beeb
-   picture (640 samples = 40 us of the line) sits registered on it at its true
-   1.15:1, on any square-pixel display, with no setting.
+   horizontal scale below: with it, the video is a 4:3 frame on any
+   square-pixel display, with no setting.  The computer screen is drawn as a
+   4:3 frame of its own height (see the RGB path), centred on the video -
+   the way a Beeb monitor is set up - rather than at the raster's 40-of-52 us
+   width, which the owner judged too narrow.
 
    Display_par=N/D is then only for a display that is not square-pixel: a
    16:10 panel fed 1920x1080 stretches every pixel 10/9 taller than wide, so
@@ -693,8 +695,8 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
                    chosen here: it is this factor x GRID_SAMPLE_PAR (x the
                    Display_par correction), which is what makes the video a
                    4:3 frame in every mode - e.g. at 1080p the frame is
-                   1536 x 1152 (1080 visible) and the Beeb 1182 x 1024; at
-                   1200 lines 1728 x 1296 and 1330 x 1152. */
+                   1536 x 1152 (1080 visible); the Beeb plane is 4:3 of its
+                   own height, 1365 x 1024 there (see the RGB path). */
                 case 480: yuv_scale = 1.75/2; break;  // 256 * 1.75 = 448
                 case 576: yuv_scale = 1 ; break; // 256 * 2 = 512
                 case 600: yuv_scale = 2.25/2; break;  // 256 * 2.25 = 576
@@ -794,8 +796,13 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
         else
             scale = rgb_scale ;
 
-    const float rgb_hscale_par = grid_par();
-    if (((uint32_t)(scale * rgb_hscale_par * (float)h_corrected)) >  h_display)
+    /* The computer screen is not drawn at the raster's 40-of-52 us width:
+       a Beeb picture is set up to fill a 4:3 monitor whatever the mode, so
+       its plane is 4:3 of its own height (times the Display_par correction),
+       centred on the video frame, which is 4:3 too.  The pointer overlay,
+       when one is used, keeps the framebuffer's exact per-axis scale. */
+    const float beeb_aspect = (4.0f / 3.0f) * display_par();
+    if (((uint32_t)(scale * (float)v_corrected * beeb_aspect)) >  h_display)
         scale = scale/2;
     if (((uint32_t)(scale * (float)v_corrected)) >  v_display)
         scale = scale/2;
@@ -803,8 +810,11 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     LOG_DEBUG("scale %f\r\n", (double) scale);
     LOG_DEBUG("rgb_scale %f\r\n", (double) rgb_scale);
 #endif
-    *scaled_width = grid_width(scale * rgb_hscale_par * (float)h_corrected);
     *scaled_height = (((uint32_t)(scale * (float)v_corrected)) & 0xfff);
+    if (scale_height && fb_scale_x > 0.01f)
+        *scaled_width = grid_width((float)width * fb_scale_x);
+    else
+        *scaled_width = grid_width((float)*scaled_height * beeb_aspect);
 #ifdef SCREEN_DEBUG
     LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", *scaled_width, *scaled_height);
 #endif
