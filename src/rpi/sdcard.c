@@ -159,6 +159,28 @@ static inline uint32_t byte_swap(uint32_t in)
 #define SD_ERR_MASK_CURRENT_LIMIT   (1 << (16 + SD_ERR_CURRENT_LIMIT))
 #define SD_ERR_MASK_AUTO_CMD12      (1 << (16 + SD_ERR_AUTO_CMD12))
 #define SD_ERR_MASK_ADMA            (1 << (16 + SD_ERR_ADMA))
+
+/* R1 card-status bits that mean THIS command was refused, or that its data
+   is not trustworthy.  The controller's own flags only report whether the
+   command completed on the wire - a card can answer cleanly and still be
+   telling us it did not take the data.
+   COM_CRC_ERROR (23) and ILLEGAL_COMMAND (22) are deliberately NOT here:
+   they latch from a PREVIOUS command and are cleared by being read, and the
+   CMD8 / inquiry-ACMD41 probing during init sets them legitimately on some
+   cards, so testing them would fail perfectly good transfers.
+   CARD_IS_LOCKED (25), READY_FOR_DATA and APP_CMD are status, not errors. */
+#define SD_R1_OUT_OF_RANGE          (1u << 31)
+#define SD_R1_ADDRESS_ERROR         (1u << 30)
+#define SD_R1_BLOCK_LEN_ERROR       (1u << 29)
+#define SD_R1_WP_VIOLATION          (1u << 26)
+#define SD_R1_CARD_ECC_FAILED       (1u << 21)
+#define SD_R1_CC_ERROR              (1u << 20)
+#define SD_R1_ERROR                 (1u << 19)
+#define SD_R1_CSD_OVERWRITE         (1u << 16)
+#define SD_R1_DATA_ERROR_MASK       (SD_R1_OUT_OF_RANGE | SD_R1_ADDRESS_ERROR | \
+                                     SD_R1_BLOCK_LEN_ERROR | SD_R1_WP_VIOLATION | \
+                                     SD_R1_CARD_ECC_FAILED | SD_R1_CC_ERROR | \
+                                     SD_R1_ERROR | SD_R1_CSD_OVERWRITE)
 #define SD_ERR_MASK_TUNING          (1 << (16 + SD_ERR_TUNING))
 
 #define SD_COMMAND_COMPLETE     1
@@ -544,6 +566,10 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
     dev->last_cmd_success = 0;
     dev->last_interrupt = 0;
     dev->last_error = 0;
+    /* Clear the response too: the raw-command error paths leave *response0
+       untouched, so without this a caller that reads last_r0 after a failure
+       gets the PREVIOUS command's card status. */
+    dev->last_r0 = 0;
 
     if ((cmd_reg & SD_CMD_RSPNS_TYPE_MASK) == SD_CMD_RSPNS_TYPE_NONE)
         sdcmd |= SDCMD_NO_RESPONSE;
@@ -1628,7 +1654,26 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
         sd_issue_command(edev, command, block_no, 5000000);
 
         if(SUCCESS(edev))
+        {
+            /* The controller flags say only that the command completed on the
+               wire; the card reports refusal in the R1 status it just sent.
+               A write to a write-protected card, or past its capacity, comes
+               back with WP_VIOLATION / OUT_OF_RANGE set and NO controller
+               error at all - so without this the write "succeeds", sd_write
+               returns buf_size, disk_write returns RES_OK and FatFs commits
+               metadata for data the card never took.
+               This catches the up-front refusal only: on a multi-block write,
+               an error that happens mid-transfer surfaces in the CMD12/CMD13
+               status rather than here. Not retried - a refusal is the card's
+               settled answer, and a second attempt just burns another 5 s. */
+            if((edev->last_r0 & SD_R1_DATA_ERROR_MASK) != 0u)
+            {
+                printf("SD: CMD%u refused by card, status = %08"PRIx32"\r\n",
+                       command, edev->last_r0);
+                return -1;
+            }
             break;
+        }
         else
         {
             printf("SD: error sending CMD%u, ", command);
