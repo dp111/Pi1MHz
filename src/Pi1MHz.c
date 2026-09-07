@@ -622,7 +622,7 @@ static void init_emulator(void) {
          /* Each emulator's init is well under the boot timeout, but the
             sequence as a whole is not - so feed the dog between them. */
          watchdog_boot_kick();
-         RPI_BootDetail(i + 1u);   /* a death here names emulator[i] on the next boot */
+         RPI_BootDetail(i + 1u);   /* DEBUG builds only: a death here names emulator[i] on the next boot */
          if (emulator[i].enable == 1) {
             uint32_t t0 = RPI_GetSystemTime();
             emulator[i].init(i, emulator[i].address);
@@ -947,7 +947,7 @@ _Noreturn void kernel_main(void)
          if (oldreset == false)
          {
             LOG_INFO("Reset detected\r\n");
-            RPI_BootDetail(0xFEu);  /* re-init pass marker: a death in config_load shows FE */
+            RPI_BootDetail(0xFEu);  /* DEBUG builds only: re-init pass marker, a death in config_load shows FE */
             init_emulator();
             /* Re-stamp RUNNING: without this the session runs forever at
                "stage 7" after a BREAK re-init and every later runtime death
@@ -997,7 +997,7 @@ _Noreturn void kernel_main(void)
       {
          func_ptr poll_fn = Pi1MHz_poll_table[i];
 
-            RPI_BootDetail((uint32_t)(i + 1u) << 8);  /* runtime hang -> names the callback */
+            RPI_BootDetail((uint32_t)(i + 1u) << 8);  /* DEBUG builds only: a runtime hang names the callback */
             poll_fn();
             {
                uint32_t after_ticks = poll_ticks();
