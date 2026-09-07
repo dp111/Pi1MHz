@@ -38,7 +38,6 @@ pixel_t    prim_get_fg_col           (void);
 plotmode_t prim_get_fg_plotmode      (void);
 void       prim_set_bg_col           (const screen_mode_t *screen, pixel_t colour);
 void       prim_set_bg_plotmode      (const screen_mode_t *screen, plotmode_t plotmode);
-pixel_t    prim_get_bg_col           (void);
 plotmode_t prim_get_bg_plotmode      (void);
 void       prim_set_ecf_mode         (const screen_mode_t *screen, int ecf_mode);
 void       prim_set_ecf_origin       (const screen_mode_t *screen, int16_t x, int16_t y);
@@ -51,7 +50,6 @@ void       prim_set_graphics_area    (const screen_mode_t *screen, int16_t x1, i
 void       prim_clear_graphics_area  (screen_mode_t *screen);
 void       prim_set_pixel            (screen_mode_t *screen, int x, int y, plotcol_t colour);
 pixel_t    prim_get_pixel            (screen_mode_t *screen, int x, int y);
-int        prim_on_screen            (screen_mode_t *screen, int x, int y);
 void       prim_draw_line            (screen_mode_t *screen, int x1, int y1, int x2, int y2, plotcol_t colour, uint8_t linemode);
 /* What a fill did, so the VDU layer can apply the OS's post-fill cursor rule.
    error: 0 = a span was drawn, 1 = fill LR refused, 2 = fill R refused.

@@ -83,7 +83,6 @@ extern int16_t g_y_pos_last2;
 
 //void fb_show_splash_screen(void);
 
-void fb_destroy(void);
 
 void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours);
 
