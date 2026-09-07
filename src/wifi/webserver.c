@@ -6231,6 +6231,8 @@ static bool process_request(ws_conn_t *c, int body_at)
          const char *p;
          for (p = cl_hdr; *p != '\0'; ++p) {
             if (*p < '0' || *p > '9') { cl_ok = false; break; }
+            /* same wrap guard as the PUT parser: 4294967296 must not read as 0 */
+            if (cl > (UINT32_C(0x7FFFFFFF) - 9u) / 10u) { cl_ok = false; break; }
             cl = cl * 10u + (uint32_t)(*p - '0');
          }
          if (!cl_ok || cl > WS_DRAIN_MAX_BYTES)
