@@ -1255,6 +1255,38 @@ static void vdu23_19(const uint8_t *buf) {
    update_text_area();
 }
 
+/* The OS's post-fill cursor rule.  VDU-layer semantics keyed to the PLOT
+   code, so it belongs here with the dispatch that owns g_x_pos/g_y_pos -
+   prim_fill_area used to reach into these globals from the pixel layer. */
+static void apply_fill_cursors(const fill_result_t *r) {
+   /* uses the file-scope `screen`, like the rest of the VDU dispatch */
+   if (!r->drawn)
+      return;
+   switch (r->error) {
+   case 1:
+      // Error 1 (used for fill LR)
+      //    set current cursor to the new point (which it already is)
+      //    set last cursor to lie on a different line
+      g_x_pos_last1 = g_x_pos;
+      g_y_pos_last1 = (int16_t)(g_y_pos + (1 << screen->yeigfactor));
+      break;
+   case 2:
+      // Error 2 (used for fill R)
+      //    set last cursor to the new point
+      //    set current cursor one pixel to the left
+      g_x_pos_last1 = g_x_pos;
+      g_y_pos_last1 = g_y_pos;
+      g_x_pos = (int16_t)(g_x_pos - (1 << screen->xeigfactor));
+      break;
+   default:
+      // No error, update with the line drawn
+      g_x_pos =       (int16_t)(r->x_right << screen->xeigfactor);
+      g_x_pos_last1 = (int16_t)(r->x_left  << screen->xeigfactor);
+      g_y_pos_last1 = g_y_pos;
+      break;
+   }
+}
+
 static void vdu23_22(const uint8_t *buf) {
    // VDU 23,22,xpixels;ypixels;xchars,ychars,colours,flags
    // User Defined Screen Mode
@@ -1545,7 +1577,8 @@ static void vdu_25(const uint8_t *buf) {
          break;
       case 72:
          // Horizontal line fill (left and right) to non-background
-         prim_fill_area(screen, x_pos, y_pos, colour, HL_LR_NB);
+         { fill_result_t r; prim_fill_area(screen, x_pos, y_pos, colour, HL_LR_NB, &r);
+           apply_fill_cursors(&r); }
          break;
       case 80:
          // Fill a triangle
@@ -1553,7 +1586,8 @@ static void vdu_25(const uint8_t *buf) {
          break;
       case 88:
          // Horizontal line fill (right only) to background
-         prim_fill_area(screen, x_pos, y_pos, colour, HL_RO_BG);
+         { fill_result_t r; prim_fill_area(screen, x_pos, y_pos, colour, HL_RO_BG, &r);
+           apply_fill_cursors(&r); }
          break;
       case 96:
          // Fill a rectangle
@@ -1561,7 +1595,8 @@ static void vdu_25(const uint8_t *buf) {
         break;
       case 104:
          // Horizontal line fill (left and right) to foreground
-         prim_fill_area(screen, x_pos, y_pos, colour, HL_LR_FG);
+         { fill_result_t r; prim_fill_area(screen, x_pos, y_pos, colour, HL_LR_FG, &r);
+           apply_fill_cursors(&r); }
          break;
       case 112:
          // Fill a parallelogram
@@ -1569,15 +1604,18 @@ static void vdu_25(const uint8_t *buf) {
          break;
       case 120:
          // Horizontal line fill (right only) to non-foreground
-         prim_fill_area(screen, x_pos, y_pos, colour, HL_RO_NF);
+         { fill_result_t r; prim_fill_area(screen, x_pos, y_pos, colour, HL_RO_NF, &r);
+           apply_fill_cursors(&r); }
          break;
       case 128:
          // Flood fill to non-background
-         prim_fill_area(screen, x_pos, y_pos, colour, AF_NONBG);
+         { fill_result_t r; prim_fill_area(screen, x_pos, y_pos, colour, AF_NONBG, &r);
+           apply_fill_cursors(&r); }
          break;
       case 136:
          // Flood fill to foreground
-         prim_fill_area(screen, x_pos, y_pos, colour, AF_TOFGD);
+         { fill_result_t r; prim_fill_area(screen, x_pos, y_pos, colour, AF_TOFGD, &r);
+           apply_fill_cursors(&r); }
          break;
       case 144:
          // Draw a circle outline

@@ -1172,7 +1172,7 @@ static void prim_flood_fill_wrapper(screen_mode_t *screen, int x, int y, plotcol
    }
 }
 
-void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_t mode) {
+void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_t mode, fill_result_t *res) {
    int x_left = x;
    int x_right = x;
 
@@ -1257,32 +1257,18 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
          printing from here. */
       printf( "Unknown fill mode %d\r\n", mode);
 #endif
-      return; // Don't update the graphics cursors
+      res->drawn = false;   // unknown mode: the caller leaves the cursors alone
+      return;
    }
 
-   switch (error) {
-   case 1:
-      // Error 1 (used for fill LR)
-      //    set current cursor to the new point (which it already is)
-      //    set last cursor to lie on a different line
-      g_x_pos_last1 = g_x_pos;
-      g_y_pos_last1 = (int16_t)(g_y_pos + (1 << screen->yeigfactor));
-      break;
-   case 2:
-      // Error 2 (used for fill R)
-      //    set last cursor to the new point
-      //    set current cursor one pixel to the left
-      g_x_pos_last1 = g_x_pos;
-      g_y_pos_last1 = g_y_pos;
-      g_x_pos = (int16_t)(g_x_pos - (1 << screen->xeigfactor));
-      break;
-   default:
-      // No error, update with the line drawn
-      g_x_pos =       (int16_t)(x_right << screen->xeigfactor);
-      g_x_pos_last1 = (int16_t)(x_left  << screen->xeigfactor);
-      g_y_pos_last1 = g_y_pos;
-      break;
-   }
+   /* Report what happened; applying the OS's cursor rule is the VDU layer's
+      job, not the rasteriser's - vdu_25 already owns that dispatch, and the
+      rule is keyed to the PLOT code rather than to any property of the
+      pixels. */
+   res->drawn   = true;
+   res->error   = error;
+   res->x_left  = x_left;
+   res->x_right = x_right;
 }
 
 void prim_fill_triangle(screen_mode_t *screen, int x1, int y1, int x2, int y2, int x3, int y3, plotcol_t colour) {

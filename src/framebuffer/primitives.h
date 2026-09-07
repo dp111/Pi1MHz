@@ -53,7 +53,17 @@ void       prim_set_pixel            (screen_mode_t *screen, int x, int y, plotc
 pixel_t    prim_get_pixel            (screen_mode_t *screen, int x, int y);
 int        prim_on_screen            (screen_mode_t *screen, int x, int y);
 void       prim_draw_line            (screen_mode_t *screen, int x1, int y1, int x2, int y2, plotcol_t colour, uint8_t linemode);
-void       prim_fill_area            (screen_mode_t *screen, int x, int y, plotcol_t colour, fill_t mode);
+/* What a fill did, so the VDU layer can apply the OS's post-fill cursor rule.
+   error: 0 = a span was drawn, 1 = fill LR refused, 2 = fill R refused.
+   drawn == false means the mode was unknown and the cursors must not move. */
+typedef struct {
+   int  error;
+   int  x_left;      /* pixel coords, valid when error == 0 */
+   int  x_right;
+   bool drawn;
+} fill_result_t;
+
+void       prim_fill_area            (screen_mode_t *screen, int x, int y, plotcol_t colour, fill_t mode, fill_result_t *res);
 void       prim_draw_circle          (screen_mode_t *screen, int xc, int yc, int xr, int yr, plotcol_t colour);
 void       prim_fill_circle          (screen_mode_t *screen, int xc, int yc, int xr, int yr, plotcol_t colour);
 void       prim_draw_ellipse         (screen_mode_t *screen, int xc, int yc, int width, int height, int shear, plotcol_t colour);
