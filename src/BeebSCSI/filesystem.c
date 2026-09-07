@@ -840,8 +840,9 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): WARNING: The LUN file size is greater than 512MBytes\r\n"));
    }
 
-   filesystemState.fsLunStatus[lunNumber] = true;
-
+   // The started flag itself belongs to filesystemSetLunStatus(), the one
+   // owner of the stopped<->started transition; this function only opens
+   // the image and loads its descriptor on that owner's behalf.
    if (!filesystemReadLunDescriptor( lunNumber)) {
 
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunImage(): Creating new LUN descriptor\r\n"));

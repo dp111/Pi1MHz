@@ -1545,8 +1545,10 @@ static uint8_t scsiCommandModeSelect6(void)
       return SCSI_STATUS;
    }
 
-   // Make sure the target LUN is started
-   if (!filesystemCheckLunImage(commandDataBlock.targetLUN)) {
+   // Make sure the target LUN is started (the state owner, not the image
+   // check it delegates to - a MODE SELECT with no MOUNT before it must leave
+   // the LUN in exactly the state a START would)
+   if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
       // If the target LUN is unavailable then the host is probably attempting to MODESELECT
       // a LUN for which no descriptor exists.  So here we create the LUN descriptor
       if(!filesystemCreateLunDescriptor(commandDataBlock.targetLUN)) {
