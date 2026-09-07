@@ -12,47 +12,16 @@
 #include "scripts/gitversion.h"
 #include "rpi/info.h"
 #include "videoplayer.h"
+#include "helpers_help.h"
 
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
 _Alignas(4) NOINIT_SECTION uint8_t helper_ram[4*1024];
 
 static uint8_t helper_address;
 
-static size_t strlcpylen(char *dst, const char *src, size_t dstsize)
-{
-    size_t srclen = 0;
-    while (srclen < dstsize - 1 && src[srclen]) {
-        dst[srclen] = src[srclen];
-        srclen++;
-    }
-    dst[srclen] = '\0';
-
-    return srclen;
-}
-
-
 size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
 {
-  // We also hide the help screen at &FFE000
-        char * const start = helpscreen;
-        char hex[3];
-        char dec[4];
-        char M5000address[4];
-
-        sprintf(hex, "%X",helper_address);
-        sprintf(dec, "%d",helper_address);
-        sprintf(M5000address, "%d", M5000_emulator_read_instance());
-
-        char scsiaddress[4];
-        sprintf(scsiaddress, "%d", harddisc_emulator_get_address()+1);
-
-        size_t size;
-        size = strlcpylen(helpscreen, "\r\nPi1MHz "RELEASENAME" , "GITVERSION
-        "\r\nDate : " BUILD_DATE
-        "\r\nPi : " , helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen, get_info_string(), helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
+        // We also hide the help screen at &FFE000 (1 KB there, ~600 B used).
         // Hand-formatted to tenths so this doesn't need newlib's float printf
         // support (dtoa machinery, ~5 KB) -- see CMakeLists.txt, -u _printf_float.
         // Integer arithmetic on purpose: this runs in FIQ context, and FIQ.s
@@ -60,64 +29,20 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         // whatever it interrupted.  Millidegrees to tenths, rounded.
         // Cannot go negative (0 on failure), so no sign handling.
         long temp_tenths = (long)((get_temp_millidegrees() + 50u) / 100u);
-        size = (size_t)snprintf(helpscreen, helpscreen_size, " %ld.%ldC",
-                                 temp_tenths / 10, temp_tenths % 10);
+        int n = snprintf(helpscreen, helpscreen_size, HELPERS_HELP_FMT(BUILD_DATE),
+                         GITVERSION,
+                         get_info_string(), temp_tenths / 10, temp_tenths % 10,
+                         (unsigned int)helper_address,
+                         (int)helper_address,
+                         (int)(harddisc_emulator_get_address() + 1),
+                         (int)M5000_emulator_read_instance());
         // snprintf returns the would-be length, which may exceed the buffer;
-        // clamp so the running pointer/size (and the returned length) stay exact.
-        if (size >= helpscreen_size) size = helpscreen_size - 1;
-        helpscreen += size;helpscreen_size -= size;
-        size= strlcpylen(helpscreen, "\r\n"
-        "\r\n3 ways to start helper functions :"
-        "\r\n*FX147,", helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen, dec, helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen,",n <ret> *GO FD00 <ret>"
-        "\r\n*FX147,", helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen, dec, helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen,",n <ret> *GOIO FD00 <ret>"
-        "\r\nX%=n:CALL&FC", helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen, hex, helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-
-        size = strlcpylen(helpscreen,
-        " <ret>\r\n\r\nwhere n is one of the following :"
-        "\r\n0 # This help screen"
-        "\r\n1 # Status N/A"
-        "\r\n2 # Enable screen redirector"
-        "\r\n3 # Load ADFS into SWR"
-        "\r\n4 # Load MMFS into SWR"
-        "\r\n5 # Load MMFS2 into SWR"
-        "\r\n6 # Load BeebSCSI helper ROM into SWR"
-        "\r\n7 # Load ATS ROM into SWR"
-        "\r\n8 # Load AUNFSbeeb ROM into SWR"
-        "\r\n9 # Load AUNFSM128 ROM into SWR"
-
-        "\r\n10-15 # Load User ROM10-ROM15 into SWR\r\n"
-        "\r\n*FX147,", helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-
-        size = strlcpylen(helpscreen, scsiaddress, helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen,",n # SCSIJUKE box directory"
-            "\r\n*FX147,202,", helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen, M5000address, helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen,":*FX147,203,1 #Record M5000\r\n"
-                    "*FX147,202,", helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen, M5000address, helpscreen_size);
-        helpscreen += size;helpscreen_size -= size;
-        size = strlcpylen(helpscreen,":*FX147,203,0 #End Record\r\n", helpscreen_size);
-        helpscreen += size;
-
-        // Return the number of characters written (excluding the NUL) so the
-        // caller can pass the exact length to fb_writen() with no strlen().
-        return (size_t)(helpscreen - start);
+        // clamp so the returned length (used for fb_writen) stays exact.
+        if (n < 0)
+            n = 0;
+        if ((size_t)n >= helpscreen_size)
+            n = (int)(helpscreen_size - 1u);
+        return (size_t)n;
 }
 
 static void helpers_bank_select(unsigned int gpio)
