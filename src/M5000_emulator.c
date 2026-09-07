@@ -505,8 +505,13 @@ static void store_samples(int sl, int sr)
 {
    if (rec_started || sl || sr)
     {
-      sl = (sl * gain * 12) / 1024; // +/- 2666.6 so scale to fit +/- 32,768
-      sr = (sr * gain * 12) / 1024;
+      /* Same headroom rule as the live path (music5000_to_s16): widen, then
+         saturate.  M5000_Gain=16 - the header's own example - overflowed
+         int16 here on any loud passage and inverted it. */
+      int64_t vl = ((int64_t)sl * gain * 12) / 1024;   // +/- 2666.6 so scale to fit +/- 32,768
+      int64_t vr = ((int64_t)sr * gain * 12) / 1024;
+      sl = (vl > 32767) ? 32767 : (vl < -32768) ? -32768 : (int)vl;
+      sr = (vr > 32767) ? 32767 : (vr < -32768) ? -32768 : (int)vr;
       if ((Audio_Index+4) >= ram_max)
       {
          LOG_INFO("Music 5000 recording stopped as we have run out of JIM RAM\r\n");
