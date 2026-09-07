@@ -158,6 +158,8 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
    jim_init_loaded = filesystemReadFile("JIM_Init.bin",&Pi1MHz->JIM_ram,((size_t)Pi1MHz->JIM_ram_size<<24));
+   if (!jim_init_loaded)
+      memset(Pi1MHz->JIM_ram, 0, PAGE_SIZE);   // page 0 is published below: never heap residue
 
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[0]);
 }
