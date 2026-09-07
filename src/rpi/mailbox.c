@@ -234,18 +234,13 @@ void RPI_PropertyStart(rpi_mailbox_tag_t tag, uint32_t length)
     pt[pt_index++] = 0; /* Request */
 }
 
-/* pt[] is followed in memory by the UART ring; a property call that keeps
-   adding past PROP_BUFFER_SIZE must drop words, not overrun into it. */
 void RPI_PropertyAdd(uint32_t data)
 {
-    if (pt_index < PROP_BUFFER_SIZE)
-        pt[pt_index++] = data;
+    pt[pt_index++] = data;
 }
 
 void RPI_PropertyAddTwoWords(uint32_t data, uint32_t data2)
 {
-    if (pt_index + 1u >= PROP_BUFFER_SIZE)
-        return;
     pt[pt_index++] = data;
     pt[pt_index++] = data2;
 }
