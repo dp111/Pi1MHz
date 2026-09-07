@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "md5.h"
 
@@ -230,7 +231,7 @@ int main(void)
          const char *b = ws_basename(s);
          assert(b >= s && b <= s + len);
          (void)ws_is_root(s);
-         (void)ws_stricmp(s, t);
+         (void)strcasecmp(s, t);
          (void)ws_prefix(t, s);
          (void)ws_strcasestr(s, t);
          (void)ws_hexval((char)(rnd() & 0xFFu));

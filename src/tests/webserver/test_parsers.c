@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "md5.h"          /* real header: md5_hex_t / MD5_HEX_LEN */
 
@@ -37,10 +38,10 @@ int main(void)
    puts("== text helpers ==");
    ok(ws_lc('A') == 'a' && ws_lc('z') == 'z' && ws_lc('0') == '0',
       "ws_lc lowers only A-Z");
-   ok(ws_stricmp("Content-Length", "content-LENGTH") == 0, "stricmp equal");
-   ok(ws_stricmp("abc", "abd") < 0 && ws_stricmp("abd", "abc") > 0,
+   ok(strcasecmp("Content-Length", "content-LENGTH") == 0, "stricmp equal");
+   ok(strcasecmp("abc", "abd") < 0 && strcasecmp("abd", "abc") > 0,
       "stricmp orders");
-   ok(ws_stricmp("ab", "abc") != 0, "stricmp length mismatch");
+   ok(strcasecmp("ab", "abc") != 0, "stricmp length mismatch");
    ok(ws_prefix("/files/", "/files/x.txt"), "ws_prefix hit");
    ok(!ws_prefix("/files/", "/file"), "ws_prefix stops at short subject");
    ok(ws_prefix_ci_str("Digest username=..", "digest "), "prefix_ci_str");

@@ -21,7 +21,7 @@ cp -r "$HERE"/stubs/. "$B/"
 # The pure text parsers: HTTP request line / header block, multipart
 # Content-Type fields, URL decoding, SD path normalisation + traversal
 # checks, Digest-auth fields, WebDAV Destination and RFC1123 dates.
-PARSER_FNS="ws_lc,ws_stricmp,ws_prefix,ws_prefix_ci,ws_prefix_ci_str,\
+PARSER_FNS="ws_lc,ws_prefix,ws_prefix_ci,ws_prefix_ci_str,\
 ws_strcasestr,ws_hexval,ws_url_decode,ws_memfind,ws_find_header_end,\
 ws_basename,ws_parse_request_line,ws_find_header,ws_extract_boundary,\
 ws_extract_filename,ws_path_is_safe,ws_normalize_path,ws_parent_path,\

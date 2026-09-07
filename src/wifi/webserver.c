@@ -53,6 +53,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 /* ------------------------------------------------------------------ */
 /* Tunables                                                            */
@@ -667,17 +668,6 @@ static int ws_lc(int c)
    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
 }
 
-static int ws_stricmp(const char *a, const char *b)
-{
-   while (*a != '\0' && *b != '\0') {
-      int d = ws_lc((unsigned char)*a) - ws_lc((unsigned char)*b);
-      if (d != 0)
-         return d;
-      ++a;
-      ++b;
-   }
-   return ws_lc((unsigned char)*a) - ws_lc((unsigned char)*b);
-}
 
 static bool ws_prefix(const char *prefix, const char *s)
 {
@@ -692,12 +682,7 @@ static bool ws_prefix(const char *prefix, const char *s)
 
 static bool ws_prefix_ci(const char *s, const char *prefix, size_t n)
 {
-   size_t k;
-   for (k = 0u; k < n; ++k) {
-      if (ws_lc((unsigned char)s[k]) != ws_lc((unsigned char)prefix[k]))
-         return false;
-   }
-   return true;
+   return strncasecmp(s, prefix, n) == 0;
 }
 
 static bool ws_prefix_ci_str(const char *s, const char *prefix)
@@ -3284,7 +3269,7 @@ static int ws_entry_cmp(const void *pa, const void *pb)
    const ws_dir_entry_t *b = (const ws_dir_entry_t *)pb;
    if (a->is_dir != b->is_dir)
       return a->is_dir ? -1 : 1;
-   return ws_stricmp(a->name, b->name);
+   return strcasecmp(a->name, b->name);
 }
 
 /* True for filenames the /Pi1MHz/disc.html viewer knows how to open:
@@ -3298,11 +3283,11 @@ static bool ws_is_disc_image_name(const char *name)
    if (ext == NULL)
       return false;
    ++ext;
-   if (ws_stricmp(ext, "ssd") == 0 || ws_stricmp(ext, "dsd") == 0
-       || ws_stricmp(ext, "mmb") == 0 || ws_stricmp(ext, "adf") == 0
-       || ws_stricmp(ext, "adm") == 0 || ws_stricmp(ext, "adl") == 0)
+   if (strcasecmp(ext, "ssd") == 0 || strcasecmp(ext, "dsd") == 0
+       || strcasecmp(ext, "mmb") == 0 || strcasecmp(ext, "adf") == 0
+       || strcasecmp(ext, "adm") == 0 || strcasecmp(ext, "adl") == 0)
       return true;
-   return ws_stricmp(ext, "dat") == 0 && ws_prefix_ci(name, "scsi", 4u);
+   return strcasecmp(ext, "dat") == 0 && ws_prefix_ci(name, "scsi", 4u);
 }
 
 static bool render_listing(ws_conn_t *c, const char *sdpath)

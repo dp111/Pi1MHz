@@ -58,6 +58,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 
 #include "debug.h"
@@ -386,18 +387,6 @@ static uint16_t hostRevokeMask;  // bit n set = the Beeb took LUN n back; abort 
 
 // Compare up to `len` bytes case-insensitively; FAT names are not case
 // sensitive, and the host hands us whatever case the directory entry has.
-static bool fsHostNameEqual(const char *a, const char *b, size_t len)
-{
-   for (size_t i = 0; i < len; i++) {
-      char ca = a[i];
-      char cb = b[i];
-      if (ca >= 'a' && ca <= 'z') ca = (char)(ca - ('a' - 'A'));
-      if (cb >= 'a' && cb <= 'z') cb = (char)(cb - ('a' - 'A'));
-      if (ca != cb) return false;
-      if (ca == '\0') return true;
-   }
-   return true;
-}
 
 // Assemble a LUN's directory, and the stem its files share, exactly as
 // filesystemCheckLunImage() assembles the .dat name.
@@ -435,11 +424,11 @@ bool filesystemHostPathBusy(const char *path)
 
       // path names one of this LUN's own files
       size_t stemLen = strlen(stem);
-      if (pathLen >= stemLen && fsHostNameEqual(path, stem, stemLen)) return true;
+      if (pathLen >= stemLen && strncasecmp(path, stem, stemLen) == 0) return true;
 
       // path is a directory at or above the one holding them
       size_t dirLen = strlen(dir);
-      if (pathLen <= dirLen && fsHostNameEqual(path, dir, pathLen) &&
+      if (pathLen <= dirLen && strncasecmp(path, dir, pathLen) == 0 &&
           (dir[pathLen] == '\0' || dir[pathLen] == '/')) return true;
    }
 
@@ -457,7 +446,7 @@ int8_t filesystemLunFromHostPath(const char *path)
       char dir[24];
       char stem[40];
       fsHostLunNames(lunNumber, dir, sizeof(dir), stem, sizeof(stem));
-      if (fsHostNameEqual(path, stem, strlen(stem))) return (int8_t)lunNumber;
+      if (strncasecmp(path, stem, strlen(stem)) == 0) return (int8_t)lunNumber;
    }
 
    return -1;

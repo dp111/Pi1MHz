@@ -26,10 +26,10 @@ keys must start at the beginning of the line and with
  * a size_t overflow and a sane allocation size. */
 #define PARSE_MAX_FILE_SIZE (256u * 1024u)
 
-/* Compare S1 and S2, ignoring case, returning less than, equal to or
-   greater than zero if S1 is lexicographically less than,
-   equal to or greater than S2.  */
-static bool localstrcasecmp(const char *s1, const char *s2 )
+/* True if the whole key S1 matches the start of S2 ignoring case, with S2
+   allowed to continue into a key terminator (newline, space, tab, '#' or
+   '=').  Not a strcasecmp: the terminator set is the point of it. */
+static bool parse_key_matches(const char *s1, const char *s2 )
 {
     while(1)
     {
@@ -44,7 +44,7 @@ int parse_findindex( const char * searchkey, const parserkey array[])
 {
     int i = 0;
     while (array[i].key) {
-        if (localstrcasecmp(array[i].key, searchkey)) {
+        if (parse_key_matches(array[i].key, searchkey)) {
             return i;
         }
         i++;

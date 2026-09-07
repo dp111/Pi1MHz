@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -22,21 +23,6 @@ static int            config_count;
 static char          *config_buf;     /* retained NUL-terminated image */
 static bool           config_loaded;
 
-static char lower(char c)
-{
-   return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
-}
-
-static bool ci_equal(const char *a, const char *b)
-{
-   while (*a != '\0' && *b != '\0') {
-      if (lower(*a) != lower(*b))
-         return false;
-      a++;
-      b++;
-   }
-   return *a == '\0' && *b == '\0';
-}
 
 void config_parse(char *buf, size_t len)
 {
@@ -97,7 +83,7 @@ void config_parse(char *buf, size_t len)
 const char *config_get(const char *key)
 {
    for (int k = 0; k < config_count; k++) {
-      if (ci_equal(config_entries[k].key, key))
+      if (strcasecmp(config_entries[k].key, key) == 0)
          return config_entries[k].value;
    }
    return NULL;
