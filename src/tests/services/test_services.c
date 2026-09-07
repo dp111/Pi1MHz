@@ -244,6 +244,9 @@ int main(void)
    {
       /* Baseline (key absent -> accessor false): Beeb writes reach FatFs. */
       ok(!config_beeb_write_protected(), "accessor false when the key is absent");
+      /* f_write (cmd 5) names handle 0 and the service refuses a handle the
+         ROM never opened (fat_file_open[] gate), so open it once for the block */
+      ok(do_open(0, "/rw0.dat") == FR_OK, "open handle 0 for the write checks");
       f_write_calls = disk_write_calls = f_mkdir_calls = f_unlink_calls = f_rename_calls = 0;
       ok(do_simple(0, 1)  == RES_OK && disk_write_calls == 1, "off: disk_write happens");
       ok(do_simple(0, 5)  == FR_OK && f_write_calls   == 1,   "off: f_write happens");
