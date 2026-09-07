@@ -5660,6 +5660,11 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    if (!ws_find_header(c->reqhdr, c->reqhdr_len, "Destination",
                        dest_hdr, sizeof dest_hdr))
       return ws_error(c, 400, "Bad Request", "Missing Destination header.");
+   /* ws_find_header truncates silently; a Destination that did not fit would
+      land the MOVE/COPY on a different, prefix-truncated path (the class
+      be21a10 closed for the request target). */
+   if (strlen(dest_hdr) + 2u > sizeof dest_hdr)
+      return ws_error(c, 400, "Bad Request", "Destination too long.");
    if (!dav_destination_sdpath(dest_hdr, dst, sizeof dst))
       return ws_error(c, 400, "Bad Request", "Bad Destination path.");
    if (ws_find_header(c->reqhdr, c->reqhdr_len, "Overwrite",
