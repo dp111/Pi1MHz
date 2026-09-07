@@ -95,7 +95,7 @@ static const parserkey scsiattributes[] = {
    { "LDUserCode"      , 0 ,  5 , STRING },
    /* Picture alignment of the Domesday video on the Beeb's raster, in Beeb
       pixels: X in MODE 0 pixels (1/640 of the line, positive = right),
-      Y in Beeb rows (1/256 of the screen, positive = down).  Absent = 2,2. */
+      Y in Beeb rows (1/256 of the screen, positive = down).  Absent = -2,-2. */
    { "LDVideoXoffset"  , -768 , 768 , INTEGER },
    { "LDVideoYoffset"  , -288 , 288 , INTEGER },
    { NULL , 0 ,0, 0} // end of list
