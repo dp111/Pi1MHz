@@ -41,7 +41,8 @@
 
     0x1000 palettes 0x400 each, banks 0-7 (bit0 flash, bit1 keyed,
            bit2 VP5 highlight) so keyed = 2/3 and its highlight twin = 6/7;
-           banks 4/5 are never selected. Ends at 0x3000.
+           banks 4/5 (PAL_MIXED: highlight without keyed) are selected by
+           screen_set_palette case 5 for VP4 *VOTRANSPARENT. Ends at 0x3000.
     0x3000 4K spare ( used for other things)
 
 LBM memory fixed at 768  bytes per line of each plane 8 planes
@@ -1347,9 +1348,9 @@ static bool screen_highlight;
    held in context memory at once: switching *VOHIGHLIGHT then costs one
    palette-pointer word per plane (deferred to blanking) instead of
    rewriting 512 entries the HVS is reading per pixel mid-frame, which is
-   what made rapid VP1/VP5 switching flicker. Banks 4/5 (highlight without
-   keyed) are never selected; the 2K they occupy keeps this arithmetic
-   trivial and the region was spare. */
+   what made rapid VP1/VP5 switching flicker. Banks 4/5 (PAL_MIXED:
+   highlight without keyed) are selected by screen_set_palette case 5, the
+   VP4 *VOTRANSPARENT look; the 2K also keeps this arithmetic trivial. */
 #define PAL_ENTRIES     (256u*2u)      /* an entry index spans a bank pair */
 #define PAL_KEYED       PAL_ENTRIES        /* banks 2,3 */
 #define PAL_MIXED       (PAL_ENTRIES*2u)   /* banks 4,5 */
