@@ -137,7 +137,7 @@ static void inflate_restart(uef_stream_t *stream)
 uef_format_t uef_stream_open(uef_stream_t *stream, uef_source_fn source,
                              void *context, uint32_t length)
 {
-   uint8_t magic[sizeof uef_magic];
+   uint8_t magic[sizeof uef_magic] = {0};   /* read may be short: never dispatch on stack residue */
    bool stored = false;
 
    memset(stream, 0, sizeof *stream);
