@@ -275,6 +275,9 @@ static int default_read_char(const font_t *font, screen_mode_t *screen, int x, i
    int width  = font->width  << font->rounding;
    int height = font->height << font->rounding;
    int h = 0;
+   if (height > MAX_FONT_HEIGHT) {
+      return 0;
+   }
    for (int i = 0; i < height ; i +=1) {
       int row = 0;
       for (int j = 0; j < width * font->scale_w; j += font->scale_w) {
@@ -288,12 +291,13 @@ static int default_read_char(const font_t *font, screen_mode_t *screen, int x, i
    }
    // Match against font
    for (int c = 0x20; c < font->num_chars; c++) {
-      for (y = 0; y < height; y++) {
-         if (font->buffer[c * height + y] != screendata[y]) {
+      int row;
+      for (row = 0; row < height; row++) {
+         if (font->buffer[c * height + row] != screendata[row]) {
             break;
          }
       }
-      if (y == height) {
+      if (row == height) {
          return c;
       }
    }
