@@ -1,4 +1,5 @@
 #include "secure_service_core.h"
+#include "byteorder.h"
 
 #include <string.h>
 
@@ -9,11 +10,6 @@ static uint16_t rd16(const uint8_t *p)
     return (uint16_t)p[0] | (uint16_t)((uint16_t)p[1] << 8);
 }
 
-static uint32_t rd32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
 
 static void wr24(uint8_t *p, uint32_t value)
 {
@@ -85,7 +81,7 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
 
     case NTS_SEC_RANDOM:
         length = rd16(command + 1);
-        address = rd32(command + 4);
+        address = get_le32(command + 4);
         if (length == 0 || length > 64 || !buffer_ok(address, length, jim_size))
             return NTS_ERR_PARAM;
         if (service->port->random == NULL ||
@@ -94,8 +90,8 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
         return NTS_OK;
 
     case NTS_SEC_SSH_OPEN: {
-        const char *url = jim_string(jim, jim_size, rd32(command + 2));
-        const char *username = jim_string(jim, jim_size, rd32(command + 6));
+        const char *url = jim_string(jim, jim_size, get_le32(command + 2));
+        const char *username = jim_string(jim, jim_size, get_le32(command + 6));
         char fingerprint[96] = { 0 };
         if (!service->managed_ssh || service->port->ssh_open == NULL)
             return NTS_ERR_UNSUPPORTED;
@@ -118,7 +114,7 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
     case NTS_SEC_SSH_READ:
         length = (uint32_t)command[1] | ((uint32_t)command[2] << 8) |
                  ((uint32_t)command[3] << 16);
-        address = rd32(command + 4);
+        address = get_le32(command + 4);
         if (service->port->ssh_read == NULL ||
             !buffer_ok(address, length, jim_size))
             return NTS_ERR_PARAM;
@@ -133,7 +129,7 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
     case NTS_SEC_SSH_WRITE:
         length = (uint32_t)command[1] | ((uint32_t)command[2] << 8) |
                  ((uint32_t)command[3] << 16);
-        address = rd32(command + 4);
+        address = get_le32(command + 4);
         if (service->port->ssh_write == NULL ||
             !buffer_ok(address, length, jim_size))
             return NTS_ERR_PARAM;
@@ -152,7 +148,7 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
 
     case NTS_SEC_SSH_PASSWORD:
         length = command[1];
-        address = rd32(command + 4);
+        address = get_le32(command + 4);
         if (!service->managed_ssh || service->port->ssh_password == NULL ||
             length == 0u || length > 127u ||
             !buffer_ok(address, length, jim_size))
@@ -163,8 +159,8 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
         return result == 0 ? NTS_OK : NTS_ERR_PARAM;
 
     case NTS_SEC_SFTP_OPEN: {
-        const char *url = jim_string(jim, jim_size, rd32(command + 2));
-        const char *username = jim_string(jim, jim_size, rd32(command + 6));
+        const char *url = jim_string(jim, jim_size, get_le32(command + 2));
+        const char *username = jim_string(jim, jim_size, get_le32(command + 6));
         char fingerprint[96] = { 0 };
         if (!service->managed_ssh || service->port->sftp_open == NULL)
             return NTS_ERR_UNSUPPORTED;
@@ -190,8 +186,8 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
     case NTS_SEC_SFTP_DELETE:
     case NTS_SEC_SFTP_MKDIR:
     case NTS_SEC_SFTP_RMDIR: {
-        const char *path = jim_string(jim, jim_size, rd32(command + 4));
-        uint32_t output = rd32(command + 8);
+        const char *path = jim_string(jim, jim_size, get_le32(command + 4));
+        uint32_t output = get_le32(command + 8);
         length = (uint32_t)command[1] | ((uint32_t)command[2] << 8) |
                  ((uint32_t)command[3] << 16);
         if (service->port->sftp_path == NULL || path == NULL ||
@@ -207,7 +203,7 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
 
     case NTS_SEC_SFTP_GET_OPEN:
     case NTS_SEC_SFTP_PUT_OPEN: {
-        const char *path = jim_string(jim, jim_size, rd32(command + 4));
+        const char *path = jim_string(jim, jim_size, get_le32(command + 4));
         if (path == NULL || *path == '\0') return NTS_ERR_PARAM;
         if (command[0] == NTS_SEC_SFTP_GET_OPEN) {
             if (service->port->sftp_get_open == NULL) return NTS_ERR_UNSUPPORTED;
@@ -223,7 +219,7 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
     case NTS_SEC_SFTP_PUT_WRITE:
         length = (uint32_t)command[1] | ((uint32_t)command[2] << 8) |
                  ((uint32_t)command[3] << 16);
-        address = rd32(command + 4);
+        address = get_le32(command + 4);
         if (!buffer_ok(address, length, jim_size)) return NTS_ERR_PARAM;
         if (command[0] == NTS_SEC_SFTP_GET_READ) {
             if (service->port->sftp_get_read == NULL) return NTS_ERR_UNSUPPORTED;

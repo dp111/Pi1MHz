@@ -5,6 +5,8 @@
 
 #include "Pi1MHz.h"
 #include "uef_stream.h"
+#include "byteorder.h"
+#include "uzlib/uzlib.h"
 #include "wifi_service.h"
 
 /* JIM layout.  The AP5 exposes one 64K JIM aperture and the tape is published
@@ -75,41 +77,7 @@ static uint32_t next_token;
 
 extern void response_string(uint32_t cp, const char *value);
 
-static uint16_t rd16(const uint8_t *p)
-{
-   return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
 
-static uint32_t rd32(const uint8_t *p)
-{
-   return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
-        | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-static void wr16(uint8_t *p, uint16_t value)
-{
-   p[0] = (uint8_t)value;
-   p[1] = (uint8_t)(value >> 8);
-}
-
-static void wr32(uint8_t *p, uint32_t value)
-{
-   p[0] = (uint8_t)value;
-   p[1] = (uint8_t)(value >> 8);
-   p[2] = (uint8_t)(value >> 16);
-   p[3] = (uint8_t)(value >> 24);
-}
-
-static uint32_t uef_crc32(const uint8_t *data, size_t length)
-{
-   uint32_t crc = 0xffffffffu;
-   while (length-- != 0u) {
-      crc ^= *data++;
-      for (unsigned int bit = 0u; bit < 8u; bit++)
-         crc = (crc >> 1) ^ (0xedb88320u & (uint32_t)-(int32_t)(crc & 1u));
-   }
-   return ~crc;
-}
 
 /* The last two bytes of the aperture tell the host how much of the window is
  * live.  The host also writes it, to declare an APPEND length. */
@@ -249,9 +217,9 @@ static void incremental_response(uint32_t cp)
    uint8_t *p = &Pi1MHz->JIM_ram[cp + 1u];
    memcpy(p, "IUEF", 4u);
    p[4] = UEF_STREAM_VERSION;
-   wr32(p + 5u, tape != NULL ? tape->token : 0u);
-   wr32(p + 9u, tape != NULL ? tape->generation : 0u);
-   wr16(p + 13u, tape != NULL ? tape->window_length : 0u);
+   put_le32(p + 5u, tape != NULL ? tape->token : 0u);
+   put_le32(p + 9u, tape != NULL ? tape->generation : 0u);
+   put_le16(p + 13u, tape != NULL ? tape->window_length : 0u);
    p[15] = (tape != NULL && tape->window_final) ? 1u : 0u;
    p[16] = tape != NULL ? tape->format : 0u;
    p[17] = 0u;
@@ -299,10 +267,10 @@ static uint8_t stream_operation(uint32_t cp)
 {
    const uint8_t *request = &Pi1MHz->JIM_ram[cp + 1u];
    uint8_t operation = request[5];
-   uint32_t token = rd32(request + 6u);
-   uint32_t value = rd32(request + 10u);
-   uint16_t length = rd16(request + 14u);
-   uint32_t crc = rd32(request + 16u);
+   uint32_t token = get_le32(request + 6u);
+   uint32_t value = get_le32(request + 10u);
+   uint16_t length = get_le16(request + 14u);
+   uint32_t crc = get_le32(request + 16u);
 
    switch (operation) {
       case UEF_OP_PROBE:
@@ -328,7 +296,9 @@ static uint8_t stream_operation(uint32_t cp)
          if (!tape->uploading || token != tape->token
              || length == 0u || length > UEF_APPEND_MAX)
             return WIFI_SVC_ERR_PARAM;
-         actual_crc = uef_crc32(&Pi1MHz->JIM_ram[UEF_BASE], length);
+         /* uzlib's table CRC, already linked for the tape stream: seed ~0, invert
+            the running value for the final CRC-32 */
+         actual_crc = ~uzlib_crc32(&Pi1MHz->JIM_ram[UEF_BASE], (unsigned int)length, 0xffffffffu);
          if (value == tape->generation) {
             if (!upload_reserve(length))
                return WIFI_SVC_ERR_PARAM;

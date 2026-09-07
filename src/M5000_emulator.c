@@ -84,6 +84,7 @@ Use https://wavedrom.com/editor.html
 #include "rpi/gpio.h"
 #include "rpi/info.h"
 #include "config.h"
+#include "byteorder.h"
 #include "BeebSCSI/fatfs/ff.h"
 
 //NB ample software access the waveform ram with bit 7 and 8 equal
@@ -141,19 +142,6 @@ static const unsigned char wavfmt[] = {
    0x00, 0x00, 0x00, 0x00  // dummy sample
 };
 
-static inline void put_le16(uint8_t *p, uint16_t v)
-{
-   p[0] = (uint8_t)v;
-   p[1] = (uint8_t)(v >> 8);
-}
-
-static inline void put_le32(uint8_t *p, uint32_t v)
-{
-   p[0] = (uint8_t)v;
-   p[1] = (uint8_t)(v >> 8);
-   p[2] = (uint8_t)(v >> 16);
-   p[3] = (uint8_t)(v >> 24);
-}
 
 struct synth {
     uint32_t phaseRAM[16];

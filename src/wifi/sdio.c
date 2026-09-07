@@ -1,4 +1,5 @@
 #include "sdio.h"
+#include "../byteorder.h"
 
 #include "cyw43.h"
 
@@ -2895,13 +2896,7 @@ static bool sdio_tx_probe_is_set_ioctl(wifi_sdio_tx_probe_command_t command)
 
 static uint32_t sdio_load_u32_le(const uint8_t *src)
 {
-   if (src == NULL)
-      return 0u;
-
-   return (uint32_t)src[0]
-      | ((uint32_t)src[1] << 8)
-      | ((uint32_t)src[2] << 16)
-      | ((uint32_t)src[3] << 24);
+   return (src != NULL) ? get_le32(src) : 0u;
 }
 
 static uint32_t sdio_tx_probe_payload_word0(wifi_sdio_tx_probe_command_t command)

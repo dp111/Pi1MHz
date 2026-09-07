@@ -1,19 +1,10 @@
 #include "uef_stream.h"
+#include "byteorder.h"
 
 #include <string.h>
 
 static const uint8_t uef_magic[] = { 'U', 'E', 'F', ' ', 'F', 'i', 'l', 'e', '!', 0 };
 
-static uint16_t le16(const uint8_t *p)
-{
-   return (uint16_t)((uint16_t)p[0] | (uint16_t)((uint16_t)p[1] << 8));
-}
-
-static uint32_t le32(const uint8_t *p)
-{
-   return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
-        | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
 
 /* Read straight from the source, bypassing the inflater's own buffering.
  * Only used while sniffing the container header. */
@@ -67,7 +58,7 @@ static bool gzip_data_start(uef_stream_t *stream, uint32_t *start)
       uint8_t len[2];
       if (source_at(stream, pos, len, 2u) != 2u)
          return false;
-      pos += 2u + (uint32_t)le16(len);
+      pos += 2u + (uint32_t)get_le16(len);
    }
    if ((flags & 8u) != 0u) {           /* FNAME, NUL terminated */
       uint8_t c;
@@ -109,18 +100,18 @@ static bool zip_data_start(uef_stream_t *stream, uint32_t *start,
       return false;
    if (source_at(stream, 0u, header, sizeof header) != sizeof header)
       return false;
-   if (le32(header) != 0x04034b50u)
+   if (get_le32(header) != 0x04034b50u)
       return false;
-   flags = le16(header + 6u);
-   method = le16(header + 8u);
+   flags = get_le16(header + 6u);
+   method = get_le16(header + 8u);
    /* Bit 0 is encryption, bit 3 puts the sizes in a trailing descriptor we
     * would have to hunt for - refuse both. */
    if ((flags & 9u) != 0u || (method != 0u && method != 8u))
       return false;
-   stream->expected_crc = le32(header + 14u);
-   stream->expected_length = le32(header + 22u);
-   name_length = le16(header + 26u);
-   extra_length = le16(header + 28u);
+   stream->expected_crc = get_le32(header + 14u);
+   stream->expected_length = get_le32(header + 22u);
+   name_length = get_le16(header + 26u);
+   extra_length = get_le16(header + 28u);
    data = 30u + (uint32_t)name_length + (uint32_t)extra_length;
    if (data >= stream->source_length)
       return false;
@@ -174,15 +165,15 @@ uef_format_t uef_stream_open(uef_stream_t *stream, uef_source_fn source,
       /* gzip states the decompressed length and CRC in its trailer, so we
        * can check both without a second pass. */
       if (source_at(stream, length - 8u, trailer, 8u) == 8u) {
-         stream->expected_crc = le32(trailer);
-         stream->expected_length = le32(trailer + 4u);
+         stream->expected_crc = get_le32(trailer);
+         stream->expected_length = get_le32(trailer + 4u);
       }
       stream->format = UEF_FORMAT_GZIP;
       inflate_restart(stream);
       return UEF_FORMAT_GZIP;
    }
 
-   if (le32(magic) == 0x04034b50u) {
+   if (get_le32(magic) == 0x04034b50u) {
       if (!zip_data_start(stream, &stream->data_start, &stored))
          return UEF_FORMAT_INVALID;
       stream->format = stored ? UEF_FORMAT_RAW : UEF_FORMAT_ZIP;

@@ -34,6 +34,7 @@
 #include <ctype.h>
 
 #include "../BeebSCSI/filesystem.h"
+#include "../byteorder.h"
 #include "../services.h"   /* fat_service_file_in_use() - MMFS/FAT interlock */
 #include "../wifi/sdio.h"
 #include "../BeebSCSI/fatfs/ff.h"
@@ -1262,11 +1263,6 @@ static int32_t fs_read_send_next(mtp_container_info_t* io_container, bool send_w
  * USB callback path with a small stack, and there is only ever one write in
  * flight (the state machine is single-object). */
 /* Little-endian 32-bit load from a byte buffer, without assuming alignment. */
-static uint32_t sdio_load_u32_le_bytes(const uint8_t *p)
-{
-  return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
-       | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
 
 #define MTP_WRITE_CHUNK 32768u
 static uint8_t g_mtp_write_buf[MTP_WRITE_CHUNK];
@@ -1432,7 +1428,7 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
            that is silent before UART init and needs a power cycle, which has
            happened repeatedly.  Refusing costs a failed flash and leaves the
            machine running. */
-        if ((sdio_load_u32_le_bytes(g_write_state.kernel_data) & 0xff000000u)
+        if ((get_le32(g_write_state.kernel_data) & 0xff000000u)
             != 0xea000000u) {
           resp->header->code = MTP_RESP_GENERAL_ERROR;
           fs_release_write_state();
