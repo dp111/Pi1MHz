@@ -107,7 +107,6 @@ static struct {
     uint32_t cur_picture;            /* 1-based, on screen */
     uint32_t next_frame;             /* 0-based, next to feed the decoder */
     uint32_t stop_picture;           /* stop register, 0 = none */
-    uint32_t info_picture;           /* info register ('I' op) */
     int32_t  in_flight;              /* AUs submitted minus frames back */
 
     int32_t  seek_frame;             /* pending random access, -1 = none */
@@ -116,10 +115,8 @@ static struct {
     /* pacing */
     uint32_t frame_period_us;
     uint32_t next_frame_due;         /* systimer target for the next flip */
-    uint32_t last_flip_vsync;        /* screen_vsync_count() at the last flip */
     uint32_t flip_wait_since;        /* when the current frame was armed */
     int64_t  armed_pts;              /* pts of the frame handed to the IRQ */
-    uint8_t  flip_gap_min, flip_gap_max;   /* refreshes per picture, for /status */
 
     /* audio: the PCM goes straight from the .pvf record into the audio
        core's ring; channel mutes (A/B soundtracks) are applied at the
@@ -809,7 +806,6 @@ void videoplayer_goto(uint32_t picture, char op)
     case 'I':                        /* info register */
         if (vp.open && picture > vp.hdr.frame_count)
             picture = vp.hdr.frame_count;
-        vp.info_picture = picture;
         return;
     case 'R':                        /* goto & still */
     case 'N':                        /* goto & play */
@@ -995,7 +991,6 @@ void videoplayer_fast_rev(void)  { fast_motion(VP_PLAY_REV); }
 void videoplayer_clear(void)
 {
     vp.stop_picture = 0;
-    vp.info_picture = 0;
 }
 
 void videoplayer_show_picture_number(bool on)
