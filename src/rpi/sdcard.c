@@ -861,15 +861,19 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
        empty FIFO. Measured against the old 8-word/usleep loop on the
        same boot workload: 2033 KB in 788 vs 794 ms - under 1%, the card
        dominates - so this is kept for tidiness, not speed. */
+    /* Empty-FIFO timeout by wall clock, not iteration count: 50M
+       register-read spins is 10-25 s on a dead card, long enough to
+       trip the watchdog before the error return. Time is sampled
+       every 4096 spins so the hot path stays a single SDEDM read.
+       One budget for the whole transfer: declared per burst, it restarted
+       every time the FIFO refilled, so a dribbling card could hold a
+       16-sector read for ~128 s. */
+    uint32_t wait_spins = 0u;
+    uint32_t wait_start_us = 0u;
+
     while (total_words > 0u)
     {
         uint32_t burst_words = SDDATA_FIFO_WORDS;
-        /* Empty-FIFO timeout by wall clock, not iteration count: 50M
-           register-read spins is 10-25 s on a dead card, long enough to
-           trip the watchdog before the error return. Time is sampled
-           every 4096 spins so the hot path stays a single SDEDM read. */
-        uint32_t wait_spins = 0u;
-        uint32_t wait_start_us = 0u;
 
         if (burst_words > total_words)
             burst_words = total_words;
