@@ -11,4 +11,9 @@ void map_4k_page(unsigned int logical, unsigned int physical);
 
 void enable_MMU_and_IDCaches(unsigned int num_4k_pages);
 
+/* Clean + disable the L1 data cache (SCTLR.C), MMU left on. For the
+   kernel.now chain-boot: makes the image copy coherent without any
+   cache work in the copier itself. */
+void disable_data_cache(void);
+
 #endif

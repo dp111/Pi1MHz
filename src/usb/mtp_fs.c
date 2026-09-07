@@ -40,6 +40,7 @@
 #include "../rpi/asm-helpers.h"
 #include "../rpi/systimer.h"
 #include "../Pi1MHz.h"
+#include "../rpi/cache.h"   /* disable_data_cache before the chain-boot copy */
 #include "../scripts/gitversion.h"   // RELEASENAME (generated from git tag)
 #include "../rpi/exceptions.h"
 #include "../wifi/webserver.h"   /* webserver_sd_space: cached FAT free-space sweep */
@@ -766,6 +767,10 @@ void mtp_fs_reboot_poll(void) {
   sdio_runtime_prepare_for_warm_reboot();
 
   _disable_interrupts();
+  /* Turn the D-cache off first, so the copy of the incoming image over the
+     running kernel goes straight to RAM.  The copier then needs no cache
+     management of its own, and the new kernel starts on a coherent image. */
+  disable_data_cache();
   _copyandreboot(g_kernel_reboot_data, (int)g_kernel_reboot_len); /* never returns */
 }
 

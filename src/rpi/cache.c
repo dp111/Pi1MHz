@@ -132,6 +132,35 @@ void CleanDataCache (void)
 }
 #endif
 
+/* Clean the D-cache back to RAM and turn it off (clear SCTLR.C), leaving the
+ * MMU and the I-cache alone.  Called just before a kernel.now chain-boot: with
+ * the data cache off the image copy is coherent by construction - stores go
+ * straight to RAM - so the copier needs no cache management of its own and the
+ * incoming kernel cannot read a stale line.  It does not turn the cache back
+ * on; the chain-booted kernel re-enables it in enable_MMU_and_IDCaches. */
+void disable_data_cache(void)
+{
+   unsigned sctlr;
+#if (__ARM_ARCH >= 7 )
+   CleanDataCache();                 /* push dirty L1+L2 lines out by set/way */
+#else
+   /* ARM1176: a single op cleans+invalidates the whole D-cache. */
+   __asm volatile ("mcr p15,0,%0,c7,c14,0" :: "r" (0) : "memory");
+#endif
+   __asm volatile ("mrc p15,0,%0,c1,c0,0" : "=r" (sctlr));
+   sctlr &= ~(1u << 2);              /* C: L1 data cache enable */
+   __asm volatile ("mcr p15,0,%0,c1,c0,0" :: "r" (sctlr) : "memory");
+#if (__ARM_ARCH >= 7 )
+   __asm volatile ("dsb" ::: "memory");
+   __asm volatile ("isb" ::: "memory");
+   InvalidateDataCache();            /* now off - make sure nothing stale is hit */
+#else
+   __asm volatile ("mcr p15,0,%0,c7,c10,4" :: "r" (0) : "memory");  /* DSB */
+   __asm volatile ("mcr p15,0,%0,c7,c5,4"  :: "r" (0) : "memory");  /* flush prefetch */
+   __asm volatile ("mcr p15,0,%0,c7,c6,0"  :: "r" (0) : "memory");  /* invalidate D-cache */
+#endif
+}
+
 // NOTE: despite the name, both paths below clean AND invalidate
 // (DCCIMVAC / MCRR c14). The mailbox property interface depends on the
 // invalidate side-effect to evict the request lines before the VC writes
