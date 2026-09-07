@@ -206,12 +206,6 @@ static void jim_write32(uint32_t off, uint32_t v)
 
 /* Every buffer offset/length pair from the Beeb is untrusted; keep all
  * accesses inside the disc RAM region. */
-static bool aun_buffer_ok(uint32_t offset, uint32_t length)
-{
-   if (offset > DISC_RAM_SIZE)
-      return false;
-   return length <= (DISC_RAM_SIZE - offset);
-}
 
 /* ---- transport: lwIP UDP -------------------------------------------------*/
 
@@ -510,7 +504,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
    {
       uint32_t off = jim_read32(cp + 8);
       uint32_t len = jim_read32(cp + 12);
-      if (!aun_buffer_ok(off, len))
+      if (!service_buffer_ok(off, len))
          break;                                   /* AUN_ERR_PARAM */
       /* Format only when the log will actually be emitted: aun_hex16 is a
          real call that LTO does NOT fold away, so it used to run on every
@@ -544,7 +538,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
    {
       uint32_t off  = jim_read32(cp + 8);
       uint32_t size = jim_read32(cp + 12);
-      if (!aun_buffer_ok(off, size))
+      if (!service_buffer_ok(off, size))
          break;                                   /* AUN_ERR_PARAM */
       result = aun_rx_open(&aun,
                            Pi1MHz->JIM_ram[cp + 1],    /* handle */
@@ -598,7 +592,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
    {
       uint32_t off = jim_read32(cp + 8);
       uint32_t len = jim_read32(cp + 12);
-      if (!aun_buffer_ok(off, len) || len > AUN_HIMM_MAX)
+      if (!service_buffer_ok(off, len) || len > AUN_HIMM_MAX)
          break;                                   /* AUN_ERR_PARAM */
       /* Only answer the immediate the host actually took via IMM_POLL. If the
        * slot was reaped (and perhaps refilled with a newer immediate) since
@@ -625,7 +619,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
    {
       uint32_t off = jim_read32(cp + 8);
       uint32_t len = jim_read32(cp + 12);
-      if (!aun_buffer_ok(off, len))
+      if (!service_buffer_ok(off, len))
          break;                                   /* AUN_ERR_PARAM */
       result = aun_broadcast(&aun,
                              Pi1MHz->JIM_ram[cp + 2],  /* ctrl */
@@ -640,7 +634,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       uint32_t len       = jim_read32(cp + 12);
       uint32_t reply_off = jim_read32(cp + 16);
       uint32_t reply_max = jim_read32(cp + 20);
-      if (!aun_buffer_ok(off, len) || !aun_buffer_ok(reply_off, reply_max))
+      if (!service_buffer_ok(off, len) || !service_buffer_ok(reply_off, reply_max))
          break;                                   /* AUN_ERR_PARAM */
       result = aun_immediate(&aun,
                              Pi1MHz->JIM_ram[cp + 5],  /* dest net */

@@ -160,24 +160,6 @@ static inline void jim_wr24(uint32_t off, uint32_t v)
 /* ---- untrusted-input bounds checks (clones of the FAT service's) --------- */
 /* [offset, offset+length) inside the disc RAM region; offset is relative to
    DISC_RAM_BASE.  The subtraction cannot underflow (offset bounded first). */
-static bool net_buffer_ok(uint32_t offset, uint32_t length)
-{
-   if (offset > DISC_RAM_SIZE)
-      return false;
-   return length <= (DISC_RAM_SIZE - offset);
-}
-/* A NUL terminator exists within NET_MAX_HOSTNAME bytes of the absolute JIM
-   offset `start`, and before the end of the disc RAM region. */
-static bool net_string_ok(uint32_t start)
-{
-   uint32_t limit = start + NET_MAX_HOSTNAME;
-   if (limit > (uint32_t)(DISC_RAM_BASE + DISC_RAM_SIZE))
-      limit = (uint32_t)(DISC_RAM_BASE + DISC_RAM_SIZE);
-   for (uint32_t i = start; i < limit; i++)
-      if (Pi1MHz->JIM_ram[i] == 0)
-         return true;
-   return false;
-}
 
 /* ---- RX ring ------------------------------------------------------------- */
 /* The buffer this handle is currently using, and its power-of-two mask. */
@@ -730,7 +712,7 @@ static uint8_t do_udp_sendto(net_handle_t *h, uint32_t cp)
 
    if (h->type != NET_TYPE_UDP || h->upcb == NULL)
       return NET_ERR_NOTOPEN;
-   if (len > 0xFFFFu || !net_buffer_ok(jimoff, len))
+   if (len > 0xFFFFu || !service_buffer_ok(jimoff, len))
       return NET_ERR_PARAM;
    if (!wifi_lwip_get_context()->address_ready)
       return NET_PENDING;
@@ -762,7 +744,7 @@ static uint8_t do_udp_recvfrom(net_handle_t *h, uint32_t cp)
 
    if (h->type != NET_TYPE_UDP)
       return NET_ERR_NOTOPEN;
-   if (!net_buffer_ok(jimoff, maxlen))
+   if (!service_buffer_ok(jimoff, maxlen))
       return NET_ERR_PARAM;
    if (h->rx_count < 8u) {           /* no complete record */
       jim_wr24(cp + 7u, 0u);
@@ -787,7 +769,7 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
       net_ip_to_wire(&h->dns_ip, cp + 4u);
       return NET_OK;
    }
-   if (!net_string_ok(cp + 1u))
+   if (!service_string_ok(cp + 1u, NET_MAX_HOSTNAME))
       return NET_ERR_PARAM;
    {
       const char *name = (const char *)&Pi1MHz->JIM_ram[cp + 1u];
@@ -873,7 +855,7 @@ static uint8_t do_send(net_handle_t *h, uint32_t cp)
 
    if (h->state != NET_ST_CONNECTED)
       return NET_ERR_NOTOPEN;
-   if (!net_buffer_ok(jimoff, len))
+   if (!service_buffer_ok(jimoff, len))
       return NET_ERR_PARAM;
 
    if (h->type == NET_TYPE_UDP) {
@@ -927,7 +909,7 @@ static uint8_t do_recv(net_handle_t *h, uint32_t cp)
 
    if (h->state == NET_ST_FREE)
       return NET_ERR_NOTOPEN;
-   if (!net_buffer_ok(jimoff, max))
+   if (!service_buffer_ok(jimoff, max))
       return NET_ERR_PARAM;
 
    if (h->type == NET_TYPE_UDP) {
@@ -1326,7 +1308,7 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
    if (h->url_phase == URL_READY) return NET_OK;
    if (h->url_phase == URL_FAIL)  return h->last_err ? h->last_err : NET_ERR_CONN;
 
-   if (!net_string_ok(cp + 2u))   return NET_ERR_PARAM;
+   if (!service_string_ok(cp + 2u, NET_MAX_HOSTNAME))   return NET_ERR_PARAM;
    url = (const char *)&Pi1MHz->JIM_ram[cp + 2u];
    if (!net_url_parse(url, &u, host, sizeof host, path, sizeof path)) {
       /* Only latch the failure once this open OWNS the handle. A malformed
@@ -1446,7 +1428,7 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
    uint32_t got;
 
    if (h->state == NET_ST_FREE) return NET_ERR_NOTOPEN;
-   if (!net_buffer_ok(jimoff, max)) return NET_ERR_PARAM;
+   if (!service_buffer_ok(jimoff, max)) return NET_ERR_PARAM;
    if (h->url_adapter == NET_URL_HTTP && h->http_hdr_done
        && h->http_has_length
        && h->http_body_read >= h->http_content_length) {
@@ -1604,7 +1586,7 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
       len    = jim_rd24(cp + 1u);
       jimoff = jim_rd32(cp + 4u);
       if (!h->tnfs_wr)                 return NET_ERR_NOTOPEN;   /* read-only open */
-      if (!net_buffer_ok(jimoff, len)) return NET_ERR_PARAM;
+      if (!service_buffer_ok(jimoff, len)) return NET_ERR_PARAM;
       if (h->tnfs_phase == TNFS_PH_READY) {
          uint16_t want = (len > TNFS_WRITE_CHUNK) ? (uint16_t)TNFS_WRITE_CHUNK : (uint16_t)len;
          size_t   n;
@@ -1642,7 +1624,7 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
       jimoff = jim_rd32(cp + 4u);
       if (h->type != NET_TYPE_TCP || h->tpcb == NULL || h->state != NET_ST_CONNECTED)
          return NET_ERR_NOTOPEN;
-      if (!net_buffer_ok(jimoff, len))
+      if (!service_buffer_ok(jimoff, len))
          return NET_ERR_PARAM;
       avail = altcp_sndbuf(h->tpcb);
       oc = (avail < sizeof esc) ? avail : (u16_t)sizeof esc;
@@ -1666,7 +1648,7 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
    jimoff = jim_rd32(cp + 4u);
    if (h->upcb == NULL)
       return NET_ERR_NOTOPEN;
-   if (len > 0xFFFFu || !net_buffer_ok(jimoff, len))
+   if (len > 0xFFFFu || !service_buffer_ok(jimoff, len))
       return NET_ERR_PARAM;
 
    p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);

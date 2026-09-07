@@ -16,6 +16,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "Pi1MHz.h"   /* JIM_ram, DISC_RAM_BASE/SIZE - see the bounds helpers below */
+
 #define SERVICE_CMD_FAT_FIRST    0u   /* FAT/SD access - fat_service.c     */
 #define SERVICE_CMD_FAT_LAST    29u
 #define SERVICE_CMD_AUN_FIRST   30u   /* Econet over AUN/UDP - AUN/        */
@@ -29,6 +31,42 @@
 #define SERVICE_CMD_SECURE_FIRST  94u /* RNG and managed SSH - secure_service.c */
 #define SERVICE_CMD_SECURE_LAST  113u
 /* 114..255 unallocated */
+
+/* ---- untrusted-input bounds checks -------------------------------------
+   Every service takes an offset and a length from the Beeb, so this is one
+   predicate with one definition rather than the five near-copies these
+   replaced (fat_service, net_service, AUN, and open-coded in wifi_service).
+   Five copies meant the next hardening fix had to be made five times, and
+   they had already drifted apart.
+
+   secure_service_core.c deliberately keeps its own: it is parameterised on
+   a caller-supplied (jim, jim_size) so it can be exercised on the host, and
+   folding it in here would tie it to the globals.
+
+   A zero-length buffer at exactly the end is accepted, matching the form the
+   FAT, net and AUN services all used. */
+static inline bool service_buffer_ok(uint32_t offset, uint32_t length)
+{
+   if (offset > DISC_RAM_SIZE)
+      return false;
+   return length <= (DISC_RAM_SIZE - offset);
+}
+
+/* A NUL terminator exists within `cap` bytes of the absolute JIM_ram offset
+   `start`, and before the end of the disc RAM region, so that strlen() and
+   FatFs cannot run off the end of the JIM_ram allocation.  `cap` is the
+   caller's own limit - DISC_MAX_PATH for the FAT service, NET_MAX_HOSTNAME
+   for net - which is why it is a parameter and not baked in. */
+static inline bool service_string_ok(uint32_t start, uint32_t cap)
+{
+   uint32_t limit = start + cap;
+   if (limit > (uint32_t)(DISC_RAM_BASE + DISC_RAM_SIZE))
+      limit = (uint32_t)(DISC_RAM_BASE + DISC_RAM_SIZE);
+   for (uint32_t i = start; i < limit; i++)
+      if (Pi1MHz->JIM_ram[i] == 0)
+         return true;
+   return false;
+}
 
 /* services_register() rejects an overlapping claim at run time, which is the
    backstop.  These catch the same mistake when the ranges above are edited -

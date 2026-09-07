@@ -57,27 +57,7 @@ static inline void jim_write32(uint32_t off, uint32_t v)
  * the disc RAM region. 'offset' is relative to base_addr. The subtraction
  * form cannot overflow because offset is bounded against DISC_RAM_SIZE
  * first. */
-static bool discaccess_buffer_ok(uint32_t offset, uint32_t length)
-{
-   if (offset > DISC_RAM_SIZE)
-      return false;
-   return length <= (DISC_RAM_SIZE - offset);
-}
 
-/* Returns true if a NUL terminator is found within DISC_MAX_PATH bytes of
- * JIM_ram[start] and before the end of the disc RAM region, so that
- * strlen()/FatFs cannot run off the end of the JIM_ram allocation.
- * 'start' is an absolute JIM_ram byte offset. */
-static bool discaccess_string_ok(uint32_t start)
-{
-   uint32_t limit = start + DISC_MAX_PATH;
-   if (limit > (uint32_t)(DISC_RAM_BASE + DISC_RAM_SIZE))
-      limit = (uint32_t)(DISC_RAM_BASE + DISC_RAM_SIZE);
-   for (uint32_t i = start; i < limit; i++)
-      if (Pi1MHz->JIM_ram[i] == 0)
-         return true;
-   return false;
-}
 
 /* ---- open-file tracking for the webserver's in-use interlock ------------
    The Beeb opens files here (FIQ context); the webserver asks from the main
@@ -233,7 +213,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         fat_raw_sector_seen = true;
         // disk_read transfers 'sectors' x 512-byte blocks into the buffer
         if ((sectors > (DISC_RAM_SIZE / DISC_SECTOR_SIZE)) ||
-            !discaccess_buffer_ok(buf_off, sectors * DISC_SECTOR_SIZE))
+            !service_buffer_ok(buf_off, sectors * DISC_SECTOR_SIZE))
         {
             Pi1MHz_MemoryWrite(addr, RES_PARERR);
             break;
@@ -258,7 +238,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         if ((sectors > (DISC_RAM_SIZE / DISC_SECTOR_SIZE)) ||
-            !discaccess_buffer_ok(buf_off, sectors * DISC_SECTOR_SIZE))
+            !service_buffer_ok(buf_off, sectors * DISC_SECTOR_SIZE))
         {
             Pi1MHz_MemoryWrite(addr, RES_PARERR);
             break;
@@ -275,7 +255,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     {
         FRESULT result;
         // Filename defined to be zero terminated string at command_pointer+3, mode in command_pointer+2
-        if (!discaccess_string_ok(command_pointer+3))
+        if (!service_string_ok(command_pointer+3, DISC_MAX_PATH))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
@@ -310,7 +290,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         UINT length;
         uint32_t buf_off = jim_read32(command_pointer+4);
         uint32_t buf_len = jim_read32(command_pointer)>>8;
-        if (!discaccess_buffer_ok(buf_off, buf_len))
+        if (!service_buffer_ok(buf_off, buf_len))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
@@ -347,7 +327,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         UINT length;
         uint32_t buf_off = jim_read32(command_pointer+4);
         uint32_t buf_len = jim_read32(command_pointer)>>8;
-        if (!discaccess_buffer_ok(buf_off, buf_len))
+        if (!service_buffer_ok(buf_off, buf_len))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
@@ -397,7 +377,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     }
 
     case 7 : // fopendir
-        if (!discaccess_string_ok(command_pointer + 1))
+        if (!service_string_ok(command_pointer + 1, DISC_MAX_PATH))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
@@ -459,7 +439,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     }
 
     case 10 : // f mkdir
-        if (!discaccess_string_ok(command_pointer + 1))
+        if (!service_string_ok(command_pointer + 1, DISC_MAX_PATH))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
@@ -471,7 +451,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     case 11 : // fchdir
     {
         FRESULT result;
-        if (!discaccess_string_ok(command_pointer + 1))
+        if (!service_string_ok(command_pointer + 1, DISC_MAX_PATH))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
@@ -487,13 +467,13 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     {
         // Two NUL-terminated names back to back; the second starts after the first.
         uint32_t name1 = command_pointer + 1;
-        if (!discaccess_string_ok(name1))
+        if (!service_string_ok(name1, DISC_MAX_PATH))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
         uint32_t name2 = name1 + (uint32_t)strlen((char * )&Pi1MHz->JIM_ram[name1]) + 1;
-        if (!discaccess_string_ok(name2))
+        if (!service_string_ok(name2, DISC_MAX_PATH))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
@@ -549,7 +529,7 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         }
         break;
     case 16 : // f_unlink
-        if (!discaccess_string_ok(command_pointer + 1))
+        if (!service_string_ok(command_pointer + 1, DISC_MAX_PATH))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
