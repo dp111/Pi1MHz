@@ -140,8 +140,8 @@ typedef struct {
 } emulator_list;
 
 static emulator_list emulator[] = {
-   {"Helpers",helpers_init, 0x88, 1 }, // needs to be before framebuffer so it can write to the screen
-   {"Rampage",rampage_emulator_init, 0xFD, 1},
+   {"Rampage",rampage_emulator_init, 0xFD, 1}, // first: status address 0 reads the JIM RAM size
+   {"Helpers",helpers_init, 0x88, 1 }, // after rampage (help screen lives in JIM), before framebuffer so it can write to the screen
    {"Rambyte",rambyte_emulator_init, 0x00, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
@@ -634,8 +634,6 @@ static void init_emulator(void) {
       const char *bp = config_get("BeebAudio_Off");
       rpi_audio_mute_beeb(bp && atoi(bp) == 1);
    }
-
-   ram_emulator_alloc();   // JIM_ram_size must be known before any init below
 
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {

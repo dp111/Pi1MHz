@@ -186,10 +186,13 @@ void helpers_init( uint8_t instance , uint8_t address)
         Pi1MHz_MemoryWrite((uint32_t)(address+4), 0x4c); // JMP &FD00 // RTS
         Pi1MHz_MemoryWrite((uint32_t)(address+5), 0x00);
         Pi1MHz_MemoryWrite((uint32_t)(address+6), 0xFD);
+
+        if (!ram_emulator_jim_init_loaded())
+        {
+            // put info in JIM page 0 so the beeb user can do P.$&FD00
+            snprintf((char *)Pi1MHz->JIM_ram, PAGE_SIZE, " Use CALL &FC%X\n\r", address);
+            Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[0]);
+        }
     }
 }
 
-uint8_t helpers_get_address(void)
-{
-   return helper_address;
-}

@@ -32,9 +32,9 @@ Millipede PRISMA-3 (Not support)
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include "rpi/info.h"
 #include "BeebSCSI/filesystem.h"
-#include "helpers.h"
 
 static uint8_t rambyte_address;
 
@@ -104,31 +104,13 @@ static void ram_emulator_page_write(unsigned int gpio)
    Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE + addr, data);
 }
 
-static char* putstring(char *ram, char term, const char *string)
-{
-   size_t length;
-   length = strlcpy(ram, string, PAGE_SIZE-1);
-   ram += length;
-   if (term == '\n')
-   {
-      *ram++ ='\n';
-      for (size_t i=0 ; i <length; i++)
-         *ram++ = 8; // Cursor left
-   }
-   if (term == '\r')
-      {
-         *ram++ ='\n';
-         *ram++ ='\r';
-      }
-   return ram;
-}
-
 extern char _end;
 
-// Sizes and allocates JIM RAM before any emulator init runs, so every
-// emulator that needs it can test JIM_ram_size in its own init.
-void ram_emulator_alloc(void)
+static bool jim_init_loaded;
+
+void rampage_emulator_init( uint8_t instance , uint8_t address)
 {
+   // Initialise JIM RAM
    uint32_t temp = mem_info(1); // get size of ram
    temp = temp - (uint32_t)&_end; // remove program
    temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
@@ -140,13 +122,6 @@ void ram_emulator_alloc(void)
    {
       LOG_INFO("No RAM - disabling RAM page emulator\r\n");
       Pi1MHz->JIM_ram_size = 0;
-   }
-}
-
-void rampage_emulator_init( uint8_t instance , uint8_t address)
-{
-   if (Pi1MHz->JIM_ram_size == 0)
-   {
       fx_register[instance] = 0;
       return;
    }
@@ -168,17 +143,14 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    fx_register[instance] = Pi1MHz->JIM_ram_size;  // fx addr 0 returns ram size
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
-   if (!filesystemReadFile("JIM_Init.bin",&Pi1MHz->JIM_ram,((size_t)Pi1MHz->JIM_ram_size<<24)))
-   {
-       // put info in fred so beeb user can do P.$&FD00 if JIM_Init doesn't exist
-      char * ram = (char *)Pi1MHz->JIM_ram;
-      char hex[4];
-      snprintf(hex, sizeof(hex), "%X",helpers_get_address());
-      ram = putstring(ram, 0, " Use CALL &FC");
-      putstring(ram,'\r', hex);
-   }
+   jim_init_loaded = filesystemReadFile("JIM_Init.bin",&Pi1MHz->JIM_ram,((size_t)Pi1MHz->JIM_ram_size<<24));
 
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[0]);
+}
+
+bool ram_emulator_jim_init_loaded(void)
+{
+   return jim_init_loaded;
 }
 
 void rambyte_emulator_init( uint8_t instance , uint8_t address)
