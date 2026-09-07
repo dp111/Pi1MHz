@@ -3,7 +3,7 @@
    template exactly as helpers_screen_setup does and measures it. */
 #include <stdio.h>
 #include <string.h>
-#include "helpers_help.h"
+#include "help_fmt.inc"
 
 static int checks, fails;
 static void ok(int c, const char *what) { checks++; if (!c) { fails++; printf("  FAIL: %s\n", what); } else printf("  ok: %s\n", what); }
