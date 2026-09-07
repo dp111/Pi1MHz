@@ -77,6 +77,7 @@ Use https://wavedrom.com/editor.html
 
 #include <inttypes.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "Pi1MHz.h"
@@ -84,6 +85,7 @@ Use https://wavedrom.com/editor.html
 #include "rpi/gpio.h"
 #include "rpi/info.h"
 #include "config.h"
+#include "M5000_emulator.h"
 #include "rpi/byteorder.h"
 #include "BeebSCSI/fatfs/ff.h"
 
@@ -434,6 +436,7 @@ static uint32_t rec_flush_pos;
 static uint32_t rec_flush_end;
 static uint32_t rec_flush_name;     /* next Musics%03d to try - kept across recordings */
 static uint32_t rec_flush_probes;   /* names tried for this flush */
+static char     rec_flush_path[24]; /* "Musics%03d.wav" being written, root-relative */
 #define M5000_REC_FLUSH_SLICE  (64u * 1024u)   /* ~4 ms of card time per poll pass */
 #define M5000_REC_FLUSH_PROBES 8u              /* Musics%03d.wav names tried per pass */
 
@@ -479,6 +482,7 @@ static void music5000_rec_flush(void)
          FRESULT result = f_open(&music5000_rec_fp, fn, FA_CREATE_NEW | FA_WRITE);
          LOG_DEBUG("Music5000 Filename : %s\r\n", fn);
          if (result == FR_OK) {
+            strcpy(rec_flush_path, fn);        /* what beeb_path_busy() must refuse */
             rec_flush = REC_FLUSH_WRITE;
             break;
          }
@@ -506,6 +510,25 @@ static void music5000_rec_flush(void)
       break;
    }
    }
+}
+
+bool M5000_recording_path_busy(const char *host_path)
+{
+   if (rec_flush != REC_FLUSH_WRITE || host_path == NULL)
+      return false;
+
+   /* Same shape as fat_service_file_in_use(): the path is compared
+      root-relative and case-insensitively, a directory that holds the file
+      is busy too, and the file lives in the root - so the root itself is. */
+   const char *q = host_path;
+   while (*q == '/')
+      q++;
+   size_t qlen = strlen(q);
+   while (qlen > 0u && q[qlen - 1u] == '/')
+      qlen--;
+   if (qlen == 0u)
+      return true;                           /* the root holds the file */
+   return strlen(rec_flush_path) == qlen && strncasecmp(q, rec_flush_path, qlen) == 0;
 }
 
 static void store_samples(int sl, int sr)

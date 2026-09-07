@@ -10,6 +10,7 @@ B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 
 cp "$SRC"/services_emulator.c "$SRC"/fat_service.c "$SRC"/services.h "$B/"
+cp "$SRC"/M5000_emulator.h "$B/"
 cp "$SRC"/config.c "$SRC"/config.h "$B/"
 cp "$HERE"/test_services.c "$HERE"/test_config.c "$HERE"/fuzz_fat.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"

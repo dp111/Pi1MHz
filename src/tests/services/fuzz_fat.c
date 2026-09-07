@@ -124,3 +124,4 @@ int main(void)
    return 0;
 }
 bool filesystemHostPathBusy(const char *path) { (void)path; return false; }
+bool M5000_recording_path_busy(const char *path) { (void)path; return false; }

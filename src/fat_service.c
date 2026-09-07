@@ -10,6 +10,7 @@
 #include "Pi1MHz.h"
 
 #include "ram_emulator.h"
+#include "M5000_emulator.h"		/* M5000_recording_path_busy */
 #include "services.h"
 #include "config.h"				/* Beeb_write_protect */
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
@@ -202,13 +203,14 @@ bool fat_service_file_in_use(const char *host_path)
 
 /* The one predicate every host-side writer (WebDAV, MTP) asks before it
    overwrites, deletes or renames a path: is the Beeb using it by ANY route -
-   a started SCSI LUN image (or a directory holding one) or a file open
-   through this service.  A host write that lands on a running LUN's cluster
+   a started SCSI LUN image (or a directory holding one), a file open
+   through this service, or the WAV the Music 5000 is still writing out.  A host write that lands on a running LUN's cluster
    chain is silent corruption, so the two halves live together here rather
    than being re-joined at each call site. */
 bool beeb_path_busy(const char *host_path)
 {
-   return filesystemHostPathBusy(host_path) || fat_service_file_in_use(host_path);
+   return filesystemHostPathBusy(host_path) || fat_service_file_in_use(host_path)
+       || M5000_recording_path_busy(host_path);    /* a WAV still being flushed */
 }
 
 static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t data)

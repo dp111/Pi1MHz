@@ -92,6 +92,7 @@ static uint8_t dispatch(uint8_t page)
    return pi.Memory[SVC_BASE + 4];
 }
 bool filesystemHostPathBusy(const char *path) { (void)path; return false; }
+bool M5000_recording_path_busy(const char *path) { (void)path; return false; }
 
 /* Issue FAT command 2 (open) for handle h on `name`; returns FRESULT byte. */
 static uint8_t do_open(uint8_t h, const char *name)
