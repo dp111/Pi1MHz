@@ -2294,7 +2294,16 @@ static int32_t fs_set_object_prop_value(tud_mtp_cb_data_t* cb_data) {
   if (prop_code == MTP_OBJ_PROP_OBJECT_FILE_NAME) {
     uint16_t name_utf16[FS_NAME_MAX_LEN + 1];
     char new_name[FS_NAME_MAX_LEN + 1];
+    /* The vendored helper copies 2*nchars bytes with no bound against the
+       payload and does not terminate; check the count against the payload
+       here (nchars includes the UTF-16 NUL) and force the terminator.  The
+       destination holds 256 entries, so a byte count always fits it. */
+    uint8_t nchars = (io_container->payload_bytes >= 1u) ? io_container->payload[0] : 0u;
+    if (nchars == 0u || io_container->payload_bytes < 1u + 2u * (uint32_t)nchars) {
+      return MTP_RESP_INVALID_OBJECT_PROP_VALUE;
+    }
     (void) mtp_container_get_string(io_container->payload, name_utf16);
+    name_utf16[nchars - 1u] = 0u;
     fs_utf16_to_ascii(name_utf16, new_name, sizeof(new_name));
 
     /* Same path-traversal guard as fs_send_object_info: a rename via
