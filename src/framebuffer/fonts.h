@@ -1,6 +1,7 @@
 #ifndef _FONTS_H
 #define _FONTS_H
 
+#include <stddef.h>
 #include "screen_modes.h"
 
 #define DEFAULT_FONT 0
@@ -69,6 +70,18 @@ typedef struct font {
    int       ( *read_char)(const struct font *font, screen_mode_t *screen, int x, int y,                        pixel_t bg_col);
 
 } font_t;
+
+/* initialize_font() copies a font_catalog_t over the start of a font_t with
+   one memcpy, so font_t must begin with the catalog's members in the same
+   order and the first member after them must lie beyond the copy.  Reorder
+   or insert on either side and this fails to compile instead of silently
+   corrupting every font. */
+_Static_assert(offsetof(font_t, name)      == offsetof(font_catalog_t, name) &&
+               offsetof(font_t, data)      == offsetof(font_catalog_t, data) &&
+               offsetof(font_t, height)    == offsetof(font_catalog_t, height) &&
+               offsetof(font_t, scale_h)   == offsetof(font_catalog_t, scale_h) &&
+               offsetof(font_t, rounding)  >= sizeof(font_catalog_t),
+               "font_t must start with font_catalog_t's members (initialize_font memcpy)");
 
 const char * get_font_name(uint32_t num);
 
