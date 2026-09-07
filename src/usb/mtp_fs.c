@@ -186,6 +186,7 @@ static int32_t fs_move_object(tud_mtp_cb_data_t* cb_data);
 static int32_t fs_set_object_prop_value(tud_mtp_cb_data_t* cb_data);
 static int32_t fs_get_object_props_supported(tud_mtp_cb_data_t* cb_data);
 static int32_t fs_get_object_prop_value(tud_mtp_cb_data_t* cb_data);
+static int32_t fs_get_object_prop_desc(tud_mtp_cb_data_t* cb_data);
 static uint16_t fs_guess_object_format(const char* name, uint8_t status);
 
 typedef int32_t (*fs_op_handler_t)(tud_mtp_cb_data_t* cb_data);
@@ -211,6 +212,7 @@ fs_op_handler_dict_t fs_op_handler_dict[] = {
   { MTP_OP_SEND_OBJECT,           fs_send_object           },
   { MTP_OP_MOVE_OBJECT,           fs_move_object           },
   { MTP_OP_GET_OBJECT_PROPS_SUPPORTED, fs_get_object_props_supported },
+  { MTP_OP_GET_OBJECT_PROP_DESC,  fs_get_object_prop_desc  },
   { MTP_OP_GET_OBJECT_PROP_VALUE, fs_get_object_prop_value },
   { MTP_OP_SET_OBJECT_PROP_VALUE, fs_set_object_prop_value },
 };
@@ -2219,6 +2221,55 @@ static int32_t fs_get_object_props_supported(tud_mtp_cb_data_t* cb_data) {
   (void) mtp_container_add_auint16(io_container, TU_ARRAY_SIZE(props), props);
   tud_mtp_data_send(io_container);
   return 0;
+}
+
+/* ObjectPropDesc dataset (MTP 1.1, 5.1.2.1): code u16, datatype u16,
+ * get/set u8, factory default in the property's type, group code u32, form
+ * flag u8 (0 = none).  Without this a host never learns that ObjectFileName
+ * is Get/Set: Windows' WPD driver asks it before offering a rename, and
+ * aborted every Explorer F2 / IFileOperation rename on this device. */
+static int32_t fs_get_object_prop_desc(tud_mtp_cb_data_t* cb_data) {
+  const mtp_container_command_t* command = cb_data->command_container;
+  mtp_container_info_t* io_container = &cb_data->io_container;
+  const uint16_t prop_code = (uint16_t) command->params[0];
+  /* params[1] is the object format; every format we expose (folder, file)
+   * carries the same four properties, so it does not change the answer. */
+
+  switch (prop_code) {
+    case MTP_OBJ_PROP_OBJECT_FILE_NAME:
+      (void) mtp_container_add_uint16(io_container, prop_code);
+      (void) mtp_container_add_uint16(io_container, MTP_DATA_TYPE_STR);
+      (void) mtp_container_add_uint8(io_container, MTP_MODE_GET_SET);
+      (void) mtp_container_add_cstring(io_container, "");  // factory default
+      (void) mtp_container_add_uint32(io_container, 0);    // group code
+      (void) mtp_container_add_uint8(io_container, 0);     // no form
+      tud_mtp_data_send(io_container);
+      return 0;
+
+    case MTP_OBJ_PROP_PARENT_OBJECT:
+      (void) mtp_container_add_uint16(io_container, prop_code);
+      (void) mtp_container_add_uint16(io_container, MTP_DATA_TYPE_UINT32);
+      (void) mtp_container_add_uint8(io_container, MTP_MODE_GET);
+      (void) mtp_container_add_uint32(io_container, 0);    // factory default
+      (void) mtp_container_add_uint32(io_container, 0);    // group code
+      (void) mtp_container_add_uint8(io_container, 0);     // no form
+      tud_mtp_data_send(io_container);
+      return 0;
+
+    case MTP_OBJ_PROP_DATE_CREATED:
+    case MTP_OBJ_PROP_DATE_MODIFIED:
+      (void) mtp_container_add_uint16(io_container, prop_code);
+      (void) mtp_container_add_uint16(io_container, MTP_DATA_TYPE_STR);
+      (void) mtp_container_add_uint8(io_container, MTP_MODE_GET);
+      (void) mtp_container_add_cstring(io_container, "");  // factory default
+      (void) mtp_container_add_uint32(io_container, 0);    // group code
+      (void) mtp_container_add_uint8(io_container, 0);     // no form: the DateTime string GetObjectPropValue returns
+      tud_mtp_data_send(io_container);
+      return 0;
+
+    default:
+      return MTP_RESP_OBJECT_PROP_NOT_SUPPORTED;
+  }
 }
 
 static int32_t fs_get_object_prop_value(tud_mtp_cb_data_t* cb_data) {
