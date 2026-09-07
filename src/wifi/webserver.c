@@ -1967,9 +1967,12 @@ static bool conn_pump(ws_conn_t *c)
             req = (c->dl_remaining < WS_DL_READ_CHUNK)
                   ? (UINT)c->dl_remaining : (UINT)WS_DL_READ_CHUNK;
             if (c->dl_bench) {
-               /* Benchmark body: whatever is in dl_buf, full-rate.  The point
-                  is to measure the network path with the SD card out of the
-                  loop entirely - the file path below pays an f_read here. */
+               /* Benchmark body: zeros, full-rate.  The point is to measure
+                  the network path with the SD card out of the loop entirely -
+                  the file path below pays an f_read here.  Not "whatever is
+                  in dl_buf": on a kept-alive connection that was the last
+                  32 KB of the previous file GET. */
+               memset(c->dl_buf, 0, req);
                br = req;
             } else if (did_card_read) {
                break;
