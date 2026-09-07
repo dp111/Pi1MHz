@@ -1735,10 +1735,6 @@ void prim_move_copy_rectangle(screen_mode_t *screen, int x1, int y1, int x2, int
    // Work out direction to copy in taking account of overlap of source and destination rectangles
    int x_overlap = x3 >= x1 && x3 <= x2;
    int y_overlap = y3 >= y1 && y3 <= y2;
-   int xstart = x_overlap ?     x2 :     x1;
-   int ystart = y_overlap ?     y2 :     y1;
-   int xend   = x_overlap ? x1 - 1 : x2 + 1;
-   int yend   = y_overlap ? y1 - 1 : y2 + 1;
    int xstep  = x_overlap ?     -1 :      1;
    int ystep  = y_overlap ?     -1 :      1;
 
@@ -1746,24 +1742,64 @@ void prim_move_copy_rectangle(screen_mode_t *screen, int x1, int y1, int x2, int
    int ox = x3 - x1;
    int oy = y3 - y1;
 
-   // Copy/Move a pixel at a time (slow.......)
-   int dy = ystart + oy;
-   for (int sy = ystart; sy != yend; sy += ystep, dy += ystep) {
-      int dx = xstart + ox;
-      for (int sx = xstart; sx != xend; sx += xstep, dx += xstep) {
-         // Default to a background colour pixel
-         pixel_t px = g_bg_col;
-         // Read source pixel, clipping if necessary
-         if (sx >= g_x_min && sx <= g_x_max && sy >= g_y_min && sy <= g_y_max) {
-            px = screen->get_pixel(screen, sx, sy);
-            // If moving, set the source pixel back to the background colour
-            if (move) {
-               set_pixel(screen, sx, sy, PC_BG);
+   // Clip before the loop, not inside it: this runs in IRQ context and the
+   // Beeb's coordinates would otherwise set the iteration count (32768 x
+   // 32768 for one PLOT). Only a destination pixel inside the graphics window
+   // is ever written, so walk just the part of the source whose image lands
+   // in the window - at most the window's area. Dropping pixels from the walk
+   // keeps the relative order of the rest, so the overlap direction still
+   // reads every source pixel before the copy overwrites it.
+   int cx1 = x1, cx2 = x2, cy1 = y1, cy2 = y2;
+   if (cx1 < g_x_min - ox) cx1 = g_x_min - ox;
+   if (cx2 > g_x_max - ox) cx2 = g_x_max - ox;
+   if (cy1 < g_y_min - oy) cy1 = g_y_min - oy;
+   if (cy2 > g_y_max - oy) cy2 = g_y_max - oy;
+
+   if (cx1 <= cx2 && cy1 <= cy2) {
+      int xstart = x_overlap ?      cx2 :      cx1;
+      int ystart = y_overlap ?      cy2 :      cy1;
+      int xend   = x_overlap ? cx1 - 1 : cx2 + 1;
+      int yend   = y_overlap ? cy1 - 1 : cy2 + 1;
+      // Copy/Move a pixel at a time (slow.......)
+      int dy = ystart + oy;
+      for (int sy = ystart; sy != yend; sy += ystep, dy += ystep) {
+         int dx = xstart + ox;
+         for (int sx = xstart; sx != xend; sx += xstep, dx += xstep) {
+            // Default to a background colour pixel
+            pixel_t px = g_bg_col;
+            // Read source pixel, clipping if necessary
+            if (sx >= g_x_min && sx <= g_x_max && sy >= g_y_min && sy <= g_y_max) {
+               px = screen->get_pixel(screen, sx, sy);
+               // If moving, set the source pixel back to the background colour
+               if (move) {
+                  set_pixel(screen, sx, sy, PC_BG);
+               }
             }
-         }
-         // Write destination pixel, clipping if necessary
-         if (dx >= g_x_min && dx <= g_x_max && dy >= g_y_min && dy <= g_y_max) {
+            // Write destination pixel - inside the window by construction
             screen->set_pixel(screen, dx, dy, px);
+         }
+      }
+   }
+
+   if (move) {
+      // Source pixels whose image falls outside the window were not walked
+      // above, but a move still clears them where they lie inside the window.
+      // Where the copy itself has just landed the pixel keeps the copied
+      // value, exactly as it did when the walk cleared every source pixel
+      // first and the copy then overwrote it.
+      int sx1 = (x1 > g_x_min) ? x1 : g_x_min;
+      int sx2 = (x2 < g_x_max) ? x2 : g_x_max;
+      int sy1 = (y1 > g_y_min) ? y1 : g_y_min;
+      int sy2 = (y2 < g_y_max) ? y2 : g_y_max;
+      for (int sy = sy1; sy <= sy2; sy++) {
+         for (int sx = sx1; sx <= sx2; sx++) {
+            if (sx >= cx1 && sx <= cx2 && sy >= cy1 && sy <= cy2) {
+               continue;   // walked above
+            }
+            if (sx >= x1 + ox && sx <= x2 + ox && sy >= y1 + oy && sy <= y2 + oy) {
+               continue;   // the copy landed here
+            }
+            set_pixel(screen, sx, sy, PC_BG);
          }
       }
    }
@@ -1900,17 +1936,32 @@ void prim_define_sprite(screen_mode_t *screen, int n, int x1, int y1, int x2, in
    printf("defining sprite %d (%d,%d to %d,%d)\r\n", n, x1, y1, x2, y2);
 #endif
 
+   if  (sprite->data != NULL)
+         free(sprite->data);
+   sprite->data = NULL;
+   sprite->width = 0;
+   sprite->height = 0;
+
+   // A sprite is a capture of the screen, so one wider or taller than the
+   // screen is refused rather than allocated. Beyond bounding the read loop
+   // (this runs in IRQ context), at 32 bpp a 32768 x 32768 request made the
+   // size wrap to zero, malloc(0) passed the NULL test and the loop wrote
+   // 2^30 words through it.
+   if (x2 - x1 >= screen->width || y2 - y1 >= screen->height) {
+      return;
+   }
+
    // Memory allocation
    sprite->width = (uint16_t)(x2 - x1 + 1);
    sprite->height = (uint16_t)(y2 - y1 + 1);
    size_t size = ((size_t)sprite->width * (size_t)sprite->height) << (screen->log2bpp - 3);
-   if  (sprite->data != NULL)
-         free(sprite->data);
-
    sprite->data = malloc(size);
 
-   if  (sprite->data == NULL)
+   if  (sprite->data == NULL) {
+      sprite->width = 0;
+      sprite->height = 0;
       return;
+   }
 
    // Read the sprite
    if (screen->log2bpp == 4) {
