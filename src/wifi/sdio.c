@@ -649,6 +649,21 @@ static bool sdio_event_is_link_up(uint32_t event_type,
 static bool sdio_event_is_link_down(uint32_t event_type, uint32_t event_flags);
 static void sdio_runtime_set_error(const char *message);
 static void sdio_runtime_boot_reset_state(void);
+
+/* STAGE_ACK_INTERRUPTS' own state.  These were function statics, the only
+   per-stage state in the machine out of reach of the reset helpers - so a
+   restart from this stage (the wifi_lwip escalation ladder calls
+   sdio_runtime_start()) re-entered with started still true and round_count
+   already at its limit: the initial INT_STATUS ack and SMB_INT_ACK write
+   were skipped and the step returned "done" on its first call, so the
+   DEVREADY/FWREADY handshake never completed and the restart "succeeded"
+   into a deaf chip.  Reset in sdio_runtime_boot_reset_state() with
+   everything else. */
+static bool         g_runtime_ack_started;
+static unsigned int g_runtime_ack_round_count;
+static unsigned int g_runtime_ack_no_hmb;
+static uint32_t     g_runtime_ack_deadline_us;
+
 static int sdio_runtime_finalize_boot_stage(sdio_host_t *dev,
                                             uint8_t clock_csr,
                                             const sdio_chip_state_t *chip,
@@ -875,6 +890,12 @@ static void sdio_runtime_boot_reset_state(void)
    g_runtime_boot_fw_offset = 0u;
    g_runtime_boot_stage = SDIO_RUNTIME_BOOT_STAGE_PREPARE;
    memset(&g_runtime_boot_chip, 0, sizeof(g_runtime_boot_chip));
+   /* STAGE_ACK_INTERRUPTS' state, which used to be function statics and so
+      survived a restart - see their declaration. */
+   g_runtime_ack_started = false;
+   g_runtime_ack_round_count = 0u;
+   g_runtime_ack_no_hmb = 0u;
+   g_runtime_ack_deadline_us = 0u;
 }
 
 static int sdio_runtime_finalize_boot_stage(sdio_host_t *dev,
@@ -4292,6 +4313,20 @@ static bool sdio_probe_send_single_tx_control_template_timeout(sdio_host_t *dev,
    if (dev == NULL || probe_result == NULL || !probe_result->tx_control_template_ready)
       return false;
 
+   /* Wake the bus first, exactly as the three data-frame senders do.  This is
+      the ONLY control-frame sender - every ioctl in the driver goes through
+      it: rssi, pktcnts, rate, powersave and its verify, scan, disconnect,
+      radio enable/disable, and every join / txglom / set_mac / query_mac
+      step.  Without it an idle link's first transmit could land on a
+      sleeping interface, which swallows the frame while the host sees
+      success: sequence consumed, one credit leaked, and enough of those
+      close the window for good (the reasoning is spelled out on the data
+      path).  It only appeared safe because the 10 ms RX sweep happens to
+      call wake_bus - an accident of the sweep interval, and the sweep is
+      skipped entirely while the DAT1 gate reads asserted. */
+   if (!sdio_runtime_wake_bus(dev))
+      return false;
+
    memset(tx_frame, 0, sizeof(tx_frame));
    memset(&cmd53_result, 0, sizeof(cmd53_result));
    probe_result->tx_control_probe_attempted = true;
@@ -4819,10 +4854,6 @@ static int sdio_runtime_join_step(sdio_host_t *dev)
    The blocking version is retained for the diagnostic probe path. */
 static int sdio_runtime_ack_interrupts_step(sdio_host_t *dev)
 {
-   static bool         started;
-   static unsigned int round_count;
-   static unsigned int no_hmb;
-   static uint32_t     poll_deadline_us;
    uint32_t            now;
 
    if (dev == NULL)
@@ -4830,7 +4861,7 @@ static int sdio_runtime_ack_interrupts_step(sdio_host_t *dev)
 
    now = RPI_GetSystemTime();
 
-   if (!started) {
+   if (!g_runtime_ack_started) {
       uint32_t ack_value = g_sdio_probe_result.sdio_int_status
                          & SDIO_HOST_INTERRUPT_MASK;
 
@@ -4852,14 +4883,14 @@ static int sdio_runtime_ack_interrupts_step(sdio_host_t *dev)
                 g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
                 0x00000002u);   /* SMB_INT_ACK */
       }
-      round_count = 0u;
-      no_hmb = 0u;
-      poll_deadline_us = now + 10000u;   /* first HMB poll in ~10 ms */
-      started = true;
+      g_runtime_ack_round_count = 0u;
+      g_runtime_ack_no_hmb = 0u;
+      g_runtime_ack_deadline_us = now + 10000u;   /* first HMB poll in ~10 ms */
+      g_runtime_ack_started = true;
       return 0;
    }
 
-   if ((int32_t)(now - poll_deadline_us) < 0)
+   if ((int32_t)(now - g_runtime_ack_deadline_us) < 0)
       return 0;                          /* still inside the 10 ms gap */
 
    {
@@ -4868,13 +4899,13 @@ static int sdio_runtime_ack_interrupts_step(sdio_host_t *dev)
       if (!sdio_backplane_read_u32(dev,
              g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
              &int_status)) {
-         started = false;
+         g_runtime_ack_started = false;
          return 1;        /* bus read failed: stop, as the old loop did */
       }
       if ((int_status & SDIO_HOST_INTERRUPT_MASK) != 0u) {
          uint32_t hmb_data = 0u;
 
-         no_hmb = 0u;
+         g_runtime_ack_no_hmb = 0u;
          (void)sdio_backplane_write_u32(dev,
                 g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                 int_status);
@@ -4885,22 +4916,22 @@ static int sdio_runtime_ack_interrupts_step(sdio_host_t *dev)
                 g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
                 0x00000002u);   /* SMB_INT_ACK */
          if ((hmb_data & 0x00000002u) != 0u) {   /* FWREADY */
-            started = false;
+            g_runtime_ack_started = false;
             return 1;
          }
       } else {
-         if (++no_hmb >= 3u) {            /* ~30 ms with no activity */
-            started = false;
+         if (++g_runtime_ack_no_hmb >= 3u) {            /* ~30 ms with no activity */
+            g_runtime_ack_started = false;
             return 1;
          }
       }
    }
 
-   if (++round_count >= 30u) {            /* original 30-poll cap */
-      started = false;
+   if (++g_runtime_ack_round_count >= 30u) {            /* original 30-poll cap */
+      g_runtime_ack_started = false;
       return 1;
    }
-   poll_deadline_us = now + 10000u;
+   g_runtime_ack_deadline_us = now + 10000u;
    return 0;
 }
 
@@ -6951,6 +6982,14 @@ void sdio_runtime_powersave_verify_poll(void)
        && (int32_t)(RPI_GetSystemTime() - g_runtime_pm_deadline_us) >= 0) {
       g_runtime_pm_request_pending = false;
       g_runtime_pm_query_sent = false;
+      /* ...and DROP the request.  g_runtime_pm_query_wanted is otherwise
+         cleared only by a link-down, so a firmware that does not answer
+         WLC_GET_PM got a fresh control frame every 250 ms for the life of
+         the association - an ioctl + CDC reply pair and one consumed SDPCM
+         sequence number each time, on a healthy link.  The RSSI, PKTCNTS
+         and RATE pollers all clear their _query_wanted here; this one did
+         not, so it re-armed instead of giving up. */
+      g_runtime_pm_query_wanted = false;
    }
    if (!g_runtime_pm_query_wanted || g_runtime_pm_query_sent)
       return;

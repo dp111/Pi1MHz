@@ -669,7 +669,22 @@ void wifi_init(void)
        && g_wifi_state != WIFI_STATE_DISABLED)
       return;
 
-    (void) wifi_config_load(&g_wifi_config);
+   /* Re-read Pi1MHz.cfg only when nothing has since supplied a live config.
+      wifi_config_load() memsets g_wifi_config first, so an unconditional
+      reload here destroyed everything wifi_service.c's *JOIN had put there
+      (ssid, password, security, enabled).  On the documented ElkWiFi setup -
+      no wifi_ssid in the cfg, the Beeb supplies the network - the ERROR-retry
+      ladder in wifi_lwip_poll() therefore zeroed the credentials, so
+      wifi_validate_config() took its !enabled branch and latched
+      WIFI_STATE_DISABLED.  wifi_boot() then early-returns forever and the
+      ERROR ladder is gated on state == ERROR, so it can never fire again:
+      an absorbing dead state produced by the recovery path itself, clearing
+      only on a BBC reset.  The normal first-boot ordering is unaffected -
+      g_wifi_config is all zeroes then, so there is nothing to keep. */
+   if (g_wifi_config.ssid[0] == '\0')
+      (void) wifi_config_load(&g_wifi_config);
+   else
+      wifi_debug_log("re-init: keeping the live config (ssid already set)");
    g_wifi_boot_stage = WIFI_BOOT_STAGE_IDLE;
    g_wifi_images_preloaded = false;
    g_wifi_debug_enabled = wifi_cmdline_bool("wifi_debug");

@@ -828,8 +828,9 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       a UDP flood cannot take the 4 reserved no-second-chance slots.
       With wifi_txglom < 2 (or glom not negotiated) this branch never
       runs and the path below is exactly the pre-glom behaviour. */
-   if (sdio_runtime_txglom_batch_limit() >= 2u
-       && wifi_lwip_frame_is_bulk(frame, offset)) {
+   bool is_capped_bulk = (sdio_runtime_txglom_batch_limit() >= 2u
+                          && wifi_lwip_frame_is_bulk(frame, offset));
+   if (is_capped_bulk) {
       if (wifi_lwip_tx_hold_push(frame, offset, true)) {
          wifi_lwip_pass_count_tx(frame, offset);
          wifi_lwip_rx_kick();
@@ -847,7 +848,14 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
       only by RTO - acceptable because staleness means 250 ms of shut
       window, which is already an outage. */
    if (!wifi_lwip_tx_hold_flush()) {
-      bool tcp = wifi_lwip_frame_self_retries(frame, offset);
+      /* Keep the bulk flag on the way through.  wifi_lwip_frame_is_bulk()
+         counts IPv4 TCP *and* UDP, but frame_self_retries() is true only for
+         TCP - so a UDP bulk frame refused by WIFI_LWIP_TX_QUEUE_TCP_MAX above
+         was re-offered here as non-capped and accepted into one of the four
+         slots the cap exists to reserve.  A UDP flood could then fill the
+         queue 32/32 and the next ARP reply or ICMP echo was dropped: exactly
+         the ping loss the reservation was written to fix. */
+      bool tcp = is_capped_bulk || wifi_lwip_frame_self_retries(frame, offset);
       if (wifi_lwip_tx_hold_push(frame, offset, tcp)) {
          s_tx_queued++;           /* parked after a refusal */
          wifi_lwip_pass_count_tx(frame, offset);
@@ -861,7 +869,7 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
 
    if (!sdio_runtime_send_ethernet_frame(frame, offset)) {
       s_tx_direct_fail++;
-      bool tcp = wifi_lwip_frame_self_retries(frame, offset);
+      bool tcp = is_capped_bulk || wifi_lwip_frame_self_retries(frame, offset);
       if (wifi_lwip_tx_hold_push(frame, offset, tcp)) {
          s_tx_queued++;           /* parked after a refusal */
          wifi_lwip_pass_count_tx(frame, offset);
@@ -927,7 +935,7 @@ static bool wifi_lwip_deliver_rx_frame(const uint8_t *frame,
    chain several 32 KB f_writes before a caller-side check would ever be
    reached - tens of milliseconds of main loop, which the Beeb's timing-
    sensitive paths feel directly. */
-static bool wifi_lwip_drain_rx_frames(uint32_t budget_end_us)
+static bool wifi_lwip_drain_rx_frames(uint32_t budget_end_us, bool *pbufs_gone)
 {
    /* static: this is on the cooperative poll path and is large (~1.6 KB).
       Keeping it off the stack avoids a deep RX->TX nesting blowing the
@@ -979,14 +987,18 @@ static bool wifi_lwip_drain_rx_frames(uint32_t budget_end_us)
 
          s_rxprof_lwip_ticks += wifi_lwip_ccnt() - t1;
          ++s_rxprof_frames;
-         if (!room)
-            break;                /* pbuf pool exhausted: stop this cycle,
+         if (!room) {
+            *pbufs_gone = true;   /* pbuf pool exhausted: stop this cycle,
                                      resume next poll once pbufs free up */
+            break;
+         }
       }
 #else
-      if (!wifi_lwip_deliver_rx_frame(frame, frame_length))
-         break;                   /* pbuf pool exhausted: stop this cycle,
+      if (!wifi_lwip_deliver_rx_frame(frame, frame_length)) {
+         *pbufs_gone = true;      /* pbuf pool exhausted: stop this cycle,
                                      resume next poll once pbufs free up */
+         break;
+      }
 #endif
    }
 
@@ -1553,11 +1565,23 @@ void wifi_lwip_poll(void)
             delay it does not already tolerate, and the loop exits the moment
             the FIFO is empty - an idle link pays nothing. */
          for (;;) {
-            bool drained = wifi_lwip_drain_rx_frames(budget_end);
+            /* Why the drain stopped matters.  It sets drained_any as soon as
+               it has pulled ANY frame out of the chip, including the one it
+               then had to discard for want of a pbuf - so on pool exhaustion
+               the outer loop used to re-enter immediately, pull the NEXT
+               frame out of the FIFO, fail to allocate again, and discard that
+               one too, until the 1200 us budget expired.  Nothing inside the
+               loop frees pbufs (the TX hold queue stores byte copies; pool
+               pbufs come back from the TCP callbacks that run inside
+               netif->input), so a sustained upload shredded up to a
+               millisecond of inbound segments instead of leaving them in the
+               chip FIFO for the next pass - the opposite of the intent. */
+            bool pbufs_gone = false;
+            bool drained = wifi_lwip_drain_rx_frames(budget_end, &pbufs_gone);
 
             active = active || drained;
             (void)wifi_lwip_tx_hold_flush();
-            if (!drained)
+            if (!drained || pbufs_gone)
                break;
             if ((int32_t)(RPI_GetSystemTime() - budget_end) >= 0)
                break;
