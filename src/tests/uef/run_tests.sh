@@ -16,7 +16,9 @@ B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 
 mkdir -p "$B/uzlib"
-cp "$SRC"/uef_stream.c "$SRC"/uef_stream.h "$SRC"/byteorder.h "$B/"
+mkdir -p "$B/rpi"
+cp "$SRC"/uef_stream.c "$SRC"/uef_stream.h "$B/"
+cp "$SRC"/rpi/byteorder.h "$B/rpi/"
 cp "$SRC"/uzlib/*.c "$SRC"/uzlib/*.h "$B/uzlib/"
 cp "$HERE"/test_uef_stream.c "$HERE"/test_uef_service.c "$B/"
 cp "$SRC"/uef_service.c "$SRC"/uef_service.h "$SRC"/wifi_service.h "$SRC"/services.h "$B/"

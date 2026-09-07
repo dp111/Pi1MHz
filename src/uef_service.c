@@ -5,7 +5,7 @@
 
 #include "Pi1MHz.h"
 #include "uef_stream.h"
-#include "byteorder.h"
+#include "rpi/byteorder.h"
 #include "uzlib/uzlib.h"
 #include "wifi_service.h"
 

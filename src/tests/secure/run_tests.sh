@@ -9,7 +9,9 @@ SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 
-cp "$SRC"/secure_service_core.c "$SRC"/secure_service_core.h "$SRC"/byteorder.h "$B/"
+mkdir -p "$B/rpi"
+cp "$SRC"/secure_service_core.c "$SRC"/secure_service_core.h "$B/"
+cp "$SRC"/rpi/byteorder.h "$B/rpi/"
 cp "$HERE"/test_secure.c "$B/"
 
 echo "== secure service ABI core =="

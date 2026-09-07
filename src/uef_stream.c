@@ -1,5 +1,5 @@
 #include "uef_stream.h"
-#include "byteorder.h"
+#include "rpi/byteorder.h"
 
 #include <string.h>
 

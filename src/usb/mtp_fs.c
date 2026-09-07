@@ -34,7 +34,7 @@
 #include <ctype.h>
 
 #include "../BeebSCSI/filesystem.h"
-#include "../byteorder.h"
+#include "../rpi/byteorder.h"
 #include "../services.h"   /* fat_service_file_in_use() - MMFS/FAT interlock */
 #include "../wifi/sdio.h"
 #include "../BeebSCSI/fatfs/ff.h"

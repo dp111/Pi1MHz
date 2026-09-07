@@ -84,7 +84,7 @@ Use https://wavedrom.com/editor.html
 #include "rpi/gpio.h"
 #include "rpi/info.h"
 #include "config.h"
-#include "byteorder.h"
+#include "rpi/byteorder.h"
 #include "BeebSCSI/fatfs/ff.h"
 
 //NB ample software access the waveform ram with bit 7 and 8 equal

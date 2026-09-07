@@ -1,5 +1,5 @@
 #include "sdio.h"
-#include "../byteorder.h"
+#include "../rpi/byteorder.h"
 
 #include "cyw43.h"
 
