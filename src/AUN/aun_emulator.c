@@ -292,8 +292,14 @@ void aun_emulator_init(uint8_t instance, uint8_t address)
    IRQ_NUM = instance;
    /* The AUN engine itself comes up on the Beeb's INIT command (the
     * network stack may not be ready yet at RST); the poll hook is
-    * registered once here - Pi1MHz_Register_Poll dedupes. */
-   aun_pending     = false;
+    * registered once here - Pi1MHz_Register_Poll dedupes.
+    *
+    * Do NOT clear aun_pending here (same rule as net_service_init): the
+    * dispatcher has already echoed the command page number to the result
+    * register as the busy marker, and only aun_execute() replaces it.  A
+    * command the FIQ latched around this re-init must therefore still be
+    * dispatched on the next poll - dropping it leaves the ROM polling a
+    * marker that never changes.  It is already false on the first boot. */
    aun_irq_enabled = false;
    aun_irq_state   = 0;
    /* Claim our range on the services port (&FCA6 command mailbox).  The
