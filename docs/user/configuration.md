@@ -101,6 +101,7 @@ Harddisc_addr=-1
 | `watchdog` | off | A number of seconds (1-15). If set, the Pi's hardware watchdog reboots it automatically should the firmware ever lock up. `0` or absent = off. `watchdog=10` is a sensible value if you want it. |
 | `BeebAudio_Off` | off | `1` mutes the emulated audio path into the BBC's internal speaker. For the Music 5000 on a Pi 3B+ this also enables proper stereo on the Pi's headphone jack. Applies to whichever audio emulator is running (Music 5000 or BeebSID). |
 | `Audio_out` | `beeb` | `hdmi` sends the sound (Music 5000, BeebSID or the video player) out of the HDMI port instead of the Beeb pin/jack. Needs the display link in HDMI mode - `hdmi_drive=2` in `config.txt` if the screen's EDID does not advertise audio. |
+| `Display_par` | `1/1` | Correction for a display whose pixels are not square. Pi1MHz already draws the video as a true 4:3 frame (and the Beeb picture registered on it) for any square-pixel display, so leave this alone unless the picture is visibly the wrong width. A 16:10 monitor fed a 1920x1080 signal stretches it 10/9 taller than wide: set `10/9`, or better, drive the monitor at its native mode in `config.txt` (`hdmi_group=2` with `hdmi_mode=69` for 1920x1200, `58` for 1680x1050, `47` for 1440x900) and leave this at `1/1`. Any fraction `N/D` between 1/4 and 4/1 is accepted. |
 
 ## Hard disc settings
 

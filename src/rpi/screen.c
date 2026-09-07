@@ -8,6 +8,9 @@
 #include "../rpi/cache.h"      /* _clean_cache_area - the dim-strip source */
 #include "../rpi/interrupts.h"
 #include "../rpi/systimer.h"   /* RPI_GetSystemTime - refresh-rate measurement */
+#include "../config.h"          /* Display_par - the raster grid's pixel aspect */
+#include <string.h>
+#include <stdlib.h>
 
 /*
     Interfaces to the HVS in the BCM2835
@@ -587,6 +590,50 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
  * @param nh Pointer to store the new height.
  * @return uint32_t Vertical offset.
  */
+/* The pixel shape of the shared raster grid, and the display's correction.
+
+   Both planes are placed on the Beeb's PAL raster: 832 samples of the 52 us
+   active line (16 MHz) by 576 lines.  A 4:3 frame 576 lines high is 768
+   square pixels wide, so each grid sample is 768/832 = 12/13 as wide as it is
+   tall - the same 12/13 the PVF header carries.  That factor is a property of
+   the grid, not of any display mode, so it is applied to every mode's
+   horizontal scale below: with it, the video is a 4:3 frame and the Beeb
+   picture (640 samples = 40 us of the line) sits registered on it at its true
+   1.15:1, on any square-pixel display, with no setting.
+
+   Display_par=N/D is then only for a display that is not square-pixel: a
+   16:10 panel fed 1920x1080 stretches every pixel 10/9 taller than wide, so
+   it wants Display_par=10/9; the fix at source is to drive such a panel at
+   its native mode and leave this at 1/1.  The same factor goes to every
+   plane's width, so the video, the computer screen, the pointer and the VP5
+   strips stay registered with each other. */
+#define GRID_SAMPLE_PAR (12.0f / 13.0f)
+
+static float display_par(void)
+{
+    const char *v = config_get("Display_par");
+    if (v == NULL || strcmp(v, "square") == 0)
+        return 1.0f;
+    char *end = NULL;
+    long num = strtol(v, &end, 10);
+    long den = (end != NULL && *end == '/') ? strtol(end + 1, NULL, 10) : 1;
+    if (num <= 0 || den <= 0 || num > 4 * den || den > 4 * num)
+        return 1.0f;                     /* nonsense: keep the picture on screen */
+    return (float)num / (float)den;
+}
+
+static float grid_par(void)
+{
+    return GRID_SAMPLE_PAR * display_par();
+}
+
+/* A scaled width from a grid width: rounded, and even so the YUV chroma
+   planes (half width) keep whole samples. */
+static uint32_t grid_width(float w)
+{
+    return ((uint32_t)(w + 0.5f)) & 0xffeu;
+}
+
 static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh, uint32_t *h_crop_out)
 {
     uint32_t h_crop = 0;
@@ -639,7 +686,15 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
         if (yuv_scale < 0.1f)
         {
             switch ( v_display)
-            {   // here we choose scaling factors that will give a good ratio for the RGB overlay
+            {   /* The VERTICAL scale, chosen so the Beeb's 256 lines fill the
+                   display height at a whole or half-integer factor (crisp
+                   scanlines); the video's 576 lines then overscan and are
+                   cropped top and bottom.  The horizontal scale is not
+                   chosen here: it is this factor x GRID_SAMPLE_PAR (x the
+                   Display_par correction), which is what makes the video a
+                   4:3 frame in every mode - e.g. at 1080p the frame is
+                   1536 x 1152 (1080 visible) and the Beeb 1182 x 1024; at
+                   1200 lines 1728 x 1296 and 1330 x 1152. */
                 case 480: yuv_scale = 1.75/2; break;  // 256 * 1.75 = 448
                 case 576: yuv_scale = 1 ; break; // 256 * 2 = 512
                 case 600: yuv_scale = 2.25/2; break;  // 256 * 2.25 = 576
@@ -661,7 +716,8 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
             rgb_scale = yuv_scale*2;
         }
 
-        *scaled_width = (((uint32_t)(yuv_scale * (float)h_corrected)) & 0xfff);
+        const float hscale = yuv_scale * grid_par();
+        *scaled_width = grid_width(hscale * (float)h_corrected);
         *scaled_height = (((uint32_t)(yuv_scale * (float)v_corrected)) & 0xfff);
 
         /* The scale above is chosen to make the HEIGHT work, and the video
@@ -678,7 +734,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
            screen instead of the right-hand edge falling off. */
         if (*scaled_width > h_display)
         {
-            h_crop = (uint32_t)((float)((*scaled_width - h_display) / 2) / yuv_scale);
+            h_crop = (uint32_t)((float)((*scaled_width - h_display) / 2) / hscale);
             *scaled_width = h_display;
         }
 
@@ -738,7 +794,8 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
         else
             scale = rgb_scale ;
 
-    if (((uint32_t)(scale * (float)h_corrected)) >  h_display)
+    const float rgb_hscale_par = grid_par();
+    if (((uint32_t)(scale * rgb_hscale_par * (float)h_corrected)) >  h_display)
         scale = scale/2;
     if (((uint32_t)(scale * (float)v_corrected)) >  v_display)
         scale = scale/2;
@@ -746,7 +803,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     LOG_DEBUG("scale %f\r\n", (double) scale);
     LOG_DEBUG("rgb_scale %f\r\n", (double) rgb_scale);
 #endif
-    *scaled_width = (((uint32_t)(scale * (float)h_corrected)) & 0xfff);
+    *scaled_width = grid_width(scale * rgb_hscale_par * (float)h_corrected);
     *scaled_height = (((uint32_t)(scale * (float)v_corrected)) & 0xfff);
 #ifdef SCREEN_DEBUG
     LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", *scaled_width, *scaled_height);
