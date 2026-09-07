@@ -1210,15 +1210,7 @@ static uint16_t net_udp_pop(net_handle_t *h, uint8_t *dst, size_t cap)
    dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
    copy  = (dglen < cap) ? dglen : (uint16_t)cap;
    ring_get_mem(h, dst, copy);
-   if (dglen > copy) {                          /* discard what didn't fit */
-      uint8_t  junk[64];
-      uint16_t left = (uint16_t)(dglen - copy);
-      while (left != 0u) {
-         uint16_t k = (left < sizeof junk) ? left : (uint16_t)sizeof junk;
-         ring_get_mem(h, junk, k);
-         left = (uint16_t)(left - k);
-      }
-   }
+   ring_skip(h, (uint32_t)dglen - copy);        /* discard what didn't fit - clamped */
    return copy;
 }
 
@@ -1529,24 +1521,8 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       /* Return one datagram's payload; the peer is the fixed URL host, so the
          [4 ip][2 port] record header is dropped.  No connection => no EOF; a
          client polls and terminates on its own (timeout/count). */
-      uint8_t  hdr[8];
-      uint16_t dglen;
-      uint32_t copy;
       if (h->rx_count < 8u) { jim_wr24(cp + 1u, 0u); return NET_OK; }
-      ring_get_mem(h, hdr, 8u);
-      dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
-      copy  = (dglen < max) ? dglen : max;
-      ring_get(h, jimoff + DISC_RAM_BASE, copy);
-      if (dglen > copy) {                        /* discard the tail that didn't fit */
-         uint8_t  junk[64];
-         uint16_t left = (uint16_t)(dglen - copy);
-         while (left != 0u) {
-            uint16_t k = (left < sizeof junk) ? left : (uint16_t)sizeof junk;
-            ring_get_mem(h, junk, k);
-            left = (uint16_t)(left - k);
-         }
-      }
-      jim_wr24(cp + 1u, copy);
+      jim_wr24(cp + 1u, udp_record_get(h, NULL, jimoff + DISC_RAM_BASE, max));
       return NET_OK;
    }
 
@@ -1582,9 +1558,7 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
          h->last_err = NET_ERR_HTTP_STATUS;
          return NET_ERR_HTTP_STATUS;
       }
-      { uint8_t junk[64]; uint16_t left = hdr;
-        while (left != 0u) { uint16_t k = (left < sizeof junk) ? left : (uint16_t)sizeof junk;
-                             ring_get_mem(h, junk, k); left = (uint16_t)(left - k); } }
+      ring_skip(h, hdr);
       h->http_hdr_done = true;
    }
    if (h->url_adapter == NET_URL_HTTP && h->http_has_length) {
