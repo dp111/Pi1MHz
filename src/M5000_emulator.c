@@ -432,7 +432,8 @@ static FIL music5000_rec_fp;
 static enum { REC_FLUSH_IDLE, REC_FLUSH_OPEN, REC_FLUSH_WRITE } rec_flush = REC_FLUSH_IDLE;
 static uint32_t rec_flush_pos;
 static uint32_t rec_flush_end;
-static uint32_t rec_flush_name;
+static uint32_t rec_flush_name;     /* next Musics%03d to try - kept across recordings */
+static uint32_t rec_flush_probes;   /* names tried for this flush */
 #define M5000_REC_FLUSH_SLICE  (64u * 1024u)   /* ~4 ms of card time per poll pass */
 #define M5000_REC_FLUSH_PROBES 8u              /* Musics%03d.wav names tried per pass */
 
@@ -452,7 +453,7 @@ static void music5000_rec_stop(void)
 
    rec_flush_pos = M5000_REC_BASE;
    rec_flush_end = Audio_Index;
-   rec_flush_name = 0;
+   rec_flush_probes = 0;
    rec_flush = REC_FLUSH_OPEN;
 
    record = false;
@@ -466,9 +467,15 @@ static void music5000_rec_flush(void)
       break;
 
    case REC_FLUSH_OPEN:
+      /* Every FA_CREATE_NEW probe of a name that exists is a root-directory
+         scan, so the name counter carries over from one recording to the
+         next (wrapping at 1000) instead of re-probing every earlier file. */
       for (uint32_t n = 0; n < M5000_REC_FLUSH_PROBES; n++) {
          char fn[22];
+         if (rec_flush_name >= 1000u)
+            rec_flush_name = 0;
          sprintf(fn, "Musics%.3lu.wav", (unsigned long)rec_flush_name++);
+         rec_flush_probes++;
          FRESULT result = f_open(&music5000_rec_fp, fn, FA_CREATE_NEW | FA_WRITE);
          LOG_DEBUG("Music5000 Filename : %s\r\n", fn);
          if (result == FR_OK) {
@@ -477,7 +484,7 @@ static void music5000_rec_flush(void)
          }
          // Only a name clash is worth another probe; a missing card or a
          // full directory will not change between names.
-         if (result != FR_EXIST || rec_flush_name >= 1000u) {
+         if (result != FR_EXIST || rec_flush_probes >= 1000u) {
             LOG_DEBUG("Music5000 recording stopped as we could not create a file\r\n");
             rec_flush = REC_FLUSH_IDLE;
             break;
