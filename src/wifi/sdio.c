@@ -20,6 +20,9 @@
 #define SDIO_RUNTIME_MAX_RX_FRAMES_PER_POLL 8u
 #define SDIO_RUNTIME_FW_CHUNKS_PER_TICK 8u
 #define SDIO_RUNTIME_HIGH_CLOCK_HZ 25000000u
+/* Total budget for STAGE_WAKE_KSO's controller-setup tail (clock raise plus
+   the two optional bus negotiations).  Healthy hardware needs ~10 ms. */
+#define SDIO_RUNTIME_KSO_TAIL_BUDGET_US 300000u
 #define SDIO_RUNTIME_HIGH_SPEED_CLOCK_HZ 50000000u
 /* Longest the chip's mailbox interrupt may go unserviced while frames keep
    arriving.  Only a floor: normally it is serviced the moment the FIFO
@@ -6191,10 +6194,37 @@ bool sdio_runtime_tick(void)
             return sdio_runtime_finalize_error("WiFi SDIO KSO wake failed");
          if (kso_result == 0)
             return true;
-         if (sdio_host_set_clock(&g_runtime_device, SDIO_RUNTIME_HIGH_CLOCK_HZ, NULL) != 0)
-            return sdio_runtime_finalize_error("WiFi SDIO high-speed clock switch failed");
-         sdio_runtime_try_four_bit_bus(&g_runtime_device);
-         sdio_runtime_try_high_speed(&g_runtime_device);
+         /* One budget for the whole tail, not three independent ones.
+            The clock raise, the 4-bit negotiation and the high-speed
+            negotiation each used to start fresh: sdio_host_set_clock spins
+            through five phases at TIMEOUT_WAIT's 100 ms apiece, and the two
+            verify loops add up to ~30 commands at SDIO_COMMAND_TIMEOUT_US -
+            so a controller that stops answering could hold this one tick for
+            seconds.  Healthy hardware costs ~10 ms, so the budget is loose;
+            it only bites when something is already wrong.
+
+            The clock raise is required and still fails the stage.  The other
+            two are genuinely optional - they are try_* and their results are
+            not consulted - so under time pressure we skip them and carry on
+            with a working, slower link rather than spend the poll loop on
+            them. */
+         {
+            uint32_t tail_deadline = RPI_GetSystemTime()
+                                     + SDIO_RUNTIME_KSO_TAIL_BUDGET_US;
+
+            if (sdio_host_set_clock(&g_runtime_device, SDIO_RUNTIME_HIGH_CLOCK_HZ, NULL) != 0)
+               return sdio_runtime_finalize_error("WiFi SDIO high-speed clock switch failed");
+
+            if ((int32_t)(RPI_GetSystemTime() - tail_deadline) < 0)
+               sdio_runtime_try_four_bit_bus(&g_runtime_device);
+            else
+               sdio_debug_log("skipping 4-bit negotiation: controller setup over budget");
+
+            if ((int32_t)(RPI_GetSystemTime() - tail_deadline) < 0)
+               sdio_runtime_try_high_speed(&g_runtime_device);
+            else
+               sdio_debug_log("skipping high-speed negotiation: controller setup over budget");
+         }
          sdio_debug_log("controller setup complete io_enable=0x%02x io_ready=0x%02x block1=%u block2=%u",
                         (unsigned int)g_sdio_probe_result.configured_io_enable,
                         (unsigned int)g_sdio_probe_result.configured_io_ready,
