@@ -128,15 +128,6 @@ extern char _end;
 void rampage_emulator_init( uint8_t instance , uint8_t address)
 {
    static uint8_t init = 0 ;
-   // Page access register write fcfd fcfe fcff
-   Pi1MHz_Register_Memory(WRITE_FRED, (address + 0u), ram_emulator_page_addr_high ); // high byte
-   Pi1MHz_Register_Memory(WRITE_FRED, (address + 1u), ram_emulator_page_addr_mid ); // Mid byte
-   Pi1MHz_Register_Memory(WRITE_FRED, (address + 2u), ram_emulator_page_addr_low ); // low byte
-
-   // register every address in JIM &FD00
-   for (uint32_t i=0 ; i<PAGE_SIZE; i++)
-      Pi1MHz_Register_Memory(WRITE_JIM, i, ram_emulator_page_write );
-
    // Initialise JIM RAM
 
    if (init == 0)
@@ -157,6 +148,18 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
       fx_register[instance] = 0;
       return;
    }
+
+   // Only now that JIM RAM exists: registered before the check, the FIQ
+   // callbacks stayed live with the emulator "disabled".
+   // Page access register write fcfd fcfe fcff
+   Pi1MHz_Register_Memory(WRITE_FRED, (address + 0u), ram_emulator_page_addr_high ); // high byte
+   Pi1MHz_Register_Memory(WRITE_FRED, (address + 1u), ram_emulator_page_addr_mid ); // Mid byte
+   Pi1MHz_Register_Memory(WRITE_FRED, (address + 2u), ram_emulator_page_addr_low ); // low byte
+
+   // register every address in JIM &FD00
+   for (uint32_t i=0 ; i<PAGE_SIZE; i++)
+      Pi1MHz_Register_Memory(WRITE_JIM, i, ram_emulator_page_write );
+
 
    Pi1MHz->byte_ram_addr = ((size_t)Pi1MHz->JIM_ram_size - 1)<<24; // 16Mbyte boundary
    Pi1MHz->page_ram_addr = 0;
@@ -179,6 +182,8 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 void rambyte_emulator_init( uint8_t instance , uint8_t address)
 {
    rambyte_address = address;
+   if (Pi1MHz->JIM_ram_size == 0)     // rampage found no JIM RAM
+      return;
 
    // register call backs
    // byte memory address write fc00 01 02
