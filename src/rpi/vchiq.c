@@ -39,6 +39,7 @@
 #include "systimer.h"
 #include "asm-helpers.h"
 #include "vchiq.h"
+#include "screen.h"   /* screen_allocate_buffer: the GPU-heap allocator */
 
 /* ------------------------------------------------------------------ */
 /* Wire format                                                        */
@@ -240,38 +241,17 @@ static void remote_event_signal(volatile vchiq_remote_event_t *ev)
 
 uint32_t vchiq_alloc_shared(uint32_t size, uint32_t *handle)
 {
-    rpi_mailbox_property_t *mp;
-    RPI_PropertyStart(TAG_ALLOCATE_MEMORY, 3);
-    RPI_PropertyAddTwoWords(size, 4096);
-    /* DIRECT (uncached 0xC alias) | ZERO | NO_INIT | HINT_PERMALOCK -
-       same flags screen_allocate_buffer() uses */
-    RPI_PropertyAdd((1 << 6) + (1 << 5) + (1 << 4) + (1 << 2));
-    RPI_PropertyProcess(true);
-    if ((mp = RPI_PropertyGet(TAG_ALLOCATE_MEMORY))) {
-        *handle = mp->data.buffer_32[0];
-        RPI_PropertyStart(TAG_LOCK_MEMORY, 1);
-        RPI_PropertyAdd(*handle);
-        RPI_PropertyProcess(true);
-        if ((mp = RPI_PropertyGet(TAG_LOCK_MEMORY)))
-            return mp->data.buffer_32[0] & 0x3FFFFFFFu;
-    }
-    return 0;
+    /* One GPU-heap allocator for the whole tree: the same DIRECT (uncached
+       0xC alias) | ZERO | NO_INIT | HINT_PERMALOCK block, allocated and
+       locked, that the display planes use.  A 0 return leaves *handle 0. */
+    return screen_allocate_buffer(size, handle);
 }
 
 void vchiq_free_shared(uint32_t handle)
 {
     if (!handle)
         return;
-    /* Unlock then release, exactly as screen_release_buffer() does - the
-       allocation above locked the block. */
-    RPI_PropertyStart(TAG_UNLOCK_MEMORY, 1);
-    RPI_PropertyAdd(handle);
-    RPI_PropertyProcess(true);
-    if (RPI_PropertyGet(TAG_UNLOCK_MEMORY)) {
-        RPI_PropertyStart(TAG_RELEASE_MEMORY, 1);
-        RPI_PropertyAdd(handle);
-        RPI_PropertyProcess(false);
-    }
+    screen_release_buffer(handle);
 }
 
 bool vchiq_connected(void)
