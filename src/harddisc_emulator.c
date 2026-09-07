@@ -253,8 +253,12 @@ void hd_juke_service(void)
    if (dir == ((scsiHostID >= 16) ? filesystemGetLunDirectoryVFS()
                                   : filesystemGetLunDirectory()))
       return;
+   /* Deliberately the unguarded swap.  filesystemReset() above has already
+      dismounted every LUN, which is the point of this path: *FX147,65,n
+      swaps discs whatever was mounted.  BSSELECT / *SCSIJUKE is the one that
+      refuses while a LUN is started - see scsiJukeboxSwap's comment. */
    filesystemReset();
-   scsiJukebox(dir);
+   scsiJukeboxSwap(dir);
 }
 
 static void hd_emulator_write_scsijuke(unsigned int gpio)

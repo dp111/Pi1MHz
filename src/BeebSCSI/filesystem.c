@@ -784,7 +784,15 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
       snprintf(fileName, sizeof(fileName), "/BeebVFS%d/scsi%d.dat", filesystemState.lunDirectoryVFS, lunNumber & 7);
 
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCheckLunImage(): Checking for (.dat) LUN image "), (uint16_t)lunNumber, 1);
-   fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName, FA_READ | FA_WRITE);
+   /* LUN >= 8 is /BeebVFS read-only media: open it FA_READ.  FatFs returns
+      FR_DENIED for a write-mode open of an AM_RDO file, so a user who marked
+      the image read-only - the natural thing to do to read-only media, and
+      something an MTP or Explorer copy can carry across - could not start the
+      LUN at all, and READ6's auto-start handed BAD_FORMAT to a host with no
+      timeout.  This is only the Beeb-facing LUN handle; MTP and WebDAV write
+      these files through their own paths and are unaffected. */
+   fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName,
+                     (lunNumber >= 8) ? FA_READ : (FA_READ | FA_WRITE));
 
    if (fsResult != FR_OK) {
       if (debugFlag_filesystem) {

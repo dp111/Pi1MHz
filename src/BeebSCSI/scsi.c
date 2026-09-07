@@ -2304,12 +2304,20 @@ static uint8_t scsiBeebScsiSense(void)
    return SCSI_STATUS;
 }
 
-bool scsiJukebox (uint8_t lun) {
-   // Check if any LUNs are in the started state
-   for (uint8_t byteCounter = 0; byteCounter < MAX_LUNS; byteCounter++)
-      if (filesystemReadLunStatus(byteCounter)) return false;
+/* The swap itself, with no started-LUN guard.  Two callers want two
+   different policies and they must not be confused:
 
-   // Only jukebox if no LUNs are in the started state
+     - BSSELECT / *SCSIJUKE goes through scsiJukebox() below, which REFUSES
+       while any LUN is started - the host is asking mid-session and an
+       ADFS holding an open catalogue must not have the disc changed under
+       it.
+     - the *FX147,65,n poke (hd_juke_service) deliberately dismounts
+       everything first and then swaps unconditionally.  It used to call
+       scsiJukebox(), but filesystemReset() has already cleared every LUN's
+       status by then, so the guard could never fire and its bool return was
+       dropped - a safety check that read as live and was not.  It calls this
+       directly now, so the difference is stated rather than accidental. */
+void scsiJukeboxSwap (uint8_t lun) {
    uint8_t old_vfs = filesystemGetLunDirectoryVFS();
    filesystemSetLunDirectory(scsiHostID, lun);
    // The video lives in the VFS jukebox directory: notify only when THAT
@@ -2318,6 +2326,15 @@ bool scsiJukebox (uint8_t lun) {
    if (filesystemGetLunDirectoryVFS() != old_vfs)
       videoplayer_media_changed();
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Jukeboxing successful - LUN directory set to "), lun, true);
+}
+
+bool scsiJukebox (uint8_t lun) {
+   // Check if any LUNs are in the started state
+   for (uint8_t byteCounter = 0; byteCounter < MAX_LUNS; byteCounter++)
+      if (filesystemReadLunStatus(byteCounter)) return false;
+
+   // Only jukebox if no LUNs are in the started state
+   scsiJukeboxSwap(lun);
    return true;
 }
 

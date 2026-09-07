@@ -90,6 +90,7 @@
 void scsiInitialise(void);
 void scsiReset(uint8_t scsiid);
 
+void scsiJukeboxSwap(uint8_t lun);
 bool scsiJukebox (uint8_t lun);
 /* Slow SCSI calls (>=1 ms), oldest first, for diagnosing a stalled host. */
 
