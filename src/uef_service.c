@@ -188,8 +188,16 @@ static void guard_stamp(void)
       return;
    /* Page 0 is the service command and reply buffer, which OSWORD &65
     * clients read as 241 contiguous bytes, so it cannot also hold the guard.
-    * The host keeps the selector off page 0 outside service calls. */
-   for (page = UEF_FIRST_PAGE; page < 256u; page++)
+    * The host keeps the selector off page 0 outside service calls.
+    *
+    * Page 255 is excluded too: the guard run is UEF_GUARD_OFFSET..255 of each
+    * page, so on page 255 it covers 0xFF97..0xFFFF - which CONTAINS the length
+    * trailer at UEF_TRAILER (0xFFFE).  Both window sizes already reserve the
+    * last page for exactly that reason.  Stamping it left the trailer holding
+    * two arbitrary bytes of the ROM's own guard image, and an APPEND with
+    * length == 0 - the documented "read my length from the trailer" form -
+    * then appended an arbitrary number of bytes from JIM page 0. */
+   for (page = UEF_FIRST_PAGE; page < 255u; page++)
       memcpy(&Pi1MHz->JIM_ram[UEF_BASE + (page << 8) + UEF_GUARD_OFFSET],
              guard_image, UEF_GUARD_LENGTH);
 }
