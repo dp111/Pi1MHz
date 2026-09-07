@@ -123,3 +123,4 @@ int main(void)
    puts("fat fuzz: 300k hostile command blocks, no crashes");
    return 0;
 }
+bool filesystemHostPathBusy(const char *path) { (void)path; return false; }
