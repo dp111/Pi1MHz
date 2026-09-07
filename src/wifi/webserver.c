@@ -2891,15 +2891,25 @@ static bool route_status(ws_conn_t *c)
       }
    }
    {
-      /* max run per poll slot, reset on read */
+      /* max run per poll slot, reset on read.  Named, not numbered: the row
+         is positional, so adding any poller renumbers the rest.  Every
+         poller is read - and so reset - whether or not it fits, and the row
+         has its own buffer: fifteen "name:us " fields overran the shared
+         144-byte tmp, so the late-registered pollers (wifi and audio among
+         them) were never shown or reset. */
+      char row[320];
       size_t o = 0;
-      /* Named, not numbered: the row is positional, so adding any poller
-         renumbers the rest and the reader has to decode the init order. */
-      for (unsigned int i = 0; i < Pi1MHz_poll_count() && o < sizeof tmp - 20; i++)
-         o += (size_t)snprintf(tmp + o, sizeof tmp - o, "%s:%lu ",
-                               Pi1MHz_poll_name(i),
-                               (unsigned long)Pi1MHz_poll_max_us(i, true));
-      table_row(&b, "Poll max us", tmp);
+      row[0] = '\0';
+      for (unsigned int i = 0; i < Pi1MHz_poll_count(); i++) {
+         unsigned long us = (unsigned long)Pi1MHz_poll_max_us(i, true);
+         if (o < sizeof row - 1u) {
+            int n = snprintf(row + o, sizeof row - o, "%s:%lu ", Pi1MHz_poll_name(i), us);
+            o += (n > 0) ? (size_t)n : 0u;
+            if (o >= sizeof row)
+               o = sizeof row - 1u;
+         }
+      }
+      table_row(&b, "Poll max us", row);
    }
    {
       /* KB/s without a 64-bit constant: bytes/ms = ~KB/s within 2.4% */
