@@ -5,10 +5,6 @@
 
 #define NTS_FINGERPRINT_ADDRESS 0x020500u
 
-static uint16_t rd16(const uint8_t *p)
-{
-    return (uint16_t)p[0] | (uint16_t)((uint16_t)p[1] << 8);
-}
 
 
 static void wr24(uint8_t *p, uint32_t value)
@@ -80,7 +76,7 @@ uint8_t nts_secure_dispatch(nts_secure_service *service, uint8_t *command,
         return NTS_OK;
 
     case NTS_SEC_RANDOM:
-        length = rd16(command + 1);
+        length = get_le16(command + 1);
         address = get_le32(command + 4);
         if (length == 0 || length > 64 || !buffer_ok(address, length, jim_size))
             return NTS_ERR_PARAM;
