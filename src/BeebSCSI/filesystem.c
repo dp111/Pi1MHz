@@ -973,20 +973,19 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
 
    if (config_beeb_write_protected()) return false;   // no .dat auto-create under write-protect
 
-   if (filesystemCheckLunImage(lunNumber)) {
-      // File opened ok - which means it already exists...
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunImage(): .dat already exists - ignoring request to create a new .dat\r\n"));
-      return true;
-   }
-
-   if (lunNumber >7)
-   {
-      // VFS doesn't support creating .dat files
-      return false;
-   }
-
    // Assemble the .dat file name
    fsLunFilePath(lunNumber, "dat", fileName, sizeof(fileName));
+
+   {
+      // Existence is a question for f_stat: filesystemCheckLunImage would
+      // open the image and load its descriptor for a LUN that stays stopped,
+      // breaking "fileObject open iff started" for the FORMAT path.
+      FILINFO fno;
+      if (f_stat(fileName, &fno) == FR_OK) {
+         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunImage(): .dat already exists - ignoring request to create a new .dat\r\n"));
+         return true;
+      }
+   }
 
    // Create a new .dat file
    fsResult = f_open(&fileObject, fileName, FA_CREATE_NEW | FA_READ | FA_WRITE);
