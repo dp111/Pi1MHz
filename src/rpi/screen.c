@@ -634,6 +634,41 @@ static uint32_t grid_width(float w)
     return ((uint32_t)(w + 0.5f)) & 0xffeu;
 }
 
+/* The grid's vertical scale for this display height - the one table both
+   planes must agree on.  Chosen so the Beeb's 256 lines fill the height at
+   a whole or half-integer factor (crisp scanlines); the video's 576 lines
+   then overscan and are cropped top and bottom.  The horizontal scale is
+   this x GRID_SAMPLE_PAR (x the Display_par correction), which is what makes
+   the video a 4:3 frame in every mode - e.g. at 1080p the frame is 1536 x
+   1152 (1080 visible) and the Beeb 1182 x 1024; at 1200 lines 1728 x 1296
+   and 1330 x 1152.  Used by the RGB path too, whether or not a video has
+   been opened: deriving the Beeb plane's scale separately when no video was
+   open gave 2x (1024 rows) at 1200 lines against the table's 4.5x, so the
+   computer screen jumped when the player first came up. */
+static float grid_vscale(uint32_t v_display)
+{
+    switch ( v_display)
+    {
+        case 480: return 1.75/2;  // 256 * 1.75 = 448
+        case 576: return 1 ; // 256 * 2 = 512
+        case 600: return 2.25/2;  // 256 * 2.25 = 576
+        case 720: return 2.75/2;  // 256 * 2.75 = 704
+        case 768: return 3.0/2;  // 256 * 3 = 768
+        case 800: return 3.0/2;  // 256 * 3 = 768
+        case 864: return 3.25/2;  // 256 * 3.25 = 832
+        case 900: return 3.5/2;  // 256 * 3.5 = 896
+        case 960: return 3.75/2;  // 256 * 3.75 = 960
+        case 1024: return 4/2;  // 256 * 4 = 1024
+        case 1050: return 4/2;  // 256 * 4 = 1024
+        case 1080: return 4/2;  // 256 * 4 = 1024
+        case 1200: return 4.5/2;  // 256 * 4.5 = 1152
+        case 1440: return 5.5/2;  // 256 * 5.5 = 1408
+        case 1536: return 6/2;  // 256 * 6 = 1536
+        case 1600: return 6.25/2;  // 256 * 6.25 = 1600
+        default: return ((float)v_display/256)/2;  // 256 * 2 = 512
+    }
+}
+
 static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh, uint32_t *h_crop_out)
 {
     uint32_t h_crop = 0;
@@ -685,34 +720,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
 
         if (yuv_scale < 0.1f)
         {
-            switch ( v_display)
-            {   /* The VERTICAL scale, chosen so the Beeb's 256 lines fill the
-                   display height at a whole or half-integer factor (crisp
-                   scanlines); the video's 576 lines then overscan and are
-                   cropped top and bottom.  The horizontal scale is not
-                   chosen here: it is this factor x GRID_SAMPLE_PAR (x the
-                   Display_par correction), which is what makes the video a
-                   4:3 frame in every mode - e.g. at 1080p the frame is
-                   1536 x 1152 (1080 visible) and the Beeb 1182 x 1024; at
-                   1200 lines 1728 x 1296 and 1330 x 1152. */
-                case 480: yuv_scale = 1.75/2; break;  // 256 * 1.75 = 448
-                case 576: yuv_scale = 1 ; break; // 256 * 2 = 512
-                case 600: yuv_scale = 2.25/2; break;  // 256 * 2.25 = 576
-                case 720: yuv_scale = 2.75/2; break;  // 256 * 2.75 = 704
-                case 768: yuv_scale = 3.0/2; break;  // 256 * 3 = 768
-                case 800: yuv_scale = 3.0/2; break;  // 256 * 3 = 768
-                case 864: yuv_scale = 3.25/2; break;  // 256 * 3.25 = 832
-                case 900: yuv_scale = 3.5/2; break;  // 256 * 3.5 = 896
-                case 960: yuv_scale = 3.75/2; break;  // 256 * 3.75 = 960
-                case 1024: yuv_scale = 4/2; break;  // 256 * 4 = 1024
-                case 1050: yuv_scale = 4/2; break;  // 256 * 4 = 1024
-                case 1080: yuv_scale = 4/2; break;  // 256 * 4 = 1024
-                case 1200: yuv_scale = 4.5/2; break;  // 256 * 4.5 = 1152
-                case 1440: yuv_scale = 5.5/2; break;  // 256 * 5.5 = 1408
-                case 1536: yuv_scale = 6/2; break;  // 256 * 6 = 1536
-                case 1600: yuv_scale = 6.25/2; break;  // 256 * 6.25 = 1600
-                default: yuv_scale = ((float)v_display/256)/2; break;  // 256 * 2 = 512
-            }
+            yuv_scale = grid_vscale(v_display);
             rgb_scale = yuv_scale*2;
         }
 
@@ -764,13 +772,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     }
 
     if ( rgb_scale < 0.1f)
-    {
-
-        uint32_t h_scale = 2 * h_display / h_corrected;
-        uint32_t v_scale = 2 * v_display / v_corrected;
-
-        rgb_scale = (h_scale < v_scale) ? (float)h_scale/2 : (float)v_scale/2;
-    }
+        rgb_scale = grid_vscale(v_display) * 2;   /* the same table the video uses */
 
     float scale;
     if (scale_height)
@@ -783,16 +785,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
         scale = (256/(float)scale_height) * ((fb_scale > 0.1f) ? fb_scale
                                                                : rgb_scale);
     else
-        if (yuv_scale <0.1f)
-        {
-            uint32_t h_scale = 2 * h_display / h_corrected;
-            uint32_t v_scale = 2 * v_display / v_corrected;
-
-            rgb_scale = (h_scale < v_scale) ? (float)h_scale/2 : (float)v_scale/2;
-            scale = rgb_scale;
-        }
-        else
-            scale = rgb_scale ;
+        scale = rgb_scale ;
 
     const float rgb_hscale_par = grid_par();
     if (((uint32_t)(scale * rgb_hscale_par * (float)h_corrected)) >  h_display)
