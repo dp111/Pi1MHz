@@ -326,6 +326,12 @@ void Pi1MHz_EmulatedMemoryByte(unsigned int gpio)
 // for access variable use WRITE_FRED WRITE_JIM READ_FRED READ_JIM
 void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_func_ptr function_ptr )
 {
+   /* access selects the FRED/JIM read/write quadrant; addr is the offset
+      within it.  config_emulator_override accepts any non-negative address,
+      so a FRED registration with addr > 255 would land in the JIM quadrant
+      (BeebSID_addr=0xF0 plus its register span was enough). */
+   if (addr >= PAGE_SIZE)
+      return;
    Pi1MHz->callback_table[access+addr] = function_ptr;
 }
 
