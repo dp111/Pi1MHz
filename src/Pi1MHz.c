@@ -635,6 +635,8 @@ static void init_emulator(void) {
       rpi_audio_mute_beeb(bp && atoi(bp) == 1);
    }
 
+   ram_emulator_alloc();   // JIM_ram_size must be known before any init below
+
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {
          LOG_DEBUG("Init %s at 0x%02x\r\n",emulator[i].name, emulator[i].address);

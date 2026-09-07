@@ -141,7 +141,7 @@ static void helpers_bank_select(unsigned int gpio)
             data = 0;
 
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
-        if (data==0 && Pi1MHz->JIM_ram_size != 0)
+        if (data==0)
         {
             helpers_screen_setup(( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000],1024);
             //signal to beeb the help screen is setup
@@ -167,6 +167,8 @@ void helpers_init( uint8_t instance , uint8_t address)
 {
    uint8_t *helper = &helper_ram[0];
    helper_address = address;
+   if (Pi1MHz->JIM_ram_size == 0)     // the help screen lives in JIM RAM
+      return;
    if (filesystemReadFile("Pi1MHz/6502code.bin",&helper,sizeof(helper_ram)))
     {
         // register call backs

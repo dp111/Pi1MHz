@@ -125,26 +125,28 @@ static char* putstring(char *ram, char term, const char *string)
 
 extern char _end;
 
-void rampage_emulator_init( uint8_t instance , uint8_t address)
+// Sizes and allocates JIM RAM before any emulator init runs, so every
+// emulator that needs it can test JIM_ram_size in its own init.
+void ram_emulator_alloc(void)
 {
-   static uint8_t init = 0 ;
-   // Initialise JIM RAM
-
-   if (init == 0)
-   {
-      init = 1;
-      uint32_t temp = mem_info(1); // get size of ram
-      temp = temp - (uint32_t)&_end; // remove program
-      temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
-      temp = temp & 0xFF000000; // round down to 16Mbyte boundary
-      Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
-      Pi1MHz->JIM_ram = (uint8_t *) malloc(((size_t)Pi1MHz->JIM_ram_size<<24)); // malloc up to 480Mbytes
-   }
+   uint32_t temp = mem_info(1); // get size of ram
+   temp = temp - (uint32_t)&_end; // remove program
+   temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
+   temp = temp & 0xFF000000; // round down to 16Mbyte boundary
+   Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
+   Pi1MHz->JIM_ram = (uint8_t *) malloc(((size_t)Pi1MHz->JIM_ram_size<<24)); // malloc up to 480Mbytes
 
    if (!Pi1MHz->JIM_ram || (Pi1MHz->JIM_ram_size < 2) )
    {
       LOG_INFO("No RAM - disabling RAM page emulator\r\n");
       Pi1MHz->JIM_ram_size = 0;
+   }
+}
+
+void rampage_emulator_init( uint8_t instance , uint8_t address)
+{
+   if (Pi1MHz->JIM_ram_size == 0)
+   {
       fx_register[instance] = 0;
       return;
    }
