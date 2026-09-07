@@ -102,7 +102,11 @@ int config_emulator_override(const char *name, uint8_t *addr)
    if (v == NULL)
       return 0;
    long t = strtol(v, NULL, 0);
-   if (t < 0)
+   /* A FRED base is one byte.  A negative value disables the emulator; so
+      does one past 0xFF - truncating it to a byte (as this did) turned a typo
+      like BeebSID_addr=0x140 into base 0x40, the SCSI emulator's default, and
+      the two fought over the same callbacks with no diagnostic. */
+   if (t < 0 || t > 0xFF)
       return -1;
    *addr = (uint8_t)t;
    return 1;
