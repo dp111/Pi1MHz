@@ -573,6 +573,13 @@ static void init_emulator(void) {
 
    memset(&Pi1MHz->callback_table[0], 0, Pi1MHz_CB_SIZE);
    memset(&Pi1MHz->Memory[0],0,sizeof(Pi1MHz->Memory)); // Clear FRED and JIM memory
+   /* The JIM fields live in the same fixed struct and nothing else clears
+      them: with Rampage disabled (Rampage_addr=-1) they would hold whatever
+      the previous kernel or the boot left there, and the "no JIM RAM" tests
+      in the helpers, rambyte and M5000 inits would pass on a stale pointer.
+      rampage_emulator_init republishes them when it runs. */
+   Pi1MHz->JIM_ram = NULL;
+   Pi1MHz->JIM_ram_size = 0;
 
    for(int i=255; i>=0; i--)
       Pi1MHz_Memory_VPU[i]=0;             // Clear VPU ram.
