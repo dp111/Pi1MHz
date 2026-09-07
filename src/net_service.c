@@ -41,6 +41,11 @@
 #include "lwip/ip_addr.h"
 #include "lwip/err.h"
 
+/* The command numbers are the Beeb-side ABI; the range is the services port
+   allocation.  Bind them, as aun_emulator and wifi_service do. */
+_Static_assert(NET_CMD_OPEN == SERVICE_CMD_NET_FIRST, "net commands must start the net range");
+_Static_assert(NET_CMD_URL_STATUS <= SERVICE_CMD_NET_LAST, "net commands must fit the net range");
+
 /* Longest hostname accepted from the host, and the bound on the NUL scan. */
 #define NET_MAX_HOSTNAME 256u
 
