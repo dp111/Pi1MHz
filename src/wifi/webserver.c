@@ -5115,9 +5115,16 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
       failure (Win32 0x8007003A) with no indication a PUT was even the
       cause, since reads/PROPFIND never carry a body and so are never
       affected. */
-   bool te_chunked = ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding",
-                                    te_hdr, sizeof te_hdr)
-                    && ws_strcasestr(te_hdr, "chunked") != NULL;
+   /* ws_find_header truncates a value that does not fit its buffer and
+      still reports success; for the two headers that decide the body's
+      framing a truncated value must not be evaluated ("identity;q=<22
+      chars>, chunked" lost the "chunked" and the body was parsed as a
+      pipelined request).  Same length test as start_download's Range. */
+   bool te_present = ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding",
+                                    te_hdr, sizeof te_hdr);
+   if (te_present && strlen(te_hdr) + 2u > sizeof te_hdr)
+      return ws_error(c, 400, "Bad Request", "Transfer-Encoding too long.");
+   bool te_chunked = te_present && ws_strcasestr(te_hdr, "chunked") != NULL;
 
    if (!te_chunked) {
       /* Content-Length is required for the fixed-length streaming model. */
@@ -5125,6 +5132,8 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
                           len_hdr, sizeof len_hdr))
          return ws_error(c, 411, "Length Required",
                          "PUT requires a Content-Length.");
+      if (strlen(len_hdr) + 2u > sizeof len_hdr)
+         return ws_error(c, 400, "Bad Request", "Malformed Content-Length.");
       /* Parse the digit string into a uint32_t, rejecting both
          non-digits and overflow.  Reject sizes that would wrap the
          counter up front: it is a uint32_t and the streaming model
@@ -6260,12 +6269,13 @@ static bool process_request(ws_conn_t *c, int body_at)
 
       if (ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding",
                          te_hdr, sizeof te_hdr)
-          && ws_strcasestr(te_hdr, "chunked") != NULL) {
+          && (ws_strcasestr(te_hdr, "chunked") != NULL
+              || strlen(te_hdr) + 2u > sizeof te_hdr)) {   /* truncated: cannot be sure */
          c->keep_alive = false;                 /* can't size a chunked drain */
       } else if (ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length",
                                 cl_hdr, sizeof cl_hdr)) {
          uint32_t cl = 0u;
-         bool     cl_ok = true;
+         bool     cl_ok = strlen(cl_hdr) + 2u <= sizeof cl_hdr;   /* a truncated value is not a length */
          const char *p;
          for (p = cl_hdr; *p != '\0'; ++p) {
             if (*p < '0' || *p > '9') { cl_ok = false; break; }
@@ -6337,12 +6347,13 @@ static bool process_request(ws_conn_t *c, int body_at)
             bool chunked = ws_find_header(c->reqhdr, c->reqhdr_len,
                                           "Transfer-Encoding", te_hdr2,
                                           sizeof te_hdr2)
-                         && ws_strcasestr(te_hdr2, "chunked") != NULL;
+                         && (ws_strcasestr(te_hdr2, "chunked") != NULL
+                             || strlen(te_hdr2) + 2u > sizeof te_hdr2);  /* truncated: cannot be sure */
             bool have_cl = ws_find_header(c->reqhdr, c->reqhdr_len,
                                           "Content-Length", cl_hdr,
                                           sizeof cl_hdr);
             uint32_t cl = 0u;
-            bool cl_ok = have_cl;
+            bool cl_ok = have_cl && strlen(cl_hdr) + 2u <= sizeof cl_hdr;
             const char *p;
             for (p = cl_hdr; have_cl && *p != '\0'; ++p) {
                if (*p < '0' || *p > '9') { cl_ok = false; break; }
