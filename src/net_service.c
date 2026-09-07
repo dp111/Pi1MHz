@@ -1410,7 +1410,9 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                uint16_t rms = 0;
                size_t   plen = strlen(path);
                size_t   n;
-               (void)tnfs_reply_mount(&rep, NULL, &rms);
+               if (!tnfs_reply_mount(&rep, NULL, &rms)) {      /* short reply: no connid to trust */
+                  h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN;
+               }
                h->tnfs_connid = rep.connid;
                if (rms >= 100u && rms <= 5000u) h->tnfs_retry_ms = rms;
                /* directory if the mode is DIR (13) or the path ends in '/' */
@@ -1435,8 +1437,12 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                return net_tnfs_start(h, TNFS_PH_OPEN, n);
             }
             /* TNFS_PH_OPEN: file/dir is open -> READY */
-            if (h->tnfs_is_dir) (void)tnfs_reply_opendir(&rep, &h->tnfs_fd);
-            else                (void)tnfs_reply_open(&rep, &h->tnfs_fd);
+            /* A reply that parses short leaves tnfs_fd at its memset 0 and every
+               later READ would use fd 0 - fail the open, as READDIR/READ do. */
+            if (!(h->tnfs_is_dir ? tnfs_reply_opendir(&rep, &h->tnfs_fd)
+                                 : tnfs_reply_open(&rep, &h->tnfs_fd))) {
+               h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN;
+            }
             h->tnfs_phase = TNFS_PH_READY;
             h->url_phase  = URL_READY;
             return NET_OK;
