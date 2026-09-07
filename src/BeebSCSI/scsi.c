@@ -1884,6 +1884,7 @@ static uint8_t scsiCommandVerify(void)
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // as READ6 reports it
 
       return SCSI_STATUS;
    }
@@ -1964,6 +1965,7 @@ static uint8_t scsiCommandReadCapacity(void)
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // as READ6 reports it
       return SCSI_STATUS;
    }
 
@@ -2018,6 +2020,7 @@ static uint8_t scsiCommandReadDefectData10(void)
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // as READ6 reports it
 
       return SCSI_STATUS;
    }
