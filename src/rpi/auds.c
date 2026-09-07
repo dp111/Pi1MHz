@@ -57,6 +57,7 @@ typedef struct {
 static struct {
     bool     open;                   /* service opened */
     bool     running;                /* START sent */
+    bool     dead;                   /* latched on the first timeout */
     int      service;
     uint32_t rate, channels;
     int      dest;
@@ -115,12 +116,20 @@ static void on_bulk_tx_done(void *user, int actual)
 
 static bool send(vc_audio_msg_t *m, bool wait)
 {
+    /* Once a call has timed out the VC side is not coming back for this
+       session: fail every later call immediately rather than spending
+       another REPLY_TIMEOUT_US each time stalling the main loop. */
+    if (au.dead)
+        return false;
+
     au.result_ready = false;
     uint32_t start = RPI_GetSystemTime();
     while (!vchiq_queue_message(au.service, m, sizeof(*m))) {
         vchiq_poll();
-        if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US)
+        if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
+            au.dead = true;
             return false;
+        }
     }
     if (!wait)
         return true;
@@ -128,6 +137,7 @@ static bool send(vc_audio_msg_t *m, bool wait)
         vchiq_poll();
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
             LOG_INFO("auds: no reply to msg %"PRId32"\r\n", m->type);
+            au.dead = true;
             return false;
         }
     }

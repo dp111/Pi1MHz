@@ -73,6 +73,7 @@ typedef struct {
 
 static struct {
     bool     inited;
+    bool     dead;                   /* latched on the first timeout */
     int      service;
     uint32_t next_trans;
     uint32_t wait_trans;             /* outstanding transaction, 0 = none */
@@ -103,7 +104,10 @@ static void on_data(const void *data, unsigned int size)
 static bool sendwait(vcsm_msg_hdr_t *msg, uint32_t size,
                      void *reply, uint32_t reply_size)
 {
-    if (!sm.inited)
+    /* Once a call has timed out the VC side is not coming back for this
+       session: fail every later call immediately rather than spending
+       another REPLY_TIMEOUT_US each time stalling the main loop. */
+    if (!sm.inited || sm.dead)
         return false;
 
     if (++sm.next_trans == 0)
@@ -118,6 +122,7 @@ static bool sendwait(vcsm_msg_hdr_t *msg, uint32_t size,
         vchiq_poll();
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
             sm.wait_trans = 0;
+            sm.dead = true;
             return false;
         }
     }
@@ -130,6 +135,7 @@ static bool sendwait(vcsm_msg_hdr_t *msg, uint32_t size,
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
             LOG_INFO("vcsm: reply timeout (type %"PRIu32")\r\n", msg->type);
             sm.wait_trans = 0;
+            sm.dead = true;
             return false;
         }
     }
