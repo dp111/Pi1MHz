@@ -337,6 +337,10 @@ static uint8_t stream_operation(uint32_t cp)
          format = uef_stream_open(&tape->stream, upload_source, tape,
                                   tape->upload_length);
          if (format == UEF_FORMAT_INVALID) {
+            /* As the one-shot path does: an upload that is not a tape is
+               released, not kept with uploading set and every later op
+               answering ERR_PARAM. */
+            tape_free();
             response_string(cp, "INVALID\r\n");
             return WIFI_SVC_OK;
          }
