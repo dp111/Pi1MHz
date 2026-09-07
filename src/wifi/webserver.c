@@ -1247,11 +1247,6 @@ static void ws_parent_path(const char *sdpath, char *out, size_t osz)
    per filing system, so the shared message names both. */
 #define WS_BUSY_MSG "That file is in use by the Beeb - release it first " \
                     "(*BYE in ADFS; close it or CTRL-BREAK in MMFS)."
-static bool ws_beeb_path_busy(const char *path)
-{
-   return filesystemHostPathBusy(path) || fat_service_file_in_use(path);
-}
-
 static bool ws_is_root(const char *p)
 {
    return p[0] == '/' && p[1] == '\0';
@@ -3903,7 +3898,7 @@ static bool upload_finish(ws_conn_t *c)
       bool    had_date;
 
       upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
-      if (ws_beeb_path_busy(full))
+      if (beeb_path_busy(full))
          return upload_fail(c, WS_BUSY_MSG);
       /* Capture the existing target's date before it goes, same as
          dav_put_finish: the freshly written temp carries only the
@@ -3993,7 +3988,7 @@ static bool upload_begin_part(ws_conn_t *c)
          re-check - so a disconnect, or the Beeb opening the file mid-upload,
          cannot destroy a pre-existing file.  Still refuse up front if the
          Beeb already holds it open. */
-      if (ws_beeb_path_busy(full))
+      if (beeb_path_busy(full))
          return upload_fail(c, WS_BUSY_MSG);
 
       if (f_open(&c->write_file.up, tmp, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
@@ -4789,7 +4784,7 @@ static bool dav_put_flush(ws_conn_t *c)
       Bytes already flushed have patched the file (there is no temp
       to roll back), but stopping bounds the damage and the client's
       write ordering keeps the catalogue consistent. */
-   if (c->dav_put_in_place && ws_beeb_path_busy(c->dav_put_target)) {
+   if (c->dav_put_in_place && beeb_path_busy(c->dav_put_target)) {
       f_close(&c->write_file.dav);
       c->dav_put_open = false;
       c->dav_put_buf_len = 0u;
@@ -4909,7 +4904,7 @@ static bool dav_put_finish(ws_conn_t *c)
          can start the LUN in that window - so re-check here rather than
          trusting the check at PUT entry. Drop the temp and fail: better a
          failed upload than an image replaced under a running BeebSCSI. */
-      if (ws_beeb_path_busy(c->dav_put_target)) {
+      if (beeb_path_busy(c->dav_put_target)) {
          (void)f_unlink(c->dav_put_tmppath);
          return ws_error(c, 423, "Locked", WS_BUSY_MSG);
       }
@@ -5137,7 +5132,7 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
       whatever later owns those clusters. *BYE on the Beeb stops the LUN.
       Re-checked at the rename in dav_put_finish(), since the LUN can start
       while a long upload is still streaming into the .part file. */
-   if (ws_beeb_path_busy(sdpath))
+   if (beeb_path_busy(sdpath))
       return ws_error(c, 423, "Locked", WS_BUSY_MSG);
 
    /* RFC 7230 §3.3.1 / RFC 9112 §6.1: if Transfer-Encoding is present it
@@ -5472,7 +5467,7 @@ static bool route_dav_delete(ws_conn_t *c, const char *rawpath)
       return ws_error(c, 403, "Forbidden", "Refusing to delete the root.");
    /* Also covers a collection holding a started LUN's image, so the
       depth-infinity walk below cannot descend into one. */
-   if (ws_beeb_path_busy(sdpath))
+   if (beeb_path_busy(sdpath))
       return ws_error(c, 423, "Locked", WS_BUSY_MSG);
    if (f_stat(sdpath, &fno) != FR_OK)
       return ws_error(c, 404, "Not Found", "No such resource.");
@@ -5747,7 +5742,7 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
       return ws_error(c, 403, "Forbidden", "Refusing to touch the root.");
    /* Either end: moving the image away from a started LUN is as bad as
       overwriting the one it is running from. */
-   if (ws_beeb_path_busy(src) || ws_beeb_path_busy(dst))
+   if (beeb_path_busy(src) || beeb_path_busy(dst))
       return ws_error(c, 423, "Locked", WS_BUSY_MSG);
    if (f_stat(src, &fno_src) != FR_OK)
       return ws_error(c, 404, "Not Found", "Source does not exist.");

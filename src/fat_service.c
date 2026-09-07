@@ -200,6 +200,17 @@ bool fat_service_file_in_use(const char *host_path)
    return false;
 }
 
+/* The one predicate every host-side writer (WebDAV, MTP) asks before it
+   overwrites, deletes or renames a path: is the Beeb using it by ANY route -
+   a started SCSI LUN image (or a directory holding one) or a file open
+   through this service.  A host write that lands on a running LUN's cluster
+   chain is silent corruption, so the two halves live together here rather
+   than being re-joined at each call site. */
+bool beeb_path_busy(const char *host_path)
+{
+   return filesystemHostPathBusy(host_path) || fat_service_file_in_use(host_path);
+}
+
 static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t data)
 {
    uint32_t base_addr = DISC_RAM_BASE ;

@@ -1135,8 +1135,7 @@ static int32_t fs_rename_entry_to(const fs_entry_t* entry, uint32_t parent_handl
 
   /* Renaming either end out from under a started LUN has the same effect as
    * deleting it - see the FA_CREATE_ALWAYS note in fs_send_object_info(). */
-  if (filesystemHostPathBusy(entry->path) || filesystemHostPathBusy(dst_path)
-      || fat_service_file_in_use(entry->path) || fat_service_file_in_use(dst_path)) {
+  if (beeb_path_busy(entry->path) || beeb_path_busy(dst_path)) {
     return MTP_RESP_DEVICE_BUSY;
   }
 
@@ -2033,8 +2032,7 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
      * reference-count, and FA_CREATE_ALWAYS frees the cluster chain that
      * BeebSCSI's cluster link map still points at, so its next write would
      * land in whatever now owns those clusters. *BYE stops the LUN. */
-    if (filesystemHostPathBusy(g_write_state.path)
-        || fat_service_file_in_use(g_write_state.path)) {
+    if (beeb_path_busy(g_write_state.path)) {
       fs_release_write_state();
       return MTP_RESP_DEVICE_BUSY;
     }
@@ -2395,7 +2393,7 @@ static int32_t fs_delete_object(tud_mtp_cb_data_t* cb_data) {
   /* Covers the recursive case too: filesystemHostPathBusy() reports a
    * directory that holds a started LUN's image as busy, so fs_delete_tree()
    * cannot walk into one. */
-  if (filesystemHostPathBusy(entry.path) || fat_service_file_in_use(entry.path)) {
+  if (beeb_path_busy(entry.path)) {
     return MTP_RESP_DEVICE_BUSY;
   }
 

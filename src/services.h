@@ -147,4 +147,9 @@ void fat_service_init(void);
    filesystemHostPathBusy() for the SCSI LUN images. */
 bool fat_service_file_in_use(const char *host_path);
 
+/* True if the Beeb has host_path in use by any route: a started SCSI LUN
+   image (filesystemHostPathBusy) or a file open through the FAT service
+   (fat_service_file_in_use).  Host-side writers ask this, not the halves. */
+bool beeb_path_busy(const char *host_path);
+
 #endif
