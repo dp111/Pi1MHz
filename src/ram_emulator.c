@@ -110,13 +110,27 @@ static bool jim_init_loaded;
 
 void rampage_emulator_init( uint8_t instance , uint8_t address)
 {
-   // Initialise JIM RAM
-   uint32_t temp = mem_info(1); // get size of ram
-   temp = temp - (uint32_t)&_end; // remove program
-   temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
-   temp = temp & 0xFF000000; // round down to 16Mbyte boundary
-   Pi1MHz->JIM_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
-   Pi1MHz->JIM_ram = (uint8_t *) malloc(((size_t)Pi1MHz->JIM_ram_size<<24)); // malloc up to 480Mbytes
+   // Size and allocate JIM RAM ONCE.  init_emulator re-runs this on every
+   // BBC reset, and a second malloc of the whole region fails because the
+   // first still holds it - which read as "No RAM" after every BREAK and
+   // left rampage, helpers and M5000 unregistered until the Pi rebooted.
+   // The verdict lives in statics and is republished into the shared struct
+   // each pass.
+   static uint8_t *jim_ram;
+   static uint8_t  jim_ram_size;
+   static bool     jim_sized;
+   if (!jim_sized)
+   {
+      jim_sized = true;
+      uint32_t temp = mem_info(1); // get size of ram
+      temp = temp - (uint32_t)&_end; // remove program
+      temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
+      temp = temp & 0xFF000000; // round down to 16Mbyte boundary
+      jim_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
+      jim_ram = (uint8_t *) malloc(((size_t)jim_ram_size<<24)); // malloc up to 480Mbytes
+   }
+   Pi1MHz->JIM_ram_size = jim_ram_size;
+   Pi1MHz->JIM_ram = jim_ram;
 
    if (!Pi1MHz->JIM_ram || (Pi1MHz->JIM_ram_size < 2) )
    {
