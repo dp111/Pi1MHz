@@ -459,6 +459,11 @@ static void Pi1MHzBus_write_Status(unsigned int gpio)
    Pi1MHz_MemoryWrite_FIQ(addr, data); // enable read back
 }
 
+static void Pi1MHzBus_read_Status(unsigned int gpio)
+{
+   // Placeholder for future expansion
+}
+
 // cppcheck-suppress unusedFunction
 void IRQHandler_main(void) {
    _data_memory_barrier();
@@ -621,6 +626,7 @@ static void init_emulator(void) {
    // Register Status read back
    Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL  , Pi1MHzBus_addr_Status );
    Pi1MHz_Register_Memory(WRITE_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_write_Status );
+   Pi1MHz_Register_Memory( READ_FRED, Pi1MHZ_FX_CONTROL+1, Pi1MHzBus_read_Status );
 
    /* BeebAudio_Off routes the shared audio pin once here, so whichever PWM
       audio emulator (M5000/BeebSID) runs doesn't have to read it itself. */
