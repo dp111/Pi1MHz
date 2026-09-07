@@ -2078,10 +2078,6 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
     return MTP_RESP_GENERAL_ERROR;
   }
 
-  if (g_write_state.is_dir) {
-    return 0;
-  }
-
   if (g_write_state.is_kernel_now) {
     if (cb_data->phase == MTP_PHASE_COMMAND) {
       if (g_write_state.size_known) {
