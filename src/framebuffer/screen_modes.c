@@ -13,6 +13,16 @@
 
 unsigned char* fb = NULL;
 
+/* Last-resort framebuffer.  The VDU code keeps running whatever the GPU says,
+   and set_pixel is far too hot to carry a NULL test - so if a buffer cannot be
+   obtained at all, fb points here and the mode is shrunk to match, instead of
+   being left NULL with every write going through address 0 (the vectors, the
+   VPU-shared low RAM at 0x100 and the kernel image itself).  Sized for the
+   worst case, 32bpp, so it is valid whatever log2bpp the mode uses. */
+#define FB_LAST_RESORT_W  64
+#define FB_LAST_RESORT_H  32
+static unsigned char fb_last_resort[FB_LAST_RESORT_W * FB_LAST_RESORT_H * 4];
+
 // Maximum number of logical colours
 #define NUM_COLOURS 256
 
@@ -868,8 +878,26 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
       outside the picture - proven by filling the guard with the background
       instead of a copy of row 0, which changed the output by not one level. */
    uint32_t temp = screen_allocate_buffer((uint32_t)((uint32_t)screen->pitch * (uint32_t)screen->height) , &handle);
-   fb = (unsigned char *) temp;
-   screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
+   if (temp == 0) {
+      /* change_mode() has already committed `screen` to the new mode, so we
+         cannot refuse it here - the mode and the buffer would then disagree
+         and every write would run off the end.  Shrink the mode to something
+         that always fits and keep the two consistent instead. */
+      screen->width  = FB_LAST_RESORT_W;
+      screen->height = FB_LAST_RESORT_H;
+      screen->pitch  = (screen->width << (uint32_t) screen->log2bpp) >> 3;
+      temp = screen_allocate_buffer((uint32_t)((uint32_t)screen->pitch * (uint32_t)screen->height), &handle);
+   }
+   if (temp == 0) {
+      /* The GPU has nothing at all - the machine has bigger problems, but the
+         1MHz bus service must keep running, so give the VDU code a real buffer
+         to scribble in and leave the plane off rather than corrupt low memory. */
+      fb = fb_last_resort;
+      handle = 0;
+   } else {
+      fb = (unsigned char *) temp;
+      screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
+   }
 
     // Initialize colour table and palette
     screen->font = font;
@@ -879,7 +907,8 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
     screen->clear(screen, NULL, 0);
 
 
-    screen_plane_enable(SCREEN_PLANE, true);
+    if (temp != 0)
+       screen_plane_enable(SCREEN_PLANE, true);
 
 }
 

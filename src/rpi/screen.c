@@ -453,6 +453,9 @@ uint32_t screen_allocate_buffer(uint32_t buffer_size, uint32_t *handle) {
     RPI_PropertyAddTwoWords(buffer_size, 4096);
     RPI_PropertyAdd((1 << 6) + (1 << 5) + (1 << 4) + (1 << 2)); // FLAGS
     RPI_PropertyProcess(true);
+    /* One contract for both failure paths: a 0 return always leaves *handle
+       zero, so a caller cannot release a stale handle it never owned. */
+    *handle = 0;
     if ((mp = RPI_PropertyGet(TAG_ALLOCATE_MEMORY))) {
         *handle = mp->data.buffer_32[0];
         RPI_PropertyStart(TAG_LOCK_MEMORY, 1);

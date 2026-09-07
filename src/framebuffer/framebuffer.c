@@ -1264,7 +1264,15 @@ static void vdu23_22(const uint8_t *buf) {
    if (n_colours == 0) {
       n_colours = 256;
    }
-   if (x_pixels < 8 || y_pixels < 8) {
+   /* Upper bound as well as lower.  x/y arrive as 16-bit values, so without
+      this a VDU 23,22,255,255,255,255,0,0,0,0 asks for 65535x65535 - at
+      32bpp that is pitch*height = 4.29e9, which overflows the uint32_t the
+      allocation is sized with and can never be satisfied anyway.  Cap at
+      4096 in each axis: comfortably above any real display, and it keeps
+      pitch*height inside 64 MB so the arithmetic downstream stays exact.
+      Anything the GPU still cannot satisfy is handled by the fallback in
+      default_init_screen. */
+   if (x_pixels < 8 || y_pixels < 8 || x_pixels > 4096 || y_pixels > 4096) {
       return;
    }
 
