@@ -47,8 +47,9 @@ typedef struct {
    uint32_t             data_start;      /* first DEFLATE byte in source   */
    uint32_t             produced;        /* decompressed bytes emitted     */
    uint32_t             expected_length; /* from the container, 0 if unknown */
-   uint32_t             expected_crc;
+   uint32_t             expected_crc;    /* valid when has_crc */
    uint32_t             running_crc;
+   bool                 has_crc;         /* the container supplied a CRC */
    uef_format_t         format;
    bool                 finished;
    bool                 failed;

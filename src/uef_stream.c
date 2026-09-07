@@ -110,6 +110,7 @@ static bool zip_data_start(uef_stream_t *stream, uint32_t *start,
       return false;
    stream->expected_crc = get_le32(header + 14u);
    stream->expected_length = get_le32(header + 22u);
+   stream->has_crc = true;
    name_length = get_le16(header + 26u);
    extra_length = get_le16(header + 28u);
    data = 30u + (uint32_t)name_length + (uint32_t)extra_length;
@@ -155,6 +156,7 @@ uef_format_t uef_stream_open(uef_stream_t *stream, uef_source_fn source,
       stream->data_start = 0u;
       stream->source_position = 0u;
       stream->expected_length = length;
+      stream->running_crc = ~0u;
       return UEF_FORMAT_RAW;
    }
 
@@ -167,6 +169,7 @@ uef_format_t uef_stream_open(uef_stream_t *stream, uef_source_fn source,
       if (source_at(stream, length - 8u, trailer, 8u) == 8u) {
          stream->expected_crc = get_le32(trailer);
          stream->expected_length = get_le32(trailer + 4u);
+         stream->has_crc = true;
       }
       stream->format = UEF_FORMAT_GZIP;
       inflate_restart(stream);
@@ -178,8 +181,10 @@ uef_format_t uef_stream_open(uef_stream_t *stream, uef_source_fn source,
          return UEF_FORMAT_INVALID;
       stream->format = stored ? UEF_FORMAT_RAW : UEF_FORMAT_ZIP;
       if (stored) {
-         /* Stored entry: the tape is already plain inside the archive. */
+         /* Stored entry: the tape is already plain inside the archive, and
+            the local header's CRC still covers it. */
          stream->source_position = stream->data_start;
+         stream->running_crc = ~0u;
          return UEF_FORMAT_RAW;
       }
       inflate_restart(stream);
@@ -249,8 +254,9 @@ bool uef_stream_verified(const uef_stream_t *stream)
       return false;
    if (stream->expected_length != 0u && stream->produced != stream->expected_length)
       return false;
-   /* A raw tape has no checksum of its own to check against. */
-   if (stream->format == UEF_FORMAT_RAW)
+   /* A bare tape has no checksum of its own to check against; gzip and zip
+      (stored entries included) supply one and it is checked. */
+   if (!stream->has_crc)
       return true;
    return stream->expected_crc == ~stream->running_crc;
 }
