@@ -1680,7 +1680,7 @@ static bool conn_pump(ws_conn_t *c);
 static void upload_discard_temp(ws_conn_t *c);
 static void copy_discard_temp(ws_conn_t *c);
 static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len);
-static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep);
+static void conn_reset_for_next_request(ws_conn_t *c);
 static bool process_request(ws_conn_t *c, int body_at);
 static bool upload_consume(ws_conn_t *c, const uint8_t *data, size_t len);
 /* WebDAV body-consumer + the SD-file fallback used by the GET path. */
@@ -2121,7 +2121,7 @@ static bool conn_pump(ws_conn_t *c)
             the unauth-PUT drain workaround does not run because the
             credentials cached on the previous request are still
             valid). */
-         conn_reset_for_next_request(c, 0u);
+         conn_reset_for_next_request(c);
          return false;
       }
       return conn_close(c, false);
@@ -2196,11 +2196,8 @@ static const char *ws_connection_hdr(const ws_conn_t *c)
    next request starts from a known empty position.  Anything that
    would be cleaned up by conn_close (open files, COPY slot, in-
    flight response buffer) is cleaned up here too, but the TCP pcb
-   is preserved.  pipelined_keep, if non-zero, is the count of
-   already-received body bytes for the NEXT request that we leave
-   at the start of reqhdr; conn_consume will re-enter the header
-   parser and continue from there. */
-static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
+   is preserved. */
+static void conn_reset_for_next_request(ws_conn_t *c)
 {
    if (c == NULL)
       return;
@@ -2261,20 +2258,8 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
    c->fb_row = 0u;
    c->fb_stale = false;
    c->pipelined_bytes_dropped = false;
-   if (pipelined_keep > 0u && pipelined_keep <= c->reqhdr_len) {
-      memmove(c->reqhdr, c->reqhdr + (c->reqhdr_len - pipelined_keep),
-              pipelined_keep);
-      c->reqhdr_len = pipelined_keep;
-      /* pipelined_keep <= reqhdr_len, and reqhdr_len is invariantly
-         <= WS_HEADER_MAX (capped in ws_recv), so this NUL lands at the
-         last valid index at most. cppcheck cannot see the cross-function
-         cap, hence the false positive. */
-      // cppcheck-suppress arrayIndexOutOfBoundsCond
-      c->reqhdr[pipelined_keep] = '\0';
-   } else {
-      c->reqhdr_len = 0u;
-      c->reqhdr[0] = '\0';
-   }
+   c->reqhdr_len = 0u;
+   c->reqhdr[0] = '\0';
    c->state = CONN_RECV_HEADER;
 }
 
