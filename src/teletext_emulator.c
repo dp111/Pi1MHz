@@ -398,8 +398,13 @@ static void teletext_poll(void)
                   memcpy(&ttx_row[i][1], line, TTX_ROW_BYTES);
                }
             }
+            /* The FIQ read path indexes ttx_row[ttx_row_ptr][ttx_col_ptr];
+               rewind both under the mask so a read cannot land between
+               them, as the ttx_status RMWs above do. */
+            unsigned int cpsr_ptrs = _disable_interrupts_cspr();
             ttx_row_ptr = 0u;
             ttx_col_ptr = 0u;
+            _restore_cpsr(cpsr_ptrs);
             ttx_preload_data();
          }
       }
