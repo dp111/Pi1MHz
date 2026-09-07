@@ -411,19 +411,26 @@ bool webserver_sd_space(uint64_t* total, uint64_t* free_bytes)
    most once rather than per query.  A refresh is queued either way, so
    the numbers converge on fresh ones.  False = no figure at all (no
    card): the caller reports an error rather than inventing zeroes. */
+/* One synchronous f_getfree into the cached figures.  True on success (the
+   cache is then valid); false leaves the cache exactly as it was. */
+static bool ws_sd_read_free(void)
+{
+   FATFS *fs = NULL;
+   DWORD nclst = 0u;
+   if (f_getfree("", &nclst, &fs) != FR_OK || fs == NULL)
+      return false;
+   uint64_t cluster_bytes = (uint64_t)fs->csize * 512u;
+   g_ws_sd_total_bytes = (uint64_t)(fs->n_fatent - 2u) * cluster_bytes;
+   g_ws_sd_free_bytes  = (uint64_t)nclst * cluster_bytes;
+   g_ws_sd_free_mb     = (uint32_t)(g_ws_sd_free_bytes / (1024u * 1024u));
+   g_ws_sd_free_valid  = true;
+   return true;
+}
+
 bool webserver_sd_space_now(uint64_t* total, uint64_t* free_bytes)
 {
-   if (!ws_sd_free_want()) {
-      FATFS *fs = NULL;
-      DWORD nclst = 0u;
-      if (f_getfree("", &nclst, &fs) == FR_OK && fs != NULL) {
-         uint64_t cluster_bytes = (uint64_t)fs->csize * 512u;
-         g_ws_sd_total_bytes = (uint64_t)(fs->n_fatent - 2u) * cluster_bytes;
-         g_ws_sd_free_bytes  = (uint64_t)nclst * cluster_bytes;
-         g_ws_sd_free_mb     = (uint32_t)(g_ws_sd_free_bytes / (1024u * 1024u));
-         g_ws_sd_free_valid  = true;
-      }
-   }
+   if (!ws_sd_free_want())
+      (void)ws_sd_read_free();
    *total = g_ws_sd_total_bytes;
    *free_bytes = g_ws_sd_free_bytes;
    return g_ws_sd_free_valid;
@@ -2153,6 +2160,23 @@ static bool ws_install_response(ws_conn_t *c, ws_strbuf_t *r, conn_state_t state
    c->state = state;
    conn_pump(c);
    return true;
+}
+
+/* RFC 9110 10.1.1: a request that arrived with "Expect: 100-continue" gets
+   the interim 100 before its body is read.  Windows Explorer's
+   MiniRedirector sends it on every PUT and waits for it. */
+static void ws_send_100_continue_if_expected(ws_conn_t *c)
+{
+   char expect_hdr[32];
+   if (ws_find_header(c->reqhdr, c->reqhdr_len, "Expect",
+                      expect_hdr, sizeof expect_hdr)
+       && ws_strcasestr(expect_hdr, "100-continue") != NULL
+       && c->pcb != NULL) {
+      static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
+      (void)tcp_write(c->pcb, cont, (u16_t)(sizeof cont - 1u),
+                      TCP_WRITE_FLAG_COPY);
+      (void)tcp_output(c->pcb);
+   }
 }
 
 /* Returns the Connection: header line every response should include.
@@ -4279,21 +4303,34 @@ static int ws_utc_offset_minutes(void)
    return (cfg != NULL) ? (int)cfg->webdav_utc_offset_minutes : 0;
 }
 
+/* Decode a FAT (fdate, ftime) pair into calendar fields.  False when fdate
+   is 0 (no timestamp) or the month is out of range - both formatters below
+   then fall back to the build date. */
+static bool dav_decode_fat_datetime(uint16_t fdate, uint16_t ftime,
+                                    unsigned int *year, unsigned int *month,
+                                    unsigned int *day, unsigned int *hour,
+                                    unsigned int *minute, unsigned int *second)
+{
+   if (fdate == 0u)
+      return false;
+   *year   = ((unsigned int)fdate >> 9)  + 1980u;
+   *month  = ((unsigned int)fdate >> 5)  & 0x0Fu;
+   *day    = (unsigned int)fdate         & 0x1Fu;
+   *hour   = ((unsigned int)ftime >> 11) & 0x1Fu;
+   *minute = ((unsigned int)ftime >> 5)  & 0x3Fu;
+   *second = ((unsigned int)ftime & 0x1Fu) * 2u;
+   return *month >= 1u && *month <= 12u;
+}
+
 static void dav_format_date(char *out, size_t out_sz,
                             uint16_t fdate, uint16_t ftime)
 {
    static const char *months = "JanFebMarAprMayJunJulAugSepOctNovDec";
    static const char *days   = "SunMonTueWedThuFriSat";
+   unsigned int year, month, day, hour, minute, second;
 
-   if (fdate != 0u) {
-      unsigned int year   = ((unsigned int)fdate >> 9)  + 1980u;
-      unsigned int month  = ((unsigned int)fdate >> 5)  & 0x0Fu;
-      unsigned int day    = (unsigned int)fdate         & 0x1Fu;
-      unsigned int hour   = ((unsigned int)ftime >> 11) & 0x1Fu;
-      unsigned int minute = ((unsigned int)ftime >> 5)  & 0x3Fu;
-      unsigned int second = ((unsigned int)ftime & 0x1Fu) * 2u;
-
-      if (month >= 1u && month <= 12u) {
+   if (dav_decode_fat_datetime(fdate, ftime, &year, &month, &day, &hour, &minute, &second)) {
+      {
          unsigned int dow = ws_day_of_week(year, month, day);
          snprintf(out, out_sz,
                   "%.3s, %02u %.3s %04u %02u:%02u:%02u GMT",
@@ -4309,9 +4346,10 @@ static void dav_format_date(char *out, size_t out_sz,
       /* Build-date fallback: the compiler's __DATE__ is decoded at compile
          time via the WS_BUILD_* macros above; __TIME__ is "HH:MM:SS". */
       const char  *bt = __TIME__;
-      unsigned int day  = WS_BUILD_DAY;
-      unsigned int mi   = WS_BUILD_MONTH - 1u;   /* 0-based index into months[] */
-      unsigned int year = WS_BUILD_YEAR;
+      unsigned int mi;
+      day  = WS_BUILD_DAY;
+      mi   = WS_BUILD_MONTH - 1u;   /* 0-based index into months[] */
+      year = WS_BUILD_YEAR;
       unsigned int dow  = ws_day_of_week(year, mi + 1u, day);
 
       snprintf(out, out_sz,
@@ -4328,15 +4366,9 @@ static void dav_format_date(char *out, size_t out_sz,
 static void dav_format_creationdate(char *out, size_t out_sz,
                                     uint16_t fdate, uint16_t ftime)
 {
-   if (fdate != 0u) {
-      unsigned int year   = ((unsigned int)fdate >> 9)  + 1980u;
-      unsigned int month  = ((unsigned int)fdate >> 5)  & 0x0Fu;
-      unsigned int day    = (unsigned int)fdate         & 0x1Fu;
-      unsigned int hour   = ((unsigned int)ftime >> 11) & 0x1Fu;
-      unsigned int minute = ((unsigned int)ftime >> 5)  & 0x3Fu;
-      unsigned int second = ((unsigned int)ftime & 0x1Fu) * 2u;
-
-      if (month >= 1u && month <= 12u) {
+   unsigned int year, month, day, hour, minute, second;
+   if (dav_decode_fat_datetime(fdate, ftime, &year, &month, &day, &hour, &minute, &second)) {
+      {
          snprintf(out, out_sz, "%04u-%02u-%02uT%02u:%02u:%02uZ",
                   year, month, day, hour, minute, second);
          return;
@@ -4348,9 +4380,9 @@ static void dav_format_creationdate(char *out, size_t out_sz,
       /* Build-date fallback: __DATE__/__TIME__ decoded at compile time via
          the shared WS_BUILD_* macros above. */
       const char  *bt = __TIME__;
-      unsigned int day   = WS_BUILD_DAY;
-      unsigned int month = WS_BUILD_MONTH;
-      unsigned int year  = WS_BUILD_YEAR;
+      day   = WS_BUILD_DAY;
+      month = WS_BUILD_MONTH;
+      year  = WS_BUILD_YEAR;
 
       snprintf(out, out_sz, "%04u-%02u-%02uT%c%c:%c%c:%c%cZ",
                year, month, day,
@@ -5146,18 +5178,7 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
       c->dav_put_status     = 204;
       c->dav_put_status_text= "No Content";
       c->state = CONN_RECV_DAV_PUT;
-      {
-         char expect_hdr[32];
-         if (ws_find_header(c->reqhdr, c->reqhdr_len, "Expect",
-                            expect_hdr, sizeof expect_hdr)
-             && ws_strcasestr(expect_hdr, "100-continue") != NULL
-             && c->pcb != NULL) {
-            static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
-            (void)tcp_write(c->pcb, cont, (u16_t)(sizeof cont - 1u),
-                            TCP_WRITE_FLAG_COPY);
-            (void)tcp_output(c->pcb);
-         }
-      }
+      ws_send_100_continue_if_expected(c);
       if ((size_t)body_at < c->reqhdr_len) {
          size_t already = c->reqhdr_len - (size_t)body_at;
          return dav_put_consume(c, (const uint8_t *)c->reqhdr + body_at,
@@ -5263,19 +5284,7 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
       uses c->out and we'd lose it.  tcp_output flushes the small
       25-byte write immediately so Windows starts the body before the
       next ws_recv callback. */
-   {
-      char expect_hdr[32];
-      if (ws_find_header(c->reqhdr, c->reqhdr_len, "Expect",
-                         expect_hdr, sizeof expect_hdr)
-          && ws_strcasestr(expect_hdr, "100-continue") != NULL) {
-         static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
-         if (c->pcb != NULL) {
-            (void)tcp_write(c->pcb, cont, (u16_t)(sizeof cont - 1u),
-                            TCP_WRITE_FLAG_COPY);
-            (void)tcp_output(c->pcb);
-         }
-      }
-   }
+   ws_send_100_continue_if_expected(c);
 
    /* The HTTP-header parse may have buffered some of the body already. */
    if ((size_t)body_at < c->reqhdr_len) {
@@ -6760,17 +6769,8 @@ static void webserver_refresh_sd_free(void)
       g_ws_sd_free_age_us = now;
       if (fs->fs_type != FS_FAT16 && fs->fs_type != FS_FAT32) {
          /* FAT12: FAT fits in a few sectors, the walk is trivial */
-         DWORD nclst = 0u;
-         FATFS *vfs = NULL;
-         if (f_getfree("", &nclst, &vfs) == FR_OK && vfs != NULL) {
-            uint64_t cluster_bytes = (uint64_t)vfs->csize * 512u;
-            g_ws_sd_total_bytes = (uint64_t)(vfs->n_fatent - 2u) * cluster_bytes;
-            g_ws_sd_free_bytes  = (uint64_t)nclst * cluster_bytes;
-            g_ws_sd_free_mb     = (uint32_t)(g_ws_sd_free_bytes / (1024u * 1024u));
-            g_ws_sd_free_valid  = true;
-         } else {
+         if (!ws_sd_read_free())
             g_ws_sd_free_valid = false;
-         }
          return;
       }
       g_sdscan.running   = true;

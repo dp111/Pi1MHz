@@ -766,12 +766,7 @@ FATFS *filesystemGetFsObject(void)
    (f_stat) - never callable from the FIQ poke path. */
 bool filesystemVFSDirPresent(uint8_t dir)
 {
-   FILINFO fno;
-   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/video.pvf", dir);
-   if (f_stat(fileName, &fno) == FR_OK)
-      return true;
-   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/scsi0.dat", dir);
-   return f_stat(fileName, &fno) == FR_OK;
+   return filesystemVFSDirType(dir) != 0u;
 }
 
 bool filesystemCheckLunImage(uint8_t lunNumber)
