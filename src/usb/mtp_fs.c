@@ -1019,6 +1019,28 @@ static uint32_t fs_find_handle_by_parent_name(uint32_t parent, const char* name)
   return 0;
 }
 
+/* Handles are a hash of the path, so a rename gives the object a new one.
+   The host re-reads the handle it just renamed BEFORE it acts on the
+   OBJECT_REMOVED/ADDED events, so a few recent renames are remembered as
+   old -> new and consulted only when a lookup misses. */
+#define FS_RENAME_ALIASES 4u
+static struct { uint32_t old_handle, new_handle; } fs_rename_alias[FS_RENAME_ALIASES];
+static uint32_t fs_rename_alias_next;
+
+static void fs_rename_alias_add(uint32_t old_handle, uint32_t new_handle) {
+  fs_rename_alias[fs_rename_alias_next] = (typeof(fs_rename_alias[0])){ old_handle, new_handle };
+  fs_rename_alias_next = (fs_rename_alias_next + 1u) % FS_RENAME_ALIASES;
+}
+
+static uint32_t fs_rename_alias_lookup(uint32_t handle) {
+  for (uint32_t i = 0; i < FS_RENAME_ALIASES; i++) {
+    if (fs_rename_alias[i].old_handle == handle && handle != 0u) {
+      return fs_rename_alias[i].new_handle;
+    }
+  }
+  return 0u;
+}
+
 static bool fs_get_entry_by_handle(uint32_t handle, fs_entry_t* out_entry) {
   if (handle == 0 || out_entry == NULL) {
     return false;
@@ -1036,11 +1058,24 @@ static bool fs_get_entry_by_handle(uint32_t handle, fs_entry_t* out_entry) {
               sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
 
   if (cache_entry == NULL) {
-    return false;
+    /* A handle that was just renamed away: answer for the renamed object. */
+    uint32_t alias = fs_rename_alias_lookup(handle);
+    if (alias == 0u || alias == handle) {
+      return false;
+    }
+    const fs_cache_entry_t akey = { .handle = alias };
+    cache_entry = bsearch(&akey, g_fs_cache.entries, g_fs_cache.count,
+                          sizeof(g_fs_cache.entries[0]), fs_cache_cmp_handle);
+    if (cache_entry == NULL) {
+      return false;
+    }
   }
 
   memset(out_entry, 0, sizeof(*out_entry));
-  out_entry->handle = cache_entry->handle;
+  /* Answer under the handle the host asked with: after a rename that is the
+     old one, and reporting the new one (and a PersistentUID built from it)
+     reads to the host as a different object. */
+  out_entry->handle = handle;
   out_entry->parent = cache_entry->parent;
   out_entry->is_dir = cache_entry->is_dir;
   out_entry->size   = cache_entry->size;
@@ -1147,6 +1182,14 @@ static int32_t fs_rename_entry_to(const fs_entry_t* entry, uint32_t parent_handl
     fs_cache_live_remove(entry->path);
     fs_cache_live_upsert(dst_path);
     fs_cache_invalidate();
+    /* Handles are a hash of the path, so the renamed object has a NEW handle
+       and the host's read-back of the one it renamed would fail (Explorer
+       reported the rename aborted although the card had done it).  Tell the
+       host what happened the way an add does: the old object is gone, a new
+       one exists. */
+    fs_rename_alias_add(entry->handle, fs_handle_from_path(dst_path));
+    fs_send_object_event(MTP_EVENT_OBJECT_REMOVED, entry->handle);
+    fs_send_object_event(MTP_EVENT_OBJECT_ADDED, fs_handle_from_path(dst_path));
     return MTP_RESP_OK;
   }
 
