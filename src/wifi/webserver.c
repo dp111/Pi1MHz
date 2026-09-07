@@ -4577,9 +4577,22 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
          PROPFIND will hit this cache and skip its own f_stat. */
       ws_propfind_cache_begin();
       if (f_opendir(&dir, sdpath) == FR_OK) {
-         while (f_readdir(&dir, &chld) == FR_OK && chld.fname[0] != '\0') {
+         FRESULT      rfr;
+         unsigned int nchild = 0u;
+         while ((rfr = f_readdir(&dir, &chld)) == FR_OK && chld.fname[0] != '\0') {
             ws_strbuf_t url;
             bool        child_is_dir = (chld.fattrib & AM_DIR) != 0u;
+
+            /* Same hard cap as the HTML listing.  This walk runs to
+               completion inside one lwIP callback, and a partial
+               multistatus reads as a complete listing to the client, so a
+               directory past the cap is refused rather than listed in part. */
+            if (++nchild > WS_LISTING_HARD_CAP) {
+               f_closedir(&dir);
+               sb_free(&b);
+               return ws_error(c, 503, "Service Unavailable",
+                               "Too many entries in that folder to list.");
+            }
 
             sb_init(&url);
             if (!is_root) sb_urlpath(&url, sdpath);
@@ -4620,6 +4633,13 @@ static bool route_dav_propfind(ws_conn_t *c, const char *rawpath, int body_at)
             }
          }
          f_closedir(&dir);
+         if (rfr != FR_OK) {
+            /* A card error mid-walk is not the end of the directory: a 207
+               here would be taken as the authoritative listing. */
+            sb_free(&b);
+            return ws_error(c, 503, "Service Unavailable",
+                            "The SD card could not be read.");
+         }
       }
       ws_propfind_cache_commit();
    }
