@@ -5,12 +5,12 @@
 
 /* Found in the *start.S file, implemented in assembler */
 
-#define _enable_interrupts() {__asm volatile ("CPSIE if");}
+#define _enable_interrupts() {__asm volatile ("CPSIE if" ::: "memory");}
 
-#define _disable_interrupts() {__asm volatile ("CPSID if");}
+#define _disable_interrupts() {__asm volatile ("CPSID if" ::: "memory");}
 
 #if (__ARM_ARCH >= 7 )
-    #define _data_memory_barrier() {asm volatile ("dmb");}
+    #define _data_memory_barrier() {asm volatile ("dmb" ::: "memory");}
 #else
     extern void _data_memory_barrier(void);
 #endif
