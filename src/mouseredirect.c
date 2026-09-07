@@ -398,7 +398,7 @@ void mouse_redirect_mouseoff(void)
 
 static void mouse_redirect_position_complete(unsigned int gpio)
 {
-    Pi1MHz_MemoryWrite(GET_ADDR(gpio), GET_DATA(gpio));
+    Pi1MHz_MemoryWrite_FIQ(GET_ADDR(gpio), GET_DATA(gpio));
     moved = true;
 }
 

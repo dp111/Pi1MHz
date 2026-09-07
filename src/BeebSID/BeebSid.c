@@ -23,7 +23,7 @@ static void beebsid_write(unsigned int gpio)
     if (reg <= 24u) {
         beebsid_sid_write(reg, data);
     }
-    Pi1MHz_MemoryWrite(addr, data);
+    Pi1MHz_MemoryWrite_FIQ(addr, data);     /* FIQ context: already masked */
 }
 
 /* .rate is corrected at init: 48000 when the sound goes to HDMI (a

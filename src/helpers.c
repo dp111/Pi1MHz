@@ -128,14 +128,14 @@ static void helpers_bank_select(unsigned int gpio)
    if (data == 0xFF)
     {
         // put RTS in instruction stream
-        Pi1MHz_MemoryWrite(addr+4, 0x60);
+        Pi1MHz_MemoryWrite_FIQ(addr+4, 0x60);
         // old page data
         ram_emulator_page_restore();
     }
     else
     {
         // put JMP instruction stream
-        Pi1MHz_MemoryWrite(addr+4, 0x4c);
+        Pi1MHz_MemoryWrite_FIQ(addr+4, 0x4c);
         // select page
         if ((data )>= sizeof(helper_ram)>>8)
             data = 0;
@@ -145,7 +145,7 @@ static void helpers_bank_select(unsigned int gpio)
         {
             helpers_screen_setup(( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000],1024);
             //signal to beeb the help screen is setup
-            Pi1MHz_MemoryWrite(Pi1MHz_MEM_PAGE+1, 0x03);
+            Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);
         }
     }
 }
