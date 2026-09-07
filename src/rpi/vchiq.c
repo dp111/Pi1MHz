@@ -23,8 +23,9 @@
     BULK_TX_DONE {actual}. Bulk receive is not implemented.
 
     Everything shared with the VideoCore lives in the VC heap, which the
-    ARM maps effectively uncached (cache.c maps arm_mem..PERIPHERAL_BASE
-    with 0x11C06), so there is no cache maintenance anywhere here.
+    ARM maps non-cacheable (cache.c maps arm_mem..PERIPHERAL_BASE with
+    0x11C02, Normal outer and inner non-cacheable), so there is no cache
+    maintenance anywhere here.
 */
 
 #include <stdint.h>

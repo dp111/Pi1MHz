@@ -374,12 +374,33 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   }
   for (; base < (PERIPHERAL_BASE>>20); base++)
   {
-     PageTable[base] = (base << 20) | 0x11C06 ;
+     /* The VideoCore's RAM. Framebuffers, the YUV/H264 output buffers and
+        every VCHIQ shared buffer are written through this mapping, so it
+        has to be non-cacheable - vchiq.c/.h both name this descriptor as
+        the reason no cache maintenance exists in that driver.
+        0x11C02 = TEX=001, C=0, B=0: Normal, outer and inner non-cacheable,
+        i.e. the "For non-cacheable RAM" encoding noted above.
+        This was 0x11C06 (B=1) until 2026-09-07. C=0/B=1 is the ARMv5 way
+        to ask for "non-cacheable but bufferable", but from ARMv6 onwards,
+        with TEX != 0, that pair is a RESERVED encoding - so the memory
+        type here was architecturally undefined and free to differ between
+        the ARM1176 and the A53. Nothing is lost by fixing it: Normal
+        non-cacheable already lets the write buffer merge, which is all the
+        B bit was after. */
+     PageTable[base] = (base << 20) | 0x11C02 ;
   }
 
   for (; base < PERIPHERAL_END>>20; base++)
   {
-    // shared device, never execute store ordered
+     /* The peripherals. 0x10C12 = TEX=000, C=0, B=0 (Strongly-ordered)
+        with XN=1, never execute, and AP=11 so user mode can reach them.
+        Strongly-ordered, NOT Device - Device would be B=1, i.e. 0x10C16.
+        Strongly-ordered forbids reordering, merging and speculative
+        access, which is what MMIO wants; a little slower than Device and
+        the safe side to be on, so don't "correct" it to Device.
+        The S bit is set but is ignored: Strongly-ordered is always
+        shareable. (The old comment here said "shared device"; the
+        encoding has always been Strongly-ordered.) */
      PageTable[base] = (base << 20) | 0x10C12;
   }
   // now create an alias of the memory. Note it is NOT uncached: 0x0C0E is

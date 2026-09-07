@@ -18,9 +18,10 @@
         and the codec reads and writes that memory itself.
       - all shared memory (slot memory, fragment pool) lives in the
         VideoCore heap, allocated with the mailbox ALLOCATE_MEMORY tag.
-        The ARM maps that region effectively uncached (see cache.c: the
-        arm_mem..PERIPHERAL_BASE range gets descriptor 0x11C06), so no ARM
-        cache maintenance is needed for any buffer handed to VCHIQ.
+        The ARM maps that region non-cacheable (see cache.c: the
+        arm_mem..PERIPHERAL_BASE range gets descriptor 0x11C02, Normal
+        outer and inner non-cacheable), so no ARM cache maintenance is
+        needed for any buffer handed to VCHIQ.
 
     Wire format (slot layout, message ids) matches the Linux vchiq driver
     (drivers/staging/vc04_services, GPL-2.0 OR BSD-3-Clause) protocol
