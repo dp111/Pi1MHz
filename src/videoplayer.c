@@ -1073,6 +1073,18 @@ static bool pvf_open_file(void)
         f_close(&vp.file);
         return false;
     }
+
+    /* This side's picture alignment (scsi0.cfg LDVideoXoffset/LDVideoYoffset,
+       Beeb pixels and rows).  Absent means 2,2: two pixels right and two rows
+       down, where the owner's discs register with the Beeb's graphics.  Read
+       here so a jukebox to another side re-applies that side's values. */
+    {
+        int ax = 2, ay = 2;
+        uint8_t dir = (uint8_t)filesystemGetLunDirectoryVFS();
+        (void)filesystemReadVFSCfgIntDir(dir, LDVIDEOXOFFSET, &ax);
+        (void)filesystemReadVFSCfgIntDir(dir, LDVIDEOYOFFSET, &ay);
+        screen_set_video_align(ax, ay);
+    }
     return true;
 }
 

@@ -93,14 +93,18 @@ static const parserkey scsiattributes[] = {
       At 4 the parser truncated it to "1=98", and filesystemReadLunUserCode
       read string[4] off the end of the 4-byte allocation. */
    { "LDUserCode"      , 0 ,  5 , STRING },
+   /* Picture alignment of the Domesday video on the Beeb's raster, in Beeb
+      pixels: X in MODE 0 pixels (1/640 of the line, positive = right),
+      Y in Beeb rows (1/256 of the screen, positive = down).  Absent = 2,2. */
    { "LDVideoXoffset"  , -768 , 768 , INTEGER },
+   { "LDVideoYoffset"  , -288 , 288 , INTEGER },
    { NULL , 0 ,0, 0} // end of list
 };
 
 #define NUM_KEYS (sizeof(scsiattributes)/sizeof(parserkey))
 
 /* The public enum (filesystem.h) indexes this table: pin the ordering */
-_Static_assert(LDVIDEOXOFFSET + 2 == NUM_KEYS,
+_Static_assert(LDVIDEOYOFFSET + 2 == NUM_KEYS,
                "parserkeyvalueenum out of step with scsiattributes[]");
 
 /* One-side cache of a scsi0.cfg's text, so the menu's ?T and ?Y for the
@@ -1059,6 +1063,32 @@ bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries)
       break;
    }
    return false;
+}
+
+/* An INTEGER key (LDVideoXoffset / LDVideoYoffset) for a side, by the same
+   two routes as the text reader below: the mounted side's parsed cache, or
+   one parse of that directory's scsi0.cfg.  The video player asks at every
+   open and media change, so this is rare and a fresh parse is fine. */
+bool filesystemReadVFSCfgIntDir(uint8_t dir, enum parserkeyvalueenum key, int *out)
+{
+   if (dir == (uint8_t)filesystemState.lunDirectoryVFS) {
+      const parserkeyvalue *v = &filesystemState.keyvalues[8][key];
+      if (v->v.integer && v->length) {
+         *out = *v->v.integer;
+         return true;
+      }
+   }
+   bool found = false;
+   parserkeyvalue values[NUM_KEYS] = {0};
+   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/scsi0.cfg", dir);
+   if (parse_readfile(fileName, 0, scsiattributes, values)) {
+      if (values[key].v.integer && values[key].length) {
+         *out = *values[key].v.integer;
+         found = true;
+      }
+   }
+   parse_releasekeyvalues(values, NUM_KEYS);
+   return found;
 }
 
 /* Read a single text Key= value ("Title" / "Description") for the disc

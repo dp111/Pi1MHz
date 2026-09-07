@@ -89,13 +89,18 @@ enum parserkeyvalueenum {
     MODEPAGE37,
     MODEPAGE38,
     LDUSERCODE,
-    LDVIDEOXOFFSET
+    LDVIDEOXOFFSET,
+    LDVIDEOYOFFSET
 };
 
 /* Read one value (TITLE or DESCRIPTION) of the mounted VFS disc from
    its already-parsed attributes into out (NUL-terminated, maxLen incl
    NUL). False if not mounted / key absent. For the disc menu. */
 bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key, char *out, uint32_t maxLen);
+/* An INTEGER key from a side's scsi0.cfg (mounted side: the parsed cache;
+   any other: a parse of that directory's file).  *out is left alone when the
+   key is absent, so pass the default in. */
+bool filesystemReadVFSCfgIntDir(uint8_t dir, enum parserkeyvalueenum key, int *out);
 uint8_t filesystemVFSDirType(uint8_t dir);   /* 2 = scsi0.dat, 1 = video.pvf, 0 = none */
 
 /* True when the current /BeebVFS<n> holds a video.pvf - the volume-present

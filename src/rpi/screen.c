@@ -928,6 +928,52 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
    chroma phase factors are computed against doubled scaled dimensions -
    horizontally because the chroma plane is half-width, vertically
    because it is also half-height. */
+/* Per-side alignment of the video on the Beeb's raster (scsi0.cfg
+   LDVideoXoffset/LDVideoYoffset, read by the player at every open).  Kept in
+   Beeb units and converted with the live scale, so the same numbers mean
+   the same thing on every display mode: one MODE 0 pixel is one grid
+   sample, rgb_scale/2 display pixels wide (times the grid's 12/13 and the
+   Display_par correction); one Beeb row is two grid lines, rgb_scale
+   display pixels tall.  The plane's unaligned position is remembered so a
+   change re-derives from it rather than accumulating. */
+static int      video_align_x = 0;
+static int      video_align_y = 0;
+static uint32_t video_base_pos;
+static uint32_t video_planeno = MAX_PLANES;   /* none yet */
+
+static uint32_t video_pos_aligned(uint32_t base_pos, uint32_t plane_w, uint32_t plane_h)
+{
+    uint32_t h_display = ( RPI_hvs->ctrl1 >> 12 ) & 0xfff;
+    uint32_t v_display = ( RPI_hvs->ctrl1       ) & 0xfff;
+    float fx = (float)video_align_x * (rgb_scale / 2.0f) * grid_par();
+    float fy = (float)video_align_y * rgb_scale;
+    int dx = (int)(fx + (fx >= 0.0f ? 0.5f : -0.5f));
+    int dy = (int)(fy + (fy >= 0.0f ? 0.5f : -0.5f));
+    int x = (int)(base_pos & 0xfffu) + dx;
+    int y = (int)((base_pos >> 12) & 0xfffu) + dy;
+    /* Never let the plane leave the display: the pos fields are 12-bit and
+       an off-screen value is how a plane once parked itself at x=2061. */
+    int xmax = (int)h_display - (int)plane_w;
+    int ymax = (int)v_display - (int)plane_h;
+    if (xmax < 0) xmax = 0;
+    if (ymax < 0) ymax = 0;
+    if (x < 0) x = 0; else if (x > xmax) x = xmax;
+    if (y < 0) y = 0; else if (y > ymax) y = ymax;
+    return (base_pos & 0xFF000000u) | (((uint32_t)y & 0xfffu) << 12) | ((uint32_t)x & 0xfffu);
+}
+
+void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows )
+{
+    video_align_x = x_beeb_pixels;
+    video_align_y = y_beeb_rows;
+    if (video_planeno < MAX_PLANES && plane_valid[video_planeno]) {
+        uint32_t w = plane_shadow[video_planeno].scale & 0xfffu;
+        uint32_t h = (plane_shadow[video_planeno].scale >> 16) & 0xfffu;
+        plane_shadow[video_planeno].pos = video_pos_aligned(video_base_pos, w, h);
+        plane_mark(video_planeno, PL_DIRTY_POS);
+    }
+}
+
 void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
     /* Before anything touches the slot: a deferred write still pending from
@@ -992,6 +1038,9 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         // invalid list, 32 words, YCrCb order, YUV420 3-plane
         uint32_t ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0x8;
         uint32_t ssz  = ((nh) << 16) + nw;
+        video_planeno  = planeno;
+        video_base_pos = startpos;
+        startpos = video_pos_aligned(startpos, scaled_width, nsh);
         yuv->ctrl = ctrl;
         yuv->pos = startpos;
         yuv->scale = (nsh << 16) + scaled_width;
