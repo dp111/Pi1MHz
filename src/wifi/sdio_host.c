@@ -3,7 +3,7 @@
 #include "../rpi/arm-start.h"
 #include "../rpi/base.h"
 #include "../rpi/block.h"
-#include "../rpi/emmc_regs.h"
+#include "../rpi/sd_commands.h"
 #include "../rpi/gpio.h"
 #include "../rpi/info.h"
 #include "../config.h"

@@ -1,10 +1,11 @@
-/* emmc_regs.h - bit definitions of the BCM2835 Arasan/EMMC (SDHCI) host
-   controller, shared by the SD card driver (rpi/sdcard.c) and the WiFi SDIO
-   host (wifi/sdio_host.c).  These are the controller's CMDTM, INTERRUPT and
-   response-type encodings, plus the R1 card-status bits - one copy, so the
-   two drivers cannot drift apart on a load-bearing mask. */
-#ifndef EMMC_REGS_H
-#define EMMC_REGS_H
+/* sd_commands.h - the SD command and response encodings shared by the SD
+   card driver (rpi/sdcard.c) and the WiFi SDIO host (wifi/sdio_host.c):
+   the host controller's CMDTM field layout, the response-type codes, the
+   command/transfer interrupt flags and error masks, and the R1 card-status
+   bits.  One copy, so the two drivers cannot drift apart on a load-bearing
+   mask. */
+#ifndef SD_COMMANDS_H
+#define SD_COMMANDS_H
 
 #define SD_CMD_INDEX(a)    ((a) << 24)
 #define SD_CMD_TYPE_NORMAL 0x0
@@ -107,4 +108,4 @@
 #define SD_RESET_CMD            (1u << 25)
 #define SD_RESET_DAT            (1u << 26)
 
-#endif
+#endif /* SD_COMMANDS_H */

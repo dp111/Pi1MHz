@@ -40,7 +40,7 @@
 #include "info.h"
 
 #include "systimer.h"
-#include "emmc_regs.h"
+#include "sd_commands.h"
 
 #define TIMEOUT_WAIT(stop_if_true, usec)     \
 { uint32_t time= usec;\
