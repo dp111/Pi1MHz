@@ -911,10 +911,17 @@ static bool ws_parse_request_line(const char *hdr, char *method, size_t msz,
    size_t i = 0u;
    size_t o = 0u;
 
+   /* A method or target that does not fit is a malformed request, not a
+      shorter one: truncating the target silently made a 560-character PUT
+      land on a DIFFERENT file, and left the 414 guards downstream
+      unreachable. */
    while (hdr[i] != '\0' && hdr[i] != ' '
           && hdr[i] != '\r' && hdr[i] != '\n') {
-      if (o + 1u < msz)
-         method[o++] = hdr[i];
+      if (o + 1u >= msz) {
+         method[o] = '\0';          /* terminated on every path */
+         return false;
+      }
+      method[o++] = hdr[i];
       ++i;
    }
    method[o] = '\0';
@@ -927,8 +934,11 @@ static bool ws_parse_request_line(const char *hdr, char *method, size_t msz,
    o = 0u;
    while (hdr[i] != '\0' && hdr[i] != ' '
           && hdr[i] != '\r' && hdr[i] != '\n') {
-      if (o + 1u < psz)
-         path[o++] = hdr[i];
+      if (o + 1u >= psz) {
+         path[o] = '\0';
+         return false;
+      }
+      path[o++] = hdr[i];
       ++i;
    }
    path[o] = '\0';

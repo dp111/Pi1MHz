@@ -121,12 +121,14 @@ int main(void)
       ok(!ws_parse_request_line("", m, sizeof m, p, sizeof p), "empty");
       ok(!ws_parse_request_line("GET ", m, sizeof m, p, sizeof p),
          "space but empty path");
-      ok(ws_parse_request_line("OPTIONS /y HTTP/1.1", m, 4u, p, sizeof p)
-         && streq(m, "OPT") && streq(p, "/y"),
-         "method truncated to msz, still parses");
-      ok(ws_parse_request_line("GET /very/long/path X", m, sizeof m, p, 6u)
-         && streq(p, "/very"),
-         "path truncated to psz");
+      /* An over-long method or target is a malformed request, not a shorter
+         one: a truncated target used to land a PUT on a different file. */
+      ok(!ws_parse_request_line("OPTIONS /y HTTP/1.1", m, 4u, p, sizeof p),
+         "method longer than msz is rejected");
+      ok(!ws_parse_request_line("GET /very/long/path X", m, sizeof m, p, 6u),
+         "path longer than psz is rejected");
+      ok(ws_parse_request_line("GET /very X", m, sizeof m, p, 6u) && streq(p, "/very"),
+         "path exactly filling psz still parses");
       /* An empty method with a leading space parses; the router's method
          table then rejects it.  Documenting actual behaviour. */
       ok(ws_parse_request_line(" /x H", m, sizeof m, p, sizeof p)
