@@ -63,15 +63,20 @@
 #define FIRMWARE_STRING    "V003.001"
 
 // Debug code displays the bytes transfer
-// when a non debug build is used the variable bytesTransferred becomes unused.
-// The following macro prevents the warning from the compiler
+// The macro DECLARES bytesTransferred, so a caller writes
+//    DEBUG_bytesTransferred(hostadapterPerformReadDMA(buf));
+// and then has the byte count available.  In a release build the debug
+// PRINTS of it vanish, so it would be unused - hence the (void) cast in the
+// non-debug arm, which keeps the declaration (callers that test the count,
+// like the short-DMA checks below, need it in both builds) while still
+// preventing the warning.
 
 #ifdef DEBUG
 #include <stdio.h>
 #include "uart.h"
 #define DEBUG_bytesTransferred(x)   uint32_t bytesTransferred =(x); scsiDiagXfer += bytesTransferred
 #else
-#define DEBUG_bytesTransferred(x)  (void)(x)
+#define DEBUG_bytesTransferred(x)   uint32_t bytesTransferred = (x); (void)bytesTransferred
 #endif
 
 // Global for the emulation mode (fixed or removable drive)
@@ -1085,9 +1090,8 @@ static uint8_t scsiCommandRead6(void)
 
       // Send the data to the host
       cli();
-      uint32_t dmaBytes = hostadapterPerformReadDMA(sectorPtr);
+      DEBUG_bytesTransferred(hostadapterPerformReadDMA(sectorPtr));
       sei();
-      DEBUG_bytesTransferred(dmaBytes);
       hd_audio_service();              // between sectors only
 
       // Check for a host reset condition
@@ -1103,13 +1107,14 @@ static uint8_t scsiCommandRead6(void)
 
       /* A short DMA means hd_wait_ack() timed out: the host stopped
          servicing REQ without asserting nRST.  The return value used to be
-         discarded (in a release build DEBUG_bytesTransferred is (void)(x)),
+         discarded (the release arm of DEBUG_bytesTransferred only cast it
+         to void),
          so the loop simply started the next sector - and a 256-block
          transfer then burned HD_ACK_TIMEOUT_US per sector, 25 s with the
          whole cooperative loop stopped: no 1MHz bus service, no WiFi/AUN,
          no USB.  Bail so the per-sector timeout composes into a
          per-command bound, exactly as scsiCommandReassignBlocks does. */
-      if (dmaBytes < 256) {
+      if (bytesTransferred < 256) {
          filesystemCloseLunForRead(commandDataBlock.targetLUN);
          return SCSI_BUSFREE;
       }
@@ -1242,9 +1247,8 @@ static uint8_t scsiCommandWrite6(void)
       uint8_t Buffer[256];
       // Get the data from the host
       cli();
-      uint32_t dmaBytes = hostadapterPerformWriteDMA(Buffer);
+      DEBUG_bytesTransferred(hostadapterPerformWriteDMA(Buffer));
       sei();
-      DEBUG_bytesTransferred(dmaBytes);
       hd_audio_service();              // between sectors only
 
       // Check for a host reset condition
@@ -1259,13 +1263,14 @@ static uint8_t scsiCommandWrite6(void)
 
       /* A short DMA means hd_wait_ack() timed out: the host stopped
          servicing REQ without asserting nRST.  The return value used to be
-         discarded (in a release build DEBUG_bytesTransferred is (void)(x)),
+         discarded (the release arm of DEBUG_bytesTransferred only cast it
+         to void),
          so the loop simply started the next sector - and a 256-block
          transfer then burned HD_ACK_TIMEOUT_US per sector, 25 s with the
          whole cooperative loop stopped: no 1MHz bus service, no WiFi/AUN,
          no USB.  Bail so the per-sector timeout composes into a
          per-command bound, exactly as scsiCommandReassignBlocks does. */
-      if (dmaBytes < 256) {
+      if (bytesTransferred < 256) {
          filesystemCloseLunForWrite(commandDataBlock.targetLUN);
          return SCSI_BUSFREE;
       }
@@ -2580,9 +2585,8 @@ static uint8_t scsiBeebScsiFatRead(void)
       }
       // Send the data to the host
       cli();
-      uint32_t dmaBytes = hostadapterPerformReadDMA(Buffer);
+      DEBUG_bytesTransferred(hostadapterPerformReadDMA(Buffer));
       sei();
-      DEBUG_bytesTransferred(dmaBytes);
 
       // Check for a host reset condition
       if (hostadapterReadResetFlag()) {
@@ -2595,13 +2599,14 @@ static uint8_t scsiBeebScsiFatRead(void)
 
       /* A short DMA means hd_wait_ack() timed out: the host stopped
          servicing REQ without asserting nRST.  The return value used to be
-         discarded (in a release build DEBUG_bytesTransferred is (void)(x)),
+         discarded (the release arm of DEBUG_bytesTransferred only cast it
+         to void),
          so the loop simply started the next sector - and a 256-block
          transfer then burned HD_ACK_TIMEOUT_US per sector, 25 s with the
          whole cooperative loop stopped: no 1MHz bus service, no WiFi/AUN,
          no USB.  Bail so the per-sector timeout composes into a
          per-command bound, exactly as scsiCommandReassignBlocks does. */
-      if (dmaBytes < 256) {
+      if (bytesTransferred < 256) {
          filesystemCloseFatForRead();
          return SCSI_BUSFREE;
       }
