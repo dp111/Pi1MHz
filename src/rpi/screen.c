@@ -654,21 +654,37 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
         *scaled_width = (((uint32_t)(yuv_scale * (float)h_corrected)) & 0xfff);
         *scaled_height = (((uint32_t)(yuv_scale * (float)v_corrected)) & 0xfff);
 
+        /* The scale above is chosen to make the HEIGHT work, and the video
+           grid is 832x576 - wider than 4:3 - so on any 4:3 display mode the
+           width then overruns: 1248 into 1024, say.  h_display - *scaled_width
+           is unsigned, so that wrapped and startpos became x ~= 3984, parking
+           the video plane off the side of the screen while videoplayer_active()
+           and /status both still reported it healthy.  Only the 16:9 modes
+           came out positive, which is why it stayed hidden.
+           Clamp the overscan to zero instead: the HVS clips a plane wider than
+           the display, so the picture is left-aligned and loses its right edge
+           rather than disappearing.  Centring it would need the horizontal
+           analogue of the vertical source crop below, which the YUV plane
+           setup does not have yet. */
+
         if (*scaled_height > v_display)
         {
             offset = (uint32_t) ((float )(( *scaled_height -v_display) /2) /yuv_scale);
 
             *nsh = v_display;
             *nh = (uint32_t)((float)v_display/yuv_scale);
-            uint32_t h_overscan = (h_display - *scaled_width) / 2;
+            uint32_t h_overscan = (*scaled_width >= h_display)
+                                  ? 0u : (h_display - *scaled_width) / 2;
             *startpos = (h_overscan & 0xfff);
             return offset;
         }
 
         *nsh = *scaled_height;
         *nh = height;
-        uint32_t h_overscan = (h_display - *scaled_width) / 2;
-        uint32_t v_overscan = (v_display - *scaled_height) / 2;
+        uint32_t h_overscan = (*scaled_width >= h_display)
+                              ? 0u : (h_display - *scaled_width) / 2;
+        uint32_t v_overscan = (*scaled_height >= v_display)
+                              ? 0u : (v_display - *scaled_height) / 2;
 
         *startpos = ((v_overscan & 0xfff)<<12) + (h_overscan & 0xfff);
         return offset;
