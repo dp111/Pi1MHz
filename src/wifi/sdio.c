@@ -540,6 +540,10 @@ static _Alignas(4) uint8_t g_txglom_buf[SDPCM_TXGLOM_BUF_SIZE];
 #define CDCF_IOC_ID_SHIFT 16u
 #define TX_CONTROL_TEMPLATE_INTERFACE 0u
 #define TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH 164u
+/* The overflow guards test this limit; the wire buffer in sdio.h is sized by
+   SDIO_TX_CONTROL_PAYLOAD_MAX.  They must be one number. */
+_Static_assert(TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH == SDIO_TX_CONTROL_PAYLOAD_MAX,
+               "tx control payload limit must match the sdio.h buffer size");
 #define WSEC_KEY_PAYLOAD_LENGTH 164u
 #define WSEC_KEY_DATA_OFFSET 8u
 #define WSEC_KEY_ALGO_OFFSET 112u
