@@ -29,7 +29,12 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         // whatever it interrupted.  Millidegrees to tenths, rounded.
         // Cannot go negative (0 on failure), so no sign handling.
         long temp_tenths = (long)((get_temp_millidegrees() + 50u) / 100u);
-        int n = snprintf(helpscreen, helpscreen_size, HELPERS_HELP_FMT(BUILD_DATE),
+#ifdef DEBUG
+#define HELPERS_KERNEL_LETTER "D"
+#else
+#define HELPERS_KERNEL_LETTER "R"
+#endif
+        int n = snprintf(helpscreen, helpscreen_size, HELPERS_HELP_FMT(BUILD_DATE, HELPERS_KERNEL_LETTER),
                          GITVERSION,
                          get_info_string(), temp_tenths / 10, temp_tenths % 10,
                          (unsigned int)helper_address,

@@ -16,14 +16,15 @@
      %d   helper base address, dec (*FX147,n)
      %d   SCSI jukebox register    (*FX147,n)
      %d   M5000 instance           (*FX147,202,n)
-   The build date is pasted in as a literal.  Lines end in CR LF for the
-   Beeb's VDU driver. */
+   The build date and the kernel letter - "D" for a DEBUG build, "R" for a
+   release - are pasted in as literals.  Lines end in CR LF for the Beeb's
+   VDU driver. */
 #ifndef HELPERS_HELP_H
 #define HELPERS_HELP_H
 
-#define HELPERS_HELP_FMT(build_date)                                     \
+#define HELPERS_HELP_FMT(build_date, kernel)                             \
    "Pi1MHz %s\r\n"                                                       \
-   "Built " build_date "\r\n"                                            \
+   "Built " build_date " " kernel "\r\n"                                 \
    "Pi %s %ld.%ldC\r\n"                                                  \
    "\r\n"                                                                \
    "Run helper n:  X%%=n:CALL &FC%X\r\n"                                 \
