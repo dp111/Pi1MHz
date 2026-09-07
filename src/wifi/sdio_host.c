@@ -858,8 +858,11 @@ static void sdio_host_refresh_status(void)
 
    g_sdio_host_backend_name = "bcm2835-arasan-emmc-wlan";
 
+   /* The override notice is advice, not a failure: it must not replace a
+      genuine error already recorded, or /status loses the real cause. */
    if (prop != NULL && prop[0] != '\0') {
-      sdio_host_set_error("wifi_sdio_host override is ignored: only the Pi Zero W onboard SD1 path is modelled here");
+      if (g_sdio_host_error[0] == '\0')
+         sdio_host_set_error("wifi_sdio_host override is ignored: only the Pi Zero W onboard SD1 path is modelled here");
       return;
    }
 
