@@ -593,6 +593,11 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
    fx_pointer = instance ;
    fx_register[fx_pointer] = 0;
 
+   /* The synth's registers live in JIM RAM (0x3000 / 0x5000); with none,
+      synth_reset would have written through a NULL base. */
+   if (Pi1MHz->JIM_ram_size == 0)
+      return;
+
    for (uint32_t n = 0; n <(sizeof(antilogtable)/sizeof(antilogtable[0])) ; n++) {
       // 12-bit antilog as per AM6070 datasheet
       // this actually has a 13 bit fsd ( sign bit makes it 14bit)

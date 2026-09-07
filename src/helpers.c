@@ -141,7 +141,7 @@ static void helpers_bank_select(unsigned int gpio)
             data = 0;
 
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
-        if (data==0)
+        if (data==0 && Pi1MHz->JIM_ram_size != 0)
         {
             helpers_screen_setup(( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000],1024);
             //signal to beeb the help screen is setup
