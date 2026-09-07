@@ -749,6 +749,7 @@ void wifi_boot(void)
          return;
 
       case WIFI_BOOT_STAGE_OPTIONAL_PROBE:
+#if PI1MHZ_SDIO_DESTRUCTIVE_PROBE
          if (g_wifi_config.sdio_probe_enabled
             && sdio_probe_card(g_wifi_config.sdio_tx_probe_enabled,
                                g_wifi_config.sdio_tx_probe_command,
@@ -756,6 +757,15 @@ void wifi_boot(void)
             wifi_note_sdio_ready();
             wifi_debug_log("optional SDIO probe completed");
          }
+#else
+         /* See PI1MHZ_SDIO_DESTRUCTIVE_PROBE in sdio.h: this stage ran after
+            bring-up had already joined, and the probe's first act is a
+            WL_REG_ON power cycle - so wifi_sdio_probe=1 destroyed the link it
+            was supposed to be diagnosing.  Left as a no-op stage rather than
+            removed, so the boot ladder keeps its shape. */
+         if (g_wifi_config.sdio_probe_enabled)
+            wifi_debug_log("optional SDIO probe skipped (destructive - see sdio.h)");
+#endif
 
          g_wifi_boot_stage = WIFI_BOOT_STAGE_INIT_LWIP;
          return;

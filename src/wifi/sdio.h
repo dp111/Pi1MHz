@@ -271,6 +271,19 @@ bool sdio_cmd53_execute(sdio_host_t *dev, uint8_t function_number,
                         uint32_t address, bool write, bool block_mode,
                         bool incrementing_address, uint16_t count, void *buffer,
                         uint32_t block_size, sdio_cmd53_result_t *result);
+/* The destructive SDIO diagnostic probe, gated OFF.
+   sdio_host_open() unconditionally drops WL_REG_ON, which wipes the CYW43's
+   firmware, NVRAM and CLM - and WIFI_BOOT_STAGE_OPTIONAL_PROBE runs AFTER
+   bring-up has reached STAGE_DONE and joined.  So enabling wifi_sdio_probe
+   killed the working link it was meant to diagnose: the probe re-identifies
+   the card, enables fn1 only, never re-downloads firmware, and leaves the
+   bus at 400 kHz 1-bit while the runtime still believes it is 4-bit/50 MHz.
+   It also blocks the cooperative poll loop for seconds with no yield.
+   Set this to 1 only to work on the probe itself. */
+#ifndef PI1MHZ_SDIO_DESTRUCTIVE_PROBE
+#define PI1MHZ_SDIO_DESTRUCTIVE_PROBE 0
+#endif
+
 bool sdio_probe_card(bool tx_control_probe_enabled,
                      wifi_sdio_tx_probe_command_t tx_control_probe_command,
                      sdio_probe_result_t *result);
