@@ -103,6 +103,23 @@ static bool fat_cwd_known = true;
    filing system holding absolute sector numbers. */
 static volatile bool fat_raw_sector_seen;
 
+/* Which fileObject[]/dirObject[] slots actually hold an opened FatFs object.
+   Those arrays live in .noinit, which is deliberately NOT zeroed, so an
+   un-opened slot holds whatever the previous session - or, on a cold boot,
+   uninitialised DRAM - left there.  FatFs's validate() gate dereferences
+   obj->fs, so a command naming a handle the ROM never opened made it load
+   through a wild pointer, in FIQ context.  The handle is (data & 15), taken
+   straight from the Beeb's command register, so it is entirely host-chosen.
+
+   fat_open_valid[] cannot serve as this gate: it records whether the PATH was
+   captured for the webserver interlock, and fat_open_record() gives up -
+   leaving it false - on an unresolvable relative name even though the f_open
+   succeeded.  These two live in .bss, so a cold boot, a watchdog reset and a
+   chain-boot all start them false, which is the safe direction: refuse until
+   the ROM re-opens. */
+static volatile bool fat_file_open[16];
+static volatile bool fat_dir_open[16];
+
 static void fat_open_record(unsigned int handle, const char *name)
 {
    char joined[FAT_OPEN_PATH_MAX];
@@ -128,8 +145,11 @@ static void fat_open_record(unsigned int handle, const char *name)
 
 static void fat_open_clear_all(void)
 {
-   for (unsigned int i = 0; i < 16u; i++)
+   for (unsigned int i = 0; i < 16u; i++) {
       fat_open_valid[i] = false;
+      fat_file_open[i] = false;
+      fat_dir_open[i] = false;
+   }
    strcpy(fat_cwd, "/");
    fat_cwd_known = true;
    fat_raw_sector_seen = false;
@@ -266,13 +286,21 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
             mode = FA_READ;                  /* strip write/create bits: read-only open */
         result = f_open( &fileObject[data & 15], (char * )&Pi1MHz->JIM_ram[command_pointer+3]
                     , mode );
-        if (result == FR_OK)
+        if (result == FR_OK) {
+            fat_file_open[data & 15] = true;
             fat_open_record(data & 15, (char * )&Pi1MHz->JIM_ram[command_pointer+3]);
+        }
         Pi1MHz_MemoryWrite(addr, result);
         break;
     }
     case 3 :
+        if (!fat_file_open[data & 15])
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
+            break;
+        }
         fat_open_valid[data & 15] = false;
+        fat_file_open[data & 15] = false;
         Pi1MHz_MemoryWrite(addr,
              f_close( &fileObject[data & 15] ) );
         break;
@@ -285,6 +313,11 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
         if (!discaccess_buffer_ok(buf_off, buf_len))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
+            break;
+        }
+        if (!fat_file_open[data & 15])
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
             break;
         }
         result = f_lseek( &fileObject[data & 15], jim_read32(command_pointer+8) );
@@ -319,6 +352,11 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
+        if (!fat_file_open[data & 15])
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
+            break;
+        }
         if (config_beeb_write_protected())      // Beeb write ignored: claim it all landed
         {
             jim_write32(command_pointer, (buf_len << 8 ) | Pi1MHz->JIM_ram[command_pointer]);
@@ -348,6 +386,11 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     }
     case 6 : // fsize
     {
+        if (!fat_file_open[data & 15])
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
+            break;
+        }
         jim_write32(command_pointer + 8, f_size( &fileObject[data & 15] ));
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
@@ -359,12 +402,23 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
-        Pi1MHz_MemoryWrite(addr,
-             f_opendir( (DIR * )&dirObject[data & 15], (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
+        {
+            FRESULT dresult = f_opendir( (DIR * )&dirObject[data & 15],
+                                         (char * )&Pi1MHz->JIM_ram[command_pointer + 1] );
+            if (dresult == FR_OK)
+                fat_dir_open[data & 15] = true;
+            Pi1MHz_MemoryWrite(addr, dresult);
+        }
         break;
 
 
     case 8: // fclosedir
+        if (!fat_dir_open[data & 15])
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
+            break;
+        }
+        fat_dir_open[data & 15] = false;
         Pi1MHz_MemoryWrite(addr,
              f_closedir( (DIR * )&dirObject[data & 15] ) );
         break;
@@ -374,6 +428,11 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
     {
         FRESULT result;
         FILINFO fileInfo;
+        if (!fat_dir_open[data & 15])
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
+            break;
+        }
         result = f_readdir( (DIR * )&dirObject[data & 15], &fileInfo );
         if (result)
             {
