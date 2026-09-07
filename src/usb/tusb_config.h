@@ -103,6 +103,15 @@
 //------------- CLASS -------------//
 #define CFG_TUD_MTP               1
 #define CFG_TUD_MTP_EP_BUFSIZE    2048
+
+/* Local fix to the vendored MTP driver (mtp_device.c): when the host does not
+   declare a length - ObjectCompressedSize 0 or 0xFFFFFFFF, so total_len is
+   UINT32_MAX - let a short OUT packet end the data phase.  Upstream ends an
+   OUT phase only on total_len or a ZLP, which for an undeclared length can
+   only happen when the data is an exact multiple of the packet size; any
+   other length hangs the operation with the file open and the LUN locked.
+   Named so the change stays visible in a future TinyUSB diff. */
+#define PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT 1
 #define CFG_TUD_MTP_EP_CONTROL_BUFSIZE  16 // should be enough to hold data in MTP control request
 
 //------------- MTP device info -------------//

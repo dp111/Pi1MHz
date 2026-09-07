@@ -246,6 +246,16 @@ static int32_t fs_dispatch_op(tud_mtp_cb_data_t* cb_data) {
      waiting for a response that never comes (it would hang, then reset the
      interface).  Matches upstream TinyUSB example fix 9a03a16c8. */
   if (resp_code > MTP_RESP_UNDEFINED) {
+    /* A response container is always a bare 12-byte header.  In the DATA
+       phase io_container->header still describes the block we just RECEIVED
+       - an ObjectInfo dataset is ~110 bytes - and tud_mtp_response_send
+       transmits header->len bytes, so without this reset an error returned
+       from a data-phase handler put a malformed response on the wire and the
+       host stalled on the short read.  fs_send_object avoids it by deferring
+       its failures to tud_mtp_data_complete_cb; fs_send_object_info and
+       fs_set_object_prop_value return directly from the data phase, so
+       normalise the length here, once, for every handler. */
+    io_container->header->len = sizeof(mtp_container_header_t);
     io_container->header->code = (uint16_t) resp_code;
     tud_mtp_response_send(io_container);
   }
