@@ -865,11 +865,17 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
        register-read spins is 10-25 s on a dead card, long enough to
        trip the watchdog before the error return. Time is sampled
        every 4096 spins so the hot path stays a single SDEDM read.
-       One budget for the whole transfer: declared per burst, it restarted
-       every time the FIFO refilled, so a dribbling card could hold a
-       16-sector read for ~128 s. */
+       Two bounds: each STALL may last 1 s (the clock restarts whenever data
+       moves, so a card that pauses several times inside one command is not
+       failed for the sum of its pauses), and the whole transfer may spend
+       1 s plus 50 ms per block stalled in total, so a dribbling card that
+       hands over a word at a time is still bounded - declared per burst,
+       the old clock restarted on every FIFO refill and such a card could
+       hold a 16-sector read for ~128 s. */
     uint32_t wait_spins = 0u;
-    uint32_t wait_start_us = 0u;
+    uint32_t wait_start_us = 0u;          /* this stall */
+    uint32_t first_stall_us = 0u;         /* the transfer's first stall */
+    const uint32_t transfer_budget_us = 1000000u + dev->blocks_to_transfer * 50000u;
 
     while (total_words > 0u)
     {
@@ -891,9 +897,12 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
                 if ((++wait_spins & 4095u) == 0u)
                 {
                     uint32_t now = RPI_GetSystemTime() | 1u;
+                    if (first_stall_us == 0u)
+                        first_stall_us = now;
                     if (wait_start_us == 0u)
                         wait_start_us = now;
-                    else if (now - wait_start_us > 1000000u)
+                    else if (now - wait_start_us > 1000000u
+                             || now - first_stall_us > transfer_budget_us)
                     {
                         dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
                         return -1;
@@ -932,6 +941,8 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
 
                 continue;
             }
+
+            wait_start_us = 0u;               /* data moved: the stall clock restarts */
 
             if (words > burst_words)
                 words = burst_words;
