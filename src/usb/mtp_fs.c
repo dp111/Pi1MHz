@@ -185,6 +185,7 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data);
 static int32_t fs_move_object(tud_mtp_cb_data_t* cb_data);
 static int32_t fs_set_object_prop_value(tud_mtp_cb_data_t* cb_data);
 static int32_t fs_get_object_props_supported(tud_mtp_cb_data_t* cb_data);
+static int32_t fs_get_object_prop_desc(tud_mtp_cb_data_t* cb_data);
 static int32_t fs_get_object_prop_value(tud_mtp_cb_data_t* cb_data);
 static uint16_t fs_guess_object_format(const char* name, uint8_t status);
 
@@ -211,6 +212,7 @@ fs_op_handler_dict_t fs_op_handler_dict[] = {
   { MTP_OP_SEND_OBJECT,           fs_send_object           },
   { MTP_OP_MOVE_OBJECT,           fs_move_object           },
   { MTP_OP_GET_OBJECT_PROPS_SUPPORTED, fs_get_object_props_supported },
+  { MTP_OP_GET_OBJECT_PROP_DESC,  fs_get_object_prop_desc  },
   { MTP_OP_GET_OBJECT_PROP_VALUE, fs_get_object_prop_value },
   { MTP_OP_SET_OBJECT_PROP_VALUE, fs_set_object_prop_value },
 };
@@ -2209,15 +2211,95 @@ static int32_t fs_move_object(tud_mtp_cb_data_t* cb_data) {
 
 static int32_t fs_get_object_props_supported(tud_mtp_cb_data_t* cb_data) {
   mtp_container_info_t* io_container = &cb_data->io_container;
+  /* The MTP mandatory object properties (StorageID, ObjectFormat,
+   * ProtectionStatus, ObjectSize, ObjectFileName, ParentObject,
+   * PersistentUID, Name) plus the two dates.  Windows' WPD driver switches
+   * to property-based enumeration once GetObjectPropDesc is offered and then
+   * needs every one of these described; advertising only four made the
+   * storage enumerate EMPTY. */
   const uint16_t props[] = {
+    MTP_OBJ_PROP_STORAGE_ID,
+    MTP_OBJ_PROP_OBJECT_FORMAT,
+    MTP_OBJ_PROP_PROTECTION_STATUS,
+    MTP_OBJ_PROP_OBJECT_SIZE,
     MTP_OBJ_PROP_OBJECT_FILE_NAME,
-    MTP_OBJ_PROP_PARENT_OBJECT,
     MTP_OBJ_PROP_DATE_CREATED,
-    MTP_OBJ_PROP_DATE_MODIFIED
+    MTP_OBJ_PROP_DATE_MODIFIED,
+    MTP_OBJ_PROP_PARENT_OBJECT,
+    MTP_OBJ_PROP_PERSISTENT_UID,
+    MTP_OBJ_PROP_NAME
   };
 
   (void) mtp_container_add_auint16(io_container, TU_ARRAY_SIZE(props), props);
   tud_mtp_data_send(io_container);
+  return 0;
+}
+
+/* ObjectPropDesc dataset (MTP 1.1, 5.1.2.1): code u16, datatype u16,
+ * get/set u8, factory default in the property's type, group code u32, form
+ * flag u8 (0 = none).  Without this a host never learns that ObjectFileName
+ * is Get/Set: Windows' WPD driver asks before offering a rename, and aborted
+ * every Explorer F2 / IFileOperation rename on this device.  Every property
+ * fs_get_object_props_supported lists is described here - WPD asks for each
+ * of them and gives up on the storage if one is refused. */
+static void fs_prop_desc_head(mtp_container_info_t* io, uint16_t code, uint16_t type, uint8_t get_set) {
+  (void) mtp_container_add_uint16(io, code);
+  (void) mtp_container_add_uint16(io, type);
+  (void) mtp_container_add_uint8(io, get_set);
+}
+
+static void fs_prop_desc_tail(mtp_container_info_t* io) {
+  (void) mtp_container_add_uint32(io, 0);   // group code
+  (void) mtp_container_add_uint8(io, 0);    // form flag: none
+}
+
+static int32_t fs_get_object_prop_desc(tud_mtp_cb_data_t* cb_data) {
+  const mtp_container_command_t* command = cb_data->command_container;
+  mtp_container_info_t* io = &cb_data->io_container;
+  const uint16_t prop_code = (uint16_t) command->params[0];
+  /* params[1] is the object format; folders and files carry the same set. */
+  static const uint32_t zero128[4] = { 0u, 0u, 0u, 0u };
+
+  switch (prop_code) {
+    case MTP_OBJ_PROP_STORAGE_ID:
+      fs_prop_desc_head(io, prop_code, MTP_DATA_TYPE_UINT32, MTP_MODE_GET);
+      (void) mtp_container_add_uint32(io, SUPPORTED_STORAGE_ID);
+      break;
+    case MTP_OBJ_PROP_OBJECT_FORMAT:
+      fs_prop_desc_head(io, prop_code, MTP_DATA_TYPE_UINT16, MTP_MODE_GET);
+      (void) mtp_container_add_uint16(io, MTP_OBJ_FORMAT_UNDEFINED);
+      break;
+    case MTP_OBJ_PROP_PROTECTION_STATUS:
+      fs_prop_desc_head(io, prop_code, MTP_DATA_TYPE_UINT16, MTP_MODE_GET);
+      (void) mtp_container_add_uint16(io, 0);
+      break;
+    case MTP_OBJ_PROP_OBJECT_SIZE:
+      fs_prop_desc_head(io, prop_code, MTP_DATA_TYPE_UINT64, MTP_MODE_GET);
+      (void) mtp_container_add_uint64(io, 0);
+      break;
+    case MTP_OBJ_PROP_OBJECT_FILE_NAME:
+      fs_prop_desc_head(io, prop_code, MTP_DATA_TYPE_STR, MTP_MODE_GET_SET);
+      (void) mtp_container_add_cstring(io, "");
+      break;
+    case MTP_OBJ_PROP_NAME:
+    case MTP_OBJ_PROP_DATE_CREATED:
+    case MTP_OBJ_PROP_DATE_MODIFIED:
+      fs_prop_desc_head(io, prop_code, MTP_DATA_TYPE_STR, MTP_MODE_GET);
+      (void) mtp_container_add_cstring(io, "");
+      break;
+    case MTP_OBJ_PROP_PARENT_OBJECT:
+      fs_prop_desc_head(io, prop_code, MTP_DATA_TYPE_UINT32, MTP_MODE_GET);
+      (void) mtp_container_add_uint32(io, 0);
+      break;
+    case MTP_OBJ_PROP_PERSISTENT_UID:
+      fs_prop_desc_head(io, prop_code, MTP_DATA_TYPE_UINT128, MTP_MODE_GET);
+      (void) mtp_container_add_uint128(io, zero128);
+      break;
+    default:
+      return MTP_RESP_OBJECT_PROP_NOT_SUPPORTED;
+  }
+  fs_prop_desc_tail(io);
+  tud_mtp_data_send(io);
   return 0;
 }
 
@@ -2241,10 +2323,48 @@ static int32_t fs_get_object_prop_value(tud_mtp_cb_data_t* cb_data) {
       return 0;
     }
 
+    case MTP_OBJ_PROP_NAME: {
+      uint16_t name_utf16[FS_NAME_MAX_LEN + 1];
+      fs_ascii_to_utf16(entry.name, name_utf16, TU_ARRAY_SIZE(name_utf16));
+      (void) mtp_container_add_string(io_container, name_utf16);
+      tud_mtp_data_send(io_container);
+      return 0;
+    }
+
     case MTP_OBJ_PROP_PARENT_OBJECT:
       (void) mtp_container_add_uint32(io_container, entry.parent);
       tud_mtp_data_send(io_container);
       return 0;
+
+    case MTP_OBJ_PROP_STORAGE_ID:
+      (void) mtp_container_add_uint32(io_container, SUPPORTED_STORAGE_ID);
+      tud_mtp_data_send(io_container);
+      return 0;
+
+    case MTP_OBJ_PROP_OBJECT_FORMAT:
+      (void) mtp_container_add_uint16(io_container,
+                                      fs_guess_object_format(entry.name, entry.is_dir ? 2u : 1u));
+      tud_mtp_data_send(io_container);
+      return 0;
+
+    case MTP_OBJ_PROP_PROTECTION_STATUS:
+      (void) mtp_container_add_uint16(io_container, 0);
+      tud_mtp_data_send(io_container);
+      return 0;
+
+    case MTP_OBJ_PROP_OBJECT_SIZE:
+      (void) mtp_container_add_uint64(io_container, entry.is_dir ? 0u : (uint64_t)entry.size);
+      tud_mtp_data_send(io_container);
+      return 0;
+
+    case MTP_OBJ_PROP_PERSISTENT_UID: {
+      /* Handles are stable for the session and unique within the storage:
+         {handle, storage, 0, 0} as the 128-bit identifier. */
+      uint32_t uid[4] = { entry.handle, SUPPORTED_STORAGE_ID, 0u, 0u };
+      (void) mtp_container_add_uint128(io_container, uid);
+      tud_mtp_data_send(io_container);
+      return 0;
+    }
 
     case MTP_OBJ_PROP_DATE_MODIFIED: {
       char mtp_datetime[FS_DATETIME_STR_LEN];
