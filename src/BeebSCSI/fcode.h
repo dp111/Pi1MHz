@@ -42,4 +42,8 @@ const char *fcodeLastExchange(void);
 /* Recent exchanges, oldest first, "<ms> <tx> -> <rx>" per line. */
 size_t fcodeHistoryText(char *out, size_t max);
 
+/* The AIV disc-flip (eject = turn the disc over). Player state, so it
+   lives here; the SCSI STARTSTOP eject calls in rather than duplicating it. */
+void fcode_disc_flip(void);
+
 #endif /* FCODE_H_ */

@@ -72,6 +72,34 @@ static char     fc_ack_reply[2];
    never opening, and hangs), short enough not to stall the application. */
 static bool     fc_tray_open;
 static uint32_t fc_tray_open_us;
+
+/* The AIV disc-flip, in one place.  Eject means "turn the disc over", so
+   swap to the partner side's directory (odd <-> even: 1<->2, 3<->4, ...).
+   Directory 0 is the menu and has no partner; a single-sided disc has no
+   partner directory either, in which case the tray opens and the same side
+   is "reinserted".  The switch itself runs in hd_juke_service on the next
+   SCSI poll, exactly like a jukebox poke.
+
+   Entering the tray-open state is part of ejecting, not an extra: every read
+   answers O until the flip has happened, which is what the host sees from a
+   real player and what its post-eject poll waits for.  The SCSI STARTSTOP
+   eject used to duplicate the partner arithmetic WITHOUT this, so a host
+   that ejected with STARTSTOP got the disc swapped while the player never
+   reported O - its poll saw "loaded" immediately and carried on against a
+   volume that was still being remounted.  This is player state, so the SCSI
+   layer calls in here rather than re-deriving the rule. */
+void fcode_disc_flip(void)
+{
+   uint8_t cur = (uint8_t)filesystemGetLunDirectoryVFS();
+   if (cur >= 1) {
+      uint8_t partner = (cur & 1u) ? (uint8_t)(cur + 1u)
+                                   : (uint8_t)(cur - 1u);
+      if (filesystemVFSDirPresent(partner))
+         hd_juke_request(partner);
+   }
+   fc_tray_open    = true;
+   fc_tray_open_us = RPI_GetSystemTime();
+}
 #define FC_TRAY_OPEN_US 2000000u
 
 static void fcode_ack_when(fc_ack_t on_what, char r0, char r1)
@@ -263,27 +291,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 
 			case 0x27: // ' // VFS sends this
 			FCdebugString_P(PSTR(" = Eject (open the front-loader tray)\r\n"));
-			{
-				/* The AIV disc-flip: eject means "turn the disc over", so
-				   swap to the partner side's directory (odd <-> even:
-				   1<->2, 3<->4, ...). Directory 0 is the menu - no partner.
-				   The switch itself runs in hd_juke_service on the next
-				   SCSI poll, exactly like a jukebox poke. */
-				uint8_t cur = (uint8_t)filesystemGetLunDirectoryVFS();
-				if (cur >= 1) {
-					uint8_t partner = (cur & 1u) ? (uint8_t)(cur + 1u)
-					                             : (uint8_t)(cur - 1u);
-					/* Single-sided disc: no partner directory - the tray
-					   opens and the same side is "reinserted". */
-					if (filesystemVFSDirPresent(partner))
-						hd_juke_request(partner);
-				}
-				/* Enter the tray-open state: every read answers O until the
-				   flip has happened, which is what the host sees from a real
-				   player and what its post-eject poll is waiting for. */
-				fc_tray_open    = true;
-				fc_tray_open_us = RPI_GetSystemTime();
-			}
+			fcode_disc_flip();
 			break;
 
 			case 0x29: // )0, )1

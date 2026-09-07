@@ -1808,17 +1808,12 @@ static uint8_t scsiCommandStartStop(void)
       // Make the target LUN unavailable
       filesystemSetLunStatus(commandDataBlock.targetLUN, false);
 
-      // SCSI eject (LoEj, byte 4 bit 1) on a VFS LUN = the AIV disc flip:
-      // swap to the partner side's directory (odd <-> even), same as the
-      // F-code eject.
-      if ((commandDataBlock.data[4] & 0x02) && commandDataBlock.targetLUN >= 8) {
-         uint8_t cur = (uint8_t)filesystemGetLunDirectoryVFS();
-         if (cur >= 1) {
-            uint8_t partner = (cur & 1u) ? (uint8_t)(cur + 1u) : (uint8_t)(cur - 1u);
-            if (filesystemVFSDirPresent(partner)) /* single-sided: no flip */
-               hd_juke_request(partner);
-         }
-      }
+      // SCSI eject (LoEj, byte 4 bit 1) on a VFS LUN = the AIV disc flip.
+      // fcode.c owns that rule, including the tray-open state a host's
+      // post-eject poll waits for - this used to re-derive the partner
+      // arithmetic here and skip the tray state entirely.
+      if ((commandDataBlock.data[4] & 0x02) && commandDataBlock.targetLUN >= 8)
+         fcode_disc_flip();
    } else {
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Starting LUN\r\n"));
 
