@@ -21,7 +21,7 @@ static uint8_t helper_address;
 /* The help screen (helper 0, and the Pi's boot splash).
 
    One printf template, laid out for the Beeb's 40 x 25 text screen: every
-   line is 40 columns or fewer and the whole screen is 20 rows, leaving five
+   line is 40 columns or fewer and the whole screen is 21 rows, leaving four
    free for future helpers.  src/tests/helpers (which pulls the #defines out of this file) checks both against worst-case
    values, so an edit that wraps a line or spills past row 25 fails there,
    not on the Beeb.  Every substituted value fits at its widest; the one line
@@ -59,7 +59,8 @@ static uint8_t helper_address;
    " 9  AUNFS Master       AUNFSM128.rom\r\n"                            \
    "10+ Your ROM (10-15)   ROM10-15.rom\r\n"                             \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
-   "*FX147,202,%d:*FX147,203,1/0 M5000 rec\r\n"
+   "*FX147,202,%d then *FX147,203,1/0\r\n"                              \
+   "   M5000 record on/off\r\n"
 
 #define HELPERS_HELP_COLUMNS 40u
 #define HELPERS_HELP_ROWS    25u

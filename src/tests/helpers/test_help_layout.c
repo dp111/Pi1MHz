@@ -36,7 +36,7 @@ int main(void)
    rows = rows_of(buf, &widest, &over);
    printf("typical: %u rows, widest %u\n", rows, widest);
    ok(over == 0, "typical: every line fits 40 columns");
-   ok(rows == 20, "typical: 20 rows (5 free for future helpers)");
+   ok(rows == 21, "typical: 21 rows (4 free for future helpers)");
 
    /* Worst case: every substituted value at its widest. */
    snprintf(buf, sizeof buf, HELPERS_HELP_FMT("2026-12-31 23:59:59", "D"),
