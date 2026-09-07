@@ -390,16 +390,32 @@ static uint16_t hostRevokeMask;  // bit n set = the Beeb took LUN n back; abort 
 
 // Assemble a LUN's directory, and the stem its files share, exactly as
 // filesystemCheckLunImage() assembles the .dat name.
+// The one place the host-side naming of a LUN's files lives: LUN 0-7 are
+// /BeebSCSI<n>/scsi<lun>.<ext> in the SCSI jukebox directory, LUN 8-15 are
+// /BeebVFS<n>/scsi<lun&7>.<ext> in the read-only VFS jukebox directory.
+// Every open of a .dat/.dsc/.cfg goes through here, so the VFS masking and
+// directory choice cannot be forgotten at a call site.
+static void fsLunDirPath(uint8_t lunNumber, char *buf, size_t size)
+{
+   if (lunNumber < 8)
+      snprintf(buf, size, "/BeebSCSI%d", filesystemState.lunDirectory);
+   else
+      snprintf(buf, size, "/BeebVFS%d", filesystemState.lunDirectoryVFS);
+}
+
+static void fsLunFilePath(uint8_t lunNumber, const char *ext, char *buf, size_t size)
+{
+   if (lunNumber < 8)
+      snprintf(buf, size, "/BeebSCSI%d/scsi%d.%s", filesystemState.lunDirectory, lunNumber, ext);
+   else
+      snprintf(buf, size, "/BeebVFS%d/scsi%d.%s", filesystemState.lunDirectoryVFS, lunNumber & 7, ext);
+}
+
 static void fsHostLunNames(uint8_t lunNumber, char *dir, size_t dirSize,
                            char *stem, size_t stemSize)
 {
-   if (lunNumber < 8) {
-      snprintf(dir, dirSize, "/BeebSCSI%d", filesystemState.lunDirectory);
-      snprintf(stem, stemSize, "/BeebSCSI%d/scsi%d.", filesystemState.lunDirectory, lunNumber);
-   } else {
-      snprintf(dir, dirSize, "/BeebVFS%d", filesystemState.lunDirectoryVFS);
-      snprintf(stem, stemSize, "/BeebVFS%d/scsi%d.", filesystemState.lunDirectoryVFS, lunNumber & 7);
-   }
+   fsLunDirPath(lunNumber, dir, dirSize);
+   fsLunFilePath(lunNumber, "", stem, stemSize);    // "/BeebSCSI<n>/scsi<lun>."
 }
 
 // True if `path` is a file of a started (or host-locked) LUN, or a directory
@@ -776,10 +792,7 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
       return false;
 
    // Attempt to open the LUN image
-   if (lunNumber < 8 )
-      snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
-   else
-      snprintf(fileName, sizeof(fileName), "/BeebVFS%d/scsi%d.dat", filesystemState.lunDirectoryVFS, lunNumber & 7);
+   fsLunFilePath(lunNumber, "dat", fileName, sizeof(fileName));
 
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemCheckLunImage(): Checking for (.dat) LUN image "), (uint16_t)lunNumber, 1);
    /* LUN >= 8 is /BeebVFS read-only media: open it FA_READ.  FatFs returns
@@ -978,7 +991,7 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
    }
 
    // Assemble the .dat file name
-   snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
+   fsLunFilePath(lunNumber, "dat", fileName, sizeof(fileName));
 
    // Create a new .dat file
    fsResult = f_open(&fileObject, fileName, FA_CREATE_NEW | FA_READ | FA_WRITE);
@@ -1005,7 +1018,7 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
    }
 
    // Assemble the .cfg file name
-   snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
+   fsLunFilePath(lunNumber, "cfg", fileName, sizeof(fileName));
    // release any values from a previous parse so re-parsing doesn't leak them
    parse_releasekeyvalues(filesystemState.keyvalues[lunNumber], NUM_KEYS);
    if(parse_readfile(fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber] ))
@@ -1134,11 +1147,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
       FIL fileObject;
       FRESULT fsResult;
       // Check if the LUN descriptor file (.dsc) is present
-      if (lunNumber < 8 )
-         snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.dsc", filesystemState.lunDirectory, lunNumber);
-      else
-         // this isn't expected to exist
-         snprintf(fileName, sizeof(fileName), "/BeebVFS%d/scsi%d.dsc", filesystemState.lunDirectoryVFS, lunNumber & 7);
+      fsLunFilePath(lunNumber, "dsc", fileName, sizeof(fileName));
 
       if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemReadLunDescriptor(): Checking for (.dsc) LUN descriptor "), (uint16_t)lunNumber, 1);
       fsResult = f_open(&fileObject, fileName, FA_READ);
@@ -1214,7 +1223,7 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
    }
 
    // Assemble the .cfg file name
-   snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
+   fsLunFilePath(lunNumber, "cfg", fileName, sizeof(fileName));
 
    if (parse_readfile(fileName, fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
@@ -1257,7 +1266,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
    if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemFormatLun(): Sectors required = "), filesystemGetLunTotalSectors(lunNumber), true);
 
    // Assemble the .dat file name
-   snprintf(fileName, sizeof(fileName), "/BeebSCSI%d/scsi%d.dat", filesystemState.lunDirectory, lunNumber);
+   fsLunFilePath(lunNumber, "dat", fileName, sizeof(fileName));
 
    // Note: We are using the expand FAT method to create the LUN image... the dataPattern byte
    // will be ignored.
@@ -1311,10 +1320,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 bool filesystemCheckExtAttributes( uint8_t lunNumber)
 {
    char extAttributes_fileName[255];
-   if (lunNumber <8)
-      snprintf(extAttributes_fileName, sizeof(extAttributes_fileName), "/BeebSCSI%d/scsi%d.cfg", filesystemState.lunDirectory, lunNumber);
-   else
-      snprintf(extAttributes_fileName, sizeof(extAttributes_fileName), "/BeebVFS%d/scsi%d.cfg", filesystemState.lunDirectoryVFS, lunNumber & 7);
+   fsLunFilePath(lunNumber, "cfg", extAttributes_fileName, sizeof(extAttributes_fileName));
 
    // release any values from a previous parse: this runs on every MODE SENSE
    // and TRANSLATE, and re-parsing without freeing leaked the whole key set
