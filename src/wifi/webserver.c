@@ -3302,7 +3302,7 @@ static bool render_listing(ws_conn_t *c, const char *sdpath)
    for (;;) {
       fr = f_readdir(&dir, &fno);
       if (fr != FR_OK || fno.fname[0] == '\0')
-         break;
+         break;                     /* fr != FR_OK is checked after the loop */
       if (count >= WS_LISTING_HARD_CAP) {
          truncated = true;
          break;
@@ -3328,6 +3328,14 @@ static bool render_listing(ws_conn_t *c, const char *sdpath)
       free(entries);
       return ws_error(c, 500, "Internal Server Error",
                       "Ran out of memory while listing the folder.");
+   }
+   if (fr != FR_OK) {
+      /* A card error mid-walk is indistinguishable from end-of-directory
+         inside the loop; report it rather than render the part we got as
+         the whole folder. */
+      free(entries);
+      return ws_error(c, 503, "Service Unavailable",
+                      "The SD card could not be read.");
    }
 
    if (count > 1u)
