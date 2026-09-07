@@ -879,7 +879,8 @@ static uint8_t scsiCommandReassignBlocks(void)
 	longlist = ((commandDataBlock.data[1] & 1) == 1);
 
 	// If the LongLBA bit 1 is 0, LBA is 4 bytes, otherwise LBA is 8 bytes
-	if ((commandDataBlock.data[1] & 1) == 0)
+	// (bit 0 is LongList, read above - both were being read from bit 0)
+	if ((commandDataBlock.data[1] & 2) == 0)
 		longlba=4;
 	else
 		longlba=8;
