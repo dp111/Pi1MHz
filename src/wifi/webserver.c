@@ -1691,6 +1691,7 @@ static size_t ws_digest_build_challenge(char *out, size_t out_sz, bool stale)
 static bool conn_close(ws_conn_t *c, bool abort_conn);
 static bool conn_pump(ws_conn_t *c);
 static void upload_discard_temp(ws_conn_t *c);
+static void copy_discard_temp(ws_conn_t *c);
 static bool conn_consume(ws_conn_t *c, const uint8_t *data, size_t len);
 static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep);
 static bool process_request(ws_conn_t *c, int body_at);
@@ -1819,6 +1820,8 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
    if (c->copy_dst_open) {
       f_close(&c->copy_dst);
       c->copy_dst_open = false;
+      /* Mid-COPY teardown: drop the ".part", keep the destination. */
+      copy_discard_temp(c);
    }
    /* Clear the active-COPY slot if we were the one holding it: a
       timeout / client-disconnect mid-COPY must release the slot so
@@ -2197,6 +2200,8 @@ static void conn_reset_for_next_request(ws_conn_t *c, size_t pipelined_keep)
    if (c->copy_dst_open) {
       f_close(&c->copy_dst);
       c->copy_dst_open = false;
+      /* Mid-COPY teardown: drop the ".part", keep the destination. */
+      copy_discard_temp(c);
    }
    c->copy_dst_existed = false;
    ws_copy_slot_release(c);
@@ -3753,6 +3758,18 @@ static void upload_build_paths(const ws_conn_t *c,
 
 /* Drop the streaming temp on any abort path, leaving a pre-existing target
    untouched.  No-op unless a temp is actually open. */
+/* Drop a COPY's staging temp, if any.  The COPY destination itself is only
+   touched by the unlink+rename at EOF in ws_copy_step, so an abandoned COPY
+   must never leave the user's existing file damaged - mirrors
+   upload_discard_temp for the multipart path. */
+static void copy_discard_temp(ws_conn_t *c)
+{
+   if (c->dav_put_tmppath[0] != '\0') {
+      (void)f_unlink(c->dav_put_tmppath);
+      c->dav_put_tmppath[0] = '\0';
+   }
+}
+
 static void upload_discard_temp(ws_conn_t *c)
 {
    if (c->up_temp_exists) {
@@ -3882,9 +3899,18 @@ static bool upload_finish(ws_conn_t *c)
       char full[WS_UP_FULL_MAX];
       char tmp[WS_UP_TMP_MAX];
 
+      FILINFO old_fno;
+      bool    had_date;
+
       upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
       if (ws_beeb_path_busy(full))
          return upload_fail(c, WS_BUSY_MSG);
+      /* Capture the existing target's date before it goes, same as
+         dav_put_finish: the freshly written temp carries only the
+         FF_FS_NORTC default, so a replace would otherwise reset the file's
+         date to 2026-02-04.  A browser multipart POST does not send the
+         source file's mtime, so the old date is the best available. */
+      had_date = (f_stat(full, &old_fno) == FR_OK);
       (void)f_unlink(full);                 /* f_rename needs a free target */
       if (f_rename(tmp, full) != FR_OK) {
          /* Target already unlinked and the rename failed, so the ".part" temp
@@ -3899,6 +3925,20 @@ static bool upload_finish(ws_conn_t *c)
       }
       c->up_temp_exists = false;
       ws_fs_mutated();                       /* the directory really changed */
+      if (had_date) {
+         FILINFO keep;
+         keep.fdate = old_fno.fdate;
+         keep.ftime = old_fno.ftime;
+         (void)f_utime(full, &keep);         /* best-effort */
+      }
+      /* Nudge a connected MTP host, as every other mutation route in this
+         file does (PUT, DELETE, MKCOL, COPY, MOVE).  Without it the browser
+         upload is the one path after which MTP keeps serving the stale
+         object. */
+      if (had_date)
+         mtp_fs_notify_object_changed(full);
+      else
+         mtp_fs_notify_object_added(full);
    }
 
    c->up_complete = true;
@@ -5602,14 +5642,13 @@ static void ws_copy_step(ws_conn_t *c)
       return;
 
    /* The Beeb started the drive whose image we are writing, and took the LUN
-      back. Unlike PUT there is no .part file to discard - the destination is
-      being written in place - so drop the partial copy rather than leave a
-      truncated image behind. Checked here, in our own loop, because the SCSI
-      path that revokes must not reach into lwIP or FatFs itself. */
+      back. Discard the ".part" and leave the existing destination untouched.
+      Checked here, in our own loop, because the SCSI path that revokes must
+      not reach into lwIP or FatFs itself. */
    if (g_ws_copy_lun >= 0 && filesystemHostLunRevoked((uint8_t)g_ws_copy_lun)) {
       f_close(&c->copy_src); c->copy_src_open = false;
       f_close(&c->copy_dst); c->copy_dst_open = false;
-      (void)f_unlink(c->dav_put_target);
+      copy_discard_temp(c);
       ws_copy_slot_release(c);
       ws_fs_mutated();
       (void)ws_error(c, 423, "Locked",
@@ -5624,6 +5663,7 @@ static void ws_copy_step(ws_conn_t *c)
    if (fr != FR_OK) {
       f_close(&c->copy_src); c->copy_src_open = false;
       f_close(&c->copy_dst); c->copy_dst_open = false;
+      copy_discard_temp(c);
       ws_copy_slot_release(c);
       (void)ws_error(c, 500, "Internal Server Error",
                      "Read failed during COPY.");
@@ -5634,6 +5674,7 @@ static void ws_copy_step(ws_conn_t *c)
       if (f_write(&c->copy_dst, c->dl_buf, br, &bw) != FR_OK || bw != br) {
          f_close(&c->copy_src); c->copy_src_open = false;
          f_close(&c->copy_dst); c->copy_dst_open = false;
+         copy_discard_temp(c);
          ws_copy_slot_release(c);
          (void)ws_error(c, 507, "Insufficient Storage",
                         "Write failed during COPY.");
@@ -5654,6 +5695,17 @@ static void ws_copy_step(ws_conn_t *c)
       f_close(&c->copy_src); c->copy_src_open = false;
       f_close(&c->copy_dst); c->copy_dst_open = false;
       ws_copy_slot_release(c);
+      /* Promote the staging temp.  This is the only destructive step, and
+         every byte is already on the card by the time it runs. */
+      (void)f_unlink(c->dav_put_target);
+      if (f_rename(c->dav_put_tmppath, c->dav_put_target) != FR_OK) {
+         copy_discard_temp(c);
+         ws_fs_mutated();
+         (void)ws_error(c, 500, "Internal Server Error",
+                        "Could not finalize the copied file.");
+         return;
+      }
+      c->dav_put_tmppath[0] = '\0';      /* renamed away: nothing to discard */
       /* As with PUT: the cache was invalidated when the COPY was parsed,
          but the destination only becomes real here. Invalidate again so a
          PROPFIND issued during the copy cannot leave stale size/mtime
@@ -5763,11 +5815,26 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
       return ws_error(c, 500, "Internal Server Error",
                       "Could not open source.");
    c->copy_src_open = true;
-   /* No f_unlink for COPY: FA_CREATE_ALWAYS truncates, and reaching it
-      only after the source opened means a failed COPY cannot destroy an
-      existing destination. */
-   if (f_open(&c->copy_dst, dst, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+   /* Stage into "<dst>.part" and rename at EOF, exactly as PUT and the
+      multipart upload do.  Opening dst itself with FA_CREATE_ALWAYS
+      truncated it up front, so ANY later failure - a read or write error, a
+      dropped connection, the Beeb taking the LUN back - left a truncated
+      file where the user's original had been.  Only the rename is
+      destructive now, and it happens after the last byte is written. */
+   {
+      int tn = snprintf(c->dav_put_tmppath, sizeof c->dav_put_tmppath,
+                        "%s.part", dst);
+      if (tn <= 0 || (size_t)tn >= sizeof c->dav_put_tmppath) {
+         f_close(&c->copy_src); c->copy_src_open = false;
+         c->dav_put_tmppath[0] = '\0';
+         return ws_error(c, 414, "URI Too Long",
+                         "Destination path is too long for a temp copy.");
+      }
+   }
+   if (f_open(&c->copy_dst, c->dav_put_tmppath,
+              FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
       f_close(&c->copy_src); c->copy_src_open = false;
+      c->dav_put_tmppath[0] = '\0';
       return ws_error(c, 500, "Internal Server Error",
                       "Could not create destination.");
    }
@@ -5779,9 +5846,11 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    strlcpy(c->dav_put_target, dst, sizeof c->dav_put_target);
    c->state = CONN_DAV_COPY;
    g_ws_active_copy = c;
-   /* Hold the destination LUN for the whole transfer. Unlike PUT, a COPY
-      writes the destination in place - there is no temp file and no rename
-      at the end, so a late re-check would come after the damage. */
+   /* Hold the destination LUN for the whole transfer.  The staging temp
+      means an abandoned COPY no longer damages the destination, but the
+      lock+revoke pair is still the strongest interlock of the three write
+      paths: it lets the SCSI side take the image back mid-copy instead of
+      racing a re-check at rename time. */
    g_ws_copy_lun = filesystemLunFromHostPath(dst);
    filesystemHostLockLun(g_ws_copy_lun, true);
    return true;
@@ -6714,6 +6783,8 @@ static void ws_err(void *arg, err_t err)
    if (c->copy_dst_open) {
       f_close(&c->copy_dst);
       c->copy_dst_open = false;
+      /* Mid-COPY teardown: drop the ".part", keep the destination. */
+      copy_discard_temp(c);
    }
    ws_copy_slot_release(c);
    if (c->dav_put_open) {
