@@ -96,6 +96,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "rpi/gpio.h"
 #include "rpi/interrupts.h"
 #include "rpi/screen.h"
+#include "rpi/display_mode.h"
 #include "rpi/systimer.h"
 #include "rpi/armc-cstubs.h"
 #include "Pi1MHz.h"
@@ -507,6 +508,10 @@ static void init_emulator(void) {
    config_load("/Pi1MHz/Pi1MHz.cfg");
    watchdog_boot_kick();
    RPI_BootStage(BOOT_STAGE_CONFIG);
+
+   /* Native resolution at 50 Hz from the monitor's EDID (Display_refresh).
+      Before any emulator: they size their planes from the display. */
+   display_mode_select();
 
    /* Report the previous attempt, now the config is up.  Anything short of
       BOOT_STAGE_RUNNING means the last boot died there - and unlike the

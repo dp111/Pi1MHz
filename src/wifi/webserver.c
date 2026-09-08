@@ -25,6 +25,7 @@
 #include "../services.h"              /* fat_service_file_in_use() - MMFS/FAT interlock */
 #include "../usb/mtp_fs.h"
 #include "../rpi/screen.h"
+#include "../rpi/display_mode.h"   /* Display mode row on /status */
 #include "../rpi/h264dec.h"           /* frame count on /status */
 #include "../rpi/audio.h"             /* owner/rate/underruns on /status */
 #include "../rpi/hdmi_audio.h"
@@ -2802,6 +2803,7 @@ static bool route_status(ws_conn_t *c)
                      (unsigned long)(mhz / 1000u), (unsigned long)((mhz % 1000u) / 10u));
       }
       table_row(&b, "Planes", planes);
+      table_row(&b, "Display mode", display_mode_report());
 
       /* VP5 strips: the rectangle they were built around, against plane 1's
          live geometry above - a disagreement means a MODE change moved the

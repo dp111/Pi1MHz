@@ -101,6 +101,7 @@ Harddisc_addr=-1
 | `watchdog` | off | A number of seconds (1-15). If set, the Pi's hardware watchdog reboots it automatically should the firmware ever lock up. `0` or absent = off. `watchdog=10` is a sensible value if you want it. |
 | `BeebAudio_Off` | off | `1` mutes the emulated audio path into the BBC's internal speaker. For the Music 5000 on a Pi 3B+ this also enables proper stereo on the Pi's headphone jack. Applies to whichever audio emulator is running (Music 5000 or BeebSID). |
 | `Audio_out` | `beeb` | `hdmi` sends the sound (Music 5000, BeebSID or the video player) out of the HDMI port instead of the Beeb pin/jack. Needs the display link in HDMI mode - `hdmi_drive=2` in `config.txt` if the screen's EDID does not advertise audio. |
+| `Display_refresh` | `50` | The refresh rate to run the screen at. At boot Pi1MHz reads the monitor's EDID and switches to its native resolution at this rate, so any monitor plugged in gets its best picture at 50 Hz with nothing in `config.txt`. The Domesday video is 25 frames a second, and at 50 Hz every frame is shown exactly twice; at 60 Hz pans judder. A television is given its own 50 Hz mode (1080p, 720p or 576p) rather than a made-up one. `off` leaves the mode to `config.txt`. A monitor whose EDID says it cannot go as low as the rate asked for is left alone, and the Display mode row on the status page says what happened. |
 | `Display_par` | `1/1` | Correction for a display whose pixels are not square. Pi1MHz already draws the video as a true 4:3 frame (and the Beeb picture registered on it) for any square-pixel display, so leave this alone unless the picture is visibly the wrong width. A 16:10 monitor fed a 1920x1080 signal stretches it 10/9 taller than wide: set `10/9`, or better, drive the monitor at its native mode in `config.txt` (see [Choosing the display mode](#choosing-the-display-mode)) and leave this at `1/1`. It is applied on top of the corrections Pi1MHz already makes (the 12/13 Beeb sample shape, and the television pixel shape on 576p and 480p). Any fraction `N/D` between 1/4 and 4/1 is accepted. |
 
 ## Hard disc settings
@@ -207,17 +208,19 @@ See [Troubleshooting](troubleshooting.md).
 
 ### Choosing the display mode
 
-`config.txt` ships with `hdmi_group=1` and `hdmi_mode=31`, which is
-1920x1080 at 50 Hz. That suits most TVs and 16:9 monitors, and 50 Hz gives
-the Domesday video (25 frames a second) an even cadence, so prefer a 50 Hz
-mode when the screen offers one. If your screen is a different shape, set
-the two lines to its **native** resolution from the table: the picture is
-then drawn correctly with no further setting: monitors have square
-pixels, and the two standard-definition television modes are recognised
-by their size and given the television pixel shape. The two
-right-hand columns are what Pi1MHz draws on each: the Beeb screen is scaled
-so that its 256 lines fill the height at a whole or half-integer factor, and
-the video frame around it is a true 4:3.
+Normally nothing needs setting: at boot Pi1MHz reads the monitor's EDID
+and switches to its native resolution at 50 Hz (see `Display_refresh`
+above), and the picture is drawn correctly for that size. The table is for
+when you want to choose the mode yourself, with `Display_refresh=off` in
+`Pi1MHz.cfg` and `hdmi_group`/`hdmi_mode` in `config.txt`: a monitor whose
+EDID is missing or wrong, a screen that must be run below its native size,
+or a mode Pi1MHz would not pick. Prefer a 50 Hz mode when the screen offers
+one, for the same even 25-frame cadence. Monitors have square pixels, and
+the two standard-definition television modes are recognised by their size
+and given the television pixel shape, so the picture is right at every
+mode listed. The two right-hand columns are what Pi1MHz draws on each: the
+Beeb screen is scaled so that its 256 lines fill the height at a whole or
+half-integer factor, and the video frame around it is a true 4:3.
 
 | Screen | config.txt | Beeb screen | Video frame (visible) | Notes |
 |---|---|---|---|---|

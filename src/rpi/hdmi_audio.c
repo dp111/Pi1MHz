@@ -94,8 +94,9 @@ static uint32_t hsm_clock_hz(void)
     return (uint32_t)(((uint64_t)PLLD_HZ << 8) / div);
 }
 
-/* Pixel clock = PLLH / 10, PLLH from its NDIV/FDIV/PDIV registers */
-static uint32_t pixel_clock_hz(void)
+/* Pixel clock = PLLH / 10, PLLH from its NDIV/FDIV/PDIV registers.  Live,
+   not cached: display_mode.c reads it before this file's init has run. */
+uint32_t hdmi_pixel_clock_hz(void)
 {
     uint32_t ctrl = A2W_PLLH_CTRLR;
     uint32_t fdiv = A2W_PLLH_FRACR & ((1u << 20) - 1u);
@@ -211,7 +212,7 @@ bool hdmi_audio_start(uint32_t rate)
     }
 
     hd.hsm_hz = hsm_clock_hz();
-    hd.pixel_hz = pixel_clock_hz();
+    hd.pixel_hz = hdmi_pixel_clock_hz();
     if (!hd.hsm_hz || !hd.pixel_hz) {
         LOG_INFO("hdmi audio: cannot read clocks (hsm %"PRIu32" pixel %"PRIu32")\r\n",
                  hd.hsm_hz, hd.pixel_hz);

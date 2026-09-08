@@ -183,6 +183,7 @@ set(core_files
    rpi/rpi.c
    rpi/asm-helpers.c
    rpi/screen.c
+   rpi/display_mode.c
    # Hardware H264 decode path: VCHIQ transport, MMAL client, decoder
    # wrapper (needs the full start.elf + gpu_mem=64 at runtime; compiles
    # and no-ops harmlessly with start_cd.elf)

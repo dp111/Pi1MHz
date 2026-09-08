@@ -42,6 +42,7 @@ void hdmi_audio_pack(int16_t l, int16_t r, uint32_t *out);
 /* Diagnostics */
 uint32_t hdmi_audio_hsm_hz(void);
 uint32_t hdmi_audio_pixel_hz(void);
+uint32_t hdmi_pixel_clock_hz(void);      /* live PLLH reading, for display_mode.c */
 uint32_t hdmi_audio_mai_ctl(void);
 
 #endif /* RPI_HDMI_AUDIO_H */
