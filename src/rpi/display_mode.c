@@ -136,6 +136,20 @@ static bool edid_read_once(uint32_t block, uint8_t edid[128])
     return true;
 }
 
+/* Both EDID blocks into edid_blocks[], once; false if there is no EDID. */
+static bool edid_fetch(void)
+{
+    if (edid_bytes != 0u)
+        return true;
+    uint8_t *edid = edid_blocks[0];
+    if (!edid_read(0, edid) || memcmp(edid, "\x00\xFF\xFF\xFF\xFF\xFF\xFF\x00", 8) != 0)
+        return false;
+    edid_bytes = 128u;
+    if (edid[126] != 0u && edid_read(1, edid_blocks[1]))
+        edid_bytes = 256u;
+    return true;
+}
+
 /* The preferred detailed timing (EDID bytes 54-71) as a firmware record
    at the given refresh: the panel's own geometry, pixel clock rescaled. */
 static bool edid_preferred_timing(const uint8_t *e, uint32_t hz, fw_timing_t *t)
@@ -222,16 +236,6 @@ void display_mode_select(void)
     if (done) return;                         /* init_emulator runs again on BREAK */
     done = true;
 
-    /* The EDID first, whatever happens next, so /edid always has it. */
-    uint8_t *edid = edid_blocks[0], *ext = edid_blocks[1];
-    bool have_edid = edid_read(0, edid)
-                     && memcmp(edid, "\x00\xFF\xFF\xFF\xFF\xFF\xFF\x00", 8) == 0;
-    if (have_edid) {
-        edid_bytes = 128u;
-        if (edid[126] != 0u && edid_read(1, ext))
-            edid_bytes = 256u;
-    }
-
     const char *v = config_get("Display_refresh");
     uint32_t hz = 50u;
     if (v != NULL) {
@@ -257,12 +261,17 @@ void display_mode_select(void)
                  (unsigned long)hz);
         return;
     }
-    if (!have_edid) {
+
+    /* Only now the EDID: two blocks over DDC are ~14 ms of boot, so they are
+       read when a decision needs them (and by /edid on demand). */
+    if (!edid_fetch()) {
         snprintf(report, sizeof report, "no EDID; %ux%u%s @ %lu.%02lu Hz left as set",
                  now.hdisplay, now.vdisplay, now_i, (unsigned long)(now_mhz / 1000u),
                  (unsigned long)((now_mhz % 1000u) / 10u));
         return;
     }
+
+    uint8_t *edid = edid_blocks[0], *ext = edid_blocks[1];
 
     /* The panel's preferred timing, rescaled - unless it is interlaced or
        otherwise unusable, in which case only a CEA mode below will do. */
@@ -319,6 +328,7 @@ const char *display_mode_report(void)
 
 unsigned display_mode_edid(const uint8_t **bytes)
 {
+    (void)edid_fetch();                  /* on demand: boot reads it only when deciding */
     *bytes = edid_blocks[0];
     return edid_bytes;
 }

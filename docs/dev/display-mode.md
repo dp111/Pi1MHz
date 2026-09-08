@@ -51,11 +51,12 @@ Called once from `init_emulator()` after `Pi1MHz.cfg` is loaded and before
 any emulator sizes a plane (interrupts still off; a BREAK re-init skips it;
 the caller kicks the watchdog around it and stamps `BOOT_STAGE_DISPLAY`).
 
-0. Read the EDID first, whatever happens next, so `/edid` always has it.
 1. `Display_refresh` (default 50; `off`/0 leaves `config.txt` in charge).
 2. Read the timing in force.  If it is progressive and within 0.5 Hz of the
-   target, stop: "already 50 Hz", no resync.  Interlaced never matches.
-3. Take the EDID's preferred detailed timing: the panel's own geometry with
+   target, stop: "already 50 Hz", no resync, and no EDID read - the two
+   blocks over DDC cost ~14 ms of boot, so they are read only when a
+   decision needs them (`/edid` fetches them on demand).
+3. Read the EDID and take its preferred detailed timing: the panel's own geometry with
    the pixel clock rescaled to `htotal * vtotal * hz`.  Interlaced, zero
    fields, or a sync that falls outside the blanking = unusable.
 4. If the target is 50 Hz and the CEA block lists a 50 Hz progressive mode,
@@ -82,7 +83,9 @@ planes follow the new mode with no other change.
 | chain-boot into a display already switched | inherited 50 Hz | "already 50 Hz", nothing sent |
 
 A cold boot of the module was seen (`Boot time` row present, mode row
-printed); the switch costs one monitor resync (~1 s) at boot.
+printed).  Cost: kernel-to-first-poll is 60 ms when the display is already
+at the target (unchanged from before the module) and ~230 ms when a mode is
+set, plus the monitor's own resync (~1 s), which is what the user sees.
 
 ## The geometry stack this sits on (src/rpi/screen.c)
 
