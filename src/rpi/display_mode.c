@@ -110,8 +110,19 @@ static uint32_t timing_mhz(const fw_timing_t *t)
     return (uint32_t)(((uint64_t)t->clock * 1000000u) / total);
 }
 
-/* One 128-byte EDID block into edid[]; false if the firmware has none. */
+/* One 128-byte EDID block into edid[]; false if the firmware has none.
+   The firmware fetches it over DDC on request, and a read can fail on the
+   wire (seen once on a long monitor lead), so try a few times. */
+static bool edid_read_once(uint32_t block, uint8_t edid[128]);
 static bool edid_read(uint32_t block, uint8_t edid[128])
+{
+    for (unsigned attempt = 0; attempt < 4u; attempt++)
+        if (edid_read_once(block, edid))
+            return true;
+    return false;
+}
+
+static bool edid_read_once(uint32_t block, uint8_t edid[128])
 {
     RPI_PropertyStart((rpi_mailbox_tag_t)TAG_GET_EDID_BLOCK_, 34u);
     RPI_PropertyAdd(block);
