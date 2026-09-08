@@ -211,6 +211,16 @@ void display_mode_select(void)
     if (done) return;                         /* init_emulator runs again on BREAK */
     done = true;
 
+    /* The EDID first, whatever happens next, so /edid always has it. */
+    uint8_t *edid = edid_blocks[0], *ext = edid_blocks[1];
+    bool have_edid = edid_read(0, edid)
+                     && memcmp(edid, "\x00\xFF\xFF\xFF\xFF\xFF\xFF\x00", 8) == 0;
+    if (have_edid) {
+        edid_bytes = 128u;
+        if (edid[126] != 0u && edid_read(1, ext))
+            edid_bytes = 256u;
+    }
+
     const char *v = config_get("Display_refresh");
     uint32_t hz = 50u;
     if (v != NULL) {
@@ -229,15 +239,14 @@ void display_mode_select(void)
     }
     uint32_t now_mhz = timing_mhz(&now);
     const char *now_i = (now.flags & TF_INTERLACE) ? "i" : "";
+
     if (!(now.flags & TF_INTERLACE)
         && now_mhz + 500u >= hz * 1000u && now_mhz <= hz * 1000u + 500u) {
         snprintf(report, sizeof report, "%ux%u already %lu Hz", now.hdisplay, now.vdisplay,
                  (unsigned long)hz);
         return;
     }
-
-    uint8_t *edid = edid_blocks[0], *ext = edid_blocks[1];
-    if (!edid_read(0, edid) || memcmp(edid, "\x00\xFF\xFF\xFF\xFF\xFF\xFF\x00", 8) != 0) {
+    if (!have_edid) {
         snprintf(report, sizeof report, "no EDID; %ux%u%s @ %lu.%02lu Hz left as set",
                  now.hdisplay, now.vdisplay, now_i, (unsigned long)(now_mhz / 1000u),
                  (unsigned long)((now_mhz % 1000u) / 10u));
@@ -253,9 +262,6 @@ void display_mode_select(void)
     /* A television: its own 50 Hz progressive mode, if it lists one - at the
        preferred size when the preferred timing is usable, else the best it
        has (a set that prefers 1080i50 usually lists 1080p50 or 720p50). */
-    edid_bytes = 128u;
-    if (edid[126] != 0u && edid_read(1, ext))
-        edid_bytes = 256u;
     if (hz == 50u && edid_bytes == 256u) {
         for (unsigned i = 0; i < sizeof cea50 / sizeof cea50[0]; i++) {
             if (!cea_lists_vic(ext, (uint8_t)cea50[i].video_id_code))
