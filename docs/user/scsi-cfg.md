@@ -99,7 +99,7 @@ You can add or remove `ModePageNN` lines; they must keep the
 |---|---|---|---|
 | `LDUserCode` | text | 5 chars | LaserDisc user code for VFS/Domesday volumes, including the `=` (e.g. `1=986`). |
 | `LDVideoXoffset` | integer | -768 … 768 | Horizontal alignment of the Domesday video on the Beeb's picture, in Beeb MODE 0 pixels (1/640 of the line); positive moves the video right. Absent = `-2`. |
-| `LDVideoYoffset` | integer | -288 … 288 | Vertical alignment, in Beeb rows (1/256 of the screen); positive moves the video down. Absent = `-2`. Both are read whenever the side is opened or jukeboxed to, so they are per disc side. |
+| `LDVideoYoffset` | integer | -288 … 288 | Vertical alignment, in Beeb rows (1/256 of the screen); positive moves the video down. Absent = `-1`. Both are read whenever the side is opened or jukeboxed to, so they are per disc side. |
 
 ## Editing safely
 
