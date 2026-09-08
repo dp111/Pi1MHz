@@ -25,8 +25,8 @@ a display that was set up by `config.txt` (i.e. not in FKMS mode):
 
 | tag | value | notes |
 |---|---|---|
-| `GET_EDID_BLOCK` | `0x00030020` | request 34 words: `[block, 0 x33]`; reply `[block, status, 128 bytes at byte offset 8]` |
-| `SET_TIMING` | `0x00048017` | request = Linux `struct set_timings`, 36 bytes (below); reply has length 0 but the mode changes |
+| `GET_EDID_BLOCK` | `0x00030020` | request 34 words: `[block, 0 x33]`; reply `[block, status, 128 bytes at byte offset 8]`.  Fetched over DDC on request: one read came back empty on the bench, so it is retried (4 tries).  Through an HDMI splitter the EDID is whichever sink the splitter forwards - the bench read the capture stick's EDID while the monitor showed the picture |
+| `SET_TIMING` | `0x00048017` | request = Linux `struct set_timings`, 36 bytes (below); the reply is empty either way (and the property layer masks the per-tag response bit), so success is judged by reading the pixel valve back |
 | `GET_DISPLAY_TIMING` | `0x00040017` | **returns a 36-byte reply of zeros** (display 2 and 0 tried).  Not used. |
 | `GET_CLOCK_RATE(PIXEL=9)` | `0x00030002` | returned 0 at this point in boot.  Not used. |
 
@@ -48,14 +48,16 @@ PLLH/10 from the A2W registers (`hdmi_pixel_clock_hz()` in
 ## What `display_mode_select()` does (src/rpi/display_mode.c)
 
 Called once from `init_emulator()` after `Pi1MHz.cfg` is loaded and before
-any emulator sizes a plane (interrupts still off; a BREAK re-init skips it).
+any emulator sizes a plane (interrupts still off; a BREAK re-init skips it;
+the caller kicks the watchdog around it and stamps `BOOT_STAGE_DISPLAY`).
 
+0. Read the EDID first, whatever happens next, so `/edid` always has it.
 1. `Display_refresh` (default 50; `off`/0 leaves `config.txt` in charge).
 2. Read the timing in force.  If it is progressive and within 0.5 Hz of the
    target, stop: "already 50 Hz", no resync.  Interlaced never matches.
-3. Read EDID block 0 (and block 1 if present).  Take the preferred detailed
-   timing: the panel's own geometry with the pixel clock rescaled to
-   `htotal * vtotal * hz`.  Interlaced or malformed = unusable.
+3. Take the EDID's preferred detailed timing: the panel's own geometry with
+   the pixel clock rescaled to `htotal * vtotal * hz`.  Interlaced, zero
+   fields, or a sync that falls outside the blanking = unusable.
 4. If the target is 50 Hz and the CEA block lists a 50 Hz progressive mode,
    prefer it: at the preferred size when the preferred timing is usable
    (a television gets its real mode with its VIC, not a rescaled 60 Hz one it
@@ -98,6 +100,10 @@ the Beeb's 16 MHz pixel clock, 576 frame lines):
   sits registered on it at its true 1.15:1, on any square-pixel display.
 * On 4:3 and 5:4 displays the video would overrun the width; the source is
   cropped horizontally and centred (the vertical path already did that).
+
+The alignment update runs with interrupts off (the player's flip is in the
+vsync IRQ and shares the offsets and pointers), as `screen_plane_alpha()`
+does.
 
 **Alignment** (`LDVideoXoffset`/`LDVideoYoffset` per disc side in
 `scsi0.cfg`, defaults -5,-2 in Beeb pixels/rows): on an axis where the plane
