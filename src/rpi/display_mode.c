@@ -65,16 +65,16 @@ static char report[128] = "not run";
 static uint8_t edid_blocks[2][128];         /* block 0 and the first extension */
 static unsigned edid_bytes;                 /* 0, 128 or 256 */
 
-/* SET_TIMING answers with an empty response (length 0) when it takes the
-   mode, and nothing at all if the firmware does not know the tag. */
-static bool fw_timing_set(const fw_timing_t *t)
+/* SET_TIMING's reply carries nothing (length 0) whether or not the firmware
+   acted on it, and RPI_PropertyGet masks off the per-tag response bit, so
+   the reply cannot say; the caller judges by reading the timing back. */
+static void fw_timing_set(const fw_timing_t *t)
 {
     const uint32_t *w = (const uint32_t *)t;
     RPI_PropertyStart((rpi_mailbox_tag_t)TAG_SET_TIMING, sizeof *t / 4u);
     for (unsigned i = 0; i < sizeof *t / 4u; i++)
         RPI_PropertyAdd(w[i]);
     RPI_PropertyProcess(true);
-    return RPI_PropertyGet((rpi_mailbox_tag_t)TAG_SET_TIMING) != NULL;
 }
 
 /* The timing in force, read from the hardware: pixel valve 2 drives HDMI
@@ -285,10 +285,12 @@ void display_mode_select(void)
     }
 
     watchdog_boot_kick();                      /* the resync can take a while */
-    bool ok = fw_timing_set(&want);
+    fw_timing_set(&want);
     watchdog_boot_kick();
     fw_timing_t after;
     uint32_t after_mhz = pv_timing_get(&after) ? timing_mhz(&after) : 0u;
+    bool ok = after.hdisplay == want.hdisplay && after.vdisplay == want.vdisplay
+              && after_mhz + 500u >= hz * 1000u && after_mhz <= hz * 1000u + 500u;
     snprintf(report, sizeof report, "%ux%u %lu Hz from %s: %s, now %ux%u @ %lu.%02lu Hz",
              want.hdisplay, want.vdisplay, (unsigned long)hz, how,
              ok ? "set" : "REFUSED", after.hdisplay, after.vdisplay,
