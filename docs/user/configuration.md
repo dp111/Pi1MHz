@@ -212,7 +212,9 @@ See [Troubleshooting](troubleshooting.md).
 the Domesday video (25 frames a second) an even cadence, so prefer a 50 Hz
 mode when the screen offers one. If your screen is a different shape, set
 the two lines to its **native** resolution from the table: the picture is
-then drawn with square pixels and no correction is needed. The two
+then drawn with square pixels and no correction is needed (the two
+television modes are the exception - their pixels are not square, and the
+table gives the `Display_par` that puts them right). The two
 right-hand columns are what Pi1MHz draws on each: the Beeb screen is scaled
 so that its 256 lines fill the height at a whole or half-integer factor, and
 the video frame around it is a true 4:3.
@@ -232,8 +234,8 @@ the video frame around it is a true 4:3.
 | 1600x1200 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=51` | 1330x1152 | 1600x1200 | The video loses a little at each side. |
 | 1024x768 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=16` | 886x768 | 1024x768 | The video loses a little at each side. |
 | 800x600 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=9` | 664x576 | 800x600 | The video loses a little at each side. |
-| 720x576 PAL television, SCART or HDMI (576p, 4:3) | `hdmi_group=1`, `hdmi_mode=17` | 590x512 | 720x576 | 50 Hz. On a widescreen set use `hdmi_mode=18` and `Display_par=3/4`. |
-| 720x480 NTSC television (480p, 4:3) | `hdmi_group=1`, `hdmi_mode=2` | 516x448 | 672x480 | 60 Hz. |
+| 720x576 PAL television, SCART or HDMI (576p, 4:3) | `hdmi_group=1`, `hdmi_mode=17` | 553x512 | 720x576 | 50 Hz. Set `Display_par=15/16`: television pixels are not square. On a widescreen set use `hdmi_mode=18` and `Display_par=45/64` instead. |
+| 720x480 NTSC television (480p, 4:3) | `hdmi_group=1`, `hdmi_mode=2` | 580x448 | 720x480 | 60 Hz. Set `Display_par=9/8`: television pixels are not square. |
 
 Sound over HDMI (`Audio_out=hdmi`) needs the link in HDMI mode: add
 `hdmi_drive=2` if the screen's EDID does not advertise audio, and
