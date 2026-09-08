@@ -232,6 +232,8 @@ the video frame around it is a true 4:3.
 | 1600x1200 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=51` | 1330x1152 | 1600x1200 | The video loses a little at each side. |
 | 1024x768 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=16` | 886x768 | 1024x768 | The video loses a little at each side. |
 | 800x600 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=9` | 664x576 | 800x600 | The video loses a little at each side. |
+| 720x576 PAL television, SCART or HDMI (576p, 4:3) | `hdmi_group=1`, `hdmi_mode=17` | 590x512 | 720x576 | 50 Hz. On a widescreen set use `hdmi_mode=18` and `Display_par=3/4`. |
+| 720x480 NTSC television (480p, 4:3) | `hdmi_group=1`, `hdmi_mode=2` | 516x448 | 672x480 | 60 Hz. |
 
 Sound over HDMI (`Audio_out=hdmi`) needs the link in HDMI mode: add
 `hdmi_drive=2` if the screen's EDID does not advertise audio, and
