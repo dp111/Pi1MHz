@@ -140,6 +140,7 @@ static bool edid_preferred_timing(const uint8_t *e, uint32_t hz, fw_timing_t *t)
     uint8_t  fl = d[17];
     if (fl & 0x80u) return false;              /* interlaced: leave it alone */
     if (ha == 0u || va == 0u || hb == 0u || vb == 0u) return false;
+    if (hso + hsw > hb || vso + vsw > vb) return false;   /* sync outside the blanking */
 
     memset(t, 0, sizeof *t);
     t->display     = HDMI_DISPLAY_ID;
