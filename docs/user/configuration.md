@@ -101,7 +101,7 @@ Harddisc_addr=-1
 | `watchdog` | off | A number of seconds (1-15). If set, the Pi's hardware watchdog reboots it automatically should the firmware ever lock up. `0` or absent = off. `watchdog=10` is a sensible value if you want it. |
 | `BeebAudio_Off` | off | `1` mutes the emulated audio path into the BBC's internal speaker. For the Music 5000 on a Pi 3B+ this also enables proper stereo on the Pi's headphone jack. Applies to whichever audio emulator is running (Music 5000 or BeebSID). |
 | `Audio_out` | `beeb` | `hdmi` sends the sound (Music 5000, BeebSID or the video player) out of the HDMI port instead of the Beeb pin/jack. Needs the display link in HDMI mode - `hdmi_drive=2` in `config.txt` if the screen's EDID does not advertise audio. |
-| `Display_par` | `1/1` | Correction for a display whose pixels are not square. Pi1MHz already draws the video as a true 4:3 frame (and the Beeb picture registered on it) for any square-pixel display, so leave this alone unless the picture is visibly the wrong width. A 16:10 monitor fed a 1920x1080 signal stretches it 10/9 taller than wide: set `10/9`, or better, drive the monitor at its native mode in `config.txt` (`hdmi_group=2` with `hdmi_mode=69` for 1920x1200, `58` for 1680x1050, `47` for 1440x900) and leave this at `1/1`. Any fraction `N/D` between 1/4 and 4/1 is accepted. |
+| `Display_par` | `1/1` | Correction for a display whose pixels are not square. Pi1MHz already draws the video as a true 4:3 frame (and the Beeb picture registered on it) for any square-pixel display, so leave this alone unless the picture is visibly the wrong width. A 16:10 monitor fed a 1920x1080 signal stretches it 10/9 taller than wide: set `10/9`, or better, drive the monitor at its native mode in `config.txt` (see [Choosing the display mode](#choosing-the-display-mode)) and leave this at `1/1`. Any fraction `N/D` between 1/4 and 4/1 is accepted. |
 
 ## Hard disc settings
 
@@ -204,3 +204,48 @@ ever change is near the top: un-commenting `kernel=debug/kernel.img`
 (or `kernel=debug/kernel7.img` in the `[pi3]` section) boots the debug
 build of Pi1MHz, which prints diagnostic messages on the serial port.
 See [Troubleshooting](troubleshooting.md).
+
+### Choosing the display mode
+
+`config.txt` ships with `hdmi_group=1` and `hdmi_mode=31`, which is
+1920x1080 at 50 Hz. That suits most TVs and 16:9 monitors, and 50 Hz gives
+the Domesday video (25 frames a second) an even cadence, so prefer a 50 Hz
+mode when the screen offers one. If your screen is a different shape, set
+the two lines to its **native** resolution from the table: the picture is
+then drawn with square pixels and no correction is needed. The two
+right-hand columns are what Pi1MHz draws on each: the Beeb screen is scaled
+so that its 256 lines fill the height at a whole or half-integer factor, and
+the video frame around it is a true 4:3.
+
+| Screen | config.txt | Beeb screen | Video frame (visible) | Notes |
+|---|---|---|---|---|
+| 1920x1080 TV or monitor (16:9) | `hdmi_group=1`, `hdmi_mode=31 (50 Hz) or 16 (60 Hz)` | 1182x1024 | 1536x1080 | The shipped default. 50 Hz matches the 25-frame Domesday video. |
+| 1280x720 TV (16:9) | `hdmi_group=1`, `hdmi_mode=19 (50 Hz) or 4 (60 Hz)` | 812x704 | 1056x720 |  |
+| 1366x768 panel (16:9) | `hdmi_group=2`, `hdmi_mode=81` | 886x768 | 1152x768 | Common on small TVs and laptop-panel monitors. |
+| 1600x900 monitor (16:9) | `hdmi_group=2`, `hdmi_mode=83` | 1034x896 | 1344x900 |  |
+| 2560x1440 or 4K monitor | `hdmi_group=1`, `hdmi_mode=31 or 16` | 1182x1024 | 1536x1080 | The Pi Zero cannot drive these natively; send 1080p and let the monitor scale it. |
+| 1920x1200 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=69` | 1330x1152 | 1728x1200 | Use the native mode: fed 1080p, a 16:10 panel stretches the picture 10/9 tall. |
+| 1680x1050 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=58` | 1182x1024 | 1536x1050 |  |
+| 1440x900 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=47` | 1034x896 | 1344x900 |  |
+| 1280x800 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=28` | 886x768 | 1152x800 |  |
+| 1280x1024 monitor (5:4) | `hdmi_group=2`, `hdmi_mode=35` | 1182x1024 | 1536x1024 | The panel Pi1MHz's scaling was first built for. |
+| 1600x1200 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=51` | 1330x1152 | 1728x1200 |  |
+| 1024x768 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=16` | 886x768 | 1152x768 | The video frame is wider than the screen and loses a little at each side. |
+| 800x600 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=9` | 664x576 | 864x600 | Small, but the whole thing works. |
+
+Two things to know:
+
+- **A 16:10 or 4:3 panel fed a 16:9 signal stretches it.** If you cannot
+  use the native mode, `Display_par` in `Pi1MHz.cfg` corrects the width:
+  `10/9` for a 16:10 panel showing 1080p full-screen, `4/3 ÷ 16/9` = `3/4`
+  for a 4:3 panel doing the same. Native mode is better - the panel also
+  stops resampling the Pi's output.
+- **Sound over HDMI** (`Audio_out=hdmi`) needs the link in HDMI mode; add
+  `hdmi_drive=2` if the screen's EDID does not advertise audio, and
+  `hdmi_force_hotplug=1` if the Pi boots before the screen is on.
+
+The mode numbers are the standard Raspberry Pi ones (group 1 = CEA/TV
+modes, group 2 = DMT/monitor modes); any other resolution in the Pi's
+tables works too - Pi1MHz derives its scaling from whatever the firmware
+reports.
+
