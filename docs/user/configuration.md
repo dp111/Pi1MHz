@@ -228,10 +228,10 @@ the video frame around it is a true 4:3.
 | 1680x1050 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=58` | 1182x1024 | 1536x1050 |  |
 | 1440x900 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=47` | 1034x896 | 1344x900 |  |
 | 1280x800 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=28` | 886x768 | 1152x800 |  |
-| 1280x1024 monitor (5:4) | `hdmi_group=2`, `hdmi_mode=35` | 1182x1024 | 1536x1024 |  |
-| 1600x1200 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=51` | 1330x1152 | 1728x1200 |  |
-| 1024x768 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=16` | 886x768 | 1152x768 | The video loses a little at each side. |
-| 800x600 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=9` | 664x576 | 864x600 |  |
+| 1280x1024 monitor (5:4) | `hdmi_group=2`, `hdmi_mode=35` | 1182x1024 | 1280x1024 | The video loses a little at each side. |
+| 1600x1200 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=51` | 1330x1152 | 1600x1200 | The video loses a little at each side. |
+| 1024x768 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=16` | 886x768 | 1024x768 | The video loses a little at each side. |
+| 800x600 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=9` | 664x576 | 800x600 | The video loses a little at each side. |
 
 Sound over HDMI (`Audio_out=hdmi`) needs the link in HDMI mode: add
 `hdmi_drive=2` if the screen's EDID does not advertise audio, and
