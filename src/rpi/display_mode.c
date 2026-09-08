@@ -32,7 +32,6 @@
 #include "mailbox.h"
 #include "rpi.h"
 #include "../config.h"
-#include "../watchdog.h"
 #include "hdmi_audio.h"           /* hdmi_pixel_clock_hz */
 
 #define TAG_GET_EDID_BLOCK_    0x30020u
@@ -284,9 +283,7 @@ void display_mode_select(void)
         }
     }
 
-    watchdog_boot_kick();                      /* the resync can take a while */
-    fw_timing_set(&want);
-    watchdog_boot_kick();
+    fw_timing_set(&want);                      /* the caller kicks the watchdog around us */
     fw_timing_t after;
     uint32_t after_mhz = pv_timing_get(&after) ? timing_mhz(&after) : 0u;
     bool ok = after.hdisplay == want.hdisplay && after.vdisplay == want.vdisplay

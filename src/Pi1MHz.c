@@ -510,8 +510,11 @@ static void init_emulator(void) {
    RPI_BootStage(BOOT_STAGE_CONFIG);
 
    /* Native resolution at 50 Hz from the monitor's EDID (Display_refresh).
-      Before any emulator: they size their planes from the display. */
+      Before any emulator: they size their planes from the display.  The
+      mode set makes the monitor resync, which can take a while. */
+   watchdog_boot_kick();
    display_mode_select();
+   watchdog_boot_kick();
 
    /* Report the previous attempt, now the config is up.  Anything short of
       BOOT_STAGE_RUNNING means the last boot died there - and unlike the
