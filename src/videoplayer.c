@@ -1075,11 +1075,11 @@ static bool pvf_open_file(void)
     }
 
     /* This side's picture alignment (scsi0.cfg LDVideoXoffset/LDVideoYoffset,
-       Beeb pixels and rows).  Absent means -2,-1: two pixels left and one row
+       Beeb pixels and rows).  Absent means -4,-1: four pixels left and one row
        up, where the owner's discs register with the Beeb's graphics.  Read
        here so a jukebox to another side re-applies that side's values. */
     {
-        int ax = -2, ay = -1;
+        int ax = -4, ay = -1;
         uint8_t dir = (uint8_t)filesystemGetLunDirectoryVFS();
         (void)filesystemReadVFSCfgIntDir(dir, LDVIDEOXOFFSET, &ax);
         (void)filesystemReadVFSCfgIntDir(dir, LDVIDEOYOFFSET, &ay);
