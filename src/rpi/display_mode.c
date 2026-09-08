@@ -33,6 +33,7 @@
 #include "rpi.h"
 #include "../config.h"
 #include "hdmi_audio.h"           /* hdmi_pixel_clock_hz */
+#include "systimer.h"             /* RPI_GetSystemTime: where the boot time went */
 
 #define TAG_GET_EDID_BLOCK_    0x30020u
 #define TAG_SET_TIMING         0x48017u
@@ -60,7 +61,7 @@ _Static_assert(sizeof(fw_timing_t) == 36, "firmware timing record is 36 bytes");
 #define TF_ASPECT_16_9  (2u << 4)
 #define TF_RGB_LIMITED  (1u << 8)
 
-static char report[128] = "not run";
+static char report[160] = "not run";
 static uint8_t edid_blocks[2][128];         /* block 0 and the first extension */
 static unsigned edid_bytes;                 /* 0, 128 or 256 */
 
@@ -264,7 +265,10 @@ void display_mode_select(void)
 
     /* Only now the EDID: two blocks over DDC are ~14 ms of boot, so they are
        read when a decision needs them (and by /edid on demand). */
-    if (!edid_fetch()) {
+    uint32_t t1 = RPI_GetSystemTime();
+    bool got_edid = edid_fetch();
+    uint32_t t2 = RPI_GetSystemTime();
+    if (!got_edid) {
         snprintf(report, sizeof report, "no EDID; %ux%u%s @ %lu.%02lu Hz left as set",
                  now.hdisplay, now.vdisplay, now_i, (unsigned long)(now_mhz / 1000u),
                  (unsigned long)((now_mhz % 1000u) / 10u));
@@ -310,7 +314,9 @@ void display_mode_select(void)
         }
     }
 
+    uint32_t t3 = RPI_GetSystemTime();
     fw_timing_set(&want);                      /* the caller kicks the watchdog around us */
+    uint32_t t4 = RPI_GetSystemTime();
     fw_timing_t after;
     uint32_t after_mhz = pv_timing_get(&after) ? timing_mhz(&after) : 0u;
     bool ok = after.hdisplay == want.hdisplay && after.vdisplay == want.vdisplay
@@ -319,6 +325,12 @@ void display_mode_select(void)
              want.hdisplay, want.vdisplay, (unsigned long)hz, how,
              ok ? "set" : "REFUSED", after.hdisplay, after.vdisplay,
              (unsigned long)(after_mhz / 1000u), (unsigned long)((after_mhz % 1000u) / 10u));
+    /* Where the boot time went: the EDID blocks over DDC, and the firmware's
+       mode set (~170 ms on a full boot; ~1.5 s for a SECOND runtime mode set
+       on the same VideoCore session, which only a chain-boot produces). */
+    snprintf(report + strlen(report), sizeof report - strlen(report),
+             " (edid %lu ms, set %lu ms)",
+             (unsigned long)((t2 - t1 + 500u) / 1000u), (unsigned long)((t4 - t3 + 500u) / 1000u));
 }
 
 const char *display_mode_report(void)
