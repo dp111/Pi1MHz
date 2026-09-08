@@ -1029,13 +1029,20 @@ void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows )
     if (video_planeno < MAX_PLANES && plane_valid[video_planeno]) {
         uint32_t pos, hoff, voff;
         video_align_resolve(&pos, &hoff, &voff);
+        /* The player's flip runs from the vsync IRQ and reads the offsets
+           and writes video_ptr[]; an IRQ between the offset update and the
+           re-point below would put one frame's luma and chroma at different
+           offsets, or re-point at a buffer the flip has just recycled.  Same
+           bracket as screen_plane_alpha(). */
+        unsigned int cpsr = _disable_interrupts_cspr();
         plane_shadow[video_planeno].pos = pos;
-        plane_mark(video_planeno, PL_DIRTY_POS);
         video_ptr_offsets(video_planeno, hoff, voff);
         /* A moved source window shows from the next frame the player flips
            in; re-point the current one too, so a paused picture moves. */
         if (video_ptr_set)
             screen_set_YUV_pointers(video_planeno, video_ptr[0], video_ptr[1], video_ptr[2]);
+        _restore_cpsr(cpsr);
+        plane_mark(video_planeno, PL_DIRTY_POS);
     }
 }
 
