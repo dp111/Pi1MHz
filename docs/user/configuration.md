@@ -224,7 +224,7 @@ the video frame around it is a true 4:3.
 | 1366x768 panel (16:9) | `hdmi_group=2`, `hdmi_mode=81` | 886x768 | 1152x768 | Common on small TVs and laptop-panel monitors. |
 | 1600x900 monitor (16:9) | `hdmi_group=2`, `hdmi_mode=83` | 1034x896 | 1344x900 |  |
 | 2560x1440 or 4K monitor | `hdmi_group=1`, `hdmi_mode=31 or 16` | 1182x1024 | 1536x1080 | The Pi Zero cannot drive these natively; send 1080p and let the monitor scale it. |
-| 1920x1200 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=69` | 1330x1152 | 1728x1200 | Use the native mode: fed 1080p, a 16:10 panel stretches the picture 10/9 tall. |
+| 1920x1200 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=69` | 1330x1152 | 1728x1200 |  |
 | 1680x1050 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=58` | 1182x1024 | 1536x1050 |  |
 | 1440x900 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=47` | 1034x896 | 1344x900 |  |
 | 1280x800 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=28` | 886x768 | 1152x800 |  |
@@ -233,16 +233,12 @@ the video frame around it is a true 4:3.
 | 1024x768 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=16` | 886x768 | 1152x768 | The video frame is wider than the screen and loses a little at each side. |
 | 800x600 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=9` | 664x576 | 864x600 | Small, but the whole thing works. |
 
-Two things to know:
-
-- **A 16:10 or 4:3 panel fed a 16:9 signal stretches it.** If you cannot
-  use the native mode, `Display_par` in `Pi1MHz.cfg` corrects the width:
-  `10/9` for a 16:10 panel showing 1080p full-screen, `4/3 ÷ 16/9` = `3/4`
-  for a 4:3 panel doing the same. Native mode is better - the panel also
-  stops resampling the Pi's output.
-- **Sound over HDMI** (`Audio_out=hdmi`) needs the link in HDMI mode; add
-  `hdmi_drive=2` if the screen's EDID does not advertise audio, and
-  `hdmi_force_hotplug=1` if the Pi boots before the screen is on.
+Sound over HDMI (`Audio_out=hdmi`) needs the link in HDMI mode: add
+`hdmi_drive=2` if the screen's EDID does not advertise audio, and
+`hdmi_force_hotplug=1` if the Pi boots before the screen is on. If a
+screen has to be run at a mode that is not its native shape and the
+picture looks too narrow or too wide, `Display_par` in `Pi1MHz.cfg`
+corrects the width.
 
 The mode numbers are the standard Raspberry Pi ones (group 1 = CEA/TV
 modes, group 2 = DMT/monitor modes); any other resolution in the Pi's
