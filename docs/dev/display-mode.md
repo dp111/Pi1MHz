@@ -83,9 +83,20 @@ planes follow the new mode with no other change.
 | chain-boot into a display already switched | inherited 50 Hz | "already 50 Hz", nothing sent |
 
 A cold boot of the module was seen (`Boot time` row present, mode row
-printed).  Cost: kernel-to-first-poll is 60 ms when the display is already
-at the target (unchanged from before the module) and ~230 ms when a mode is
-set, plus the monitor's own resync (~1 s), which is what the user sees.
+printed).  Cost, measured with the system timer (the row prints it):
+
+| | kernel to first poll |
+|---|---|
+| display already at the target (no EDID read, nothing sent) | 60 ms - as before the module |
+| a mode is set, full boot | 230 ms = 60 baseline + 24 EDID (two DDC blocks) + 145-170 SET_TIMING |
+| a mode is set from a **chain-boot** (second runtime mode set on the same VideoCore session) | 1.5-1.8 s in SET_TIMING alone.  Developer artefact only; a full boot does not show it |
+
+The pixel clock changing or not made no difference (1920x1200 at 154 MHz
+to 720p at 74 MHz was 145 ms).  The monitor's own resync (~1 s) is what
+the user sees.  The wait cannot be overlapped with the rest of boot: the
+mailbox is one in-order slot already carrying the deferred USB power-on,
+and the framebuffer allocation needs it too.  The zero-cost path is a
+`config.txt` mode that is already right, when the switch never runs.
 
 ## The geometry stack this sits on (src/rpi/screen.c)
 
