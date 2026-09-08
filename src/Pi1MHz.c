@@ -515,6 +515,7 @@ static void init_emulator(void) {
    watchdog_boot_kick();
    display_mode_select();
    watchdog_boot_kick();
+   RPI_BootStage(BOOT_STAGE_DISPLAY);
 
    /* Report the previous attempt, now the config is up.  Anything short of
       BOOT_STAGE_RUNNING means the last boot died there - and unlike the

@@ -37,6 +37,7 @@ typedef enum {
    BOOT_STAGE_HEAP,           /* heap sized                                 */
    BOOT_STAGE_INFO,           /* dump_useful_info done (DEBUG builds)       */
    BOOT_STAGE_CONFIG,         /* Pi1MHz.cfg parsed                          */
+   BOOT_STAGE_DISPLAY,        /* display mode chosen (EDID read, mode set)  */
    BOOT_STAGE_EMULATORS,      /* every emulator init returned               */
    BOOT_STAGE_RUNNING         /* main poll loop entered                     */
 } boot_stage_t;
