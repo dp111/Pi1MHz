@@ -942,36 +942,84 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
    because it is also half-height. */
 /* Per-side alignment of the video on the Beeb's raster (scsi0.cfg
    LDVideoXoffset/LDVideoYoffset, read by the player at every open).  Kept in
-   Beeb units and converted with the live scale, so the same numbers mean
-   the same thing on every display mode: one MODE 0 pixel is one grid
-   sample, rgb_scale/2 display pixels wide (times the grid's 12/13 and the
-   Display_par correction); one Beeb row is two grid lines, rgb_scale
-   display pixels tall.  The plane's unaligned position is remembered so a
-   change re-derives from it rather than accumulating. */
+   Beeb units and converted with the live geometry, so the same numbers mean
+   the same thing on every display mode: one MODE 0 pixel is one grid sample
+   (src_w/832 source columns, or rgb_scale/2 display pixels times the grid's
+   12/13 and the panel corrections); one Beeb row is two grid lines (2*src_h/576
+   source lines, or rgb_scale display pixels).
+
+   On an axis where the plane is narrower than the display (the width on a
+   16:9 or 16:10 mode) the plane is moved.  On an axis where it fills the
+   display (the height on every mode, the width on 4:3 and 5:4) the plane
+   cannot move - the position clamps at 0 - so the SOURCE window slides
+   inside the overscan crop instead: moving the picture up means showing
+   lower source lines, so the top offset grows.  A source shift is kept even
+   (the chroma planes are half size) and clamped to the crop's slack, which
+   is nil at 576p where the frame fits exactly.  The unaligned geometry is
+   remembered so a change re-derives from it rather than accumulating. */
+void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr );   /* below */
+
 static int      video_align_x = 0;
 static int      video_align_y = 0;
-static uint32_t video_base_pos;
 static uint32_t video_planeno = MAX_PLANES;   /* none yet */
+static uint32_t video_base_pos;                /* centred, unaligned */
+static uint32_t video_base_hoff, video_base_voff;   /* centred source crop */
+static uint32_t video_src_w, video_src_h;      /* the file's frame */
+static uint32_t video_win_w, video_win_h;      /* source window shown */
+static uint32_t video_ptr[3];                  /* last frame's Y, Cb, Cr */
+static bool     video_ptr_set;
 
-static uint32_t video_pos_aligned(uint32_t base_pos, uint32_t plane_w, uint32_t plane_h)
+static int round_even(float v)
+{
+    float h = v * 0.5f;
+    return 2 * (int)(h + (h >= 0.0f ? 0.5f : -0.5f));
+}
+
+static void video_align_resolve(uint32_t *pos_out, uint32_t *hoff_out, uint32_t *voff_out)
 {
     uint32_t h_display = ( RPI_hvs->ctrl1 >> 12 ) & 0xfff;
     uint32_t v_display = ( RPI_hvs->ctrl1       ) & 0xfff;
-    float fx = (float)video_align_x * (rgb_scale / 2.0f) * grid_par(h_display, v_display);
-    float fy = (float)video_align_y * rgb_scale;
-    int dx = (int)(fx + (fx >= 0.0f ? 0.5f : -0.5f));
-    int dy = (int)(fy + (fy >= 0.0f ? 0.5f : -0.5f));
-    int x = (int)(base_pos & 0xfffu) + dx;
-    int y = (int)((base_pos >> 12) & 0xfffu) + dy;
+    uint32_t plane_w = plane_shadow[video_planeno].scale & 0xfffu;
+    uint32_t plane_h = (plane_shadow[video_planeno].scale >> 16) & 0xfffu;
+    int x = (int)(video_base_pos & 0xfffu);
+    int y = (int)((video_base_pos >> 12) & 0xfffu);
+    int hoff = (int)video_base_hoff;
+    int voff = (int)video_base_voff;
+
+    if (plane_w < h_display) {
+        float fx = (float)video_align_x * (rgb_scale / 2.0f) * grid_par(h_display, v_display);
+        int xmax = (int)h_display - (int)plane_w;
+        x += (int)(fx + (fx >= 0.0f ? 0.5f : -0.5f));
+        if (x < 0) x = 0; else if (x > xmax) x = xmax;
+    } else {
+        int max = (int)(video_src_w - video_win_w);
+        hoff -= round_even((float)video_align_x * (float)video_src_w / (float)VIDEO_GRID_WIDTH);
+        if (hoff < 0) hoff = 0; else if (hoff > max) hoff = max;
+    }
+    if (plane_h < v_display) {
+        float fy = (float)video_align_y * rgb_scale;
+        int ymax = (int)v_display - (int)plane_h;
+        y += (int)(fy + (fy >= 0.0f ? 0.5f : -0.5f));
+        if (y < 0) y = 0; else if (y > ymax) y = ymax;
+    } else {
+        int max = (int)(video_src_h - video_win_h);
+        voff -= round_even((float)video_align_y * 2.0f * (float)video_src_h / (float)VIDEO_GRID_HEIGHT);
+        if (voff < 0) voff = 0; else if (voff > max) voff = max;
+    }
     /* Never let the plane leave the display: the pos fields are 12-bit and
        an off-screen value is how a plane once parked itself at x=2061. */
-    int xmax = (int)h_display - (int)plane_w;
-    int ymax = (int)v_display - (int)plane_h;
-    if (xmax < 0) xmax = 0;
-    if (ymax < 0) ymax = 0;
-    if (x < 0) x = 0; else if (x > xmax) x = xmax;
-    if (y < 0) y = 0; else if (y > ymax) y = ymax;
-    return (base_pos & 0xFF000000u) | (((uint32_t)y & 0xfffu) << 12) | ((uint32_t)x & 0xfffu);
+    *pos_out  = (video_base_pos & 0xFF000000u) | (((uint32_t)y & 0xfffu) << 12) | ((uint32_t)x & 0xfffu);
+    *hoff_out = (uint32_t)hoff;
+    *voff_out = (uint32_t)voff;
+}
+
+/* The source crop as pointer offsets into an I420 frame of video_src_w wide. */
+static void video_ptr_offsets(uint32_t planeno, uint32_t hoff, uint32_t voff)
+{
+    uint32_t w = video_src_w;
+    yuv_ptr_offset[planeno][0] = voff*w + hoff;
+    yuv_ptr_offset[planeno][1] = (voff/2)*(w/2) + hoff/2;
+    yuv_ptr_offset[planeno][2] = (voff/2)*(w/2) + hoff/2;
 }
 
 void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows )
@@ -979,10 +1027,15 @@ void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows )
     video_align_x = x_beeb_pixels;
     video_align_y = y_beeb_rows;
     if (video_planeno < MAX_PLANES && plane_valid[video_planeno]) {
-        uint32_t w = plane_shadow[video_planeno].scale & 0xfffu;
-        uint32_t h = (plane_shadow[video_planeno].scale >> 16) & 0xfffu;
-        plane_shadow[video_planeno].pos = video_pos_aligned(video_base_pos, w, h);
+        uint32_t pos, hoff, voff;
+        video_align_resolve(&pos, &hoff, &voff);
+        plane_shadow[video_planeno].pos = pos;
         plane_mark(video_planeno, PL_DIRTY_POS);
+        video_ptr_offsets(video_planeno, hoff, voff);
+        /* A moved source window shows from the next frame the player flips
+           in; re-point the current one too, so a paused picture moves. */
+        if (video_ptr_set)
+            screen_set_YUV_pointers(video_planeno, video_ptr[0], video_ptr[1], video_ptr[2]);
     }
 }
 
@@ -1050,20 +1103,25 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         // invalid list, 32 words, YCrCb order, YUV420 3-plane
         uint32_t ctrl = 0x00000000 + (0x20<<24) + (1<<13 ) + 0x8;
         uint32_t ssz  = ((nh) << 16) + nw;
-        video_planeno  = planeno;
-        video_base_pos = startpos;
-        startpos = video_pos_aligned(startpos, scaled_width, nsh);
+        /* Shadow first: the alignment resolves against the plane's size. */
+        plane_shadow[planeno] = (plane_shadow_t){ ctrl, startpos, ssz, 0,
+                                                  (nsh << 16) + scaled_width };
+        video_planeno   = planeno;
+        video_base_pos  = startpos;
+        video_base_hoff = horizontal_offset;
+        video_base_voff = vertical_offset;
+        video_src_w = width;  video_src_h = height;
+        video_win_w = nw;     video_win_h = nh;
+        video_ptr_set = false;
+        video_align_resolve(&startpos, &horizontal_offset, &vertical_offset);
+        plane_shadow[planeno].pos = startpos;
         yuv->ctrl = ctrl;
         yuv->pos = startpos;
         yuv->scale = (nsh << 16) + scaled_width;
         yuv->src_size = ssz;
-        plane_shadow[planeno] = (plane_shadow_t){ ctrl, startpos, ssz, 0,
-                                                  (nsh << 16) + scaled_width };
         // I420 memory order is Y, Cb (U), Cr (V); chroma planes are
         // width/2 x height/2
-        yuv_ptr_offset[planeno][0] = vertical_offset*width + horizontal_offset;
-        yuv_ptr_offset[planeno][1] = (vertical_offset/2)*(width/2) + horizontal_offset/2;
-        yuv_ptr_offset[planeno][2] = (vertical_offset/2)*(width/2) + horizontal_offset/2;
+        video_ptr_offsets(planeno, horizontal_offset, vertical_offset);
         yuv->y_ptr =  buffer + vertical_offset*width + horizontal_offset;
         /* Cr-first: the HVS's second pointer is Cr in this order mode (see
            the ctrl comment above); the decoder's I420 memory is Y,Cb,Cr */
@@ -1109,7 +1167,11 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
 void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr )
 {
     volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
-    // re-apply the vertical-overscan crop baked in at plane creation
+    if (planeno == video_planeno) {
+        video_ptr[0] = y; video_ptr[1] = cb; video_ptr[2] = cr;
+        video_ptr_set = true;
+    }
+    // re-apply the source crop baked in at plane creation (and any alignment)
     yuv->y_ptr  = (y  + yuv_ptr_offset[planeno][0]) | 0xC0000000;
     /* Cr-first slot order - see the ctrl comment in screen_create_YUV420 */
     yuv->cb_ptr = (cr + yuv_ptr_offset[planeno][1]) | 0xC0000000;
