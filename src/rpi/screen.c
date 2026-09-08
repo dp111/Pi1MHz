@@ -601,13 +601,32 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
    picture (640 samples = 40 us of the line) sits registered on it at its true
    1.15:1, on any square-pixel display, with no setting.
 
-   Display_par=N/D is then only for a display that is not square-pixel: a
-   16:10 panel fed 1920x1080 stretches every pixel 10/9 taller than wide, so
-   it wants Display_par=10/9; the fix at source is to drive such a panel at
-   its native mode and leave this at 1/1.  The same factor goes to every
-   plane's width, so the video, the computer screen, the pointer and the VP5
-   strips stay registered with each other. */
+   Standard-definition television modes are the one non-square case the
+   firmware can recognise from the panel size alone, so it corrects them too:
+   a 720x576 PAL frame carries a 4:3 picture in 720 pixels that a square-pixel
+   display would need 768 for (pixels 16/15 wide), and 720x480 NTSC carries
+   it in 720 where square would need 640 (pixels 8/9 wide).
+
+   Display_par=N/D is then only a final trim for a display that is neither
+   square-pixel nor one of those: a 16:10 panel fed 1920x1080 stretches every
+   pixel 10/9 taller than wide, so it wants Display_par=10/9 (the fix at
+   source is to drive such a panel at its native mode and leave this at 1/1);
+   a widescreen set fed 720x576 wants 3/4 on top of the television
+   correction.  The same factor goes to every plane's width, so the video,
+   the computer screen, the pointer and the VP5 strips stay registered with
+   each other. */
 #define GRID_SAMPLE_PAR (12.0f / 13.0f)
+
+/* Pixel shape of the panel itself: square unless it is a standard-definition
+   television frame, whose 720 pixels span the full 4:3 width. */
+static float panel_par(uint32_t h_display, uint32_t v_display)
+{
+    if (h_display == 720u && v_display == 576u)
+        return 15.0f / 16.0f;            /* PAL: 768 square pixels in 720 */
+    if (h_display == 720u && v_display == 480u)
+        return 9.0f / 8.0f;              /* NTSC: 640 square pixels in 720 */
+    return 1.0f;
+}
 
 static float display_par(void)
 {
@@ -622,9 +641,9 @@ static float display_par(void)
     return (float)num / (float)den;
 }
 
-static float grid_par(void)
+static float grid_par(uint32_t h_display, uint32_t v_display)
 {
-    return GRID_SAMPLE_PAR * display_par();
+    return GRID_SAMPLE_PAR * panel_par(h_display, v_display) * display_par();
 }
 
 /* A scaled width from a grid width: rounded, and even so the YUV chroma
@@ -638,7 +657,7 @@ static uint32_t grid_width(float w)
    planes must agree on.  Chosen so the Beeb's 256 lines fill the height at
    a whole or half-integer factor (crisp scanlines); the video's 576 lines
    then overscan and are cropped top and bottom.  The horizontal scale is
-   this x GRID_SAMPLE_PAR (x the Display_par correction), which is what makes
+   this x GRID_SAMPLE_PAR (x the panel and Display_par corrections), which makes
    the video a 4:3 frame in every mode - e.g. at 1080p the frame is 1536 x
    1152 (1080 visible) and the Beeb 1182 x 1024; at 1200 lines 1728 x 1296
    and 1330 x 1152.  Used by the RGB path too, whether or not a video has
@@ -724,7 +743,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
             rgb_scale = yuv_scale*2;
         }
 
-        const float hscale = yuv_scale * grid_par();
+        const float hscale = yuv_scale * grid_par(h_display, v_display);
         *scaled_width = grid_width(hscale * (float)h_corrected);
         *scaled_height = (((uint32_t)(yuv_scale * (float)v_corrected)) & 0xfff);
 
@@ -787,7 +806,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     else
         scale = rgb_scale ;
 
-    const float rgb_hscale_par = grid_par();
+    const float rgb_hscale_par = grid_par(h_display, v_display);
     if (((uint32_t)(scale * rgb_hscale_par * (float)h_corrected)) >  h_display)
         scale = scale/2;
     if (((uint32_t)(scale * (float)v_corrected)) >  v_display)
@@ -938,7 +957,7 @@ static uint32_t video_pos_aligned(uint32_t base_pos, uint32_t plane_w, uint32_t 
 {
     uint32_t h_display = ( RPI_hvs->ctrl1 >> 12 ) & 0xfff;
     uint32_t v_display = ( RPI_hvs->ctrl1       ) & 0xfff;
-    float fx = (float)video_align_x * (rgb_scale / 2.0f) * grid_par();
+    float fx = (float)video_align_x * (rgb_scale / 2.0f) * grid_par(h_display, v_display);
     float fy = (float)video_align_y * rgb_scale;
     int dx = (int)(fx + (fx >= 0.0f ? 0.5f : -0.5f));
     int dy = (int)(fy + (fy >= 0.0f ? 0.5f : -0.5f));

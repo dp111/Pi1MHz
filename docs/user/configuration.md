@@ -101,7 +101,7 @@ Harddisc_addr=-1
 | `watchdog` | off | A number of seconds (1-15). If set, the Pi's hardware watchdog reboots it automatically should the firmware ever lock up. `0` or absent = off. `watchdog=10` is a sensible value if you want it. |
 | `BeebAudio_Off` | off | `1` mutes the emulated audio path into the BBC's internal speaker. For the Music 5000 on a Pi 3B+ this also enables proper stereo on the Pi's headphone jack. Applies to whichever audio emulator is running (Music 5000 or BeebSID). |
 | `Audio_out` | `beeb` | `hdmi` sends the sound (Music 5000, BeebSID or the video player) out of the HDMI port instead of the Beeb pin/jack. Needs the display link in HDMI mode - `hdmi_drive=2` in `config.txt` if the screen's EDID does not advertise audio. |
-| `Display_par` | `1/1` | Correction for a display whose pixels are not square. Pi1MHz already draws the video as a true 4:3 frame (and the Beeb picture registered on it) for any square-pixel display, so leave this alone unless the picture is visibly the wrong width. A 16:10 monitor fed a 1920x1080 signal stretches it 10/9 taller than wide: set `10/9`, or better, drive the monitor at its native mode in `config.txt` (see [Choosing the display mode](#choosing-the-display-mode)) and leave this at `1/1`. Any fraction `N/D` between 1/4 and 4/1 is accepted. |
+| `Display_par` | `1/1` | Correction for a display whose pixels are not square. Pi1MHz already draws the video as a true 4:3 frame (and the Beeb picture registered on it) for any square-pixel display, so leave this alone unless the picture is visibly the wrong width. A 16:10 monitor fed a 1920x1080 signal stretches it 10/9 taller than wide: set `10/9`, or better, drive the monitor at its native mode in `config.txt` (see [Choosing the display mode](#choosing-the-display-mode)) and leave this at `1/1`. It is applied on top of the corrections Pi1MHz already makes (the 12/13 Beeb sample shape, and the television pixel shape on 576p and 480p). Any fraction `N/D` between 1/4 and 4/1 is accepted. |
 
 ## Hard disc settings
 
@@ -212,9 +212,9 @@ See [Troubleshooting](troubleshooting.md).
 the Domesday video (25 frames a second) an even cadence, so prefer a 50 Hz
 mode when the screen offers one. If your screen is a different shape, set
 the two lines to its **native** resolution from the table: the picture is
-then drawn with square pixels and no correction is needed (the two
-television modes are the exception - their pixels are not square, and the
-table gives the `Display_par` that puts them right). The two
+then drawn correctly with no further setting: monitors have square
+pixels, and the two standard-definition television modes are recognised
+by their size and given the television pixel shape. The two
 right-hand columns are what Pi1MHz draws on each: the Beeb screen is scaled
 so that its 256 lines fill the height at a whole or half-integer factor, and
 the video frame around it is a true 4:3.
@@ -234,15 +234,16 @@ the video frame around it is a true 4:3.
 | 1600x1200 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=51` | 1330x1152 | 1600x1200 | The video loses a little at each side. |
 | 1024x768 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=16` | 886x768 | 1024x768 | The video loses a little at each side. |
 | 800x600 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=9` | 664x576 | 800x600 | The video loses a little at each side. |
-| 720x576 PAL television, SCART or HDMI (576p, 4:3) | `hdmi_group=1`, `hdmi_mode=17` | 553x512 | 720x576 | 50 Hz. Set `Display_par=15/16`: television pixels are not square. On a widescreen set use `hdmi_mode=18` and `Display_par=45/64` instead. |
-| 720x480 NTSC television (480p, 4:3) | `hdmi_group=1`, `hdmi_mode=2` | 580x448 | 720x480 | 60 Hz. Set `Display_par=9/8`: television pixels are not square. |
+| 720x576 PAL television, SCART or HDMI (576p, 4:3) | `hdmi_group=1`, `hdmi_mode=17` | 553x512 | 720x576 | 50 Hz. On a widescreen set use `hdmi_mode=18` and set `Display_par=3/4`. |
+| 720x480 NTSC television (480p, 4:3) | `hdmi_group=1`, `hdmi_mode=2` | 580x448 | 720x480 | 60 Hz. |
 
 Sound over HDMI (`Audio_out=hdmi`) needs the link in HDMI mode: add
 `hdmi_drive=2` if the screen's EDID does not advertise audio, and
 `hdmi_force_hotplug=1` if the Pi boots before the screen is on. If a
 screen has to be run at a mode that is not its native shape and the
-picture looks too narrow or too wide, `Display_par` in `Pi1MHz.cfg`
-corrects the width.
+picture looks too narrow or too wide, `Display_par` in `Pi1MHz.cfg` is
+the final trim on the width, applied on top of whatever the table row
+already gets right.
 
 The mode numbers are the standard Raspberry Pi ones (group 1 = CEA/TV
 modes, group 2 = DMT/monitor modes); any other resolution in the Pi's
