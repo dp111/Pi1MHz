@@ -98,8 +98,8 @@ You can add or remove `ModePageNN` lines; they must keep the
 | Key | Type | Range | Meaning |
 |---|---|---|---|
 | `LDUserCode` | text | 5 chars | LaserDisc user code for VFS/Domesday volumes, including the `=` (e.g. `1=986`). |
-| `LDVideoXoffset` | integer | -768 … 768 | Horizontal alignment of the Domesday video on the Beeb's picture, in Beeb MODE 0 pixels (1/640 of the line); positive moves the video right. Absent = `-4`. |
-| `LDVideoYoffset` | integer | -288 … 288 | Vertical alignment, in Beeb rows (1/256 of the screen); positive moves the video down. Absent = `-1`. Both are read whenever the side is opened or jukeboxed to, so they are per disc side. Where the video already fills the screen in that direction (the height on every mode, the width on a 4:3 or 5:4 monitor) the picture is moved inside its own overscan, in steps of two Beeb pixels horizontally, and by nothing at all at 576p where there is no overscan. |
+| `LDVideoXoffset` | integer | -768 … 768 | Horizontal alignment of the Domesday video on the Beeb's picture, in Beeb MODE 0 pixels (1/640 of the line); positive moves the video right. Absent = `-5`. |
+| `LDVideoYoffset` | integer | -288 … 288 | Vertical alignment, in Beeb rows (1/256 of the screen); positive moves the video down. Absent = `-2`. Both are read whenever the side is opened or jukeboxed to, so they are per disc side. Where the video already fills the screen in that direction (the height on every mode, the width on a 4:3 or 5:4 monitor) the picture is moved inside its own overscan, in steps of two Beeb pixels horizontally, and by nothing at all at 576p where there is no overscan. |
 
 ## Editing safely
 
