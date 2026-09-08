@@ -62,6 +62,8 @@ _Static_assert(sizeof(fw_timing_t) == 36, "firmware timing record is 36 bytes");
 #define TF_RGB_LIMITED  (1u << 8)
 
 static char report[128] = "not run";
+static uint8_t edid_blocks[2][128];         /* block 0 and the first extension */
+static unsigned edid_bytes;                 /* 0, 128 or 256 */
 
 /* SET_TIMING answers with an empty response (length 0) when it takes the
    mode, and nothing at all if the firmware does not know the tag. */
@@ -234,7 +236,7 @@ void display_mode_select(void)
         return;
     }
 
-    static uint8_t edid[128], ext[128];
+    uint8_t *edid = edid_blocks[0], *ext = edid_blocks[1];
     if (!edid_read(0, edid) || memcmp(edid, "\x00\xFF\xFF\xFF\xFF\xFF\xFF\x00", 8) != 0) {
         snprintf(report, sizeof report, "no EDID; %ux%u%s @ %lu.%02lu Hz left as set",
                  now.hdisplay, now.vdisplay, now_i, (unsigned long)(now_mhz / 1000u),
@@ -251,7 +253,10 @@ void display_mode_select(void)
     /* A television: its own 50 Hz progressive mode, if it lists one - at the
        preferred size when the preferred timing is usable, else the best it
        has (a set that prefers 1080i50 usually lists 1080p50 or 720p50). */
-    if (hz == 50u && edid[126] != 0u && edid_read(1, ext)) {
+    edid_bytes = 128u;
+    if (edid[126] != 0u && edid_read(1, ext))
+        edid_bytes = 256u;
+    if (hz == 50u && edid_bytes == 256u) {
         for (unsigned i = 0; i < sizeof cea50 / sizeof cea50[0]; i++) {
             if (!cea_lists_vic(ext, (uint8_t)cea50[i].video_id_code))
                 continue;
@@ -293,4 +298,10 @@ void display_mode_select(void)
 const char *display_mode_report(void)
 {
     return report;
+}
+
+unsigned display_mode_edid(const uint8_t **bytes)
+{
+    *bytes = edid_blocks[0];
+    return edid_bytes;
 }

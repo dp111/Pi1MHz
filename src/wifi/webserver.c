@@ -2472,6 +2472,24 @@ static bool route_fcodes(ws_conn_t *c)
    return ws_finish_text(c, 200, "OK", &b);
 }
 
+/* GET /edid - the screen's EDID as read at boot, hex, 16 bytes a line,
+   with the Display mode verdict first.  For "what does this screen claim"
+   questions: the panel's size and shape, its preferred timing, its refresh
+   range and the CEA modes it lists are all in there. */
+static bool route_edid(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+   const uint8_t *e;
+   unsigned n = display_mode_edid(&e);
+   sb_init(&b);
+   sb_printf(&b, "Display mode: %s\n", display_mode_report());
+   if (n == 0u)
+      sb_puts(&b, "no EDID read\n");
+   for (unsigned i = 0; i < n; i++)
+      sb_printf(&b, "%02x%c", e[i], ((i & 15u) == 15u) ? '\n' : ' ');
+   return ws_finish_text(c, 200, "OK", &b);
+}
+
 static bool route_status(ws_conn_t *c)
 {
    const wifi_config_t         *cfg = wifi_get_config();
@@ -6457,6 +6475,8 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_fcodes(c);
       if (strcmp(rawpath, "/status") == 0)
          return route_status(c);
+      if (strcmp(rawpath, "/edid") == 0)
+         return route_edid(c);
       if (strcmp(rawpath, "/bench.bin") == 0)
          return route_bench(c);
       if (strcmp(rawpath, "/udpblast") == 0)

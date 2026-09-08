@@ -10,4 +10,9 @@ void display_mode_select(void);
 /* One line for /status: what was found and what was done. */
 const char *display_mode_report(void);
 
+/* The EDID as read at boot (block 0 and the first extension): 0, 128 or
+   256 bytes.  For the /edid diagnostic route. */
+#include <stdint.h>
+unsigned display_mode_edid(const uint8_t **bytes);
+
 #endif
