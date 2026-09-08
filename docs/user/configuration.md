@@ -219,7 +219,7 @@ the video frame around it is a true 4:3.
 
 | Screen | config.txt | Beeb screen | Video frame (visible) | Notes |
 |---|---|---|---|---|
-| 1920x1080 TV or monitor (16:9) | `hdmi_group=1`, `hdmi_mode=31 (50 Hz) or 16 (60 Hz)` | 1182x1024 | 1536x1080 | The shipped default. 50 Hz matches the 25-frame Domesday video. |
+| 1920x1080 TV or monitor (16:9) | `hdmi_group=1`, `hdmi_mode=31 (50 Hz) or 16 (60 Hz)` | 1182x1024 | 1536x1080 | The shipped default. |
 | 1280x720 TV (16:9) | `hdmi_group=1`, `hdmi_mode=19 (50 Hz) or 4 (60 Hz)` | 812x704 | 1056x720 |  |
 | 1366x768 panel (16:9) | `hdmi_group=2`, `hdmi_mode=81` | 886x768 | 1152x768 | Common on small TVs and laptop-panel monitors. |
 | 1600x900 monitor (16:9) | `hdmi_group=2`, `hdmi_mode=83` | 1034x896 | 1344x900 |  |
@@ -228,10 +228,10 @@ the video frame around it is a true 4:3.
 | 1680x1050 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=58` | 1182x1024 | 1536x1050 |  |
 | 1440x900 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=47` | 1034x896 | 1344x900 |  |
 | 1280x800 monitor (16:10) | `hdmi_group=2`, `hdmi_mode=28` | 886x768 | 1152x800 |  |
-| 1280x1024 monitor (5:4) | `hdmi_group=2`, `hdmi_mode=35` | 1182x1024 | 1536x1024 | The panel Pi1MHz's scaling was first built for. |
+| 1280x1024 monitor (5:4) | `hdmi_group=2`, `hdmi_mode=35` | 1182x1024 | 1536x1024 |  |
 | 1600x1200 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=51` | 1330x1152 | 1728x1200 |  |
-| 1024x768 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=16` | 886x768 | 1152x768 | The video frame is wider than the screen and loses a little at each side. |
-| 800x600 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=9` | 664x576 | 864x600 | Small, but the whole thing works. |
+| 1024x768 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=16` | 886x768 | 1152x768 | The video loses a little at each side. |
+| 800x600 monitor (4:3) | `hdmi_group=2`, `hdmi_mode=9` | 664x576 | 864x600 |  |
 
 Sound over HDMI (`Audio_out=hdmi`) needs the link in HDMI mode: add
 `hdmi_drive=2` if the screen's EDID does not advertise audio, and
