@@ -61,7 +61,7 @@ _Static_assert(sizeof(fw_timing_t) == 36, "firmware timing record is 36 bytes");
 #define TF_ASPECT_16_9  (2u << 4)
 #define TF_RGB_LIMITED  (1u << 8)
 
-static char report[112] = "not run";
+static char report[128] = "not run";
 
 /* SET_TIMING answers with an empty response (length 0) when it takes the
    mode, and nothing at all if the firmware does not know the tag. */
@@ -82,7 +82,7 @@ static bool fw_timing_set(const fw_timing_t *t)
 static bool pv_timing_get(fw_timing_t *t)
 {
     volatile uint32_t *pv = (volatile uint32_t *)(PERIPHERAL_BASE + 0x807000u);
-    uint32_t ctrl = pv[0], horza = pv[3], horzb = pv[4], verta = pv[5], vertb = pv[6];
+    uint32_t ctrl = pv[0], vctrl = pv[1], horza = pv[3], horzb = pv[4], verta = pv[5], vertb = pv[6];
     memset(t, 0, sizeof *t);
     if ((ctrl & 1u) == 0u) return false;                  /* pixel valve off */
     t->hdisplay = (uint16_t)(horzb & 0xFFFFu);
@@ -90,6 +90,14 @@ static bool pv_timing_get(fw_timing_t *t)
     t->vdisplay = (uint16_t)(vertb & 0xFFFFu);
     t->vtotal   = (uint16_t)((verta >> 16) + (verta & 0xFFFFu) + (vertb >> 16) + t->vdisplay);
     t->clock    = hdmi_pixel_clock_hz() / 1000u;
+    /* Interlaced: the valve holds one field, so these are field figures and
+       timing_mhz() gives the FIELD rate.  1080i50 reads as 1920x540 at
+       50 Hz - which is not a 50 Hz frame, and the planes are laid out for a
+       progressive frame, so it must never pass as "already there". */
+    if (vctrl & (1u << 4)) {
+        t->flags |= TF_INTERLACE;
+        t->vdisplay = (uint16_t)(t->vdisplay * 2u);
+    }
     return t->hdisplay != 0u && t->htotal != 0u && t->vtotal != 0u && t->clock != 0u;
 }
 
@@ -218,7 +226,9 @@ void display_mode_select(void)
         return;
     }
     uint32_t now_mhz = timing_mhz(&now);
-    if (now_mhz + 500u >= hz * 1000u && now_mhz <= hz * 1000u + 500u) {
+    const char *now_i = (now.flags & TF_INTERLACE) ? "i" : "";
+    if (!(now.flags & TF_INTERLACE)
+        && now_mhz + 500u >= hz * 1000u && now_mhz <= hz * 1000u + 500u) {
         snprintf(report, sizeof report, "%ux%u already %lu Hz", now.hdisplay, now.vdisplay,
                  (unsigned long)hz);
         return;
@@ -226,35 +236,46 @@ void display_mode_select(void)
 
     static uint8_t edid[128], ext[128];
     if (!edid_read(0, edid) || memcmp(edid, "\x00\xFF\xFF\xFF\xFF\xFF\xFF\x00", 8) != 0) {
-        snprintf(report, sizeof report, "no EDID; %ux%u @ %lu.%02lu Hz left as set",
-                 now.hdisplay, now.vdisplay, (unsigned long)(now_mhz / 1000u),
+        snprintf(report, sizeof report, "no EDID; %ux%u%s @ %lu.%02lu Hz left as set",
+                 now.hdisplay, now.vdisplay, now_i, (unsigned long)(now_mhz / 1000u),
                  (unsigned long)((now_mhz % 1000u) / 10u));
         return;
     }
 
+    /* The panel's preferred timing, rescaled - unless it is interlaced or
+       otherwise unusable, in which case only a CEA mode below will do. */
     fw_timing_t want;
-    if (!edid_preferred_timing(edid, hz, &want)) {
-        snprintf(report, sizeof report, "EDID has no usable preferred timing");
-        return;
-    }
-    uint32_t min_hz = edid_min_refresh(edid);
-    if (min_hz > hz) {
-        snprintf(report, sizeof report, "%ux%u: monitor's minimum is %lu Hz, left at %lu.%02lu",
-                 want.hdisplay, want.vdisplay, (unsigned long)min_hz,
-                 (unsigned long)(now_mhz / 1000u), (unsigned long)((now_mhz % 1000u) / 10u));
-        return;
-    }
-
-    /* A television: its own 50 Hz mode at the native size, if it lists one. */
+    bool have = edid_preferred_timing(edid, hz, &want);
     const char *how = "EDID";
+
+    /* A television: its own 50 Hz progressive mode, if it lists one - at the
+       preferred size when the preferred timing is usable, else the best it
+       has (a set that prefers 1080i50 usually lists 1080p50 or 720p50). */
     if (hz == 50u && edid[126] != 0u && edid_read(1, ext)) {
         for (unsigned i = 0; i < sizeof cea50 / sizeof cea50[0]; i++) {
-            if (cea50[i].hdisplay == want.hdisplay && cea50[i].vdisplay == want.vdisplay
-                && cea_lists_vic(ext, (uint8_t)cea50[i].video_id_code)) {
-                want = cea50[i];
-                how = "CEA";
-                break;
-            }
+            if (!cea_lists_vic(ext, (uint8_t)cea50[i].video_id_code))
+                continue;
+            if (have && (cea50[i].hdisplay != want.hdisplay || cea50[i].vdisplay != want.vdisplay))
+                continue;
+            want = cea50[i];
+            how = "CEA";
+            have = true;
+            break;
+        }
+    }
+    if (!have) {
+        snprintf(report, sizeof report, "EDID prefers %s and lists no 50 Hz progressive mode; %ux%u%s left",
+                 (edid[54 + 17] & 0x80u) ? "an interlaced mode" : "nothing usable",
+                 now.hdisplay, now.vdisplay, now_i);
+        return;
+    }
+    if (how[0] == 'E') {                       /* a rescaled timing: is the panel happy that low? */
+        uint32_t min_hz = edid_min_refresh(edid);
+        if (min_hz > hz) {
+            snprintf(report, sizeof report, "%ux%u: monitor's minimum is %lu Hz, left at %lu.%02lu",
+                     want.hdisplay, want.vdisplay, (unsigned long)min_hz,
+                     (unsigned long)(now_mhz / 1000u), (unsigned long)((now_mhz % 1000u) / 10u));
+            return;
         }
     }
 
