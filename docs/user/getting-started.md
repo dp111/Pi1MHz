@@ -29,7 +29,9 @@ Zero 2 W or 3B+) and a 2.4GHz WPA2 network.
    ```
    bootcode.bin
    config.txt
-   start_cd.elf
+   start.elf           (full GPU firmware: video decode)
+   fixup.dat
+   start_cd.elf        (cut-down firmware, no video)
    fixup_cd.dat
    kernel.img          (used by Pi Zero / Zero W)
    kernel7.img         (used by Pi Zero 2 W / Pi 3)

@@ -62,19 +62,20 @@ display hardware is scanning out.
 
 To use it you need three things:
 
-1. **The full GPU firmware, and three config.txt settings.** Copy
-   `start.elf` and `fixup.dat` from the matching [Raspberry Pi firmware
-   release](https://github.com/raspberrypi/firmware/tree/master/boot)
-   to the card (the shipped `start_cd.elf` is a cut-down firmware with
-   no video codec support), then uncomment these lines in `config.txt`:
+1. **The full GPU firmware, and three config.txt settings.** The
+   firmware folder ships `start.elf` and `fixup.dat` (the full GPU
+   firmware; `start_cd.elf` is a cut-down build with no video codec
+   support) - copy both to the card.  The shipped `config.txt` already
+   selects them, with these lines:
 
    ```
-   start_file=start.elf
-   fixup_file=fixup.dat
    gpu_mem=64
    vd_use_vpu0=1
    vd_isp_disable=1
    ```
+
+   (`gpu_mem=64` is what makes the firmware load `start.elf` rather than
+   `start_cd.elf`; `gpu_mem=16` would pick the cut-down one.)
 
    `vd_use_vpu0=1` is **required**: Pi1MHz runs its 1MHz bus handler on
    VPU core 1, and without this key the firmware wants that core for
