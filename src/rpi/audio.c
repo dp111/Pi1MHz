@@ -382,12 +382,16 @@ int16_t *audio_write_ptr(const audio_producer_t *p, uint32_t *contig_frames)
    return &ring[pos * 2u];
 }
 
+#ifdef DEBUG
 static int32_t peak_level;                    /* decaying |sample| max, for /status */
+#endif
 
 void audio_commit(uint32_t frames)
 {
+#ifdef DEBUG
    /* A level meter is the only way to see, from the web, that a producer
-      is making sound at all. ~450 compares per block - negligible. */
+      is making sound at all.  DEBUG only: it is two compares per sample in
+      the audio pump, the one place the release build must not spend. */
    uint32_t pos = ring_wr & (RING_FRAMES - 1u);
    int32_t pk = peak_level - (peak_level >> 6);  /* decay */
    for (uint32_t i = 0; i < frames; i++) {
@@ -399,13 +403,16 @@ void audio_commit(uint32_t frames)
       if (r > pk) pk = r;
    }
    peak_level = pk;
+#endif
    ring_wr += frames;
 }
 
+#ifdef DEBUG
 uint32_t audio_peak(void)
 {
    return (uint32_t)peak_level;
 }
+#endif
 
 uint32_t audio_ring_snapshot(int16_t *dst, uint32_t max_frames)
 {

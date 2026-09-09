@@ -401,7 +401,10 @@ static uint32_t s_tx_flush_rx_stamp;
 static uint32_t s_tx_queued;        /* refused by the chip, parked here */
 static uint32_t s_tx_dropped_stale; /* aged out before credit appeared */
 static uint32_t s_tx_direct_fail;   /* send refused on the direct path */
-static uint32_t s_tx_hold_max_us;   /* longest a frame waited in the queue */
+static uint32_t s_tx_hold_max_us;   /* longest a frame waited in the queue
+                                       (wifi_diag=1 only: it is a timer read
+                                       per send otherwise) */
+static bool s_pass_diag;            /* sdio_runtime_diag_enabled(), cached once per service pass */
 static uint32_t s_tx_dropped_full;  /* arrived with every slot taken - LOST */
 static uint32_t s_tx_batch_lost;    /* dropped after a superframe CMD53
                                        completion failure - the card may hold
@@ -473,14 +476,16 @@ static bool wifi_lwip_tx_hold_flush(void)
                                                             gather);
 
             if (sent > 0) {
-               uint32_t sent_at = RPI_GetSystemTime();
+               uint32_t sent_at = s_pass_diag ? RPI_GetSystemTime() : 0u;
                uint8_t i;
 
                for (i = 0u; i < (uint8_t)sent; ++i) {
-                  uint32_t waited = sent_at - stamps[i];
+                  if (s_pass_diag) {
+                     uint32_t waited = sent_at - stamps[i];
 
-                  if (waited > s_tx_hold_max_us)
-                     s_tx_hold_max_us = waited;
+                     if (waited > s_tx_hold_max_us)
+                        s_tx_hold_max_us = waited;
+                  }
 #if WIFI_LWIP_ICMP_PROBE_DIAG
                   wifi_lwip_icmp_probe_tx(frames[i], lens[i]);
 #endif
@@ -516,9 +521,11 @@ static bool wifi_lwip_tx_hold_flush(void)
       }
 
       if (sdio_runtime_send_ethernet_frame(slot->data, slot->len)) {
-         uint32_t waited = RPI_GetSystemTime() - slot->stamp_us;
-         if (waited > s_tx_hold_max_us)
-            s_tx_hold_max_us = waited;
+         if (s_pass_diag) {
+            uint32_t waited = RPI_GetSystemTime() - slot->stamp_us;
+            if (waited > s_tx_hold_max_us)
+               s_tx_hold_max_us = waited;
+         }
 #if WIFI_LWIP_ICMP_PROBE_DIAG
          wifi_lwip_icmp_probe_tx(slot->data, slot->len);
 #endif
@@ -693,7 +700,6 @@ void wifi_lwip_udpblast_stats(uint32_t *sent, uint32_t *remaining,
 /* do not swamp bucket 0: in the three TX-source histograms, bucket 0  */
 /* means "a productive pass in which this source contributed nothing". */
 /* ------------------------------------------------------------------ */
-static bool s_pass_diag;            /* cached once per service pass */
 static uint8_t s_pass_tx_tcp;
 static uint8_t s_pass_tx_blast;
 static uint8_t s_pass_tx_other;
@@ -766,9 +772,12 @@ bool wifi_lwip_pass_diag_read(uint32_t tcp_hist[6], uint32_t blast_hist[6],
 #if (__ARM_ARCH >= 7)
 #error "WIFI_LWIP_RX_PROFILE uses the ARM1176 CP15 c15 cycle counter, which faults on the A53 (kernel7). Profile on kernel.img (rpi) instead."
 #endif
+#ifndef DEBUG
+#error "WIFI_LWIP_RX_PROFILE needs poll_ticks_start() (Pi1MHz.c), which only a DEBUG build runs"
+#endif
 /* CCNT/64 ticks; the counter is started once at boot (poll_ticks_start in
-   Pi1MHz.c), so reads here are free-running.  Same mechanism and caveats
-   as POLL_PROFILE. */
+   Pi1MHz.c, DEBUG builds), so reads here are free-running.  Same mechanism
+   and caveats as POLL_PROFILE. */
 static inline uint32_t wifi_lwip_ccnt(void)
 {
    uint32_t v;

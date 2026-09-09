@@ -27,6 +27,9 @@
 #ifndef DEBUG_H_
 #define DEBUG_H_
 
+#include "cpuspecific.h"
+
+#ifdef DEBUG
 /* External globals  // these should be volatile as they are set in the int handler */
 extern  volatile bool debugFlag_filesystem;
 extern  volatile bool debugFlag_scsiCommands;
@@ -35,7 +38,18 @@ extern  volatile bool debugFlag_scsiFcodes;
 extern  volatile bool debugFlag_scsiState;
 extern  volatile bool debugFlag_fatfs;
 extern  volatile bool debugFlag_extended_attributes;
-#include "cpuspecific.h"
+#else
+/* Release: the flags are constants, so every `if (debugFlag_...)` site
+   compiles out.  A volatile variable would cost a load per site, some of
+   them per CDB byte, and nothing can set it (the &FC44 handler is DEBUG). */
+#define debugFlag_filesystem            false
+#define debugFlag_scsiCommands          false
+#define debugFlag_scsiBlocks            false
+#define debugFlag_scsiFcodes            false
+#define debugFlag_scsiState             false
+#define debugFlag_fatfs                 false
+#define debugFlag_extended_attributes   false
+#endif
 
 #ifdef DEBUG
 /* Function prototypes */

@@ -132,7 +132,10 @@ static struct {
     bool tail_pushed;                /* end of play range: last picture's pusher sent */
 
     /* diagnostics */
-    uint32_t feeds, feed_fail, frames_back, flips, resume_max_us, feed_max_us;
+    uint32_t feeds, feed_fail, frames_back, flips;
+#ifdef DEBUG
+    uint32_t resume_max_us, feed_max_us;     /* timer reads per feed and per seek */
+#endif
     uint32_t clmt_entries;           /* cluster link map size in use (0 = none) */
 } vp;
 
@@ -244,15 +247,19 @@ static bool submit_au(uint32_t frame, bool with_audio, bool count)
    the duplicate is owed and the poll task sends it. */
 static bool feed_frame(uint32_t frame, bool with_audio, bool eos)
 {
+#ifdef DEBUG
     uint32_t t0 = RPI_GetSystemTime();
+#endif
     if (!submit_au(frame, with_audio, true))
         return false;
     if (eos) {
         if (!submit_au(frame, false, false))
             vp.dup_owed = frame + 1u;   /* 1-based so 0 = none */
     }
+#ifdef DEBUG
     uint32_t dt = RPI_GetSystemTime() - t0;
     if (dt > vp.feed_max_us) vp.feed_max_us = dt;
+#endif
     return true;
 }
 
@@ -318,15 +325,18 @@ static void draw_picture_number(uint32_t phys, uint32_t picture)
  * loop happens to be, up to a poll pass (tens of ms) later, which is halfway
  * down a frame: torn, and 1, 2 or 3 refreshes per picture at random.  At
  * 50 Hz with 25 fps material a correct commit is every second refresh,
- * exactly, which the "gap" figures in /status report. */
+ * exactly, which the "gap" figures in /status report (DEBUG builds). */
 static volatile uint32_t vp_armed_phys;      /* handed to the IRQ */
 static volatile uint32_t vp_committed_phys;  /* what the IRQ programmed */
+#ifdef DEBUG
 /* Cadence is measured AT THE COMMIT, not when the poll loop notices it:
    sampling in the poll loop measures poll jitter (1-3 refreshes) and says
-   nothing about what the display did. */
+   nothing about what the display did.  DEBUG only: it is work in the
+   vsync IRQ. */
 static volatile uint32_t vp_commit_vsync;    /* count at the last commit */
 static volatile uint8_t  vp_gap_min, vp_gap_max;
 static volatile uint32_t vp_commit_irq, vp_commit_poll;
+#endif
 
 /* IRQ context (and the poll-loop fallback below): register writes only. */
 void videoplayer_vsync_flip(void)
@@ -335,6 +345,7 @@ void videoplayer_vsync_flip(void)
     if (!phys)
         return;
     vp_armed_phys = 0;
+#ifdef DEBUG
     {
         uint32_t v = screen_vsync_count();
         uint32_t gap = v - vp_commit_vsync;      /* refreshes the last one held */
@@ -345,6 +356,7 @@ void videoplayer_vsync_flip(void)
         vp_commit_vsync = v;
     }
     vp_commit_irq++;
+#endif
     uint32_t w = vp.hdr.width, h = vp.hdr.height;
     screen_set_YUV_pointers(YUV_PLANE,
                             phys,
@@ -377,7 +389,9 @@ static void reap_flip(void)
     if (vp_armed_phys) {
         uint32_t limit = vp.frame_period_us ? vp.frame_period_us : 40000u;
         if ((int32_t)(RPI_GetSystemTime() - vp.flip_wait_since) >= (int32_t)limit) {
+#ifdef DEBUG
             vp_commit_poll++;                  /* no vsync IRQ: don't stall */
+#endif
             videoplayer_vsync_flip();
         }
     }
@@ -438,10 +452,14 @@ static void videoplayer_poll(void)
     /* Pending random access? Flush whatever is mid-pipeline first. */
     if (vp.seek_frame >= 0) {
         uint32_t target = (uint32_t)vp.seek_frame;
+#ifdef DEBUG
         uint32_t t0 = RPI_GetSystemTime();
+#endif
         h264dec_resume();            /* discard stale pictures and a held still duplicate */
+#ifdef DEBUG
         uint32_t dt = RPI_GetSystemTime() - t0;
         if (dt > vp.resume_max_us) vp.resume_max_us = dt;
+#endif
         vp.in_flight = 0;
         vp.dup_owed = 0;
         vp.tail_pushed = false;
@@ -745,6 +763,7 @@ const char *videoplayer_status(void)
     static char closed[40];
     snprintf(closed, sizeof closed, "closed d%d arm%d last:%s",
              filesystemGetLunDirectoryVFS(), vp.lazy_pending ? 1 : 0, vp_fail);
+#ifdef DEBUG
     snprintf(buf, sizeof buf, "%s mode %d pic %lu seek %ld inflight %ld feeds %lu fail %lu back %lu flips %lu gap %u-%u irq %lu late %lu resume_max %luus feed_max %luus clmt %lu%s",
              vp.open ? pvf_path : closed, (int)vp.mode, (unsigned long)vp.cur_picture,
              (long)vp.seek_frame, (long)vp.in_flight, (unsigned long)vp.feeds,
@@ -755,6 +774,14 @@ const char *videoplayer_status(void)
              (unsigned long)vp.resume_max_us,
              (unsigned long)vp.feed_max_us, (unsigned long)vp.clmt_entries,
              vp.file.cltbl ? "" : " (slow seeks)");
+#else
+    snprintf(buf, sizeof buf, "%s mode %d pic %lu seek %ld inflight %ld feeds %lu fail %lu back %lu flips %lu clmt %lu%s",
+             vp.open ? pvf_path : closed, (int)vp.mode, (unsigned long)vp.cur_picture,
+             (long)vp.seek_frame, (long)vp.in_flight, (unsigned long)vp.feeds,
+             (unsigned long)vp.feed_fail, (unsigned long)vp.frames_back,
+             (unsigned long)vp.flips, (unsigned long)vp.clmt_entries,
+             vp.file.cltbl ? "" : " (slow seeks)");
+#endif
     return buf;
 }
 
@@ -873,7 +900,9 @@ void videoplayer_play_fwd(void)
         h264dec_resume();
         audio_flush();
         vp.mode = VP_PLAY;
+#ifdef DEBUG
         vp_gap_min = vp_gap_max = 0;             /* fresh cadence stats */
+#endif
         vp.next_frame_due = RPI_GetSystemTime() + vp.frame_period_us;
     }
 }

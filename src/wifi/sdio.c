@@ -272,7 +272,8 @@ static uint32_t g_runtime_last_rx_us;
 static bool g_runtime_fifo_was_empty = true;
 /* Gating of the fn2 peek on the chip's in-band SDIO interrupt.  Armed at
    link-up.  g_rx_int_missed is the trust metric: frames the safety sweep found
-   while the line was NOT asserted - zero means the signal can be relied on.
+   while the line was NOT asserted - zero means the signal can be relied on
+   (the four counters count only with wifi_diag=1).
    The sweep runs at the old idle poll rate, so an untrusted signal costs
    nothing over the previous behaviour. */
 static bool g_rx_int_armed;
@@ -286,8 +287,8 @@ static uint32_t g_rx_int_high;
    sweep at 1 ms and the gate armed: 1 frame missed out of 3718 - the line
    announces essentially everything, so sweeping at the old 1 ms poll rate
    just spent ~1000 CMD53s a second confirming the FIFO was empty.  A missed
-   frame now waits at most 10 ms, and g_rx_int_missed on /status says how
-   often that actually happens. */
+   frame now waits at most 10 ms, and g_rx_int_missed on /status (wifi_diag=1)
+   says how often that actually happens. */
 #define SDIO_RX_SWEEP_INTERVAL_US 10000u
 static bool g_runtime_emulator_mode;
 static bool g_runtime_identify_started;
@@ -7482,12 +7483,13 @@ int8_t sdio_runtime_send_ethernet_frames(const uint8_t *const frames[],
    }
 
    g_runtime_tx_frame_count += count;
-   ++g_txglom_superframes;
-   g_txglom_subframes += count;
-   if (g_runtime_diag_enabled)
+   if (g_runtime_diag_enabled) {
+      ++g_txglom_superframes;
+      g_txglom_subframes += count;
       ++g_txglom_batch_hist[(count <= 3u) ? 1u
                             : (count <= 7u) ? 2u
                             : (count <= 15u) ? 3u : 4u];
+   }
    g_runtime_bus_active_us = RPI_GetSystemTime();
    /* As in the single path: NOT clearing the TX-dead clock here - only
       the chip's own RX refresh may do that. */
@@ -7724,8 +7726,10 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
       guarantees the main system poll loop remains responsive. */
    if (g_runtime_emulator_mode) {
       static uint32_t s_emu_poll_count;
+      static uint32_t s_emu_heartbeat_left = 1u;   /* countdown, not a modulo per poll */
 
-      if ((s_emu_poll_count % 10000000u) == 0u) {
+      if (--s_emu_heartbeat_left == 0u) {
+         s_emu_heartbeat_left = 10000000u;
          sdio_debug_log("poll heartbeat (emu-safe): %lu polls, link_up=%u, rx_frames=%lu",
                         (unsigned long)s_emu_poll_count,
                         (unsigned)(g_runtime_link_up ? 1u : 0u),
@@ -7749,8 +7753,8 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
       uint32_t gate_now_us = RPI_GetSystemTime();
 
       if (sdio_host_card_interrupt_asserted()) {
-         g_rx_int_high++;
          if (g_runtime_diag_enabled) {
+            g_rx_int_high++;
             if (!g_gate_prev_high && g_gate_last_low_us != 0u) {
                uint32_t gate_lat = gate_now_us - g_gate_last_low_us;
 
@@ -7764,17 +7768,17 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
          }
          g_rx_sweeping = false;
       } else if ((uint32_t)(gate_now_us - g_rx_sweep_us) < SDIO_RX_SWEEP_INTERVAL_US) {
-         g_rx_int_skips++;
          if (g_runtime_diag_enabled) {
+            g_rx_int_skips++;
             g_gate_last_low_us = (gate_now_us == 0u) ? 1u : gate_now_us;
             g_gate_prev_high = false;
          }
          return false;
       } else {
          g_rx_sweep_us = gate_now_us;
-         g_rx_sweeps++;
          g_rx_sweeping = true;
          if (g_runtime_diag_enabled) {
+            g_rx_sweeps++;
             g_gate_last_low_us = (gate_now_us == 0u) ? 1u : gate_now_us;
             g_gate_prev_high = false;
          }
@@ -7852,7 +7856,7 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
          down - it shows the join is still being waited on.  Once the
          link is up the heartbeat goes silent: a working connection
          should not stream log lines forever. */
-      if ((s_poll_count % 1000u) == 999u && !g_runtime_link_up) {
+      if (!g_runtime_link_up && (s_poll_count % 1000u) == 999u) {
          sdio_debug_log("poll heartbeat: %lu polls, link still down, rx_frames=%lu",
                         (unsigned long)(s_poll_count + 1u),
                         (unsigned long)g_runtime_rx_frame_count);
@@ -7887,7 +7891,7 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
          break; /* fn2 FIFO empty */
       }
       g_runtime_fifo_was_empty = false;
-      if (g_rx_sweeping && frame_index == 0u)
+      if (g_runtime_diag_enabled && g_rx_sweeping && frame_index == 0u)
          g_rx_int_missed++;            /* the sweep found what the line did not say */
 
       /* There is a frame: feed the already-consumed 4-byte header forward

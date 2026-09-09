@@ -204,9 +204,12 @@ static inline uint32_t byte_swap(uint32_t in)
 /* The data FIFO is 16 words deep; SDEDM bits 4..8 report its occupancy */
 #define SDDATA_FIFO_WORDS           16u
 
+#ifdef DEBUG
 /* Transfer statistics for /status: bytes moved and time spent inside the
-   PIO loop, so the real SD data rate can be read off the web */
+   PIO loop, so the real SD data rate can be read off the web.  DEBUG only:
+   two Strongly-Ordered timer reads per block transfer otherwise. */
 uint32_t sd_pio_bytes, sd_pio_us;
+#endif
 
 #ifdef EMMC_DEBUG
 static const char *err_irpts[] = { "CMD_TIMEOUT", "CMD_CRC", "CMD_END_BIT", "CMD_INDEX",
@@ -851,8 +854,10 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
 {
     uint32_t *cursor = (uint32_t *)dev->buf;
     uint32_t total_words = (uint32_t)((dev->block_size * dev->blocks_to_transfer) / sizeof(uint32_t));
+#ifdef DEBUG
     uint32_t t0 = RPI_GetSystemTime();
     sd_pio_bytes += total_words * 4u;
+#endif
 
     /* One SDEDM read tells how many words the FIFO holds (read) or has
        room for (write); move exactly that many, then look again. The
@@ -962,7 +967,9 @@ static int sdhost_transfer_pio(struct emmc_block_dev *dev, bool is_write)
     }
 
     uint32_t final_hsts = sdhost_read(SDHSTS);
+#ifdef DEBUG
     sd_pio_us += RPI_GetSystemTime() - t0;
+#endif
     if ((final_hsts & SDHSTS_ERROR_MASK) != 0u)
     {
         dev->last_error = sdhost_translate_error(final_hsts, true);

@@ -44,16 +44,7 @@
     volatile bool debugFlag_scsiState = true;
     volatile bool debugFlag_fatfs = false;
     volatile bool debugFlag_extended_attributes = true;
-#else
-   // Default debug settings for release builds
-    volatile bool debugFlag_filesystem = false;
-    volatile bool debugFlag_scsiCommands = false;
-    volatile bool debugFlag_scsiBlocks = false;
-    volatile bool debugFlag_scsiFcodes = false;
-    volatile bool debugFlag_scsiState = false;
-    volatile bool debugFlag_fatfs = false;
-    volatile bool debugFlag_extended_attributes = false;
-#endif
+#endif   /* release: the flags are constant false, see debug.h */
 
 #ifdef DEBUG
 // This function outputs a string stored in program space to the UART

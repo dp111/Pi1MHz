@@ -222,7 +222,9 @@ const char *audio_owner_name(void);
 const char *audio_sink_name(void);
 uint32_t audio_rate(void);
 uint32_t audio_underruns(void);
+#ifdef DEBUG
 uint32_t audio_peak(void);        /* recent |sample| maximum, 0..32767 */
+#endif
 /* Copy the last max_frames written to the ring (interleaved L/R) into
    dst; returns frames copied. For /audio.wav. */
 uint32_t audio_ring_snapshot(int16_t *dst, uint32_t max_frames);

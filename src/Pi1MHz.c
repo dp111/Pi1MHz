@@ -729,6 +729,14 @@ uint32_t Pi1MHz_now_us;
 #define POLL_PROFILE 0
 #define POLL_PROFILE_PASSES 200000u
 
+/* Passes between the LOG_INFO heartbeats of the main loop. */
+#define MAIN_POLL_HEARTBEAT_PASSES 10000000u
+
+#ifdef DEBUG
+/* Per-callback run-time measurement (the /status "Poll max us" row and the
+   slow-poll warning): DEBUG builds only.  Release pays no timestamp per
+   callback - the cheap c15 counter read on ARM1176 is still a read, and on
+   the A53 it is a Strongly-Ordered peripheral load per poller per pass. */
 #if (__ARM_ARCH >= 7)
 /* Cortex-A53 (kernel7.img): the ARM1176 CP15 c15 performance-monitor
    registers do NOT exist on the A53 and every access faults as an Undefined
@@ -782,6 +790,7 @@ static inline uint32_t poll_ticks_to_us(uint32_t ticks)
 {
    return (uint32_t)((uint64_t)ticks * 1000u / POLL_TICKS_PER_MS);
 }
+#endif /* DEBUG */
 
 /* Swap one registered callback for another IN PLACE.
  *
@@ -828,10 +837,13 @@ bool Pi1MHz_Replace_Poll( func_ptr old_fn, func_ptr new_fn, const char *name )
 
    Pi1MHz_poll_table[slot] = new_fn;
    Pi1MHz_poll_names[slot] = (name != NULL) ? name : "?";
+#ifdef DEBUG
    poll_max_ticks[slot] = 0u;
+#endif
    return true;
 }
 
+#ifdef DEBUG
 uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset)
 {
    if (idx >= Pi1MHz_polls_max)
@@ -841,6 +853,7 @@ uint32_t Pi1MHz_poll_max_us(unsigned int idx, bool reset)
       poll_max_ticks[idx] = 0;
    return poll_ticks_to_us(t);
 }
+#endif
 
 unsigned int Pi1MHz_poll_count(void)
 {
@@ -967,7 +980,7 @@ _Noreturn void kernel_main(void)
    init_emulator();
 #if POLL_PROFILE
    poll_prof_start();
-#else
+#elif defined(DEBUG)
    poll_ticks_start();
 #endif
    Pi1MHz_boot_poll_us = RPI_GetSystemTime();
@@ -976,6 +989,7 @@ _Noreturn void kernel_main(void)
 
    bool oldreset = Pi1MHz_is_rst_active();
    uint32_t main_poll_loops = 0u;
+   uint32_t heartbeat_left = MAIN_POLL_HEARTBEAT_PASSES;
    do {
       if ( Pi1MHz_is_rst_active() )
       {
@@ -1027,13 +1041,16 @@ _Noreturn void kernel_main(void)
          phases, SDIO command timeouts) still reads the timer itself. */
       Pi1MHz_now_us = RPI_GetSystemTime();
 
+#ifdef DEBUG
       uint32_t before_ticks = poll_ticks();
+#endif
       for (size_t i=0 , n=Pi1MHz_polls_max ; i<n; i++ )
       {
          func_ptr poll_fn = Pi1MHz_poll_table[i];
 
             RPI_BootDetail((uint32_t)(i + 1u) << 8);  /* DEBUG builds only: a runtime hang names the callback */
             poll_fn();
+#ifdef DEBUG
             {
                uint32_t after_ticks = poll_ticks();
                uint32_t duration_ticks = after_ticks - before_ticks;
@@ -1047,12 +1064,14 @@ _Noreturn void kernel_main(void)
                         (unsigned long)poll_ticks_to_us(duration_ticks));
                }
             }
+#endif
       }
 #endif
 
       RPI_BootDetail(0u);
       main_poll_loops++;
-      if ((main_poll_loops % 10000000u) == 0u) {
+      if (--heartbeat_left == 0u) {     /* a countdown: a modulo is a multiply per pass */
+         heartbeat_left = MAIN_POLL_HEARTBEAT_PASSES;
          LOG_INFO("Main poll heartbeat loops=%lu callbacks=%u\r\n",
                   (unsigned long)main_poll_loops,
                   (unsigned int)Pi1MHz_polls_max);

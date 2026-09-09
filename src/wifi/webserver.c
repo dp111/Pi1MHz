@@ -2581,19 +2581,26 @@ static bool route_status(ws_conn_t *c)
       uint32_t sk = 0u, sw = 0u, ms = 0u, hi = 0u;
       bool armed = false;
       sdio_runtime_rx_gate_counts(&sk, &sw, &ms, &armed, &hi);
-      snprintf(tmp, sizeof tmp,
-               "%s %lu high / %lu skipped / %lu sweeps / %lu MISSED",
-               armed ? "armed:" : "OFF:", (unsigned long)hi,
-               (unsigned long)sk, (unsigned long)sw, (unsigned long)ms);
+      /* The counts exist only with wifi_diag=1; a "0 MISSED" from a build
+         that is not counting would read as a clean bill of health. */
+      if (sdio_runtime_diag_enabled())
+         snprintf(tmp, sizeof tmp,
+                  "%s %lu high / %lu skipped / %lu sweeps / %lu MISSED",
+                  armed ? "armed:" : "OFF:", (unsigned long)hi,
+                  (unsigned long)sk, (unsigned long)sw, (unsigned long)ms);
+      else
+         snprintf(tmp, sizeof tmp, "%s (counts: wifi_diag=1)", armed ? "armed" : "OFF");
       table_row(&b, "RX interrupt gate", tmp);
    }
    {
       uint32_t q = 0u, stale_n = 0u, df = 0u, hm = 0u;
       wifi_lwip_tx_path_counts(&q, &stale_n, &df, &hm);
-      snprintf(tmp, sizeof tmp,
-               "%lu queued / %lu stale / %lu fail / %lu us max wait",
-               (unsigned long)q, (unsigned long)stale_n,
-               (unsigned long)df, (unsigned long)hm);
+      /* queued/stale/fail are real counters; only the wait maximum is a
+         wifi_diag=1 measurement. */
+      int o = snprintf(tmp, sizeof tmp, "%lu queued / %lu stale / %lu fail",
+                       (unsigned long)q, (unsigned long)stale_n, (unsigned long)df);
+      if (sdio_runtime_diag_enabled() && o > 0 && (size_t)o < sizeof tmp)
+         snprintf(tmp + o, sizeof tmp - (size_t)o, " / %lu us max wait", (unsigned long)hm);
       table_row(&b, "TX path", tmp);
    }
    {
@@ -2608,14 +2615,19 @@ static bool route_status(ws_conn_t *c)
                                  &g_supers, &g_subs, &g_falls, &g_ch3);
       if (glom_cfg != 0u || g_ch3 != 0u) {
          char big[128];
+         int o = snprintf(big, sizeof big, "%s limit %u - ",
+                          glom_active ? "active," : "OFF (not negotiated),",
+                          (unsigned)glom_cfg);
 
-         snprintf(big, sizeof big,
-                  "%s limit %u - supers %lu / subs %lu / fallbacks %lu / ch3 %lu%s",
-                  glom_active ? "active," : "OFF (not negotiated),",
-                  (unsigned)glom_cfg,
-                  (unsigned long)g_supers, (unsigned long)g_subs,
-                  (unsigned long)g_falls, (unsigned long)g_ch3,
-                  (g_ch3 != 0u) ? " TRIPWIRE!" : "");
+         /* supers/subs count only with wifi_diag=1; fallbacks and ch3 are
+            always counted (fallbacks drives a decision in sdio.c). */
+         if (sdio_runtime_diag_enabled() && o > 0 && (size_t)o < sizeof big)
+            o += snprintf(big + o, sizeof big - (size_t)o, "supers %lu / subs %lu / ",
+                          (unsigned long)g_supers, (unsigned long)g_subs);
+         if (o > 0 && (size_t)o < sizeof big)
+            snprintf(big + o, sizeof big - (size_t)o, "fallbacks %lu / ch3 %lu%s",
+                     (unsigned long)g_falls, (unsigned long)g_ch3,
+                     (g_ch3 != 0u) ? " TRIPWIRE!" : "");
          table_row(&b, "TX glom", big);
       }
    }
@@ -2837,11 +2849,19 @@ static bool route_status(ws_conn_t *c)
    }
    table_row(&b, "Video player", videoplayer_status());
    table_row(&b, "F-code", fcodeLastExchange());
+#ifdef DEBUG
    snprintf(tmp, sizeof tmp, "%s %luHz q%lu pk%lu blk%lu ur%lu %s",
             audio_owner_name(), (unsigned long)audio_rate(),
             (unsigned long)audio_queued_frames(), (unsigned long)audio_peak(),
             (unsigned long)audio_blocks_played(),
             (unsigned long)audio_underruns(), audio_sink_name());
+#else
+   snprintf(tmp, sizeof tmp, "%s %luHz q%lu blk%lu ur%lu %s",
+            audio_owner_name(), (unsigned long)audio_rate(),
+            (unsigned long)audio_queued_frames(),
+            (unsigned long)audio_blocks_played(),
+            (unsigned long)audio_underruns(), audio_sink_name());
+#endif
    table_row(&b, "Audio", tmp);
    snprintf(tmp, sizeof tmp, "mai %08lx hsm %lu pix %lu",
             (unsigned long)hdmi_audio_mai_ctl(), (unsigned long)hdmi_audio_hsm_hz(),
@@ -2923,6 +2943,7 @@ static bool route_status(ws_conn_t *c)
          }
       }
    }
+#ifdef DEBUG
    {
       /* max run per poll slot, reset on read.  Named, not numbered: the row
          is positional, so adding any poller renumbers the rest.  Every
@@ -2952,6 +2973,7 @@ static bool route_status(ws_conn_t *c)
                ms ? (unsigned long)(sd_pio_bytes / 1024u * 1000u / ms) : 0ul);
    }
    table_row(&b, "SD data", tmp);
+#endif
    {
       /* Boot timing, stamped during init and read on demand.  Pre-kernel is
          the free-running system timer's value on entry to kernel_main: the
