@@ -110,7 +110,10 @@
    OUT phase only on total_len or a ZLP, which for an undeclared length can
    only happen when the data is an exact multiple of the packet size; any
    other length hangs the operation with the file open and the LUN locked.
-   Named so the change stays visible in a future TinyUSB diff. */
+   Named so the change stays visible in a future TinyUSB diff.  The edit
+   itself is only in the submodule's working tree: the patch is kept as
+   tinyusb-mtp-unknown-length.patch beside this file - re-apply it after
+   any submodule checkout. */
 #define PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT 1
 #define CFG_TUD_MTP_EP_CONTROL_BUFSIZE  16 // should be enough to hold data in MTP control request
 

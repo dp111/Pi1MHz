@@ -1,0 +1,40 @@
+Local fix to the vendored TinyUSB MTP class driver, kept here because the
+submodule is a plain upstream pin (hathach/tinyusb 231347964, master of
+2026-09-06) and a working-tree edit inside it is invisible to this repo.
+Apply after any submodule checkout or bump:
+
+    git -C src/usb/tinyusb apply ../tinyusb-mtp-unknown-length.patch
+
+Guarded by PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT (tusb_config.h).
+When the host declares no length (ObjectCompressedSize 0 or 0xFFFFFFFF)
+upstream ends an OUT data phase only on total_len or a ZLP, so any length
+that is not a whole number of packets hangs the operation with the file
+open and the LUN locked; a short packet must end the phase.  Upstream had
+not changed mtp_device.c as of e97cf0296 (2026-09-08).
+
+diff --git a/src/class/mtp/mtp_device.c b/src/class/mtp/mtp_device.c
+index 275c9f858..b2011cef0 100644
+--- a/src/class/mtp/mtp_device.c
++++ b/src/class/mtp/mtp_device.c
+@@ -432,6 +432,21 @@ bool mtpd_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t event, uint32_t
+         // OUT completion: reaching total_len or ZLP only. A short packet does NOT end the phase
+         // (an early short packet before total_len is the cancel case, not normal completion).
+         is_complete = (p_mtp->xferred_len >= p_mtp->total_len) || ((xferred_bytes == 0 && p_mtp->xferred_len > 0));
++#if PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT
++        // ...EXCEPT when the length is unknown.  A host that sent
++        // ObjectCompressedSize 0 or 0xFFFFFFFF leaves the application no
++        // length to give tud_mtp_data_receive(), so total_len is UINT32_MAX
++        // and the rule above can only ever be satisfied by a ZLP - which the
++        // host sends only when its data happens to be a whole number of
++        // packets.  For every other length the transfer simply stops: the
++        // application stops re-arming, no ZLP arrives, data_complete_cb never
++        // fires and no response is ever sent, so the operation hangs with the
++        // file still open and the destination LUN still locked.  For an
++        // unknown length the short packet IS the terminator.
++        if (p_mtp->total_len == UINT32_MAX && xferred_bytes > 0 && xferred_bytes < threshold) {
++          is_complete = true;
++        }
++#endif
+       }
+ 
+       TU_LOG_DRV("  MTP Data %s CB: xferred_bytes=%lu, xferred_len/total_len=%lu/%lu, is_complete=%d\r\n",
