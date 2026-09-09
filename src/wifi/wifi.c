@@ -219,8 +219,12 @@ static bool wifi_validate_config(void)
    return true;
 }
 
+/* The three WiFi debug loggers (this pair and sdio_debug_log) end in
+   LOG_DEBUG, which is empty in release: their bodies are DEBUG-only so a
+   release build with wifi_debug=1 does not format lines nobody prints. */
 void wifi_debug_printf(const char *format, ...)
 {
+#ifdef DEBUG
    va_list args;
    char line[192];
    int written;
@@ -236,10 +240,14 @@ void wifi_debug_printf(const char *format, ...)
       return;
 
    LOG_DEBUG("%s", line);
+#else
+   (void)format;
+#endif
 }
 
 static void wifi_debug_log(const char *format, ...)
 {
+#ifdef DEBUG
    va_list args;
    char line[192];
    int written;
@@ -255,6 +263,9 @@ static void wifi_debug_log(const char *format, ...)
       return;
 
    LOG_DEBUG("WIFI: %s\r\n", line);
+#else
+   (void)format;
+#endif
 }
 
 static bool wifi_parse_ipv4(const char *value, char *dest, size_t dest_size,

@@ -352,6 +352,7 @@ static void sdio_debug_log(const char *format, ...) __attribute__((format(printf
 
 static void sdio_debug_log(const char *format, ...)
 {
+#ifdef DEBUG
    va_list args;
    char line[192];
    int written;
@@ -367,6 +368,9 @@ static void sdio_debug_log(const char *format, ...)
       return;
 
    wifi_debug_printf("WIFI-SDIO: %s\r\n", line);
+#else
+   (void)format;                       /* wifi_debug_printf is empty in release */
+#endif
 }
 
 #define SDIO_CCCR_CCCR_SDIO_REV 0x00u

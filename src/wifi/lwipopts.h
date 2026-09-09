@@ -2,6 +2,9 @@
 #define PI1MHZ_LWIPOPTS_H
 
 #define NO_SYS                          1
+/* lwIP's default is LWIP_STATS 1: a dozen counter read-modify-writes per
+   packet through ethernet/ip/tcp/memp, feeding a lwip_stats nothing reads. */
+#define LWIP_STATS                      0
 #define SYS_LIGHTWEIGHT_PROT            0
 
 #define MEM_ALIGNMENT                   4

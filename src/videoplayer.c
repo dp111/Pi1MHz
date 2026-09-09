@@ -191,7 +191,11 @@ static bool submit_au(uint32_t frame, bool with_audio, bool count)
     if (f_lseek(&vp.file, vp.index[frame]) != FR_OK ||
         f_read(&vp.file, &rec, sizeof(rec), &n) != FR_OK || n != sizeof(rec) ||
         rec.video_len > max) {
-        LOG_INFO("videoplayer: bad record %"PRIu32"\r\n", frame);
+        static bool said;                /* once: a corrupt file repeats this per frame */
+        if (!said) {
+            said = true;
+            LOG_INFO("videoplayer: bad record %"PRIu32"\r\n", frame);
+        }
         h264dec_cancel_input();
         return false;
     }

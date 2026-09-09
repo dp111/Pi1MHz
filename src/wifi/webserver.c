@@ -2442,15 +2442,18 @@ static bool route_aun(ws_conn_t *c)
 {
    /* aun_status_text() formats the AUN engine state (station, map,
       queue depth, counters) as plain text; present it preformatted. */
-   static char eco[1536];
    ws_strbuf_t b;
+   char *eco = malloc(1536);
+   if (eco == NULL)
+      return ws_oom(c);
 
-   aun_status_text(eco, sizeof eco);
+   aun_status_text(eco, 1536u);
    sb_init(&b);
    page_open(&b, "AUN");
    sb_puts(&b, "<h1>AUN</h1><div class=\"card\"><pre>");
    sb_html(&b, eco);
    sb_puts(&b, "</pre></div>");
+   free(eco);
    page_close(&b);
    return ws_finish_html(c, 200, "OK", &b);
 }

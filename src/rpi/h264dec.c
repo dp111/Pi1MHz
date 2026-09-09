@@ -129,7 +129,11 @@ static void on_buffer_done(mmal_vc_buffer_t *buf)
             if (dec.frame_cb)
                 dec.frame_cb(0, buf->pts, true);
         } else if (buf->length) {
-            LOG_INFO("h264: short frame %"PRIu32"\r\n", buf->length);
+            static bool said;            /* once: this repeats per frame while the fault lasts */
+            if (!said) {
+                said = true;
+                LOG_INFO("h264: short frame %"PRIu32"\r\n", buf->length);
+            }
         }
         return;
     }
@@ -147,7 +151,11 @@ static void on_event(uint32_t port_type, uint32_t port_num, uint32_t cmd,
         dec.reconfigure_pending = true;
     } else if (cmd == MMAL_EVENT_ERROR) {
         uint32_t status = length >= 4 ? *(const uint32_t *)(const void *)data : 0;
-        LOG_INFO("h264: component error %"PRIu32"\r\n", status);
+        static bool said;                /* once: an error storm arrives per frame */
+        if (!said) {
+            said = true;
+            LOG_INFO("h264: component error %"PRIu32"\r\n", status);
+        }
     }
 }
 

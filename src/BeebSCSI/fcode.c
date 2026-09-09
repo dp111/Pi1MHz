@@ -29,6 +29,7 @@
 #include "../harddisc_emulator.h"   /* hd_juke_request - the eject/disc-flip swap */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>            /* malloc: the F-code history */
 
 // Local includes
 #include "uart.h"
@@ -149,15 +150,21 @@ void fcodePoll(void)
    reproducible on a release build. */
 #define FCODE_HIST 320
 typedef struct { uint32_t ms; char tx[20]; char rx[28]; } fcode_hist_t;
-static fcode_hist_t fcode_hist[FCODE_HIST];
+static fcode_hist_t *fcode_hist;       /* 16 KB, allocated on first use when fcode_log=1 */
 static uint16_t fcode_hist_count;      /* total ever recorded; index = %FCODE_HIST */
 
 static int8_t fcode_log = -1;          /* -1 = not yet read from the cfg */
 
 static void fcode_hist_record(void)
 {
-   if (fcode_log < 0)
+   if (fcode_log < 0) {
       fcode_log = config_get_bool("fcode_log") ? 1 : 0;
+      if (fcode_log) {
+         fcode_hist = malloc(sizeof *fcode_hist * FCODE_HIST);
+         if (fcode_hist == NULL)
+            fcode_log = 0;
+      }
+   }
    if (!fcode_log)
       return;
 
