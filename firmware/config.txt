@@ -28,3 +28,6 @@ vd_isp_disable=1
 #hdmi_force_hotplug=1
 hdmi_group=1
 hdmi_mode=31
+# Skip the firmware's HDMI mute/unmute waits around a runtime mode set:
+# the 50 Hz switch at boot (SET_TIMING) drops from 145 ms to 22-29 ms.
+hdmi_muting=0x10001

@@ -89,10 +89,14 @@ printed).  Cost, measured with the system timer (the row prints it):
 |---|---|
 | display already at the target (no EDID read, nothing sent) | 60 ms - as before the module |
 | a mode is set, full boot | 230 ms = 60 baseline + 24 EDID (two DDC blocks) + 145-170 SET_TIMING |
+| the same with `hdmi_muting=0x10001` in `config.txt` (now shipped) | 108-118 ms: SET_TIMING falls to 22-29 ms.  Two cold boots, picture and HDMI audio unchanged |
 | a mode is set from a **chain-boot** (second runtime mode set on the same VideoCore session) | 1.5-1.8 s in SET_TIMING alone.  Developer artefact only; a full boot does not show it |
 
 The pixel clock changing or not made no difference (1920x1200 at 154 MHz
-to 720p at 74 MHz was 145 ms).  The monitor's own resync (~1 s) is what
+to 720p at 74 MHz was 145 ms).  Most of the 145 ms was the firmware's
+HDMI mute/unmute waits around the switch: `hdmi_muting=0x10001` (a
+`config.txt` key of the firmware, suggested by dp111) skips them, measured
+2026-09-09 on the bench card with the Aug 2026 start.elf.  The monitor's own resync (~1 s) is what
 the user sees.  The wait cannot be overlapped with the rest of boot: the
 mailbox is one in-order slot already carrying the deferred USB power-on,
 and the framebuffer allocation needs it too.  The zero-cost path is a
