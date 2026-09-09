@@ -103,8 +103,63 @@ def pixel_aspect(width, height, display_aspect):
                     display_aspect.denominator * width)
 
 
-def build_filter(args, par):
-    """The ffmpeg filter chain: optional deinterlace, scale, declared SAR.
+def probe_source(path):
+    """(width, height, sar) of the first video stream, via ffprobe."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height,sample_aspect_ratio",
+         "-of", "csv=p=0:nk=1", path],
+        check=True, capture_output=True, text=True).stdout.strip()
+    w, h, sar = out.split(",")[:3]
+    try:
+        n, d = sar.split(":")
+        sar = Fraction(int(n), int(d))
+    except ValueError:
+        sar = None
+    return int(w), int(h), sar
+
+
+def active_crop(args, src_w, src_h, sar):
+    """Return (crop_w, crop_x) removing ld-chroma-decoder's padding, or None.
+
+    ld-chroma-decoder emits the TBC's active window (922 samples for a 52 us
+    PAL line at 4fsc) padded on both sides to a multiple of --output-padding
+    (default 8), so a PAL frame is 928 wide.  Scaling all 928 onto the 832
+    pixels that stand for 52 us squeezes the picture by 6/922 = 0.65%, which
+    is measurable against the Domesday alignment grid (picture 2500 on the
+    Community discs).  The active width comes from the decode's .tbc.json
+    (activeVideoEnd - activeVideoStart); failing that, from the SAR the
+    chroma decoder declares, which is exactly the one that makes the active
+    line 4:3, so active = display_aspect * height / SAR.  The padding is
+    split evenly, so the crop offset is half the difference."""
+    if args.no_crop:
+        return None
+    active = None
+    json_path = args.tbc_json
+    if json_path is None:
+        stem = os.path.splitext(args.input)[0]
+        for cand in (stem + ".tbc.json", stem + ".json"):
+            if os.path.exists(cand):
+                json_path = cand
+                break
+    if json_path:
+        import json
+        with open(json_path) as f:
+            vp = json.load(f)["videoParameters"]
+        active = int(vp["activeVideoEnd"]) - int(vp["activeVideoStart"])
+        print(f"active window from {json_path}: {active} samples")
+    elif sar:
+        da = parse_aspect(args.display_aspect)
+        active = round(da.numerator * src_h / (da.denominator * sar))
+        print(f"active window from source SAR {sar}: {active} samples")
+    if not active or active >= src_w:
+        return None
+    pad = src_w - active
+    return active, pad // 2
+
+
+def build_filter(args, par, crop=None):
+    """The ffmpeg filter chain: optional deinterlace, crop, scale, declared SAR.
 
     --vf replaces only the scaling part, so the deinterlacer and the SAR
     still apply. (In make_pvf.py --vf replaced the whole chain, which made
@@ -112,6 +167,9 @@ def build_filter(args, par):
     chain = []
     if args.deinterlace:
         chain.append("yadif=1")
+    if crop:
+        crop_w, crop_x = crop
+        chain.append(f"crop={crop_w}:in_h:{crop_x}:0")
     if args.vf:
         chain.append(args.vf)
     else:
@@ -123,6 +181,13 @@ def build_filter(args, par):
 
 
 def encode_video(args, par, h264_path):
+    src_w, src_h, sar = probe_source(args.input)
+    crop = active_crop(args, src_w, src_h, sar)
+    if crop:
+        print(f"source {src_w}x{src_h}: cropping {crop[1]} padding samples each "
+              f"side to {crop[0]} before the scale to {args.width}")
+    else:
+        print(f"source {src_w}x{src_h}: no crop (scaling the full width)")
     x264 = (
         "keyint=1:min-keyint=1:scenecut=0:repeat-headers=1:"
         "bframes=0:ref=1:rc-lookahead=0:threads=auto"
@@ -137,7 +202,7 @@ def encode_video(args, par, h264_path):
         cmd += ["-frames:v", str(args.frames)]
     cmd += [
         "-an", "-sn",
-        "-vf", build_filter(args, par),
+        "-vf", build_filter(args, par, crop),
         "-pix_fmt", "yuv420p",
         "-r", f"{args.fps_num}/{args.fps_den}",
         "-c:v", "libx264",
@@ -277,6 +342,13 @@ def main():
     p.add_argument("--vf", default=None,
                    help="replace the scale filter (deinterlace and the "
                         "declared aspect are still applied around it)")
+    p.add_argument("--tbc-json", default=None,
+                   help="the decode's .tbc.json, for the active window that "
+                        "sets the crop (default: <input>.tbc.json if present, "
+                        "else derived from the source's declared SAR)")
+    p.add_argument("--no-crop", action="store_true",
+                   help="scale the source's full width, padding included "
+                        "(the pre-2026-09-07 behaviour, 0.65%% narrow)")
     p.add_argument("--start", default=None, help="ffmpeg -ss start point")
     p.add_argument("--frames", type=int, default=None, help="limit frame count")
     p.add_argument("--no-audio", action="store_true")
