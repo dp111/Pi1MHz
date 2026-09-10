@@ -121,8 +121,27 @@ see the hard disc pause during the reboot.)
 
 ## Getting more information out of it
 
-The release firmware prints nothing at all - that is normal. For real
-diagnosis you need a debug build of the firmware (built from source
+The release firmware prints nothing on the serial port - that is normal -
+but its `/status` page on the web interface carries a few rows that are
+worth reading before anything else:
+
+- **Boot time** - how long the Pi took to reach its main loop, and where
+  the time went.
+- **BREAK** - what happened at the last BBC reset: how quickly the Pi saw
+  it, how long its own re-initialisation took, how long the BREAK key was
+  held, and when the BBC first reached the Pi afterwards (`helper` is the
+  screen redirector being re-enabled, `vdu` the first character sent
+  through it). A `-` in those two after a CTRL-BREAK means the BBC never
+  got that far, which points at the BBC side rather than the Pi; `missed`
+  counts reset pulses too short for the Pi to act on (a bouncing key).
+- **Bus diag** - the hard disc engine's state, and `ovr`, which should
+  stay at 0: anything else means the Pi fell behind the 1MHz bus.
+
+With `vdu_log=1` in `Pi1MHz.cfg`, `/vdulog` shows every VDU command the
+BBC sent through the screen redirector, so a wrong screen can be traced to
+the exact command. `/fcodes` does the same for the LaserDisc player.
+
+For real diagnosis beyond that you need a debug build of the firmware (built from source
 with `DEBUG=1`, or included with some releases), placed on the card as
 `debug/kernel.img` (and/or `debug/kernel7.img`):
 

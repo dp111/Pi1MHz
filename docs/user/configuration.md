@@ -103,6 +103,7 @@ Harddisc_addr=-1
 | `Audio_out` | `beeb` | `hdmi` sends the sound (Music 5000, BeebSID or the video player) out of the HDMI port instead of the Beeb pin/jack. Needs the display link in HDMI mode - `hdmi_drive=2` in `config.txt` if the screen's EDID does not advertise audio. |
 | `Display_refresh` | `50` | The refresh rate to run the screen at. At boot Pi1MHz reads the monitor's EDID and switches to its native resolution at this rate, so any monitor plugged in gets its best picture at 50 Hz with nothing in `config.txt`. The Domesday video is 25 frames a second, and at 50 Hz every frame is shown exactly twice; at 60 Hz pans judder. A television is given its own 50 Hz mode (1080p, 720p or 576p) rather than a made-up one. `off` leaves the mode to `config.txt`. A monitor whose EDID says it cannot go as low as the rate asked for is left alone, and the Display mode row on the status page says what happened. |
 | `Display_par` | `1/1` | Correction for a display whose pixels are not square. Pi1MHz already draws the video as a true 4:3 frame (and the Beeb picture registered on it) for any square-pixel display, so leave this alone unless the picture is visibly the wrong width. A 16:10 monitor fed a 1920x1080 signal stretches it 10/9 taller than wide: set `10/9`, or better, drive the monitor at its native mode in `config.txt` (see [Choosing the display mode](#choosing-the-display-mode)) and leave this at `1/1`. It is applied on top of the corrections Pi1MHz already makes (the 12/13 Beeb sample shape, and the television pixel shape on 576p and 480p). Any fraction `N/D` between 1/4 and 4/1 is accepted. |
+| `vdu_log` | off | `1` keeps a log of every VDU command the BBC sends through the screen redirector (the last 4096, with timestamps), readable at `/vdulog` on the web interface. For chasing a display fault; costs 64 KB of RAM while on. |
 
 ## Hard disc settings
 
@@ -204,7 +205,9 @@ configuration and is already set up correctly. The only line you might
 ever change is near the top: un-commenting `kernel=debug/kernel.img`
 (or `kernel=debug/kernel7.img` in the `[pi3]` section) boots the debug
 build of Pi1MHz, which prints diagnostic messages on the serial port.
-See [Troubleshooting](troubleshooting.md).
+See [Troubleshooting](troubleshooting.md). Leave `hdmi_muting=0x10001`
+in place: it lets the display mode switch at boot happen in a few tens
+of milliseconds instead of well over a hundred.
 
 ### Choosing the display mode
 
