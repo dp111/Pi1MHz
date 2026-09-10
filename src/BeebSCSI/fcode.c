@@ -216,7 +216,8 @@ const char *fcodeLastExchange(void)
 }
 
 
-static char VPmode;
+static char VPmode = '3';   /* what VPX answers: the overlay mode actually set
+                               (the mixer's power-on state is VP3, hard-keyed) */
 
 /* Latched by their own F-codes purely so ?P can report them (the ROM's
    player-status bits 4.4/4.3/4.2 and 5.3). Nothing else consumes them. */
@@ -820,7 +821,13 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 			case 0x56: // V, VP // VFS sends this
 			switch(scsiFcodeBuffer[1]) {
 				case 'P':
-				VPmode = scsiFcodeBuffer[2];
+				/* Remember only a mode actually set.  VPX is a query: storing
+				   its 'X' made the answer "VPX", the ROM took that as "no
+				   overlay" and fell back to VP2 (computer only), which gates
+				   the video plane - so the still it then requested came up
+				   black, with E0/E1 unable to lift a gate they do not own. */
+				if (scsiFcodeBuffer[2] >= '1' && scsiFcodeBuffer[2] <= '5')
+					VPmode = scsiFcodeBuffer[2];
 				switch(scsiFcodeBuffer[2]) {
 					/* Layer visibility goes through screen_plane_gate(), the
 					   mixer-level hide: the framebuffer, mouseredirect and the
