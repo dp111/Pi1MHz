@@ -2809,14 +2809,18 @@ static bool route_status(ws_conn_t *c)
       bool     out_en = false, reconf = false;
       uint32_t nreg = 0, narm = 0;
       h264dec_output_state(&out_en, &reconf, &nreg, &narm);
+      uint32_t in_free = 0; bool eos = false;
+      h264dec_input_state(&in_free, &eos);
       /* out/reg/armed is the handshake that strands the decoder after a
          BREAK: "feeds N back 0" with armed 0 says nothing is waiting for a
          picture, and out=0 says the port never came back up. */
       snprintf(tmp, sizeof tmp,
-               "running, %lu frames decoded, out %s%s reg %lu armed %lu",
+               "running, %lu frames decoded, out %s%s reg %lu armed %lu, in free %lu/%u%s",
                (unsigned long)h264dec_frames_decoded(),
                out_en ? "on" : "OFF", reconf ? " reconf-pending" : "",
-               (unsigned long)nreg, (unsigned long)narm);
+               (unsigned long)nreg, (unsigned long)narm,
+               (unsigned long)in_free, (unsigned)H264DEC_INPUT_BUFFERS,
+               eos ? " eos-owed" : "");
       table_row(&b, "H264 decoder", tmp);
    }
    /* Always shown: with the decoder not running these are the only view of
@@ -2835,10 +2839,13 @@ static bool route_status(ws_conn_t *c)
          screen_geometry_report(pl, &dw, &dh, &x, &y, &w, &h, &sw, &sh);
          if (!w && !h)
             continue;
-         o += (size_t)snprintf(planes + o, sizeof planes - o, "%lu:%lux%lu@%lu,%lu src %lux%lu  ",
+         bool wanted = false, gated = false;
+         bool shown = screen_plane_shown(pl, &wanted, &gated);
+         o += (size_t)snprintf(planes + o, sizeof planes - o, "%lu:%lux%lu@%lu,%lu src %lux%lu%s  ",
                                (unsigned long)pl, (unsigned long)w, (unsigned long)h,
                                (unsigned long)x, (unsigned long)y,
-                               (unsigned long)sw, (unsigned long)sh);
+                               (unsigned long)sw, (unsigned long)sh,
+                               shown ? "" : (gated ? " HIDDEN(gated)" : wanted ? " HIDDEN(wanted)" : " HIDDEN(off)"));
          /* snprintf returns what it WOULD have written, so o can run past
             the buffer and make the next "sizeof - o" underflow */
          if (o >= sizeof planes) o = sizeof planes - 1u;

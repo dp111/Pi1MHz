@@ -576,6 +576,18 @@ void h264dec_reset(void)
    caller registering its new buffers. "feeds N, back 0" with no armed
    buffers says the arm happened too early; with the port disabled it says
    the reconfigure never ran. Three counters, no cost. */
+/* Input side, for /status: free input slots (0 = both AUs still with the
+   VC, so a still's duplicate cannot be sent) and an EOS marker still owed. */
+void h264dec_input_state(uint32_t *free_slots, bool *eos_pending)
+{
+    uint32_t f = 0;
+    for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++)
+        if (dec.in[i].free)
+            f++;
+    *free_slots  = f;
+    *eos_pending = dec.eos_pending;
+}
+
 void h264dec_output_state(bool *enabled, bool *reconf,
                           uint32_t *registered, uint32_t *armed)
 {

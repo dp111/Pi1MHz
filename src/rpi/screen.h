@@ -25,6 +25,7 @@ void screen_mixer_reset(void);   /* Beeb reset: clear gates + highlight */
 void screen_dim_strips(bool on);        /* VP5: dim the band around the computer's raster */
 bool screen_dim_strips_report(uint32_t g[6]);  /* /status: rectangle the strips were built for */
 void screen_geometry_report(uint32_t planeno, uint32_t *disp_w, uint32_t *disp_h, uint32_t *x, uint32_t *y, uint32_t *w, uint32_t *h, uint32_t *src_w, uint32_t *src_h);
+bool screen_plane_shown(uint32_t planeno, bool *wanted, bool *gated);
 void screen_set_palette(uint32_t planeno, uint32_t palette, uint32_t flags);
 uint32_t screen_get_palette_entry( uint32_t entry );
 void screen_set_vsync(bool enable);

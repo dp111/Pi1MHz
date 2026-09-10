@@ -763,7 +763,7 @@ uint32_t videoplayer_picture_number(void)
 
 const char *videoplayer_status(void)
 {
-    static char buf[256];
+    static char buf[384];
     static char closed[40];
     snprintf(closed, sizeof closed, "closed d%d arm%d last:%s",
              filesystemGetLunDirectoryVFS(), vp.lazy_pending ? 1 : 0, vp_fail);
@@ -786,6 +786,15 @@ const char *videoplayer_status(void)
              (unsigned long)vp.flips, (unsigned long)vp.clmt_entries,
              vp.file.cltbl ? "" : " (slow seeks)");
 #endif
+    /* Display state, the ground truth for "the plane is black": what is
+       enabled, what is scanned out, what is waiting, and what the F-code
+       layer last asked for. */
+    size_t o = strlen(buf);
+    snprintf(buf + o, sizeof buf - o, " | plane %s vid %s disp %lx pend %lx arm %lx dup %lu stop %lu op %c",
+             vp.plane_on ? "on" : "off", vp_video_off ? "OFF" : "on",
+             (unsigned long)vp.displayed_phys, (unsigned long)vp.pending_phys,
+             (unsigned long)vp_armed_phys, (unsigned long)vp.dup_owed,
+             (unsigned long)vp.stop_picture, vp.seek_op ? vp.seek_op : '-');
     return buf;
 }
 

@@ -1817,6 +1817,20 @@ void screen_geometry_report( uint32_t planeno, uint32_t *disp_w, uint32_t *disp_
     *src_h = (p->src_size >> 16) & 0xFFF;
 }
 
+/* Is the plane's "owns the display" bit set in the shadow we last wrote,
+   and what the owner asked for - the /status Planes row prints these so a
+   hidden plane reads as hidden, not as "present". */
+bool screen_plane_shown( uint32_t planeno, bool *wanted, bool *gated )
+{
+    if (planeno >= MAX_PLANES || !plane_valid[planeno]) {
+        *wanted = *gated = false;
+        return false;
+    }
+    *wanted = plane_wanted[planeno];
+    *gated  = plane_gated[planeno];
+    return (plane_shadow[planeno].ctrl & 0x40000000u) != 0u;
+}
+
 void screen_set_highlight( bool on );
 
 /* Beeb reset: the mixer state (VP gates + highlight palette) returns to
