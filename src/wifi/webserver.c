@@ -2916,9 +2916,9 @@ static bool route_status(ws_conn_t *c)
       /* Release: just the live engine state and adapter flags - reading them
          costs nothing, and during a wedge this row is the only witness to
          which side of the handshake dropped the completion. */
-      snprintf(tmp, sizeof tmp, "st %u fl %06lx nirq %08lx",
+      snprintf(tmp, sizeof tmp, "st %u fl %06lx nirq %08lx ovr %lu",
                (unsigned int)scsiDiagState(), (unsigned long)hd_diag_flags(),
-               (unsigned long)Pi1MHz_nIRQ_diag());
+               (unsigned long)Pi1MHz_nIRQ_diag(), (unsigned long)Pi1MHz_fiq_overruns);
       table_row(&b, "Bus diag", tmp);
 #endif
 

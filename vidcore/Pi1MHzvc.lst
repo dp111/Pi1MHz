@@ -1,5 +1,5 @@
 Sections:
-00: "org0001:0" (0-108)
+00: "org0001:0" (0-15A)
 
 
 Source: "Pi1MHzvc.s"
@@ -45,219 +45,258 @@ Source: "Pi1MHzvc.s"
                             	    40: .equ GPLEV0_offset, 0x34
                             	    41: .equ GPEDS0_offset, 0x40
                             	    42: 
-                            	    43: # fixed pin bit positions ( TEST passed in dynamically)
-                            	    44: .equ nRST,         26
-                            	    45: .equ nPCFD,        25
-                            	    46: .equ nPCFC,        24
-                            	    47: 
-                            	    48: .equ RnW,          10
-                            	    49: .equ CLK,          27
-                            	    50: .equ DATASHIFT,    2
-                            	    51: .equ ADDRBUS_SHIFT, (16)
-                            	    52: .equ OUTPUTBIT,   (15)
-                            	    53: 
-                            	    54: .equ ADDRESSBUS_WIDTH, (8 + 1)
-                            	    55: .equ DATABUS_WIDTH, 8
-                            	    56: 
-                            	    57: .equ NPCFC_MASK,    (1<<nPCFC)
-                            	    58: 
-                            	    59: .equ Pi1MHz_MEM_RNW, (1<<9)
-                            	    60: 
-                            	    61: .equ GPU_ARM_DBELL, 0x7E00B844
-                            	    62: 
-                            	    63: .org 0                     # NB all code relative
+                            	    43: # Post ring (docs/dev/bus-post-ring.md).  Each bus cycle's GPIO sample goes
+                            	    44: # into one of 8 consecutive registers (SMI DSR0..DSW3, 0x7E600010..2C) with
+                            	    45: # a 5-bit sequence tag in bits 27-31 (GPIO 27 is CLK, which the ARM never
+                            	    46: # reads from the sample; GPIO 28-31 are not on the bus), then
+                            	    47: # the doorbell rings.  The ARM FIQ acknowledges the bell first and drains
+                            	    48: # every slot whose tag matches its own sequence.  Nothing here reads a
+                            	    49: # register: two stores per post, as before.
+                            	    50: #  r1  - ring base, passed by the ARM at launch (it was the single post word
+                            	    51: #        before the ring, so the launch parameter did not change)
+                            	    52: #  r10 - the next tag, pre-shifted to bits 27-31 (add TAG_STEP to advance);
+                            	    53: #        bits 27-29 are the slot, bits 30-31 the lap, so the ARM can tell
+                            	    54: #        "last lap, not written yet" from "the VPU is a lap ahead"
+                            	    55: #  r11 - word index of the next slot, 0..7 (st rX,(ra,rb) scales rb by 4,
+                            	    56: #        like ld r8,(r0,r8) below)
+                            	    57: #  The sample's GPIO 27-31 are dropped with extu rX,27 before the tag goes in.
+                            	    58: .equ TAG_STEP,  0x08000000
+                            	    59: 
+                            	    60: # fixed pin bit positions ( TEST passed in dynamically)
+                            	    61: .equ nRST,         26
+                            	    62: .equ nPCFD,        25
+                            	    63: .equ nPCFC,        24
                             	    64: 
-00:00000000 0500            	    65:    di                      # disable interrupts
-00:00000002 434D            	    66:    or     r3, r4           # add in test pin so that it is still enabled
-00:00000004 06E80000207E    	    67:    mov    r6, GPFSEL0
-                            	    68: 
-00:0000000A 0DE844B8007E    	    69:    mov    r13, GPU_ARM_DBELL
-00:00000010 026A            	    70:    cmp    r2, 0
-00:00000012 BE18            	    71:    bne    use_nOE
-00:00000014 061F            	    72:    BEQ    Poll_loop
+                            	    65: .equ RnW,          10
+                            	    66: .equ CLK,          27
+                            	    67: .equ DATASHIFT,    2
+                            	    68: .equ ADDRBUS_SHIFT, (16)
+                            	    69: .equ OUTPUTBIT,   (15)
+                            	    70: 
+                            	    71: .equ ADDRESSBUS_WIDTH, (8 + 1)
+                            	    72: .equ DATABUS_WIDTH, 8
                             	    73: 
-                            	    74: # poll for nPCFC or nPCFD being low
-                            	    75: .balignw 16,1 # Align with nops
-                            	    76: Poll_loop:
-                            	    77:    # st     r5, GPCLR0_offset(r6)  # Turn off debug signal
-                            	    78: 
-                            	    79: Poll_access_low:
-00:00000020 6C2D            	    80:    ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
+                            	    74: .equ NPCFC_MASK,    (1<<nPCFC)
+                            	    75: 
+                            	    76: .equ Pi1MHz_MEM_RNW, (1<<9)
+                            	    77: 
+                            	    78: .equ GPU_ARM_DBELL, 0x7E00B844
+                            	    79: 
+                            	    80: .org 0                     # NB all code relative
                             	    81: 
-00:00000022 8C6D            	    82:    btst   r12, nPCFC
-00:00000024 8CC1D960        	    83:    btstne r12, nPCFD
-00:00000028 FC18            	    84:    bne    Poll_access_low
+00:00000000 0500            	    82:    di                      # disable interrupts
+00:00000002 434D            	    83:    or     r3, r4           # add in test pin so that it is still enabled
+00:00000004 06E80000207E    	    84:    mov    r6, GPFSEL0
                             	    85: 
-                            	    86:    # st     r5, GPSET0_offset(r6)  # Debug pin
-                            	    87: 
-00:0000002A BC6D            	    88:    btst   r12, CLK
-00:0000002C 0A18            	    89:    beq    waitforclkhigh
-                            	    90: 
-                            	    91: waitforclklow:                   # wait for extra half cycle to end
-00:0000002E 6C2D            	    92:    ld     r12, GPLEV0_offset(r6)
-00:00000030 8C6D            	    93:    btst   r12, nPCFC
-00:00000032 8CC1D960        	    94:    btstne r12, nPCFD
-00:00000036 F518            	    95:    bne    Poll_loop
-                            	    96: 
-00:00000038 BC6D            	    97:    btst   r12, CLK
-00:0000003A FA18            	    98:    bne    waitforclklow
-                            	    99: 
-                            	   100: .balignw 16,1 # Align with nops
-                            	   101: waitforclkhigh:
-                            	   102: waitforclkhighloop:
-00:00000040 48C35167        	   103:    LSR    r8, r12,ADDRBUS_SHIFT+1
-00:00000044 6C2D            	   104:    ld     r12, GPLEV0_offset(r6)
-00:00000046 886E            	   105:    extu   r8, ADDRESSBUS_WIDTH-1   # bmask Isolate address bus
-00:00000048 08A00807        	   106:    ld     r8, (r0,r8)            # get byte to write out
-                            	   107: 
-00:0000004C BC6D            	   108:    btst   r12, CLK
-00:0000004E 7918            	   109:    beq    waitforclkhighloop
-                            	   110: 
-                            	   111: # seen rising edge of CLK
-                            	   112: # so address bus has now been setup
-                            	   113: 
-00:00000050 8C6D            	   114:    btst   r12, nPCFC
-00:00000052 8CC1D960        	   115:    btstne r12, nPCFD
-00:00000056 E518            	   116:    bne    Poll_loop
-                            	   117: 
-                            	   118: # check if we are in a read or write cycle
-                            	   119: # we do this here while the read above is stalling
-                            	   120: 
-00:00000058 AC6C            	   121:    btst   r12, RnW
-                            	   122:   # lsl    r8, DATASHIFT
-00:0000005A 1318            	   123:    beq    writecycle
-                            	   124: 
-00:0000005C 0C6D            	   125:    btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
-00:0000005E 48C3CE40        	   126:    lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
-00:00000062 88C34240        	   127:    lsleq  r8, DATASHIFT          # low 16 bits with databus shift
-                            	   128: 
-                            	   129:   # btst   r8, OUTPUTBIT
-00:00000066 A86E            	   130:    extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above
-                            	   131: 
-00:00000068 6837            	   132:    st     r8, GPSET0_offset(r6)  # set up databus
-00:0000006A 6330            	   133:    st     r3, GPFSEL0_offset(r6) # set databus to output
-00:0000006C 1C09            	   134:    st     r12, (r1)              # post data
-00:0000006E DC09            	   135:    st     r12, (r13)             # ring doorbell
+00:0000000A 0DE844B8007E    	    86:    mov    r13, GPU_ARM_DBELL
+00:00000010 0A60            	    87:    mov    r10, 0                 # post ring: first tag is 0 (the ARM starts at sequence 0)
+00:00000012 0B60            	    88:    mov    r11, 0                 # ... first slot (the base is r1, from the ARM)
+00:00000014 026A            	    89:    cmp    r2, 0
+00:00000016 00914D00        	    90:    bne    use_nOE
+00:0000001A 031F            	    91:    BEQ    Poll_loop
+                            	    92: 
+                            	    93: # poll for nPCFC or nPCFD being low
+                            	    94: .balignw 16,1 # Align with nops
+                            	    95: Poll_loop:
+                            	    96:    # st     r5, GPCLR0_offset(r6)  # Turn off debug signal
+                            	    97: 
+                            	    98: Poll_access_low:
+00:00000020 6C2D            	    99:    ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
+                            	   100: 
+00:00000022 8C6D            	   101:    btst   r12, nPCFC
+00:00000024 8CC1D960        	   102:    btstne r12, nPCFD
+00:00000028 FC18            	   103:    bne    Poll_access_low
+                            	   104: 
+                            	   105:    # st     r5, GPSET0_offset(r6)  # Debug pin
+                            	   106: 
+00:0000002A BC6D            	   107:    btst   r12, CLK
+00:0000002C 0A18            	   108:    beq    waitforclkhigh
+                            	   109: 
+                            	   110: waitforclklow:                   # wait for extra half cycle to end
+00:0000002E 6C2D            	   111:    ld     r12, GPLEV0_offset(r6)
+00:00000030 8C6D            	   112:    btst   r12, nPCFC
+00:00000032 8CC1D960        	   113:    btstne r12, nPCFD
+00:00000036 F518            	   114:    bne    Poll_loop
+                            	   115: 
+00:00000038 BC6D            	   116:    btst   r12, CLK
+00:0000003A FA18            	   117:    bne    waitforclklow
+                            	   118: 
+                            	   119: .balignw 16,1 # Align with nops
+                            	   120: waitforclkhigh:
+                            	   121: waitforclkhighloop:
+00:00000040 48C35167        	   122:    LSR    r8, r12,ADDRBUS_SHIFT+1
+00:00000044 6C2D            	   123:    ld     r12, GPLEV0_offset(r6)
+00:00000046 886E            	   124:    extu   r8, ADDRESSBUS_WIDTH-1   # bmask Isolate address bus
+00:00000048 08A00807        	   125:    ld     r8, (r0,r8)            # get byte to write out
+                            	   126: 
+00:0000004C BC6D            	   127:    btst   r12, CLK
+00:0000004E 7918            	   128:    beq    waitforclkhighloop
+                            	   129: 
+                            	   130: # seen rising edge of CLK
+                            	   131: # so address bus has now been setup
+                            	   132: 
+00:00000050 8C6D            	   133:    btst   r12, nPCFC
+00:00000052 8CC1D960        	   134:    btstne r12, nPCFD
+00:00000056 E518            	   135:    bne    Poll_loop
                             	   136: 
-                            	   137: waitforclklow2loop:
-00:00000070 6C2D            	   138:    ld     r12, GPLEV0_offset(r6)
-00:00000072 BC6D            	   139:    btst   r12, CLK
-00:00000074 FE18            	   140:    bne    waitforclklow2loop
-                            	   141: 
-00:00000076 6430            	   142:    st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
-00:00000078 683A            	   143:    st     r8, GPCLR0_offset(r6)  # clear databus low
-                            	   144: 
-00:0000007A 531F            	   145:    b      Poll_loop
-                            	   146: 
-                            	   147: .balignw 16,1 # Align with nops
-                            	   148: writecycle:
-                            	   149: waitforclkloww2:
-00:00000080 C840            	   150:    mov    r8,r12
-00:00000082 6C2D            	   151:    ld     r12, GPLEV0_offset(r6)
-00:00000084 BC6D            	   152:    btst   r12, CLK
-00:00000086 FD18            	   153:    bne    waitforclkloww2
-                            	   154: 
-00:00000088 1809            	   155:    st     r8, (r1)         # post data
-00:0000008A D809            	   156:    st     r8, (r13)        # ring doorbell
-00:0000008C 4A1F            	   157:    b      Poll_loop
-                            	   158: 
-                            	   159: 
-                            	   160: #
-                            	   161: # Same as above but with nOE pin ( only for system without the screen enabled
-                            	   162: #
-                            	   163: use_nOE:
-00:0000008E A960            	   164:    mov    r9, GPCLR0_offset>>2
-                            	   165: .balignw 16,1 # Align with nops
-                            	   166: 
-                            	   167: nOE_Poll_loop:
-00:00000090 653A            	   168:    st     r5, GPCLR0_offset(r6)  # Turn off debug signal
-                            	   169: 
-                            	   170: nOE_Poll_access_low:
-00:00000092 6C2D            	   171:    ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
-                            	   172: 
-00:00000094 8C6D            	   173:    btst   r12, nPCFC
-00:00000096 8CC1D960        	   174:    btstne r12, nPCFD
-00:0000009A FC18            	   175:    bne    nOE_Poll_access_low
-                            	   176: 
-00:0000009C 6537            	   177:    st     r5, GPSET0_offset(r6)  # Debug pin
+                            	   137: # check if we are in a read or write cycle
+                            	   138: # we do this here while the read above is stalling
+                            	   139: 
+00:00000058 AC6C            	   140:    btst   r12, RnW
+                            	   141:   # lsl    r8, DATASHIFT
+00:0000005A 1B18            	   142:    beq    writecycle
+                            	   143: 
+00:0000005C 0C6D            	   144:    btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
+00:0000005E 48C3CE40        	   145:    lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
+00:00000062 88C34240        	   146:    lsleq  r8, DATASHIFT          # low 16 bits with databus shift
+                            	   147: 
+                            	   148:   # btst   r8, OUTPUTBIT
+00:00000066 A86E            	   149:    extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above
+                            	   150: 
+00:00000068 6837            	   151:    st     r8, GPSET0_offset(r6)  # set up databus
+00:0000006A 6330            	   152:    st     r3, GPFSEL0_offset(r6) # set databus to output
+00:0000006C BC6F            	   153:    extu   r12, 27                # post: drop GPIO 27-31 ...
+00:0000006E AC4D            	   154:    or     r12, r10               # ... tag it ...
+00:00000070 2CA00B0F        	   155:    st     r12, (r1, r11)        # ... store the entry (rb scaled by 4, as ld r8,(r0,r8) above) ...
+00:00000074 DC09            	   156:    st     r12, (r13)             # ... ring the doorbell
+00:00000076 4AE800000008    	   157:    add    r10, TAG_STEP          # next tag (wraps through bit 31)
+00:0000007C 1B62            	   158:    add    r11, 1
+00:0000007E 3B6E            	   159:    extu   r11, 3                 # next slot, 0..7
+                            	   160: 
+                            	   161: waitforclklow2loop:
+00:00000080 6C2D            	   162:    ld     r12, GPLEV0_offset(r6)
+00:00000082 BC6D            	   163:    btst   r12, CLK
+00:00000084 FE18            	   164:    bne    waitforclklow2loop
+                            	   165: 
+00:00000086 6430            	   166:    st     r4, GPFSEL0_offset(r6) # data bus to inputs except debug
+00:00000088 683A            	   167:    st     r8, GPCLR0_offset(r6)  # clear databus low
+                            	   168: 
+00:0000008A 4B1F            	   169:    b      Poll_loop
+                            	   170: 
+                            	   171: .balignw 16,1 # Align with nops
+                            	   172: writecycle:
+                            	   173: waitforclkloww2:
+00:00000090 C840            	   174:    mov    r8,r12
+00:00000092 6C2D            	   175:    ld     r12, GPLEV0_offset(r6)
+00:00000094 BC6D            	   176:    btst   r12, CLK
+00:00000096 FD18            	   177:    bne    waitforclkloww2
                             	   178: 
-00:0000009E BC6D            	   179:    btst   r12, CLK
-00:000000A0 0818            	   180:    beq    nOE_waitforclkhigh
-                            	   181: 
-                            	   182: nOE_waitforclklow:                   # wait for extra half cycle to end
-00:000000A2 6C2D            	   183:    ld     r12, GPLEV0_offset(r6)
-00:000000A4 8C6D            	   184:    btst   r12, nPCFC
-00:000000A6 8CC1D960        	   185:    btstne r12, nPCFD
-00:000000AA F318            	   186:    bne    nOE_Poll_loop
+00:00000098 B86F            	   179:    extu   r8, 27                 # post: drop GPIO 27-31, tag, store, ring (see the read path)
+00:0000009A A84D            	   180:    or     r8, r10
+00:0000009C 28A00B0F        	   181:    st     r8, (r1, r11)
+00:000000A0 D809            	   182:    st     r8, (r13)              # ring doorbell
+00:000000A2 4AE800000008    	   183:    add    r10, TAG_STEP
+00:000000A8 1B62            	   184:    add    r11, 1
+00:000000AA 3B6E            	   185:    extu   r11, 3
+00:000000AC 7F9EBAFF        	   186:    b      Poll_loop
                             	   187: 
-00:000000AC BC6D            	   188:    btst   r12, CLK
-00:000000AE FA18            	   189:    bne    nOE_waitforclklow
-                            	   190: 
-                            	   191: .balignw 16,1 # Align with nops
-                            	   192: nOE_waitforclkhigh:
-                            	   193: nOE_waitforclkhighloop:
-00:000000B0 48C35167        	   194:    LSR    r8, r12,ADDRBUS_SHIFT+1
-00:000000B4 6C2D            	   195:    ld     r12, GPLEV0_offset(r6)
-00:000000B6 886E            	   196:    extu   r8, ADDRESSBUS_WIDTH-1   # bmask Isolate address bus
-00:000000B8 08A00807        	   197:    ld     r8, (r0,r8)            # get byte to write out
+                            	   188: 
+                            	   189: #
+                            	   190: # Same as above but with nOE pin ( only for system without the screen enabled
+                            	   191: #
+                            	   192: use_nOE:
+00:000000B0 A960            	   193:    mov    r9, GPCLR0_offset>>2
+                            	   194: .balignw 16,1 # Align with nops
+                            	   195: 
+                            	   196: nOE_Poll_loop:
+00:000000C0 653A            	   197:    st     r5, GPCLR0_offset(r6)  # Turn off debug signal
                             	   198: 
-00:000000BC BC6D            	   199:    btst   r12, CLK
-00:000000BE 7918            	   200:    beq    nOE_waitforclkhighloop
+                            	   199: nOE_Poll_access_low:
+00:000000C2 6C2D            	   200:    ld     r12, GPLEV0_offset(r6)  # loop until we see FRED or JIM low
                             	   201: 
-                            	   202: # seen rising edge of CLK
-                            	   203: # so address bus has now been setup
-                            	   204: 
-00:000000C0 8C6D            	   205:    btst   r12, nPCFC
-00:000000C2 8CC1D960        	   206:    btstne r12, nPCFD
-00:000000C6 E518            	   207:    bne    nOE_Poll_loop
-                            	   208: 
-                            	   209: # check if we are in a read or write cycle
-                            	   210: # we do this here while the read above is stalling
-                            	   211: 
-00:000000C8 AC6C            	   212:    btst   r12, RnW
-                            	   213:    #lsl    r8, DATASHIFT
-00:000000CA 1618            	   214:    beq    nOE_writecycle
-                            	   215: 
-00:000000CC 0C6D            	   216:    btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
-00:000000CE 48C3CE40        	   217:    lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
-00:000000D2 88C34240        	   218:    lsleq  r8, DATASHIFT          # low 16 bits with databus shift
+00:000000C4 8C6D            	   202:    btst   r12, nPCFC
+00:000000C6 8CC1D960        	   203:    btstne r12, nPCFD
+00:000000CA FC18            	   204:    bne    nOE_Poll_access_low
+                            	   205: 
+00:000000CC 6537            	   206:    st     r5, GPSET0_offset(r6)  # Debug pin
+                            	   207: 
+00:000000CE BC6D            	   208:    btst   r12, CLK
+00:000000D0 0818            	   209:    beq    nOE_waitforclkhigh
+                            	   210: 
+                            	   211: nOE_waitforclklow:                   # wait for extra half cycle to end
+00:000000D2 6C2D            	   212:    ld     r12, GPLEV0_offset(r6)
+00:000000D4 8C6D            	   213:    btst   r12, nPCFC
+00:000000D6 8CC1D960        	   214:    btstne r12, nPCFD
+00:000000DA F318            	   215:    bne    nOE_Poll_loop
+                            	   216: 
+00:000000DC BC6D            	   217:    btst   r12, CLK
+00:000000DE FA18            	   218:    bne    nOE_waitforclklow
                             	   219: 
-                            	   220: 
-00:000000D6 F86C            	   221:    btst   r8, OUTPUTBIT
-00:000000D8 A86E            	   222:    extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above
-                            	   223: 
-00:000000DA 6837            	   224:    st    r8, GPSET0_offset(r6)  # set up databus
-00:000000DC 6330            	   225:    st    r3, GPFSEL0_offset(r6) # set databus to output
-00:000000DE 0318            	   226:    beq   bytenotwrittento
-00:000000E0 22A00937        	   227:    st    r2,(r6,r9)             # set external output enable low ( only if it has been written to)
-                            	   228: bytenotwrittento:
-00:000000E4 1C09            	   229:    st    r12, (r1)              # post data
-00:000000E6 DC09            	   230:    st    r12, (r13)             # ring doorbell
-                            	   231: 
-                            	   232: .balignw 4,1 # Align with nops
-                            	   233: nOE_waitforclklow2loop:
-00:000000E8 6C2D            	   234:    ld    r12, GPLEV0_offset(r6)
-00:000000EA BC6D            	   235:    btst  r12, CLK
-00:000000EC FE18            	   236:    bne   nOE_waitforclklow2loop
+                            	   220: .balignw 16,1 # Align with nops
+                            	   221: nOE_waitforclkhigh:
+                            	   222: nOE_waitforclkhighloop:
+00:000000E0 48C35167        	   223:    LSR    r8, r12,ADDRBUS_SHIFT+1
+00:000000E4 6C2D            	   224:    ld     r12, GPLEV0_offset(r6)
+00:000000E6 886E            	   225:    extu   r8, ADDRESSBUS_WIDTH-1   # bmask Isolate address bus
+00:000000E8 08A00807        	   226:    ld     r8, (r0,r8)            # get byte to write out
+                            	   227: 
+00:000000EC BC6D            	   228:    btst   r12, CLK
+00:000000EE 7918            	   229:    beq    nOE_waitforclkhighloop
+                            	   230: 
+                            	   231: # seen rising edge of CLK
+                            	   232: # so address bus has now been setup
+                            	   233: 
+00:000000F0 8C6D            	   234:    btst   r12, nPCFC
+00:000000F2 8CC1D960        	   235:    btstne r12, nPCFD
+00:000000F6 E518            	   236:    bne    nOE_Poll_loop
                             	   237: 
-00:000000EE 6237            	   238:    st    r2, GPSET0_offset(r6)  # set external output enable high
-00:000000F0 6430            	   239:    st    r4, GPFSEL0_offset(r6) # data bus to inputs except debug
-00:000000F2 683A            	   240:    st    r8, GPCLR0_offset(r6)  # clear databus low
-                            	   241: 
-00:000000F4 4E1F            	   242:    b      nOE_Poll_loop
-                            	   243: 
-                            	   244: nOE_writecycle:
-00:000000F6 623A            	   245:    st     r2, GPCLR0_offset(r6)  # set external output enable low
-                            	   246: nOE_waitforclkloww2:
-00:000000F8 C840            	   247:    mov    r8,r12
-00:000000FA 6C2D            	   248:    ld     r12, GPLEV0_offset(r6)
-00:000000FC BC6D            	   249:    btst   r12, CLK
-00:000000FE FD18            	   250:    bne    nOE_waitforclkloww2
-                            	   251: 
-00:00000100 1809            	   252:    st     r8, (r1)         # post data
-00:00000102 D809            	   253:    st     r8, (r13)        # ring doorbell
-00:00000104 6237            	   254:    st     r2, GPSET0_offset(r6)  # set external output enable high
-00:00000106 451F            	   255:    b      nOE_Poll_loop
+                            	   238: # check if we are in a read or write cycle
+                            	   239: # we do this here while the read above is stalling
+                            	   240: 
+00:000000F8 AC6C            	   241:    btst   r12, RnW
+                            	   242:    #lsl    r8, DATASHIFT
+00:000000FA 1E18            	   243:    beq    nOE_writecycle
+                            	   244: 
+00:000000FC 0C6D            	   245:    btst   r12, ADDRBUS_SHIFT     # select which 16bits hold the data
+00:000000FE 48C3CE40        	   246:    lsrne  r8, 16 - DATASHIFT     # High 16 bits to low 16 bits with databus shift
+00:00000102 88C34240        	   247:    lsleq  r8, DATASHIFT          # low 16 bits with databus shift
+                            	   248: 
+                            	   249: 
+00:00000106 F86C            	   250:    btst   r8, OUTPUTBIT
+00:00000108 A86E            	   251:    extu   r8, DATABUS_WIDTH + DATASHIFT      # bmask isolate the databus NB lower bit are already zero form above
+                            	   252: 
+00:0000010A 6837            	   253:    st    r8, GPSET0_offset(r6)  # set up databus
+00:0000010C 6330            	   254:    st    r3, GPFSEL0_offset(r6) # set databus to output
+00:0000010E 0318            	   255:    beq   bytenotwrittento
+00:00000110 22A00937        	   256:    st    r2,(r6,r9)             # set external output enable low ( only if it has been written to)
+                            	   257: bytenotwrittento:
+00:00000114 BC6F            	   258:    extu  r12, 27                # post: drop GPIO 27-31, tag, store, ring (see the first read path)
+00:00000116 AC4D            	   259:    or    r12, r10
+00:00000118 2CA00B0F        	   260:    st    r12, (r1, r11)
+00:0000011C DC09            	   261:    st    r12, (r13)             # ring doorbell
+00:0000011E 4AE800000008    	   262:    add   r10, TAG_STEP
+00:00000124 1B62            	   263:    add   r11, 1
+00:00000126 3B6E            	   264:    extu  r11, 3
+                            	   265: 
+                            	   266: .balignw 4,1 # Align with nops
+                            	   267: nOE_waitforclklow2loop:
+00:00000128 6C2D            	   268:    ld    r12, GPLEV0_offset(r6)
+00:0000012A BC6D            	   269:    btst  r12, CLK
+00:0000012C FE18            	   270:    bne   nOE_waitforclklow2loop
+                            	   271: 
+00:0000012E 6237            	   272:    st    r2, GPSET0_offset(r6)  # set external output enable high
+00:00000130 6430            	   273:    st    r4, GPFSEL0_offset(r6) # data bus to inputs except debug
+00:00000132 683A            	   274:    st    r8, GPCLR0_offset(r6)  # clear databus low
+                            	   275: 
+00:00000134 461F            	   276:    b      nOE_Poll_loop
+                            	   277: 
+                            	   278: nOE_writecycle:
+00:00000136 623A            	   279:    st     r2, GPCLR0_offset(r6)  # set external output enable low
+                            	   280: nOE_waitforclkloww2:
+00:00000138 C840            	   281:    mov    r8,r12
+00:0000013A 6C2D            	   282:    ld     r12, GPLEV0_offset(r6)
+00:0000013C BC6D            	   283:    btst   r12, CLK
+00:0000013E FD18            	   284:    bne    nOE_waitforclkloww2
+                            	   285: 
+00:00000140 B86F            	   286:    extu   r8, 27                 # post: drop GPIO 27-31, tag, store, ring (see the first read path)
+00:00000142 A84D            	   287:    or     r8, r10
+00:00000144 28A00B0F        	   288:    st     r8, (r1, r11)
+00:00000148 D809            	   289:    st     r8, (r13)              # ring doorbell
+00:0000014A 6237            	   290:    st     r2, GPSET0_offset(r6)  # set external output enable high
+00:0000014C 4AE800000008    	   291:    add    r10, TAG_STEP
+00:00000152 1B62            	   292:    add    r11, 1
+00:00000154 3B6E            	   293:    extu   r11, 3
+00:00000156 7F9EB5FF        	   294:    b      nOE_Poll_loop
 
 
 Symbols by name:
@@ -276,24 +315,25 @@ OUTPUTBIT                        S:0000000F
 Poll_access_low                  A:00000020
 Poll_loop                        A:00000020
 RnW                              S:0000000A
-bytenotwrittento                 A:000000E4
-nOE_Poll_access_low              A:00000092
-nOE_Poll_loop                    A:00000090
-nOE_waitforclkhigh               A:000000B0
-nOE_waitforclkhighloop           A:000000B0
-nOE_waitforclklow                A:000000A2
-nOE_waitforclklow2loop           A:000000E8
-nOE_waitforclkloww2              A:000000F8
-nOE_writecycle                   A:000000F6
+TAG_STEP                         S:08000000
+bytenotwrittento                 A:00000114
+nOE_Poll_access_low              A:000000C2
+nOE_Poll_loop                    A:000000C0
+nOE_waitforclkhigh               A:000000E0
+nOE_waitforclkhighloop           A:000000E0
+nOE_waitforclklow                A:000000D2
+nOE_waitforclklow2loop           A:00000128
+nOE_waitforclkloww2              A:00000138
+nOE_writecycle                   A:00000136
 nPCFC                            S:00000018
 nPCFD                            S:00000019
-use_nOE                          A:0000008E
+use_nOE                          A:000000B0
 waitforclkhigh                   A:00000040
 waitforclkhighloop               A:00000040
 waitforclklow                    A:0000002E
-waitforclklow2loop               A:00000070
-waitforclkloww2                  A:00000080
-writecycle                       A:00000080
+waitforclklow2loop               A:00000080
+waitforclkloww2                  A:00000090
+writecycle                       A:00000090
 
 Symbols by value:
 00000000 GPFSEL0_offset
@@ -314,18 +354,19 @@ Symbols by value:
 00000034 GPLEV0_offset
 00000040 waitforclkhigh
 00000040 waitforclkhighloop
-00000070 waitforclklow2loop
-00000080 waitforclkloww2
-00000080 writecycle
-0000008E use_nOE
-00000090 nOE_Poll_loop
-00000092 nOE_Poll_access_low
-000000A2 nOE_waitforclklow
-000000B0 nOE_waitforclkhigh
-000000B0 nOE_waitforclkhighloop
-000000E4 bytenotwrittento
-000000E8 nOE_waitforclklow2loop
-000000F6 nOE_writecycle
-000000F8 nOE_waitforclkloww2
+00000080 waitforclklow2loop
+00000090 waitforclkloww2
+00000090 writecycle
+000000B0 use_nOE
+000000C0 nOE_Poll_loop
+000000C2 nOE_Poll_access_low
+000000D2 nOE_waitforclklow
+000000E0 nOE_waitforclkhigh
+000000E0 nOE_waitforclkhighloop
+00000114 bytenotwrittento
+00000128 nOE_waitforclklow2loop
+00000136 nOE_writecycle
+00000138 nOE_waitforclkloww2
+08000000 TAG_STEP
 7E00B844 GPU_ARM_DBELL
 7E200000 GPFSEL0

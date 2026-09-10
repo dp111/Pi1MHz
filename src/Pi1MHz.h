@@ -21,6 +21,9 @@
 #define Pi1MHz_MEM_BASE (PERIPHERAL_BASE + 0xA04000 )
 
 #define Pi1MHz_VPU_RETURN (PERIPHERAL_BASE + 0x600010 )
+/* Post ring base (docs/dev/bus-post-ring.md): eight registers from the one
+   the single-word post used, SMI DSR0.  Visible to the assembler (FIQ.s). */
+#define Pi1MHz_POST_RING  Pi1MHz_VPU_RETURN
 
 #define Pi1MHz_STRUCT_VADDR 0x100
 
@@ -225,6 +228,11 @@ void Pi1MHz_Register_Poll( func_ptr function_ptr, const char *name );
 bool Pi1MHz_Replace_Poll( func_ptr old_fn, func_ptr new_fn, const char *name );
 
 const char *Pi1MHz_poll_name(unsigned int idx);
+/* Post ring (docs/dev/bus-post-ring.md): eight registers the VPU fills with
+   tagged bus-cycle samples and the FIQ drains; base Pi1MHz_POST_RING above. */
+#define Pi1MHz_POST_SLOTS 8u
+#define Pi1MHz_post_ring  ((volatile uint32_t *)Pi1MHz_POST_RING)
+extern uint32_t Pi1MHz_fiq_overruns;      /* post ring: FIQs that found the VPU a lap ahead; /status Bus diag "ovr" */
 
 /* Boot timing, stamped once during init (see Pi1MHz.c).  The system timer
    free-runs from the GPU's start, so _entry_us also measures the firmware

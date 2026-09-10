@@ -48,6 +48,24 @@ void _disable_interrupts(void)
     );
 }
 
+/* Set the FIQ mode's banked r10 - the post ring's consumer tag, pre-shifted to bits 27-31 (FIQ.s)
+   - from another mode.  Call with FIQ masked: it switches to FIQ mode for
+   one instruction.  r0 is shared across modes, r10 is not, which is the
+   whole point. */
+void _fiq_set_consumer(unsigned int c)
+{
+    register unsigned int v __asm__("r0") = c;
+    __asm volatile
+    (
+        "mrs     r1, cpsr \r\n"
+        "cps     #0x11 \r\n"
+        "mov     r10, r0 \r\n"
+        "msr     cpsr_c, r1 \r\n"
+    :
+    : "r" (v)
+    : "r1", "memory", "cc");
+}
+
 /* IRQ only: FIQ stays live.  The 1MHz bus is serviced from FIQ and the VPU
    posts every bus cycle without waiting for the ARM to collect it (one word
    before the post ring, eight entries with it), so a window with FIQ masked

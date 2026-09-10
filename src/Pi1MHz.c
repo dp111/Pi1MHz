@@ -184,6 +184,8 @@ const char *Pi1MHz_EmulatorName(unsigned int idx)
 // Memory for VPU to read FRED and JIM
 static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE;
 
+uint32_t Pi1MHz_fiq_overruns;       /* post ring: FIQs that found the VPU a lap ahead (docs/dev/bus-post-ring.md) */
+
 // Table of polling functions to call while idle
 NOINIT_SECTION static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
 NOINIT_SECTION static const char *Pi1MHz_poll_names[NUM_EMULATORS];
@@ -592,11 +594,22 @@ static void init_emulator(void) {
 
    for(int i=255; i>=0; i--)
       Pi1MHz_Memory_VPU[i]=0;             // Clear VPU ram.
+   /* Post ring (docs/dev/bus-post-ring.md), FIQ masked until the VPU is
+      relaunched: a bus cycle in the gap would post into a ring the
+      consumer is about to reset.  The 5-bit tag in bits 27-31 is slot
+      (27-29) + lap (30-31); each slot is cleared to its own slot number
+      with lap 3, which the consumer (starting at lap 0) reads as "last
+      lap's entry, not written yet", never as an overrun.  Consumer
+      sequence to 0; the VPU starts at tag 0 when launched. */
+   unsigned int ring_cpsr = _disable_interrupts_cspr();
+   for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++)
+      Pi1MHz_post_ring[s] = (s | 24u) << 27;
+   _fiq_set_consumer(0);
 
    RPI_PropertyStart(TAG_LAUNCH_VPU1, 7);
    RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function
    RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
-   RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_VPU_RETURN & 0x00FFFFFF) )); // r1
+   RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_POST_RING & 0x00FFFFFF) )); // r1: the post ring base (docs/dev/bus-post-ring.md)
 
    const char *prop = config_get("Pi1MHznOE");
    if (prop)
@@ -616,6 +629,7 @@ static void init_emulator(void) {
    RPI_PropertyProcess(false);
 
    RPI_IRQBase->FIQ_control = 0x80 + 67; // doorbell FIQ
+   _restore_cpsr(ring_cpsr);              /* ring reset and relaunch done: FIQ may run again */
 
    /* nRST edge -> interrupt.  The SCSI teardown has to happen while nRST is
       still asserted; the poll loop cannot promise that, because one pass can
