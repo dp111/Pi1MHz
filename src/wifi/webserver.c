@@ -34,6 +34,7 @@
 #include "../rpi/cache.h"              /* clean the boot-stage block before a deliberate reboot */
 #include "../videoplayer.h"
 #include "../BeebSCSI/fcode.h"
+#include "../framebuffer/framebuffer.h"   /* fb_vdu_log_text for /vdulog */
 #include "../harddisc_emulator.h"
 #include "../BeebSCSI/scsi.h"
 #include "../rpi/exceptions.h"
@@ -2469,6 +2470,22 @@ static bool route_fcodes(ws_conn_t *c)
       return ws_oom(c);
    text[0] = '\0';
    (void)fcodeHistoryText(text, 24576u);
+   sb_init(&b);
+   sb_puts(&b, text);
+   free(text);
+   return ws_finish_text(c, 200, "OK", &b);
+}
+
+/* GET /vdulog - the VDU commands the drain consumed (vdu_log=1), oldest
+   first, as text.  Its own route for the same reason as /fcodes. */
+static bool route_vdulog(ws_conn_t *c)
+{
+   ws_strbuf_t b;
+   char *text = malloc(65536);
+   if (text == NULL)
+      return ws_oom(c);
+   text[0] = '\0';
+   (void)fb_vdu_log_text(text, 65536u);
    sb_init(&b);
    sb_puts(&b, text);
    free(text);
@@ -6498,6 +6515,8 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_home(c);
       if (strcmp(rawpath, "/fcodes") == 0)
          return route_fcodes(c);
+      if (strcmp(rawpath, "/vdulog") == 0)
+         return route_vdulog(c);
       if (strcmp(rawpath, "/status") == 0)
          return route_status(c);
       if (strcmp(rawpath, "/edid") == 0)

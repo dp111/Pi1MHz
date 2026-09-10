@@ -133,4 +133,7 @@ uint8_t fb_get_gcol_from_colnum(uint8_t colnum);
 
 void fb_emulator_init(uint8_t instance, uint8_t address);
 
+/* The VDU command log (vdu_log=1), as text for /vdulog; returns bytes written. */
+size_t fb_vdu_log_text(char *out, size_t max);
+
 #endif

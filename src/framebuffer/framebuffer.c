@@ -16,6 +16,9 @@
 #include "../helpers.h"
 #include "screen_modes.h"
 #include "../mouseredirect.h"    /* the pointer sprite is lifted around the VDU drain */
+#include "../config.h"           /* vdu_log= */
+#include "../rpi/systimer.h"     /* timestamps for the VDU log */
+#include <stdlib.h>
 #include "framebuffer.h"
 #include "primitives.h"
 #include "fonts.h"
@@ -107,6 +110,17 @@ static volatile uint8_t flash_space_time = 25;
 // VDU Queue
 #define VDU_QSIZE 8192
 #define VDU_BUF_LEN 16
+
+/* VDU log (vdu_log=1 in Pi1MHz.cfg): every command the drain consumes,
+   oldest first, read over /vdulog - the way to see whether the Beeb's bytes
+   reached the Pi at all and what the drain did with them.  Fixed 16-byte
+   entries so the ring wraps on a command boundary.  Off (the default) it
+   costs one test per drained command; the storage exists only when on. */
+#define VDU_LOG_ENTRIES 4096u                 /* 64 KB: ~4000 characters of history */
+typedef struct { uint32_t ms; uint8_t len; uint8_t executed; uint8_t b[10]; } vdu_log_t;
+static vdu_log_t *vdu_log;                    /* NULL = off */
+static uint32_t vdu_log_count;                /* total ever recorded; index = % entries */
+static uint32_t vdu_fiq_drops;                /* commands the FIQ refused for want of queue space */
 static volatile unsigned int vdu_wp = 0;
 static volatile unsigned int vdu_rp = 0;
 // The ring is over-allocated by VDU_BUF_LEN bytes. Every write to an index
@@ -2030,7 +2044,16 @@ void fb_process_vdu_queue(void) {
          // not executed. VDU 6 re-enables; VDU 22 (mode) does too so that a
          // Beeb BREAK (whose driver re-sends the mode) always recovers the
          // display - the disable state lives here, not in the Beeb's OS.
-         if (vdu_enabled || vdu_queue[rp] == 6 || vdu_queue[rp] == 22)
+         const bool execute = vdu_enabled || vdu_queue[rp] == 6 || vdu_queue[rp] == 22;
+         if (vdu_log != NULL) {
+            vdu_log_t *e = &vdu_log[vdu_log_count % VDU_LOG_ENTRIES];
+            e->ms = RPI_GetSystemTime() / 1000u;
+            e->len = (uint8_t)((needed > sizeof e->b) ? sizeof e->b : needed);
+            e->executed = execute ? 1u : 0u;
+            memcpy(e->b, &vdu_queue[rp], e->len);
+            vdu_log_count++;
+         }
+         if (execute)
             vdu_op->handler(&vdu_queue[rp]);
          vdu_rp = (rp + needed) & (VDU_QSIZE - 1);
       }
@@ -2536,6 +2559,7 @@ static void fb_emulator_vdu(unsigned int gpio)
       unsigned int space = (vdu_rp - wp - 1u) & (VDU_QSIZE - 1);
       if (space < needed) {
          drop_remaining = needed - 1u;
+         vdu_fiq_drops++;                 /* the /vdulog header reports these */
          return;
       }
       vdu_fiq_cmd_remaining = needed - 1u;
@@ -2549,10 +2573,40 @@ static void fb_emulator_vdu(unsigned int gpio)
    vdu_wp = (wp + 1) & (VDU_QSIZE - 1);
 }
 
+/* Oldest first: text runs on one line, each control command starts a new
+   "<ms> " line with its bytes in hex, "!" = consumed while VDU 21 had the
+   drivers disabled.  Returns bytes written. */
+size_t fb_vdu_log_text(char *out, size_t max)
+{
+   size_t o = 0u;
+   if (vdu_log == NULL)
+      return (size_t)snprintf(out, max, "VDU logging is off - set vdu_log=1 in Pi1MHz.cfg and reboot.\n");
+   o += (size_t)snprintf(out, max, "fiq_drops %lu  commands %lu  (newest last)\n",
+                         (unsigned long)vdu_fiq_drops, (unsigned long)vdu_log_count);
+   uint32_t n = (vdu_log_count < VDU_LOG_ENTRIES) ? vdu_log_count : VDU_LOG_ENTRIES;
+   uint32_t first = (vdu_log_count < VDU_LOG_ENTRIES) ? 0u : vdu_log_count % VDU_LOG_ENTRIES;
+   for (uint32_t k = 0u; k < n && o + 48u < max; k++) {
+      const vdu_log_t *e = &vdu_log[(first + k) % VDU_LOG_ENTRIES];
+      if (e->len == 1u && e->b[0] >= 0x20u && e->b[0] < 0x7Fu && e->executed) {
+         out[o++] = (char)e->b[0];
+         continue;
+      }
+      o += (size_t)snprintf(out + o, max - o, "\n%lu %s", (unsigned long)e->ms, e->executed ? "" : "!");
+      for (unsigned i = 0; i < e->len && o + 4u < max; i++)
+         o += (size_t)snprintf(out + o, max - o, "%02X ", e->b[i]);
+   }
+   if (o < max - 1u)
+      out[o++] = '\n';
+   out[o] = '\0';
+   return o;
+}
+
 void fb_emulator_init(uint8_t instance, uint8_t address)
 {
 
   fb_initialize();
+  if (vdu_log == NULL && config_get_bool("vdu_log"))
+     vdu_log = malloc(sizeof *vdu_log * VDU_LOG_ENTRIES);   /* NULL stays off */
   fb_show_splash_screen();
 
   Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
