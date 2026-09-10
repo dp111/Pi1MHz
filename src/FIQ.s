@@ -44,8 +44,8 @@
 // FIQ-banked registers: nothing here is saved or restored, and they hold
 // their values from one FIQ to the next.
 //  r8  temp: the next slot index (computed early), then the entry being dispatched
-//  r9  temp: the doorbell read, tag test, callback; ZERO on entry and exit
-//      (the DMB wants a zero register, so the exit leaves one)
+//  r9  temp: the doorbell read, tag difference, callback; ZERO on entry and
+//      exit (the DMB wants a zero register; the common exit leaves one for free)
 //  r10 C, the sequence tag of the next entry to consume, pre-shifted to bits
 //      27-31 (like the VPU's r10); bits 27-29 are the slot, bits 30-31 the lap
 //  r11 ring base
@@ -71,9 +71,9 @@ FIQstart:
 
 drain:
    LDR      r8, [r11, r8, LSR #25]     // LSR #25 is slot * 4: the entry (stalls: off chip)
-   eor      r9, r8, r10                // bits 27-31 clear if the tag is C's
+   sub      r9, r8, r10                // tag difference in bits 27-31 (no borrow: C's low 27 bits are 0)
    tst      r9, #0xF8000000
-   bne      notmine
+   bne      notmine                    // not C's: notmine reuses the difference
 
 // Dispatch: the callback table is indexed by address bus + fred/jim + RnW.
    tst      r8, # RNW_MASK
@@ -95,14 +95,18 @@ drain:
 notmine:
 // The tag is not C's.  The slot bits always agree (an entry in slot s carries
 // slot s), so the difference is in the lap: entry lap - C lap = 3 means the
-// slot still holds LAST lap's entry, i.e. not written yet.  1 or 2 means the
-// VPU is a lap or two ahead: entries are gone.  Count it and leave C alone:
-// the VPU's tag comes back round and the stream resyncs itself (each bell in
-// between counts again, so /status shows overrun FIQs, not events).
-   sub      r9, r8, r10                 // lap difference in bits 30-31 (bits 27-29 cancel)
-   eor      r9, r9, #0xC0000000         // 3 -> 0
-   tst      r9, #0xC0000000
-   beq      done                        // last lap's entry: not written yet, the drain is done
+// slot still holds LAST lap's entry, i.e. not written yet, and the drain is
+// done - the common way out of every FIQ, so it falls through to done with
+// r9 already zero for the DMB.  1 or 2 means the VPU is a lap or two ahead:
+// entries are gone.  Count it and leave C alone: the VPU's tag comes back
+// round and the stream resyncs itself (each bell in between counts again,
+// so /status shows overrun FIQs, not events).
+   eor      r9, r9, #0xC0000000         // lap difference 3 -> 0 in the tag bits
+   ands     r9, r9, #0xF8000000
+   bne      overrun
+done:
+   DMB_MACRO r9             // r9 == 0: the doorbell ack has actually left the core; r9 stays zero for the next entry
+   subs     pc, lr, #4
 
 overrun:
    ldr      r9, =Pi1MHz_fiq_ovr_first_us   // BREAK forensics: when the first overrun after a reset happened
@@ -117,11 +121,7 @@ counted:
    ldr      r8, [r9]
    add      r8, r8, #1
    str      r8, [r9]
-   b        done
-
-done:
    mov      r9, #0
-   DMB_MACRO r9             // the doorbell ack has actually left the core; r9 left zero for the next entry
-   subs     pc, lr, #4
+   b        done
 FIQend:
 .ltorg

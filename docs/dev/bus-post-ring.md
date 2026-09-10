@@ -116,8 +116,9 @@ and the constants live in registers from one FIQ to the next:
 
 Keeping C pre-shifted makes each step one instruction: the slot address is
 `and r8, r10, #0x38000000` then `ldr r8, [r11, r8, LSR #25]` (the LSR turns
-the slot in bits 27-29 into slot * 4), the tag test is `eor r9, r8, r10` +
-`tst r9, #0xF8000000`, and the advance is `add r10, r10, #0x08000000`.
+the slot in bits 27-29 into slot * 4), the tag test is `sub r9, r8, r10` +
+`tst r9, #0xF8000000` (the difference serves the lap test too), and the
+advance is `add r10, r10, #0x08000000`.
 
 ```
 FIQstart:
@@ -128,7 +129,7 @@ FIQstart:
                                     # the entry has arrived, so nothing waits on this read
 drain:
    ldr  r8, [r11, r8, LSR #25]      # the entry: the one peripheral read per entry
-   eor  r9, r8, r10
+   sub  r9, r8, r10                 # tag difference (no borrow: C's low 27 bits are 0)
    tst  r9, #0xF8000000             # tag matches C?
    bne  notmine
    ... RnW test, address mask (r12), callback-pointer load ...
@@ -138,13 +139,11 @@ drain:
    beq  drain
    push ; r0 = r8 >> 2 ; and r8, r10, #0x38000000 (next slot, survives the call) ; blx ; pop ; b drain
 notmine:
-   sub  r9, r8, r10                 # entry lap - C lap, in bits 30-31 (slot bits cancel)
-   eor  r9, r9, #0xC0000000         # 3 = last lap's entry, not written yet ...
-   tst  r9, #0xC0000000
-   beq  done                        # ... the drain is done
-   count Pi1MHz_fiq_overruns        # 1 or 2 laps ahead; C stays, the stream resyncs itself
+   eor  r9, r9, #0xC0000000         # lap difference 3 = last lap's entry, not written yet ...
+   ands r9, r9, #0xF8000000         # ... leaves r9 zero ...
+   bne  overrun                     # 1 or 2 laps ahead: count it, C stays, the stream resyncs
 done:
-   mov r9, #0 ; DMB ; return
+   DMB ; return                     # ... the common exit falls through, r9 already zero for the DMB
 ```
 
 Five instructions from entry load to dispatch decision, no stack traffic,
