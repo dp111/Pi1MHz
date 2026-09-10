@@ -13,9 +13,11 @@
 // of eight registers, then rings the doorbell.  This handler acknowledges
 // the bell FIRST (the data is in the ring, so a bell rung after the
 // acknowledge simply re-enters), then drains every slot whose tag matches
-// its own sequence.  The VPU stores the entry before it rings, and its
-// stores land in order, so the entry a bell announces is always there:
-// no retry.  The drain ends at the first slot not yet written; it cannot
+// its own sequence.  The VPU stores the entry before it rings and the entry
+// is there by the time the FIQ reads it: a measurement build that re-read an
+// unwritten slot up to 64 times never found one that landed within four
+// reads (every hit was the Beeb's NEXT cycle arriving), so the handler does
+// not re-read.  The drain ends at the first slot not yet written; it cannot
 // run for ever because one bus cycle per microsecond is slower than one
 // pass of this loop.
 
@@ -48,7 +50,7 @@
 //      27-31 (like the VPU's r10); bits 27-29 are the slot, bits 30-31 the lap
 //  r11 ring base
 //  r12 address mask (a constant; saved round the callback because C code
-//      treats r12 as scratch); bit 31 = "consumed something in this FIQ"
+//      treats r12 as scratch)
 //  r13 stack
 //  r14 return address
 FIQstart:
@@ -74,9 +76,6 @@ drain:
    bne      notmine
 
 // Dispatch: the callback table is indexed by address bus + fred/jim + RnW.
-dispatch:
-   orr      r12, r12, #0x80000000           // something consumed in this FIQ (see notwritten; cleared at done).
-                                            // Harmless in the mask below: r8 LSR #14 has bit 31 clear.
    tst      r8, # RNW_MASK
    and      r9, r12, r8, LSR # ADDRBUS_SHIFT - 2 // isolate address bus and fred or jim
    orrne    r9, r9, # Pi1MHz_MEM_RNW<<2     // set read flag ready for call back table
@@ -103,7 +102,7 @@ notmine:
    sub      r9, r8, r10                 // lap difference in bits 30-31 (bits 27-29 cancel)
    eor      r9, r9, #0xC0000000         // 3 -> 0
    tst      r9, #0xC0000000
-   beq      notwritten
+   beq      done                        // last lap's entry: not written yet, the drain is done
 
 overrun:
    ldr      r9, =Pi1MHz_fiq_ovr_first_us   // BREAK forensics: when the first overrun after a reset happened
@@ -120,35 +119,7 @@ counted:
    str      r8, [r9]
    b        done
 
-notwritten:
-// Not written yet.  If this FIQ has consumed something, that is the normal
-// end of the drain.  If it has consumed NOTHING, the bell that woke us
-// announced an entry that has not landed yet: the entry and the bell are
-// stores to different peripheral blocks and the entry can arrive after the
-// bell (seen in the counter builds).  Re-read the slot, bounded; if it never
-// lands we leave and the next bell finds it.
-   tst      r12, #0x80000000
-   bne      done
-   mov      r9, #16
-   push     {r9}                        // re-read budget
-retry:
-   and      r8, r10, #0x38000000
-   LDR      r8, [r11, r8, LSR #25]
-   eor      r9, r8, r10
-   tst      r9, #0xF8000000
-   beq      landed
-   ldr      r9, [sp]
-   subs     r9, r9, #1
-   str      r9, [sp]
-   bne      retry
-   add      sp, sp, #4
-   b        done
-landed:
-   add      sp, sp, #4
-   b        dispatch
-
 done:
-   bic      r12, r12, #0x80000000       // consumed flag off for the next FIQ
    mov      r9, #0
    DMB_MACRO r9             // the doorbell ack has actually left the core; r9 left zero for the next entry
    subs     pc, lr, #4
