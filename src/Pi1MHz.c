@@ -618,7 +618,10 @@ static void init_emulator(void) {
       (30-31); each slot is cleared to its own slot number with lap 3,
       which the consumer (starting at lap 0) reads as "last lap's entry,
       not written yet", never as an overrun.  Consumer sequence to 0; the
-      VPU starts at tag 0 when launched. */
+      VPU starts at tag 0 when launched.  (A kernel.now chain-boot runs
+      this against a VPU1 the firmware will not restart: the consumer is
+      then out of step until the running VPU's tag comes round, up to 32
+      bus cycles, while the Beeb is idle anyway.) */
    static bool vpu_launched;
    if (!vpu_launched)
    {

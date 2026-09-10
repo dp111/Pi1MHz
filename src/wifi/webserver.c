@@ -2930,25 +2930,31 @@ static bool route_status(ws_conn_t *c)
             the poll loop never re-initialised for; held = nRST low time as the
             poll loop saw it; helper/vdu are from the nRST edge, "-" = not yet. */
          volatile Pi1MHz_break_t *bk = &Pi1MHz_break;
-         char row[200];             /* longer than tmp: eleven fields */
+         char row[256];             /* longer than tmp: eleven fields */
          if (bk->edges == 0u) {
             snprintf(row, sizeof row, "no reset seen since boot");
          } else {
-            char hs[16], vs[16], os[16];
+            /* Every interval is "stamp - last nRST edge"; a stamp from before
+               that edge (a bouncing key, or nothing since it yet) prints "-". */
+            char is[16], hd[16], hs[16], vs[16], os[16];
             uint32_t missed = (bk->edges > bk->inits) ? bk->edges - bk->inits : 0u;
-            if (bk->helper_pending) snprintf(hs, sizeof hs, "-");
-            else { uint32_t d = bk->helper_us - bk->rst_us; snprintf(hs, sizeof hs, "%lu.%lu ms", (unsigned long)(d / 1000u), (unsigned long)((d % 1000u) / 100u)); }
-            if (Pi1MHz_fiq_ovr_first_us == 0u) snprintf(os, sizeof os, "-");
-            else { uint32_t d = Pi1MHz_fiq_ovr_first_us - bk->rst_us; snprintf(os, sizeof os, "%lu.%lu ms", (unsigned long)(d / 1000u), (unsigned long)((d % 1000u) / 100u)); }
-            if (bk->vdu_pending) snprintf(vs, sizeof vs, "-");
-            else { uint32_t d = bk->vdu_us - bk->rst_us; snprintf(vs, sizeof vs, "%lu.%lu ms", (unsigned long)(d / 1000u), (unsigned long)((d % 1000u) / 100u)); }
+            #define SINCE_RST(buf, stamp, valid) do { \
+               int32_t d_ = (int32_t)((stamp) - bk->rst_us); \
+               if (!(valid) || d_ < 0) snprintf(buf, sizeof buf, "-"); \
+               else if (d_ < 1000) snprintf(buf, sizeof buf, "%ld us", (long)d_); \
+               else snprintf(buf, sizeof buf, "%lu.%lu ms", (unsigned long)(d_ / 1000), (unsigned long)((d_ % 1000) / 100)); } while (0)
+            SINCE_RST(is, bk->init_start_us, true);
+            SINCE_RST(hd, bk->release_us, true);
+            SINCE_RST(hs, bk->helper_us, !bk->helper_pending);
+            SINCE_RST(vs, bk->vdu_us, !bk->vdu_pending);
+            SINCE_RST(os, Pi1MHz_fiq_ovr_first_us, Pi1MHz_fiq_ovr_first_us != 0u);
+            #undef SINCE_RST
             snprintf(row, sizeof row,
-                     "edges %lu inits %lu missed %lu | rst->init %lu us, init %lu us, held %lu ms, helper %s, vdu %s, ovr +%lu first %s | worst init %lu us, margin %ld ms",
+                     "edges %lu inits %lu missed %lu | rst->init %s, init %lu us, held %s, helper %s, vdu %s, ovr +%lu first %s | worst init %lu us, margin %ld ms",
                      (unsigned long)bk->edges, (unsigned long)bk->inits, (unsigned long)missed,
-                     (unsigned long)(bk->init_start_us - bk->rst_us),
+                     is,
                      (unsigned long)(bk->init_end_us - bk->init_start_us),
-                     (unsigned long)((bk->release_us - bk->rst_us) / 1000u),
-                     hs, vs,
+                     hd, hs, vs,
                      (unsigned long)(Pi1MHz_fiq_overruns - bk->ovr_at_rst), os,
                      (unsigned long)bk->init_max_us,
                      (long)((bk->margin_min_us == INT32_MAX) ? 0 : bk->margin_min_us / 1000));
@@ -2960,12 +2966,12 @@ static bool route_status(ws_conn_t *c)
                bits, lap in the top 2) and the consumer's tag C.  A producer
                that restarted with the consumer shows the lap-3 fill with a
                run of lap-0 entries; anything else is out of step. */
-            unsigned int cpsr = _disable_interrupts_cspr();
+            unsigned int cpsr = _disable_interrupts_cspr();   /* only the mode switch needs FIQ off */
             uint32_t ctag = _fiq_get_consumer();
-            uint32_t t[Pi1MHz_POST_SLOTS];
-            for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++)
-               t[s] = Pi1MHz_post_ring[s] >> 27;
             _restore_cpsr(cpsr);
+            uint32_t t[Pi1MHz_POST_SLOTS];
+            for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++)     /* single-word reads: no exclusion */
+               t[s] = Pi1MHz_post_ring[s] >> 27;
             snprintf(row, sizeof row, "tags %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx  C %02lx (slot %lu lap %lu)",
                      (unsigned long)t[0], (unsigned long)t[1], (unsigned long)t[2], (unsigned long)t[3],
                      (unsigned long)t[4], (unsigned long)t[5], (unsigned long)t[6], (unsigned long)t[7],

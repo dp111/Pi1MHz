@@ -106,9 +106,13 @@ static void helpers_bank_select(unsigned int gpio)
    if (Pi1MHz_break.helper_pending) {       /* first helper select after a reset: BREAK forensics */
       Pi1MHz_break.helper_pending = 0u;
       Pi1MHz_break.helper_us = RPI_GetSystemTime();
-      int32_t margin = (int32_t)(Pi1MHz_break.helper_us - Pi1MHz_break.init_end_us);
-      if (margin < Pi1MHz_break.margin_min_us)
-         Pi1MHz_break.margin_min_us = margin;
+      /* Only against a re-init that belongs to this reset (its end stamp is
+         after the edge); otherwise the previous reset's init would be measured. */
+      if ((int32_t)(Pi1MHz_break.init_end_us - Pi1MHz_break.rst_us) > 0) {
+         int32_t margin = (int32_t)(Pi1MHz_break.helper_us - Pi1MHz_break.init_end_us);
+         if (margin < Pi1MHz_break.margin_min_us)
+            Pi1MHz_break.margin_min_us = margin;
+      }
    }
 
    if (data == 0xFF)

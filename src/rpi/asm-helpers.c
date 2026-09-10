@@ -207,12 +207,14 @@ return result & 0x3;
    mode - for the DEBUG /status Ring row.  Call with FIQ masked. */
 unsigned int _fiq_get_consumer(void)
 {
-    unsigned int v;
+    /* The output must be a register that is NOT banked in FIQ mode (r8-r14
+       are), or the value written there vanishes with the mode switch. */
+    register unsigned int v __asm__("r0");
     __asm volatile
     (
         "mrs     r1, cpsr \r\n"
         "cps     #0x11 \r\n"
-        "mov     %0, r10 \r\n"
+        "mov     r0, r10 \r\n"
         "msr     cpsr_c, r1 \r\n"
     : "=r" (v)
     :
