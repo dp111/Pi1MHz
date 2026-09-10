@@ -11,6 +11,7 @@
 #include "BeebSCSI/filesystem.h"
 #include "scripts/gitversion.h"
 #include "rpi/info.h"
+#include "rpi/systimer.h"
 #include "videoplayer.h"
 
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
@@ -101,6 +102,14 @@ static void helpers_bank_select(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
+
+   if (Pi1MHz_break.helper_pending) {       /* first helper select after a reset: BREAK forensics */
+      Pi1MHz_break.helper_pending = 0u;
+      Pi1MHz_break.helper_us = RPI_GetSystemTime();
+      int32_t margin = (int32_t)(Pi1MHz_break.helper_us - Pi1MHz_break.init_end_us);
+      if (margin < Pi1MHz_break.margin_min_us)
+         Pi1MHz_break.margin_min_us = margin;
+   }
 
    if (data == 0xFF)
     {

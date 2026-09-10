@@ -84,6 +84,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 */
 
 #include <string.h>
+#include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -185,6 +186,8 @@ const char *Pi1MHz_EmulatorName(unsigned int idx)
 static volatile uint32_t * const Pi1MHz_Memory_VPU = (uint32_t *)Pi1MHz_MEM_BASE;
 
 uint32_t Pi1MHz_fiq_overruns;       /* post ring: FIQs that found the VPU a lap ahead (docs/dev/bus-post-ring.md) */
+uint32_t Pi1MHz_fiq_ovr_first_us;   /* system-timer stamp of the first of them since the last nRST, 0 = none */
+volatile Pi1MHz_break_t Pi1MHz_break = { .margin_min_us = INT32_MAX };    /* BREAK forensics, see Pi1MHz.h */
 
 // Table of polling functions to call while idle
 NOINIT_SECTION static func_ptr Pi1MHz_poll_table[NUM_EMULATORS];
@@ -475,6 +478,12 @@ void IRQHandler_main(void) {
       poll loop next comes round to noticing the reset. */
    if (RPI_GpioBase->GPEDS0 & NRST_MASK) {
       RPI_GpioBase->GPEDS0 = NRST_MASK;    /* write 1 clears, before the work */
+      Pi1MHz_break.rst_us = RPI_GetSystemTime();
+      Pi1MHz_break.edges++;
+      Pi1MHz_break.helper_pending = 1u;
+      Pi1MHz_break.vdu_pending = 1u;
+      Pi1MHz_break.ovr_at_rst = Pi1MHz_fiq_overruns;
+      Pi1MHz_fiq_ovr_first_us = 0u;
       /* With Harddisc_addr=-1 this used to write SCSI status to &FC00/&FC01
          and clear the Helpers slot's nIRQ mask on every BREAK. */
       if (harddisc_enabled)
@@ -1025,7 +1034,12 @@ _Noreturn void kernel_main(void)
          {
             LOG_INFO("Reset detected\r\n");
             RPI_BootDetail(0xFEu);  /* DEBUG builds only: re-init pass marker, a death in config_load shows FE */
+            Pi1MHz_break.init_start_us = RPI_GetSystemTime();
+            Pi1MHz_break.inits++;
             init_emulator();
+            Pi1MHz_break.init_end_us = RPI_GetSystemTime();
+            if (Pi1MHz_break.init_end_us - Pi1MHz_break.init_start_us > Pi1MHz_break.init_max_us)
+               Pi1MHz_break.init_max_us = Pi1MHz_break.init_end_us - Pi1MHz_break.init_start_us;
             /* Re-stamp RUNNING: without this the session runs forever at
                "stage 7" after a BREAK re-init and every later runtime death
                is misreported as an init death. */
@@ -1034,6 +1048,8 @@ _Noreturn void kernel_main(void)
          }
       } else
       {
+         if (oldreset)
+            Pi1MHz_break.release_us = RPI_GetSystemTime();   /* nRST seen high again: the MOS is running */
          oldreset = false;
       }
       /* One system-timer read per poll, not two.  RPI_GetSystemTime() is a

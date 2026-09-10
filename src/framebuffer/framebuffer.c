@@ -2601,15 +2601,30 @@ size_t fb_vdu_log_text(char *out, size_t max)
    return o;
 }
 
+/* BREAK forensics: the first VDU byte the Beeb writes after a reset is
+   stamped by this one-shot, which then puts the real handler back in the
+   callback table.  The hot path pays nothing: after one byte the table no
+   longer points here.  (The drain cannot tell the Beeb's bytes from the Pi's
+   own splash, which is why the stamp lives on the bus side.) */
+static uint8_t fb_bus_address;
+static void fb_emulator_vdu_first(unsigned int gpio)
+{
+   Pi1MHz_break.vdu_us = RPI_GetSystemTime();
+   Pi1MHz_break.vdu_pending = 0u;
+   Pi1MHz_Register_Memory(WRITE_FRED, fb_bus_address, fb_emulator_vdu);
+   fb_emulator_vdu(gpio);
+}
+
 void fb_emulator_init(uint8_t instance, uint8_t address)
 {
+  fb_bus_address = address;
 
   fb_initialize();
   if (vdu_log == NULL && config_get_bool("vdu_log"))
      vdu_log = malloc(sizeof *vdu_log * VDU_LOG_ENTRIES);   /* NULL stays off */
   fb_show_splash_screen();
 
-  Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu);
+  Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu_first);   /* one-shot stamp, then fb_emulator_vdu */
  // Create 6 bytes of RAM for vector code
   Pi1MHz_MemoryWrite((uint32_t)(address+0), 0x8D); // STA abs
   Pi1MHz_MemoryWrite((uint32_t)(address+1), address);

@@ -41,6 +41,7 @@
 #include "../rpi/info.h"
 #include "../rpi/systimer.h"
 #include "../Pi1MHz.h"
+#include "../rpi/asm-helpers.h"
 #include "../AUN/aun_emulator.h"
 
 #include "lwip/err.h"
@@ -2921,6 +2922,58 @@ static bool route_status(ws_conn_t *c)
                (unsigned long)Pi1MHz_nIRQ_diag(), (unsigned long)Pi1MHz_fiq_overruns);
       table_row(&b, "Bus diag", tmp);
 #endif
+
+      {
+         /* BREAK forensics (Pi1MHz_break, stamped once per Beeb reset in the
+            nRST IRQ, the poll loop's re-init, the first helper select and the
+            first VDU byte): read on demand.  missed = resets the IRQ saw but
+            the poll loop never re-initialised for; held = nRST low time as the
+            poll loop saw it; helper/vdu are from the nRST edge, "-" = not yet. */
+         volatile Pi1MHz_break_t *bk = &Pi1MHz_break;
+         char row[200];             /* longer than tmp: eleven fields */
+         if (bk->edges == 0u) {
+            snprintf(row, sizeof row, "no reset seen since boot");
+         } else {
+            char hs[16], vs[16], os[16];
+            uint32_t missed = (bk->edges > bk->inits) ? bk->edges - bk->inits : 0u;
+            if (bk->helper_pending) snprintf(hs, sizeof hs, "-");
+            else { uint32_t d = bk->helper_us - bk->rst_us; snprintf(hs, sizeof hs, "%lu.%lu ms", (unsigned long)(d / 1000u), (unsigned long)((d % 1000u) / 100u)); }
+            if (Pi1MHz_fiq_ovr_first_us == 0u) snprintf(os, sizeof os, "-");
+            else { uint32_t d = Pi1MHz_fiq_ovr_first_us - bk->rst_us; snprintf(os, sizeof os, "%lu.%lu ms", (unsigned long)(d / 1000u), (unsigned long)((d % 1000u) / 100u)); }
+            if (bk->vdu_pending) snprintf(vs, sizeof vs, "-");
+            else { uint32_t d = bk->vdu_us - bk->rst_us; snprintf(vs, sizeof vs, "%lu.%lu ms", (unsigned long)(d / 1000u), (unsigned long)((d % 1000u) / 100u)); }
+            snprintf(row, sizeof row,
+                     "edges %lu inits %lu missed %lu | rst->init %lu us, init %lu us, held %lu ms, helper %s, vdu %s, ovr +%lu first %s | worst init %lu us, margin %ld ms",
+                     (unsigned long)bk->edges, (unsigned long)bk->inits, (unsigned long)missed,
+                     (unsigned long)(bk->init_start_us - bk->rst_us),
+                     (unsigned long)(bk->init_end_us - bk->init_start_us),
+                     (unsigned long)((bk->release_us - bk->rst_us) / 1000u),
+                     hs, vs,
+                     (unsigned long)(Pi1MHz_fiq_overruns - bk->ovr_at_rst), os,
+                     (unsigned long)bk->init_max_us,
+                     (long)((bk->margin_min_us == INT32_MAX) ? 0 : bk->margin_min_us / 1000));
+         }
+         table_row(&b, "BREAK", row);
+#ifdef DEBUG
+         {
+            /* The ring as it stands: each slot's 5-bit tag (slot in the low 3
+               bits, lap in the top 2) and the consumer's tag C.  A producer
+               that restarted with the consumer shows the lap-3 fill with a
+               run of lap-0 entries; anything else is out of step. */
+            unsigned int cpsr = _disable_interrupts_cspr();
+            uint32_t ctag = _fiq_get_consumer();
+            uint32_t t[Pi1MHz_POST_SLOTS];
+            for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++)
+               t[s] = Pi1MHz_post_ring[s] >> 27;
+            _restore_cpsr(cpsr);
+            snprintf(row, sizeof row, "tags %02lx %02lx %02lx %02lx %02lx %02lx %02lx %02lx  C %02lx (slot %lu lap %lu)",
+                     (unsigned long)t[0], (unsigned long)t[1], (unsigned long)t[2], (unsigned long)t[3],
+                     (unsigned long)t[4], (unsigned long)t[5], (unsigned long)t[6], (unsigned long)t[7],
+                     (unsigned long)(ctag >> 27), (unsigned long)((ctag >> 27) & 7u), (unsigned long)(ctag >> 30));
+            table_row(&b, "Ring", row);
+         }
+#endif
+      }
 
       {
          /* Lockup forensics: where the previous boot attempt died (only shown

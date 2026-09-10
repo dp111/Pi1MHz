@@ -233,6 +233,29 @@ const char *Pi1MHz_poll_name(unsigned int idx);
 #define Pi1MHz_POST_SLOTS 8u
 #define Pi1MHz_post_ring  ((volatile uint32_t *)Pi1MHz_POST_RING)
 extern uint32_t Pi1MHz_fiq_overruns;      /* post ring: FIQs that found the VPU a lap ahead; /status Bus diag "ovr" */
+extern uint32_t Pi1MHz_fiq_ovr_first_us;  /* system-timer stamp of the first overrun since the last nRST, 0 = none */
+
+/* BREAK forensics: microsecond stamps of the last Beeb reset, stored in
+   paths that already run once per reset (the nRST IRQ, the poll loop's
+   re-init, the first helper bank select and the first VDU byte after it)
+   and read on demand by the /status "BREAK" row.  edges - inits = resets
+   the IRQ saw but the poll loop never re-initialised for. */
+typedef struct {
+   uint32_t edges;          /* nRST falling edges (IRQ) */
+   uint32_t inits;          /* re-inits the poll loop ran for them */
+   uint32_t rst_us;         /* last falling edge */
+   uint32_t release_us;     /* first poll pass that saw nRST high again */
+   uint32_t init_start_us;  /* poll loop entered init_emulator */
+   uint32_t init_end_us;    /* init_emulator returned */
+   uint32_t helper_us;      /* first helper bank select after the reset */
+   uint32_t vdu_us;         /* first VDU byte drained after the reset */
+   uint32_t ovr_at_rst;     /* Pi1MHz_fiq_overruns when nRST fell: overruns since = the difference */
+   uint32_t init_max_us;    /* longest re-init seen */
+   int32_t  margin_min_us;  /* smallest helper_us - init_end_us seen (negative = the ROM got there first) */
+   uint8_t  helper_pending; /* set by the IRQ, cleared by the stamp */
+   uint8_t  vdu_pending;
+} Pi1MHz_break_t;
+extern volatile Pi1MHz_break_t Pi1MHz_break;
 
 /* Boot timing, stamped once during init (see Pi1MHz.c).  The system timer
    free-runs from the GPU's start, so _entry_us also measures the firmware

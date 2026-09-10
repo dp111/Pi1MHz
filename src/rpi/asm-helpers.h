@@ -7,6 +7,7 @@ void  _disable_interrupts( void );
 unsigned int _disable_interrupts_cspr(void);
 unsigned int _disable_irq_cspr(void);      /* IRQ only - FIQ (the 1MHz bus) stays live */
 void _fiq_set_consumer(unsigned int c);    /* post ring: set the FIQ's consumer tag (FIQ masked) */
+unsigned int _fiq_get_consumer(void);      /* post ring: read it (DEBUG /status Ring row) */
 void _restore_cpsr(unsigned int cpsr);
 unsigned int _get_cpsr(void);
 unsigned int _get_stack_pointer(void);

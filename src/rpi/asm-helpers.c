@@ -202,3 +202,20 @@ unsigned int result;
 return result & 0x3;
 }
 #endif
+
+/* Read the FIQ mode's banked r10 (the post ring consumer tag) from another
+   mode - for the DEBUG /status Ring row.  Call with FIQ masked. */
+unsigned int _fiq_get_consumer(void)
+{
+    unsigned int v;
+    __asm volatile
+    (
+        "mrs     r1, cpsr \r\n"
+        "cps     #0x11 \r\n"
+        "mov     %0, r10 \r\n"
+        "msr     cpsr_c, r1 \r\n"
+    : "=r" (v)
+    :
+    : "r1", "memory", "cc");
+    return v;
+}

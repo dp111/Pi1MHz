@@ -106,6 +106,14 @@ notmine:
    beq      notwritten
 
 overrun:
+   ldr      r9, =Pi1MHz_fiq_ovr_first_us   // BREAK forensics: when the first overrun after a reset happened
+   ldr      r8, [r9]
+   cmp      r8, #0                          // 0 = none since the nRST IRQ cleared it
+   bne      counted
+   ldr      r8, =(PERIPHERAL_BASE + 0x3004) // system timer CLO
+   ldr      r8, [r8]
+   str      r8, [r9]
+counted:
    ldr      r9, =Pi1MHz_fiq_overruns
    ldr      r8, [r9]
    add      r8, r8, #1
