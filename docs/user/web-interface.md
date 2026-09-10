@@ -17,10 +17,10 @@ system's light/dark theme preference automatically.
 | `/framebuffer.bmp` | The same snapshot as a plain BMP image you can save |
 | `/reboot` | Reboot the Pi (asks for confirmation first). The BBC does not need to be switched off, but anything using Pi1MHz will pause while it restarts |
 | `/aun` | Diagnostic counters for [Econet over WiFi](econet-aun.md) |
-| `/fcodes` | The most recent F-code exchanges between the BBC and the emulated LaserDisc player, oldest first (see [Screen and video](screen-and-video.md)) |
-| `/vdulog` | The VDU commands the BBC has sent through the screen redirector, oldest first, with a millisecond stamp on each - only when `vdu_log=1` is set in `Pi1MHz.cfg` (see [Troubleshooting](troubleshooting.md)) |
-| `/edid` | What the monitor told the Pi about itself (its EDID, as hex) and which display mode Pi1MHz chose from it |
 | `/bench.bin` | A dummy large download for testing your network speed to the Pi |
+
+There are further pages for developers chasing a fault; they are listed in
+`docs/dev/diagnostics.md` in the source tree.
 
 Any other address is treated as a path on the SD card, so
 `http://pi1mhz.local/BeebSCSI0/scsi0.dat` downloads that file
