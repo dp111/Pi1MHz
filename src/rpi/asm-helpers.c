@@ -48,6 +48,25 @@ void _disable_interrupts(void)
     );
 }
 
+/* IRQ only: FIQ stays live.  The 1MHz bus is serviced from FIQ and the VPU
+   posts every bus cycle without waiting for the ARM to collect it (one word
+   before the post ring, eight entries with it), so a window with FIQ masked
+   longer than that loses posts - seen as a VDU command byte vanishing and
+   its parameters parsed as commands. */
+unsigned int _disable_irq_cspr(void)
+{
+    unsigned int result;
+    __asm volatile
+    (
+        "mrs     %[result], cpsr \r\n"
+        "CPSID i \r\n"
+    :
+        [result] "=r" (result)
+    :
+    :"memory");
+    return result;
+}
+
 unsigned int _disable_interrupts_cspr(void)
 {
     unsigned int result;

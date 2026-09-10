@@ -190,7 +190,13 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
     pt[pt_index++] = 0; /* Request */
     pt[pt_index++] = data;
     pt_index += 1;
-    unsigned int irq = _disable_interrupts_cspr();
+    /* IRQ only.  The mailbox is main-loop only (info.c) and every FIQ path
+       reads a cache, so FIQ needs no exclusion here - and it must stay
+       live: the VPU posts every 1MHz bus cycle without waiting for the FIQ
+       to collect it, so a VideoCore round trip with FIQ masked (this call,
+       four times a second for the temperature) lost a Beeb VDU byte whenever
+       a parameter block was mid-flight. */
+    unsigned int irq = _disable_irq_cspr();
     RPI_PropertyProcess(true);
     rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
     _restore_cpsr(irq);
@@ -218,7 +224,7 @@ rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag)
     pt[pt_index++] = PROP_SIZE;
     pt[pt_index++] = 0; /* Request */
     pt_index += PROP_SIZE >> 2;
-    unsigned int irq = _disable_interrupts_cspr();
+    unsigned int irq = _disable_irq_cspr();    /* IRQ only - see RPI_PropertyGetWord */
     RPI_PropertyProcess(true);
     rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
     _restore_cpsr(irq);
