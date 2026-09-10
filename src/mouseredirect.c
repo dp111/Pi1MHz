@@ -264,7 +264,11 @@ static uint8_t fred_address;
 
 /* Set by the write of the LAST of the four bytes: that write is what says a
    new position is complete.  FIQ only latches it - the plot happens in the
-   poll loop, where the rest of the framebuffer is written. */
+   VDU drain (fb_process_vdu_queue, IRQ context), serialised with everything
+   else that writes the framebuffer: the pointer is a sprite with its
+   background saved underneath, and a scroll, clear or print running while it
+   is on screen leaves copies of it behind and paints stale pixels back over
+   new text when it is lifted. */
 static volatile bool moved;
 
 /* What is on the screen right now, and the pixels it is covering.  The
@@ -330,11 +334,23 @@ static void mouse_pointer_erase(void)
     drawn_shape = NULL;
 }
 
-/* Erase and re-plot, once per completed position from the Beeb. */
-void mouse_redirect_move_mouse(void)
+bool mouse_redirect_pointer_moved(void)
 {
-    if (!moved)
-        return;
+    return moved;
+}
+
+/* Lift the pointer so the framebuffer can be drawn on.  Called by the VDU
+   drain before it runs any command; show() puts it back afterwards. */
+void mouse_redirect_pointer_hide(void)
+{
+    mouse_pointer_erase();
+}
+
+/* Plot the pointer at the latest completed position from the Beeb.  Called
+   by the VDU drain after its commands, whether or not the position changed:
+   hide() will have lifted it. */
+void mouse_redirect_pointer_show(void)
+{
     moved = false;
 
     const screen_mode_t *screen = fb_get_current_screen_mode();
@@ -344,7 +360,6 @@ void mouse_redirect_move_mouse(void)
     int32_t mouse_x = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 0)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 1))<<8)));
     int32_t mouse_y = (int32_t)((Pi1MHz_MemoryRead((uint32_t)(fred_address + 2)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))<<8)) & 0x0FFF);
     uint8_t mouse_pointer = Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))>>4;
-    LOG_DEBUG("Mouse x %"PRIi32" y %"PRIi32" Pointer %u\r\n", mouse_x, mouse_y, mouse_pointer);
 
     /* Lift the old one before anything else: the pixels under it are only
        valid for where it was drawn. */
@@ -410,5 +425,5 @@ void mouse_redirect_init(uint8_t instance, uint8_t address)
     Pi1MHz_Register_Memory(WRITE_FRED, (address+1u), Pi1MHz_EmulatedMemoryByte );
     Pi1MHz_Register_Memory(WRITE_FRED, (address+2u), Pi1MHz_EmulatedMemoryByte );
     Pi1MHz_Register_Memory(WRITE_FRED, (address+3u), mouse_redirect_position_complete );
-    Pi1MHz_Register_Poll(mouse_redirect_move_mouse, "mouse");
+    /* No poll callback: the plot runs from the VDU drain, see moved. */
 }

@@ -15,6 +15,7 @@
 #include "../Pi1MHz.h"
 #include "../helpers.h"
 #include "screen_modes.h"
+#include "../mouseredirect.h"    /* the pointer sprite is lifted around the VDU drain */
 #include "framebuffer.h"
 #include "primitives.h"
 #include "fonts.h"
@@ -2005,6 +2006,15 @@ void fb_process_vdu_queue(void) {
       // Clear the ARM Timer interrupt
       RPI_GetArmTimer()->IRQClear = 0;
 
+      // The mouse pointer is a software sprite in this framebuffer with its
+      // background saved underneath: it must not be on screen while a command
+      // prints, scrolls or clears under it. Lift it for the drain and re-plot
+      // it after, at the latest position; a pass with nothing to draw and no
+      // move touches nothing.
+      const bool drawing = (vdu_rp != vdu_wp) || mouse_redirect_pointer_moved();
+      if (drawing)
+         mouse_redirect_pointer_hide();
+
       // Service the VDU queue one whole command at a time. The mirrored tail
       // (see vdu_queue) makes &vdu_queue[vdu_rp] contiguous for the whole
       // command, so the handler is given a direct pointer - no copy.
@@ -2024,6 +2034,9 @@ void fb_process_vdu_queue(void) {
             vdu_op->handler(&vdu_queue[rp]);
          vdu_rp = (rp + needed) & (VDU_QSIZE - 1);
       }
+
+      if (drawing)
+         mouse_redirect_pointer_show();
    }
 }
 
