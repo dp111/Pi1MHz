@@ -1,16 +1,18 @@
 # Bus post ring: a FIFO between the VPU bus handler and the ARM FIQ
 
-STATUS (2026-09-10 21:30): **built, on the bench SD, uncommitted; 5-bit tag;
-VPU launched ONCE; first-slot re-read.**  Soaked 10 h / 87k F2 presses clean.
-Then CTRL-BREAK failed ~60% of the time: TAG_LAUNCH_VPU1 against a running
-VPU1 does not reliably restart it, so after a reset the old code carried on
-with its old tag while the ARM had reset C to 0 (the Ring row on /status
-decodes it exactly: each failed boot's tags continue from the previous
-boot's end).  Fix: launch once at boot, never on a reset; the ring flows
-across BREAK.  12/12 BREAKs pass after the fix.  Also real: the entry store
-lands after its bell often enough (20-30 times per Beeb boot) that the FIQ
-re-reads the first slot, bounded, when it has consumed nothing yet.
-BREAK/Ring rows on /status are diagnostics to strip before release.
+STATUS (2026-09-10 21:00): **committed (6839666 ring, 4eccb14 launch once,
+a07fed8 BREAK row) and on the bench SD.**  5-bit tag; VPU launched ONCE;
+no re-read.  Soaked 10 h / 87k F2 presses clean.  Then CTRL-BREAK failed
+~60% of the time: TAG_LAUNCH_VPU1 against a running VPU1 does not reliably
+restart it, so after a reset the old code carried on with its old tag while
+the ARM had reset C to 0 (the DEBUG Ring row decodes it exactly: each
+failed boot's tags continue from the previous boot's end).  Fix: launch
+once at boot, never on a reset; the ring flows across BREAK.  12/12 BREAKs
+pass after the fix.  A first-slot re-read was tried on the theory that the
+entry lands after its bell; a measurement build (64-read budget, histogram
+of reads needed) found no hit within four reads - every hit was the Beeb's
+next cycle arriving - so it was removed again.  The BREAK row (zero-cost
+stamps) stays in release; the Ring row is DEBUG-only.
 
 ## The fault this closes
 
@@ -60,7 +62,7 @@ slot        seq & 7
 Accesses per post: VPU **2 stores** (entry, bell) - the same as today's
 data store and bell.  FIQ per invocation: 1 doorbell read (as today) plus
 one entry read per pending entry plus one read that finds the first
-unwritten slot.  For a single post that is 2 entry reads against today's
+unwritten slot (no re-read: see "Why acknowledging first" below).  For a single post that is 2 entry reads against today's
 1 data read, and that extra read is on the ARM, which is not the side
 that must be back at the GPIO poll within a microsecond.
 
@@ -73,7 +75,7 @@ start at the ring base / tag 0 at launch.
 ```
    # word already assembled in r8 (write cycle) or r12 (read cycle)
    # r1 = ring base, passed by the ARM at launch (the same parameter that carried the
-   # single post word), r10 = tag, r11 = slot word index 0..7
+   # single post word), r10 = tag pre-shifted to bits 27-31, r11 = slot word index 0..7
    extu   r8, 27                # drop GPIO 27-31 (keep the low 27 bits)
    or     r8, r10               # tag it
    st     r8, (r1, r11)         # the entry - ONE store; (ra,rb) scales rb by 4, as ld r8,(r0,r8)
@@ -160,12 +162,14 @@ Why acknowledging first is correct: a post that lands after the
 acknowledge rings again and re-enters after we return; a post that landed
 before it is in the ring and the drain reads it.  The old order existed
 only because the data lived in the bell's word.  The VPU stores the entry
-before it rings, but the two stores go to different peripheral blocks and
-the entry DOES land after the bell often enough to matter (20-30 times per
-Beeb boot, counted): when the FIQ has consumed nothing yet and the slot
-reads "not written", it re-reads the slot up to 16 times before leaving.
-A "consumed" flag in r12 bit 31 (clear on exit) keeps the normal end of a
-drain from paying for that.
+before it rings, and the entry is there by the time the FIQ reads it: a
+measurement build re-read an unwritten slot up to 64 times, at the first
+slot of a FIQ and at the end of a drain, and binned the reads each hit
+needed (1, 2, 3-4, 5-16, 17-64).  First slot: 0 0 0 0 7.  Drain end, over
+~16,000 hits: 80 207 1068 12275 2812 - a smooth arrival-time curve peaking
+at 1-2 us, the Beeb's next cycle, with no spike at one or two reads.  So
+there is no store-after-bell window to cover and the handler does not
+re-read; a re-read only loiters in the FIQ until the next post.
 
 The drain runs until it meets an unwritten slot.  It cannot stay resident
 for ever: the bus delivers at most one post per microsecond and a pass of
@@ -212,13 +216,20 @@ tolerates that, the stall budget does not.
 
 ### Initialisation and BREAK
 
-`init_emulator()` relaunches the VPU on every Beeb reset.  Before the
-launch, with FIQ masked: clear the eight entries, set the FIQ's C to 0.
-The VPU starts with rtag = 0 and rslot = ring base.  Because the tag is a
-4-bit lap-aware sequence, a cleared ring (tag 0 in every slot) would look
-"written" to a consumer expecting sequence 0 - so either clear the entries
-to a value whose tag is not 0 (0x80000000 is a safe "empty" mark), or
-start C at 1 and rtag at 1.  Pick one and write it down in the code.
+The VPU is launched ONCE, at boot, under one FIQ mask: fill the eight
+entries with their own slot number and lap 3 (`(s | 24) << 27`, which the
+consumer starting at lap 0 reads as "last lap's entry, not written yet"),
+set the FIQ's C to 0 with `_fiq_set_consumer(0)`, launch, enable the
+doorbell FIQ, unmask.  `init_emulator()` runs again on every Beeb reset
+and must NOT repeat any of that: TAG_LAUNCH_VPU1 against a VPU1 already
+running the poll loop does not reliably restart it (measured: the old code
+carried on with its old tag while C had been reset to 0, and the ROM's
+helper select after CTRL-BREAK was lost about 60% of the time).  Nothing
+the launch passes changes on a reset, so the ring simply keeps flowing
+across it while the callback table is rebuilt underneath.  A kernel.now
+chain-boot is the one case that does run the boot sequence against a
+running VPU: the consumer is out of step until the VPU's tag comes round,
+up to 32 bus cycles, while the Beeb is idle anyway.
 
 ### Validation
 
