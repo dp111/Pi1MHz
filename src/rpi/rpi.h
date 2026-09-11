@@ -58,6 +58,9 @@ unsigned int RPI_BootDetailPrevious( void );
 #define RPI_BootDetailPrevious() (0u)
 #endif
 unsigned int RPI_ResetReason( void );
+void RPI_ChainBootMark(void);      /* outgoing kernel, just before the jump */
+void RPI_ChainBootConsume(void);   /* kernel_main entry */
+unsigned int RPI_ChainBooted(void);/* 1 if this session was chain-booted */
 volatile unsigned int *RPI_BootStageBlock( void ); /* words 4..11 = crash record */
 
 /* Crash record persisted across the post-exception reboot (rpi/exception.c).

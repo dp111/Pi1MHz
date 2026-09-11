@@ -3070,8 +3070,9 @@ static bool route_status(ws_conn_t *c)
                                             - Pi1MHz_boot_entry_us) / 1000u);
       /* Only meaningful from a cold or watchdog boot: a kernel.now chain-boot
          inherits a timer that has been running since the original power-on,
-         so the entry stamp is an uptime, not a firmware load. */
-      if (pre > 60000ul)
+         so the entry stamp is an uptime, not a firmware load.  The outgoing
+         kernel leaves a marker in .noinit that says so (RPI_ChainBootMark). */
+      if (RPI_ChainBooted())
          snprintf(tmp, sizeof tmp,
                   "pre-kernel n/a (chain-boot), kernel->poll %lu ms", init);
       else

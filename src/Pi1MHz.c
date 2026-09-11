@@ -608,53 +608,79 @@ static void init_emulator(void) {
       the poll loop does not reliably restart it (measured 2026-09-10: after
       a BREAK the old code often carried on with its old post-ring tag while
       the ARM had reset its sequence to 0, so the ring was out of step and
-      the ROM's helper select was lost - CTRL-BREAK failing ~60% of the time;
-      a kernel.now chain-boot shows the same).  Nothing the launch passes
-      changes on a reset, so the ring simply keeps flowing across it.
+      the ROM's helper select was lost - CTRL-BREAK failing ~60% of the time).
+      Nothing the launch passes changes on a reset, so the ring simply keeps
+      flowing across it.
 
-      Post ring (docs/dev/bus-post-ring.md), FIQ masked until the VPU is
-      launched: a bus cycle in the gap would post into a ring the consumer
-      is about to reset.  The 5-bit tag in bits 27-31 is slot (27-29) + lap
-      (30-31); each slot is cleared to its own slot number with lap 3,
-      which the consumer (starting at lap 0) reads as "last lap's entry,
-      not written yet", never as an overrun.  Consumer sequence to 0; the
-      VPU starts at tag 0 when launched.  (A kernel.now chain-boot runs
-      this against a VPU1 the firmware will not restart: the consumer is
-      then out of step until the running VPU's tag comes round, up to 32
-      bus cycles, while the Beeb is idle anyway.) */
+      Post ring (docs/dev/bus-post-ring.md), FIQ masked until the consumer
+      is set: a bus cycle in the gap would post into a ring the consumer is
+      about to be pointed at.  The 5-bit tag in bits 27-31 is slot (27-29) +
+      lap (30-31).
+
+      Cold boot: each slot is cleared to its own slot number with lap 3,
+      which the consumer (starting at lap 0) reads as "last lap's entry, not
+      written yet", never as an overrun; consumer sequence 0; the VPU starts
+      at tag 0 when launched.
+
+      kernel.now chain-boot: the VPU is still running the previous kernel's
+      handler with its own tag and cannot be relaunched, so the ring is left
+      alone and the consumer is seeded from it.  The producer writes the
+      slots in order, so the one place round the ring where the lap drops by
+      one is its position: the next entry is that slot with the previous
+      slot's lap, or slot 0 with the next lap if every slot carries the same
+      one (a fresh fill reads as slot 0, lap 0, the cold-boot answer). */
    static bool vpu_launched;
    if (!vpu_launched)
    {
       vpu_launched = true;
       unsigned int ring_cpsr = _disable_interrupts_cspr();
-      for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++)
-         Pi1MHz_post_ring[s] = (s | 24u) << 27;
-      _fiq_set_consumer(0);                 /* Pi1MHz_fiq_overruns is cumulative: the BREAK row shows the delta */
-
-      RPI_PropertyStart(TAG_LAUNCH_VPU1, 7);
-      RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function
-      RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
-      RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_POST_RING & 0x00FFFFFF) )); // r1: the post ring base (docs/dev/bus-post-ring.md)
-
-      const char *prop = config_get("Pi1MHznOE");
-      if (prop)
+      if (RPI_ChainBooted())
       {
-         int temp = atoi(prop);
-         if (temp == 0)
-            RPI_PropertyAdd(0); // r2  No external nOE pin
-         else
-            RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
+         uint32_t tag[Pi1MHz_POST_SLOTS];
+         for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++)
+            tag[s] = Pi1MHz_post_ring[s] >> 27;
+         uint32_t next_slot = 0u, next_lap = ((tag[Pi1MHz_POST_SLOTS - 1u] >> 3) + 1u) & 3u;
+         for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++) {
+            uint32_t prev_lap = tag[(s + Pi1MHz_POST_SLOTS - 1u) % Pi1MHz_POST_SLOTS] >> 3;
+            if (((prev_lap - (tag[s] >> 3)) & 3u) == 1u) {
+               next_slot = s;
+               next_lap = prev_lap;
+               break;
+            }
+         }
+         _fiq_set_consumer(((next_lap << 3) | next_slot) << 27);
       }
       else
-         RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
+      {
+         for (unsigned s = 0; s < Pi1MHz_POST_SLOTS; s++)
+            Pi1MHz_post_ring[s] = (s | 24u) << 27;
+         _fiq_set_consumer(0);                 /* Pi1MHz_fiq_overruns is cumulative: the BREAK row shows the delta */
 
-      RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
-      RPI_PropertyAdd(TEST_PINS_OUTPUTS | (1<<(NOE_PIN<<3))); // r4
-      RPI_PropertyAdd(0); // r5 TEST_MASK
-      RPI_PropertyProcess(false);
+         RPI_PropertyStart(TAG_LAUNCH_VPU1, 7);
+         RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function
+         RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
+         RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_POST_RING & 0x00FFFFFF) )); // r1: the post ring base (docs/dev/bus-post-ring.md)
+
+         const char *prop = config_get("Pi1MHznOE");
+         if (prop)
+         {
+            int temp = atoi(prop);
+            if (temp == 0)
+               RPI_PropertyAdd(0); // r2  No external nOE pin
+            else
+               RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
+         }
+         else
+            RPI_PropertyAdd(1<<(NOE_PIN)); // r2 ( External nOE pin)
+
+         RPI_PropertyAdd(DATABUS_TO_OUTPUTS); // r3
+         RPI_PropertyAdd(TEST_PINS_OUTPUTS | (1<<(NOE_PIN<<3))); // r4
+         RPI_PropertyAdd(0); // r5 TEST_MASK
+         RPI_PropertyProcess(false);
+      }
 
       RPI_IRQBase->FIQ_control = 0x80 + 67; // doorbell FIQ
-      _restore_cpsr(ring_cpsr);              /* ring reset and launch done: FIQ may run again */
+      _restore_cpsr(ring_cpsr);              /* consumer set (and, cold, the VPU launched): FIQ may run again */
    }
 
    /* nRST edge -> interrupt.  The SCSI teardown has to happen while nRST is
@@ -958,6 +984,7 @@ static void poll_prof_report(void)
 _Noreturn void kernel_main(void)
 {
    Pi1MHz_boot_entry_us = RPI_GetSystemTime();
+   RPI_ChainBootConsume();
 
    unsigned int baud_rate = 115200;
    const char * const prop = get_cmdline_prop("baud_rate");

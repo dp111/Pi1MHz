@@ -24,6 +24,21 @@
    clean "nothing to report", never a phantom.  Same-build reboots (the
    normal lockup case) always line up. */
 NOINIT_SECTION static volatile uint32_t boot_stage_block[16];
+/* Chain-boot marker: the outgoing kernel writes CHAIN_MAGIC just before it
+   jumps (mtp_fs.c); the incoming kernel_main reads and clears it, so the
+   session knows it was chain-booted rather than cold-booted.  .noinit
+   survives the jump; a different build places .noinit elsewhere and simply
+   never sees the magic, which reads as a cold boot - the safe direction. */
+NOINIT_SECTION static volatile unsigned int chain_magic;
+#define CHAIN_MAGIC 0xC4A1B007u
+static unsigned int chain_booted_flag;
+void RPI_ChainBootMark(void) { chain_magic = CHAIN_MAGIC; }
+void RPI_ChainBootConsume(void)
+{
+   chain_booted_flag = (chain_magic == CHAIN_MAGIC) ? 1u : 0u;
+   chain_magic = 0u;
+}
+unsigned int RPI_ChainBooted(void) { return chain_booted_flag; }
 #define boot_stage_magic    (boot_stage_block[0])
 #define boot_stage_current  (boot_stage_block[1])
 #define boot_stage_previous (boot_stage_block[2])

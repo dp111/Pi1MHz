@@ -225,10 +225,19 @@ running the poll loop does not reliably restart it (measured: the old code
 carried on with its old tag while C had been reset to 0, and the ROM's
 helper select after CTRL-BREAK was lost about 60% of the time).  Nothing
 the launch passes changes on a reset, so the ring simply keeps flowing
-across it while the callback table is rebuilt underneath.  A kernel.now
-chain-boot is the one case that does run the boot sequence against a
-running VPU: the consumer is out of step until the VPU's tag comes round,
-up to 32 bus cycles, while the Beeb is idle anyway.
+across it while the callback table is rebuilt underneath.
+
+A kernel.now chain-boot also arrives with the VPU running the previous
+kernel's handler, and it cannot be relaunched either.  The outgoing kernel
+leaves a marker in .noinit (`RPI_ChainBootMark`, consumed by kernel_main),
+and a chain-booted `init_emulator` neither fills the ring nor launches: it
+reads the eight tags and seeds C from them.  The producer writes the slots
+in order, so the one place round the ring where the lap drops by one is its
+position; the next entry is that slot with the previous slot's lap, or slot
+0 with the next lap when every slot carries the same one (which is also
+what a fresh fill reads as, so the rule gives the cold-boot answer too).
+Verified on the Zero 2 W with the DEBUG Ring row: producer at 10 before the
+kernel.now, C seeded to 11 after it, next BREAK in step, no overruns.
 
 ### Validation
 
