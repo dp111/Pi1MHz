@@ -134,11 +134,20 @@ _reset_:
     vmsr    fpexc, r4
 
 #if (__ARM_ARCH >= 7 )
-    // enter in HYP mode and need to force a switch to SVC mode
+    // The firmware enters a cold boot in HYP mode and we need SVC.  A
+    // kernel.now chain-boot arrives from the outgoing kernel's main loop,
+    // already in SVC, and "msr ELR_hyp" / "eret" executed outside Hyp mode
+    // are not defined - on the A53 that killed every chain-boot between the
+    // jump and the first line of the new kernel (2026-09-11).  So: only
+    // leave Hyp mode when actually in it.
     //
     // The logs show:
     // SVC mode: cpsr ends with 1d3
     // HYP mode: cpsr ends with 1a3
+    mrs     r4, cpsr
+    and     r4, r4, #CPSR_MODE_MASK
+    cmp     r4, #CPSR_MODE_HYP
+    bne     _reset_continue
     adr     lr , _reset_continue
     msr     spsr_cxsf, #CPSR_IRQ_INHIBIT | CPSR_FIQ_INHIBIT | CPSR_MODE_SVC
     msr     ELR_hyp , lr
