@@ -175,14 +175,16 @@ static bool sdio_host_clock_deadline_expired(uint32_t now_us, uint32_t deadline_
 static void sdio_host_set_wl_reg_on(bool asserted)
 {
 #if (__ARM_ARCH >= 7)
+   /* Pi 3 family: WL_REG_ON is on the firmware's GPIO expander.  Pi Zero 2 W:
+      it is GPIO 41, as on the Zero W.  Drive both; on a Pi 3 GPIO 41 is only
+      the activity LED. */
    RPI_PropertySetWord(TAG_SET_GPIO_STATE, PI3_WIFI_POWER_EXP_GPIO, asserted ? 1u : 0u);
-#else
+#endif
    RPI_SetGpioOutput(WIFI_POWER_GPIO);
    if (asserted)
       RPI_SetGpioHi(WIFI_POWER_GPIO);
    else
       RPI_SetGpioLo(WIFI_POWER_GPIO);
-#endif
 }
 
 static bool sdio_host_is_frame_count_poll(uint32_t cmd_reg, uint32_t argument)
@@ -277,16 +279,14 @@ static void sdio_host_power_wifi_chip(void)
                               activity LED on Pi 3 - harmless). */
    const uint32_t power_cycle_delay_us = 20000u;
 
-#if (__ARM_ARCH >= 7)
-   RPI_PropertySetWord(TAG_SET_GPIO_STATE, PI3_WIFI_POWER_EXP_GPIO, 0u);
+   /* Both lines, see sdio_host_set_wl_reg_on.  A cold boot finds the chip
+      unpowered anyway; a kernel.now chain-boot finds it running the previous
+      session's firmware, and only a real WL_REG_ON drop gives the bring-up
+      the fresh chip it assumes (the Zero 2 W came up with no network after
+      every chain-boot until GPIO 41 was driven here, 2026-09-11). */
+   sdio_host_set_wl_reg_on(false);
    usleep(power_cycle_delay_us);
-   RPI_PropertySetWord(TAG_SET_GPIO_STATE, PI3_WIFI_POWER_EXP_GPIO, 1u);
-#else
-   RPI_SetGpioOutput(WIFI_POWER_GPIO);
-   RPI_SetGpioLo(WIFI_POWER_GPIO);
-   usleep(power_cycle_delay_us);
-   RPI_SetGpioHi(WIFI_POWER_GPIO);
-#endif
+   sdio_host_set_wl_reg_on(true);
 
    WIFI_SDIO_LOG("WIFI-SDIO: WL_REG_ON asserted, settling 150ms\n");
 
