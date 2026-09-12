@@ -68,7 +68,6 @@
 // See ARM section A2.5 (Program status registers)
 .equ    CPSR_A_BIT,             0x100
 .equ    CPSR_IRQ_INHIBIT,       0x80
-
 .equ    CPSR_FIQ_INHIBIT,       0x40
 
 _start_vectors:
@@ -394,13 +393,13 @@ _chainboot_mmu_off:
     mcr     p15, 0, r0, c8, c7, 0      // invalidate entire TLB
     mcr     p15, 0, r0, c7, c10, 4     // DSB
     mcr     p15, 0, r0, c7, c5, 4      // flush prefetch buffer
-    // A literal, not "mov pc, #_start_vectors": a MOV immediate cannot carry a
+    // A branch, not "mov pc, #_start_vectors": a MOV immediate cannot carry a
     // symbol and assembled as "mov pc, #0" - a jump into the firmware's ARM
     // stub at address 0.  On the ARM1176 that stub just re-enters 0x8000, so
     // chain-boots worked by accident; on the Pi 3 family the 32-bit stub is
     // reset-time HYP-mode code and re-entering it from SVC killed every
     // chain-boot right here (Zero 2 W, 2026-09-11).
-    ldr     pc, =_start_vectors
+    b       _start_vectors
 
 .section ".text._exception_handlers_", "x"
 _undefined_instruction_handler_:
