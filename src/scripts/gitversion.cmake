@@ -9,7 +9,7 @@
 # automatic -dirty suffix for uncommitted tracked changes. Falls back to a bare
 # short hash, then to "unknown" outside a git tree.
 execute_process(
-   COMMAND git -C "${SRC_DIR}" describe --tags --always --dirty=-dirty --abbrev=7
+   COMMAND git -C "${SRC_DIR}" describe --tags --always --abbrev=7
    OUTPUT_VARIABLE GIT_VERSION
    OUTPUT_STRIP_TRAILING_WHITESPACE
    RESULT_VARIABLE GIT_RESULT
@@ -68,7 +68,16 @@ if(NOT UNTRACKED_RESULT EQUAL 0)
    set(GIT_UNTRACKED_FILES "")
 endif()
 
-if(GIT_VERSION MATCHES "-dirty$" OR NOT GIT_UNTRACKED_FILES STREQUAL "")
+# Dirty means the SOURCE tree differs from HEAD.  git describe's own --dirty
+# looks at the whole repository, and every build rewrites the tracked
+# firmware/kernel*.img, so a release build made after a debug build in the
+# same tree came out "-dirty" from images it had itself just replaced.
+execute_process(
+   COMMAND git -C "${SRC_DIR}" diff --quiet --ignore-submodules=dirty HEAD -- . ":(exclude)scripts/gitversion.h" ":(exclude)third_party/**"
+   RESULT_VARIABLE SRC_DIRTY_RESULT
+   ERROR_QUIET
+)
+if(NOT SRC_DIRTY_RESULT EQUAL 0 OR NOT GIT_UNTRACKED_FILES STREQUAL "")
    # Pathspec matters: an unqualified "git diff HEAD" covers the whole repo,
    # and every build rewrites the tracked firmware/kernel*.img, so the
    # fingerprint moved on its own and each build regenerated the header and
