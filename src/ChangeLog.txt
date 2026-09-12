@@ -201,13 +201,23 @@ MTP: correctly answer unsupported operations (Windows no longer stalls);
 CREDITS.md added listing sources and contributors.
 
 v.1.31
-Beeb_write_protect config option: ignore all writes from the Beeb to the SD card (MMFS/MMFS2 and ADFS), while USB and web/WebDAV access stay read-write.
-AUN Fix * notify etc
-Add a web browser for viewing/modifying .ssd .dsd .mmb files scsi.dat can only be viewed.
-Update 43455 WiFi firmware to 7.45.265 (Pi 3B+/4/CM4).
-Hardware H264 video player for the Domesday LaserDisc emulation (needs the full start.elf, gpu_mem=64 and vd_use_vpu0=1).
-Audio rework: one audio core (int16 ring) shared by Music 5000, BeebSID and the video player; Beeb pin always carries the proper mono mix; Audio_out=hdmi plays over HDMI (direct MAI, no firmware service).
-Web /status: audio, video player, SD throughput and per-poll timing diagnostics; /audio.wav returns the last third of a second of sound; PUT size limit raised to 4GB for video uploads.
-Disc menu support: ?T / ?Y F-codes return the mounted VFS disc's Title/Description from its scsi0.cfg (read the reply with OSWORD &62 cmd &C8); a Domesday-style menu disc for /BeebVFS0 is built by tools/make_vfs_menu.py.
-Framebuffer: a mode change now resets the font scale/spacing - the boot splash's double-width font no longer leaks into the Beeb's screen modes (everything rendered 20 columns wide after a reset).
-WiFi no longer stays dead until a BREAK when a runtime chip restart fails bring-up: the error state now retries the full init on a doubling backoff (1-10 minutes) instead of stopping permanently.
+Beeb_write_protect config key: the Beeb's SD writes are ignored; USB and web stay read-write.
+AUN fixes (*NOTIFY and others).
+Web disc browser for .ssd/.dsd/.mmb (scsi.dat view only); PUT limit raised to 4GB.
+43455 WiFi firmware 7.45.265 (Pi 3B+/4/CM4); both Pi Zero 2 W radios supported; flow-control and stall-recovery fixes.
+Hardware H264 video player for the Domesday LaserDisc emulation (needs the full start.elf, gpu_mem=64, vd_use_vpu0=1).
+Audio rework: one audio core shared by Music 5000, BeebSID and the video player; Audio_out=hdmi.
+Display mode from the monitor's EDID at 50 Hz; hdmi_muting=0x10001 makes the boot mode switch fast; config.txt modes documented.
+Video and computer planes on the Beeb's pixel grid with per-side alignment in scsi0.cfg; the pointer matches in every VP mode.
+1MHz bus writes are never lost: an 8-entry ring between the VPU and the ARM replaces the single post word.
+CTRL-BREAK is reliable: the VPU bus handler is launched once, not on every reset.
+kernel.now chain-boot works on the Pi 3 family / Zero 2 W.
+VP415: VPX no longer changes the overlay mode; eject and completion replies fixed; ?T/?Y return the VFS disc title/description.
+Mouse pointer leaves no fragments; VDU lines and circles match the BBC ROM; vdu_log=1 logs VDU commands to /vdulog.
+SCSI survives a BBC reset at any moment; VFS LUNs are read-only.
+USB/MTP: TinyUSB upstream (silent write loss fixed), rename and error-response fixes.
+Networking: ElkWiFi service (elkwifi_enable), SSH/SFTP (PI1MHZ_SSH), TNFS, UDP, ping/SNTP, eight service slots.
+UEF resumable tape stream; M5000 cheaper when silent and WAV recording fixes.
+/status shows boot timing, the last BBC reset, and a crash record; release builds carry no diagnostic cost.
+firmware/ ships bootcode.bin, start.elf and fixup.dat; docs/dev/diagnostics.md for developers.
+Whole-tree review with about ninety fixes.
