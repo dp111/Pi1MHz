@@ -221,3 +221,9 @@ UEF resumable tape stream; M5000 cheaper when silent and WAV recording fixes.
 /status shows boot timing, the last BBC reset, and a crash record; release builds carry no diagnostic cost.
 firmware/ ships bootcode.bin, start.elf and fixup.dat; docs/dev/diagnostics.md for developers.
 Whole-tree review with about ninety fixes.
+
+v.1.32
+FAT service (MMFS, helper ROM loads) does its SD work from the main loop, not in FIQ: helper ROM loads no longer lose bus writes and hang.
+Help screen is formatted ahead of time; the FIQ only releases the Beeb.
+Music 5000 WAV recordings carry the real sample rate (48000 with Audio_out=hdmi).
+Beeb-side test suite: tools/testsuite (a BeebSCSI disc of BASIC tests plus a host driver over the Pico keyboard).
