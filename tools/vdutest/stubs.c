@@ -86,3 +86,22 @@ void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_fun
 { (void)access; (void)addr; (void)func; }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data) { (void)addr; (void)data; }
 void Pi1MHz_EmulatedMemoryByte(unsigned int gpio) { (void)gpio; }
+
+// ---- added 2026-09-13: symbols the driver grew since the harness was written --
+
+#include <stdbool.h>
+#include "../../src/config.h"
+
+volatile Pi1MHz_break_t Pi1MHz_break;
+
+uint32_t RPI_GetSystemTime(void)
+{
+   static uint32_t t;
+   return t += 1000;          // a microsecond clock that always moves forward
+}
+
+bool config_get_bool(const char *key) { (void)key; return false; }
+
+bool mouse_redirect_pointer_moved(void) { return false; }
+void mouse_redirect_pointer_hide(void) { }
+void mouse_redirect_pointer_show(void) { }

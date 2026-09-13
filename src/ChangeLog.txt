@@ -227,4 +227,5 @@ FAT service (MMFS, helper ROM loads) does its SD work from the main loop, not in
 Help screen is formatted ahead of time; the FIQ only releases the Beeb.
 Music 5000 WAV recordings carry the real sample rate (48000 with Audio_out=hdmi).
 Music 5000: phase-set loads the frequency register unscaled with Audio_out=hdmi (the 125/128 belongs to the increment only); modulate follows the hardware slot order, channel 7 selects channel 0 and channel 15 selects channel 8, not 7 to 8 and 15 to 0.
+VDU: circles, arcs, chords and sectors in MODE 0, 2 and 5 are the size the Master draws them; filled triangles and parallelograms are the span fill of their own PLOT-line edges (the collinear triangle included); ellipses use the GXR's own algorithm; sectors include their radial line pixels; VDU 31 in VDU 5 mode counts rows from the top of the graphics window; tools/vdutest now checks text, windows, colours, patterns and VDU 5 against a real Master 128 and runs from recorded results without an emulator.
 Beeb-side test suite: tools/testsuite (a BeebSCSI disc of BASIC tests plus a host driver over the Pico keyboard).
