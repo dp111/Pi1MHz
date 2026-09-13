@@ -213,7 +213,10 @@ bool beeb_path_busy(const char *host_path)
        || M5000_recording_path_busy(host_path);    /* a WAV still being flushed */
 }
 
-static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t data)
+/* Runs on the main loop (fat_service_poll): every FatFs and SD call below
+   may block for milliseconds, which the FIQ cannot afford - see
+   fat_service_command. */
+static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t data)
 {
    uint32_t base_addr = DISC_RAM_BASE ;
 
@@ -560,6 +563,44 @@ static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t
 
 }
 
+/* One-slot command mailbox latched in FIQ, drained by the poll (the net
+   service's pattern).  The services port dispatches command-register
+   writes from the FIQ; the FatFs work behind them reads the SD card for
+   milliseconds, and a FIQ held that long lets the 8-slot bus post ring
+   overrun whenever the Beeb keeps the bus busy meanwhile - the helper ROM
+   loader executes from JIM, so every instruction fetch is a posted cycle.
+   The ring then drops the writes that follow, and the loader hung on its
+   next command.  The Beeb already polls bit 7 of the command register, so
+   deferring the work changes nothing on its side. */
+static volatile bool     fat_pending;
+static volatile uint32_t fat_pending_cp;
+static volatile uint32_t fat_pending_addr;
+static volatile uint8_t  fat_pending_data;
+
+static void fat_service_command(uint32_t command_pointer, uint32_t addr, uint8_t data)
+{
+   /* FIQ context: latch only.  The register must read busy (bit 7) until
+      the poll writes the real result; every Beeb client sends a command
+      byte with bit 7 set, so this is the byte it wrote back with the bit
+      forced for safety. */
+   fat_pending_cp   = command_pointer;
+   fat_pending_addr = addr;
+   fat_pending_data = data;
+   fat_pending      = true;
+   Pi1MHz_MemoryWrite(addr, (uint8_t)(data | 0x80u));
+}
+
+static void fat_service_poll(void)
+{
+   if (!fat_pending)
+      return;
+   uint32_t cp   = fat_pending_cp;
+   uint32_t addr = fat_pending_addr;
+   uint8_t  data = fat_pending_data;
+   fat_pending = false;
+   fat_service_execute(cp, addr, data);
+}
+
 void fat_service_init(void)
 {
    /* Runs on every BBC RST (init_emulator re-runs the whole table).  The
@@ -572,4 +613,8 @@ void fat_service_init(void)
    fat_open_clear_all();
    (void)services_register(SERVICE_CMD_FAT_FIRST, SERVICE_CMD_FAT_LAST,
                            fat_service_command);
+   /* fat_pending is deliberately not cleared here: a command latched around
+      the reset is still answered by the poll (against the now-closed
+      handles), so the busy bit the FIQ wrote can never be stranded. */
+   Pi1MHz_Register_Poll(fat_service_poll, "fatsvc");
 }
