@@ -118,31 +118,52 @@ static float calc_radius_float(int x1, int y1, int x2, int y2) {
    return sqrtf((float)((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1)));
 }
 
+#ifndef USE_NEW_SECTOR_SEGMENT_FILL
 static int calc_radius(int x1, int y1, int x2, int y2) {
     return (int)(calc_radius_float(x1, y1, x2, y2) + 0.5F);
 }
+#endif
 
-// The OS's circle is the set of pixels inside x*x + y*y <= (R + 1/2)^2, where
-// R is the *exact* distance to the point PLOT was given - not rounded to a
-// whole pixel first.  The squared distance is an exact integer, so that limit
-// is floor(d2 + sqrt(d2) + 1/4) = d2 + (int)(sqrt(d2) + 1/4), which keeps the
-// whole test in integers.  Measured against OS 1.20 + GXR.
-static int calc_radius_limit(int x1, int y1, int x2, int y2) {
-   int d2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
-   return d2 + (int)(sqrtf((float)d2) + 0.25F);
+// Exact integer square root: the largest n with n*n <= v
+static int isqrt(int v) {
+   float root = sqrtf((float)v);
+   int n = (int)root;
+   while (n > 0 && n * n > v) n--;
+   while ((n + 1) * (n + 1) <= v) n++;
+   return n;
 }
 
-// The outermost y on the circle: the largest y with y*y <= limit
-static int circle_top(int limit) {
-   float root = sqrtf((float)limit);
-   int y = (int)root;
-   while (y > 0 && y * y > limit) {
-      y--;
+// The OS's circle is the set of pixels inside x*x + y*y <= (R + h)^2 in OS
+// units, where R is the *exact* distance to the point PLOT was given - not
+// rounded to a whole pixel first - and h is half the smaller pixel dimension:
+// half a pixel in MODE 4, 1 unit in MODE 0, 2 units in MODE 5.  The squared
+// distance d2 is an exact integer, so the limit is too:
+//    floor((R + h)^2) = d2 + h*h + floor(2*h*R) = d2 + h*h + isqrt(4*h*h*d2)
+// and for h = 1/2 (a mode whose pixels are one unit wide)
+//    floor(d2 + R + 1/4)  = d2 + (isqrt(16*d2) + 1) / 4.
+// Measured against MOS 3.20 in MODES 0, 4 and 5 (tools/vdutest).
+static int calc_radius_limit(const screen_mode_t *screen, int xc, int yc, int xr, int yr) {
+   int dx = (xr - xc) << screen->xeigfactor;
+   int dy = (yr - yc) << screen->yeigfactor;
+   int d2 = dx * dx + dy * dy;
+   int m  = screen->xeigfactor < screen->yeigfactor ? screen->xeigfactor : screen->yeigfactor;
+   if (m == 0) {
+      return d2 + ((isqrt(16 * d2) + 1) >> 2);
    }
-   while ((y + 1) * (y + 1) <= limit) {
-      y++;
-   }
-   return y;
+   int h = 1 << (m - 1);
+   return d2 + h * h + isqrt(4 * h * h * d2);
+}
+
+// The widest |x| (in pixels) on row y of the disc, or -1 if the row misses it
+static int circle_xmax(const screen_mode_t *screen, int limit, int y) {
+   int v = limit - (y << screen->yeigfactor) * (y << screen->yeigfactor);
+   return v < 0 ? -1 : isqrt(v) >> screen->xeigfactor;
+}
+
+// The highest |y| (in pixels) on column x of the disc, or -1 if it misses
+static int circle_ymax(const screen_mode_t *screen, int limit, int x) {
+   int v = limit - (x << screen->xeigfactor) * (x << screen->xeigfactor);
+   return v < 0 ? -1 : isqrt(v) >> screen->yeigfactor;
 }
 
 static pixel_t get_pixel(screen_mode_t *screen, int x, int y) {
@@ -251,6 +272,7 @@ static void draw_hline(screen_mode_t *screen, int x1, int x2, int y, plotcol_t c
    }
 }
 
+#if 0 /* replaced by span_fill: the OS fills between its own PLOT-line edges */
 static void fill_bottom_flat_triangle(screen_mode_t *screen, int x1, int y1, int x2, int y2, int x3, int y3, plotcol_t colour) {
    // Note: y2 and y3 are the same, so the below test is slightly redundant
    if (y1 == y2 || y1 == y3) {
@@ -284,6 +306,7 @@ static void fill_top_flat_triangle(screen_mode_t *screen, int x1, int y1, int x2
       }
    }
 }
+#endif
 
 #ifndef USE_NEW_SECTOR_SEGMENT_FILL
 // Rodders: Arc drawing routines, used by chord and sector fills
@@ -392,43 +415,38 @@ static int arc_point(unsigned int q, quadrant_t state, int x, int y, int xs, int
 }
 #endif
 
-static void draw_circle(screen_mode_t *screen, int xc, int yc, int limit, plotcol_t colour) {
-   int y = circle_top(limit);
-   int x = 0;
-   // Walk one column at a time keeping y the largest value still inside the
-   // circle, and mirror into the other seven octants.  The guards stop a
-   // pixel being plotted twice where the octants meet, which would undo
-   // itself under XOR.
-   while (x <= y) {
-      set_pixel(screen, xc + x, yc + y, colour);
+// Plot (xc +/- x, yc +/- y) once each - the guards matter under XOR
+static void plot_mirrored(screen_mode_t *screen, int xc, int yc, int x, int y, plotcol_t colour) {
+   set_pixel(screen, xc + x, yc + y, colour);
+   if (x > 0) set_pixel(screen, xc - x, yc + y, colour);
+   if (y > 0) {
       set_pixel(screen, xc + x, yc - y, colour);
-      if (x > 0) {
-         set_pixel(screen, xc - x, yc + y, colour);
-         set_pixel(screen, xc - x, yc - y, colour);
-      }
-      if (x != y) {
-         set_pixel(screen, xc + y, yc + x, colour);
-         set_pixel(screen, xc - y, yc + x, colour);
-         if (x > 0) {
-            set_pixel(screen, xc + y, yc - x, colour);
-            set_pixel(screen, xc - y, yc - x, colour);
-         }
-      }
-      x++;
-      while (y >= 0 && x * x + y * y > limit) {
-         y--;
+      if (x > 0) set_pixel(screen, xc - x, yc - y, colour);
+   }
+}
+
+// The OS's outline is the leftmost and rightmost pixel of every row of the
+// disc plus the top and bottom pixel of every column: in a square-pixel mode
+// that is the usual octant walk, and in MODE 0 or 5 it is what makes the flat
+// runs at the sides or the top come out the width the ROM draws them.
+static void draw_circle(screen_mode_t *screen, int xc, int yc, int limit, plotcol_t colour) {
+   int ytop = circle_ymax(screen, limit, 0);
+   int xtop = circle_xmax(screen, limit, 0);
+   for (int y = 0; y <= ytop; y++) {
+      plot_mirrored(screen, xc, yc, circle_xmax(screen, limit, y), y, colour);
+   }
+   for (int x = 0; x <= xtop; x++) {
+      int y = circle_ymax(screen, limit, x);
+      if (circle_xmax(screen, limit, y) != x) {      // not already a row extreme
+         plot_mirrored(screen, xc, yc, x, y, colour);
       }
    }
 }
 
 static void fill_circle(screen_mode_t *screen, int xc, int yc, int limit, plotcol_t colour) {
-   int x = 0;
-   // Same circle, walked a row at a time; x only ever grows, so the inner
-   // loop costs O(radius) over the whole fill.
-   for (int y = circle_top(limit); y >= 0; y--) {
-      while ((x + 1) * (x + 1) + y * y <= limit) {
-         x++;
-      }
+   // Same disc, a row at a time
+   for (int y = circle_ymax(screen, limit, 0); y >= 0; y--) {
+      int x = circle_xmax(screen, limit, y);
       draw_hline(screen, xc - x, xc + x, yc + y, colour);
       if (y > 0) {
          draw_hline(screen, xc - x, xc + x, yc - y, colour);
@@ -436,6 +454,7 @@ static void fill_circle(screen_mode_t *screen, int xc, int yc, int limit, plotco
    }
 }
 
+#if 0 /* replaced by gxr_ellipse below, a transliteration of the ROM's own algorithm */
 static void draw_normal_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, plotcol_t colour) {
    // Deal with the trivial case of single point
    if (width == 0 && height == 0) {
@@ -672,6 +691,139 @@ static void fill_sheared_ellipse(screen_mode_t *screen, int xc, int yc, int widt
 // ==========================================================================
 // Public methods
 // ==========================================================================
+
+#endif /* old ellipse code */
+
+// ---- Ellipses: the GXR's own algorithm (Chapter 23 of Toby Nelson's
+// reassembly of GXR 1.20, which the Master's MOS carries unchanged).  Row n
+// of the ellipse, counted from the centre towards the third PLOT point, has
+// half-width (w/h)*sqrt(h*h - n*n) and a shear offset of n*s/h, computed in
+// 8.8 fixed point with an integer square root and rounded half up, with the
+// rounding errors accumulating exactly as the ROM's do - which is why no
+// closed-form ellipse ever fitted the pixels.  Everything is in pixels, so
+// modes with oblong pixels come out right by construction.  The outline
+// joins each row to its neighbours the way the ROM does: the left run
+// extends right until it meets the left ends of the rows above and below,
+// the right run extends left likewise, and each pixel is plotted once.
+
+static int64_t isqrt64(int64_t v) {
+   if (v <= 0) return 0;
+   double root = sqrt((double)v);
+   int64_t n = (int64_t)root;
+   while (n > 0 && n * n > v) n--;
+   while ((n + 1) * (n + 1) <= v) n++;
+   return n;
+}
+
+typedef struct {
+   int64_t aspect;        // 256 * w / h                    (.ellipse256AspectRatio)
+   int64_t shear;         // 256 * s / h, signed            (.ellipse256Shear)
+   int64_t hh2;           // h * h                          (.ellipseHalfHeightSquared)
+   int64_t acc;           // accumulated shear, 1/256 px   (.ellipseAccumulatedShear)
+   int64_t squares;       // n * n                          (.ellipseCountSquares)
+   int64_t odd;           // 2n + 1                         (.ellipseCountOddNumbers)
+   int n;                 // current row                    (.ellipseCountHeight)
+   int half;              // rows to go                     (.ellipseHalfHeightCounter)
+   int L, R;              // this row's extent              (.ellipseLeftPoint/RightPoint)
+   int A, B;              // next row's extent              (.ellipsePointA/B)
+   int C, D;              // previous row's extent          (.ellipsePointC/D)
+} gxr_ellipse_t;
+
+static void gxr_ellipse_update(gxr_ellipse_t *e) {          // .updateEllipse
+   e->C = e->L;
+   e->D = e->R;
+   e->L = e->A;
+   e->R = e->B;
+   int64_t root = isqrt64((e->hh2 - e->squares) << 16);     // 256 * sqrt(h*h - n*n)
+   int64_t p = ((e->aspect * root) & 0xFFFFFFFF) >> 8;      // 32-bit product, top 24 bits
+   e->B = (int)((e->acc + p + 128) >> 8);                    // round half up, as the ROM
+   e->A = (int)((e->acc - p + 128) >> 8);
+   e->squares += e->odd;
+   e->odd += 2;
+   e->acc += e->shear;
+   e->n++;
+   e->half--;
+}
+
+static void gxr_ellipse_update_incrementally(gxr_ellipse_t *e) {   // .updateEllipseIncrementally
+   gxr_ellipse_update(e);
+   if (e->A > e->R) {
+      e->R = e->A;
+   } else if (e->B < e->L) {
+      e->L = e->B;
+   }
+}
+
+// Fill row n from a to b, and its reflection through the centre
+static void gxr_ellipse_row(screen_mode_t *screen, int xc, int yc, int n, int a, int b, plotcol_t colour) {
+   draw_hline(screen, xc + a, xc + b, yc + n, colour);
+   if (n) {
+      draw_hline(screen, xc - a, xc - b, yc - n, colour);
+   }
+}
+
+static void gxr_ellipse_point(screen_mode_t *screen, int xc, int yc, int n, int x, plotcol_t colour) {
+   set_pixel(screen, xc + x, yc + n, colour);
+   if (n) {
+      set_pixel(screen, xc - x, yc - n, colour);
+   }
+}
+
+// width w and height h in pixels, shear s the x offset of the top row
+static void gxr_ellipse(screen_mode_t *screen, int xc, int yc, int w, int h, int s, int fill, plotcol_t colour) {
+   if (h == 0) {                                             // .zeroHeightEllipse
+      draw_hline(screen, xc - w, xc + w, yc, colour);
+      return;
+   }
+   gxr_ellipse_t e = { 0 };
+   e.aspect = (256 * (int64_t)w) / h;                        // unsigned divides, then the sign
+   e.shear  = (256 * (int64_t)abs(s)) / h;
+   if (s < 0) e.shear = -e.shear;
+   e.hh2    = (int64_t)h * h;
+   e.odd    = 1;
+   e.half   = h;
+   gxr_ellipse_update(&e);
+   gxr_ellipse_update(&e);
+   e.n = 0;
+   e.D = -e.A;
+   e.C = -e.B;
+   if (e.R < e.A) {
+      e.R = e.A;
+      e.L = e.D;
+   } else if (e.L > e.B) {
+      e.L = e.B;
+      e.R = e.C;
+   }
+   for (;;) {
+      if (fill) {                                            // .startFilledEllipse
+         gxr_ellipse_row(screen, xc, yc, e.n, e.L, e.R, colour);
+      } else {                                               // .startEllipseOutline
+         int y = e.C > e.A ? e.C : e.A;                      // rightmost of C and A
+         int x = e.L;
+         gxr_ellipse_point(screen, xc, yc, e.n, x, colour);
+         for (x++; x < y; x++) {
+            gxr_ellipse_point(screen, xc, yc, e.n, x, colour);
+         }
+         x--;
+         e.C = x;                                            // rightmost pixel of the left run
+         if (x < e.R) {
+            // The ROM sorts D and B, then sorts the *leftmost* of them against
+            // C: the right run stops at max(min(D, B), C)
+            y = e.D < e.B ? e.D : e.B;
+            if (e.C > y) y = e.C;
+            x = e.R;
+            gxr_ellipse_point(screen, xc, yc, e.n, x, colour);
+            for (x--; x > y; x--) {
+               gxr_ellipse_point(screen, xc, yc, e.n, x, colour);
+            }
+         }
+      }
+      if (e.half < 0) break;
+      gxr_ellipse_update_incrementally(&e);
+   }
+   e.n++;                                                    // .finishEllipseLastRow
+   gxr_ellipse_row(screen, xc, yc, e.n, e.A, e.B, colour);
+}
 
 void prim_init (const screen_mode_t *screen) {
    // max_col is used when calculating the logical inverse of the existing pixel
@@ -914,78 +1066,131 @@ int prim_on_screen(screen_mode_t *screen, int x, int y) {
 // Rodders: Line mode support
 // Implementation of Bresenham's line drawing algorithm from here:
 // http://tech-algorithm.com/articles/drawing-line-using-bresenham-algorithm/
-void prim_draw_line(screen_mode_t *screen, int x1, int y1, int x2, int y2, plotcol_t colour, uint8_t linemode) {
+// The OS's line: Bresenham from (x1,y1), taking longest+1 steps.  One stepper
+// serves PLOT lines and the span fills, so a filled triangle's edges are the
+// same pixels as the lines that would outline it - which is the ROM's rule.
+typedef struct {
+   int x, y;                 // the current pixel
+   int dx1, dy1;             // the diagonal step
+   int dx2, dy2;             // the step along the major axis
+   int longest, shortest;    // |major|, |minor|
+   int numerator;            // the error term
+} line_stepper_t;
+
+static void line_stepper_init(line_stepper_t *s, int x1, int y1, int x2, int y2) {
    int w = x2 - x1;
    int h = y2 - y1;
-   int mask = (linemode & 0x38);
-   int dotted =     (mask == 0x10 || mask == 0x18 || mask == 0x30 || mask == 0x38); // Dotted line
-   int omit_first = (mask == 0x20 || mask == 0x28 || mask == 0x30 || mask == 0x38); // Omit first
-   int omit_last =  (mask == 0x08 || mask == 0x18 || mask == 0x28 || mask == 0x38); // Omit last
-   int dx1 = 0, dy1 = 0, dx2 = 0, dy2 = 0;
-   if (w < 0) {
-      dx1 = -1;
-   } else if (w > 0) {
-      dx1 = 1;
-   }
-   if (h < 0) {
-      dy1 = -1;
-   } else if (h > 0) {
-      dy1 = 1;
-   }
-   if (w < 0) {
-      dx2 = -1;
-   } else if (w > 0) {
-      dx2 = 1;
-   }
-   int longest = abs(w);
-   int shortest = abs(h);
-   if (!(longest > shortest)) {
-      longest = abs(h);
-      shortest = abs(w);
-      if (h < 0) {
-         dy2 = -1;
-      } else if (h > 0) {
-         dy2 = 1;
-      }
-      dx2 = 0;
+   s->dx1 = (w < 0) ? -1 : (w > 0) ? 1 : 0;
+   s->dy1 = (h < 0) ? -1 : (h > 0) ? 1 : 0;
+   s->dx2 = s->dx1;
+   s->dy2 = 0;
+   s->longest = abs(w);
+   s->shortest = abs(h);
+   if (!(s->longest > s->shortest)) {
+      s->longest = abs(h);
+      s->shortest = abs(w);
+      s->dy2 = s->dy1;
+      s->dx2 = 0;
    }
    // dx2/dy2 is the step along the major axis, so their sum is its direction.
    // The OS starts the error term one lower when the major axis runs in the
    // positive direction; that asymmetry is what makes a real Beeb draw A to B
    // and B to A as exactly the same pixels.  Measured against OS 1.20 + GXR.
-   int major_dir = dx2 + dy2;
-   int numerator = (major_dir > 0) ? ((longest - 1) >> 1) : (longest >> 1);
-   int x = x1;
-   int y = y1;
+   int major_dir = s->dx2 + s->dy2;
+   s->numerator = (major_dir > 0) ? ((s->longest - 1) >> 1) : (s->longest >> 1);
+   s->x = x1;
+   s->y = y1;
+}
+
+static inline void line_stepper_next(line_stepper_t *s) {
+   s->numerator += s->shortest;
+   if (!(s->numerator < s->longest)) {
+      s->numerator -= s->longest;
+      s->x += s->dx1;
+      s->y += s->dy1;
+   } else {
+      s->x += s->dx2;
+      s->y += s->dy2;
+   }
+}
+
+void prim_draw_line(screen_mode_t *screen, int x1, int y1, int x2, int y2, plotcol_t colour, uint8_t linemode) {
+   int mask = (linemode & 0x38);
+   int dotted =     (mask == 0x10 || mask == 0x18 || mask == 0x30 || mask == 0x38); // Dotted line
+   int omit_first = (mask == 0x20 || mask == 0x28 || mask == 0x30 || mask == 0x38); // Omit first
+   int omit_last =  (mask == 0x08 || mask == 0x18 || mask == 0x28 || mask == 0x38); // Omit last
+   line_stepper_t s;
+   line_stepper_init(&s, x1, y1, x2, y2);
    // "longest" sets the Bresenham step ratio, so omitting the last point must
    // shorten the loop, not longest itself - decrementing it re-slopes the line
-   int count = omit_last ? longest - 1 : longest;
-   int start = 0;
+   int count = omit_last ? s.longest - 1 : s.longest;
    // restart the dot pattern if the first point is plotted
    if (dotted && !omit_first) {
       g_dot_pattern_index = 0;
    }
-   for (int i = start; i <= count; i++) {
-      if (i > start || !omit_first) {
+   for (int i = 0; i <= count; i++) {
+      if (i > 0 || !omit_first) {
          if (dotted) {
             if (g_dot_pattern[g_dot_pattern_index++]) {
-               set_pixel(screen, x, y, colour);
+               set_pixel(screen, s.x, s.y, colour);
             }
             if (g_dot_pattern_index == g_dot_pattern_len) {
                g_dot_pattern_index = 0;
             }
          } else {
-            set_pixel(screen, x, y, colour);
+            set_pixel(screen, s.x, s.y, colour);
          }
       }
-      numerator += shortest;
-      if (!(numerator < longest)) {
-         numerator -= longest;
-         x += dx1;
-         y += dy1;
-      } else {
-         x += dx2;
-         y += dy2;
+      line_stepper_next(&s);
+   }
+}
+
+// ---- span fills: the OS fills a polygon row by row between the leftmost
+// and rightmost pixel of its own edges, each drawn as a PLOT line.  The edges
+// are walked in bands of SPAN_ROWS rows so the scratch stays small whatever
+// the screen height; rows outside the graphics window are never walked.
+
+#define SPAN_ROWS 256
+__attribute__ ((section (".noinit"))) static int16_t span_min[SPAN_ROWS];
+__attribute__ ((section (".noinit"))) static int16_t span_max[SPAN_ROWS];
+
+static void span_edge(int x1, int y1, int x2, int y2, int ybase, int rows) {
+   line_stepper_t s;
+   line_stepper_init(&s, x1, y1, x2, y2);
+   for (int i = 0; i <= s.longest; i++) {
+      int r = s.y - ybase;
+      if (r >= 0 && r < rows) {
+         if (s.x < span_min[r]) span_min[r] = (int16_t)s.x;
+         if (s.x > span_max[r]) span_max[r] = (int16_t)s.x;
+      }
+      line_stepper_next(&s);
+   }
+}
+
+// Fill the polygon whose n vertices are xs[]/ys[] (closed back to the first)
+static void span_fill(screen_mode_t *screen, int n, const int *xs, const int *ys, plotcol_t colour) {
+   int ymin = ys[0], ymax = ys[0];
+   for (int i = 1; i < n; i++) {
+      if (ys[i] < ymin) ymin = ys[i];
+      if (ys[i] > ymax) ymax = ys[i];
+   }
+   if (ymin < g_y_min) ymin = g_y_min;
+   if (ymax > g_y_max) ymax = g_y_max;
+   for (int ybase = ymin; ybase <= ymax; ybase += SPAN_ROWS) {
+      int rows = ymax - ybase + 1;
+      if (rows > SPAN_ROWS) rows = SPAN_ROWS;
+      for (int r = 0; r < rows; r++) {
+         span_min[r] = INT16_MAX;
+         span_max[r] = INT16_MIN;
+      }
+      for (int i = 0; i < n; i++) {
+         int j = (i + 1 == n) ? 0 : i + 1;
+         span_edge(xs[i], ys[i], xs[j], ys[j], ybase, rows);
+      }
+      for (int r = 0; r < rows; r++) {
+         if (span_min[r] <= span_max[r]) {
+            draw_hline(screen, span_min[r], span_max[r], ybase + r, colour);
+         }
       }
    }
 }
@@ -1271,39 +1476,12 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
    res->x_right = x_right;
 }
 
+// The OS's filled triangle is the span fill of its own three edges drawn as
+// PLOT lines: measured identical on the ROM, the collinear case included.
 void prim_fill_triangle(screen_mode_t *screen, int x1, int y1, int x2, int y2, int x3, int y3, plotcol_t colour) {
-   int tmp;
-   // Use Standard Triangle Fill
-   // http://www.sunshine2k.de/coding/java/TriangleRasterization/TriangleRasterization.html
-   // sort the three vertices by y-coordinate ascending so v1 is the topmost vertex
-   if (y2 > y1) {
-      tmp = x1; x1 = x2; x2 = tmp;
-      tmp = y1; y1 = y2; y2 = tmp;
-   }
-   if (y3 > y1) {
-      tmp = x1; x1 = x3; x3 = tmp;
-      tmp = y1; y1 = y3; y3 = tmp;
-   }
-   if (y3 > y2) {
-      tmp = x2; x2 = x3; x3 = tmp;
-      tmp = y2; y2 = y3; y3 = tmp;
-   }
-   // here we know that y1 >= y2 >= y3
-   if (y2 == y3) {
-      // trivial case of bottom-flat triangle
-      fill_bottom_flat_triangle(screen, x1, y1, x2, y2, x3, y3, colour);
-   } else if (y1 == y2) {
-      // trivial case of top-flat triangle
-      fill_top_flat_triangle(screen, x1, y1, x2, y2, x3, y3, colour);
-   } else {
-      // general case - split the triangle in a topflat and bottom-flat one
-      int x4 = (int)((float)x1 + ((float)(y1 - y2) / (float)(y1 - y3)) * (float)(x3 - x1));
-      int y4 = y2;
-      fill_bottom_flat_triangle(screen, x1, y1, x2, y2, x4, y4, colour);
-      fill_top_flat_triangle(screen, x2, y2, x4, y4, x3, y3, colour);
-      // draw the overlapping line again, in case we are XOR plotting
-      draw_hline(screen, x2, x4, y4, colour);
-   }
+   int xs[3] = { x1, x2, x3 };
+   int ys[3] = { y1, y2, y3 };
+   span_fill(screen, 3, xs, ys, colour);
 }
 
 
@@ -1388,6 +1566,38 @@ static void draw_h_line_with_sector_segment_filter(screen_mode_t *sr, int xc, in
    }
 }
 
+// The same test as the row filter above, for one pixel at (x, y) relative
+// to the centre (y up).  True when the sector/segment fill would plot it.
+static int sector_filter_inside(int x, int y, int start_dx, int start_dy, int end_dx, int end_dy, uint32_t is_segment, uint32_t is_minor_sector) {
+   int start_ok = (x * start_dy + y * -start_dx) >= 0;
+   int end_ok   = (x * -end_dy  + y * end_dx)    >= 0;
+   int chord_ok = ((x - start_dx) * -(end_dy - start_dy) + (y - start_dy) * (end_dx - start_dx)) >= 0;
+   if (is_minor_sector) {
+      return (start_ok && end_ok) && (chord_ok || !is_segment);
+   }
+   return (start_ok || end_ok) || (chord_ok && is_segment);
+}
+
+// The ROM bounds a sector by its two radial lines and a segment by its chord,
+// each tracked as an ordinary Bresenham line, and fills every row from the
+// line's own pixel: so the line pixels belong to the shape even where they
+// sit half a pixel outside the exact edge.  Plot the ones the filter left
+// out, once each, staying inside the disc.  Measured against MOS 3.20.
+static void sector_boundary_line(screen_mode_t *screen, int xc, int yc, int limit, int ax, int ay, int bx, int by,
+                                 int start_dx, int start_dy, int end_dx, int end_dy, uint32_t is_segment, uint32_t is_minor_sector, plotcol_t colour) {
+   line_stepper_t s;
+   line_stepper_init(&s, ax, ay, bx, by);
+   for (int i = 0; i <= s.longest; i++) {
+      int x = s.x - xc;
+      int y = s.y - yc;
+      int ux = x << screen->xeigfactor, uy = y << screen->yeigfactor;
+      if (ux * ux + uy * uy <= limit && !sector_filter_inside(x, y, start_dx, start_dy, end_dx, end_dy, is_segment, is_minor_sector)) {
+         set_pixel(screen, s.x, s.y, colour);
+      }
+      line_stepper_next(&s);
+   }
+}
+
 #define PLOT_ARC 0xA0 /* Plot a circular arc */
 #define PLOT_SEGMENT 0xA8 /* Plot a segment */
 #define PLOT_SECTOR 0xB0 /* Plot a sector */
@@ -1395,21 +1605,21 @@ static void draw_h_line_with_sector_segment_filter(screen_mode_t *sr, int xc, in
 #define MIN(x1,x2) ((x1) > (x2) ? (x2):(x1))
 #define MAX(x1,x2) ((x1) > (x2) ? (x1):(x2))
 
-static void draw_arc_or_sector_or_segment(screen_mode_t *screen, int xc, int yc, int xradius, int yradius, int start_dx, int start_dy, int end_dx, int end_dy, uint32_t colour, uint32_t action, int plot_graphop_code) {
+static void draw_arc_or_sector_or_segment(screen_mode_t *screen, int xc, int yc, int limit, int start_dx, int start_dy, int end_dx, int end_dy, uint32_t colour, uint32_t action, int plot_graphop_code) {
    // For details of the arc, sector, segment plot codes, see e.g. http://www.riscos.com/support/developer ... phics.html
    // Original Graphics ROM sector, arc and segment 6502 routines are disassembled here: https://tobylobster.github.io/GXR-pages/gxr/S-s16.html
    // This code is inspired by that logic, i.e. considering all pixels in a solid circle, but only plotting those pixels on the
    // correct side of the construction vectors; but the implementation differs probably.
    // (This implementation by M.Fairbank, July 2025)
 
-   int32_t height=yradius;
+   // The disc is the one prim_draw_circle draws, (R + h)^2 in OS units, so
+   // every row's extent comes from circle_xmax and is exact in every mode
+   int32_t height = circle_ymax(screen, limit, 0);
 
    if (height == 0) {
       // this arc/sector/segment is just a single point
       draw_hline(screen,xc,xc,yc,colour);
    } else {
-      int width=xradius;
-      int shear=0;
       // work out whether the sector being filled is a MAJOR sector or a MINOR sector (i.e. whether the angle at the centre of the sector is >180 or <180)
       // We know this is a major sector if the start line is less than 180 degrees anticlockwise of the end line.
       // We know this is a minor sector if the start line is less than 180 degrees clockwise of the end line. (Remember, we fill this sector by
@@ -1418,12 +1628,6 @@ static void draw_arc_or_sector_or_segment(screen_mode_t *screen, int xc, int yc,
       int cross_product=start_dx*end_dy-end_dx*start_dy;
       uint32_t is_minor_sector=cross_product<=0;// a synonym for this would be "arc sweeps out less than 180 degrees"
 
-      // this loop copies the code and logic from draw_ellipse(...) as closely as possible.
-      float oversize=0.5;// this makes the circles a bit fatter, and avoids leaving a single pixel at the top and bottom
-      float axis_ratio = (((float)width)+oversize) / (((float)height)+oversize);
-      float shear_per_line = (float) (shear) / (float) height;
-      float xshear = 0.0;
-      float h_squared = (((float)height)+oversize) * (((float)height)+oversize);
       // Maintain the left/right coordinates of the previous, current, and next slices
       // to allow lines to be drawn to make sure the pixels are connected
       int xl_prev = 0;
@@ -1433,11 +1637,9 @@ static void draw_arc_or_sector_or_segment(screen_mode_t *screen, int xc, int yc,
       int y;
       // Start at -1 to allow the pipeline to fill
       for (y = -1; y < height; y++) {
-         int y_squared_next=(y+1)*(y+1);
-         float x = axis_ratio * sqrtf(h_squared - (float)y_squared_next);
-         int xl_next = (int) (xshear - x);
-         int xr_next = (int) (xshear + x);
-         xshear += shear_per_line;
+         int x = circle_xmax(screen, limit, y + 1);
+         int xl_next = -x;
+         int xr_next = x;
          // Initialize the pipeline for the first slice
          if (y == 0) {
             xl_prev = -xr_next;
@@ -1488,6 +1690,13 @@ static void draw_arc_or_sector_or_segment(screen_mode_t *screen, int xc, int yc,
          draw_h_line_with_sector_segment_filter(screen,xc,yc, +xl_this, xr_this, +height, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
          draw_h_line_with_sector_segment_filter(screen,xc,yc, -xl_this,-xr_this, -height, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
       }
+      // The boundary lines' own pixels (the filter frame has y up, the screen y down from yc)
+      if (plot_graphop_code==PLOT_SECTOR) {
+         sector_boundary_line(screen, xc, yc, limit, xc, yc, xc + start_dx, yc - start_dy, start_dx, start_dy, end_dx, end_dy, 0, is_minor_sector, colour);
+         sector_boundary_line(screen, xc, yc, limit, xc, yc, xc + end_dx,   yc - end_dy,   start_dx, start_dy, end_dx, end_dy, 0, is_minor_sector, colour);
+      } else if (plot_graphop_code==PLOT_SEGMENT) {
+         sector_boundary_line(screen, xc, yc, limit, xc + start_dx, yc - start_dy, xc + end_dx, yc - end_dy, start_dx, start_dy, end_dx, end_dy, 1, is_minor_sector, colour);
+      }
    }
 }
 
@@ -1496,46 +1705,22 @@ void prim_draw_arc(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2
    int start_dy = y1 - yc; //displacement to start point from centre
    int end_dx   = x2 - xc; //displacement to end point from centre
    int end_dy   = y2 - yc; //displacement to end point from centre
-   // Draw the circle
-   if (screen->xeigfactor == screen->yeigfactor) {
-      // Square pixels
-      int r = calc_radius(xc, yc, x1, y1);
-      draw_arc_or_sector_or_segment(screen, xc, yc, r, r, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_ARC);
-   } else {
-      // Rectangular pixels
-      int r = calc_radius(xc << screen->xeigfactor, yc << screen->yeigfactor, x1 << screen->xeigfactor, y1 << screen->yeigfactor);
-      int width  = r >> screen->xeigfactor;
-      int height = r >> screen->yeigfactor;
-      draw_arc_or_sector_or_segment(screen, xc, yc, width, height, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_ARC);
-   }
+   int limit = calc_radius_limit(screen, xc, yc, x1, y1);
+   draw_arc_or_sector_or_segment(screen, xc, yc, limit, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_ARC);
 }
 void prim_fill_chord(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
    int start_dx = x1 - xc; //displacement to start point from centre
    int start_dy = y1 - yc; //displacement to start point from centre
    int end_dx   = x2 - xc; //displacement to end point from centre
    int end_dy   = y2 - yc; //displacement to end point from centre
-   int width;
-   int height;
-   float radius;
-   float radius2;
-   if (screen->xeigfactor == screen->yeigfactor) {
-      // Square pixels
-      radius  = calc_radius_float(xc, yc, x1, y1);
-      radius2 = calc_radius_float(xc, yc, x2, y2);
-      width   = (int) lroundf(radius);
-      height  = (int) lroundf(radius);
-   } else {
-      // Rectangular pixels
-      radius  = calc_radius_float(xc << screen->xeigfactor, yc << screen->yeigfactor, x1 << screen->xeigfactor, y1 << screen->yeigfactor);
-      radius2 = calc_radius_float(xc << screen->xeigfactor, yc << screen->yeigfactor, x2 << screen->xeigfactor, y2 << screen->yeigfactor);
-      width   = (int) lroundf(radius / (float)(1 << screen->xeigfactor));
-      height  = (int) lroundf(radius / (float)(1 << screen->yeigfactor));
-   }
+   float radius  = calc_radius_float(xc << screen->xeigfactor, yc << screen->yeigfactor, x1 << screen->xeigfactor, y1 << screen->yeigfactor);
+   float radius2 = calc_radius_float(xc << screen->xeigfactor, yc << screen->yeigfactor, x2 << screen->xeigfactor, y2 << screen->yeigfactor);
    // Project end onto perimeter
    end_dx = (int)lroundf(((float) end_dx) * radius / radius2);
    end_dy = (int)lroundf(((float) end_dy) * radius / radius2);
    // Draw filled segment
-   draw_arc_or_sector_or_segment(screen, xc, yc, width, height, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_SEGMENT);
+   int limit = calc_radius_limit(screen, xc, yc, x1, y1);
+   draw_arc_or_sector_or_segment(screen, xc, yc, limit, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_SEGMENT);
 }
 
 void prim_fill_sector(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
@@ -1543,17 +1728,8 @@ void prim_fill_sector(screen_mode_t *screen, int xc, int yc, int x1, int y1, int
    int start_dy = y1 - yc; //displacement to start point from centre
    int end_dx   = x2 - xc; //displacement to end point from centre
    int end_dy   = y2 - yc; //displacement to end point from centre
-   if (screen->xeigfactor == screen->yeigfactor) {
-      // Square pixels
-      int radius = calc_radius(xc, yc, x1, y1);
-      draw_arc_or_sector_or_segment(screen, xc, yc, radius, radius, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_SECTOR);
-   } else {
-      // Rectangular pixels
-      int radius = calc_radius(xc << screen->xeigfactor, yc << screen->yeigfactor, x1 << screen->xeigfactor, y1 << screen->yeigfactor);
-      int width  = radius >> screen->xeigfactor;
-      int height = radius >> screen->yeigfactor;
-      draw_arc_or_sector_or_segment(screen, xc, yc, width, height, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_SECTOR);
-   }
+   int limit = calc_radius_limit(screen, xc, yc, x1, y1);
+   draw_arc_or_sector_or_segment(screen, xc, yc, limit, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_SECTOR);
 }
 
 #else
@@ -1823,58 +1999,29 @@ void prim_fill_rectangle(screen_mode_t *screen, int x1, int y1, int x2, int y2, 
 }
 
 void prim_fill_parallelogram(screen_mode_t *screen, int x1, int y1, int x2, int y2, int x3, int y3, plotcol_t colour) {
-   int x4 = x3 - x2 + x1;
-   int y4 = y3 - y2 + y1;
-   // Fill the parallelogram
-   prim_fill_triangle(screen, x1, y1, x2, y2, x3, y3, colour);
-   prim_fill_triangle(screen, x1, y1, x4, y4, x3, y3, colour);
+   // The fourth corner completes the parallelogram; one span fill, so each
+   // pixel is plotted exactly once whatever the plot mode
+   int xs[4] = { x1, x2, x3, x3 - x2 + x1 };
+   int ys[4] = { y1, y2, y3, y3 - y2 + y1 };
+   span_fill(screen, 4, xs, ys, colour);
 }
 
 
 void prim_draw_circle(screen_mode_t *screen, int xc, int yc, int xr, int yr, plotcol_t colour) {
-   // Draw the circle
-   if (screen->xeigfactor == screen->yeigfactor) {
-      // Square pixels
-      draw_circle(screen, xc, yc, calc_radius_limit(xc, yc, xr, yr), colour);
-   } else {
-      // Rectangular pixels
-      int r = calc_radius(xc << screen->xeigfactor, yc << screen->yeigfactor, xr << screen->xeigfactor, yr << screen->yeigfactor);
-      int width  = r >> screen->xeigfactor;
-      int height = r >> screen->yeigfactor;
-      draw_normal_ellipse(screen, xc, yc, width, height, colour);
-   }
+   draw_circle(screen, xc, yc, calc_radius_limit(screen, xc, yc, xr, yr), colour);
 }
 
 void prim_fill_circle(screen_mode_t *screen, int xc, int yc, int xr, int yr, plotcol_t colour) {
    // Fill the circle
-   if (screen->xeigfactor == screen->yeigfactor) {
-      // Square pixels
-      fill_circle(screen, xc, yc, calc_radius_limit(xc, yc, xr, yr), colour);
-   } else {
-      int r = calc_radius(xc << screen->xeigfactor, yc << screen->yeigfactor, xr << screen->xeigfactor, yr << screen->yeigfactor);
-      int width  = r >> screen->xeigfactor;
-      int height = r >> screen->yeigfactor;
-      // Rectangular pixels
-      fill_normal_ellipse(screen, xc, yc, width, height, colour);
-   }
+   fill_circle(screen, xc, yc, calc_radius_limit(screen, xc, yc, xr, yr), colour);
 }
 
 void prim_draw_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, int shear, plotcol_t colour) {
-   // Draw the ellipse
-   if (shear) {
-      draw_sheared_ellipse(screen, xc, yc, width, height, shear, colour);
-   } else {
-      draw_normal_ellipse(screen, xc, yc, width, height, colour);
-   }
+   gxr_ellipse(screen, xc, yc, width, height, shear, 0, colour);
 }
 
 void prim_fill_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, int shear, plotcol_t colour) {
-   // Fill the ellipse
-   if (shear) {
-      fill_sheared_ellipse(screen, xc, yc, width, height, shear, colour);
-   } else {
-      fill_normal_ellipse(screen, xc, yc, width, height, colour);
-   }
+   gxr_ellipse(screen, xc, yc, width, height, shear, 1, colour);
 }
 
 void prim_draw_character(screen_mode_t *screen, int c, int x_pos, int y_pos, plotcol_t colour) {
