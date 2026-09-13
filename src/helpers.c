@@ -18,6 +18,8 @@
 _Alignas(4) NOINIT_SECTION uint8_t helper_ram[4*1024];
 
 static uint8_t helper_address;
+static volatile bool     help_shown_pending;   /* a help screen was shown: reformat it later */
+static volatile uint32_t help_shown_us;
 
 /* The help screen (helper 0, and the Pi's boot splash).
 
@@ -72,9 +74,9 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         // We also hide the help screen at &FFE000 (1 KB there, ~600 B used).
         // Hand-formatted to tenths so this doesn't need newlib's float printf
         // support (dtoa machinery, ~5 KB) -- see CMakeLists.txt, -u _printf_float.
-        // Integer arithmetic on purpose: this runs in FIQ context, and FIQ.s
-        // saves no VFP state, so a float here would corrupt the registers of
-        // whatever it interrupted.  Millidegrees to tenths, rounded.
+        // Integer arithmetic on purpose: the float printf support is not
+        // linked (and this once ran in FIQ context, where FIQ.s saves no VFP
+        // state).  Millidegrees to tenths, rounded.
         // Cannot go negative (0 on failure), so no sign handling.
         long temp_tenths = (long)((get_temp_millidegrees() + 50u) / 100u);
 #ifdef DEBUG
@@ -133,9 +135,9 @@ static void helpers_bank_select(unsigned int gpio)
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
         if (data==0)
         {
-            helpers_screen_setup(( char *) &Pi1MHz->JIM_ram[ DISC_RAM_BASE + 0x00FFE000],1024);
-            //signal to beeb the help screen is setup
-            Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);
+            Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);   /* screen already formatted: release the waitloop */
+            help_shown_us = Pi1MHz_now_us;
+            help_shown_pending = true;                          /* reformat for next time, once printed */
         }
     }
 }
@@ -146,8 +148,24 @@ static void helpers_bank_select(unsigned int gpio)
    only while the player is idle: a mailbox exchange can block the poll loop
    (bounded only by the 3 s mailbox timeout) and stalling it mid-playback
    starves the Beeb's SCSI handshake. */
+/* The help screen in JIM is formatted ahead of time, so the page-0 switch
+   in FIQ only releases the Beeb (formatting there took tens of
+   microseconds, long enough for the bus post ring to overrun while the
+   Beeb fetched its waitloop from JIM).  It is formatted once at init and
+   again two seconds after each showing - by then the Beeb has printed it,
+   so nothing tears - which keeps the temperature one showing old at most
+   without touching the screen on every poll. */
+static void helpers_screen_refresh(void)
+{
+   helpers_screen_setup((char *)&Pi1MHz->JIM_ram[DISC_RAM_BASE + 0x00FFE000], 1024);
+}
+
 static void helpers_poll(void)
 {
+   if (help_shown_pending && (Pi1MHz_now_us - help_shown_us) > 2000000u) {
+      help_shown_pending = false;
+      helpers_screen_refresh();
+   }
    if (videoplayer_active())
       return;
    info_refresh_cached();
@@ -157,6 +175,7 @@ void helpers_init( uint8_t instance , uint8_t address)
 {
    uint8_t *helper = &helper_ram[0];
    helper_address = address;
+   help_shown_pending = false;      /* the screen is formatted again below */
    if (Pi1MHz->JIM_ram_size == 0)     // the help screen lives in JIM RAM
       return;
    if (filesystemReadFile("Pi1MHz/6502code.bin",&helper,sizeof(helper_ram)))
@@ -167,6 +186,7 @@ void helpers_init( uint8_t instance , uint8_t address)
            can never be the first to touch the mailbox - then keep it fresh
            from the poll loop. */
         info_refresh_cached();
+        helpers_screen_refresh();
         Pi1MHz_Register_Poll(helpers_poll, "helpers");
 
         Pi1MHz_MemoryWrite((uint32_t)(address+0), 0x8E); // STX &FCxx
