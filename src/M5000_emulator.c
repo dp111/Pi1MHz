@@ -135,8 +135,8 @@ static const unsigned char wavfmt[] = {
    0x10, 0x00, 0x00, 0x00, // format chunk size
    0x01, 0x00,             // format 1=PCM
    0x02, 0x00,             // channels 2=stereo
-   0x1B, 0xB7, 0x00, 0x00, // sample rate.
-   0x6C, 0xDC, 0x02, 0x00, // byte rate.
+   0x1B, 0xB7, 0x00, 0x00, // sample rate (overwritten with the running rate at stop)
+   0x6C, 0xDC, 0x02, 0x00, // byte rate   (likewise)
    0x04, 0x00,             // block align.
    0x10, 0x00,             // bits per sample.
    0x64, 0x61, 0x74, 0x61, // "DATA".
@@ -449,6 +449,11 @@ static void music5000_rec_stop(void)
    }
 
    memcpy(&Pi1MHz->JIM_ram[M5000_REC_BASE], wavfmt, sizeof(wavfmt));
+   /* The template carries the hardware's 46875 Hz; with Audio_out=hdmi the
+      synth runs at 48000 and the samples were captured at that rate, so a
+      header left at 46875 played the recording 2.4% slow and flat. */
+   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+24], m5000_producer.rate);
+   put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+28], m5000_producer.rate * 4u);   /* byte rate: stereo s16 */
 
    uint32_t size = Audio_Index - M5000_REC_BASE;
    put_le32(&Pi1MHz->JIM_ram[M5000_REC_BASE+4], size - 8u);
