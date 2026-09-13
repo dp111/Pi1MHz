@@ -226,4 +226,5 @@ v.1.32
 FAT service (MMFS, helper ROM loads) does its SD work from the main loop, not in FIQ: helper ROM loads no longer lose bus writes and hang.
 Help screen is formatted ahead of time; the FIQ only releases the Beeb.
 Music 5000 WAV recordings carry the real sample rate (48000 with Audio_out=hdmi).
+Music 5000: phase-set loads the frequency register unscaled with Audio_out=hdmi (the 125/128 belongs to the increment only); modulate follows the hardware slot order, channel 7 selects channel 0 and channel 15 selects channel 8, not 7 to 8 and 15 to 0.
 Beeb-side test suite: tools/testsuite (a BeebSCSI disc of BASIC tests plus a host driver over the Pico keyboard).

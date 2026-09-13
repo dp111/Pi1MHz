@@ -150,7 +150,12 @@ struct synth {
     int sleft, sright;
     uint8_t amplitude[16];
     uint8_t * ram;
-    uint8_t modulate;
+    /* The hardware processes the channels in the order 0,8,1,9,..,7,15 and a
+       channel's modulate output selects the register bank of the channel two
+       slots later: n -> n+1 within each half, channel 7 -> channel 0 and
+       channel 15 -> channel 8 on the next sample.  Two rings of eight. */
+    uint8_t modulate;      /* channel 7's output: channel 0's bank next sample */
+    uint8_t modulate_hi;   /* channel 15's output: channel 8's bank next sample */
 };
 
 static const uint8_t PanArray[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 6, 6, 6, 5, 4, 3, 2, 1 };
@@ -163,6 +168,7 @@ static void synth_reset(struct synth *s, uint8_t * ptr)
 {
    s->ram = ptr;
    s->modulate = 0;
+   s->modulate_hi = 0;
    // Real hardware clears 0x3E00 for 128bytes
    // and random Waveform bytes depending on phaseRAM
    memset(&s->ram[I_WFTOP], 0, 128);
@@ -245,7 +251,7 @@ static void M5000_gain(void) {
    Music 5000 costs nothing until something plays through it. */
 static bool synth_running(const struct synth *s)
 {
-   if (s->modulate)             /* stale bank select - take the slow path */
+   if (s->modulate | s->modulate_hi)   /* stale bank select - take the slow path */
       return true;
 
    const uint8_t *c = s->ram + I_WFTOP;
@@ -265,6 +271,10 @@ static void update_channels(struct synth *s)
 
     for (int i = 0; i < 16; i++) {
       int c4d; // c4d is used for "Synchronization" e.g. the "Wha" instrument
+      if (i == 8) {               /* channel 7 feeds channel 0, channel 15 feeds channel 8 */
+         s->modulate = modulate;
+         modulate = s->modulate_hi;
+      }
       const uint8_t * c = s->ram + I_WFTOP + modulate + i;
       if  (!PHASESET(c))
          {
@@ -277,7 +287,7 @@ static void update_channels(struct synth *s)
          }
          else
          {
-            s->phaseRAM[i] = ((uint32_t)FREQ(c) * m5000_freq_mul) >> 7;
+            s->phaseRAM[i] = (uint32_t)FREQ(c);   /* a phase load is a position, not a rate: no 125/128 */
             c4d = 0;
          }
 
@@ -346,7 +356,7 @@ static void update_channels(struct synth *s)
     }
     s->sleft  = sleft;
     s->sright = sright;
-    s->modulate = modulate;
+    s->modulate_hi = modulate;
 }
 
 /* One channel of the mix to int16 with error-feedback dither. The sum for
