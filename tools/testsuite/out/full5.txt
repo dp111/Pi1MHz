@@ -1,0 +1,123 @@
+Pi1MHz test suite Sun Sep 13 10:27:30 AM BST 2026 PI_IP=192.168.0.42 JUKE=9 log=/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/run-20260913-102730.log
+  I:PI:boot:Boot time: pre-kernel n/a (chain-boot), kernel->poll 63 ms
+  I:PI:bus at start:Bus diag: st 0 fl 000200 nirq 80000000 ovr 66
+CAPS was on: sent ALT+A
+PAGE=&800
+co-processor is on: *CONFIGURE NOTUBE + CTRL-BREAK
+CAPS was on: sent ALT+A
+== TINFO
+  I:INFO:PAGE:E00
+  I:INFO:HIMEM:8000
+  I:INFO:TUBE:0
+  I:INFO:MOS:3
+  T:INFO:basic on host cpu:PASS
+  S:INFO:P=1:F=0:K=0
+  I:INFO:bus:66 ovr
+== HELP
+  T:INFO:helper 0 help screen:PASS
+  I:INFO:firmware:Pi1MHz V1.31 Built 2026-09-12 04:50:33 R
+  I:INFO:pi:Pi 9000c1 1000/400MHz 50.3C
+  I:INFO:bus:66 ovr
+== TFRED
+  I:FRED:JIM0: Use CALL &FC88
+  T:FRED:jim page 0 greeting:PASS
+  I:FRED:FC00:00000000000000000000000000000000
+  I:FRED:FC10:DF000000000000000000000000000000
+  I:FRED:FC20:00000000000000000000000000000000
+  I:FRED:FC30:00000000000000000000000000000000
+  I:FRED:FC50:00000000000000000000000000000000
+  I:FRED:FC60:00000000000000000000000000000000
+  I:FRED:FC70:00000000000000000000000000000000
+  I:FRED:FC80:00000000000000008E88FCEA6000FD00
+  I:FRED:FC90:00000000000000000000000000000000
+  I:FRED:FCB0:00000000000000000000000000000000
+  I:FRED:FCC0:00000000000000000000000000000000
+  I:FRED:FCD0:00000000000000000000000000000000
+  I:FRED:FCE0:00000000000000000000000000000000
+  I:FRED:FCF0:00000000000000000000000000000000
+  I:FRED:pageregs readback:5 34 12
+  I:FRED:scsi status reg:0
+  S:FRED:P=1:F=0:K=0
+  I:FRED:bus:66 ovr
+== TRAM
+  I:RAM:page errs:0
+  T:RAM:page mode 12 pages to 64MB:PASS
+  T:RAM:full page fill:PASS
+  I:RAM:jim size 16MB units:23
+  T:RAM:byte mode write, page read:PASS
+  T:RAM:page write, byte mode read:PASS
+  I:RAM:asm 64KB write cs:68
+  I:RAM:asm 64KB read cs:68
+  I:RAM:burst errs:0
+  T:RAM:asm 64KB burst:PASS
+  I:RAM:coherence errs:0
+  T:RAM:write then read back 16K:PASS
+  S:RAM:P=6:F=0:K=0
+  T:RAM:no bus overruns:PASS
+  I:RAM:bus:66 ovr
+== TDISC
+  T:DISC:open RUNALL:PASS
+  T:DISC:completed:FAIL:no ##DONE within 240000 ms
+  T:DISC:WROTE reached the image:PASS
+  T:DISC:no bus overruns:PASS
+  I:DISC:bus:66 ovr
+== TVDU
+  T:VDU:completed:FAIL:no ##DONE within 40000 ms
+  T:VDU:framebuffer changed:PASS
+  I:VDU:bus:66 ovr
+== TNET
+  T:NET:completed:FAIL:no ##DONE within 90000 ms
+  I:NET:bus:66 ovr
+== MOUSE
+  T:MOUSE:pointer on changes screen:PASS
+  T:MOUSE:pointer off changes screen:PASS
+  I:MOUSE:bus:66 ovr
+== WAV
+  T:WAV:recorder wrote a wav:FAIL:no new Musics*.wav in the SD root
+  I:WAV:bus:66 ovr
+== VFS
+  I:VFS:set:0
+  T:VFS:mount and *CAT:FAIL:
+  T:VFS:fcode ?T reached the Pi:PASS
+  I:VFS:fcode row:tx ?T rx 
+  I:VFS:video player:Video player: closed d0 arm1 last:- mode 0 pic 0 seek -1 inflight 0 feeds 0 fail
+  T:VFS:back to the test disc:FAIL
+  I:VFS:bus:66 ovr
+== ROM
+CAPS was on: sent ALT+A
+  T:ROM:BeebSCSI utilities in *HELP after load + BREAK:PASS
+  I:ROM:help line:BeebSCSI Utilities 1.04
+  I:ROM:bus:66 ovr
+== BREAK
+CAPS was on: sent ALT+A
+  I:BREAK:row:edges 43 inits 41 missed 2 | rst->init 12 us, init 32688 us, held 210.3 ms, helper 403.9 ms, vdu 404.4 ms, ovr +0 first - | worst init 38812 us, margin 300 ms
+  T:BREAK:5 inits counted:PASS
+  T:BREAK:rom selected the helper:PASS
+  T:BREAK:no bus overruns:PASS
+  T:BREAK:test disc mounts after BREAK:PASS
+== teardown
+CAPS was on: sent ALT+A
+  I:PI:bus at end:Bus diag: st 0 fl 000200 nirq 80000000 ovr 66
+
+RESULTS (/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/results.txt)
+  FAIL  DISC: completed no ##DONE within 240000 ms
+  FAIL  VDU: completed no ##DONE within 40000 ms
+  FAIL  NET: completed no ##DONE within 90000 ms
+  FAIL  WAV: recorder wrote a wav no new Musics*.wav in the SD root
+  FAIL  VFS: mount and *CAT 
+  FAIL  VFS: back to the test disc 
+test      pass  fail  skip
+INFO         2     0     0
+FRED         1     0     0
+RAM          7     0     0
+DISC         3     1     0
+VDU          1     1     0
+NET          0     1     0
+MOUSE        2     0     0
+WAV          0     1     0
+VFS          1     2     0
+ROM          1     0     0
+BREAK        4     0     0
+total       22     6     0
+state changed on the bench: *CONFIGURE NOTUBE (Tube was on) jukebox set 9 selected jukebox set restored to 0 *CONFIGURE TUBE restored (CTRL-BREAK done)
+exit 1

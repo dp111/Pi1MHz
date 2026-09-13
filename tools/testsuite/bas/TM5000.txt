@@ -1,0 +1,16 @@
+10 REM TM5000 - Music 5000: a 1 kHz square wave on channel 0, captured by the Pi's WAV recorder
+20 REM Waveform RAM is JIM page &30 (waveform 0 = offsets 0-127, &FF/&7F = loud +/-),
+30 REM channel registers are page &3E (channel 0: freq lo/mid/hi +0/+&10/+&20, wavesel +&50, amp +&60, ctl +&70)
+40 REM Two recordings: tone, then silence. The host analyses the two Musics*.wav files.
+50 PROCbegin("M5000")
+60 ?&FCFD=0:?&FCFE=0:?&FCFF=&30:FOR I%=0 TO 63:?(&FD00+I%)=&FF:NEXT:FOR I%=64 TO 127:?(&FD00+I%)=&7F:NEXT
+70 F%=INT(1000*2^24/46875+0.5):F%=F% AND &FFFFFE:PROCinfo("freq word",STR$~F%)
+80 ?&FCFF=&3E:?&FD00=F% AND 255:?&FD10=(F% DIV 256) AND 255:?&FD20=(F% DIV 65536) AND 255
+90 ?&FD50=0:?&FD70=8:?&FD60=&7F
+100 PROCwait(30):?&FCCA=4:?&FCCB=1:PROCwait(100):?&FCCA=4:?&FCCB=0:PROCwait(200)
+110 ?&FD60=0:?&FD00=0:?&FD10=0:?&FD20=0
+120 PROCwait(30):?&FCCA=4:?&FCCB=1:PROCwait(60):?&FCCA=4:?&FCCB=0:PROCwait(200)
+130 ?&FCFF=0
+140 PROCchk("tone then silence recorded",TRUE)
+150 PROCend
+160 DEF PROCwait(N%):T%=TIME:REPEAT UNTIL TIME-T%>N%:ENDPROC

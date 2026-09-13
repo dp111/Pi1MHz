@@ -1,0 +1,466 @@
+Pi1MHz test suite Sun Sep 13 11:54:45 AM BST 2026 PI_IP=192.168.0.42 JUKE=9 log=/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/run-20260913-115445.log
+  I:PI:boot:Boot time: pre-kernel n/a (chain-boot), kernel->poll 63 ms
+  I:PI:bus at start:Bus diag: st 0 fl 000200 nirq 80000000 ovr 66
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B57 -Timeout 3000
+RX 1 bytes
+MATCH yes
+>
+--- send -Lines a -Until Mistake -Timeout 4000
+RX 15 bytes
+MATCH yes
+A
+
+Mistake
+>
+--- send -Hex 1B41 -Timeout 1000
+RX 0 bytes
+MATCH yes
+CAPS was on: sent ALT+A
+--- send -Lines PRINT ~PAGE -Until \n *[0-9A-F]+\n -Timeout 4000
+RX 26 bytes
+MATCH no
+PRINT ~PAGE
+       800
+>
+PAGE=&800
+co-processor is on: *CONFIGURE NOTUBE + CTRL-BREAK
+--- send -Lines *CONFIGURE NOTUBE -Until  -Timeout 2000
+RX 20 bytes
+MATCH yes
+*CONFIGURE NOTUBE
+>
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B57 -Timeout 3000
+RX 1 bytes
+MATCH yes
+>
+--- send -Lines a -Until Mistake -Timeout 4000
+RX 15 bytes
+MATCH yes
+A
+
+Mistake
+>
+--- send -Hex 1B41 -Timeout 1000
+RX 0 bytes
+MATCH yes
+CAPS was on: sent ALT+A
+--- send -Lines PRINT ~PAGE -Until \n *[0-9A-F]+\n -Timeout 4000
+RX 26 bytes
+MATCH no
+PRINT ~PAGE
+       E00
+>
+--- send -Lines *ADFS|*BYE -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*ADFS
+>*BYE
+>
+uploaded /BeebSCSI9/scsi0.dat (2162688 bytes)
+--- send -Lines *ADFS|*BYE -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*ADFS
+>*BYE
+>
+--- send -Lines *FX147,65,9 -Until  -Timeout 2000
+RX 14 bytes
+MATCH yes
+*FX147,65,9
+>
+--- send -Lines *MOUNT 0|*CAT -Until Option -Timeout 15000
+RX 164 bytes
+MATCH yes
+*MOUNT 0
+>*CAT
+PI1MHZTEST          (10)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  RUNALL     WR (10)  TAUN
+== TM5000
+--- send -Lines Z%=0:CHAIN"TM5000" -Until ##DONE -Timeout 90000
+RX 124 bytes
+MATCH yes
+Z%=0:CHAIN"TM5000"
+B:M5000
+I:M5000:freq word:5761A
+T:M5000:tone then silence recorded:PASS
+S:M5000:P=1:F=0:K=0
+##DONE
+  I:M5000:freq word:5761A
+  T:M5000:tone then silence recorded:PASS
+  S:M5000:P=1:F=0:K=0
+  T:M5000:1 kHz tone in the recording:PASS
+  I:M5000:tone wav:rate 46875 ch 2 frames 48385 rms 820 peak 977 Hz (want 1000)
+  T:M5000:silence after amp 0:PASS
+  I:M5000:silence wav:rate 46875 ch 2 frames 29345 rms 5 (silence floor 100)
+  I:M5000:bus:66 ovr
+== TTTX
+--- send -Lines Z%=0:CHAIN"TTTX" -Until ##DONE -Timeout 40000
+RX 229 bytes
+MATCH yes
+Z%=0:CHAIN"TTTX"
+B:TTX
+I:TTX:status:9F
+T:TTX:field INT seen:PASS
+T:TTX:DEW pulses:FAIL
+I:TTX:rows with text:0
+I:TTX:sample row:
+T:TTX:row data carries text:SKIP:no text (teletext server down?)
+S:TTX:P=1:F=1:K=1
+##DONE
+>
+  I:TTX:status:9F
+  T:TTX:field INT seen:PASS
+  T:TTX:DEW pulses:FAIL
+  I:TTX:rows with text:0
+  I:TTX:sample row:
+  T:TTX:row data carries text:SKIP:no text (teletext server down?)
+  S:TTX:P=1:F=1:K=1
+  I:TTX:bus:66 ovr
+== TAUN
+--- send -Lines Z%=0:CHAIN"TAUN" -Until ##DONE -Timeout 90000
+RX 352 bytes
+MATCH yes
+Z%=0:CHAIN"TAUN"
+B:AUN
+T:AUN:INIT:PASS
+I:AUN:station:0.42 ip 192.168.0.42
+T:AUN:STATUS:PASS
+T:AUN:TEST responder:PASS
+T:AUN:RX_OPEN:PASS
+T:AUN:TX accepted:PASS
+T:AUN:TX completed:PASS
+T:AUN:RX frame (port/src/len):PASS
+T:AUN:RX payload intact:PASS
+T:AUN:RX_DONE:PASS
+I:AUN:machine type:1
+T:AUN:Machine peek:PASS
+S:AUN:P=10:F=0:K=0
+##DONE
+  T:AUN:INIT:PASS
+  I:AUN:station:0.42 ip 192.168.0.42
+  T:AUN:STATUS:PASS
+  T:AUN:TEST responder:PASS
+  T:AUN:RX_OPEN:PASS
+  T:AUN:TX accepted:PASS
+  T:AUN:TX completed:PASS
+  T:AUN:RX frame (port/src/len):PASS
+  T:AUN:RX payload intact:PASS
+  T:AUN:RX_DONE:PASS
+  I:AUN:machine type:1
+  T:AUN:Machine peek:PASS
+  S:AUN:P=10:F=0:K=0
+  I:AUN:bus:66 ovr
+== REDIR
+--- send -Lines *FX147,136,2 -Until  -Timeout 1500
+RX 15 bytes
+MATCH yes
+*FX147,136,2
+>
+--- send -Lines *GO FD00 -Until >|No SWR|No ROM -Timeout 20000
+RX 42 bytes
+MATCH yes
+*GO FD00
+ Screen Redirector enabled.
+
+>
+--- send -Lines PRINT "PI1MHZ SCREEN REDIRECTOR TEST":PRINT STRING$(30,"#") -Until  -Timeout 3000
+RX 125 bytes
+MATCH yes
+PRINT "PI1MHZ SCREEN REDIRECTOR TEST":PRINT STRING$(30,"#")
+PI1MHZ SCREEN REDIRECTOR TEST
+##############################
+>
+  T:REDIR:beeb output reaches the Pi screen:PASS
+  I:REDIR:bus:66 ovr
+== VIDEO
+  I:VIDEO:set:0
+--- send -Lines *BYE -Until  -Timeout 2000
+RX 7 bytes
+MATCH yes
+*BYE
+>
+--- send -Lines *FX147,65,0 -Until  -Timeout 2000
+RX 14 bytes
+MATCH yes
+*FX147,65,0
+>
+--- send -Lines *VFS|*MOUNT 0 -Until > -Timeout 20000
+RX 18 bytes
+MATCH yes
+*VFS
+>*MOUNT 0
+>
+--- send -Lines *FCODE F1000R -Until > -Timeout 8000
+RX 16 bytes
+MATCH yes
+*FCODE F1000R
+>
+  I:VIDEO:row:/BeebVFS0/video.pvf mode 1 pic 1000 seek -1 inflight 0 feeds 2 fail 0 back 1 flips 1 clmt 256 | plane on vid on disp 1e9d1000 pend 0 arm 0 dup 0 stop 0 op R
+  T:VIDEO:frame 1000 shown after F1000R:PASS
+--- send -Lines *FCODE F1050R -Until > -Timeout 8000
+RX 16 bytes
+MATCH yes
+*FCODE F1050R
+>
+  T:VIDEO:seek to 1050:PASS
+  I:VIDEO:fcode row:tx F1050R rx A0
+--- send -Lines *BYE|*ADFS -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*BYE
+>*ADFS
+>
+--- send -Lines *FX147,65,9 -Until  -Timeout 2000
+RX 14 bytes
+MATCH yes
+*FX147,65,9
+>
+--- send -Lines *MOUNT 0|*CAT -Until Option -Timeout 15000
+RX 164 bytes
+MATCH yes
+*MOUNT 0
+>*CAT
+PI1MHZTEST          (10)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  RUNALL     WR (10)  TAUN
+  T:VIDEO:back to the test disc:PASS
+  I:VIDEO:bus:66 ovr
+== STRESS
+--- send -Lines Z%=0:CHAIN"TRAM" -Until ##DONE -Timeout 240000
+RX 409 bytes
+MATCH yes
+Z%=0:CHAIN"TRAM"
+B:RAM
+I:RAM:page errs:0
+T:RAM:page mode 12 pages to 64MB:PASS
+T:RAM:full page fill:PASS
+I:RAM:jim size 16MB units:23
+T:RAM:byte mode write, page read:PASS
+T:RAM:page write, byte mode read:PASS
+I:RAM:asm 64KB write cs:68
+I:RAM:asm 64KB read cs:67
+I:RAM:burst errs:0
+T:RAM:asm 64KB burst:PASS
+I:RAM:coherence errs:0
+T:RAM:write then read back 16K:PASS
+S:RAM:P=6:F=0:K=0
+##DONE
+>
+  T:STRESS:TRAM under host load:PASS
+  I:STRESS:TRAM bus:66 ovr
+--- send -Lines Z%=0:CHAIN"TDISC" -Until ##DONE -Timeout 240000
+RX 302 bytes
+MATCH yes
+Z%=0:CHAIN"TDISC"
+B:DISC
+T:DISC:open RUNALL:PASS
+I:DISC:save 16K cs:26
+I:DISC:load 16K cs:18
+I:DISC:load errs:0
+T:DISC:save/load 16K:PASS
+T:DISC:EXT# 3000:PASS
+T:DISC:BGET sequential:PASS
+T:DISC:PTR# random:PASS
+T:DISC:delete:PASS
+T:DISC:restart after BYE:PASS
+S:DISC:P=7:F=0:K=0
+##DONE
+>
+  T:STRESS:TDISC under host load:PASS
+  I:STRESS:TDISC bus:66 ovr
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B57 -Timeout 3000
+RX 1 bytes
+MATCH yes
+>
+--- send -Lines a -Until Mistake -Timeout 4000
+RX 15 bytes
+MATCH yes
+A
+
+Mistake
+>
+--- send -Hex 1B41 -Timeout 1000
+RX 0 bytes
+MATCH yes
+CAPS was on: sent ALT+A
+  I:STRESS:break row:edges 51 inits 49 missed 2 | rst->init 15 us, init 307353 us, held 307.7 ms, helper 403.9 ms, vdu 404.4 ms, ovr +0 first - | worst init 307353 us, margin 96 ms
+  T:STRESS:reset latency under load < 100 us:PASS
+  T:STRESS:no bus overruns:PASS
+--- send -Lines *ADFS|*BYE -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*ADFS
+>*BYE
+>
+--- send -Lines *FX147,65,9 -Until  -Timeout 2000
+RX 14 bytes
+MATCH yes
+*FX147,65,9
+>
+--- send -Lines *MOUNT 0|*CAT -Until Option -Timeout 15000
+RX 176 bytes
+MATCH yes
+*MOUNT 0
+>*CAT
+PI1MHZTEST          (12)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  RUNALL     WR (10)  TAUN       WR (1
+== MMFS
+--- send -Lines *HELP -Until \n> -Timeout 8000
+RX 250 bytes
+MATCH no
+*HELP
+<0E>
+OS 3.20
+  MOS
+
+TERMINAL 1.20
+
+VIEW B3.0
+
+Advanced DFS 1.50
+  ADFS
+
+EDIT 4
+
+ViewSheet B1.0
+
+DFS 2.24
+  DFS      
+
+SRAM 1.04
+  SRAM
+
+Videodisc FS 2.00
+  VFS, Video, Mouse, Trackerball
+
+BeebSCSI Utilities 1.04
+  BeebSCSI
+--- send -Lines *FX147,136,5 -Until  -Timeout 1500
+RX 19 bytes
+MATCH yes
+
+<0F>>*FX147,136,5
+>
+--- send -Lines *GO FD00 -Until >|No SWR|No ROM -Timeout 60000
+RX 22 bytes
+MATCH no
+*GO FD00
+............
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B57 -Timeout 3000
+RX 1 bytes
+MATCH yes
+>
+--- send -Lines a -Until Mistake -Timeout 4000
+RX 15 bytes
+MATCH yes
+A
+
+Mistake
+>
+--- send -Hex 1B41 -Timeout 1000
+RX 0 bytes
+MATCH yes
+CAPS was on: sent ALT+A
+--- send -Lines *MMFS|*DIN 0 NET|*CAT -Until Option -Timeout 20000
+RX 204 bytes
+MATCH yes
+*MMFS
+
+Card format?
+>*DIN 0 NET
+
+Bad command
+>*CAT
+$                   (10)
+Drive:0             Option 03 (Exec)
+Dir. "Unset"        Lib. "Unset"   
+
+!BOOT      WR (10)  MENU       WR (10)  
+>
+  T:MMFS:*DIN NET + *CAT:FAIL: !BOOT      WR (10)  MENU       WR (10)   >
+--- send -Lines *SAVE TSAVE 3000 +100 -Until > -Timeout 15000
+RX 42 bytes
+MATCH yes
+*SAVE TSAVE 3000 +100
+
+Disc read only
+>
+  T:MMFS:save reached NET.ssd on the card:FAIL
+--- send -Lines *DELETE TSAVE -Until > -Timeout 15000
+RX 34 bytes
+MATCH yes
+*DELETE TSAVE
+
+Disc read only
+>
+  T:MMFS:delete reached NET.ssd:PASS
+--- send -Lines *ADFS -Until  -Timeout 2000
+RX 8 bytes
+MATCH yes
+*ADFS
+>
+--- send -Lines *ADFS|*BYE -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*ADFS
+>*BYE
+>
+--- send -Lines *FX147,65,9 -Until  -Timeout 2000
+RX 14 bytes
+MATCH yes
+*FX147,65,9
+>
+--- send -Lines *MOUNT 0|*CAT -Until Option -Timeout 15000
+RX 165 bytes
+MATCH yes
+*MOUNT 0
+>*CAT
+PI1MHZTEST          (12)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  RUNALL     WR (10)  TAUN 
+  I:MMFS:bus:78 ovr
+== teardown
+--- send -Lines *BYE -Until  -Timeout 2000
+RX 7 bytes
+MATCH yes
+*BYE
+>
+  I:PI:bus at end:Bus diag: st 0 fl 000200 nirq 80000000 ovr 78
+
+RESULTS (/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/results.txt)
+  FAIL  TTX: DEW pulses 
+  skip  TTX: row data carries text no text (teletext server down?)
+  FAIL  MMFS: *DIN NET + *CAT  !BOOT      WR (10)  MENU       WR (10)   >
+  FAIL  MMFS: save reached NET.ssd on the card 
+test      pass  fail  skip
+M5000        3     0     0
+TTX          1     1     1
+AUN         10     0     0
+REDIR        1     0     0
+VIDEO        3     0     0
+STRESS       4     0     0
+MMFS         1     2     0
+total       23     3     1
+state changed on the bench: *CONFIGURE NOTUBE (Tube was on) jukebox set 9 selected

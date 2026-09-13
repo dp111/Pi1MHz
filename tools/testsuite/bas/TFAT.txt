@@ -1,0 +1,14 @@
+10 REM TFAT - FAT service (services port &FCA6-&FCAA): fopen, fread 16K, fclose of Pi1MHz/6502code.bin x5, polled from host RAM
+20 REM Command block at DISC RAM offset &FFFF00 (command register &FF = page &FF, handle 15): [0]=cmd [2]=mode [3..]=name
+30 REM The host adds the Bus diag overrun delta as a check; compare with TFATJ (same, polled from JIM)
+40 PROCbegin("FAT")
+50 F$="Pi1MHz/6502code.bin":o%=0:c%=0
+60 FOR J%=1 TO 5
+70 PROCblk:?&FCA9=2:?&FCA9=0:?&FCA9=1:FOR I%=1 TO LEN(F$):?&FCA9=ASC(MID$(F$,I%,1)):NEXT:?&FCA9=0
+80 ?&FCAA=&FF:T%=TIME:REPEAT:R%=?&FCAA:UNTIL R%<&80 OR TIME-T%>300:IF R%=0 o%=o%+1 ELSE PROCinfo("fopen result",STR$~R%)
+85 PROCblk:?&FCA9=4:?&FCA9=0:?&FCA9=&40:?&FCA9=0:?&FCA9=0:?&FCA9=0:?&FCA9=&F0:?&FCA9=0:FOR I%=1 TO 4:?&FCA9=0:NEXT:?&FCAA=&FF:T%=TIME:REPEAT:R%=?&FCAA:UNTIL R%<&80 OR TIME-T%>300:IF R%<>0 PROCinfo("fread result",STR$~R%)
+90 PROCblk:?&FCA9=3:?&FCAA=&FF:T%=TIME:REPEAT:R%=?&FCAA:UNTIL R%<&80 OR TIME-T%>300:IF R%=0 c%=c%+1 ELSE PROCinfo("fclose result",STR$~R%)
+100 NEXT
+110 PROCchk("fopen x5 from host RAM",o%=5):PROCchk("fclose x5",c%=5)
+120 PROCend
+130 DEF PROCblk:?&FCA6=0:?&FCA7=&FF:?&FCA8=&FF:ENDPROC

@@ -1,0 +1,19 @@
+10 REM TDISC - SCSI hard disc through ADFS: save/load, sequential files, delete, *BYE restart
+20 REM Leaves WROTE (16 KB, word I EOR &5A3C0F1E) on the disc for the host to verify in scsi0.dat
+30 PROCbegin("DISC")
+40 H%=OPENIN("RUNALL"):PROCchk("open RUNALL",H%<>0):IF H% CLOSE#H%
+50 FOR I%=0 TO 16380 STEP 4:!(&3000+I%)=I% EOR &5A3C0F1E:NEXT
+60 T%=TIME:OSCLI "SAVE WROTE 3000 +4000":t1%=TIME-T%
+70 FOR I%=0 TO 16380 STEP 4:!(&3000+I%)=0:NEXT
+80 T%=TIME:OSCLI "LOAD WROTE 3000":t2%=TIME-T%
+90 e%=0:FOR I%=0 TO 16380 STEP 4:IF !(&3000+I%)<>(I% EOR &5A3C0F1E) e%=e%+1
+100 NEXT:PROCinfo("save 16K cs",STR$t1%):PROCinfo("load 16K cs",STR$t2%):PROCinfo("load errs",STR$e%)
+110 PROCchk("save/load 16K",e%=0)
+120 H%=OPENOUT("SEQ"):FOR I%=0 TO 2999:BPUT#H%,(I%*3) AND 255:NEXT:CLOSE#H%
+130 H%=OPENIN("SEQ"):PROCchk("EXT# 3000",EXT#H%=3000):e%=0:FOR I%=0 TO 2999:IF BGET#H%<>((I%*3) AND 255) e%=e%+1
+140 NEXT:PROCchk("BGET sequential",e%=0):PTR#H%=1234:PROCchk("PTR# random",BGET#H%=((1234*3) AND 255)):CLOSE#H%
+150 *DELETE SEQ
+160 H%=OPENIN("SEQ"):PROCchk("delete",H%=0):IF H% CLOSE#H%
+170 *BYE
+180 H%=OPENIN("RUNALL"):PROCchk("restart after BYE",H%<>0):IF H% CLOSE#H%
+190 PROCend

@@ -1,0 +1,120 @@
+Pi1MHz test suite Sun Sep 13 09:23:01 AM BST 2026 PI_IP=192.168.0.42 JUKE=9 log=/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/run-20260913-092301.log
+  I:PI:boot:Boot time: pre-kernel n/a (chain-boot), kernel->poll 63 ms
+CAPS was on: sent ALT+A
+PAGE=&E00
+uploaded /BeebSCSI9/scsi0.dat (22 bytes) + scsi0.dsc
+== TINFO
+  I:INFO:PAGE:E00
+  I:INFO:HIMEM:8000
+  I:INFO:TUBE:0
+  I:INFO:MOS:3
+  T:INFO:basic on host cpu:PASS
+  I:INFO:HELP0:BEGIN
+  T:INFO:completed:FAIL:no ##DONE within 40000 ms
+== TFRED
+  I:FRED:JIM0: Use CALL &FC88
+  T:FRED:jim page 0 greeting:PASS
+  I:FRED:FC00:00000000000000000000000000000000
+  I:FRED:FC10:DF000000000000000000000000000000
+  I:FRED:FC20:00000000000000000000000000000000
+  I:FRED:FC30:00000000000000000000000000000000
+  I:FRED:FC50:00000000000000000000000000000000
+  I:FRED:FC60:00000000000000000000000000000000
+  I:FRED:FC70:00000000000000000000000000000000
+  I:FRED:FC80:00000000000000008E88FCEA6000FD00
+  I:FRED:FC90:00000000000000000000000000000000
+  I:FRED:FCB0:00000000000000000000000000000000
+  I:FRED:FCC0:00000000000000000000000000000000
+  I:FRED:FCD0:00000000000000000000000000000000
+  I:FRED:FCE0:00000000000000000000000000000000
+  I:FRED:FCF0:00000000000000000000000000000000
+  I:FRED:pageregs readback:5 34 12
+  I:FRED:scsi status reg:0
+  S:FRED:P=1:F=0:K=0
+== TRAM
+  I:RAM:page errs:0
+  T:RAM:page mode 12 pages to 64MB:PASS
+  T:RAM:full page fill:PASS
+  I:RAM:jim size 16MB units:23
+  T:RAM:byte mode write, page read:PASS
+  T:RAM:page write, byte mode read:PASS
+  I:RAM:asm 64KB write cs:68
+  I:RAM:asm 64KB read cs:68
+  I:RAM:burst errs:0
+  T:RAM:asm 64KB burst:PASS
+  I:RAM:coherence errs:0
+  T:RAM:write then read back 16K:PASS
+  S:RAM:P=6:F=0:K=0
+  T:RAM:no bus overruns:PASS
+== TDISC
+  T:DISC:open RUNALL:PASS
+  I:DISC:save 16K cs:112
+  I:DISC:load 16K cs:18
+  I:DISC:load errs:0
+  T:DISC:save/load 16K:PASS
+  T:DISC:EXT# 3000:PASS
+  T:DISC:BGET sequential:PASS
+  T:DISC:PTR# random:PASS
+  T:DISC:delete:PASS
+  T:DISC:restart after BYE:PASS
+  S:DISC:P=7:F=0:K=0
+  T:DISC:WROTE reached the image:PASS
+  T:DISC:no bus overruns:PASS
+== TVDU
+  I:VDU:host:framebuffer.bmp must differ from the pre-test snapshot
+  T:VDU:wrote 400 bytes to &FCA0:PASS
+  S:VDU:P=1:F=0:K=0
+  T:VDU:framebuffer changed:PASS
+== TNET
+  I:NET:url:HTTP://192.168.0.1/
+  T:NET:url_open:PASS
+  I:NET:body bytes:88
+  I:NET:body head:<HTML><HEAD><script>window.top.location.href='/Main_Login.as
+  T:NET:body received:PASS
+  T:NET:http 200:PASS
+  S:NET:P=3:F=0:K=0
+== MOUSE
+  T:MOUSE:pointer on changes screen:PASS
+  T:MOUSE:pointer off changes screen:PASS
+== WAV
+  I:WAV:file:/Musics001.wav 48 bytes
+  T:WAV:recorder wrote a wav:PASS
+  deleted /Musics001.wav
+== VFS
+  I:VFS:set:0
+  T:VFS:mount and *CAT:PASS
+  T:VFS:fcode ?T reached the Pi:PASS
+  I:VFS:fcode row:tx ?T rx X
+  I:VFS:video player:Video player: closed d0 arm1 last:- mode 0 pic 0 seek -1 inflight 0 feeds 0 fail
+  T:VFS:back to the test disc:PASS
+== ROM
+CAPS was on: sent ALT+A
+  T:ROM:new rom in *HELP:FAIL:*HELP unchanged
+  I:ROM:added:
+== BREAK
+CAPS was on: sent ALT+A
+  I:BREAK:row:edges 23 inits 21 missed 2 | rst->init 13 us, init 32137 us, held 210.2 ms, helper 388.9 ms, vdu 389.4 ms, ovr +0 first - | worst init 38812 us, margin 300 ms
+  T:BREAK:5 inits counted:PASS
+  T:BREAK:rom selected the helper:PASS
+  T:BREAK:no bus overruns:PASS
+  T:BREAK:test disc mounts after BREAK:PASS
+== teardown
+
+RESULTS (/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/results.txt)
+  FAIL  INFO: completed no ##DONE within 40000 ms
+  FAIL  ROM: new rom in *HELP *HELP unchanged
+test      pass  fail  skip
+INFO         1     1     0
+FRED         1     0     0
+RAM          7     0     0
+DISC         9     0     0
+VDU          2     0     0
+NET          3     0     0
+MOUSE        2     0     0
+WAV          1     0     0
+VFS          3     0     0
+ROM          0     1     0
+BREAK        4     0     0
+total       33     2     0
+state changed on the bench: jukebox set 9 selected jukebox set 9 selected
+exit 1

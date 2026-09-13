@@ -1,0 +1,29 @@
+Pi1MHz test suite Sun Sep 13 10:44:38 AM BST 2026 PI_IP=192.168.0.42 JUKE=9 log=/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/run-20260913-104438.log
+  I:PI:boot:Boot time: pre-kernel n/a (chain-boot), kernel->poll 63 ms
+  I:PI:bus at start:Bus diag: st 0 fl 000200 nirq 80000000 ovr 66
+CAPS was on: sent ALT+A
+PAGE=&E00
+== TDISC
+  T:DISC:open RUNALL:PASS
+  I:DISC:save 16K cs:22
+  I:DISC:load 16K cs:18
+  I:DISC:load errs:0
+  T:DISC:save/load 16K:PASS
+  T:DISC:EXT# 3000:PASS
+  T:DISC:BGET sequential:PASS
+  T:DISC:PTR# random:PASS
+  T:DISC:delete:PASS
+  T:DISC:restart after BYE:PASS
+  S:DISC:P=7:F=0:K=0
+  T:DISC:WROTE reached the image:PASS
+  T:DISC:no bus overruns:PASS
+  I:DISC:bus:66 ovr
+== teardown
+  I:PI:bus at end:Bus diag: st 0 fl 000200 nirq 80000000 ovr 66
+
+RESULTS (/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/results.txt)
+test      pass  fail  skip
+DISC         9     0     0
+total        9     0     0
+state changed on the bench: jukebox set 9 selected
+exit 0

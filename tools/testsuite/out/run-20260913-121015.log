@@ -1,0 +1,85 @@
+Pi1MHz test suite Sun Sep 13 12:10:15 PM BST 2026 PI_IP=192.168.0.42 JUKE=9 log=/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/run-20260913-121015.log
+  I:PI:boot:Boot time: pre-kernel n/a (chain-boot), kernel->poll 63 ms
+  I:PI:bus at start:Bus diag: st 0 fl 000200 nirq 80000000 ovr 78
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B57 -Timeout 3000
+RX 1 bytes
+MATCH yes
+>
+--- send -Lines a -Until Mistake -Timeout 4000
+RX 15 bytes
+MATCH yes
+A
+
+Mistake
+>
+--- send -Hex 1B41 -Timeout 1000
+RX 0 bytes
+MATCH yes
+CAPS was on: sent ALT+A
+--- send -Lines PRINT ~PAGE -Until \n *[0-9A-F]+\n -Timeout 4000
+RX 26 bytes
+MATCH no
+PRINT ~PAGE
+       E00
+>
+PAGE=&E00
+--- send -Lines *ADFS|*BYE -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*ADFS
+>*BYE
+>
+uploaded /BeebSCSI9/scsi0.dat (2162688 bytes)
+--- send -Lines *ADFS|*BYE -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*ADFS
+>*BYE
+>
+--- send -Lines *FX147,65,9 -Until  -Timeout 2000
+RX 14 bytes
+MATCH yes
+*FX147,65,9
+>
+--- send -Lines *MOUNT 0|*CAT -Until Option -Timeout 15000
+RX 178 bytes
+MATCH yes
+*MOUNT 0
+>*CAT
+PI1MHZTEST          (10)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  RUNALL     WR (10)  TAUN       WR (10)
+== TFAT
+--- send -Lines Z%=0:CHAIN"TFAT" -Until ##DONE -Timeout 40000
+RX 110 bytes
+MATCH yes
+Z%=0:CHAIN"TFAT"
+B:FAT
+T:FAT:fopen x5 from host RAM:PASS
+T:FAT:fclose x5:PASS
+S:FAT:P=2:F=0:K=0
+##DONE
+>
+  T:FAT:fopen x5 from host RAM:PASS
+  T:FAT:fclose x5:PASS
+  S:FAT:P=2:F=0:K=0
+  T:FAT:no bus overruns:PASS
+  I:FAT:bus:78 ovr
+== teardown
+--- send -Lines *BYE -Until  -Timeout 2000
+RX 7 bytes
+MATCH yes
+*BYE
+>
+  I:PI:bus at end:Bus diag: st 0 fl 000200 nirq 80000000 ovr 78
+
+RESULTS (/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/results.txt)
+test      pass  fail  skip
+FAT          3     0     0
+total        3     0     0
+state changed on the bench: jukebox set 9 selected

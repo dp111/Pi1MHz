@@ -1,0 +1,485 @@
+Pi1MHz test suite Sun Sep 13 09:11:29 AM BST 2026 PI_IP=192.168.0.42 JUKE=9 log=/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/run-20260913-091129.log
+  I:PI:version:
+  I:PI:boot:Boot time: pre-kernel n/a (chain-boot), kernel->poll 63 ms
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B57 -Timeout 3000
+RX 1 bytes
+MATCH yes
+>
+--- send -Lines a -Until Mistake -Timeout 4000
+RX 15 bytes
+MATCH yes
+A
+
+Mistake
+>
+--- send -Hex 1B41 -Timeout 1000
+RX 0 bytes
+MATCH yes
+CAPS was on: sent ALT+A
+--- send -Lines PRINT ~PAGE -Until \n *[0-9A-F]+\n -Timeout 4000
+RX 26 bytes
+MATCH no
+PRINT ~PAGE
+       E00
+>
+PAGE=&E00
+--- send -Lines *ADFS|*BYE -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*ADFS
+>*BYE
+>
+--- send -Lines *ADFS|*BYE -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*ADFS
+>*BYE
+>
+--- send -Lines *FX147,65,9 -Until  -Timeout 2000
+RX 14 bytes
+MATCH yes
+*FX147,65,9
+>
+--- send -Lines *MOUNT 0|*CAT -Until Option -Timeout 15000
+RX 194 bytes
+MATCH yes
+*MOUNT 0
+>*CAT
+PI1MHZTEST          (10)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  RUNALL     WR (10)  TDISC      WR (10)  TFRED      WR 
+== TINFO
+--- send -Lines Z%=0:CHAIN"TINFO" -Until ##DONE -Timeout 40000
+RX 193 bytes
+MATCH yes
+Z%=0:CHAIN"TINFO"
+B:INFO
+I:INFO:PAGE:E00
+I:INFO:HIMEM:8000
+I:INFO:TUBE:0
+I:INFO:MOS:3
+T:INFO:basic on host cpu:PASS
+I:INFO:HELP0:BEGIN
+<00>
+I:INFO:HELP0:END
+S:INFO:P=1:F=0:K=0
+##DONE
+>
+  I:INFO:PAGE:E00
+  I:INFO:HIMEM:8000
+  I:INFO:TUBE:0
+  I:INFO:MOS:3
+  T:INFO:basic on host cpu:PASS
+  I:INFO:HELP0:BEGIN
+  I:INFO:HELP0:END
+  S:INFO:P=1:F=0:K=0
+== TFRED
+--- send -Lines Z%=0:CHAIN"TFRED" -Until ##DONE -Timeout 40000
+RX 822 bytes
+MATCH yes
+Z%=0:CHAIN"TFRED"
+B:FRED
+I:FRED:JIM0: Use CALL &FC88
+T:FRED:jim page 0 greeting:PASS
+I:FRED:FC00:00000000000000000000000000000000
+I:FRED:FC10:DF000000000000000000000000000000
+I:FRED:FC20:00000000000000000000000000000000
+I:FRED:FC30:00000000000000000000000000000000
+I:FRED:FC50:00000000000000000000000000000000
+I:FRED:FC60:00000000000000000000000000000000
+I:FRED:FC70:00000000000000000000000000000000
+I:FRED:FC80:00000000000000008E88FCEA6000FD00
+I:FRED:FC90:00000000000000000000000000000000
+I:FRED:FCB0:00000000000000000000000000000000
+I:FRED:FCC0:00000000000000000000000000000000
+I:FRED:FCD0:00000000000000000000000000000000
+I:FRED:FCE0:00000000000000000000000000000000
+I:FRED:FCF0:00000000000000000000000000000000
+I:FRED:pageregs readback:5 34 12
+I:FRED:scsi status reg:0
+S:FRED:P=1:F=0:K=0
+##DONE
+>
+  I:FRED:JIM0: Use CALL &FC88
+  T:FRED:jim page 0 greeting:PASS
+  I:FRED:FC00:00000000000000000000000000000000
+  I:FRED:FC10:DF000000000000000000000000000000
+  I:FRED:FC20:00000000000000000000000000000000
+  I:FRED:FC30:00000000000000000000000000000000
+  I:FRED:FC50:00000000000000000000000000000000
+  I:FRED:FC60:00000000000000000000000000000000
+  I:FRED:FC70:00000000000000000000000000000000
+  I:FRED:FC80:00000000000000008E88FCEA6000FD00
+  I:FRED:FC90:00000000000000000000000000000000
+  I:FRED:FCB0:00000000000000000000000000000000
+  I:FRED:FCC0:00000000000000000000000000000000
+  I:FRED:FCD0:00000000000000000000000000000000
+  I:FRED:FCE0:00000000000000000000000000000000
+  I:FRED:FCF0:00000000000000000000000000000000
+  I:FRED:pageregs readback:5 34 12
+  I:FRED:scsi status reg:0
+  S:FRED:P=1:F=0:K=0
+== TRAM
+--- send -Lines Z%=0:CHAIN"TRAM" -Until ##DONE -Timeout 90000
+RX 379 bytes
+MATCH yes
+Z%=0:CHAIN"TRAM"
+B:RAM
+I:RAM:page errs:0
+T:RAM:page mode 12 pages to 64MB:PASS
+T:RAM:full page fill:PASS
+T:RAM:byte mode write, page read:FAIL
+T:RAM:page write, byte mode read:FAIL
+I:RAM:asm 64KB write cs:68
+I:RAM:asm 64KB read cs:68
+I:RAM:burst errs:0
+T:RAM:asm 64KB burst:PASS
+I:RAM:coherence errs:0
+T:RAM:write then read back 16K:PASS
+S:RAM:P=4:F=2:K=0
+##DONE
+>
+  I:RAM:page errs:0
+  T:RAM:page mode 12 pages to 64MB:PASS
+  T:RAM:full page fill:PASS
+  T:RAM:byte mode write, page read:FAIL
+  T:RAM:page write, byte mode read:FAIL
+  I:RAM:asm 64KB write cs:68
+  I:RAM:asm 64KB read cs:68
+  I:RAM:burst errs:0
+  T:RAM:asm 64KB burst:PASS
+  I:RAM:coherence errs:0
+  T:RAM:write then read back 16K:PASS
+  S:RAM:P=4:F=2:K=0
+  T:RAM:no bus overruns:PASS
+== TDISC
+--- send -Lines Z%=0:CHAIN"TDISC" -Until ##DONE -Timeout 240000
+RX 299 bytes
+MATCH yes
+Z%=0:CHAIN"TDISC"
+B:DISC
+T:DISC:open RUNALL:PASS
+I:DISC:save 16K cs:24
+I:DISC:load 16K cs:18
+I:DISC:load errs:0
+T:DISC:save/load 16K:PASS
+T:DISC:EXT# 3000:PASS
+T:DISC:BGET sequential:PASS
+T:DISC:PTR# random:PASS
+T:DISC:delete:PASS
+T:DISC:restart after BYE:PASS
+S:DISC:P=7:F=0:K=0
+##DONE
+  T:DISC:open RUNALL:PASS
+  I:DISC:save 16K cs:24
+  I:DISC:load 16K cs:18
+  I:DISC:load errs:0
+  T:DISC:save/load 16K:PASS
+  T:DISC:EXT# 3000:PASS
+  T:DISC:BGET sequential:PASS
+  T:DISC:PTR# random:PASS
+  T:DISC:delete:PASS
+  T:DISC:restart after BYE:PASS
+  S:DISC:P=7:F=0:K=0
+/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/scsi0-after.dat: WROTE at sector 61, 16384 bytes, content OK
+  T:DISC:WROTE reached the image:PASS
+  T:DISC:no bus overruns:PASS
+== TVDU
+--- send -Lines Z%=0:CHAIN"TVDU" -Until ##DONE -Timeout 40000
+RX 157 bytes
+MATCH yes
+Z%=0:CHAIN"TVDU"
+B:VDU
+I:VDU:host:framebuffer.bmp must differ from the pre-test snapshot
+T:VDU:wrote 400 bytes to &FCA0:PASS
+S:VDU:P=1:F=0:K=0
+##DONE
+>
+  I:VDU:host:framebuffer.bmp must differ from the pre-test snapshot
+  T:VDU:wrote 400 bytes to &FCA0:PASS
+  S:VDU:P=1:F=0:K=0
+  T:VDU:framebuffer changed:PASS
+== TNET
+--- send -Lines $&7000="HTTP://192.168.0.42/" -Until  -Timeout 2000
+RX 32 bytes
+MATCH yes
+$&7000="HTTP://192.168.0.42/"
+>
+--- send -Lines Z%=0:CHAIN"TNET" -Until ##DONE -Timeout 90000
+RX 125 bytes
+MATCH yes
+Z%=0:CHAIN"TNET"
+B:NET
+I:NET:url:HTTP://192.168.0.42/
+T:NET:url_open:FAIL
+I:NET:open code:1
+S:NET:P=0:F=1:K=0
+##DONE
+>
+  I:NET:url:HTTP://192.168.0.42/
+  T:NET:url_open:FAIL
+  I:NET:open code:1
+  S:NET:P=0:F=1:K=0
+== MOUSE
+--- send -Lines ?&FCAC=100:?&FCAD=1:?&FCAE=44:?&FCAF=1 -Until  -Timeout 1000
+RX 41 bytes
+MATCH yes
+?&FCAC=100:?&FCAD=1:?&FCAE=44:?&FCAF=1
+>
+--- send -Lines ?&FCAF=&41 -Until  -Timeout 1000
+RX 13 bytes
+MATCH yes
+?&FCAF=&41
+>
+  T:MOUSE:pointer on changes screen:PASS
+  T:MOUSE:pointer off changes screen:PASS
+== WAV
+--- send -Lines *FX147,202,4|*FX147,203,1 -Until  -Timeout 1500
+RX 30 bytes
+MATCH yes
+*FX147,202,4
+>*FX147,203,1
+>
+--- send -Lines *FX147,202,4|*FX147,203,0 -Until  -Timeout 1500
+RX 30 bytes
+MATCH yes
+*FX147,202,4
+>*FX147,203,0
+>
+  I:WAV:file:/Musics000.wav 48 bytes
+  T:WAV:recorder wrote a wav:PASS
+  deleted /Musics000.wav
+== VFS
+  I:VFS:set:0
+--- send -Lines *BYE -Until  -Timeout 2000
+RX 7 bytes
+MATCH yes
+*BYE
+>
+--- send -Lines *FX147,65,0 -Until  -Timeout 2000
+RX 14 bytes
+MATCH yes
+*FX147,65,0
+>
+--- send -Lines *VFS|*MOUNT 0|*CAT -Until \n> -Timeout 20000
+RX 170 bytes
+MATCH no
+*VFS
+>*MOUNT 0
+>*CAT
+$                   (10)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  MENU       WR (10)  
+>
+  T:VFS:mount and *CAT:PASS
+--- send -Lines *FCODE ?T -Until \n> -Timeout 8000
+RX 12 bytes
+MATCH no
+*FCODE ?T
+>
+  T:VFS:fcode ?T reply:FAIL:*FCODE ?T >
+  I:VFS:video player:Video player: closed d0 arm1 last:- mode 0 pic 0 seek -1 inflight 0 feeds 0 fail
+--- send -Lines *BYE|*ADFS -Until  -Timeout 3000
+RX 15 bytes
+MATCH yes
+*BYE
+>*ADFS
+>
+--- send -Lines *FX147,65,9 -Until  -Timeout 2000
+RX 14 bytes
+MATCH yes
+*FX147,65,9
+>
+--- send -Lines *MOUNT 0|*CAT -Until Option -Timeout 15000
+RX 158 bytes
+MATCH yes
+*MOUNT 0
+>*CAT
+PI1MHZTEST          (12)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  RUNALL     WR (10)
+  T:VFS:back to the test disc:PASS
+== ROM
+--- send -Lines *HELP -Until \n> -Timeout 8000
+RX 215 bytes
+MATCH no
+*HELP
+<0E>
+OS 3.20
+  MOS
+
+TERMINAL 1.20
+
+VIEW B3.0
+
+Advanced DFS 1.50
+  ADFS
+
+EDIT 4
+
+ViewSheet B1.0
+
+DFS 2.24
+  DFS      
+
+SRAM 1.04
+  SRAM
+
+Videodisc FS 2.00
+  VFS, Video, Mouse, Trackerball
+<0F>>
+--- send -Lines *FX147,136,6 -Until  -Timeout 2000
+RX 15 bytes
+MATCH yes
+*FX147,136,6
+>
+--- send -Lines *GO FD00 -Until \n>|No SWR|No ROM -Timeout 60000
+RX 19 bytes
+MATCH no
+*GO FD00
+.........
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B57 -Timeout 3000
+RX 1 bytes
+MATCH yes
+>
+--- send -Lines a -Until Mistake -Timeout 4000
+RX 15 bytes
+MATCH yes
+A
+
+Mistake
+>
+--- send -Hex 1B41 -Timeout 1000
+RX 0 bytes
+MATCH yes
+CAPS was on: sent ALT+A
+--- send -Lines *HELP -Until \n> -Timeout 8000
+RX 250 bytes
+MATCH no
+*HELP
+<0E>
+OS 3.20
+  MOS
+
+TERMINAL 1.20
+
+VIEW B3.0
+
+Advanced DFS 1.50
+  ADFS
+
+EDIT 4
+
+ViewSheet B1.0
+
+DFS 2.24
+  DFS      
+
+SRAM 1.04
+  SRAM
+
+Videodisc FS 2.00
+  VFS, Video, Mouse, Trackerball
+
+BeebSCSI Utilities 1.04
+  BeebSCSI
+  T:ROM:new rom in *HELP:PASS
+  I:ROM:added:  BeebSCSI BeebSCSI Utilities 1.04 
+--- send -Lines *MOUNT 0|*CAT -Until Option -Timeout 15000
+RX 151 bytes
+MATCH yes
+
+<0F>>*MOUNT 0
+>*CAT
+$                   (10)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  MENU   
+  note: test disc not mounted after the BREAK
+== BREAK
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B76 -Timeout 3000
+RX 0 bytes
+MATCH yes
+--- send -Hex 1B5B57 -Timeout 3000
+RX 1 bytes
+MATCH yes
+>
+--- send -Lines a -Until Mistake -Timeout 4000
+RX 15 bytes
+MATCH yes
+A
+
+Mistake
+>
+--- send -Hex 1B41 -Timeout 1000
+RX 0 bytes
+MATCH yes
+CAPS was on: sent ALT+A
+  I:BREAK:row:edges 16 inits 14 missed 2 | rst->init 11 us, init 32732 us, held 210.2 ms, helper 373.8 ms, vdu 374.3 ms, ovr +0 first - | worst init 38812 us, margin 300 ms
+  T:BREAK:5 inits counted:PASS
+  T:BREAK:rom selected the helper:PASS
+  T:BREAK:no bus overruns:PASS
+--- send -Lines *MOUNT 0|*CAT -Until Option -Timeout 15000
+RX 163 bytes
+MATCH yes
+*MOUNT 0
+>*CAT
+$                   (10)
+Drive:0             Option 03 (Exec)
+Dir. $              Lib. "Unset"   
+
+!BOOT      WR (10)  MENU       WR (10)  
+>
+  T:BREAK:test disc mounts after BREAK:FAIL
+== teardown
+--- send -Lines *BYE -Until  -Timeout 2000
+RX 7 bytes
+MATCH yes
+*BYE
+>
+
+RESULTS (/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/results.txt)
+  FAIL  RAM: byte mode write, page read 
+  FAIL  RAM: page write, byte mode read 
+  FAIL  NET: url_open 
+  FAIL  VFS: fcode ?T reply *FCODE ?T >
+  FAIL  BREAK: test disc mounts after BREAK 
+test      pass  fail  skip
+INFO         1     0     0
+FRED         1     0     0
+RAM          5     2     0
+DISC         9     0     0
+VDU          2     0     0
+NET          0     1     0
+MOUSE        2     0     0
+WAV          1     0     0
+VFS          2     1     0
+ROM          1     0     0
+BREAK        3     1     0
+total       27     5     0
+state changed on the bench: jukebox set 9 selected

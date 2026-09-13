@@ -34,9 +34,10 @@ def checksum(data255):
     return a & 255
 
 
-def build(files, disc_sectors=DISC_SECTORS, boot_opt=3, seq=0x10):
+def build(files, disc_sectors=DISC_SECTORS, boot_opt=3, seq=0x10, title='$'):
     """files: list of (name, data, load, exec) tuples, in directory order
-    (ADFS requires the directory sorted case-insensitively)."""
+    (ADFS requires the directory sorted case-insensitively).  title is the
+    root directory title *CAT shows (up to 19 characters)."""
     if len(files) > 47:
         raise ValueError('old-map ADFS root holds at most 47 entries')
     for name, *_ in files:
@@ -89,7 +90,8 @@ def build(files, disc_sectors=DISC_SECTORS, boot_opt=3, seq=0x10):
         p += 26
     # directory tail: root is named "$"
     d[0x4CC:0x4CC + 2] = b'$\r'                           # dir name
-    d[0x4D9:0x4D9 + 2] = b'$\r'                           # dir title
+    t = (title[:19] + '\r').encode('latin1')
+    d[0x4D9:0x4D9 + len(t)] = t                           # dir title
     d[0x4FA] = seq
     d[0x4FB:0x4FF] = b'Hugo'
     # Old-map ADFS: the root is its own parent (*DIR ^ / *BACK from root

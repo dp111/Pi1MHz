@@ -1,0 +1,8 @@
+Pi1MHz test suite Sun Sep 13 09:31:03 AM BST 2026 PI_IP=192.168.0.42 JUKE=9 log=/mnt/c/Archlinux/Pi1MHz/tools/testsuite/out/run-20260913-093103.log
+  I:PI:boot:Boot time: pre-kernel n/a (chain-boot), kernel->poll 63 ms
+CAPS was on: sent ALT+A
+PAGE=&E00
+uploaded /BeebSCSI9/scsi0.dat (22 bytes) + scsi0.dsc
+ABORT: test disc not mounted (no PI1MHZTEST in *CAT):
+*MOUNT 0
+exit 1

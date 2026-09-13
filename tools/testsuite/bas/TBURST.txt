@@ -1,0 +1,40 @@
+10 REM TBURST - fast write bursts straight after a slow FIQ callback: does the 8-slot post ring keep up?
+20 REM Each burst is 32 unrolled LDA #n:STA (6 cycles = 3 us a write, 8 writes in 24 us).
+30 REM pgburst: page-register write (256-byte page copy in FIQ) then 32 JIM writes
+40 REM svburst: services address regs then 32 data-port writes (the helper ROM loader's fopen pattern)
+50 REM hpburst: helper page switch &FC88 (page copy in FIQ) then 32 data-port writes (the loader exactly)
+60 REM The host adds the Bus diag overrun delta as a check.
+70 PROCbegin("BURST")
+80 IF PAGE=&800 PROCskip("all","tube"):PROCend
+90 DIM C% 900
+100 FOR O%=0 TO 2 STEP 2:P%=C%
+110 [OPT O%
+120 .pgburst LDA #&11:STA &FCFE:LDA #0:STA &FCFD:LDA #1:STA &FCFF
+130 ]
+140 FOR I%=0 TO 31:[OPT O%:LDA #I%+&40:STA &FD00+I%:]:NEXT
+150 [OPT O%:RTS
+160 .svburst LDA #0:STA &FCA6:LDA #0:STA &FCA7:LDA #&E0:STA &FCA8
+170 ]
+180 FOR I%=0 TO 31:[OPT O%:LDA #I%+&80:STA &FCA9:]:NEXT
+190 [OPT O%:RTS
+200 .hpburst LDA #1:STA &FC88
+210 ]
+220 FOR I%=0 TO 31:[OPT O%:LDA #I%+&C0:STA &FCA9:]:NEXT
+230 [OPT O%:LDA #&FF:STA &FC88:RTS
+240 ]:NEXT
+250 REM --- page copy then JIM burst
+260 ?&FCFE=&11:?&FCFD=0:?&FCFF=1:FOR I%=0 TO 31:?(&FD00+I%)=0:NEXT
+270 CALL pgburst:?&FCFF=2:?&FCFF=1:e%=0:FOR I%=0 TO 31:IF ?(&FD00+I%)<>I%+&40 e%=e%+1
+280 NEXT:PROCinfo("pgburst lost",STR$e%):PROCchk("page switch then 32 JIM writes at 3us",e%=0)
+290 REM --- services data port burst (address regs then data)
+300 CALL svburst:?&FCA6=0:?&FCA7=0:?&FCA8=&E0:e%=0:FOR I%=0 TO 31:IF ?&FCA9<>I%+&80 e%=e%+1
+310 NEXT:PROCinfo("svburst lost",STR$e%):PROCchk("services address then 32 data writes at 3us",e%=0)
+320 REM --- helper page switch then data port burst (what the ROM loader does)
+330 ?&FCA6=&20:?&FCA7=0:?&FCA8=&E0
+340 CALL hpburst:?&FCA6=&20:?&FCA7=0:?&FCA8=&E0:e%=0:FOR I%=0 TO 31:IF ?&FCA9<>I%+&C0 e%=e%+1
+350 NEXT:PROCinfo("hpburst lost",STR$e%):PROCchk("helper page switch then 32 data writes at 3us",e%=0)
+360 REM --- repeat the loader pattern 20 times to catch an intermittent stall
+370 t%=0:FOR J%=1 TO 20:?&FCA6=&20:?&FCA7=0:?&FCA8=&E0:CALL hpburst:?&FCA6=&20:?&FCA7=0:?&FCA8=&E0:FOR I%=0 TO 31:IF ?&FCA9<>I%+&C0 t%=t%+1
+380 NEXT:NEXT:PROCinfo("hpburst x20 lost",STR$t%):PROCchk("loader pattern x20",t%=0)
+390 ?&FCFD=0:?&FCFE=0:?&FCFF=0
+400 PROCend

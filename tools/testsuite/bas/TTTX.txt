@@ -1,0 +1,19 @@
+10 REM TTTX - Acorn Teletext Adapter at &FC10-&FC13: field state machine (FSYNC/DEW/INT) and row data
+20 REM +0 status/control, +1 row counter, +2 data (auto-increment), +3 clear status
+30 PROCbegin("TTX")
+40 ?&FC10=&04:?&FC13=0
+50 T%=TIME:REPEAT:S%=?&FC10:UNTIL (S% AND &80)<>0 OR TIME-T%>200
+60 PROCinfo("status",STR$~S%)
+70 IF (S% AND &80)=0 PROCskip("field INT seen","no INT in 2 s (adapter off?)"):?&FC10=0:PROCend
+80 PROCchk("field INT seen",TRUE)
+90 T%=TIME:REPEAT UNTIL (?&FC10 AND &20)<>0 OR TIME-T%>20
+100 D%=(?&FC10 AND &20):T%=TIME:REPEAT UNTIL (?&FC10 AND &20)=0 OR TIME-T%>20
+110 PROCinfo("DEW seen high by a BASIC poll",STR$(D%<>0))
+120 ?&FC13=0:T%=TIME:REPEAT UNTIL (?&FC10 AND &80)<>0 OR TIME-T%>20
+130 B%=0:L$="":FOR R%=0 TO 15:?&FC11=R%:S$="":FOR I%=0 TO 41:C%=?&FC12 AND &7F:IF I%>=2 AND C%>31 AND C%<127 S$=S$+CHR$C%
+140 NEXT:IF LEN(S$)>=24 B%=B%+1:IF L$="" L$=S$
+150 NEXT
+160 PROCinfo("rows with text",STR$B%):PROCinfo("sample row",L$)
+170 IF B%>0 PROCchk("row data carries text",TRUE) ELSE PROCskip("row data carries text","no text (teletext server down?)")
+180 ?&FC10=0:?&FC13=0
+190 PROCend

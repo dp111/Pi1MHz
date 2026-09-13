@@ -1,0 +1,14 @@
+10 REM TFRED - the 1MHz bus answers: JIM page 0 greeting, FRED register dump
+20 PROCbegin("FRED")
+30 ?&FCFD=0:?&FCFE=0:?&FCFF=0
+40 S$="":FOR I%=0 TO 39:C%=?(&FD00+I%):IF C%>31 AND C%<127 S$=S$+CHR$C%
+50 NEXT:PROCinfo("JIM0",S$)
+60 PROCchk("jim page 0 greeting",INSTR(S$,"Pi1MHz")>0 OR INSTR(S$,"FC88")>0)
+70 REM dump FRED, skipping rows with read side effects (SCSI data, services data port)
+80 FOR B%=&FC00 TO &FCF0 STEP 16:IF B%<>&FC40 AND B%<>&FCA0 THEN S$="":FOR I%=0 TO 15:S$=S$+RIGHT$("0"+STR$~?(B%+I%),2):NEXT:PROCinfo("FC"+RIGHT$(STR$~B%,2),S$)
+90 NEXT
+100 ?&FCFF=&12:?&FCFE=&34:?&FCFD=&05
+110 PROCinfo("pageregs readback",STR$~?&FCFD+" "+STR$~?&FCFE+" "+STR$~?&FCFF)
+120 ?&FCFD=0:?&FCFE=0:?&FCFF=0
+130 PROCinfo("scsi status reg",STR$~?&FC41)
+140 PROCend

@@ -1,0 +1,20 @@
+10 REM TFATJ - as TFAT, but the dispatch + poll loop runs FROM JIM (&FD00), like the helper ROM loader does:
+20 REM every instruction fetch is a 1MHz bus cycle the VPU posts while the FIQ is inside f_open
+30 REM Code at JIM page &800: LDA #&FF:STA &FCAA:.l LDA &FCAA:BMI l:RTS
+40 PROCbegin("FATJ")
+50 F$="Pi1MHz/6502code.bin":o%=0:c%=0
+60 ?&FCFD=0:?&FCFE=8:?&FCFF=0
+70 RESTORE 200:FOR I%=0 TO 11:READ B%:?(&FD00+I%)=B%:NEXT
+80 e%=0:RESTORE 200:FOR I%=0 TO 11:READ B%:IF ?(&FD00+I%)<>B% e%=e%+1
+90 NEXT:PROCchk("poll code written to JIM",e%=0):IF e%>0 PROCend
+100 FOR J%=1 TO 5
+110 PROCblk:?&FCA9=2:?&FCA9=0:?&FCA9=1:FOR I%=1 TO LEN(F$):?&FCA9=ASC(MID$(F$,I%,1)):NEXT:?&FCA9=0
+120 CALL &FD00:R%=?&FCAA:IF R%=0 o%=o%+1 ELSE PROCinfo("fopen result",STR$~R%)
+125 PROCblk:?&FCA9=4:?&FCA9=0:?&FCA9=&40:?&FCA9=0:?&FCA9=0:?&FCA9=0:?&FCA9=&F0:?&FCA9=0:FOR I%=1 TO 4:?&FCA9=0:NEXT:CALL &FD00:R%=?&FCAA:IF R%<>0 PROCinfo("fread result",STR$~R%)
+130 PROCblk:?&FCA9=3:CALL &FD00:R%=?&FCAA:IF R%=0 c%=c%+1 ELSE PROCinfo("fclose result",STR$~R%)
+140 NEXT
+150 PROCchk("fopen x5 polled from JIM",o%=5):PROCchk("fclose x5 polled from JIM",c%=5)
+160 ?&FCFE=0
+170 PROCend
+180 DEF PROCblk:?&FCA6=0:?&FCA7=&FF:?&FCA8=&FF:ENDPROC
+200 DATA &A9,&FF,&8D,&AA,&FC,&AD,&AA,&FC,&30,&FB,&60,&EA

@@ -1,0 +1,30 @@
+10 REM TNET - network service N: device: HTTP GET a LAN page (the gateway by default)
+20 REM The host puts the URL at $&7000 before CHAIN; library from beeb/net/NETHTTP.BAS
+25 REM lwIP cannot connect to the Pi's own address, so the target must be another host
+30 PROCbegin("NET")
+40 net=&FCA6:cmd=net+4:dat=net+3:nEOF=&20:nBUSY=&80:nPEND=1:rxb=&010000
+50 U$=$&7000:IF LEFT$(U$,7)<>"HTTP://" U$="HTTP://192.168.0.1/"
+60 PROCinfo("url",U$)
+70 R=FNurl_open(0,U$)
+80 IF R=&28 PROCskip("http get","net service disabled"):PROCend
+90 PROCchk("url_open",R=0):IF R<>0 PROCinfo("open code",STR$~R):PROCend
+100 B$="":n%=0
+110 REPEAT:R=FNurl_read(0,rxb,200):IF nlen>0 PROCbody
+120 n%=n%+nlen:UNTIL R>=nEOF
+130 PROCinfo("body bytes",STR$n%):PROCinfo("body head",LEFT$(B$,60))
+140 PROCchk("body received",n%>0)
+150 PROCchk("http 200",FNurl_httpcode(0)=200)
+160 PROCurl_close(0):PROCend
+170 DEF PROCbody:PROCaddr(rxb):FOR I%=1 TO nlen:C%=?dat:IF LEN(B$)<240 B$=B$+CHR$C%
+180 NEXT:ENDPROC
+300 DEF PROCaddr(A):?net=A AND &FF:?(net+1)=(A DIV &100)AND &FF:?(net+2)=(A DIV &10000)AND &FF:ENDPROC
+310 DEF FNblk(N)=&FFF000+N*&100
+320 DEF PROCwr(V):?dat=V AND &FF:ENDPROC
+330 DEF PROCwr24(V):PROCwr(V):PROCwr(V DIV &100):PROCwr(V DIV &10000):ENDPROC
+340 DEF PROCwr32(V):PROCwr24(V):PROCwr(V DIV &1000000):ENDPROC
+350 DEF FNrd24:LOCAL l,m,h:l=?dat:m=?dat:h=?dat:=l+m*256+h*65536
+360 DEF FNurl_go(N):LOCAL R,T:T=TIME:REPEAT ?cmd=&F0+N:REPEAT R=?cmd:UNTIL (R AND nBUSY)=0 OR TIME-T>1500:UNTIL R<>nPEND OR TIME-T>1500:=R
+370 DEF FNurl_open(N,U$):LOCAL I:PROCaddr(FNblk(N)):PROCwr(60):PROCwr(0):FOR I=1 TO LEN(U$):PROCwr(ASC(MID$(U$,I,1))):NEXT:PROCwr(0):=FNurl_go(N)
+380 DEF FNurl_read(N,B,MX):LOCAL R:PROCaddr(FNblk(N)):PROCwr(61):PROCwr24(MX):PROCwr32(B):R=FNurl_go(N):PROCaddr(FNblk(N)+1):nlen=FNrd24:=R
+390 DEF FNurl_httpcode(N):LOCAL R,l,h:PROCaddr(FNblk(N)):PROCwr(64):R=FNurl_go(N):PROCaddr(FNblk(N)+7):l=?dat:h=?dat:=l+h*256
+400 DEF PROCurl_close(N):PROCaddr(FNblk(N)):PROCwr(63):R=FNurl_go(N):ENDPROC

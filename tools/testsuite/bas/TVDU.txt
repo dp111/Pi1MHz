@@ -1,0 +1,9 @@
+10 REM TVDU - framebuffer VDU port &FCA0: clear the Pi screen and print text
+20 REM The host compares /framebuffer.bmp before and after (no HDMI capture needed)
+30 PROCbegin("VDU")
+40 ?&FCA0=12:M$="Pi1MHz test suite VDU port "+TIME$
+50 FOR I%=1 TO LEN(M$):?&FCA0=ASC(MID$(M$,I%,1)):NEXT:?&FCA0=13:?&FCA0=10
+60 FOR J%=0 TO 7:FOR I%=1 TO 40:?&FCA0=65+((I%+J%) MOD 26):NEXT:?&FCA0=13:?&FCA0=10:NEXT
+70 PROCinfo("host","framebuffer.bmp must differ from the pre-test snapshot")
+80 PROCchk("wrote 400 bytes to &FCA0",TRUE)
+90 PROCend

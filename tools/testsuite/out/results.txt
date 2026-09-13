@@ -1,0 +1,11 @@
+I:PI:boot:Boot time: pre-kernel n/a (chain-boot), kernel->poll 63 ms
+I:PI:bus at start:Bus diag: st 0 fl 000200 nirq 80000000 ovr 78
+T:FATJ:poll code written to JIM:PASS
+I:FATJ:fread result:14
+I:FATJ:fread result:14
+T:FATJ:fopen x5 polled from JIM:PASS
+T:FATJ:fclose x5 polled from JIM:PASS
+S:FATJ:P=3:F=0:K=0
+T:FATJ:no bus overruns:FAIL:ovr 78 -> 110
+I:FATJ:bus:110 ovr
+I:PI:bus at end:Bus diag: st 0 fl 000200 nirq 80000000 ovr 110

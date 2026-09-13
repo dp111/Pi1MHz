@@ -1,0 +1,7 @@
+10 REM TINFO - machine facts (the helper 0 help screen ends in a BRK, so run.sh runs it from the prompt)
+20 PROCbegin("INFO")
+30 PROCinfo("PAGE",STR$~PAGE):PROCinfo("HIMEM",STR$~HIMEM)
+40 A%=&EA:X%=0:Y%=&FF:PROCinfo("TUBE",STR$((USR(&FFF4) AND &FF00) DIV &100))
+50 A%=0:X%=1:PROCinfo("MOS",STR$((USR(&FFF4) AND &FF00) DIV &100))
+60 PROCchk("basic on host cpu",PAGE<>&800)
+80 PROCend

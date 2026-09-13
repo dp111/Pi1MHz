@@ -1,0 +1,4 @@
+10 REM RUNALL - chain every test in turn (stand-alone use: *!BOOT)
+20 PROCbegin("RUNALL"):Z%=1:Y%=-1:V%=0:W%=0:U%=0
+30 PRINT "Pi1MHz test suite - chaining all tests"
+40 PROCend

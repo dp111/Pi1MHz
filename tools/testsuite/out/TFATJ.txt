@@ -1,0 +1,37 @@
+10 REM TFATJ - as TFAT, but the dispatch + poll loop runs FROM JIM (&FD00), like the helper ROM loader does:
+20 REM every instruction fetch is a 1MHz bus cycle the VPU posts while the FIQ is inside f_open
+30 REM Code at JIM page &800: LDA #&FF:STA &FCAA:.l LDA &FCAA:BMI l:RTS
+40 PROCbegin("FATJ")
+50 F$="Pi1MHz/6502code.bin":o%=0:c%=0
+60 ?&FCFD=0:?&FCFE=8:?&FCFF=0
+70 RESTORE 200:FOR I%=0 TO 11:READ B%:?(&FD00+I%)=B%:NEXT
+80 e%=0:RESTORE 200:FOR I%=0 TO 11:READ B%:IF ?(&FD00+I%)<>B% e%=e%+1
+90 NEXT:PROCchk("poll code written to JIM",e%=0):IF e%>0 PROCend
+100 FOR J%=1 TO 5
+110 PROCblk:?&FCA9=2:?&FCA9=0:?&FCA9=1:FOR I%=1 TO LEN(F$):?&FCA9=ASC(MID$(F$,I%,1)):NEXT:?&FCA9=0
+120 CALL &FD00:R%=?&FCAA:IF R%=0 o%=o%+1 ELSE PROCinfo("fopen result",STR$~R%)
+125 PROCblk:?&FCA9=4:?&FCA9=0:?&FCA9=&40:?&FCA9=0:?&FCA9=0:?&FCA9=0:?&FCA9=&F0:?&FCA9=0:FOR I%=1 TO 4:?&FCA9=0:NEXT:CALL &FD00:R%=?&FCAA:IF R%<>0 PROCinfo("fread result",STR$~R%)
+130 PROCblk:?&FCA9=3:CALL &FD00:R%=?&FCAA:IF R%=0 c%=c%+1 ELSE PROCinfo("fclose result",STR$~R%)
+140 NEXT
+150 PROCchk("fopen x5 polled from JIM",o%=5):PROCchk("fclose x5 polled from JIM",c%=5)
+160 ?&FCFE=0
+170 PROCend
+180 DEF PROCblk:?&FCA6=0:?&FCA7=&FF:?&FCA8=&FF:ENDPROC
+200 DATA &A9,&FF,&8D,&AA,&FC,&AD,&AA,&FC,&30,&FB,&60,&EA
+9000 REM ---- common footer appended to every test by build.py ----
+9001 REM Resident integers survive CHAIN: Z%=1 chain all tests, Y%=index,
+9002 REM V%/W%/U% = running PASS/FAIL/SKIP totals.  Lines the host parses:
+9003 REM   B:<test>  T:<test>:<check>:PASS|FAIL|SKIP:<why>  I:<test>:<name>:<text>
+9004 REM   S:<test>:P=n:F=n:K=n   then ##DONE (host mode) or ##ALLDONE (chain mode)
+9005 DEF PROCbegin(N$):T$=N$:p%=0:f%=0:k%=0:PRINT "B:";T$:ENDPROC
+9010 DEF PROCchk(N$,O%):IF O% p%=p%+1:V%=V%+1:PRINT "T:";T$;":";N$;":PASS" ELSE f%=f%+1:W%=W%+1:PRINT "T:";T$;":";N$;":FAIL"
+9015 ENDPROC
+9020 DEF PROCskip(N$,R$):k%=k%+1:U%=U%+1:PRINT "T:";T$;":";N$;":SKIP:";R$:ENDPROC
+9030 DEF PROCinfo(N$,S$):PRINT "I:";T$;":";N$;":";S$:ENDPROC
+9040 DEF PROCend:IF T$<>"RUNALL" PRINT "S:";T$;":P=";p%;":F=";f%;":K=";k%
+9050 IF Z%=0 PRINT "##DONE":END
+9060 RESTORE 9900:FOR I%=0 TO Y%+1:READ N$:NEXT:Y%=Y%+1
+9070 IF N$="END" PRINT "S:ALL:P=";V%;":F=";W%;":K=";U%:PRINT "##ALLDONE":END
+9080 CHAIN N$
+9090 ENDPROC
+9900 DATA TINFO,TFRED,TRAM,TDISC,TVDU,TNET,TM5000,TTTX,TAUN,TBURST,TFAT,TFATJ,END
