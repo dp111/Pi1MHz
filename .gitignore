@@ -44,3 +44,6 @@ src/.vscode/tasks.json
 /firmware/kernel.*.img
 /firmware/kernel7.*.img
 __pycache__/
+
+# test-suite build output, logs and downloaded images
+tools/testsuite/out/

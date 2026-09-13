@@ -93,8 +93,10 @@ ensure_notube() {
   p=$(beeb_page); [ "$p" != "800" ] || die "still on the Tube after *CONFIGURE NOTUBE"
 }
 mount_test_disc() {
-  lines '*ADFS|*BYE' '' 3000
-  lines "*FX147,65,$JUKE" '' 2000
+  # *FX147,65 changes the SCSI or the VFS set depending on which ROM last
+  # selected the Pi, so make an ADFS access right before the poke.
+  lines '*ADFS|*CAT' 'Option' 15000
+  lines "*BYE|*FX147,65,$JUKE" '' 2000; sleep 1   # the swap remounts the FAT asynchronously
   lines '*MOUNT 0|*CAT' 'Option' 15000
   printf '%s\n' "$TEXT" | grep -q PI1MHZTEST || die "test disc not mounted (no PI1MHZTEST in *CAT):"$'\n'"$TEXT"
   [[ " ${CHANGES[*]:-} " == *"set $JUKE selected"* ]] || CHANGES+=("jukebox set $JUKE selected")
@@ -225,27 +227,27 @@ t_vfs() {
   printf '%s' "$fc" | grep -q 'tx ?T' && result "T:VFS:fcode ?T reached the Pi:PASS" || result "T:VFS:fcode ?T reached the Pi:FAIL:$fc"
   result "I:VFS:fcode row:${fc#F-code: }"
   result "I:VFS:video player:$(pi_row 'Video player' | cut -c1-80)"
-  lines '*BYE|*ADFS' '' 3000
-  lines "*FX147,65,$JUKE" '' 2000
+  lines '*ADFS|*CAT' 'Option' 15000
+  lines "*BYE|*FX147,65,$JUKE" '' 2000
   lines '*MOUNT 0|*CAT' 'Option' 15000
   printf '%s\n' "$TEXT" | grep -q PI1MHZTEST && result "T:VFS:back to the test disc:PASS" || result "T:VFS:back to the test disc:FAIL"
   result "I:VFS:bus:$(bus_ovr) ovr"
 }
 t_rom() { # helper 6 = BSRom into sideways RAM, then a BREAK registers it
   log "== ROM"
-  lines '*HELP' '\n>' 8000
+  lines '*ROMS' 'ROM 0' 10000
   if printf '%s\n' "$TEXT" | grep -q 'BeebSCSI'; then
     result "I:ROM:note:BeebSCSI utilities already resident, helper load skipped"
   else
     lines '*FX147,136,6' '' 2000; sleep 2
-    lines '*GO FD00' '>|No SWR|No ROM' 60000
+    lines '*GO FD00' 'No SWR|No ROM' 45000     # ~20 s; the loader prints no prompt the echo can see
     printf '%s\n' "$TEXT" | grep -qE 'No SWR|No ROM' && { result "T:ROM:helper load:FAIL:$(printf '%s' "$TEXT" | grep -E 'No SWR|No ROM')"; return; }
     ctrl_break; arm_echo
   fi
-  lines '*HELP' '\n>' 8000
+  lines '*ROMS' 'ROM 0' 10000
   local rom; rom=$(printf '%s\n' "$TEXT" | grep -m1 'BeebSCSI')
-  [ -n "$rom" ] && result "T:ROM:BeebSCSI utilities in *HELP after load + BREAK:PASS" || result "T:ROM:BeebSCSI utilities in *HELP after load + BREAK:FAIL"
-  result "I:ROM:help line:$rom"
+  [ -n "$rom" ] && result "T:ROM:BeebSCSI utilities in *ROMS after load + BREAK:PASS" || result "T:ROM:BeebSCSI utilities in *ROMS after load + BREAK:FAIL"
+  result "I:ROM:roms line:$rom"
   mount_test_disc
   result "I:ROM:bus:$(bus_ovr) ovr"
 }
@@ -295,7 +297,7 @@ t_video() { # F-code frame seeks on a VFS set with video.pvf, judged by the Vide
   lines '*FCODE F1050R' '>' 8000; sleep 3
   row=$(pi_row 'Video player'); printf '%s' "$row" | grep -q 'pic 1050' && result "T:VIDEO:seek to 1050:PASS" || result "T:VIDEO:seek to 1050:FAIL:$(printf '%s' "$row" | cut -c15-70)"
   result "I:VIDEO:fcode row:$(pi_row 'F-code' | cut -c9-60)"
-  lines '*BYE|*ADFS' '' 3000; lines "*FX147,65,$JUKE" '' 2000
+  lines '*ADFS|*CAT' 'Option' 15000; lines "*BYE|*FX147,65,$JUKE" '' 2000
   lines '*MOUNT 0|*CAT' 'Option' 15000
   printf '%s\n' "$TEXT" | grep -q PI1MHZTEST && result "T:VIDEO:back to the test disc:PASS" || result "T:VIDEO:back to the test disc:FAIL"
   result "I:VIDEO:bus:$(bus_ovr) ovr"
@@ -329,14 +331,16 @@ t_stress() { # RAM burst + DISC test + a CTRL-BREAK while the host hammers HTTP 
 }
 t_mmfs() { # helper 5 = MMFS2 into sideways RAM (FAT service); *DIN a loose .ssd, save and delete on it
   log "== MMFS"
-  lines '*HELP' '\n>' 8000
+  lines '*ROMS' 'ROM 0' 10000
   if printf '%s\n' "$TEXT" | grep -q 'MMFS2'; then
     result "I:MMFS:note:MMFS2 already resident, helper load skipped"
   else
     lines '*FX147,136,5' '' 1500
-    lines '*GO FD00' '>|No SWR|No ROM' 60000
+    lines '*GO FD00' 'No SWR|No ROM' 45000     # ~20 s; the loader prints no prompt the echo can see
     printf '%s\n' "$TEXT" | grep -qE 'No SWR|No ROM' && { result "T:MMFS:helper 5 load:FAIL:$(printf '%s' "$TEXT" | grep -E 'No SWR|No ROM')"; return; }
     ctrl_break; arm_echo
+    lines '*ROMS' 'ROM 0' 10000
+    printf '%s\n' "$TEXT" | grep -q 'MMFS2' && result "T:MMFS:helper 5 loaded MMFS2 into sideways RAM:PASS" || result "T:MMFS:helper 5 loaded MMFS2 into sideways RAM:FAIL:$(printf '%s' "$TEXT" | grep -E 'ROM [4-7]' | tr '\n' ' ')"
   fi
   lines '*MMFS|*DIN 0 NET|*CAT' 'Option' 20000
   printf '%s\n' "$TEXT" | grep -q 'NETDEMO' && result "T:MMFS:*DIN NET + *CAT:PASS" || result "T:MMFS:*DIN NET + *CAT:FAIL:$(printf '%s' "$TEXT" | tail -3 | tr '\n' ' ')"
@@ -382,7 +386,7 @@ want BREAK && t_break
 
 # ---- teardown -------------------------------------------------------------
 log "== teardown"
-lines '*BYE' '' 2000
+lines '*ADFS|*CAT' 'Option' 15000; lines '*BYE' '' 2000
 if [ $RESTORE = 1 ]; then
   lines "*FX147,65,$JUKE_RESTORE" '' 2000; lines '*MOUNT 0' '' 5000
   CHANGES+=("jukebox set restored to $JUKE_RESTORE")

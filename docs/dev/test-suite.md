@@ -106,13 +106,59 @@ So:
    data-port callbacks themselves are fast: 32 writes at 3 µs lose
    nothing).
 
-Fixes, for the owner to choose: (a) in FIQ.s, on overrun resync at once
-to the oldest surviving entry (scan the eight tags), so only what arrived
-during the stall is lost, as before the ring; (b) move the FAT service's
-FatFs work to the poll loop (latch the command in FIQ, answer from
-`fat_service_poll`), which removes the stall and the IRQ starvation that
-goes with it (the 576 µs nRST latency, audio underruns and WiFi TX
-failures seen during helper loads).  Both are cheap; (b) is the root cause.
+This is a regression from the post ring: with the single-word post the
+same FIQ stall lost only the cycles during the stall, which the loader
+spent polling, and the first write afterwards was handled.  A consumer
+cannot fully resync after an arbitrary stall with a two-bit lap (a
+difference of 3 reads as "not written", 4 as a match on stale data), so
+the fix is to remove the stall.
+
+**Fix (built 2026-09-13, `src/fat_service.c`, `src/helpers.c`):** the
+services command callback latches command pointer, address and value in
+FIQ and writes the busy bit; `fat_service_poll` runs the FatFs work from
+the main loop and writes the result - the net service's pattern.  The
+Beeb-side protocol already spins on bit 7, so nothing changes there.  The
+help screen is formatted ahead of time instead (once at init, and again
+two seconds after each showing, once the Beeb has printed it), so the
+page-0 switch callback only releases the Beeb's waitloop; dp111's
+preference over deferring the format, and over refreshing it every poll.  Result on the bench: `TFATJ` 0 overruns
+(was +32), `TFAT`, `TBURST` and the help screen 0, MMFS2 `*DIN`/`*CAT`/
+`*DCAT` clean.  Cold-booted from the SD (`V1.31-1-g22ee78c-dirty`, built
+2026-09-13 13:16, md5 b68c94e408a6; the V1.31 release is staged for restore
+in claude-tmp/kernel-sd-V131-20260913.img) the full suite gave 69 pass,
+2 fail, 1 skip with the overrun counter at 0 throughout.  The two failures
+are separate: the MMFS helper load answers "No SWR" because the bench's
+four sideways RAM banks are full (MMFS2 plus three copies of BSRom from
+earlier runs; a power cycle clears them), and the STRESS test measured the
+BBC-reset re-init at 315 ms while the host was fetching 9 MB snapshots and
+uploading 2 MB files, against 32 ms idle - the re-init runs from the main
+loop and waits behind an HTTP transfer in progress, leaving 92 ms before
+the ROM's helper select.  Note also that the video player cannot open the
+hardware decoder on a kernel chain-booted over another chain-booted kernel
+(`last:decoder`); it opens normally after a cold boot.
+
+## Jukebox select and F-codes after the Master's power cycle (pre-existing)
+
+For part of the afternoon the driver's VIDEO and VFS tests failed with a
+blank F-code row and a player that would not open: the HDMI display had
+been unplugged, so the player had nothing to open and the ROM's F-codes
+went nowhere.  With it back both tests pass (frame 1000 and 1050, `?T`
+answered).  During the same period the jukebox select misfired.  The
+select misfired because `hd_juke_service` routes the `*FX147,65,n` poke
+by the ID of the last host that selected the Pi (`scsiHostID >= 16` is
+the VFS ROM): after a CTRL-BREAK the Master is in VFS, its CMOS filing
+system, so the poke changed the VFS set and the ADFS set stayed put.
+That routing is by design (owner, 2026-09-13): the poke changes the set
+of whichever filing system is talking to the Pi.  The driver therefore
+makes an ADFS access before it pokes.  The driver's select-then-mount therefore showed the
+old disc and aborted.  The driver now makes an ADFS access right before
+the poke.  Separately, a `*MOUNT 0` issued about 300 ms after the poke hung
+the Beeb with zero overruns (the blind probe showed it was not executing):
+the poke returns at once, and `hd_juke_service` then dismounts and remounts
+the FAT from the poll loop, so a READ6 that arrives mid-swap meets a
+half-swapped LUN; once it was served BASIC-token garbage.  ADFS has no
+timeout, so that is a hang.  The driver should wait after a poke; the
+race itself, and the F-code silence, need the owner's eyes.
 
 ## Echo silences
 
