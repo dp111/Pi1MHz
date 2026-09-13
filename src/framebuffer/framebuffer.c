@@ -801,15 +801,15 @@ static void graphics_cursor_tab(const uint8_t *buf) {
 #ifdef DEBUG_VDU
    printf("cursor move to %d %d\r\n", x, y);
 #endif
-   // Scale to absolute external coordinates
+   // Scale to absolute external coordinates: column x from the left edge of
+   // the graphics window and row y down from its top, the cell's top-left
+   // landing on the cursor as it does for every VDU 5 character.  Measured
+   // against MOS 3.20 (tools/vdutest vdu5-31-rows): row 0 is the top row.
    x = x * (font_width << screen->xeigfactor);
    y = y * (font_height << screen->yeigfactor);
-   // Take account of current text window
-   // x = (uint16_t)(x + g_window.left) ;
-   // y = (uint16_t)(y + g_window.bottom);
    // Deliberately don't range check here
    g_x_pos = (int16_t)(g_window.left + x);
-   g_y_pos = (int16_t)(g_window.bottom + y);
+   g_y_pos = (int16_t)(g_window.top - y);
 }
 
 static void graphics_area_clear(const uint8_t *buf) {
