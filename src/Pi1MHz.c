@@ -143,7 +143,6 @@ typedef struct {
 
 static emulator_list emulator[] = {
    {"Rampage",rampage_emulator_init, 0xFD, 1}, // first: status address 0 reads the JIM RAM size
-   {"Helpers",helpers_init, 0x88, 1 }, // after rampage (help screen lives in JIM), before framebuffer so it can write to the screen
    {"Rambyte",rambyte_emulator_init, 0x00, 1},
    {"Harddisc",harddisc_emulator_init, 0x40, 1},
    {"M5000",M5000_emulator_init, 0, 1},
@@ -170,6 +169,10 @@ static emulator_list emulator[] = {
    {"secure",secure_service_init, 0x00, 1 },
 #endif
    {"Teletext",teletext_emulator_init, 0x10, 1 },  // Acorn Teletext Adapter at &FC10
+   /* After every emulator it reports on (the help screen is formatted at init
+      and shows the hard disc and M5000 settings); the table index is the
+      instance number, so moving an entry renumbers those after it. */
+   {"Helpers",helpers_init, 0x88, 1 },
    /* Last, so its poll callback re-arms the watchdog only after every other
       emulator has had its turn - a poll that stops responding still trips it. */
    {"Watchdog",watchdog_init, 0x00, 1 }

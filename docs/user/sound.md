@@ -38,8 +38,8 @@ Pi1MHz can capture Music 5000 output straight to a file on the SD
 card:
 
 ```
-*FX147,202,4 : *FX147,203,1     start recording
-*FX147,202,4 : *FX147,203,0     stop recording
+*FX147,202,3 : *FX147,203,1     start recording
+*FX147,202,3 : *FX147,203,0     stop recording
 ```
 
 On stopping, the capture is written to the SD card root as

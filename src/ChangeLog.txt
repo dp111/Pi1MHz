@@ -224,7 +224,7 @@ Whole-tree review with about ninety fixes.
 
 v.1.32
 FAT service (MMFS, helper ROM loads) does its SD work from the main loop, not in FIQ: helper ROM loads no longer lose bus writes and hang.
-Help screen is formatted ahead of time; the FIQ only releases the Beeb.
+Help screen is formatted ahead of time; the FIQ only releases the Beeb. The helper initialises after the emulators it reports on, so the first showing after boot has the hard disc and M5000 numbers; this renumbers the M5000 recorder to *FX147,202,3.
 Music 5000 WAV recordings carry the real sample rate (48000 with Audio_out=hdmi).
 Music 5000: phase-set loads the frequency register unscaled with Audio_out=hdmi (the 125/128 belongs to the increment only); modulate follows the hardware slot order, channel 7 selects channel 0 and channel 15 selects channel 8, not 7 to 8 and 15 to 0.
 VDU: circles, arcs, chords and sectors use the Master's own boundary walk and match it pixel for pixel in every mode, slanted chord and sector edges included; filled triangles and parallelograms are the span fill of their own PLOT-line edges (the collinear triangle included); ellipses use the algorithm of the GXR as MOS 3.20 has it, EOR outlines included; flood fills use the Master's span queue and line fills test against ECF patterns, so both match in every plot mode; VDU 31 in VDU 5 mode counts rows from the top of the graphics window; tools/vdutest now checks text, windows, colours, patterns and VDU 5 against a real Master 128 and runs from recorded results without an emulator, and tools/vdutest/shapes.py runs random PLOTs of every family through the Master's own VDU driver in an interpreter.

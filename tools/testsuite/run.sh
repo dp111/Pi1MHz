@@ -118,8 +118,8 @@ blind_probe() { # the echo went silent: is the Beeb hung, or only the Pico's ech
   # Type a command with a Pi-visible side effect (start+stop the WAV recorder)
   # and look for the file: a hung Beeb (SCSI handshake, IRQs off) cannot run it.
   local before after; before=$(list_wavs)
-  lines '*FX147,202,4|*FX147,203,1' '' 1500; sleep 1
-  lines '*FX147,202,4|*FX147,203,0' '' 1500; sleep 3
+  lines '*FX147,202,3|*FX147,203,1' '' 1500; sleep 1
+  lines '*FX147,202,3|*FX147,203,0' '' 1500; sleep 3
   after=$(list_wavs)
   local new; new=$(comm -13 <(echo "$before") <(echo "$after") | head -1)
   if [ -n "$new" ]; then
@@ -199,8 +199,8 @@ t_wav() {
   log "== WAV"
   local before after new
   before=$(list_wavs)
-  lines '*FX147,202,4|*FX147,203,1' '' 1500; sleep 1.5
-  lines '*FX147,202,4|*FX147,203,0' '' 1500; sleep 3
+  lines '*FX147,202,3|*FX147,203,1' '' 1500; sleep 1.5
+  lines '*FX147,202,3|*FX147,203,0' '' 1500; sleep 3
   after=$(list_wavs)
   new=$(comm -13 <(echo "$before") <(echo "$after") | head -1)
   if [ -n "$new" ]; then
