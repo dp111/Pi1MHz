@@ -231,3 +231,6 @@ Music 5000 modulate rings and phase-set load follow the hardware schematic.
 VDU circles, arcs, chords, sectors, ellipses, triangles, parallelograms and flood fills match the Master 128 pixel for pixel.
 VDU line and flood fills test against ECF patterns; VDU 31 in VDU 5 mode counts rows from the window top.
 tools/vdutest checks the VDU driver against a Master 128; tools/testsuite runs BASIC tests on a real Beeb.
+
+v.1.33
+F-code audio: muting one channel plays the other on both outputs (mono), as a VP415 does.
