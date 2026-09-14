@@ -67,12 +67,14 @@ __attribute__ ((section (".noinit"))) static uint8_t g_dot_pattern[64];
 static int     g_dot_pattern_len;
 static int     g_dot_pattern_index;
 
+#if 0 /* replaced by the Master's span queue (flood_spans, below) */
 #define FLOOD_QUEUE_SIZE 16384
 
 __attribute__ ((section (".noinit"))) static int16_t flood_queue_x[FLOOD_QUEUE_SIZE];
 __attribute__ ((section (".noinit"))) static int16_t flood_queue_y[FLOOD_QUEUE_SIZE];
 static int flood_queue_wr;
 static int flood_queue_rd;
+#endif
 
 // Rodders: Quadrant definitions for arc rendering
 typedef enum {
@@ -114,6 +116,7 @@ static inline int min(int a, int b) {
    return (a < b) ? a : b;
 }
 
+#if 0 /* replaced by the Master's circle walk (master_walk_t below) */
 static float calc_radius_float(int x1, int y1, int x2, int y2) {
    return sqrtf((float)((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1)));
 }
@@ -165,6 +168,7 @@ static int circle_ymax(const screen_mode_t *screen, int limit, int x) {
    int v = limit - (x << screen->xeigfactor) * (x << screen->xeigfactor);
    return v < 0 ? -1 : isqrt(v) >> screen->yeigfactor;
 }
+#endif
 
 static pixel_t get_pixel(screen_mode_t *screen, int x, int y) {
    if (x < g_x_min  || x > g_x_max || y < g_y_min || y > g_y_max) {
@@ -415,6 +419,7 @@ static int arc_point(unsigned int q, quadrant_t state, int x, int y, int xs, int
 }
 #endif
 
+#if 0 /* replaced by the Master's circle walk (master_walk_t below) */
 // Plot (xc +/- x, yc +/- y) once each - the guards matter under XOR
 static void plot_mirrored(screen_mode_t *screen, int xc, int yc, int x, int y, plotcol_t colour) {
    set_pixel(screen, xc + x, yc + y, colour);
@@ -453,6 +458,7 @@ static void fill_circle(screen_mode_t *screen, int xc, int yc, int limit, plotco
       }
    }
 }
+#endif
 
 #if 0 /* replaced by gxr_ellipse below, a transliteration of the ROM's own algorithm */
 static void draw_normal_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, plotcol_t colour) {
@@ -694,8 +700,17 @@ static void fill_sheared_ellipse(screen_mode_t *screen, int xc, int yc, int widt
 
 #endif /* old ellipse code */
 
-// ---- Ellipses: the GXR's own algorithm (Chapter 23 of Toby Nelson's
-// reassembly of GXR 1.20, which the Master's MOS carries unchanged).  Row n
+// ---- Ellipses: the GXR's own algorithm -------------------------------------
+//
+// Source: this is a C re-implementation of the ellipse routine (PLOT 192-207)
+// as the BBC Master's MOS 3.20 has it, (C) Acorn Computers Ltd, worked out
+// from Toby Nelson's annotated reassembly of the Graphics Extension ROM 1.20
+// it came from (https://github.com/tobylobster/GXR-pages, docs/gxr120_acme.a,
+// chapter 23) and Tom Seddon's MOS disassembly for where MOS 3.20 differs
+// (https://github.com/tom-seddon/acorn_mos_disassembly, src/ext.s65, the
+// outline's right-hand run).  No ROM code or data is included.
+//
+// Row n
 // of the ellipse, counted from the centre towards the third PLOT point, has
 // half-width (w/h)*sqrt(h*h - n*n) and a shear offset of n*s/h, computed in
 // 8.8 fixed point with an integer square root and rounded half up, with the
@@ -704,7 +719,7 @@ static void fill_sheared_ellipse(screen_mode_t *screen, int xc, int yc, int widt
 // modes with oblong pixels come out right by construction.  The outline
 // joins each row to its neighbours the way the ROM does: the left run
 // extends right until it meets the left ends of the rows above and below,
-// the right run extends left likewise, and each pixel is plotted once.
+// and the right run extends left likewise.
 
 static int64_t isqrt64(int64_t v) {
    if (v <= 0) return 0;
@@ -804,18 +819,16 @@ static void gxr_ellipse(screen_mode_t *screen, int xc, int yc, int w, int h, int
          for (x++; x < y; x++) {
             gxr_ellipse_point(screen, xc, yc, e.n, x, colour);
          }
-         x--;
-         e.C = x;                                            // rightmost pixel of the left run
-         if (x < e.R) {
-            // The ROM sorts D and B, then sorts the *leftmost* of them against
-            // C: the right run stops at max(min(D, B), C)
-            y = e.D < e.B ? e.D : e.B;
-            if (e.C > y) y = e.C;
-            x = e.R;
+         // MOS 3.20 then runs from the right point down to one past the
+         // lesser of D and B, whatever the left run covered.  (GXR 1.20 and
+         // MOS 5 stop the right run where the left run ended, so each pixel
+         // is plotted once; on a Master the overlap is plotted twice, which
+         // is invisible except under EOR and invert, where it cancels.)
+         y = e.D < e.B ? e.D : e.B;
+         x = e.R;
+         gxr_ellipse_point(screen, xc, yc, e.n, x, colour);
+         for (x--; x > y; x--) {
             gxr_ellipse_point(screen, xc, yc, e.n, x, colour);
-            for (x--; x > y; x--) {
-               gxr_ellipse_point(screen, xc, yc, e.n, x, colour);
-            }
          }
       }
       if (e.half < 0) break;
@@ -1216,6 +1229,7 @@ static int test_pixel_bg_ecf(screen_mode_t *screen, int x, int y) {
 
 #endif
 
+#if 0 /* replaced by the Master's flood fill (master_flood, below) */
 static int test_pixel_not_bg_col(screen_mode_t *screen, int x, int y) {
    // No need to explicitly test for the marker as the test will fail on marked bits anyway
    return get_pixel(screen, x, y) != g_bg_col;
@@ -1376,14 +1390,161 @@ static void prim_flood_fill_wrapper(screen_mode_t *screen, int x, int y, plotcol
       }
    }
 }
+#endif /* old flood fill */
+
+// Does (x,y) hold the foreground (or background) colour - or, if that is an
+// ECF, the pattern's colour at that pixel?  The OS's line and flood fills
+// test against the pattern, not a solid colour.
+static bool pixel_matches_gcol(screen_mode_t *screen, bool fg, int x, int y) {
+   plotmode_t plotmode = fg ? g_fg_plotmode : g_bg_plotmode;
+   pixel_t colour = fg ? g_fg_col : g_bg_col;
+   if (plotmode >= PM_ECF) {
+      int ecfnum = (plotmode >> 4) - 1;
+      if (ecfnum >= 4) {
+         ecfnum = ((x - g_ecf_origin_x) >> g_ecf_giant_shift) & 3;
+      }
+      colour = g_ecf_pattern[ecfnum][(((y - g_ecf_origin_y) & 7) << 3) + ((x - g_ecf_origin_x) & g_ecf_mask)];
+   }
+   return screen->get_pixel(screen, x, y) == colour;
+}
+
+// ---- Flood fill: the Master's span queue ------------------------------------
+//
+// Source: this is a C re-implementation of the flood fill (PLOT 128-143) in
+// Acorn's MOS 3.20 for the BBC Master 128, (C) Acorn Computers Ltd - &9CF9 in
+// the utilities ROM with the line-fill helpers at &DC1C-&DD9E in the MOS -
+// worked out from Tom Seddon's disassembly
+// (https://github.com/tom-seddon/acorn_mos_disassembly, src/utils.s65 and
+// src/mos.s65).  No ROM code or data is included.
+//
+// A pixel is fillable when it holds the background colour or pattern (PLOT
+// 128-135), or does not hold the foreground (136-143), tested on the screen
+// as it stands - so a fill in OR, EOR or invert can meet its own pixels, which
+// is where the Master and a mark-then-paint fill part company.  The start
+// span is filled and queued; each span taken from the queue then has the row
+// above and the row below scanned between its ends, and every fillable run
+// found there is filled at once and queued.  The Master's queue holds 255
+// spans and the whole fill stops if it overflows; a screen taller than the
+// BBC's 256 rows gets a proportionally longer queue.
+
+#define FLOOD_SPANS_MAX 4096u
+
+typedef struct {
+   int16_t left, right, y;
+} flood_span_t;
+
+__attribute__ ((section (".noinit"))) static flood_span_t flood_spans[FLOOD_SPANS_MAX];
+
+typedef struct {
+   screen_mode_t *screen;
+   plotcol_t colour;
+   bool fg;                      // test against the foreground, else the background
+   bool invert;                  // fill what does not match
+   unsigned rd, wr, size;
+} flood_t;
+
+static bool flood_fillable(const flood_t *f, int x, int y) {
+   if (x < g_x_min || x > g_x_max || y < g_y_min || y > g_y_max) {
+      return false;
+   }
+   return pixel_matches_gcol(f->screen, f->fg, x, y) != f->invert;
+}
+
+static int flood_run_right(const flood_t *f, int x, int y) {
+   while (x < g_x_max && flood_fillable(f, x + 1, y)) {
+      x++;
+   }
+   return x;
+}
+
+static bool flood_queue(flood_t *f, int left, int right, int y) {
+   unsigned next = (f->wr + 1u) % f->size;
+   if (next == f->rd) {
+      return false;                              // full: the Master gives up
+   }
+   f->wr = next;
+   flood_spans[next].left = (int16_t)left;
+   flood_spans[next].right = (int16_t)right;
+   flood_spans[next].y = (int16_t)y;
+   return true;
+}
+
+// Fill the runs on row y within the parent span; false if the queue overflowed
+static bool flood_row(flood_t *f, flood_span_t p, int y) {
+   int x = p.left;
+   if (flood_fillable(f, x, y)) {
+      int right = flood_run_right(f, x, y);
+      int left = x;
+      while (left > g_x_min && flood_fillable(f, left - 1, y)) {
+         left--;
+      }
+      draw_hline(f->screen, left, right, y, f->colour);
+      if (!flood_queue(f, left, right, y)) {
+         return false;
+      }
+      if (right >= p.right) {
+         return true;
+      }
+      x = right + 1;
+   }
+   for (;;) {
+      if (x > g_x_max) {
+         return true;
+      }
+      // skip what cannot be filled, stopping at the parent's right end
+      while (x < p.right && !flood_fillable(f, x + 1, y)) {
+         x++;
+      }
+      if (x >= p.right) {
+         return true;
+      }
+      x++;
+      int right = flood_run_right(f, x, y);
+      draw_hline(f->screen, x, right, y, f->colour);
+      if (!flood_queue(f, x, right, y)) {
+         return false;
+      }
+      if (right >= p.right) {
+         return true;
+      }
+      x = right + 1;
+   }
+}
+
+static void master_flood(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_t mode) {
+   flood_t f;
+   f.screen = screen;
+   f.colour = colour;
+   f.fg = f.invert = (mode == AF_TOFGD);
+   f.rd = f.wr = 0;
+   f.size = (screen->height > 256) ? FLOOD_SPANS_MAX : 256u;
+   if (!flood_fillable(&f, x, y)) {
+      return;
+   }
+   int right = flood_run_right(&f, x, y);
+   int left = x;
+   while (left > g_x_min && flood_fillable(&f, left - 1, y)) {
+      left--;
+   }
+   draw_hline(screen, left, right, y, colour);
+   flood_queue(&f, left, right, y);
+   while (f.rd != f.wr) {
+      f.rd = (f.rd + 1u) % f.size;
+      flood_span_t p = flood_spans[f.rd];
+      if (p.y != g_y_max && !flood_row(&f, p, p.y + 1)) {
+         return;
+      }
+      if (p.y != g_y_min && !flood_row(&f, p, p.y - 1)) {
+         return;
+      }
+   }
+}
+
 
 void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_t mode, fill_result_t *res) {
    int x_left = x;
    int x_right = x;
 
-
-   pixel_t fg_col = g_fg_col;
-   pixel_t bg_col = g_bg_col;
 
    int error = 0;
 
@@ -1391,13 +1552,13 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
 
    switch(mode) {
    case HL_LR_NB:
-      if (offscreen || get_pixel(screen, x, y) != bg_col) {
+      if (offscreen || !pixel_matches_gcol(screen, false, x, y)) {
          error = 1;
       } else {
-         while (x_right < g_x_max && get_pixel(screen, x_right + 1, y) == bg_col) {
+         while (x_right < g_x_max && pixel_matches_gcol(screen, false, x_right + 1, y)) {
             x_right++;
          }
-         while (x_left > g_x_min && get_pixel(screen, x_left - 1, y) == bg_col) {
+         while (x_left > g_x_min && pixel_matches_gcol(screen, false, x_left - 1, y)) {
             x_left--;
          }
          draw_hline(screen, x_left, x_right, y, colour);
@@ -1408,10 +1569,10 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
    case HL_RO_BG:
       if (offscreen) {
          error = 1;
-      } else if (get_pixel(screen, x, y) == bg_col) {
+      } else if (pixel_matches_gcol(screen, false, x, y)) {
          error = 2;
       } else {
-         while (x_right < g_x_max && get_pixel(screen, x_right + 1, y) != bg_col) {
+         while (x_right < g_x_max && !pixel_matches_gcol(screen, false, x_right + 1, y)) {
             x_right++;
          }
          draw_hline(screen, x_left, x_right, y, colour);
@@ -1420,13 +1581,13 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
       break;
 
    case HL_LR_FG:
-      if (offscreen || get_pixel(screen, x, y) == fg_col) {
+      if (offscreen || pixel_matches_gcol(screen, true, x, y)) {
          error = 1;
       } else {
-         while (x_right < g_x_max && get_pixel(screen, x_right + 1, y) != fg_col) {
+         while (x_right < g_x_max && !pixel_matches_gcol(screen, true, x_right + 1, y)) {
             x_right++;
          }
-         while (x_left > g_x_min && get_pixel(screen, x_left - 1, y) != fg_col) {
+         while (x_left > g_x_min && !pixel_matches_gcol(screen, true, x_left - 1, y)) {
             x_left--;
          }
          draw_hline(screen, x_left, x_right, y, colour);
@@ -1437,10 +1598,10 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
    case HL_RO_NF:
       if (offscreen) {
          error = 1;
-      } else if (get_pixel(screen, x, y) != fg_col) {
+      } else if (!pixel_matches_gcol(screen, true, x, y)) {
          error = 2;
       } else {
-         while (x_right < g_x_max && get_pixel(screen, x_right + 1, y) == fg_col) {
+         while (x_right < g_x_max && pixel_matches_gcol(screen, true, x_right + 1, y)) {
             x_right++;
          }
          draw_hline(screen, x_left, x_right, y, colour);
@@ -1449,12 +1610,10 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
       break;
 
    case AF_NONBG:
-      prim_flood_fill_wrapper(screen, x, y, colour, AF_NONBG);
-      return; // Don't update the graphics cursors
-
    case AF_TOFGD:
-      prim_flood_fill_wrapper(screen, x, y, colour, AF_TOFGD);
-      return; // Don't update the graphics cursors
+      master_flood(screen, x, y, colour, mode);
+      res->drawn = false;   // a flood leaves the graphics cursors alone
+      return;
 
    default:
 #ifdef DEBUG_VDU
@@ -1485,6 +1644,7 @@ void prim_fill_triangle(screen_mode_t *screen, int x1, int y1, int x2, int y2, i
 }
 
 
+#if 0 /* replaced by the Master's walk (master_walk_t below): both older arc/chord/sector implementations */
 #ifdef USE_NEW_SECTOR_SEGMENT_FILL
 
 static void draw_h_line_with_sector_segment_filter(screen_mode_t *sr, int xc, int yc, int x1, int x2, int y, uint32_t col, uint32_t action,int start_dx,int start_dy, int end_dx, int end_dy, uint32_t is_segment, uint32_t is_minor_sector) {
@@ -1892,6 +2052,508 @@ void prim_fill_sector(screen_mode_t *screen, int xc, int yc, int x1, int y1, int
 }
 
 #endif
+#endif /* older arc/chord/sector implementations */
+
+// ---- Circles, arcs, chords and sectors: the Master's own walk -------------
+//
+// Source: this is a C re-implementation of the circle, arc, chord and sector
+// routines (PLOT 144-183) in Acorn's MOS 3.20 for the BBC Master 128, (C)
+// Acorn Computers Ltd - &9923 sector, &9935 chord, &9999 arc, &9944 and
+// &99A4 circles in the utilities ROM, with their helpers at &D24D-&D77B in
+// the MOS - worked out from Tom Seddon's disassembly
+// (https://github.com/tom-seddon/acorn_mos_disassembly, src/utils.s65 and
+// src/mos.s65).  No ROM code or data is included.
+//
+// MOS 3.20 draws all five of these the same way, and this reproduces it
+// pixel for pixel (measured with tools/vdutest and per-row traces of the ROM;
+// see docs/dev/vdu-rom-conformance.md).  It walks the boundary of one disc,
+// x*x + y*y <= r2 + isqrt(r2) in doubled units for oblong pixels, from its
+// bottom pixel up the right-hand side to its top, gathering each row's
+// extent.  An arc plots the walked pixels; a filled shape fills each row.
+// A sector or chord also follows two edges with the OS line stepper - for a
+// sector the two radii, for a chord the chord in both directions - holding
+// edge A at its rightmost pixel on a row and edge B at its leftmost.  A flag
+// byte, updated whenever the walk lands on the start point or on the point
+// where the end radius leaves the circle, and again at the centre row,
+// picks which of the circle's edges and the two lines bound each row, and
+// can split a row in two.  Everything here is in pixels relative to the
+// centre, y up, keeping the 16-bit wrap the ROM's arithmetic depends on.
+
+typedef struct {
+   int16_t  x, y;        // current pixel
+   int16_t  tx, ty;      // where the edge ends
+   uint16_t adx, ady;
+   int16_t  err;
+   int8_t   sx, sy;      // step directions
+} walk_edge_t;
+
+static void walk_edge_init(walk_edge_t *e, int fx, int fy, int tx, int ty) {
+   int16_t dx = (int16_t)(tx - fx);
+   int16_t dy = (int16_t)(ty - fy);
+   e->x = (int16_t)fx;
+   e->y = (int16_t)fy;
+   e->tx = (int16_t)tx;
+   e->ty = (int16_t)ty;
+   e->sx = (dx < 0) ? -1 : 1;
+   e->sy = (dy < 0) ? -1 : 1;
+   e->adx = (uint16_t)((dx < 0) ? -dx : dx);
+   e->ady = (uint16_t)((dy < 0) ? -dy : dy);
+   uint16_t longest = (e->adx > e->ady) ? e->adx : e->ady;
+   if (!((dy - dx) & 0x8000)) {          // the 6502's N flag of dy - dx
+      longest = (uint16_t)(longest - 1);
+   }
+   e->err = (int16_t)((longest >> 1) - e->ady);
+}
+
+// One call moves either along x, or to the next row (possibly with an x step)
+static void walk_edge_step(walk_edge_t *e) {
+   if (e->err >= 0) {
+      e->err = (int16_t)(e->err - e->ady);
+      e->x = (int16_t)(e->x + e->sx);
+      return;
+   }
+   e->err = (int16_t)(e->err + e->adx);
+   if (e->err >= 0) {
+      e->err = (int16_t)(e->err - e->ady);
+      e->x = (int16_t)(e->x + e->sx);
+   }
+   e->y = (int16_t)(e->y + e->sy);
+}
+
+// Step along the current row to its last pixel, or until the edge ends.
+// Never more than adx steps on one row; the bound only guards the IRQ path.
+static void walk_edge_to_row_end(walk_edge_t *e) {
+   for (unsigned n = e->adx + 1u; n && e->err >= 0 && !(e->x == e->tx && e->y == e->ty); n--) {
+      walk_edge_step(e);
+   }
+}
+
+static void walk_edge_next_row(walk_edge_t *e) {
+   for (unsigned n = e->adx + 1u; n && e->err >= 0; n--) {
+      walk_edge_step(e);
+   }
+   walk_edge_step(e);
+}
+
+static uint32_t isqrt_u32(uint32_t v) {
+   uint32_t root = 0;
+   uint32_t bit = 1ul << 30;
+   while (bit > v) {
+      bit >>= 2;
+   }
+   while (bit) {
+      if (v >= root + bit) {
+         v -= root + bit;
+         root = (root >> 1) + bit;
+      } else {
+         root >>= 1;
+      }
+      bit >>= 2;
+   }
+   return root;
+}
+
+// The square of a 16-bit value as the ROM computes it: |v| times |v|
+static uint32_t square16(int v) {
+   int16_t s = (int16_t)v;
+   uint16_t a = (uint16_t)((s < 0) ? -s : s);
+   return (uint32_t)a * a;
+}
+
+enum { WALK_CIRCLE = 0, WALK_ARC = 1, WALK_CHORD = 2, WALK_SECTOR = 3 };
+
+#define WALK_B_ACTIVE   0x10u    // edge B is being followed
+#define WALK_A_ACTIVE   0x20u    // edge A is being followed
+#define WALK_LEFT_OFF   0x40u    // the circle's left edge is not part of the shape
+#define WALK_RIGHT_OFF  0x80u    // nor its right edge
+
+typedef struct {
+   screen_mode_t *screen;
+   int xc, yc;                   // centre, screen pixels
+   plotcol_t colour;
+   int kind;
+   int xs, ys;                   // 1 for the doubled axis of an oblong-pixel mode
+   int16_t sx, sy;               // start point, relative
+   int16_t ex, ey;               // where the end radius meets the circle
+   uint32_t r2;                  // r2 + isqrt(r2), in doubled units
+   int16_t radius;               // walk radius in pixels of y
+   int16_t cx, cy;               // the walk
+   int16_t dx2, dy2, decision;   //   and its incremental terms
+   int phase;                    // 0 below the centre row, 1 from it up
+   int32_t budget;
+   uint8_t flags;                // the shape's state
+   uint8_t point_flags;          // what applies to the pixel being added
+   uint8_t row_flags;            // what applies to the row being filled
+   int16_t left_x, left_y, right_x, right_y;
+   walk_edge_t a, b;
+} master_walk_t;
+
+// Radius from the start point; false if the ROM gives up (radius >= 8192)
+static bool walk_radius(master_walk_t *w) {
+   uint32_t r2 = square16(w->sx * (1 << w->xs)) + square16(w->sy * (1 << w->ys));
+   w->r2 = r2 + isqrt_u32(r2);
+   uint32_t r = isqrt_u32(w->r2);
+   if (r >= 0x2000u) {
+      return false;
+   }
+   w->radius = (int16_t)(r >> w->ys);
+   return true;
+}
+
+// The walk's x on row y, as the ROM finds it when setting up
+static void walk_x_at(master_walk_t *w, int y) {
+   uint32_t x = isqrt_u32(w->r2 - square16(y * (1 << w->ys))) & 0xFFFFu;
+   w->cy = (int16_t)y;
+   w->cx = (int16_t)((int16_t)x >> w->xs);
+}
+
+static void walk_init(master_walk_t *w) {
+   w->phase = 0;
+   w->cx = 0;
+   w->cy = (int16_t)-w->radius;
+   w->dx2 = 0;
+   w->dy2 = (int16_t)(2 * w->cy * (1 << w->ys));
+   w->decision = (int16_t)(w->r2 - square16(w->cy * (1 << w->ys)));
+   w->budget = 64 * ((int32_t)w->radius + 4);
+}
+
+static bool walk_x(master_walk_t *w, int d) {
+   w->cx = (int16_t)(w->cx + d);
+   for (int i = 0; i < (1 << w->xs); i++) {
+      if (d > 0) {
+         w->dx2 = (int16_t)(w->dx2 + 1); w->decision = (int16_t)(w->decision - w->dx2); w->dx2 = (int16_t)(w->dx2 + 1);
+      } else {
+         w->dx2 = (int16_t)(w->dx2 - 1); w->decision = (int16_t)(w->decision + w->dx2); w->dx2 = (int16_t)(w->dx2 - 1);
+      }
+   }
+   return w->decision >= 0;
+}
+
+static bool walk_y(master_walk_t *w, int d) {
+   w->cy = (int16_t)(w->cy + d);
+   for (int i = 0; i < (1 << w->ys); i++) {
+      if (d > 0) {
+         w->dy2 = (int16_t)(w->dy2 + 1); w->decision = (int16_t)(w->decision - w->dy2); w->dy2 = (int16_t)(w->dy2 + 1);
+      } else {
+         w->dy2 = (int16_t)(w->dy2 - 1); w->decision = (int16_t)(w->decision + w->dy2); w->dy2 = (int16_t)(w->dy2 - 1);
+      }
+   }
+   return w->decision >= 0;
+}
+
+// Next pixel of the walk.  False once the budget is spent: the Master never
+// finishes some tiny shapes in MODE 2 and 5, and this must not hang instead.
+static bool walk_step(master_walk_t *w) {
+   if (--w->budget < 0) {
+      return false;
+   }
+   if (w->phase == 0) {
+      if (w->cy == 0) {
+         w->phase = 1;
+      } else if (walk_x(w, +1)) {
+         return true;
+      }
+   }
+   if (!walk_y(w, +1) && !walk_x(w, -1)) {
+      walk_y(w, -1);
+   }
+   return true;
+}
+
+static void walk_init_edges(master_walk_t *w) {
+   if (w->kind == WALK_SECTOR) {
+      if (w->phase == 0) {          // below the centre: both radii inwards
+         walk_edge_init(&w->a, w->ex, w->ey, 0, 0);
+         walk_edge_init(&w->b, w->sx, w->sy, 0, 0);
+      } else {                      // above: both outwards
+         walk_edge_init(&w->a, 0, 0, w->sx, w->sy);
+         walk_edge_init(&w->b, 0, 0, w->ex, w->ey);
+      }
+   } else {                         // a chord, both ways
+      walk_edge_init(&w->a, w->ex, w->ey, w->sx, w->sy);
+      walk_edge_init(&w->b, w->sx, w->sy, w->ex, w->ey);
+   }
+   if (w->a.sx > 0) {
+      walk_edge_to_row_end(&w->a);   // A: rightmost pixel on its row
+   }
+   if (w->b.sx < 0) {
+      walk_edge_to_row_end(&w->b);   // B: leftmost
+   }
+}
+
+// The walk landing exactly on the start point or the end point
+static void walk_event(master_walk_t *w, int px, int py, uint8_t on, uint8_t off) {
+   if (py != w->cy) {
+      return;
+   }
+   uint8_t side = WALK_RIGHT_OFF;
+   if (px < 0) {
+      side = WALK_LEFT_OFF;
+      px = (int16_t)-px;
+   }
+   if (px != w->cx) {
+      return;
+   }
+   if (w->flags & 2) {
+      uint8_t mark = (uint8_t)(((w->flags & 1) ? on : 0x30u) >> 2);
+      if (!(w->flags & mark)) {
+         w->flags |= (uint8_t)(mark | on);
+      } else {
+         w->flags &= (uint8_t)~(mark | off);
+      }
+   }
+   if (!(w->flags & side)) {
+      w->flags |= side;              // takes effect from the next pixel
+      return;
+   }
+   w->flags &= (uint8_t)~side;       // takes effect on this pixel
+   w->point_flags = w->flags;
+   w->row_flags = w->flags;
+}
+
+static void walk_events(master_walk_t *w) {
+   w->point_flags = w->flags;
+   if (w->flags & 3) {
+      walk_event(w, w->sx, w->sy, WALK_B_ACTIVE, WALK_A_ACTIVE);
+      walk_event(w, w->ex, w->ey, WALK_A_ACTIVE, WALK_B_ACTIVE);
+   }
+}
+
+// Gather one row of the walk; true when the top of the circle is done
+static bool walk_row(master_walk_t *w, bool *hung) {
+   w->row_flags = w->flags;
+   w->left_x = w->right_x = 0;
+   w->left_y = w->right_y = w->cy;
+   int16_t row = w->cy;
+   for (;;) {
+      walk_events(w);
+      if (!(w->point_flags & WALK_RIGHT_OFF) && (uint16_t)w->cx >= (uint16_t)w->right_x) {
+         w->right_x = w->cx;
+      }
+      if (!(w->point_flags & WALK_LEFT_OFF) && (uint16_t)w->cx >= (uint16_t)w->left_x) {
+         w->left_x = w->cx;
+      }
+      if (w->cx == 0 && w->phase) {
+         w->left_x = (int16_t)-w->left_x;
+         return true;
+      }
+      if (!walk_step(w)) {
+         *hung = true;
+         return true;
+      }
+      if ((w->cy & 0xFF) != (row & 0xFF)) {
+         w->left_x = (int16_t)-w->left_x;
+         return false;
+      }
+   }
+}
+
+// At the centre row a sector swaps to its outward edges
+static void walk_centre_row(master_walk_t *w) {
+   if (w->left_y != 0 || w->kind != WALK_SECTOR) {
+      return;
+   }
+   if ((w->row_flags & WALK_RIGHT_OFF) && (w->row_flags & WALK_A_ACTIVE)) {
+      w->right_x = w->a.x; w->right_y = w->a.y;
+   }
+   if ((w->row_flags & WALK_LEFT_OFF) && (w->row_flags & WALK_B_ACTIVE)) {
+      w->left_x = w->b.x; w->left_y = w->b.y;
+   }
+   walk_init_edges(w);
+   uint8_t f = w->flags ^ 0x3Cu;
+   w->flags = (uint8_t)((f & ~0x30u) | ((f & 0x10u) << 1) | ((f & 0x20u) >> 1));
+   if ((w->flags & WALK_A_ACTIVE) && w->a.x > w->right_x) {
+      w->right_x = w->a.x; w->right_y = w->a.y;
+   }
+   if ((w->flags & WALK_B_ACTIVE) && w->b.x <= w->left_x) {
+      w->left_x = w->b.x; w->left_y = w->b.y;
+   }
+   w->row_flags = 0;
+}
+
+static void walk_fill(master_walk_t *w, int x1, int y, int x2) {
+   draw_hline(w->screen, w->xc + x1, w->xc + x2, w->yc + y, w->colour);
+}
+
+// Set up an arc, chord or sector: the point where the end radius leaves the
+// circle, and which way round the shape goes.  False if the ROM draws nothing
+// here or falls back to *degenerate.
+static bool walk_setup(master_walk_t *w, int ex, int ey, bool *degenerate) {
+   *degenerate = false;
+   w->flags = (uint8_t)w->kind;
+   if (!walk_radius(w)) {
+      return false;
+   }
+   if (w->radius == 0) {
+      *degenerate = true;
+      return false;
+   }
+   walk_edge_t e;
+   walk_edge_init(&e, 0, 0, ex, ey);
+   walk_x_at(w, e.y);
+   bool inside = true;
+   int16_t px, py, d;
+   for (int32_t n = 4 * (int32_t)w->radius + 64; ; ) {
+      px = e.x;
+      py = e.y;
+      bool new_row = e.err < 0;
+      walk_edge_step(&e);
+      if (new_row) {
+         walk_x_at(w, e.y);
+      }
+      d = (int16_t)(w->cx - ((e.x < 0) ? -e.x : e.x));
+      if (d < 0 || --n < 0) {
+         break;
+      }
+      inside = (d != 0);
+   }
+   if (d == -1 && inside && (e.x & 0xFF) != (px & 0xFF)) {
+      if ((e.sx < 0) != (e.sy < 0)) {
+         py = e.y;
+      } else {
+         px = e.x;
+      }
+   }
+   w->ex = px;
+   w->ey = py;
+   walk_radius(w);
+   bool reverse;
+   if ((px < 0) != (w->sx < 0)) {
+      reverse = px < 0;
+   } else if (w->sy != py) {
+      reverse = (w->sy < py) != (px < 0);
+   } else if (w->sx != px) {
+      reverse = !(w->sx < px) != (py < 0);
+   } else {
+      *degenerate = true;
+      return false;
+   }
+   if (reverse) {
+      w->flags |= WALK_RIGHT_OFF | WALK_LEFT_OFF;
+   }
+   return true;
+}
+
+// kind: WALK_CIRCLE with fill false/true for PLOT 144/152, or an arc, chord
+// or sector from centre (xc,yc) through start (x1,y1) towards end (x2,y2)
+static void master_walk(screen_mode_t *screen, int kind, bool fill, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
+   master_walk_t w;
+   memset(&w, 0, sizeof w);
+   w.screen = screen;
+   w.xc = xc;
+   w.yc = yc;
+   w.colour = colour;
+   w.kind = kind;
+   w.xs = (screen->xeigfactor > screen->yeigfactor) ? screen->xeigfactor - screen->yeigfactor : 0;
+   w.ys = (screen->yeigfactor > screen->xeigfactor) ? screen->yeigfactor - screen->xeigfactor : 0;
+   w.sx = (int16_t)(x1 - xc);
+   w.sy = (int16_t)(y1 - yc);
+   if (kind == WALK_CIRCLE) {
+      if (!walk_radius(&w)) {
+         return;
+      }
+      if (w.radius == 0) {
+         set_pixel(screen, xc, yc, colour);
+         return;
+      }
+   } else {
+      bool degenerate;
+      if (!walk_setup(&w, (int16_t)(x2 - xc), (int16_t)(y2 - yc), &degenerate)) {
+         if (degenerate) {
+            if (kind == WALK_SECTOR) {
+               prim_draw_line(screen, x1, y1, xc, yc, colour, 0);   // the radius
+            } else {
+               set_pixel(screen, x1, y1, colour);
+            }
+         }
+         return;
+      }
+      fill = (kind != WALK_ARC);
+   }
+   walk_init(&w);
+
+   if (!fill) {
+      walk_events(&w);
+      if (!(w.point_flags & WALK_RIGHT_OFF)) {
+         set_pixel(screen, xc + w.cx, yc + w.cy, colour);
+      }
+      for (;;) {
+         if (!walk_step(&w)) {
+            return;
+         }
+         walk_events(&w);
+         if (!(w.point_flags & WALK_RIGHT_OFF)) {
+            set_pixel(screen, xc + w.cx, yc + w.cy, colour);
+         }
+         if (w.cx == 0) {
+            return;
+         }
+         if (!(w.point_flags & WALK_LEFT_OFF)) {
+            set_pixel(screen, xc - w.cx, yc + w.cy, colour);
+         }
+      }
+   }
+
+   if (kind != WALK_CIRCLE) {
+      walk_init_edges(&w);
+   }
+   for (;;) {
+      if (w.flags & WALK_A_ACTIVE) {
+         walk_edge_next_row(&w.a);
+         if (w.a.sx > 0) {
+            walk_edge_to_row_end(&w.a);
+         }
+      }
+      if (w.flags & WALK_B_ACTIVE) {
+         walk_edge_next_row(&w.b);
+         if (w.b.sx < 0) {
+            walk_edge_to_row_end(&w.b);
+         }
+      }
+      bool hung = false;
+      bool done = walk_row(&w, &hung);
+      if (hung) {
+         return;
+      }
+      walk_centre_row(&w);
+      uint8_t f = w.row_flags;
+      if (f & WALK_A_ACTIVE) {
+         if (f & WALK_RIGHT_OFF) {
+            if (f & WALK_LEFT_OFF) {
+               walk_fill(&w, w.b.x, w.b.y, w.a.x);
+            } else {
+               walk_fill(&w, w.left_x, w.left_y, w.a.x);
+            }
+         } else if (w.a.x != w.b.x) {
+            walk_fill(&w, w.b.x, w.b.y, w.right_x);
+            walk_fill(&w, w.left_x, w.left_y, w.a.x);
+         } else {
+            walk_fill(&w, w.left_x, w.left_y, w.right_x);
+         }
+      } else if (!(f & WALK_RIGHT_OFF)) {
+         if (f & WALK_LEFT_OFF) {
+            walk_fill(&w, w.b.x, w.b.y, w.right_x);
+         } else {
+            walk_fill(&w, w.left_x, w.left_y, w.right_x);
+         }
+      }
+      if (done) {
+         return;
+      }
+   }
+}
+
+void prim_draw_arc(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
+   master_walk(screen, WALK_ARC, false, xc, yc, x1, y1, x2, y2, colour);
+}
+
+void prim_fill_chord(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
+   master_walk(screen, WALK_CHORD, true, xc, yc, x1, y1, x2, y2, colour);
+}
+
+void prim_fill_sector(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
+   master_walk(screen, WALK_SECTOR, true, xc, yc, x1, y1, x2, y2, colour);
+}
 
 // Block Copy/Move
 void prim_move_copy_rectangle(screen_mode_t *screen, int x1, int y1, int x2, int y2, int x3, int y3, int move) {
@@ -2008,12 +2670,11 @@ void prim_fill_parallelogram(screen_mode_t *screen, int x1, int y1, int x2, int 
 
 
 void prim_draw_circle(screen_mode_t *screen, int xc, int yc, int xr, int yr, plotcol_t colour) {
-   draw_circle(screen, xc, yc, calc_radius_limit(screen, xc, yc, xr, yr), colour);
+   master_walk(screen, WALK_CIRCLE, false, xc, yc, xr, yr, 0, 0, colour);
 }
 
 void prim_fill_circle(screen_mode_t *screen, int xc, int yc, int xr, int yr, plotcol_t colour) {
-   // Fill the circle
-   fill_circle(screen, xc, yc, calc_radius_limit(screen, xc, yc, xr, yr), colour);
+   master_walk(screen, WALK_CIRCLE, true, xc, yc, xr, yr, 0, 0, colour);
 }
 
 void prim_draw_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, int shear, plotcol_t colour) {

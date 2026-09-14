@@ -45,6 +45,25 @@ The Raspberrypi Engineers who have helped me with this project.
   ioctl ordering and settle delays. <https://iosoft.blog> · `src/wifi/sdio.c`
 - **Howard Hinnant's** `days`↔`civil` date algorithms are used for the WebDAV
   timestamp conversion. `src/wifi/webserver.c`
+- **Acorn MOS 3.20 and GXR 1.20 graphics** — `src/framebuffer/primitives.c`
+  re-implements in C two sets of Acorn ROM routines, © Acorn Computers Ltd:
+  the circle, arc, chord and sector drawing of the BBC Master's MOS 3.20
+  (`master_walk`), worked out from Tom Seddon's MOS disassembly
+  <https://github.com/tom-seddon/acorn_mos_disassembly>, and the ellipse
+  drawing of the Graphics Extension ROM 1.20 (`gxr_ellipse`), worked out from
+  Toby Nelson's GXR reassembly <https://github.com/tobylobster/GXR-pages>.
+  No ROM code or data is included. The rest of the VDU driver's BBC
+  behaviour (lines, triangles, text, VDU 5 and so on) was matched by testing
+  against the ROMs, not taken from their code; each source file names what
+  it follows.
+
+## Test tools
+
+- **beebjit** — Chris Evans' BBC Micro emulator, run headless as the
+  reference for `tools/vdutest/`. <https://github.com/scarybeasts/beebjit>
+- `tools/vdutest/mos65.py` runs the MOS 3.20 VDU code in a small 65C12
+  interpreter as a faster reference. The Acorn ROM images it and beebjit use
+  are read from the beebjit tree at run time and are not part of Pi1MHz.
 
 ## Redistributed firmware
 

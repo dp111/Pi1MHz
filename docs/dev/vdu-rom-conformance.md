@@ -4,12 +4,18 @@
 > 3.20), covers text, windows, scrolling, colours, patterns and VDU 5 as well
 > as PLOT, and runs on any PC from recorded results.** `tools/vdutest/` builds
 > Pi1MHz's own `src/framebuffer/*` for the PC and diffs it, pixel for pixel
-> and colour for colour, against the ROM under beebjit. **193 of 200 cases
-> match.** Triangles, parallelograms, ellipses, and arcs/chords/sectors in
-> every mode were brought to a match on 2026-09-13; what remains is listed
-> under "What the Master does that we do not". The earlier OS 1.20 + GXR oracle is still there as
-> `--machine b`. The suite is not part of the build; run it by hand after
-> touching `src/framebuffer/`.
+> and colour for colour, against the ROM under beebjit. **197 of 200 cases
+> match**; the three left are VDU 27 (a deliberate extension) and VDU 23,16
+> (not implemented). `tools/vdutest/shapes.py` now also runs **random PLOTs
+> of every family except sprites through the Master's whole VDU driver** in
+> an interpreter and compares full screens. Floods and line fills now follow
+> the Master's own algorithm and ellipse outlines its MOS 3.20 run rule, so
+> every graphics family matches in every plot mode. Random *text* runs
+> (`shapes.py 200 3 text`, opt-in) still match only 60 of 200 even without
+> VDU 23,16: the text engine is the next known gap. Hand-picked cases had hidden that the previous sector
+> code matched barely a fifth of random sectors. The earlier OS 1.20 +
+> GXR oracle is still there as `--machine b`. The suite is not part of the
+> build; run it by hand after touching `src/framebuffer/`.
 
 ## Why
 
@@ -142,6 +148,55 @@ All four produce plausible, wrong data rather than an error.
    `grep` treats a capture as binary and silently reports nothing. Use
    `grep -a`.
 
+## Checking against the ROM's code itself
+
+Hand-picked cases are not enough: the suite's 25 arc, chord and sector cases
+all passed while the code they tested drew barely a fifth of random sectors
+the way the Master does. Three tools in `tools/vdutest/` close that gap.
+
+* **`mos65.py`** is a small 65C12 interpreter that runs the Master's own VDU
+  driver. `MasterVDU(mode)` starts from a memory snapshot taken under beebjit
+  just after `MODE m` (at the VDU 25 handler &C69B of a MOVE: screen clear,
+  queue empty, ANDY and the utilities ROM paged in), feeds bytes to
+  `outputToVDU` at &C027, pages sideways ROMs on writes to ROMSEL, and
+  decodes screen memory into logical colours. It reproduces all 200 suite
+  cases (one needs the explanation in the traps below) and runs about 20
+  PLOTs a second in Python. `master_plot` and `master_circle` are the older
+  single-routine hooks it grew from; they reproduced every one of 227 row
+  traces from beebjit.
+* **`shapes.py`** sends random VDU sequences - GCOL modes, colours, sometimes
+  an ECF pattern, a few shapes for fills to meet, then one PLOT from any
+  family but sprites - through the host build and through the interpreter,
+  in MODEs 0, 1, 2, 4 and 5, and compares whole screens, colour included.
+  `./shapes.py 1500 7` takes about eight minutes; name families to narrow
+  it (`./shapes.py 300 1 flood ellipse`).
+* **`rowtrace.py`** records the rows the real ROM fills under beebjit, via a
+  breakpoint on &DAE8 that dumps page 3. It is how the interpreter was
+  validated, and works for any routine that fills rows. Its docstring lists
+  the three traps that each lost every row.
+
+Traps found building it, each of which silently gave wrong pixels:
+
+* **Screen memory is laid out a character cell at a time**, not a scanline
+  at a time: BBC video forms the address from the 6845's character address
+  times 8 plus the raster line, so each byte column of a character row holds
+  eight bytes. The MOS's own address calculation (`windGADDR`) confirms it.
+* **MOS 3.20's extension code is in sideways slot 14**, after VIEW (beebjit's
+  `view.rom`); ellipses and move/copy page it in through ROMSEL.
+* **POINT returns -1 outside the graphics window**, so the golden files
+  cannot see pixels outside a window a case leaves set (`gwin-24-clg`); the
+  interpreter reads memory and can. The host's DUMP clips the same way POINT
+  does, which is why that case still matches.
+* **A full-screen MODE 0 flood takes about five million instructions**: give
+  the interpreter a budget well above that before calling anything a hang.
+
+The code was read from Tom Seddon's rebuildable MOS disassembly
+(github.com/tom-seddon/acorn_mos_disassembly, `src/utils.s65` from &9923 and
+`src/mos.s65` from &D24D) with Toby Nelson's GXR 1.20 reassembly
+(github.com/tobylobster/GXR-pages) for the parts they share. The walk
+routines are uncommented there; the semantics recorded above came from
+reading them and checking every step against the interpreter.
+
 ## What has been checked
 
 Findings confirmed on the ROM:
@@ -163,12 +218,31 @@ Findings confirmed on the ROM:
   row above, `VDU 13` returns to the window's left edge, `VDU 127` blanks the
   cell behind the cursor in the background colour, and `VDU 31,x,y` counts
   column x from the window's left edge and **row y down from its top**.
-* **Circles in every mode** are the disc `x*x + y*y <= (R + h)^2` in OS
-  units, R the exact unrounded distance to the radius point and h half the
-  *smaller* pixel dimension (half a pixel in MODE 4, 1 unit in MODE 0, 2 units
-  in MODE 5); the outline is that disc's row and column extremes. Fitted on
-  MODE 0, 4 and 5 outlines and fills; `calc_radius_limit` now does this, and
-  arcs, chords and sectors take their rows from the same disc.
+* **Circles, arcs, chords and sectors are one walk** (`master_walk` in
+  `primitives.c`). The Master's own code, not the GXR's, which differs from
+  it: GXR 1.20 on a model B and MOS 3.20 disagree on 10 of the suite's
+  cases. The walk traces the boundary of `x*x + y*y <= r2 + isqrt(r2)`, r2
+  the squared distance to the start point in doubled units on the doubled
+  axis of MODE 0, 2 and 5, from the bottom pixel up the right-hand side to
+  the top, and records each row's extent. An arc or circle outline plots the
+  walked pixels; a filled shape fills each row. A sector or chord also
+  follows two edges with the OS line stepper - the two radii, inwards below
+  the centre row and outwards above it, or the chord in both directions -
+  holding one at its rightmost pixel per row and the other at its leftmost.
+  A flag byte, changed when the walk lands on the start point or on the
+  point where the end radius leaves the circle, and permuted at the centre
+  row, chooses which of the circle edges and the two lines bound each row,
+  and can split a row in two. The earlier fitted disc rule,
+  `(R + h)^2`, matched every suite case but about one random circle in
+  twenty.
+* **Degenerate circle-family shapes**: radius 0 plots the centre (circles)
+  or the start point (arcs, chords); a sector with radius 0 or whose end lies
+  on its start radius draws that radius as a PLOT line; a radius of 8192
+  pixels or more draws nothing.
+* **The Master hangs on some tiny shapes** - for instance a sector of radius
+  1 in MODE 5 never returns, even in 60 billion emulated cycles. The driver
+  bounds the walk (64 steps per pixel of radius, far beyond any real shape)
+  and its row stepping, so these draw something and return instead.
 * **Filled triangles and parallelograms** are the span fill of their own
   edges drawn as PLOT lines. `prim_draw_line`'s Bresenham is now a shared
   `line_stepper_t`, and `span_fill` walks the edges into 256-row bands of
@@ -206,14 +280,14 @@ From `tools/vdutest/vdutest.py --golden` as of 2026-09-13 (193/200).
 
 | family | cases | status |
 |--------|-------|--------|
-| lines 0-63, points 64-71 | 9 | **exact** (plus 864 line instances in 2c6ef25) |
-| triangles 80-87, parallelograms 112-119 | 7 | **exact** (span fill, 2026-09-13) |
-| horizontal fills 72-79 .. 120-127 | 5 | **exact** |
-| rectangles 96-103, move/copy 184-191 | 4 | **exact** |
-| flood fills 128-143 | 2 | **exact** |
-| circles 144-159, MODE 0/4/5, off-axis radius | 14 | **exact** (MODE 0/5 fixed 2026-09-13) |
-| arcs, chords, sectors 160-183 | 25 | exact in every mode with axis-aligned or radial edges; **4 slanted cases differ by 1-11 pixels** |
-| ellipses 192-207 | 32 | **exact** (GXR algorithm, 2026-09-13) |
+| lines 0-63, points 64-71 | 9 | **exact**, and 200 random |
+| triangles 80-87, parallelograms 112-119 | 7 | **exact**, and 200 random |
+| horizontal fills 72-79 .. 120-127 | 5 | **exact**, and random in every plot mode and ECF |
+| rectangles 96-103, move/copy 184-191 | 4 | **exact**, and 300 random |
+| flood fills 128-143 | 2 | **exact**, and random in every plot mode, queue overflow included |
+| circles 144-159, MODE 0/4/5, off-axis radius | 14 | **exact**, and 3000 random shapes match the ROM's code |
+| arcs, chords, sectors 160-183 | 25 | **exact**, likewise (Master walk, 2026-09-13) |
+| ellipses 192-207 | 32 | **exact**, and random in every plot mode |
 | sprites 232-239 | 0 | not testable on a Master; needs `--machine b` |
 | GCOL modes and colours | 8 | **exact** |
 | ECF and dot patterns | 11 | **exact** |
@@ -233,38 +307,36 @@ The assessment. In order of how likely a Beeb program is to notice.
    print in the bottom-right cell without scrolling. Cases
    `cursor-23-16-*` measure it; `cursor-23-16-noscroll` and `-vdu10-wrap`
    differ today.
-2. **Sectors and segments with slanted edges** differ by a few pixels along
-   the edge (`sector-181-slant-b`, `chord-173-slant-b`, `m0-sector-181-slant`,
-   one pixel on `sector-181-offaxis`). The ROM tracks the start, end and
-   chord lines row by row with its line stepper and fills from the line's
-   pixel; ours fills from the exact edge and then adds the line pixels, which
-   is close but not the same thing. GXR chapter 16 has the algorithm.
-3. **`VDU 27` is an escape here** (`VDU 27,c` injects edit-cursor keys
+2. **`VDU 27` is an escape here** (`VDU 27,c` injects edit-cursor keys
    136-139 and prints any other byte literally); on a Master it is a no-op
    and the next byte is an ordinary VDU byte. A deliberate extension noted in
    the source; a Beeb program that sends 27 followed by a control code will
    behave differently.
-4. **`VDU 23,0` CRTC registers** other than 10 and 11 (cursor shape) are
+3. **`VDU 23,0` CRTC registers** other than 10 and 11 (cursor shape) are
    ignored - 12/13 (screen start, used for hardware scrolling) and 8
    (interlace) in particular. Not testable through `POINT`.
-5. **Not observable with this method, so untested:** MODE 7 teletext
+4. **Not observable with this method, so untested:** MODE 7 teletext
    rendering, `VDU 19` palette and flashing colours, `VDU 23,9/10` flash
    rates, the cursor's own appearance, paged mode `VDU 14/15`, printer
    `VDU 2/3`. Shadow modes 128-135 are treated as their base mode, which is
    right for the pixels.
-6. **Sprites** (`VDU 23,27`, PLOT 232-239) exist here and in the GXR but not
+5. **Sprites** (`VDU 23,27`, PLOT 232-239) exist here and in the GXR but not
    on a Master; untested either way.
+6. **The text engine differs from the Master in ordinary use.** Random runs
+   of printable text, cursor codes, VDU 30/31, CLS, text windows, colours and
+   VDU 4/5 (`shapes.py 200 3 text`) match in only 60 of 200, with VDU 23,16
+   untouched. Not yet minimised or diagnosed; the Master keeps a "column 81"
+   pending-wrap state and moves the VDU 5 cursor in pixels, and ours does
+   neither, which is where to look first.
+
+Fixed 2026-09-14, all found by `shapes.py`: flood fills in OR/AND/EOR/invert
+(now the Master's span queue: fill as found, test the live screen, 255-span
+queue that abandons the fill when it overflows), horizontal fills in an ECF
+pattern (they test against the pattern, not a solid colour), and ellipse
+outlines in EOR/invert (MOS 3.20 runs the right-hand run down past where the
+left run ended, so the overlap is plotted twice).
 
 ## Still to do
-
-### Sectors and segments with slanted edges
-
-Transliterate the GXR's arc/sector/segment code (chapter 16 of the
-reassembly, `.plotCircleSector` and `.circleDoLineAndQuadrantInitialisation`)
-the way the ellipse was: it walks the circle pixel by pixel, tracks the
-start, end and chord lines with the line stepper, and fills each row from the
-tracked line pixel with a per-quadrant state byte. Until then the four
-slanted cases above differ by a few edge pixels.
 
 ### VDU 23,16
 
