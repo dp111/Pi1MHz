@@ -444,8 +444,14 @@ void audio_set_channel_mute(bool left, bool right)
    place). */
 static inline uint32_t *pack_frame(dma_sink_t *s, int32_t l, int32_t r, uint32_t *dst)
 {
-   if (mute_l) l = 0;
-   if (mute_r) r = 0;
+   /* One channel muted = the other on both outputs (a VP415 with one
+      sound track selected plays it mono), not silence on one side. */
+   bool one_track = mute_l != mute_r;
+   if (one_track) {
+      if (mute_l) l = r; else r = l;
+   } else if (mute_l) {
+      l = r = 0;
+   }
    if (s == &hdmi_sink) {
       hdmi_audio_pack((int16_t)l, (int16_t)r, dst);
       return dst + 2;
@@ -457,9 +463,10 @@ static inline uint32_t *pack_frame(dma_sink_t *s, int32_t l, int32_t r, uint32_t
       return dst;
    }
    uint32_t w;
-   if (owner_mono) {
-      /* a mono producer (BeebSID) put the same full-scale sample in both
-         slots: the pin takes it as-is, no summing */
+   if (owner_mono || one_track) {
+      /* a mono producer (BeebSID), or one track copied to both slots
+         above: the same full-scale sample in both, the pin takes it
+         as-is, no summing */
       w = pwm_pack(l, &err_l);
    } else {
       /* the Beeb pin (PWM1) is mono: it gets L+R, unhalved and saturated,
