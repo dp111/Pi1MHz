@@ -1,16 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <string.h>
 #include <inttypes.h>
 #include "primitives.h"
 #include "framebuffer.h"
 #include "fonts.h"
 
-#define USE_NEW_SECTOR_SEGMENT_FILL
-
 static pixel_t    max_col;
-static pixel_t    marker;
 static plotmode_t g_fg_plotmode;
 static pixel_t    g_fg_col;
 static plotmode_t g_bg_plotmode;
@@ -67,31 +63,6 @@ __attribute__ ((section (".noinit"))) static uint8_t g_dot_pattern[64];
 static int     g_dot_pattern_len;
 static int     g_dot_pattern_index;
 
-#if 0 /* replaced by the Master's span queue (flood_spans, below) */
-#define FLOOD_QUEUE_SIZE 16384
-
-__attribute__ ((section (".noinit"))) static int16_t flood_queue_x[FLOOD_QUEUE_SIZE];
-__attribute__ ((section (".noinit"))) static int16_t flood_queue_y[FLOOD_QUEUE_SIZE];
-static int flood_queue_wr;
-static int flood_queue_rd;
-#endif
-
-// Rodders: Quadrant definitions for arc rendering
-typedef enum {
-   Q_NONE,
-   Q_START,
-   Q_END,
-   Q_BOTH,
-   Q_ALL
-} quadrant_t;
-
-#ifndef USE_NEW_SECTOR_SEGMENT_FILL
-static int16_t arc_end_x;
-static int16_t arc_end_y;
-static int16_t arc_fill_x;
-static int16_t arc_fill_y;
-#endif
-
 #define NUM_SPRITES 256
 
 typedef struct {  
@@ -116,59 +87,15 @@ static inline int min(int a, int b) {
    return (a < b) ? a : b;
 }
 
-#if 0 /* replaced by the Master's circle walk (master_walk_t below) */
-static float calc_radius_float(int x1, int y1, int x2, int y2) {
-   return sqrtf((float)((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1)));
-}
-
-#ifndef USE_NEW_SECTOR_SEGMENT_FILL
-static int calc_radius(int x1, int y1, int x2, int y2) {
-    return (int)(calc_radius_float(x1, y1, x2, y2) + 0.5F);
-}
-#endif
-
-// Exact integer square root: the largest n with n*n <= v
-static int isqrt(int v) {
-   float root = sqrtf((float)v);
-   int n = (int)root;
-   while (n > 0 && n * n > v) n--;
-   while ((n + 1) * (n + 1) <= v) n++;
-   return n;
-}
-
-// The OS's circle is the set of pixels inside x*x + y*y <= (R + h)^2 in OS
-// units, where R is the *exact* distance to the point PLOT was given - not
-// rounded to a whole pixel first - and h is half the smaller pixel dimension:
-// half a pixel in MODE 4, 1 unit in MODE 0, 2 units in MODE 5.  The squared
-// distance d2 is an exact integer, so the limit is too:
-//    floor((R + h)^2) = d2 + h*h + floor(2*h*R) = d2 + h*h + isqrt(4*h*h*d2)
-// and for h = 1/2 (a mode whose pixels are one unit wide)
-//    floor(d2 + R + 1/4)  = d2 + (isqrt(16*d2) + 1) / 4.
-// Measured against MOS 3.20 in MODES 0, 4 and 5 (tools/vdutest).
-static int calc_radius_limit(const screen_mode_t *screen, int xc, int yc, int xr, int yr) {
-   int dx = (xr - xc) << screen->xeigfactor;
-   int dy = (yr - yc) << screen->yeigfactor;
-   int d2 = dx * dx + dy * dy;
-   int m  = screen->xeigfactor < screen->yeigfactor ? screen->xeigfactor : screen->yeigfactor;
-   if (m == 0) {
-      return d2 + ((isqrt(16 * d2) + 1) >> 2);
+// The colour an ECF plot mode gives pixel (x,y): patterns 1-4, or 5 (giant)
+// taking the pattern from the pixel's column
+static inline pixel_t ecf_colour(plotmode_t plotmode, int x, int y) {
+   int ecfnum = (plotmode >> 4) - 1;
+   if (ecfnum >= 4) {
+      ecfnum = ((x - g_ecf_origin_x) >> g_ecf_giant_shift) & 3;
    }
-   int h = 1 << (m - 1);
-   return d2 + h * h + isqrt(4 * h * h * d2);
+   return g_ecf_pattern[ecfnum][(((y - g_ecf_origin_y) & 7) << 3) + ((x - g_ecf_origin_x) & g_ecf_mask)];
 }
-
-// The widest |x| (in pixels) on row y of the disc, or -1 if the row misses it
-static int circle_xmax(const screen_mode_t *screen, int limit, int y) {
-   int v = limit - (y << screen->yeigfactor) * (y << screen->yeigfactor);
-   return v < 0 ? -1 : isqrt(v) >> screen->xeigfactor;
-}
-
-// The highest |y| (in pixels) on column x of the disc, or -1 if it misses
-static int circle_ymax(const screen_mode_t *screen, int limit, int x) {
-   int v = limit - (x << screen->xeigfactor) * (x << screen->xeigfactor);
-   return v < 0 ? -1 : isqrt(v) >> screen->yeigfactor;
-}
-#endif
 
 static pixel_t get_pixel(screen_mode_t *screen, int x, int y) {
    if (x < g_x_min  || x > g_x_max || y < g_y_min || y > g_y_max) {
@@ -201,17 +128,11 @@ static void set_pixel(screen_mode_t *screen, int x, int y, plotcol_t col) {
       break;
    }
    if (plotmode >= PM_ECF) {
-      int ecfnum = (plotmode >> 4) - 1;
-      // Giant ECF
-      if (ecfnum >= 4) {
-         ecfnum = ((x - g_ecf_origin_x) >> g_ecf_giant_shift) & 3;
-      }
-      colour = g_ecf_pattern[ecfnum][(((y - g_ecf_origin_y) & 7) << 3) + ((x - g_ecf_origin_x) & g_ecf_mask)];
+      colour = ecf_colour(plotmode, x, y);
       plotmode &= 0x0F;
    }
    if (plotmode != PM_NORMAL) {
-      // Make sure the marker bits are clear; this is safe in all modes
-      pixel_t existing = screen->get_pixel(screen, x, y) & ~marker;
+      pixel_t existing = screen->get_pixel(screen, x, y);
       switch (plotmode) {
       case PM_OR:
          colour |= existing;
@@ -276,430 +197,6 @@ static void draw_hline(screen_mode_t *screen, int x1, int x2, int y, plotcol_t c
    }
 }
 
-#if 0 /* replaced by span_fill: the OS fills between its own PLOT-line edges */
-static void fill_bottom_flat_triangle(screen_mode_t *screen, int x1, int y1, int x2, int y2, int x3, int y3, plotcol_t colour) {
-   // Note: y2 and y3 are the same, so the below test is slightly redundant
-   if (y1 == y2 || y1 == y3) {
-      draw_hline(screen, (int)x2, (int)x3, y1, colour);
-   } else {
-      float invslope1 = ((float) (x2 - x1)) / ((float) (y1 - y2));
-      float invslope2 = ((float) (x3 - x1)) / ((float) (y1 - y3));
-      float curx1 = 0.5f + (float)x1;
-      float curx2 = curx1;
-      for (int scanlineY = y1; scanlineY >= y2; scanlineY--) {
-         draw_hline(screen, (int)curx1, (int)curx2, scanlineY, colour);
-         curx1 += invslope1;
-         curx2 += invslope2;
-      }
-   }
-}
-
-static void fill_top_flat_triangle(screen_mode_t *screen, int x1, int y1, int x2, int y2, int x3, int y3, plotcol_t colour) {
-   // Note: y1 and y2 are the same, so the below test is slightly redundant
-   if (y1 == y3 || y2 == y3) {
-      draw_hline(screen, (int)x1, (int)x2, y3, colour);
-   } else {
-      float invslope1 = ((float) (x3 - x1)) / ((float) (y1 - y3));
-      float invslope2 = ((float) (x3 - x2)) / ((float) (y2 - y3));
-      float curx1 = 0.5f + (float)x3;
-      float curx2 = curx1;
-      for (int scanlineY = y3; scanlineY <= y1; scanlineY++) {
-         draw_hline(screen, (int)curx1, (int)curx2, scanlineY, colour);
-         curx1 -= invslope1;
-         curx2 -= invslope2;
-      }
-   }
-}
-#endif
-
-#ifndef USE_NEW_SECTOR_SEGMENT_FILL
-// Rodders: Arc drawing routines, used by chord and sector fills
-static unsigned int arc_quadrant(int x, int y) {
-   if (x >= 0) {
-      if (y >= 0) {
-         return 0;
-      } else {
-         return 3;
-      }
-   } else {
-      if (y >= 0) {
-         return 1;
-      } else {
-         return 2;
-      }
-   }
-}
-
-static int arc_point(unsigned int q, quadrant_t state, int x, int y, int xs, int ys, int xe, int ye) {
-   if (state == Q_ALL) {
-      return TRUE;
-   }
-   if (state == Q_NONE) {
-      return FALSE;
-   }
-   switch (q) {
-   case 0:
-      if (state == Q_START && x <= xs && y >= ys) {
-         return TRUE;
-      }
-      if (state == Q_END   && x >= xe && y <= ye) {
-         return TRUE;
-      }
-      if (state == Q_BOTH) {
-         if (xs > xe) {
-            if ((x <= xs && y >= ys) && (x >= xe && y <= ye)) {
-               return TRUE;
-            }
-         } else {
-            if ((x <= xs && y >= ys) || (x >= xe && y <= ye)) {
-               return TRUE;
-            }
-         }
-      }
-      break;
-   case 1:
-      if (state == Q_START && x <= xs && y <= ys) {
-         return TRUE;
-      }
-      if (state == Q_END   && x >= xe && y >= ye) {
-         return TRUE;
-      }
-      if (state == Q_BOTH) {
-         if (xs > xe) {
-            if ((x <= xs && y <= ys) && (x >= xe && y >= ye)) {
-               return TRUE;
-            }
-         } else {
-            if ((x <= xs && y <= ys) || (x >= xe && y >= ye)) {
-               return TRUE;
-            }
-         }
-      }
-      break;
-   case 2:
-      if (state == Q_START && x >= xs && y <= ys) {
-         return TRUE;
-      }
-      if (state == Q_END   && x <= xe && y >= ye) {
-         return TRUE;
-      }
-      if (state == Q_BOTH) {
-         if (xs < xe) {
-            if ((x >= xs && y <= ys) && (x <= xe && y >= ye)) {
-               return TRUE;
-            }
-         } else {
-            if ((x >= xs && y <= ys) || (x <= xe && y >= ye)) {
-               return TRUE;
-            }
-         }
-      }
-      break;
-   case 3:
-      if (state == Q_START && x >= xs && y >= ys) {
-         return TRUE;
-      }
-      if (state == Q_END   && x <= xe && y <= ye) {
-         return TRUE;
-      }
-      if (state == Q_BOTH) {
-         if (xs < xe) {
-            if ((x >= xs && y >= ys) && (x <= xe && y <= ye)) {
-               return TRUE;
-            }
-         } else {
-            if ((x >= xs && y >= ys) || (x <= xe && y <= ye)) {
-               return TRUE;
-            }
-         }
-      }
-      break;
-   }
-   return FALSE;
-}
-#endif
-
-#if 0 /* replaced by the Master's circle walk (master_walk_t below) */
-// Plot (xc +/- x, yc +/- y) once each - the guards matter under XOR
-static void plot_mirrored(screen_mode_t *screen, int xc, int yc, int x, int y, plotcol_t colour) {
-   set_pixel(screen, xc + x, yc + y, colour);
-   if (x > 0) set_pixel(screen, xc - x, yc + y, colour);
-   if (y > 0) {
-      set_pixel(screen, xc + x, yc - y, colour);
-      if (x > 0) set_pixel(screen, xc - x, yc - y, colour);
-   }
-}
-
-// The OS's outline is the leftmost and rightmost pixel of every row of the
-// disc plus the top and bottom pixel of every column: in a square-pixel mode
-// that is the usual octant walk, and in MODE 0 or 5 it is what makes the flat
-// runs at the sides or the top come out the width the ROM draws them.
-static void draw_circle(screen_mode_t *screen, int xc, int yc, int limit, plotcol_t colour) {
-   int ytop = circle_ymax(screen, limit, 0);
-   int xtop = circle_xmax(screen, limit, 0);
-   for (int y = 0; y <= ytop; y++) {
-      plot_mirrored(screen, xc, yc, circle_xmax(screen, limit, y), y, colour);
-   }
-   for (int x = 0; x <= xtop; x++) {
-      int y = circle_ymax(screen, limit, x);
-      if (circle_xmax(screen, limit, y) != x) {      // not already a row extreme
-         plot_mirrored(screen, xc, yc, x, y, colour);
-      }
-   }
-}
-
-static void fill_circle(screen_mode_t *screen, int xc, int yc, int limit, plotcol_t colour) {
-   // Same disc, a row at a time
-   for (int y = circle_ymax(screen, limit, 0); y >= 0; y--) {
-      int x = circle_xmax(screen, limit, y);
-      draw_hline(screen, xc - x, xc + x, yc + y, colour);
-      if (y > 0) {
-         draw_hline(screen, xc - x, xc + x, yc - y, colour);
-      }
-   }
-}
-#endif
-
-#if 0 /* replaced by gxr_ellipse below, a transliteration of the ROM's own algorithm */
-static void draw_normal_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, plotcol_t colour) {
-   // Deal with the trivial case of single point
-   if (width == 0 && height == 0) {
-      set_pixel(screen, xc, yc, colour);
-      return;
-   }
-   // Draw the ellipse
-   int a2 = width * width;
-   int b2 = height * height;
-   int fa2 = 4 * a2, fb2 = 4 * b2;
-   int x, y, sigma;
-   /* First half */
-   for (x = 0, y = height, sigma = 2 * b2 + a2 * (1 - 2 * height); b2 * x <= a2 * y; x++) {
-      set_pixel(screen, xc + x, yc + y, colour);
-      set_pixel(screen, xc + x, yc - y, colour);
-      if (x > 0) {
-         set_pixel(screen, xc - x, yc + y, colour);
-         set_pixel(screen, xc - x, yc - y, colour);
-      }
-      if (sigma >= 0) {
-         sigma += fa2 * (1 - y);
-         y--;
-      }
-      sigma += b2 * ((4 * x) + 6);
-   }
-   /* Second half */
-   for (x = width, y = 0, sigma = 2 * a2 + b2 * (1 - 2 * width); a2 * y <= b2 * x; y++) {
-      set_pixel(screen, xc + x, yc + y, colour);
-      set_pixel(screen, xc - x, yc + y, colour);
-      if (y > 0) {
-         set_pixel(screen, xc + x, yc - y, colour);
-         set_pixel(screen, xc - x, yc - y, colour);
-      }
-      if (sigma >= 0) {
-         sigma += fb2 * (1 - x);
-         x--;
-      }
-      sigma += a2 * ((4 * y) + 6);
-   }
-}
-
-static void draw_sheared_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, int shear, plotcol_t colour) {
-   // Draw the ellipse
-   if (height == 0) {
-      draw_hline(screen, xc - width, xc + width, yc, colour);
-   } else {
-      float axis_ratio = (float) width / (float) height;
-      float shear_per_line = (float) (shear) / (float) height;
-      float xshear = 0.0;
-      int odd_sequence = 1;
-      int y_squared = 0;
-      int h_squared = height * height;
-      // Maintain the left/right coordinated of the previous, current, and next slices
-      // to allow lines to be drawn to make sure the pixels are connected
-      int xl_prev = 0;
-      int xr_prev = 0;
-      int xl_this = 0;
-      int xr_this = 0;
-      // Start at -1 to allow the pipeline to fill
-      for (int y = -1; y < height; y++) {
-         float x = axis_ratio * sqrtf((float)(h_squared - y_squared));
-         int xl_next = (int) (xshear - x);
-         int xr_next = (int) (xshear + x);
-         xshear += shear_per_line;
-         // It's probably quicker to just use y * y
-         y_squared += odd_sequence;
-         odd_sequence += 2;
-         // Initialize the pipeline for the first slice
-         if (y == 0) {
-            xl_prev = -xr_next;
-            xr_prev = -xl_next;
-         }
-         // Draw the slice as a single horizontal line
-         if (y >= 0) {
-            // Left line runs from xl_this rightwards to max(xl_this, max(xl_prev, xl_next) - 1)
-            int xl = max(xl_this, max(xl_prev, xl_next) - 1);
-            // Right line runs from xr_this leftwards to min(xr_this, min(xr_prev, xr_next) + 1)
-            int xr = min(xr_this, min(xr_prev, xr_next) + 1);
-            draw_hline(screen, xc + xl_this, xc + xl, yc + y, colour);
-            draw_hline(screen, xc + xr_this, xc + xr, yc + y, colour);
-            if (y > 0) {
-               draw_hline(screen, xc - xl_this, xc - xl, yc - y, colour);
-               draw_hline(screen, xc - xr_this, xc - xr, yc - y, colour);
-            }
-         }
-         xl_prev = xl_this;
-         xr_prev = xr_this;
-         xl_this = xl_next;
-         xr_this = xr_next;
-      }
-      // Draw the final slice
-      draw_hline(screen, xc + xl_this, xc + xr_this, yc + height, colour);
-      draw_hline(screen, xc - xl_this, xc - xr_this, yc - height, colour);
-   }
-}
-
-#if 0
-static void draw_sheared_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, int shear, plotcol_t colour) {
-   // Draw the ellipse
-   int a2 = width * width;
-   int b2 = height * height;
-   int fa2 = 4 * a2, fb2 = 4 * b2;
-   int x, y, sigma;
-   /* First half */
-   for (x = 0, y = height, sigma = 2 * b2 + a2 * (1 - 2 * height); b2 * x <= a2 * y; x++) {
-      int s = shear * y / height;
-      set_pixel(screen, xc + x + s, yc + y, colour);
-      set_pixel(screen, xc + x - s, yc - y, colour);
-      if (x > 0) {
-         set_pixel(screen, xc - x + s, yc + y, colour);
-         set_pixel(screen, xc - x - s, yc - y, colour);
-      }
-      if (sigma >= 0) {
-         sigma += fa2 * (1 - y);
-         y--;
-      }
-      sigma += b2 * ((4 * x) + 6);
-   }
-   /* Second half */
-   for (x = width, y = 0, sigma = 2 * a2 + b2 * (1 - 2 * width); a2 * y <= b2 * x; y++) {
-      int s = shear * y / height;
-      set_pixel(screen, xc + x + s, yc + y, colour);
-      set_pixel(screen, xc - x + s, yc + y, colour);
-      if (y > 0) {
-         set_pixel(screen, xc + x - s, yc - y, colour);
-         set_pixel(screen, xc - x - s, yc - y, colour);
-      }
-      if (sigma >= 0) {
-         sigma += fb2 * (1 - x);
-         x--;
-      }
-      sigma += a2 * ((4 * y) + 6);
-   }
-}
-#endif
-
-static void fill_normal_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, plotcol_t colour) {
-   // Deal with the trivial case of single point
-   if (width == 0 && height == 0) {
-      set_pixel(screen, xc, yc, colour);
-      return;
-   }
-   // Fill the ellipse
-   int a2 = width * width;
-   int b2 = height * height;
-   int fa2 = 4 * a2, fb2 = 4 * b2;
-   int x, y, sigma;
-   /* First half */
-   for (x = 0, y = height, sigma = 2 * b2 + a2 * (1 - 2 * height); b2 * x <= a2 * y; x++) {
-      if (sigma >= 0) {
-         draw_hline(screen, xc + x, xc - x, yc + y, colour);
-         draw_hline(screen, xc + x, xc - x, yc - y, colour);
-         sigma += fa2 * (1 - y);
-         y--;
-      }
-      sigma += b2 * ((4 * x) + 6);
-   }
-   /* Second half */
-   for (x = width, y = 0, sigma = 2 * a2 + b2 * (1 - 2 * width); a2 * y <= b2 * x; y++) {
-      draw_hline(screen, xc + x, xc - x, yc + y, colour);
-      if (y > 0) {
-         draw_hline(screen, xc + x, xc - x, yc - y, colour);
-      }
-      if (sigma >= 0) {
-         sigma += fb2 * (1 - x);
-         x--;
-      }
-      sigma += a2 * ((4 * y) + 6);
-   }
-}
-
-static void fill_sheared_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, int shear, plotcol_t colour) {
-   // Fill the ellipse
-   if (height == 0) {
-      draw_hline(screen, xc - width, xc + width, yc, colour);
-   } else {
-      float axis_ratio = (float) width / (float) height;
-      float shear_per_line = (float) (shear) / (float) height;
-      float xshear = 0.0;
-      int odd_sequence = 1;
-      int y_squared = 0;
-      int h_squared = height * height;
-      for (int y = 0; y <= height; y++) {
-         float x = axis_ratio * sqrtf((float)(h_squared - y_squared));
-         int xl = (int) (xshear - x);
-         int xr = (int) (xshear + x);
-         xshear += shear_per_line;
-         // It's probably quicker to just use y * y
-         y_squared += odd_sequence;
-         odd_sequence += 2;
-         // Draw the slice as a single horizontal line
-         draw_hline(screen, xc + xl, xc + xr, yc + y, colour);
-         if (y > 0) {
-            draw_hline(screen, xc - xl, xc - xr, yc - y, colour);
-         }
-      }
-   }
-}
-
-#if 0
-static void fill_sheared_ellipse(screen_mode_t *screen, int xc, int yc, int width, int height, int shear, plotcol_t colour) {
-   int a2 = width * width;
-   // Fill the ellipse
-   int b2 = height * height;
-   int fa2 = 4 * a2, fb2 = 4 * b2;
-   int x, y, sigma;
-   /* First half */
-   for (x = 0, y = height, sigma = 2 * b2 + a2 * (1 - 2 * height); b2 * x <= a2 * y; x++) {
-      if (sigma >= 0) {
-         int s = shear * y / height;
-         draw_hline(screen, xc + x + s, xc - x + s, yc + y, colour);
-         draw_hline(screen, xc + x - s, xc - x - s, yc - y, colour);
-         sigma += fa2 * (1 - y);
-         y--;
-      }
-      sigma += b2 * ((4 * x) + 6);
-   }
-   /* Second half */
-   for (x = width, y = 0, sigma = 2 * a2 + b2 * (1 - 2 * width); a2 * y <= b2 * x; y++) {
-      int s = shear * y / height;
-      draw_hline(screen, xc + x + s, xc - x + s, yc + y, colour);
-      if (y > 0) {
-         draw_hline(screen, xc + x - s, xc - x - s, yc - y, colour);
-      }
-      if (sigma >= 0) {
-         sigma += fb2 * (1 - x);
-         x--;
-      }
-      sigma += a2 * ((4 * y) + 6);
-   }
-}
-#endif
-
-// ==========================================================================
-// Public methods
-// ==========================================================================
-
-#endif /* old ellipse code */
-
 // ---- Ellipses: the GXR's own algorithm -------------------------------------
 //
 // Source: this is a C re-implementation of the ellipse routine (PLOT 192-207)
@@ -721,13 +218,23 @@ static void fill_sheared_ellipse(screen_mode_t *screen, int xc, int yc, int widt
 // extends right until it meets the left ends of the rows above and below,
 // and the right run extends left likewise.
 
-static int64_t isqrt64(int64_t v) {
-   if (v <= 0) return 0;
-   double root = sqrt((double)v);
-   int64_t n = (int64_t)root;
-   while (n > 0 && n * n > v) n--;
-   while ((n + 1) * (n + 1) <= v) n++;
-   return n;
+// The largest n with n*n <= v, bit by bit: exact, and no floating point
+static uint32_t isqrt_u64(uint64_t v) {
+   uint64_t root = 0;
+   uint64_t bit = (uint64_t)1 << 62;
+   while (bit > v) {
+      bit >>= 2;
+   }
+   while (bit) {
+      if (v >= root + bit) {
+         v -= root + bit;
+         root = (root >> 1) + bit;
+      } else {
+         root >>= 1;
+      }
+      bit >>= 2;
+   }
+   return (uint32_t)root;
 }
 
 typedef struct {
@@ -749,7 +256,8 @@ static void gxr_ellipse_update(gxr_ellipse_t *e) {          // .updateEllipse
    e->D = e->R;
    e->L = e->A;
    e->R = e->B;
-   int64_t root = isqrt64((e->hh2 - e->squares) << 16);     // 256 * sqrt(h*h - n*n)
+   int64_t left = e->hh2 - e->squares;                       // h*h - n*n, negative past the top
+   int64_t root = (left > 0) ? isqrt_u64((uint64_t)left << 16) : 0;   // 256 * sqrt(h*h - n*n)
    int64_t p = ((e->aspect * root) & 0xFFFFFFFF) >> 8;      // 32-bit product, top 24 bits
    e->B = (int)((e->acc + p + 128) >> 8);                    // round half up, as the ROM
    e->A = (int)((e->acc - p + 128) >> 8);
@@ -841,8 +349,6 @@ static void gxr_ellipse(screen_mode_t *screen, int xc, int yc, int w, int h, int
 void prim_init (const screen_mode_t *screen) {
    // max_col is used when calculating the logical inverse of the existing pixel
    max_col = (pixel_t) screen->ncolour;
-   // marker is used when flood filling, if there are spare bits in the frame buffer
-   marker = (pixel_t) (screen->ncolour + 1);
 }
 
 void prim_set_fg_col(const screen_mode_t *screen, pixel_t colour) {
@@ -1173,8 +679,11 @@ static void span_edge(int x1, int y1, int x2, int y2, int ybase, int rows) {
    for (int i = 0; i <= s.longest; i++) {
       int r = s.y - ybase;
       if (r >= 0 && r < rows) {
-         if (s.x < span_min[r]) span_min[r] = (int16_t)s.x;
-         if (s.x > span_max[r]) span_max[r] = (int16_t)s.x;
+         // Held to one pixel either side of the window, so a corner far off
+         // screen cannot wrap int16; draw_hline clips the rest
+         int x = (s.x < g_x_min - 1) ? g_x_min - 1 : (s.x > g_x_max + 1) ? g_x_max + 1 : s.x;
+         if (x < span_min[r]) span_min[r] = (int16_t)x;
+         if (x > span_max[r]) span_max[r] = (int16_t)x;
       }
       line_stepper_next(&s);
    }
@@ -1209,189 +718,6 @@ static void span_fill(screen_mode_t *screen, int n, const int *xs, const int *ys
 }
 
 
-typedef int (*fill_test_fn)(screen_mode_t *, int, int);
-
-#ifndef USE_NEW_SECTOR_SEGMENT_FILL
-
-static int test_pixel_bg_col(screen_mode_t *screen, int x, int y) {
-   return get_pixel(screen, x, y) == g_bg_col;
-}
-
-static int test_pixel_bg_ecf(screen_mode_t *screen, int x, int y) {
-   int ecfnum = (g_bg_plotmode >> 4) - 1;
-   // Giant ECF
-   if (ecfnum >= 4) {
-      ecfnum = ((x - g_ecf_origin_x) >> g_ecf_giant_shift) & 3;
-   }
-   pixel_t colour = g_ecf_pattern[ecfnum][(((y - g_ecf_origin_y) & 7) << 3) + ((x - g_ecf_origin_x) & g_ecf_mask)];
-   return get_pixel(screen, x, y) == colour;
-}
-
-#endif
-
-#if 0 /* replaced by the Master's flood fill (master_flood, below) */
-static int test_pixel_not_bg_col(screen_mode_t *screen, int x, int y) {
-   // No need to explicitly test for the marker as the test will fail on marked bits anyway
-   return get_pixel(screen, x, y) != g_bg_col;
-}
-
-static int test_pixel_not_bg_ecf(screen_mode_t *screen, int x, int y) {
-   // No need to explicitly test for the marker as the test will fail on marked bits anyway
-   int ecfnum = (g_bg_plotmode >> 4) - 1;
-   // Giant ECF
-   if (ecfnum >= 4) {
-      ecfnum = ((x - g_ecf_origin_x) >> g_ecf_giant_shift) & 3;
-   }
-   pixel_t colour = g_ecf_pattern[ecfnum][(((y - g_ecf_origin_y) & 7) << 3) + ((x - g_ecf_origin_x) & g_ecf_mask)];
-   return get_pixel(screen, x, y) != colour;
-}
-
-static int test_pixel_fg_col(screen_mode_t *screen, int x, int y) {
-   pixel_t px = get_pixel(screen, x, y);
-   if (px & marker) {
-      // terminate the fill if a marked pixel is found
-      return 1;
-   } else {
-      // or at a FG pixel
-      return px == g_fg_col;
-   }
-}
-
-static int test_pixel_fg_ecf(screen_mode_t *screen, int x, int y) {
-   pixel_t px = get_pixel(screen, x, y);
-   if (px & marker) {
-      // terminate the fill if a marked pixel is found
-      return 1;
-   } else {
-      int ecfnum = (g_fg_plotmode >> 4) - 1;
-      // Giant ECF
-      if (ecfnum >= 4) {
-         ecfnum = ((x - g_ecf_origin_x) >> g_ecf_giant_shift) & 3;
-      }
-      pixel_t colour = g_ecf_pattern[ecfnum][(((y - g_ecf_origin_y) & 7) << 3) + ((x - g_ecf_origin_x) & g_ecf_mask)];
-      // of at a pixel that matches the ECF pattern
-      return (px == colour);
-   }
-}
-
-static void prim_flood_fill(screen_mode_t *screen, int x, int y, plotcol_t fill, fill_test_fn test_pixel) {
-#ifdef DEBUG_VDU
-   int maxq = 0;
-   printf("Flood fill @ %d,%d with fill %d; initial pixel %"PRIx32"\r\n", x, y, fill, get_pixel(screen, x, y));
-#endif
-   if ((*test_pixel)(screen, x, y)) {
-      return;
-   }
-   flood_queue_x[0] = (int16_t)x;
-   flood_queue_y[0] = (int16_t)y;
-   flood_queue_rd = 0;
-   flood_queue_wr = 1;
-   while (flood_queue_rd != flood_queue_wr) {
-
-      x = flood_queue_x[flood_queue_rd];
-      y = flood_queue_y[flood_queue_rd];
-      flood_queue_rd ++;
-      flood_queue_rd &= FLOOD_QUEUE_SIZE - 1;
-
-      if ((*test_pixel)(screen, x, y)) {
-         continue;
-      }
-
-      int xl = x;
-      int xr = x;
-      while (xl > g_x_min && !(*test_pixel)(screen, xl - 1, y)) {
-         xl--;
-      }
-      while (xr < g_x_max && !(*test_pixel)(screen, xr + 1, y)) {
-         xr++;
-      }
-      for (x = xl; x <= xr; x++) {
-         set_pixel(screen, x, y, fill);
-         if (y > g_y_min && !(*test_pixel)(screen, x, y - 1)) {
-            flood_queue_x[flood_queue_wr] = (int16_t)x;
-            flood_queue_y[flood_queue_wr] = (int16_t)(y - 1);
-            flood_queue_wr ++;
-            flood_queue_wr &= FLOOD_QUEUE_SIZE - 1;
-#ifdef DEBUG_VDU
-            if (flood_queue_wr == flood_queue_rd) {
-               printf("queue wrapped\r\n");
-            }
-#endif
-         }
-         if (y < g_y_max && !(*test_pixel)(screen, x, y + 1)) {
-            flood_queue_x[flood_queue_wr] = (int16_t)x;
-            flood_queue_y[flood_queue_wr] = (int16_t)(y + 1);
-            flood_queue_wr ++;
-            flood_queue_wr &= FLOOD_QUEUE_SIZE - 1;
-#ifdef DEBUG_VDU
-            if (flood_queue_wr == flood_queue_rd) {
-               printf("queue wrapped\r\n");
-            }
-#endif
-         }
-      }
-#ifdef DEBUG_VDU
-      int size = (FLOOD_QUEUE_SIZE + flood_queue_wr - flood_queue_rd) & (FLOOD_QUEUE_SIZE - 1);
-      if (size > maxq) {
-         maxq = size;
-      }
-#endif
-   }
-#ifdef DEBUG_VDU
-   printf("Max queue size = %d\r\n", maxq);
-#endif
-}
-
-// Return false for pixels that are marked
-static int test_pixel_marker(screen_mode_t *screen, int x, int y) {
-   return !(get_pixel(screen, x, y) & marker);
-}
-
-static void prim_flood_fill_wrapper(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_t mode) {
-
-   // Are we in a low colour mode, with a spare bit in the frame buffer?
-   if (screen->ncolour < 128) {
-
-      // Yes, then we can use a two pass fill, using a marker bit, that is much better
-      // at dealing with patterns that contain colours that are themselves fillable
-
-      // Pass 1: Fill the region with a marker
-      if (mode == AF_TOFGD) {
-         // Use the BG colour to fill, because the test_pixel fn uses the FG colour
-         pixel_t old_col = g_bg_col;
-         plotmode_t old_plotmode = g_bg_plotmode;
-         g_bg_col = marker;
-         g_bg_plotmode = PM_XOR;
-         prim_flood_fill(screen, x, y, PC_BG, g_fg_plotmode < PM_ECF ? test_pixel_fg_col : test_pixel_fg_ecf);
-         g_bg_col = old_col;
-         g_bg_plotmode = old_plotmode;
-      } else {
-         // Use the FG colour to fill, because the test_pixel fn uses the BG colour
-         pixel_t old_col = g_fg_col;
-         plotmode_t old_plotmode = g_fg_plotmode;
-         g_fg_col = marker;
-         g_fg_plotmode = PM_XOR;
-         prim_flood_fill(screen, x, y, PC_FG, g_bg_plotmode < PM_ECF ? test_pixel_not_bg_col : test_pixel_not_bg_ecf);
-         g_fg_col = old_col;
-         g_fg_plotmode = old_plotmode;
-      }
-
-      // Pass 2: Replace the marker with the required colour/pattern
-      prim_flood_fill(screen, x, y, colour, test_pixel_marker);
-
-   } else {
-
-      // No, then well do our best...
-
-      if (mode == AF_TOFGD) {
-         prim_flood_fill(screen, x, y, colour, g_fg_plotmode < PM_ECF ? test_pixel_fg_col : test_pixel_fg_ecf);
-      } else {
-         prim_flood_fill(screen, x, y, colour, g_bg_plotmode < PM_ECF ? test_pixel_not_bg_col : test_pixel_not_bg_ecf);
-      }
-   }
-}
-#endif /* old flood fill */
-
 // Does (x,y) hold the foreground (or background) colour - or, if that is an
 // ECF, the pattern's colour at that pixel?  The OS's line and flood fills
 // test against the pattern, not a solid colour.
@@ -1399,11 +725,7 @@ static bool pixel_matches_gcol(screen_mode_t *screen, bool fg, int x, int y) {
    plotmode_t plotmode = fg ? g_fg_plotmode : g_bg_plotmode;
    pixel_t colour = fg ? g_fg_col : g_bg_col;
    if (plotmode >= PM_ECF) {
-      int ecfnum = (plotmode >> 4) - 1;
-      if (ecfnum >= 4) {
-         ecfnum = ((x - g_ecf_origin_x) >> g_ecf_giant_shift) & 3;
-      }
-      colour = g_ecf_pattern[ecfnum][(((y - g_ecf_origin_y) & 7) << 3) + ((x - g_ecf_origin_x) & g_ecf_mask)];
+      colour = ecf_colour(plotmode, x, y);
    }
    return screen->get_pixel(screen, x, y) == colour;
 }
@@ -1427,7 +749,7 @@ static bool pixel_matches_gcol(screen_mode_t *screen, bool fg, int x, int y) {
 // spans and the whole fill stops if it overflows; a screen taller than the
 // BBC's 256 rows gets a proportionally longer queue.
 
-#define FLOOD_SPANS_MAX 4096u
+#define FLOOD_SPANS_MAX 4096u         // a power of two: the ring wraps by masking
 
 typedef struct {
    int16_t left, right, y;
@@ -1440,7 +762,7 @@ typedef struct {
    plotcol_t colour;
    bool fg;                      // test against the foreground, else the background
    bool invert;                  // fill what does not match
-   unsigned rd, wr, size;
+   unsigned rd, wr, mask;        // ring indices; mask = queue size - 1 (a power of two)
 } flood_t;
 
 static bool flood_fillable(const flood_t *f, int x, int y) {
@@ -1458,7 +780,7 @@ static int flood_run_right(const flood_t *f, int x, int y) {
 }
 
 static bool flood_queue(flood_t *f, int left, int right, int y) {
-   unsigned next = (f->wr + 1u) % f->size;
+   unsigned next = (f->wr + 1u) & f->mask;
    if (next == f->rd) {
       return false;                              // full: the Master gives up
    }
@@ -1517,7 +839,7 @@ static void master_flood(screen_mode_t *screen, int x, int y, plotcol_t colour, 
    f.colour = colour;
    f.fg = f.invert = (mode == AF_TOFGD);
    f.rd = f.wr = 0;
-   f.size = (screen->height > 256) ? FLOOD_SPANS_MAX : 256u;
+   f.mask = ((screen->height > 256) ? FLOOD_SPANS_MAX : 256u) - 1u;
    if (!flood_fillable(&f, x, y)) {
       return;
    }
@@ -1529,7 +851,7 @@ static void master_flood(screen_mode_t *screen, int x, int y, plotcol_t colour, 
    draw_hline(screen, left, right, y, colour);
    flood_queue(&f, left, right, y);
    while (f.rd != f.wr) {
-      f.rd = (f.rd + 1u) % f.size;
+      f.rd = (f.rd + 1u) & f.mask;
       flood_span_t p = flood_spans[f.rd];
       if (p.y != g_y_max && !flood_row(&f, p, p.y + 1)) {
          return;
@@ -1644,416 +966,6 @@ void prim_fill_triangle(screen_mode_t *screen, int x1, int y1, int x2, int y2, i
 }
 
 
-#if 0 /* replaced by the Master's walk (master_walk_t below): both older arc/chord/sector implementations */
-#ifdef USE_NEW_SECTOR_SEGMENT_FILL
-
-static void draw_h_line_with_sector_segment_filter(screen_mode_t *sr, int xc, int yc, int x1, int x2, int y, uint32_t col, uint32_t action,int start_dx,int start_dy, int end_dx, int end_dy, uint32_t is_segment, uint32_t is_minor_sector) {
-   // This function draws a horizontal line from x1+xc to x2+xc, at height y+yc; but only plots those pixels
-   // which are in the sector defined by vectors (start_dx,start_dy) and (end_dx, end_dy), relative to circle centre (cx,cy)
-   // If is_segment is true, then it also checks the side of the segment's chord each pixel is on.
-   if (x1>x2) {
-      int temp=x2;
-      x2=x1;
-      x1=temp;
-   }
-
-   // same clipping logic as draw_hline(), but with xc,yc added to the x and y coordinates:
-   // (note, y coords are negative)
-   if (xc + x1 > g_x_max || xc + x2 < g_x_min || yc - y < g_y_min || yc - y > g_y_max) {
-      return;
-   }
-   if (xc + x1 < g_x_min) {
-      x1 = g_x_min - xc;
-   }
-   if (xc + x2 > g_x_max) {
-      x2 = g_x_max - xc;
-   }
-
-   int start_dx_normal_vector=start_dy;// rotates start vector 90 degrees
-   int start_dy_normal_vector=-start_dx;
-   int end_dx_normal_vector=-end_dy;// rotates end vector 90 degrees in opposite direction
-   int end_dy_normal_vector=end_dx;
-   // note that both normal vectors now point inwards towards the region that needs filling.
-
-   // calculate segment's chord vector (only used if is_segment!=0):
-   int chord_dx=end_dx-start_dx;
-   int chord_dy=end_dy-start_dy;
-   // Calculate the "normal" to the chord vector, i.e. rotate chord vector 90 degrees
-   int chord_dx_normal_vector=-chord_dy;
-   int chord_dy_normal_vector=chord_dx;
-
-   int x=x1;
-   //The following 3 dot products indicate which side of the vectors/chord that the point (x,y) is at. These dot products
-   // are positive if (x,y) is on the side indicated by the direction of the corresponding normal vector.
-   int dot_product_for_chord=(x-start_dx)*chord_dx_normal_vector+(y-start_dy)*chord_dy_normal_vector;// only used for segment
-   int dot_product_for_start_vector=x*start_dx_normal_vector+y*start_dy_normal_vector;
-   int dot_product_for_end_vector=x*end_dx_normal_vector+y*end_dy_normal_vector;
-
-   for (x=x1;x<=x2;x++) {
-      // the following 3 booleans say which side of the vectors/chord that the point (x,y) is at. These are true if (x,y) is on
-      // the side indicated by the corresponding normal vector.
-      int correct_side_of_chord=dot_product_for_chord>=0;// only used for segment
-      int correct_side_of_start_vector=dot_product_for_start_vector>=0;
-      int correct_side_of_end_vector=dot_product_for_end_vector>=0;
-      if (is_minor_sector) {
-         // Our sector's angle is less than 180 degrees.
-         // So this means we only plot a single minor sector. We just need to see if we are inside that minor sector,
-         // i.e. we just need to check our point is on the correct side of BOTH normal vectors.
-         // Both normal vectors point inwards towards the minor sector which we want to fill.
-         int xInMinorSector=correct_side_of_start_vector && correct_side_of_end_vector;
-         if (xInMinorSector && (correct_side_of_chord || is_segment==0))
-            // For a segment, with a small angle like this (minor sector) we are using the sector check AND the segment chord check together.
-            // otherwise, for very small angle segments, pixels can leak out of the sector due to rounding errors.
-            set_pixel(sr, xc+x, yc-y, col);
-      } else {
-         // Our sector's angle is > 180 degrees
-         // Here we are drawing a MAJOR sector or segment. Let's call the minor sector which we don't plot as the "void".
-         // The logic to plot the major sector is to consider the opposite points to those we want. Those opposite points, form a minor-sector "void",
-         // Checking for that minor sector is simple. The void is backwards from both normal vectors.
-         // Note that NOT(Void)=not(wrong side of both normal vectors) = correct side of EITHER of the two vectors. So we use an OR condition in the next line:
-         int xInMajorSector=correct_side_of_start_vector || correct_side_of_end_vector;
-         if (xInMajorSector || (correct_side_of_chord && is_segment==1))
-            // okay, so this must be part of the Major sector... So we plot it...
-            // For a major segment, with a very small void angle, we are using the sector check OR the segment chord check together.
-            // Otherwise, for very small void angles, pixels can be missed from the segment due to rounding errors.
-            set_pixel(sr, xc+x, yc-y, col);
-      }
-      // Now, as we move to the next pixel, update the 3 dot products to be applicable for the next point (x+1,y)
-      // To do this, we just increase each dot product by their coefficient of x:
-      dot_product_for_chord+=chord_dx_normal_vector;// only used for segment
-      dot_product_for_start_vector+=start_dx_normal_vector;
-      dot_product_for_end_vector+=end_dx_normal_vector;
-   }
-}
-
-// The same test as the row filter above, for one pixel at (x, y) relative
-// to the centre (y up).  True when the sector/segment fill would plot it.
-static int sector_filter_inside(int x, int y, int start_dx, int start_dy, int end_dx, int end_dy, uint32_t is_segment, uint32_t is_minor_sector) {
-   int start_ok = (x * start_dy + y * -start_dx) >= 0;
-   int end_ok   = (x * -end_dy  + y * end_dx)    >= 0;
-   int chord_ok = ((x - start_dx) * -(end_dy - start_dy) + (y - start_dy) * (end_dx - start_dx)) >= 0;
-   if (is_minor_sector) {
-      return (start_ok && end_ok) && (chord_ok || !is_segment);
-   }
-   return (start_ok || end_ok) || (chord_ok && is_segment);
-}
-
-// The ROM bounds a sector by its two radial lines and a segment by its chord,
-// each tracked as an ordinary Bresenham line, and fills every row from the
-// line's own pixel: so the line pixels belong to the shape even where they
-// sit half a pixel outside the exact edge.  Plot the ones the filter left
-// out, once each, staying inside the disc.  Measured against MOS 3.20.
-static void sector_boundary_line(screen_mode_t *screen, int xc, int yc, int limit, int ax, int ay, int bx, int by,
-                                 int start_dx, int start_dy, int end_dx, int end_dy, uint32_t is_segment, uint32_t is_minor_sector, plotcol_t colour) {
-   line_stepper_t s;
-   line_stepper_init(&s, ax, ay, bx, by);
-   for (int i = 0; i <= s.longest; i++) {
-      int x = s.x - xc;
-      int y = s.y - yc;
-      int ux = x << screen->xeigfactor, uy = y << screen->yeigfactor;
-      if (ux * ux + uy * uy <= limit && !sector_filter_inside(x, y, start_dx, start_dy, end_dx, end_dy, is_segment, is_minor_sector)) {
-         set_pixel(screen, s.x, s.y, colour);
-      }
-      line_stepper_next(&s);
-   }
-}
-
-#define PLOT_ARC 0xA0 /* Plot a circular arc */
-#define PLOT_SEGMENT 0xA8 /* Plot a segment */
-#define PLOT_SECTOR 0xB0 /* Plot a sector */
-
-#define MIN(x1,x2) ((x1) > (x2) ? (x2):(x1))
-#define MAX(x1,x2) ((x1) > (x2) ? (x1):(x2))
-
-static void draw_arc_or_sector_or_segment(screen_mode_t *screen, int xc, int yc, int limit, int start_dx, int start_dy, int end_dx, int end_dy, uint32_t colour, uint32_t action, int plot_graphop_code) {
-   // For details of the arc, sector, segment plot codes, see e.g. http://www.riscos.com/support/developer ... phics.html
-   // Original Graphics ROM sector, arc and segment 6502 routines are disassembled here: https://tobylobster.github.io/GXR-pages/gxr/S-s16.html
-   // This code is inspired by that logic, i.e. considering all pixels in a solid circle, but only plotting those pixels on the
-   // correct side of the construction vectors; but the implementation differs probably.
-   // (This implementation by M.Fairbank, July 2025)
-
-   // The disc is the one prim_draw_circle draws, (R + h)^2 in OS units, so
-   // every row's extent comes from circle_xmax and is exact in every mode
-   int32_t height = circle_ymax(screen, limit, 0);
-
-   if (height == 0) {
-      // this arc/sector/segment is just a single point
-      draw_hline(screen,xc,xc,yc,colour);
-   } else {
-      // work out whether the sector being filled is a MAJOR sector or a MINOR sector (i.e. whether the angle at the centre of the sector is >180 or <180)
-      // We know this is a major sector if the start line is less than 180 degrees anticlockwise of the end line.
-      // We know this is a minor sector if the start line is less than 180 degrees clockwise of the end line. (Remember, we fill this sector by
-      // sweeping anticlockwise from the start line to the end line).
-      // We can check if the start line is anticlockwise of the end line by forming their cross product, as follows:
-      int cross_product=start_dx*end_dy-end_dx*start_dy;
-      uint32_t is_minor_sector=cross_product<=0;// a synonym for this would be "arc sweeps out less than 180 degrees"
-
-      // Maintain the left/right coordinates of the previous, current, and next slices
-      // to allow lines to be drawn to make sure the pixels are connected
-      int xl_prev = 0;
-      int xr_prev = 0;
-      int xl_this = 0;
-      int xr_this = 0;
-      int y;
-      // Start at -1 to allow the pipeline to fill
-      for (y = -1; y < height; y++) {
-         int x = circle_xmax(screen, limit, y + 1);
-         int xl_next = -x;
-         int xr_next = x;
-         // Initialize the pipeline for the first slice
-         if (y == 0) {
-            xl_prev = -xr_next;
-            xr_prev = -xl_next;
-         }
-         // Draw the slice as a single horizontal line
-         if (y >= 0) {
-            // Left line runs from xl_this rightwards to MAX(xl_this, MAX(xl_prev, xl_next) - 1)
-            int xl = MAX(xl_this, MAX(xl_prev, xl_next) - 1);
-            // Right line runs from xr_this leftwards to MIN(xr_this, MIN(xr_prev, xr_next) + 1)
-            int xr = MIN(xr_this, MIN(xr_prev, xr_next) + 1);
-            if (plot_graphop_code==PLOT_SECTOR) {
-               draw_h_line_with_sector_segment_filter(screen, xc,yc,xl_this, xr_this, y, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
-            } else if (plot_graphop_code==PLOT_SEGMENT) {
-               draw_h_line_with_sector_segment_filter(screen, xc,yc,xl_this, xr_this, y, colour, action,start_dx,start_dy,end_dx,end_dy,1,is_minor_sector);
-            } else {
-               // This is PLOT_ARC. So we just draw the groups of pixels at the left and right of each row.
-               // However those pixels can be filtered by exactly the same logic as the sector filter, so we just
-               // reuse that method here.
-               draw_h_line_with_sector_segment_filter(screen, xc,yc,xl_this, xl, y, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
-               draw_h_line_with_sector_segment_filter(screen, xc,yc,xr_this, xr, y, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
-            }
-            if (y > 0) {
-               if (plot_graphop_code==PLOT_SECTOR) {
-                  draw_h_line_with_sector_segment_filter(screen, xc,yc,xl_this, xr_this, -y, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
-               } else if (plot_graphop_code==PLOT_SEGMENT) {
-                  draw_h_line_with_sector_segment_filter(screen, xc,yc,xl_this, xr_this, -y, colour, action,start_dx,start_dy,end_dx,end_dy,1,is_minor_sector);
-               } else {
-                  // This is PLOT_ARC. So we just draw the groups of pixels at the left and right of each row.
-                  // However those pixels can be filtered by exactly the same logic as the sector filter, so we just
-                  // reuse that method here.
-                  draw_h_line_with_sector_segment_filter(screen, xc,yc,-xl_this, -xl, -y, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
-                  draw_h_line_with_sector_segment_filter(screen, xc,yc,-xr_this, -xr, -y, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
-               }
-            }
-         }
-         xl_prev = xl_this;
-         xr_prev = xr_this;
-         xl_this = xl_next;
-         xr_this = xr_next;
-      }
-      // Draw the final slice
-      if (plot_graphop_code==PLOT_SEGMENT) {
-         draw_h_line_with_sector_segment_filter(screen,xc,yc, +xl_this, xr_this, +height, colour, action,start_dx,start_dy,end_dx,end_dy,1,is_minor_sector);
-         draw_h_line_with_sector_segment_filter(screen,xc,yc, -xl_this,-xr_this, -height, colour, action,start_dx,start_dy,end_dx,end_dy,1,is_minor_sector);
-      } else {
-         // This is PLOT_ARC or PLOT_SECTOR. The logic here is the same (because this is the top/bottom single row of pixels)
-         draw_h_line_with_sector_segment_filter(screen,xc,yc, +xl_this, xr_this, +height, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
-         draw_h_line_with_sector_segment_filter(screen,xc,yc, -xl_this,-xr_this, -height, colour, action,start_dx,start_dy,end_dx,end_dy,0,is_minor_sector);
-      }
-      // The boundary lines' own pixels (the filter frame has y up, the screen y down from yc)
-      if (plot_graphop_code==PLOT_SECTOR) {
-         sector_boundary_line(screen, xc, yc, limit, xc, yc, xc + start_dx, yc - start_dy, start_dx, start_dy, end_dx, end_dy, 0, is_minor_sector, colour);
-         sector_boundary_line(screen, xc, yc, limit, xc, yc, xc + end_dx,   yc - end_dy,   start_dx, start_dy, end_dx, end_dy, 0, is_minor_sector, colour);
-      } else if (plot_graphop_code==PLOT_SEGMENT) {
-         sector_boundary_line(screen, xc, yc, limit, xc + start_dx, yc - start_dy, xc + end_dx, yc - end_dy, start_dx, start_dy, end_dx, end_dy, 1, is_minor_sector, colour);
-      }
-   }
-}
-
-void prim_draw_arc(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
-   int start_dx = x1 - xc; //displacement to start point from centre
-   int start_dy = y1 - yc; //displacement to start point from centre
-   int end_dx   = x2 - xc; //displacement to end point from centre
-   int end_dy   = y2 - yc; //displacement to end point from centre
-   int limit = calc_radius_limit(screen, xc, yc, x1, y1);
-   draw_arc_or_sector_or_segment(screen, xc, yc, limit, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_ARC);
-}
-void prim_fill_chord(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
-   int start_dx = x1 - xc; //displacement to start point from centre
-   int start_dy = y1 - yc; //displacement to start point from centre
-   int end_dx   = x2 - xc; //displacement to end point from centre
-   int end_dy   = y2 - yc; //displacement to end point from centre
-   float radius  = calc_radius_float(xc << screen->xeigfactor, yc << screen->yeigfactor, x1 << screen->xeigfactor, y1 << screen->yeigfactor);
-   float radius2 = calc_radius_float(xc << screen->xeigfactor, yc << screen->yeigfactor, x2 << screen->xeigfactor, y2 << screen->yeigfactor);
-   // Project end onto perimeter
-   end_dx = (int)lroundf(((float) end_dx) * radius / radius2);
-   end_dy = (int)lroundf(((float) end_dy) * radius / radius2);
-   // Draw filled segment
-   int limit = calc_radius_limit(screen, xc, yc, x1, y1);
-   draw_arc_or_sector_or_segment(screen, xc, yc, limit, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_SEGMENT);
-}
-
-void prim_fill_sector(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
-   int start_dx = x1 - xc; //displacement to start point from centre
-   int start_dy = y1 - yc; //displacement to start point from centre
-   int end_dx   = x2 - xc; //displacement to end point from centre
-   int end_dy   = y2 - yc; //displacement to end point from centre
-   int limit = calc_radius_limit(screen, xc, yc, x1, y1);
-   draw_arc_or_sector_or_segment(screen, xc, yc, limit, start_dx, -start_dy, end_dx, -end_dy, colour, 0, PLOT_SECTOR);
-}
-
-#else
-
-// Rodders: Draw arc using modified Bresenham algorithm
-// Finds start and end quadrants and masks plotting of points
-
-// TODO: Update this to work with non-square pixels
-
-void prim_draw_arc(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
-   // Draw arc using modified Bresenham algorithm
-   // Finds start and end quadrants and masks plotting of points
-   int radius = calc_radius(xc, yc, x1, y1);
-   // Don't use calc_radius for r2 as this rounds up and can lead to gaps and leakage
-   int r2 = (int)sqrt((x2-xc)*(x2-xc) + (y2-yc)*(y2-yc));
-
-   // Calc end point
-   int x3 = xc + (x2 - xc) * radius / r2;
-   int y3 = yc + (y2 - yc) * radius / r2;
-
-   // Set up quadrants
-   unsigned int qstart = arc_quadrant(x1 - xc, y1 - yc);
-   unsigned int qend = arc_quadrant(x3 - xc, y3 - yc);
-   quadrant_t q[4] = {Q_NONE, Q_NONE, Q_NONE, Q_NONE};
-   q[qstart] = (qstart == qend) ? Q_BOTH : Q_START;
-   if (qstart != qend || (y1 >= yc && x1 < x3) || (y1 < yc && x1 > x3)) {
-      for (unsigned int i = qstart + 1; i < qstart + 4; i++) {
-         unsigned int j = i % 4;
-         if (j == qend) {
-            q[j] = Q_END;
-            break;
-         } else {
-            q[j] = Q_ALL;
-         }
-      }
-   }
-
-   int x = 0;
-   int y = radius;
-   int d = 1 - radius;
-
-   // Do compass points
-   if (arc_point(0, q[0], xc, yc + y, x1, y1, x3, y3))
-      set_pixel(screen, xc, yc + y, colour);
-   if (arc_point(1, q[1], xc - y, yc, x1, y1, x3, y3))
-      set_pixel(screen, xc - y, yc, colour);
-   if (arc_point(2, q[2], xc, yc - y, x1, y1, x3, y3))
-      set_pixel(screen, xc, yc - y, colour);
-   if (arc_point(3, q[3], xc + y, yc, x1, y1, x3, y3))
-      set_pixel(screen, xc + y, yc, colour);
-
-   while(x < y) {
-      if (d < 0) {
-         d = d + 2 * x + 3;
-         x += 1;
-      } else {
-         d = d + 2 * (x - y) + 5;
-         x += 1;
-         y -= 1;
-      }
-      if (arc_point(0, q[0], xc + x, yc + y, x1, y1, x3, y3)) {
-         set_pixel(screen, xc + x, yc + y, colour);
-      }
-      if (arc_point(3, q[3], xc + x, yc - y, x1, y1, x3, y3)) {
-         set_pixel(screen, xc + x, yc - y, colour);
-      }
-      if (arc_point(1, q[1], xc - x, yc + y, x1, y1, x3, y3)) {
-         set_pixel(screen, xc - x, yc + y, colour);
-      }
-      if (arc_point(2, q[2], xc - x, yc - y, x1, y1, x3, y3)) {
-         set_pixel(screen, xc - x, yc - y, colour);
-      }
-      if (arc_point(0, q[0], xc + y, yc + x, x1, y1, x3, y3)) {
-         set_pixel(screen, xc + y, yc + x, colour);
-      }
-      if (arc_point(3, q[3], xc + y, yc - x, x1, y1, x3, y3)) {
-         set_pixel(screen, xc + y, yc - x, colour);
-      }
-      if (arc_point(1, q[1], xc - y, yc + x, x1, y1, x3, y3)) {
-         set_pixel(screen, xc - y, yc + x, colour);
-      }
-      if (arc_point(2, q[2], xc - y, yc - x, x1, y1, x3, y3)) {
-         set_pixel(screen, xc - y, yc - x, colour);
-      }
-   }
-   // Save the screen coordinates of the arc endpoint, for sector/chord drawing
-   // (but don't reuse the graphics cursor for this purpose)
-   arc_end_x = (int16_t)x3;
-   arc_end_y = (int16_t)y3;
-
-   // Find chord centre for flood fill
-   int xf = (x1 + x3) / 2;
-   int yf = (y1 + y3) / 2;
-
-   // Make xf,yf relative to the centre
-   xf -= xc;
-   yf -= yc;
-
-   // If chord passes through origin use alternative centre
-   if (abs(xf) < 5 && abs(yf) < 5) {
-      xf = -(y1 - yc) / 2;
-      yf =  (x1 - xc) / 2;
-   }
-   unsigned int qf = arc_quadrant(xf, yf);
-   int rf = calc_radius(0, 0, xf, yf);
-   if (rf < 5) rf = radius / 2;
-   xf = (xf + xf * radius / rf) / 2;
-   yf = (yf + yf * radius / rf) / 2;
-
-   // Invert if the point would not be displayed
-   if (!arc_point(qf, q[qf], xc + xf, yc + yf, x1, y1, x3, y3)) {
-      xf = - xf;
-      yf = - yf;
-   }
-
-   // Make xf,yf absolute again
-   xf += xc;
-   yf += yc;
-
-   arc_fill_x = (int16_t)xf;
-   arc_fill_y = (int16_t)yf;
-}
-
-// Common to prim_fill_chord and prim_fill_sector
-static void prim_fill_interior(screen_mode_t *screen, int x, int y, plotcol_t colour) {
-   fill_test_fn test_pixel;
-   if (colour == PC_BG) {
-      if (g_bg_plotmode < PM_ECF) {
-         test_pixel = test_pixel_bg_col;
-      } else {
-         test_pixel = test_pixel_bg_ecf;
-      }
-   } else {
-      if (g_fg_plotmode < PM_ECF) {
-         test_pixel = test_pixel_fg_col;
-      } else {
-         test_pixel = test_pixel_fg_ecf;
-      }
-   }
-   prim_flood_fill(screen, arc_fill_x, arc_fill_y, colour, test_pixel);
-}
-
-void prim_fill_chord(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
-   // Draw the arc that bounds the chord
-   prim_draw_arc(screen, xc, yc, x1, y1, x2, y2, colour);
-   // The arc drawing sets the arc_end_x/y to the arc endpoint (in screen coordinates)
-   prim_draw_line(screen, x1, y1, arc_end_x, arc_end_y, colour, 0);
-   // Fill the interior
-   prim_fill_interior(screen, arc_fill_x, arc_fill_y, colour);
-}
-
-void prim_fill_sector(screen_mode_t *screen, int xc, int yc, int x1, int y1, int x2, int y2, plotcol_t colour) {
-   // Draw the arc that bounds the sector
-   prim_draw_arc(screen, xc, yc, x1, y1, x2, y2, colour);
-   // The arc drawing sets the arc_end_x/y to the arc endpoint (in screen coordinates)
-   prim_draw_line(screen, arc_end_x, arc_end_y, xc, yc, colour, 0);
-   prim_draw_line(screen, xc, yc, x1, y1, colour, 0);
-   // Fill the interior
-   prim_fill_interior(screen, arc_fill_x, arc_fill_y, colour);
-}
-
-#endif
-#endif /* older arc/chord/sector implementations */
-
 // ---- Circles, arcs, chords and sectors: the Master's own walk -------------
 //
 // Source: this is a C re-implementation of the circle, arc, chord and sector
@@ -2135,24 +1047,6 @@ static void walk_edge_next_row(walk_edge_t *e) {
    walk_edge_step(e);
 }
 
-static uint32_t isqrt_u32(uint32_t v) {
-   uint32_t root = 0;
-   uint32_t bit = 1ul << 30;
-   while (bit > v) {
-      bit >>= 2;
-   }
-   while (bit) {
-      if (v >= root + bit) {
-         v -= root + bit;
-         root = (root >> 1) + bit;
-      } else {
-         root >>= 1;
-      }
-      bit >>= 2;
-   }
-   return root;
-}
-
 // The square of a 16-bit value as the ROM computes it: |v| times |v|
 static uint32_t square16(int v) {
    int16_t s = (int16_t)v;
@@ -2191,8 +1085,8 @@ typedef struct {
 // Radius from the start point; false if the ROM gives up (radius >= 8192)
 static bool walk_radius(master_walk_t *w) {
    uint32_t r2 = square16(w->sx * (1 << w->xs)) + square16(w->sy * (1 << w->ys));
-   w->r2 = r2 + isqrt_u32(r2);
-   uint32_t r = isqrt_u32(w->r2);
+   w->r2 = r2 + isqrt_u64(r2);
+   uint32_t r = isqrt_u64(w->r2);
    if (r >= 0x2000u) {
       return false;
    }
@@ -2202,7 +1096,7 @@ static bool walk_radius(master_walk_t *w) {
 
 // The walk's x on row y, as the ROM finds it when setting up
 static void walk_x_at(master_walk_t *w, int y) {
-   uint32_t x = isqrt_u32(w->r2 - square16(y * (1 << w->ys))) & 0xFFFFu;
+   uint32_t x = isqrt_u64(w->r2 - square16(y * (1 << w->ys))) & 0xFFFFu;
    w->cy = (int16_t)y;
    w->cx = (int16_t)((int16_t)x >> w->xs);
 }
