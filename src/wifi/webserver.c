@@ -1770,6 +1770,16 @@ static void append_files_url(ws_strbuf_t *b, const char *sdpath)
       sb_urlpath(b, sdpath);
 }
 
+/* An iovar readback for the status page: the value, or why it is missing
+   (-1 = the chip never answered, -2 = it refused the read). */
+static void ws_iovar_text(char *out, size_t len, int32_t value)
+{
+   if (value >= 0)
+      snprintf(out, len, "%ld", (long)value);
+   else
+      snprintf(out, len, "%s", (value == -2) ? "refused" : "unread");
+}
+
 static void table_row(ws_strbuf_t *b, const char *label, const char *value)
 {
    sb_puts(b, "<tr><th>");
@@ -2730,18 +2740,18 @@ static bool route_status(ws_conn_t *c)
          getter refuses while disabled, so a release /status is unchanged). */
       uint32_t dh[7];
       uint32_t rh[6];
-      uint8_t  dmin = 0u;
+      uint8_t  dmin = 0u, dmax = 0u;
       uint32_t rmax = 0u;
 
-      if (sdio_runtime_credit_diag(dh, &dmin, rh, &rmax)) {
+      if (sdio_runtime_credit_diag(dh, &dmin, &dmax, rh, &rmax)) {
          char big[160];
 
          snprintf(big, sizeof big,
-                  "0:%lu 1:%lu 2:%lu 3:%lu 4-7:%lu 8-15:%lu 16+:%lu min:%u",
+                  "0:%lu 1:%lu 2:%lu 3:%lu 4-7:%lu 8-15:%lu 16+:%lu min:%u max:%u",
                   (unsigned long)dh[0], (unsigned long)dh[1],
                   (unsigned long)dh[2], (unsigned long)dh[3],
                   (unsigned long)dh[4], (unsigned long)dh[5],
-                  (unsigned long)dh[6], (unsigned)dmin);
+                  (unsigned long)dh[6], (unsigned)dmin, (unsigned)dmax);
          table_row(&b, "Credit depth (RX refresh)", big);
          snprintf(big, sizeof big,
                   "<100us:%lu <500us:%lu <1ms:%lu <5ms:%lu "
@@ -2803,6 +2813,74 @@ static bool route_status(ws_conn_t *c)
          snprintf(tmp, sizeof tmp, "%ld%s", (long)pm,
                   (pm == 0) ? " (off, as requested)" : " (ON - AP will buffer!)");
          table_row(&b, "Power save (WLC_GET_PM)", tmp);
+      }
+   }
+   {
+      uint32_t fb_us = 0u, fb_bytes = 0u, fb_ops = 0u;
+      static uint32_t fn2_last_read_us;
+
+      if (sdio_runtime_fn2_diag(&fb_us, &fb_bytes, &fb_ops)) {
+         uint32_t now_us  = RPI_GetSystemTime();
+         uint32_t span_us = now_us - fn2_last_read_us;
+
+         fn2_last_read_us = now_us;
+         if (span_us != 0u) {
+            snprintf(tmp, sizeof tmp,
+                     "%lu%% busy (%lu us of %lu ms), %lu ops, %lu KB",
+                     (unsigned long)((uint64_t)fb_us * 100u / span_us),
+                     (unsigned long)fb_us, (unsigned long)(span_us / 1000u),
+                     (unsigned long)fb_ops, (unsigned long)(fb_bytes / 1024u));
+            table_row(&b, "fn2 data bus", tmp);
+         }
+      }
+   }
+   {
+      uint32_t sh[6];
+
+      if (sdio_runtime_credit_spend_diag(sh)) {
+         snprintf(tmp, sizeof tmp,
+                  "<50us:%lu <100us:%lu <250us:%lu <1ms:%lu <5ms:%lu 5ms+:%lu",
+                  (unsigned long)sh[0], (unsigned long)sh[1],
+                  (unsigned long)sh[2], (unsigned long)sh[3],
+                  (unsigned long)sh[4], (unsigned long)sh[5]);
+         table_row(&b, "Credit grant -> spend", tmp);
+      }
+   }
+   {
+      uint32_t mb_ints = 0u, mb_or = 0u, mb_last = 0u, mb_fc = 0u;
+      uint32_t mb_services = 0u, mb_int_or = 0u;
+
+      if (sdio_runtime_mailbox_diag(&mb_ints, &mb_or, &mb_last, &mb_fc,
+                                    &mb_services, &mb_int_or)) {
+         snprintf(tmp, sizeof tmp,
+                  "%lu reads (int bits 0x%08lx) / %lu ints / hmb 0x%08lx last 0x%08lx / %lu fc",
+                  (unsigned long)mb_services, (unsigned long)mb_int_or,
+                  (unsigned long)mb_ints, (unsigned long)mb_or,
+                  (unsigned long)mb_last, (unsigned long)mb_fc);
+         table_row(&b, "Mailbox (HMB_DATA)", tmp);
+      }
+   }
+   {
+      int32_t  fw_wsize = -1, fw_ampdu = -1, fw_nmode = -1;
+      uint32_t set_wsize = 0u;
+
+      if (sdio_runtime_get_ampdu_defaults(&fw_wsize, &set_wsize,
+                                          &fw_ampdu, &fw_nmode)) {
+         char ws[12], amp[12], nm[12];
+
+         ws_iovar_text(ws, sizeof ws, fw_wsize);
+         ws_iovar_text(amp, sizeof amp, fw_ampdu);
+         ws_iovar_text(nm, sizeof nm, fw_nmode);
+         snprintf(tmp, sizeof tmp, "ampdu %s, nmode %s", amp, nm);
+         table_row(&b, "802.11n state", tmp);
+         if (set_wsize != 0u)
+            snprintf(tmp, sizeof tmp,
+                     "firmware ba_wsize %s, join sets %lu",
+                     ws, (unsigned long)set_wsize);
+         else
+            snprintf(tmp, sizeof tmp,
+                     "firmware ba_wsize %s, join sets none (wifi_ampdu=0)", ws);
+         table_row(&b, "AMPDU limits", tmp);
       }
    }
    table_row(&b, "Link-loss detect", rs.link_flag_trusted ? "armed" : "not armed");

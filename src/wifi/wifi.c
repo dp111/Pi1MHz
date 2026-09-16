@@ -564,6 +564,16 @@ bool wifi_config_load(wifi_config_t *config)
       byte-identical to today so the SD fallback kernel and a new kernel
       behave the same until glom is proven on this chip/firmware. */
    config->txglom = wifi_parse_u8(config_get("wifi_txglom"), 0u);
+   /* wifi_ampdu=1 restores PicoWi's ampdu_ba_wsize=8 / ampdu_mpdu=4 /
+      ampdu_rx_factor=0 at join; the default leaves them unsent so the
+      firmware keeps its own limits.  Measured on the 43430 (2026-09-16,
+      interleaved A/B): its own ampdu_ba_wsize is 64, so sending 8 cut the
+      block-ack window eightfold - and since the dongle frees SDPCM credits
+      as it retires transmitted buffers, that also set the credit-grant
+      quantum.  Leaving them alone is worth +18% (1.96 -> 2.31 MB/s) with
+      no extra over-air retries.  Set 1 if an AP dislikes the deeper
+      window. */
+   config->ampdu_limits = wifi_parse_u8(config_get("wifi_ampdu"), 0u) != 0u;
    /* Regulatory domain for the CYW43 "country" iovar.  Defaults to "GB":
       the brcmfmac43430 firmware validates the country code against its
       built-in regulatory table, which holds real ISO 3166 codes (GB,
@@ -738,6 +748,7 @@ void wifi_boot(void)
          wifi_debug_log("starting SDIO runtime");
          sdio_runtime_set_diag(g_wifi_config.diag_enabled);
          sdio_runtime_set_txglom(g_wifi_config.txglom);
+         sdio_runtime_set_ampdu_limits(g_wifi_config.ampdu_limits);
          if (!sdio_runtime_start()) {
             wifi_boot_fail(sdio_runtime_last_error());
             return;

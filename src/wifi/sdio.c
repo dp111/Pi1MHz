@@ -90,6 +90,38 @@ static uint8_t g_runtime_chip_mac[6];
 static bool g_runtime_chip_mac_valid;
 static bool g_runtime_mac_request_pending;
 static uint16_t g_runtime_mac_request_id;
+/* wifi_ampdu: 1 sends PicoWi's aggregation limits in the join sequence,
+   as releases up to V1.33 did; the default leaves them unsent so the
+   firmware keeps its own (deeper) ones.  Set once at boot, before
+   sdio_runtime_start(), and read by the join builder and the settle
+   table. */
+static bool g_runtime_ampdu_limits;
+/* What the join sequence tells the firmware its aggregation limits are
+   (PicoWi's values, sent at sdio_prepare_tx_control_payload).  Named so
+   the readback below can be reported against them. */
+#define SDIO_JOIN_AMPDU_MPDU     4u
+#define SDIO_JOIN_AMPDU_BA_WSIZE 8u
+/* The firmware's OWN ampdu_mpdu / ampdu_ba_wsize, read once at bring-up
+   before the join sequence overwrites them, and captured by the CDC
+   decoder on request_id exactly like the MAC.  [0] = ampdu_mpdu,
+   [1] = ampdu_ba_wsize; the index of the request in flight selects the
+   slot, and only one is ever outstanding (the stage sends them one at a
+   time).  Diagnostic only - nothing in the driver reads the values. */
+#define SDIO_AMPDU_PROBE_SLOTS 3u
+static uint32_t g_runtime_ampdu_default[SDIO_AMPDU_PROBE_SLOTS];
+static bool g_runtime_ampdu_default_valid[SDIO_AMPDU_PROBE_SLOTS];
+/* Which slot the request in flight is for: send ORDER is deliberately
+   separate from slot meaning (g_runtime_ampdu_order), so the order can be
+   flipped to tell a lost first reply from an iovar the firmware ignores. */
+static uint8_t g_runtime_ampdu_slot;
+/* A reply that came back with the CDC error flag: the firmware knows the
+   iovar name but refused the read, which is a different thing from no
+   reply at all - and if it refuses the GET it may equally be refusing
+   the join's SET of the same name. */
+static bool g_runtime_ampdu_rejected[SDIO_AMPDU_PROBE_SLOTS];
+static uint8_t g_runtime_ampdu_index;
+static bool g_runtime_ampdu_request_pending;
+static uint16_t g_runtime_ampdu_request_id;
 /* On-demand signal-strength (RSSI) read, driven only when the /status
    page is viewed.  The value is captured by the CDC decoder from a
    WLC_GET_RSSI reply, matched by request_id exactly like the MAC.  The
@@ -195,6 +227,9 @@ static uint32_t g_runtime_tx_resync_count;
 static bool g_runtime_diag_enabled;
 static uint32_t g_credit_depth_hist[7];
 static uint8_t g_credit_depth_min = 0xffu;
+/* The widest window the dongle ever advertised: tells an offer-limited
+   host (we never used the credits we had) from a grant-limited one. */
+static uint8_t g_credit_depth_max;
 static uint32_t g_credit_reopen_hist[6];
 static uint32_t g_credit_reopen_max_us;
 /* Grant-loop latency (wifi_diag=1).  gate_latency: interval from the
@@ -206,6 +241,18 @@ static uint32_t g_credit_reopen_max_us;
    refreshes that advanced max_seq).  If gate latency is a visible
    fraction of the grant gap, the host is late collecting grants; if
    not, the dongle's own cadence governs. */
+/* wifi_diag: what the dongle says on the mailbox channel.  _int_count is
+   mailbox interrupts serviced, _hmb_or the OR of every HMB_DATA word seen,
+   _fc_events those carrying the flow-control bit.  Counted on the 20 ms /
+   FIFO-empty service path, never the hot path. */
+static uint32_t g_mbox_int_count;
+/* _services counts every INT_STATUS read on that path and _int_or ORs the
+   words read, so "no mailbox traffic" can be told from "we never looked". */
+static uint32_t g_mbox_services;
+static uint32_t g_mbox_int_or;
+static uint32_t g_mbox_hmb_or;
+static uint32_t g_mbox_hmb_last;
+static uint32_t g_mbox_fc_events;
 static uint32_t g_gate_latency_hist[6];  /* <50us,<100,<250,<1ms,<5ms,5ms+ */
 static uint32_t g_gate_last_low_us;
 static bool g_gate_prev_high;
@@ -236,7 +283,17 @@ static uint32_t g_glom_rx_channel3;      /* tripwire: RX glom-desc frames */
    credit-refill round trip, the number the deep-glom experiment is
    trying to raise. */
 static uint32_t g_txglom_batch_hist[5];
+/* wifi_diag: fn2 data-bus duty cycle (see sdio_function2_transfer_timeout). */
+static uint32_t g_fn2_busy_us;
+static uint32_t g_fn2_bytes;
+static uint32_t g_fn2_ops;
 static uint32_t g_credit_refills;
+/* wifi_diag: how long a credit sits unspent.  Stamped when the chip advances
+   max_seq, cleared by the next data frame written to the bus.  If the mass is
+   far below the grant interval we are waiting for credits, not sitting on
+   them - which decides whether making the RX path cheaper could help TX. */
+static uint32_t g_credit_grant_stamp_us;
+static uint32_t g_credit_spend_hist[6];  /* <50us,<100,<250,<1ms,<5ms,5ms+ */
 /* Negotiation sub-state for the TXGLOM bring-up stage. */
 static uint8_t g_runtime_txglom_step;
 static bool g_runtime_glom_request_pending;
@@ -341,6 +398,11 @@ typedef enum {
       run before QUERY_MAC so the readback reflects the new value. */
    SDIO_RUNTIME_STAGE_SET_MAC,
    SDIO_RUNTIME_STAGE_QUERY_MAC,
+   /* Reads the firmware's own aggregation limits.  Must run before the
+      join sequence, which sets them - that is the whole point of the
+      stage.  Diagnostic: a failed read is tolerated and the join runs
+      exactly as before. */
+   SDIO_RUNTIME_STAGE_QUERY_AMPDU,
    SDIO_RUNTIME_STAGE_JOIN,
    SDIO_RUNTIME_STAGE_SWEEP_RX,
    SDIO_RUNTIME_STAGE_DONE,
@@ -418,6 +480,11 @@ static uint32_t g_runtime_sdio_core_base = CYW43_SDIO_CORE_BASE;
 #define SDIO_CORE_TO_SB_MAILBOX_OFFSET 0x40u
 #define SDIO_CORE_SB_MBOX_DATA_OFFSET 0x48u
 #define SDIO_CORE_TO_HOST_MAILBOX_DATA_OFFSET 0x4Cu
+/* HMB_DATA flow-control bit (brcmfmac HMB_DATA_FC); the byte above it
+   carries the per-priority flow-control mask this firmware is asserting.
+   Read for diagnostics only - nothing here acts on either yet. */
+#define SDPCM_HMB_DATA_FC 0x00000004u
+#define SDPCM_HMB_DATA_FCDATA_SHIFT 24u
 #define SDIO_HOST_INTERRUPT_MASK 0x000000F0u
 #define SDIO_BACKPLANE_OFFSET_MASK 0x07FFFu
 #define SDIO_BACKPLANE_ACCESS_2_4B_FLAG 0x08000u
@@ -2482,9 +2549,20 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_ANTDIV;          /* WLC_SET_ANTDIV = 0 */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_TXGLOM_OFF;      /* bus:txglom = 0 */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_APSTA;           /* apsta = 1 */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_BA_WSIZE;  /* ampdu_ba_wsize = 8 */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU;      /* ampdu_mpdu = 4 */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR; /* ampdu_rx_factor = 0; 150 ms settle follows */
+   /* Sent only when wifi_ampdu=1.  By default all three stay unsent and
+      the firmware keeps its own aggregation limits (measured: its
+      ampdu_ba_wsize is 64, eight times what these commands set).  The
+      dongle frees SDPCM credits as it retires transmitted buffers, so the
+      aggregate size is also the credit-grant quantum - which is why this
+      is a throughput knob and not just an RF one. */
+   if (g_runtime_ampdu_limits) {
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_BA_WSIZE;  /* ampdu_ba_wsize = 8 */
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU;      /* ampdu_mpdu = 4 */
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR; /* ampdu_rx_factor = 0 */
+   }
+   /* PicoWi's 150 ms radio/PHY settle normally hangs off AMPDU_RX_FACTOR;
+      with the block skipped it moves to APSTA so the settle is still
+      paid - see sdio_tx_probe_post_delay_us. */
    /* Enable async events before the join so WLC_E_SET_SSID / _LINK /
       _PSK_SUP are delivered.  PicoWi calls events_enable() here; this
       driver sends the per-bsscfg + global + _ext event masks.  Order
@@ -2587,6 +2665,13 @@ static uint32_t sdio_tx_probe_post_delay_us(wifi_sdio_tx_probe_command_t command
    switch (command) {
       case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
          return 150000u;
+      case WIFI_SDIO_TX_PROBE_COMMAND_APSTA:
+         /* Last command of the aggregation block that is always sent, so
+            it inherits that block's 150 ms settle when wifi_ampdu=0 drops
+            AMPDU_RX_FACTOR.  With the block present, the ordinary
+            spacing - the settle is still on AMPDU_RX_FACTOR and the
+            default path's timing is unchanged. */
+         return g_runtime_ampdu_limits ? 10000u : 150000u;
       case WIFI_SDIO_TX_PROBE_COMMAND_UP:
          /* WLC_UP initialises the PHY; give it a generous settle so the
             radio has finished coming up before WLC_SET_SSID / WLC_SCAN
@@ -2647,6 +2732,9 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_MAC:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_SUP_WPA:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU_BA_WSIZE:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE:
          return WLC_GET_VAR;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_BSSID:
          return WLC_GET_BSSID;
@@ -2757,6 +2845,12 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          /* "cur_etheraddr\0" + 6 zero bytes for the chip to write the
             current MAC into. */
          return (uint16_t)(sizeof("cur_etheraddr") + 6u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU_BA_WSIZE:
+         return (uint16_t)(sizeof("ampdu_ba_wsize") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU:
+         return (uint16_t)(sizeof("ampdu") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE:
+         return (uint16_t)(sizeof("nmode") + 4u);
       case WIFI_SDIO_TX_PROBE_COMMAND_SET_MAC:
          /* "cur_etheraddr\0" + 6 MAC bytes the chip should adopt.  The
             actual payload bytes are filled by sdio_prepare_tx_control_-
@@ -3336,6 +3430,32 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
          /* Trailing 6 bytes already zeroed by the memset at top. */
          break;
       }
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU_BA_WSIZE:
+      {
+         /* GET-VAR "ampdu_ba_wsize" - the firmware's own block-ack
+            window, read before the join sequence overwrites it with 8. */
+         size_t name_length = sizeof("ampdu_ba_wsize");
+
+         memcpy(probe_result->tx_control_template_payload_bytes,
+                "ampdu_ba_wsize", name_length);
+         break;
+      }
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU:
+      {
+         size_t name_length = sizeof("ampdu");
+
+         memcpy(probe_result->tx_control_template_payload_bytes,
+                "ampdu", name_length);
+         break;
+      }
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE:
+      {
+         size_t name_length = sizeof("nmode");
+
+         memcpy(probe_result->tx_control_template_payload_bytes,
+                "nmode", name_length);
+         break;
+      }
       case WIFI_SDIO_TX_PROBE_COMMAND_SET_MAC:
       {
          /* SET-VAR "cur_etheraddr" - overrides the chip's factory OTP
@@ -3452,10 +3572,12 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "apsta", 1u);
          break;
       case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_BA_WSIZE:
-         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_ba_wsize", 8u);
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_ba_wsize",
+                                                   SDIO_JOIN_AMPDU_BA_WSIZE);
          break;
       case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU:
-         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_mpdu", 4u);
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_mpdu",
+                                                   SDIO_JOIN_AMPDU_MPDU);
          break;
       case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_rx_factor", 0u);
@@ -3706,8 +3828,17 @@ static void sdio_glom_write_header(uint8_t *dest, uint16_t tag_len,
 static bool sdio_function2_transfer_timeout(sdio_host_t *dev, bool write, uint8_t *buffer,
                                             uint16_t length, uint32_t timeout_us)
 {
+   /* wifi_diag: total time and bytes moved on fn2, so /status can show what
+      fraction of wall time the data bus is actually busy.  A low duty cycle
+      means the ceiling is the link, not the host - which decides whether
+      interrupt-driven servicing could buy anything. */
+   bool     result;
+   uint32_t started_us = 0u;
+
    if (length == 0u)
       return true;
+   if (g_runtime_diag_enabled)
+      started_us = RPI_GetSystemTime();
 
    if (length > SDIO_PROBE_FUNCTION2_BLOCK_SIZE) {
       uint16_t block_count = (uint16_t)((length + SDIO_PROBE_FUNCTION2_BLOCK_SIZE - 1u)
@@ -3716,13 +3847,20 @@ static bool sdio_function2_transfer_timeout(sdio_host_t *dev, bool write, uint8_
       if (block_count > 511u)
          block_count = 511u;
 
-      return sdio_cmd53_execute_timeout(dev, 2u, 0u, write, true, false, block_count,
-                                        buffer, SDIO_PROBE_FUNCTION2_BLOCK_SIZE,
-                                        timeout_us, NULL);
+      result = sdio_cmd53_execute_timeout(dev, 2u, 0u, write, true, false, block_count,
+                                          buffer, SDIO_PROBE_FUNCTION2_BLOCK_SIZE,
+                                          timeout_us, NULL);
+   } else {
+      result = sdio_cmd53_execute_timeout(dev, 2u, 0u, write, false, false, length,
+                                          buffer, length, timeout_us, NULL);
    }
 
-   return sdio_cmd53_execute_timeout(dev, 2u, 0u, write, false, false, length,
-                                     buffer, length, timeout_us, NULL);
+   if (g_runtime_diag_enabled) {
+      g_fn2_busy_us += RPI_GetSystemTime() - started_us;
+      g_fn2_bytes += length;
+      ++g_fn2_ops;
+   }
+   return result;
 }
 
 static bool sdio_function2_transfer(sdio_host_t *dev, bool write, uint8_t *buffer,
@@ -3963,6 +4101,7 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
       uint32_t grant_now_us = RPI_GetSystemTime();
 
       ++g_credit_refills;   /* the chip advanced the credit window */
+      g_credit_grant_stamp_us = grant_now_us | 1u;
       if (g_grant_last_us != 0u) {
          uint32_t gap = grant_now_us - g_grant_last_us;
 
@@ -3990,6 +4129,8 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
                             : (d <= 15u) ? 5u : 6u];
       if (d < g_credit_depth_min)
          g_credit_depth_min = d;
+      if (d > g_credit_depth_max)
+         g_credit_depth_max = d;
    }
    /* The chip has just told us where the window stands.  If it has room for
       our next frame and no flow-control stop, transmit is demonstrably
@@ -4050,6 +4191,22 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
                    &frame_buffer[header_length + CDC_HEADER_LENGTH], 6u);
             g_runtime_chip_mac_valid = true;
             g_runtime_mac_request_pending = false;
+         }
+         /* The firmware's own aggregation limits, same request_id
+            correlation as GET_MAC.  The 4-byte LE value follows the
+            CDC header; the outstanding request's index picks the slot. */
+         if (g_runtime_ampdu_request_pending && cdc_cmd == WLC_GET_VAR
+             && cdc_request_id == g_runtime_ampdu_request_id
+             && g_runtime_ampdu_slot < SDIO_AMPDU_PROBE_SLOTS) {
+            if ((cdc_flags & CDCF_IOC_ERROR) != 0u || cdc_status != 0u) {
+               g_runtime_ampdu_rejected[g_runtime_ampdu_slot] = true;
+            } else if (total_length
+                       >= (uint16_t)(header_length + CDC_HEADER_LENGTH + 4u)) {
+               g_runtime_ampdu_default[g_runtime_ampdu_slot] =
+                  sdio_load_u32_le(&frame_buffer[header_length + CDC_HEADER_LENGTH]);
+               g_runtime_ampdu_default_valid[g_runtime_ampdu_slot] = true;
+            }
+            g_runtime_ampdu_request_pending = false;
          }
          /* SET cur_etheraddr ack: same request_id correlation as
             GET_MAC.  Record both the seen-bit and the firmware's
@@ -4813,6 +4970,56 @@ static int sdio_runtime_query_mac_step(sdio_host_t *dev)
    g_runtime_mac_request_pending = false;
    g_runtime_step_sent = false;
    return 1;
+}
+
+/* Read the firmware's own ampdu_mpdu and ampdu_ba_wsize across ticks,
+   one GET per pass in the same send-settle-drain shape as the MAC read
+   (the CDC decoder captures the value).  Returns 1 when both have been
+   attempted, 0 while in progress.  A read that fails or goes unanswered
+   is tolerated: this is diagnostic, and the join must run regardless. */
+static int sdio_runtime_query_ampdu_step(sdio_host_t *dev)
+{
+   uint32_t now;
+
+   if (dev == NULL)
+      return 1;
+   if (g_runtime_ampdu_index >= SDIO_AMPDU_PROBE_SLOTS)
+      return 1;
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_step_sent) {
+      static const wifi_sdio_tx_probe_command_t probes[SDIO_AMPDU_PROBE_SLOTS] = {
+         WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU_BA_WSIZE,
+         WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU,
+         WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE,
+      };
+
+      g_runtime_ampdu_slot = g_runtime_ampdu_index;
+      sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                       probes[g_runtime_ampdu_index]);
+      /* Matched by exact request_id, like the MAC read above. */
+      g_runtime_ampdu_request_id =
+         g_sdio_probe_result.tx_control_template_request_id;
+      g_runtime_ampdu_request_pending = true;
+      (void)sdio_probe_send_single_tx_control_template_timeout(dev,
+                                                               &g_sdio_probe_result,
+                                                               SDIO_RUNTIME_POLL_TIMEOUT_US);
+      g_runtime_step_sent = true;
+      /* 120 ms, not the MAC query's 250: three probes ride in bring-up and
+         every reply that has ever arrived came back well inside this. */
+      g_runtime_step_deadline_us = now + 120000u;
+      return 0;
+   }
+
+   if ((int32_t)(now - g_runtime_step_deadline_us) < 0)
+      return 0;
+
+   (void)sdio_drain_fn2_responses(dev);
+   g_runtime_ampdu_request_pending = false;
+   g_runtime_step_sent = false;
+   g_runtime_ampdu_index++;
+   return (g_runtime_ampdu_index >= SDIO_AMPDU_PROBE_SLOTS) ? 1 : 0;
 }
 
 /* Send one join ioctl per call: prepare g_runtime_join_commands[index],
@@ -6066,6 +6273,18 @@ bool sdio_runtime_start(void)
    g_runtime_txglom_step = 0u;
    g_runtime_glom_request_pending = false;
    g_runtime_glom_ack_seen = false;
+   /* The re-downloaded firmware boots with default iovars, so the
+      readback is taken again on the way back through QUERY_AMPDU. */
+   g_runtime_ampdu_index = 0u;
+   g_runtime_ampdu_request_pending = false;
+   {
+      unsigned int i;
+
+      for (i = 0u; i < SDIO_AMPDU_PROBE_SLOTS; ++i) {
+         g_runtime_ampdu_default_valid[i] = false;
+         g_runtime_ampdu_rejected[i] = false;
+      }
+   }
    g_runtime_tx_stalled = false;
    g_runtime_tx_stall_since_us = 0u;
    /* Both freshness clocks, or a runtime restart inherits a dead past: a
@@ -6381,6 +6600,19 @@ bool sdio_runtime_tick(void)
                            (unsigned)g_runtime_chip_mac[4], (unsigned)g_runtime_chip_mac[5]);
          else
             sdio_debug_log("chip MAC read failed - lwIP netif keeps its default address");
+         g_runtime_step_sent = false;
+         g_runtime_stage = SDIO_RUNTIME_STAGE_QUERY_AMPDU;
+         return true;
+      }
+
+      case SDIO_RUNTIME_STAGE_QUERY_AMPDU:
+      {
+         if (sdio_runtime_query_ampdu_step(&g_runtime_device) == 0)
+            return true;
+         sdio_debug_log("firmware: ba_wsize %lu ampdu %lu nmode %lu",
+                        (unsigned long)g_runtime_ampdu_default[0],
+                        (unsigned long)g_runtime_ampdu_default[1],
+                        (unsigned long)g_runtime_ampdu_default[2]);
          g_runtime_step_sent = false;
          sdio_debug_log("== STAGE_JOIN: starting join sequence ==");
          g_runtime_stage = SDIO_RUNTIME_STAGE_JOIN;
@@ -6707,6 +6939,83 @@ bool sdio_runtime_link_is_up(void)
 /* Copy the chip's WiFi MAC into mac_out. A missed cur_etheraddr response
    falls back to the desired board MAC that SET_MAC requested, so scan/join
    is not disabled merely because diagnostic read-back was late. */
+bool sdio_runtime_fn2_diag(uint32_t *busy_us, uint32_t *bytes, uint32_t *ops)
+{
+   if (!g_runtime_diag_enabled)
+      return false;
+   if (busy_us != NULL)
+      *busy_us = g_fn2_busy_us;
+   if (bytes != NULL)
+      *bytes = g_fn2_bytes;
+   if (ops != NULL)
+      *ops = g_fn2_ops;
+   /* Read-and-reset: /status reports the window since the last read, which
+      is what a duty cycle needs. */
+   g_fn2_busy_us = 0u;
+   g_fn2_bytes = 0u;
+   g_fn2_ops = 0u;
+   return true;
+}
+
+bool sdio_runtime_credit_spend_diag(uint32_t hist[6])
+{
+   unsigned int i;
+
+   if (!g_runtime_diag_enabled)
+      return false;
+   for (i = 0u; i < 6u; ++i)
+      hist[i] = g_credit_spend_hist[i];
+   return true;
+}
+
+bool sdio_runtime_mailbox_diag(uint32_t *ints, uint32_t *hmb_or,
+                               uint32_t *hmb_last, uint32_t *fc_events,
+                               uint32_t *services, uint32_t *int_or)
+{
+   if (!g_runtime_diag_enabled)
+      return false;
+   if (services != NULL)
+      *services = g_mbox_services;
+   if (int_or != NULL)
+      *int_or = g_mbox_int_or;
+   if (ints != NULL)
+      *ints = g_mbox_int_count;
+   if (hmb_or != NULL)
+      *hmb_or = g_mbox_hmb_or;
+   if (hmb_last != NULL)
+      *hmb_last = g_mbox_hmb_last;
+   if (fc_events != NULL)
+      *fc_events = g_mbox_fc_events;
+   return true;
+}
+
+bool sdio_runtime_get_ampdu_defaults(int32_t *ba_wsize, uint32_t *set_ba_wsize,
+                                     int32_t *ampdu_on, int32_t *nmode)
+{
+   /* -1 = the chip never answered, -2 = it refused the read. */
+   int32_t out[SDIO_AMPDU_PROBE_SLOTS];
+   unsigned int i;
+   bool any = false;
+
+   for (i = 0u; i < SDIO_AMPDU_PROBE_SLOTS; ++i) {
+      out[i] = g_runtime_ampdu_default_valid[i] ? (int32_t)g_runtime_ampdu_default[i]
+             : (g_runtime_ampdu_rejected[i] ? -2 : -1);
+      if (g_runtime_ampdu_default_valid[i] || g_runtime_ampdu_rejected[i])
+         any = true;
+   }
+   if (ba_wsize != NULL)
+      *ba_wsize = out[0];
+   if (ampdu_on != NULL)
+      *ampdu_on = out[1];
+   if (nmode != NULL)
+      *nmode = out[2];
+   /* 0 = the join sent nothing (the default), so the firmware's own limits
+      are the ones in force. */
+   if (set_ba_wsize != NULL)
+      *set_ba_wsize = g_runtime_ampdu_limits ? SDIO_JOIN_AMPDU_BA_WSIZE : 0u;
+   return any;
+}
+
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6])
 {
    if (mac_out == NULL)
@@ -7272,6 +7581,17 @@ bool sdio_runtime_send_ethernet_frame(const uint8_t *frame, uint16_t frame_lengt
    if (!sdio_runtime_tx_gate_pass())
       return false;
 
+   if (g_runtime_diag_enabled && g_credit_grant_stamp_us != 0u) {
+      uint32_t held = RPI_GetSystemTime() - g_credit_grant_stamp_us;
+
+      ++g_credit_spend_hist[(held < 50u) ? 0u
+                            : (held < 100u) ? 1u
+                            : (held < 250u) ? 2u
+                            : (held < 1000u) ? 3u
+                            : (held < 5000u) ? 4u : 5u];
+      g_credit_grant_stamp_us = 0u;
+   }
+
    /* The RX path wakes the bus before touching it, but this path never did -
       and since the interrupt gate removed the every-poll KSO side effect, an
       idle link's first transmit could land on a sleeping interface, which
@@ -7567,6 +7887,11 @@ void sdio_runtime_rx_gate_counts(uint32_t *skips, uint32_t *sweeps,
    value survives chip restarts (only the negotiated _active flag is
    reset, and the restart's bring-up renegotiates). */
 // cppcheck-suppress unusedFunction
+void sdio_runtime_set_ampdu_limits(bool send_limits)
+{
+   g_runtime_ampdu_limits = send_limits;
+}
+
 void sdio_runtime_set_txglom(uint8_t max_frames)
 {
    if (max_frames > (uint8_t)SDPCM_TXGLOM_MAX)
@@ -7631,6 +7956,7 @@ bool sdio_runtime_diag_enabled(void)
    rows entirely. */
 // cppcheck-suppress unusedFunction
 bool sdio_runtime_credit_diag(uint32_t depth_hist[7], uint8_t *depth_min,
+                              uint8_t *depth_max,
                               uint32_t reopen_hist[6], uint32_t *reopen_max_us)
 {
    unsigned int i;
@@ -7640,6 +7966,8 @@ bool sdio_runtime_credit_diag(uint32_t depth_hist[7], uint8_t *depth_min,
    for (i = 0u; i < 7u; ++i)
       depth_hist[i] = g_credit_depth_hist[i];
    *depth_min = g_credit_depth_min;
+   if (depth_max != NULL)
+      *depth_max = g_credit_depth_max;
    for (i = 0u; i < 6u; ++i)
       reopen_hist[i] = g_credit_reopen_hist[i];
    *reopen_max_us = g_credit_reopen_max_us;
@@ -7826,6 +8154,10 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                         g_runtime_sdio_core_base + SDIO_CORE_INT_STATUS_OFFSET,
                         SDIO_RUNTIME_POLL_TIMEOUT_US,
                         &int_status)) {
+         if (g_runtime_diag_enabled) {
+            g_mbox_services++;
+            g_mbox_int_or |= int_status;
+         }
          if (int_status != 0u) {
             if (!g_runtime_emulator_mode) {
                /* Clear ALL INT_STATUS bits (write-1-to-clear), not just the
@@ -7851,7 +8183,19 @@ bool sdio_runtime_poll_ethernet_frame(uint8_t *frame, uint16_t frame_capacity,
                                                          g_runtime_sdio_core_base + SDIO_CORE_TO_SB_MAILBOX_OFFSET,
                                                          0x00000002u,
                                                          SDIO_RUNTIME_POLL_TIMEOUT_US); /* SMB_INT_ACK */
-                  (void)hmb_data;   /* HMB read+acked; not logged */
+                  /* The dongle's other channel to us.  Credits are read
+                     only from received SDPCM headers, which measured
+                     1:1 with the grant rate, so anything the firmware
+                     signals here - brcmfmac acts on I_HMB_FC_CHANGE -
+                     is a grant channel we are deaf to.  Counted, not
+                     acted on: this says whether it is worth wiring up. */
+                  if (g_runtime_diag_enabled) {
+                     g_mbox_int_count++;
+                     g_mbox_hmb_or |= hmb_data;
+                     g_mbox_hmb_last = hmb_data;
+                     if ((hmb_data & SDPCM_HMB_DATA_FC) != 0u)
+                        g_mbox_fc_events++;
+                  }
                }
             }
          }

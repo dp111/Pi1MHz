@@ -176,6 +176,18 @@ typedef enum {
       response length also reveals the exact struct size this firmware
       build expects, which pins down why the SET returns BCME_BADARG. */
    WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY,
+   /* GET-VAR readback of the firmware's own block-ack window, issued once
+      at bring-up BEFORE the join sequence would overwrite it.  Measured:
+      the firmware uses 64 where the join used to send 8, and neither
+      brcmfmac nor WHD sets the iovar at all.  ampdu_mpdu is deliberately
+      not probed - this firmware never answers a GET of it, sent from
+      either position, and each probe costs a settle in bring-up. */
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU_BA_WSIZE,
+   /* Is frame aggregation actually on, and is 802.11n mode actually on?
+      We set neither, so both are whatever the firmware defaults to, and
+      /status should be able to answer the question without a rebuild. */
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU,
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE,
    WIFI_SDIO_TX_PROBE_COMMAND_JOIN
 } wifi_sdio_tx_probe_command_t;
 
@@ -222,6 +234,11 @@ typedef struct {
       driver; nonzero enables the bring-up iovar negotiation and, if the
       firmware accepts it, the 20-byte glom-form headers. */
    uint8_t txglom;
+   /* wifi_ampdu=1: send PicoWi's aggregation limits at join, as releases
+      up to V1.33 did.  Default 0: leave the firmware's own limits in place
+      - its ampdu_ba_wsize default is 64 against the 8 those releases sent,
+      and the deeper window is worth +18% throughput. */
+   bool ampdu_limits;
    char country[8];
    wifi_sdio_tx_probe_command_t sdio_tx_probe_command;
    uint8_t sdio_rx_sweep_limit;

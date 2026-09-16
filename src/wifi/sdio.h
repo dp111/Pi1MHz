@@ -329,6 +329,7 @@ void sdio_runtime_rx_gate_counts(uint32_t *skips, uint32_t *sweeps,
 void sdio_runtime_set_diag(bool enabled);
 bool sdio_runtime_diag_enabled(void);
 bool sdio_runtime_credit_diag(uint32_t depth_hist[7], uint8_t *depth_min,
+                              uint8_t *depth_max,
                               uint32_t reopen_hist[6], uint32_t *reopen_max_us);
 /* Grant-loop latency (wifi_diag=1): DAT1 low->high service-latency
    histogram (<50us,<100,<250,<1ms,<5ms,5ms+) and credit-refill
@@ -344,6 +345,13 @@ uint32_t sdio_runtime_tx_data_phase_fails(void);
    and supers/subs/fallbacks plus the channel-3 RX tripwire counter. */
 #define SDIO_RUNTIME_TXGLOM_MAX 16u
 void sdio_runtime_set_txglom(uint8_t max_frames);
+/* wifi_ampdu: false (the default) leaves the join sequence's
+   ampdu_ba_wsize / ampdu_mpdu / ampdu_rx_factor unsent, so the firmware
+   keeps its own aggregation limits - measured +18% throughput, because the
+   firmware's block-ack window is 64 against the 8 releases up to V1.33
+   sent, and the aggregate is also the SDPCM credit-grant quantum.  True
+   restores those values.  Must be called before sdio_runtime_start(). */
+void sdio_runtime_set_ampdu_limits(bool send_limits);
 /* How many frames the TX hold-queue flush may hand
    sdio_runtime_send_ethernet_frames() in one call right now: 1 while glom
    is off / not negotiated / belt-and-braces disabled after repeated
@@ -371,6 +379,29 @@ void sdio_runtime_txglom_status(uint8_t *config, bool *active,
    that advanced max_seq).  False while wifi_diag is off. */
 bool sdio_runtime_txglom_diag(uint32_t batch_hist[5], uint32_t *credit_refills);
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6]);
+/* The firmware's own ampdu_mpdu / ampdu_ba_wsize, read at bring-up before
+   the join sequence set them (-1 = the read failed or went unanswered),
+   alongside the values the join then set.  Diagnostic: a firmware default
+   larger than what we set means our join is capping over-air aggregation,
+   and with it the dongle's SDPCM credit-grant quantum.  Returns false
+   until at least one readback has landed. */
+bool sdio_runtime_get_ampdu_defaults(int32_t *ba_wsize, uint32_t *set_ba_wsize,
+                                     int32_t *ampdu_on, int32_t *nmode);
+/* wifi_diag-gated: what the dongle signals on the mailbox channel -
+   interrupts serviced, the OR of every HMB_DATA word seen, the last one,
+   and how many carried the flow-control bit.  Diagnostic for the question
+   of whether credit/flow-control updates arrive there as well as in
+   received SDPCM headers.  False while wifi_diag is off. */
+/* wifi_diag: how long a freshly granted credit waits before a data frame
+   spends it (<50us,<100,<250,<1ms,<5ms,5ms+).  Mass at the low end means TX
+   is waiting on grants, not on our own RX servicing. */
+/* wifi_diag: fn2 busy microseconds, bytes and operations since the last call
+   (read-and-reset).  Busy/elapsed is the data bus duty cycle. */
+bool sdio_runtime_fn2_diag(uint32_t *busy_us, uint32_t *bytes, uint32_t *ops);
+bool sdio_runtime_credit_spend_diag(uint32_t hist[6]);
+bool sdio_runtime_mailbox_diag(uint32_t *ints, uint32_t *hmb_or,
+                               uint32_t *hmb_last, uint32_t *fc_events,
+                               uint32_t *services, uint32_t *int_or);
 /* Start a real CYW43 enhanced scan. Results arrive as WLC_E_ESCAN_RESULT
    events through the normal RX poller, so this API never blocks Pi1MHz's
    cooperative main loop. */
