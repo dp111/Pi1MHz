@@ -741,6 +741,11 @@ static void init_emulator(void) {
             editing the SD card on another machine. Stand it down here. */
          else if (emulator[i].init == watchdog_init) watchdog_stop();
       }
+   /* Paint the boot screen only now: it prints the helper, hard disc and
+      M5000 addresses, and Helpers inits after the Framebuffer, so painting
+      it from fb_emulator_init showed a zero helper address (CALL &FC0). */
+   fb_show_splash_screen();
+
    RPI_BootStage(BOOT_STAGE_EMULATORS);
 }
 

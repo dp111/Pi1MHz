@@ -95,6 +95,10 @@ void fb_writec(char c);
 
 void fb_writes(const char *string);
 
+/* Paints the boot/help screen. Called after every emulator has initialised
+   (Pi1MHz.c), so the addresses it prints are the resolved ones. */
+void fb_show_splash_screen(void);
+
 int fb_get_cursor_x(void);
 
 int fb_get_cursor_y(void);

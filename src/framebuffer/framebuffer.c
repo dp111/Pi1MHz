@@ -1878,7 +1878,7 @@ static void owl(int x0, int y0, int r, int col) {
    prim_set_fg_col(screen, old_col);
 }
 #endif
-static void fb_show_splash_screen(void) {
+void fb_show_splash_screen(void) {
 
 #if 1
    // Select the default screen mode
@@ -2622,7 +2622,6 @@ void fb_emulator_init(uint8_t instance, uint8_t address)
   fb_initialize();
   if (vdu_log == NULL && config_get_bool("vdu_log"))
      vdu_log = malloc(sizeof *vdu_log * VDU_LOG_ENTRIES);   /* NULL stays off */
-  fb_show_splash_screen();
 
   Pi1MHz_Register_Memory(WRITE_FRED, address, fb_emulator_vdu_first);   /* one-shot stamp, then fb_emulator_vdu */
  // Create 6 bytes of RAM for vector code
