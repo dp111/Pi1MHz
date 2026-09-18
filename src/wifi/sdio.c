@@ -102,6 +102,8 @@ static bool g_runtime_ampdu_limits;
 static wifi_test_iovar_t g_test_iovars[WIFI_TEST_IOVAR_MAX];
 static uint8_t           g_test_iovar_count;
 static uint8_t           g_runtime_test_iovar_index;
+/* wifi_ampdu_rts: -1 = leave the firmware's value alone. */
+static int8_t            g_runtime_ampdu_rts = -1;
 
 /* delta_stats: the 128-byte reply, captured by the CDC decode below when the
    on-demand sample is outstanding.  Separate from the 4-byte ampdu slots
@@ -2589,6 +2591,10 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
       commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_MPDU;      /* ampdu_mpdu = 4 */
       commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR; /* ampdu_rx_factor = 0 */
    }
+   /* wifi_ampdu_rts=0/1.  Sent only when the key is set, so the join is
+      byte-identical to today when it is not - same discipline as wifi_ampdu. */
+   if (g_runtime_ampdu_rts >= 0)
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RTS;
    /* PicoWi's 150 ms radio/PHY settle normally hangs off AMPDU_RX_FACTOR;
       with the block skipped it moves to APSTA so the settle is still
       paid - see sdio_tx_probe_post_delay_us. */
@@ -2762,6 +2768,7 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_1:
       case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_2:
       case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_3:
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RTS:
          return WLC_SET_VAR;
       case WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_VERIFY:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_CHANSPEC:
@@ -2969,6 +2976,8 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          return (uint16_t)(sizeof("ampdu_mpdu") + 4u);
       case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
          return (uint16_t)(sizeof("ampdu_rx_factor") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RTS:
+         return (uint16_t)(sizeof("ampdu_rts") + 4u);
       case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_0:
       case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_1:
       case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_2:
@@ -3649,6 +3658,10 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
          break;
       case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_rx_factor", 0u);
+         break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RTS:
+         sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_rts",
+                                                   (g_runtime_ampdu_rts > 0) ? 1u : 0u);
          break;
       case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_0:
       case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_1:
@@ -8103,6 +8116,14 @@ bool sdio_runtime_sample_delta_stats(uint32_t *txframe, uint32_t *txretrans,
          g_delta_request_pending = false;
    }
    return have;
+}
+
+/* Cache wifi_ampdu_rts (-1 = leave the firmware alone).  Called from wifi.c
+   alongside the other bring-up settings, before the join consumes it. */
+// cppcheck-suppress unusedFunction
+void sdio_runtime_set_ampdu_rts(int8_t value)
+{
+   g_runtime_ampdu_rts = value;
 }
 
 /* Cache the wifi_test_iovars list.  Called from wifi.c at the same point as

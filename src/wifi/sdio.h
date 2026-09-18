@@ -355,6 +355,7 @@ void sdio_runtime_set_txglom(uint8_t max_frames);
    restores those values.  Must be called before sdio_runtime_start(). */
 void sdio_runtime_set_ampdu_limits(bool send_limits);
 void sdio_runtime_set_test_iovars(const wifi_test_iovar_t *list, uint8_t count);
+void sdio_runtime_set_ampdu_rts(int8_t value);
 uint8_t sdio_runtime_test_iovar_count(void);
 bool sdio_runtime_get_test_iovar_readback(const char **name, int32_t *value);
 bool sdio_runtime_sample_delta_stats(uint32_t *txframe, uint32_t *txretrans,

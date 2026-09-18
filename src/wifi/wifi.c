@@ -603,6 +603,18 @@ bool wifi_config_load(wifi_config_t *config)
    /* wifi_test_iovars="name=value,name=value,..." - see wifi_parse_test_iovars. */
    config->test_iovar_count = wifi_parse_test_iovars(config->test_iovars,
                                                      config_get("wifi_test_iovars"));
+   /* wifi_ampdu_rts=0/1: RTS/CTS protection around each A-MPDU.  Unset leaves
+      the firmware's own default (1) alone, exactly as wifi_ampdu does for the
+      aggregation limits.  MEASURED on the 43430 (2026-09-18, interleaved A/B,
+      n=6 against n=12, value read back out of the chip): sending 0 is worth
+      **+6.2%**, the only tuning gain the whole campaign found.  It is not the
+      default because RTS/CTS earns its keep where hidden nodes exist, and the
+      measurement is one board against one AP. */
+   {
+      const char *rts = config_get("wifi_ampdu_rts");
+      config->ampdu_rts = (rts == NULL) ? -1
+                        : (int8_t)((wifi_parse_u8(rts, 1u) != 0u) ? 1 : 0);
+   }
    /* wifi_txglom=N: TX superframe batching limit (0 = off, the default;
       sdio.c clamps to its compile-time ceiling).  Off keeps the TX path
       byte-identical to today so the SD fallback kernel and a new kernel
@@ -795,6 +807,7 @@ void wifi_boot(void)
          sdio_runtime_set_ampdu_limits(g_wifi_config.ampdu_limits);
          sdio_runtime_set_test_iovars(g_wifi_config.test_iovars,
                                       g_wifi_config.test_iovar_count);
+         sdio_runtime_set_ampdu_rts(g_wifi_config.ampdu_rts);
          if (!sdio_runtime_start()) {
             wifi_boot_fail(sdio_runtime_last_error());
             return;

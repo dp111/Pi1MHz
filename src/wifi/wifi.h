@@ -208,7 +208,10 @@ typedef enum {
       bring-up) because the numbers only mean anything under load.  Gives
       txretrans / txfail / rxcrsglitch, which separate "the medium is busy"
       from "we are retransmitting". */
-   WIFI_SDIO_TX_PROBE_COMMAND_GET_DELTA_STATS
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_DELTA_STATS,
+   /* ampdu_rts: RTS/CTS protection around each A-MPDU.  The firmware default
+      is 1; measured on the 43430, sending 0 is worth about +6%. */
+   WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RTS
 } wifi_sdio_tx_probe_command_t;
 
 /* delta_stats reply: u16 version, u16 length, then 31 u32 deltas. */
@@ -283,6 +286,9 @@ typedef struct {
    /* wifi_test_iovars="name=value,..." - see the enum above. */
    wifi_test_iovar_t test_iovars[WIFI_TEST_IOVAR_MAX];
    uint8_t           test_iovar_count;
+   /* wifi_ampdu_rts: -1 leaves the firmware's own value alone (the default),
+      0 or 1 sends that value at join. */
+   int8_t            ampdu_rts;
    char country[8];
    wifi_sdio_tx_probe_command_t sdio_tx_probe_command;
    uint8_t sdio_rx_sweep_limit;
