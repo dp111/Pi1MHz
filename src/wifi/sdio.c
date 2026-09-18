@@ -96,6 +96,28 @@ static uint16_t g_runtime_mac_request_id;
    sdio_runtime_start(), and read by the join builder and the settle
    table. */
 static bool g_runtime_ampdu_limits;
+/* wifi_test_iovars: copied from the config at boot (wifi.c), sent once in the
+   join sequence.  Count 0 = nothing pushed, so the join is byte-identical to
+   today when the key is unset. */
+static wifi_test_iovar_t g_test_iovars[WIFI_TEST_IOVAR_MAX];
+static uint8_t           g_test_iovar_count;
+static uint8_t           g_runtime_test_iovar_index;
+
+/* delta_stats: the 128-byte reply, captured by the CDC decode below when the
+   on-demand sample is outstanding.  Separate from the 4-byte ampdu slots
+   because this reply is a whole struct, not one value. */
+static uint8_t  g_delta_stats[WIFI_DELTA_STATS_LEN];
+static bool     g_delta_stats_valid;
+static bool     g_delta_request_pending;
+static uint16_t g_delta_request_id;
+
+/* The four TEST_IOVAR commands are contiguous, so one helper serves all. */
+static const wifi_test_iovar_t *sdio_test_iovar(wifi_sdio_tx_probe_command_t cmd)
+{
+   uint32_t i = (uint32_t)cmd - (uint32_t)WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_0;
+   return (i < g_test_iovar_count) ? &g_test_iovars[i] : NULL;
+}
+
 /* What the join sequence tells the firmware its aggregation limits are
    (PicoWi's values, sent at sdio_prepare_tx_control_payload).  Named so
    the readback below can be reported against them. */
@@ -107,7 +129,7 @@ static bool g_runtime_ampdu_limits;
    [1] = ampdu_ba_wsize; the index of the request in flight selects the
    slot, and only one is ever outstanding (the stage sends them one at a
    time).  Diagnostic only - nothing in the driver reads the values. */
-#define SDIO_AMPDU_PROBE_SLOTS 3u
+#define SDIO_AMPDU_PROBE_SLOTS 4u
 static uint32_t g_runtime_ampdu_default[SDIO_AMPDU_PROBE_SLOTS];
 static bool g_runtime_ampdu_default_valid[SDIO_AMPDU_PROBE_SLOTS];
 /* Which slot the request in flight is for: send ORDER is deliberately
@@ -398,6 +420,12 @@ typedef enum {
       run before QUERY_MAC so the readback reflects the new value. */
    SDIO_RUNTIME_STAGE_SET_MAC,
    SDIO_RUNTIME_STAGE_QUERY_MAC,
+   /* wifi_test_iovars SETs.  Here rather than in the join list because
+      bus: iovars are bus-layer settings (brcmfmac sets bus:txglom at bus
+      init, not at join), and because QUERY_AMPDU's readback of slot 0 has
+      to run AFTER the SET to prove anything.  Skipped entirely when the
+      key is unset. */
+   SDIO_RUNTIME_STAGE_TEST_IOVARS,
    /* Reads the firmware's own aggregation limits.  Must run before the
       join sequence, which sets them - that is the whole point of the
       stage.  Diagnostic: a failed read is tolerated and the join runs
@@ -918,6 +946,7 @@ static void sdio_runtime_note_scan_event(uint32_t event_type,
    const uint8_t *bss = data + ESCAN_RESULT_HEADER_LENGTH;
    uint32_t bss_length = sdio_load_u32_le(&bss[4]);
    uint8_t ssid_length = bss[18];
+
    if (bss_length < BSS_INFO_MIN_LENGTH || bss_length > data_length - ESCAN_RESULT_HEADER_LENGTH
        || ssid_length > SDIO_WIFI_SCAN_SSID_MAX)
       return;
@@ -2726,6 +2755,13 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS:
       case WIFI_SDIO_TX_PROBE_COMMAND_GLOBAL_EVENT_MSGS:
       case WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_EXT:
+      /* wifi_test_iovars: these are SETs.  Without these four cases they
+         fall to the default below, which is WLC_GET_VERSION - the chip
+         answers a version query and the value is silently never set. */
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_0:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_1:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_2:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_3:
          return WLC_SET_VAR;
       case WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_VERIFY:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_CHANSPEC:
@@ -2735,6 +2771,8 @@ static uint32_t sdio_tx_probe_command_value(wifi_sdio_tx_probe_command_t command
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU_BA_WSIZE:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU:
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_TEST_IOVAR_0:
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_DELTA_STATS:
          return WLC_GET_VAR;
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_BSSID:
          return WLC_GET_BSSID;
@@ -2851,6 +2889,12 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          return (uint16_t)(sizeof("ampdu") + 4u);
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE:
          return (uint16_t)(sizeof("nmode") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_DELTA_STATS:
+         return (uint16_t)(sizeof("delta_stats") + WIFI_DELTA_STATS_LEN);
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_TEST_IOVAR_0: {
+         const wifi_test_iovar_t *iv = sdio_runtime_test_iovar(0);
+         return (iv == NULL) ? 0u : (uint16_t)(strlen(iv->name) + 1u + 4u);
+      }
       case WIFI_SDIO_TX_PROBE_COMMAND_SET_MAC:
          /* "cur_etheraddr\0" + 6 MAC bytes the chip should adopt.  The
             actual payload bytes are filled by sdio_prepare_tx_control_-
@@ -2925,6 +2969,13 @@ static uint16_t sdio_tx_probe_payload_length(wifi_sdio_tx_probe_command_t comman
          return (uint16_t)(sizeof("ampdu_mpdu") + 4u);
       case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
          return (uint16_t)(sizeof("ampdu_rx_factor") + 4u);
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_0:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_1:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_2:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_3: {
+         const wifi_test_iovar_t *iv = sdio_test_iovar(command);
+         return (iv == NULL) ? 0u : (uint16_t)(strlen(iv->name) + 1u + 4u);
+      }
       case WIFI_SDIO_TX_PROBE_COMMAND_PM2_SLEEP_RET:
          return (uint16_t)(sizeof("pm2_sleep_ret") + 4u);
       case WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_BCN:
@@ -3448,6 +3499,23 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
                 "ampdu", name_length);
          break;
       }
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_DELTA_STATS:
+      {
+         memcpy(probe_result->tx_control_template_payload_bytes,
+                "delta_stats", sizeof("delta_stats"));
+         break;
+      }
+      case WIFI_SDIO_TX_PROBE_COMMAND_GET_TEST_IOVAR_0:
+      {
+         /* Read slot 0 back out of the chip.  The trailing 4 bytes are
+            already zeroed by the memset at the top of this function, which
+            is where the firmware writes the value. */
+         const wifi_test_iovar_t *iv = sdio_runtime_test_iovar(0);
+         if (iv != NULL)
+            memcpy(probe_result->tx_control_template_payload_bytes,
+                   iv->name, strlen(iv->name) + 1u);
+         break;
+      }
       case WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE:
       {
          size_t name_length = sizeof("nmode");
@@ -3582,6 +3650,15 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
       case WIFI_SDIO_TX_PROBE_COMMAND_AMPDU_RX_FACTOR:
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "ampdu_rx_factor", 0u);
          break;
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_0:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_1:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_2:
+      case WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_3: {
+         const wifi_test_iovar_t *iv = sdio_test_iovar(command);
+         if (iv != NULL)
+            sdio_prepare_tx_control_iovar_u32_payload(probe_result, iv->name, iv->value);
+         break;
+      }
       case WIFI_SDIO_TX_PROBE_COMMAND_PM2_SLEEP_RET:
          sdio_prepare_tx_control_iovar_u32_payload(probe_result, "pm2_sleep_ret", 0xc8u);
          break;
@@ -4208,6 +4285,19 @@ static bool sdio_runtime_complete_read_ethernet_frame_timeout(sdio_host_t *dev,
             }
             g_runtime_ampdu_request_pending = false;
          }
+         /* delta_stats: capture the whole 128-byte struct, not one word. */
+         if (g_delta_request_pending && cdc_cmd == WLC_GET_VAR
+             && cdc_request_id == g_delta_request_id) {
+            if ((cdc_flags & CDCF_IOC_ERROR) == 0u && cdc_status == 0u
+                && total_length >= (uint16_t)(header_length + CDC_HEADER_LENGTH
+                                              + WIFI_DELTA_STATS_LEN)) {
+               memcpy(g_delta_stats,
+                      &frame_buffer[header_length + CDC_HEADER_LENGTH],
+                      WIFI_DELTA_STATS_LEN);
+               g_delta_stats_valid = true;
+            }
+            g_delta_request_pending = false;
+         }
          /* SET cur_etheraddr ack: same request_id correlation as
             GET_MAC.  Record both the seen-bit and the firmware's
             status word so the SET_MAC stage can log a clear warning
@@ -4466,8 +4556,15 @@ static bool sdio_probe_send_single_tx_control_template_timeout(sdio_host_t *dev,
                                                                uint32_t timeout_us)
 {
    /* +HWEXT+4: room for the glom-form header (8 bytes wider) and its
-      4-byte-alignment tail pad, both zero-filled by the memset below. */
-   _Alignas(4) uint8_t tx_frame[SDPCM_CONTROL_EVENT_HEADER_LENGTH + SDPCM_HWEXT_LENGTH
+      4-byte-alignment tail pad, both zero-filled by the memset below.
+
+      STATIC, not on the stack: the payload limit grew to hold the 848-byte
+      `statistics` reply buffer, and a ~900-byte frame built on the stack broke
+      the join outright (the board came up, USB enumerated, WiFi never
+      associated - bisected 2026-09-18).  This is the only control-frame sender
+      and it runs from the poll loop, never from FIQ, so a single shared buffer
+      is safe; it must not be called re-entrantly. */
+   _Alignas(4) static uint8_t tx_frame[SDPCM_CONTROL_EVENT_HEADER_LENGTH + SDPCM_HWEXT_LENGTH
                                 + CDC_HEADER_LENGTH + TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH
                                 + 4u]; // drained by 32-bit EMMC PIO writes
    sdio_cmd53_result_t cmd53_result;
@@ -4977,6 +5074,48 @@ static int sdio_runtime_query_mac_step(sdio_host_t *dev)
    (the CDC decoder captures the value).  Returns 1 when both have been
    attempted, 0 while in progress.  A read that fails or goes unanswered
    is tolerated: this is diagnostic, and the join must run regardless. */
+/* Send the wifi_test_iovars SETs, one per pass, in the same send-settle
+   shape as the other bring-up steps.  Returns 1 when all are sent (or when
+   there are none), 0 while in progress. */
+static int sdio_runtime_test_iovars_step(sdio_host_t *dev)
+{
+   uint32_t now;
+
+   if (dev == NULL || g_runtime_test_iovar_index >= sdio_runtime_test_iovar_count())
+      return 1;
+
+   /* GET-only entries are read by the QUERY_AMPDU readback, never written. */
+   {
+      const wifi_test_iovar_t *iv = sdio_runtime_test_iovar(g_runtime_test_iovar_index);
+      if (iv != NULL && !iv->set) {
+         g_runtime_test_iovar_index++;
+         return (g_runtime_test_iovar_index >= sdio_runtime_test_iovar_count()) ? 1 : 0;
+      }
+   }
+
+   now = RPI_GetSystemTime();
+
+   if (!g_runtime_step_sent) {
+      sdio_prepare_tx_control_template(&g_sdio_probe_result,
+         (wifi_sdio_tx_probe_command_t)
+         ((uint32_t)WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_0 + g_runtime_test_iovar_index));
+      (void)sdio_probe_send_single_tx_control_template_timeout(dev,
+                                                              &g_sdio_probe_result,
+                                                              SDIO_RUNTIME_POLL_TIMEOUT_US);
+      g_runtime_step_sent = true;
+      g_runtime_step_deadline_us = now + 20000u;   /* short: a bus: SET acks fast */
+      return 0;
+   }
+
+   if ((int32_t)(now - g_runtime_step_deadline_us) < 0)
+      return 0;
+
+   (void)sdio_drain_fn2_responses(dev);
+   g_runtime_step_sent = false;
+   g_runtime_test_iovar_index++;
+   return (g_runtime_test_iovar_index >= sdio_runtime_test_iovar_count()) ? 1 : 0;
+}
+
 static int sdio_runtime_query_ampdu_step(sdio_host_t *dev)
 {
    uint32_t now;
@@ -4993,6 +5132,7 @@ static int sdio_runtime_query_ampdu_step(sdio_host_t *dev)
          WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU_BA_WSIZE,
          WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU,
          WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE,
+         WIFI_SDIO_TX_PROBE_COMMAND_GET_TEST_IOVAR_0,
       };
 
       g_runtime_ampdu_slot = g_runtime_ampdu_index;
@@ -6601,6 +6741,21 @@ bool sdio_runtime_tick(void)
          else
             sdio_debug_log("chip MAC read failed - lwIP netif keeps its default address");
          g_runtime_step_sent = false;
+         /* Rewind: the index is consumed by the stage, and a chip restart
+            re-runs bring-up - without this the SETs would be skipped on every
+            re-join after the first. */
+         g_runtime_test_iovar_index = 0;
+         g_runtime_stage = SDIO_RUNTIME_STAGE_TEST_IOVARS;
+         return true;
+      }
+
+      case SDIO_RUNTIME_STAGE_TEST_IOVARS:
+      {
+         int r = sdio_runtime_test_iovars_step(&g_runtime_device);
+
+         if (r == 0)
+            return true;
+         g_runtime_step_sent = false;
          g_runtime_stage = SDIO_RUNTIME_STAGE_QUERY_AMPDU;
          return true;
       }
@@ -7014,6 +7169,23 @@ bool sdio_runtime_get_ampdu_defaults(int32_t *ba_wsize, uint32_t *set_ba_wsize,
    if (set_ba_wsize != NULL)
       *set_ba_wsize = g_runtime_ampdu_limits ? SDIO_JOIN_AMPDU_BA_WSIZE : 0u;
    return any;
+}
+
+/* Slot 3 is the wifi_test_iovars[0] readback: what the chip reports the
+   value to be AFTER we set it, which is the only proof the SET landed.
+   -1 = never answered, -2 = refused. */
+bool sdio_runtime_get_test_iovar_readback(const char **name, int32_t *value)
+{
+   const wifi_test_iovar_t *iv = sdio_runtime_test_iovar(0);
+
+   if (iv == NULL)
+      return false;
+   if (name != NULL)
+      *name = iv->name;
+   if (value != NULL)
+      *value = g_runtime_ampdu_default_valid[3] ? (int32_t)g_runtime_ampdu_default[3]
+             : (g_runtime_ampdu_rejected[3] ? -2 : -1);
+   return true;
 }
 
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6])
@@ -7890,6 +8062,67 @@ void sdio_runtime_rx_gate_counts(uint32_t *skips, uint32_t *sweeps,
 void sdio_runtime_set_ampdu_limits(bool send_limits)
 {
    g_runtime_ampdu_limits = send_limits;
+}
+
+/* delta_stats, non-blocking: report the PREVIOUS reply and kick off the next
+   request.  It deliberately does not wait for the answer - this runs from the
+   poll loop (the /status route) and a busy-wait here would stall the loop, and
+   with it the Beeb's SCSI handshake, which has no timeout.  So the first call
+   after boot reports nothing and every later one reports a sample about one
+   /status refresh old, which is fine for a counter that is already a 1-second
+   delta.  Returns false until a reply has ever been captured. */
+bool sdio_runtime_sample_delta_stats(uint32_t *txframe, uint32_t *txretrans,
+                                     uint32_t *txfail, uint32_t *rxcrsglitch)
+{
+   bool have = g_delta_stats_valid;
+
+   if (!g_runtime_started || g_runtime_emulator_mode)
+      return false;
+
+   if (have) {
+      if (txframe != NULL)
+         *txframe = sdio_load_u32_le(&g_delta_stats[WIFI_DELTA_STATS_OFF_TXFRAME]);
+      if (txretrans != NULL)
+         *txretrans = sdio_load_u32_le(&g_delta_stats[WIFI_DELTA_STATS_OFF_TXRETRANS]);
+      if (txfail != NULL)
+         *txfail = sdio_load_u32_le(&g_delta_stats[WIFI_DELTA_STATS_OFF_TXFAIL]);
+      if (rxcrsglitch != NULL)
+         *rxcrsglitch = sdio_load_u32_le(&g_delta_stats[WIFI_DELTA_STATS_OFF_RXCRSGLITCH]);
+   }
+
+   /* Kick the next one only when the last has landed, so a silent chip cannot
+      leave a request outstanding for ever. */
+   if (!g_delta_request_pending) {
+      sdio_prepare_tx_control_template(&g_sdio_probe_result,
+                                       WIFI_SDIO_TX_PROBE_COMMAND_GET_DELTA_STATS);
+      g_delta_request_id = g_sdio_probe_result.tx_control_template_request_id;
+      g_delta_request_pending = true;
+      if (!sdio_probe_send_single_tx_control_template_timeout(&g_runtime_device,
+                                                              &g_sdio_probe_result,
+                                                              SDIO_RUNTIME_POLL_TIMEOUT_US))
+         g_delta_request_pending = false;
+   }
+   return have;
+}
+
+/* Cache the wifi_test_iovars list.  Called from wifi.c at the same point as
+   sdio_runtime_set_ampdu_limits, before the bring-up that consumes it. */
+// cppcheck-suppress unusedFunction
+void sdio_runtime_set_test_iovars(const wifi_test_iovar_t *list, uint8_t count)
+{
+   if (count > (uint8_t)WIFI_TEST_IOVAR_MAX)
+      count = (uint8_t)WIFI_TEST_IOVAR_MAX;
+   for (uint8_t i = 0; i < count; i++)
+      g_test_iovars[i] = list[i];
+   g_test_iovar_count = count;
+}
+
+
+uint8_t sdio_runtime_test_iovar_count(void) { return g_test_iovar_count; }
+
+const wifi_test_iovar_t *sdio_runtime_test_iovar(uint8_t index)
+{
+   return (index < g_test_iovar_count) ? &g_test_iovars[index] : NULL;
 }
 
 void sdio_runtime_set_txglom(uint8_t max_frames)

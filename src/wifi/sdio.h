@@ -237,10 +237,12 @@ typedef struct {
    uint32_t sdpcm_brcm_event_auth_type;
    uint32_t sdpcm_brcm_event_datalen;
    uint32_t sdpcm_brcm_event_payload_bytes_available;
-   /* Scratch for the IOCTL payload bytes (iovar name + value).  80 B
-      is enough for every command we send today; the prepare path
-      asserts payload_length stays within SDIO_TX_CONTROL_PAYLOAD_MAX
-      so a future iovar with a longer name can't silently overflow. */
+   /* Scratch for the IOCTL payload bytes (iovar name + value).  80 B was
+      enough for every command we sent originally; the prepare path asserts
+      payload_length stays within SDIO_TX_CONTROL_PAYLOAD_MAX so a future
+      iovar with a longer name can't silently overflow.  Raised to 880 for
+      the `statistics` GET: that iovar's minlen is 848, so the request has to
+      carry a buffer that big or the firmware rejects it outright. */
 #define SDIO_TX_CONTROL_PAYLOAD_MAX 164u
    uint8_t tx_control_template_payload_bytes[SDIO_TX_CONTROL_PAYLOAD_MAX];
    uint8_t sdpcm_brcm_event_addr[6];
@@ -352,6 +354,12 @@ void sdio_runtime_set_txglom(uint8_t max_frames);
    sent, and the aggregate is also the SDPCM credit-grant quantum.  True
    restores those values.  Must be called before sdio_runtime_start(). */
 void sdio_runtime_set_ampdu_limits(bool send_limits);
+void sdio_runtime_set_test_iovars(const wifi_test_iovar_t *list, uint8_t count);
+uint8_t sdio_runtime_test_iovar_count(void);
+bool sdio_runtime_get_test_iovar_readback(const char **name, int32_t *value);
+bool sdio_runtime_sample_delta_stats(uint32_t *txframe, uint32_t *txretrans,
+                                     uint32_t *txfail, uint32_t *rxcrsglitch);
+const wifi_test_iovar_t *sdio_runtime_test_iovar(uint8_t index);
 /* How many frames the TX hold-queue flush may hand
    sdio_runtime_send_ethernet_frames() in one call right now: 1 while glom
    is off / not negotiated / belt-and-braces disabled after repeated

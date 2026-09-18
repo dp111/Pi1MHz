@@ -13,6 +13,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>   /* strtoul - wifi_parse_test_iovars */
 #include <string.h>
 
 static wifi_config_t g_wifi_config;
@@ -473,6 +474,46 @@ static void wifi_clear_error(void)
    g_wifi_error[0] = '\0';
 }
 
+/* Parse wifi_test_iovars: "name=value,name=value,..." into at most
+   WIFI_TEST_IOVAR_MAX entries, returning how many were filled in.
+
+   An entry with no "=value" is a GET-only probe: the iovar is read back out of
+   the chip and reported on /status, never written, so a firmware default can be
+   discovered without disturbing it.  Values take strtoul base 0, so 0x-prefixed
+   hex works - which matters because a ratespec is written that way.
+
+   This exists so a firmware knob can be A/B'd by editing Pi1MHz.cfg and
+   rebooting, rather than rebuilding.  Unset sends nothing, so the join sequence
+   is byte-identical to today and a release build pays nothing.
+
+   Malformed input stops the scan and keeps whatever parsed cleanly: a typo in a
+   bench config should cost one knob, not the whole WiFi bring-up. */
+static uint8_t wifi_parse_test_iovars(wifi_test_iovar_t *out, const char *spec)
+{
+   uint8_t count = 0;
+
+   while (spec != NULL && *spec != '\0' && count < (uint8_t)WIFI_TEST_IOVAR_MAX) {
+      const char *eq  = strchr(spec, '=');
+      const char *end = strchr(spec, ',');
+      /* "name" alone, or a '=' belonging to a later entry, means GET-only. */
+      bool   has_value = (eq != NULL) && (end == NULL || eq < end);
+      size_t namelen   = has_value ? (size_t)(eq - spec)
+                       : (end != NULL ? (size_t)(end - spec) : strlen(spec));
+
+      if (namelen == 0u || namelen >= WIFI_TEST_IOVAR_NAME_MAX)
+         break;
+      memcpy(out[count].name, spec, namelen);
+      out[count].name[namelen] = '\0';
+      out[count].value = has_value ? (uint32_t)strtoul(eq + 1, NULL, 0) : 0u;
+      out[count].set   = has_value;
+      count++;
+      if (end == NULL)
+         break;
+      spec = end + 1;
+   }
+   return count;
+}
+
 static bool wifi_cmdline_bool(const char *key)
 {
    const char *prop = config_get(key);
@@ -559,6 +600,9 @@ bool wifi_config_load(wifi_config_t *config)
       /status.  Off by default - the sampling costs a little per received
       frame, and release builds must pay nothing they don't need. */
    config->diag_enabled = wifi_cmdline_bool("wifi_diag");
+   /* wifi_test_iovars="name=value,name=value,..." - see wifi_parse_test_iovars. */
+   config->test_iovar_count = wifi_parse_test_iovars(config->test_iovars,
+                                                     config_get("wifi_test_iovars"));
    /* wifi_txglom=N: TX superframe batching limit (0 = off, the default;
       sdio.c clamps to its compile-time ceiling).  Off keeps the TX path
       byte-identical to today so the SD fallback kernel and a new kernel
@@ -749,6 +793,8 @@ void wifi_boot(void)
          sdio_runtime_set_diag(g_wifi_config.diag_enabled);
          sdio_runtime_set_txglom(g_wifi_config.txglom);
          sdio_runtime_set_ampdu_limits(g_wifi_config.ampdu_limits);
+         sdio_runtime_set_test_iovars(g_wifi_config.test_iovars,
+                                      g_wifi_config.test_iovar_count);
          if (!sdio_runtime_start()) {
             wifi_boot_fail(sdio_runtime_last_error());
             return;

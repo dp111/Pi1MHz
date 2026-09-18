@@ -2882,6 +2882,39 @@ static bool route_status(ws_conn_t *c)
                      "firmware ba_wsize %s, join sets none (wifi_ampdu=0)", ws);
          table_row(&b, "AMPDU limits", tmp);
       }
+      {  /* wifi_test_iovars slot 0, read back out of the chip: the only
+            proof a SET landed rather than being silently ignored. */
+         const char *iv_name = NULL;
+         int32_t     iv_val  = 0;
+         if (sdio_runtime_get_test_iovar_readback(&iv_name, &iv_val)) {
+            if (iv_val == -1)
+               snprintf(tmp, sizeof tmp, "%s: no answer", iv_name);
+            else if (iv_val == -2)
+               snprintf(tmp, sizeof tmp, "%s: REFUSED by firmware", iv_name);
+            else
+               snprintf(tmp, sizeof tmp, "%s reads back %ld", iv_name, (long)iv_val);
+            table_row(&b, "Test iovar", tmp);
+         }
+      }
+      {  /* delta_stats, sampled on demand: separates "the medium is busy"
+            (rxcrsglitch climbing) from "we are retransmitting" (txretrans /
+            txfail climbing).  Only sampled when wifi_test_iovars armed
+            delta_stats_interval, so a normal build never issues the ioctl. */
+         const char *iv_name = NULL;
+         int32_t     iv_val  = 0;
+         if (sdio_runtime_get_test_iovar_readback(&iv_name, &iv_val)
+             && iv_name != NULL && strstr(iv_name, "delta_stats") != NULL) {
+            uint32_t txf = 0, txr = 0, txfail = 0, glitch = 0;
+            if (sdio_runtime_sample_delta_stats(&txf, &txr, &txfail, &glitch))
+               snprintf(tmp, sizeof tmp,
+                        "txframe %lu retrans %lu fail %lu rxcrsglitch %lu",
+                        (unsigned long)txf, (unsigned long)txr,
+                        (unsigned long)txfail, (unsigned long)glitch);
+            else
+               snprintf(tmp, sizeof tmp, "no answer (interval armed?)");
+            table_row(&b, "Delta stats", tmp);
+         }
+      }
    }
    table_row(&b, "Link-loss detect", rs.link_flag_trusted ? "armed" : "not armed");
    if (h264dec_running()) {

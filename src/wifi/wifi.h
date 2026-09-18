@@ -188,8 +188,49 @@ typedef enum {
       /status should be able to answer the question without a rebuild. */
    WIFI_SDIO_TX_PROBE_COMMAND_GET_AMPDU,
    WIFI_SDIO_TX_PROBE_COMMAND_GET_NMODE,
-   WIFI_SDIO_TX_PROBE_COMMAND_JOIN
+   WIFI_SDIO_TX_PROBE_COMMAND_JOIN,
+   /* wifi_test_iovars: up to four arbitrary "name=value" iovars sent once,
+      early in the join sequence, so a firmware knob can be A/B'd by editing
+      Pi1MHz.cfg and rebooting instead of rebuilding.  Four fixed commands
+      rather than one indexed command: the prepare switch is called per send
+      and a shared index would desynchronise if a send is ever retried.
+      Unset = none pushed into the join list, so release pays nothing. */
+   WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_0,
+   WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_1,
+   WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_2,
+   WIFI_SDIO_TX_PROBE_COMMAND_TEST_IOVAR_3,
+   /* GET-VAR readback of test iovar slot 0, so /status can prove the value
+      actually landed in the chip rather than trusting the SET's result
+      code.  Shares the ampdu probe's slot machinery. */
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_TEST_IOVAR_0,
+   /* GET-VAR "delta_stats": a 128-byte counter delta since the previous
+      sample, armed by setting delta_stats_interval.  Read on demand (not in
+      bring-up) because the numbers only mean anything under load.  Gives
+      txretrans / txfail / rxcrsglitch, which separate "the medium is busy"
+      from "we are retransmitting". */
+   WIFI_SDIO_TX_PROBE_COMMAND_GET_DELTA_STATS
 } wifi_sdio_tx_probe_command_t;
+
+/* delta_stats reply: u16 version, u16 length, then 31 u32 deltas. */
+#define WIFI_DELTA_STATS_LEN        128u
+#define WIFI_DELTA_STATS_OFF_TXFRAME   0x04u
+#define WIFI_DELTA_STATS_OFF_TXRETRANS 0x0Cu
+#define WIFI_DELTA_STATS_OFF_TXFAIL    0x10u
+#define WIFI_DELTA_STATS_OFF_RXFRAME   0x14u
+#define WIFI_DELTA_STATS_OFF_RXCRSGLITCH 0x74u
+
+
+#define WIFI_TEST_IOVAR_MAX       4u
+#define WIFI_TEST_IOVAR_NAME_MAX  24u   /* "bus:rxsequpdthresh" + NUL fits */
+
+typedef struct {
+   char     name[WIFI_TEST_IOVAR_NAME_MAX];
+   uint32_t value;
+   /* false when the spec entry had no "=value": the iovar is only READ back,
+      never written, so the firmware's own default can be discovered without
+      disturbing it. */
+   bool     set;
+} wifi_test_iovar_t;
 
 typedef struct {
    uint8_t octets[4];
@@ -239,6 +280,9 @@ typedef struct {
       - its ampdu_ba_wsize default is 64 against the 8 those releases sent,
       and the deeper window is worth +18% throughput. */
    bool ampdu_limits;
+   /* wifi_test_iovars="name=value,..." - see the enum above. */
+   wifi_test_iovar_t test_iovars[WIFI_TEST_IOVAR_MAX];
+   uint8_t           test_iovar_count;
    char country[8];
    wifi_sdio_tx_probe_command_t sdio_tx_probe_command;
    uint8_t sdio_rx_sweep_limit;
