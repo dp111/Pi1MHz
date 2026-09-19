@@ -41,6 +41,9 @@ typedef struct {
 
 #define BBC_GAP_COL 0x02
 
+/* NOT const, despite being the largest single .data object: init_screen() and
+   the mode-setup path below write ->width, ->height, ->pitch and ->font
+   through the pointer get_screen_mode() returns. */
 static screen_mode_t screen_modes[] = {
    {
       .mode_num      = 0,

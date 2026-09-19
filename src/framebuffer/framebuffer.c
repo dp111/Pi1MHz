@@ -170,9 +170,31 @@ static void vdu_21(const uint8_t *buf);
 static void vdu_nop(const uint8_t *buf);
 static void vdu_default(const uint8_t *buf);
 
-static vdu_operation_t vdu_operation_table[256] = {
-   // Entries 8-13,30,31,127 are filled in by VDU 4/5
-   // remaining entries >=32 are filled in by fb_initialize
+/* The nine control codes whose meaning depends on VDU 4 / VDU 5.  They
+   dispatch on text_at_g_cursor rather than being patched into the table, so
+   the table itself can be const and the VDU 4/5 mode state has exactly one
+   representation. */
+static void vdu_cursor_left (const uint8_t *buf);
+static void vdu_cursor_right(const uint8_t *buf);
+static void vdu_cursor_down (const uint8_t *buf);
+static void vdu_cursor_up   (const uint8_t *buf);
+static void vdu_area_clear  (const uint8_t *buf);
+static void vdu_cursor_col0 (const uint8_t *buf);
+static void vdu_cursor_home (const uint8_t *buf);
+static void vdu_cursor_tab  (const uint8_t *buf);
+static void vdu_delete      (const uint8_t *buf);
+
+/* const: read from the FIQ path (.len, when sizing a queued command) and
+   never written.  Codes 8-13, 30, 31 and 127 change meaning between VDU 4
+   and VDU 5; that is handled by the dispatchers above, not by rewriting
+   entries here. */
+/* [32 ... 255] is a GCC range designator (not ISO C) and [127] deliberately
+   overrides part of that range; both are exactly what we want here, so the
+   two diagnostics are turned off for this table only. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Woverride-init"
+static const vdu_operation_t vdu_operation_table[256] = {
    { 0, vdu_nop }, // 0 -  Does nothing
    { 1, vdu_nop }, // 1 -  Send next character to printer only (do nothing)
    { 0, vdu_nop }, // 2 -  Enable printer (do nothing)
@@ -181,12 +203,12 @@ static vdu_operation_t vdu_operation_table[256] = {
    { 0, vdu_5   }, // 5 -  Write text at graphics cursor
    { 0, vdu_6   }, // 6 -  Enable VDU drivers
    { 0, vdu_nop }, // 7 -  Make a short beep (do nothing)
-   { 0, vdu_nop }, // 8 -  Backspace cursor one character
-   { 0, vdu_nop }, // 9 -  Forward space cursor one character
-   { 0, vdu_nop }, // 10 - Move cursor down one line
-   { 0, vdu_nop }, // 11 - Move cursor up one line
-   { 0, vdu_nop }, // 12 - Clear text area
-   { 0, vdu_nop }, // 13 - Move cursor to start of current line
+   { 0, vdu_cursor_left  }, // 8 -  Backspace cursor one character
+   { 0, vdu_cursor_right }, // 9 -  Forward space cursor one character
+   { 0, vdu_cursor_down  }, // 10 - Move cursor down one line
+   { 0, vdu_cursor_up    }, // 11 - Move cursor up one line
+   { 0, vdu_area_clear   }, // 12 - Clear text area
+   { 0, vdu_cursor_col0  }, // 13 - Move cursor to start of current line
    { 0, vdu_nop }, // 14 - Page mode on (do nothing)
    { 0, vdu_nop }, // 15 - Page mode off (do nothing)
    { 0, vdu_16  }, // 16 - Clear graphics area
@@ -203,9 +225,15 @@ static vdu_operation_t vdu_operation_table[256] = {
    { 1, vdu_27  }, // 27 - Escape next character
    { 4, vdu_28  }, // 28 - Define text window
    { 4, vdu_29  }, // 29 - Define graphics origin
-   { 0, vdu_nop }, // 30 - Home text cursor to top left
-   { 2, vdu_nop }  // 31 - Move text cursor to x,y
+   { 0, vdu_cursor_home  }, // 30 - Home text cursor to top left
+   { 2, vdu_cursor_tab   }, // 31 - Move text cursor to x,y
+   /* Everything from 32 up is an ordinary printable/unhandled code; 127 is
+      the one exception.  GCC range designators keep this a static table
+      instead of a boot-time fill loop. */
+   [32 ... 255] = { 0, vdu_default },
+   [127]        = { 0, vdu_delete  }
 };
+#pragma GCC diagnostic pop
 
 // ==========================================================================
 // Static methods
@@ -1368,30 +1396,37 @@ static void vdu23_27(const uint8_t *buf) {
 // ==========================================================================
 
 static void vdu_4(const uint8_t *buf) {
+   (void)buf;
    text_at_g_cursor = 0;
-   vdu_operation_table[  8].handler = text_cursor_left;
-   vdu_operation_table[  9].handler = text_cursor_right;
-   vdu_operation_table[ 10].handler = text_cursor_down;
-   vdu_operation_table[ 11].handler = text_cursor_up;
-   vdu_operation_table[ 12].handler = text_area_clear;
-   vdu_operation_table[ 13].handler = text_cursor_col0;
-   vdu_operation_table[ 30].handler = text_cursor_home;
-   vdu_operation_table[ 31].handler = text_cursor_tab;
-   vdu_operation_table[127].handler = text_delete;
    enable_cursors();
 }
 
+/* Codes 8-13, 30, 31 and 127 act on the graphics cursor in VDU 5 mode and on
+   the text cursor in VDU 4 mode.  Control codes are a vanishing fraction of
+   VDU traffic - printable characters never reach these - so resolving the
+   mode here costs nothing measurable and lets the table be const. */
+static void vdu_cursor_left (const uint8_t *buf)
+{ if (text_at_g_cursor) graphics_cursor_left (buf); else text_cursor_left (buf); }
+static void vdu_cursor_right(const uint8_t *buf)
+{ if (text_at_g_cursor) graphics_cursor_right(buf); else text_cursor_right(buf); }
+static void vdu_cursor_down (const uint8_t *buf)
+{ if (text_at_g_cursor) graphics_cursor_down (buf); else text_cursor_down (buf); }
+static void vdu_cursor_up   (const uint8_t *buf)
+{ if (text_at_g_cursor) graphics_cursor_up   (buf); else text_cursor_up   (buf); }
+static void vdu_area_clear  (const uint8_t *buf)
+{ if (text_at_g_cursor) graphics_area_clear  (buf); else text_area_clear  (buf); }
+static void vdu_cursor_col0 (const uint8_t *buf)
+{ if (text_at_g_cursor) graphics_cursor_col0 (buf); else text_cursor_col0 (buf); }
+static void vdu_cursor_home (const uint8_t *buf)
+{ if (text_at_g_cursor) graphics_cursor_home (buf); else text_cursor_home (buf); }
+static void vdu_cursor_tab  (const uint8_t *buf)
+{ if (text_at_g_cursor) graphics_cursor_tab  (buf); else text_cursor_tab  (buf); }
+static void vdu_delete      (const uint8_t *buf)
+{ if (text_at_g_cursor) graphics_delete      (buf); else text_delete      (buf); }
+
 static void vdu_5(const uint8_t *buf) {
+   (void)buf;
    disable_cursors();
-   vdu_operation_table[  8].handler = graphics_cursor_left;
-   vdu_operation_table[  9].handler = graphics_cursor_right;
-   vdu_operation_table[ 10].handler = graphics_cursor_down;
-   vdu_operation_table[ 11].handler = graphics_cursor_up;
-   vdu_operation_table[ 12].handler = graphics_area_clear;
-   vdu_operation_table[ 13].handler = graphics_cursor_col0;
-   vdu_operation_table[ 30].handler = graphics_cursor_home;
-   vdu_operation_table[ 31].handler = graphics_cursor_tab;
-   vdu_operation_table[127].handler = graphics_delete;
    text_at_g_cursor = 1;
 }
 
@@ -1909,11 +1944,7 @@ void fb_show_splash_screen(void) {
 
 static void fb_initialize(void) {
 
-   // Initialize the VDU operation table
-   for (unsigned int i = 32; i < sizeof(vdu_operation_table) / sizeof(vdu_operation_t); i++) {
-      vdu_operation_table[i].len = 0;
-      vdu_operation_table[i].handler = vdu_default;
-   }
+   // The VDU operation table is fully initialised at compile time.
 
    // Fonts
    initialize_font_by_number(DEFAULT_FONT, &font_normal);
