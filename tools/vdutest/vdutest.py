@@ -76,6 +76,8 @@ U4 = UNITS[4]
 U5 = UNITS[5]
 U0 = UNITS[0]
 
+CURSOR_OFF = vdu(23,1,0,0,0,0,0,0,0,0)   # VDU 23,1,0;0;0;0;
+
 CASES = [
     # ===== PLOT: the family measured in 2026-09 =============================
     case("line-5-solid",       plot(MOVE,0,0),  plot(5,26,7)),
@@ -286,6 +288,20 @@ CASES = [
     case("vdu5-wrap",      vdu(5), plot(MOVE,304,20,(1,4)), text("ABC"), box=(0,0,319,24)),
     case("vdu5-window",    vdu(24) + P(16) + P(16) + P(80) + P(80), vdu(5), plot(MOVE,2,20), text("AB"), box=(0,0,30,24)),
     case("vdu5-back-4",    vdu(5), plot(MOVE,6,20), text("A"), vdu(4), text("B"), box=(0,0,30,24)),
+    # The nine codes whose meaning VDU 4/5 switches (8-13, 30, 31, 127): the
+    # three not covered above, a MODE change (which must drop back to VDU 4),
+    # and all nine in text mode after a VDU 5 -> VDU 4 round trip.  VDU 4 and
+    # MODE turn the text cursor back on: the Pi draws it into the frame, the
+    # Beeb's is the 6845 hardware cursor that POINT cannot see, so those two
+    # cases turn it off again before the snapshot.
+    case("vdu5-ht-9",      vdu(5), plot(MOVE,4,20), text("A") + vdu(9) + text("B"), box=(0,0,40,24)),
+    case("vdu5-home-30",   vdu(5), plot(MOVE,40,40), text("A") + vdu(30) + text("H"), box=(0,0,60,255)),
+    case("vdu5-tab-31",    vdu(5), vdu(31,3,2) + text("T"), box=(0,200,48,255)),
+    case("vdu5-then-4-all", vdu(5), vdu(4), vdu(31,4,4) + text("AB") + vdu(8) + text("C") + vdu(9) + text("D")
+                            + vdu(10) + text("E") + vdu(11) + text("F") + vdu(13) + text("G") + vdu(127)
+                            + vdu(30) + text("H") + CURSOR_OFF, box=(0,200,72,255)),
+    case("vdu5-mode-resets", vdu(5), vdu(22,4), text("AB") + vdu(8) + text("C") + vdu(9) + text("D")
+                            + vdu(127) + vdu(13) + text("E") + CURSOR_OFF, box=(0,224,48,255)),
     case("vdu5-vdu12",     plot(MOVE,0,0), plot(101,20,20), vdu(5), vdu(12), text("A"), box=(0,0,30,24)),
 
     # ===== VDU 23,7 scroll and VDU 23,8 clear block =========================
