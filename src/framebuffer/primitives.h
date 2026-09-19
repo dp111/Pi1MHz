@@ -2,6 +2,7 @@
 #define _PRIMITIVES_H
 
 #include <stdint.h>
+#include <stdbool.h>   /* bool is used below; keep this header self-contained */
 #include "screen_modes.h"
 
 typedef enum {
