@@ -964,7 +964,7 @@ static uint8_t do_recv(net_handle_t *h, uint32_t cp)
    return NET_OK;
 }
 
-static uint8_t do_recv_avail(net_handle_t *h, uint32_t cp)
+static uint8_t do_recv_avail(const net_handle_t *h, uint32_t cp)
 {
    if (h->state == NET_ST_FREE)
       return NET_ERR_NOTOPEN;

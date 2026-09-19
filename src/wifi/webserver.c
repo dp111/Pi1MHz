@@ -3040,7 +3040,7 @@ static bool route_status(ws_conn_t *c)
             first VDU byte): read on demand.  missed = resets the IRQ saw but
             the poll loop never re-initialised for; held = nRST low time as the
             poll loop saw it; helper/vdu are from the nRST edge, "-" = not yet. */
-         volatile Pi1MHz_break_t *bk = &Pi1MHz_break;
+         volatile const Pi1MHz_break_t *bk = &Pi1MHz_break;
          char row[256];             /* longer than tmp: eleven fields */
          if (bk->edges == 0u) {
             snprintf(row, sizeof row, "no reset seen since boot");

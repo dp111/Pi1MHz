@@ -613,7 +613,7 @@ bool vchiq_init(void)
     _data_memory_barrier();
 
     /* --- tell the firmware ---------------------------------------- */
-    rpi_mailbox_property_t *mp;
+    const rpi_mailbox_property_t *mp;
     RPI_PropertyStart(TAG_VCHIQ_INIT, 1);
     RPI_PropertyAdd(vc.slot_base_bus);
     RPI_PropertyProcess(true);

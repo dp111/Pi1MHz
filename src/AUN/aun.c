@@ -80,7 +80,7 @@ static aun_map_entry_t *map_find_by_addr(aun_engine_t *e,
 
 /* Learn-mode outbound resolve: subnet_base | station on the default
  * port. Returns false when learn mode is off or doesn't apply. */
-static bool learn_resolve(aun_engine_t *e, uint8_t net, uint8_t stn,
+static bool learn_resolve(const aun_engine_t *e, uint8_t net, uint8_t stn,
                           uint32_t *ip_be, uint16_t *port)
 {
    if (e->learn_net == 0xFF || net != e->learn_net)
@@ -92,7 +92,7 @@ static bool learn_resolve(aun_engine_t *e, uint8_t net, uint8_t stn,
 }
 
 /* Learn-mode inbound attribution for an unmapped in-subnet source. */
-static bool learn_attribute(aun_engine_t *e, uint32_t ip_be, uint16_t port,
+static bool learn_attribute(const aun_engine_t *e, uint32_t ip_be, uint16_t port,
                             uint8_t *net, uint8_t *stn)
 {
    if (e->learn_net == 0xFF || port != (uint16_t)AUN_DEFAULT_UDP_PORT)
@@ -440,7 +440,7 @@ static bool rx_frame_eligible(aun_engine_t *e, aun_rx_block_t *b,
 static int32_t rx_first_eligible(aun_engine_t *e, aun_rx_block_t *b)
 {
    for (uint32_t i = 0; i < b->count; i++) {
-      aun_rx_frame_t *f = &b->q[((uint32_t)b->head + i) % AUN_RX_QUEUE];
+      const aun_rx_frame_t *f = &b->q[((uint32_t)b->head + i) % AUN_RX_QUEUE];
       if (rx_frame_eligible(e, b, f))
          return (int32_t)i;
    }
@@ -478,12 +478,12 @@ uint8_t aun_rx_poll(aun_engine_t *e, uint8_t handle, aun_rx_info_t *out)
       b->pres_off = (uint8_t)off;
       /* copy the frame into the host-visible buffer once; it stays there
        * untouched until collected */
-      aun_rx_frame_t *pf =
+      const aun_rx_frame_t *pf =
          &b->q[((uint32_t)b->head + (uint32_t)off) % AUN_RX_QUEUE];
       memcpy(b->buf, pf->data, pf->len);
       b->presented = true;
    }
-   aun_rx_frame_t *f = &b->q[((uint32_t)b->head + b->pres_off) % AUN_RX_QUEUE];
+   const aun_rx_frame_t *f = &b->q[((uint32_t)b->head + b->pres_off) % AUN_RX_QUEUE];
    if (out != NULL) {
       out->src_stn = f->src_stn;
       out->src_net = f->src_net;
@@ -762,7 +762,7 @@ static uint8_t tx_begin(aun_engine_t *e, uint8_t wire_type,
 
    uint32_t dest_ip;
    uint16_t dest_port;
-   aun_map_entry_t *m = map_find_by_addr(e, dest_net, dest_stn);
+   const aun_map_entry_t *m = map_find_by_addr(e, dest_net, dest_stn);
    if (m != NULL) {
       dest_ip   = m->ip_be;
       dest_port = m->udp_port;
@@ -1104,7 +1104,7 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
       }
       uint8_t verdict;
 
-      aun_map_entry_t *m = map_find_by_ip(e, src_ip_be, src_port);
+      const aun_map_entry_t *m = map_find_by_ip(e, src_ip_be, src_port);
       if (m == NULL) {
          /* learn mode can attribute (and auto-map) in-subnet sources */
          uint8_t lnet, lstn;

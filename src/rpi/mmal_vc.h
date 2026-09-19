@@ -384,7 +384,7 @@ bool mmal_vc_port_enable(mmal_vc_port_t *port);
 bool mmal_vc_port_disable(mmal_vc_port_t *port);
 /* Discard anything in flight on the port (PORT_ACTION flush). */
 bool mmal_vc_port_flush(mmal_vc_port_t *port);
-bool mmal_vc_port_parameter_set(mmal_vc_port_t *port,
+bool mmal_vc_port_parameter_set(const mmal_vc_port_t *port,
                                 const void *param, uint32_t size);
 /* Switch a port to zero-copy: payloads stay in the VC heap and buffers
    cross as memory handles (buf->vc_handle) instead of being copied.

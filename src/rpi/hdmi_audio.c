@@ -168,7 +168,7 @@ static uint8_t iec958_fs_code(uint32_t rate)
     }
 }
 
-static bool wait_bit(volatile uint32_t *reg, uint32_t mask, bool set, uint32_t ms)
+static bool wait_bit(volatile const uint32_t *reg, uint32_t mask, bool set, uint32_t ms)
 {
     while (((*reg & mask) != 0) != set) {
         usleep(1000);

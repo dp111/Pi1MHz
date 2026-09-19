@@ -84,7 +84,7 @@ static bool inflight_add(mmal_vc_buffer_t *buf)
     return true;
 }
 
-static void inflight_remove(mmal_vc_buffer_t *buf)
+static void inflight_remove(const mmal_vc_buffer_t *buf)
 {
     for (int i = 0; i < MMAL_MAX_INFLIGHT; i++)
         if (inflight[i] == buf)
@@ -411,7 +411,7 @@ bool mmal_vc_port_set_format(mmal_vc_port_t *port)
     return true;
 }
 
-static bool port_action(mmal_vc_port_t *port, uint32_t action, bool with_port_copy)
+static bool port_action(const mmal_vc_port_t *port, uint32_t action, bool with_port_copy)
 {
     mmal_worker_port_action_t msg;
     mmal_worker_reply_t reply;
@@ -451,7 +451,7 @@ bool mmal_vc_port_flush(mmal_vc_port_t *port)
     return port_action(port, MMAL_WORKER_PORT_ACTION_FLUSH, false);
 }
 
-bool mmal_vc_port_parameter_set(mmal_vc_port_t *port,
+bool mmal_vc_port_parameter_set(const mmal_vc_port_t *port,
                                 const void *param, uint32_t size)
 {
     mmal_worker_port_param_set_t msg;

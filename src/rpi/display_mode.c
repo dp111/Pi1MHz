@@ -83,7 +83,7 @@ static void fw_timing_set(const fw_timing_t *t)
    with zeros on this firmware, so it is not used.)  False with no display. */
 static bool pv_timing_get(fw_timing_t *t)
 {
-    volatile uint32_t *pv = (volatile uint32_t *)(PERIPHERAL_BASE + 0x807000u);
+    volatile const uint32_t *pv = (volatile uint32_t *)(PERIPHERAL_BASE + 0x807000u);
     uint32_t ctrl = pv[0], vctrl = pv[1], horza = pv[3], horzb = pv[4], verta = pv[5], vertb = pv[6];
     memset(t, 0, sizeof *t);
     if ((ctrl & 1u) == 0u) return false;                  /* pixel valve off */
@@ -279,7 +279,7 @@ void display_mode_select(void)
         return;
     }
 
-    uint8_t *edid = edid_blocks[0], *ext = edid_blocks[1];
+    const uint8_t *edid = edid_blocks[0], *ext = edid_blocks[1];
 
     /* The panel's preferred timing, rescaled - unless it is interlaced or
        otherwise unusable, in which case only a CEA mode below will do. */

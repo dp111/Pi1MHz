@@ -229,7 +229,7 @@ static int sdhost_issue_raw_command(uint32_t sdcmd, uint32_t argument, uint32_t 
 static void sdhost_probe_firmware_clock_mode(void);
 
 #ifdef DEBUG_SD
-static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argument, struct emmc_block_dev *dev)
+static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argument, const struct emmc_block_dev *dev)
 {
     printf(
         "SDHOST %s: cmd=%" PRIu32 " arg=%08" PRIx32 " err=%08" PRIx32
@@ -247,7 +247,7 @@ static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argu
         (unsigned int) dev->block_size);
 }
 #else
-static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argument, struct emmc_block_dev *dev)
+static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argument, const struct emmc_block_dev *dev)
 {
     (void)phase;
     (void)opcode;

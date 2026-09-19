@@ -259,7 +259,7 @@ static err_t ttx_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
       ttx_disconnect(c, false);
       return ERR_OK;
    }
-   for (struct pbuf *q = p; q != NULL; q = q->next)
+   for (const struct pbuf *q = p; q != NULL; q = q->next)
       ring_push(c, (const uint8_t *)q->payload, (uint32_t)q->len);
    if (!c->rx_seen) {
       c->rx_seen = true;

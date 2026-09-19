@@ -442,7 +442,7 @@ void audio_set_channel_mute(bool left, bool right)
 /* One frame into the active sink's format. Shared by the data and the
    silence paths so they cannot diverge (mute/mono/dither all in one
    place). */
-static inline uint32_t *pack_frame(dma_sink_t *s, int32_t l, int32_t r, uint32_t *dst)
+static inline uint32_t *pack_frame(const dma_sink_t *s, int32_t l, int32_t r, uint32_t *dst)
 {
    /* One channel muted = the other on both outputs (a VP415 with one
       sound track selected plays it mono), not silence on one side. */

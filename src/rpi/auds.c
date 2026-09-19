@@ -114,7 +114,7 @@ static void on_bulk_tx_done(void *user, int actual)
         au.busy[idx] = false;
 }
 
-static bool send(vc_audio_msg_t *m, bool wait)
+static bool send(const vc_audio_msg_t *m, bool wait)
 {
     /* Once a call has timed out the VC side is not coming back for this
        session: fail every later call immediately rather than spending

@@ -430,7 +430,7 @@ static bool wifi_lwip_tx_hold_flush(void)
    uint8_t batch_limit = sdio_runtime_txglom_batch_limit();
 
    while (s_tx_count > 0u) {
-      wifi_lwip_tx_slot_t *slot = &s_tx_queue[s_tx_head];
+      const wifi_lwip_tx_slot_t *slot = &s_tx_queue[s_tx_head];
 
       /* Age out first, so a stuck head cannot pin the queue while the
          pacing gate below is holding sends back. */
