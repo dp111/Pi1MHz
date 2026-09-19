@@ -134,9 +134,20 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter ")
 set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=auto")
 # Set the linker flags so that we use our "custom" linker script
 
-#set( CMAKE_EXE_LINKER_FLAGS "-Wl,--gc-sections -Wl,--print-gc-sections -Wl,-unresolved-symbols=ignore-in-object-files -Wl,-T,${PROJECT_SOURCE_DIR}/rpi.ld" )
+# --gc-sections on its own, WITHOUT -ffunction-sections / -fdata-sections.
+# It only drops unused newlib pieces (newlib is built with per-function
+# sections); -flto has already discarded our own dead code.  The per-function
+# and per-data section flags cost size instead - -fdata-sections most of all.
+# Measured 2026-09-19, rpi release, text+data:
+#                        gcc 16.1   gcc 17 (consol-final2)
+#   no gc-sections        499856    478488
+#   --gc-sections only    496944    475576   <- this
+#   + -ffunction-sections    -      477784
+#   + -fdata-sections        -      484456
+#   + both                505080    486680
+# Re-measure before adding either section flag.
 
-set( CMAKE_EXE_LINKER_FLAGS " -Wl,--defsym=START_ADDR=0x8000 -Wl,-T,${PROJECT_SOURCE_DIR}/rpi/rpi.ld " )
+set( CMAKE_EXE_LINKER_FLAGS " -Wl,--gc-sections -Wl,--defsym=START_ADDR=0x8000 -Wl,-T,${PROJECT_SOURCE_DIR}/rpi/rpi.ld " )
 
 set(core_files
    # Architecture-optimised string routines, built with our real -mcpu flags.
