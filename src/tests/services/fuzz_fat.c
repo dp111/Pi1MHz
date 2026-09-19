@@ -24,6 +24,8 @@ static callback_func_ptr write_cb[256];
 static callback_func_ptr read_cb[256];
 void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_func_ptr fn)
 { if (access == WRITE_FRED) write_cb[addr & 0xff] = fn; else read_cb[addr & 0xff] = fn; }
+static func_ptr poll_cb;
+void Pi1MHz_Register_Poll(func_ptr fn, const char *name) { (void)name; poll_cb = fn; }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)  { pi.Memory[addr & 0x1ff] = data; }
 void Pi1MHz_nIRQ_ASSERT(uint8_t src) { (void)src; }
 void Pi1MHz_nIRQ_CLEAR(uint8_t src) { (void)src; }
@@ -99,6 +101,7 @@ int main(void)
                                                     : (rnd() % 30u));
 
       write_cb[SVC_BASE + 4](TEST_GPIO(SVC_BASE + 4, page));
+      poll_cb();   /* the write only latches: the FatFs work is the poll pass */
 
       /* Exercise the address window and data port too. */
       if ((iter & 0xFu) == 0u) {

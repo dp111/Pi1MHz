@@ -33,6 +33,10 @@ void Pi1MHz_Register_Memory(unsigned int access, unsigned int addr, callback_fun
    if (access == WRITE_FRED) write_cb[addr & 0xff] = fn;
    else                      read_cb[addr & 0xff] = fn;
 }
+/* fat_service_init() registers a poll callback; dispatch() runs it the way
+   the main loop would. */
+static func_ptr poll_cb;
+void Pi1MHz_Register_Poll(func_ptr fn, const char *name) { (void)name; poll_cb = fn; }
 void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data)  { pi.Memory[addr & 0x1ff] = data; }
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
 { pi.Memory[addr & 0x1ff] = (uint8_t)data; pi.Memory[(addr + 1u) & 0x1ff] = (uint8_t)(data >> 8); }
@@ -89,6 +93,11 @@ static uint32_t cp_of(uint8_t page) { return DISC_RAM_BASE | 0xFF0000u | ((uint3
 static uint8_t dispatch(uint8_t page)
 {
    write_cb[SVC_BASE + 4](TEST_GPIO(SVC_BASE + 4, page));
+   /* Since "fat_service: do the FatFs work from the poll loop, not in FIQ"
+      the write callback only latches the request; the work happens on the
+      next poll pass.  Run that pass, so the status byte read below is the
+      completed result and not the latch. */
+   poll_cb();
    return pi.Memory[SVC_BASE + 4];
 }
 bool filesystemHostPathBusy(const char *path) { (void)path; return false; }
