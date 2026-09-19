@@ -107,8 +107,12 @@ static volatile bool     ttx_ints_enabled;
    takes ONE copy of each per pass - see teletext_poll. */
 static volatile bool    ttx_enable;
 static volatile uint8_t ttx_channel;
-static uint8_t  ttx_row_ptr;
-static uint8_t  ttx_col_ptr;
+/* Same FIQ<->poll sharing as ttx_enable/ttx_channel above: written by the FIQ
+   callbacks and rewound by the poll.  The rewind runs under the FIQ mask and
+   the mask helpers carry "memory" clobbers, so this is consistency rather than
+   a live fix - but it keeps the guarantee if the mask is ever dropped. */
+static volatile uint8_t ttx_row_ptr;
+static volatile uint8_t ttx_col_ptr;
 static uint8_t  ttx_row[TTX_ROWS][TTX_ROW_STRIDE];
 
 static ttx_phase_t ttx_phase = TTX_FIELD;
