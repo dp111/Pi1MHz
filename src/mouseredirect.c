@@ -44,7 +44,7 @@ _Static_assert(sizeof(void*) == 4 ,"Must have 32bit pointers");
 #define PTRMODE2WIDTH 6
 #define PTRMODEHEIGHT 16
 
-_Alignas(16) static char mouse_pointer_data[] = {
+_Alignas(16) static const char mouse_pointer_data[] = {
 #define B (1)
 #define i 16
 
