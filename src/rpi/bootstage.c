@@ -65,7 +65,6 @@ void RPI_BootStage( boot_stage_t stage )
    _clean_cache_area((const void *)(uintptr_t)boot_stage_block, 64);
 }
 
-#ifdef DEBUG
 void RPI_BootDetail( unsigned int detail )
 {
    boot_detail_current = detail;
@@ -75,7 +74,6 @@ unsigned int RPI_BootDetailPrevious( void )
 {
    return boot_detail_previous;
 }
-#endif
 
 /* Reset reason from the PM block. RSTS bits 12..0: the "had watchdog reset"
    flag is bit 5 on BCM2835 (0x20); power-on shows the full set. Read once -

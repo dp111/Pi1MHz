@@ -726,7 +726,7 @@ static void init_emulator(void) {
          /* Each emulator's init is well under the boot timeout, but the
             sequence as a whole is not - so feed the dog between them. */
          watchdog_boot_kick();
-         RPI_BootDetail(i + 1u);   /* DEBUG builds only: a death here names emulator[i] on the next boot */
+         RPI_BootDetail(i + 1u);   /* a death here names emulator[i] on the next boot */
          if (emulator[i].enable == 1) {
             uint32_t t0 = RPI_GetSystemTime();
             emulator[i].init(i, emulator[i].address);
@@ -1071,7 +1071,7 @@ _Noreturn void kernel_main(void)
          if (oldreset == false)
          {
             LOG_INFO("Reset detected\r\n");
-            RPI_BootDetail(0xFEu);  /* DEBUG builds only: re-init pass marker, a death in config_load shows FE */
+            RPI_BootDetail(0xFEu);  /* re-init pass marker: a death in config_load shows FE */
             Pi1MHz_break.init_start_us = RPI_GetSystemTime();
             Pi1MHz_break.inits++;
             init_emulator();
@@ -1130,7 +1130,11 @@ _Noreturn void kernel_main(void)
       {
          func_ptr poll_fn = Pi1MHz_poll_table[i];
 
-            RPI_BootDetail((uint32_t)(i + 1u) << 8);  /* DEBUG builds only: a runtime hang names the callback */
+#ifdef DEBUG
+            /* The one marker release cannot afford: this is per poll callback
+               per pass, i.e. the hot loop.  Boot-time markers stay in. */
+            RPI_BootDetail((uint32_t)(i + 1u) << 8);  /* a runtime hang names the callback */
+#endif
             poll_fn();
 #ifdef DEBUG
             {
@@ -1150,7 +1154,12 @@ _Noreturn void kernel_main(void)
       }
 #endif
 
+#ifdef DEBUG
+      /* Clears the per-callback stamp above.  Release sets no runtime
+         marker, and RPI_BootStage(BOOT_STAGE_RUNNING) already clears the
+         init markers, so this store would be a dead one in the hot loop. */
       RPI_BootDetail(0u);
+#endif
       main_poll_loops++;
       if (--heartbeat_left == 0u) {     /* a countdown: a modulo is a multiply per pass */
          heartbeat_left = MAIN_POLL_HEARTBEAT_PASSES;
