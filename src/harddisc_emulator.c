@@ -1,6 +1,6 @@
 /*
  Emulates Harddisc using beebSCSI
- This file combines the Verilog file the hostadaptor.c and the interface to Pi1MHz
+ This file combines the Verilog file, hostadapter.c, and the interface to Pi1MHz
  NB the inversions have been optimized out
 
 */

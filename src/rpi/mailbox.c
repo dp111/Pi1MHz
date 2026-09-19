@@ -111,8 +111,8 @@ static void RPI_Mailbox0Write( mailbox0_channel_t channel, const uint32_t * ptr 
     rpiMailbox0->Data; // empty buffer in case anything is left over.
     /* Wait until the mailbox becomes available and then write to the mailbox
        channel */
-// cppcheck-suppress constStatement
     while ( ( rpiMailbox1->Status & ARM_MS_FULL ) != 0 ) {
+// cppcheck-suppress constStatement
         rpiMailbox0->Data;
         if ( ( RPI_GetSystemTime() - start_us ) > MAILBOX_TIMEOUT_US )
             break;      /* a FULL bit that never clears will not clear by

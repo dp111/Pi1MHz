@@ -132,6 +132,12 @@ static hdmi_t* const RPI_hdmi = (hdmi_t*) (PERIPHERAL_BASE + 0x902000);
 
 
 //YUV plane ( YV12 format)
+/* This is the HVS display-list layout, not a driver struct: every field sits
+   at the byte offset the hardware defines (given in the trailing comments).
+   The *_ctx members are context registers the HVS maintains itself - the
+   driver never reads them, but they must stay so the fields after them land
+   at the right offsets.  Static analysers flag them as unused; that is
+   expected, and deleting them would silently corrupt the display list. */
 typedef struct {
     // bit 31 = 1 end of list
     // bit 30 = 1 valid list

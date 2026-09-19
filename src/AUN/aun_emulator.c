@@ -190,7 +190,7 @@ static bool aun_map_add_cb(void *user, uint8_t net, uint8_t stn,
    return aun_map_add((aun_engine_t *)user, net, stn, ip_be, port);
 }
 
-/* ---- JIM helpers (same pattern as discaccess_emulator.c) ---------------- */
+/* ---- JIM helpers (same pattern as fat_service.c) ----------------------- */
 
 static uint32_t jim_read32(uint32_t off)
 {
