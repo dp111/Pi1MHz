@@ -68,6 +68,26 @@ escape_key() { key 1B0D 1500; }    # Pico: ESC + unknown byte = Escape key, then
 pi_up() { "$TMP/pi-status.sh" 'Boot' > /dev/null 2>&1; }
 pi_row() { "$TMP/pi-status.sh" "$1" 2>/dev/null; }
 pi_get() { "$TMP/pi-http.sh" -s --max-time "${2:-30}" "$1"; }
+# The SWR loader needs a RAM bank with no ROM image in it, and refuses with
+# "No SWR" when every bank is taken.  Sideways RAM does not survive a power
+# cycle, so a ROM sitting in one is always something a helper put there and
+# a helper can put back: clear the header of one this suite knows how to
+# reload, using the Master's own *SRWRITE.  Returns 1 when there is nothing
+# it is willing to touch.
+free_swr_bank() {   # $1: optional ROM name to clear, else any reloadable one
+  lines '*ROMS' 'ROM 0' 10000
+  local line bank
+  line=$(printf '%s\n' "$TEXT" | grep -m1 -iE "^ROM [0-9A-F] +(${1:-1MHz-Wi|.*MMFS|BeebSCSI|ATS})")
+  [ -n "$line" ] || return 1
+  bank=$(printf '%s' "$line" | sed -n 's/^ROM \([0-9A-F]\).*/\1/p')
+  [ -n "$bank" ] || return 1
+  log "  sideways RAM is full; clearing bank $bank (${line#ROM ? })"
+  lines 'FORI%=&2000 TO &2020:?I%=0:NEXT' '>' 15000
+  lines "*SRWRITE 2000 2020 8000 $bank" '>' 15000
+  ctrl_break; arm_echo
+  return 0
+}
+
 bmp_hash() { pi_get /framebuffer.bmp 60 | md5sum | cut -c1-32; }
 break_inits() { pi_row BREAK | sed -n 's/.*inits \([0-9]*\).*/\1/p'; }
 bus_ovr() { pi_row 'Bus diag' | sed -n 's/.*ovr \([0-9]*\).*/\1/p'; }
@@ -238,21 +258,37 @@ t_vfs() {
 t_wifi() { # helper 16 = the shipped ROM (1MHz-WiFi with WiCFS merged in)
   log "== WIFI"
   local ip; ip=$(pi_row 'IP address' | sed -n 's/^IP address: //p')
+  # Load helper 16 every time, even when a 1MHz-WiFi ROM is already in a bank.
+  # Sideways RAM keeps whatever the last session put there, and an older image
+  # answers every check in this test convincingly - it passed ten of them once
+  # while the ROM under test was never loaded at all.  Clear it first so what
+  # is tested is what the Pi is serving now.
   lines '*ROMS' 'ROM 0' 10000
-  if ! printf '%s\n' "$TEXT" | grep -qi '1MHz-Wi'; then
+  if printf '%s\n' "$TEXT" | grep -qi '1MHz-Wi'; then
+    free_swr_bank '1MHz-Wi' || {
+      result "T:WIFI:helper 16 load:SKIP:a 1MHz-WiFi ROM is in a bank this suite cannot clear"
+      mount_test_disc; return; }
+  fi
+  local tries=0
+  while :; do
     lines '*FX147,136,16' '' 2000; sleep 2
-    lines '*GO FD00' 'No SWR|No ROM' 45000     # the loader prints no prompt the echo can see
+    lines '*GO FD00' 'No SWR|No ROM' 45000   # the loader prints no prompt the echo can see
     case "$TEXT" in
       *"No ROM"*)
         result "T:WIFI:helper 16 load:SKIP:No ROM - /Pi1MHz/1mhz-wicfs.rom is not on the card"
         mount_test_disc; return;;
       *"No SWR"*)
-        result "T:WIFI:helper 16 load:SKIP:No SWR - sideways RAM is full, power-cycle the Beeb"
-        mount_test_disc; return;;
+        tries=$((tries + 1))
+        if [ "$tries" -gt 2 ] || ! free_swr_bank; then
+          result "T:WIFI:helper 16 load:SKIP:No SWR - every bank holds a ROM this suite will not clear"
+          mount_test_disc; return
+        fi
+        continue;;
     esac
-    ctrl_break; arm_echo
-    lines '*ROMS' 'ROM 0' 10000
-  fi
+    break
+  done
+  ctrl_break; arm_echo
+  lines '*ROMS' 'ROM 0' 10000
   local rom; rom=$(printf '%s\n' "$TEXT" | grep -m1 -i '1MHz-Wi')
   [ -n "$rom" ] && result "T:WIFI:ROM in *ROMS after load + BREAK:PASS" || {
       result "T:WIFI:ROM in *ROMS after load + BREAK:FAIL"; mount_test_disc; return; }
