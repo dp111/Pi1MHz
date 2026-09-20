@@ -31,6 +31,31 @@ It is not wired into the CMake build and does not affect the firmware.
 
 `*HELP WIFI` lists them on the machine.
 
+## Workspace
+
+The ROM's scratch - the command heap, the parameter string and the driver's
+32 bytes of timeouts and error block - lives inside the image, above the
+code at `&BC00`. Pi1MHz loads this ROM into sideways RAM (helper 16), so the
+image is writable and the workspace costs the host nothing.
+
+It used to sit in host memory at `&0900`, `&0A00` and `&0D90`. Every one of
+those belongs to the OS on the machines this ROM supports: `&0900` is the
+RS423 output buffer, the speech buffer and ENVELOPEs 5-16; `&0A00` is the
+CFS/RFS/RS423 input buffer; and `&0D90` runs into the VFS/AMX mouse
+workspace at `&0D92` and then the **extended vector table at `&0D9F`**. On a
+Master with ROMs using vectors the last one hung the machine on the first OS
+call after any command, and the first stopped a `*FX3,1` serial redirect
+dead.
+
+`autorun` (service call 1) probes the image for writability and records the
+answer in the image. If the ROM is burnt into a real EPROM there is nowhere
+to put the workspace, so commands raise "1MHz-WiFi needs sideways RAM"
+rather than corrupting host memory. A real-ROM build would need the
+workspace claimed from the OS instead - service call `&02`, or `&24`/`&22`
+on the Master, which allocates in hidden RAM and leaves PAGE alone - and
+every workspace reference reached through a pointer rather than an absolute
+address.
+
 ## The RAM disk
 
 The RAM disk holds 65,024 bytes in up to 15 files in the low 64 KiB JIM

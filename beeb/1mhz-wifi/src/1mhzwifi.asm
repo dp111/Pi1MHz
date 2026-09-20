@@ -79,7 +79,10 @@ include "machine.asm"
 \ matched text, which is where every handler expects to start reading its
 \ arguments.
 
-.command            tya                         \ A on exit belongs to the
+.command            bit ws_flag                 \ no writable workspace, no
+                    bmi command_have_ws         \ commands: every handler
+                    jmp no_swr_error            \ scribbles on it
+.command_have_ws    tya                         \ A on exit belongs to the
                     pha                         \ handler, so only X and Y are
                     txa                         \ saved here
                     pha
@@ -174,6 +177,29 @@ include "machine.asm"
                     pha
                     txa
                     pha
+
+                    \ Is the image writable?  Pi1MHz loads this ROM into
+                    \ sideways RAM, where the workspace above the code is
+                    \ ours to use.  Burnt into a real ROM the writes would go
+                    \ nowhere, and every command would read back whatever the
+                    \ image holds, so record the answer once, here, and let
+                    \ the command entry refuse rather than misbehave.
+                    \ ws_flag is itself inside the image: in ROM it keeps its
+                    \ assembled 0 however often this runs.
+                    lda ws_base
+                    pha                         \ do not disturb the workspace
+                    lda #&A5
+                    sta ws_base
+                    cmp ws_base
+                    bne autorun_read_only
+                    lda #&5A                    \ both ways: a bus that floats
+                    sta ws_base                 \ high would pass the first
+                    cmp ws_base
+                    bne autorun_read_only
+                    lda #&80                    \ bit 7, so the command entry
+                    sta ws_flag                 \ can test it with BIT/BMI
+.autorun_read_only  pla
+                    sta ws_base
 
 
                     \ Nothing here may touch the AP5 JIM selector: the ROM scan
@@ -348,8 +374,27 @@ include "ping.asm"
 include "nslook.asm"
 include "ramdisk.asm"
 
+\ Raised when the image is not writable - burnt into a real ROM rather than
+\ loaded into sideways RAM.  The workspace this ROM needs lives in the image,
+\ so there is nowhere to put it; say so instead of corrupting host memory.
+\ (A real-ROM build wants the workspace claimed from the OS at service call
+\ &02, or &24/&22 on the Master: see beeb/1mhz-wifi/README.md.)
+.no_swr_error       brk
+                    equb &80
+                    equs "1MHz-WiFi needs sideways RAM"
+                    equb 0
+
 rom_content_end = P%
-ASSERT rom_content_end <= &BF00
+ASSERT rom_content_end <= ws_base
+
+\ ---------------------------------------------------------------------------
+\ Workspace, inside the image (see machine.asm)
+\ ---------------------------------------------------------------------------
+skipto ws_base
+.ws_heap            skip &100       \ heap
+.ws_strbuf          skip &100       \ strbuf
+.ws_netprt          skip &20        \ netprt: timeouts, cursor, error block
+.ws_writable        equb 0          \ ws_flag: set by the probe in autorun
 
 skipto &C000
 .romend

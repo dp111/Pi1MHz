@@ -108,13 +108,27 @@
 \ of one command, so the overlaps below are safe and are documented where they
 \ are not obvious.
 
-            heap       = &900       \ command parameter block
-            strbuf     = &A00       \ command line parameter string
-
-            \ Retired network printer workspace. The printer support this ROM
-            \ inherited has been removed, so the bytes are free; the dynamic
-            \ error block is built here rather than on the &0100 stack.
-            netprt = &D90           \ 32 bytes
+            \ The ROM's scratch lives INSIDE THE IMAGE, not in host RAM.
+            \ Pi1MHz loads this ROM into sideways RAM (helper 16), so the
+            \ image is writable, and a workspace here costs the machine
+            \ nothing and cannot collide with anything the OS owns.
+            \
+            \ It used to sit in host memory at &900, &A00 and &D90, which
+            \ the OS owns on every machine this ROM claims to support:
+            \   &0900  RS423 output buffer, speech, CFS BPUT, ENVELOPEs 5-16
+            \   &0A00  CFS/RFS/RS423 input buffer
+            \   &0D90  VFS/AMX mouse workspace (&0D92-&0D9E) and then the
+            \          EXTENDED VECTOR TABLE at &0D9F
+            \ The last one is fatal: corrupting the extended vectors kills
+            \ the next OS call made through a claimed vector, so the machine
+            \ hung after any command on a Master with ROMs using vectors.
+            \ The first one is why a *FX3,1 serial redirect stopped as soon
+            \ as a command ran.  See ws_writable below for the ROM case.
+            ws_base    = &BC00      \ inside the image, above the code
+            heap       = ws_base+&000   \ command parameter block, 256 bytes
+            strbuf     = ws_base+&100   \ command line parameter string, 256
+            netprt     = ws_base+&200   \ 32 bytes, was &0D90
+            ws_flag    = ws_base+&220   \ 0 = image is not writable (real ROM)
 
             \ The ROM select register is not the same on every target, so it
             \ is not equated here: &FE05 with the Electron deselect cycle
