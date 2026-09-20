@@ -47,3 +47,7 @@ __pycache__/
 
 # test-suite build output, logs and downloaded images
 tools/testsuite/out/
+
+# built by beeb/1mhz-wifi/build.sh; the shipped copy is firmware/Pi1MHz/1mhz-wifi.rom
+beeb/1mhz-wifi/src/1mhz-wifi.rom
+beeb/1mhz-wifi/src/1mhz-wifi-atm.rom

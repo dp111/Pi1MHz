@@ -14,8 +14,13 @@
 #include "rpi/systimer.h"
 #include "videoplayer.h"
 
+/* One 256-byte page per helper, 0..16 - the page the Beeb runs when it asks
+   for helper n.  Not a round 4 KB: it is exactly as many pages as
+   6502code.bin carries, so the bank select below rejects a helper number
+   that has no page rather than running whatever follows. */
+#define HELPER_PAGES 17u
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
-_Alignas(4) NOINIT_SECTION uint8_t helper_ram[4*1024];
+_Alignas(4) NOINIT_SECTION uint8_t helper_ram[HELPER_PAGES * 256u];
 
 static uint8_t helper_address;
 static volatile bool     help_shown_pending;   /* a help screen was shown: reformat it later */
@@ -61,6 +66,7 @@ static volatile uint32_t help_shown_us;
    " 8  AUNFS BBC B        AUNFSbeeb.rom\r\n"                            \
    " 9  AUNFS Master       AUNFSM128.rom\r\n"                            \
    "10+ Your ROM (10-15)   ROM10-15.rom\r\n"                             \
+   "16  1MHz-WiFi          1mhz-wifi.rom\r\n"                            \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then *FX147,203,1/0\r\n"                              \
    "   M5000 record on/off\r\n"
@@ -178,6 +184,12 @@ void helpers_init( uint8_t instance , uint8_t address)
    help_shown_pending = false;      /* the screen is formatted again below */
    if (Pi1MHz->JIM_ram_size == 0)     // the help screen lives in JIM RAM
       return;
+   /* 0x60 = RTS.  filesystemReadFile clamps to the file's length and leaves
+      the rest of the buffer alone, and this buffer is .noinit - so an older
+      or truncated 6502code.bin would otherwise leave a page of whatever
+      survived the last boot, and the Beeb would JMP into it.  Filled first,
+      an absent page just returns. */
+   memset(helper_ram, 0x60, sizeof helper_ram);
    if (filesystemReadFile("Pi1MHz/6502code.bin",&helper,sizeof(helper_ram)))
     {
         // register call backs

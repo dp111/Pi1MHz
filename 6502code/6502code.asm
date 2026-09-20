@@ -389,6 +389,14 @@ ORG &FD00
     ENDBLOCK &F00
 }
 
+; Page 16
+; 1MHz-WiFi host ROM (beeb/1mhz-wifi)
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/1mhz-wifi.rom"
+    ENDBLOCK &1000
+}
+
 .end
 
-SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &1000
+SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &1100

@@ -43,6 +43,7 @@ part of the standard firmware set.
 | 8 | Loads the Econet-over-WiFi filing system for the BBC B | `/Pi1MHz/AUNFSbeeb.rom` |
 | 9 | Loads the Econet-over-WiFi filing system for the Master 128 | `/Pi1MHz/AUNFSM128.rom` |
 | 10-15 | Loads a ROM of your own into sideways RAM | `/Pi1MHz/ROM10.rom` ... `/Pi1MHz/ROM15.rom` |
+| 16 | Loads the 1MHz-WiFi host ROM (`*JOIN`, `*WGET`, `*PING`, the RAM disc) | `/Pi1MHz/1mhz-wifi.rom` |
 
 After loading a ROM press **CTRL-BREAK** so the OS notices it.
 
@@ -52,6 +53,14 @@ Helpers 4 and 5 load the Pi1MHz builds of MMFS - the DFS-compatible
 filing system that serves classic DFS disc images from the Pi's SD
 card. See [MMFS and MMFS2](mmfs.md) for the disc-image files, the
 `BEEB.MMB` store and how to use them.
+
+## The 1MHz-WiFi ROM
+
+Helper 16 loads the host half of the WiFi service: `*JOIN` and `*LEAVE`,
+`*LAP`, `*IFCFG`, `*PING`, `*NSLOOK`, `*WGET`, `*DATE`/`*TIME` and a small
+RAM disc, for the BBC B, B+, Master and the Electron. `*HELP WIFI` lists
+them on the machine. The source is in `beeb/1mhz-wifi/`; the image on the
+card is built from it with `beeb/1mhz-wifi/build.sh`.
 
 ## Your own ROMs
 
