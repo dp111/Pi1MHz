@@ -224,6 +224,21 @@ include "machine.asm"
                     jsr oswrch
                     cpx #1
                     bne autorun_l1
+IF INCLUDE_WICFS
+                    \ The MOS has just rebuilt the vectors, so persisted filing
+                    \ system state is only meaningful if BYTEV still proves the
+                    \ RAM cassette trap survived. Release only what this ROM
+                    \ owns, and on failure leave the vectors alone rather than
+                    \ resetting into an inconsistent filing system.
+                    lda BYTEV
+                    cmp #<notape
+                    bne autorun_l1
+                    lda BYTEV+1
+                    cmp #>notape
+                    bne autorun_l1
+                    jsr release_owned_wicfs
+                    bcs autorun_l1
+ENDIF
 .autorun_l1         jsr print_logo
                     jsr printtext
                     equb &D,&EA
@@ -286,6 +301,26 @@ ENDIF
                     equb >mode_cmd, <mode_cmd
                     equs "DISCONNECT"
                     equb >disconnect_cmd, <disconnect_cmd
+IF INCLUDE_WICFS
+                    \ The filing system's own commands, in ElkWiFi's order:
+                    \ QUPRUN before QR, and QUPCFS distinct from both.
+                    equs "QUPRUN"
+                    equb >uef_run_cmd, <uef_run_cmd
+                    equs "QR"
+                    equb >uef_run_cmd, <uef_run_cmd
+                    equs "QAUTO"
+                    equb >uef_auto_cmd, <uef_auto_cmd
+                    equs "QHOST"
+                    equb >host_basic_cmd, <host_basic_cmd
+                    equs "QUPCFS"
+                    equb >bUPCFS, <bUPCFS
+                    equs "UEF"
+                    equb >uef_cmd, <uef_cmd
+                    equs "WICFS"
+                    equb >wicfs_cmd, <wicfs_cmd
+                    equs "REWIND"
+                    equb >rewind_cmd, <rewind_cmd
+ENDIF
                     equb >command_x6, <command_x6
 
 \ Print the ROM title and version, with the separating zero shown as a space.
@@ -399,6 +434,8 @@ ELSE
                     inc help_txt+1
                     jmp phd_entry
 .phd_done           rts
+\ One line per command table entry, read in lockstep with it, so every IF here
+\ must match the one around the entry it describes.
 .help_descriptions
                     equs "Get a file from a webserver",&0D
                     equs "WiFi control ON|OFF|HR|SR",&0D
@@ -408,19 +445,33 @@ ELSE
                     equs "Print IP and MAC address",&0D
                     equs "Print current date",&0D
                     equs "Print current time",&0D
+IF INCLUDE_PDUMP
                     equs "Paged Ram Dump",&0D
+ENDIF
                     equs "Show network readiness",&0D
                     equs "Join a network",&0D
                     equs "Disconnect from network",&0D
                     equs "ping a host on network",&0D
                     equs "Resolve an IPv4 address",&0D
+IF INCLUDE_RAMDISK
                     equs "Clear the RAM disk",&0D
                     equs "Catalogue the RAM disk",&0D
                     equs "Load from the RAM disk",&0D
                     equs "Save to the RAM disk",&0D
                     equs "Run from the RAM disk",&0D
+ENDIF
                     equs "Set device mode",&0D
                     equs "Close the connection",&0D
+IF INCLUDE_WICFS
+                    equs "Run a UEF file",&0D
+                    equs "Run a UEF file",&0D
+                    equs "Autorun a UEF file",&0D
+                    equs "Enter host BASIC",&0D
+                    equs "Start the UEF filing system",&0D
+                    equs "Load local UEF file",&0D
+                    equs "Enable WiFi CFS",&0D
+                    equs "Rewind the UEF stream",&0D
+ENDIF
 .print_help_end
 ENDIF
 
@@ -457,6 +508,9 @@ ENDIF
 
 include "util.asm"
 include "errors.asm"
+IF INCLUDE_WICFS
+include "wicfs_errors.asm"   \ appends to the table errors.asm starts
+ENDIF
 include "serial.asm"
 include "service_driver.asm"
 include "net_transport.asm"   \ after service_driver.asm, which sizes its workspace
@@ -478,6 +532,13 @@ include "ping.asm"
 include "nslook.asm"
 IF INCLUDE_RAMDISK
 include "ramdisk.asm"
+ENDIF
+IF INCLUDE_WICFS
+include "wicfs.asm"                \ inherited; see beeb/1mhz-wifi/README.md
+include "wicfs_messages.asm"       \ after wicfs.asm, which defines cr
+include "wicfs_catalogue.asm"
+include "uef.asm"
+include "host_launch.asm"
 ENDIF
 
 \ Raised when the image is not writable - burnt into a real ROM rather than
@@ -508,5 +569,10 @@ skipto heap
 skipto &C000
 .romend
 
-SAVE "1mhz-wifi-atm.rom", atmheader, romend
+\ The merged image is a different ROM from the network-only one, and is the
+\ one the Pi serves, so it is saved under its own name.
+IF INCLUDE_WICFS
+SAVE "1mhz-wicfs.rom", romstart, romend
+ELSE
 SAVE "1mhz-wifi.rom", romstart, romend
+ENDIF
