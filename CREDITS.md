@@ -97,7 +97,8 @@ hardware; they are not part of Pi1MHz's own GPL-3.0 licence.
   filing systems with the Econet hardware layer replaced by Pi1MHz's AUN
   commands.
 - **1MHz-WiCFS** — the UEF cassette filing system, in the merged ROM image
-  `firmware/Pi1MHz/1mhz-wicfs.rom` (helper 17). It derives from **Roland
+  `firmware/Pi1MHz/1mhz-wicfs.rom`, which is the image Pi1MHz ships and
+  loads with helper 16. It derives from **Roland
   Leurs'** ElkWiFi 0.23 <https://github.com/AtomicRoland/ElkWiFi> and through
   it from **Martin Barr's** UPCFS, and is combined with Peter Clarke's
   1MHz-WiFi ROM. Roland Leurs' terms, quoted in full and given for this use:
@@ -111,9 +112,9 @@ hardware; they are not part of Pi1MHz's own GPL-3.0 licence.
 
   So this image is **not** under Pi1MHz's GPL-3.0: it carries the licence
   above, as clause 2 requires of anything derived from that Work. Pi1MHz is
-  a non-commercial project and ships it on those terms. The GPL-3.0
-  1MHz-WiFi ROM in `beeb/1mhz-wifi/` is a separate image (helper 16) and is
-  unaffected.
+  a non-commercial project and ships it on those terms. The WiFi half's sources stay in `beeb/1mhz-wifi/`
+  under the project's own GPL-3.0 and build to a ROM of their own for
+  development and testing; that image is not shipped.
 - **MMFS / MMFS2** — Martin Mather and the MMFS project; Pi1MHz-specific
   sideways-RAM builds. <https://github.com/hoglet67/MMFS> ·
   `firmware/Pi1MHz/SWMMFS.rom`, `SWMMFS2.rom`

@@ -390,22 +390,15 @@ ORG &FD00
 }
 
 ; Page 16
-; 1MHz-WiFi host ROM (beeb/1mhz-wifi)
-{
-ORG &FD00
-    LOADFILETOSWR "Pi1MHz/1mhz-wifi.rom"
-    ENDBLOCK &1000
-}
-
-; Page 17
-; 1MHz-WiCFS: the same ROM with the UEF cassette filing system merged in.
-; A different licence from the rest of this project - see CREDITS.md.
+; 1MHz-WiFi with the UEF cassette filing system merged in (beeb/1mhz-wifi
+; provides the WiFi half; the merged image carries a different licence -
+; see CREDITS.md).
 {
 ORG &FD00
     LOADFILETOSWR "Pi1MHz/1mhz-wicfs.rom"
-    ENDBLOCK &1100
+    ENDBLOCK &1000
 }
 
 .end
 
-SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &1200
+SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &1100

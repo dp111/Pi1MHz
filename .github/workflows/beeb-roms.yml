@@ -11,7 +11,6 @@ on:
     paths:
       - 'beeb/**'
       - '6502code/**'
-      - 'firmware/Pi1MHz/1mhz-wifi.rom'
       - 'firmware/Pi1MHz/6502code.bin'
       - 'src/wifi_service.h'
       - 'src/net_service.h'
@@ -38,19 +37,6 @@ jobs:
 
       - name: ROM interface and assembly
         run: sh src/tests/wifirom/run_tests.sh
-
-      - name: The shipped 1mhz-wifi.rom matches its source
-        run: |
-          sha_before=$(sha256sum firmware/Pi1MHz/1mhz-wifi.rom | cut -d' ' -f1)
-          sh beeb/1mhz-wifi/build.sh
-          sha_after=$(sha256sum firmware/Pi1MHz/1mhz-wifi.rom | cut -d' ' -f1)
-          echo "committed $sha_before"
-          echo "rebuilt   $sha_after"
-          test "$sha_before" = "$sha_after" || {
-            echo "firmware/Pi1MHz/1mhz-wifi.rom is not what beeb/1mhz-wifi/ builds:" \
-                 "rebuild it with beeb/1mhz-wifi/build.sh and commit the result" >&2
-            exit 1
-          }
 
       - name: The shipped 6502code.bin matches its source
         working-directory: 6502code

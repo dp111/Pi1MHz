@@ -17,7 +17,8 @@ if [ "$size" -ne 16384 ]; then
     echo "1mhz-wifi.rom is $size bytes, expected 16384" >&2
     exit 1
 fi
-# Keep the image the Pi serves (helper 16) regenerable from this source.
-install=../../../firmware/Pi1MHz/1mhz-wifi.rom
-cp 1mhz-wifi.rom "$install"
-echo "built $(pwd)/1mhz-wifi.rom -> $(cd "$(dirname "$install")" && pwd)/1mhz-wifi.rom"
+# Not installed into firmware/Pi1MHz/: what Pi1MHz ships is the MERGED image
+# (this ROM plus the WiCFS cassette filing system), which is built elsewhere
+# and carries a different licence - see CREDITS.md.  This build is for
+# development and for the tests.
+echo "built $(pwd)/1mhz-wifi.rom"

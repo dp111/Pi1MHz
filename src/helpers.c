@@ -18,7 +18,7 @@
    for helper n.  Not a round 4 KB: it is exactly as many pages as
    6502code.bin carries, so the bank select below rejects a helper number
    that has no page rather than running whatever follows. */
-#define HELPER_PAGES 18u
+#define HELPER_PAGES 17u
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
 _Alignas(4) NOINIT_SECTION uint8_t helper_ram[HELPER_PAGES * 256u];
 
@@ -66,8 +66,7 @@ static volatile uint32_t help_shown_us;
    " 8  AUNFS BBC B        AUNFSbeeb.rom\r\n"                            \
    " 9  AUNFS Master       AUNFSM128.rom\r\n"                            \
    "10+ Your ROM (10-15)   ROM10-15.rom\r\n"                             \
-   "16  1MHz-WiFi          1mhz-wifi.rom\r\n"                            \
-   "17  + cassette FS       1mhz-wicfs.rom\r\n"                           \
+   "16  1MHz-WiFi+WiCFS    1mhz-wicfs.rom\r\n"                           \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then *FX147,203,1/0\r\n"                              \
    "   M5000 record on/off\r\n"

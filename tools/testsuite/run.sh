@@ -235,23 +235,27 @@ t_vfs() {
   printf '%s\n' "$TEXT" | grep -q PI1MHZTEST && result "T:VFS:back to the test disc:PASS" || result "T:VFS:back to the test disc:FAIL"
   result "I:VFS:bus:$(bus_ovr) ovr"
 }
-t_wifi() { # helper 16 = the 1MHz-WiFi host ROM, and the memory it must not touch
+t_wifi() { # helper 16 = the shipped ROM (1MHz-WiFi with WiCFS merged in)
   log "== WIFI"
   local ip; ip=$(pi_row 'IP address' | sed -n 's/^IP address: //p')
   lines '*ROMS' 'ROM 0' 10000
-  if ! printf '%s\n' "$TEXT" | grep -q '1MHz-WiFi'; then
+  if ! printf '%s\n' "$TEXT" | grep -qi '1MHz-Wi'; then
     lines '*FX147,136,16' '' 2000; sleep 2
     lines '*GO FD00' 'No SWR|No ROM' 45000     # the loader prints no prompt the echo can see
-    if printf '%s\n' "$TEXT" | grep -qE 'No SWR|No ROM'; then
-      result "T:WIFI:helper 16 load:SKIP:$(printf '%s' "$TEXT" | grep -oE 'No SWR|No ROM') - sideways RAM is full"
-      mount_test_disc; return
-    fi
+    case "$TEXT" in
+      *"No ROM"*)
+        result "T:WIFI:helper 16 load:SKIP:No ROM - /Pi1MHz/1mhz-wicfs.rom is not on the card"
+        mount_test_disc; return;;
+      *"No SWR"*)
+        result "T:WIFI:helper 16 load:SKIP:No SWR - sideways RAM is full, power-cycle the Beeb"
+        mount_test_disc; return;;
+    esac
     ctrl_break; arm_echo
     lines '*ROMS' 'ROM 0' 10000
   fi
-  local rom; rom=$(printf '%s\n' "$TEXT" | grep -m1 '1MHz-WiFi')
-  [ -n "$rom" ] && result "T:WIFI:1MHz-WiFi in *ROMS after load + BREAK:PASS" || {
-      result "T:WIFI:1MHz-WiFi in *ROMS after load + BREAK:FAIL"; mount_test_disc; return; }
+  local rom; rom=$(printf '%s\n' "$TEXT" | grep -m1 -i '1MHz-Wi')
+  [ -n "$rom" ] && result "T:WIFI:ROM in *ROMS after load + BREAK:PASS" || {
+      result "T:WIFI:ROM in *ROMS after load + BREAK:FAIL"; mount_test_disc; return; }
   result "I:WIFI:roms line:$rom"
 
   # The extended vector table. The ROM used to keep its workspace at &0D90,
@@ -357,6 +361,18 @@ t_wifi() { # helper 16 = the 1MHz-WiFi host ROM, and the memory it must not touc
                                               || result "T:WIFI:*LAP scan returns:SKIP:no scan output"
   else
     result "I:WIFI:scan:*LAP skipped (WIFI_SCAN=1 to run it); *JOIN is never run, it would drop the link"
+  fi
+
+  # WiCFS, in the merged image only: *WGET -U leaves a normalised UEF in the
+  # JIM window and the filing system streams it back out as if it were tape.
+  lines '*HELP WIFI' '>' 20000
+  if printf '%s\n' "$TEXT" | grep -qiE 'WICFS|UEF'; then
+    lines '*UEF' '>' 20000
+    printf '%s\n' "$TEXT" | grep -qiE 'syntax|usage|filename' \
+        && result "T:WIFI:WiCFS *UEF answers:PASS" \
+        || result "T:WIFI:WiCFS *UEF answers:FAIL:$(printf '%s' "$TEXT" | tail -1)"
+  else
+    result "T:WIFI:WiCFS:SKIP:this image has no cassette filing system"
   fi
 
   result "I:WIFI:bus:$(bus_ovr) ovr"
