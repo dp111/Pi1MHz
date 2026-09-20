@@ -4,7 +4,11 @@ set -eu
 
 beebasm=${BEEBASM:-beebasm}
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/src" && pwd)"
-"$beebasm" -i 1mhzwifi.asm
+# INCLUDE_RAMDISK=0 drops the RAM disc, which is what makes room for a second
+# ROM merged into this bank: the RAM disc exists to get a program into the
+# machine without a filing system, so it is redundant beside a cassette FS.
+ramdisk=${INCLUDE_RAMDISK:-1}
+"$beebasm" -i 1mhzwifi.asm -D INCLUDE_RAMDISK=$ramdisk
 
 size=$(wc -c < 1mhz-wifi.rom)
 if [ "$size" -ne 16384 ]; then

@@ -56,6 +56,23 @@ on the Master, which allocates in hidden RAM and leaves PAGE alone - and
 every workspace reference reached through a pointer rather than an absolute
 address.
 
+## One bank
+
+The image is a single 16 KiB sideways ROM and the workspace is packed against
+the top of it, so everything below `rom_content_end` is free. Measured with
+beebasm at the time of writing:
+
+| build | code ends | free |
+| --- | --- | --- |
+| default | `&A3E2` | 6651 bytes |
+| `INCLUDE_RAMDISK=0` | `&9E45` | 8088 bytes |
+
+`INCLUDE_RAMDISK=0` drops the RAM disc and its five commands. It exists for
+the case where a second ROM - the WiCFS cassette filing system - is merged
+into this bank rather than served as an image of its own: the RAM disc is
+there to get a program into the machine without a filing system, so it is the
+first thing to trade when there is one.
+
 ## The RAM disk
 
 The RAM disk holds 65,024 bytes in up to 15 files in the low 64 KiB JIM

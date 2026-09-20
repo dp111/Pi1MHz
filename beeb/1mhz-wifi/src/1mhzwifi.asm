@@ -268,6 +268,7 @@ include "machine.asm"
                     equb >ping_cmd, <ping_cmd
                     equs "NSLOOK"
                     equb >nslook_cmd, <nslook_cmd
+IF INCLUDE_RAMDISK
                     equs "RDINIT"
                     equb >rd_init_cmd, <rd_init_cmd
                     equs "RDCAT"
@@ -278,6 +279,7 @@ include "machine.asm"
                     equb >rd_save_cmd, <rd_save_cmd
                     equs "RDRUN"
                     equb >rd_run_cmd, <rd_run_cmd
+ENDIF
                     equs "MODE"
                     equb >mode_cmd, <mode_cmd
                     equs "DISCONNECT"
@@ -310,11 +312,13 @@ include "machine.asm"
                     equs " PING      ping a host on network",&0D
                     equs " NSLOOK    Resolve an IPv4 address",&0D
                     equs " PRD       Paged Ram Dump",&0D
+IF INCLUDE_RAMDISK
                     equs " RDCAT     Catalogue the RAM disk",&0D
                     equs " RDINIT    Clear the RAM disk",&0D
                     equs " RDLOAD    Load from the RAM disk",&0D
                     equs " RDRUN     Run from the RAM disk",&0D
                     equs " RDSAVE    Save to the RAM disk",&0D
+ENDIF
                     equs " TIME      Print current time",&0D
                     equs " VERSION   Print firmware version",&0D
                     equs " WGET      Get a file from a webserver",&0D
@@ -372,7 +376,9 @@ include "wget.asm"
 include "net_wget.asm"
 include "ping.asm"
 include "nslook.asm"
+IF INCLUDE_RAMDISK
 include "ramdisk.asm"
+ENDIF
 
 \ Raised when the image is not writable - burnt into a real ROM rather than
 \ loaded into sideways RAM.  The workspace this ROM needs lives in the image,
@@ -390,12 +396,14 @@ ASSERT rom_content_end <= ws_base
 \ ---------------------------------------------------------------------------
 \ Workspace, inside the image (see machine.asm)
 \ ---------------------------------------------------------------------------
+\ At the top of the bank, so everything below rom_content_end is free for code.
 skipto ws_base
-.ws_heap            skip &100       \ heap
-.ws_strbuf          skip &100       \ strbuf
 .ws_netprt          skip &20        \ netprt: timeouts, cursor, error block
 .ws_writable        equb 0          \ ws_flag: set by the probe in autorun
 .ws_mux_status      equb 0          \ mux_status
+skipto heap
+.ws_heap            skip &100       \ heap
+.ws_strbuf          skip &100       \ strbuf
 
 skipto &C000
 .romend

@@ -315,6 +315,12 @@ t_wifi() { # helper 16 = the 1MHz-WiFi host ROM, and the memory it must not touc
   # The RAM disk: self-contained, no network, so it is the part of this ROM
   # that can be checked properly.  Write a pattern, save it, catalogue it,
   # load it back somewhere else and compare.
+  # The RAM disc can be built out (INCLUDE_RAMDISK=0, to make room for a
+  # second ROM in the bank), so ask the ROM before testing it.
+  lines '*HELP WIFI' '>' 20000
+  if ! printf '%s\n' "$TEXT" | grep -qi 'RDCAT'; then
+    result "T:WIFI:RAM disk:SKIP:this ROM was built without it"
+  else
   lines 'FORI%=0 TO 15:?(&2000+I%)=I%+65:NEXT:?&3000=0' '>' 15000
   lines '*RDINIT' '>' 15000
   lines '*RDSAVE WTEST 2000 2010' '>' 20000
@@ -327,6 +333,7 @@ t_wifi() { # helper 16 = the 1MHz-WiFi host ROM, and the memory it must not touc
   local got; got=$(printf '%s\n' "$TEXT" | tr -d ' ' | grep -oE '414243444546474849[0-9A-F]*' | tail -1)
   [ -n "$got" ] && result "T:WIFI:RAM disk round trip (save, load elsewhere, compare):PASS" \
                 || result "T:WIFI:RAM disk round trip (save, load elsewhere, compare):FAIL:$(printf '%s' "$TEXT" | tail -2 | tr -d '\n')"
+  fi
 
   # A name lookup and a fetch, both against the LAN so no internet is needed.
   # Either can legitimately be unavailable, so neither failure is fatal.

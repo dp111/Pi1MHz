@@ -128,12 +128,17 @@
             \ hung after any command on a Master with ROMs using vectors.
             \ The first one is why a *FX3,1 serial redirect stopped as soon
             \ as a command ran.  See ws_writable below for the ROM case.
-            ws_base    = &BC00      \ inside the image, above the code
-            heap       = ws_base+&000   \ command parameter block, 256 bytes
-            strbuf     = ws_base+&100   \ command line parameter string, 256
-            netprt     = ws_base+&200   \ 32 bytes, was &0D90
-            ws_flag    = ws_base+&220   \ 0 = image is not writable (real ROM)
-            mux_status = ws_base+&221   \ connection state, was zero page &90
+            \ Packed against the top of the bank so the code below has every
+            \ byte that is left: the two page buffers take the last two pages
+            \ and the small state sits just under them.  Room matters here -
+            \ a second ROM merged into this image has to fit in what remains
+            \ (see README.md, "One bank").
+            heap       = &BE00      \ command parameter block, 256 bytes
+            strbuf     = &BF00      \ command line parameter string, 256 bytes
+            ws_base    = &BDDE      \ 34 bytes of state below them
+            netprt     = ws_base+&00    \ 32 bytes, was &0D90
+            ws_flag    = ws_base+&20    \ 0 = image is not writable (real ROM)
+            mux_status = ws_base+&21    \ connection state, was zero page &90
 
             \ The ROM select register is not the same on every target, so it
             \ is not equated here: &FE05 with the Electron deselect cycle
