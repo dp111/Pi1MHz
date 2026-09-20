@@ -59,7 +59,14 @@ card. See [MMFS and MMFS2](mmfs.md) for the disc-image files, the
 Helper 16 loads the host half of the WiFi service: `*JOIN` and `*LEAVE`,
 `*LAP`, `*IFCFG`, `*PING`, `*NSLOOK`, `*WGET`, `*DATE`/`*TIME` and a small
 RAM disc, for the BBC B, B+, Master and the Electron. `*HELP WIFI` lists
-them on the machine. The source is in `beeb/1mhz-wifi/`; the image on the
+them on the machine.
+
+The ROM needs the service behind it: put **`wifi_service_enable=1`** in
+`Pi1MHz.cfg` (with `wifi_ssid`/`wifi_password` set) before using any of
+the network commands. Without it the service never claims its command
+range, so a command like `*ONLINE` waits for an answer that cannot come -
+`*HELP WIFI` and `*VERSION` still work, because they are answered by the
+ROM itself. The source is in `beeb/1mhz-wifi/`; the image on the
 card is built from it with `beeb/1mhz-wifi/build.sh`.
 
 ## Your own ROMs
