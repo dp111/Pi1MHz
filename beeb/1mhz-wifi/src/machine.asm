@@ -99,7 +99,11 @@
             pr_r  = &C8             \ stream cursor page register shadow
 
             \ Connection state read by the public OSWORD &65 driver.
-            mux_status  = &90
+            \ In the image, not zero page: &90 is in the Econet/NFS block
+            \ (&009A-&009F is live NetTx/NetRx/NFS workspace), nothing in
+            \ this ROM reads it, and upstream ElkWiFi moved it into its own
+            \ image at 0.34 for the same reason ("Mux is disabled from
+            \ version 0.34").  Defined with the rest of the workspace below.
 
 \ ---------------------------------------------------------------------------
 \ Main memory workspace
@@ -129,6 +133,7 @@
             strbuf     = ws_base+&100   \ command line parameter string, 256
             netprt     = ws_base+&200   \ 32 bytes, was &0D90
             ws_flag    = ws_base+&220   \ 0 = image is not writable (real ROM)
+            mux_status = ws_base+&221   \ connection state, was zero page &90
 
             \ The ROM select register is not the same on every target, so it
             \ is not equated here: &FE05 with the Electron deselect cycle

@@ -43,7 +43,6 @@ ALLOWED = [
 # Writes outside that set which are deliberate, with the reason. Each one is a
 # claim on memory this ROM does not own, so it has to be argued for here.
 KNOWN = {
-    0x0090: "mux_status: connection state read by the OSWORD &65 driver",
     0x00C7: "pr_y: UEF stream cursor, shared with the filing system ROM",
     0x00C8: "pr_r: UEF stream page register, shared with the filing system ROM",
     0x00F8: "sbufl: UEF stream length low, shared with the filing system ROM",

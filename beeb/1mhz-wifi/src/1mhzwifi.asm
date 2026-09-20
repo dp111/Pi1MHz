@@ -395,6 +395,7 @@ skipto ws_base
 .ws_strbuf          skip &100       \ strbuf
 .ws_netprt          skip &20        \ netprt: timeouts, cursor, error block
 .ws_writable        equb 0          \ ws_flag: set by the probe in autorun
+.ws_mux_status      equb 0          \ mux_status
 
 skipto &C000
 .romend
