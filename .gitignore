@@ -51,3 +51,9 @@ tools/testsuite/out/
 # built by beeb/1mhz-wifi/build.sh; the shipped copy is firmware/Pi1MHz/1mhz-wifi.rom
 beeb/1mhz-wifi/src/1mhz-wifi.rom
 beeb/1mhz-wifi/src/1mhz-wifi-atm.rom
+# the merged image and the inherited sources build-merged.sh fetches. Neither
+# may be committed to this tree: see beeb/1mhz-wifi/README.md and CREDITS.md
+beeb/1mhz-wifi/src/1mhz-wicfs.rom
+beeb/1mhz-wifi/src/wicfs*.asm
+beeb/1mhz-wifi/src/uef.asm
+beeb/1mhz-wifi/src/host_launch.asm

@@ -64,11 +64,11 @@ beebasm at the time of writing:
 
 | build | free |
 | --- | --- |
-| default - full `*HELP`, names taken from the command table | 6761 bytes |
-| `INCLUDE_PDUMP=0` - drops `*PRD` | 6983 bytes |
-| `HELP_BRIEF=1` - names only, four to a line | 7232 bytes |
-| `HELP_BRIEF=1 INCLUDE_PDUMP=0` | 7454 bytes |
-| `INCLUDE_RAMDISK=0` as well | 8257 bytes |
+| default - full `*HELP`, names taken from the command table | 6760 bytes |
+| `INCLUDE_PDUMP=0` - drops `*PRD` | 6997 bytes |
+| `HELP_BRIEF=1` - names only, four to a line | 7231 bytes |
+| `HELP_BRIEF=1 INCLUDE_PDUMP=0` | 7453 bytes |
+| `INCLUDE_RAMDISK=0` as well | 8727 bytes |
 
 The default build already takes the command names for `*HELP WIFI` out of the
 command table rather than storing a second copy beside each description: 200
@@ -76,8 +76,8 @@ of that block's 643 bytes were names and padding. It costs the listing its
 alphabetical order - it now follows the table - and saves 130 bytes with the
 descriptions intact.
 
-These exist for the case where a second ROM - the WiCFS cassette filing
-system - is merged into this bank rather than served as an image of its own.
+These exist so a second ROM - the WiCFS cassette filing system - can be merged
+into this bank rather than served as an image of its own. It fits; see below.
 In the order I would spend them:
 
 - `HELP_BRIEF=1` prints `*HELP WIFI` as names walked out of the command
@@ -90,6 +90,52 @@ In the order I would spend them:
   because the RAM disc is how you get a program into a machine with no
   filing system - though a merged WiCFS is exactly the thing that makes it
   redundant.
+
+## The merged image
+
+`INCLUDE_WICFS=1` puts the WiCFS cassette filing system in this bank
+alongside the network commands: 28 commands in one 16 KiB ROM, with
+`*UEF LOAD` and the RAM disc both kept. Build it with
+
+```sh
+./build-merged.sh          # writes src/1mhz-wicfs.rom
+```
+
+It fits in exactly one configuration, which is what that script selects:
+
+| build | content | free below the workspace |
+| --- | --- | --- |
+| RAM disc, `*PRD`, full `*HELP` | 16200 | does not fit |
+| RAM disc, brief `*HELP`, no `*PRD` | 15529 | 309 bytes |
+
+So `*PRD` and the descriptive `*HELP` are what pay for the filing system.
+Dropping the RAM disc would buy 1274 bytes more, and is not needed.
+
+The two halves share `machine.asm`, `util.asm`, `errors.asm`, `serial.asm`,
+`service_driver.asm`, `net_transport.asm` and `driver.asm`, which is why the
+merge costs 15529 bytes rather than the 21669 the two images take separately.
+
+### Why the filing system is not in this tree
+
+`build-merged.sh` fetches it at build time instead, from two pinned commits,
+because a merged image is a derived work of three parties and none of them
+has granted terms for it:
+
+- **Roland Leurs** - ElkWiFi, which `wicfs.asm` comes from. No licence file;
+  the non-commercial terms he has stated cover his own work.
+- **Martin Barr** - UPCFS, which `wicfs.asm` in turn derives from. No licence.
+- **Peter Clarke** - the 45 patches to it and the sources around it. His
+  repository states that no licence is granted and that public availability
+  is not permission to copy or to publish derived binaries.
+
+Pi1MHz is GPL-3.0, so `wicfs.asm` could not live here even if the image were
+shippable. What arrived through PR #23 is this project's to use - Peter
+offered it - but the rest is not, so `src/1mhz-wicfs.rom` is a local build
+only and is git-ignored. Nothing installs it into `firmware/Pi1MHz/`.
+
+The ElkWiFi commit the patches apply to, `7bf366c9`, is not on any branch
+upstream. It is still served by SHA, which is how the script fetches it; the
+patch stack is zero-context and will not rebase onto any later revision.
 
 ## The RAM disk
 

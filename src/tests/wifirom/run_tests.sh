@@ -3,7 +3,8 @@
 #
 # 1. its service command numbers still match the headers it talks to,
 # 2. it only writes to memory a sideways ROM owns, and
-# 3. it still assembles to a 16 KiB image, when beebasm is available.
+# 3. its command table stays walkable and its help list stays in step, and
+# 4. it still assembles to a 16 KiB image, when beebasm is available.
 #
 # The ROM is not part of the firmware build, so nothing else would notice a
 # renumbering of wifi_service.h until the ROM misbehaved on real hardware.
@@ -13,6 +14,7 @@ ROOT=$(cd "$HERE/../../.." && pwd)
 
 python3 "$HERE/check_interface.py"
 python3 "$HERE/check_memory.py"
+python3 "$HERE/check_help_table.py"
 
 beebasm=${BEEBASM:-beebasm}
 if command -v "$beebasm" >/dev/null 2>&1; then
