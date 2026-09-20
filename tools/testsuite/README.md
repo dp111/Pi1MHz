@@ -30,6 +30,7 @@ way a user does, and needs no HDMI capture.
 | STRESS| host          | RAM burst and DISC test, then a CTRL-BREAK, while the host fetches 9 MB snapshots and uploads 2 MB files in a loop; overruns and reset latency must stay put |
 | MMFS  | host          | helper 5 (MMFS2 through the FAT service): `*DIN 0 NET`, `*CAT`, a `*SAVE` and `*DELETE` verified in NET.ssd on the card |
 | ROM   | host          | helper 6 loads BSRom into sideways RAM; after a CTRL-BREAK `*HELP` lists a new ROM |
+| WIFI  | host          | helper 16 loads the 1MHz-WiFi ROM; `*VERSION` round-trips to the service, the extended vector table at `&0D9F` is unchanged by a command, and the machine still executes afterwards (checked over the bus, not by the echo) |
 | BREAK | host          | five CTRL-BREAKs: the Pi's BREAK row counts every init, the ROM selected the helper, no bus overruns, the disc mounts again |
 
 Every check prints one line the host parses:

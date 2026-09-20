@@ -16,6 +16,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TMP=${PI1MHZ_TOOLS:-/mnt/c/Archlinux/claude-tmp}
 export PI_IP=${PI_IP:-192.168.0.42}
 JUKE=${JUKE:-9}
+M5000_FX=${M5000_FX:-3}      # Music 5000's index in the emulator table (see TM5000)
 JUKE_RESTORE=${JUKE_RESTORE:-0}
 OUT=${OUT:-$HERE/out}
 mkdir -p "$OUT"
@@ -35,7 +36,7 @@ while [ $# -gt 0 ]; do
   esac; shift
 done
 BASIC_TESTS="TINFO TFRED TRAM TDISC TVDU TNET TM5000 TTTX TAUN TBURST TFAT TFATJ"
-HOST_TESTS="MOUSE WAV REDIR VIDEO VFS STRESS MMFS ROM BREAK"
+HOST_TESTS="MOUSE WAV REDIR VIDEO VFS STRESS MMFS ROM WIFI BREAK"
 TUBE_CHANGED=0
 CHANGES=()
 
@@ -233,6 +234,86 @@ t_vfs() {
   printf '%s\n' "$TEXT" | grep -q PI1MHZTEST && result "T:VFS:back to the test disc:PASS" || result "T:VFS:back to the test disc:FAIL"
   result "I:VFS:bus:$(bus_ovr) ovr"
 }
+t_wifi() { # helper 16 = the 1MHz-WiFi host ROM, and the memory it must not touch
+  log "== WIFI"
+  local ip; ip=$(pi_row 'IP address' | sed -n 's/^IP address: //p')
+  lines '*ROMS' 'ROM 0' 10000
+  if ! printf '%s\n' "$TEXT" | grep -q '1MHz-WiFi'; then
+    lines '*FX147,136,16' '' 2000; sleep 2
+    lines '*GO FD00' 'No SWR|No ROM' 45000     # the loader prints no prompt the echo can see
+    if printf '%s\n' "$TEXT" | grep -qE 'No SWR|No ROM'; then
+      result "T:WIFI:helper 16 load:SKIP:$(printf '%s' "$TEXT" | grep -oE 'No SWR|No ROM') - sideways RAM is full"
+      mount_test_disc; return
+    fi
+    ctrl_break; arm_echo
+    lines '*ROMS' 'ROM 0' 10000
+  fi
+  local rom; rom=$(printf '%s\n' "$TEXT" | grep -m1 '1MHz-WiFi')
+  [ -n "$rom" ] && result "T:WIFI:1MHz-WiFi in *ROMS after load + BREAK:PASS" || {
+      result "T:WIFI:1MHz-WiFi in *ROMS after load + BREAK:FAIL"; mount_test_disc; return; }
+  result "I:WIFI:roms line:$rom"
+
+  # The extended vector table. The ROM used to keep its workspace at &0D90,
+  # which runs into it at &0D9F, and the machine then died on the next OS
+  # call made through a claimed vector - after the command had finished.
+  lines 'FORI%=&D9F TO &DAF:PRINT~?I%;" ";:NEXT:PRINT' '>' 15000
+  local before; before=$(printf '%s\n' "$TEXT" | tr -s ' ' | grep -E '^ *[0-9A-F]+ ' | tail -1)
+
+  lines '*VERSION' '>' 25000
+  printf '%s\n' "$TEXT" | grep -q '1MHz-WiFi' && result "T:WIFI:*VERSION answers:PASS" \
+                                               || result "T:WIFI:*VERSION answers:FAIL"
+  # the firmware's own reply only comes back when the service is enabled
+  if printf '%s\n' "$TEXT" | grep -q 'kernel V'; then
+    result "I:WIFI:service:$(printf '%s\n' "$TEXT" | grep -m1 'kernel V')"
+  else
+    result "I:WIFI:service:no firmware reply - wifi_service_enable=1 not set in Pi1MHz.cfg?"
+  fi
+
+  lines 'FORI%=&D9F TO &DAF:PRINT~?I%;" ";:NEXT:PRINT' '>' 15000
+  local after; after=$(printf '%s\n' "$TEXT" | tr -s ' ' | grep -E '^ *[0-9A-F]+ ' | tail -1)
+  [ -n "$before" ] && [ "$before" = "$after" ] \
+      && result "T:WIFI:extended vector table unchanged by a command:PASS" \
+      || result "T:WIFI:extended vector table unchanged by a command:FAIL:$before -> $after"
+
+  # Alive check that does not depend on the echo.  This is the fault that has
+  # to be caught: when the ROM corrupted the extended vectors the machine
+  # printed its reply and THEN stopped executing, so a test that only reads
+  # the echo calls that a pass.
+  #
+  # It has to be a side effect only the Beeb can cause.  The Pi's framebuffer
+  # is no good - the screen redirector mirrors Beeb output, so the picture
+  # changes whether or not this particular command ran - and *FCODE needs VFS
+  # selected.  Starting and stopping the Music 5000 recorder writes a file to
+  # the card, which is unambiguous and works under any filing system.
+  local w0 w1 wnew
+  w0=$(list_wavs)
+  lines "?&FCCA=$M5000_FX:?&FCCB=1" '>' 10000
+  lines "?&FCCA=$M5000_FX:?&FCCB=0" '>' 10000
+  sleep 3
+  w1=$(list_wavs); wnew=$(comm -13 <(echo "$w0") <(echo "$w1") | head -1)
+  if [ -n "$wnew" ]; then
+    result "T:WIFI:machine still executes after a command:PASS"
+    "$TMP/pi-http.sh" -s -o /dev/null -X DELETE "$wnew"
+  else
+    result "T:WIFI:machine still executes after a command:FAIL:the Beeb no longer reaches the bus"
+  fi
+
+  lines '*ONLINE' '>' 30000
+  if [ -n "$ip" ] && printf '%s\n' "$TEXT" | grep -q "$ip"; then
+    result "T:WIFI:*ONLINE reports the Pi's address:PASS"
+  else
+    result "T:WIFI:*ONLINE reports the Pi's address:SKIP:no address in the reply (service off?)"
+  fi
+  local gw; gw=$(pi_row 'Gateway' | sed -n 's/^Gateway: //p')
+  if [ -n "$gw" ]; then
+    lines "*PING $gw" '>' 40000
+    printf '%s\n' "$TEXT" | grep -q 'Received response' && result "T:WIFI:*PING the gateway:PASS" \
+                                                        || result "T:WIFI:*PING the gateway:SKIP:no response line"
+  fi
+  result "I:WIFI:bus:$(bus_ovr) ovr"
+  mount_test_disc
+}
+
 t_rom() { # helper 6 = BSRom into sideways RAM, then a BREAK registers it
   log "== ROM"
   lines '*ROMS' 'ROM 0' 10000
@@ -382,6 +463,7 @@ want VFS && t_vfs
 want STRESS && t_stress
 want MMFS && t_mmfs
 want ROM && t_rom
+want WIFI && t_wifi
 want BREAK && t_break
 
 # ---- teardown -------------------------------------------------------------
