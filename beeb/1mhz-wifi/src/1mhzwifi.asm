@@ -344,36 +344,84 @@ IF HELP_BRIEF
                     jsr OSASCI
 .print_help_end     rts
 ELSE
+\ The names come out of the command table, which already holds them: storing
+\ a second copy with each description cost 200 of this block's 643 bytes, and
+\ room in the bank is what decides whether a filing system can share it.  The
+\ descriptions below are in TABLE order, so they stay paired with the names.
 .print_help         jsr help_version
-                    jsr printtext
-                    equb &0D
-                    \ 40 "----- This string is 40 characters -----"
-                    equs " DATE      Print current date",&0D
-                    equs " IFCFG     Print IP and MAC address",&0D
-                    equs " JOIN      Join a network",&0D
-                    equs " LAP       List access points",&0D
-                    equs " LAPOPT    Set LAP options",&0D
-                    equs " LEAVE     Disconnect from network",&0D
-                    equs " MODE      Set device mode",&0D
-                    equs " ONLINE    Show network readiness",&0D
-                    equs " PING      ping a host on network",&0D
-                    equs " NSLOOK    Resolve an IPv4 address",&0D
-IF INCLUDE_PDUMP
-                    equs " PRD       Paged Ram Dump",&0D
-ENDIF
-IF INCLUDE_RAMDISK
-                    equs " RDCAT     Catalogue the RAM disk",&0D
-                    equs " RDINIT    Clear the RAM disk",&0D
-                    equs " RDLOAD    Load from the RAM disk",&0D
-                    equs " RDRUN     Run from the RAM disk",&0D
-                    equs " RDSAVE    Save to the RAM disk",&0D
-ENDIF
-                    equs " TIME      Print current time",&0D
-                    equs " VERSION   Print firmware version",&0D
-                    equs " WGET      Get a file from a webserver",&0D
-                    equs " WIFI      WiFi control ON|OFF|HR|SR",&0D
-                    equb &EA
-.print_help_end     rts
+                    lda #<commandtable
+                    sta help_tbl
+                    lda #>commandtable
+                    sta help_tbl+1
+                    lda #<help_descriptions
+                    sta help_txt
+                    lda #>help_descriptions
+                    sta help_txt+1
+                    lda #&0D
+                    jsr OSASCI
+.phd_entry          ldy #0
+                    lda (help_tbl),y
+                    bmi phd_done
+                    lda #' '
+                    jsr OSWRCH
+                    ldx #1                      \ columns used, including it
+.phd_name           lda (help_tbl),y
+                    bmi phd_name_done
+                    jsr OSWRCH
+                    iny
+                    inx
+                    bne phd_name
+.phd_name_done      iny                         \ step over the address bytes
+                    iny
+                    tya
+                    clc
+                    adc help_tbl
+                    sta help_tbl
+                    bcc phd_pad
+                    inc help_tbl+1
+.phd_pad            cpx #11                     \ line up the descriptions
+                    bcs phd_desc
+                    lda #' '
+                    jsr OSWRCH
+                    inx
+                    bne phd_pad
+.phd_desc           ldy #0
+.phd_dchar          lda (help_txt),y
+                    jsr OSASCI
+                    iny
+                    cmp #&0D
+                    bne phd_dchar
+                    tya
+                    clc
+                    adc help_txt
+                    sta help_txt
+                    bcc phd_entry
+                    inc help_txt+1
+                    jmp phd_entry
+.phd_done           rts
+.help_descriptions
+                    equs "Get a file from a webserver",&0D
+                    equs "WiFi control ON|OFF|HR|SR",&0D
+                    equs "Print firmware version",&0D
+                    equs "Set LAP options",&0D
+                    equs "List access points",&0D
+                    equs "Print IP and MAC address",&0D
+                    equs "Print current date",&0D
+                    equs "Print current time",&0D
+                    equs "Paged Ram Dump",&0D
+                    equs "Show network readiness",&0D
+                    equs "Join a network",&0D
+                    equs "Disconnect from network",&0D
+                    equs "ping a host on network",&0D
+                    equs "Resolve an IPv4 address",&0D
+                    equs "Clear the RAM disk",&0D
+                    equs "Catalogue the RAM disk",&0D
+                    equs "Load from the RAM disk",&0D
+                    equs "Save to the RAM disk",&0D
+                    equs "Run from the RAM disk",&0D
+                    equs "Set device mode",&0D
+                    equs "Close the connection",&0D
+.print_help_end
 ENDIF
 
 \ ---------------------------------------------------------------------------

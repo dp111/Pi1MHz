@@ -85,6 +85,10 @@
             data_pointer = zp+11
             size         = zp+11    \ search length, shares data_pointer
             needle       = zp+12    \ search string pointer, 2 bytes
+            \ *HELP only: two pointers for the table walk that prints it.
+            \ Nothing else is live while a service call 9 is being handled.
+            help_tbl     = zp+0     \ 2 bytes, walks commandtable
+            help_txt     = zp+6     \ 2 bytes, walks help_descriptions
             datalen      = zp+13    \ remaining data length, 2 bytes
 
             \ The UEF stream handover to the filing system ROM. *WGET -U

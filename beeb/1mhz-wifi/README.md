@@ -62,12 +62,19 @@ The image is a single 16 KiB sideways ROM and the workspace is packed against
 the top of it, so everything below `rom_content_end` is free. Measured with
 beebasm at the time of writing:
 
-| build | code ends | free |
-| --- | --- | --- |
-| default | `&A3E2` | 6651 bytes |
-| `HELP_BRIEF=1` | `&A19D` | 7232 bytes |
-| `HELP_BRIEF=1 INCLUDE_PDUMP=0` | `&A0BF` | 7454 bytes |
-| `INCLUDE_RAMDISK=0` (with both of the above) | `&9BC5` | 8728 bytes |
+| build | free |
+| --- | --- |
+| default - full `*HELP`, names taken from the command table | 6761 bytes |
+| `INCLUDE_PDUMP=0` - drops `*PRD` | 6983 bytes |
+| `HELP_BRIEF=1` - names only, four to a line | 7232 bytes |
+| `HELP_BRIEF=1 INCLUDE_PDUMP=0` | 7454 bytes |
+| `INCLUDE_RAMDISK=0` as well | 8257 bytes |
+
+The default build already takes the command names for `*HELP WIFI` out of the
+command table rather than storing a second copy beside each description: 200
+of that block's 643 bytes were names and padding. It costs the listing its
+alphabetical order - it now follows the table - and saves 130 bytes with the
+descriptions intact.
 
 These exist for the case where a second ROM - the WiCFS cassette filing
 system - is merged into this bank rather than served as an image of its own.
