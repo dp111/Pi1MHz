@@ -1,8 +1,9 @@
 #!/bin/sh -e
 # Host checks for the 1MHz-WiFi host ROM in beeb/1mhz-wifi/.
 #
-# 1. its service command numbers still match the headers it talks to, and
-# 2. it still assembles to a 16 KiB image, when beebasm is available.
+# 1. its service command numbers still match the headers it talks to,
+# 2. it only writes to memory a sideways ROM owns, and
+# 3. it still assembles to a 16 KiB image, when beebasm is available.
 #
 # The ROM is not part of the firmware build, so nothing else would notice a
 # renumbering of wifi_service.h until the ROM misbehaved on real hardware.
@@ -11,6 +12,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd)
 
 python3 "$HERE/check_interface.py"
+python3 "$HERE/check_memory.py"
 
 beebasm=${BEEBASM:-beebasm}
 if command -v "$beebasm" >/dev/null 2>&1; then
