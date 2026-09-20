@@ -411,6 +411,12 @@ bool h264dec_add_output_buffer(uint32_t phys, uint32_t size)
                 return false;
             o->buf.alloc_size = dec.frame_bytes;
             o->registered = true;
+            /* Buffers exist but the port is down - after a reset, or after a
+               BREAK that landed before the first FORMAT_CHANGED ever came.
+               Nothing else would bring it back up, and the decoder would
+               swallow every frame. */
+            if (!dec.output_enabled)
+                dec.reconfigure_pending = true;
             arm_output_buffers();
             return true;
         }
@@ -567,8 +573,13 @@ void h264dec_reset(void)
     mmal_vc_port_enable(&dec.port_in);
     /* If the output was up before, its format is already known - re-enable
        it from the poll loop once the caller has registered new buffers,
-       without waiting for another FORMAT_CHANGED. */
-    dec.reconfigure_pending = was_enabled;
+       without waiting for another FORMAT_CHANGED.  Never CLEAR the flag: a
+       second reset before the first one's reconfigure has run (two BREAKs in
+       a row) arrives with the port already disabled, and an assignment would
+       drop the pending work - leaving the port down for good, because the
+       component is never destroyed and so never sends FORMAT_CHANGED again. */
+    if (was_enabled)
+        dec.reconfigure_pending = true;
 }
 
 /* /status forensics: the output-port handshake, which is what breaks when a
