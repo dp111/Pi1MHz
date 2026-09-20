@@ -1,0 +1,70 @@
+name: "Beeb ROMs"
+
+# The 6502 side is not part of the CMake build, so nothing else would notice
+# if the ROM stopped assembling, if its service command numbers drifted from
+# the headers it talks to, or if the images committed under firmware/Pi1MHz/
+# stopped matching the source they are built from.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'beeb/**'
+      - '6502code/**'
+      - 'firmware/Pi1MHz/1mhz-wifi.rom'
+      - 'firmware/Pi1MHz/6502code.bin'
+      - 'src/wifi_service.h'
+      - 'src/net_service.h'
+      - 'src/tests/wifirom/**'
+      - '.github/workflows/beeb-roms.yml'
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  roms:
+    name: Assemble and check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build beebasm
+        run: |
+          git clone --depth 1 https://github.com/stardot/beebasm.git "$RUNNER_TEMP/beebasm"
+          # its Makefile lives in src/ and writes the binary to the root
+          make -C "$RUNNER_TEMP/beebasm/src" -j"$(nproc)"
+          echo "$RUNNER_TEMP/beebasm" >> "$GITHUB_PATH"
+
+      - name: ROM interface and assembly
+        run: sh src/tests/wifirom/run_tests.sh
+
+      - name: The shipped 1mhz-wifi.rom matches its source
+        run: |
+          sha_before=$(sha256sum firmware/Pi1MHz/1mhz-wifi.rom | cut -d' ' -f1)
+          sh beeb/1mhz-wifi/build.sh
+          sha_after=$(sha256sum firmware/Pi1MHz/1mhz-wifi.rom | cut -d' ' -f1)
+          echo "committed $sha_before"
+          echo "rebuilt   $sha_after"
+          test "$sha_before" = "$sha_after" || {
+            echo "firmware/Pi1MHz/1mhz-wifi.rom is not what beeb/1mhz-wifi/ builds:" \
+                 "rebuild it with beeb/1mhz-wifi/build.sh and commit the result" >&2
+            exit 1
+          }
+
+      - name: The shipped 6502code.bin matches its source
+        working-directory: 6502code
+        run: |
+          sha_before=$(sha256sum ../firmware/Pi1MHz/6502code.bin | cut -d' ' -f1)
+          beebasm -i 6502code.asm
+          sha_after=$(sha256sum ../firmware/Pi1MHz/6502code.bin | cut -d' ' -f1)
+          echo "committed $sha_before"
+          echo "rebuilt   $sha_after"
+          test "$sha_before" = "$sha_after" || {
+            echo "firmware/Pi1MHz/6502code.bin is not what 6502code/6502code.asm builds:" \
+                 "rebuild it and commit the result" >&2
+            exit 1
+          }
+
+      - name: Helper table and help screen
+        run: sh src/tests/helpers/run_tests.sh
