@@ -234,3 +234,15 @@ tools/vdutest checks the VDU driver against a Master 128; tools/testsuite runs B
 
 v.1.33
 F-code audio: muting one channel plays the other on both outputs (mono), as a VP415 does.
+
+v.1.34
+1MHz-WiFi host ROM: helper 16 loads it into sideways RAM; *JOIN, *PING, *WGET, *NSLOOK and a RAM disc (needs wifi_service_enable=1).
+Video no longer goes black after a BREAK: the decoder's output port is brought back up.
+WiFi throughput +18%: the chip's own aggregation limits are left alone; wifi_ampdu_rts for the one tuning gain found.
+A slow VideoCore can no longer stall the main loop for seconds: sensor reads give up after 50 ms.
+/status BREAK row records the worst delay from the reset edge to the re-init.
+Boot forensics: release builds name the emulator a failed boot died in.
+VDU 4/5 control codes dispatch on the current mode instead of rewriting the handler table.
+Release images link with --gc-sections: about 2.9 KB smaller.
+Menu reports a missing co-processor instead of hanging.
+tools/testsuite gains a WIFI test; tools/vdutest covers the VDU 4/5 codes; the services tests run again.
