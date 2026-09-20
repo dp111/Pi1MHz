@@ -397,6 +397,15 @@ ORG &FD00
     ENDBLOCK &1000
 }
 
+; Page 17
+; 1MHz-WiCFS: the same ROM with the UEF cassette filing system merged in.
+; A different licence from the rest of this project - see CREDITS.md.
+{
+ORG &FD00
+    LOADFILETOSWR "Pi1MHz/1mhz-wicfs.rom"
+    ENDBLOCK &1100
+}
+
 .end
 
-SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &1100
+SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &1200

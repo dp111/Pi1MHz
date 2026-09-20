@@ -44,6 +44,7 @@ part of the standard firmware set.
 | 9 | Loads the Econet-over-WiFi filing system for the Master 128 | `/Pi1MHz/AUNFSM128.rom` |
 | 10-15 | Loads a ROM of your own into sideways RAM | `/Pi1MHz/ROM10.rom` ... `/Pi1MHz/ROM15.rom` |
 | 16 | Loads the 1MHz-WiFi host ROM (`*JOIN`, `*WGET`, `*PING`, the RAM disc) | `/Pi1MHz/1mhz-wifi.rom` |
+| 17 | Loads the same ROM with the UEF cassette filing system merged in | `/Pi1MHz/1mhz-wicfs.rom` |
 
 After loading a ROM press **CTRL-BREAK** so the OS notices it.
 
@@ -60,6 +61,13 @@ Helper 16 loads the host half of the WiFi service: `*JOIN` and `*LEAVE`,
 `*LAP`, `*IFCFG`, `*PING`, `*NSLOOK`, `*WGET`, `*DATE`/`*TIME` and a small
 RAM disc, for the BBC B, B+, Master and the Electron. `*HELP WIFI` lists
 them on the machine.
+
+Helper 17 loads a second image, the same ROM with **WiCFS** - a UEF cassette
+filing system - merged into the bank, so a UEF fetched with `*WGET -U` can be
+`*CAT`ed, `*LOAD`ed and `CHAIN`ed as if it were tape. It is one or the other:
+both images provide the same WiFi commands, so load 16 or 17, not both. That
+image is **not** under Pi1MHz's GPL-3.0 - it derives from Roland Leurs'
+ElkWiFi and carries his non-commercial licence, quoted in `CREDITS.md`.
 
 The ROM needs the service behind it: put **`wifi_service_enable=1`** in
 `Pi1MHz.cfg` (with `wifi_ssid`/`wifi_password` set) before using any of
