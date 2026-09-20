@@ -256,8 +256,10 @@ include "machine.asm"
                     equb >date_cmd, <date_cmd
                     equs "TIME"
                     equb >time_cmd, <time_cmd
+IF INCLUDE_PDUMP
                     equs "PRD"
                     equb >pdump_cmd, <pdump_cmd
+ENDIF
                     equs "ONLINE"
                     equb >online_cmd, <online_cmd
                     equs "JOIN"
@@ -297,6 +299,51 @@ ENDIF
                     bne help_vl1
                     rts
 
+IF HELP_BRIEF
+\ Names only, walked out of the command table, four to a line.  The table
+\ already holds every name; storing them a second time with a description
+\ each costs ~650 bytes, which is the difference between this ROM sharing a
+\ bank with a filing system and not.  An entry is the name in ASCII followed
+\ by the handler address high byte first, so a byte with bit 7 set ends the
+\ name, and an entry that starts with one is the bare address that ends the
+\ table.
+.print_help         jsr help_version
+                    lda #<commandtable
+                    sta needle
+                    lda #>commandtable
+                    sta needle+1
+                    lda #&0D
+                    jsr OSASCI
+                    ldx #0                      \ names printed on this line
+.pht_entry          ldy #0
+                    lda (needle),y
+                    bmi pht_done
+                    lda #' '
+                    jsr OSWRCH
+.pht_char           lda (needle),y
+                    bmi pht_name_done
+                    jsr OSWRCH
+                    iny
+                    bne pht_char
+.pht_name_done      iny                         \ step over the two address
+                    iny                         \ bytes to the next entry
+                    tya
+                    clc
+                    adc needle
+                    sta needle
+                    bcc pht_no_carry
+                    inc needle+1
+.pht_no_carry       inx
+                    cpx #4
+                    bcc pht_entry
+                    ldx #0
+                    lda #&0D
+                    jsr OSASCI
+                    bne pht_entry               \ always: A is &0D
+.pht_done           lda #&0D
+                    jsr OSASCI
+.print_help_end     rts
+ELSE
 .print_help         jsr help_version
                     jsr printtext
                     equb &0D
@@ -311,7 +358,9 @@ ENDIF
                     equs " ONLINE    Show network readiness",&0D
                     equs " PING      ping a host on network",&0D
                     equs " NSLOOK    Resolve an IPv4 address",&0D
+IF INCLUDE_PDUMP
                     equs " PRD       Paged Ram Dump",&0D
+ENDIF
 IF INCLUDE_RAMDISK
                     equs " RDCAT     Catalogue the RAM disk",&0D
                     equs " RDINIT    Clear the RAM disk",&0D
@@ -325,6 +374,7 @@ ENDIF
                     equs " WIFI      WiFi control ON|OFF|HR|SR",&0D
                     equb &EA
 .print_help_end     rts
+ENDIF
 
 \ ---------------------------------------------------------------------------
 \ OSWORD &65
@@ -369,7 +419,9 @@ include "lap.asm"
 include "ifcfg.asm"
 include "online.asm"
 include "wificmd.asm"
+IF INCLUDE_PDUMP
 include "pdump.asm"
+ENDIF
 include "join.asm"
 include "mode.asm"
 include "wget.asm"

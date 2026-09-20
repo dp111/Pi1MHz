@@ -65,13 +65,24 @@ beebasm at the time of writing:
 | build | code ends | free |
 | --- | --- | --- |
 | default | `&A3E2` | 6651 bytes |
-| `INCLUDE_RAMDISK=0` | `&9E45` | 8088 bytes |
+| `HELP_BRIEF=1` | `&A19D` | 7232 bytes |
+| `HELP_BRIEF=1 INCLUDE_PDUMP=0` | `&A0BF` | 7454 bytes |
+| `INCLUDE_RAMDISK=0` (with both of the above) | `&9BC5` | 8728 bytes |
 
-`INCLUDE_RAMDISK=0` drops the RAM disc and its five commands. It exists for
-the case where a second ROM - the WiCFS cassette filing system - is merged
-into this bank rather than served as an image of its own: the RAM disc is
-there to get a program into the machine without a filing system, so it is the
-first thing to trade when there is one.
+These exist for the case where a second ROM - the WiCFS cassette filing
+system - is merged into this bank rather than served as an image of its own.
+In the order I would spend them:
+
+- `HELP_BRIEF=1` prints `*HELP WIFI` as names walked out of the command
+  table, four to a line, instead of a stored name-and-description per
+  command. The table already holds every name, so the second copy is the
+  most expensive text in the image. It also scales: a merged ROM's extra
+  commands appear in the listing for nothing.
+- `INCLUDE_PDUMP=0` drops `*PRD`, a paged-RAM dump for debugging.
+- `INCLUDE_RAMDISK=0` drops the RAM disc and its five commands. Last,
+  because the RAM disc is how you get a program into a machine with no
+  filing system - though a merged WiCFS is exactly the thing that makes it
+  redundant.
 
 ## The RAM disk
 
