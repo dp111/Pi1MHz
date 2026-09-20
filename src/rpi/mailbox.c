@@ -54,6 +54,22 @@ static mailbox_t* rpiMailbox1 = (mailbox_t*)RPI_MAILBOX1_BASE;
    any legitimate latency rather than close to it. */
 #define MAILBOX_TIMEOUT_US 3000000u
 
+/* A QUERY (RPI_PropertyGetWord) reads a value the VideoCore already has -
+   temperature, a clock rate, a memory split - and a healthy VC answers in
+   well under a millisecond.  The 3 s bound above is the infinite-hang
+   breaker for boot-time work (allocations, the HDMI mode set); spending it
+   on a sensor read hands the Beeb's BREAK budget to the VC.  The budget:
+   the Beeb is out of reset ~210 ms after nRST and its ROM probes us ~380 ms
+   after it, and the re-init cannot start until the poll callback in flight
+   returns - so one 3 s temperature read, once a second, is enough to wedge
+   a BREAK.  A query that overruns this returns no data (a 0 C reading, the
+   same as any other timeout); the caller already checks. */
+#define MAILBOX_QUERY_TIMEOUT_US 50000u
+
+/* The bound for the exchange in progress; queries lower it (see
+   RPI_PropertyGetWord) and restore it afterwards. */
+static uint32_t mailbox_bound_us = MAILBOX_TIMEOUT_US;
+
 /* Returned by RPI_Mailbox0Read when the VC did not answer in time.  A real
    response is a 28-bit buffer address, so this cannot collide with one. */
 #define MAILBOX_READ_TIMEOUT 0xFFFFFFFFu
@@ -91,6 +107,12 @@ static bool mailbox_silent( void )
 
 static void mailbox_missed( void )
 {
+    /* Only a full-bound timeout is evidence that the VC has stopped
+       answering.  A query gives up after MAILBOX_QUERY_TIMEOUT_US, which a
+       merely BUSY VideoCore can exceed - striking on that would latch it
+       "dead" and then fast-fail the allocations a video bring-up needs. */
+    if ( mailbox_bound_us < MAILBOX_TIMEOUT_US )
+        return;
     if ( mailbox_misses < MAILBOX_DEAD_STRIKES )
         mailbox_misses++;
     mailbox_probe_at_us = RPI_GetSystemTime() + MAILBOX_RETRY_US;
@@ -114,7 +136,7 @@ static void RPI_Mailbox0Write( mailbox0_channel_t channel, const uint32_t * ptr 
     while ( ( rpiMailbox1->Status & ARM_MS_FULL ) != 0 ) {
 // cppcheck-suppress constStatement
         rpiMailbox0->Data;
-        if ( ( RPI_GetSystemTime() - start_us ) > MAILBOX_TIMEOUT_US )
+        if ( ( RPI_GetSystemTime() - start_us ) > mailbox_bound_us )
             break;      /* a FULL bit that never clears will not clear by
                            waiting longer; post anyway and let the read time
                            out if the VC really has stopped listening */
@@ -136,14 +158,14 @@ static uint32_t RPI_Mailbox0Read( mailbox0_channel_t channel )
            to read! */
 
         while ( rpiMailbox0->Status & ARM_MS_EMPTY ) {
-            if ( ( RPI_GetSystemTime() - start_us ) > MAILBOX_TIMEOUT_US )
+            if ( ( RPI_GetSystemTime() - start_us ) > mailbox_bound_us )
                 return MAILBOX_READ_TIMEOUT;
         }
         /* Extract the value from the Read register of the mailbox. The value
            is actually in the upper 28 bits */
         value = rpiMailbox0->Data;
     } while ( ( value & 0xF ) != channel
-              && ( RPI_GetSystemTime() - start_us ) <= MAILBOX_TIMEOUT_US );
+              && ( RPI_GetSystemTime() - start_us ) <= mailbox_bound_us );
 
     if ( ( value & 0xF ) != channel )
         return MAILBOX_READ_TIMEOUT;
@@ -176,7 +198,7 @@ static void RPI_Mailbox0Drain( void )
     while ( ( rpiMailbox0->Status & ARM_MS_EMPTY ) == 0 ) {
 // cppcheck-suppress constStatement
         rpiMailbox0->Data;
-        if ( ( RPI_GetSystemTime() - start_us ) > MAILBOX_TIMEOUT_US )
+        if ( ( RPI_GetSystemTime() - start_us ) > mailbox_bound_us )
             break;
     }
 }
@@ -197,7 +219,9 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
        four times a second for the temperature) lost a Beeb VDU byte whenever
        a parameter block was mid-flight. */
     unsigned int irq = _disable_irq_cspr();
+    mailbox_bound_us = MAILBOX_QUERY_TIMEOUT_US;
     RPI_PropertyProcess(true);
+    mailbox_bound_us = MAILBOX_TIMEOUT_US;
     rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
     _restore_cpsr(irq);
     return result;
@@ -290,7 +314,7 @@ static unsigned int mailbox_collect( void )
                 break;
              }
           }
-       } while (( RPI_GetSystemTime() - start_us ) <= MAILBOX_TIMEOUT_US);
+       } while (( RPI_GetSystemTime() - start_us ) <= mailbox_bound_us);
 
        if (!accepted) {
           RPI_Mailbox0Drain();
