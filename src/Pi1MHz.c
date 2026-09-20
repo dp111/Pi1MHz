@@ -1073,6 +1073,15 @@ _Noreturn void kernel_main(void)
             LOG_INFO("Reset detected\r\n");
             RPI_BootDetail(0xFEu);  /* re-init pass marker: a death in config_load shows FE */
             Pi1MHz_break.init_start_us = RPI_GetSystemTime();
+            /* The edge is latched in IRQ but the re-init runs from this
+               cooperative loop, so it waits for whatever callback was in
+               flight.  That wait is the whole BREAK budget: record the worst
+               one, because a wedged Beeb leaves nothing else behind. */
+            {
+               uint32_t wait = Pi1MHz_break.init_start_us - Pi1MHz_break.rst_us;
+               if (wait > Pi1MHz_break.rst_start_max_us)
+                  Pi1MHz_break.rst_start_max_us = wait;
+            }
             Pi1MHz_break.inits++;
             init_emulator();
             Pi1MHz_break.init_end_us = RPI_GetSystemTime();

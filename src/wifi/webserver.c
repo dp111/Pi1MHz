@@ -3061,13 +3061,14 @@ static bool route_status(ws_conn_t *c)
             SINCE_RST(os, Pi1MHz_fiq_ovr_first_us, Pi1MHz_fiq_ovr_first_us != 0u);
             #undef SINCE_RST
             snprintf(row, sizeof row,
-                     "edges %lu inits %lu missed %lu | rst->init %s, init %lu us, held %s, helper %s, vdu %s, ovr +%lu first %s | worst init %lu us, margin %ld ms",
+                     "edges %lu inits %lu missed %lu | rst->init %s, init %lu us, held %s, helper %s, vdu %s, ovr +%lu first %s | worst init %lu us, worst rst->init %lu us, margin %ld ms",
                      (unsigned long)bk->edges, (unsigned long)bk->inits, (unsigned long)missed,
                      is,
                      (unsigned long)(bk->init_end_us - bk->init_start_us),
                      hd, hs, vs,
                      (unsigned long)(Pi1MHz_fiq_overruns - bk->ovr_at_rst), os,
                      (unsigned long)bk->init_max_us,
+                     (unsigned long)bk->rst_start_max_us,
                      (long)((bk->margin_min_us == INT32_MAX) ? 0 : bk->margin_min_us / 1000));
          }
          table_row(&b, "BREAK", row);

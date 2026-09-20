@@ -251,6 +251,12 @@ typedef struct {
    uint32_t vdu_us;         /* first VDU byte drained after the reset */
    uint32_t ovr_at_rst;     /* Pi1MHz_fiq_overruns when nRST fell: overruns since = the difference */
    uint32_t init_max_us;    /* longest re-init seen */
+   uint32_t rst_start_max_us; /* worst nRST edge -> init_start_us: how long the
+                                 poll callback in flight held the re-init off.
+                                 The Beeb is out of reset ~210 ms after the
+                                 edge and its ROM probes us ~380 ms after it,
+                                 so this is the number that decides whether a
+                                 BREAK finds a Pi that can answer. */
    int32_t  margin_min_us;  /* smallest helper_us - init_end_us seen (negative = the ROM got there first) */
    uint8_t  helper_pending; /* set by the IRQ, cleared by the stamp */
    uint8_t  vdu_pending;
