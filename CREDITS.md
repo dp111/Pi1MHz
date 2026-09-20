@@ -43,6 +43,17 @@ The Raspberrypi Engineers who have helped me with this project.
 - **PicoWi** — the CYW43 WiFi join/association sequence is a faithful port of
   Jeremy Bentham's bare-metal PicoWi driver (`picowi_join.c`), including its
   ioctl ordering and settle delays. <https://iosoft.blog> · `src/wifi/sdio.c`
+- **1MHz-WiFi host ROM** — `beeb/1mhz-wifi/` is a sideways ROM written for
+  this project by **Peter Clarke**, the host half of `wifi_service`. It
+  implements the command interface of **Roland Leurs' ElkWiFi** cartridge ROM
+  and keeps that ROM's command-table *format*, and `*VERSION` credits ElkWiFi
+  for it, but it carries no ElkWiFi source: the parts that did derive from it
+  (the cassette filing system, itself deriving from Martin Barr's UPCFS) are
+  not in this ROM. That distinction matters, because upstream
+  <https://github.com/AtomicRoland/ElkWiFi> carries **no licence** - no
+  LICENSE file, nothing in its README, and its sources are marked only
+  "(c) Roland Leurs, May 2020" - so ElkWiFi code could not be carried here.
+
 - **Howard Hinnant's** `days`↔`civil` date algorithms are used for the WebDAV
   timestamp conversion. `src/wifi/webserver.c`
 - **Acorn MOS 3.20 and GXR 1.20 graphics** — `src/framebuffer/primitives.c`
