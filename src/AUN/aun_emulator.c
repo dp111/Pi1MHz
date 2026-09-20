@@ -207,6 +207,14 @@ static void jim_write32(uint32_t off, uint32_t v)
 /* Every buffer offset/length pair from the Beeb is untrusted; keep all
  * accesses inside the disc RAM region. */
 
+/* IMM_POLL stages the held immediate at a fixed offset in the disc RAM
+ * window (agreed with the ROM). Unlike the Beeb-supplied offsets this one
+ * is a constant, so assert once that it plus the largest immediate stays
+ * inside the window rather than bounds-checking it per call. */
+#define AUN_IMM_STAGE_OFF 0xFEA000u
+_Static_assert(AUN_IMM_STAGE_OFF + AUN_HIMM_MAX <= DISC_RAM_SIZE,
+               "immediate-poll staging buffer overflows the disc RAM window");
+
 /* ---- transport: lwIP UDP -------------------------------------------------*/
 
 static bool aun_udp_send(void *user, uint32_t ip_be, uint16_t port,
@@ -586,7 +594,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       Pi1MHz->JIM_ram[cp + 2] = aun.himm.ctrl;
       jim_write32(cp + 12, aun.himm.len);
       if (aun.himm.len != 0)
-         memcpy(&Pi1MHz->JIM_ram[base_addr + 0xFEA000u], aun.himm.data,
+         memcpy(&Pi1MHz->JIM_ram[base_addr + AUN_IMM_STAGE_OFF], aun.himm.data,
                 aun.himm.len);
       /* record which slot generation the host is now executing, so a reply
        * that arrives after a reap/refill is dropped, not mis-routed */
