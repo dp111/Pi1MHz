@@ -63,7 +63,10 @@ ROM, since sideways RAM cannot be unloaded without a power cycle.  The
 VIDEO test leaves the video player open; do not chain-boot a kernel.now
 until it is closed.
 
-Environment: `PI_IP` (default 192.168.0.42), `VIDEO_SET` (VFS set for the VIDEO test; default the first with `video.pvf`), `JUKE` (jukebox set the disc
+Environment: `NSLOOK_HOST` (the name the WIFI test resolves, default
+`www.google.com`; it skips when there is no DNS), `WIFI_SCAN=1` (also run
+`*LAP`, which rescans on the radio carrying the session - `*JOIN` is never
+run, it would drop the link), `PI_IP` (default 192.168.0.42), `VIDEO_SET` (VFS set for the VIDEO test; default the first with `video.pvf`), `JUKE` (jukebox set the disc
 is uploaded to and selected from, default 9), `JUKE_RESTORE` (set selected
 at the end, default 0), `NET_URL` (page TNET fetches; default the Pi's gateway, since lwIP cannot connect to the Pi's own address), `VFS_SET` (default: lowest `/BeebVFSn` on the
 card), `PI1MHZ_TOOLS` (directory holding `beeb-run.sh`, `pi-http.sh`,

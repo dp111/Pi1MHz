@@ -17,6 +17,7 @@ TMP=${PI1MHZ_TOOLS:-/mnt/c/Archlinux/claude-tmp}
 export PI_IP=${PI_IP:-192.168.0.42}
 JUKE=${JUKE:-9}
 M5000_FX=${M5000_FX:-3}      # Music 5000's index in the emulator table (see TM5000)
+NSLOOK_HOST=${NSLOOK_HOST:-www.google.com}   # *NSLOOK target; needs DNS, skips without it
 JUKE_RESTORE=${JUKE_RESTORE:-0}
 OUT=${OUT:-$HERE/out}
 mkdir -p "$OUT"
@@ -310,6 +311,47 @@ t_wifi() { # helper 16 = the 1MHz-WiFi host ROM, and the memory it must not touc
     printf '%s\n' "$TEXT" | grep -q 'Received response' && result "T:WIFI:*PING the gateway:PASS" \
                                                         || result "T:WIFI:*PING the gateway:SKIP:no response line"
   fi
+
+  # The RAM disk: self-contained, no network, so it is the part of this ROM
+  # that can be checked properly.  Write a pattern, save it, catalogue it,
+  # load it back somewhere else and compare.
+  lines 'FORI%=0 TO 15:?(&2000+I%)=I%+65:NEXT:?&3000=0' '>' 15000
+  lines '*RDINIT' '>' 15000
+  lines '*RDSAVE WTEST 2000 2010' '>' 20000
+  lines '*RDCAT' '>' 20000
+  printf '%s\n' "$TEXT" | grep -qi 'WTEST' && result "T:WIFI:RAM disk *RDCAT lists the saved file:PASS" \
+                                            || result "T:WIFI:RAM disk *RDCAT lists the saved file:FAIL"
+  lines 'FORI%=0 TO 15:?(&3000+I%)=0:NEXT' '>' 15000
+  lines '*RDLOAD WTEST 3000' '>' 20000
+  lines 'P.;:FORI%=0 TO 15:P.~?(&3000+I%);:NEXT:P.' '>' 20000
+  local got; got=$(printf '%s\n' "$TEXT" | tr -d ' ' | grep -oE '414243444546474849[0-9A-F]*' | tail -1)
+  [ -n "$got" ] && result "T:WIFI:RAM disk round trip (save, load elsewhere, compare):PASS" \
+                || result "T:WIFI:RAM disk round trip (save, load elsewhere, compare):FAIL:$(printf '%s' "$TEXT" | tail -2 | tr -d '\n')"
+
+  # A name lookup and a fetch, both against the LAN so no internet is needed.
+  # Either can legitimately be unavailable, so neither failure is fatal.
+  local gw; gw=$(pi_row 'Gateway' | sed -n 's/^Gateway: //p')
+  lines "*NSLOOK $NSLOOK_HOST" '>' 40000
+  printf '%s\n' "$TEXT" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' \
+      && result "T:WIFI:*NSLOOK resolves $NSLOOK_HOST:PASS" \
+      || result "T:WIFI:*NSLOOK resolves $NSLOOK_HOST:SKIP:no address - no DNS on this network?"
+  if [ -n "$gw" ]; then
+    lines "*WGET http://$gw/" '>' 45000
+    printf '%s\n' "$TEXT" | grep -qiE 'not found|error|refused|failed' \
+        && result "T:WIFI:*WGET the gateway:SKIP:$(printf '%s' "$TEXT" | grep -im1 -oE 'not found|error|refused|failed')" \
+        || result "T:WIFI:*WGET the gateway:PASS"
+  fi
+  # *LAP rescans on the radio that is carrying this session, so it is only
+  # run when asked for.  *JOIN is never run here: it would re-associate the
+  # Pi and take the link this suite is talking over with it.
+  if [ "${WIFI_SCAN:-0}" = 1 ]; then
+    lines '*LAP' '>' 60000
+    printf '%s\n' "$TEXT" | grep -qE '[0-9]' && result "T:WIFI:*LAP scan returns:PASS" \
+                                              || result "T:WIFI:*LAP scan returns:SKIP:no scan output"
+  else
+    result "I:WIFI:scan:*LAP skipped (WIFI_SCAN=1 to run it); *JOIN is never run, it would drop the link"
+  fi
+
   result "I:WIFI:bus:$(bus_ovr) ovr"
   mount_test_disc
 }
