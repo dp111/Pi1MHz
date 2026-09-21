@@ -40,6 +40,7 @@ Then one guide per feature:
 - [SCSI drive descriptors (scsi.cfg)](scsi-cfg.md)
 - [MMFS and MMFS2 (DFS disc images)](mmfs.md)
 - [Loading ROMs and the helper functions](helpers-and-roms.md)
+- [SD card explorer (file transfer from the Beeb)](sd-explorer.md)
 - [Sound: Music 5000/3000 and BeebSID](sound.md)
 - [RAM expansion (JIM)](ram-expansion.md)
 - [HDMI screen, mouse pointer and video](screen-and-video.md)

@@ -1,5 +1,6 @@
 /*
   The FAT/SD service: commands 0-20 on the services port (&FCA6).
+  17 = readdir-ex (fixed records for the SD explorer), 18 = getcwd.
 
   Enables the Beeb to access the SDCARD.  16Mbytes of the JIM buffer is
   available as the transfer buffer; command blocks live in its top pages.
@@ -211,6 +212,71 @@ bool beeb_path_busy(const char *host_path)
 {
    return filesystemHostPathBusy(host_path) || fat_service_file_in_use(host_path)
        || M5000_recording_path_busy(host_path);    /* a WAV still being flushed */
+}
+
+/* ---- readdir-ex (command 17) record ------------------------------------
+   A fixed 128-byte record per directory entry, laid out for a 6502 client:
+   power-of-two size so entry N is a shift away, and a ready-to-print
+   38-column display line so the Beeb never has to format sizes itself.
+
+     +0        attribute byte (AM_DIR etc., see FatFs FILINFO.fattrib)
+     +1..3     reserved (0)
+     +4..7     file size, little-endian (0 for a directory)
+     +8..46    display line: exactly FAT_DIRENT_DISP printable chars
+               (name, then right-aligned size or <DIR>), NUL terminated
+     +48..127  raw name for fopen/fchdir, NUL terminated (truncated if
+               longer than 79 chars)                                      */
+#define FAT_DIRENT_SIZE  128u
+#define FAT_DIRENT_DISP   38u
+#define FAT_DIRENT_NAME  (FAT_DIRENT_SIZE - 48u)
+#define FAT_CWD_MAX      128u
+
+static void fat_dirent_record(uint8_t *rec, const FILINFO *info)
+{
+   char size_text[12];
+   char name[FAT_DIRENT_DISP];     /* display copy, truncated + sanitized */
+   size_t n;
+
+   memset(rec, 0, FAT_DIRENT_SIZE);
+   rec[0] = info->fattrib;
+   rec[4] = (uint8_t)(info->fsize);
+   rec[5] = (uint8_t)(info->fsize >> 8);
+   rec[6] = (uint8_t)(info->fsize >> 16);
+   rec[7] = (uint8_t)(info->fsize >> 24);
+
+   /* Right-hand column: <DIR>, bytes, KB or MB - always fits 7 chars. */
+   if (info->fattrib & AM_DIR)
+      strcpy(size_text, "<DIR>");
+   else if (info->fsize < 1000000u)
+      sprintf(size_text, "%lu", (unsigned long)info->fsize);
+   else if ((info->fsize >> 10) < 1000000u)
+      sprintf(size_text, "%luK", (unsigned long)(info->fsize >> 10));
+   else
+      sprintf(size_text, "%luM", (unsigned long)(info->fsize >> 20));
+
+   /* Display name: truncate to the name column, mark directories with a
+      trailing '/', and replace anything a teletext VDU stream would
+      interpret as a control code. */
+   n = 0;
+   while (n < sizeof name - 2u && info->fname[n]) {
+      char c = info->fname[n];
+      name[n] = (c < 32 || c > 126) ? '?' : c;
+      n++;
+   }
+   if ((info->fattrib & AM_DIR) && n < sizeof name - 1u)
+      name[n++] = '/';
+   name[n] = '\0';
+
+   sprintf((char *)&rec[8], "%-*.*s%7s",
+           (int)(FAT_DIRENT_DISP - 7u), (int)(FAT_DIRENT_DISP - 7u),
+           name, size_text);
+
+   /* Raw name, for the Beeb to hand back to fopen/fchdir. */
+   n = strlen(info->fname);
+   if (n >= FAT_DIRENT_NAME)
+      n = FAT_DIRENT_NAME - 1u;
+   memcpy(&rec[48], info->fname, n);
+   rec[48u + n] = '\0';
 }
 
 /* Runs on the main loop (fat_service_poll): every FatFs and SD call below
@@ -554,10 +620,65 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
              f_unlink( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
         break;
 
+    case 17 : // readdir-ex: next entry as a fixed 128-byte record in the buffer
+    {
+        FRESULT result;
+        FILINFO fileInfo;
+        uint32_t buf_off = jim_read32(command_pointer+4);
+        if (!service_buffer_ok(buf_off, FAT_DIRENT_SIZE))
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
+            break;
+        }
+        if (!fat_dir_open[data & 15])
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
+            break;
+        }
+        result = f_readdir( (DIR * )&dirObject[data & 15], &fileInfo );
+        if (result)
+            {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+        if (fileInfo.fname[0] == 0)
+        {
+                Pi1MHz_MemoryWrite(addr, 20);
+                break;
+        }
+        fat_dirent_record(&Pi1MHz->JIM_ram[buf_off + base_addr], &fileInfo);
+        Pi1MHz_MemoryWrite(addr, FR_OK);
+        break;
+    }
+
+    case 18 : // getcwd: current directory as a string in the buffer
+    {
+        char cwd[FAT_CWD_MAX];
+        uint32_t buf_off = jim_read32(command_pointer+4);
+        FRESULT result;
+        if (!service_buffer_ok(buf_off, FAT_CWD_MAX))
+        {
+            Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
+            break;
+        }
+        result = f_getcwd(cwd, sizeof cwd);
+        if (result)
+            {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+        for (uint32_t i = 0; cwd[i]; i++)
+            if ((uint8_t)cwd[i] < 32u || (uint8_t)cwd[i] > 126u)
+                cwd[i] = '?';           /* keep the Beeb's VDU stream safe */
+        memcpy(&Pi1MHz->JIM_ram[buf_off + base_addr], cwd, strlen(cwd)+1);
+        Pi1MHz_MemoryWrite(addr, FR_OK);
+        break;
+    }
+
     case 20 : Pi1MHz_MemoryWrite(addr, disk_type()); break;
 
     default :
-        /* 17-19 and 21-29 are reserved within the FAT range; ignored. */
+        /* 19 and 21-29 are reserved within the FAT range; ignored. */
         break;
    }
 

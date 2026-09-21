@@ -138,7 +138,7 @@ void services_irq_set(uint8_t source, bool asserted);
 
 void services_emulator_init(uint8_t instance, uint8_t address);
 
-/* The FAT/SD service (commands 0-20 today; the range reserves up to 29). */
+/* The FAT/SD service (commands 0-18 and 20 today; the range reserves up to 29). */
 void fat_service_init(void);
 
 /* True while the Beeb holds host_path open through the FAT service, or

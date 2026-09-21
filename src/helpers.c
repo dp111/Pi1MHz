@@ -14,11 +14,13 @@
 #include "rpi/systimer.h"
 #include "videoplayer.h"
 
-/* One 256-byte page per helper, 0..16 - the page the Beeb runs when it asks
-   for helper n.  Not a round 4 KB: it is exactly as many pages as
-   6502code.bin carries, so the bank select below rejects a helper number
-   that has no page rather than running whatever follows. */
-#define HELPER_PAGES 17u
+/* One 256-byte page per helper entry point, 0..32 - the page the Beeb runs
+   when it asks for helper n.  It is exactly as many pages as 6502code.bin
+   carries, so the bank select below rejects a helper number that has no
+   page rather than running whatever follows.  Pages 17-32 are all the SD
+   card explorer: 17 is its entry helper and 18-32 the pages it chains
+   through while it runs. */
+#define HELPER_PAGES 33u
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
 _Alignas(4) NOINIT_SECTION uint8_t helper_ram[HELPER_PAGES * 256u];
 
@@ -29,7 +31,7 @@ static volatile uint32_t help_shown_us;
 /* The help screen (helper 0, and the Pi's boot splash).
 
    One printf template, laid out for the Beeb's 40 x 25 text screen: every
-   line is 40 columns or fewer and the whole screen is 21 rows, leaving four
+   line is 40 columns or fewer and the whole screen is 23 rows, leaving two
    free for future helpers.  src/tests/helpers (which pulls the #defines out of this file) checks both against worst-case
    values, so an edit that wraps a line or spills past row 25 fails there,
    not on the Beeb.  Every substituted value fits at its widest; the one line
@@ -67,6 +69,7 @@ static volatile uint32_t help_shown_us;
    " 9  AUNFS Master       AUNFSM128.rom\r\n"                            \
    "10+ Your ROM (10-15)   ROM10-15.rom\r\n"                             \
    "16  1MHz-WiFi+WiCFS    1mhz-wicfs.rom\r\n"                           \
+   "17  SD card explorer (file transfer)\r\n"                            \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then *FX147,203,1/0\r\n"                              \
    "   M5000 record on/off\r\n"

@@ -199,6 +199,37 @@ are no more entries. Only the name is returned (not size/dates/attributes).
     +0        16
     +1...     name (zero terminated)
 
+**17 - readdir-ex** (directory entry as a fixed record)
+
+    +0        17
+    +4..7     destination offset in the buffer (top byte must be 0)
+
+Like readdir, but writes a fixed **128-byte record** at the given buffer
+offset - laid out for a 6502 client (power-of-two size, and a
+ready-to-print display line so the Beeb never formats sizes itself):
+
+    rec+0       attribute byte (AM_DIR = &10 etc.)
+    rec+1..3    reserved (0)
+    rec+4..7    file size, little-endian (0 for a directory)
+    rec+8..46   display line: exactly 38 printable characters (name,
+                directories marked with a trailing '/', then a
+                right-aligned size or "<DIR>"), NUL terminated.
+                Control characters are replaced with '?' so the text is
+                safe to feed straight to OSWRCH.
+    rec+48..127 raw name for fopen/fchdir, NUL terminated (truncated
+                at 79 characters)
+
+Returns 20 when there are no more entries. This is what the SD card
+explorer (helper 17) uses.
+
+**18 - getcwd**
+
+    +0        18
+    +4..7     destination offset in the buffer (top byte must be 0)
+
+Writes the current directory as a NUL-terminated string (up to 128
+bytes, control characters replaced with '?') at the given offset.
+
 **20 - SD card type**
 
     +0        20

@@ -44,6 +44,7 @@ part of the standard firmware set.
 | 9 | Loads the Econet-over-WiFi filing system for the Master 128 | `/Pi1MHz/AUNFSM128.rom` |
 | 10-15 | Loads a ROM of your own into sideways RAM | `/Pi1MHz/ROM10.rom` ... `/Pi1MHz/ROM15.rom` |
 | 16 | Loads the 1MHz-WiFi ROM with the UEF cassette filing system (`*JOIN`, `*WGET`, `*PING`, the RAM disc, and WiCFS) | `/Pi1MHz/1mhz-wicfs.rom` |
+| 17 | SD card explorer: browse the Pi's SD card and copy files to/from the current filing system. See [SD card explorer](sd-explorer.md) | - |
 
 After loading a ROM press **CTRL-BREAK** so the OS notices it.
 

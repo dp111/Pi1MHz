@@ -7,6 +7,146 @@ OSBYTE = &FFF4
 OSWRCH = &FFEE
 OSNEWL = &FFE7
 
+OSRDCH = &FFE0
+OSWORD = &FFF1
+OSFIND = &FFCE
+OSGBPB = &FFD1
+
+; ---------------------------------------------------------------------------
+; SD card explorer (helper 17) - pages 17..32
+;
+; Runs entirely from the paged &FD00 window; state lives in zero page
+; &70-&86 and a little Beeb RAM around &0900 (RS423/cassette buffers).
+; Directory entries are fetched with FAT command 17 (readdir-ex), which
+; fills fixed 128-byte records - attribute, size, a ready-to-print 38-char
+; display line and the raw name - at &D00000 in the JIM transfer buffer.
+; Transfers stream through a 256-byte chunk at &D80000 and the Beeb
+; bounce buffer at &0A00, using OSFIND/OSGBPB on the current filing
+; system and fread/fwrite (slot &FD) on the SD side.
+; ---------------------------------------------------------------------------
+
+EXP_HUB   = 17      ; init
+EXP_KEY   = 18      ; key dispatch loop
+EXP_DIR   = 19      ; read directory into records
+EXP_DRAW2 = 20      ; path row, then rows
+EXP_DRAW  = 21      ; row rendering (entry 1: two rows, entry 4: all rows)
+EXP_CD    = 22      ; chdir (entry 1: selected, entry 4: up)
+EXP_GET1  = 23      ; get: prompt for FS name
+EXP_GET2  = 24      ; get: open FS + SD files
+EXP_GET3  = 25      ; get: copy loop
+EXP_PUT1  = 26      ; put: prompt + open FS input
+EXP_PUT2  = 27      ; put: create SD file + copy loop
+EXP_FIN   = 28      ; close files, report, route on
+EXP_ERR   = 29      ; BRK (filing system error) trap
+EXP_EXIT  = 30      ; restore state and return
+EXP_GET4  = 31      ; get: FS write half of the copy loop
+EXP_PUT3  = 32      ; put: SD write half of the copy loop
+
+; zero page
+zp_count  = &70     ; number of entries (0-250)
+zp_sel    = &72     ; selected entry
+zp_top    = &74     ; first entry on screen
+zp_idx    = &76     ; drawrow argument
+zp_rows   = &78     ; row loop counter
+zp_oldsel = &7A     ; previous selection (two-row redraw)
+zp_fshand = &7C     ; current-FS file handle, 0 = none
+zp_off    = &7D     ; &7D-&7F 24-bit SD file offset
+zp_prptr  = &80     ; &80/&81 inline-print pointer
+zp_len    = &82     ; &82/&83 chunk length
+zp_eof    = &84     ; get: last-chunk flag
+zp_fail   = &85     ; transfer error flag
+zp_reread = &86     ; reread directory after transfer
+
+; Beeb RAM scratch (RS423/cassette buffers - safe while tape/serial idle)
+gbpb_blk  = &0900   ; 13-byte OSGBPB control block
+word_blk  = &0910   ; 5-byte OSWORD 0 block
+old_fx4   = &0916
+old_fx229 = &0917
+brk_stub  = &0918   ; 8-byte BRK redirector, built by init
+old_brkv  = &0920   ; 2 bytes
+old_stack = &0922
+name_buf  = &0940   ; typed / default filename, CR terminated (max 30+CR)
+sdname_buf= &0980   ; raw SD name, NUL terminated (max 63+NUL)
+bounce    = &0A00   ; 256-byte transfer bounce buffer
+
+; JIM transfer-buffer addresses (24 bit)
+recs_hi   = &D0     ; records at &D00000, 128 bytes each
+chunk_hi  = &D8     ; chunk / path buffer at &D80000
+AM_DIR    = &10
+
+; switch to another explorer page: every explorer page carries the common
+; PAGESWITCH trailer at &FDF7, so this works from any of them.  target
+; offset must be >= 1 (the pushed return address is &FD00+off-1).
+MACRO GOTOPAGE bank, off
+    LDA #bank
+    LDY #off-1
+    JMP &FDF7
+ENDMACRO
+
+; dispatch the command block for a slot and wait for completion.
+; exits with A = result, flags set (BEQ = FR_OK)
+MACRO DOCMD slot
+{
+    LDA #slot
+    STA discaccess+4
+.wait
+    LDA discaccess+4
+    BMI wait
+}
+ENDMACRO
+
+; point the 24-bit buffer pointer at a slot's command block (&FFxx00)
+MACRO SETCMDPTR slot
+    LDA #0
+    STA discaccess
+    LDA #slot
+    STA discaccess+1
+    LDA #&FF
+    STA discaccess+2
+ENDMACRO
+
+; point the buffer pointer at record[A]+off (off < 128; records are
+; 128-byte aligned so the ORA can never carry).  clobbers A only.
+MACRO SETRECPTR off
+    LSR A
+    STA discaccess+1
+    LDA #0
+    ROR A
+    ORA #off
+    STA discaccess
+    LDA #recs_hi
+    STA discaccess+2
+ENDMACRO
+
+; local print-inline-string subroutine; string follows the JSR,
+; terminated by &FF (so teletext colour codes and VDU 31 zeros pass).
+; expand as:  .print  PRSUB   (the label at the expansion site)
+MACRO PRSUB
+{
+    PLA
+    STA zp_prptr
+    PLA
+    STA zp_prptr+1
+.prnext
+    INC zp_prptr
+    BNE prget
+    INC zp_prptr+1
+.prget
+    LDY #0
+    LDA (zp_prptr),Y
+    CMP #&FF
+    BEQ prdone
+    JSR OSWRCH
+    JMP prnext
+.prdone
+    LDA zp_prptr+1
+    PHA
+    LDA zp_prptr
+    PHA
+    RTS
+}
+ENDMACRO
+
 GUARD &FE00
 
 MACRO PAGERTS
@@ -399,6 +539,980 @@ ORG &FD00
     ENDBLOCK &1000
 }
 
+; ---------------------------------------------------------------------------
+; Page 17 : SD explorer entry - save state, trap BRK, set up MODE 7 screen
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01 is the GOTOPAGE-reachable entry
+    TSX                     ; stack level to unwind to after a BRK
+    STX old_stack
+    LDA #4                  ; cursor keys return &88-&8B
+    LDX #1
+    LDY #0
+    JSR OSBYTE
+    STX old_fx4
+    LDA #229                ; ESC returns ASCII 27
+    LDX #1
+    LDY #0
+    JSR OSBYTE
+    STX old_fx229
+    LDX #7                  ; BRK redirector into page EXP_ERR
+.stubcopy
+    LDA stub,X
+    STA brk_stub,X
+    DEX
+    BPL stubcopy
+    LDA &0202
+    STA old_brkv
+    LDA &0203
+    STA old_brkv+1
+    LDA #brk_stub AND &FF
+    STA &0202
+    LDA #brk_stub DIV 256
+    STA &0203
+    LDA #0
+    STA zp_fshand
+    LDX #0
+.vduloop
+    LDA vdutab,X
+    JSR OSWRCH
+    INX
+    CPX #vdutabend-vdutab
+    BNE vduloop
+    GOTOPAGE EXP_DIR, 1
+
+.stub
+    EQUB &A9, EXP_ERR       ; LDA #EXP_ERR
+    EQUB &8D, &88, &FC      ; STA &FC88
+    EQUB &4C, &00, &FD      ; JMP &FD00
+
+.vdutab
+    EQUB 22,7                       ; MODE 7
+    EQUB 23,1,0,0,0,0,0,0,0,0       ; cursor off
+    EQUB 134 : EQUS "Pi1MHz SD card explorer"
+    EQUB 31,0,24                    ; footer
+    EQUB 133 : EQUS "RET=open/get P=put <-=up ESC=quit"
+.vdutabend
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1100
+}
+
+; ---------------------------------------------------------------------------
+; Page 18 : key dispatch loop
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP
+.keyloop                    ; &FD01
+    JSR OSRDCH
+    CMP #27
+    BNE notesc
+    GOTOPAGE EXP_EXIT, 1
+.notesc
+    CMP #&8B
+    BEQ up
+    CMP #&8A
+    BEQ down
+    CMP #&88
+    BEQ left
+    CMP #13
+    BEQ enter
+    AND #&DF                ; fold lower case
+    CMP #'G'
+    BEQ enter
+    CMP #'U'
+    BEQ left
+    CMP #'P'
+    BEQ doput
+    JMP keyloop
+
+.up
+    LDA zp_sel
+    BEQ keyloop
+    STA zp_oldsel
+    DEC zp_sel
+    LDA zp_sel
+    CMP zp_top
+    BCS tworow              ; still on screen
+    STA zp_top              ; scrolled off the top
+    JMP fullrows
+.down
+    LDX zp_sel
+    INX
+    CPX zp_count
+    BCS keyloop
+    LDA zp_sel
+    STA zp_oldsel
+    STX zp_sel
+    TXA
+    SEC
+    SBC #19
+    BCC tworow              ; sel < 19 always fits
+    CMP zp_top
+    BCC tworow
+    BEQ tworow
+    STA zp_top              ; scrolled off the bottom
+.fullrows
+    GOTOPAGE EXP_DRAW, 4
+.tworow
+    GOTOPAGE EXP_DRAW, 1
+.left
+    GOTOPAGE EXP_CD, 4
+.enter
+    LDA zp_count
+    BEQ keyloop
+    LDA zp_sel
+    SETRECPTR 0
+    LDA discaccess+3        ; attribute byte
+    AND #AM_DIR
+    BNE isdir
+    GOTOPAGE EXP_GET1, 1
+.isdir
+    GOTOPAGE EXP_CD, 1
+.doput
+    GOTOPAGE EXP_PUT1, 1
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1200
+}
+
+; ---------------------------------------------------------------------------
+; Page 19 : read current directory into records at &D00000
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01
+    SETCMDPTR &FC
+    LDA #7                  ; fopendir
+    STA discaccess+3
+    LDA #0                  ; "" = current directory
+    STA discaccess+3
+    DOCMD &FC
+    LDA #0
+    STA zp_count
+.rdloop
+    LDA #0                  ; command block again (mid/hi still &FC/&FF)
+    STA discaccess
+    LDA #17                 ; readdir-ex
+    STA discaccess+3
+    LDA #4                  ; skip to destination field
+    STA discaccess
+    LDA zp_count            ; dest = &D00000 + count*128
+    LSR A
+    TAX
+    LDA #0
+    ROR A
+    STA discaccess+3        ; dest lo
+    TXA
+    STA discaccess+3        ; dest mid
+    LDA #recs_hi
+    STA discaccess+3        ; dest hi
+    LDA #0
+    STA discaccess+3        ; dest top byte must be 0
+    DOCMD &FC
+    BNE rddone              ; 20 = no more entries (or error)
+    INC zp_count
+    LDA zp_count
+    CMP #250
+    BCC rdloop
+.rddone
+    LDA #0                  ; fclosedir
+    STA discaccess
+    LDA #8
+    STA discaccess+3
+    DOCMD &FC
+    LDA #0
+    STA zp_sel
+    STA zp_top
+    GOTOPAGE EXP_DRAW2, 1
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1300
+}
+
+; ---------------------------------------------------------------------------
+; Page 20 : draw path row, then fall on to the rows
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01
+    SETCMDPTR &FC
+    LDA #18                 ; getcwd -> &D80000
+    STA discaccess+3
+    LDA #4
+    STA discaccess
+    LDA #0
+    STA discaccess+3        ; dest lo
+    STA discaccess+3        ; dest mid
+    LDA #chunk_hi
+    STA discaccess+3        ; dest hi
+    LDA #0
+    STA discaccess+3
+    DOCMD &FC
+    LDA #31                 ; TAB(0,1)
+    JSR OSWRCH
+    LDA #0
+    JSR OSWRCH
+    LDA #1
+    JSR OSWRCH
+    LDA #130                ; green
+    JSR OSWRCH
+    LDA #0
+    STA discaccess
+    STA discaccess+1
+    LDA #chunk_hi
+    STA discaccess+2
+    LDX #38
+.ploop
+    LDA discaccess+3
+    BEQ pad
+    JSR OSWRCH
+    DEX
+    BNE ploop
+    BEQ prows
+.pad
+    LDA #' '
+.padloop
+    JSR OSWRCH
+    DEX
+    BNE padloop
+.prows
+    GOTOPAGE EXP_DRAW, 4
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1400
+}
+
+; ---------------------------------------------------------------------------
+; Page 21 : row rendering
+;   entry &FD01 : redraw oldsel + sel rows (selection moved)
+;   entry &FD04 : redraw all 20 rows
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP
+    JMP tworow              ; &FD01
+    JMP rowsall             ; &FD04
+.tworow
+    LDA zp_oldsel
+    STA zp_idx
+    JSR drawrow
+    LDA zp_sel
+    STA zp_idx
+    JSR drawrow
+    GOTOPAGE EXP_KEY, 1
+.rowsall
+    LDA zp_top
+    STA zp_idx
+    LDA #20
+    STA zp_rows
+.rowloop
+    JSR drawrow
+    INC zp_idx
+    DEC zp_rows
+    BNE rowloop
+    GOTOPAGE EXP_KEY, 1
+
+.drawrow
+    LDA zp_idx              ; screen row = idx - top + 2
+    SEC
+    SBC zp_top
+    CLC
+    ADC #2
+    TAY
+    LDA #31
+    JSR OSWRCH
+    LDA #0
+    JSR OSWRCH
+    TYA
+    JSR OSWRCH
+    LDA zp_idx
+    CMP zp_count
+    BCS blankrow
+    LDA zp_idx
+    SETRECPTR 0
+    LDA discaccess+3        ; attribute
+    AND #AM_DIR
+    BEQ isfile
+    LDA #131                ; yellow directory
+    BNE selchk
+.isfile
+    LDA #135                ; white file
+.selchk
+    LDX zp_idx
+    CPX zp_sel
+    BNE notsel
+    LDA #130                ; green selection
+.notsel
+    JSR OSWRCH
+    LDA zp_idx              ; back to record+8: the display line
+    LSR A
+    LDA #0
+    ROR A
+    ORA #8
+    STA discaccess
+    LDX #38
+.dloop
+    LDA discaccess+3
+    JSR OSWRCH
+    DEX
+    BNE dloop
+    RTS
+.blankrow
+    LDX #39
+    LDA #' '
+.bloop
+    JSR OSWRCH
+    DEX
+    BNE bloop
+    RTS
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1500
+}
+
+; ---------------------------------------------------------------------------
+; Page 22 : change directory
+;   entry &FD01 : into the selected entry     entry &FD04 : up ".."
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP
+    JMP cdsel               ; &FD01
+    JMP cdup                ; &FD04
+.cdsel
+    LDA zp_sel              ; copy raw name out of the record
+    SETRECPTR 48
+    LDY #0
+.cp1
+    LDA discaccess+3
+    STA sdname_buf,Y
+    BEQ named
+    INY
+    CPY #63
+    BNE cp1
+    LDA #0
+    STA sdname_buf+63
+.named
+    SETCMDPTR &FC
+    LDA #11                 ; fchdir
+    STA discaccess+3
+    LDY #0
+.cp2
+    LDA sdname_buf,Y
+    STA discaccess+3
+    BEQ dispatch
+    INY
+    BNE cp2
+.dispatch
+    DOCMD &FC
+    GOTOPAGE EXP_DIR, 1     ; reread (on error the cwd is unchanged)
+.cdup
+    SETCMDPTR &FC
+    LDA #11
+    STA discaccess+3
+    LDA #'.'
+    STA discaccess+3
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    JMP dispatch
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1600
+}
+
+; ---------------------------------------------------------------------------
+; Page 23 : get (SD -> current FS), part 1 - choose the FS filename
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01
+    LDA #0
+    STA zp_fail
+    STA zp_reread
+    JSR print
+    EQUB 31,0,23,135 : EQUS "Copy as: " : EQUB &FF
+    LDA #name_buf AND &FF   ; OSWORD 0: read line into name_buf
+    STA word_blk
+    LDA #name_buf DIV 256
+    STA word_blk+1
+    LDA #30
+    STA word_blk+2
+    LDA #32
+    STA word_blk+3
+    LDA #126
+    STA word_blk+4
+    LDA #0
+    LDX #word_blk AND &FF
+    LDY #word_blk DIV 256
+    JSR OSWORD
+    BCS cancel
+    CPY #0
+    BNE gotname
+    LDA zp_sel              ; empty input: default to the SD name
+    SETRECPTR 48
+    LDY #0
+.defloop
+    LDA discaccess+3
+    BEQ defdone
+    STA name_buf,Y
+    INY
+    CPY #30
+    BNE defloop
+.defdone
+    LDA #13
+    STA name_buf,Y
+.gotname
+    GOTOPAGE EXP_GET2, 1
+.cancel
+    GOTOPAGE EXP_KEY, 1
+
+.print
+    PRSUB
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1700
+}
+
+; ---------------------------------------------------------------------------
+; Page 24 : get, part 2 - open both files
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01
+    LDA #&80                ; OPENOUT name_buf on the current FS
+    LDX #name_buf AND &FF
+    LDY #name_buf DIV 256
+    JSR OSFIND
+    STA zp_fshand
+    TAX                     ; set Z from the handle: 0 = open failed
+    BNE opened
+    LDA #1                  ; handle 0 and no BRK: report failure
+    STA zp_fail
+    GOTOPAGE EXP_FIN, 1
+.opened
+    LDA zp_sel              ; raw SD name -> sdname_buf
+    SETRECPTR 48
+    LDY #0
+.cp1
+    LDA discaccess+3
+    STA sdname_buf,Y
+    BEQ named
+    INY
+    CPY #63
+    BNE cp1
+    LDA #0
+    STA sdname_buf+63
+.named
+    SETCMDPTR &FD
+    LDA #2                  ; fopen
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    LDA #1                  ; FA_READ
+    STA discaccess+3
+    LDY #0
+.cp2
+    LDA sdname_buf,Y
+    STA discaccess+3
+    BEQ dof
+    INY
+    BNE cp2
+.dof
+    DOCMD &FD
+    BEQ openok
+    LDA #1
+    STA zp_fail
+    GOTOPAGE EXP_FIN, 1
+.openok
+    LDA #0
+    STA zp_off
+    STA zp_off+1
+    STA zp_off+2
+    GOTOPAGE EXP_GET3, 1
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1800
+}
+
+; ---------------------------------------------------------------------------
+; Page 25 : get, part 3 - fread a chunk and stage it in the bounce buffer;
+;           page EXP_GET4 writes it to the FS and loops back to &FD04
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP
+    JMP init                ; &FD01
+    JMP chunk               ; &FD04 : loop re-entry from EXP_GET4
+.init
+    LDA #0
+    STA zp_eof
+.chunk
+    SETCMDPTR &FD
+    LDA #4                  ; fread
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3        ; length 256
+    LDA #1
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    STA discaccess+3        ; dest = &D80000
+    STA discaccess+3
+    LDA #chunk_hi
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    LDA zp_off              ; file offset
+    STA discaccess+3
+    LDA zp_off+1
+    STA discaccess+3
+    LDA zp_off+2
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    DOCMD &FD
+    BEQ full
+    CMP #20                 ; short read = final chunk
+    BEQ short1
+    LDA #1
+    STA zp_fail
+    GOTOPAGE EXP_FIN, 1
+.full
+    LDA #0
+    STA zp_len
+    LDA #1
+    STA zp_len+1
+    BNE copy
+.short1
+    LDA #1
+    STA zp_eof
+    STA discaccess          ; read back actual length from cmd+1/2
+    LDA discaccess+3
+    STA zp_len
+    LDA discaccess+3
+    STA zp_len+1
+    ORA zp_len
+    BEQ closeup
+.copy
+    LDA #0                  ; stream chunk into the bounce buffer
+    STA discaccess
+    STA discaccess+1
+    LDA #chunk_hi
+    STA discaccess+2
+    LDY #0
+    LDX zp_len+1
+    BNE full256
+    LDX zp_len
+.partloop
+    LDA discaccess+3
+    STA bounce,Y
+    INY
+    DEX
+    BNE partloop
+    BEQ write
+.full256
+    LDA discaccess+3
+    STA bounce,Y
+    INY
+    BNE full256
+.write
+    GOTOPAGE EXP_GET4, 1
+.closeup
+    GOTOPAGE EXP_FIN, 1
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1900
+}
+
+; ---------------------------------------------------------------------------
+; Page 26 : put (current FS -> SD), part 1 - name prompt and FS open
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01
+    LDA #0
+    STA zp_fail
+    LDA #1
+    STA zp_reread           ; a new SD file appears: reread after
+    JSR print
+    EQUB 31,0,23,135 : EQUS "Put file: " : EQUB &FF
+    LDA #name_buf AND &FF
+    STA word_blk
+    LDA #name_buf DIV 256
+    STA word_blk+1
+    LDA #30
+    STA word_blk+2
+    LDA #32
+    STA word_blk+3
+    LDA #126
+    STA word_blk+4
+    LDA #0
+    LDX #word_blk AND &FF
+    LDY #word_blk DIV 256
+    JSR OSWORD
+    BCS cancel
+    CPY #0
+    BEQ cancel
+    LDA #&40                ; OPENIN
+    LDX #name_buf AND &FF
+    LDY #name_buf DIV 256
+    JSR OSFIND
+    TAX                     ; set Z from the handle: 0 = not found
+    BNE gotfile
+    JSR print
+    EQUB 31,0,23,129 : EQUS "Not found         " : EQUB &FF
+.cancel
+    GOTOPAGE EXP_KEY, 1
+.gotfile
+    STA zp_fshand
+    GOTOPAGE EXP_PUT2, 1
+
+.print
+    PRSUB
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1A00
+}
+
+; ---------------------------------------------------------------------------
+; Page 27 : put, part 2 - create the SD file, read FS chunks into the
+;           bounce buffer; page EXP_PUT3 does the SD write, looping to &FD04
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP
+    JMP create              ; &FD01
+    JMP chunk               ; &FD04 : loop re-entry from EXP_PUT3
+.create
+    SETCMDPTR &FD
+    LDA #2                  ; fopen
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    LDA #&0A                ; FA_CREATE_ALWAYS | FA_WRITE
+    STA discaccess+3
+    LDY #0
+.namecopy
+    LDA name_buf,Y          ; typed name, CR -> NUL
+    CMP #13
+    BEQ nameend
+    STA discaccess+3
+    INY
+    CPY #30
+    BNE namecopy
+.nameend
+    LDA #0
+    STA discaccess+3
+    DOCMD &FD
+    BEQ createok
+    LDA #1
+    STA zp_fail
+    GOTOPAGE EXP_FIN, 1
+.createok
+    LDA #0
+    STA zp_off
+    STA zp_off+1
+    STA zp_off+2
+.chunk
+    LDA zp_fshand           ; OSGBPB 4: read, sequential
+    STA gbpb_blk
+    LDA #0
+    STA gbpb_blk+1
+    LDA #bounce DIV 256
+    STA gbpb_blk+2
+    LDA #&FF
+    STA gbpb_blk+3
+    STA gbpb_blk+4
+    LDA #0
+    STA gbpb_blk+5
+    LDA #1
+    STA gbpb_blk+6
+    LDA #0
+    STA gbpb_blk+7
+    STA gbpb_blk+8
+    LDA #4
+    LDX #gbpb_blk AND &FF
+    LDY #gbpb_blk DIV 256
+    JSR OSGBPB
+    PHP                     ; C set = EOF reached
+    SEC                     ; transferred = 256 - remaining
+    LDA #0
+    SBC gbpb_blk+5
+    STA zp_len
+    LDA #1
+    SBC gbpb_blk+6
+    STA zp_len+1
+    LDA zp_len
+    ORA zp_len+1
+    BEQ lastnone
+    LDA #0                  ; bounce -> &D80000
+    STA discaccess
+    STA discaccess+1
+    LDA #chunk_hi
+    STA discaccess+2
+    LDY #0
+    LDX zp_len+1
+    BNE full256
+    LDX zp_len
+.partloop
+    LDA bounce,Y
+    STA discaccess+3
+    INY
+    DEX
+    BNE partloop
+    BEQ dowrite
+.full256
+    LDA bounce,Y
+    STA discaccess+3
+    INY
+    BNE full256
+.dowrite
+    GOTOPAGE EXP_PUT3, 1
+.lastnone
+    PLP
+    GOTOPAGE EXP_FIN, 1
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1B00
+}
+
+; ---------------------------------------------------------------------------
+; Page 28 : finish a transfer - close both files, report, route on
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01
+    LDY zp_fshand
+    BEQ nofs
+    LDA #0
+    STA zp_fshand           ; clear first: a BRK in close cannot loop
+    JSR OSFIND
+.nofs
+    SETCMDPTR &FD
+    LDA #3                  ; fclose (error ignored)
+    STA discaccess+3
+    DOCMD &FD
+    LDA zp_fail
+    BNE badmsg
+    JSR print
+    EQUB 31,0,23,130 : EQUS "Done                " : EQUB &FF
+    JMP route
+.badmsg
+    JSR print
+    EQUB 31,0,23,129 : EQUS "Failed              " : EQUB &FF
+.route
+    LDA zp_reread
+    BEQ tokey
+    GOTOPAGE EXP_DIR, 1
+.tokey
+    GOTOPAGE EXP_KEY, 1
+
+.print
+    PRSUB
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1C00
+}
+
+; ---------------------------------------------------------------------------
+; Page 29 : BRK trap - a filing system error unwound to here
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; also reached by JMP &FD00 from the RAM stub
+    LDX old_stack           ; unwind to the CALL-time stack level
+    TXS
+    JSR print
+    EQUB 31,0,23,129 : EQUB &FF
+    LDY #1                  ; error string sits after the BRK (ptr at &FD)
+.errloop
+    LDA (&FD),Y
+    BEQ errdone
+    JSR OSWRCH
+    INY
+    BNE errloop
+.errdone
+    JSR print
+    EQUS " - press a key" : EQUB &FF
+    LDY zp_fshand           ; close anything the transfer left open
+    BEQ nofs
+    LDA #0
+    STA zp_fshand
+    JSR OSFIND
+.nofs
+    SETCMDPTR &FD
+    LDA #3
+    STA discaccess+3
+    DOCMD &FD
+    JSR OSRDCH
+    GOTOPAGE EXP_DIR, 1
+
+.print
+    PRSUB
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1D00
+}
+
+; ---------------------------------------------------------------------------
+; Page 30 : exit - restore vectors, keys and cursor
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01
+    LDA old_brkv
+    STA &0202
+    LDA old_brkv+1
+    STA &0203
+    LDA #4
+    LDX old_fx4
+    LDY #0
+    JSR OSBYTE
+    LDA #229
+    LDX old_fx229
+    LDY #0
+    JSR OSBYTE
+    LDX #0
+.vduloop
+    LDA vdutab,X
+    JSR OSWRCH
+    INX
+    CPX #vdutabend-vdutab
+    BNE vduloop
+    PAGERTS
+
+.vdutab
+    EQUB 23,1,1,0,0,0,0,0,0,0       ; cursor on
+    EQUB 31,0,22                    ; park the cursor above the footer
+.vdutabend
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1E00
+}
+
+; ---------------------------------------------------------------------------
+; Page 31 : get, part 4 - write the staged chunk to the FS, loop or finish
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01
+    LDA zp_fshand           ; OSGBPB 2: write, sequential
+    STA gbpb_blk
+    LDA #0
+    STA gbpb_blk+1
+    LDA #bounce DIV 256
+    STA gbpb_blk+2
+    LDA #&FF
+    STA gbpb_blk+3
+    STA gbpb_blk+4
+    LDA zp_len
+    STA gbpb_blk+5
+    LDA zp_len+1
+    STA gbpb_blk+6
+    LDA #0
+    STA gbpb_blk+7
+    STA gbpb_blk+8
+    LDA #2
+    LDX #gbpb_blk AND &FF
+    LDY #gbpb_blk DIV 256
+    JSR OSGBPB
+    CLC
+    LDA zp_off
+    ADC zp_len
+    STA zp_off
+    LDA zp_off+1
+    ADC zp_len+1
+    STA zp_off+1
+    LDA zp_off+2
+    ADC #0
+    STA zp_off+2
+    LDA zp_eof
+    BNE closeup
+    GOTOPAGE EXP_GET3, 4
+.closeup
+    GOTOPAGE EXP_FIN, 1
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &1F00
+}
+
+; ---------------------------------------------------------------------------
+; Page 32 : put, part 3 - fwrite the staged chunk to SD, loop or finish
+;           (a saved status byte from OSGBPB - C = EOF - is on the stack)
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP                     ; &FD01
+    SETCMDPTR &FD
+    LDA #5                  ; fwrite
+    STA discaccess+3
+    LDA zp_len
+    STA discaccess+3
+    LDA zp_len+1
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    STA discaccess+3        ; source = &D80000
+    STA discaccess+3
+    LDA #chunk_hi
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    LDA zp_off
+    STA discaccess+3
+    LDA zp_off+1
+    STA discaccess+3
+    LDA zp_off+2
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    DOCMD &FD
+    BEQ writeok
+    PLP                     ; discard saved EOF state
+    LDA #1
+    STA zp_fail
+    GOTOPAGE EXP_FIN, 1
+.writeok
+    CLC
+    LDA zp_off
+    ADC zp_len
+    STA zp_off
+    LDA zp_off+1
+    ADC zp_len+1
+    STA zp_off+1
+    LDA zp_off+2
+    ADC #0
+    STA zp_off+2
+    PLP
+    BCS finished
+    GOTOPAGE EXP_PUT2, 4
+.finished
+    GOTOPAGE EXP_FIN, 1
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &2000
+}
+
 .end
 
-SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &1100
+SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &2100

@@ -26,8 +26,20 @@ typedef enum {
 
 typedef struct { uint32_t fsize; } FIL;
 typedef struct { int dummy; } DIR;
-typedef struct { char fname[256]; } FILINFO;
+typedef struct {
+   uint32_t fsize;
+   uint16_t fdate, ftime;
+   uint8_t  fattrib;
+   char     fname[256];
+} FILINFO;
 typedef struct { uint32_t csize; } FATFS;
+
+/* File attribute bits (match ff.h) */
+#define AM_RDO 0x01
+#define AM_HID 0x02
+#define AM_SYS 0x04
+#define AM_DIR 0x10
+#define AM_ARC 0x20
 
 FRESULT f_open(FIL *fp, const char *path, uint8_t mode);
 FRESULT f_close(FIL *fp);

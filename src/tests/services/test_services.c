@@ -62,7 +62,18 @@ FRESULT f_write(FIL *fp, const void *b, UINT n, UINT *w) { (void)fp; (void)b; f_
 FRESULT f_lseek(FIL *fp, uint32_t ofs) { (void)fp; (void)ofs; return FR_OK; }
 FRESULT f_opendir(DIR *dp, const char *p) { (void)dp; (void)p; return FR_OK; }
 FRESULT f_closedir(DIR *dp) { (void)dp; return FR_OK; }
-FRESULT f_readdir(DIR *dp, FILINFO *fno) { (void)dp; fno->fname[0] = 0; return FR_OK; }
+
+/* settable directory listing for readdir / readdir-ex tests */
+static FILINFO readdir_entries[4];
+static int     readdir_count, readdir_next;
+FRESULT f_readdir(DIR *dp, FILINFO *fno)
+{
+   (void)dp;
+   memset(fno, 0, sizeof *fno);
+   if (readdir_next < readdir_count)
+      *fno = readdir_entries[readdir_next++];
+   return FR_OK;                     /* fname[0]==0 past the end */
+}
 FRESULT f_mkdir(const char *p) { (void)p; f_mkdir_calls++; return FR_OK; }
 FRESULT f_chdir(const char *p) { (void)p; return chdir_result; }
 FRESULT f_getcwd(char *buff, UINT len) { snprintf(buff, len, "%s", cwd_value); return getcwd_result; }
@@ -246,6 +257,95 @@ int main(void)
    ok(!fat_service_file_in_use("/discs/held.ssd"), "reset releases the open-file lock");
    ok(!fat_service_file_in_use("/BEEB.MMB"), "reset releases the raw-sector latch");
    ok(do_simple(0, 20) == 42, "FAT service still dispatches after reset");
+
+   puts("== readdir-ex (17) ==");
+   {
+      uint32_t cp = cp_of(0xFCu);           /* slot &FC, as the SD explorer uses */
+      uint32_t dest = 0x00D00000u;          /* record buffer (DISC_RAM_BASE==0) */
+      uint8_t *rec = &Pi1MHz->JIM_ram[dest];
+
+      memset(readdir_entries, 0, sizeof readdir_entries);
+      strcpy(readdir_entries[0].fname, "GAMES");
+      readdir_entries[0].fattrib = AM_DIR;
+      strcpy(readdir_entries[1].fname, "Elite.ssd");
+      readdir_entries[1].fsize = 204800;
+      readdir_entries[1].fattrib = AM_ARC;
+      strcpy(readdir_entries[2].fname, "big.dat");
+      readdir_entries[2].fsize = 5u * 1024u * 1024u;
+      memset(readdir_entries[3].fname, 'n', 100);   /* long name... */
+      readdir_entries[3].fname[1] = 7;              /* ...with a control char */
+      readdir_entries[3].fsize = 12;
+      readdir_count = 4;
+      readdir_next = 0;
+
+      memset(&Pi1MHz->JIM_ram[cp], 0, 64);
+      Pi1MHz->JIM_ram[cp] = 17;            /* no fopendir yet */
+      Pi1MHz->JIM_ram[cp + 6] = 0xD0;      /* dest offset, little-endian */
+      ok(dispatch(0xFCu) == FR_INVALID_OBJECT, "readdir-ex without fopendir refused");
+
+      memset(&Pi1MHz->JIM_ram[cp], 0, 64);
+      Pi1MHz->JIM_ram[cp] = 7;             /* fopendir "" (current dir) */
+      ok(dispatch(0xFCu) == FR_OK, "fopendir for readdir-ex");
+
+      memset(&Pi1MHz->JIM_ram[cp], 0, 64);
+      Pi1MHz->JIM_ram[cp] = 17;
+      Pi1MHz->JIM_ram[cp + 6] = 0xD0;      /* dest offset, little-endian */
+
+      ok(dispatch(0xFCu) == FR_OK, "readdir-ex returns an entry");
+      ok(rec[0] == AM_DIR && rec[1] == 0 && rec[2] == 0 && rec[3] == 0,
+         "directory attribute recorded, reserved bytes clear");
+      ok(memcmp(&rec[8], "GAMES/", 6) == 0, "display name has the dir slash");
+      ok(memcmp(&rec[8 + 31], "  <DIR>", 7) == 0 && rec[46] == 0,
+         "size column shows <DIR>, display NUL-terminated");
+      ok(strcmp((char *)&rec[48], "GAMES") == 0, "raw name recorded");
+
+      ok(dispatch(0xFCu) == FR_OK, "second entry read");
+      ok(rec[4] == 0x00 && rec[5] == 0x20 && rec[6] == 0x03 && rec[7] == 0x00,
+         "file size stored little-endian (204800)");
+      ok(memcmp(&rec[8 + 31], " 204800", 7) == 0, "small size shown in bytes");
+      ok(strcmp((char *)&rec[48], "Elite.ssd") == 0, "raw file name recorded");
+
+      ok(dispatch(0xFCu) == FR_OK, "third entry read");
+      ok(memcmp(&rec[8 + 31], "  5120K", 7) == 0, "large size shown in KB");
+
+      ok(dispatch(0xFCu) == FR_OK, "fourth entry read");
+      ok(rec[8] == 'n' && rec[9] == '?', "control char sanitized in display");
+      ok(rec[48 + 79] == 0 && rec[48 + 78] == 'n' && rec[49] == 7,
+         "raw name kept verbatim, truncated at 79 chars");
+
+      ok(dispatch(0xFCu) == 20, "end of directory returns 20");
+
+      Pi1MHz->JIM_ram[cp + 4] = 0xFF;      /* dest too close to the end for */
+      Pi1MHz->JIM_ram[cp + 5] = 0xFF;      /* a 128-byte record            */
+      Pi1MHz->JIM_ram[cp + 6] = 0xFF;
+      Pi1MHz->JIM_ram[cp + 7] = 0x01;
+      readdir_next = 0;
+      ok(dispatch(0xFCu) == FR_INVALID_PARAMETER, "out-of-range dest refused");
+      Pi1MHz->JIM_ram[cp + 4] = 0x00;
+      Pi1MHz->JIM_ram[cp + 5] = 0x00;
+      Pi1MHz->JIM_ram[cp + 7] = 0x00;
+
+      memset(&Pi1MHz->JIM_ram[cp], 0, 64);
+      Pi1MHz->JIM_ram[cp] = 8;             /* fclosedir: leave the slot clean */
+      ok(dispatch(0xFCu) == FR_OK, "fclosedir after readdir-ex");
+   }
+
+   puts("== getcwd (18) ==");
+   {
+      uint32_t cp = cp_of(0xFCu);
+      uint32_t dest = 0x00D80000u;
+      memset(&Pi1MHz->JIM_ram[cp], 0, 64);
+      Pi1MHz->JIM_ram[cp] = 18;
+      Pi1MHz->JIM_ram[cp + 6] = 0xD8;
+      strcpy(cwd_value, "/my\002dir");
+      ok(dispatch(0xFCu) == FR_OK, "getcwd succeeds");
+      ok(strcmp((char *)&Pi1MHz->JIM_ram[dest], "/my?dir") == 0,
+         "cwd written to the buffer, control char sanitized");
+      getcwd_result = FR_NOT_READY;
+      ok(dispatch(0xFCu) == FR_NOT_READY, "getcwd error propagated");
+      getcwd_result = FR_OK;
+      strcpy(cwd_value, "/");
+   }
 
    /* KEEP THIS BLOCK LAST: it sets Beeb_write_protect in the shared config
       store and there is no config_reset(), so anything appended after it would

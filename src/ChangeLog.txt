@@ -253,3 +253,11 @@ That ROM derives from ElkWiFi and UPCFS and carries Roland Leurs' non-commercial
 *HELP WIFI lists command names four to a line, and *PRD is gone, to make room for the filing system.
 beeb/1mhz-wifi/build-merged.sh rebuilds the shipped ROM from pinned sources; CI checks the two still match.
 tools/testsuite loads the ROM under test into a freed sideways RAM bank, and finds the Pi as pi1mhz.local.
+
+unreleased
+SD card explorer (helper 17): full-screen MODE 7 browser of the SD card,
+  running from paged JIM RAM, that copies files between the SD card and the
+  current filing system (get and put) using OSFIND/OSGBPB. Helper RAM grows
+  to 33 pages. New FAT service commands: 17 readdir-ex (fixed 128-byte
+  records with attribute, size and a preformatted display line) and
+  18 getcwd.
