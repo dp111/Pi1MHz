@@ -246,3 +246,10 @@ VDU 4/5 control codes dispatch on the current mode instead of rewriting the hand
 Release images link with --gc-sections: about 2.9 KB smaller.
 Menu reports a missing co-processor instead of hanging.
 tools/testsuite gains a WIFI test; tools/vdutest covers the VDU 4/5 codes; the services tests run again.
+
+v.1.35
+Helper 16 adds the WiCFS UEF cassette filing system to 1MHz-WiFi, in one bank: *UEF LOAD, *WICFS, *REWIND.
+That ROM derives from ElkWiFi and UPCFS and carries Roland Leurs' non-commercial licence, not GPL-3.0: see CREDITS.md.
+*HELP WIFI lists command names four to a line, and *PRD is gone, to make room for the filing system.
+beeb/1mhz-wifi/build-merged.sh rebuilds the shipped ROM from pinned sources; CI checks the two still match.
+tools/testsuite loads the ROM under test into a freed sideways RAM bank, and finds the Pi as pi1mhz.local.
