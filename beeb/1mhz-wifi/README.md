@@ -118,20 +118,23 @@ merge costs 15529 bytes rather than the 21669 the two images take separately.
 ### Why the filing system is not in this tree
 
 `build-merged.sh` fetches it at build time instead, from two pinned commits,
-because a merged image is a derived work of three parties and none of them
-has granted terms for it:
+because the merged image is a derived work of three parties and this tree is
+GPL-3.0:
 
 - **Roland Leurs** - ElkWiFi, which `wicfs.asm` comes from. No licence file;
-  the non-commercial terms he has stated cover his own work.
+  his stated terms allow non-commercial use but require anything derived to
+  carry the same terms, which is exactly what the GPL will not take.
 - **Martin Barr** - UPCFS, which `wicfs.asm` in turn derives from. No licence.
-- **Peter Clarke** - the 45 patches to it and the sources around it. His
-  repository states that no licence is granted and that public availability
-  is not permission to copy or to publish derived binaries.
+- **Peter Clarke** - the 45 patches to it and the sources around it. He has
+  given this project permission to use his work, though his repository
+  publishes it without a licence.
 
-Pi1MHz is GPL-3.0, so `wicfs.asm` could not live here even if the image were
-shippable. What arrived through PR #23 is this project's to use - Peter
-offered it - but the rest is not, so `src/1mhz-wicfs.rom` is a local build
-only and is git-ignored. Nothing installs it into `firmware/Pi1MHz/`.
+So `wicfs.asm` cannot live in this tree whoever permits what: a
+non-commercial restriction cannot be added to GPL-3.0 sources. The merged
+image ships as a third-party binary instead, `firmware/Pi1MHz/1mhz-wicfs.rom`
+under Roland Leurs' terms, the way ADFS, ATS and the MMFS ROMs already do -
+see CREDITS.md. The build's own `src/1mhz-wicfs.rom` is git-ignored; the
+shipped copy is installed deliberately, not by this script.
 
 The ElkWiFi commit the patches apply to, `7bf366c9`, is not on any branch
 upstream. It is still served by SHA, which is how the script fetches it; the

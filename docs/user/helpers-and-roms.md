@@ -74,8 +74,9 @@ The ROM needs the service behind it: put **`wifi_service_enable=1`** in
 the network commands. Without it the service never claims its command
 range, so a command like `*ONLINE` waits for an answer that cannot come -
 `*HELP WIFI` and `*VERSION` still work, because they are answered by the
-ROM itself. The source is in `beeb/1mhz-wifi/`; the image on the
-card is built from it with `beeb/1mhz-wifi/build.sh`.
+ROM itself. The source is in `beeb/1mhz-wifi/`; the shipped image is rebuilt
+with `beeb/1mhz-wifi/build-merged.sh`, which fetches the filing system half
+at build time because it cannot live in this tree.
 
 ## Your own ROMs
 

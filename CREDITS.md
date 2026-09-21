@@ -49,10 +49,11 @@ The Raspberrypi Engineers who have helped me with this project.
   and keeps that ROM's command-table *format*, and `*VERSION` credits ElkWiFi
   for it, but it carries no ElkWiFi source: the parts that did derive from it
   (the cassette filing system, itself deriving from Martin Barr's UPCFS) are
-  not in this ROM. That distinction matters, because upstream
-  <https://github.com/AtomicRoland/ElkWiFi> carries **no licence** - no
-  LICENSE file, nothing in its README, and its sources are marked only
-  "(c) Roland Leurs, May 2020" - so ElkWiFi code could not be carried here.
+  not in this ROM. That distinction is what keeps these sources GPL-3.0:
+  upstream <https://github.com/AtomicRoland/ElkWiFi> ships no LICENSE file,
+  and its sources are marked only "(c) Roland Leurs, May 2020", so no ElkWiFi
+  source is carried in this tree. The filing system reaches Pi1MHz only as
+  the shipped binary below, built from sources fetched at build time.
 
 - **Howard Hinnant's** `days`↔`civil` date algorithms are used for the WebDAV
   timestamp conversion. `src/wifi/webserver.c`
@@ -101,7 +102,10 @@ hardware; they are not part of Pi1MHz's own GPL-3.0 licence.
   loads with helper 16. It derives from **Roland
   Leurs'** ElkWiFi 0.23 <https://github.com/AtomicRoland/ElkWiFi> and through
   it from **Martin Barr's** UPCFS, and is combined with Peter Clarke's
-  1MHz-WiFi ROM. Roland Leurs' terms, quoted in full and given for this use:
+  1MHz-WiFi ROM. **Peter Clarke** has given this project permission to use
+  his work in it: the patches that adapt the filing system and the sources
+  around it, which his own repository otherwise publishes without a licence.
+  Roland Leurs' terms, quoted in full and given for this use:
 
   > 1. You have the right to use the Work in any way you want for
   >    non-commercial use. Commercial use is considered when you integrate the
