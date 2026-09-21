@@ -14,7 +14,7 @@
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 TMP=${PI1MHZ_TOOLS:-/mnt/c/Archlinux/claude-tmp}
-export PI_IP=${PI_IP:-192.168.0.42}
+export PI_IP=${PI_IP:-pi1mhz.local}   # the name the firmware advertises by mDNS
 JUKE=${JUKE:-9}
 M5000_FX=${M5000_FX:-3}      # Music 5000's index in the emulator table (see TM5000)
 NSLOOK_HOST=${NSLOOK_HOST:-www.google.com}   # *NSLOOK target; needs DNS, skips without it
