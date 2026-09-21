@@ -12,6 +12,7 @@ on:
       - 'beeb/**'
       - '6502code/**'
       - 'firmware/Pi1MHz/6502code.bin'
+      - 'firmware/Pi1MHz/1mhz-wicfs.rom'
       - 'src/wifi_service.h'
       - 'src/net_service.h'
       - 'src/tests/wifirom/**'
@@ -48,6 +49,25 @@ jobs:
           echo "rebuilt   $sha_after"
           test "$sha_before" = "$sha_after" || {
             echo "firmware/Pi1MHz/6502code.bin is not what 6502code/6502code.asm builds:" \
+                 "rebuild it and commit the result" >&2
+            exit 1
+          }
+
+      - name: The shipped 1mhz-wicfs.rom matches its sources
+        run: |
+          # The filing system half is fetched, not committed, so tell a
+          # vanished upstream apart from a stale image: only the second is
+          # this repository's problem.
+          if ! sh beeb/1mhz-wifi/build-merged.sh; then
+            echo "::warning::could not build the merged ROM - upstream sources unreachable?"
+            exit 0
+          fi
+          committed=$(sha256sum firmware/Pi1MHz/1mhz-wicfs.rom | cut -d' ' -f1)
+          rebuilt=$(sha256sum beeb/1mhz-wifi/src/1mhz-wicfs.rom | cut -d' ' -f1)
+          echo "committed $committed"
+          echo "rebuilt   $rebuilt"
+          test "$committed" = "$rebuilt" || {
+            echo "firmware/Pi1MHz/1mhz-wicfs.rom is not what build-merged.sh builds:" \
                  "rebuild it and commit the result" >&2
             exit 1
           }
