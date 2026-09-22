@@ -637,7 +637,12 @@ ORG &FD00
     LDA zp_sel
     CMP zp_top
     BCS tworow              ; still on screen
-    STA zp_top              ; scrolled off the top
+    SEC                     ; off the top: show the previous page whole,
+    SBC #19                 ; with the selection on its last row
+    BCS settop
+    LDA #0                  ; first page
+.settop
+    STA zp_top
     JMP fullrows
 .down
     LDX zp_sel
@@ -654,7 +659,7 @@ ORG &FD00
     CMP zp_top
     BCC tworow
     BEQ tworow
-    STA zp_top              ; scrolled off the bottom
+    STX zp_top              ; off the bottom: start a new page here (X = sel)
 .fullrows
     GOTOPAGE EXP_DRAW, 4
 .tworow
