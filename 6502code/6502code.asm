@@ -13,7 +13,7 @@ OSFIND = &FFCE
 OSGBPB = &FFD1
 
 ; ---------------------------------------------------------------------------
-; SD card explorer (helper 17) - pages 17..32
+; SD card explorer (helper 17) - pages 17 and 31..45
 ;
 ; Runs entirely from the paged &FD00 window; state lives in zero page
 ; &70-&86 and a little Beeb RAM around &0900 (RS423/cassette buffers).
@@ -25,22 +25,28 @@ OSGBPB = &FFD1
 ; system and fread/fwrite (slot &FD) on the SD side.
 ; ---------------------------------------------------------------------------
 
+; Helper numbers 18-30 are deliberately left free for future helpers, so the
+; explorer's own pages start above them.  Only EXP_HUB is a helper anybody
+; runs; the rest are pages it chains through while it is running.
+EXP_FREE_FIRST = 18 ; first reserved-for-future helper page
+EXP_FREE_LAST  = 30 ; last one
+
 EXP_HUB   = 17      ; init
-EXP_KEY   = 18      ; key dispatch loop
-EXP_DIR   = 19      ; read directory into records
-EXP_DRAW2 = 20      ; path row, then rows
-EXP_DRAW  = 21      ; row rendering (entry 1: two rows, entry 4: all rows)
-EXP_CD    = 22      ; chdir (entry 1: selected, entry 4: up)
-EXP_GET1  = 23      ; get: prompt for FS name
-EXP_GET2  = 24      ; get: open FS + SD files
-EXP_GET3  = 25      ; get: copy loop
-EXP_PUT1  = 26      ; put: prompt + open FS input
-EXP_PUT2  = 27      ; put: create SD file + copy loop
-EXP_FIN   = 28      ; close files, report, route on
-EXP_ERR   = 29      ; BRK (filing system error) trap
-EXP_EXIT  = 30      ; restore state and return
-EXP_GET4  = 31      ; get: FS write half of the copy loop
-EXP_PUT3  = 32      ; put: SD write half of the copy loop
+EXP_KEY   = 31      ; key dispatch loop
+EXP_DIR   = 32      ; read directory into records
+EXP_DRAW2 = 33      ; path row, then rows
+EXP_DRAW  = 34      ; row rendering (entry 1: two rows, entry 4: all rows)
+EXP_CD    = 35      ; chdir (entry 1: selected, entry 4: up)
+EXP_GET1  = 36      ; get: prompt for FS name
+EXP_GET2  = 37      ; get: open FS + SD files
+EXP_GET3  = 38      ; get: copy loop
+EXP_PUT1  = 39      ; put: prompt + open FS input
+EXP_PUT2  = 40      ; put: create SD file + copy loop
+EXP_FIN   = 41      ; close files, report, route on
+EXP_ERR   = 42      ; BRK (filing system error) trap
+EXP_EXIT  = 43      ; restore state and return
+EXP_GET4  = 44      ; get: FS write half of the copy loop
+EXP_PUT3  = 45      ; put: SD write half of the copy loop
 
 ; zero page
 zp_count  = &70     ; number of entries (0-250)
@@ -600,8 +606,109 @@ ORG &FD00
     ENDBLOCK &1100
 }
 
+
 ; ---------------------------------------------------------------------------
-; Page 18 : key dispatch loop
+; Pages 18-30 : reserved for future helpers
+;
+; Free slots, so a new helper can be added without moving the explorer's
+; pages and rewriting every GOTOPAGE in it.  Each answers like any finished
+; helper page, so running one before it does anything simply returns.
+; ---------------------------------------------------------------------------
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1200
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1300
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1400
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1500
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1600
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1700
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1800
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1900
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1A00
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1B00
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1C00
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1D00
+}
+
+{
+    ORG &FD00
+    PAGERTS
+
+    ENDBLOCK &1E00
+}
+
+
+; ---------------------------------------------------------------------------
+; Page 31 : key dispatch loop
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -682,11 +789,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1200
+    ENDBLOCK &1F00
 }
 
 ; ---------------------------------------------------------------------------
-; Page 19 : read current directory into records at &D00000
+; Page 32 : read current directory into records at &D00000
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -737,11 +844,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1300
+    ENDBLOCK &2000
 }
 
 ; ---------------------------------------------------------------------------
-; Page 20 : draw path row, then fall on to the rows
+; Page 33 : draw path row, then fall on to the rows
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -791,11 +898,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1400
+    ENDBLOCK &2100
 }
 
 ; ---------------------------------------------------------------------------
-; Page 21 : row rendering
+; Page 34 : row rendering
 ;   entry &FD01 : redraw oldsel + sel rows (selection moved)
 ;   entry &FD04 : redraw all 20 rows
 ; ---------------------------------------------------------------------------
@@ -880,11 +987,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1500
+    ENDBLOCK &2200
 }
 
 ; ---------------------------------------------------------------------------
-; Page 22 : change directory
+; Page 35 : change directory
 ;   entry &FD01 : into the selected entry     entry &FD04 : up ".."
 ; ---------------------------------------------------------------------------
 {
@@ -932,11 +1039,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1600
+    ENDBLOCK &2300
 }
 
 ; ---------------------------------------------------------------------------
-; Page 23 : get (SD -> current FS), part 1 - choose the FS filename
+; Page 36 : get (SD -> current FS), part 1 - choose the FS filename
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -986,11 +1093,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1700
+    ENDBLOCK &2400
 }
 
 ; ---------------------------------------------------------------------------
-; Page 24 : get, part 2 - open both files
+; Page 37 : get, part 2 - open both files
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -1048,11 +1155,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1800
+    ENDBLOCK &2500
 }
 
 ; ---------------------------------------------------------------------------
-; Page 25 : get, part 3 - fread a chunk and stage it in the bounce buffer;
+; Page 38 : get, part 3 - fread a chunk and stage it in the bounce buffer;
 ;           page EXP_GET4 writes it to the FS and loops back to &FD04
 ; ---------------------------------------------------------------------------
 {
@@ -1139,11 +1246,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1900
+    ENDBLOCK &2600
 }
 
 ; ---------------------------------------------------------------------------
-; Page 26 : put (current FS -> SD), part 1 - name prompt and FS open
+; Page 39 : put (current FS -> SD), part 1 - name prompt and FS open
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -1190,11 +1297,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1A00
+    ENDBLOCK &2700
 }
 
 ; ---------------------------------------------------------------------------
-; Page 27 : put, part 2 - create the SD file, read FS chunks into the
+; Page 40 : put, part 2 - create the SD file, read FS chunks into the
 ;           bounce buffer; page EXP_PUT3 does the SD write, looping to &FD04
 ; ---------------------------------------------------------------------------
 {
@@ -1293,11 +1400,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1B00
+    ENDBLOCK &2800
 }
 
 ; ---------------------------------------------------------------------------
-; Page 28 : finish a transfer - close both files, report, route on
+; Page 41 : finish a transfer - close both files, report, route on
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -1332,11 +1439,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1C00
+    ENDBLOCK &2900
 }
 
 ; ---------------------------------------------------------------------------
-; Page 29 : BRK trap - a filing system error unwound to here
+; Page 42 : BRK trap - a filing system error unwound to here
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -1373,11 +1480,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1D00
+    ENDBLOCK &2A00
 }
 
 ; ---------------------------------------------------------------------------
-; Page 30 : exit - restore vectors, keys and cursor
+; Page 43 : exit - restore vectors, keys and cursor
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -1410,11 +1517,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1E00
+    ENDBLOCK &2B00
 }
 
 ; ---------------------------------------------------------------------------
-; Page 31 : get, part 4 - write the staged chunk to the FS, loop or finish
+; Page 44 : get, part 4 - write the staged chunk to the FS, loop or finish
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -1457,11 +1564,11 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &1F00
+    ENDBLOCK &2C00
 }
 
 ; ---------------------------------------------------------------------------
-; Page 32 : put, part 3 - fwrite the staged chunk to SD, loop or finish
+; Page 45 : put, part 3 - fwrite the staged chunk to SD, loop or finish
 ;           (a saved status byte from OSGBPB - C = EOF - is on the stack)
 ; ---------------------------------------------------------------------------
 {
@@ -1515,9 +1622,9 @@ ORG &FD00
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
-    ENDBLOCK &2000
+    ENDBLOCK &2D00
 }
 
 .end
 
-SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &2100
+SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &2E00

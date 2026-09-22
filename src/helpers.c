@@ -14,13 +14,14 @@
 #include "rpi/systimer.h"
 #include "videoplayer.h"
 
-/* One 256-byte page per helper entry point, 0..32 - the page the Beeb runs
+/* One 256-byte page per helper entry point, 0..45 - the page the Beeb runs
    when it asks for helper n.  It is exactly as many pages as 6502code.bin
    carries, so the bank select below rejects a helper number that has no
-   page rather than running whatever follows.  Pages 17-32 are all the SD
-   card explorer: 17 is its entry helper and 18-32 the pages it chains
-   through while it runs. */
-#define HELPER_PAGES 33u
+   page rather than running whatever follows.  17 is the SD card explorer,
+   and 31-45 are the pages it chains through while it runs; 18-30 are left
+   free for future helpers, and answer with a bare return until one is
+   written. */
+#define HELPER_PAGES 46u
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
 _Alignas(4) NOINIT_SECTION uint8_t helper_ram[HELPER_PAGES * 256u];
 
