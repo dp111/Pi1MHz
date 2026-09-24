@@ -2,10 +2,11 @@
 
 STATUS (2026-09-24): **the failure is real but NON-DETERMINISTIC.** The same
 image onto the same running kernel both failed and succeeded on the same day,
-so no rule in terms of image size or image content can be correct. Size and
-content were each tested and eliminated; a time-varying agent is suspected and
-untested. Use the two-hop push as a workaround and judge every push by its
-banner.
+so no rule in terms of image size or image content can be correct. Size,
+content and the audio-DMA hypothesis have each been tested and eliminated; **no
+suspect currently stands.** Use the two-hop push as a workaround and judge every
+push by its banner. One failure left the VideoCore wedged rather than falling
+back to the card, which is the most alarming thing here and is recorded below.
 
 Large images do chain-boot: real-content and non-zero-padded images up to
 900,000 bytes hand over cleanly on unmodified master, and the believed
@@ -67,11 +68,9 @@ Two consequences that are real and worth knowing:
   and `:125`). The DMA engine reads them autonomously — disabling interrupts
   does nothing to it. Writing over `next` mid-copy is a genuine hazard: zeros
   terminate the chain harmlessly, arbitrary bytes point the engine at an
-  arbitrary address, and the channels are only armed while audio is actually
-  playing — which would make any resulting failure intermittent. **This is the
-  one mechanism not yet eliminated**, and it is the reason to prefer a real
-  image over a zero-padded one when testing, even though padding turned out
-  not to change the outcome (see the discriminator below).
+  arbitrary address. `dma_stop()` (`audio.c:156`) is never called on the
+  chain-boot path, so this hazard is real — but it was tested as the cause and
+  refuted (see below), so treat stopping the channels as hardening only.
 
 ## Measured, 2026-09-24, Pi Zero W (`BOARD_REVISION 009000c1`)
 
@@ -136,13 +135,45 @@ zeros do not move that kernel's `.noinit`; the image in (a) runs as a
 481,904 B kernel, which is why (b) — pushing 699,560 B onto it — reached well
 past its linked end.
 
-**INFERRED, not measured:** something time-varying is involved. The only
-mechanism identified so far that is real in the source, reaches exactly the
-region the copy crosses, and is *intermittently* armed is the audio DMA — the
-`pwm_cb`/`hdmi_cb` chains above only matter while channels 4 and 5 are
-actually running. That would make the failure look exactly this intermittent.
-Untested. The test: repeat one known-failing pair many times with audio
-definitely active and definitely idle, and compare failure rates.
+### The audio-DMA hypothesis was tested and refuted
+
+The suspicion was that the `pwm_cb`/`hdmi_cb` chains only matter while
+channels 4 and 5 are actually running, which would explain the intermittency.
+gcc17 logged the `/status` Audio `blk` counter (read twice, 2 s apart) before
+every push on 2026-09-24. Audio was advancing before **every** push read, and
+both outcomes occurred with it advancing:
+
+- landed with audio active: 12:45:06Z, 12:45:27Z, 12:47:05Z
+- failed with audio active: 12:45:50Z (cold-booted to V1.31), 12:48:54Z (see
+  below)
+
+So "audio running => failure" is **refuted**. `dma_stop()` (`audio.c:156`) is
+still never called on the chain-boot path, and the copy still writes over
+control blocks the DMA engine is following, so calling it remains defensible
+as *hardening* — but there is no evidence it is the cause, and it should not
+be described as a fix.
+
+### A worse failure mode: the wedged VideoCore
+
+The 12:48:54Z failure (a 784,052 B image) did not cold-boot to V1.31. It left
+the board half-dead, and `/status` read, before the power cycle that cleared
+it:
+
+- `VideoCore: not answering (property calls skipped)`
+- `Audio: none 0Hz q0 blk0` — the audio DMA had stopped entirely
+- `kernel->poll 12928 ms`, against ~115 ms normally — the kernel grinding
+  through mailbox timeouts
+- `Boot init ms: WiFiSvc:2 Harddisc:1` — Framebuffer, Rampage and Helpers all
+  absent
+- `Reset reason: 000` — no watchdog fired
+- COM5 read only NUL bytes at 1 Mbaud afterwards, consistent with the core
+  clock never being set up so the UART divisor is wrong
+- the board came back on a **new DHCP lease**, so any script pinning the old
+  address loses it
+
+The ARM side served HTTP throughout. Only a power cycle cleared it. Worth
+knowing because it is silent on the serial port and invisible to a script
+watching for a banner.
 
 Full 16-push table in the gcc17 harness's `PI-CONTROL.md` under
 "2026-09-24 gcc17 observations"; every push in `pi/logs/push-emu-0924.log`.
