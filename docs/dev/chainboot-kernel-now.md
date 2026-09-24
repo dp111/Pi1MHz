@@ -1,13 +1,18 @@
 # `kernel.now` chain-boot: what the copy actually touches
 
-STATUS (2026-09-24): **no size limit reproducible here, but two failures seen
-elsewhere on the same board are unexplained - see "Failures seen elsewhere".**
-The long-standing belief that large images fail to chain-boot did not survive
-measurement: real-content and non-zero-padded images up to 900,000 bytes hand
-over cleanly on unmodified master. Several mechanisms that *look* like they
-should break were tested and did not. One real hazard is documented below but
-is unproven. No code change came out of this; the section on how to test is
-the part worth keeping.
+STATUS (2026-09-24): **the failure is real but NON-DETERMINISTIC.** The same
+image onto the same running kernel both failed and succeeded on the same day,
+so no rule in terms of image size or image content can be correct. Size and
+content were each tested and eliminated; a time-varying agent is suspected and
+untested. Use the two-hop push as a workaround and judge every push by its
+banner.
+
+Large images do chain-boot: real-content and non-zero-padded images up to
+900,000 bytes hand over cleanly on unmodified master, and the believed
+557,056-byte threshold does not exist. But failures do occur, roughly 3 in 16
+pushes on a busy day, and every static explanation tried so far has been
+eliminated by measurement. No code change came out of this; the section on how
+to test is the part worth keeping.
 
 ## The handover
 
@@ -62,9 +67,11 @@ Two consequences that are real and worth knowing:
   and `:125`). The DMA engine reads them autonomously — disabling interrupts
   does nothing to it. Writing over `next` mid-copy is a genuine hazard: zeros
   terminate the chain harmlessly, arbitrary bytes point the engine at an
-  arbitrary address. **This is the one mechanism still considered plausible**,
-  and it is why a zero-padded test image is not a valid stand-in for a real
-  one.
+  arbitrary address, and the channels are only armed while audio is actually
+  playing — which would make any resulting failure intermittent. **This is the
+  one mechanism not yet eliminated**, and it is the reason to prefer a real
+  image over a zero-padded one when testing, even though padding turned out
+  not to change the outcome (see the discriminator below).
 
 ## Measured, 2026-09-24, Pi Zero W (`BOARD_REVISION 009000c1`)
 
@@ -80,7 +87,7 @@ Unmodified master, each run fingerprinted by the serial banner:
 `Reset reason: 000` throughout, and the pre-kernel figure free-ran across each
 handover, so all were warm handovers rather than watchdog fallbacks.
 
-**Failures seen elsewhere, and still unexplained.** The gcc17 timing work on
+**Failures seen elsewhere.** The gcc17 timing work on
 the same board saw 2 failures in 9 pushes, both cold-booting to V1.31, and
 both of the shape *incoming image larger than the running one* — 788 KB onto
 the stock V1.34-16 image, and 751 KB onto a 700 KB image. Every one of their
@@ -93,19 +100,52 @@ into the **running** kernel's live `.noinit` — the DMA control blocks,
 `PageTable`, the stacks. It also fits the two-hop remedy, which raises the
 running size first.
 
-It is **not established**, because one measurement here breaks a pure size
-rule: **900,000 bytes pushed onto a running 567,008-byte kernel chain-booted**,
-with random non-zero padding landing across that kernel's `.noinit` (its
-`pwm_cb`, `hdmi_cb` and `PageTable` all sit below copy offset ~560,000). A
-second run of mine that looked like a counter-example was not one — the
-567,008-byte push went onto a 723,232-byte running image, so it was
-smaller-onto-larger and consistent with their rule.
+It was **not established, and has since been disproved** — see the
+discriminator below. One measurement here already broke a pure size rule:
+**900,000 bytes pushed onto a running 567,008-byte kernel chain-booted**, with
+random non-zero padding landing across that kernel's `.noinit`. (A second run
+of mine that looked like a counter-example was not one: the 567,008-byte push
+went onto a 723,232-byte running image, so it was smaller-onto-larger.)
 
-Treat the two-hop push as a **workaround, not a rule**. The discriminator, if
-someone wants to settle it: from one fixed running kernel, push two images of
-the **same size**, one real and one zero-padded to match. Real fails and
-padded passes => content, not size. Both pass => the variable is the running
-kernel, not the incoming one.
+Treat the two-hop push as a **workaround, not a rule**.
+
+### The discriminator was run, and the failure is non-deterministic
+
+gcc17 ran it on 2026-09-24, fixed running kernel Z-R (699,560 B linked, banner
+`62487a98`), banner confirmed before each arm:
+
+| arm | pushed | result |
+|---|---|---|
+| a | 751,160 B = a 481,904 B kernel + 269,256 appended zeros | **landed** |
+| b | Z-R, 699,560 B real, onto the running 481,904 B-linked kernel from (a) | **cold-booted to V1.31** |
+| c | X-F, 751,160 B real — same size as (a), same baseline | **landed** |
+
+Two conclusions, both solid:
+
+- **Content is not the variable.** Real and zero-padded images of identical
+  size both landed from the same running kernel.
+- **Nothing static is the variable.** The X-F-onto-Z-R pair *failed* at 11:38Z
+  and *landed* at 11:55Z the same day. The same bytes onto the same running
+  kernel gave both outcomes, so no rule in terms of sizes or contents can be
+  right. Across 16 pushes, all 3 failures had non-zero bytes landing past the
+  running kernel's linked end — but so did 4 successes.
+
+A subtlety that invalidates the naive size comparison: **use the running
+kernel's *linked* size, not the size of the file that was pushed.** Appended
+zeros do not move that kernel's `.noinit`; the image in (a) runs as a
+481,904 B kernel, which is why (b) — pushing 699,560 B onto it — reached well
+past its linked end.
+
+**INFERRED, not measured:** something time-varying is involved. The only
+mechanism identified so far that is real in the source, reaches exactly the
+region the copy crosses, and is *intermittently* armed is the audio DMA — the
+`pwm_cb`/`hdmi_cb` chains above only matter while channels 4 and 5 are
+actually running. That would make the failure look exactly this intermittent.
+Untested. The test: repeat one known-failing pair many times with audio
+definitely active and definitely idle, and compare failure rates.
+
+Full 16-push table in the gcc17 harness's `PI-CONTROL.md` under
+"2026-09-24 gcc17 observations"; every push in `pi/logs/push-emu-0924.log`.
 
 ## Mechanisms tested and rejected
 
