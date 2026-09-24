@@ -99,3 +99,34 @@ header — trust the newest status over the body).
 - Do not re-report findings the owner has rejected: HD_status volatile,
   WRITE6 LBA bounds, FatFs FIQ/main concurrency (the Beeb serializes SD
   ops), `_invalidate_cache_area` edge handling.
+
+## Evidence discipline
+
+Every rule here was bought with a wasted session. The failure mode is
+always the same: a mechanism that fits the evidence, then tests that can
+only agree with it.
+
+- **A fix is not proved by the fixed build.** Before claiming one works,
+  run the negative control — unmodified code, same input, same rig,
+  shown failing. No control, no claim. The MMU change of 2026-09-24
+  passed every test it was given and fixed nothing; only the control
+  showed the bug never existed.
+- **Label each claim MEASURED, INFERRED or GUESSED, and keep the label**
+  when repeating it. Nearly all the damage is an inference retold in the
+  voice of a measurement.
+- **A probe proves nothing until it has fired at least once.** Silence
+  from instrumentation never seen to print is not evidence. Check it can
+  run where it sits: interrupts off, an IRQ-drained UART, or an imminent
+  reset each make output impossible. See
+  `docs/dev/chainboot-kernel-now.md`.
+- **Suspect the harness before the firmware.** A host-side tool that
+  silently does nothing looks exactly like a Pi that ignored you.
+- **Repo state: diff content, never ancestry.** Work landed by rebase or
+  cherry-pick leaves its branch looking unmerged, and
+  `git merge-base --is-ancestor` will confirm that and be wrong. Use
+  `git diff master <branch>` and look for same-titled commits before
+  proposing any merge.
+- Report each experiment's raw result as it lands, not the assembled
+  conclusion at the end — the conclusions are where this goes wrong.
+  Expect "what would prove this wrong, and have you run it?" and have an
+  answer before writing code.
