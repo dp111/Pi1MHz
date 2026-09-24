@@ -1,6 +1,7 @@
 # `kernel.now` chain-boot: what the copy actually touches
 
-STATUS (2026-09-24): **no reproducible size limit on the Pi Zero W bench.**
+STATUS (2026-09-24): **no size limit reproducible here, but two failures seen
+elsewhere on the same board are unexplained - see "Failures seen elsewhere".**
 The long-standing belief that large images fail to chain-boot did not survive
 measurement: real-content and non-zero-padded images up to 900,000 bytes hand
 over cleanly on unmodified master. Several mechanisms that *look* like they
@@ -79,12 +80,32 @@ Unmodified master, each run fingerprinted by the serial banner:
 `Reset reason: 000` throughout, and the pre-kernel figure free-ran across each
 handover, so all were warm handovers rather than watchdog fallbacks.
 
-**Not reproduced here, reported elsewhere:** a real 723 KB image failing to
-chain-boot twice off the **V1.31 card kernel** after a cold boot, where a
-zero-padded 789 KB image succeeded. Every success above had a V1.34/V1.35-era
-outgoing kernel already running from RAM. The outgoing kernel is the one that
-runs the copy, so *that*, not image size, is the variable to isolate next:
-push the same image once off V1.31 and once off V1.34+.
+**Failures seen elsewhere, and still unexplained.** The gcc17 timing work on
+the same board saw 2 failures in 9 pushes, both cold-booting to V1.31, and
+both of the shape *incoming image larger than the running one* — 788 KB onto
+the stock V1.34-16 image, and 751 KB onto a 700 KB image. Every one of their
+7 successes had incoming <= running. Hopping up through a larger zero-padded
+image cured both.
+
+That has a plausible mechanism: the copy only stays inside the running
+kernel's own text/rodata/data while `incoming <= running`; past that it writes
+into the **running** kernel's live `.noinit` — the DMA control blocks,
+`PageTable`, the stacks. It also fits the two-hop remedy, which raises the
+running size first.
+
+It is **not established**, because one measurement here breaks a pure size
+rule: **900,000 bytes pushed onto a running 567,008-byte kernel chain-booted**,
+with random non-zero padding landing across that kernel's `.noinit` (its
+`pwm_cb`, `hdmi_cb` and `PageTable` all sit below copy offset ~560,000). A
+second run of mine that looked like a counter-example was not one — the
+567,008-byte push went onto a 723,232-byte running image, so it was
+smaller-onto-larger and consistent with their rule.
+
+Treat the two-hop push as a **workaround, not a rule**. The discriminator, if
+someone wants to settle it: from one fixed running kernel, push two images of
+the **same size**, one real and one zero-padded to match. Real fails and
+padded passes => content, not size. Both pass => the variable is the running
+kernel, not the incoming one.
 
 ## Mechanisms tested and rejected
 
