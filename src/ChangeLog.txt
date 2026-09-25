@@ -256,3 +256,7 @@ tools/testsuite loads the ROM under test into a freed sideways RAM bank, and fin
 SD card explorer (helper 17): a full-screen browser for the SD card, copying files to and from the current filing system.
 It needs no ROM, no sideways RAM and leaves PAGE alone; the FAT service gains readdir-ex and getcwd for it.
 Helper slots 18-30 are left free for future helpers.
+
+v.1.36
+SD card explorer: the first error after quitting it no longer hangs the Beeb when output goes to serial - it kept its state in the RS423 buffers.
+It now uses no Beeb RAM beyond the user zero page: file data and names go through a JIM RAM transfer page (&FC88 = &FE), with no bounce buffer.

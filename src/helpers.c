@@ -21,7 +21,17 @@
    and 31-45 are the pages it chains through while it runs; 18-30 are left
    free for future helpers, and answer with a bare return until one is
    written. */
-#define HELPER_PAGES 46u
+#define HELPER_PAGES 47u
+
+/* &FC88 = HELPER_XFER shows the helper transfer page in the JIM window
+   instead of a helper page.  It is a page of the services buffer, so a
+   helper can hand the filing system a buffer it can see - OSGBPB, OSFIND,
+   OSWORD 0 all take a pointer - without borrowing any Beeb RAM (pages &09
+   and &0A are the RS423/cassette buffers, and serial must keep working).
+   Its offset sits in the program area of the documented buffer layout
+   (docs/advanced.md: 8-14 MB), beside the SD explorer's other buffers. */
+#define HELPER_XFER        0xFEu
+#define HELPER_XFER_OFFSET 0x00D90000u
 // 4-byte aligned: passed to Pi1MHz_MemoryWritePage which copies it with LDM.
 _Alignas(4) NOINIT_SECTION uint8_t helper_ram[HELPER_PAGES * 256u];
 
@@ -110,6 +120,10 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         return (size_t)n;
 }
 
+/* Transfer page state: only ever touched in helpers_bank_select (FIQ). */
+static bool   helper_xfer_active;
+static size_t helper_xfer_saved_page;
+
 static void helpers_bank_select(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
@@ -125,6 +139,29 @@ static void helpers_bank_select(unsigned int gpio)
          if (margin < Pi1MHz_break.margin_min_us)
             Pi1MHz_break.margin_min_us = margin;
       }
+   }
+
+   if (data == HELPER_XFER)
+   {
+      /* A Beeb write into the window lands in JIM_ram[page_ram_addr + offset]
+         (ram_emulator_page_write), so pointing page_ram_addr at the transfer
+         page is what routes a filing system's writes into it.  The user's own
+         JIM RAM page is saved here and put back by the next select of any
+         other kind - every way out of a helper, including its BRK trap, is
+         one. */
+      if (!helper_xfer_active) {
+         helper_xfer_saved_page = Pi1MHz->page_ram_addr;
+         helper_xfer_active = true;
+      }
+      Pi1MHz->page_ram_addr = DISC_RAM_BASE + HELPER_XFER_OFFSET;
+      Pi1MHz_MemoryWrite_FIQ(addr+4, 0x4c);
+      Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
+      return;
+   }
+
+   if (helper_xfer_active) {
+      Pi1MHz->page_ram_addr = helper_xfer_saved_page;
+      helper_xfer_active = false;
    }
 
    if (data == 0xFF)

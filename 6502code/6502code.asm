@@ -15,14 +15,28 @@ OSGBPB = &FFD1
 ; ---------------------------------------------------------------------------
 ; SD card explorer (helper 17) - pages 17 and 31..45
 ;
-; Runs entirely from the paged &FD00 window; state lives in zero page
-; &70-&86 and a little Beeb RAM around &0900 (RS423/cassette buffers).
+; Runs entirely from the paged &FD00 window and uses no Beeb RAM outside
+; the user zero page (&70-&8F), so serial and cassette keep working while
+; it runs - pages &09 and &0A are the RS423/cassette buffers.
 ; Directory entries are fetched with FAT command 17 (readdir-ex), which
 ; fills fixed 128-byte records - attribute, size, a ready-to-print 38-char
 ; display line and the raw name - at &D00000 in the JIM transfer buffer.
-; Transfers stream through a 256-byte chunk at &D80000 and the Beeb
-; bounce buffer at &0A00, using OSFIND/OSGBPB on the current filing
-; system and fread/fwrite (slot &FD) on the SD side.
+;
+; Anything the filing system must be pointed at (a filename for OSFIND, the
+; OSWORD 0 line buffer, OSGBPB's data) lives in the transfer page: a page of
+; the services buffer at &D90000 that &FC88 = &FE shows in the window (the
+; firmware routes the FS's writes into it and restores the user's JIM page
+; on the next select).  The calls are made by small stubs inside that page,
+; so the FS reads and writes the very page it is running from.  The page is
+; installed from the template helper page EXP_XFERT; its setup-only stubs
+; share the data area, so it is reinstalled before each transfer or chdir.
+; File data moves straight between that page and the SD file with fread /
+; fwrite on file &D (command &FD, block &FFFD00) - no bounce buffer.
+;
+; Services buffer use, per the documented layout (docs/advanced.md): the
+; explorer keeps to the program area - records &D00000, path &D80000,
+; transfer page &D90000.  Clear of MMFS/MMFS2 (sector buffer &FFE000,
+; command block &FFF000), the ROM loader (&F00000) and the command blocks.
 ; ---------------------------------------------------------------------------
 
 ; Helper numbers 18-30 are deliberately left free for future helpers, so the
@@ -45,16 +59,27 @@ EXP_PUT2  = 40      ; put: create SD file + copy loop
 EXP_FIN   = 41      ; close files, report, route on
 EXP_ERR   = 42      ; BRK (filing system error) trap
 EXP_EXIT  = 43      ; restore state and return
-EXP_GET4  = 44      ; get: FS write half of the copy loop
+EXP_GET4  = 44      ; get: after the FS write of a chunk
 EXP_PUT3  = 45      ; put: SD write half of the copy loop
+EXP_XFERT = 46      ; transfer page template (installed at &D90000)
 
-; zero page
+; &FC88 value that shows the transfer page instead of a helper page
+XFER_SEL  = &FE
+
+; zero page - the user area &70-&8F, nothing else.  The list-state
+; variables are single bytes, so their odd neighbours are free.
 zp_count  = &70     ; number of entries (0-250)
+old_fx4   = &71     ; *FX4 on entry
 zp_sel    = &72     ; selected entry
+old_fx229 = &73     ; *FX229 on entry
 zp_top    = &74     ; first entry on screen
+old_stack = &75     ; stack level to unwind to after a BRK
 zp_idx    = &76     ; drawrow argument
+old_brkv  = &77     ; BRKV on entry, low
 zp_rows   = &78     ; row loop counter
+old_brkv_hi = &79   ; BRKV on entry, high
 zp_oldsel = &7A     ; previous selection (two-row redraw)
+zp_ret    = &7B     ; transfer page stubs return to this page ...
 zp_fshand = &7C     ; current-FS file handle, 0 = none
 zp_off    = &7D     ; &7D-&7F 24-bit SD file offset
 zp_prptr  = &80     ; &80/&81 inline-print pointer
@@ -62,23 +87,31 @@ zp_len    = &82     ; &82/&83 chunk length
 zp_eof    = &84     ; get: last-chunk flag
 zp_fail   = &85     ; transfer error flag
 zp_reread = &86     ; reread directory after transfer
-
-; Beeb RAM scratch (RS423/cassette buffers - safe while tape/serial idle)
-gbpb_blk  = &0900   ; 13-byte OSGBPB control block
-word_blk  = &0910   ; 5-byte OSWORD 0 block
-old_fx4   = &0916
-old_fx229 = &0917
-brk_stub  = &0918   ; 8-byte BRK redirector, built by init
-old_brkv  = &0920   ; 2 bytes
-old_stack = &0922
-name_buf  = &0940   ; typed / default filename, CR terminated (max 30+CR)
-sdname_buf= &0980   ; raw SD name, NUL terminated (max 63+NUL)
-bounce    = &0A00   ; 256-byte transfer bounce buffer
+brk_stub  = &87     ; &87-&8E 8-byte BRK redirector, built by init
+zp_rent   = &8F     ; ... at this entry offset - 1
 
 ; JIM transfer-buffer addresses (24 bit)
 recs_hi   = &D0     ; records at &D00000, 128 bytes each
-chunk_hi  = &D8     ; chunk / path buffer at &D80000
+chunk_hi  = &D8     ; path buffer at &D80000
+xfer_hi   = &D9     ; transfer page at &D90000
 AM_DIR    = &10
+
+; Transfer page layout, as seen in the window.  Entries 1-16 are the stubs'
+; jump table; the persistent part (gbpb stub, return, OSGBPB block) is what a
+; transfer needs, and DATA..&FDF6 holds either file data or - between
+; transfers - the name buffer and the setup-only stubs.
+XE_INSTALL = 1      ; template only: copy this page to &D90000
+XE_OSWORD  = 4      ; OSWORD 0 into xname;           out: C = Escape, X = length
+XE_OSFIND  = 7      ; X = OSFIND mode, name xname;   out: X = handle
+XE_GBPB    = 10     ; X = OSGBPB fn, count zp_len;   out: C, block updated
+XE_P2PAGE  = 13     ; X = max; port string -> xname; out: X = length
+XE_P2PORT  = 16     ; xname -> port, NUL terminated
+; Every stub returns with GOTOPAGE zp_ret, zp_rent+1 after a PHP: the entry
+; it returns to must PLP first.
+XBLK       = &FD37  ; OSGBPB control block, 13 bytes (persistent)
+XBLK_COUNT = XBLK+5 ; its count field, left holding the bytes NOT moved
+XFER_DATA  = &FD44  ; data area: file data, or the setup stubs + name
+XFER_LEN   = &FDF7 - XFER_DATA   ; bytes of file data per chunk
 
 ; switch to another explorer page: every explorer page carries the common
 ; PAGESWITCH trailer at &FDF7, so this works from any of them.  target
@@ -87,6 +120,25 @@ MACRO GOTOPAGE bank, off
     LDA #bank
     LDY #off-1
     JMP &FDF7
+ENDMACRO
+
+; run a transfer page stub, returning to retpage entry retoff.  X passes
+; straight through the page switch, so it carries the stub's parameter.
+MACRO XCALL entry, retpage, retoff
+    LDA #retpage
+    STA zp_ret
+    LDA #retoff-1
+    STA zp_rent
+    GOTOPAGE XFER_SEL, entry
+ENDMACRO
+
+; (re)install the transfer page from its template, then return as XCALL does
+MACRO XINSTALL retpage, retoff
+    LDA #retpage
+    STA zp_ret
+    LDA #retoff-1
+    STA zp_rent
+    GOTOPAGE EXP_XFERT, XE_INSTALL
 ENDMACRO
 
 ; dispatch the command block for a slot and wait for completion.
@@ -572,7 +624,7 @@ ORG &FD00
     LDA &0202
     STA old_brkv
     LDA &0203
-    STA old_brkv+1
+    STA old_brkv_hi
     LDA #brk_stub AND &FF
     STA &0202
     LDA #brk_stub DIV 256
@@ -999,30 +1051,25 @@ ORG &FD00
     NOP
     JMP cdsel               ; &FD01
     JMP cdup                ; &FD04
+    JMP installed           ; &FD07 : transfer page ready
+    JMP gotname             ; &FD0A : raw name now in the transfer page
+    JMP named               ; &FD0D : ... and in the command block
 .cdsel
-    LDA zp_sel              ; copy raw name out of the record
+    XINSTALL EXP_CD, 7
+.installed
+    PLP
+    LDA zp_sel              ; raw name out of the record
     SETRECPTR 48
-    LDY #0
-.cp1
-    LDA discaccess+3
-    STA sdname_buf,Y
-    BEQ named
-    INY
-    CPY #63
-    BNE cp1
-    LDA #0
-    STA sdname_buf+63
-.named
+    LDX #63
+    XCALL XE_P2PAGE, EXP_CD, 10
+.gotname
+    PLP
     SETCMDPTR &FC
     LDA #11                 ; fchdir
     STA discaccess+3
-    LDY #0
-.cp2
-    LDA sdname_buf,Y
-    STA discaccess+3
-    BEQ dispatch
-    INY
-    BNE cp2
+    XCALL XE_P2PORT, EXP_CD, 13
+.named
+    PLP
 .dispatch
     DOCMD &FC
     GOTOPAGE EXP_DIR, 1     ; reread (on error the cwd is unchanged)
@@ -1047,42 +1094,32 @@ ORG &FD00
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
-    NOP                     ; &FD01
+    NOP
+    JMP start               ; &FD01
+    JMP installed           ; &FD04
+    JMP typed               ; &FD07
+    JMP defaulted           ; &FD0A
+.start
     LDA #0
     STA zp_fail
     STA zp_reread
+    XINSTALL EXP_GET1, 4
+.installed
+    PLP
     JSR print
     EQUB 31,0,23,135 : EQUS "Copy as: " : EQUB &FF
-    LDA #name_buf AND &FF   ; OSWORD 0: read line into name_buf
-    STA word_blk
-    LDA #name_buf DIV 256
-    STA word_blk+1
-    LDA #30
-    STA word_blk+2
-    LDA #32
-    STA word_blk+3
-    LDA #126
-    STA word_blk+4
-    LDA #0
-    LDX #word_blk AND &FF
-    LDY #word_blk DIV 256
-    JSR OSWORD
+    XCALL XE_OSWORD, EXP_GET1, 7
+.typed
+    PLP
     BCS cancel
-    CPY #0
+    TXA                     ; typed length
     BNE gotname
     LDA zp_sel              ; empty input: default to the SD name
     SETRECPTR 48
-    LDY #0
-.defloop
-    LDA discaccess+3
-    BEQ defdone
-    STA name_buf,Y
-    INY
-    CPY #30
-    BNE defloop
-.defdone
-    LDA #13
-    STA name_buf,Y
+    LDX #30
+    XCALL XE_P2PAGE, EXP_GET1, 10
+.defaulted
+    PLP
 .gotname
     GOTOPAGE EXP_GET2, 1
 .cancel
@@ -1101,31 +1138,29 @@ ORG &FD00
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
-    NOP                     ; &FD01
-    LDA #&80                ; OPENOUT name_buf on the current FS
-    LDX #name_buf AND &FF
-    LDY #name_buf DIV 256
-    JSR OSFIND
-    STA zp_fshand
-    TAX                     ; set Z from the handle: 0 = open failed
-    BNE opened
-    LDA #1                  ; handle 0 and no BRK: report failure
+    NOP
+    JMP start               ; &FD01
+    JMP opened              ; &FD04 : OSFIND returned, X = handle
+    JMP gotname             ; &FD07 : raw SD name now in the transfer page
+    JMP named               ; &FD0A : ... and in the command block
+.start
+    LDX #&80                ; OPENOUT the typed name on the current FS
+    XCALL XE_OSFIND, EXP_GET2, 4
+.opened
+    PLP
+    STX zp_fshand
+    TXA                     ; handle 0 and no BRK: report failure
+    BNE openfs
+    LDA #1
     STA zp_fail
     GOTOPAGE EXP_FIN, 1
-.opened
-    LDA zp_sel              ; raw SD name -> sdname_buf
+.openfs
+    LDA zp_sel              ; raw SD name out of the record
     SETRECPTR 48
-    LDY #0
-.cp1
-    LDA discaccess+3
-    STA sdname_buf,Y
-    BEQ named
-    INY
-    CPY #63
-    BNE cp1
-    LDA #0
-    STA sdname_buf+63
-.named
+    LDX #63
+    XCALL XE_P2PAGE, EXP_GET2, 7
+.gotname
+    PLP
     SETCMDPTR &FD
     LDA #2                  ; fopen
     STA discaccess+3
@@ -1133,14 +1168,9 @@ ORG &FD00
     STA discaccess+3
     LDA #1                  ; FA_READ
     STA discaccess+3
-    LDY #0
-.cp2
-    LDA sdname_buf,Y
-    STA discaccess+3
-    BEQ dof
-    INY
-    BNE cp2
-.dof
+    XCALL XE_P2PORT, EXP_GET2, 10
+.named
+    PLP
     DOCMD &FD
     BEQ openok
     LDA #1
@@ -1159,8 +1189,8 @@ ORG &FD00
 }
 
 ; ---------------------------------------------------------------------------
-; Page 38 : get, part 3 - fread a chunk and stage it in the bounce buffer;
-;           page EXP_GET4 writes it to the FS and loops back to &FD04
+; Page 38 : get, part 3 - fread a chunk straight into the transfer page and
+;           have its stub OSGBPB it to the FS; EXP_GET4 loops back to &FD04
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
@@ -1174,15 +1204,16 @@ ORG &FD00
     SETCMDPTR &FD
     LDA #4                  ; fread
     STA discaccess+3
-    LDA #0
-    STA discaccess+3        ; length 256
-    LDA #1
-    STA discaccess+3
+    LDA #XFER_LEN
+    STA discaccess+3        ; length XFER_LEN
     LDA #0
     STA discaccess+3
-    STA discaccess+3        ; dest = &D80000
     STA discaccess+3
-    LDA #chunk_hi
+    LDA #XFER_DATA AND &FF  ; dest = the transfer page's data area
+    STA discaccess+3
+    LDA #0
+    STA discaccess+3
+    LDA #xfer_hi
     STA discaccess+3
     LDA #0
     STA discaccess+3
@@ -1202,11 +1233,11 @@ ORG &FD00
     STA zp_fail
     GOTOPAGE EXP_FIN, 1
 .full
-    LDA #0
+    LDA #XFER_LEN
     STA zp_len
-    LDA #1
+    LDA #0
     STA zp_len+1
-    BNE copy
+    BEQ write               ; always
 .short1
     LDA #1
     STA zp_eof
@@ -1217,30 +1248,9 @@ ORG &FD00
     STA zp_len+1
     ORA zp_len
     BEQ closeup
-.copy
-    LDA #0                  ; stream chunk into the bounce buffer
-    STA discaccess
-    STA discaccess+1
-    LDA #chunk_hi
-    STA discaccess+2
-    LDY #0
-    LDX zp_len+1
-    BNE full256
-    LDX zp_len
-.partloop
-    LDA discaccess+3
-    STA bounce,Y
-    INY
-    DEX
-    BNE partloop
-    BEQ write
-.full256
-    LDA discaccess+3
-    STA bounce,Y
-    INY
-    BNE full256
 .write
-    GOTOPAGE EXP_GET4, 1
+    LDX #2                  ; OSGBPB 2: write the chunk to the FS file
+    XCALL XE_GBPB, EXP_GET4, 1
 .closeup
     GOTOPAGE EXP_FIN, 1
 
@@ -1254,35 +1264,32 @@ ORG &FD00
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
-    NOP                     ; &FD01
+    NOP
+    JMP start               ; &FD01
+    JMP installed           ; &FD04
+    JMP typed               ; &FD07
+    JMP opened              ; &FD0A : OSFIND returned, X = handle
+.start
     LDA #0
     STA zp_fail
     LDA #1
     STA zp_reread           ; a new SD file appears: reread after
+    XINSTALL EXP_PUT1, 4
+.installed
+    PLP
     JSR print
     EQUB 31,0,23,135 : EQUS "Put file: " : EQUB &FF
-    LDA #name_buf AND &FF
-    STA word_blk
-    LDA #name_buf DIV 256
-    STA word_blk+1
-    LDA #30
-    STA word_blk+2
-    LDA #32
-    STA word_blk+3
-    LDA #126
-    STA word_blk+4
-    LDA #0
-    LDX #word_blk AND &FF
-    LDY #word_blk DIV 256
-    JSR OSWORD
+    XCALL XE_OSWORD, EXP_PUT1, 7
+.typed
+    PLP
     BCS cancel
-    CPY #0
+    TXA                     ; typed length
     BEQ cancel
-    LDA #&40                ; OPENIN
-    LDX #name_buf AND &FF
-    LDY #name_buf DIV 256
-    JSR OSFIND
-    TAX                     ; set Z from the handle: 0 = not found
+    LDX #&40                ; OPENIN the typed name on the current FS
+    XCALL XE_OSFIND, EXP_PUT1, 10
+.opened
+    PLP
+    TXA                     ; set Z from the handle: 0 = not found
     BNE gotfile
     JSR print
     EQUB 31,0,23,129 : EQUS "Not found         " : EQUB &FF
@@ -1301,14 +1308,17 @@ ORG &FD00
 }
 
 ; ---------------------------------------------------------------------------
-; Page 40 : put, part 2 - create the SD file, read FS chunks into the
-;           bounce buffer; page EXP_PUT3 does the SD write, looping to &FD04
+; Page 40 : put, part 2 - create the SD file, have the transfer page's stub
+;           OSGBPB FS chunks into its data area; page EXP_PUT3 does the SD
+;           write, looping to &FD04
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
     NOP
     JMP create              ; &FD01
     JMP chunk               ; &FD04 : loop re-entry from EXP_PUT3
+    JMP named               ; &FD07 : name now in the fopen block
+    JMP gotchunk            ; &FD0A : OSGBPB 4 returned
 .create
     SETCMDPTR &FD
     LDA #2                  ; fopen
@@ -1317,18 +1327,9 @@ ORG &FD00
     STA discaccess+3
     LDA #&0A                ; FA_CREATE_ALWAYS | FA_WRITE
     STA discaccess+3
-    LDY #0
-.namecopy
-    LDA name_buf,Y          ; typed name, CR -> NUL
-    CMP #13
-    BEQ nameend
-    STA discaccess+3
-    INY
-    CPY #30
-    BNE namecopy
-.nameend
-    LDA #0
-    STA discaccess+3
+    XCALL XE_P2PORT, EXP_PUT2, 7    ; the typed name is still in xname
+.named
+    PLP
     DOCMD &FD
     BEQ createok
     LDA #1
@@ -1340,59 +1341,30 @@ ORG &FD00
     STA zp_off+1
     STA zp_off+2
 .chunk
-    LDA zp_fshand           ; OSGBPB 4: read, sequential
-    STA gbpb_blk
-    LDA #0
-    STA gbpb_blk+1
-    LDA #bounce DIV 256
-    STA gbpb_blk+2
-    LDA #&FF
-    STA gbpb_blk+3
-    STA gbpb_blk+4
-    LDA #0
-    STA gbpb_blk+5
-    LDA #1
-    STA gbpb_blk+6
-    LDA #0
-    STA gbpb_blk+7
-    STA gbpb_blk+8
-    LDA #4
-    LDX #gbpb_blk AND &FF
-    LDY #gbpb_blk DIV 256
-    JSR OSGBPB
-    PHP                     ; C set = EOF reached
-    SEC                     ; transferred = 256 - remaining
-    LDA #0
-    SBC gbpb_blk+5
+    LDA #XFER_LEN
     STA zp_len
-    LDA #1
-    SBC gbpb_blk+6
+    LDA #0
     STA zp_len+1
-    LDA zp_len
-    ORA zp_len+1
-    BEQ lastnone
-    LDA #0                  ; bounce -> &D80000
+    LDX #4                  ; OSGBPB 4: read a chunk from the FS file
+    XCALL XE_GBPB, EXP_PUT2, 10
+.gotchunk
+    PLP                     ; C set = EOF reached ...
+    PHP                     ; ... kept for EXP_PUT3
+    LDA #XBLK_COUNT AND &FF ; remaining count, updated in place by OSGBPB
     STA discaccess
+    LDA #0
     STA discaccess+1
-    LDA #chunk_hi
+    LDA #xfer_hi
     STA discaccess+2
-    LDY #0
-    LDX zp_len+1
-    BNE full256
-    LDX zp_len
-.partloop
-    LDA bounce,Y
-    STA discaccess+3
-    INY
-    DEX
-    BNE partloop
-    BEQ dowrite
-.full256
-    LDA bounce,Y
-    STA discaccess+3
-    INY
-    BNE full256
-.dowrite
+    SEC                     ; transferred = XFER_LEN - remaining
+    LDA #XFER_LEN
+    SBC discaccess+3
+    STA zp_len
+    LDA #0
+    SBC discaccess+3
+    STA zp_len+1
+    ORA zp_len
+    BEQ lastnone
     GOTOPAGE EXP_PUT3, 1
 .lastnone
     PLP
@@ -1491,7 +1463,7 @@ ORG &FD00
     NOP                     ; &FD01
     LDA old_brkv
     STA &0202
-    LDA old_brkv+1
+    LDA old_brkv_hi
     STA &0203
     LDA #4
     LDX old_fx4
@@ -1521,31 +1493,13 @@ ORG &FD00
 }
 
 ; ---------------------------------------------------------------------------
-; Page 44 : get, part 4 - write the staged chunk to the FS, loop or finish
+; Page 44 : get, part 4 - the chunk is on the FS (the transfer page's stub
+;           did the OSGBPB): advance, loop or finish
 ; ---------------------------------------------------------------------------
 {
 ORG &FD00
     NOP                     ; &FD01
-    LDA zp_fshand           ; OSGBPB 2: write, sequential
-    STA gbpb_blk
-    LDA #0
-    STA gbpb_blk+1
-    LDA #bounce DIV 256
-    STA gbpb_blk+2
-    LDA #&FF
-    STA gbpb_blk+3
-    STA gbpb_blk+4
-    LDA zp_len
-    STA gbpb_blk+5
-    LDA zp_len+1
-    STA gbpb_blk+6
-    LDA #0
-    STA gbpb_blk+7
-    STA gbpb_blk+8
-    LDA #2
-    LDX #gbpb_blk AND &FF
-    LDY #gbpb_blk DIV 256
-    JSR OSGBPB
+    PLP                     ; the stub's saved status
     CLC
     LDA zp_off
     ADC zp_len
@@ -1583,9 +1537,11 @@ ORG &FD00
     STA discaccess+3
     LDA #0
     STA discaccess+3
-    STA discaccess+3        ; source = &D80000
+    LDA #XFER_DATA AND &FF  ; source = the transfer page's data area
     STA discaccess+3
-    LDA #chunk_hi
+    LDA #0
+    STA discaccess+3
+    LDA #xfer_hi
     STA discaccess+3
     LDA #0
     STA discaccess+3
@@ -1625,6 +1581,118 @@ ORG &FD00
     ENDBLOCK &2D00
 }
 
+; ---------------------------------------------------------------------------
+; Page 46 : transfer page template, installed at &D90000 (see the notes at
+;           the top of the SD explorer).  Only entry 1 runs in this page; the
+;           other entries run in the installed copy, shown by &FC88 = XFER_SEL.
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    NOP
+    JMP selfcopy            ; &FD01 XE_INSTALL - template only
+    JMP osword              ; &FD04 XE_OSWORD
+    JMP osfind              ; &FD07 XE_OSFIND
+    JMP gbpb                ; &FD0A XE_GBPB
+    JMP port2page           ; &FD0D XE_P2PAGE
+    JMP page2port           ; &FD10 XE_P2PORT
+
+; ---- persistent: survives the file data a transfer puts in XFER_DATA ----
+.gbpb                       ; X = function, zp_fshand = handle, zp_len = count
+    LDA zp_fshand
+    STA XBLK
+    LDA #XFER_DATA AND &FF  ; OSGBPB advances the address: reset it each call
+    STA XBLK+1
+    LDA zp_len              ; ... and counts the count down: reset that too
+    STA XBLK+5
+    LDA zp_len+1
+    STA XBLK+6
+    TXA
+    LDX #XBLK AND &FF
+    LDY #XBLK DIV 256
+    JSR OSGBPB
+.ret                        ; every stub leaves through here
+    PHP
+    LDA zp_ret
+    LDY zp_rent
+    JMP &FDF7
+
+    ASSERT P% = XBLK
+    EQUB 0                  ; +0 handle
+    EQUB XFER_DATA AND &FF, XFER_DATA DIV 256, &FF, &FF   ; +1 address, I/O
+    EQUD 0                  ; +5 count
+    EQUD 0                  ; +9 pointer (unused: sequential calls)
+
+; ---- XFER_DATA: file data during a transfer, these setup stubs before one ----
+    ASSERT P% = XFER_DATA
+.xname                      ; name buffer, CR terminated (63 + CR)
+FOR n, 1, 64
+    EQUB 0
+NEXT
+.xword                      ; OSWORD 0 block: into xname, max 30, chars 32-126
+    EQUB xname AND &FF, xname DIV 256, 30, 32, 126
+.osword
+    LDA #0
+    LDX #xword AND &FF
+    LDY #xword DIV 256
+    JSR OSWORD
+    TYA                     ; length in X: Y does not survive the switch
+    TAX
+    JMP ret
+.osfind                     ; X = mode
+    TXA
+    LDX #xname AND &FF
+    LDY #xname DIV 256
+    JSR OSFIND
+    TAX                     ; handle in X
+    JMP ret
+.port2page                  ; X = max length; NUL-terminated at the port
+    LDY #0
+.p2loop
+    LDA discaccess+3
+    BEQ p2end
+    STA xname,Y
+    INY
+    DEX
+    BNE p2loop
+.p2end
+    LDA #13
+    STA xname,Y
+    TYA                     ; length in X
+    TAX
+    JMP ret
+.page2port                  ; xname -> port, NUL terminated
+    LDY #0
+.ploop
+    LDA xname,Y
+    CMP #13
+    BEQ pend
+    STA discaccess+3
+    INY
+    CPY #63
+    BNE ploop
+.pend
+    LDA #0
+    STA discaccess+3
+    JMP ret
+.selfcopy                   ; template only: copy this whole page to &D90000
+    LDA #0
+    STA discaccess
+    STA discaccess+1
+    LDA #xfer_hi
+    STA discaccess+2
+    LDY #0
+.scloop
+    LDA &FD00,Y
+    STA discaccess+3
+    INY
+    BNE scloop
+    JMP ret
+
+    ASSERT P% <= &FE00-9
+    PAGESWITCH
+    ENDBLOCK &2E00
+}
+
 .end
 
-SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &2E00
+SAVE "../firmware/Pi1MHz/6502code.bin" , 0, &2F00
