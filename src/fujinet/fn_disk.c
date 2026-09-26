@@ -96,6 +96,40 @@ void fn_disk_reset(void)
    }
 }
 
+/* Does a mounted or pending image live at host_path (root-relative, on the
+   SD card), or inside host_path when it is a directory?  The same shape as
+   fat_service_file_in_use(), for beeb_path_busy(). */
+bool fn_disk_uses_path(const char *host_path)
+{
+   if (!host_path)
+      return false;
+   const char *q = host_path;
+   while (*q == '/') q++;
+   size_t qlen = strlen(q);
+   while (qlen && q[qlen - 1] == '/') qlen--;
+   for (unsigned int i = 0; i < SLOTS; i++) {
+      char fs[16], path[URI_MAX];
+      if (!s_slot[i].used || !fn_uri_split(s_slot[i].uri, fs, sizeof fs, path, sizeof path) ||
+          strcmp(fs, "sd0") != 0)
+         continue;
+      const char *p = path;
+      while (*p == '/') p++;
+      if (qlen == 0)
+         return true;                     /* the root holds everything */
+      size_t j = 0;
+      while (j < qlen && p[j]) {
+         char a = p[j], b = q[j];
+         if (a >= 'a' && a <= 'z') a = (char)(a - 32);
+         if (b >= 'a' && b <= 'z') b = (char)(b - 32);
+         if (a != b) break;
+         j++;
+      }
+      if (j == qlen && (p[j] == '\0' || p[j] == '/'))
+         return true;
+   }
+   return false;
+}
+
 static bool ends_with_ci(const char *s, const char *ext)
 {
    size_t n = strlen(s), e = strlen(ext);

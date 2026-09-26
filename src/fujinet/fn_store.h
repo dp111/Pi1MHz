@@ -32,6 +32,8 @@ bool fn_store_known_fs(const char *fs, const char **canon);
 
 fn_handle fn_store_open(const char *fs, const char *path, fn_open_mode mode);
 bool fn_store_read (fn_handle h, uint32_t offset, void *buf, uint32_t len);
+/* A write past the end leaves the gap reading as zeros, as a POSIX sparse
+   file does - the disk device relies on it for short SSD images. */
 bool fn_store_write(fn_handle h, uint32_t offset, const void *buf, uint32_t len);
 bool fn_store_size (fn_handle h, uint32_t *size);
 bool fn_store_sync (fn_handle h);

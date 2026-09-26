@@ -314,6 +314,14 @@ set(services_emulator_files
    net_service.c
    net_service.h
    net_tnfs.c
+   fujibus_service.c
+   fujinet/fujibus.c
+   fujinet/fn_appstore.c
+   fujinet/fn_disk.c
+   fujinet/fn_file.c
+   fujinet/fn_host.c
+   fujinet/fn_slotcat.c
+   fujinet/fn_store_fatfs.c
    net_tnfs.h
    net_telnet.c
    net_telnet.h

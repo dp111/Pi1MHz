@@ -30,7 +30,9 @@
 #define SERVICE_CMD_WIFI_LAST  93u
 #define SERVICE_CMD_SECURE_FIRST  94u /* RNG and managed SSH - secure_service.c */
 #define SERVICE_CMD_SECURE_LAST  113u
-/* 114..255 unallocated */
+#define SERVICE_CMD_FUJI_FIRST  114u  /* FujiNet device for fn-rom - fujibus_service.c */
+#define SERVICE_CMD_FUJI_LAST   119u  /* 114 = FujiBus exchange; the rest reserved */
+/* 120..255 unallocated */
 
 /* ---- untrusted-input bounds checks -------------------------------------
    Every service takes an offset and a length from the Beeb, so this is one
@@ -81,6 +83,8 @@ _Static_assert(SERVICE_CMD_FAT_LAST     < SERVICE_CMD_AUN_FIRST,     "FAT overla
 _Static_assert(SERVICE_CMD_AUN_LAST     < SERVICE_CMD_NET_FIRST,     "AUN overlaps net");
 _Static_assert(SERVICE_CMD_NET_LAST     < SERVICE_CMD_WIFI_FIRST, "net overlaps ElkWiFi");
 _Static_assert(SERVICE_CMD_WIFI_LAST < SERVICE_CMD_SECURE_FIRST,  "ElkWiFi overlaps secure");
+_Static_assert(SERVICE_CMD_FUJI_FIRST   <= SERVICE_CMD_FUJI_LAST,    "FujiNet range inverted");
+_Static_assert(SERVICE_CMD_SECURE_LAST  < SERVICE_CMD_FUJI_FIRST,    "secure overlaps FujiNet");
 
 /* What a Beeb sees when a service is not there.  Three states, deliberately
    distinguishable, because a ROM has to tell them apart:

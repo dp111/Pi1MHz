@@ -237,7 +237,9 @@ static void build_display(const target_t *t, char *out, size_t cap)
       if (colon) p = colon + 1;
    }
    if (!*p) p = "/";
-   snprintf(out, cap, "%s%s", p[0] == '/' ? "" : "/", p);
+   /* Display only: a path too long for the buffer is shown cut short. */
+   if (snprintf(out, cap, "%s%s", p[0] == '/' ? "" : "/", p) >= (int)cap)
+      out[cap - 1] = '\0';
 }
 
 /* ---- state ---------------------------------------------------------------- */
