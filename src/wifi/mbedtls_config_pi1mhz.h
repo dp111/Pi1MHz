@@ -22,7 +22,9 @@
 
 /* hashes */
 #define MBEDTLS_MD_C
-#define MBEDTLS_SHA1_C                /* older intermediates are still SHA-1 signed */
+#define MBEDTLS_SHA1_C     /* to PARSE the bundle's SHA-1 self-signed roots (3 of 121
+                              fail without it, MEASURED); SHA-1 signatures in a chain
+                              are still refused by the default X.509 profile */
 #define MBEDTLS_SHA224_C
 #define MBEDTLS_SHA256_C
 #define MBEDTLS_SHA384_C

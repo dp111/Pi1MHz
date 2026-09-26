@@ -29,7 +29,26 @@
  
  #include <string.h>
  
-@@ -533,7 +537,7 @@
+@@ -388,6 +392,18 @@
+     /* handshake not done yet */
+     return ERR_VAL;
+   }
++  /* Pi1MHz: offer what is already decrypted before decrypting more.  While
++     the application refuses it, leave the rest encrypted, as TCP holds one
++     refused chain rather than growing it on every retry. */
++  if (state->rx_app != NULL) {
++    err_t err = altcp_mbedtls_pass_rx_data(conn, state);
++    if (err == ERR_ABRT) {
++      return ERR_ABRT;
++    }
++    if (state->rx_app != NULL) {
++      return ERR_OK;
++    }
++  }
+   do {
+     /* allocate a full-sized unchained PBUF_POOL: this is for RX! */
+     struct pbuf *buf = pbuf_alloc(PBUF_RAW, PBUF_POOL_BUFSIZE, PBUF_POOL);
+@@ -533,7 +549,7 @@
      LWIP_ASSERT("state", state != NULL);
      LWIP_ASSERT("pcb mismatch", conn->inner_conn == inner_conn);
      /* calculate TLS overhead part to not send it to application */
@@ -38,7 +57,7 @@
      if ((unsigned)overhead > len) {
        overhead = len;
      }
-@@ -692,7 +696,9 @@
+@@ -692,7 +708,9 @@
    if (session && conn && conn->state) {
      altcp_mbedtls_state_t *state = (altcp_mbedtls_state_t *)conn->state;
      int ret = -1;
@@ -49,7 +68,7 @@
        ret = mbedtls_ssl_set_session(&state->ssl_context, &session->data);
      return ret < 0 ? ERR_VAL : ERR_OK;
    }
-@@ -785,7 +791,7 @@
+@@ -785,7 +803,7 @@
    struct altcp_tls_config *conf;
    mbedtls_x509_crt *mem;
  
@@ -58,7 +77,7 @@
      LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG|LWIP_DBG_LEVEL_SERIOUS,
        ("altcp_tls: TCP_WND is smaller than the RX decrypion buffer, connection RX might stall!\n"));
    }
-@@ -909,7 +915,8 @@
+@@ -909,7 +927,8 @@
      return ERR_VAL;
    }
  
@@ -68,7 +87,7 @@
    if (ret != 0) {
      LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_pk_parse_public_key failed: %d\n", ret));
      mbedtls_x509_crt_free(srvcert);
-@@ -967,7 +974,10 @@
+@@ -967,7 +986,10 @@
    if (ca) {
      mbedtls_x509_crt_init(conf->ca);
      ret = mbedtls_x509_crt_parse(conf->ca, ca, ca_len);
@@ -80,7 +99,7 @@
        LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_x509_crt_parse ca failed: %d 0x%x\n", ret, -1*ret));
        altcp_tls_free_config(conf);
        return NULL;
-@@ -1012,7 +1022,8 @@
+@@ -1012,7 +1034,8 @@
    }
  
    mbedtls_pk_init(conf->pkey);
@@ -90,7 +109,7 @@
    if (ret != 0) {
      LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_pk_parse_key failed: %d 0x%x\n", ret, -1*ret));
      altcp_tls_free_config(conf);
-@@ -1241,9 +1252,9 @@
+@@ -1241,9 +1264,9 @@
    /* HACK: if there is something left to send, try to flush it and only
       allow sending more if this succeeded (this is a hack because neither
       returning 0 nor MBEDTLS_ERR_SSL_WANT_WRITE worked for me) */
@@ -102,3 +121,16 @@
        return ERR_MEM;
      }
    }
+@@ -1335,6 +1358,12 @@
+         pbuf_free(state->rx);
+         state->rx = NULL;
+       }
++      /* Pi1MHz: and decrypted data the application refused (ERR_MEM) and
++         never took - upstream leaks these pool pbufs on every such close. */
++      if (state->rx_app) {
++        pbuf_free(state->rx_app);
++        state->rx_app = NULL;
++      }
+       altcp_mbedtls_free(state->conf, state);
+       conn->state = NULL;
+     }

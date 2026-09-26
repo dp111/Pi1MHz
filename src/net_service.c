@@ -479,10 +479,11 @@ static void net_tcp_err(void *arg, err_t err)
    h->tpcb = NULL;
    h->last_err = net_tcp_result(err);
    /* A TLS connection reports "connected" only once the handshake is done,
-      so failing while still connecting is the handshake failing: most
-      often a certificate that does not verify. */
-   if (h->tls && h->state == NET_ST_CONNECTING)
-      h->last_err = NET_ERR_TLS;
+      and the adapter fails a handshake with ERR_CLSD (or ERR_ABRT when the
+      peer closes mid-handshake): most often a certificate that does not
+      verify.  A reset or timeout before that is still a TCP failure. */
+   if (h->tls && h->state == NET_ST_CONNECTING && (err == ERR_CLSD || err == ERR_ABRT))
+      h->last_err = NET_ERR_TLS;           /* others (RST, timeout) keep their own code */
    h->state = NET_ST_ERROR;
 }
 
@@ -501,7 +502,10 @@ static void net_tcp_bind_callbacks(net_handle_t *h, struct altcp_pcb *pcb)
    altcp_arg (pcb, h);
    altcp_recv(pcb, net_tcp_recv);
    altcp_sent(pcb, net_tcp_sent);
-   altcp_poll(pcb, net_tcp_poll, 4u);
+   /* TLS: the adapter retries decrypted data this service refused (ERR_MEM)
+      only on new input or on this poll, so poll it every slow tick (500 ms);
+      plain TCP's refused data is retried by lwIP's fast timer instead. */
+   altcp_poll(pcb, net_tcp_poll, h->tls ? 1u : 4u);
    altcp_err (pcb, net_tcp_err);
 }
 
@@ -1448,6 +1452,8 @@ static uint8_t url_open_core(net_handle_t *h, const char *url, uint8_t mode,
    switch (h->url_phase) {
       case URL_START:
          if (h->state != NET_ST_FREE)  return NET_ERR_INUSE;
+         if (opts && opts->content_type && strpbrk(opts->content_type, "\r\n"))
+            return NET_ERR_PARAM;                 /* would inject request headers */
          if (!wifi_lwip_get_context()->address_ready)
             return NET_PENDING;                   /* no IP yet - keep polling */
          net_handle_reset(h);
@@ -1907,8 +1913,9 @@ static uint8_t net_irq_state;
 static void net_update_irq(void)
 {
    uint8_t any = 0u;
-   if (net_irq_armed)
-      for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
+   if (net_irq_armed)                   /* the Beeb's handles only: it cannot
+                                           read (so cannot clear) the rest */
+      for (unsigned int i = 0; i < NET_BEEB_HANDLES; i++)
          if (net_h[i].rx_count != 0u) { any = 1u; break; }
    if (any != net_irq_state) {
       services_irq_set(net_source, any != 0u);

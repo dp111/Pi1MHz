@@ -178,7 +178,7 @@ set(ALTCP_TLS_PATCHED  ${CMAKE_CURRENT_BINARY_DIR}/lwip-patched/altcp_tls_mbedtl
 add_custom_command(
    OUTPUT  ${ALTCP_TLS_PATCHED}
    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/lwip-patched
-   COMMAND patch --forward --silent -o ${ALTCP_TLS_PATCHED} ${ALTCP_TLS_UPSTREAM} ${ALTCP_TLS_PATCH}
+   COMMAND patch --forward --fuzz=0 -o ${ALTCP_TLS_PATCHED} ${ALTCP_TLS_UPSTREAM} ${ALTCP_TLS_PATCH}
    DEPENDS ${ALTCP_TLS_UPSTREAM} ${ALTCP_TLS_PATCH}
    COMMENT "Applying the Pi1MHz mbedTLS 3 patch to lwIP altcp_tls_mbedtls.c"
    VERBATIM
