@@ -11,9 +11,18 @@ MEASURED on hardware, fn-rom 0.02 Master build in sideways RAM:
 *FMOUNT, *FDRIVE, *CAT, *TYPE, *LOAD, *SAVE (new file allocated after the
 last, byte-exact on the card, other files intact); WebDAV PUT/DELETE of a
 mounted image refused 423; plain BREAK keeps mounts, CTRL-BREAK starts a
-new host session (unmounts) as fujinet-nio specifies. NOT hardware-tested:
-*FLS (a utilities-disc command, not in the ROM), TNFS images (not built:
-needs a non-blocking TNFS session), phase 2 (network). The exchange ABI
+new host session (unmounts) as fujinet-nio specifies. TNFS images (2b05832,
+on the shared net_tnfs.c engine from 1f6ec9d) also MEASURED on the Master
+against FujiNet's own tnfsd: *FHOST tnfs://host/dir, *FIN, *FMOUNT,
+*CAT, *TYPE, *LOAD, *SAVE (byte-exact on the server), BREAK keeps the
+mount. A request waiting on the server holds the Beeb's busy bit and is
+re-run each main-loop pass (see fujinet/fn_store.h). NOT hardware-tested:
+*FLS (a utilities-disc command, not in the ROM), phase 2 (network).
+
+Bench trap: a TNFS server with two interfaces on one subnet answers from
+its primary address; address it by that one, or every client here (the N:
+device too) rejects the replies and the server logs a new session per
+resend. The exchange ABI
 below is as built; fn-rom's author has not reviewed it yet.
 
 ## What this is
