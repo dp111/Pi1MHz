@@ -13,7 +13,8 @@
    serial link never needed, since the ESP buffers the whole chunk.  A Write
    is safe to run again because offsets are sequential: the session's
    cursor says how much of the chunk already went, and only the rest is
-   sent.  Thirty seconds without progress answers Timeout.
+   sent.  Three seconds without progress answers Timeout - inside fn-rom's
+   own ~4 s wait for a reply, so the Beeb hears it.
 
    JSON translation (TranslateConfigure, or the Open extension) buffers the
    whole response body, as nio does, and then serves the flattened result
@@ -64,7 +65,9 @@
 #define SESSIONS      NET_CAPI_HANDLES
 #define URL_MAX       256u
 #define CTYPE_MAX     48u
-#define WRITE_STALL_MS 30000u
+/* Under fn-rom's own reply wait (~4 s, fuji_link_pi1mhz.s PI_WAIT_OUTER), so
+   the Timeout answer reaches the Beeb instead of arriving after it gave up. */
+#define WRITE_STALL_MS 3000u
 #define BODY_MAX      (1024u * 1024u)   /* the most of a response we buffer */
 #define BODY_STEP     4096u
 
@@ -102,6 +105,7 @@ static bool      s_waiting;
 static volatile bool s_reset;
 
 bool fn_network_waiting(void) { return s_waiting; }
+void fn_network_clear_waiting(void) { s_waiting = false; }
 void fn_network_reset(void)   { s_reset = true; }
 
 static uint16_t handle_of(const session_t *s)
@@ -562,7 +566,6 @@ static uint8_t do_close(fb_in *in, fb_out *out)
 
 uint8_t fn_network_command(uint8_t command, fb_in *in, fb_out *out)
 {
-   s_waiting = false;
    if ((command < NET_OPEN || command > NET_CLOSE) && command != NET_TRANSLATE)
       return FB_UNSUPPORTED;            /* Info, InfoRead */
    if (fb_get_u8(in) != FB_VERSION)

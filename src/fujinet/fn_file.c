@@ -41,19 +41,30 @@ static int by_name(const void *a, const void *b)
 /* "1.5K"-style, as ls -h. */
 static void human_size(uint32_t bytes, char *out, size_t cap)
 {
+   /* nio's format_size_readable, in integers: the release printf has no
+      float support.  bytes / 1024^u is exact in binary, so rounding it to
+      tenths here - a tie to even, as printf does - gives printf's digits. */
    static const char units[] = "BKMGT";
    if (bytes == 0) {
       snprintf(out, cap, "0");
       return;
    }
-   double size = (double)bytes;
-   int u = 0;
-   while (u < 4 && size >= 1000.0) {
-      size /= 1024.0;
+   uint64_t den = 1;
+   unsigned u = 0;
+   while (u < 4 && bytes >= 1000u * den) {
+      den *= 1024u;
       u++;
    }
-   if (u == 0) snprintf(out, cap, "%.0f%c", size, units[0]);
-   else        snprintf(out, cap, "%.1f%c", size, units[u]);
+   if (u == 0) {
+      snprintf(out, cap, "%luB", (unsigned long)bytes);
+      return;
+   }
+   uint64_t num = (uint64_t)bytes * 10u;
+   uint64_t tenths = num / den, rem = num % den;
+   if (2u * rem > den || (2u * rem == den && (tenths & 1u)))
+      tenths++;
+   snprintf(out, cap, "%lu.%lu%c", (unsigned long)(tenths / 10u),
+            (unsigned long)(tenths % 10u), units[u]);
 }
 
 /* "Mon dd  YYYY" (the Pi has no trusted "now" to choose ls's HH:MM form for

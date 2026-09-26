@@ -69,6 +69,6 @@ bool fn_store_pending(void);             /* did the last failing call mean "not 
 void fn_store_clear_pending(void);
 void fn_store_request_end(void);         /* the request finished: forget its results */
 void fn_store_request_abort(void);       /* a new request replaced it: stop its work */
-void fn_store_poll(uint32_t now_ms);     /* resends and timeouts; every main loop pass */
+void fn_store_poll(void);                /* resends and timeouts; every main loop pass */
 
 #endif

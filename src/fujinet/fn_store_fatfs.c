@@ -1,11 +1,19 @@
 /* fn_store_fatfs.c - the SD card ("sd0") backend on the Pi, through FatFs
-   (fn_store_sd.h).  Main loop only (fujibus_service_poll); never FIQ. */
+   (fn_store_sd.h).  Main loop only (fujibus_service_poll); never FIQ.
+
+   Beeb_write_protect (docs/user/mmfs.md): every write the Beeb makes is
+   silently ignored and reported as success, as MMFS and ADFS writes are.
+   A file opened for writing is opened for reading and its writes are
+   dropped; a file created is a stand-in that takes writes and holds
+   nothing; mkdir and delete do nothing.  VFS volumes (/BeebVFS*) are read
+   only media and are treated the same way whatever the setting. */
 
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
 
 #include "../Pi1MHz.h"
+#include "../config.h"
 #include "../BeebSCSI/fatfs/ff.h"
 #include "fn_store_sd.h"
 
@@ -16,10 +24,23 @@ _Static_assert(HANDLES <= FN_SD_HANDLES, "SD handles overlap TNFS handles");
    which are live (the fat_service pattern). */
 NOINIT_SECTION static FIL s_fil[HANDLES];
 static bool s_open[HANDLES];
+static bool s_discard[HANDLES];        /* writes are dropped (protected) */
+static bool s_stand_in[HANDLES];       /* no file behind it (protected create) */
 
 static FIL *fil(fn_handle h)
 {
-   return (h >= 0 && (unsigned)h < HANDLES && s_open[h]) ? &s_fil[h] : NULL;
+   return (h >= 0 && (unsigned)h < HANDLES && s_open[h] && !s_stand_in[h]) ? &s_fil[h] : NULL;
+}
+
+static bool live(fn_handle h)
+{
+   return h >= 0 && (unsigned)h < HANDLES && s_open[h];
+}
+
+/* May the Beeb change this path on the card? */
+static bool protected_path(const char *path)
+{
+   return config_beeb_write_protected() || strncasecmp(path, "/BeebVFS", 8) == 0;
 }
 
 fn_handle fn_sd_open(const char *path, fn_open_mode mode)
@@ -30,10 +51,16 @@ fn_handle fn_sd_open(const char *path, fn_open_mode mode)
            : mode == FN_OPEN_UPDATE ? (BYTE)(FA_READ | FA_WRITE)
            : mode == FN_OPEN_CREATE ? (BYTE)(FA_READ | FA_WRITE | FA_CREATE_ALWAYS)
            : (BYTE)(FA_READ | FA_WRITE | FA_CREATE_NEW);
+   bool discard = mode != FN_OPEN_READ && protected_path(path);
    for (unsigned int i = 0; i < HANDLES; i++) {
       if (!s_open[i]) {
-         if (f_open(&s_fil[i], path, fa) != FR_OK)
-            return FN_NO_HANDLE;
+         s_discard[i] = discard;
+         s_stand_in[i] = false;
+         if (f_open(&s_fil[i], path, discard ? FA_READ : fa) != FR_OK) {
+            if (!discard || mode == FN_OPEN_UPDATE)
+               return FN_NO_HANDLE;
+            s_stand_in[i] = true;           /* a create: nothing to read */
+         }
          s_open[i] = true;
          return (fn_handle)i;
       }
@@ -56,6 +83,8 @@ bool fn_sd_write(fn_handle h, uint32_t offset, const void *buf, uint32_t len)
    static const BYTE zeros[256];
    FIL *f = fil(h);
    UINT done = 0;
+   if (live(h) && s_discard[h])
+      return true;                          /* protected: reported, not written */
    if (!f)
       return false;
    for (FSIZE_t pos = f_size(f); pos < offset; pos += done) {
@@ -71,6 +100,10 @@ bool fn_sd_write(fn_handle h, uint32_t offset, const void *buf, uint32_t len)
 bool fn_sd_size(fn_handle h, uint32_t *size)
 {
    FIL *f = fil(h);
+   if (live(h) && s_stand_in[h]) {
+      *size = 0;
+      return true;
+   }
    if (!f)
       return false;
    *size = (uint32_t)f_size(f);
@@ -80,16 +113,18 @@ bool fn_sd_size(fn_handle h, uint32_t *size)
 bool fn_sd_sync(fn_handle h)
 {
    FIL *f = fil(h);
+   if (live(h) && s_discard[h])
+      return true;
    return f && f_sync(f) == FR_OK;
 }
 
 void fn_sd_close(fn_handle h)
 {
    FIL *f = fil(h);
-   if (f) {
+   if (f)
       (void)f_close(f);
+   if (live(h))
       s_open[h] = false;
-   }
 }
 
 bool fn_sd_is_dir(const char *path)
@@ -107,6 +142,8 @@ bool fn_sd_mkdirs(const char *path)
    char p[FN_STORE_MAX_PATH];
    if (path[0] != '/' || snprintf(p, sizeof p, "%s", path) >= (int)sizeof p)
       return false;
+   if (protected_path(path))
+      return true;                          /* protected: reported, not made */
    for (char *s = p + 1; ; s++) {
       if (*s == '/' || *s == '\0') {
          char c = *s;
@@ -123,6 +160,8 @@ bool fn_sd_mkdirs(const char *path)
 
 bool fn_sd_delete(const char *path)
 {
+   if (path[0] == '/' && protected_path(path))
+      return true;                          /* protected: reported, not deleted */
    return path[0] == '/' && f_unlink(path) == FR_OK;
 }
 

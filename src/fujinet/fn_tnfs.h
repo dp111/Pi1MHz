@@ -33,7 +33,7 @@ bool fn_tnfs_dir_entry(const char *uri, uint32_t index, fn_dirent *out);
 /* Request lifetime and time, from fn_store.c. */
 void fn_tnfs_request_end(void);
 void fn_tnfs_request_abort(void);
-void fn_tnfs_poll(uint32_t now_ms);
+void fn_tnfs_poll(void);
 bool fn_tnfs_take_pending(void);      /* was a call just told "not yet"? (clears) */
 
 /* ---- the platform ---------------------------------------------------------- */

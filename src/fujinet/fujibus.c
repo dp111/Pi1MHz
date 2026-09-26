@@ -124,7 +124,10 @@ fb_answer fujibus_answer(const uint8_t *req, uint16_t req_len,
          general parameter encoding, which no device here implements. */
       status = FB_INVALID_REQUEST;
    else {
+      /* Both "not yet" flags belong to this run of this request: a request
+         the Beeb abandoned must not leave either set for the next one. */
       fn_store_clear_pending();
+      fn_network_clear_waiting();
       status = fn(command, &in, &out);
       if (fn_store_pending() || fn_network_waiting())
          return FB_ANSWER_PENDING;   /* whatever it wrote is incomplete */

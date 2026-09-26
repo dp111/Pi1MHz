@@ -63,7 +63,7 @@ static reply_t call_raw(const uint8_t *pkt, uint16_t n)
           ++r.passes < 200000) {
       fake_tnfs_step();
       fake_tnfs_advance(1);
-      fn_store_poll(fn_tnfs_io_now_ms());
+      fn_store_poll();
       fn_network_poll();
    }
    r.passes++;
@@ -240,6 +240,33 @@ static void test_host(void)
 }
 
 /* ---- app store ------------------------------------------------------------- */
+
+static void test_appstore_limits(void)
+{
+   /* offset 0 replaces the value (nio "wb"); a later offset updates it */
+   buf_t p = payload(); lstr(&p, "t-ns"); lstr(&p, "k");
+   u32(&p, 0); u16(&p, 6); put(&p, "ABCDEF", 6);
+   CHECK(call(FB_DEV_APPSTORE, 0x03, &p).status == FB_OK, "write 6");
+   p = payload(); lstr(&p, "t-ns"); lstr(&p, "k"); u32(&p, 0); u16(&p, 2); put(&p, "xy", 2);
+   CHECK(call(FB_DEV_APPSTORE, 0x03, &p).status == FB_OK, "write 2 at 0");
+   p = payload(); lstr(&p, "t-ns"); lstr(&p, "k"); u32(&p, 0); u16(&p, 16);
+   reply_t r = call(FB_DEV_APPSTORE, 0x02, &p);
+   CHECK(r.status == FB_OK && rd16(D(r) + 8) == 2 && !memcmp(D(r) + 10, "xy", 2),
+         "offset 0 truncates: %u bytes", rd16(D(r) + 8));
+   p = payload(); lstr(&p, "t-ns"); lstr(&p, "k"); u32(&p, 1); u16(&p, 1); put(&p, "Z", 1);
+   call(FB_DEV_APPSTORE, 0x03, &p);
+   p = payload(); lstr(&p, "t-ns"); lstr(&p, "k"); u32(&p, 0); u16(&p, 16);
+   r = call(FB_DEV_APPSTORE, 0x02, &p);
+   CHECK(rd16(D(r) + 8) == 2 && !memcmp(D(r) + 10, "xZ", 2), "offset 1 updates in place");
+   /* a far offset is refused, not zero-filled up to */
+   p = payload(); lstr(&p, "t-ns"); lstr(&p, "k"); u32(&p, 0xF0000000u); u16(&p, 1); put(&p, "!", 1);
+   r = call(FB_DEV_APPSTORE, 0x03, &p);
+   CHECK(r.status == FB_INVALID_REQUEST && r.passes == 1, "a far offset is refused at once");
+   p = payload(); lstr(&p, "t-ns"); lstr(&p, "k"); u32(&p, 65535); u16(&p, 1); put(&p, "!", 1);
+   CHECK(call(FB_DEV_APPSTORE, 0x03, &p).status == FB_OK, "the last byte of 64 KB is allowed");
+   p = payload(); lstr(&p, "t-ns"); lstr(&p, "k");
+   call(FB_DEV_APPSTORE, 0x04, &p);
+}
 
 static void test_appstore(void)
 {
@@ -517,6 +544,10 @@ static void test_tnfs(void)
    uint8_t sec[256];
    for (int i = 0; i < 256; i++) sec[i] = (uint8_t)(0xA5 ^ i);
    CHECK(disk_write(1, 9, sec, 256).status == FB_OK, "tnfs write sector 9");
+   {
+      static uint8_t big[257];
+      CHECK(disk_write(1, 9, big, 257).status == FB_INVALID_REQUEST, "more than a sector is refused (nio)");
+   }
    uint32_t sz = 0;
    const uint8_t *srv = fake_tnfs_get("/games/elite.ssd", &sz);
    CHECK(srv && sz == sizeof img && !memcmp(srv + 9 * 256, sec, 256), "written on the server");
@@ -606,12 +637,51 @@ static void test_tnfs(void)
       CHECK(r.status == FB_OK && D(r)[11 + 7] == 21, "the next request after an abort works");
    }
 
+   /* The Beeb gives up after the server has opened a file for the request
+      but before the request finished: the orphan handle must be closed, or
+      eight such give-ups use up every TNFS handle. */
+   {
+      static uint8_t other[204800];
+      make_ssd(other, sizeof other, 800, "OTHER");
+      fake_tnfs_put("/games/other.ssd", other, sizeof other);
+      fake_tnfs_step();
+      int base = fake_tnfs_open_fds();
+      buf_t q = payload(); u8(&q, 5); u8(&q, 0); u8(&q, 0); u16(&q, 0);
+      lstr(&q, "tnfs://tnfs.test/games/other.ssd");                  /* a mount opens the image */
+      uint8_t pkt[96];
+      uint16_t n = (uint16_t)(6 + q.n);
+      pkt[0] = FB_DEV_DISK; pkt[1] = 0x01; pkt[2] = (uint8_t)n; pkt[3] = 0; pkt[4] = 0; pkt[5] = 0;
+      memcpy(pkt + 6, q.b, q.n);
+      pkt[4] = fb_checksum(pkt, n);
+      uint8_t reply[600];
+      uint16_t rl;
+      fb_answer a = FB_ANSWER_PENDING;
+      for (int i = 0; i < 1000 && fake_tnfs_open_fds() == base; i++) {
+         a = fujibus_answer(pkt, n, reply, sizeof reply, &rl);
+         if (a != FB_ANSWER_PENDING) break;
+         fake_tnfs_step();
+         fake_tnfs_advance(1);
+         fn_store_poll();
+      }
+      CHECK(fake_tnfs_open_fds() == base + 1, "the mount's OPEN happened on the server");
+      fake_tnfs_drop(1000);                         /* the rest of the mount stalls */
+      a = fujibus_answer(pkt, n, reply, sizeof reply, &rl);
+      CHECK(a == FB_ANSWER_PENDING, "the mount is still waiting");
+      fn_store_request_abort();
+      fake_tnfs_drop(0);
+      fake_tnfs_step();
+      CHECK(fake_tnfs_open_fds() == base, "abort closed the orphan handle (%d open, %d before)",
+            fake_tnfs_open_fds(), base);
+   }
+
    /* Unmount closes the file on the server. */
    p = payload(); u8(&p, 1);
    call(FB_DEV_DISK, 0x02, &p);
    p = payload(); u8(&p, 2);
    call(FB_DEV_DISK, 0x02, &p);
    p = payload(); u8(&p, 3);
+   call(FB_DEV_DISK, 0x02, &p);
+   p = payload(); u8(&p, 5);
    call(FB_DEV_DISK, 0x02, &p);
    fake_tnfs_step();
    CHECK(fake_tnfs_open_fds() == 0, "no fds left open on the server: %d", fake_tnfs_open_fds());
@@ -765,9 +835,33 @@ static void test_network(void)
    h = NET_H(net_open(3, 0, "http://ok.test/put", 4));
    fake_net_write_block(true);
    r = net_write(h, 0, "abcd", 4);
-   CHECK(r.status == FB_TIMEOUT && r.passes >= 30000, "stalled write: %u after %d", r.status, r.passes);
+   CHECK(r.status == FB_TIMEOUT && r.passes >= 3000 && r.passes < 4000,
+         "stalled write: %u after %d ms", r.status, r.passes);
    fake_net_write_block(false);
    CHECK(net_write(h, 0, "abcd", 4).status == FB_OK, "and can be tried again");
+   net_close(h);
+
+   /* The Beeb gives up on a pending Write (fn-rom's ~4 s) and sends something
+      else: the next request - here the app store - must not inherit the
+      Write's "still waiting" and pend for ever. */
+   h = NET_H(net_open(3, 0, "http://ok.test/put", 4));
+   fake_net_write_block(true);
+   {
+      buf_t w = payload(); u16(&w, h); u32(&w, 0); u16(&w, 4); put(&w, "abcd", 4);
+      uint8_t pkt[64];
+      uint16_t n = (uint16_t)(6 + w.n);
+      pkt[0] = FB_DEV_NETWORK; pkt[1] = 0x03; pkt[2] = (uint8_t)n; pkt[3] = 0; pkt[4] = 0; pkt[5] = 0;
+      memcpy(pkt + 6, w.b, w.n);
+      pkt[4] = fb_checksum(pkt, n);
+      uint8_t rep[64];
+      uint16_t rl;
+      CHECK(fujibus_answer(pkt, n, rep, sizeof rep, &rl) == FB_ANSWER_PENDING, "the write waits");
+      fn_store_request_abort();                 /* as the service does when replaced */
+      buf_t a = payload(); lstr(&a, "ns"); lstr(&a, "key"); u32(&a, 0); u16(&a, 16);
+      reply_t ar = call(FB_DEV_APPSTORE, 0x02, &a);
+      CHECK(ar.answered && ar.passes == 1, "the next request answers at once (%d passes)", ar.passes);
+   }
+   fake_net_write_block(false);
    net_close(h);
    CHECK(net_write(NET_H(net_open(1, 0, "http://ok.test/g", 0)), 0, "a", 1).status == FB_INVALID_REQUEST,
          "a write to a GET");
@@ -962,7 +1056,7 @@ static void test_fuzz(void)
              ++passes < 200000) {
          fake_tnfs_step();
          fake_tnfs_advance(1);
-         fn_store_poll(fn_tnfs_io_now_ms());
+         fn_store_poll();
       }
       bool ok = a == FB_ANSWER_REPLY;
       if (!ok || rl < 7 || fb_checksum(reply, rl) != reply[4]) {
@@ -986,6 +1080,7 @@ int main(void)
    test_packet_layer();
    test_host();
    test_appstore();
+   test_appstore_limits();
    test_slotcat();
    test_disk();
    test_file();

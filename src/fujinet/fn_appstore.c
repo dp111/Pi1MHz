@@ -22,6 +22,8 @@
 #define APP_STAT   0x01u
 #define APP_READ   0x02u
 #define APP_WRITE  0x03u
+
+#define APP_VALUE_MAX  (64u * 1024u)   /* the largest value a Write may make */
 #define APP_DELETE 0x04u
 #define APP_LIST   0x05u
 
@@ -99,7 +101,9 @@ static bool app_read(const char *dir, const char *path, uint32_t offset,
 static bool app_write(const char *dir, const char *path, uint32_t offset,
                       const uint8_t *data, uint16_t len)
 {
-   fn_handle h = fn_store_open(APP_FS, path, FN_OPEN_UPDATE);
+   /* As nio: a write at offset 0 replaces the value ("wb"), one further in
+      updates it ("r+b"). */
+   fn_handle h = offset == 0 ? FN_NO_HANDLE : fn_store_open(APP_FS, path, FN_OPEN_UPDATE);
    if (h == FN_NO_HANDLE) {
       if (!fn_store_mkdirs(APP_FS, dir))
          return false;
@@ -215,6 +219,10 @@ uint8_t fn_appstore_command(uint8_t command, fb_in *in, fb_out *out)
       uint16_t len = fb_get_u16(in);
       const uint8_t *data = fb_get_bytes(in, len);
       if (in->bad)
+         return FB_INVALID_REQUEST;
+      /* Values are small (nio keeps settings here); a far offset would have
+         the SD backend zero-fill up to it, synchronously, in the main loop. */
+      if ((uint64_t)offset + len > APP_VALUE_MAX)
          return FB_INVALID_REQUEST;
       if (!app_write(dir, path, offset, data, len))
          return FB_IO_ERROR;

@@ -650,14 +650,23 @@ void fn_tnfs_request_abort(void)
       if (f) f->pos_known = false;
    }
    J.active = false;
+   /* A device keeps a handle only once its whole request has finished (no
+      state changes before a call that may wait), so a handle an abandoned
+      request opened belongs to nobody: close it, or eight give-ups use up
+      every file slot. */
+   for (unsigned i = 0; i < DONE_MAX; i++)
+      if (s_done[i].used && s_done[i].key.kind == OP_OPEN && s_done[i].ok &&
+          s_done[i].handle >= 0)
+         fn_tnfs_close(s_done[i].handle);
    fn_tnfs_request_end();
 }
 
-void fn_tnfs_poll(uint32_t now_ms)
+void fn_tnfs_poll(void)
 {
-   s_now = now_ms;
    if (!J.active)
-      return;
+      return;                       /* idle: not even the clock is read */
+   uint32_t now_ms = fn_tnfs_io_now_ms();
+   s_now = now_ms;
    if (J.step == ST_RESOLVE) {
       run_session();
       return;

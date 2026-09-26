@@ -15,6 +15,7 @@ uint8_t fn_network_command(uint8_t command, fb_in *in, fb_out *out);
 /* Did the last command stop to wait (a Write the network has not taken
    yet)?  fujibus_answer then reports the request pending and runs it again. */
 bool fn_network_waiting(void);
+void fn_network_clear_waiting(void);   /* fujibus_answer, before each device call */
 
 /* Every main loop pass: advance the connections that are still opening, so
    they are ready by the time the Beeb reads. */

@@ -128,7 +128,7 @@ void fn_store_request_abort(void)
    fn_tnfs_request_abort();
 }
 
-void fn_store_poll(uint32_t now_ms)
+void fn_store_poll(void)
 {
-   fn_tnfs_poll(now_ms);
+   fn_tnfs_poll();
 }

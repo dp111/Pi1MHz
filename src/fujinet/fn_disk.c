@@ -403,8 +403,8 @@ uint8_t fn_disk_command(uint8_t command, fb_in *in, fb_out *out)
          fb_put_bytes(out, sec, len);
          return FB_OK;
       }
-      if (s->ro || n < s->sector_size)
-         return FB_INVALID_REQUEST;                    /* ReadOnly / too short */
+      if (s->ro || n != s->sector_size)
+         return FB_INVALID_REQUEST;                    /* ReadOnly / not one sector (nio) */
       /* Past the end is fine: fn_store leaves the gap reading as zeros. */
       if (!fn_store_write(s->h, off, data, s->sector_size) || !fn_store_sync(s->h))
          return FB_IO_ERROR;
