@@ -181,9 +181,15 @@ net_bytes_bank = heap+&E2
 .pi_wget_opened
  lda net_file_mode
  beq pi_wget_output_ready
+ jsr wget_name_to_ram       \ X/Y point at the name in main memory
+ bcc pi_wget_name_ok
+ pha                       \ the error to raise, once the URL is closed
+ jsr pi_wget_close
+ pla
+ tax
+ jmp error
+.pi_wget_name_ok
  lda #&80                  \ open output file through the current filing system
- ldx #<strbuf
- ldy #>strbuf
  jsr wget_OSFIND
  sta net_file_handle
  bne pi_wget_output_ready
@@ -557,6 +563,41 @@ net_bytes_bank = heap+&E2
  jsr pi_wget_close
  ldx #(error_buffer_full-error_table)
  jmp error
+
+\ The filing system reads the name through X/Y with its own ROM paged in over
+\ this one, so a name left in strbuf, inside this image, reads back as that
+\ ROM's bytes ("Bad string"). Copy it to &0100, the bottom of the stack page,
+\ where it only has to last until OSFIND has parsed it; the error block uses
+\ the same bytes, which is fine for the same reason. C set on failure with
+\ the error's table offset in A.
+wget_name     = &0100
+wget_name_max = &40                 \ including the CR
+
+.wget_name_to_ram
+ tsx
+ cpx #wget_name_max+&20             \ keep well clear of the live stack
+ bcc wget_name_stack
+ ldy #0
+.wget_name_copy
+ lda strbuf,y
+ sta wget_name,y
+ cmp #&0D
+ beq wget_name_done
+ iny
+ cpy #wget_name_max
+ bne wget_name_copy
+ lda #(error_bad_param-error_table) \ too long for the space
+ sec
+ rts
+.wget_name_stack
+ lda #(error_stack_deep-error_table)
+ sec
+ rts
+.wget_name_done
+ ldx #<wget_name
+ ldy #>wget_name
+ clc
+ rts
 
 .pi_wget_close
  pha
