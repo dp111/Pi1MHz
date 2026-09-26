@@ -72,6 +72,9 @@ typedef struct {
    bool              http_has_length;
    uint32_t          http_content_length;
    uint32_t          http_body_read;
+   uint8_t           http_method;   /* NET_HTTP_*: the request line's verb   */
+   uint32_t          http_body_len; /* Content-Length sent with POST/PUT     */
+   char              http_ctype[48];/* request Content-Type, "" for none     */
    struct altcp_pcb *tpcb;          /* TCP pcb, NULL once freed by lwIP     */
    struct udp_pcb   *upcb;          /* UDP pcb                              */
    ip_addr_t         remote_ip;
@@ -495,7 +498,7 @@ static err_t net_tcp_accept(void *arg, struct altcp_pcb *newpcb, err_t err)
       return ERR_VAL;
    if (lh->accept_ready)                      /* backlog full: refuse */
       { altcp_abort(newpcb); return ERR_ABRT; }
-   for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
+   for (unsigned int i = 0; i < NET_BEEB_HANDLES; i++)   /* the Beeb's handles only */
       if (net_h[i].state == NET_ST_FREE) { nh = &net_h[i]; idx = i; break; }
    if (nh == NULL)                            /* no free handle: refuse */
       { altcp_abort(newpcb); return ERR_ABRT; }
@@ -1055,15 +1058,27 @@ static uint8_t do_status(net_handle_t *h, uint32_t cp)
 
 /* ---- N: device adapters -------------------------------------------------- */
 
-/* HTTP: send "GET <path> HTTP/1.0" with Host + Connection: close. */
+/* HTTP: send "<METHOD> <path> HTTP/1.0" with Host + Connection: close, and
+   for a body its Content-Length (the body itself follows as url writes). */
 static uint8_t net_http_send_request(net_handle_t *h, const char *host,
                                      const char *path)
 {
-   char req[NET_MAX_HOSTNAME + 288u];
+   static const char *const verb[] = { "GET", "GET", "POST", "PUT", "DELETE", "HEAD" };
+   char req[NET_MAX_HOSTNAME + 400u];
+   char extra[128] = "";
+   bool body = h->http_method == NET_HTTP_POST || h->http_method == NET_HTTP_PUT;
+   if (h->http_ctype[0])
+      snprintf(extra, sizeof extra, "Content-Type: %s\r\n", h->http_ctype);
+   if (body) {
+      size_t e = strlen(extra);
+      snprintf(extra + e, sizeof extra - e, "Content-Length: %lu\r\n",
+               (unsigned long)h->http_body_len);
+   }
    int n = snprintf(req, sizeof req,
-                    "GET %s HTTP/1.0\r\nHost: %s\r\n"
-                    "User-Agent: Pi1MHz/" RELEASENAME "\r\nConnection: close\r\n\r\n",
-                    path, host);
+                    "%s %s HTTP/1.0\r\nHost: %s\r\n"
+                    "User-Agent: Pi1MHz/" RELEASENAME "\r\nConnection: close\r\n%s\r\n",
+                    verb[h->http_method <= NET_HTTP_HEAD ? h->http_method : 0u],
+                    path, host, extra);
    if (n < 0 || (size_t)n >= sizeof req)
       return NET_ERR_PARAM;
    if (h->tpcb == NULL)
@@ -1330,7 +1345,8 @@ static uint8_t url_after_resolve(net_handle_t *h)
 /* Advance a URL handle's open; called again until it stops answering
    NET_PENDING.  `url` is NULL when the caller's copy failed its bounds
    check; `mode` is the FujiNet aux1 open mode. */
-static uint8_t url_open_core(net_handle_t *h, const char *url, uint8_t mode)
+static uint8_t url_open_core(net_handle_t *h, const char *url, uint8_t mode,
+                             const net_http_opts_t *opts)
 {
    char       host[NET_MAX_HOSTNAME];
    char       path[192];
@@ -1360,6 +1376,10 @@ static uint8_t url_open_core(net_handle_t *h, const char *url, uint8_t mode)
             return NET_PENDING;                   /* no IP yet - keep polling */
          net_handle_reset(h);
          h->is_url = true; h->url_adapter = u.adapter;
+         h->http_method = (opts && opts->method) ? opts->method : (uint8_t)NET_HTTP_GET;
+         h->http_body_len = opts ? opts->body_len : 0u;
+         snprintf(h->http_ctype, sizeof h->http_ctype, "%s",
+                  (opts && opts->content_type) ? opts->content_type : "");
          { uint8_t m = mode;                                 /* FujiNet aux1 open mode */
            h->tnfs_wr = (m == NET_OPEN_WRITE || m == NET_OPEN_RW) ? 1u : 0u; }
          h->type = (u.adapter == NET_URL_UDP) ? NET_TYPE_UDP : NET_TYPE_TCP;
@@ -1464,7 +1484,7 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
 {
    const char *url = service_string_ok(cp + 2u, NET_MAX_HOSTNAME)
                      ? (const char *)&Pi1MHz->JIM_ram[cp + 2u] : NULL;
-   return url_open_core(h, url, jim_rd8(cp + 1u));
+   return url_open_core(h, url, jim_rd8(cp + 1u), NULL);
 }
 
 /* The count the Beeb's command block reports; NET_NO_COUNT leaves it as it
@@ -1576,9 +1596,17 @@ static uint8_t url_read_core(net_handle_t *h, uint8_t *dst, uint32_t max, uint32
       }
       ring_skip(h, hdr);
       h->http_hdr_done = true;
+      if (h->http_method == NET_HTTP_HEAD) {  /* the answer carries no body */
+         h->http_has_length = true;
+         h->http_content_length = 0u;
+      }
    }
    if (h->url_adapter == NET_URL_HTTP && h->http_has_length) {
       uint32_t remaining = h->http_content_length - h->http_body_read;
+      if (remaining == 0u) {          /* HEAD, or an empty body: done now, not */
+         *out = 0u;                   /* one read later                        */
+         return NET_EOF;
+      }
       if (max > remaining)
          max = remaining;
    }
@@ -1759,7 +1787,7 @@ static uint8_t net_dispatch(uint32_t cp, uint8_t data)
 
    if (!net_enabled)
       return NET_ERR_DISABLED;
-   if (handle >= NET_MAX_HANDLES)
+   if (handle >= NET_BEEB_HANDLES)            /* the rest are net_capi_*'s */
       return NET_ERR_PARAM;
    h = &net_h[handle];
 
@@ -2194,6 +2222,82 @@ static void net_service_poll(void)
    }
 
    net_update_irq();
+}
+
+/* ---- URL sessions for Pi-side clients (net_service.h) -------------------- */
+
+/* Handed out until closed: a handle stays NET_ST_FREE until its open gets
+   going (it waits for an IP address first), so being free is not enough. */
+static bool capi_taken[NET_MAX_HANDLES];
+
+static net_handle_t *capi_handle(int h)
+{
+   return (h >= (int)NET_BEEB_HANDLES && h < (int)NET_MAX_HANDLES && capi_taken[h])
+          ? &net_h[h] : NULL;
+}
+
+bool net_capi_enabled(void)
+{
+   return net_enabled;
+}
+
+int net_capi_alloc(void)
+{
+   for (unsigned int i = NET_BEEB_HANDLES; i < NET_MAX_HANDLES; i++)
+      if (!capi_taken[i] && net_h[i].state == NET_ST_FREE) {
+         capi_taken[i] = true;
+         return (int)i;
+      }
+   return -1;
+}
+
+uint8_t net_capi_open(int hi, const char *url, uint8_t mode, const net_http_opts_t *opts)
+{
+   net_handle_t *h = capi_handle(hi);
+   if (!net_enabled) return NET_ERR_DISABLED;
+   if (!h || !url)   return NET_ERR_PARAM;
+   return url_open_core(h, url, mode, opts);
+}
+
+uint8_t net_capi_read(int hi, uint8_t *dst, uint32_t max, uint32_t *got)
+{
+   net_handle_t *h = capi_handle(hi);
+   uint32_t out = NET_NO_COUNT;
+   uint8_t r;
+   *got = 0u;
+   if (!h || !dst) return NET_ERR_PARAM;
+   r = url_read_core(h, dst, max, &out);
+   if (out != NET_NO_COUNT)
+      *got = out;
+   return r;
+}
+
+uint8_t net_capi_write(int hi, const uint8_t *src, uint32_t len, uint32_t *done)
+{
+   net_handle_t *h = capi_handle(hi);
+   uint32_t out = NET_NO_COUNT;
+   uint8_t r;
+   *done = 0u;
+   if (!h || !src) return NET_ERR_PARAM;
+   r = url_write_core(h, src, len, &out);
+   if (out != NET_NO_COUNT)
+      *done = out;
+   return r;
+}
+
+void net_capi_close(int hi)
+{
+   net_handle_t *h = capi_handle(hi);
+   if (h) {
+      (void)do_close(h);
+      capi_taken[hi] = false;
+   }
+}
+
+uint16_t net_capi_http_code(int hi)
+{
+   net_handle_t *h = capi_handle(hi);
+   return h ? h->http_code : 0u;
 }
 
 void net_service_init(uint8_t instance, uint8_t address)
