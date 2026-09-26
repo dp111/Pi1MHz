@@ -12,7 +12,7 @@ echo "== fujinet device =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$SRC/fujinet" -I"$HERE" -o "$B/t" \
-    "$HERE/test_fujinet.c" "$HERE/fn_store_host.c" "$HERE/fake_tnfs.c" "$SRC/net_tnfs.c" \
+    "$HERE/test_fujinet.c" "$HERE/fn_store_host.c" "$HERE/fake_tnfs.c" "$HERE/fake_net.c" "$SRC/net_tnfs.c" \
     $(ls "$SRC"/fujinet/*.c | grep -v fn_store_fatfs.c) -lm
 "$B/t"
 echo "FUJINET TESTS PASSED"

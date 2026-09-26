@@ -18,6 +18,8 @@
 #include "fn_store.h"
 #include "fake_tnfs.h"
 #include "fn_tnfs.h"
+#include "fn_network.h"
+#include "fake_net.h"
 
 void fn_store_host_root(const char *root);
 int fn_store_host_open_count(void);
@@ -61,6 +63,7 @@ static reply_t call_raw(const uint8_t *pkt, uint16_t n)
       fake_tnfs_step();
       fake_tnfs_advance(1);
       fn_store_poll(fn_tnfs_io_now_ms());
+      fn_network_poll();
    }
    r.passes++;
    CHECK(a != FB_ANSWER_PENDING, "request never finished waiting");
@@ -616,6 +619,218 @@ static void test_tnfs(void)
 
 /* ---- fuzz: random requests with valid framing must never crash ------------ */
 
+/* ---- NetworkDevice ($FD) ----------------------------------------------------
+   Layouts from fujinet-nio src/lib/network_device.cpp. */
+
+#define NET_H(r) rd16(D(r) + 4)
+
+static buf_t net_open_req(uint8_t method, uint8_t flags, const char *url, uint32_t body)
+{
+   buf_t p = payload();
+   u8(&p, method); u8(&p, flags); lstr(&p, url);
+   u16(&p, 0);                 /* request headers */
+   u32(&p, body);              /* body length hint */
+   u16(&p, 0);                 /* response header names */
+   return p;
+}
+
+static reply_t net_open(uint8_t method, uint8_t flags, const char *url, uint32_t body)
+{
+   buf_t p = net_open_req(method, flags, url, body);
+   return call(FB_DEV_NETWORK, 0x01, &p);
+}
+
+static reply_t net_read(uint16_t h, uint32_t off, uint16_t max)
+{
+   buf_t p = payload(); u16(&p, h); u32(&p, off); u16(&p, max);
+   return call(FB_DEV_NETWORK, 0x02, &p);
+}
+
+static reply_t net_write(uint16_t h, uint32_t off, const void *d, uint16_t n)
+{
+   buf_t p = payload(); u16(&p, h); u32(&p, off); u16(&p, n); put(&p, d, n);
+   return call(FB_DEV_NETWORK, 0x03, &p);
+}
+
+static uint8_t net_close(uint16_t h)
+{
+   buf_t p = payload(); u16(&p, h);
+   reply_t r = call(FB_DEV_NETWORK, 0x04, &p);
+   if (r.status == FB_OK)
+      CHECK(r.dlen == 4 && D(r)[0] == 1, "close reply is the 4-byte prefix");
+   return r.status;
+}
+
+static void net_poll(int n) { while (n--) fn_network_poll(); }
+
+static void test_network(void)
+{
+   fake_net_reset();
+   static const char body[] = "hello world";
+   fake_net_body(body, 11);
+
+   /* Open: accepted, a non-zero handle, HTTP proto flags 0. */
+   reply_t r = net_open(1, 0, "http://ok.test/a", 0);
+   CHECK(r.status == FB_OK && r.dlen == 7, "open GET: %u len %u", r.status, r.dlen);
+   CHECK(D(r)[0] == 1 && D(r)[1] == 0x01 && rd16(D(r) + 2) == 0, "open flags: accepted");
+   uint16_t h = NET_H(r);
+   CHECK(h != 0 && D(r)[6] == 0x00, "handle %04X, proto flags %02X", h, D(r)[6]);
+   CHECK(strcmp(fake_net_last_open()->url, "http://ok.test/a") == 0 &&
+         fake_net_last_open()->method == 1 && fake_net_last_open()->mode == 4,
+         "open reached the stack as GET, read mode");
+
+   /* Read: sequential chunks, truncated while more follows, EOF on the last. */
+   r = net_read(h, 0, 4);
+   CHECK(r.status == FB_OK && r.dlen == 12 + 4 && memcmp(D(r) + 12, "hell", 4) == 0,
+         "read 1: %u len %u", r.status, r.dlen);
+   CHECK(D(r)[1] == 0x02 && NET_H(r) == h && rd32(D(r) + 6) == 0 && rd16(D(r) + 10) == 4,
+         "read 1 flags %02X: truncated, echoes", D(r)[1]);
+   CHECK(net_read(h, 0, 4).status == FB_INVALID_REQUEST, "a read behind the cursor");
+   CHECK(net_read(h, 9, 4).status == FB_INVALID_REQUEST, "a read ahead of the cursor");
+   fake_net_stall(1);
+   CHECK(net_read(h, 4, 4).status == FB_NOT_READY, "no data yet is NotReady, not Ok+0");
+   r = net_read(h, 4, 4);
+   CHECK(r.status == FB_OK && memcmp(D(r) + 12, "o wo", 4) == 0 && D(r)[1] == 0x02, "read 2");
+   r = net_read(h, 8, 4);
+   CHECK(r.status == FB_OK && rd16(D(r) + 10) == 3 && memcmp(D(r) + 12, "rld", 3) == 0,
+         "read 3: %u", r.status);
+   CHECK(D(r)[1] == 0x01, "the last chunk carries EOF (flags %02X)", D(r)[1]);
+   r = net_read(h, 11, 4);
+   CHECK(r.status == FB_OK && D(r)[1] == 0x01 && rd16(D(r) + 10) == 0, "read at the end: Ok, EOF, 0");
+   CHECK(net_close(h) == FB_OK, "close");
+   CHECK(net_close(h) == FB_INVALID_REQUEST, "close again");
+   CHECK(net_read(h, 11, 4).status == FB_INVALID_REQUEST, "read a closed handle");
+   CHECK(fake_net_handles_taken() == 0, "close released the stack's handle");
+
+   /* A slow open: NotReady until it connects; the poll moves it on. */
+   fake_net_open_delay(3);
+   h = NET_H(net_open(1, 0, "http://ok.test/b", 0));
+   CHECK(net_read(h, 0, 64).status == FB_NOT_READY, "read while connecting");
+   net_poll(3);
+   r = net_read(h, 0, 64);
+   CHECK(r.status == FB_OK && rd16(D(r) + 10) == 11 && D(r)[1] == 0x01, "read after connecting");
+   uint16_t old = h;
+   net_close(h);
+   fake_net_open_delay(0);
+   h = NET_H(net_open(1, 0, "http://ok.test/c", 0));
+   CHECK(h != old && (h & 0xFF) == (old & 0xFF), "a reused slot gets a new generation");
+   CHECK(net_read(old, 0, 4).status == FB_INVALID_REQUEST, "the old generation is dead");
+   net_close(h);
+
+   /* Sessions: five, then DeviceBusy, or evict the least recently used. */
+   uint16_t hs[5];
+   for (int i = 0; i < 5; i++)
+      hs[i] = NET_H(net_open(1, 0, "http://ok.test/x", 0));
+   CHECK(net_open(1, 0, "http://ok.test/y", 0).status == FB_DEVICE_BUSY, "sixth open: busy");
+   net_read(hs[0], 0, 1);                            /* hs[1] is now the oldest */
+   r = net_open(1, 0x08, "http://ok.test/y", 0);
+   CHECK(r.status == FB_OK, "allow_evict opens anyway");
+   CHECK(net_read(hs[1], 0, 1).status == FB_INVALID_REQUEST, "the LRU session was evicted");
+   CHECK(net_read(hs[0], 1, 1).status == FB_OK, "the recently used one was not");
+   CHECK(fake_net_handles_taken() == 5, "no stack handle leaked: %d", fake_net_handles_taken());
+
+   /* BBC reset closes them all on the next poll. */
+   fn_network_reset();
+   net_poll(1);
+   CHECK(fake_net_handles_taken() == 0, "reset closed every session");
+   CHECK(net_read(hs[0], 1, 1).status == FB_INVALID_REQUEST, "and their handles are dead");
+
+   /* POST: needs_body_write; the reply waits for the body; Write pends
+      until the stack has taken the whole chunk. */
+   r = net_open(2, 0, "http://ok.test/post", 10);
+   CHECK(r.status == FB_OK && D(r)[1] == 0x03, "open POST: accepted + needs body (%02X)", D(r)[1]);
+   h = NET_H(r);
+   CHECK(fake_net_last_open()->method == 2 && fake_net_last_open()->body_len == 10 &&
+         fake_net_last_open()->mode == 12, "POST reached the stack with its length");
+   CHECK(net_read(h, 0, 4).status == FB_NOT_READY, "no response before the body");
+   fake_net_accept(2);
+   r = net_write(h, 0, "01234", 5);
+   CHECK(r.status == FB_OK && r.passes > 1, "write 1 waited for the stack (%d passes)", r.passes);
+   CHECK(r.dlen == 12 && NET_H(r) == h && rd32(D(r) + 6) == 0 && rd16(D(r) + 10) == 5,
+         "write reply: handle, offset, written");
+   r = net_write(h, 0, "01234", 5);
+   CHECK(r.status == FB_OK && r.passes == 1 && rd16(D(r) + 10) == 5, "a repeated chunk is answered, not resent");
+   CHECK(net_write(h, 7, "x", 1).status == FB_INVALID_REQUEST, "a gap in the body");
+   CHECK(net_write(h, 5, "56789X", 6).status == FB_INVALID_REQUEST, "past the declared length");
+   fake_net_accept(0);
+   CHECK(net_write(h, 5, "56789", 5).status == FB_OK, "write 2");
+   uint32_t sunk;
+   const uint8_t *sink = fake_net_sink(&sunk);
+   CHECK(sunk == 10 && memcmp(sink, "0123456789", 10) == 0, "the stack got the body once (%u)", sunk);
+   CHECK(net_read(h, 0, 64).status == FB_OK, "the response follows the body");
+   net_close(h);
+
+   /* A Write the network never takes times out after 30 s. */
+   h = NET_H(net_open(3, 0, "http://ok.test/put", 4));
+   fake_net_write_block(true);
+   r = net_write(h, 0, "abcd", 4);
+   CHECK(r.status == FB_TIMEOUT && r.passes >= 30000, "stalled write: %u after %d", r.status, r.passes);
+   fake_net_write_block(false);
+   CHECK(net_write(h, 0, "abcd", 4).status == FB_OK, "and can be tried again");
+   net_close(h);
+   CHECK(net_write(NET_H(net_open(1, 0, "http://ok.test/g", 0)), 0, "a", 1).status == FB_INVALID_REQUEST,
+         "a write to a GET");
+   fn_network_reset();
+   net_poll(1);
+
+   /* tcp: streaming, sequential both ways, no declared body. */
+   r = net_open(1, 0, "tcp://ok.test:23", 0);
+   CHECK(r.status == FB_OK && D(r)[6] == 0x07 && D(r)[1] == 0x01, "tcp open: proto %02X", D(r)[6]);
+   h = NET_H(r);
+   sink = fake_net_sink(&sunk);
+   uint32_t before = sunk;
+   CHECK(net_write(h, 0, "hi", 2).status == FB_OK && fake_net_sink(&sunk) && sunk == before + 2, "tcp write");
+   net_close(h);
+
+   /* Refusals. */
+   CHECK(net_open(1, 0, "https://ok.test/", 0).status == FB_UNSUPPORTED, "https (not yet)");
+   CHECK(net_open(1, 0, "ftp://ok.test/", 0).status == FB_UNSUPPORTED, "unknown scheme");
+   CHECK(net_open(1, 0, "http:///", 0).status == FB_INVALID_REQUEST, "a URL with no host");
+   CHECK(net_open(1, 0, "http://ok.test/", 5).status == FB_INVALID_REQUEST, "GET with a body");
+   CHECK(net_open(2, 0x04, "http://ok.test/", 0).status == FB_UNSUPPORTED, "unknown body length");
+   CHECK(net_open(9, 0, "http://ok.test/", 0).status == FB_INVALID_REQUEST, "unknown method");
+   CHECK(fake_net_handles_taken() == 0, "refused opens hold nothing");
+   buf_t p = net_open_req(1, 0, "http://ok.test/", 0);
+   u8(&p, 0xEE);
+   CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_INVALID_REQUEST, "trailing bytes");
+   p = net_open_req(1, 0, "http://ok.test/", 0);
+   u32(&p, 1); u8(&p, 1); u8(&p, 0); lstr(&p, "/a");
+   CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_UNSUPPORTED, "JSON translation (not yet)");
+   p = net_open_req(2, 0, "http://ok.test/", 3);
+   u32(&p, 2); u8(&p, 1);
+   CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_OK &&
+         strcmp(fake_net_last_open()->ctype, "application/json") == 0, "content profile JSON");
+   p = payload(); u8(&p, 2); u8(&p, 0); lstr(&p, "http://ok.test/");
+   u16(&p, 1); lstr(&p, "Content-TYPE"); lstr(&p, "text/csv"); u32(&p, 1); u16(&p, 0);
+   CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_OK &&
+         strcmp(fake_net_last_open()->ctype, "text/csv") == 0, "a Content-Type header");
+   p = payload(); u8(&p, 1); u8(&p, 0); lstr(&p, "http://ok.test/");
+   u16(&p, 1); lstr(&p, "Accept"); lstr(&p, "*/*"); u32(&p, 0); u16(&p, 0);
+   CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_UNSUPPORTED, "other request headers");
+   fn_network_reset();
+   net_poll(1);
+   p = payload(); u16(&p, 0);
+   for (uint8_t c = 5; c <= 7; c++)
+      CHECK(call(FB_DEV_NETWORK, c, &p).status == FB_UNSUPPORTED, "command %u (not yet)", c);
+   p = net_open_req(1, 0, "http://ok.test/", 0);
+   p.b[0] = 2;
+   CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_INVALID_REQUEST, "protocol version 2");
+
+   /* A host that does not resolve: accepted, then the read fails. */
+   h = NET_H(net_open(1, 0, "http://dns.fail/", 0));
+   net_poll(1);
+   CHECK(net_read(h, 0, 4).status == FB_IO_ERROR, "unresolvable host: IOError");
+   CHECK(net_close(h) == FB_OK, "close it");
+   fake_net_open_delay(1);
+   h = NET_H(net_open(1, 0, "http://dns.fail/", 0));
+   CHECK(net_read(h, 0, 4).status == FB_IO_ERROR, "failing during the read itself: IOError");
+   CHECK(net_close(h) == FB_OK && fake_net_handles_taken() == 0, "a failed session closes");
+
+   fake_net_enable(false);
+   CHECK(net_open(1, 0, "http://ok.test/", 0).status == FB_DEVICE_NOT_FOUND, "net_enable=0");
+   fake_net_reset();
+}
+
 static void test_fuzz(void)
 {
    static const uint8_t devs[] = { 0xF0, 0xF1, 0xF2, 0xFC, 0xFD, 0xFE };
@@ -668,6 +883,7 @@ int main(void)
    test_disk();
    test_file();
    test_tnfs();
+   test_network();
    test_fuzz();
 
    char cmd[300];

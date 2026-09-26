@@ -4,6 +4,7 @@
 
 #include "fujibus.h"
 #include "fn_devices.h"
+#include "fn_network.h"
 #include "fn_store.h"
 
 uint8_t fb_get_u8(fb_in *in)
@@ -93,6 +94,7 @@ static fb_device_fn device_for(uint8_t device)
    case FB_DEV_APPSTORE: return fn_appstore_command;
    case FB_DEV_HOST:     return fn_host_command;
    case FB_DEV_FILE:     return fn_file_command;
+   case FB_DEV_NETWORK:  return fn_network_command;
    default:              return NULL;
    }
 }
@@ -124,7 +126,7 @@ fb_answer fujibus_answer(const uint8_t *req, uint16_t req_len,
    else {
       fn_store_clear_pending();
       status = fn(command, &in, &out);
-      if (fn_store_pending())
+      if (fn_store_pending() || fn_network_waiting())
          return FB_ANSWER_PENDING;   /* whatever it wrote is incomplete */
       if (status == FB_OK && out.full)
          status = FB_INTERNAL_ERROR;

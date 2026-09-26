@@ -62,6 +62,7 @@
   apart.
 */
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Emulator-table init: instance = nIRQ source id, address = services base. */

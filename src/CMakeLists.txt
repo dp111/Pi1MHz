@@ -320,6 +320,7 @@ set(services_emulator_files
    fujinet/fn_disk.c
    fujinet/fn_file.c
    fujinet/fn_host.c
+   fujinet/fn_network.c
    fujinet/fn_slotcat.c
    fujinet/fn_store_fatfs.c
    fujinet/fn_store.c

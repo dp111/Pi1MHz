@@ -29,6 +29,7 @@
 #include "fujibus_service.h"
 #include "fujinet/fujibus.h"
 #include "fujinet/fn_disk.h"
+#include "fujinet/fn_network.h"
 #include "fujinet/fn_store.h"
 #include "fujinet/fn_tnfs.h"
 
@@ -94,6 +95,7 @@ static uint8_t fujibus_execute(uint32_t cp)
 static void fujibus_service_poll(void)
 {
    fn_store_poll(fn_tnfs_io_now_ms());     /* TNFS resends and timeouts */
+   fn_network_poll();                      /* connections still opening */
    if (!fuji_pending)
       return;
    if (fuji_replaced) {
@@ -123,6 +125,7 @@ void fujibus_service_init(uint8_t instance, uint8_t address)
       session (BeginHostSession) itself when it wants one. */
    const char *boot = config_get("fujinet_boot");
    fn_disk_set_boot(boot ? boot : "", true);
+   fn_network_reset();       /* the network service drops its connections too */
    (void)services_register(SERVICE_CMD_FUJI_FIRST, SERVICE_CMD_FUJI_LAST,
                            fujibus_service_command);
    Pi1MHz_Register_Poll(fujibus_service_poll, "fujinet");

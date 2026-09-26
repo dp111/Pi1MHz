@@ -19,6 +19,11 @@ mount. A request waiting on the server holds the Beeb's busy bit and is
 re-run each main-loop pass (see fujinet/fn_store.h). NOT hardware-tested:
 *FLS (a utilities-disc command, not in the ROM), phase 2 (network).
 
+Phase 2 so far (host-tested only): net_service's URL verbs split into cores
+(4859208) with a C API and HTTP methods/body on top (06a75a4), and the
+network device fujinet/fn_network.c - open/read/write/close for http:// and
+tcp://. Still to come: JSON translation, https://.
+
 Bench trap: a TNFS server with two interfaces on one subnet answers from
 its primary address; address it by that one, or every client here (the N:
 device too) rejects the replies and the server logs a new session per
@@ -132,6 +137,22 @@ Phase 2 - network `$FD`: open, read, write, close, JSON translate, mapped
 onto the existing net service; five channels, and "not ready" (status 4)
 where fn-rom already retries. `*FJSON` needs a JSON query engine - to be
 checked.
+
+As built (fujinet/fn_network.c on net_capi_*, net_service.h): five sessions,
+one net_service handle each (handles 8-12, never the Beeb's own), handle =
+generation << 8 | slot so a stale handle is refused and none is ever 0 (0
+is fn-rom's "open failed"). Open replies at once and starts resolving; the
+main-loop poll carries the connection on, and Read answers NotReady until
+it is up (fn-rom backs off for ~48 s in all). Write is the one divergence
+from nio's model: fn-rom takes anything but Ok from Write as failure, so a
+Write the stack cannot take yet keeps the request pending and is re-run,
+safe because offsets are sequential - the session's cursor says how much of
+the chunk already went. Thirty seconds without progress answers Timeout. A
+repeated chunk (at or behind the cursor) is answered without being resent.
+Refused for now: https:// and JSON translation (Unsupported), Info and
+InfoRead, request headers other than Content-Type, bodies of unknown length
+(the request is sent with its Content-Length before the body). A BBC reset
+closes every session, as net_service drops its connections on reset.
 
 Not sent by fn-rom today, so not implemented: Wi-Fi `$F3`, clock, modem,
 the FujiNet control device `$70`, and the defined-but-unused commands (disk
