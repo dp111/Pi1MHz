@@ -1,10 +1,10 @@
 /* fn_store.h - the storage the FujiNet devices reach, and nothing else.
 
-   A path is a filesystem name plus an absolute path within it ("sd0" +
-   "/games/elite.ssd").  The Pi implements this over FatFs in
-   fn_store_fatfs.c, called only from the main loop; the host tests
-   implement it over a temporary directory.  Handles are small integers so
-   the devices never see a FatFs type.
+   A path is a filesystem name plus an absolute path within it: "sd0" +
+   "/games/elite.ssd", or "tnfs" + the whole URI, "tnfs://host:port/x.ssd".
+   fn_store.c routes each call: sd0 to fn_store_sd.h's backend (FatFs on
+   the Pi, a temporary directory in the host tests), tnfs to fn_tnfs.c.
+   Handles are small integers so the devices never see a backend type.
 
    Every call returns true on success. */
 #ifndef FN_STORE_H
@@ -55,5 +55,20 @@ typedef struct {
 
 bool fn_store_dir_entry(const char *fs, const char *path, uint32_t index,
                         fn_dirent *out);
+
+/* ---- waiting on the network ---------------------------------------------
+   A filesystem reached over the network (tnfs) cannot answer at once.  A
+   call that has to wait starts the work, returns failure and sets the
+   pending flag; the FujiBus layer then reports the whole request as pending
+   and runs it again later.  Completed operations are remembered for the
+   rest of the request, so the re-run gets past them at once and only the
+   first unfinished one waits.  A device must therefore make its storage
+   calls in the same order on every run, and not change state it cannot
+   change again before a call that may wait. */
+bool fn_store_pending(void);             /* did the last failing call mean "not yet"? */
+void fn_store_clear_pending(void);
+void fn_store_request_end(void);         /* the request finished: forget its results */
+void fn_store_request_abort(void);       /* a new request replaced it: stop its work */
+void fn_store_poll(uint32_t now_ms);     /* resends and timeouts; every main loop pass */
 
 #endif

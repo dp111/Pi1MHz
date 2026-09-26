@@ -86,13 +86,21 @@ typedef uint8_t (*fb_device_fn)(uint8_t command, fb_in *in, fb_out *out);
    the packet, with byte 4 taken as zero. */
 uint8_t fb_checksum(const uint8_t *pkt, uint16_t len);
 
-/* Answer one request packet.  Returns false - no reply - when the packet is
-   not a well-formed FujiBus request (short, length field disagreeing with
-   `req_len`, bad checksum) or `reply_cap` cannot hold even a header; that is
-   what a device on a serial line would silently drop.  Otherwise builds the
-   reply in `reply`, sets *reply_len and returns true, including for requests
-   the device refuses (the status says so). */
-bool fujibus_answer(const uint8_t *req, uint16_t req_len,
-                    uint8_t *reply, uint16_t reply_cap, uint16_t *reply_len);
+/* Answer one request packet:
+   FB_ANSWER_NONE    - not a well-formed FujiBus request (short, length field
+                       disagreeing with `req_len`, bad checksum) or `reply_cap`
+                       cannot hold even a header: what a device on a serial
+                       line would silently drop;
+   FB_ANSWER_REPLY   - the reply is in `reply` and *reply_len, including for
+                       requests the device refuses (the status says so);
+   FB_ANSWER_PENDING - the device is waiting on the network (fn_store.h):
+                       nothing is reported (the reply area may hold partial
+                       bytes); answer the same packet again later.
+   A new packet while one is pending must be preceded by
+   fn_store_request_abort(). */
+typedef enum { FB_ANSWER_NONE, FB_ANSWER_REPLY, FB_ANSWER_PENDING } fb_answer;
+
+fb_answer fujibus_answer(const uint8_t *req, uint16_t req_len,
+                         uint8_t *reply, uint16_t reply_cap, uint16_t *reply_len);
 
 #endif

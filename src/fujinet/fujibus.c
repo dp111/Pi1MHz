@@ -4,6 +4,7 @@
 
 #include "fujibus.h"
 #include "fn_devices.h"
+#include "fn_store.h"
 
 uint8_t fb_get_u8(fb_in *in)
 {
@@ -96,15 +97,15 @@ static fb_device_fn device_for(uint8_t device)
    }
 }
 
-bool fujibus_answer(const uint8_t *req, uint16_t req_len,
-                    uint8_t *reply, uint16_t reply_cap, uint16_t *reply_len)
+fb_answer fujibus_answer(const uint8_t *req, uint16_t req_len,
+                         uint8_t *reply, uint16_t reply_cap, uint16_t *reply_len)
 {
-   if (req_len < FB_HDR_LEN || reply_cap < FB_REPLY_HDR_LEN)
-      return false;
-   if ((uint16_t)(req[2] | (req[3] << 8)) != req_len)
-      return false;
-   if (fb_checksum(req, req_len) != req[4])
-      return false;
+   if (req_len < FB_HDR_LEN || reply_cap < FB_REPLY_HDR_LEN ||
+       (uint16_t)(req[2] | (req[3] << 8)) != req_len ||
+       fb_checksum(req, req_len) != req[4]) {
+      fn_store_request_end();
+      return FB_ANSWER_NONE;
+   }
 
    uint8_t device = req[0];
    uint8_t command = req[1];
@@ -121,10 +122,14 @@ bool fujibus_answer(const uint8_t *req, uint16_t req_len,
          general parameter encoding, which no device here implements. */
       status = FB_INVALID_REQUEST;
    else {
+      fn_store_clear_pending();
       status = fn(command, &in, &out);
+      if (fn_store_pending())
+         return FB_ANSWER_PENDING;   /* whatever it wrote is incomplete */
       if (status == FB_OK && out.full)
          status = FB_INTERNAL_ERROR;
    }
+   fn_store_request_end();
    if (status != FB_OK)
       out.len = 0;
 
@@ -138,5 +143,5 @@ bool fujibus_answer(const uint8_t *req, uint16_t req_len,
    reply[6] = status;
    reply[4] = fb_checksum(reply, total);
    *reply_len = total;
-   return true;
+   return FB_ANSWER_REPLY;
 }

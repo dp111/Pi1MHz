@@ -16,6 +16,8 @@
 #include "fn_devices.h"
 #include "fn_disk.h"
 #include "fn_store.h"
+#include "fake_tnfs.h"
+#include "fn_tnfs.h"
 
 void fn_store_host_root(const char *root);
 int fn_store_host_open_count(void);
@@ -40,16 +42,31 @@ static buf_t payload(void) { buf_t p = { .n = 0 }; u8(&p, 1); return p; }   /* v
 
 typedef struct {
    bool answered;
+   int passes;            /* service-loop passes it took (1 = no waiting) */
    uint8_t status;
    uint8_t pkt[4096];
    uint16_t len;
    uint16_t dlen;         /* device payload is D(r): pkt + 7 */
 } reply_t;
 
+/* The service loop: while the answer is pending, let the network deliver,
+   let time pass and poll, then run the same packet again - as
+   fujibus_service_poll does on the Pi. */
 static reply_t call_raw(const uint8_t *pkt, uint16_t n)
 {
    reply_t r = { 0 };
-   r.answered = fujibus_answer(pkt, n, r.pkt, sizeof r.pkt, &r.len);
+   fb_answer a;
+   while ((a = fujibus_answer(pkt, n, r.pkt, sizeof r.pkt, &r.len)) == FB_ANSWER_PENDING &&
+          ++r.passes < 200000) {
+      fake_tnfs_step();
+      fake_tnfs_advance(1);
+      fn_store_poll(fn_tnfs_io_now_ms());
+   }
+   r.passes++;
+   CHECK(a != FB_ANSWER_PENDING, "request never finished waiting");
+   if (a == FB_ANSWER_PENDING)
+      fn_store_request_abort();     /* as the Pi does when the Beeb moves on */
+   r.answered = a == FB_ANSWER_REPLY;
    if (r.answered) {
       r.status = r.pkt[6];
       r.dlen = (uint16_t)(r.len - 7);
@@ -451,6 +468,152 @@ static void test_file(void)
    CHECK(call(FB_DEV_FILE, 0x02, &p).status == FB_DEVICE_NOT_FOUND, "unknown filesystem");
 }
 
+/* ---- TNFS: the same devices on a server, through waits -------------------- */
+
+static void make_ssd(uint8_t *img, uint32_t size, uint16_t count, const char *title)
+{
+   memset(img, 0, size);
+   memcpy(img, title, strlen(title));
+   img[0x106] = (uint8_t)(count >> 8);
+   img[0x107] = (uint8_t)count;
+}
+
+static void test_tnfs(void)
+{
+   static uint8_t img[204800];
+   fake_tnfs_mkdir("/games");
+   make_ssd(img, sizeof img, 800, "ELITE");
+   for (int i = 0; i < 256; i++) img[5 * 256 + i] = (uint8_t)(i * 3);
+   fake_tnfs_put("/games/elite.ssd", img, sizeof img);
+   uint8_t small[1024];
+   make_ssd(small, sizeof small, 400, "SPARSE");
+   fake_tnfs_put("/games/sparse.ssd", small, sizeof small);
+   fake_tnfs_mkdir("/games/more");
+
+   /* Host on the server: resolved, mounted, STAT says it is a directory. */
+   reply_t r = host_set("tnfs://tnfs.test/games");
+   CHECK(r.status == FB_OK && r.passes > 1, "set a tnfs host (waited %d passes)", r.passes);
+   expect_current("tnfs://tnfs.test/games", "/games");
+   CHECK(host_set("tnfs://tnfs.test/nothing").status == FB_IO_ERROR, "missing tnfs directory refused");
+   CHECK(host_set("tnfs://nowhere.test/").status == FB_IO_ERROR, "unresolvable server refused");
+
+   /* Catalogue and mount, relative to the tnfs host. */
+   buf_t p = payload(); u8(&p, 10); u8(&p, 0); lstr(&p, "elite.ssd");
+   r = call(FB_DEV_SLOTCAT, 0x02, &p);
+   CHECK(r.status == FB_OK && rd16(D(r) + 3) == strlen("tnfs://tnfs.test/games/elite.ssd") &&
+         !memcmp(D(r) + 5, "tnfs://tnfs.test/games/elite.ssd", rd16(D(r) + 3)), "tnfs slot is canonical");
+   r = disk_mount(1, 0, "elite.ssd");
+   CHECK(r.status == FB_OK && D(r)[1] == 1 && rd32(D(r) + 8) == 800, "mount tnfs SSD rw");
+   r = disk_read(1, 0, 256);
+   CHECK(r.status == FB_OK && !memcmp(D(r) + 11, "ELITE", 5), "tnfs catalogue");
+   r = disk_read(1, 5, 256);
+   CHECK(r.status == FB_OK && D(r)[11 + 7] == 21 && D(r)[11 + 255] == (uint8_t)(255 * 3), "tnfs sector 5");
+
+   /* Write, and see it on the server. */
+   uint8_t sec[256];
+   for (int i = 0; i < 256; i++) sec[i] = (uint8_t)(0xA5 ^ i);
+   CHECK(disk_write(1, 9, sec, 256).status == FB_OK, "tnfs write sector 9");
+   uint32_t sz = 0;
+   const uint8_t *srv = fake_tnfs_get("/games/elite.ssd", &sz);
+   CHECK(srv && sz == sizeof img && !memcmp(srv + 9 * 256, sec, 256), "written on the server");
+   r = disk_read(1, 9, 256);
+   CHECK(!memcmp(D(r) + 11, sec, 256), "tnfs read back");
+
+   /* Lost datagrams are resent; a busy server is waited for. */
+   int before = fake_tnfs_stats()->sent;
+   fake_tnfs_drop(2);
+   r = disk_read(1, 5, 256);
+   CHECK(r.status == FB_OK && D(r)[11 + 7] == 21 && fake_tnfs_stats()->sent - before >= 3,
+         "read survives two lost datagrams");
+   fake_tnfs_eagain(3);
+   CHECK(disk_write(1, 10, sec, 256).status == FB_OK, "write survives three EAGAINs");
+   srv = fake_tnfs_get("/games/elite.ssd", &sz);
+   CHECK(!memcmp(srv + 10 * 256, sec, 256), "EAGAIN'd write landed once");
+
+   /* A sparse image on the server reads zeros past its end, and a write past
+      the end leaves zeros in the gap (the server's POSIX file does). */
+   r = disk_mount(2, 0, "sparse.ssd");
+   CHECK(r.status == FB_OK && rd32(D(r) + 8) == 400, "sparse tnfs SSD");
+   r = disk_read(2, 300, 256);
+   CHECK(r.status == FB_OK && D(r)[11] == 0, "past the end reads zeros");
+   CHECK(disk_write(2, 20, sec, 256).status == FB_OK, "write past the end");
+   srv = fake_tnfs_get("/games/sparse.ssd", &sz);
+   CHECK(sz == 21 * 256 && srv[10 * 256] == 0 && !memcmp(srv + 20 * 256, sec, 256), "gap zeros on server");
+
+   /* Create on the server. */
+   p = payload(); u8(&p, 0); u8(&p, 2); u16(&p, 256); u32(&p, 400); lstr(&p, "new.ssd");
+   r = call(FB_DEV_DISK, 0x07, &p);
+   srv = fake_tnfs_get("/games/new.ssd", &sz);
+   CHECK(r.status == FB_OK && srv && sz == 102400 && !memcmp(srv, "BLANK", 5) &&
+         srv[0x107] == 0x90 && srv[0x106] == 1, "create SSD on tnfs");
+   CHECK(call(FB_DEV_DISK, 0x07, &p).status == FB_INVALID_REQUEST, "create again refused (exists)");
+
+   /* Reinitialize a tnfs image: its catalogue is rewritten for 800. */
+   r = disk_mount(3, 0, "new.ssd");
+   p = payload(); u8(&p, 3); u16(&p, 256); u32(&p, 800);
+   r = call(FB_DEV_DISK, 0x0C, &p);
+   srv = fake_tnfs_get("/games/new.ssd", &sz);
+   CHECK(r.status == FB_OK && rd32(D(r) + 8) == 800 && sz == 204800 && srv[0x107] == 0x20, "reinitialize on tnfs: status %u count %u size %u cat %02X passes %d",
+         r.status, rd32(D(r) + 8), sz, srv ? srv[0x107] : 0, r.passes);
+
+   /* Listing a tnfs directory: sorted, formatted, sizes and a folder. */
+   p = payload(); lstr(&p, "tnfs://tnfs.test/games"); u16(&p, 0); u16(&p, 400); u8(&p, 0x06); u8(&p, 40);
+   r = call(FB_DEV_FILE, 0x02, &p);
+   char text[1024];
+   uint16_t el = rd16(D(r) + 8);
+   memcpy(text, D(r) + 10, el);
+   text[el] = '\0';
+   CHECK(r.status == FB_OK && rd16(D(r) + 6) == 4 && strstr(text, " more/\n") &&
+         strstr(text, " 200.0K ") && strstr(text, "Nov 14  2023") &&
+         strstr(text, "elite.ssd") < strstr(text, "new.ssd"), "tnfs listing:\n%s", text);
+   int sent = fake_tnfs_stats()->sent;
+   p = payload(); lstr(&p, "tnfs://tnfs.test/games"); u16(&p, 2); u16(&p, 400); u8(&p, 0x06); u8(&p, 40);
+   r = call(FB_DEV_FILE, 0x02, &p);
+   CHECK(r.status == FB_OK && rd16(D(r) + 6) == 2 && fake_tnfs_stats()->sent - sent <= 1,
+         "the next page comes from the cached listing");
+
+   /* A dead server fails the request; it is not left pending forever. */
+   fake_tnfs_drop(1000);
+   r = disk_read(1, 5, 256);
+   CHECK(r.answered && r.status == FB_IO_ERROR, "dead server: IOError after %d passes", r.passes);
+   fake_tnfs_drop(0);
+   r = disk_read(1, 5, 256);
+   CHECK(r.status == FB_OK && D(r)[11 + 7] == 21, "server back: remounted and reading");
+
+   /* A resolver that takes a moment. */
+   fake_tnfs_mkdir("/");
+   CHECK(host_set("tnfs://slow.test/").status == FB_OK, "slow DNS waited for");
+
+   /* The Beeb gives up on a waiting request and asks something else. */
+   {
+      uint8_t pkt[64];
+      buf_t q = payload(); u8(&q, 1); u32(&q, 6); u16(&q, 256);
+      uint16_t n = (uint16_t)(6 + q.n);
+      pkt[0] = FB_DEV_DISK; pkt[1] = 0x03; pkt[2] = (uint8_t)n; pkt[3] = 0; pkt[4] = 0; pkt[5] = 0;
+      memcpy(pkt + 6, q.b, q.n);
+      pkt[4] = fb_checksum(pkt, n);
+      uint8_t reply[600];
+      uint16_t rl;
+      fake_tnfs_drop(1000);
+      CHECK(fujibus_answer(pkt, n, reply, sizeof reply, &rl) == FB_ANSWER_PENDING, "read pending");
+      fn_store_request_abort();
+      fake_tnfs_drop(0);
+      r = disk_read(1, 5, 256);
+      CHECK(r.status == FB_OK && D(r)[11 + 7] == 21, "the next request after an abort works");
+   }
+
+   /* Unmount closes the file on the server. */
+   p = payload(); u8(&p, 1);
+   call(FB_DEV_DISK, 0x02, &p);
+   p = payload(); u8(&p, 2);
+   call(FB_DEV_DISK, 0x02, &p);
+   p = payload(); u8(&p, 3);
+   call(FB_DEV_DISK, 0x02, &p);
+   fake_tnfs_step();
+   CHECK(fake_tnfs_open_fds() == 0, "no fds left open on the server: %d", fake_tnfs_open_fds());
+   CHECK(host_set("sd0:/img").status == FB_OK, "back to the SD card");
+}
+
 /* ---- fuzz: random requests with valid framing must never crash ------------ */
 
 static void test_fuzz(void)
@@ -471,7 +634,15 @@ static void test_fuzz(void)
       pkt[4] = fb_checksum(pkt, n);
       uint8_t reply[1024];
       uint16_t rl = 0;
-      bool ok = fujibus_answer(pkt, n, reply, sizeof reply, &rl);
+      fb_answer a;
+      int passes = 0;
+      while ((a = fujibus_answer(pkt, n, reply, sizeof reply, &rl)) == FB_ANSWER_PENDING &&
+             ++passes < 200000) {
+         fake_tnfs_step();
+         fake_tnfs_advance(1);
+         fn_store_poll(fn_tnfs_io_now_ms());
+      }
+      bool ok = a == FB_ANSWER_REPLY;
       if (!ok || rl < 7 || fb_checksum(reply, rl) != reply[4]) {
          s_fail++;
          printf("FAIL fuzz %d\n", i);
@@ -488,6 +659,7 @@ int main(void)
    snprintf(s_root, sizeof s_root, "/tmp/fujinet-test-XXXXXX");
    if (!mkdtemp(s_root)) return 2;
    fn_store_host_root(s_root);
+   fake_tnfs_reset();
 
    test_packet_layer();
    test_host();
@@ -495,6 +667,7 @@ int main(void)
    test_slotcat();
    test_disk();
    test_file();
+   test_tnfs();
    test_fuzz();
 
    char cmd[300];

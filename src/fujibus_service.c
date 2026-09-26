@@ -18,7 +18,10 @@
       3  a reserved command in 115-119
 
    The FIQ handler only latches; fujibus_service_poll answers on the main
-   loop, where the devices may reach the SD card. */
+   loop, where the devices may reach the SD card.  A request waiting on a
+   TNFS server (fujinet/fn_store.h) keeps the register busy and is run again
+   on each later pass until it is answered; if the Beeb gives up and sends a
+   new request meanwhile, the old one's work is abandoned. */
 
 #include "Pi1MHz.h"
 #include "config.h"
@@ -26,6 +29,8 @@
 #include "fujibus_service.h"
 #include "fujinet/fujibus.h"
 #include "fujinet/fn_disk.h"
+#include "fujinet/fn_store.h"
+#include "fujinet/fn_tnfs.h"
 
 #define FUJI_CMD_EXCHANGE   114u
 
@@ -33,14 +38,18 @@
 #define FUJI_RES_BAD_BLOCK  1u
 #define FUJI_RES_NO_REPLY   2u
 #define FUJI_RES_UNKNOWN    3u
+#define FUJI_RES_PENDING    0xFFu    /* internal: not answered yet */
 
 static volatile bool     fuji_pending;
+static volatile bool     fuji_replaced;    /* a new request arrived while one waited */
 static volatile uint32_t fuji_pending_cp;
 static volatile uint32_t fuji_pending_addr;
 
 static void fujibus_service_command(uint32_t command_pointer, uint32_t addr, uint8_t data)
 {
    /* FIQ context: latch only, and read busy until the poll answers. */
+   if (fuji_pending)
+      fuji_replaced = true;
    fuji_pending_cp   = command_pointer;
    fuji_pending_addr = addr;
    fuji_pending      = true;
@@ -71,9 +80,12 @@ static uint8_t fujibus_execute(uint32_t cp)
       return FUJI_RES_BAD_BLOCK;
 
    uint16_t rep_len = 0;
-   if (!fujibus_answer(&Pi1MHz->JIM_ram[DISC_RAM_BASE + req_off], req_len,
-                       &Pi1MHz->JIM_ram[DISC_RAM_BASE + rep_off], rep_cap, &rep_len))
-      return FUJI_RES_NO_REPLY;
+   switch (fujibus_answer(&Pi1MHz->JIM_ram[DISC_RAM_BASE + req_off], req_len,
+                          &Pi1MHz->JIM_ram[DISC_RAM_BASE + rep_off], rep_cap, &rep_len)) {
+   case FB_ANSWER_NONE:    return FUJI_RES_NO_REPLY;
+   case FB_ANSWER_PENDING: return FUJI_RES_PENDING;
+   case FB_ANSWER_REPLY:   break;
+   }
    blk[11] = (uint8_t)rep_len;
    blk[12] = (uint8_t)(rep_len >> 8);
    return FUJI_RES_OK;
@@ -81,12 +93,20 @@ static uint8_t fujibus_execute(uint32_t cp)
 
 static void fujibus_service_poll(void)
 {
+   fn_store_poll(fn_tnfs_io_now_ms());     /* TNFS resends and timeouts */
    if (!fuji_pending)
       return;
+   if (fuji_replaced) {
+      fuji_replaced = false;
+      fn_store_request_abort();
+   }
    uint32_t cp = fuji_pending_cp;
    uint32_t addr = fuji_pending_addr;
+   uint8_t result = fujibus_execute(cp);
+   if (result == FUJI_RES_PENDING)
+      return;                               /* busy stays set; run it again next pass */
    fuji_pending = false;
-   Pi1MHz_MemoryWrite(addr, fujibus_execute(cp));
+   Pi1MHz_MemoryWrite(addr, result);
 }
 
 bool fujibus_service_path_busy(const char *host_path)

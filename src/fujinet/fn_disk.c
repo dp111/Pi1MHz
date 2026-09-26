@@ -7,8 +7,8 @@
    - slots are 1-based on the wire; a bad slot is InvalidRequest, an empty
      one NotReady;
    - an SSD's geometry is its DFS catalogue's sector count (400 or 800), not
-     its file size: a short (sparse) image reads zeros past its end and a
-     write past the end zero-fills the gap;
+     its file size: a short (sparse) image reads zeros past its end, and a
+     write past the end leaves zeros in the gap (fn_store's contract);
    - a URI may be relative to the current host (fn_host_resolve);
    - Mount with flags bit 1 records a lazy mount, opened on first use.
 
@@ -142,8 +142,19 @@ static bool ends_with_ci(const char *s, const char *ext)
    return true;
 }
 
+/* Give up on an image being opened.  When the failure is only "not yet"
+   (fn_store.h) the handle is the one the re-run will be handed again, so it
+   must stay open. */
+static uint8_t drop_image(fn_handle h, uint8_t status)
+{
+   if (!fn_store_pending())
+      fn_store_close(h);
+   return status;
+}
+
 /* Open the image named by s->uri and establish its geometry.  Returns a
-   status. */
+   status.  Nothing in *s changes until it succeeds, so a re-run after a
+   wait starts from the same place. */
 static uint8_t open_image(slot_t *s)
 {
    char fs[16], path[URI_MAX];
@@ -168,30 +179,24 @@ static uint8_t open_image(slot_t *s)
       return FB_INVALID_REQUEST;           /* FileNotFound */
 
    uint32_t size = 0;
-   if (!fn_store_size(h, &size)) {
-      fn_store_close(h);
-      return FB_IO_ERROR;
-   }
+   if (!fn_store_size(h, &size))
+      return drop_image(h, FB_IO_ERROR);
    uint16_t ssize;
    uint32_t count;
    if (type == TYPE_SSD) {
       uint8_t cat[0x108];
-      if (size < sizeof cat || !fn_store_read(h, 0, cat, sizeof cat)) {
-         fn_store_close(h);
-         return size < sizeof cat ? FB_INVALID_REQUEST : FB_IO_ERROR;
-      }
+      if (size < sizeof cat)
+         return drop_image(h, FB_INVALID_REQUEST);
+      if (!fn_store_read(h, 0, cat, sizeof cat))
+         return drop_image(h, FB_IO_ERROR);
       ssize = 256;
       count = ((uint32_t)(cat[0x106] & 3u) << 8) | cat[0x107];
-      if (count != 400u && count != 800u) {
-         fn_store_close(h);
-         return FB_INVALID_REQUEST;        /* BadImage */
-      }
+      if (count != 400u && count != 800u)
+         return drop_image(h, FB_INVALID_REQUEST);   /* BadImage */
    } else {
       ssize = s->hint ? s->hint : ends_with_ci(path, ".adf") ? 512u : 256u;
-      if (ssize > SECTOR_MAX || size % ssize) {
-         fn_store_close(h);
-         return FB_INVALID_REQUEST;        /* InvalidGeometry */
-      }
+      if (ssize > SECTOR_MAX || size % ssize)
+         return drop_image(h, FB_INVALID_REQUEST);   /* InvalidGeometry */
       count = size / ssize;
    }
    s->h = h;
@@ -320,6 +325,8 @@ static uint8_t create_image(const char *uri, uint8_t type, uint16_t ssize,
    /* Extend to full size with one byte at the end. */
    uint8_t z = 0;
    ok = ok && fn_store_write(h, (uint32_t)ssize * count - 1u, &z, 1);
+   if (fn_store_pending())
+      return FB_IO_ERROR;                 /* not yet: the re-run carries on */
    ok = fn_store_sync(h) && ok;
    fn_store_close(h);
    return ok ? FB_OK : FB_IO_ERROR;
@@ -398,15 +405,7 @@ uint8_t fn_disk_command(uint8_t command, fb_in *in, fb_out *out)
       }
       if (s->ro || n < s->sector_size)
          return FB_INVALID_REQUEST;                    /* ReadOnly / too short */
-      if (off > s->file_size) {
-         static const uint8_t zeros[256] = { 0 };
-         for (uint32_t pos = s->file_size; pos < off; ) {
-            uint32_t chunk = off - pos < sizeof zeros ? off - pos : sizeof zeros;
-            if (!fn_store_write(s->h, pos, zeros, chunk))
-               return FB_IO_ERROR;
-            pos += chunk;
-         }
-      }
+      /* Past the end is fine: fn_store leaves the gap reading as zeros. */
       if (!fn_store_write(s->h, off, data, s->sector_size) || !fn_store_sync(s->h))
          return FB_IO_ERROR;
       if (off + s->sector_size > s->file_size)
@@ -496,17 +495,29 @@ uint8_t fn_disk_command(uint8_t command, fb_in *in, fb_out *out)
       uint32_t count = fb_get_u32(in);
       if (in->bad || (st = slot_of(slot1, &s)) != FB_OK)
          return FB_INVALID_REQUEST;
-      if ((st = active(s)) != FB_OK)
-         return st;
-      if (s->ro)
-         return FB_INVALID_REQUEST;
-      char uri[URI_MAX];
-      uint8_t type = s->type;
-      snprintf(uri, sizeof uri, "%s", s->uri);
-      close_slot(s);
-      if ((st = create_image(uri, type, ssize, count, true)) != FB_OK)
-         return st;
-      return mount(s, slot1, uri, false, type, type == TYPE_RAW ? ssize : 0, false, out);
+      /* Closing the slot cannot be done twice, and the re-creation may wait
+         on the network: what the slot held is remembered across re-runs. */
+      static struct { bool valid; uint8_t slot, type; char uri[URI_MAX]; } again;
+      if (s->used) {
+         if ((st = active(s)) != FB_OK)
+            return st;
+         if (s->ro)
+            return FB_INVALID_REQUEST;
+         again.valid = true;
+         again.slot = slot1;
+         again.type = s->type;
+         snprintf(again.uri, sizeof again.uri, "%s", s->uri);
+         close_slot(s);
+      } else if (!again.valid || again.slot != slot1) {
+         return FB_NOT_READY;
+      }
+      st = create_image(again.uri, again.type, ssize, count, true);
+      if (st == FB_OK)
+         st = mount(s, slot1, again.uri, false, again.type,
+                    again.type == TYPE_RAW ? ssize : 0, false, out);
+      if (!fn_store_pending())
+         again.valid = false;
+      return st;
    }
    case DISK_LIST_MOUNTS: {
       uint8_t flags = fb_get_u8(in);

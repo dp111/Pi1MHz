@@ -322,6 +322,9 @@ set(services_emulator_files
    fujinet/fn_host.c
    fujinet/fn_slotcat.c
    fujinet/fn_store_fatfs.c
+   fujinet/fn_store.c
+   fujinet/fn_tnfs.c
+   fujinet_tnfs_io.c
    net_tnfs.h
    net_telnet.c
    net_telnet.h
