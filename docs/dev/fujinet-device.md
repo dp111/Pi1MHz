@@ -29,7 +29,13 @@ for upstream): its Read check compared only the low byte of the reply
 length, so any 237-255 byte chunk read as EOF, and BGET asked for 256 bytes
 whose reply cannot fit its 274-byte buffer. Control: the same Pi and file
 with the unfixed check read 1 byte. Write/POST and tcp:// are host-tested
-only. Still to come: JSON translation, https://.
+only. JSON translation (TranslateConfigure and the Open extension) BUILT
+and host-tested: cJSON is a submodule at fujinet-nio's pinned commit
+(fb16e5c), and fujinet/fn_json.c flattens as nio does; its output matched
+nio's own translator (built on the host) on 6,000 random documents and
+50,000 random numbers. The release printf has no float support, so
+%.10g is done exactly in fn_json.c (big-integer digits, ties to even).
+Still to come: https://.
 
 Bench trap: a TNFS server with two interfaces on one subnet answers from
 its primary address; address it by that one, or every client here (the N:
@@ -156,8 +162,10 @@ Write the stack cannot take yet keeps the request pending and is re-run,
 safe because offsets are sequential - the session's cursor says how much of
 the chunk already went. Thirty seconds without progress answers Timeout. A
 repeated chunk (at or behind the cursor) is answered without being resent.
-Refused for now: https:// and JSON translation (Unsupported), Info and
-InfoRead, request headers other than Content-Type, bodies of unknown length
+JSON translation buffers the whole response (up to 1 MB) before
+answering, as nio does; a new selector reuses the buffered body, and
+translated reads may start at any offset. Refused for now: https://,
+XML/RSS translation (Unsupported, as in nio), Info and InfoRead, request headers other than Content-Type, bodies of unknown length
 (the request is sent with its Content-Length before the body). A BBC reset
 closes every session, as net_service drops its connections on reset.
 

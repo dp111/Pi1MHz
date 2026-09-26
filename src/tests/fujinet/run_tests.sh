@@ -9,9 +9,15 @@ B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 
 echo "== fujinet device =="
+# cJSON is vendored (fujinet-nio's pinned commit): built on its own, without
+# our warning set.
+gcc -std=gnu2x -w -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -c "$SRC/fujinet/cJSON/cJSON.c" -o "$B/cJSON.o"
+gcc -std=gnu2x -w -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -c "$SRC/fujinet/cJSON/cJSON_Utils.c" -o "$B/cJSON_Utils.o"
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -I"$SRC/fujinet" -I"$HERE" -o "$B/t" \
+    -I"$SRC/fujinet" -I"$HERE" -o "$B/t" "$B/cJSON.o" "$B/cJSON_Utils.o" \
     "$HERE/test_fujinet.c" "$HERE/fn_store_host.c" "$HERE/fake_tnfs.c" "$HERE/fake_net.c" "$SRC/net_tnfs.c" \
     $(ls "$SRC"/fujinet/*.c | grep -v fn_store_fatfs.c) -lm
 "$B/t"

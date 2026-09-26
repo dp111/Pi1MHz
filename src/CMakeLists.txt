@@ -320,7 +320,10 @@ set(services_emulator_files
    fujinet/fn_disk.c
    fujinet/fn_file.c
    fujinet/fn_host.c
+   fujinet/fn_json.c
    fujinet/fn_network.c
+   fujinet/cJSON/cJSON.c
+   fujinet/cJSON/cJSON_Utils.c
    fujinet/fn_slotcat.c
    fujinet/fn_store_fatfs.c
    fujinet/fn_store.c
@@ -339,6 +342,16 @@ set(services_emulator_files
    uef_stream.h
    uef_service.c
    uef_service.h
+)
+
+# cJSON is vendored at fujinet-nio's pinned commit (the FujiNet network
+# device's JSON translation must match nio's byte for byte): not ours to
+# warn about.
+set_source_files_properties(
+   fujinet/cJSON/cJSON.c
+   fujinet/cJSON/cJSON_Utils.c
+   PROPERTIES
+   COMPILE_OPTIONS "-w"
 )
 
 # uzlib - vendored DEFLATE decompressor, see src/uzlib/NOTES.md.  Only the

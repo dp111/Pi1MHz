@@ -5,3 +5,6 @@
 [submodule "src/wifi/lwip"]
 	path = src/wifi/lwip
 	url = https://github.com/lwip-tcpip/lwip.git
+[submodule "src/fujinet/cJSON"]
+	path = src/fujinet/cJSON
+	url = https://github.com/DaveGamble/cJSON.git

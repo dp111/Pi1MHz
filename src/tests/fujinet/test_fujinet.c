@@ -20,6 +20,7 @@
 #include "fn_tnfs.h"
 #include "fn_network.h"
 #include "fake_net.h"
+#include "fn_json.h"
 
 void fn_store_host_root(const char *root);
 int fn_store_host_open_count(void);
@@ -794,8 +795,12 @@ static void test_network(void)
    u8(&p, 0xEE);
    CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_INVALID_REQUEST, "trailing bytes");
    p = net_open_req(1, 0, "http://ok.test/", 0);
-   u32(&p, 1); u8(&p, 1); u8(&p, 0); lstr(&p, "/a");
-   CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_UNSUPPORTED, "JSON translation (not yet)");
+   u32(&p, 1); u8(&p, 2); u8(&p, 0); lstr(&p, "/a");
+   CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_UNSUPPORTED, "XML translation (as nio)");
+   p = net_open_req(1, 0, "http://ok.test/", 0);
+   u32(&p, 1); u8(&p, 9); u8(&p, 0); lstr(&p, "/a");
+   CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_INVALID_REQUEST, "unknown translation type");
+   CHECK(fake_net_handles_taken() == 0, "refused translations hold nothing");
    p = net_open_req(2, 0, "http://ok.test/", 3);
    u32(&p, 2); u8(&p, 1);
    CHECK(call(FB_DEV_NETWORK, 0x01, &p).status == FB_OK &&
@@ -810,7 +815,7 @@ static void test_network(void)
    fn_network_reset();
    net_poll(1);
    p = payload(); u16(&p, 0);
-   for (uint8_t c = 5; c <= 7; c++)
+   for (uint8_t c = 5; c <= 6; c++)
       CHECK(call(FB_DEV_NETWORK, c, &p).status == FB_UNSUPPORTED, "command %u (not yet)", c);
    p = net_open_req(1, 0, "http://ok.test/", 0);
    p.b[0] = 2;
@@ -829,6 +834,105 @@ static void test_network(void)
    fake_net_enable(false);
    CHECK(net_open(1, 0, "http://ok.test/", 0).status == FB_DEVICE_NOT_FOUND, "net_enable=0");
    fake_net_reset();
+}
+
+static reply_t net_translate(uint16_t h, uint8_t type, const char *sel)
+{
+   buf_t p = payload(); u16(&p, h); u8(&p, type); u8(&p, 0); lstr(&p, sel);
+   return call(FB_DEV_NETWORK, 0x07, &p);
+}
+
+/* JSON translation: the flattened text is fn_json.c's (checked against nio's
+   own translator separately); here, the device's handling of it. */
+static void test_network_json(void)
+{
+   fake_net_reset();
+   static const char body[] =
+      "{\"current\":{\"temperature_2m\":12.5,\"is_day\":true},\"name\":\"Leeds\","
+      "\"list\":[1,2,3]}";
+   fake_net_body(body, (uint32_t)strlen(body));
+   fake_net_chunk(10);                               /* the body arrives in pieces */
+
+   /* TranslateConfigure on an open session. */
+   uint16_t h = NET_H(net_open(1, 0, "http://ok.test/w", 0));
+   fake_net_stall(1);
+   CHECK(net_translate(h, 1, "/name").status == FB_NOT_READY, "configure while the body is still coming");
+   reply_t r = net_translate(h, 1, "/name");
+   CHECK(r.status == FB_OK && r.dlen == 10, "configure: %u len %u", r.status, r.dlen);
+   CHECK(D(r)[1] == 0x01 && NET_H(r) == h && rd32(D(r) + 6) == 5, "ready, 5 bytes (%02X %u)",
+         D(r)[1], rd32(D(r) + 6));
+   r = net_read(h, 0, 64);
+   CHECK(r.status == FB_OK && rd16(D(r) + 10) == 5 && memcmp(D(r) + 12, "Leeds", 5) == 0 &&
+         D(r)[1] == 0x01, "translated read: Leeds, EOF");
+   r = net_read(h, 1, 3);
+   CHECK(r.status == FB_OK && memcmp(D(r) + 12, "eed", 3) == 0 && D(r)[1] == 0x06,
+         "any offset; truncated + more (%02X)", D(r)[1]);
+   CHECK(net_read(h, 6, 3).status == FB_INVALID_REQUEST, "past the end");
+   r = net_read(h, 5, 3);
+   CHECK(r.status == FB_OK && rd16(D(r) + 10) == 0 && D(r)[1] == 0x01, "at the end: Ok, EOF, 0");
+
+   /* A second selector reuses the buffered body. */
+   r = net_translate(h, 1, "/CURRENT/temperature_2m");
+   CHECK(r.status == FB_OK && rd32(D(r) + 6) == 4, "second query on the same body");
+   r = net_read(h, 0, 64);
+   CHECK(memcmp(D(r) + 12, "12.5", 4) == 0, "keys match without case, as cJSON");
+   r = net_translate(h, 1, "/list");
+   r = net_read(h, 0, 64);
+   CHECK(rd16(D(r) + 10) == 5 && memcmp(D(r) + 12, "1\n2\n3", 5) == 0, "an array, one per line");
+   r = net_translate(h, 1, "/missing");
+   CHECK(r.status == FB_OK && D(r)[1] == 0x01 && rd32(D(r) + 6) == 0, "nothing selected: ready, empty");
+   CHECK(net_translate(h, 2, "/a").status == FB_UNSUPPORTED, "XML: Unsupported");
+   CHECK(net_translate(h, 7, "/a").status == FB_INVALID_REQUEST, "unknown type");
+   r = net_translate(h, 0, "");
+   CHECK(r.status == FB_OK && D(r)[1] == 0x00 && rd32(D(r) + 6) == 0, "type None: off");
+   CHECK(net_translate(0x7F00, 1, "/a").status == FB_INVALID_REQUEST, "unknown handle");
+   net_close(h);
+
+   /* The Open extension: translated from the first Read. */
+   buf_t p = net_open_req(1, 0, "http://ok.test/w", 0);
+   u32(&p, 1); u8(&p, 1); u8(&p, 0); lstr(&p, "/current/is_day");
+   r = call(FB_DEV_NETWORK, 0x01, &p);
+   CHECK(r.status == FB_OK, "open with a translation");
+   h = NET_H(r);
+   r = net_read(h, 0, 64);
+   CHECK(r.status == FB_OK && rd16(D(r) + 10) == 4 && memcmp(D(r) + 12, "TRUE", 4) == 0,
+         "translated from the open: TRUE");
+   net_close(h);
+
+   /* A POST's response is translated only after its body has gone. */
+   h = NET_H(net_open(2, 0, "http://ok.test/p", 2));
+   CHECK(net_translate(h, 1, "/name").status == FB_NOT_READY, "configure before the request body");
+   CHECK(net_write(h, 0, "{}", 2).status == FB_OK, "the request body");
+   CHECK(net_translate(h, 1, "/name").status == FB_OK, "then it translates");
+   net_close(h);
+
+   /* Not JSON: an empty result, still Ok (nio). */
+   fake_net_body("<html>", 6);
+   h = NET_H(net_open(1, 0, "http://ok.test/h", 0));
+   r = net_translate(h, 1, "/a");
+   CHECK(r.status == FB_OK && rd32(D(r) + 6) == 0, "a body that is not JSON");
+   net_close(h);
+   CHECK(fake_net_handles_taken() == 0, "all closed");
+   fake_net_reset();
+}
+
+/* fn_json.c's number formatting: printf's %.10g done without printf.  The
+   expected text is fujinet-nio's own translator's output for this array (its
+   json_content_translator.cpp built on the host with the same cJSON): exact
+   ties round to even, subnormals, the largest double, %g's layout edges. */
+static void test_json_numbers(void)
+{
+   static const char body[] = "[1234567890.5,1234567891.5,-1234567890.5,9999999999.5,99999999995,0.00012345678905,0.0001,0.00001,1e-5,9.9999999995e-5,1e10,9999999999,12345678901,5e-324,2.2250738585072014e-308,1.7976931348623157e308,0.1,0.3,1e15,1e16,123456789012345678,4.35,2.675,1.0000000005,1.00000000050000001,8.5,0.5,-0.5,1e100,1.5e-7]";
+   static const char want[] = "1234567890\n1234567892\n-1234567890\n1e+10\n99999999995\n0.0001234567891\n0.0001\n1e-05\n1e-05\n0.0001\n10000000000\n9999999999\n12345678901\n4.940656458e-324\n2.225073859e-308\n1.797693135e+308\n0.1\n0.3\n1000000000000000\n1e+16\n1.23456789e+17\n4.35\n2.675\n1.000000001\n1.000000001\n8.5\n0.5\n-0.5\n1e+100\n1.5e-07";
+   char *out;
+   uint32_t len;
+   CHECK(fn_json_translate(body, "", &out, &len), "translate the number array");
+   CHECK(out && len == strlen(want) && memcmp(out, want, len) == 0,
+         "numbers as nio prints them:\n  got  %.*s\n  want %s", (int)len, out ? out : "", want);
+   free(out);
+   CHECK(fn_json_translate("[{\"a\":{\"b\":[1,{\"c\":\"d\"}]}},{}]", "", &out, &len) &&
+         len == 10 && memcmp(out, "a\nb\n1\nc\nd\n", 10) == 0, "nested object/array layout (nio)");
+   free(out);
 }
 
 static void test_fuzz(void)
@@ -884,6 +988,8 @@ int main(void)
    test_file();
    test_tnfs();
    test_network();
+   test_network_json();
+   test_json_numbers();
    test_fuzz();
 
    char cmd[300];
