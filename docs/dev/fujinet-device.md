@@ -19,10 +19,17 @@ mount. A request waiting on the server holds the Beeb's busy bit and is
 re-run each main-loop pass (see fujinet/fn_store.h). NOT hardware-tested:
 *FLS (a utilities-disc command, not in the ROM), phase 2 (network).
 
-Phase 2 so far (host-tested only): net_service's URL verbs split into cores
-(4859208) with a C API and HTTP methods/body on top (06a75a4), and the
-network device fujinet/fn_network.c - open/read/write/close for http:// and
-tcp://. Still to come: JSON translation, https://.
+Phase 2 so far: net_service's URL verbs split into cores (4859208) with a
+C API and HTTP methods/body on top (06a75a4), and the network device
+fujinet/fn_network.c (00736f1) - open/read/write/close for http:// and
+tcp://. MEASURED on the Master: OPENIN "http://<server>/fn.txt" then
+BGET# to EOF# reads all 600 bytes, byte sum matching the server's file,
+EOF# true exactly at the end. That needed an fn-rom fix (fn-rom 8531b19,
+for upstream): its Read check compared only the low byte of the reply
+length, so any 237-255 byte chunk read as EOF, and BGET asked for 256 bytes
+whose reply cannot fit its 274-byte buffer. Control: the same Pi and file
+with the unfixed check read 1 byte. Write/POST and tcp:// are host-tested
+only. Still to come: JSON translation, https://.
 
 Bench trap: a TNFS server with two interfaces on one subnet answers from
 its primary address; address it by that one, or every client here (the N:
