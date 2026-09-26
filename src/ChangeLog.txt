@@ -260,3 +260,6 @@ Helper slots 18-30 are left free for future helpers.
 v.1.36
 SD card explorer: the first error after quitting it no longer hangs the Beeb when output goes to serial - it kept its state in the RS423 buffers.
 It now uses no Beeb RAM beyond the user zero page: file data and names go through a JIM RAM transfer page (&FC88 = &FE), with no bounce buffer.
+1MHz-WiFi: *WGET -S into sideways RAM works - it could never have copied anything; the copy now runs from the bottom of the stack page, put back afterwards.
+1MHz-WiFi: *WGET <url> <file> no longer fails with "Bad string", and the ROM's error messages are readable again instead of BASIC keywords; both are built at &0100.
+1MHz-WiFi: *WGET no longer writes the filing system's zero page (&C7/&C8) or the MOS's (&F8/&F9); WiCFS reads the length from the JIM window.

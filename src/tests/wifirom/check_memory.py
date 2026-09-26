@@ -49,6 +49,10 @@ KNOWN = {
     0x00F9: "sbufh: UEF stream length high, shared with the filing system ROM",
     0x00F4: "shadow: the MOS's own copy of the selected ROM number",
     0x00F5: "sbuft: UEF stream flags, shared with the filing system ROM",
+    0x0100: "bottom of the stack page, as Acorn's own ROMs use it: the error "
+            "block, and the name *WGET hands OSFIND - both read by another ROM, "
+            "so they cannot be in this image - and the *WGET -S loop, borrowed "
+            "with interrupts off and put back",
 }
 
 
