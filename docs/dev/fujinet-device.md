@@ -1,9 +1,20 @@
 # FujiNet device on the Pi - design
 
-STATUS 2026-09-26: design agreed in outline with dp111 (Pi is the device;
-the ROM backend goes upstream to fn-rom; disk first, then network). Nothing
-built yet. The exchange ABI below is a proposal until fn-rom's author has
-seen it.
+STATUS 2026-09-26 (evening): phase 1 (disk) BUILT and working on a Master
+with a Pi Zero 2 W. Pi side on branch fujinet-device (376c79d devices +
+host tests, 926a670 service). ROM side: fn-rom branch pi1mhz-1mhz-link
+(6bf7040, claude-tmp/fn-rom), BUILD_INTERFACE=1MHZ, for upstream; its
+serial build is byte-identical to before.
+
+MEASURED on hardware, fn-rom 0.02 Master build in sideways RAM:
+*FHOST set/get (resolved and stored by the Pi, on the card), *FIN,
+*FMOUNT, *FDRIVE, *CAT, *TYPE, *LOAD, *SAVE (new file allocated after the
+last, byte-exact on the card, other files intact); WebDAV PUT/DELETE of a
+mounted image refused 423; plain BREAK keeps mounts, CTRL-BREAK starts a
+new host session (unmounts) as fujinet-nio specifies. NOT hardware-tested:
+*FLS (a utilities-disc command, not in the ROM), TNFS images (not built:
+needs a non-blocking TNFS session), phase 2 (network). The exchange ABI
+below is as built; fn-rom's author has not reviewed it yet.
 
 ## What this is
 
