@@ -2,8 +2,8 @@
 
    Protocol: fujinet-nio docs/network_device_protocol.md, with the handlers
    in src/lib/network_device.cpp as the reference for every layout and
-   status.  Sessions ride on net_service's C API (net_capi_*), so http:// and
-   tcp:// go through the same lwIP code as the N: device.
+   status.  Sessions ride on net_service's C API (net_capi_*), so http://,
+   https:// and tcp:// go through the same lwIP code as the N: device.
 
    How it waits.  nio answers NotReady and lets the host poll; fn-rom does
    that for Read (with a back-off of ~48 s in all) but treats anything other
@@ -21,8 +21,7 @@
    selector reuses the buffered body, so one request can answer several
    queries.  Buffering answers NotReady until the body has all arrived.
 
-   Not here yet: https:// (Unsupported), XML/RSS translation (Unsupported,
-   as in nio), Info/InfoRead, request headers other than Content-Type, and
+   Not here yet: XML/RSS translation (Unsupported, as in nio), Info/InfoRead, request headers other than Content-Type, and
    bodies of unknown length (our HTTP request carries a Content-Length). */
 
 #include <stdlib.h>
@@ -322,9 +321,9 @@ static uint8_t do_open(fb_in *in, fb_out *out)
    char u[URL_MAX];
    memcpy(u, url, url_len);
    u[url_len] = '\0';
-   bool http = prefix_is(u, "http://");
+   bool http = prefix_is(u, "http://") || prefix_is(u, "https://");
    if (!http && !prefix_is(u, "tcp://"))
-      return FB_UNSUPPORTED;                         /* https:// among them, for now */
+      return FB_UNSUPPORTED;
    bool has_body = method == NET_HTTP_POST || method == NET_HTTP_PUT;
    if (!has_body && (body_len || (flags & OPEN_FLAG_BODY_UNKNOWN)))
       return FB_INVALID_REQUEST;

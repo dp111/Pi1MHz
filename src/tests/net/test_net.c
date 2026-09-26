@@ -92,6 +92,13 @@ err_t altcp_bind(struct altcp_pcb *c, const ip_addr_t *ip, u16_t port)
 struct altcp_pcb *altcp_listen(struct altcp_pcb *c) { c->listening = 1; return c; }
 void altcp_accept(struct altcp_pcb *c, altcp_accept_fn f) { c->accept = f; }
 u16_t altcp_sndbuf(struct altcp_pcb *c) { return c->t_sndbuf; }
+err_t altcp_get_tcp_addrinfo(struct altcp_pcb *c, int local, ip_addr_t *addr, u16_t *port)
+{
+   if (local) return ERR_VAL;           /* only the peer is ever asked for */
+   if (addr) *addr = c->remote_ip;
+   if (port) *port = c->remote_port;
+   return ERR_OK;
+}
 err_t altcp_write(struct altcp_pcb *c, const void *d, u16_t len, u8_t fl)
 {
    (void)fl;

@@ -1,0 +1,62 @@
+/* hwrng.c - the BCM2835 hardware random number generator as mbedTLS's
+   entropy source (MBEDTLS_ENTROPY_HARDWARE_ALT, wifi/mbedtls_config_pi1mhz.h).
+
+   Started on first use - the first https:// connection - not at boot, so
+   boot and BBC reset do no extra work.  Start-up discards the first 0x40000
+   oscillator bits, as secure_service_wolfssh.c does; the first poll waits
+   for them (a fraction of a second, once).  A word identical to the one
+   before means the generator has stopped, and the poll fails rather than
+   hand mbedTLS constant "entropy". */
+
+#include <stddef.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "base.h"
+#include "systimer.h"
+
+#define RNG_BASE      (PERIPHERAL_BASE + 0x104000u)
+#define RNG_CTRL      (*(volatile uint32_t *)(RNG_BASE + 0x00u))
+#define RNG_STATUS    (*(volatile uint32_t *)(RNG_BASE + 0x04u))
+#define RNG_DATA      (*(volatile uint32_t *)(RNG_BASE + 0x08u))
+#define RNG_INT_MASK  (*(volatile uint32_t *)(RNG_BASE + 0x10u))
+
+#define RNG_WARMUP_BITS   0x40000u
+#define RNG_WORD_WAIT_US  500000u      /* covers the warm-up; a stopped RNG fails */
+
+/* MBEDTLS_ERR_ENTROPY_SOURCE_FAILED, without pulling in mbedTLS headers */
+#define ENTROPY_SOURCE_FAILED  (-0x003C)
+
+static bool rng_started;
+static bool rng_have_last;
+static uint32_t rng_last;
+
+int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen);
+
+int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen)
+{
+   (void)data;
+   *olen = 0;
+   if (!rng_started) {
+      RNG_INT_MASK |= 1u;
+      RNG_STATUS = RNG_WARMUP_BITS;
+      RNG_CTRL |= 1u;
+      rng_started = true;
+   }
+   while (*olen < len) {
+      uint32_t t0 = RPI_GetSystemTime();
+      while ((RNG_STATUS >> 24) == 0u)
+         if (RPI_GetSystemTime() - t0 >= RNG_WORD_WAIT_US)
+            return ENTROPY_SOURCE_FAILED;
+      uint32_t w = RNG_DATA;
+      if (rng_have_last && w == rng_last)
+         return ENTROPY_SOURCE_FAILED;
+      rng_last = w;
+      rng_have_last = true;
+      for (unsigned int i = 0; i < 4u && *olen < len; i++) {
+         output[(*olen)++] = (unsigned char)w;
+         w >>= 8;
+      }
+   }
+   return 0;
+}

@@ -10,9 +10,9 @@
   ADFS).  Async commands (connect/dns/close) return NET_PENDING; the Beeb
   re-issues the same command to poll, exactly like the AUN TX/TX_POLL idiom.
 
-  TCP is written against lwIP's altcp API (altcp_*), which at LWIP_ALTCP==0
-  compiles to plain tcp_* (altcp.h provides the macros) - so Stage 4 can add
-  TLS by flipping one lwipopts flag rather than refactoring every callback.
+  TCP is written against lwIP's altcp API (altcp_*), so https:// is the same
+  code over a TLS altcp (LWIP_ALTCP_TLS in lwipopts.h) instead of a plain
+  one.
 */
 
 #include <string.h>
@@ -27,6 +27,16 @@
 #include "net_telnet.h"
 #include "config.h"
 #include "rpi/systimer.h"          /* RPI_GetSystemTime64 (ms clock for TNFS) */
+#include "lwip/opt.h"               /* LWIP_ALTCP_TLS, from lwipopts.h         */
+#if defined(LWIP_ALTCP_TLS) && LWIP_ALTCP_TLS
+#include <stdlib.h>
+#include "BeebSCSI/fatfs/ff.h"
+#include "lwip/altcp_tls.h"
+#include "mbedtls/ssl.h"
+#define NET_TLS 1
+#else
+#define NET_TLS 0
+#endif
 
 #include "wifi/wifi_lwip.h"        /* wifi_lwip_get_context, wifi_lwip_rx_kick */
 #include "lwip/altcp.h"
@@ -66,6 +76,9 @@ typedef struct {
    bool              dns_ok;        /* that resolve succeeded               */
    bool              is_url;        /* opened via net_url_open (N: device)  */
    uint8_t           url_adapter;   /* NET_URL_* for a URL handle           */
+   bool              tls;           /* https://: the connection is TLS      */
+   char              tls_host[NET_MAX_HOSTNAME]; /* its name, for SNI and the
+                                       certificate check                    */
    uint8_t           url_phase;     /* url_phase_t: the open state machine   */
    bool              http_hdr_done; /* HTTP adapter: response headers eaten */
    uint16_t          http_code;     /* HTTP adapter: parsed status code     */
@@ -464,6 +477,11 @@ static void net_tcp_err(void *arg, err_t err)
    /* lwIP has already freed the pcb - NULL it, never touch it again. */
    h->tpcb = NULL;
    h->last_err = net_tcp_result(err);
+   /* A TLS connection reports "connected" only once the handshake is done,
+      so failing while still connecting is the handshake failing: most
+      often a certificate that does not verify. */
+   if (h->tls && h->state == NET_ST_CONNECTING)
+      h->last_err = NET_ERR_TLS;
    h->state = NET_ST_ERROR;
 }
 
@@ -507,8 +525,11 @@ static err_t net_tcp_accept(void *arg, struct altcp_pcb *newpcb, err_t err)
    nh->type  = NET_TYPE_TCP;
    nh->tpcb  = newpcb;
    nh->state = NET_ST_CONNECTED;
-   nh->remote_ip   = newpcb->remote_ip;      /* peer, for URL_STATUS (see rcv_wnd */
-   nh->remote_port = newpcb->remote_port;    /* clamp above: altcp_pcb is tcp_pcb) */
+   {                                          /* the peer, for URL_STATUS */
+      u16_t port = 0;
+      (void)altcp_get_tcp_addrinfo(newpcb, 0, &nh->remote_ip, &port);
+      nh->remote_port = port;
+   }
    net_tcp_bind_callbacks(nh, newpcb);
    lh->accept_ready = true;
    lh->accept_h     = (uint8_t)idx;
@@ -564,7 +585,7 @@ static void net_dns_found(const char *name, const ip_addr_t *ipaddr, void *arg)
 
 /* ---- N: device (Stage 2): URL parsing ------------------------------------ */
 
-typedef struct { uint8_t adapter; uint16_t port; } net_url_t;
+typedef struct { uint8_t adapter; uint16_t port; bool tls; } net_url_t;
 
 /* Case-insensitive compare of s[0..len) against an upper-case NUL literal. */
 static bool net_ci_eq(const char *s, size_t len, const char *lit)
@@ -608,9 +629,11 @@ static bool net_url_parse(const char *url, net_url_t *out,
    const char *h, *e;
    size_t i;
    if (sep == NULL) return false;
+   out->tls = false;
    {
       size_t sl = (size_t)(sep - url);
       if      (net_ci_eq(url, sl, "HTTP")) { out->adapter = NET_URL_HTTP; out->port = 80u; }
+      else if (net_ci_eq(url, sl, "HTTPS")) { out->adapter = NET_URL_HTTP; out->port = 443u; out->tls = true; }
       else if (net_ci_eq(url, sl, "TCP"))  { out->adapter = NET_URL_TCP;  out->port = 0u;  }
       else if (net_ci_eq(url, sl, "UDP"))  { out->adapter = NET_URL_UDP;  out->port = 0u;  }
       else if (net_ci_eq(url, sl, "TNFS")) { out->adapter = NET_URL_TNFS; out->port = (uint16_t)TNFS_PORT; }
@@ -816,12 +839,64 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
    }
 }
 
+#if NET_TLS
+/* The CA bundle every https:// server certificate must chain to: a PEM file
+   at the root of the card (the Mozilla bundle, as curl ships it).  Read and
+   parsed on the first https:// connection and kept; if the file is missing
+   or unreadable, https:// fails with NET_ERR_TLS and the next attempt looks
+   again.  There is no clock, so certificate dates are not checked. */
+#define NET_TLS_CA_FILE   "/cacert.pem"
+#define NET_TLS_CA_MAX    (1024u * 1024u)
+
+static struct altcp_tls_config *net_tls_config(void)
+{
+   static struct altcp_tls_config *conf;
+   FIL      f;
+   UINT     got = 0;
+   uint8_t *pem;
+   FSIZE_t  size;
+
+   if (conf != NULL)
+      return conf;
+   if (f_open(&f, NET_TLS_CA_FILE, FA_READ) != FR_OK)
+      return NULL;
+   size = f_size(&f);
+   pem = (size != 0u && size < NET_TLS_CA_MAX) ? malloc((size_t)size + 1u) : NULL;
+   if (pem != NULL && f_read(&f, pem, (UINT)size, &got) == FR_OK && got == size) {
+      pem[size] = '\0';                     /* mbedTLS parses PEM with its NUL */
+      conf = altcp_tls_create_config_client(pem, (size_t)size + 1u);
+   }
+   (void)f_close(&f);
+   free(pem);
+   return conf;
+}
+#endif
+
 /* Create a pcb and start an outbound connect to h->remote_ip:remote_port.
    Returns NET_PENDING (CONNECTING) or an error.  The ERR_MEM park in
    net_tcp_recv() is what keeps RX drop-free (see net_tcp_bind_callbacks). */
 static uint8_t net_start_connect(net_handle_t *h)
 {
-   h->tpcb = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
+   if (h->tls) {
+#if NET_TLS
+      struct altcp_tls_config *conf = net_tls_config();
+      if (conf == NULL)
+         return NET_ERR_TLS;
+      h->tpcb = altcp_tls_new(conf, IPADDR_TYPE_V4);
+      if (h->tpcb == NULL)
+         return NET_ERR_NOMEM;
+      /* SNI, and the name the certificate must carry */
+      if (mbedtls_ssl_set_hostname((mbedtls_ssl_context *)altcp_tls_context(h->tpcb),
+                                   h->tls_host) != 0) {
+         altcp_abort(h->tpcb);
+         h->tpcb = NULL;
+         return NET_ERR_TLS;
+      }
+#else
+      return NET_ERR_UNSUPPORTED;
+#endif
+   } else
+      h->tpcb = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
    if (h->tpcb == NULL)
       return NET_ERR_NOMEM;
    net_tcp_bind_callbacks(h, h->tpcb);
@@ -1376,6 +1451,9 @@ static uint8_t url_open_core(net_handle_t *h, const char *url, uint8_t mode,
             return NET_PENDING;                   /* no IP yet - keep polling */
          net_handle_reset(h);
          h->is_url = true; h->url_adapter = u.adapter;
+         h->tls = u.tls;
+         if (u.tls)
+            snprintf(h->tls_host, sizeof h->tls_host, "%s", host);
          h->http_method = (opts && opts->method) ? opts->method : (uint8_t)NET_HTTP_GET;
          h->http_body_len = opts ? opts->body_len : 0u;
          snprintf(h->http_ctype, sizeof h->http_ctype, "%s",

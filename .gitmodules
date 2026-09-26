@@ -8,3 +8,6 @@
 [submodule "src/fujinet/cJSON"]
 	path = src/fujinet/cJSON
 	url = https://github.com/DaveGamble/cJSON.git
+[submodule "src/wifi/mbedtls"]
+	path = src/wifi/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls.git

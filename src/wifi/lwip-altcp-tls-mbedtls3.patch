@@ -1,0 +1,92 @@
+--- a/src/apps/altcp_tls/altcp_tls_mbedtls.c
++++ b/src/apps/altcp_tls/altcp_tls_mbedtls.c
+@@ -60,6 +60,9 @@
+ 
+ #if LWIP_ALTCP_TLS && LWIP_ALTCP_TLS_MBEDTLS
+ 
++/* Pi1MHz: built against mbedTLS 3, which made these struct members private. */
++#define MBEDTLS_ALLOW_PRIVATE_ACCESS
++
+ #include "lwip/altcp.h"
+ #include "lwip/altcp_tls.h"
+ #include "lwip/priv/altcp_priv.h"
+@@ -70,7 +73,6 @@
+ /* @todo: which includes are really needed? */
+ #include "mbedtls/entropy.h"
+ #include "mbedtls/ctr_drbg.h"
+-#include "mbedtls/certs.h"
+ #include "mbedtls/x509.h"
+ #include "mbedtls/ssl.h"
+ #include "mbedtls/net_sockets.h"
+@@ -81,7 +83,9 @@
+ #include "mbedtls/ssl_cache.h"
+ #include "mbedtls/ssl_ticket.h"
+ 
+-#include "mbedtls/ssl_internal.h" /* to call mbedtls_flush_output after ERR_MEM */
++/* mbedTLS 3: ssl_internal.h is gone; mbedtls_ssl_flush_output is still
++   exported by the library, declared only in its private ssl_misc.h. */
++int mbedtls_ssl_flush_output(mbedtls_ssl_context *ssl);
+ 
+ #include <string.h>
+ 
+@@ -533,7 +537,7 @@
+     LWIP_ASSERT("state", state != NULL);
+     LWIP_ASSERT("pcb mismatch", conn->inner_conn == inner_conn);
+     /* calculate TLS overhead part to not send it to application */
+-    overhead = state->overhead_bytes_adjust + state->ssl_context.out_left;
++    overhead = state->overhead_bytes_adjust + state->ssl_context.MBEDTLS_PRIVATE(out_left);
+     if ((unsigned)overhead > len) {
+       overhead = len;
+     }
+@@ -692,7 +696,9 @@
+   if (session && conn && conn->state) {
+     altcp_mbedtls_state_t *state = (altcp_mbedtls_state_t *)conn->state;
+     int ret = -1;
+-    if (session->data.start)
++#if defined(MBEDTLS_HAVE_TIME)
++    if (session->data.MBEDTLS_PRIVATE(start))
++#endif
+       ret = mbedtls_ssl_set_session(&state->ssl_context, &session->data);
+     return ret < 0 ? ERR_VAL : ERR_OK;
+   }
+@@ -785,7 +791,7 @@
+   struct altcp_tls_config *conf;
+   mbedtls_x509_crt *mem;
+ 
+-  if (TCP_WND < MBEDTLS_SSL_MAX_CONTENT_LEN) {
++  if (TCP_WND < MBEDTLS_SSL_IN_CONTENT_LEN) {
+     LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG|LWIP_DBG_LEVEL_SERIOUS,
+       ("altcp_tls: TCP_WND is smaller than the RX decrypion buffer, connection RX might stall!\n"));
+   }
+@@ -909,7 +915,8 @@
+     return ERR_VAL;
+   }
+ 
+-  ret = mbedtls_pk_parse_key(pkey, (const unsigned char *) privkey, privkey_len, privkey_pass, privkey_pass_len);
++  ret = mbedtls_pk_parse_key(pkey, (const unsigned char *) privkey, privkey_len, privkey_pass, privkey_pass_len,
++                             mbedtls_ctr_drbg_random, &altcp_tls_entropy_rng->ctr_drbg);
+   if (ret != 0) {
+     LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_pk_parse_public_key failed: %d\n", ret));
+     mbedtls_x509_crt_free(srvcert);
+@@ -1012,7 +1019,8 @@
+   }
+ 
+   mbedtls_pk_init(conf->pkey);
+-  ret = mbedtls_pk_parse_key(conf->pkey, privkey, privkey_len, privkey_pass, privkey_pass_len);
++  ret = mbedtls_pk_parse_key(conf->pkey, privkey, privkey_len, privkey_pass, privkey_pass_len,
++                             mbedtls_ctr_drbg_random, &altcp_tls_entropy_rng->ctr_drbg);
+   if (ret != 0) {
+     LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_pk_parse_key failed: %d 0x%x\n", ret, -1*ret));
+     altcp_tls_free_config(conf);
+@@ -1241,9 +1249,9 @@
+   /* HACK: if there is something left to send, try to flush it and only
+      allow sending more if this succeeded (this is a hack because neither
+      returning 0 nor MBEDTLS_ERR_SSL_WANT_WRITE worked for me) */
+-  if (state->ssl_context.out_left) {
++  if (state->ssl_context.MBEDTLS_PRIVATE(out_left)) {
+     altcp_mbedtls_flush_output(state);
+-    if (state->ssl_context.out_left) {
++    if (state->ssl_context.MBEDTLS_PRIVATE(out_left)) {
+       return ERR_MEM;
+     }
+   }

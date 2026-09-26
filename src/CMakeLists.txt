@@ -168,6 +168,36 @@ add_custom_command(
    VERBATIM
 )
 
+# lwIP's altcp_tls adapter is written for mbedTLS 2.x, which is end of life;
+# wifi/lwip-altcp-tls-mbedtls3.patch ports it to 3.6 (private-member access,
+# renamed macros, pk_parse_key's RNG).  Applied to a build-tree copy, as the
+# MTP patch above, so the lwIP submodule stays a plain upstream pin.
+set(ALTCP_TLS_UPSTREAM ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip/src/apps/altcp_tls/altcp_tls_mbedtls.c)
+set(ALTCP_TLS_PATCH    ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip-altcp-tls-mbedtls3.patch)
+set(ALTCP_TLS_PATCHED  ${CMAKE_CURRENT_BINARY_DIR}/lwip-patched/altcp_tls_mbedtls.c)
+add_custom_command(
+   OUTPUT  ${ALTCP_TLS_PATCHED}
+   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/lwip-patched
+   COMMAND patch --forward --silent -o ${ALTCP_TLS_PATCHED} ${ALTCP_TLS_UPSTREAM} ${ALTCP_TLS_PATCH}
+   DEPENDS ${ALTCP_TLS_UPSTREAM} ${ALTCP_TLS_PATCH}
+   COMMENT "Applying the Pi1MHz mbedTLS 3 patch to lwIP altcp_tls_mbedtls.c"
+   VERBATIM
+)
+set_source_files_properties(${ALTCP_TLS_PATCHED} PROPERTIES
+   INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip/src/apps/altcp_tls)
+
+# mbedTLS itself (every library file, most of which the config compiles to
+# nothing) and lwIP's TLS adapter: a library of their own, built without LTO
+# as wolfSSL is below - vendored code is not ours to warn about, and LTO
+# would re-optimise it at the final link, where per-file -w does not reach.
+file(GLOB mbedtls_files ${CMAKE_CURRENT_SOURCE_DIR}/wifi/mbedtls/library/*.c)
+add_library(pi1mhz_tls STATIC
+   ${mbedtls_files}
+   ${ALTCP_TLS_PATCHED}
+   ${CMAKE_CURRENT_SOURCE_DIR}/wifi/lwip/src/apps/altcp_tls/altcp_tls_mbedtls_mem.c
+)
+target_compile_options(pi1mhz_tls PRIVATE -w -O2 -fno-lto)
+
 set(core_files
    # Architecture-optimised string routines, built with our real -mcpu flags.
    # The prebuilt libc.a is compiled -Os for a weaker multilib than either
@@ -268,6 +298,10 @@ set(LWIP_ROOT wifi/lwip)
 # strict warnings (same rationale as the TinyUSB includes above).
 include_directories(SYSTEM ${LWIP_ROOT}/src/include)
 include_directories(wifi)
+# mbedTLS 3.6 LTS for https:// through lwIP's altcp_tls; our selection of it
+# is wifi/mbedtls_config_pi1mhz.h.
+include_directories(SYSTEM wifi/mbedtls/include)
+add_compile_definitions(MBEDTLS_CONFIG_FILE="mbedtls_config_pi1mhz.h")
 include_directories(AUN)
 
 # M5000 emulator
@@ -303,6 +337,7 @@ set(FrameBuffer_emulator_files
    framebuffer/teletext.c
    framebuffer/teletext.h
    rpi/armtimer.c
+   rpi/hwrng.c
    rpi/interrupts.c
 )
 
@@ -397,6 +432,9 @@ set(wifi_files
 )
 
 set(lwip_files
+   ${LWIP_ROOT}/src/core/altcp.c
+   ${LWIP_ROOT}/src/core/altcp_alloc.c
+   ${LWIP_ROOT}/src/core/altcp_tcp.c
    ${LWIP_ROOT}/src/core/def.c
    ${LWIP_ROOT}/src/core/dns.c
    ${LWIP_ROOT}/src/core/inet_chksum.c
@@ -442,6 +480,9 @@ set_source_files_properties(${MTP_DEVICE_PATCHED} PROPERTIES
    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/class/mtp)
 
 set_source_files_properties(
+   ${LWIP_ROOT}/src/core/altcp.c
+   ${LWIP_ROOT}/src/core/altcp_alloc.c
+   ${LWIP_ROOT}/src/core/altcp_tcp.c
    ${LWIP_ROOT}/src/core/def.c
    ${LWIP_ROOT}/src/core/dns.c
    ${LWIP_ROOT}/src/core/inet_chksum.c
@@ -558,7 +599,7 @@ endif()
 
 add_executable( Pi1MHz ${Pi1MHz_sources} )
 
-target_link_libraries( Pi1MHz PRIVATE m )
+target_link_libraries( Pi1MHz PRIVATE pi1mhz_tls m )
 if(PI1MHZ_SSH)
    target_compile_definitions(Pi1MHz PRIVATE WOLFSSL_USER_SETTINGS PI1MHZ_SSH)
    target_link_libraries( Pi1MHz PRIVATE nettools_wolfssh wolfssl )

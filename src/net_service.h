@@ -150,6 +150,7 @@ void net_time_cancel(void);
 #define NET_ERR_TCP_CLOSED   0x2Eu /* connection closed unexpectedly            */
 #define NET_ERR_TCP_IF       0x2Fu /* network interface rejected the operation  */
 #define NET_ERR_HTTP_STATUS  0x30u /* HTTP response was not successful          */
+#define NET_ERR_TLS          0x31u /* https: no CA bundle, or the server's certificate did not verify */
 /* NET_PENDING is bit-7-CLEAR on purpose.  Bit 7 set means "the command was
    latched in FIQ but the main-loop poll has not produced a result yet" - the
    Beeb spins on it (the FAT-service "BMI wait" idiom) and it clears within one

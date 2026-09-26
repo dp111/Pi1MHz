@@ -784,7 +784,10 @@ static void test_network(void)
    net_close(h);
 
    /* Refusals. */
-   CHECK(net_open(1, 0, "https://ok.test/", 0).status == FB_UNSUPPORTED, "https (not yet)");
+   reply_t rs = net_open(1, 0, "https://ok.test/s", 0);
+   CHECK(rs.status == FB_OK && D(rs)[6] == 0x00 &&
+         strcmp(fake_net_last_open()->url, "https://ok.test/s") == 0, "https: an HTTP session");
+   CHECK(net_close(NET_H(rs)) == FB_OK, "close it");
    CHECK(net_open(1, 0, "ftp://ok.test/", 0).status == FB_UNSUPPORTED, "unknown scheme");
    CHECK(net_open(1, 0, "http:///", 0).status == FB_INVALID_REQUEST, "a URL with no host");
    CHECK(net_open(1, 0, "http://ok.test/", 5).status == FB_INVALID_REQUEST, "GET with a body");

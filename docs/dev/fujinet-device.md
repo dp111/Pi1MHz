@@ -38,7 +38,20 @@ nio's own translator (built on the host) on 6,000 random documents and
 MEASURED on the Master (release build): OPENIN an http:// JSON file, then
 *FJSON 21 <path> and BGET# to EOF# for five selectors on the one channel -
 12.5, -0.0325, Leeds, 1/2/3 one per line, TRUE - all right, and the
-server logged a single GET for the five. Still to come: https://.
+server logged a single GET for the five.
+
+https:// BUILT, NOT hardware-tested (2026-09-26): dp111 chose lwIP's
+altcp_tls with LWIP_ALTCP on for every altcp user, and a CA bundle with no
+date checks. mbedTLS 3.6.7 LTS is a submodule (src/wifi/mbedtls, config
+wifi/mbedtls_config_pi1mhz.h: TLS 1.2 client, ECDHE-RSA/ECDSA, AES-GCM and
+ChaCha20-Poly1305, no clock); lwIP's adapter is 2.x-only, so
+wifi/lwip-altcp-tls-mbedtls3.patch ports it, applied to a build-tree copy
+as the TinyUSB MTP patch is. Certificates must verify
+(ALTCP_MBEDTLS_AUTHMODE REQUIRED) against /cacert.pem on the card, with
+SNI and the host-name check from the URL; a missing bundle or a failed
+handshake is NET_ERR_TLS (0x31). Entropy is the BCM2835 RNG (rpi/hwrng.c),
+started on first use. Kernel +183 KB (753 KB rpi). The N: device's
+*WGET gets https:// too.
 
 Bench trap: a TNFS server with two interfaces on one subnet answers from
 its primary address; address it by that one, or every client here (the N:
