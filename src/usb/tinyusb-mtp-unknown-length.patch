@@ -1,22 +1,23 @@
-Local fix to the vendored TinyUSB MTP class driver, kept here because the
-submodule is a plain upstream pin (hathach/tinyusb 231347964, master of
-2026-09-06) and a working-tree edit inside it is invisible to this repo.
-Apply after any submodule checkout or bump:
-
-    git -C src/usb/tinyusb apply ../tinyusb-mtp-unknown-length.patch
+Local fix to the vendored TinyUSB MTP class driver.  The build applies it to a
+copy of mtp_device.c in the build tree and compiles that (src/CMakeLists.txt,
+MTP_DEVICE_PATCHED); the submodule itself stays a plain upstream pin.  Do NOT
+apply it inside src/usb/tinyusb: a working-tree edit there is hidden by
+ignore=dirty and silently lost by any fresh checkout or submodule update,
+which is how builds went out without it before.  If an upstream bump changes
+the surrounding code the build stops at this patch - regenerate it then.
+Generated against hathach/tinyusb d09de3022 (master of 2026-09-25).
 
 Guarded by PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT (tusb_config.h).
 When the host declares no length (ObjectCompressedSize 0 or 0xFFFFFFFF)
 upstream ends an OUT data phase only on total_len or a ZLP, so any length
 that is not a whole number of packets hangs the operation with the file
-open and the LUN locked; a short packet must end the phase.  Upstream had
-not changed mtp_device.c as of e97cf0296 (2026-09-08).
+open and the LUN locked; a short packet must end the phase.  Upstream has
+not changed this as of d09de3022; hathach/tinyusb PR #3956 (open) reworks the
+OUT data phase and must be checked against this case when it lands.
 
-diff --git a/src/class/mtp/mtp_device.c b/src/class/mtp/mtp_device.c
-index 275c9f858..b2011cef0 100644
 --- a/src/class/mtp/mtp_device.c
 +++ b/src/class/mtp/mtp_device.c
-@@ -432,6 +432,21 @@ bool mtpd_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t event, uint32_t
+@@ -433,6 +433,21 @@
          // OUT completion: reaching total_len or ZLP only. A short packet does NOT end the phase
          // (an early short packet before total_len is the cancel case, not normal completion).
          is_complete = (p_mtp->xferred_len >= p_mtp->total_len) || ((xferred_bytes == 0 && p_mtp->xferred_len > 0));

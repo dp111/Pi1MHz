@@ -149,6 +149,25 @@ set( CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=auto")
 
 set( CMAKE_EXE_LINKER_FLAGS " -Wl,--gc-sections -Wl,--defsym=START_ADDR=0x8000 -Wl,-T,${PROJECT_SOURCE_DIR}/rpi/rpi.ld " )
 
+# Our fix to TinyUSB's MTP class driver (usb/tinyusb-mtp-unknown-length.patch,
+# guarded by PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT in tusb_config.h)
+# is applied to a copy in the build tree and that copy is compiled.  The
+# submodule stays a plain upstream pin: an edit in its working tree is hidden
+# by ignore=dirty and lost by any fresh checkout or submodule update, which
+# is how builds went out without it.  A patch that stops applying after an
+# upstream bump fails the build here instead of silently disappearing.
+set(MTP_DEVICE_UPSTREAM ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/class/mtp/mtp_device.c)
+set(MTP_DEVICE_PATCH    ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb-mtp-unknown-length.patch)
+set(MTP_DEVICE_PATCHED  ${CMAKE_CURRENT_BINARY_DIR}/tinyusb-patched/mtp_device.c)
+add_custom_command(
+   OUTPUT  ${MTP_DEVICE_PATCHED}
+   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tinyusb-patched
+   COMMAND patch --forward --silent -o ${MTP_DEVICE_PATCHED} ${MTP_DEVICE_UPSTREAM} ${MTP_DEVICE_PATCH}
+   DEPENDS ${MTP_DEVICE_UPSTREAM} ${MTP_DEVICE_PATCH}
+   COMMENT "Applying the Pi1MHz MTP patch to TinyUSB mtp_device.c"
+   VERBATIM
+)
+
 set(core_files
    # Architecture-optimised string routines, built with our real -mcpu flags.
    # The prebuilt libc.a is compiled -Os for a weaker multilib than either
@@ -216,7 +235,7 @@ set(core_files
    usb/tinyusb/src/tusb.c
    usb/tinyusb/src/common/tusb_fifo.c
    usb/tinyusb/src/device/usbd.c
-   usb/tinyusb/src/class/mtp/mtp_device.c
+   ${MTP_DEVICE_PATCHED}          # usb/tinyusb/src/class/mtp/mtp_device.c + our patch
    usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
    usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
 )
@@ -385,12 +404,17 @@ set_source_files_properties(
    usb/tinyusb/src/tusb.c
    usb/tinyusb/src/common/tusb_fifo.c
    usb/tinyusb/src/device/usbd.c
-   usb/tinyusb/src/class/mtp/mtp_device.c
+   ${MTP_DEVICE_PATCHED}
    usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
    usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
    PROPERTIES
    COMPILE_OPTIONS "-Wno-arith-conversion;-Wno-strict-overflow;-Wno-attributes;-Wno-packed;-Wno-conversion;-Wno-switch-enum;-Wno-bad-function-cast"
 )
+
+# The patched copy lives in the build tree, so its own directory - which holds
+# mtp_device.h, included with quotes - has to be named explicitly.
+set_source_files_properties(${MTP_DEVICE_PATCHED} PROPERTIES
+   INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/class/mtp)
 
 set_source_files_properties(
    ${LWIP_ROOT}/src/core/def.c
