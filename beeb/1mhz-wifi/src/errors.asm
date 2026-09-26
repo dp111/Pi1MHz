@@ -1,12 +1,13 @@
 \ ElkWiFi-compatible MOS error construction.
 \
-\ The original Electron ROM used &0100 as a temporary BRK block. That is the
-\ processor stack, so a driver error entered by an application could overwrite
-\ live return addresses and subsequently report Bad program. 1MHzWifi removes
-\ the network printer and therefore owns its original 32-byte `netprt` block.
-\ The longest emitted error, including BRK, number and terminator, fits there.
+\ The error block is built at &0100, the bottom of the stack page, as Acorn's
+\ own ROMs do. It must be in main memory: by the time the language's error
+\ handler reads the message, a different ROM is paged in, so a block inside
+\ this image (where the workspace now lives) reads back as that ROM's bytes.
+\ The *WGET -S copy also borrows &0100, but only with interrupts off and puts
+\ it back before any error can be raised.
 
-error_workspace = netprt
+error_workspace = &0100
 
 .error
     lda #&00

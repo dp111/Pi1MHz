@@ -458,9 +458,15 @@ net_bytes_bank = heap+&E2
  plp
  lda sflag
  beq pi_wget_finish_close
+ \ Close the URL before copying: the copy can end in an error, and one that
+ \ left the Pi's handle open made the next *WGET fail with Empty response.
+ \ The close goes through the services mailbox, not the JIM pages copied.
+ jsr pi_wget_close
  jsr wget_copy_file_to_swr
+ jmp pi_wget_report
 .pi_wget_finish_close
  jsr pi_wget_close
+.pi_wget_report
  jsr printtext
  equs "WGET ",&EA
  lda uflag

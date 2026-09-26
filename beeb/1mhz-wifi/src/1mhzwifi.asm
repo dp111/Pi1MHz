@@ -559,7 +559,7 @@ ASSERT rom_content_end <= ws_base
 \ ---------------------------------------------------------------------------
 \ At the top of the bank, so everything below rom_content_end is free for code.
 skipto ws_base
-.ws_netprt          skip &20        \ netprt: timeouts, cursor, error block
+.ws_netprt          skip &20        \ netprt: timeouts, cursor, driver state
 .ws_writable        equb 0          \ ws_flag: set by the probe in autorun
 .ws_mux_status      equb 0          \ mux_status
 skipto heap
