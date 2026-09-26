@@ -223,3 +223,66 @@ bool tnfs_reply_stat_size(const tnfs_reply_t *r, uint32_t *size)
             | ((uint32_t)r->body[8] << 16) | ((uint32_t)r->body[9] << 24);
    return true;
 }
+
+size_t tnfs_build_lseek(uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
+                        uint8_t fd, uint8_t whence, int32_t position)
+{
+   uint32_t p = (uint32_t)position;
+   size_t pos = put_hdr(buf, cap, connid, seq, TNFS_CMD_LSEEK);
+   if (pos == 0u) return 0u;
+   if (!put_u8 (buf, cap, &pos, fd))                    return 0u;
+   if (!put_u8 (buf, cap, &pos, whence))                return 0u;
+   if (!put_u16(buf, cap, &pos, (uint16_t)p))           return 0u;
+   if (!put_u16(buf, cap, &pos, (uint16_t)(p >> 16)))   return 0u;
+   return pos;
+}
+
+bool tnfs_reply_stat_mode(const tnfs_reply_t *r, uint16_t *mode)
+{
+   if (!r->ok || r->status != TNFS_OK || r->body_len < 2u) return false;
+   if (mode) *mode = rd_u16(r->body);
+   return true;
+}
+
+/* ---- the shared request engine (see net_tnfs.h) ------------------------ */
+
+static void tnfs_xfer_arm(tnfs_xfer_t *x, uint32_t now_ms)
+{
+   x->deadline = now_ms + (x->retry_ms ? x->retry_ms : TNFS_TIMEOUT_MS);
+}
+
+void tnfs_xfer_begin(tnfs_xfer_t *x, uint16_t len, uint32_t now_ms)
+{
+   x->req_len = len;
+   x->retries = TNFS_RETRIES;
+   x->eagain  = TNFS_EAGAIN_MAX;
+   tnfs_xfer_arm(x, now_ms);
+}
+
+tnfs_x tnfs_xfer_reply(tnfs_xfer_t *x, const uint8_t *pkt, size_t len,
+                       uint32_t now_ms, tnfs_reply_t *rep)
+{
+   /* Accept only a well-formed reply to our seq/cmd on this session: once a
+      session id is assigned, a reply carrying another is not ours. */
+   if (len == 0u || !tnfs_parse_reply(pkt, len, x->seq, x->req[3], rep)
+       || (x->connid != 0u && rep->connid != x->connid))
+      return TNFS_X_IGNORED;
+   if (rep->status == TNFS_EAGAIN) {          /* server busy: back off, resend */
+      uint32_t back = rep->backoff_ms ? rep->backoff_ms : x->retry_ms;
+      if (x->eagain == 0u) return TNFS_X_FAIL; /* bound sustained EAGAIN */
+      x->eagain--;
+      x->retries  = TNFS_RETRIES;              /* the link is proven up */
+      x->deadline = now_ms + (back ? back : TNFS_TIMEOUT_MS);
+      return TNFS_X_BUSY;
+   }
+   return TNFS_X_DONE;
+}
+
+tnfs_x tnfs_xfer_tick(tnfs_xfer_t *x, uint32_t now_ms)
+{
+   if ((int32_t)(now_ms - x->deadline) < 0) return TNFS_X_WAIT;
+   if (x->retries == 0u) return TNFS_X_FAIL;
+   x->retries--;
+   tnfs_xfer_arm(x, now_ms);
+   return TNFS_X_SEND;
+}

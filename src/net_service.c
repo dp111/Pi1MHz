@@ -94,17 +94,10 @@ typedef struct {
    uint32_t          rx_size;       /* capacity of the ring in use (pow2)   */
    /* TNFS (N:TNFS://) session + one in-flight request, for the retry engine */
    uint8_t           tnfs_phase;    /* TNFS_PH_*                            */
-   uint8_t           tnfs_seq;      /* sequence of the outstanding request  */
    uint8_t           tnfs_fd;       /* open file / directory handle         */
    uint8_t           tnfs_is_dir;   /* URL path ended in '/': a directory   */
    uint8_t           tnfs_wr;       /* url_open mode had the write bit      */
-   uint8_t           tnfs_retries;  /* resends left on the outstanding req  */
-   uint8_t           tnfs_eagain;   /* server-busy (EAGAIN) budget left     */
-   uint16_t          tnfs_connid;   /* session id (from MOUNT)              */
-   uint16_t          tnfs_retry_ms; /* base resend timeout (from MOUNT)     */
-   uint32_t          tnfs_deadline; /* ms: resend/timeout deadline          */
-   uint16_t          tnfs_req_len;  /* outstanding request length           */
-   uint8_t           tnfs_req[256]; /* buffered request, for resend         */
+   tnfs_xfer_t       tnfs;          /* outstanding request: net_tnfs.h engine */
    telnet_ctx_t      telnet;        /* TELNET: IAC filter state (zeroed = reset) */
 } net_handle_t;
 
@@ -115,13 +108,9 @@ typedef struct {
 #define TNFS_PH_READY    3u   /* mounted + file open                   */
 #define TNFS_PH_READING  4u   /* READ sent, awaiting reply             */
 #define TNFS_PH_WRITING  5u   /* WRITE sent, awaiting reply            */
-#define TNFS_REQ_MAX     256u
-#define TNFS_PKT_MAX     600u /* largest reply datagram we parse       */
-#define TNFS_RETRIES     4u   /* resends before giving up              */
-#define TNFS_EAGAIN_MAX  8u   /* server-busy backoffs before giving up */
-#define TNFS_TIMEOUT_MS  800u /* fallback resend timeout               */
+/* TNFS_REQ_MAX, TNFS_PKT_MAX and the resend/backoff limits are net_tnfs.h's. */
 #define TNFS_READ_CHUNK  512u /* cap a READ so its reply fits a datagram */
-#define TNFS_WRITE_CHUNK 240u /* cap a WRITE so req (data + 7 hdr) fits tnfs_req */
+#define TNFS_WRITE_CHUNK 240u /* cap a WRITE (data + 7 hdr) as before the shared buffer grew */
 
 static void net_tnfs_send_raw(net_handle_t *h, const uint8_t *req, uint16_t len);
 
@@ -985,17 +974,17 @@ static uint8_t do_close(net_handle_t *h)
       socket, so the server reclaims the fd/session promptly.  Fire-and-forget:
       a lost teardown just leaves the server to time the session out. */
    if (h->is_url && h->url_adapter == NET_URL_TNFS
-       && h->upcb != NULL && h->tnfs_connid != 0u) {
+       && h->upcb != NULL && h->tnfs.connid != 0u) {
       uint8_t  req[16];
       size_t   n;
       if (h->tnfs_phase == TNFS_PH_READY || h->tnfs_phase == TNFS_PH_READING) {
          if (h->tnfs_is_dir)
-            n = tnfs_build_closedir(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq, h->tnfs_fd);
+            n = tnfs_build_closedir(req, sizeof req, h->tnfs.connid, ++h->tnfs.seq, h->tnfs_fd);
          else
-            n = tnfs_build_close(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq, h->tnfs_fd);
+            n = tnfs_build_close(req, sizeof req, h->tnfs.connid, ++h->tnfs.seq, h->tnfs_fd);
          net_tnfs_send_raw(h, req, (uint16_t)n);
       }
-      n = tnfs_build_umount(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq);
+      n = tnfs_build_umount(req, sizeof req, h->tnfs.connid, ++h->tnfs.seq);
       net_tnfs_send_raw(h, req, (uint16_t)n);
    }
    /* A listener with an accepted connection nobody has collected: close that
@@ -1232,24 +1221,14 @@ static void net_tnfs_send_raw(net_handle_t *h, const uint8_t *req, uint16_t len)
    wifi_lwip_rx_kick();
 }
 
-/* (Re)transmit the buffered request and (re)arm the resend/timeout deadline. */
-static void net_tnfs_fire(net_handle_t *h)
-{
-   net_tnfs_send_raw(h, h->tnfs_req, h->tnfs_req_len);
-   h->tnfs_deadline = net_now_ms()
-                    + (h->tnfs_retry_ms ? h->tnfs_retry_ms : TNFS_TIMEOUT_MS);
-}
-
 /* Begin a new transaction: the caller has already built the request into
-   h->tnfs_req[] with sequence h->tnfs_seq.  Sends it and enters `phase`. */
+   h->tnfs.req[] with sequence h->tnfs.seq.  Sends it and enters `phase`. */
 static uint8_t net_tnfs_start(net_handle_t *h, uint8_t phase, size_t req_len)
 {
    if (req_len == 0u || req_len > TNFS_REQ_MAX) return NET_ERR_PARAM;
-   h->tnfs_phase   = phase;
-   h->tnfs_req_len = (uint16_t)req_len;
-   h->tnfs_retries = TNFS_RETRIES;
-   h->tnfs_eagain  = TNFS_EAGAIN_MAX;
-   net_tnfs_fire(h);
+   h->tnfs_phase = phase;
+   tnfs_xfer_begin(&h->tnfs, (uint16_t)req_len, net_now_ms());
+   net_tnfs_send_raw(h, h->tnfs.req, h->tnfs.req_len);
    return NET_PENDING;
 }
 
@@ -1257,35 +1236,25 @@ static uint8_t net_tnfs_start(net_handle_t *h, uint8_t phase, size_t req_len)
    body pointers in *rep stay valid after return) and returns:
    NET_OK  - a matching reply arrived (rep->status may still be an error),
    NET_PENDING - still waiting / backing off / just resent,
-   NET_ERR_CONN - retries exhausted with no reply. */
+   NET_ERR_CONN - retries exhausted with no reply.
+   The resend and backoff rules are net_tnfs.h's tnfs_xfer engine; the pcb is
+   also udp_connect'd to the server, so foreign sources never arrive. */
 static uint8_t net_tnfs_poll(net_handle_t *h, uint8_t *pkt, size_t pktcap,
                              tnfs_reply_t *rep)
 {
-   uint8_t cmd = h->tnfs_req[3];                /* the command we sent */
    if (h->rx_count >= 8u) {
       uint16_t plen = net_udp_pop(h, pkt, pktcap);
-      /* Accept only a well-formed reply to our seq/cmd on this session - a
-         reply carrying a different connid (once one is assigned) is not ours,
-         so it is drained and ignored (defence-in-depth: the pcb is also
-         udp_connect'd to the server, so foreign sources never arrive). */
-      if (plen != 0u && tnfs_parse_reply(pkt, plen, h->tnfs_seq, cmd, rep)
-          && (h->tnfs_connid == 0u || rep->connid == h->tnfs_connid)) {
-         if (rep->status == TNFS_EAGAIN) {       /* server busy: back off, resend */
-            uint32_t back = rep->backoff_ms ? rep->backoff_ms : h->tnfs_retry_ms;
-            if (h->tnfs_eagain == 0u) return NET_ERR_CONN;   /* bound sustained EAGAIN */
-            h->tnfs_eagain--;
-            h->tnfs_retries = TNFS_RETRIES;      /* link is proven up - restore loss budget */
-            h->tnfs_deadline = net_now_ms() + (back ? back : TNFS_TIMEOUT_MS);
-            return NET_PENDING;
-         }
-         return NET_OK;
+      switch (tnfs_xfer_reply(&h->tnfs, pkt, plen, net_now_ms(), rep)) {
+      case TNFS_X_DONE: return NET_OK;
+      case TNFS_X_FAIL: return NET_ERR_CONN;
+      case TNFS_X_BUSY: return NET_PENDING;
+      default:          break;            /* not ours: keep waiting */
       }
-      /* a stale/duplicate/foreign datagram - ignore it and keep waiting */
    }
-   if ((int32_t)(net_now_ms() - h->tnfs_deadline) >= 0) {
-      if (h->tnfs_retries == 0u) return NET_ERR_CONN;   /* gave up */
-      h->tnfs_retries--;
-      net_tnfs_fire(h);
+   switch (tnfs_xfer_tick(&h->tnfs, net_now_ms())) {
+   case TNFS_X_FAIL: return NET_ERR_CONN;   /* gave up */
+   case TNFS_X_SEND: net_tnfs_send_raw(h, h->tnfs.req, h->tnfs.req_len); break;
+   default:          break;
    }
    return NET_PENDING;
 }
@@ -1317,9 +1286,9 @@ static uint8_t net_tnfs_begin(net_handle_t *h)
    (void)udp_connect(h->upcb, &h->remote_ip, h->remote_port);
    h->type          = NET_TYPE_UDP;
    h->state         = NET_ST_CONNECTED;
-   h->tnfs_retry_ms = TNFS_TIMEOUT_MS;          /* until MOUNT tells us better */
-   h->tnfs_seq      = 1u;
-   n = tnfs_build_mount(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_seq, "/", NULL, NULL);
+   h->tnfs.retry_ms = TNFS_TIMEOUT_MS;          /* until MOUNT tells us better */
+   h->tnfs.seq      = 1u;
+   n = tnfs_build_mount(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.seq, "/", NULL, NULL);
    if (n == 0u) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM; }
    h->url_phase = URL_CONNECTING;               /* reuse: "TNFS handshaking" */
    return net_tnfs_start(h, TNFS_PH_MOUNT, n);
@@ -1413,16 +1382,16 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                if (!tnfs_reply_mount(&rep, NULL, &rms)) {      /* short reply: no connid to trust */
                   h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN;
                }
-               h->tnfs_connid = rep.connid;
-               if (rms >= 100u && rms <= 5000u) h->tnfs_retry_ms = rms;
+               h->tnfs.connid = rep.connid;
+               if (rms >= 100u && rms <= 5000u) h->tnfs.retry_ms = rms;
                /* directory if the mode is DIR (13) or the path ends in '/' */
                uint8_t m = jim_rd8(cp + 1u);
                h->tnfs_is_dir = ((plen != 0u && path[plen - 1u] == '/')
                                  || m == NET_OPEN_DIR) ? 1u : 0u;
-               h->tnfs_seq++;
+               h->tnfs.seq++;
                if (h->tnfs_is_dir) {
-                  n = tnfs_build_opendir(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                         h->tnfs_seq, path);
+                  n = tnfs_build_opendir(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid,
+                                         h->tnfs.seq, path);
                } else {
                   uint16_t oflags = (m == NET_OPEN_RW)
                         ? (uint16_t)(TNFS_O_RDWR | TNFS_O_CREAT)
@@ -1430,8 +1399,8 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                               ? (uint16_t)(TNFS_O_WRONLY | TNFS_O_CREAT | TNFS_O_TRUNC)
                               : (uint16_t)TNFS_O_RDONLY;
                   uint16_t omode = h->tnfs_wr ? 0x01A4u : 0u;   /* 0644 on create */
-                  n = tnfs_build_open(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                      h->tnfs_seq, oflags, omode, path);
+                  n = tnfs_build_open(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid,
+                                      h->tnfs.seq, oflags, omode, path);
                }
                if (n == 0u) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM; }
                return net_tnfs_start(h, TNFS_PH_OPEN, n);
@@ -1489,15 +1458,15 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       if (h->tnfs_phase == TNFS_PH_READY) {       /* start a READ / READDIR */
          size_t n;
          if (max == 0u) return NET_OK;            /* no room - don't burn a dir entry */
-         h->tnfs_seq++;
+         h->tnfs.seq++;
          if (h->tnfs_is_dir) {                    /* one directory entry per read */
-            n = tnfs_build_readdir(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                   h->tnfs_seq, h->tnfs_fd);
+            n = tnfs_build_readdir(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid,
+                                   h->tnfs.seq, h->tnfs_fd);
          } else {
             uint16_t want = (max > TNFS_READ_CHUNK) ? (uint16_t)TNFS_READ_CHUNK : (uint16_t)max;
             if (want == 0u) return NET_OK;
-            n = tnfs_build_read(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                h->tnfs_seq, h->tnfs_fd, want);
+            n = tnfs_build_read(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid,
+                                h->tnfs.seq, h->tnfs_fd, want);
          }
          return net_tnfs_start(h, TNFS_PH_READING, n);
       }
@@ -1619,8 +1588,8 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
          size_t   n;
          jim_wr24(cp + 1u, 0u);
          if (want == 0u) return NET_OK;
-         h->tnfs_seq++;
-         n = tnfs_build_write(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid, h->tnfs_seq,
+         h->tnfs.seq++;
+         n = tnfs_build_write(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid, h->tnfs.seq,
                               h->tnfs_fd, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], want);
          return net_tnfs_start(h, TNFS_PH_WRITING, n);
       }

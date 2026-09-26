@@ -141,6 +141,55 @@ int main(void)
               "EAGAIN reply -> backoff 500 ms"); }
    }
 
+   printf("== LSEEK / STAT mode ==\n");
+   n = tnfs_build_lseek(buf, sizeof buf, 0x1234u, 9u, 0x05u, TNFS_SEEK_SET, 0x00030200);
+   CHECK(n == 10u && buf[3] == TNFS_CMD_LSEEK && buf[4] == 0x05 && buf[5] == TNFS_SEEK_SET &&
+         buf[6] == 0x00 && buf[7] == 0x02 && buf[8] == 0x03 && buf[9] == 0x00,
+         "lseek: fd, whence, position LE");
+   CHECK(tnfs_build_lseek(buf, 9u, 1u, 1u, 1u, 0u, 0) == 0u, "lseek refuses a short buffer");
+   { uint8_t srep[] = { 0x01,0x00,0x04,TNFS_CMD_STAT, TNFS_OK, 0xED,0x41, 0,0,0,0, 0,0,0,0 };
+     tnfs_reply_t r; uint16_t mode = 0;
+     CHECK(tnfs_parse_reply(srep, sizeof srep, 4u, TNFS_CMD_STAT, &r) &&
+           tnfs_reply_stat_mode(&r, &mode) && (mode & TNFS_S_IFMT) == TNFS_S_IFDIR,
+           "stat mode 0x41ED is a directory"); }
+
+   printf("== shared request engine (tnfs_xfer) ==\n");
+   {
+      tnfs_xfer_t x;
+      tnfs_reply_t r;
+      memset(&x, 0, sizeof x);
+      x.seq = 3u; x.connid = 0x0042u; x.retry_ms = 100u;
+      size_t len = tnfs_build_read(x.req, sizeof x.req, x.connid, x.seq, 1u, 256u);
+      tnfs_xfer_begin(&x, (uint16_t)len, 1000u);
+      CHECK(tnfs_xfer_tick(&x, 1099u) == TNFS_X_WAIT, "no resend before the deadline");
+      CHECK(tnfs_xfer_tick(&x, 1100u) == TNFS_X_SEND, "resend at the deadline");
+      uint8_t good[]  = { 0x42,0x00,3u,TNFS_CMD_READ, TNFS_OK, 0x00,0x00 };
+      uint8_t stale[] = { 0x42,0x00,2u,TNFS_CMD_READ, TNFS_OK, 0x00,0x00 };
+      uint8_t other[] = { 0x43,0x00,3u,TNFS_CMD_READ, TNFS_OK, 0x00,0x00 };
+      uint8_t busy[]  = { 0x42,0x00,3u,TNFS_CMD_READ, TNFS_EAGAIN, 0xF4,0x01 };
+      CHECK(tnfs_xfer_reply(&x, stale, sizeof stale, 1200u, &r) == TNFS_X_IGNORED, "stale seq ignored");
+      CHECK(tnfs_xfer_reply(&x, other, sizeof other, 1200u, &r) == TNFS_X_IGNORED, "foreign session ignored");
+      CHECK(tnfs_xfer_reply(&x, busy, sizeof busy, 1200u, &r) == TNFS_X_BUSY, "EAGAIN backs off");
+      CHECK(tnfs_xfer_tick(&x, 1699u) == TNFS_X_WAIT && tnfs_xfer_tick(&x, 1700u) == TNFS_X_SEND,
+            "the server's 500 ms backoff is honoured");
+      CHECK(tnfs_xfer_reply(&x, good, sizeof good, 1800u, &r) == TNFS_X_DONE && r.ok, "matching reply done");
+      /* Silence: TNFS_RETRIES resends, then fail. */
+      tnfs_xfer_begin(&x, (uint16_t)len, 0u);
+      int sends = 0;
+      uint32_t t = 0;
+      tnfs_x res;
+      while ((res = tnfs_xfer_tick(&x, t)) != TNFS_X_FAIL && t < 100000u) {
+         if (res == TNFS_X_SEND) sends++;
+         t += 10u;
+      }
+      CHECK(res == TNFS_X_FAIL && sends == (int)TNFS_RETRIES, "silence: TNFS_RETRIES resends, then fail");
+      /* Sustained EAGAIN is bounded. */
+      tnfs_xfer_begin(&x, (uint16_t)len, 0u);
+      int busies = 0;
+      while ((res = tnfs_xfer_reply(&x, busy, sizeof busy, 0u, &r)) == TNFS_X_BUSY) busies++;
+      CHECK(res == TNFS_X_FAIL && busies == (int)TNFS_EAGAIN_MAX, "sustained EAGAIN bounded");
+   }
+
    printf("\n%d checks, %d failures\n", checks, failures);
    if (failures) { printf("TNFS CODEC TESTS FAILED\n"); return 1; }
    printf("TNFS CODEC TESTS PASSED\n");
