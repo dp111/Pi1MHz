@@ -42,3 +42,5 @@ error_workspace = netprt
 .error_disabled         equs "Wifi is disabled",&0D
 .error_opencon          equs "Connect error",&0D
 .error_bad_param        equs "Wrong parameter",&0D
+.error_not_swram        equs "Not swram",&0D
+.error_stack_deep       equs "Stack full",&0D

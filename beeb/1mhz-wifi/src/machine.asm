@@ -91,12 +91,12 @@
             help_txt     = zp+6     \ 2 bytes, walks help_descriptions
             datalen      = zp+13    \ remaining data length, 2 bytes
 
-            \ The UEF stream handover to the filing system ROM. *WGET -U
-            \ downloads an image into the JIM window and records its length
-            \ and cursor here; the filing system ROM reads them to stream the
-            \ image out. These four addresses are the whole of the contract
-            \ between the two ROMs, alongside the JIM window itself, so they
-            \ must agree with the filing system ROM's own definitions.
+            \ The cassette filing system's stream state, used by the merged
+            \ WiCFS (which takes these definitions from here). They are the
+            \ current filing system's and the MOS's zero page, so nothing
+            \ outside WiCFS may write them: *WGET -U hands the image over in
+            \ the JIM window alone, with its length in the last two bytes of
+            \ page &FF, which is where WiCFS reads it when it is selected.
             sbufl = &F8             \ stream bytes remaining, low
             sbufh = &F9             \ stream bytes remaining, high
             pr_y  = &C7             \ stream cursor offset within the page

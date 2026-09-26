@@ -194,10 +194,6 @@ net_bytes_bank = heap+&E2
 .pi_wget_output_ready
  lda #0
  sta net_empty_lo
- sta pr_r
- sta pr_y
- sta sbufl
- sta sbufh
  lda #10
  sta net_empty_hi
 
@@ -372,13 +368,6 @@ net_bytes_bank = heap+&E2
  bne pi_wget_paged_finish
  jmp pi_wget_finish_close
 .pi_wget_paged_finish
- lda #0
- sta pr_r
- sta pr_y
- lda net_bytes_lo
- sta sbufl
- lda net_bytes_hi
- sta sbufh
  php
  sei
  jsr set_bank_1
@@ -448,10 +437,8 @@ net_bytes_bank = heap+&E2
  jsr bus_delay
  lda &FDFE
  sta net_bytes_lo
- sta sbufl
  lda &FDFF
  sta net_bytes_hi
- sta sbufh
  plp
  jmp pi_wget_normalized
 .pi_wget_raw_paged
