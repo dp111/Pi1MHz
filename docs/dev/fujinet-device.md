@@ -35,7 +35,10 @@ and host-tested: cJSON is a submodule at fujinet-nio's pinned commit
 nio's own translator (built on the host) on 6,000 random documents and
 50,000 random numbers. The release printf has no float support, so
 %.10g is done exactly in fn_json.c (big-integer digits, ties to even).
-Still to come: https://.
+MEASURED on the Master (release build): OPENIN an http:// JSON file, then
+*FJSON 21 <path> and BGET# to EOF# for five selectors on the one channel -
+12.5, -0.0325, Leeds, 1/2/3 one per line, TRUE - all right, and the
+server logged a single GET for the five. Still to come: https://.
 
 Bench trap: a TNFS server with two interfaces on one subnet answers from
 its primary address; address it by that one, or every client here (the N:
