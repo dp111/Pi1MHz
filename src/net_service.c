@@ -210,16 +210,20 @@ static void ring_put_pbuf(net_handle_t *h, const struct pbuf *p)
    }
 }
 /* Drain up to max bytes from the ring into a JIM destination. */
-static uint32_t ring_get(net_handle_t *h, uint32_t jim_dst, uint32_t max)
+static uint32_t ring_get_to(net_handle_t *h, uint8_t *dst, uint32_t max)
 {
    const uint8_t *ring = ring_buf(h);
    uint32_t n = (max < h->rx_count) ? max : h->rx_count;
    for (uint32_t i = 0; i < n; i++) {
-      Pi1MHz->JIM_ram[jim_dst + i] = ring[h->rx_tail];
+      dst[i] = ring[h->rx_tail];
       h->rx_tail = (h->rx_tail + 1u) & ring_mask(h);
    }
    h->rx_count -= n;
    return n;
+}
+static uint32_t ring_get(net_handle_t *h, uint32_t jim_dst, uint32_t max)
+{
+   return ring_get_to(h, &Pi1MHz->JIM_ram[jim_dst], max);
 }
 /* Append raw bytes to the ring (UDP record framing).  Caller ensures fit. */
 static void ring_put_mem(net_handle_t *h, const uint8_t *src, uint16_t len)
@@ -258,8 +262,8 @@ static void ring_skip(net_handle_t *h, uint32_t len)
    checked that a whole record header is present.  Returns the payload bytes
    actually delivered.  Shared by recvfrom (which reports the peer) and the
    generic recv on a connected UDP handle (which does not). */
-static uint32_t udp_record_get(net_handle_t *h, uint8_t peer[6],
-                               uint32_t jim_dst, uint32_t max)
+static uint32_t udp_record_get_to(net_handle_t *h, uint8_t peer[6],
+                                  uint8_t *dst, uint32_t max)
 {
    uint8_t  hdr[8];
    uint16_t dglen;
@@ -269,9 +273,14 @@ static uint32_t udp_record_get(net_handle_t *h, uint8_t peer[6],
    if (peer != NULL)
       memcpy(peer, hdr, 6u);
    dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
-   got   = ring_get(h, jim_dst, (dglen < max) ? dglen : max);
+   got   = ring_get_to(h, dst, (dglen < max) ? dglen : max);
    ring_skip(h, (uint32_t)dglen - got);      /* rest of this datagram */
    return got;
+}
+static uint32_t udp_record_get(net_handle_t *h, uint8_t peer[6],
+                               uint32_t jim_dst, uint32_t max)
+{
+   return udp_record_get_to(h, peer, &Pi1MHz->JIM_ram[jim_dst], max);
 }
 
 /* ---- IPv4 <-> wire (network-order octets [b0,b1,b2,b3]) ------------------ */
@@ -864,16 +873,17 @@ static uint8_t do_connect(net_handle_t *h, uint32_t cp)
    return net_start_connect(h);
 }
 
-static uint8_t do_send(net_handle_t *h, uint32_t cp)
+/* Send on a connected stream or datagram socket.  `src` is NULL when the
+   caller's buffer failed its bounds check: that is reported where the
+   check always was.  *sent is set only on NET_OK. */
+static uint8_t send_core(net_handle_t *h, const uint8_t *src, uint32_t len, uint32_t *sent)
 {
-   uint32_t len    = jim_rd24(cp + 1u);
-   uint32_t jimoff = jim_rd32(cp + 4u);
    uint32_t want;
    u16_t    avail;
 
    if (h->state != NET_ST_CONNECTED)
       return NET_ERR_NOTOPEN;
-   if (!service_buffer_ok(jimoff, len))
+   if (src == NULL)
       return NET_ERR_PARAM;
 
    if (h->type == NET_TYPE_UDP) {
@@ -884,13 +894,13 @@ static uint8_t do_send(net_handle_t *h, uint32_t cp)
       p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
       if (p == NULL)
          return NET_ERR_NOMEM;
-      pbuf_take(p, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], (u16_t)len);
+      pbuf_take(p, src, (u16_t)len);
       e = udp_sendto(h->upcb, p, &h->remote_ip, h->remote_port);
       pbuf_free(p);
       if (e != ERR_OK)
          return NET_ERR_CONN;
       wifi_lwip_rx_kick();
-      jim_wr24(cp + 1u, len);
+      *sent = len;
       return NET_OK;
    }
    if (h->type != NET_TYPE_TCP || h->tpcb == NULL)
@@ -900,14 +910,13 @@ static uint8_t do_send(net_handle_t *h, uint32_t cp)
    want  = len;
    if (want > avail) want = avail;
    if (want == 0u) {                /* send buffer full - retry later */
-      jim_wr24(cp + 1u, 0u);
+      *sent = 0u;
       return NET_OK;
    }
    {
-      const void *src = &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE];
       err_t e = altcp_write(h->tpcb, src, (u16_t)want, TCP_WRITE_FLAG_COPY);
       if (e == ERR_MEM) {           /* heap shortfall despite sndbuf - retry */
-         jim_wr24(cp + 1u, 0u);
+         *sent = 0u;
          return NET_OK;
       }
       if (e != ERR_OK)
@@ -915,8 +924,23 @@ static uint8_t do_send(net_handle_t *h, uint32_t cp)
       altcp_output(h->tpcb);
       wifi_lwip_rx_kick();          /* a send usually precedes a reply */
    }
-   jim_wr24(cp + 1u, want);
+   *sent = want;
    return NET_OK;
+}
+
+static uint8_t do_send(net_handle_t *h, uint32_t cp)
+{
+   uint32_t len    = jim_rd24(cp + 1u);
+   uint32_t jimoff = jim_rd32(cp + 4u);
+   uint32_t sent   = 0u;
+   uint8_t  r;
+   if (h->state != NET_ST_CONNECTED)
+      return NET_ERR_NOTOPEN;
+   r = send_core(h, service_buffer_ok(jimoff, len)
+                    ? &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE] : NULL, len, &sent);
+   if (r == NET_OK)
+      jim_wr24(cp + 1u, sent);
+   return r;
 }
 
 static uint8_t do_recv(net_handle_t *h, uint32_t cp)
@@ -1303,18 +1327,19 @@ static uint8_t url_after_resolve(net_handle_t *h)
    return url_begin_connect(h);
 }
 
-static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
+/* Advance a URL handle's open; called again until it stops answering
+   NET_PENDING.  `url` is NULL when the caller's copy failed its bounds
+   check; `mode` is the FujiNet aux1 open mode. */
+static uint8_t url_open_core(net_handle_t *h, const char *url, uint8_t mode)
 {
    char       host[NET_MAX_HOSTNAME];
    char       path[192];
    net_url_t  u;
-   const char *url;
 
    if (h->url_phase == URL_READY) return NET_OK;
    if (h->url_phase == URL_FAIL)  return h->last_err ? h->last_err : NET_ERR_CONN;
 
-   if (!service_string_ok(cp + 2u, NET_MAX_HOSTNAME))   return NET_ERR_PARAM;
-   url = (const char *)&Pi1MHz->JIM_ram[cp + 2u];
+   if (url == NULL)                                      return NET_ERR_PARAM;
    if (!net_url_parse(url, &u, host, sizeof host, path, sizeof path)) {
       /* Only latch the failure once this open OWNS the handle. A malformed
        * URL on a still-FREE handle must not stick: URL_FAIL is answered
@@ -1335,7 +1360,7 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
             return NET_PENDING;                   /* no IP yet - keep polling */
          net_handle_reset(h);
          h->is_url = true; h->url_adapter = u.adapter;
-         { uint8_t m = jim_rd8(cp + 1u);                     /* FujiNet aux1 open mode */
+         { uint8_t m = mode;                                 /* FujiNet aux1 open mode */
            h->tnfs_wr = (m == NET_OPEN_WRITE || m == NET_OPEN_RW) ? 1u : 0u; }
          h->type = (u.adapter == NET_URL_UDP) ? NET_TYPE_UDP : NET_TYPE_TCP;
          h->state = NET_ST_IDLE;
@@ -1385,7 +1410,7 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                h->tnfs.connid = rep.connid;
                if (rms >= 100u && rms <= 5000u) h->tnfs.retry_ms = rms;
                /* directory if the mode is DIR (13) or the path ends in '/' */
-               uint8_t m = jim_rd8(cp + 1u);
+               uint8_t m = mode;
                h->tnfs_is_dir = ((plen != 0u && path[plen - 1u] == '/')
                                  || m == NET_OPEN_DIR) ? 1u : 0u;
                h->tnfs.seq++;
@@ -1435,18 +1460,29 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
    }
 }
 
-static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
+static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
 {
-   uint32_t max    = jim_rd24(cp + 1u);
-   uint32_t jimoff = jim_rd32(cp + 4u);
+   const char *url = service_string_ok(cp + 2u, NET_MAX_HOSTNAME)
+                     ? (const char *)&Pi1MHz->JIM_ram[cp + 2u] : NULL;
+   return url_open_core(h, url, jim_rd8(cp + 1u));
+}
+
+/* The count the Beeb's command block reports; NET_NO_COUNT leaves it as it
+   was (paths that never wrote it before the split still do not). */
+#define NET_NO_COUNT 0xFFFFFFFFu
+
+/* Read from a URL handle into dst (NULL: the caller's buffer failed its
+   bounds check).  *out is the delivered count, or NET_NO_COUNT. */
+static uint8_t url_read_core(net_handle_t *h, uint8_t *dst, uint32_t max, uint32_t *out)
+{
    uint32_t got;
 
    if (h->state == NET_ST_FREE) return NET_ERR_NOTOPEN;
-   if (!service_buffer_ok(jimoff, max)) return NET_ERR_PARAM;
+   if (dst == NULL) return NET_ERR_PARAM;
    if (h->url_adapter == NET_URL_HTTP && h->http_hdr_done
        && h->http_has_length
        && h->http_body_read >= h->http_content_length) {
-      jim_wr24(cp + 1u, 0u);
+      *out = 0u;
       return NET_EOF;
    }
 
@@ -1454,7 +1490,7 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       uint8_t      pkt[TNFS_PKT_MAX];
       tnfs_reply_t rep;
       uint8_t      r;
-      jim_wr24(cp + 1u, 0u);                     /* default: 0 bytes read */
+      *out = 0u;                     /* default: 0 bytes read */
       if (h->tnfs_phase == TNFS_PH_READY) {       /* start a READ / READDIR */
          size_t n;
          if (max == 0u) return NET_OK;            /* no room - don't burn a dir entry */
@@ -1483,16 +1519,16 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
          if (!tnfs_reply_readdir(&rep, &name)) return NET_ERR_CONN;
          copy = (uint32_t)strlen(name);
          if (copy > max) copy = max;
-         memcpy(&Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], name, copy);
-         jim_wr24(cp + 1u, copy);
+         memcpy(dst, name, copy);
+         *out = copy;
       } else {                                    /* deliver file bytes */
          const uint8_t *data;
          uint16_t       dlen;
          uint32_t       copy;
          if (!tnfs_reply_read(&rep, &data, &dlen)) return NET_ERR_CONN;
          copy = (dlen < max) ? dlen : max;
-         memcpy(&Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], data, copy);
-         jim_wr24(cp + 1u, copy);
+         memcpy(dst, data, copy);
+         *out = copy;
       }
       return NET_OK;
    }
@@ -1501,15 +1537,15 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       /* Return one datagram's payload; the peer is the fixed URL host, so the
          [4 ip][2 port] record header is dropped.  No connection => no EOF; a
          client polls and terminates on its own (timeout/count). */
-      if (h->rx_count < 8u) { jim_wr24(cp + 1u, 0u); return NET_OK; }
-      jim_wr24(cp + 1u, udp_record_get(h, NULL, jimoff + DISC_RAM_BASE, max));
+      if (h->rx_count < 8u) { *out = 0u; return NET_OK; }
+      *out = udp_record_get_to(h, NULL, dst, max);
       return NET_OK;
    }
 
    if (h->url_adapter == NET_URL_HTTP && !h->http_hdr_done) {
       uint16_t hdr = net_http_find_headers(h);
       if (hdr == 0u) {                       /* end-of-headers not seen yet */
-         jim_wr24(cp + 1u, 0u);
+         *out = 0u;
          /* Ring full without CRLFCRLF = oversized/non-HTTP headers: fail
             rather than deadlock (a full ring parks all further RX, so the
             terminator - and the FIN - can never arrive).
@@ -1546,10 +1582,10 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       if (max > remaining)
          max = remaining;
    }
-   got = ring_get(h, jimoff + DISC_RAM_BASE, max);
+   got = ring_get_to(h, dst, max);
    if (h->url_adapter == NET_URL_HTTP)
       h->http_body_read += got;
-   jim_wr24(cp + 1u, got);
+   *out = got;
    if (got == 0u && h->rx_count == 0u) {
       if (h->rx_eof) {
          /* EOF is success only after the declared HTTP body has arrived.
@@ -1567,38 +1603,49 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
    return NET_OK;
 }
 
+static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
+{
+   uint32_t max    = jim_rd24(cp + 1u);
+   uint32_t jimoff = jim_rd32(cp + 4u);
+   uint32_t out    = NET_NO_COUNT;
+   uint8_t  r;
+   if (h->state == NET_ST_FREE) return NET_ERR_NOTOPEN;
+   r = url_read_core(h, service_buffer_ok(jimoff, max)
+                        ? &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE] : NULL, max, &out);
+   if (out != NET_NO_COUNT)
+      jim_wr24(cp + 1u, out);
+   return r;
+}
+
 /* url_write (62): UDP sends the payload to the URL's host:port; TCP/HTTP reuse
    the stream send (same [1..3] len, [4..7] JIM src command-block layout). */
-static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
+static uint8_t url_write_core(net_handle_t *h, const uint8_t *src, uint32_t len,
+                              uint32_t *out)
 {
-   uint32_t     len;
-   uint32_t     jimoff;
    struct pbuf *p;
 
    if (h->url_adapter == NET_URL_TNFS) {         /* WRITE a chunk to the file */
       uint8_t      pkt[TNFS_PKT_MAX];
       tnfs_reply_t rep;
       uint8_t      r;
-      len    = jim_rd24(cp + 1u);
-      jimoff = jim_rd32(cp + 4u);
       if (!h->tnfs_wr)                 return NET_ERR_NOTOPEN;   /* read-only open */
-      if (!service_buffer_ok(jimoff, len)) return NET_ERR_PARAM;
+      if (src == NULL)                 return NET_ERR_PARAM;
       if (h->tnfs_phase == TNFS_PH_READY) {
          uint16_t want = (len > TNFS_WRITE_CHUNK) ? (uint16_t)TNFS_WRITE_CHUNK : (uint16_t)len;
          size_t   n;
-         jim_wr24(cp + 1u, 0u);
+         *out = 0u;
          if (want == 0u) return NET_OK;
          h->tnfs.seq++;
          n = tnfs_build_write(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid, h->tnfs.seq,
-                              h->tnfs_fd, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], want);
+                              h->tnfs_fd, src, want);
          return net_tnfs_start(h, TNFS_PH_WRITING, n);
       }
-      if (h->tnfs_phase != TNFS_PH_WRITING) { jim_wr24(cp + 1u, 0u); return NET_ERR_NOTOPEN; }
+      if (h->tnfs_phase != TNFS_PH_WRITING) { *out = 0u; return NET_ERR_NOTOPEN; }
       r = net_tnfs_poll(h, pkt, sizeof pkt, &rep);
-      if (r == NET_PENDING) { jim_wr24(cp + 1u, 0u); return NET_PENDING; }
+      if (r == NET_PENDING) { *out = 0u; return NET_PENDING; }
       h->tnfs_phase = TNFS_PH_READY;
-      if (r != NET_OK) { jim_wr24(cp + 1u, 0u); return r; }
-      if (rep.status != TNFS_OK) { jim_wr24(cp + 1u, 0u); return net_tnfs_status(rep.status); }
+      if (r != NET_OK) { *out = 0u; return r; }
+      if (rep.status != TNFS_OK) { *out = 0u; return net_tnfs_status(rep.status); }
       /* Clamp the server's count to the most we can ever have sent: a hostile
          or buggy server answering a 240-byte WRITE with "wrote 65535" would
          underflow a Beeb-side `rem% -= wrote%` loop and walk its pointer off
@@ -1608,7 +1655,7 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
       { uint16_t wrote = 0u;
         if (!tnfs_reply_write(&rep, &wrote)) wrote = 0u;
         if (wrote > (uint16_t)TNFS_WRITE_CHUNK) wrote = (uint16_t)TNFS_WRITE_CHUNK;
-        jim_wr24(cp + 1u, wrote); }
+        *out = wrote; }
       return NET_OK;
    }
 
@@ -1616,41 +1663,45 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
       uint8_t esc[512];
       size_t  consumed = 0u, elen;
       u16_t   avail, oc;
-      len    = jim_rd24(cp + 1u);
-      jimoff = jim_rd32(cp + 4u);
       if (h->type != NET_TYPE_TCP || h->tpcb == NULL || h->state != NET_ST_CONNECTED)
          return NET_ERR_NOTOPEN;
-      if (!service_buffer_ok(jimoff, len))
+      if (src == NULL)
          return NET_ERR_PARAM;
       avail = altcp_sndbuf(h->tpcb);
       oc = (avail < sizeof esc) ? avail : (u16_t)sizeof esc;
-      if (oc == 0u) { jim_wr24(cp + 1u, 0u); return NET_OK; }   /* sndbuf full - retry */
-      elen = telnet_escape(&Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], len, esc, oc, &consumed);
+      if (oc == 0u) { *out = 0u; return NET_OK; }   /* sndbuf full - retry */
+      elen = telnet_escape(src, len, esc, oc, &consumed);
       if (elen != 0u) {
          err_t e = altcp_write(h->tpcb, esc, (u16_t)elen, TCP_WRITE_FLAG_COPY);
-         if (e == ERR_MEM) { jim_wr24(cp + 1u, 0u); return NET_OK; }
+         if (e == ERR_MEM) { *out = 0u; return NET_OK; }
          if (e != ERR_OK)  return NET_ERR_CONN;
          altcp_output(h->tpcb);
          wifi_lwip_rx_kick();
       }
-      jim_wr24(cp + 1u, (uint32_t)consumed);      /* input bytes consumed */
+      *out = (uint32_t)consumed;      /* input bytes consumed */
       return NET_OK;
    }
 
-   if (h->type != NET_TYPE_UDP)
-      return do_send(h, cp);
+   if (h->type != NET_TYPE_UDP) {
+      uint32_t sent = 0u;
+      uint8_t  rs;
+      if (h->state != NET_ST_CONNECTED)      /* the stream send's order: state, then buffer */
+         return NET_ERR_NOTOPEN;
+      rs = send_core(h, src, len, &sent);
+      if (rs == NET_OK)
+         *out = sent;
+      return rs;
+   }
 
-   len    = jim_rd24(cp + 1u);
-   jimoff = jim_rd32(cp + 4u);
    if (h->upcb == NULL)
       return NET_ERR_NOTOPEN;
-   if (len > 0xFFFFu || !service_buffer_ok(jimoff, len))
+   if (len > 0xFFFFu || src == NULL)
       return NET_ERR_PARAM;
 
    p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
    if (p == NULL)
       return NET_ERR_NOMEM;
-   pbuf_take(p, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], (u16_t)len);
+   pbuf_take(p, src, (u16_t)len);
    {
       err_t e = udp_sendto(h->upcb, p, &h->remote_ip, h->remote_port);
       pbuf_free(p);
@@ -1658,8 +1709,21 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
          return NET_ERR_CONN;
    }
    wifi_lwip_rx_kick();
-   jim_wr24(cp + 1u, len);
+   *out = len;
    return NET_OK;
+}
+
+static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
+{
+   uint32_t len    = jim_rd24(cp + 1u);
+   uint32_t jimoff = jim_rd32(cp + 4u);
+   uint32_t out    = NET_NO_COUNT;
+   uint8_t  r = url_write_core(h, service_buffer_ok(jimoff, len)
+                                  ? &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE] : NULL,
+                               len, &out);
+   if (out != NET_NO_COUNT)
+      jim_wr24(cp + 1u, out);
+   return r;
 }
 
 static uint8_t do_url_status(net_handle_t *h, uint32_t cp)
