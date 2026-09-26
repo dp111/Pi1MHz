@@ -68,7 +68,19 @@
    if (ret != 0) {
      LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_pk_parse_public_key failed: %d\n", ret));
      mbedtls_x509_crt_free(srvcert);
-@@ -1012,7 +1019,8 @@
+@@ -967,7 +974,10 @@
+   if (ca) {
+     mbedtls_x509_crt_init(conf->ca);
+     ret = mbedtls_x509_crt_parse(conf->ca, ca, ca_len);
+-    if (ret != 0) {
++    /* Pi1MHz: a positive result is the number of certificates in the bundle
++       that could not be parsed (a key type this build leaves out); the rest
++       are loaded, and one unusable root must not disable every connection. */
++    if (ret < 0) {
+       LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_x509_crt_parse ca failed: %d 0x%x\n", ret, -1*ret));
+       altcp_tls_free_config(conf);
+       return NULL;
+@@ -1012,7 +1022,8 @@
    }
  
    mbedtls_pk_init(conf->pkey);
@@ -78,7 +90,7 @@
    if (ret != 0) {
      LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_pk_parse_key failed: %d 0x%x\n", ret, -1*ret));
      altcp_tls_free_config(conf);
-@@ -1241,9 +1249,9 @@
+@@ -1241,9 +1252,9 @@
    /* HACK: if there is something left to send, try to flush it and only
       allow sending more if this succeeded (this is a hack because neither
       returning 0 nor MBEDTLS_ERR_SSL_WANT_WRITE worked for me) */

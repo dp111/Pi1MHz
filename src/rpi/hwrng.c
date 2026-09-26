@@ -1,10 +1,12 @@
 /* hwrng.c - the BCM2835 hardware random number generator as mbedTLS's
    entropy source (MBEDTLS_ENTROPY_HARDWARE_ALT, wifi/mbedtls_config_pi1mhz.h).
 
-   Started on first use - the first https:// connection - not at boot, so
-   boot and BBC reset do no extra work.  Start-up discards the first 0x40000
-   oscillator bits, as secure_service_wolfssh.c does; the first poll waits
-   for them (a fraction of a second, once).  A word identical to the one
+   hwrng_start() is called when the network service starts: three register
+   writes, no waiting, so the warm-up (the first 0x40000 oscillator bits are
+   discarded, as secure_service_wolfssh.c does) is long over by the first
+   https:// connection.  Started on first use instead, the warm-up outlasted
+   the poll's wait and the first https:// after boot failed (MEASURED
+   2026-09-26).  A word identical to the one
    before means the generator has stopped, and the poll fails rather than
    hand mbedTLS constant "entropy". */
 
@@ -14,6 +16,7 @@
 
 #include "base.h"
 #include "systimer.h"
+#include "hwrng.h"
 
 #define RNG_BASE      (PERIPHERAL_BASE + 0x104000u)
 #define RNG_CTRL      (*(volatile uint32_t *)(RNG_BASE + 0x00u))
@@ -31,18 +34,23 @@ static bool rng_started;
 static bool rng_have_last;
 static uint32_t rng_last;
 
+void hwrng_start(void)
+{
+   if (rng_started)
+      return;
+   RNG_INT_MASK |= 1u;
+   RNG_STATUS = RNG_WARMUP_BITS;
+   RNG_CTRL |= 1u;
+   rng_started = true;
+}
+
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen);
 
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen)
 {
    (void)data;
    *olen = 0;
-   if (!rng_started) {
-      RNG_INT_MASK |= 1u;
-      RNG_STATUS = RNG_WARMUP_BITS;
-      RNG_CTRL |= 1u;
-      rng_started = true;
-   }
+   hwrng_start();
    while (*olen < len) {
       uint32_t t0 = RPI_GetSystemTime();
       while ((RNG_STATUS >> 24) == 0u)

@@ -4,7 +4,8 @@
    - Key exchange ECDHE, signed by RSA or ECDSA; AES-GCM or ChaCha20-Poly1305.
      That is what every current web server offers over TLS 1.2.
    - Certificates are verified against the CA bundle on the card (see
-     net_service.c), including the host name.  There is no clock
+     net_service.c), including the host name.  A root this build cannot
+     parse is skipped, not fatal (lwip-altcp-tls-mbedtls3.patch).  There is no clock
      (MBEDTLS_HAVE_TIME_DATE is off), so validity dates are not checked -
      dp111's choice, 2026-09-26.
    - Entropy comes only from the BCM2835 hardware RNG (rpi/hwrng.c).
@@ -50,6 +51,7 @@
 #define MBEDTLS_ECDSA_C
 #define MBEDTLS_ECP_DP_SECP256R1_ENABLED
 #define MBEDTLS_ECP_DP_SECP384R1_ENABLED
+#define MBEDTLS_ECP_DP_SECP521R1_ENABLED     /* a few roots are P-521 (e-Szigno 2023) */
 #define MBEDTLS_ECP_DP_CURVE25519_ENABLED
 #define MBEDTLS_ECP_NIST_OPTIM
 

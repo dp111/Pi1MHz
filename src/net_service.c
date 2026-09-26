@@ -33,6 +33,7 @@
 #include "BeebSCSI/fatfs/ff.h"
 #include "lwip/altcp_tls.h"
 #include "mbedtls/ssl.h"
+#include "rpi/hwrng.h"
 #define NET_TLS 1
 #else
 #define NET_TLS 0
@@ -2386,6 +2387,12 @@ void net_service_init(uint8_t instance, uint8_t address)
    {
       net_enabled = config_get_bool("net_enable");
    }
+#if NET_TLS
+   /* Warm the RNG now so https://'s first handshake finds it ready (see
+      rpi/hwrng.c); a few register writes, no waiting. */
+   if (net_enabled)
+      hwrng_start();
+#endif
 
    /* Defer all pcb teardown to the first poll (see net_service_poll).  Do NOT
       clear net_pending here either: a command latched around a BBC-reset

@@ -40,7 +40,23 @@ MEASURED on the Master (release build): OPENIN an http:// JSON file, then
 12.5, -0.0325, Leeds, 1/2/3 one per line, TRUE - all right, and the
 server logged a single GET for the five.
 
-https:// BUILT, NOT hardware-tested (2026-09-26): dp111 chose lwIP's
+https:// WORKING on the Master (2026-09-26, cold-booted from the card -
+kernel.now chain-boot was failing that evening, see below). MEASURED:
+fn-rom OPENIN "https://api.chucknorris.io/jokes/random" + *FJSON /value
+read the joke; *WGET -T https://example.com/ and the chucknorris API work;
+self-signed, wrong-host and untrusted-root badssl.com sites all refused
+(&31); expired.badssl.com accepted (no date checks, as chosen); plain
+http:// unchanged with LWIP_ALTCP on (600-byte file, same sum); with no
+/cacert.pem https:// fails at once (&31). Three bugs found on the way:
+the Mozilla bundle has a P-521 root (now enabled) and lwIP's adapter
+rejected the whole bundle for one unparseable root (patched to skip it);
+and the RNG, started on first use, was still warming up when the first
+handshake seeded, so the first https:// after boot failed - it now
+starts at net_service init (control: same test failed on the old build).
+Host probe (scratchpad tls_probe.c, the firmware's exact config and
+bundle over sockets) handshakes example.com, github.com, bbc.co.uk etc.
+
+Design (dp111's choices, 2026-09-26): dp111 chose lwIP's
 altcp_tls with LWIP_ALTCP on for every altcp user, and a CA bundle with no
 date checks. mbedTLS 3.6.7 LTS is a submodule (src/wifi/mbedtls, config
 wifi/mbedtls_config_pi1mhz.h: TLS 1.2 client, ECDHE-RSA/ECDSA, AES-GCM and
