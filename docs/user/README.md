@@ -41,6 +41,7 @@ Then one guide per feature:
 - [MMFS and MMFS2 (DFS disc images)](mmfs.md)
 - [Loading ROMs and the helper functions](helpers-and-roms.md)
 - [SD card explorer (file transfer from the Beeb)](sd-explorer.md)
+- [FujiNet: disc images, TNFS, http/https and JSON with fn-rom](fujinet.md)
 - [Sound: Music 5000/3000 and BeebSID](sound.md)
 - [RAM expansion (JIM)](ram-expansion.md)
 - [HDMI screen, mouse pointer and video](screen-and-video.md)

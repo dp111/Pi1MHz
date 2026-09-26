@@ -1,10 +1,15 @@
 # FujiNet device on the Pi - design
 
-STATUS 2026-09-26 (evening): phase 1 (disk) BUILT and working on a Master
-with a Pi Zero 2 W. Pi side on branch fujinet-device (376c79d devices +
-host tests, 926a670 service). ROM side: fn-rom branch pi1mhz-1mhz-link
-(6bf7040, claude-tmp/fn-rom), BUILD_INTERFACE=1MHZ, for upstream; its
-serial build is byte-identical to before.
+STATUS 2026-09-26 (late): disk (SD and TNFS), network (http, https, tcp,
+POST/PUT) and JSON translation all WORKING on a Master with a Pi Zero 2 W,
+after the review fixes (1b11618 FujiNet, 6657b4e net) - see "Review fixes"
+at the end. Pi side on branch fujinet-device. ROM side: dp111/fn-rom master
+(1MHz link + BGET fix, merged by dp111), review follow-up on branch
+pi1mhz-link-review (063cf6b); upstream fix for the scatter-length carry on
+fix-scatter-send-length (60dcf16). The serial build stays byte-identical.
+User documentation: docs/user/fujinet.md.
+
+(The history below is kept as it was measured.)
 
 MEASURED on hardware, fn-rom 0.02 Master build in sideways RAM:
 *FHOST set/get (resolved and stored by the Pi, on the card), *FIN,
@@ -41,7 +46,8 @@ MEASURED on the Master (release build): OPENIN an http:// JSON file, then
 server logged a single GET for the five.
 
 https:// WORKING on the Master (2026-09-26, cold-booted from the card -
-kernel.now chain-boot was failing that evening, see below). MEASURED:
+kernel.now chain-boot was failing that evening - docs/dev/chainboot-kernel-now.md
+and the experiments recorded with it). MEASURED:
 fn-rom OPENIN "https://api.chucknorris.io/jokes/random" + *FJSON /value
 read the joke; *WGET -T https://example.com/ and the chucknorris API work;
 self-signed, wrong-host and untrusted-root badssl.com sites all refused
@@ -66,7 +72,8 @@ as the TinyUSB MTP patch is. Certificates must verify
 (ALTCP_MBEDTLS_AUTHMODE REQUIRED) against /cacert.pem on the card, with
 SNI and the host-name check from the URL; a missing bundle or a failed
 handshake is NET_ERR_TLS (0x31). Entropy is the BCM2835 RNG (rpi/hwrng.c),
-started on first use. Kernel +183 KB (753 KB rpi). The N: device's
+started when net_service starts (it was first "on first use", which
+failed the first handshake after boot). Kernel +183 KB (753 KB rpi). The N: device's
 *WGET gets https:// too.
 
 Bench trap: a TNFS server with two interfaces on one subnet answers from
@@ -213,3 +220,43 @@ A request for one gets status 8, Unsupported.
 - Beeb: fn-rom built with `BUILD_INTERFACE=1MHZ`; `*FMOUNT` an SSD from the
   SD card and from a TNFS server, `*CAT`, `*RUN`, a sector write read back;
   the negative control is the serial build against the same image.
+
+## Review fixes (2026-09-26, late)
+
+Three review agents covered the FujiNet device, the network/TLS work and the
+fn-rom side. Fixed, each with a host regression test shown failing on the
+old code where the host can reach it:
+
+- Abandoned requests (fn-rom gives up after ~4 s): the network device's
+  "waiting" flag outlived its Write and wedged every later request; a TNFS
+  file an abandoned request had opened was never closed; the service re-ran
+  a pending request from the Beeb's live buffer and could lose a ring. Now:
+  the flag is cleared per request, orphan TNFS handles are closed on abort,
+  the request is copied out on its first run and a result is published only
+  if no new ring came in (FIQ counts rings). A stalled Write answers Timeout
+  after 3 s, inside fn-rom's own wait.
+- TLS: lwIP's adapter leaked decrypted-but-refused pbufs on close (upstream
+  bug) and grew the refused chain on every retry; both fixed in the patch.
+  TLS handles poll every 500 ms. NET_ERR_TLS only for a failed handshake.
+  MEMP_NUM_ALTCP_PCB doubled. CR/LF refused in Content-Type.
+- Beeb_write_protect now covers FujiNet (writes ignored, reported as
+  success); /BeebVFS* never written. *FLS sizes formatted in integers
+  (release printf has no float), identical to nio's on 6M sizes. App-store
+  offset 0 truncates (nio "wb"); offsets over 64 KB refused. WriteSector of
+  more than one sector refused (nio).
+- fn-rom: 16-bit reply-length checks and 255-byte BGET (dp111 merged);
+  settle before tight reads, reply length zeroed before each request,
+  Escape in the wait, serial_utils out of the 1MHz build (pi1mhz-link-review);
+  upstream scatter-send length carry bug (fix-scatter-send-length).
+
+MEASURED on the Master with the fixes kernel and the review ROM: TNFS mount,
+*CAT, *SAVE (byte-exact on the server) and *LOAD; POST (5-byte body, echoed
+back through BGET#), PUT with the JSON content profile (Content-Type
+application/json reached the server), tcp:// echo (PING back in 4 BGET#s),
+http 600-byte read, https + *FJSON, a self-signed site refused.
+
+Not verified on hardware: write protect, the service's replaced-request
+path, *FLS. *FLS could not be run: fn-rom's transient utilities read the
+ROM's workspace at &C2xx directly, which on a Master is hidden RAM, not
+visible to a program running from main memory (INFERRED from the FLS
+binary; an fn-rom issue, not this link's). Its Pi side is host-tested.
