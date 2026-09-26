@@ -132,6 +132,8 @@ swr_save   = heap                   \ the stack-page bytes the loop displaces
  ldx #&FF
 .wget_swr_done
  ldy #0
+ lda swr_first                      \ the same two writes as the select above:
+ sta (swr_sel),y                    \ the Electron needs &0C before a bank 0-7
  lda shadow                         \ this ROM back before returning into it
  sta (swr_sel),y
  txa

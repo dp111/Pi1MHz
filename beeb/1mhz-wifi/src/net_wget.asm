@@ -575,7 +575,7 @@ wget_name_max = &40                 \ including the CR
 
 .wget_name_to_ram
  tsx
- cpx #wget_name_max+&20             \ keep well clear of the live stack
+ cpx #wget_name_max+&60             \ &60 bytes below SP for OSFIND and the FS
  bcc wget_name_stack
  ldy #0
 .wget_name_copy

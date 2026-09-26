@@ -162,7 +162,7 @@ set(MTP_DEVICE_PATCHED  ${CMAKE_CURRENT_BINARY_DIR}/tinyusb-patched/mtp_device.c
 add_custom_command(
    OUTPUT  ${MTP_DEVICE_PATCHED}
    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tinyusb-patched
-   COMMAND patch --forward --silent -o ${MTP_DEVICE_PATCHED} ${MTP_DEVICE_UPSTREAM} ${MTP_DEVICE_PATCH}
+   COMMAND patch --forward --fuzz=0 -o ${MTP_DEVICE_PATCHED} ${MTP_DEVICE_UPSTREAM} ${MTP_DEVICE_PATCH}
    DEPENDS ${MTP_DEVICE_UPSTREAM} ${MTP_DEVICE_PATCH}
    COMMENT "Applying the Pi1MHz MTP patch to TinyUSB mtp_device.c"
    VERBATIM

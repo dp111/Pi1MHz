@@ -120,7 +120,9 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
         return (size_t)n;
 }
 
-/* Transfer page state: only ever touched in helpers_bank_select (FIQ). */
+/* Transfer page state: touched in helpers_bank_select (FIQ), and cleared by
+   helpers_init on a BBC reset - the JIM page it saved belongs to a session
+   the reset has ended (rampage_emulator_init resets page_ram_addr itself). */
 static bool   helper_xfer_active;
 static size_t helper_xfer_saved_page;
 
@@ -223,6 +225,7 @@ void helpers_init( uint8_t instance , uint8_t address)
    uint8_t *helper = &helper_ram[0];
    helper_address = address;
    help_shown_pending = false;      /* the screen is formatted again below */
+   helper_xfer_active = false;      /* a BREAK mid-transfer: nothing to restore */
    if (Pi1MHz->JIM_ram_size == 0)     // the help screen lives in JIM RAM
       return;
    /* 0x60 = RTS.  filesystemReadFile clamps to the file's length and leaves
