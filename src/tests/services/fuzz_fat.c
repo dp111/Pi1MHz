@@ -129,3 +129,4 @@ int main(void)
 }
 bool filesystemHostPathBusy(const char *path) { (void)path; return false; }
 bool M5000_recording_path_busy(const char *path) { (void)path; return false; }
+bool fujibus_service_path_busy(const char *path) { (void)path; return false; }

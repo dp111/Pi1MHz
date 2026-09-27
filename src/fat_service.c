@@ -12,6 +12,7 @@
 
 #include "ram_emulator.h"
 #include "M5000_emulator.h"		/* M5000_recording_path_busy */
+#include "fujibus_service.h"		/* fujibus_service_path_busy */
 #include "services.h"
 #include "config.h"				/* Beeb_write_protect */
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
@@ -211,7 +212,8 @@ bool fat_service_file_in_use(const char *host_path)
 bool beeb_path_busy(const char *host_path)
 {
    return filesystemHostPathBusy(host_path) || fat_service_file_in_use(host_path)
-       || M5000_recording_path_busy(host_path);    /* a WAV still being flushed */
+       || M5000_recording_path_busy(host_path)     /* a WAV still being flushed */
+       || fujibus_service_path_busy(host_path);    /* a FujiNet-mounted image */
 }
 
 /* ---- readdir-ex (command 17) record ------------------------------------

@@ -121,6 +121,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "framebuffer/framebuffer.h"
 #include "services.h"
 #include "net_service.h"
+#include "fujibus_service.h"
 #include "helpers.h"
 #include "mouseredirect.h"
 #include "videoplayer.h"
@@ -163,6 +164,9 @@ static emulator_list emulator[] = {
    {"net",net_service_init, 0x00, 1 },
    /* Off unless wifi_service_enable=1 in Pi1MHz.cfg (checked in its init). */
    {"WiFiSvc",wifi_service_init, 0x00, 1 },
+   /* The FujiNet device for fn-rom (commands 114-119): answers FujiBus
+      packets from the ROM's 1MHz link. See docs/dev/fujinet-device.md. */
+   {"fujinet",fujibus_service_init, 0x00, 1 },
 #ifdef PI1MHZ_SSH
    /* Only built when -DPI1MHZ_SSH=ON supplied wolfSSL/wolfSSH; its init
       claims 94..113 and registers a poll slot. */

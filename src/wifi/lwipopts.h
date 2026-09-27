@@ -14,6 +14,16 @@
 #define LWIP_SOCKET                     0
 
 #define LWIP_TCP                        1
+
+/* https://: TCP goes through lwIP's altcp layer so a connection can carry
+ * TLS (mbedTLS 3.6, see mbedtls_config_pi1mhz.h and the build-applied
+ * lwip-altcp-tls-mbedtls3.patch).  Plain TCP users of altcp_* get the thin
+ * altcp_tcp wrapper; raw tcp_* users are untouched.  A server certificate
+ * must verify: lwIP's default, OPTIONAL, would connect to anyone. */
+#define LWIP_ALTCP                      1
+#define LWIP_ALTCP_TLS                  1
+#define LWIP_ALTCP_TLS_MBEDTLS          1
+#define ALTCP_MBEDTLS_AUTHMODE          MBEDTLS_SSL_VERIFY_REQUIRED
 #define LWIP_UDP                        1
 #define LWIP_ICMP                       1
 #define LWIP_DHCP                       1
@@ -107,6 +117,8 @@
  * makes it worse, since a closed connection holds its PCB for a while after
  * the transfer is over. */
 #define MEMP_NUM_TCP_PCB                16
+/* A TLS connection is two altcp pcbs (the TLS layer over an altcp_tcp). */
+#define MEMP_NUM_ALTCP_PCB              (2 * MEMP_NUM_TCP_PCB)
 /* DHCP + DNS + NetBIOS + mDNS = 4 in use today; 8 leaves headroom for
    ad-hoc UDP without dipping into the unused-PCB pool. */
 #define MEMP_NUM_UDP_PCB                8

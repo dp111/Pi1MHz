@@ -92,6 +92,13 @@ err_t altcp_bind(struct altcp_pcb *c, const ip_addr_t *ip, u16_t port)
 struct altcp_pcb *altcp_listen(struct altcp_pcb *c) { c->listening = 1; return c; }
 void altcp_accept(struct altcp_pcb *c, altcp_accept_fn f) { c->accept = f; }
 u16_t altcp_sndbuf(struct altcp_pcb *c) { return c->t_sndbuf; }
+err_t altcp_get_tcp_addrinfo(struct altcp_pcb *c, int local, ip_addr_t *addr, u16_t *port)
+{
+   if (local) return ERR_VAL;           /* only the peer is ever asked for */
+   if (addr) *addr = c->remote_ip;
+   if (port) *port = c->remote_port;
+   return ERR_OK;
+}
 err_t altcp_write(struct altcp_pcb *c, const void *d, u16_t len, u8_t fl)
 {
    (void)fl;
@@ -1155,6 +1162,56 @@ int main(void)
    issue(NET_CMD_URL_STATUS, 0);
    CHECK((jrd8(CP(0)+7) | (jrd8(CP(0)+8)<<8)) == 200u, "url status reports HTTP 200 (+7..8)");
    CHECK(jrd8(CP(0)+3) == 1u, "DVSTAT connected byte set");
+
+   printf("== C API (net_capi_*) - handle split, POST with a body, HEAD ==\n");
+   world_reset();
+   {
+      int a = net_capi_alloc(), b = net_capi_alloc();
+      CHECK(a >= (int)NET_BEEB_HANDLES && b >= (int)NET_BEEB_HANDLES && a != b,
+            "C API handles come from above the Beeb's, one per alloc");
+      net_capi_close(b);
+      CHECK(issue(NET_CMD_URL_STATUS, (uint8_t)NET_BEEB_HANDLES) == NET_ERR_PARAM,
+            "the Beeb cannot address a C API handle");
+      uint32_t got = 0;
+      uint8_t buf[64];
+      CHECK(net_capi_read(3, buf, sizeof buf, &got) == NET_ERR_PARAM,
+            "the C API cannot touch a Beeb handle");
+
+      net_http_opts_t o = { .method = NET_HTTP_POST, .body_len = 5, .content_type = "text/plain" };
+      const char *url = "HTTP://1.2.3.4/post";
+      CHECK(net_capi_open(a, url, 12, &o) == NET_PENDING, "capi open POST -> PENDING");
+      g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+      CHECK(net_capi_open(a, url, 12, &o) == NET_OK, "capi open POST -> OK");
+      g_tx[g_tx_len] = 0;
+      CHECK(strstr((char *)g_tx, "POST /post HTTP/1.0") && strstr((char *)g_tx, "Content-Length: 5\r\n") &&
+            strstr((char *)g_tx, "Content-Type: text/plain\r\n"), "POST line, length and type sent");
+      uint32_t before = g_tx_len, done = 0;
+      CHECK(net_capi_write(a, (const uint8_t *)"hello", 5, &done) == NET_OK && done == 5 &&
+            g_tx_len == before + 5 && memcmp(g_tx + before, "hello", 5) == 0, "body written after the headers");
+      static const char resp[] = "HTTP/1.0 201 Created\r\nContent-Length: 2\r\n\r\nok";
+      g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, make_pbuf(resp, (u16_t)(sizeof resp - 1u)), ERR_OK);
+      CHECK(net_capi_read(a, buf, sizeof buf, &got) == NET_OK && got == 2 && memcmp(buf, "ok", 2) == 0,
+            "response body read through the C API");
+      CHECK(net_capi_http_code(a) == 201u, "HTTP 201 reported");
+      CHECK(net_capi_read(a, buf, sizeof buf, &got) == NET_EOF && got == 0, "then EOF");
+      net_capi_close(a);
+
+      int c = net_capi_alloc();
+      o = (net_http_opts_t){ .method = NET_HTTP_HEAD };
+      url = "HTTP://1.2.3.4/big";
+      net_capi_open(c, url, 4, &o);
+      g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+      g_tx_len = 0;
+      CHECK(net_capi_open(c, url, 4, &o) == NET_OK, "capi open HEAD -> OK");
+      g_tx[g_tx_len] = 0;
+      CHECK(strstr((char *)g_tx, "HEAD /big HTTP/1.0") && !strstr((char *)g_tx, "Content-Length"),
+            "HEAD line sent, no request body length");
+      static const char hresp[] = "HTTP/1.0 200 OK\r\nContent-Length: 999999\r\n\r\n";
+      g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, make_pbuf(hresp, (u16_t)(sizeof hresp - 1u)), ERR_OK);
+      CHECK(net_capi_read(c, buf, sizeof buf, &got) == NET_EOF && got == 0,
+            "HEAD: EOF straight after the headers, whatever Content-Length says");
+      net_capi_close(c);
+   }
 
    printf("== N: device - truncated HTTP body ==\n");
    world_reset();

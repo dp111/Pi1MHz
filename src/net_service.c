@@ -10,9 +10,9 @@
   ADFS).  Async commands (connect/dns/close) return NET_PENDING; the Beeb
   re-issues the same command to poll, exactly like the AUN TX/TX_POLL idiom.
 
-  TCP is written against lwIP's altcp API (altcp_*), which at LWIP_ALTCP==0
-  compiles to plain tcp_* (altcp.h provides the macros) - so Stage 4 can add
-  TLS by flipping one lwipopts flag rather than refactoring every callback.
+  TCP is written against lwIP's altcp API (altcp_*), so https:// is the same
+  code over a TLS altcp (LWIP_ALTCP_TLS in lwipopts.h) instead of a plain
+  one.
 */
 
 #include <string.h>
@@ -27,6 +27,17 @@
 #include "net_telnet.h"
 #include "config.h"
 #include "rpi/systimer.h"          /* RPI_GetSystemTime64 (ms clock for TNFS) */
+#include "lwip/opt.h"               /* LWIP_ALTCP_TLS, from lwipopts.h         */
+#if defined(LWIP_ALTCP_TLS) && LWIP_ALTCP_TLS
+#include <stdlib.h>
+#include "BeebSCSI/fatfs/ff.h"
+#include "lwip/altcp_tls.h"
+#include "mbedtls/ssl.h"
+#include "rpi/hwrng.h"
+#define NET_TLS 1
+#else
+#define NET_TLS 0
+#endif
 
 #include "wifi/wifi_lwip.h"        /* wifi_lwip_get_context, wifi_lwip_rx_kick */
 #include "lwip/altcp.h"
@@ -66,12 +77,18 @@ typedef struct {
    bool              dns_ok;        /* that resolve succeeded               */
    bool              is_url;        /* opened via net_url_open (N: device)  */
    uint8_t           url_adapter;   /* NET_URL_* for a URL handle           */
+   bool              tls;           /* https://: the connection is TLS      */
+   char              tls_host[NET_MAX_HOSTNAME]; /* its name, for SNI and the
+                                       certificate check                    */
    uint8_t           url_phase;     /* url_phase_t: the open state machine   */
    bool              http_hdr_done; /* HTTP adapter: response headers eaten */
    uint16_t          http_code;     /* HTTP adapter: parsed status code     */
    bool              http_has_length;
    uint32_t          http_content_length;
    uint32_t          http_body_read;
+   uint8_t           http_method;   /* NET_HTTP_*: the request line's verb   */
+   uint32_t          http_body_len; /* Content-Length sent with POST/PUT     */
+   char              http_ctype[48];/* request Content-Type, "" for none     */
    struct altcp_pcb *tpcb;          /* TCP pcb, NULL once freed by lwIP     */
    struct udp_pcb   *upcb;          /* UDP pcb                              */
    ip_addr_t         remote_ip;
@@ -94,17 +111,10 @@ typedef struct {
    uint32_t          rx_size;       /* capacity of the ring in use (pow2)   */
    /* TNFS (N:TNFS://) session + one in-flight request, for the retry engine */
    uint8_t           tnfs_phase;    /* TNFS_PH_*                            */
-   uint8_t           tnfs_seq;      /* sequence of the outstanding request  */
    uint8_t           tnfs_fd;       /* open file / directory handle         */
    uint8_t           tnfs_is_dir;   /* URL path ended in '/': a directory   */
    uint8_t           tnfs_wr;       /* url_open mode had the write bit      */
-   uint8_t           tnfs_retries;  /* resends left on the outstanding req  */
-   uint8_t           tnfs_eagain;   /* server-busy (EAGAIN) budget left     */
-   uint16_t          tnfs_connid;   /* session id (from MOUNT)              */
-   uint16_t          tnfs_retry_ms; /* base resend timeout (from MOUNT)     */
-   uint32_t          tnfs_deadline; /* ms: resend/timeout deadline          */
-   uint16_t          tnfs_req_len;  /* outstanding request length           */
-   uint8_t           tnfs_req[256]; /* buffered request, for resend         */
+   tnfs_xfer_t       tnfs;          /* outstanding request: net_tnfs.h engine */
    telnet_ctx_t      telnet;        /* TELNET: IAC filter state (zeroed = reset) */
 } net_handle_t;
 
@@ -115,13 +125,9 @@ typedef struct {
 #define TNFS_PH_READY    3u   /* mounted + file open                   */
 #define TNFS_PH_READING  4u   /* READ sent, awaiting reply             */
 #define TNFS_PH_WRITING  5u   /* WRITE sent, awaiting reply            */
-#define TNFS_REQ_MAX     256u
-#define TNFS_PKT_MAX     600u /* largest reply datagram we parse       */
-#define TNFS_RETRIES     4u   /* resends before giving up              */
-#define TNFS_EAGAIN_MAX  8u   /* server-busy backoffs before giving up */
-#define TNFS_TIMEOUT_MS  800u /* fallback resend timeout               */
+/* TNFS_REQ_MAX, TNFS_PKT_MAX and the resend/backoff limits are net_tnfs.h's. */
 #define TNFS_READ_CHUNK  512u /* cap a READ so its reply fits a datagram */
-#define TNFS_WRITE_CHUNK 240u /* cap a WRITE so req (data + 7 hdr) fits tnfs_req */
+#define TNFS_WRITE_CHUNK 240u /* cap a WRITE (data + 7 hdr) as before the shared buffer grew */
 
 static void net_tnfs_send_raw(net_handle_t *h, const uint8_t *req, uint16_t len);
 
@@ -221,16 +227,20 @@ static void ring_put_pbuf(net_handle_t *h, const struct pbuf *p)
    }
 }
 /* Drain up to max bytes from the ring into a JIM destination. */
-static uint32_t ring_get(net_handle_t *h, uint32_t jim_dst, uint32_t max)
+static uint32_t ring_get_to(net_handle_t *h, uint8_t *dst, uint32_t max)
 {
    const uint8_t *ring = ring_buf(h);
    uint32_t n = (max < h->rx_count) ? max : h->rx_count;
    for (uint32_t i = 0; i < n; i++) {
-      Pi1MHz->JIM_ram[jim_dst + i] = ring[h->rx_tail];
+      dst[i] = ring[h->rx_tail];
       h->rx_tail = (h->rx_tail + 1u) & ring_mask(h);
    }
    h->rx_count -= n;
    return n;
+}
+static uint32_t ring_get(net_handle_t *h, uint32_t jim_dst, uint32_t max)
+{
+   return ring_get_to(h, &Pi1MHz->JIM_ram[jim_dst], max);
 }
 /* Append raw bytes to the ring (UDP record framing).  Caller ensures fit. */
 static void ring_put_mem(net_handle_t *h, const uint8_t *src, uint16_t len)
@@ -269,8 +279,8 @@ static void ring_skip(net_handle_t *h, uint32_t len)
    checked that a whole record header is present.  Returns the payload bytes
    actually delivered.  Shared by recvfrom (which reports the peer) and the
    generic recv on a connected UDP handle (which does not). */
-static uint32_t udp_record_get(net_handle_t *h, uint8_t peer[6],
-                               uint32_t jim_dst, uint32_t max)
+static uint32_t udp_record_get_to(net_handle_t *h, uint8_t peer[6],
+                                  uint8_t *dst, uint32_t max)
 {
    uint8_t  hdr[8];
    uint16_t dglen;
@@ -280,9 +290,14 @@ static uint32_t udp_record_get(net_handle_t *h, uint8_t peer[6],
    if (peer != NULL)
       memcpy(peer, hdr, 6u);
    dglen = (uint16_t)(hdr[6] | (hdr[7] << 8));
-   got   = ring_get(h, jim_dst, (dglen < max) ? dglen : max);
+   got   = ring_get_to(h, dst, (dglen < max) ? dglen : max);
    ring_skip(h, (uint32_t)dglen - got);      /* rest of this datagram */
    return got;
+}
+static uint32_t udp_record_get(net_handle_t *h, uint8_t peer[6],
+                               uint32_t jim_dst, uint32_t max)
+{
+   return udp_record_get_to(h, peer, &Pi1MHz->JIM_ram[jim_dst], max);
 }
 
 /* ---- IPv4 <-> wire (network-order octets [b0,b1,b2,b3]) ------------------ */
@@ -463,6 +478,12 @@ static void net_tcp_err(void *arg, err_t err)
    /* lwIP has already freed the pcb - NULL it, never touch it again. */
    h->tpcb = NULL;
    h->last_err = net_tcp_result(err);
+   /* A TLS connection reports "connected" only once the handshake is done,
+      and the adapter fails a handshake with ERR_CLSD (or ERR_ABRT when the
+      peer closes mid-handshake): most often a certificate that does not
+      verify.  A reset or timeout before that is still a TCP failure. */
+   if (h->tls && h->state == NET_ST_CONNECTING && (err == ERR_CLSD || err == ERR_ABRT))
+      h->last_err = NET_ERR_TLS;           /* others (RST, timeout) keep their own code */
    h->state = NET_ST_ERROR;
 }
 
@@ -481,7 +502,10 @@ static void net_tcp_bind_callbacks(net_handle_t *h, struct altcp_pcb *pcb)
    altcp_arg (pcb, h);
    altcp_recv(pcb, net_tcp_recv);
    altcp_sent(pcb, net_tcp_sent);
-   altcp_poll(pcb, net_tcp_poll, 4u);
+   /* TLS: the adapter retries decrypted data this service refused (ERR_MEM)
+      only on new input or on this poll, so poll it every slow tick (500 ms);
+      plain TCP's refused data is retried by lwIP's fast timer instead. */
+   altcp_poll(pcb, net_tcp_poll, h->tls ? 1u : 4u);
    altcp_err (pcb, net_tcp_err);
 }
 
@@ -497,7 +521,7 @@ static err_t net_tcp_accept(void *arg, struct altcp_pcb *newpcb, err_t err)
       return ERR_VAL;
    if (lh->accept_ready)                      /* backlog full: refuse */
       { altcp_abort(newpcb); return ERR_ABRT; }
-   for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
+   for (unsigned int i = 0; i < NET_BEEB_HANDLES; i++)   /* the Beeb's handles only */
       if (net_h[i].state == NET_ST_FREE) { nh = &net_h[i]; idx = i; break; }
    if (nh == NULL)                            /* no free handle: refuse */
       { altcp_abort(newpcb); return ERR_ABRT; }
@@ -506,8 +530,11 @@ static err_t net_tcp_accept(void *arg, struct altcp_pcb *newpcb, err_t err)
    nh->type  = NET_TYPE_TCP;
    nh->tpcb  = newpcb;
    nh->state = NET_ST_CONNECTED;
-   nh->remote_ip   = newpcb->remote_ip;      /* peer, for URL_STATUS (see rcv_wnd */
-   nh->remote_port = newpcb->remote_port;    /* clamp above: altcp_pcb is tcp_pcb) */
+   {                                          /* the peer, for URL_STATUS */
+      u16_t port = 0;
+      (void)altcp_get_tcp_addrinfo(newpcb, 0, &nh->remote_ip, &port);
+      nh->remote_port = port;
+   }
    net_tcp_bind_callbacks(nh, newpcb);
    lh->accept_ready = true;
    lh->accept_h     = (uint8_t)idx;
@@ -563,7 +590,7 @@ static void net_dns_found(const char *name, const ip_addr_t *ipaddr, void *arg)
 
 /* ---- N: device (Stage 2): URL parsing ------------------------------------ */
 
-typedef struct { uint8_t adapter; uint16_t port; } net_url_t;
+typedef struct { uint8_t adapter; uint16_t port; bool tls; } net_url_t;
 
 /* Case-insensitive compare of s[0..len) against an upper-case NUL literal. */
 static bool net_ci_eq(const char *s, size_t len, const char *lit)
@@ -607,9 +634,11 @@ static bool net_url_parse(const char *url, net_url_t *out,
    const char *h, *e;
    size_t i;
    if (sep == NULL) return false;
+   out->tls = false;
    {
       size_t sl = (size_t)(sep - url);
       if      (net_ci_eq(url, sl, "HTTP")) { out->adapter = NET_URL_HTTP; out->port = 80u; }
+      else if (net_ci_eq(url, sl, "HTTPS")) { out->adapter = NET_URL_HTTP; out->port = 443u; out->tls = true; }
       else if (net_ci_eq(url, sl, "TCP"))  { out->adapter = NET_URL_TCP;  out->port = 0u;  }
       else if (net_ci_eq(url, sl, "UDP"))  { out->adapter = NET_URL_UDP;  out->port = 0u;  }
       else if (net_ci_eq(url, sl, "TNFS")) { out->adapter = NET_URL_TNFS; out->port = (uint16_t)TNFS_PORT; }
@@ -815,12 +844,64 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
    }
 }
 
+#if NET_TLS
+/* The CA bundle every https:// server certificate must chain to: a PEM file
+   at the root of the card (the Mozilla bundle, as curl ships it).  Read and
+   parsed on the first https:// connection and kept; if the file is missing
+   or unreadable, https:// fails with NET_ERR_TLS and the next attempt looks
+   again.  There is no clock, so certificate dates are not checked. */
+#define NET_TLS_CA_FILE   "/cacert.pem"
+#define NET_TLS_CA_MAX    (1024u * 1024u)
+
+static struct altcp_tls_config *net_tls_config(void)
+{
+   static struct altcp_tls_config *conf;
+   FIL      f;
+   UINT     got = 0;
+   uint8_t *pem;
+   FSIZE_t  size;
+
+   if (conf != NULL)
+      return conf;
+   if (f_open(&f, NET_TLS_CA_FILE, FA_READ) != FR_OK)
+      return NULL;
+   size = f_size(&f);
+   pem = (size != 0u && size < NET_TLS_CA_MAX) ? malloc((size_t)size + 1u) : NULL;
+   if (pem != NULL && f_read(&f, pem, (UINT)size, &got) == FR_OK && got == size) {
+      pem[size] = '\0';                     /* mbedTLS parses PEM with its NUL */
+      conf = altcp_tls_create_config_client(pem, (size_t)size + 1u);
+   }
+   (void)f_close(&f);
+   free(pem);
+   return conf;
+}
+#endif
+
 /* Create a pcb and start an outbound connect to h->remote_ip:remote_port.
    Returns NET_PENDING (CONNECTING) or an error.  The ERR_MEM park in
    net_tcp_recv() is what keeps RX drop-free (see net_tcp_bind_callbacks). */
 static uint8_t net_start_connect(net_handle_t *h)
 {
-   h->tpcb = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
+   if (h->tls) {
+#if NET_TLS
+      struct altcp_tls_config *conf = net_tls_config();
+      if (conf == NULL)
+         return NET_ERR_TLS;
+      h->tpcb = altcp_tls_new(conf, IPADDR_TYPE_V4);
+      if (h->tpcb == NULL)
+         return NET_ERR_NOMEM;
+      /* SNI, and the name the certificate must carry */
+      if (mbedtls_ssl_set_hostname((mbedtls_ssl_context *)altcp_tls_context(h->tpcb),
+                                   h->tls_host) != 0) {
+         altcp_abort(h->tpcb);
+         h->tpcb = NULL;
+         return NET_ERR_TLS;
+      }
+#else
+      return NET_ERR_UNSUPPORTED;
+#endif
+   } else
+      h->tpcb = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
    if (h->tpcb == NULL)
       return NET_ERR_NOMEM;
    net_tcp_bind_callbacks(h, h->tpcb);
@@ -875,16 +956,17 @@ static uint8_t do_connect(net_handle_t *h, uint32_t cp)
    return net_start_connect(h);
 }
 
-static uint8_t do_send(net_handle_t *h, uint32_t cp)
+/* Send on a connected stream or datagram socket.  `src` is NULL when the
+   caller's buffer failed its bounds check: that is reported where the
+   check always was.  *sent is set only on NET_OK. */
+static uint8_t send_core(net_handle_t *h, const uint8_t *src, uint32_t len, uint32_t *sent)
 {
-   uint32_t len    = jim_rd24(cp + 1u);
-   uint32_t jimoff = jim_rd32(cp + 4u);
    uint32_t want;
    u16_t    avail;
 
    if (h->state != NET_ST_CONNECTED)
       return NET_ERR_NOTOPEN;
-   if (!service_buffer_ok(jimoff, len))
+   if (src == NULL)
       return NET_ERR_PARAM;
 
    if (h->type == NET_TYPE_UDP) {
@@ -895,13 +977,13 @@ static uint8_t do_send(net_handle_t *h, uint32_t cp)
       p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
       if (p == NULL)
          return NET_ERR_NOMEM;
-      pbuf_take(p, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], (u16_t)len);
+      pbuf_take(p, src, (u16_t)len);
       e = udp_sendto(h->upcb, p, &h->remote_ip, h->remote_port);
       pbuf_free(p);
       if (e != ERR_OK)
          return NET_ERR_CONN;
       wifi_lwip_rx_kick();
-      jim_wr24(cp + 1u, len);
+      *sent = len;
       return NET_OK;
    }
    if (h->type != NET_TYPE_TCP || h->tpcb == NULL)
@@ -911,14 +993,13 @@ static uint8_t do_send(net_handle_t *h, uint32_t cp)
    want  = len;
    if (want > avail) want = avail;
    if (want == 0u) {                /* send buffer full - retry later */
-      jim_wr24(cp + 1u, 0u);
+      *sent = 0u;
       return NET_OK;
    }
    {
-      const void *src = &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE];
       err_t e = altcp_write(h->tpcb, src, (u16_t)want, TCP_WRITE_FLAG_COPY);
       if (e == ERR_MEM) {           /* heap shortfall despite sndbuf - retry */
-         jim_wr24(cp + 1u, 0u);
+         *sent = 0u;
          return NET_OK;
       }
       if (e != ERR_OK)
@@ -926,8 +1007,23 @@ static uint8_t do_send(net_handle_t *h, uint32_t cp)
       altcp_output(h->tpcb);
       wifi_lwip_rx_kick();          /* a send usually precedes a reply */
    }
-   jim_wr24(cp + 1u, want);
+   *sent = want;
    return NET_OK;
+}
+
+static uint8_t do_send(net_handle_t *h, uint32_t cp)
+{
+   uint32_t len    = jim_rd24(cp + 1u);
+   uint32_t jimoff = jim_rd32(cp + 4u);
+   uint32_t sent   = 0u;
+   uint8_t  r;
+   if (h->state != NET_ST_CONNECTED)
+      return NET_ERR_NOTOPEN;
+   r = send_core(h, service_buffer_ok(jimoff, len)
+                    ? &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE] : NULL, len, &sent);
+   if (r == NET_OK)
+      jim_wr24(cp + 1u, sent);
+   return r;
 }
 
 static uint8_t do_recv(net_handle_t *h, uint32_t cp)
@@ -985,17 +1081,17 @@ static uint8_t do_close(net_handle_t *h)
       socket, so the server reclaims the fd/session promptly.  Fire-and-forget:
       a lost teardown just leaves the server to time the session out. */
    if (h->is_url && h->url_adapter == NET_URL_TNFS
-       && h->upcb != NULL && h->tnfs_connid != 0u) {
+       && h->upcb != NULL && h->tnfs.connid != 0u) {
       uint8_t  req[16];
       size_t   n;
       if (h->tnfs_phase == TNFS_PH_READY || h->tnfs_phase == TNFS_PH_READING) {
          if (h->tnfs_is_dir)
-            n = tnfs_build_closedir(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq, h->tnfs_fd);
+            n = tnfs_build_closedir(req, sizeof req, h->tnfs.connid, ++h->tnfs.seq, h->tnfs_fd);
          else
-            n = tnfs_build_close(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq, h->tnfs_fd);
+            n = tnfs_build_close(req, sizeof req, h->tnfs.connid, ++h->tnfs.seq, h->tnfs_fd);
          net_tnfs_send_raw(h, req, (uint16_t)n);
       }
-      n = tnfs_build_umount(req, sizeof req, h->tnfs_connid, ++h->tnfs_seq);
+      n = tnfs_build_umount(req, sizeof req, h->tnfs.connid, ++h->tnfs.seq);
       net_tnfs_send_raw(h, req, (uint16_t)n);
    }
    /* A listener with an accepted connection nobody has collected: close that
@@ -1042,15 +1138,27 @@ static uint8_t do_status(net_handle_t *h, uint32_t cp)
 
 /* ---- N: device adapters -------------------------------------------------- */
 
-/* HTTP: send "GET <path> HTTP/1.0" with Host + Connection: close. */
+/* HTTP: send "<METHOD> <path> HTTP/1.0" with Host + Connection: close, and
+   for a body its Content-Length (the body itself follows as url writes). */
 static uint8_t net_http_send_request(net_handle_t *h, const char *host,
                                      const char *path)
 {
-   char req[NET_MAX_HOSTNAME + 288u];
+   static const char *const verb[] = { "GET", "GET", "POST", "PUT", "DELETE", "HEAD" };
+   char req[NET_MAX_HOSTNAME + 400u];
+   char extra[128] = "";
+   bool body = h->http_method == NET_HTTP_POST || h->http_method == NET_HTTP_PUT;
+   if (h->http_ctype[0])
+      snprintf(extra, sizeof extra, "Content-Type: %s\r\n", h->http_ctype);
+   if (body) {
+      size_t e = strlen(extra);
+      snprintf(extra + e, sizeof extra - e, "Content-Length: %lu\r\n",
+               (unsigned long)h->http_body_len);
+   }
    int n = snprintf(req, sizeof req,
-                    "GET %s HTTP/1.0\r\nHost: %s\r\n"
-                    "User-Agent: Pi1MHz/" RELEASENAME "\r\nConnection: close\r\n\r\n",
-                    path, host);
+                    "%s %s HTTP/1.0\r\nHost: %s\r\n"
+                    "User-Agent: Pi1MHz/" RELEASENAME "\r\nConnection: close\r\n%s\r\n",
+                    verb[h->http_method <= NET_HTTP_HEAD ? h->http_method : 0u],
+                    path, host, extra);
    if (n < 0 || (size_t)n >= sizeof req)
       return NET_ERR_PARAM;
    if (h->tpcb == NULL)
@@ -1232,24 +1340,14 @@ static void net_tnfs_send_raw(net_handle_t *h, const uint8_t *req, uint16_t len)
    wifi_lwip_rx_kick();
 }
 
-/* (Re)transmit the buffered request and (re)arm the resend/timeout deadline. */
-static void net_tnfs_fire(net_handle_t *h)
-{
-   net_tnfs_send_raw(h, h->tnfs_req, h->tnfs_req_len);
-   h->tnfs_deadline = net_now_ms()
-                    + (h->tnfs_retry_ms ? h->tnfs_retry_ms : TNFS_TIMEOUT_MS);
-}
-
 /* Begin a new transaction: the caller has already built the request into
-   h->tnfs_req[] with sequence h->tnfs_seq.  Sends it and enters `phase`. */
+   h->tnfs.req[] with sequence h->tnfs.seq.  Sends it and enters `phase`. */
 static uint8_t net_tnfs_start(net_handle_t *h, uint8_t phase, size_t req_len)
 {
    if (req_len == 0u || req_len > TNFS_REQ_MAX) return NET_ERR_PARAM;
-   h->tnfs_phase   = phase;
-   h->tnfs_req_len = (uint16_t)req_len;
-   h->tnfs_retries = TNFS_RETRIES;
-   h->tnfs_eagain  = TNFS_EAGAIN_MAX;
-   net_tnfs_fire(h);
+   h->tnfs_phase = phase;
+   tnfs_xfer_begin(&h->tnfs, (uint16_t)req_len, net_now_ms());
+   net_tnfs_send_raw(h, h->tnfs.req, h->tnfs.req_len);
    return NET_PENDING;
 }
 
@@ -1257,35 +1355,25 @@ static uint8_t net_tnfs_start(net_handle_t *h, uint8_t phase, size_t req_len)
    body pointers in *rep stay valid after return) and returns:
    NET_OK  - a matching reply arrived (rep->status may still be an error),
    NET_PENDING - still waiting / backing off / just resent,
-   NET_ERR_CONN - retries exhausted with no reply. */
+   NET_ERR_CONN - retries exhausted with no reply.
+   The resend and backoff rules are net_tnfs.h's tnfs_xfer engine; the pcb is
+   also udp_connect'd to the server, so foreign sources never arrive. */
 static uint8_t net_tnfs_poll(net_handle_t *h, uint8_t *pkt, size_t pktcap,
                              tnfs_reply_t *rep)
 {
-   uint8_t cmd = h->tnfs_req[3];                /* the command we sent */
    if (h->rx_count >= 8u) {
       uint16_t plen = net_udp_pop(h, pkt, pktcap);
-      /* Accept only a well-formed reply to our seq/cmd on this session - a
-         reply carrying a different connid (once one is assigned) is not ours,
-         so it is drained and ignored (defence-in-depth: the pcb is also
-         udp_connect'd to the server, so foreign sources never arrive). */
-      if (plen != 0u && tnfs_parse_reply(pkt, plen, h->tnfs_seq, cmd, rep)
-          && (h->tnfs_connid == 0u || rep->connid == h->tnfs_connid)) {
-         if (rep->status == TNFS_EAGAIN) {       /* server busy: back off, resend */
-            uint32_t back = rep->backoff_ms ? rep->backoff_ms : h->tnfs_retry_ms;
-            if (h->tnfs_eagain == 0u) return NET_ERR_CONN;   /* bound sustained EAGAIN */
-            h->tnfs_eagain--;
-            h->tnfs_retries = TNFS_RETRIES;      /* link is proven up - restore loss budget */
-            h->tnfs_deadline = net_now_ms() + (back ? back : TNFS_TIMEOUT_MS);
-            return NET_PENDING;
-         }
-         return NET_OK;
+      switch (tnfs_xfer_reply(&h->tnfs, pkt, plen, net_now_ms(), rep)) {
+      case TNFS_X_DONE: return NET_OK;
+      case TNFS_X_FAIL: return NET_ERR_CONN;
+      case TNFS_X_BUSY: return NET_PENDING;
+      default:          break;            /* not ours: keep waiting */
       }
-      /* a stale/duplicate/foreign datagram - ignore it and keep waiting */
    }
-   if ((int32_t)(net_now_ms() - h->tnfs_deadline) >= 0) {
-      if (h->tnfs_retries == 0u) return NET_ERR_CONN;   /* gave up */
-      h->tnfs_retries--;
-      net_tnfs_fire(h);
+   switch (tnfs_xfer_tick(&h->tnfs, net_now_ms())) {
+   case TNFS_X_FAIL: return NET_ERR_CONN;   /* gave up */
+   case TNFS_X_SEND: net_tnfs_send_raw(h, h->tnfs.req, h->tnfs.req_len); break;
+   default:          break;
    }
    return NET_PENDING;
 }
@@ -1317,9 +1405,9 @@ static uint8_t net_tnfs_begin(net_handle_t *h)
    (void)udp_connect(h->upcb, &h->remote_ip, h->remote_port);
    h->type          = NET_TYPE_UDP;
    h->state         = NET_ST_CONNECTED;
-   h->tnfs_retry_ms = TNFS_TIMEOUT_MS;          /* until MOUNT tells us better */
-   h->tnfs_seq      = 1u;
-   n = tnfs_build_mount(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_seq, "/", NULL, NULL);
+   h->tnfs.retry_ms = TNFS_TIMEOUT_MS;          /* until MOUNT tells us better */
+   h->tnfs.seq      = 1u;
+   n = tnfs_build_mount(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.seq, "/", NULL, NULL);
    if (n == 0u) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM; }
    h->url_phase = URL_CONNECTING;               /* reuse: "TNFS handshaking" */
    return net_tnfs_start(h, TNFS_PH_MOUNT, n);
@@ -1334,18 +1422,20 @@ static uint8_t url_after_resolve(net_handle_t *h)
    return url_begin_connect(h);
 }
 
-static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
+/* Advance a URL handle's open; called again until it stops answering
+   NET_PENDING.  `url` is NULL when the caller's copy failed its bounds
+   check; `mode` is the FujiNet aux1 open mode. */
+static uint8_t url_open_core(net_handle_t *h, const char *url, uint8_t mode,
+                             const net_http_opts_t *opts)
 {
    char       host[NET_MAX_HOSTNAME];
    char       path[192];
    net_url_t  u;
-   const char *url;
 
    if (h->url_phase == URL_READY) return NET_OK;
    if (h->url_phase == URL_FAIL)  return h->last_err ? h->last_err : NET_ERR_CONN;
 
-   if (!service_string_ok(cp + 2u, NET_MAX_HOSTNAME))   return NET_ERR_PARAM;
-   url = (const char *)&Pi1MHz->JIM_ram[cp + 2u];
+   if (url == NULL)                                      return NET_ERR_PARAM;
    if (!net_url_parse(url, &u, host, sizeof host, path, sizeof path)) {
       /* Only latch the failure once this open OWNS the handle. A malformed
        * URL on a still-FREE handle must not stick: URL_FAIL is answered
@@ -1362,11 +1452,20 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
    switch (h->url_phase) {
       case URL_START:
          if (h->state != NET_ST_FREE)  return NET_ERR_INUSE;
+         if (opts && opts->content_type && strpbrk(opts->content_type, "\r\n"))
+            return NET_ERR_PARAM;                 /* would inject request headers */
          if (!wifi_lwip_get_context()->address_ready)
             return NET_PENDING;                   /* no IP yet - keep polling */
          net_handle_reset(h);
          h->is_url = true; h->url_adapter = u.adapter;
-         { uint8_t m = jim_rd8(cp + 1u);                     /* FujiNet aux1 open mode */
+         h->tls = u.tls;
+         if (u.tls)
+            snprintf(h->tls_host, sizeof h->tls_host, "%s", host);
+         h->http_method = (opts && opts->method) ? opts->method : (uint8_t)NET_HTTP_GET;
+         h->http_body_len = opts ? opts->body_len : 0u;
+         snprintf(h->http_ctype, sizeof h->http_ctype, "%s",
+                  (opts && opts->content_type) ? opts->content_type : "");
+         { uint8_t m = mode;                                 /* FujiNet aux1 open mode */
            h->tnfs_wr = (m == NET_OPEN_WRITE || m == NET_OPEN_RW) ? 1u : 0u; }
          h->type = (u.adapter == NET_URL_UDP) ? NET_TYPE_UDP : NET_TYPE_TCP;
          h->state = NET_ST_IDLE;
@@ -1413,16 +1512,16 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                if (!tnfs_reply_mount(&rep, NULL, &rms)) {      /* short reply: no connid to trust */
                   h->url_phase = URL_FAIL; h->last_err = NET_ERR_CONN; return NET_ERR_CONN;
                }
-               h->tnfs_connid = rep.connid;
-               if (rms >= 100u && rms <= 5000u) h->tnfs_retry_ms = rms;
+               h->tnfs.connid = rep.connid;
+               if (rms >= 100u && rms <= 5000u) h->tnfs.retry_ms = rms;
                /* directory if the mode is DIR (13) or the path ends in '/' */
-               uint8_t m = jim_rd8(cp + 1u);
+               uint8_t m = mode;
                h->tnfs_is_dir = ((plen != 0u && path[plen - 1u] == '/')
                                  || m == NET_OPEN_DIR) ? 1u : 0u;
-               h->tnfs_seq++;
+               h->tnfs.seq++;
                if (h->tnfs_is_dir) {
-                  n = tnfs_build_opendir(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                         h->tnfs_seq, path);
+                  n = tnfs_build_opendir(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid,
+                                         h->tnfs.seq, path);
                } else {
                   uint16_t oflags = (m == NET_OPEN_RW)
                         ? (uint16_t)(TNFS_O_RDWR | TNFS_O_CREAT)
@@ -1430,8 +1529,8 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
                               ? (uint16_t)(TNFS_O_WRONLY | TNFS_O_CREAT | TNFS_O_TRUNC)
                               : (uint16_t)TNFS_O_RDONLY;
                   uint16_t omode = h->tnfs_wr ? 0x01A4u : 0u;   /* 0644 on create */
-                  n = tnfs_build_open(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                      h->tnfs_seq, oflags, omode, path);
+                  n = tnfs_build_open(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid,
+                                      h->tnfs.seq, oflags, omode, path);
                }
                if (n == 0u) { h->url_phase = URL_FAIL; h->last_err = NET_ERR_PARAM; return NET_ERR_PARAM; }
                return net_tnfs_start(h, TNFS_PH_OPEN, n);
@@ -1466,18 +1565,29 @@ static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
    }
 }
 
-static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
+static uint8_t do_url_open(net_handle_t *h, uint32_t cp)
 {
-   uint32_t max    = jim_rd24(cp + 1u);
-   uint32_t jimoff = jim_rd32(cp + 4u);
+   const char *url = service_string_ok(cp + 2u, NET_MAX_HOSTNAME)
+                     ? (const char *)&Pi1MHz->JIM_ram[cp + 2u] : NULL;
+   return url_open_core(h, url, jim_rd8(cp + 1u), NULL);
+}
+
+/* The count the Beeb's command block reports; NET_NO_COUNT leaves it as it
+   was (paths that never wrote it before the split still do not). */
+#define NET_NO_COUNT 0xFFFFFFFFu
+
+/* Read from a URL handle into dst (NULL: the caller's buffer failed its
+   bounds check).  *out is the delivered count, or NET_NO_COUNT. */
+static uint8_t url_read_core(net_handle_t *h, uint8_t *dst, uint32_t max, uint32_t *out)
+{
    uint32_t got;
 
    if (h->state == NET_ST_FREE) return NET_ERR_NOTOPEN;
-   if (!service_buffer_ok(jimoff, max)) return NET_ERR_PARAM;
+   if (dst == NULL) return NET_ERR_PARAM;
    if (h->url_adapter == NET_URL_HTTP && h->http_hdr_done
        && h->http_has_length
        && h->http_body_read >= h->http_content_length) {
-      jim_wr24(cp + 1u, 0u);
+      *out = 0u;
       return NET_EOF;
    }
 
@@ -1485,19 +1595,19 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       uint8_t      pkt[TNFS_PKT_MAX];
       tnfs_reply_t rep;
       uint8_t      r;
-      jim_wr24(cp + 1u, 0u);                     /* default: 0 bytes read */
+      *out = 0u;                     /* default: 0 bytes read */
       if (h->tnfs_phase == TNFS_PH_READY) {       /* start a READ / READDIR */
          size_t n;
          if (max == 0u) return NET_OK;            /* no room - don't burn a dir entry */
-         h->tnfs_seq++;
+         h->tnfs.seq++;
          if (h->tnfs_is_dir) {                    /* one directory entry per read */
-            n = tnfs_build_readdir(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                   h->tnfs_seq, h->tnfs_fd);
+            n = tnfs_build_readdir(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid,
+                                   h->tnfs.seq, h->tnfs_fd);
          } else {
             uint16_t want = (max > TNFS_READ_CHUNK) ? (uint16_t)TNFS_READ_CHUNK : (uint16_t)max;
             if (want == 0u) return NET_OK;
-            n = tnfs_build_read(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid,
-                                h->tnfs_seq, h->tnfs_fd, want);
+            n = tnfs_build_read(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid,
+                                h->tnfs.seq, h->tnfs_fd, want);
          }
          return net_tnfs_start(h, TNFS_PH_READING, n);
       }
@@ -1514,16 +1624,16 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
          if (!tnfs_reply_readdir(&rep, &name)) return NET_ERR_CONN;
          copy = (uint32_t)strlen(name);
          if (copy > max) copy = max;
-         memcpy(&Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], name, copy);
-         jim_wr24(cp + 1u, copy);
+         memcpy(dst, name, copy);
+         *out = copy;
       } else {                                    /* deliver file bytes */
          const uint8_t *data;
          uint16_t       dlen;
          uint32_t       copy;
          if (!tnfs_reply_read(&rep, &data, &dlen)) return NET_ERR_CONN;
          copy = (dlen < max) ? dlen : max;
-         memcpy(&Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], data, copy);
-         jim_wr24(cp + 1u, copy);
+         memcpy(dst, data, copy);
+         *out = copy;
       }
       return NET_OK;
    }
@@ -1532,15 +1642,15 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       /* Return one datagram's payload; the peer is the fixed URL host, so the
          [4 ip][2 port] record header is dropped.  No connection => no EOF; a
          client polls and terminates on its own (timeout/count). */
-      if (h->rx_count < 8u) { jim_wr24(cp + 1u, 0u); return NET_OK; }
-      jim_wr24(cp + 1u, udp_record_get(h, NULL, jimoff + DISC_RAM_BASE, max));
+      if (h->rx_count < 8u) { *out = 0u; return NET_OK; }
+      *out = udp_record_get_to(h, NULL, dst, max);
       return NET_OK;
    }
 
    if (h->url_adapter == NET_URL_HTTP && !h->http_hdr_done) {
       uint16_t hdr = net_http_find_headers(h);
       if (hdr == 0u) {                       /* end-of-headers not seen yet */
-         jim_wr24(cp + 1u, 0u);
+         *out = 0u;
          /* Ring full without CRLFCRLF = oversized/non-HTTP headers: fail
             rather than deadlock (a full ring parks all further RX, so the
             terminator - and the FIN - can never arrive).
@@ -1571,16 +1681,24 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
       }
       ring_skip(h, hdr);
       h->http_hdr_done = true;
+      if (h->http_method == NET_HTTP_HEAD) {  /* the answer carries no body */
+         h->http_has_length = true;
+         h->http_content_length = 0u;
+      }
    }
    if (h->url_adapter == NET_URL_HTTP && h->http_has_length) {
       uint32_t remaining = h->http_content_length - h->http_body_read;
+      if (remaining == 0u) {          /* HEAD, or an empty body: done now, not */
+         *out = 0u;                   /* one read later                        */
+         return NET_EOF;
+      }
       if (max > remaining)
          max = remaining;
    }
-   got = ring_get(h, jimoff + DISC_RAM_BASE, max);
+   got = ring_get_to(h, dst, max);
    if (h->url_adapter == NET_URL_HTTP)
       h->http_body_read += got;
-   jim_wr24(cp + 1u, got);
+   *out = got;
    if (got == 0u && h->rx_count == 0u) {
       if (h->rx_eof) {
          /* EOF is success only after the declared HTTP body has arrived.
@@ -1598,38 +1716,49 @@ static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
    return NET_OK;
 }
 
+static uint8_t do_url_read(net_handle_t *h, uint32_t cp)
+{
+   uint32_t max    = jim_rd24(cp + 1u);
+   uint32_t jimoff = jim_rd32(cp + 4u);
+   uint32_t out    = NET_NO_COUNT;
+   uint8_t  r;
+   if (h->state == NET_ST_FREE) return NET_ERR_NOTOPEN;
+   r = url_read_core(h, service_buffer_ok(jimoff, max)
+                        ? &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE] : NULL, max, &out);
+   if (out != NET_NO_COUNT)
+      jim_wr24(cp + 1u, out);
+   return r;
+}
+
 /* url_write (62): UDP sends the payload to the URL's host:port; TCP/HTTP reuse
    the stream send (same [1..3] len, [4..7] JIM src command-block layout). */
-static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
+static uint8_t url_write_core(net_handle_t *h, const uint8_t *src, uint32_t len,
+                              uint32_t *out)
 {
-   uint32_t     len;
-   uint32_t     jimoff;
    struct pbuf *p;
 
    if (h->url_adapter == NET_URL_TNFS) {         /* WRITE a chunk to the file */
       uint8_t      pkt[TNFS_PKT_MAX];
       tnfs_reply_t rep;
       uint8_t      r;
-      len    = jim_rd24(cp + 1u);
-      jimoff = jim_rd32(cp + 4u);
       if (!h->tnfs_wr)                 return NET_ERR_NOTOPEN;   /* read-only open */
-      if (!service_buffer_ok(jimoff, len)) return NET_ERR_PARAM;
+      if (src == NULL)                 return NET_ERR_PARAM;
       if (h->tnfs_phase == TNFS_PH_READY) {
          uint16_t want = (len > TNFS_WRITE_CHUNK) ? (uint16_t)TNFS_WRITE_CHUNK : (uint16_t)len;
          size_t   n;
-         jim_wr24(cp + 1u, 0u);
+         *out = 0u;
          if (want == 0u) return NET_OK;
-         h->tnfs_seq++;
-         n = tnfs_build_write(h->tnfs_req, TNFS_REQ_MAX, h->tnfs_connid, h->tnfs_seq,
-                              h->tnfs_fd, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], want);
+         h->tnfs.seq++;
+         n = tnfs_build_write(h->tnfs.req, TNFS_REQ_MAX, h->tnfs.connid, h->tnfs.seq,
+                              h->tnfs_fd, src, want);
          return net_tnfs_start(h, TNFS_PH_WRITING, n);
       }
-      if (h->tnfs_phase != TNFS_PH_WRITING) { jim_wr24(cp + 1u, 0u); return NET_ERR_NOTOPEN; }
+      if (h->tnfs_phase != TNFS_PH_WRITING) { *out = 0u; return NET_ERR_NOTOPEN; }
       r = net_tnfs_poll(h, pkt, sizeof pkt, &rep);
-      if (r == NET_PENDING) { jim_wr24(cp + 1u, 0u); return NET_PENDING; }
+      if (r == NET_PENDING) { *out = 0u; return NET_PENDING; }
       h->tnfs_phase = TNFS_PH_READY;
-      if (r != NET_OK) { jim_wr24(cp + 1u, 0u); return r; }
-      if (rep.status != TNFS_OK) { jim_wr24(cp + 1u, 0u); return net_tnfs_status(rep.status); }
+      if (r != NET_OK) { *out = 0u; return r; }
+      if (rep.status != TNFS_OK) { *out = 0u; return net_tnfs_status(rep.status); }
       /* Clamp the server's count to the most we can ever have sent: a hostile
          or buggy server answering a 240-byte WRITE with "wrote 65535" would
          underflow a Beeb-side `rem% -= wrote%` loop and walk its pointer off
@@ -1639,7 +1768,7 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
       { uint16_t wrote = 0u;
         if (!tnfs_reply_write(&rep, &wrote)) wrote = 0u;
         if (wrote > (uint16_t)TNFS_WRITE_CHUNK) wrote = (uint16_t)TNFS_WRITE_CHUNK;
-        jim_wr24(cp + 1u, wrote); }
+        *out = wrote; }
       return NET_OK;
    }
 
@@ -1647,41 +1776,45 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
       uint8_t esc[512];
       size_t  consumed = 0u, elen;
       u16_t   avail, oc;
-      len    = jim_rd24(cp + 1u);
-      jimoff = jim_rd32(cp + 4u);
       if (h->type != NET_TYPE_TCP || h->tpcb == NULL || h->state != NET_ST_CONNECTED)
          return NET_ERR_NOTOPEN;
-      if (!service_buffer_ok(jimoff, len))
+      if (src == NULL)
          return NET_ERR_PARAM;
       avail = altcp_sndbuf(h->tpcb);
       oc = (avail < sizeof esc) ? avail : (u16_t)sizeof esc;
-      if (oc == 0u) { jim_wr24(cp + 1u, 0u); return NET_OK; }   /* sndbuf full - retry */
-      elen = telnet_escape(&Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], len, esc, oc, &consumed);
+      if (oc == 0u) { *out = 0u; return NET_OK; }   /* sndbuf full - retry */
+      elen = telnet_escape(src, len, esc, oc, &consumed);
       if (elen != 0u) {
          err_t e = altcp_write(h->tpcb, esc, (u16_t)elen, TCP_WRITE_FLAG_COPY);
-         if (e == ERR_MEM) { jim_wr24(cp + 1u, 0u); return NET_OK; }
+         if (e == ERR_MEM) { *out = 0u; return NET_OK; }
          if (e != ERR_OK)  return NET_ERR_CONN;
          altcp_output(h->tpcb);
          wifi_lwip_rx_kick();
       }
-      jim_wr24(cp + 1u, (uint32_t)consumed);      /* input bytes consumed */
+      *out = (uint32_t)consumed;      /* input bytes consumed */
       return NET_OK;
    }
 
-   if (h->type != NET_TYPE_UDP)
-      return do_send(h, cp);
+   if (h->type != NET_TYPE_UDP) {
+      uint32_t sent = 0u;
+      uint8_t  rs;
+      if (h->state != NET_ST_CONNECTED)      /* the stream send's order: state, then buffer */
+         return NET_ERR_NOTOPEN;
+      rs = send_core(h, src, len, &sent);
+      if (rs == NET_OK)
+         *out = sent;
+      return rs;
+   }
 
-   len    = jim_rd24(cp + 1u);
-   jimoff = jim_rd32(cp + 4u);
    if (h->upcb == NULL)
       return NET_ERR_NOTOPEN;
-   if (len > 0xFFFFu || !service_buffer_ok(jimoff, len))
+   if (len > 0xFFFFu || src == NULL)
       return NET_ERR_PARAM;
 
    p = pbuf_alloc(PBUF_TRANSPORT, (u16_t)len, PBUF_RAM);
    if (p == NULL)
       return NET_ERR_NOMEM;
-   pbuf_take(p, &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE], (u16_t)len);
+   pbuf_take(p, src, (u16_t)len);
    {
       err_t e = udp_sendto(h->upcb, p, &h->remote_ip, h->remote_port);
       pbuf_free(p);
@@ -1689,8 +1822,21 @@ static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
          return NET_ERR_CONN;
    }
    wifi_lwip_rx_kick();
-   jim_wr24(cp + 1u, len);
+   *out = len;
    return NET_OK;
+}
+
+static uint8_t do_url_write(net_handle_t *h, uint32_t cp)
+{
+   uint32_t len    = jim_rd24(cp + 1u);
+   uint32_t jimoff = jim_rd32(cp + 4u);
+   uint32_t out    = NET_NO_COUNT;
+   uint8_t  r = url_write_core(h, service_buffer_ok(jimoff, len)
+                                  ? &Pi1MHz->JIM_ram[jimoff + DISC_RAM_BASE] : NULL,
+                               len, &out);
+   if (out != NET_NO_COUNT)
+      jim_wr24(cp + 1u, out);
+   return r;
 }
 
 static uint8_t do_url_status(net_handle_t *h, uint32_t cp)
@@ -1726,7 +1872,7 @@ static uint8_t net_dispatch(uint32_t cp, uint8_t data)
 
    if (!net_enabled)
       return NET_ERR_DISABLED;
-   if (handle >= NET_MAX_HANDLES)
+   if (handle >= NET_BEEB_HANDLES)            /* the rest are net_capi_*'s */
       return NET_ERR_PARAM;
    h = &net_h[handle];
 
@@ -1767,8 +1913,9 @@ static uint8_t net_irq_state;
 static void net_update_irq(void)
 {
    uint8_t any = 0u;
-   if (net_irq_armed)
-      for (unsigned int i = 0; i < NET_MAX_HANDLES; i++)
+   if (net_irq_armed)                   /* the Beeb's handles only: it cannot
+                                           read (so cannot clear) the rest */
+      for (unsigned int i = 0; i < NET_BEEB_HANDLES; i++)
          if (net_h[i].rx_count != 0u) { any = 1u; break; }
    if (any != net_irq_state) {
       services_irq_set(net_source, any != 0u);
@@ -2163,6 +2310,82 @@ static void net_service_poll(void)
    net_update_irq();
 }
 
+/* ---- URL sessions for Pi-side clients (net_service.h) -------------------- */
+
+/* Handed out until closed: a handle stays NET_ST_FREE until its open gets
+   going (it waits for an IP address first), so being free is not enough. */
+static bool capi_taken[NET_MAX_HANDLES];
+
+static net_handle_t *capi_handle(int h)
+{
+   return (h >= (int)NET_BEEB_HANDLES && h < (int)NET_MAX_HANDLES && capi_taken[h])
+          ? &net_h[h] : NULL;
+}
+
+bool net_capi_enabled(void)
+{
+   return net_enabled;
+}
+
+int net_capi_alloc(void)
+{
+   for (unsigned int i = NET_BEEB_HANDLES; i < NET_MAX_HANDLES; i++)
+      if (!capi_taken[i] && net_h[i].state == NET_ST_FREE) {
+         capi_taken[i] = true;
+         return (int)i;
+      }
+   return -1;
+}
+
+uint8_t net_capi_open(int hi, const char *url, uint8_t mode, const net_http_opts_t *opts)
+{
+   net_handle_t *h = capi_handle(hi);
+   if (!net_enabled) return NET_ERR_DISABLED;
+   if (!h || !url)   return NET_ERR_PARAM;
+   return url_open_core(h, url, mode, opts);
+}
+
+uint8_t net_capi_read(int hi, uint8_t *dst, uint32_t max, uint32_t *got)
+{
+   net_handle_t *h = capi_handle(hi);
+   uint32_t out = NET_NO_COUNT;
+   uint8_t r;
+   *got = 0u;
+   if (!h || !dst) return NET_ERR_PARAM;
+   r = url_read_core(h, dst, max, &out);
+   if (out != NET_NO_COUNT)
+      *got = out;
+   return r;
+}
+
+uint8_t net_capi_write(int hi, const uint8_t *src, uint32_t len, uint32_t *done)
+{
+   net_handle_t *h = capi_handle(hi);
+   uint32_t out = NET_NO_COUNT;
+   uint8_t r;
+   *done = 0u;
+   if (!h || !src) return NET_ERR_PARAM;
+   r = url_write_core(h, src, len, &out);
+   if (out != NET_NO_COUNT)
+      *done = out;
+   return r;
+}
+
+void net_capi_close(int hi)
+{
+   net_handle_t *h = capi_handle(hi);
+   if (h) {
+      (void)do_close(h);
+      capi_taken[hi] = false;
+   }
+}
+
+uint16_t net_capi_http_code(int hi)
+{
+   net_handle_t *h = capi_handle(hi);
+   return h ? h->http_code : 0u;
+}
+
 void net_service_init(uint8_t instance, uint8_t address)
 {
    (void)address;                   /* the services framework owns the base */
@@ -2171,6 +2394,12 @@ void net_service_init(uint8_t instance, uint8_t address)
    {
       net_enabled = config_get_bool("net_enable");
    }
+#if NET_TLS
+   /* Warm the RNG now so https://'s first handshake finds it ready (see
+      rpi/hwrng.c); a few register writes, no waiting. */
+   if (net_enabled)
+      hwrng_start();
+#endif
 
    /* Defer all pcb teardown to the first poll (see net_service_poll).  Do NOT
       clear net_pending here either: a command latched around a BBC-reset

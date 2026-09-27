@@ -62,6 +62,7 @@
   apart.
 */
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Emulator-table init: instance = nIRQ source id, address = services base. */
@@ -149,6 +150,7 @@ void net_time_cancel(void);
 #define NET_ERR_TCP_CLOSED   0x2Eu /* connection closed unexpectedly            */
 #define NET_ERR_TCP_IF       0x2Fu /* network interface rejected the operation  */
 #define NET_ERR_HTTP_STATUS  0x30u /* HTTP response was not successful          */
+#define NET_ERR_TLS          0x31u /* https: no CA bundle, or the server's certificate did not verify */
 /* NET_PENDING is bit-7-CLEAR on purpose.  Bit 7 set means "the command was
    latched in FIQ but the main-loop poll has not produced a result yet" - the
    Beeb spins on it (the FAT-service "BMI wait" idiom) and it clears within one
@@ -177,7 +179,12 @@ typedef enum {
 #define NET_FLAG_ERROR       0x04u
 #define NET_FLAG_RX_READY    0x08u /* bytes waiting in the RX ring           */
 
-#define NET_MAX_HANDLES      8u    /* hard cap < MEMP_NUM_TCP_PCB (16)       */
+/* Handles 0..NET_BEEB_HANDLES-1 are the Beeb's (its command page picks one);
+   the rest belong to Pi-side clients through net_capi_* below, so neither
+   side can take the other's.  All of them < MEMP_NUM_TCP_PCB (16). */
+#define NET_BEEB_HANDLES     8u
+#define NET_CAPI_HANDLES     5u    /* the FujiNet device: fn-rom's 5 channels */
+#define NET_MAX_HANDLES      (NET_BEEB_HANDLES + NET_CAPI_HANDLES)
 #define NET_RX_RING_SIZE     8192u /* per-handle byte-stream ring            */
 /* One shared ring, claimed by whichever handle meets a chain too large for its
    own.  lwIP re-presents a whole chain rather than a prefix, so a chain bigger
@@ -185,5 +192,36 @@ typedef enum {
    ever.  TCP_WND is 44*TCP_MSS = 64,240, so 65536 accepts any single chain.
    Sized once and shared because nothing requires two such chains at once. */
 #define NET_RX_RING_LARGE   65536u /* shared, claimed on demand              */
+
+/* ---- URL sessions for Pi-side clients ------------------------------------
+   The N: device's URL verbs as C calls, on handles NET_BEEB_HANDLES.. .
+   Everything runs on the main loop and nothing waits: an open or a read
+   that cannot finish yet answers NET_PENDING / zero bytes and is simply
+   called again later, as the Beeb's commands are. */
+
+/* HTTP methods (the FujiNet NetworkDevice codes). */
+#define NET_HTTP_GET         1u
+#define NET_HTTP_POST        2u
+#define NET_HTTP_PUT         3u
+#define NET_HTTP_DELETE      4u
+#define NET_HTTP_HEAD        5u
+
+typedef struct {
+   uint8_t     method;        /* NET_HTTP_*; 0 means GET              */
+   uint32_t    body_len;      /* Content-Length of a POST/PUT body    */
+   const char *content_type;  /* request Content-Type, or NULL        */
+} net_http_opts_t;
+
+int      net_capi_alloc(void);             /* a free handle, or -1 */
+/* Advance the open; NET_OK once ready, NET_PENDING while under way, or an
+   error.  url/opts must be the same on every call for one open. */
+uint8_t  net_capi_open(int h, const char *url, uint8_t mode, const net_http_opts_t *opts);
+/* NET_OK (with *got, possibly 0: nothing yet), NET_EOF, or an error. */
+uint8_t  net_capi_read(int h, uint8_t *dst, uint32_t max, uint32_t *got);
+/* NET_OK with *done (possibly 0: the send buffer is full, try again). */
+uint8_t  net_capi_write(int h, const uint8_t *src, uint32_t len, uint32_t *done);
+void     net_capi_close(int h);
+uint16_t net_capi_http_code(int h);         /* 0 until the headers are in */
+bool     net_capi_enabled(void);            /* net_enable=1 */
 
 #endif /* NET_SERVICE_H */

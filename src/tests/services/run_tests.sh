@@ -11,6 +11,7 @@ trap 'rm -rf "$B"' EXIT
 
 cp "$SRC"/services_emulator.c "$SRC"/fat_service.c "$SRC"/services.h "$B/"
 cp "$SRC"/M5000_emulator.h "$B/"
+cp "$SRC"/fujibus_service.h "$B/"
 cp "$SRC"/config.c "$SRC"/config.h "$B/"
 cp "$HERE"/test_services.c "$HERE"/test_config.c "$HERE"/fuzz_fat.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"
@@ -21,6 +22,17 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -I"$B" -o "$B/t" \
     "$B/test_services.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/config.c"
 "$B/t"
+
+echo "== FujiNet service latch =="
+mkdir -p "$B/fujinet"
+cp "$SRC"/fujibus_service.c "$B/"
+cp "$SRC"/fujinet/fujibus.h "$SRC"/fujinet/fn_disk.h "$SRC"/fujinet/fn_network.h \
+   "$SRC"/fujinet/fn_store.h "$B/fujinet/"
+cp "$HERE"/test_fujibus_service.c "$B/"
+gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$B" -o "$B/tf" "$B/test_fujibus_service.c" "$B/fujibus_service.c"
+"$B/tf"
 
 echo "== config parser =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \

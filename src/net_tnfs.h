@@ -72,6 +72,12 @@ size_t tnfs_build_closedir(uint8_t *buf, size_t cap, uint16_t connid, uint8_t se
                            uint8_t dirhandle);
 size_t tnfs_build_stat    (uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
                            const char *path);
+/* LSEEK: whence is TNFS_SEEK_SET/CUR/END; position is signed 32-bit LE. */
+#define TNFS_SEEK_SET        0u
+#define TNFS_SEEK_CUR        1u
+#define TNFS_SEEK_END        2u
+size_t tnfs_build_lseek   (uint8_t *buf, size_t cap, uint16_t connid, uint8_t seq,
+                           uint8_t fd, uint8_t whence, int32_t position);
 
 /* ---- reply parsing ------------------------------------------------------- */
 
@@ -107,5 +113,51 @@ bool tnfs_reply_read  (const tnfs_reply_t *r, const uint8_t **data, uint16_t *da
 bool tnfs_reply_readdir(const tnfs_reply_t *r, const char **name);
 /* STAT: file size in bytes (the field most callers want). */
 bool tnfs_reply_stat_size(const tnfs_reply_t *r, uint32_t *size);
+/* STAT: the POSIX file mode; (mode & TNFS_S_IFMT) == TNFS_S_IFDIR for a
+   directory. */
+#define TNFS_S_IFMT          0xF000u
+#define TNFS_S_IFDIR         0x4000u
+bool tnfs_reply_stat_mode(const tnfs_reply_t *r, uint16_t *mode);
+
+/* ---- one outstanding request: resend, server-busy backoff, matching -------
+ * The rules every TNFS client here follows, shared by the net service's
+ * N:TNFS adapter and the FujiNet disk device.  A request is built into
+ * x->req (sequence x->seq, session x->connid), armed with tnfs_xfer_begin
+ * and sent by the caller; the caller then feeds every datagram to
+ * tnfs_xfer_reply and calls tnfs_xfer_tick while waiting.  Pure: the caller
+ * supplies the time and does the sending, so this is host-testable. */
+#define TNFS_REQ_MAX         520u  /* a 512-byte WRITE: 4 hdr + fd + len + data */
+#define TNFS_PKT_MAX         600u  /* largest reply datagram parsed        */
+#define TNFS_RETRIES         4u    /* resends before giving up             */
+#define TNFS_EAGAIN_MAX      8u    /* server-busy backoffs before giving up */
+#define TNFS_TIMEOUT_MS      800u  /* resend timeout until MOUNT says otherwise */
+
+typedef struct {
+   uint8_t  req[TNFS_REQ_MAX];
+   uint16_t req_len;
+   uint16_t connid;        /* 0 until MOUNT assigns one                 */
+   uint16_t retry_ms;      /* resend timeout: MOUNT's, or TNFS_TIMEOUT_MS */
+   uint8_t  seq;           /* sequence of the outstanding request       */
+   uint8_t  retries;       /* resends left                              */
+   uint8_t  eagain;        /* server-busy backoffs left                 */
+   uint32_t deadline;      /* ms: resend / timeout deadline             */
+} tnfs_xfer_t;
+
+typedef enum {
+   TNFS_X_DONE,            /* a matching reply: *rep is valid (its status may be an error) */
+   TNFS_X_BUSY,            /* EAGAIN: backing off as the server asked   */
+   TNFS_X_IGNORED,         /* stale, duplicate or foreign: keep waiting */
+   TNFS_X_SEND,            /* resend x->req now (deadline re-armed)     */
+   TNFS_X_WAIT,            /* nothing to do yet                         */
+   TNFS_X_FAIL             /* resends or backoffs exhausted             */
+} tnfs_x;
+
+/* Arm a freshly built request of `len` bytes; the caller sends it. */
+void   tnfs_xfer_begin(tnfs_xfer_t *x, uint16_t len, uint32_t now_ms);
+/* Offer a received datagram.  Returns DONE, BUSY, IGNORED or FAIL. */
+tnfs_x tnfs_xfer_reply(tnfs_xfer_t *x, const uint8_t *pkt, size_t len,
+                       uint32_t now_ms, tnfs_reply_t *rep);
+/* Time passing with no reply.  Returns SEND, WAIT or FAIL. */
+tnfs_x tnfs_xfer_tick (tnfs_xfer_t *x, uint32_t now_ms);
 
 #endif /* NET_TNFS_H */

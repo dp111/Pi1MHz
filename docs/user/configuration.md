@@ -145,6 +145,13 @@ set.
 There are also several `wifi_sdio_*` keys and `wifi_emulator`. These
 are hardware-diagnostic switches for developers; leave them unset.
 
+## Network and FujiNet settings
+
+| Key | Default | Meaning |
+|---|---|---|
+| `net_enable` | off | `1` lets the Beeb use the Pi's network: the 1MHz-WiFi ROM's `*WGET` and N: device, and FujiNet's TNFS, `http://`, `https://` and `tcp://`. Needs WiFi set up. `https://` also needs `/cacert.pem` on the card - see [FujiNet](fujinet.md#https). |
+| `fujinet_boot` | (none) | The disc image fn-rom's `*FBOOT` mounts, read only, as `sd0:/path` or a `tnfs://` URL - normally fn-rom's utilities disc, `sd0:/FujiNet/FN-BOOTB.ssd` (BBC B) or `sd0:/FujiNet/FN-BOOTM.ssd` (Master). See [FujiNet](fujinet.md#the-utilities-disc). |
+
 ## Web interface / WebDAV settings
 
 See [The web interface](web-interface.md).

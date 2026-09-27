@@ -26,6 +26,8 @@ The Raspberrypi Engineers who have helped me with this project.
 | **TinyUSB** — USB device stack (MTP) | Ha Thach, <https://tinyusb.org> | MIT | `src/usb/tinyusb/` |
 | **FastSID** — MOS6581/8580 SID emulation | Teemu Rantanen, Michael Schwendt, Ettore Perazzoli; vendored from **VICE** 3.1. Ported into Pi1MHz as BeebSID by **Andrew Fawcett**. | GPL-2.0 | `src/fastsid/`, `src/BeebSID/` (see `src/fastsid/ORIGIN.md`) |
 | **Newlib** ARM string routines | Red Hat / newlib `machine/arm`, pulled via the arm-none-eabi toolchain | BSD-style | `src/lib/armstring-pi/` (see `NOTES.md`) |
+| **Mbed TLS** 3.6 LTS — TLS for `https://` | The Mbed TLS Contributors, <https://github.com/Mbed-TLS/mbedtls> | Apache-2.0 | `src/wifi/mbedtls/` (submodule; config `src/wifi/mbedtls_config_pi1mhz.h`) |
+| **cJSON** — JSON parser for the FujiNet device | Dave Gamble and cJSON contributors, <https://github.com/DaveGamble/cJSON> | MIT | `src/fujinet/cJSON/` (submodule, at fujinet-nio's pinned commit) |
 
 ## Derived code
 
@@ -85,6 +87,16 @@ The Raspberrypi Engineers who have helped me with this project.
   onboard WiFi chip; redistributed under the terms of that firmware's own
   licence. `firmware/Pi1MHz/wifi/`
 
+## Redistributed data
+
+- **CA certificate bundle** — `firmware/cacert.pem`, the Mozilla CA
+  certificate store as published by the curl project
+  (<https://curl.se/ca/cacert.pem>), used to verify `https://` servers.
+  The certificate data is Mozilla's (`certdata.txt`, source linked in the
+  file's header), under the Mozilla Public License 2.0 as stated on
+  <https://curl.se/docs/caextract.html>. Replace it with a newer copy from
+  the same address to update it.
+
 ## Redistributed ROMs (Beeb-side sideways ROMs)
 
 These are third-party BBC Micro / Master ROM images shipped for convenience so
@@ -123,6 +135,16 @@ hardware; they are not part of Pi1MHz's own GPL-3.0 licence.
   sideways-RAM builds. <https://github.com/hoglet67/MMFS> ·
   `firmware/Pi1MHz/SWMMFS.rom`, `SWMMFS2.rom`
 - **BeebSCSI helper ROM** — Simon Inns (Domesday86). `firmware/Pi1MHz/BSRom.rom`
+- **fn-rom** — Mark Fisher and the FujiNet project,
+  <https://github.com/markjfisher/fn-rom>, GPL-3.0. `firmware/Pi1MHz/fujinetB.rom`
+  (BBC B) and `fujinetM.rom` (Master 128), loaded by helper 18, are its
+  1MHz-bus builds (`make all BUILD_INTERFACE=1MHZ`, plus
+  `BUILD_MACHINE=MASTER` for the Master) from
+  <https://github.com/dp111/fn-rom>, branch `pi1mhz-ship`: the 1MHz link
+  on fn-rom master, with the link review, network-read clamp, scatter-send
+  length, OSGBPB and partial-sector read fixes. `firmware/FujiNet/FN-BOOTB.ssd` and
+  `FN-BOOTM.ssd` are fn-rom's utilities discs built from the same source for
+  those two ROMs (`scripts/build_fn_boot.sh` with `BUILD_INTERFACE=1MHZ`).
 
 ## Static analysis
 

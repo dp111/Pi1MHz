@@ -29,7 +29,7 @@ struct altcp_pcb {
    int              listening;
    u16_t            rcv_wnd;
    u16_t            rcv_ann_wnd;
-   ip_addr_t        remote_ip;     /* peer (tcp_pcb field at LWIP_ALTCP==0)  */
+   ip_addr_t        remote_ip;     /* peer, as altcp_get_tcp_addrinfo reports */
    u16_t            remote_port;
    /* test control / capture */
    u16_t            t_sndbuf;      /* value altcp_sndbuf returns             */
@@ -57,4 +57,5 @@ void  altcp_output(struct altcp_pcb *conn);
 void  altcp_recved(struct altcp_pcb *conn, u16_t len);
 err_t altcp_close(struct altcp_pcb *conn);
 void  altcp_abort(struct altcp_pcb *conn);
+err_t altcp_get_tcp_addrinfo(struct altcp_pcb *conn, int local, ip_addr_t *addr, u16_t *port);
 #endif
