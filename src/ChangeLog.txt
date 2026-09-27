@@ -263,3 +263,11 @@ It now uses no Beeb RAM beyond the user zero page: file data and names go throug
 1MHz-WiFi: *WGET -S into sideways RAM works - it could never have copied anything; the copy now runs from the bottom of the stack page, put back afterwards.
 1MHz-WiFi: *WGET <url> <file> no longer fails with "Bad string", and the ROM's error messages are readable again instead of BASIC keywords; both are built at &0100.
 1MHz-WiFi: *WGET no longer writes the filing system's zero page (&C7/&C8) or the MOS's (&F8/&F9); WiCFS reads the length from the JIM window.
+FujiNet: the Pi is fn-rom's FujiNet device over the 1MHz bus - disc images from the SD card or a TNFS server.
+FujiNet network channels: http://, https:// and tcp:// through BGET#/BPUT#, POST and PUT bodies, *FJSON JSON queries.
+https:// checks certificates against /cacert.pem (Mozilla's list, shipped); TLS is mbedTLS 3.6. Needs net_enable=1.
+Helper 18 loads fn-rom: fujinetB.rom on a B, fujinetM.rom on a Master; /FujiNet/ holds their utilities discs.
+The shipped fn-rom has OSGBPB, partial-sector *LOAD and *FLS fixes; see docs/user/fujinet.md.
+BeebSID no longer crashes a Pi Zero/1: the VFP now flushes tiny results to zero instead of trapping.
+USB: TinyUSB updated to upstream. Boot skips the firmware's device-tree search (config.txt device_tree=).
+The optional SSH/SFTP service (PI1MHZ_SSH, off by default) builds warning-free and shares the hardware RNG.
