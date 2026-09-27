@@ -131,6 +131,14 @@ _reset_:
     // Set the FPEXC EN bit to enable the NEON MPE:
     mov     r4, #0x40000000
     vmsr    fpexc, r4
+#if (__ARM_ARCH < 7)
+    // VFP RunFast (FPSCR.DN | FPSCR.FZ, no traps).  In the reset IEEE mode the
+    // ARM1176's VFP11 hands subnormal results to "support code" through the
+    // Undefined vector - and there is none, so a BeebSID filter decaying
+    // towards zero crashed V1.34 on the Pi Zero/1.  The A53 handles them.
+    mov     r4, #0x03000000
+    vmsr    fpscr, r4
+#endif
 
 #if (__ARM_ARCH >= 7 )
     // The firmware enters a cold boot in HYP mode and we need SVC.  A
