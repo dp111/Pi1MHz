@@ -23,6 +23,17 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     "$B/test_services.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/config.c"
 "$B/t"
 
+echo "== FujiNet service latch =="
+mkdir -p "$B/fujinet"
+cp "$SRC"/fujibus_service.c "$B/"
+cp "$SRC"/fujinet/fujibus.h "$SRC"/fujinet/fn_disk.h "$SRC"/fujinet/fn_network.h \
+   "$SRC"/fujinet/fn_store.h "$B/fujinet/"
+cp "$HERE"/test_fujibus_service.c "$B/"
+gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$B" -o "$B/tf" "$B/test_fujibus_service.c" "$B/fujibus_service.c"
+"$B/tf"
+
 echo "== config parser =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
