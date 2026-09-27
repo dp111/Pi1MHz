@@ -67,8 +67,31 @@ card (under `/FujiNet/`), so they survive power-offs.
 - An image that is mounted is locked against being replaced or deleted over
   WiFi (WebDAV answers 423 Locked) until it is unmounted.
 - `fujinet_boot=` in `Pi1MHz.cfg` names the image fn-rom's `*FBOOT` mounts,
-  read only - for instance fn-rom's utilities disc:
-  `fujinet_boot=sd0:/FujiNet/FN-BOOT.ssd`.
+  read only - normally fn-rom's utilities disc (below).
+
+### The utilities disc
+
+Some fn-rom commands - `*FLS`, `*FCD`, `*FSLOTS`, `*FNEW`, `*FOUT`,
+`*FUMOUNT`, `*FORM`, `*COPY`, `*ACCESS`, `*RENAME`, `*TITLE`, `*WIPE`,
+`*DESTROY`, `*MAP`, `*FREE` - are not in the ROM but on its utilities disc,
+loaded when you type them. Pi1MHz ships the disc for each ROM in
+`/FujiNet/`:
+
+| Machine | ROM | Utilities disc |
+|---|---|---|
+| BBC B | `fujinetB.rom` | `FN-BOOTB.ssd` |
+| Master 128 | `fujinetM.rom` | `FN-BOOTM.ssd` |
+
+Name yours in `Pi1MHz.cfg` - on a Master, for example:
+
+```
+fujinet_boot=sd0:/FujiNet/FN-BOOTM.ssd
+```
+
+then `*FBOOT` mounts it. The disc's programs call into the ROM at fixed
+addresses, so use the disc that came with your ROM: a disc from another
+fn-rom build can crash. On a Master they load at &0E00, which is PAGE, so
+running one wipes a BASIC program in memory - save it first.
 
 ### TNFS servers
 
@@ -95,6 +118,9 @@ CLOSE#H%
 - `tcp://host:port` opens a raw TCP connection; `BGET#` returns 254 while no
   data has arrived yet.
 - Up to five channels can be open at once.
+- For more than a few bytes, read with OSGBPB rather than a `BGET#` loop: in
+  BASIC each `BGET#` costs a few milliseconds whatever the filing system, and
+  OSGBPB moves a block in one call - about ten times faster on a disc image.
 
 See fn-rom's `docs/fnnet-api.md` for the OSWORD &78 calls (long URLs, body
 length, content type, JSON paths).
