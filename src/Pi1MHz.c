@@ -991,18 +991,6 @@ static void poll_prof_report(void)
 
 _Noreturn void kernel_main(void)
 {
-#if (__ARM_ARCH < 7)
-   /* VFP RunFast (FPSCR.DN | FPSCR.FZ, no traps).  In the reset IEEE mode the
-      ARM1176's VFP11 hands subnormal results and some NaN cases to "support
-      code" through the Undefined Instruction vector - and there is none, so
-      a BeebSID filter state decaying towards zero in fastsid's dofilter()
-      crashed V1.34 on the Pi Zero/1.  Flushing to zero is what a sound
-      filter wants anyway.  The IRQ path saves and restores FPSCR, so this
-      holds everywhere.  Set here, not beside the FPEXC enable in
-      arm-start.S: code added there, before _fast_scroll_end, would move the
-      kernel.now copy loop.  The A53 (kernel7) handles subnormals itself. */
-   __asm volatile ("vmsr fpscr, %0" : : "r" (0x03000000u) : "memory");
-#endif
    Pi1MHz_boot_entry_us = RPI_GetSystemTime();
    RPI_ChainBootConsume();
 
