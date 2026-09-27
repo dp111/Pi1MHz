@@ -60,8 +60,16 @@ name.
   browsing.
 - Directories are listed in SD card order, up to 250 entries.
 - Files larger than 16 MB cannot be transferred.
-- The explorer uses the RS423/cassette buffers (&0900-&0AFF) and zero
-  page &70-&86 as workspace, and leaves the machine in MODE 7.
+- The explorer uses no Beeb RAM beyond the user zero page (&70-&8F), so
+  serial and cassette keep working; everything else lives on the Pi, in the
+  services buffer (records at &D00000, the path at &D80000 and a transfer
+  page at &D90000). It leaves the machine in MODE 7.
+- While a file is being copied, the explorer's own code runs from that
+  transfer page in the JIM window (&FD00). A filing system or interrupt
+  handler that changes the JIM page itself (writes &FCFD-&FCFF) during the
+  copy would pull the code out from under it. MMFS and MMFS2 do not (tested);
+  the 1MHz-WiFi/WiCFS ROM does page JIM for its network buffers, so do not
+  use the explorer with WiCFS as the current filing system.
 - Load/exec addresses are not preserved; set them afterwards if the
   file needs them (or use `*OPT`-style defaults).
 - Transfers use FAT service file slot &FD and directory slot &FC, so
