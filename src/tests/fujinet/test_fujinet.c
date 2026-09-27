@@ -497,6 +497,16 @@ static void test_file(void)
    CHECK(call(FB_DEV_FILE, 0x02, &p).status == FB_IO_ERROR, "missing directory");
    p = payload(); lstr(&p, "zz9:/"); u16(&p, 0); u16(&p, 50);
    CHECK(call(FB_DEV_FILE, 0x02, &p).status == FB_DEVICE_NOT_FOUND, "unknown filesystem");
+   /* An empty path is the current directory: fn-rom's plain *FLS sends that. */
+   CHECK(host_set("sd0:/img").status == FB_OK, "current host sd0:/img");
+   p = payload(); lstr(&p, ""); u16(&p, 0); u16(&p, 400); u8(&p, 0x06); u8(&p, 40);
+   r = call(FB_DEV_FILE, 0x02, &p);
+   CHECK(r.status == FB_OK && rd16(D(r) + 6) == 5, "empty path lists the current directory: status %02X count %u",
+         r.status, r.status == FB_OK ? rd16(D(r) + 6) : 0u);
+   /* fn-rom's request exactly: no lineWidth byte after the flags. */
+   p = payload(); lstr(&p, ""); u16(&p, 0); u16(&p, 220); u8(&p, 0x06);
+   r = call(FB_DEV_FILE, 0x02, &p);
+   CHECK(r.status == FB_OK && rd16(D(r) + 6) == 5, "formatted list without lineWidth: status %02X", r.status);
 }
 
 /* ---- TNFS: the same devices on a server, through waits -------------------- */

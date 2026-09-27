@@ -111,13 +111,16 @@ uint8_t fn_file_command(uint8_t command, fb_in *in, fb_out *out)
    uint16_t start = fb_get_u16(in);
    uint16_t max = fb_get_u16(in);
    uint8_t flags = fb_left(in) ? fb_get_u8(in) : 0u;
-   if (flags & LIST_FORMATTED)
-      (void)fb_get_u8(in);              /* lineWidth: not applied, as upstream */
+   if ((flags & LIST_FORMATTED) && fb_left(in))
+      (void)fb_get_u8(in);              /* lineWidth, optional (fn-rom sends
+                                           none): not applied, as upstream */
    char spec[URI_MAX], uri[URI_MAX], fs[16], path[URI_MAX];
-   if (in->bad || ulen == 0 || ulen >= sizeof spec || max == 0 ||
+   /* An empty path is the current directory (fn-rom's plain *FLS). */
+   if (in->bad || ulen >= sizeof spec || max == 0 ||
        ((flags & LIST_COMPACT) && (flags & LIST_FORMATTED)))
       return FB_INVALID_REQUEST;
-   memcpy(spec, u, ulen);
+   if (ulen)
+      memcpy(spec, u, ulen);
    spec[ulen] = '\0';
    if (!fn_host_resolve(spec, uri, sizeof uri) ||
        !fn_uri_split(uri, fs, sizeof fs, path, sizeof path))
