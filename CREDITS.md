@@ -135,6 +135,14 @@ hardware; they are not part of Pi1MHz's own GPL-3.0 licence.
   sideways-RAM builds. <https://github.com/hoglet67/MMFS> ·
   `firmware/Pi1MHz/SWMMFS.rom`, `SWMMFS2.rom`
 - **BeebSCSI helper ROM** — Simon Inns (Domesday86). `firmware/Pi1MHz/BSRom.rom`
+- **fn-rom** — Mark Fisher and the FujiNet project,
+  <https://github.com/markjfisher/fn-rom>, GPL-3.0. `firmware/Pi1MHz/fujinetB.rom`
+  (BBC B) and `fujinetM.rom` (Master 128), loaded by helper 18, are its
+  1MHz-bus builds (`make all BUILD_INTERFACE=1MHZ`, plus
+  `BUILD_MACHINE=MASTER` for the Master) from
+  <https://github.com/dp111/fn-rom>, branch `pi1mhz-ship`: the 1MHz link
+  on fn-rom master, with the link review, network-read clamp and scatter-send
+  length fixes.
 
 ## Static analysis
 

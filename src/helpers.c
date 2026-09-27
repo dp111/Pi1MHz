@@ -81,6 +81,7 @@ static volatile uint32_t help_shown_us;
    "10+ Your ROM (10-15)   ROM10-15.rom\r\n"                             \
    "16  1MHz-WiFi+WiCFS    1mhz-wicfs.rom\r\n"                           \
    "17  SD card explorer (file transfer)\r\n"                            \
+   "18  FujiNet            fujinetB/M.rom\r\n"                           \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then *FX147,203,1/0\r\n"                              \
    "   M5000 record on/off\r\n"

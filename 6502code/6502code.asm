@@ -42,7 +42,7 @@ OSGBPB = &FFD1
 ; Helper numbers 18-30 are deliberately left free for future helpers, so the
 ; explorer's own pages start above them.  Only EXP_HUB is a helper anybody
 ; runs; the rest are pages it chains through while it is running.
-EXP_FREE_FIRST = 18 ; first reserved-for-future helper page
+EXP_FREE_FIRST = 19 ; first reserved-for-future helper page (18 is FujiNet)
 EXP_FREE_LAST  = 30 ; last one
 
 EXP_HUB   = 17      ; init
@@ -393,6 +393,154 @@ MACRO LOADFILETOSWR filename
 }
 ENDMACRO
 
+; As LOADFILETOSWR, but the file is chosen when it runs: the letter after
+; "prefix" is patched to 'M' on a Master family machine (OSBYTE 0 with X=1
+; gives 3 or more) and left 'B' otherwise.  For ROMs built separately for the
+; B and the Master (fn-rom: workspace addresses and 65C02 code are fixed at
+; build time), so one helper serves both.  The patch lasts until the next
+; BREAK, which reloads the page.  To fit one page the two errors share one
+; message.
+MACRO LOADFILETOSWR_BY_MACHINE prefix, suffix
+{
+    LDA     &F4
+    PHA
+    LDX     #15
+.romlp
+    stx     &f4
+    stx     &fe30
+    LDA     #'.'
+    JSR     OSWRCH
+;; Step 1: Test if candidate slot already contains a rom image
+;; so we don't clobber any pre-existing ROM images
+    ldy     &8007
+    lda     &8000, Y
+    bne     testram
+    lda     &8001, Y
+    cmp     #'('
+    bne     testram
+    lda     &8002, Y
+    cmp     #'C'
+    bne     testram
+    lda     &8003, Y
+    cmp     #')'
+    ; bne     testram
+
+;; Step 2: Test if that pre-existing rom image is SWMMFS
+;; so we reuse the same slot again and again
+     ;   lda     &b5fe
+     ;   cmp     #MAGIC0
+     ;   bne     romnxt
+     ;   lda     &b5ff
+     ;   cmp     #MAGIC1
+     ;   bne     romnxt
+    beq     romnxt
+;; Step 3: Check if slot is RAM
+.testram
+    lda     &8006
+    eor     #&FF
+    sta     &8006
+    cmp     &8006
+    beq     SWRfound
+.romnxt
+    dex
+    bpl     romlp
+
+; no SWR found, or no ROM file
+.fileerror
+    PLA
+    sta    &f4
+    sta    &fe30
+   ; should really put the error on the stack
+   ; and fake RTS on the stack
+   ; LDX     #255
+   ; STX     &FC88   ; Restore JIM
+    BRK
+    EQUB 255: EQUS "No SWR/ROM":EQUB 0
+
+.SWRfound
+
+    LDA #0 : LDX #1 : JSR OSBYTE    ; X = machine: 3+ is the Master family
+    CPX #3
+    BCC fopen                       ; B, B+: keep 'B'
+    LDA #'M' : STA machineletter
+
+.fopen
+    LDY #0   : STY discaccess
+    DEY      : STY discaccess+1
+               STY discaccess+2
+
+.fopenloop
+    INY
+    LDA fopenstring, Y: STA discaccess+3
+    BPL fopenloop
+    STA discaccess+4
+
+.fopencheckloop
+    LDA discaccess+4
+    BMI fopencheckloop
+    BNE fileerror ; file not found
+
+    TAY      : STY discaccess       ; A is zero
+
+.freadsetuploop
+    LDA freaddata, Y: STA discaccess+3
+    INY
+    CMP #255
+    BNE freadsetuploop
+    STA discaccess+4
+
+.freadcheckloop
+    LDA discaccess+4
+    BEQ readdone
+    BMI freadcheckloop
+    CMP #20
+    BNE fileerror ; file open error
+
+.readdone
+    LDY #0   : STY discaccess
+             : STY discaccess+1
+    LDA #&F0 : STA discaccess+2
+
+             : STY swrpointer+1
+    LDA #&80 : STA swrpointer+2
+
+    LDX #&C0-&80
+.copyswrloop
+    LDA discaccess+3
+.swrpointer
+    STA &8000,Y
+    INY
+    BNE copyswrloop
+
+    INC swrpointer+2
+    DEX
+    BNE copyswrloop;
+    ; Y is zero
+           : STY discaccess
+    DEY    : STY discaccess+1
+             STY discaccess+2
+
+    LDY #fclose-&FD01
+    LDA #0
+    BEQ pageswitch
+
+.fopenstring
+    EQUB 2, 0, 1 : EQUS prefix
+.machineletter
+    EQUS "B", suffix : EQUB 0, 255
+
+.freaddata
+    EQUB 4, 0, &40, 0
+    EQUB 0, 0, &F0, 0
+    EQUB 0, 0, 0, 0
+    EQUB &FF
+
+    PAGESWITCHORG
+.pageswitch
+    PAGESWITCH
+}
+ENDMACRO
+
 ; Page 0
 ; help screen
 {
@@ -660,19 +808,23 @@ ORG &FD00
 
 
 ; ---------------------------------------------------------------------------
-; Pages 18-30 : reserved for future helpers
+; Page 18
+; fn-rom, the FujiNet filing system, built for the 1MHz bus: the Master
+; build on a Master, the Model B build otherwise (docs/user/fujinet.md).
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+    LOADFILETOSWR_BY_MACHINE "Pi1MHz/fujinet", ".rom"
+    ENDBLOCK &1200
+}
+
+; ---------------------------------------------------------------------------
+; Pages 19-30 : reserved for future helpers
 ;
 ; Free slots, so a new helper can be added without moving the explorer's
 ; pages and rewriting every GOTOPAGE in it.  Each answers like any finished
 ; helper page, so running one before it does anything simply returns.
 ; ---------------------------------------------------------------------------
-
-{
-    ORG &FD00
-    PAGERTS
-
-    ENDBLOCK &1200
-}
 
 {
     ORG &FD00

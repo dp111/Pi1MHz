@@ -21,23 +21,29 @@ programs written for fn-rom work unchanged.
 - WiFi set up and working - see [WiFi setup](wifi.md).
 - `net_enable=1` in `/Pi1MHz/Pi1MHz.cfg` for anything that uses the network
   (TNFS, http, https, tcp). SD-card disc images work without it.
-- fn-rom built for the 1MHz bus: `make all BUILD_INTERFACE=1MHZ` (BBC B) or
-  `make all BUILD_INTERFACE=1MHZ BUILD_MACHINE=MASTER` (Master 128), from a
-  version that includes the 1MHz link (github.com/dp111/fn-rom until it is
-  merged upstream). The two builds are separate ROM images: their workspace
-  addresses are fixed when they are built.
+- fn-rom built for the 1MHz bus. Pi1MHz ships both builds in `/Pi1MHz/`:
+  `fujinetB.rom` for the BBC B and `fujinetM.rom` for the Master 128. They
+  are separate images because fn-rom fixes its workspace addresses (and, on
+  the Master, uses 65C02 code) when it is built.
 - For `https://`: the CA certificate bundle `/cacert.pem` at the root of the
   SD card (it ships with the firmware - see [HTTPS](#https) below).
 
-Load the ROM into sideways RAM and press CTRL-BREAK so it claims its
-workspace, then select it with `*FUJI`. From MMFS2, for example, with the ROM
-saved as `FNROM` on a disc image:
+Load it with **helper 18**, which picks the right build for the machine it
+runs on, then press CTRL-BREAK so it claims its workspace, and select it with
+`*FUJI`:
 
 ```
-*SRLOAD FNROM 8000 5
+X%=18:CALL &FC88
 ```
 
-then CTRL-BREAK, then `*FUJI`.
+(or `*FX147,136,18` then `*GO FD00`). A `No SWR/ROM` error means there was no
+free sideways RAM, or the ROM file is missing from the SD card - see
+[Helpers and ROMs](helpers-and-roms.md).
+
+To build fn-rom yourself: `make all BUILD_INTERFACE=1MHZ` (BBC B) or
+`make all BUILD_INTERFACE=1MHZ BUILD_MACHINE=MASTER` (Master 128), from a
+version that includes the 1MHz link (github.com/dp111/fn-rom until it is
+merged upstream), and copy the result over the shipped file.
 
 ## Disc images
 
