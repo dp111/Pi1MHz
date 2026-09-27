@@ -9,6 +9,7 @@
 #include "BeebSCSI/fatfs/ff.h"
 #include "BeebSCSI/filesystem.h"   /* filesystemWriteFileSafe */
 #include "rpi/base.h"
+#include "rpi/hwrng.h"
 #include "rpi/systimer.h"
 #include "wifi/wifi_lwip.h"
 #include "lwip/altcp.h"
@@ -43,11 +44,6 @@
 #define NTS_ERR_CONN 0x25u
 #define NTS_ERR_PROTOCOL 0x2Bu
 
-#define BCM_RNG_BASE (PERIPHERAL_BASE + 0x104000u)
-#define BCM_RNG_CTRL (*(volatile uint32_t *)(BCM_RNG_BASE + 0x00u))
-#define BCM_RNG_STATUS (*(volatile uint32_t *)(BCM_RNG_BASE + 0x04u))
-#define BCM_RNG_DATA (*(volatile uint32_t *)(BCM_RNG_BASE + 0x08u))
-#define BCM_RNG_INT_MASK (*(volatile uint32_t *)(BCM_RNG_BASE + 0x10u))
 
 typedef enum {
     SSH_IDLE, SSH_RESOLVING, SSH_CONNECTING, SSH_HANDSHAKE, SSH_RESIZE,
@@ -103,33 +99,17 @@ static bool wolfssh_started;
 static bool wolfssh_init_attempted;
 static bool rng_started;
 static bool rng_ready;
-static bool rng_have_last;
-static uint32_t rng_last;
 static uint8_t rng_sample_count;
 static uint8_t rng_zero_count;
 static uint8_t rng_ones_count;
 
-/* Warm-up is not waited for here. rng_begin discards 0x40000 oscillator bits
+/* Warm-up is not waited for here. hwrng_start discards 0x40000 oscillator bits
    and rng_poll samples the result from the cooperative poll loop, so by the
    time a caller reaches this the generator is running at its hardware rate and
    a word is due in microseconds. The bound is a safety net against a generator
    that stops, not a settling time: at 750ms it was long enough to stall the
    1MHz bus service for most of a second. */
 #define RNG_WORD_DEADLINE_US 5000u
-
-static int rng_word(uint32_t *out)
-{
-    uint32_t started_us = RPI_GetSystemTime();
-    while ((BCM_RNG_STATUS >> 24) == 0u) {
-        if (RPI_GetSystemTime() - started_us >= RNG_WORD_DEADLINE_US) return -1;
-        RPI_WaitMicroSeconds(1u);
-    }
-    *out = BCM_RNG_DATA;
-    if (rng_have_last && *out == rng_last) return -1;
-    rng_last = *out;
-    rng_have_last = true;
-    return 0;
-}
 
 /* Named by CUSTOM_RAND_GENERATE_BLOCK in user_settings.h. */
 int nts_bcm_random_block(unsigned char *out, unsigned int length)
@@ -143,7 +123,7 @@ int nts_bcm_random_block(unsigned char *out, unsigned int length)
     if (!rng_started || !rng_ready || out == NULL) return -1;
     while (length != 0u) {
         if (available == 0u) {
-            if (rng_word(&word) != 0) return -1;
+            if (hwrng_word(&word, RNG_WORD_DEADLINE_US) != 0) return -1;
             available = 4u;
         }
         *out++ = (uint8_t)word;
@@ -154,14 +134,14 @@ int nts_bcm_random_block(unsigned char *out, unsigned int length)
     return 0;
 }
 
+/* The generator is shared with mbedTLS and started once (hwrng_start is
+   idempotent), so a reset here re-checks its output without restarting its
+   warm-up under an https:// connection. */
 static void rng_begin(void)
 {
-    BCM_RNG_INT_MASK |= 1u;
-    BCM_RNG_STATUS = 0x00040000u; /* discard the first 0x40000 oscillator bits */
-    BCM_RNG_CTRL |= 1u;
+    hwrng_start();
     rng_started = true;
     rng_ready = false;
-    rng_have_last = false;
     rng_sample_count = 0u;
     rng_zero_count = 0u;
     rng_ones_count = 0u;
@@ -170,15 +150,9 @@ static void rng_begin(void)
 static void rng_poll(void)
 {
     uint32_t word;
-    if (!rng_started || rng_ready || (BCM_RNG_STATUS >> 24) == 0u) return;
-
-    word = BCM_RNG_DATA;
-    if (rng_have_last && word == rng_last) {
-        rng_started = false;
-        return;
-    }
-    rng_last = word;
-    rng_have_last = true;
+    /* No word yet, or a repeat of the last (a stopped generator): not ready,
+       look again next pass. */
+    if (!rng_started || rng_ready || hwrng_word(&word, 0u) != 0) return;
     for (unsigned int i = 0; i < 4u; i++) {
         uint8_t value = (uint8_t)word;
         if (value == 0u) rng_zero_count++;

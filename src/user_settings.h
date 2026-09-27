@@ -72,4 +72,11 @@ extern int nts_bcm_random_block(unsigned char *out, unsigned int length);
 #define NO_OLD_TLS
 #define WC_NO_ASYNC_THREADING
 
+/* No clock: the Pi has no time when it connects.  wolfCrypt reads the time
+   only for X.509 dates, which the SSH client never checks.  Left to time(),
+   asn.c links newlib's _gettimeofday stub, which always fails, so time()
+   returns -1 - the answer this gives without the stub.  (NO_ASN_TIME would
+   also drop <time.h>, which wolfsftp.c needs for file times.) */
+#define XTIME(t) ((time_t)-1)
+
 #endif

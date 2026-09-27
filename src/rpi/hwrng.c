@@ -1,5 +1,6 @@
-/* hwrng.c - the BCM2835 hardware random number generator as mbedTLS's
-   entropy source (MBEDTLS_ENTROPY_HARDWARE_ALT, wifi/mbedtls_config_pi1mhz.h).
+/* hwrng.c - the BCM2835 hardware random number generator: mbedTLS's entropy
+   source (MBEDTLS_ENTROPY_HARDWARE_ALT, wifi/mbedtls_config_pi1mhz.h), and
+   wolfCrypt's through secure_service_wolfssh.c when PI1MHZ_SSH is built.
 
    hwrng_start() is called when the network service starts: three register
    writes, no waiting, so the warm-up (the first 0x40000 oscillator bits are
@@ -44,6 +45,21 @@ void hwrng_start(void)
    rng_started = true;
 }
 
+int hwrng_word(uint32_t *out, uint32_t wait_us)
+{
+   uint32_t t0 = RPI_GetSystemTime();
+   while ((RNG_STATUS >> 24) == 0u)
+      if (RPI_GetSystemTime() - t0 >= wait_us)
+         return -1;
+   uint32_t w = RNG_DATA;
+   if (rng_have_last && w == rng_last)
+      return -1;
+   rng_last = w;
+   rng_have_last = true;
+   *out = w;
+   return 0;
+}
+
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen);
 
 int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t *olen)
@@ -52,15 +68,9 @@ int mbedtls_hardware_poll(void *data, unsigned char *output, size_t len, size_t 
    *olen = 0;
    hwrng_start();
    while (*olen < len) {
-      uint32_t t0 = RPI_GetSystemTime();
-      while ((RNG_STATUS >> 24) == 0u)
-         if (RPI_GetSystemTime() - t0 >= RNG_WORD_WAIT_US)
-            return ENTROPY_SOURCE_FAILED;
-      uint32_t w = RNG_DATA;
-      if (rng_have_last && w == rng_last)
+      uint32_t w;
+      if (hwrng_word(&w, RNG_WORD_WAIT_US) != 0)
          return ENTROPY_SOURCE_FAILED;
-      rng_last = w;
-      rng_have_last = true;
       for (unsigned int i = 0; i < 4u && *olen < len; i++) {
          output[(*olen)++] = (unsigned char)w;
          w >>= 8;

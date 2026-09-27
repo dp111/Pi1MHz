@@ -603,6 +603,11 @@ target_link_libraries( Pi1MHz PRIVATE pi1mhz_tls m )
 if(PI1MHZ_SSH)
    target_compile_definitions(Pi1MHz PRIVATE WOLFSSL_USER_SETTINGS PI1MHZ_SSH)
    target_link_libraries( Pi1MHz PRIVATE nettools_wolfssh wolfssl )
+   # Their headers are vendored: included as system headers, so our own
+   # warning flags stay on our code (they flag long long and sign conversions
+   # in wolfssl/wolfcrypt/types.h and wolfssh/port.h).
+   target_include_directories( Pi1MHz SYSTEM PRIVATE
+      third_party/wolfssl third_party/wolfssh )
 endif()
 
 # Kernel images always go to the top-level firmware/ directory, regardless of
