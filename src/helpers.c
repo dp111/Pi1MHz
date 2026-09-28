@@ -158,7 +158,7 @@ static void helpers_bank_select(unsigned int gpio)
       }
       Pi1MHz->page_ram_addr = DISC_RAM_BASE + HELPER_XFER_OFFSET;
       Pi1MHz_MemoryWrite_FIQ(addr+4, 0x4c);
-      Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
+      ram_emulator_page_restore();       /* shows JIM RAM: writes reach it */
       return;
    }
 
@@ -183,6 +183,7 @@ static void helpers_bank_select(unsigned int gpio)
             data = 0;
 
         Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &helper_ram[data<<8]);
+        ram_emulator_window_helper();    /* its writes stay out of the user's JIM RAM */
         if (data==0)
         {
             Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);   /* screen already formatted: release the waitloop */

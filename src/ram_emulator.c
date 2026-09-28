@@ -63,10 +63,23 @@ static void ram_emulator_byte_write(unsigned int gpio)
    Pi1MHz_MemoryWrite_FIQ(addr,  data);
 }
 
+/* The &FD00 window shows a helper page (helpers.c) rather than JIM RAM.  The
+   Beeb's writes to it then update the window only: a helper's own
+   self-modifying stores must not land in the user's JIM RAM page.  Any view
+   of JIM RAM again - a page register write, ram_emulator_page_restore, or a
+   BBC reset - clears it.  Written and read in FIQ only. */
+static bool window_is_helper;
+
+void ram_emulator_window_helper(void)
+{
+   window_is_helper = true;
+}
+
 static void ram_emulator_page_addr_high(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
+   window_is_helper = false;
    if (data >= (Pi1MHz->JIM_ram_size)) data = (uint8_t)(Pi1MHz->JIM_ram_size - 1);
                Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0x00FFFFFF) | ((size_t)data<<24));
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
@@ -77,6 +90,7 @@ static void ram_emulator_page_addr_mid(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
+   window_is_helper = false;
    Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0xFF00FFFF) | ((size_t)data<<16));
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
    Pi1MHz_MemoryWrite_FIQ(addr,data); // enable the address register to be read back
@@ -86,6 +100,7 @@ static void ram_emulator_page_addr_low(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
+   window_is_helper = false;
    Pi1MHz->page_ram_addr = ((Pi1MHz->page_ram_addr & 0xFFFF00FF) | ((size_t)data<<8));
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
    Pi1MHz_MemoryWrite_FIQ(addr,data); // enable the address register to be read back
@@ -93,6 +108,7 @@ static void ram_emulator_page_addr_low(unsigned int gpio)
 
 void ram_emulator_page_restore(void)
 {
+   window_is_helper = false;
    Pi1MHz_MemoryWritePage(Pi1MHz_MEM_PAGE, &Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr]);
 }
 
@@ -100,7 +116,8 @@ static void ram_emulator_page_write(unsigned int gpio)
 {
    uint8_t  data = GET_DATA(gpio);
    uint32_t addr = GET_ADDR(gpio);
-   Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr + addr] = data;
+   if (!window_is_helper)
+      Pi1MHz->JIM_ram[Pi1MHz->page_ram_addr + addr] = data;
    Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE + addr, data);
 }
 
@@ -154,6 +171,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 
    Pi1MHz->byte_ram_addr = ((size_t)Pi1MHz->JIM_ram_size - 1)<<24; // 16Mbyte boundary
    Pi1MHz->page_ram_addr = 0;
+   window_is_helper = false;
    fx_register[instance] = Pi1MHz->JIM_ram_size;  // fx addr 0 returns ram size
 
    // see if JIM_Init existing on the SDCARD if so load it to JIM and copy first page across Pi1MHz memory
