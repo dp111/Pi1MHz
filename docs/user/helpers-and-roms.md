@@ -58,27 +58,17 @@ card. See [MMFS and MMFS2](mmfs.md) for the disc-image files, the
 
 ## The 1MHz-WiFi ROM
 
-Helper 16 loads the host half of the WiFi service: `*JOIN` and `*LEAVE`,
-`*LAP`, `*IFCFG`, `*PING`, `*NSLOOK`, `*WGET`, `*DATE`/`*TIME` and a small
-RAM disc, for the BBC B, B+, Master and the Electron. `*HELP WIFI` lists
-them on the machine.
+Helper 16 loads the 1MHz-WiFi ROM: `*JOIN`, `*LAP`, `*PING`, `*NSLOOK`,
+`*WGET`, `*DATE`, a small RAM disc and **WiCFS**, a UEF cassette filing
+system, for the BBC B, B+, Master and the Electron. It needs
+`wifi_service_enable=1` and `net_enable=1` in `Pi1MHz.cfg`. See
+[The 1MHz-WiFi ROM and WiCFS](wifi-rom.md) for every command.
 
-The shipped image has **WiCFS** - a UEF cassette filing system - merged into
-the same bank, so a UEF fetched with `*WGET -U` can be `*CAT`ed, `*LOAD`ed and
-`CHAIN`ed as if it were tape. That image is **not** under Pi1MHz's GPL-3.0: it
-derives from Roland Leurs' ElkWiFi and carries his non-commercial licence,
-quoted in `CREDITS.md`. The WiFi half's sources are in `beeb/1mhz-wifi/` under
-the project's own licence, and `beeb/1mhz-wifi/build.sh` builds that half on
-its own for development and for the tests.
-
-The ROM needs the service behind it: put **`wifi_service_enable=1`** in
-`Pi1MHz.cfg` (with `wifi_ssid`/`wifi_password` set) before using any of
-the network commands. Without it the service never claims its command
-range, so a command like `*ONLINE` waits for an answer that cannot come -
-`*HELP WIFI` and `*VERSION` still work, because they are answered by the
-ROM itself. The source is in `beeb/1mhz-wifi/`; the shipped image is rebuilt
-with `beeb/1mhz-wifi/build-merged.sh`, which fetches the filing system half
-at build time because it cannot live in this tree.
+The image is **not** under Pi1MHz's GPL-3.0: WiCFS derives from Roland Leurs'
+ElkWiFi and carries his non-commercial licence, quoted in `CREDITS.md`. The
+WiFi half's sources are in `beeb/1mhz-wifi/` under the project's own licence;
+`beeb/1mhz-wifi/build-merged.sh` rebuilds the shipped image, fetching the
+filing system half at build time because it cannot live in this tree.
 
 ## Your own ROMs
 

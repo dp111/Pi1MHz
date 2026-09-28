@@ -15,8 +15,10 @@ WiFi is entirely optional. Without it, everything else still works.
 
 - 2.4GHz networks with **WPA2 personal** (ordinary home password
   security). WPA3-only and enterprise/login-page networks are not
-  supported, and there is no HTTPS - treat it as a device for your own
-  trusted network.
+  supported. The web interface and WebDAV are plain HTTP - treat them as
+  services for your own trusted network. (The Beeb itself can fetch
+  `https://` pages, with [FujiNet](fujinet.md#https) or the
+  [1MHz-WiFi ROM](wifi-rom.md).)
 
 ## Turning it on
 
