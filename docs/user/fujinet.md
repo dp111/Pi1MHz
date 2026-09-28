@@ -44,8 +44,8 @@ To build fn-rom yourself: `make all BUILD_INTERFACE=1MHZ` (BBC B) or
 `make all BUILD_INTERFACE=1MHZ BUILD_MACHINE=MASTER` (Master 128), from a
 version that includes the 1MHz link, and copy the result over the shipped
 file. The shipped ROMs and utilities discs are built from github.com/dp111/fn-rom
-branch `pi1mhz-ship`, which also carries fixes (OSGBPB, partial-sector
-loads) not yet in fn-rom itself.
+branch `pi1mhz-ship`, which also carries fixes (OSGBPB, and loading and
+saving a file whose last sector is partial) not yet in fn-rom itself.
 
 ## Disc images
 

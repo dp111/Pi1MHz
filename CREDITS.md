@@ -142,7 +142,7 @@ hardware; they are not part of Pi1MHz's own GPL-3.0 licence.
   `BUILD_MACHINE=MASTER` for the Master) from
   <https://github.com/dp111/fn-rom>, branch `pi1mhz-ship`: the 1MHz link
   on fn-rom master, with the link review, network-read clamp, scatter-send
-  length, OSGBPB and partial-sector read fixes. `firmware/FujiNet/FN-BOOTB.ssd` and
+  length, OSGBPB and partial-sector read and save fixes. `firmware/FujiNet/FN-BOOTB.ssd` and
   `FN-BOOTM.ssd` are fn-rom's utilities discs built from the same source for
   those two ROMs (`scripts/build_fn_boot.sh` with `BUILD_INTERFACE=1MHZ`).
 
