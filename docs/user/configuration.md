@@ -149,9 +149,9 @@ are hardware-diagnostic switches for developers; leave them unset.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `wifi_service_enable` | off | `1` answers the [1MHz-WiFi ROM](wifi-rom.md)'s WiFi commands (`*JOIN`, `*LAP`, `*PING`, `*DATE` ...). |
+| `wifi_service_enable` | off | `1` answers the [1MHz-WiFi ROM](wifi-rom.md)'s WiFi commands (`*JOIN`, `*LAP`, `*PING`, `*DATE` ...) and its WiCFS tape filing system (`*UEF`). |
 | `wifi_service_utc_offset_minutes` | 0 | Time zone for the ROM's `*DATE`/`*TIME`, in minutes from UTC - e.g. `60` for British Summer Time. |
-| `net_enable` | off | `1` lets the Beeb use the Pi's network: the 1MHz-WiFi ROM's `*WGET` and N: device, and FujiNet's TNFS, `http://`, `https://` and `tcp://`. Needs WiFi set up. `https://` also needs `/cacert.pem` on the card - see [FujiNet](fujinet.md#https). |
+| `net_enable` | off | `1` lets the Beeb use the Pi's network: the 1MHz-WiFi ROM's `*WGET`, `*NSLOOK` and `*DISCONNECT`, the N: device programs in `beeb/net/`, and FujiNet's TNFS, `http://`, `https://` and `tcp://`. Needs WiFi set up. `https://` also needs `/cacert.pem` on the card - see [FujiNet](fujinet.md#https). |
 | `fujinet_boot` | (none) | The disc image fn-rom's `*FBOOT` mounts, read only, as `sd0:/path` or a `tnfs://` URL - normally fn-rom's utilities disc, `sd0:/FujiNet/FN-BOOTB.ssd` (BBC B) or `sd0:/FujiNet/FN-BOOTM.ssd` (Master). See [FujiNet](fujinet.md#the-utilities-disc). |
 
 ## Web interface / WebDAV settings

@@ -397,9 +397,9 @@ ENDMACRO
 ; "prefix" is patched to 'M' on a Master family machine (OSBYTE 0 with X=1
 ; gives 3 or more) and left 'B' otherwise.  For ROMs built separately for the
 ; B and the Master (fn-rom: workspace addresses and 65C02 code are fixed at
-; build time), so one helper serves both.  The patch lasts until the next
-; BREAK, which reloads the page.  To fit one page the two errors share one
-; message.
+; build time), so one helper serves both.  The patch lasts only for this
+; run: the Pi copies the page afresh each time it is selected.  To fit one
+; page the two errors share one message.
 MACRO LOADFILETOSWR_BY_MACHINE prefix, suffix
 {
     LDA     &F4

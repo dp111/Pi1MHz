@@ -4,7 +4,7 @@
 
    hwrng_start() is called when the network service starts: three register
    writes, no waiting, so the warm-up (the first 0x40000 oscillator bits are
-   discarded, as secure_service_wolfssh.c does) is long over by the first
+   discarded) is long over by the first
    https:// connection.  Started on first use instead, the warm-up outlasted
    the poll's wait and the first https:// after boot failed (MEASURED
    2026-09-26).  A word identical to the one

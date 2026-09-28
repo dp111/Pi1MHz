@@ -17,10 +17,13 @@ B+, Master 128 and the Electron (through a Plus 5's 1MHz connector).
   ```
 
   `wifi_service_enable` answers the WiFi commands (`*JOIN`, `*LAP`,
-  `*PING`, `*DATE` ...); `net_enable` is needed as well for `*WGET`,
-  `*NSLOOK` and `*DISCONNECT`. Without them a command waits and then
-  reports "No response from device" or a `Network error`. `*HELP WIFI`
-  and `*VERSION` always work: the ROM answers those itself.
+  `*PING`, `*DATE` ...) and WiCFS (`*UEF`, the tape, and expanding `.gz`
+  and `.zip` downloads); `net_enable` is needed as well for `*WGET`,
+  `*NSLOOK` and `*DISCONNECT`. Without `wifi_service_enable` a command
+  waits - about 2 seconds, or 40 for `*JOIN`, `*LAP`, `*PING` and
+  `*DATE` - and reports `Not implemented`; without `net_enable` it reports
+  `Network error &28`. Only `*HELP WIFI` and `*MODE` work without the Pi:
+  `*VERSION` prints the ROM's lines and then asks the Pi for its own.
 - Free sideways RAM. The ROM keeps its workspace inside its own bank, so it
   must run from sideways RAM, not an EPROM.
 
@@ -65,7 +68,7 @@ Most of the time none of these are needed: the Pi joins the network set in
 ```
 
 - Options go **before** the URL. `*WGET <url> -U` takes `-U` as a file
-  name and fails with "Bad filing system name".
+  name to save to.
 - `http://` and `https://` both work; `https://` needs `/cacert.pem` on the
   SD card - see [FujiNet](fujinet.md#https).
 - `<file>` can be any name the current filing system accepts, up to 63
@@ -73,7 +76,7 @@ Most of the time none of these are needed: the Pi joins the network set in
   ADFS.
 - `-U` expands `.gz` and `.zip` downloads on the Pi and reports
   `WGET GZIP OK &nnnn bytes in JIM` (or `ZIP` / `RAW`). The limit is &FFFE
-  bytes after expanding.
+  bytes after expanding: `Expanded UEF exceeds &FFFE bytes` otherwise.
 - `-S` takes the bank number in hex (`*WGET -S http://host/rom.bin 5`). The
   bank must be sideways RAM and not the one this ROM is in; press
   CTRL-BREAK afterwards so the machine sees the new ROM.
@@ -105,7 +108,8 @@ or `*RUN""` for the next program. `*REWIND` goes back to the start.
 
 **From a disc:** `*UEF LOAD <file>` reads a UEF (or `.gz` / `.zip`) from the
 current filing system - DFS, ADFS, MMFS - into JIM and then runs its first
-program by itself, `CHAIN""` for BASIC and `*RUN""` for anything else:
+program by itself, `CHAIN""` for BASIC and `*RUN""` for anything else. Like
+`*WICFS`, it clears any BASIC program in memory:
 
 ```
 *UEF LOAD ELITE
@@ -115,7 +119,8 @@ With a second processor active, `*UEF` switches to the host's BASIC first
 so the game runs in the Beeb itself.
 
 Errors you may see: `Invalid UEF, gzip or ZIP file`, `Buffer full` (the
-expanded UEF is over &FFFE bytes), `UEF file not found`. `WiCFS state
+file on the disc is &FFFE bytes or more), `Expanded UEF exceeds &FFFE bytes`,
+`UEF file not found`. `WiCFS state
 invalid; power cycle` means its saved state is damaged - switch the Beeb
 off and on.
 
