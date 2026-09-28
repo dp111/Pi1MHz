@@ -500,7 +500,12 @@ t_stress() { # RAM burst + DISC test + a CTRL-BREAK while the host hammers HTTP 
     result "I:STRESS:$t bus:$(bus_ovr) ovr"
   done
   ctrl_break; arm_echo
-  row=$(pi_row BREAK); lat=$(printf '%s' "$row" | sed -n 's/.*rst->init \([0-9]*\) us.*/\1/p')
+  # This reset's own figure: the first "rst->init" after "missed N |", printed
+  # in us below 1 ms and as "N.N ms" above - not the "worst rst->init" later in
+  # the row, which keeps the worst since the Pi booted, earlier runs included.
+  row=$(pi_row BREAK)
+  lat=$(printf '%s' "$row" | sed -n 's/.*missed [0-9]* | rst->init \([0-9.]*\) \([um]s\).*/\1 \2/p' |
+        awk '{ if ($2 == "ms") printf "%d", $1 * 1000; else printf "%d", $1 }')
   result "I:STRESS:break row:${row#BREAK: }"
   [ "${lat:-99999}" -lt 100 ] && result "T:STRESS:reset latency under load < 100 us:PASS" || result "T:STRESS:reset latency under load < 100 us:FAIL:${lat:-?} us"
   local ini; ini=$(printf '%s' "$row" | sed -n 's/.*| rst->init [0-9]* us, init \([0-9]*\) us.*/\1/p')
