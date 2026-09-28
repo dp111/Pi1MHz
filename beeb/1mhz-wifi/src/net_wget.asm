@@ -20,6 +20,7 @@ wget_OSBPUT = &FFD4
 
 net_count = heap+&E8
 net_cli_y = heap+&E9
+net_url_y = heap+&E3                \ where the URL starts on the command line
 \ The raw ElkWiFi OSWORD receive path shares these counters and the cursor
 \ helpers below. They must not occupy the &0900 ADFS/application workspace.
 net_result = heap+&EE
@@ -34,7 +35,7 @@ net_primary_page = heap+&E7
 net_file_handle = heap+&E0
 net_file_mode = heap+&E1
 net_bytes_bank = heap+&E2
-\ heap+&E3 and &E7 are otherwise unused across the whole ROM build.
+\ heap+&E3 is net_url_y; &E7 is net_primary_page.
 \ &F5-&F7 collide with wget.asm's proto/newln/clptr, and &E6 belongs to the
 \ host BASIC transition workspace. Both share the same "heap" workspace.
 
@@ -72,6 +73,7 @@ net_bytes_bank = heap+&E2
 
 .pi_wget_param
  jsr skipspace1
+ sty net_url_y              \ this parameter's start, kept for the URL
  jsr read_cli_param
  cpx #0
  bne pi_wget_have_param
@@ -115,6 +117,37 @@ net_bytes_bank = heap+&E2
  jmp pi_wget_param
 
 .pi_wget_url
+ \ A file to save to is created before the URL is opened: an error from the
+ \ filing system (a bad name, a full disc) leaves through BRK, and must not
+ \ leave the URL open behind it.
+ lda tflag
+ ora uflag
+ ora sflag
+ bne pi_wget_url_request
+ jsr skipspace1
+ jsr read_cli_param         \ the file name, after the URL
+ cpx #0
+ bne pi_wget_create_file
+ jmp pi_wget_usage
+.pi_wget_create_file
+ jsr wget_name_to_ram       \ X/Y point at the name in main memory
+ bcc pi_wget_name_ok
+ tax
+ jmp error
+.pi_wget_name_ok
+ lda #&80                  \ open output file through the current filing system
+ jsr wget_OSFIND
+ sta net_file_handle
+ bne pi_wget_file_open
+ jsr printtext
+ equs "Cannot create file",&0D,&EA
+ jmp call_claimed
+.pi_wget_file_open
+ lda #&FF
+ sta net_file_mode
+ ldy net_url_y
+ jsr read_cli_param         \ the URL back into strbuf
+.pi_wget_url_request
  \ Preserve the MOS command-line index while building the service request.
  sty net_cli_y
  jsr net_command_address
@@ -140,9 +173,11 @@ net_bytes_bank = heap+&E2
  jmp error
 
 .pi_wget_url_done
- \ Ordinary WGET writes a named file through the active MOS filing system.
- \ Text mode needs no destination, -U owns the public JIM window, and -S uses
- \ its final parameter as the sideways RAM slot number.
+ \ Ordinary WGET writes a named file through the active MOS filing system,
+ \ already open. Text mode needs no destination, -U owns the public JIM
+ \ window, and -S uses its final parameter as the sideways RAM slot number.
+ lda net_file_mode
+ bne pi_wget_address_ok
  ldy net_cli_y
  jsr skipspace1
  jsr read_cli_param
@@ -152,13 +187,7 @@ net_bytes_bank = heap+&E2
  bne pi_wget_address_ok
  lda sflag
  bne pi_wget_parse_slot
- cpx #0
- bne pi_wget_file_name
  jmp pi_wget_usage
-.pi_wget_file_name
- lda #&FF
- sta net_file_mode
- jmp pi_wget_address_ok
 .pi_wget_parse_slot
  cpx #0
  bne pi_wget_have_slot
@@ -179,24 +208,6 @@ net_bytes_bank = heap+&E2
  jsr pi_wget_network_error
 
 .pi_wget_opened
- lda net_file_mode
- beq pi_wget_output_ready
- jsr wget_name_to_ram       \ X/Y point at the name in main memory
- bcc pi_wget_name_ok
- pha                       \ the error to raise, once the URL is closed
- jsr pi_wget_close
- pla
- tax
- jmp error
-.pi_wget_name_ok
- lda #&80                  \ open output file through the current filing system
- jsr wget_OSFIND
- sta net_file_handle
- bne pi_wget_output_ready
- jsr pi_wget_close
- jsr printtext
- equs "Cannot create file",&0D,&EA
- jmp call_claimed
 .pi_wget_output_ready
  lda #0
  sta net_empty_lo
