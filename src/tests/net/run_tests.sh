@@ -22,6 +22,16 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion -g $SAN \
     "$B/test_net.c" "$B/net_service.c" "$B/net_tnfs.c" "$B/net_telnet.c"
 "$B/t"
 
+# Command 58 copies from DISC_RAM_BASE-relative service RAM to an absolute
+# JIM offset.  With the default test base of 0 the two are the same number, so
+# the asymmetry is only checked by building the suite again with a real base.
+echo "== net service: scratch -> public JIM copy, nonzero service base =="
+gcc -std=gnu2x -Wall -Wextra -Wconversion -g $SAN \
+    -DDISC_RAM_BASE=0x10000u -DCOPY_PUBLIC_NONZERO_ONLY \
+    -I"$B" -o "$B/copy-public" \
+    "$B/test_net.c" "$B/net_service.c" "$B/net_tnfs.c" "$B/net_telnet.c"
+"$B/copy-public"
+
 echo "== TNFS wire codec =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g $SAN \
     -I"$B" -o "$B/tnfs" \
