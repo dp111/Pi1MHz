@@ -32,12 +32,18 @@ size_t serial_redirect_read(uint8_t *dst, size_t max)
       dst[n++] = to_pi[to_pi_head++];
    return n;
 }
-size_t serial_redirect_room(void) { return beeb_room; }
+/* With fifo_cap set, the redirect's buffer is modelled as a FIFO of that size
+   which the Beeb drains drain_per_ms bytes a millisecond; otherwise the room
+   is beeb_room on every call. */
+static size_t  fifo_cap, fifo_level, drain_per_ms;
+size_t serial_redirect_room(void) { return fifo_cap ? fifo_cap - fifo_level : beeb_room; }
 size_t serial_redirect_write(const uint8_t *src, size_t len)
 {
-   if (len > beeb_room) len = beeb_room;
+   size_t room = serial_redirect_room();
+   if (len > room) len = room;
    memcpy(to_beeb + to_beeb_len, src, len);
    to_beeb_len += len;
+   if (fifo_cap) fifo_level += len;
    to_beeb[to_beeb_len] = '\0';
    return len;
 }
@@ -108,6 +114,7 @@ static void reset_all(void)
    to_pi_head = to_pi_tail = 0;
    to_beeb_len = 0; to_beeb[0] = '\0';
    beeb_room = 1024;
+   fifo_cap = fifo_level = drain_per_ms = 0;
    net_on = true; net_taken = -1; open_delay = 0; open_result = NET_OK;
    opened_url[0] = '\0'; peer_closed = false;
    net_rx_head = net_rx_len = 0; net_tx_len = 0; write_accept = 0xFFFFFFFFu;
@@ -123,7 +130,11 @@ static void type(const char *s)
 static void poll_for(uint32_t us)          /* run the modem for us, in 1 ms steps */
 {
    uint32_t end = now + us;
-   do { modem_poll(now); now += 1000u; } while ((int32_t)(end - now) > 0);
+   do {
+      modem_poll(now);
+      now += 1000u;
+      fifo_level -= fifo_level < drain_per_ms ? fifo_level : drain_per_ms;
+   } while ((int32_t)(end - now) > 0);
 }
 static void clear_out(void) { to_beeb_len = 0; to_beeb[0] = '\0'; }
 static void peer_sends(const char *s)
@@ -280,8 +291,10 @@ static void test_online(void)
    beeb_room = 0;
    peer_sends("abc"); poll_for(2000);
    CHECK(to_beeb_len == 0 && net_rx_head == 0, "no room: the data waits");
-   beeb_room = 2; poll_for(1000);
-   CHECK(to_beeb_len == 2, "room for 2: 2 delivered");
+   beeb_room = 24; poll_for(1000);
+   CHECK(to_beeb_len == 0 && net_rx_head == 0, "room only for a result: the data waits");
+   beeb_room = 26; poll_for(1000);
+   CHECK(to_beeb_len == 2, "room for 2 more: 2 delivered");
 
    /* A slow network: what it has not taken yet is kept, in order. */
    connect_now();
@@ -294,6 +307,34 @@ static void test_online(void)
    CHECK(out_has("NO CARRIER") && net_taken < 0, "peer closes: NO CARRIER");
    clear_out(); type("AT\r"); poll_for(2000);
    CHECK(out_has("OK"), "back in command mode");
+}
+
+/* The network fills the Beeb's buffer faster than the Beeb empties it: a
+   result written then must still arrive whole, not cut to the room left. */
+static void test_result_fits(void)
+{
+   printf("== results are never cut short ==\n");
+   static char burst[4001];
+
+   connect_now();
+   fifo_cap = 1024; drain_per_ms = 1;
+   memset(burst, 'x', 3000); burst[3000] = '\0';
+   peer_sends(burst); peer_closed = true;
+   poll_for(5000000);
+   CHECK(to_beeb_len == 3000 + 14 && memcmp(to_beeb + 2999, "x\r\nNO CARRIER\r\n", 15) == 0,
+         "burst then hang-up: every byte, then all of NO CARRIER (%u bytes, ends '%s')",
+         (unsigned)to_beeb_len, to_beeb_len >= 14 ? to_beeb + to_beeb_len - 14 : to_beeb);
+   CHECK(net_taken < 0, "and the line is down");
+
+   connect_now();
+   fifo_cap = 1024; drain_per_ms = 1;
+   poll_for(1100000);                   /* guard before */
+   memset(burst, 'y', 4000); burst[4000] = '\0';
+   peer_sends(burst);
+   type("+++"); poll_for(1100000);      /* guard after, the buffer kept full */
+   poll_for(3000000);                   /* let the Beeb drain it */
+   CHECK(out_has("y\r\nOK\r\n"), "+++ with the buffer full: all of OK");
+   CHECK(net_taken >= 0, "the line stays up");
 }
 
 static void test_escape(void)
@@ -347,6 +388,7 @@ int main(void)
    test_dial_outcomes();
    test_online();
    test_escape();
+   test_result_fits();
    printf("%d checks, %d failures\n", checks, failures);
    return failures ? 1 : 0;
 }

@@ -54,6 +54,10 @@ static const char *const result_text[] = {
 #define LINE_MAX    80u
 #define URL_MAX     160u             /* "telnet://" + a long host + ":65535" */
 #define NETBUF_SIZE 256u
+/* The longest result, "\r\nNO DIALTONE\r\n" with room to spare.  Data from the
+   network leaves this much of the Beeb's buffer free, so a result written
+   while online - NO CARRIER, or OK after +++ - arrives whole. */
+#define RESULT_ROOM 24u
 
 static uint8_t  m_state;
 static bool     m_connected;         /* a line is up (online, or command mode during a call) */
@@ -99,7 +103,7 @@ static void put(const char *s)
 
 static void result(int code)
 {
-   char buf[24];
+   char buf[RESULT_ROOM];
    if (m_quiet)
       return;
    if (m_verbose)
@@ -406,11 +410,14 @@ static void online(uint32_t now_us)
       return;
    }
 
-   /* network -> Beeb, as far as the redirect has room. */
+   /* network -> Beeb, as far as the redirect has room beyond RESULT_ROOM.  A
+      hang-up is only reported by a read that finds no data, so it is only
+      looked for with that room free: the NO CARRIER always fits. */
    size_t room = serial_redirect_room();
-   if (room != 0u) {
+   if (room >= RESULT_ROOM) {
       uint8_t buf[NETBUF_SIZE];
       uint32_t got = 0u;
+      room -= RESULT_ROOM;
       uint32_t max = room < sizeof buf ? (uint32_t)room : (uint32_t)sizeof buf;
       uint8_t r = net_capi_read(m_net, buf, max, &got);
       if (got != 0u)
