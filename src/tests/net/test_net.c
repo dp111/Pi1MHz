@@ -349,6 +349,53 @@ static void connect_handle(unsigned h)
 
 int main(void)
 {
+   printf("== private scratch -> public JIM copy (command 58) ==\n");
+   {
+      /* The host ROM's *WGET and OSWORD &65 function 13 read into the fixed
+         service scratch page and then ask the Pi to place the bytes in the
+         AP5-visible 64K window, rather than carrying every byte back out
+         through FCA9 and FDxx.  The source is DISC_RAM_BASE-relative service
+         RAM; the destination is NOT, because physical page RAM maps JIM page
+         zero to JIM_ram[0].  Getting that asymmetry wrong is invisible on a
+         build with DISC_RAM_BASE == 0, which is why run_tests.sh builds this
+         suite a second time with a nonzero base. */
+      const uint32_t scratch = DISC_RAM_BASE + 0xfff100u;
+      world_reset();
+      for (unsigned i = 0; i < 240u; i++)
+         Pi1MHz->JIM_ram[scratch + i] = (uint8_t)(0x40u + i);
+      memset(&Pi1MHz->JIM_ram[0x0100u], 0, 0x0200u);
+
+      jwr8(CP(0) + 1u, 240u);
+      jwr8(CP(0) + 2u, 0xf0u); jwr8(CP(0) + 3u, 0x01u);   /* -> 0x01f0 */
+      CHECK(issue(NET_CMD_COPY_PUBLIC, 0) == NET_OK, "copy 240 bytes -> OK");
+      CHECK(memcmp(&Pi1MHz->JIM_ram[0x01f0u],
+                   &Pi1MHz->JIM_ram[scratch], 240u) == 0,
+            "the public window holds the scratch bytes");
+      CHECK(Pi1MHz->JIM_ram[0x01efu] == 0u
+            && Pi1MHz->JIM_ram[0x01f0u + 240u] == 0u,
+            "nothing either side of the destination was touched");
+      if (DISC_RAM_BASE != 0u)
+         CHECK(Pi1MHz->JIM_ram[DISC_RAM_BASE + 0x01f0u] == 0u,
+               "the copy did not land at DISC_RAM_BASE + destination");
+
+      jwr8(CP(0) + 1u, 0u);
+      CHECK(issue(NET_CMD_COPY_PUBLIC, 0) == NET_ERR_PARAM, "zero count -> PARAM");
+      jwr8(CP(0) + 1u, 241u);
+      CHECK(issue(NET_CMD_COPY_PUBLIC, 0) == NET_ERR_PARAM, "241 bytes -> PARAM");
+      jwr8(CP(0) + 1u, 240u);
+      jwr8(CP(0) + 2u, 0x20u); jwr8(CP(0) + 3u, 0xffu);   /* 0xff20 + 240 */
+      CHECK(issue(NET_CMD_COPY_PUBLIC, 0) == NET_ERR_PARAM,
+            "a destination running past the 64K window -> PARAM");
+   }
+
+#ifdef COPY_PUBLIC_NONZERO_ONLY
+   /* This build exists only to prove that asymmetry, and stops here: the rest
+      of the suite reaches into JIM at offsets that do not shift with
+      DISC_RAM_BASE, so it is only meaningful at the default base of 0. */
+   printf("\n%d checks, %d failures\n", checks, fails);
+   printf(fails ? "COPY_PUBLIC TESTS FAILED\n" : "COPY_PUBLIC TESTS PASSED\n");
+   return fails ? 1 : 0;
+#else
    printf("== net service: open / status / gate ==\n");
    world_reset();
    jwr8(CP(0) + 1u, NET_TYPE_TCP);
@@ -1619,4 +1666,5 @@ int main(void)
    printf("\n%d checks, %d failures\n", checks, fails);
    printf(fails ? "NET SERVICE TESTS FAILED\n" : "NET SERVICE TESTS PASSED\n");
    return fails ? 1 : 0;
+#endif
 }

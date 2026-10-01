@@ -1060,6 +1060,32 @@ static uint8_t do_recv(net_handle_t *h, uint32_t cp)
    return NET_OK;
 }
 
+/* Pi1MHz-private transport accelerator used behind the host ROM's OSWORD &65
+ * function 13, and by *WGET.  Bytes already received into the fixed service
+ * scratch page are copied into the public AP5-visible 64K JIM window without
+ * making the host transfer every byte back through FCA9 and FDxx.  The public
+ * ABI is unchanged; this is a copy the Pi can do in one memmove.
+ *
+ * The source belongs to service RAM and is DISC_RAM_BASE-relative.  Physical
+ * page RAM maps FCFF/FDxx page zero to JIM_ram[0], so the destination must
+ * NOT include DISC_RAM_BASE.
+ * Request: [1] count (1..240), [2..3] public destination offset. */
+static uint8_t do_copy_public(uint32_t cp)
+{
+   const uint32_t scratch_offset = 0xfff100u;
+   const uint32_t scratch = DISC_RAM_BASE + scratch_offset;
+   uint32_t count = jim_rd8(cp + 1u);
+   uint32_t destination = (uint32_t)jim_rd8(cp + 2u)
+                        | ((uint32_t)jim_rd8(cp + 3u) << 8);
+   if (count == 0u || count > 240u
+       || destination + count > 0x10000u
+       || scratch_offset + count > DISC_RAM_SIZE)
+      return NET_ERR_PARAM;
+   memmove(&Pi1MHz->JIM_ram[destination],
+           &Pi1MHz->JIM_ram[scratch], count);
+   return NET_OK;
+}
+
 static uint8_t do_recv_avail(const net_handle_t *h, uint32_t cp)
 {
    if (h->state == NET_ST_FREE)
@@ -1889,6 +1915,7 @@ static uint8_t net_dispatch(uint32_t cp, uint8_t data)
       case NET_CMD_STATUS:       return do_status(h, cp);
       case NET_CMD_UDP_SENDTO:   return do_udp_sendto(h, cp);
       case NET_CMD_UDP_RECVFROM: return do_udp_recvfrom(h, cp);
+      case NET_CMD_COPY_PUBLIC:  return do_copy_public(cp);
       case NET_CMD_IRQ:          net_irq_armed = (jim_rd8(cp + 1u) != 0u);
                                  return NET_OK;
       case NET_CMD_URL_OPEN:     return do_url_open(h, cp);

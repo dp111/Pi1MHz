@@ -107,6 +107,7 @@ void net_time_cancel(void);
 #define NET_CMD_UDP_SENDTO   55u
 #define NET_CMD_UDP_RECVFROM 56u
 #define NET_CMD_IRQ          57u   /* [1] 0=disarm (default) / 1=arm nIRQ     */
+#define NET_CMD_COPY_PUBLIC  58u   /* internal: scratch -> public 64K JIM     */
 /* Layer 2 - the N: device: open a URL like a file (Stage 2). */
 #define NET_CMD_URL_OPEN     60u   /* in [2..] URL (0-term); scheme picks adapter */
 #define NET_CMD_URL_READ     61u   /* like recv, on the URL's stream              */
