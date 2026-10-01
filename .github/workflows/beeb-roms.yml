@@ -32,8 +32,10 @@ jobs:
       - name: Build beebasm
         run: |
           git clone --depth 1 https://github.com/stardot/beebasm.git "$RUNNER_TEMP/beebasm"
-          # its Makefile lives in src/ and writes the binary to the root
-          make -C "$RUNNER_TEMP/beebasm/src" -j"$(nproc)"
+          # its Makefile lives in src/ and writes the binary to the root. The
+          # default target only prints the platform list; "code" builds it.
+          make -C "$RUNNER_TEMP/beebasm/src" code -j"$(nproc)"
+          test -x "$RUNNER_TEMP/beebasm/beebasm"
           echo "$RUNNER_TEMP/beebasm" >> "$GITHUB_PATH"
 
       - name: ROM interface and assembly
