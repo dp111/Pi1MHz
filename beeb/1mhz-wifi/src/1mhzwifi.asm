@@ -414,9 +414,16 @@ ELSE
                     sta help_tbl
                     bcc phd_pad
                     inc help_tbl+1
-.phd_pad            cpx #11                     \ line up the descriptions
-                    bcs phd_desc
+\ Line the descriptions up at column 11.  A name that already reaches it
+\ gets a single space instead of none: *DISCONNECT is ten characters, which
+\ with the leading space fills the column exactly, and without this its
+\ description ran straight into the name as "DISCONNECTClose the connection".
+.phd_pad            cpx #11
+                    bcc phd_pad_one
                     lda #' '
+                    jsr OSWRCH
+                    bne phd_desc                \ always: A is a space
+.phd_pad_one        lda #' '
                     jsr OSWRCH
                     inx
                     bne phd_pad
