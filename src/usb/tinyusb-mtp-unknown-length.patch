@@ -5,15 +5,17 @@ apply it inside src/usb/tinyusb: a working-tree edit there is hidden by
 ignore=dirty and silently lost by any fresh checkout or submodule update,
 which is how builds went out without it before.  If an upstream bump changes
 the surrounding code the build stops at this patch - regenerate it then.
-Generated against hathach/tinyusb d09de3022 (master of 2026-09-25).
+Generated against hathach/tinyusb d09de3022 (master of 2026-09-25); applies
+unchanged (offset) to e85c2b8af.
 
 Guarded by PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT (tusb_config.h).
 When the host declares no length (ObjectCompressedSize 0 or 0xFFFFFFFF)
 upstream ends an OUT data phase only on total_len or a ZLP, so any length
 that is not a whole number of packets hangs the operation with the file
-open and the LUN locked; a short packet must end the phase.  Upstream has
-not changed this as of d09de3022; hathach/tinyusb PR #3956 (open) reworks the
-OUT data phase and must be checked against this case when it lands.
+open and the LUN locked; a short packet must end the phase.  PR #3956
+(e85c2b8af) now takes total_len from the host's data container header,
+which fixes a host that puts the real length there; one that sends
+0xFFFFFFFF (PTP's "unknown") still ends only on a ZLP, so this stays.
 
 --- a/src/class/mtp/mtp_device.c
 +++ b/src/class/mtp/mtp_device.c
