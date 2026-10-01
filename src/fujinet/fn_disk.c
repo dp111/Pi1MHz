@@ -12,9 +12,13 @@
    - a URI may be relative to the current host (fn_host_resolve);
    - Mount with flags bit 1 records a lazy mount, opened on first use.
 
+   - a DSD (fujinet-nio 888135d) is two SSD sides stored track-interleaved
+     (track 0 side 0, track 0 side 1, track 1 side 0 ...); its logical
+     sectors run through side 0 then side 1, so side 1 starts at half the
+     sector count, and side 0's catalogue gives the size of each side.
+
    Image types (fujinet-nio ImageType): 0 auto, 1 ATR, 2 SSD, 3 DSD, 4 raw.
-   SSD and raw are implemented; ATR and DSD are Unsupported, as DSD is in
-   fujinet-nio too. */
+   SSD, DSD and raw are implemented; ATR is Unsupported. */
 
 #include <stdio.h>
 #include <string.h>
@@ -45,6 +49,8 @@
 #define TYPE_DSD  3u
 #define TYPE_RAW  4u
 
+#define DFS_SECTORS_PER_TRACK 10u
+
 typedef struct {
    bool     used;          /* inserted, or pending */
    bool     pending;       /* lazy: recorded, not yet opened */
@@ -57,6 +63,7 @@ typedef struct {
    uint16_t hint;
    uint16_t sector_size;
    uint32_t sector_count;
+   uint32_t side_sectors;  /* a DSD's sectors per side; 0 when single-sided */
    uint32_t file_size;
    fn_handle h;
    char     uri[URI_MAX];
@@ -166,7 +173,7 @@ static uint8_t open_image(slot_t *s)
       type = ends_with_ci(path, ".ssd") ? TYPE_SSD
            : ends_with_ci(path, ".dsd") ? TYPE_DSD
            : ends_with_ci(path, ".atr") ? TYPE_ATR : TYPE_RAW;
-   if (type != TYPE_SSD && type != TYPE_RAW)
+   if (type != TYPE_SSD && type != TYPE_DSD && type != TYPE_RAW)
       return FB_UNSUPPORTED;
 
    bool ro = s->ro_requested;
@@ -182,8 +189,9 @@ static uint8_t open_image(slot_t *s)
    if (!fn_store_size(h, &size))
       return drop_image(h, FB_IO_ERROR);
    uint16_t ssize;
-   uint32_t count;
-   if (type == TYPE_SSD) {
+   uint32_t count, side_sectors = 0;
+   if (type == TYPE_SSD || type == TYPE_DSD) {
+      /* A DSD's side 0 catalogue is in track 0 side 0, first in the file. */
       uint8_t cat[0x108];
       if (size < sizeof cat)
          return drop_image(h, FB_INVALID_REQUEST);
@@ -193,6 +201,10 @@ static uint8_t open_image(slot_t *s)
       count = ((uint32_t)(cat[0x106] & 3u) << 8) | cat[0x107];
       if (count != 400u && count != 800u)
          return drop_image(h, FB_INVALID_REQUEST);   /* BadImage */
+      if (type == TYPE_DSD) {
+         side_sectors = count;
+         count *= 2u;
+      }
    } else {
       ssize = s->hint ? s->hint : ends_with_ci(path, ".adf") ? 512u : 256u;
       if (ssize > SECTOR_MAX || size % ssize)
@@ -204,11 +216,24 @@ static uint8_t open_image(slot_t *s)
    s->type = type;
    s->sector_size = ssize;
    s->sector_count = count;
+   s->side_sectors = side_sectors;
    s->file_size = size;
    s->pending = false;
    s->used = true;
    s->changed = true;
    return FB_OK;
+}
+
+/* Where a logical sector lives in the image file: in order, except that a
+   DSD interleaves its two sides track by track. */
+static uint32_t sector_offset(const slot_t *s, uint32_t lba)
+{
+   if (!s->side_sectors)
+      return lba * s->sector_size;
+   uint32_t side = lba / s->side_sectors, in_side = lba % s->side_sectors;
+   uint32_t track = in_side / DFS_SECTORS_PER_TRACK;
+   return ((track * 2u + side) * DFS_SECTORS_PER_TRACK + in_side % DFS_SECTORS_PER_TRACK) *
+          s->sector_size;
 }
 
 static uint8_t slot_of(uint8_t slot1, slot_t **out)
@@ -292,7 +317,22 @@ static uint8_t mount(slot_t *s, uint8_t slot1, const char *uri, bool ro,
    return FB_OK;
 }
 
-/* Write a blank image: SSD gets fujinet-nio's minimal DFS catalogue. */
+/* fujinet-nio's minimal DFS catalogue for a side of `count` sectors, its two
+   sectors written at `at` and `at` + 256. */
+static bool put_catalogue(fn_handle h, uint32_t at, uint32_t count)
+{
+   uint8_t sec[256];
+   memset(sec, 0, sizeof sec);
+   memcpy(sec, "BLANK", 5);
+   bool ok = fn_store_write(h, at, sec, 256);
+   memset(sec, 0, sizeof sec);
+   sec[6] = (uint8_t)((count >> 8) & 3u);
+   sec[7] = (uint8_t)count;
+   return fn_store_write(h, at + 256u, sec, 256) && ok;
+}
+
+/* Write a blank image: SSD gets fujinet-nio's minimal DFS catalogue, DSD one
+   on each side - side 1's in track 0 side 1, after side 0's track 0. */
 static uint8_t create_image(const char *uri, uint8_t type, uint16_t ssize,
                             uint32_t count, bool overwrite)
 {
@@ -301,6 +341,9 @@ static uint8_t create_image(const char *uri, uint8_t type, uint16_t ssize,
       return FB_INVALID_REQUEST;
    if (type == TYPE_SSD) {
       if (ssize != 256u || (count != 400u && count != 800u))
+         return FB_INVALID_REQUEST;
+   } else if (type == TYPE_DSD) {
+      if (ssize != 256u || (count != 800u && count != 1600u))
          return FB_INVALID_REQUEST;
    } else if (type == TYPE_RAW) {
       if (ssize == 0 || ssize > SECTOR_MAX || count == 0 || count > 0x1000000u / ssize)
@@ -312,15 +355,11 @@ static uint8_t create_image(const char *uri, uint8_t type, uint16_t ssize,
    if (h == FN_NO_HANDLE)
       return FB_INVALID_REQUEST;          /* AlreadyExists, or no such directory */
    bool ok = true;
-   uint8_t sec[256];
    if (type == TYPE_SSD) {
-      memset(sec, 0, sizeof sec);
-      memcpy(sec, "BLANK", 5);
-      ok = fn_store_write(h, 0, sec, 256);
-      memset(sec, 0, sizeof sec);
-      sec[6] = (uint8_t)((count >> 8) & 3u);
-      sec[7] = (uint8_t)count;
-      ok = ok && fn_store_write(h, 256, sec, 256);
+      ok = put_catalogue(h, 0, count);
+   } else if (type == TYPE_DSD) {
+      ok = put_catalogue(h, 0, count / 2u) &&
+           put_catalogue(h, DFS_SECTORS_PER_TRACK * 256u, count / 2u);
    }
    /* Extend to full size with one byte at the end. */
    uint8_t z = 0;
@@ -385,7 +424,7 @@ uint8_t fn_disk_command(uint8_t command, fb_in *in, fb_out *out)
          return st;
       if (lba >= s->sector_count)
          return FB_INVALID_REQUEST;                    /* OutOfRange */
-      uint32_t off = lba * s->sector_size;
+      uint32_t off = sector_offset(s, lba);
       if (command == DISK_READ_SECTOR) {
          uint8_t sec[SECTOR_MAX];
          memset(sec, 0, s->sector_size);

@@ -61,7 +61,9 @@ card (under `/FujiNet/`), so they survive power-offs.
 *CAT
 ```
 
-- SSD images (single-sided DFS, 40 or 80 track) and raw images are supported.
+- SSD images (single-sided DFS, 40 or 80 track), DSD images (double-sided
+  DFS) and raw images are supported. A DSD mounted as drive 0 or 1 shows its
+  second side as drive 2 or 3, as a double-sided drive does: `*CAT 2`.
 - Writes (`*SAVE`, `*DELETE`, `*COPY` ...) go straight into the image, on the
   card or on the TNFS server.
 - A plain BREAK keeps the mounts. CTRL-BREAK starts a new session and

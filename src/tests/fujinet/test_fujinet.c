@@ -117,6 +117,19 @@ static long file_size(const char *rel)
    return stat(p, &st) == 0 ? st.st_size : -1;
 }
 
+static void read_file_at(const char *rel, long off, void *d, size_t n)
+{
+   char p[512];
+   snprintf(p, sizeof p, "%s%s", s_root, rel);
+   FILE *f = fopen(p, "rb");
+   memset(d, 0xA5, n);
+   if (f) {
+      if (fseek(f, off, SEEK_SET) == 0 && fread(d, 1, n, f) != n)
+         memset(d, 0xA5, n);
+      fclose(f);
+   }
+}
+
 static void mkdir_rel(const char *rel)
 {
    char p[512];
@@ -417,7 +430,7 @@ static void test_disk(void)
    CHECK(disk_mount(4, 0, "junk.ssd").status == FB_INVALID_REQUEST, "catalogue count 0 is a bad image");
    CHECK(disk_mount(4, 0, "missing.ssd").status == FB_INVALID_REQUEST, "missing file");
    write_file("/img/two.dsd", junk, sizeof junk);
-   CHECK(disk_mount(4, 0, "two.dsd").status == FB_UNSUPPORTED, "DSD unsupported, as upstream");
+   CHECK(disk_mount(4, 0, "two.dsd").status == FB_INVALID_REQUEST, "DSD catalogue count 0 is a bad image");
    CHECK(disk_mount(0, 0, "new.ssd").status == FB_INVALID_REQUEST, "slot 0");
    CHECK(disk_mount(9, 0, "new.ssd").status == FB_INVALID_REQUEST, "slot 9");
    CHECK(disk_read(4, 0, 256).status == FB_NOT_READY, "empty slot not ready");
@@ -471,6 +484,96 @@ static void test_disk(void)
    r = call(FB_DEV_DISK, 0x0B, &p);
    CHECK(r.status == FB_OK && r.dlen == 12 && D(r)[1] == 3 && rd32(D(r) + 8) == 400, "begin session mounts boot");
    fn_disk_set_boot("", true);
+}
+
+/* ---- DSD ---------------------------------------------------------------------
+   A double-sided DFS image, as fujinet-nio 888135d: two SSD sides stored
+   track-interleaved (track 0 side 0, track 0 side 1, track 1 side 0 ...),
+   served as logical sectors through side 0 then side 1. */
+
+/* File offset of a DSD's logical sector, for a side of `per_side` sectors. */
+static long dsd_offset(uint32_t lba, uint32_t per_side)
+{
+   uint32_t side = lba / per_side, in_side = lba % per_side;
+   return ((long)(in_side / 10u * 2u + side) * 10 + (long)(in_side % 10u)) * 256;
+}
+
+static void test_dsd(void)
+{
+   int open_before = fn_store_host_open_count();   /* test_disk leaves its boot image mounted */
+   mkdir_rel("/dsd");
+
+   /* Create: fujinet-nio's blank catalogue on each side, full size. */
+   buf_t p = payload(); u8(&p, 0); u8(&p, 3); u16(&p, 256); u32(&p, 1600); lstr(&p, "sd0:/dsd/new.dsd");
+   reply_t r = call(FB_DEV_DISK, 0x07, &p);
+   CHECK(r.status == FB_OK && D(r)[4] == 3 && rd16(D(r) + 5) == 256 && rd32(D(r) + 7) == 1600, "create DSD");
+   CHECK(file_size("/dsd/new.dsd") == 409600, "DSD created size %ld", file_size("/dsd/new.dsd"));
+   uint8_t got[256];
+   read_file_at("/dsd/new.dsd", 0, got, 5);
+   CHECK(!memcmp(got, "BLANK", 5), "side 0 title in track 0 side 0");
+   read_file_at("/dsd/new.dsd", 256 + 6, got, 2);
+   CHECK(got[0] == 3 && got[1] == 0x20, "side 0 catalogue counts 800");
+   read_file_at("/dsd/new.dsd", 2560, got, 5);
+   CHECK(!memcmp(got, "BLANK", 5), "side 1 title in track 0 side 1");
+   read_file_at("/dsd/new.dsd", 2560 + 256 + 6, got, 2);
+   CHECK(got[0] == 3 && got[1] == 0x20, "side 1 catalogue counts 800");
+   p = payload(); u8(&p, 0); u8(&p, 3); u16(&p, 256); u32(&p, 800); lstr(&p, "sd0:/dsd/forty.dsd");
+   CHECK(call(FB_DEV_DISK, 0x07, &p).status == FB_OK && file_size("/dsd/forty.dsd") == 204800,
+         "create 40-track DSD");
+   p = payload(); u8(&p, 0); u8(&p, 3); u16(&p, 256); u32(&p, 900); lstr(&p, "sd0:/dsd/bad.dsd");
+   CHECK(call(FB_DEV_DISK, 0x07, &p).status == FB_INVALID_REQUEST, "DSD must be 800/1600");
+   p = payload(); u8(&p, 0); u8(&p, 3); u16(&p, 512); u32(&p, 1600); lstr(&p, "sd0:/dsd/bad.dsd");
+   CHECK(call(FB_DEV_DISK, 0x07, &p).status == FB_INVALID_REQUEST, "DSD sectors are 256 bytes");
+
+   /* Mount: type DSD, both sides' sectors. */
+   r = disk_mount(7, 0, "sd0:/dsd/new.dsd");
+   CHECK(r.status == FB_OK && D(r)[5] == 3 && rd16(D(r) + 6) == 256 && rd32(D(r) + 8) == 1600,
+         "mount 80-track DSD");
+   r = disk_read(7, 800, 256);
+   CHECK(r.status == FB_OK && !memcmp(D(r) + 11, "BLANK", 5), "side 1 starts at sector 800");
+   CHECK(disk_read(7, 1600, 256).status == FB_INVALID_REQUEST, "lba 1600 out of range");
+
+   /* Each logical sector lands in its interleaved place in the file. */
+   static const uint32_t lbas[] = { 2, 10, 799, 805, 1599 };
+   for (unsigned int i = 0; i < sizeof lbas / sizeof lbas[0]; i++) {
+      uint8_t sec[256];
+      for (int k = 0; k < 256; k++) sec[k] = (uint8_t)(k + 7 * (int)i + 1);
+      CHECK(disk_write(7, lbas[i], sec, 256).status == FB_OK, "write lba %u", lbas[i]);
+      read_file_at("/dsd/new.dsd", dsd_offset(lbas[i], 800), got, 256);
+      CHECK(!memcmp(got, sec, 256), "lba %u at file offset %ld", lbas[i], dsd_offset(lbas[i], 800));
+      r = disk_read(7, lbas[i], 256);
+      CHECK(r.status == FB_OK && !memcmp(D(r) + 11, sec, 256), "read back lba %u", lbas[i]);
+   }
+
+   /* 40 tracks a side: side 1 from sector 400, at track 0 side 1. */
+   r = disk_mount(8, 0, "sd0:/dsd/forty.dsd");
+   CHECK(r.status == FB_OK && D(r)[5] == 3 && rd32(D(r) + 8) == 800, "mount 40-track DSD");
+   r = disk_read(8, 400, 256);
+   CHECK(r.status == FB_OK && !memcmp(D(r) + 11, "BLANK", 5), "40-track side 1 starts at 400");
+
+   /* Truncated: only track 0 of each side is in the file. */
+   uint8_t img[5120] = { 0 };
+   img[0x106] = 3; img[0x107] = 0x20; img[2560] = 0xEE;
+   write_file("/dsd/short.dsd", img, sizeof img);
+   r = disk_mount(8, 0, "sd0:/dsd/short.dsd");
+   CHECK(r.status == FB_OK && rd32(D(r) + 8) == 1600, "truncated DSD mounts as 1600");
+   r = disk_read(8, 800, 256);
+   CHECK(r.status == FB_OK && D(r)[11] == 0xEE, "truncated side 1 in-file sector");
+   r = disk_read(8, 900, 256);
+   CHECK(r.status == FB_OK && rd16(D(r) + 9) == 256 && D(r)[11] == 0 && D(r)[11 + 255] == 0,
+         "truncated past EOF reads zeros");
+   uint8_t sec[256];
+   memset(sec, 0x3C, sizeof sec);
+   CHECK(disk_write(8, 900, sec, 256).status == FB_OK, "write past EOF");
+   CHECK(file_size("/dsd/short.dsd") == dsd_offset(900, 800) + 256,
+         "file grows to the interleaved sector, size %ld", file_size("/dsd/short.dsd"));
+
+   p = payload(); u8(&p, 7);
+   call(FB_DEV_DISK, 0x02, &p);
+   p = payload(); u8(&p, 8);
+   call(FB_DEV_DISK, 0x02, &p);
+   CHECK(fn_store_host_open_count() == open_before, "DSD: no handles leaked: %d, was %d",
+         fn_store_host_open_count(), open_before);
 }
 
 /* ---- file ------------------------------------------------------------------- */
@@ -1093,6 +1196,7 @@ int main(void)
    test_appstore_limits();
    test_slotcat();
    test_disk();
+   test_dsd();
    test_file();
    test_tnfs();
    test_network();
