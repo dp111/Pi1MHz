@@ -79,9 +79,26 @@ include "machine.asm"
 \ matched text, which is where every handler expects to start reading its
 \ arguments.
 
-.command            bit ws_flag                 \ no writable workspace, no
-                    bmi command_have_ws         \ commands: every handler
-                    jmp no_swr_error            \ scribbles on it
+\ Without a writable workspace every handler below would scribble on memory
+\ this ROM does not own, so none of them may run.  Decline the service call
+\ rather than raising an error: A is still 4 and nothing has been pushed, so
+\ the MOS carries on offering the command to lower-priority ROMs and reports
+\ "Bad command" if nobody takes it.
+\
+\ Raising an error here instead, which is what this did first, was wrong
+\ twice over.  The test runs before the command table is searched, so it
+\ answered for every unrecognised command on the machine and not just this
+\ ROM's, which broke other ROMs' commands and the MOS's own.  And the error
+\ was a BRK with its message inline in the bank, which the MOS cannot read
+\ back once it has paged this ROM out: the screen filled with whatever the
+\ incoming ROM had at those addresses, which on an Electron is BASIC's
+\ keyword table.  The reason is printed once at reset instead, where OSWRCH
+\ works and the text is addressable.
+.command            bit ws_flag
+                    bpl command_declined
+                    jmp command_have_ws
+.command_declined   lda #4                      \ unclaimed: pass it on
+                    rts
 .command_have_ws    tya                         \ A on exit belongs to the
                     pha                         \ handler, so only X and Y are
                     txa                         \ saved here
@@ -206,13 +223,28 @@ include "machine.asm"
                     \ runs with another ROM's page possibly selected, and every
                     \ command selects its own page when it starts.
                     lda #&D7                    \ suppress the default banner
-                    ldx #0
-                    stx mux_status              \ no connection multiplexing yet
-                    ldy #&7F
+                    ldx #0                      \ EOR mask: X is still this
+                    ldy #&7F                    \ ROM's slot number otherwise
                     jsr osbyte
+                    \ Only once the workspace is known to be ours: in a
+                    \ read-only bank this store goes nowhere.
+                    bit ws_flag
+                    bpl autorun_no_mux
+                    lda #0
+                    sta mux_status              \ no connection multiplexing yet
+.autorun_no_mux
 
                     jsr printtext
                     equs "1MHz-WiFi 0.1.67",&EA
+
+                    \ Say why, once, if the workspace is not there.  The
+                    \ command entry only declines; without this the machine
+                    \ would answer "Bad command" with no explanation.
+                    bit ws_flag
+                    bmi autorun_ws_ready
+                    jsr printtext
+                    equs " needs sideways RAM",&D,&EA
+.autorun_ws_ready
 
                     ldy #&FF                    \ OSBYTE &FD: last reset type
                     ldx #&00
@@ -547,16 +579,6 @@ include "wicfs_catalogue.asm"
 include "uef.asm"
 include "host_launch.asm"
 ENDIF
-
-\ Raised when the image is not writable - burnt into a real ROM rather than
-\ loaded into sideways RAM.  The workspace this ROM needs lives in the image,
-\ so there is nowhere to put it; say so instead of corrupting host memory.
-\ (A real-ROM build wants the workspace claimed from the OS at service call
-\ &02, or &24/&22 on the Master: see beeb/1mhz-wifi/README.md.)
-.no_swr_error       brk
-                    equb &80
-                    equs "1MHz-WiFi needs sideways RAM"
-                    equb 0
 
 rom_content_end = P%
 ASSERT rom_content_end <= ws_base

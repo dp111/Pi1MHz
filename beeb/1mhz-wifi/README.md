@@ -49,8 +49,9 @@ dead.
 
 `autorun` (service call 1) probes the image for writability and records the
 answer in the image. If the ROM is burnt into a real EPROM there is nowhere
-to put the workspace, so commands raise "1MHz-WiFi needs sideways RAM"
-rather than corrupting host memory. A real-ROM build would need the
+to put the workspace, so the ROM prints "needs sideways RAM" after its
+banner at reset and declines its commands, leaving the MOS to offer them to
+other ROMs, rather than corrupting host memory. A real-ROM build would need the
 workspace claimed from the OS instead - service call `&02`, or `&24`/`&22`
 on the Master, which allocates in hidden RAM and leaves PAGE alone - and
 every workspace reference reached through a pointer rather than an absolute
