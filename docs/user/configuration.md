@@ -151,6 +151,7 @@ are hardware-diagnostic switches for developers; leave them unset.
 |---|---|---|
 | `wifi_service_enable` | off | `1` answers the [1MHz-WiFi ROM](wifi-rom.md)'s WiFi commands (`*JOIN`, `*LAP`, `*PING`, `*DATE` ...) and its WiCFS tape filing system (`*UEF`). |
 | `wifi_service_utc_offset_minutes` | 0 | Time zone for the ROM's `*DATE`/`*TIME`, in minutes from UTC - e.g. `60` for British Summer Time. |
+| `wifi_service_uef_filev_repair` | on | `0` sends `*UEF` tapes exactly as stored. On, a cassette loader that writes FILEV itself (`?&212=&D6:?&213=&F1`, common on the Electron) has those two addresses redirected to `&900`/`&901`, so it does not knock WiCFS off the filing vector. |
 | `net_enable` | off | `1` lets the Beeb use the Pi's network: the 1MHz-WiFi ROM's `*WGET`, `*NSLOOK` and `*DISCONNECT`, the N: device programs in `beeb/net/`, and FujiNet's TNFS, `http://`, `https://` and `tcp://`. Needs WiFi set up. `https://` also needs `/cacert.pem` on the card - see [FujiNet](fujinet.md#https). |
 | `fujinet_boot` | (none) | The disc image fn-rom's `*FBOOT` mounts, read only, as `sd0:/path` or a `tnfs://` URL - normally fn-rom's utilities disc, `sd0:/FujiNet/FN-BOOTB.ssd` (BBC B) or `sd0:/FujiNet/FN-BOOTM.ssd` (Master). See [FujiNet](fujinet.md#the-utilities-disc). |
 

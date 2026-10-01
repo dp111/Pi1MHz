@@ -24,6 +24,15 @@ void Pi1MHz_Register_Poll(func_ptr f, const char *n) { (void)f; (void)n; }
 void Pi1MHz_nIRQ_ASSERT(uint8_t src) { (void)src; }
 void Pi1MHz_nIRQ_CLEAR(uint8_t src) { (void)src; }
 
+/* The FILEV stamp repair is on by default on a Pi, and deliberately changes
+   the bytes the host sees.  This suite asserts the opposite - that a tape
+   arrives exactly as gunzip would produce it - so it runs with the repair
+   off.  test_uef_filev.c covers it switched on. */
+const char *config_get(const char *key)
+{
+   return strcmp(key, "wifi_service_uef_filev_repair") == 0 ? "0" : NULL;
+}
+
 /* uef_service.c borrows this from wifi_service.c. */
 void response_string(uint32_t cp, const char *value)
 {

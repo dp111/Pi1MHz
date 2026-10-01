@@ -4,6 +4,8 @@
 #include <string.h>
 
 #include "Pi1MHz.h"
+#include "config.h"
+#include "uef_repair.h"
 #include "uef_stream.h"
 #include "rpi/byteorder.h"
 #include "uzlib/uzlib.h"
@@ -36,6 +38,14 @@
 #define UEF_UPLOAD_MAX      (1024u * 1024u)
 #define UEF_UPLOAD_GROW     (64u * 1024u)
 
+/* The FILEV repair carries an incomplete chunk into the next window so it can
+ * be repaired whole.  A standard Acorn cassette block is at most 289 bytes of
+ * chunk - '*', a name of up to 10, a 17 byte descriptor, two CRCs and 256
+ * bytes of payload - so this is three times the worst block the repair can
+ * act on.  A &0100 chunk larger than this is not a cassette block and is
+ * skipped rather than carried; framing resumes after it. */
+#define UEF_REPAIR_CARRY    1024u
+
 #define UEF_OP_PROBE        0u
 #define UEF_OP_BEGIN        1u
 #define UEF_OP_APPEND       2u
@@ -66,6 +76,12 @@ typedef struct {
    uint32_t     last_append_offset;
    uint32_t     last_append_crc;
    uint16_t     last_append_length;
+   /* FILEV repair framing, carried between windows.  See repair_window(). */
+   uint32_t     repair_skip;         /* stream bytes still to step over   */
+   uint16_t     repair_carry_length; /* head of the next chunk, held back */
+   bool         repair_framed;       /* still in sync with the chunk list */
+   bool         repair_first;        /* next window is the tape's first   */
+   uint8_t      repair_carry[UEF_REPAIR_CARRY];
 } uef_tape_t;
 
 static uef_tape_t *tape;
@@ -200,15 +216,99 @@ static void window_lay_out(void)
    public_length_set(tape->window_length);
 }
 
+/* ---- FILEV stamp repair ------------------------------------------------
+   A large minority of Electron titles load with `?&212=&D6:?&213=&F1`, which
+   stamps the MOS 1.00 cassette entry straight over FILEV and so over whatever
+   filing system owns it - WiCFS included.  uef_repair_filev_span() redirects
+   the address token to &900/&901, which leaves the program the same length,
+   so only the affected block's payload CRC has to be recomputed.
+
+   The repair needs whole chunks, and the stream hands out 63 KB windows that
+   a chunk can straddle, so an incomplete chunk at the end of a window is held
+   back and re-offered at the head of the next one.  Every window this
+   publishes therefore ends on a chunk boundary, which is why only the first
+   starts past the twelve byte file header. */
+
+static bool repair_enabled = true;    /* wifi_service_uef_filev_repair */
+
+static void repair_reset(void)
+{
+   tape->repair_skip = 0u;
+   tape->repair_carry_length = 0u;
+   tape->repair_framed = repair_enabled;
+   tape->repair_first = true;
+}
+
+/* Repair `count` bytes in tape->window and return how many of them may be
+   published.  `final` means the stream has ended, so nothing is held back.
+   `first` means this is the first window of the tape and the walk starts
+   past the file header. */
+static size_t repair_window(size_t count, bool first, bool final)
+{
+   size_t start = first ? UEF_REPAIR_HEADER : 0u;
+   size_t framed;
+   size_t tail;
+
+   if (!tape->repair_framed)
+      return count;
+   if (tape->repair_skip != 0u) {
+      /* Stepping over a chunk too large to have been carried. */
+      if (tape->repair_skip >= count) {
+         tape->repair_skip -= (uint32_t)count;
+         return count;
+      }
+      start = tape->repair_skip;
+      tape->repair_skip = 0u;
+   }
+   framed = uef_repair_filev_span(tape->window, count, start, NULL);
+   if (final || framed >= count)
+      return count;
+
+   tail = count - framed;
+   if (tail <= UEF_REPAIR_CARRY) {
+      memcpy(tape->repair_carry, tape->window + framed, tail);
+      tape->repair_carry_length = (uint16_t)tail;
+      return framed;
+   }
+   /* The chunk is longer than the carry.  If its header is complete the
+      length is known, so publish what we have and step over the rest; if it
+      is not, the chunk list cannot be followed any further and the rest of
+      the tape goes out unrepaired.  Neither case loses a repair that would
+      have happened: no cassette block is this long. */
+   if (framed + 6u <= count) {
+      uint32_t chunk_length = get_le32(tape->window + framed + 2u);
+      uint64_t past = (uint64_t)framed + 6u + chunk_length;
+      if (past > (uint64_t)count) {
+         tape->repair_skip = (uint32_t)(past - (uint64_t)count);
+         return count;
+      }
+   }
+   tape->repair_framed = false;
+   return count;
+}
+
 /* Pull the next window out of the stream and publish it. */
 static void window_advance(void)
 {
    size_t limit = guard_image_valid ? UEF_GUARD_WINDOW : UEF_FLAT_WINDOW;
-   size_t count = uef_stream_read(&tape->stream, tape->window, limit);
+   bool first = tape->repair_first;
+   size_t held = tape->repair_carry_length;
+   size_t got;
+   size_t count;
+
+   memcpy(tape->window, tape->repair_carry, held);
+   tape->repair_carry_length = 0u;
+   got = uef_stream_read(&tape->stream, tape->window + held, limit - held);
+   /* A short read means the stream ended inside this window; a zero-length
+    * one that the host asked for means the tape is simply over. */
+   tape->window_final = got < limit - held;
+   count = repair_window(held + got, first, tape->window_final);
+   /* A window that holds bytes back is not the last one even though the
+    * stream has ended: the host still has to be given what was held. */
+   if (tape->repair_carry_length != 0u)
+      tape->window_final = false;
    tape->window_length = (uint16_t)count;
-   /* A short window means the stream ended inside it; a zero-length one that
-    * the host asked for means the tape is simply over. */
-   tape->window_final = count < limit;
+   tape->repair_first = false;
    window_lay_out();
 }
 
@@ -348,6 +448,7 @@ static uint8_t stream_operation(uint32_t cp)
          tape->ready = true;
          tape->uploading = false;
          tape->generation++;
+         repair_reset();
          window_advance();
          incremental_response(cp);
          return WIFI_SVC_OK;
@@ -360,6 +461,7 @@ static uint8_t stream_operation(uint32_t cp)
          if (!uef_stream_rewind(&tape->stream))
             return WIFI_SVC_ERR_IO;
          tape->generation++;
+         repair_reset();
          window_advance();
          incremental_response(cp);
          return WIFI_SVC_OK;
@@ -451,6 +553,8 @@ static uint8_t legacy_normalize(uint32_t cp)
       response_string(cp, "INVALID\r\n");
       return WIFI_SVC_OK;
    }
+   if (repair_enabled)
+      (void)uef_repair_filev_stamp(tape->window, produced);
    memcpy(&Pi1MHz->JIM_ram[UEF_BASE], tape->window, produced);
    public_length_set(produced);
    /* The one-shot path hands the tape over whole and keeps no stream. */
@@ -499,6 +603,12 @@ uint8_t uef_service_guard_command(uint32_t cp)
 
 void uef_service_reset(void)
 {
+   const char *value = config_get("wifi_service_uef_filev_repair");
+   /* On unless explicitly switched off: a title that does not use the idiom
+      is unaffected by the repair, so the safe default is to run it. */
+   repair_enabled = !(value != NULL
+                      && (*value == '0' || *value == 'n' || *value == 'N'
+                          || *value == 'f' || *value == 'F'));
    tape_free();
    guard_image_valid = false;
 }
