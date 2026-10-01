@@ -412,6 +412,8 @@ set(teletext_emulator_files
 
 set(mouse_redirect_files
    mouseredirect.c
+   serial_redirect.c
+   serial_modem.c
 )
 
 set(wifi_files

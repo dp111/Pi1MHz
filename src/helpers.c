@@ -13,15 +13,21 @@
 #include "rpi/info.h"
 #include "rpi/systimer.h"
 #include "videoplayer.h"
+#include "serial_redirect.h"
 
 /* One 256-byte page per helper entry point, 0..45 - the page the Beeb runs
    when it asks for helper n.  It is exactly as many pages as 6502code.bin
    carries, so the bank select below rejects a helper number that has no
    page rather than running whatever follows.  17 is the SD card explorer,
-   and 31-45 are the pages it chains through while it runs; 18-30 are left
-   free for future helpers, and answer with a bare return until one is
-   written. */
+   and 31-45 are the pages it chains through while it runs; 18 is FujiNet,
+   19 the serial redirector, and 20-30 are left free for future helpers,
+   answering with a bare return until one is written. */
 #define HELPER_PAGES 47u
+
+/* Helper 19 hooks the vectors into the serial stub; its LDY # at &FD06
+   carries the stub's FRED offset, which only the Pi knows (Serial_addr). */
+#define SERIAL_HELPER_PAGE  19u
+#define SERIAL_HELPER_LDY   0x06u
 
 /* &FC88 = HELPER_XFER shows the helper transfer page in the JIM window
    instead of a helper page.  It is a page of the services buffer, so a
@@ -238,6 +244,10 @@ void helpers_init( uint8_t instance , uint8_t address)
    memset(helper_ram, 0x60, sizeof helper_ram);
    if (filesystemReadFile("Pi1MHz/6502code.bin",&helper,sizeof(helper_ram)))
     {
+        uint8_t *ser = &helper_ram[SERIAL_HELPER_PAGE * 256u + SERIAL_HELPER_LDY];
+        if (ser[0] == 0xA0)           /* LDY #: an older 6502code.bin has no such page */
+            ser[1] = serial_redirect_address();
+
         // register call backs
         Pi1MHz_Register_Memory(WRITE_FRED, address, helpers_bank_select );
         /* Prime once here, before anything can be playing, so the FIQ path

@@ -184,7 +184,9 @@ typedef enum {
    side can take the other's.  All of them < MEMP_NUM_TCP_PCB (16). */
 #define NET_BEEB_HANDLES     8u
 #define NET_CAPI_HANDLES     5u    /* the FujiNet device: fn-rom's 5 channels */
-#define NET_MAX_HANDLES      (NET_BEEB_HANDLES + NET_CAPI_HANDLES)
+#define NET_MODEM_HANDLES    1u    /* the serial modem's line, its own so a
+                                      busy FujiNet can never take it */
+#define NET_MAX_HANDLES      (NET_BEEB_HANDLES + NET_CAPI_HANDLES + NET_MODEM_HANDLES)
 #define NET_RX_RING_SIZE     8192u /* per-handle byte-stream ring            */
 /* One shared ring, claimed by whichever handle meets a chain too large for its
    own.  lwIP re-presents a whole chain rather than a prefix, so a chain bigger
@@ -213,6 +215,7 @@ typedef struct {
 } net_http_opts_t;
 
 int      net_capi_alloc(void);             /* a free handle, or -1 */
+int      net_capi_alloc_modem(void);       /* the modem's handle, or -1 if taken */
 /* Advance the open; NET_OK once ready, NET_PENDING while under way, or an
    error.  url/opts must be the same on every call for one open. */
 uint8_t  net_capi_open(int h, const char *url, uint8_t mode, const net_http_opts_t *opts);

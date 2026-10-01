@@ -2327,14 +2327,24 @@ bool net_capi_enabled(void)
    return net_enabled;
 }
 
-int net_capi_alloc(void)
+static int capi_alloc_range(unsigned int first, unsigned int end)
 {
-   for (unsigned int i = NET_BEEB_HANDLES; i < NET_MAX_HANDLES; i++)
+   for (unsigned int i = first; i < end; i++)
       if (!capi_taken[i] && net_h[i].state == NET_ST_FREE) {
          capi_taken[i] = true;
          return (int)i;
       }
    return -1;
+}
+
+int net_capi_alloc(void)
+{
+   return capi_alloc_range(NET_BEEB_HANDLES, NET_BEEB_HANDLES + NET_CAPI_HANDLES);
+}
+
+int net_capi_alloc_modem(void)
+{
+   return capi_alloc_range(NET_BEEB_HANDLES + NET_CAPI_HANDLES, NET_MAX_HANDLES);
 }
 
 uint8_t net_capi_open(int hi, const char *url, uint8_t mode, const net_http_opts_t *opts)

@@ -124,6 +124,7 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "fujibus_service.h"
 #include "helpers.h"
 #include "mouseredirect.h"
+#include "serial_redirect.h"
 #include "videoplayer.h"
 #include "usb.h"
 #include "wifi/wifi.h"
@@ -173,6 +174,10 @@ static emulator_list emulator[] = {
    {"secure",secure_service_init, 0x00, 1 },
 #endif
    {"Teletext",teletext_emulator_init, 0x10, 1 },  // Acorn Teletext Adapter at &FC10
+   /* RS423 redirected to the Pi: a stub at &FCCC-&FCF8 that helper 19 hooks
+      INSV and IRQ1V into.  Before Helpers, which patches its base into that
+      helper's page. */
+   {"Serial",serial_redirect_init, 0xCC, 1 },
    /* After every emulator it reports on (the help screen is formatted at init
       and shows the hard disc and M5000 settings); the table index is the
       instance number, so moving an entry renumbers those after it. */

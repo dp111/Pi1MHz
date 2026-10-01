@@ -511,7 +511,7 @@ int main(void)
    CHECK(issue(NET_CMD_DNS, 0) == NET_PENDING, "dns async -> PENDING");
    {
       ip_addr_t ip; IP_ADDR4(&ip, 1, 1, 1, 1);
-      g_dns_cb(g_dns_name, &ip, g_dns_arg);
+      g_dns_cb("bbs.test", &ip, g_dns_arg);
    }
    CHECK(issue(NET_CMD_DNS, 0) == NET_OK, "dns after callback -> OK");
    CHECK(jrd8(CP(0)+4)==1 && jrd8(CP(0)+7)==1, "resolved async IP 1.1.1.1 written back");
@@ -1162,6 +1162,27 @@ int main(void)
    issue(NET_CMD_URL_STATUS, 0);
    CHECK((jrd8(CP(0)+7) | (jrd8(CP(0)+8)<<8)) == 200u, "url status reports HTTP 200 (+7..8)");
    CHECK(jrd8(CP(0)+3) == 1u, "DVSTAT connected byte set");
+
+   printf("== C API: telnet:// by host name on the modem's handle ==\n");
+   world_reset();
+   {
+      int m = net_capi_alloc_modem();
+      CHECK(m == (int)(NET_BEEB_HANDLES + NET_CAPI_HANDLES), "the modem's own handle");
+      CHECK(net_capi_alloc_modem() == -1, "only one");
+      const char *url = "telnet://bbs.test:23";
+      CHECK(net_capi_open(m, url, NET_OPEN_RW, NULL) == NET_PENDING, "resolving -> PENDING");
+      CHECK(g_dns_cb != NULL, "a lookup was started (the stub keeps only a pointer: not read)");
+      CHECK(net_capi_open(m, url, NET_OPEN_RW, NULL) == NET_PENDING, "still resolving");
+      ip_addr_t ip; IP_ADDR4(&ip, 10, 0, 0, 7);
+      g_dns_cb(g_dns_name, &ip, g_dns_arg);
+      uint8_t r = net_capi_open(m, url, NET_OPEN_RW, NULL);
+      if (r != NET_PENDING) printf("  open after resolve: %02x\n", r);
+      CHECK(r == NET_PENDING, "resolved -> connecting (PENDING)");
+      if (g_last_pcb) g_last_pcb->connected(g_last_pcb->arg, g_last_pcb, ERR_OK);
+      r = net_capi_open(m, url, NET_OPEN_RW, NULL);
+      CHECK(r == NET_OK, "connected -> OK");
+      net_capi_close(m);
+   }
 
    printf("== C API (net_capi_*) - handle split, POST with a body, HEAD ==\n");
    world_reset();

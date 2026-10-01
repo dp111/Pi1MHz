@@ -72,7 +72,7 @@ bool net_capi_enabled(void) { return s_enabled; }
 
 int net_capi_alloc(void)
 {
-   for (unsigned int i = H0; i < NET_MAX_HANDLES; i++)
+   for (unsigned int i = H0; i < H0 + NET_CAPI_HANDLES; i++)   /* not the modem's */
       if (!H[i].taken) {
          memset(&H[i], 0, sizeof H[i]);
          H[i].taken = true;

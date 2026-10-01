@@ -43,6 +43,8 @@
 #include "../Pi1MHz.h"
 #include "../rpi/asm-helpers.h"
 #include "../AUN/aun_emulator.h"
+#include "../serial_redirect.h"
+#include "../serial_modem.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
@@ -3002,6 +3004,10 @@ static bool route_status(ws_conn_t *c)
             (unsigned long)audio_underruns(), audio_sink_name());
 #endif
    table_row(&b, "Audio", tmp);
+   serial_redirect_status(tmp, sizeof tmp);
+   table_row(&b, "Serial", tmp);
+   modem_status(tmp, sizeof tmp);
+   table_row(&b, "Modem", tmp);
    snprintf(tmp, sizeof tmp, "mai %08lx hsm %lu pix %lu",
             (unsigned long)hdmi_audio_mai_ctl(), (unsigned long)hdmi_audio_hsm_hz(),
             (unsigned long)hdmi_audio_pixel_hz());

@@ -39,10 +39,10 @@ OSGBPB = &FFD1
 ; command block &FFF000), the ROM loader (&F00000) and the command blocks.
 ; ---------------------------------------------------------------------------
 
-; Helper numbers 18-30 are deliberately left free for future helpers, so the
+; Helper numbers 18-30 are kept for other helpers (18 FujiNet, 19 serial), so the
 ; explorer's own pages start above them.  Only EXP_HUB is a helper anybody
 ; runs; the rest are pages it chains through while it is running.
-EXP_FREE_FIRST = 19 ; first reserved-for-future helper page (18 is FujiNet)
+EXP_FREE_FIRST = 20 ; first reserved-for-future helper page (19 is serial)
 EXP_FREE_LAST  = 30 ; last one
 
 EXP_HUB   = 17      ; init
@@ -819,19 +819,104 @@ ORG &FD00
 }
 
 ; ---------------------------------------------------------------------------
-; Pages 19-30 : reserved for future helpers
+; Page 19 : serial redirector - the RS423 buffers, fed and drained by the Pi
+;
+; Hooks INSV (output buffer 2) and IRQ1V (input buffer 1) into the stub the
+; Pi keeps in FRED (src/serial_redirect.c has its layout), silences the
+; 6850's interrupt bits (its divider and format stay, so &FD03 hands a
+; working port back), and tells the Pi it may now raise nIRQ.  Entry &FD03
+; puts the vectors back; BREAK does too.  The stub's FRED offset is patched into
+; &FD07 by the Pi, so a relocated stub (Serial_addr=) needs no change here.
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+INSV  = &022A
+IRQ1V = &0204
+SER_TXOLD = &FC0A       ; stub offsets, indexed by Y = the stub base
+SER_RXOLD = &FC0D
+SER_EXOLD = &FC2B
+SER_CTRL  = &FC28
+    JMP serinstall          ; &FD00: hook the vectors
+    JMP serremove           ; &FD03: unhook them
+.serbase
+    LDY #0                  ; &FD07: stub offset, patched by the Pi (0 = none)
+    RTS
+    ASSERT serbase = &FD06
+
+; out: Y = stub offset, Z=1 if INSV already points at it (the two vectors
+; are only ever moved together).  No stub: reports it and leaves the helper.
+.serprobe
+    JSR serbase
+    BEQ sernone
+    LDA &FC00,Y : CMP #&E0 : BNE sernone     ; the stub's CPX #2
+    LDA INSV+1 : CMP #&FC : BNE serprobed
+    CPY INSV
+.serprobed
+    RTS
+.sernone
+    PLA : PLA
+    LDX #msgnone-&FD00
+    JMP serprint
+
+.serinstall
+    JSR serprobe : BEQ serhooked             ; already in: just re-arm the Pi
+    ; The RX gate's BIT reads the old IRQ1V target on every interrupt; into
+    ; FRED/JIM (another stub, or a stale copy of this one) that is a port read.
+    LDX #msgbusy-&FD00
+    LDA IRQ1V+1 : AND #&FE : CMP #&FC : BEQ serprint
+    LDA INSV    : STA SER_TXOLD,Y            ; stash first: nothing runs the
+    LDA INSV+1  : STA SER_TXOLD+1,Y          ; stub until the vectors move
+    LDA IRQ1V   : STA SER_RXOLD,Y : STA SER_EXOLD,Y
+    LDA IRQ1V+1 : STA SER_RXOLD+1,Y : STA SER_EXOLD+1,Y
+    PHP : SEI                                ; both vectors are used in IRQs
+    STY INSV
+    LDA #&FC : STA INSV+1 : STA IRQ1V+1
+    TYA : CLC : ADC #&0C : STA IRQ1V
+    PLP
+.serhooked
+    LDA #1 : STA SER_CTRL,Y                  ; the Pi may raise nIRQ now
+    LDA #156 : LDX #&40 : LDY #&1F : JSR OSBYTE  ; 6850: RTS high, no IRQs; keep format and divider
+    LDX #msgon-&FD00
+    BNE serprint
+
+.serremove
+    JSR serprobe
+    BEQ serunhook
+    LDX #msgnotin-&FD00                      ; Z=0: not ours
+    BNE serprint
+.serunhook
+    PHP : SEI
+    LDA #0 : STA SER_CTRL,Y                  ; the Pi drops nIRQ first
+    LDA SER_TXOLD,Y   : STA INSV
+    LDA SER_TXOLD+1,Y : STA INSV+1
+    LDA SER_RXOLD,Y   : STA IRQ1V
+    LDA SER_RXOLD+1,Y : STA IRQ1V+1
+    PLP
+    LDX #msgoff-&FD00
+.serprint
+    LDA &FD00,X : BEQ serexit
+    JSR OSWRCH
+    INX
+    BNE serprint
+.serexit
+    PAGERTS
+
+.msgon    EQUS " Serial: Pi", 13, 10, 0
+.msgoff   EQUS " Serial: 6850", 13, 10, 0
+.msgnotin EQUS " Not hooked", 13, 10, 0
+.msgbusy  EQUS " IRQ1V busy", 13, 10, 0
+.msgnone  EQUS " No port", 13, 10, 0
+
+    ENDBLOCK &1300
+}
+
+; ---------------------------------------------------------------------------
+; Pages 20-30 : reserved for future helpers
 ;
 ; Free slots, so a new helper can be added without moving the explorer's
 ; pages and rewriting every GOTOPAGE in it.  Each answers like any finished
 ; helper page, so running one before it does anything simply returns.
 ; ---------------------------------------------------------------------------
-
-{
-    ORG &FD00
-    PAGERTS
-
-    ENDBLOCK &1300
-}
 
 {
     ORG &FD00

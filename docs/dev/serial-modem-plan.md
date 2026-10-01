@@ -1,10 +1,43 @@
 # Serial redirect + modem emulation — plan
 
-> **STATUS 2026-09-02: not started.** Nothing in this plan is implemented -
-> there is no `src/serial_modem.c` and no FRED range is claimed for it. The
-> pieces it builds on do now exist: `net_service.c` provides the TCP sockets
-> the modem would dial through, and `services.h` records which command ranges
-> are already taken.
+> **STATUS 2026-09-29: stage A (the redirect) BUILT and hardware-tested on
+> the Master + Zero 2 W; uncommitted.** `src/serial_redirect.c` ("Serial"
+> emulator, stub at **&FCCC-&FCF8**, on by default, `Serial_addr=-1`
+> disables) + helper 19 (`6502code.asm`; &FD03 unhooks). The Pi loops output
+> back to input until the modem exists. MEASURED: control (old kernel) says
+> "No port"; install -> tx/rx counted, looped bytes read back exact; 480-byte
+> flood with nobody reading -> buffer 1 fills, stub reports full, Beeb stays
+> responsive, the rest drains later; BREAK and &FD03 both unhook and COM9
+> works again. RX cost per byte, Beeb idle, debug build: ~910 us chaining
+> to the MOS every byte (a Master offers each one to the ROMs as an
+> unrecognised IRQ), ~105 us leaving by RTI every byte (which would hold
+> other IRQs off for a whole burst, up to ~27 ms). **Built: RTI, with every
+> 16th exit chained** - the Pi rewrites the exit opcode at +2A on each
+> consume: **~150 us/byte (~6.7 KB/s)**, other IRQs wait at most 15 fast
+> trips (~1.6 ms). Retrying against a full, unread buffer 1 (every 20 ms)
+> costs the Beeb 0.9% (empty FOR loop 353 vs 350 cs unhooked).
+> Changes from the body below, which is otherwise the design record:
+> &FCB0 moved to &FCCC (the body's span swallowed the *FX port at &FCCA);
+> the stub reports "buffer 1 full" on its own port (+0F) instead of the Pi
+> inferring it; nIRQ is only raised after the install code writes "hooked"
+> (+28), so an unhooked Beeb cannot livelock; the install touches only the
+> 6850's interrupt bits (`OSBYTE 156,&40,&1F`) - the body's `&55` also set
+> the divider to /16 and COM9 came back garbled after &FD03; MOS 3.20's IRQ
+> entry is `STA &FC : JMP (&0204)`, as assumed (checked in the ROM image).
+> Going via INSV skips the MOS's ESCAPE check on received bytes (MOS 3.20
+> &EA80) - ESC from the line is data, which is what a modem link wants.
+> **Stage B (the modem) BUILT and hardware-tested 2026-09-30:**
+> `src/serial_modem.c`, driven from the redirect's poll through its byte API
+> (`serial_redirect_read/room/write`), dialling through `net_capi_*` on a
+> handle of its own (`net_capi_alloc_modem`, so FujiNet's five cannot take
+> it). Commands: A/ AT Z &F E V Q H O I D Sn= Sn? NET0/1 (&C &D &K &W X M L
+> ignored); dial forms host:port, host (port 23), 12 digits, phonebook slot
+> (`modem_phone_n=` in Pi1MHz.cfg); +++ with S12 guard; S7 dial timeout;
+> a BBC reset hangs up. /status "Modem" row: state + last net error.
+> Host tests src/tests/modem (65 checks). MEASURED on the Master: ATDT to a
+> LAN TCP server (greeting, echo, bytes exact in the server log, +++, ATH);
+> ATNET1DT to telehack.com by name and by IP (telnet IAC filtered). Not
+> built: inbound calls (RING/ATA/S0) - the C API has no listen.
 
 Redirect both directions of the BBC's RS423 traffic to Pi1MHz, then put a
 Hayes-style modem behind it so `ATDT <ip>` opens a TCP connection instead of
