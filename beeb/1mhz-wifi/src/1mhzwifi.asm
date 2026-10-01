@@ -223,14 +223,15 @@ include "machine.asm"
                     \ runs with another ROM's page possibly selected, and every
                     \ command selects its own page when it starts.
                     lda #&D7                    \ suppress the default banner
-                    ldy #&7F
+                    ldx #0                      \ EOR mask: X is still this
+                    ldy #&7F                    \ ROM's slot number otherwise
                     jsr osbyte
                     \ Only once the workspace is known to be ours: in a
                     \ read-only bank this store goes nowhere.
                     bit ws_flag
                     bpl autorun_no_mux
-                    ldx #0
-                    stx mux_status              \ no connection multiplexing yet
+                    lda #0
+                    sta mux_status              \ no connection multiplexing yet
 .autorun_no_mux
 
                     jsr printtext
