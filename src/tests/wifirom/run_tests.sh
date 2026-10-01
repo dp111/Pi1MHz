@@ -35,6 +35,9 @@ if command -v "$beebasm" >/dev/null 2>&1; then
     done
 else
     echo "beebasm not found (set BEEBASM): skipped the ROM assembly check"
+    # Never in CI: a missing beebasm skipped this for every run from
+    # 2026-09-20 until PR 28, and the step still looked like it ran.
+    if [ -n "${CI:-}" ]; then exit 1; fi
 fi
 
 # shellcheck disable=SC2086 # $images is a list of LABEL=PATH words

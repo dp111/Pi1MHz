@@ -17,6 +17,7 @@ sideways RAM, and the shipped image uses the brief *HELP.
 
 usage: check_service.py LABEL=ROM [LABEL=ROM ...]
 """
+import os
 import re
 import sys
 
@@ -24,8 +25,10 @@ try:
     from rom6502 import Beeb, RomError, Unmodelled, command_names
 except ImportError as e:
     if "py65" in str(e):
+        # Skipping is for a desk without py65; in CI it would hide every
+        # check here behind a green step, as a missing beebasm once did.
         print("py65 not installed (pip install py65): skipped the 6502 service checks")
-        sys.exit(0)
+        sys.exit(1 if os.environ.get("CI") else 0)
     raise
 
 checks = fails = 0
