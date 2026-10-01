@@ -4,6 +4,9 @@
  * recomputes the one CRC it disturbs, so it can run on a window of a tape
  * that is still being decompressed. */
 
+#include <stdbool.h>
+#include <string.h>
+
 #include "uef_repair.h"
 
 static uint16_t rd16(const uint8_t *p)
@@ -30,37 +33,63 @@ static uint16_t tape_crc(const uint8_t *data, size_t length)
    return crc;
 }
 
-static int stamp_hex_digit(uint8_t c)
+#define STAMP_LENGTH 9u      /* ?&212=&D6 */
+#define TOKEN_ELSE   0x8Bu
+#define TOKEN_THEN   0x8Cu
+
+/* Is `at` a whole `?&21x=&vv` statement (x/vv = 2/D6 or 3/F1) in tokenised
+ * BBC BASIC?  It must start a statement - a line's first text, or after a
+ * colon, THEN or ELSE - and end one, before a colon, ELSE or the line's CR.
+ * `IF ?&212=&D6 THEN` reads the vector and is not a stamp: blanking that
+ * would be a syntax error.  A stamp cut by the end of the payload is left. */
+static bool stamp_at(const uint8_t *data, size_t length, size_t at,
+                     uint8_t which)
 {
-   return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')
-       || (c >= 'a' && c <= 'f');
+   static const char *const text[2] = { "?&212=&D6", "?&213=&F1" };
+   size_t s = at;
+   size_t e = at + STAMP_LENGTH;
+
+   if (e > length || memcmp(&data[at], text[which], STAMP_LENGTH) != 0)
+      return false;
+   while (e < length && data[e] == ' ')
+      e++;
+   if (e >= length || (data[e] != ':' && data[e] != 0x0Du && data[e] != TOKEN_ELSE))
+      return false;
+   while (s > 0u && data[s - 1u] == ' ')
+      s--;
+   if (s > 0u && (data[s - 1u] == ':' || data[s - 1u] == TOKEN_THEN
+                  || data[s - 1u] == TOKEN_ELSE))
+      return true;
+   /* A line starts CR, line number high and low, length; the next line's
+      CR is that length on from this one, which a stray CR would not be. */
+   if (s >= 4u && data[s - 4u] == 0x0Du && data[s - 1u] >= 4u) {
+      size_t next = s - 4u + data[s - 1u];
+      return next >= length || data[next] == 0x0Du;
+   }
+   return false;
 }
 
-/* Rewrite `&212`/`&213` address tokens in one block's payload. BBC BASIC
- * tokenises keywords but leaves `&` and digits as ASCII, so the address
- * survives verbatim and a three-digit substitution is exact. A following hex
- * digit means the token is really a longer address such as &2120, which must
- * be left alone. Both `?` and `!` forms are redirected: a loader which saves
- * and restores the vector then does both through scratch and leaves ours
- * untouched. */
+/* Blank the loader's FILEV stamp statements with spaces.  The statements
+ * then do nothing, as BASIC runs an empty statement, and nothing is written
+ * anywhere; the program keeps its length, so only the block CRC changes.
+ * Both halves or neither: one half blanked would leave FILEV pointing at
+ * neither the filing system nor the MOS. */
 static unsigned repair_block_payload(uint8_t *data, size_t length)
 {
+   unsigned found[2] = { 0u, 0u };
    unsigned repaired = 0u;
-   if (length < 4u) return 0u;
-   for (size_t at = 0u; at + 4u <= length; at++) {
-      if (data[at] != '&' || data[at + 1] != '2' || data[at + 2] != '1')
-         continue;
-      if (data[at + 3] != '2' && data[at + 3] != '3')
-         continue;
-      if (at + 4u < length && stamp_hex_digit(data[at + 4]))
-         continue;
-      if (at == 0u || (data[at - 1] != '?' && data[at - 1] != '!'))
-         continue;
-      data[at + 1] = '9';
-      data[at + 2] = '0';
-      data[at + 3] = (data[at + 3] == '2') ? '0' : '1';
-      repaired++;
-   }
+   for (size_t at = 0u; at < length; at++)
+      for (uint8_t w = 0u; w < 2u; w++)
+         if (stamp_at(data, length, at, w))
+            found[w]++;
+   if (found[0] == 0u || found[1] == 0u)
+      return 0u;
+   for (size_t at = 0u; at < length; at++)
+      for (uint8_t w = 0u; w < 2u; w++)
+         if (stamp_at(data, length, at, w)) {
+            memset(&data[at], ' ', STAMP_LENGTH);
+            repaired++;
+         }
    return repaired;
 }
 

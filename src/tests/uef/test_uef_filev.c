@@ -3,7 +3,7 @@
 
    A large minority of Electron titles load with `?&212=&D6:?&213=&F1`, which
    stamps the MOS 1.00 cassette entry over whatever filing system owns FILEV.
-   The Pi redirects the address token to &900/&901 as the tape goes past.
+   The Pi blanks those two statements with spaces as the tape goes past.
 
    The case worth a test is the one the streaming rewrite created: the tape is
    published to the Beeb a 63 KB window at a time, and the block carrying the
@@ -92,13 +92,13 @@ static uint16_t tape_crc(const uint8_t *data, size_t length)
 /* A &0100 chunk holding one standard cassette block whose payload is `text`
    padded out to `payload_length` bytes.  Appends to `tape`. */
 static size_t put_block(uint8_t *tape, size_t at, const char *name,
-                        const char *text, size_t payload_length)
+                        const uint8_t *text, size_t text_length,
+                        size_t payload_length)
 {
    size_t chunk_at = at;
    size_t body = at + 6u;
    size_t p = body;
    size_t name_length = strlen(name);
-   size_t text_length = strlen(text);
    size_t header_start;
    size_t data_at;
 
@@ -143,6 +143,15 @@ static size_t put_filler(uint8_t *tape, size_t at, size_t payload)
    return at + 6u + payload;
 }
 
+/* The loader, tokenised by basictool -2 from
+     10 ?&212=&D6:?&213=&F1:CHAIN""
+     20 IF A%=1 THEN ?&212=&D6 ELSE PRINT
+     30 IF ?&212=&D6 THEN PRINT
+   Lines 10 and 20 stamp FILEV; line 30 only reads it, and must survive. */
+static const uint8_t loader[] = {
+   0x0d, 0x00, 0x0a, 0x1c, 0x20, 0x3f, 0x26, 0x32, 0x31, 0x32, 0x3d, 0x26, 0x44, 0x36, 0x3a, 0x3f, 0x26, 0x32, 0x31, 0x33, 0x3d, 0x26, 0x46, 0x31, 0x3a, 0xd7, 0x22, 0x22, 0x0d, 0x00, 0x14, 0x1b, 0x20, 0xe7, 0x20, 0x41, 0x25, 0x3d, 0x31, 0x20, 0x8c, 0x20, 0x3f, 0x26, 0x32, 0x31, 0x32, 0x3d, 0x26, 0x44, 0x36, 0x20, 0x8b, 0x20, 0xf1, 0x0d, 0x00, 0x1e, 0x14, 0x20, 0xe7, 0x20, 0x3f, 0x26, 0x32, 0x31, 0x32, 0x3d, 0x26, 0x44, 0x36, 0x20, 0x8c, 0x20, 0xf1, 0x0d, 0xff
+};
+
 /* Build a tape whose one interesting block starts at `block_at`. */
 static size_t build_tape(uint8_t *tape, size_t capacity, size_t block_at,
                          size_t payload_length)
@@ -161,8 +170,7 @@ static size_t build_tape(uint8_t *tape, size_t capacity, size_t block_at,
       if (gap != 0u)
          at = put_filler(tape, at, gap - 6u);
    }
-   at = put_block(tape, at, "LOADER",
-                  "10?&212=&D6:?&213=&F1:REM stamp", payload_length);
+   at = put_block(tape, at, "LOADER", loader, sizeof loader, payload_length);
    at = put_filler(tape, at, 300u);
    if (at > capacity) { printf("tape overran the buffer\n"); exit(2); }
    return at;
@@ -237,11 +245,11 @@ static size_t round_trip(const uint8_t *tape, size_t length, uint8_t *out,
 
 /* Walk the reassembled tape and report on the one block that matters. */
 static void inspect(const uint8_t *image, size_t length, bool *found_old,
-                    bool *found_new, bool *crc_ok)
+                    bool *read_kept, bool *crc_ok)
 {
    size_t at = 12u;
    *found_old = false;
-   *found_new = false;
+   *read_kept = false;
    *crc_ok = true;
    while (at + 6u <= length) {
       unsigned chunk = (unsigned)image[at] | ((unsigned)image[at + 1] << 8);
@@ -263,10 +271,12 @@ static void inspect(const uint8_t *image, size_t length, bool *found_old,
                uint16_t want = tape_crc(&image[data_at], payload);
                uint16_t got = (uint16_t)(((unsigned)image[data_at + payload] << 8)
                                         | image[data_at + payload + 1u]);
-               if (memmem(&image[data_at], payload, "?&212", 5u) != NULL)
+               if (memmem(&image[data_at], payload, "?&213=&F1", 9u) != NULL
+                   || memmem(&image[data_at], payload, "?&212=&D6:", 10u) != NULL
+                   || memmem(&image[data_at], payload, "?&212=&D6 \x8b", 11u) != NULL)
                   *found_old = true;
-               if (memmem(&image[data_at], payload, "?&900", 5u) != NULL)
-                  *found_new = true;
+               if (memmem(&image[data_at], payload, "?&212=&D6 \x8c", 11u) != NULL)
+                  *read_kept = true;
                if (want != got) *crc_ok = false;
             }
          }
@@ -279,7 +289,7 @@ static void one_case(const char *what, size_t block_at, size_t payload_length)
 {
    static uint8_t tape[4u * 1024u * 1024u];
    static uint8_t out[4u * 1024u * 1024u];
-   bool old_token, new_token, crc_ok;
+   bool old_token, read_kept, crc_ok;
    size_t length = build_tape(tape, sizeof tape, block_at, payload_length);
    size_t produced = round_trip(tape, length, out, sizeof out);
    char label[128];
@@ -291,11 +301,11 @@ static void one_case(const char *what, size_t block_at, size_t payload_length)
    }
    snprintf(label, sizeof label, "%s: tape reassembles to its full length", what);
    check(label, produced == length);
-   inspect(out, produced, &old_token, &new_token, &crc_ok);
-   snprintf(label, sizeof label, "%s: the FILEV stamp is gone", what);
+   inspect(out, produced, &old_token, &read_kept, &crc_ok);
+   snprintf(label, sizeof label, "%s: the FILEV stamps are blanked", what);
    check(label, !old_token);
-   snprintf(label, sizeof label, "%s: redirected to &900", what);
-   check(label, new_token);
+   snprintf(label, sizeof label, "%s: IF ?&212=&D6 THEN is left", what);
+   check(label, read_kept);
    snprintf(label, sizeof label, "%s: the block CRC still verifies", what);
    check(label, crc_ok);
 }

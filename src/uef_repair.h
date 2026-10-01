@@ -4,14 +4,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Redirect the published Electron loader idiom which stamps the FILEV vector
+/* Blank the published Electron loader idiom which stamps the FILEV vector
  * blind. 84 of a 728-title Electron UEF corpus contain `?&212=` and 76 of
  * them `?&212=&D6:?&213=&F1`, which
  * overwrites whatever filing system owns the vector - including WiCFS - with
- * the Electron MOS 1.00 cassette entry. Rewriting the address token to
- * &900/&901 leaves the program the same length, so block layout and every
- * stored offset are untouched and only the affected block's data CRC is
- * recomputed. Returns the number of address tokens redirected. */
+ * the Electron MOS 1.00 cassette entry. Both statements are blanked with
+ * spaces, so nothing is written; the program keeps its length, so block
+ * layout and every stored offset are untouched and only the affected block's
+ * data CRC is recomputed. Returns the number of statements blanked. */
 unsigned uef_repair_filev_stamp(uint8_t *window, size_t length);
 
 /* Bytes of UEF file header - "UEF File!", its terminator and the two version
@@ -29,7 +29,7 @@ unsigned uef_repair_filev_stamp(uint8_t *window, size_t length);
  *
  * `start` is UEF_REPAIR_HEADER for the first window and 0 afterwards, because
  * every window this returns ends on a chunk boundary. `repaired`, when not
- * NULL, receives the number of address tokens redirected. */
+ * NULL, receives the number of statements blanked. */
 size_t uef_repair_filev_span(uint8_t *window, size_t length, size_t start,
                              unsigned *repaired);
 

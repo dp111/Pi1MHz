@@ -219,8 +219,8 @@ static void window_lay_out(void)
 /* ---- FILEV stamp repair ------------------------------------------------
    A large minority of Electron titles load with `?&212=&D6:?&213=&F1`, which
    stamps the MOS 1.00 cassette entry straight over FILEV and so over whatever
-   filing system owns it - WiCFS included.  uef_repair_filev_span() redirects
-   the address token to &900/&901, which leaves the program the same length,
+   filing system owns it - WiCFS included.  uef_repair_filev_span() blanks
+   those statements with spaces, which leaves the program the same length,
    so only the affected block's payload CRC has to be recomputed.
 
    The repair needs whole chunks, and the stream hands out 63 KB windows that
