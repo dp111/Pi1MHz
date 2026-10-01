@@ -36,6 +36,9 @@ jobs:
           make -C "$RUNNER_TEMP/beebasm/src" -j"$(nproc)"
           echo "$RUNNER_TEMP/beebasm" >> "$GITHUB_PATH"
 
+      - name: py65, the 6502 the ROM service checks run on
+        run: pip install py65
+
       - name: ROM interface and assembly
         run: sh src/tests/wifirom/run_tests.sh
 
