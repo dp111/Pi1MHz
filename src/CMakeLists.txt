@@ -542,6 +542,8 @@ set( Pi1MHz_sources
     ${wifi_files}
     ${lwip_files}
     wifi_service.c
+    uef_repair.c
+    uef_repair.h
 )
 
 # These are cold (config/filename handling, ~12 call sites). We recompile them

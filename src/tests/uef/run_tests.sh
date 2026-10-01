@@ -22,6 +22,9 @@ cp "$SRC"/rpi/byteorder.h "$B/rpi/"
 cp "$SRC"/uzlib/*.c "$SRC"/uzlib/*.h "$B/uzlib/"
 cp "$HERE"/test_uef_stream.c "$HERE"/test_uef_service.c "$B/"
 cp "$SRC"/uef_service.c "$SRC"/uef_service.h "$SRC"/wifi_service.h "$SRC"/services.h "$B/"
+# uef_service.c calls the FILEV stamp repair in uef_repair.c.
+cp "$SRC"/uef_repair.c "$SRC"/uef_repair.h "$SRC"/config.h "$B/"
+cp "$HERE"/test_uef_filev.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"
 
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
@@ -56,6 +59,12 @@ fi
 
 gcc -std=gnu2x -Wall -Wextra -g $SAN -I"$B" -o "$B/svc" \
     "$B/test_uef_service.c" "$B/uef_service.c" "$B/uef_stream.c" \
+    "$B/uef_repair.c" \
+    "$B/tinflate.o" "$B/crc32.o" "$B/adler32.o"
+
+gcc -std=gnu2x -Wall -Wextra -Wconversion -g $SAN -I"$B" -o "$B/filev" \
+    "$B/test_uef_filev.c" "$B/uef_service.c" "$B/uef_stream.c" \
+    "$B/uef_repair.c" \
     "$B/tinflate.o" "$B/crc32.o" "$B/adler32.o"
 
 echo "== UEF stream: bytes match gunzip, rewind repeats, CRC verifies =="
@@ -95,3 +104,7 @@ for f in "$B"/corpus/*.uef; do
    fi
    "$B/svc" "$f" "$B/ref.bin"
 done
+
+echo
+echo "== FILEV stamp repair across window boundaries =="
+"$B/filev"
