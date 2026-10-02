@@ -311,7 +311,10 @@ void hd_card_service(void)
       if (filesystemEject()) {
 #ifdef DEBUG
          RPI_BootDetail(0xFDu);  /* deliberate reboot - not a death */
-         _clean_cache_area((const void *)(uintptr_t)RPI_BootStageBlock(), 64); /* reboot_now never flushes */
+         {
+            const volatile unsigned int *blk = RPI_BootStageBlock();
+            _clean_cache_area((const void *)(uintptr_t)blk, 64); /* reboot_now never flushes */
+         }
 #endif
          reboot_now();
       }
