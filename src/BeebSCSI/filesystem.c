@@ -304,6 +304,11 @@ bool filesystemEject(void)
       return false;
    if (filesystemState.fsMountState)
       (void)filesystemDismount();
+   /* filesystemDismount only re-registers the volume, which FatFs mounts
+      again on the next f_open from anyone (the webserver does) - and that
+      would identify whatever card is in the slot.  Unregister it: until
+      filesystemMount registers it again, FatFs answers FR_NOT_ENABLED. */
+   (void)f_mount(NULL, "", 0);
    disk_forget();
    return true;
 }
