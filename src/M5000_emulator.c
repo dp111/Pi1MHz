@@ -85,6 +85,7 @@ Use https://wavedrom.com/editor.html
 #include "rpi/gpio.h"
 #include "rpi/info.h"
 #include "config.h"
+#include "BeebSCSI/filesystem.h"
 #include "M5000_emulator.h"
 #include "rpi/byteorder.h"
 #include "BeebSCSI/fatfs/ff.h"
@@ -628,6 +629,15 @@ static void music5000_emulate(void)
    }
 }
 
+/* SD card eject (filesystemEject): a recording in progress is stopped, and
+   the card may go once its WAV file has been written out. */
+static bool M5000_eject(void)
+{
+   if (record)
+      music5000_rec_stop();
+   return rec_flush == REC_FLUSH_IDLE;
+}
+
 void M5000_emulator_init(uint8_t instance, uint8_t address)
 {
    if (record)
@@ -672,6 +682,7 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
 
    // register polling function
    Pi1MHz_Register_Poll(music5000_emulate, "m5000");
+   filesystemRegisterEject(M5000_eject, NULL);
 }
 
 uint8_t M5000_emulator_read_instance(void)

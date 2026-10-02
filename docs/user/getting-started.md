@@ -119,6 +119,39 @@ See [Hard discs](hard-discs.md) for images, drives and jukeboxes, and
 (MMFS, VFS support, Econet filing system, teletext software and your
 own).
 
+## Changing the SD card without switching off
+
+The Pi runs from memory, so the SD card can be swapped while it is on -
+but tell it first, so nothing is half-written when the card comes out:
+
+```
+*FX147,202,2 : *FX147,203,1     eject: finish writing, let go of the card
+                                (swap the card)
+*FX147,202,2 : *FX147,203,2     insert: use the new card
+*FX147,202,2 : *FX147,203,3     eject, then restart the Pi completely
+```
+
+CTRL-BREAK after the swap does the same as insert. The `2` is the
+hard disc's number on the help screen (`X%=0 : CALL &FC88`); check it
+there after a firmware update.
+
+- **Eject** stops a Music 5000 recording and writes it out, closes
+  anything open on the card (MMFS and FujiNet files, a USB transfer) and
+  disconnects USB, so the computer forgets the old card. It can take a
+  moment if a long recording is being saved. To check, select the
+  register again and read it - it reads 0 once the card can come out:
+  `*FX147,202,2` then `A%=146:X%=203:PRINT (USR&FFF4 AND &FF0000) DIV &10000`
+- Until insert or CTRL-BREAK, **do not use the hard disc** (`*CAT`,
+  `*MOUNT` ...): there is no card, and ADFS can hang waiting for one.
+- **Insert** mounts whatever card is in the slot. USB reconnects. The
+  register reads &FF if no card could be read (none in the slot, or
+  not FAT32) - put one in and insert again.
+- After either, **re-select the filing system** (`*MOUNT` on ADFS,
+  CTRL-BREAK is simplest): the Beeb still remembers the old disc.
+- The new card's `Pi1MHz.cfg` is not read until the Pi restarts - use
+  the restart value (3), or switch off and on, if the settings differ.
+- Web and WebDAV transfers in progress at eject are abandoned.
+
 ## Next steps
 
 - Set up [WiFi](wifi.md) so you can manage the SD card from another

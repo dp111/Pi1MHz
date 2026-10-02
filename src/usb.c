@@ -6,6 +6,7 @@
 // warnings suppressed). Do NOT change back to explicit relative paths.
 #include "usb.h"
 #include "usb/mtp_fs.h"
+#include "BeebSCSI/filesystem.h"
 #include <bsp/board_api.h>
 #include "rpi/interrupts.h"
 #include "Pi1MHz.h"
@@ -297,4 +298,5 @@ void usb_init(uint8_t instance , uint8_t address) {
   RPI_PropertySetWord(TAG_SET_POWER_STATE, POWER_DEVICE_USB_HCD, 0x00000003);
 
   Pi1MHz_Register_Poll(usb_boot_task, "usb-boot");
+  filesystemRegisterEject(mtp_fs_eject, mtp_fs_inserted);
 }

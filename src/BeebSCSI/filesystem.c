@@ -64,6 +64,7 @@
 #include "debug.h"
 #include "scsi.h"
 #include "fatfs/ff.h"
+#include "fatfs/diskio.h"
 #include "filesystem.h"
 #include "../videoplayer.h"
 #include "../config.h"			/* Beeb_write_protect */
@@ -261,6 +262,64 @@ void filesystemInitialiseVFS(uint8_t vfsjuke)
 }
 
 // Reset the file system (called when the host signals reset)
+/* ---- SD card swap ------------------------------------------------------
+   filesystemEject() makes the card safe to pull: every subsystem that keeps
+   files open closes them (an unsynced write would otherwise be lost, or -
+   worse - its cached FAT sectors written to whichever card is in the slot
+   next), then the volume is dismounted and the card forgotten.  Until
+   filesystemInsert() or a BBC reset nothing may mount it again: USB/MTP and
+   others mount on demand.  The hooks are registered by the subsystems
+   themselves, so this layer need not know them. */
+#define EJECT_HOOKS 8u
+static struct {
+   bool (*eject)(void);       /* true once nothing of its own is open */
+   void (*inserted)(void);    /* a card is mounted again */
+} eject_hook[EJECT_HOOKS];
+static unsigned int eject_hooks;
+static bool fsEjected;
+
+/* Called from init functions, which run again on every BBC reset. */
+void filesystemRegisterEject(bool (*eject)(void), void (*inserted)(void))
+{
+   for (unsigned int i = 0; i < eject_hooks; i++)
+      if (eject_hook[i].eject == eject && eject_hook[i].inserted == inserted)
+         return;
+   if (eject_hooks < EJECT_HOOKS) {
+      eject_hook[eject_hooks].eject = eject;
+      eject_hook[eject_hooks].inserted = inserted;
+      eject_hooks++;
+   }
+}
+
+/* One step: call it until it returns true (a recording still being written
+   out makes a subsystem wait). */
+bool filesystemEject(void)
+{
+   bool ready = true;
+   fsEjected = true;
+   for (unsigned int i = 0; i < eject_hooks; i++)
+      if (eject_hook[i].eject && !eject_hook[i].eject())
+         ready = false;
+   if (!ready)
+      return false;
+   if (filesystemState.fsMountState)
+      (void)filesystemDismount();
+   disk_forget();
+   return true;
+}
+
+/* Mount whatever card is in the slot now.  False if none could be. */
+bool filesystemInsert(void)
+{
+   filesystemReset();
+   return filesystemState.fsMountState;
+}
+
+bool filesystemEjected(void)
+{
+   return fsEjected;
+}
+
 void filesystemReset(void)
 {
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReset(): Resetting file system\r\n"));
@@ -271,8 +330,17 @@ void filesystemReset(void)
 
    // ensure the file-system is closed on reset
    filesystemDismount();
-   // Now Mount the filesystem
-   filesystemMount();
+   // Now Mount the filesystem - after an eject, whichever card is in now
+   bool was_ejected = fsEjected;
+   fsEjected = false;
+   if (filesystemMount()) {
+      if (was_ejected)
+         for (unsigned int i = 0; i < eject_hooks; i++)
+            if (eject_hook[i].inserted)
+               eject_hook[i].inserted();
+   } else if (was_ejected) {
+      fsEjected = true;                  /* no card yet: nothing may keep retrying it */
+   }
 }
 
 // File system mount and dismount functions --------------------------------------------------------------------
@@ -295,6 +363,7 @@ void filesystemReset(void)
    // which ADFS never does on its own.  It also re-read the MBR/BPB on every
    // MTP request.
    if (filesystemState.fsMountState) return true;
+   if (fsEjected) return false;          /* until filesystemInsert() or a BBC reset */
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemMount(): Mounting file system\r\n"));
 
@@ -2155,6 +2224,8 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
    FIL fileObject;
    LOG_DEBUG("filesystemReadFile: %s\n\r", filename);
    if (filesystemState.fsMountState == false) {
+         if (fsEjected)
+            return 0;
          fsResult = f_mount(&filesystemState.fsObject, "", 1);
          if (fsResult != FR_OK) {
             return 0;

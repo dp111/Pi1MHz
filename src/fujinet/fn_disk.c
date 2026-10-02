@@ -103,6 +103,18 @@ void fn_disk_reset(void)
    }
 }
 
+/* SD card eject: let go of every image on the card, so its writes are
+   synced before the card goes.  Images on a TNFS server stay mounted. */
+void fn_disk_drop_sd(void)
+{
+   for (unsigned int i = 0; i < SLOTS; i++) {
+      char fs[16], path[URI_MAX];
+      if (s_slot[i].used && fn_uri_split(s_slot[i].uri, fs, sizeof fs, path, sizeof path) &&
+          strcmp(fs, "sd0") == 0)
+         close_slot(&s_slot[i]);
+   }
+}
+
 /* Does a mounted or pending image live at host_path (root-relative, on the
    SD card), or inside host_path when it is a directory?  The same shape as
    fat_service_file_in_use(), for beeb_path_busy(). */

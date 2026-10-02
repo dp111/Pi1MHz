@@ -35,6 +35,7 @@
 #include "fujinet/fn_disk.h"
 #include "fujinet/fn_network.h"
 #include "fujinet/fn_store.h"
+#include "BeebSCSI/filesystem.h"
 
 #define FUJI_CMD_EXCHANGE   114u
 
@@ -160,6 +161,13 @@ bool fujibus_service_path_busy(const char *host_path)
    return fn_disk_uses_path(host_path);
 }
 
+/* SD card eject (filesystemEject). */
+static bool fujibus_service_eject(void)
+{
+   fn_disk_drop_sd();
+   return true;
+}
+
 void fujibus_service_init(uint8_t instance, uint8_t address)
 {
    (void)instance;
@@ -173,4 +181,5 @@ void fujibus_service_init(uint8_t instance, uint8_t address)
    (void)services_register(SERVICE_CMD_FUJI_FIRST, SERVICE_CMD_FUJI_LAST,
                            fujibus_service_command);
    Pi1MHz_Register_Poll(fujibus_service_poll, "fujinet");
+   filesystemRegisterEject(fujibus_service_eject, NULL);
 }

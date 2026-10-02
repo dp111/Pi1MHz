@@ -5,12 +5,14 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address);
 /* Fast SCSI teardown, driven by the nRST edge interrupt - see the .c */
 void hd_emulator_bus_reset(void);
 uint8_t harddisc_emulator_get_address(void);
+uint8_t harddisc_emulator_get_instance(void);
 
 /* Service the audio between sectors of a long transfer (see .c) */
 void hd_audio_service(void);
 
 /* Transfer diagnostics for /status */
 void hd_juke_service(void);
+void hd_card_service(void);
 void hd_juke_request(uint8_t dir);
 uint32_t hd_diag_flags(void);
 extern uint32_t hd_ev_writes, hd_ev_reads, hd_ev_sel;

@@ -724,6 +724,20 @@ static void fat_service_poll(void)
    fat_service_execute(cp, addr, data);
 }
 
+/* SD card eject (filesystemEject): close what the Beeb has open here, so a
+   file it was writing reaches the card before the card goes. */
+static bool fat_service_eject(void)
+{
+   for (unsigned int i = 0; i < 16u; i++) {
+      if (fat_file_open[i])
+         (void)f_close(&fileObject[i]);
+      if (fat_dir_open[i])
+         (void)f_closedir(&dirObject[i]);
+   }
+   fat_open_clear_all();
+   return true;
+}
+
 void fat_service_init(void)
 {
    /* Runs on every BBC RST (init_emulator re-runs the whole table).  The
@@ -740,4 +754,5 @@ void fat_service_init(void)
       the reset is still answered by the poll (against the now-closed
       handles), so the busy bit the FIQ wrote can never be stranded. */
    Pi1MHz_Register_Poll(fat_service_poll, "fatsvc");
+   filesystemRegisterEject(fat_service_eject, NULL);
 }

@@ -2577,3 +2577,24 @@ static int32_t fs_delete_object(tud_mtp_cb_data_t* cb_data) {
 
   return MTP_RESP_GENERAL_ERROR;
 }
+
+/* SD card eject (filesystemEject): drop every open file and the object
+   cache - an unfinished upload's ".part" goes with it - and take the device
+   off the bus, so the host forgets this card's objects instead of asking
+   about them on the next one. */
+bool mtp_fs_eject(void) {
+  fs_release_read_state();
+  fs_release_write_state();
+  fs_cache_bg_abort();
+  fs_cache_invalidate();
+  if (tud_inited())
+    (void) tud_disconnect();
+  return true;
+}
+
+/* A card is mounted again: come back, so the host enumerates it afresh. */
+void mtp_fs_inserted(void) {
+  fs_cache_invalidate();
+  if (tud_inited())
+    (void) tud_connect();
+}

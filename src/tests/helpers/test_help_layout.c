@@ -32,7 +32,7 @@ int main(void)
    /* Typical: a 33-character git describe, real addresses. */
    snprintf(buf, sizeof buf, HELPERS_HELP_FMT("2026-09-07 14:07:42", "R"),
             "V1.30-214-gd5dcf57-dirty.93616fe3", "902120 1000/400MHz", 46L, 2L,
-            0x88u, 136, 65, 4);
+            0x88u, 136, 65, 4, 2);
    rows = rows_of(buf, &widest, &over);
    printf("typical: %u rows, widest %u\n", rows, widest);
    ok(over == 0, "typical: every line fits 40 columns");
@@ -41,7 +41,7 @@ int main(void)
    /* Worst case: every substituted value at its widest. */
    snprintf(buf, sizeof buf, HELPERS_HELP_FMT("2026-12-31 23:59:59", "D"),
             "V99.99-9999-gffffffff-dirty.ffffffff", "ffffffff 9999/999MHz", 999L, 9L,
-            0xFFu, 255, 255, 255);
+            0xFFu, 255, 255, 255, 255);
    rows = rows_of(buf, &widest, &over);
    printf("worst:   %u rows, widest %u\n", rows, widest);
    ok(over <= 1, "worst case: only the version line may wrap");

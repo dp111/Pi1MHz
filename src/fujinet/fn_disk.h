@@ -12,4 +12,7 @@ void fn_disk_set_boot(const char *uri, bool read_only);
    (root-relative, case-insensitive): host-side writers must not touch it. */
 bool fn_disk_uses_path(const char *host_path);
 
+/* SD card eject: close every image on the SD card (TNFS ones stay mounted). */
+void fn_disk_drop_sd(void);
+
 #endif

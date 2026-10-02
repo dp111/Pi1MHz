@@ -32,6 +32,9 @@ DRESULT disk_read (BYTE pdrv, BYTE* buff, LBA_t sector, UINT count);
 DRESULT disk_write (BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count);
 DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff);
 unsigned char disk_type( void);
+/* Forget the card: the next disk_initialize() identifies whatever card is
+   in the slot then (a card swap), and no read-ahead from this one survives. */
+void disk_forget( void);
 
 /* Disk Status Bits (DSTATUS) */
 

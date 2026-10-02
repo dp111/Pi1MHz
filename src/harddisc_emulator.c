@@ -11,6 +11,7 @@
 #include "rpi/audio.h"
 #include "rpi/info.h"
 #include "rpi/systimer.h"
+#include "rpi/exceptions.h"
 #include "config.h"
 
 #include <stdbool.h>
@@ -261,6 +262,39 @@ void hd_juke_service(void)
    scsiJukeboxSwap(dir);
 }
 
+/* The SD card controls: *FX147,202,<this emulator's instance> then
+   *FX147,203,v.  The FIQ only stores v in fx_register (the status port in
+   Pi1MHz.c); the work is done here, in the main loop between SCSI commands,
+   and the register goes back to 0 once it is done - or to &FF when no card
+   could be mounted - so the Beeb can poll it with OSBYTE 146 &CB. */
+#define HD_CARD_EJECT   1u    /* close, flush and dismount: safe to pull the card */
+#define HD_CARD_INSERT  2u    /* mount whatever card is in the slot (as a BBC reset does) */
+#define HD_CARD_REBOOT  3u    /* eject, then restart the Pi */
+#define HD_CARD_FAILED  0xFFu
+
+void hd_card_service(void)
+{
+   switch (fx_register[IRQ_NUM]) {
+   case 0u:
+   case HD_CARD_FAILED:
+      break;
+   case HD_CARD_EJECT:
+      if (filesystemEject())
+         fx_register[IRQ_NUM] = 0u;
+      break;
+   case HD_CARD_INSERT:
+      fx_register[IRQ_NUM] = filesystemInsert() ? 0u : HD_CARD_FAILED;
+      break;
+   case HD_CARD_REBOOT:
+      if (filesystemEject())
+         reboot_now();
+      break;
+   default:
+      fx_register[IRQ_NUM] = HD_CARD_FAILED;
+      break;
+   }
+}
+
 static void hd_emulator_write_scsijuke(unsigned int gpio)
 {
    hd_juke_pending = 0x100u | (uint16_t)GET_DATA(gpio);
@@ -299,6 +333,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    static bool PowerOn = 0 ;
    HD_ADDR = (uint8_t) address;
    IRQ_NUM = (uint8_t) instance;
+   fx_register[IRQ_NUM] = 0u;    /* .noinit: a request must not survive a reset, or appear from nowhere */
 
    /* On a BBC reset the nRST interrupt has already done this, and doing it
       again here - after the milliseconds this function spends on the card -
@@ -373,6 +408,11 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
 uint8_t harddisc_emulator_get_address(void)
 {
    return HD_ADDR;
+}
+
+uint8_t harddisc_emulator_get_instance(void)
+{
+   return IRQ_NUM;
 }
 /************************************************************************
    hostadapter.c

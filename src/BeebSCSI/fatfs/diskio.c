@@ -132,6 +132,14 @@ DSTATUS disk_initialize (
    return STA_NOINIT;
 }
 
+void disk_forget(void)
+{
+   ra_invalidate();
+   ra_expect_valid = 0;
+   sd_dev_storage.card_rca = 0;
+   sd_dev_storage.in_transfer_state = false;
+}
+
 /*-----------------------------------------------------------------------*/
 /* Read Sector(s)                                                        */
 /*-----------------------------------------------------------------------*/

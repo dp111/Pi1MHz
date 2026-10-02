@@ -4,12 +4,17 @@
 #ifndef PI1MHZ_USB_MTP_FS_H
 #define PI1MHZ_USB_MTP_FS_H
 
+#include <stdbool.h>
+
 /* Signal that the SD filesystem changed underneath MTP (a file was created,
    deleted, or renamed by another subsystem via FatFs).  Invalidates MTP's
    in-memory object-handle cache so the next MTP request re-enumerates the
    card instead of serving stale handles.  Must be called from the main-loop
    poll context (where the webserver already runs); it is not ISR-safe. */
 void mtp_fs_notify_fs_changed(void);
+/* SD card swap hooks, registered with filesystemRegisterEject() by usb_init. */
+bool mtp_fs_eject(void);
+void mtp_fs_inserted(void);
 /* Poll hook: performs a pending kernel.now flash from the main loop. */
 void mtp_fs_reboot_poll(void);
 void mtp_fs_cache_poll(void);   /* sliced object-cache rebuild - see mtp_fs.c */

@@ -63,6 +63,7 @@ static volatile uint32_t help_shown_us;
      %d   helper base address, dec (*FX147,n)
      %d   SCSI jukebox register    (*FX147,n)
      %d   M5000 instance           (*FX147,202,n)
+     %d   hard disc instance       (*FX147,202,n: SD card eject/insert/reboot)
    The build date and the kernel letter - "D" for a DEBUG build, "R" for a
    release - are pasted in as literals.  Lines end in CR LF for the Beeb's
    VDU driver. */
@@ -89,8 +90,8 @@ static volatile uint32_t help_shown_us;
    "17  SD card explorer (file transfer)\r\n"                            \
    "18  FujiNet            fujinetB/M.rom\r\n"                           \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
-   "*FX147,202,%d then *FX147,203,1/0\r\n"                              \
-   "   M5000 record on/off\r\n"
+   "*FX147,202,%d then 203,1/0 M5000 rec\r\n"                          \
+   "*FX147,202,%d 203,1/2/3 SD out/in/boot\r\n"
 
 #define HELPERS_HELP_COLUMNS 40u
 #define HELPERS_HELP_ROWS    25u
@@ -117,7 +118,8 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
                          (unsigned int)helper_address,
                          (int)helper_address,
                          (int)(harddisc_emulator_get_address() + 1),
-                         (int)M5000_emulator_read_instance());
+                         (int)M5000_emulator_read_instance(),
+                         (int)harddisc_emulator_get_instance());
         // snprintf returns the would-be length, which may exceed the buffer;
         // clamp so the returned length (used for fb_writen) stays exact.
         if (n < 0)

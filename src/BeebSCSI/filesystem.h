@@ -59,6 +59,10 @@ struct HDGeometry
 void filesystemInitialise(uint8_t scsijuke);
 void filesystemInitialiseVFS(uint8_t vfsjuke);
 void filesystemReset(void);
+void filesystemRegisterEject(bool (*eject)(void), void (*inserted)(void));
+bool filesystemEject(void);
+bool filesystemInsert(void);
+bool filesystemEjected(void);
 
 bool filesystemMount(void);
 bool filesystemDismount(void);
