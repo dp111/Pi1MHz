@@ -158,7 +158,8 @@ there after a firmware update.
   CTRL-BREAK is simplest): the Beeb still remembers the old disc.
 - The new card's `Pi1MHz.cfg` is not read until the Pi restarts - use
   the restart value (3), or switch off and on, if the settings differ.
-- Web and WebDAV transfers in progress at eject are abandoned.
+- Web and WebDAV transfers in progress at eject are stopped, and a
+  half-uploaded file is removed rather than left on the card.
 
 ## Next steps
 
