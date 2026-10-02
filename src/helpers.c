@@ -57,7 +57,7 @@ static volatile uint32_t help_shown_us;
 
    Arguments, in order:
      %s   git version              (GITVERSION)
-     %s   Pi info string           (ARM MHz)
+     %s   Pi info string           (revision, ARM MHz)
      %ld.%ld  SoC temperature, tenths (integer arithmetic: FIQ context)
      %X   helper base address, hex (CALL &FCxx)
      %d   helper base address, dec (*FX147,n)
