@@ -271,3 +271,20 @@ The shipped fn-rom has OSGBPB, partial-sector *LOAD and *FLS fixes; see docs/use
 BeebSID no longer crashes a Pi Zero/1: the VFP now flushes tiny results to zero instead of trapping.
 USB: TinyUSB updated to upstream. Boot skips the firmware's device-tree search (config.txt device_tree=).
 The optional SSH/SFTP service (PI1MHZ_SSH, off by default) builds warning-free and shares the hardware RNG.
+
+v.1.37
+Serial redirector (helper 19): the Beeb's RS423 goes to the Pi, where a Hayes-style modem dials TCP and telnet over WiFi.
+Modem: NO CARRIER and +++'s OK arrive whole when the Beeb is slow to read.
+The SD card can be swapped while on: *FX147,202,2 then *FX147,203,1 ejects, 2 inserts, 3 restarts the Pi.
+FujiNet: double-sided .dsd images; a .dsd mounted as drive 0/1 shows its second side as drive 2/3.
+FujiNet: OPENOUT of a new file no longer fails with "Bad string"; BGET after a seek and partial-sector saves fixed.
+1MHz-WiFi: *WGET -U and -S use the fast copy into JIM (Pete Clarke) - a 16K load in about 2s instead of over a minute.
+1MHz-WiFi: in a read-only bank the ROM declines commands instead of raising an error; a reset leaves the startup options alone.
+1MHz-WiFi: *HELP WIFI no longer runs DISCONNECT into its description; *WGET creates its file before it opens the URL.
+WiCFS: cassette loaders that stamp FILEV (?&212=&D6:?&213=&F1) have those statements blanked, so the tape keeps loading.
+A helper page's own writes no longer land in the user's JIM RAM.
+Help screen: one "Pi" line with the revision, clock, temperature and build date; helper 19 and the SD card controls listed.
+USB: TinyUSB updated (MTP data-phase recovery); uploads follow the length the host declares.
+Web/WebDAV: an SD card eject removes a half-finished upload; a PUT with no card answers 503.
+Docs: guides for the 1MHz-WiFi ROM and WiCFS, and the serial modem; *FX pairs go on separate lines.
+CI: beebasm is built properly, the WiFi ROM's service entry runs on a 6502 model, and a broken ROM build fails the job.
