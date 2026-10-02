@@ -2138,9 +2138,10 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
       const uint32_t xact_len = io_container->payload_bytes;
       uint32_t total_needed = offset + xact_len;
 
-      // The driver ignores this callback's return value in the data phase,
-      // so an error cannot stall the endpoint here: remember it, drain the
-      // rest of the stream, and report it from tud_mtp_data_complete_cb
+      // tud_mtp_data_xfer_cb always returns 0 - a negative return would
+      // make the driver stall mid-stream - so an error is remembered, the
+      // rest of the stream drained, and it is reported from
+      // tud_mtp_data_complete_cb
       if (g_write_state.failed_resp == 0u && total_needed > g_write_state.kernel_capacity) {
         g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
       }
@@ -2180,10 +2181,10 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
     // file contents offset is total xferred minus header size minus last received chunk
     const uint32_t offset = cb_data->total_xferred_bytes - sizeof(mtp_container_header_t) - io_container->payload_bytes;
     const uint32_t xact_len = io_container->payload_bytes;
-    // A failure here cannot stall or respond while the host is still
-    // streaming (the driver ignores this callback's return value in the
-    // data phase): remember it, drain the rest of the stream, and report
-    // it from tud_mtp_data_complete_cb. No release here - the completion
+    // A failure here must not stall or respond while the host is still
+    // streaming (tud_mtp_data_xfer_cb always returns 0; a negative return
+    // would make the driver stall): remember it, drain the rest of the
+    // stream, and report it from tud_mtp_data_complete_cb. No release here - the completion
     // path closes the file and unlinks the partial upload.
     if (g_write_state.failed_resp == 0u) {
       /* The Beeb has taken this LUN back (it started the drive while we were

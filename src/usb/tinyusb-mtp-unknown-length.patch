@@ -24,9 +24,9 @@ which fixes a host that puts the real length there; one that sends
          // (an early short packet before total_len is the cancel case, not normal completion).
          is_complete = (p_mtp->xferred_len >= p_mtp->total_len) || ((xferred_bytes == 0 && p_mtp->xferred_len > 0));
 +#if PI1MHZ_MTP_SHORT_PACKET_ENDS_UNKNOWN_LENGTH_OUT
-+        // ...EXCEPT when the length is unknown.  A host that sent
-+        // ObjectCompressedSize 0 or 0xFFFFFFFF leaves the application no
-+        // length to give tud_mtp_data_receive(), so total_len is UINT32_MAX
++        // ...EXCEPT when the length is unknown.  total_len comes from the
++        // host's data container header, and a host that does not know the
++        // length puts 0xFFFFFFFF there, so total_len is UINT32_MAX
 +        // and the rule above can only ever be satisfied by a ZLP - which the
 +        // host sends only when its data happens to be a whole number of
 +        // packets.  For every other length the transfer simply stops: the
