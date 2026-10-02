@@ -48,8 +48,8 @@ static volatile uint32_t help_shown_us;
 /* The help screen (helper 0, and the Pi's boot splash).
 
    One printf template, laid out for the Beeb's 40 x 25 text screen: every
-   line is 40 columns or fewer and the whole screen is 23 rows, leaving two
-   free for future helpers.  src/tests/helpers (which pulls the #defines out of this file) checks both against worst-case
+   line is 40 columns or fewer and the whole screen is 24 rows, leaving one
+   free.  src/tests/helpers (which pulls the #defines out of this file) checks both against worst-case
    values, so an edit that wraps a line or spills past row 25 fails there,
    not on the Beeb.  Every substituted value fits at its widest; the one line
    at exactly 40 columns is the version line, where a longer git describe
@@ -57,20 +57,19 @@ static volatile uint32_t help_shown_us;
 
    Arguments, in order:
      %s   git version              (GITVERSION)
-     %s   Pi info string           (revision, ARM/core MHz)
+     %s   Pi info string           (ARM MHz)
      %ld.%ld  SoC temperature, tenths (integer arithmetic: FIQ context)
      %X   helper base address, hex (CALL &FCxx)
      %d   helper base address, dec (*FX147,n)
      %d   SCSI jukebox register    (*FX147,n)
      %d   M5000 instance           (*FX147,202,n)
      %d   hard disc instance       (*FX147,202,n: SD card eject/insert/reboot)
-   The build date and the kernel letter - "D" for a DEBUG build, "R" for a
-   release - are pasted in as literals.  Lines end in CR LF for the Beeb's
-   VDU driver. */
-#define HELPERS_HELP_FMT(build_date, kernel)                             \
+     %.2s x3, %.5s  build date as YYMMDD HH:MM, cut from BUILD_DATE
+   The kernel letter - "D" for a DEBUG build, "R" for a release - is pasted
+   in as a literal.  Lines end in CR LF for the Beeb's VDU driver. */
+#define HELPERS_HELP_FMT(kernel)                                         \
    "Pi1MHz %s\r\n"                                                       \
-   "Built " build_date " " kernel "\r\n"                                 \
-   "Pi %s %ld.%ldC\r\n"                                                  \
+   "Pi %s %ld.%ldC %.2s%.2s%.2s %.5s " kernel "\r\n"                      \
    "\r\n"                                                                \
    "Run helper n:  X%%=n:CALL &FC%X\r\n"                                 \
    "  or *FX147,%d,n then *GO/GOIO FD00\r\n"                             \
@@ -89,6 +88,7 @@ static volatile uint32_t help_shown_us;
    "16  1MHz-WiFi+WiCFS    1mhz-wicfs.rom\r\n"                           \
    "17  SD card explorer (file transfer)\r\n"                            \
    "18  FujiNet            fujinetB/M.rom\r\n"                           \
+   "19  Serial redirector (modem)\r\n"                                   \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then 203,1/0 M5000 rec\r\n"                          \
    "*FX147,202,%d 203,1/2/3 SD out/in/boot\r\n"
@@ -112,9 +112,10 @@ size_t helpers_screen_setup( char * helpscreen, size_t helpscreen_size)
 #else
 #define HELPERS_KERNEL_LETTER "R"
 #endif
-        int n = snprintf(helpscreen, helpscreen_size, HELPERS_HELP_FMT(BUILD_DATE, HELPERS_KERNEL_LETTER),
+        int n = snprintf(helpscreen, helpscreen_size, HELPERS_HELP_FMT(HELPERS_KERNEL_LETTER),
                          GITVERSION,
                          get_info_string(), temp_tenths / 10, temp_tenths % 10,
+                         BUILD_DATE + 2, BUILD_DATE + 5, BUILD_DATE + 8, BUILD_DATE + 11,
                          (unsigned int)helper_address,
                          (int)helper_address,
                          (int)(harddisc_emulator_get_address() + 1),

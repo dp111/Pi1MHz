@@ -30,8 +30,10 @@ int main(void)
    unsigned widest, over, rows;
 
    /* Typical: a 33-character git describe, real addresses. */
-   snprintf(buf, sizeof buf, HELPERS_HELP_FMT("2026-09-07 14:07:42", "R"),
-            "V1.30-214-gd5dcf57-dirty.93616fe3", "902120 1000/400MHz", 46L, 2L,
+   static const char date[] = "2026-09-07 14:07:42";
+   snprintf(buf, sizeof buf, HELPERS_HELP_FMT("R"),
+            "V1.30-214-gd5dcf57-dirty.93616fe3", "1000M", 46L, 2L,
+            date + 2, date + 5, date + 8, date + 11,
             0x88u, 136, 65, 4, 2);
    rows = rows_of(buf, &widest, &over);
    printf("typical: %u rows, widest %u\n", rows, widest);
@@ -39,8 +41,10 @@ int main(void)
    ok(rows == 24, "typical: 24 rows (1 free for future helpers)");
 
    /* Worst case: every substituted value at its widest. */
-   snprintf(buf, sizeof buf, HELPERS_HELP_FMT("2026-12-31 23:59:59", "D"),
-            "V99.99-9999-gffffffff-dirty.ffffffff", "ffffffff 9999/999MHz", 999L, 9L,
+   static const char wdate[] = "2026-12-31 23:59:59";
+   snprintf(buf, sizeof buf, HELPERS_HELP_FMT("D"),
+            "V99.99-9999-gffffffff-dirty.ffffffff", "9999M", 999L, 9L,
+            wdate + 2, wdate + 5, wdate + 8, wdate + 11,
             0xFFu, 255, 255, 255, 255);
    rows = rows_of(buf, &widest, &over);
    printf("worst:   %u rows, widest %u\n", rows, widest);
