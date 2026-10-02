@@ -205,8 +205,6 @@ static void ser_control(unsigned int gpio)
       ser_gate_close();
 }
 
-/* ---- poll loop -------------------------------------------------------- */
-
 /* ---- the byte API, main loop only ------------------------------------ */
 
 static bool ser_tx_drained;       /* the TX flag may need to go back to CLC */

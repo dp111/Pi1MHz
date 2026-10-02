@@ -69,6 +69,7 @@ plus `_addr`:
 | `wifi_addr` | (none) | WiFi stack |
 | `aun_addr` | (none) | Econet-over-WiFi engine |
 | `Teletext_addr` | `0x10` | Acorn Teletext Adapter at `&FC10-&FC13` |
+| `Serial_addr` | `0xCC` | The serial redirector's stub at `&FCCC-&FCF8` (helper 19) |
 | `Watchdog_addr` | (none) | Watchdog (use the `watchdog` key below instead) |
 
 **Two bases you should not move:** `Framebuffer_addr` (default `&FCA0`)
@@ -152,7 +153,8 @@ are hardware-diagnostic switches for developers; leave them unset.
 | `wifi_service_enable` | off | `1` answers the [1MHz-WiFi ROM](wifi-rom.md)'s WiFi commands (`*JOIN`, `*LAP`, `*PING`, `*DATE` ...) and its WiCFS tape filing system (`*UEF`). |
 | `wifi_service_utc_offset_minutes` | 0 | Time zone for the ROM's `*DATE`/`*TIME`, in minutes from UTC - e.g. `60` for British Summer Time. |
 | `wifi_service_uef_filev_repair` | on | `0` sends `*UEF` tapes exactly as stored. On, a cassette loader that writes FILEV itself (`?&212=&D6:?&213=&F1`, common on the Electron) has those two statements blanked, so it does not knock WiCFS off the filing vector. |
-| `net_enable` | off | `1` lets the Beeb use the Pi's network: the 1MHz-WiFi ROM's `*WGET`, `*NSLOOK` and `*DISCONNECT`, the N: device programs in `beeb/net/`, and FujiNet's TNFS, `http://`, `https://` and `tcp://`. Needs WiFi set up. `https://` also needs `/cacert.pem` on the card - see [FujiNet](fujinet.md#https). |
+| `net_enable` | off | `1` lets the Beeb use the Pi's network: the 1MHz-WiFi ROM's `*WGET`, `*NSLOOK` and `*DISCONNECT`, the N: device programs in `beeb/net/`, the [WiFi modem](serial-modem.md), and FujiNet's TNFS, `http://`, `https://` and `tcp://`. Needs WiFi set up. `https://` also needs `/cacert.pem` on the card - see [FujiNet](fujinet.md#https). |
+| `modem_phone_1` ... `modem_phone_99` | (none) | The [WiFi modem](serial-modem.md)'s phonebook: `modem_phone_1=bbs.example.com:6502` makes `ATDT1` dial that host and port (port 23 if none). |
 | `fujinet_boot` | (none) | The disc image fn-rom's `*FBOOT` mounts, read only, as `sd0:/path` or a `tnfs://` URL - normally fn-rom's utilities disc, `sd0:/FujiNet/FN-BOOTB.ssd` (BBC B) or `sd0:/FujiNet/FN-BOOTM.ssd` (Master). See [FujiNet](fujinet.md#the-utilities-disc). |
 
 ## Web interface / WebDAV settings

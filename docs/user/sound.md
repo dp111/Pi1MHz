@@ -38,9 +38,16 @@ Pi1MHz can capture Music 5000 output straight to a file on the SD
 card:
 
 ```
-*FX147,202,3 : *FX147,203,1     start recording
-*FX147,202,3 : *FX147,203,0     stop recording
+*FX147,202,3
+*FX147,203,1        start recording
+
+*FX147,202,3
+*FX147,203,0        stop recording
 ```
+
+Type each `*FX` on a line of its own: BASIC hands everything after a `*`
+to the operating system, so a second command after a colon is never
+run.
 
 On stopping, the capture is written to the SD card root as
 `Musics000.wav` (then `Musics001.wav` and so on). The exact numbers to

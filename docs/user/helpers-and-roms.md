@@ -46,6 +46,7 @@ part of the standard firmware set.
 | 16 | Loads the 1MHz-WiFi ROM with the UEF cassette filing system (`*JOIN`, `*WGET`, `*PING`, the RAM disc, and WiCFS) | `/Pi1MHz/1mhz-wicfs.rom` |
 | 17 | SD card explorer: browse the Pi's SD card and copy files to/from the current filing system. See [SD card explorer](sd-explorer.md) | - |
 | 18 | Loads fn-rom, the FujiNet filing system: the BBC B build on a B or B+, the Master build on a Master. See [FujiNet](fujinet.md) | `/Pi1MHz/fujinetB.rom`, `/Pi1MHz/fujinetM.rom` |
+| 19 | Redirects the RS423 serial port to the Pi, where a Hayes-style modem dials out over WiFi. See [Serial redirector and modem](serial-modem.md) | - |
 
 After loading a ROM press **CTRL-BREAK** so the OS notices it.
 

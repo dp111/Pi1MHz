@@ -43,6 +43,7 @@ Then one guide per feature:
 - [SD card explorer (file transfer from the Beeb)](sd-explorer.md)
 - [FujiNet: disc images, TNFS, http/https and JSON with fn-rom](fujinet.md)
 - [The 1MHz-WiFi ROM and WiCFS: *WGET, UEF tape games, the RAM disc](wifi-rom.md)
+- [The serial redirector and the WiFi modem (RS423, AT commands)](serial-modem.md)
 - [Sound: Music 5000/3000 and BeebSID](sound.md)
 - [RAM expansion (JIM)](ram-expansion.md)
 - [HDMI screen, mouse pointer and video](screen-and-video.md)
