@@ -12,6 +12,8 @@
 #include "rpi/info.h"
 #include "rpi/systimer.h"
 #include "rpi/exceptions.h"
+#include "rpi/rpi.h"			/* the boot-stage record, for a deliberate reboot */
+#include "rpi/cache.h"
 #include "config.h"
 
 #include <stdbool.h>
@@ -244,6 +246,10 @@ void hd_juke_service(void)
    _restore_cpsr(cpsr);
    if (!p)
       return;
+   /* The SD card is ejected: a jukebox poke (or the F-code side flip) must
+      not mount whatever is in the slot - only insert or a BBC reset may. */
+   if (filesystemEjected())
+      return;
    uint8_t dir = (uint8_t)(p & 0xFFu);
    /* Reselecting the directory that is already current is a no-op: the
       full reset below remounts the FAT, which invalidates every open FIL
@@ -272,25 +278,45 @@ void hd_juke_service(void)
 #define HD_CARD_REBOOT  3u    /* eject, then restart the Pi */
 #define HD_CARD_FAILED  0xFFu
 
+/* Report a request's result - unless the Beeb has written a newer request
+   meanwhile (the FIQ stores it at any time), which must not be lost. */
+static void hd_card_done(uint8_t request, uint8_t result)
+{
+   unsigned int cpsr = _disable_interrupts_cspr();
+   if (fx_register[IRQ_NUM] == request)
+      fx_register[IRQ_NUM] = result;
+   _restore_cpsr(cpsr);
+}
+
 void hd_card_service(void)
 {
-   switch (fx_register[IRQ_NUM]) {
+   uint8_t request = fx_register[IRQ_NUM];
+   switch (request) {
    case 0u:
    case HD_CARD_FAILED:
       break;
    case HD_CARD_EJECT:
       if (filesystemEject())
-         fx_register[IRQ_NUM] = 0u;
+         hd_card_done(request, 0u);
       break;
    case HD_CARD_INSERT:
-      fx_register[IRQ_NUM] = filesystemInsert() ? 0u : HD_CARD_FAILED;
+      /* An insert is a swap: finish letting go of the old card first (a
+         no-op if it was ejected already), or a recording still being
+         written out when the request came would be cut off by the remount. */
+      if (filesystemEject())
+         hd_card_done(request, filesystemInsert() ? 0u : HD_CARD_FAILED);
       break;
    case HD_CARD_REBOOT:
-      if (filesystemEject())
+      if (filesystemEject()) {
+#ifdef DEBUG
+         RPI_BootDetail(0xFDu);  /* deliberate reboot - not a death */
+         _clean_cache_area((const void *)(uintptr_t)RPI_BootStageBlock(), 64); /* reboot_now never flushes */
+#endif
          reboot_now();
+      }
       break;
    default:
-      fx_register[IRQ_NUM] = HD_CARD_FAILED;
+      hd_card_done(request, HD_CARD_FAILED);
       break;
    }
 }

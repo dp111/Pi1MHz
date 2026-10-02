@@ -261,7 +261,6 @@ void filesystemInitialiseVFS(uint8_t vfsjuke)
    filesystemState.lunDirectoryVFS = vfsjuke;      // Default to LUN directory 0
 }
 
-// Reset the file system (called when the host signals reset)
 /* ---- SD card swap ------------------------------------------------------
    filesystemEject() makes the card safe to pull: every subsystem that keeps
    files open closes them (an unsynced write would otherwise be lost, or -
@@ -325,6 +324,7 @@ bool filesystemEjected(void)
    return fsEjected;
 }
 
+// Reset the file system (called when the host signals reset)
 void filesystemReset(void)
 {
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReset(): Resetting file system\r\n"));
@@ -344,7 +344,11 @@ void filesystemReset(void)
             if (eject_hook[i].inserted)
                eject_hook[i].inserted();
    } else if (was_ejected) {
-      fsEjected = true;                  /* no card yet: nothing may keep retrying it */
+      /* No card yet: nothing may keep retrying it - and the failed mount
+         left the volume registered, which the next f_open from anyone (the
+         webserver) would mount behind this layer's back.  As at eject. */
+      fsEjected = true;
+      (void)f_mount(NULL, "", 0);
    }
 }
 

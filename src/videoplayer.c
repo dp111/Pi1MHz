@@ -639,6 +639,16 @@ void videoplayer_media_changed(void)
     vp_failed_dir = -1;          /* a new side is worth trying again */
 }
 
+/* SD card eject (filesystemEject): the file is going, so the poll drops it
+   and - the reopen finding no card - blanks the plane rather than leave the
+   last frame up while the card is out.  Insert remounts, which calls
+   videoplayer_media_changed again and brings the picture back. */
+static bool videoplayer_eject(void)
+{
+    videoplayer_media_changed();
+    return true;
+}
+
 /* The VFS jukebox directory changed, or the card was remounted (which
    invalidates every open FIL): drop the file and index, reopen whatever
    video the new directory holds, and show its picture 1. The decoder and
@@ -1213,6 +1223,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
        highlight palette armed. */
     screen_mixer_reset();
     Pi1MHz_Register_Poll(videoplayer_poll, "video");
+    filesystemRegisterEject(videoplayer_eject, NULL);
 }
 
 /* The deferred bring-up: everything videoplayer_init used to do inline. */
