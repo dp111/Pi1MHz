@@ -26,6 +26,7 @@
 
 static uint8_t HD_ADDR;
 static uint8_t IRQ_NUM;
+static bool hd_initialised;        /* IRQ_NUM is this emulator's instance */
 volatile bool HD_ACK;
 volatile uint8_t HD_DATA;
 
@@ -359,6 +360,7 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
    static bool PowerOn = 0 ;
    HD_ADDR = (uint8_t) address;
    IRQ_NUM = (uint8_t) instance;
+   hd_initialised = true;
    fx_register[IRQ_NUM] = 0u;    /* .noinit: a request must not survive a reset, or appear from nowhere */
 
    /* On a BBC reset the nRST interrupt has already done this, and doing it
@@ -436,9 +438,11 @@ uint8_t harddisc_emulator_get_address(void)
    return HD_ADDR;
 }
 
+/* 0xFF with the hard disc disabled: the help screen must not point
+   *FX147,202 at slot 0, which is Rampage's register. */
 uint8_t harddisc_emulator_get_instance(void)
 {
-   return IRQ_NUM;
+   return hd_initialised ? IRQ_NUM : 0xFFu;
 }
 /************************************************************************
    hostadapter.c

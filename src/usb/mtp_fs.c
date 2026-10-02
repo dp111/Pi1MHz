@@ -163,6 +163,7 @@ typedef struct {
   FIL file;
   uint32_t transferred;
   uint32_t size;
+  uint32_t host_len;    // the host's data container length (header + payload), from its first packet
   uint16_t failed_resp; // non-zero: data phase failed - drain the stream, report at completion
   uint8_t  lun_lock_p1; // LUN held for this transfer, +1 (0 = none) so memset clears it
 } write_state_t;
@@ -2119,6 +2120,36 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
   return 0;
 }
 
+/* Arm the read for the next packet of a SendObject data phase, or not.  The
+ * driver ends the phase when the length in the host's data container has
+ * arrived (or on a ZLP), so follow that - not the ObjectInfo size, which a
+ * host may contradict: stopping early would leave the driver waiting with
+ * the file open and the LUN locked, and an extra read would still be armed
+ * when the response goes.  A mismatch is an error, reported once the stream
+ * has been drained.  An unknown length (0xFFFFFFFF) ends on a short packet
+ * (usb/tinyusb-mtp-unknown-length.patch), so re-arm after every full one. */
+static void fs_write_rearm(tud_mtp_cb_data_t* cb_data, uint32_t offset, uint32_t xact_len) {
+  mtp_container_info_t* io_container = &cb_data->io_container;
+  if (offset == 0u) {
+    g_write_state.host_len = io_container->header->len;
+    if (g_write_state.failed_resp == 0u && g_write_state.size_known &&
+        g_write_state.host_len != UINT32_MAX &&
+        g_write_state.host_len != sizeof(mtp_container_header_t) + g_write_state.size) {
+      g_write_state.failed_resp = MTP_RESP_GENERAL_ERROR;
+    }
+  }
+  if (g_write_state.host_len != UINT32_MAX) {
+    if (cb_data->total_xferred_bytes < g_write_state.host_len) {
+      tud_mtp_data_receive(io_container);
+    }
+  } else {
+    const uint32_t packet_bytes = (offset == 0u) ? (xact_len + sizeof(mtp_container_header_t)) : xact_len;
+    if (packet_bytes == CFG_TUD_MTP_EP_BUFSIZE) {
+      tud_mtp_data_receive(io_container);
+    }
+  }
+}
+
 static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
   mtp_container_info_t* io_container = &cb_data->io_container;
   if (!g_write_state.active) {
@@ -2153,16 +2184,7 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
         }
       }
 
-      if (g_write_state.size_known) {
-        if (cb_data->total_xferred_bytes - sizeof(mtp_container_header_t) < g_write_state.size) {
-          tud_mtp_data_receive(io_container);
-        }
-      } else {
-        const uint32_t packet_bytes = (offset == 0u) ? (xact_len + sizeof(mtp_container_header_t)) : xact_len;
-        if (packet_bytes == CFG_TUD_MTP_EP_BUFSIZE) {
-          tud_mtp_data_receive(io_container);
-        }
-      }
+      fs_write_rearm(cb_data, offset, xact_len);
     }
     return 0;
   }
@@ -2219,16 +2241,7 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
           g_write_state.transferred += xact_len;
       }
     }
-    if (g_write_state.size_known) {
-      if (cb_data->total_xferred_bytes - sizeof(mtp_container_header_t) < g_write_state.size) {
-        tud_mtp_data_receive(io_container);
-      }
-    } else {
-      const uint32_t packet_bytes = (offset == 0u) ? (xact_len + sizeof(mtp_container_header_t)) : xact_len;
-      if (packet_bytes == CFG_TUD_MTP_EP_BUFSIZE) {
-        tud_mtp_data_receive(io_container);
-      }
-    }
+    fs_write_rearm(cb_data, offset, xact_len);
   }
 
   return 0;

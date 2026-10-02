@@ -25,6 +25,8 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cache=${WICFS_CACHE:-${TMPDIR:-/tmp}/pi1mhz-wicfs}
 beebasm=${BEEBASM:-beebasm}
 
+# Exit status 2 means only that the upstream sources could not be fetched
+# (CI treats that as a warning); any other failure is this tree's problem.
 fetch() {   # url sha dir
     if [ ! -d "$3/.git" ]; then
         mkdir -p "$3"
@@ -32,7 +34,8 @@ fetch() {   # url sha dir
         git -C "$3" remote add origin "$1"
     fi
     # By SHA, not by branch: the ElkWiFi commit this is based on is not on one.
-    git -C "$3" fetch -q --depth 1 origin "$2"
+    git -C "$3" fetch -q --depth 1 origin "$2" ||
+        { echo "cannot fetch $1 $2" >&2; exit 2; }
     git -C "$3" checkout -q -f FETCH_HEAD
 }
 

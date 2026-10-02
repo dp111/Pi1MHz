@@ -22,6 +22,7 @@
 #include "Pi1MHz.h"
 #include "uef_service.h"
 #include "wifi_service.h"
+#include "uef_repair.h"
 
 static Pi1MHz_t jim_storage;
 Pi1MHz_t *Pi1MHz = &jim_storage;
@@ -310,8 +311,36 @@ static void one_case(const char *what, size_t block_at, size_t payload_length)
    check(label, crc_ok);
 }
 
+/* A pair split across two blocks: the block ends mid-line, after a whole
+   pair and the first half of a second, so the next block starts ?&213=&F1.
+     10 ?&212=&D6:?&213=&F1:?&212=&D6:   (the block ends here)
+   Blanking all three here would leave the next block's ?&213=&F1 to run
+   alone, pointing FILEV at neither the filing system nor the MOS - worse
+   than no repair.  The block must be left as it is. */
+static void split_pair_case(void)
+{
+   static const uint8_t payload[] = {
+      0x0d, 0x00, 0x0a, 0x22, 0x20,
+      '?', '&', '2', '1', '2', '=', '&', 'D', '6', ':',
+      '?', '&', '2', '1', '3', '=', '&', 'F', '1', ':',
+      '?', '&', '2', '1', '2', '=', '&', 'D', '6', ':'
+   };
+   static uint8_t tape[1024];
+   size_t at = 0u;
+   memcpy(&tape[at], "UEF File!\0\012\000", 12u); at += 12u;
+   at = put_block(tape, at, "SPLIT", payload, sizeof payload, sizeof payload);
+   at = put_filler(tape, at, 16u);
+   uint8_t before[sizeof tape];
+   memcpy(before, tape, at);
+   unsigned repaired = uef_repair_filev_stamp(tape, at);
+   check("a block with an unmatched half is left alone", repaired == 0u);
+   check("and not one byte of it changes", memcmp(before, tape, at) == 0);
+}
+
 int main(void)
 {
+   split_pair_case();
+
    /* Well inside the first window. */
    one_case("early block", 4096u, 256u);
    /* The block's header lands in one window and its payload in the next. */

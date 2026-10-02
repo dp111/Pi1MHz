@@ -61,12 +61,15 @@ jobs:
       - name: The shipped 1mhz-wicfs.rom matches its sources
         run: |
           # The filing system half is fetched, not committed, so tell a
-          # vanished upstream apart from a stale image: only the second is
-          # this repository's problem.
-          if ! sh beeb/1mhz-wifi/build-merged.sh; then
-            echo "::warning::could not build the merged ROM - upstream sources unreachable?"
+          # vanished upstream (exit 2, a warning) apart from a build that
+          # fails or a stale image: those are this repository's problem.
+          rc=0
+          sh beeb/1mhz-wifi/build-merged.sh || rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "::warning::could not fetch the merged ROM's upstream sources"
             exit 0
           fi
+          [ "$rc" -eq 0 ] || exit "$rc"
           committed=$(sha256sum firmware/Pi1MHz/1mhz-wicfs.rom | cut -d' ' -f1)
           rebuilt=$(sha256sum beeb/1mhz-wifi/src/1mhz-wicfs.rom | cut -d' ' -f1)
           echo "committed $committed"

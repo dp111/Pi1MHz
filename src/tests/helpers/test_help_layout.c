@@ -40,13 +40,12 @@ int main(void)
    ok(over == 0, "typical: every line fits 40 columns");
    ok(rows == 24, "typical: 24 rows (1 free for future helpers)");
 
-   /* Worst case: every substituted value at its widest.  A revision code is
-      at most 7 hex digits (24 bits of new-style code, plus the warranty bit
-      at 25), and the SoC throttles at 85C, so the temperature stays under
-      100.0. */
+   /* Worst case: every substituted value at its widest.  The revision code
+      is shown without its flag bits, so it is at most 6 hex digits, and the
+      SoC throttles at 85C, so the temperature stays under 100.0. */
    static const char wdate[] = "2026-12-31 23:59:59";
    snprintf(buf, sizeof buf, HELPERS_HELP_FMT("D"),
-            "V99.99-9999-gffffffff-dirty.ffffffff", "2ffffff 9999MHz", 99L, 9L,
+            "V99.99-9999-gffffffff-dirty.ffffffff", "ffffff 9999MHz", 99L, 9L,
             wdate + 2, wdate + 5, wdate + 8, wdate + 11,
             0xFFu, 255, 255, 255, 255);
    rows = rows_of(buf, &widest, &over);

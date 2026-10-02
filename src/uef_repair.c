@@ -73,17 +73,32 @@ static bool stamp_at(const uint8_t *data, size_t length, size_t at,
  * then do nothing, as BASIC runs an empty statement, and nothing is written
  * anywhere; the program keeps its length, so only the block CRC changes.
  * Both halves or neither: one half blanked would leave FILEV pointing at
- * neither the filing system nor the MOS. */
+ * neither the filing system nor the MOS.  A cassette block can end in the
+ * middle of a line, so a pair may be split across two blocks: a ?&212 here
+ * with its ?&213 at the start of the next block, where it cannot be seen to
+ * start a statement and is left.  So a block whose last ?&212 has no ?&213
+ * after it, on a line that runs on past the block, is left whole. */
 static unsigned repair_block_payload(uint8_t *data, size_t length)
 {
    unsigned found[2] = { 0u, 0u };
    unsigned repaired = 0u;
+   bool open_pair = false;      /* the last ?&212 still waits for its ?&213 */
+   size_t last = 0u;
    for (size_t at = 0u; at < length; at++)
       for (uint8_t w = 0u; w < 2u; w++)
-         if (stamp_at(data, length, at, w))
+         if (stamp_at(data, length, at, w)) {
             found[w]++;
+            if (w == 0u) {
+               open_pair = true;
+               last = at;
+            } else {
+               open_pair = false;
+            }
+         }
    if (found[0] == 0u || found[1] == 0u)
       return 0u;
+   if (open_pair && memchr(&data[last], 0x0D, length - last) == NULL)
+      return 0u;               /* its line, and maybe its ?&213, run on */
    for (size_t at = 0u; at < length; at++)
       for (uint8_t w = 0u; w < 2u; w++)
          if (stamp_at(data, length, at, w)) {

@@ -117,9 +117,11 @@ uint32_t get_speed(void) {
 char *get_info_string(void) {
    static uint8_t read = 0;
    if (!read) {
-      /* The help screen's "Pi" line: board revision and ARM clock. */
+      /* The help screen's "Pi" line: the board's revision code, without
+         the flag bits above it (warranty, OTP, overvoltage), and the ARM
+         clock. */
       sprintf(info_string, "%"PRIx32" %"PRIu32"MHz",
-         get_revision(),
+         get_revision() & 0xFFFFFFu,
          get_clock_rate(ARM_CLK_ID) / 1000000);
       read = 1;
    }

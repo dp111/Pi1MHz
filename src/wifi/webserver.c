@@ -524,6 +524,29 @@ static bool ws_propfind_cache_lookup(const char *path, FILINFO *out)
    leave a dangling reference. */
 static ws_conn_t      *g_ws_active_copy;
 
+/* Live connections - lwIP holds them, this only lists them - so an SD card
+   eject can tear down the ones with files open while the card is still
+   there: conn_close closes them and drops a partial upload's ".part",
+   instead of the dismount throwing their unsynced writes away. */
+#define WS_LIVE_MAX MEMP_NUM_TCP_PCB
+static ws_conn_t      *g_ws_live[WS_LIVE_MAX];
+
+static void ws_live_add(ws_conn_t *c)
+{
+   for (unsigned int i = 0; i < WS_LIVE_MAX; i++)
+      if (g_ws_live[i] == NULL) {
+         g_ws_live[i] = c;
+         return;
+      }
+}
+
+static void ws_live_remove(const ws_conn_t *c)
+{
+   for (unsigned int i = 0; i < WS_LIVE_MAX; i++)
+      if (g_ws_live[i] == c)
+         g_ws_live[i] = NULL;
+}
+
 /* When the last byte moved on any connection.  Used to keep the free-space
    FAT walk out of the way of active transfers - see webserver_refresh_sd_free. */
 static uint32_t        g_ws_last_io_us;
@@ -1839,6 +1862,7 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
       timeout / client-disconnect mid-COPY must release the slot so
       the next COPY request isn't rejected with 503 forever. */
    ws_copy_slot_release(c);
+   ws_live_remove(c);
 
    if (c->pcb != NULL) {
       struct tcp_pcb *pcb = c->pcb;
@@ -5542,10 +5566,18 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
                          "Target path is too long for a temp upload.");
    }
 
-   if (f_open(&c->write_file.dav, c->dav_put_tmppath,
-              FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
-      return ws_error(c, 409, "Conflict",
-                      "Cannot create the target (missing parent folder?).");
+   {
+      FRESULT fr = f_open(&c->write_file.dav, c->dav_put_tmppath,
+                          FA_CREATE_ALWAYS | FA_WRITE);
+      /* No volume: the card is ejected (or unreadable) - not the client's
+         fault, and a retry later will work, as a GET there gets too. */
+      if (fr == FR_NOT_ENABLED || fr == FR_NOT_READY)
+         return ws_error(c, 503, "Service Unavailable",
+                         "The SD card could not be read.");
+      if (fr != FR_OK)
+         return ws_error(c, 409, "Conflict",
+                         "Cannot create the target (missing parent folder?).");
+   }
    c->dav_put_open       = true;
    c->dav_put_buf_len    = 0u;
    c->dav_put_chunked    = te_chunked;
@@ -6978,8 +7010,22 @@ static void ws_err(void *arg, err_t err)
       if (c->dav_put_tmppath[0] != '\0')
          (void)f_unlink(c->dav_put_tmppath);
    }
+   ws_live_remove(c);
    free(c->out);
    free(c);
+}
+
+/* SD card eject (filesystemEject): every connection with a file open on the
+   card is torn down now, cleanly, while the card is still mounted. */
+static bool webserver_eject(void)
+{
+   for (unsigned int i = 0; i < WS_LIVE_MAX; i++) {
+      ws_conn_t *c = g_ws_live[i];
+      if (c != NULL && (c->dl_open || c->up_file_open || c->dav_put_open ||
+                        c->copy_src_open || c->copy_dst_open))
+         (void)conn_close(c, true);
+   }
+   return true;
 }
 
 static err_t ws_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
@@ -6998,6 +7044,7 @@ static err_t ws_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
 
    c->pcb = newpcb;
    c->state = CONN_RECV_HEADER;
+   ws_live_add(c);
 
    tcp_arg(newpcb, c);
    tcp_recv(newpcb, ws_recv);
@@ -7217,6 +7264,7 @@ void webserver_init(void)
 
    tcp_arg(g_ws_listener, NULL);
    tcp_accept(g_ws_listener, ws_accept);
+   filesystemRegisterEject(webserver_eject, NULL);
 
    /* No poll registration: webserver_poll is called from
       wifi_dispatch_poll in wifi.c so the whole WiFi stack costs a
