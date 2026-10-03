@@ -42,6 +42,16 @@ static inline void BP_DisableIRQ(uint32_t irqn)
     }
 }
 
+/* TinyUSB's dwc2 host driver (hcd_dwc2.c, usb_mode=host) asks the port for
+   this; upstream's dwc2_bcm.h only provides the device pair.  A macro, so
+   this header needs no TinyUSB types: it expands where USB_IRQn is known. */
+#define dwc2_int_set(_rhport, _role, _enabled) \
+    do { \
+        (void)(_rhport); \
+        (void)(_role); \
+        if (_enabled) BP_EnableIRQ(USB_IRQn); else BP_DisableIRQ(USB_IRQn); \
+    } while (0)
+
 /**
  * @brief Set priority for an IRQ (no-op on BCM283x as it has no priority levels)
  * @param irqn IRQ number

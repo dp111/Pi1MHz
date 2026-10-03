@@ -33,6 +33,7 @@ Takes 4 bytes of RAM
 #include <stdio.h>
 #include <inttypes.h>
 #include "Pi1MHz.h"
+#include "usb_mouse.h"
 #include "framebuffer/framebuffer.h"
 #include "framebuffer/screen_modes.h"
 
@@ -262,6 +263,11 @@ i,B,i,0,0,0,
 
 static uint8_t fred_address;
 
+/* The position the Beeb last wrote, kept here rather than in FRED's read
+   bytes: those read back as the USB mouse (usb_mouse.h), not as the
+   position.  Written in FIQ, a byte at a time, as the writes arrive. */
+static volatile uint8_t pointer_pos[4];
+
 /* Set by the write of the LAST of the four bytes: that write is what says a
    new position is complete.  FIQ only latches it - the plot happens in the
    VDU drain (fb_process_vdu_queue, IRQ context), serialised with everything
@@ -357,9 +363,9 @@ void mouse_redirect_pointer_show(void)
     if (screen == NULL)
         return;
 
-    int32_t mouse_x = (int32_t)((int16_t)(Pi1MHz_MemoryRead((uint32_t)(fred_address + 0)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 1))<<8)));
-    int32_t mouse_y = (int32_t)((Pi1MHz_MemoryRead((uint32_t)(fred_address + 2)) | (Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))<<8)) & 0x0FFF);
-    uint8_t mouse_pointer = Pi1MHz_MemoryRead((uint32_t)(fred_address + 3))>>4;
+    int32_t mouse_x = (int32_t)((int16_t)(pointer_pos[0] | (pointer_pos[1] << 8)));
+    int32_t mouse_y = (int32_t)((pointer_pos[2] | (pointer_pos[3] << 8)) & 0x0FFF);
+    uint8_t mouse_pointer = pointer_pos[3] >> 4;
 
     /* Lift the old one before anything else: the pixels under it are only
        valid for where it was drawn. */
@@ -411,19 +417,41 @@ void mouse_redirect_mouseoff(void)
     drawn_shape = NULL;
 }
 
+static void mouse_redirect_position_byte(unsigned int gpio)
+{
+    pointer_pos[(GET_ADDR(gpio) - fred_address) & 3u] = GET_DATA(gpio);
+}
+
 static void mouse_redirect_position_complete(unsigned int gpio)
 {
-    Pi1MHz_MemoryWrite_FIQ(GET_ADDR(gpio), GET_DATA(gpio));
+    pointer_pos[3] = GET_DATA(gpio);
     moved = true;
+}
+
+/* The Beeb has read &FCAF, the last of the four USB mouse bytes: put the
+   next set in place for its next read.  A read callback runs after the read
+   has been served, so each read returns what had built up by the one
+   before - a poll's lag, and never a torn set. */
+static void mouse_redirect_mouse_read(unsigned int gpio)
+{
+    (void)gpio;
+    uint8_t m[4];
+    usb_mouse_latch(m);
+    for (unsigned int i = 0; i < 4u; i++)
+        Pi1MHz_MemoryWrite_FIQ(fred_address + i, m[i]);
 }
 
 void mouse_redirect_init(uint8_t instance, uint8_t address)
 {
     // register call backs
     fred_address = address;
-    Pi1MHz_Register_Memory(WRITE_FRED, (address+0u), Pi1MHz_EmulatedMemoryByte );
-    Pi1MHz_Register_Memory(WRITE_FRED, (address+1u), Pi1MHz_EmulatedMemoryByte );
-    Pi1MHz_Register_Memory(WRITE_FRED, (address+2u), Pi1MHz_EmulatedMemoryByte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (address+0u), mouse_redirect_position_byte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (address+1u), mouse_redirect_position_byte );
+    Pi1MHz_Register_Memory(WRITE_FRED, (address+2u), mouse_redirect_position_byte );
     Pi1MHz_Register_Memory(WRITE_FRED, (address+3u), mouse_redirect_position_complete );
+    /* Reads are the USB mouse: reading &FCAF latches the next set. */
+    Pi1MHz_Register_Memory(READ_FRED, (address+3u), mouse_redirect_mouse_read );
+    for (unsigned int i = 0; i < 4u; i++)
+        Pi1MHz_MemoryWrite(address + i, 0u);   /* no movement, no mouse - until the first read */
     /* No poll callback: the plot runs from the VDU drain, see moved. */
 }

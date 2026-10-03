@@ -24,3 +24,9 @@ uint32_t board_millis(void)
     uint64_t us = ((uint64_t)hi1 << 32) | lo;
     return (uint32_t)(us / 1000u);
 }
+
+/* TinyUSB's host stack times its enumeration with this (no OS here). */
+uint32_t tusb_time_millis_api(void)
+{
+    return board_millis();
+}

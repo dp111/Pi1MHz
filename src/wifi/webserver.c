@@ -46,6 +46,8 @@
 #include "../serial_redirect.h"
 #include "../serial_modem.h"
 #include "../chainboot.h"
+#include "../usb.h"
+#include "../usb_mouse.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
@@ -3039,6 +3041,14 @@ static bool route_status(ws_conn_t *c)
    table_row(&b, "Serial", tmp);
    modem_status(tmp, sizeof tmp);
    table_row(&b, "Modem", tmp);
+   if (usb_is_host()) {
+      char m[64];
+      usb_mouse_status(m, sizeof m);
+      snprintf(tmp, sizeof tmp, "host, mouse %s", m);
+      table_row(&b, "USB", tmp);
+   } else {
+      table_row(&b, "USB", "device (MTP)");
+   }
    snprintf(tmp, sizeof tmp, "mai %08lx hsm %lu pix %lu",
             (unsigned long)hdmi_audio_mai_ctl(), (unsigned long)hdmi_audio_hsm_hz(),
             (unsigned long)hdmi_audio_pixel_hz());

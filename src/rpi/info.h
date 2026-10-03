@@ -21,6 +21,9 @@ typedef struct {
 extern uint32_t mem_info(int size);
 
 extern uint32_t get_clock_rate(uint32_t clk_id);
+/* The USB port is behind an on-board hub (Pi 1/2/3 Model B): host only.
+   Main loop only (a mailbox call). */
+extern bool board_usb_behind_hub(void);
 /* Cached on boot, so this is safe to call at any time */
 extern uint32_t get_speed(void);
 /* Cached on boot, so this is safe to call at any time */

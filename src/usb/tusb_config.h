@@ -165,6 +165,31 @@
     MTP_OBJ_FORMAT_TEXT, \
     MTP_OBJ_FORMAT_PNG
 
+//--------------------------------------------------------------------
+// HOST CONFIGURATION
+//--------------------------------------------------------------------
+/* The one port is a device (MTP) or a host (a USB mouse), chosen at boot by
+   usb_mode= in Pi1MHz.cfg - see usb.c.  Both stacks are built; only one is
+   started.  Slave mode, not DMA: a mouse's few bytes need no DMA, and the
+   FIFOs need no cache maintenance. */
+#define CFG_TUH_ENABLED            1
+#define BOARD_TUH_RHPORT           BOARD_TUD_RHPORT
+#define CFG_TUH_MAX_SPEED          BOARD_TUD_MAX_SPEED
+#define CFG_TUH_DWC2_SLAVE_ENABLE  1
+#define CFG_TUH_DWC2_DMA_ENABLE    0
+/* The controller's interrupt output is never enabled in host mode: usb.c
+   polls tuh_int_handler (usb/tinyusb-hcd-polled.patch). */
+#define PI1MHZ_TUH_POLLED          1
+#define CFG_TUH_ENUMERATION_BUFSIZE 256
+/* A mouse may be behind a hub - a Pi 1/2/3 Model B's own (with its
+   Ethernet chip on it too) and a user's hub beyond that.  Every device on
+   the way counts, mouse or not. */
+#define CFG_TUH_HUB                3
+#define CFG_TUH_DEVICE_MAX         8
+#define CFG_TUH_HID                4
+#define CFG_TUH_HID_EPIN_BUFSIZE   64
+#define CFG_TUH_HID_EPOUT_BUFSIZE  64
+
 #ifdef __cplusplus
  }
 #endif

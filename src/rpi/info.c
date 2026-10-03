@@ -35,6 +35,30 @@ static uint32_t get_revision(void) {
    }
 }
 
+/* Is the SoC's USB port behind an on-board hub, so it can only ever be a
+   host?  True for the Pi 1/2/3 Model B family, from the revision code.  Not
+   cached: a mailbox call, so main loop only. */
+bool board_usb_behind_hub(void) {
+   uint32_t rev = get_revision() & 0xFFFFFFu;
+   if (rev & (1u << 23)) {            /* new style: bits 4-11 are the type */
+      switch ((rev >> 4) & 0xFFu) {
+      case 0x01u: case 0x03u:         /* B, B+ */
+      case 0x04u:                     /* 2B */
+      case 0x08u: case 0x0Du:         /* 3B, 3B+ */
+         return true;
+      default:
+         return false;
+      }
+   }
+   switch (rev & 0xFFFFu) {           /* old style: every Pi 1 but these is a B */
+   case 0x07u: case 0x08u: case 0x09u: case 0x12u: case 0x15u:   /* A, A+ */
+   case 0x11u: case 0x14u:                                       /* CM1 */
+      return false;
+   default:
+      return true;
+   }
+}
+
 uint32_t get_clock_rate(uint32_t clk_id) {
    rpi_mailbox_property_t *buf;
    buf = RPI_PropertyGetWord(TAG_GET_CLOCK_RATE, clk_id);

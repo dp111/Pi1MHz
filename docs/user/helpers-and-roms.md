@@ -94,4 +94,6 @@ to try ROM software without hardware.
 `/Pi1MHz/VFS.rom` (for Domesday/VFS volumes) is also shipped in the
 `/Pi1MHz` directory, but it is not wired to a helper number - install
 it as a normal ROM, or load it as one of the user ROMs by copying it to
-`ROM10.rom`.
+`ROM10.rom`. It is the Pi1MHz build of VFS: it shows its pointer on the
+HDMI picture and also follows a [USB mouse](usb-mouse.md) plugged into
+the Pi.

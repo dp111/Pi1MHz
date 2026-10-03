@@ -504,7 +504,9 @@ void IRQHandler_main(void) {
 
    // Check for USB IRQ (IRQ #9 in Enable_IRQs_1)
    if (RPI_GetIrqController()->IRQ_pending_1 & (1 << 9)) {
-      tud_int_handler(0);
+      /* Host mode is polled from the main loop (usb.c) and never raises it. */
+      if (!usb_is_host())
+         tud_int_handler(0);
    }
 
    RPI_AuxMiniUartIRQHandler();

@@ -12,6 +12,10 @@
 #include "rpi/interrupts.h"
 #include "Pi1MHz.h"
 #include "rpi/mailbox.h"
+#include <strings.h>
+#include "rpi/base.h"
+#include "rpi/info.h"
+#include "config.h"
 
 // Power device IDs for mailbox
 #define POWER_DEVICE_USB_HCD    3   // USB Host Controller Device
@@ -251,6 +255,61 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 
 
 
+/* The port's role, chosen once at boot.  On a board whose port is behind
+   its own hub (Pi 1/2/3 Model B) it can only be a host, whatever the config
+   says.  Elsewhere usb_mode= in Pi1MHz.cfg picks:
+     device  MTP to a computer (the default)
+     host    a USB mouse for the Beeb (usb_mouse.c), directly or via a hub
+     auto    host when the OTG ID pin is grounded - an OTG adapter - and
+             device when it is not. */
+static bool s_usb_host;
+
+bool usb_is_host(void)
+{
+  return s_usb_host;
+}
+
+/* The OTG connector-ID status, GOTGCTL bit 16: 0 when the ID pin is grounded
+   (an OTG adapter: this end is the host). */
+#define USB_GOTGCTL   (*(volatile uint32_t *)(PERIPHERAL_BASE + 0x980000u))
+#define GOTGCTL_CIDSTS (1u << 16)
+
+static bool usb_choose_host(void)
+{
+  if (board_usb_behind_hub())
+    return true;
+  const char *mode = config_get("usb_mode");
+  if (mode == NULL || strcasecmp(mode, "device") == 0)
+    return false;
+  if (strcasecmp(mode, "host") == 0)
+    return true;
+  if (strcasecmp(mode, "auto") == 0)
+    return (USB_GOTGCTL & GOTGCTL_CIDSTS) == 0u;
+  return false;
+}
+
+/* Host mode is polled, never interrupt driven: with the controller's
+   interrupt output enabled, the first interrupt after the port is powered
+   resets the whole board (MEASURED on a Zero 2 W, chain-booted kernels;
+   never tried from a cold boot - presumably the VideoCore, which sees the
+   same IRQ, as nothing on the ARM side runs or is reported).
+   So usb_boot_task turns that output off, and the controller's interrupt
+   work is done from here, every USB_HOST_POLL_US - a mouse needs nothing
+   faster, and in slave mode the receive FIFO is still emptied promptly. */
+#define USB_GAHBCFG      (*(volatile uint32_t *)(PERIPHERAL_BASE + 0x980008u))
+#define GAHBCFG_GINT_BIT (1u << 0)
+
+#define USB_HOST_POLL_US 250u
+static void usb_host_task(void) {
+    static uint32_t last_us;
+    if ((uint32_t)(Pi1MHz_now_us - last_us) < USB_HOST_POLL_US)
+        return;
+    last_us = Pi1MHz_now_us;
+    tuh_int_handler(BOARD_TUH_RHPORT, false);
+    tuh_task();
+    chainboot_poll();      /* a kernel.now PUT's restart (no MTP in host mode) */
+}
+
 static void usb_task(void) {
     tud_task();
     /* A received kernel.now is flashed from here rather than from inside the
@@ -279,19 +338,28 @@ static void usb_boot_task(void)
 
   RPI_PropertySettle();            /* the answer is here; this will not block */
 
-  tusb_rhport_init_t dev_init = {
-    .role = TUSB_ROLE_DEVICE,
+  s_usb_host = usb_choose_host();
+  tusb_rhport_init_t port_init = {
+    .role = s_usb_host ? TUSB_ROLE_HOST : TUSB_ROLE_DEVICE,
     .speed = TUSB_SPEED_AUTO
   };
-  tusb_init(BOARD_TUD_RHPORT, &dev_init);
+  tusb_init(BOARD_TUD_RHPORT, &port_init);
 
-  // Enable USB IRQ (IRQ #9 in Enable_IRQs_1)
-  // The IRQ handler is already attached in IRQHandler_main() - see Pi1MHz.c
-  RPI_GetIrqController()->Enable_IRQs_1 = (1 << 9);
+  if (s_usb_host) {
+    /* Polled - see usb_host_task.  hcd_init never enabled the output
+       (usb/tinyusb-hcd-polled.patch); TinyUSB's later writes only save and
+       restore it.  Belt and braces: */
+    USB_GAHBCFG &= ~GAHBCFG_GINT_BIT;
+    RPI_GetIrqController()->Disable_IRQs_1 = (1 << 9);
+  } else {
+    // Enable USB IRQ (IRQ #9 in Enable_IRQs_1)
+    // The IRQ handler is already attached in IRQHandler_main() - see Pi1MHz.c
+    RPI_GetIrqController()->Enable_IRQs_1 = (1 << 9);
+  }
 
   /* Swap in the steady-state callback, in place: no later pass then tests
      whether start-up has finished. */
-  Pi1MHz_Replace_Poll(usb_boot_task, usb_task, "usb");
+  Pi1MHz_Replace_Poll(usb_boot_task, s_usb_host ? usb_host_task : usb_task, "usb");
 }
 
 void usb_init(uint8_t instance , uint8_t address) {

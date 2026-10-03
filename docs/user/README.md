@@ -19,7 +19,8 @@ provides, all at once:
 - **Teletext** - an Acorn Teletext Adapter fed from internet teletext
   streams
 - **USB file access** - the Pi shows up on a PC as a portable device for
-  copying files to and from the SD card
+  copying files to and from the SD card - or, with the port as a host,
+  a **USB mouse** for the Beeb
 
 Everything is driven from image files and a single plain-text
 configuration file on the Pi's SD card. You never need to compile
@@ -53,6 +54,7 @@ Then one guide per feature:
 - [Econet over WiFi (AUN)](econet-aun.md)
 - [Teletext](teletext.md)
 - [USB file access (MTP)](usb-file-access.md)
+- [USB mouse](usb-mouse.md)
 
 And when things go wrong:
 

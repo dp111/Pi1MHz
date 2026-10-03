@@ -168,6 +168,22 @@ add_custom_command(
    VERBATIM
 )
 
+# Our change to TinyUSB's dwc2 host driver (usb/tinyusb-hcd-polled.patch,
+# guarded by PI1MHZ_TUH_POLLED in tusb_config.h): the controller's interrupt
+# output is never enabled in host mode - see usb.c.  Applied to a build-tree
+# copy, as the MTP patch above.
+set(HCD_DWC2_UPSTREAM ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/portable/synopsys/dwc2/hcd_dwc2.c)
+set(HCD_DWC2_PATCH    ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb-hcd-polled.patch)
+set(HCD_DWC2_PATCHED  ${CMAKE_CURRENT_BINARY_DIR}/tinyusb-patched/hcd_dwc2.c)
+add_custom_command(
+   OUTPUT  ${HCD_DWC2_PATCHED}
+   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tinyusb-patched
+   COMMAND patch --forward --fuzz=0 -o ${HCD_DWC2_PATCHED} ${HCD_DWC2_UPSTREAM} ${HCD_DWC2_PATCH}
+   DEPENDS ${HCD_DWC2_UPSTREAM} ${HCD_DWC2_PATCH}
+   COMMENT "Applying the Pi1MHz polled-host patch to TinyUSB hcd_dwc2.c"
+   VERBATIM
+)
+
 # lwIP's altcp_tls adapter is written for mbedTLS 2.x, which is end of life;
 # wifi/lwip-altcp-tls-mbedtls3.patch ports it to 3.6 (private-member access,
 # renamed macros, pk_parse_key's RNG).  Applied to a build-tree copy, as the
@@ -258,6 +274,7 @@ set(core_files
    ram_emulator.c
    helpers.c
    chainboot.c
+   usb_mouse.c
    videoplayer.c
    rpi/fileparser.c
    usb.c
@@ -269,6 +286,10 @@ set(core_files
    ${MTP_DEVICE_PATCHED}          # usb/tinyusb/src/class/mtp/mtp_device.c + our patch
    usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
    usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
+   ${HCD_DWC2_PATCHED}            # usb/tinyusb/.../hcd_dwc2.c + our patch
+   usb/tinyusb/src/host/usbh.c
+   usb/tinyusb/src/host/hub.c
+   usb/tinyusb/src/class/hid/hid_host.c
 )
 
 
@@ -473,14 +494,20 @@ set_source_files_properties(
    ${MTP_DEVICE_PATCHED}
    usb/tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
    usb/tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
+   ${HCD_DWC2_PATCHED}            # usb/tinyusb/.../hcd_dwc2.c + our patch
+   usb/tinyusb/src/host/usbh.c
+   usb/tinyusb/src/host/hub.c
+   usb/tinyusb/src/class/hid/hid_host.c
    PROPERTIES
-   COMPILE_OPTIONS "-Wno-arith-conversion;-Wno-strict-overflow;-Wno-attributes;-Wno-packed;-Wno-conversion;-Wno-switch-enum;-Wno-bad-function-cast"
+   COMPILE_OPTIONS "-Wno-arith-conversion;-Wno-strict-overflow;-Wno-attributes;-Wno-packed;-Wno-conversion;-Wno-sign-conversion;-Wno-switch-enum;-Wno-bad-function-cast"
 )
 
 # The patched copy lives in the build tree, so its own directory - which holds
 # mtp_device.h, included with quotes - has to be named explicitly.
 set_source_files_properties(${MTP_DEVICE_PATCHED} PROPERTIES
    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/class/mtp)
+set_source_files_properties(${HCD_DWC2_PATCHED} PROPERTIES
+   INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/usb/tinyusb/src/portable/synopsys/dwc2)
 
 set_source_files_properties(
    ${LWIP_ROOT}/src/core/altcp.c

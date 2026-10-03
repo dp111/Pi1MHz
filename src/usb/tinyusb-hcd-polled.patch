@@ -1,0 +1,29 @@
+Local change to the vendored TinyUSB dwc2 host driver.  The build applies it
+to a copy of hcd_dwc2.c in the build tree and compiles that (src/CMakeLists.txt,
+HCD_DWC2_PATCHED); the submodule itself stays a plain upstream pin, as for the
+MTP patch.  Generated against hathach/tinyusb e85c2b8af.
+
+Guarded by PI1MHZ_TUH_POLLED (tusb_config.h).  hcd_init enables the
+controller's global interrupt output a moment after it powers the port; on a
+Raspberry Pi the VideoCore sees the same USB IRQ, and a host-mode interrupt
+there resets the board or stops the VPU's bus service.  With the guard set
+the output is never enabled and usb.c polls tuh_int_handler instead, so there
+is no window at all.
+
+--- a/src/portable/synopsys/dwc2/hcd_dwc2.c	2026-10-03 10:35:13.343011906 +0100
++++ b/src/portable/synopsys/dwc2/hcd_dwc2.c	2026-10-03 10:35:13.360510133 +0100
+@@ -517,7 +517,14 @@
+ 
+   // NPTX can hold at least 2 packet, change interrupt level to half-empty
+   uint32_t gahbcfg = dwc2->gahbcfg & ~GAHBCFG_TX_FIFO_EPMTY_LVL;
++#if !PI1MHZ_TUH_POLLED
+   gahbcfg |= GAHBCFG_GINT;   // Enable global interrupt
++#else
++  // ...EXCEPT on a Pi: there the interrupt output stays off, and the
++  // application calls tuh_int_handler(rhport, false) from its main loop.
++  // With the output enabled the first host-mode interrupt takes down the
++  // VideoCore (it sees the same IRQ) - the board resets, or the VPU stops.
++#endif
+   dwc2->gahbcfg = gahbcfg;
+ 
+   return true;
