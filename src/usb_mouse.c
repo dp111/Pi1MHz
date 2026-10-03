@@ -31,7 +31,10 @@ static int32_t clamp(int32_t v)
 
 void usb_mouse_latch(uint8_t out[4])
 {
-   int32_t dx = clamp(s_dx), dy = clamp(s_dy);
+   /* In whole steps of 4, the VFS pointer's step: what is below one stays
+      here for the next read, so the ROM needs no state of its own for it. */
+   int32_t dx = (int32_t)((uint32_t)clamp(s_dx) & ~3u);
+   int32_t dy = (int32_t)((uint32_t)clamp(s_dy) & ~3u);
    s_dx -= dx;
    s_dy -= dy;
    out[0] = (uint8_t)dx;

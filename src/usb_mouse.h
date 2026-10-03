@@ -13,8 +13,9 @@
      out[1] bits 0-5 X bits 8-13, bit 6 left button, bit 7 right button
      out[2] Y bits 0-7                      (Y up is positive, as on the Beeb)
      out[3] bits 0-5 Y bits 8-13, bit 6 middle button, bit 7 a mouse is there
-   Reading takes everything built up since the last read; movement beyond
-   what one read can carry is dropped as it arrives. */
+   Movement is in graphics units, always a multiple of 4: reading takes the
+   whole steps built up since the last read and leaves the rest for the next;
+   movement beyond what one read can carry is dropped as it arrives. */
 void usb_mouse_latch(uint8_t out[4]);
 
 /* For /status: what is plugged in, and what it has done. */

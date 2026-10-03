@@ -68,8 +68,9 @@ read (writing them still drives the [mouse pointer](screen-and-video.md#mouse-po
 | `&FCAE` | Y movement, bits 0-7 |
 | `&FCAF` | bits 0-5: Y movement, bits 8-13; bit 6: middle button; bit 7: a mouse is plugged in |
 
-The movement is a 14-bit two's complement number (-8192 to +8191);
-Y up is positive, as on the Beeb's screen. A set button bit means the
+The movement is a 14-bit two's complement number (-8192 to +8188),
+always a multiple of 4 - the VFS pointer's step - with what is left
+over kept for the next read. Y up is positive, as on the Beeb's screen. A set button bit means the
 button is held.
 
 Read the four in order, `&FCAC` first. Reading `&FCAF` hands over the
