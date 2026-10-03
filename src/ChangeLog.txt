@@ -288,3 +288,10 @@ USB: TinyUSB updated (MTP data-phase recovery); uploads follow the length the ho
 Web/WebDAV: an SD card eject removes a half-finished upload; a PUT with no card answers 503.
 Docs: guides for the 1MHz-WiFi ROM and WiCFS, and the serial modem; *FX pairs go on separate lines.
 CI: beebasm is built properly, the WiFi ROM's service entry runs on a 6502 model, and a broken ROM build fails the job.
+
+v.1.38
+USB mouse: usb_mode=host makes the Pi a USB host; the VFS pointer, *MOUSE and ADVAL 7/8/9 follow a USB mouse.
+USB mouse: works alongside a user port mouse, and through a hub; a Pi 1/2/3 Model B is always a host.
+USB mouse: the Beeb reads its movement and buttons at &FCAC-&FCAF; see docs/user/usb-mouse.md.
+VFS ROM 2.01: reads the USB mouse; *ROMS shows version 02 to tell it from an Acorn chip.
+kernel.now: a firmware image can be tried over WiFi - WebDAV PUT /kernel.now or the web upload form.
