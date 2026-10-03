@@ -71,6 +71,23 @@ unencrypted HTTP.
 File date-stamps shown over WebDAV are in UTC unless you set your
 timezone, e.g. `webdav_utc_offset_minutes=60` in `Pi1MHz.cfg`.
 
+## kernel.now over the network
+
+`kernel.now` - restart into a firmware image from memory, without
+changing the SD card - works over the network too, as it does over
+[USB](usb-file-access.md#a-special-file-kernelnow):
+
+- copy a firmware image to the WebDAV share's root as `kernel.now`, or
+- upload it as `kernel.now` with the form on the root folder's page, or
+- from a command line: `curl -T kernel7.img http://pi1mhz.local/kernel.now`
+  (add `--digest -u user:password` if the server has a password).
+
+Use `kernel7.img` on a Pi 2/3/Zero 2 and `kernel.img` on a Pi 1/Zero.
+The image is held in memory, never saved; the Pi answers, then restarts
+into it. A file that does not look like Pi1MHz firmware is refused
+(422) and the Pi carries on, and so is any image while the video
+player is open (503). A power cycle goes back to the card's kernel.
+
 ## Password protection
 
 Set both `webdav_user=` and `webdav_password=` in `Pi1MHz.cfg` to

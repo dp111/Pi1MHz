@@ -257,6 +257,7 @@ set(core_files
    config.h
    ram_emulator.c
    helpers.c
+   chainboot.c
    videoplayer.c
    rpi/fileparser.c
    usb.c

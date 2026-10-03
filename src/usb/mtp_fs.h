@@ -16,7 +16,8 @@ void mtp_fs_notify_fs_changed(void);
 bool mtp_fs_eject(void);
 void mtp_fs_inserted(void);
 /* Poll hook: performs a pending kernel.now flash from the main loop. */
-void mtp_fs_reboot_poll(void);
+/* Before a chain-boot (chainboot.c): take the device off the bus. */
+void mtp_fs_prepare_for_warm_reboot(void);
 void mtp_fs_cache_poll(void);   /* sliced object-cache rebuild - see mtp_fs.c */
 
 /* As above, but also emit an asynchronous MTP event so a connected host

@@ -46,6 +46,7 @@
 #include "../scripts/gitversion.h"   // RELEASENAME (generated from git tag)
 #include "../rpi/exceptions.h"
 #include "../wifi/webserver.h"   /* webserver_sd_space: cached FAT free-space sweep */
+#include "../chainboot.h"
 
 //--------------------------------------------------------------------+
 // Dataset
@@ -97,7 +98,6 @@ storage_info_t storage_info = {
 #define FS_PATH_MAX 512u
 #define FS_FALLBACK_DATETIME "19800101T000000.0" // "YYYYMMDDTHHMMSS.s"
 #define FS_DATETIME_STR_LEN 18u
-#define FS_KERNEL_NOW_FALLBACK_CAPACITY (4u* 1024u * 1024u)
 
 typedef struct {
   uint32_t handle;
@@ -729,65 +729,9 @@ static void fs_send_object_event(uint16_t code, uint32_t handle) {
    collision that was repaired at cache-build time may not match, in which
    case the host simply ignores that event and falls back to a later
    re-enumeration.  See mtp_fs.h. */
-/* A received kernel.now waits here until the main loop can act on it.
- *
- * The reboot used to happen inside this callback, with interrupts off, never
- * returning - so the host's SendObject was never answered and the device
- * simply vanished mid-command, while USB was still connected and possibly
- * still moving data.  Copying a new image over the running kernel and jumping
- * into it while a controller may still touch memory is only safe if nothing
- * is in flight, which is why flashing an idle Pi always worked and flashing
- * one straight after a transfer left it hung with no USB and no network -
- * reproduced deliberately: four flashes idle all succeeded, one flash
- * immediately after a load test failed exactly that way.
- *
- * Deferring costs a few milliseconds and buys a clean completion for the
- * host, a chance to disconnect USB first, and a main loop that is between
- * poll callbacks rather than nested inside one. */
-static uint8_t *g_kernel_reboot_data;
-static uint32_t g_kernel_reboot_len;
-
-/* Main-loop half of the kernel.now flash: let the MTP response reach the host,
-   drop off the bus, then copy the image over the running kernel and jump.
-   Called from the USB poll, so by here we are between poll callbacks rather
-   than nested inside one. */
-void mtp_fs_reboot_poll(void) {
-  static uint8_t stage;
-  static uint32_t settle_us;
-
-  if (g_kernel_reboot_data == NULL)
-    return;
-
-  if (stage == 0u) {
-    /* tud_task() has queued the response by now; give it time on the wire,
-       then take the device off the bus so nothing is left in flight. */
-    settle_us = RPI_GetSystemTime() + 20000u;
-    stage = 1u;
-    return;
-  }
-  if (stage == 1u) {
-    if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
-      return;
-    tud_disconnect();
-    settle_us = RPI_GetSystemTime() + 50000u;
-    stage = 2u;
-    return;
-  }
-  if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
-    return;
-
-  /* The chip keeps power across the warm jump, so tell it to stop signalling
-     on DAT1 (CCCR 0x04, HOSTINTMASK) and hide the controller latch before the
-     incoming kernel starts its bring-up over that same line. */
-  sdio_runtime_prepare_for_warm_reboot();
-
-  _disable_interrupts();
-  RPI_ChainBootMark();   /* the incoming kernel_main learns it was chain-booted */
-  /* Turn the D-cache off first, so the copy of the incoming image over the
-     running kernel goes straight to RAM.  The copier then needs no cache
-     management of its own, and the new kernel starts on a coherent image. */
-  disable_data_cache();
-  _copyandreboot(g_kernel_reboot_data, (int)g_kernel_reboot_len); /* never returns */
+void mtp_fs_prepare_for_warm_reboot(void) {
+  if (tud_inited())
+    (void) tud_disconnect();
 }
 
 /* Main-loop half of the sliced cache rebuild: start a debounced rebuild
@@ -1445,49 +1389,22 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
         break;
       }
       if (g_write_state.is_kernel_now) {
-        uint32_t reboot_copy_len = (g_write_state.transferred + 63u) & ~63u;
-
         if (g_write_state.size_known && (g_write_state.transferred != g_write_state.size)) {
           resp->header->code = MTP_RESP_GENERAL_ERROR;
           fs_release_write_state();
           break;
         }
-
-        if (g_write_state.kernel_data == NULL || g_write_state.transferred == 0u) {
+        if (g_write_state.transferred > g_write_state.kernel_capacity ||
+            !chainboot_image_ok(g_write_state.kernel_data, g_write_state.transferred)) {
           resp->header->code = MTP_RESP_GENERAL_ERROR;
           fs_release_write_state();
           break;
         }
-
-        if (reboot_copy_len > g_write_state.kernel_capacity) {
-          resp->header->code = MTP_RESP_STORE_FULL;
-          fs_release_write_state();
-          break;
-        }
-
-        if (reboot_copy_len > g_write_state.transferred) {
-          memset(g_write_state.kernel_data + g_write_state.transferred, 0, reboot_copy_len - g_write_state.transferred);
-        }
-
-        /* Refuse to jump into something that is not a kernel.  Every image
-           this project builds begins with an ARM branch at offset 0 (the
-           vector table's "b _reset_"), so a first word that is not one means
-           the transfer arrived damaged - and jumping into it produces a Pi
-           that is silent before UART init and needs a power cycle, which has
-           happened repeatedly.  Refusing costs a failed flash and leaves the
-           machine running. */
-        if ((get_le32(g_write_state.kernel_data) & 0xff000000u)
-            != 0xea000000u) {
-          resp->header->code = MTP_RESP_GENERAL_ERROR;
-          fs_release_write_state();
-          break;
-        }
-
-        /* Hand the image to the main loop and answer the host normally.  The
-           buffer's ownership moves with it, so clear the pointer before the
-           release below frees it. */
-        g_kernel_reboot_data = g_write_state.kernel_data;
-        g_kernel_reboot_len = reboot_copy_len;
+        /* Hand the image over and answer the host normally: the buffer's
+           ownership moves with it, so clear the pointer before the release
+           below frees it. */
+        chainboot_request(g_write_state.kernel_data, g_write_state.transferred,
+                          g_write_state.kernel_capacity);
         g_write_state.kernel_data = NULL;
         resp->header->code = MTP_RESP_OK;
         fs_release_write_state();
@@ -2030,8 +1947,13 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
         return MTP_RESP_INVALID_OBJECT_FORMAT_CODE;
       }
 
-      uint32_t kernel_capacity = g_write_state.size_known ? ((g_write_state.size + 63u) & ~63u) : FS_KERNEL_NOW_FALLBACK_CAPACITY;
-      if ( (g_write_state.size > (FS_KERNEL_NOW_FALLBACK_CAPACITY - 63)) || (!fs_kernel_alloc(kernel_capacity))) {
+      /* Refused before the host sends the image, not after. */
+      if (chainboot_refusal() != NULL) {
+        fs_release_write_state();
+        return MTP_RESP_DEVICE_BUSY;
+      }
+      uint32_t kernel_capacity = g_write_state.size_known ? ((g_write_state.size + 63u) & ~63u) : CHAINBOOT_MAX_IMAGE;
+      if ( (g_write_state.size > (CHAINBOOT_MAX_IMAGE - 63)) || (!fs_kernel_alloc(kernel_capacity))) {
         fs_release_write_state();
         return MTP_RESP_STORE_FULL;
       }

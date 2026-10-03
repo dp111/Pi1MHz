@@ -33,5 +33,11 @@ safely test-driving a new firmware build before committing to it. To
 make a new firmware permanent, copy it over `kernel.img` in the SD card
 root instead (over MTP, WebDAV, or in a card reader).
 
+The same works over the network: see
+[the web interface](web-interface.md#kernelnow-over-the-network). The Pi
+checks the image looks like Pi1MHz firmware before restarting, and
+refuses while the video player is open - restarting over a running
+player leaves video broken until the next full reboot.
+
 If you never touch firmware updates you can ignore this entirely -
 just avoid naming any of your own files `kernel.now`.

@@ -45,6 +45,7 @@
 #include "../AUN/aun_emulator.h"
 #include "../serial_redirect.h"
 #include "../serial_modem.h"
+#include "../chainboot.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
@@ -351,6 +352,11 @@ typedef struct {
    bool     copy_dst_existed;
    FIL      copy_src;
    FIL      copy_dst;
+   /* kernel.now (a PUT, or the upload form): the image is gathered here in
+      RAM - never written to the card - and handed to chainboot at the end. */
+   uint8_t *kn_buf;
+   uint32_t kn_len;
+   uint32_t kn_cap;
 } ws_conn_t;
 
 typedef struct {
@@ -1881,6 +1887,7 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
       }
    }
 
+   free(c->kn_buf);
    free(c->out);
    free(c);
    return aborted;
@@ -4013,6 +4020,84 @@ static void upload_discard_temp(ws_conn_t *c)
    }
 }
 
+/* ---- kernel.now ----------------------------------------------------------
+   A file called kernel.now in the card's root, sent by PUT or by the upload
+   form, is not saved: it is gathered in RAM and the Pi restarts into it, as
+   when one is copied over MTP.  See chainboot.c. */
+static bool ws_is_kernel_now(const char *path)
+{
+   while (*path == '/')
+      path++;
+   return strcasecmp(path, "kernel.now") == 0;
+}
+
+/* Start gathering an image of expect bytes (0: not known).  NULL on
+   success, else the reason, with the HTTP status for it in *status. */
+static const char *kn_begin(ws_conn_t *c, uint32_t expect, int *status)
+{
+   const char *why = chainboot_refusal();
+   uint32_t    cap;
+
+   if (why != NULL) {
+      *status = 503;
+      return why;
+   }
+   if (expect > CHAINBOOT_MAX_IMAGE) {
+      *status = 413;
+      return "kernel.now is larger than 4 MB.";
+   }
+   cap = (expect != 0u) ? ((expect + 63u) & ~63u) : CHAINBOOT_MAX_IMAGE;
+   free(c->kn_buf);
+   c->kn_buf = malloc(cap);
+   if (c->kn_buf == NULL) {
+      *status = 507;
+      return "There is no room for kernel.now.";
+   }
+   c->kn_cap = cap;
+   c->kn_len = 0u;
+   return NULL;
+}
+
+/* False if the image would outgrow its buffer. */
+static bool kn_append(ws_conn_t *c, const uint8_t *data, size_t len)
+{
+   if (len > c->kn_cap - c->kn_len)
+      return false;
+   memcpy(c->kn_buf + c->kn_len, data, len);
+   c->kn_len += (uint32_t)len;
+   return true;
+}
+
+/* The whole image is here: hand it to chainboot.  NULL on success, else
+   the reason, with the HTTP status for it in *status.  Either way the
+   buffer is no longer this connection's. */
+static const char *kn_take(ws_conn_t *c, int *status)
+{
+   const char *why = chainboot_refusal();
+
+   *status = 503;
+   if (why == NULL && !chainboot_image_ok(c->kn_buf, c->kn_len)) {
+      *status = 422;
+      why = "That is not a Pi1MHz kernel image - the Pi carries on as it was.";
+   }
+   if (why != NULL) {
+      free(c->kn_buf);
+      c->kn_buf = NULL;
+      return why;
+   }
+   chainboot_request(c->kn_buf, c->kn_len, c->kn_cap);
+   c->kn_buf = NULL;
+   return NULL;
+}
+
+static const char *kn_status_text(int status)
+{
+   return status == 413 ? "Payload Too Large"
+        : status == 422 ? "Unprocessable Content"
+        : status == 507 ? "Insufficient Storage"
+        :                 "Service Unavailable";
+}
+
 static bool upload_fail(ws_conn_t *c, const char *msg)
 {
    ws_strbuf_t b;
@@ -4040,6 +4125,15 @@ static bool upload_flush(ws_conn_t *c);
 
 static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
 {
+   if (c->kn_buf != NULL && len != 0u) {
+      if (!kn_append(c, data, len)) {
+         free(c->kn_buf);
+         c->kn_buf = NULL;
+         return upload_fail(c, "kernel.now is larger than 4 MB.");
+      }
+      c->up_bytes_written += (uint32_t)len;
+      return true;
+   }
 
    if (len == 0u || !c->up_file_open)
       return true;
@@ -4107,6 +4201,24 @@ static bool upload_flush(ws_conn_t *c)
 static bool upload_finish(ws_conn_t *c)
 {
    ws_strbuf_t b;
+
+   if (c->kn_buf != NULL) {
+      int         status;
+      const char *why = kn_take(c, &status);
+      if (why != NULL)
+         return upload_fail(c, why);
+      c->up_complete = true;
+      c->up_state = UP_EPILOGUE;
+      sb_init(&b);
+      page_open(&b, "Restarting");
+      sb_printf(&b, "<h1>Restarting</h1><div class=\"card\"><p>kernel.now "
+                    "(%lu bytes) was received - the Pi is restarting into it. "
+                    "It is not saved on the card: a power cycle goes back to "
+                    "the card's kernel.</p></div>",
+                (unsigned long)c->up_bytes_written);
+      page_close(&b);
+      return ws_finish_html(c, 200, "OK", &b);
+   }
 
    if (c->up_file_open) {
       FRESULT fr;
@@ -4218,6 +4330,17 @@ static bool upload_begin_part(ws_conn_t *c)
    {
       char tmp[WS_UP_TMP_MAX];
       upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
+
+      /* kernel.now in the root is not saved: the Pi restarts into it. */
+      if (ws_is_kernel_now(full)) {
+         int         status;
+         const char *why = kn_begin(c, 0u, &status);
+         if (why != NULL)
+            return upload_fail(c, why);
+         c->up_bytes_written = 0u;
+         c->up_buf_len = 0u;
+         return true;
+      }
 
       /* The browser upload form is a third way onto the card, alongside MTP
          and the DAV verbs.  Like WebDAV PUT it streams into a "<name>.part"
@@ -5053,6 +5176,15 @@ static bool dav_put_write_bytes(ws_conn_t *c, const uint8_t *data, size_t len)
 {
    if (len == 0u)
       return true;
+   if (c->kn_buf != NULL) {
+      if (kn_append(c, data, len))
+         return true;
+      free(c->kn_buf);
+      c->kn_buf = NULL;
+      (void)ws_error(c, 413, "Payload Too Large",
+                     "kernel.now is longer than it said, or than 4 MB.");
+      return false;
+   }
    if (!c->dav_put_open)
       /* Deliberate unauthenticated drain swallows the body; any OTHER
          closed-file state here means the temp file went away mid-transfer
@@ -5083,6 +5215,13 @@ static bool dav_put_write_bytes(ws_conn_t *c, const uint8_t *data, size_t len)
    hand off to the digest challenge. */
 static bool dav_put_finish(ws_conn_t *c)
 {
+   if (c->kn_buf != NULL) {
+      int         status;
+      const char *why = kn_take(c, &status);
+      if (why != NULL)
+         return ws_error(c, status, kn_status_text(status), why);
+      return dav_put_send_response(c);   /* the restart follows, from webserver_poll */
+   }
    if (c->dav_put_open) {
       FRESULT fr;
       if (!dav_put_flush(c))
@@ -5310,6 +5449,59 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
    return true;
 }
 
+/* The PUT's sink is ready (the .part file, or a kernel.now buffer): set up
+   the body framing, answer Expect: 100-continue, and take any body bytes
+   that arrived with the headers.  status is the reply on success. */
+static bool dav_put_begin_body(ws_conn_t *c, bool te_chunked,
+                               uint32_t content_length, int body_at,
+                               int status, const char *status_text)
+{
+   c->dav_put_buf_len    = 0u;
+   c->dav_put_chunked    = te_chunked;
+   c->dav_remaining      = content_length;      /* unused while te_chunked */
+   c->dav_chunk_state    = DAV_CHUNK_SIZE;
+   c->dav_chunk_remaining= 0u;
+   c->dav_chunk_linelen  = 0u;
+   c->dav_put_status     = status;
+   c->dav_put_status_text= status_text;
+
+   c->state = CONN_RECV_DAV_PUT;
+
+   /* Expect: 100-continue handshake (RFC 9110 §10.1.1).  Windows
+      Explorer's MiniRedirector sends "Expect: 100-continue" on every
+      PUT and refuses to transmit the body until it sees a
+      "HTTP/1.1 100 Continue" interim response.  Without this reply
+      Windows hangs on the empty pipe; one TCP keep-alive byte slips
+      through after a few seconds and then the connection times out.
+      Combined with Windows' DELETE-before-PUT overwrite pattern, the
+      target ends up removed and never replaced - exactly the
+      "transfer stops after one byte, file gone" symptom.
+
+      Cyberduck and other DAV clients don't send Expect, so they hit
+      none of this and work today.
+
+      The 100 response is written directly to the pcb; it is NOT
+      queued via c->out because the FINAL response (201/204) also
+      uses c->out and we'd lose it.  tcp_output flushes the small
+      25-byte write immediately so Windows starts the body before the
+      next ws_recv callback. */
+   ws_send_100_continue_if_expected(c);
+
+   /* The HTTP-header parse may have buffered some of the body already. */
+   if ((size_t)body_at < c->reqhdr_len) {
+      size_t already = c->reqhdr_len - (size_t)body_at;
+      return te_chunked
+          ? dav_put_consume_chunked(c, (const uint8_t *)c->reqhdr + body_at,
+                          already, NULL)
+           : dav_put_consume(c, (const uint8_t *)c->reqhdr + body_at, already);
+   }
+   /* Zero-length PUT (Content-Length model only): close + reply immediately. */
+   if (!te_chunked && content_length == 0u)
+      return dav_put_consume(c, NULL, 0u);
+
+   return true;
+}
+
 static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
                           const char *query)
 {
@@ -5422,6 +5614,28 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
                             "Content-Length exceeds the PUT size limit.");
          content_length = (content_length * 10u) + (uint32_t)(*p - '0');
       }
+   }
+
+   /* kernel.now in the root is never written: it is a restart. */
+   if (ws_is_kernel_now(sdpath)) {
+      int         status;
+      const char *why;
+      if (in_place)
+         return ws_error(c, 400, "Bad Request",
+                         "kernel.now cannot be written in place.");
+      why = kn_begin(c, te_chunked ? 0u : content_length, &status);
+      if (why != NULL)
+         return ws_error(c, status, kn_status_text(status), why);
+      /* Explorer LOCKs a new name before it PUTs, and route_dav_lock leaves
+         an empty placeholder for its PROPFIND - not wanted for this one. */
+      if (f_stat(sdpath, &fno) == FR_OK && fno.fsize == 0u
+          && (fno.fattrib & AM_DIR) == 0u
+          && f_unlink(sdpath) == FR_OK)
+         mtp_fs_notify_object_removed(sdpath);
+      c->dav_put_target[0]  = '\0';
+      c->dav_put_tmppath[0] = '\0';
+      return dav_put_begin_body(c, te_chunked, content_length, body_at,
+                                201, "Created");
    }
 
    target_existed = f_stat(sdpath, &fno) == FR_OK;
@@ -5579,50 +5793,9 @@ static bool route_dav_put(ws_conn_t *c, const char *rawpath, int body_at,
                          "Cannot create the target (missing parent folder?).");
    }
    c->dav_put_open       = true;
-   c->dav_put_buf_len    = 0u;
-   c->dav_put_chunked    = te_chunked;
-   c->dav_remaining      = content_length;      /* unused while te_chunked */
-   c->dav_chunk_state    = DAV_CHUNK_SIZE;
-   c->dav_chunk_remaining= 0u;
-   c->dav_chunk_linelen  = 0u;
-   c->dav_put_status     = target_existed ? 204 : 201;
-   c->dav_put_status_text= target_existed ? "No Content" : "Created";
-
-   c->state = CONN_RECV_DAV_PUT;
-
-   /* Expect: 100-continue handshake (RFC 9110 §10.1.1).  Windows
-      Explorer's MiniRedirector sends "Expect: 100-continue" on every
-      PUT and refuses to transmit the body until it sees a
-      "HTTP/1.1 100 Continue" interim response.  Without this reply
-      Windows hangs on the empty pipe; one TCP keep-alive byte slips
-      through after a few seconds and then the connection times out.
-      Combined with Windows' DELETE-before-PUT overwrite pattern, the
-      target ends up removed and never replaced - exactly the
-      "transfer stops after one byte, file gone" symptom.
-
-      Cyberduck and other DAV clients don't send Expect, so they hit
-      none of this and work today.
-
-      The 100 response is written directly to the pcb; it is NOT
-      queued via c->out because the FINAL response (201/204) also
-      uses c->out and we'd lose it.  tcp_output flushes the small
-      25-byte write immediately so Windows starts the body before the
-      next ws_recv callback. */
-   ws_send_100_continue_if_expected(c);
-
-   /* The HTTP-header parse may have buffered some of the body already. */
-   if ((size_t)body_at < c->reqhdr_len) {
-      size_t already = c->reqhdr_len - (size_t)body_at;
-      return te_chunked
-          ? dav_put_consume_chunked(c, (const uint8_t *)c->reqhdr + body_at,
-                          already, NULL)
-           : dav_put_consume(c, (const uint8_t *)c->reqhdr + body_at, already);
-   }
-   /* Zero-length PUT (Content-Length model only): close + reply immediately. */
-   if (!te_chunked && content_length == 0u)
-      return dav_put_consume(c, NULL, 0u);
-
-   return true;
+   return dav_put_begin_body(c, te_chunked, content_length, body_at,
+                             target_existed ? 204 : 201,
+                             target_existed ? "No Content" : "Created");
 }
 
 /* Recursive DELETE for a collection: f_unlink only succeeds on files
@@ -7011,6 +7184,7 @@ static void ws_err(void *arg, err_t err)
          (void)f_unlink(c->dav_put_tmppath);
    }
    ws_live_remove(c);
+   free(c->kn_buf);
    free(c->out);
    free(c);
 }
@@ -7187,6 +7361,8 @@ static void webserver_refresh_sd_free(void)
    have been delivered - restart the Pi.  reboot_now() does not return. */
 void webserver_poll(void)
 {
+   chainboot_poll();      /* a kernel.now PUT's restart, once its reply is out */
+
    if (g_ws_reboot_pending
        && (Pi1MHz_now_us - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
 #ifdef DEBUG
