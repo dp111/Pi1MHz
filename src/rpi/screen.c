@@ -17,10 +17,11 @@
 
     Default usage :
 
-    Plane 0 - YUV 768 x 576
-    Plane 1 - RGB 320 x 240 256 colour
-    Plane 2 - RGB 16x16  mouse pointer 2 colour
-    Plane 3 - RGB 320x16  status 2 colour
+    Plane 0 - YUV video (the video player)
+    Plane 1 - RGB 8 bit palettised, the computer screen (the pointer is
+              drawn into it)
+    Plane 2 - unused (was the mouse pointer)
+    Planes 3-6 - the VP5 dim strips
 */
 
 /* context memory layout 16Kbytes ( 0x4000 bytes)
@@ -68,8 +69,9 @@ YUV plane = 768*8 + 768/2* 8
 #define SCALER_POS2_ALPHA_PREMULT (1u<<29)
 
 /* Line-buffer memory for vertical scaling, 48K words in total.  It is NOT
-   divided evenly: the video, computer and pointer planes keep the 12K each
-   they were designed around (shrinking them corrupts the video plane), and
+   divided evenly: slots 0-2 keep the 12K each they were designed around
+   (shrinking them corrupts the video plane; slot 2, once the pointer plane,
+   is unused), and
    the four VP5 dim strips get 512 words apiece - they scale a handful of
    constant source pixels, so they need almost nothing. */
 #define LBM_PLANE_SIZE (12*1024)
@@ -360,14 +362,6 @@ static float rgb_scale = 0.0f;
 /* The scale the framebuffer plane actually ended up at, after the clamp.
    Overlays on the computer screen inherit it verbatim - see screen_scale. */
 static float fb_scale = 0.0f;
-/* ...and its SOURCE-pixel-to-screen-pixel ratio per axis, which is not the
-   same number on both: screen_scale corrects the pixel aspect ratio on one
-   axis only, so MODE 0 (par 0.5) maps x by 2 and y by 4. Positions on the
-   computer screen must use these, not the scalar. */
-static float fb_scale_x = 0.0f;
-static float fb_scale_y = 0.0f;
-static uint32_t xoffset = 0;
-static uint32_t yoffset = 0;
 
 static bool plane_valid[8];
 
@@ -566,9 +560,8 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
     if (plane_valid[planeno + 1] == false) {
         /* An unused slot ends the list only if nothing further along is
            live. Planes are no longer a contiguous run - the VP5 dim strips
-           sit at 3-6 with the mouse plane at 2 often absent - so ending
-           here unconditionally would cut the strips out of the list on
-           every MODE change. */
+           sit at 3-6 and slot 2 is unused - so ending here unconditionally
+           would cut the strips out of the list on every MODE change. */
         bool later_valid = false;
         for (uint32_t i = planeno + 2; i < MAX_PLANES; i++)
             if (plane_valid[i]) { later_valid = true; break; }
@@ -827,11 +820,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", *scaled_width, *scaled_height);
 #endif
     if (!scale_height) {
-        fb_scale = scale;        /* what the pointer must inherit */
-        if (width && height) {
-            fb_scale_x = (float)*scaled_width  / (float)width;
-            fb_scale_y = (float)*scaled_height / (float)height;
-        }
+        fb_scale = scale;        /* what an overlay must inherit */
     }
 
     uint32_t h_overscan = (h_display - *scaled_width) / 2;
@@ -840,12 +829,6 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     LOG_DEBUG("overscan %"PRId32" x %"PRId32"\r\n", h_overscan, v_overscan);
 #endif
     *startpos = ((v_overscan & 0xfff)<<12) + (h_overscan & 0xfff);
-
-    if (!scale_height)
-    {
-        xoffset = h_overscan;
-        yoffset = v_overscan;
-    }
     return 0;
 }
 
@@ -1337,43 +1320,6 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         dim_strips_reframe();
 }
 
-void screen_set_plane_position( uint32_t planeno, int32_t x, int32_t y )
-{
-    // we can cheat here as we are only changing the position
-
-// we should clip the plane to the screen size
-
-    /* Computer-screen coordinates, so the framebuffer's own source-to-screen
-       ratio and origin - PER AXIS, because the pixel aspect correction only
-       applies to one of them. rgb_scale is not it either: the framebuffer's
-       clamp can halve it (see screen_scale). */
-    float sx = (fb_scale_x > 0.01f) ? fb_scale_x
-                                    : ((fb_scale > 0.1f) ? fb_scale : rgb_scale);
-    float sy = (fb_scale_y > 0.01f) ? fb_scale_y
-                                    : ((fb_scale > 0.1f) ? fb_scale : rgb_scale);
-
-    int newy = (int) (( float) y * sy) + (int) yoffset;
-    if (newy < 0)
-    {
-        newy = 0;
-    }
-
-    int newx = (int) (( float) x * sx) + (int)xoffset;
-    if (newx < 0)
-    {
-        newx = 0;
-    }
-    /* Keep the fixed-alpha byte the VP modes put in bits 24-31: rebuilding
-       pos from scratch here used to clear it, so a pointer move during VP4
-       silently dropped the plane's mix level to zero. */
-    if (planeno < MAX_PLANES) {
-        plane_shadow[planeno].pos = (plane_shadow[planeno].pos & 0xFF000000u)
-                                  | (((uint32_t)newy & 0xfffu) << 12)
-                                  | ((uint32_t)newx & 0xfffu);
-        plane_mark(planeno, PL_DIRTY_POS);
-    }
-}
-
 /* Overlay translucency for the palettized (8-bit) plane.
    alpha = 0xFF: per-pixel palette alpha only (hard key - black clear,
    graphics opaque). alpha < 0xFF: HVS fixed-nonzero mode - the fixed
@@ -1426,10 +1372,10 @@ static bool plane_gated[MAX_PLANES];
    surround dims the video and draws a rectangle round the glyph. Sticky
    per plane: the framebuffer's flash timer re-selects the family every
    tick and must not quietly re-enrol the pointer. */
-static bool plane_hl_exempt[MAX_PLANES] = { [2] = true };
-static uint8_t plane_treat_flags[MAX_PLANES] = { [2] = 6u };
-static uint8_t plane_treat_alpha[MAX_PLANES] = { [2] = 0xFFu };
-static bool    plane_treat_set[MAX_PLANES]   = { [2] = true };
+static bool plane_hl_exempt[MAX_PLANES];
+static uint8_t plane_treat_flags[MAX_PLANES];
+static uint8_t plane_treat_alpha[MAX_PLANES];
+static bool    plane_treat_set[MAX_PLANES];
 
 void screen_plane_treatment( uint32_t planeno, uint32_t palette_flags, uint32_t alpha )
 {
@@ -1849,10 +1795,6 @@ void screen_mixer_reset( void )
     }
     for (uint32_t i = 0; i < MAX_PLANES; i++)
         plane_hl_exempt[i] = false;
-    plane_hl_exempt[2] = true;      /* the pointer, always */
-    plane_treat_flags[2] = 6u;      /* keyed, exempt from highlight */
-    plane_treat_alpha[2] = 0xFFu;
-    plane_treat_set[2]   = true;
     screen_dim_strips(false);
     screen_set_highlight(false);
 }
@@ -1884,7 +1826,7 @@ void screen_set_highlight( bool on )
         if ((plane_shadow[pl].ctrl & 0xF) != 0xD)
             continue;      /* only the palettized planes have a palette word */
         if (plane_hl_exempt[pl])
-            continue;      /* the pointer: its black stays clear, not dimming */
+            continue;      /* its black stays clear, not dimming */
         uint32_t bank = ((plane_shadow[pl].palette & 0x3fffu) - PALETTE_BASE)/0x400u;
         if (!(bank & 2u))
             continue;                      /* not keyed: highlight is moot */

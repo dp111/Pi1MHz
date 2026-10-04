@@ -830,13 +830,12 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					VPmode = scsiFcodeBuffer[2];
 				switch(scsiFcodeBuffer[2]) {
 					/* Layer visibility goes through screen_plane_gate(), the
-					   mixer-level hide: the framebuffer, mouseredirect and the
-					   player keep OWNING their planes via screen_plane_enable
-					   (a MODE change or a pointer move re-asserts "wanted"),
-					   but a gated layer stays hidden regardless - on the real
-					   AIV the pointer is drawn INTO the computer RGB, so it is
-					   gated and mixed exactly like the screen, while keeping
-					   its per-pixel key so it never gains an opaque surround. */
+					   mixer-level hide: the framebuffer and the player keep
+					   OWNING their planes via screen_plane_enable (a MODE
+					   change re-asserts "wanted"), but a gated layer stays
+					   hidden regardless.  The pointer is drawn INTO the
+					   computer plane, as on the real AIV, so it is gated and
+					   mixed with the screen. */
 					case '1':
 					screen_dim_strips(false);
 					FCdebugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
@@ -847,7 +846,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, true);
-					screen_plane_gate(2, true);
 					screen_plane_alpha(1, 0xFF);
 					break;
 
@@ -857,12 +855,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_set_highlight(false);
 					screen_plane_gate(0, true);
 					screen_plane_gate(1, false);
-					screen_plane_gate(2, false);
 					screen_plane_enable(1, true);
-					/* the pointer stays KEYED here: it composites onto the
-					   screen, and an opaque surround would paint a box */
 					screen_plane_treatment(1, 3, 0xFF);
-					screen_plane_treatment(2, 6, 0xFF);
 					break;
 
 					case '3':
@@ -872,10 +866,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, false);
-					screen_plane_gate(2, false);
 					screen_plane_enable(1, true);
 					screen_plane_treatment(1, 2, 0xFF);
-					screen_plane_treatment(2, 6, 0xFF);
 					break;
 
 					case '4':
@@ -889,24 +881,18 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					   black stays clear and graphics mix at alpha/255.
 					   NOT the all-opaque bank: that mixes black too and
 					   dims the picture inside the computer's rectangle,
-					   which is visible as a box against the surround.
-					   The pointer mixes at the same level and is keyed for
-					   the same reason (its surround is an overlay artifact,
-					   not screen content - an opaque mix draws a grey box). */
+					   which is visible as a box against the surround. */
 					FCdebugString_P(PSTR(" = Video overlay mode 4 (Transparent - both mixed)\r\n"));
 					screen_set_highlight(false);
 					/* The mix is in the palette (premultiplied), not in the
 					   plane's fixed-alpha stage, so the scaler interpolates
-					   correct data and glyph edges get no dark outline. The
-					   pointer shares the bank for the same reason. */
+					   correct data and glyph edges get no dark outline. */
 					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, false);
-					screen_plane_gate(2, false);
 					screen_plane_enable(1, true);
 					/* alpha comes from the palette, so the plane runs at 0xFF */
 					screen_plane_treatment(1, 5, 0xFF);
-					screen_plane_treatment(2, 5, 0xFF);
 					break;
 
 					case '5':
@@ -914,10 +900,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					   picture except where the computer's image is non-black.
 					   Keyed palette inverted (black = half-opaque, colours =
 					   transparent), per-pixel alpha - the graphic is a stencil
-					   that spotlights the video, not a layer drawn over it.
-					   The pointer sits on the same inverted bank, so its glyph
-					   is a brightup window too (its black surround adds a
-					   small extra dim patch - accepted artifact). */
+					   that spotlights the video, not a layer drawn over it. */
 					FCdebugString_P(PSTR(" = Video overlay mode 5 (Highlight - LaserVision enhanced by computer)\r\n"));
 					screen_set_highlight(true);
 					/* dim the band outside the computer's raster too - out
@@ -926,10 +909,8 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, false);
-					screen_plane_gate(2, false);
 					screen_plane_enable(1, true);
 					screen_plane_treatment(1, 2, 0xFF);
-					screen_plane_treatment(2, 6, 0xFF);
 					break;
 
 					case 'X':

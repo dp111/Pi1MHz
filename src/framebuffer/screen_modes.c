@@ -753,7 +753,6 @@ static void update_palette(screen_mode_t *screen, int mark) {
    }
 
    screen_set_palette(SCREEN_PLANE,mark?0:1,1);
-   screen_set_palette(SCREEN_PLANE+1,mark?0:1,1); // mouse plane
 
    // Remember the currently selected palette
    last_mark = mark;
