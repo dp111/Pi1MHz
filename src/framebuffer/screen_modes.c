@@ -1269,7 +1269,11 @@ screen_mode_t *get_screen_mode(int mode_num) {
          break;
       }
 
-      if (!sm->flash && sm->log2bpp == 3) {
+      /* Flashing colours exist only in the 2, 4 and 16 colour modes and
+         teletext; in a 256-colour mode the flash tick would just swap the
+         plane between two identical banks. */
+      if (!sm->flash && sm->log2bpp == 3 &&
+          (sm->ncolour <= 15 || (sm->mode_flags & F_TELETEXT))) {
          sm->flash = default_flash;
       }
 

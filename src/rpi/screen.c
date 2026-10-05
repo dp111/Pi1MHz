@@ -1534,6 +1534,29 @@ static uint32_t palette_keyed_entry( uint32_t entry, uint32_t colour, bool highl
     return black ? colour : (0xff000000u | colour);
 }
 
+/* What each palette word was last set to.  A MODE change sets all 512
+   entries, four words each, and most of them to what they already hold;
+   writing only the ones that differ keeps the HVS's palette, which it reads
+   for every pixel, out of the way of 2048 writes mid-frame.  0x00FFFFFF is
+   never a palette value (opaque entries carry alpha FF, clear and dimming
+   ones carry no colour), so it marks "not written yet". */
+#define PAL_UNWRITTEN 0x00FFFFFFu
+static uint32_t palette_words[PAL_ENTRIES * 4u];
+static bool     palette_words_init;
+
+static void palette_put( uint32_t index, uint32_t value )
+{
+    if (!palette_words_init) {
+        for (uint32_t i = 0; i < PAL_ENTRIES * 4u; i++)
+            palette_words[i] = PAL_UNWRITTEN;
+        palette_words_init = true;
+    }
+    if (palette_words[index] == value)
+        return;
+    palette_words[index] = value;
+    context_memory[(PALETTE_BASE>>2) + index] = value;
+}
+
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
 {
     // palette 0 is normal colours
@@ -1543,19 +1566,15 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
 
     uint32_t colour = ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
 
-    context_memory[(PALETTE_BASE>>2) + entry] = 0xff000000 | colour;
+    palette_put(entry, 0xff000000 | colour);
 
     /* BOTH keyed variants: under highlight the framebuffer is on 6/7 but a
        highlight-exempt plane (the mouse pointer) is still rendering from
        2/3, so refreshing only the "active" pair left the pointer showing
        pre-VP5 colours until highlight was turned off again. */
-    context_memory[(PALETTE_BASE>>2) + entry + PAL_KEYED] =
-        palette_keyed_entry(entry, colour, false);
-    context_memory[(PALETTE_BASE>>2) + entry + PAL_KEYED_HL] =
-        palette_keyed_entry(entry, colour, true);
-
-    context_memory[(PALETTE_BASE>>2) + entry + PAL_MIXED] =
-        palette_mixed_entry(entry, colour);
+    palette_put(entry + PAL_KEYED,    palette_keyed_entry(entry, colour, false));
+    palette_put(entry + PAL_KEYED_HL, palette_keyed_entry(entry, colour, true));
+    palette_put(entry + PAL_MIXED,    palette_mixed_entry(entry, colour));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1812,8 +1831,7 @@ void screen_set_highlight( bool on )
     uint32_t dst = on ? PAL_KEYED_HL : PAL_KEYED;
     for (uint32_t entry = 0; entry < 512u; entry++) {
         uint32_t colour = context_memory[(PALETTE_BASE>>2) + entry] & 0x00FFFFFFu;
-        context_memory[(PALETTE_BASE>>2) + entry + dst] =
-            palette_keyed_entry(entry, colour, on);
+        palette_put(entry + dst, palette_keyed_entry(entry, colour, on));
     }
 
     screen_highlight = on;
