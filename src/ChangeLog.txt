@@ -295,3 +295,11 @@ USB mouse: works alongside a user port mouse, and through a hub; a Pi 1/2/3 Mode
 USB mouse: the Beeb reads its movement and buttons at &FCAC-&FCAF; see docs/user/usb-mouse.md.
 VFS ROM 2.01: reads the USB mouse; *ROMS shows version 02 to tell it from an Acorn chip.
 kernel.now: a firmware image can be tried over WiFi - WebDAV PUT /kernel.now or the web upload form.
+
+v.1.39
+BREAK after a Pi reboot no longer crashes the Master: the Pi changes screen mode only between HVS frames.
+Screen redirector: the Beeb's screen, boot message included, is copied to the Pi when the redirector starts.
+MODE changes are quicker (a row-at-a-time clear) and rewrite only the palette entries that change.
+Pi 3B+ WiFi joins again: back to the 43455 firmware 7.45.241 (7.45.265 shipped since V1.31 could not join).
+VFS ROM 2.02: the user port trackball works again with the USB mouse code; *POINTER 0 hides the Pi's pointer.
+The Pi's mouse pointer goes off at BREAK.
