@@ -449,6 +449,14 @@ void mouse_redirect_init(uint8_t instance, uint8_t address)
     Pi1MHz_Register_Memory(WRITE_FRED, (address+1u), mouse_redirect_position_byte );
     Pi1MHz_Register_Memory(WRITE_FRED, (address+2u), mouse_redirect_position_byte );
     Pi1MHz_Register_Memory(WRITE_FRED, (address+3u), mouse_redirect_position_complete );
+    /* A Beeb reset hides the pointer: nothing on the Beeb asks for it again
+       until a VFS program does *POINTER.  (When the position lived in FRED
+       memory the reset's clear left it at 0,0 - drawn off the bottom of the
+       screen, so it looked off; pointer_pos survives a reset, so say so.)
+       moved makes the next VDU drain lift whatever is drawn. */
+    pointer_pos[0] = pointer_pos[1] = pointer_pos[2] = 0u;
+    pointer_pos[3] = 0xF0u;
+    moved = true;
     /* Reads are the USB mouse: reading &FCAF latches the next set. */
     Pi1MHz_Register_Memory(READ_FRED, (address+3u), mouse_redirect_mouse_read );
     for (unsigned int i = 0; i < 4u; i++)
