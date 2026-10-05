@@ -600,12 +600,14 @@ ORG &FD00
   JMP oswtchredirectexit
 
 .setupredirector
+
   LDA &20F
   CMP #(newoswrch DIV 256)
   BNE redirectnextbyte
   RTS
 
 .redirectnextbyte
+
   STA newoswrch+4+1
 
   LDA &20E
@@ -615,26 +617,89 @@ ORG &FD00
   STA &20E
   LDA #(newoswrch DIV 256)
   STA &20F
-  LDA #&75:JSR OSBYTE   :\ Read VDU status
-  TXA:AND #&10:CMP #&10 :\ Test shadow flag in bit 4
-  PHP                   :\ Save shadow flag in Carry
-  LDA #&A0 : LDX #&55
-  JSR OSBYTE  :\ Read current MODE
-  TXA :ASL A:PLP:ROR A   :\ Move shadow flag into bit 7
 
-  ; Change mode so that both screens match
-  PHA
-  LDA #22: JSR &FFEE
-  PLA : JSR &FFEE
-  RTS
+    LDA #&A0 : LDX #&55 : JSR OSBYTE  :\ Read current MODE
+
+  ; Change mode on pi.
+    LDA #22: STA newoswrch :STX newoswrch
+
+  ; read cursor enabled state directly from hardware
+    LDA #10: STA &FE00: LDA &FE01 : PHA
+    LDA #32: STA &FE01 ; disable beeb cursor
+
+  ; now copy existing screen
+
+  ; read screen width
+    LDA #160: LDX #9 : JSR OSBYTE ; read screen width ; Y = width
+    INY
+    STY screenwidth+1 ; store screen width in variable
+  ; read current cursor position
+
+    LDA #134 : JSR OSBYTE ; get current cursor position X = HPOS, Y = VPOS
+    INX:INY
+    STX xcounter : STY ycounter
+
+; set cursor position to the top of screen
+
+    LDA #31 : JSR newoswrch+3 : LDA #0 : JSR newoswrch+3 : JSR newoswrch+3
+
+    ; disable Pi cursor
+    LDX #0 : JSR cursoronoff
+    JMP dofirstchar
+
+.screenwidth
+    LDA #0
+    STA xcounter
+.loopcopyscreen
+    LDA #9 : JSR newoswrch+3  ; advance cursor
+
+.dofirstchar
+    ; loop read screen characters
+    LDA #135 : JSR OSBYTE ; x = Char ; Y screen mode
+    STX newoswrch ; write char to new screen
+
+    DEC xcounter
+    BNE loopcopyscreen
+
+    DEC ycounter
+    BNE screenwidth
+
+    LDA #8 : STA newoswrch    ; the last read was the cell under the cursor: step the Pi back onto it
+
+    LDX #0
+  ;  LDA #10: STA &FE00 ; re-enable beeb cursor
+    PLA :; STA &FE01
+
+    CMP #32
+    BEQ restorecursoroff
+    LDX #10
+.restorecursoroff
+.cursoronoff
+    LDY #10
+.cursoronoffloop
+    LDA cursoroffdata,X
+    JSR newoswrch+3 ;STA newoswrch ; just the Pi cursor
+    INX:DEY
+    BNE cursoronoffloop
+
+    RTS
+
+.cursoroffdata
+    EQUB 23,1,0,0,0,0,0,0,0,0
+.cursoroondata
+    EQUB 23,1,1,0,0,0,0,0,0,0
+.xcounter
+    EQUB 0
+.ycounter
+    EQUB 0
 
 .setupredirectorwithmessage
   JSR setupredirector
 
-  PRTSTRING " Screen Redirector enabled."
-  JSR OSNEWL
-  JSR OSNEWL
-
+;  PRTSTRING " Screen Redirector enabled."
+;  JSR OSNEWL
+;  JSR OSNEWL
+   JMP  oswtchredirectexit
 .oswtchredirectexit
   PAGERTS
 
