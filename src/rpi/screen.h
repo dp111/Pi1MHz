@@ -13,6 +13,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
    creation and, if the plane exists, at the next blanking. */
 void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows );
 void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr );
+void screen_wait_blanking( void );
 void screen_create_RGB_plane( uint32_t planeno, uint32_t width , uint32_t height, float par, uint32_t scale_height, uint32_t colour_depth, uint32_t buffer );
 void screen_plane_enable(uint32_t planeno, bool enable);
 void screen_plane_alpha(uint32_t planeno, uint32_t alpha);

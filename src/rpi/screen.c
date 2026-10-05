@@ -1917,6 +1917,36 @@ static uint32_t vsync_window_start_us;
 static uint32_t vsync_window_count;
 static uint32_t vsync_rate_mhz;      /* refresh in millihertz */
 
+/* Return at the start of a blanking interval, so that what the caller
+   writes into the display list and palette next lands while the HVS is not
+   reading them.  A MODE change rebuilt plane 1 and rewrote the palette
+   mid-frame, which disturbs the HVS (an immediate end of frame, then a short
+   frame), and while it recovers the VPU misses 1MHz bus cycles - measured on
+   a Zero W: a Beeb BREAK whose redirector helper runs from JIM crashed in 15
+   of 22 after a Pi reboot, and in 0 of 48 with the rebuild started here.
+   Staging only the plane entry for the end-of-frame commit was not enough
+   (14 of 32): the palette rewrite that follows has to start in blanking too.
+
+   A FRESH end of frame is waited for: any pending one is dropped first,
+   since a caller inside a long IRQ (the VDU drain) may be well past it.  The
+   end-of-frame flag is polled directly, as the vsync IRQ cannot run while
+   the caller is in IRQ context, and left set, so the IRQ still services the
+   new frame.  Waiting on channel 1's state field instead (EOF until the next
+   frame starts) does not work: 18 of 32 BREAKs failed with that.  It waits
+   at boot too, before the end-of-frame IRQ is enabled: the flag is set by
+   the HVS regardless, and skipping the wait there - for the Pi's own first
+   MODE - took the failure rate straight back (10 of 16, 21 of 32), for a
+   reason not yet understood.  Up to a frame, 40 ms at most; FIQ - and so
+   the bus - runs throughout. */
+void screen_wait_blanking( void )
+{
+    RPI_hvs->stat = ( 1 << 16);                 /* drop a stale end of frame */
+    uint32_t c0 = vsync_count, t0 = RPI_GetSystemTime();
+    while (!(RPI_hvs->stat & ( 1 << 16)) && vsync_count == c0 &&
+           (RPI_GetSystemTime() - t0) < 40000u)
+        ;
+}
+
 bool screen_check_vsync( void )
 {
     if (RPI_hvs->stat & ( 1 << 16)) // check for end of frame
