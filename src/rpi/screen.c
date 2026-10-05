@@ -429,6 +429,18 @@ static void plane_mark( uint32_t planeno, uint32_t mask )
    their changes go out in the same blanking interval. */
 void screen_plane_commit( void )
 {
+    /* Only while the HVS is still between frames.  It composites ahead of
+       the display and starts the next frame ~0.1-0.2 ms after its end of
+       frame; a plane change written after that - here, typically because
+       the end of frame was serviced late behind a long IRQ - is followed
+       within a few ms by the VPU missing 1MHz bus cycles (bus trace: plane
+       1's ctrl+palette commit landing at HVS line 10, then a JIM fetch never
+       served; 3 of 3).  Leave the changes for the next frame; a channel that
+       never gets there cannot hold them for more than a few. */
+    static uint32_t late;
+    if (plane_defer && (RPI_hvs->stat1 >> 30) != 3u && ++late < 4u)
+        return;
+    late = 0;
     for (uint32_t pl = 0; pl < MAX_PLANES; pl++) {
         uint32_t mask = plane_dirty[pl];
         if (!mask)
