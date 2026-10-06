@@ -17,7 +17,8 @@ bool mtp_fs_eject(void);
 void mtp_fs_inserted(void);
 /* Before a chain-boot (chainboot.c): take the device off the bus. */
 void mtp_fs_prepare_for_warm_reboot(void);
-void mtp_fs_cache_poll(void);   /* sliced object-cache rebuild - see mtp_fs.c */
+void mtp_fs_cache_poll(void);   /* sliced object-cache rebuild, deferred
+                                   transfer drop - see mtp_fs.c */
 
 /* As above, but also emit an asynchronous MTP event so a connected host
    (Windows Explorer) refreshes its own cached view immediately rather than
