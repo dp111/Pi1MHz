@@ -47,6 +47,7 @@ void screen_set_palette(uint32_t planeno, uint32_t palette, uint32_t flags)
 void screen_update_palette_entry(uint32_t entry, uint32_t r, uint32_t g, uint32_t b)
 { (void)entry; (void)r; (void)g; (void)b; }
 uint32_t screen_get_palette_entry(uint32_t entry) { (void)entry; return 0; }
+void screen_wait_blanking(void) { }
 
 // ---- timer / interrupt controller ---------------------------------------
 // The VDU queue is drained by fb_process_vdu_queue() only when the ARM timer

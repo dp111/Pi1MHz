@@ -2002,6 +2002,10 @@ void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours) {
       y_pixels <<= 1;
    } while (y_pixels < 1024);
    new_screen->ncolour = n_colours - 1;
+   /* get_screen_mode() works out white and the flash filter from ncolour,
+      and the call above saw the previous custom mode's (or none, the first
+      time): derive them again from this one. */
+   new_screen = get_screen_mode(new_screen->mode_num);
    new_screen->par = ((float) (1 << new_screen->xeigfactor)) / ((float) (1 << new_screen->yeigfactor));
    change_mode(new_screen);
 }
