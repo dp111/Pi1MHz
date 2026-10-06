@@ -88,9 +88,10 @@ header — trust the newest status over the body).
   screen. When the running AND the pushed build both have the low-RAM
   chain marker (`src/rpi/lowmem.h`), a `Boot time` row with a real
   pre-kernel figure after a kernel.now means the chain-boot fell back to
-  the SD kernel; with an older build on either side the row proves nothing,
-  so fingerprint the banner before believing any symptom
-  (`docs/dev/chainboot-kernel-now.md`). Zero bytes on COM9 after F11 (1B 5B 57)
+  the SD kernel; "n/a (chain-boot)" counts only with the `Reset reason` row
+  showing no reset since the push. With an older build on either side the
+  row proves nothing, so fingerprint the banner before believing any
+  symptom (`docs/dev/chainboot-kernel-now.md`). Zero bytes on COM9 after F11 (1B 5B 57)
   means the Pico is wedged and needs a physical re-plug, not a firmware
   fault. `claude-tmp/build-all.sh` builds the three configs release-last
   and prints only warnings. Brief subagents narrowly with an output cap;

@@ -52,8 +52,9 @@ needs lives below the kernel, at fixed addresses defined in
 drains the stores, invalidates the I-cache, branch predictor and prefetch
 (with the ARM1176 erratum 411920 workaround on `kernel.img`; DSB/ICIALLU/
 BPIALL/DSB/ISB on `kernel7.img`) and branches to it. That routine copies the
-image to 0x8000 with registers only - no stack - then cleans the caches, turns
-the MMU and caches off, invalidates the TLB, I-cache and branch predictor and
+image to 0x8000 with registers only - no stack - then invalidates (never
+cleans: `disable_data_cache` already did, and a clean now could only write a
+stale line over the image) the data caches, turns the MMU and caches off, invalidates the TLB, I-cache and branch predictor and
 branches to 0x8000. The assembler refuses to build if it outgrows its 256-byte
 page. Consequences:
 
@@ -66,18 +67,28 @@ page. Consequences:
   source is always above the destination: the ascending copy can overlap it
   and still never overwrite a byte before reading it.
 - **The chain marker survives any image and any pair of builds** that both
-  have it, so the `Boot time` row's "pre-kernel n/a (chain-boot)" can be
-  trusted again (and with it the post-ring seeding in `Pi1MHz.c`, which also
-  keys off `RPI_ChainBooted()`): a real pre-kernel figure after a push
-  between two such builds means the chain-boot fell back to the card.
-  INFERRED from the design; confirm it on hardware before relying on it.
+  have it - and is believed only for a jump that has just happened with no
+  reset in between: it carries the 64-bit system timer and the reset-reason
+  register from the moment of the jump, and the incoming kernel accepts it
+  only if under 500 ms have passed and the register is unchanged
+  (`bootstage.c`). Without that, a marker left by a failed hand-over (or by
+  a push to an older kernel, which never clears it) was read by the SD
+  kernel after the watchdog reset, which then skipped launching the VPU.
+  So the `Boot time` row's "pre-kernel n/a (chain-boot)" can be trusted
+  again, and with it the post-ring seeding in `Pi1MHz.c` that keys off
+  `RPI_ChainBooted()`: a real pre-kernel figure after a push between two such
+  builds means the chain-boot fell back to the card. INFERRED from the
+  design, including that a real jump fits in 500 ms; confirm both on
+  hardware before relying on it.
 - **The first push onto an older running kernel still goes through that
   kernel's in-place copier**, which only survives where the incoming image
   has the same bytes at its `_copyandreboot`..`_fast_scroll_end` and
-  `_chainboot_mmu_off`. This build does not (INFERRED from the layout change,
-  not measured): expect that push to fail - a hang, or a watchdog fall-back to
-  the card kernel - and install the first build of this layout from the SD
-  card. Pushes from it onward, to any build, use the new copier. The older
+  `_chainboot_mmu_off`. This layout does not: MEASURED by comparing the
+  `rpi` release images of 876c829 and this build, every word differs at
+  0x81a0-0x81bf (8/8), `_fast_scroll` 0x81c0-0x81e3 (9/9) and
+  `_chainboot_mmu_off` 0x8218-0x823f (10/10). So that push will fail - a
+  hang, or a watchdog fall-back to the card kernel (INFERRED: not tried).
+  **The first install of this layout must be from the SD card.** Pushes from it onward, to any build, use the new copier. The older
   kernel's marker is in its `.noinit`, so that row is meaningless across the
   transition in either direction.
 
@@ -227,11 +238,15 @@ Full 16-push table in the gcc17 harness's `PI-CONTROL.md` under
 
 ## Mechanisms tested and rejected
 
-- **"The copy overwrites `PageTable` while the MMU is live."** The identity map
-  is 1 MB sections, so the whole copy region is one already-resident TLB entry
-  and the copy performs no table walks. Trampling the table is harmless.
-  Turning the MMU off before the copy was implemented, tested, and made no
-  difference; it was reverted.
+- **"The copy overwrites `PageTable` while the MMU is live."** Rejected as the
+  cause of the intermittent failure, but the reasoning recorded here was
+  wrong: the identity map is 1 MB sections, and a copy of 0.5-0.9 MB from
+  0x8000 already reaches into the second section (0x100000), a 4 MB image
+  into the fifth. The copy walks the table once for each new section it
+  enters, so trampled entries ahead of it could fault the copy. Why that
+  never showed in these tests is not known. Turning the MMU off before the copy was implemented,
+  tested, and made no difference; it was reverted. Since 2026-10-06 the table
+  is at 0x4000, out of the copy's reach.
 - **"The copy must not reach `arm_stack`, because `_fast_scroll` returns
   through that stack."** 900,000 bytes writes past it and still boots.
 - **"Real bytes over the live DMA control blocks break the handover."** Tested
