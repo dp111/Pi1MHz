@@ -1320,6 +1320,48 @@ static bool ws_is_root(const char *p)
 }
 
 /* ------------------------------------------------------------------ */
+/* Cross-site requests                                                 */
+/* ------------------------------------------------------------------ */
+
+/* True if a browser sent this request for a page from another site.  With
+   no credentials configured (the default) any page the user has open could
+   otherwise POST a kernel.now (a chain-boot) or /reboot here, or overwrite
+   a disc image - and with credentials the browser may attach its cached
+   ones.  Sec-Fetch-Site is set by the browser and page script cannot forge
+   it: anything but same-origin, or none (a typed URL or bookmark), is
+   refused.  A browser too old to send it still sends Origin on a POST,
+   which must then name the host the request was sent to ("null", from a
+   sandboxed frame or a file: page, never does).  A request with neither
+   header is not from a web page - curl, WebDAV clients - and passes. */
+static bool ws_cross_site(const char *hdr, size_t limit)
+{
+   char        site[24];
+   char        origin[128];
+   char        host[128];
+   const char *o = origin;
+
+   if (ws_find_header(hdr, limit, "Sec-Fetch-Site", site, sizeof site))
+      return strcasecmp(site, "same-origin") != 0
+          && strcasecmp(site, "none") != 0;
+   if (!ws_find_header(hdr, limit, "Origin", origin, sizeof origin))
+      return false;
+   if (ws_prefix_ci_str(o, "http://"))
+      o += 7;
+   else if (ws_prefix_ci_str(o, "https://"))
+      o += 8;
+   else
+      return true;
+   /* ws_find_header truncates silently: a cut value proves nothing. */
+   if (strlen(origin) + 2u > sizeof origin
+       || !ws_find_header(hdr, limit, "Host", host, sizeof host))
+      return true;
+   return strcasecmp(o, host) != 0;
+}
+
+#define WS_CROSS_SITE_MSG "Refused: another web site's page asked for this. " \
+                          "Use the Pi1MHz pages themselves."
+
+/* ------------------------------------------------------------------ */
 /* Digest authentication (RFC 2617, qop=auth, MD5)                     */
 /* ------------------------------------------------------------------ */
 
@@ -3955,12 +3997,15 @@ static bool route_bench(ws_conn_t *c)
    return true;
 }
 
+#ifdef DEBUG
 /* GET /udpblast?host=a.b.c.d&port=5001&mb=8 - prime the UDP blast rig
    (wifi_lwip.c).  Takes lwIP TCP out of the throughput measurement: the
    datagrams travel the ordinary link_output -> hold-queue -> credit-gate
    path, but nothing waits for ACKs.  Measure at the receiver (its byte
    count over its own clock); the /status "UDP blast" row is the
-   cross-check.  host is required; port defaults to 5001, mb to 8. */
+   cross-check.  host is required; port defaults to 5001, mb to 8.
+   DEBUG builds only: on a release build anyone on the network could
+   point a gigabyte of UDP at any host. */
 static bool route_udpblast(ws_conn_t *c, const char *query)
 {
    char        val[40];
@@ -4010,6 +4055,7 @@ static bool route_udpblast(ws_conn_t *c, const char *query)
    page_close(&b);
    return ws_finish_html(c, 200, "OK", &b);
 }
+#endif
 
 static bool route_files_get(ws_conn_t *c, const char *rawpath)
 {
@@ -6855,6 +6901,18 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (wifi_debug_enabled())
       wifi_debug_printf("REQ %s %s\n", method, rawpath);
 
+   /* Anything that changes state is refused when a browser says another
+      site's page sent it (ws_cross_site).  Reads are left alone: that page
+      cannot see the answer.  Ahead of the digest check, because a browser
+      attaches its cached credentials to a forged request too.  Closed
+      after the 403: a PUT or POST body behind it is never read. */
+   if (!ws_method_is(method, "GET") && !ws_method_is(method, "HEAD")
+       && !ws_method_is(method, "OPTIONS") && !ws_method_is(method, "PROPFIND")
+       && ws_cross_site(c->reqhdr, (size_t)body_at)) {
+      c->keep_alive = false;
+      return ws_error(c, 403, "Forbidden", WS_CROSS_SITE_MSG);
+   }
+
    /* Digest auth.  When configured, every route requires a valid
       Authorization header.  OPTIONS is intentionally NOT exempt - the
       WebDAV client sends it after authenticating, and exempting it
@@ -7002,8 +7060,15 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_edid(c);
       if (strcmp(rawpath, "/bench.bin") == 0)
          return route_bench(c);
+#ifdef DEBUG
+      /* A GET that acts, so the cross-site rule above applies to it too:
+         an <img src=/udpblast?...&mb=1024> on any page would otherwise
+         start a gigabyte of UDP. */
       if (strcmp(rawpath, "/udpblast") == 0)
-         return route_udpblast(c, (query != NULL) ? query + 1 : NULL);
+         return ws_cross_site(c->reqhdr, (size_t)body_at)
+              ? ws_error(c, 403, "Forbidden", WS_CROSS_SITE_MSG)
+              : route_udpblast(c, (query != NULL) ? query + 1 : NULL);
+#endif
       if (strcmp(rawpath, "/aun") == 0)
          return route_aun(c);
       if (strcmp(rawpath, "/framebuffer") == 0)

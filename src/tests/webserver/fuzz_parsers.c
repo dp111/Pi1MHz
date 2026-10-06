@@ -162,6 +162,7 @@ int main(void)
          if (ws_find_header(s, len, name, o, osz))
             assert(strlen(o) < osz);
          free(o);
+         (void)ws_cross_site(s, len);
       }
 
       /* Multipart fields */

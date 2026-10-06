@@ -303,6 +303,70 @@ int main(void)
          "ws_is_root");
    }
 
+   puts("== W4: cross-site request check ==");
+   {
+#define XS(h) ws_cross_site(h, sizeof h - 1u)
+      static const char plain[] =
+         "POST /reboot HTTP/1.1\r\nHost: 192.168.1.50\r\n\r\n";
+      static const char same_sfs[] =
+         "POST /reboot HTTP/1.1\r\nHost: pi1mhz.local\r\n"
+         "Origin: http://pi1mhz.local\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+      static const char cross_sfs[] =
+         "POST /reboot HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Origin: http://evil.example\r\nSec-Fetch-Site: cross-site\r\n\r\n";
+      static const char samesite_sfs[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Sec-Fetch-Site: same-site\r\n\r\n";
+      static const char none_sfs[] =
+         "GET /udpblast HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Sec-Fetch-Site: none\r\n\r\n";
+      static const char img_cross[] =
+         "GET /udpblast?host=1.2.3.4&mb=1024 HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Sec-Fetch-Site: cross-site\r\nSec-Fetch-Dest: image\r\n\r\n";
+      static const char origin_same[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50:8080\r\n"
+         "Origin: http://192.168.1.50:8080\r\n\r\n";
+      static const char origin_case[] =
+         "POST /files/ HTTP/1.1\r\nHost: Pi1MHz.local\r\n"
+         "Origin: HTTP://pi1mhz.LOCAL\r\n\r\n";
+      static const char origin_cross[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Origin: http://evil.example\r\n\r\n";
+      static const char origin_port[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Origin: http://192.168.1.50:8080\r\n\r\n";
+      static const char origin_null[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50\r\nOrigin: null\r\n\r\n";
+      static const char origin_nohost[] =
+         "POST /files/ HTTP/1.1\r\nOrigin: http://192.168.1.50\r\n\r\n";
+      static const char sfs_beats_origin[] =
+         "PUT /x.ssd HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Origin: http://192.168.1.50\r\nSec-Fetch-Site: cross-site\r\n\r\n";
+      ok(!XS(plain), "W4: no Origin, no Sec-Fetch-Site (curl, WebDAV) passes");
+      ok(!XS(same_sfs), "W4: same-origin (the Pi's own pages) passes");
+      ok(XS(cross_sfs), "W4: Sec-Fetch-Site cross-site refused");
+      ok(XS(samesite_sfs), "W4: Sec-Fetch-Site same-site refused");
+      ok(!XS(none_sfs), "W4: Sec-Fetch-Site none (typed URL) passes");
+      ok(XS(img_cross), "W4: cross-site <img> GET refused");
+      ok(!XS(origin_same), "W4: Origin naming the Host passes (with port)");
+      ok(!XS(origin_case), "W4: Origin/Host compare is case-blind");
+      ok(XS(origin_cross), "W4: foreign Origin refused");
+      ok(XS(origin_port), "W4: Origin on another port refused");
+      ok(XS(origin_null), "W4: Origin null refused");
+      ok(XS(origin_nohost), "W4: Origin with no Host to match refused");
+      ok(XS(sfs_beats_origin), "W4: Sec-Fetch-Site wins over a matching Origin");
+      {
+         /* A body after the header block is not searched: the caller
+            passes body_at, not the whole buffer. */
+         static const char body_origin[] =
+            "POST /files/ HTTP/1.1\r\nHost: h\r\n\r\nOrigin: http://evil\r\n";
+         ok(!ws_cross_site(body_origin, sizeof body_origin - 1u
+                                        - sizeof "Origin: http://evil\r\n" + 1u),
+            "W4: header block only");
+      }
+#undef XS
+   }
+
    puts("== W7: download Content-Type by whole extension ==");
    {
       const char *t;

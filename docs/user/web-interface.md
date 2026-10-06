@@ -95,6 +95,13 @@ require a login on every page and WebDAV operation. With either one
 missing, the server is open to anyone on your network. See
 [WiFi setup](wifi.md#password-protection).
 
+With or without a password, the Pi refuses any change - an upload,
+delete, rename, `kernel.now` or reboot - that your web browser says was
+asked for by a page from another web site (403 Forbidden). So a web
+page you happen to visit cannot write to the card or restart the Pi
+behind your back. The Pi's own pages, WebDAV clients and `curl` are
+not affected.
+
 ## Speed expectations
 
 This is a Pi Zero doing WiFi in software; expect file transfers of
