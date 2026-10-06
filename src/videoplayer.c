@@ -37,6 +37,7 @@
 #include "rpi/systimer.h"
 #include "rpi/audio.h"
 #include "rpi/h264dec.h"
+#include "rpi/vchiq.h"
 #include "rpi/lowmem.h"
 #include "rpi/cache.h"
 #include "Pi1MHz.h"
@@ -62,11 +63,18 @@ static char pvf_path[32];
  * (rpi/lowmem.h; 0x7C20 until the page table took 0x4000-0x7FFF).
  *
  * [0] magic 'VBUF', [1] still-frame buffer handle of a PRE-1.31 kernel
+ *     - or magic 'VCHQ', [1] the VCHIQ shared block handed on (below)
  * [2] magic 'VBF2', [3][4] the two H264 frame buffer handles
  *
- * Word [1] is only ever released here, never written: the 4:2:2 still
+ * 'VBUF' is only ever released here, never written: the 4:2:2 still
  * frame it belonged to is gone, but chain-booting from an older kernel
  * would otherwise leak its 864 KB out of the pool the decoder needs.
+ *
+ * 'VCHQ' is written by videoplayer_shutdown just before a kernel.now: the
+ * VideoCore will not take a second VCHIQ_INIT, so the connection itself is
+ * handed on (rpi/vchiq.h) and the next kernel finds it by [1].  A kernel
+ * that predates it reads neither word, starts a fresh connection that the
+ * VideoCore ignores, and has no video until a power cycle - as before.
  */
 #define VIDEOBUF_PERSIST_BASE LOWMEM_VIDEOBUF_PERSIST
 #define videobuf_magic    (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[0])
@@ -75,6 +83,7 @@ static char pvf_path[32];
 #define videobuf_handle2(n) (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[3 + (n)])
 #define VIDEOBUF_MAGIC    0x56425546u   /* 'VBUF' */
 #define VIDEOBUF_MAGIC2   0x56424632u   /* 'VBF2' */
+#define VIDEOBUF_LINK     0x56434851u   /* 'VCHQ' */
 /* After every change: a kernel.now copies with the D-cache on, and the next
    kernel must find the block in RAM, not in this one's dirty line. */
 #define videobuf_persist_clean() \
@@ -746,11 +755,10 @@ static void pvf_reopen(void)
         return;
     }
     /* A DIFFERENT disc side (VFS jukebox / eject flip): blank the h264
-       frame buffers to black I420 so a later plane enable (E1/VP-mode from
-       the new side's boot software) can never re-show the previous disc's
-       last frame.  A same-path reopen (card remount, repoke of the current
-       directory) keeps its frames - blanking there would black out a
-       playing disc for nothing. */
+       frame buffers to black I420 so no later plane enable can ever
+       re-show the previous disc's last frame.  A same-path reopen (card
+       remount, repoke of the current directory) keeps its frames -
+       blanking there would black out a playing disc for nothing. */
     if (strcmp(prev_path, pvf_path) != 0) {
         for (int i = 0; i < NUM_FRAME_BUFFERS; i++) {
             if (vp.buf_phys[i]) {
@@ -1229,6 +1237,12 @@ void videoplayer_init(uint8_t instance, uint8_t address)
             videobuf_magic = 0u;
             videobuf_magic2 = 0u;
             videobuf_persist_clean();
+        } else if (videobuf_magic == VIDEOBUF_LINK) {
+            /* Only noted: the connection is taken over lazily, by the
+               first bring-up, like everything else video. */
+            vchiq_adopt(videobuf_handle);
+            videobuf_magic = 0u;
+            videobuf_handle = 0u;
         }
     }
 
@@ -1267,6 +1281,44 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     screen_mixer_reset();
     Pi1MHz_Register_Poll(videoplayer_poll, "video");
     filesystemRegisterEject(videoplayer_eject, NULL);
+}
+
+/* kernel.now (chainboot.c, from the main loop, just before the jump): the
+   VideoCore is not reset by the jump, so the player shuts itself down
+   rather than leave the decoder running on the GPU with nobody behind it.
+   Only the player's own output is touched - its plane and its sound.  The
+   decoder goes down completely (h264dec_shutdown) and the VCHIQ connection
+   is handed on, so the next kernel can play video again without a power
+   cycle.  Never a reason not to jump: a step that fails is logged (DEBUG),
+   and whatever the VideoCore may still hold is leaked rather than freed
+   under it - the frame buffers' handles are then dropped from the block
+   instead of left for the next kernel to release.  True if it was clean. */
+bool videoplayer_shutdown(void)
+{
+    vp_armed_phys = 0;               /* the vsync IRQ flips nothing more */
+    vp_committed_phys = 0;
+    screen_plane_enable(YUV_PLANE, false);
+    vp.plane_on = false;
+    if (vp.open) {
+        f_close(&vp.file);
+        if (vp.audio_present)
+            audio_release(&vp.producer);
+        vp.audio_present = false;
+        vp.open = false;
+    }
+    free(vp.index);
+    vp.index = NULL;
+    vp.pending_phys = vp.displayed_phys = 0;
+    vp.mode = VP_IDLE;
+
+    bool clean = h264dec_shutdown();
+    if (!clean)
+        videobuf_magic2 = 0u;        /* leaked: the VC may still decode into them */
+    uint32_t link = vchiq_handover();
+    videobuf_magic = link ? VIDEOBUF_LINK : 0u;
+    videobuf_handle = link;
+    videobuf_persist_clean();
+    return clean;
 }
 
 /* The deferred bring-up: everything videoplayer_init used to do inline. */

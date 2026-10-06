@@ -31,7 +31,8 @@ header — trust the newest status over the body).
   addresses - with exactly four recorded exceptions, all in
   `src/rpi/lowmem.h`: the VPU bus program (0x3A00, copied at a cold boot
   only, so a VPU-code change needs a cold boot/SD install), the kernel.now
-  markers (0x3D00: chain-boot marker, video GPU handles), the kernel.now
+  markers (0x3D00: chain-boot marker; 0x3D20: video GPU handles and the
+  VCHIQ hand-over pointer), the kernel.now
   copier (0x3E00) and the L1 page table (0x4000-0x7FFF). They exist because
   a kernel.now copy writes the incoming image from 0x8000 up over the
   running kernel, `.noinit` included, and `.noinit` moves between builds;

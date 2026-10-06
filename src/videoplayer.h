@@ -9,8 +9,10 @@ void videoplayer_vsync_flip(void);   /* vsync IRQ: commit the armed frame */
 
 /* ---- LaserDisc-player control surface, driven by the F-codes ---------- */
 
-/* True when a .pvf video is open and the hardware decoder is running.
-   When false the F-code layer keeps its old (static frame) behaviour. */
+/* True when a .pvf video is open and the hardware decoder is running -
+   which says nothing about a decoded frame: the video plane is the
+   player's own and comes on only with its first real one. When false
+   there is no disc picture: ?F answers X and the jumps do nothing. */
 bool videoplayer_active(void);
 bool videoplayer_seeking(void);            /* ?P: goto outstanding */
 bool videoplayer_audio_enabled(int channel);
@@ -46,10 +48,15 @@ void videoplayer_show_picture_number(bool on);
 /* F-codes A0/A1 (channel 0) and B0/B1 (channel 1) */
 void videoplayer_audio_enable(int channel, bool on);
 
-/* Current picture number for the ?F status request (0 = unknown) */
 void videoplayer_set_video(bool on);        /* F-codes E0 / E1  */
 bool videoplayer_take_stop_reached(void);  /* stop register hit, once */
+/* Current picture number for the ?F status request (0 = unknown) */
 uint32_t videoplayer_picture_number(void);
+
+/* kernel.now, just before the jump (chainboot.c): close the player, take
+   the decoder down and hand the VideoCore connection to the next kernel.
+   Never fails the jump; true if the VideoCore let go of everything. */
+bool videoplayer_shutdown(void);
 
 /* One-line state dump for /status */
 const char *videoplayer_status(void);

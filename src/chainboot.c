@@ -12,7 +12,6 @@
 #include "videoplayer.h"
 #include "rpi/asm-helpers.h"
 #include "rpi/audio.h"
-#include "rpi/h264dec.h"
 #include "rpi/rpi.h"
 #include "rpi/systimer.h"
 #include "wifi/sdio.h"
@@ -32,16 +31,12 @@ bool chainboot_image_ok(const uint8_t *image, uint32_t length)
 
 const char *chainboot_refusal(void)
 {
-   /* A chain-boot never shuts the VideoCore down: over an open player it
-      orphans the GPU decoder, and video stays broken until a full reboot. */
-   if (videoplayer_active())
-      return "The video player is open - close it (or reboot) first.";
-   /* The decoder outlives the player: its MMAL component and VCHIQ service
-      are never torn down once started - not by closing the player, not by a
-      BREAK - so after any video use since the last reboot there is something
-      a chain-boot would orphan. */
-   if (h264dec_running())
-      return "Video has been used since the last reboot - reboot first.";
+   /* Nothing refuses at present.  Video used to (review 2026-10-06 R2: a
+      chain-boot orphaned the GPU decoder, and once started it was never torn
+      down); the owner's call is that kernel.now must not depend on what the
+      Beeb has been doing, so the player now shuts itself down just before
+      the jump instead (videoplayer_shutdown, below).  Kept, with the checks
+      in chainboot_poll and the senders, for the next thing that must. */
    return NULL;
 }
 
@@ -116,9 +111,9 @@ void chainboot_poll(void)
    if (s_image == NULL)
       return;
 
-   /* The player or the decoder may start while this waits, and then the
-      image is given up rather than orphan the decoder.  The refusal is asked
-      again before each step that would cost the Beeb something to undo. */
+   /* Whatever a refusal guards against may start while this waits, and then
+      the image is given up.  The refusal is asked again before each step
+      that would cost the Beeb something to undo. */
    if (s_stage == 0u) {
       settle_us = RPI_GetSystemTime() + CHAINBOOT_SETTLE_US;
       s_stage = 1u;
@@ -166,11 +161,21 @@ void chainboot_poll(void)
       Beeb: the eject stopped every LUN, and putting the card back mounts it
       without restarting them and resets the FAT directory to /Transfer, so
       a session in progress - a Domesday disc, say - loses its discs until
-      the next BREAK.  Still better than orphaning the decoder. */
+      the next BREAK. */
    if (chainboot_refusal() != NULL) {
       chainboot_abandon();
       return;
    }
+
+   /* The VideoCore is not reset by the jump.  Left alone, a decoder that
+      ever ran stays on the GPU with nobody behind it, holding our memory,
+      and the next kernel can never reach it - no video until a power cycle.
+      So the player shuts itself down (its plane, its sound, the decoder) and
+      hands the VideoCore connection on.  Here, after the eject: with no card
+      no F-code can bring the player back up before the jump.  The answer is
+      not a reason to stay - what a failed step leaves is leaked, not freed
+      under the VideoCore (videoplayer.c) - and each step is time-bounded. */
+   (void)videoplayer_shutdown();
 
    /* The chip keeps power across the warm jump, so tell it to stop signalling
       on DAT1 (CCCR 0x04, HOSTINTMASK) and hide the controller latch before the

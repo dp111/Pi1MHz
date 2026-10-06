@@ -1,5 +1,10 @@
 # `kernel.now` chain-boot: what the copy actually touches
 
+STATUS (2026-10-06, later): **kernel.now is no longer refused after video
+use; the player shuts video down and hands the VideoCore connection on
+instead** - see "Video across the jump" below. COMPILE- AND HOST-TESTED
+ONLY: none of it has run on a Pi.
+
 STATUS (2026-10-06): **the hand-over was rebuilt so that nothing it uses lies
 in the copy's path** (review 2026-10-06 P2) - see "The handover" below.
 COMPILE-VERIFIED ONLY: it needs cold-boot and kernel.now tests on a Pi Zero/1
@@ -123,6 +128,72 @@ page. Consequences:
   via the SD card too.** The older kernel's marker is in its `.noinit`, so
   the Boot time row is meaningless across the transition in either
   direction.
+
+## Video across the jump
+
+The VideoCore is not reset by a kernel.now. Until 2026-10-06 that made video
+and kernel.now incompatible: the decoder (an MMAL component on the GPU,
+importing our buffers through the SMEM service, both over VCHIQ) was never
+torn down, so a jump left it running with nobody behind it, and the incoming
+kernel could not reach the VideoCore at all - the firmware ignores a second
+`TAG_VCHIQ_INIT` and never answers the new kernel's CONNECT (hardware
+observation recorded in `h264-hardware-decode.md`). So kernel.now was refused
+whenever the decoder had ever run (review 2026-10-06 R2).
+
+The owner's decision: no refusal. Instead `chainboot_poll`, after the eject
+(no card, so no F-code can bring the player back up) and before the WiFi chip
+is quietened and interrupts go off, calls `videoplayer_shutdown()`:
+
+1. the player's own output goes: video plane off, its audio producer
+   released, the file and index dropped (never the Beeb's display);
+2. `h264dec_shutdown()`: input and output ports disabled (each by its own
+   state), the component disabled and destroyed, every SMEM import freed,
+   the SMEM service closed - a FREE has no answer, so the VideoCore's answer
+   to that CLOSE, which follows the FREEs on the same service, is the proof
+   they were done - then the input staging buffers returned to the GPU pool
+   and the MMAL service closed;
+3. `vchiq_handover()`: protocol 8 has no disconnect, so the connection is
+   handed on rather than shut. Where the stream stands (our read position,
+   the next kernel's first local port) is recorded at the end of the
+   pagelist page of the shared block itself - GPU memory, outside the copy -
+   and the block's address goes in the 0x3D20 handle block as `'VCHQ'` in
+   word 0, the address in word 1. The incoming kernel's first
+   `videoplayer_init` passes it to `vchiq_adopt()` (no VideoCore work), and
+   the first bring-up's `vchiq_init` takes the connection over - no INIT, no
+   CONNECT - reading and dropping whatever arrived meanwhile so its slots go
+   back. Each kernel's ports start past the previous one's, so a service the
+   outgoing kernel could not close can never talk to a new one.
+
+Every MMAL/SMEM call is bounded by its reply timeout (and a VideoCore that
+stops answering latches each client dead, so later calls fail at once); each
+close waits at most 200 ms. Nothing stops the jump: a failed step is logged
+in DEBUG builds and the jump goes ahead. What a failed step leaves is
+leaked, never freed under the VideoCore: the frame buffers' handles are then
+dropped from the 0x3D20 block (word 2 cleared) instead of left for the next
+kernel to release, and the input staging buffers are not returned. An
+unanswered SMEM close counts as a failure for this. A bulk transfer still in
+flight (only the audio service sends one, and nothing starts that service
+today) is given 200 ms, then the connection is not handed on at all. A clean
+shutdown leaves `'VBF2'` and the two frame-buffer handles in place, and the
+next kernel releases them at its first `videoplayer_init`, as before. If the
+record does not check out, `vchiq_init` falls back to a fresh start - which,
+with the VideoCore still on the old block, costs one CONNECT timeout and
+leaves video unavailable until a power cycle, but never hangs.
+
+Cross-build: a kernel older than this ignores `'VCHQ'`, starts a fresh
+connection the VideoCore ignores, and has no video until a power cycle (as
+before); a push from an older kernel after video use is still refused by
+that kernel.
+
+Host tests: `src/tests/chainboot` (no refusal on video; the shutdown is
+sequenced after the eject and before the jump; the jump happens when the
+shutdown fails) and `src/tests/vchiq` (hand-over and adoption against a
+simulated VideoCore that, like the hardware, takes one INIT and ignores the
+rest). The VideoCore side - that destroy/free/close are accepted, and that a
+taken-over connection really carries on - needs the hardware test: play
+video, push kernel.now, play video again after the jump without a power
+cycle, five times over; and once more with the push landing while a PVF is
+mid-playback.
 
 ## What the copy runs over (before 2026-10-06)
 

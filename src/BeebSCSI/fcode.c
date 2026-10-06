@@ -833,17 +833,18 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					   mixer-level hide: the framebuffer and the player keep
 					   OWNING their planes via screen_plane_enable (a MODE
 					   change re-asserts "wanted"), but a gated layer stays
-					   hidden regardless.  The pointer is drawn INTO the
-					   computer plane, as on the real AIV, so it is gated and
-					   mixed with the screen. */
+					   hidden regardless.  So no mode here enables plane 0:
+					   whether the disc picture is wanted is the player's
+					   call - on with its first real decoded frame, off and
+					   on with E0/E1, off on a media change - and asserting
+					   it from here showed a stale or never-decoded buffer
+					   and undid an E0 (review 2026-10-06 U1).  The pointer
+					   is drawn INTO the computer plane, as on the real AIV,
+					   so it is gated and mixed with the screen. */
 					case '1':
 					screen_dim_strips(false);
 					FCdebugString_P(PSTR(" = Video overlay mode 1 (LaserVision video only)\r\n"));
 					screen_set_highlight(false);
-					/* No video open (data-only side): keep the plane off so the
-					   screen is black, not a stale buffer. The player's first
-					   real frame enables it. */
-					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, true);
 					screen_plane_alpha(1, 0xFF);
@@ -863,7 +864,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					screen_dim_strips(false);
 					FCdebugString_P(PSTR(" = Video overlay mode 3 (Hard-keyed)\r\n"));
 					screen_set_highlight(false);
-					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, false);
 					screen_plane_enable(1, true);
@@ -887,7 +887,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					/* The mix is in the palette (premultiplied), not in the
 					   plane's fixed-alpha stage, so the scaler interpolates
 					   correct data and glyph edges get no dark outline. */
-					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, false);
 					screen_plane_enable(1, true);
@@ -906,7 +905,6 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 					/* dim the band outside the computer's raster too - out
 					   there the computer signal is blanking, i.e. black */
 					screen_dim_strips(true);
-					screen_plane_enable(0, videoplayer_active());
 					screen_plane_gate(0, false);
 					screen_plane_gate(1, false);
 					screen_plane_enable(1, true);

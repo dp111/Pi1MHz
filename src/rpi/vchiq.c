@@ -169,6 +169,35 @@ typedef struct {
 #define FRAG_MEM_SIZE      (((MAX_FRAGMENTS * FRAGMENT_SIZE) + 4095u) & ~4095u)
 #define SHARED_MEM_SIZE    (SLOT_MEM_SIZE + FRAG_MEM_SIZE + PAGELIST_MEM_SIZE)
 
+/* A kernel.now hands the connection on (vchiq_handover): where the stream
+   stands is recorded at the end of the pagelist page, in the shared block
+   itself, because the block outlives the jump and the VideoCore only ever
+   reads the pagelists a BULK_TX names. The next kernel finds the block by
+   the address the caller passes on, and the record must name that block. */
+typedef struct {
+    uint32_t magic;                  /* VCHIQ_HANDOVER_MAGIC; 0 once taken */
+    uint32_t phys;                   /* the block this record is in */
+    uint32_t handle;                 /* its GPU handle */
+    int32_t  rx_pos;                 /* our read position in the VC's stream */
+    uint32_t port_base;              /* local ports the next kernel starts from */
+    uint32_t check;                  /* the words above xor'd, inverted */
+} vchiq_handover_t;
+
+#define VCHIQ_HANDOVER_MAGIC  VCHIQ_FOURCC('V','Q','H','O')
+#define HANDOVER_OFFSET    (SHARED_MEM_SIZE - (uint32_t)sizeof(vchiq_handover_t))
+_Static_assert(SLOT_MEM_SIZE + FRAG_MEM_SIZE + VCHIQ_BULK_DEPTH * PAGELIST_STRIDE
+               <= HANDOVER_OFFSET, "handover record overlaps the pagelists");
+
+/* Local ports run 1..0xFFF (12 bits on the wire). Each kernel.now moves the
+   next kernel's ports on by a whole set, so a VideoCore service the
+   outgoing kernel could not close never talks to a new one by accident.
+   The base steps VCHIQ_MAX_SERVICES (3) per kernel and wraps to 0 after
+   about 1364 chain-boots without a power cycle; a leftover service from
+   that long ago could then share a port again.  That the firmware accepts
+   ARM source ports this high is GUESSED from the Linux driver (which uses
+   up to 4095) - not tried on hardware. */
+#define VCHIQ_PORT_LIMIT   0xFFFu
+
 /* Doorbells: DT node 0x7e00b840. Writing BELL2 interrupts the VideoCore. */
 #define VCHIQ_BELL_BASE    (PERIPHERAL_BASE + 0xB840u)
 #define VCHIQ_BELL2        (*(volatile uint32_t *)(VCHIQ_BELL_BASE + 0x8u))
@@ -203,11 +232,15 @@ static struct {
     int32_t  tx_pos;                 /* cached copy of local->tx_pos */
     uint32_t slot_queue_available;   /* how many entries of local->slot_queue are usable */
 
-    /* Open services. Ports are 1-based (index + 1) and never reused, so a
-       message for a closed service simply matches nothing. */
+    /* Open services. Ports are index + 1 + port_base: 0 on a fresh
+       connection, moved on at every kernel.now (VCHIQ_PORT_LIMIT), so a
+       message for a previous kernel's service matches nothing here. */
+    uint32_t port_base;
     struct {
         uint32_t remoteport;
         bool     open;
+        bool     closing;            /* our CLOSE sent, the VC's not yet back */
+        bool     stale;              /* close never answered: never reused */
         vchiq_callbacks_t cb;
     } svc[VCHIQ_MAX_SERVICES];
 } vc;
@@ -218,10 +251,11 @@ static struct {
 static uint32_t shared_phys;         /* ARM-visible address of the block */
 static uint32_t shared_handle;       /* its GPU memory handle */
 static bool     vchiq_condemned;     /* VC owns the block but we gave up */
+static uint32_t adopt_phys;          /* a previous kernel's block to take over */
 
 #define SVC_VALID(s)   ((s) >= 0 && (s) < VCHIQ_MAX_SERVICES)
-#define SVC_PORT(s)    ((uint32_t)(s) + 1u)      /* local port of service s */
-#define PORT_SVC(p)    ((int)(p) - 1)            /* inverse; may be invalid */
+#define SVC_PORT(s)    ((uint32_t)(s) + 1u + vc.port_base)    /* local port of service s */
+#define PORT_SVC(p)    ((int)(p) - 1 - (int)vc.port_base)     /* inverse; may be invalid */
 
 static uint8_t *slot_ptr(uint32_t index)
 {
@@ -442,14 +476,23 @@ static void parse_message(volatile vchiq_header_t *h)
 
     case VCHIQ_MSG_CLOSE: {
         int s = PORT_SVC(VCHIQ_MSG_DSTPORT(msgid));
-        LOG_INFO("vchiq: service %d closed by VC\r\n", s);
-        /* complete the close handshake so the VC side can free the port */
-        queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_CLOSE,
-                                         VCHIQ_MSG_DSTPORT(msgid),
-                                         VCHIQ_MSG_SRCPORT(msgid)),
-                          NULL, 0, NULL, 0);
-        if (SVC_VALID(s))
-            vc.svc[s].open = false;
+        /* Not one of ours - a previous kernel's port, after a kernel.now:
+           nothing here to close or answer for (Linux drops these too). */
+        if (!SVC_VALID(s))
+            break;
+        if (vc.svc[s].closing) {
+            /* The answer to our own CLOSE: the VC has let the port go.
+               Answering it again would start a close of its own. */
+            vc.svc[s].closing = false;
+        } else if (vc.svc[s].open) {
+            LOG_INFO("vchiq: service %d closed by VC\r\n", s);
+            /* complete the close handshake so the VC side can free the port */
+            queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_CLOSE,
+                                             VCHIQ_MSG_DSTPORT(msgid),
+                                             VCHIQ_MSG_SRCPORT(msgid)),
+                              NULL, 0, NULL, 0);
+        }
+        vc.svc[s].open = false;
         break;
     }
 
@@ -462,6 +505,11 @@ static void parse_message(volatile vchiq_header_t *h)
 
     case VCHIQ_MSG_BULK_TX_DONE: {
         int s = PORT_SVC(VCHIQ_MSG_DSTPORT(msgid));
+        /* Only one of our own transfers may come off the ring: after a
+           kernel.now the done for a previous kernel's port would otherwise
+           complete one of ours that is still in flight. */
+        if (!SVC_VALID(s))
+            break;
         if (vc.bulk_tx.head == vc.bulk_tx.tail) {
             LOG_INFO("vchiq: unexpected bulk done\r\n");
             break;
@@ -537,6 +585,86 @@ static void poll_for(uint32_t us)
     } while ((RPI_GetSystemTime() - start) < us);
 }
 
+/* Point the client state at a shared block (fresh or adopted). */
+static void attach_block(uint32_t phys)
+{
+    memset(&vc, 0, sizeof(vc));
+    vc.slot_base = (uint8_t *)(uintptr_t)phys;
+    vc.slot_base_bus = vchiq_bus_addr(phys);
+    vc.pagelist_base = vc.slot_base + SLOT_MEM_SIZE + FRAG_MEM_SIZE;
+    vc.pagelist_base_bus = vc.slot_base_bus + SLOT_MEM_SIZE + FRAG_MEM_SIZE;
+    volatile vchiq_slot_zero_t *z = (volatile vchiq_slot_zero_t *)(uintptr_t)vc.slot_base;
+    vc.zero = z;
+    vc.local = &z->slave;
+    vc.remote = &z->master;
+}
+
+static volatile vchiq_handover_t *handover_record(uint32_t phys)
+{
+    return (volatile vchiq_handover_t *)(uintptr_t)(phys + HANDOVER_OFFSET);
+}
+
+static uint32_t handover_check(const volatile vchiq_handover_t *h)
+{
+    return ~(h->magic ^ h->phys ^ h->handle ^ (uint32_t)h->rx_pos ^ h->port_base);
+}
+
+/* Take over the connection a previous kernel handed on (vchiq_handover):
+   the VideoCore is still serving it, so nothing is sent - no INIT, no
+   CONNECT - and the stream simply carries on from where that kernel left
+   it. False, touching nothing, if the record or the block does not look
+   like that connection. */
+static bool adopt_connection(uint32_t phys)
+{
+    /* The address came through low RAM: read nothing until it at least
+       names a page-aligned block of RAM. */
+    if ((phys & 0xFFFu) || phys < 0x8000u ||
+        (uintptr_t)phys + SHARED_MEM_SIZE > (uintptr_t)PERIPHERAL_BASE)
+        return false;
+
+    volatile vchiq_handover_t *h = handover_record(phys);
+    volatile vchiq_slot_zero_t *z = (volatile vchiq_slot_zero_t *)(uintptr_t)phys;
+
+    if (h->magic != VCHIQ_HANDOVER_MAGIC || h->phys != phys ||
+        h->check != handover_check(h) || (h->rx_pos & 7) ||
+        h->port_base > VCHIQ_PORT_LIMIT - VCHIQ_MAX_SERVICES)
+        return false;
+    if (z->magic != (int32_t)VCHIQ_MAGIC || z->slot_size != (int32_t)VCHIQ_SLOT_SIZE ||
+        z->max_slots_per_side != VCHIQ_MAX_SLOTS_PER_SIDE || z->slave.initialised != 1)
+        return false;
+    /* Neither side can be further ahead of the other than the slots it
+       owns: anything else is not a stream this record belongs to. */
+    uint32_t vc_slots = (uint32_t)(z->master.slot_last - z->master.slot_first + 1);
+    uint32_t our_slots = (uint32_t)(z->slave.slot_last - z->slave.slot_first + 1);
+    if ((uint32_t)(z->master.tx_pos - h->rx_pos) > vc_slots * VCHIQ_SLOT_SIZE ||
+        (uint32_t)((uint32_t)z->slave.slot_queue_recycle * VCHIQ_SLOT_SIZE -
+                   (uint32_t)z->slave.tx_pos) > our_slots * VCHIQ_SLOT_SIZE)
+        return false;
+
+    attach_block(phys);
+    vc.rx_pos = h->rx_pos;
+    vc.tx_pos = vc.local->tx_pos;
+    vc.port_base = h->port_base;
+    refresh_tx_slots();
+    shared_phys = phys;
+    shared_handle = h->handle;
+    h->magic = 0;                    /* taken: never adopted twice */
+    _data_memory_barrier();
+    vc.inited = true;
+    vc.connected = true;
+    /* Whatever the VideoCore sent since the jump - answers to the outgoing
+       kernel's CLOSEs, for ports no longer ours - is read and dropped, and
+       its slots recycled: skipping it would lose them for good. */
+    vchiq_poll();
+    return vc.inited;
+}
+
+void vchiq_adopt(uint32_t phys)
+{
+    if (!vc.inited)
+        adopt_phys = phys;
+}
+
 bool vchiq_init(void)
 {
     if (vc.inited)
@@ -548,6 +676,20 @@ bool vchiq_init(void)
        heap. One failure is final. */
     if (vchiq_condemned)
         return false;
+
+    /* A kernel.now handed us a live connection: a fresh INIT would be
+       ignored, so take it over. If the record is not right, a fresh start
+       is all that is left to try - it costs one CONNECT timeout and, if the
+       VideoCore is still on the old block, condemns the new one. */
+    if (adopt_phys) {
+        uint32_t phys = adopt_phys;
+        adopt_phys = 0;
+        if (adopt_connection(phys)) {
+            LOG_DEBUG("vchiq: connection taken over from the previous kernel\r\n");
+            return true;
+        }
+        LOG_DEBUG("vchiq: handed-over connection at %08"PRIx32" not usable\r\n", phys);
+    }
 
     /* Re-init (a Beeb reset re-runs the emulator inits) reuses the block
        we already own rather than leaking it and taking another. */
@@ -563,18 +705,11 @@ bool vchiq_init(void)
         shared_handle = handle;
     }
 
-    memset(&vc, 0, sizeof(vc));
-    vc.slot_base = (uint8_t *)(uintptr_t)phys;
-    vc.slot_base_bus = vchiq_bus_addr(phys);
-    vc.pagelist_base = vc.slot_base + SLOT_MEM_SIZE + FRAG_MEM_SIZE;
-    vc.pagelist_base_bus = vc.slot_base_bus + SLOT_MEM_SIZE + FRAG_MEM_SIZE;
+    attach_block(phys);
 
     /* --- build slot zero ------------------------------------------ */
     memset(vc.slot_base, 0, SHARED_MEM_SIZE);
-    volatile vchiq_slot_zero_t *z = (volatile vchiq_slot_zero_t *)(uintptr_t)vc.slot_base;
-    vc.zero = z;
-    vc.local = &z->slave;
-    vc.remote = &z->master;
+    volatile vchiq_slot_zero_t *z = vc.zero;
 
     z->magic = (int32_t)VCHIQ_MAGIC;
     z->version = VCHIQ_VERSION;
@@ -660,7 +795,7 @@ int vchiq_open_service(uint32_t fourcc, short version, short version_min,
 
     int s = -1;
     for (int i = 0; i < VCHIQ_MAX_SERVICES; i++) {
-        if (!vc.svc[i].open) {
+        if (!vc.svc[i].open && !vc.svc[i].stale) {
             s = i;
             break;
         }
@@ -672,6 +807,7 @@ int vchiq_open_service(uint32_t fourcc, short version, short version_min,
 
     vc.svc[s].cb = *callbacks;
     vc.svc[s].open = false;
+    vc.svc[s].closing = false;
 
     vchiq_open_payload_t open = {
         .fourcc = (int32_t)fourcc,
@@ -698,4 +834,85 @@ int vchiq_open_service(uint32_t fourcc, short version, short version_min,
        processing any immediately queued messages). */
     poll_for(1000);
     return s;
+}
+
+/* Bounds each wait in a close: a healthy VideoCore answers in well under a
+   millisecond (as in mmal_vc.c), and this runs just before a kernel.now. */
+#define VCHIQ_CLOSE_TIMEOUT_US 200000u
+
+bool vchiq_close_service(int service)
+{
+    if (!vc.inited || !SVC_VALID(service) || !vc.svc[service].open)
+        return false;
+
+    vc.svc[service].closing = true;
+    uint32_t start = RPI_GetSystemTime();
+    bool sent;
+    while (!(sent = queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_CLOSE, SVC_PORT(service),
+                                                     vc.svc[service].remoteport),
+                                      NULL, 0, NULL, 0)) &&
+           (RPI_GetSystemTime() - start) < VCHIQ_CLOSE_TIMEOUT_US)
+        vchiq_poll();
+    while (sent && vc.svc[service].closing && vc.inited &&
+           (RPI_GetSystemTime() - start) < VCHIQ_CLOSE_TIMEOUT_US)
+        vchiq_poll();
+
+    bool answered = sent && !vc.svc[service].closing;
+    vc.svc[service].open = false;
+    if (!answered) {
+        LOG_DEBUG("vchiq: CLOSE of service %d %s\r\n", service,
+                  sent ? "not answered" : "not sent");
+        vc.svc[service].closing = false;
+        vc.svc[service].stale = true;
+    }
+    return answered;
+}
+
+uint32_t vchiq_handover(void)
+{
+    /* Never taken up here: the record the previous kernel left is still
+       true - nothing has read the stream since - so pass it on as it is. */
+    if (!vc.inited)
+        return vchiq_condemned ? 0u : adopt_phys;
+    if (!vc.connected)
+        return 0u;
+
+    /* A bulk transfer still in flight cannot be handed on: its pagelist
+       stays the VideoCore's until the done, and neither the ring nor the
+       pagelist index travels in the record.  Give it a bounded moment to
+       finish; if it will not, hand nothing on - the next kernel then starts
+       fresh, is ignored and goes without video until a power cycle, which
+       is better than reusing a pagelist the VideoCore is reading.  Only the
+       audio service sends bulk, and nothing starts it today (auds_start has
+       no callers), so this is a guard, not a path anything takes. */
+    uint32_t start = RPI_GetSystemTime();
+    do {
+        vchiq_poll();                /* everything before rx_pos is dealt with */
+    } while (vc.inited && vc.bulk_tx.head != vc.bulk_tx.tail &&
+             (RPI_GetSystemTime() - start) < VCHIQ_CLOSE_TIMEOUT_US);
+    if (!vc.inited)
+        return 0u;                   /* the stream went bad: nothing to pass on */
+    if (vc.bulk_tx.head != vc.bulk_tx.tail) {
+        LOG_DEBUG("vchiq: bulk transfer outstanding - connection not handed on\r\n");
+        return 0u;
+    }
+
+    uint32_t next = vc.port_base + VCHIQ_MAX_SERVICES;
+    if (next + VCHIQ_MAX_SERVICES > VCHIQ_PORT_LIMIT)
+        next = 0u;
+    volatile vchiq_handover_t *h = handover_record(shared_phys);
+    h->magic = VCHIQ_HANDOVER_MAGIC;
+    h->phys = shared_phys;
+    h->handle = shared_handle;
+    h->rx_pos = vc.rx_pos;
+    h->port_base = next;
+    h->check = handover_check(h);
+    _data_memory_barrier();          /* uncached, but in order before the jump */
+
+    /* No more traffic from this kernel, so the position recorded stays
+       true; were the channel wanted again before the jump, vchiq_init
+       would take it over from the record like the next kernel does. */
+    vc.inited = false;
+    adopt_phys = shared_phys;
+    return shared_phys;
 }

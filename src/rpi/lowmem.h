@@ -13,8 +13,14 @@
                       0x3D00  chain-boot marker: CHAIN_MAGIC, its
                               complement, the jump's timer stamp and
                               reset reason (rpi/bootstage.c)
-                      0x3D20  the video player's GPU handle block
-                              (videoplayer.c)
+                      0x3D20  the video player's hand-over block
+                              (videoplayer.c): words 0-1 'VCHQ' and
+                              the ARM address of the VCHIQ shared
+                              block, whose hand-over record says where
+                              the connection stands (rpi/vchiq.c);
+                              words 2-4 'VBF2' and the two H264 frame
+                              buffer handles for the next kernel to
+                              release
      0x3E00-0x3EFF  the kernel.now copier (rpi/arm-start.S)
      0x4000-0x7FFF  the L1 page table (rpi/cache.c)
      0x8000-        the kernel image, then .data, .noinit, .bss, the heap
@@ -49,7 +55,7 @@
 
 #define LOWMEM_MARKERS               0x3D00
 #define LOWMEM_CHAIN_MARKER          (LOWMEM_MARKERS + 0x00)  /* 5 words */
-#define LOWMEM_VIDEOBUF_PERSIST      (LOWMEM_MARKERS + 0x20)  /* 5 words */
+#define LOWMEM_VIDEOBUF_PERSIST      (LOWMEM_MARKERS + 0x20)  /* 5 words, as above */
 
 #define LOWMEM_CHAINBOOT_COPIER      0x3E00
 #define LOWMEM_CHAINBOOT_COPIER_SIZE 0x100

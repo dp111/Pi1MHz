@@ -35,7 +35,13 @@ bool vcsm_init(void);
 uint32_t vcsm_import(uint32_t busaddr, uint32_t size, const char *name);
 
 /* Release a handle from vcsm_import(). The memory itself is still ours;
-   this only drops the VideoCore's registration of it. */
-void vcsm_free(uint32_t handle);
+   this only drops the VideoCore's registration of it. False if the
+   request could not be sent (no service, or a VideoCore that stopped
+   answering); the FREE itself is not answered. */
+bool vcsm_free(uint32_t handle);
+
+/* Close the SMEM service (kernel.now), after every import has been freed.
+   vcsm_init may open it again. True if the VideoCore answered the close. */
+bool vcsm_deinit(void);
 
 #endif /* RPI_VCSM_H */
