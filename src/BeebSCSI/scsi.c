@@ -2315,9 +2315,9 @@ static uint8_t scsiBeebScsiSense(void)
    different policies and they must not be confused:
 
      - BSSELECT / *SCSIJUKE goes through scsiJukebox() below, which REFUSES
-       while any LUN is started - the host is asking mid-session and an
-       ADFS holding an open catalogue must not have the disc changed under
-       it.
+       while any LUN of the directory being swapped is started - the host
+       is asking mid-session and an ADFS holding an open catalogue must not
+       have the disc changed under it.
      - the *FX147,65,n poke (hd_juke_service) deliberately dismounts
        everything first and then swaps unconditionally.  It used to call
        scsiJukebox(), but filesystemReset() has already cleared every LUN's
@@ -2336,11 +2336,16 @@ void scsiJukeboxSwap (uint8_t lun) {
 }
 
 bool scsiJukebox (uint8_t lun) {
-   // Check if any LUNs are in the started state
-   for (uint8_t byteCounter = 0; byteCounter < MAX_LUNS; byteCounter++)
-      if (filesystemReadLunStatus(byteCounter)) return false;
+   // Check only the LUNs of the directory being swapped: an ADFS host
+   // (ID < 16) swaps /BeebSCSI<n>, which holds LUNs 0-7, and the VFS host
+   // swaps /BeebVFS<n>, LUNs 8-15 (filesystemSetLunDirectory splits the
+   // same way).  Guarding all 16 refused an ADFS *SCSIJUKE while the
+   // LaserDisc was mounted, and a disc flip while an ADFS LUN was.
+   uint8_t firstLun = (scsiHostID < 16) ? 0 : 8;
+   for (uint8_t lunNumber = firstLun; lunNumber < firstLun + 8; lunNumber++)
+      if (filesystemReadLunStatus(lunNumber)) return false;
 
-   // Only jukebox if no LUNs are in the started state
+   // Only jukebox if none of those LUNs is in the started state
    scsiJukeboxSwap(lun);
    return true;
 }
@@ -2382,9 +2387,9 @@ static uint8_t scsiBeebScsiSelect(void)
         }
      }
 
-   // Only jukebox if no LUNs are in the started state
+   // Only jukebox if none of that directory's LUNs is started
    if (!scsiJukebox(Buffer[0])) {
-      // One or more LUNs are started... cannot perform jukeboxing
+      // One or more of its LUNs are started... cannot perform jukeboxing
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Error - cannot jukebox if LUNs are started\r\n"));
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
 
