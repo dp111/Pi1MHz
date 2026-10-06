@@ -777,17 +777,19 @@ static void text_cursor_home(const uint8_t *buf) {
 }
 
 static void text_cursor_tab(const uint8_t *buf) {
-   uint8_t x = buf[1];
-   uint8_t y = buf[2];
+   int x = buf[1];
+   int y = buf[2];
 #ifdef DEBUG_VDU
    printf("cursor move to %d %d\r\n", x, y);
 #endif
-   // Take account of current text window
-   x = (uint8_t)(x + t_window.left);
-   y = (uint8_t)(y + t_window.top);
+   // Take account of current text window, in int: a byte sum wraps (250
+   // plus a window at column 10 is 4, left of the window) where the MOS's
+   // signed compare refuses it
+   x += t_window.left;
+   y += t_window.top;
    if (x <= t_window.right && y <= t_window.bottom) {
-      c_x_pos = x;
-      c_y_pos = y;
+      c_x_pos = (int16_t)x;
+      c_y_pos = (int16_t)y;
       update_cursors();
    }
 }

@@ -331,6 +331,25 @@ static void test_v7_graphics_window(void)
          "V7: CLG after refused windows does not fill (5,5)-(20,15)");
 }
 
+// ---- V8: VDU 31 off the window --------------------------------------------
+
+static void test_v8_vdu31_range(void)
+{
+   mode(0);
+   VDU(28, 10, 31, 79, 0);         /* text window from column 10 */
+   VDU(31, 2, 3);
+   CHECK(fb_get_cursor_x() == 2 && fb_get_cursor_y() == 3, "V8 setup: cursor at %d,%d",
+         fb_get_cursor_x(), fb_get_cursor_y());
+   VDU(31, 250, 3);                /* 250 + 10 wraps to 4 in a byte */
+   CHECK(fb_get_cursor_x() == 2, "V8: VDU 31,250,3 with the window at column 10 moved the cursor to %d",
+         fb_get_cursor_x());
+   VDU(28, 0, 31, 79, 10);         /* window from row 10 */
+   VDU(31, 1, 250);
+   CHECK(fb_get_cursor_y() >= 0, "V8: VDU 31,1,250 put the cursor above the window (row %d)",
+         fb_get_cursor_y());
+   VDU(26);
+}
+
 int main(void)
 {
    fb_emulator_init(0, 0xd0);
@@ -342,6 +361,7 @@ int main(void)
    test_v4_teletext_scroll();
    test_v6_vdu19_mask();
    test_v7_graphics_window();
+   test_v8_vdu31_range();
 
    printf("%d checks, %d failed\n", checks, fails);
    if (fails)
