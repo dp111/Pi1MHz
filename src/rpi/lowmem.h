@@ -32,9 +32,10 @@
 
    None of this is on the bus.  The VPU only fetches its program from low
    RAM and never writes it: it reads the FRED/JIM pages from Pi1MHz_MEM_BASE
-   in peripheral space and posts bus cycles through the SMI registers.  bootstage.c records stray bytes once
-   seen at 0x7C00, cause never found - which is why the chain-boot marker is
-   a magic word and its complement, and carries a time stamp.
+   in peripheral space and posts bus cycles through the SMI registers.
+   bootstage.c records stray bytes once seen at 0x7C00, cause never found -
+   which is why the chain-boot marker is a magic word and its complement,
+   and carries a time stamp.
 
    Plain numbers, no suffixes: arm-start.S includes this as well. */
 #ifndef LOWMEM_H

@@ -116,9 +116,13 @@ page. Consequences:
   0x81a0-0x81bf (8/8), `_fast_scroll` 0x81c0-0x81e3 (9/9) and
   `_chainboot_mmu_off` 0x8218-0x823f (10/10). So that push will fail - a
   hang, or a watchdog fall-back to the card kernel (INFERRED: not tried).
-  **The first install of this layout must be from the SD card.** Pushes from it onward, to any build, use the new copier. The older
-  kernel's marker is in its `.noinit`, so that row is meaningless across the
-  transition in either direction.
+  **The first install of this layout must be from the SD card.** Pushes from it onward use the new copier, which lands any image - but a
+  kernel older than 1a328b4 (the timed marker) reads the 0x3D00 marker
+  differently or not at all, takes the jump for a cold boot and relaunches
+  VPU1, which does not reliably restart it. **Downgrades below that must go
+  via the SD card too.** The older kernel's marker is in its `.noinit`, so
+  the Boot time row is meaningless across the transition in either
+  direction.
 
 ## What the copy runs over (before 2026-10-06)
 

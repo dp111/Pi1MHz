@@ -38,9 +38,11 @@ static unsigned int jump(uint32_t us)
 
 int main(void)
 {
-   test_pm_rsts = 0x1000u;            /* power-on flags, as left by the firmware */
+   test_pm_rsts = 0x1000u;            /* HADPOR, as left by a power-on */
 
    CHECK(jump(120000u) == 1u, "a fresh mark (120 ms) not accepted");
+   CHECK(RPI_ChainBootJumpUs() == 120000u, "jump time %u us, want 120000",
+         (unsigned)RPI_ChainBootJumpUs());
    RPI_ChainBootConsume();
    CHECK(RPI_ChainBooted() == 0u, "a consumed mark accepted a second time");
 
@@ -62,6 +64,15 @@ int main(void)
 
    /* ...while a flag already set at the jump is no reason to refuse. */
    CHECK(jump(100000u) == 1u, "refused with a sticky flag unchanged since the mark");
+
+   /* A power-on reset shows as HADPOR, bit 12, alone. */
+   test_pm_rsts = 0x020u;
+   RPI_ChainBootMark();
+   test_pm_rsts = 0x1020u;
+   now += 100000u;
+   RPI_ChainBootConsume();
+   CHECK(RPI_ChainBooted() == 0u, "accepted with the power-on flag (bit 12) newly set");
+   CHECK(RPI_ChainBootJumpUs() == 0u, "a jump time reported for a refused mark");
 
    /* A stray byte in the complement, or RAM after a power-on. */
    RPI_ChainBootMark();

@@ -3233,7 +3233,8 @@ static bool route_status(ws_conn_t *c)
          kernel leaves a marker in low RAM that says so (RPI_ChainBootMark). */
       if (RPI_ChainBooted())
          snprintf(tmp, sizeof tmp,
-                  "pre-kernel n/a (chain-boot), kernel->poll %lu ms", init);
+                  "pre-kernel n/a (chain-boot, jump %lu ms), kernel->poll %lu ms",
+                  (unsigned long)(RPI_ChainBootJumpUs() / 1000u), init);
       else
          snprintf(tmp, sizeof tmp, "pre-kernel %lu ms, kernel->poll %lu ms",
                   pre, init);

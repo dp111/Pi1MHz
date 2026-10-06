@@ -45,13 +45,15 @@ NOINIT_SECTION static volatile uint32_t boot_stage_block[16];
    no reset in between.  Two tests, either of which a reset fails:
    - the 64-bit system timer, stamped at the jump, has moved on less than
      CHAIN_MARK_MAX_US.  A reset either restarts the timer (now before the
-     stamp) or takes far longer: the watchdog's shortest timeout is 1 s, and
-     the firmware then reloads start.elf and the kernel from the card.  The
-     jump itself - a copy of at most 4 MB and the incoming .bss clear, both
-     with the caches off - is well inside it (INFERRED: not yet timed).
+     stamp) or takes far longer, because the firmware then reloads
+     bootcode, start.elf and the kernel from the card.  INFERRED, both: not
+     the watchdog timeout - reboot_now() fires it after one tick.  The jump
+     itself - a cached copy of at most 4 MB, the cache clean and the
+     incoming .bss clear - should be well inside it; RPI_ChainBootJumpUs()
+     reports what it took, on the /status Boot time row.
    - the reset-reason register is unchanged.  Its flags are sticky, so this
      alone would miss a second watchdog reset after a first; the timer does
-     not.  It does catch a reset whose timing happened to fit.
+     not.  INFERRED: it catches a reset whose timing happened to fit.
    And two words, the magic and its complement, so that whatever RAM holds
    after a power-on, or a stray write, reads as a cold boot - the safe
    direction - never as a phantom chain-boot. */
@@ -59,6 +61,7 @@ NOINIT_SECTION static volatile uint32_t boot_stage_block[16];
 #define CHAIN_MAGIC 0xC4A1B007u
 #define CHAIN_MARK_MAX_US 500000u
 static unsigned int chain_booted_flag;
+static uint32_t chain_jump_us;
 void RPI_ChainBootMark(void)
 {
    uint64_t now = RPI_GetSystemTime64();
@@ -79,10 +82,14 @@ void RPI_ChainBootConsume(void)
                         chain_marker[1] == ~CHAIN_MAGIC &&
                         now >= stamp && now - stamp < CHAIN_MARK_MAX_US &&
                         chain_marker[4] == RPI_ResetReason()) ? 1u : 0u;
+   /* Mark to here: the copy, the cache clean and the .bss clear - the
+      measurement behind CHAIN_MARK_MAX_US. */
+   chain_jump_us = chain_booted_flag ? (uint32_t)(now - stamp) : 0u;
    chain_marker[0] = 0u;
    chain_marker[1] = 0u;
 }
 unsigned int RPI_ChainBooted(void) { return chain_booted_flag; }
+unsigned int RPI_ChainBootJumpUs(void) { return chain_jump_us; }
 #define boot_stage_magic    (boot_stage_block[0])
 #define boot_stage_current  (boot_stage_block[1])
 #define boot_stage_previous (boot_stage_block[2])
@@ -120,8 +127,9 @@ unsigned int RPI_BootDetailPrevious( void )
 }
 
 /* Reset reason from the PM block. RSTS bits 12..0: the "had watchdog reset"
-   flag is bit 5 on BCM2835 (0x20); power-on shows the full set. Read once -
-   the register survives until something clears it. */
+   flag is bit 5 on BCM2835 (0x20), "had power-on reset" bit 12 (0x1000);
+   power-on shows the full set.  The register survives until something
+   clears it. */
 volatile unsigned int *RPI_BootStageBlock( void )
 {
    return (volatile unsigned int *)boot_stage_block;
@@ -129,7 +137,7 @@ volatile unsigned int *RPI_BootStageBlock( void )
 
 unsigned int RPI_ResetReason( void )
 {
-   return (*(volatile unsigned int *)(PERIPHERAL_BASE + 0x00100020u)) & 0xfffu;
+   return (*(volatile unsigned int *)(PERIPHERAL_BASE + 0x00100020u)) & 0x1fffu;
 }
 
 boot_stage_t RPI_BootStagePrevious( void )

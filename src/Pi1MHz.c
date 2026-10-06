@@ -679,9 +679,19 @@ static void init_emulator(void) {
          _fiq_set_consumer(0);                 /* Pi1MHz_fiq_overruns is cumulative: the BREAK row shows the delta */
 
          /* The VPU fetches the program itself, so the copy has to be in
-            RAM, not in a dirty D-cache line. */
-         memcpy((void *)LOWMEM_VPU_PROGRAM, Pi1MHzvc_asm, sizeof(Pi1MHzvc_asm));
-         _clean_cache_area((const void *)LOWMEM_VPU_PROGRAM, sizeof(Pi1MHzvc_asm));
+            RAM, not in a dirty D-cache line.  Skipped when the bytes are
+            already there: if this were a chain-boot misread as cold, the
+            VPU would be executing them.  The plain ARM address is passed,
+            as it always was (the uncached alias would change the bus
+            loop's timing).  On the BCM2836/7 the ARM's stores bypass the
+            VideoCore L2 the VPU fetches through: code written by the ARM
+            and fetched by the VPU there is the one coherency point not yet
+            proved, and the kernel7 cold-boot test settles it. */
+         if (memcmp((const void *)LOWMEM_VPU_PROGRAM, Pi1MHzvc_asm,
+                    sizeof(Pi1MHzvc_asm)) != 0) {
+            memcpy((void *)LOWMEM_VPU_PROGRAM, Pi1MHzvc_asm, sizeof(Pi1MHzvc_asm));
+            _clean_cache_area((const void *)LOWMEM_VPU_PROGRAM, sizeof(Pi1MHzvc_asm));
+         }
 
          RPI_PropertyStart(TAG_LAUNCH_VPU1, 7);
          RPI_PropertyAdd(LOWMEM_VPU_PROGRAM); // VPU function (ARM address, passed as before)
