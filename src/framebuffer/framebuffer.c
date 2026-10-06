@@ -693,27 +693,24 @@ static void change_mode(screen_mode_t *new_screen) {
 }
 
 static void set_graphics_area(const screen_mode_t *scr, const g_clip_window_t *window) {
-   // Sanity check illegal windows
-   if (window->left   < 0 || window->left   >= scr->width  << scr->xeigfactor ||
-       window->bottom < 0 || window->bottom >= scr->height << scr->yeigfactor) {
+   // The MOS's rule (MOS 3.20 VDU 24): a window whose right edge is left of
+   // its left edge, or whose top is below its bottom, is ignored - judged in
+   // external units, and an edge may equal its opposite (a one-pixel
+   // window); then, in pixels, so is one with any edge off the screen,
+   // which prim_set_graphics_area judges.  g_window changes only with the
+   // clipping window, so the two always agree.
+   if (window->left > window->right || window->bottom > window->top) {
       return;
    }
-   if (window->right  < 0 || window->right  >= scr->width  << scr->xeigfactor ||
-       window->top    < 0 || window->top    >= scr->height << scr->yeigfactor) {
-      return;
-   }
-   if (window->left >= window->right || window->bottom >= window->top) {
-      return;
-   }
-   // Accept the window
-   g_window = *window;
    // Transform to screen coordinates
    int16_t x1 = (int16_t)(window->left   >> scr->xeigfactor);
    int16_t y1 = (int16_t)(window->bottom >> scr->yeigfactor);
    int16_t x2 = (int16_t)(window->right  >> scr->xeigfactor);
    int16_t y2 = (int16_t)(window->top    >> scr->yeigfactor);
-   // Set the clipping window
-   prim_set_graphics_area(screen, x1, y1, x2, y2);
+   // Set the clipping window, and accept the window if that did
+   if (prim_set_graphics_area(screen, x1, y1, x2, y2)) {
+      g_window = *window;
+   }
 }
 
 static int read_character(int x_pos, int y_pos) {

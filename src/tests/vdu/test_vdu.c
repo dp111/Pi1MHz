@@ -292,6 +292,45 @@ static void test_v6_vdu19_mask(void)
    VDU(20);
 }
 
+// ---- V7: VDU 24 - one rule, and a one-pixel window -------------------------
+
+static void test_v7_graphics_window(void)
+{
+   /* MODE 1 pixels are 4 units wide: left 0, right 3 is a one-pixel-wide
+      window, which the MOS accepts (right - left >= 0). */
+   mode(1);
+   VDU(24, 0, 0, 0, 0, 3, 0, 100, 0);
+   int l = fb_read_vdu_variable(V_GWLCOL), r = fb_read_vdu_variable(V_GWRCOL);
+   int b = fb_read_vdu_variable(V_GWBROW), t = fb_read_vdu_variable(V_GWTROW);
+   CHECK(l == 0 && r == 0 && b == 0 && t == 25, "V7: VDU 24,0;0;3;100; window (%d,%d)-(%d,%d), want (0,0)-(0,25)",
+         l, b, r, t);
+   VDU(18, 0, 129);                /* graphics background colour 1 */
+   VDU(16);                        /* CLG: must fill exactly that window */
+   CHECK(px(0, 0) == 1 && px(0, 25) == 1, "V7: CLG did not fill the one-pixel window");
+   CHECK(px(1, 0) == 0 && px(0, 26) == 0 && px(100, 100) == 0,
+         "V7: CLG filled outside the one-pixel window (the drawing clip and VDU 24 disagree)");
+
+   /* A one-pixel-high window (bottom == top) is accepted as well. */
+   mode(1);
+   VDU(24, 0, 0, 40, 0, 40, 0, 40, 0);
+   CHECK(fb_read_vdu_variable(V_GWBROW) == 10 && fb_read_vdu_variable(V_GWTROW) == 10,
+         "V7: VDU 24,0;40;40;40; refused");
+
+   /* A refused window changes nothing, in either layer. */
+   mode(1);
+   VDU(24, 20, 0, 20, 0, 80, 0, 60, 0);   /* (20,20)-(80,60): pixels (5,5)-(20,15) */
+   VDU(24, 80, 0, 20, 0, 20, 0, 60, 0);   /* right < left: refused */
+   CHECK(fb_read_vdu_variable(V_GWLCOL) == 5 && fb_read_vdu_variable(V_GWRCOL) == 20,
+         "V7: a refused VDU 24 changed the window (%d-%d)",
+         (int)fb_read_vdu_variable(V_GWLCOL), (int)fb_read_vdu_variable(V_GWRCOL));
+   VDU(24, 20, 0, 20, 0, 0, 10, 60, 0);   /* right 2560: off screen, refused */
+   CHECK(fb_read_vdu_variable(V_GWRCOL) == 20, "V7: an off-screen VDU 24 changed the window");
+   VDU(18, 0, 129);
+   VDU(16);
+   CHECK(px(5, 5) == 1 && px(20, 15) == 1 && px(4, 5) == 0 && px(21, 15) == 0,
+         "V7: CLG after refused windows does not fill (5,5)-(20,15)");
+}
+
 int main(void)
 {
    fb_emulator_init(0, 0xd0);
@@ -302,6 +341,7 @@ int main(void)
    test_v3_mode_shrinks_below_cell();
    test_v4_teletext_scroll();
    test_v6_vdu19_mask();
+   test_v7_graphics_window();
 
    printf("%d checks, %d failed\n", checks, fails);
    if (fails)
