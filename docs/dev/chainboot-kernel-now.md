@@ -42,6 +42,7 @@ needs lives below the kernel, at fixed addresses defined in
 | address | what |
 |---|---|
 | 0x0100-0x13FF | Pi1MHz struct and callback table (unchanged) |
+| 0x3A00-0x3CFF | the VPU's 1MHz-bus program (was run from `.rodata`) |
 | 0x3D00 | chain-boot marker: `CHAIN_MAGIC` and its complement |
 | 0x3D20 | the video player's persisted GPU handles (was 0x7C20) |
 | 0x3E00-0x3EFF | the copier |
@@ -80,6 +81,16 @@ page. Consequences:
   builds means the chain-boot fell back to the card. INFERRED from the
   design, including that a real jump fits in 500 ms; confirm both on
   hardware before relying on it.
+- **The VPU's bus program is no longer in the copy's path.** The VPU is
+  never relaunched after a chain-boot (relaunching it does not reliably
+  work, see `Pi1MHz.c`), so it goes on running the program it was started
+  with. That program used to run straight out of the cold-booted kernel's
+  `.rodata` (346 bytes; 0xb4940 in the `rpi` release of 876c829, and
+  somewhere else in nearly every other build), which the copy then overwrote with whatever the new image held
+  there. A cold boot now copies it to 0x3A00, cleans the D-cache over it and
+  launches it from there; a chain-boot leaves 0x3A00 alone. **So a change to
+  `vidcore/Pi1MHzvc.s` only takes effect from a cold boot (an SD install)** -
+  kernel.now carries the new bytes but never runs them.
 - **The first push onto an older running kernel still goes through that
   kernel's in-place copier**, which only survives where the incoming image
   has the same bytes at its `_copyandreboot`..`_fast_scroll_end` and

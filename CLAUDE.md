@@ -28,12 +28,14 @@ header — trust the newest status over the body).
 - **Low RAM below 0x8000 is VPU/Beeb-shared** (`Pi1MHz_STRUCT_VADDR`
   0x100 + callback table to 0x13FF). ARM-side persistent state goes in
   `.noinit` (survives watchdog resets and the loader), never at fixed low
-  addresses - with exactly three recorded exceptions, all in
-  `src/rpi/lowmem.h`: the kernel.now markers (0x3D00: chain-boot marker,
-  video GPU handles), the kernel.now copier (0x3E00) and the L1 page table
-  (0x4000-0x7FFF). They exist because a kernel.now copy writes the incoming
-  image from 0x8000 up over the running kernel's `.noinit`, and `.noinit`
-  moves between builds; add nothing else there.
+  addresses - with exactly four recorded exceptions, all in
+  `src/rpi/lowmem.h`: the VPU bus program (0x3A00, copied at a cold boot
+  only, so a VPU-code change needs a cold boot/SD install), the kernel.now
+  markers (0x3D00: chain-boot marker, video GPU handles), the kernel.now
+  copier (0x3E00) and the L1 page table (0x4000-0x7FFF). They exist because
+  a kernel.now copy writes the incoming image from 0x8000 up over the
+  running kernel, `.noinit` included, and `.noinit` moves between builds;
+  add nothing else there.
 - The video plane is enabled only when the player has a real decoded frame
   (`videoplayer_active()`); data-only disc sides show black, never a stale
   buffer. The player is lazy: boot and BBC reset do no video/GPU/SD work.
