@@ -67,6 +67,9 @@ void RPI_ChainBootMark(void)
    chain_marker[4] = RPI_ResetReason();
    chain_marker[0] = CHAIN_MAGIC;
    chain_marker[1] = ~CHAIN_MAGIC;
+   /* Out to RAM now, rather than leave it to the copier's set/way clean:
+      the copy runs with the D-cache on. */
+   _clean_cache_area((const void *)LOWMEM_CHAIN_MARKER, 5u * sizeof(uint32_t));
 }
 void RPI_ChainBootConsume(void)
 {

@@ -48,7 +48,6 @@ static void ev(char c)
 
 uint32_t RPI_GetSystemTime(void) { return now; }
 void _disable_interrupts(void) { }
-void disable_data_cache(void) { }
 void RPI_ChainBootMark(void) { }
 void sdio_runtime_prepare_for_warm_reboot(void) { ev('S'); }
 void audio_stop_dma(void) { ev('A'); }

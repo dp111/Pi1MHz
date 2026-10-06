@@ -12,7 +12,6 @@
 #include "videoplayer.h"
 #include "rpi/asm-helpers.h"
 #include "rpi/audio.h"
-#include "rpi/cache.h"
 #include "rpi/h264dec.h"
 #include "rpi/rpi.h"
 #include "rpi/systimer.h"
@@ -181,10 +180,10 @@ void chainboot_poll(void)
    _disable_interrupts();
    audio_stop_dma();      /* the copy may run over its control blocks */
    RPI_ChainBootMark();   /* the incoming kernel_main learns it was chain-booted */
-   /* Turn the D-cache off first, so the copier written under the kernel and
-      the copy of the incoming image over it go straight to RAM: the copier
-      then needs only the instruction side cleaned (arm-start.S), and the new
-      kernel starts on a coherent image. */
-   disable_data_cache();
+   /* The copy runs with the caches on - an uncached copy of up to 4 MB is
+      slow, and the marker above is only believed within 500 ms.  The copier
+      cleans the whole data side to RAM before it turns the caches off
+      (arm-start.S), which is also what gets the marker, still in a dirty
+      line here, to RAM. */
    _copyandreboot(s_image, (int)s_length); /* never returns */
 }

@@ -12,7 +12,6 @@
 void _copyandreboot(void *src, int num_bytes);
 /* rpi/asm-helpers.h, rpi/cache.h, rpi/rpi.h, rpi/systimer.h */
 void _disable_interrupts(void);
-void disable_data_cache(void);
 void RPI_ChainBootMark(void);
 uint32_t RPI_GetSystemTime(void);
 /* rpi/audio.h */

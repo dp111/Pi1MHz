@@ -31,9 +31,12 @@ to test is the part worth keeping.
 `chainboot_poll()` (`src/chainboot.c`) takes the staged image from MTP or the
 webserver and, from the main loop, takes USB off the bus, ejects the card,
 tells the WiFi chip to stop signalling, disables interrupts, stops both audio
-DMA channels (`audio_stop_dma`), writes the chain-boot marker, and turns the
-D-cache off (`disable_data_cache`) so every store from then on goes straight
-to RAM. Then it calls `_copyandreboot(src, len)` in `src/rpi/arm-start.S`.
+DMA channels (`audio_stop_dma`) and writes the chain-boot marker (cleaning
+it to RAM at once). Then it calls `_copyandreboot(src, len)` in
+`src/rpi/arm-start.S`, with the MMU and both caches still on. (Until
+2026-10-06 the D-cache was turned off first: the old copier ran inside the
+region it overwrote and could not do cache maintenance of its own. That
+reason went with it, and an uncached copy of up to 4 MB was slow.)
 
 Since 2026-10-06 the copy no longer runs in place. Everything the hand-over
 needs lives below the kernel, at fixed addresses defined in
@@ -43,20 +46,24 @@ needs lives below the kernel, at fixed addresses defined in
 |---|---|
 | 0x0100-0x13FF | Pi1MHz struct and callback table (unchanged) |
 | 0x3A00-0x3CFF | the VPU's 1MHz-bus program (was run from `.rodata`) |
-| 0x3D00 | chain-boot marker: `CHAIN_MAGIC` and its complement |
+| 0x3D00 | chain-boot marker: `CHAIN_MAGIC`, its complement, the jump's 64-bit timer stamp and reset reason (5 words) |
 | 0x3D20 | the video player's persisted GPU handles (was 0x7C20) |
 | 0x3E00-0x3EFF | the copier |
 | 0x4000-0x7FFF | the L1 page table (was `PageTable` in `.noinit`) |
 | 0x8000- | the kernel |
 
 `_copyandreboot` copies a small position-independent routine to 0x3E00,
-drains the stores, invalidates the I-cache, branch predictor and prefetch
-(with the ARM1176 erratum 411920 workaround on `kernel.img`; DSB/ICIALLU/
-BPIALL/DSB/ISB on `kernel7.img`) and branches to it. That routine copies the
-image to 0x8000 with registers only - no stack - then invalidates (never
-cleans: `disable_data_cache` already did, and a clean now could only write a
-stale line over the image) the data caches, turns the MMU and caches off, invalidates the TLB, I-cache and branch predictor and
-branches to 0x8000. The assembler refuses to build if it outgrows its 256-byte
+cleans it out of the D-cache (DCCMVAU per line on `kernel7.img`, clean
+entire D-cache on `kernel.img`), invalidates the I-cache, branch predictor
+and prefetch (with the ARM1176 erratum 411920 workaround on `kernel.img`;
+DSB/ICIALLU/BPIALL/DSB/ISB on `kernel7.img`) and branches to it. That
+routine copies the image to 0x8000 with registers only - no stack - and
+with the caches on, then cleans and invalidates the whole data side to the
+point of coherency (set/way over every level to LoC, the A53's L2 included;
+clean+invalidate entire D-cache on the ARM1176): the copy is still partly in
+dirty lines, and this puts it, and everything else below 0x8000, in RAM.
+Only then does it turn the MMU and caches off, invalidate the TLB, I-cache
+and branch predictor and branch to 0x8000. The assembler refuses to build if it outgrows its 256-byte
 page. Consequences:
 
 - **Nothing depends on the incoming image's layout any more.** The old

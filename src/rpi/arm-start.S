@@ -240,9 +240,9 @@ bssclearloop:
 
 // kernel.now: restart into the image at r0, r1 bytes long (a non-zero
 // multiple of 64 - chainboot_request pads it).  Called from chainboot_poll
-// with interrupts off, the audio DMA stopped and the D-cache already cleaned
-// and turned off (disable_data_cache), so every store here goes straight to
-// RAM.  Never returns.
+// with interrupts off and the audio DMA stopped, with the MMU and both caches
+// still on: the copy runs cached, and the copier cleans everything out to
+// RAM once it is done.  Never returns.
 //
 // The image goes where this kernel runs, so the copy cannot run from this
 // kernel: it would be writing over its own loop.  The copier below is first
@@ -261,20 +261,28 @@ _copyandreboot:
     str     r6, [r5], #4
     cmp     r3, r4
     blo     1b
+    mov     r7, r5                         // end of the copier at its new home
 
-    // Freshly written code is about to run.  The D-cache is off and was
-    // cleaned and invalidated (both levels on the A53) by disable_data_cache,
-    // so the copier is already in RAM; what is left is the instruction side:
-    // drain the stores, then drop any stale I-cache line, branch prediction
-    // and prefetched instruction for that page.
+    // Freshly written code is about to run, written through the D-cache:
+    // clean it to the point of unification, where the instruction side
+    // fetches from, then drop any stale I-cache line, branch prediction and
+    // prefetched instruction for that page.
     mov     r6, #0
 #if (__ARM_ARCH >= 7)
+    mov     r5, #LOWMEM_CHAINBOOT_COPIER
+2:
+    mcr     p15, 0, r5, c7, c11, 1         // DCCMVAU: clean line to PoU
+    add     r5, r5, #32                    // no v7 core here has a smaller line
+    cmp     r5, r7                         // ... up to the copy's end (r7)
+    blo     2b
     dsb
     mcr     p15, 0, r6, c7, c5, 0          // ICIALLU: invalidate I-cache
     mcr     p15, 0, r6, c7, c5, 6          // BPIALL: invalidate branch predictor
     dsb
     isb
 #else
+    mcr     p15, 0, r6, c7, c10, 0         // clean entire D-cache (the ARM1176
+                                           // has no separate PoU clean)
     mcr     p15, 0, r6, c7, c10, 4         // DSB: drain the write buffer
     // ARM1176 erratum 411920: Invalidate Entire Instruction Cache can miss
     // lines.  The workaround is four in a row with interrupts off (they are),
@@ -316,10 +324,11 @@ _chainboot_copier:
     bhi     2b                             // stops at 0, and can never wrap
 
 #if (__ARM_ARCH >= 7)
-    // Invalidate - never clean - every data/unified cache level by set/way,
-    // so the new kernel starts with nothing cached.  disable_data_cache
-    // cleaned everything before the cache went off; a clean here could only
-    // write some line left over from before the copy back over the image.
+    // Clean and invalidate every data/unified cache level, to the point of
+    // coherency (the A53's L2 included), by set/way.  The copy ran with the
+    // D-cache on, so much of the new image - and the chain-boot marker at
+    // LOWMEM_MARKERS - may still be dirty lines; this is what puts it in RAM
+    // before the caches go off and the new kernel starts uncached.
     mrc     p15, 1, r0, c0, c0, 1          // CLIDR
     and     r3, r0, #0x07000000            // LoC, bits 26:24
     mov     r10, #0                        // cache level 0 (x2)
@@ -344,7 +353,7 @@ _chainboot_copier:
 5:
     orr     r11, r10, r9, lsl r5
     orr     r11, r11, r7, lsl r2
-    mcr     p15, 0, r11, c7, c6, 2         // DCISW
+    mcr     p15, 0, r11, c7, c14, 2        // DCCISW
     subs    r9, r9, #1
     bge     5b
     subs    r7, r7, #1
@@ -355,9 +364,9 @@ _chainboot_copier:
     bgt     3b
     dsb
 #else
-    // Invalidate, never clean: see the ARMv7 note above.
+    // As above: the copy is still partly in dirty lines.
     mov     r0, #0
-    mcr     p15, 0, r0, c7, c6, 0          // invalidate entire D-cache
+    mcr     p15, 0, r0, c7, c14, 0         // clean+invalidate entire D-cache
     mcr     p15, 0, r0, c7, c10, 4         // DSB
 #endif
 

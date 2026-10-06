@@ -37,6 +37,7 @@
 #include "rpi/audio.h"
 #include "rpi/h264dec.h"
 #include "rpi/lowmem.h"
+#include "rpi/cache.h"
 #include "Pi1MHz.h"
 #include "pvf.h"
 #include "videoplayer.h"
@@ -73,6 +74,10 @@ static char pvf_path[32];
 #define videobuf_handle2(n) (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[3 + (n)])
 #define VIDEOBUF_MAGIC    0x56425546u   /* 'VBUF' */
 #define VIDEOBUF_MAGIC2   0x56424632u   /* 'VBF2' */
+/* After every change: a kernel.now copies with the D-cache on, and the next
+   kernel must find the block in RAM, not in this one's dirty line. */
+#define videobuf_persist_clean() \
+    _clean_cache_area((const void *)VIDEOBUF_PERSIST_BASE, 5u * sizeof(uint32_t))
 
 /* ------------------------------------------------------------------ */
 /* Player state                                                       */
@@ -1209,6 +1214,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
             }
         videobuf_magic2 = 0;
     }
+    videobuf_persist_clean();
 
     /* LAZY BRING-UP (2026-08-25): opening the video file, starting the
        hardware decoder and allocating GPU frame buffers used to happen right
@@ -1282,6 +1288,7 @@ static void vp_bring_up(void)
     videobuf_magic2 = VIDEOBUF_MAGIC2;
     for (int i = 0; i < NUM_FRAME_BUFFERS; i++)
         videobuf_handle2(i) = handles[i];
+    videobuf_persist_clean();
 
     screen_create_YUV420_plane(YUV_PLANE, vp.hdr.width, vp.hdr.height,
                                vp.buf_phys[0]);
