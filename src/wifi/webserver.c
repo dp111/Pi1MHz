@@ -4098,7 +4098,7 @@ static const char *kn_begin(ws_conn_t *c, uint32_t expect, int *status)
       return "kernel.now is larger than 4 MB.";
    }
    cap = (expect != 0u) ? ((expect + 63u) & ~63u) : CHAINBOOT_MAX_IMAGE;
-   free(c->kn_buf);
+   kn_discard(c);
    c->kn_buf = malloc(cap);
    if (c->kn_buf == NULL) {
       *status = 507;
@@ -4132,12 +4132,12 @@ static const char *kn_take(ws_conn_t *c, int *status)
       why = "That is not a Pi1MHz kernel image - the Pi carries on as it was.";
    }
    if (why != NULL) {
-      free(c->kn_buf);
-      c->kn_buf = NULL;
+      kn_discard(c);
       return why;
    }
    bool taken = chainboot_request(c->kn_buf, c->kn_len, c->kn_cap);
    c->kn_buf = NULL;                  /* chainboot's now, or freed by it */
+   kn_discard(c);                     /* ... so this only clears len/cap */
    if (!taken) {
       *status = 507;
       return "There is no room for kernel.now.";
@@ -4153,7 +4153,8 @@ static const char *kn_status_text(int status)
         :                 "Service Unavailable";
 }
 
-static bool upload_fail(ws_conn_t *c, const char *msg)
+static bool upload_fail_status(ws_conn_t *c, int status, const char *stext,
+                               const char *msg)
 {
    ws_strbuf_t b;
 
@@ -4174,7 +4175,19 @@ static bool upload_fail(ws_conn_t *c, const char *msg)
    append_files_url(&b, c->up_dir);
    sb_puts(&b, "\">Back to folder</a></p></div>");
    page_close(&b);
-   return ws_finish_html(c, 400, "Bad Request", &b);
+   return ws_finish_html(c, status, stext, &b);
+}
+
+static bool upload_fail(ws_conn_t *c, const char *msg)
+{
+   return upload_fail_status(c, 400, "Bad Request", msg);
+}
+
+/* A refused kernel.now: the status kn_begin / kn_take chose, as the WebDAV
+   PUT path sends it, so a script can tell "too big" from "not a kernel". */
+static bool upload_fail_kn(ws_conn_t *c, int status, const char *why)
+{
+   return upload_fail_status(c, status, kn_status_text(status), why);
 }
 
 static bool upload_flush(ws_conn_t *c);
@@ -4182,11 +4195,8 @@ static bool upload_flush(ws_conn_t *c);
 static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
 {
    if (c->kn_buf != NULL && len != 0u) {
-      if (!kn_append(c, data, len)) {
-         free(c->kn_buf);
-         c->kn_buf = NULL;
-         return upload_fail(c, "kernel.now is larger than 4 MB.");
-      }
+      if (!kn_append(c, data, len))
+         return upload_fail_kn(c, 413, "kernel.now is larger than 4 MB.");
       c->up_bytes_written += (uint32_t)len;
       return true;
    }
@@ -4262,7 +4272,7 @@ static bool upload_finish(ws_conn_t *c)
       int         status;
       const char *why = kn_take(c, &status);
       if (why != NULL)
-         return upload_fail(c, why);
+         return upload_fail_kn(c, status, why);
       c->up_complete = true;
       c->up_state = UP_EPILOGUE;
       sb_init(&b);
@@ -4395,7 +4405,7 @@ static bool upload_begin_part(ws_conn_t *c)
          int         status;
          const char *why = kn_begin(c, 0u, &status);
          if (why != NULL)
-            return upload_fail(c, why);
+            return upload_fail_kn(c, status, why);
          c->up_bytes_written = 0u;
          c->up_buf_len = 0u;
          return true;
@@ -5238,8 +5248,7 @@ static bool dav_put_write_bytes(ws_conn_t *c, const uint8_t *data, size_t len)
    if (c->kn_buf != NULL) {
       if (kn_append(c, data, len))
          return true;
-      free(c->kn_buf);
-      c->kn_buf = NULL;
+      kn_discard(c);
       (void)ws_error(c, 413, "Payload Too Large",
                      "kernel.now is longer than it said, or than 4 MB.");
       return false;

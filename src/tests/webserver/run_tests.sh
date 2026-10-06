@@ -30,7 +30,7 @@ ws_is_root,ws_digest_field,ws_hex_eq_ci,ws_digest_uri_matches,\
 dav_url_to_sdpath,dav_destination_sdpath,dav_memfind,dav_parse_http_date,\
 ws_parse_range,ws_query_param"
 
-awk -v defs="WS_HEADER_MAX,WS_FILE_CHUNK,WS_BOUNDARY_MAX,WS_UPLOAD_HEAD_MAX,WS_PATH_MAX,WS_DRAIN_MAX_BYTES,WS_READ_CHUNK,WS_DL_READ_CHUNK" \
+awk -v defs="WS_HEADER_MAX,WS_FILE_CHUNK,WS_BOUNDARY_MAX,WS_UPLOAD_HEAD_MAX,WS_PATH_MAX,WS_DRAIN_MAX_BYTES,WS_READ_CHUNK,WS_DL_READ_CHUNK,WS_UP_FULL_MAX,WS_UP_TMP_MAX" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_defines.inc"
 # types= rides along so ws_range_result_t lands ahead of ws_parse_range
 # (the awk emits in file order, and the typedef precedes the function).
@@ -43,7 +43,9 @@ awk -v fns="dav_put_consume_chunked" \
 # Per-request resource lifetime: the kernel.now buffer, the three
 # teardown paths, and the PUT body sink a stale buffer would hijack.
 KN_FNS="kn_discard,conn_release_resources,conn_close,conn_reset_for_next_request,\
-kn_begin,kn_append,kn_take,kn_status_text,upload_fail,dav_put_write_bytes,\
+kn_begin,kn_append,kn_take,kn_status_text,upload_fail_status,upload_fail,\
+upload_fail_kn,upload_write,upload_finish,\
+dav_put_write_bytes,\
 dav_put_finish,dav_put_consume,dav_put_consume_chunked,ws_err"
 awk -v fns="$KN_FNS" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_kn.inc"
