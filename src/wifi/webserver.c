@@ -7331,13 +7331,21 @@ static void webserver_refresh_sd_free(void)
 
 /* Poll hook: once a reboot has been requested via POST /reboot and the
    short grace period has elapsed - long enough for the response page to
-   have been delivered - restart the Pi.  reboot_now() does not return. */
+   have been delivered - let go of the card and restart the Pi.
+   reboot_now() does not return. */
 void webserver_poll(void)
 {
    chainboot_poll();      /* a kernel.now PUT's restart, once its reply is out */
 
+   /* As the Beeb's HD_CARD_REBOOT does: every subsystem closes what it holds
+      and the volume is dismounted first, or an unsynced FAT-service file, an
+      M5000 recording or an upload's .part is cut off mid-write and leaves
+      lost clusters.  filesystemEject() is one step and is false while
+      something is still being written out, so the reboot just waits for a
+      later pass. */
    if (g_ws_reboot_pending
-       && (Pi1MHz_now_us - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
+       && (Pi1MHz_now_us - g_ws_reboot_at) >= WS_REBOOT_DELAY_US
+       && filesystemEject()) {
 #ifdef DEBUG
       RPI_BootDetail(0xFDu);  /* deliberate reboot - not a death */
       {
