@@ -18,11 +18,13 @@ void audio_stop_dma(void);
 /* wifi/sdio.h, usb/mtp_fs.h */
 void sdio_runtime_prepare_for_warm_reboot(void);
 void mtp_fs_prepare_for_warm_reboot(void);
+void mtp_fs_inserted(void);
 /* videoplayer.h, rpi/h264dec.h */
 bool videoplayer_active(void);
 bool h264dec_running(void);
 /* BeebSCSI/filesystem.h */
 bool filesystemEject(void);
 bool filesystemInsert(void);
+bool filesystemEjected(void);
 
 #endif

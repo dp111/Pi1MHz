@@ -37,11 +37,12 @@ const char *chainboot_refusal(void)
       orphans the GPU decoder, and video stays broken until a full reboot. */
    if (videoplayer_active())
       return "The video player is open - close it (or reboot) first.";
-   /* The decoder outlives the player: once started it holds its GPU
-      buffers until a reboot, even with the player closed (say, after a
-      jukebox to a side without video). */
+   /* The decoder outlives the player: its MMAL component and VCHIQ service
+      are never torn down once started - not by closing the player, not by a
+      BREAK - so after any video use since the last reboot there is something
+      a chain-boot would orphan. */
    if (h264dec_running())
-      return "The video decoder has been started - reboot first.";
+      return "Video has been used since the last reboot - reboot first.";
    return NULL;
 }
 
@@ -62,6 +63,9 @@ const char *chainboot_refusal(void)
  * callbacks rather than nested inside one. */
 static uint8_t *s_image;
 static uint32_t s_length;
+static uint8_t  s_stage;         /* where chainboot_poll has got to with it */
+static bool     s_usb_off;       /* USB taken off the bus for the jump */
+static bool     s_took_card;     /* the eject was ours, so a give-up returns it */
 
 /* Long enough for the sender's answer to get out: an MTP response on the
    wire, or an HTTP one through lwIP and the WiFi chip. */
@@ -78,31 +82,69 @@ bool chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity)
    free(s_image);                 /* a second request replaces the first */
    s_image = image;
    s_length = padded;
+   s_stage = 0u;                  /* ...and waits a settle of its own, so its
+                                     sender's answer gets out too */
    return true;
+}
+
+/* Give the image up and let the Pi carry on as it was: what this code took
+   for the jump goes back, and nothing else - a card the user had ejected
+   stays out, and USB with it.  The sender has had its OK already; there is
+   no telling it otherwise. */
+static void chainboot_abandon(void)
+{
+   free(s_image);
+   s_image = NULL;
+   s_stage = 0u;
+   if (s_took_card)
+      (void)filesystemInsert();          /* and with it USB (mtp_fs_inserted) */
+   else if (s_usb_off && !filesystemEjected())
+      mtp_fs_inserted();                 /* USB back; the host enumerates afresh */
+   s_took_card = false;
+   s_usb_off = false;
 }
 
 void chainboot_poll(void)
 {
-   static uint8_t stage;
    static uint32_t settle_us;
 
    if (s_image == NULL)
       return;
 
-   if (stage == 0u) {
+   /* The player or the decoder may start while this waits, and then the
+      image is given up rather than orphan the decoder.  The refusal is asked
+      again before each step that would cost the Beeb something to undo. */
+   if (s_stage == 0u) {
       settle_us = RPI_GetSystemTime() + CHAINBOOT_SETTLE_US;
-      stage = 1u;
+      s_stage = 1u;
       return;
    }
-   if (stage == 1u) {
+   if (s_stage == 1u) {
       if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
          return;
+      if (chainboot_refusal() != NULL) {   /* nothing touched yet */
+         chainboot_abandon();
+         return;
+      }
       mtp_fs_prepare_for_warm_reboot();   /* USB off the bus, so nothing is left in flight */
+      s_usb_off = true;
       settle_us = RPI_GetSystemTime() + 50000u;
-      stage = 2u;
+      s_stage = 2u;
       return;
    }
-   if (stage == 2u) {
+   if (s_stage == 2u) {
+      if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
+         return;
+      if (chainboot_refusal() != NULL) {   /* free: at most USB comes back */
+         chainboot_abandon();
+         return;
+      }
+      if (!filesystemEjected())
+         s_took_card = true;    /* ours from here; one the user ejected is not */
+      s_stage = 3u;
+      return;
+   }
+   if (s_stage == 3u) {
       /* As the Beeb's own reboot (HD_CARD_REBOOT): every open file closed and
          the volume dismounted, so nothing unsynced - a FAT-service file, a
          recording, a half-written upload - is lost with lost clusters left
@@ -110,20 +152,18 @@ void chainboot_poll(void)
          its subsystem wait. */
       if (!filesystemEject())
          return;
-      stage = 3u;
-   }
-   if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
+      s_stage = 4u;
       return;
+   }
 
-   /* The player or the decoder may have started while this waited.  Then
-      the image is given up rather than orphan the decoder: the card goes
-      back, and with it USB (mtp_fs_inserted), and the Pi carries on.  The
-      sender has had its OK already; there is no telling it otherwise. */
+   /* Only a backstop now, for an eject that took several passes (a Music
+      5000 recording being flushed).  Giving up here is not free for the
+      Beeb: the eject stopped every LUN, and putting the card back mounts it
+      without restarting them and resets the FAT directory to /Transfer, so
+      a session in progress - a Domesday disc, say - loses its discs until
+      the next BREAK.  Still better than orphaning the decoder. */
    if (chainboot_refusal() != NULL) {
-      free(s_image);
-      s_image = NULL;
-      stage = 0u;
-      (void)filesystemInsert();
+      chainboot_abandon();
       return;
    }
 
