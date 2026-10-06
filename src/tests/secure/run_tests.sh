@@ -43,4 +43,20 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     "$B/test_wrapper.c" "$B/secure_service.c" "$B/secure_service_core.c"
 "$B/tw"
 
+# The wolfSSH provider itself - compiled by no firmware build while
+# PI1MHZ_SSH is OFF, and wolfSSH is not in the tree - against stand-ins for
+# wolfSSH/wolfCrypt, FatFs and the WiFi glue (provider_stubs/) and the net
+# suite's lwIP headers.
+echo "== wolfSSH provider =="
+P=$B/provider
+mkdir -p "$P"
+cp -r "$HERE"/provider_stubs/. "$P/"
+cp -r "$SRC"/tests/net/stubs/lwip "$P/"
+cp "$SRC"/secure_service_wolfssh.c "$SRC"/secure_service_wolfssh.h \
+   "$SRC"/secure_service_core.h "$HERE"/test_provider.c "$P/"
+gcc -std=gnu2x -Wall -Wextra -g \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$P" -o "$P/t" "$P/test_provider.c" "$P/secure_service_wolfssh.c"
+"$P/t"
+
 echo "SECURE TESTS PASSED"

@@ -34,7 +34,11 @@
 
 #define SSH_RX_SIZE 16384u
 #define SSH_FILE_SIZE 4096u
-#define SSH_DIR "Pi1MHz/ssh"
+/* Absolute, like WiFi.profile and /cacert.pem: a Beeb *CD moves FatFs's
+   current directory (fat_service f_chdir), and a relative path would then
+   miss the keys and write known_hosts wherever the Beeb had gone. */
+#define SSH_PARENT "/Pi1MHz"
+#define SSH_DIR SSH_PARENT "/ssh"
 #define SSH_PRIVATE SSH_DIR "/id_ed25519"
 #define SSH_PUBLIC SSH_DIR "/id_ed25519.pub"
 #define SSH_HOSTS SSH_DIR "/known_hosts"
@@ -89,6 +93,7 @@ typedef struct {
     word32 sftp_offset[2];
     uint8_t sftp_transfer; /* 0 none, 1 download, 2 upload */
     char sftp_cwd[256];
+    uint16_t dns_gen;      /* bumped per resolve and per close - see dns_found */
 } pi_ssh;
 
 static pi_ssh client;
@@ -298,6 +303,9 @@ static int persist_known_host(void)
        would otherwise lose every host already trusted.  The shared helper
        writes a .new, reads it back to check it, and only then swaps it in. */
     total = length + (size_t)count;      /* bounded by sizeof file_buffer */
+    /* The directory is made here, by its only writer, not on every BREAK. */
+    (void)f_mkdir(SSH_PARENT);
+    (void)f_mkdir(SSH_DIR);
     ok = filesystemWriteFileSafe(SSH_HOSTS, file_buffer, (uint32_t)total);
     memset(file_buffer, 0, total);
     return ok ? 0 : -1;
@@ -430,14 +438,20 @@ static int io_send(WOLFSSH *ssh, void *data, word32 size, void *opaque)
     return (int)count;
 }
 
+/* lwIP cannot cancel a resolve, and close_connection just clears the
+   client, so the answer for a session closed and reopened for another host
+   would land in the new one: it would connect to the old host under the new
+   host_id, saving the wrong key to known_hosts and sending the new host's
+   password to the old.  The callback carries the resolve's generation and
+   only the current one is taken, as net_service's net_dns_found does. */
 static void dns_found(const char *name, const ip_addr_t *address, void *opaque)
 {
-    pi_ssh *state = opaque;
     (void)name;
-    if (state == NULL) return;
-    state->dns_done = true;
-    state->dns_ok = address != NULL;
-    if (address != NULL) state->address = *address;
+    if ((uint16_t)(uintptr_t)opaque != client.dns_gen ||
+        client.stage != SSH_RESOLVING) return;
+    client.dns_done = true;
+    client.dns_ok = address != NULL;
+    if (address != NULL) client.address = *address;
 }
 
 static int parse_url(const char *url)
@@ -499,6 +513,7 @@ static void close_connection(bool keep_password)
 {
     byte saved_password[128];
     word32 saved_size = 0;
+    uint16_t dns_gen = (uint16_t)(client.dns_gen + 1u); /* see dns_found */
     if (keep_password && client.password_size != 0u) {
         saved_size = client.password_size;
         memcpy(saved_password, client.password, saved_size);
@@ -517,6 +532,7 @@ static void close_connection(bool keep_password)
     }
     free_keys();
     memset(&client, 0, sizeof(client));
+    client.dns_gen = dns_gen;
     if (saved_size != 0u) {
         memcpy(client.password, saved_password, saved_size);
         client.password_size = saved_size;
@@ -539,7 +555,9 @@ static uint8_t start_connection(const char *url, const char *username,
         free_keys();
         if (client.password_size == 0u) return NTS_AUTH_FAILED;
     }
-    result = dns_gethostbyname(client.host, &client.address, dns_found, &client);
+    client.dns_gen++;
+    result = dns_gethostbyname(client.host, &client.address, dns_found,
+                               (void *)(uintptr_t)client.dns_gen);
     if (result == ERR_INPROGRESS) { client.stage = SSH_RESOLVING; return NTS_PENDING; }
     if (result != ERR_OK) return NTS_ERR_DNS;
     client.dns_done = client.dns_ok = true;
@@ -889,7 +907,12 @@ int nts_pi_wolfssh_ready(void) { return provider_ready; }
 int nts_pi_wolfssh_random_ready(void) { return rng_ready; }
 void nts_pi_wolfssh_poll(void)
 {
-    wifi_lwip_rx_kick();
+    /* Full-rate WiFi RX only while a session is being set up, when a reply
+       is always due.  Once up, io_send kicks after each write; idle, the
+       link may back off - a kick on every pass held it at full rate (up to
+       1.2 ms a pass) for as long as the build ran. */
+    if (client.stage >= SSH_RESOLVING && client.stage < SSH_UP)
+        wifi_lwip_rx_kick();
     rng_poll();
     if (rng_ready && !wolfssh_init_attempted) {
         wolfssh_init_attempted = true;
@@ -906,8 +929,6 @@ void nts_pi_wolfssh_reset(void)
         wolfssh_started = false;
     }
     wolfssh_init_attempted = false;
-    (void)f_mkdir("Pi1MHz");
-    (void)f_mkdir(SSH_DIR);
     provider_ready = false;
     rng_begin();
 }
