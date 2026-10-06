@@ -596,7 +596,7 @@ ORG &FD00
 ORG &FD00
   JMP setupredirectorwithmessage ; default entry point for message redirector
 
-  JSR setupredirector       ; &FD03 Entry point for non message redirector and no mode change
+  JSR setupredirector       ; &FD03 Entry point: now the same as &FD00, kept as ROMs call both
   JMP oswtchredirectexit
 
 .setupredirector
@@ -623,27 +623,44 @@ ORG &FD00
   ; Change mode on pi.
     LDA #22: STA newoswrch :STX newoswrch
 
-  ; read cursor enabled state directly from hardware
-    LDA #10: STA &FE00: LDA &FE01 : PHA
-    LDA #32: STA &FE01 ; disable beeb cursor
+  ; The Beeb's cursor is left as it is and walks across during the copy.
+  ; Its on/off state cannot be read back to restore it: the 6845's R10 is
+  ; write-only, on an Electron &FE00 is the ULA's interrupt register, and
+  ; the MOS's R10 copy (VDU variable &5F) is the shape VDU 23,1,1 puts
+  ; back, not a record of VDU 23,1,0.  Guessing wrong would turn on a
+  ; cursor the program had turned off.
 
   ; now copy existing screen
+  ; Known limits: with VDU 5 active, VDU 9 moves the graphics cursor, not
+  ; the text cursor; a cursor on the bottom-right cell makes the Pi scroll
+  ; when that cell is written.
 
-  ; read screen width
-    LDA #160: LDX #9 : JSR OSBYTE ; read screen width ; Y = width
-    INY
-    STY screenwidth+1 ; store screen width in variable
+  ; Give the Pi the Beeb's text window: OSBYTE 134 and VDU 9/31 work
+  ; inside a VDU 28 window, so the copy only lands in place if the Pi
+  ; has the same one.
+    LDA #28 : STA newoswrch
+    LDA #&A0 : LDX #8 : JSR OSBYTE  ; X = window left, Y = bottom
+    STX newoswrch : STY newoswrch
+    STX screenwidth+1                ; hold left for the width
+    LDA #&A0 : LDX #10 : JSR OSBYTE ; X = window right, Y = top
+    STX newoswrch : STY newoswrch
+    LDA #30 : STA newoswrch          ; Pi cursor to the window's top left
+
+  ; window width = right - left + 1
+    TXA : SEC : SBC screenwidth+1
+    TAY : INY
+    STY screenwidth+1 ; store window width in variable
   ; read current cursor position
 
-    LDA #134 : JSR OSBYTE ; get current cursor position X = HPOS, Y = VPOS
+    LDA #134 : JSR OSBYTE ; get current cursor position X = HPOS, Y = VPOS (in the window)
     INX:INY
     STX xcounter : STY ycounter
 
-; set cursor position to the top of screen
+; set cursor position to the top of the window
 
     LDA #31 : JSR newoswrch+3 : LDA #0 : JSR newoswrch+3 : JSR newoswrch+3
 
-    ; disable Pi cursor
+    ; hide the Pi's cursor while the copy draws
     LDX #0 : JSR cursoronoff
     JMP dofirstchar
 
@@ -656,7 +673,17 @@ ORG &FD00
 .dofirstchar
     ; loop read screen characters
     LDA #135 : JSR OSBYTE ; x = Char ; Y screen mode
-    STX newoswrch ; write char to new screen
+    ; X = 0 is a cell OSBYTE 135 cannot recognise (graphics), and a MODE 7
+    ; control byte is <32 or &7F: as VDU codes they would not draw a cell
+    ; (VDU 0 does nothing, 127 deletes), and the rest of the copy would
+    ; land out of step.  The Pi gets a space instead.
+    TXA
+    CMP #32 : BCC copyspace
+    CMP #&7F : BNE copychar
+.copyspace
+    LDA #32
+.copychar
+    STA newoswrch ; write char to new screen
 
     DEC xcounter
     BNE loopcopyscreen
@@ -666,19 +693,12 @@ ORG &FD00
 
     LDA #8 : STA newoswrch    ; the last read was the cell under the cursor: step the Pi back onto it
 
-    LDX #0
-  ;  LDA #10: STA &FE00 ; re-enable beeb cursor
-    PLA :; STA &FE01
-
-    CMP #32
-    BEQ restorecursoroff
-    LDX #10
-.restorecursoroff
+    LDX #10           ; Pi cursor back on, as VDU 22 left it
 .cursoronoff
     LDY #10
 .cursoronoffloop
     LDA cursoroffdata,X
-    JSR newoswrch+3 ;STA newoswrch ; just the Pi cursor
+    STA newoswrch     ; just the Pi cursor
     INX:DEY
     BNE cursoronoffloop
 
@@ -699,7 +719,6 @@ ORG &FD00
 ;  PRTSTRING " Screen Redirector enabled."
 ;  JSR OSNEWL
 ;  JSR OSNEWL
-   JMP  oswtchredirectexit
 .oswtchredirectexit
   PAGERTS
 
