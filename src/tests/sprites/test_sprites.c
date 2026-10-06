@@ -102,6 +102,25 @@ static void test_basic(int log2bpp) {
    prim_reset_sprites(&scr);
 }
 
+/* The store is sized for a full-screen capture of the biggest MODE 0-7
+   framebuffer (MODE 7: 480x500 at 8 bpp); that must be accepted, twice over
+   (redefine) and after a reset. */
+static void test_full_screen_modes(void) {
+   printf("full-screen capture of the largest supported MODE\n");
+   set_bpp(3);
+   prim_reset_sprites(&scr);
+   for (int pass = 0; pass < 3; pass++) {
+      define(0, 0, 0, 480, 500, 40 + pass);
+      CHECK(paints(0, 0, 0, 480, 500, 40 + pass), "MODE 7 sized sprite refused/wrong (pass %d)", pass);
+   }
+   define(1, 0, 0, 640, 256, 50);          /* no room beside a MODE 7 sized one: refused, not corrupting */
+   CHECK(undefined(1) && paints(0, 0, 0, 480, 500, 42), "second full-screen sprite not cleanly refused");
+   prim_reset_sprites(&scr);
+   define(1, 0, 0, 640, 256, 51);
+   CHECK(paints(1, 0, 0, 640, 256, 51), "MODE 0 sized sprite refused after reset");
+   prim_reset_sprites(&scr);
+}
+
 static void test_redefine(void) {
    printf("redefine larger / smaller / same, neighbours intact\n");
    set_bpp(3);
@@ -139,7 +158,7 @@ static void test_exhaustion(void) {
    define(2, 0, 0, SW, rows, 33);                                   /* a third cannot fit */
    CHECK(undefined(2), "third big sprite fitted (store is %u bytes)", (unsigned)SPRITE_POOL_BYTES);
    CHECK(paints(0, 0, 0, SW, rows, 31) && paints(1, 0, 0, SW, rows, 32), "exhaustion damaged earlier sprites");
-   /* the whole screen is 1 MiB at 8bpp: more than the store holds, refused cleanly */
+   /* the whole 1024x1024 screen is 1 MiB at 8bpp: more than the store holds, refused cleanly */
    define(3, 0, 0, SW, SH, 34);
    CHECK(undefined(3), "screen-sized sprite fitted");
    /* freeing space (a smaller redefine) lets a later one in */
@@ -201,11 +220,13 @@ int main(void) {
 
    heap_calls = 0;                         /* count from here: only the code under test runs */
    test_basic(3); test_basic(4); test_basic(5);
+   test_full_screen_modes();
    test_redefine();
    test_exhaustion();
+   /* worst case live set, 256 sprites of maxdim^2: 147 KB, 131 KB, 147 KB of the store */
    test_churn(3, 24, 3000);
-   test_churn(4, 24, 3000);
-   test_churn(5, 24, 400);      /* 256 * 24*24*4 = 590 KB worst case: still fits */
+   test_churn(4, 16, 3000);
+   test_churn(5, 12, 3000);
    CHECK(heap_calls == 0, "sprite code made %u heap calls (malloc/free in IRQ context)", heap_calls);
 
    printf("%d checks, %d failed\n", checks, fails);

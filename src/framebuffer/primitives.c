@@ -93,9 +93,14 @@ static sprite_t sprites[NUM_SPRITES];
 // so a live sprite's data never moves. A sprite that does not fit is simply
 // left undefined, exactly as a failed malloc did.
 //
-// BSS rather than .noinit: .noinit is part of the kernel image. The size is
-// SPRITE_POOL_BYTES in primitives.h: about 128 sprites of 64x64 at 16 bpp, or
-// one capture of roughly 1024x500 at 16 bpp.
+// Sized in primitives.h (SPRITE_POOL_BYTES) for one full-screen capture of
+// the biggest MODE 0-7 framebuffer. A capture too big for the store - only
+// possible in the unsupported modes above 7 or a custom mode - is refused and
+// the sprite left undefined, where it used to be taken from the heap.
+//
+// BSS rather than .noinit: a sprite never has to survive a reset, and .bss is
+// cleared at start-up so the store begins as one free block. (Both sections
+// sit past the end of the loaded image, so neither costs image size.)
 typedef struct {
    uint32_t cells;  // whole block, header cell included
    uint32_t used;

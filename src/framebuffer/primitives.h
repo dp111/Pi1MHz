@@ -5,6 +5,15 @@
 #include <stdbool.h>   /* bool is used below; keep this header self-contained */
 #include "screen_modes.h"
 
+// Size of the static sprite store (see "Sprite store" in primitives.c).
+// The biggest framebuffer the supported MODEs 0-7 have is MODE 7's teletext
+// surface, 480x500 at 8 bpp = 240000 bytes (MODEs 0-6 are at most 640x256 =
+// 163840), so a full-screen capture in any of them fits: 240000 + the 8 byte
+// block header, rounded up to 256 KiB. A capture larger than the store (only
+// possible in the unsupported modes above 7, or a custom mode) is refused:
+// the sprite is left undefined, as a failed malloc used to do.
+#define SPRITE_POOL_BYTES (256u * 1024u)
+
 typedef enum {
    HL_LR_NB = 1, // Horizontal line fill (left & right) to non-background
    HL_RO_BG = 2, // Horizontal line fill (right only) to background
@@ -77,11 +86,6 @@ void       prim_move_copy_rectangle  (screen_mode_t *screen, int x1, int y1, int
 void       prim_fill_rectangle       (screen_mode_t *screen, int x1, int y1, int x2, int y2, plotcol_t colour);
 void       prim_fill_parallelogram   (screen_mode_t *screen, int x1, int y1, int x2, int y2, int x3, int y3, plotcol_t colour);
 void       prim_draw_character       (screen_mode_t *screen, int c, int x_pos, int y_pos, plotcol_t colour);
-/* Sprite pixels live in a static store of this many bytes, never the heap:
-   they are defined from the VDU drain, which runs in IRQ context. A sprite
-   that does not fit is left undefined (VDU 23,27,1 is then a no-op to plot). */
-#define SPRITE_POOL_BYTES (1024u * 1024u)
-
 void       prim_reset_sprites        (screen_mode_t *screen);
 void       prim_define_sprite        (screen_mode_t *screen, int n, int x1, int y1, int x2, int y2);
 void       prim_draw_sprite          (screen_mode_t *screen, int n, int x, int y);
