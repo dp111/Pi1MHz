@@ -686,12 +686,13 @@ static void fs_cache_invalidate(void) {
    TransactionID 0xFFFFFFFF marks a spontaneous, non-transaction event.  We
    drive the endpoint directly via usbd_edpt_xfer (DWC2 runs in slave/FIFO
    mode here, so a plain static buffer needs no DMA section) after claiming
-   it.  Best-effort: skipped with no open session, dropped if the endpoint is
-   still busy with a prior event; the cache invalidation is the backstop. */
+   it.  Best-effort: skipped with no open session or no configuration (the
+   endpoint is closed then), dropped if the endpoint is still busy with a
+   prior event; the cache invalidation is the backstop. */
 static void fs_send_object_event(uint16_t code, uint32_t handle) {
   static uint8_t evt_buf[16];        /* persists across the async xfer */
 
-  if (!is_session_opened) {
+  if (!is_session_opened || !tud_mounted()) {
     return;
   }
 
@@ -940,10 +941,11 @@ static bool fs_cache_ensure(void) {
   if (g_fs_cache.valid) {
     return true;
   }
-  /* Only reachable before the first-ever build completes (the live cache
-     is kept, stale, through rebuilds and across sessions): drain the
-     warm-up walker inline - same walker, no budget, so at worst the
-     REMAINDER of the boot walk, not a fresh one. */
+  /* Only reachable before the first-ever build completes, or the first
+     after a card eject dropped the cache (otherwise the live cache is kept,
+     stale, through rebuilds and across sessions): drain the warm-up walker
+     inline - same walker, no budget, so at worst the REMAINDER of the
+     warm-up walk, not a fresh one. */
   g_fs_cache_bg_armed = false;
   if (g_fs_cache_bg == NULL && !fs_cache_bg_start()) {
     return false;
@@ -1326,6 +1328,17 @@ static bool fs_kernel_alloc(uint32_t capacity) {
   return true;
 }
 
+/* What CloseSession does, for every way a session ends without one: an
+   unplug, a re-enumeration, a Device Reset, a card eject.  Left open, the
+   next OpenSession is refused SESSION_ALREADY_OPEN, and an unfinished
+   upload keeps its ".part" open, its LUN host-locked and a kernel.now
+   buffer of up to 4 MB allocated. */
+static void fs_session_end(void) {
+  is_session_opened = false;
+  fs_release_read_state();
+  fs_release_write_state();
+}
+
 //--------------------------------------------------------------------+
 // Control Request callback
 //--------------------------------------------------------------------+
@@ -1342,7 +1355,39 @@ bool tud_mtp_request_cancel_cb(tud_mtp_request_cb_data_t* cb_data) {
 // return false to stall the request
 bool tud_mtp_request_device_reset_cb(tud_mtp_request_cb_data_t* cb_data) {
   (void) cb_data;
+  /* The host's way back to Idle: it closes the session too (Still Image
+     class), and opens a new one next. */
+  fs_session_end();
   return true;
+}
+
+//--------------------------------------------------------------------+
+// Device callbacks (usbd.c, from tud_task).  MTP is this device's only
+// function, so its session is the device's.
+//--------------------------------------------------------------------+
+/* Every SET_CONFIGURATION - which follows each bus reset - means a host
+   that has just enumerated us and holds no session.  It is also the only
+   sign of an unplug that a board without VBUS sensing gets, at the replug:
+   no UNPLUGGED arrives, so tud_umount_cb never runs. */
+void tud_mount_cb(void) {
+  fs_session_end();
+}
+
+/* Unplugged (or deconfigured): the session and any transfer died with the
+   host. */
+void tud_umount_cb(void) {
+  fs_session_end();
+}
+
+/* A host suspends only an idle bus, so a transfer still in flight means the
+   host is gone - an unplug with no VBUS sensing looks exactly like this.
+   Drop the transfer now rather than hold its ".part", LUN lock and buffer
+   until a replug that may never come.  The session stays: a host that
+   suspended an idle device resumes into it. */
+void tud_suspend_cb(bool remote_wakeup_en) {
+  (void) remote_wakeup_en;
+  fs_release_read_state();
+  fs_release_write_state();
 }
 
 // Invoked when received Get Extended Event request. Application fill callback data's buffer for response
@@ -1583,9 +1628,7 @@ static int32_t fs_open_close_session(tud_mtp_cb_data_t* cb_data) {
     if (!is_session_opened) {
       return MTP_RESP_SESSION_NOT_OPEN;
     }
-    is_session_opened = false;
-    fs_release_read_state();
-    fs_release_write_state();
+    fs_session_end();
     /* The cache (and any rebuild in flight) survives the session: hosts
        close/reopen sessions freely, and a cleared cache would make the
        next open's first query pay the full tree walk inline. */
@@ -2526,15 +2569,19 @@ static int32_t fs_delete_object(tud_mtp_cb_data_t* cb_data) {
   return MTP_RESP_GENERAL_ERROR;
 }
 
-/* SD card eject (filesystemEject): drop every open file and the object
-   cache - an unfinished upload's ".part" goes with it - and take the device
-   off the bus, so the host forgets this card's objects instead of asking
-   about them on the next one. */
+/* SD card eject (filesystemEject): end the session - an unfinished upload's
+   ".part" goes with it - drop the object cache, and take the device off the
+   bus, so the host forgets this card's objects instead of asking about them
+   on the next one.  The cache really goes, unlike fs_cache_invalidate's
+   stale-while-rebuilding: handles are path hashes, so a stale entry would
+   list the old card to the next session, and one whose path also exists on
+   the new card would name (delete, rename) the new card's file. */
 bool mtp_fs_eject(void) {
-  fs_release_read_state();
-  fs_release_write_state();
+  fs_session_end();
   fs_cache_bg_abort();
-  fs_cache_invalidate();
+  fs_cache_stage_clear();
+  fs_cache_free(&g_fs_cache);
+  memset(fs_rename_alias, 0, sizeof(fs_rename_alias));
   if (tud_inited())
     (void) tud_disconnect();
   return true;
