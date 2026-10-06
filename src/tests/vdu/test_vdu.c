@@ -239,6 +239,34 @@ static void test_v3_mode_shrinks_below_cell(void)
    VDU(23, 19, 3, 0, 0, 0, 0, 0, 0, 0);
 }
 
+// ---- V4: teletext scroll vs the cached line state --------------------------
+
+static void test_v4_teletext_scroll(void)
+{
+   mode(7);
+   /* Red alphanumerics at the start of row 23, then "A" at the top left. */
+   VDU(31, 0, 23, 129);
+   VDU(31, 0, 0, 'A');
+   /* VDU 11 on the top row scrolls the screen down: row 24 now starts red,
+      and re-rendering it leaves the renderer's colour state red. */
+   VDU(11);
+   VDU('B');                       /* lands at column 1 of the (blank) top row */
+   screen_mode_t *s = fb_get_current_screen_mode();
+   font_t *f = s->font;
+   int cw = f->get_overall_w(f), ch = f->get_overall_h(f);
+   pixel_t ink = first_ink(1 * cw, s->height - 1, cw, ch, 0);
+   CHECK(ink == 0x3f, "V4: 'B' after a scroll drawn in colour %02x, want white (3f)", (unsigned)ink);
+
+   /* The same through VDU 23,7 (here: scroll the whole screen down). */
+   mode(7);
+   VDU(31, 0, 23, 129);            /* red at the start of row 23, row 24 after the scroll */
+   VDU(31, 0, 2, 'A');             /* "A" at (0,2): the cursor is at (1,2) */
+   VDU(23, 7, 1, 2, 0, 0, 0, 0, 0, 0);
+   VDU('B');                       /* (1,2), on a row the scroll filled from row 1 */
+   ink = first_ink(1 * cw, s->height - 1 - 2 * ch, cw, ch, 0);
+   CHECK(ink == 0x3f, "V4: 'B' after VDU 23,7 drawn in colour %02x, want white (3f)", (unsigned)ink);
+}
+
 int main(void)
 {
    fb_emulator_init(0, 0xd0);
@@ -247,6 +275,7 @@ int main(void)
    test_v1_cursor_vs_metrics();
    test_v2_vdu20_keeps_font();
    test_v3_mode_shrinks_below_cell();
+   test_v4_teletext_scroll();
 
    printf("%d checks, %d failed\n", checks, fails);
    if (fails)

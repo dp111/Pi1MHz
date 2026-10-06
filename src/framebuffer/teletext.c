@@ -326,6 +326,10 @@ static void tt_scroll(screen_mode_t *screen, const t_clip_window_t *text_window,
       tt_reset_line_state(row);
       re_render_row(screen, 0, row);
    }
+   // Invalidate the current line state: it is now the end of the last row,
+   // and the rows have moved under the cached position
+   tt.last_row = -1;
+   tt.last_col = -1;
 }
 
 // cppcheck-suppress constParameterCallback
