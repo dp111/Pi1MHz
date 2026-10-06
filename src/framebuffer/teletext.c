@@ -142,12 +142,13 @@ static screen_mode_t teletext_screen_modes[] = {
    }
 };
 
-static void set_font(screen_mode_t *screen, int num) {
-   // This screen mode always uses the SAA505x family of fonts
-   char name[] = "SAA5050";
-   name[6] = (char)('0'+(num & 7));
+static void set_font(screen_mode_t *screen) {
+   // MODE 7 always uses the SAA5050: the user cannot change its font (the
+   // other SAA505x national sets are not built - see fonts.c), so nothing
+   // else may be selected here, and the 480x500 surface always holds the
+   // same 40x25 grid.
    font_t *font = screen->font;
-   initialize_font_by_name(name, font);
+   initialize_font_by_name("SAA5050", font);
    font->set_rounding(font, TRUE);
 }
 
@@ -232,7 +233,7 @@ static void set_flashing(int on) {
 // It sets the default palette, and resets the default display options
 static void tt_reset(screen_mode_t *screen) {
    // Initialize the font
-   set_font(screen, 0);
+   set_font(screen);
    font_t *font = screen->font;
    // Set the rows/columns based on the the font
    tt.columns = screen->width / font->get_overall_w(font);
@@ -634,9 +635,7 @@ static void tt_unknown_vdu(screen_mode_t *screen, const uint8_t *buf) {
       case 2:
          set_reveal(screen, buf[3], buf[4]);
          break;
-      case 4:
-         set_font(screen, buf[3]);
-         break;
+      /* VDU 23,18,4 (select font) is not offered: the MODE 7 font is fixed. */
       }
    }
 }
