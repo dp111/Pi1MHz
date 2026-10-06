@@ -156,6 +156,94 @@ static uint8_t *play_tape(const uint8_t *image, uint32_t image_length,
    return out;
 }
 
+/* A guard published over a tape whose window is already out.  The window the
+   Pi holds was laid out flat and can be up to FLAT_WINDOW bytes; in GUARD_OFFSET
+   runs that is more pages than the 64K aperture has, so a blind re-lay-out
+   writes past it into Beeb-visible paged RAM and publishes a length the host
+   cannot read back in guard layout.  The tape is built here so the first flat
+   window is bigger than GUARD_WINDOW whatever corpus the runner was given. */
+#define SENTINEL_FROM    (CP + 0x400u)  /* clear of the command block + reply */
+#define SENTINEL_TO      0x40000u
+#define BIG_TAPE_CHUNKS  2500u          /* 23 bytes each, 57,512 with header */
+
+static void test_guard_over_flat_window(void)
+{
+   static const uint8_t chunk[23] = {
+      0x10, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x2a, 0x55, 0x2a, 0x55, 0x2a, 0x55,
+      0x2a, 0x55, 0x2a, 0x55, 0x2a, 0x55, 0x2a, 0x55, 0x2a, 0x55, 0x2a };
+   static const uint8_t header[12] = {
+      'U', 'E', 'F', ' ', 'F', 'i', 'l', 'e', '!', 0x00, 0x0a, 0x00 };
+   size_t length = sizeof header + (size_t)BIG_TAPE_CHUNKS * sizeof chunk;
+   uint8_t *image = malloc(length);
+   uint8_t *flat = malloc(FLAT_WINDOW);
+   uint8_t *back = malloc(FLAT_WINDOW);
+   uint8_t *p = &Pi1MHz->JIM_ram[CP + 1u];
+   uint32_t token, generation, offset = 0u;
+   size_t n, i, outside = 0u, window;
+   uint8_t status;
+
+   printf("\n== guard published over a flat window (%zu byte tape) ==\n", length);
+   memcpy(image, header, sizeof header);
+   for (i = 0u; i < BIG_TAPE_CHUNKS; i++)
+      memcpy(image + sizeof header + i * sizeof chunk, chunk, sizeof chunk);
+
+   op(6u /*CLOSE*/, 0u, 0u, 0u, 0u);
+   op(1u /*BEGIN*/, 0u, 0u, 0u, 0u);
+   token = reply_token();
+   generation = reply_generation();
+   while (offset < length) {
+      uint32_t c = (uint32_t)(length - offset);
+      if (c > 0xff00u) c = 0xff00u;
+      memcpy(&Pi1MHz->JIM_ram[UEF_BASE], image + offset, c);
+      op(2u /*APPEND*/, token, generation, (uint16_t)c, 0u);
+      generation = reply_generation();
+      offset += c;
+   }
+   op(3u /*FINALIZE*/, token, 0u, 0u, 0u);
+   window = reply_length();
+   check("first flat window is larger than a guard window", window > GUARD_WINDOW);
+   collect_window(flat, window, false);
+
+   memset(&Pi1MHz->JIM_ram[SENTINEL_FROM], 0xee, SENTINEL_TO - SENTINEL_FROM);
+   p[0] = GUARD_LENGTH;
+   for (i = 0u; i < GUARD_LENGTH; i++) p[1u + i] = (uint8_t)(0xa0u + i);
+   status = uef_service_guard_command(CP);
+
+   for (i = SENTINEL_FROM; i < SENTINEL_TO; i++)
+      if (Pi1MHz->JIM_ram[i] != 0xee) outside++;
+   check("nothing written outside the 64K aperture", outside == 0u);
+
+   /* Whatever the Pi decides, the host has to be able to read what is
+      published.  Either the guard is refused and the flat window is exactly
+      as it was, or it is accepted and the window fits the guard layout. */
+   n = rd16(&Pi1MHz->JIM_ram[UEF_BASE + TRAILER]);
+   if (status == WIFI_SVC_OK) {
+      check("accepted guard: published length fits the guard layout", n <= GUARD_WINDOW);
+      if (n <= GUARD_WINDOW) {
+         collect_window(back, n, true);
+         check("accepted guard: window reads back from the tape's start",
+               memcmp(back, flat, n) == 0);
+      }
+   } else {
+      check("guard refused with ERR_PARAM", status == WIFI_SVC_ERR_PARAM);
+      check("refused guard: published length unchanged", n == window);
+      check("refused guard: flat window left as published",
+            memcmp(&Pi1MHz->JIM_ram[UEF_BASE + (FIRST_PAGE << 8)], flat, window) == 0);
+   }
+
+   /* A host that is refused closes the tape and can then publish the guard
+      before reopening, which is the order that always works. */
+   op(6u /*CLOSE*/, token, 0u, 0u, 0u);
+   p[0] = GUARD_LENGTH;
+   for (i = 0u; i < GUARD_LENGTH; i++) p[1u + i] = (uint8_t)(0xa0u + i);
+   check("guard accepted once no tape is open", uef_service_guard_command(CP) == WIFI_SVC_OK);
+   p[0] = 0u;
+   uef_service_guard_command(CP);
+   free(image);
+   free(flat);
+   free(back);
+}
+
 static uint8_t *slurp(const char *path, uint32_t *length)
 {
    FILE *fp = fopen(path, "rb");
@@ -263,6 +351,8 @@ int main(int argc, char **argv)
          op(4u, 0u, 0u, 0u, 0u) == WIFI_SVC_ERR_PARAM);
    check("PROBE after CLOSE still answers, with a zero token",
          op(0u, 0u, 0u, 0u, 0u) == WIFI_SVC_OK && reply_token() == 0u);
+
+   test_guard_over_flat_window();
 
    free(image);
    free(reference);
