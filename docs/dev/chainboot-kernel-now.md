@@ -1,5 +1,16 @@
 # `kernel.now` chain-boot: what the copy actually touches
 
+STATUS (2026-10-06): **the hand-over was rebuilt so that nothing it uses lies
+in the copy's path** (review 2026-10-06 P2) - see "The handover" below.
+COMPILE-VERIFIED ONLY: it needs cold-boot and kernel.now tests on a Pi Zero/1
+and a Pi 3/Zero 2 W before anything here can be called fixed. The
+non-deterministic failure described next has NOT been re-measured against it;
+the rebuild removes hazards that were real (the copy running over the live
+page table, the stack and the DMA control blocks, and the chain marker lost
+for any image over ~806 KB), not a cause that was ever demonstrated. The
+sections after "The handover" describe the old in-place copier and are kept
+as the measurement record.
+
 STATUS (2026-09-24): **the failure is real but NON-DETERMINISTIC.** The same
 image onto the same running kernel both failed and succeeded on the same day,
 so no rule in terms of image size or image content can be correct. Size,
@@ -17,32 +28,65 @@ to test is the part worth keeping.
 
 ## The handover
 
-`mtp_fs_reboot_poll()` (`src/usb/mtp_fs.c`) takes the staged image and calls
-`_copyandreboot(src, len)` in `src/rpi/arm-start.S`. Before that it disables
-interrupts, tells the WiFi chip to stop signalling, and turns the D-cache off
-so the copy lands in RAM.
+`chainboot_poll()` (`src/chainboot.c`) takes the staged image from MTP or the
+webserver and, from the main loop, takes USB off the bus, ejects the card,
+tells the WiFi chip to stop signalling, disables interrupts, stops both audio
+DMA channels (`audio_stop_dma`), writes the chain-boot marker, and turns the
+D-cache off (`disable_data_cache`) so every store from then on goes straight
+to RAM. Then it calls `_copyandreboot(src, len)` in `src/rpi/arm-start.S`.
 
-`_fast_scroll` copies the image to **0x8000 upward, 64 bytes at a time**, then
-the tail of `_copyandreboot_code` invalidates the caches and branches into the
-new image.
+Since 2026-10-06 the copy no longer runs in place. Everything the hand-over
+needs lives below the kernel, at fixed addresses defined in
+`src/rpi/lowmem.h`:
 
-The load-bearing constraint: **`_copyandreboot_code` runs IN PLACE while
-`_fast_scroll` copies the new image straight over it.** It survives only
-because those bytes are identical in both images. Nothing may be inserted at
-or before `_fast_scroll_end` — doing so shifts the copy loop and the outgoing
-kernel executes whatever landed at its old address. Verified addresses:
+| address | what |
+|---|---|
+| 0x0100-0x13FF | Pi1MHz struct and callback table (unchanged) |
+| 0x3D00 | chain-boot marker: `CHAIN_MAGIC` and its complement |
+| 0x3D20 | the video player's persisted GPU handles (was 0x7C20) |
+| 0x3E00-0x3EFF | the copier |
+| 0x4000-0x7FFF | the L1 page table (was `PageTable` in `.noinit`) |
+| 0x8000- | the kernel |
 
-| symbol | ARMv6 (`rpi`) | ARMv7 (`rpi3`) |
-|---|---|---|
-| `_copyandreboot` | 0x818c | 0x81a4 |
-| `_fast_scroll` | 0x81b8 | 0x8248 |
+`_copyandreboot` copies a small position-independent routine to 0x3E00,
+drains the stores, invalidates the I-cache, branch predictor and prefetch
+(with the ARM1176 erratum 411920 workaround on `kernel.img`; DSB/ICIALLU/
+BPIALL/DSB/ISB on `kernel7.img`) and branches to it. That routine copies the
+image to 0x8000 with registers only - no stack - then cleans the caches, turns
+the MMU and caches off, invalidates the TLB, I-cache and branch predictor and
+branches to 0x8000. The assembler refuses to build if it outgrows its 256-byte
+page. Consequences:
 
-A corollary that is easy to miss: code placed *after* `_fast_scroll_end` is
-free to differ between builds, but it is **not** free to be branched to after
-the copy. By then the copy has written the incoming image over every address
-below `0x8000 + image size`, so such a branch lands in the NEW image.
+- **Nothing depends on the incoming image's layout any more.** The old
+  constraint - "nothing may be inserted at or before `_fast_scroll_end`",
+  because the copy loop ran in place over identical bytes - is gone, and so is
+  every instruction-count comment that served it.
+- **The only size limit is `CHAINBOOT_MAX_IMAGE` (4 MB).** The source is a
+  heap buffer, and the heap starts at the running kernel's `_end`, so the
+  source is always above the destination: the ascending copy can overlap it
+  and still never overwrite a byte before reading it.
+- **The chain marker survives any image and any pair of builds** that both
+  have it, so the `Boot time` row's "pre-kernel n/a (chain-boot)" can be
+  trusted again (and with it the post-ring seeding in `Pi1MHz.c`, which also
+  keys off `RPI_ChainBooted()`): a real pre-kernel figure after a push
+  between two such builds means the chain-boot fell back to the card.
+  INFERRED from the design; confirm it on hardware before relying on it.
+- **The first push onto an older running kernel still goes through that
+  kernel's in-place copier**, which only survives where the incoming image
+  has the same bytes at its `_copyandreboot`..`_fast_scroll_end` and
+  `_chainboot_mmu_off`. This build does not (INFERRED from the layout change,
+  not measured): expect that push to fail - a hang, or a watchdog fall-back to
+  the card kernel - and install the first build of this layout from the SD
+  card. Pushes from it onward, to any build, use the new copier. The older
+  kernel's marker is in its `.noinit`, so that row is meaningless across the
+  transition in either direction.
 
-## What the copy runs over
+## What the copy runs over (before 2026-10-06)
+
+Historical: this is the old in-place copier's footprint, kept because the
+measurements below were made against it. With the copier, page table and
+marker below 0x8000, the copy still runs over the outgoing kernel's
+`.noinit`, but nothing there is used after the jump begins.
 
 For an image of length *L* the copy covers `0x8000 .. 0x8000+L`. In a release
 build that crosses, in order:
@@ -58,19 +102,22 @@ build that crosses, in order:
 
 Two consequences that are real and worth knowing:
 
-- Any image over ~508 KB destroys `chain_magic`, so the incoming kernel does
-  not know it was chain-booted and `/status` shows a nonsense pre-kernel
-  figure. **Do not use the "Boot time" row to tell a chain-boot from a card
-  fallback.** Use the banner's per-build `-dirty.<hash>` suffix on the serial
-  port, or the fact that the pre-kernel figure free-runs rather than resetting.
+- Any image over ~508 KB destroyed `chain_magic`, so the incoming kernel did
+  not know it was chain-booted and `/status` showed a nonsense pre-kernel
+  figure. Under the old copier, **do not use the "Boot time" row to tell a
+  chain-boot from a card fallback**; use the banner's per-build
+  `-dirty.<hash>` suffix on the serial port, or the fact that the pre-kernel
+  figure free-runs rather than resetting. (Fixed by the low-RAM marker, for
+  pushes between builds that both have it.)
 - `pwm_cb` and `hdmi_cb` are live `struct bcm2708_dma_cb` driving audio DMA
   channels 5 and 4, circularly linked via `cb->next` (`src/rpi/audio.c:52-56`
   and `:125`). The DMA engine reads them autonomously — disabling interrupts
   does nothing to it. Writing over `next` mid-copy is a genuine hazard: zeros
   terminate the chain harmlessly, arbitrary bytes point the engine at an
-  arbitrary address. `dma_stop()` (`audio.c:156`) is never called on the
-  chain-boot path, so this hazard is real — but it was tested as the cause and
-  refuted (see below), so treat stopping the channels as hardening only.
+  arbitrary address. `dma_stop()` was never called on the chain-boot path,
+  so this hazard was real — but it was tested as the cause and refuted (see
+  below), so stopping the channels (`audio_stop_dma`, since 2026-10-06) is
+  hardening only.
 
 ## Measured, 2026-09-24, Pi Zero W (`BOARD_REVISION 009000c1`)
 
@@ -147,11 +194,11 @@ both outcomes occurred with it advancing:
 - failed with audio active: 12:45:50Z (cold-booted to V1.31), 12:48:54Z (see
   below)
 
-So "audio running => failure" is **refuted**. `dma_stop()` (`audio.c:156`) is
-still never called on the chain-boot path, and the copy still writes over
-control blocks the DMA engine is following, so calling it remains defensible
-as *hardening* — but there is no evidence it is the cause, and it should not
-be described as a fix.
+So "audio running => failure" is **refuted**. At the time `dma_stop()` was
+never called on the chain-boot path while the copy wrote over control blocks
+the DMA engine was following, so stopping it was defensible as *hardening* —
+and since 2026-10-06 `audio_stop_dma()` does — but there is no evidence it
+was the cause, and it should not be described as a fix.
 
 ### A worse failure mode: the wedged VideoCore
 

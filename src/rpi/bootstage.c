@@ -12,6 +12,7 @@
 #include "rpi.h"
 #include "base.h"
 #include "cache.h"
+#include "lowmem.h"
 
 /* In .noinit: this block MUST NOT live at a fixed low address - 0x7C00 (the
    first attempt) is inside the VPU-shared Pi1MHz region (struct at 0x100,
@@ -24,19 +25,30 @@
    clean "nothing to report", never a phantom.  Same-build reboots (the
    normal lockup case) always line up. */
 NOINIT_SECTION static volatile uint32_t boot_stage_block[16];
-/* Chain-boot marker: the outgoing kernel writes CHAIN_MAGIC just before it
-   jumps (mtp_fs.c); the incoming kernel_main reads and clears it, so the
-   session knows it was chain-booted rather than cold-booted.  .noinit
-   survives the jump; a different build places .noinit elsewhere and simply
-   never sees the magic, which reads as a cold boot - the safe direction. */
-NOINIT_SECTION static volatile unsigned int chain_magic;
+/* Chain-boot marker: the outgoing kernel writes it just before it jumps
+   (chainboot.c); the incoming kernel_main reads and clears it, so the
+   session knows it was chain-booted rather than cold-booted.  Not in
+   .noinit: the copy of the incoming image runs over the outgoing kernel's
+   .noinit, and a different build places .noinit elsewhere, so a marker
+   there was lost whenever the two builds differed or the image was large.
+   It lives at a fixed address under the kernel instead (lowmem.h), as two
+   words - the magic and its complement - so that a stray write, or
+   whatever RAM holds after a power-on, reads as a cold boot (the safe
+   direction) and never as a phantom chain-boot. */
+#define chain_marker ((volatile uint32_t *)LOWMEM_CHAIN_MARKER)
 #define CHAIN_MAGIC 0xC4A1B007u
 static unsigned int chain_booted_flag;
-void RPI_ChainBootMark(void) { chain_magic = CHAIN_MAGIC; }
+void RPI_ChainBootMark(void)
+{
+   chain_marker[0] = CHAIN_MAGIC;
+   chain_marker[1] = ~CHAIN_MAGIC;
+}
 void RPI_ChainBootConsume(void)
 {
-   chain_booted_flag = (chain_magic == CHAIN_MAGIC) ? 1u : 0u;
-   chain_magic = 0u;
+   chain_booted_flag = (chain_marker[0] == CHAIN_MAGIC &&
+                        chain_marker[1] == ~CHAIN_MAGIC) ? 1u : 0u;
+   chain_marker[0] = 0u;
+   chain_marker[1] = 0u;
 }
 unsigned int RPI_ChainBooted(void) { return chain_booted_flag; }
 #define boot_stage_magic    (boot_stage_block[0])

@@ -3230,7 +3230,7 @@ static bool route_status(ws_conn_t *c)
       /* Only meaningful from a cold or watchdog boot: a kernel.now chain-boot
          inherits a timer that has been running since the original power-on,
          so the entry stamp is an uptime, not a firmware load.  The outgoing
-         kernel leaves a marker in .noinit that says so (RPI_ChainBootMark). */
+         kernel leaves a marker in low RAM that says so (RPI_ChainBootMark). */
       if (RPI_ChainBooted())
          snprintf(tmp, sizeof tmp,
                   "pre-kernel n/a (chain-boot), kernel->poll %lu ms", init);

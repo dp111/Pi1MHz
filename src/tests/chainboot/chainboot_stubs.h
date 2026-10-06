@@ -13,6 +13,8 @@ void _disable_interrupts(void);
 void disable_data_cache(void);
 void RPI_ChainBootMark(void);
 uint32_t RPI_GetSystemTime(void);
+/* rpi/audio.h */
+void audio_stop_dma(void);
 /* wifi/sdio.h, usb/mtp_fs.h */
 void sdio_runtime_prepare_for_warm_reboot(void);
 void mtp_fs_prepare_for_warm_reboot(void);

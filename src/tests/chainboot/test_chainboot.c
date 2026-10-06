@@ -27,7 +27,8 @@ static uint32_t now = 0x10000000u;
 static bool     player_open, decoder_running;
 static int      eject_fails;          /* filesystemEject answers false this often first */
 static char     events[64];           /* M usb off, E/e eject step not done/done,
-                                         I card back, S sdio, J jump */
+                                         I card back, S sdio, A audio DMA stopped,
+                                         J jump */
 static jmp_buf  jumped;
 static uint8_t *jump_src;
 static int      jump_len;
@@ -47,6 +48,7 @@ void _disable_interrupts(void) { }
 void disable_data_cache(void) { }
 void RPI_ChainBootMark(void) { }
 void sdio_runtime_prepare_for_warm_reboot(void) { ev('S'); }
+void audio_stop_dma(void) { ev('A'); }
 void mtp_fs_prepare_for_warm_reboot(void) { ev('M'); }
 bool videoplayer_active(void) { return player_open; }
 bool h264dec_running(void) { return decoder_running; }
@@ -182,7 +184,8 @@ static void test_refusal(void)
 }
 
 /* Padded to 64 with zeros, and the steps in order: USB off after the
-   settle, the card ejected, then the jump. */
+   settle, the card ejected, the WiFi chip quietened, the audio DMA stopped
+   (the copy may run over its control blocks), then the jump. */
 static void case_pads_and_jumps(void)
 {
    uint8_t *p = image(128u, 0xAA);
@@ -195,7 +198,7 @@ static void case_pads_and_jumps(void)
    for (int i = 4; i < 100; i++) kept &= jump_copy[i] == 0xAAu;
    CHECK(zero, "padding not zeroed");
    CHECK(kept, "image bytes changed");
-   CHECK(strcmp(events, "MeSJ") == 0, "steps \"%s\", want \"MeSJ\"", events);
+   CHECK(strcmp(events, "MeSAJ") == 0, "steps \"%s\", want \"MeSAJ\"", events);
    CHECK(jump_at - asked >= 250000u, "jumped %u us after the request", (unsigned)(jump_at - asked));
    CHECK(nfreed == 0, "the image was freed before the jump");
 }
@@ -207,7 +210,7 @@ static void case_eject_stepped(void)
    eject_fails = 3;
    CHECK(req(image(64u, 0x55), 64u, 64u), "64 bytes in 64 not taken");
    CHECK(run(2000u), "never jumped");
-   CHECK(strcmp(events, "MEEEeSJ") == 0, "steps \"%s\", want \"MEEEeSJ\"", events);
+   CHECK(strcmp(events, "MEEEeSAJ") == 0, "steps \"%s\", want \"MEEEeSAJ\"", events);
 }
 
 /* Nothing to pad into: refused, and the buffer goes - never silently. */
@@ -246,6 +249,7 @@ static void refused_at_jump(bool *flag)
    CHECK(was_freed(p), "abandoned image not freed");
    CHECK(strchr(events, 'I') != NULL, "card not given back: steps \"%s\"", events);
    CHECK(strchr(events, 'S') == NULL, "sdio told to stop for a jump that was given up");
+   CHECK(strchr(events, 'A') == NULL, "audio stopped for a jump that was given up");
 
    *flag = false;
    events[0] = '\0';
@@ -254,7 +258,7 @@ static void refused_at_jump(bool *flag)
    CHECK(req(q, 64u, 64u), "second request not taken");
    CHECK(run(2000u), "second request never jumped");
    CHECK(jump_src == q, "jumped into the wrong image");
-   CHECK(strcmp(events, "MeSJ") == 0, "second steps \"%s\", want \"MeSJ\"", events);
+   CHECK(strcmp(events, "MeSAJ") == 0, "second steps \"%s\", want \"MeSAJ\"", events);
    CHECK(jump_at - asked >= 250000u, "second jumped only %u us after its request", (unsigned)(jump_at - asked));
 }
 

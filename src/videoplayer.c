@@ -36,6 +36,7 @@
 #include "rpi/systimer.h"
 #include "rpi/audio.h"
 #include "rpi/h264dec.h"
+#include "rpi/lowmem.h"
 #include "Pi1MHz.h"
 #include "pvf.h"
 #include "videoplayer.h"
@@ -55,7 +56,8 @@ static char pvf_path[32];
  * back over a kernel.now chain-boot - see the detailed rationale in git
  * history / docs: the VideoCore keeps allocations across an ARM warm
  * restart and the allocating and releasing kernels are different builds,
- * so the handles live at a fixed low-RAM address, not in .noinit.
+ * so the handles live at a fixed low-RAM address, not in .noinit
+ * (rpi/lowmem.h; 0x7C20 until the page table took 0x4000-0x7FFF).
  *
  * [0] magic 'VBUF', [1] still-frame buffer handle of a PRE-1.31 kernel
  * [2] magic 'VBF2', [3][4] the two H264 frame buffer handles
@@ -64,7 +66,7 @@ static char pvf_path[32];
  * frame it belonged to is gone, but chain-booting from an older kernel
  * would otherwise leak its 864 KB out of the pool the decoder needs.
  */
-#define VIDEOBUF_PERSIST_BASE 0x00007C20u
+#define VIDEOBUF_PERSIST_BASE LOWMEM_VIDEOBUF_PERSIST
 #define videobuf_magic    (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[0])
 #define videobuf_handle   (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[1])
 #define videobuf_magic2   (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[2])

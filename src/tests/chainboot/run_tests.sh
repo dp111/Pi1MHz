@@ -1,7 +1,8 @@
 #!/bin/sh -e
 # Host tests for chainboot.c: the image check, the hand-over (padding,
 # capacity, replacement) and the main-loop steps up to the jump - the
-# settle, USB off, the card ejected, the last refusal check.  Real file,
+# settle, USB off, the card ejected, the last refusal check, the audio DMA
+# stopped.  Real file,
 # stub platform; the jump is caught.  Under ASan/UBSan.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -15,7 +16,7 @@ mkdir -p "$B/usb" "$B/rpi" "$B/wifi" "$B/BeebSCSI"
 cp "$SRC"/chainboot.c "$SRC"/chainboot.h "$B/"
 cp "$HERE"/chainboot_stubs.h "$B/"
 for h in Pi1MHz.h videoplayer.h usb/mtp_fs.h rpi/asm-helpers.h rpi/cache.h \
-         rpi/rpi.h rpi/systimer.h rpi/h264dec.h wifi/sdio.h BeebSCSI/filesystem.h; do
+         rpi/rpi.h rpi/systimer.h rpi/h264dec.h rpi/audio.h wifi/sdio.h BeebSCSI/filesystem.h; do
    echo '#include "chainboot_stubs.h"' > "$B/$h"
 done
 

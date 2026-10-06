@@ -11,6 +11,7 @@
 #include "usb/mtp_fs.h"
 #include "videoplayer.h"
 #include "rpi/asm-helpers.h"
+#include "rpi/audio.h"
 #include "rpi/cache.h"
 #include "rpi/h264dec.h"
 #include "rpi/rpi.h"
@@ -132,10 +133,12 @@ void chainboot_poll(void)
    sdio_runtime_prepare_for_warm_reboot();
 
    _disable_interrupts();
+   audio_stop_dma();      /* the copy may run over its control blocks */
    RPI_ChainBootMark();   /* the incoming kernel_main learns it was chain-booted */
-   /* Turn the D-cache off first, so the copy of the incoming image over the
-      running kernel goes straight to RAM.  The copier then needs no cache
-      management of its own, and the new kernel starts on a coherent image. */
+   /* Turn the D-cache off first, so the copier written under the kernel and
+      the copy of the incoming image over it go straight to RAM: the copier
+      then needs only the instruction side cleaned (arm-start.S), and the new
+      kernel starts on a coherent image. */
    disable_data_cache();
    _copyandreboot(s_image, (int)s_length); /* never returns */
 }

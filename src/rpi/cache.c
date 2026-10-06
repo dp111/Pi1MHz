@@ -6,13 +6,18 @@
 #include "cache.h"
 #include "rpi.h"
 #include "info.h"
+#include "lowmem.h"
 /* Historical Note:
    Were seeing core 3 crashes if inner *and* outer both set to some flavour of WB (i.e. 1 or 3)
    The point of crashing is when the data cache is enabled
    At that point, the stack appears to vanish and the data read back is 0x55555555
    Reason turned out to be failure to correctly invalidate the entire data cache */
 
-volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTable[4096];
+/* The L1 table sits at a fixed address under the kernel (lowmem.h), not in
+   .noinit: a kernel.now copy writes the incoming image over this kernel's
+   .noinit while still translating through this table, and an image only
+   ~850 KB long already reached it there. */
+#define PageTable ((volatile unsigned int *)LOWMEM_PAGE_TABLE)
 #ifdef NUM_4K_PAGES
 volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTable2[NUM_4K_PAGES];
 #endif
@@ -414,7 +419,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   for (; base <  end; base++)
      PageTable[base] = ((start++) << 20 )| 0x0C0E ;
 
-  // Zero the remaining entries: PageTable is NOINIT, so without this the high
+  // Zero the remaining entries: nothing initialises PageTable, so without this the high
   // VA range would get garbage descriptors and a stray access there would hit
   // a random mapping instead of a clean translation fault.
   for (; base < 4096; base++)
@@ -458,7 +463,7 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // Bit 1 indicates shareable
   // 4A = 0100 1010
   unsigned int attr = ((aa6) << 6) | (1 << 3) | (shareable << 1) | ((aa0 ));
-  __asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (attr | (unsigned) &PageTable));
+  __asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (attr | (unsigned) PageTable));
 #else
   // set TTBR0: C=1 (walks Inner Cacheable), S=0 (matches the tables' actual Non-shared
   // mapping), RGN=00 (walks Outer Non-cacheable — safe wrt VC L2), P=0.
@@ -466,8 +471,12 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // tables in inner write-back memory, any runtime PTE modification must be cleaned from
   // the D-cache before the walk (map_4k_page does this). Boot-time table writes here
   // happen with the MMU/caches still off, so they are already visible to the walker.
-  __asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (0x01 | (unsigned) &PageTable));
+  __asm volatile ("mcr p15, 0, %0, c2, c0, 0" :: "r" (0x01 | (unsigned) PageTable));
 #endif
+  // TTBCR.N = 0: TTBR0 alone translates the whole 4 GB, which is what lets a
+  // 16 KB table at LOWMEM_PAGE_TABLE cover everything.  It is the reset value,
+  // but a chain-boot inherits whatever the previous kernel left.
+  __asm volatile ("mcr p15, 0, %0, c2, c0, 2" :: "r" (0));
 
   // Invalidate entire data cache
 #if (__ARM_ARCH >= 7 )
