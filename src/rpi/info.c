@@ -27,12 +27,12 @@ static void print_tag_value(const char *name, const rpi_mailbox_property_t *buf,
 
 /* 0 while unknown.  Kept once the VideoCore has answered - it never changes -
    so a later caller cannot lose it to a busy VC; a failed query is asked
-   again next time.  Asked with the full bound: see RPI_PropertyGetWordOnce. */
+   again next time.  Asked with the full bound: see RPI_PropertyGetWordLong. */
 static uint32_t get_revision(void) {
    static uint32_t revision;
    if (revision == 0u) {
       rpi_mailbox_property_t *buf;
-      buf = RPI_PropertyGetWordOnce(TAG_GET_BOARD_REVISION,0);
+      buf = RPI_PropertyGetWordLong(TAG_GET_BOARD_REVISION,0);
       if (buf)
          revision = buf->data.buffer_32[0];
    }
@@ -250,7 +250,7 @@ bool rpi_get_board_mac(uint8_t mac[6])
 uint32_t mem_info(int size)
 {
    rpi_mailbox_property_t *buf;
-   buf = RPI_PropertyGetWordOnce(TAG_GET_ARM_MEMORY, 0);   /* boot only: page table, heap */
+   buf = RPI_PropertyGetWordLong(TAG_GET_ARM_MEMORY, 0);   /* boot only: page table, heap */
    if (buf)
       return buf->data.buffer_32[size];
    return 0;

@@ -60,8 +60,8 @@ rpi_mailbox_property_t *RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
 }
 /* Declared here as well as (after the fix) in mailbox.h, so the unmodified
    info.c - which never calls it - still links: the negative control. */
-rpi_mailbox_property_t *RPI_PropertyGetWordOnce(rpi_mailbox_tag_t tag, uint32_t data);
-rpi_mailbox_property_t *RPI_PropertyGetWordOnce(rpi_mailbox_tag_t tag, uint32_t data)
+rpi_mailbox_property_t *RPI_PropertyGetWordLong(rpi_mailbox_tag_t tag, uint32_t data);
+rpi_mailbox_property_t *RPI_PropertyGetWordLong(rpi_mailbox_tag_t tag, uint32_t data)
 {
    return vc(tag, data, 1);
 }

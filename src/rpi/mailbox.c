@@ -233,13 +233,14 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
     return property_get_word(tag, data, MAILBOX_QUERY_TIMEOUT_US);
 }
 
-/* The same query with the full bound, for the few answers a session asks for
-   once and then lives by: the board revision (USB host or device, for good)
-   and the ARM memory size (page table and heap).  Losing one of those to a
-   VideoCore that is merely slow costs the whole session, which is the cold
-   boot failure the 3 s bound above was set for; the 50 ms query bound exists
-   for the reads that repeat while the Beeb is being served. */
-rpi_mailbox_property_t* RPI_PropertyGetWordOnce(rpi_mailbox_tag_t tag, uint32_t data)
+/* The same query with the full bound, for boot-context answers the session
+   then lives by: the board revision (USB host or device, for good) and the
+   ARM memory size (page table and heap - asked several times during boot).
+   Losing one of those to a VideoCore that is merely slow costs the whole
+   session, which is the cold-boot failure the 3 s bound above was set for.
+   Never from a poll callback: there the 50 ms query bound applies, because
+   a stall with IRQs masked is taken out of the BREAK budget. */
+rpi_mailbox_property_t* RPI_PropertyGetWordLong(rpi_mailbox_tag_t tag, uint32_t data)
 {
     return property_get_word(tag, data, MAILBOX_TIMEOUT_US);
 }
