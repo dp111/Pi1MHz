@@ -182,7 +182,7 @@ static void guard_stamp(void)
     * two arbitrary bytes of the ROM's own guard image, and an APPEND with
     * length == 0 - the documented "read my length from the trailer" form -
     * then appended an arbitrary number of bytes from JIM page 0. */
-   for (page = UEF_FIRST_PAGE; page < 255u; page++)
+   for (page = UEF_FIRST_PAGE; page < UEF_FIRST_PAGE + UEF_WINDOW_PAGES; page++)
       memcpy(&Pi1MHz->JIM_ram[UEF_BASE + (page << 8) + UEF_GUARD_OFFSET],
              guard_image, UEF_GUARD_LENGTH);
 }
@@ -211,14 +211,20 @@ static void window_scatter(const uint8_t *source, size_t count)
  * layout the guard currently dictates. */
 static void window_lay_out(void)
 {
-   if (tape->window_length != 0u) {
+   /* The guard refusal keeps a flat window out of here, so this clamp is
+    * unreachable; if it were reached, publish what scatter actually laid
+    * down rather than a length the aperture does not hold. */
+   size_t length = tape->window_length;
+   if (guard_image_valid && length > UEF_GUARD_WINDOW)
+      length = UEF_GUARD_WINDOW;
+   if (length != 0u) {
       if (guard_image_valid)
-         window_scatter(tape->window, tape->window_length);
+         window_scatter(tape->window, length);
       else
          memcpy(&Pi1MHz->JIM_ram[UEF_BASE + (UEF_FIRST_PAGE << 8)],
-                tape->window, tape->window_length);
+                tape->window, length);
    }
-   public_length_set(tape->window_length);
+   public_length_set(length);
 }
 
 /* ---- FILEV stamp repair ------------------------------------------------
