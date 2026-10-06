@@ -33,11 +33,10 @@ uint32_t screen_allocate_buffer(uint32_t buffer_size, uint32_t *handle)
 void screen_release_buffer(uint32_t handle) { (void)handle; }
 
 void screen_create_RGB_plane(uint32_t planeno, uint32_t width, uint32_t height,
-                             float par, uint32_t scale_height,
-                             uint32_t colour_depth, uint32_t buffer)
+                             float par, uint32_t colour_depth, uint32_t buffer)
 {
    (void)planeno; (void)width; (void)height; (void)par;
-   (void)scale_height; (void)colour_depth; (void)buffer;
+   (void)colour_depth; (void)buffer;
 }
 
 void screen_plane_enable(uint32_t planeno, bool enable) { (void)planeno; (void)enable; }

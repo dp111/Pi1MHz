@@ -901,7 +901,7 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
       /* The new plane and the palette that follows it go in during blanking:
          see screen_wait_blanking. */
       screen_wait_blanking();
-      screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
+      screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, (uint32_t) screen->log2bpp , (uint32_t) fb );
    }
 
     // Initialize colour table and palette

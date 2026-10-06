@@ -359,9 +359,6 @@ typedef struct {
 } rgb_t;
 
 static float rgb_scale = 0.0f;
-/* The scale the framebuffer plane actually ended up at, after the clamp.
-   Overlays on the computer screen inherit it verbatim - see screen_scale. */
-static float fb_scale = 0.0f;
 
 static bool plane_valid[8];
 
@@ -388,8 +385,8 @@ static plane_shadow_t plane_shadow[MAX_PLANES];
    state with part of the new - a VP mode change touches ctrl, pos, src_size
    and palette, so the frame it lands in can show a plane half-switched,
    which reads as a flicker when the modes are changed rapidly.
-   If the end-of-frame IRQ is not running (the framebuffer disables it in
-   some modes) the mutators write through immediately, so an update can
+   If the end-of-frame IRQ is not running (at boot, until the framebuffer
+   enables it) the mutators write through immediately, so an update can
    never be stranded - it just is not tear-free, as it was before. */
 #define PL_DIRTY_CTRL     (1u<<0)
 #define PL_DIRTY_POS      (1u<<1)
@@ -606,7 +603,6 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
  * @param height Height of the source image.
  * @param par Pixel aspect ratio.
  * @param yuv Flag indicating if the image is YUV.
- * @param scale_height Height to scale to.
  * @param scaled_width Pointer to store the scaled width.
  * @param scaled_height Pointer to store the scaled height.
  * @param startpos Pointer to store the start position.
@@ -637,8 +633,7 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
    source is to drive such a panel at its native mode and leave this at 1/1);
    a widescreen set fed 720x576 wants 3/4 on top of the television
    correction.  The same factor goes to every plane's width, so the video,
-   the computer screen, the pointer and the VP5 strips stay registered with
-   each other. */
+   the computer screen and the VP5 strips stay registered with each other. */
 #define GRID_SAMPLE_PAR (12.0f / 13.0f)
 
 /* Pixel shape of the panel itself: square unless it is a standard-definition
@@ -712,7 +707,7 @@ static float grid_vscale(uint32_t v_display)
     }
 }
 
-static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh, uint32_t *h_crop_out)
+static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh, uint32_t *h_crop_out)
 {
     uint32_t h_crop = 0;
     static float yuv_scale = 0.0f;
@@ -817,18 +812,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     if ( rgb_scale < 0.1f)
         rgb_scale = grid_vscale(v_display) * 2;   /* the same table the video uses */
 
-    float scale;
-    if (scale_height)
-        /* An overlay ON the computer screen (the mouse pointer): it must
-           end up at the framebuffer's FINAL scale, not re-derive one from
-           rgb_scale. The clamp below is per-plane, so a big plane trips it
-           and a 24-pixel-wide one never does - which left the pointer at
-           exactly twice the framebuffer's scale once the video plane set
-           rgb_scale = yuv_scale*2. */
-        scale = (256/(float)scale_height) * ((fb_scale > 0.1f) ? fb_scale
-                                                               : rgb_scale);
-    else
-        scale = rgb_scale ;
+    float scale = rgb_scale;
 
     const float rgb_hscale_par = grid_par(h_display, v_display);
     if (((uint32_t)(scale * rgb_hscale_par * (float)h_corrected)) >  h_display)
@@ -844,10 +828,6 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
 #ifdef SCREEN_DEBUG
     LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", *scaled_width, *scaled_height);
 #endif
-    if (!scale_height) {
-        fb_scale = scale;        /* what an overlay must inherit */
-    }
-
     uint32_t h_overscan = (h_display - *scaled_width) / 2;
     uint32_t v_overscan = (v_display - *scaled_height) / 2;
 #ifdef SCREEN_DEBUG
@@ -1100,7 +1080,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
            instead of 1536 and registers just as well, with no re-encode. */
         uint32_t grid_h_crop;
         uint32_t grid_offset = screen_scale(VIDEO_GRID_WIDTH, VIDEO_GRID_HEIGHT,
-                                            1.0f, true, 0, &scaled_width,
+                                            1.0f, true, &scaled_width,
                                             &scaled_height, &startpos, &nsh, &nh,
                                             &grid_h_crop);
 
@@ -1220,7 +1200,7 @@ static void dim_strips_reframe( void );
 static void plane_treatment_reapply( uint32_t planeno );
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags );
 
-void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height, float par , uint32_t scale_height, uint32_t colour_depth, uint32_t buffer )
+void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height, float par , uint32_t colour_depth, uint32_t buffer )
 {
     /* see screen_create_YUV420_plane: drop pending deferred writes first */
     if (planeno < MAX_PLANES)
@@ -1233,7 +1213,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t nh;
         {   /* horizontal cropping is a YUV-path concept; ignore it here */
             uint32_t rgb_hcrop;
-            screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh, &rgb_hcrop);
+            screen_scale(width, height , par, false, &scaled_width, &scaled_height, &startpos, &nsh, &nh, &rgb_hcrop);
         }
 
         buffer |= 0x80000000; // if we use &C then there is an error on the screen
@@ -1385,29 +1365,19 @@ void screen_plane_alpha( uint32_t planeno, uint32_t alpha )
 
 /* Two layers of visibility, kept separate so neither has to know about
    the other: screen_plane_enable() is what a plane's OWNER wants
-   (framebuffer MODE changes, mouseredirect pointer moves, the video
-   player's first frame), and screen_plane_gate() is what the VP415
-   video mixer allows - VP1 gates the computer planes, VP2 gates the
-   video plane. A plane is shown only when wanted AND not gated, so an
-   owner re-asserting its plane (a pointer move, a MODE change) can
-   never resurface a layer the mixer has hidden. */
+   (framebuffer MODE changes, the video player's first frame), and
+   screen_plane_gate() is what the VP415 video mixer allows - VP1 gates
+   the computer plane, VP2 gates the video plane. A plane is shown only
+   when wanted AND not gated, so an owner re-asserting its plane (a MODE
+   change) can never resurface a layer the mixer has hidden. */
 static bool plane_wanted[MAX_PLANES];
 static bool plane_gated[MAX_PLANES];
 
 /* The third layer, for the same reason as the second: what the VP mixer
    decided a plane should LOOK like - which palette family, and how
    translucent. Recorded here so that the owner re-creating its plane (a
-   MODE change, a new pointer shape) cannot silently drop it. Twice now a
-   rebuild has thrown the mixer's decision away: plane 1's fixed alpha on a
-   MODE change, and the pointer's palette on a shape change, which dropped
-   VP4's premultiplied mix bank. The pointer defaults to keyed so its black
-   surround shows the screen underneath rather than painting a box. */
-/* The pointer's black is "no pointer here", not computer content, so it
-   must stay clear when highlight inverts the keyed bank - otherwise its
-   surround dims the video and draws a rectangle round the glyph. Sticky
-   per plane: the framebuffer's flash timer re-selects the family every
-   tick and must not quietly re-enrol the pointer. */
-static bool plane_hl_exempt[MAX_PLANES];
+   MODE change) cannot silently drop it, as a rebuild once did with plane
+   1's fixed alpha. */
 static uint8_t plane_treat_flags[MAX_PLANES];
 static uint8_t plane_treat_alpha[MAX_PLANES];
 static bool    plane_treat_set[MAX_PLANES];
@@ -1544,12 +1514,10 @@ static bool screen_highlight;
 
 static uint32_t palette_mixed_entry( uint32_t entry, uint32_t colour )
 {
-    /* Black is black whatever index it sits at. The old `entry <= 15`
-       restriction existed for the removed dim-frame plane, which needed a
-       never-keyed index; the only user left is the mouse pointer's outline
-       (index 16, which no mode ever gives a colour, so it is black by
-       omission) - and that must key out exactly like the Beeb's own black,
-       or it draws a hard black border round the pointer over the video. */
+    /* Black is black whatever index it sits at: keyed on the colour, not
+       the index.  (The old `entry <= 15` restriction existed for the
+       removed dim-frame plane, which needed a never-keyed index; in a
+       256-colour mode every index is a real colour, black included.) */
     bool black = (colour == 0);
     if (black)
         return 0u;               /* clear: black must not dim the video */
@@ -1561,12 +1529,7 @@ static uint32_t palette_mixed_entry( uint32_t entry, uint32_t colour )
 
 static uint32_t palette_keyed_entry( uint32_t entry, uint32_t colour, bool highlight )
 {
-    /* Black is black whatever index it sits at. The old `entry <= 15`
-       restriction existed for the removed dim-frame plane, which needed a
-       never-keyed index; the only user left is the mouse pointer's outline
-       (index 16, which no mode ever gives a colour, so it is black by
-       omission) - and that must key out exactly like the Beeb's own black,
-       or it draws a hard black border round the pointer over the video. */
+    /* Black is black whatever index it sits at - see palette_mixed_entry. */
     bool black = (colour == 0);
     if (highlight)
         return black ? (VP5_DIM_ALPHA << 24) : 0u;
@@ -1615,10 +1578,9 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
 
     palette_put(entry, 0xff000000 | colour);
 
-    /* BOTH keyed variants: under highlight the framebuffer is on 6/7 but a
-       highlight-exempt plane (the mouse pointer) is still rendering from
-       2/3, so refreshing only the "active" pair left the pointer showing
-       pre-VP5 colours until highlight was turned off again. */
+    /* BOTH keyed variants, whichever is in use: screen_set_highlight only
+       re-points the planes, so the pair it switches to must already hold
+       this colour. */
     palette_put(entry + PAL_KEYED,    palette_keyed_entry(entry, colour, false));
     palette_put(entry + PAL_KEYED_HL, palette_keyed_entry(entry, colour, true));
     palette_put(entry + PAL_MIXED,    palette_mixed_entry(entry, colour));
@@ -1650,9 +1612,9 @@ void screen_geometry_report( uint32_t planeno, uint32_t *disp_w, uint32_t *disp_
 
 /* The strips' source pixels: 4x4 of palette entry 0 (black), blown up to
    fill each rect.  Ordinary ARM memory, handed to the HVS through the
-   0x80000000 alias exactly as mouseredirect.c hands it the pointer bitmap.
-   It must NOT be a GPU allocation: screen_dim_strips runs inside a Beeb
-   SCSI command (fcodeWriteBuffer, between the data-out and status phases),
+   0x80000000 alias (cleaned out of the cache first).  It must NOT be a GPU
+   allocation: screen_dim_strips runs inside a Beeb SCSI command
+   (fcodeWriteBuffer, between the data-out and status phases),
    and the mailbox allocate/lock pair can block the poll loop for up to two
    mailbox timeouts while the Beeb waits in a handshake that has none of its
    own.  Cache-line aligned so the clean below cannot touch a neighbour. */
@@ -1887,8 +1849,6 @@ void screen_mixer_reset( void )
         screen_set_palette(planeno, 0, 3);
         screen_plane_alpha(planeno, 0xFFu);
     }
-    for (uint32_t i = 0; i < MAX_PLANES; i++)
-        plane_hl_exempt[i] = false;
     screen_dim_strips(false);
     screen_set_highlight(false);
 }
@@ -1911,8 +1871,6 @@ void screen_set_highlight( bool on )
             continue;
         if ((plane_shadow[pl].ctrl & 0xF) != 0xD)
             continue;      /* only the palettized planes have a palette word */
-        if (plane_hl_exempt[pl])
-            continue;      /* its black stays clear, not dimming */
         uint32_t bank = ((plane_shadow[pl].palette & 0x3fffu) - PALETTE_BASE)/0x400u;
         if (!(bank & 2u))
             continue;                      /* not keyed: highlight is moot */
@@ -1934,6 +1892,7 @@ uint32_t screen_get_palette_entry( uint32_t entry )
 // 2 set alpha palette
 // 3 clear alpha
 // 4 flash palette
+// 5 premultiplied mix palette (VP4)
 
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
@@ -1960,15 +1919,13 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
             case 0: fam = (palette & 2u) ? 2u : 0u;
                     flash = palette & 1u;                      break;
             case 1: flash = palette & 1u;                      break;
-            case 2: fam = 2u; plane_hl_exempt[planeno] = false; break;
+            case 2: fam = 2u;                                  break;
             case 3: fam = 0u;                                  break;
             case 4: flash ^= 1u;                               break;
             case 5: fam = 4u;                                  break;
-            case 6: fam = 2u; plane_hl_exempt[planeno] = true;  break;
         }
-        /* the keyed family has a highlight twin; no other family does, and
-           an exempt plane stays on the plain keyed bank */
-        if (fam == 2u && screen_highlight && !plane_hl_exempt[planeno])
+        /* the keyed family has a highlight twin; no other family does */
+        if (fam == 2u && screen_highlight)
             fam = 6u;
         s->palette = ( 0xc0000000 ) | ((((fam | flash) & 7u)*0x400) + PALETTE_BASE);
         _restore_cpsr(cpsr);
@@ -2019,8 +1976,9 @@ static uint32_t vsync_rate_mhz;      /* refresh in millihertz */
    A FRESH end of frame is waited for: any pending one is dropped first,
    since a caller inside a long IRQ (the VDU drain) may be well past it.  The
    end-of-frame flag is polled directly, as the vsync IRQ cannot run while
-   the caller is in IRQ context, and left set, so the IRQ still services the
-   new frame.  Waiting on channel 1's state field instead (EOF until the next
+   the caller is in IRQ context - or has IRQs masked, as the main-loop
+   callers (the dim strips, the video plane) do - and left set, so the IRQ
+   still services the new frame.  Waiting on channel 1's state field instead (EOF until the next
    frame starts) does not work: 18 of 32 BREAKs failed with that.  It waits
    at boot too, before the end-of-frame IRQ is enabled: the flag is set by
    the HVS regardless, and skipping the wait there - for the Pi's own first
