@@ -251,7 +251,10 @@ void filesystemInitialise(uint8_t scsijuke)
 {
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemInitialise(): Initialising file system\r\n"));
    filesystemState.lunDirectory = scsijuke;      // Default to LUN directory 0
-   filesystemState.fsMountState = false;  // FS default state is unmounted
+   /* fsMountState is left alone: it starts false, and by the Harddisc's
+      power-on call config_load has mounted the card - clearing it there
+      would hide that mount from filesystemDismount, and the remount that
+      follows would skip the hooks' dismount half. */
 }
 
 // Function to initialise the file system control functions (called on a cold-start of the AVR)
@@ -324,6 +327,49 @@ bool filesystemEjected(void)
    return fsEjected;
 }
 
+/* This layer has the card mounted.  FatFs alone would mount it again on
+   any f_open after a dismount; a holder resuming work asks this first. */
+bool filesystemMounted(void)
+{
+   return filesystemState.fsMountState;
+}
+
+/* ---- Volume remount ----------------------------------------------------
+   Every f_mount() of the volume - filesystemDismount(), and the mount in
+   filesystemMount() - makes each FIL opened before it fail validate() for
+   good: an unsynced write is dropped, f_close fails, the directory entry
+   keeps its old size and the clusters written are orphaned.  A BBC reset
+   and the jukebox (filesystemReset), the Beeb's f unmount, and any mount
+   while unmounted (MTP, filesystemReadFile) do that with no eject first,
+   and none can wait for a subsystem the way an eject does - the BREAK
+   budget and a Domesday disc flip are both short.  So a subsystem that
+   holds a file open across polls registers here.  The hook runs just
+   before each f_mount(), must close what it holds at once, and may reopen
+   once filesystemMounted() says the card is mounted.  A reset calls it
+   twice (dismount, then mount), and it can precede a mount that fails.
+
+   Kept apart from the eject hooks: those are polled until they say they
+   are ready, these are told once and cannot refuse. */
+#define REMOUNT_HOOKS 4u
+static void (*remount_hook[REMOUNT_HOOKS])(void);
+static unsigned int remount_hooks;
+
+/* Called from init functions, which run again on every BBC reset. */
+void filesystemRegisterRemount(void (*closing)(void))
+{
+   for (unsigned int i = 0; i < remount_hooks; i++)
+      if (remount_hook[i] == closing)
+         return;
+   if (remount_hooks < REMOUNT_HOOKS)
+      remount_hook[remount_hooks++] = closing;
+}
+
+static void filesystemRemountNotify(void)
+{
+   for (unsigned int i = 0; i < remount_hooks; i++)
+      remount_hook[i]();
+}
+
 // Reset the file system (called when the host signals reset)
 void filesystemReset(void)
 {
@@ -377,6 +423,7 @@ void filesystemReset(void)
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemMount(): Mounting file system\r\n"));
 
    // Mount the SD card
+   filesystemRemountNotify();
    fsResult = f_mount(&filesystemState.fsObject, "", 1);
 
    // Check the result
@@ -429,6 +476,7 @@ bool filesystemDismount(void)
    }
    // Dismount the SD card
      FRESULT fsResult;
+   filesystemRemountNotify();
    fsResult = f_mount(&filesystemState.fsObject, "", 0);
 
    // Check the result
@@ -2232,14 +2280,11 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
    FRESULT fsResult;
    FIL fileObject;
    LOG_DEBUG("filesystemReadFile: %s\n\r", filename);
-   if (filesystemState.fsMountState == false) {
-         if (fsEjected)
-            return 0;
-         fsResult = f_mount(&filesystemState.fsObject, "", 1);
-         if (fsResult != FR_OK) {
-            return 0;
-         }
-   }
+   /* Through filesystemMount(), the one mount path: it tells the remount
+      hooks first, and once mounted the next read (every BBC reset's
+      config_load) leaves the volume alone. */
+   if (!filesystemMount())
+      return 0;
    fsResult = f_open(&fileObject, filename, FA_READ);
    if (fsResult != FR_OK) {
       return 0;
