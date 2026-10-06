@@ -1941,8 +1941,10 @@ void screen_set_vsync( bool enable )
    1080p60 (both are 148.5 MHz - only the blanking differs), and the whole
    point of a 50 Hz mode here is that 25 fps video then maps to exactly two
    refreshes per frame. Counting the end-of-frame interrupts says which
-   mode actually negotiated. */
-static uint32_t vsync_count;
+   mode actually negotiated.  Volatile: the IRQ counts, and
+   screen_wait_blanking polls it - without, LTO dropped that term of the
+   loop. */
+static volatile uint32_t vsync_count;
 static uint32_t vsync_window_start_us;
 static uint32_t vsync_window_count;
 static uint32_t vsync_rate_mhz;      /* refresh in millihertz */
