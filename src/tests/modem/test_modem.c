@@ -381,6 +381,41 @@ static void test_escape(void)
    CHECK(net_taken < 0, "reset hangs up");
 }
 
+/* Bytes that arrive in the same read as the command that changes state
+   belong to the new state, as they would on a modem fed byte by byte.  After
+   ATO they are data for the line.  After ATD they are keys typed while it
+   dials, and a key abandons the call (V.250 6.3.1) - except the LF of a
+   CR LF line ending. */
+static void test_typeahead(void)
+{
+   printf("== bytes after a state change ==\n");
+   connect_now();
+   poll_for(1100000); type("+++"); poll_for(1100000);
+   net_tx_len = 0;
+   clear_out(); type("ATO\rabc"); poll_for(2000);
+   CHECK(out_has("CONNECT"), "ATO goes back online");
+   CHECK(net_tx_len == 3 && memcmp(net_tx, "abc", 3) == 0,
+         "data after ATO\\r in the same read reaches the line (%u bytes)", (unsigned)net_tx_len);
+
+   reset_all();
+   open_delay = 1000000;
+   type("ATDhost:1\rx"); poll_for(5000);
+   CHECK(out_has("NO CARRIER") && net_taken < 0,
+         "a key in the same read as ATD...\\r abandons the call: [%s]", to_beeb);
+
+   reset_all();
+   open_delay = 20;
+   type("ATDhost:1\r\n"); poll_for(60000);
+   CHECK(out_has("\r\nCONNECT\r\n"), "CR LF after ATD: the LF does not abandon the call");
+   type("hi"); poll_for(2000);
+   CHECK(net_tx_len == 2 && memcmp(net_tx, "hi", 2) == 0, "and is not sent down the line");
+
+   reset_all();
+   type("ATE0\rATV0\rAT\r"); poll_for(2000);
+   CHECK(strcmp(to_beeb, "ATE0\r\r\nOK\r\n0\r0\r") == 0,
+         "several commands in one read each run: [%s]", to_beeb);
+}
+
 int main(void)
 {
    test_commands();
@@ -389,6 +424,7 @@ int main(void)
    test_online();
    test_escape();
    test_result_fits();
+   test_typeahead();
    printf("%d checks, %d failures\n", checks, failures);
    return failures ? 1 : 0;
 }
