@@ -73,6 +73,8 @@ typedef struct {
    uint8_t           last_err;      /* NET_* sticky error for status        */
    bool              rx_eof;        /* peer sent FIN                        */
    bool              rx_parked;     /* a pbuf was ERR_MEM-parked            */
+   bool              rx_starved;    /* ...one too big for the own ring, with
+                                       the shared ring lent to another handle */
    bool              dns_done;      /* a resolve completed, result waiting  */
    bool              dns_ok;        /* that resolve succeeded               */
    bool              is_url;        /* opened via net_url_open (N: device)  */
@@ -202,11 +204,36 @@ static void ring_claim_large(net_handle_t *h)
    h->rx_tail = 0u;
    h->rx_head = n;
 }
-/* Give the shared ring back.  Only called once the handle is finished with it,
-   so buffered bytes do not need carrying back. */
+/* Give the shared ring back.  Only called once the handle is finished with it
+   or has emptied it, so buffered bytes do not need carrying back. */
 static void ring_release_large(const net_handle_t *h)
 {
    if (net_rx_big_owner == (int)(h - net_h)) net_rx_big_owner = -1;
+}
+/* Called whenever a read empties the ring.  An empty borrowed ring goes back
+   at once, onto the handle's own: TLS hands up whole 16 KB records, so every
+   HTTPS session borrows it, and holding it to close shut every other handle
+   out for the length of the session.  Nothing is buffered, so nothing moves.
+   Kept while a chain is parked: it was refused against the large ring, may
+   not fit the small one, and must find the ring still there when lwIP
+   re-presents it. */
+static void ring_drained(net_handle_t *h)
+{
+   if (h->rx_parked || net_rx_big_owner != (int)(h - net_h))
+      return;
+   ring_release_large(h);
+   h->rx_size = NET_RX_RING_SIZE;
+   h->rx_head = 0u;
+   h->rx_tail = 0u;
+}
+/* Nothing buffered, and the next chain is waiting on the shared ring another
+   handle holds.  Reads report NET_ERR_NOMEM rather than OK with 0 bytes: the
+   holder may never drain (its reader may be the one waiting on this one), and
+   a Beeb read loop has no timeout.  Not sticky - the chain is still parked, so
+   a read after the ring comes back carries on from where the stream was. */
+static inline bool ring_starved(const net_handle_t *h)
+{
+   return h->rx_starved && net_rx_big_owner >= 0;
 }
 static inline uint32_t ring_free(const net_handle_t *h)
 {
@@ -236,6 +263,8 @@ static uint32_t ring_get_to(net_handle_t *h, uint8_t *dst, uint32_t max)
       h->rx_tail = (h->rx_tail + 1u) & ring_mask(h);
    }
    h->rx_count -= n;
+   if (h->rx_count == 0u)
+      ring_drained(h);
    return n;
 }
 static uint32_t ring_get(net_handle_t *h, uint32_t jim_dst, uint32_t max)
@@ -271,6 +300,8 @@ static void ring_skip(net_handle_t *h, uint32_t len)
       len = h->rx_count;
    h->rx_tail = (h->rx_tail + len) & ring_mask(h);
    h->rx_count -= len;
+   if (h->rx_count == 0u)
+      ring_drained(h);
 }
 
 /* Consume one queued UDP record ([4 ip][2 port][2 len][payload]): copy up to
@@ -403,10 +434,16 @@ static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
       if ((uint32_t)p->tot_len > h->rx_size)
          ring_claim_large(h);
       if (p->tot_len > ring_free(h)) {
+         /* Still bigger than the ring in use after the claim: the shared
+            one is lent to another handle.  Park all the same - the chain is
+            kept, and fits once that handle drains - but say so, or the read
+            side answers OK with 0 bytes for as long as it lasts. */
+         h->rx_starved = ((uint32_t)p->tot_len > h->rx_size);
          h->rx_parked = true;
          return ERR_MEM;
       }
    }
+   h->rx_starved = false;
    if (h->is_url && h->url_adapter == NET_URL_TELNET) {
       /* Run the segment through the TELNET IAC filter: clean text to the ring,
          option-negotiation replies straight back to the server.  Filtered
@@ -1056,6 +1093,7 @@ static uint8_t do_recv(net_handle_t *h, uint32_t cp)
    if (got == 0u && h->rx_count == 0u) {
       if (h->rx_eof)                 return NET_EOF;
       if (h->state == NET_ST_ERROR)  return h->last_err ? h->last_err : NET_ERR_CONN;
+      if (ring_starved(h))           return NET_ERR_NOMEM;
    }
    return NET_OK;
 }
@@ -1738,6 +1776,7 @@ static uint8_t url_read_core(net_handle_t *h, uint8_t *dst, uint32_t max, uint32
          return NET_EOF;
       }
       if (h->state == NET_ST_ERROR)  return h->last_err ? h->last_err : NET_ERR_CONN;
+      if (ring_starved(h))           return NET_ERR_NOMEM;
    }
    return NET_OK;
 }

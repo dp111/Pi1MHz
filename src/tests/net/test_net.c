@@ -347,6 +347,34 @@ static void connect_handle(unsigned h)
    issue(NET_CMD_CONNECT, h);             /* poll -> CONNECTED */
 }
 
+/* Hand *pp to the pcb's recv callback, as lwIP would.  The callback owns the
+   chain unless it parks it (ERR_MEM), so *pp is cleared on any other answer;
+   a chain already taken answers ERR_VAL rather than being handed over twice. */
+static err_t present(struct altcp_pcb *pcb, struct pbuf **pp)
+{
+   err_t r;
+   if (*pp == NULL) return ERR_VAL;
+   r = pcb->recv(pcb->arg, pcb, *pp, ERR_OK);
+   if (r != ERR_MEM) *pp = NULL;
+   return r;
+}
+
+/* recv on stream handle h until the ring is empty (or `want` bytes), appending
+   to out.  Returns the bytes read; *res is the last result byte. */
+static uint32_t recv_all(unsigned h, uint8_t *out, uint32_t want, uint8_t *res)
+{
+   uint32_t total = 0u;
+   for (;;) {
+      uint32_t got;
+      jwr24(CP(h) + 1u, 4096u); jwr32(CP(h) + 4u, 0x20000u);
+      *res = issue(NET_CMD_RECV, h);
+      got = (*res == NET_OK) ? jrd24(CP(h) + 1u) : 0u;
+      if (got == 0u || total + got > want) return total;
+      memcpy(out + total, &Pi1MHz->JIM_ram[0x20000u], got);
+      total += got;
+   }
+}
+
 int main(void)
 {
    printf("== private scratch -> public JIM copy (command 58) ==\n");
@@ -507,6 +535,109 @@ int main(void)
       CHECK(g_last_pcb->recv(g_last_pcb->arg, g_last_pcb, p2, ERR_OK) == ERR_OK,
             "redelivered parked segment now fits");
       free(big);
+   }
+
+   /* The shared 64 KB ring is borrowed by whichever handle meets a chain too
+      big for its own 8 KB one.  TLS hands up whole 16 KB records, so every
+      HTTPS session borrows it; if only a close gave it back, a second handle
+      meeting a >8 KB chain parked for good and its reads answered OK with 0
+      bytes for ever.  Review 2026-10-06 N1. */
+   printf("== shared RX ring: returned on drain, refusal is visible ==\n");
+   world_reset();
+   {
+      enum { REC = 16384u, OTHER = 10000u, FILL = 60000u };
+      uint8_t *a = malloc(REC), *b = malloc(OTHER), *out = malloc(65536u);
+      uint8_t *fill = calloc(1u, FILL);
+      struct altcp_pcb *pa, *pb, *pc;
+      /* every chain the test hands over; present() clears one once taken */
+      struct pbuf *a1, *b1, *a0, *b2, *a2, *a3, *a4, *b3, *b4, *a5;
+      uint8_t res;
+      for (unsigned i = 0; i < REC; i++)   a[i] = (uint8_t)(i * 7u + 1u);
+      for (unsigned i = 0; i < OTHER; i++) b[i] = (uint8_t)(i * 13u + 5u);
+      a1 = make_pbuf_split(a, REC, 1460u);   b1 = make_pbuf_split(b, OTHER, 1460u);
+      a0 = make_pbuf(a, 100u);               b2 = make_pbuf_split(b, OTHER, 1460u);
+      a2 = make_pbuf_split(a, REC, 1460u);   a3 = make_pbuf_split(fill, FILL, 1460u);
+      a4 = make_pbuf_split(a, REC, 1460u);   b3 = make_pbuf_split(b, OTHER, 1460u);
+      b4 = make_pbuf_split(b, OTHER, 1460u); a5 = make_pbuf_split(a, REC, 1460u);
+
+      connect_handle(0); pa = g_last_pcb;
+      connect_handle(1); pb = g_last_pcb;
+
+      /* handle 0: one TLS-record-sized chain, read to the end; the session
+         stays open, idle, as a kept-alive HTTPS connection would */
+      CHECK(present(pa, &a1) == ERR_OK, "16 KB chain accepted by borrowing the shared ring");
+      CHECK(recv_all(0, out, REC, &res) == REC && memcmp(out, a, REC) == 0,
+            "16 KB chain read back byte-exact");
+
+      /* handle 1: a >8 KB chain must now get the ring handle 0 drained */
+      CHECK(present(pb, &b1) == ERR_OK,
+            "a drained handle has returned the shared ring: another handle's 10 KB chain fits");
+      CHECK(recv_all(1, out, OTHER, &res) == OTHER && memcmp(out, b, OTHER) == 0,
+            "the other handle reads its 10 KB byte-exact");
+
+      /* handle 0 is back on its own ring: a small chain still reads in order */
+      CHECK(present(pa, &a0) == ERR_OK, "handle 0 takes a small chain again");
+      CHECK(recv_all(0, out, 100u, &res) == 100u && memcmp(out, a, 100u) == 0,
+            "and reads it back exact");
+
+      /* handle 1 now holds the ring with data unread; handle 0 meets a chain
+         that cannot fit its own ring.  It parks (data kept), and once its ring
+         is empty the read says so rather than OK with 0 bytes for ever. */
+      CHECK(present(pb, &b2) == ERR_OK, "handle 1 borrows the ring and leaves it unread");
+      CHECK(present(pa, &a2) == ERR_MEM, "handle 0's 16 KB chain parks while the ring is lent out");
+      jwr24(CP(0) + 1u, 4096u); jwr32(CP(0) + 4u, 0x20000u);
+      CHECK(issue(NET_CMD_RECV, 0) == NET_ERR_NOMEM,
+            "a starved recv reports NOMEM, not OK with 0 bytes");
+      jwr24(CP(0) + 1u, 4096u); jwr32(CP(0) + 4u, 0x20000u);
+      CHECK(issue(NET_CMD_RECV, 0) == NET_ERR_NOMEM, "and keeps saying so");
+
+      /* handle 1 drains -> ring returned -> handle 0's parked chain fits */
+      CHECK(recv_all(1, out, OTHER, &res) == OTHER && memcmp(out, b, OTHER) == 0,
+            "handle 1 drains its 10 KB");
+      CHECK(present(pa, &a2) == ERR_OK, "re-presented chain is accepted once the ring is returned");
+      CHECK(recv_all(0, out, REC, &res) == REC && memcmp(out, a, REC) == 0 && res == NET_OK,
+            "and handle 0 reads its 16 KB byte-exact, no error");
+
+      /* A chain parked against the BORROWED ring keeps it through a drain to
+         zero: it was refused at 64 KB and may be too big for 8 KB, so its
+         re-presentation must not find the ring gone. */
+      CHECK(present(pa, &a3) == ERR_OK, "60 KB chain fills the shared ring");
+      CHECK(present(pa, &a4) == ERR_MEM, "the next 16 KB parks against it");
+      CHECK(recv_all(0, out, 65536u, &res) == FILL, "handle 0 drains its 60 KB");
+      CHECK(present(pb, &b3) == ERR_MEM,
+            "another handle cannot take the ring while handle 0 has a chain parked");
+      CHECK(present(pa, &a4) == ERR_OK, "the parked chain still finds the ring it was refused against");
+      CHECK(recv_all(0, out, REC, &res) == REC && memcmp(out, a, REC) == 0,
+            "and reads back exact");
+      CHECK(present(pb, &b3) == ERR_OK, "drained again: the waiting handle gets the ring");
+      CHECK(recv_all(1, out, OTHER, &res) == OTHER && memcmp(out, b, OTHER) == 0,
+            "and reads its 10 KB exact");
+
+      /* the N: device read path reports the same refusal */
+      strcpy((char *)&Pi1MHz->JIM_ram[CP(2) + 2u], "TCP://1.2.3.4:5000");
+      CHECK(issue(NET_CMD_URL_OPEN, 2) == NET_PENDING, "url handle 2 opening");
+      pc = g_last_pcb;
+      pc->connected(pc->arg, pc, ERR_OK);
+      CHECK(issue(NET_CMD_URL_OPEN, 2) == NET_OK, "url handle 2 open");
+      CHECK(present(pb, &b4) == ERR_OK, "handle 1 borrows the ring again and leaves it unread");
+      CHECK(present(pc, &a5) == ERR_MEM, "url handle's 16 KB chain parks");
+      jwr24(CP(2) + 1u, 240u); jwr32(CP(2) + 4u, 0x20000u);
+      CHECK(issue(NET_CMD_URL_READ, 2) == NET_ERR_NOMEM,
+            "a starved url_read reports NOMEM, not OK with 0 bytes");
+      CHECK(recv_all(1, out, OTHER, &res) == OTHER, "handle 1 drains");
+      CHECK(present(pc, &a5) == ERR_OK, "url handle's chain now fits");
+      jwr24(CP(2) + 1u, 240u); jwr32(CP(2) + 4u, 0x20000u);
+      CHECK(issue(NET_CMD_URL_READ, 2) == NET_OK && jrd24(CP(2) + 1u) == 240u
+            && memcmp(&Pi1MHz->JIM_ram[0x20000u], a, 240u) == 0,
+            "url_read delivers the first 240 bytes in order");
+
+      /* chains still parked (only if a check above failed) are the harness's */
+      {
+         struct pbuf *left[] = { a1, b1, a0, b2, a2, a3, a4, b3, b4, a5 };
+         for (unsigned i = 0; i < sizeof left / sizeof left[0]; i++)
+            if (left[i] != NULL) pbuf_free(left[i]);
+      }
+      free(a); free(b); free(out); free(fill);
    }
 
    printf("== FIN / EOF ==\n");
