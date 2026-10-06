@@ -171,6 +171,8 @@ int main(void)
    CHECK(card_has && card_says("scanfields=7"), "the setting is saved:\n%s", card);
    CHECK(!card_says("CfgNet") && !card_says("cfgpass"),
          "the cfg's SSID and password are not copied into the profile");
+   CHECK(!card_says("overrides") && card_says("Pi1MHz.cfg apply"),
+         "and its header does not claim to override the cfg");
    live_set("EditedNet", "editedpass");         /* the user edits Pi1MHz.cfg */
    reset_beeb();
    CHECK(rejoins == 0, "after a cfg edit the profile does not drag the Pi back (%d rejoins, to '%s')",

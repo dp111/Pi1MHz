@@ -348,6 +348,12 @@ static void dialling(uint32_t now_us)
    uint8_t c;
    /* Any key abandons the call - except the LF of a CR LF line ending. */
    if (serial_redirect_read(&c, 1u) != 0u && c != m_s[4]) {
+      /* The rest of the abandoning key's line goes with it, as far as it
+         has arrived: left queued, a paste would prefix the next command
+         and that command would be ignored. */
+      while (c != m_s[3] && serial_redirect_read(&c, 1u) != 0u)
+         ;
+      m_len = 0u;
       hang_up();
       result(R_NO_CARRIER);
       return;

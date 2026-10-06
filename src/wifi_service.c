@@ -336,12 +336,16 @@ static bool wifi_profile_save(const char *ssid, const char *password,
 {
    char text[WIFI_SSID_MAX_LEN + WIFI_PASSWORD_MAX_LEN + 256u];
    int length = snprintf(text, sizeof text,
-                         "# Written by the Beeb.  The network here overrides\n"
-                         "# wifi_ssid / wifi_password in Pi1MHz.cfg; delete\n"
-                         "# this file to go back to those.\n"
+                         "%s"
                          "ssid=%s\npassword=%s\nsecurity=%s\n"
                          "# LAP detail: 127 every field, 7 security/ssid/rssi.\n"
                          "scanfields=%u\n",
+                         ssid[0] != '\0'
+                            ? "# Written by the Beeb.  The network here overrides\n"
+                              "# wifi_ssid / wifi_password in Pi1MHz.cfg; delete\n"
+                              "# this file to go back to those.\n"
+                            : "# Written by the Beeb.  No network saved here, so\n"
+                              "# wifi_ssid / wifi_password in Pi1MHz.cfg apply.\n",
                          ssid, password, security_name(security),
                          (unsigned)scanfields);
    /* Verified write-and-swap: this file is the only copy of the network the

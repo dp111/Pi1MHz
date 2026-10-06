@@ -414,6 +414,21 @@ static void test_typeahead(void)
    type("ATE0\rATV0\rAT\r"); poll_for(2000);
    CHECK(strcmp(to_beeb, "ATE0\r\r\nOK\r\n0\r0\r") == 0,
          "several commands in one read each run: [%s]", to_beeb);
+
+   /* A paste that abandons a dial: the rest of the abandoning line goes
+      with it, and does not prefix the next command. */
+   reset_all();
+   open_delay = 1000000;
+   type("ATDhost:1\r\nhello"); poll_for(10000);
+   CHECK(out_has("NO CARRIER") && net_taken < 0, "the paste abandons the call");
+   clear_out(); type("AT\r"); poll_for(2000);
+   CHECK(out_has("\r\nOK\r\n"), "the next AT is answered, not prefixed by the paste: [%s]", to_beeb);
+
+   reset_all();
+   open_delay = 1000000;
+   type("ATDhost:1\rxyz\rATI\r"); poll_for(10000);
+   CHECK(out_has("NO CARRIER") && out_has("Pi1MHz modem"),
+         "only the abandoning key's line is dropped: [%s]", to_beeb);
 }
 
 int main(void)
