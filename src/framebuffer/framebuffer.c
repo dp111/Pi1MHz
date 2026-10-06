@@ -1526,6 +1526,14 @@ static void vdu_19(const uint8_t *buf) {
    if (screen->mode_flags & F_TELETEXT) {
       return;
    }
+   // The logical colour is taken modulo the mode's colours, as the MOS does
+   // (MOS 3.20 ANDs it with numberOfLogicalColoursMinusOne): VDU 19,2 in a
+   // 2-colour mode is colour 0.  Unmasked it reached palette entries no
+   // pixel of the mode uses - in MODE 3/6 entry 2 is BBC_GAP_COL, the
+   // black gap lines.
+   if (screen->ncolour < 255) {
+      l &= (uint8_t)screen->ncolour;
+   }
    // See http://beebwiki.mdfs.net/VDU_19
    if (p < 16) {
       // Set to Physical Colour

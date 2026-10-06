@@ -267,6 +267,31 @@ static void test_v4_teletext_scroll(void)
    CHECK(ink == 0x3f, "V4: 'B' after VDU 23,7 drawn in colour %02x, want white (3f)", (unsigned)ink);
 }
 
+// ---- V6: VDU 19's logical colour is masked to the mode ---------------------
+
+static void test_v6_vdu19_mask(void)
+{
+   mode(3);
+   pal_forget();
+   VDU(19, 2, 1, 0, 0, 0);         /* MODE 3 has two colours: this is 0 */
+   CHECK(pal[2].writes == 0 && pal[0x102].writes == 0,
+         "V6: VDU 19,2 in MODE 3 wrote palette entry 2 (the gap line colour)");
+   CHECK(pal[0].writes > 0 && pal[0].r == 0xff && pal[0].g == 0 && pal[0].b == 0,
+         "V6: VDU 19,2,1 in MODE 3 did not make logical colour 0 red");
+
+   mode(1);
+   pal_forget();
+   VDU(19, 6, 4, 0, 0, 0);         /* MODE 1: 6 AND 3 = 2 */
+   CHECK(pal[6].writes == 0, "V6: VDU 19,6 in MODE 1 wrote entry 6");
+   CHECK(pal[2].writes > 0 && pal[2].b == 0xff && pal[2].r == 0, "V6: VDU 19,6,4 in MODE 1 did not set colour 2 blue");
+
+   mode(2);
+   pal_forget();
+   VDU(19, 0x13, 2, 0, 0, 0);      /* MODE 2: 19 AND 15 = 3 */
+   CHECK(pal[0x13].writes == 0 && pal[3].writes > 0, "V6: VDU 19,19 in MODE 2 not taken as colour 3");
+   VDU(20);
+}
+
 int main(void)
 {
    fb_emulator_init(0, 0xd0);
@@ -276,6 +301,7 @@ int main(void)
    test_v2_vdu20_keeps_font();
    test_v3_mode_shrinks_below_cell();
    test_v4_teletext_scroll();
+   test_v6_vdu19_mask();
 
    printf("%d checks, %d failed\n", checks, fails);
    if (fails)
