@@ -1411,6 +1411,18 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemFormatLun(): Formatting LUN image "), lunNumber, true);
 
+   // The size below comes from fsLunGeometry, which is only current for a
+   // started LUN (loaded at START, updated by MODE SELECT).  For a stopped
+   // one it was never read since boot - zero, so f_expand failed after
+   // FA_CREATE_ALWAYS had already truncated the image to 0 bytes - or it
+   // belongs to the image of the directory before a jukebox.  Starting the
+   // LUN loads its geometry exactly as the START after this FORMAT will;
+   // if it cannot start there is no size to format to, so refuse before
+   // anything is truncated.
+   if (!filesystemSetLunStatus(lunNumber, true)) {
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): ERROR: Could not read the LUN's geometry\r\n"));
+      return false;
+   }
    filesystemSetLunStatus(lunNumber, false );
 
    if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemFormatLun(): Sectors required = "), filesystemGetLunTotalSectors(lunNumber), true);
@@ -1451,6 +1463,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
       if (fsResult != FR_OK) {
          // Something went wrong writing to the .dat
          if (debugFlag_filesystem) debugStringInt8Hex_P(PSTR("File system: filesystemFormatLun(): ERROR: Could not write .dat : \r\n"),fsResult,1);
+         f_close(&fileObject);
          return false;
       }
    } else {
