@@ -972,6 +972,7 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
    is nil at 576p where the frame fits exactly.  The unaligned geometry is
    remembered so a change re-derives from it rather than accumulating. */
 void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr );   /* below */
+void screen_wait_blanking( void );   /* below */
 
 static int      video_align_x = 0;
 static int      video_align_y = 0;
@@ -1062,6 +1063,15 @@ void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows )
 
 void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
+    LOG_DEBUG("plane %"PRIu32" (420)\r\n", planeno);
+    /* Rebuilding the entry rewrites live display-list slots, so it starts in
+       blanking like a MODE change's rebuild (see screen_wait_blanking).  The
+       player's bring-up runs in the main loop, so IRQs are masked from the
+       wait to the last write: otherwise the vsync IRQ would take the end of
+       frame (and the VDU drain after it) and this would land mid-frame.
+       IRQ only - FIQ, and so the bus, runs throughout. */
+    unsigned int cpsr = _disable_irq_cspr();
+    screen_wait_blanking();
     /* Before anything touches the slot: a deferred write still pending from
        the old contents would otherwise be committed by the end-of-frame IRQ
        part-way through the rebuild, putting the previous mode's pos/src_size
@@ -1069,7 +1079,6 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
     if (planeno < MAX_PLANES)
         plane_dirty[planeno] = 0;
     volatile uint32_t * plane =  screen_get_nextplane( planeno);
-    LOG_DEBUG("plane %"PRIu32" (420)\r\n", planeno);
     buffer |= 0xC0000000;
         uint32_t scaled_width;
         uint32_t scaled_height;
@@ -1179,6 +1188,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         yuv->pfkpv1 = POLYPHASE_BASE | 0x80000000u;
         setup_polyphase();
     plane_valid[planeno] = true;
+    _restore_cpsr(cpsr);
 }
 
 /* Retarget an existing YUV plane at a new frame - the video player's
@@ -1700,7 +1710,14 @@ static bool dim_strip_place(uint32_t planeno, uint32_t x, uint32_t y,
     return true;
 }
 
-void screen_dim_strips( bool on )
+/* The strips' slots and dim_geom/dim_built/dim_shown/dim_strips_on are
+   changed from two contexts: the main loop (F-code VP modes, through
+   screen_dim_strips) and the IRQ (a MODE change's dim_strips_reframe).  So
+   the main loop's way in masks IRQs for the whole update.  in_blanking says
+   the caller has already started this in blanking (the MODE change's
+   rebuild); otherwise a rebuild waits for one first, as a MODE change does -
+   it rewrites four live display-list slots. */
+static void dim_strips_set( bool on, bool in_blanking )
 {
     if (!on) {
         if (dim_strips_on) {
@@ -1752,6 +1769,8 @@ void screen_dim_strips( bool on )
         dim_strip_src_ready = true;
     }
 
+    if (!in_blanking)
+        screen_wait_blanking();
     uint32_t right = x + w, bottom = y + h;
     uint32_t shown = 0u;
     if (dim_strip_place(DIM_STRIP_FIRST + 0u, 0u, 0u, disp_w, y))          shown |= 1u;
@@ -1767,13 +1786,24 @@ void screen_dim_strips( bool on )
     dim_strips_on = true;
 }
 
+/* Main loop (F-code, inside a SCSI command).  IRQ only is masked - FIQ, and
+   so the bus, runs through the blanking wait. */
+void screen_dim_strips( bool on )
+{
+    unsigned int cpsr = _disable_irq_cspr();
+    dim_strips_set(on, false);
+    _restore_cpsr(cpsr);
+}
+
 /* Called from screen_create_RGB_plane when the computer plane is rebuilt:
    a no-op unless VP5 has the strips up, and the geometry guard above makes
-   it free when the rectangle has not actually moved. */
+   it free when the rectangle has not actually moved.  That rebuild was
+   started in blanking (default_init_screen), from the VDU drain's IRQ, so
+   the strips go straight on after it. */
 static void dim_strips_reframe( void )
 {
     if (dim_strips_on)
-        screen_dim_strips(true);
+        dim_strips_set(true, true);
 }
 
 /* /status forensics: the rectangle the strips were last built around. The
