@@ -54,14 +54,22 @@ static FRESULT getcwd_result = FR_OK;
 static int f_write_calls, disk_write_calls, f_mkdir_calls, f_unlink_calls, f_rename_calls;
 static uint8_t last_open_mode;
 
+/* which FatFs objects were opened last and which have been closed, so the
+   eject test can say exactly what the callback closed */
+static FIL *last_open_fp;
+static DIR *last_opendir_dp;
+static FIL *closed_fp[32];
+static DIR *closed_dp[32];
+static int  n_closed_fp, n_closed_dp;
+
 FRESULT f_open(FIL *fp, const char *path, uint8_t mode)
-{ (void)fp; last_open_mode = mode; snprintf(last_open_path, sizeof last_open_path, "%s", path); return open_result; }
-FRESULT f_close(FIL *fp) { (void)fp; return FR_OK; }
+{ last_open_fp = fp; last_open_mode = mode; snprintf(last_open_path, sizeof last_open_path, "%s", path); return open_result; }
+FRESULT f_close(FIL *fp) { if (n_closed_fp < 32) closed_fp[n_closed_fp++] = fp; return FR_OK; }
 FRESULT f_read(FIL *fp, void *b, UINT n, UINT *r) { (void)fp; (void)b; *r = n; return FR_OK; }
 FRESULT f_write(FIL *fp, const void *b, UINT n, UINT *w) { (void)fp; (void)b; f_write_calls++; *w = n; return FR_OK; }
 FRESULT f_lseek(FIL *fp, uint32_t ofs) { (void)fp; (void)ofs; return FR_OK; }
-FRESULT f_opendir(DIR *dp, const char *p) { (void)dp; (void)p; return FR_OK; }
-FRESULT f_closedir(DIR *dp) { (void)dp; return FR_OK; }
+FRESULT f_opendir(DIR *dp, const char *p) { (void)p; last_opendir_dp = dp; return FR_OK; }
+FRESULT f_closedir(DIR *dp) { if (n_closed_dp < 32) closed_dp[n_closed_dp++] = dp; return FR_OK; }
 
 /* settable directory listing for readdir / readdir-ex tests */
 static FILINFO readdir_entries[4];
@@ -90,6 +98,11 @@ unsigned char disk_type(void) { return 42; }
 
 bool filesystemMount(void) { return true; }
 bool filesystemDismount(void) { return true; }
+
+/* fat_service_init() hands filesystemEject() its callback here (SD eject). */
+static bool (*eject_cb)(void);
+void filesystemRegisterEject(bool (*eject)(void), void (*inserted)(void))
+{ eject_cb = eject; (void)inserted; }
 
 /* ---- AUN-range test handler ---- */
 static uint32_t aun_calls;
@@ -346,6 +359,68 @@ int main(void)
       ok(dispatch(0xFCu) == FR_NOT_READY, "getcwd error propagated");
       getcwd_result = FR_OK;
       strcpy(cwd_value, "/");
+   }
+
+   puts("== SD eject (filesystemEject callback) ==");
+   /* fat_service registers fat_service_eject with filesystemRegisterEject():
+      what the Beeb has open here must be closed (a file it was writing
+      reaches the card before the card goes) and the tracking dropped, so the
+      webserver's in-use interlock and the handle gates start clean for
+      whatever card is inserted next. */
+   {
+      FIL *fp1, *fp2, *fp5;
+      DIR *dp3, *dp4, *dp9;
+      uint32_t dcp;
+
+      ok(eject_cb != NULL, "fat_service_init registered an eject callback");
+
+      (void)do_simple(0, 15);               /* known state: nothing tracked */
+      ok(do_open(1, "/eject/one.dat") == FR_OK, "open handle 1");  fp1 = last_open_fp;
+      ok(do_open(2, "/eject/two.dat") == FR_OK, "open handle 2");  fp2 = last_open_fp;
+      ok(do_open(5, "/eject/five.dat") == FR_OK, "open handle 5"); fp5 = last_open_fp;
+      ok(do_simple(2, 3) == FR_OK, "close handle 2 before the eject");
+
+      dcp = cp_of(0xF3u);
+      memset(&Pi1MHz->JIM_ram[dcp], 0, 64);
+      Pi1MHz->JIM_ram[dcp] = 7;             /* fopendir "" on handle 3 */
+      ok(dispatch(0xF3u) == FR_OK, "opendir handle 3");  dp3 = last_opendir_dp;
+      dcp = cp_of(0xF4u);
+      memset(&Pi1MHz->JIM_ram[dcp], 0, 64);
+      Pi1MHz->JIM_ram[dcp] = 7;
+      ok(dispatch(0xF4u) == FR_OK, "opendir handle 4");  dp4 = last_opendir_dp;
+      ok(do_simple(4, 8) == FR_OK, "closedir handle 4 before the eject");
+      dcp = cp_of(0xF9u);
+      memset(&Pi1MHz->JIM_ram[dcp], 0, 64);
+      Pi1MHz->JIM_ram[dcp] = 7;
+      ok(dispatch(0xF9u) == FR_OK, "opendir handle 9");  dp9 = last_opendir_dp;
+      (void)do_simple(0, 0);                /* raw sector access: BEEB.MMB latched */
+      ok(fat_service_file_in_use("/eject/one.dat") && fat_service_file_in_use("/BEEB.MMB"),
+         "locks held before the eject");
+
+      n_closed_fp = n_closed_dp = 0;
+      ok(eject_cb != NULL && eject_cb(), "eject callback reports success");
+      ok(n_closed_fp == 2 && closed_fp[0] == fp1 && closed_fp[1] == fp5,
+         "closes exactly the open files (1 and 5), not the one already closed");
+      ok(fp2 != fp1 && fp2 != fp5, "(handle 2 has its own FIL)");
+      ok(n_closed_dp == 2 && closed_dp[0] == dp3 && closed_dp[1] == dp9,
+         "closes exactly the open directories (3 and 9), not the one already closed");
+      ok(dp4 != dp3 && dp4 != dp9, "(handle 4 has its own DIR)");
+
+      ok(!fat_service_file_in_use("/eject/one.dat") && !fat_service_file_in_use("/eject/five.dat"),
+         "eject releases the open-file locks");
+      ok(!fat_service_file_in_use("/BEEB.MMB"), "eject releases the raw-sector latch");
+      ok(do_simple(1, 3) == FR_INVALID_OBJECT, "stale file handle refused after eject (close)");
+      ok(do_simple(5, 4) == FR_INVALID_OBJECT, "stale file handle refused after eject (read)");
+      ok(do_simple(3, 8) == FR_INVALID_OBJECT, "stale dir handle refused after eject (closedir)");
+      ok(do_simple(9, 9) == FR_INVALID_OBJECT, "stale dir handle refused after eject (readdir)");
+
+      n_closed_fp = n_closed_dp = 0;
+      ok(eject_cb(), "second eject also reports success");
+      ok(n_closed_fp == 0 && n_closed_dp == 0, "second eject has nothing left to close");
+
+      ok(do_open(1, "/eject/new.dat") == FR_OK && fat_service_file_in_use("/eject/new.dat"),
+         "a card inserted afterwards opens and tracks files again");
+      (void)do_simple(1, 3);
    }
 
    /* KEEP THIS BLOCK LAST: it sets Beeb_write_protect in the shared config
