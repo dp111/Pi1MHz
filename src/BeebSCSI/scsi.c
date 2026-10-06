@@ -54,7 +54,6 @@
 #include "filesystem.h"
 #include "statusled.h"
 #include "scsi.h"
-#include "../rpi/systimer.h"   /* timing the slow-call log */
 
 // Define the major and minor firmware version number returned
 // by the BSSENSE command
@@ -2040,8 +2039,9 @@ static uint8_t scsiCommandSendDiagnostic(void)
       bail-out that was up to 65535 x HD_ACK_TIMEOUT_US - about 1.8 hours with
       the poll loop dead - and BREAK did NOT shorten it, because hd_wait_ack()
       returns immediately on reset while the loop still grinds through every
-      remaining iteration.  A corrupted CDB (see the command-phase note in
-      hostadapterReadByte) is enough to get here with a non-zero byte 3.
+      remaining iteration.  A corrupted CDB is enough to get here with a
+      non-zero byte 3: hostadapterReadByte() returns whatever is on the bus
+      when its ACK wait gives up.
       Bail on reset, as scsiCommandReassignBlocks does, so the per-byte
       timeout composes into a per-command bound. */
    int drainLength = (commandDataBlock.data[3] << 8) | commandDataBlock.data[4];
@@ -2366,9 +2366,9 @@ static uint8_t scsiBeebScsiFatPath(void)
    // Set up the control signals ready for the data out phase
    scsiInformationTransferPhase(ITPHASE_DATAOUT);
 
-   // Transfer a single block from the file system to the host
-   // Note: Since VFS is slower than ADFS we do not disable interrupts here as
-   // disabling interrupts can cause incoming serial bytes to be lost
+   // Transfer a single block (the path) from the host
+   // Note: cli()/sei() are empty on the Pi (cpuspecific.h) - the bracket is
+   // the AVR original's, and disables nothing here
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Transferring FAT path buffer from the host...\r\n"));
    cli();
    DEBUG_bytesTransferred(hostadapterPerformWriteDMA(Buffer));

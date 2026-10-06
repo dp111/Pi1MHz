@@ -1,9 +1,9 @@
 # Changes from BeebSCSI
 
-These files have been taken from the BeebSCSI project. Fatfs has been updated to 0.14b.
-host_interface.c has been significantly changed as it contains the equalivant of the CPLD as well, moved up a level and renamed to harddisdc_emaultor.c
+These files have been taken from the BeebSCSI project. FatFs has been updated to R0.16.
+host_interface.c has been significantly changed as it contains the equivalent of the CPLD as well, moved up a level and renamed to harddisc_emulator.c
 
-Filesystem.c is largely unchanged except from remove AVR specific code.
+scsi.c and filesystem.c started from BeebSCSI with the AVR-specific code removed, and have since been extended substantially (VFS/LaserDisc LUNs 8-15 and F-codes, extended attribute .cfg files, jukeboxing, FAT transfer, host-transfer locking, card eject).
 
 The rest of this file is from BeebSCSI
 

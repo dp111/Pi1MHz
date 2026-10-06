@@ -1197,16 +1197,13 @@ bool filesystemReadVFSCfgIntDir(uint8_t dir, enum parserkeyvalueenum key, int *o
    return found;
 }
 
-/* Read a single text Key= value ("Title" / "Description") for the disc
-   menu, straight from the mounted VFS disc's already-parsed attributes:
-   the VFS LUN's mount fills keyvalues[8] from its scsi0.cfg (a BeebVFS
-   directory only ever holds scsi0), and the cache cannot be stale -
-   every jukebox path is gated on all LUNs being stopped, and stopping
-   releases the values. The menu scans discs by jukeboxing to each
-   directory and remounting, so no separate file read is needed. */
-/* Read a side's Title/Description WITHOUT jukeboxing to it: a jukebox is a
-   remount, and the menu's rescan was paying one per side purely to read a
-   name. */
+/* Read a side's Title/Description for the disc menu WITHOUT jukeboxing to
+   it: a jukebox is a remount, and the menu's rescan was paying one per side
+   purely to read a name.  The mounted side is served from keyvalues[8],
+   which the VFS LUN's start filled from its scsi0.cfg (a BeebVFS directory
+   only ever holds scsi0); that cache cannot be stale - a VFS jukebox is
+   refused while LUN 8 is started (the *FX147 poke stops every LUN first),
+   and stopping releases the values. */
 bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key,
                                  char *out, uint32_t maxLen)
 {
