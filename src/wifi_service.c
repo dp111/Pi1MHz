@@ -25,6 +25,7 @@
 #include "Pi1MHz.h"
 #include "scripts/gitversion.h"
 #include "BeebSCSI/filesystem.h"
+#include "BeebSCSI/fatfs/ff.h"
 #include "config.h"
 #include "wifi_service.h"
 #include "uef_service.h"
@@ -352,14 +353,34 @@ static bool wifi_profile_save(const char *ssid, const char *password,
 }
 
 /* The scan setting shares the profile file, so persisting it rewrites the
-   whole thing - hence the live credentials rather than just the one value. */
+   whole thing - with the network the file itself holds, never the live one.
+   The live network may have come from Pi1MHz.cfg, and once written here it
+   would override every later edit of the cfg; or a *JOIN - may have emptied
+   it, and the network the Beeb saved would be lost.  No profile: write the
+   setting alone, with no network, so the cfg's still applies.  A profile
+   whose network does not read back (as wifi_credentials_load would ignore
+   it) is not rewritten: what it held could not be reproduced. */
 static bool wifi_scanfields_save(uint8_t scanfields)
 {
-   const wifi_config_t *current = wifi_get_config();
-   return wifi_profile_save(current != NULL ? current->ssid : "",
-                            current != NULL ? current->password : "",
-                            current != NULL ? current->security : WIFI_SECURITY_AUTO,
-                            scanfields);
+   parserkeyvalue values[WIFI_KEY_COUNT] = {0};
+   wifi_security_t security = WIFI_SECURITY_AUTO;
+   FILINFO info;
+   FRESULT found = f_stat(WIFI_FILE, &info);
+   bool ok;
+
+   if (found == FR_NO_FILE || found == FR_NO_PATH)
+      return wifi_profile_save("", "", WIFI_SECURITY_AUTO, scanfields);
+   if (found != FR_OK || !parse_readfile(WIFI_FILE, 0, wifi_profile_keys, values))
+      return false;
+   ok = !values[WIFI_KEY_SECURITY].length
+        || security_parse(values[WIFI_KEY_SECURITY].v.string, &security);
+   if (ok)
+      ok = wifi_profile_save(
+         values[WIFI_KEY_SSID].length ? values[WIFI_KEY_SSID].v.string : "",
+         values[WIFI_KEY_PASSWORD].length ? values[WIFI_KEY_PASSWORD].v.string : "",
+         security, scanfields);
+   parse_releasekeyvalues(values, WIFI_KEY_COUNT);
+   return ok;
 }
 
 static void response_printf(uint32_t cp, const char *format, ...)
