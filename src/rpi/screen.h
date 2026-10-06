@@ -30,6 +30,7 @@ void screen_set_palette(uint32_t planeno, uint32_t palette, uint32_t flags);
 uint32_t screen_get_palette_entry( uint32_t entry );
 void screen_set_vsync(bool enable);
 bool screen_check_vsync(void);
+bool screen_between_frames(void);  /* end-of-frame IRQ: may it write the display list now? */
 void screen_plane_commit(void);  /* end-of-frame IRQ: push deferred plane writes */
 uint32_t screen_refresh_mhz(void);   /* measured refresh, millihertz (0 = not yet) */
 uint32_t screen_vsync_count(void);   /* end-of-frame counter, for tear-free flips */

@@ -424,23 +424,36 @@ static void plane_mark( uint32_t planeno, uint32_t mask )
     plane_write_fields(planeno, mask);
 }
 
+/* May the end-of-frame IRQ write the display list now?  Only while the HVS
+   is still between frames.  It composites ahead of the display and starts
+   the next frame ~0.1-0.2 ms after its end of frame; a plane change written
+   after that - typically because the end of frame was serviced late behind
+   a long IRQ - is followed within a few ms by the VPU missing 1MHz bus
+   cycles (bus trace: plane 1's ctrl+palette commit landing at HVS line 10,
+   then a JIM fetch never served; 3 of 3).  So a late writer leaves its
+   change for the next end of frame, however many that takes: forcing it
+   through after a few late frames forced exactly the write that crashed.
+   The exceptions are where no end of frame is coming to wait for: the IRQ
+   is off (plane_defer clear, the mutators write through), or channel 1 is
+   not running at all - disabled, so it never reaches its end-of-frame
+   state. */
+bool screen_between_frames( void )
+{
+    if (!plane_defer)
+        return true;
+    uint32_t state = RPI_hvs->stat1 >> 30;     /* 0 disabled .. 3 end of frame */
+    if (state == 3u)
+        return true;
+    return state == 0u || !(RPI_hvs->ctrl1 & (1u << 31));   /* not running */
+}
+
 /* End-of-frame IRQ: push everything the frame just gone was not allowed to
-   see. Called after the other per-frame writers (pointer move, flash), so
-   their changes go out in the same blanking interval. */
+   see. Called after the other per-frame writer (flash), so its changes go
+   out in the same blanking interval. */
 void screen_plane_commit( void )
 {
-    /* Only while the HVS is still between frames.  It composites ahead of
-       the display and starts the next frame ~0.1-0.2 ms after its end of
-       frame; a plane change written after that - here, typically because
-       the end of frame was serviced late behind a long IRQ - is followed
-       within a few ms by the VPU missing 1MHz bus cycles (bus trace: plane
-       1's ctrl+palette commit landing at HVS line 10, then a JIM fetch never
-       served; 3 of 3).  Leave the changes for the next frame; a channel that
-       never gets there cannot hold them for more than a few. */
-    static uint32_t late;
-    if (plane_defer && (RPI_hvs->stat1 >> 30) != 3u && ++late < 4u)
-        return;
-    late = 0;
+    if (!screen_between_frames())
+        return;                    /* late: the next end of frame takes them */
     for (uint32_t pl = 0; pl < MAX_PLANES; pl++) {
         uint32_t mask = plane_dirty[pl];
         if (!mask)
