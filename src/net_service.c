@@ -73,8 +73,6 @@ typedef struct {
    uint8_t           last_err;      /* NET_* sticky error for status        */
    bool              rx_eof;        /* peer sent FIN                        */
    bool              rx_parked;     /* a pbuf was ERR_MEM-parked            */
-   bool              rx_starved;    /* ...one too big for the own ring, with
-                                       the shared ring lent to another handle */
    bool              dns_done;      /* a resolve completed, result waiting  */
    bool              dns_ok;        /* that resolve succeeded               */
    bool              is_url;        /* opened via net_url_open (N: device)  */
@@ -210,13 +208,14 @@ static void ring_release_large(const net_handle_t *h)
 {
    if (net_rx_big_owner == (int)(h - net_h)) net_rx_big_owner = -1;
 }
-/* Called whenever a read empties the ring.  An empty borrowed ring goes back
-   at once, onto the handle's own: TLS hands up whole 16 KB records, so every
-   HTTPS session borrows it, and holding it to close shut every other handle
-   out for the length of the session.  Nothing is buffered, so nothing moves.
-   Kept while a chain is parked: it was refused against the large ring, may
-   not fit the small one, and must find the ring still there when lwIP
-   re-presents it. */
+/* Called whenever the ring empties.  An empty borrowed ring goes back at
+   once, onto the handle's own.  altcp_tls hands up pool-sized pbufs one at a
+   time, but chains the next onto any the reader refused, so an HTTPS reader
+   that falls behind grows a chain past 8 KB and borrows the ring - and holding
+   it to close shut every other handle out for the rest of that session.
+   Nothing is buffered, so nothing moves.  Kept while a chain is parked: it
+   was refused against the large ring, may not fit the small one, and must
+   find the ring still there when lwIP re-presents it. */
 static void ring_drained(net_handle_t *h)
 {
    if (h->rx_parked || net_rx_big_owner != (int)(h - net_h))
@@ -226,14 +225,14 @@ static void ring_drained(net_handle_t *h)
    h->rx_head = 0u;
    h->rx_tail = 0u;
 }
-/* Nothing buffered, and the next chain is waiting on the shared ring another
-   handle holds.  Reads report NET_ERR_NOMEM rather than OK with 0 bytes: the
-   holder may never drain (its reader may be the one waiting on this one), and
-   a Beeb read loop has no timeout.  Not sticky - the chain is still parked, so
-   a read after the ring comes back carries on from where the stream was. */
-static inline bool ring_starved(const net_handle_t *h)
+/* The connection has failed: lwIP frees whatever it had parked, so nothing
+   will be re-presented.  Without this a handle in ERROR kept the shared ring
+   until the Beeb closed it. */
+static void ring_unpark(net_handle_t *h)
 {
-   return h->rx_starved && net_rx_big_owner >= 0;
+   h->rx_parked = false;
+   if (h->rx_count == 0u)
+      ring_drained(h);
 }
 static inline uint32_t ring_free(const net_handle_t *h)
 {
@@ -417,6 +416,7 @@ static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
       if (p != NULL) pbuf_free(p);
       h->last_err = NET_ERR_CONN;
       h->state = NET_ST_ERROR;
+      ring_unpark(h);
       return ERR_OK;
    }
    if (p == NULL) {                 /* peer FIN */
@@ -434,16 +434,12 @@ static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
       if ((uint32_t)p->tot_len > h->rx_size)
          ring_claim_large(h);
       if (p->tot_len > ring_free(h)) {
-         /* Still bigger than the ring in use after the claim: the shared
-            one is lent to another handle.  Park all the same - the chain is
-            kept, and fits once that handle drains - but say so, or the read
-            side answers OK with 0 bytes for as long as it lasts. */
-         h->rx_starved = ((uint32_t)p->tot_len > h->rx_size);
+         /* Also the case when the shared ring is lent to another handle:
+            that handle gives it back as soon as its reader empties it. */
          h->rx_parked = true;
          return ERR_MEM;
       }
    }
-   h->rx_starved = false;
    if (h->is_url && h->url_adapter == NET_URL_TELNET) {
       /* Run the segment through the TELNET IAC filter: clean text to the ring,
          option-negotiation replies straight back to the server.  Filtered
@@ -522,6 +518,7 @@ static void net_tcp_err(void *arg, err_t err)
    if (h->tls && h->state == NET_ST_CONNECTING && (err == ERR_CLSD || err == ERR_ABRT))
       h->last_err = NET_ERR_TLS;           /* others (RST, timeout) keep their own code */
    h->state = NET_ST_ERROR;
+   ring_unpark(h);
 }
 
 /* Attach this service's callbacks to a TCP pcb - shared by an outbound
@@ -864,7 +861,9 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
    /* Only an IDLE handle may resolve: the answer drops RESOLVING back to
       IDLE, which on a connected, connecting, listening or failed handle hid a
       live pcb from do_connect - the next connect orphaned it, still feeding
-      this ring and able to NULL the new tpcb from net_tcp_err. */
+      this ring and able to NULL the new tpcb from net_tcp_err.  NOTOPEN is
+      the code do_connect gives for the same wrong state; INUSE means "open
+      on a handle already open" and no busy code exists. */
    if (h->state != NET_ST_IDLE)
       return NET_ERR_NOTOPEN;
    if (!service_string_ok(cp + 1u, NET_MAX_HOSTNAME))
@@ -1099,7 +1098,6 @@ static uint8_t do_recv(net_handle_t *h, uint32_t cp)
    if (got == 0u && h->rx_count == 0u) {
       if (h->rx_eof)                 return NET_EOF;
       if (h->state == NET_ST_ERROR)  return h->last_err ? h->last_err : NET_ERR_CONN;
-      if (ring_starved(h))           return NET_ERR_NOMEM;
    }
    return NET_OK;
 }
@@ -1782,7 +1780,6 @@ static uint8_t url_read_core(net_handle_t *h, uint8_t *dst, uint32_t max, uint32
          return NET_EOF;
       }
       if (h->state == NET_ST_ERROR)  return h->last_err ? h->last_err : NET_ERR_CONN;
-      if (ring_starved(h))           return NET_ERR_NOMEM;
    }
    return NET_OK;
 }
