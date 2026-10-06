@@ -1338,6 +1338,11 @@ static uint8_t scsiCommandSeek(void)
 // the physical storage geometry doesn't have any head or cylinders.
 // However, to emulate defect mapping (i.e. make the emulation act
 // like a physical SCSI drive) it's good to include it anyway.
+/* Upstream's TRANSLATE refused a stopped LUN; here it auto-starts it, as
+   READ6 and WRITE6 do.  The upstream check stays behind a named gate, not
+   deleted, so future BeebSCSI diffs stay clean. */
+#define BEEBSCSI_TRANSLATE_REFUSES_STOPPED 0
+
 static uint8_t scsiCommandTranslate(void)
 {
    uint32_t cylinderNumber;
@@ -1350,6 +1355,18 @@ static uint8_t scsiCommandTranslate(void)
       debugString_P(PSTR("SCSI Commands: TRANSLATE command (0x0F) received\r\n"));
       debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, true);
    }
+#if BEEBSCSI_TRANSLATE_REFUSES_STOPPED
+   // Make sure the target LUN is started
+   if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
+      // LUN unavailable... return with error status
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+
+      // Set request sense error globals
+      requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
+      return SCSI_STATUS;
+   }
+#endif
    // Make sure the target LUN is started
    if (!scsiAutoStartLun()) return SCSI_STATUS;
 
