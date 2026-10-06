@@ -179,12 +179,49 @@ static void test_v1_cursor_vs_metrics(void)
    VDU(23, 19, 1, 1, 1, 0, 0, 0, 0, 0);
 }
 
+// ---- V2: VDU 20 must not change the cell ----------------------------------
+
+static void test_v2_vdu20_keeps_font(void)
+{
+   /* MODE 3 cells are 8x10 (two gap rows).  VDU 23,19,2,0,0 drops the gap:
+      8x8 cells, 31 rows.  VDU 20 then must not put the gap back behind the
+      text grid's back. */
+   mode(3);
+   VDU(23, 19, 2, 0, 0, 0, 0, 0, 0, 0);
+   int rows = fb_read_vdu_variable(V_WINDOWHEIGHT);
+   CHECK(rows == 31, "V2 setup: MODE 3 with no spacing has %d rows, want 31", rows);
+   VDU(26);                        /* the text window to the new grid */
+   VDU(31, 0, 30);
+   CHECK(fb_get_cursor_y() == 30, "V2 setup: cursor row %d, want 30", fb_get_cursor_y());
+   VDU(20);
+   VDU('X');
+   long d = guard_damage();
+   CHECK(d == 0, "V2: VDU 20 then a character on row 30 wrote %ld bytes outside the screen", d);
+   int h = fb_read_vdu_variable(V_TCHARSIZEY);
+   CHECK(h == 8, "V2: VDU 20 changed the cell height to %d (want 8, as VDU 23,19 left it)", h);
+
+   /* VDU 20 is colours, palette and GCOL actions (MOS 3.20). */
+   mode(1);
+   VDU(18, 3, 2);                  /* GCOL 3,2: EOR */
+   VDU(18, 1, 129);                /* GCOL 1,129: OR, background */
+   VDU(17, 2);
+   VDU(20);
+   CHECK(fb_read_vdu_variable(V_GPLFMD) == 0, "V2: VDU 20 left the foreground GCOL action at %d",
+         (int)fb_read_vdu_variable(V_GPLFMD));
+   CHECK(fb_read_vdu_variable(V_GPLBMD) == 0, "V2: VDU 20 left the background GCOL action at %d",
+         (int)fb_read_vdu_variable(V_GPLBMD));
+   CHECK(fb_read_vdu_variable(V_TFORECOL) == 3, "V2: VDU 20 text colour %d, want 3",
+         (int)fb_read_vdu_variable(V_TFORECOL));
+   VDU(23, 19, 2, 0xff, 0xff, 0, 0, 0, 0, 0);
+}
+
 int main(void)
 {
    fb_emulator_init(0, 0xd0);
    (void)guard_damage();
 
    test_v1_cursor_vs_metrics();
+   test_v2_vdu20_keeps_font();
 
    printf("%d checks, %d failed\n", checks, fails);
    if (fails)

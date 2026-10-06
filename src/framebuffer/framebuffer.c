@@ -651,6 +651,20 @@ static void change_mode(screen_mode_t *new_screen) {
    }
    // reset the screen to it's default state
    screen->reset(screen);
+   // Return the text cell to the mode's native grid.  The splash screen
+   // leaves font_normal at scale 2 (select_font(12,2,2,0)) and a user
+   // VDU 23,19 can do the same - without this every later mode renders
+   // double-width (the "20 column" corruption seen after any framebuffer
+   // re-init).  Here rather than in screen->reset, which VDU 20 calls too:
+   // VDU 20 is colours only, and changing the cell behind the text grid's
+   // back put glyphs outside the screen.  MODE 7's font is set by tt_reset.
+   if (!(screen->mode_flags & F_TELETEXT)) {
+      font_t *font = screen->font;
+      font->set_scale_w(font, 1);
+      font->set_scale_h(font, 1);
+      font->set_spacing_w(font, 0);
+      font->set_spacing_h(font, (screen->mode_flags & (F_BBC_GAP | F_GAP)) ? 2 : 0);
+   }
    // update the colour flash rate
    if (screen->mode_flags & F_TELETEXT) {
       flash_mark_time  = 16;
@@ -1528,8 +1542,13 @@ static void vdu_19(const uint8_t *buf) {
 }
 
 static void vdu_20(const uint8_t *buf) {
+   // Colours only, as MOS 3.20 does it: the palette, the text and graphics
+   // colours and both GCOL actions.  The font and the text grid are left
+   // alone.
    screen->reset(screen);
    set_default_colours();
+   prim_set_bg_plotmode(screen, PM_NORMAL);
+   prim_set_fg_plotmode(screen, PM_NORMAL);
 }
 
 static void vdu_22(const uint8_t *buf) {
