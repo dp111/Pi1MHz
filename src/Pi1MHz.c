@@ -555,7 +555,10 @@ static void init_emulator(void) {
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
    RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
    {
-      uint32_t *ico = (uint32_t *)0x20002000;
+      /* The VPU's interrupt controller, on this board's peripheral base: the
+         literal 0x20002000 was BCM2835-only, so on kernel7 the HVS interrupt
+         stayed unmasked and a word of ARM RAM at 512 MB + 0x2020 was zeroed. */
+      volatile uint32_t *ico = (volatile uint32_t *)(PERIPHERAL_BASE + 0x2000);
       ico[0x20/4] = 0x00000000;// disable HVS interrupts going to the VPU
    }
 
