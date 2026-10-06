@@ -410,6 +410,30 @@ static void test_eject_mid_flush(void)
    verify("eject mid-flush", fn);
 }
 
+/* A BBC reset while still recording, with M5000 then disabled: an eject
+   must not stop the dead recording - rec_stop would write a WAV header
+   into JIM RAM the Beeb owns again (a RAM disc, say) and arm a flush. */
+static void test_disabled_while_recording(void)
+{
+   record(64);
+   bbc_reset(true, false);
+   uint8_t *j = &Pi1MHz->JIM_ram[REC_BASE];
+   memset(j, 0xA5, 64);                 /* the Beeb's data now */
+   bool ejected = false;
+   for (unsigned int i = 0; i < 16u && !ejected; i++)
+      ejected = filesystemEject();
+   bool busy = M5000_recording_path_busy("/");
+   bool untouched = true;
+   for (unsigned int i = 0; i < 64u; i++)
+      untouched = untouched && j[i] == 0xA5;
+   filesystemInsert();
+   check("BREAK while recording, M5000 disabled: eject",
+         ejected && !busy && untouched,
+         !untouched ? "a WAV header was written into the Beeb's JIM RAM"
+                    : busy ? "a flush was armed" : "eject still waiting");
+   emulators_init();
+}
+
 int main(void)
 {
    disk = calloc(DISK_SECTORS, 512u);
@@ -441,6 +465,7 @@ int main(void)
    test_readfile_mid_flush();
    test_swapped_file();
    test_disabled_after_break();
+   test_disabled_while_recording();
    test_plain_flush("flush after all the above");
 
    printf("%d passed, %d failed\n", passes, failures);

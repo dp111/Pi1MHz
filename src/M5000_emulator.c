@@ -568,17 +568,22 @@ static void music5000_rec_flush(void)
 }
 
 /* init_emulator bumps Pi1MHz_break.inits before it re-runs the inits, so a
-   flush this emulator's init has not run since is never polled again: a
-   BBC reset with M5000 disabled by an edited config, BeebSID taking the
-   audio path, or no JIM RAM.  Left as it is, the path stays busy and an
-   eject waits on it for ever; close what was written and let go. */
+   recording or flush this emulator's init has not run since is never
+   polled again: a BBC reset with M5000 disabled by an edited config,
+   BeebSID taking the audio path, or no JIM RAM.  Left as it is, the path
+   stays busy and an eject waits on it for ever; close what was written and
+   let go.  A capture still running is dropped, never stopped: rec_stop
+   would write its header into JIM RAM that is the Beeb's again. */
 static void rec_flush_orphaned(void)
 {
-   if (rec_flush == REC_FLUSH_IDLE || rec_flush_inits == Pi1MHz_break.inits)
+   if (rec_flush_inits == Pi1MHz_break.inits)
       return;
+   if (record || rec_flush != REC_FLUSH_IDLE) {
+      LOG_DEBUG("Music5000 recording cut short: the emulator is no longer running\r\n");
+   }
+   record = false;
    if (rec_flush == REC_FLUSH_WRITE)
       f_close(&music5000_rec_fp);
-   LOG_DEBUG("Music5000 recording cut short: the emulator is no longer running\r\n");
    rec_flush = REC_FLUSH_IDLE;
 }
 
@@ -714,19 +719,21 @@ static void M5000_remount(void)
 
 void M5000_emulator_init(uint8_t instance, uint8_t address)
 {
+   fx_pointer = instance ;
+   fx_register[fx_pointer] = 0;
+
+   /* The synth's registers live in JIM RAM (0x3000 / 0x5000); with none,
+      synth_reset would have written through a NULL base - and so would
+      rec_stop's header below.  A recording left running is dropped by
+      rec_flush_orphaned instead. */
+   if (Pi1MHz->JIM_ram_size == 0)
+      return;
+   rec_flush_inits = Pi1MHz_break.inits;   /* polled again: a flush may carry on */
    if (record)
    {
       // stop recording
       music5000_rec_stop();
    }
-   fx_pointer = instance ;
-   fx_register[fx_pointer] = 0;
-
-   /* The synth's registers live in JIM RAM (0x3000 / 0x5000); with none,
-      synth_reset would have written through a NULL base. */
-   if (Pi1MHz->JIM_ram_size == 0)
-      return;
-   rec_flush_inits = Pi1MHz_break.inits;   /* polled again: a flush may carry on */
 
    for (uint32_t n = 0; n <(sizeof(antilogtable)/sizeof(antilogtable[0])) ; n++) {
       // 12-bit antilog as per AM6070 datasheet

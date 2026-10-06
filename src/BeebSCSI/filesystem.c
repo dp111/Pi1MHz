@@ -251,7 +251,10 @@ void filesystemInitialise(uint8_t scsijuke)
 {
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemInitialise(): Initialising file system\r\n"));
    filesystemState.lunDirectory = scsijuke;      // Default to LUN directory 0
-   filesystemState.fsMountState = false;  // FS default state is unmounted
+   /* fsMountState is left alone: it starts false, and by the Harddisc's
+      power-on call config_load has mounted the card - clearing it there
+      would hide that mount from filesystemDismount, and the remount that
+      follows would skip the hooks' dismount half. */
 }
 
 // Function to initialise the file system control functions (called on a cold-start of the AVR)

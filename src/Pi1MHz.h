@@ -239,7 +239,9 @@ extern uint32_t Pi1MHz_fiq_ovr_first_us;  /* system-timer stamp of the first ove
    paths that already run once per reset (the nRST IRQ, the poll loop's
    re-init, the first helper bank select and the first VDU byte after it)
    and read on demand by the /status "BREAK" row.  edges - inits = resets
-   the IRQ saw but the poll loop never re-initialised for. */
+   the IRQ saw but the poll loop never re-initialised for.  Not only
+   forensics: inits, bumped before every re-init, is how the M5000 tells
+   that a reset left it uninitialised (rec_flush_orphaned) - keep it. */
 typedef struct {
    uint32_t edges;          /* nRST falling edges (IRQ) */
    uint32_t inits;          /* re-inits the poll loop ran for them */
