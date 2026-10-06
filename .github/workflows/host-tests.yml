@@ -29,10 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # fujinet builds src/fujinet/cJSON.  No suite reads the other three
-      # submodules (tinyusb, lwip, mbedtls), so they are not fetched.
+      # fujinet builds src/fujinet/cJSON; mtpsession compiles usb/mtp_fs.c
+      # against TinyUSB's headers (shallow: only its headers are read).  No
+      # suite reads lwip or mbedtls, so they are not fetched.
       - name: cJSON submodule
         run: git submodule update --init src/fujinet/cJSON
+      - name: TinyUSB submodule
+        run: git submodule update --init --depth 1 src/usb/tinyusb
 
       - name: Run every suite
         run: sh src/tests/run_all.sh

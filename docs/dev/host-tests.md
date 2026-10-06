@@ -14,9 +14,10 @@ each push to master and each pull request against master, through `src/tests/run
   failed step), carries on after a
   failure so one run lists every broken suite, and exits non-zero if any
   failed.  A new suite directory is picked up without editing the workflow.
-- Needs gcc (ASan/UBSan), python3, awk and gzip.  Only fujinet needs a
-  submodule, `src/fujinet/cJSON`; the workflow initialises that one and not
-  tinyusb, lwIP or mbedTLS.
+- Needs gcc (ASan/UBSan), python3, awk and gzip.  Two suites need a
+  submodule: fujinet `src/fujinet/cJSON`, and mtpsession `src/usb/tinyusb`
+  (the MTP class headers `usb/mtp_fs.c` compiles against).  The workflow
+  initialises those two (TinyUSB shallow) and not lwIP or mbedTLS.
 - wifirom is skipped by default (`SKIP`, default `wifirom`): it needs beebasm
   and py65 and fails under `CI` without beebasm.  `beeb-roms.yml` runs it,
   with the image checks that need the same tools.

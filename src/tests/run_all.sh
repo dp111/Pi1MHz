@@ -12,7 +12,8 @@
 # without beebasm under CI, so beeb-roms.yml runs it where they are installed.
 #
 # fujinet needs the cJSON submodule (git submodule update --init
-# src/fujinet/cJSON); no other suite reads a submodule.
+# src/fujinet/cJSON), mtpsession the TinyUSB one (src/usb/tinyusb, for its
+# MTP class headers); no other suite reads a submodule.
 HERE=$(cd "$(dirname "$0")" && pwd)
 SKIP=${SKIP-wifirom}
 
