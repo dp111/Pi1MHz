@@ -123,7 +123,7 @@ Pi1MHz.cfg values below have nothing to act on.
 | `wifi_sdio_probe=`                   | (off)             | `1` runs a diagnostic CMD5/CCCR/function-enable probe in the boot path. |
 | `wifi_sdio_tx_probe=`                | (off)             | `1` adds a single gated function-2 CMD53 control-frame write during the SDIO probe. |
 | `wifi_sdio_tx_probe_command=`        | `version`         | Picks the diagnostic ioctl the TX probe sends: `version`, `magic`, `up`, `infra`, `auth`, `ssid`, `wpa_auth`, `wsec`, `pmk`, `join`. |
-| `wifi_sdio_rx_sweep_limit=`          | `16`              | Maximum number of function-2 frames the bounded receive sweep will decode after the TX probe. |
+| `wifi_sdio_rx_sweep_limit=`          | `16`              | Maximum number of function-2 frames the bounded receive sweep will decode after the TX probe.  Only the diagnostic probe sweeps, so it has no effect unless the build sets `PI1MHZ_SDIO_DESTRUCTIVE_PROBE` (see `sdio.h`). |
 | `webdav_user=`                       | (none)            | WebDAV / management UI digest-auth username.  Auth is enforced on every webserver route only when **both** `webdav_user` and `webdav_password` are set; if either is missing, the server stays anonymous (matching the legacy `/files` behaviour). |
 | `webdav_password=`                   | (none)            | Digest-auth password.  See `webdav_user`. |
 | `webdav_realm=`                      | `Pi1MHz`          | Realm string presented in the digest challenge. |

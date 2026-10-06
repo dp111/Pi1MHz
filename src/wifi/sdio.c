@@ -872,14 +872,12 @@ static bool sdio_event_is_link_up(uint32_t event_type,
                                   uint32_t event_status,
                                   uint32_t event_reason)
 {
-   /* Deliberately NOT gated on the LINK flag.  Doing that broke association
-      outright: the boot sweep (since removed - Review 2026-10-06 D2) tested
-      this against a flags word captured by a different decoder, which is zero
-      unless that path filled it in, so every link-up was rejected and the Pi
-      never got on the network.  Link-down
-      below reads flags only where they have just been parsed from the event
-      itself, and runs after this, so a flag-clear WLC_E_LINK still ends up
-      down. */
+   /* Deliberately NOT gated on the LINK flag, so a link-up is never judged
+      on a flags word some other decoder may have left zero - that rejects
+      every link-up and the Pi never gets on the network.  The flag is
+      honoured by link-down below, which reads flags just parsed from the
+      event itself and runs after this, so a flag-clear WLC_E_LINK still
+      ends up down. */
    return event_type == 16u && event_status == 0u && event_reason == 0u;
 }
 
@@ -2036,8 +2034,7 @@ static uint32_t sdio_cyw43_condense_nvram(uint8_t *buffer, uint32_t length)
 /* Buffer size sdio_cyw43_condense_nvram needs for a length-byte file.  Each
    input byte writes at most one output byte; a last line with no newline
    adds its NUL, the closing NUL is one more, and padding to a word up to 3:
-   length + 5 at worst (len % 4 == 3).  length + 4 overflowed by a byte on
-   such a file - every shipped .txt ends in '\n', so only an edited one did. */
+   length + 5 at worst (len % 4 == 3, no final newline). */
 static uint32_t sdio_cyw43_condensed_nvram_capacity(uint32_t length)
 {
    return length + 8u;
@@ -6673,23 +6670,19 @@ bool sdio_runtime_tick(void)
             (wifi_enable_radio: *WIFI ON, then *LAP) - wifi_init refuses an
             empty SSID before starting SDIO - and that host needs the CLM,
             the country, WLC_UP and the event masks, or its escan goes to a
-            DOWN interface and finds nothing.  The join list already stops
-            short of WLC_SET_SSID without a profile, and SET_MAC/QUERY_MAC
-            give lwIP the board MAC for the *JOIN that follows. */
+            DOWN interface and finds nothing.  The join list stops short of
+            WLC_SET_SSID without a profile, and SET_MAC/QUERY_MAC give lwIP
+            the board MAC for the *JOIN that follows. */
          if (g_runtime_emulator_mode) {
             g_runtime_stage = SDIO_RUNTIME_STAGE_DONE;
             sdio_debug_log("== STAGE_DONE: emulator mode, skipping join burst to keep polling responsive ==");
             return false;
          }
 
-         /* Build the join command list once.  The CLM download, the MAC
-            read and the join itself then each advance one step per tick
-            (STAGE_CLM_DOWNLOAD / QUERY_MAC / JOIN) so no single poll
-            callback stalls the main 1 MHz loop - this whole phase used
-            to run inline here as one ~0.9 s blocking call. */
-         g_runtime_join_count = sdio_tx_probe_join_commands(g_runtime_join_commands,
-            sizeof(g_runtime_join_commands) / sizeof(g_runtime_join_commands[0]));
-         g_runtime_join_index = 0u;
+         /* The CLM download, the MAC read and the join itself each advance
+            one step per tick (STAGE_CLM_DOWNLOAD / QUERY_MAC / JOIN) so no
+            single poll callback stalls the main 1 MHz loop - this whole
+            phase used to run inline here as one ~0.9 s blocking call. */
          g_runtime_clm_offset = 0u;
          g_runtime_step_sent = false;
          if (g_cyw43_clm_data != NULL && g_cyw43_clm_length != 0u)
@@ -6788,6 +6781,15 @@ bool sdio_runtime_tick(void)
                         (unsigned long)g_runtime_ampdu_default[1],
                         (unsigned long)g_runtime_ampdu_default[2]);
          g_runtime_step_sent = false;
+         /* Built here, not at PREPARE_JOIN: the stages since then take over
+            a second, and an ElkWiFi *JOIN that arrives meanwhile has already
+            stored its SSID (wifi_reconfigure_and_rejoin, which reports
+            success while sdio_runtime_join_pending()), so the list picks it
+            up and the join goes out now rather than after lwIP's 30 s
+            link timeout. */
+         g_runtime_join_count = sdio_tx_probe_join_commands(g_runtime_join_commands,
+            sizeof(g_runtime_join_commands) / sizeof(g_runtime_join_commands[0]));
+         g_runtime_join_index = 0u;
          sdio_debug_log("== STAGE_JOIN: starting join sequence ==");
          g_runtime_stage = SDIO_RUNTIME_STAGE_JOIN;
          return true;
@@ -6811,11 +6813,9 @@ bool sdio_runtime_tick(void)
                            (unsigned int)g_runtime_join_count);
          /* Straight to DONE: the association events (WLC_E_SET_SSID, _LINK,
             _PSK_SUP) arrive through the normal receive path, which keeps
-            link_up, psk_keyed and the credit window.  A SWEEP_RX stage used
-            to sit here: the boot-time probe's sweep, reading the head of up
-            to wifi_sdio_rx_sweep_limit pending frames and aborting each, so
-            after every join and rejoin it could swallow the very events it
-            then looked for. */
+            link_up, psk_keyed and the credit window.  No receive sweep
+            here: sdio_probe_sweep_rx_frames reads only each frame's head and
+            aborts the rest, so it would swallow those very events. */
          g_runtime_stage = SDIO_RUNTIME_STAGE_DONE;
          return false;
       }
@@ -6928,8 +6928,9 @@ bool sdio_runtime_rejoin_start(void)
       return false;
    /* Nothing to join without an SSID.  A radio-only ElkWiFi session never
       has a link, so wifi_lwip's retry ladder would otherwise re-run the
-      list - WLC_DOWN/UP included, killing any *LAP escan in flight - every
-      few seconds; refused, it never counts as a rejoin either. */
+      list - WLC_DOWN/UP included, killing any *LAP escan in flight - after
+      its 30 s link timeout and then every 2 s, doubling to 60 s, and power-
+      cycle the chip after three.  Refused, it never counts as a rejoin. */
    config = wifi_get_config();
    if (config == NULL || config->ssid[0] == '\0')
       return false;
@@ -6976,6 +6977,28 @@ uint32_t sdio_runtime_last_any_rx_stamp(void)
 bool sdio_runtime_rejoin_busy(void)
 {
    return g_runtime_stage == SDIO_RUNTIME_STAGE_JOIN;
+}
+
+/* True while bring-up is past the firmware boot but has not yet built its
+   join list (PREPARE_JOIN .. QUERY_AMPDU).  An SSID stored now is joined
+   when bring-up reaches STAGE_JOIN, so a caller need not - and, since
+   rejoin_start refuses off STAGE_DONE, cannot - start a join itself. */
+bool sdio_runtime_join_pending(void)
+{
+   if (!g_runtime_started || g_runtime_emulator_mode)
+      return false;
+   switch (g_runtime_stage) {
+      case SDIO_RUNTIME_STAGE_PREPARE_JOIN:
+      case SDIO_RUNTIME_STAGE_CLM_DOWNLOAD:
+      case SDIO_RUNTIME_STAGE_TXGLOM:
+      case SDIO_RUNTIME_STAGE_SET_MAC:
+      case SDIO_RUNTIME_STAGE_QUERY_MAC:
+      case SDIO_RUNTIME_STAGE_TEST_IOVARS:
+      case SDIO_RUNTIME_STAGE_QUERY_AMPDU:
+         return true;
+      default:
+         return false;
+   }
 }
 
 void sdio_runtime_rejoin_enable(void)

@@ -586,6 +586,8 @@ bool wifi_config_load(wifi_config_t *config)
    config->http_port = 80;
    config->ip_mode = WIFI_IP_MODE_DHCP;
    config->ip_config_valid = true;
+   /* Read only by the diagnostic probe's receive sweep (sdio_probe_card),
+      which runs only in a PI1MHZ_SDIO_DESTRUCTIVE_PROBE build. */
    config->sdio_rx_sweep_limit = 16u;
    strlcpy(config->hostname, "Pi1MHz", sizeof(config->hostname));
    strlcpy(config->netmask, "255.255.255.0", sizeof(config->netmask));
@@ -952,6 +954,13 @@ bool wifi_reconfigure_and_rejoin(const char *ssid, const char *password,
       g_wifi_init_done = true;
       return true;
    }
+   /* A radio-only bring-up (*WIFI ON) still working through CLM, MAC and
+      the AMPDU query builds its join list only on reaching STAGE_JOIN, so
+      the SSID stored above goes out then: report success instead of the
+      refusal rejoin_start() gives off STAGE_DONE.  A *LAP in this window
+      still fails fast (scans need STAGE_DONE); the host simply retries. */
+   if (sdio_runtime_join_pending())
+      return true;
    if (g_wifi_state == WIFI_STATE_DISABLED) {
       if (!sdio_runtime_radio_enable())
          return false;
@@ -964,10 +973,12 @@ bool wifi_reconfigure_and_rejoin(const char *ssid, const char *password,
 bool wifi_enable_radio(void)
 {
    /* ElkWiFi starts in discovery mode: *WIFI ON and *LAP must work before
-      the user has supplied an SSID.  The SDIO state machine already stops
-      cleanly at STAGE_DONE when the SSID is empty; schedule that radio-only
-      bring-up here instead of treating an empty Pi1MHz.cfg as absent
-      hardware.  A genuine firmware/SDIO failure remains latched as ERROR. */
+      the user has supplied an SSID.  With the SSID empty the SDIO state
+      machine runs the whole bring-up - CLM, country, WLC_UP, event masks -
+      and stops at STAGE_DONE without sending WLC_SET_SSID; schedule that
+      radio-only bring-up here instead of treating an empty Pi1MHz.cfg as
+      absent hardware.  A genuine firmware/SDIO failure remains latched as
+      ERROR. */
    if (sdio_runtime_started()) {
       if (g_wifi_state == WIFI_STATE_DISABLED) {
          if (!sdio_runtime_radio_enable())
