@@ -15,10 +15,12 @@
 #include "lowmem.h"
 #include "systimer.h"
 
-/* In .noinit: this block MUST NOT live at a fixed low address - 0x7C00 (the
-   first attempt) is inside the VPU-shared Pi1MHz region (struct at 0x100,
-   Beeb-writable shadow/JIM RAM after it), and stray bus bytes (CR, 0x0D)
-   corrupted the detail words into phantom "died in init N" reports.
+/* In .noinit: this block MUST NOT live at a fixed low address - at 0x7C00
+   (the first attempt) stray bytes (CR, 0x0D) corrupted the detail words into
+   phantom "died in init N" reports.  The writer was never found: the VPU
+   never touches ARM low RAM (it reads Pi1MHz_MEM_BASE in peripheral space
+   and posts through the SMI registers), and nothing at 0x100-0x13FF, the
+   Pi1MHz struct and callback table, reaches that far (lowmem.h).
    .noinit survives the watchdog reset and the SD loader alike.  The known
    cost, learned the hard way in the fixed-address era: if the image that
    dies and the image that reports are DIFFERENT builds, .noinit moves with

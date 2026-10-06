@@ -22,10 +22,15 @@
    included - is in the copy's path, and moves whenever a build changes the
    layout.  The page table the copy translates through, the copier itself
    and anything one build must hand to a different one therefore live below
-   the kernel, where no image can reach them.  None of it is on the bus: the
-   VPU serves FRED/JIM from its own memory (Pi1MHz_MEM_BASE).  bootstage.c
-   records stray bytes once seen at 0x7C00, cause never found - which is why
-   the chain-boot marker is a magic word and its complement.
+   the kernel, where no image can reach them.  (Only the L1 table: the 4 KB
+   second-level table, PageTable2, compiled only with NUM_4K_PAGES, is still
+   in .noinit.)
+
+   None of this is on the bus.  The VPU never touches ARM low RAM: it reads
+   the FRED/JIM pages from Pi1MHz_MEM_BASE in peripheral space and posts bus
+   cycles through the SMI registers.  bootstage.c records stray bytes once
+   seen at 0x7C00, cause never found - which is why the chain-boot marker is
+   a magic word and its complement, and carries a time stamp.
 
    Plain numbers, no suffixes: arm-start.S includes this as well. */
 #ifndef LOWMEM_H
