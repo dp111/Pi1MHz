@@ -316,8 +316,10 @@ _chainboot_copier:
     bhi     2b                             // stops at 0, and can never wrap
 
 #if (__ARM_ARCH >= 7)
-    // Clean and invalidate every data/unified cache level by set/way.  The
-    // D-cache is already off, so this is belt and braces, as it always was.
+    // Invalidate - never clean - every data/unified cache level by set/way,
+    // so the new kernel starts with nothing cached.  disable_data_cache
+    // cleaned everything before the cache went off; a clean here could only
+    // write some line left over from before the copy back over the image.
     mrc     p15, 1, r0, c0, c0, 1          // CLIDR
     and     r3, r0, #0x07000000            // LoC, bits 26:24
     mov     r10, #0                        // cache level 0 (x2)
@@ -342,7 +344,7 @@ _chainboot_copier:
 5:
     orr     r11, r10, r9, lsl r5
     orr     r11, r11, r7, lsl r2
-    mcr     p15, 0, r11, c7, c14, 2        // DCCISW
+    mcr     p15, 0, r11, c7, c6, 2         // DCISW
     subs    r9, r9, #1
     bge     5b
     subs    r7, r7, #1
@@ -353,8 +355,9 @@ _chainboot_copier:
     bgt     3b
     dsb
 #else
+    // Invalidate, never clean: see the ARMv7 note above.
     mov     r0, #0
-    mcr     p15, 0, r0, c7, c14, 0         // clean+invalidate entire D-cache
+    mcr     p15, 0, r0, c7, c6, 0          // invalidate entire D-cache
     mcr     p15, 0, r0, c7, c10, 4         // DSB
 #endif
 
