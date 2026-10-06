@@ -61,7 +61,7 @@ IDLE → START_SDIO → WAIT_SDIO → OPTIONAL_PROBE → INIT_LWIP → INIT_WEBS
                              → REQUEST_ALP → READ_POWER → WAKE_KSO → BOOT_FIRMWARE
                              → READ_MAILBOX → ACK_INTERRUPTS → WRITE_INTR_MASK
                              → PREPARE_JOIN → CLM_DOWNLOAD → SET_MAC → QUERY_MAC
-                             → JOIN → SWEEP_RX → DONE
+                             → JOIN → DONE
 ```
 
 ### MAC handling

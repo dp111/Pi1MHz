@@ -434,7 +434,6 @@ typedef enum {
       exactly as before. */
    SDIO_RUNTIME_STAGE_QUERY_AMPDU,
    SDIO_RUNTIME_STAGE_JOIN,
-   SDIO_RUNTIME_STAGE_SWEEP_RX,
    SDIO_RUNTIME_STAGE_DONE,
    SDIO_RUNTIME_STAGE_ERROR
 } sdio_runtime_stage_t;
@@ -874,9 +873,10 @@ static bool sdio_event_is_link_up(uint32_t event_type,
                                   uint32_t event_reason)
 {
    /* Deliberately NOT gated on the LINK flag.  Doing that broke association
-      outright: the boot sweep tests this against a flags word captured by a
-      different decoder, which is zero unless that path filled it in, so every
-      link-up was rejected and the Pi never got on the network.  Link-down
+      outright: the boot sweep (since removed - Review 2026-10-06 D2) tested
+      this against a flags word captured by a different decoder, which is zero
+      unless that path filled it in, so every link-up was rejected and the Pi
+      never got on the network.  Link-down
       below reads flags only where they have just been parsed from the event
       itself, and runs after this, so a flag-clear WLC_E_LINK still ends up
       down. */
@@ -6489,8 +6489,6 @@ bool sdio_runtime_start(void)
 
 bool sdio_runtime_tick(void)
 {
-   const wifi_config_t *config;
-
    switch (g_runtime_stage) {
       case SDIO_RUNTIME_STAGE_OPEN_HOST:
       {
@@ -6807,49 +6805,16 @@ bool sdio_runtime_tick(void)
          } else
             sdio_debug_log("join command sequence sent (%u steps)",
                            (unsigned int)g_runtime_join_count);
-         g_runtime_stage = SDIO_RUNTIME_STAGE_SWEEP_RX;
-         return true;
-      }
-
-      case SDIO_RUNTIME_STAGE_SWEEP_RX:
-         sdio_debug_log("== ENTERING SWEEP_RX ==");
-         config = wifi_get_config();
-         {
-            uint8_t sweep_limit =
-               (config != NULL && config->sdio_rx_sweep_limit != 0u)
-                  ? config->sdio_rx_sweep_limit : 4u;
-            (void)sdio_probe_sweep_rx_frames(&g_runtime_device, &g_sdio_probe_result,
-                                             sweep_limit);
-         }
-         (void)sdio_probe_read_tx_post_state(&g_runtime_device, &g_sdio_probe_result);
-
-         if (g_sdio_probe_result.tx_control_probe_steps_requested > 0u) {
-            sdio_debug_log("join sequence complete: %u/%u steps, last_cmd=0x%08lx, result: event_type=%lu event_status=%lu",
-                           (unsigned int)g_sdio_probe_result.tx_control_probe_steps_completed,
-                           (unsigned int)g_sdio_probe_result.tx_control_probe_steps_requested,
-                           (unsigned long)g_sdio_probe_result.tx_control_probe_last_command,
-                           (unsigned long)g_sdio_probe_result.sdpcm_brcm_event_type,
-                           (unsigned long)g_sdio_probe_result.sdpcm_brcm_event_status);
-         }
-
-         sdio_debug_log("== EXITING SWEEP_RX -> STAGE_DONE: link_up=%u ==",
-                        sdio_event_is_link_up(g_sdio_probe_result.sdpcm_brcm_event_type,
-                                              g_sdio_probe_result.sdpcm_brcm_event_status,
-                                              g_sdio_probe_result.sdpcm_brcm_event_reason)
-                           ? 1u : 0u);
-
-         /* WLC_E_LINK = 16, status = 0, reason = 0 indicates the chip
-            successfully associated. Anything else leaves the link down
-            for now; the lwip layer will keep polling and the next
-            sweep ticks will pick up async events. */
-          if (sdio_event_is_link_up(g_sdio_probe_result.sdpcm_brcm_event_type,
-                              g_sdio_probe_result.sdpcm_brcm_event_status,
-                              g_sdio_probe_result.sdpcm_brcm_event_reason)) {
-            g_runtime_link_up = true;
-         }
-
+         /* Straight to DONE: the association events (WLC_E_SET_SSID, _LINK,
+            _PSK_SUP) arrive through the normal receive path, which keeps
+            link_up, psk_keyed and the credit window.  A SWEEP_RX stage used
+            to sit here: the boot-time probe's sweep, reading the head of up
+            to wifi_sdio_rx_sweep_limit pending frames and aborting each, so
+            after every join and rejoin it could swallow the very events it
+            then looked for. */
          g_runtime_stage = SDIO_RUNTIME_STAGE_DONE;
          return false;
+      }
 
       case SDIO_RUNTIME_STAGE_IDLE:
       case SDIO_RUNTIME_STAGE_DONE:
@@ -6997,8 +6962,7 @@ uint32_t sdio_runtime_last_any_rx_stamp(void)
 
 bool sdio_runtime_rejoin_busy(void)
 {
-   return g_runtime_stage == SDIO_RUNTIME_STAGE_JOIN
-       || g_runtime_stage == SDIO_RUNTIME_STAGE_SWEEP_RX;
+   return g_runtime_stage == SDIO_RUNTIME_STAGE_JOIN;
 }
 
 void sdio_runtime_rejoin_enable(void)
