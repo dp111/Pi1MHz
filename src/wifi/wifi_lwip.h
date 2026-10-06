@@ -54,6 +54,8 @@ uint32_t wifi_lwip_icmp_probe_read(uint32_t *gap_ms, uint32_t *turnaround_us,
    includes queue-full drops), and the longest wait in the hold queue. */
 void wifi_lwip_tx_path_counts(uint32_t *queued, uint32_t *stale,
                               uint32_t *direct_fail, uint32_t *hold_max_us);
+/* Received frames dropped because the pbuf pool was empty, for /status. */
+uint32_t wifi_lwip_rx_pbuf_drops(void);
 
 /* UDP blast test rig (/udpblast): a poll-driven raw-UDP source that takes
    TCP out of the throughput measurement.  start() primes it (datagrams of

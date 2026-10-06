@@ -2725,6 +2725,10 @@ static bool route_status(ws_conn_t *c)
       snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.rejoins);
       table_row(&b, "Rejoins", tmp);
    }
+   if (wifi_lwip_rx_pbuf_drops() != 0u) {
+      snprintf(tmp, sizeof tmp, "%lu", (unsigned long)wifi_lwip_rx_pbuf_drops());
+      table_row(&b, "Frames dropped (no pbuf)", tmp);
+   }
    {
       uint32_t sk = 0u, sw = 0u, ms = 0u, hi = 0u;
       bool armed = false;

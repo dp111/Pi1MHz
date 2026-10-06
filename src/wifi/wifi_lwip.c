@@ -910,19 +910,32 @@ static err_t wifi_lwip_link_output(struct netif *netif, struct pbuf *p)
    return ERR_OK;
 }
 
+/* Frames already read off the chip and then dropped because the pbuf pool
+   was empty: lost, not deferred (TCP retransmits them; anything else does
+   not).  Shown on /status when non-zero. */
+static uint32_t s_rx_pbuf_drops;
+
+uint32_t wifi_lwip_rx_pbuf_drops(void)
+{
+   return s_rx_pbuf_drops;
+}
+
 /* Hand one received frame to lwIP.  Returns false only when the pbuf pool
-   is exhausted (the caller stops this drain cycle and resumes next poll).
-   On a per-packet failure it drops just that packet and returns true so
-   the caller keeps draining the remaining frames from the chip;
-   abandoning the whole budget on one bad packet leaves the rest queued
-   in the chip until the next poll tick. */
+   is exhausted: this frame is then dropped and counted, and the caller
+   stops the drain cycle so the frames still queued in the chip wait for
+   the next poll, by when pbufs may have freed up.  On a per-packet failure
+   it drops just that packet and returns true so the caller keeps draining
+   the remaining frames from the chip; abandoning the whole budget on one
+   bad packet leaves the rest queued in the chip until the next poll tick. */
 static bool wifi_lwip_deliver_rx_frame(const uint8_t *frame,
                                        uint16_t frame_length)
 {
    struct pbuf *packet = pbuf_alloc(PBUF_RAW, frame_length, PBUF_POOL);
 
-   if (packet == NULL)
+   if (packet == NULL) {
+      s_rx_pbuf_drops++;
       return false;
+   }
 
    if (pbuf_take(packet, frame, frame_length) != ERR_OK) {
       pbuf_free(packet);
@@ -997,15 +1010,15 @@ static bool wifi_lwip_drain_rx_frames(uint32_t budget_end_us, bool *pbufs_gone)
          s_rxprof_lwip_ticks += wifi_lwip_ccnt() - t1;
          ++s_rxprof_frames;
          if (!room) {
-            *pbufs_gone = true;   /* pbuf pool exhausted: stop this cycle,
-                                     resume next poll once pbufs free up */
+            *pbufs_gone = true;   /* pbuf pool exhausted: this frame is lost;
+                                     the rest wait in the chip for next poll */
             break;
          }
       }
 #else
       if (!wifi_lwip_deliver_rx_frame(frame, frame_length)) {
-         *pbufs_gone = true;      /* pbuf pool exhausted: stop this cycle,
-                                     resume next poll once pbufs free up */
+         *pbufs_gone = true;      /* pbuf pool exhausted: this frame is lost;
+                                     the rest wait in the chip for next poll */
          break;
       }
 #endif
