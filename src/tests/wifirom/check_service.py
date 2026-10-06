@@ -150,21 +150,26 @@ WGET_ERRORS = [
     ("copy to paged RAM fails", "-U", {NET_COPY_PUBLIC: 0x2D},
      {NET_URL_READ: {NET_COUNT: 10}},
      "Network error &2D"),
-    # An open stream that never delivers a byte: the ROM polls for about
-    # fifty seconds of video frames, which is a lot of 6502 steps.
+]
+
+# An open stream that never delivers a byte: the ROM polls for about fifty
+# seconds of video frames (about 2,560 reads), which is 30 s of 6502 steps.
+# The ROM reloads its own counter, so it cannot be shortened from here; the
+# source builds share this code, so only the shipped image runs it.
+WGET_TIMEOUT = [
     ("no bytes ever arrive", "-T", {}, {NET_URL_READ: {NET_COUNT: 0}},
      "Network timeout"),
 ]
 
 
-def check_wget_errors(label, image):
+def check_wget_errors(label, image, slow=False):
     """The Pi answers *WGET with an error.  The handler must print it, close
     the URL, and return to the MOS as service call 4 claimed (A=0, X and Y
     as offered, the stack back where the MOS left it).  Each error exit
     ends by restoring the X and Y the service entry pushed, so a handler
     that reaches it with a return address on top of them returns into the
     stack page instead."""
-    for what, option, results, replies, text in WGET_ERRORS:
+    for what, option, results, replies, text in WGET_ERRORS + (WGET_TIMEOUT if slow else []):
         what = f"{label}: *WGET, {what}"
         pi = SimPi(results, replies)
         b = Beeb(image, writable=True, pi=pi, max_steps=40_000_000)
@@ -199,7 +204,7 @@ def main(args):
             check_reset(label, image, writable, bank)
             check_commands(label, image, writable, bank, names)
             check_help(label, image, writable, bank, names)
-        check_wget_errors(label, image)
+        check_wget_errors(label, image, slow=label == "shipped")
     print(f"\n{checks} checks, {fails} failures")
     print("WIFI ROM SERVICE TESTS FAILED" if fails else "WIFI ROM SERVICE TESTS PASSED")
     return 1 if fails else 0
