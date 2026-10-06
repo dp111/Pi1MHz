@@ -2029,6 +2029,16 @@ static uint32_t sdio_cyw43_condense_nvram(uint8_t *buffer, uint32_t length)
    return (uint32_t)(write_ptr - buffer);
 }
 
+/* Buffer size sdio_cyw43_condense_nvram needs for a length-byte file.  Each
+   input byte writes at most one output byte; a last line with no newline
+   adds its NUL, the closing NUL is one more, and padding to a word up to 3:
+   length + 5 at worst (len % 4 == 3).  length + 4 overflowed by a byte on
+   such a file - every shipped .txt ends in '\n', so only an edited one did. */
+static uint32_t sdio_cyw43_condensed_nvram_capacity(uint32_t length)
+{
+   return length + 8u;
+}
+
 static int sdio_runtime_boot_firmware(sdio_host_t *dev, sdio_probe_result_t *probe_result)
 {
    sdio_chip_state_t chip;
@@ -2388,7 +2398,7 @@ firmware_download:
                      (unsigned int)(verify_count + 1u));
    }
 
-   condensed_nvram = malloc(g_cyw43_nvram_length + 4u);
+   condensed_nvram = malloc(sdio_cyw43_condensed_nvram_capacity(g_cyw43_nvram_length));
    if (condensed_nvram == NULL) {
       sdio_runtime_set_error("Failed to allocate CYW43 NVRAM buffer");
       return -1;
