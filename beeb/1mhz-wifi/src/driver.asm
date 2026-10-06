@@ -150,8 +150,9 @@ driver_entry_y = drv_svc_workspace+23
  jsr select_public_page_a
  lda pageram,x
  plp
- jsr read_buffer_inc
- ora #0                    \ return N/Z for the byte read
+ pha                       \ selecting the next page at a wrap leaves the
+ jsr read_buffer_inc       \ page number in A, not the byte
+ pla                       \ the byte read, with N/Z for it
  rts
 .read_buffer_inc
  inx

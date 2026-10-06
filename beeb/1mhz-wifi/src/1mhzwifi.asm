@@ -78,6 +78,11 @@ include "machine.asm"
 \ when a match is found; Y indexes the command line and is left just past the
 \ matched text, which is where every handler expects to start reading its
 \ arguments.
+\
+\ Each entry is tried from the Y the MOS passed in, the offset of the name from
+\ (&F2): the MOS has already stepped over any spaces and stars in front of it,
+\ so "*WIFI" arrives with Y=1 but OSCLI "WIFI" with Y=0 and "**WIFI" with Y=2.
+\ Starting at offset 1 whatever Y said, as this did, found only the first.
 
 \ Without a writable workspace every handler below would scribble on memory
 \ this ROM does not own, so none of them may run.  Decline the service call
@@ -103,10 +108,11 @@ include "machine.asm"
                     pha                         \ handler, so only X and Y are
                     txa                         \ saved here
                     pha
+                    sty zp                      \ free until cmd_dispatch
                     cld
                     ldx #0
-.cmd_entry          ldy #0
-                    jsr skipspace               \ Y indexes the first non-space
+.cmd_entry          ldy zp                      \ where the MOS says it starts
+                    jsr skipspace1              \ Y indexes the first non-space
                     dey                         \ the loop's iny puts it back
 .cmd_step           iny
                     lda commandtable,x
