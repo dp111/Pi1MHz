@@ -1877,7 +1877,15 @@ void screen_mixer_reset( void )
 {
     for (uint32_t planeno = 0; planeno < MAX_PLANES; planeno++) {
         screen_plane_gate(planeno, false);
+        if (!plane_treat_set[planeno])
+            continue;
         plane_treat_set[planeno] = false;
+        /* Forgetting the treatment is not enough: the plane is still on the
+           family and alpha it chose (VP4's half-strength mix) until the next
+           MODE rebuilds it.  Put back what creation gives it - the colour
+           family, flash bank kept, at full alpha. */
+        screen_set_palette(planeno, 0, 3);
+        screen_plane_alpha(planeno, 0xFFu);
     }
     for (uint32_t i = 0; i < MAX_PLANES; i++)
         plane_hl_exempt[i] = false;
