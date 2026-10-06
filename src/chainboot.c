@@ -7,10 +7,12 @@
 
 #include "chainboot.h"
 #include "Pi1MHz.h"
+#include "BeebSCSI/filesystem.h"
 #include "usb/mtp_fs.h"
 #include "videoplayer.h"
 #include "rpi/asm-helpers.h"
 #include "rpi/cache.h"
+#include "rpi/h264dec.h"
 #include "rpi/rpi.h"
 #include "rpi/systimer.h"
 #include "wifi/sdio.h"
@@ -34,6 +36,11 @@ const char *chainboot_refusal(void)
       orphans the GPU decoder, and video stays broken until a full reboot. */
    if (videoplayer_active())
       return "The video player is open - close it (or reboot) first.";
+   /* The decoder outlives the player: once started it holds its GPU
+      buffers until a reboot, even with the player closed (say, after a
+      jukebox to a side without video). */
+   if (h264dec_running())
+      return "The video decoder has been started - reboot first.";
    return NULL;
 }
 
@@ -59,17 +66,18 @@ static uint32_t s_length;
    wire, or an HTTP one through lwIP and the WiFi chip. */
 #define CHAINBOOT_SETTLE_US 200000u
 
-void chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity)
+bool chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity)
 {
    uint32_t padded = (length + 63u) & ~63u;
    if (image == NULL || padded > capacity) {
       free(image);
-      return;
+      return false;
    }
    memset(image + length, 0, padded - length);
    free(s_image);                 /* a second request replaces the first */
    s_image = image;
    s_length = padded;
+   return true;
 }
 
 void chainboot_poll(void)
@@ -93,8 +101,30 @@ void chainboot_poll(void)
       stage = 2u;
       return;
    }
+   if (stage == 2u) {
+      /* As the Beeb's own reboot (HD_CARD_REBOOT): every open file closed and
+         the volume dismounted, so nothing unsynced - a FAT-service file, a
+         recording, a half-written upload - is lost with lost clusters left
+         behind.  A step per pass: a recording still being written out makes
+         its subsystem wait. */
+      if (!filesystemEject())
+         return;
+      stage = 3u;
+   }
    if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
       return;
+
+   /* The player or the decoder may have started while this waited.  Then
+      the image is given up rather than orphan the decoder: the card goes
+      back, and with it USB (mtp_fs_inserted), and the Pi carries on.  The
+      sender has had its OK already; there is no telling it otherwise. */
+   if (chainboot_refusal() != NULL) {
+      free(s_image);
+      s_image = NULL;
+      stage = 0u;
+      (void)filesystemInsert();
+      return;
+   }
 
    /* The chip keeps power across the warm jump, so tell it to stop signalling
       on DAT1 (CCCR 0x04, HOSTINTMASK) and hide the controller latch before the

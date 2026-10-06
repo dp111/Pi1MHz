@@ -4095,8 +4095,12 @@ static const char *kn_take(ws_conn_t *c, int *status)
       c->kn_buf = NULL;
       return why;
    }
-   chainboot_request(c->kn_buf, c->kn_len, c->kn_cap);
-   c->kn_buf = NULL;
+   bool taken = chainboot_request(c->kn_buf, c->kn_len, c->kn_cap);
+   c->kn_buf = NULL;                  /* chainboot's now, or freed by it */
+   if (!taken) {
+      *status = 507;
+      return "There is no room for kernel.now.";
+   }
    return NULL;
 }
 
