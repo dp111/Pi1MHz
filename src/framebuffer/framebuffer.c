@@ -660,10 +660,19 @@ static void change_mode(screen_mode_t *new_screen) {
    // back put glyphs outside the screen.  MODE 7's font is set by tt_reset.
    if (!(screen->mode_flags & F_TELETEXT)) {
       font_t *font = screen->font;
+      char spacing_h = (screen->mode_flags & (F_BBC_GAP | F_GAP)) ? 2 : 0;
       font->set_scale_w(font, 1);
       font->set_scale_h(font, 1);
       font->set_spacing_w(font, 0);
-      font->set_spacing_h(font, (screen->mode_flags & (F_BBC_GAP | F_GAP)) ? 2 : 0);
+      font->set_spacing_h(font, spacing_h);
+      // The font and its rounding (VDU 23,19) are kept, but text is drawn
+      // unclipped and relies on one cell fitting the screen: a mode too
+      // small for the cell (a VDU 23,22 mode can be 8x8, a rounded cell is
+      // 16x16) gets the default 8x8 font back.
+      if (font->get_overall_w(font) > screen->width || font->get_overall_h(font) > screen->height) {
+         initialize_font_by_number(DEFAULT_FONT, font);
+         font->set_spacing_h(font, spacing_h);
+      }
    }
    // update the colour flash rate
    if (screen->mode_flags & F_TELETEXT) {
@@ -1270,8 +1279,9 @@ static void vdu23_19(const uint8_t *buf) {
    // The text layer writes glyphs unclipped (set_pixel is too hot to carry a
    // bounds test), relying on the grid: text_width*font_width <= width and
    // likewise for height. That holds whenever one cell fits the screen, so a
-   // request that grows the cell past the screen is refused here - the one
-   // place the metrics change - and the previous font/metrics come back.
+   // request that grows the cell past the screen is refused here and the
+   // previous font/metrics come back.  The metrics change only here and in
+   // change_mode, which keeps the same rule for a smaller mode.
    uint32_t old_number    = font->get_number(font);
    char     old_scale_w   = font->get_scale_w(font);
    char     old_scale_h   = font->get_scale_h(font);

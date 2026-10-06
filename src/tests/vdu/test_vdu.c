@@ -215,6 +215,30 @@ static void test_v2_vdu20_keeps_font(void)
    VDU(23, 19, 2, 0xff, 0xff, 0, 0, 0, 0, 0);
 }
 
+// ---- V3: a MODE change must leave a cell that fits ------------------------
+
+static void test_v3_mode_shrinks_below_cell(void)
+{
+   /* Rounding doubles the BBC font to 16x16, which MODE 0 holds; a custom
+      8x8 mode does not. */
+   mode(0);
+   VDU(23, 19, 3, 1, 0, 0, 0, 0, 0, 0);
+   CHECK(fb_read_vdu_variable(V_TCHARSIZEY) == 16, "V3 setup: rounded cell is %d high",
+         (int)fb_read_vdu_variable(V_TCHARSIZEY));
+   VDU(23, 22, 8, 0, 8, 0, 1, 1, 2, 0);
+   (void)guard_damage();
+   screen_mode_t *s = fb_get_current_screen_mode();
+   CHECK(s->width == 8 && s->height == 8, "V3 setup: custom mode is %dx%d", s->width, s->height);
+   int w = fb_read_vdu_variable(V_TCHARSIZEX), h = fb_read_vdu_variable(V_TCHARSIZEY);
+   CHECK(w <= 8 && h <= 8, "V3: an 8x8 mode was left with a %dx%d cell", w, h);
+   VDU('A');
+   VDU(12);
+   long d = guard_damage();
+   CHECK(d == 0, "V3: a character in the 8x8 mode wrote %ld bytes outside the screen", d);
+   mode(0);
+   VDU(23, 19, 3, 0, 0, 0, 0, 0, 0, 0);
+}
+
 int main(void)
 {
    fb_emulator_init(0, 0xd0);
@@ -222,6 +246,7 @@ int main(void)
 
    test_v1_cursor_vs_metrics();
    test_v2_vdu20_keeps_font();
+   test_v3_mode_shrinks_below_cell();
 
    printf("%d checks, %d failed\n", checks, fails);
    if (fails)
