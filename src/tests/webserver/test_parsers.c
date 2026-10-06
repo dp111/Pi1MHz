@@ -303,6 +303,26 @@ int main(void)
          "ws_is_root");
    }
 
+   puts("== W7: download Content-Type by whole extension ==");
+   {
+      const char *t;
+      t = ws_content_type("data.json");
+      ok(t != NULL && streq(t, "application/json"), "W7: .json is JSON, not JavaScript");
+      t = ws_content_type("page.html");
+      ok(t != NULL && streq(t, "text/html; charset=utf-8"), "W7: .html is HTML");
+      t = ws_content_type("PAGE.HTM");
+      ok(t != NULL && streq(t, "text/html; charset=utf-8"), "W7: case-blind");
+      t = ws_content_type("app.js");
+      ok(t != NULL && streq(t, "application/javascript"), "W7: .js still JavaScript");
+      ok(ws_content_type("disc.mdx") == NULL, "W7: .mdx is not text (attachment)");
+      ok(ws_content_type("disc.mds") == NULL, "W7: .mds is not text (attachment)");
+      ok(ws_content_type("x.jsonl") == NULL, "W7: .jsonl is not JSON");
+      ok(ws_content_type("scsi0.dat") == NULL, "W7: unmapped -> octet-stream");
+      ok(ws_content_type("README") == NULL, "W7: no extension -> octet-stream");
+      t = ws_content_type("a.b.TXT");
+      ok(t != NULL && streq(t, "text/plain; charset=utf-8"), "W7: last dot wins");
+   }
+
    puts("== dav_url_to_sdpath / dav_destination_sdpath ==");
    {
       char sd[WS_PATH_MAX];

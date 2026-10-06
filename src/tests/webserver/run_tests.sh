@@ -28,7 +28,7 @@ ws_basename,ws_parse_request_line,ws_find_header,ws_extract_boundary,\
 ws_extract_filename,ws_path_is_safe,ws_fat_name_len,ws_normalize_path,ws_parent_path,\
 ws_is_root,ws_digest_field,ws_hex_eq_ci,ws_digest_uri_matches,\
 dav_url_to_sdpath,dav_destination_sdpath,dav_memfind,dav_parse_http_date,\
-ws_parse_range,ws_query_param"
+ws_parse_range,ws_query_param,ws_content_type"
 
 awk -v defs="WS_HEADER_MAX,WS_FILE_CHUNK,WS_BOUNDARY_MAX,WS_UPLOAD_HEAD_MAX,WS_PATH_MAX,WS_DRAIN_MAX_BYTES,WS_READ_CHUNK,WS_DL_READ_CHUNK,WS_UP_FULL_MAX,WS_UP_TMP_MAX" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_defines.inc"

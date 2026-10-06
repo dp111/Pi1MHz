@@ -135,6 +135,7 @@ int main(void)
          (void)dav_destination_sdpath(s, o, WS_PATH_MAX);
          free(o);
          (void)ws_path_is_safe(s);
+         (void)ws_content_type(s);
       }
 
       /* Request line */

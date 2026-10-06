@@ -3746,6 +3746,45 @@ static bool render_listing(ws_conn_t *c, const char *sdpath)
 /* File download                                                       */
 /* ------------------------------------------------------------------ */
 
+/* Content-Type for a file a browser may show inline (a PROPFIND-mounted
+   view previews text and images instead of forcing a download), or NULL
+   for application/octet-stream as an attachment.  The map is
+   intentionally small; add entries as they prove useful. */
+static const char *ws_content_type(const char *name)
+{
+   static const struct { char ext[5]; const char *ctype; } map[] = {
+      { "txt",  "text/plain; charset=utf-8" },
+      { "log",  "text/plain; charset=utf-8" },
+      { "md",   "text/plain; charset=utf-8" },
+      { "htm",  "text/html; charset=utf-8" },
+      { "html", "text/html; charset=utf-8" },
+      { "css",  "text/css; charset=utf-8" },
+      { "js",   "application/javascript" },
+      { "json", "application/json" },
+      { "xml",  "application/xml" },
+      { "png",  "image/png" },
+      { "jpg",  "image/jpeg" },
+      { "jpeg", "image/jpeg" },
+      { "gif",  "image/gif" },
+      { "svg",  "image/svg+xml" },
+      { "bmp",  "image/bmp" },
+      { "pdf",  "application/pdf" },
+      { "wav",  "audio/wav" },
+      { "mp3",  "audio/mpeg" },
+   };
+   const char *ext = strrchr(name, '.');
+   size_t      i;
+
+   if (ext == NULL)
+      return NULL;
+   /* The whole extension: a prefix match served .json as JavaScript and
+      .mdx/.mds disc images inline as text. */
+   for (i = 0u; i < sizeof map / sizeof map[0]; i++)
+      if (strcasecmp(ext + 1, map[i].ext) == 0)
+         return map[i].ctype;
+   return NULL;
+}
+
 /* c->dl_file must already be open and c->dl_open set: the callers open it
    themselves so that a successful open doubles as the "is this a regular
    file?" test.  f_stat and f_open each walk the directory chain linearly -
@@ -3833,36 +3872,12 @@ static bool start_download(ws_conn_t *c, const char *sdpath)
 
    sb_init(&h);
    {
-      /* Pick a Content-Type from the extension so a browser PROPFIND-
-         mounted view will preview text/images directly instead of
-         offering them as a forced download.  Anything unmapped stays
-         as application/octet-stream and gets the Content-Disposition:
-         attachment hint.  The map is intentionally small; add more
-         entries as they prove useful. */
-      const char *ext = strrchr(ws_basename(sdpath), '.');
-      const char *ctype = "application/octet-stream";
-      const char *cdisp = "attachment; ";
-      if (ext != NULL) {
-         ++ext;   /* skip the '.' */
-         if      (ws_prefix_ci_str(ext, "txt"))  { ctype = "text/plain; charset=utf-8";  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "log"))  { ctype = "text/plain; charset=utf-8";  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "md"))   { ctype = "text/plain; charset=utf-8";  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "htm"))  { ctype = "text/html; charset=utf-8";   cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "html")) { ctype = "text/html; charset=utf-8";   cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "css"))  { ctype = "text/css; charset=utf-8";    cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "js"))   { ctype = "application/javascript";     cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "json")) { ctype = "application/json";           cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "xml"))  { ctype = "application/xml";            cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "png"))  { ctype = "image/png";                  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "jpg"))  { ctype = "image/jpeg";                 cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "jpeg")) { ctype = "image/jpeg";                 cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "gif"))  { ctype = "image/gif";                  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "svg"))  { ctype = "image/svg+xml";              cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "bmp"))  { ctype = "image/bmp";                  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "pdf"))  { ctype = "application/pdf";            cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "wav"))  { ctype = "audio/wav";                  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "mp3"))  { ctype = "audio/mpeg";                 cdisp = "inline; "; }
-      }
+      /* Anything ws_content_type does not map stays
+         application/octet-stream with the attachment hint. */
+      const char *ctype = ws_content_type(ws_basename(sdpath));
+      const char *cdisp = (ctype != NULL) ? "inline; " : "attachment; ";
+      if (ctype == NULL)
+         ctype = "application/octet-stream";
       sb_printf(&h,
                 "HTTP/1.1 %s\r\n"
                 "Content-Type: %s\r\n"
