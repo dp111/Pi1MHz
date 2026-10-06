@@ -434,14 +434,20 @@ static void plane_mark( uint32_t planeno, uint32_t mask )
    is off (plane_defer clear, the mutators write through), or channel 1 is
    not running at all - disabled, so it never reaches its end-of-frame
    state. */
+static bool hvs_channel1_running( void )
+{
+    /* DISPSTAT1's state (0 disabled .. 3 end of frame) and DISPCTRL1's
+       enable bit */
+    return (RPI_hvs->stat1 >> 30) != 0u && (RPI_hvs->ctrl1 & (1u << 31)) != 0u;
+}
+
 bool screen_between_frames( void )
 {
     if (!plane_defer)
         return true;
-    uint32_t state = RPI_hvs->stat1 >> 30;     /* 0 disabled .. 3 end of frame */
-    if (state == 3u)
-        return true;
-    return state == 0u || !(RPI_hvs->ctrl1 & (1u << 31));   /* not running */
+    if ((RPI_hvs->stat1 >> 30) == 3u)
+        return true;                           /* end of frame */
+    return !hvs_channel1_running();
 }
 
 /* End-of-frame IRQ: push everything the frame just gone was not allowed to
@@ -1044,21 +1050,6 @@ void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows )
 void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
     LOG_DEBUG("plane %"PRIu32" (420)\r\n", planeno);
-    /* Rebuilding the entry rewrites live display-list slots, so it starts in
-       blanking like a MODE change's rebuild (see screen_wait_blanking).  The
-       player's bring-up runs in the main loop, so IRQs are masked from the
-       wait to the last write: otherwise the vsync IRQ would take the end of
-       frame (and the VDU drain after it) and this would land mid-frame.
-       IRQ only - FIQ, and so the bus, runs throughout. */
-    unsigned int cpsr = _disable_irq_cspr();
-    screen_wait_blanking();
-    /* Before anything touches the slot: a deferred write still pending from
-       the old contents would otherwise be committed by the end-of-frame IRQ
-       part-way through the rebuild, putting the previous mode's pos/src_size
-       back over the new entry. */
-    if (planeno < MAX_PLANES)
-        plane_dirty[planeno] = 0;
-    volatile uint32_t * plane =  screen_get_nextplane( planeno);
     buffer |= 0xC0000000;
         uint32_t scaled_width;
         uint32_t scaled_height;
@@ -1102,6 +1093,23 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
             (uint32_t)(((uint64_t)grid_h_crop * width) / VIDEO_GRID_WIDTH) & ~1u;
         uint32_t nw = width - 2u * horizontal_offset;
 
+    /* Rebuilding the entry rewrites live display-list slots, so it starts in
+       blanking like a MODE change's rebuild (see screen_wait_blanking) - the
+       geometry above is worked out first, so the window holds only the
+       writes, and the shadow and alignment state the IRQ's commit and flip
+       read.  The player's bring-up runs in the main loop, so IRQs are masked
+       from the wait to the last write: otherwise the vsync IRQ would take the
+       end of frame (and the VDU drain after it) and this would land
+       mid-frame.  IRQ only - FIQ, and so the bus, runs throughout. */
+    unsigned int cpsr = _disable_irq_cspr();
+    screen_wait_blanking();
+    /* Before anything touches the slot: a deferred write still pending from
+       the old contents would otherwise be committed by the end-of-frame IRQ
+       part-way through the rebuild, putting the previous mode's pos/src_size
+       back over the new entry. */
+    if (planeno < MAX_PLANES)
+        plane_dirty[planeno] = 0;
+    volatile uint32_t * plane =  screen_get_nextplane( planeno);
         volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) plane;
         /* Pixel order (bits 13-14), established empirically on Test Card F
            against a PC decode of the same access unit: with order 1 the
@@ -1449,16 +1457,26 @@ void screen_plane_gate( uint32_t planeno, bool gated )
     screen_plane_apply(planeno);
 }
 
+/* screen_plane_enable without its DEBUG print, for the dim strips: they
+   enable theirs inside a blanking window, which a serial print would
+   stretch. */
+static void plane_set_wanted( uint32_t planeno, bool enable )
+{
+    plane_wanted[planeno] = enable;
+    if (!plane_valid[planeno])
+        return;                  /* flag recorded; slot not ours to touch */
+    plane_write_show(planeno, enable && !plane_gated[planeno]);
+}
+
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
     LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
 
     if (planeno >= MAX_PLANES)
         return;
-    plane_wanted[planeno] = enable;
+    plane_set_wanted(planeno, enable);
     if (!plane_valid[planeno])
-        return;                  /* flag recorded; slot not ours to touch */
-    plane_write_show(planeno, enable && !plane_gated[planeno]);
+        return;
 #ifdef SCREEN_DEBUG
     volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
     LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
@@ -1542,7 +1560,8 @@ static uint32_t palette_keyed_entry( uint32_t entry, uint32_t colour, bool highl
    for every pixel, out of the way of 2048 writes mid-frame.  0x00FFFFFF is
    never a palette value (opaque entries carry alpha FF, clear and dimming
    ones carry no colour), so it marks "not written yet".
-   The compare, the copy and the word go together with IRQs masked: entries
+   The compare, the copy and the word go together with IRQs masked (once
+   per entry, by screen_update_palette_entry, the only caller): entries
    are set from the IRQ (the VDU drain) and the main loop, and an IRQ
    between the copy and the word would leave the copy saying a value the
    hardware does not hold - for good, since the diff then skips it.  IRQ
@@ -1552,9 +1571,9 @@ static uint32_t palette_keyed_entry( uint32_t entry, uint32_t colour, bool highl
 static uint32_t palette_words[PAL_ENTRIES * 4u];
 static bool     palette_words_init;
 
+/* Caller holds IRQs masked - see screen_update_palette_entry. */
 static void palette_put( uint32_t index, uint32_t value )
 {
-    unsigned int cpsr = _disable_irq_cspr();
     if (!palette_words_init) {
         for (uint32_t i = 0; i < PAL_ENTRIES * 4u; i++)
             palette_words[i] = PAL_UNWRITTEN;
@@ -1564,7 +1583,6 @@ static void palette_put( uint32_t index, uint32_t value )
         palette_words[index] = value;
         context_memory[(PALETTE_BASE>>2) + index] = value;
     }
-    _restore_cpsr(cpsr);
 }
 
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
@@ -1576,6 +1594,8 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
 
     uint32_t colour = ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
 
+    /* One bracket for the entry's four words (see palette_words). */
+    unsigned int cpsr = _disable_irq_cspr();
     palette_put(entry, 0xff000000 | colour);
 
     /* BOTH keyed variants, whichever is in use: screen_set_highlight only
@@ -1584,6 +1604,7 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
     palette_put(entry + PAL_KEYED,    palette_keyed_entry(entry, colour, false));
     palette_put(entry + PAL_KEYED_HL, palette_keyed_entry(entry, colour, true));
     palette_put(entry + PAL_MIXED,    palette_mixed_entry(entry, colour));
+    _restore_cpsr(cpsr);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1642,7 +1663,7 @@ static bool dim_strip_place(uint32_t planeno, uint32_t x, uint32_t y,
                             uint32_t w, uint32_t h)
 {
     if (!w || !h) {                       /* empty band: nothing to show */
-        screen_plane_enable(planeno, false);
+        plane_set_wanted(planeno, false);
         return false;
     }
     plane_dirty[planeno] = 0;       /* see screen_create_YUV420_plane */
@@ -1680,7 +1701,7 @@ static bool dim_strip_place(uint32_t planeno, uint32_t x, uint32_t y,
         k[2] = POLYPHASE_BASE | 0x80000000u;
     }
     plane_valid[planeno] = true;
-    screen_plane_enable(planeno, true);
+    plane_set_wanted(planeno, true);
     return true;
 }
 
@@ -1978,15 +1999,19 @@ static uint32_t vsync_rate_mhz;      /* refresh in millihertz */
    end-of-frame flag is polled directly, as the vsync IRQ cannot run while
    the caller is in IRQ context - or has IRQs masked, as the main-loop
    callers (the dim strips, the video plane) do - and left set, so the IRQ
-   still services the new frame.  Waiting on channel 1's state field instead (EOF until the next
-   frame starts) does not work: 18 of 32 BREAKs failed with that.  It waits
-   at boot too, before the end-of-frame IRQ is enabled: the flag is set by
-   the HVS regardless, and skipping the wait there - for the Pi's own first
-   MODE - took the failure rate straight back (10 of 16, 21 of 32), for a
-   reason not yet understood.  Up to a frame, 40 ms at most; FIQ - and so
-   the bus - runs throughout. */
+   still services the new frame.  Waiting on channel 1's state field
+   instead (EOF until the next frame starts) does not work: 18 of 32 BREAKs
+   failed with that.  It waits at boot too, before the end-of-frame IRQ is
+   enabled: the flag is set by the HVS regardless, and skipping the wait
+   there - for the Pi's own first MODE - took the failure rate straight back
+   (10 of 16, 21 of 32), for a reason not yet understood.  Up to a frame,
+   40 ms at most; FIQ - and so the bus - runs throughout.  Not at all when
+   channel 1 is not running: no end of frame is coming, and the caller may
+   have IRQs masked inside a SCSI command. */
 void screen_wait_blanking( void )
 {
+    if (!hvs_channel1_running())
+        return;
     RPI_hvs->stat = ( 1 << 16);                 /* drop a stale end of frame */
     uint32_t c0 = vsync_count, t0 = RPI_GetSystemTime();
     while (!(RPI_hvs->stat & ( 1 << 16)) && vsync_count == c0 &&
