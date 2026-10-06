@@ -1434,7 +1434,9 @@ static void plane_treatment_reapply( uint32_t planeno )
 /* Set or clear a created plane's "owns the display" bit. ctrl also carries
    the entry's word count and end-of-list bit, so it is written whole from
    the shadow - reading it back out of a list the HVS is walking risks
-   latching a transient value and malforming the list itself. */
+   latching a transient value and malforming the list itself.  The shadow
+   RMW is bracketed: the main loop (VP modes) and the IRQ (a MODE change)
+   both show and hide planes. */
 static void plane_write_show( uint32_t planeno, bool show )
 {
     plane_shadow_t *s = &plane_shadow[planeno];
@@ -1442,12 +1444,14 @@ static void plane_write_show( uint32_t planeno, bool show )
     // Deliberately inverted: our direct-HVS planes only own the display
     // when HDMI is NOT connected (hotplug bit 0 clear) - with a monitor
     // attached the firmware drives the display instead
-    if (show && (~(RPI_hdmi->hotplug)&1))
-        s->ctrl |= (uint32_t)0x40000000;
-    else if (!show)
-        s->ctrl &= ~(uint32_t)0x40000000;
-    else
+    if (show && (RPI_hdmi->hotplug & 1u))
         return;                     /* wanted, but the firmware owns the display */
+    unsigned int cpsr = _disable_interrupts_cspr();
+    if (show)
+        s->ctrl |= (uint32_t)0x40000000;
+    else
+        s->ctrl &= ~(uint32_t)0x40000000;
+    _restore_cpsr(cpsr);
 
     plane_mark(planeno, PL_DIRTY_CTRL);
 }
