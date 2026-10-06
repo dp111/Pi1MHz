@@ -116,12 +116,22 @@ bool filesystemVFSVolumePresent(void);
 bool filesystemVFSDatPresent(void);
 bool filesystemVFSDirPresent(uint8_t dir);
 
+/* Upstream BeebSCSI functions with no caller here: named gates, not
+   deletion, so future BeebSCSI diffs stay clean. */
+#define BEEBSCSI_TEST_LUN_STATUS 0   /* filesystemTestLunStatus: no caller */
+#define BEEBSCSI_UCD_USER_CODE   0   /* filesystemGetUserCodeFromUcd: never ported - the user code is LDUserCode in the .cfg */
+#define BEEBSCSI_GET_CYL_HEADS   0   /* filesystemGetCylHeads: no caller */
+
 bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus);
 bool filesystemReadLunStatus(uint8_t lunNumber);
+#if BEEBSCSI_TEST_LUN_STATUS
 bool filesystemTestLunStatus(uint8_t lunNumber);
+#endif
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5]);
 
+#if BEEBSCSI_UCD_USER_CODE
 void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber);
+#endif
 bool filesystemCheckExtAttributes( uint8_t lunNumber);
 void filesystemConfigToLunGeometry(uint8_t lunNumber);
 void filesytemdattoconfigGeometry(uint8_t lunNumber);
@@ -130,7 +140,9 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber);
 void filesystemCopyPage0toPage4(uint8_t lunNumber);
 void filesystemCopyPage4toPage0(uint8_t lunNumber);
 
+#if BEEBSCSI_GET_CYL_HEADS
 void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf);
+#endif
 uint32_t filesystemGetLunBlockSize(uint8_t lunNumber);
 uint32_t filesystemGetheadspercylinder(uint8_t lunNumber);
 uint32_t filesystemGetLunSPTSize( uint8_t lunNumber);

@@ -212,9 +212,10 @@ static void hd_emulator_conf(unsigned int gpio)
 #endif
 
 
-/* The &FC41 jukebox poke arrives in FIQ context, but filesystemReset() and
-   scsiJukebox() do real FatFs/SD work (dismount, directory change, the
-   videoplayer notification).  Milliseconds of card I/O inside the FIQ
+/* The &FC41 jukebox poke arrives in FIQ context, but filesystemReset() does
+   real FatFs/SD work (closing every LUN, dismount and remount) - the swap
+   after it only sets a directory number and flags the video player for a
+   reopen.  Milliseconds of card I/O inside the FIQ
    starves the VPU bus handler and the whole bus event path dies - the Beeb
    then polls a status register that reads &7F forever (a wedge that struck
    whenever the poke landed mid video/SD activity).  So the FIQ only
@@ -255,16 +256,17 @@ void hd_juke_service(void)
    /* Reselecting the directory that is already current is a no-op: the
       full reset below remounts the FAT, which invalidates every open FIL
       and forces a video reopen - a Domesday player re-poking its own
-      directory must not have its disc rewound (scsiJukebox's same-dir
-      check runs too late to prevent that: the remount notify has already
-      fired by then). */
+      directory must not have its disc rewound (scsiJukeboxSwap's same-dir
+      check, which guards only its own videoplayer notification, runs too
+      late to prevent that: the remount notify has already fired by then). */
    if (dir == ((scsiHostID >= 16) ? filesystemGetLunDirectoryVFS()
                                   : filesystemGetLunDirectory()))
       return;
-   /* Deliberately the unguarded swap.  filesystemReset() above has already
-      dismounted every LUN, which is the point of this path: *FX147,65,n
-      swaps discs whatever was mounted.  BSSELECT / *SCSIJUKE is the one that
-      refuses while a LUN is started - see scsiJukeboxSwap's comment. */
+   /* Deliberately the unguarded swap.  filesystemReset() below dismounts
+      every LUN first, which is the point of this path: *FX147,65,n swaps
+      discs whatever was mounted.  BSSELECT / *SCSIJUKE is the one that
+      refuses while a LUN of that directory is started - see
+      scsiJukeboxSwap's comment. */
    filesystemReset();
    scsiJukeboxSwap(dir);
 }

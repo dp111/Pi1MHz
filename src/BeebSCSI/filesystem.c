@@ -717,6 +717,9 @@ bool filesystemReadLunStatus(uint8_t lunNumber)
    return filesystemState.fsLunStatus[lunNumber];
 }
 
+/* Upstream function with no caller here; named gate (filesystem.h), not
+   deletion, so future BeebSCSI diffs stay clean. */
+#if BEEBSCSI_TEST_LUN_STATUS
 // Function to confirm that a LUN image is still available
 // cppcheck-suppress unusedFunction
 bool filesystemTestLunStatus(uint8_t lunNumber)
@@ -737,6 +740,7 @@ bool filesystemTestLunStatus(uint8_t lunNumber)
    // LUN tested OK
    return true;
 }
+#endif
 
 // Function to read the user code for the specified LUN image
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
@@ -1047,9 +1051,8 @@ uint32_t filesystemGetLunTotalSectors( uint8_t lunNumber)
 // Function to return the cylinders and heads from the LUN descriptor file parameters
 // into the buffer
 //
-/* Upstream helper with no caller here; named gate, not deletion, so future
-   BeebSCSI diffs stay clean. */
-#define BEEBSCSI_GET_CYL_HEADS 0
+/* Upstream helper with no caller here; named gate (filesystem.h), not
+   deletion, so future BeebSCSI diffs stay clean. */
 #if BEEBSCSI_GET_CYL_HEADS
 void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf)
 {
@@ -1217,16 +1220,13 @@ bool filesystemReadVFSCfgIntDir(uint8_t dir, enum parserkeyvalueenum key, int *o
    return found;
 }
 
-/* Read a single text Key= value ("Title" / "Description") for the disc
-   menu, straight from the mounted VFS disc's already-parsed attributes:
-   the VFS LUN's mount fills keyvalues[8] from its scsi0.cfg (a BeebVFS
-   directory only ever holds scsi0), and the cache cannot be stale -
-   every jukebox path is gated on all LUNs being stopped, and stopping
-   releases the values. The menu scans discs by jukeboxing to each
-   directory and remounting, so no separate file read is needed. */
-/* Read a side's Title/Description WITHOUT jukeboxing to it: a jukebox is a
-   remount, and the menu's rescan was paying one per side purely to read a
-   name. */
+/* Read a side's Title/Description for the disc menu WITHOUT jukeboxing to
+   it: a jukebox is a remount, and the menu's rescan was paying one per side
+   purely to read a name.  The mounted side is served from keyvalues[8],
+   which the VFS LUN's start filled from its scsi0.cfg (a BeebVFS directory
+   only ever holds scsi0); that cache cannot be stale - a VFS jukebox is
+   refused while LUN 8 is started (the *FX147 poke stops every LUN first),
+   and stopping releases the values. */
 bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key,
                                  char *out, uint32_t maxLen)
 {
@@ -1411,6 +1411,18 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemFormatLun(): Formatting LUN image "), lunNumber, true);
 
+   // The size below comes from fsLunGeometry, which is only current for a
+   // started LUN (loaded at START, updated by MODE SELECT).  For a stopped
+   // one it was never read since boot - zero, so f_expand failed after
+   // FA_CREATE_ALWAYS had already truncated the image to 0 bytes - or it
+   // belongs to the image of the directory before a jukebox.  Starting the
+   // LUN loads its geometry exactly as the START after this FORMAT will;
+   // if it cannot start there is no size to format to, so refuse before
+   // anything is truncated.
+   if (!filesystemSetLunStatus(lunNumber, true)) {
+      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): ERROR: Could not read the LUN's geometry\r\n"));
+      return false;
+   }
    filesystemSetLunStatus(lunNumber, false );
 
    if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemFormatLun(): Sectors required = "), filesystemGetLunTotalSectors(lunNumber), true);
@@ -1451,6 +1463,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
       if (fsResult != FR_OK) {
          // Something went wrong writing to the .dat
          if (debugFlag_filesystem) debugStringInt8Hex_P(PSTR("File system: filesystemFormatLun(): ERROR: Could not write .dat : \r\n"),fsResult,1);
+         f_close(&fileObject);
          return false;
       }
    } else {
@@ -1732,8 +1745,8 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    map_check_pending = (startSector == 0 && lunNumber < 8);
 #endif
 
-   // Exit with success
-   filesystemState.fsLunStatus[lunNumber] = true;
+   // Exit with success (the LUN is already started: READ6 auto-starts it
+   // through filesystemSetLunStatus, the one owner of that flag)
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForRead(): Successful\r\n"));
    return true;
 }
