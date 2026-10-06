@@ -295,10 +295,14 @@ bool sdio_runtime_tick(void);
 bool sdio_runtime_started(void);
 bool sdio_runtime_ready(void);
 /* Re-issue the association sequence after a lost or never-established link.
-   rejoin_start() re-arms it (false if bring-up or another rejoin is running);
-   the caller then drives sdio_runtime_tick() while rejoin_busy() is true. */
+   rejoin_start() re-arms it (false if bring-up or another rejoin is running,
+   or no SSID is configured); the caller then drives sdio_runtime_tick() while
+   rejoin_busy() is true. */
 bool sdio_runtime_rejoin_start(void);
 bool sdio_runtime_rejoin_busy(void);
+/* Bring-up has not yet built its join list: an SSID stored now is joined
+   when it does, with no rejoin_start() needed. */
+bool sdio_runtime_join_pending(void);
 /* Re-enable automatic association when the host supplies a new JOIN. */
 void sdio_runtime_rejoin_enable(void);
 /* Disassociate after *LEAVE without taking the radio down, and suppress the
