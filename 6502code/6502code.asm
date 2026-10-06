@@ -673,13 +673,19 @@ ORG &FD00
 .dofirstchar
     ; loop read screen characters
     LDA #135 : JSR OSBYTE ; x = Char ; Y screen mode
-    ; X = 0 is a cell OSBYTE 135 cannot recognise (graphics), and a MODE 7
-    ; control byte is <32 or &7F: as VDU codes they would not draw a cell
-    ; (VDU 0 does nothing, 127 deletes), and the rest of the copy would
-    ; land out of step.  The Pi gets a space instead.
+    ; A byte <32 or &7F cannot go to the Pi as it is: as a VDU code it
+    ; draws no cell (VDU 0 does nothing, 127 deletes) and the rest of the
+    ; copy lands out of step.  In MODE 7 it is a teletext byte - 0-31 are
+    ; the control codes 128-159 and &7F the solid block, the same cells
+    ; with bit 7 set - so send it with bit 7 set and keep its effect.  In
+    ; any other mode it is X = 0, a cell OSBYTE 135 could not recognise
+    ; (graphics): the Pi gets a space.
     TXA
-    CMP #32 : BCC copyspace
+    CMP #32 : BCC copylow
     CMP #&7F : BNE copychar
+.copylow
+    TYA : AND #&7F : CMP #7 : BNE copyspace   ; Y = MODE (bit 7: shadow)
+    TXA : ORA #&80 : BNE copychar             ; always taken
 .copyspace
     LDA #32
 .copychar
