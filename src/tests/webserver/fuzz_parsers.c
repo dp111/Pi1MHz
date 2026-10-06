@@ -163,7 +163,9 @@ int main(void)
          if (ws_find_header(s, len, name, o, osz))
             assert(strlen(o) < osz);
          free(o);
-         (void)ws_cross_site(s, len);
+         (void)ws_forgery_refused((rnd() & 1u) ? "PUT" : "GET", "/udpblast",
+                                  s, len, "192.168.1.50", "Pi1MHz");
+         (void)ws_host_is_ours(s, "192.168.1.50", "Pi1MHz");
       }
 
       /* Multipart fields */

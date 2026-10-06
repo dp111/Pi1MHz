@@ -57,10 +57,11 @@ void wifi_lwip_tx_path_counts(uint32_t *queued, uint32_t *stale,
 /* Received frames dropped because the pbuf pool was empty, for /status. */
 uint32_t wifi_lwip_rx_pbuf_drops(void);
 
-/* UDP blast test rig (/udpblast): a poll-driven raw-UDP source that takes
-   TCP out of the throughput measurement.  start() primes it (datagrams of
-   1472-byte payload = one full 1500-byte IP packet each); the lwIP service
-   pass then drains it a few datagrams per pass.  The receiver's byte count
+#ifdef DEBUG
+/* UDP blast test rig (/udpblast, DEBUG builds only): a poll-driven raw-UDP
+   source that takes TCP out of the throughput measurement.  start() primes
+   it (datagrams of 1472-byte payload = one full 1500-byte IP packet each);
+   the lwIP service pass then drains it a few datagrams per pass.  The receiver's byte count
    over its own clock is the measurement; stats() is the cross-check. */
 /* burst = datagrams emitted per service pass (0 = default 4, clamped to
    16): the pipeline-capability knob - at burst >= 8 the producer
@@ -69,6 +70,7 @@ void wifi_lwip_udpblast_start(const ip_addr_t *dst, uint16_t port,
                               uint32_t datagrams, uint8_t burst);
 void wifi_lwip_udpblast_stats(uint32_t *sent, uint32_t *remaining,
                               uint32_t *elapsed_us);
+#endif
 
 /* wifi_diag-gated per-pass histograms (buckets 0/1/2-3/4-7/8-15/16+):
    frames handed to the TX path per service pass, split by producer

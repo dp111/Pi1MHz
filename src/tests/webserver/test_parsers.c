@@ -306,7 +306,9 @@ int main(void)
 
    puts("== W4: cross-site request check ==");
    {
-#define XS(h) ws_cross_site(h, sizeof h - 1u)
+#define MY_IP   "192.168.1.50"
+#define MY_NAME "Pi1MHz"
+#define XS(h) ws_cross_site(h, sizeof h - 1u, MY_IP, MY_NAME)
       static const char plain[] =
          "POST /reboot HTTP/1.1\r\nHost: 192.168.1.50\r\n\r\n";
       static const char same_sfs[] =
@@ -362,9 +364,79 @@ int main(void)
          static const char body_origin[] =
             "POST /files/ HTTP/1.1\r\nHost: h\r\n\r\nOrigin: http://evil\r\n";
          ok(!ws_cross_site(body_origin, sizeof body_origin - 1u
-                                        - sizeof "Origin: http://evil\r\n" + 1u),
+                                        - sizeof "Origin: http://evil\r\n" + 1u,
+                           MY_IP, MY_NAME),
             "W4: header block only");
       }
+
+      /* DNS rebinding: attacker.example re-pointed at the Pi's address is
+         same-origin with it, and Origin and Host agree. */
+      static const char rebind_sfs[] =
+         "POST /kernel.now HTTP/1.1\r\nHost: attacker.example\r\n"
+         "Origin: http://attacker.example\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+      static const char rebind_origin[] =
+         "POST /reboot HTTP/1.1\r\nHost: attacker.example:80\r\n"
+         "Origin: http://attacker.example:80\r\n\r\n";
+      static const char rebind_lookalike[] =
+         "POST /reboot HTTP/1.1\r\nHost: pi1mhz.attacker.example\r\n"
+         "Origin: http://pi1mhz.attacker.example\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+      static const char rebind_curl[] =
+         "PUT /x.ssd HTTP/1.1\r\nHost: attacker.example\r\n\r\n";
+      static const char bare_name[] =
+         "POST /reboot HTTP/1.1\r\nHost: PI1MHZ\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+      ok(XS(rebind_sfs), "W4: rebinding (same-origin, foreign Host) refused");
+      ok(XS(rebind_origin), "W4: rebinding (Origin == Host, foreign) refused");
+      ok(XS(rebind_lookalike), "W4: hostname.<other domain> refused");
+      ok(!XS(rebind_curl), "W4: a non-browser client is not Host-checked");
+      ok(!XS(bare_name), "W4: the bare hostname (NetBIOS) passes");
+
+      puts("== W4: Host names the Pi ==");
+      ok(ws_host_is_ours("192.168.1.50", MY_IP, MY_NAME), "W4: own IP");
+      ok(ws_host_is_ours("192.168.1.50:8080", MY_IP, MY_NAME), "W4: own IP:port");
+      ok(!ws_host_is_ours("192.168.1.5", MY_IP, MY_NAME), "W4: prefix of own IP refused");
+      ok(!ws_host_is_ours("192.168.1.500", MY_IP, MY_NAME), "W4: own IP plus a digit refused");
+      ok(ws_host_is_ours("pi1mhz", MY_IP, MY_NAME), "W4: hostname, case-blind");
+      ok(ws_host_is_ours("Pi1MHz.Local:80", MY_IP, MY_NAME), "W4: hostname.local:port");
+      ok(!ws_host_is_ours("pi1mhz.example", MY_IP, MY_NAME), "W4: hostname.<domain> refused");
+      ok(!ws_host_is_ours("pi1mhz.localx", MY_IP, MY_NAME), "W4: .localx refused");
+      ok(!ws_host_is_ours("xpi1mhz.local", MY_IP, MY_NAME), "W4: longer name refused");
+      ok(!ws_host_is_ours("pi1mhz:", MY_IP, MY_NAME), "W4: empty port refused");
+      ok(!ws_host_is_ours("pi1mhz:8o", MY_IP, MY_NAME), "W4: bad port refused");
+      ok(!ws_host_is_ours(":80", MY_IP, MY_NAME), "W4: empty host refused");
+      ok(!ws_host_is_ours("[::1]:80", MY_IP, MY_NAME), "W4: IPv6 literal refused");
+      ok(ws_host_is_ours("foo-bar.local", MY_IP, "foo.bar"),
+         "W4: a dotted hostname as mDNS advertises it");
+      ok(ws_host_is_ours("foo.bar", MY_IP, "foo.bar"),
+         "W4: a dotted hostname as configured");
+
+      puts("== W4: the forgery gate ==");
+#define GATE(m, path, h) ws_forgery_refused(m, path, h, sizeof h - 1u, MY_IP, MY_NAME)
+      {
+         static const char *const writes[] = {
+            "POST", "PUT", "DELETE", "MKCOL", "MOVE", "COPY",
+            "PROPPATCH", "LOCK", "UNLOCK", "BREW" };
+         static const char *const reads[] = { "GET", "HEAD", "OPTIONS", "PROPFIND" };
+         bool all = true;
+         for (size_t i = 0u; i < sizeof writes / sizeof writes[0]; i++)
+            all = all && GATE(writes[i], "/x", cross_sfs);
+         ok(all, "W4: every non-read method refused cross-site (PUT included)");
+         ok(GATE("PUT", "/kernel.now", rebind_sfs), "W4: rebinding PUT kernel.now refused");
+         all = true;
+         for (size_t i = 0u; i < sizeof writes / sizeof writes[0]; i++)
+            all = all && !GATE(writes[i], "/x", same_sfs);
+         ok(all, "W4: same-origin writes pass");
+         all = true;
+         for (size_t i = 0u; i < sizeof writes / sizeof writes[0]; i++)
+            all = all && !GATE(writes[i], "/x", plain);
+         ok(all, "W4: writes with no browser headers pass (curl, WebDAV)");
+         all = true;
+         for (size_t i = 0u; i < sizeof reads / sizeof reads[0]; i++)
+            all = all && !GATE(reads[i], "/status", cross_sfs);
+         ok(all, "W4: reads are exempt even cross-site");
+         ok(GATE("GET", "/udpblast", img_cross), "W4: a cross-site GET /udpblast refused");
+         ok(!GATE("GET", "/udpblast", none_sfs), "W4: a typed-in /udpblast passes");
+      }
+#undef GATE
 #undef XS
    }
 
@@ -414,8 +486,8 @@ int main(void)
       ok(dav_url_to_sdpath("/BEEBSC~1/scsi0.dat", sd, sizeof sd)
          && streq(sd, "/BeebSCSI0/scsi0.dat"),
          "W1: 8.3 alias of a folder resolved to its long name");
-      ok(dav_url_to_sdpath("/beebsc~1/SCSI0~1.DAT", sd, sizeof sd)
-         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+      ok(dav_url_to_sdpath("/beebsc~1/backup~1.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/backup of scsi0.dat"),
          "W1: aliases resolved segment by segment, case-blind");
       ok(dav_url_to_sdpath("/games/LONGNA~1.SSD", sd, sizeof sd)
          && streq(sd, "/games/longname disc.ssd"),

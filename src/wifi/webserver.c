@@ -1368,43 +1368,107 @@ static bool ws_is_root(const char *p)
 /* Cross-site requests                                                 */
 /* ------------------------------------------------------------------ */
 
+/* True if a Host value names this Pi: its IPv4 address, or its hostname
+   bare (NetBIOS) or as <hostname>.local (mDNS, which advertises any '.' in
+   it as '-'), each with an optional :port.  Nothing else - in particular
+   not <hostname>.<some domain>, a name anyone can register. */
+static bool ws_host_is_ours(const char *host, const char *my_ip,
+                            const char *my_name)
+{
+   const char *colon = strrchr(host, ':');
+   size_t      hlen  = (colon != NULL) ? (size_t)(colon - host) : strlen(host);
+   size_t      nlen  = strlen(my_name);
+   size_t      i;
+
+   if (colon != NULL) {
+      if (colon[1] == '\0')
+         return false;
+      for (i = 1u; colon[i] != '\0'; i++)
+         if (colon[i] < '0' || colon[i] > '9')
+            return false;
+   }
+   if (hlen == 0u)
+      return false;
+   if (hlen == strlen(my_ip) && strncmp(host, my_ip, hlen) == 0)
+      return true;
+   if (hlen == nlen && strncasecmp(host, my_name, nlen) == 0)
+      return true;
+   if (hlen == nlen + 6u && strncasecmp(host + nlen, ".local", 6u) == 0) {
+      for (i = 0u; i < nlen; i++)
+         if (ws_lc(host[i]) != ws_lc((my_name[i] == '.') ? '-' : my_name[i]))
+            return false;
+      return true;
+   }
+   return false;
+}
+
 /* True if a browser sent this request for a page from another site.  With
    no credentials configured (the default) any page the user has open could
    otherwise POST a kernel.now (a chain-boot) or /reboot here, or overwrite
    a disc image - and with credentials the browser may attach its cached
-   ones.  Sec-Fetch-Site is set by the browser and page script cannot forge
-   it: anything but same-origin, or none (a typed URL or bookmark), is
-   refused.  A browser too old to send it still sends Origin on a POST,
-   which must then name the host the request was sent to ("null", from a
-   sandboxed frame or a file: page, never does).  A request with neither
-   header is not from a web page - curl, WebDAV clients - and passes. */
-static bool ws_cross_site(const char *hdr, size_t limit)
+   ones.  A request with neither Sec-Fetch-Site nor Origin is not from a web
+   page - curl, WebDAV clients - and passes.  A browser's must:
+   - be addressed to one of the Pi's own names (ws_host_is_ours).  Without
+     this, DNS rebinding works: a page on attacker.example whose name is
+     re-pointed at the Pi is same-origin with it, and its Origin and Host
+     agree;
+   - say Sec-Fetch-Site same-origin, or none (a typed URL or bookmark).
+     The browser sets it and page script cannot forge it;
+   - failing that (an older browser), carry an Origin naming the Host
+     ("null", from a sandboxed frame or a file: page, never does). */
+static bool ws_cross_site(const char *hdr, size_t limit,
+                          const char *my_ip, const char *my_name)
 {
    char        site[24];
    char        origin[128];
    char        host[128];
    const char *o = origin;
+   bool        have_site = ws_find_header(hdr, limit, "Sec-Fetch-Site",
+                                          site, sizeof site);
+   bool        have_origin = ws_find_header(hdr, limit, "Origin",
+                                            origin, sizeof origin);
 
-   if (ws_find_header(hdr, limit, "Sec-Fetch-Site", site, sizeof site))
+   if (!have_site && !have_origin)
+      return false;
+   /* ws_find_header truncates silently: a cut value proves nothing. */
+   if (!ws_find_header(hdr, limit, "Host", host, sizeof host)
+       || strlen(host) + 2u > sizeof host
+       || !ws_host_is_ours(host, my_ip, my_name))
+      return true;
+   if (have_site)
       return strcasecmp(site, "same-origin") != 0
           && strcasecmp(site, "none") != 0;
-   if (!ws_find_header(hdr, limit, "Origin", origin, sizeof origin))
-      return false;
    if (ws_prefix_ci_str(o, "http://"))
       o += 7;
    else if (ws_prefix_ci_str(o, "https://"))
       o += 8;
    else
       return true;
-   /* ws_find_header truncates silently: a cut value proves nothing. */
-   if (strlen(origin) + 2u > sizeof origin
-       || !ws_find_header(hdr, limit, "Host", host, sizeof host))
+   if (strlen(origin) + 2u > sizeof origin)
       return true;
    return strcasecmp(o, host) != 0;
 }
 
+/* The request-forgery gate: true if process_request must refuse this
+   request (403, and close) before anything acts on it.  Reads are exempt -
+   another site's page cannot see the answer - except /udpblast, a GET that
+   acts (an <img src=/udpblast?...&mb=1024> would start a gigabyte of UDP). */
+static bool ws_forgery_refused(const char *method, const char *path,
+                               const char *hdr, size_t limit,
+                               const char *my_ip, const char *my_name)
+{
+   bool reads = strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0
+             || strcmp(method, "OPTIONS") == 0
+             || strcmp(method, "PROPFIND") == 0;
+
+   if (reads && strcmp(path, "/udpblast") != 0)
+      return false;
+   return ws_cross_site(hdr, limit, my_ip, my_name);
+}
+
 #define WS_CROSS_SITE_MSG "Refused: another web site's page asked for this. " \
-                          "Use the Pi1MHz pages themselves."
+                          "Use the Pi1MHz pages themselves, at the Pi's IP " \
+                          "address, its hostname or hostname.local."
 
 /* ------------------------------------------------------------------ */
 /* Digest authentication (RFC 2617, qop=auth, MD5)                     */
@@ -2876,12 +2940,14 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)th[2], (unsigned long)th[3],
                   (unsigned long)th[4], (unsigned long)th[5]);
          table_row(&b, "TX feed/pass (TCP)", big);
+#ifdef DEBUG                        /* the rig exists in DEBUG builds only */
          snprintf(big, sizeof big,
                   "0:%lu 1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
                   (unsigned long)blh[0], (unsigned long)blh[1],
                   (unsigned long)blh[2], (unsigned long)blh[3],
                   (unsigned long)blh[4], (unsigned long)blh[5]);
          table_row(&b, "TX feed/pass (udpblast)", big);
+#endif
          snprintf(big, sizeof big,
                   "0:%lu 1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
                   (unsigned long)oh[0], (unsigned long)oh[1],
@@ -2967,6 +3033,7 @@ static bool route_status(ws_conn_t *c)
          table_row(&b, "TX data-phase fails", tmp);
       }
    }
+#ifdef DEBUG
    {
       uint32_t bl_sent = 0u, bl_rem = 0u, bl_us = 0u;
 
@@ -2979,6 +3046,7 @@ static bool route_status(ws_conn_t *c)
          table_row(&b, "UDP blast", tmp);
       }
    }
+#endif
    {
       int32_t pm = -1;
       if (sdio_runtime_get_powersave_mode(&pm)) {
@@ -6955,16 +7023,26 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (wifi_debug_enabled())
       wifi_debug_printf("REQ %s %s\n", method, rawpath);
 
-   /* Anything that changes state is refused when a browser says another
-      site's page sent it (ws_cross_site).  Reads are left alone: that page
-      cannot see the answer.  Ahead of the digest check, because a browser
-      attaches its cached credentials to a forged request too.  Closed
-      after the 403: a PUT or POST body behind it is never read. */
-   if (!ws_method_is(method, "GET") && !ws_method_is(method, "HEAD")
-       && !ws_method_is(method, "OPTIONS") && !ws_method_is(method, "PROPFIND")
-       && ws_cross_site(c->reqhdr, (size_t)body_at)) {
-      c->keep_alive = false;
-      return ws_error(c, 403, "Forbidden", WS_CROSS_SITE_MSG);
+   /* Request forgery (ws_forgery_refused).  Ahead of the digest check,
+      because a browser attaches its cached credentials to a forged request
+      too.  The name default matches netname.c's. */
+   {
+      const wifi_config_t *cfg = wifi_get_config();
+      char                 my_ip[16];
+
+      ws_ip_str(netif_ip4_addr(&wifi_lwip_get_context()->netif),
+                my_ip, sizeof my_ip);
+      if (ws_forgery_refused(method, rawpath, c->reqhdr, (size_t)body_at,
+                             my_ip,
+                             (cfg != NULL && cfg->hostname[0] != '\0')
+                                ? cfg->hostname : "Pi1MHz")) {
+         /* Closed after the 403, since a PUT or POST body behind it is
+            never read.  A client still sending that body may see a
+            connection reset instead of the 403 text: lwIP answers data
+            arriving after tcp_close with a RST. */
+         c->keep_alive = false;
+         return ws_error(c, 403, "Forbidden", WS_CROSS_SITE_MSG);
+      }
    }
 
    /* Digest auth.  When configured, every route requires a valid
@@ -7116,13 +7194,8 @@ static bool process_request(ws_conn_t *c, int body_at)
       if (strcmp(rawpath, "/bench.bin") == 0)
          return route_bench(c);
 #ifdef DEBUG
-      /* A GET that acts, so the cross-site rule above applies to it too:
-         an <img src=/udpblast?...&mb=1024> on any page would otherwise
-         start a gigabyte of UDP. */
-      if (strcmp(rawpath, "/udpblast") == 0)
-         return ws_cross_site(c->reqhdr, (size_t)body_at)
-              ? ws_error(c, 403, "Forbidden", WS_CROSS_SITE_MSG)
-              : route_udpblast(c, (query != NULL) ? query + 1 : NULL);
+      if (strcmp(rawpath, "/udpblast") == 0)     /* gated above, as a write */
+         return route_udpblast(c, (query != NULL) ? query + 1 : NULL);
 #endif
       if (strcmp(rawpath, "/aun") == 0)
          return route_aun(c);

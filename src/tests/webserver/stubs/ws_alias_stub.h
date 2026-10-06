@@ -11,7 +11,7 @@ typedef struct { char fname[256]; } FILINFO;
 
 static const struct { const char *alias; const char *lfn; } ws_alias_card[] = {
    { "/BEEBSC~1",                  "BeebSCSI0" },
-   { "/BeebSCSI0/SCSI0~1.DAT",     "scsi0.dat" },
+   { "/BeebSCSI0/BACKUP~1.DAT",    "backup of scsi0.dat" },
    { "/games/LONGNA~1.SSD",        "longname disc.ssd" },
    { "/BEEBVF~1",                  "BeebVFS0" },
 };
