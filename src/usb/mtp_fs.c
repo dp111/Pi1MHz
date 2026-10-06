@@ -718,17 +718,9 @@ static void fs_send_object_event(uint16_t code, uint32_t handle) {
   }
 }
 
-/* Public: the WebDAV server mutated the SD filesystem directly via FatFs, so
-   the object-handle cache is now stale.  Drop it (next MTP request rebuilds
-   lazily via fs_cache_ensure) and, for the path-specific variants, nudge the
-   host to re-enumerate via an async MTP event.  Safe to call from the
-   webserver: both MTP (tud_task) and the webserver (webserver_poll) run in
-   the single cooperative main-loop poll and never preempt each other, and
-   the cache is never touched from an ISR.  The event handle is FNV(path),
-   matching MTP's own handle scheme (fs_handle_from_path); a rare hash
-   collision that was repaired at cache-build time may not match, in which
-   case the host simply ignores that event and falls back to a later
-   re-enumeration.  See mtp_fs.h. */
+/* Before a chain-boot (chainboot.c): off the bus, so the host stops
+   sending and nothing of USB's is in flight when the new kernel is copied
+   over this one. */
 void mtp_fs_prepare_for_warm_reboot(void) {
   if (tud_inited())
     (void) tud_disconnect();
@@ -835,6 +827,18 @@ static void fs_cache_live_remove(const char* path) {
   g_fs_cache.count--;
 }
 
+/* Public: the WebDAV server changed the SD filesystem directly via FatFs,
+   so the object-handle cache is stale.  It keeps answering meanwhile: the
+   path-specific variants patch the one entry in place and nudge the host
+   with an async MTP event, and every variant arms the debounced background
+   rebuild that replaces the cache wholesale (fs_cache_invalidate).  Safe to
+   call from the webserver: both MTP (tud_task) and the webserver
+   (webserver_poll) run in the single cooperative main-loop poll and never
+   preempt each other, and the cache is never touched from an ISR.  The
+   event handle is FNV(path), matching MTP's own handle scheme
+   (fs_handle_from_path); a rare hash collision that was repaired at
+   cache-build time may not match, in which case the host simply ignores
+   that event and falls back to a later re-enumeration.  See mtp_fs.h. */
 void mtp_fs_notify_fs_changed(void) {
   fs_cache_invalidate();
 }
@@ -1400,13 +1404,20 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
           fs_release_write_state();
           break;
         }
-        /* Hand the image over and answer the host normally: the buffer's
-           ownership moves with it, so clear the pointer before the release
-           below frees it. */
-        chainboot_request(g_write_state.kernel_data, g_write_state.transferred,
-                          g_write_state.kernel_capacity);
+        /* Asked at SendObjectInfo, and again now: the player may have been
+           opened while the image came. */
+        if (chainboot_refusal() != NULL) {
+          resp->header->code = MTP_RESP_DEVICE_BUSY;
+          fs_release_write_state();
+          break;
+        }
+        /* Hand the image over and answer the host: the buffer's ownership
+           moves with it either way (chainboot frees one it cannot take), so
+           clear the pointer before the release below frees it. */
+        bool taken = chainboot_request(g_write_state.kernel_data, g_write_state.transferred,
+                                       g_write_state.kernel_capacity);
         g_write_state.kernel_data = NULL;
-        resp->header->code = MTP_RESP_OK;
+        resp->header->code = taken ? MTP_RESP_OK : MTP_RESP_GENERAL_ERROR;
         fs_release_write_state();
         break;
       }
@@ -1947,13 +1958,14 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
         return MTP_RESP_INVALID_OBJECT_FORMAT_CODE;
       }
 
-      /* Refused before the host sends the image, not after. */
+      /* Refused before the host sends the image where it can be, so as not
+         to waste the copy; asked again when the image is in. */
       if (chainboot_refusal() != NULL) {
         fs_release_write_state();
         return MTP_RESP_DEVICE_BUSY;
       }
       uint32_t kernel_capacity = g_write_state.size_known ? ((g_write_state.size + 63u) & ~63u) : CHAINBOOT_MAX_IMAGE;
-      if ( (g_write_state.size > (CHAINBOOT_MAX_IMAGE - 63)) || (!fs_kernel_alloc(kernel_capacity))) {
+      if ( (g_write_state.size > CHAINBOOT_MAX_IMAGE) || (!fs_kernel_alloc(kernel_capacity))) {
         fs_release_write_state();
         return MTP_RESP_STORE_FULL;
       }

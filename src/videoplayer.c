@@ -37,6 +37,8 @@
 #include "rpi/systimer.h"
 #include "rpi/audio.h"
 #include "rpi/h264dec.h"
+#include "rpi/lowmem.h"
+#include "rpi/cache.h"
 #include "Pi1MHz.h"
 #include "pvf.h"
 #include "videoplayer.h"
@@ -56,7 +58,8 @@ static char pvf_path[32];
  * back over a kernel.now chain-boot - see the detailed rationale in git
  * history / docs: the VideoCore keeps allocations across an ARM warm
  * restart and the allocating and releasing kernels are different builds,
- * so the handles live at a fixed low-RAM address, not in .noinit.
+ * so the handles live at a fixed low-RAM address, not in .noinit
+ * (rpi/lowmem.h; 0x7C20 until the page table took 0x4000-0x7FFF).
  *
  * [0] magic 'VBUF', [1] still-frame buffer handle of a PRE-1.31 kernel
  * [2] magic 'VBF2', [3][4] the two H264 frame buffer handles
@@ -65,13 +68,17 @@ static char pvf_path[32];
  * frame it belonged to is gone, but chain-booting from an older kernel
  * would otherwise leak its 864 KB out of the pool the decoder needs.
  */
-#define VIDEOBUF_PERSIST_BASE 0x00007C20u
+#define VIDEOBUF_PERSIST_BASE LOWMEM_VIDEOBUF_PERSIST
 #define videobuf_magic    (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[0])
 #define videobuf_handle   (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[1])
 #define videobuf_magic2   (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[2])
 #define videobuf_handle2(n) (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[3 + (n)])
 #define VIDEOBUF_MAGIC    0x56425546u   /* 'VBUF' */
 #define VIDEOBUF_MAGIC2   0x56424632u   /* 'VBF2' */
+/* After every change: a kernel.now copies with the D-cache on, and the next
+   kernel must find the block in RAM, not in this one's dirty line. */
+#define videobuf_persist_clean() \
+    _clean_cache_area((const void *)VIDEOBUF_PERSIST_BASE, 5u * sizeof(uint32_t))
 
 /* ------------------------------------------------------------------ */
 /* Player state                                                       */
@@ -1208,6 +1215,23 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     memset(&vp, 0, sizeof(vp));
     vp.seek_frame = -1;
 
+    /* The handle block is only worth anything while the VideoCore instance
+       that allocated the buffers lives: across a kernel.now (the VC is not
+       reset) and across a BREAK.  Any other boot - power-on, watchdog,
+       crash - restarted the VC, so whatever the block holds names nothing,
+       or something new; releasing it could free another user's memory.
+       Decided once, at the first init, where it is known which boot this
+       was; a BREAK re-init keeps the release below. */
+    static bool persist_checked;
+    if (!persist_checked) {
+        persist_checked = true;
+        if (!RPI_ChainBooted()) {
+            videobuf_magic = 0u;
+            videobuf_magic2 = 0u;
+            videobuf_persist_clean();
+        }
+    }
+
     /* An older kernel's 4:2:2 still-frame buffer, if we chain-booted from
        one: the still is gone, so just give the memory back. */
     if (videobuf_magic == VIDEOBUF_MAGIC && videobuf_handle != 0u) {
@@ -1225,6 +1249,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
             }
         videobuf_magic2 = 0;
     }
+    videobuf_persist_clean();
 
     /* LAZY BRING-UP (2026-08-25): opening the video file, starting the
        hardware decoder and allocating GPU frame buffers used to happen right
@@ -1298,6 +1323,7 @@ static void vp_bring_up(void)
     videobuf_magic2 = VIDEOBUF_MAGIC2;
     for (int i = 0; i < NUM_FRAME_BUFFERS; i++)
         videobuf_handle2(i) = handles[i];
+    videobuf_persist_clean();
 
     screen_create_YUV420_plane(YUV_PLANE, vp.hdr.width, vp.hdr.height,
                                vp.buf_phys[0]);

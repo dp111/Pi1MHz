@@ -103,6 +103,8 @@ See mdfs.net/Docs/Comp/BBC/Hardware/JIMAddrs for full details
 #include "Pi1MHz.h"
 
 #include "Pi1MHzvc.c"
+_Static_assert(sizeof(Pi1MHzvc_asm) <= LOWMEM_VPU_PROGRAM_SIZE,
+               "the VPU program no longer fits below the low-RAM markers");
 
 #include "scripts/gitversion.h"
 
@@ -647,7 +649,13 @@ static void init_emulator(void) {
 
       kernel.now chain-boot: the VPU is still running the previous kernel's
       handler with its own tag and cannot be relaunched, so the ring is left
-      alone and the consumer is seeded from it.  The producer writes the
+      alone and the consumer is seeded from it.  That handler is the one a
+      cold boot copied to LOWMEM_VPU_PROGRAM, under the kernel where the
+      incoming image cannot overwrite it - it used to run straight out of
+      .rodata, which the copy replaced with whatever the new image held
+      there.  The other side of that: this kernel's Pi1MHzvc_asm is never
+      used after a chain-boot, so a change to the VPU program only takes
+      effect from a cold boot (an SD install).  The producer writes the
       slots in order, so the one place round the ring where the lap drops by
       one is its position: the next entry is that slot with the previous
       slot's lap, or slot 0 with the next lap if every slot carries the same
@@ -679,8 +687,23 @@ static void init_emulator(void) {
             Pi1MHz_post_ring[s] = (s | 24u) << 27;
          _fiq_set_consumer(0);                 /* Pi1MHz_fiq_overruns is cumulative: the BREAK row shows the delta */
 
+         /* The VPU fetches the program itself, so the copy has to be in
+            RAM, not in a dirty D-cache line.  Skipped when the bytes are
+            already there: if this were a chain-boot misread as cold, the
+            VPU would be executing them.  The plain ARM address is passed,
+            as it always was (the uncached alias would change the bus
+            loop's timing).  On the BCM2836/7 the ARM's stores bypass the
+            VideoCore L2 the VPU fetches through: code written by the ARM
+            and fetched by the VPU there is the one coherency point not yet
+            proved, and the kernel7 cold-boot test settles it. */
+         if (memcmp((const void *)LOWMEM_VPU_PROGRAM, Pi1MHzvc_asm,
+                    sizeof(Pi1MHzvc_asm)) != 0) {
+            memcpy((void *)LOWMEM_VPU_PROGRAM, Pi1MHzvc_asm, sizeof(Pi1MHzvc_asm));
+            _clean_cache_area((const void *)LOWMEM_VPU_PROGRAM, sizeof(Pi1MHzvc_asm));
+         }
+
          RPI_PropertyStart(TAG_LAUNCH_VPU1, 7);
-         RPI_PropertyAdd((uint32_t)Pi1MHzvc_asm); // VPU function
+         RPI_PropertyAdd(LOWMEM_VPU_PROGRAM); // VPU function (ARM address, passed as before)
          RPI_PropertyAdd (Pi1MHz_MEM_BASE_GPU); // r0 address of register block in IO space
          RPI_PropertyAdd((PERIPHERAL_BASE_GPU | (Pi1MHz_POST_RING & 0x00FFFFFF) )); // r1: the post ring base (docs/dev/bus-post-ring.md)
 
@@ -1013,6 +1036,15 @@ _Noreturn void kernel_main(void)
 {
    Pi1MHz_boot_entry_us = RPI_GetSystemTime();
    RPI_ChainBootConsume();
+
+   /* A kernel.now arrives with the previous kernel's doorbell FIQ still
+      selected, the VPU still ringing it, and the callback table at
+      Pi1MHz_CB_BASE still holding that kernel's function pointers - into
+      what is now this image's code.  init_emulator unmasks interrupts well
+      before it clears that table and seeds the post ring, so the doorbell is
+      deselected here, as it already is at a cold boot, and init_emulator
+      selects it again once both are done (the "doorbell FIQ" line). */
+   RPI_IRQBase->FIQ_control = 0;
 
    unsigned int baud_rate = 115200;
    const char * const prop = get_cmdline_prop("baud_rate");

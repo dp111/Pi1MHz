@@ -125,11 +125,12 @@ static bool chainboot_image_ok(const uint8_t *image, uint32_t length)
       return false;
    return image[3] == 0xeau;
 }
-static void chainboot_request(uint8_t *image, uint32_t length, uint32_t cap)
+static bool chainboot_request(uint8_t *image, uint32_t length, uint32_t cap)
 {
    (void)length; (void)cap;
    boot_calls++;
    (free)(image);              /* chainboot owns it now */
+   return true;                /* taken */
 }
 
 #include "ws_kn.inc"

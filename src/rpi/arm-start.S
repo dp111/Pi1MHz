@@ -26,6 +26,7 @@
 //  POSSIBILITY OF SUCH DAMAGE.
 
 #include "rpi.h"
+#include "lowmem.h"
 
 .equ    STACK_BASE,          arm_stack
 .equ    STACK_SIZE,          0x0010000
@@ -167,18 +168,18 @@ _reset_continue:
 
     // Start from a known MMU state.  At a cold boot the GPU hands over with
     // the MMU and caches already off, so this is a no-op.  After a kernel.now
-    // chain-boot it is not: the previous kernel is still using its own page
-    // table, whose live copy sits in ITS .noinit - and if the two images place
-    // .noinit differently, that table falls inside the range the bss clear
-    // below is about to zero.  The clear then wipes the table it is running
-    // on, sweeps on undisturbed while the TLB still covers the section being
-    // written, and dies the moment it touches an address it has to walk for -
-    // a Data Abort at exactly the next 1 MB boundary.  Turning the MMU off
-    // first makes the incoming kernel independent of whatever the outgoing one
-    // left behind.  (_copyandreboot also hands over with it off now; this is
-    // the half that protects us from an older kernel that does not.)
+    // chain-boot from an older kernel it may not be: such a kernel can jump
+    // here still using its own page table, whose live copy sat in ITS .noinit
+    // - and if the two images place .noinit differently, that table falls
+    // inside the range the bss clear below is about to zero.  The clear then
+    // wipes the table it is running on, sweeps on undisturbed while the TLB
+    // still covers the section being written, and dies the moment it touches
+    // an address it has to walk for - a Data Abort at exactly the next 1 MB
+    // boundary.  Turning the MMU off first makes the incoming kernel
+    // independent of whatever the outgoing one left behind.  (The copier at
+    // LOWMEM_CHAINBOOT_COPIER hands over with it off; this is the half that
+    // protects us from a kernel that does not.)
     bl      _early_mmu_off_and_vectors
-    nop                                // keep this pair two instructions wide
 
     // Initialise Stack Pointers ---------------------------------------------
     ldr     r4,=STACK_BASE
@@ -237,107 +238,180 @@ bssclearloop:
 
 .global _copyandreboot
 
-// we copy our code to below &8000 and then jump to it.
-// R0 = source
-// R1 = length
+// kernel.now: restart into the image at r0, r1 bytes long (a non-zero
+// multiple of 64 - chainboot_request pads it).  Called from chainboot_poll
+// with interrupts off and the audio DMA stopped, with the MMU and both caches
+// still on: the copy runs cached, and the copier cleans everything out to
+// RAM once it is done.  Never returns.
+//
+// The image goes where this kernel runs, so the copy cannot run from this
+// kernel: it would be writing over its own loop.  The copier below is first
+// copied to its own page under the kernel, LOWMEM_CHAINBOOT_COPIER, and runs
+// from there.  Nothing it uses lies in the copy's path - it has no stack, the
+// page table it translates through is at LOWMEM_PAGE_TABLE, and the copy only
+// writes from LOWMEM_KERNEL_BASE up - so the hand-over no longer depends on
+// the incoming image's layout or size (up to CHAINBOOT_MAX_IMAGE) at all.
 _copyandreboot:
-    push {r0, r1}
-    //ldr r0, =_start_vectors - 0x100
-    //adr r1, _copyandreboot_code
-    //mov r2, # ((_fast_scroll_end - _copyandreboot_code + 63) & ~63)
-    //bl _fast_scroll
-    pop {r1, r2}
-    ldr r0, =_start_vectors
+    ldr     r2, =_start_vectors            // where the image goes: where we run
+    adr     r3, _chainboot_copier
+    adr     r4, _chainboot_copier_end
+    mov     r5, #LOWMEM_CHAINBOOT_COPIER
+1:
+    ldr     r6, [r3], #4
+    str     r6, [r5], #4
+    cmp     r3, r4
+    blo     1b
+    mov     r7, r5                         // end of the copier at its new home
 
-    //B _start_vectors - 0x100
-_copyandreboot_code:
-    BL _fast_scroll
-
-    // flush caches and branch predictor to make sure we execute the new code
-    mov r0,#0
-    mcr p15, 0, r0, c7, c5, 0
-
-// flush BTB icache dcache it might be better to just invalidate a few lines
-#if (__ARM_ARCH >= 7 )
-
-    mrc     p15, 1, r0, c0, c0, 1      @ Read CLIDR (Cache Level ID Register)
-    and     r3, r0, #0x07000000        @ Extract LoC (Bits 26:24)
-    mov     r10, #0                    @ Start at Cache Level 0
-
-loop_level:
-    add     r2, r10, r10, lsr #1       @ Calculate level shift
-    mov     r1, r0, lsr r2             @ Get bits for this level
-    and     r1, r1, #7                 @ Mask to get cache type
-    cmp     r1, #2                     @ Does it have a data cache?
-    blt     next_level                 @ Skip if no data cache
-
-    @ Select this cache level in CSSELR
-    mcr     p15, 2, r10, c0, c0, 0     @ Write CSSELR
-    isb                                @ Instruction Synchronization Barrier
-    mrc     p15, 1, r1, c0, c0, 0      @ Read CCSIDR (Current Cache Size ID)
-
-    @ Extract Way/Set geometry
-    and     r2, r1, #7                 @ Line size (log2 words - 2)
-    add     r2, r2, #4                 @ Actual line size offset
-    ldr     r4, =0x3ff
-    and     r4, r4, r1, lsr #3         @ Max Way number
-    clz     r5, r4                     @ Way shift (bit position)
-    ldr     r7, =0x7fff
-    and     r7, r7, r1, lsr #13        @ Max Set number
-
-loop_set:
-    mov     r9, r4                     @ Reset Way counter
-loop_way:
-    @ Combine Way, Set, and Level into a single register for DCCISW
-    orr     r11, r10, r9, lsl r5       @ Insert Way
-    orr     r11, r11, r7, lsl r2       @ Insert Set
-    mcr     p15, 0, r11, c7, c14, 2    @ DCCISW (Clean & Invalidate by Set/Way)
-    subs    r9, r9, #1                 @ Decrement Way
-    bge     loop_way
-    subs    r7, r7, #1                 @ Decrement Set
-    bge     loop_set
-
-next_level:
-    add     r10, r10, #2               @ Increment Level (Level 0, 2, 4...)
-    cmp     r3, r10, lsl #23           @ Compare with LoC
-    bgt     loop_level
-
-
-finished:
-
-   DSB
-   mov r0,#0
-   MCR p15, 0, r0, c7, c5, 0 // invalidate I&BTB cache
-
-   DSB
-   ISB
-
+    // Freshly written code is about to run, written through the D-cache:
+    // clean it to the point of unification, where the instruction side
+    // fetches from, then drop any stale I-cache line, branch prediction and
+    // prefetched instruction for that page.
+    mov     r6, #0
+#if (__ARM_ARCH >= 7)
+    mov     r5, #LOWMEM_CHAINBOOT_COPIER
+2:
+    mcr     p15, 0, r5, c7, c11, 1         // DCCMVAU: clean line to PoU
+    add     r5, r5, #32                    // no v7 core here has a smaller line
+    cmp     r5, r7                         // ... up to the copy's end (r7)
+    blo     2b
+    dsb
+    mcr     p15, 0, r6, c7, c5, 0          // ICIALLU: invalidate I-cache
+    mcr     p15, 0, r6, c7, c5, 6          // BPIALL: invalidate branch predictor
+    dsb
+    isb
 #else
+    mcr     p15, 0, r6, c7, c10, 0         // clean entire D-cache (the ARM1176
+                                           // has no separate PoU clean)
+    mcr     p15, 0, r6, c7, c10, 4         // DSB: drain the write buffer
+    // ARM1176 erratum 411920: Invalidate Entire Instruction Cache can miss
+    // lines.  The workaround is four in a row with interrupts off (they are),
+    // then at least 11 NOPs.
+    mcr     p15, 0, r6, c7, c5, 0
+    mcr     p15, 0, r6, c7, c5, 0
+    mcr     p15, 0, r6, c7, c5, 0
+    mcr     p15, 0, r6, c7, c5, 0
+    .rept   11
+    mov     r0, r0                         // a real NOP, not the v6K hint
+    .endr
+    mcr     p15, 0, r6, c7, c5, 6          // flush the branch target cache
+    mcr     p15, 0, r6, c7, c10, 4         // DSB
+    mcr     p15, 0, r6, c7, c5, 4          // flush prefetch buffer (ISB)
+#endif
+    mov     r5, #LOWMEM_CHAINBOOT_COPIER
+    bx      r5                             // r0 = src, r1 = length, r2 = dst
 
-// Pizero Cache flush code
+// The copier: runs at LOWMEM_CHAINBOOT_COPIER, so it must be position
+// independent - relative branches inside itself only, no literal pool, no
+// symbol addresses - and must not touch the stack, which is in the copy's
+// path (arm_stack is in .noinit).
+//
+// The ascending copy is safe although source and destination can overlap:
+// the source is a heap buffer, and the heap starts at this kernel's _end, so
+// src > dst always.  Each block is read before the (lower) block it lands
+// on is written, so an overlap only ever overwrites bytes already copied.
+//
+// In:  r0 = source, r1 = length (a non-zero multiple of 64), r2 = destination
+//      and entry point of the incoming image.
+_chainboot_copier:
+    mov     r12, r2                        // the entry point, kept for the jump
+2:
+    ldmia   r0!, {r3-r10}
+    stmia   r2!, {r3-r10}
+    ldmia   r0!, {r3-r10}
+    stmia   r2!, {r3-r10}
+    subs    r1, r1, #64
+    bhi     2b                             // stops at 0, and can never wrap
 
-   // clean and invalidate all the cache
-   mov r0,#0
-   // Instruction count here is load-bearing: _fast_scroll must keep the
-   // address the outgoing kernel calls, so this block cannot grow.  The DSB
-   // that would belong here is done in _chainboot_mmu_off instead.
-   MCR p15, 0, r0, c7, c14, 0 //; clean+invalidate entire data cache
-   MCR p15, 0, r0, c7, c5, 0 //; invalidate I cache and BTB
-   MCR p15, 0, r0, c7, c5, 4 // flush prefetch buffer
-
+#if (__ARM_ARCH >= 7)
+    // Clean and invalidate every data/unified cache level, to the point of
+    // coherency (the A53's L2 included), by set/way.  The copy ran with the
+    // D-cache on, so much of the new image may still be dirty lines; this is
+    // what puts it, and anything else below 0x8000 still dirty, in RAM before
+    // the caches go off and the new kernel starts uncached.  (The chain-boot
+    // marker does not depend on it: RPI_ChainBootMark cleans its own.)
+    // Set/way operations are not ordered against earlier stores, so the copy
+    // has to complete first, or its last line could be swept while still in
+    // the store buffer and stay dirty (as Linux's v7_flush_dcache_all).
+    dsb
+    mrc     p15, 1, r0, c0, c0, 1          // CLIDR
+    and     r3, r0, #0x07000000            // LoC, bits 26:24
+    mov     r10, #0                        // cache level 0 (x2)
+3:
+    add     r2, r10, r10, lsr #1           // 3 x level: this level's CLIDR field
+    mov     r1, r0, lsr r2
+    and     r1, r1, #7                     // cache type at this level
+    cmp     r1, #2
+    blt     6f                             // no data cache here
+    mcr     p15, 2, r10, c0, c0, 0         // CSSELR: select this level
+    isb
+    mrc     p15, 1, r1, c0, c0, 0          // CCSIDR
+    and     r2, r1, #7                     // log2(line length) - 4
+    add     r2, r2, #4                     // set shift
+    movw    r4, #0x3ff
+    and     r4, r4, r1, lsr #3             // max way number
+    clz     r5, r4                         // way shift
+    movw    r7, #0x7fff
+    and     r7, r7, r1, lsr #13            // max set number
+4:
+    mov     r9, r4                         // ways, from the top
+5:
+    orr     r11, r10, r9, lsl r5
+    orr     r11, r11, r7, lsl r2
+    mcr     p15, 0, r11, c7, c14, 2        // DCCISW
+    subs    r9, r9, #1
+    bge     5b
+    subs    r7, r7, #1
+    bge     4b
+6:
+    add     r10, r10, #2
+    cmp     r3, r10, lsl #23               // compare with LoC
+    bgt     3b
+    dsb
+#else
+    // As above: the copy is still partly in dirty lines.
+    mov     r0, #0
+    mcr     p15, 0, r0, c7, c14, 0         // clean+invalidate entire D-cache
+    mcr     p15, 0, r0, c7, c10, 4         // DSB
 #endif
 
-// Hand over with the MMU and caches off - see _chainboot_mmu_off.  This must
-// stay a single instruction: _copyandreboot_code runs IN PLACE while
-// _fast_scroll copies the new image over it, so every byte from here back to
-// _copyandreboot_code has to keep the address the outgoing kernel expects.
-// Growing this region shifts _fast_scroll and the copy overwrites the loop
-// mid-flight; the out-of-line routine lives past _fast_scroll_end instead.
-    b _chainboot_mmu_off
+    // Hand over in the state the GPU leaves a cold boot in: MMU and caches
+    // off, nothing stale in the TLB, I-cache or branch predictor.  This page
+    // is identity mapped, so turning the MMU off under it is seamless.
+    mrc     p15, 0, r0, c1, c0, 0
+    bic     r0, r0, #0x0001                // M: MMU off
+    bic     r0, r0, #0x0004                // C: data cache off
+    bic     r0, r0, #0x1000                // I: instruction cache off
+    mcr     p15, 0, r0, c1, c0, 0
+    mov     r0, #0
+#if (__ARM_ARCH >= 7)
+    isb
+    mcr     p15, 0, r0, c8, c7, 0          // TLBIALL
+    mcr     p15, 0, r0, c7, c5, 0          // ICIALLU
+    mcr     p15, 0, r0, c7, c5, 6          // BPIALL
+    dsb
+    isb
+#else
+    mcr     p15, 0, r0, c7, c5, 4          // flush prefetch buffer
+    mcr     p15, 0, r0, c8, c7, 0          // invalidate entire TLB
+    mcr     p15, 0, r0, c7, c5, 0          // invalidate I-cache (now off)
+    mcr     p15, 0, r0, c7, c5, 6          // flush the branch target cache
+    mcr     p15, 0, r0, c7, c10, 4         // DSB
+    mcr     p15, 0, r0, c7, c5, 4          // flush prefetch buffer
+#endif
+    // A register branch to the image's own start.  Never "mov pc, #symbol":
+    // a MOV immediate cannot carry a symbol, and it once assembled as
+    // "mov pc, #0" - a jump into the firmware's ARM stub, which killed every
+    // chain-boot on the Pi 3 family (Zero 2 W, 2026-09-11).
+    bx      r12
+_chainboot_copier_end:
 
+.if (_chainboot_copier_end - _chainboot_copier) > LOWMEM_CHAINBOOT_COPIER_SIZE
+.error "the kernel.now copier no longer fits its page at LOWMEM_CHAINBOOT_COPIER"
+.endif
 
-// and then restart
 .global _fast_scroll
+// Block copy, used by the framebuffer's scroll (screen_modes.c).
 // R0 = dst
 // R1 = src
 // R2 = number of bytes, must be a multiple of 64
@@ -352,23 +426,11 @@ _fast_scroll_loop:
         stmia   r0!,{r3, r4, r5, r6, r8, r9, r10, r11}
         bne     _fast_scroll_loop
         pop     {r4, r5, r6, r8, r9, r10, r11, pc}
-_fast_scroll_end:
-
-// Everything below is deliberately placed AFTER _fast_scroll_end.
-//
-// A kernel.now flash copies the incoming image over the outgoing kernel while
-// the outgoing kernel is executing from the region being overwritten -
-// _copyandreboot_code runs in place and _fast_scroll copies straight across
-// it.  That only survives because the bytes there are the same in both images.
-// So nothing may be inserted at or before _fast_scroll_end: doing so shifts
-// the copy loop, the outgoing kernel executes whatever landed at its old
-// address, and the flash dies with no output at all.  Past _fast_scroll_end
-// the copy has already finished, so code here is free to differ.
 
 // Bring the MMU and caches down to the state the GPU hands over in at a cold
 // boot.  Then point the vector base at this image.  Called from _reset_ before
 // the .bss clear; a no-op on a cold boot, and the thing that saves us on a
-// chain-boot - see the note at the call site.
+// chain-boot from an older kernel - see the note at the call site.
 _early_mmu_off_and_vectors:
     mrc     p15, 0, r4, c1, c0, 0
     bic     r4, r4, #0x0001            // M: MMU off
@@ -383,31 +445,6 @@ _early_mmu_off_and_vectors:
     ldr     r4, =_start_vectors
     mcr     p15, 0, r4, c12, c0, 0     // vector base = start of this image
     bx      lr
-
-// The outgoing half of the same handover: drop the MMU before branching into
-// the freshly copied image, so it never runs a single instruction under this
-// kernel's page table.  The incoming kernel protects itself as well, but an
-// older kernel in the field does not, and this is the side that fixes it for
-// the image being replaced.  Reached by the one-instruction branch that ends
-// _copyandreboot_code; the caches were cleaned there, so the copy is in RAM
-// and not stranded in a line that turning the cache off would discard.
-_chainboot_mmu_off:
-    mrc     p15, 0, r0, c1, c0, 0
-    bic     r0, r0, #0x0001            // M: MMU off
-    bic     r0, r0, #0x0004            // C: data cache off
-    bic     r0, r0, #0x1000            // I: instruction cache off
-    mcr     p15, 0, r0, c1, c0, 0
-    mov     r0, #0
-    mcr     p15, 0, r0, c8, c7, 0      // invalidate entire TLB
-    mcr     p15, 0, r0, c7, c10, 4     // DSB
-    mcr     p15, 0, r0, c7, c5, 4      // flush prefetch buffer
-    // A branch, not "mov pc, #_start_vectors": a MOV immediate cannot carry a
-    // symbol and assembled as "mov pc, #0" - a jump into the firmware's ARM
-    // stub at address 0.  On the ARM1176 that stub just re-enters 0x8000, so
-    // chain-boots worked by accident; on the Pi 3 family the 32-bit stub is
-    // reset-time HYP-mode code and re-entering it from SVC killed every
-    // chain-boot right here (Zero 2 W, 2026-09-11).
-    b       _start_vectors
 
 .section ".text._exception_handlers_", "x"
 _undefined_instruction_handler_:

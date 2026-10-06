@@ -26,8 +26,16 @@ header — trust the newest status over the body).
   inside that state's `case`, not behind an `if` in the caller. Match the
   idiom of the code you are editing.
 - **Low RAM below 0x8000 is VPU/Beeb-shared** (`Pi1MHz_STRUCT_VADDR`
-  0x100 + shadow/JIM). ARM-side persistent state goes in `.noinit`
-  (survives watchdog resets and the loader), never at fixed low addresses.
+  0x100 + callback table to 0x13FF). ARM-side persistent state goes in
+  `.noinit` (survives watchdog resets and the loader), never at fixed low
+  addresses - with exactly four recorded exceptions, all in
+  `src/rpi/lowmem.h`: the VPU bus program (0x3A00, copied at a cold boot
+  only, so a VPU-code change needs a cold boot/SD install), the kernel.now
+  markers (0x3D00: chain-boot marker, video GPU handles), the kernel.now
+  copier (0x3E00) and the L1 page table (0x4000-0x7FFF). They exist because
+  a kernel.now copy writes the incoming image from 0x8000 up over the
+  running kernel, `.noinit` included, and `.noinit` moves between builds;
+  add nothing else there.
 - The video plane is enabled only when the player has a real decoded frame
   (`videoplayer_active()`); data-only disc sides show black, never a stale
   buffer. The player is lazy: boot and BBC reset do no video/GPU/SD work.
@@ -79,9 +87,13 @@ header — trust the newest status over the body).
   `claude-tmp/pi-status.sh 'Boot|Display'` gives /status as text - never
   dump the HTML. `claude-tmp/beeb-cap.sh` grabs the HDMI capture, which is
   the **Pi's** output (help screen / video plane), not the Beeb's native
-  screen. A `Boot time` row with a real pre-kernel figure after a
-  kernel.now means the chain-boot fell back to the SD kernel - fingerprint
-  before believing any symptom. Zero bytes on COM9 after F11 (1B 5B 57)
+  screen. When the running AND the pushed build both have the low-RAM
+  chain marker (`src/rpi/lowmem.h`), a `Boot time` row with a real
+  pre-kernel figure after a kernel.now means the chain-boot fell back to
+  the SD kernel; "n/a (chain-boot)" counts only with the `Reset reason` row
+  showing no reset since the push. With an older build on either side the
+  row proves nothing, so fingerprint the banner before believing any
+  symptom (`docs/dev/chainboot-kernel-now.md`). Zero bytes on COM9 after F11 (1B 5B 57)
   means the Pico is wedged and needs a physical re-plug, not a firmware
   fault. `claude-tmp/build-all.sh` builds the three configs release-last
   and prints only warnings. Brief subagents narrowly with an output cap;

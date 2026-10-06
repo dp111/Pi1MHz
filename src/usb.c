@@ -346,9 +346,10 @@ static void usb_boot_task(void)
   tusb_init(BOARD_TUD_RHPORT, &port_init);
 
   if (s_usb_host) {
-    /* Polled - see usb_host_task.  hcd_init never enabled the output
-       (usb/tinyusb-hcd-polled.patch); TinyUSB's later writes only save and
-       restore it.  Belt and braces: */
+    /* Polled - see usb_host_task.  hcd_init never enabled the controller's
+       output (usb/tinyusb-hcd-polled.patch), and TinyUSB's hcd_int_enable
+       on every tuh_task leaves the ARM's IRQ 9 alone (dwc2_int_set in
+       usb/broadcom/interrupts.h), so this stays as set here: */
     USB_GAHBCFG &= ~GAHBCFG_GINT_BIT;
     RPI_GetIrqController()->Disable_IRQs_1 = (1 << 9);
   } else {

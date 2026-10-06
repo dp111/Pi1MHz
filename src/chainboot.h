@@ -24,8 +24,11 @@ const char *chainboot_refusal(void);
 /* Restart into image, length bytes: a malloc'd buffer of capacity bytes,
    which chainboot now owns (it pads the length to 64 with zeros inside the
    capacity).  The jump happens from chainboot_poll, after a moment for the
-   sender's answer to get out. */
-void chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity);
+   sender's answer to get out - unless chainboot_refusal() has changed its
+   mind by then, when the image is dropped and the Pi carries on.  False if
+   the image cannot be taken (no room for the padding): it is freed all the
+   same, and the sender must answer with an error. */
+bool chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity);
 
 /* Main-loop step; never returns once the jump is due.  Called from the
    polls that can make a request (USB, the webserver), so it needs no slot

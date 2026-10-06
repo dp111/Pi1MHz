@@ -18,7 +18,7 @@ cp "$SRC"/M5000_emulator.c "$SRC"/M5000_emulator.h "$SRC"/config.h \
    "$SRC"/videoplayer.h "$B/"
 cp "$SRC"/rpi/audio.h "$SRC"/rpi/gpio.h "$SRC"/rpi/info.h "$SRC"/rpi/byteorder.h \
    "$SRC"/rpi/base.h "$SRC"/rpi/mailbox.h "$SRC"/rpi/rpi.h "$SRC"/rpi/systimer.h \
-   "$SRC"/rpi/fileparser.h "$B/rpi/"
+   "$SRC"/rpi/fileparser.h "$SRC"/rpi/lowmem.h "$B/rpi/"
 cp "$SRC"/BeebSCSI/filesystem.c "$SRC"/BeebSCSI/filesystem.h "$SRC"/BeebSCSI/debug.h \
    "$SRC"/BeebSCSI/scsi.h "$SRC"/BeebSCSI/cpuspecific.h "$B/BeebSCSI/"
 cp "$SRC"/BeebSCSI/fatfs/ff.c "$SRC"/BeebSCSI/fatfs/ff.h "$SRC"/BeebSCSI/fatfs/ffunicode.c \

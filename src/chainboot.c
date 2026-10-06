@@ -7,10 +7,12 @@
 
 #include "chainboot.h"
 #include "Pi1MHz.h"
+#include "BeebSCSI/filesystem.h"
 #include "usb/mtp_fs.h"
 #include "videoplayer.h"
 #include "rpi/asm-helpers.h"
-#include "rpi/cache.h"
+#include "rpi/audio.h"
+#include "rpi/h264dec.h"
 #include "rpi/rpi.h"
 #include "rpi/systimer.h"
 #include "wifi/sdio.h"
@@ -34,6 +36,12 @@ const char *chainboot_refusal(void)
       orphans the GPU decoder, and video stays broken until a full reboot. */
    if (videoplayer_active())
       return "The video player is open - close it (or reboot) first.";
+   /* The decoder outlives the player: its MMAL component and VCHIQ service
+      are never torn down once started - not by closing the player, not by a
+      BREAK - so after any video use since the last reboot there is something
+      a chain-boot would orphan. */
+   if (h264dec_running())
+      return "Video has been used since the last reboot - reboot first.";
    return NULL;
 }
 
@@ -54,47 +62,115 @@ const char *chainboot_refusal(void)
  * callbacks rather than nested inside one. */
 static uint8_t *s_image;
 static uint32_t s_length;
+static uint8_t  s_stage;         /* where chainboot_poll has got to with it */
+static bool     s_usb_off;       /* USB taken off the bus for the jump */
+static bool     s_took_card;     /* the eject was ours, so a give-up returns it */
 
 /* Long enough for the sender's answer to get out: an MTP response on the
    wire, or an HTTP one through lwIP and the WiFi chip. */
 #define CHAINBOOT_SETTLE_US 200000u
 
-void chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity)
+bool chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity)
 {
    uint32_t padded = (length + 63u) & ~63u;
    if (image == NULL || padded > capacity) {
       free(image);
-      return;
+      return false;
    }
    memset(image + length, 0, padded - length);
    free(s_image);                 /* a second request replaces the first */
    s_image = image;
    s_length = padded;
+   s_stage = 0u;                  /* ...and waits a settle of its own, so its
+                                     sender's answer gets out too */
+   return true;
+}
+
+/* Give the image up and let the Pi carry on as it was: what this code took
+   for the jump goes back, and nothing else - a card the user had ejected
+   stays out, and USB with it.  The sender has had its OK already; there is
+   no telling it otherwise. */
+static void chainboot_abandon(void)
+{
+   free(s_image);
+   s_image = NULL;
+   s_stage = 0u;
+   if (s_took_card) {
+      /* And with it USB (mtp_fs_inserted).  If the card will not mount, the
+         Pi is left as a failed HD_CARD_INSERT leaves it: ejected, so USB
+         stays off - it is only ever on the bus with a card behind it - and
+         the Beeb's own insert, or a BBC reset, brings both back. */
+      if (!filesystemInsert()) {
+         LOG_DEBUG("chainboot: card did not mount again - left ejected\r\n");
+      }
+   } else if (s_usb_off && !filesystemEjected())
+      mtp_fs_inserted();                 /* USB back; the host enumerates afresh */
+   s_took_card = false;
+   s_usb_off = false;
 }
 
 void chainboot_poll(void)
 {
-   static uint8_t stage;
    static uint32_t settle_us;
 
    if (s_image == NULL)
       return;
 
-   if (stage == 0u) {
+   /* The player or the decoder may start while this waits, and then the
+      image is given up rather than orphan the decoder.  The refusal is asked
+      again before each step that would cost the Beeb something to undo. */
+   if (s_stage == 0u) {
       settle_us = RPI_GetSystemTime() + CHAINBOOT_SETTLE_US;
-      stage = 1u;
+      s_stage = 1u;
       return;
    }
-   if (stage == 1u) {
+   if (s_stage == 1u) {
       if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
          return;
+      if (chainboot_refusal() != NULL) {   /* nothing touched yet */
+         chainboot_abandon();
+         return;
+      }
       mtp_fs_prepare_for_warm_reboot();   /* USB off the bus, so nothing is left in flight */
+      s_usb_off = true;
       settle_us = RPI_GetSystemTime() + 50000u;
-      stage = 2u;
+      s_stage = 2u;
       return;
    }
-   if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
+   if (s_stage == 2u) {
+      if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
+         return;
+      if (chainboot_refusal() != NULL) {   /* free: at most USB comes back */
+         chainboot_abandon();
+         return;
+      }
+      if (!filesystemEjected())
+         s_took_card = true;    /* ours from here; one the user ejected is not */
+      s_stage = 3u;
       return;
+   }
+   if (s_stage == 3u) {
+      /* As the Beeb's own reboot (HD_CARD_REBOOT): every open file closed and
+         the volume dismounted, so nothing unsynced - a FAT-service file, a
+         recording, a half-written upload - is lost with lost clusters left
+         behind.  A step per pass: a recording still being written out makes
+         its subsystem wait. */
+      if (!filesystemEject())
+         return;
+      s_stage = 4u;
+      return;
+   }
+
+   /* Only a backstop now, for an eject that took several passes (a Music
+      5000 recording being flushed).  Giving up here is not free for the
+      Beeb: the eject stopped every LUN, and putting the card back mounts it
+      without restarting them and resets the FAT directory to /Transfer, so
+      a session in progress - a Domesday disc, say - loses its discs until
+      the next BREAK.  Still better than orphaning the decoder. */
+   if (chainboot_refusal() != NULL) {
+      chainboot_abandon();
+      return;
+   }
 
    /* The chip keeps power across the warm jump, so tell it to stop signalling
       on DAT1 (CCCR 0x04, HOSTINTMASK) and hide the controller latch before the
@@ -102,10 +178,12 @@ void chainboot_poll(void)
    sdio_runtime_prepare_for_warm_reboot();
 
    _disable_interrupts();
+   audio_stop_dma();      /* the copy may run over its control blocks */
    RPI_ChainBootMark();   /* the incoming kernel_main learns it was chain-booted */
-   /* Turn the D-cache off first, so the copy of the incoming image over the
-      running kernel goes straight to RAM.  The copier then needs no cache
-      management of its own, and the new kernel starts on a coherent image. */
-   disable_data_cache();
+   /* The copy runs with the caches on - an uncached copy of up to 4 MB is
+      slow, and the marker above is only believed within 500 ms.  The copier
+      cleans the whole data side to RAM before it turns the caches off
+      (arm-start.S); the marker does not wait for that - RPI_ChainBootMark
+      cleans its own words. */
    _copyandreboot(s_image, (int)s_length); /* never returns */
 }

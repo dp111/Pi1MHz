@@ -3230,10 +3230,11 @@ static bool route_status(ws_conn_t *c)
       /* Only meaningful from a cold or watchdog boot: a kernel.now chain-boot
          inherits a timer that has been running since the original power-on,
          so the entry stamp is an uptime, not a firmware load.  The outgoing
-         kernel leaves a marker in .noinit that says so (RPI_ChainBootMark). */
+         kernel leaves a marker in low RAM that says so (RPI_ChainBootMark). */
       if (RPI_ChainBooted())
          snprintf(tmp, sizeof tmp,
-                  "pre-kernel n/a (chain-boot), kernel->poll %lu ms", init);
+                  "pre-kernel n/a (chain-boot, jump %lu ms), kernel->poll %lu ms",
+                  (unsigned long)(RPI_ChainBootJumpUs() / 1000u), init);
       else
          snprintf(tmp, sizeof tmp, "pre-kernel %lu ms, kernel->poll %lu ms",
                   pre, init);
@@ -4095,8 +4096,12 @@ static const char *kn_take(ws_conn_t *c, int *status)
       c->kn_buf = NULL;
       return why;
    }
-   chainboot_request(c->kn_buf, c->kn_len, c->kn_cap);
-   c->kn_buf = NULL;
+   bool taken = chainboot_request(c->kn_buf, c->kn_len, c->kn_cap);
+   c->kn_buf = NULL;                  /* chainboot's now, or freed by it */
+   if (!taken) {
+      *status = 507;
+      return "There is no room for kernel.now.";
+   }
    return NULL;
 }
 

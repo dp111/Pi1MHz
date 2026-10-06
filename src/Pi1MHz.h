@@ -5,6 +5,7 @@
 
 #include "rpi/rpi.h"
 #include "rpi/base.h"
+#include "rpi/lowmem.h"
 
 // RELEASENAME (and GITVERSION / BUILD_DATE) are generated from git into
 // scripts/gitversion.h - bump the release by creating a git tag, not here.
@@ -207,6 +208,12 @@ typedef struct
 } Pi1MHz_t;
 
 static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;
+
+/* The struct and its callback table must stay clear of the VPU program,
+   the chain-boot markers, the copier and the page table above them
+   (rpi/lowmem.h). */
+_Static_assert(Pi1MHz_STRUCT_VADDR + sizeof(Pi1MHz_t) <= LOWMEM_VPU_PROGRAM,
+               "Pi1MHz struct runs into the VPU program in low RAM");
 
 #define JIM_RAM_STEP ( 16u * 1024u * 1024u)
 #define DISC_RAM_SIZE (2u * JIM_RAM_STEP)

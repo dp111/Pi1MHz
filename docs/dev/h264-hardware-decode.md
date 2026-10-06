@@ -283,9 +283,11 @@ display side knows which picture it is showing with no other bookkeeping.
 | audio ring (8 frames) | 64 KB | ARM heap |
 | VC-internal codec + its buffer pools | ~10-15 MB | inside gpu_mem |
 
-GPU buffer handles for the frame buffers are parked at `0x7C20` (words
+GPU buffer handles for the frame buffers are parked at `0x3D20` (words
 2-4, magic `'VBF2'`) so a `kernel.now` chain-boot can release them - the
-same leak-avoidance mechanism the still-frame buffer already used.
+same leak-avoidance mechanism the still-frame buffer already used
+(`LOWMEM_VIDEOBUF_PERSIST`, `src/rpi/lowmem.h`; it was `0x7C20` until the
+L1 page table moved to 0x4000-0x7FFF on 2026-10-06).
 
 ## 6. The .pvf container and offline preparation
 
