@@ -440,9 +440,11 @@ static void music5000_rec_start(void)
    past the watchdog - with the Beeb unable to reach the disc meanwhile.
    The flush is now a small state machine driven one step per poll: a few
    name probes per pass while picking the file, then one slice per pass.
-   A new recording cannot start until the flush has released the buffer. */
+   A new recording cannot start until the flush has released the buffer.
+   A remount of the card part-way (a BBC reset, a jukebox) closes the file
+   and the flush picks it up again from REC_FLUSH_REOPEN - see M5000_remount. */
 static FIL music5000_rec_fp;
-static enum { REC_FLUSH_IDLE, REC_FLUSH_OPEN, REC_FLUSH_WRITE } rec_flush = REC_FLUSH_IDLE;
+static enum { REC_FLUSH_IDLE, REC_FLUSH_OPEN, REC_FLUSH_WRITE, REC_FLUSH_REOPEN } rec_flush = REC_FLUSH_IDLE;
 static uint32_t rec_flush_pos;
 static uint32_t rec_flush_end;
 static uint32_t rec_flush_name;     /* next Musics%03d to try - kept across recordings */
@@ -525,12 +527,32 @@ static void music5000_rec_flush(void)
       }
       break;
    }
+
+   case REC_FLUSH_REOPEN: {
+      /* Carry on where M5000_remount closed it.  Only if the file is still
+         exactly what was written: the card may have been swapped in the
+         meantime, and appending to some other file would be worse than a
+         short recording. */
+      FRESULT result = f_open(&music5000_rec_fp, rec_flush_path, FA_OPEN_EXISTING | FA_WRITE);
+      if (result != FR_OK) {
+         rec_flush = REC_FLUSH_IDLE;
+         break;
+      }
+      if (f_size(&music5000_rec_fp) != rec_flush_pos - M5000_REC_BASE ||
+          f_lseek(&music5000_rec_fp, f_size(&music5000_rec_fp)) != FR_OK) {
+         f_close(&music5000_rec_fp);
+         rec_flush = REC_FLUSH_IDLE;
+         break;
+      }
+      rec_flush = REC_FLUSH_WRITE;
+      break;
+   }
    }
 }
 
 bool M5000_recording_path_busy(const char *host_path)
 {
-   if (rec_flush != REC_FLUSH_WRITE || host_path == NULL)
+   if ((rec_flush != REC_FLUSH_WRITE && rec_flush != REC_FLUSH_REOPEN) || host_path == NULL)
       return false;
 
    /* Same shape as fat_service_file_in_use(): the path is compared
@@ -638,6 +660,21 @@ static bool M5000_eject(void)
    return rec_flush == REC_FLUSH_IDLE;
 }
 
+/* The card is about to be remounted (filesystemReset: a BBC reset or a
+   jukebox), which would invalidate the open WAV for good - the recording
+   lost, its clusters orphaned.  Neither can wait out a flush that may run
+   for many seconds, so close the file now - its directory entry then
+   holds what has been written so far, which plays as a truncated WAV if
+   the card does not come back - and let the flush reopen it and carry on
+   once it does. */
+static void M5000_remount(void)
+{
+   if (rec_flush == REC_FLUSH_WRITE) {
+      f_close(&music5000_rec_fp);
+      rec_flush = REC_FLUSH_REOPEN;
+   }
+}
+
 void M5000_emulator_init(uint8_t instance, uint8_t address)
 {
    if (record)
@@ -683,6 +720,7 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
    // register polling function
    Pi1MHz_Register_Poll(music5000_emulate, "m5000");
    filesystemRegisterEject(M5000_eject, NULL);
+   filesystemRegisterRemount(M5000_remount);
 }
 
 uint8_t M5000_emulator_read_instance(void)

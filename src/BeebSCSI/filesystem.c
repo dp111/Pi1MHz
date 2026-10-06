@@ -324,6 +324,37 @@ bool filesystemEjected(void)
    return fsEjected;
 }
 
+/* ---- Volume remount ----------------------------------------------------
+   Every f_mount() of the volume - filesystemDismount(), and the remount in
+   filesystemMount() - makes each FIL opened before it fail validate() for
+   good: an unsynced write is dropped, f_close fails, the directory entry
+   keeps its old size and the clusters written are orphaned.  A BBC reset
+   and the jukebox (filesystemReset) remount with no eject first, and
+   neither can wait for a subsystem the way an eject does - the BREAK
+   budget and a Domesday disc flip are both short.  So a subsystem that
+   holds a file open across polls registers here; it is called just before
+   the volume goes, must close what it holds at once, and may reopen once
+   the card is mounted again. */
+#define REMOUNT_HOOKS 4u
+static void (*remount_hook[REMOUNT_HOOKS])(void);
+static unsigned int remount_hooks;
+
+/* Called from init functions, which run again on every BBC reset. */
+void filesystemRegisterRemount(void (*closing)(void))
+{
+   for (unsigned int i = 0; i < remount_hooks; i++)
+      if (remount_hook[i] == closing)
+         return;
+   if (remount_hooks < REMOUNT_HOOKS)
+      remount_hook[remount_hooks++] = closing;
+}
+
+static void filesystemRemountNotify(void)
+{
+   for (unsigned int i = 0; i < remount_hooks; i++)
+      remount_hook[i]();
+}
+
 // Reset the file system (called when the host signals reset)
 void filesystemReset(void)
 {
@@ -377,6 +408,7 @@ void filesystemReset(void)
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemMount(): Mounting file system\r\n"));
 
    // Mount the SD card
+   filesystemRemountNotify();
    fsResult = f_mount(&filesystemState.fsObject, "", 1);
 
    // Check the result
@@ -429,6 +461,7 @@ bool filesystemDismount(void)
    }
    // Dismount the SD card
      FRESULT fsResult;
+   filesystemRemountNotify();
    fsResult = f_mount(&filesystemState.fsObject, "", 0);
 
    // Check the result

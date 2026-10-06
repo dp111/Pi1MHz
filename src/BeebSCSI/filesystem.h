@@ -63,6 +63,7 @@ void filesystemRegisterEject(bool (*eject)(void), void (*inserted)(void));
 bool filesystemEject(void);
 bool filesystemInsert(void);
 bool filesystemEjected(void);
+void filesystemRegisterRemount(void (*closing)(void));
 
 bool filesystemMount(void);
 bool filesystemDismount(void);
