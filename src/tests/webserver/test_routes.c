@@ -44,7 +44,7 @@ static err_t tcp_output(struct tcp_pcb *p) { (void)p; return ERR_OK; }
 /* ---- FatFs ---- */
 typedef unsigned int UINT;
 typedef enum { FR_OK = 0, FR_DISK_ERR = 1, FR_NO_FILE = 4 } FRESULT;
-typedef struct { uint32_t fsize; uint16_t fdate, ftime; uint8_t fattrib; } FILINFO;
+typedef struct { uint32_t fsize; uint16_t fdate, ftime; uint8_t fattrib; char fname[256]; } FILINFO;
 #define AM_DIR   0x10
 #define FA_READ  0x01
 #define FA_WRITE 0x02
@@ -59,6 +59,12 @@ static FRESULT f_read(FIL *f, void *b, UINT n, UINT *br)
 static FRESULT f_stat(const char *p, FILINFO *fno)
 {
    memset(fno, 0, sizeof *fno);
+   /* LUN 0's folder, as FatFs finds it by its 8.3 alias */
+   if (strcasecmp(p, "/BEEBSC~1") == 0) {
+      strcpy(fno->fname, "BeebSCSI0");
+      fno->fattrib = AM_DIR;
+      return FR_OK;
+   }
    if (stat_dir != NULL && strcasecmp(p, stat_dir) == 0) { fno->fattrib = AM_DIR; return FR_OK; }
    if (stat_file != NULL && strcasecmp(p, stat_file) == 0) return FR_OK;
    return FR_NO_FILE;
@@ -93,7 +99,15 @@ static bool dav_move_copy_send_response(ws_conn_t *c, bool existed)
 {
    (void)c; (void)existed; moved_calls++; return true;
 }
-static bool beeb_path_busy(const char *p) { (void)p; return false; }
+/* As filesystemHostPathBusy with LUN 0 started: its own files, or a
+   folder at or above the one holding them. */
+static bool lun0_started;
+static bool beeb_path_busy(const char *p)
+{
+   return lun0_started
+       && (strncasecmp(p, "/BeebSCSI0/scsi0", 16) == 0
+           || strcasecmp(p, "/BeebSCSI0") == 0 || strcmp(p, "/") == 0);
+}
 static void ws_fs_mutated(void) {}
 static void mtp_fs_notify_object_removed(const char *p) { (void)p; }
 static void mtp_fs_notify_object_added(const char *p) { (void)p; }
@@ -268,6 +282,33 @@ int main(void)
       (void)route_dav_move_or_copy(c, "/f.txt", true);
       ok(f_rename_calls == 1 && err_calls == 0,
          "MOVE /f.txt -> /f.txt.bak still allowed");
+      free(c);
+   }
+
+   puts("== W1: an 8.3 alias cannot get past the LUN busy check ==");
+   {
+      ws_conn_t *c = new_conn();
+      stat_dir = NULL;
+      stat_file = "/BeebSCSI0/scsi0.dat";
+      lun0_started = true;
+
+      dav_request(c, "MOVE", "http://pi/away.dat");
+      (void)route_dav_move_or_copy(c, "/BEEBSC~1/scsi0.dat", true);
+      ok(f_rename_calls == 0 && err_calls == 1 && err_status == 423,
+         "MOVE /BEEBSC~1/scsi0.dat with LUN 0 started is 423 Locked");
+
+      dav_request(c, "COPY", "http://pi/BEEBSC~1/scsi0.dat");
+      stat_file = "/other.dat";
+      (void)route_dav_move_or_copy(c, "/other.dat", false);
+      ok(f_open_calls == 0 && err_calls == 1 && err_status == 423,
+         "COPY onto /BEEBSC~1/scsi0.dat with LUN 0 started is 423 Locked");
+
+      lun0_started = false;
+      stat_file = "/BeebSCSI0/scsi0.dat";
+      dav_request(c, "MOVE", "http://pi/away.dat");
+      (void)route_dav_move_or_copy(c, "/BEEBSC~1/scsi0.dat", true);
+      ok(f_rename_calls == 1 && err_calls == 0,
+         "with LUN 0 stopped the alias spelling still works");
       free(c);
    }
 

@@ -25,7 +25,7 @@ cp -r "$HERE"/stubs/. "$B/"
 PARSER_FNS="ws_lc,ws_prefix,ws_prefix_ci,ws_prefix_ci_str,\
 ws_strcasestr,ws_hexval,ws_url_decode,ws_memfind,ws_find_header_end,\
 ws_basename,ws_parse_request_line,ws_find_header,ws_extract_boundary,\
-ws_extract_filename,ws_path_is_safe,ws_fat_name_len,ws_normalize_path,ws_parent_path,\
+ws_extract_filename,ws_path_is_safe,ws_fat_name_len,ws_normalize_path,ws_resolve_aliases,ws_parent_path,\
 ws_is_root,ws_digest_field,ws_hex_eq_ci,ws_digest_uri_matches,\
 dav_url_to_sdpath,dav_destination_sdpath,dav_memfind,dav_parse_http_date,\
 ws_parse_range,ws_query_param,ws_content_type,ws_cross_site"
@@ -52,7 +52,7 @@ awk -v fns="$KN_FNS" \
 # What a response puts on the wire (HEAD), and MOVE/COPY's preconditions,
 # with the path parsers those run through.
 ROUTE_FNS="ws_prefix_ci,ws_prefix_ci_str,ws_hexval,ws_url_decode,\
-ws_find_header,ws_find_header_end,ws_path_is_safe,ws_fat_name_len,ws_normalize_path,ws_is_root,\
+ws_find_header,ws_find_header_end,ws_path_is_safe,ws_fat_name_len,ws_normalize_path,ws_resolve_aliases,ws_is_root,\
 dav_url_to_sdpath,dav_destination_sdpath,ws_write_best_effort,conn_pump,\
 route_dav_move_or_copy"
 awk -v fns="$ROUTE_FNS" \

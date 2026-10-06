@@ -1295,6 +1295,51 @@ static void ws_normalize_path(const char *raw, char *out, size_t osz)
       strlcpy(out, "/", osz);
 }
 
+/* FatFs also opens a name by its 8.3 alias: "/BEEBSC~1/scsi0.dat" is LUN
+   0's image, yet no interlock string-compares it equal to
+   "/BeebSCSI0/scsi0.dat".  Every generated alias holds a '~', so rewrite
+   each segment that has one to the long name FatFs stores for it, looked
+   up against the already-resolved parent.  A segment that does not exist
+   (a file about to be created) is left as it is.  No SD work unless the
+   path holds a '~'.  Takes a normalised path; false if the long form does
+   not fit in sz. */
+static bool ws_resolve_aliases(char *path, size_t sz)
+{
+   size_t i = 0u;
+
+   if (strchr(path, '~') == NULL)
+      return true;
+   while (path[i] != '\0') {
+      size_t  start, end, flen, tail;
+      char    saved;
+      FILINFO fno;
+
+      while (path[i] == '/')
+         ++i;
+      start = i;
+      while (path[i] != '\0' && path[i] != '/')
+         ++i;
+      end = i;
+      if (memchr(path + start, '~', end - start) == NULL)
+         continue;
+      saved = path[end];
+      path[end] = '\0';                 /* stat just the prefix */
+      if (f_stat(path, &fno) != FR_OK) {
+         path[end] = saved;
+         continue;
+      }
+      path[end] = saved;
+      flen = strlen(fno.fname);
+      tail = strlen(path + end) + 1u;   /* the rest, with its NUL */
+      if (start + flen + tail > sz)
+         return false;
+      memmove(path + start + flen, path + end, tail);
+      memcpy(path + start, fno.fname, flen);
+      i = start + flen;
+   }
+   return true;
+}
+
 static void ws_parent_path(const char *sdpath, char *out, size_t osz)
 {
    char *slash;
@@ -4470,6 +4515,13 @@ static bool upload_begin_part(ws_conn_t *c)
    {
       char tmp[WS_UP_TMP_MAX];
       upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
+      /* The folder was resolved by route_upload; an 8.3 alias for the name
+         itself is recorded as its long name, once, so the busy checks here
+         and at completion - and the .part temp - all use the real one. */
+      if (!ws_resolve_aliases(full, sizeof full))
+         return upload_fail(c, "The uploaded file has an invalid name.");
+      strlcpy(c->up_name, ws_basename(full), sizeof c->up_name);
+      upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
 
       /* kernel.now in the root is not saved: the Pi restarts into it. */
       if (ws_is_kernel_now(full)) {
@@ -4665,7 +4717,7 @@ static bool route_upload(ws_conn_t *c, const char *rawpath, int body_at)
       return ws_error(c, 400, "Bad Request",
                       "That path is too long.");
    ws_normalize_path(decoded, dir, sizeof dir);
-   if (!ws_path_is_safe(dir))
+   if (!ws_path_is_safe(dir) || !ws_resolve_aliases(dir, sizeof dir))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
 
    if (!ws_is_root(dir)) {
@@ -4711,7 +4763,7 @@ static bool route_upload(ws_conn_t *c, const char *rawpath, int body_at)
    false if the URL didn't fit in the decode buffer (caller should
    surface a 400 - the path is too long to handle, NOT a missing
    resource), or if the path-safety check rejects it (control chars,
-   ".."). */
+   ".."), or if resolving an 8.3 alias made it too long. */
 static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
                               size_t sdpath_sz)
 {
@@ -4720,7 +4772,7 @@ static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
    if (!ws_url_decode(rawpath, decoded, sizeof decoded))
       return false;
    ws_normalize_path(decoded, sdpath, sdpath_sz);
-   return ws_path_is_safe(sdpath);
+   return ws_path_is_safe(sdpath) && ws_resolve_aliases(sdpath, sdpath_sz);
 }
 
 /* Day-of-week from a Gregorian Y/M/D via Zeller's congruence.  Used

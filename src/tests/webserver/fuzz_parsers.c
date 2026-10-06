@@ -21,6 +21,7 @@
 #include "md5.h"
 
 #include "ws_defines.inc"
+#include "ws_alias_stub.h"
 #include "ws_parsers.inc"
 
 /* Deterministic PRNG (xorshift32), matching the other suites. */

@@ -21,6 +21,7 @@
 #include "md5.h"          /* real header: md5_hex_t / MD5_HEX_LEN */
 
 #include "ws_defines.inc" /* WS_PATH_MAX etc., extracted */
+#include "ws_alias_stub.h" /* f_stat for ws_resolve_aliases */
 #include "ws_parsers.inc" /* the parsers, extracted verbatim */
 
 static int checks, fails;
@@ -409,6 +410,37 @@ int main(void)
       ok(dav_destination_sdpath("http://pi/BeebSCSI0./scsi0.dat", sd, sizeof sd)
          && streq(sd, "/BeebSCSI0/scsi0.dat"),
          "W1: Destination gets the same canonical form");
+      /* W1, 8.3 aliases: FatFs opens "/BEEBSC~1" as "/BeebSCSI0". */
+      ok(dav_url_to_sdpath("/BEEBSC~1/scsi0.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+         "W1: 8.3 alias of a folder resolved to its long name");
+      ok(dav_url_to_sdpath("/beebsc~1/SCSI0~1.DAT", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+         "W1: aliases resolved segment by segment, case-blind");
+      ok(dav_url_to_sdpath("/games/LONGNA~1.SSD", sd, sizeof sd)
+         && streq(sd, "/games/longname disc.ssd"),
+         "W1: 8.3 alias of a file resolved");
+      ok(dav_url_to_sdpath("/BEEBSC~1/new~1.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/new~1.dat"),
+         "W1: a '~' name that does not exist yet is kept, its folder resolved");
+      ok(dav_url_to_sdpath("/BEEBSC~1./scsi0.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+         "W1: alias with a trailing dot: stripped, then resolved");
+      ok(dav_destination_sdpath("http://pi/BEEBVF~1/x", sd, sizeof sd)
+         && streq(sd, "/BeebVFS0/x"),
+         "W1: Destination aliases resolved too");
+      {
+         char small[16];
+         strcpy(small, "/BEEBSC~1/a");
+         ok(ws_resolve_aliases(small, sizeof small)
+            && streq(small, "/BeebSCSI0/a"), "W1: resolve in place");
+         strcpy(small, "/BEEBSC~1/abcd");
+         ok(!ws_resolve_aliases(small, 12u),
+            "W1: a long form that does not fit is refused, not truncated");
+         strcpy(small, "/plain/name");
+         ok(ws_resolve_aliases(small, sizeof small)
+            && streq(small, "/plain/name"), "W1: no '~', untouched");
+      }
       ok(dav_url_to_sdpath("/a%00b", sd, sizeof sd) && streq(sd, "/a_b"),
          "encoded NUL cannot cut the path short");
       ok(dav_url_to_sdpath("%2F%2F", sd, sizeof sd) && streq(sd, "/"),
