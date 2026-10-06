@@ -258,9 +258,6 @@ static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argu
 
 static uint32_t g_sdhost_storage_hcfg = SDHCFG_BUSY_IRPT_EN;
 static uint32_t g_sdhost_storage_cdiv = SDCDIV_MAX_CDIV;
-/* The clock last set by sdhost_switch_clock_rate, so a data-circuit reset
-   can put it back (sdhost_reset_data_circuit). */
-static uint32_t g_sdhost_storage_rate;
 static bool g_sdhost_firmware_sets_cdiv;
 
 static const uint32_t sd_commands[] = {
@@ -769,7 +766,6 @@ static int sdhost_switch_clock_rate(uint32_t target_rate)
         sdhost_write(SDTOUT, actual_clock / 2u);
         sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
         usleep(10);
-        g_sdhost_storage_rate = target_rate;
         return 0;
     }
 
@@ -802,7 +798,6 @@ static int sdhost_switch_clock_rate(uint32_t target_rate)
     sdhost_write(SDCDIV, g_sdhost_storage_cdiv);
     sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
     usleep(10);
-    g_sdhost_storage_rate = target_rate;
     return 0;
 }
 
@@ -812,15 +807,20 @@ static int sdhost_switch_clock_rate(uint32_t target_rate)
    leaves the slowest divider.  The card itself is still 4-bit at the
    transfer clock, so after that reset alone the next data command is read on
    one line of four: CRC errors, and a disc error at the Beeb.  So the same
-   internal reset, then the saved width and clock go back.  The clock is set
-   again through sdhost_switch_clock_rate rather than by rewriting the saved
-   divider, because where the firmware owns SDCDIV that divider was never
-   ours to save. */
+   internal reset, then the width, divider and data timeout go back.  The
+   divider and timeout are read back from the hardware, not recomputed:
+   where the firmware owns SDCDIV the saved g_sdhost_storage_cdiv was never
+   set, and a mailbox call here could be skipped by a firmware that sees an
+   unchanged rate.  No mailbox work in this recovery. */
 static void sdhost_reset_data_circuit(void)
 {
+    uint32_t cdiv = sdhost_read(SDCDIV);
+    uint32_t tout = sdhost_read(SDTOUT);
+
     sdhost_reset_internal();
-    sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
-    (void)sdhost_switch_clock_rate(g_sdhost_storage_rate);
+    sdhost_write(SDCDIV, cdiv);
+    sdhost_write(SDTOUT, tout);
+    sdhost_write(SDHCFG, g_sdhost_storage_hcfg);   /* incl. WIDE_EXT */
 }
 
 static void sd_reset_cmd_sdhost(void)
