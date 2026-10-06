@@ -53,6 +53,7 @@ static struct {
     uint32_t frame_bytes;
 
     uint32_t component;
+    bool created;                    /* component exists on the VideoCore */
     mmal_vc_port_t port_in;
     mmal_vc_port_t port_out;
 
@@ -288,6 +289,7 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
     if (!mmal_vc_component_create("ril.video_decode", &dec.component,
                                   &inputs, &outputs))
         return false;
+    dec.created = true;
     LOG_DEBUG("h264: video_decode created (%"PRIu32" in, %"PRIu32" out)\r\n",
               inputs, outputs);
 
@@ -580,6 +582,79 @@ void h264dec_reset(void)
        component is never destroyed and so never sends FORMAT_CHANGED again. */
     if (was_enabled)
         dec.reconfigure_pending = true;
+}
+
+/* kernel.now (videoplayer_shutdown): the VideoCore runs on across the jump,
+   so take the decoder down completely - ports, component, SMEM imports,
+   services - leaving it nothing that names our memory.  Every call is
+   bounded by its client's reply timeout, and a VideoCore that stops
+   answering latches each client dead, so the rest fail at once.  Nothing
+   stops at a failure: each step is tried, and the outcome is the answer.
+   True only if the component is gone and every import was released - only
+   then is the memory the decoder used ours again; the input staging
+   buffers go back to the GPU pool here, and the caller may let the next
+   kernel free the frame buffers.  On false nothing the decoder named may be
+   freed, by this kernel or the next: leaked, never freed under the VC. */
+bool h264dec_shutdown(void)
+{
+    bool ok = true;
+    /* Buffers come back while the ports go down: none of them may reach the
+       player (it has closed) or be armed again. */
+    bool output_was_enabled = dec.output_enabled;
+    dec.frame_cb = NULL;
+    dec.output_enabled = false;
+
+    if (dec.created) {
+        /* Ports first, so the component hands back every buffer it holds;
+           a component whose bring-up failed part way has none enabled
+           that we know of, and its destroy takes its ports with it. */
+        if (dec.running && !mmal_vc_port_disable(&dec.port_in)) {
+            LOG_DEBUG("h264: shutdown: input port disable failed\r\n");
+            ok = false;
+        }
+        if (output_was_enabled && !mmal_vc_port_disable(&dec.port_out)) {
+            LOG_DEBUG("h264: shutdown: output port disable failed\r\n");
+            ok = false;
+        }
+        if (!mmal_vc_component_disable(dec.component)) {
+            LOG_DEBUG("h264: shutdown: component disable failed\r\n");
+        }
+        if (!mmal_vc_component_destroy(dec.component)) {
+            LOG_DEBUG("h264: shutdown: component destroy failed\r\n");
+            ok = false;
+        }
+    }
+
+    for (int i = 0; i < H264DEC_MAX_OUTPUT; i++)
+        if (dec.out[i].buf.vc_handle && !vcsm_free(dec.out[i].buf.vc_handle))
+            ok = false;
+    for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++)
+        if (dec.in[i].buf.vc_handle && !vcsm_free(dec.in[i].buf.vc_handle))
+            ok = false;
+    if (!ok) {
+        LOG_DEBUG("h264: shutdown incomplete - decoder memory left to the VideoCore\r\n");
+    }
+
+    for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++)
+        if (ok && dec.in[i].mem_handle)
+            vchiq_free_shared(dec.in[i].mem_handle);
+
+    /* After the frees, which need the SMEM service.  A close the VideoCore
+       does not answer costs nothing here: the next kernel takes the
+       connection on from fresh ports (vchiq_handover). */
+    if (!vcsm_deinit()) {
+        LOG_DEBUG("h264: shutdown: SMEM service close not answered\r\n");
+    }
+    if (!mmal_vc_deinit()) {
+        LOG_DEBUG("h264: shutdown: MMAL service close not answered\r\n");
+    }
+
+    memset(&dec, 0, sizeof(dec));
+    dec.in_borrowed = -1;
+    ptsq_r = ptsq_w = 0;
+    /* What a failed shutdown stranded stays stranded: no second set. */
+    init_failed = !ok;
+    return ok;
 }
 
 /* /status forensics: the output-port handshake, which is what breaks when a

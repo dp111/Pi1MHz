@@ -82,6 +82,14 @@ bool h264dec_resume(void);
    re-register output buffers with h264dec_add_output_buffer(). */
 void h264dec_reset(void);
 
+/* kernel.now: take the decoder down for good - ports, component, SMEM
+   imports, the MMAL and SMEM services - and give back the input staging
+   buffers. True only if the VideoCore let go of everything; on false
+   nothing the decoder named may be freed (see h264dec.c). The caller's
+   output buffers are its own to release. h264dec_init may run again
+   after a clean shutdown. */
+bool h264dec_shutdown(void);
+
 /* Pump the decoder; call from the player poll task. */
 void h264dec_poll(void);
 

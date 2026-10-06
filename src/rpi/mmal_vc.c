@@ -58,9 +58,9 @@ static struct {
 #define MMAL_MAX_INFLIGHT 8
 static mmal_vc_buffer_t *inflight[MMAL_MAX_INFLIGHT];
 
-/* Latched on a failure that leaves a VCHIQ service open: the service
-   cannot be taken back (the protocol's CLOSE handshake is VC-initiated
-   here), so a retry would burn the last free service slot. */
+/* Latched on a failure that leaves a VCHIQ service open: a VideoCore that
+   will not answer the version handshake cannot be relied on to answer a
+   CLOSE either, so a retry would burn the last free service slot. */
 static bool mmal_failed;
 
 /* ------------------------------------------------------------------ */
@@ -333,16 +333,31 @@ bool mmal_vc_component_create(const char *name, uint32_t *handle,
     return true;
 }
 
-bool mmal_vc_component_enable(uint32_t handle)
+/* COMPONENT_ENABLE/DISABLE/DESTROY: a handle out, a status back. */
+static bool component_call(uint32_t handle, uint32_t msgid)
 {
     mmal_worker_component_handle_msg_t msg;
     mmal_worker_reply_t reply;
     memset(&msg, 0, sizeof(msg));
     msg.component_handle = handle;
-    if (!sendwait(&msg.header, sizeof(msg), MMAL_WORKER_COMPONENT_ENABLE,
-                  &reply, sizeof(reply)))
+    if (!sendwait(&msg.header, sizeof(msg), msgid, &reply, sizeof(reply)))
         return false;
     return reply.status == MMAL_STATUS_SUCCESS;
+}
+
+bool mmal_vc_component_enable(uint32_t handle)
+{
+    return component_call(handle, MMAL_WORKER_COMPONENT_ENABLE);
+}
+
+bool mmal_vc_component_disable(uint32_t handle)
+{
+    return component_call(handle, MMAL_WORKER_COMPONENT_DISABLE);
+}
+
+bool mmal_vc_component_destroy(uint32_t handle)
+{
+    return component_call(handle, MMAL_WORKER_COMPONENT_DESTROY);
 }
 
 bool mmal_vc_port_info_get(uint32_t component, uint32_t port_type,
@@ -533,4 +548,16 @@ bool mmal_vc_submit_buffer(mmal_vc_port_t *port, mmal_vc_buffer_t *buf)
     buf->port = port;
     buf->in_flight = true;
     return true;
+}
+
+bool mmal_vc_deinit(void)
+{
+    if (!client.inited)
+        return true;
+    /* Whatever is still on the books is the VideoCore's to drop with the
+       service; none of it may be completed back to the caller now. */
+    memset(inflight, 0, sizeof(inflight));
+    bool ok = vchiq_close_service(client.service);
+    memset(&client, 0, sizeof(client));
+    return ok;
 }

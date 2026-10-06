@@ -20,7 +20,9 @@ void audio_stop_dma(void);
 void sdio_runtime_prepare_for_warm_reboot(void);
 void mtp_fs_prepare_for_warm_reboot(void);
 void mtp_fs_inserted(void);
-/* videoplayer.h, rpi/h264dec.h */
+/* videoplayer.h (the last two only for an older chainboot.c, which
+   refused on video - the negative control) */
+bool videoplayer_shutdown(void);
 bool videoplayer_active(void);
 bool h264dec_running(void);
 /* BeebSCSI/filesystem.h */

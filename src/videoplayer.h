@@ -53,6 +53,11 @@ bool videoplayer_take_stop_reached(void);  /* stop register hit, once */
 /* Current picture number for the ?F status request (0 = unknown) */
 uint32_t videoplayer_picture_number(void);
 
+/* kernel.now, just before the jump (chainboot.c): close the player, take
+   the decoder down and hand the VideoCore connection to the next kernel.
+   Never fails the jump; true if the VideoCore let go of everything. */
+bool videoplayer_shutdown(void);
+
 /* One-line state dump for /status */
 const char *videoplayer_status(void);
 

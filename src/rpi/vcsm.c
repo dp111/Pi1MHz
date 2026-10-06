@@ -206,14 +206,23 @@ uint32_t vcsm_import(uint32_t busaddr, uint32_t size, const char *name)
     return reply.res_handle;
 }
 
-void vcsm_free(uint32_t handle)
+bool vcsm_free(uint32_t handle)
 {
     if (!sm.inited || !handle)
-        return;
+        return false;
 
     vcsm_free_msg_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.hdr.type   = VC_SM_MSG_TYPE_FREE;
     msg.res_handle = handle;
-    sendwait(&msg.hdr, sizeof(msg), NULL, 0);
+    return sendwait(&msg.hdr, sizeof(msg), NULL, 0);
+}
+
+bool vcsm_deinit(void)
+{
+    if (!sm.inited)
+        return true;
+    bool ok = vchiq_close_service(sm.service);
+    memset(&sm, 0, sizeof(sm));
+    return ok;
 }

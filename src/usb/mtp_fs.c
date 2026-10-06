@@ -1404,8 +1404,9 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
           fs_release_write_state();
           break;
         }
-        /* Asked at SendObjectInfo, and again now: the player may have been
-           opened while the image came. */
+        /* Asked at SendObjectInfo, and again now: what a refusal guards
+           may have started while the image came.  (Nothing refuses at
+           present - video is shut down before the jump, not refused.) */
         if (chainboot_refusal() != NULL) {
           resp->header->code = MTP_RESP_DEVICE_BUSY;
           fs_release_write_state();
