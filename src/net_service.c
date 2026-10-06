@@ -861,6 +861,12 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
       net_ip_to_wire(&h->dns_ip, cp + 4u);
       return NET_OK;
    }
+   /* Only an IDLE handle may resolve: the answer drops RESOLVING back to
+      IDLE, which on a connected, connecting, listening or failed handle hid a
+      live pcb from do_connect - the next connect orphaned it, still feeding
+      this ring and able to NULL the new tpcb from net_tcp_err. */
+   if (h->state != NET_ST_IDLE)
+      return NET_ERR_NOTOPEN;
    if (!service_string_ok(cp + 1u, NET_MAX_HOSTNAME))
       return NET_ERR_PARAM;
    {

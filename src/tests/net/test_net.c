@@ -694,6 +694,48 @@ int main(void)
    CHECK(issue(NET_CMD_DNS, 0) == NET_OK, "dns after callback -> OK");
    CHECK(jrd8(CP(0)+4)==1 && jrd8(CP(0)+7)==1, "resolved async IP 1.1.1.1 written back");
 
+   /* A resolve parks the handle in RESOLVING and its answer drops it to IDLE.
+      On a handle with a pcb attached that orphaned the pcb: the next connect
+      made a new one, while the old one (arg still this handle) fed the same
+      ring and its err callback NULLed the new tpcb.  Review 2026-10-06 N5. */
+   printf("== DNS refused on a handle that is not IDLE ==\n");
+   world_reset();
+   connect_handle(0);
+   {
+      struct altcp_pcb *live = g_last_pcb;
+      int npcbs = g_npcbs;
+      g_dns_sync = 0;
+      memcpy(&Pi1MHz->JIM_ram[CP(0)+1], "slow.test", 10);
+      CHECK(issue(NET_CMD_DNS, 0) == NET_ERR_NOTOPEN, "dns on a CONNECTED handle -> NOTOPEN");
+      issue(NET_CMD_STATUS, 0);
+      CHECK(jrd8(CP(0)+1) == NET_ST_CONNECTED, "the handle is still CONNECTED");
+      if (g_dns_cb != NULL) {        /* an answer to whatever was asked */
+         ip_addr_t ip; IP_ADDR4(&ip, 5, 6, 7, 8);
+         g_dns_cb("slow.test", &ip, g_dns_arg);
+      }
+      issue(NET_CMD_STATUS, 0);
+      CHECK(jrd8(CP(0)+1) == NET_ST_CONNECTED, "and stays CONNECTED after any DNS answer");
+      jwr8(CP(0)+1,1); jwr8(CP(0)+5,0x50);
+      CHECK(issue(NET_CMD_CONNECT, 0) == NET_OK && g_npcbs == npcbs,
+            "a following connect makes no second pcb");
+      CHECK(live->t_closed == 0 && live->arg != NULL, "the live pcb is untouched");
+      live->err(live->arg, ERR_RST);
+      CHECK(issue(NET_CMD_DNS, 0) == NET_ERR_NOTOPEN, "dns on an ERROR handle -> NOTOPEN");
+   }
+   world_reset();
+   jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+   jwr8(CP(0)+1, 0x40); jwr8(CP(0)+2, 0x1F);
+   issue(NET_CMD_BIND, 0);
+   CHECK(issue(NET_CMD_LISTEN, 0) == NET_PENDING, "listener up");
+   memcpy(&Pi1MHz->JIM_ram[CP(0)+1], "slow.test", 10);
+   CHECK(issue(NET_CMD_DNS, 0) == NET_ERR_NOTOPEN, "dns on a LISTENING handle -> NOTOPEN");
+   world_reset();
+   jwr8(CP(0)+1, NET_TYPE_UDP); issue(NET_CMD_OPEN, 0);
+   g_dns_sync = 1; IP_ADDR4(&g_dns_result, 9, 9, 9, 9);
+   memcpy(&Pi1MHz->JIM_ram[CP(0)+1], "udp.test", 9);
+   CHECK(issue(NET_CMD_DNS, 0) == NET_OK && jrd8(CP(0)+4) == 9,
+         "dns on an IDLE UDP handle still resolves");
+
    printf("== bounds checks ==\n");
    world_reset();
    connect_handle(0);
