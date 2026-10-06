@@ -31,10 +31,13 @@ static int32_t clamp(int32_t v)
 
 void usb_mouse_latch(uint8_t out[4])
 {
-   /* In whole steps of 4, the VFS pointer's step: what is below one stays
-      here for the next read, so the ROM needs no state of its own for it. */
-   int32_t dx = (int32_t)((uint32_t)clamp(s_dx) & ~3u);
-   int32_t dy = (int32_t)((uint32_t)clamp(s_dy) & ~3u);
+   /* In whole steps of 4, the VFS pointer's step: what is short of one,
+      either way, stays here for the next read, so the ROM needs no state of
+      its own for it.  Division, as it rounds toward zero; masking off the
+      low bits rounds a negative down instead, so a build-up of -1 went out
+      as -4 with +3 owed, and at-rest jitter moved the pointer. */
+   int32_t dx = clamp(s_dx) / 4 * 4;
+   int32_t dy = clamp(s_dy) / 4 * 4;
    s_dx -= dx;
    s_dy -= dy;
    out[0] = (uint8_t)dx;
@@ -57,13 +60,8 @@ void usb_mouse_status(char *buf, size_t len)
 
 /* ---- TinyUSB HID host callbacks (main loop, from tuh_task) -------------- */
 
-void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
-                      uint8_t const *desc_report, uint16_t desc_len)
+static void adopt(uint8_t dev_addr, uint8_t instance)
 {
-   (void)desc_report;
-   (void)desc_len;
-   if (s_present || tuh_hid_interface_protocol(dev_addr, instance) != HID_ITF_PROTOCOL_MOUSE)
-      return;                          /* one mouse; keyboards and the rest ignored */
    s_addr = dev_addr;
    s_instance = instance;
    (void)tuh_vid_pid_get(dev_addr, &s_vid, &s_pid);
@@ -76,6 +74,16 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
    (void)tuh_hid_receive_report(dev_addr, instance);
 }
 
+void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
+                      uint8_t const *desc_report, uint16_t desc_len)
+{
+   (void)desc_report;
+   (void)desc_len;
+   if (s_present || tuh_hid_interface_protocol(dev_addr, instance) != HID_ITF_PROTOCOL_MOUSE)
+      return;                          /* one mouse; keyboards and the rest ignored */
+   adopt(dev_addr, instance);
+}
+
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
 {
    if (!s_present || dev_addr != s_addr || instance != s_instance)
@@ -85,6 +93,18 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
    s_buttons = 0u;
    s_dx = s_dy = 0;
    _restore_cpsr(cpsr);
+
+   /* A second mouse plugged in while this one was read was passed over at
+      its mount, and nothing would mount it again: take it up now.  TinyUSB
+      calls this while the going device still holds its interfaces, so its
+      address is skipped; hubs sit above CFG_TUH_DEVICE_MAX. */
+   for (uint8_t a = 1u; a <= CFG_TUH_DEVICE_MAX; a++)
+      for (uint8_t i = 0u; i < CFG_TUH_HID; i++)
+         if (a != dev_addr && tuh_hid_mounted(a, i) &&
+             tuh_hid_interface_protocol(a, i) == HID_ITF_PROTOCOL_MOUSE) {
+            adopt(a, i);
+            return;
+         }
 }
 
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
