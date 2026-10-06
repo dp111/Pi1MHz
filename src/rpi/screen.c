@@ -1578,22 +1578,30 @@ static uint32_t palette_keyed_entry( uint32_t entry, uint32_t colour, bool highl
    writing only the ones that differ keeps the HVS's palette, which it reads
    for every pixel, out of the way of 2048 writes mid-frame.  0x00FFFFFF is
    never a palette value (opaque entries carry alpha FF, clear and dimming
-   ones carry no colour), so it marks "not written yet". */
+   ones carry no colour), so it marks "not written yet".
+   The compare, the copy and the word go together with IRQs masked: entries
+   are set from the IRQ (the VDU drain) and the main loop, and an IRQ
+   between the copy and the word would leave the copy saying a value the
+   hardware does not hold - for good, since the diff then skips it.  IRQ
+   only: FIQ never touches the palette, and the bus must not wait out the
+   first call's 2048-word fill. */
 #define PAL_UNWRITTEN 0x00FFFFFFu
 static uint32_t palette_words[PAL_ENTRIES * 4u];
 static bool     palette_words_init;
 
 static void palette_put( uint32_t index, uint32_t value )
 {
+    unsigned int cpsr = _disable_irq_cspr();
     if (!palette_words_init) {
         for (uint32_t i = 0; i < PAL_ENTRIES * 4u; i++)
             palette_words[i] = PAL_UNWRITTEN;
         palette_words_init = true;
     }
-    if (palette_words[index] == value)
-        return;
-    palette_words[index] = value;
-    context_memory[(PALETTE_BASE>>2) + index] = value;
+    if (palette_words[index] != value) {
+        palette_words[index] = value;
+        context_memory[(PALETTE_BASE>>2) + index] = value;
+    }
+    _restore_cpsr(cpsr);
 }
 
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
@@ -1882,21 +1890,14 @@ void screen_set_highlight( bool on )
     if (screen_highlight == on)
         return;
 
-    /* Recast the bank pair we are about to switch TO, while it is still
-       inactive - nothing is reading it, so this cannot tear. Both banks of
-       the pair (normal + flash twin: entries 0-511 map to the two) must be
-       done, or the framebuffer's flash timer alternates the plane between
-       an inverted and an un-inverted palette and the overlay blinks. */
-    uint32_t dst = on ? PAL_KEYED_HL : PAL_KEYED;
-    for (uint32_t entry = 0; entry < 512u; entry++) {
-        uint32_t colour = context_memory[(PALETTE_BASE>>2) + entry] & 0x00FFFFFFu;
-        palette_put(entry + dst, palette_keyed_entry(entry, colour, on));
-    }
-
+    /* Both keyed pairs are already current: screen_update_palette_entry
+       writes the plain and highlight variants of every entry together, so
+       there is nothing to recast - only every plane already on a keyed bank
+       to re-point at the other pair.  One word each, committed during
+       blanking.  IRQs masked: the flash tick re-selects plane 1's bank from
+       the IRQ, from the same shadow word and screen_highlight. */
+    unsigned int cpsr = _disable_irq_cspr();
     screen_highlight = on;
-
-    /* Now the cheap part: re-point every plane already on a keyed bank at
-       the other pair. One word each, committed during blanking. */
     for (uint32_t pl = 0; pl < MAX_PLANES; pl++) {
         if (!plane_valid[pl])
             continue;
@@ -1911,6 +1912,7 @@ void screen_set_highlight( bool on )
         plane_shadow[pl].palette = 0xc0000000u | ((bank*0x400u) + PALETTE_BASE);
         plane_mark(pl, PL_DIRTY_PALETTE);
     }
+    _restore_cpsr(cpsr);
 }
 
 uint32_t screen_get_palette_entry( uint32_t entry )
