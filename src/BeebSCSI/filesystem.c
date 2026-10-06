@@ -324,17 +324,29 @@ bool filesystemEjected(void)
    return fsEjected;
 }
 
+/* This layer has the card mounted.  FatFs alone would mount it again on
+   any f_open after a dismount; a holder resuming work asks this first. */
+bool filesystemMounted(void)
+{
+   return filesystemState.fsMountState;
+}
+
 /* ---- Volume remount ----------------------------------------------------
-   Every f_mount() of the volume - filesystemDismount(), and the remount in
+   Every f_mount() of the volume - filesystemDismount(), and the mount in
    filesystemMount() - makes each FIL opened before it fail validate() for
    good: an unsynced write is dropped, f_close fails, the directory entry
    keeps its old size and the clusters written are orphaned.  A BBC reset
-   and the jukebox (filesystemReset) remount with no eject first, and
-   neither can wait for a subsystem the way an eject does - the BREAK
+   and the jukebox (filesystemReset), the Beeb's f unmount, and any mount
+   while unmounted (MTP, filesystemReadFile) do that with no eject first,
+   and none can wait for a subsystem the way an eject does - the BREAK
    budget and a Domesday disc flip are both short.  So a subsystem that
-   holds a file open across polls registers here; it is called just before
-   the volume goes, must close what it holds at once, and may reopen once
-   the card is mounted again. */
+   holds a file open across polls registers here.  The hook runs just
+   before each f_mount(), must close what it holds at once, and may reopen
+   once filesystemMounted() says the card is mounted.  A reset calls it
+   twice (dismount, then mount), and it can precede a mount that fails.
+
+   Kept apart from the eject hooks: those are polled until they say they
+   are ready, these are told once and cannot refuse. */
 #define REMOUNT_HOOKS 4u
 static void (*remount_hook[REMOUNT_HOOKS])(void);
 static unsigned int remount_hooks;
@@ -2265,14 +2277,11 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
    FRESULT fsResult;
    FIL fileObject;
    LOG_DEBUG("filesystemReadFile: %s\n\r", filename);
-   if (filesystemState.fsMountState == false) {
-         if (fsEjected)
-            return 0;
-         fsResult = f_mount(&filesystemState.fsObject, "", 1);
-         if (fsResult != FR_OK) {
-            return 0;
-         }
-   }
+   /* Through filesystemMount(), the one mount path: it tells the remount
+      hooks first, and once mounted the next read (every BBC reset's
+      config_load) leaves the volume alone. */
+   if (!filesystemMount())
+      return 0;
    fsResult = f_open(&fileObject, filename, FA_READ);
    if (fsResult != FR_OK) {
       return 0;

@@ -441,8 +441,8 @@ static void music5000_rec_start(void)
    The flush is now a small state machine driven one step per poll: a few
    name probes per pass while picking the file, then one slice per pass.
    A new recording cannot start until the flush has released the buffer.
-   A remount of the card part-way (a BBC reset, a jukebox) closes the file
-   and the flush picks it up again from REC_FLUSH_REOPEN - see M5000_remount. */
+   A remount of the volume part-way closes the file and the flush picks it
+   up again from REC_FLUSH_REOPEN - see M5000_remount. */
 static FIL music5000_rec_fp;
 static enum { REC_FLUSH_IDLE, REC_FLUSH_OPEN, REC_FLUSH_WRITE, REC_FLUSH_REOPEN } rec_flush = REC_FLUSH_IDLE;
 static uint32_t rec_flush_pos;
@@ -450,6 +450,7 @@ static uint32_t rec_flush_end;
 static uint32_t rec_flush_name;     /* next Musics%03d to try - kept across recordings */
 static uint32_t rec_flush_probes;   /* names tried for this flush */
 static char     rec_flush_path[24]; /* "Musics%03d.wav" being written, root-relative */
+static uint32_t rec_flush_inits;    /* Pi1MHz_break.inits when this emulator last initialised */
 #define M5000_REC_FLUSH_SLICE  (64u * 1024u)   /* ~4 ms of card time per poll pass */
 #define M5000_REC_FLUSH_PROBES 8u              /* Musics%03d.wav names tried per pass */
 
@@ -529,17 +530,33 @@ static void music5000_rec_flush(void)
    }
 
    case REC_FLUSH_REOPEN: {
-      /* Carry on where M5000_remount closed it.  Only if the file is still
-         exactly what was written: the card may have been swapped in the
-         meantime, and appending to some other file would be worse than a
-         short recording. */
-      FRESULT result = f_open(&music5000_rec_fp, rec_flush_path, FA_OPEN_EXISTING | FA_WRITE);
+      /* Carry on where M5000_remount closed it - but only onto a card this
+         layer has mounted: after the Beeb's own "f unmount" an f_open here
+         would mount it again behind filesystem.c's back.  A reset or a
+         jukebox mounts before this pass, so those resume; anything else
+         leaves the WAV closed at the length written.  And only if the file
+         is still the one written - its length, and the header the capture
+         starts with: the card may have been swapped meanwhile, and
+         appending to some other file would be worse than a short
+         recording.  The seek to the end walks the cluster chain, so this
+         one pass costs more the further the flush had got. */
+      uint8_t hdr[sizeof(wavfmt)];
+      uint32_t done = rec_flush_pos - M5000_REC_BASE;
+      UINT n = (done < sizeof(hdr)) ? (UINT)done : (UINT)sizeof(hdr);
+      UINT got = 0;
+      FRESULT result = FR_NOT_READY;
+      if (filesystemMounted())
+         result = f_open(&music5000_rec_fp, rec_flush_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
       if (result != FR_OK) {
+         LOG_DEBUG("Music5000 recording cut short: %s could not be reopened\r\n", rec_flush_path);
          rec_flush = REC_FLUSH_IDLE;
          break;
       }
-      if (f_size(&music5000_rec_fp) != rec_flush_pos - M5000_REC_BASE ||
-          f_lseek(&music5000_rec_fp, f_size(&music5000_rec_fp)) != FR_OK) {
+      if (f_size(&music5000_rec_fp) != done ||
+          f_read(&music5000_rec_fp, hdr, n, &got) != FR_OK || got != n ||
+          memcmp(hdr, &Pi1MHz->JIM_ram[M5000_REC_BASE], n) != 0 ||
+          f_lseek(&music5000_rec_fp, done) != FR_OK) {
+         LOG_DEBUG("Music5000 recording cut short: %s is not the file being written\r\n", rec_flush_path);
          f_close(&music5000_rec_fp);
          rec_flush = REC_FLUSH_IDLE;
          break;
@@ -550,8 +567,24 @@ static void music5000_rec_flush(void)
    }
 }
 
+/* init_emulator bumps Pi1MHz_break.inits before it re-runs the inits, so a
+   flush this emulator's init has not run since is never polled again: a
+   BBC reset with M5000 disabled by an edited config, BeebSID taking the
+   audio path, or no JIM RAM.  Left as it is, the path stays busy and an
+   eject waits on it for ever; close what was written and let go. */
+static void rec_flush_orphaned(void)
+{
+   if (rec_flush == REC_FLUSH_IDLE || rec_flush_inits == Pi1MHz_break.inits)
+      return;
+   if (rec_flush == REC_FLUSH_WRITE)
+      f_close(&music5000_rec_fp);
+   LOG_DEBUG("Music5000 recording cut short: the emulator is no longer running\r\n");
+   rec_flush = REC_FLUSH_IDLE;
+}
+
 bool M5000_recording_path_busy(const char *host_path)
 {
+   rec_flush_orphaned();
    if ((rec_flush != REC_FLUSH_WRITE && rec_flush != REC_FLUSH_REOPEN) || host_path == NULL)
       return false;
 
@@ -655,18 +688,22 @@ static void music5000_emulate(void)
    the card may go once its WAV file has been written out. */
 static bool M5000_eject(void)
 {
+   rec_flush_orphaned();
    if (record)
       music5000_rec_stop();
    return rec_flush == REC_FLUSH_IDLE;
 }
 
-/* The card is about to be remounted (filesystemReset: a BBC reset or a
-   jukebox), which would invalidate the open WAV for good - the recording
-   lost, its clusters orphaned.  Neither can wait out a flush that may run
-   for many seconds, so close the file now - its directory entry then
-   holds what has been written so far, which plays as a truncated WAV if
-   the card does not come back - and let the flush reopen it and carry on
-   once it does. */
+/* The volume is about to be re-registered (filesystemRegisterRemount: a BBC
+   reset, a jukebox, the Beeb's f unmount, a mount after one), which would
+   invalidate the open WAV for good - the recording lost, its clusters
+   orphaned.  None of those can wait out a flush that may run for many
+   seconds, so close the file now - its directory entry then holds what has
+   been written so far, which plays as a truncated WAV if the flush cannot
+   resume - and let REC_FLUSH_REOPEN carry on once the card is mounted.
+   A reset calls this twice (dismount, then mount): the second finds the
+   file closed already.  No orphan check here: a reset calls it from inside
+   init_emulator, before this emulator's own init has run again. */
 static void M5000_remount(void)
 {
    if (rec_flush == REC_FLUSH_WRITE) {
@@ -689,6 +726,7 @@ void M5000_emulator_init(uint8_t instance, uint8_t address)
       synth_reset would have written through a NULL base. */
    if (Pi1MHz->JIM_ram_size == 0)
       return;
+   rec_flush_inits = Pi1MHz_break.inits;   /* polled again: a flush may carry on */
 
    for (uint32_t n = 0; n <(sizeof(antilogtable)/sizeof(antilogtable[0])) ; n++) {
       // 12-bit antilog as per AM6070 datasheet

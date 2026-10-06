@@ -30,6 +30,7 @@
 static Pi1MHz_t pi_struct;
 Pi1MHz_t * const Pi1MHz = &pi_struct;
 uint8_t fx_register[256];
+volatile Pi1MHz_break_t Pi1MHz_break;
 
 static func_ptr polls[8];
 static unsigned int npolls;
@@ -130,11 +131,28 @@ static void synth_play(void)
    c[0x70] = 0x08;          /* centre pan */
 }
 
-static void emulators_init(void)       /* the harddisc, then M5000, slots */
+/* init_emulator after a BBC reset: the poll table starts empty, the reset
+   count goes up, then the inits run in table order - Rampage (whose
+   JIM_Init.bin read goes through filesystemReadFile, as config_load's
+   does), Harddisc, M5000. */
+static void bbc_reset(bool harddisc, bool m5000)
 {
-   filesystemReset();
-   M5000_emulator_init(INSTANCE, 0);
-   synth_play();
+   npolls = 0;
+   Pi1MHz_break.inits++;
+   uint8_t *cfg = NULL;
+   if (filesystemReadFile("Pi1MHz/Pi1MHz.cfg", &cfg, 0) || cfg)
+      free(cfg);
+   if (harddisc)
+      filesystemReset();
+   if (m5000) {
+      M5000_emulator_init(INSTANCE, 0);
+      synth_play();
+   }
+}
+
+static void emulators_init(void)
+{
+   bbc_reset(true, true);
 }
 
 static void record(unsigned int passes_)
@@ -235,13 +253,13 @@ static void verify(const char *test, const char *fn)
 
 /* ---- tests ------------------------------------------------------------- */
 
-static void test_plain_flush(void)
+static void test_plain_flush(const char *test)
 {
    const char *fn = name_of(recording++);
    record(64);
    stop();
    drain(fn);
-   verify("flush with no remount (control)", fn);
+   verify(test, fn);
 }
 
 static void test_break_mid_flush(void)
@@ -275,7 +293,81 @@ static void test_dismount_mid_flush(void)
    filesystemDismount();                /* the FAT service's f unmount */
    drain(fn);
    filesystemMount();
-   verify("dismount mid-flush", fn);
+   /* The Beeb said unmounted: the flush must not write on (FatFs would
+      mount the card behind this layer's back), so the WAV stops, closed,
+      at the two slices written. */
+   verify_len("dismount mid-flush", fn, 2u * 64u * 1024u);
+}
+
+/* Harddisc disabled: nothing calls filesystemReset, but every BBC reset's
+   config_load (and JIM_Init.bin) read goes through filesystemReadFile -
+   which, while this layer has the card unmounted, mounts it. */
+static void test_readfile_mid_flush(void)
+{
+   const char *fn = name_of(recording++);
+   filesystemDismount();                /* unmounted as far as this layer knows */
+   record(64);
+   stop();
+   if (!mid_flush(fn)) { check("BREAK mid-flush, Harddisc disabled", false, "flush not under way"); return; }
+   bbc_reset(false, true);
+   drain(fn);
+   filesystemMount();
+   verify("BREAK mid-flush, Harddisc disabled", fn);
+}
+
+/* Between the remount's close and the reopen the file became another of
+   the same length (a card swap, a host write): it must not be appended to. */
+static void test_swapped_file(void)
+{
+   const char *fn = name_of(recording++);
+   record(64);
+   stop();
+   if (!mid_flush(fn)) { check("same-size impostor", false, "flush not under way"); return; }
+   filesystemReset();                   /* a jukebox: the WAV is closed */
+   static uint8_t other[2u * 64u * 1024u];
+   memset(other, 0x55, sizeof other);
+   FIL f;
+   UINT put = 0;
+   bool made = f_unlink(fn) == FR_OK &&
+               f_open(&f, fn, FA_CREATE_NEW | FA_WRITE) == FR_OK &&
+               f_write(&f, other, sizeof other, &put) == FR_OK && put == sizeof other &&
+               f_close(&f) == FR_OK;
+   if (!made) { check("same-size impostor", false, "could not plant the impostor"); return; }
+   drain(fn);
+   FILINFO fi;
+   static uint8_t back[sizeof other + 1u];
+   UINT got = 0;
+   bool same = f_stat(fn, &fi) == FR_OK && fi.fsize == sizeof other &&
+               f_open(&f, fn, FA_READ) == FR_OK &&
+               f_read(&f, back, sizeof back, &got) == FR_OK && got == sizeof other &&
+               memcmp(back, other, sizeof other) == 0;
+   f_close(&f);
+   static char why[96];
+   snprintf(why, sizeof why, "the impostor was written to (now %lu bytes)", (unsigned long)fi.fsize);
+   check("same-size impostor", same, why);
+}
+
+/* A BBC reset with M5000 disabled (edited config, BeebSID): nothing will
+   ever poll the flush again.  It must let go - closed at the length written
+   - not leave the root busy and an eject waiting for ever. */
+static void test_disabled_after_break(void)
+{
+   const char *fn = name_of(recording++);
+   record(64);
+   stop();
+   if (!mid_flush(fn)) { check("BREAK mid-flush, M5000 disabled", false, "flush not under way"); return; }
+   bbc_reset(true, false);
+   bool busy = M5000_recording_path_busy("/");
+   bool ejected = false;
+   for (unsigned int i = 0; i < 16u && !ejected; i++) {
+      poll();
+      ejected = filesystemEject();
+   }
+   filesystemInsert();
+   check("BREAK mid-flush, M5000 disabled: lets go", !busy && ejected,
+         busy ? "the root is still busy" : "eject still waiting");
+   verify_len("BREAK mid-flush, M5000 disabled", fn, 2u * 64u * 1024u);
+   emulators_init();                    /* and back on for what follows */
 }
 
 /* The BREAK's remount fails (the card will not initialise): what was
@@ -339,14 +431,17 @@ int main(void)
    filesystemInitialise(0);
    emulators_init();                    /* power on */
 
-   test_plain_flush();
+   test_plain_flush("flush with no remount (control)");
    test_break_mid_flush();
    test_jukebox_mid_flush();
    test_dismount_mid_flush();
    test_break_card_gone();
    test_break_while_recording();
    test_eject_mid_flush();
-   test_plain_flush();                  /* and the flush still works after all that */
+   test_readfile_mid_flush();
+   test_swapped_file();
+   test_disabled_after_break();
+   test_plain_flush("flush after all the above");
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;
