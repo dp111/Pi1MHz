@@ -33,4 +33,14 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion -Wshadow -g \
     -I"$B" -c "$B/secure_service.c" -o "$B/wrapper.o"
 echo "  ok: secure_service.c builds warning-free against the firmware headers"
 
+# ...and linked, with the real ABI core and a fake provider, to drive the
+# FIQ latch and the poll that answers it.
+echo "== secure service wrapper: latch and poll =="
+cp "$HERE"/test_wrapper.c "$B/"
+gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$B" -o "$B/tw" \
+    "$B/test_wrapper.c" "$B/secure_service.c" "$B/secure_service_core.c"
+"$B/tw"
+
 echo "SECURE TESTS PASSED"
