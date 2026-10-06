@@ -229,7 +229,8 @@ static void set_flashing(int on) {
    tt.flashing = on;
 }
 
-// This is called on initialization, on mode change, and VDU 20
+// This is called on initialization and on mode change (not VDU 20: in MODE 7
+// that resets the text colours only, see vdu_20).
 // It sets the default palette, and resets the default display options
 static void tt_reset(screen_mode_t *screen) {
    // Initialize the font

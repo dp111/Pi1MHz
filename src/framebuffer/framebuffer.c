@@ -326,35 +326,15 @@ static void update_text_area(void) {
          t_window.top = t_window.bottom;
       }
    }
-   // Make sure cursor is in text area
-   int16_t tmp_x = c_x_pos;
-   int16_t tmp_y = c_y_pos;
-   if (tmp_x < t_window.left) {
-      tmp_x = t_window.left;
-   } else if (tmp_x > t_window.right) {
-      tmp_x = t_window.right;
-   }
-   if (tmp_y < t_window.top) {
-      tmp_y = t_window.top;
-   } else if (tmp_y > t_window.bottom) {
-      tmp_y = t_window.bottom;
-   }
-   // The edit cursor too: update_cursors draws it with the current metrics,
-   // so one left below a shrunken grid would be drawn off the screen
-   int16_t tmp_ex = e_x_pos;
-   int16_t tmp_ey = e_y_pos;
-   if (e_enabled) {
-      if (tmp_ex < t_window.left) {
-         tmp_ex = t_window.left;
-      } else if (tmp_ex > t_window.right) {
-         tmp_ex = t_window.right;
-      }
-      if (tmp_ey < t_window.top) {
-         tmp_ey = t_window.top;
-      } else if (tmp_ey > t_window.bottom) {
-         tmp_ey = t_window.bottom;
-      }
-   }
+   // Make sure the cursors are on the (possibly smaller) grid.  Only the
+   // grid: update_cursors draws them with the current metrics, so one left
+   // below a shrunken grid would be drawn off the screen.  Clipping the
+   // window above keeps a cursor that was inside it inside it; a cursor a
+   // new VDU 28 window leaves outside is set_text_area's business.
+   int16_t tmp_x  = (int16_t)(c_x_pos < text_width  ? c_x_pos : text_width  - 1);
+   int16_t tmp_y  = (int16_t)(c_y_pos < text_height ? c_y_pos : text_height - 1);
+   int16_t tmp_ex = (int16_t)(e_x_pos < text_width  ? e_x_pos : text_width  - 1);
+   int16_t tmp_ey = (int16_t)(e_y_pos < text_height ? e_y_pos : text_height - 1);
    if (c_x_pos != tmp_x || c_y_pos != tmp_y || e_x_pos != tmp_ex || e_y_pos != tmp_ey) {
       c_x_pos = tmp_x;
       c_y_pos = tmp_y;
@@ -475,6 +455,23 @@ static void set_text_area(const t_clip_window_t *window) {
    t_window = *window;
    // Update any dependent variables
    update_text_area();
+   // A cursor the new window leaves outside it goes to the window's top
+   // left, each cursor on its own - what MOS 3.20's VDU 28 does (it homes
+   // the edit cursor, then the text cursor, with VDU 30)
+   int moved = 0;
+   if (c_x_pos < t_window.left || c_x_pos > t_window.right || c_y_pos < t_window.top || c_y_pos > t_window.bottom) {
+      c_x_pos = t_window.left;
+      c_y_pos = t_window.top;
+      moved = 1;
+   }
+   if (e_enabled && (e_x_pos < t_window.left || e_x_pos > t_window.right || e_y_pos < t_window.top || e_y_pos > t_window.bottom)) {
+      e_x_pos = t_window.left;
+      e_y_pos = t_window.top;
+      moved = 1;
+   }
+   if (moved && !text_at_g_cursor) {
+      update_cursors();
+   }
 }
 
 static void invert_cursor(int x_pos, int y_pos, int start, int end) {
@@ -668,7 +665,10 @@ static void change_mode(screen_mode_t *new_screen) {
       // The font and its rounding (VDU 23,19) are kept, but text is drawn
       // unclipped and relies on one cell fitting the screen: a mode too
       // small for the cell (a VDU 23,22 mode can be 8x8, a rounded cell is
-      // 16x16) gets the default 8x8 font back.
+      // 16x16) gets the default 8x8 font back.  MODEs 0-6 hold any cell
+      // left after the reset above (at most 16x24), so only an (unsupported) VDU 23,22 mode gets here, and
+      // the re-initialised font loses its user-defined characters -
+      // documented, not handled.
       if (font->get_overall_w(font) > screen->width || font->get_overall_h(font) > screen->height) {
          initialize_font_by_number(DEFAULT_FONT, font);
          font->set_spacing_h(font, spacing_h);
@@ -1529,7 +1529,9 @@ static void vdu_19(const uint8_t *buf) {
    // (MOS 3.20 ANDs it with numberOfLogicalColoursMinusOne): VDU 19,2 in a
    // 2-colour mode is colour 0.  Unmasked it reached palette entries no
    // pixel of the mode uses - in MODE 3/6 entry 2 is BBC_GAP_COL, the
-   // black gap lines.
+   // black gap lines.  The AND assumes 2^k colours, true of MODEs 0-7; a
+   // VDU 23,22 custom mode with another count is outside the supported set
+   // and is masked the same way (documented, not handled).
    if (screen->ncolour < 255) {
       l &= (uint8_t)screen->ncolour;
    }
@@ -1561,8 +1563,12 @@ static void vdu_19(const uint8_t *buf) {
 static void vdu_20(const uint8_t *buf) {
    // Colours only, as MOS 3.20 does it: the palette, the text and graphics
    // colours and both GCOL actions.  The font and the text grid are left
-   // alone.
-   screen->reset(screen);
+   // alone.  MODE 7 has no logical palette (VDU 19 is refused there) and
+   // its screen->reset is the MODE change one - SAA5050 font, reveal - so
+   // it gets the colour reset alone, which is all the MOS does in MODE 7.
+   if (!(screen->mode_flags & F_TELETEXT)) {
+      screen->reset(screen);
+   }
    set_default_colours();
    prim_set_bg_plotmode(screen, PM_NORMAL);
    prim_set_fg_plotmode(screen, PM_NORMAL);

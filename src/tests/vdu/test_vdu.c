@@ -1,6 +1,7 @@
 // Host test: VDU driver state that the ROM-comparison suite (tools/vdutest)
 // cannot see - cell metrics, the cursors, the teletext line state, the
-// palette and the window bookkeeping (review 2026-10-06 V1-V4, V6-V8).
+// palette and the window bookkeeping (review 2026-10-06 V1-V4, V6-V8, and
+// VDU 28 cursor homing and VDU 20 in MODE 7 from the review of those).
 //
 // Runs the real src/framebuffer/* against tools/vdutest/stubs.c with two
 // stubs wrapped (-Wl,--wrap):
@@ -14,7 +15,8 @@
 // the logical colour with numberOfLogicalColoursMinusOne; VDU 20 zeroes the
 // text/graphics colours and both GCOL actions and redoes the palette; VDU 24
 // refuses right < left or top < bottom (equal is a one-pixel window), then
-// any edge off the screen in pixels; VDU 31 ignores a position off the window.
+// any edge off the screen in pixels; VDU 31 ignores a position off the window;
+// VDU 28 homes a cursor it leaves outside the window.
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -179,6 +181,38 @@ static void test_v1_cursor_vs_metrics(void)
    VDU(23, 19, 1, 1, 1, 0, 0, 0, 0, 0);
 }
 
+// ---- VDU 28 homes a cursor it leaves outside the window --------------------
+
+static void test_vdu28_homes_cursors(void)
+{
+   /* MOS 3.20 vdu28EntryPoint: the edit cursor, then the text cursor, if
+      outside the new window, each go to its top left (VDU 30) - not to the
+      nearest edge. */
+   mode(0);
+   VDU(31, 20, 20);
+   VDU(28, 0, 10, 39, 0);          /* rows 0-10: the cursor is below it */
+   CHECK(fb_get_cursor_x() == 0 && fb_get_cursor_y() == 0,
+         "VDU 28: text cursor outside the window went to %d,%d, want 0,0 (home)",
+         fb_get_cursor_x(), fb_get_cursor_y());
+
+   mode(0);
+   VDU(31, 3, 3);
+   VDU(28, 0, 20, 39, 0);          /* the cursor is inside: it stays */
+   CHECK(fb_get_cursor_x() == 3 && fb_get_cursor_y() == 3,
+         "VDU 28: text cursor inside the window moved to %d,%d", fb_get_cursor_x(), fb_get_cursor_y());
+
+   mode(0);
+   VDU(31, 5, 5);
+   VDU(27, 138);                   /* edit cursor on, one row down: (5,6) */
+   VDU(28, 0, 20, 30, 10);         /* rows 10-20: the edit cursor is above it */
+   CHECK(fb_get_cursor_x() == 0 && fb_get_cursor_y() == 0,
+         "VDU 28: edit cursor outside the window went to %d,%d, want 0,0 (home)",
+         fb_get_cursor_x(), fb_get_cursor_y());
+   long d = flash_damage(32);
+   CHECK(d == 0, "VDU 28: cursors after homing wrote %ld bytes outside the screen", d);
+   VDU(26);
+}
+
 // ---- V2: VDU 20 must not change the cell ----------------------------------
 
 static void test_v2_vdu20_keeps_font(void)
@@ -265,6 +299,30 @@ static void test_v4_teletext_scroll(void)
    VDU('B');                       /* (1,2), on a row the scroll filled from row 1 */
    ink = first_ink(1 * cw, s->height - 1 - 2 * ch, cw, ch, 0);
    CHECK(ink == 0x3f, "V4: 'B' after VDU 23,7 drawn in colour %02x, want white (3f)", (unsigned)ink);
+}
+
+// ---- VDU 20 in MODE 7: the text colours only -------------------------------
+
+static void test_vdu20_mode7(void)
+{
+   /* MOS 3.20 vdu20EntryPoint in MODE 7 resets the text colours and nothing
+      else; the SAA5050 font, the reveal state and the palette belong to the
+      MODE change. */
+   mode(7);
+   VDU(23, 18, 2, 1, 0, 0, 0, 0, 0, 0);   /* reveal on */
+   VDU(31, 0, 0, 152, 'A');                /* conceal, then "A": shown, revealed */
+   pal_forget();
+   VDU(20);
+   int writes = 0;
+   for (int i = 0; i < PAL_ENTRIES; i++)
+      writes += pal[i].writes;
+   CHECK(writes == 0, "VDU 20 in MODE 7: %d palette writes, want none", writes);
+   VDU('B');                               /* concealed too: shown only if still revealed */
+   screen_mode_t *s = fb_get_current_screen_mode();
+   font_t *f = s->font;
+   int cw = f->get_overall_w(f), ch = f->get_overall_h(f);
+   CHECK(first_ink(2 * cw, s->height - 1, cw, ch, 0) != 0,
+         "VDU 20 in MODE 7 turned reveal off: concealed 'B' not shown");
 }
 
 // ---- V6: VDU 19's logical colour is masked to the mode ---------------------
@@ -356,9 +414,11 @@ int main(void)
    (void)guard_damage();
 
    test_v1_cursor_vs_metrics();
+   test_vdu28_homes_cursors();
    test_v2_vdu20_keeps_font();
    test_v3_mode_shrinks_below_cell();
    test_v4_teletext_scroll();
+   test_vdu20_mode7();
    test_v6_vdu19_mask();
    test_v7_graphics_window();
    test_v8_vdu31_range();
