@@ -5,6 +5,15 @@
 #include <stdbool.h>   /* bool is used below; keep this header self-contained */
 #include "screen_modes.h"
 
+// Size of the static sprite store (see "Sprite store" in primitives.c).
+// The biggest framebuffer the supported MODEs 0-7 have is MODE 7's teletext
+// surface, 480x500 at 8 bpp = 240000 bytes (MODEs 0-6 are at most 640x256 =
+// 163840), so a full-screen capture in any of them fits: 240000 + the 8 byte
+// block header, rounded up to 256 KiB. A capture larger than the store (only
+// possible in the unsupported modes above 7, or a custom mode) is refused:
+// the sprite is left undefined, as a failed malloc used to do.
+#define SPRITE_POOL_BYTES (256u * 1024u)
+
 typedef enum {
    HL_LR_NB = 1, // Horizontal line fill (left & right) to non-background
    HL_RO_BG = 2, // Horizontal line fill (right only) to background
