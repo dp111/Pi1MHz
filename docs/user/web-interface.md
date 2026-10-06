@@ -84,9 +84,13 @@ changing the SD card - works over the network too, as it does over
 
 Use `kernel7.img` on a Pi 2/3/Zero 2 and `kernel.img` on a Pi 1/Zero.
 The image is held in memory, never saved; the Pi answers, then restarts
-into it. A file that does not look like Pi1MHz firmware is refused
-(422) and the Pi carries on, and so is any image while the video
-player is open (503). A power cycle goes back to the card's kernel.
+into it. If the video player is running it is shut down first. Only a
+basic check is made - the image must start like an ARM kernel - so a
+file that fails it is refused (422) and the Pi carries on, but the
+wrong kernel for your Pi model is not caught and needs a power cycle.
+A power cycle always goes back to the card's kernel. The first install
+of a build with the current kernel.now layout has to go on the SD card
+(see `docs/dev/chainboot-kernel-now.md`); after that kernel.now works.
 
 ## Password protection
 
