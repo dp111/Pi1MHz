@@ -514,7 +514,8 @@ void IRQHandler_main(void) {
    {
       videoplayer_vsync_flip();   /* plane pointers, during blanking: tear-free */
       fb_process_flash();
-      screen_plane_commit();      /* last: the two above only mark their planes */
+      screen_plane_commit();      /* last: the flash tick only marks plane 1;
+                                     the flip writes its pointers itself */
    }
    // Periodically also process the VDU Queue
    fb_process_vdu_queue();
@@ -555,8 +556,16 @@ static void init_emulator(void) {
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
    RPI_PropertySetWord(0x00038030,12,1); // Set domain 12 ISP
    {
-      uint32_t *ico = (uint32_t *)0x20002000;
-      ico[0x20/4] = 0x00000000;// disable HVS interrupts going to the VPU
+      /* VPU core 0's interrupt controller (IC0, bus 0x7E002000), on this
+         board's peripheral base.  Word 0x20 is IC0_MASK4: eight 4-bit fields
+         for VideoCore interrupts 32-39, the HVS being 33.  Writing 0 masks
+         all eight from core 0 - HostPort, CCP2, SDC, DSI0, AVE, CAM0/1 as
+         well as the HVS - which is what the Zero W has always done; IC1
+         (0x7E002800, core 1) is not touched.  The literal 0x20002000 this
+         used to be was BCM2835-only, so kernel7 masked nothing and zeroed a
+         word of ARM RAM at 512 MB + 0x2020 instead. */
+      volatile uint32_t *ico = (volatile uint32_t *)(PERIPHERAL_BASE + 0x2000);
+      ico[0x20/4] = 0x00000000;   // IC0_MASK4: VC interrupts 32-39 off on core 0
    }
 
    _enable_interrupts();

@@ -14,7 +14,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
 void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows );
 void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr );
 void screen_wait_blanking( void );
-void screen_create_RGB_plane( uint32_t planeno, uint32_t width , uint32_t height, float par, uint32_t scale_height, uint32_t colour_depth, uint32_t buffer );
+void screen_create_RGB_plane( uint32_t planeno, uint32_t width , uint32_t height, float par, uint32_t colour_depth, uint32_t buffer );
 void screen_plane_enable(uint32_t planeno, bool enable);
 void screen_plane_alpha(uint32_t planeno, uint32_t alpha);
 void screen_update_palette_entry(uint32_t entry, uint32_t r, uint32_t g, uint32_t b);
@@ -30,6 +30,7 @@ void screen_set_palette(uint32_t planeno, uint32_t palette, uint32_t flags);
 uint32_t screen_get_palette_entry( uint32_t entry );
 void screen_set_vsync(bool enable);
 bool screen_check_vsync(void);
+bool screen_between_frames(void);  /* end-of-frame IRQ: may it write the display list now? */
 void screen_plane_commit(void);  /* end-of-frame IRQ: push deferred plane writes */
 uint32_t screen_refresh_mhz(void);   /* measured refresh, millihertz (0 = not yet) */
 uint32_t screen_vsync_count(void);   /* end-of-frame counter, for tear-free flips */

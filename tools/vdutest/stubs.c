@@ -33,11 +33,10 @@ uint32_t screen_allocate_buffer(uint32_t buffer_size, uint32_t *handle)
 void screen_release_buffer(uint32_t handle) { (void)handle; }
 
 void screen_create_RGB_plane(uint32_t planeno, uint32_t width, uint32_t height,
-                             float par, uint32_t scale_height,
-                             uint32_t colour_depth, uint32_t buffer)
+                             float par, uint32_t colour_depth, uint32_t buffer)
 {
    (void)planeno; (void)width; (void)height; (void)par;
-   (void)scale_height; (void)colour_depth; (void)buffer;
+   (void)colour_depth; (void)buffer;
 }
 
 void screen_plane_enable(uint32_t planeno, bool enable) { (void)planeno; (void)enable; }
@@ -47,6 +46,7 @@ void screen_set_palette(uint32_t planeno, uint32_t palette, uint32_t flags)
 void screen_update_palette_entry(uint32_t entry, uint32_t r, uint32_t g, uint32_t b)
 { (void)entry; (void)r; (void)g; (void)b; }
 uint32_t screen_get_palette_entry(uint32_t entry) { (void)entry; return 0; }
+void screen_wait_blanking(void) { }
 
 // ---- timer / interrupt controller ---------------------------------------
 // The VDU queue is drained by fb_process_vdu_queue() only when the ARM timer

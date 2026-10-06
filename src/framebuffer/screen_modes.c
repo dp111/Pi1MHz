@@ -901,7 +901,7 @@ void default_init_screen(screen_mode_t *screen, font_t *font) {
       /* The new plane and the palette that follows it go in during blanking:
          see screen_wait_blanking. */
       screen_wait_blanking();
-      screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, 0, (uint32_t) screen->log2bpp , (uint32_t) fb );
+      screen_create_RGB_plane(SCREEN_PLANE,(uint32_t)screen->width, (uint32_t)screen->height, screen->par, (uint32_t) screen->log2bpp , (uint32_t) fb );
    }
 
     // Initialize colour table and palette
@@ -921,8 +921,10 @@ void default_reset_screen(screen_mode_t *screen) {
     /* Copy default colour table */
     init_colour_table(screen);
 
-    /* Update the palette (this is a no-op in 8-bpp modes) */
-    screen->update_palette(screen, 0);
+    /* Select the flash bank (a no-op in 16/32-bpp modes).  A mode with no
+       flash stays on bank 0, the first flashing colour that VDU 19,l,17
+       writes; mark 0 is the twin, bank 1, where only 16 and 18 reach. */
+    screen->update_palette(screen, screen->flash ? 0 : 1);
 
     /* Initialize the font. Restore the default rendering too: the splash
        screen leaves font_normal at scale 2 (select_font(12,2,2,0)) and a
@@ -1270,10 +1272,13 @@ screen_mode_t *get_screen_mode(int mode_num) {
 
       /* Flashing colours exist only in the 2, 4 and 16 colour modes and
          teletext; in a 256-colour mode the flash tick would just swap the
-         plane between two identical banks. */
-      if (!sm->flash && sm->log2bpp == 3 &&
-          (sm->ncolour <= 15 || (sm->mode_flags & F_TELETEXT))) {
-         sm->flash = default_flash;
+         plane between two identical banks.  Decided afresh each time, not
+         once: the custom 8 bpp mode is one struct whose ncolour each
+         VDU 23,22 changes, and a filter set once stayed set. */
+      if (!sm->flash || sm->flash == default_flash) {
+         sm->flash = (sm->log2bpp == 3 &&
+                      (sm->ncolour <= 15 || (sm->mode_flags & F_TELETEXT)))
+                   ? default_flash : NULL;
       }
 
       // Set the colour index for while, avoiding flashing colours in 16-colour modes

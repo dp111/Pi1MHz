@@ -33,6 +33,7 @@
 #include "BeebSCSI/fatfs/ff.h"
 #include "BeebSCSI/filesystem.h"
 #include "rpi/rpi.h"
+#include "rpi/asm-helpers.h"
 #include "rpi/systimer.h"
 #include "rpi/audio.h"
 #include "rpi/h264dec.h"
@@ -116,6 +117,7 @@ static struct {
     uint32_t frame_period_us;
     uint32_t next_frame_due;         /* systimer target for the next flip */
     uint32_t flip_wait_since;        /* when the current frame was armed */
+    uint32_t flip_wait_vsync;        /* end-of-frame count when it was armed */
     int64_t  armed_pts;              /* pts of the frame handed to the IRQ */
 
     /* audio: the PCM goes straight from the .pvf record into the audio
@@ -342,11 +344,18 @@ static volatile uint8_t  vp_gap_min, vp_gap_max;
 static volatile uint32_t vp_commit_irq, vp_commit_poll;
 #endif
 
-/* IRQ context (and the poll-loop fallback below): register writes only. */
+/* IRQ context (and the poll-loop fallback below, IRQs masked): register
+   writes only. */
 void videoplayer_vsync_flip(void)
 {
     uint32_t phys = vp_armed_phys;
     if (!phys)
+        return;
+    /* The rule every display-list write keeps: only between HVS frames (see
+       screen_between_frames).  An end of frame serviced late leaves the
+       picture armed for the next one - shown a refresh later, rather than
+       its pointers written mid-frame. */
+    if (!screen_between_frames())
         return;
     vp_armed_phys = 0;
 #ifdef DEBUG
@@ -380,23 +389,32 @@ static void arm_flip(void)
         draw_picture_number(phys, (uint32_t)vp.pending_pts + 1u);
     vp.armed_pts = vp.pending_pts;
     vp.flip_wait_since = RPI_GetSystemTime();
+    vp.flip_wait_vsync = screen_vsync_count();
     vp_armed_phys = phys;
 }
 
 /* Poll loop: pick up what the interrupt showed - MMAL calls and the
    bookkeeping cannot run in interrupt context.  Also covers the case where
-   the end-of-frame interrupt is not running at all (the framebuffer disables
-   it in some modes): after a frame period, commit from here instead, so the
-   video can never freeze waiting for an edge that will not come. */
+   no end of frame is being serviced at all: after a frame period with none,
+   commit from here instead, so the video can never freeze waiting for an
+   edge that will not come.  Only then - while ends of frame are being
+   counted, a picture still armed was held for a late one and the next one
+   takes it; writing it from here would land wherever the loop is, mid-frame. */
 static void reap_flip(void)
 {
     if (vp_armed_phys) {
         uint32_t limit = vp.frame_period_us ? vp.frame_period_us : 40000u;
-        if ((int32_t)(RPI_GetSystemTime() - vp.flip_wait_since) >= (int32_t)limit) {
+        if ((int32_t)(RPI_GetSystemTime() - vp.flip_wait_since) >= (int32_t)limit &&
+            screen_vsync_count() == vp.flip_wait_vsync) {
 #ifdef DEBUG
             vp_commit_poll++;                  /* no vsync IRQ: don't stall */
 #endif
+            /* IRQs masked: the IRQ is the other reader and clearer of
+               vp_armed_phys, and must not flip the same picture between our
+               read and our clear.  IRQ only - FIQ (the bus) stays live. */
+            unsigned int cpsr = _disable_irq_cspr();
             videoplayer_vsync_flip();
+            _restore_cpsr(cpsr);
         }
     }
 

@@ -359,9 +359,6 @@ typedef struct {
 } rgb_t;
 
 static float rgb_scale = 0.0f;
-/* The scale the framebuffer plane actually ended up at, after the clamp.
-   Overlays on the computer screen inherit it verbatim - see screen_scale. */
-static float fb_scale = 0.0f;
 
 static bool plane_valid[8];
 
@@ -388,8 +385,8 @@ static plane_shadow_t plane_shadow[MAX_PLANES];
    state with part of the new - a VP mode change touches ctrl, pos, src_size
    and palette, so the frame it lands in can show a plane half-switched,
    which reads as a flicker when the modes are changed rapidly.
-   If the end-of-frame IRQ is not running (the framebuffer disables it in
-   some modes) the mutators write through immediately, so an update can
+   If the end-of-frame IRQ is not running (at boot, until the framebuffer
+   enables it) the mutators write through immediately, so an update can
    never be stranded - it just is not tear-free, as it was before. */
 #define PL_DIRTY_CTRL     (1u<<0)
 #define PL_DIRTY_POS      (1u<<1)
@@ -424,23 +421,42 @@ static void plane_mark( uint32_t planeno, uint32_t mask )
     plane_write_fields(planeno, mask);
 }
 
+/* May the end-of-frame IRQ write the display list now?  Only while the HVS
+   is still between frames.  It composites ahead of the display and starts
+   the next frame ~0.1-0.2 ms after its end of frame; a plane change written
+   after that - typically because the end of frame was serviced late behind
+   a long IRQ - is followed within a few ms by the VPU missing 1MHz bus
+   cycles (bus trace: plane 1's ctrl+palette commit landing at HVS line 10,
+   then a JIM fetch never served; 3 of 3).  So a late writer leaves its
+   change for the next end of frame, however many that takes: forcing it
+   through after a few late frames forced exactly the write that crashed.
+   The exceptions are where no end of frame is coming to wait for: the IRQ
+   is off (plane_defer clear, the mutators write through), or channel 1 is
+   not running at all - disabled, so it never reaches its end-of-frame
+   state. */
+static bool hvs_channel1_running( void )
+{
+    /* DISPSTAT1's state (0 disabled .. 3 end of frame) and DISPCTRL1's
+       enable bit */
+    return (RPI_hvs->stat1 >> 30) != 0u && (RPI_hvs->ctrl1 & (1u << 31)) != 0u;
+}
+
+bool screen_between_frames( void )
+{
+    if (!plane_defer)
+        return true;
+    if ((RPI_hvs->stat1 >> 30) == 3u)
+        return true;                           /* end of frame */
+    return !hvs_channel1_running();
+}
+
 /* End-of-frame IRQ: push everything the frame just gone was not allowed to
-   see. Called after the other per-frame writers (pointer move, flash), so
-   their changes go out in the same blanking interval. */
+   see. Called after the other per-frame writer (flash), so its changes go
+   out in the same blanking interval. */
 void screen_plane_commit( void )
 {
-    /* Only while the HVS is still between frames.  It composites ahead of
-       the display and starts the next frame ~0.1-0.2 ms after its end of
-       frame; a plane change written after that - here, typically because
-       the end of frame was serviced late behind a long IRQ - is followed
-       within a few ms by the VPU missing 1MHz bus cycles (bus trace: plane
-       1's ctrl+palette commit landing at HVS line 10, then a JIM fetch never
-       served; 3 of 3).  Leave the changes for the next frame; a channel that
-       never gets there cannot hold them for more than a few. */
-    static uint32_t late;
-    if (plane_defer && (RPI_hvs->stat1 >> 30) != 3u && ++late < 4u)
-        return;
-    late = 0;
+    if (!screen_between_frames())
+        return;                    /* late: the next end of frame takes them */
     for (uint32_t pl = 0; pl < MAX_PLANES; pl++) {
         uint32_t mask = plane_dirty[pl];
         if (!mask)
@@ -593,7 +609,6 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
  * @param height Height of the source image.
  * @param par Pixel aspect ratio.
  * @param yuv Flag indicating if the image is YUV.
- * @param scale_height Height to scale to.
  * @param scaled_width Pointer to store the scaled width.
  * @param scaled_height Pointer to store the scaled height.
  * @param startpos Pointer to store the start position.
@@ -624,8 +639,7 @@ static volatile uint32_t* screen_get_nextplane(uint32_t planeno) {
    source is to drive such a panel at its native mode and leave this at 1/1);
    a widescreen set fed 720x576 wants 3/4 on top of the television
    correction.  The same factor goes to every plane's width, so the video,
-   the computer screen, the pointer and the VP5 strips stay registered with
-   each other. */
+   the computer screen and the VP5 strips stay registered with each other. */
 #define GRID_SAMPLE_PAR (12.0f / 13.0f)
 
 /* Pixel shape of the panel itself: square unless it is a standard-definition
@@ -699,7 +713,7 @@ static float grid_vscale(uint32_t v_display)
     }
 }
 
-static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t scale_height, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh, uint32_t *h_crop_out)
+static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool yuv, uint32_t* scaled_width, uint32_t* scaled_height, uint32_t* startpos,  uint32_t *nsh, uint32_t *nh, uint32_t *h_crop_out)
 {
     uint32_t h_crop = 0;
     static float yuv_scale = 0.0f;
@@ -804,18 +818,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     if ( rgb_scale < 0.1f)
         rgb_scale = grid_vscale(v_display) * 2;   /* the same table the video uses */
 
-    float scale;
-    if (scale_height)
-        /* An overlay ON the computer screen (the mouse pointer): it must
-           end up at the framebuffer's FINAL scale, not re-derive one from
-           rgb_scale. The clamp below is per-plane, so a big plane trips it
-           and a 24-pixel-wide one never does - which left the pointer at
-           exactly twice the framebuffer's scale once the video plane set
-           rgb_scale = yuv_scale*2. */
-        scale = (256/(float)scale_height) * ((fb_scale > 0.1f) ? fb_scale
-                                                               : rgb_scale);
-    else
-        scale = rgb_scale ;
+    float scale = rgb_scale;
 
     const float rgb_hscale_par = grid_par(h_display, v_display);
     if (((uint32_t)(scale * rgb_hscale_par * (float)h_corrected)) >  h_display)
@@ -831,10 +834,6 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
 #ifdef SCREEN_DEBUG
     LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", *scaled_width, *scaled_height);
 #endif
-    if (!scale_height) {
-        fb_scale = scale;        /* what an overlay must inherit */
-    }
-
     uint32_t h_overscan = (h_display - *scaled_width) / 2;
     uint32_t v_overscan = (v_display - *scaled_height) / 2;
 #ifdef SCREEN_DEBUG
@@ -959,6 +958,7 @@ static void tpz( uint32_t src, uint32_t scl, uint32_t *ptr)
    is nil at 576p where the frame fits exactly.  The unaligned geometry is
    remembered so a change re-derives from it rather than accumulating. */
 void screen_set_YUV_pointers( uint32_t planeno, uint32_t y, uint32_t cb, uint32_t cr );   /* below */
+void screen_wait_blanking( void );   /* below */
 
 static int      video_align_x = 0;
 static int      video_align_y = 0;
@@ -1049,13 +1049,6 @@ void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows )
 
 void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
-    /* Before anything touches the slot: a deferred write still pending from
-       the old contents would otherwise be committed by the end-of-frame IRQ
-       part-way through the rebuild, putting the previous mode's pos/src_size
-       back over the new entry. */
-    if (planeno < MAX_PLANES)
-        plane_dirty[planeno] = 0;
-    volatile uint32_t * plane =  screen_get_nextplane( planeno);
     LOG_DEBUG("plane %"PRIu32" (420)\r\n", planeno);
     buffer |= 0xC0000000;
         uint32_t scaled_width;
@@ -1078,7 +1071,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
            instead of 1536 and registers just as well, with no re-encode. */
         uint32_t grid_h_crop;
         uint32_t grid_offset = screen_scale(VIDEO_GRID_WIDTH, VIDEO_GRID_HEIGHT,
-                                            1.0f, true, 0, &scaled_width,
+                                            1.0f, true, &scaled_width,
                                             &scaled_height, &startpos, &nsh, &nh,
                                             &grid_h_crop);
 
@@ -1100,6 +1093,23 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
             (uint32_t)(((uint64_t)grid_h_crop * width) / VIDEO_GRID_WIDTH) & ~1u;
         uint32_t nw = width - 2u * horizontal_offset;
 
+    /* Rebuilding the entry rewrites live display-list slots, so it starts in
+       blanking like a MODE change's rebuild (see screen_wait_blanking) - the
+       geometry above is worked out first, so the window holds only the
+       writes, and the shadow and alignment state the IRQ's commit and flip
+       read.  The player's bring-up runs in the main loop, so IRQs are masked
+       from the wait to the last write: otherwise the vsync IRQ would take the
+       end of frame (and the VDU drain after it) and this would land
+       mid-frame.  IRQ only - FIQ, and so the bus, runs throughout. */
+    unsigned int cpsr = _disable_irq_cspr();
+    screen_wait_blanking();
+    /* Before anything touches the slot: a deferred write still pending from
+       the old contents would otherwise be committed by the end-of-frame IRQ
+       part-way through the rebuild, putting the previous mode's pos/src_size
+       back over the new entry. */
+    if (planeno < MAX_PLANES)
+        plane_dirty[planeno] = 0;
+    volatile uint32_t * plane =  screen_get_nextplane( planeno);
         volatile YUV_plane_t* yuv = (volatile YUV_plane_t*) plane;
         /* Pixel order (bits 13-14), established empirically on Test Card F
            against a PC decode of the same access unit: with order 1 the
@@ -1166,6 +1176,7 @@ void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t heig
         yuv->pfkpv1 = POLYPHASE_BASE | 0x80000000u;
         setup_polyphase();
     plane_valid[planeno] = true;
+    _restore_cpsr(cpsr);
 }
 
 /* Retarget an existing YUV plane at a new frame - the video player's
@@ -1197,7 +1208,7 @@ static void dim_strips_reframe( void );
 static void plane_treatment_reapply( uint32_t planeno );
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags );
 
-void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height, float par , uint32_t scale_height, uint32_t colour_depth, uint32_t buffer )
+void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height, float par , uint32_t colour_depth, uint32_t buffer )
 {
     /* see screen_create_YUV420_plane: drop pending deferred writes first */
     if (planeno < MAX_PLANES)
@@ -1210,7 +1221,7 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
         uint32_t nh;
         {   /* horizontal cropping is a YUV-path concept; ignore it here */
             uint32_t rgb_hcrop;
-            screen_scale(width, height , par, false, scale_height,  &scaled_width, &scaled_height, &startpos, &nsh, &nh, &rgb_hcrop);
+            screen_scale(width, height , par, false, &scaled_width, &scaled_height, &startpos, &nsh, &nh, &rgb_hcrop);
         }
 
         buffer |= 0x80000000; // if we use &C then there is an error on the screen
@@ -1362,29 +1373,19 @@ void screen_plane_alpha( uint32_t planeno, uint32_t alpha )
 
 /* Two layers of visibility, kept separate so neither has to know about
    the other: screen_plane_enable() is what a plane's OWNER wants
-   (framebuffer MODE changes, mouseredirect pointer moves, the video
-   player's first frame), and screen_plane_gate() is what the VP415
-   video mixer allows - VP1 gates the computer planes, VP2 gates the
-   video plane. A plane is shown only when wanted AND not gated, so an
-   owner re-asserting its plane (a pointer move, a MODE change) can
-   never resurface a layer the mixer has hidden. */
+   (framebuffer MODE changes, the video player's first frame), and
+   screen_plane_gate() is what the VP415 video mixer allows - VP1 gates
+   the computer plane, VP2 gates the video plane. A plane is shown only
+   when wanted AND not gated, so an owner re-asserting its plane (a MODE
+   change) can never resurface a layer the mixer has hidden. */
 static bool plane_wanted[MAX_PLANES];
 static bool plane_gated[MAX_PLANES];
 
 /* The third layer, for the same reason as the second: what the VP mixer
    decided a plane should LOOK like - which palette family, and how
    translucent. Recorded here so that the owner re-creating its plane (a
-   MODE change, a new pointer shape) cannot silently drop it. Twice now a
-   rebuild has thrown the mixer's decision away: plane 1's fixed alpha on a
-   MODE change, and the pointer's palette on a shape change, which dropped
-   VP4's premultiplied mix bank. The pointer defaults to keyed so its black
-   surround shows the screen underneath rather than painting a box. */
-/* The pointer's black is "no pointer here", not computer content, so it
-   must stay clear when highlight inverts the keyed bank - otherwise its
-   surround dims the video and draws a rectangle round the glyph. Sticky
-   per plane: the framebuffer's flash timer re-selects the family every
-   tick and must not quietly re-enrol the pointer. */
-static bool plane_hl_exempt[MAX_PLANES];
+   MODE change) cannot silently drop it, as a rebuild once did with plane
+   1's fixed alpha. */
 static uint8_t plane_treat_flags[MAX_PLANES];
 static uint8_t plane_treat_alpha[MAX_PLANES];
 static bool    plane_treat_set[MAX_PLANES];
@@ -1411,7 +1412,9 @@ static void plane_treatment_reapply( uint32_t planeno )
 /* Set or clear a created plane's "owns the display" bit. ctrl also carries
    the entry's word count and end-of-list bit, so it is written whole from
    the shadow - reading it back out of a list the HVS is walking risks
-   latching a transient value and malforming the list itself. */
+   latching a transient value and malforming the list itself.  The shadow
+   RMW is bracketed: the main loop (VP modes) and the IRQ (a MODE change)
+   both show and hide planes. */
 static void plane_write_show( uint32_t planeno, bool show )
 {
     plane_shadow_t *s = &plane_shadow[planeno];
@@ -1419,12 +1422,14 @@ static void plane_write_show( uint32_t planeno, bool show )
     // Deliberately inverted: our direct-HVS planes only own the display
     // when HDMI is NOT connected (hotplug bit 0 clear) - with a monitor
     // attached the firmware drives the display instead
-    if (show && (~(RPI_hdmi->hotplug)&1))
-        s->ctrl |= (uint32_t)0x40000000;
-    else if (!show)
-        s->ctrl &= ~(uint32_t)0x40000000;
-    else
+    if (show && (RPI_hdmi->hotplug & 1u))
         return;                     /* wanted, but the firmware owns the display */
+    unsigned int cpsr = _disable_interrupts_cspr();
+    if (show)
+        s->ctrl |= (uint32_t)0x40000000;
+    else
+        s->ctrl &= ~(uint32_t)0x40000000;
+    _restore_cpsr(cpsr);
 
     plane_mark(planeno, PL_DIRTY_CTRL);
 }
@@ -1452,16 +1457,26 @@ void screen_plane_gate( uint32_t planeno, bool gated )
     screen_plane_apply(planeno);
 }
 
+/* screen_plane_enable without its DEBUG print, for the dim strips: they
+   enable theirs inside a blanking window, which a serial print would
+   stretch. */
+static void plane_set_wanted( uint32_t planeno, bool enable )
+{
+    plane_wanted[planeno] = enable;
+    if (!plane_valid[planeno])
+        return;                  /* flag recorded; slot not ours to touch */
+    plane_write_show(planeno, enable && !plane_gated[planeno]);
+}
+
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
     LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
 
     if (planeno >= MAX_PLANES)
         return;
-    plane_wanted[planeno] = enable;
+    plane_set_wanted(planeno, enable);
     if (!plane_valid[planeno])
-        return;                  /* flag recorded; slot not ours to touch */
-    plane_write_show(planeno, enable && !plane_gated[planeno]);
+        return;
 #ifdef SCREEN_DEBUG
     volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
     LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
@@ -1517,12 +1532,10 @@ static bool screen_highlight;
 
 static uint32_t palette_mixed_entry( uint32_t entry, uint32_t colour )
 {
-    /* Black is black whatever index it sits at. The old `entry <= 15`
-       restriction existed for the removed dim-frame plane, which needed a
-       never-keyed index; the only user left is the mouse pointer's outline
-       (index 16, which no mode ever gives a colour, so it is black by
-       omission) - and that must key out exactly like the Beeb's own black,
-       or it draws a hard black border round the pointer over the video. */
+    /* Black is black whatever index it sits at: keyed on the colour, not
+       the index.  (The old `entry <= 15` restriction existed for the
+       removed dim-frame plane, which needed a never-keyed index; in a
+       256-colour mode every index is a real colour, black included.) */
     bool black = (colour == 0);
     if (black)
         return 0u;               /* clear: black must not dim the video */
@@ -1534,12 +1547,7 @@ static uint32_t palette_mixed_entry( uint32_t entry, uint32_t colour )
 
 static uint32_t palette_keyed_entry( uint32_t entry, uint32_t colour, bool highlight )
 {
-    /* Black is black whatever index it sits at. The old `entry <= 15`
-       restriction existed for the removed dim-frame plane, which needed a
-       never-keyed index; the only user left is the mouse pointer's outline
-       (index 16, which no mode ever gives a colour, so it is black by
-       omission) - and that must key out exactly like the Beeb's own black,
-       or it draws a hard black border round the pointer over the video. */
+    /* Black is black whatever index it sits at - see palette_mixed_entry. */
     bool black = (colour == 0);
     if (highlight)
         return black ? (VP5_DIM_ALPHA << 24) : 0u;
@@ -1551,11 +1559,19 @@ static uint32_t palette_keyed_entry( uint32_t entry, uint32_t colour, bool highl
    writing only the ones that differ keeps the HVS's palette, which it reads
    for every pixel, out of the way of 2048 writes mid-frame.  0x00FFFFFF is
    never a palette value (opaque entries carry alpha FF, clear and dimming
-   ones carry no colour), so it marks "not written yet". */
+   ones carry no colour), so it marks "not written yet".
+   The compare, the copy and the word go together with IRQs masked (once
+   per entry, by screen_update_palette_entry, the only caller): entries
+   are set from the IRQ (the VDU drain) and the main loop, and an IRQ
+   between the copy and the word would leave the copy saying a value the
+   hardware does not hold - for good, since the diff then skips it.  IRQ
+   only: FIQ never touches the palette, and the bus must not wait out the
+   first call's 2048-word fill. */
 #define PAL_UNWRITTEN 0x00FFFFFFu
 static uint32_t palette_words[PAL_ENTRIES * 4u];
 static bool     palette_words_init;
 
+/* Caller holds IRQs masked - see screen_update_palette_entry. */
 static void palette_put( uint32_t index, uint32_t value )
 {
     if (!palette_words_init) {
@@ -1563,10 +1579,10 @@ static void palette_put( uint32_t index, uint32_t value )
             palette_words[i] = PAL_UNWRITTEN;
         palette_words_init = true;
     }
-    if (palette_words[index] == value)
-        return;
-    palette_words[index] = value;
-    context_memory[(PALETTE_BASE>>2) + index] = value;
+    if (palette_words[index] != value) {
+        palette_words[index] = value;
+        context_memory[(PALETTE_BASE>>2) + index] = value;
+    }
 }
 
 void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint32_t b )
@@ -1578,15 +1594,17 @@ void screen_update_palette_entry( uint32_t entry, uint32_t r , uint32_t g , uint
 
     uint32_t colour = ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
 
+    /* One bracket for the entry's four words (see palette_words). */
+    unsigned int cpsr = _disable_irq_cspr();
     palette_put(entry, 0xff000000 | colour);
 
-    /* BOTH keyed variants: under highlight the framebuffer is on 6/7 but a
-       highlight-exempt plane (the mouse pointer) is still rendering from
-       2/3, so refreshing only the "active" pair left the pointer showing
-       pre-VP5 colours until highlight was turned off again. */
+    /* BOTH keyed variants, whichever is in use: screen_set_highlight only
+       re-points the planes, so the pair it switches to must already hold
+       this colour. */
     palette_put(entry + PAL_KEYED,    palette_keyed_entry(entry, colour, false));
     palette_put(entry + PAL_KEYED_HL, palette_keyed_entry(entry, colour, true));
     palette_put(entry + PAL_MIXED,    palette_mixed_entry(entry, colour));
+    _restore_cpsr(cpsr);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1615,9 +1633,9 @@ void screen_geometry_report( uint32_t planeno, uint32_t *disp_w, uint32_t *disp_
 
 /* The strips' source pixels: 4x4 of palette entry 0 (black), blown up to
    fill each rect.  Ordinary ARM memory, handed to the HVS through the
-   0x80000000 alias exactly as mouseredirect.c hands it the pointer bitmap.
-   It must NOT be a GPU allocation: screen_dim_strips runs inside a Beeb
-   SCSI command (fcodeWriteBuffer, between the data-out and status phases),
+   0x80000000 alias (cleaned out of the cache first).  It must NOT be a GPU
+   allocation: screen_dim_strips runs inside a Beeb SCSI command
+   (fcodeWriteBuffer, between the data-out and status phases),
    and the mailbox allocate/lock pair can block the poll loop for up to two
    mailbox timeouts while the Beeb waits in a handshake that has none of its
    own.  Cache-line aligned so the clean below cannot touch a neighbour. */
@@ -1645,7 +1663,7 @@ static bool dim_strip_place(uint32_t planeno, uint32_t x, uint32_t y,
                             uint32_t w, uint32_t h)
 {
     if (!w || !h) {                       /* empty band: nothing to show */
-        screen_plane_enable(planeno, false);
+        plane_set_wanted(planeno, false);
         return false;
     }
     plane_dirty[planeno] = 0;       /* see screen_create_YUV420_plane */
@@ -1683,11 +1701,18 @@ static bool dim_strip_place(uint32_t planeno, uint32_t x, uint32_t y,
         k[2] = POLYPHASE_BASE | 0x80000000u;
     }
     plane_valid[planeno] = true;
-    screen_plane_enable(planeno, true);
+    plane_set_wanted(planeno, true);
     return true;
 }
 
-void screen_dim_strips( bool on )
+/* The strips' slots and dim_geom/dim_built/dim_shown/dim_strips_on are
+   changed from two contexts: the main loop (F-code VP modes, through
+   screen_dim_strips) and the IRQ (a MODE change's dim_strips_reframe).  So
+   the main loop's way in masks IRQs for the whole update.  in_blanking says
+   the caller has already started this in blanking (the MODE change's
+   rebuild); otherwise a rebuild waits for one first, as a MODE change does -
+   it rewrites four live display-list slots. */
+static void dim_strips_set( bool on, bool in_blanking )
 {
     if (!on) {
         if (dim_strips_on) {
@@ -1739,6 +1764,8 @@ void screen_dim_strips( bool on )
         dim_strip_src_ready = true;
     }
 
+    if (!in_blanking)
+        screen_wait_blanking();
     uint32_t right = x + w, bottom = y + h;
     uint32_t shown = 0u;
     if (dim_strip_place(DIM_STRIP_FIRST + 0u, 0u, 0u, disp_w, y))          shown |= 1u;
@@ -1754,13 +1781,24 @@ void screen_dim_strips( bool on )
     dim_strips_on = true;
 }
 
+/* Main loop (F-code, inside a SCSI command).  IRQ only is masked - FIQ, and
+   so the bus, runs through the blanking wait. */
+void screen_dim_strips( bool on )
+{
+    unsigned int cpsr = _disable_irq_cspr();
+    dim_strips_set(on, false);
+    _restore_cpsr(cpsr);
+}
+
 /* Called from screen_create_RGB_plane when the computer plane is rebuilt:
    a no-op unless VP5 has the strips up, and the geometry guard above makes
-   it free when the rectangle has not actually moved. */
+   it free when the rectangle has not actually moved.  That rebuild was
+   started in blanking (default_init_screen), from the VDU drain's IRQ, so
+   the strips go straight on after it. */
 static void dim_strips_reframe( void )
 {
     if (dim_strips_on)
-        screen_dim_strips(true);
+        dim_strips_set(true, true);
 }
 
 /* /status forensics: the rectangle the strips were last built around. The
@@ -1822,10 +1860,16 @@ void screen_mixer_reset( void )
 {
     for (uint32_t planeno = 0; planeno < MAX_PLANES; planeno++) {
         screen_plane_gate(planeno, false);
+        if (!plane_treat_set[planeno])
+            continue;
         plane_treat_set[planeno] = false;
+        /* Forgetting the treatment is not enough: the plane is still on the
+           family and alpha it chose (VP4's half-strength mix) until the next
+           MODE rebuilds it.  Put back what creation gives it - the colour
+           family, flash bank kept, at full alpha. */
+        screen_set_palette(planeno, 0, 3);
+        screen_plane_alpha(planeno, 0xFFu);
     }
-    for (uint32_t i = 0; i < MAX_PLANES; i++)
-        plane_hl_exempt[i] = false;
     screen_dim_strips(false);
     screen_set_highlight(false);
 }
@@ -1835,28 +1879,19 @@ void screen_set_highlight( bool on )
     if (screen_highlight == on)
         return;
 
-    /* Recast the bank pair we are about to switch TO, while it is still
-       inactive - nothing is reading it, so this cannot tear. Both banks of
-       the pair (normal + flash twin: entries 0-511 map to the two) must be
-       done, or the framebuffer's flash timer alternates the plane between
-       an inverted and an un-inverted palette and the overlay blinks. */
-    uint32_t dst = on ? PAL_KEYED_HL : PAL_KEYED;
-    for (uint32_t entry = 0; entry < 512u; entry++) {
-        uint32_t colour = context_memory[(PALETTE_BASE>>2) + entry] & 0x00FFFFFFu;
-        palette_put(entry + dst, palette_keyed_entry(entry, colour, on));
-    }
-
+    /* Both keyed pairs are already current: screen_update_palette_entry
+       writes the plain and highlight variants of every entry together, so
+       there is nothing to recast - only every plane already on a keyed bank
+       to re-point at the other pair.  One word each, committed during
+       blanking.  IRQs masked: the flash tick re-selects plane 1's bank from
+       the IRQ, from the same shadow word and screen_highlight. */
+    unsigned int cpsr = _disable_irq_cspr();
     screen_highlight = on;
-
-    /* Now the cheap part: re-point every plane already on a keyed bank at
-       the other pair. One word each, committed during blanking. */
     for (uint32_t pl = 0; pl < MAX_PLANES; pl++) {
         if (!plane_valid[pl])
             continue;
         if ((plane_shadow[pl].ctrl & 0xF) != 0xD)
             continue;      /* only the palettized planes have a palette word */
-        if (plane_hl_exempt[pl])
-            continue;      /* its black stays clear, not dimming */
         uint32_t bank = ((plane_shadow[pl].palette & 0x3fffu) - PALETTE_BASE)/0x400u;
         if (!(bank & 2u))
             continue;                      /* not keyed: highlight is moot */
@@ -1864,6 +1899,7 @@ void screen_set_highlight( bool on )
         plane_shadow[pl].palette = 0xc0000000u | ((bank*0x400u) + PALETTE_BASE);
         plane_mark(pl, PL_DIRTY_PALETTE);
     }
+    _restore_cpsr(cpsr);
 }
 
 uint32_t screen_get_palette_entry( uint32_t entry )
@@ -1877,6 +1913,7 @@ uint32_t screen_get_palette_entry( uint32_t entry )
 // 2 set alpha palette
 // 3 clear alpha
 // 4 flash palette
+// 5 premultiplied mix palette (VP4)
 
 void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
 {
@@ -1903,15 +1940,13 @@ void screen_set_palette( uint32_t planeno, uint32_t palette, uint32_t flags )
             case 0: fam = (palette & 2u) ? 2u : 0u;
                     flash = palette & 1u;                      break;
             case 1: flash = palette & 1u;                      break;
-            case 2: fam = 2u; plane_hl_exempt[planeno] = false; break;
+            case 2: fam = 2u;                                  break;
             case 3: fam = 0u;                                  break;
             case 4: flash ^= 1u;                               break;
             case 5: fam = 4u;                                  break;
-            case 6: fam = 2u; plane_hl_exempt[planeno] = true;  break;
         }
-        /* the keyed family has a highlight twin; no other family does, and
-           an exempt plane stays on the plain keyed bank */
-        if (fam == 2u && screen_highlight && !plane_hl_exempt[planeno])
+        /* the keyed family has a highlight twin; no other family does */
+        if (fam == 2u && screen_highlight)
             fam = 6u;
         s->palette = ( 0xc0000000 ) | ((((fam | flash) & 7u)*0x400) + PALETTE_BASE);
         _restore_cpsr(cpsr);
@@ -1941,8 +1976,10 @@ void screen_set_vsync( bool enable )
    1080p60 (both are 148.5 MHz - only the blanking differs), and the whole
    point of a 50 Hz mode here is that 25 fps video then maps to exactly two
    refreshes per frame. Counting the end-of-frame interrupts says which
-   mode actually negotiated. */
-static uint32_t vsync_count;
+   mode actually negotiated.  Volatile: the IRQ counts, and
+   screen_wait_blanking polls it - without, LTO dropped that term of the
+   loop. */
+static volatile uint32_t vsync_count;
 static uint32_t vsync_window_start_us;
 static uint32_t vsync_window_count;
 static uint32_t vsync_rate_mhz;      /* refresh in millihertz */
@@ -1960,16 +1997,21 @@ static uint32_t vsync_rate_mhz;      /* refresh in millihertz */
    A FRESH end of frame is waited for: any pending one is dropped first,
    since a caller inside a long IRQ (the VDU drain) may be well past it.  The
    end-of-frame flag is polled directly, as the vsync IRQ cannot run while
-   the caller is in IRQ context, and left set, so the IRQ still services the
-   new frame.  Waiting on channel 1's state field instead (EOF until the next
-   frame starts) does not work: 18 of 32 BREAKs failed with that.  It waits
-   at boot too, before the end-of-frame IRQ is enabled: the flag is set by
-   the HVS regardless, and skipping the wait there - for the Pi's own first
-   MODE - took the failure rate straight back (10 of 16, 21 of 32), for a
-   reason not yet understood.  Up to a frame, 40 ms at most; FIQ - and so
-   the bus - runs throughout. */
+   the caller is in IRQ context - or has IRQs masked, as the main-loop
+   callers (the dim strips, the video plane) do - and left set, so the IRQ
+   still services the new frame.  Waiting on channel 1's state field
+   instead (EOF until the next frame starts) does not work: 18 of 32 BREAKs
+   failed with that.  It waits at boot too, before the end-of-frame IRQ is
+   enabled: the flag is set by the HVS regardless, and skipping the wait
+   there - for the Pi's own first MODE - took the failure rate straight back
+   (10 of 16, 21 of 32), for a reason not yet understood.  Up to a frame,
+   40 ms at most; FIQ - and so the bus - runs throughout.  Not at all when
+   channel 1 is not running: no end of frame is coming, and the caller may
+   have IRQs masked inside a SCSI command. */
 void screen_wait_blanking( void )
 {
+    if (!hvs_channel1_running())
+        return;
     RPI_hvs->stat = ( 1 << 16);                 /* drop a stale end of frame */
     uint32_t c0 = vsync_count, t0 = RPI_GetSystemTime();
     while (!(RPI_hvs->stat & ( 1 << 16)) && vsync_count == c0 &&
