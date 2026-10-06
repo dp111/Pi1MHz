@@ -27,15 +27,9 @@
 #ifndef HOSTADAPTER_H_
 #define HOSTADAPTER_H_
 
-// Function prototypes
-void hostadapterInitialise(void);
-void hostadapterReset(void);
-
+// Function prototypes (implemented in ../harddisc_emulator.c, which
+// stands in for the AVR host adapter)
 uint8_t hostadapterReadDatabus(void);
-void hostadapterWritedatabus(uint8_t databusValue);
-
-void hostadapterDatabusInput(void);
-void hostadapterDatabusOutput(void);
 
 uint8_t hostadapterReadByte(void);
 void hostadapterWriteByte(uint8_t databusValue);

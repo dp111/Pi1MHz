@@ -118,10 +118,8 @@ bool filesystemVFSDirPresent(uint8_t dir);
 
 bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus);
 bool filesystemReadLunStatus(uint8_t lunNumber);
-bool filesystemTestLunStatus(uint8_t lunNumber);
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5]);
 
-void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber);
 bool filesystemCheckExtAttributes( uint8_t lunNumber);
 void filesystemConfigToLunGeometry(uint8_t lunNumber);
 void filesytemdattoconfigGeometry(uint8_t lunNumber);
@@ -130,7 +128,6 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber);
 void filesystemCopyPage0toPage4(uint8_t lunNumber);
 void filesystemCopyPage4toPage0(uint8_t lunNumber);
 
-void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf);
 uint32_t filesystemGetLunBlockSize(uint8_t lunNumber);
 uint32_t filesystemGetheadspercylinder(uint8_t lunNumber);
 uint32_t filesystemGetLunSPTSize( uint8_t lunNumber);

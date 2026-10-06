@@ -717,27 +717,6 @@ bool filesystemReadLunStatus(uint8_t lunNumber)
    return filesystemState.fsLunStatus[lunNumber];
 }
 
-// Function to confirm that a LUN image is still available
-// cppcheck-suppress unusedFunction
-bool filesystemTestLunStatus(uint8_t lunNumber)
-{
-   if (filesystemState.fsLunStatus[lunNumber] == true) {
-      // Check that the LUN image exists
-      if (!filesystemCheckLunImage(lunNumber)) {
-         // Failed!
-         if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemTestLunStatus(): ERROR: Could not access LUN image file!\r\n"));
-         return false;
-      }
-   } else {
-      // LUN is not marked as available!
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemTestLunStatus(): LUN status is marked as stopped - cannot test\r\n"));
-      return false;
-   }
-
-   // LUN tested OK
-   return true;
-}
-
 // Function to read the user code for the specified LUN image
 void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 {
@@ -1048,7 +1027,8 @@ uint32_t filesystemGetLunTotalSectors( uint8_t lunNumber)
 // into the buffer
 //
 /* Upstream helper with no caller here; named gate, not deletion, so future
-   BeebSCSI diffs stay clean. */
+   BeebSCSI diffs stay clean.  Its prototype is not in filesystem.h while
+   the gate is off. */
 #define BEEBSCSI_GET_CYL_HEADS 0
 #if BEEBSCSI_GET_CYL_HEADS
 void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf)
@@ -1745,8 +1725,8 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    map_check_pending = (startSector == 0 && lunNumber < 8);
 #endif
 
-   // Exit with success
-   filesystemState.fsLunStatus[lunNumber] = true;
+   // Exit with success (the LUN is already started: READ6 auto-starts it
+   // through filesystemSetLunStatus, the one owner of that flag)
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForRead(): Successful\r\n"));
    return true;
 }
