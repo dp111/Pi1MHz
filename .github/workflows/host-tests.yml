@@ -1,0 +1,32 @@
+name: "Host tests"
+
+# The host-side suites under src/tests/ build real firmware sources against
+# stub headers and run on the PC.  Only two of them ran in CI (wifirom and
+# helpers, from beeb-roms.yml), so the services suite stopped linking at
+# 368e244 and nobody noticed.  src/tests/run_all.sh runs every suite and
+# fails if any does; a suite added under src/tests/ is picked up by it.
+#
+# wifirom is left out: it needs beebasm and py65, which beeb-roms.yml
+# installs.  helpers runs here as well as there; it takes a second.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  suites:
+    name: All suites
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # fujinet builds src/fujinet/cJSON.  No suite reads the other three
+      # submodules (tinyusb, lwip, mbedtls), so they are not fetched.
+      - name: cJSON submodule
+        run: git submodule update --init src/fujinet/cJSON
+
+      - name: Run every suite
+        run: sh src/tests/run_all.sh
