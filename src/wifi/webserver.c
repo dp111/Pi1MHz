@@ -2038,6 +2038,17 @@ static bool conn_pump(ws_conn_t *c)
    if (c == NULL || c->pcb == NULL)
       return false;
 
+   /* HEAD gets the header block only.  Every in-memory response (error
+      pages, listings, /status, the BMP header of /framebuffer.bmp) is built
+      whole, body included, so cut it at the blank line before the first
+      byte goes out: a body sent after a HEAD's headers is read by a
+      keep-alive client as the start of its next response. */
+   if (c->is_head && c->out != NULL && c->out_sent == 0u) {
+      int eoh = ws_find_header_end(c->out, c->out_len);
+      if (eoh > 0)
+         c->out_len = (size_t)eoh;
+   }
+
    /* in-memory portion (HTML body, or the HTTP header of a download) */
    while (c->out != NULL && c->out_sent < c->out_len) {
       u16_t  avail = tcp_sndbuf(c->pcb);
@@ -6187,6 +6198,11 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    if (ws_prefix_ci_str(src, dst) && ws_prefix_ci_str(dst, src))
       return ws_error(c, 403, "Forbidden",
                       "Source and destination are the same.");
+   /* A folder into itself: f_rename would link it inside its own subtree,
+      leaving it reachable from nowhere (RFC 4918 forbids it too). */
+   if (ws_prefix_ci_str(dst, src) && dst[strlen(src)] == '/')
+      return ws_error(c, 403, "Forbidden",
+                      "The destination is inside the source.");
 
    {
       FILINFO fno_dst;
