@@ -746,11 +746,10 @@ static void pvf_reopen(void)
         return;
     }
     /* A DIFFERENT disc side (VFS jukebox / eject flip): blank the h264
-       frame buffers to black I420 so a later plane enable (E1/VP-mode from
-       the new side's boot software) can never re-show the previous disc's
-       last frame.  A same-path reopen (card remount, repoke of the current
-       directory) keeps its frames - blanking there would black out a
-       playing disc for nothing. */
+       frame buffers to black I420 so no later plane enable can ever
+       re-show the previous disc's last frame.  A same-path reopen (card
+       remount, repoke of the current directory) keeps its frames -
+       blanking there would black out a playing disc for nothing. */
     if (strcmp(prev_path, pvf_path) != 0) {
         for (int i = 0; i < NUM_FRAME_BUFFERS; i++) {
             if (vp.buf_phys[i]) {
