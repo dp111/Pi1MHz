@@ -91,6 +91,16 @@ page. Consequences:
   launches it from there; a chain-boot leaves 0x3A00 alone. **So a change to
   `vidcore/Pi1MHzvc.s` only takes effect from a cold boot (an SD install)** -
   kernel.now carries the new bytes but never runs them.
+- **No FIQ runs through the previous kernel's callback table.** A chain-boot
+  arrives with the old kernel's doorbell FIQ still selected and the VPU still
+  ringing it, and the table at `Pi1MHz_CB_BASE` still holds the old kernel's
+  function pointers - now pointing into the new image. `init_emulator`
+  unmasks interrupts before it clears that table and seeds the post ring, so
+  a FRED/JIM access in between used to call into arbitrary new code (review
+  2026-10-06 C4). `kernel_main` now deselects the doorbell FIQ on entry, as
+  it already is at a cold boot; `init_emulator` selects it again after the
+  table is cleared and the ring seeded, with FIQ masked, exactly as the cold
+  boot always did. A BBC reset is unchanged: `kernel_main` runs once.
 - **The first push onto an older running kernel still goes through that
   kernel's in-place copier**, which only survives where the incoming image
   has the same bytes at its `_copyandreboot`..`_fast_scroll_end` and

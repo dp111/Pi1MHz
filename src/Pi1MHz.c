@@ -1018,6 +1018,15 @@ _Noreturn void kernel_main(void)
    Pi1MHz_boot_entry_us = RPI_GetSystemTime();
    RPI_ChainBootConsume();
 
+   /* A kernel.now arrives with the previous kernel's doorbell FIQ still
+      selected, the VPU still ringing it, and the callback table at
+      Pi1MHz_CB_BASE still holding that kernel's function pointers - into
+      what is now this image's code.  init_emulator unmasks interrupts well
+      before it clears that table and seeds the post ring, so the doorbell is
+      deselected here, as it already is at a cold boot, and init_emulator
+      selects it again once both are done (the "doorbell FIQ" line). */
+   RPI_IRQBase->FIQ_control = 0;
+
    unsigned int baud_rate = 115200;
    const char * const prop = get_cmdline_prop("baud_rate");
    if (prop)
