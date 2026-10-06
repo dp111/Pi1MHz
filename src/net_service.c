@@ -202,11 +202,37 @@ static void ring_claim_large(net_handle_t *h)
    h->rx_tail = 0u;
    h->rx_head = n;
 }
-/* Give the shared ring back.  Only called once the handle is finished with it,
-   so buffered bytes do not need carrying back. */
+/* Give the shared ring back.  Only called once the handle is finished with it
+   or has emptied it, so buffered bytes do not need carrying back. */
 static void ring_release_large(const net_handle_t *h)
 {
    if (net_rx_big_owner == (int)(h - net_h)) net_rx_big_owner = -1;
+}
+/* Called whenever the ring empties.  An empty borrowed ring goes back at
+   once, onto the handle's own.  altcp_tls hands up pool-sized pbufs one at a
+   time, but chains the next onto any the reader refused, so an HTTPS reader
+   that falls behind grows a chain past 8 KB and borrows the ring - and holding
+   it to close shut every other handle out for the rest of that session.
+   Nothing is buffered, so nothing moves.  Kept while a chain is parked: it
+   was refused against the large ring, may not fit the small one, and must
+   find the ring still there when lwIP re-presents it. */
+static void ring_drained(net_handle_t *h)
+{
+   if (h->rx_parked || net_rx_big_owner != (int)(h - net_h))
+      return;
+   ring_release_large(h);
+   h->rx_size = NET_RX_RING_SIZE;
+   h->rx_head = 0u;
+   h->rx_tail = 0u;
+}
+/* The connection has failed: lwIP frees whatever it had parked, so nothing
+   will be re-presented.  Without this a handle in ERROR kept the shared ring
+   until the Beeb closed it. */
+static void ring_unpark(net_handle_t *h)
+{
+   h->rx_parked = false;
+   if (h->rx_count == 0u)
+      ring_drained(h);
 }
 static inline uint32_t ring_free(const net_handle_t *h)
 {
@@ -236,6 +262,8 @@ static uint32_t ring_get_to(net_handle_t *h, uint8_t *dst, uint32_t max)
       h->rx_tail = (h->rx_tail + 1u) & ring_mask(h);
    }
    h->rx_count -= n;
+   if (h->rx_count == 0u)
+      ring_drained(h);
    return n;
 }
 static uint32_t ring_get(net_handle_t *h, uint32_t jim_dst, uint32_t max)
@@ -271,6 +299,8 @@ static void ring_skip(net_handle_t *h, uint32_t len)
       len = h->rx_count;
    h->rx_tail = (h->rx_tail + len) & ring_mask(h);
    h->rx_count -= len;
+   if (h->rx_count == 0u)
+      ring_drained(h);
 }
 
 /* Consume one queued UDP record ([4 ip][2 port][2 len][payload]): copy up to
@@ -386,6 +416,7 @@ static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
       if (p != NULL) pbuf_free(p);
       h->last_err = NET_ERR_CONN;
       h->state = NET_ST_ERROR;
+      ring_unpark(h);
       return ERR_OK;
    }
    if (p == NULL) {                 /* peer FIN */
@@ -403,6 +434,8 @@ static err_t net_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
       if ((uint32_t)p->tot_len > h->rx_size)
          ring_claim_large(h);
       if (p->tot_len > ring_free(h)) {
+         /* Also the case when the shared ring is lent to another handle:
+            that handle gives it back as soon as its reader empties it. */
          h->rx_parked = true;
          return ERR_MEM;
       }
@@ -485,6 +518,7 @@ static void net_tcp_err(void *arg, err_t err)
    if (h->tls && h->state == NET_ST_CONNECTING && (err == ERR_CLSD || err == ERR_ABRT))
       h->last_err = NET_ERR_TLS;           /* others (RST, timeout) keep their own code */
    h->state = NET_ST_ERROR;
+   ring_unpark(h);
 }
 
 /* Attach this service's callbacks to a TCP pcb - shared by an outbound
@@ -824,6 +858,14 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
       net_ip_to_wire(&h->dns_ip, cp + 4u);
       return NET_OK;
    }
+   /* Only an IDLE handle may resolve: the answer drops RESOLVING back to
+      IDLE, which on a connected, connecting, listening or failed handle hid a
+      live pcb from do_connect - the next connect orphaned it, still feeding
+      this ring and able to NULL the new tpcb from net_tcp_err.  NOTOPEN is
+      the code do_connect gives for the same wrong state; INUSE means "open
+      on a handle already open" and no busy code exists. */
+   if (h->state != NET_ST_IDLE)
+      return NET_ERR_NOTOPEN;
    if (!service_string_ok(cp + 1u, NET_MAX_HOSTNAME))
       return NET_ERR_PARAM;
    {
