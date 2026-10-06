@@ -326,9 +326,14 @@ _chainboot_copier:
 #if (__ARM_ARCH >= 7)
     // Clean and invalidate every data/unified cache level, to the point of
     // coherency (the A53's L2 included), by set/way.  The copy ran with the
-    // D-cache on, so much of the new image - and the chain-boot marker at
-    // LOWMEM_MARKERS - may still be dirty lines; this is what puts it in RAM
-    // before the caches go off and the new kernel starts uncached.
+    // D-cache on, so much of the new image may still be dirty lines; this is
+    // what puts it, and anything else below 0x8000 still dirty, in RAM before
+    // the caches go off and the new kernel starts uncached.  (The chain-boot
+    // marker does not depend on it: RPI_ChainBootMark cleans its own.)
+    // Set/way operations are not ordered against earlier stores, so the copy
+    // has to complete first, or its last line could be swept while still in
+    // the store buffer and stay dirty (as Linux's v7_flush_dcache_all).
+    dsb
     mrc     p15, 1, r0, c0, c0, 1          // CLIDR
     and     r3, r0, #0x07000000            // LoC, bits 26:24
     mov     r10, #0                        // cache level 0 (x2)

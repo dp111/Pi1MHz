@@ -65,13 +65,22 @@ int main(void)
    /* ...while a flag already set at the jump is no reason to refuse. */
    CHECK(jump(100000u) == 1u, "refused with a sticky flag unchanged since the mark");
 
-   /* A power-on reset shows as HADPOR, bit 12, alone. */
-   test_pm_rsts = 0x020u;
-   RPI_ChainBootMark();
+   /* Bit 12 (HADPOR) is for display only: a kernel before 9f46af5 stored
+      the register without it, and it is sticky from power-on, so a push
+      across that change must still count.  A power-on is caught by the
+      timer restarting (above). */
    test_pm_rsts = 0x1020u;
+   RPI_ChainBootMark();
+   test_lowmem[4] &= 0xfffu;          /* as an older kernel stored it */
    now += 100000u;
    RPI_ChainBootConsume();
-   CHECK(RPI_ChainBooted() == 0u, "accepted with the power-on flag (bit 12) newly set");
+   CHECK(RPI_ChainBooted() == 1u, "refused across the bit-12 format change");
+   CHECK(RPI_ResetReason() == 0x1020u, "Reset reason row lost bit 12");
+
+   /* A refused mark reports no jump time. */
+   RPI_ChainBootMark();
+   now += 5000000u;
+   RPI_ChainBootConsume();
    CHECK(RPI_ChainBootJumpUs() == 0u, "a jump time reported for a refused mark");
 
    /* A stray byte in the complement, or RAM after a power-on. */

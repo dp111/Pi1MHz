@@ -1197,6 +1197,23 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     memset(&vp, 0, sizeof(vp));
     vp.seek_frame = -1;
 
+    /* The handle block is only worth anything while the VideoCore instance
+       that allocated the buffers lives: across a kernel.now (the VC is not
+       reset) and across a BREAK.  Any other boot - power-on, watchdog,
+       crash - restarted the VC, so whatever the block holds names nothing,
+       or something new; releasing it could free another user's memory.
+       Decided once, at the first init, where it is known which boot this
+       was; a BREAK re-init keeps the release below. */
+    static bool persist_checked;
+    if (!persist_checked) {
+        persist_checked = true;
+        if (!RPI_ChainBooted()) {
+            videobuf_magic = 0u;
+            videobuf_magic2 = 0u;
+            videobuf_persist_clean();
+        }
+    }
+
     /* An older kernel's 4:2:2 still-frame buffer, if we chain-booted from
        one: the still is gone, so just give the memory back. */
     if (videobuf_magic == VIDEOBUF_MAGIC && videobuf_handle != 0u) {

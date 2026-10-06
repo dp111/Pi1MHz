@@ -53,7 +53,10 @@ NOINIT_SECTION static volatile uint32_t boot_stage_block[16];
      reports what it took, on the /status Boot time row.
    - the reset-reason register is unchanged.  Its flags are sticky, so this
      alone would miss a second watchdog reset after a first; the timer does
-     not.  INFERRED: it catches a reset whose timing happened to fit.
+     not.  INFERRED: it catches a reset whose timing happened to fit.  Bits
+     0-11 only: kernels before 9f46af5 stored the register without bit 12
+     (HADPOR, sticky from power-on), and a power-on restarts the timer
+     anyway.
    And two words, the magic and its complement, so that whatever RAM holds
    after a power-on, or a stray write, reads as a cold boot - the safe
    direction - never as a phantom chain-boot. */
@@ -81,7 +84,8 @@ void RPI_ChainBootConsume(void)
    chain_booted_flag = (chain_marker[0] == CHAIN_MAGIC &&
                         chain_marker[1] == ~CHAIN_MAGIC &&
                         now >= stamp && now - stamp < CHAIN_MARK_MAX_US &&
-                        chain_marker[4] == RPI_ResetReason()) ? 1u : 0u;
+                        ((chain_marker[4] ^ RPI_ResetReason()) & 0xfffu) == 0u)
+                       ? 1u : 0u;
    /* Mark to here: the copy, the cache clean and the .bss clear - the
       measurement behind CHAIN_MARK_MAX_US. */
    chain_jump_us = chain_booted_flag ? (uint32_t)(now - stamp) : 0u;

@@ -183,7 +183,7 @@ void chainboot_poll(void)
    /* The copy runs with the caches on - an uncached copy of up to 4 MB is
       slow, and the marker above is only believed within 500 ms.  The copier
       cleans the whole data side to RAM before it turns the caches off
-      (arm-start.S), which is also what gets the marker, still in a dirty
-      line here, to RAM. */
+      (arm-start.S); the marker does not wait for that - RPI_ChainBootMark
+      cleans its own words. */
    _copyandreboot(s_image, (int)s_length); /* never returns */
 }
