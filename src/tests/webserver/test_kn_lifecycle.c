@@ -4,10 +4,10 @@
  * connection into a chain-boot image (review 2026-10-06 P3 / W10).
  *
  * Extracted VERBATIM from a copy of webserver.c by extract.awk (see
- * run_tests.sh): the kernel.now helpers, upload_fail, the three teardown
- * paths (conn_close, ws_err, conn_reset_for_next_request) and the WebDAV
- * PUT body sink (dav_put_consume[_chunked] -> dav_put_write_bytes ->
- * dav_put_finish).  Everything they call that touches the SD card, lwIP,
+ * run_tests.sh): the kernel.now helpers, the upload form's body sink
+ * (upload_write, upload_finish, upload_fail), the three teardown paths
+ * (conn_close, ws_err, conn_reset_for_next_request) and the WebDAV PUT body
+ * sink (dav_put_consume[_chunked] -> dav_put_write_bytes -> dav_put_finish).  Everything they call that touches the SD card, lwIP,
  * the HTML builder or chainboot is stubbed below to record what happened.
  */
 #include <assert.h>
@@ -95,12 +95,22 @@ static bool ws_send_auth_challenge(ws_conn_t *c, bool stale) { (void)c; (void)st
 static bool dav_put_flush(ws_conn_t *c) { c->dav_put_buf_len = 0u; flush_calls++; return true; }
 static bool beeb_path_busy(const char *p) { (void)p; return false; }
 static void ws_fs_mutated(void) {}
+static bool filesystemReadLunStatus(uint8_t lun) { (void)lun; return false; }
+static bool upload_flush(ws_conn_t *c) { c->up_buf_len = 0u; return true; }
+static void upload_build_paths(const ws_conn_t *c, char *full, size_t fsz,
+                               char *tmp, size_t tsz)
+{
+   (void)c;
+   snprintf(full, fsz, "/up.ssd");
+   snprintf(tmp, tsz, "/up.ssd.part");
+}
 static void mtp_fs_notify_object_added(const char *p) { (void)p; }
 static void mtp_fs_notify_object_changed(const char *p) { (void)p; }
 
 typedef struct { char *data; size_t len; size_t cap; bool failed; } ws_strbuf_t;
 static void sb_init(ws_strbuf_t *b) { memset(b, 0, sizeof *b); }
 static void sb_puts(ws_strbuf_t *b, const char *s) { (void)b; (void)s; }
+static void sb_printf(ws_strbuf_t *b, const char *f, ...) { (void)b; (void)f; }
 static void sb_html(ws_strbuf_t *b, const char *s) { (void)b; (void)s; }
 static void page_open(ws_strbuf_t *b, const char *t) { (void)b; (void)t; }
 static void page_close(ws_strbuf_t *b) { (void)b; }
@@ -180,6 +190,9 @@ static int pcb_token;     /* stands in for a live pcb: never dereferenced */
 
 /* A body that begins with an ARM branch: what chainboot_image_ok accepts. */
 static const uint8_t arm_body[16] = { 0x06, 0x00, 0x00, 0xea, 'B', 'B', 'C' };
+/* Longer than the smallest kernel.now buffer (64 bytes, for a declared
+   length of 8): what a client that under-declared its body sends. */
+static const uint8_t long_body[100] = { 0x06, 0x00, 0x00, 0xea };
 
 int main(void)
 {
@@ -255,6 +268,69 @@ int main(void)
       ok(challenge_calls == 1, "the drain ends in the 401 challenge");
       conn_reset_for_next_request(c);
       (free)(c->kn_buf);
+      (free)(c);
+   }
+
+   puts("== W10: every kernel.now exit leaves no stale length/capacity ==");
+   {
+      ws_conn_t *c = new_conn();
+      zero_counters();
+      (void)kn_begin(c, 0u, &status);
+      (void)kn_append(c, (const uint8_t *)"not arm", 7u);
+      ok(kn_take(c, &status) != NULL && status == 422,
+         "kn_take refuses a non-kernel image (422)");
+      ok(c->kn_buf == NULL && c->kn_len == 0u && c->kn_cap == 0u,
+         "kn_take refusal: kn_buf, kn_len and kn_cap all cleared");
+
+      (void)kn_begin(c, 0u, &status);
+      (void)kn_append(c, arm_body, sizeof arm_body);
+      ok(kn_take(c, &status) == NULL && boot_calls == 1,
+         "kn_take hands a kernel image to chainboot");
+      ok(c->kn_buf == NULL && c->kn_len == 0u && c->kn_cap == 0u,
+         "kn_take hand-over: kn_buf, kn_len and kn_cap all cleared");
+
+      zero_counters();
+      (void)kn_begin(c, 8u, &status);           /* said 8 bytes ...   */
+      start_plain_put(c, sizeof long_body);     /* ... sends 100 */
+      c->dav_put_open = false;
+      (void)dav_put_write_bytes(c, long_body, sizeof long_body);
+      ok(err_calls == 1 && err_status == 413, "DAV PUT overrun is a 413");
+      ok(c->kn_buf == NULL && c->kn_len == 0u && c->kn_cap == 0u,
+         "DAV PUT overrun: kn_buf, kn_len and kn_cap all cleared");
+      conn_reset_for_next_request(c);
+      (free)(c);
+   }
+
+   puts("== W8: upload-form kernel.now refusals carry their real status ==");
+   {
+      ws_conn_t *c = new_conn();
+      zero_counters();
+      (void)kn_begin(c, 8u, &status);
+      c->up_state = UP_DATA;
+      (void)upload_write(c, long_body, sizeof long_body);
+      ok(html_calls == 1 && html_status == 413,
+         "upload form: a kernel.now over its size is a 413, not a 400");
+      ok(c->kn_buf == NULL && c->kn_len == 0u && c->kn_cap == 0u,
+         "upload form overrun: kn_buf, kn_len and kn_cap all cleared");
+      conn_reset_for_next_request(c);
+
+      zero_counters();
+      (void)kn_begin(c, 0u, &status);
+      c->up_state = UP_DATA;
+      (void)upload_write(c, (const uint8_t *)"not arm", 7u);
+      (void)upload_finish(c);
+      ok(boot_calls == 0 && html_calls == 1 && html_status == 422,
+         "upload form: a non-kernel image is a 422, as on the DAV path");
+      conn_reset_for_next_request(c);
+
+      zero_counters();
+      (void)kn_begin(c, 0u, &status);
+      c->up_state = UP_DATA;
+      (void)upload_write(c, arm_body, sizeof arm_body);
+      (void)upload_finish(c);
+      ok(boot_calls == 1 && html_calls == 1 && html_status == 200,
+         "upload form: a kernel image still restarts (200)");
+      conn_reset_for_next_request(c);
       (free)(c);
    }
 

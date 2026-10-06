@@ -95,6 +95,24 @@ require a login on every page and WebDAV operation. With either one
 missing, the server is open to anyone on your network. See
 [WiFi setup](wifi.md#password-protection).
 
+Setting `webdav_user=` and `webdav_password=` is the real protection.
+Without them, one narrower guard still applies: a change (an upload,
+delete, rename, `kernel.now` or reboot) sent by a **web browser** is
+refused with 403 Forbidden unless
+
+- the browser addressed the Pi by its IP address, its hostname or
+  `hostname.local` (with or without a port) - so use one of those in
+  the address bar to change files from the browser; and
+- the browser says the request came from the Pi's own pages (or was
+  typed in), not from a page on another web site.
+
+This stops a web page you happen to visit from writing to the card or
+restarting the Pi behind your back, including by pointing a name of its
+own at the Pi's address. It does nothing about other programs on your
+network: WebDAV clients, `curl` and scripts send no browser headers and
+are not checked, so anyone on the network can still change files unless
+a password is set. This guard never refuses reading pages or files.
+
 ## Speed expectations
 
 This is a Pi Zero doing WiFi in software; expect file transfers of

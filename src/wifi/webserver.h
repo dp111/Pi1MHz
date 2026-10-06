@@ -12,7 +12,7 @@
  *   /files/... - browse the SD card, download files, upload files
  *
  * The server is wired up by wifi.c once the network comes up; only the
- * three entry points below are part of the public interface. */
+ * six functions below are part of the public interface. */
 
 void webserver_init(void);
 /* Per-tick housekeeping (deferred reboot, etc).  Called from the
