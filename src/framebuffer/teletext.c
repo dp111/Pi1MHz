@@ -229,7 +229,8 @@ static void set_flashing(int on) {
    tt.flashing = on;
 }
 
-// This is called on initialization, on mode change, and VDU 20
+// This is called on initialization and on mode change (not VDU 20: in MODE 7
+// that resets the text colours only, see vdu_20).
 // It sets the default palette, and resets the default display options
 static void tt_reset(screen_mode_t *screen) {
    // Initialize the font
@@ -326,6 +327,10 @@ static void tt_scroll(screen_mode_t *screen, const t_clip_window_t *text_window,
       tt_reset_line_state(row);
       re_render_row(screen, 0, row);
    }
+   // Invalidate the current line state: it is now the end of the last row,
+   // and the rows have moved under the cached position
+   tt.last_row = -1;
+   tt.last_col = -1;
 }
 
 // cppcheck-suppress constParameterCallback

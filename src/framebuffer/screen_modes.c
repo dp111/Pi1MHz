@@ -926,16 +926,9 @@ void default_reset_screen(screen_mode_t *screen) {
        writes; mark 0 is the twin, bank 1, where only 16 and 18 reach. */
     screen->update_palette(screen, screen->flash ? 0 : 1);
 
-    /* Initialize the font. Restore the default rendering too: the splash
-       screen leaves font_normal at scale 2 (select_font(12,2,2,0)) and a
-       user VDU 23,19 can do the same - a MODE change must return to the
-       mode's native text grid, or every later mode renders double-width
-       (the "20 column" corruption seen after any framebuffer re-init). */
-    font_t *font = screen->font;
-    font->set_scale_w(font, 1);
-    font->set_scale_h(font, 1);
-    font->set_spacing_w(font, 0);
-    font->set_spacing_h(font, (screen->mode_flags & (F_BBC_GAP | F_GAP)) ? 2 : 0);
+    /* Colours only: VDU 20 calls this too, and must not touch the font -
+       the cell metrics belong to framebuffer.c, which resets them on a MODE
+       change (change_mode). */
 }
 
 void default_clear_screen(const screen_mode_t *screen, const t_clip_window_t *text_window, pixel_t bg_col) {

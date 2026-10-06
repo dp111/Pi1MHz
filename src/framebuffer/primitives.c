@@ -633,22 +633,19 @@ void prim_set_dot_pattern_len(screen_mode_t *screen, int len) {
    g_dot_pattern_index = 0;
 }
 
-void prim_set_graphics_area(const screen_mode_t *screen, int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
-   // Reject illegal windows (this is what OS 1.20 does)
-   if (x1 < 0 || x1 >= screen->width || y1 < 0 || y1 >= screen->height) {
-      return;
-   }
-   if (x2 < 0 || x2 >= screen->width || y2 < 0 || y2 >= screen->height) {
-      return;
-   }
-   if (x1 >= x2 || y1 >= y2) {
-      return;
+bool prim_set_graphics_area(const screen_mode_t *screen, int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+   // Reject a window with an edge off the screen.  Edge order is the
+   // caller's check (VDU 24 judges it in external units, as the MOS does);
+   // x1 == x2 is a one-pixel window.
+   if (x1 < 0 || x2 >= screen->width || y1 < 0 || y2 >= screen->height) {
+      return false;
    }
    // Update the window
    g_x_min = x1;
    g_y_min = y1;
    g_x_max = x2;
    g_y_max = y2;
+   return true;
 }
 
 void prim_clear_graphics_area(screen_mode_t *screen) {
