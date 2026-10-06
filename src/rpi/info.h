@@ -24,6 +24,9 @@ extern uint32_t get_clock_rate(uint32_t clk_id);
 /* The USB port is behind an on-board hub (Pi 1/2/3 Model B): host only.
    Main loop only (a mailbox call). */
 extern bool board_usb_behind_hub(void);
+/* Ask the board revision with the full mailbox bound, once per session.
+   Boot context only (usb_init), so the poll path above finds it cached. */
+extern void board_revision_prime(void);
 /* Cached on boot, so this is safe to call at any time */
 extern uint32_t get_speed(void);
 /* Cached on boot, so this is safe to call at any time */

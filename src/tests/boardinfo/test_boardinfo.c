@@ -7,9 +7,9 @@
  *   - an unknown revision (the query failed) must count as NOT behind a hub,
  *     which leaves the choice to usb_mode in the config;
  *   - a revision, once known, is kept and never asked for again;
- *   - the revision and ARM-memory queries, one-shot answers the session
- *     keeps, use the full mailbox bound, while the runtime temperature read
- *     keeps the short query bound.
+ *   - the revision (primed once from usb_init) and ARM-memory queries use
+ *     the full mailbox bound in boot context only; the poll path (the USB
+ *     role choice, the temperature read) keeps the short query bound.
  * Each scenario runs in its own process: info.c's caches are static.
  */
 #include <stdio.h>
@@ -122,7 +122,8 @@ static void known_b_is_kept(void)
 static void boot_queries_use_the_full_bound(void)
 {
    vc_revision = 0x9000c1u;
-   (void)board_usb_behind_hub();
+   board_revision_prime();            /* usb_init, boot context */
+   (void)board_usb_behind_hub();      /* usb_boot_task: from the cache */
    CHECK(asked_revision[1] == 1u && asked_revision[0] == 0u,
          "revision asked with the query bound (%u) not the full bound (%u)",
          asked_revision[0], asked_revision[1]);
@@ -137,6 +138,36 @@ static void boot_queries_use_the_full_bound(void)
          asked_temperature[1]);
    CHECK(get_temp_millidegrees() == 45000u, "temperature %u",
          (unsigned)get_temp_millidegrees());
+}
+
+/* usb_boot_task is a poll callback: asking there with the 3 s bound (IRQs
+   masked) is a stall taken out of the BREAK budget.  Unprimed, the poll
+   path may only use the short bound. */
+static void poll_time_query_is_short(void)
+{
+   vc_revision = 0x9000c1u;
+   (void)board_usb_behind_hub();
+   CHECK(asked_revision[1] == 0u,
+         "the poll path asked the revision with the full bound (%u times)",
+         asked_revision[1]);
+   CHECK(asked_revision[0] == 1u, "revision asked %u times with the query bound",
+         asked_revision[0]);
+}
+
+/* A prime the VC failed is not repeated at every BREAK re-init (usb_init
+   runs again each time); the poll path then asks on the short bound. */
+static void failed_prime_is_not_repeated(void)
+{
+   vc_alive = false;
+   board_revision_prime();
+   CHECK(asked_revision[1] == 1u, "prime asked %u times", asked_revision[1]);
+   vc_alive = true;
+   vc_revision = 0xa02082u;           /* 3B */
+   board_revision_prime();            /* a BREAK */
+   CHECK(asked_revision[1] == 1u, "a second full-bound wait at a BREAK");
+   CHECK(board_usb_behind_hub(), "3B not found by the poll path after a failed prime");
+   CHECK(asked_revision[0] == 1u, "poll path asked %u times on the query bound",
+         asked_revision[0]);
 }
 
 /* The revision table itself, unchanged by the fix but pinned with it. */
@@ -195,6 +226,8 @@ int main(void)
    run("a known revision is kept (Zero W)", known_revision_is_kept);
    run("a known revision is kept (3B)", known_b_is_kept);
    run("boot queries use the full bound", boot_queries_use_the_full_bound);
+   run("revision unknown at poll time: short bound", poll_time_query_is_short);
+   run("a failed prime is not repeated", failed_prime_is_not_repeated);
    for (board_index = 0; board_index < sizeof boards / sizeof boards[0]; board_index++)
       run(boards[board_index].name, board_table);
 

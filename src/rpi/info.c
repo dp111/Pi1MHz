@@ -27,16 +27,33 @@ static void print_tag_value(const char *name, const rpi_mailbox_property_t *buf,
 
 /* 0 while unknown.  Kept once the VideoCore has answered - it never changes -
    so a later caller cannot lose it to a busy VC; a failed query is asked
-   again next time.  Asked with the full bound: see RPI_PropertyGetWordLong. */
-static uint32_t get_revision(void) {
-   static uint32_t revision;
+   again next time.  board_revision_prime() asks with the full bound from
+   boot context; anything later (board_usb_behind_hub from the USB poll
+   callback, the help-screen line) only with the query bound. */
+static uint32_t revision;
+
+static uint32_t ask_revision(rpi_mailbox_property_t *(*get)(rpi_mailbox_tag_t, uint32_t)) {
    if (revision == 0u) {
-      rpi_mailbox_property_t *buf;
-      buf = RPI_PropertyGetWordLong(TAG_GET_BOARD_REVISION,0);
+      const rpi_mailbox_property_t *buf = get(TAG_GET_BOARD_REVISION, 0);
       if (buf)
          revision = buf->data.buffer_32[0];
    }
    return revision;
+}
+
+static uint32_t get_revision(void) {
+   return ask_revision(RPI_PropertyGetWord);
+}
+
+/* Boot context only, before anything polls for the revision: one full-bound
+   attempt per session, so a VC that failed it is not waited on again at
+   every BREAK re-init. */
+void board_revision_prime(void) {
+   static bool primed;
+   if (primed)
+      return;
+   primed = true;
+   (void)ask_revision(RPI_PropertyGetWordLong);
 }
 
 /* Is the SoC's USB port behind an on-board hub, so it can only ever be a
@@ -45,7 +62,7 @@ static uint32_t get_revision(void) {
    choice to usb_mode in the config, where "host" still reaches a B's hub -
    whereas guessing "hub" would force a Zero, A+ or CM into host mode, with
    no MTP and no kernel.now, and no config setting could undo it.  A mailbox
-   call until the revision is known, so main loop only. */
+   call (query bound) until the revision is known, so main loop only. */
 bool board_usb_behind_hub(void) {
    uint32_t rev = get_revision() & 0xFFFFFFu;
    if (rev == 0u)
