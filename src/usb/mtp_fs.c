@@ -718,17 +718,9 @@ static void fs_send_object_event(uint16_t code, uint32_t handle) {
   }
 }
 
-/* Public: the WebDAV server mutated the SD filesystem directly via FatFs, so
-   the object-handle cache is now stale.  Drop it (next MTP request rebuilds
-   lazily via fs_cache_ensure) and, for the path-specific variants, nudge the
-   host to re-enumerate via an async MTP event.  Safe to call from the
-   webserver: both MTP (tud_task) and the webserver (webserver_poll) run in
-   the single cooperative main-loop poll and never preempt each other, and
-   the cache is never touched from an ISR.  The event handle is FNV(path),
-   matching MTP's own handle scheme (fs_handle_from_path); a rare hash
-   collision that was repaired at cache-build time may not match, in which
-   case the host simply ignores that event and falls back to a later
-   re-enumeration.  See mtp_fs.h. */
+/* Before a chain-boot (chainboot.c): off the bus, so the host stops
+   sending and nothing of USB's is in flight when the new kernel is copied
+   over this one. */
 void mtp_fs_prepare_for_warm_reboot(void) {
   if (tud_inited())
     (void) tud_disconnect();
@@ -835,6 +827,18 @@ static void fs_cache_live_remove(const char* path) {
   g_fs_cache.count--;
 }
 
+/* Public: the WebDAV server changed the SD filesystem directly via FatFs,
+   so the object-handle cache is stale.  It keeps answering meanwhile: the
+   path-specific variants patch the one entry in place and nudge the host
+   with an async MTP event, and every variant arms the debounced background
+   rebuild that replaces the cache wholesale (fs_cache_invalidate).  Safe to
+   call from the webserver: both MTP (tud_task) and the webserver
+   (webserver_poll) run in the single cooperative main-loop poll and never
+   preempt each other, and the cache is never touched from an ISR.  The
+   event handle is FNV(path), matching MTP's own handle scheme
+   (fs_handle_from_path); a rare hash collision that was repaired at
+   cache-build time may not match, in which case the host simply ignores
+   that event and falls back to a later re-enumeration.  See mtp_fs.h. */
 void mtp_fs_notify_fs_changed(void) {
   fs_cache_invalidate();
 }
