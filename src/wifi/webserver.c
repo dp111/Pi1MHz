@@ -1226,11 +1226,24 @@ static bool ws_path_is_safe(const char *p)
    return true;
 }
 
+/* Length of a name as FatFs looks it up: create_name drops trailing dots
+   and spaces, so "scsi0.dat. " opens "scsi0.dat".  A name made of nothing
+   but dots and spaces keeps its length - FatFs refuses it outright (bar "."
+   and "..", which the callers deal with), so it cannot alias a real file. */
+static size_t ws_fat_name_len(const char *name, size_t len)
+{
+   size_t n = len;
+   while (n > 0u && (name[n - 1u] == '.' || name[n - 1u] == ' '))
+      --n;
+   return (n == 0u) ? len : n;
+}
+
 /* Normalise a decoded path: force a leading '/', collapse repeated
    slashes, drop a trailing slash (except for the root). */
 static void ws_normalize_path(const char *raw, char *out, size_t osz)
 {
    size_t o = 0u;
+   size_t r, w;
    const char *s;
 
    if (raw == NULL || raw[0] == '\0') {
@@ -1259,6 +1272,22 @@ static void ws_normalize_path(const char *raw, char *out, size_t osz)
       if (o + 1u < osz)
          out[o++] = ch;
    }
+   /* Trailing dots and spaces are another spelling of the same name:
+      "/BeebSCSI0./scsi0.dat" opens the running LUN image, but no interlock
+      string-compares it equal to "/BeebSCSI0/scsi0.dat".  Strip them per
+      segment, exactly as FatFs will. */
+   for (r = w = 0u; r < o; ) {
+      size_t start = r;
+      size_t len;
+      while (r < o && out[r] != '/')
+         ++r;
+      len = ws_fat_name_len(out + start, r - start);
+      memmove(out + w, out + start, len);
+      w += len;
+      if (r < o)
+         out[w++] = out[r++];            /* the '/' */
+   }
+   o = w;
    out[o] = '\0';
    while (o > 1u && out[o - 1u] == '/')
       out[--o] = '\0';
@@ -4340,8 +4369,11 @@ static bool upload_begin_part(ws_conn_t *c)
    }
 
    /* Record the name now so upload_build_paths (and upload_discard_temp on
-      any abort) rebuild the target and its .part temp consistently. */
-   strlcpy(c->up_name, base, sizeof c->up_name);
+      any abort) rebuild the target and its .part temp consistently - in the
+      form FatFs will store it, so "elite.ssd." meets the busy check as
+      "elite.ssd" (see ws_normalize_path). */
+   snprintf(c->up_name, sizeof c->up_name, "%.*s",
+            (int)ws_fat_name_len(base, strlen(base)), base);
 
    {
       char tmp[WS_UP_TMP_MAX];

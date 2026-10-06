@@ -258,6 +258,27 @@ int main(void)
       ok(streq(n, "/a/.hidden"), "dotfiles untouched");
       ws_normalize_path("..", n, sizeof n);
       ok(streq(n, "/.."), "dotdot NOT resolved here (is_safe rejects it)");
+      /* W1: FatFs create_name drops trailing dots and spaces from every
+         name, so these all open the same file as the plain spelling - and
+         must compare equal to it in the Beeb-busy interlock. */
+      ws_normalize_path("/BeebSCSI0./scsi0.dat", n, sizeof n);
+      ok(streq(n, "/BeebSCSI0/scsi0.dat"), "W1: trailing dot on a folder stripped");
+      ws_normalize_path("/BeebSCSI0 /scsi0.dat", n, sizeof n);
+      ok(streq(n, "/BeebSCSI0/scsi0.dat"), "W1: trailing space on a folder stripped");
+      ws_normalize_path("/BeebSCSI0. . /scsi0.dat. ", n, sizeof n);
+      ok(streq(n, "/BeebSCSI0/scsi0.dat"), "W1: dot/space runs stripped, every segment");
+      ws_normalize_path("/games/elite.ssd.", n, sizeof n);
+      ok(streq(n, "/games/elite.ssd"), "W1: trailing dot on a file stripped");
+      ws_normalize_path("/a./", n, sizeof n);
+      ok(streq(n, "/a"), "W1: stripped, then the trailing slash goes");
+      ws_normalize_path("/ lead/x.y", n, sizeof n);
+      ok(streq(n, "/ lead/x.y"), "W1: leading space kept (FatFs keeps it too)");
+      ws_normalize_path("/a/.../b", n, sizeof n);
+      ok(streq(n, "/a/.../b"), "W1: all-dot name left alone (FatFs rejects it)");
+      ws_normalize_path("/a/. /b", n, sizeof n);
+      ok(streq(n, "/a/. /b"), "W1: dot+space name left alone (FatFs rejects it)");
+      ws_normalize_path("/a/.. ", n, sizeof n);
+      ok(streq(n, "/a/.. "), "W1: '.. ' is not turned into '..'");
       {
          char t[4];
          ws_normalize_path("/abcdef", t, sizeof t);
@@ -298,6 +319,12 @@ int main(void)
       ok(dav_url_to_sdpath("/BeebSCSI0%5Cscsi0.dat", sd, sizeof sd)
          && streq(sd, "/BeebSCSI0/scsi0.dat"),
          "encoded backslash canonicalised for the LUN interlock");
+      ok(dav_url_to_sdpath("/BeebSCSI0%2E/scsi0.dat%20", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+         "W1: encoded trailing dot/space canonicalised for the LUN interlock");
+      ok(dav_destination_sdpath("http://pi/BeebSCSI0./scsi0.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+         "W1: Destination gets the same canonical form");
       ok(dav_url_to_sdpath("/a%00b", sd, sizeof sd) && streq(sd, "/a_b"),
          "encoded NUL cannot cut the path short");
       ok(dav_url_to_sdpath("%2F%2F", sd, sizeof sd) && streq(sd, "/"),
