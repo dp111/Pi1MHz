@@ -209,9 +209,11 @@ ENDMACRO
 ; then OSWORD 0 takes ESC as a character too and never returns C=1: a prompt
 ; could not be cancelled.  ESCON before the XE_OSWORD call lets Escape end the
 ; line; the local subroutine ESCOFF, called first thing on the way back, puts
-; ESC back to ASCII 27 and then acknowledges any Escape (OSBYTE 126), in that
-; order so a second press cannot leave a condition pending.
-; In and out: C = Escape, X = length (lost on Escape, when it is not needed).
+; ESC back to ASCII 27 and only then reads the MOS Escape flag (bit 7 of &FF),
+; not OSWORD 0's C: an ESC pressed after RETURN but before *FX229,1 sets the
+; flag too, and left set it would turn up as a 27 at the next OSRDCH.  Any
+; Escape is acknowledged and cancels the prompt.
+; Out: C = Escape, X = length (lost on Escape, when it is not needed).
 ; expand as:  .escoff  ESCOFF   (the label at the expansion site)
 MACRO ESCON
     LDA #229
@@ -222,7 +224,6 @@ ENDMACRO
 
 MACRO ESCOFF
 {
-    PHP
     TXA
     PHA
     LDA #229
@@ -231,10 +232,11 @@ MACRO ESCOFF
     JSR OSBYTE
     PLA
     TAX
-    PLP
-    BCC done
-    LDA #126
-    JSR OSBYTE
+    CLC
+    BIT &FF                 ; the Escape flag, now nothing more can set it
+    BPL done
+    LDA #126                ; its effects (closes *EXEC, flushes buffers) are
+    JSR OSBYTE              ; what any Escape does: accepted
     SEC
 .done
     RTS

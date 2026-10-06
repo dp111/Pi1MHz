@@ -65,16 +65,24 @@ class Memory:
 
 
 class Explorer:
-    def __init__(self, image, keys):
+    def __init__(self, image, keys, late_escape=False):
         self.mem = Memory(image, self)
+        self.late_escape = late_escape   # ESC after RETURN, before *FX229,1
         self.cpu = MPU(memory=self.mem)
         self.keys = list(keys)
         self.fx229 = 1               # as the explorer's entry page sets it
-        self.escape = False          # the MOS Escape flag
         self.acks = 0                # OSBYTE 126 calls that cleared it
         self.fx229_at_osword = []
         self.osword_carry = []
         self.page = None
+
+    @property
+    def escape(self):                # the MOS Escape flag, bit 7 of &FF
+        return bool(self.mem[0xFF] & 0x80)
+
+    @escape.setter
+    def escape(self, on):
+        self.mem[0xFF] = 0x80 if on else 0
 
     def page_switch(self, page):
         if page not in (EXP_GET1, EXP_PUT1, XFER_SEL):
@@ -85,6 +93,8 @@ class Explorer:
 
     def osbyte(self, cpu):
         if cpu.a == 229:
+            if cpu.x == 1 and self.late_escape and self.fx229 == 0:
+                self.escape = True   # Escape is still the Escape key here
             old = self.fx229
             self.fx229 = (old & cpu.y) ^ cpu.x
             cpu.x = old
@@ -174,6 +184,12 @@ CASES = [
     (EXP_PUT1, [ord("A"), ord("B"), 13], "OSFIND"),
     (EXP_PUT1, [13], (EXP_KEY, 1)),                 # empty: cancelled, as before
 ]
+# ESC pressed after RETURN but before *FX229,1 takes effect: the flag is
+# set though OSWORD 0 returned C=0.  Cancel, rather than leave it pending.
+LATE = [
+    (EXP_GET1, [ord("A"), ord("B"), 13], (EXP_KEY, 1)),
+    (EXP_PUT1, [ord("A"), ord("B"), 13], (EXP_KEY, 1)),
+]
 
 
 def main(args):
@@ -181,10 +197,11 @@ def main(args):
         print(__doc__)
         return 2
     image = open(args[0], "rb").read()
-    for page, keys, want in CASES:
+    for (page, keys, want), late in ([(c, False) for c in CASES] +
+                                     [(c, True) for c in LATE]):
         name = {EXP_GET1: "Copy as:", EXP_PUT1: "Put file:"}[page]
-        what = f"{name} keys {keys}"
-        ex = Explorer(image, keys)
+        what = f"{name} keys {keys}" + (", ESC after RETURN" if late else "")
+        ex = Explorer(image, keys, late)
         try:
             got = ex.run(page)
         except AssertionError as e:
@@ -195,7 +212,7 @@ def main(args):
               f"{what}: OSWORD 0 ran with *FX229 {ex.fx229_at_osword}, not [0]")
         check(ex.fx229 == 1, f"{what}: left *FX229 {ex.fx229}, not the explorer's 1")
         check(not ex.escape, f"{what}: left an Escape condition pending")
-        check(ex.acks == (ESC in keys),
+        check(ex.acks == (ESC in keys or late),
               f"{what}: acknowledged {ex.acks} Escapes")
     print(f"\n{checks} checks, {fails} failures")
     print("EXPLORER PROMPT TESTS FAILED" if fails else "EXPLORER PROMPT TESTS PASSED")
