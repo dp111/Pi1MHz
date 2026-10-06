@@ -339,9 +339,27 @@ static void update_text_area(void) {
    } else if (tmp_y > t_window.bottom) {
       tmp_y = t_window.bottom;
    }
-   if (c_x_pos != tmp_x || c_y_pos != tmp_y) {
+   // The edit cursor too: update_cursors draws it with the current metrics,
+   // so one left below a shrunken grid would be drawn off the screen
+   int16_t tmp_ex = e_x_pos;
+   int16_t tmp_ey = e_y_pos;
+   if (e_enabled) {
+      if (tmp_ex < t_window.left) {
+         tmp_ex = t_window.left;
+      } else if (tmp_ex > t_window.right) {
+         tmp_ex = t_window.right;
+      }
+      if (tmp_ey < t_window.top) {
+         tmp_ey = t_window.top;
+      } else if (tmp_ey > t_window.bottom) {
+         tmp_ey = t_window.bottom;
+      }
+   }
+   if (c_x_pos != tmp_x || c_y_pos != tmp_y || e_x_pos != tmp_ex || e_y_pos != tmp_ey) {
       c_x_pos = tmp_x;
       c_y_pos = tmp_y;
+      e_x_pos = tmp_ex;
+      e_y_pos = tmp_ey;
       if (!text_at_g_cursor) {
          update_cursors();
       }
@@ -1229,6 +1247,10 @@ static void vdu23_19(const uint8_t *buf) {
    // On enter, buf points to 19, so increment
    buf++;
 
+   // The cursors are drawn with the cell metrics: take them off the screen
+   // with the old ones before anything below can change the cell
+   int tmp = disable_cursors();
+
    font_t *font = &font_normal;
 
    // The text layer writes glyphs unclipped (set_pixel is too hot to carry a
@@ -1318,6 +1340,10 @@ static void vdu23_19(const uint8_t *buf) {
 #endif
    // As the font metrics have changed, update text area
    update_text_area();
+   if (tmp) {
+      enable_cursors();
+   }
+   update_cursors();
 }
 
 /* The OS's post-fill cursor rule.  VDU-layer semantics keyed to the PLOT
