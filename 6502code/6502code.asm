@@ -596,7 +596,7 @@ ORG &FD00
 ORG &FD00
   JMP setupredirectorwithmessage ; default entry point for message redirector
 
-  JSR setupredirector       ; &FD03 Entry point for non message redirector and no mode change
+  JSR setupredirector       ; &FD03 Entry point: now the same as &FD00, kept as ROMs call both
   JMP oswtchredirectexit
 
 .setupredirector
@@ -631,6 +631,9 @@ ORG &FD00
   ; cursor the program had turned off.
 
   ; now copy existing screen
+  ; Known limits: with VDU 5 active, VDU 9 moves the graphics cursor, not
+  ; the text cursor; a cursor on the bottom-right cell makes the Pi scroll
+  ; when that cell is written.
 
   ; Give the Pi the Beeb's text window: OSBYTE 134 and VDU 9/31 work
   ; inside a VDU 28 window, so the copy only lands in place if the Pi
@@ -670,7 +673,17 @@ ORG &FD00
 .dofirstchar
     ; loop read screen characters
     LDA #135 : JSR OSBYTE ; x = Char ; Y screen mode
-    STX newoswrch ; write char to new screen
+    ; X = 0 is a cell OSBYTE 135 cannot recognise (graphics), and a MODE 7
+    ; control byte is <32 or &7F: as VDU codes they would not draw a cell
+    ; (VDU 0 does nothing, 127 deletes), and the rest of the copy would
+    ; land out of step.  The Pi gets a space instead.
+    TXA
+    CMP #32 : BCC copyspace
+    CMP #&7F : BNE copychar
+.copyspace
+    LDA #32
+.copychar
+    STA newoswrch ; write char to new screen
 
     DEC xcounter
     BNE loopcopyscreen
