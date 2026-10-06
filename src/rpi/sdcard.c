@@ -801,6 +801,28 @@ static int sdhost_switch_clock_rate(uint32_t target_rate)
     return 0;
 }
 
+/* Reset the data circuit after an aborted transfer, keeping what
+   sd_card_init negotiated with the card.  sdhost_reset_controller() is the
+   reset for a fresh init: it drops the 4-bit bus, and sdhost_reset_internal()
+   leaves the slowest divider.  The card itself is still 4-bit at the
+   transfer clock, so after that reset alone the next data command is read on
+   one line of four: CRC errors, and a disc error at the Beeb.  So the same
+   internal reset, then the width, divider and data timeout go back.  The
+   divider and timeout are read back from the hardware, not recomputed:
+   where the firmware owns SDCDIV the saved g_sdhost_storage_cdiv was never
+   set, and a mailbox call here could be skipped by a firmware that sees an
+   unchanged rate.  No mailbox work in this recovery. */
+static void sdhost_reset_data_circuit(void)
+{
+    uint32_t cdiv = sdhost_read(SDCDIV);
+    uint32_t tout = sdhost_read(SDTOUT);
+
+    sdhost_reset_internal();
+    sdhost_write(SDCDIV, cdiv);
+    sdhost_write(SDTOUT, tout);
+    sdhost_write(SDHCFG, g_sdhost_storage_hcfg);   /* incl. WIDE_EXT */
+}
+
 static void sd_reset_cmd_sdhost(void)
 {
     sdhost_write(SDHCFG, g_sdhost_storage_hcfg | SDHCFG_REL_CMD_LINE);
@@ -1494,8 +1516,8 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
          return -1;
       }
 
-      // Reset the data circuit
-    sdhost_reset_controller();
+      // Reset the data circuit, keeping the bus width and clock
+      sdhost_reset_data_circuit();
    }
    else if(cur_state != 4)
    {

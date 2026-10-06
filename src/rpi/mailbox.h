@@ -192,6 +192,9 @@ typedef struct {
 
 extern void RPI_PropertyInit( void );
 extern rpi_mailbox_property_t* RPI_PropertyGetWord( rpi_mailbox_tag_t tag, uint32_t data );
+/* RPI_PropertyGetWord with the full 3 s bound (not cached): boot-context
+   queries only (board revision, ARM memory).  Never from a poll callback. */
+extern rpi_mailbox_property_t* RPI_PropertyGetWordLong( rpi_mailbox_tag_t tag, uint32_t data );
 extern rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag);
 extern void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data);
 extern void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... );

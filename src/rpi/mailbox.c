@@ -203,7 +203,8 @@ static void RPI_Mailbox0Drain( void )
     }
 }
 
-rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data)
+static rpi_mailbox_property_t* property_get_word(rpi_mailbox_tag_t tag, uint32_t data,
+                                                 uint32_t bound_us)
 {
     RPI_PropertySettle();   /* pt[] may still be owned by a deferred reply */
     pt_index = 2;
@@ -219,12 +220,29 @@ rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data
        four times a second for the temperature) lost a Beeb VDU byte whenever
        a parameter block was mid-flight. */
     unsigned int irq = _disable_irq_cspr();
-    mailbox_bound_us = MAILBOX_QUERY_TIMEOUT_US;
+    mailbox_bound_us = bound_us;
     RPI_PropertyProcess(true);
     mailbox_bound_us = MAILBOX_TIMEOUT_US;
     rpi_mailbox_property_t* result = RPI_PropertyGet(tag);
     _restore_cpsr(irq);
     return result;
+}
+
+rpi_mailbox_property_t* RPI_PropertyGetWord(rpi_mailbox_tag_t tag, uint32_t data)
+{
+    return property_get_word(tag, data, MAILBOX_QUERY_TIMEOUT_US);
+}
+
+/* The same query with the full bound, for boot-context answers the session
+   then lives by: the board revision (USB host or device, for good) and the
+   ARM memory size (page table and heap - asked several times during boot).
+   Losing one of those to a VideoCore that is merely slow costs the whole
+   session, which is the cold-boot failure the 3 s bound above was set for.
+   Never from a poll callback: there the 50 ms query bound applies, because
+   a stall with IRQs masked is taken out of the BREAK budget. */
+rpi_mailbox_property_t* RPI_PropertyGetWordLong(rpi_mailbox_tag_t tag, uint32_t data)
+{
+    return property_get_word(tag, data, MAILBOX_TIMEOUT_US);
 }
 
 void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data)

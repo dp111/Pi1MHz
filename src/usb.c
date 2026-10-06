@@ -364,6 +364,11 @@ static void usb_boot_task(void)
 }
 
 void usb_init(uint8_t instance , uint8_t address) {
+  /* The host/device choice in usb_boot_task needs the board revision, and
+     there, a poll callback, only the short mailbox bound is allowed: ask it
+     here with the full bound, while boot can afford the wait.  First, while
+     the property buffer is free. */
+  board_revision_prime();
   /* Posted, not waited for - see usb_boot_task. */
   RPI_PropertySetWord(TAG_SET_POWER_STATE, POWER_DEVICE_USB_HCD, 0x00000003);
 

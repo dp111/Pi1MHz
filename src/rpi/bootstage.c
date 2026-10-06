@@ -123,6 +123,16 @@ void RPI_BootStage( boot_stage_t stage )
 void RPI_BootDetail( unsigned int detail )
 {
    boot_detail_current = detail;
+   /* Cleaned for the same reason as RPI_BootStage's block: the stamp that
+      matters is the one before an emulator init that then hangs, and the
+      watchdog reset that ends the hang drops a dirty line.  Only this word
+      changed, so only its line: one clean by MVA, at boot and BREAK.  (The
+      per-callback DEBUG stamp in the poll loop pays it too - which is what
+      lets that stamp survive a hang at all.  So in DEBUG builds every poll
+      callback carries a clean+invalidate of this line, and poll_max_ticks
+      and the slow-callback report include it; release has no such stamp.) */
+   _clean_cache_area((const void *)(uintptr_t)&boot_detail_current,
+                     sizeof boot_detail_current);
 }
 
 unsigned int RPI_BootDetailPrevious( void )
