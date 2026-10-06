@@ -7,8 +7,9 @@
                     FRED/JIM callback table - Pi1MHz.h, checked there
      0x1400-0x3CFF  free
      0x3D00-0x3DFF  markers handed from one kernel to the next:
-                      0x3D00  chain-boot marker, CHAIN_MAGIC then its
-                              complement (rpi/bootstage.c)
+                      0x3D00  chain-boot marker: CHAIN_MAGIC, its
+                              complement, the jump's timer stamp and
+                              reset reason (rpi/bootstage.c)
                       0x3D20  the video player's GPU handle block
                               (videoplayer.c)
      0x3E00-0x3EFF  the kernel.now copier (rpi/arm-start.S)
@@ -33,7 +34,7 @@
 #define LOWMEM_KERNEL_BASE           0x8000
 
 #define LOWMEM_MARKERS               0x3D00
-#define LOWMEM_CHAIN_MARKER          (LOWMEM_MARKERS + 0x00)  /* 2 words */
+#define LOWMEM_CHAIN_MARKER          (LOWMEM_MARKERS + 0x00)  /* 5 words */
 #define LOWMEM_VIDEOBUF_PERSIST      (LOWMEM_MARKERS + 0x20)  /* 5 words */
 
 #define LOWMEM_CHAINBOOT_COPIER      0x3E00

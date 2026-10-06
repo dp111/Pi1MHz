@@ -13,6 +13,7 @@
 #include "base.h"
 #include "cache.h"
 #include "lowmem.h"
+#include "systimer.h"
 
 /* In .noinit: this block MUST NOT live at a fixed low address - 0x7C00 (the
    first attempt) is inside the VPU-shared Pi1MHz region (struct at 0x100,
@@ -31,22 +32,48 @@ NOINIT_SECTION static volatile uint32_t boot_stage_block[16];
    .noinit: the copy of the incoming image runs over the outgoing kernel's
    .noinit, and a different build places .noinit elsewhere, so a marker
    there was lost whenever the two builds differed or the image was large.
-   It lives at a fixed address under the kernel instead (lowmem.h), as two
-   words - the magic and its complement - so that a stray write, or
-   whatever RAM holds after a power-on, reads as a cold boot (the safe
-   direction) and never as a phantom chain-boot. */
+   It lives at a fixed address under the kernel instead (lowmem.h).
+
+   Living there, it also survives what it must not: a reset.  If the
+   incoming kernel dies before it consumes the marker, or a kernel that does
+   not know this marker runs for a while and is then reset, the SD kernel
+   that boots next would find it - and, believing it was chain-booted,
+   report "n/a (chain-boot)" and skip launching the VPU, leaving the bus
+   dead.  So the marker counts only for a jump that has just happened with
+   no reset in between.  Two tests, either of which a reset fails:
+   - the 64-bit system timer, stamped at the jump, has moved on less than
+     CHAIN_MARK_MAX_US.  A reset either restarts the timer (now before the
+     stamp) or takes far longer: the watchdog's shortest timeout is 1 s, and
+     the firmware then reloads start.elf and the kernel from the card.  The
+     jump itself - a copy of at most 4 MB and the incoming .bss clear, both
+     with the caches off - is well inside it (INFERRED: not yet timed).
+   - the reset-reason register is unchanged.  Its flags are sticky, so this
+     alone would miss a second watchdog reset after a first; the timer does
+     not.  It does catch a reset whose timing happened to fit.
+   And two words, the magic and its complement, so that whatever RAM holds
+   after a power-on, or a stray write, reads as a cold boot - the safe
+   direction - never as a phantom chain-boot. */
 #define chain_marker ((volatile uint32_t *)LOWMEM_CHAIN_MARKER)
 #define CHAIN_MAGIC 0xC4A1B007u
+#define CHAIN_MARK_MAX_US 500000u
 static unsigned int chain_booted_flag;
 void RPI_ChainBootMark(void)
 {
+   uint64_t now = RPI_GetSystemTime64();
+   chain_marker[2] = (uint32_t)now;
+   chain_marker[3] = (uint32_t)(now >> 32);
+   chain_marker[4] = RPI_ResetReason();
    chain_marker[0] = CHAIN_MAGIC;
    chain_marker[1] = ~CHAIN_MAGIC;
 }
 void RPI_ChainBootConsume(void)
 {
+   uint64_t now = RPI_GetSystemTime64();
+   uint64_t stamp = ((uint64_t)chain_marker[3] << 32) | chain_marker[2];
    chain_booted_flag = (chain_marker[0] == CHAIN_MAGIC &&
-                        chain_marker[1] == ~CHAIN_MAGIC) ? 1u : 0u;
+                        chain_marker[1] == ~CHAIN_MAGIC &&
+                        now >= stamp && now - stamp < CHAIN_MARK_MAX_US &&
+                        chain_marker[4] == RPI_ResetReason()) ? 1u : 0u;
    chain_marker[0] = 0u;
    chain_marker[1] = 0u;
 }
