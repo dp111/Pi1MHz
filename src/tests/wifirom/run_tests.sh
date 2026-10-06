@@ -7,7 +7,9 @@
 # 4. it still assembles to a 16 KiB image, when beebasm is available, and
 # 5. on a 6502 (py65) its reset, unrecognised-command and *HELP paths keep
 #    the service-call rules, in sideways RAM and in a read-only bank: the
-#    shipped image always, both *HELP builds when beebasm is available.
+#    shipped image always, both *HELP builds when beebasm is available, and
+# 6. the SD explorer's filename prompts in the shipped 6502code.bin can be
+#    cancelled with Escape (py65 too).
 #
 # The ROM is not part of the firmware build, so nothing else would notice a
 # renumbering of wifi_service.h until the ROM misbehaved on real hardware.
@@ -42,5 +44,6 @@ fi
 
 # shellcheck disable=SC2086 # $images is a list of LABEL=PATH words
 "$PY" "$HERE/check_service.py" $images
+"$PY" "$HERE/check_explorer.py" "$ROOT/firmware/Pi1MHz/6502code.bin"
 
 echo "WIFI ROM TESTS PASSED"

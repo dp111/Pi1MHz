@@ -205,6 +205,44 @@ MACRO PRSUB
 }
 ENDMACRO
 
+; The explorer runs with *FX229,1 so its key loop reads ESC as ASCII 27, but
+; then OSWORD 0 takes ESC as a character too and never returns C=1: a prompt
+; could not be cancelled.  ESCON before the XE_OSWORD call lets Escape end the
+; line; the local subroutine ESCOFF, called first thing on the way back, puts
+; ESC back to ASCII 27 and only then reads the MOS Escape flag (bit 7 of &FF),
+; not OSWORD 0's C: an ESC pressed after RETURN but before *FX229,1 sets the
+; flag too, and left set it would turn up as a 27 at the next OSRDCH.  Any
+; Escape is acknowledged and cancels the prompt.
+; Out: C = Escape, X = length (lost on Escape, when it is not needed).
+; expand as:  .escoff  ESCOFF   (the label at the expansion site)
+MACRO ESCON
+    LDA #229
+    LDX #0
+    LDY #0
+    JSR OSBYTE
+ENDMACRO
+
+MACRO ESCOFF
+{
+    TXA
+    PHA
+    LDA #229
+    LDX #1
+    LDY #0
+    JSR OSBYTE
+    PLA
+    TAX
+    CLC
+    BIT &FF                 ; the Escape flag, now nothing more can set it
+    BPL done
+    LDA #126                ; its effects (closes *EXEC, flushes buffers) are
+    JSR OSBYTE              ; what any Escape does: accepted
+    SEC
+.done
+    RTS
+}
+ENDMACRO
+
 GUARD &FE00
 
 MACRO PAGERTS
@@ -1436,9 +1474,11 @@ ORG &FD00
     PLP
     JSR print
     EQUB 31,0,23,135 : EQUS "Copy as: " : EQUB &FF
+    ESCON
     XCALL XE_OSWORD, EXP_GET1, 7
 .typed
     PLP
+    JSR escoff
     BCS cancel
     TXA                     ; typed length
     BNE gotname
@@ -1455,6 +1495,8 @@ ORG &FD00
 
 .print
     PRSUB
+.escoff
+    ESCOFF
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
@@ -1607,9 +1649,11 @@ ORG &FD00
     PLP
     JSR print
     EQUB 31,0,23,135 : EQUS "Put file: " : EQUB &FF
+    ESCON
     XCALL XE_OSWORD, EXP_PUT1, 7
 .typed
     PLP
+    JSR escoff
     BCS cancel
     TXA                     ; typed length
     BEQ cancel
@@ -1629,6 +1673,8 @@ ORG &FD00
 
 .print
     PRSUB
+.escoff
+    ESCOFF
 
     ASSERT P% <= &FE00-9
     PAGESWITCH

@@ -17,6 +17,8 @@ step over it, and a Model B or an Electron would not.
 
 Needs py65 (pip install py65).
 """
+import re
+
 from py65.devices.mpu6502 import MPU
 
 ROM_BASE = 0x8000
@@ -52,15 +54,16 @@ class SimPi:
     """The Pi's side of the services mailbox at &FCA6-&FCAA.
 
     &FCA6-&FCA8 hold a 24-bit JIM address, &FCA9 reads and writes the byte
-    there and steps the address on, and a write of &F0 to &FCAA runs the
-    command whose number is in the first byte of the page at &FFF000.  The
-    result comes back in &FCAA with bit 7 clear.  `results` maps a command
+    there and steps the address on, and a write of &F0-&FF to &FCAA runs the
+    command whose number is in the first byte of the page it names (&F0 the
+    page at &FFF000, the service driver's &FF the one at &FFFF00).  The
+    result comes back in &FCAA with bit 7 clear.  &FCFD-&FCFF select the
+    page of the same JIM memory that &FD00-&FDFF shows, which is where the
+    ROM's driver keeps a reply for read_buffer.  `results` maps a command
     number to the result code (a list is consumed one entry per command,
     the last one repeating); a command not listed answers 0.  `replies`
     maps a command number to {JIM address: byte} the Pi publishes with it.
     """
-    COMMAND_PAGE = 0xFFF000
-
     def __init__(self, results=None, replies=None):
         self.results = {k: (list(v) if isinstance(v, (list, tuple)) else [v])
                         for k, v in (results or {}).items()}
@@ -69,6 +72,11 @@ class SimPi:
         self.addr = 0
         self.result = 0
         self.commands = []         # every command number run, in order
+        self.select = {0xFD: 0, 0xFE: 0, 0xFF: 0}   # JIM page selectors
+
+    def _window(self, a):
+        s = self.select
+        return s[0xFD] << 24 | s[0xFE] << 16 | s[0xFF] << 8 | (a & 0xFF)
 
     def read(self, a):
         reg = a - 0xFC00
@@ -85,7 +93,7 @@ class SimPi:
         if reg == 0xAA:
             return self.result
         if 0xFD00 <= a < 0xFE00:
-            return 0
+            return self.jim.get(self._window(a), 0)
         raise Unmodelled(f"read of I/O &{a:04X}")
 
     def write(self, a, v):
@@ -100,16 +108,18 @@ class SimPi:
             self.jim[self.addr] = v
             self.addr = (self.addr + 1) & 0xFFFFFF
         elif reg == 0xAA:
-            if v != 0xF0:
-                raise Unmodelled(f"service command &{v:02X}, not the dispatch &F0")
-            self._dispatch()
-        elif reg in (0xFD, 0xFE, 0xFF) or 0xFD00 <= a < 0xFE00:
-            pass                   # JIM bank and page selectors, the page window
+            if v < 0xF0:
+                raise Unmodelled(f"service command &{v:02X}, not a dispatch &F0-&FF")
+            self._dispatch(0xFF0000 | v << 8)
+        elif reg in (0xFD, 0xFE, 0xFF):
+            self.select[reg] = v
+        elif 0xFD00 <= a < 0xFE00:
+            self.jim[self._window(a)] = v
         else:
             raise Unmodelled(f"write &{v:02X} to I/O &{a:04X}")
 
-    def _dispatch(self):
-        number = self.jim.get(self.COMMAND_PAGE, 0)
+    def _dispatch(self, page):
+        number = self.jim.get(page, 0)
         self.commands.append(number)
         queue = self.results.get(number, [0])
         self.result = queue.pop(0) if len(queue) > 1 else queue[0]
@@ -230,23 +240,28 @@ class Beeb:
 
         `line` is the command text for calls 4 and 9: it goes in LINE_BUF,
         (&F2) points there and Y indexes it, as the MOS leaves them."""
-        cpu = self.cpu
         if line is not None:
             data = line.encode("latin-1") + b"\r"
             self.mem.ram[LINE_BUF:LINE_BUF + len(data)] = data
             self.mem.ram[0xF2] = LINE_BUF & 0xFF
             self.mem.ram[0xF3] = LINE_BUF >> 8
         self.mem.ram[0xF4] = slot          # the MOS's current-ROM copy
-        cpu.a, cpu.x, cpu.y = reason, slot, y
-        cpu.sp = 0xFF
+        self.cpu.sp = 0xFF
+        return self.call(SERVICE, reason, slot, y)
+
+    def call(self, address, a=0, x=0, y=0):
+        """JSR to `address` in the ROM; return (A, X, Y) at its RTS.
+        The flags it returned with are left in self.cpu.p."""
+        cpu = self.cpu
+        cpu.a, cpu.x, cpu.y = a, x, y
         cpu.p = 0x34                       # I set, D clear: as the MOS calls
         ret = RETURN_TRAP - 1
         cpu.stPushWord(ret)
-        cpu.pc = SERVICE
+        cpu.pc = address
         for _ in range(self.max_steps):
             pc = cpu.pc
             if pc == RETURN_TRAP:
-                self.sp = cpu.sp           # 0xFF: the MOS's return address was all that was left
+                self.sp = cpu.sp           # back where it was before the JSR
                 return cpu.a, cpu.x, cpu.y
             if pc >= ROM_END:
                 self._trap(pc)
@@ -273,3 +288,14 @@ def command_names(image):
         names.append(image[at:end].decode("ascii"))
         at = end + 2
     return names
+
+
+def read_buffer_address(image):
+    """Where the driver's read_buffer starts: PHP, SEI, LDA abs (the page
+    shadow), JSR (select the page), LDA &FD00,X, PLP.  write_buffer pushes
+    A before its LDA, so only read_buffer has this shape."""
+    hits = [m.start() for m in re.finditer(
+        rb"\x08\x78\xAD..\x20..\xBD\x00\xFD\x28", image, re.DOTALL)]
+    if len(hits) != 1:
+        raise ValueError(f"read_buffer found {len(hits)} times, not once")
+    return ROM_BASE + hits[0]
