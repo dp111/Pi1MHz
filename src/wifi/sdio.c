@@ -1989,6 +1989,10 @@ static bool sdio_backplane_scan_ram(sdio_host_t *dev, sdio_chip_state_t *chip)
    return chip->socramsize != 0u;
 }
 
+/* Known limitation: a '#' after content on a line (a trailing comment) also
+   suppresses that line's NUL, so the line runs into the next one.  brcmfmac
+   ends the value at the '#' instead.  None of the shipped .txt files has
+   such a line; comments must start their own line. */
 static uint32_t sdio_cyw43_condense_nvram(uint8_t *buffer, uint32_t length)
 {
    const uint8_t *read_ptr = buffer;
@@ -6914,11 +6918,20 @@ uint8_t sdio_runtime_scan_results(sdio_wifi_scan_result_t *out,
    association is over; both are re-established from the chip's events. */
 bool sdio_runtime_rejoin_start(void)
 {
+   const wifi_config_t *config;
+
    if (!g_runtime_started || g_runtime_emulator_mode)
       return false;
    if (!g_runtime_rejoin_allowed)
       return false;
    if (g_runtime_stage != SDIO_RUNTIME_STAGE_DONE)
+      return false;
+   /* Nothing to join without an SSID.  A radio-only ElkWiFi session never
+      has a link, so wifi_lwip's retry ladder would otherwise re-run the
+      list - WLC_DOWN/UP included, killing any *LAP escan in flight - every
+      few seconds; refused, it never counts as a rejoin either. */
+   config = wifi_get_config();
+   if (config == NULL || config->ssid[0] == '\0')
       return false;
 
    g_runtime_join_count = sdio_tx_probe_join_commands(g_runtime_join_commands,
