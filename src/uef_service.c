@@ -17,15 +17,16 @@
  * sharing JIM.  Absolute JIM offset zero, not the services mailbox DISC_RAM. */
 #define UEF_BASE            0u
 #define UEF_FIRST_PAGE      1u   /* page 0 is the service reply buffer */
+#define UEF_WINDOW_PAGES    (256u - UEF_FIRST_PAGE - 1u)
 /* The flat window reserves page 0 for the reply buffer, which OSWORD &65
  * clients read in full, and the last page for the length trailer. */
-#define UEF_FLAT_WINDOW     ((256u - UEF_FIRST_PAGE - 1u) * 256u)
+#define UEF_FLAT_WINDOW     (UEF_WINDOW_PAGES * 256u)
 /* A published guard occupies the top of every page, so the stream gives those
  * bytes up and is laid out in short runs instead.  The guard ends exactly at
  * the page top, which is what leaves the length trailer intact. */
 #define UEF_GUARD_OFFSET    0x97u
 #define UEF_GUARD_LENGTH    (256u - UEF_GUARD_OFFSET)
-#define UEF_GUARD_WINDOW    ((256u - UEF_FIRST_PAGE - 1u) * UEF_GUARD_OFFSET)
+#define UEF_GUARD_WINDOW    (UEF_WINDOW_PAGES * UEF_GUARD_OFFSET)
 #define UEF_TRAILER         (UEF_BASE + 0xfffeu)
 #define UEF_APPEND_MAX      0xff00u   /* most the host sends in one APPEND */
 #define UEF_LEGACY_CAPACITY 0xfffeu   /* the one-shot path's JIM window     */
@@ -181,17 +182,21 @@ static void guard_stamp(void)
     * two arbitrary bytes of the ROM's own guard image, and an APPEND with
     * length == 0 - the documented "read my length from the trailer" form -
     * then appended an arbitrary number of bytes from JIM page 0. */
-   for (page = UEF_FIRST_PAGE; page < 255u; page++)
+   for (page = UEF_FIRST_PAGE; page < UEF_FIRST_PAGE + UEF_WINDOW_PAGES; page++)
       memcpy(&Pi1MHz->JIM_ram[UEF_BASE + (page << 8) + UEF_GUARD_OFFSET],
              guard_image, UEF_GUARD_LENGTH);
 }
 
 /* Lay the window into the aperture in UEF_GUARD_OFFSET runs, one per page, so
- * it never covers the guard. */
+ * it never covers the guard.  The runs stop at the last window page: a longer
+ * window has nowhere to go, and the pages past it are not ours - they are
+ * Beeb-visible paged RAM beyond the 64K aperture.  Callers keep the window
+ * within UEF_GUARD_WINDOW; the bound is here so a caller that does not can
+ * lose the tail but never write outside. */
 static void window_scatter(const uint8_t *source, size_t count)
 {
    size_t page = 0u;
-   while (count != 0u) {
+   while (count != 0u && page < UEF_WINDOW_PAGES) {
       size_t chunk = count < UEF_GUARD_OFFSET ? count : UEF_GUARD_OFFSET;
       memcpy(&Pi1MHz->JIM_ram[UEF_BASE + ((page + UEF_FIRST_PAGE) << 8)],
              source, chunk);
@@ -206,14 +211,20 @@ static void window_scatter(const uint8_t *source, size_t count)
  * layout the guard currently dictates. */
 static void window_lay_out(void)
 {
-   if (tape->window_length != 0u) {
+   /* The guard refusal keeps a flat window out of here, so this clamp is
+    * unreachable; if it were reached, publish what scatter actually laid
+    * down rather than a length the aperture does not hold. */
+   size_t length = tape->window_length;
+   if (guard_image_valid && length > UEF_GUARD_WINDOW)
+      length = UEF_GUARD_WINDOW;
+   if (length != 0u) {
       if (guard_image_valid)
-         window_scatter(tape->window, tape->window_length);
+         window_scatter(tape->window, length);
       else
          memcpy(&Pi1MHz->JIM_ram[UEF_BASE + (UEF_FIRST_PAGE << 8)],
-                tape->window, tape->window_length);
+                tape->window, length);
    }
-   public_length_set(tape->window_length);
+   public_length_set(length);
 }
 
 /* ---- FILEV stamp repair ------------------------------------------------
@@ -588,13 +599,25 @@ uint8_t uef_service_guard_command(uint32_t cp)
    }
    if (p[0] != UEF_GUARD_LENGTH)
       return WIFI_SVC_ERR_PARAM;
+   /* A window laid out flat can be longer than the guard layout holds: the
+    * guard gives up the top of every page, so the aperture takes only
+    * UEF_GUARD_WINDOW bytes in runs.  The host has already been told this
+    * window's length and final flag, and this reply carries neither, so the
+    * window cannot be cut down behind its back - and the bytes cut off could
+    * not be handed back, as the stream cannot seek.  Refuse, touching
+    * nothing: the flat window stays exactly as the host holds it, and the
+    * guard goes up cleanly before the next BEGIN, when the windows are cut to
+    * fit.  Withdrawing needs no such check; a guard window is always flat-
+    * sized or smaller. */
+   if (tape != NULL && tape->ready && tape->window_length > UEF_GUARD_WINDOW)
+      return WIFI_SVC_ERR_PARAM;
    memcpy(guard_image, p + 1, UEF_GUARD_LENGTH);
    guard_image_valid = true;
    guard_stamp();
    /* Publishing or withdrawing the guard changes the shape of the window, so
     * anything already published was laid out for the old shape and the host
     * would read it misaligned.  Lay the same bytes down again under the new
-    * rule - the window we are holding makes that exact. */
+    * rule - the check above is what makes that exact. */
    if (tape != NULL && tape->ready)
       window_lay_out();
    response_string(cp, "OK\r\n");
