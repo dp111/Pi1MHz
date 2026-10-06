@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* rpi/rpi.h */
+#define LOG_DEBUG(...)
 /* Pi1MHz.h */
 void _copyandreboot(void *src, int num_bytes);
 /* rpi/asm-helpers.h, rpi/cache.h, rpi/rpi.h, rpi/systimer.h */

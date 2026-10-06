@@ -96,9 +96,15 @@ static void chainboot_abandon(void)
    free(s_image);
    s_image = NULL;
    s_stage = 0u;
-   if (s_took_card)
-      (void)filesystemInsert();          /* and with it USB (mtp_fs_inserted) */
-   else if (s_usb_off && !filesystemEjected())
+   if (s_took_card) {
+      /* And with it USB (mtp_fs_inserted).  If the card will not mount, the
+         Pi is left as a failed HD_CARD_INSERT leaves it: ejected, so USB
+         stays off - it is only ever on the bus with a card behind it - and
+         the Beeb's own insert, or a BBC reset, brings both back. */
+      if (!filesystemInsert()) {
+         LOG_DEBUG("chainboot: card did not mount again - left ejected\r\n");
+      }
+   } else if (s_usb_off && !filesystemEjected())
       mtp_fs_inserted();                 /* USB back; the host enumerates afresh */
    s_took_card = false;
    s_usb_off = false;

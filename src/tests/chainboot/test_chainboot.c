@@ -27,6 +27,7 @@
 static uint32_t now = 0x10000000u;
 static bool     player_open, decoder_running;
 static bool     card_ejected;         /* filesystemEjected(): the user's own eject */
+static bool     insert_fails;         /* filesystemInsert(): the card will not mount */
 static int      eject_fails;          /* filesystemEject answers false this often first */
 static char     events[64];           /* M usb off, U usb back, E/e eject step
                                          not done/done, I card back, S sdio,
@@ -65,7 +66,13 @@ bool filesystemEject(void)
    return true;
 }
 
-bool filesystemInsert(void) { ev('I'); card_ejected = false; return true; }
+bool filesystemInsert(void)
+{
+   ev('I');
+   if (insert_fails) return false;   /* filesystemReset leaves it ejected */
+   card_ejected = false;
+   return true;
+}
 
 void _copyandreboot(void *src, int num_bytes)
 {
@@ -316,6 +323,25 @@ static void case_user_ejected_card_stays_out(void)
    CHECK(card_ejected, "card no longer ejected");
 }
 
+/* Given up after the eject, and the card will not mount again: left
+   ejected, as a failed insert from the Beeb leaves it - USB not forced back
+   with no card behind it. */
+static void case_reinsert_fails(void)
+{
+   insert_fails = true;
+   uint8_t *p = image(64u, 0x61);
+   CHECK(req(p, 64u, 64u), "not taken");
+   CHECK(run_until('e', 2000u), "card never ejected");
+   player_open = true;
+   CHECK(!run(2000u), "jumped although refused");
+   CHECK(was_freed(p), "abandoned image not freed");
+   CHECK(strcmp(events, "MeI") == 0, "steps \"%s\", want \"MeI\"", events);
+   CHECK(card_ejected, "card not left ejected");
+   events[0] = '\0';
+   CHECK(!run(2000u), "something ran with nothing taken");
+   CHECK(events[0] == '\0', "steps \"%s\" after the give-up", events);
+}
+
 /* A second request arrives after this code took the card, and is refused
    during its own settle: the card taken for the first still goes back. */
 static void case_second_request_after_eject_refused(void)
@@ -361,6 +387,7 @@ int main(void)
    in_child(case_user_ejected_card_stays_out, "user_ejected_card_stays_out");
    in_child(case_second_request_resettles, "second_request_resettles");
    in_child(case_second_request_after_eject_refused, "second_request_after_eject_refused");
+   in_child(case_reinsert_fails, "reinsert_fails");
    printf("%d checks, %d failed\n", checks, failures);
    if (failures == 0)
       printf("CHAINBOOT TESTS PASSED\n");
