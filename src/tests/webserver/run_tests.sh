@@ -15,7 +15,8 @@ B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 
 cp "$SRC"/wifi/webserver.c "$SRC"/wifi/md5.h "$B/"
-cp "$HERE"/test_parsers.c "$HERE"/test_chunked.c "$HERE"/fuzz_parsers.c "$B/"
+cp "$HERE"/test_parsers.c "$HERE"/test_chunked.c "$HERE"/fuzz_parsers.c \
+   "$HERE"/test_kn_lifecycle.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"
 
 # The pure text parsers: HTTP request line / header block, multipart
@@ -39,6 +40,13 @@ awk -v types="conn_state_t,upload_state_t,dav_chunk_state_t,ws_conn_t" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_conn.inc"
 awk -v fns="dav_put_consume_chunked" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_chunked.inc"
+# Per-request resource lifetime: the kernel.now buffer, the three
+# teardown paths, and the PUT body sink a stale buffer would hijack.
+KN_FNS="kn_discard,conn_release_resources,conn_close,conn_reset_for_next_request,\
+kn_begin,kn_append,kn_take,kn_status_text,upload_fail,dav_put_write_bytes,\
+dav_put_finish,dav_put_consume,dav_put_consume_chunked,ws_err"
+awk -v fns="$KN_FNS" \
+    -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_kn.inc"
 
 echo "== unit: HTTP / path / digest / date parsers =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
@@ -51,6 +59,12 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/tc" "$B/test_chunked.c"
 "$B/tc"
+
+echo "== unit: per-request resources (kernel.now buffer, teardown) =="
+gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -I"$B" -o "$B/tk" "$B/test_kn_lifecycle.c"
+"$B/tk"
 
 echo "== fuzz: hostile inputs through every parser (ASan/UBSan) =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \

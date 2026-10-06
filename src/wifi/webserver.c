@@ -1826,13 +1826,27 @@ static void table_row(ws_strbuf_t *b, const char *label, const char *value)
 /* Connection lifecycle                                                */
 /* ------------------------------------------------------------------ */
 
-static bool conn_close(ws_conn_t *c, bool abort_conn)
+/* The kernel.now image being gathered, if any, goes: the request it belonged
+   to is over.  Left behind, it would take the next PUT or upload body on a
+   kept-alive connection for a kernel image - and chain-boot into it. */
+static void kn_discard(ws_conn_t *c)
 {
-   bool aborted = false;
+   free(c->kn_buf);
+   c->kn_buf = NULL;
+   c->kn_len = 0u;
+   c->kn_cap = 0u;
+}
 
-   if (c == NULL)
-      return false;
-
+/* Let go of everything a request holds: open files (dropping any ".part"
+   temp, never the real target), the COPY slot, the kernel.now buffer and the
+   queued response.  The pcb and the conn itself are the caller's.  This is
+   the one copy for all three ways a request ends - conn_close, ws_err (lwIP's
+   RST / fatal-error path, which never reaches conn_close) and
+   conn_reset_for_next_request (keep-alive) - which used to be three
+   hand-kept copies; the one that forgot kn_buf let the next request on the
+   connection become a chain-boot. */
+static void conn_release_resources(ws_conn_t *c)
+{
    if (c->dl_open) {
       f_close(&c->dl_file);
       c->dl_open = false;
@@ -1843,16 +1857,14 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
    }
    upload_discard_temp(c);   /* mid-upload teardown: drop the .part, keep target */
    if (c->dav_put_open) {
-      if (wifi_debug_enabled())
-         wifi_debug_printf("PUT: conn_close mid-PUT (dav_remaining=%lu target='%s')\n",
-                           (unsigned long)c->dav_remaining, c->dav_put_target);
       f_close(&c->write_file.dav);
       c->dav_put_open = false;
-      /* Connection torn down mid-PUT: discard the partial temp file so
-         the SD card does not accumulate "<name>.part" droppings.  The
-         final target was deliberately not touched until the body
-         completed (dav_put_consume's f_rename) so the user's previous
-         file - if any - is intact. */
+      /* Torn down mid-PUT - on ws_err that is exactly what an aborted upload
+         or a flaky link produces: discard the partial temp file so the SD
+         card does not accumulate "<name>.part" droppings.  The final target
+         was deliberately not touched until the body completed
+         (dav_put_finish's f_rename), so the user's previous file - if any -
+         is intact. */
       if (c->dav_put_tmppath[0] != '\0')
          (void)f_unlink(c->dav_put_tmppath);
    }
@@ -1870,6 +1882,26 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
       timeout / client-disconnect mid-COPY must release the slot so
       the next COPY request isn't rejected with 503 forever. */
    ws_copy_slot_release(c);
+   kn_discard(c);
+   /* Every tcp_write copies (TCP_WRITE_FLAG_COPY), so lwIP never points
+      into out and it can go before the pcb does. */
+   free(c->out);
+   c->out = NULL;
+   c->out_len = 0u;
+   c->out_sent = 0u;
+}
+
+static bool conn_close(ws_conn_t *c, bool abort_conn)
+{
+   bool aborted = false;
+
+   if (c == NULL)
+      return false;
+
+   if (c->dav_put_open && wifi_debug_enabled())
+      wifi_debug_printf("PUT: conn_close mid-PUT (dav_remaining=%lu target='%s')\n",
+                        (unsigned long)c->dav_remaining, c->dav_put_target);
+   conn_release_resources(c);
    ws_live_remove(c);
 
    if (c->pcb != NULL) {
@@ -1889,8 +1921,6 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
       }
    }
 
-   free(c->kn_buf);
-   free(c->out);
    free(c);
    return aborted;
 }
@@ -2254,45 +2284,15 @@ static const char *ws_connection_hdr(const ws_conn_t *c)
 }
 
 /* Reset all per-request state on a kept-alive connection so the
-   next request starts from a known empty position.  Anything that
-   would be cleaned up by conn_close (open files, COPY slot, in-
-   flight response buffer) is cleaned up here too, but the TCP pcb
-   is preserved. */
+   next request starts from a known empty position.  Everything
+   conn_close releases is released here too (conn_release_resources),
+   but the TCP pcb is preserved. */
 static void conn_reset_for_next_request(ws_conn_t *c)
 {
    if (c == NULL)
       return;
-   if (c->dl_open) {
-      f_close(&c->dl_file);
-      c->dl_open = false;
-   }
-   if (c->up_file_open) {
-      f_close(&c->write_file.up);
-      c->up_file_open = false;
-   }
-   upload_discard_temp(c);   /* mid-upload reset: drop the .part, keep target */
-   if (c->dav_put_open) {
-      f_close(&c->write_file.dav);
-      c->dav_put_open = false;
-      if (c->dav_put_tmppath[0] != '\0')
-         (void)f_unlink(c->dav_put_tmppath);
-   }
-   if (c->copy_src_open) {
-      f_close(&c->copy_src);
-      c->copy_src_open = false;
-   }
-   if (c->copy_dst_open) {
-      f_close(&c->copy_dst);
-      c->copy_dst_open = false;
-      /* Mid-COPY teardown: drop the ".part", keep the destination. */
-      copy_discard_temp(c);
-   }
+   conn_release_resources(c);
    c->copy_dst_existed = false;
-   ws_copy_slot_release(c);
-   free(c->out);
-   c->out = NULL;
-   c->out_len = 0u;
-   c->out_sent = 0u;
    c->bytes_queued = 0u;
    c->bytes_acked = 0u;
    c->producing_done = false;
@@ -4117,6 +4117,7 @@ static bool upload_fail(ws_conn_t *c, const char *msg)
       c->up_file_open = false;
    }
    upload_discard_temp(c);       /* leave any pre-existing target intact */
+   kn_discard(c);                /* a failed kernel.now: free its 4 MB now */
    c->up_state = UP_FAILED;
 
    sb_init(&b);
@@ -5409,6 +5410,7 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
                c->dav_chunk_line_overflow = false;
                if (bad) {
                   if (consumed != NULL) *consumed = pos;
+                  kn_discard(c);   /* a kernel.now PUT ends here too */
                   return ws_error(c, 400, "Bad Request",
                                   "Malformed chunk size.");
                }
@@ -7155,47 +7157,8 @@ static void ws_err(void *arg, err_t err)
 
    /* lwIP has already freed the pcb */
    c->pcb = NULL;
-   if (c->dl_open) {
-      f_close(&c->dl_file);
-      c->dl_open = false;
-   }
-   if (c->up_file_open) {
-      f_close(&c->write_file.up);
-      c->up_file_open = false;
-   }
-   /* Same reason as the dav_put block below: ws_err is lwIP's RST / fatal-
-      error callback - the real mid-upload disconnect - and it frees the conn
-      without going through conn_close, so the multipart ".part" temp must be
-      dropped here too or a reset upload leaves a dropping nothing collects.
-      The real target was never touched (rename happens only on completion). */
-   upload_discard_temp(c);
-   if (c->copy_src_open) {
-      f_close(&c->copy_src);
-      c->copy_src_open = false;
-   }
-   if (c->copy_dst_open) {
-      f_close(&c->copy_dst);
-      c->copy_dst_open = false;
-      /* Mid-COPY teardown: drop the ".part", keep the destination. */
-      copy_discard_temp(c);
-   }
-   ws_copy_slot_release(c);
-   if (c->dav_put_open) {
-      f_close(&c->write_file.dav);
-      c->dav_put_open = false;
-      /* Same as conn_close: discard the partial temp file. ws_err is what
-         lwIP calls on RST or a fatal error - i.e. exactly what an aborted
-         upload or a flaky link produces - so without this every failed PUT
-         leaves a "<name>.part" dropping that nothing ever collects, visible
-         in both /files/ and PROPFIND listings. The final target was never
-         touched (the rename happens only on a complete body), so the user's
-         previous file is intact either way. */
-      if (c->dav_put_tmppath[0] != '\0')
-         (void)f_unlink(c->dav_put_tmppath);
-   }
+   conn_release_resources(c);
    ws_live_remove(c);
-   free(c->kn_buf);
-   free(c->out);
    free(c);
 }
 

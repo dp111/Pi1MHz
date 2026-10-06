@@ -56,6 +56,13 @@ static bool ws_error(ws_conn_t *c, int status, const char *stext,
    return true;
 }
 
+/* The kernel.now buffer is dropped on a malformed chunk size;
+   test_kn_lifecycle.c covers that, so here it is a no-op. */
+static void kn_discard(ws_conn_t *c)
+{
+   (void)c;
+}
+
 #include "ws_chunked.inc"   /* dav_put_consume_chunked, extracted verbatim */
 
 static ws_conn_t C;
