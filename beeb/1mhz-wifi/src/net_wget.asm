@@ -205,7 +205,7 @@ net_bytes_bank = heap+&E2
  jsr net_dispatch_wait
  cmp #0
  beq pi_wget_opened
- jsr pi_wget_network_error
+ jmp pi_wget_network_error
 
 .pi_wget_opened
 .pi_wget_output_ready
@@ -238,7 +238,7 @@ net_bytes_bank = heap+&E2
 .pi_wget_not_eof
  cmp #0
  beq pi_wget_read_length
- jsr pi_wget_network_error
+ jmp pi_wget_network_error
 
 .pi_wget_read_length
  jsr net_command_address
@@ -329,7 +329,7 @@ net_bytes_bank = heap+&E2
  bcs pi_wget_copy_cancel
  jmp pi_wget_read
 .pi_wget_copy_paged_error
- jsr pi_wget_network_error
+ jmp pi_wget_network_error
 .pi_wget_copy_paged_advance
  lda #&FF
  sta net_received
@@ -371,7 +371,7 @@ net_bytes_bank = heap+&E2
  beq pi_wget_empty_timeout
  jmp pi_wget_read
 .pi_wget_empty_timeout
- jsr pi_wget_timeout
+ jmp pi_wget_timeout
 
 .pi_wget_done
  lda net_received
@@ -632,6 +632,9 @@ wget_name_max = &40                 \ including the CR
  equs "       WGET [-TXUS] <url> [slot]",&0D,&EA
  jmp call_claimed
 
+\ pi_wget_timeout and pi_wget_network_error never return: they end through
+\ call_claimed, which pulls the X and Y the service entry pushed. Reach them
+\ with jmp; a jsr leaves its return address where that X and Y should be.
 .pi_wget_timeout
  jsr printtext
  equs "Network timeout",&0D,&EA
