@@ -623,12 +623,12 @@ ORG &FD00
   ; Change mode on pi.
     LDA #22: STA newoswrch :STX newoswrch
 
-  ; The Beeb's cursor is left as it is and walks across during the copy.
-  ; Its on/off state cannot be read back to restore it: the 6845's R10 is
-  ; write-only, on an Electron &FE00 is the ULA's interrupt register, and
-  ; the MOS's R10 copy (VDU variable &5F) is the shape VDU 23,1,1 puts
-  ; back, not a record of VDU 23,1,0.  Guessing wrong would turn on a
-  ; cursor the program had turned off.
+  ; Both cursors are hidden for the copy with VDU 23,1,0 - the Beeb's
+  ; through its own VDU driver, never by poking the 6845 (R10 is write-
+  ; only, and on an Electron &FE00 is the ULA's interrupt register) - and
+  ; both are turned back on with VDU 23,1,1 when it is done.  The Beeb's
+  ; earlier on/off state cannot be read back, so a program that had its
+  ; cursor off gets it back on.
 
   ; now copy existing screen
   ; Known limits: with VDU 5 active, VDU 9 moves the graphics cursor, not
@@ -660,7 +660,7 @@ ORG &FD00
 
     LDA #31 : JSR newoswrch+3 : LDA #0 : JSR newoswrch+3 : JSR newoswrch+3
 
-    ; hide the Pi's cursor while the copy draws
+    ; hide both cursors while the copy draws
     LDX #0 : JSR cursoronoff
     JMP dofirstchar
 
@@ -699,12 +699,13 @@ ORG &FD00
 
     LDA #8 : STA newoswrch    ; the last read was the cell under the cursor: step the Pi back onto it
 
-    LDX #10           ; Pi cursor back on, as VDU 22 left it
+    LDX #10           ; both cursors back on
 .cursoronoff
     LDY #10
 .cursoronoffloop
     LDA cursoroffdata,X
-    STA newoswrch     ; just the Pi cursor
+    STA newoswrch     ; the Pi's VDU stream
+    JSR newoswrch+3   ; and the Beeb's (OSWRCH keeps A, X and Y)
     INX:DEY
     BNE cursoronoffloop
 
