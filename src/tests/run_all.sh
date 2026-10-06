@@ -36,9 +36,10 @@ for s in $suites; do
    fi
    [ -n "$GITHUB_ACTIONS" ] && echo "::group::$s"
    echo "=== $s ==="
-   # "sh script" on purpose: each script sets -e itself, which is what makes
-   # a failure in the middle of a suite stop it rather than reach its banner.
-   if sh "$script"; then pass="$pass $s"; else fail="$fail $s"; fi
+   # "sh -e" on purpose: the runner, not each script, guarantees that a
+   # failed step stops the suite instead of reaching its banner.  Every
+   # script is POSIX sh.
+   if sh -e "$script"; then pass="$pass $s"; else fail="$fail $s"; fi
    [ -n "$GITHUB_ACTIONS" ] && echo "::endgroup::"
 done
 
