@@ -190,7 +190,12 @@ _Static_assert(SLOT_MEM_SIZE + FRAG_MEM_SIZE + VCHIQ_BULK_DEPTH * PAGELIST_STRID
 
 /* Local ports run 1..0xFFF (12 bits on the wire). Each kernel.now moves the
    next kernel's ports on by a whole set, so a VideoCore service the
-   outgoing kernel could not close never talks to a new one by accident. */
+   outgoing kernel could not close never talks to a new one by accident.
+   The base steps VCHIQ_MAX_SERVICES (3) per kernel and wraps to 0 after
+   about 1364 chain-boots without a power cycle; a leftover service from
+   that long ago could then share a port again.  That the firmware accepts
+   ARM source ports this high is GUESSED from the Linux driver (which uses
+   up to 4095) - not tried on hardware. */
 #define VCHIQ_PORT_LIMIT   0xFFFu
 
 /* Doorbells: DT node 0x7e00b840. Writing BELL2 interrupts the VideoCore. */
@@ -500,6 +505,11 @@ static void parse_message(volatile vchiq_header_t *h)
 
     case VCHIQ_MSG_BULK_TX_DONE: {
         int s = PORT_SVC(VCHIQ_MSG_DSTPORT(msgid));
+        /* Only one of our own transfers may come off the ring: after a
+           kernel.now the done for a previous kernel's port would otherwise
+           complete one of ours that is still in flight. */
+        if (!SVC_VALID(s))
+            break;
         if (vc.bulk_tx.head == vc.bulk_tx.tail) {
             LOG_INFO("vchiq: unexpected bulk done\r\n");
             break;
@@ -867,9 +877,25 @@ uint32_t vchiq_handover(void)
     if (!vc.connected)
         return 0u;
 
-    vchiq_poll();                    /* everything before rx_pos is dealt with */
+    /* A bulk transfer still in flight cannot be handed on: its pagelist
+       stays the VideoCore's until the done, and neither the ring nor the
+       pagelist index travels in the record.  Give it a bounded moment to
+       finish; if it will not, hand nothing on - the next kernel then starts
+       fresh, is ignored and goes without video until a power cycle, which
+       is better than reusing a pagelist the VideoCore is reading.  Only the
+       audio service sends bulk, and nothing starts it today (auds_start has
+       no callers), so this is a guard, not a path anything takes. */
+    uint32_t start = RPI_GetSystemTime();
+    do {
+        vchiq_poll();                /* everything before rx_pos is dealt with */
+    } while (vc.inited && vc.bulk_tx.head != vc.bulk_tx.tail &&
+             (RPI_GetSystemTime() - start) < VCHIQ_CLOSE_TIMEOUT_US);
     if (!vc.inited)
         return 0u;                   /* the stream went bad: nothing to pass on */
+    if (vc.bulk_tx.head != vc.bulk_tx.tail) {
+        LOG_DEBUG("vchiq: bulk transfer outstanding - connection not handed on\r\n");
+        return 0u;
+    }
 
     uint32_t next = vc.port_base + VCHIQ_MAX_SERVICES;
     if (next + VCHIQ_MAX_SERVICES > VCHIQ_PORT_LIMIT)

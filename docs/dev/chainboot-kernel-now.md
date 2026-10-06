@@ -146,10 +146,12 @@ is quietened and interrupts go off, calls `videoplayer_shutdown()`:
 
 1. the player's own output goes: video plane off, its audio producer
    released, the file and index dropped (never the Beeb's display);
-2. `h264dec_shutdown()`: input and output ports disabled, the component
-   disabled and destroyed, every SMEM import freed, the input staging buffers
-   returned to the GPU pool, the SMEM and MMAL services closed (CLOSE, then
-   the VideoCore's CLOSE in answer);
+2. `h264dec_shutdown()`: input and output ports disabled (each by its own
+   state), the component disabled and destroyed, every SMEM import freed,
+   the SMEM service closed - a FREE has no answer, so the VideoCore's answer
+   to that CLOSE, which follows the FREEs on the same service, is the proof
+   they were done - then the input staging buffers returned to the GPU pool
+   and the MMAL service closed;
 3. `vchiq_handover()`: protocol 8 has no disconnect, so the connection is
    handed on rather than shut. Where the stream stands (our read position,
    the next kernel's first local port) is recorded at the end of the
@@ -168,7 +170,10 @@ close waits at most 200 ms. Nothing stops the jump: a failed step is logged
 in DEBUG builds and the jump goes ahead. What a failed step leaves is
 leaked, never freed under the VideoCore: the frame buffers' handles are then
 dropped from the 0x3D20 block (word 2 cleared) instead of left for the next
-kernel to release, and the input staging buffers are not returned. A clean
+kernel to release, and the input staging buffers are not returned. An
+unanswered SMEM close counts as a failure for this. A bulk transfer still in
+flight (only the audio service sends one, and nothing starts that service
+today) is given 200 ms, then the connection is not handed on at all. A clean
 shutdown leaves `'VBF2'` and the two frame-buffer handles in place, and the
 next kernel releases them at its first `videoplayer_init`, as before. If the
 record does not check out, `vchiq_init` falls back to a fresh start - which,

@@ -40,6 +40,9 @@ typedef struct {
    int32_t  rx_pos;                   /* its read position in our stream */
    bool     connected;
    bool     ignore_close;             /* a VC that never answers a CLOSE */
+   bool     hold_recycle;             /* reads our slots but keeps them */
+   int32_t  held[64];                 /* ...these, until vc_release_slots */
+   int      nheld;
    struct { bool open; uint32_t armport; } svc[VC_SERVICES];
    int      closes_seen;              /* CLOSEs from us */
    int      closes_sent;              /* CLOSEs to us (answers) */
@@ -125,11 +128,28 @@ static void vc_step(void)
       }
       sim->rx_pos = (int32_t)(pos + CALC_STRIDE(size));
       if (((uint32_t)sim->rx_pos & VCHIQ_SLOT_MASK) == 0) {
-         z->slave.slot_queue[(uint32_t)z->slave.slot_queue_recycle & VCHIQ_SLOT_QUEUE_MASK] = idx;
-         __sync_synchronize();
-         z->slave.slot_queue_recycle++;
+         if (sim->hold_recycle) {
+            sim->held[sim->nheld++] = idx;
+         } else {
+            z->slave.slot_queue[(uint32_t)z->slave.slot_queue_recycle & VCHIQ_SLOT_QUEUE_MASK] = idx;
+            __sync_synchronize();
+            z->slave.slot_queue_recycle++;
+         }
       }
    }
+}
+
+/* Give back the slots a holding VC kept, in order. */
+static void vc_release_slots(void)
+{
+   vchiq_slot_zero_t *z = vc_zero();
+   sim->hold_recycle = false;
+   for (int i = 0; i < sim->nheld; i++) {
+      z->slave.slot_queue[(uint32_t)z->slave.slot_queue_recycle & VCHIQ_SLOT_QUEUE_MASK] = sim->held[i];
+      __sync_synchronize();
+      z->slave.slot_queue_recycle++;
+   }
+   sim->nheld = 0;
 }
 
 /* ---- the stub platform ---------------------------------------------------- */
@@ -350,6 +370,64 @@ static void k_bad_record(void)
    h->rx_pos = (int32_t)saved;
 }
 
+/* Only the check word is wrong - every field it covers is intact: still
+   not adopted. */
+static void k_bad_check(void)
+{
+   volatile vchiq_handover_t *h = handover_record(sim->result);
+   uint32_t saved = h->check;
+   h->check ^= 1u;
+   int inits = sim->inits;
+   vchiq_adopt(sim->result);
+   CHECK(!vchiq_init(), "a record with a bad check word was adopted");
+   CHECK(sim->inits == inits + 1, "no fresh start after the bad check word");
+   h->check = saved;
+}
+
+/* The VC is slow to give our slots back, across the jump: the outgoing
+   kernel fills slots the VC has read but kept; the incoming one must take
+   its slot count from the shared queue (not assume a fresh pool), so it
+   runs out when the VC's grant does, and carries on when the VC lets go. */
+static void k_hold_before(void)
+{
+   vchiq_adopt(sim->result);
+   CHECK(vchiq_init(), "adoption failed");
+   int a = vchiq_open_service(MMAL, 16, 10, &cbs);
+   CHECK(a >= 0, "service %d", a);
+   sim->hold_recycle = true;
+   CHECK(round_trips(a, 12, 1000u), "round trips with slots held failed");
+   CHECK(sim->nheld > 0, "the VC held nothing - the case proves nothing");
+   CHECK(vchiq_close_service(a), "close not answered");
+   sim->result = vchiq_handover();
+   CHECK(sim->result != 0u, "nothing handed on");
+}
+
+static void k_hold_after(void)
+{
+   vchiq_adopt(sim->result);
+   CHECK(vchiq_init(), "adoption failed");
+   CHECK(sim->hold_recycle && sim->nheld > 0, "the VC is not holding slots");
+   int a = vchiq_open_service(MMAL, 16, 10, &cbs);
+   CHECK(a >= 0, "service %d", a);
+   /* Our pool: 15 slots, some kept by the VC.  Messages must stop being
+      taken once the granted slots are full - never run on into slots the
+      VC has not given back. */
+   static uint8_t msg[1000];
+   int taken = 0;
+   while (taken < 200 && vchiq_queue_message(a, msg, sizeof msg)) {
+      taken++;
+      vchiq_poll();
+      (void)RPI_GetSystemTime();
+   }
+   CHECK(taken < 15 * 4, "%d messages taken with slots held - past the VC's grant", taken);
+   vc_release_slots();
+   got = 0;
+   CHECK(round_trips(a, 30, 1000u), "no traffic after the VC gave the slots back");
+   CHECK(all_read_slots_recycled(), "slot accounting off");
+   CHECK(vchiq_close_service(a), "close not answered");
+   sim->result = vchiq_handover();
+}
+
 /* The VC does not answer a CLOSE: the service is gone on our side, its slot
    never reused this session, and after the jump the VC's still-open
    service cannot reach the new kernel's. */
@@ -404,6 +482,9 @@ int main(void)
    vc_late_traffic(3);
    kernel(k_adopt, "adopt again");
    kernel(k_bad_record, "bad record");
+   kernel(k_bad_check, "bad check word");
+   kernel(k_hold_before, "slots held before the jump");
+   kernel(k_hold_after, "slots held across the jump");
    kernel(k_close_unanswered, "close unanswered");
    kernel(k_after_unanswered, "after unanswered");
    kernel(k_fresh_after_jump, "fresh after jump");
