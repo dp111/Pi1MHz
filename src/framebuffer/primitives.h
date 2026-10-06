@@ -77,6 +77,11 @@ void       prim_move_copy_rectangle  (screen_mode_t *screen, int x1, int y1, int
 void       prim_fill_rectangle       (screen_mode_t *screen, int x1, int y1, int x2, int y2, plotcol_t colour);
 void       prim_fill_parallelogram   (screen_mode_t *screen, int x1, int y1, int x2, int y2, int x3, int y3, plotcol_t colour);
 void       prim_draw_character       (screen_mode_t *screen, int c, int x_pos, int y_pos, plotcol_t colour);
+/* Sprite pixels live in a static store of this many bytes, never the heap:
+   they are defined from the VDU drain, which runs in IRQ context. A sprite
+   that does not fit is left undefined (VDU 23,27,1 is then a no-op to plot). */
+#define SPRITE_POOL_BYTES (1024u * 1024u)
+
 void       prim_reset_sprites        (screen_mode_t *screen);
 void       prim_define_sprite        (screen_mode_t *screen, int n, int x1, int y1, int x2, int y2);
 void       prim_draw_sprite          (screen_mode_t *screen, int n, int x, int y);
