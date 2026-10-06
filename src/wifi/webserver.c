@@ -272,7 +272,7 @@ typedef struct {
       uploads.  Instead we send 100 Continue, accept the body bytes
       into /dev/null (no temp file is opened), and once the full
       Content-Length is drained we send the 401 challenge - which
-      MiniRedirector then retries cleanly on a fresh connection.
+      MiniRedirector then retries cleanly with credentials.
       The dav_put_open flag stays false so dav_put_consume's f_write
       path is skipped; the dav_remaining counter still drives the
       drain.  Capped at WS_DRAIN_MAX_BYTES to avoid eating arbitrary
@@ -1682,7 +1682,13 @@ static ws_auth_status_t ws_digest_verify(const char *method,
    char authz[640];
    char field_nonce[MD5_HEX_LEN + 1];
    char field_response[MD5_HEX_LEN + 1];
-   /* Kept in function scope so the replay check below can see them. */
+   /* nc is hashed into the response but not tracked, so there is no
+      replay check: within a nonce's lifetime (WS_NONCE_MAX_AGE_US) a
+      captured request can be resent verbatim.  Refusing an nc no higher
+      than the last one seen would close that for one shared nonce at the
+      cost of a counter - but a client running several connections at once
+      may send its nc values out of order, so a safe version needs a window
+      of recently seen values rather than a single high-water mark. */
    char field_nc_seen[16] = { 0 };
    bool have_qop = false;
    const wifi_config_t *cfg = wifi_get_config();
@@ -6514,32 +6520,24 @@ static bool route_dav_unlock(ws_conn_t *c)
    return ws_install_response(c, &r, CONN_SEND_MEM);
 }
 
-/* PROPPATCH stub.  Windows Explorer's MiniRedirector issues PROPPATCH
-   immediately before the PUT body to set Win32CreationTime /
-   Win32LastModifiedTime / Win32LastAccessTime / Win32FileAttributes -
-   it uses these to preserve the source file's timestamps on the
-   uploaded copy.  If the server returns 405 Method Not Allowed (as we
-   used to before this stub existed), MiniRedirector treats the entire
-   upload as failed and rolls back by issuing DELETE on the target,
-   even though the PUT itself would have succeeded.  Symptom: a one-
-   segment PUT goes out, the body never follows, the target file is
-   then DELETEd - exactly the "transfer stops after one byte, file
-   gone" report from the trace.
+/* PROPPATCH.  Windows Explorer's MiniRedirector issues PROPPATCH around
+   the PUT to set Win32CreationTime / Win32LastModifiedTime /
+   Win32LastAccessTime / Win32FileAttributes - it uses these to preserve
+   the source file's timestamps on the uploaded copy.  If the server
+   returns 405 Method Not Allowed (as we used to before this route
+   existed), MiniRedirector treats the entire upload as failed and rolls
+   back by issuing DELETE on the target, even though the PUT itself would
+   have succeeded.  Symptom: a one-segment PUT goes out, the body never
+   follows, the target file is then DELETEd - exactly the "transfer stops
+   after one byte, file gone" report from the trace.
 
-   FatFs has no API for setting modification timestamps from a host
-   string and on a single-user device the metadata round-trip serves
-   no real purpose, so this stub accepts every property update and
-   returns 207 Multi-Status with a single 200 OK propstat covering
-   them all.  RFC 4918 §9.2 explicitly permits returning success
-   without persisting the property (the client treats the operation
-   as "accepted").
-
-   We do not parse the PROPPATCH XML body - any bytes that arrive
-   after the headers stay in the receive window and are quietly
-   dropped once c->state advances to CONN_SEND_MEM (see conn_consume).
-   The response body therefore does not enumerate which properties
-   were "accepted"; a generic "all OK" propstat is enough to satisfy
-   Windows. */
+   Only Win32LastModifiedTime is acted on: route_dav_proppatch scans the
+   XML body for it (dav_apply_win32_mtime; a body split across segments
+   is captured by conn_consume's drain) and stamps it with f_utime.  Every
+   other property is accepted without being stored, which RFC 4918 §9.2
+   permits, and the reply is 207 Multi-Status with a single 200 OK
+   propstat - it does not enumerate the properties, and a generic "all
+   OK" is enough to satisfy Windows. */
 /* Length-bounded substring search: the request body in c->reqhdr is not
    NUL-terminated, so strstr() can't be used on it. */
 static const char *dav_memfind(const char *hay, size_t hay_len,
@@ -6940,10 +6938,11 @@ static bool process_request(ws_conn_t *c, int body_at)
             response so MiniRedirector ships the body, drain those
             bytes into nowhere (no temp file, nothing is written to
             the SD card), and only then send the 401 challenge.  The
-            connection is closed after the challenge, the client
-            opens a fresh one and resends the PUT with the digest
-            credentials.  The body has to be sent twice on the wire
-            but the upload completes - which is the entire point.
+            challenge goes out on the connection's ordinary keep-alive
+            terms - it is not closed - and the client resends the PUT
+            with the digest credentials.  The body has to be sent twice
+            on the wire but the upload completes - which is the entire
+            point.
 
             Capped at WS_DRAIN_MAX_BYTES so an attacker on the LAN
             can't make us spin reading an arbitrary-size unauthed
