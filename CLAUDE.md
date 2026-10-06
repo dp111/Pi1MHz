@@ -36,9 +36,12 @@ header — trust the newest status over the body).
   a kernel.now copy writes the incoming image from 0x8000 up over the
   running kernel, `.noinit` included, and `.noinit` moves between builds;
   add nothing else there.
-- The video plane is enabled only when the player has a real decoded frame
-  (`videoplayer_active()`); data-only disc sides show black, never a stale
-  buffer. The player is lazy: boot and BBC reset do no video/GPU/SD work.
+- The video plane is enabled only when the player has a real decoded
+  frame, and the player owns that decision (`vp.plane_on`, set by
+  `reap_flip` on the first frame shown). `videoplayer_active()` only means
+  the player is open, so nothing may turn the plane on from it. Data-only
+  disc sides show black, never a stale buffer. The player is lazy: boot and
+  BBC reset do no video/GPU/SD work.
 
 ## Release-build discipline
 
