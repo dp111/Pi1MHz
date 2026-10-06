@@ -2281,6 +2281,8 @@ bool scsiJukebox (uint8_t lun) {
    // swaps /BeebVFS<n>, LUNs 8-15 (filesystemSetLunDirectory splits the
    // same way).  Guarding all 16 refused an ADFS *SCSIJUKE while the
    // LaserDisc was mounted, and a disc flip while an ADFS LUN was.
+   // "< 16" is filesystemSetLunDirectory's test; scsiTransformLUNid adds 8
+   // only for ID == 16, the one VFS host ID in use, so the two agree.
    uint8_t firstLun = (scsiHostID < 16) ? 0 : 8;
    for (uint8_t lunNumber = firstLun; lunNumber < firstLun + 8; lunNumber++)
       if (filesystemReadLunStatus(lunNumber)) return false;

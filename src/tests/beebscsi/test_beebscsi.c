@@ -270,6 +270,51 @@ static void test_format_expand_fails(void)
    filesystemSetLunDirectory(1, 0);
 }
 
+/* A new disc, as SuperForm makes one: MODE SELECT on a LUN with no image
+   (scsiCommandModeSelect6: the start fails, the descriptor is created from
+   /Pi1MHz/defscsi.cfg, the drive parameter list written over it and saved),
+   then FORMAT on the still-stopped LUN (scsiCommandFormat: create the
+   image, format it, start it).  The image must have the selected size. */
+static const char *defscsi_path;
+
+static void test_format_new_disc(void)
+{
+   static char why[200];
+   const char *t = "S7 new disc: MODE SELECT, FORMAT, START gives the selected size";
+   FILE *h = fopen(defscsi_path, "rb");
+   static char cfg[16384];
+   size_t n = h ? fread(cfg, 1, sizeof cfg, h) : 0;
+   if (h) fclose(h);
+   if (!n) {
+      check(t, false, "precondition: could not read the firmware's defscsi.cfg");
+      return;
+   }
+   f_mkdir("/Pi1MHz");
+   put_file("/Pi1MHz/defscsi.cfg", cfg, (UINT)n);
+   filesystemSetLunDirectory(1, 4);           /* a directory that does not exist yet */
+
+   bool st = filesystemSetLunStatus(1, true);  /* fails: no image */
+   bool cd = filesystemCreateLunDescriptor(1);
+   const uint8_t p0[10] = { 0x01, 0x00, 40, 5, 0x00, 0x80, 0x00, 0x80, 0x00, 0x01 };
+   filesystemWriteModePageData(1, 0, 10, p0);
+   filesystemCopyPage0toPage4(1);
+   filesystemConfigToLunGeometry(1);
+   bool wa = filesystemWriteAttributes(1);
+
+   bool stopped = !filesystemReadLunStatus(1);
+   bool ci = filesystemCreateLunImage(1);
+   bool ok = filesystemFormatLun(1, 0x6C);
+   bool st2 = filesystemSetLunStatus(1, true);
+   long got = size_of("/BeebSCSI4/scsi1.dat");
+   snprintf(why, sizeof why, "start %d (want 0), descriptor %d, saved %d, stopped %d, "
+            "create %d, format %d, start %d, image %ld bytes, want %lu",
+            st, cd, wa, stopped, ci, ok, st2, got, (unsigned long)geometry_bytes(40, 5));
+   check(t, !st && cd && wa && stopped && ci && ok && st2 &&
+            got == (long)geometry_bytes(40, 5), why);
+   filesystemSetLunStatus(1, false);
+   filesystemSetLunDirectory(1, 0);
+}
+
 /* ---- S1: the jukebox guard -------------------------------------------- */
 
 static void stop_all(void)
@@ -357,8 +402,9 @@ static void test_jukebox(void)
    stop_all();
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+   defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
    disk = calloc(DISK_SECTORS, 512u);
    static uint8_t work[FF_MAX_SS * 4];
    static FATFS mkfs_fs;
@@ -382,6 +428,7 @@ int main(void)
    test_format_started();
    test_format_after_jukebox();
    test_format_expand_fails();
+   test_format_new_disc();
    test_jukebox();
 
    printf("%d passed, %d failed\n", passes, failures);

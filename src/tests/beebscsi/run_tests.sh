@@ -34,6 +34,8 @@ sed 's/^static Pi1MHz_t \* const Pi1MHz = (Pi1MHz_t \*) 0x100;/extern Pi1MHz_t *
    "$SRC"/Pi1MHz.h > "$B/Pi1MHz.h"
 grep -q '^extern Pi1MHz_t \* const Pi1MHz;' "$B/Pi1MHz.h"
 cp "$HERE"/test_beebscsi.c "$B/"
+# The shipped default descriptor, for the new-disc MODE SELECT case.
+cp "$SRC"/../firmware/Pi1MHz/defscsi.cfg "$B/"
 
 gcc -std=gnu2x -Wall -Wextra -Wno-unused-parameter -g -O1 \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
@@ -42,4 +44,4 @@ gcc -std=gnu2x -Wall -Wextra -Wno-unused-parameter -g -O1 \
     "$B/test_beebscsi.c" "$B/BeebSCSI/scsi.c" "$B/BeebSCSI/filesystem.c" \
     "$B/BeebSCSI/filesystem_safewrite.c" "$B/rpi/fileparser.c" \
     "$B/BeebSCSI/fatfs/ff.c" "$B/BeebSCSI/fatfs/ffunicode.c"
-"$B/t"
+"$B/t" "$B/defscsi.cfg"
