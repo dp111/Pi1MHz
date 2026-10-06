@@ -1,4 +1,5 @@
-/* Host tests for the chain-boot marker in rpi/bootstage.c.
+/* Host tests for the chain-boot marker in rpi/bootstage.c, and for the
+ * boot-detail stamp reaching RAM.
  *
  * The marker decides more than a /status row: Pi1MHz.c skips launching the
  * VPU when it believes it was chain-booted, so a marker believed after a
@@ -17,7 +18,23 @@ uint32_t test_pm_rsts;
 static uint64_t now = 0x0000000123456789ull;
 
 uint64_t RPI_GetSystemTime64(void) { return now; }
-void _clean_cache_area(const void *start, unsigned int length) { (void)start; (void)length; }
+/* Every clean is logged: a stamp survives a watchdog reset only if its line
+   was cleaned after the store (the reset drops dirty L1). */
+static uintptr_t clean_start, clean_end;     /* the last clean, line-rounded */
+static unsigned int cleans;
+#define TEST_LINE 32u                         /* ARM1176; the A53's 64 is coarser */
+void _clean_cache_area(const void *start, unsigned int length)
+{
+   clean_start = (uintptr_t)start & ~(uintptr_t)(TEST_LINE - 1u);
+   clean_end = (uintptr_t)start + length;
+   cleans++;
+}
+/* Has the word at p been cleaned since the counter read `since`? */
+static int cleaned_since(unsigned int since, const volatile void *p)
+{
+   uintptr_t a = (uintptr_t)p;
+   return cleans != since && a >= clean_start && a + 4u <= clean_end;
+}
 
 static int failures, checks;
 
@@ -92,6 +109,22 @@ int main(void)
    memset(test_lowmem, 0x55, sizeof test_lowmem);
    RPI_ChainBootConsume();
    CHECK(RPI_ChainBooted() == 0u, "accepted on power-on RAM contents");
+
+   /* The emulator-init stamp: Pi1MHz.c stamps i+1 before each init, and a
+      hang there ends in a watchdog reset, which drops a dirty line - so the
+      store must reach RAM, as RPI_BootStage's already does. */
+   RPI_BootStage(BOOT_STAGE_ENTRY);
+   {
+      unsigned int before = cleans;
+      RPI_BootDetail(7u);
+      CHECK(RPI_BootStageBlock()[3] == 7u, "detail word not written");
+      CHECK(cleaned_since(before, &RPI_BootStageBlock()[3]),
+            "RPI_BootDetail left the stamp dirty in the cache");
+   }
+   /* ...and the next boot reports it. */
+   RPI_BootStage(BOOT_STAGE_ENTRY);
+   CHECK(RPI_BootDetailPrevious() == 7u, "previous detail %u, want 7",
+         RPI_BootDetailPrevious());
 
    printf("%d checks, %d failed\n", checks, failures);
    if (failures == 0)
