@@ -43,6 +43,14 @@ void test_free(void *p)
    free(p);
 }
 
+/* ---- directory reads made by mtp_fs.c (-Df_readdir): a cache walk -------- */
+static unsigned readdirs;
+FRESULT test_f_readdir(DIR *dp, FILINFO *fno)
+{
+   readdirs++;
+   return f_readdir(dp, fno);
+}
+
 /* ---- RAM disks: card A and card B --------------------------------------- */
 #define DISK_SECTORS (64u * 1024u * 2u)          /* 64 MB of 512-byte sectors */
 static uint8_t *card_a, *card_b, *disk;
@@ -276,8 +284,11 @@ static bool send_object_first_packet(uint32_t size)
    return data_out(body, n, sizeof(mtp_container_header_t) + size) == 0 && data_out_armed;
 }
 
-/* Names of the root's objects, as the host would list them. */
-static int root_names(char names[][32], int max)
+/* The root's objects, as the host would list them: name and size. */
+#define MAX_LISTED 8
+static char     listed[MAX_LISTED][32];
+static uint32_t listed_size[MAX_LISTED];
+static int list_root(void)
 {
    if (op(MTP_OP_GET_OBJECT_HANDLES, 0x00010001u, 0, 0xFFFFFFFFu) != MTP_RESP_OK)
       return -1;
@@ -286,17 +297,29 @@ static int root_names(char names[][32], int max)
    if (count > 16) count = 16;
    memcpy(handles, data_in + 16, count * 4u);
    int n = 0;
-   for (uint32_t i = 0; i < count && n < max; i++) {
+   for (uint32_t i = 0; i < count && n < MAX_LISTED; i++) {
       if (op(MTP_OP_GET_OBJECT_INFO, handles[i], 0, 0) != MTP_RESP_OK)
          continue;
-      const uint8_t *s = data_in + 12 + sizeof(mtp_object_info_header_t);
+      mtp_object_info_header_t h;
+      memcpy(&h, data_in + 12, sizeof h);
+      listed_size[n] = h.object_compressed_size;
+      const uint8_t *s = data_in + 12 + sizeof h;
       int j;
       for (j = 0; j < s[0] - 1 && j < 31; j++)
-         names[n][j] = (char)s[1 + 2 * j];
-      names[n][j] = '\0';
+         listed[n][j] = (char)s[1 + 2 * j];
+      listed[n][j] = '\0';
       n++;
    }
    return n;
+}
+
+/* Size of `name` in the last listing, or -1 if it was not listed. */
+static long listed_as(const char *name, int n)
+{
+   for (int i = 0; i < n; i++)
+      if (strcmp(listed[i], name) == 0)
+         return (long)listed_size[i];
+   return -1;
 }
 
 static bool exists(const char *path)
@@ -305,12 +328,12 @@ static bool exists(const char *path)
    return f_stat(path, &fno) == FR_OK;
 }
 
-static void make_file(const char *path)
+static void make_file(const char *path, UINT size)
 {
    FIL f;
    UINT bw;
    if (f_open(&f, path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK ||
-       f_write(&f, "x", 1, &bw) != FR_OK || f_close(&f) != FR_OK) {
+       f_write(&f, "xxxxxxxx", size, &bw) != FR_OK || f_close(&f) != FR_OK) {
       printf("FAIL: could not create %s\n", path);
       exit(1);
    }
@@ -331,14 +354,30 @@ static void check(const char *name, bool ok, const char *fmt, ...)
 }
 
 /* Back to a plugged-in, configured device with no session, whatever the
-   test before left: a Device Reset/re-enumeration on the fixed code, a
-   CloseSession on the old one. */
+   test before left: a re-enumeration on the fixed code, a CloseSession on
+   the old one. */
 static void fresh(void)
 {
    usb_configured = true; usb_suspended = false;
    tud_mount_cb();
    (void)op(MTP_OP_CLOSE_SESSION, 0, 0, 0);
    memset(lun_locked, 0, sizeof lun_locked);
+}
+
+/* The rest of the SendObject body after a drop: what a host that did not
+   see it go sends next. */
+static uint16_t send_object_next_packet(void)
+{
+   static uint8_t body[CFG_TUD_MTP_EP_BUFSIZE];
+   return data_out(body, sizeof body, sizeof(mtp_container_header_t) + 100000u);
+}
+
+/* The session is open without a new OpenSession: a command that needs one
+   is not refused SESSION_NOT_OPEN. */
+static bool session_still_open(void)
+{
+   uint16_t r = send_object_info("probe.txt", 1u);
+   return r == MTP_RESP_OK;
 }
 
 /* An upload into a LUN image is under way: session open, the ".part"
@@ -383,16 +422,43 @@ static void test_unplug_mid_upload(void)
 
 /* The Pi may never see UNPLUGGED (no VBUS sense): the replug's bus reset
    and SET_CONFIGURATION are all it gets. */
-static void test_reenumeration_only(void)
+/* tud_mount_cb runs inside SET_CONFIGURATION, before its status stage: it
+   must do no SD work there.  The transfer goes on the next main-loop poll. */
+static void test_reenumeration_then_poll(void)
 {
    fresh();
    check("re-enumeration: upload under way", upload_under_way(), "setup failed");
    tud_mount_cb();
-   check_upload_dropped("re-enumeration");
+   check("re-enumeration: no SD work inside SET_CONFIGURATION",
+         exists(LUN_PATH ".part") && lun_locked[LUN_NUM], "the transfer was dropped there");
+   mtp_fs_cache_poll();
+   check_upload_dropped("re-enumeration, then the poll");
    uint16_t r = op(MTP_OP_OPEN_SESSION, 1, 0, 0);
    check("re-enumeration: the next OpenSession succeeds", r == MTP_RESP_OK, "response 0x%04x", r);
 }
 
+/* ... or before the next command, if that comes first. */
+static void test_reenumeration_then_command(void)
+{
+   fresh();
+   check("re-enumeration, command first: upload under way", upload_under_way(), "setup failed");
+   tud_mount_cb();
+   uint16_t r = op(MTP_OP_OPEN_SESSION, 1, 0, 0);
+   check("re-enumeration, command first: OpenSession succeeds", r == MTP_RESP_OK, "response 0x%04x", r);
+   check_upload_dropped("re-enumeration, command first");
+}
+
+/* An OpenSession while one is open: the host has lost the old session. */
+static void test_reopen(void)
+{
+   fresh();
+   check("reopen: upload under way", upload_under_way(), "setup failed");
+   uint16_t r = op(MTP_OP_OPEN_SESSION, 2, 0, 0);
+   check("reopen: OpenSession on an open session answers OK", r == MTP_RESP_OK, "response 0x%04x", r);
+   check_upload_dropped("reopen");
+}
+
+/* Device Reset abandons the transaction; the session is the host's call. */
 static void test_device_reset(void)
 {
    fresh();
@@ -401,13 +467,15 @@ static void test_device_reset(void)
    tud_mtp_request_cb_data_t rcb = { .stage = CONTROL_STAGE_ACK, .request = &req };
    check("device reset: the request is accepted", tud_mtp_request_device_reset_cb(&rcb), "stalled");
    check_upload_dropped("device reset");
+   check("device reset: the session is kept", session_still_open(), "refused");
    uint16_t r = op(MTP_OP_OPEN_SESSION, 1, 0, 0);
-   check("device reset: the next OpenSession succeeds", r == MTP_RESP_OK, "response 0x%04x", r);
+   check("device reset: an OpenSession after it succeeds", r == MTP_RESP_OK, "response 0x%04x", r);
 }
 
 /* A suspend mid-transfer means the host has gone (a host suspends only an
    idle bus): drop the transfer, but keep the session - a host that merely
-   suspended an idle device resumes into it. */
+   suspended an idle device resumes into it.  One that carries on with the
+   dropped transfer is answered an error, not left hanging. */
 static void test_suspend_mid_upload(void)
 {
    fresh();
@@ -416,9 +484,25 @@ static void test_suspend_mid_upload(void)
    tud_suspend_cb(false);
    check_upload_dropped("suspend");
    usb_suspended = false;
+   uint16_t r = send_object_next_packet();
+   check("suspend: the rest of the body is answered GENERAL_ERROR",
+         r == MTP_RESP_GENERAL_ERROR, "response 0x%04x", r);
+   check("suspend: the session survives it", session_still_open(), "refused");
+}
+
+static void test_suspend_between_info_and_object(void)
+{
+   fresh();
    uint16_t r = op(MTP_OP_OPEN_SESSION, 1, 0, 0);
-   check("suspend: the session survives it", r == MTP_RESP_SESSION_ALREADY_OPEN,
-         "response 0x%04x", r);
+   r = (r == MTP_RESP_OK) ? send_object_info(LUN_PATH + 1, 100000u) : r;
+   check("suspend after SendObjectInfo: set up", r == MTP_RESP_OK, "response 0x%04x", r);
+   usb_suspended = true;
+   tud_suspend_cb(false);
+   usb_suspended = false;
+   check_upload_dropped("suspend after SendObjectInfo");
+   r = op(MTP_OP_SEND_OBJECT, 0, 0, 0);
+   check("suspend after SendObjectInfo: SendObject is answered GENERAL_ERROR",
+         r == MTP_RESP_GENERAL_ERROR, "response 0x%04x", r);
 }
 
 static void test_kernel_buffer_freed(void)
@@ -433,39 +517,70 @@ static void test_kernel_buffer_freed(void)
    check("kernel.now: unplug frees the buffer", big_ptr == NULL, "%p still held", big_ptr);
 }
 
+/* Card A: old.txt, same.txt (1 byte).  Card B: new.txt, same.txt (5 bytes).
+   *FX147 with a host attached: the eject takes the device off the bus; the
+   card goes in; the device comes back and the host enumerates while the
+   main loop polls. */
 static void test_card_swap(void)
 {
    fresh();
-   char names[8][32];
    (void)op(MTP_OP_OPEN_SESSION, 1, 0, 0);
-   int n = root_names(names, 8);
-   check("card swap: card A lists old.txt", n == 1 && strcmp(names[0], "old.txt") == 0,
-         "%d objects, first '%s'", n, n > 0 ? names[0] : "");
+   int n = list_root();
+   check("card swap: card A lists old.txt and same.txt (1 byte)",
+         n == 2 && listed_as("old.txt", n) == 1 && listed_as("same.txt", n) == 1,
+         "%d objects", n);
 
-   card_eject();                            /* *FX147: off the bus, card out */
-   card_insert(card_b);                     /* the other card, back on the bus */
-   tud_mount_cb();                          /* the host enumerates afresh */
+   card_eject();
+   usb_configured = false;                  /* the host has let go */
+   card_insert(card_b);
+   unsigned walked = readdirs;
+   for (int i = 0; i < 200; i++)            /* the main loop, while it enumerates */
+      mtp_fs_cache_poll();
+   check("card swap: the walk runs while the host enumerates", readdirs > walked,
+         "no directory read");
+   usb_configured = true;
+   tud_mount_cb();
+   walked = readdirs;
    (void)op(MTP_OP_OPEN_SESSION, 1, 0, 0);
-   n = root_names(names, 8);
-   bool old_seen = false, new_seen = false;
-   for (int i = 0; i < n; i++) {
-      old_seen |= strcmp(names[i], "old.txt") == 0;
-      new_seen |= strcmp(names[i], "new.txt") == 0;
-   }
-   check("card swap: card A's objects are gone", !old_seen, "old.txt still listed");
-   check("card swap: card B's objects are listed", new_seen, "new.txt not listed (%d objects)", n);
+   n = list_root();
+   check("card swap: the host's queries walk nothing inline", readdirs == walked,
+         "%u directory reads", readdirs - walked);
+   check("card swap: card A's objects are gone", listed_as("old.txt", n) < 0, "old.txt still listed");
+   check("card swap: card B's objects are listed", listed_as("new.txt", n) == 1,
+         "new.txt not listed (%d objects)", n);
+   check("card swap: a path on both cards is card B's file", listed_as("same.txt", n) == 5,
+         "same.txt listed at %ld bytes", listed_as("same.txt", n));
 
    /* An ordinary change keeps stale-while-rebuild: still answered from the
       live cache, and the rebuild brings the new file in. */
-   make_file("/added.txt");
+   make_file("/added.txt", 1);
    mtp_fs_notify_fs_changed();
-   n = root_names(names, 8);
-   check("change: answered from the live cache meanwhile", n == 1, "%d objects", n);
+   walked = readdirs;
+   n = list_root();
+   check("change: answered from the live cache meanwhile", n == 2 && readdirs == walked,
+         "%d objects, %u directory reads", n, readdirs - walked);
    now_us += 1100000u;
-   for (int i = 0; i < 50; i++)
+   for (int i = 0; i < 200; i++)
       mtp_fs_cache_poll();
-   n = root_names(names, 8);
-   check("change: the background rebuild lists it", n == 2, "%d objects", n);
+   n = list_root();
+   check("change: the background rebuild lists it", n == 3 && listed_as("added.txt", n) == 1,
+         "%d objects", n);
+}
+
+/* The probe's own control: a host that queries before the walk has run
+   gets the rest of it inline, and the count sees it. */
+static void test_card_swap_query_before_walk(void)
+{
+   card_eject();
+   card_insert(card_a);
+   tud_mount_cb();
+   unsigned walked = readdirs;
+   (void)op(MTP_OP_OPEN_SESSION, 1, 0, 0);
+   int n = list_root();
+   check("swap, no poll: the walk is finished inline (probe control)", readdirs > walked,
+         "no directory read");
+   check("swap, no poll: card A is listed", n == 2 && listed_as("same.txt", n) == 1,
+         "%d objects", n);
 }
 
 int main(void)
@@ -483,17 +598,22 @@ int main(void)
          printf("FAIL: could not format RAM disk %c\n", 'A' + c);
          return 1;
       }
-      make_file(c ? "/new.txt" : "/old.txt");
+      make_file(c ? "/new.txt" : "/old.txt", 1);
+      make_file("/same.txt", c ? 5 : 1);
       f_mount(NULL, "", 0);
    }
    disk = card_a;
 
    test_unplug_mid_upload();
-   test_reenumeration_only();
+   test_reenumeration_then_poll();
+   test_reenumeration_then_command();
+   test_reopen();
    test_device_reset();
    test_suspend_mid_upload();
+   test_suspend_between_info_and_object();
    test_kernel_buffer_freed();
-   test_card_swap();                        /* last: it leaves card B in */
+   test_card_swap();                        /* last two: they swap the cards */
+   test_card_swap_query_before_walk();
 
    printf("\nmtpsession: %d passed, %d failed\n", passes, failures);
    free(card_a);

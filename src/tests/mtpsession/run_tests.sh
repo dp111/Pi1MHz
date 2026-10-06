@@ -36,11 +36,12 @@ cp "$SRC"/BeebSCSI/fatfs/ff.c "$SRC"/BeebSCSI/fatfs/ff.h "$SRC"/BeebSCSI/fatfs/f
 sed 's/^#define FF_USE_MKFS[[:space:]]*0/#define FF_USE_MKFS 1/' \
    "$SRC"/BeebSCSI/fatfs/ffconf.h > "$B/BeebSCSI/fatfs/ffconf.h"
 
-# -Dmalloc/-Dfree in mtp_fs.c only: the test sees the kernel.now buffer.
+# -Dmalloc/-Dfree/-Df_readdir in mtp_fs.c only: the test sees the
+# kernel.now buffer, and counts the directory reads of a cache walk.
 # TinyUSB's headers are third-party: -isystem, as in the firmware build.
 CFLAGS="-std=gnu2x -Wall -Wextra -g -fsanitize=address,undefined -fno-sanitize-recover=all"
 gcc $CFLAGS -I"$B" -I"$B/usb" -isystem "$TUSB" \
-    -Dmalloc=test_malloc -Dfree=test_free \
+    -Dmalloc=test_malloc -Dfree=test_free -Df_readdir=test_f_readdir \
     -c -o "$B/mtp_fs.o" "$B/usb/mtp_fs.c"
 gcc $CFLAGS -I"$B" -I"$B/usb" -isystem "$TUSB" -o "$B/t" \
     "$HERE/test_mtp_session.c" "$B/mtp_fs.o" \

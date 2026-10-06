@@ -220,6 +220,10 @@ fs_op_handler_dict_t fs_op_handler_dict[] = {
 };
 
 static bool is_session_opened = false;
+/* A re-enumeration ended the session; its transfer is dropped from the main
+   loop or before the next command - see tud_mount_cb. */
+static bool g_transfer_drop_pending;
+static void fs_transfer_drop(void);
 static uint32_t send_obj_handle = 0;
 static uint32_t send_obj_parent = 0;
 static read_state_t g_read_state;
@@ -729,16 +733,22 @@ void mtp_fs_prepare_for_warm_reboot(void) {
 
 /* Main-loop half of the sliced cache rebuild: start a debounced rebuild
    when due, and advance an in-flight one by a bounded slice per pass so
-   tud_task never carries the whole tree walk. */
+   tud_task never carries the whole tree walk.  Also drops the transfer a
+   re-enumeration left behind (tud_mount_cb). */
 void mtp_fs_cache_poll(void) {
-  /* No USB host attached = nobody to serve: don't walk the card, don't
+  if (g_transfer_drop_pending) {
+    fs_transfer_drop();
+  }
+  /* A walk in flight always advances: the one mtp_fs_inserted starts after
+     a card swap runs while the host is still enumerating. */
+  if (g_fs_cache_bg != NULL) {
+    (void) fs_cache_bg_step(2000u);
+    return;
+  }
+  /* No USB host attached = nobody to serve: don't start a walk, don't
      retry mounts, don't hold two cache generations - the arm stays set
      and fires when a host appears. */
   if (!tud_mounted()) {
-    return;
-  }
-  if (g_fs_cache_bg != NULL) {
-    (void) fs_cache_bg_step(2000u);
     return;
   }
   /* Warm the cache when a host is present so its first enumeration never
@@ -1328,15 +1338,20 @@ static bool fs_kernel_alloc(uint32_t capacity) {
   return true;
 }
 
-/* What CloseSession does, for every way a session ends without one: an
-   unplug, a re-enumeration, a Device Reset, a card eject.  Left open, the
-   next OpenSession is refused SESSION_ALREADY_OPEN, and an unfinished
-   upload keeps its ".part" open, its LUN host-locked and a kernel.now
-   buffer of up to 4 MB allocated. */
-static void fs_session_end(void) {
-  is_session_opened = false;
+/* Drop whatever transfer is in flight: an unfinished upload's ".part" is
+   closed and unlinked, its LUN host lock released, a kernel.now buffer of
+   up to 4 MB freed. */
+static void fs_transfer_drop(void) {
+  g_transfer_drop_pending = false;
   fs_release_read_state();
   fs_release_write_state();
+}
+
+/* What CloseSession does, for every way a session ends without one: an
+   unplug, a re-enumeration, a card eject. */
+static void fs_session_end(void) {
+  is_session_opened = false;
+  fs_transfer_drop();
 }
 
 //--------------------------------------------------------------------+
@@ -1355,9 +1370,11 @@ bool tud_mtp_request_cancel_cb(tud_mtp_request_cb_data_t* cb_data) {
 // return false to stall the request
 bool tud_mtp_request_device_reset_cb(tud_mtp_request_cb_data_t* cb_data) {
   (void) cb_data;
-  /* The host's way back to Idle: it closes the session too (Still Image
-     class), and opens a new one next. */
-  fs_session_end();
+  /* The host's way back to Idle after a stalled bulk pipe: the transaction
+     in flight is abandoned, so its transfer goes.  Whether the session goes
+     too is left to the host - an OpenSession on an open one is answered
+     anyway (fs_open_close_session). */
+  fs_transfer_drop();
   return true;
 }
 
@@ -1368,9 +1385,13 @@ bool tud_mtp_request_device_reset_cb(tud_mtp_request_cb_data_t* cb_data) {
 /* Every SET_CONFIGURATION - which follows each bus reset - means a host
    that has just enumerated us and holds no session.  It is also the only
    sign of an unplug that a board without VBUS sensing gets, at the replug:
-   no UNPLUGGED arrives, so tud_umount_cb never runs. */
+   no UNPLUGGED arrives, so tud_umount_cb never runs.  This runs inside the
+   SET_CONFIGURATION request, before its status stage, so the transfer's
+   SD work (closing and unlinking a possibly large ".part") is left to the
+   main loop - or to the next command, whichever comes first. */
 void tud_mount_cb(void) {
-  fs_session_end();
+  is_session_opened = false;
+  g_transfer_drop_pending = true;
 }
 
 /* Unplugged (or deconfigured): the session and any transfer died with the
@@ -1383,11 +1404,13 @@ void tud_umount_cb(void) {
    host is gone - an unplug with no VBUS sensing looks exactly like this.
    Drop the transfer now rather than hold its ".part", LUN lock and buffer
    until a replug that may never come.  The session stays: a host that
-   suspended an idle device resumes into it. */
+   suspended an idle device resumes into it.  The cost: a host that
+   suspended between SendObjectInfo and SendObject, or mid-transfer, finds
+   the transfer gone and is answered GENERAL_ERROR - an error it reports,
+   not a hang. */
 void tud_suspend_cb(bool remote_wakeup_en) {
   (void) remote_wakeup_en;
-  fs_release_read_state();
-  fs_release_write_state();
+  fs_transfer_drop();
 }
 
 // Invoked when received Get Extended Event request. Application fill callback data's buffer for response
@@ -1410,6 +1433,9 @@ int32_t tud_mtp_request_get_device_status_cb(tud_mtp_request_cb_data_t* cb_data)
 // Bulk Only Protocol
 //--------------------------------------------------------------------+
 int32_t tud_mtp_command_received_cb(tud_mtp_cb_data_t* cb_data) {
+  if (g_transfer_drop_pending) {
+    fs_transfer_drop();             /* before this command can start one */
+  }
   return fs_dispatch_op(cb_data);
 }
 
@@ -1613,8 +1639,11 @@ static int32_t fs_get_device_info(tud_mtp_cb_data_t* cb_data) {
 static int32_t fs_open_close_session(tud_mtp_cb_data_t* cb_data) {
   const mtp_container_command_t* command = cb_data->command_container;
   if (command->header.code == MTP_OP_OPEN_SESSION) {
+    /* A host opening a session while we think one is open has lost the old
+       one (a reset or reconnect we did not see as such): end it, and answer
+       OK rather than SESSION_ALREADY_OPEN, which a host may not get past. */
     if (is_session_opened) {
-      return MTP_RESP_SESSION_ALREADY_OPEN;
+      fs_session_end();
     }
     is_session_opened = true;
     /* Refresh an existing cache in the background - queries are answered
@@ -2569,14 +2598,17 @@ static int32_t fs_delete_object(tud_mtp_cb_data_t* cb_data) {
   return MTP_RESP_GENERAL_ERROR;
 }
 
+static bool g_host_at_eject;   /* a USB host was attached when the card went */
+
 /* SD card eject (filesystemEject): end the session - an unfinished upload's
    ".part" goes with it - drop the object cache, and take the device off the
-   bus, so the host forgets this card's objects instead of asking about them
-   on the next one.  The cache really goes, unlike fs_cache_invalidate's
-   stale-while-rebuilding: handles are path hashes, so a stale entry would
-   list the old card to the next session, and one whose path also exists on
-   the new card would name (delete, rename) the new card's file. */
+   bus.  The disconnect is what makes the host forget this card's handles:
+   they are path hashes, so one whose path also exists on the next card
+   would name that card's file.  The cache really goes, unlike
+   fs_cache_invalidate's stale-while-rebuilding, so that the next session
+   is not listed this card's objects. */
 bool mtp_fs_eject(void) {
+  g_host_at_eject = tud_mounted();
   fs_session_end();
   fs_cache_bg_abort();
   fs_cache_stage_clear();
@@ -2587,9 +2619,16 @@ bool mtp_fs_eject(void) {
   return true;
 }
 
-/* A card is mounted again: come back, so the host enumerates it afresh. */
+/* A card is mounted again: come back, so the host enumerates it afresh.
+   The eject left no cache, so for a host that is waiting the walk starts
+   now, undebounced, and runs while it enumerates (mtp_fs_cache_poll) - its
+   first query then finds the cache built instead of walking the card
+   inline in tud_task.  With no host, the arm waits for one as usual. */
 void mtp_fs_inserted(void) {
   fs_cache_invalidate();
+  if (g_host_at_eject && fs_cache_bg_start()) {
+    g_fs_cache_bg_armed = false;
+  }
   if (tud_inited())
     (void) tud_connect();
 }
