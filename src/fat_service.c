@@ -738,16 +738,30 @@ static bool fat_service_eject(void)
    return true;
 }
 
+/* The volume is about to be re-registered (filesystemRegisterRemount: a BBC
+   reset, a jukebox, the Beeb's f unmount, a mount after one), which would
+   invalidate every FIL open here for good - an unsynced write dropped, the
+   file keeping its old size, the clusters written orphaned.  On a BBC reset
+   the hard disc's filesystemReset() does this before fat_service_init()
+   runs again, so close them here, as at eject.  Main loop only: both run
+   from init_emulator and the poll, never from the FIQ. */
+static void fat_service_remount(void)
+{
+   (void)fat_service_eject();
+}
+
 void fat_service_init(void)
 {
-   /* Runs on every BBC RST (init_emulator re-runs the whole table).  The
-      Beeb-side filing system restarts on reset and abandons whatever it had
-      open through this service, so drop the open-file tracking and the
-      raw-sector (BEEB.MMB) latch: otherwise the webserver's in-use
-      interlock would report ghosts of a pre-reset session as busy until the
-      Pi itself rebooted.  If the Beeb re-opens files after the reset, the
-      tracking simply re-populates. */
-   fat_open_clear_all();
+   /* Runs on every BBC RST (init_emulator re-runs the whole table), in the
+      main loop.  The Beeb-side filing system restarts on reset and abandons
+      whatever it had open through this service, so close those files - a
+      file it was writing then keeps what reached it - and drop the
+      open-file tracking and the raw-sector (BEEB.MMB) latch: otherwise the
+      webserver's in-use interlock would report ghosts of a pre-reset
+      session as busy until the Pi itself rebooted.  If the Beeb re-opens
+      files after the reset, the tracking simply re-populates.  Usually the
+      remount hook has closed them already and this finds nothing open. */
+   (void)fat_service_eject();
    (void)services_register(SERVICE_CMD_FAT_FIRST, SERVICE_CMD_FAT_LAST,
                            fat_service_command);
    /* fat_pending is deliberately not cleared here: a command latched around
@@ -755,4 +769,5 @@ void fat_service_init(void)
       handles), so the busy bit the FIQ wrote can never be stranded. */
    Pi1MHz_Register_Poll(fat_service_poll, "fatsvc");
    filesystemRegisterEject(fat_service_eject, NULL);
+   filesystemRegisterRemount(fat_service_remount);
 }

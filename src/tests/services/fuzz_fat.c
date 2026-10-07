@@ -68,6 +68,7 @@ unsigned char disk_type(void) { return 1; }
 bool filesystemMount(void) { return true; }
 bool filesystemDismount(void) { return true; }
 void filesystemRegisterEject(bool (*eject)(void), void (*inserted)(void)) { (void)eject; (void)inserted; }
+void filesystemRegisterRemount(void (*closing)(void)) { (void)closing; }
 
 /* config.c (linked for config_beeb_write_protected) references this. */
 uint32_t filesystemReadFile(const char *f, uint8_t **a, unsigned int m)
