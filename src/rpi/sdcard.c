@@ -561,6 +561,14 @@ static void sd_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd_reg, u
                 sdhost_log_failure("stop", opcode, argument, dev);
                 return;
             }
+            /* A write error the card hit mid-transfer (WP_VIOLATION, an
+               OUT_OF_RANGE crossing the end of the card, CC_ERROR, ECC) is
+               reported in the R1 answer to CMD12, not in CMD25's.  Fold its
+               error bits into last_r0 so sd_do_data_command's refusal check
+               sees them.  Writes only: some cards flag OUT_OF_RANGE on the
+               CMD12 that ends a read of the last blocks of the card. */
+            if (is_write)
+                dev->last_r0 |= stop_response & SD_R1_DATA_ERROR_MASK;
         }
 
         if (sdhost_wait_for_data_idle(!is_write) != 0)
@@ -1611,9 +1619,9 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
                error at all - so without this the write "succeeds", sd_write
                returns buf_size, disk_write returns RES_OK and FatFs commits
                metadata for data the card never took.
-               This catches the up-front refusal only: on a multi-block write,
-               an error that happens mid-transfer surfaces in the CMD12/CMD13
-               status rather than here. Not retried - a refusal is the card's
+               On a multi-block write, an error that happens mid-transfer is
+               in the CMD12 status, which sd_issue_command_int folds into
+               last_r0 for this check. Not retried - a refusal is the card's
                settled answer, and a second attempt just burns another 5 s. */
             if((edev->last_r0 & SD_R1_DATA_ERROR_MASK) != 0u)
             {
