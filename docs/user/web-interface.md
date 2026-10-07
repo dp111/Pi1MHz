@@ -11,7 +11,7 @@ system's light/dark theme preference automatically.
 | Address | What it does |
 |---|---|
 | `/` | Home page with links |
-| `/status` | WiFi and network details (network name, addresses, signal strength, link rate, traffic counters) and SD card free space |
+| `/status` | The Pi's state: WiFi and network details (network name, addresses, signal strength, link rate, traffic counters); the video side (H264 decoder, Display mode, Video player, F-code); Audio, Serial, Modem, USB and SCSI; boot and reset history (BREAK, Boot, Reset reason, Boot time); and SD card free space |
 | `/files/` | Browse the SD card: download files, upload files, create and delete |
 | `/framebuffer` | A live snapshot of the Pi's HDMI screen (see [Screen and video](screen-and-video.md)); refresh the page for a new one |
 | `/framebuffer.bmp` | The same snapshot as a plain BMP image you can save |
@@ -68,8 +68,11 @@ supported by the server (your computer's file manager usually walks the
 tree itself, in which case it works anyway), and transfers are plain
 unencrypted HTTP.
 
-File date-stamps shown over WebDAV are in UTC unless you set your
-timezone, e.g. `webdav_utc_offset_minutes=60` in `Pi1MHz.cfg`.
+The SD card holds file times as local time with no timezone, while
+WebDAV works in UTC. Unless you set your offset east of UTC, e.g.
+`webdav_utc_offset_minutes=60` for BST in `Pi1MHz.cfg`, the card's times
+are taken to be UTC, so your computer shows them shifted by its own
+timezone.
 
 ## kernel.now over the network
 

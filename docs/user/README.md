@@ -19,8 +19,9 @@ provides, all at once:
 - **Teletext** - an Acorn Teletext Adapter fed from internet teletext
   streams
 - **USB file access** - the Pi shows up on a PC as a portable device for
-  copying files to and from the SD card - or, with the port as a host,
-  a **USB mouse** for the Beeb
+  copying files to and from the SD card (with `usb_mode=device`; not on
+  a 3B+, whose port is [always a host](usb-file-access.md)) -
+  or, with the port as a host (the default), a **USB mouse** for the Beeb
 
 Everything is driven from image files and a single plain-text
 configuration file on the Pi's SD card. You never need to compile

@@ -1,5 +1,11 @@
 # Econet over AUN/UDP for Pi1MHz
 
+> **STATUS 2026-10-07:** implemented and shipped, both sides. The dispatch
+> is now `services_emulator.c` (the &FCA6 services port): `aun_emulator_init()`
+> (its own entry in the `Pi1MHz.c` emulator table) claims opcodes 30..44 with
+> `services_register()`; `discaccess_emulator.c` no longer exists. The ROM's
+> assembler source and patch scripts are not in this repo (see "ROM side").
+
 Replace the BBC Econet ROM's ADLC (6854) hardware layer with calls to
 Pi1MHz, which speaks standard AUN over UDP via the onboard WiFi/lwIP
 stack. Interoperates with PiEconetBridge, BeebEm/B-Em AUN mode and
@@ -15,7 +21,7 @@ ROMs ship as `firmware/Pi1MHz/AUNFSbeeb.rom` and `AUNFSM128.rom`.
 ```
 NFS/ANFS (unmodified above the NetCom layer)
    | replaced Tx/Rx primitives: FRED &FCAA command interface
-discaccess_emulator.c          command dispatch (opcodes 30..44 routed out)
+services_emulator.c            &FCA6 services port: opcodes 30..44 to AUN
 aun_emulator.c              JIM command-block parsing, lwIP UDP transport
 aun.c                   pure-C AUN engine (host-testable, no deps)
 lwIP UDP  ->  WiFi             AUN datagrams, port 32768
@@ -37,10 +43,10 @@ the replaced transmit/receive primitives.
   loop, per-peer duplicate suppression, loopback test responder.
 - `aun_emulator.h/.c` — glue: command-block parsing (untrusted
   offsets bounds-checked against the disc RAM region), lwIP UDP pcb,
-  poll hook. Registered from `discaccess_emulator_init()`.
-- `discaccess_emulator.c` — dispatch: opcodes 30..44
-  (`SERVICE_CMD_AUN_FIRST..LAST` in services.h) forward to
-  `aun_emulator_command()`.
+  poll hook. `aun_emulator_init()` is its own emulator-table entry.
+- `services_emulator.c` — dispatch: `aun_emulator_init()` claims opcodes
+  30..44 (`SERVICE_CMD_AUN_FIRST..LAST` in services.h) with
+  `services_register()`, which forwards them to `aun_emulator_command()`.
 
 ### Command interface (FRED &FCAA, opcodes 30+)
 

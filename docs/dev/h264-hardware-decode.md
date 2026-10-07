@@ -5,6 +5,17 @@ what the hardware actually is, why the only viable route is speaking the
 firmware's VCHIQ/MMAL protocols, exactly how those protocols work, and how
 the code in this repo implements them.
 
+> **STATUS 2026-10-07:** the player ships. Since this was written: the
+> tools (`tools/make_pvf.py`, and its successor `tools/make_pvfv2.py`, which
+> writes 832x576 with a pixel aspect ratio) default to **48000 Hz** audio
+> (`--audio-rate`; 46875 was the original PWM-only rate) and the player plays
+> whatever `audio_rate` the header gives; `firmware/config.txt` sets
+> `gpu_mem=64`, `vd_use_vpu0=1` and `vd_isp_disable=1` live (not commented)
+> and the card ships the full `start.elf`; audio ownership is `audio_claim()`
+> in `rpi/audio.c` (`rpi_audio_active()` is gone) and a video open takes the
+> audio path from the Music 5000/BeebSID, so `M5000_addr=-1` is not needed.
+> The body below is otherwise the design record.
+
 ## TL;DR
 
 * The H264 codec block on BCM2835 has **no public register documentation**
@@ -15,11 +26,11 @@ the code in this repo implements them.
   underneath is simple and fully reimplemented here in ~1500 lines.
 * Requires the **full `start.elf`** (the shipped `start_cd.elf` cut-down
   firmware has no codec/VCHIQ support), **`gpu_mem=64`** and
-  **`vd_use_vpu0=1`**. See the commented block in `firmware/config.txt`
+  **`vd_use_vpu0=1`**. Both are set in `firmware/config.txt`
   and §1 below.
 * Source material is prepared **offline** by `tools/make_pvf.py` into a
   `.pvf` file: all-intra Annex-B H264 (every frame = SPS+PPS+IDR) plus
-  46875 Hz PCM audio plus a frame index. All-intra makes random access,
+  PCM audio (48000 Hz by default; originally 46875) plus a frame index. All-intra makes random access,
   freeze frame, step and reverse trivial: any frame decodes on its own.
 * Frames are delivered **zero-copy**: the decoder writes each picture
   straight into the buffer the HVS is scanning out, and only a memory
@@ -46,8 +57,9 @@ the code in this repo implements them.
 | `src/videoplayer.c` | the player: index, goto/still/play/step/reverse, audio, HVS flips |
 | `src/BeebSCSI/fcode.c` | LaserVision F-codes now call into `videoplayer_*` |
 | `src/rpi/screen.c` | new: 4:2:0 3-plane HVS support + `screen_set_YUV_pointers()` page flip |
-| `tools/make_pvf.py` | offline encoder/muxer |
-| `firmware/config.txt` | commented lines to switch to full start.elf + gpu_mem=64 + vd_use_vpu0=1 |
+| `tools/make_pvf.py` | offline encoder/muxer (768x576) |
+| `tools/make_pvfv2.py` | its successor: 832x576 + pixel aspect ratio |
+| `firmware/config.txt` | gpu_mem=64 + vd_use_vpu0=1 + vd_isp_disable=1 (live) |
 
 ## 1. Why it has to be VCHIQ + MMAL
 
@@ -77,7 +89,8 @@ smaller because we need exactly one component.
   The full `start.elf` + `fixup.dat` from the same firmware release as
   the shipped `bootcode.bin` must be copied to the card, and
   `start_file=start.elf`, `fixup_file=fixup.dat`, `gpu_mem=64` and
-  `vd_use_vpu0=1` set (prepared, commented, in `firmware/config.txt`).
+  `vd_use_vpu0=1` set (now live in `firmware/config.txt`, and the full
+  `start.elf` ships).
   Everything degrades gracefully without it: `vchiq_init()`'s mailbox
   call fails, and `videoplayer.c` leaves the video plane disabled.
 * H264 needs **no licence key** (unlike MPEG-2/VC-1).
@@ -303,7 +316,8 @@ drivers:
 * **one seek + one or two sequential reads per random access** (record
   header+AU, optionally audio);
 * every AU self-contained (SPS+PPS+IDR) => decode any frame cold;
-* audio pre-resampled to **46875 Hz** = the PWM DMA rate in
+* audio pre-resampled to **46875 Hz** (the tools now default to 48000;
+  the player takes the header's rate) = the PWM DMA rate in
   `rpi/audio.c`, so 25 fps gives exactly 1875 stereo samples per frame
   and playback does no rate conversion;
 * 32-bit offsets: 4 GB cap = the FAT32 file limit anyway. A Domesday
@@ -340,11 +354,11 @@ change.
   `+yy`/`-yy` (instant jump), `A0/A1`, `B0/B1` (audio channels), and
   `?F` now answers with the real picture number `Fxxxxx`.
 * Audio shares the PWM path with Music 5000/BeebSID. Ownership is
-  enforced: whoever calls `rpi_audio_init()` first owns it
-  (`rpi_audio_active()`), and the player stands down with a log message
-  when the path is taken. The M5000 is enabled by default, so video
-  sound needs `M5000_addr=-1` in Pi1MHz.cfg. (A mixer would be the
-  proper fix if ever needed.)
+  enforced by `audio_claim()` (`rpi/audio.c`): a video open claims the
+  path from the Music 5000/BeebSID, and when the player releases it the
+  next producer to write takes it back. (This replaced the original
+  first-caller-owns `rpi_audio_init()`/`rpi_audio_active()` scheme, under
+  which video sound needed `M5000_addr=-1`.)
 * A Beeb reset re-runs every emulator init; `videoplayer_init` detects
   the warm restart, calls `h264dec_reset()` to detach the frame buffers
   from the live component BEFORE releasing them, and frees the previous

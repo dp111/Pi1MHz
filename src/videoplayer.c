@@ -3,7 +3,8 @@
     Take video from SDCARD and display it on the screen
 
     Hardware video player: a "video.pvf" file (built offline by
-    tools/make_pvf.py: all-intra H264 + 46875 Hz PCM + frame index) is
+    tools/make_pvf.py: all-intra H264 + PCM at the rate in its header,
+    48000 Hz by default + frame index) is
     decoded with the VideoCore hardware H264 decoder (rpi/h264dec.c,
     MMAL-over-VCHIQ) into two GPU frame buffers that double as the HVS
     4:2:0 plane sources. The ARM never touches pixel data: it reads

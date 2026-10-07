@@ -1,3 +1,5 @@
+STATUS (2026-10-07): an old, undated Domesday TODO list kept for reference; items checked against the source are marked (done).
+
 Doomsday notes
 
 
@@ -5,13 +7,13 @@ TODO notes in no order
 
 Check mouse offsets and fix VFS ROM bug
 *MOUSE appears to not always work, see if original VFS has this bug and fix
-See if boot time can be improved
+See if boot time can be improved (done)
 
-More Fcode support (including VP4 and VP5 )
+More Fcode support (including VP4 and VP5 ) (done)
 See if power consumption of the Pi can be improved
 check and fix YUV scaling
 composite video out ?
-50Hz HDMI modes
+50Hz HDMI modes (done)
 Check 1MHz timing / add DMBs ( sometimes bad FSMAP)
 Check beeb screen offset vertical appears off by a pixel ?
 Menu system
@@ -81,19 +83,19 @@ plot 99 1279 59
 fcodeReadBuffer
  0x56 0x50 0x33 0x0d 0x36 0x36 fcodeClearBuffer
 F-Code: Received bytes: 0x41 0x31 0x0d
-F-Code: Received F-Code 0x41 = Audio-1 on                <- TODO ->
+F-Code: Received F-Code 0x41 = Audio-1 on                <- TODO -> (done)
 F-Code: Received bytes: 0x42 0x31 0x0d
-F-Code: Received F-Code 0x42 = Audio-2 on               <- TODO ->
+F-Code: Received F-Code 0x42 = Audio-2 on               <- TODO -> (done)
 fcodeReadBuffer
  0x41 0x0d 0x33 0x0d 0x36 0x36 fcodeClearBuffer
 F-Code: Received bytes: 0x46 0x35 0x31 0x52 0x0d
-F-Code: Received F-Code 0x46 = Load/Goto picture number : 51 op: R = Still picture   <- TODO ->
+F-Code: Received F-Code 0x46 = Load/Goto picture number : 51 op: R = Still picture   <- TODO -> (done)
 fcodeReadBuffer
  0x41 0x30 0x0d 0x0d 0x36 0x36 fcodeClearBuffer
 F-Code: Received bytes: 0x45 0x31 0x0d
 F-Code: Received F-Code 0x45 = Video on
 F-Code: Received bytes: 0x46 0x31 0x36 0x30 0x30 0x53 0x0d
-F-Code: Received F-Code 0x46 = Load/Goto picture number : 1600 op: S = Stop Register  <- TODO ->
+F-Code: Received F-Code 0x46 = Load/Goto picture number : 1600 op: S = Stop Register  <- TODO -> (done)
 F-Code: Received bytes: 0x4e 0x0d
 F-Code: Received F-Code 0x4e = Play forward
 fcodeReadBuffer
@@ -108,7 +110,7 @@ F-Code: Received F-Code 0x42 = Audio-2 off
 fcodeReadBuffer
  0x0d 0x32 0x0d 0x0d 0x36 0x36 fcodeClearBuffer
 F-Code: Received bytes: 0x46 0x31 0x38 0x37 0x39 0x32 0x52 0x0d
-F-Code: Received F-Code 0x46 = Load/Goto picture number : 18792 op: R = Still picture  <- TODO ->
+F-Code: Received F-Code 0x46 = Load/Goto picture number : 18792 op: R = Still picture  <- TODO -> (done)
 fcodeReadBuffer
  0x41 0x30 0x0d 0x0d 0x36 0x36 fcodeClearBuffer
 fcodeReadBuffer

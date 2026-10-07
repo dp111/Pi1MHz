@@ -1,5 +1,12 @@
 # WiFi throughput — plan
 
+> **STATUS 2026-10-07: superseded by
+> [wifi-throughput-2026-09.md](wifi-throughput-2026-09.md)**, which
+> eliminates the host side by measurement and leaves the ~2.3 MB/s ceiling
+> unexplained - so the "credit-grant cadence is the governor" conclusion
+> below no longer stands. The 2026-08-26 outcome and the "PLAN ONLY" line
+> below are history.
+
 > **OUTCOME (2026-08-26, investigation complete):** this plan was executed on
 > the `worktree-agent-a1fcf31c5ad85f2d0` branch (15 commits; see its
 > VALIDATION.md for every checkpoint's hardware numbers). The central
@@ -16,7 +23,7 @@
 > found already landed in the tree before the branch started.
 
 
-Status: PLAN ONLY — no source changes applied. All `file:line` references were
+Original status (2026-08-26, before the branch ran): PLAN ONLY — no source changes applied. All `file:line` references were
 verified against the working tree on 2026-08-26 (branch `master`, after
 `d08242e`). brcmfmac references are to
 `drivers/net/wireless/broadcom/brcm80211/brcmfmac/` at torvalds/linux master

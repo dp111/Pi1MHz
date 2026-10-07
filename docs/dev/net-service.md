@@ -6,17 +6,24 @@ design is in [network-service-plan.md](network-service-plan.md) /
 as-built ABI and status. Source: `src/net_service.c` / `src/net_service.h`.
 Off unless **`net_enable=1`** in `Pi1MHz.cfg`.
 
+> **STATUS 2026-10-07:** as-built, checked against `net_service.[ch]`.
+> `https://` is implemented (lwIP altcp TLS over mbedTLS, `LWIP_ALTCP_TLS`
+> in `src/wifi/lwipopts.h`; failures report `NET_ERR_TLS` &31). The Beeb has
+> handles 0-7 (`NET_BEEB_HANDLES`); higher ones belong to the Pi-side FujiNet
+> device and modem. POST/PUT/DELETE/HEAD exist only through the Pi-side C API
+> (`net_capi_*`, used by the FujiNet device); the Beeb's `url_open` is GET.
+
 ## Where it lives
 
 A service on the `&FCA6` services port (command range 45-79 in `services.h`),
 shaped exactly like the FAT and AUN services. The FRED write handler latches
 the request in FIQ; `net_service_poll()` does every lwIP call on the main loop.
 Async ops return `NET_PENDING`; the Beeb re-issues the command to poll. TCP is
-written against lwIP's `altcp` (maps to `tcp_*` at `LWIP_ALTCP=0`; TLS-ready).
+written against lwIP's `altcp` (maps to `tcp_*` at `LWIP_ALTCP=0`; TLS in use for `https://`).
 
 ## Wire protocol (how the Beeb issues a command)
 
-The command block for handle N (0-15) is at JIM offset `&FFF000 + N*&100`.
+The command block for handle N (0-7, `NET_BEEB_HANDLES`; 8-15 answer `&23` `NET_ERR_PARAM`) is at JIM offset `&FFF000 + N*&100`.
 
 1. Set the 24-bit address pointer: `&FCA6`=low, `&FCA7`=mid, `&FCA8`=high.
 2. Write the command byte then its args through the auto-incrementing data
@@ -24,7 +31,8 @@ The command block for handle N (0-15) is at JIM offset `&FFF000 + N*&100`.
 3. Dispatch: write `&F0+N` to the command register `&FCAA`.
 4. Poll `&FCAA`: **bit 7 set = busy**, the poll hasn't run yet - spin. Then the
    byte is the result: `&00`=OK, `&01`=`NET_PENDING` (async in progress -
-   re-dispatch), `&20`=EOF, `&21..&3F`=errors, `&28`=`NET_ERR_DISABLED`.
+   re-dispatch), `&20`=EOF, `&21..&3F`=errors, `&28`=`NET_ERR_DISABLED`,
+   `&2A..&2F` TCP failure detail, `&30` HTTP status not 2xx, `&31` TLS.
 5. Result fields (resolved IP, byte counts, status) are read back from the
    block through the data port. Bulk payload lives in a JIM data buffer
    addressed by a 24-bit offset in the command block.
@@ -51,6 +59,7 @@ Layer 1 - raw sockets (handle = command-register low nibble, like a FAT file):
 | 55 | udp_sendto | `[1..4]` IP, `[5..6]` port, `[7..9]` len, `[10..13]` JIM src |
 | 56 | udp_recvfrom | → `[1..4]` peer IP, `[5..6]` port, `[7..9]` len, payload to `[10..13]` JIM dst |
 | 57 | irq | `[1]` 0=disarm (default) / 1=arm nIRQ — only arm if a handler is installed |
+| 58 | copy_public | internal: `[1]` count (1-240), `[2..3]` dest - copies from the scratch page `&FFF100` into the public 64K JIM |
 
 Layer 2 - the N: device (open a URL like a file):
 
@@ -62,7 +71,7 @@ Layer 2 - the N: device (open a URL like a file):
 | 63 | url_close | |
 | 64 | url_status | `[1..4]` FujiNet **DVSTAT** {bytes_waiting_lo, hi, connected, error}; then native `[5]` state, `[6]` flags, `[7..8]` HTTP code |
 
-Schemes: `TCP:` (raw stream wrapper), `HTTP:` (GET + header-strip + status),
+Schemes: `TCP:` (raw stream wrapper), `HTTP:`/`HTTPS:` (GET + header-strip + status; HTTPS default port 443),
 `UDP:` (connectionless - `url_open` binds an ephemeral local port and remembers
 the URL's host:port; `url_write` sends a datagram there, `url_read` returns the
 next datagram's payload, no EOF), and `TNFS:` (a TNFS server over UDP :16384).
@@ -76,8 +85,9 @@ written); a read-only handle refuses writes. `TELNET:` is a raw TCP stream
 (default port 23) run through an IAC filter: server option negotiation is
 answered minimally (accept `WILL ECHO`/`WILL SGA`, refuse the rest), `IAC IAC`
 unescapes to `0xFF`, subnegotiations and `CR NUL` are dropped, so `url_read`
-gives the Beeb clean text - for BBSs/MUDs; url_write escapes outbound 0xFF as IAC IAC. HTTP POST/chunked is not implemented
-yet. TCP:/UDP: need an explicit `:port` (TNFS: 16384, TELNET: 23).
+gives the Beeb clean text - for BBSs/MUDs; url_write escapes outbound 0xFF as IAC IAC. The Beeb's `url_open` always
+sends GET (POST/PUT/DELETE/HEAD are Pi-side C API only); chunked transfer
+encoding is not implemented. TCP:/UDP: need an explicit `:port` (TNFS: 16384, TELNET: 23).
 
 ## Design notes
 
@@ -116,4 +126,5 @@ yet. TCP:/UDP: need an explicit `:port` (TNFS: 16384, TELNET: 23).
   checks under ASan/UBSan incl. a fuzzer. See `beeb/net/NETTNFS.BAS`, `NETTEL.BAS`.
 - **nIRQ**: opt-in (`irq`, 57), default disarmed - see Design notes; a stuck
   nIRQ froze the Beeb when asserted for a polling client, fixed 2026-08-03.
-- Not started: TLS/HTTPS, a native sideways-ROM `*`-command API.
+- HTTPS: implemented (see STATUS above).
+- Not started: a native sideways-ROM `*`-command API.

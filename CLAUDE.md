@@ -59,19 +59,26 @@ header — trust the newest status over the body).
 - Build: `bash src/scripts/build.sh rpi` (release) / `rpi debug` / `rpi3`.
   Both configs must compile warning-free (the vendored FatFs
   `-Wcast-qual` is the one pre-existing exception).
-- Every build overwrites `firmware/kernel.img` — debug builds included.
+- Every relink overwrites `firmware/kernel.img` (rpi3: `kernel7.img`) —
+  debug builds included; a no-op build writes nothing.
   The committed artifact can be stale: never trust it; judge by source.
   Verify what you deploy: readback md5 (PUT) and, for behavioural changes,
   a marker string in the binary.
 - `kernel7` (rpi3/A53) must be boot-tested on real hardware after any
   CP15/asm/timer change — a clean compile proves nothing there.
-- BBC BASIC tokenising: use `basictool` (ROM-exact, builds in-tree from
-  github.com/ZornsLemma/basictool). `tools/bbc_tokenise.py` exists but is
+- BBC BASIC tokenising: use `basictool` (ROM-exact, built from
+  github.com/ZornsLemma/basictool, outside the repo). `tools/bbc_tokenise.py` exists but is
   not the tool of record.
 - Vendored code (FatFs, lwIP, TinyUSB, VICE): disable with a named `#if`,
   never delete, so upstream diffs stay clean.
 
 ## Hardware sessions (see PI-CONTROL.md for the full runbook)
+
+- The bench tools are not in the repo: `PI-CONTROL.md` is untracked
+  (gitignored) in the main checkout `/mnt/c/Archlinux/Pi1MHz`; `pi-http.sh`,
+  `ffmpeg.exe` and the `claude-tmp/*` scripts are in
+  `/mnt/c/Archlinux/claude-tmp`; basictool is
+  `/mnt/c/Archlinux/basictool/basictool`.
 
 - Flash/reboot the target Pi without asking (standing authorization), but
   only a settled Pi; leave test state as-is afterwards and report it.
@@ -101,7 +108,8 @@ header — trust the newest status over the body).
   means the Beeb isn't sending serial data - the Pico keyboard never
   wedges. After a kernel.now or a slow Pi the redirect has dropped: look
   at the screen, then CTRL-BREAK once /status answers. `claude-tmp/build-all.sh` builds the three configs release-last
-  and prints only warnings. Brief subagents narrowly with an output cap;
+  and prints only warnings; if the release build relinks nothing the debug
+  `kernel.img` stays, so check the fingerprint it prints. Brief subagents narrowly with an output cap;
   a read-only Explore agent for a report, never an open-ended "study".
 
 ## Reviews and process

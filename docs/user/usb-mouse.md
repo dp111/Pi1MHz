@@ -15,11 +15,10 @@ the same time.
    |---|---|
    | `host` (default) | a host for a USB mouse |
    | `device` | [USB file access (MTP)](usb-file-access.md) to a computer |
-   | `auto` | a host when an OTG adapter is plugged in, MTP otherwise |
+   | `auto` | a host when an OTG adapter is plugged in at start-up, MTP otherwise |
 
-   On a Pi whose USB sockets sit behind its own hub - the Pi 1, 2 and 3
-   Model B, B+ and 3B+ - the port can only be a host, so it is always
-   one, whatever `usb_mode` says.
+   On a Pi 1, 2 or 3 Model B (including the B+ and 3B+) the port is
+   [always a host](usb-file-access.md).
 
 2. **Plug the mouse in.** On a Pi Zero use the inner micro-USB socket
    (marked USB, not PWR) with an OTG adapter. A USB hub works too; the

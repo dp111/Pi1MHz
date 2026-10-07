@@ -6,6 +6,9 @@ documentation lists only the everyday pages.  Everything here is read on
 demand: the release build pays nothing for a row until the page is fetched,
 and the switches that do cost something are off by default.
 
+STATUS 2026-10-07: row names checked against the `table_row()` calls in
+`src/wifi/webserver.c`.
+
 ## Pages
 
 | Address | What it returns |
@@ -32,7 +35,7 @@ and the switches that do cost something are off by default.
 | Planes | Each display plane's geometry, with `HIDDEN(off/wanted/gated)` when it is not being scanned out |
 | Video player | Transport state, then the display side: plane on/off, video on/OFF, displayed and pending buffers, duplicates owed, stop picture, last seek op |
 | H264 decoder | Frames decoded, the output-port handshake (enable, pending reconfigure, registered/armed buffers) and free input slots / EOS owed |
-| Reset reason, Boot stage | Where the previous boot died and what reset the SoC last (`docs/dev/review-2026-09-07.md`, lockup forensics) |
+| Boot, Reset reason, Last fault | `Boot` (shown only when the previous boot or session died): the boot stage or poll callback/init it died in; `Reset reason`: the PM reset-status bits, `(watchdog)` flagged; `Last fault`: the last CPU fault record since power-on (`docs/dev/review-2026-09-07.md`, lockup forensics) |
 
 ## Switches in Pi1MHz.cfg
 

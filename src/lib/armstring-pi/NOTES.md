@@ -4,7 +4,7 @@ Date: 2026-07-19. Working notes so this can be picked up cold.
 
 ## The original question
 
-Newlib is pulled in via `--specs=nosys.specs --specs=nano.specs` (CMakeLists.txt:93),
+Newlib is pulled in via `--specs=nosys.specs --specs=nano.specs` (the `CMAKE_C_FLAGS` line in `src/CMakeLists.txt`),
 LTO can't cross into it, and some functions (e.g. `toupper`) are inefficient.
 Should newlib become a submodule?
 
@@ -115,7 +115,7 @@ Leave them alone.
 ## DONE: vendored newlib sources (committed to `lib/armstring/`)
 
 18 files copied unmodified from newlib-4.6.0.20260123 `libc/machine/arm`, plus a
-README. Four dispatch files added to `core_files` in CMakeLists.txt:112 —
+README. Four dispatch files added to `core_files` (the `set(core_files` list in `src/CMakeLists.txt`) —
 `memcpy.S`, `strcmp.S`, `strlen.S`, `memchr.S`. No per-target CMake logic: the
 files' own `#if` chains dispatch, and a file with nothing to offer a target emits
 no symbol and falls through to libc, so this cannot regress anything.

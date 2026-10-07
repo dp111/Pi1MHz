@@ -45,7 +45,9 @@ greeting), so large programs or data can be pre-staged on the card.
 A general command mailbox. The first byte of a command block selects a
 service by number: commands **0-29** are the SD/FAT service documented
 here, commands **30-44** are the Econet AUN service used by the AUNFS
-ROMs. The allocation map is `src/services.h`.
+ROMs, and **45-119** belong to the IP/network, WiFi, security and FujiNet
+services (120-255 are unallocated). The allocation map is
+`src/services.h`.
 
     &FCA6  address pointer, low 8 bits  (24-bit address into JIM)
     &FCA7  address pointer, middle 8 bits
@@ -252,23 +254,27 @@ the helper entry point:
     ?&FC88 = function : CALL &FD00
     or  X% = function : CALL &FC88
 
-They cover the help screen, the HDMI screen redirector, and loading the
-shipped ROMs into sideways RAM. See
+They cover the help screen, the HDMI screen redirector, loading the
+shipped ROMs into sideways RAM, the SD card explorer and the serial
+redirector/modem. See
 [Loading ROMs and helpers](user/helpers-and-roms.md) for the function
 list and usage.
 
 ## Special SD-card files: `kernel.now` and `reboot.now`
 
-Two magic filenames, sent to the Pi over [USB/MTP](user/usb-file-access.md),
-trigger firmware actions rather than being stored (this is an MTP-write
-feature; copying a file of the same name over WebDAV just stores it):
+Two magic filenames trigger firmware actions rather than being stored:
 
-- **`kernel.now`** - a firmware image copied under this name is loaded
-  into RAM and chain-booted **immediately and transiently**. The SD
-  card's `kernel.img` is not changed, so a power cycle or `reboot.now`
-  reverts to it. This is for safely test-driving a new build before
-  committing it; to make a build permanent, overwrite `kernel.img`.
-- **`reboot.now`** - writing this file reboots the Pi (reverting to the
-  SD card's `kernel.img`).
+- **`kernel.now`** - a firmware image sent under this name over
+  [USB/MTP](user/usb-file-access.md), a WebDAV `PUT /kernel.now`, or the
+  web interface's upload form is loaded into RAM and chain-booted
+  **immediately and transiently** (an open video player is shut down
+  first). The SD card's `kernel.img` is not changed, so a power cycle or
+  reboot reverts to it. This is for safely test-driving a new build before
+  committing it; to make a build permanent, overwrite `kernel.img`. A
+  build that changes the VideoCore (VPU) code needs a cold boot instead.
+- **`reboot.now`** - copying this file over USB/MTP reboots the Pi
+  (reverting to the SD card's `kernel.img`). It is MTP-only, so it does
+  nothing while the USB port is a host (the default); over WiFi use the
+  web interface's `/reboot` page.
 
 Avoid naming any of your own files `kernel.now` or `reboot.now`.

@@ -24,8 +24,11 @@ see [cmdline.txt settings](#cmdlinetxt-settings) at the end.
   cut off. Watch out for it in passwords (`wifi_password`,
   `webdav_password`).
 - Keys are not case-sensitive.
-- A key on its own (no value) counts as "set" - some debug switches
-  work this way.
+- On/off switches are on when the value starts with `1`, `y` or `t`
+  (`net_enable=1`, `net_enable=yes`); anything else, or a key with no
+  value, is off. The two exceptions are `aun_debug` and
+  `teletext_debug`, which are on whenever the key is present at all -
+  even `aun_debug=0`.
 
 Example:
 
@@ -64,10 +67,13 @@ plus `_addr`:
 | `Services_addr` | `0xA6` | The services port at `&FCA6-&FCAB`: SD card / FAT access plus the Econet AUN commands |
 | `Videoplayer_addr` | (none) | Video background plane |
 | `Framebuffer_addr` | `0xA0` | HDMI framebuffer / VDU port at `&FCA0-&FCA5` |
-| `Mouseredirect_addr` | `0xAC` | Mouse pointer registers at `&FCAC-&FCB0` |
+| `Mouseredirect_addr` | `0xAC` | [Mouse pointer](screen-and-video.md#mouse-pointer) registers at `&FCAC-&FCAF` |
 | `usb_addr` | (none) | USB MTP file access |
 | `wifi_addr` | (none) | WiFi stack |
 | `aun_addr` | (none) | Econet-over-WiFi engine |
+| `net_addr` | (none) | Network sockets for the Beeb (also needs `net_enable`) |
+| `WiFiSvc_addr` | (none) | The 1MHz-WiFi ROM's service (also needs `wifi_service_enable`) |
+| `fujinet_addr` | (none) | The FujiNet device for fn-rom |
 | `Teletext_addr` | `0x10` | Acorn Teletext Adapter at `&FC10-&FC13` |
 | `Serial_addr` | `0xCC` | The serial redirector's stub at `&FCCC-&FCF8` (helper 19) |
 | `Watchdog_addr` | (none) | Watchdog (use the `watchdog` key below instead) |
@@ -99,7 +105,7 @@ Harddisc_addr=-1
 | Key | Default | Meaning |
 |---|---|---|
 | `Pi1MHznOE` | `1` | Set `0` if your interface board has no external output-enable (nOE) pin on its data bus buffer. `1` (the default) drives the nOE pin, which also lets Pi1MHz share the 1MHz bus with other devices. Which one you need depends on the board - if the shipped default works, leave it alone. |
-| `usb_mode` | `host` | What the Pi's USB port is: `host` for a [USB mouse](usb-mouse.md), `device` for [USB file access (MTP)](usb-file-access.md), `auto` for a host when an OTG adapter is plugged in and MTP otherwise. A Pi 1, 2 or 3 Model B (B+, 3B+) is always a host - unless its board revision cannot be read at boot, when this setting decides as on any other Pi. |
+| `usb_mode` | `host` | What the Pi's USB port is: `host` for a [USB mouse](usb-mouse.md), `device` for [USB file access (MTP)](usb-file-access.md), `auto` for a host when an OTG adapter is plugged in and MTP otherwise (checked once, at start-up). On a Pi 1, 2 or 3 Model B the port is always a host - see [USB file access](usb-file-access.md). |
 | `watchdog` | off | A number of seconds (1-15). If set, the Pi's hardware watchdog reboots it automatically should the firmware ever lock up. `0` or absent = off. `watchdog=10` is a sensible value if you want it. |
 | `BeebAudio_Off` | off | `1` mutes the emulated audio path into the BBC's internal speaker. For the Music 5000 on a Pi 3B+ this also enables proper stereo on the Pi's headphone jack. Applies to whichever audio emulator is running (Music 5000 or BeebSID). |
 | `Audio_out` | `beeb` | `hdmi` sends the sound (Music 5000, BeebSID or the video player) out of the HDMI port instead of the Beeb pin/jack. Needs the display link in HDMI mode - `hdmi_drive=2` in `config.txt` if the screen's EDID does not advertise audio. |
@@ -115,6 +121,7 @@ See [Hard discs](hard-discs.md) for what these mean in practice.
 | `SCSIJUKE` | `0` | Which `/BeebSCSIn` directory (disc set) to use at power-on. |
 | `VFSJUKE` | `0` | Which `/BeebVFSn` directory to use for VFS volumes at power-on. |
 | `SCSIID` | `0` | SCSI ID the emulation answers to. `0` (default) answers every ID. Only relevant if you run more than one SCSI adapter on a Master. |
+| `Beeb_write_protect` | off | `1` stops the Beeb changing anything on the SD card: every write it makes is silently ignored and reported as a success. Writes over USB and the web interface still work. See [MMFS](mmfs.md). |
 
 ## Sound settings
 
@@ -141,6 +148,7 @@ set.
 | `wifi_netmask` | `255.255.255.0` | Only used with a fixed address. |
 | `wifi_gateway` | (none) | Only used with a fixed address. Needed for anything beyond your own network. |
 | `wifi_dns` | (none) | Only used with a fixed address. |
+| `wifi_security` | auto | `open`, `wep`, `wpa` or `wpa2`. Unset (auto) joins with WPA2 when there is a password and as an open network when there is not. A WEP key is 5 or 13 characters, or 10 or 26 hex digits. |
 | `wifi_http_port` | `80` | TCP port for the built-in web server. |
 | `wifi_debug` | off | `1` prints verbose WiFi logging on the serial port. Only does anything on a debug build of the firmware - release builds print nothing. |
 
@@ -180,7 +188,7 @@ See [Econet over WiFi](econet-aun.md).
 | `aun_map` | (none) | Where to find other stations, as a comma-separated list of `net.stn=ip` or `net.stn=ip:port` entries. Example: `aun_map=1.254=192.168.1.10,1.200=192.168.1.11:32769` |
 | `aun_learn` | (none) | A network number (e.g. `2`). Stations on that net are learned automatically from incoming traffic instead of needing `aun_map` entries. |
 | `aun_machine` | (none) | Eight hex digits sent as the reply to a "machine peek". Leave unset unless a bridge needs a specific machine type. |
-| `aun_debug` | off | `1` logs Econet events on the serial port (debug builds only). |
+| `aun_debug` | off | Present at all (any value, even `0`) logs Econet events on the serial port (debug builds only). |
 
 ## Teletext settings
 
@@ -192,7 +200,7 @@ See [Teletext](teletext.md).
 | `teletext_server2` | (none) | Channel 2 source. |
 | `teletext_server3` | (none) | Channel 3 source. |
 | `teletext_server4` | (none) | Channel 4 source. |
-| `teletext_debug` | off | Log teletext events (debug builds only). |
+| `teletext_debug` | off | Present at all (any value, even `0`) logs teletext events (debug builds only). |
 
 ---
 

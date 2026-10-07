@@ -1,14 +1,15 @@
 # Pi1MHz net service — BBC BASIC client
 
 `NETDEMO.BAS` is a BBC BASIC library + demo that drives the Pi1MHz IP/net
-service (the `&FCA6` services port, commands 45–65) — the raw-socket layer
+service (the `&FCA6` services port, commands 45–79) — the raw-socket layer
 (45–57) plus the `N:` device URL verbs (60–65) described in
 [../../docs/dev/network-service-stages.md](../../docs/dev/network-service-stages.md).
 
 It is the reference Beeb-side client and the vehicle for hardware-testing the
-firmware net service. A native sideways-ROM `*`-command API comes in a later
-stage; this BASIC library is deliberately first so the ABI can be shaken out
-from the Beeb side while it is still settling.
+firmware net service. The sideways-ROM side now exists in the 1MHz-WiFi ROM
+([../1mhz-wifi/README.md](../1mhz-wifi/README.md)): its `*` commands
+(`*WGET` uses the `N:` URL verbs) and its OSWORD `&65` entry. This BASIC
+library came first so the ABI could be shaken out from the Beeb side.
 
 `mkssd.py` packs all of the demos below into a bootable SSD (`*OPT4,3` runs a
 `!BOOT` menu). Each is a plain-text listing — `*EXEC <name>` or paste it in:

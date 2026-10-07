@@ -69,7 +69,7 @@ that must be back at the GPIO poll within a microsecond.
 ### Producer (VPU)
 
 Keep two registers across the loop: `rtag`, the sequence tag already
-shifted to bits 28-31, and `rslot`, the address of the next entry.  Both
+shifted to bits 27-31 (5-bit tag), and `rslot`, the address of the next entry.  Both
 start at the ring base / tag 0 at launch.
 
 ```

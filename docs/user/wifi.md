@@ -75,8 +75,8 @@ Pick an address outside your router's DHCP range. `wifi_gateway` and
 
 The WiFi chip needs its manufacturer's firmware files, which Pi1MHz
 loads from `/Pi1MHz/wifi/` on the SD card. **The standard firmware set
-already includes them** for the Pi Zero W (43430), Pi Zero 2 W (43436)
-and Pi 3B+ (43455), so normally there is nothing to do - this section
+already includes them** for the Pi Zero W (43430), Pi Zero 2 W (43436
+and 43436s) and Pi 3B+ (43455), so normally there is nothing to do - this section
 matters only if you built the card by hand.
 
 The right set is picked automatically for the board you boot on:
@@ -84,7 +84,7 @@ The right set is picked automatically for the board you boot on:
 | Board | Files needed under `/Pi1MHz/wifi/` |
 |---|---|
 | Pi Zero W | `brcmfmac43430-sdio.bin`, `.txt`, `.clm_blob` |
-| Pi Zero 2 W | `brcmfmac43436-sdio.bin`, `.txt`, `.clm_blob` |
+| Pi Zero 2 W | `brcmfmac43436-sdio.bin`, `.txt`, `.clm_blob`, and `brcmfmac43436s-sdio.bin`, `.txt`, `.clm_blob` (some boards have the radio that needs the `s` set) |
 | Pi 3B+ | `brcmfmac43455-sdio.bin`, `.txt`, `.clm_blob` |
 
 If they are missing for your board, WiFi reports an error and stays

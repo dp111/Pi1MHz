@@ -4,6 +4,16 @@ Detailed plan behind [network-service-plan.md](network-service-plan.md).
 Each stage is self-contained and shippable; effort estimates are person-days
 for one implementer.
 
+> **STATUS 2026-10-07:** stages 1-4 shipped and the FujiNet work went a
+> different way from Stage 5: TLS/HTTPS is implemented (lwIP altcp TLS over
+> mbedTLS 3.6, `NET_ERR_TLS` &31), and the FujiNet device runs Pi-side
+> (`src/fujinet/`, see `fujinet-device.md`), which also drives HTTP
+> POST/PUT/DELETE/HEAD through `net_capi_*` (the Beeb's own `url_open` is GET
+> only). The Beeb has handles 0-7. The `src/net/*.c` file split in the stage
+> plans below was never built - it is all `src/net_service.c`,
+> `net_tnfs.[ch]`, `net_telnet.[ch]`. `net-service.md` is the as-built ABI.
+> The 2026-08-03 status below is history.
+
 ## Implementation status (2026-08-03)
 
 - **Stage 1 - raw TCP/UDP sockets + DNS: DONE + fully HW-validated.**
@@ -41,7 +51,8 @@ for one implementer.
   wolfSSL/wolfSSH behind `PI1MHZ_SSH`, the hardware RNG, and SNTP. See the
   note in Stage 4 before picking up the mbedTLS verdict.)
   Stage 5's pickup plan and its blockers (licensing + toolchain + coordinating
-  with fenrock) are written up in `fujinet-collaboration.md`.
+  with fenrock) were written up in `fujinet-collaboration.md`, since removed
+  (ddebf81); superseded by `fujinet-device.md`.
 - **Reset-teardown wedge: FOUND + FIXED (f7fce2a).** Heavy aborted-listener
   churn once wedged the service on hardware (FNopen spun on NET_BUSY forever;
   reflash-only recovery). Root cause was a FIQ-vs-main-loop race, not a leak:

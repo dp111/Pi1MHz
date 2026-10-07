@@ -9,8 +9,9 @@
     re-initialisation on hotplug. It answers each chunk with COMPLETE as
     it is consumed, which is our flow control.
 
-    Needs the full start.elf (start_cd.elf has no VCHIQ). The sink is
-    selected with Audio_out=hdmi in Pi1MHz.cfg; see docs/dev/audio-plan.md.
+    Needs the full start.elf (start_cd.elf has no VCHIQ). NOT BUILT: auds.c
+    is not in src/CMakeLists.txt and nothing calls it. Audio_out=hdmi in
+    Pi1MHz.cfg selects rpi/hdmi_audio.c instead; see docs/dev/audio-plan.md.
 
     Wire format from Linux drivers/staging/vc04_services/bcm2835-audio/
     vc_vchi_audioserv_defs.h (GPL-2.0); this is an independent

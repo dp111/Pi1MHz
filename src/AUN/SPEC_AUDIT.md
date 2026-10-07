@@ -1,5 +1,13 @@
 # AUNFS + Pi1MHz AUN — specification conformance audit
 
+> **STATUS 2026-10-07:** historical audit. The ROM-side sources it cites
+> (`pi1mhz-patch/*` - `apply.py`, `eco_library.asm`, `eco_lib_b.asm`,
+> `basm.py`; `anfs-4.21-pi1mhz.asm`) and the `AUNFS-4.21.rom` build output
+> are not in this repo; only the assembled ROMs ship, as
+> `firmware/Pi1MHz/AUNFSbeeb.rom` and `AUNFSM128.rom` (plus
+> `src/tests/aun/lockstep/anfs-4.18-pi1mhz.rom`). The Pi-side files it names
+> are current.
+
 Audit of the complete AUN path on both sides — the 6502 **AUNFS** ROM patch
 (ANFS 4.21/4.18) and the **Pi1MHz** C engine + glue — against the published
 specification, with fixes applied inline.
@@ -18,7 +26,7 @@ specification, with fixes applied inline.
 
 The Pi side: `AUN/aun.c`, `AUN/aun.h`, `AUN/aun_emulator.c`, `wifi/wifi_lwip.c`.
 The ROM side: `pi1mhz-patch/eco_library.asm` (the foreground RX pump and the
-transmit path that replaces the ADLC/NMI engine).
+transmit path that replaces the ADLC/NMI engine) - not in this repo, see STATUS.
 
 ---
 

@@ -1,5 +1,10 @@
 # FujiNet device on the Pi - design
 
+STATUS 2026-10-07: shipped in V1.36 (FujiNet device, helper 18), with
+.dsd and OPENOUT/BGET fixes in V1.37; the Pi side is on master, the
+fujinet-device branch is history. The 2026-09-26 status below is kept as
+written.
+
 STATUS 2026-09-26 (late): disk (SD and TNFS), network (http, https, tcp,
 POST/PUT) and JSON translation all WORKING on a Master with a Pi Zero 2 W,
 after the review fixes (1b11618 FujiNet, 6657b4e net) - see "Review fixes"

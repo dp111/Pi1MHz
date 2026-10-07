@@ -1,13 +1,13 @@
 # WiFi txglom branch — hardware validation runbook
 
-> **STATUS 2026-09-02: historical.** This was written before the branch ran
+> **STATUS 2026-10-07 (first 2026-09-02): historical.** This was written before the branch ran
 > on hardware. It has since been run: the implementation landed
-> (`wifi_txglom` in Pi1MHz.cfg, the TX glom batch histogram on `/status`) and
-> the investigation is closed - glomming works, throughput did not move, and
-> the governor turned out to be the dongle's credit-grant cadence. The
-> conclusion, with the numbers, is in
-> `docs/dev/wifi-throughput-plan.md`. Kept for the procedure below, which is
-> still how you validate a WiFi change on this hardware.
+> (`wifi_txglom` in Pi1MHz.cfg, the TX glom batch histogram on `/status`):
+> glomming works and throughput did not move. The credit-grant-cadence
+> conclusion first drawn in `docs/dev/wifi-throughput-plan.md` was later
+> overturned: the current picture (ceiling still unexplained, host side
+> eliminated) is `docs/dev/wifi-throughput-2026-09.md`. Kept for the procedure below,
+> which is still how you validate a WiFi change on this hardware.
 
 What to run on the target Pi at each checkpoint for this branch (the
 implementation of `docs/dev/wifi-throughput-plan.md`).

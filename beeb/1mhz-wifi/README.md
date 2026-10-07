@@ -11,8 +11,10 @@ Build it with beebasm:
 ./build.sh
 ```
 
-That writes `src/1mhz-wifi.rom`. Put it in a sideways slot, or add it to
-`firmware/Pi1MHz/` and reference it from `Pi1MHz.cfg` to have Pi1MHz serve it.
+That writes `src/1mhz-wifi.rom`. Put it in a sideways slot. The ROM that
+Pi1MHz serves is the merged one with WiCFS (`build-merged.sh`): helper 16
+loads it from the fixed path `/Pi1MHz/1mhz-wicfs.rom`; there is no
+`Pi1MHz.cfg` setting for it.
 It is not wired into the CMake build and does not affect the firmware.
 
 ## Commands

@@ -4,6 +4,11 @@ Status: **implemented** (raw TCP/UDP sockets, listen/accept, and the `N:`
 device with TCP/HTTP/UDP/TNFS/TELNET adapters). This file is the original
 design plan; see `network-service-stages.md` for what actually shipped.
 
+> **STATUS 2026-10-07:** also implemented since: `HTTPS:` (altcp TLS over
+> mbedTLS) and the Pi-side FujiNet device (`fujinet-device.md`). The as-built
+> ABI is `net-service.md` - the Beeb has 8 handles (0-7), not the 0-15 this
+> plan assumes.
+
 Goal: give the Beeb internet access through the existing services port, in
 two layers that share one implementation:
 
@@ -24,7 +29,8 @@ almost unchanged, three things this codebase already has:
   registered poll callback does all lwIP work on the main loop. **lwIP is
   never touched from FIQ**;
 - **lwIP** itself: `LWIP_TCP`/`LWIP_UDP`/`LWIP_DNS` are all on, 16 TCP PCBs,
-  8 UDP PCBs, a 256 KB heap. (No TLS/altcp yet - see phase 4.)
+  8 UDP PCBs, a 256 KB heap. (No TLS/altcp yet - see phase 4. Since built:
+  altcp TLS over mbedTLS, `https://` works.)
 
 ## Why this shape
 

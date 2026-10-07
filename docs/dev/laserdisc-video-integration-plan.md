@@ -232,6 +232,10 @@ Three HVS planes: **0** = video (`videoplayer.c:47`), **1** = the Beeb screen
 (`SCREEN_PLANE`, `framebuffer/screen_modes.c:26`), **2** = the mouse pointer
 (`MOUSE_PLANE`, `mouseredirect.c:246`).
 
+> **2026-10-07:** plane 2 / `MOUSE_PLANE` no longer exists - the pointer is
+> drawn into the computer plane, and 38db70a removed the plane and its VP
+> handling. Problem 1 below is history; there are now two planes.
+
 `fcode.c` pokes `screen_plane_enable()` and `screen_set_palette()` directly
 (`fcode.c:313`, `fcode.c:496-517`). Three problems:
 

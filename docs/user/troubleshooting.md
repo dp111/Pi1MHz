@@ -3,7 +3,7 @@
 ## Nothing works at all
 
 - **Check the SD card.** The card root must contain `bootcode.bin`,
-  `start_cd.elf`, `fixup_cd.dat`, `config.txt`, `kernel.img`,
+  `start.elf`, `fixup.dat`, `config.txt`, `kernel.img`,
   `kernel7.img` and the `Pi1MHz` folder. A card with only some of
   these will not boot. The card must be FAT formatted.
 - **Check the Pi's power/activity LED.** If it never flickers after

@@ -22,10 +22,11 @@
     record can be decoded with no other data - that is what makes
     LaserDisc-style random access and freeze frame trivial.
 
-    The audio is pre-resampled by the tool to 46875 Hz, the native rate
-    of rpi/audio.c's PWM path, so playback needs no rate conversion:
-    at 25 fps each record carries exactly 1875 stereo samples (7500
-    bytes).
+    The audio is pre-resampled by the tool to audio_rate - 48000 Hz by
+    default (tools/make_pvf.py, make_pvfv2.py --audio-rate), 46875 Hz
+    (the PWM path's native rate) in the original files.  The player
+    plays the header's rate.  At 25 fps and 48000 Hz each record
+    carries 1920 stereo samples (7680 bytes); at 46875 Hz, 1875 (7500).
 
     32-bit offsets cap a file at 4 GB, which is also the FAT32 limit; a
     Domesday side (54000 frames) comes to roughly 1.5-2.5 GB.
@@ -47,9 +48,9 @@ typedef struct {
     uint32_t fps_num;                /* 25 */
     uint32_t fps_den;                /* 1 */
     uint32_t frame_count;
-    uint32_t audio_rate;             /* 46875, or 0 = no audio */
+    uint32_t audio_rate;             /* 48000 (46875 in old files), or 0 = no audio */
     uint32_t audio_channels;         /* 2 */
-    uint32_t audio_bytes_per_frame;  /* nominal: 1875 * 2ch * 2B = 7500 */
+    uint32_t audio_bytes_per_frame;  /* nominal: rate/25 * 2ch * 2B (7680 @ 48 kHz) */
     uint32_t index_offset;           /* file offset of the u32 index */
     uint32_t data_offset;            /* file offset of the first record */
     uint32_t max_video_len;          /* largest AU, for buffer sizing */

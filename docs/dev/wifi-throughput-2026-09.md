@@ -79,9 +79,10 @@ occupancy cannot be read from the hardware.
 - Never trust an iovar SET without reading it back. Two silent failures were
   found this way — commands falling through the ioctl map to `WLC_GET_VERSION`,
   and a readback that ran before the SET.
-- `build-all.sh` leaves a **debug** `kernel.img`, and a plain `build.sh rpi`
-  afterwards returns success while relinking nothing. Only `build.sh rpi clean`
-  produces the release image.
+- `build-all.sh` builds release last, but a release build with nothing to
+  relink writes nothing, so it can leave the **debug** `kernel.img` in place —
+  and a plain `build.sh rpi` afterwards returns success while relinking
+  nothing. `build.sh rpi clean` forces the release image.
 
 ## Tooling this left behind
 

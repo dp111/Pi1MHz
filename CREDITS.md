@@ -23,7 +23,7 @@ The Raspberrypi Engineers who have helped me with this project.
 |---|---|---|---|
 | **FatFs** R0.16 — FAT filesystem | ChaN, <http://elm-chan.org/fsw/ff/> | BSD-style (1-clause) | `src/BeebSCSI/fatfs/` |
 | **lwIP** — TCP/IP stack | Swedish Institute of Computer Science; Adam Dunkels and contributors | BSD-3-Clause | `src/wifi/lwip/` |
-| **TinyUSB** — USB device stack (MTP) | Ha Thach, <https://tinyusb.org> | MIT | `src/usb/tinyusb/` |
+| **TinyUSB** — USB stack: device (MTP) and host (mouse) | Ha Thach, <https://tinyusb.org> | MIT | `src/usb/tinyusb/` |
 | **FastSID** — MOS6581/8580 SID emulation | Teemu Rantanen, Michael Schwendt, Ettore Perazzoli; vendored from **VICE** 3.1. Ported into Pi1MHz as BeebSID by **Andrew Fawcett**. | GPL-2.0 | `src/fastsid/`, `src/BeebSID/` (see `src/fastsid/ORIGIN.md`) |
 | **Newlib** ARM string routines | Red Hat / newlib `machine/arm`, pulled via the arm-none-eabi toolchain | BSD-style | `src/lib/armstring-pi/` (see `NOTES.md`) |
 | **Mbed TLS** 3.6 LTS — TLS for `https://` | The Mbed TLS Contributors, <https://github.com/Mbed-TLS/mbedtls> | Apache-2.0 | `src/wifi/mbedtls/` (submodule; config `src/wifi/mbedtls_config_pi1mhz.h`) |

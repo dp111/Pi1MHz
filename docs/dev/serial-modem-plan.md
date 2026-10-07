@@ -1,5 +1,9 @@
 # Serial redirect + modem emulation — plan
 
+> **STATUS 2026-10-07: shipped in V1.37** - the serial redirector (helper
+> 19) and the Hayes-style modem, on master. The 2026-09-29 status below is
+> history ("uncommitted" was true then).
+
 > **STATUS 2026-09-29: stage A (the redirect) BUILT and hardware-tested on
 > the Master + Zero 2 W; uncommitted.** `src/serial_redirect.c` ("Serial"
 > emulator, stub at **&FCCC-&FCF8**, on by default, `Serial_addr=-1`

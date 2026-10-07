@@ -15,8 +15,9 @@ Switch it on with helper 2:
 X%=2 : CALL &FC88
 ```
 
-From then on, everything printed through the OS (`PRINT`, `*CAT`,
-listings, MODE changes and so on) also appears on the HDMI screen.
+It starts by copying the text already on the Beeb's screen, and from
+then on everything printed through the OS (`PRINT`, `*CAT`, listings,
+MODE changes and so on) also appears on the HDMI screen.
 
 Under the hood the Beeb-side hook sends each VDU byte to `&FCA0`, so
 software can also write to `&FCA0` directly to print on the HDMI
@@ -28,9 +29,9 @@ live snapshot at `http://Pi1MHz/framebuffer`.
 
 ## Mouse pointer
 
-Pi1MHz can overlay a mouse pointer on the HDMI picture - this is used
-by VFS/Domesday software (`*MOUSE`), and your own programs can drive it
-too, by writing `&FCAC-&FCB0`:
+Pi1MHz can draw a mouse pointer into the HDMI picture - this is used
+by VFS/Domesday software (`*MOUSE`, `*POINTER`), and your own programs
+can drive it too, by writing `&FCAC-&FCAF`:
 
 | Address | Contents |
 |---|---|
@@ -38,10 +39,14 @@ too, by writing `&FCAC-&FCB0`:
 | `&FCAD` | X position, high byte |
 | `&FCAE` | Y position, low byte |
 | `&FCAF` | bits 0-3: Y position high bits; bits 4-7: pointer shape 0-3 (4 or more = pointer off) |
-| `&FCB0` | pointer type select |
+
+The pointer moves when `&FCAF` is written, so write it last. It is
+drawn in MODE 0, 1 and 2 only. BREAK hides it, and it stays hidden
+until a program sets a position again; the VFS ROM's `*POINTER 0`
+hides it by writing shape 15.
 
 Reading `&FCAC-&FCAF` gives a [USB mouse](usb-mouse.md)'s movement
-instead.
+instead - see that page for the layout.
 
 ## Video background
 
@@ -118,8 +123,9 @@ To use it you need three things:
    numbers work) and packs the audio ready-resampled for the Pi.
    A Domesday disc side comes to roughly 2 GB.
 
-3. Nothing else - at boot the player shows picture 1 and then follows
-   the F-codes: `Fxxxxx R/N/Q/S/I`, `N`, `O`, `L`, `M`, `*`, `/`,
+3. Nothing else - the player does nothing at boot; it opens the file
+   the first time the Beeb asks it for a picture, and then follows the
+   F-codes: `Fxxxxx R/N/Q/S/I`, `N`, `O`, `L`, `M`, `*`, `/`,
    `A0/A1`, `B0/B1`, `?F`, `+yy`/`-yy`, `X`, the VP415 speed set
    (`SxxxF`/`SxxxS` with `U`/`V`/`W`/`Z` slow and fast motion), and
    `D0`/`D1` for the player's own on-screen picture number. With the

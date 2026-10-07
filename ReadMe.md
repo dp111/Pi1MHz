@@ -17,7 +17,8 @@ becomes, all at once:
   mount for the SD card
 - **Econet over WiFi** (AUN) and **Teletext** (from an internet stream)
 - **USB mouse** for the VFS pointer, or **USB file access** (MTP, with
-  `usb_mode=device`) - the Pi appears as a portable device
+  `usb_mode=device`) - the Pi appears as a portable device. Not on a
+  3B+, whose port is [always a host](docs/user/usb-file-access.md)
 
 Everything is driven from image files and a single plain-text config file
 on the SD card - nothing to compile.
