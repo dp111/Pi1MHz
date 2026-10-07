@@ -493,6 +493,12 @@ static void test_disk(void)
    p = payload(); u8(&p, 0); u16(&p, 0); u16(&p, 0); u16(&p, 0); u16(&p, 400);
    CHECK(call(FB_DEV_DISK, 0x0D, &p).status == FB_INVALID_REQUEST, "binary list refused, as upstream");
 
+   /* A geometry the image cannot have is refused before the slot is
+      closed: the image stays mounted. */
+   p = payload(); u8(&p, 1); u16(&p, 256); u32(&p, 123);
+   CHECK(call(FB_DEV_DISK, 0x0C, &p).status == FB_INVALID_REQUEST, "reinitialize bad geometry refused");
+   CHECK(disk_read(1, 0, 256).status == FB_OK, "and the slot keeps its image");
+
    /* Reinitialize slot 1 as 40 tracks. */
    p = payload(); u8(&p, 1); u16(&p, 256); u32(&p, 400);
    r = call(FB_DEV_DISK, 0x0C, &p);
