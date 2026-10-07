@@ -1046,6 +1046,11 @@ _Noreturn void kernel_main(void)
       selects it again once both are done (the "doorbell FIQ" line). */
    RPI_IRQBase->FIQ_control = 0;
 
+   /* Before any property request - get_cmdline_prop below is one: a
+      chain-boot inherits the VideoCore's mailbox state, and a stale reply
+      desynchronises every later call. */
+   RPI_MailboxInit();
+
    unsigned int baud_rate = 115200;
    const char * const prop = get_cmdline_prop("baud_rate");
    if (prop)
@@ -1064,10 +1069,6 @@ _Noreturn void kernel_main(void)
       chain-boot dies.  See watchdog_boot_kick(). */
    watchdog_boot_kick();
    RPI_BootStage(BOOT_STAGE_ENTRY);
-
-   /* Before any property request: a chain-boot inherits the VideoCore's
-      mailbox state, and a stale reply desynchronises every later call. */
-   RPI_MailboxInit();
    RPI_BootStage(BOOT_STAGE_MAILBOX);
 
    enable_MMU_and_IDCaches(0);

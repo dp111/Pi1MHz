@@ -40,10 +40,10 @@ if [ "$size" -ne 16384 ]; then
     echo "$rom is $size bytes, expected 16384" >&2
     exit 1
 fi
-# Nothing is installed into firmware/Pi1MHz/ from here. What Pi1MHz would
-# serve is the merged image, and that one is a derived work of three parties
-# who have granted no licence for it - see CREDITS.md and README.md. Until
-# that is settled this builds for development and for the tests only.
+# Nothing is installed into firmware/Pi1MHz/ from here. What Pi1MHz ships is
+# the merged image (build-merged.sh), a third-party binary under Roland Leurs'
+# terms with Peter Clarke's permission - see CREDITS.md and README.md.  This
+# WiFi-only image is for development and for the tests.
 if [ "$wicfs" -ne 0 ]; then
     cp "$rom" "$out/$rom"       # out of the temporary tree, into src/
 fi

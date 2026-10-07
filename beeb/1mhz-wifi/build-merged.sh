@@ -2,9 +2,10 @@
 # Build the merged image: this ROM plus the WiCFS cassette filing system, in
 # one 16K bank.
 #
-# The filing system is not in this tree and must not be committed to it. Two
-# of its three authors have never stated any licence, and the third states
-# that none is granted, so this fetches the sources at build time instead:
+# The filing system is not in this tree and must not be committed to it: its
+# terms (Roland Leurs' non-commercial licence, which anything derived must
+# carry) cannot be added to this GPL-3.0 tree, so this fetches the sources at
+# build time instead:
 #
 #   ElkWiFi 0.23      wicfs.asm, from Roland Leurs, itself deriving from
 #                     Martin Barr's UPCFS. The pinned commit is unreferenced
@@ -12,8 +13,10 @@
 #   1mhzWifi          Peter Clarke's 45 patches to that file, and the five
 #                     sources around it that are his own work.
 #
-# See CREDITS.md. Nothing here is installed into firmware/Pi1MHz/: the
-# merged image may not be redistributed until those terms are settled.
+# Peter Clarke has given this project permission to use his work, and the
+# merged image ships as a third-party binary, firmware/Pi1MHz/1mhz-wicfs.rom,
+# under Roland Leurs' terms - see CREDITS.md and README.md.  Nothing here
+# installs it: the shipped copy is put there deliberately.
 set -eu
 
 ELKWIFI_URL=https://github.com/AtomicRoland/ElkWiFi

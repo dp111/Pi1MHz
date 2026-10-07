@@ -15,7 +15,9 @@ the same time.
    |---|---|
    | `host` (default) | a host for a USB mouse |
    | `device` | [USB file access (MTP)](usb-file-access.md) to a computer |
-   | `auto` | a host when an OTG adapter is plugged in at start-up, MTP otherwise |
+   | `auto` | a host when an OTG adapter is plugged in at start-up, MTP otherwise - but see below |
+
+   `auto` reads the port's OTG ID pin once, at start-up, and is not reliable on every Pi: a Zero 2 W with a plain lead to a computer has been seen to start as a host. If it guesses wrong, set `host` or `device`.
 
    On a Pi 1, 2 or 3 Model B (including the B+ and 3B+) the port is
    [always a host](usb-file-access.md).

@@ -301,6 +301,6 @@ BREAK after a Pi reboot no longer crashes the Master: the Pi changes screen mode
 Screen redirector: the Beeb's screen, boot message included, is copied to the Pi when the redirector starts.
 MODE changes are quicker (a row-at-a-time clear) and rewrite only the palette entries that change.
 Pi 3B+ WiFi joins again: back to the 43455 firmware 7.45.241 (7.45.265 shipped since V1.31 could not join).
-VFS ROM 2.02: the user port trackball works again with the USB mouse code; *POINTER 0 should hide the Pi's pointer (not yet tried on a Beeb).
+VFS ROM 2.02: the user port trackball works again with the USB mouse code; *POINTER 0 hides the Pi's pointer.
 The Pi's mouse pointer goes off at BREAK.
 USB mouse: movement is reported in whole steps of 4 graphics units, the VFS pointer's step; the remainder carries to the next read.

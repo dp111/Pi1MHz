@@ -188,10 +188,10 @@ static char *get_cmdline(void) {
          if (n >= sizeof(cmdline)) n = sizeof(cmdline) - 1;
          memcpy(cmdline, buf->data.buffer_8, n);
          cmdline[n] = 0;
+         read = 1;          /* only a real answer is kept */
       } else {
-         cmdline[0] = 0;
+         cmdline[0] = 0;    /* asked again next time */
       }
-      read = 1;
    }
    return cmdline;
 }
