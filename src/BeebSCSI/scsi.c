@@ -93,6 +93,7 @@
 #define ILLEGAL_ADDR    (0xA1u<<24)
 #define BAD_ARG         (0x24u<<24)
 #define INTERLEAVE_ERROR (0x1Au<<24)
+#define INVALID_COMMAND (0x20u<<24)   // ACB-4000 class 2 code 0: invalid command
 
 // REQUEST SENSE command error reporting structure
 static uint32_t requestSenseData[MAX_LUNS];
@@ -484,6 +485,10 @@ uint8_t scsiEmulationCommand(void)
    }
    if (debugFlag_scsiCommands) debugString_P(PSTR("\r\n"));
 
+   // A host reset or reselection while the CDB was being read leaves stale
+   // bus bytes in it: never run that as a command
+   if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
+
   // if the format Drive[1,2,4,8].0 was used, convert to to Drive 1.[0 1 2 3]
 
    uint32_t newLUN = scsiTransformLUNid(commandDataBlock.data[1]);
@@ -560,6 +565,9 @@ uint8_t scsiEmulationCommand(void)
 	// prevent the requester from potentially hanging if it sends an unknown command
 	// Indicate unsuccessful command in status and message
 	commandDataBlock.status = SCSI_STATUS_CHECK_COND;      // 0x02 = Bad
+
+   // Set request sense error globals (without, REQUEST SENSE says NO ERROR)
+   requestSenseData[commandDataBlock.targetLUN] = INVALID_COMMAND; // 20 Invalid command
    return SCSI_STATUS;
 }
 
@@ -834,6 +842,10 @@ static uint8_t scsiCommandFormat(void)
          }
       }
    }
+
+   // A host reset or reselection while the defect list was being read:
+   // the command is dead - abandon it rather than format the image
+   if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 
    // Create/recreate the LUN data file according to the drive descriptor and fill
    // with the required data pattern byte:
@@ -1586,6 +1598,10 @@ static uint8_t scsiCommandModeSelect6(void)
 	}
 	if (debugFlag_scsiCommands)debugString_P(PSTR("\r\n"));
 
+   // A host reset or reselection mid-transfer leaves stale bus bytes in
+   // Buffer: abandon the command rather than save them to the .cfg
+   if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
+
    // we skip the 4 byte header
    uint8_t start = 4;
 
@@ -2082,6 +2098,10 @@ static uint8_t scsiCommandInquiry(void)
 
 		// Indicate unsuccessful command in status and message
 		commandDataBlock.status = SCSI_STATUS_CHECK_COND;      // 0x02 = Bad
+
+		// Set request sense error globals: no descriptor loaded means the
+		// LUN was never started - as TEST UNIT READY reports it
+		requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
 	}
 
    return SCSI_STATUS;
@@ -2165,6 +2185,13 @@ static uint8_t scsiWriteFCode(void)
    // Check for a host reset condition
    if (hostadapterReadResetFlag()) {
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Write DMA interrupted by host reset at byte #"), (uint16_t)bytesTransferred, true);
+      return SCSI_BUSFREE;
+   }
+
+   /* A short DMA means the host stopped ACKing part-way: the tail of
+      scsiFcodeBuffer still holds the previous F-code, so running it would
+      execute half the new command and half the old.  Bail as WRITE6 does. */
+   if (bytesTransferred < 256) {
       return SCSI_BUSFREE;
    }
 
@@ -2394,6 +2421,10 @@ static uint8_t scsiBeebScsiSelect(void)
         }
      }
 
+   // A host reset or reselection mid-transfer leaves stale bus bytes in
+   // Buffer: abandon the command rather than jukebox to them
+   if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
+
    // Only jukebox if none of that directory's LUNs is started
    if (!scsiJukebox(Buffer[0])) {
       // One or more of its LUNs are started... cannot perform jukeboxing
@@ -2600,7 +2631,15 @@ static uint8_t scsiBeebScsiFatRead(void)
          sei();
          if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Failed to read new FAT block"));
          filesystemCloseFatForRead();
-         return SCSI_BUSFREE;
+
+         /* Report it as READ6 does.  BUS FREE here, mid data-in, left the
+            host waiting on REQ for a byte that never came. */
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+
+         // Set request sense error globals
+         requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
+
+         return SCSI_STATUS;
       }
       // Send the data to the host
       cli();

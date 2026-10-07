@@ -253,21 +253,21 @@ void hd_juke_service(void)
    if (filesystemEjected())
       return;
    uint8_t dir = (uint8_t)(p & 0xFFu);
-   /* Reselecting the directory that is already current is a no-op: the
-      full reset below remounts the FAT, which invalidates every open FIL
-      and forces a video reopen - a Domesday player re-poking its own
-      directory must not have its disc rewound (scsiJukeboxSwap's same-dir
-      check, which guards only its own videoplayer notification, runs too
-      late to prevent that: the remount notify has already fired by then). */
+   /* Reselecting the directory that is already current is a no-op: it
+      would stop that directory's LUNs for nothing, and a Domesday player
+      re-poking its own directory must not have its disc rewound. */
    if (dir == ((scsiHostID >= 16) ? filesystemGetLunDirectoryVFS()
                                   : filesystemGetLunDirectory()))
       return;
-   /* Deliberately the unguarded swap.  filesystemReset() below dismounts
-      every LUN first, which is the point of this path: *FX147,65,n swaps
-      discs whatever was mounted.  BSSELECT / *SCSIJUKE is the one that
-      refuses while a LUN of that directory is started - see
-      scsiJukeboxSwap's comment. */
-   filesystemReset();
+   /* Deliberately the unguarded swap: *FX147,65,n swaps discs whatever was
+      mounted, so the swapped directory's LUNs are stopped first.  Only
+      those: this used to call filesystemReset(), whose remount changed the
+      FatFs volume id under every other open file (FAT service, FujiNet,
+      MTP, WebDAV) and stopped the other host's LUNs too - a Domesday side
+      flip stopped ADFS, which never restarts a LUN on its own.  BSSELECT /
+      *SCSIJUKE is the one that refuses while a LUN of that directory is
+      started - see scsiJukeboxSwap's comment. */
+   filesystemStopDirectoryLuns((scsiHostID >= 16) ? 8u : 0u);
    scsiJukeboxSwap(dir);
 }
 
@@ -487,20 +487,31 @@ uint8_t harddisc_emulator_get_instance(void)
 // main poll loop (audio, wifi, USB, teletext) is never frozen for seconds.
 #define HD_ACK_TIMEOUT_US 100000u
 
-// Wait for ACK (or host reset). Returns false on timeout. The system
-// timer is only read every 256th spin to keep the normal path fast.
+// Wait for ACK (or host reset). Returns false unless the host ACKed: on
+// timeout, selection or reset. The system timer is only read every 256th
+// spin to keep the normal path fast.
 #ifdef DEBUG
 uint32_t hd_ack_timeouts;        // transfers abandoned: host never ACKed
 uint32_t hd_service_max_us;      // longest audio_pump() inside a transfer
 uint32_t hd_ack_wait_max_us;     // longest single wait for the host's ACK
 #endif
 
+/* Latched when hd_wait_ack() stops for a selection or a reset instead of an
+   ACK: the host has restarted and the command in progress is dead.  SEL and
+   nRST are both gone again by the time a caller looks (BUS FREE answers the
+   new selection; a BREAK can begin and end inside one slow f_write), so the
+   caller tests this through hostadapterReadResetFlag().  Cleared in BUS
+   FREE by hostadapterWriteResetFlag(false), before the next command. */
+static bool hd_host_restarted;
+
 static bool hd_wait_ack(void)
 {
    uint32_t counter = 0;
    uint32_t start = RPI_GetSystemTime();
    /* A selection arriving mid-wait means the host restarted: stop waiting
-      for an ACK it will never send, rather than sitting out the timeout. */
+      for an ACK it will never send, rather than sitting out the timeout.
+      Only an ACK is a byte: report the other two as a failed wait, so a
+      transfer stops short instead of taking the stale HD_DATA latch. */
    while ((HD_ACK == CLEAR) && (HD_SEL == CLEAR) && !Pi1MHz_is_rst_active())
    {
       if ((++counter & 0xFFu) == 0u)
@@ -526,6 +537,11 @@ static bool hd_wait_ack(void)
          if (waited > 100u)
             audio_pump_until(&HD_ACK);
       }
+   }
+   if (HD_ACK == CLEAR)
+   {
+      hd_host_restarted = true;
+      return false;
    }
    return true;
 }
@@ -656,15 +672,15 @@ inline bool hostadapterConnectedToExternalBus(void)
 }
 
 // Function to write the host reset flag
-inline void hostadapterWriteResetFlag(bool flagState __attribute__((unused)))
+inline void hostadapterWriteResetFlag(bool flagState)
 {
-
+   hd_host_restarted = flagState;
 }
 
 // Function to return the state of the host reset flag
 inline bool hostadapterReadResetFlag(void)
 {
-   return Pi1MHz_is_rst_active();
+   return hd_host_restarted || Pi1MHz_is_rst_active();
 }
 
 // Function to write the data phase flags and control databus direction

@@ -11,6 +11,9 @@
    ADFS *SCSIJUKE was refused while the VFS LaserDisc LUN 8 was mounted,
    and the reverse, although each host swaps only its own directory.
 
+   Review 2026-10-06 S3, S5, S6, S8, S10, S11 and P8: whole commands run
+   through scsiProcessEmulation() against a scripted host (run_cmd).
+
    Real scsi.c, filesystem.c, fileparser.c and FatFs on a RAM disk.
    f_open/f_close are wrapped (-Wl,--wrap) to see handles left open. */
 #include <stdio.h>
@@ -42,7 +45,8 @@ void videoplayer_media_changed(void) {}
 /* The bus and the F-code layer: the tests call the LUN layer directly. */
 uint8_t scsiFcodeBuffer[256];
 uint8_t scsiFcodeBufferRX[256];
-void fcodeWriteBuffer(uint8_t lunNumber) { (void)lunNumber; }
+static int fcode_writes;               /* F-codes handed to the player */
+void fcodeWriteBuffer(uint8_t lunNumber) { (void)lunNumber; fcode_writes++; }
 void fcodeReadBuffer(void) {}
 void fcodePoll(void) {}
 void fcodeClearBuffer(void) {}
@@ -50,17 +54,67 @@ void fcode_disc_flip(void) {}
 void hd_audio_service(void) {}
 void hd_juke_service(void) {}
 void hd_card_service(void) {}
-uint8_t hostadapterReadDatabus(void) { return 0; }
-uint8_t hostadapterReadByte(void) { return 0; }
-void hostadapterWriteByte(uint8_t v) { (void)v; }
-uint32_t hostadapterPerformReadDMA(const uint8_t *b) { (void)b; return 256; }
-uint32_t hostadapterPerformWriteDMA(uint8_t *b) { (void)b; return 256; }
-void hostadapterWriteResetFlag(bool f) { (void)f; }
-bool hostadapterReadResetFlag(void) { return false; }
-void hostadapterWriteDataPhaseFlags(bool m, bool c, bool i) { (void)m; (void)c; (void)i; }
-void hostadapterWriteBusyFlag(bool f) { (void)f; }
+
+/* A scripted host for the bus tests (run_cmd): it selects, then supplies
+   the CDB and any data-out bytes from bus_in[]; data-in bytes land in
+   bus_out[] and the status byte in bus_status.  The reset flag behaves as
+   the firmware's hostadapterReadResetFlag(): set by a host reset (here
+   raised once reset_after_in host bytes have been read), cleared in BUS
+   FREE by hostadapterWriteResetFlag(false). */
+static bool     bus_sel;
+static uint8_t  bus_host = 1;          /* 1 = ADFS drive 0, 16 = VFS */
+static uint8_t  bus_in[1024];
+static unsigned bus_in_len, bus_in_pos;
+static uint8_t  bus_out[4096];
+static unsigned bus_out_len;
+static int      bus_status = -1;       /* -1: no status phase (BUS FREE) */
+static bool     ph_msg, ph_cd, ph_io;
+static bool     bus_reset;
+static int      reset_after_in = -1;
+static unsigned dma_short;             /* next write DMA delivers only this many bytes */
+static int      fail_disk_after_dma = -1;  /* disk_read fails after this many read DMAs */
+static unsigned read_dmas;
+static bool     disk_fail;
+
+static uint8_t bus_in_next(void)
+{
+   uint8_t b = bus_in_pos < bus_in_len ? bus_in[bus_in_pos] : 0;
+   bus_in_pos++;
+   if (reset_after_in >= 0 && bus_in_pos >= (unsigned)reset_after_in)
+      bus_reset = true;
+   return b;
+}
+
+uint8_t hostadapterReadDatabus(void) { return bus_host; }
+uint8_t hostadapterReadByte(void) { return bus_in_next(); }
+void hostadapterWriteByte(uint8_t v)
+{
+   if (ph_cd && ph_io && !ph_msg) bus_status = v;
+   else if (!ph_cd && ph_io && bus_out_len < sizeof bus_out) bus_out[bus_out_len++] = v;
+}
+uint32_t hostadapterPerformReadDMA(const uint8_t *b)
+{
+   for (unsigned i = 0; i < 256u && bus_out_len < sizeof bus_out; i++)
+      bus_out[bus_out_len++] = b[i];
+   read_dmas++;
+   if (fail_disk_after_dma >= 0 && read_dmas >= (unsigned)fail_disk_after_dma)
+      disk_fail = true;
+   return 256;
+}
+uint32_t hostadapterPerformWriteDMA(uint8_t *b)
+{
+   unsigned n = dma_short ? dma_short : 256u;
+   dma_short = 0;
+   for (unsigned i = 0; i < n; i++)
+      b[i] = bus_in_next();
+   return n;
+}
+void hostadapterWriteResetFlag(bool f) { bus_reset = f; }
+bool hostadapterReadResetFlag(void) { return bus_reset; }
+void hostadapterWriteDataPhaseFlags(bool m, bool c, bool i) { ph_msg = m; ph_cd = c; ph_io = i; }
+void hostadapterWriteBusyFlag(bool f) { if (f) bus_sel = false; }
 void hostadapterWriteRequestFlag(bool f) { (void)f; }
-bool hostadapterReadSelectFlag(void) { return false; }
+bool hostadapterReadSelectFlag(void) { return bus_sel; }
 
 /* ---- RAM disk ---------------------------------------------------------- */
 
@@ -72,6 +126,7 @@ DSTATUS disk_status(BYTE pdrv) { (void)pdrv; return 0; }
 DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
 {
    (void)pdrv;
+   if (disk_fail) return RES_ERROR;
    if (sector + count > DISK_SECTORS) return RES_PARERR;
    memcpy(buff, disk + (size_t)sector * 512u, (size_t)count * 512u);
    return RES_OK;
@@ -402,6 +457,292 @@ static void test_jukebox(void)
    stop_all();
 }
 
+/* S2: a jukebox stops only the swapped directory's LUNs and leaves the card
+   mounted, so a file another subsystem holds open on it stays usable.  The
+   control is the full filesystemReset() the jukebox used to do. */
+static void test_stop_directory_luns(void)
+{
+   static char why[160];
+   FIL other;
+   UINT br = 0;
+   char buf[4];
+
+   stop_all();
+   filesystemSetLunDirectory(1, 3);
+   filesystemSetLunDirectory(16, 1);
+   bool s0 = filesystemSetLunStatus(0, true);
+   bool s8 = filesystemSetLunStatus(8, true);
+   FRESULT fo = f_open(&other, "/BeebVFS0/scsi0.dat", FA_READ);
+
+   filesystemStopDirectoryLuns(8);
+   FRESULT fr = f_read(&other, buf, sizeof buf, &br);
+   snprintf(why, sizeof why, "start 0 %d 8 %d, open %d, LUN0 %d LUN8 %d, read %d",
+            s0, s8, fo, filesystemReadLunStatus(0), filesystemReadLunStatus(8), fr);
+   check("S2 stopping the VFS directory's LUNs leaves ADFS LUN 0 started",
+         s0 && s8 && filesystemReadLunStatus(0) && !filesystemReadLunStatus(8), why);
+   check("S2 ... and another subsystem's open file stays valid",
+         fo == FR_OK && fr == FR_OK && br == sizeof buf, why);
+
+   filesystemReset();
+   fr = f_read(&other, buf, sizeof buf, &br);
+   snprintf(why, sizeof why, "read after reset %d (want an error)", fr);
+   check("S2 control: a full filesystemReset invalidates that file", fr != FR_OK, why);
+   stop_all();
+}
+
+/* ---- the bus: whole commands through scsiProcessEmulation() ----------- */
+
+/* One command from selection to BUS FREE.  Returns the status byte, or -1
+   if the target went BUS FREE without a status phase. */
+static int run_cmd(uint8_t host, const uint8_t *cdb, unsigned cdblen,
+                   const uint8_t *data, unsigned datalen)
+{
+   memcpy(bus_in, cdb, cdblen);
+   if (datalen) memcpy(bus_in + cdblen, data, datalen);
+   bus_in_len = cdblen + datalen;
+   bus_in_pos = 0;
+   bus_out_len = 0;
+   bus_status = -1;
+   bus_host = host;
+   bus_sel = true;
+   for (int i = 0; i < 64; i++) {
+      scsiProcessEmulation();
+      if (i > 0 && scsiDiagState() == SCSI_BUSFREE)
+         break;
+   }
+   reset_after_in = -1;
+   return bus_status;
+}
+
+/* REQUEST SENSE on `lun` (host 1): the error code byte. */
+static int sense_of(uint8_t lun)
+{
+   const uint8_t rs[6] = { 0x03, (uint8_t)(lun << 5), 0, 0, 4, 0 };
+   int st = run_cmd(1, rs, 6, NULL, 0);
+   return (st == 0 && bus_out_len >= 4) ? bus_out[0] : -1;
+}
+
+static void read_file(const char *path, void *buf, UINT len)
+{
+   FIL f;
+   UINT done = 0;
+   memset(buf, 0, len);
+   if (__real_f_open(&f, path, FA_READ) == FR_OK) {
+      (void)f_read(&f, buf, len, &done);
+      __real_f_close(&f);
+   }
+}
+
+/* S3: a FAT read error part-way through BSFATREAD. */
+static void test_bsfatread_failure(void)
+{
+   static char why[160];
+   static uint8_t data[2048];
+   memset(data, 0x5A, sizeof data);
+   f_mkdir("/Transfer");
+   put_file("/Transfer/big.bin", data, sizeof data);
+   stop_all();
+
+   /* G6 0x14: block offset 0, 4 blocks, FAT file 0 (the only entry). */
+   const uint8_t cdb[6] = { 0xD4, 0, 0, 0, 4, 0 };
+   int ok = run_cmd(1, cdb, 6, NULL, 0);
+   check("S3 BSFATREAD control: 4 blocks, status GOOD", ok == 0 && bus_out_len == 1024,
+         "control transfer failed");
+
+   /* The disc fails after the first block: block 3 needs a new sector. */
+   read_dmas = 0;
+   fail_disk_after_dma = 1;
+   int st = run_cmd(1, cdb, 6, NULL, 0);
+   fail_disk_after_dma = -1;
+   disk_fail = false;
+   int sense = sense_of(0);
+   snprintf(why, sizeof why, "status %d (want 2, -1 = BUS FREE mid data-in), sense %d (want 4)",
+            st, sense);
+   check("S3 BSFATREAD read failure ends in CHECK CONDITION with sense", st == 2 && sense == 4, why);
+}
+
+/* S5: CHECK CONDITION always comes with sense data. */
+static void test_sense_set(void)
+{
+   static char why[120];
+   const uint8_t bad[6] = { 0x05, 0, 0, 0, 0, 0 };      /* group 0 opcode 5: none */
+   int st = run_cmd(1, bad, 6, NULL, 0);
+   int sense = sense_of(0);
+   snprintf(why, sizeof why, "status %d, sense %d (want 2, 0x20)", st, sense);
+   check("S5 unknown opcode gives CHECK CONDITION and INVALID COMMAND sense",
+         st == 2 && sense == 0x20, why);
+
+   const uint8_t inq[6] = { 0x12, 5 << 5, 0, 0, 36, 0 }; /* LUN 5: never started */
+   st = run_cmd(1, inq, 6, NULL, 0);
+   sense = sense_of(5);
+   snprintf(why, sizeof why, "status %d, sense %d (want 2, 2)", st, sense);
+   check("S5 INQUIRY of a never-started LUN gives UNIT NOT READY sense",
+         st == 2 && sense == 0x02, why);
+}
+
+/* S8: a short WRITE F-code transfer must not run. */
+static void test_fcode_short(void)
+{
+   static char why[120];
+   static uint8_t fc[256];
+   memset(fc, 0, sizeof fc);
+   memcpy(fc, "E0\r", 3);
+   const uint8_t cdb[6] = { 0xCA, 0, 0, 0, 1, 0 };     /* G6 0x0A, LUN 0 (+8) */
+   fcode_writes = 0;
+   int st = run_cmd(16, cdb, 6, fc, sizeof fc);
+   snprintf(why, sizeof why, "status %d, F-codes run %d", st, fcode_writes);
+   check("S8 WRITE F-code control: a full block runs", st == 0 && fcode_writes == 1, why);
+
+   fcode_writes = 0;
+   dma_short = 100;
+   st = run_cmd(16, cdb, 6, fc, 100);
+   snprintf(why, sizeof why, "status %d, F-codes run %d (want 0)", st, fcode_writes);
+   check("S8 WRITE F-code with a short transfer does not run", fcode_writes == 0, why);
+}
+
+/* P8 (scsi.c side): a host reset or reselection part-way through a
+   data-out phase abandons the command before anything is saved. */
+static void test_reset_abandons(void)
+{
+   static char why[160];
+   static char before[256], after[256];
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_cfg("/BeebSCSI0/scsi0.cfg", 10, 2);
+   bool s = filesystemSetLunStatus(0, true);
+
+   /* MODE SELECT: header, LBA descriptor, drive parameter list 50 x 6 */
+   const uint8_t ms[6] = { 0x15, 0, 0, 0, 22, 0 };
+   const uint8_t msd[22] = { 0, 0, 0, 8,  0, 0, 0, 0, 0, 0, 1, 0,
+                             1, 0, 50, 6, 0, 0x80, 0, 0x80, 0, 1 };
+   read_file("/BeebSCSI0/scsi0.cfg", before, sizeof before - 1);
+   reset_after_in = 6 + 10;
+   int st = run_cmd(1, ms, 6, msd, sizeof msd);
+   read_file("/BeebSCSI0/scsi0.cfg", after, sizeof after - 1);
+   snprintf(why, sizeof why, "start %d, status %d (want -1), heads %u (want 2), cfg %s",
+            s, st, (unsigned)filesystemGetheadspercylinder(0),
+            strcmp(before, after) ? "CHANGED" : "unchanged");
+   check("P8 MODE SELECT cut by a host reset saves nothing",
+         s && st == -1 && filesystemGetheadspercylinder(0) == 2 && !strcmp(before, after), why);
+
+   st = run_cmd(1, ms, 6, msd, sizeof msd);
+   snprintf(why, sizeof why, "status %d, heads %u (want 0, 6)",
+            st, (unsigned)filesystemGetheadspercylinder(0));
+   check("P8 MODE SELECT control: uncut, it is saved",
+         st == 0 && filesystemGetheadspercylinder(0) == 6, why);
+   stop_all();
+   put_cfg("/BeebSCSI0/scsi0.cfg", 10, 2);
+
+   /* BSSELECT (jukebox) cut part-way through its 8 bytes */
+   const uint8_t bs[6] = { 0xD1, 0, 0, 0, 8, 0 };
+   const uint8_t bsd[8] = { 3, 0, 0, 0, 0, 0, 0, 0 };
+   reset_after_in = 6 + 4;
+   st = run_cmd(1, bs, 6, bsd, sizeof bsd);
+   snprintf(why, sizeof why, "status %d (want -1), directory %u (want 0)",
+            st, filesystemGetLunDirectory());
+   check("P8 BSSELECT cut by a host reset does not jukebox",
+         st == -1 && filesystemGetLunDirectory() == 0, why);
+
+   /* A CDB cut part-way is never run as a command */
+   const uint8_t tur[6] = { 0x00, 0, 0, 0, 0, 0 };
+   s = filesystemSetLunStatus(0, true);
+   reset_after_in = 3;
+   st = run_cmd(1, tur, 6, NULL, 0);
+   int st2 = run_cmd(1, tur, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d (want -1), then uncut %d (want 0)", st, st2);
+   check("P8 a CDB cut by a host reset is not run", s && st == -1 && st2 == 0, why);
+   stop_all();
+}
+
+/* S6: an ADFS image marked read-only starts, and writes to it are
+   swallowed and reported as done. */
+static void test_readonly_image(void)
+{
+   static char why[200];
+   static uint8_t img[4096], back[4096], blk[256];
+   memset(img, 0x11, sizeof img);
+   f_mkdir("/BeebSCSI5");
+   put_cfg("/BeebSCSI5/scsi0.cfg", 10, 2);
+   put_file("/BeebSCSI5/scsi0.dat", img, sizeof img);
+   FRESULT cr = f_chmod("/BeebSCSI5/scsi0.dat", AM_RDO, AM_RDO);
+   stop_all();
+   filesystemSetLunDirectory(1, 5);
+
+   bool s = filesystemSetLunStatus(0, true);
+   snprintf(why, sizeof why, "chmod %d, start %d", cr, s);
+   check("S6 a read-only ADFS image starts", cr == FR_OK && s, why);
+
+   const uint8_t rd[6] = { 0x08, 0, 0, 1, 1, 0 };
+   int st = run_cmd(1, rd, 6, NULL, 0);
+   check("S6 ... READ6 works", st == 0 && bus_out_len == 256 && bus_out[0] == 0x11,
+         "read failed");
+
+   memset(blk, 0xEE, sizeof blk);
+   const uint8_t wr[6] = { 0x0A, 0, 0, 1, 1, 0 };
+   st = run_cmd(1, wr, 6, blk, sizeof blk);
+   read_file("/BeebSCSI5/scsi0.dat", back, sizeof back);
+   snprintf(why, sizeof why, "status %d (want 0), image %s", st,
+            memcmp(back, img, sizeof img) ? "CHANGED" : "unchanged");
+   check("S6 ... WRITE6 reports GOOD and writes nothing", st == 0 && !memcmp(back, img, sizeof img), why);
+
+   const uint8_t fm[6] = { 0x04, 0, 0x6C, 0, 0, 0 };
+   st = run_cmd(1, fm, 6, NULL, 0);
+   long sz = size_of("/BeebSCSI5/scsi0.dat");
+   snprintf(why, sizeof why, "status %d (want 0), image %ld bytes (want %u)", st, sz,
+            (unsigned)sizeof img);
+   check("S6 ... FORMAT reports GOOD and leaves the image alone",
+         st == 0 && sz == (long)sizeof img && filesystemReadLunStatus(0), why);
+
+   stop_all();
+   (void)f_chmod("/BeebSCSI5/scsi0.dat", 0, AM_RDO);
+   s = filesystemSetLunStatus(0, true);
+   st = run_cmd(1, wr, 6, blk, sizeof blk);
+   read_file("/BeebSCSI5/scsi0.dat", back, sizeof back);
+   check("S6 control: the same image read/write takes the write",
+         s && st == 0 && back[256] == 0xEE, "write did not land");
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+}
+
+/* S11: geometry from a stopped LUN's image size. */
+static void test_stopped_geometry(void)
+{
+   static char why[160];
+   static uint8_t img[40u * 33u * 256u];          /* 40 tracks: 4 cyl x 10 heads */
+   memset(img, 0, sizeof img);
+   f_mkdir("/BeebSCSI6");
+   f_mkdir("/BeebSCSI7");
+   put_file("/BeebSCSI6/scsi2.dat", img, 4096);   /* the previous directory's image */
+   put_file("/BeebSCSI7/scsi2.dat", img, sizeof img);
+   stop_all();
+   filesystemSetLunDirectory(1, 6);
+   bool s = filesystemSetLunStatus(2, true);
+   filesystemSetLunStatus(2, false);
+   filesystemSetLunDirectory(1, 7);
+   filesytemdattoconfigGeometry(2);
+   snprintf(why, sizeof why, "start %d, %lu bytes, want %lu", s,
+            (unsigned long)filesystemGetLunTotalBytes(2), (unsigned long)sizeof img);
+   check("S11 a stopped LUN's geometry comes from its own image",
+         s && filesystemGetLunTotalBytes(2) == sizeof img, why);
+   filesystemSetLunDirectory(1, 0);
+}
+
+/* S10: the VFS title cache does not survive a card change. */
+static void test_title_cache(void)
+{
+   static char why[160];
+   char t[64];
+   static const char a[] = "Title=Alpha\n", b[] = "Title=Bravo\n";
+   f_mkdir("/BeebVFS7");
+   put_file("/BeebVFS7/scsi0.cfg", a, sizeof a - 1);
+   bool r1 = filesystemReadVFSCfgTextDir(7, TITLE, t, sizeof t) && !strcmp(t, "Alpha");
+   put_file("/BeebVFS7/scsi0.cfg", b, sizeof b - 1);   /* another card */
+   filesystemReset();                                  /* the card change */
+   bool r2 = filesystemReadVFSCfgTextDir(7, TITLE, t, sizeof t);
+   snprintf(why, sizeof why, "first read %d, after the change '%s' (want Bravo)", r1, r2 ? t : "");
+   check("S10 the VFS title cache is dropped on a card change", r1 && r2 && !strcmp(t, "Bravo"), why);
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -430,6 +771,16 @@ int main(int argc, char **argv)
    test_format_expand_fails();
    test_format_new_disc();
    test_jukebox();
+   test_stop_directory_luns();
+
+   scsiReset(0);
+   test_bsfatread_failure();
+   test_sense_set();
+   test_fcode_short();                  /* after test_jukebox: a VFS side with data */
+   test_reset_abandons();
+   test_readonly_image();
+   test_stopped_geometry();
+   test_title_cache();                  /* last: it remounts the card */
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;

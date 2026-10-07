@@ -104,6 +104,11 @@ static bool (*eject_cb)(void);
 void filesystemRegisterEject(bool (*eject)(void), void (*inserted)(void))
 { eject_cb = eject; (void)inserted; }
 
+/* ...and the hook run just before every f_mount() (a BBC reset's
+   filesystemReset(), a jukebox), which invalidates every open FIL. */
+static void (*remount_cb)(void);
+void filesystemRegisterRemount(void (*closing)(void)) { remount_cb = closing; }
+
 /* ---- AUN-range test handler ---- */
 static uint32_t aun_calls;
 static uint8_t  aun_last_cmd;
@@ -267,10 +272,36 @@ int main(void)
    ok(fat_service_file_in_use("/discs/held.ssd")
       && fat_service_file_in_use("/BEEB.MMB"),
       "both locks held before reset");
-   services_emulator_init(0, SVC_BASE);   /* the reset */
+   {
+      FIL *held = last_open_fp;
+      n_closed_fp = 0;
+      services_emulator_init(0, SVC_BASE);   /* the reset */
+      /* Review 2026-10-06 F2: forgetting the FIL left a file being written
+         at its old size, its new clusters orphaned.  It must be closed
+         (f_close syncs). */
+      ok(n_closed_fp == 1 && closed_fp[0] == held, "reset closes the open file");
+   }
    ok(!fat_service_file_in_use("/discs/held.ssd"), "reset releases the open-file lock");
    ok(!fat_service_file_in_use("/BEEB.MMB"), "reset releases the raw-sector latch");
    ok(do_simple(0, 20) == 42, "FAT service still dispatches after reset");
+   ok(do_simple(2, 3) == FR_INVALID_OBJECT, "the pre-reset handle is refused after reset");
+
+   puts("== volume remount (BBC reset's filesystemReset, jukebox) ==");
+   /* On a BBC reset the hard disc's init remounts the card BEFORE
+      fat_service_init runs again, and the remount invalidates every open
+      FIL - too late to close it then.  The remount hook must close it. */
+   ok(remount_cb != NULL, "fat_service_init registered a remount hook");
+   ok(do_open(6, "/discs/writing.dat") == FR_OK, "open a file before the remount");
+   {
+      FIL *writing = last_open_fp;
+      n_closed_fp = 0;
+      if (remount_cb) remount_cb();
+      ok(n_closed_fp == 1 && closed_fp[0] == writing, "remount hook closes the open file");
+      ok(!fat_service_file_in_use("/discs/writing.dat"), "remount hook releases the lock");
+      n_closed_fp = 0;
+      services_emulator_init(0, SVC_BASE);   /* the rest of the reset */
+      ok(n_closed_fp == 0, "the re-init after it finds nothing left to close");
+   }
 
    puts("== readdir-ex (17) ==");
    {

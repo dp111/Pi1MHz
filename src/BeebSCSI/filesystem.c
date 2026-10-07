@@ -132,6 +132,7 @@ static struct filesystemStateStruct
    uint8_t lunDirectory;               // Current LUN directory ID
    uint8_t lunDirectoryVFS;            // Current LUN directory ID for VFS
    bool fsLunStatus[MAX_LUNS];         // LUN image availability flags for the currently selected LUN directory (true = started, false = stopped)
+   bool fsLunReadOnly[MAX_LUNS];       // ADFS image is AM_RDO, opened FA_READ: Beeb writes to it are swallowed
 	struct HDGeometry fsLunGeometry[MAX_LUNS];   // Keep the geometry details for each LUN
    parserkeyvalue keyvalues[MAX_LUNS][NUM_KEYS];   // keys from .cfg file for each LUN
 } filesystemState;
@@ -378,6 +379,7 @@ void filesystemReset(void)
    // Reset the default FAT transfer directory
    snprintf(fatDirectory, sizeof(fatDirectory), "/Transfer");
    vfs_vol_cached_dir = -1;          /* re-stat the VFS volume marker */
+   vfs_cfg_dir = -1;                 /* and re-parse the cached side's title: a card swap comes through here */
 
    // ensure the file-system is closed on reset
    filesystemDismount();
@@ -711,6 +713,20 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
    return true;
 }
 
+/* A jukebox swaps one host's LUN directory: stop just that directory's
+   eight LUNs (0-7 ADFS, 8-15 VFS) and drop their cached .cfg values, as
+   filesystemDismount does for all sixteen - but leave the card mounted, so
+   every other file open on it (FAT service, FujiNet, MTP, WebDAV, the
+   video) stays valid.  The VFS volume cache is keyed by directory and
+   re-checks itself. */
+void filesystemStopDirectoryLuns(uint8_t firstLun)
+{
+   for (uint8_t i = firstLun; i < firstLun + 8u; i++) {
+      filesystemSetLunStatus(i, false);
+      parse_releasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
+   }
+}
+
 // Function to read the status of a LUN image
 bool filesystemReadLunStatus(uint8_t lunNumber)
 {
@@ -933,6 +949,15 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
       these files through their own paths and are unaffected. */
    fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName,
                      (lunNumber >= 8) ? FA_READ : (FA_READ | FA_WRITE));
+
+   /* The same FR_DENIED for an ADFS image marked read-only: start it FA_READ
+      rather than hand the host BAD_FORMAT.  Its writes are then swallowed and
+      reported as done, as under Beeb_write_protect (fsLunReadOnly). */
+   filesystemState.fsLunReadOnly[lunNumber] = false;
+   if (fsResult == FR_DENIED && lunNumber < 8) {
+      fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName, FA_READ);
+      filesystemState.fsLunReadOnly[lunNumber] = (fsResult == FR_OK);
+   }
 
    if (fsResult != FR_OK) {
       if (debugFlag_filesystem) {
@@ -1425,6 +1450,10 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
    }
    filesystemSetLunStatus(lunNumber, false );
 
+   // A read-only image (just found so by that start): ignore FORMAT and
+   // report success, as Beeb_write_protect does above
+   if (filesystemState.fsLunReadOnly[lunNumber]) return true;
+
    if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemFormatLun(): Sectors required = "), filesystemGetLunTotalSectors(lunNumber), true);
 
    // Assemble the .dat file name
@@ -1562,7 +1591,20 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
 
 void filesytemdattoconfigGeometry(uint8_t lunNumber)
 {
-      uint32_t lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+      /* f_size() is only the image's size while the LUN holds it open.  A
+         stopped LUN's FIL is closed and still reports the last image it
+         had - another directory's after a jukebox, zero since boot - so
+         ask the card (MODE SELECT on a new disc gets here stopped). */
+      uint32_t lunFileSize = 0;
+      if (filesystemState.fsLunStatus[lunNumber]) {
+         lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+      } else {
+         char datName[48];
+         FILINFO fno;
+         fsLunFilePath(lunNumber, "dat", datName, sizeof(datName));
+         if (f_stat(datName, &fno) == FR_OK)
+            lunFileSize = (uint32_t)fno.fsize;
+      }
 
       lunFileSize = lunFileSize / (filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack * filesystemState.fsLunGeometry[lunNumber].BlockSize);
       uint8_t heads = 16;
@@ -1820,6 +1862,11 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
    if (lunNumber > 7)
       return false;
 
+   // A read-only image (AM_RDO, opened FA_READ): nothing to seek or grow -
+   // filesystemWriteNextSector() swallows the data, as under write-protect
+   if (filesystemState.fsLunReadOnly[lunNumber])
+      return true;
+
 #if FF_USE_FASTSEEK
    FIL *fp = &filesystemState.fileObject[lunNumber];
 
@@ -1869,7 +1916,8 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
 {
    // Beeb_write_protect: swallow the sector, report success, write nothing.
    // Returning true (never false) keeps a mounted ADFS from seeing an error.
-   if (config_beeb_write_protected()) return true;
+   // A read-only image (fsLunReadOnly) is treated the same way.
+   if (config_beeb_write_protected() || filesystemState.fsLunReadOnly[lunNumber]) return true;
 
    memcpy(sectorBuffer + (currentBufferSector * 256), buffer , 256 );
    currentBufferSector++;

@@ -68,6 +68,7 @@ bool filesystemMounted(void);
 
 bool filesystemMount(void);
 bool filesystemDismount(void);
+void filesystemStopDirectoryLuns(uint8_t firstLun);
 
 bool filesystemCheckLunImage(uint8_t lunNumber);
 
