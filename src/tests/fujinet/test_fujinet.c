@@ -314,10 +314,26 @@ static void test_appstore(void)
 
 /* ---- slot catalogue ------------------------------------------------------ */
 
+static reply_t slot_range_bitmap(void)
+{
+   buf_t p = payload(); u8(&p, 0); u8(&p, 15); u8(&p, 0); u8(&p, 0); u8(&p, 255); u16(&p, 200);
+   return call(FB_DEV_SLOTCAT, 0x04, &p);
+}
+
 static void test_slotcat(void)
 {
+   /* No slot directory yet (no card, or none ever put) is not latched as
+      "all empty": slot 9 arriving on the card is seen. */
+   reply_t r = slot_range_bitmap();
+   CHECK(r.status == FB_OK && D(r)[7] == 0 && D(r)[8] == 0, "range with no slot directory");
+   CHECK(fn_app_write("fujinet-slots", "9", 0, (const uint8_t *)"\0sd0:/x.ssd", 11), "slot 9 on the card");
+   r = slot_range_bitmap();
+   CHECK(r.status == FB_OK && D(r)[8] == 0x02, "slot 9 seen after an empty first scan");
+   CHECK(fn_app_delete("fujinet-slots", "9", NULL), "slot 9 removed behind the cache");
+   fn_slotcat_forget();
+
    buf_t p = payload(); u8(&p, 3); u8(&p, 0); lstr(&p, "a.ssd");
-   reply_t r = call(FB_DEV_SLOTCAT, 0x02, &p);
+   r = call(FB_DEV_SLOTCAT, 0x02, &p);
    CHECK(r.status == FB_OK && D(r)[1] == 1 && D(r)[2] == 3 &&
          rd16(D(r) + 3) == 14 && !memcmp(D(r) + 5, "sd0:/img/a.ssd", 14), "put resolves relative");
    p = payload(); u8(&p, 7); u8(&p, 2); lstr(&p, "tnfs://server.example.org/games/long-name.ssd");
@@ -350,6 +366,16 @@ static void test_slotcat(void)
    CHECK(r.status == FB_OK && D(r)[1] == 1, "delete 3");
    p = payload(); u8(&p, 3);
    CHECK(call(FB_DEV_SLOTCAT, 0x01, &p).status == FB_DEVICE_NOT_FOUND, "3 gone");
+
+   /* A card swap: the occupancy is forgotten and the new card scanned. */
+   CHECK(fn_app_write("fujinet-slots", "12", 0, (const uint8_t *)"\0sd0:/y.ssd", 11), "slot 12 on the new card");
+   r = slot_range_bitmap();
+   CHECK(r.status == FB_OK && D(r)[7] == 0x80 && D(r)[8] == 0, "before the eject the old occupancy stands");
+   fn_slotcat_forget();
+   r = slot_range_bitmap();
+   CHECK(r.status == FB_OK && D(r)[7] == 0x80 && D(r)[8] == 0x10, "after the eject slot 12 is seen");
+   CHECK(fn_app_delete("fujinet-slots", "12", NULL), "slot 12 removed");
+   fn_slotcat_forget();
 }
 
 /* ---- disk ----------------------------------------------------------------- */

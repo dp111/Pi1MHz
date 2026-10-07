@@ -38,6 +38,8 @@ void fn_disk_set_boot(const char *uri, bool ro) { (void)uri; (void)ro; }
 bool fn_disk_uses_path(const char *p) { (void)p; return false; }
 static int sd_drops;
 void fn_disk_drop_sd(void) { sd_drops++; }
+static int slot_forgets;
+void fn_slotcat_forget(void) { slot_forgets++; }
 static bool (*eject_cb)(void);      /* what fujibus_service_init registers */
 void filesystemRegisterEject(bool (*eject)(void), void (*inserted)(void))
 { eject_cb = eject; (void)inserted; }
@@ -170,6 +172,7 @@ int main(void)
    CHECK(sd_drops == 0, "nothing dropped before an eject (%d)", sd_drops);
    CHECK(eject_cb && eject_cb(), "eject callback reports success");
    CHECK(sd_drops == 1, "eject dropped the SD images once (%d)", sd_drops);
+   CHECK(slot_forgets == 1, "eject forgot the slot occupancy (%d)", slot_forgets);
 
    free(pi.JIM_ram);
    printf("%d checks, %d failures\n", s_pass + s_fail, s_fail);
