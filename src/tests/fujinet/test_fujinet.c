@@ -819,6 +819,57 @@ static void test_tnfs(void)
             fake_tnfs_open_fds(), base);
    }
 
+   /* The Beeb gives up while the mount's OPEN is still in flight: the
+      server opens the file anyway, and its late reply must close it. */
+   {
+      int base = fake_tnfs_open_fds();
+      buf_t q = payload(); u8(&q, 6); u8(&q, 0); u8(&q, 0); u16(&q, 0);
+      lstr(&q, "tnfs://tnfs.test/games/other.ssd");
+      uint8_t pkt[96];
+      uint16_t n = (uint16_t)(6 + q.n);
+      pkt[0] = FB_DEV_DISK; pkt[1] = 0x01; pkt[2] = (uint8_t)n; pkt[3] = 0; pkt[4] = 0; pkt[5] = 0;
+      memcpy(pkt + 6, q.b, q.n);
+      pkt[4] = fb_checksum(pkt, n);
+      uint8_t reply[600];
+      uint16_t rl;
+      int opens = fake_tnfs_stats()->opens;
+      fb_answer a = fujibus_answer(pkt, n, reply, sizeof reply, &rl);
+      CHECK(a == FB_ANSWER_PENDING && fake_tnfs_open_fds() == base, "the OPEN is in flight");
+      fn_store_request_abort();
+      for (int i = 0; i < 4; i++) fake_tnfs_step();
+      CHECK(fake_tnfs_stats()->opens == opens + 1, "the server did open it");
+      CHECK(fake_tnfs_open_fds() == base, "the late OPEN reply closed it (%d open, %d before)",
+            fake_tnfs_open_fds(), base);
+   }
+
+   /* Every TNFS handle in use: an OPEN the server grants has nowhere to
+      go, and the server's file is closed again. */
+   {
+      fn_handle h[FN_TNFS_HANDLES + 1];
+      int open_before = fake_tnfs_open_fds();
+      unsigned got = 0;
+      for (unsigned k = 0; k <= FN_TNFS_HANDLES; k++) {
+         h[k] = FN_NO_HANDLE;
+         for (int i = 0; i < 20 && h[k] == FN_NO_HANDLE; i++) {
+            h[k] = fn_tnfs_open("tnfs://tnfs.test/games/other.ssd", FN_OPEN_READ);
+            if (!fn_tnfs_take_pending())
+               break;
+            fake_tnfs_step();
+         }
+         fn_tnfs_request_end();
+         if (h[k] != FN_NO_HANDLE) got++;
+      }
+      fake_tnfs_step();            /* any CLOSE the last refusal sent */
+      int in_use = open_before;    /* what the earlier cases left open */
+      CHECK(h[FN_TNFS_HANDLES] == FN_NO_HANDLE && fake_tnfs_open_fds() == in_use + (int)got,
+            "an OPEN with no free handle is closed on the server (%d open, %d expected)",
+            fake_tnfs_open_fds(), in_use + (int)got);
+      for (unsigned k = 0; k <= FN_TNFS_HANDLES; k++)
+         if (h[k] != FN_NO_HANDLE) fn_tnfs_close(h[k]);
+      fake_tnfs_step();
+      CHECK(fake_tnfs_open_fds() == open_before, "and the rest close again");
+   }
+
    /* Unmount closes the file on the server. */
    p = payload(); u8(&p, 1);
    call(FB_DEV_DISK, 0x02, &p);
