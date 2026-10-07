@@ -132,6 +132,7 @@ static struct filesystemStateStruct
    uint8_t lunDirectory;               // Current LUN directory ID
    uint8_t lunDirectoryVFS;            // Current LUN directory ID for VFS
    bool fsLunStatus[MAX_LUNS];         // LUN image availability flags for the currently selected LUN directory (true = started, false = stopped)
+   bool fsLunReadOnly[MAX_LUNS];       // ADFS image is AM_RDO, opened FA_READ: Beeb writes to it are swallowed
 	struct HDGeometry fsLunGeometry[MAX_LUNS];   // Keep the geometry details for each LUN
    parserkeyvalue keyvalues[MAX_LUNS][NUM_KEYS];   // keys from .cfg file for each LUN
 } filesystemState;
@@ -934,6 +935,15 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
    fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName,
                      (lunNumber >= 8) ? FA_READ : (FA_READ | FA_WRITE));
 
+   /* The same FR_DENIED for an ADFS image marked read-only: start it FA_READ
+      rather than hand the host BAD_FORMAT.  Its writes are then swallowed and
+      reported as done, as under Beeb_write_protect (fsLunReadOnly). */
+   filesystemState.fsLunReadOnly[lunNumber] = false;
+   if (fsResult == FR_DENIED && lunNumber < 8) {
+      fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName, FA_READ);
+      filesystemState.fsLunReadOnly[lunNumber] = (fsResult == FR_OK);
+   }
+
    if (fsResult != FR_OK) {
       if (debugFlag_filesystem) {
          if (fsResult == FR_NO_FILE)
@@ -1425,6 +1435,10 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
    }
    filesystemSetLunStatus(lunNumber, false );
 
+   // A read-only image (just found so by that start): ignore FORMAT and
+   // report success, as Beeb_write_protect does above
+   if (filesystemState.fsLunReadOnly[lunNumber]) return true;
+
    if (debugFlag_filesystem) debugStringInt32_P(PSTR("File system: filesystemFormatLun(): Sectors required = "), filesystemGetLunTotalSectors(lunNumber), true);
 
    // Assemble the .dat file name
@@ -1820,6 +1834,11 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
    if (lunNumber > 7)
       return false;
 
+   // A read-only image (AM_RDO, opened FA_READ): nothing to seek or grow -
+   // filesystemWriteNextSector() swallows the data, as under write-protect
+   if (filesystemState.fsLunReadOnly[lunNumber])
+      return true;
+
 #if FF_USE_FASTSEEK
    FIL *fp = &filesystemState.fileObject[lunNumber];
 
@@ -1869,7 +1888,8 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
 {
    // Beeb_write_protect: swallow the sector, report success, write nothing.
    // Returning true (never false) keeps a mounted ADFS from seeing an error.
-   if (config_beeb_write_protected()) return true;
+   // A read-only image (fsLunReadOnly) is treated the same way.
+   if (config_beeb_write_protected() || filesystemState.fsLunReadOnly[lunNumber]) return true;
 
    memcpy(sectorBuffer + (currentBufferSector * 256), buffer , 256 );
    currentBufferSector++;

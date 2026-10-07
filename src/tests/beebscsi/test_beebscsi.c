@@ -11,7 +11,7 @@
    ADFS *SCSIJUKE was refused while the VFS LaserDisc LUN 8 was mounted,
    and the reverse, although each host swaps only its own directory.
 
-   Review 2026-10-06 S3, S5, S8 and P8: whole commands run
+   Review 2026-10-06 S3, S5, S6, S8 and P8: whole commands run
    through scsiProcessEmulation() against a scripted host (run_cmd).
 
    Real scsi.c, filesystem.c, fileparser.c and FatFs on a RAM disk.
@@ -621,6 +621,56 @@ static void test_reset_abandons(void)
    stop_all();
 }
 
+/* S6: an ADFS image marked read-only starts, and writes to it are
+   swallowed and reported as done. */
+static void test_readonly_image(void)
+{
+   static char why[200];
+   static uint8_t img[4096], back[4096], blk[256];
+   memset(img, 0x11, sizeof img);
+   f_mkdir("/BeebSCSI5");
+   put_cfg("/BeebSCSI5/scsi0.cfg", 10, 2);
+   put_file("/BeebSCSI5/scsi0.dat", img, sizeof img);
+   FRESULT cr = f_chmod("/BeebSCSI5/scsi0.dat", AM_RDO, AM_RDO);
+   stop_all();
+   filesystemSetLunDirectory(1, 5);
+
+   bool s = filesystemSetLunStatus(0, true);
+   snprintf(why, sizeof why, "chmod %d, start %d", cr, s);
+   check("S6 a read-only ADFS image starts", cr == FR_OK && s, why);
+
+   const uint8_t rd[6] = { 0x08, 0, 0, 1, 1, 0 };
+   int st = run_cmd(1, rd, 6, NULL, 0);
+   check("S6 ... READ6 works", st == 0 && bus_out_len == 256 && bus_out[0] == 0x11,
+         "read failed");
+
+   memset(blk, 0xEE, sizeof blk);
+   const uint8_t wr[6] = { 0x0A, 0, 0, 1, 1, 0 };
+   st = run_cmd(1, wr, 6, blk, sizeof blk);
+   read_file("/BeebSCSI5/scsi0.dat", back, sizeof back);
+   snprintf(why, sizeof why, "status %d (want 0), image %s", st,
+            memcmp(back, img, sizeof img) ? "CHANGED" : "unchanged");
+   check("S6 ... WRITE6 reports GOOD and writes nothing", st == 0 && !memcmp(back, img, sizeof img), why);
+
+   const uint8_t fm[6] = { 0x04, 0, 0x6C, 0, 0, 0 };
+   st = run_cmd(1, fm, 6, NULL, 0);
+   long sz = size_of("/BeebSCSI5/scsi0.dat");
+   snprintf(why, sizeof why, "status %d (want 0), image %ld bytes (want %u)", st, sz,
+            (unsigned)sizeof img);
+   check("S6 ... FORMAT reports GOOD and leaves the image alone",
+         st == 0 && sz == (long)sizeof img && filesystemReadLunStatus(0), why);
+
+   stop_all();
+   (void)f_chmod("/BeebSCSI5/scsi0.dat", 0, AM_RDO);
+   s = filesystemSetLunStatus(0, true);
+   st = run_cmd(1, wr, 6, blk, sizeof blk);
+   read_file("/BeebSCSI5/scsi0.dat", back, sizeof back);
+   check("S6 control: the same image read/write takes the write",
+         s && st == 0 && back[256] == 0xEE, "write did not land");
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -655,6 +705,7 @@ int main(int argc, char **argv)
    test_sense_set();
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
    test_reset_abandons();
+   test_readonly_image();
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;
