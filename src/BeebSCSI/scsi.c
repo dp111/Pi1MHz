@@ -2176,6 +2176,13 @@ static uint8_t scsiWriteFCode(void)
       return SCSI_BUSFREE;
    }
 
+   /* A short DMA means the host stopped ACKing part-way: the tail of
+      scsiFcodeBuffer still holds the previous F-code, so running it would
+      execute half the new command and half the old.  Bail as WRITE6 does. */
+   if (bytesTransferred < 256) {
+      return SCSI_BUSFREE;
+   }
+
    // Write the requested F-Code to the Laser Video Disc Player
    fcodeWriteBuffer(commandDataBlock.targetLUN);
 

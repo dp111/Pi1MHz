@@ -11,7 +11,7 @@
    ADFS *SCSIJUKE was refused while the VFS LaserDisc LUN 8 was mounted,
    and the reverse, although each host swaps only its own directory.
 
-   Review 2026-10-06 S3 and S5: whole commands run
+   Review 2026-10-06 S3, S5 and S8: whole commands run
    through scsiProcessEmulation() against a scripted host (run_cmd).
 
    Real scsi.c, filesystem.c, fileparser.c and FatFs on a RAM disk.
@@ -536,6 +536,26 @@ static void test_sense_set(void)
          st == 2 && sense == 0x02, why);
 }
 
+/* S8: a short WRITE F-code transfer must not run. */
+static void test_fcode_short(void)
+{
+   static char why[120];
+   static uint8_t fc[256];
+   memset(fc, 0, sizeof fc);
+   memcpy(fc, "E0\r", 3);
+   const uint8_t cdb[6] = { 0xCA, 0, 0, 0, 1, 0 };     /* G6 0x0A, LUN 0 (+8) */
+   fcode_writes = 0;
+   int st = run_cmd(16, cdb, 6, fc, sizeof fc);
+   snprintf(why, sizeof why, "status %d, F-codes run %d", st, fcode_writes);
+   check("S8 WRITE F-code control: a full block runs", st == 0 && fcode_writes == 1, why);
+
+   fcode_writes = 0;
+   dma_short = 100;
+   st = run_cmd(16, cdb, 6, fc, 100);
+   snprintf(why, sizeof why, "status %d, F-codes run %d (want 0)", st, fcode_writes);
+   check("S8 WRITE F-code with a short transfer does not run", fcode_writes == 0, why);
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -568,6 +588,7 @@ int main(int argc, char **argv)
    scsiReset(0);
    test_bsfatread_failure();
    test_sense_set();
+   test_fcode_short();                  /* after test_jukebox: a VFS side with data */
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;
