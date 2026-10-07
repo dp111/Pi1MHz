@@ -431,7 +431,8 @@ typedef enum {
    /* Reads the firmware's own aggregation limits.  Must run before the
       join sequence, which sets them - that is the whole point of the
       stage.  Diagnostic: a failed read is tolerated and the join runs
-      exactly as before. */
+      exactly as before; skipped without wifi_diag (see
+      sdio_runtime_query_ampdu_step). */
    SDIO_RUNTIME_STAGE_QUERY_AMPDU,
    SDIO_RUNTIME_STAGE_JOIN,
    SDIO_RUNTIME_STAGE_DONE,
@@ -462,6 +463,19 @@ static void sdio_debug_log(const char *format, ...)
 #else
    (void)format;                       /* wifi_debug_printf is empty in release */
 #endif
+}
+
+/* True when the bring-up GET readbacks have a reader: the /status rows
+   (wifi_diag=1) or the sdio_debug_log lines (wifi_debug=1 in a DEBUG
+   build).  Nothing functional reads them, so a release build without
+   wifi_diag skips them and their settle time. */
+static bool sdio_runtime_diag_readbacks(void)
+{
+#ifdef DEBUG
+   if (wifi_debug_enabled())
+      return true;
+#endif
+   return g_runtime_diag_enabled;
 }
 
 #define SDIO_CCCR_CCCR_SDIO_REV 0x00u
@@ -2616,7 +2630,11 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS;
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GLOBAL_EVENT_MSGS;
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_EXT;
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_VERIFY; /* 50 ms settle follows */
+   /* The readback GETs in this list (EVENT_MSGS_VERIFY, GET_COUNTRY,
+      GET_RADIO, GET_SSID) are diagnostic: no reply is captured, only
+      logged.  Sent only when sdio_runtime_diag_readbacks(). */
+   if (sdio_runtime_diag_readbacks())
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_VERIFY; /* 50 ms settle follows */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_MCAST_LIST;      /* mcast_list (IPv4 multicast MAC); 50 ms settle follows */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_MPC_OFF;         /* mpc = 0: keep the radio awake */
    /* Band / G-mode MUST be set while the interface is DOWN.  WLC_UP
@@ -2644,11 +2662,13 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
       state, which should clear WL_RADIO_COUNTRY_DISABLE. */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_DOWN;
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY;        /* regulatory domain (wifi_country, default "GB") */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY;    /* diagnostic: did the SET finally take? */
+   if (sdio_runtime_diag_readbacks())
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_COUNTRY; /* diagnostic: did the SET finally take? */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_UP;             /* second WLC_UP - radio re-evaluates regulatory */
    /* Diagnostic: read the radio-disable bitmask after the second UP.
       0x00 = radio enabled (success); 0x08 = still country-disabled. */
-   commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO;
+   if (sdio_runtime_diag_readbacks())
+      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_RADIO;
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_POWERSAVE_OFF;  /* WLC_SET_PM = 0 */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_PM2_SLEEP_RET;  /* pm2_sleep_ret = 0xc8 */
    commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_BCN_LI_BCN;     /* bcn_li_bcn = 1 */
@@ -2684,7 +2704,8 @@ static uint8_t sdio_tx_probe_join_commands(wifi_sdio_tx_probe_command_t *command
    if (config != NULL && config->ssid[0] != '\0') {
       /* WLC_SET_SSID with a wlc_ssid_t triggers the actual scan + join. */
       commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_SSID;
-      commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_SSID;    /* diagnostic readback */
+      if (sdio_runtime_diag_readbacks())
+         commands[count++] = WIFI_SDIO_TX_PROBE_COMMAND_GET_SSID; /* diagnostic readback */
    }
    /* No explicit WLC_SCAN here: it was only ever a radio diagnostic,
       and now that the CLM is loaded and SET_SSID genuinely starts a
@@ -2723,6 +2744,11 @@ static uint32_t sdio_tx_probe_post_delay_us(wifi_sdio_tx_probe_command_t command
             radio has finished coming up before WLC_SET_SSID / WLC_SCAN
             run.  The BCM43430 PHY bring-up takes tens of ms. */
          return 100000u;
+      case WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_EXT:
+         /* PicoWi's 50 ms events_enable settle hangs off the readback
+            that follows; when that is not sent it moves here, as the
+            aggregation settle moves to APSTA. */
+         return sdio_runtime_diag_readbacks() ? 10000u : 50000u;
       case WIFI_SDIO_TX_PROBE_COMMAND_EVENT_MSGS_VERIFY:
       case WIFI_SDIO_TX_PROBE_COMMAND_MCAST_LIST:
          return 50000u;
@@ -5146,6 +5172,12 @@ static int sdio_runtime_query_ampdu_step(sdio_host_t *dev)
 
    if (dev == NULL)
       return 1;
+   /* Skip the slots nobody reads: 0-2 feed only the diagnostic /status
+      rows and log line, slot 3 only the wifi_test_iovars readback. */
+   while (!g_runtime_step_sent && g_runtime_ampdu_index < SDIO_AMPDU_PROBE_SLOTS
+          && !((g_runtime_ampdu_index < 3u) ? sdio_runtime_diag_readbacks()
+                                            : (sdio_runtime_test_iovar(0) != NULL)))
+      g_runtime_ampdu_index++;
    if (g_runtime_ampdu_index >= SDIO_AMPDU_PROBE_SLOTS)
       return 1;
 

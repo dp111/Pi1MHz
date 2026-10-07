@@ -10,6 +10,7 @@
 #include "../rpi/mailbox.h"
 #include "../rpi/rpi.h"
 #include "../rpi/systimer.h"
+#include "sdio.h"
 #include "wifi.h"
 
 #include <string.h>
@@ -154,6 +155,7 @@ static uint32_t sdio_host_get_base_clock_hz(void);
 static uint32_t sdio_host_get_clock_divider(uint32_t base_clock, uint32_t target_rate);
 static void sdio_host_power_wifi_chip(void);
 static void sdio_host_log_registers(const char *label);
+static void sdio_host_log_command_error(const char *label);
 static void sdio_host_log_capabilities(uint32_t base_clock, uint32_t divider);
 static int sdio_host_reset_line(uint32_t mask);
 static int sdio_host_open_arasan_path(void);
@@ -361,10 +363,9 @@ static uint32_t sdio_host_get_clock_divider(uint32_t base_clock, uint32_t target
 
 static void sdio_host_log_registers(const char *label)
 {
-   /* Always log register dumps - they are only emitted from error paths
-      ("cmd wait fail") and from the one-shot "host open" trace below.
-      The "host open" call is itself wrapped in a wifi_debug_enabled()
-      check at the call site, so this function does not need a guard. */
+   /* Per-command error dumps come through sdio_host_log_command_error,
+      which gates them; the one-shot "host open" trace is gated here on
+      wifi_debug, and "host open error" always prints. */
    if (!wifi_debug_enabled() && strcmp(label, "host open") == 0)
       return;
 
@@ -374,6 +375,18 @@ static void sdio_host_log_registers(const char *label)
             (unsigned long) g_rpi_emmc_base->EMMC_CONTROL0,
             (unsigned long) g_rpi_emmc_base->EMMC_CONTROL1,
             (unsigned long) g_rpi_emmc_base->EMMC_INTERRUPT);
+}
+
+/* A failed command is routine - the first KSO write fails while the core
+   is asleep and its caller retries - so a release build dumps the
+   registers only with wifi_diag=1.  DEBUG builds always do. */
+static void sdio_host_log_command_error(const char *label)
+{
+#ifndef DEBUG
+   if (!sdio_runtime_diag_enabled())
+      return;
+#endif
+   sdio_host_log_registers(label);
 }
 
 static void sdio_host_log_capabilities(uint32_t base_clock, uint32_t divider)
@@ -665,14 +678,14 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
       though the command completed; STATUS is more reliable there. */
    if ((irpts & 0xffff0000u) != 0u) {
       dev->last_error = irpts & 0xffff0000u;
-      sdio_host_log_registers("cmd error");
+      sdio_host_log_command_error("cmd error");
       dev->last_interrupt = irpts;
       return;
    }
    if (((irpts & 0x1u) == 0u) && ((g_rpi_emmc_base->EMMC_STATUS & 0x1u) != 0u)) {
       dev->last_error = SD_ERR_MASK_CMD_TIMEOUT;
       (void) sdio_host_reset_line(SD_RESET_CMD);
-      sdio_host_log_registers("cmd wait fail");
+      sdio_host_log_command_error("cmd wait fail");
       dev->last_interrupt = irpts;
       return;
    }
@@ -713,7 +726,7 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
             the caller as success. */
          if ((irpts & 0xffff0000u) != 0u) {
             dev->last_error = irpts & 0xffff0000u;
-            sdio_host_log_registers("data error");
+            sdio_host_log_command_error("data error");
             dev->last_interrupt = irpts;
             return;
          }
@@ -732,7 +745,7 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
 
             if (cfg == NULL || !cfg->allow_emulator_fallback) {
                dev->last_error = SD_ERR_MASK_DATA_TIMEOUT;
-               sdio_host_log_registers("data wait timeout");
+               sdio_host_log_command_error("data wait timeout");
                dev->last_interrupt = irpts;
                return;
             }
@@ -767,7 +780,7 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
             fails the transfer. */
          if (((irpts & 0xffff0002u) != 0x2u) && ((irpts & 0xffff0002u) != 0x100002u)) {
             dev->last_error = irpts & 0xffff0000u;
-            sdio_host_log_registers("xfer complete error");
+            sdio_host_log_command_error("xfer complete error");
             dev->last_interrupt = irpts;
             return;
          }
