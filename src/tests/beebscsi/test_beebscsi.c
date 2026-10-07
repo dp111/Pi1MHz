@@ -11,6 +11,9 @@
    ADFS *SCSIJUKE was refused while the VFS LaserDisc LUN 8 was mounted,
    and the reverse, although each host swaps only its own directory.
 
+   Review 2026-10-06 S3: whole commands run
+   through scsiProcessEmulation() against a scripted host (run_cmd).
+
    Real scsi.c, filesystem.c, fileparser.c and FatFs on a RAM disk.
    f_open/f_close are wrapped (-Wl,--wrap) to see handles left open. */
 #include <stdio.h>
@@ -42,7 +45,8 @@ void videoplayer_media_changed(void) {}
 /* The bus and the F-code layer: the tests call the LUN layer directly. */
 uint8_t scsiFcodeBuffer[256];
 uint8_t scsiFcodeBufferRX[256];
-void fcodeWriteBuffer(uint8_t lunNumber) { (void)lunNumber; }
+static int fcode_writes;               /* F-codes handed to the player */
+void fcodeWriteBuffer(uint8_t lunNumber) { (void)lunNumber; fcode_writes++; }
 void fcodeReadBuffer(void) {}
 void fcodePoll(void) {}
 void fcodeClearBuffer(void) {}
@@ -50,17 +54,67 @@ void fcode_disc_flip(void) {}
 void hd_audio_service(void) {}
 void hd_juke_service(void) {}
 void hd_card_service(void) {}
-uint8_t hostadapterReadDatabus(void) { return 0; }
-uint8_t hostadapterReadByte(void) { return 0; }
-void hostadapterWriteByte(uint8_t v) { (void)v; }
-uint32_t hostadapterPerformReadDMA(const uint8_t *b) { (void)b; return 256; }
-uint32_t hostadapterPerformWriteDMA(uint8_t *b) { (void)b; return 256; }
-void hostadapterWriteResetFlag(bool f) { (void)f; }
-bool hostadapterReadResetFlag(void) { return false; }
-void hostadapterWriteDataPhaseFlags(bool m, bool c, bool i) { (void)m; (void)c; (void)i; }
-void hostadapterWriteBusyFlag(bool f) { (void)f; }
+
+/* A scripted host for the bus tests (run_cmd): it selects, then supplies
+   the CDB and any data-out bytes from bus_in[]; data-in bytes land in
+   bus_out[] and the status byte in bus_status.  The reset flag behaves as
+   the firmware's hostadapterReadResetFlag(): set by a host reset (here
+   raised once reset_after_in host bytes have been read), cleared in BUS
+   FREE by hostadapterWriteResetFlag(false). */
+static bool     bus_sel;
+static uint8_t  bus_host = 1;          /* 1 = ADFS drive 0, 16 = VFS */
+static uint8_t  bus_in[1024];
+static unsigned bus_in_len, bus_in_pos;
+static uint8_t  bus_out[4096];
+static unsigned bus_out_len;
+static int      bus_status = -1;       /* -1: no status phase (BUS FREE) */
+static bool     ph_msg, ph_cd, ph_io;
+static bool     bus_reset;
+static int      reset_after_in = -1;
+static unsigned dma_short;             /* next write DMA delivers only this many bytes */
+static int      fail_disk_after_dma = -1;  /* disk_read fails after this many read DMAs */
+static unsigned read_dmas;
+static bool     disk_fail;
+
+static uint8_t bus_in_next(void)
+{
+   uint8_t b = bus_in_pos < bus_in_len ? bus_in[bus_in_pos] : 0;
+   bus_in_pos++;
+   if (reset_after_in >= 0 && bus_in_pos >= (unsigned)reset_after_in)
+      bus_reset = true;
+   return b;
+}
+
+uint8_t hostadapterReadDatabus(void) { return bus_host; }
+uint8_t hostadapterReadByte(void) { return bus_in_next(); }
+void hostadapterWriteByte(uint8_t v)
+{
+   if (ph_cd && ph_io && !ph_msg) bus_status = v;
+   else if (!ph_cd && ph_io && bus_out_len < sizeof bus_out) bus_out[bus_out_len++] = v;
+}
+uint32_t hostadapterPerformReadDMA(const uint8_t *b)
+{
+   for (unsigned i = 0; i < 256u && bus_out_len < sizeof bus_out; i++)
+      bus_out[bus_out_len++] = b[i];
+   read_dmas++;
+   if (fail_disk_after_dma >= 0 && read_dmas >= (unsigned)fail_disk_after_dma)
+      disk_fail = true;
+   return 256;
+}
+uint32_t hostadapterPerformWriteDMA(uint8_t *b)
+{
+   unsigned n = dma_short ? dma_short : 256u;
+   dma_short = 0;
+   for (unsigned i = 0; i < n; i++)
+      b[i] = bus_in_next();
+   return n;
+}
+void hostadapterWriteResetFlag(bool f) { bus_reset = f; }
+bool hostadapterReadResetFlag(void) { return bus_reset; }
+void hostadapterWriteDataPhaseFlags(bool m, bool c, bool i) { ph_msg = m; ph_cd = c; ph_io = i; }
+void hostadapterWriteBusyFlag(bool f) { if (f) bus_sel = false; }
 void hostadapterWriteRequestFlag(bool f) { (void)f; }
-bool hostadapterReadSelectFlag(void) { return false; }
+bool hostadapterReadSelectFlag(void) { return bus_sel; }
 
 /* ---- RAM disk ---------------------------------------------------------- */
 
@@ -72,6 +126,7 @@ DSTATUS disk_status(BYTE pdrv) { (void)pdrv; return 0; }
 DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
 {
    (void)pdrv;
+   if (disk_fail) return RES_ERROR;
    if (sector + count > DISK_SECTORS) return RES_PARERR;
    memcpy(buff, disk + (size_t)sector * 512u, (size_t)count * 512u);
    return RES_OK;
@@ -402,6 +457,66 @@ static void test_jukebox(void)
    stop_all();
 }
 
+/* ---- the bus: whole commands through scsiProcessEmulation() ----------- */
+
+/* One command from selection to BUS FREE.  Returns the status byte, or -1
+   if the target went BUS FREE without a status phase. */
+static int run_cmd(uint8_t host, const uint8_t *cdb, unsigned cdblen,
+                   const uint8_t *data, unsigned datalen)
+{
+   memcpy(bus_in, cdb, cdblen);
+   if (datalen) memcpy(bus_in + cdblen, data, datalen);
+   bus_in_len = cdblen + datalen;
+   bus_in_pos = 0;
+   bus_out_len = 0;
+   bus_status = -1;
+   bus_host = host;
+   bus_sel = true;
+   for (int i = 0; i < 64; i++) {
+      scsiProcessEmulation();
+      if (i > 0 && scsiDiagState() == SCSI_BUSFREE)
+         break;
+   }
+   reset_after_in = -1;
+   return bus_status;
+}
+
+/* REQUEST SENSE on `lun` (host 1): the error code byte. */
+static int sense_of(uint8_t lun)
+{
+   const uint8_t rs[6] = { 0x03, (uint8_t)(lun << 5), 0, 0, 4, 0 };
+   int st = run_cmd(1, rs, 6, NULL, 0);
+   return (st == 0 && bus_out_len >= 4) ? bus_out[0] : -1;
+}
+
+/* S3: a FAT read error part-way through BSFATREAD. */
+static void test_bsfatread_failure(void)
+{
+   static char why[160];
+   static uint8_t data[2048];
+   memset(data, 0x5A, sizeof data);
+   f_mkdir("/Transfer");
+   put_file("/Transfer/big.bin", data, sizeof data);
+   stop_all();
+
+   /* G6 0x14: block offset 0, 4 blocks, FAT file 0 (the only entry). */
+   const uint8_t cdb[6] = { 0xD4, 0, 0, 0, 4, 0 };
+   int ok = run_cmd(1, cdb, 6, NULL, 0);
+   check("S3 BSFATREAD control: 4 blocks, status GOOD", ok == 0 && bus_out_len == 1024,
+         "control transfer failed");
+
+   /* The disc fails after the first block: block 3 needs a new sector. */
+   read_dmas = 0;
+   fail_disk_after_dma = 1;
+   int st = run_cmd(1, cdb, 6, NULL, 0);
+   fail_disk_after_dma = -1;
+   disk_fail = false;
+   int sense = sense_of(0);
+   snprintf(why, sizeof why, "status %d (want 2, -1 = BUS FREE mid data-in), sense %d (want 4)",
+            st, sense);
+   check("S3 BSFATREAD read failure ends in CHECK CONDITION with sense", st == 2 && sense == 4, why);
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -430,6 +545,9 @@ int main(int argc, char **argv)
    test_format_expand_fails();
    test_format_new_disc();
    test_jukebox();
+
+   scsiReset(0);
+   test_bsfatread_failure();
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;

@@ -2600,7 +2600,15 @@ static uint8_t scsiBeebScsiFatRead(void)
          sei();
          if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Failed to read new FAT block"));
          filesystemCloseFatForRead();
-         return SCSI_BUSFREE;
+
+         /* Report it as READ6 does.  BUS FREE here, mid data-in, left the
+            host waiting on REQ for a byte that never came. */
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+
+         // Set request sense error globals
+         requestSenseData[commandDataBlock.targetLUN] = DRIVE_NOT_READY; // Drive not ready
+
+         return SCSI_STATUS;
       }
       // Send the data to the host
       cli();
