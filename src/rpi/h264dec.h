@@ -79,8 +79,10 @@ bool h264dec_resume(void);
 /* Warm restart (e.g. Beeb reset re-running emulator inits): return all
    buffers, forget output registrations (so the caller may free its frame
    buffers), keep the component alive ready for new input. After this,
-   re-register output buffers with h264dec_add_output_buffer(). */
-void h264dec_reset(void);
+   re-register output buffers with h264dec_add_output_buffer(). False if
+   a port would not come down: the decoder is condemned and the caller
+   must leak, never free, the output buffers it registered. */
+bool h264dec_reset(void);
 
 /* kernel.now: take the decoder down for good - ports, component, SMEM
    imports, the MMAL and SMEM services - and give back the input staging
