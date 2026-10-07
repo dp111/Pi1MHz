@@ -399,8 +399,9 @@ static uint8_t scsiEmulationBusFree(void)
       case 1:
          /* Service a FIQ-latched jukebox poke here: the machine parks in
             this sub-state on every idle poll, and selection has not been
-            accepted yet (BSY still clear), so the filesystem reset inside
-            can never close a FIL an in-flight command is using. Placing it
+            accepted yet (BSY still clear), so stopping the swapped
+            directory's LUNs can never close a FIL an in-flight command is
+            using. Placing it
             in case 0 would delay service until after the NEXT command
             completes, letting a mount sequence interleave two discs. */
          hd_juke_service();
@@ -2350,12 +2351,13 @@ static uint8_t scsiBeebScsiSense(void)
        while any LUN of the directory being swapped is started - the host
        is asking mid-session and an ADFS holding an open catalogue must not
        have the disc changed under it.
-     - the *FX147,65,n poke (hd_juke_service) deliberately dismounts
-       everything first and then swaps unconditionally.  It used to call
-       scsiJukebox(), but filesystemReset() has already cleared every LUN's
-       status by then, so the guard could never fire and its bool return was
-       dropped - a safety check that read as live and was not.  It calls this
-       directly now, so the difference is stated rather than accidental. */
+     - the *FX147,65,n poke (hd_juke_service) deliberately stops the swapped
+       directory's LUNs first (filesystemStopDirectoryLuns) and then swaps
+       unconditionally.  It used to call scsiJukebox(), but those LUNs are
+       already stopped by then, so the guard could never fire and its bool
+       return was dropped - a safety check that read as live and was not.
+       It calls this directly now, so the difference is stated rather than
+       accidental. */
 void scsiJukeboxSwap (uint8_t lun) {
    uint8_t old_vfs = filesystemGetLunDirectoryVFS();
    filesystemSetLunDirectory(scsiHostID, lun);

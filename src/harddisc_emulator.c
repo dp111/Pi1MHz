@@ -212,9 +212,9 @@ static void hd_emulator_conf(unsigned int gpio)
 #endif
 
 
-/* The &FC41 jukebox poke arrives in FIQ context, but filesystemReset() does
-   real FatFs/SD work (closing every LUN, dismount and remount) - the swap
-   after it only sets a directory number and flags the video player for a
+/* The &FC41 jukebox poke arrives in FIQ context, but the swap does real
+   FatFs/SD work (closing the swapped directory's LUN images) - the swap
+   itself only sets a directory number and flags the video player for a
    reopen.  Milliseconds of card I/O inside the FIQ
    starves the VPU bus handler and the whole bus event path dies - the Beeb
    then polls a status register that reads &7F forever (a wedge that struck
