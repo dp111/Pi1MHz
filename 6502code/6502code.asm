@@ -1453,7 +1453,7 @@ ORG &FD00
 .typed
     PLP
     JSR escoff
-    BCS cancel
+    BCS escaped
     TXA                     ; typed length
     BNE gotname
     LDA zp_sel              ; empty input: default to the SD name
@@ -1464,8 +1464,18 @@ ORG &FD00
     PLP
 .gotname
     GOTOPAGE EXP_GET2, 1
-.cancel
+.escaped
+    JSR clearline           ; take the abandoned prompt off the status row
     GOTOPAGE EXP_KEY, 1
+
+.clearline
+    LDA #31 : JSR OSWRCH : LDA #0 : JSR OSWRCH : LDA #23 : JSR OSWRCH
+    LDX #39 : LDA #' '
+.clearchar
+    JSR OSWRCH
+    DEX
+    BNE clearchar
+    RTS
 
 .print
     PRSUB
@@ -1628,9 +1638,9 @@ ORG &FD00
 .typed
     PLP
     JSR escoff
-    BCS cancel
+    BCS escaped
     TXA                     ; typed length
-    BEQ cancel
+    BEQ escaped
     LDX #&40                ; OPENIN the typed name on the current FS
     XCALL XE_OSFIND, EXP_PUT1, 10
 .opened
@@ -1639,11 +1649,22 @@ ORG &FD00
     BNE gotfile
     JSR print
     EQUB 31,0,23,129 : EQUS "Not found         " : EQUB &FF
-.cancel
+    GOTOPAGE EXP_KEY, 1     ; the message stays on the status row
+.escaped
+    JSR clearline           ; take the abandoned prompt off the status row
     GOTOPAGE EXP_KEY, 1
 .gotfile
     STA zp_fshand
     GOTOPAGE EXP_PUT2, 1
+
+.clearline
+    LDA #31 : JSR OSWRCH : LDA #0 : JSR OSWRCH : LDA #23 : JSR OSWRCH
+    LDX #39 : LDA #' '
+.clearchar
+    JSR OSWRCH
+    DEX
+    BNE clearchar
+    RTS
 
 .print
     PRSUB
