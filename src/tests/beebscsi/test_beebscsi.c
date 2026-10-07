@@ -11,7 +11,7 @@
    ADFS *SCSIJUKE was refused while the VFS LaserDisc LUN 8 was mounted,
    and the reverse, although each host swaps only its own directory.
 
-   Review 2026-10-06 S3, S5, S6, S8, S11 and P8: whole commands run
+   Review 2026-10-06 S3, S5, S6, S8, S10, S11 and P8: whole commands run
    through scsiProcessEmulation() against a scripted host (run_cmd).
 
    Real scsi.c, filesystem.c, fileparser.c and FatFs on a RAM disk.
@@ -694,6 +694,22 @@ static void test_stopped_geometry(void)
    filesystemSetLunDirectory(1, 0);
 }
 
+/* S10: the VFS title cache does not survive a card change. */
+static void test_title_cache(void)
+{
+   static char why[160];
+   char t[64];
+   static const char a[] = "Title=Alpha\n", b[] = "Title=Bravo\n";
+   f_mkdir("/BeebVFS7");
+   put_file("/BeebVFS7/scsi0.cfg", a, sizeof a - 1);
+   bool r1 = filesystemReadVFSCfgTextDir(7, TITLE, t, sizeof t) && !strcmp(t, "Alpha");
+   put_file("/BeebVFS7/scsi0.cfg", b, sizeof b - 1);   /* another card */
+   filesystemReset();                                  /* the card change */
+   bool r2 = filesystemReadVFSCfgTextDir(7, TITLE, t, sizeof t);
+   snprintf(why, sizeof why, "first read %d, after the change '%s' (want Bravo)", r1, r2 ? t : "");
+   check("S10 the VFS title cache is dropped on a card change", r1 && r2 && !strcmp(t, "Bravo"), why);
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -730,6 +746,7 @@ int main(int argc, char **argv)
    test_reset_abandons();
    test_readonly_image();
    test_stopped_geometry();
+   test_title_cache();                  /* last: it remounts the card */
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;

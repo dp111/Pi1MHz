@@ -379,6 +379,7 @@ void filesystemReset(void)
    // Reset the default FAT transfer directory
    snprintf(fatDirectory, sizeof(fatDirectory), "/Transfer");
    vfs_vol_cached_dir = -1;          /* re-stat the VFS volume marker */
+   vfs_cfg_dir = -1;                 /* and re-parse the cached side's title: a card swap comes through here */
 
    // ensure the file-system is closed on reset
    filesystemDismount();
