@@ -188,10 +188,10 @@
 3040 PRINTTAB(2,8);"N play    O play rev   U slow"
 3050 PRINTTAB(2,10);"W fast    Z fast rev"
 3060 PRINTTAB(2,12);"+ / - jump 10   G goto picture"
-3070 PRINTTAB(2,14);"A audio   D picture display"
+3070 PRINTTAB(2,14);"A sound:       D picture display"
 3080 PRINTTAB(2,16);"Q or right button back to menu"
 3090 PROCbar("PICTURE:")
-3100 PL%=0:AU%=1:DI%=0:q%=-2:VO%=0:TT%=TIME-100:PT%=TIME-100:KT%=TIME
+3100 PL%=0:AU%=1:DI%=0:q%=-2:VO%=0:TT%=TIME-100:PT%=TIME-100:KT%=TIME:PROCau
 3110 REPEAT
 3120 k%=INKEY(4):PROCtb:IF k%<>-1 KT%=TIME
 3130 IF MY%<-3 PROCf("M"):MY%=0:PL%=0
@@ -207,7 +207,7 @@
 3230 IF k%=137 PROCf("L"):PL%=0
 3240 IF k%=43 PROCf("+10")
 3250 IF k%=45 PROCf("-10")
-3260 IF k%=65 OR k%=97 AU%=1-AU%:PROCf("A"+STR$(AU%))
+3260 IF k%=65 OR k%=97 AU%=(AU%+1) MOD 4:PROCau
 3270 IF k%=68 OR k%=100 DI%=1-DI%:PROCf("D"+STR$(DI%))
 3280 IF k%=71 OR k%=103 PROCgoto
 3290 IF (PL%=1 OR TIME-KT%<200) AND TIME-PT%>25 PT%=TIME:p%=FNpic:IF p%<>q% q%=p%:PROCshowpic(p%)
@@ -224,6 +224,11 @@
 3500 DEF PROCf(f$)
 3510 OSCLI("FCODE "+f$)
 3520 ENDPROC
+3550 REM sound: 1 both, 2 left only, 3 right only, 0 off - one track plays on both speakers
+3560 DEF PROCau
+3570 PROCf("A"+STR$(-(AU%=1 OR AU%=2))):PROCf("B"+STR$(-(AU%=1 OR AU%=3)))
+3580 COLOUR 3:PRINTTAB(10,14);MID$("off  bothleft right",AU%*5+1,5);
+3590 ENDPROC
 3600 DEF PROCshowpic(p%)
 3610 COLOUR 129:COLOUR 3
 3620 IF p%<0 PRINTTAB(10,30);"-----   "; ELSE PRINTTAB(10,30);STR$(p%);"     ";
