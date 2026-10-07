@@ -116,7 +116,7 @@ include "machine.asm"
                     dey                         \ the loop's iny puts it back
 .cmd_step           iny
                     lda commandtable,x
-                    bmi cmd_dispatch            \ name ended: full match
+                    bmi cmd_name_ended
                     cmp (line),y
                     bne cmd_mismatch
                     inx
@@ -141,6 +141,22 @@ include "machine.asm"
                     bmi cmd_dispatch
                     inx
                     bne cmd_abbrev_skip
+
+\ The whole name matched, but it is this command only if the word on the
+\ command line ends there too: a letter next means a longer name, so *TIMER,
+\ *LAPSE or *PINGALL is left for the ROM it belongs to rather than taken as
+\ *TIME, *LAP or *PING. Anything else ends the word, as it does for the MOS,
+\ and the handler reads it as before. The terminating entry has no name and
+\ must match whatever follows.
+.cmd_name_ended     cpx #commandtable_end-commandtable
+                    beq cmd_dispatch            \ A holds its high byte
+                    lda (line),y
+                    and #&DF                    \ either case
+                    cmp #'A'
+                    bcc cmd_full_match
+                    cmp #'Z'+1
+                    bcc cmd_skip_name           \ a letter: not this command
+.cmd_full_match     lda commandtable,x          \ the high byte again
 
 .cmd_dispatch       sta zp+1                    \ A already holds the high byte
                     lda commandtable+1,x
@@ -359,7 +375,7 @@ IF INCLUDE_WICFS
                     equs "REWIND"
                     equb >rewind_cmd, <rewind_cmd
 ENDIF
-                    equb >command_x6, <command_x6
+.commandtable_end   equb >command_x6, <command_x6
 
 \ Print the ROM title and version, with the separating zero shown as a space.
 .help_version       ldx #0

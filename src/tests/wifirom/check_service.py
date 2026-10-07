@@ -16,10 +16,13 @@ machine with the ROM fitted depends on, whether or not a Pi answers:
 6. a command is found wherever the MOS's Y says its name starts: OSCLI
    "WIFI ON" with no star, "**WIFI ON" and "* WIFI ON" all reach *WIFI;
 7. the driver's read_buffer hands back every byte of a reply that runs past
-   the end of a JIM page, the byte at each page boundary included.
+   the end of a JIM page, the byte at each page boundary included;
+8. a command whose name only starts with one of the ROM's (*TIMER, *LAPSE,
+   *PINGALL) is passed on, while the ROM's own name followed by anything but
+   a letter, and its abbreviations, still reach the handler.
 
 Checks 1-4 run with the ROM in sideways RAM and in a read-only bank, checks
-5-7 in sideways RAM only (without it the ROM declines the command).  These paths
+5-8 in sideways RAM only (without it the ROM declines the command).  These paths
 are the ones that broke unseen: Pi1MHz always serves the ROM into
 sideways RAM, and the shipped image uses the brief *HELP.
 
@@ -226,6 +229,32 @@ def check_oscli(label, image):
               f"{what}: printed {b.text!r}")
 
 
+# Lines that only start with a name of the ROM's belong to other ROMs; a name
+# ended by a space, a digit, a dot or the end of the line, or abbreviated with
+# a dot, is the ROM's.  A handler that runs may claim the call or raise an
+# error (no Pi answers here); either way it was not passed on.
+OTHERS_PREFIXED = ["TIMER", "LAPSE", "PINGALL", "WIFIX", "QRX", "LAPOPTS"]
+OWN_ENDED = ["TIME", "TIME.", "TIME1", "TI.", "LAP", "LAPOPT", "PING",
+             "PING ", "WIF. ON", "WIFI ON"]
+
+
+def check_word_boundary(label, image):
+    for line in OTHERS_PREFIXED:
+        what = f"{label}: *{line}"
+        _, r = run(image, what, 4, True, slot=5, y=0, line=line)
+        if r is not None:
+            check(r == (4, 5, 0), f"{what}: returned A,X,Y={r}, not passed on (4,5,0)")
+    for line in OWN_ENDED:
+        what = f"{label}: *{line}"
+        b = Beeb(image, writable=True, pi=SimPi())
+        try:
+            b.service(1, slot=5)
+            r = b.service(4, slot=5, y=0, line=line)
+        except (RomError, Unmodelled):
+            continue                            # the handler ran
+        check(r != (4, 5, 0), f"{what}: passed on, not handled")
+
+
 def check_read_buffer(label, image):
     """read_buffer walks a reply in the JIM page window, stepping to the
     next page when X wraps.  Nearly three pages must come back byte for
@@ -276,6 +305,7 @@ def main(args):
             check_help(label, image, writable, bank, names)
         check_wget_errors(label, image, slow=label == "shipped")
         check_oscli(label, image)
+        check_word_boundary(label, image)
         check_read_buffer(label, image)
     print(f"\n{checks} checks, {fails} failures")
     print("WIFI ROM SERVICE TESTS FAILED" if fails else "WIFI ROM SERVICE TESTS PASSED")
