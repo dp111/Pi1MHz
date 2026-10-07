@@ -227,7 +227,7 @@
 3550 REM sound: 1 both, 2 left only, 3 right only, 0 off - one track plays on both speakers
 3560 DEF PROCau
 3570 PROCf("A"+STR$(-(AU%=1 OR AU%=2))):PROCf("B"+STR$(-(AU%=1 OR AU%=3)))
-3580 COLOUR 3:PRINTTAB(10,14);MID$("off  bothleft right",AU%*5+1,5);
+3580 COLOUR 3:PRINTTAB(11,14);MID$("off  both left right",AU%*5+1,5);
 3590 ENDPROC
 3600 DEF PROCshowpic(p%)
 3610 COLOUR 129:COLOUR 3
