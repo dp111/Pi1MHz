@@ -657,6 +657,29 @@ int main(void)
       assert(e.himm.active && e.himm.seq == 0x34);
    }
 
+   /* 30b: a retransmit of an answered type-5 immediate is replayed from the
+    * cache even while a newer immediate from another station is held - the
+    * cache is consulted before the busy test, as rx_imm4_data does. */
+   reset();
+   aun_set_host_imm(&e, true);
+   {
+      uint8_t imm[AUN_HDR_SIZE + 4] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x50,0,0,0, 1,2,3,4 };
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* held */
+      uint8_t rep[2] = { 0x56, 0x78 };
+      aun_himm_reply(&e, rep, 2);                              /* answered + cached */
+      uint8_t other[AUN_HDR_SIZE + 4] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x07,0,0,0, 5,6,7,8 };
+      aun_udp_input(&e, 0x0200000A, 32768, other, sizeof other);
+      assert(e.himm.active && e.himm.ip_be == 0x0200000A);     /* busy */
+      sent_count = 0;
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* retransmit */
+      assert(e.counters.himm_replay == 1);
+      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_IMM_REPLY && seq_of(0) == 0x50);
+      assert(memcmp(&sent[0].buf[AUN_HDR_SIZE], rep, 2) == 0);
+      assert(e.himm.active && e.himm.ip_be == 0x0200000A);     /* still held */
+   }
+
    /* 31: the ms clock MUST be derived from the full 64-bit microsecond timer
     * (aun_emulator.c aun_now_ms -> RPI_GetSystemTime64). Deriving it from only
     * the low 32 bits (us32/1000) makes a ramp that resets every ~71.6 min, so
