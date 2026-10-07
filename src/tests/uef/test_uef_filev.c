@@ -337,9 +337,36 @@ static void split_pair_case(void)
    check("and not one byte of it changes", memcmp(before, tape, at) == 0);
 }
 
+/* The same split seen from the next block: it starts mid-line, after a
+   ?&212=&D6 the last block cut, and holds that pair's ?&213 and then a
+   whole pair of its own.
+     :?&213=&F1:?&212=&D6:?&213=&F1:   (the rest of the line, then CR)
+   Blanking all three would leave the last block's ?&212=&D6 to run alone.
+   The block must be left as it is. */
+static void split_pair_lead_case(void)
+{
+   static const uint8_t payload[] = {
+      ':',
+      '?', '&', '2', '1', '3', '=', '&', 'F', '1', ':',
+      '?', '&', '2', '1', '2', '=', '&', 'D', '6', ':',
+      '?', '&', '2', '1', '3', '=', '&', 'F', '1', 0x0d, 0xff
+   };
+   static uint8_t tape[1024];
+   size_t at = 0u;
+   memcpy(&tape[at], "UEF File!\0\012\000", 12u); at += 12u;
+   at = put_block(tape, at, "SPLIT", payload, sizeof payload, sizeof payload);
+   at = put_filler(tape, at, 16u);
+   uint8_t before[sizeof tape];
+   memcpy(before, tape, at);
+   unsigned repaired = uef_repair_filev_stamp(tape, at);
+   check("a block led by an unmatched ?&213 is left alone", repaired == 0u);
+   check("and not one byte of that block changes", memcmp(before, tape, at) == 0);
+}
+
 int main(void)
 {
    split_pair_case();
+   split_pair_lead_case();
 
    /* Well inside the first window. */
    one_case("early block", 4096u, 256u);
