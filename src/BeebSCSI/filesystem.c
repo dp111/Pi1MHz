@@ -1745,8 +1745,8 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    map_check_pending = (startSector == 0 && lunNumber < 8);
 #endif
 
-   // Exit with success (the LUN is already started: READ6 auto-starts it
-   // through filesystemSetLunStatus, the one owner of that flag)
+   // Exit with success
+   filesystemState.fsLunStatus[lunNumber] = true;
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForRead(): Successful\r\n"));
    return true;
 }

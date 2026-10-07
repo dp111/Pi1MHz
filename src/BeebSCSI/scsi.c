@@ -969,45 +969,6 @@ static uint8_t scsiCommandReassignBlocks(void)
    return SCSI_STATUS;
 }
 
-// Make sure the target LUN of a READ6, WRITE6 or TRANSLATE is started.
-// If it is not started but present, start it; otherwise set CHECK CONDITION
-// (BAD_FORMAT) and return false, and the caller returns SCSI_STATUS.
-// Note: The original Adaptec SCSI host adapter would always auto-start a LUN
-// if it was present, so we duplicate that behavior here even though it is
-// 'more correct' (according to the specs) to return with error
-static bool scsiAutoStartLun(void)
-{
-   if (filesystemReadLunStatus(commandDataBlock.targetLUN)) return true;
-
-   // Is the requested LUN available?
-   if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
-
-   // If a host transfer (MTP/WebDAV) is rewriting this image, take it back
-   // rather than refusing the Beeb: the transfer aborts itself when it
-   // notices, and the LUN starts normally here. Refusing instead is what
-   // hung the machine in 8d8389e.
-   filesystemHostRevokeLun(commandDataBlock.targetLUN);
-
-   // Auto-start the LUN
-   if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
-      // Could not start LUN... return with error status
-      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Could not auto-start LUN #"), commandDataBlock.targetLUN, true);
-      commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
-
-      // Set request sense error globals
-      requestSenseData[commandDataBlock.targetLUN] = BAD_FORMAT; // 1C Bad format
-
-      return false;
-   }
-
-   if (debugFlag_scsiCommands) {
-      debugString_P(PSTR("SCSI Commands: Requested LUN has been auto-started\r\n"));
-      // Output the initial debug again (as the command debug information is appended to it)
-      debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, false);
-   }
-   return true;
-}
-
 // SCSI Command (0x08) Read6
 //
 // Adaptec ACB-4000 Manual notes:
@@ -1042,7 +1003,39 @@ static uint8_t scsiCommandRead6(void)
    }
 
    // Make sure the target LUN is started
-   if (!scsiAutoStartLun()) return SCSI_STATUS;
+   if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
+      // Target LUN is not started.  If the LUN is present, then start it, otherwise
+      // return an error.  Note: The original Adaptec SCSI host adapter would always
+      // auto-start a LUN if it was present, so we duplicate that behavior here even
+      // though it is 'more correct' (according to the specs) to return with error
+
+      // Is the requested LUN available?
+      if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
+
+      // If a host transfer (MTP/WebDAV) is rewriting this image, take it back
+      // rather than refusing the Beeb: the transfer aborts itself when it
+      // notices, and the LUN starts normally here. Refusing instead is what
+      // hung the machine in 8d8389e.
+      filesystemHostRevokeLun(commandDataBlock.targetLUN);
+
+      // Auto-start the LUN
+      if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
+         // Could not start LUN... return with error status
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Could not auto-start LUN #"), commandDataBlock.targetLUN, true);
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+
+         // Set request sense error globals
+         requestSenseData[commandDataBlock.targetLUN] = BAD_FORMAT; // 1C Bad format
+
+         return SCSI_STATUS;
+      }
+
+      if (debugFlag_scsiCommands) {
+         debugString_P(PSTR("SCSI Commands: Requested LUN has been auto-started\r\n"));
+         // Output the initial debug again (as the command debug information is appended to it)
+         debugStringInt16_P(PSTR("SCSI Commands: Target LUN = "), commandDataBlock.targetLUN, false);
+      }
+   }
 
    // Get the starting logical block address from the CDB
    logicalBlockAddress = (((uint32_t)commandDataBlock.data[1] & 0x1F) << 16) |
@@ -1187,7 +1180,34 @@ static uint8_t scsiCommandWrite6(void)
    }
 
    // Make sure the target LUN is started
-   if (!scsiAutoStartLun()) return SCSI_STATUS;
+   if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
+      // Target LUN is not started.  If the LUN is present, then start it, otherwise
+      // return an error.  Note: The original Adaptec SCSI host adapter would always
+      // auto-start a LUN if it was present, so we duplicate that behavior here even
+      // though it is 'more correct' (according to the specs) to return with error
+
+      // Is the requested LUN available?
+      if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
+
+      // If a host transfer (MTP/WebDAV) is rewriting this image, take it back
+      // rather than refusing the Beeb: the transfer aborts itself when it
+      // notices, and the LUN starts normally here. Refusing instead is what
+      // hung the machine in 8d8389e.
+      filesystemHostRevokeLun(commandDataBlock.targetLUN);
+
+      // Auto-start the LUN
+      if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
+         // Could not start LUN... return with error status
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Could not auto-start LUN #"), commandDataBlock.targetLUN, true);
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+
+         // Set request sense error globals
+         requestSenseData[commandDataBlock.targetLUN] = BAD_FORMAT; // 1C Bad format
+         return SCSI_STATUS;
+      }
+
+      if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Requested LUN has been auto-started\r\n"));
+   }
 
    // Get the starting logical block address from the CDB
    logicalBlockAddress = (((uint32_t)commandDataBlock.data[1] & 0x1F) << 16) |
@@ -1367,8 +1387,36 @@ static uint8_t scsiCommandTranslate(void)
       return SCSI_STATUS;
    }
 #endif
-   // Make sure the target LUN is started
-   if (!scsiAutoStartLun()) return SCSI_STATUS;
+// Make sure the target LUN is started
+   if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
+      // Target LUN is not started.  If the LUN is present, then start it, otherwise
+      // return an error.  Note: The original Adaptec SCSI host adapter would always
+      // auto-start a LUN if it was present, so we duplicate that behavior here even
+      // though it is 'more correct' (according to the specs) to return with error
+
+      // Is the requested LUN available?
+      if (debugFlag_scsiCommands) debugString_P(PSTR("\r\nSCSI Commands: Attempting to Auto-Start LUN (as it is currently STOPped)\r\n"));
+
+      // If a host transfer (MTP/WebDAV) is rewriting this image, take it back
+      // rather than refusing the Beeb: the transfer aborts itself when it
+      // notices, and the LUN starts normally here. Refusing instead is what
+      // hung the machine in 8d8389e.
+      filesystemHostRevokeLun(commandDataBlock.targetLUN);
+
+      // Auto-start the LUN
+      if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
+         // Could not start LUN... return with error status
+         if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Could not auto-start LUN #"), commandDataBlock.targetLUN, true);
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+
+         // Set request sense error globals
+         requestSenseData[commandDataBlock.targetLUN] = BAD_FORMAT; // 1C Bad format
+
+         return SCSI_STATUS;
+      }
+
+      if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Requested LUN has been auto-started\r\n"));
+   }
 
    // Get the logical block address from the CDB
    logicalBlockAddress = ((uint32_t)(commandDataBlock.data[1] & 0x1F) << 16) |
