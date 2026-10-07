@@ -10,11 +10,12 @@ trap 'rm -rf "$B"' EXIT
 
 echo "== fujinet device =="
 # cJSON is vendored (fujinet-nio's pinned commit): built on its own, without
-# our warning set.
+# our warning set, and with the firmware's nesting limit (src/CMakeLists.txt).
+CJSON_DEFS=-DCJSON_NESTING_LIMIT=64
 gcc -std=gnu2x -w -g -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -c "$SRC/fujinet/cJSON/cJSON.c" -o "$B/cJSON.o"
+    $CJSON_DEFS -c "$SRC/fujinet/cJSON/cJSON.c" -o "$B/cJSON.o"
 gcc -std=gnu2x -w -g -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -c "$SRC/fujinet/cJSON/cJSON_Utils.c" -o "$B/cJSON_Utils.o"
+    $CJSON_DEFS -c "$SRC/fujinet/cJSON/cJSON_Utils.c" -o "$B/cJSON_Utils.o"
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$SRC/fujinet" -I"$HERE" -o "$B/t" "$B/cJSON.o" "$B/cJSON_Utils.o" \

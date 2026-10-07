@@ -1143,6 +1143,24 @@ static void test_json_numbers(void)
    CHECK(fn_json_translate("[{\"a\":{\"b\":[1,{\"c\":\"d\"}]}},{}]", "", &out, &len) &&
          len == 10 && memcmp(out, "a\nb\n1\nc\nd\n", 10) == 0, "nested object/array layout (nio)");
    free(out);
+
+   /* cJSON recurses per nesting level; the build caps it at 64 so a
+      server's JSON cannot run the SVC stack out (CJSON_NESTING_LIMIT). */
+   {
+      static char deep[2 * 65 + 2];
+      for (int depth = 64; depth <= 65; depth++) {
+         memset(deep, '[', (size_t)depth);
+         deep[depth] = '1';
+         memset(deep + depth + 1, ']', (size_t)depth);
+         deep[2 * depth + 1] = '\0';
+         CHECK(fn_json_translate(deep, "", &out, &len), "translate %d-deep", depth);
+         if (depth == 64)
+            CHECK(len == 1 && out[0] == '1', "64-deep JSON is read");
+         else
+            CHECK(len == 0, "65-deep JSON is refused (nesting limit 64)");
+         free(out);
+      }
+   }
 }
 
 static void test_fuzz(void)
