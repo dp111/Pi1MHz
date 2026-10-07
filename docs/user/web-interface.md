@@ -92,6 +92,12 @@ A power cycle always goes back to the card's kernel. The first install
 of a build with the current kernel.now layout has to go on the SD card
 (see `docs/dev/chainboot-kernel-now.md`); after that kernel.now works.
 
+kernel.now never changes the program the Pi's VideoCore runs to serve
+the 1MHz bus: that is loaded only at a cold boot. A build whose
+VideoCore code (`vidcore/Pi1MHzvc.s`) has changed must be copied to the
+SD card as `kernel.img` and the Pi power-cycled or rebooted; under
+kernel.now it runs with the old VideoCore code.
+
 ## Password protection
 
 Set both `webdav_user=` and `webdav_password=` in `Pi1MHz.cfg` to

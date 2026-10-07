@@ -41,7 +41,10 @@ The same works over the network: see
 [the web interface](web-interface.md#kernelnow-over-the-network). The Pi only
 checks the image starts like an ARM kernel before restarting - the wrong
 kernel for your Pi model is not caught and needs a power cycle. If the
-video player is running, it is shut down first.
+video player is running, it is shut down first. A build that changes
+the VideoCore's bus code needs a cold boot from the SD card - kernel.now
+keeps the code it started with (see
+[the web interface](web-interface.md#kernelnow-over-the-network)).
 
 If you never touch firmware updates you can ignore this entirely -
 just avoid naming any of your own files `kernel.now`.
