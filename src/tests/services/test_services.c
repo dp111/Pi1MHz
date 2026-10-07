@@ -303,6 +303,19 @@ int main(void)
       ok(n_closed_fp == 0, "the re-init after it finds nothing left to close");
    }
 
+   puts("== the Beeb's own f unmount (15) closes its files ==");
+   /* Review 2026-10-07 (F2 follow-up): command 15 cleared the open-file
+      tracking before dismounting, so the remount hook found nothing to
+      close and a file being written was forgotten, not closed. */
+   ok(do_open(7, "/discs/unmounting.dat") == FR_OK, "open a file before f unmount");
+   {
+      FIL *unm = last_open_fp;
+      n_closed_fp = 0;
+      (void)do_simple(0, 15);
+      ok(n_closed_fp >= 1 && closed_fp[0] == unm, "f unmount closes the open file");
+      ok(!fat_service_file_in_use("/discs/unmounting.dat"), "f unmount releases the lock");
+   }
+
    puts("== readdir-ex (17) ==");
    {
       uint32_t cp = cp_of(0xFCu);           /* slot &FC, as the SD explorer uses */

@@ -138,6 +138,8 @@ static void fat_open_clear_all(void)
    fat_raw_sector_seen = false;
 }
 
+static bool fat_service_eject(void);    /* below: close all, then clear */
+
 /* FAT names are case-insensitive, and either side may carry a "0:" drive
    prefix or leading slashes. */
 static const char *fat_path_norm(const char *p)
@@ -590,7 +592,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
     }
 
     case 14 : // f mount
-        fat_open_clear_all();
+        (void)fat_service_eject();      /* close, not just forget: see below */
         if (filesystemMount())
          {
             Pi1MHz_MemoryWrite(addr, FR_OK);
@@ -602,7 +604,11 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         break;
 
     case 15 : // f unmount
-        fat_open_clear_all();
+        /* Close what the Beeb has open before the dismount, so a file it was
+           writing keeps what it wrote.  Clearing the tracking first (as this
+           did) left the remount hook nothing to close.  Poll context, not
+           FIQ, so the FatFs calls are safe here. */
+        (void)fat_service_eject();
         if (filesystemDismount())
         {
             Pi1MHz_MemoryWrite(addr, FR_OK);
@@ -739,7 +745,7 @@ static bool fat_service_eject(void)
 }
 
 /* The volume is about to be re-registered (filesystemRegisterRemount: a BBC
-   reset, a jukebox, the Beeb's f unmount, a mount after one), which would
+   reset, the Beeb's f unmount, a mount after one), which would
    invalidate every FIL open here for good - an unsynced write dropped, the
    file keeping its old size, the clusters written orphaned.  On a BBC reset
    the hard disc's filesystemReset() does this before fat_service_init()
