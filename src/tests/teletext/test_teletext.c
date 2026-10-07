@@ -55,8 +55,10 @@ err_t tcp_connect(struct tcp_pcb*p, const ip_addr_t*ip, uint16_t port, tcp_conne
    return cb(tcp_arg_saved, p, ERR_OK);   /* simulate immediate connect */
 }
 void tcp_recved(struct tcp_pcb*p, uint16_t n){ (void)p;(void)n; }
-err_t tcp_close(struct tcp_pcb*p){ (void)p; return ERR_OK; }
-void tcp_abort(struct tcp_pcb*p){ (void)p; }
+static err_t close_rc = ERR_OK;     /* what tcp_close reports */
+static int abort_calls;
+err_t tcp_close(struct tcp_pcb*p){ (void)p; return close_rc; }
+void tcp_abort(struct tcp_pcb*p){ (void)p; abort_calls++; }
 uint8_t pbuf_free(struct pbuf*p){ (void)p; return 1; }
 
 #include "teletext_emulator.c"
@@ -112,6 +114,42 @@ int main(void)
 
    char buf[512]; teletext_status_text(buf, sizeof buf);
    assert(strstr(buf,"ch0") && strstr(buf,"connected"));
+
+   /* C6: an unread channel overflows in TCP-segment sized pieces; what is
+      left must still pop as whole fields.  Byte k of the stream is its
+      field number, so a misaligned pop mixes two numbers. */
+   {
+      static ttx_chan_t rc;
+      static uint8_t seg[1460], out[TTX_FIELD_BYTES];
+      uint32_t k = 0u;
+      for (int n = 0; n < 23; n++) {
+         for (uint32_t i = 0u; i < sizeof seg; i++, k++)
+            seg[i] = (uint8_t)(k / TTX_FIELD_BYTES);
+         ring_push(&rc, seg, sizeof seg);
+         assert(rc.count <= TTX_RING_BYTES);
+      }
+      int last = -1, pops = 0;
+      while (ring_pop_field(&rc, out)) {
+         for (uint32_t i = 1u; i < TTX_FIELD_BYTES; i++)
+            assert(out[i] == out[0] && "overflow kept fields whole");
+         assert((last < 0 || out[0] == (uint8_t)(last + 1)) && "fields in order");
+         last = out[0];
+         pops++;
+      }
+      assert(pops == (int)TTX_RING_FIELDS - 1 && "newest whole fields kept");
+      assert(last == (int)(k / TTX_FIELD_BYTES) - 1 && "up to the newest");
+   }
+
+   /* C7: the server closes and tcp_close fails, so the pcb is aborted -
+      the recv callback must then tell lwIP so with ERR_ABRT. */
+   close_rc = ERR_MEM;
+   assert(recv_cb(tcp_arg_saved, &the_pcb, NULL, ERR_OK) == ERR_ABRT
+          && abort_calls == 1 && "aborted pcb -> ERR_ABRT");
+   close_rc = ERR_OK;
+   now_us += 3000000u;                      /* past the reconnect delay */
+   step();
+   assert(recv_cb(tcp_arg_saved, &the_pcb, NULL, ERR_OK) == ERR_OK
+          && abort_calls == 1 && "clean close -> ERR_OK");
 
    printf("all teletext tests passed\n");
    return 0;

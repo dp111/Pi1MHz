@@ -403,12 +403,15 @@ set(services_emulator_files
 
 # cJSON is vendored at fujinet-nio's pinned commit (the FujiNet network
 # device's JSON translation must match nio's byte for byte): not ours to
-# warn about.
+# warn about.  Its parser recurses once per nesting level and the default
+# limit is 1000, which server-supplied JSON could drive deep enough to
+# overrun the 64 KB SVC stack; 64 levels is far beyond any real document.
 set_source_files_properties(
    fujinet/cJSON/cJSON.c
    fujinet/cJSON/cJSON_Utils.c
    PROPERTIES
    COMPILE_OPTIONS "-w"
+   COMPILE_DEFINITIONS "CJSON_NESTING_LIMIT=64"
 )
 
 # uzlib - vendored DEFLATE decompressor, see src/uzlib/NOTES.md.  Only the

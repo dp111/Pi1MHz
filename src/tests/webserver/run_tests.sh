@@ -44,7 +44,7 @@ awk -v fns="dav_put_consume_chunked" \
 # teardown paths, and the PUT body sink a stale buffer would hijack.
 KN_FNS="kn_discard,conn_release_resources,conn_close,conn_reset_for_next_request,\
 kn_begin,kn_append,kn_take,kn_status_text,upload_fail_status,upload_fail,\
-upload_fail_kn,upload_write,upload_finish,\
+upload_fail_kn,upload_write,upload_finish,ws_body_unread,\
 dav_put_write_bytes,\
 dav_put_finish,dav_put_consume,dav_put_consume_chunked,ws_err"
 awk -v fns="$KN_FNS" \

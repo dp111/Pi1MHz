@@ -128,16 +128,28 @@ static bool        ttx_net_waiting_logged;
 
 /* ---- ring buffer (per channel) -------------------------------------------*/
 
+/* The tail always sits on a field boundary of the stream - ring_pop_field
+   takes whole fields from it - so on overflow only whole fields are dropped:
+   the oldest ones, from the ring and then, if that is not enough, from the
+   front of the new data.  The newest bytes kept are any part-field still
+   arriving plus as many whole fields as fit. */
 static void ring_push(ttx_chan_t *c, const uint8_t *d, uint32_t len)
 {
-   if (len >= TTX_RING_BYTES) {        /* keep only the newest bytes */
-      d  += len - TTX_RING_BYTES;
-      len = TTX_RING_BYTES;
-   }
-   if (c->count + len > TTX_RING_BYTES) {   /* drop oldest to make room */
-      uint32_t drop = c->count + len - TTX_RING_BYTES;
-      c->tail   = (c->tail + drop) % TTX_RING_BYTES;
-      c->count -= drop;
+   uint32_t total = c->count + len;
+   if (total > TTX_RING_BYTES) {
+      uint32_t part = total % TTX_FIELD_BYTES;
+      uint32_t keep = (part != 0u) ? TTX_RING_BYTES - TTX_FIELD_BYTES + part
+                                   : TTX_RING_BYTES;
+      uint32_t drop = total - keep;              /* whole fields */
+      if (drop >= c->count) {                    /* all held, and some new */
+         d      += drop - c->count;
+         len    -= drop - c->count;
+         c->tail  = c->head;
+         c->count = 0u;
+      } else {
+         c->tail   = (c->tail + drop) % TTX_RING_BYTES;
+         c->count -= drop;
+      }
    }
    for (uint32_t i = 0u; i < len; i++) {
       c->buf[c->head] = d[i];
@@ -223,14 +235,19 @@ static void ttx_clear(unsigned int gpio)
 
 /* ---- network: lwIP raw TCP client ----------------------------------------*/
 
-static void ttx_disconnect(ttx_chan_t *c, bool from_err)
+/* Returns true if the pcb had to be aborted: a recv callback must then
+   return ERR_ABRT, or lwIP goes on to use the pcb it has just freed. */
+static bool ttx_disconnect(ttx_chan_t *c, bool from_err)
 {
+   bool aborted = false;
    if (!from_err && c->pcb != NULL) {
       tcp_arg(c->pcb, NULL);
       tcp_recv(c->pcb, NULL);
       tcp_err(c->pcb, NULL);
-      if (tcp_close(c->pcb) != ERR_OK)
+      if (tcp_close(c->pcb) != ERR_OK) {
          tcp_abort(c->pcb);
+         aborted = true;
+      }
    }
    c->pcb             = NULL;
    c->connected       = false;
@@ -238,13 +255,14 @@ static void ttx_disconnect(ttx_chan_t *c, bool from_err)
    c->head = c->tail  = 0u;
    c->count           = 0u;
    c->reconnect_at_us = RPI_GetSystemTime() + TTX_US_RECONNECT;
+   return aborted;
 }
 
 static void ttx_tcp_err(void *arg, err_t err)
 {
    if (arg != NULL) {
       TTX_LOG("TELETEXT: connection error %d, will retry\r\n", (int)err);
-      ttx_disconnect((ttx_chan_t *)arg, true);   /* pcb already freed by lwIP */
+      (void)ttx_disconnect((ttx_chan_t *)arg, true);   /* pcb already freed by lwIP */
    }
 }
 
@@ -256,8 +274,7 @@ static err_t ttx_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
    if (p == NULL || err != ERR_OK) {            /* remote closed / error */
       if (p != NULL)
          pbuf_free(p);
-      ttx_disconnect(c, false);
-      return ERR_OK;
+      return ttx_disconnect(c, false) ? ERR_ABRT : ERR_OK;
    }
    for (const struct pbuf *q = p; q != NULL; q = q->next)
       ring_push(c, (const uint8_t *)q->payload, (uint32_t)q->len);

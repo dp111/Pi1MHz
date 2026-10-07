@@ -221,6 +221,12 @@ typedef struct {
       stray body desync the next request.  Persists across
       conn_reset_for_next_request until it reaches zero. */
    uint32_t drain_remaining;
+   /* A PUT or POST whose declared body has not all arrived with its
+      headers.  Those verbs are not drained (their handlers read the body),
+      so one answered before its handler took the body - an early error, a
+      401 - must close instead; see ws_body_unread.  Set per request by
+      process_request. */
+   bool     req_body_pending;
 
    /* upload */
    upload_state_t up_state;
@@ -1359,6 +1365,8 @@ static void ws_parent_path(const char *sdpath, char *out, size_t osz)
    per filing system, so the shared message names both. */
 #define WS_BUSY_MSG "That file is in use by the Beeb - release it first " \
                     "(*BYE in ADFS; close it or CTRL-BREAK in MMFS)."
+/* The upload form's refusal to replace a folder (WebDAV PUT's 409). */
+#define WS_UP_DIR_MSG "Cannot upload over an existing folder."
 static bool ws_is_root(const char *p)
 {
    return p[0] == '/' && p[1] == '\0';
@@ -2428,6 +2436,29 @@ static bool ws_oom(ws_conn_t *c)
    return false;
 }
 
+/* True while the request being answered still has body bytes on the way
+   that no handler will read: a PUT or POST answered from process_request,
+   a PUT body cut short by an error, a failed upload.  Keeping such a
+   connection alive would parse the rest of the body as the next request,
+   so the response closes it instead (ws_connection_hdr, and
+   ws_install_response for keep_alive).  A body read to its end - the
+   normal PUT and upload completions, and the unauthenticated-PUT drain -
+   keeps the connection. */
+static bool ws_body_unread(const ws_conn_t *c)
+{
+   switch (c->state) {
+   case CONN_RECV_HEADER:
+      return c->req_body_pending;
+   case CONN_RECV_DAV_PUT:
+      return c->dav_put_chunked ? c->dav_chunk_state != DAV_CHUNK_TRAILER
+                                : c->dav_remaining != 0u;
+   case CONN_RECV_UPLOAD:
+      return c->up_state != UP_EPILOGUE;
+   default:
+      return false;
+   }
+}
+
 /* Install a fully built response as the connection's output and start
    sending it.  Takes ownership of r's buffer.  This is the one place the
    OOM contract is enforced: a buffer that failed to grow closes the
@@ -2445,6 +2476,8 @@ static bool ws_install_response(ws_conn_t *c, ws_strbuf_t *r, conn_state_t state
    c->out_sent = 0u;
    c->bytes_queued = 0u;
    c->bytes_acked = 0u;
+   if (ws_body_unread(c))
+      c->keep_alive = false;
    c->state = state;
    conn_pump(c);
    return true;
@@ -2476,8 +2509,8 @@ static void ws_send_100_continue_if_expected(ws_conn_t *c)
    so the intent is unambiguous to HTTP/1.0 clients. */
 static const char *ws_connection_hdr(const ws_conn_t *c)
 {
-   return c->keep_alive ? "Connection: keep-alive\r\n"
-                        : "Connection: close\r\n";
+   return (c->keep_alive && !ws_body_unread(c)) ? "Connection: keep-alive\r\n"
+                                                : "Connection: close\r\n";
 }
 
 /* Reset all per-request state on a kept-alive connection so the
@@ -2516,6 +2549,7 @@ static void conn_reset_for_next_request(ws_conn_t *c)
    c->fb_row = 0u;
    c->fb_stale = false;
    c->pipelined_bytes_dropped = false;
+   c->req_body_pending = false;
    c->reqhdr_len = 0u;
    c->reqhdr[0] = '\0';
    c->state = CONN_RECV_HEADER;
@@ -4505,6 +4539,8 @@ static bool upload_finish(ws_conn_t *c)
          date to 2026-02-04.  A browser multipart POST does not send the
          source file's mtime, so the old date is the best available. */
       had_date = (f_stat(full, &old_fno) == FR_OK);
+      if (had_date && (old_fno.fattrib & AM_DIR) != 0u)
+         return upload_fail_status(c, 409, "Conflict", WS_UP_DIR_MSG);
       (void)f_unlink(full);                 /* f_rename needs a free target */
       if (f_rename(tmp, full) != FR_OK) {
          /* Target already unlinked and the rename failed, so the ".part" temp
@@ -4610,6 +4646,15 @@ static bool upload_begin_part(ws_conn_t *c)
          Beeb already holds it open. */
       if (beeb_path_busy(full))
          return upload_fail(c, WS_BUSY_MSG);
+
+      /* As WebDAV PUT refuses: the completion's f_unlink would delete an
+         empty folder of this name, and the rename then put the file in
+         its place.  Re-checked there, as the folder can appear meanwhile. */
+      {
+         FILINFO fno;
+         if (f_stat(full, &fno) == FR_OK && (fno.fattrib & AM_DIR) != 0u)
+            return upload_fail_status(c, 409, "Conflict", WS_UP_DIR_MSG);
+      }
 
       if (f_open(&c->write_file.up, tmp, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
          return upload_fail(c, "The file could not be created on the SD card.");
@@ -7013,6 +7058,40 @@ static bool process_request(ws_conn_t *c, int body_at)
             client waited out the ~30s poll limit. Flagging it here makes the
             response completion close instead, so the client retries at once. */
          c->pipelined_bytes_dropped = true;
+      }
+   }
+
+   /* PUT and POST read their own bodies, so they are not drained above.
+      Note whether any of the body is still to come: if the request is
+      answered before its handler takes it, ws_body_unread closes the
+      connection rather than parse that body as the next request.  A
+      Transfer-Encoding body, or a length that will not parse, counts as
+      still to come. */
+   c->req_body_pending = false;
+   if (ws_method_is(method, "PUT") || ws_method_is(method, "POST")) {
+      char   cl_hdr[24];
+      char   te_hdr[32];
+      size_t already = ((size_t)body_at < c->reqhdr_len)
+                     ? (c->reqhdr_len - (size_t)body_at) : 0u;
+
+      if (ws_find_header(c->reqhdr, c->reqhdr_len, "Transfer-Encoding",
+                         te_hdr, sizeof te_hdr)) {
+         c->req_body_pending = true;
+      } else if (ws_find_header(c->reqhdr, c->reqhdr_len, "Content-Length",
+                                cl_hdr, sizeof cl_hdr)) {
+         uint32_t cl = 0u;
+         const char *p;
+         c->req_body_pending = (cl_hdr[0] == '\0'
+                                || strlen(cl_hdr) + 2u > sizeof cl_hdr);
+         for (p = cl_hdr; !c->req_body_pending && *p != '\0'; ++p) {
+            if (*p < '0' || *p > '9'
+                || cl > (UINT32_C(0x7FFFFFFF) - 9u) / 10u)
+               c->req_body_pending = true;
+            else
+               cl = cl * 10u + (uint32_t)(*p - '0');
+         }
+         if (cl > already)
+            c->req_body_pending = true;
       }
    }
 

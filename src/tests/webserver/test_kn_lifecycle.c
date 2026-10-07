@@ -56,7 +56,17 @@ static FRESULT f_unlink(const char *p)
    return FR_OK;
 }
 static FRESULT f_rename(const char *a, const char *b) { (void)a; (void)b; f_rename_calls++; return FR_OK; }
-static FRESULT f_stat(const char *p, FILINFO *f) { (void)p; (void)f; return FR_NO_FILE; }
+/* A folder at stat_dir_at (W6); every other path does not exist. */
+static const char *stat_dir_at;
+static FRESULT f_stat(const char *p, FILINFO *f)
+{
+   if (stat_dir_at != NULL && strcmp(p, stat_dir_at) == 0) {
+      memset(f, 0, sizeof *f);
+      f->fattrib = AM_DIR;
+      return FR_OK;
+   }
+   return FR_NO_FILE;
+}
 static FRESULT f_utime(const char *p, const FILINFO *f) { (void)p; (void)f; return FR_OK; }
 
 /* ---- lwIP ---- */
@@ -74,6 +84,7 @@ static err_t tcp_close(struct tcp_pcb *p) { (void)p; tcp_close_calls++; return E
 
 /* ---- the rest of webserver.c the extracted functions call ---- */
 #define WS_BUSY_MSG "busy"
+#define WS_UP_DIR_MSG "dir"
 static int upload_discard_calls, copy_discard_calls, slot_release_calls, live_remove_calls;
 static void upload_discard_temp(ws_conn_t *c) { (void)c; upload_discard_calls++; }
 static void copy_discard_temp(ws_conn_t *c) { (void)c; copy_discard_calls++; }
@@ -330,6 +341,76 @@ int main(void)
       (void)upload_finish(c);
       ok(boot_calls == 1 && html_calls == 1 && html_status == 200,
          "upload form: a kernel image still restarts (200)");
+      conn_reset_for_next_request(c);
+      (free)(c);
+   }
+
+   puts("== W5: a body nobody will read closes the connection ==");
+   {
+      ws_conn_t *c = new_conn();
+      size_t consumed = 0u;
+      zero_counters();
+      c->state = CONN_RECV_HEADER;
+      c->req_body_pending = true;
+      ok(ws_body_unread(c), "PUT/POST answered from process_request, body to come");
+      c->req_body_pending = false;
+      ok(!ws_body_unread(c), "request whose body came with its headers");
+
+      start_plain_put(c, 8u);
+      c->dav_put_open = false;
+      c->dav_put_draining = true;               /* no file: bytes go nowhere */
+      (void)dav_put_consume(c, arm_body, 4u);
+      ok(ws_body_unread(c), "PUT answered part way through its body");
+      (void)dav_put_consume(c, arm_body + 4, 4u);
+      ok(challenge_calls == 1 && !ws_body_unread(c),
+         "drained PUT: the 401 keeps the connection");
+      conn_reset_for_next_request(c);
+      ok(!c->req_body_pending, "reset clears the pending-body note");
+
+      c->dav_put_chunked = true;
+      c->dav_put_draining = true;
+      c->state = CONN_RECV_DAV_PUT;
+      (void)dav_put_consume_chunked(c, (const uint8_t *)"zz\r\n", 4u, &consumed);
+      ok(err_calls == 1 && ws_body_unread(c),
+         "chunked PUT refused mid-body closes");
+      conn_reset_for_next_request(c);
+      c->dav_put_chunked = true;
+      c->dav_put_draining = true;
+      c->state = CONN_RECV_DAV_PUT;
+      (void)dav_put_consume_chunked(c, (const uint8_t *)"2\r\nab\r\n0\r\n\r\n",
+                                    15u, &consumed);
+      ok(challenge_calls == 2 && !ws_body_unread(c),
+         "chunked body read to its end keeps the connection");
+      conn_reset_for_next_request(c);
+
+      c->state = CONN_RECV_UPLOAD;
+      c->up_state = UP_DATA;
+      (void)upload_fail(c, "bad");
+      ok(ws_body_unread(c), "upload refused mid-body closes");
+      conn_reset_for_next_request(c);
+      c->state = CONN_RECV_UPLOAD;
+      c->up_state = UP_DATA;
+      (void)upload_finish(c);
+      ok(html_status == 200 && !ws_body_unread(c),
+         "completed upload keeps the connection");
+      conn_reset_for_next_request(c);
+      (free)(c);
+   }
+
+   puts("== W6: the upload form does not replace a folder ==");
+   {
+      ws_conn_t *c = new_conn();
+      zero_counters();
+      stat_dir_at = "/up.ssd";
+      c->state = CONN_RECV_UPLOAD;
+      c->up_state = UP_DATA;
+      c->up_temp_exists = true;
+      (void)upload_finish(c);
+      ok(html_calls == 1 && html_status == 409, "a folder of that name is a 409");
+      ok(f_unlink_calls == 0 && f_rename_calls == 0,
+         "the folder is neither unlinked nor renamed over");
+      ok(upload_discard_calls == 1, "the .part temp is dropped");
+      stat_dir_at = NULL;
       conn_reset_for_next_request(c);
       (free)(c);
    }
