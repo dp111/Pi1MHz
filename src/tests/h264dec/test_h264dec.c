@@ -1,5 +1,6 @@
 /* Host tests for rpi/h264dec.c: h264dec_shutdown, the decoder's half of a
- * kernel.now (videoplayer_shutdown).
+ * kernel.now (videoplayer_shutdown), and h264dec_reset, its warm restart
+ * on a Beeb reset.
  *
  * The VideoCore runs on across the jump, so what matters is the ORDER in
  * which the decoder lets go, and what it refuses to give back when a step
@@ -28,7 +29,8 @@
 /* ---- the stub platform -------------------------------------------------- */
 
 static char log_[512];                 /* the calls, in order, ';'-separated */
-static bool fail_destroy, fail_smem_close, fail_output_info, fail_port_disable;
+static bool fail_destroy, fail_smem_close, fail_output_info, fail_port_disable,
+            fail_port_enable;
 static uint32_t next_phys = 0x1000000u, next_handle = 0x100u;
 
 static void ev(const char *what)
@@ -76,7 +78,7 @@ bool mmal_vc_port_info_get(uint32_t component, uint32_t port_type, uint32_t inde
 }
 bool mmal_vc_port_set_format(mmal_vc_port_t *port) { (void)port; return true; }
 bool mmal_vc_port_set_zero_copy(mmal_vc_port_t *port) { (void)port; return true; }
-bool mmal_vc_port_enable(mmal_vc_port_t *port) { (void)port; return true; }
+bool mmal_vc_port_enable(mmal_vc_port_t *port) { (void)port; return !fail_port_enable; }
 bool mmal_vc_port_disable(mmal_vc_port_t *port)
 {
    ev(port->type == MMAL_PORT_TYPE_INPUT ? "in_disable" :
@@ -123,6 +125,7 @@ static void reset(void)
 {
    log_[0] = '\0';
    fail_destroy = fail_smem_close = fail_output_info = fail_port_disable = false;
+   fail_port_enable = false;
 }
 
 /* A running decoder with two frame buffers registered. */
@@ -205,6 +208,63 @@ static void test_nothing_up(void)
    CHECK(at("comp_destroy") < 0 && count("staging_free") == 0, "work done with nothing up: %s", log_);
 }
 
+/* A warm restart lets go of the output imports (the caller frees the frame
+   buffers next) and keeps the decoder up. */
+static void test_reset_clean(void)
+{
+   reset();
+   bring_up();
+   CHECK(h264dec_reset(), "clean reset reported failure: %s", log_);
+   CHECK(at("in_disable") >= 0, "input port not disabled: %s", log_);
+   CHECK(count("smem_free") == 2, "%d output imports freed, want 2: %s", count("smem_free"), log_);
+   CHECK(h264dec_running(), "not running after a clean reset");
+}
+
+/* A port the VideoCore will not disable may still hold buffers: nothing is
+   handed back, the caller is told to leak, and the decoder is condemned. */
+static void test_reset_disable_fails(void)
+{
+   reset();
+   bring_up();
+   for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++) {      /* both AUs with the VC */
+      uint32_t max = 0;
+      CHECK(h264dec_get_input_buffer(&max) != NULL, "no input buffer %d", i);
+      CHECK(h264dec_submit_input(100u, i, false), "submit %d", i);
+   }
+   fail_port_disable = true;
+   CHECK(!h264dec_reset(), "reset reported clean with the port still up");
+   CHECK(count("smem_free") == 0, "imports freed under a live port: %s", log_);
+   CHECK(!h264dec_running(), "still running after a failed reset");
+   uint32_t free_slots = 9u;
+   bool eos = false;
+   h264dec_input_state(&free_slots, &eos);
+   (void)eos;
+   CHECK(free_slots == 0u, "%u input slots handed back as free", free_slots);
+   reset();
+   CHECK(!h264dec_init(768u, 576u, frame), "a second set brought up after a failed reset");
+   /* a kernel.now still tries to take it all down */
+   log_[0] = '\0';
+   CHECK(h264dec_shutdown(), "shutdown after a failed reset: %s", log_);
+   CHECK(at("in_disable") >= 0 && at("comp_destroy") >= 0, "not taken down: %s", log_);
+}
+
+/* The re-enable at the end of a reset failed, so the input port is down: a
+   second reset (two BREAKs) must not try to disable it - the VideoCore
+   refuses that - and so must not condemn a healthy decoder. */
+static void test_reset_input_down(void)
+{
+   reset();
+   bring_up();
+   fail_port_enable = true;
+   CHECK(h264dec_reset(), "reset failed");
+   fail_port_enable = false;
+   fail_port_disable = true;          /* the VC's answer for a port already down */
+   log_[0] = '\0';
+   CHECK(h264dec_reset(), "second reset condemned the decoder: %s", log_);
+   CHECK(at("in_disable") < 0, "disabled a port that was down: %s", log_);
+   CHECK(h264dec_running(), "not running");
+}
+
 /* Each case in a child: h264dec.c keeps its state in statics. */
 static void run(void (*fn)(void), const char *name)
 {
@@ -232,6 +292,9 @@ int main(void)
    run(test_destroy_fails, "destroy_fails");
    run(test_half_up, "half_up");
    run(test_nothing_up, "nothing_up");
+   run(test_reset_clean, "reset_clean");
+   run(test_reset_disable_fails, "reset_disable_fails");
+   run(test_reset_input_down, "reset_input_down");
    printf("%d checks, %d failed\n", checks, failures);
    if (failures == 0)
       printf("H264DEC TESTS PASSED\n");

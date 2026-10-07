@@ -1179,13 +1179,15 @@ static bool pvf_open_file(void)
    h264dec_reset() first, so the decoder drops its SMEM imports and
    disables the output port, before any frame buffer goes back to the GPU
    pool - otherwise the VideoCore could still be armed to decode into
-   memory we have just returned. */
+   memory we have just returned.  A reset that fails leaves them to the
+   VideoCore: leaked, never freed under it. */
 static void video_give_up(uint32_t handles[NUM_FRAME_BUFFERS])
 {
-    h264dec_reset();
+    bool released = h264dec_reset();
     for (int i = 0; i < NUM_FRAME_BUFFERS; i++)
         if (handles[i]) {
-            screen_release_buffer(handles[i]);
+            if (released)
+                screen_release_buffer(handles[i]);
             handles[i] = 0;
         }
     free(vp.index);
@@ -1208,13 +1210,13 @@ void videoplayer_init(uint8_t instance, uint8_t address)
        from the still-running decoder - without it, releasing the GPU
        buffers below would leave the VideoCore free to DMA into freed
        memory. Then release the heap the old instance held. */
-    if (h264dec_running())
-        h264dec_reset();   /* detach the frame buffers from the decoder even
-                              when the player is closed (e.g. a reopen that
-                              failed into an empty directory leaves the
-                              decoder up with buffers registered) - the
-                              release below must never free memory the
-                              VideoCore still holds armed */
+    /* Detach the frame buffers from the decoder even when the player is
+       closed (e.g. a reopen that failed into an empty directory leaves the
+       decoder up with buffers registered) - the release below must never
+       free memory the VideoCore still holds armed.  A reset that fails
+       leaves them leaked instead. */
+    if (h264dec_running() && !h264dec_reset())
+        videobuf_magic2 = 0u;        /* leaked: the VC may still decode into them */
     if (vp.open) {
         f_close(&vp.file);
         audio_release(&vp.producer);

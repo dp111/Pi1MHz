@@ -538,18 +538,41 @@ bool h264dec_resume(void)
 /* Detach everything for a warm restart (Beeb reset re-runs the emulator
    inits): return all buffers to us, forget the output registrations so
    the caller can free/reallocate its frame buffers, and leave the
-   component enabled with a fresh input port ready for the next AU. */
-void h264dec_reset(void)
+   component enabled with a fresh input port ready for the next AU.
+   False if a port would not come down: the component may still hold
+   buffers on it, so nothing is handed back - the input slots stay busy,
+   the output imports and registrations stay, and the caller must not free
+   its frame buffers (leaked, never freed under the VideoCore).  The
+   decoder is then condemned, as after a failed shutdown: it stops, and no
+   second set is brought up (init_failed); h264dec_shutdown still takes
+   it down at a kernel.now if the VideoCore will let it. */
+bool h264dec_reset(void)
 {
     if (!dec.running)
-        return;
+        return true;
 
     bool was_enabled = dec.output_enabled;
-    if (mmal_vc_port_disable(&dec.port_in))
-        dec.input_enabled = false;
+    bool ok = true;
+    /* Each port by its own state, as in h264dec_shutdown: a re-enable that
+       failed last time left the input port down, and disabling a port that
+       is not enabled is refused - which must not condemn the decoder. */
+    if (dec.input_enabled) {
+        if (mmal_vc_port_disable(&dec.port_in))
+            dec.input_enabled = false;
+        else
+            ok = false;
+    }
     if (dec.output_enabled) {
-        mmal_vc_port_disable(&dec.port_out);
-        dec.output_enabled = false;
+        if (mmal_vc_port_disable(&dec.port_out))
+            dec.output_enabled = false;
+        else
+            ok = false;
+    }
+    if (!ok) {
+        LOG_DEBUG("h264: reset: port disable failed - decoder left to the VideoCore\r\n");
+        dec.running = false;
+        init_failed = true;
+        return false;
     }
 
     for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++)
@@ -586,6 +609,7 @@ void h264dec_reset(void)
        component is never destroyed and so never sends FORMAT_CHANGED again. */
     if (was_enabled)
         dec.reconfigure_pending = true;
+    return true;
 }
 
 /* kernel.now (videoplayer_shutdown): the VideoCore runs on across the jump,

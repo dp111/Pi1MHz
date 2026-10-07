@@ -265,8 +265,8 @@ bool mmal_vc_init(const mmal_vc_client_callbacks_t *callbacks)
         return true;
 
     /* A previous attempt left an 'mmal' service open on the VCHIQ side.
-       There are only two service slots, so trying again would strand the
-       one vcsm still needs. */
+       There are only VCHIQ_MAX_SERVICES (3) slots - mmal, SMEM and AUDS -
+       so trying again would strand one another service still needs. */
     if (mmal_failed)
         return false;
 
