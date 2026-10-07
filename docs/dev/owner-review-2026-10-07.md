@@ -1,6 +1,7 @@
 # Owner review list, 2026-10-07
 
-STATUS: open - waiting for dp111's decisions.  Built from
+STATUS: decided 2026-10-07 - see "Outcome" below; the tables keep the
+original proposals.  Built from
 `review-2026-10-06.md` (full detail by ID there) after the merge and the
 hardware tests of 2026-10-07.  Mark each item **fix**, **reject** or
 **later**.  "Rec" is Claude's recommendation; the review's own evidence
@@ -88,3 +89,38 @@ L8, L9, V10, D13, N12, F10, A10-A12, T3-T5, T7, T8.
   open.
 - Fresh firmware images, then push: ADFS-multi-target `878e424` first,
   then Pi1MHz master, then the `V1.39` tag.
+
+## Outcome (2026-10-07)
+
+**Fixed** (branch review-fixes, each with a host test that fails on the old
+code where one was possible): S2, S3, S5, S6, S8, S10, S11, P8, F2 (and the
+Beeb's own f mount/unmount, found by the review of the fixes), L6, L7, W5,
+W6, C6, C7, F3, F5-F9, A2, A4, A8, A9, U5, U6, D11, D12, D-dev15 (#if 0),
+the licence comments, the V1.39 ChangeLog line, the usb_mode=auto docs and
+the explorer's leftover prompt.
+
+**Hardware-tested** (Zero 2 W + Master): cold boot and kernel.now of the
+combined build; S2 with a control (a download across a VFS side flip is
+cut short on V1.39, complete now); explorer Escape clears the prompt; the
+menu's new sound option (both / left / right / off), the right mouse
+button and the help screen on a second visit (dp111).
+
+**Rejected or closed**: C2 (JIM RAM is never 0), C3, C5 (no FP in the
+IRQ), C8, F1, F4, S9 (only the Beeb's VFS can't write), A7 (a bank may
+hold a different ROM), D-dev4 (the VFS ROM never writes), L5 (DMB is
+enough: every caller follows the clean with a device write), A5 (the 6850
+reads &52 before install and after remove - nothing to restore, MEASURED),
+D9 (not real), D10, N9-N11 (real but harmless), R17, P7.
+
+**Still open**:
+- A2/A4 not yet run on a Beeb: the WiFi ROM would not load into sideways
+  RAM after a power cycle (banks 4-7 read RAM FF after *SRROM).
+- sdcard: no CMD13 after a write's programming; OUT_OF_RANGE on a write
+  ending at the card's last block (GUESSED, rare).
+- FujiNet: atomic file rewrite needs a new store primitive.
+- BSFATPATH has no short-transfer check.
+- D11: without wifi_diag the "802.11n state" / "AMPDU limits" /status rows
+  are gone.
+- U4 (reboot.now inside tud_task), L4, D4-D8, V9 (check against a Beeb),
+  the tidy-ups.
+- WiFi on a 3B+ and the VP modes on Domesday (owner's hardware).
