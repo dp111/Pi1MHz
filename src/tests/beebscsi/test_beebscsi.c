@@ -457,6 +457,39 @@ static void test_jukebox(void)
    stop_all();
 }
 
+/* S2: a jukebox stops only the swapped directory's LUNs and leaves the card
+   mounted, so a file another subsystem holds open on it stays usable.  The
+   control is the full filesystemReset() the jukebox used to do. */
+static void test_stop_directory_luns(void)
+{
+   static char why[160];
+   FIL other;
+   UINT br = 0;
+   char buf[4];
+
+   stop_all();
+   filesystemSetLunDirectory(1, 3);
+   filesystemSetLunDirectory(16, 1);
+   bool s0 = filesystemSetLunStatus(0, true);
+   bool s8 = filesystemSetLunStatus(8, true);
+   FRESULT fo = f_open(&other, "/BeebVFS0/scsi0.dat", FA_READ);
+
+   filesystemStopDirectoryLuns(8);
+   FRESULT fr = f_read(&other, buf, sizeof buf, &br);
+   snprintf(why, sizeof why, "start 0 %d 8 %d, open %d, LUN0 %d LUN8 %d, read %d",
+            s0, s8, fo, filesystemReadLunStatus(0), filesystemReadLunStatus(8), fr);
+   check("S2 stopping the VFS directory's LUNs leaves ADFS LUN 0 started",
+         s0 && s8 && filesystemReadLunStatus(0) && !filesystemReadLunStatus(8), why);
+   check("S2 ... and another subsystem's open file stays valid",
+         fo == FR_OK && fr == FR_OK && br == sizeof buf, why);
+
+   filesystemReset();
+   fr = f_read(&other, buf, sizeof buf, &br);
+   snprintf(why, sizeof why, "read after reset %d (want an error)", fr);
+   check("S2 control: a full filesystemReset invalidates that file", fr != FR_OK, why);
+   stop_all();
+}
+
 /* ---- the bus: whole commands through scsiProcessEmulation() ----------- */
 
 /* One command from selection to BUS FREE.  Returns the status byte, or -1
@@ -738,6 +771,7 @@ int main(int argc, char **argv)
    test_format_expand_fails();
    test_format_new_disc();
    test_jukebox();
+   test_stop_directory_luns();
 
    scsiReset(0);
    test_bsfatread_failure();

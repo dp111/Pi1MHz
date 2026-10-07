@@ -713,6 +713,20 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
    return true;
 }
 
+/* A jukebox swaps one host's LUN directory: stop just that directory's
+   eight LUNs (0-7 ADFS, 8-15 VFS) and drop their cached .cfg values, as
+   filesystemDismount does for all sixteen - but leave the card mounted, so
+   every other file open on it (FAT service, FujiNet, MTP, WebDAV, the
+   video) stays valid.  The VFS volume cache is keyed by directory and
+   re-checks itself. */
+void filesystemStopDirectoryLuns(uint8_t firstLun)
+{
+   for (uint8_t i = firstLun; i < firstLun + 8u; i++) {
+      filesystemSetLunStatus(i, false);
+      parse_releasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
+   }
+}
+
 // Function to read the status of a LUN image
 bool filesystemReadLunStatus(uint8_t lunNumber)
 {

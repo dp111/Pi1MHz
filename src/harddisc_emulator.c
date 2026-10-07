@@ -253,21 +253,21 @@ void hd_juke_service(void)
    if (filesystemEjected())
       return;
    uint8_t dir = (uint8_t)(p & 0xFFu);
-   /* Reselecting the directory that is already current is a no-op: the
-      full reset below remounts the FAT, which invalidates every open FIL
-      and forces a video reopen - a Domesday player re-poking its own
-      directory must not have its disc rewound (scsiJukeboxSwap's same-dir
-      check, which guards only its own videoplayer notification, runs too
-      late to prevent that: the remount notify has already fired by then). */
+   /* Reselecting the directory that is already current is a no-op: it
+      would stop that directory's LUNs for nothing, and a Domesday player
+      re-poking its own directory must not have its disc rewound. */
    if (dir == ((scsiHostID >= 16) ? filesystemGetLunDirectoryVFS()
                                   : filesystemGetLunDirectory()))
       return;
-   /* Deliberately the unguarded swap.  filesystemReset() below dismounts
-      every LUN first, which is the point of this path: *FX147,65,n swaps
-      discs whatever was mounted.  BSSELECT / *SCSIJUKE is the one that
-      refuses while a LUN of that directory is started - see
-      scsiJukeboxSwap's comment. */
-   filesystemReset();
+   /* Deliberately the unguarded swap: *FX147,65,n swaps discs whatever was
+      mounted, so the swapped directory's LUNs are stopped first.  Only
+      those: this used to call filesystemReset(), whose remount changed the
+      FatFs volume id under every other open file (FAT service, FujiNet,
+      MTP, WebDAV) and stopped the other host's LUNs too - a Domesday side
+      flip stopped ADFS, which never restarts a LUN on its own.  BSSELECT /
+      *SCSIJUKE is the one that refuses while a LUN of that directory is
+      started - see scsiJukeboxSwap's comment. */
+   filesystemStopDirectoryLuns((scsiHostID >= 16) ? 8u : 0u);
    scsiJukeboxSwap(dir);
 }
 
