@@ -11,7 +11,7 @@
    ADFS *SCSIJUKE was refused while the VFS LaserDisc LUN 8 was mounted,
    and the reverse, although each host swaps only its own directory.
 
-   Review 2026-10-06 S3: whole commands run
+   Review 2026-10-06 S3 and S5: whole commands run
    through scsiProcessEmulation() against a scripted host (run_cmd).
 
    Real scsi.c, filesystem.c, fileparser.c and FatFs on a RAM disk.
@@ -517,6 +517,25 @@ static void test_bsfatread_failure(void)
    check("S3 BSFATREAD read failure ends in CHECK CONDITION with sense", st == 2 && sense == 4, why);
 }
 
+/* S5: CHECK CONDITION always comes with sense data. */
+static void test_sense_set(void)
+{
+   static char why[120];
+   const uint8_t bad[6] = { 0x05, 0, 0, 0, 0, 0 };      /* group 0 opcode 5: none */
+   int st = run_cmd(1, bad, 6, NULL, 0);
+   int sense = sense_of(0);
+   snprintf(why, sizeof why, "status %d, sense %d (want 2, 0x20)", st, sense);
+   check("S5 unknown opcode gives CHECK CONDITION and INVALID COMMAND sense",
+         st == 2 && sense == 0x20, why);
+
+   const uint8_t inq[6] = { 0x12, 5 << 5, 0, 0, 36, 0 }; /* LUN 5: never started */
+   st = run_cmd(1, inq, 6, NULL, 0);
+   sense = sense_of(5);
+   snprintf(why, sizeof why, "status %d, sense %d (want 2, 2)", st, sense);
+   check("S5 INQUIRY of a never-started LUN gives UNIT NOT READY sense",
+         st == 2 && sense == 0x02, why);
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -548,6 +567,7 @@ int main(int argc, char **argv)
 
    scsiReset(0);
    test_bsfatread_failure();
+   test_sense_set();
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;

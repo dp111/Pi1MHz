@@ -93,6 +93,7 @@
 #define ILLEGAL_ADDR    (0xA1u<<24)
 #define BAD_ARG         (0x24u<<24)
 #define INTERLEAVE_ERROR (0x1Au<<24)
+#define INVALID_COMMAND (0x20u<<24)   // ACB-4000 class 2 code 0: invalid command
 
 // REQUEST SENSE command error reporting structure
 static uint32_t requestSenseData[MAX_LUNS];
@@ -560,6 +561,9 @@ uint8_t scsiEmulationCommand(void)
 	// prevent the requester from potentially hanging if it sends an unknown command
 	// Indicate unsuccessful command in status and message
 	commandDataBlock.status = SCSI_STATUS_CHECK_COND;      // 0x02 = Bad
+
+   // Set request sense error globals (without, REQUEST SENSE says NO ERROR)
+   requestSenseData[commandDataBlock.targetLUN] = INVALID_COMMAND; // 20 Invalid command
    return SCSI_STATUS;
 }
 
@@ -2082,6 +2086,10 @@ static uint8_t scsiCommandInquiry(void)
 
 		// Indicate unsuccessful command in status and message
 		commandDataBlock.status = SCSI_STATUS_CHECK_COND;      // 0x02 = Bad
+
+		// Set request sense error globals: no descriptor loaded means the
+		// LUN was never started - as TEST UNIT READY reports it
+		requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
 	}
 
    return SCSI_STATUS;
