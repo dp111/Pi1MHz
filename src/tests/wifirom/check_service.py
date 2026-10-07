@@ -19,10 +19,13 @@ machine with the ROM fitted depends on, whether or not a Pi answers:
    the end of a JIM page, the byte at each page boundary included;
 8. a command whose name only starts with one of the ROM's (*TIMER, *LAPSE,
    *PINGALL) is passed on, while the ROM's own name followed by anything but
-   a letter, and its abbreviations, still reach the handler.
+   a letter, and its abbreviations, still reach the handler;
+9. *JOIN's password prompt ends a 128-character password with a CR in the
+   parameter block, and Escape at the prompt is acknowledged and gives the
+   call back claimed without sending anything to the Pi.
 
 Checks 1-4 run with the ROM in sideways RAM and in a read-only bank, checks
-5-8 in sideways RAM only (without it the ROM declines the command).  These paths
+5-9 in sideways RAM only (without it the ROM declines the command).  These paths
 are the ones that broke unseen: Pi1MHz always serves the ROM into
 sideways RAM, and the shipped image uses the brief *HELP.
 
@@ -255,6 +258,45 @@ def check_word_boundary(label, image):
         check(r != (4, 5, 0), f"{what}: passed on, not handled")
 
 
+# The parameter block *JOIN builds, "<ssid> CR <password> CR" (machine.asm).
+HEAP, STRBUF = 0xBE00, 0xBF00
+
+
+def join_prompt(image, keys):
+    """*JOIN NET with `keys` typed at the password prompt; the machine, the
+    Pi and the (A, X, Y) it returned, or None if it raised a MOS error."""
+    pi = SimPi()
+    b = Beeb(image, writable=True, pi=pi)
+    b.service(1, slot=5)
+    b.mem.ram[STRBUF:STRBUF + 0x100] = b"Z" * 0x100     # no CR to find by luck
+    b.keys = list(keys)
+    try:
+        return b, pi, b.service(4, slot=5, y=0, line="JOIN NET")
+    except RomError:                        # no Pi answers the join itself
+        return b, pi, None
+
+
+def check_join(label, image):
+    what = f"{label}: *JOIN with a 130-character password typed"
+    try:
+        b, pi, _ = join_prompt(image, [ord("A")] * 130 + [13])
+    except Unmodelled as e:
+        check(False, f"{what}: {e}")
+    else:
+        block = bytes(b.mem.ram[HEAP:HEAP + 0x100])
+        check(block.startswith(b"NET\r" + b"A" * 128 + b"\r"),
+              f"{what}: parameter block {block[:140]!r}, not the first 128 ended by a CR")
+    what = f"{label}: Escape at *JOIN's password prompt"
+    try:
+        b, pi, r = join_prompt(image, [ord("a"), ord("b"), 0x1B])
+    except Unmodelled as e:
+        check(False, f"{what}: {e}")
+        return
+    check(r == (0, 5, 0), f"{what}: returned A,X,Y={r}, not claimed (0,5,0)")
+    check(not pi.commands, f"{what}: the Pi saw commands {pi.commands}")
+    check(not b.escape, f"{what}: Escape left unacknowledged")
+
+
 def check_read_buffer(label, image):
     """read_buffer walks a reply in the JIM page window, stepping to the
     next page when X wraps.  Nearly three pages must come back byte for
@@ -306,6 +348,7 @@ def main(args):
         check_wget_errors(label, image, slow=label == "shipped")
         check_oscli(label, image)
         check_word_boundary(label, image)
+        check_join(label, image)
         check_read_buffer(label, image)
     print(f"\n{checks} checks, {fails} failures")
     print("WIFI ROM SERVICE TESTS FAILED" if fails else "WIFI ROM SERVICE TESTS PASSED")

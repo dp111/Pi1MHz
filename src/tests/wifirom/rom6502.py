@@ -5,6 +5,10 @@ whether or not the Pi answers: reset (service 1), unrecognised commands
 (service 4) and *HELP (service 9).  The ROM sits in a bank that is writable
 (sideways RAM) or not (an EPROM), so both can be checked.
 
+OSRDCH reads from `keys`, a list a test fills; ESCAPE (&1B) comes back with
+carry set and stays pending until OSBYTE 126 acknowledges it, as on the MOS.
+With no keys left OSRDCH is Unmodelled.
+
 SimPi is the other end of the 1MHz bus for the commands that talk to the Pi
 (*WGET): the FCA6-FCAA service mailbox, answering each command number with
 whatever result the test scripts.
@@ -169,6 +173,8 @@ class Beeb:
         self.osvars = {0xD7: 0x80, 0xFD: reset_type}
         self.osbytes = []          # (A, X, Y) of every OSBYTE, in order
         self.text = ""
+        self.keys = []             # what OSRDCH returns, in order
+        self.escape = False        # an Escape not yet acknowledged
         self._vdu_skip = 0
         self.mem.ram[0xFFFE] = BRK_TRAP & 0xFF
         self.mem.ram[0xFFFF] = BRK_TRAP >> 8
@@ -203,6 +209,9 @@ class Beeb:
             cpu.x, cpu.y = 32, 7
         elif a == 0x13:                    # wait for vertical sync
             pass
+        elif a == 0x7E:                    # acknowledge Escape
+            cpu.x = 0xFF if self.escape else 0
+            self.escape = False
         else:
             raise Unmodelled(f"OSBYTE &{a:02X},&{x:02X},&{y:02X}")
 
@@ -219,6 +228,11 @@ class Beeb:
             self._wrch(13)
         elif pc == OSBYTE:
             self._osbyte(cpu)
+        elif pc == OSRDCH and self.keys:
+            cpu.a = self.keys.pop(0)
+            if cpu.a == 0x1B:
+                self.escape = True
+            cpu.p = cpu.p | 1 if self.escape else cpu.p & ~1
         elif pc == BRK_TRAP:
             cpu.stPop()                    # P
             ret = cpu.stPopWord()          # BRK pushes its address + 2
