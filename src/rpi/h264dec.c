@@ -570,6 +570,8 @@ bool h264dec_reset(void)
     }
     if (!ok) {
         LOG_DEBUG("h264: reset: port disable failed - decoder left to the VideoCore\r\n");
+        dec.frame_cb = NULL;    /* as h264dec_shutdown: a late output buffer must
+                                   not call into a player that has let go */
         dec.running = false;
         init_failed = true;
         return false;
