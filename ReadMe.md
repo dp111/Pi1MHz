@@ -16,7 +16,8 @@ becomes, all at once:
 - **WiFi** (on WiFi-equipped Pis) - a built-in web interface and WebDAV
   mount for the SD card
 - **Econet over WiFi** (AUN) and **Teletext** (from an internet stream)
-- **USB file access** (MTP) - the Pi appears as a portable device
+- **USB mouse** for the VFS pointer, or **USB file access** (MTP, with
+  `usb_mode=device`) - the Pi appears as a portable device
 
 Everything is driven from image files and a single plain-text config file
 on the SD card - nothing to compile.

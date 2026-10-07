@@ -8,16 +8,13 @@ the same time.
 
 ## Setting it up
 
-1. **Make the Pi's USB port a host.** Add this to `/Pi1MHz/Pi1MHz.cfg`:
-
-   ```
-   usb_mode=host
-   ```
+1. **The Pi's USB port is a host by default** - there is nothing to set.
+   `usb_mode` in `/Pi1MHz/Pi1MHz.cfg` changes it:
 
    | `usb_mode` | The port is |
    |---|---|
-   | `device` (default) | [USB file access (MTP)](usb-file-access.md) to a computer |
-   | `host` | a host for a USB mouse |
+   | `host` (default) | a host for a USB mouse |
+   | `device` | [USB file access (MTP)](usb-file-access.md) to a computer |
    | `auto` | a host when an OTG adapter is plugged in, MTP otherwise |
 
    On a Pi whose USB sockets sit behind its own hub - the Pi 1, 2 and 3

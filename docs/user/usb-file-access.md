@@ -5,9 +5,14 @@ shows up as a portable device called **Pi1MHz MTP** - the same way a
 phone or camera does. You can then browse the SD card and copy files
 both ways without removing the card and without WiFi.
 
-This is the USB port's default role. With `usb_mode=host` it is a host
-for a [USB mouse](usb-mouse.md) instead, and there is no MTP; on a Pi 1,
-2 or 3 Model B the port is always a host.
+The port is a host for a [USB mouse](usb-mouse.md) by default, so MTP
+needs this line in `/Pi1MHz/Pi1MHz.cfg`:
+
+```
+usb_mode=device
+```
+
+On a Pi 1, 2 or 3 Model B the port is always a host, so there is no MTP.
 
 ## Using it
 
