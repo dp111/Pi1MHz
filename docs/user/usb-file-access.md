@@ -12,8 +12,10 @@ needs this line in `/Pi1MHz/Pi1MHz.cfg`:
 usb_mode=device
 ```
 
-(`usb_mode=auto` makes it MTP unless an OTG adapter is plugged in; that
-is checked once, when the Pi starts up.)
+(`usb_mode=auto` is meant to make it MTP unless an OTG adapter is plugged
+in, checked once when the Pi starts up - but it is not reliable on every
+Pi: a Zero 2 W with a plain lead to a computer has been seen to start as a
+host. Use `usb_mode=device` for MTP.)
 
 On a Pi whose USB sockets sit behind an on-board
 hub - the Pi 1, 2 and 3 Model B, including the B+ and 3B+ - the port is
