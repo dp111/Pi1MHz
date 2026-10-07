@@ -134,6 +134,26 @@ static void inflate_restart(uef_stream_t *stream)
    stream->failed = false;
 }
 
+/* What came out of the gzip or zip must be a tape too: a zip holding a
+ * .uef.gz (or anything else) would otherwise stream as noise.  Reads the
+ * magic through the stream, then rewinds it to the start. */
+static uef_format_t unwrapped(uef_stream_t *stream, uef_format_t format)
+{
+   uint8_t magic[sizeof uef_magic];
+   size_t got = 0u, n;
+
+   stream->format = format;
+   while (got < sizeof magic
+          && (n = uef_stream_read(stream, magic + got, sizeof magic - got)) != 0u)
+      got += n;
+   if (got != sizeof magic || memcmp(magic, uef_magic, sizeof uef_magic) != 0
+       || !uef_stream_rewind(stream)) {
+      stream->format = UEF_FORMAT_INVALID;
+      return UEF_FORMAT_INVALID;
+   }
+   return format;
+}
+
 uef_format_t uef_stream_open(uef_stream_t *stream, uef_source_fn source,
                              void *context, uint32_t length)
 {
@@ -171,24 +191,22 @@ uef_format_t uef_stream_open(uef_stream_t *stream, uef_source_fn source,
          stream->expected_length = get_le32(trailer + 4u);
          stream->has_crc = true;
       }
-      stream->format = UEF_FORMAT_GZIP;
       inflate_restart(stream);
-      return UEF_FORMAT_GZIP;
+      return unwrapped(stream, UEF_FORMAT_GZIP);
    }
 
    if (get_le32(magic) == 0x04034b50u) {
       if (!zip_data_start(stream, &stream->data_start, &stored))
          return UEF_FORMAT_INVALID;
-      stream->format = stored ? UEF_FORMAT_RAW : UEF_FORMAT_ZIP;
       if (stored) {
          /* Stored entry: the tape is already plain inside the archive, and
             the local header's CRC still covers it. */
          stream->source_position = stream->data_start;
          stream->running_crc = ~0u;
-         return UEF_FORMAT_RAW;
+         return unwrapped(stream, UEF_FORMAT_RAW);
       }
       inflate_restart(stream);
-      return UEF_FORMAT_ZIP;
+      return unwrapped(stream, UEF_FORMAT_ZIP);
    }
 
    return UEF_FORMAT_INVALID;
