@@ -334,6 +334,58 @@ int main(void)
       (free)(c);
    }
 
+   puts("== W5: a body nobody will read closes the connection ==");
+   {
+      ws_conn_t *c = new_conn();
+      size_t consumed = 0u;
+      zero_counters();
+      c->state = CONN_RECV_HEADER;
+      c->req_body_pending = true;
+      ok(ws_body_unread(c), "PUT/POST answered from process_request, body to come");
+      c->req_body_pending = false;
+      ok(!ws_body_unread(c), "request whose body came with its headers");
+
+      start_plain_put(c, 8u);
+      c->dav_put_open = false;
+      c->dav_put_draining = true;               /* no file: bytes go nowhere */
+      (void)dav_put_consume(c, arm_body, 4u);
+      ok(ws_body_unread(c), "PUT answered part way through its body");
+      (void)dav_put_consume(c, arm_body + 4, 4u);
+      ok(challenge_calls == 1 && !ws_body_unread(c),
+         "drained PUT: the 401 keeps the connection");
+      conn_reset_for_next_request(c);
+      ok(!c->req_body_pending, "reset clears the pending-body note");
+
+      c->dav_put_chunked = true;
+      c->dav_put_draining = true;
+      c->state = CONN_RECV_DAV_PUT;
+      (void)dav_put_consume_chunked(c, (const uint8_t *)"zz\r\n", 4u, &consumed);
+      ok(err_calls == 1 && ws_body_unread(c),
+         "chunked PUT refused mid-body closes");
+      conn_reset_for_next_request(c);
+      c->dav_put_chunked = true;
+      c->dav_put_draining = true;
+      c->state = CONN_RECV_DAV_PUT;
+      (void)dav_put_consume_chunked(c, (const uint8_t *)"2\r\nab\r\n0\r\n\r\n",
+                                    15u, &consumed);
+      ok(challenge_calls == 2 && !ws_body_unread(c),
+         "chunked body read to its end keeps the connection");
+      conn_reset_for_next_request(c);
+
+      c->state = CONN_RECV_UPLOAD;
+      c->up_state = UP_DATA;
+      (void)upload_fail(c, "bad");
+      ok(ws_body_unread(c), "upload refused mid-body closes");
+      conn_reset_for_next_request(c);
+      c->state = CONN_RECV_UPLOAD;
+      c->up_state = UP_DATA;
+      (void)upload_finish(c);
+      ok(html_status == 200 && !ws_body_unread(c),
+         "completed upload keeps the connection");
+      conn_reset_for_next_request(c);
+      (free)(c);
+   }
+
    /* W10: every teardown releases every per-request resource. */
    for (int which = 0; which < 4; which++) {
       static const char *const name[4] = {
