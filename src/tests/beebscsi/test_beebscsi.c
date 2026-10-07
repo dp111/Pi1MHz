@@ -11,7 +11,7 @@
    ADFS *SCSIJUKE was refused while the VFS LaserDisc LUN 8 was mounted,
    and the reverse, although each host swaps only its own directory.
 
-   Review 2026-10-06 S3, S5, S6, S8 and P8: whole commands run
+   Review 2026-10-06 S3, S5, S6, S8, S11 and P8: whole commands run
    through scsiProcessEmulation() against a scripted host (run_cmd).
 
    Real scsi.c, filesystem.c, fileparser.c and FatFs on a RAM disk.
@@ -671,6 +671,29 @@ static void test_readonly_image(void)
    filesystemSetLunDirectory(1, 0);
 }
 
+/* S11: geometry from a stopped LUN's image size. */
+static void test_stopped_geometry(void)
+{
+   static char why[160];
+   static uint8_t img[40u * 33u * 256u];          /* 40 tracks: 4 cyl x 10 heads */
+   memset(img, 0, sizeof img);
+   f_mkdir("/BeebSCSI6");
+   f_mkdir("/BeebSCSI7");
+   put_file("/BeebSCSI6/scsi2.dat", img, 4096);   /* the previous directory's image */
+   put_file("/BeebSCSI7/scsi2.dat", img, sizeof img);
+   stop_all();
+   filesystemSetLunDirectory(1, 6);
+   bool s = filesystemSetLunStatus(2, true);
+   filesystemSetLunStatus(2, false);
+   filesystemSetLunDirectory(1, 7);
+   filesytemdattoconfigGeometry(2);
+   snprintf(why, sizeof why, "start %d, %lu bytes, want %lu", s,
+            (unsigned long)filesystemGetLunTotalBytes(2), (unsigned long)sizeof img);
+   check("S11 a stopped LUN's geometry comes from its own image",
+         s && filesystemGetLunTotalBytes(2) == sizeof img, why);
+   filesystemSetLunDirectory(1, 0);
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -706,6 +729,7 @@ int main(int argc, char **argv)
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
    test_reset_abandons();
    test_readonly_image();
+   test_stopped_geometry();
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;

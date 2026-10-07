@@ -1576,7 +1576,20 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
 
 void filesytemdattoconfigGeometry(uint8_t lunNumber)
 {
-      uint32_t lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+      /* f_size() is only the image's size while the LUN holds it open.  A
+         stopped LUN's FIL is closed and still reports the last image it
+         had - another directory's after a jukebox, zero since boot - so
+         ask the card (MODE SELECT on a new disc gets here stopped). */
+      uint32_t lunFileSize = 0;
+      if (filesystemState.fsLunStatus[lunNumber]) {
+         lunFileSize = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+      } else {
+         char datName[48];
+         FILINFO fno;
+         fsLunFilePath(lunNumber, "dat", datName, sizeof(datName));
+         if (f_stat(datName, &fno) == FR_OK)
+            lunFileSize = (uint32_t)fno.fsize;
+      }
 
       lunFileSize = lunFileSize / (filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack * filesystemState.fsLunGeometry[lunNumber].BlockSize);
       uint8_t heads = 16;
