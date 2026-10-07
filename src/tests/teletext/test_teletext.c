@@ -115,6 +115,31 @@ int main(void)
    char buf[512]; teletext_status_text(buf, sizeof buf);
    assert(strstr(buf,"ch0") && strstr(buf,"connected"));
 
+   /* C6: an unread channel overflows in TCP-segment sized pieces; what is
+      left must still pop as whole fields.  Byte k of the stream is its
+      field number, so a misaligned pop mixes two numbers. */
+   {
+      static ttx_chan_t rc;
+      static uint8_t seg[1460], out[TTX_FIELD_BYTES];
+      uint32_t k = 0u;
+      for (int n = 0; n < 23; n++) {
+         for (uint32_t i = 0u; i < sizeof seg; i++, k++)
+            seg[i] = (uint8_t)(k / TTX_FIELD_BYTES);
+         ring_push(&rc, seg, sizeof seg);
+         assert(rc.count <= TTX_RING_BYTES);
+      }
+      int last = -1, pops = 0;
+      while (ring_pop_field(&rc, out)) {
+         for (uint32_t i = 1u; i < TTX_FIELD_BYTES; i++)
+            assert(out[i] == out[0] && "overflow kept fields whole");
+         assert((last < 0 || out[0] == (uint8_t)(last + 1)) && "fields in order");
+         last = out[0];
+         pops++;
+      }
+      assert(pops == (int)TTX_RING_FIELDS - 1 && "newest whole fields kept");
+      assert(last == (int)(k / TTX_FIELD_BYTES) - 1 && "up to the newest");
+   }
+
    /* C7: the server closes and tcp_close fails, so the pcb is aborted -
       the recv callback must then tell lwIP so with ERR_ABRT. */
    close_rc = ERR_MEM;

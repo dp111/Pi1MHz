@@ -128,16 +128,28 @@ static bool        ttx_net_waiting_logged;
 
 /* ---- ring buffer (per channel) -------------------------------------------*/
 
+/* The tail always sits on a field boundary of the stream - ring_pop_field
+   takes whole fields from it - so on overflow only whole fields are dropped:
+   the oldest ones, from the ring and then, if that is not enough, from the
+   front of the new data.  The newest bytes kept are any part-field still
+   arriving plus as many whole fields as fit. */
 static void ring_push(ttx_chan_t *c, const uint8_t *d, uint32_t len)
 {
-   if (len >= TTX_RING_BYTES) {        /* keep only the newest bytes */
-      d  += len - TTX_RING_BYTES;
-      len = TTX_RING_BYTES;
-   }
-   if (c->count + len > TTX_RING_BYTES) {   /* drop oldest to make room */
-      uint32_t drop = c->count + len - TTX_RING_BYTES;
-      c->tail   = (c->tail + drop) % TTX_RING_BYTES;
-      c->count -= drop;
+   uint32_t total = c->count + len;
+   if (total > TTX_RING_BYTES) {
+      uint32_t part = total % TTX_FIELD_BYTES;
+      uint32_t keep = (part != 0u) ? TTX_RING_BYTES - TTX_FIELD_BYTES + part
+                                   : TTX_RING_BYTES;
+      uint32_t drop = total - keep;              /* whole fields */
+      if (drop >= c->count) {                    /* all held, and some new */
+         d      += drop - c->count;
+         len    -= drop - c->count;
+         c->tail  = c->head;
+         c->count = 0u;
+      } else {
+         c->tail   = (c->tail + drop) % TTX_RING_BYTES;
+         c->count -= drop;
+      }
    }
    for (uint32_t i = 0u; i < len; i++) {
       c->buf[c->head] = d[i];
