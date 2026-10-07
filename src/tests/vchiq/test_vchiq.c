@@ -40,6 +40,9 @@ typedef struct {
    int32_t  rx_pos;                   /* its read position in our stream */
    bool     connected;
    bool     ignore_close;             /* a VC that never answers a CLOSE */
+   bool     late_open;                /* opens, but holds the OPENACK back */
+   int      late_index;               /* ...for this service, */
+   uint32_t late_src;                 /* ...opened from this ARM port */
    bool     hold_recycle;             /* reads our slots but keeps them */
    int32_t  held[64];                 /* ...these, until vc_release_slots */
    int      nheld;
@@ -110,7 +113,12 @@ static void vc_step(void)
             if (!sim->svc[i].open) {
                sim->svc[i].open = true;
                sim->svc[i].armport = src;
-               vc_send(VCHIQ_MAKE_MSG(VCHIQ_MSG_OPENACK, VC_PORT0 + (uint32_t)i, src), NULL, 0);
+               if (sim->late_open) {
+                  sim->late_index = i;
+                  sim->late_src = src;
+               } else {
+                  vc_send(VCHIQ_MAKE_MSG(VCHIQ_MSG_OPENACK, VC_PORT0 + (uint32_t)i, src), NULL, 0);
+               }
                break;
             }
       } else if (type == VCHIQ_MSG_CLOSE) {
@@ -465,6 +473,56 @@ static void k_after_unanswered(void)
    CHECK(SVC_PORT(a) != sim->svc[stale].armport, "new port %u is the old service's",
          SVC_PORT(a));
    CHECK(round_trips(a, 5, 800u), "round trips failed");
+   sim->result = vchiq_handover();
+}
+
+/* The VC answers an OPEN only after the opener has given up: that slot is
+   never reused, so the late OPENACK cannot open a retry's slot - or any -
+   for the abandoned service. */
+static void k_open_late(void)
+{
+   vchiq_adopt(sim->result);
+   CHECK(vchiq_init(), "adoption failed");
+   sim->late_open = true;
+   int a = vchiq_open_service(MMAL, 16, 10, &cbs);
+   sim->late_open = false;
+   CHECK(a < 0, "an unanswered OPEN succeeded (%d)", a);
+   int b = vchiq_open_service(MMAL, 16, 10, &cbs);
+   CHECK(b >= 0, "retry failed");
+   CHECK(SVC_PORT(b) != sim->late_src, "retry reused the abandoned port %u", sim->late_src);
+   vc_send(VCHIQ_MAKE_MSG(VCHIQ_MSG_OPENACK, VC_PORT0 + (uint32_t)sim->late_index, sim->late_src), NULL, 0);
+   vchiq_poll();
+   int open = 0;
+   for (int i = 0; i < VCHIQ_MAX_SERVICES; i++) if (vc.svc[i].open) open++;
+   CHECK(open == 1, "%d services open after the late OPENACK, want 1", open);
+   CHECK(round_trips(b, 5, 800u), "round trips on the retry failed");
+   CHECK(vchiq_close_service(b), "close not answered");
+   sim->result = vchiq_handover();
+}
+
+/* The VC's stream goes bad: the client stops, and the block - which the
+   VC still holds - is condemned, never wiped and re-INITed. */
+static void k_corrupt_rx(void)
+{
+   vchiq_adopt(sim->result);
+   CHECK(vchiq_init(), "adoption failed");
+   vchiq_shared_state_t *m = &vc_zero()->master;
+   uint32_t pos = (uint32_t)m->tx_pos;
+   CHECK((pos & VCHIQ_SLOT_MASK) <= VCHIQ_SLOT_SIZE - 64u, "no room for the bad header");
+   vchiq_header_t *h = (vchiq_header_t *)(vc_slot(m->slot_queue[(pos / VCHIQ_SLOT_SIZE) & VCHIQ_SLOT_QUEUE_MASK])
+                                          + (pos & VCHIQ_SLOT_MASK));
+   h->size = VCHIQ_SLOT_SIZE;                        /* cannot fit in a slot */
+   h->msgid = (int32_t)VCHIQ_MAKE_MSG(VCHIQ_MSG_DATA, 1, 1);
+   __sync_synchronize();
+   m->tx_pos = (int32_t)(pos + 8u);
+   vchiq_poll();
+   CHECK(!vc.inited, "still processing a corrupt stream");
+   int inits = sim->inits;
+   CHECK(!vchiq_init(), "re-initialised over a block the VC holds");
+   CHECK(sim->inits == inits, "an INIT was sent for a block the VC holds");
+   CHECK(vc_zero()->magic == (int32_t)VCHIQ_MAGIC && vc_zero()->master.initialised == 1,
+         "the VC's block was wiped");
+   CHECK(vchiq_handover() == 0u, "a corrupt connection was handed on");
 }
 
 int main(void)
@@ -485,9 +543,11 @@ int main(void)
    kernel(k_bad_check, "bad check word");
    kernel(k_hold_before, "slots held before the jump");
    kernel(k_hold_after, "slots held across the jump");
+   kernel(k_open_late, "OPENACK late");
    kernel(k_close_unanswered, "close unanswered");
    kernel(k_after_unanswered, "after unanswered");
    kernel(k_fresh_after_jump, "fresh after jump");
+   kernel(k_corrupt_rx, "corrupt rx stream");   /* last: the stream is gone */
 
    printf("%d checks, %d failed\n", checks, failures);
    if (failures == 0)

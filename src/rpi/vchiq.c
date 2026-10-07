@@ -234,13 +234,16 @@ static struct {
 
     /* Open services. Ports are index + 1 + port_base: 0 on a fresh
        connection, moved on at every kernel.now (VCHIQ_PORT_LIMIT), so a
-       message for a previous kernel's service matches nothing here. */
+       message for a previous kernel's service matches nothing here.
+       Within a kernel a slot - and so its port - is reused once the
+       VideoCore has answered its CLOSE; a slot whose OPEN or CLOSE went
+       unanswered is marked stale and never reused. */
     uint32_t port_base;
     struct {
         uint32_t remoteport;
         bool     open;
         bool     closing;            /* our CLOSE sent, the VC's not yet back */
-        bool     stale;              /* close never answered: never reused */
+        bool     stale;              /* OPEN or CLOSE never answered: never reused */
         vchiq_callbacks_t cb;
     } svc[VCHIQ_MAX_SERVICES];
 } vc;
@@ -467,7 +470,9 @@ static void parse_message(volatile vchiq_header_t *h)
 
     case VCHIQ_MSG_OPENACK: {
         int s = PORT_SVC(VCHIQ_MSG_DSTPORT(msgid));
-        if (SVC_VALID(s)) {
+        /* A stale slot's OPENACK is late: its opener has given up, so the
+           slot stays unowned rather than open with nobody behind it. */
+        if (SVC_VALID(s) && !vc.svc[s].stale) {
             vc.svc[s].remoteport = VCHIQ_MSG_SRCPORT(msgid);
             vc.svc[s].open = true;
         }
@@ -560,7 +565,12 @@ void vchiq_poll(void)
         if (size > VCHIQ_SLOT_SIZE - VCHIQ_HEADER_SIZE ||
             stride > VCHIQ_SLOT_SIZE - (rx_pos & VCHIQ_SLOT_MASK)) {
             LOG_INFO("vchiq: corrupt rx stream at %"PRIx32"\r\n", rx_pos);
-            vc.inited = false;       /* fail safe: stop processing */
+            /* Fail safe: stop processing.  The VideoCore still holds the
+               block and may write to it, so it is condemned as after a
+               missing CONNECT - a later vchiq_init must not wipe it and
+               send an INIT the VideoCore would ignore. */
+            vc.inited = false;
+            vchiq_condemned = true;
             return;
         }
 
@@ -827,6 +837,9 @@ int vchiq_open_service(uint32_t fourcc, short version, short version_min,
         LOG_INFO("vchiq: OPEN '%c%c%c%c' not acknowledged\r\n",
                  (char)(fourcc >> 24), (char)(fourcc >> 16),
                  (char)(fourcc >> 8), (char)fourcc);
+        /* The VideoCore may still open it: never reuse the port, so a late
+           OPENACK cannot hand a retry's slot to the service it abandoned. */
+        vc.svc[s].stale = true;
         return -1;
     }
 
