@@ -11,7 +11,7 @@
    ADFS *SCSIJUKE was refused while the VFS LaserDisc LUN 8 was mounted,
    and the reverse, although each host swaps only its own directory.
 
-   Review 2026-10-06 S3, S5 and S8: whole commands run
+   Review 2026-10-06 S3, S5, S8 and P8: whole commands run
    through scsiProcessEmulation() against a scripted host (run_cmd).
 
    Real scsi.c, filesystem.c, fileparser.c and FatFs on a RAM disk.
@@ -489,6 +489,17 @@ static int sense_of(uint8_t lun)
    return (st == 0 && bus_out_len >= 4) ? bus_out[0] : -1;
 }
 
+static void read_file(const char *path, void *buf, UINT len)
+{
+   FIL f;
+   UINT done = 0;
+   memset(buf, 0, len);
+   if (__real_f_open(&f, path, FA_READ) == FR_OK) {
+      (void)f_read(&f, buf, len, &done);
+      __real_f_close(&f);
+   }
+}
+
 /* S3: a FAT read error part-way through BSFATREAD. */
 static void test_bsfatread_failure(void)
 {
@@ -556,6 +567,60 @@ static void test_fcode_short(void)
    check("S8 WRITE F-code with a short transfer does not run", fcode_writes == 0, why);
 }
 
+/* P8 (scsi.c side): a host reset or reselection part-way through a
+   data-out phase abandons the command before anything is saved. */
+static void test_reset_abandons(void)
+{
+   static char why[160];
+   static char before[256], after[256];
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_cfg("/BeebSCSI0/scsi0.cfg", 10, 2);
+   bool s = filesystemSetLunStatus(0, true);
+
+   /* MODE SELECT: header, LBA descriptor, drive parameter list 50 x 6 */
+   const uint8_t ms[6] = { 0x15, 0, 0, 0, 22, 0 };
+   const uint8_t msd[22] = { 0, 0, 0, 8,  0, 0, 0, 0, 0, 0, 1, 0,
+                             1, 0, 50, 6, 0, 0x80, 0, 0x80, 0, 1 };
+   read_file("/BeebSCSI0/scsi0.cfg", before, sizeof before - 1);
+   reset_after_in = 6 + 10;
+   int st = run_cmd(1, ms, 6, msd, sizeof msd);
+   read_file("/BeebSCSI0/scsi0.cfg", after, sizeof after - 1);
+   snprintf(why, sizeof why, "start %d, status %d (want -1), heads %u (want 2), cfg %s",
+            s, st, (unsigned)filesystemGetheadspercylinder(0),
+            strcmp(before, after) ? "CHANGED" : "unchanged");
+   check("P8 MODE SELECT cut by a host reset saves nothing",
+         s && st == -1 && filesystemGetheadspercylinder(0) == 2 && !strcmp(before, after), why);
+
+   st = run_cmd(1, ms, 6, msd, sizeof msd);
+   snprintf(why, sizeof why, "status %d, heads %u (want 0, 6)",
+            st, (unsigned)filesystemGetheadspercylinder(0));
+   check("P8 MODE SELECT control: uncut, it is saved",
+         st == 0 && filesystemGetheadspercylinder(0) == 6, why);
+   stop_all();
+   put_cfg("/BeebSCSI0/scsi0.cfg", 10, 2);
+
+   /* BSSELECT (jukebox) cut part-way through its 8 bytes */
+   const uint8_t bs[6] = { 0xD1, 0, 0, 0, 8, 0 };
+   const uint8_t bsd[8] = { 3, 0, 0, 0, 0, 0, 0, 0 };
+   reset_after_in = 6 + 4;
+   st = run_cmd(1, bs, 6, bsd, sizeof bsd);
+   snprintf(why, sizeof why, "status %d (want -1), directory %u (want 0)",
+            st, filesystemGetLunDirectory());
+   check("P8 BSSELECT cut by a host reset does not jukebox",
+         st == -1 && filesystemGetLunDirectory() == 0, why);
+
+   /* A CDB cut part-way is never run as a command */
+   const uint8_t tur[6] = { 0x00, 0, 0, 0, 0, 0 };
+   s = filesystemSetLunStatus(0, true);
+   reset_after_in = 3;
+   st = run_cmd(1, tur, 6, NULL, 0);
+   int st2 = run_cmd(1, tur, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d (want -1), then uncut %d (want 0)", st, st2);
+   check("P8 a CDB cut by a host reset is not run", s && st == -1 && st2 == 0, why);
+   stop_all();
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -589,6 +654,7 @@ int main(int argc, char **argv)
    test_bsfatread_failure();
    test_sense_set();
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
+   test_reset_abandons();
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;

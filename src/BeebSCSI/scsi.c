@@ -485,6 +485,10 @@ uint8_t scsiEmulationCommand(void)
    }
    if (debugFlag_scsiCommands) debugString_P(PSTR("\r\n"));
 
+   // A host reset or reselection while the CDB was being read leaves stale
+   // bus bytes in it: never run that as a command
+   if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
+
   // if the format Drive[1,2,4,8].0 was used, convert to to Drive 1.[0 1 2 3]
 
    uint32_t newLUN = scsiTransformLUNid(commandDataBlock.data[1]);
@@ -838,6 +842,10 @@ static uint8_t scsiCommandFormat(void)
          }
       }
    }
+
+   // A host reset or reselection while the defect list was being read:
+   // the command is dead - abandon it rather than format the image
+   if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 
    // Create/recreate the LUN data file according to the drive descriptor and fill
    // with the required data pattern byte:
@@ -1589,6 +1597,10 @@ static uint8_t scsiCommandModeSelect6(void)
 		if (debugFlag_scsiCommands)debugStringInt16_P(PSTR(" "), Buffer[byteCounter], false);
 	}
 	if (debugFlag_scsiCommands)debugString_P(PSTR("\r\n"));
+
+   // A host reset or reselection mid-transfer leaves stale bus bytes in
+   // Buffer: abandon the command rather than save them to the .cfg
+   if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 
    // we skip the 4 byte header
    uint8_t start = 4;
@@ -2408,6 +2420,10 @@ static uint8_t scsiBeebScsiSelect(void)
          debugStringInt16_P(PSTR(" = "), (uint16_t)Buffer[byteCounter], true);
         }
      }
+
+   // A host reset or reselection mid-transfer leaves stale bus bytes in
+   // Buffer: abandon the command rather than jukebox to them
+   if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 
    // Only jukebox if none of that directory's LUNs is started
    if (!scsiJukebox(Buffer[0])) {
