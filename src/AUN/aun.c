@@ -1106,9 +1106,12 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
 
       const aun_map_entry_t *m = map_find_by_ip(e, src_ip_be, src_port);
       if (m == NULL) {
-         /* learn mode can attribute (and auto-map) in-subnet sources */
+         /* learn mode can attribute (and auto-map) in-subnet sources, but
+          * only to a station not already mapped: a static aun_map entry for
+          * that station wins, and is never re-pointed at this IP. */
          uint8_t lnet, lstn;
-         if (learn_attribute(e, src_ip_be, src_port, &lnet, &lstn)) {
+         if (learn_attribute(e, src_ip_be, src_port, &lnet, &lstn) &&
+             map_find_by_addr(e, lnet, lstn) == NULL) {
             (void)aun_map_add(e, lnet, lstn, src_ip_be, src_port);
             m = map_find_by_ip(e, src_ip_be, src_port);
          }
