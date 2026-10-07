@@ -345,12 +345,9 @@ static bool put_catalogue(fn_handle h, uint32_t at, uint32_t count)
 
 /* Write a blank image: SSD gets fujinet-nio's minimal DFS catalogue, DSD one
    on each side - side 1's in track 0 side 1, after side 0's track 0. */
-static uint8_t create_image(const char *uri, uint8_t type, uint16_t ssize,
-                            uint32_t count, bool overwrite)
+/* Can an image of this type be ssize x count?  FB_OK, or why not. */
+static uint8_t check_geometry(uint8_t type, uint16_t ssize, uint32_t count)
 {
-   char fs[16], path[URI_MAX];
-   if (!fn_uri_split(uri, fs, sizeof fs, path, sizeof path))
-      return FB_INVALID_REQUEST;
    if (type == TYPE_SSD) {
       if (ssize != 256u || (count != 400u && count != 800u))
          return FB_INVALID_REQUEST;
@@ -363,6 +360,18 @@ static uint8_t create_image(const char *uri, uint8_t type, uint16_t ssize,
    } else {
       return type == TYPE_AUTO ? FB_INVALID_REQUEST : FB_UNSUPPORTED;
    }
+   return FB_OK;
+}
+
+static uint8_t create_image(const char *uri, uint8_t type, uint16_t ssize,
+                            uint32_t count, bool overwrite)
+{
+   char fs[16], path[URI_MAX];
+   if (!fn_uri_split(uri, fs, sizeof fs, path, sizeof path))
+      return FB_INVALID_REQUEST;
+   uint8_t st = check_geometry(type, ssize, count);
+   if (st != FB_OK)
+      return st;
    fn_handle h = fn_store_open(fs, path, overwrite ? FN_OPEN_CREATE : FN_OPEN_CREATE_NEW);
    if (h == FN_NO_HANDLE)
       return FB_INVALID_REQUEST;          /* AlreadyExists, or no such directory */
@@ -554,6 +563,9 @@ uint8_t fn_disk_command(uint8_t command, fb_in *in, fb_out *out)
             return st;
          if (s->ro)
             return FB_INVALID_REQUEST;
+         /* Refuse a bad geometry while the slot still holds its image. */
+         if ((st = check_geometry(s->type, ssize, count)) != FB_OK)
+            return st;
          again.valid = true;
          again.slot = slot1;
          again.type = s->type;

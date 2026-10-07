@@ -44,4 +44,7 @@ bool fn_uri_split(const char *uri, char *fs, size_t fs_cap,
    images).  Persistent state - catalogue, app store, host - is on the card. */
 void fn_disk_reset(void);
 
+/* The card has gone: the slot catalogue's occupancy is rescanned on next use. */
+void fn_slotcat_forget(void);
+
 #endif

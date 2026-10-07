@@ -7,7 +7,8 @@
    Each entry is one app-store record, namespace "fujinet-slots", key the
    decimal index, holding [flags][canonical URI].  An occupancy bitmap is
    built from one directory scan on first use and kept up to date by Put and
-   Delete, so Range does not open 256 records. */
+   Delete, so Range does not open 256 records.  A card eject forgets it
+   (fn_slotcat_forget), so the next card is scanned afresh. */
 
 #include <stdio.h>
 #include <string.h>
@@ -36,6 +37,11 @@
 static uint8_t s_occupied[32];
 static bool s_occupied_valid;
 
+void fn_slotcat_forget(void)
+{
+   s_occupied_valid = false;
+}
+
 static void key_of(uint8_t index, char *key) { sprintf(key, "%u", index); }
 
 static bool occupied(uint8_t i) { return ((unsigned)s_occupied[i >> 3] >> (i & 7u)) & 1u; }
@@ -51,6 +57,10 @@ static void ensure_index(void)
    if (s_occupied_valid)
       return;
    memset(s_occupied, 0, sizeof s_occupied);
+   /* No directory (no card, or no slot ever put) is not "all empty" for
+      good: it is scanned again next time. */
+   if (!fn_store_is_dir("sd0", SLOT_DIR))
+      return;
    fn_dirent e;
    for (uint32_t i = 0; fn_store_dir_entry("sd0", SLOT_DIR, i, &e); i++) {
       unsigned int v = 0;

@@ -32,6 +32,7 @@
 #include "rpi/asm-helpers.h"
 #include "fujibus_service.h"
 #include "fujinet/fujibus.h"
+#include "fujinet/fn_devices.h"
 #include "fujinet/fn_disk.h"
 #include "fujinet/fn_network.h"
 #include "fujinet/fn_store.h"
@@ -165,6 +166,7 @@ bool fujibus_service_path_busy(const char *host_path)
 static bool fujibus_service_eject(void)
 {
    fn_disk_drop_sd();
+   fn_slotcat_forget();
    return true;
 }
 

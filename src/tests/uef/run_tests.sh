@@ -93,6 +93,33 @@ echo
 echo "$pass ok, $fail bad"
 [ "$fail" -eq 0 ]
 
+# What a gzip or zip unwraps to must itself be a tape: a zip of a .uef.gz,
+# or a gzip of one, is refused rather than streamed as noise.
+echo
+echo "== UEF stream: zip entries, and wrappers around a non-tape refused =="
+gzip -c "$B/corpus/synthetic_gz.uef" > "$B/double.gz"
+python3 - "$B" <<'PY'
+import sys, zipfile
+b = sys.argv[1]
+for name, method, src in (("zip_deflated", zipfile.ZIP_DEFLATED, "synthetic.uef"),
+                          ("zip_stored", zipfile.ZIP_STORED, "synthetic.uef"),
+                          ("zip_of_gz", zipfile.ZIP_DEFLATED, "synthetic_gz.uef"),
+                          ("zip_stored_gz", zipfile.ZIP_STORED, "synthetic_gz.uef")):
+    with zipfile.ZipFile(f"{b}/{name}.zip", "w", method) as z:
+        z.write(f"{b}/corpus/{src}", "tape.uef")
+PY
+for f in zip_deflated zip_stored; do
+   "$B/t" "$B/$f.zip" "$B/out.bin" | sed "s#$B/##"
+   cmp -s "$B/out.bin" "$B/corpus/synthetic.uef" || { echo "  MISMATCH: $f"; exit 1; }
+done
+for f in double.gz zip_of_gz.zip zip_stored_gz.zip; do
+   if "$B/t" "$B/$f" "$B/out.bin" > "$B/line" 2>&1; then
+      echo "  ACCEPTED, should be refused: $f"; exit 1
+   fi
+   grep -q INVALID "$B/line" || { cat "$B/line"; exit 1; }
+   echo "  $f refused"
+done
+
 # The service protocol, driven the way the ROM drives it, against a fake JIM.
 echo
 for f in "$B"/corpus/*.uef; do

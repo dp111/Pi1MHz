@@ -242,6 +242,18 @@ int main(void)
    assert(li.src_stn == 44 && li.src_net == 2);   /* auto-attributed */
    assert(aun_rx_collect(&e, 1, true) == AUN_OK);
 
+   /* 14b: learn mode never re-points a static map entry.  Station 2.44 is
+    * mapped to 192.168.1.99; a frame from 192.168.1.44 would learn as 2.44,
+    * but the static entry wins and the source stays unattributed. */
+   reset();
+   aun_set_addressing(&e, 0xff01a8c0, 0x1401a8c0, 0x00ffffff, 2);
+   aun_map_add(&e, 2, 44, (0x1401a8c0 & 0x00ffffff) | (99u<<24), 32768);
+   assert(aun_rx_open(&e, 1, 0, AUN_WILDCARD, AUN_WILDCARD, rb2, 32) == AUN_OK);
+   aun_udp_input(&e, (0x1401a8c0 & 0x00ffffff) | (44u<<24), 32768, dgl, 9);
+   assert(e.counters.rx_unknown_source == 1);
+   assert(aun_tx_start(&e, 2, 44, 0x80, 0x99, pay, 4) == AUN_OK);
+   assert(sent[sent_count - 1].ip == ((0x1401a8c0 & 0x00ffffff) | (99u<<24)));
+
    /* 15: subnet broadcast goes out alongside mapped peers */
    reset();
    aun_set_addressing(&e, 0xff01a8c0, 0x1401a8c0, 0x00ffffff, 0xFF);
@@ -643,6 +655,29 @@ int main(void)
          { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x34,0,0,0, 1,2,3,4 };
       aun_udp_input(&e, 0x0100000A, 32768, imm2, sizeof imm2);
       assert(e.himm.active && e.himm.seq == 0x34);
+   }
+
+   /* 30b: a retransmit of an answered type-5 immediate is replayed from the
+    * cache even while a newer immediate from another station is held - the
+    * cache is consulted before the busy test, as rx_imm4_data does. */
+   reset();
+   aun_set_host_imm(&e, true);
+   {
+      uint8_t imm[AUN_HDR_SIZE + 4] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x50,0,0,0, 1,2,3,4 };
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* held */
+      uint8_t rep[2] = { 0x56, 0x78 };
+      aun_himm_reply(&e, rep, 2);                              /* answered + cached */
+      uint8_t other[AUN_HDR_SIZE + 4] =
+         { AUN_TYPE_IMMEDIATE, 0, 0x02, 0, 0x07,0,0,0, 5,6,7,8 };
+      aun_udp_input(&e, 0x0200000A, 32768, other, sizeof other);
+      assert(e.himm.active && e.himm.ip_be == 0x0200000A);     /* busy */
+      sent_count = 0;
+      aun_udp_input(&e, 0x0100000A, 32768, imm, sizeof imm);   /* retransmit */
+      assert(e.counters.himm_replay == 1);
+      assert(sent_count == 1 && sent[0].buf[0] == AUN_TYPE_IMM_REPLY && seq_of(0) == 0x50);
+      assert(memcmp(&sent[0].buf[AUN_HDR_SIZE], rep, 2) == 0);
+      assert(e.himm.active && e.himm.ip_be == 0x0200000A);     /* still held */
    }
 
    /* 31: the ms clock MUST be derived from the full 64-bit microsecond timer

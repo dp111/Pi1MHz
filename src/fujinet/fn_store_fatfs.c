@@ -184,27 +184,61 @@ static uint32_t fat_time(WORD date, WORD time)
           (uint32_t)((time >> 5) & 63) * 60u + (uint32_t)(time & 31) * 2u;
 }
 
-bool fn_sd_dir_entry(const char *path, uint32_t index, fn_dirent *out)
+/* A walk in progress.  Every lister asks for entries 0, 1, 2, ... in one
+   synchronous loop, so the directory stays open between calls and the next
+   entry is one f_readdir away: a walk is O(n), not O(n^2).  Any other index
+   or path reopens the directory and skips to it, and a new walk always
+   starts at 0, so a walk abandoned part way, or a card swapped since, is
+   never read from. */
+static DIR s_walk_dir;
+static bool s_walk_open;
+static uint32_t s_walk_next;              /* the index the next read gives */
+static char s_walk_path[FN_STORE_MAX_PATH];
+
+static void walk_close(void)
 {
-   DIR dir;
-   FILINFO info;
-   if (path[0] != '/' || f_opendir(&dir, path) != FR_OK)
-      return false;
-   bool found = false;
-   for (uint32_t i = 0; ; ) {
-      if (f_readdir(&dir, &info) != FR_OK || info.fname[0] == '\0')
-         break;
-      if (strcmp(info.fname, ".") == 0 || strcmp(info.fname, "..") == 0)
-         continue;
-      if (i++ == index) {
-         snprintf(out->name, sizeof out->name, "%s", info.fname);
-         out->is_dir = (info.fattrib & AM_DIR) != 0;
-         out->size = out->is_dir ? 0 : (uint32_t)info.fsize;
-         out->mtime = fat_time(info.fdate, info.ftime);
-         found = true;
-         break;
+   if (s_walk_open)
+      (void)f_closedir(&s_walk_dir);
+   s_walk_open = false;
+}
+
+/* The next entry other than "." and "..": false at the end or on an error,
+   and the walk is then closed. */
+static bool walk_read(FILINFO *info)
+{
+   for (;;) {
+      if (f_readdir(&s_walk_dir, info) != FR_OK || info->fname[0] == '\0') {
+         walk_close();
+         return false;
+      }
+      if (strcmp(info->fname, ".") != 0 && strcmp(info->fname, "..") != 0) {
+         s_walk_next++;
+         return true;
       }
    }
-   (void)f_closedir(&dir);
-   return found;
+}
+
+bool fn_sd_dir_entry(const char *path, uint32_t index, fn_dirent *out)
+{
+   FILINFO info;
+   if (path[0] != '/' || strlen(path) >= sizeof s_walk_path)
+      return false;
+   if (!s_walk_open || index != s_walk_next || strcmp(path, s_walk_path) != 0) {
+      walk_close();
+      if (f_opendir(&s_walk_dir, path) != FR_OK)
+         return false;
+      s_walk_open = true;
+      s_walk_next = 0;
+      snprintf(s_walk_path, sizeof s_walk_path, "%s", path);
+      while (s_walk_next < index)
+         if (!walk_read(&info))
+            return false;
+   }
+   if (!walk_read(&info))
+      return false;
+   snprintf(out->name, sizeof out->name, "%s", info.fname);
+   out->is_dir = (info.fattrib & AM_DIR) != 0;
+   out->size = out->is_dir ? 0 : (uint32_t)info.fsize;
+   out->mtime = fat_time(info.fdate, info.ftime);
+   return true;
 }

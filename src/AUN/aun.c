@@ -1106,9 +1106,12 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
 
       const aun_map_entry_t *m = map_find_by_ip(e, src_ip_be, src_port);
       if (m == NULL) {
-         /* learn mode can attribute (and auto-map) in-subnet sources */
+         /* learn mode can attribute (and auto-map) in-subnet sources, but
+          * only to a station not already mapped: a static aun_map entry for
+          * that station wins, and is never re-pointed at this IP. */
          uint8_t lnet, lstn;
-         if (learn_attribute(e, src_ip_be, src_port, &lnet, &lstn)) {
+         if (learn_attribute(e, src_ip_be, src_port, &lnet, &lstn) &&
+             map_find_by_addr(e, lnet, lstn) == NULL) {
             (void)aun_map_add(e, lnet, lstn, src_ip_be, src_port);
             m = map_find_by_ip(e, src_ip_be, src_port);
          }
@@ -1211,18 +1214,14 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
          send_imm_reply(e, src_ip_be, src_port, ctrl, seq, e->machine_id, 4);
       } else if (e->host_imm_enabled && dlen <= AUN_HIMM_MAX &&
                  himm_len_ok(ctrl, dlen, data)) {
-         if (e->himm.active) {
-            /* one held at a time: absorb a retransmit of the one in flight
-             * (the host is still working on it), refuse anything else. */
-            if (!(e->himm.ip_be == src_ip_be && e->himm.port == src_port &&
-                  e->himm.seq == seq))
-               send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK,
-                            port, ctrl, seq);
-         } else if (e->himm_cache.valid && !e->himm_cache.from_data &&
-                    (int32_t)(now_ms(e) - e->himm_cache.due_ms) < 0 &&
-                    e->himm_cache.ip_be == src_ip_be &&
-                    e->himm_cache.port == src_port &&
-                    e->himm_cache.seq == seq) {
+         /* The cache is consulted BEFORE the busy test, as rx_imm4_data
+          * does: a retransmit of an immediate already answered is
+          * re-answered even while a newer one is held. */
+         if (e->himm_cache.valid && !e->himm_cache.from_data &&
+             (int32_t)(now_ms(e) - e->himm_cache.due_ms) < 0 &&
+             e->himm_cache.ip_be == src_ip_be &&
+             e->himm_cache.port == src_port &&
+             e->himm_cache.seq == seq) {
             /* Retransmit of an immediate we already resolved (and not yet
              * expired): replay the recorded outcome - the positive reply, or
              * the NAK if it was reaped - do NOT hand it to the host again
@@ -1235,6 +1234,13 @@ void aun_udp_input(aun_engine_t *e, uint32_t src_ip_be, uint16_t src_port,
                               e->himm_cache.ctrl, e->himm_cache.seq,
                               e->himm_cache.data, e->himm_cache.len);
             e->counters.himm_replay++;
+         } else if (e->himm.active) {
+            /* one held at a time: absorb a retransmit of the one in flight
+             * (the host is still working on it), refuse anything else. */
+            if (!(e->himm.ip_be == src_ip_be && e->himm.port == src_port &&
+                  e->himm.seq == seq))
+               send_ack_nak(e, src_ip_be, src_port, AUN_TYPE_NAK,
+                            port, ctrl, seq);
          } else {                     /* fresh immediate: hold it for the host */
             e->himm.gen++;            /* new slot generation (gen guard) */
             e->himm.active = true;

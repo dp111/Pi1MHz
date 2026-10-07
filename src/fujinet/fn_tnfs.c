@@ -158,6 +158,15 @@ static tnfs_xfer_t X;
 static bool s_pending;
 static uint32_t s_now;
 
+/* An OPEN abandoned in flight (fn_tnfs_request_abort): if the server's
+   reply still comes, the file it opened is closed. */
+static struct {
+   bool     live;
+   unsigned sess;
+   uint16_t connid;
+   uint8_t  seq;
+} s_lost_open;
+
 /* The last directory listed, serving its pages. */
 static struct {
    bool     valid;
@@ -255,6 +264,9 @@ static void send_step(step_t step)
    }
    J.step = step;
    next_seq();
+   /* The sequence has come round: that lost reply is long gone. */
+   if (s_lost_open.live && s_lost_open.sess == J.sess && s_lost_open.seq == X.seq)
+      s_lost_open.live = false;
    switch (step) {
    case ST_MOUNT:
       X.connid = 0;
@@ -313,6 +325,17 @@ static void send_step(step_t step)
       return;
    }
    send_built(n);
+}
+
+/* Close a file on the server.  Fire and forget: nothing waits for a CLOSE,
+   and its reply is ignored by sequence. */
+static void close_fd(unsigned sess, uint8_t fd)
+{
+   session_t *s = &s_sess[sess];
+   uint8_t pkt[16];
+   size_t n = tnfs_build_close(pkt, sizeof pkt, s->connid, ++s->seq, fd);
+   if (n && s->mounted)
+      (void)fn_tnfs_io_send(s->ip, s->port, pkt, (uint16_t)n);
 }
 
 /* The first request of the job once the session is mounted. */
@@ -387,7 +410,11 @@ static void on_reply(const tnfs_reply_t *rep)
          unsigned i = (next + k) % FN_TNFS_HANDLES;
          if (!s_file[i].used) slot = (int)i;
       }
-      if (slot < 0) { finish(false, -1, 0); return; }
+      if (slot < 0) {
+         close_fd(J.sess, fd);      /* opened on the server: give it back */
+         finish(false, -1, 0);
+         return;
+      }
       next = (unsigned)slot + 1u;
       s_file[slot] = (tfile_t){ .used = true, .sess = J.sess, .fd = fd, .pos = 0, .pos_known = true };
       snprintf(s_file[slot].path, sizeof s_file[slot].path, "%s", J.path);
@@ -589,13 +616,7 @@ void fn_tnfs_close(fn_handle h)
    tfile_t *f = file_of(h);
    if (!f)
       return;
-   /* Fire and forget: nothing waits for a CLOSE, and its reply is ignored
-      by sequence. */
-   session_t *s = &s_sess[f->sess];
-   uint8_t pkt[16];
-   size_t n = tnfs_build_close(pkt, sizeof pkt, s->connid, ++s->seq, f->fd);
-   if (n && s->mounted)
-      (void)fn_tnfs_io_send(s->ip, s->port, pkt, (uint16_t)n);
+   close_fd(f->sess, f->fd);
    f->used = false;
 }
 
@@ -649,6 +670,13 @@ void fn_tnfs_request_abort(void)
       tfile_t *f = file_of(J.key.h);
       if (f) f->pos_known = false;
    }
+   if (J.active && J.step == ST_OPEN) {
+      /* The server may open the file yet: close it when its reply comes. */
+      s_lost_open.live = true;
+      s_lost_open.sess = J.sess;
+      s_lost_open.connid = s_sess[J.sess].connid;
+      s_lost_open.seq = X.seq;
+   }
    J.active = false;
    /* A device keeps a handle only once its whole request has finished (no
       state changes before a call that may wait), so a handle an abandoned
@@ -686,6 +714,19 @@ void fn_tnfs_poll(void)
 
 void fn_tnfs_input(uint32_t ip, uint16_t port, const uint8_t *pkt, uint16_t len)
 {
+   if (s_lost_open.live) {
+      session_t *ls = &s_sess[s_lost_open.sess];
+      tnfs_reply_t lost;
+      uint8_t fd;
+      if (ip == ls->ip && port == ls->port &&
+          tnfs_parse_reply(pkt, len, s_lost_open.seq, TNFS_CMD_OPEN, &lost) &&
+          lost.connid == s_lost_open.connid && lost.connid == ls->connid) {
+         s_lost_open.live = false;
+         if (tnfs_reply_open(&lost, &fd))
+            close_fd(s_lost_open.sess, fd);
+         return;
+      }
+   }
    if (!J.active || J.step == ST_RESOLVE)
       return;
    session_t *s = &s_sess[J.sess];

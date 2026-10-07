@@ -37,6 +37,17 @@ static uint16_t tape_crc(const uint8_t *data, size_t length)
 #define TOKEN_ELSE   0x8Bu
 #define TOKEN_THEN   0x8Cu
 
+/* Does a tokenised BASIC line's text start at `s`?  A line starts CR, line
+ * number high and low, length; the next line's CR is that length on from
+ * this one, which a stray CR would not be. */
+static bool line_start(const uint8_t *data, size_t length, size_t s)
+{
+   if (s < 4u || data[s - 4u] != 0x0Du || data[s - 1u] < 4u)
+      return false;
+   size_t next = s - 4u + data[s - 1u];
+   return next >= length || data[next] == 0x0Du;
+}
+
 /* Is `at` a whole `?&21x=&vv` statement (x/vv = 2/D6 or 3/F1) in tokenised
  * BBC BASIC?  It must start a statement - a line's first text, or after a
  * colon, THEN or ELSE - and end one, before a colon, ELSE or the line's CR.
@@ -55,18 +66,17 @@ static bool stamp_at(const uint8_t *data, size_t length, size_t at,
       e++;
    if (e >= length || (data[e] != ':' && data[e] != 0x0Du && data[e] != TOKEN_ELSE))
       return false;
-   while (s > 0u && data[s - 1u] == ' ')
+   /* Back over the spaces before it, testing for a line start at each step:
+      a line's length byte can be 0x20, which is not a space to skip. */
+   for (;;) {
+      if (line_start(data, length, s))
+         return true;
+      if (s == 0u || data[s - 1u] != ' ')
+         break;
       s--;
-   if (s > 0u && (data[s - 1u] == ':' || data[s - 1u] == TOKEN_THEN
-                  || data[s - 1u] == TOKEN_ELSE))
-      return true;
-   /* A line starts CR, line number high and low, length; the next line's
-      CR is that length on from this one, which a stray CR would not be. */
-   if (s >= 4u && data[s - 4u] == 0x0Du && data[s - 1u] >= 4u) {
-      size_t next = s - 4u + data[s - 1u];
-      return next >= length || data[next] == 0x0Du;
    }
-   return false;
+   return s > 0u && (data[s - 1u] == ':' || data[s - 1u] == TOKEN_THEN
+                     || data[s - 1u] == TOKEN_ELSE);
 }
 
 /* Blank the loader's FILEV stamp statements with spaces.  The statements
@@ -77,12 +87,18 @@ static bool stamp_at(const uint8_t *data, size_t length, size_t at,
  * middle of a line, so a pair may be split across two blocks: a ?&212 here
  * with its ?&213 at the start of the next block, where it cannot be seen to
  * start a statement and is left.  So a block whose last ?&212 has no ?&213
- * after it, on a line that runs on past the block, is left whole. */
+ * after it, on a line that runs on past the block, is left whole.  The
+ * mirror case: the block starts mid-line, after a ?&212 the last block cut
+ * (or saw and left), and a ?&213 with no ?&212 before it on that first part
+ * line - after a colon, so it is seen - is the second half of a pair split
+ * the other way.  That block is left whole too, even if it also holds a
+ * complete pair. */
 static unsigned repair_block_payload(uint8_t *data, size_t length)
 {
    unsigned found[2] = { 0u, 0u };
    unsigned repaired = 0u;
    bool open_pair = false;      /* the last ?&212 still waits for its ?&213 */
+   bool split_lead = false;     /* a ?&213 whose ?&212 may be in the last block */
    size_t last = 0u;
    for (size_t at = 0u; at < length; at++)
       for (uint8_t w = 0u; w < 2u; w++)
@@ -92,10 +108,12 @@ static unsigned repair_block_payload(uint8_t *data, size_t length)
                open_pair = true;
                last = at;
             } else {
+               if (!open_pair && memchr(data, 0x0D, at) == NULL)
+                  split_lead = true;
                open_pair = false;
             }
          }
-   if (found[0] == 0u || found[1] == 0u)
+   if (found[0] == 0u || found[1] == 0u || split_lead)
       return 0u;
    if (open_pair && memchr(&data[last], 0x0D, length - last) == NULL)
       return 0u;               /* its line, and maybe its ?&213, run on */

@@ -15,7 +15,7 @@
 #include "fake_tnfs.h"
 
 #define MAXF     16
-#define MAXFD    8
+#define MAXFD    16      /* more than the client's 8 handles, as a real server has */
 #define QMAX     8
 
 typedef struct { bool used; char path[256]; bool dir; uint8_t *data; uint32_t size; } ffile_t;
