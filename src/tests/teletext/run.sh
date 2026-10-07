@@ -69,6 +69,8 @@ cat > "$B/lwip/tcp.h" <<'EOF'
 #include "lwip/ip_addr.h"
 typedef int8_t err_t;
 #define ERR_OK 0
+#define ERR_MEM (-1)
+#define ERR_ABRT (-13)
 struct tcp_pcb;
 typedef err_t (*tcp_recv_fn)(void*, struct tcp_pcb*, struct pbuf*, err_t);
 typedef err_t (*tcp_connected_fn)(void*, struct tcp_pcb*, err_t);
