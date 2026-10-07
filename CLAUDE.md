@@ -98,8 +98,9 @@ header — trust the newest status over the body).
   showing no reset since the push. With an older build on either side the
   row proves nothing, so fingerprint the banner before believing any
   symptom (`docs/dev/chainboot-kernel-now.md`). Zero bytes on COM9 after F11 (1B 5B 57)
-  means the Pico is wedged and needs a physical re-plug, not a firmware
-  fault. `claude-tmp/build-all.sh` builds the three configs release-last
+  means the Beeb isn't sending serial data - the Pico keyboard never
+  wedges. After a kernel.now or a slow Pi the redirect has dropped: look
+  at the screen, then CTRL-BREAK once /status answers. `claude-tmp/build-all.sh` builds the three configs release-last
   and prints only warnings. Brief subagents narrowly with an output cap;
   a read-only Explore agent for a report, never an open-ended "study".
 
