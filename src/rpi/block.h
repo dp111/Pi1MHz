@@ -73,8 +73,10 @@ struct emmc_block_dev
 };
 
 
+#if 0 /* no definition */
 size_t block_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t starting_block);
 size_t block_write(struct block_device *dev, const uint8_t *buf, size_t buf_size, uint32_t starting_block);
+#endif
 
 /* SD PIO transfer statistics (bytes moved, microseconds in the loop) */
 #ifdef DEBUG

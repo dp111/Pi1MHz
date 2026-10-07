@@ -64,6 +64,8 @@ enum {
 
 screen_mode_t *tt_get_screen_mode(int mode_num);
 
+#if 0 /* no definition */
 void tt_vdu_23_18(uint8_t *params);
+#endif
 
 #endif

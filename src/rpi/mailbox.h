@@ -190,14 +190,18 @@ typedef struct {
 #define MIN_CLK_ID  0x000000001
 #define MAX_CLK_ID  0x00000000a
 
+#if 0 /* no definition */
 extern void RPI_PropertyInit( void );
+#endif
 extern rpi_mailbox_property_t* RPI_PropertyGetWord( rpi_mailbox_tag_t tag, uint32_t data );
 /* RPI_PropertyGetWord with the full 3 s bound (not cached): boot-context
    queries only (board revision, ARM memory).  Never from a poll callback. */
 extern rpi_mailbox_property_t* RPI_PropertyGetWordLong( rpi_mailbox_tag_t tag, uint32_t data );
 extern rpi_mailbox_property_t* RPI_PropertyGetBuffer(rpi_mailbox_tag_t tag);
 extern void RPI_PropertySetWord(rpi_mailbox_tag_t tag, uint32_t id, uint32_t data);
+#if 0 /* no definition */
 extern void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... );
+#endif
 extern void RPI_PropertyStart(rpi_mailbox_tag_t tag, uint32_t length);
 extern void RPI_PropertyNewTag(rpi_mailbox_tag_t tag, uint32_t length);
 extern void RPI_PropertyAdd(uint32_t data);
@@ -208,7 +212,9 @@ extern unsigned int RPI_PropertyProcess( bool wait );
 extern void RPI_PropertySettle( void );
 /* True when RPI_PropertySettle() would not block. */
 extern bool RPI_PropertyReplyWaiting( void );
+#if 0 /* no definition */
 extern void RPI_PropertyProcessNoCheck( void );
+#endif
 extern rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag );
 
 #endif

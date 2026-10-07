@@ -109,7 +109,9 @@ void fb_wait_for_vsync(void);
 
 screen_mode_t *fb_get_current_screen_mode(void);
 
+#if 0 /* no definition */
 void fb_set_vdu_device(vdu_device_t device);
+#endif
 
 int32_t fb_read_vdu_variable(vdu_variable_t v);
 
