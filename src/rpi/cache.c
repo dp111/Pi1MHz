@@ -16,8 +16,16 @@
 /* The L1 table sits at a fixed address under the kernel (lowmem.h), not in
    .noinit: a kernel.now copy writes the incoming image over this kernel's
    .noinit while still translating through this table, and an image only
-   ~850 KB long already reached it there. */
+   ~850 KB long already reached it there.  The .noinit placement is kept
+   behind CACHE_PAGETABLE_IN_NOINIT; the kernel.now copier
+   (rpi/arm-start.S) expects the table at LOWMEM_PAGE_TABLE, so turning it on
+   breaks chain-booting. */
+#define CACHE_PAGETABLE_IN_NOINIT 0
+#if CACHE_PAGETABLE_IN_NOINIT
+volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTable[4096];
+#else
 #define PageTable ((volatile unsigned int *)LOWMEM_PAGE_TABLE)
+#endif
 #ifdef NUM_4K_PAGES
 volatile __attribute__ ((aligned (0x4000) )) NOINIT_SECTION unsigned int PageTable2[NUM_4K_PAGES];
 #endif
