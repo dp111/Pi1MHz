@@ -363,8 +363,29 @@ static void split_pair_lead_case(void)
    check("and not one byte of that block changes", memcmp(before, tape, at) == 0);
 }
 
+/* A line whose length byte is &20 - the same byte as a space.  The ?&212
+   starts the line's text and must be seen to:
+     10 ?&212=&D6:?&213=&F1:       PRINT   (32 bytes with its header) */
+static void length_space_case(void)
+{
+   static const uint8_t payload[] = {
+      0x0d, 0x00, 0x0a, 0x20,
+      '?', '&', '2', '1', '2', '=', '&', 'D', '6', ':',
+      '?', '&', '2', '1', '3', '=', '&', 'F', '1', ':',
+      ' ', ' ', ' ', ' ', ' ', ' ', ' ', 0xf1, 0x0d, 0xff
+   };
+   static uint8_t tape[1024];
+   size_t at = 0u;
+   memcpy(&tape[at], "UEF File!\0\012\000", 12u); at += 12u;
+   at = put_block(tape, at, "LEN20", payload, sizeof payload, sizeof payload);
+   at = put_filler(tape, at, 16u);
+   unsigned repaired = uef_repair_filev_stamp(tape, at);
+   check("a line of length &20 has its pair repaired", repaired == 2u);
+}
+
 int main(void)
 {
+   length_space_case();
    split_pair_case();
    split_pair_lead_case();
 
