@@ -12,11 +12,15 @@
 #include "rpi.h"
 #include "base.h"
 #include "cache.h"
+#include "lowmem.h"
+#include "systimer.h"
 
-/* In .noinit: this block MUST NOT live at a fixed low address - 0x7C00 (the
-   first attempt) is inside the VPU-shared Pi1MHz region (struct at 0x100,
-   Beeb-writable shadow/JIM RAM after it), and stray bus bytes (CR, 0x0D)
-   corrupted the detail words into phantom "died in init N" reports.
+/* In .noinit: this block MUST NOT live at a fixed low address - at 0x7C00
+   (the first attempt) stray bytes (CR, 0x0D) corrupted the detail words into
+   phantom "died in init N" reports.  The writer was never found: the VPU
+   never touches ARM low RAM (it reads Pi1MHz_MEM_BASE in peripheral space
+   and posts through the SMI registers), and nothing at 0x100-0x13FF, the
+   Pi1MHz struct and callback table, reaches that far (lowmem.h).
    .noinit survives the watchdog reset and the SD loader alike.  The known
    cost, learned the hard way in the fixed-address era: if the image that
    dies and the image that reports are DIFFERENT builds, .noinit moves with
@@ -24,21 +28,72 @@
    clean "nothing to report", never a phantom.  Same-build reboots (the
    normal lockup case) always line up. */
 NOINIT_SECTION static volatile uint32_t boot_stage_block[16];
-/* Chain-boot marker: the outgoing kernel writes CHAIN_MAGIC just before it
-   jumps (mtp_fs.c); the incoming kernel_main reads and clears it, so the
-   session knows it was chain-booted rather than cold-booted.  .noinit
-   survives the jump; a different build places .noinit elsewhere and simply
-   never sees the magic, which reads as a cold boot - the safe direction. */
-NOINIT_SECTION static volatile unsigned int chain_magic;
+/* Chain-boot marker: the outgoing kernel writes it just before it jumps
+   (chainboot.c); the incoming kernel_main reads and clears it, so the
+   session knows it was chain-booted rather than cold-booted.  Not in
+   .noinit: the copy of the incoming image runs over the outgoing kernel's
+   .noinit, and a different build places .noinit elsewhere, so a marker
+   there was lost whenever the two builds differed or the image was large.
+   It lives at a fixed address under the kernel instead (lowmem.h).
+
+   Living there, it also survives what it must not: a reset.  If the
+   incoming kernel dies before it consumes the marker, or a kernel that does
+   not know this marker runs for a while and is then reset, the SD kernel
+   that boots next would find it - and, believing it was chain-booted,
+   report "n/a (chain-boot)" and skip launching the VPU, leaving the bus
+   dead.  So the marker counts only for a jump that has just happened with
+   no reset in between.  Two tests, either of which a reset fails:
+   - the 64-bit system timer, stamped at the jump, has moved on less than
+     CHAIN_MARK_MAX_US.  A reset either restarts the timer (now before the
+     stamp) or takes far longer, because the firmware then reloads
+     bootcode, start.elf and the kernel from the card.  INFERRED, both: not
+     the watchdog timeout - reboot_now() fires it after one tick.  The jump
+     itself - a cached copy of at most 4 MB, the cache clean and the
+     incoming .bss clear - should be well inside it; RPI_ChainBootJumpUs()
+     reports what it took, on the /status Boot time row.
+   - the reset-reason register is unchanged.  Its flags are sticky, so this
+     alone would miss a second watchdog reset after a first; the timer does
+     not.  INFERRED: it catches a reset whose timing happened to fit.  Bits
+     0-11 only: kernels before 9f46af5 stored the register without bit 12
+     (HADPOR, sticky from power-on), and a power-on restarts the timer
+     anyway.
+   And two words, the magic and its complement, so that whatever RAM holds
+   after a power-on, or a stray write, reads as a cold boot - the safe
+   direction - never as a phantom chain-boot. */
+#define chain_marker ((volatile uint32_t *)LOWMEM_CHAIN_MARKER)
 #define CHAIN_MAGIC 0xC4A1B007u
+#define CHAIN_MARK_MAX_US 500000u
 static unsigned int chain_booted_flag;
-void RPI_ChainBootMark(void) { chain_magic = CHAIN_MAGIC; }
+static uint32_t chain_jump_us;
+void RPI_ChainBootMark(void)
+{
+   uint64_t now = RPI_GetSystemTime64();
+   chain_marker[2] = (uint32_t)now;
+   chain_marker[3] = (uint32_t)(now >> 32);
+   chain_marker[4] = RPI_ResetReason();
+   chain_marker[0] = CHAIN_MAGIC;
+   chain_marker[1] = ~CHAIN_MAGIC;
+   /* Out to RAM now, rather than leave it to the copier's set/way clean:
+      the copy runs with the D-cache on. */
+   _clean_cache_area((const void *)LOWMEM_CHAIN_MARKER, 5u * sizeof(uint32_t));
+}
 void RPI_ChainBootConsume(void)
 {
-   chain_booted_flag = (chain_magic == CHAIN_MAGIC) ? 1u : 0u;
-   chain_magic = 0u;
+   uint64_t now = RPI_GetSystemTime64();
+   uint64_t stamp = ((uint64_t)chain_marker[3] << 32) | chain_marker[2];
+   chain_booted_flag = (chain_marker[0] == CHAIN_MAGIC &&
+                        chain_marker[1] == ~CHAIN_MAGIC &&
+                        now >= stamp && now - stamp < CHAIN_MARK_MAX_US &&
+                        ((chain_marker[4] ^ RPI_ResetReason()) & 0xfffu) == 0u)
+                       ? 1u : 0u;
+   /* Mark to here: the copy, the cache clean and the .bss clear - the
+      measurement behind CHAIN_MARK_MAX_US. */
+   chain_jump_us = chain_booted_flag ? (uint32_t)(now - stamp) : 0u;
+   chain_marker[0] = 0u;
+   chain_marker[1] = 0u;
 }
 unsigned int RPI_ChainBooted(void) { return chain_booted_flag; }
+unsigned int RPI_ChainBootJumpUs(void) { return chain_jump_us; }
 #define boot_stage_magic    (boot_stage_block[0])
 #define boot_stage_current  (boot_stage_block[1])
 #define boot_stage_previous (boot_stage_block[2])
@@ -68,6 +123,16 @@ void RPI_BootStage( boot_stage_t stage )
 void RPI_BootDetail( unsigned int detail )
 {
    boot_detail_current = detail;
+   /* Cleaned for the same reason as RPI_BootStage's block: the stamp that
+      matters is the one before an emulator init that then hangs, and the
+      watchdog reset that ends the hang drops a dirty line.  Only this word
+      changed, so only its line: one clean by MVA, at boot and BREAK.  (The
+      per-callback DEBUG stamp in the poll loop pays it too - which is what
+      lets that stamp survive a hang at all.  So in DEBUG builds every poll
+      callback carries a clean+invalidate of this line, and poll_max_ticks
+      and the slow-callback report include it; release has no such stamp.) */
+   _clean_cache_area((const void *)(uintptr_t)&boot_detail_current,
+                     sizeof boot_detail_current);
 }
 
 unsigned int RPI_BootDetailPrevious( void )
@@ -76,8 +141,9 @@ unsigned int RPI_BootDetailPrevious( void )
 }
 
 /* Reset reason from the PM block. RSTS bits 12..0: the "had watchdog reset"
-   flag is bit 5 on BCM2835 (0x20); power-on shows the full set. Read once -
-   the register survives until something clears it. */
+   flag is bit 5 on BCM2835 (0x20), "had power-on reset" bit 12 (0x1000);
+   power-on shows the full set.  The register survives until something
+   clears it. */
 volatile unsigned int *RPI_BootStageBlock( void )
 {
    return (volatile unsigned int *)boot_stage_block;
@@ -85,7 +151,7 @@ volatile unsigned int *RPI_BootStageBlock( void )
 
 unsigned int RPI_ResetReason( void )
 {
-   return (*(volatile unsigned int *)(PERIPHERAL_BASE + 0x00100020u)) & 0xfffu;
+   return (*(volatile unsigned int *)(PERIPHERAL_BASE + 0x00100020u)) & 0x1fffu;
 }
 
 boot_stage_t RPI_BootStagePrevious( void )

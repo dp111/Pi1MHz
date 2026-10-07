@@ -21,6 +21,7 @@
 #include "md5.h"
 
 #include "ws_defines.inc"
+#include "ws_alias_stub.h"
 #include "ws_parsers.inc"
 
 /* Deterministic PRNG (xorshift32), matching the other suites. */
@@ -135,6 +136,7 @@ int main(void)
          (void)dav_destination_sdpath(s, o, WS_PATH_MAX);
          free(o);
          (void)ws_path_is_safe(s);
+         (void)ws_content_type(s);
       }
 
       /* Request line */
@@ -161,6 +163,9 @@ int main(void)
          if (ws_find_header(s, len, name, o, osz))
             assert(strlen(o) < osz);
          free(o);
+         (void)ws_forgery_refused((rnd() & 1u) ? "PUT" : "GET", "/udpblast",
+                                  s, len, "192.168.1.50", "Pi1MHz");
+         (void)ws_host_is_ours(s, "192.168.1.50", "Pi1MHz");
       }
 
       /* Multipart fields */

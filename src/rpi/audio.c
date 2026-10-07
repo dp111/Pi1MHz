@@ -158,6 +158,18 @@ static void dma_stop(dma_sink_t *s)
    s->chan->CS = BCM2708_DMA_RESET;
 }
 
+/* A kernel.now chain-boot copies the incoming image over this kernel's
+   .noinit, where pwm_cb/hdmi_cb live, and the DMA engine keeps following
+   their next pointers whatever the ARM is doing: real bytes landing there
+   could point it at any address, to write anywhere.  So both channels are
+   reset before the jump - unconditionally: resetting an idle channel is
+   harmless, and 4 and 5 are this firmware's alone. */
+void audio_stop_dma(void)
+{
+   dma_stop(&pwm_sink);
+   dma_stop(&hdmi_sink);
+}
+
 /* ------------------------------------------------------------------ */
 /* PWM sink (the Beeb pin / Pi jack)                                  */
 /* ------------------------------------------------------------------ */

@@ -25,21 +25,48 @@ static void print_tag_value(const char *name, const rpi_mailbox_property_t *buf,
    LOG_INFO("\r\n");
 }
 
-static uint32_t get_revision(void) {
-   rpi_mailbox_property_t *buf;
-   buf = RPI_PropertyGetWord(TAG_GET_BOARD_REVISION,0);
-   if (buf) {
-      return buf->data.buffer_32[0];
-   } else {
-      return 0;
+/* 0 while unknown.  Kept once the VideoCore has answered - it never changes -
+   so a later caller cannot lose it to a busy VC; a failed query is asked
+   again next time.  board_revision_prime() asks with the full bound from
+   boot context; anything later (board_usb_behind_hub from the USB poll
+   callback, the help-screen line) only with the query bound. */
+static uint32_t revision;
+
+static uint32_t ask_revision(rpi_mailbox_property_t *(*get)(rpi_mailbox_tag_t, uint32_t)) {
+   if (revision == 0u) {
+      const rpi_mailbox_property_t *buf = get(TAG_GET_BOARD_REVISION, 0);
+      if (buf)
+         revision = buf->data.buffer_32[0];
    }
+   return revision;
+}
+
+static uint32_t get_revision(void) {
+   return ask_revision(RPI_PropertyGetWord);
+}
+
+/* Boot context only, before anything polls for the revision: one full-bound
+   attempt per session, so a VC that failed it is not waited on again at
+   every BREAK re-init. */
+void board_revision_prime(void) {
+   static bool primed;
+   if (primed)
+      return;
+   primed = true;
+   (void)ask_revision(RPI_PropertyGetWordLong);
 }
 
 /* Is the SoC's USB port behind an on-board hub, so it can only ever be a
-   host?  True for the Pi 1/2/3 Model B family, from the revision code.  Not
-   cached: a mailbox call, so main loop only. */
+   host?  True for the Pi 1/2/3 Model B family, from the revision code.  An
+   unknown revision (the query failed) is NOT behind a hub: that leaves the
+   choice to usb_mode in the config, where "host" still reaches a B's hub -
+   whereas guessing "hub" would force a Zero, A+ or CM into host mode, with
+   no MTP and no kernel.now, and no config setting could undo it.  A mailbox
+   call (query bound) until the revision is known, so main loop only. */
 bool board_usb_behind_hub(void) {
    uint32_t rev = get_revision() & 0xFFFFFFu;
+   if (rev == 0u)
+      return false;
    if (rev & (1u << 23)) {            /* new style: bits 4-11 are the type */
       switch ((rev >> 4) & 0xFFu) {
       case 0x01u: case 0x03u:         /* B, B+ */
@@ -240,7 +267,7 @@ bool rpi_get_board_mac(uint8_t mac[6])
 uint32_t mem_info(int size)
 {
    rpi_mailbox_property_t *buf;
-   buf = RPI_PropertyGetWord(TAG_GET_ARM_MEMORY, 0);
+   buf = RPI_PropertyGetWordLong(TAG_GET_ARM_MEMORY, 0);   /* boot only: page table, heap */
    if (buf)
       return buf->data.buffer_32[size];
    return 0;

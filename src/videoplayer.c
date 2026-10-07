@@ -33,9 +33,13 @@
 #include "BeebSCSI/fatfs/ff.h"
 #include "BeebSCSI/filesystem.h"
 #include "rpi/rpi.h"
+#include "rpi/asm-helpers.h"
 #include "rpi/systimer.h"
 #include "rpi/audio.h"
 #include "rpi/h264dec.h"
+#include "rpi/vchiq.h"
+#include "rpi/lowmem.h"
+#include "rpi/cache.h"
 #include "Pi1MHz.h"
 #include "pvf.h"
 #include "videoplayer.h"
@@ -55,22 +59,35 @@ static char pvf_path[32];
  * back over a kernel.now chain-boot - see the detailed rationale in git
  * history / docs: the VideoCore keeps allocations across an ARM warm
  * restart and the allocating and releasing kernels are different builds,
- * so the handles live at a fixed low-RAM address, not in .noinit.
+ * so the handles live at a fixed low-RAM address, not in .noinit
+ * (rpi/lowmem.h; 0x7C20 until the page table took 0x4000-0x7FFF).
  *
  * [0] magic 'VBUF', [1] still-frame buffer handle of a PRE-1.31 kernel
+ *     - or magic 'VCHQ', [1] the VCHIQ shared block handed on (below)
  * [2] magic 'VBF2', [3][4] the two H264 frame buffer handles
  *
- * Word [1] is only ever released here, never written: the 4:2:2 still
+ * 'VBUF' is only ever released here, never written: the 4:2:2 still
  * frame it belonged to is gone, but chain-booting from an older kernel
  * would otherwise leak its 864 KB out of the pool the decoder needs.
+ *
+ * 'VCHQ' is written by videoplayer_shutdown just before a kernel.now: the
+ * VideoCore will not take a second VCHIQ_INIT, so the connection itself is
+ * handed on (rpi/vchiq.h) and the next kernel finds it by [1].  A kernel
+ * that predates it reads neither word, starts a fresh connection that the
+ * VideoCore ignores, and has no video until a power cycle - as before.
  */
-#define VIDEOBUF_PERSIST_BASE 0x00007C20u
+#define VIDEOBUF_PERSIST_BASE LOWMEM_VIDEOBUF_PERSIST
 #define videobuf_magic    (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[0])
 #define videobuf_handle   (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[1])
 #define videobuf_magic2   (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[2])
 #define videobuf_handle2(n) (((volatile uint32_t *)VIDEOBUF_PERSIST_BASE)[3 + (n)])
 #define VIDEOBUF_MAGIC    0x56425546u   /* 'VBUF' */
 #define VIDEOBUF_MAGIC2   0x56424632u   /* 'VBF2' */
+#define VIDEOBUF_LINK     0x56434851u   /* 'VCHQ' */
+/* After every change: a kernel.now copies with the D-cache on, and the next
+   kernel must find the block in RAM, not in this one's dirty line. */
+#define videobuf_persist_clean() \
+    _clean_cache_area((const void *)VIDEOBUF_PERSIST_BASE, 5u * sizeof(uint32_t))
 
 /* ------------------------------------------------------------------ */
 /* Player state                                                       */
@@ -116,6 +133,7 @@ static struct {
     uint32_t frame_period_us;
     uint32_t next_frame_due;         /* systimer target for the next flip */
     uint32_t flip_wait_since;        /* when the current frame was armed */
+    uint32_t flip_wait_vsync;        /* end-of-frame count when it was armed */
     int64_t  armed_pts;              /* pts of the frame handed to the IRQ */
 
     /* audio: the PCM goes straight from the .pvf record into the audio
@@ -342,11 +360,18 @@ static volatile uint8_t  vp_gap_min, vp_gap_max;
 static volatile uint32_t vp_commit_irq, vp_commit_poll;
 #endif
 
-/* IRQ context (and the poll-loop fallback below): register writes only. */
+/* IRQ context (and the poll-loop fallback below, IRQs masked): register
+   writes only. */
 void videoplayer_vsync_flip(void)
 {
     uint32_t phys = vp_armed_phys;
     if (!phys)
+        return;
+    /* The rule every display-list write keeps: only between HVS frames (see
+       screen_between_frames).  An end of frame serviced late leaves the
+       picture armed for the next one - shown a refresh later, rather than
+       its pointers written mid-frame. */
+    if (!screen_between_frames())
         return;
     vp_armed_phys = 0;
 #ifdef DEBUG
@@ -380,23 +405,32 @@ static void arm_flip(void)
         draw_picture_number(phys, (uint32_t)vp.pending_pts + 1u);
     vp.armed_pts = vp.pending_pts;
     vp.flip_wait_since = RPI_GetSystemTime();
+    vp.flip_wait_vsync = screen_vsync_count();
     vp_armed_phys = phys;
 }
 
 /* Poll loop: pick up what the interrupt showed - MMAL calls and the
    bookkeeping cannot run in interrupt context.  Also covers the case where
-   the end-of-frame interrupt is not running at all (the framebuffer disables
-   it in some modes): after a frame period, commit from here instead, so the
-   video can never freeze waiting for an edge that will not come. */
+   no end of frame is being serviced at all: after a frame period with none,
+   commit from here instead, so the video can never freeze waiting for an
+   edge that will not come.  Only then - while ends of frame are being
+   counted, a picture still armed was held for a late one and the next one
+   takes it; writing it from here would land wherever the loop is, mid-frame. */
 static void reap_flip(void)
 {
     if (vp_armed_phys) {
         uint32_t limit = vp.frame_period_us ? vp.frame_period_us : 40000u;
-        if ((int32_t)(RPI_GetSystemTime() - vp.flip_wait_since) >= (int32_t)limit) {
+        if ((int32_t)(RPI_GetSystemTime() - vp.flip_wait_since) >= (int32_t)limit &&
+            screen_vsync_count() == vp.flip_wait_vsync) {
 #ifdef DEBUG
             vp_commit_poll++;                  /* no vsync IRQ: don't stall */
 #endif
+            /* IRQs masked: the IRQ is the other reader and clearer of
+               vp_armed_phys, and must not flip the same picture between our
+               read and our clear.  IRQ only - FIQ (the bus) stays live. */
+            unsigned int cpsr = _disable_irq_cspr();
             videoplayer_vsync_flip();
+            _restore_cpsr(cpsr);
         }
     }
 
@@ -721,11 +755,10 @@ static void pvf_reopen(void)
         return;
     }
     /* A DIFFERENT disc side (VFS jukebox / eject flip): blank the h264
-       frame buffers to black I420 so a later plane enable (E1/VP-mode from
-       the new side's boot software) can never re-show the previous disc's
-       last frame.  A same-path reopen (card remount, repoke of the current
-       directory) keeps its frames - blanking there would black out a
-       playing disc for nothing. */
+       frame buffers to black I420 so no later plane enable can ever
+       re-show the previous disc's last frame.  A same-path reopen (card
+       remount, repoke of the current directory) keeps its frames -
+       blanking there would black out a playing disc for nothing. */
     if (strcmp(prev_path, pvf_path) != 0) {
         for (int i = 0; i < NUM_FRAME_BUFFERS; i++) {
             if (vp.buf_phys[i]) {
@@ -1190,6 +1223,29 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     memset(&vp, 0, sizeof(vp));
     vp.seek_frame = -1;
 
+    /* The handle block is only worth anything while the VideoCore instance
+       that allocated the buffers lives: across a kernel.now (the VC is not
+       reset) and across a BREAK.  Any other boot - power-on, watchdog,
+       crash - restarted the VC, so whatever the block holds names nothing,
+       or something new; releasing it could free another user's memory.
+       Decided once, at the first init, where it is known which boot this
+       was; a BREAK re-init keeps the release below. */
+    static bool persist_checked;
+    if (!persist_checked) {
+        persist_checked = true;
+        if (!RPI_ChainBooted()) {
+            videobuf_magic = 0u;
+            videobuf_magic2 = 0u;
+            videobuf_persist_clean();
+        } else if (videobuf_magic == VIDEOBUF_LINK) {
+            /* Only noted: the connection is taken over lazily, by the
+               first bring-up, like everything else video. */
+            vchiq_adopt(videobuf_handle);
+            videobuf_magic = 0u;
+            videobuf_handle = 0u;
+        }
+    }
+
     /* An older kernel's 4:2:2 still-frame buffer, if we chain-booted from
        one: the still is gone, so just give the memory back. */
     if (videobuf_magic == VIDEOBUF_MAGIC && videobuf_handle != 0u) {
@@ -1207,6 +1263,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
             }
         videobuf_magic2 = 0;
     }
+    videobuf_persist_clean();
 
     /* LAZY BRING-UP (2026-08-25): opening the video file, starting the
        hardware decoder and allocating GPU frame buffers used to happen right
@@ -1224,6 +1281,44 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     screen_mixer_reset();
     Pi1MHz_Register_Poll(videoplayer_poll, "video");
     filesystemRegisterEject(videoplayer_eject, NULL);
+}
+
+/* kernel.now (chainboot.c, from the main loop, just before the jump): the
+   VideoCore is not reset by the jump, so the player shuts itself down
+   rather than leave the decoder running on the GPU with nobody behind it.
+   Only the player's own output is touched - its plane and its sound.  The
+   decoder goes down completely (h264dec_shutdown) and the VCHIQ connection
+   is handed on, so the next kernel can play video again without a power
+   cycle.  Never a reason not to jump: a step that fails is logged (DEBUG),
+   and whatever the VideoCore may still hold is leaked rather than freed
+   under it - the frame buffers' handles are then dropped from the block
+   instead of left for the next kernel to release.  True if it was clean. */
+bool videoplayer_shutdown(void)
+{
+    vp_armed_phys = 0;               /* the vsync IRQ flips nothing more */
+    vp_committed_phys = 0;
+    screen_plane_enable(YUV_PLANE, false);
+    vp.plane_on = false;
+    if (vp.open) {
+        f_close(&vp.file);
+        if (vp.audio_present)
+            audio_release(&vp.producer);
+        vp.audio_present = false;
+        vp.open = false;
+    }
+    free(vp.index);
+    vp.index = NULL;
+    vp.pending_phys = vp.displayed_phys = 0;
+    vp.mode = VP_IDLE;
+
+    bool clean = h264dec_shutdown();
+    if (!clean)
+        videobuf_magic2 = 0u;        /* leaked: the VC may still decode into them */
+    uint32_t link = vchiq_handover();
+    videobuf_magic = link ? VIDEOBUF_LINK : 0u;
+    videobuf_handle = link;
+    videobuf_persist_clean();
+    return clean;
 }
 
 /* The deferred bring-up: everything videoplayer_init used to do inline. */
@@ -1280,6 +1375,7 @@ static void vp_bring_up(void)
     videobuf_magic2 = VIDEOBUF_MAGIC2;
     for (int i = 0; i < NUM_FRAME_BUFFERS; i++)
         videobuf_handle2(i) = handles[i];
+    videobuf_persist_clean();
 
     screen_create_YUV420_plane(YUV_PLANE, vp.hdr.width, vp.hdr.height,
                                vp.buf_phys[0]);

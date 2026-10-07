@@ -27,15 +27,26 @@
 #ifndef HOSTADAPTER_H_
 #define HOSTADAPTER_H_
 
-// Function prototypes
+// Function prototypes (implemented in ../harddisc_emulator.c, which
+// stands in for the AVR host adapter)
+
+/* The AVR host adapter's set-up and databus-direction functions have no
+   counterpart on the Pi (the VPU drives the bus): named gate, not
+   deletion, so future BeebSCSI diffs stay clean. */
+#define BEEBSCSI_AVR_HOSTADAPTER 0
+
+#if BEEBSCSI_AVR_HOSTADAPTER
 void hostadapterInitialise(void);
 void hostadapterReset(void);
+#endif
 
 uint8_t hostadapterReadDatabus(void);
+#if BEEBSCSI_AVR_HOSTADAPTER
 void hostadapterWritedatabus(uint8_t databusValue);
 
 void hostadapterDatabusInput(void);
 void hostadapterDatabusOutput(void);
+#endif
 
 uint8_t hostadapterReadByte(void);
 void hostadapterWriteByte(uint8_t databusValue);

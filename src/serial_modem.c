@@ -348,6 +348,12 @@ static void dialling(uint32_t now_us)
    uint8_t c;
    /* Any key abandons the call - except the LF of a CR LF line ending. */
    if (serial_redirect_read(&c, 1u) != 0u && c != m_s[4]) {
+      /* The rest of the abandoning key's line goes with it, as far as it
+         has arrived: left queued, a paste would prefix the next command
+         and that command would be ignored. */
+      while (c != m_s[3] && serial_redirect_read(&c, 1u) != 0u)
+         ;
+      m_len = 0u;
       hang_up();
       result(R_NO_CARRIER);
       return;
@@ -434,10 +440,14 @@ void modem_poll(uint32_t now_us)
 {
    switch (m_state) {
    case M_COMMAND: {
-      uint8_t buf[64];
-      size_t n = serial_redirect_read(buf, sizeof buf);
-      for (size_t i = 0u; i < n && m_state == M_COMMAND; i++)
-         command_byte(buf[i], now_us);
+      /* One byte at a time, so a command that changes state (ATD, ATO)
+         leaves what follows it in the redirect for the new state to read:
+         data for the line after ATO, a key that abandons the dial after
+         ATD.  Taken as a batch, the rest of it was lost. */
+      uint8_t c;
+      for (unsigned i = 0u; i < 64u && m_state == M_COMMAND
+                            && serial_redirect_read(&c, 1u) != 0u; i++)
+         command_byte(c, now_us);
       /* A call held in command mode can still drop: a zero-length read
          reports it without taking any of the data waiting. */
       if (m_state == M_COMMAND && m_connected) {

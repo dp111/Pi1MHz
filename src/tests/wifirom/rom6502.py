@@ -5,6 +5,10 @@ whether or not the Pi answers: reset (service 1), unrecognised commands
 (service 4) and *HELP (service 9).  The ROM sits in a bank that is writable
 (sideways RAM) or not (an EPROM), so both can be checked.
 
+SimPi is the other end of the 1MHz bus for the commands that talk to the Pi
+(*WGET): the FCA6-FCAA service mailbox, answering each command number with
+whatever result the test scripts.
+
 The MOS is modelled only as far as those paths reach.  Anything else the ROM
 calls - an OSWORD, an OSBYTE below &A6 that is not listed, a jump into the OS
 ROM - raises Unmodelled, so a test can never pass because the model quietly
@@ -13,6 +17,8 @@ step over it, and a Model B or an Electron would not.
 
 Needs py65 (pip install py65).
 """
+import re
+
 from py65.devices.mpu6502 import MPU
 
 ROM_BASE = 0x8000
@@ -44,18 +50,102 @@ class RomError(Exception):
         self.message = message
 
 
+class SimPi:
+    """The Pi's side of the services mailbox at &FCA6-&FCAA.
+
+    &FCA6-&FCA8 hold a 24-bit JIM address, &FCA9 reads and writes the byte
+    there and steps the address on, and a write of &F0-&FF to &FCAA runs the
+    command whose number is in the first byte of the page it names (&F0 the
+    page at &FFF000, the service driver's &FF the one at &FFFF00).  The
+    result comes back in &FCAA with bit 7 clear.  &FCFD-&FCFF select the
+    page of the same JIM memory that &FD00-&FDFF shows, which is where the
+    ROM's driver keeps a reply for read_buffer.  `results` maps a command
+    number to the result code (a list is consumed one entry per command,
+    the last one repeating); a command not listed answers 0.  `replies`
+    maps a command number to {JIM address: byte} the Pi publishes with it.
+    """
+    def __init__(self, results=None, replies=None):
+        self.results = {k: (list(v) if isinstance(v, (list, tuple)) else [v])
+                        for k, v in (results or {}).items()}
+        self.replies = replies or {}
+        self.jim = {}
+        self.addr = 0
+        self.result = 0
+        self.commands = []         # every command number run, in order
+        self.select = {0xFD: 0, 0xFE: 0, 0xFF: 0}   # JIM page selectors
+
+    def _window(self, a):
+        s = self.select
+        return s[0xFD] << 24 | s[0xFE] << 16 | s[0xFF] << 8 | (a & 0xFF)
+
+    def read(self, a):
+        reg = a - 0xFC00
+        if reg == 0xA6:
+            return self.addr & 0xFF
+        if reg == 0xA7:
+            return (self.addr >> 8) & 0xFF
+        if reg == 0xA8:
+            return (self.addr >> 16) & 0xFF
+        if reg == 0xA9:
+            v = self.jim.get(self.addr, 0)
+            self.addr = (self.addr + 1) & 0xFFFFFF
+            return v
+        if reg == 0xAA:
+            return self.result
+        if 0xFD00 <= a < 0xFE00:
+            return self.jim.get(self._window(a), 0)
+        raise Unmodelled(f"read of I/O &{a:04X}")
+
+    def write(self, a, v):
+        reg = a - 0xFC00
+        if reg == 0xA6:
+            self.addr = (self.addr & 0xFFFF00) | v
+        elif reg == 0xA7:
+            self.addr = (self.addr & 0xFF00FF) | v << 8
+        elif reg == 0xA8:
+            self.addr = (self.addr & 0x00FFFF) | v << 16
+        elif reg == 0xA9:
+            self.jim[self.addr] = v
+            self.addr = (self.addr + 1) & 0xFFFFFF
+        elif reg == 0xAA:
+            if v < 0xF0:
+                raise Unmodelled(f"service command &{v:02X}, not a dispatch &F0-&FF")
+            self._dispatch(0xFF0000 | v << 8)
+        elif reg in (0xFD, 0xFE, 0xFF):
+            self.select[reg] = v
+        elif 0xFD00 <= a < 0xFE00:
+            self.jim[self._window(a)] = v
+        else:
+            raise Unmodelled(f"write &{v:02X} to I/O &{a:04X}")
+
+    def _dispatch(self, page):
+        number = self.jim.get(page, 0)
+        self.commands.append(number)
+        queue = self.results.get(number, [0])
+        self.result = queue.pop(0) if len(queue) > 1 else queue[0]
+        for addr, byte in self.replies.get(number, {}).items():
+            self.jim[addr] = byte
+
+
 class Memory:
-    """64 KiB; writes to the ROM bank are dropped unless it is writable."""
-    def __init__(self, image, writable):
+    """64 KiB; writes to the ROM bank are dropped unless it is writable.
+    With a SimPi, &FC00-&FDFF is the 1MHz bus; without one it is Unmodelled."""
+    def __init__(self, image, writable, pi=None):
         self.ram = bytearray(0x10000)
         self.ram[ROM_BASE:ROM_BASE + len(image)] = image
         self.writable = writable
+        self.pi = pi
 
     def __getitem__(self, a):
+        if self.pi and 0xFC00 <= a < 0xFE00:
+            return self.pi.read(a)
         return self.ram[a]
 
     def __setitem__(self, a, v):
         if ROM_BASE <= a < ROM_END and not self.writable:
+            return
+        if self.pi and 0xFC00 <= a < 0xFE00:
+            self.pi.write(a, v)
             return
         if a >= ROM_END:
             raise Unmodelled(f"write &{v:02X} to OS ROM / I/O &{a:04X}")
@@ -67,10 +157,11 @@ class Memory:
 
 class Beeb:
     def __init__(self, image, writable=True, machine="bbc", reset_type=2,
-                 max_steps=2_000_000):
+                 max_steps=2_000_000, pi=None):
         if len(image) != 0x4000:
             raise ValueError(f"ROM image is {len(image)} bytes, not 16384")
-        self.mem = Memory(image, writable)
+        self.pi = pi
+        self.mem = Memory(image, writable, pi)
         self.cpu = MPU(memory=self.mem)
         self.machine = machine
         self.max_steps = max_steps
@@ -110,6 +201,8 @@ class Beeb:
             cpu.x = cpu.y = MACHINE_ID[self.machine]
         elif a == 0x87:                    # character at cursor, screen mode
             cpu.x, cpu.y = 32, 7
+        elif a == 0x13:                    # wait for vertical sync
+            pass
         else:
             raise Unmodelled(f"OSBYTE &{a:02X},&{x:02X},&{y:02X}")
 
@@ -147,22 +240,28 @@ class Beeb:
 
         `line` is the command text for calls 4 and 9: it goes in LINE_BUF,
         (&F2) points there and Y indexes it, as the MOS leaves them."""
-        cpu = self.cpu
         if line is not None:
             data = line.encode("latin-1") + b"\r"
             self.mem.ram[LINE_BUF:LINE_BUF + len(data)] = data
             self.mem.ram[0xF2] = LINE_BUF & 0xFF
             self.mem.ram[0xF3] = LINE_BUF >> 8
         self.mem.ram[0xF4] = slot          # the MOS's current-ROM copy
-        cpu.a, cpu.x, cpu.y = reason, slot, y
-        cpu.sp = 0xFF
+        self.cpu.sp = 0xFF
+        return self.call(SERVICE, reason, slot, y)
+
+    def call(self, address, a=0, x=0, y=0):
+        """JSR to `address` in the ROM; return (A, X, Y) at its RTS.
+        The flags it returned with are left in self.cpu.p."""
+        cpu = self.cpu
+        cpu.a, cpu.x, cpu.y = a, x, y
         cpu.p = 0x34                       # I set, D clear: as the MOS calls
         ret = RETURN_TRAP - 1
         cpu.stPushWord(ret)
-        cpu.pc = SERVICE
+        cpu.pc = address
         for _ in range(self.max_steps):
             pc = cpu.pc
             if pc == RETURN_TRAP:
+                self.sp = cpu.sp           # back where it was before the JSR
                 return cpu.a, cpu.x, cpu.y
             if pc >= ROM_END:
                 self._trap(pc)
@@ -189,3 +288,14 @@ def command_names(image):
         names.append(image[at:end].decode("ascii"))
         at = end + 2
     return names
+
+
+def read_buffer_address(image):
+    """Where the driver's read_buffer starts: PHP, SEI, LDA abs (the page
+    shadow), JSR (select the page), LDA &FD00,X, PLP.  write_buffer pushes
+    A before its LDA, so only read_buffer has this shape."""
+    hits = [m.start() for m in re.finditer(
+        rb"\x08\x78\xAD..\x20..\xBD\x00\xFD\x28", image, re.DOTALL)]
+    if len(hits) != 1:
+        raise ValueError(f"read_buffer found {len(hits)} times, not once")
+    return ROM_BASE + hits[0]

@@ -272,7 +272,7 @@ typedef struct {
       uploads.  Instead we send 100 Continue, accept the body bytes
       into /dev/null (no temp file is opened), and once the full
       Content-Length is drained we send the 401 challenge - which
-      MiniRedirector then retries cleanly on a fresh connection.
+      MiniRedirector then retries cleanly with credentials.
       The dav_put_open flag stays false so dav_put_consume's f_write
       path is skipped; the dav_remaining counter still drives the
       drain.  Capped at WS_DRAIN_MAX_BYTES to avoid eating arbitrary
@@ -1226,11 +1226,24 @@ static bool ws_path_is_safe(const char *p)
    return true;
 }
 
+/* Length of a name as FatFs looks it up: create_name drops trailing dots
+   and spaces, so "scsi0.dat. " opens "scsi0.dat".  A name made of nothing
+   but dots and spaces keeps its length - FatFs refuses it outright (bar "."
+   and "..", which the callers deal with), so it cannot alias a real file. */
+static size_t ws_fat_name_len(const char *name, size_t len)
+{
+   size_t n = len;
+   while (n > 0u && (name[n - 1u] == '.' || name[n - 1u] == ' '))
+      --n;
+   return (n == 0u) ? len : n;
+}
+
 /* Normalise a decoded path: force a leading '/', collapse repeated
    slashes, drop a trailing slash (except for the root). */
 static void ws_normalize_path(const char *raw, char *out, size_t osz)
 {
    size_t o = 0u;
+   size_t r, w;
    const char *s;
 
    if (raw == NULL || raw[0] == '\0') {
@@ -1259,11 +1272,72 @@ static void ws_normalize_path(const char *raw, char *out, size_t osz)
       if (o + 1u < osz)
          out[o++] = ch;
    }
+   /* Trailing dots and spaces are another spelling of the same name:
+      "/BeebSCSI0./scsi0.dat" opens the running LUN image, but no interlock
+      string-compares it equal to "/BeebSCSI0/scsi0.dat".  Strip them per
+      segment, exactly as FatFs will. */
+   for (r = w = 0u; r < o; ) {
+      size_t start = r;
+      size_t len;
+      while (r < o && out[r] != '/')
+         ++r;
+      len = ws_fat_name_len(out + start, r - start);
+      memmove(out + w, out + start, len);
+      w += len;
+      if (r < o)
+         out[w++] = out[r++];            /* the '/' */
+   }
+   o = w;
    out[o] = '\0';
    while (o > 1u && out[o - 1u] == '/')
       out[--o] = '\0';
    if (o == 0u)
       strlcpy(out, "/", osz);
+}
+
+/* FatFs also opens a name by its 8.3 alias: "/BEEBSC~1/scsi0.dat" is LUN
+   0's image, yet no interlock string-compares it equal to
+   "/BeebSCSI0/scsi0.dat".  Every generated alias holds a '~', so rewrite
+   each segment that has one to the long name FatFs stores for it, looked
+   up against the already-resolved parent.  A segment that does not exist
+   (a file about to be created) is left as it is.  No SD work unless the
+   path holds a '~'.  Takes a normalised path; false if the long form does
+   not fit in sz. */
+static bool ws_resolve_aliases(char *path, size_t sz)
+{
+   size_t i = 0u;
+
+   if (strchr(path, '~') == NULL)
+      return true;
+   while (path[i] != '\0') {
+      size_t  start, end, flen, tail;
+      char    saved;
+      FILINFO fno;
+
+      while (path[i] == '/')
+         ++i;
+      start = i;
+      while (path[i] != '\0' && path[i] != '/')
+         ++i;
+      end = i;
+      if (memchr(path + start, '~', end - start) == NULL)
+         continue;
+      saved = path[end];
+      path[end] = '\0';                 /* stat just the prefix */
+      if (f_stat(path, &fno) != FR_OK) {
+         path[end] = saved;
+         continue;
+      }
+      path[end] = saved;
+      flen = strlen(fno.fname);
+      tail = strlen(path + end) + 1u;   /* the rest, with its NUL */
+      if (start + flen + tail > sz)
+         return false;
+      memmove(path + start + flen, path + end, tail);
+      memcpy(path + start, fno.fname, flen);
+      i = start + flen;
+   }
+   return true;
 }
 
 static void ws_parent_path(const char *sdpath, char *out, size_t osz)
@@ -1289,6 +1363,112 @@ static bool ws_is_root(const char *p)
 {
    return p[0] == '/' && p[1] == '\0';
 }
+
+/* ------------------------------------------------------------------ */
+/* Cross-site requests                                                 */
+/* ------------------------------------------------------------------ */
+
+/* True if a Host value names this Pi: its IPv4 address, or its hostname
+   bare (NetBIOS) or as <hostname>.local (mDNS, which advertises any '.' in
+   it as '-'), each with an optional :port.  Nothing else - in particular
+   not <hostname>.<some domain>, a name anyone can register. */
+static bool ws_host_is_ours(const char *host, const char *my_ip,
+                            const char *my_name)
+{
+   const char *colon = strrchr(host, ':');
+   size_t      hlen  = (colon != NULL) ? (size_t)(colon - host) : strlen(host);
+   size_t      nlen  = strlen(my_name);
+   size_t      i;
+
+   if (colon != NULL) {
+      if (colon[1] == '\0')
+         return false;
+      for (i = 1u; colon[i] != '\0'; i++)
+         if (colon[i] < '0' || colon[i] > '9')
+            return false;
+   }
+   if (hlen == 0u)
+      return false;
+   if (hlen == strlen(my_ip) && strncmp(host, my_ip, hlen) == 0)
+      return true;
+   if (hlen == nlen && strncasecmp(host, my_name, nlen) == 0)
+      return true;
+   if (hlen == nlen + 6u && strncasecmp(host + nlen, ".local", 6u) == 0) {
+      for (i = 0u; i < nlen; i++)
+         if (ws_lc(host[i]) != ws_lc((my_name[i] == '.') ? '-' : my_name[i]))
+            return false;
+      return true;
+   }
+   return false;
+}
+
+/* True if a browser sent this request for a page from another site.  With
+   no credentials configured (the default) any page the user has open could
+   otherwise POST a kernel.now (a chain-boot) or /reboot here, or overwrite
+   a disc image - and with credentials the browser may attach its cached
+   ones.  A request with neither Sec-Fetch-Site nor Origin is not from a web
+   page - curl, WebDAV clients - and passes.  A browser's must:
+   - be addressed to one of the Pi's own names (ws_host_is_ours).  Without
+     this, DNS rebinding works: a page on attacker.example whose name is
+     re-pointed at the Pi is same-origin with it, and its Origin and Host
+     agree;
+   - say Sec-Fetch-Site same-origin, or none (a typed URL or bookmark).
+     The browser sets it and page script cannot forge it;
+   - failing that (an older browser), carry an Origin naming the Host
+     ("null", from a sandboxed frame or a file: page, never does). */
+static bool ws_cross_site(const char *hdr, size_t limit,
+                          const char *my_ip, const char *my_name)
+{
+   char        site[24];
+   char        origin[128];
+   char        host[128];
+   const char *o = origin;
+   bool        have_site = ws_find_header(hdr, limit, "Sec-Fetch-Site",
+                                          site, sizeof site);
+   bool        have_origin = ws_find_header(hdr, limit, "Origin",
+                                            origin, sizeof origin);
+
+   if (!have_site && !have_origin)
+      return false;
+   /* ws_find_header truncates silently: a cut value proves nothing. */
+   if (!ws_find_header(hdr, limit, "Host", host, sizeof host)
+       || strlen(host) + 2u > sizeof host
+       || !ws_host_is_ours(host, my_ip, my_name))
+      return true;
+   if (have_site)
+      return strcasecmp(site, "same-origin") != 0
+          && strcasecmp(site, "none") != 0;
+   if (ws_prefix_ci_str(o, "http://"))
+      o += 7;
+   else if (ws_prefix_ci_str(o, "https://"))
+      o += 8;
+   else
+      return true;
+   if (strlen(origin) + 2u > sizeof origin)
+      return true;
+   return strcasecmp(o, host) != 0;
+}
+
+/* The request-forgery gate: true if process_request must refuse this
+   request (403, and close) before anything acts on it.  Reads are exempt -
+   another site's page cannot see the answer - except /udpblast, a GET that
+   acts (an <img src=/udpblast?...&mb=1024> would start a gigabyte of UDP). */
+static bool ws_forgery_refused(const char *method, const char *path,
+                               const char *hdr, size_t limit,
+                               const char *my_ip, const char *my_name)
+{
+   bool reads = strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0
+             || strcmp(method, "OPTIONS") == 0
+             || strcmp(method, "PROPFIND") == 0;
+
+   if (reads && strcmp(path, "/udpblast") != 0)
+      return false;
+   return ws_cross_site(hdr, limit, my_ip, my_name);
+}
+
+#define WS_CROSS_SITE_MSG "Refused: another web site's page asked for this. " \
+                          "Use the Pi1MHz pages themselves, at the Pi's IP " \
+                          "address, its hostname or hostname.local."
 
 /* ------------------------------------------------------------------ */
 /* Digest authentication (RFC 2617, qop=auth, MD5)                     */
@@ -1611,7 +1791,13 @@ static ws_auth_status_t ws_digest_verify(const char *method,
    char authz[640];
    char field_nonce[MD5_HEX_LEN + 1];
    char field_response[MD5_HEX_LEN + 1];
-   /* Kept in function scope so the replay check below can see them. */
+   /* nc is hashed into the response but not tracked, so there is no
+      replay check: within a nonce's lifetime (WS_NONCE_MAX_AGE_US) a
+      captured request can be resent verbatim.  Refusing an nc no higher
+      than the last one seen would close that for one shared nonce at the
+      cost of a counter - but a client running several connections at once
+      may send its nc values out of order, so a safe version needs a window
+      of recently seen values rather than a single high-water mark. */
    char field_nc_seen[16] = { 0 };
    bool have_qop = false;
    const wifi_config_t *cfg = wifi_get_config();
@@ -1826,13 +2012,27 @@ static void table_row(ws_strbuf_t *b, const char *label, const char *value)
 /* Connection lifecycle                                                */
 /* ------------------------------------------------------------------ */
 
-static bool conn_close(ws_conn_t *c, bool abort_conn)
+/* The kernel.now image being gathered, if any, goes: the request it belonged
+   to is over.  Left behind, it would take the next PUT or upload body on a
+   kept-alive connection for a kernel image - and chain-boot into it. */
+static void kn_discard(ws_conn_t *c)
 {
-   bool aborted = false;
+   free(c->kn_buf);
+   c->kn_buf = NULL;
+   c->kn_len = 0u;
+   c->kn_cap = 0u;
+}
 
-   if (c == NULL)
-      return false;
-
+/* Let go of everything a request holds: open files (dropping any ".part"
+   temp, never the real target), the COPY slot, the kernel.now buffer and the
+   queued response.  The pcb and the conn itself are the caller's.  This is
+   the one copy for all three ways a request ends - conn_close, ws_err (lwIP's
+   RST / fatal-error path, which never reaches conn_close) and
+   conn_reset_for_next_request (keep-alive) - which used to be three
+   hand-kept copies; the one that forgot kn_buf let the next request on the
+   connection become a chain-boot. */
+static void conn_release_resources(ws_conn_t *c)
+{
    if (c->dl_open) {
       f_close(&c->dl_file);
       c->dl_open = false;
@@ -1843,16 +2043,14 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
    }
    upload_discard_temp(c);   /* mid-upload teardown: drop the .part, keep target */
    if (c->dav_put_open) {
-      if (wifi_debug_enabled())
-         wifi_debug_printf("PUT: conn_close mid-PUT (dav_remaining=%lu target='%s')\n",
-                           (unsigned long)c->dav_remaining, c->dav_put_target);
       f_close(&c->write_file.dav);
       c->dav_put_open = false;
-      /* Connection torn down mid-PUT: discard the partial temp file so
-         the SD card does not accumulate "<name>.part" droppings.  The
-         final target was deliberately not touched until the body
-         completed (dav_put_consume's f_rename) so the user's previous
-         file - if any - is intact. */
+      /* Torn down mid-PUT - on ws_err that is exactly what an aborted upload
+         or a flaky link produces: discard the partial temp file so the SD
+         card does not accumulate "<name>.part" droppings.  The final target
+         was deliberately not touched until the body completed
+         (dav_put_finish's f_rename), so the user's previous file - if any -
+         is intact. */
       if (c->dav_put_tmppath[0] != '\0')
          (void)f_unlink(c->dav_put_tmppath);
    }
@@ -1870,6 +2068,26 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
       timeout / client-disconnect mid-COPY must release the slot so
       the next COPY request isn't rejected with 503 forever. */
    ws_copy_slot_release(c);
+   kn_discard(c);
+   /* Every tcp_write copies (TCP_WRITE_FLAG_COPY), so lwIP never points
+      into out and it can go before the pcb does. */
+   free(c->out);
+   c->out = NULL;
+   c->out_len = 0u;
+   c->out_sent = 0u;
+}
+
+static bool conn_close(ws_conn_t *c, bool abort_conn)
+{
+   bool aborted = false;
+
+   if (c == NULL)
+      return false;
+
+   if (c->dav_put_open && wifi_debug_enabled())
+      wifi_debug_printf("PUT: conn_close mid-PUT (dav_remaining=%lu target='%s')\n",
+                        (unsigned long)c->dav_remaining, c->dav_put_target);
+   conn_release_resources(c);
    ws_live_remove(c);
 
    if (c->pcb != NULL) {
@@ -1889,8 +2107,6 @@ static bool conn_close(ws_conn_t *c, bool abort_conn)
       }
    }
 
-   free(c->kn_buf);
-   free(c->out);
    free(c);
    return aborted;
 }
@@ -1978,6 +2194,17 @@ static bool conn_pump(ws_conn_t *c)
 
    if (c == NULL || c->pcb == NULL)
       return false;
+
+   /* HEAD gets the header block only.  Every in-memory response (error
+      pages, listings, /status, the BMP header of /framebuffer.bmp) is built
+      whole, body included, so cut it at the blank line before the first
+      byte goes out: a body sent after a HEAD's headers is read by a
+      keep-alive client as the start of its next response. */
+   if (c->is_head && c->out != NULL && c->out_sent == 0u) {
+      int eoh = ws_find_header_end(c->out, c->out_len);
+      if (eoh > 0)
+         c->out_len = (size_t)eoh;
+   }
 
    /* in-memory portion (HTML body, or the HTTP header of a download) */
    while (c->out != NULL && c->out_sent < c->out_len) {
@@ -2254,45 +2481,15 @@ static const char *ws_connection_hdr(const ws_conn_t *c)
 }
 
 /* Reset all per-request state on a kept-alive connection so the
-   next request starts from a known empty position.  Anything that
-   would be cleaned up by conn_close (open files, COPY slot, in-
-   flight response buffer) is cleaned up here too, but the TCP pcb
-   is preserved. */
+   next request starts from a known empty position.  Everything
+   conn_close releases is released here too (conn_release_resources),
+   but the TCP pcb is preserved. */
 static void conn_reset_for_next_request(ws_conn_t *c)
 {
    if (c == NULL)
       return;
-   if (c->dl_open) {
-      f_close(&c->dl_file);
-      c->dl_open = false;
-   }
-   if (c->up_file_open) {
-      f_close(&c->write_file.up);
-      c->up_file_open = false;
-   }
-   upload_discard_temp(c);   /* mid-upload reset: drop the .part, keep target */
-   if (c->dav_put_open) {
-      f_close(&c->write_file.dav);
-      c->dav_put_open = false;
-      if (c->dav_put_tmppath[0] != '\0')
-         (void)f_unlink(c->dav_put_tmppath);
-   }
-   if (c->copy_src_open) {
-      f_close(&c->copy_src);
-      c->copy_src_open = false;
-   }
-   if (c->copy_dst_open) {
-      f_close(&c->copy_dst);
-      c->copy_dst_open = false;
-      /* Mid-COPY teardown: drop the ".part", keep the destination. */
-      copy_discard_temp(c);
-   }
+   conn_release_resources(c);
    c->copy_dst_existed = false;
-   ws_copy_slot_release(c);
-   free(c->out);
-   c->out = NULL;
-   c->out_len = 0u;
-   c->out_sent = 0u;
    c->bytes_queued = 0u;
    c->bytes_acked = 0u;
    c->producing_done = false;
@@ -2643,6 +2840,10 @@ static bool route_status(ws_conn_t *c)
       snprintf(tmp, sizeof tmp, "%lu", (unsigned long)rs.rejoins);
       table_row(&b, "Rejoins", tmp);
    }
+   if (wifi_lwip_rx_pbuf_drops() != 0u) {
+      snprintf(tmp, sizeof tmp, "%lu", (unsigned long)wifi_lwip_rx_pbuf_drops());
+      table_row(&b, "Frames dropped (no pbuf)", tmp);
+   }
    {
       uint32_t sk = 0u, sw = 0u, ms = 0u, hi = 0u;
       bool armed = false;
@@ -2739,12 +2940,14 @@ static bool route_status(ws_conn_t *c)
                   (unsigned long)th[2], (unsigned long)th[3],
                   (unsigned long)th[4], (unsigned long)th[5]);
          table_row(&b, "TX feed/pass (TCP)", big);
+#ifdef DEBUG                        /* the rig exists in DEBUG builds only */
          snprintf(big, sizeof big,
                   "0:%lu 1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
                   (unsigned long)blh[0], (unsigned long)blh[1],
                   (unsigned long)blh[2], (unsigned long)blh[3],
                   (unsigned long)blh[4], (unsigned long)blh[5]);
          table_row(&b, "TX feed/pass (udpblast)", big);
+#endif
          snprintf(big, sizeof big,
                   "0:%lu 1:%lu 2-3:%lu 4-7:%lu 8-15:%lu 16+:%lu",
                   (unsigned long)oh[0], (unsigned long)oh[1],
@@ -2830,6 +3033,7 @@ static bool route_status(ws_conn_t *c)
          table_row(&b, "TX data-phase fails", tmp);
       }
    }
+#ifdef DEBUG
    {
       uint32_t bl_sent = 0u, bl_rem = 0u, bl_us = 0u;
 
@@ -2842,6 +3046,7 @@ static bool route_status(ws_conn_t *c)
          table_row(&b, "UDP blast", tmp);
       }
    }
+#endif
    {
       int32_t pm = -1;
       if (sdio_runtime_get_powersave_mode(&pm)) {
@@ -3230,10 +3435,11 @@ static bool route_status(ws_conn_t *c)
       /* Only meaningful from a cold or watchdog boot: a kernel.now chain-boot
          inherits a timer that has been running since the original power-on,
          so the entry stamp is an uptime, not a firmware load.  The outgoing
-         kernel leaves a marker in .noinit that says so (RPI_ChainBootMark). */
+         kernel leaves a marker in low RAM that says so (RPI_ChainBootMark). */
       if (RPI_ChainBooted())
          snprintf(tmp, sizeof tmp,
-                  "pre-kernel n/a (chain-boot), kernel->poll %lu ms", init);
+                  "pre-kernel n/a (chain-boot, jump %lu ms), kernel->poll %lu ms",
+                  (unsigned long)(RPI_ChainBootJumpUs() / 1000u), init);
       else
          snprintf(tmp, sizeof tmp, "pre-kernel %lu ms, kernel->poll %lu ms",
                   pre, init);
@@ -3705,6 +3911,45 @@ static bool render_listing(ws_conn_t *c, const char *sdpath)
 /* File download                                                       */
 /* ------------------------------------------------------------------ */
 
+/* Content-Type for a file a browser may show inline (a PROPFIND-mounted
+   view previews text and images instead of forcing a download), or NULL
+   for application/octet-stream as an attachment.  The map is
+   intentionally small; add entries as they prove useful. */
+static const char *ws_content_type(const char *name)
+{
+   static const struct { char ext[5]; const char *ctype; } map[] = {
+      { "txt",  "text/plain; charset=utf-8" },
+      { "log",  "text/plain; charset=utf-8" },
+      { "md",   "text/plain; charset=utf-8" },
+      { "htm",  "text/html; charset=utf-8" },
+      { "html", "text/html; charset=utf-8" },
+      { "css",  "text/css; charset=utf-8" },
+      { "js",   "application/javascript" },
+      { "json", "application/json" },
+      { "xml",  "application/xml" },
+      { "png",  "image/png" },
+      { "jpg",  "image/jpeg" },
+      { "jpeg", "image/jpeg" },
+      { "gif",  "image/gif" },
+      { "svg",  "image/svg+xml" },
+      { "bmp",  "image/bmp" },
+      { "pdf",  "application/pdf" },
+      { "wav",  "audio/wav" },
+      { "mp3",  "audio/mpeg" },
+   };
+   const char *ext = strrchr(name, '.');
+   size_t      i;
+
+   if (ext == NULL)
+      return NULL;
+   /* The whole extension: a prefix match served .json as JavaScript and
+      .mdx/.mds disc images inline as text. */
+   for (i = 0u; i < sizeof map / sizeof map[0]; i++)
+      if (strcasecmp(ext + 1, map[i].ext) == 0)
+         return map[i].ctype;
+   return NULL;
+}
+
 /* c->dl_file must already be open and c->dl_open set: the callers open it
    themselves so that a successful open doubles as the "is this a regular
    file?" test.  f_stat and f_open each walk the directory chain linearly -
@@ -3792,36 +4037,12 @@ static bool start_download(ws_conn_t *c, const char *sdpath)
 
    sb_init(&h);
    {
-      /* Pick a Content-Type from the extension so a browser PROPFIND-
-         mounted view will preview text/images directly instead of
-         offering them as a forced download.  Anything unmapped stays
-         as application/octet-stream and gets the Content-Disposition:
-         attachment hint.  The map is intentionally small; add more
-         entries as they prove useful. */
-      const char *ext = strrchr(ws_basename(sdpath), '.');
-      const char *ctype = "application/octet-stream";
-      const char *cdisp = "attachment; ";
-      if (ext != NULL) {
-         ++ext;   /* skip the '.' */
-         if      (ws_prefix_ci_str(ext, "txt"))  { ctype = "text/plain; charset=utf-8";  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "log"))  { ctype = "text/plain; charset=utf-8";  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "md"))   { ctype = "text/plain; charset=utf-8";  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "htm"))  { ctype = "text/html; charset=utf-8";   cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "html")) { ctype = "text/html; charset=utf-8";   cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "css"))  { ctype = "text/css; charset=utf-8";    cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "js"))   { ctype = "application/javascript";     cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "json")) { ctype = "application/json";           cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "xml"))  { ctype = "application/xml";            cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "png"))  { ctype = "image/png";                  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "jpg"))  { ctype = "image/jpeg";                 cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "jpeg")) { ctype = "image/jpeg";                 cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "gif"))  { ctype = "image/gif";                  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "svg"))  { ctype = "image/svg+xml";              cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "bmp"))  { ctype = "image/bmp";                  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "pdf"))  { ctype = "application/pdf";            cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "wav"))  { ctype = "audio/wav";                  cdisp = "inline; "; }
-         else if (ws_prefix_ci_str(ext, "mp3"))  { ctype = "audio/mpeg";                 cdisp = "inline; "; }
-      }
+      /* Anything ws_content_type does not map stays
+         application/octet-stream with the attachment hint. */
+      const char *ctype = ws_content_type(ws_basename(sdpath));
+      const char *cdisp = (ctype != NULL) ? "inline; " : "attachment; ";
+      if (ctype == NULL)
+         ctype = "application/octet-stream";
       sb_printf(&h,
                 "HTTP/1.1 %s\r\n"
                 "Content-Type: %s\r\n"
@@ -3899,12 +4120,15 @@ static bool route_bench(ws_conn_t *c)
    return true;
 }
 
+#ifdef DEBUG
 /* GET /udpblast?host=a.b.c.d&port=5001&mb=8 - prime the UDP blast rig
    (wifi_lwip.c).  Takes lwIP TCP out of the throughput measurement: the
    datagrams travel the ordinary link_output -> hold-queue -> credit-gate
    path, but nothing waits for ACKs.  Measure at the receiver (its byte
    count over its own clock); the /status "UDP blast" row is the
-   cross-check.  host is required; port defaults to 5001, mb to 8. */
+   cross-check.  host is required; port defaults to 5001, mb to 8.
+   DEBUG builds only: on a release build anyone on the network could
+   point a gigabyte of UDP at any host. */
 static bool route_udpblast(ws_conn_t *c, const char *query)
 {
    char        val[40];
@@ -3954,6 +4178,7 @@ static bool route_udpblast(ws_conn_t *c, const char *query)
    page_close(&b);
    return ws_finish_html(c, 200, "OK", &b);
 }
+#endif
 
 static bool route_files_get(ws_conn_t *c, const char *rawpath)
 {
@@ -4057,7 +4282,7 @@ static const char *kn_begin(ws_conn_t *c, uint32_t expect, int *status)
       return "kernel.now is larger than 4 MB.";
    }
    cap = (expect != 0u) ? ((expect + 63u) & ~63u) : CHAINBOOT_MAX_IMAGE;
-   free(c->kn_buf);
+   kn_discard(c);
    c->kn_buf = malloc(cap);
    if (c->kn_buf == NULL) {
       *status = 507;
@@ -4091,12 +4316,16 @@ static const char *kn_take(ws_conn_t *c, int *status)
       why = "That is not a Pi1MHz kernel image - the Pi carries on as it was.";
    }
    if (why != NULL) {
-      free(c->kn_buf);
-      c->kn_buf = NULL;
+      kn_discard(c);
       return why;
    }
-   chainboot_request(c->kn_buf, c->kn_len, c->kn_cap);
-   c->kn_buf = NULL;
+   bool taken = chainboot_request(c->kn_buf, c->kn_len, c->kn_cap);
+   c->kn_buf = NULL;                  /* chainboot's now, or freed by it */
+   kn_discard(c);                     /* ... so this only clears len/cap */
+   if (!taken) {
+      *status = 507;
+      return "There is no room for kernel.now.";
+   }
    return NULL;
 }
 
@@ -4108,7 +4337,8 @@ static const char *kn_status_text(int status)
         :                 "Service Unavailable";
 }
 
-static bool upload_fail(ws_conn_t *c, const char *msg)
+static bool upload_fail_status(ws_conn_t *c, int status, const char *stext,
+                               const char *msg)
 {
    ws_strbuf_t b;
 
@@ -4117,6 +4347,7 @@ static bool upload_fail(ws_conn_t *c, const char *msg)
       c->up_file_open = false;
    }
    upload_discard_temp(c);       /* leave any pre-existing target intact */
+   kn_discard(c);                /* a failed kernel.now: free its 4 MB now */
    c->up_state = UP_FAILED;
 
    sb_init(&b);
@@ -4128,7 +4359,19 @@ static bool upload_fail(ws_conn_t *c, const char *msg)
    append_files_url(&b, c->up_dir);
    sb_puts(&b, "\">Back to folder</a></p></div>");
    page_close(&b);
-   return ws_finish_html(c, 400, "Bad Request", &b);
+   return ws_finish_html(c, status, stext, &b);
+}
+
+static bool upload_fail(ws_conn_t *c, const char *msg)
+{
+   return upload_fail_status(c, 400, "Bad Request", msg);
+}
+
+/* A refused kernel.now: the status kn_begin / kn_take chose, as the WebDAV
+   PUT path sends it, so a script can tell "too big" from "not a kernel". */
+static bool upload_fail_kn(ws_conn_t *c, int status, const char *why)
+{
+   return upload_fail_status(c, status, kn_status_text(status), why);
 }
 
 static bool upload_flush(ws_conn_t *c);
@@ -4136,11 +4379,8 @@ static bool upload_flush(ws_conn_t *c);
 static bool upload_write(ws_conn_t *c, const uint8_t *data, size_t len)
 {
    if (c->kn_buf != NULL && len != 0u) {
-      if (!kn_append(c, data, len)) {
-         free(c->kn_buf);
-         c->kn_buf = NULL;
-         return upload_fail(c, "kernel.now is larger than 4 MB.");
-      }
+      if (!kn_append(c, data, len))
+         return upload_fail_kn(c, 413, "kernel.now is larger than 4 MB.");
       c->up_bytes_written += (uint32_t)len;
       return true;
    }
@@ -4216,7 +4456,7 @@ static bool upload_finish(ws_conn_t *c)
       int         status;
       const char *why = kn_take(c, &status);
       if (why != NULL)
-         return upload_fail(c, why);
+         return upload_fail_kn(c, status, why);
       c->up_complete = true;
       c->up_state = UP_EPILOGUE;
       sb_init(&b);
@@ -4334,11 +4574,21 @@ static bool upload_begin_part(ws_conn_t *c)
    }
 
    /* Record the name now so upload_build_paths (and upload_discard_temp on
-      any abort) rebuild the target and its .part temp consistently. */
-   strlcpy(c->up_name, base, sizeof c->up_name);
+      any abort) rebuild the target and its .part temp consistently - in the
+      form FatFs will store it, so "elite.ssd." meets the busy check as
+      "elite.ssd" (see ws_normalize_path). */
+   snprintf(c->up_name, sizeof c->up_name, "%.*s",
+            (int)ws_fat_name_len(base, strlen(base)), base);
 
    {
       char tmp[WS_UP_TMP_MAX];
+      upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
+      /* The folder was resolved by route_upload; an 8.3 alias for the name
+         itself is recorded as its long name, once, so the busy checks here
+         and at completion - and the .part temp - all use the real one. */
+      if (!ws_resolve_aliases(full, sizeof full))
+         return upload_fail(c, "The uploaded file has an invalid name.");
+      strlcpy(c->up_name, ws_basename(full), sizeof c->up_name);
       upload_build_paths(c, full, sizeof full, tmp, sizeof tmp);
 
       /* kernel.now in the root is not saved: the Pi restarts into it. */
@@ -4346,7 +4596,7 @@ static bool upload_begin_part(ws_conn_t *c)
          int         status;
          const char *why = kn_begin(c, 0u, &status);
          if (why != NULL)
-            return upload_fail(c, why);
+            return upload_fail_kn(c, status, why);
          c->up_bytes_written = 0u;
          c->up_buf_len = 0u;
          return true;
@@ -4535,7 +4785,7 @@ static bool route_upload(ws_conn_t *c, const char *rawpath, int body_at)
       return ws_error(c, 400, "Bad Request",
                       "That path is too long.");
    ws_normalize_path(decoded, dir, sizeof dir);
-   if (!ws_path_is_safe(dir))
+   if (!ws_path_is_safe(dir) || !ws_resolve_aliases(dir, sizeof dir))
       return ws_error(c, 400, "Bad Request", "That path is not allowed.");
 
    if (!ws_is_root(dir)) {
@@ -4581,7 +4831,7 @@ static bool route_upload(ws_conn_t *c, const char *rawpath, int body_at)
    false if the URL didn't fit in the decode buffer (caller should
    surface a 400 - the path is too long to handle, NOT a missing
    resource), or if the path-safety check rejects it (control chars,
-   ".."). */
+   ".."), or if resolving an 8.3 alias made it too long. */
 static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
                               size_t sdpath_sz)
 {
@@ -4590,7 +4840,7 @@ static bool dav_url_to_sdpath(const char *rawpath, char *sdpath,
    if (!ws_url_decode(rawpath, decoded, sizeof decoded))
       return false;
    ws_normalize_path(decoded, sdpath, sdpath_sz);
-   return ws_path_is_safe(sdpath);
+   return ws_path_is_safe(sdpath) && ws_resolve_aliases(sdpath, sdpath_sz);
 }
 
 /* Day-of-week from a Gregorian Y/M/D via Zeller's congruence.  Used
@@ -5189,8 +5439,7 @@ static bool dav_put_write_bytes(ws_conn_t *c, const uint8_t *data, size_t len)
    if (c->kn_buf != NULL) {
       if (kn_append(c, data, len))
          return true;
-      free(c->kn_buf);
-      c->kn_buf = NULL;
+      kn_discard(c);
       (void)ws_error(c, 413, "Payload Too Large",
                      "kernel.now is longer than it said, or than 4 MB.");
       return false;
@@ -5409,6 +5658,7 @@ static bool dav_put_consume_chunked(ws_conn_t *c, const uint8_t *data,
                c->dav_chunk_line_overflow = false;
                if (bad) {
                   if (consumed != NULL) *consumed = pos;
+                  kn_discard(c);   /* a kernel.now PUT ends here too */
                   return ws_error(c, 400, "Bad Request",
                                   "Malformed chunk size.");
                }
@@ -6148,6 +6398,11 @@ static bool route_dav_move_or_copy(ws_conn_t *c, const char *rawpath, bool is_mo
    if (ws_prefix_ci_str(src, dst) && ws_prefix_ci_str(dst, src))
       return ws_error(c, 403, "Forbidden",
                       "Source and destination are the same.");
+   /* A folder into itself: f_rename would link it inside its own subtree,
+      leaving it reachable from nowhere (RFC 4918 forbids it too). */
+   if (ws_prefix_ci_str(dst, src) && dst[strlen(src)] == '/')
+      return ws_error(c, 403, "Forbidden",
+                      "The destination is inside the source.");
 
    {
       FILINFO fno_dst;
@@ -6385,32 +6640,24 @@ static bool route_dav_unlock(ws_conn_t *c)
    return ws_install_response(c, &r, CONN_SEND_MEM);
 }
 
-/* PROPPATCH stub.  Windows Explorer's MiniRedirector issues PROPPATCH
-   immediately before the PUT body to set Win32CreationTime /
-   Win32LastModifiedTime / Win32LastAccessTime / Win32FileAttributes -
-   it uses these to preserve the source file's timestamps on the
-   uploaded copy.  If the server returns 405 Method Not Allowed (as we
-   used to before this stub existed), MiniRedirector treats the entire
-   upload as failed and rolls back by issuing DELETE on the target,
-   even though the PUT itself would have succeeded.  Symptom: a one-
-   segment PUT goes out, the body never follows, the target file is
-   then DELETEd - exactly the "transfer stops after one byte, file
-   gone" report from the trace.
+/* PROPPATCH.  Windows Explorer's MiniRedirector issues PROPPATCH around
+   the PUT to set Win32CreationTime / Win32LastModifiedTime /
+   Win32LastAccessTime / Win32FileAttributes - it uses these to preserve
+   the source file's timestamps on the uploaded copy.  If the server
+   returns 405 Method Not Allowed (as we used to before this route
+   existed), MiniRedirector treats the entire upload as failed and rolls
+   back by issuing DELETE on the target, even though the PUT itself would
+   have succeeded.  Symptom: a one-segment PUT goes out, the body never
+   follows, the target file is then DELETEd - exactly the "transfer stops
+   after one byte, file gone" report from the trace.
 
-   FatFs has no API for setting modification timestamps from a host
-   string and on a single-user device the metadata round-trip serves
-   no real purpose, so this stub accepts every property update and
-   returns 207 Multi-Status with a single 200 OK propstat covering
-   them all.  RFC 4918 §9.2 explicitly permits returning success
-   without persisting the property (the client treats the operation
-   as "accepted").
-
-   We do not parse the PROPPATCH XML body - any bytes that arrive
-   after the headers stay in the receive window and are quietly
-   dropped once c->state advances to CONN_SEND_MEM (see conn_consume).
-   The response body therefore does not enumerate which properties
-   were "accepted"; a generic "all OK" propstat is enough to satisfy
-   Windows. */
+   Only Win32LastModifiedTime is acted on: route_dav_proppatch scans the
+   XML body for it (dav_apply_win32_mtime; a body split across segments
+   is captured by conn_consume's drain) and stamps it with f_utime.  Every
+   other property is accepted without being stored, which RFC 4918 §9.2
+   permits, and the reply is 207 Multi-Status with a single 200 OK
+   propstat - it does not enumerate the properties, and a generic "all
+   OK" is enough to satisfy Windows. */
 /* Length-bounded substring search: the request body in c->reqhdr is not
    NUL-terminated, so strstr() can't be used on it. */
 static const char *dav_memfind(const char *hay, size_t hay_len,
@@ -6776,6 +7023,28 @@ static bool process_request(ws_conn_t *c, int body_at)
    if (wifi_debug_enabled())
       wifi_debug_printf("REQ %s %s\n", method, rawpath);
 
+   /* Request forgery (ws_forgery_refused).  Ahead of the digest check,
+      because a browser attaches its cached credentials to a forged request
+      too.  The name default matches netname.c's. */
+   {
+      const wifi_config_t *cfg = wifi_get_config();
+      char                 my_ip[16];
+
+      ws_ip_str(netif_ip4_addr(&wifi_lwip_get_context()->netif),
+                my_ip, sizeof my_ip);
+      if (ws_forgery_refused(method, rawpath, c->reqhdr, (size_t)body_at,
+                             my_ip,
+                             (cfg != NULL && cfg->hostname[0] != '\0')
+                                ? cfg->hostname : "Pi1MHz")) {
+         /* Closed after the 403, since a PUT or POST body behind it is
+            never read.  A client still sending that body may see a
+            connection reset instead of the 403 text: lwIP answers data
+            arriving after tcp_close with a RST. */
+         c->keep_alive = false;
+         return ws_error(c, 403, "Forbidden", WS_CROSS_SITE_MSG);
+      }
+   }
+
    /* Digest auth.  When configured, every route requires a valid
       Authorization header.  OPTIONS is intentionally NOT exempt - the
       WebDAV client sends it after authenticating, and exempting it
@@ -6799,10 +7068,11 @@ static bool process_request(ws_conn_t *c, int body_at)
             response so MiniRedirector ships the body, drain those
             bytes into nowhere (no temp file, nothing is written to
             the SD card), and only then send the 401 challenge.  The
-            connection is closed after the challenge, the client
-            opens a fresh one and resends the PUT with the digest
-            credentials.  The body has to be sent twice on the wire
-            but the upload completes - which is the entire point.
+            challenge goes out on the connection's ordinary keep-alive
+            terms - it is not closed - and the client resends the PUT
+            with the digest credentials.  The body has to be sent twice
+            on the wire but the upload completes - which is the entire
+            point.
 
             Capped at WS_DRAIN_MAX_BYTES so an attacker on the LAN
             can't make us spin reading an arbitrary-size unauthed
@@ -6923,8 +7193,10 @@ static bool process_request(ws_conn_t *c, int body_at)
          return route_edid(c);
       if (strcmp(rawpath, "/bench.bin") == 0)
          return route_bench(c);
-      if (strcmp(rawpath, "/udpblast") == 0)
+#ifdef DEBUG
+      if (strcmp(rawpath, "/udpblast") == 0)     /* gated above, as a write */
          return route_udpblast(c, (query != NULL) ? query + 1 : NULL);
+#endif
       if (strcmp(rawpath, "/aun") == 0)
          return route_aun(c);
       if (strcmp(rawpath, "/framebuffer") == 0)
@@ -7155,47 +7427,8 @@ static void ws_err(void *arg, err_t err)
 
    /* lwIP has already freed the pcb */
    c->pcb = NULL;
-   if (c->dl_open) {
-      f_close(&c->dl_file);
-      c->dl_open = false;
-   }
-   if (c->up_file_open) {
-      f_close(&c->write_file.up);
-      c->up_file_open = false;
-   }
-   /* Same reason as the dav_put block below: ws_err is lwIP's RST / fatal-
-      error callback - the real mid-upload disconnect - and it frees the conn
-      without going through conn_close, so the multipart ".part" temp must be
-      dropped here too or a reset upload leaves a dropping nothing collects.
-      The real target was never touched (rename happens only on completion). */
-   upload_discard_temp(c);
-   if (c->copy_src_open) {
-      f_close(&c->copy_src);
-      c->copy_src_open = false;
-   }
-   if (c->copy_dst_open) {
-      f_close(&c->copy_dst);
-      c->copy_dst_open = false;
-      /* Mid-COPY teardown: drop the ".part", keep the destination. */
-      copy_discard_temp(c);
-   }
-   ws_copy_slot_release(c);
-   if (c->dav_put_open) {
-      f_close(&c->write_file.dav);
-      c->dav_put_open = false;
-      /* Same as conn_close: discard the partial temp file. ws_err is what
-         lwIP calls on RST or a fatal error - i.e. exactly what an aborted
-         upload or a flaky link produces - so without this every failed PUT
-         leaves a "<name>.part" dropping that nothing ever collects, visible
-         in both /files/ and PROPFIND listings. The final target was never
-         touched (the rename happens only on a complete body), so the user's
-         previous file is intact either way. */
-      if (c->dav_put_tmppath[0] != '\0')
-         (void)f_unlink(c->dav_put_tmppath);
-   }
+   conn_release_resources(c);
    ws_live_remove(c);
-   free(c->kn_buf);
-   free(c->out);
    free(c);
 }
 
@@ -7368,13 +7601,21 @@ static void webserver_refresh_sd_free(void)
 
 /* Poll hook: once a reboot has been requested via POST /reboot and the
    short grace period has elapsed - long enough for the response page to
-   have been delivered - restart the Pi.  reboot_now() does not return. */
+   have been delivered - let go of the card and restart the Pi.
+   reboot_now() does not return. */
 void webserver_poll(void)
 {
    chainboot_poll();      /* a kernel.now PUT's restart, once its reply is out */
 
+   /* As the Beeb's HD_CARD_REBOOT does: every subsystem closes what it holds
+      and the volume is dismounted first, or an unsynced FAT-service file, an
+      M5000 recording or an upload's .part is cut off mid-write and leaves
+      lost clusters.  filesystemEject() is one step and is false while
+      something is still being written out, so the reboot just waits for a
+      later pass. */
    if (g_ws_reboot_pending
-       && (Pi1MHz_now_us - g_ws_reboot_at) >= WS_REBOOT_DELAY_US) {
+       && (Pi1MHz_now_us - g_ws_reboot_at) >= WS_REBOOT_DELAY_US
+       && filesystemEject()) {
 #ifdef DEBUG
       RPI_BootDetail(0xFDu);  /* deliberate reboot - not a death */
       {

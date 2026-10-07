@@ -57,7 +57,8 @@ typedef struct {
 } vchiq_callbacks_t;
 
 /* Bring the channel up: allocate shared memory, tell the firmware where it
-   is (mailbox tag 0x48010), exchange CONNECT. Returns false if the
+   is (mailbox tag 0x48010), exchange CONNECT - or take over the connection
+   a previous kernel handed on (vchiq_adopt). Returns false if the
    firmware has no VCHIQ (e.g. start_cd.elf) - safe to call anyway. */
 bool vchiq_init(void);
 
@@ -69,6 +70,30 @@ bool vchiq_init(void);
    pass to the calls below, or -1 on timeout/reject. */
 int vchiq_open_service(uint32_t fourcc, short version, short version_min,
                        const vchiq_callbacks_t *callbacks);
+
+/* Close a service from our end: send CLOSE and wait, bounded, for the
+   VideoCore's CLOSE in answer, which is when it has let the port go. The
+   service is closed on this side either way; true only if the VideoCore
+   answered. Unanswered, its slot is never used again this session, since
+   the VideoCore may still be sending to it. */
+bool vchiq_close_service(int service);
+
+/* kernel.now: the VideoCore is not reset by the jump, and it ignores a
+   second TAG_VCHIQ_INIT - it goes on serving the connection it has, in the
+   slot memory it was first given (hardware-observed: the incoming kernel's
+   CONNECT is never answered). Protocol 8 has no disconnect. So the
+   connection is handed to the next kernel instead of shut down:
+
+   vchiq_handover() (outgoing kernel, its services closed) drains what has
+   arrived, records where the stream stands inside the shared block itself,
+   stops this kernel using the channel and returns the block's ARM address
+   for the caller to pass on - or 0 when there is no live connection to
+   pass. vchiq_adopt() (incoming kernel, at init, no VideoCore work) notes
+   that address; the next vchiq_init() then takes that connection over
+   instead of starting one, and falls back to a fresh start if the record
+   does not check out. */
+uint32_t vchiq_handover(void);
+void vchiq_adopt(uint32_t phys);
 
 /* Queue a DATA message on a service. Copies into the shared slot, so the
    buffer may live in ordinary cached ARM memory. Returns false if no TX

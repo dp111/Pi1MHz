@@ -16,7 +16,7 @@ and the switches that do cost something are off by default.
 | `/edid` | The monitor's EDID as read at boot, 16 bytes a line, with the display-mode verdict first (`src/rpi/display_mode.c`) |
 | `/aun` | The Econet-over-WiFi engine's state and counters |
 | `/bench.bin` | A large dummy download for network throughput tests |
-| `/udpblast?host=a.b.c.d&port=n&mb=m` | Primes a UDP send rig that takes lwIP TCP out of a throughput measurement (`src/wifi/wifi_lwip.c`) |
+| `/udpblast?host=a.b.c.d&port=n&mb=m` | DEBUG builds only.  Primes a UDP send rig that takes lwIP TCP out of a throughput measurement (`src/wifi/wifi_lwip.c`) |
 | `/audio.wav` | A test tone through the audio path |
 
 ## /status rows for diagnosis

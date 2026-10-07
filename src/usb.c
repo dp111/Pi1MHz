@@ -346,9 +346,10 @@ static void usb_boot_task(void)
   tusb_init(BOARD_TUD_RHPORT, &port_init);
 
   if (s_usb_host) {
-    /* Polled - see usb_host_task.  hcd_init never enabled the output
-       (usb/tinyusb-hcd-polled.patch); TinyUSB's later writes only save and
-       restore it.  Belt and braces: */
+    /* Polled - see usb_host_task.  hcd_init never enabled the controller's
+       output (usb/tinyusb-hcd-polled.patch), and TinyUSB's hcd_int_enable
+       on every tuh_task leaves the ARM's IRQ 9 alone (dwc2_int_set in
+       usb/broadcom/interrupts.h), so this stays as set here: */
     USB_GAHBCFG &= ~GAHBCFG_GINT_BIT;
     RPI_GetIrqController()->Disable_IRQs_1 = (1 << 9);
   } else {
@@ -363,6 +364,11 @@ static void usb_boot_task(void)
 }
 
 void usb_init(uint8_t instance , uint8_t address) {
+  /* The host/device choice in usb_boot_task needs the board revision, and
+     there, a poll callback, only the short mailbox bound is allowed: ask it
+     here with the full bound, while boot can afford the wait.  First, while
+     the property buffer is free. */
+  board_revision_prime();
   /* Posted, not waited for - see usb_boot_task. */
   RPI_PropertySetWord(TAG_SET_POWER_STATE, POWER_DEVICE_USB_HCD, 0x00000003);
 

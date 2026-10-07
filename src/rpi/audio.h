@@ -217,6 +217,10 @@ void audio_pump_until(volatile const bool *abort);
 void rpi_audio_mute_beeb(bool mute);
 bool rpi_audio_beeb_muted(void);
 
+/* Reset both sinks' DMA channels and leave them stopped, for good: only
+   for the kernel.now jump (chainboot.c), which never comes back. */
+void audio_stop_dma(void);
+
 /* Diagnostics for /status */
 const char *audio_owner_name(void);
 const char *audio_sink_name(void);

@@ -16,6 +16,8 @@ keys) typing on the Beeb is reliable enough to script, so the suite drives
 the Master exactly as a user would and reads what it prints back over the
 Pico's serial echo.
 
+The host-side (PC) suites and what CI runs are in `host-tests.md`.
+
 ## Shape
 
 - **A BeebSCSI jukebox set** (`/BeebSCSI9/scsi0.dat`, no descriptor: the

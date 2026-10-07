@@ -71,9 +71,94 @@ typedef struct {
    uint16_t height;
 } sprite_t;
 
-// This needs to be in initialized memory, otherwise prim_reset_sprites()
-// will erroneously call free on memory that wasn't malloced.
+// Plain .bss (zeroed at start-up), not .noinit: a sprite never has to survive
+// a reset, and the table must start empty.
 static sprite_t sprites[NUM_SPRITES];
+
+// ==========================================================================
+// Sprite store
+// ==========================================================================
+
+// Sprites are defined and reset from the VDU drain, which runs in IRQ context
+// (IRQHandler_main -> fb_process_vdu_queue), while the main loop also uses
+// the newlib heap (FujiNet, webserver, video player) with no __malloc_lock.
+// An IRQ landing inside a main-loop malloc and calling malloc/free itself
+// corrupts that heap, so the drain must never touch it: the sprite pixels
+// live in this fixed store instead, which only the drain uses.
+//
+// The store is a run of 8 byte cells. A block is a header cell (its length in
+// cells, and whether it is in use) followed by its data cells, so the data is
+// 8-aligned for the 16/32 bit pixel reads and writes. Allocation is first-fit
+// over the run, merging neighbouring free blocks as it walks - no compaction,
+// so a live sprite's data never moves. A sprite that does not fit is simply
+// left undefined, exactly as a failed malloc did.
+//
+// Sized in primitives.h (SPRITE_POOL_BYTES) for one full-screen capture of
+// the biggest MODE 0-7 framebuffer. A capture too big for the store - only
+// possible in the unsupported modes above 7 or a custom mode - is refused and
+// the sprite left undefined, where it used to be taken from the heap.
+//
+// BSS rather than .noinit: a sprite never has to survive a reset, and .bss is
+// cleared at start-up so the store begins as one free block. (Both sections
+// sit past the end of the loaded image, so neither costs image size.)
+typedef struct {
+   uint32_t cells;  // whole block, header cell included
+   uint32_t used;
+} sprite_cell_t;
+
+#define SPRITE_POOL_CELLS (SPRITE_POOL_BYTES / sizeof(sprite_cell_t))
+
+static sprite_cell_t sprite_pool[SPRITE_POOL_CELLS] __attribute__ ((aligned (8)));
+
+static void sprite_pool_init(void) {
+   sprite_pool[0].cells = SPRITE_POOL_CELLS;
+   sprite_pool[0].used = 0;
+}
+
+static void *sprite_alloc(size_t size) {
+   if (size == 0 || size > SPRITE_POOL_BYTES - sizeof(sprite_cell_t)) {
+      return NULL;
+   }
+   // Cells needed: the data rounded up, plus the header cell
+   const uint32_t need = (uint32_t)((size + sizeof(sprite_cell_t) - 1) / sizeof(sprite_cell_t)) + 1u;
+
+   if (sprite_pool[0].cells == 0) {
+      sprite_pool_init();       // first use: .bss is all zero
+   }
+   for (uint32_t i = 0; i < SPRITE_POOL_CELLS; ) {
+      sprite_cell_t *b = &sprite_pool[i];
+      if (b->cells == 0 || b->cells > SPRITE_POOL_CELLS - i) {
+         return NULL;           // header overwritten: refuse rather than walk off
+      }
+      if (!b->used) {
+         // Merge the free blocks that follow into this one
+         for (uint32_t j = i + b->cells; j < SPRITE_POOL_CELLS && !sprite_pool[j].used &&
+                                         sprite_pool[j].cells != 0 &&
+                                         sprite_pool[j].cells <= SPRITE_POOL_CELLS - j;
+              j = i + b->cells) {
+            b->cells += sprite_pool[j].cells;
+         }
+         if (b->cells >= need) {
+            // Split off the tail if it can hold a block of its own (header + data)
+            if (b->cells - need >= 2u) {
+               sprite_pool[i + need].cells = b->cells - need;
+               sprite_pool[i + need].used = 0;
+               b->cells = need;
+            }
+            b->used = 1;
+            return b + 1;
+         }
+      }
+      i += b->cells;
+   }
+   return NULL;
+}
+
+static void sprite_free(void *data) {
+   if (data != NULL) {
+      ((sprite_cell_t *)data - 1)->used = 0;   // merged into its neighbours by the next sprite_alloc
+   }
+}
 
 // ==========================================================================
 // Static methods (operate at screen resolution)
@@ -548,22 +633,19 @@ void prim_set_dot_pattern_len(screen_mode_t *screen, int len) {
    g_dot_pattern_index = 0;
 }
 
-void prim_set_graphics_area(const screen_mode_t *screen, int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
-   // Reject illegal windows (this is what OS 1.20 does)
-   if (x1 < 0 || x1 >= screen->width || y1 < 0 || y1 >= screen->height) {
-      return;
-   }
-   if (x2 < 0 || x2 >= screen->width || y2 < 0 || y2 >= screen->height) {
-      return;
-   }
-   if (x1 >= x2 || y1 >= y2) {
-      return;
+bool prim_set_graphics_area(const screen_mode_t *screen, int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+   // Reject a window with an edge off the screen.  Edge order is the
+   // caller's check (VDU 24 judges it in external units, as the MOS does);
+   // x1 == x2 is a one-pixel window.
+   if (x1 < 0 || x2 >= screen->width || y1 < 0 || y2 >= screen->height) {
+      return false;
    }
    // Update the window
    g_x_min = x1;
    g_y_min = y1;
    g_x_max = x2;
    g_y_max = y2;
+   return true;
 }
 
 void prim_clear_graphics_area(screen_mode_t *screen) {
@@ -1614,11 +1696,10 @@ void prim_reset_sprites(screen_mode_t *screen) {
    for (int i = 0; i < NUM_SPRITES; i++) {
       sprites[i].width = 0;
       sprites[i].height = 0;
-      if (sprites[i].data) {
-         free(sprites[i].data);
-      }
       sprites[i].data = 0;
    }
+   // Every sprite is gone, so the store goes back to one free block
+   sprite_pool_init();
 }
 
 void prim_define_sprite(screen_mode_t *screen, int n, int x1, int y1, int x2, int y2) {
@@ -1643,8 +1724,7 @@ void prim_define_sprite(screen_mode_t *screen, int n, int x1, int y1, int x2, in
    printf("defining sprite %d (%d,%d to %d,%d)\r\n", n, x1, y1, x2, y2);
 #endif
 
-   if  (sprite->data != NULL)
-         free(sprite->data);
+   sprite_free(sprite->data);
    sprite->data = NULL;
    sprite->width = 0;
    sprite->height = 0;
@@ -1653,7 +1733,7 @@ void prim_define_sprite(screen_mode_t *screen, int n, int x1, int y1, int x2, in
    // screen is refused rather than allocated. Beyond bounding the read loop
    // (this runs in IRQ context), at 32 bpp a 32768 x 32768 request made the
    // size wrap to zero, malloc(0) passed the NULL test and the loop wrote
-   // 2^30 words through it.
+   // 2^30 words through it. (sprite_alloc refuses a zero size too.)
    if (x2 - x1 >= screen->width || y2 - y1 >= screen->height) {
       return;
    }
@@ -1662,7 +1742,7 @@ void prim_define_sprite(screen_mode_t *screen, int n, int x1, int y1, int x2, in
    sprite->width = (uint16_t)(x2 - x1 + 1);
    sprite->height = (uint16_t)(y2 - y1 + 1);
    size_t size = ((size_t)sprite->width * (size_t)sprite->height) << (screen->log2bpp - 3);
-   sprite->data = malloc(size);
+   sprite->data = sprite_alloc(size);
 
    if  (sprite->data == NULL) {
       sprite->width = 0;

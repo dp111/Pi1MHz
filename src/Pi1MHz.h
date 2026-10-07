@@ -5,6 +5,7 @@
 
 #include "rpi/rpi.h"
 #include "rpi/base.h"
+#include "rpi/lowmem.h"
 
 // RELEASENAME (and GITVERSION / BUILD_DATE) are generated from git into
 // scripts/gitversion.h - bump the release by creating a git tag, not here.
@@ -208,6 +209,12 @@ typedef struct
 
 static Pi1MHz_t * const Pi1MHz = (Pi1MHz_t *) 0x100;
 
+/* The struct and its callback table must stay clear of the VPU program,
+   the chain-boot markers, the copier and the page table above them
+   (rpi/lowmem.h). */
+_Static_assert(Pi1MHz_STRUCT_VADDR + sizeof(Pi1MHz_t) <= LOWMEM_VPU_PROGRAM,
+               "Pi1MHz struct runs into the VPU program in low RAM");
+
 #define JIM_RAM_STEP ( 16u * 1024u * 1024u)
 #define DISC_RAM_SIZE (2u * JIM_RAM_STEP)
 #define DISC_RAM_BASE ((uint32_t)( ((size_t)Pi1MHz->JIM_ram_size) * JIM_RAM_STEP )- DISC_RAM_SIZE)
@@ -239,7 +246,9 @@ extern uint32_t Pi1MHz_fiq_ovr_first_us;  /* system-timer stamp of the first ove
    paths that already run once per reset (the nRST IRQ, the poll loop's
    re-init, the first helper bank select and the first VDU byte after it)
    and read on demand by the /status "BREAK" row.  edges - inits = resets
-   the IRQ saw but the poll loop never re-initialised for. */
+   the IRQ saw but the poll loop never re-initialised for.  Not only
+   forensics: inits, bumped before every re-init, is how the M5000 tells
+   that a reset left it uninitialised (rec_flush_orphaned) - keep it. */
 typedef struct {
    uint32_t edges;          /* nRST falling edges (IRQ) */
    uint32_t inits;          /* re-inits the poll loop ran for them */

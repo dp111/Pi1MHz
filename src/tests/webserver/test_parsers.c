@@ -21,6 +21,7 @@
 #include "md5.h"          /* real header: md5_hex_t / MD5_HEX_LEN */
 
 #include "ws_defines.inc" /* WS_PATH_MAX etc., extracted */
+#include "ws_alias_stub.h" /* f_stat for ws_resolve_aliases */
 #include "ws_parsers.inc" /* the parsers, extracted verbatim */
 
 static int checks, fails;
@@ -258,6 +259,27 @@ int main(void)
       ok(streq(n, "/a/.hidden"), "dotfiles untouched");
       ws_normalize_path("..", n, sizeof n);
       ok(streq(n, "/.."), "dotdot NOT resolved here (is_safe rejects it)");
+      /* W1: FatFs create_name drops trailing dots and spaces from every
+         name, so these all open the same file as the plain spelling - and
+         must compare equal to it in the Beeb-busy interlock. */
+      ws_normalize_path("/BeebSCSI0./scsi0.dat", n, sizeof n);
+      ok(streq(n, "/BeebSCSI0/scsi0.dat"), "W1: trailing dot on a folder stripped");
+      ws_normalize_path("/BeebSCSI0 /scsi0.dat", n, sizeof n);
+      ok(streq(n, "/BeebSCSI0/scsi0.dat"), "W1: trailing space on a folder stripped");
+      ws_normalize_path("/BeebSCSI0. . /scsi0.dat. ", n, sizeof n);
+      ok(streq(n, "/BeebSCSI0/scsi0.dat"), "W1: dot/space runs stripped, every segment");
+      ws_normalize_path("/games/elite.ssd.", n, sizeof n);
+      ok(streq(n, "/games/elite.ssd"), "W1: trailing dot on a file stripped");
+      ws_normalize_path("/a./", n, sizeof n);
+      ok(streq(n, "/a"), "W1: stripped, then the trailing slash goes");
+      ws_normalize_path("/ lead/x.y", n, sizeof n);
+      ok(streq(n, "/ lead/x.y"), "W1: leading space kept (FatFs keeps it too)");
+      ws_normalize_path("/a/.../b", n, sizeof n);
+      ok(streq(n, "/a/.../b"), "W1: all-dot name left alone (FatFs rejects it)");
+      ws_normalize_path("/a/. /b", n, sizeof n);
+      ok(streq(n, "/a/. /b"), "W1: dot+space name left alone (FatFs rejects it)");
+      ws_normalize_path("/a/.. ", n, sizeof n);
+      ok(streq(n, "/a/.. "), "W1: '.. ' is not turned into '..'");
       {
          char t[4];
          ws_normalize_path("/abcdef", t, sizeof t);
@@ -282,6 +304,162 @@ int main(void)
          "ws_is_root");
    }
 
+   puts("== W4: cross-site request check ==");
+   {
+#define MY_IP   "192.168.1.50"
+#define MY_NAME "Pi1MHz"
+#define XS(h) ws_cross_site(h, sizeof h - 1u, MY_IP, MY_NAME)
+      static const char plain[] =
+         "POST /reboot HTTP/1.1\r\nHost: 192.168.1.50\r\n\r\n";
+      static const char same_sfs[] =
+         "POST /reboot HTTP/1.1\r\nHost: pi1mhz.local\r\n"
+         "Origin: http://pi1mhz.local\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+      static const char cross_sfs[] =
+         "POST /reboot HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Origin: http://evil.example\r\nSec-Fetch-Site: cross-site\r\n\r\n";
+      static const char samesite_sfs[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Sec-Fetch-Site: same-site\r\n\r\n";
+      static const char none_sfs[] =
+         "GET /udpblast HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Sec-Fetch-Site: none\r\n\r\n";
+      static const char img_cross[] =
+         "GET /udpblast?host=1.2.3.4&mb=1024 HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Sec-Fetch-Site: cross-site\r\nSec-Fetch-Dest: image\r\n\r\n";
+      static const char origin_same[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50:8080\r\n"
+         "Origin: http://192.168.1.50:8080\r\n\r\n";
+      static const char origin_case[] =
+         "POST /files/ HTTP/1.1\r\nHost: Pi1MHz.local\r\n"
+         "Origin: HTTP://pi1mhz.LOCAL\r\n\r\n";
+      static const char origin_cross[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Origin: http://evil.example\r\n\r\n";
+      static const char origin_port[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Origin: http://192.168.1.50:8080\r\n\r\n";
+      static const char origin_null[] =
+         "POST /files/ HTTP/1.1\r\nHost: 192.168.1.50\r\nOrigin: null\r\n\r\n";
+      static const char origin_nohost[] =
+         "POST /files/ HTTP/1.1\r\nOrigin: http://192.168.1.50\r\n\r\n";
+      static const char sfs_beats_origin[] =
+         "PUT /x.ssd HTTP/1.1\r\nHost: 192.168.1.50\r\n"
+         "Origin: http://192.168.1.50\r\nSec-Fetch-Site: cross-site\r\n\r\n";
+      ok(!XS(plain), "W4: no Origin, no Sec-Fetch-Site (curl, WebDAV) passes");
+      ok(!XS(same_sfs), "W4: same-origin (the Pi's own pages) passes");
+      ok(XS(cross_sfs), "W4: Sec-Fetch-Site cross-site refused");
+      ok(XS(samesite_sfs), "W4: Sec-Fetch-Site same-site refused");
+      ok(!XS(none_sfs), "W4: Sec-Fetch-Site none (typed URL) passes");
+      ok(XS(img_cross), "W4: cross-site <img> GET refused");
+      ok(!XS(origin_same), "W4: Origin naming the Host passes (with port)");
+      ok(!XS(origin_case), "W4: Origin/Host compare is case-blind");
+      ok(XS(origin_cross), "W4: foreign Origin refused");
+      ok(XS(origin_port), "W4: Origin on another port refused");
+      ok(XS(origin_null), "W4: Origin null refused");
+      ok(XS(origin_nohost), "W4: Origin with no Host to match refused");
+      ok(XS(sfs_beats_origin), "W4: Sec-Fetch-Site wins over a matching Origin");
+      {
+         /* A body after the header block is not searched: the caller
+            passes body_at, not the whole buffer. */
+         static const char body_origin[] =
+            "POST /files/ HTTP/1.1\r\nHost: h\r\n\r\nOrigin: http://evil\r\n";
+         ok(!ws_cross_site(body_origin, sizeof body_origin - 1u
+                                        - sizeof "Origin: http://evil\r\n" + 1u,
+                           MY_IP, MY_NAME),
+            "W4: header block only");
+      }
+
+      /* DNS rebinding: attacker.example re-pointed at the Pi's address is
+         same-origin with it, and Origin and Host agree. */
+      static const char rebind_sfs[] =
+         "POST /kernel.now HTTP/1.1\r\nHost: attacker.example\r\n"
+         "Origin: http://attacker.example\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+      static const char rebind_origin[] =
+         "POST /reboot HTTP/1.1\r\nHost: attacker.example:80\r\n"
+         "Origin: http://attacker.example:80\r\n\r\n";
+      static const char rebind_lookalike[] =
+         "POST /reboot HTTP/1.1\r\nHost: pi1mhz.attacker.example\r\n"
+         "Origin: http://pi1mhz.attacker.example\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+      static const char rebind_curl[] =
+         "PUT /x.ssd HTTP/1.1\r\nHost: attacker.example\r\n\r\n";
+      static const char bare_name[] =
+         "POST /reboot HTTP/1.1\r\nHost: PI1MHZ\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+      ok(XS(rebind_sfs), "W4: rebinding (same-origin, foreign Host) refused");
+      ok(XS(rebind_origin), "W4: rebinding (Origin == Host, foreign) refused");
+      ok(XS(rebind_lookalike), "W4: hostname.<other domain> refused");
+      ok(!XS(rebind_curl), "W4: a non-browser client is not Host-checked");
+      ok(!XS(bare_name), "W4: the bare hostname (NetBIOS) passes");
+
+      puts("== W4: Host names the Pi ==");
+      ok(ws_host_is_ours("192.168.1.50", MY_IP, MY_NAME), "W4: own IP");
+      ok(ws_host_is_ours("192.168.1.50:8080", MY_IP, MY_NAME), "W4: own IP:port");
+      ok(!ws_host_is_ours("192.168.1.5", MY_IP, MY_NAME), "W4: prefix of own IP refused");
+      ok(!ws_host_is_ours("192.168.1.500", MY_IP, MY_NAME), "W4: own IP plus a digit refused");
+      ok(ws_host_is_ours("pi1mhz", MY_IP, MY_NAME), "W4: hostname, case-blind");
+      ok(ws_host_is_ours("Pi1MHz.Local:80", MY_IP, MY_NAME), "W4: hostname.local:port");
+      ok(!ws_host_is_ours("pi1mhz.example", MY_IP, MY_NAME), "W4: hostname.<domain> refused");
+      ok(!ws_host_is_ours("pi1mhz.localx", MY_IP, MY_NAME), "W4: .localx refused");
+      ok(!ws_host_is_ours("xpi1mhz.local", MY_IP, MY_NAME), "W4: longer name refused");
+      ok(!ws_host_is_ours("pi1mhz:", MY_IP, MY_NAME), "W4: empty port refused");
+      ok(!ws_host_is_ours("pi1mhz:8o", MY_IP, MY_NAME), "W4: bad port refused");
+      ok(!ws_host_is_ours(":80", MY_IP, MY_NAME), "W4: empty host refused");
+      ok(!ws_host_is_ours("[::1]:80", MY_IP, MY_NAME), "W4: IPv6 literal refused");
+      ok(ws_host_is_ours("foo-bar.local", MY_IP, "foo.bar"),
+         "W4: a dotted hostname as mDNS advertises it");
+      ok(ws_host_is_ours("foo.bar", MY_IP, "foo.bar"),
+         "W4: a dotted hostname as configured");
+
+      puts("== W4: the forgery gate ==");
+#define GATE(m, path, h) ws_forgery_refused(m, path, h, sizeof h - 1u, MY_IP, MY_NAME)
+      {
+         static const char *const writes[] = {
+            "POST", "PUT", "DELETE", "MKCOL", "MOVE", "COPY",
+            "PROPPATCH", "LOCK", "UNLOCK", "BREW" };
+         static const char *const reads[] = { "GET", "HEAD", "OPTIONS", "PROPFIND" };
+         bool all = true;
+         for (size_t i = 0u; i < sizeof writes / sizeof writes[0]; i++)
+            all = all && GATE(writes[i], "/x", cross_sfs);
+         ok(all, "W4: every non-read method refused cross-site (PUT included)");
+         ok(GATE("PUT", "/kernel.now", rebind_sfs), "W4: rebinding PUT kernel.now refused");
+         all = true;
+         for (size_t i = 0u; i < sizeof writes / sizeof writes[0]; i++)
+            all = all && !GATE(writes[i], "/x", same_sfs);
+         ok(all, "W4: same-origin writes pass");
+         all = true;
+         for (size_t i = 0u; i < sizeof writes / sizeof writes[0]; i++)
+            all = all && !GATE(writes[i], "/x", plain);
+         ok(all, "W4: writes with no browser headers pass (curl, WebDAV)");
+         all = true;
+         for (size_t i = 0u; i < sizeof reads / sizeof reads[0]; i++)
+            all = all && !GATE(reads[i], "/status", cross_sfs);
+         ok(all, "W4: reads are exempt even cross-site");
+         ok(GATE("GET", "/udpblast", img_cross), "W4: a cross-site GET /udpblast refused");
+         ok(!GATE("GET", "/udpblast", none_sfs), "W4: a typed-in /udpblast passes");
+      }
+#undef GATE
+#undef XS
+   }
+
+   puts("== W7: download Content-Type by whole extension ==");
+   {
+      const char *t;
+      t = ws_content_type("data.json");
+      ok(t != NULL && streq(t, "application/json"), "W7: .json is JSON, not JavaScript");
+      t = ws_content_type("page.html");
+      ok(t != NULL && streq(t, "text/html; charset=utf-8"), "W7: .html is HTML");
+      t = ws_content_type("PAGE.HTM");
+      ok(t != NULL && streq(t, "text/html; charset=utf-8"), "W7: case-blind");
+      t = ws_content_type("app.js");
+      ok(t != NULL && streq(t, "application/javascript"), "W7: .js still JavaScript");
+      ok(ws_content_type("disc.mdx") == NULL, "W7: .mdx is not text (attachment)");
+      ok(ws_content_type("disc.mds") == NULL, "W7: .mds is not text (attachment)");
+      ok(ws_content_type("x.jsonl") == NULL, "W7: .jsonl is not JSON");
+      ok(ws_content_type("scsi0.dat") == NULL, "W7: unmapped -> octet-stream");
+      ok(ws_content_type("README") == NULL, "W7: no extension -> octet-stream");
+      t = ws_content_type("a.b.TXT");
+      ok(t != NULL && streq(t, "text/plain; charset=utf-8"), "W7: last dot wins");
+   }
+
    puts("== dav_url_to_sdpath / dav_destination_sdpath ==");
    {
       char sd[WS_PATH_MAX];
@@ -298,6 +476,43 @@ int main(void)
       ok(dav_url_to_sdpath("/BeebSCSI0%5Cscsi0.dat", sd, sizeof sd)
          && streq(sd, "/BeebSCSI0/scsi0.dat"),
          "encoded backslash canonicalised for the LUN interlock");
+      ok(dav_url_to_sdpath("/BeebSCSI0%2E/scsi0.dat%20", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+         "W1: encoded trailing dot/space canonicalised for the LUN interlock");
+      ok(dav_destination_sdpath("http://pi/BeebSCSI0./scsi0.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+         "W1: Destination gets the same canonical form");
+      /* W1, 8.3 aliases: FatFs opens "/BEEBSC~1" as "/BeebSCSI0". */
+      ok(dav_url_to_sdpath("/BEEBSC~1/scsi0.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+         "W1: 8.3 alias of a folder resolved to its long name");
+      ok(dav_url_to_sdpath("/beebsc~1/backup~1.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/backup of scsi0.dat"),
+         "W1: aliases resolved segment by segment, case-blind");
+      ok(dav_url_to_sdpath("/games/LONGNA~1.SSD", sd, sizeof sd)
+         && streq(sd, "/games/longname disc.ssd"),
+         "W1: 8.3 alias of a file resolved");
+      ok(dav_url_to_sdpath("/BEEBSC~1/new~1.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/new~1.dat"),
+         "W1: a '~' name that does not exist yet is kept, its folder resolved");
+      ok(dav_url_to_sdpath("/BEEBSC~1./scsi0.dat", sd, sizeof sd)
+         && streq(sd, "/BeebSCSI0/scsi0.dat"),
+         "W1: alias with a trailing dot: stripped, then resolved");
+      ok(dav_destination_sdpath("http://pi/BEEBVF~1/x", sd, sizeof sd)
+         && streq(sd, "/BeebVFS0/x"),
+         "W1: Destination aliases resolved too");
+      {
+         char small[16];
+         strcpy(small, "/BEEBSC~1/a");
+         ok(ws_resolve_aliases(small, sizeof small)
+            && streq(small, "/BeebSCSI0/a"), "W1: resolve in place");
+         strcpy(small, "/BEEBSC~1/abcd");
+         ok(!ws_resolve_aliases(small, 12u),
+            "W1: a long form that does not fit is refused, not truncated");
+         strcpy(small, "/plain/name");
+         ok(ws_resolve_aliases(small, sizeof small)
+            && streq(small, "/plain/name"), "W1: no '~', untouched");
+      }
       ok(dav_url_to_sdpath("/a%00b", sd, sizeof sd) && streq(sd, "/a_b"),
          "encoded NUL cannot cut the path short");
       ok(dav_url_to_sdpath("%2F%2F", sd, sizeof sd) && streq(sd, "/"),

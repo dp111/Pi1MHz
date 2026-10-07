@@ -205,6 +205,44 @@ MACRO PRSUB
 }
 ENDMACRO
 
+; The explorer runs with *FX229,1 so its key loop reads ESC as ASCII 27, but
+; then OSWORD 0 takes ESC as a character too and never returns C=1: a prompt
+; could not be cancelled.  ESCON before the XE_OSWORD call lets Escape end the
+; line; the local subroutine ESCOFF, called first thing on the way back, puts
+; ESC back to ASCII 27 and only then reads the MOS Escape flag (bit 7 of &FF),
+; not OSWORD 0's C: an ESC pressed after RETURN but before *FX229,1 sets the
+; flag too, and left set it would turn up as a 27 at the next OSRDCH.  Any
+; Escape is acknowledged and cancels the prompt.
+; Out: C = Escape, X = length (lost on Escape, when it is not needed).
+; expand as:  .escoff  ESCOFF   (the label at the expansion site)
+MACRO ESCON
+    LDA #229
+    LDX #0
+    LDY #0
+    JSR OSBYTE
+ENDMACRO
+
+MACRO ESCOFF
+{
+    TXA
+    PHA
+    LDA #229
+    LDX #1
+    LDY #0
+    JSR OSBYTE
+    PLA
+    TAX
+    CLC
+    BIT &FF                 ; the Escape flag, now nothing more can set it
+    BPL done
+    LDA #126                ; its effects (closes *EXEC, flushes buffers) are
+    JSR OSBYTE              ; what any Escape does: accepted
+    SEC
+.done
+    RTS
+}
+ENDMACRO
+
 GUARD &FE00
 
 MACRO PAGERTS
@@ -596,7 +634,7 @@ ORG &FD00
 ORG &FD00
   JMP setupredirectorwithmessage ; default entry point for message redirector
 
-  JSR setupredirector       ; &FD03 Entry point for non message redirector and no mode change
+  JSR setupredirector       ; &FD03 Entry point: now the same as &FD00, kept as ROMs call both
   JMP oswtchredirectexit
 
 .setupredirector
@@ -623,27 +661,44 @@ ORG &FD00
   ; Change mode on pi.
     LDA #22: STA newoswrch :STX newoswrch
 
-  ; read cursor enabled state directly from hardware
-    LDA #10: STA &FE00: LDA &FE01 : PHA
-    LDA #32: STA &FE01 ; disable beeb cursor
+  ; Both cursors are hidden for the copy with VDU 23,1,0 - the Beeb's
+  ; through its own VDU driver, never by poking the 6845 (R10 is write-
+  ; only, and on an Electron &FE00 is the ULA's interrupt register) - and
+  ; both are turned back on with VDU 23,1,1 when it is done.  The Beeb's
+  ; earlier on/off state cannot be read back, so a program that had its
+  ; cursor off gets it back on.
 
   ; now copy existing screen
+  ; Known limits: with VDU 5 active, VDU 9 moves the graphics cursor, not
+  ; the text cursor; a cursor on the bottom-right cell makes the Pi scroll
+  ; when that cell is written.
 
-  ; read screen width
-    LDA #160: LDX #9 : JSR OSBYTE ; read screen width ; Y = width
-    INY
-    STY screenwidth+1 ; store screen width in variable
+  ; Give the Pi the Beeb's text window: OSBYTE 134 and VDU 9/31 work
+  ; inside a VDU 28 window, so the copy only lands in place if the Pi
+  ; has the same one.
+    LDA #28 : STA newoswrch
+    LDA #&A0 : LDX #8 : JSR OSBYTE  ; X = window left, Y = bottom
+    STX newoswrch : STY newoswrch
+    STX screenwidth+1                ; hold left for the width
+    LDA #&A0 : LDX #10 : JSR OSBYTE ; X = window right, Y = top
+    STX newoswrch : STY newoswrch
+    LDA #30 : STA newoswrch          ; Pi cursor to the window's top left
+
+  ; window width = right - left + 1
+    TXA : SEC : SBC screenwidth+1
+    TAY : INY
+    STY screenwidth+1 ; store window width in variable
   ; read current cursor position
 
-    LDA #134 : JSR OSBYTE ; get current cursor position X = HPOS, Y = VPOS
+    LDA #134 : JSR OSBYTE ; get current cursor position X = HPOS, Y = VPOS (in the window)
     INX:INY
     STX xcounter : STY ycounter
 
-; set cursor position to the top of screen
+; set cursor position to the top of the window
 
     LDA #31 : JSR newoswrch+3 : LDA #0 : JSR newoswrch+3 : JSR newoswrch+3
 
-    ; disable Pi cursor
+    ; hide both cursors while the copy draws
     LDX #0 : JSR cursoronoff
     JMP dofirstchar
 
@@ -656,7 +711,23 @@ ORG &FD00
 .dofirstchar
     ; loop read screen characters
     LDA #135 : JSR OSBYTE ; x = Char ; Y screen mode
-    STX newoswrch ; write char to new screen
+    ; A byte <32 or &7F cannot go to the Pi as it is: as a VDU code it
+    ; draws no cell (VDU 0 does nothing, 127 deletes) and the rest of the
+    ; copy lands out of step.  In MODE 7 it is a teletext byte - 0-31 are
+    ; the control codes 128-159 and &7F the solid block, the same cells
+    ; with bit 7 set - so send it with bit 7 set and keep its effect.  In
+    ; any other mode it is X = 0, a cell OSBYTE 135 could not recognise
+    ; (graphics): the Pi gets a space.
+    TXA
+    CMP #32 : BCC copylow
+    CMP #&7F : BNE copychar
+.copylow
+    TYA : AND #&7F : CMP #7 : BNE copyspace   ; Y = MODE (bit 7: shadow)
+    TXA : ORA #&80 : BNE copychar             ; always taken
+.copyspace
+    LDA #32
+.copychar
+    STA newoswrch ; write char to new screen
 
     DEC xcounter
     BNE loopcopyscreen
@@ -666,19 +737,13 @@ ORG &FD00
 
     LDA #8 : STA newoswrch    ; the last read was the cell under the cursor: step the Pi back onto it
 
-    LDX #0
-  ;  LDA #10: STA &FE00 ; re-enable beeb cursor
-    PLA :; STA &FE01
-
-    CMP #32
-    BEQ restorecursoroff
-    LDX #10
-.restorecursoroff
+    LDX #10           ; both cursors back on
 .cursoronoff
     LDY #10
 .cursoronoffloop
     LDA cursoroffdata,X
-    JSR newoswrch+3 ;STA newoswrch ; just the Pi cursor
+    STA newoswrch     ; the Pi's VDU stream
+    JSR newoswrch+3   ; and the Beeb's (OSWRCH keeps A, X and Y)
     INX:DEY
     BNE cursoronoffloop
 
@@ -699,7 +764,6 @@ ORG &FD00
 ;  PRTSTRING " Screen Redirector enabled."
 ;  JSR OSNEWL
 ;  JSR OSNEWL
-   JMP  oswtchredirectexit
 .oswtchredirectexit
   PAGERTS
 
@@ -1410,9 +1474,11 @@ ORG &FD00
     PLP
     JSR print
     EQUB 31,0,23,135 : EQUS "Copy as: " : EQUB &FF
+    ESCON
     XCALL XE_OSWORD, EXP_GET1, 7
 .typed
     PLP
+    JSR escoff
     BCS cancel
     TXA                     ; typed length
     BNE gotname
@@ -1429,6 +1495,8 @@ ORG &FD00
 
 .print
     PRSUB
+.escoff
+    ESCOFF
 
     ASSERT P% <= &FE00-9
     PAGESWITCH
@@ -1581,9 +1649,11 @@ ORG &FD00
     PLP
     JSR print
     EQUB 31,0,23,135 : EQUS "Put file: " : EQUB &FF
+    ESCON
     XCALL XE_OSWORD, EXP_PUT1, 7
 .typed
     PLP
+    JSR escoff
     BCS cancel
     TXA                     ; typed length
     BEQ cancel
@@ -1603,6 +1673,8 @@ ORG &FD00
 
 .print
     PRSUB
+.escoff
+    ESCOFF
 
     ASSERT P% <= &FE00-9
     PAGESWITCH

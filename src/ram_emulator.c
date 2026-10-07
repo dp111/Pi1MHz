@@ -140,8 +140,13 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
    {
       jim_sized = true;
       uint32_t temp = mem_info(1); // get size of ram
-      temp = temp - (uint32_t)&_end; // remove program
-      temp = temp -( 4*1024*1024) ; // 4Mbytes for other mallocs
+      // mem_info() is 0 when the VideoCore did not answer: the subtractions
+      // would wrap into a ~4 GB request (size 0xFF).  The failed malloc is
+      // caught below, but size it as no RAM rather than rely on that
+      if (temp <= (uint32_t)&_end + (4u*1024u*1024u))
+         temp = 0u;
+      else
+         temp = temp - (uint32_t)&_end - (4u*1024u*1024u); // less program and 4Mbytes for other mallocs
       temp = temp & 0xFF000000; // round down to 16Mbyte boundary
       jim_ram_size = (uint8_t)(temp >> 24) ; // set to 16Mbyte sets
       jim_ram = (uint8_t *) malloc(((size_t)jim_ram_size<<24)); // malloc up to 480Mbytes

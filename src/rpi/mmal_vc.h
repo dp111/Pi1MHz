@@ -377,6 +377,12 @@ bool mmal_vc_init(const mmal_vc_client_callbacks_t *callbacks);
 bool mmal_vc_component_create(const char *name, uint32_t *handle,
                               uint32_t *inputs, uint32_t *outputs);
 bool mmal_vc_component_enable(uint32_t handle);
+bool mmal_vc_component_disable(uint32_t handle);
+bool mmal_vc_component_destroy(uint32_t handle);
+/* Close the 'mmal' service (kernel.now): any component still on it is the
+   VideoCore's to clean up. mmal_vc_init may open a new one afterwards.
+   True if the VideoCore answered the close. */
+bool mmal_vc_deinit(void);
 bool mmal_vc_port_info_get(uint32_t component, uint32_t port_type,
                            uint32_t index, mmal_vc_port_t *port);
 bool mmal_vc_port_set_format(mmal_vc_port_t *port);

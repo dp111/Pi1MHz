@@ -283,9 +283,16 @@ display side knows which picture it is showing with no other bookkeeping.
 | audio ring (8 frames) | 64 KB | ARM heap |
 | VC-internal codec + its buffer pools | ~10-15 MB | inside gpu_mem |
 
-GPU buffer handles for the frame buffers are parked at `0x7C20` (words
+GPU buffer handles for the frame buffers are parked at `0x3D20` (words
 2-4, magic `'VBF2'`) so a `kernel.now` chain-boot can release them - the
-same leak-avoidance mechanism the still-frame buffer already used.
+same leak-avoidance mechanism the still-frame buffer already used
+(`LOWMEM_VIDEOBUF_PERSIST`, `src/rpi/lowmem.h`; it was `0x7C20` until the
+L1 page table moved to 0x4000-0x7FFF on 2026-10-06). Since the later
+2026-10-06 change, words 0-1 also carry the VCHIQ connection across a
+kernel.now (`'VCHQ'`, the shared block's address), and `'VBF2'` is cleared
+- the buffers leaked, not freed - when the decoder could not be shut down
+cleanly before the jump. See `chainboot-kernel-now.md`, "Video across the
+jump".
 
 ## 6. The .pvf container and offline preparation
 
@@ -363,10 +370,17 @@ Symptoms and where to look, if a card ever comes up without video:
 * **Video works but the Beeb interface is dead** - something other than
   `vd_use_vpu0` took VPU core 1; check `TAG_LAUNCH_VPU1` succeeded.
 
-Note that `kernel.now` chain-booting does not work with video: it is an
-ARM-only warm restart, so the VideoCore keeps the previous connection
-state and ignores the new kernel's CONNECT. Video kernels must boot from
-SD.
+`kernel.now` is an ARM-only warm restart: the VideoCore keeps the
+previous connection state and ignores the new kernel's INIT and CONNECT
+(hardware-observed during bring-up). Until 2026-10-06 that meant video
+kernels had to boot from SD, and later that a kernel.now was refused after
+any video use. Now the outgoing kernel shuts the decoder down and hands the
+connection on (`videoplayer_shutdown`, `h264dec_shutdown`,
+`vchiq_handover`), and the incoming one takes it over (`vchiq_adopt`) -
+see `chainboot-kernel-now.md`, "Video across the jump". COMPILE- AND
+HOST-TESTED ONLY: until it has been run on a Pi, still boot video tests
+from SD. A kernel older than this cannot take the connection over: after
+pushing one, video needs a power cycle.
 
 ## 9. Performance budget (Pi Zero, 1 GHz ARM1176)
 

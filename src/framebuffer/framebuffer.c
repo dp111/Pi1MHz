@@ -326,22 +326,20 @@ static void update_text_area(void) {
          t_window.top = t_window.bottom;
       }
    }
-   // Make sure cursor is in text area
-   int16_t tmp_x = c_x_pos;
-   int16_t tmp_y = c_y_pos;
-   if (tmp_x < t_window.left) {
-      tmp_x = t_window.left;
-   } else if (tmp_x > t_window.right) {
-      tmp_x = t_window.right;
-   }
-   if (tmp_y < t_window.top) {
-      tmp_y = t_window.top;
-   } else if (tmp_y > t_window.bottom) {
-      tmp_y = t_window.bottom;
-   }
-   if (c_x_pos != tmp_x || c_y_pos != tmp_y) {
+   // Make sure the cursors are on the (possibly smaller) grid.  Only the
+   // grid: update_cursors draws them with the current metrics, so one left
+   // below a shrunken grid would be drawn off the screen.  Clipping the
+   // window above keeps a cursor that was inside it inside it; a cursor a
+   // new VDU 28 window leaves outside is set_text_area's business.
+   int16_t tmp_x  = (int16_t)(c_x_pos < text_width  ? c_x_pos : text_width  - 1);
+   int16_t tmp_y  = (int16_t)(c_y_pos < text_height ? c_y_pos : text_height - 1);
+   int16_t tmp_ex = (int16_t)(e_x_pos < text_width  ? e_x_pos : text_width  - 1);
+   int16_t tmp_ey = (int16_t)(e_y_pos < text_height ? e_y_pos : text_height - 1);
+   if (c_x_pos != tmp_x || c_y_pos != tmp_y || e_x_pos != tmp_ex || e_y_pos != tmp_ey) {
       c_x_pos = tmp_x;
       c_y_pos = tmp_y;
+      e_x_pos = tmp_ex;
+      e_y_pos = tmp_ey;
       if (!text_at_g_cursor) {
          update_cursors();
       }
@@ -457,6 +455,23 @@ static void set_text_area(const t_clip_window_t *window) {
    t_window = *window;
    // Update any dependent variables
    update_text_area();
+   // A cursor the new window leaves outside it goes to the window's top
+   // left, each cursor on its own - what MOS 3.20's VDU 28 does (it homes
+   // the edit cursor, then the text cursor, with VDU 30)
+   int moved = 0;
+   if (c_x_pos < t_window.left || c_x_pos > t_window.right || c_y_pos < t_window.top || c_y_pos > t_window.bottom) {
+      c_x_pos = t_window.left;
+      c_y_pos = t_window.top;
+      moved = 1;
+   }
+   if (e_enabled && (e_x_pos < t_window.left || e_x_pos > t_window.right || e_y_pos < t_window.top || e_y_pos > t_window.bottom)) {
+      e_x_pos = t_window.left;
+      e_y_pos = t_window.top;
+      moved = 1;
+   }
+   if (moved && !text_at_g_cursor) {
+      update_cursors();
+   }
 }
 
 static void invert_cursor(int x_pos, int y_pos, int start, int end) {
@@ -633,6 +648,32 @@ static void change_mode(screen_mode_t *new_screen) {
    }
    // reset the screen to it's default state
    screen->reset(screen);
+   // Return the text cell to the mode's native grid.  The splash screen
+   // leaves font_normal at scale 2 (select_font(12,2,2,0)) and a user
+   // VDU 23,19 can do the same - without this every later mode renders
+   // double-width (the "20 column" corruption seen after any framebuffer
+   // re-init).  Here rather than in screen->reset, which VDU 20 calls too:
+   // VDU 20 is colours only, and changing the cell behind the text grid's
+   // back put glyphs outside the screen.  MODE 7's font is set by tt_reset.
+   if (!(screen->mode_flags & F_TELETEXT)) {
+      font_t *font = screen->font;
+      char spacing_h = (screen->mode_flags & (F_BBC_GAP | F_GAP)) ? 2 : 0;
+      font->set_scale_w(font, 1);
+      font->set_scale_h(font, 1);
+      font->set_spacing_w(font, 0);
+      font->set_spacing_h(font, spacing_h);
+      // The font and its rounding (VDU 23,19) are kept, but text is drawn
+      // unclipped and relies on one cell fitting the screen: a mode too
+      // small for the cell (a VDU 23,22 mode can be 8x8, a rounded cell is
+      // 16x16) gets the default 8x8 font back.  MODEs 0-6 hold any cell
+      // left after the reset above (at most 16x24), so only an (unsupported) VDU 23,22 mode gets here, and
+      // the re-initialised font loses its user-defined characters -
+      // documented, not handled.
+      if (font->get_overall_w(font) > screen->width || font->get_overall_h(font) > screen->height) {
+         initialize_font_by_number(DEFAULT_FONT, font);
+         font->set_spacing_h(font, spacing_h);
+      }
+   }
    // update the colour flash rate
    if (screen->mode_flags & F_TELETEXT) {
       flash_mark_time  = 16;
@@ -652,27 +693,24 @@ static void change_mode(screen_mode_t *new_screen) {
 }
 
 static void set_graphics_area(const screen_mode_t *scr, const g_clip_window_t *window) {
-   // Sanity check illegal windows
-   if (window->left   < 0 || window->left   >= scr->width  << scr->xeigfactor ||
-       window->bottom < 0 || window->bottom >= scr->height << scr->yeigfactor) {
+   // The MOS's rule (MOS 3.20 VDU 24): a window whose right edge is left of
+   // its left edge, or whose top is below its bottom, is ignored - judged in
+   // external units, and an edge may equal its opposite (a one-pixel
+   // window); then, in pixels, so is one with any edge off the screen,
+   // which prim_set_graphics_area judges.  g_window changes only with the
+   // clipping window, so the two always agree.
+   if (window->left > window->right || window->bottom > window->top) {
       return;
    }
-   if (window->right  < 0 || window->right  >= scr->width  << scr->xeigfactor ||
-       window->top    < 0 || window->top    >= scr->height << scr->yeigfactor) {
-      return;
-   }
-   if (window->left >= window->right || window->bottom >= window->top) {
-      return;
-   }
-   // Accept the window
-   g_window = *window;
    // Transform to screen coordinates
    int16_t x1 = (int16_t)(window->left   >> scr->xeigfactor);
    int16_t y1 = (int16_t)(window->bottom >> scr->yeigfactor);
    int16_t x2 = (int16_t)(window->right  >> scr->xeigfactor);
    int16_t y2 = (int16_t)(window->top    >> scr->yeigfactor);
-   // Set the clipping window
-   prim_set_graphics_area(screen, x1, y1, x2, y2);
+   // Set the clipping window, and accept the window if that did
+   if (prim_set_graphics_area(screen, x1, y1, x2, y2)) {
+      g_window = *window;
+   }
 }
 
 static int read_character(int x_pos, int y_pos) {
@@ -739,17 +777,19 @@ static void text_cursor_home(const uint8_t *buf) {
 }
 
 static void text_cursor_tab(const uint8_t *buf) {
-   uint8_t x = buf[1];
-   uint8_t y = buf[2];
+   int x = buf[1];
+   int y = buf[2];
 #ifdef DEBUG_VDU
    printf("cursor move to %d %d\r\n", x, y);
 #endif
-   // Take account of current text window
-   x = (uint8_t)(x + t_window.left);
-   y = (uint8_t)(y + t_window.top);
+   // Take account of current text window, in int: a byte sum wraps (250
+   // plus a window at column 10 is 4, left of the window) where the MOS's
+   // signed compare refuses it
+   x += t_window.left;
+   y += t_window.top;
    if (x <= t_window.right && y <= t_window.bottom) {
-      c_x_pos = x;
-      c_y_pos = y;
+      c_x_pos = (int16_t)x;
+      c_y_pos = (int16_t)y;
       update_cursors();
    }
 }
@@ -1229,13 +1269,18 @@ static void vdu23_19(const uint8_t *buf) {
    // On enter, buf points to 19, so increment
    buf++;
 
+   // The cursors are drawn with the cell metrics: take them off the screen
+   // with the old ones before anything below can change the cell
+   int tmp = disable_cursors();
+
    font_t *font = &font_normal;
 
    // The text layer writes glyphs unclipped (set_pixel is too hot to carry a
    // bounds test), relying on the grid: text_width*font_width <= width and
    // likewise for height. That holds whenever one cell fits the screen, so a
-   // request that grows the cell past the screen is refused here - the one
-   // place the metrics change - and the previous font/metrics come back.
+   // request that grows the cell past the screen is refused here and the
+   // previous font/metrics come back.  The metrics change only here and in
+   // change_mode, which keeps the same rule for a smaller mode.
    uint32_t old_number    = font->get_number(font);
    char     old_scale_w   = font->get_scale_w(font);
    char     old_scale_h   = font->get_scale_h(font);
@@ -1318,6 +1363,10 @@ static void vdu23_19(const uint8_t *buf) {
 #endif
    // As the font metrics have changed, update text area
    update_text_area();
+   if (tmp) {
+      enable_cursors();
+   }
+   update_cursors();
 }
 
 /* The OS's post-fill cursor rule.  VDU-layer semantics keyed to the PLOT
@@ -1476,6 +1525,16 @@ static void vdu_19(const uint8_t *buf) {
    if (screen->mode_flags & F_TELETEXT) {
       return;
    }
+   // The logical colour is taken modulo the mode's colours, as the MOS does
+   // (MOS 3.20 ANDs it with numberOfLogicalColoursMinusOne): VDU 19,2 in a
+   // 2-colour mode is colour 0.  Unmasked it reached palette entries no
+   // pixel of the mode uses - in MODE 3/6 entry 2 is BBC_GAP_COL, the
+   // black gap lines.  The AND assumes 2^k colours, true of MODEs 0-7; a
+   // VDU 23,22 custom mode with another count is outside the supported set
+   // and is masked the same way (documented, not handled).
+   if (screen->ncolour < 255) {
+      l &= (uint8_t)screen->ncolour;
+   }
    // See http://beebwiki.mdfs.net/VDU_19
    if (p < 16) {
       // Set to Physical Colour
@@ -1502,8 +1561,17 @@ static void vdu_19(const uint8_t *buf) {
 }
 
 static void vdu_20(const uint8_t *buf) {
-   screen->reset(screen);
+   // Colours only, as MOS 3.20 does it: the palette, the text and graphics
+   // colours and both GCOL actions.  The font and the text grid are left
+   // alone.  MODE 7 has no logical palette (VDU 19 is refused there) and
+   // its screen->reset is the MODE change one - SAA5050 font, reveal - so
+   // it gets the colour reset alone, which is all the MOS does in MODE 7.
+   if (!(screen->mode_flags & F_TELETEXT)) {
+      screen->reset(screen);
+   }
    set_default_colours();
+   prim_set_bg_plotmode(screen, PM_NORMAL);
+   prim_set_fg_plotmode(screen, PM_NORMAL);
 }
 
 static void vdu_22(const uint8_t *buf) {
@@ -2002,6 +2070,10 @@ void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours) {
       y_pixels <<= 1;
    } while (y_pixels < 1024);
    new_screen->ncolour = n_colours - 1;
+   /* get_screen_mode() works out white and the flash filter from ncolour,
+      and the call above saw the previous custom mode's (or none, the first
+      time): derive them again from this one. */
+   new_screen = get_screen_mode(new_screen->mode_num);
    new_screen->par = ((float) (1 << new_screen->xeigfactor)) / ((float) (1 << new_screen->yeigfactor));
    change_mode(new_screen);
 }

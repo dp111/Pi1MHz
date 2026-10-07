@@ -9,10 +9,18 @@ machine with the ROM fitted depends on, whether or not a Pi answers:
 3. in a bank that is not writable, the ROM's own commands are declined too,
    because every handler needs the workspace inside the image;
 4. *HELP is passed on, and *HELP WIFI lists every command in the table once,
-   with any descriptions in one column, not run into the name.
+   with any descriptions in one column, not run into the name;
+5. *WGET, when the Pi answers with an error (a failed open or read, an HTTP
+   status, or a stream that never delivers a byte), reports it and gives the
+   service call back claimed with the stack balanced, as the MOS needs;
+6. a command is found wherever the MOS's Y says its name starts: OSCLI
+   "WIFI ON" with no star, "**WIFI ON" and "* WIFI ON" all reach *WIFI;
+7. the driver's read_buffer hands back every byte of a reply that runs past
+   the end of a JIM page, the byte at each page boundary included.
 
-Each check runs with the ROM in sideways RAM and in a read-only bank.  These
-paths are the ones that broke unseen: Pi1MHz always serves the ROM into
+Checks 1-4 run with the ROM in sideways RAM and in a read-only bank, checks
+5-7 in sideways RAM only (without it the ROM declines the command).  These paths
+are the ones that broke unseen: Pi1MHz always serves the ROM into
 sideways RAM, and the shipped image uses the brief *HELP.
 
 usage: check_service.py LABEL=ROM [LABEL=ROM ...]
@@ -22,7 +30,8 @@ import re
 import sys
 
 try:
-    from rom6502 import Beeb, RomError, Unmodelled, command_names
+    from rom6502 import (Beeb, RomError, SimPi, Unmodelled, command_names,
+                         read_buffer_address)
 except ImportError as e:
     if "py65" in str(e):
         # Skipping is for a desk without py65; in CI it would hide every
@@ -125,6 +134,133 @@ def check_help(label, image, writable, bank, names):
           f"{what}: lists {sorted(listed)}, the table has {sorted(names)}")
 
 
+# Service commands *WGET sends (net_wget.asm), and where the Pi publishes
+# its reply: the command page at &FFF000, byte 1 on a read being the count.
+NET_URL_OPEN, NET_URL_READ, NET_URL_CLOSE, NET_URL_STATUS = 60, 61, 63, 64
+NET_COPY_PUBLIC = 58
+NET_COUNT = 0xFFF001
+NET_HTTP_STATUS = 0xFFF007
+
+# One entry per place *WGET can fail: (what, option, Pi results by command,
+# Pi replies by command, text the ROM must print).  -T prints the download
+# and -U stores it in paged RAM, so each reaches different code.
+WGET_ERRORS = [
+    ("open fails (DNS, connect)", "-T", {NET_URL_OPEN: 0x2B}, {},
+     "Network error &2B"),
+    ("read fails", "-T", {NET_URL_READ: 0x2C}, {},
+     "Network error &2C"),
+    ("HTTP status", "-T", {NET_URL_OPEN: 0x30},
+     {NET_URL_STATUS: {NET_HTTP_STATUS: 0x94, NET_HTTP_STATUS + 1: 0x01}},
+     "Network error &30\nHTTP status &0194"),
+    ("copy to paged RAM fails", "-U", {NET_COPY_PUBLIC: 0x2D},
+     {NET_URL_READ: {NET_COUNT: 10}},
+     "Network error &2D"),
+]
+
+# An open stream that never delivers a byte: the ROM polls for about fifty
+# seconds of video frames (about 2,560 reads), which is 30 s of 6502 steps.
+# The ROM reloads its own counter, so it cannot be shortened from here; the
+# source builds share this code, so only the shipped image runs it.
+WGET_TIMEOUT = [
+    ("no bytes ever arrive", "-T", {}, {NET_URL_READ: {NET_COUNT: 0}},
+     "Network timeout"),
+]
+
+
+def check_wget_errors(label, image, slow=False):
+    """The Pi answers *WGET with an error.  The handler must print it, close
+    the URL, and return to the MOS as service call 4 claimed (A=0, X and Y
+    as offered, the stack back where the MOS left it).  Each error exit
+    ends by restoring the X and Y the service entry pushed, so a handler
+    that reaches it with a return address on top of them returns into the
+    stack page instead."""
+    for what, option, results, replies, text in WGET_ERRORS + (WGET_TIMEOUT if slow else []):
+        what = f"{label}: *WGET, {what}"
+        pi = SimPi(results, replies)
+        b = Beeb(image, writable=True, pi=pi, max_steps=40_000_000)
+        try:
+            b.service(1, slot=5)
+            b.text = ""
+            # Y past the star, as the MOS leaves it for "*WGET".
+            r = b.service(4, slot=5, y=1, line=f"*WGET {option} http://example.com/")
+        except (RomError, Unmodelled) as e:
+            check(False, f"{what}: {e} (Pi saw {len(pi.commands)} commands, last "
+                         f"{pi.commands[-3:]}, pc &{b.cpu.pc:04X}, sp &{b.cpu.sp:02X})")
+            continue
+        check(r == (0, 5, 1), f"{what}: returned A,X,Y={r}, not claimed (0,5,1)")
+        check(b.sp == 0xFF, f"{what}: returned with SP=&{b.sp:02X}, not &FF")
+        check(text in b.text, f"{what}: printed {b.text!r}, not {text!r}")
+        check(pi.commands.count(NET_URL_CLOSE) == 1,
+              f"{what}: the URL was closed {pi.commands.count(NET_URL_CLOSE)} times, not once"
+              f" (last commands {pi.commands[-3:]})")
+
+
+# The MOS steps over any spaces and stars in front of a command and passes
+# the offset of its name from (&F2) in Y, so OSCLI "WIFI ON" arrives with
+# Y=0 and "**WIFI ON" with Y=2.  The last line leaves Y on spaces the MOS
+# would have skipped, which the ROM skips too.
+NET_RADIO = 91          # drv_svc_radio, what *WIFI ON sends
+OSCLI_LINES = [("WIFI ON", 0), ("*WIFI ON", 1), ("**WIFI ON", 2),
+               ("  * WIFI ON", 4), ("*  WIFI ON", 1)]
+
+
+def check_oscli(label, image):
+    for line, y in OSCLI_LINES:
+        what = f"{label}: OSCLI {line!r} with Y={y}"
+        # The Pi's reply, "OK" and a CR, from byte 1 of the service page.
+        pi = SimPi(replies={NET_RADIO: {0xFFFF01: ord("O"), 0xFFFF02: ord("K"),
+                                        0xFFFF03: 13, 0xFFFF04: 0}})
+        b = Beeb(image, writable=True, pi=pi)
+        try:
+            b.service(1, slot=5)
+            b.text = ""
+            r = b.service(4, slot=5, y=y, line=line)
+        except (RomError, Unmodelled) as e:
+            check(False, f"{what}: {e}")
+            continue
+        check(r == (0, 5, y), f"{what}: returned A,X,Y={r}, not claimed (0,5,{y})")
+        check(b.sp == 0xFF, f"{what}: returned with SP=&{b.sp:02X}, not &FF")
+        check(pi.commands == [NET_RADIO],
+              f"{what}: the Pi saw commands {pi.commands}, not [{NET_RADIO}]")
+        check("Switching wifi on" in b.text and "OK" in b.text,
+              f"{what}: printed {b.text!r}")
+
+
+def check_read_buffer(label, image):
+    """read_buffer walks a reply in the JIM page window, stepping to the
+    next page when X wraps.  Nearly three pages must come back byte for
+    byte, in A and in N/Z, as print_string, fnd and search0a rely on."""
+    what = f"{label}: read_buffer across JIM pages"
+    pi = SimPi()
+    b = Beeb(image, writable=True, pi=pi)
+    try:
+        address = read_buffer_address(image)
+        b.service(1, slot=5)
+    except (ValueError, RomError, Unmodelled) as e:
+        check(False, f"{what}: {e}")
+        return
+    shadow = image[address - 0x8000 + 3] | image[address - 0x8000 + 4] << 8
+    b.mem[shadow] = 0                       # where reset_buffer leaves it, X=0
+    data = [(i * 7 + 1) % 255 + 1 for i in range(700)]   # never 0: no early Z
+    for i, v in enumerate(data):
+        pi.jim[i] = v                       # JIM 00:00:page, the reply buffer
+    x, wrong = 0, []
+    for i, v in enumerate(data):
+        b.cpu.sp = 0xFF
+        try:
+            a, x, _ = b.call(address, 0, x)
+        except (RomError, Unmodelled) as e:
+            check(False, f"{what}: byte {i}: {e}")
+            return
+        z = bool(b.cpu.p & 0x02)
+        if a != v or z:
+            wrong.append(f"byte {i}: A=&{a:02X} Z={int(z)}, expected &{v:02X}")
+    check(not wrong, f"{what}: {len(wrong)} wrong, first {wrong[:3]}")
+    check(b.mem[shadow] == len(data) >> 8 and x == len(data) & 0xFF,
+          f"{what}: ended at page {b.mem[shadow]} X=&{x:02X}, not page "
+          f"{len(data) >> 8} X=&{len(data) & 0xFF:02X}")
+
+
 def main(args):
     if not args:
         print(__doc__)
@@ -138,6 +274,9 @@ def main(args):
             check_reset(label, image, writable, bank)
             check_commands(label, image, writable, bank, names)
             check_help(label, image, writable, bank, names)
+        check_wget_errors(label, image, slow=label == "shipped")
+        check_oscli(label, image)
+        check_read_buffer(label, image)
     print(f"\n{checks} checks, {fails} failures")
     print("WIFI ROM SERVICE TESTS FAILED" if fails else "WIFI ROM SERVICE TESTS PASSED")
     return 1 if fails else 0

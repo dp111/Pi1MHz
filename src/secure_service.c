@@ -8,6 +8,7 @@
 #include "secure_service.h"
 #include "secure_service_core.h"
 #include "secure_service_wolfssh.h"
+#include "rpi/asm-helpers.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -94,8 +95,14 @@ static void secure_poll(void)
     nts_pi_wolfssh_poll();
     secure_refresh_capabilities();
     if (pending) {
+        /* Take the latch before dispatching, not after: an SSH handshake
+           step can be long, and the Beeb's next command (SSH_CLOSE after
+           ESCAPE) may be latched meanwhile.  Clearing afterwards lost it. */
+        unsigned int cpsr = _disable_interrupts_cspr();
         uint32_t cp = pending_cp;
         uint32_t addr = pending_addr;
+        pending = false;
+        _set_interrupts(cpsr);
         uint8_t result;
         if (cp < DISC_RAM_BASE) {
             result = NTS_ERR_PARAM;
@@ -104,8 +111,12 @@ static void secure_poll(void)
                 &service, &Pi1MHz->JIM_ram[cp],
                 &Pi1MHz->JIM_ram[DISC_RAM_BASE], DISC_RAM_SIZE);
         }
-        pending = false;
-        Pi1MHz_MemoryWrite(addr, result);
+        /* Publish only if no newer command came in: its caller is the live
+           one, and it reads BUSY until its own answer, next pass. */
+        cpsr = _disable_interrupts_cspr();
+        if (!pending)
+            Pi1MHz_MemoryWrite(addr, result);
+        _set_interrupts(cpsr);
     }
 }
 

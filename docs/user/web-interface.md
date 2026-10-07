@@ -84,9 +84,13 @@ changing the SD card - works over the network too, as it does over
 
 Use `kernel7.img` on a Pi 2/3/Zero 2 and `kernel.img` on a Pi 1/Zero.
 The image is held in memory, never saved; the Pi answers, then restarts
-into it. A file that does not look like Pi1MHz firmware is refused
-(422) and the Pi carries on, and so is any image while the video
-player is open (503). A power cycle goes back to the card's kernel.
+into it. If the video player is running it is shut down first. Only a
+basic check is made - the image must start like an ARM kernel - so a
+file that fails it is refused (422) and the Pi carries on, but the
+wrong kernel for your Pi model is not caught and needs a power cycle.
+A power cycle always goes back to the card's kernel. The first install
+of a build with the current kernel.now layout has to go on the SD card
+(see `docs/dev/chainboot-kernel-now.md`); after that kernel.now works.
 
 ## Password protection
 
@@ -94,6 +98,24 @@ Set both `webdav_user=` and `webdav_password=` in `Pi1MHz.cfg` to
 require a login on every page and WebDAV operation. With either one
 missing, the server is open to anyone on your network. See
 [WiFi setup](wifi.md#password-protection).
+
+Setting `webdav_user=` and `webdav_password=` is the real protection.
+Without them, one narrower guard still applies: a change (an upload,
+delete, rename, `kernel.now` or reboot) sent by a **web browser** is
+refused with 403 Forbidden unless
+
+- the browser addressed the Pi by its IP address, its hostname or
+  `hostname.local` (with or without a port) - so use one of those in
+  the address bar to change files from the browser; and
+- the browser says the request came from the Pi's own pages (or was
+  typed in), not from a page on another web site.
+
+This stops a web page you happen to visit from writing to the card or
+restarting the Pi behind your back, including by pointing a name of its
+own at the Pi's address. It does nothing about other programs on your
+network: WebDAV clients, `curl` and scripts send no browser headers and
+are not checked, so anyone on the network can still change files unless
+a password is set. This guard never refuses reading pages or files.
 
 ## Speed expectations
 
