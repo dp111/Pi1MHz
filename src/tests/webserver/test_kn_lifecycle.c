@@ -56,7 +56,17 @@ static FRESULT f_unlink(const char *p)
    return FR_OK;
 }
 static FRESULT f_rename(const char *a, const char *b) { (void)a; (void)b; f_rename_calls++; return FR_OK; }
-static FRESULT f_stat(const char *p, FILINFO *f) { (void)p; (void)f; return FR_NO_FILE; }
+/* A folder at stat_dir_at (W6); every other path does not exist. */
+static const char *stat_dir_at;
+static FRESULT f_stat(const char *p, FILINFO *f)
+{
+   if (stat_dir_at != NULL && strcmp(p, stat_dir_at) == 0) {
+      memset(f, 0, sizeof *f);
+      f->fattrib = AM_DIR;
+      return FR_OK;
+   }
+   return FR_NO_FILE;
+}
 static FRESULT f_utime(const char *p, const FILINFO *f) { (void)p; (void)f; return FR_OK; }
 
 /* ---- lwIP ---- */
@@ -74,6 +84,7 @@ static err_t tcp_close(struct tcp_pcb *p) { (void)p; tcp_close_calls++; return E
 
 /* ---- the rest of webserver.c the extracted functions call ---- */
 #define WS_BUSY_MSG "busy"
+#define WS_UP_DIR_MSG "dir"
 static int upload_discard_calls, copy_discard_calls, slot_release_calls, live_remove_calls;
 static void upload_discard_temp(ws_conn_t *c) { (void)c; upload_discard_calls++; }
 static void copy_discard_temp(ws_conn_t *c) { (void)c; copy_discard_calls++; }
@@ -382,6 +393,24 @@ int main(void)
       (void)upload_finish(c);
       ok(html_status == 200 && !ws_body_unread(c),
          "completed upload keeps the connection");
+      conn_reset_for_next_request(c);
+      (free)(c);
+   }
+
+   puts("== W6: the upload form does not replace a folder ==");
+   {
+      ws_conn_t *c = new_conn();
+      zero_counters();
+      stat_dir_at = "/up.ssd";
+      c->state = CONN_RECV_UPLOAD;
+      c->up_state = UP_DATA;
+      c->up_temp_exists = true;
+      (void)upload_finish(c);
+      ok(html_calls == 1 && html_status == 409, "a folder of that name is a 409");
+      ok(f_unlink_calls == 0 && f_rename_calls == 0,
+         "the folder is neither unlinked nor renamed over");
+      ok(upload_discard_calls == 1, "the .part temp is dropped");
+      stat_dir_at = NULL;
       conn_reset_for_next_request(c);
       (free)(c);
    }

@@ -1365,6 +1365,8 @@ static void ws_parent_path(const char *sdpath, char *out, size_t osz)
    per filing system, so the shared message names both. */
 #define WS_BUSY_MSG "That file is in use by the Beeb - release it first " \
                     "(*BYE in ADFS; close it or CTRL-BREAK in MMFS)."
+/* The upload form's refusal to replace a folder (WebDAV PUT's 409). */
+#define WS_UP_DIR_MSG "Cannot upload over an existing folder."
 static bool ws_is_root(const char *p)
 {
    return p[0] == '/' && p[1] == '\0';
@@ -4537,6 +4539,8 @@ static bool upload_finish(ws_conn_t *c)
          date to 2026-02-04.  A browser multipart POST does not send the
          source file's mtime, so the old date is the best available. */
       had_date = (f_stat(full, &old_fno) == FR_OK);
+      if (had_date && (old_fno.fattrib & AM_DIR) != 0u)
+         return upload_fail_status(c, 409, "Conflict", WS_UP_DIR_MSG);
       (void)f_unlink(full);                 /* f_rename needs a free target */
       if (f_rename(tmp, full) != FR_OK) {
          /* Target already unlinked and the rename failed, so the ".part" temp
@@ -4642,6 +4646,15 @@ static bool upload_begin_part(ws_conn_t *c)
          Beeb already holds it open. */
       if (beeb_path_busy(full))
          return upload_fail(c, WS_BUSY_MSG);
+
+      /* As WebDAV PUT refuses: the completion's f_unlink would delete an
+         empty folder of this name, and the rename then put the file in
+         its place.  Re-checked there, as the folder can appear meanwhile. */
+      {
+         FILINFO fno;
+         if (f_stat(full, &fno) == FR_OK && (fno.fattrib & AM_DIR) != 0u)
+            return upload_fail_status(c, 409, "Conflict", WS_UP_DIR_MSG);
+      }
 
       if (f_open(&c->write_file.up, tmp, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
          return upload_fail(c, "The file could not be created on the SD card.");
