@@ -38,6 +38,7 @@
                     equs "Enter password: ",&EA
                     ldx #0
 .enter_password     jsr osrdch
+                    bcs join_escape
                     cmp #&7F
                     beq delete
                     sta strbuf,x                \ the carriage return is stored
@@ -46,8 +47,10 @@
                     jsr oswrch
                     pla
                     inx
-                    bmi copy_password           \ 128 characters is enough
-                    cmp #&0D
+                    bpl password_room
+                    lda #&0D                    \ 128 characters is enough:
+                    sta strbuf,x                \ end it as Return would
+.password_room      cmp #&0D
                     bne enter_password
                     jsr osnewl
 
@@ -60,6 +63,13 @@
                     jsr oswrch
                     dex
                     bpl enter_password
+
+\ Escape abandons the *JOIN, as it does the ROM's other commands: acknowledge
+\ it and give the call back claimed, with nothing sent to the Pi.
+.join_escape        lda #126
+                    jsr osbyte
+                    jsr osnewl
+                    jmp call_claimed
 
 \ *JOIN ? asks the driver which network is associated, which it reports when
 \ the parameter block is empty.
