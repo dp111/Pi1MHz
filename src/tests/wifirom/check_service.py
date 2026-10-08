@@ -237,7 +237,7 @@ def check_oscli(label, image):
 # a dot, is the ROM's.  A handler that runs may claim the call or raise an
 # error (no Pi answers here); either way it was not passed on.
 OTHERS_PREFIXED = ["TIMER", "LAPSE", "PINGALL", "WIFIX", "QRX", "LAPOPTS"]
-OWN_ENDED = ["TIME", "TIME.", "TIME1", "TI.", "LAP", "LAPOPT", "PING",
+OWN_ENDED = ["TIME", "TIME.", "WTIME", "WTIME.", "TIME1", "TI.", "LAP", "LAPOPT", "PING",
              "PING ", "WIF. ON", "WIFI ON"]
 
 

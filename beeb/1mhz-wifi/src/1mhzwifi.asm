@@ -325,6 +325,8 @@ ENDIF
                     equb >date_cmd, <date_cmd
                     equs "TIME"
                     equb >time_cmd, <time_cmd
+                    equs "WTIME"                \ *TIME is the MOS's own on a Master
+                    equb >time_cmd, <time_cmd
 IF INCLUDE_PDUMP
                     equs "PRD"
                     equb >pdump_cmd, <pdump_cmd
@@ -506,6 +508,7 @@ ELSE
                     equs "Print IP and MAC address",&0D
                     equs "Print current date",&0D
                     equs "Print current time",&0D
+                    equs "Print current time (on a Master)",&0D
 IF INCLUDE_PDUMP
                     equs "Paged Ram Dump",&0D
 ENDIF
