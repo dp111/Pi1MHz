@@ -16,6 +16,12 @@ on:
       - 'src/wifi_service.h'
       - 'src/net_service.h'
       - 'src/tests/wifirom/**'
+      # the helper table / help screen step: helpers.c's help template, read
+      # through the webserver suite's extract.awk, built with cflags.sh
+      - 'src/helpers.c'
+      - 'src/tests/helpers/**'
+      - 'src/tests/webserver/extract.awk'
+      - 'src/tests/cflags.sh'
       - '.github/workflows/beeb-roms.yml'
   pull_request:
     branches: [master]
