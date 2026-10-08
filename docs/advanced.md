@@ -273,8 +273,10 @@ Two magic filenames trigger firmware actions rather than being stored:
   committing it; to make a build permanent, overwrite `kernel.img`. A
   build that changes the VideoCore (VPU) code needs a cold boot instead.
 - **`reboot.now`** - copying this file over USB/MTP reboots the Pi
-  (reverting to the SD card's `kernel.img`). It is MTP-only, so it does
-  nothing while the USB port is a host (the default); over WiFi use the
-  web interface's `/reboot` page.
+  (reverting to the SD card's `kernel.img`). The copy is accepted and
+  nothing is saved; the Pi then closes its files and restarts, so the
+  computer may report an error as the device goes away - that is
+  expected. It is MTP-only, so it does nothing while the USB port is a
+  host (the default); over WiFi use the web interface's `/reboot` page.
 
 Avoid naming any of your own files `kernel.now` or `reboot.now`.
