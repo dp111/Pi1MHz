@@ -121,6 +121,9 @@ a VideoCore slower than the bound but not dead; a timeout in practice means
 it has stopped answering (RPI_MailboxSilent), and each write already drains
 a leftover reply.
 
+**D4, D7, D8** (2026-10-08): fixed; WiFi checked on the Zero 2 W from a cold
+boot and after kernel.now.  D5, D6 held (dp111).
+
 **Accepted** (2026-10-08): D11 - without wifi_diag the "802.11n state" /
 "AMPDU limits" /status rows are gone; that is fine (dp111).
 
@@ -138,5 +141,7 @@ D9 (not real), D10, N9-N11 (real but harmless), R17, P7.
   ending at the card's last block (GUESSED, rare).
 - FujiNet: atomic file rewrite needs a new store primitive.
 - BSFATPATH has no short-transfer check.
-- D4-D8, the tidy-ups.
+- D5, D6 (held: they change the WiFi data path for conditions not seen;
+  would need a throughput and join test on the 3B+ and Zero 2 W), the
+  tidy-ups.
 - WiFi on a 3B+ and the VP modes on Domesday (owner's hardware).
