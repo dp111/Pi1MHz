@@ -112,6 +112,10 @@ Pi now ignores VDU 23,17 too (dp111's choice; handler kept behind
 FB_VDU23_17_RISCOS).  VDU 23,19,0 with a 0 scale fixed (80d0808, Pi-only
 command, host test).
 
+**U4** (2026-10-08): fixed (a17caf6) - reboot.now answered, then a reset
+with the card ejected; Windows reports an error as the device goes,
+accepted by dp111 (no longer wait).
+
 **Accepted** (2026-10-08): D11 - without wifi_diag the "802.11n state" /
 "AMPDU limits" /status rows are gone; that is fine (dp111).
 
@@ -129,5 +133,5 @@ D9 (not real), D10, N9-N11 (real but harmless), R17, P7.
   ending at the card's last block (GUESSED, rare).
 - FujiNet: atomic file rewrite needs a new store primitive.
 - BSFATPATH has no short-transfer check.
-- U4 (reboot.now inside tud_task), L4, D4-D8, the tidy-ups.
+- L4, D4-D8, the tidy-ups.
 - WiFi on a 3B+ and the VP modes on Domesday (owner's hardware).
