@@ -7,7 +7,8 @@
 # Set UEF_CORPUS to a directory of .uef files.  Without one the test still
 # runs, on UEFs generated here, but a real corpus is much better cover - the
 # gzip headers real tools emit vary (FNAME, FEXTRA, no flags at all) and that
-# is exactly where a hand-written header walk goes wrong.
+# is exactly where a hand-written header walk goes wrong.  The generated
+# set therefore includes a gzip for each optional header field.
 # NB: set -e here too - the shebang -e is ignored under "sh script.sh".
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -53,6 +54,39 @@ while [ $i -lt 4000 ]; do
 done
 gzip -c "$B/corpus/synthetic.uef" > "$B/corpus/synthetic.uef.gz"
 mv "$B/corpus/synthetic.uef.gz" "$B/corpus/synthetic_gz.uef"
+# gzip(1) only ever writes FNAME (or no flags), so build the other optional
+# header fields by hand: FEXTRA, FCOMMENT, FHCRC each alone, then all four
+# together.  A walk that mis-skips any of them starts inflating in the
+# header and fails the CRC, or differs from gunzip below.
+python3 - "$B/corpus" <<'PY'
+import struct, sys, zlib
+d = sys.argv[1]
+tape = open(f"{d}/synthetic.uef", "rb").read()
+co = zlib.compressobj(9, zlib.DEFLATED, -15)
+deflated = co.compress(tape) + co.flush()
+trailer = struct.pack("<II", zlib.crc32(tape), len(tape) & 0xffffffff)
+FHCRC, FEXTRA, FNAME, FCOMMENT = 2, 4, 8, 16
+def gz(flags):
+    h = bytes([0x1f, 0x8b, 8, flags]) + struct.pack("<I", 0) + bytes([0, 255])
+    if flags & FEXTRA:      # two subfields, 0x1f 0x8b in the data on purpose
+        sub = b"AP" + struct.pack("<H", 6) + b"\x1f\x8b\x08\x00\x00\x00"
+        sub += b"UE" + struct.pack("<H", 300) + bytes(range(256)) + bytes(44)
+        h += struct.pack("<H", len(sub)) + sub
+    if flags & FNAME:
+        h += b"tape.uef\0"
+    if flags & FCOMMENT:
+        h += b"a comment, with \x1f\x8b and high bytes \xa9\xff\0"
+    if flags & FHCRC:
+        h += struct.pack("<H", zlib.crc32(h) & 0xffff)
+    return h + deflated + trailer
+for name, flags in (("fextra", FEXTRA), ("fcomment", FCOMMENT),
+                    ("fhcrc", FHCRC),
+                    ("allflags", FEXTRA | FNAME | FCOMMENT | FHCRC)):
+    open(f"{d}/hdr_{name}.uef", "wb").write(gz(flags))
+PY
+for f in fextra fcomment fhcrc allflags; do   # the reference must accept them
+   gzip -t "$B/corpus/hdr_$f.uef"
+done
 
 if [ -n "$UEF_CORPUS" ] && [ -d "$UEF_CORPUS" ]; then
    find "$UEF_CORPUS" -iname '*.uef' -exec cp {} "$B/corpus/" \; 2>/dev/null || true
