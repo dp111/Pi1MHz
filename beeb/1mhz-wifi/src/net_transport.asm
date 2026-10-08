@@ -18,6 +18,10 @@ net_svc_addr_mid = &A7
 net_svc_addr_hi = &A8
 net_svc_data = &A9
 net_svc_command = &AA
+\ These five share bytes with other users of drv_svc_workspace: net_cursor_*
+\ (+21..+23) with driver_function/driver_entry_x/driver_entry_y (driver.asm),
+\ net_empty_* (+24, +25) with drv_net_type/drv_net_protocol_second
+\ (service_driver.asm). Nothing checks that their lifetimes do not overlap.
 net_empty_lo = drv_svc_workspace+24
 net_empty_hi = drv_svc_workspace+25
 net_cursor_lo = drv_svc_workspace+21

@@ -1288,7 +1288,8 @@ void aun_poll(aun_engine_t *e)
                    0, e->himm.ctrl, e->himm.seq);
       /* Seed the cache as a NAK-marker: a retransmit of this reaped immediate
        * must be re-refused, not re-held and re-executed (the host's eventual
-       * late reply is separately dropped by the gen guard in aun_himm_reply). */
+       * late reply is separately dropped by the gen guard in aun_emulator.c's
+       * IMM_REPLY handler). */
       himm_cache_store(e, true, NULL, 0);
       e->himm.active = false;
       e->counters.himm_timeout++;

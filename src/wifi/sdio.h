@@ -237,12 +237,11 @@ typedef struct {
    uint32_t sdpcm_brcm_event_auth_type;
    uint32_t sdpcm_brcm_event_datalen;
    uint32_t sdpcm_brcm_event_payload_bytes_available;
-   /* Scratch for the IOCTL payload bytes (iovar name + value).  80 B was
-      enough for every command we sent originally; the prepare path asserts
-      payload_length stays within SDIO_TX_CONTROL_PAYLOAD_MAX so a future
-      iovar with a longer name can't silently overflow.  Raised to 880 for
-      the `statistics` GET: that iovar's minlen is 848, so the request has to
-      carry a buffer that big or the firmware rejects it outright. */
+   /* Scratch for the IOCTL payload bytes (iovar name + value).  The
+      prepare path refuses any payload_length above
+      SDIO_TX_CONTROL_PAYLOAD_MAX, so a future iovar with a longer payload
+      can't silently overflow.  164 is the largest payload sent, the
+      WSEC_KEY one; sdio.c static-asserts its own limit matches. */
 #define SDIO_TX_CONTROL_PAYLOAD_MAX 164u
    uint8_t tx_control_template_payload_bytes[SDIO_TX_CONTROL_PAYLOAD_MAX];
    uint8_t sdpcm_brcm_event_addr[6];

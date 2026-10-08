@@ -1,6 +1,6 @@
 /*
-  The IP/net service - raw TCP client sockets + DNS on the &FCA6 services
-  port.  See net_service.h for the command-block ABI.
+  The IP/net service - TCP/UDP sockets, DNS, listen/accept and the N: device
+  on the &FCA6 services port.  See net_service.h for the command-block ABI.
 
   Structure mirrors the AUN service: the FRED write handler
   (net_service_command) runs in FIQ and only latches the request in a
@@ -2307,10 +2307,11 @@ net_util_state_t net_time_poll(uint32_t *ntp_seconds)
 
 /* Bring-up breadcrumb: the last stage the net service reached, for a Beeb
    that is spinning on NET_BUSY with no serial and no way to ask the Pi.  It
-   lives at the fixed command page + 0xFF - beyond NET_IO_MAX, so no command
-   payload can overwrite it - and the client reads it through the NET_COMMAND
-   JIM selection it already has.  Stages: 1 FIQ latched, 2 poll entered,
-   3/4 reset teardown started/finished, 5/6 dispatch started/finished.
+   lives at the fixed command page + 0xFF - beyond every fixed command field,
+   so only a hostname or URL of about 254 characters can overwrite it - and
+   the client reads it through the NET_COMMAND JIM selection it already has.
+   Stages: 1 FIQ latched, 2 poll entered, 3/4 reset teardown
+   started/finished, 5/6 dispatch started/finished.
 
    Compiled out unless NET_DEBUG_MARKS is defined (add it to the build's
    compile options for a bring-up kernel).  Stage 2 is the first thing every

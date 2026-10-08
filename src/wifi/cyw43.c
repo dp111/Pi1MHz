@@ -14,19 +14,21 @@
        Pi Zero W only -> always BCM43430 -> brcmfmac43430-sdio.*
 
      scripts/rpi3.cmake -> -march=armv8-a       (__ARM_ARCH == 8)
-       Pi Zero 2 W  -> BCM43430B0 -> brcmfmac43430b0-sdio.*
-       Pi 3 B+      -> BCM43455   -> brcmfmac43455-sdio.*
-       Pi 4         -> BCM43455   -> brcmfmac43455-sdio.*
+       Pi Zero 2 W  -> BCM43430 rev >= 2 -> brcmfmac43436-sdio.*
+                    -> BCM43430 rev 1    -> brcmfmac43436s-sdio.*
+       Pi 3 B       -> BCM43430A1        -> brcmfmac43430-sdio.*
+       Pi 3 B+      -> BCM43455          -> brcmfmac43455-sdio.*
+       Pi 4         -> BCM43455          -> brcmfmac43455-sdio.*
 
      The ARMv8 build can't pick at compile time because the same
-     binary runs on all three boards.  It preloads BOTH firmware
-     sets (43430b0 in the primary g_cyw43_* slots, 43455 in the alt
-     slots below); after the SDIO runtime reads chip_id and
-     socramrev it calls cyw43_select_chip_variant() to free the
-     wrong one and (if needed) swap the alt set into primary.
-     If a board's firmware files are missing the corresponding
-     slot stays empty and cyw43_select_chip_variant errors out
-     cleanly.
+     binary runs on all these boards.  It preloads all four firmware
+     sets (43436 in the primary g_cyw43_* slots; 43455, 43436s and
+     43430 in the alt, s and legacy slots below); after the SDIO
+     runtime reads chip_id, chip_revision and socramrev it calls
+     cyw43_select_chip_variant() to swap the right set into primary
+     and free the rest.  If a board's firmware files are missing the
+     corresponding slot stays empty and cyw43_select_chip_variant
+     errors out cleanly.
 
      Note on naming, and on the two Pi Zero 2 W radios.  Linux
      picks the blob in two stages.  First chip_revision selects a
@@ -112,8 +114,8 @@ uint32_t g_cyw43_clm_length;
 
 #if __ARM_ARCH >= 7
 /* Free the alt (43455) slots.  Called both as part of the full
-   cyw43_release_images teardown and as a side effect of
-   cyw43_select_chip_variant choosing the 43436s primary. */
+   cyw43_release_images teardown and by cyw43_select_chip_variant
+   whenever the chip needs some other set. */
 static void cyw43_release_alt_images(void)
 {
    if (g_cyw43_alt_firmware_data != NULL) {
@@ -398,16 +400,14 @@ bool cyw43_preload_images(void)
 }
 
 #if __ARM_ARCH >= 7
-/* The chip-family identifier (chip_id) is shared by the BCM43430A1
-   (Pi Zero W) and the BCM43430B0 (Pi Zero 2 W): both report 43430
-   and both report chip_revision = 2.  The two are differentiated by
-   socramrev - the B0 silicon adds RAM and SDIO controller revisions
-   and reports socramrev >= 23 (the real boards we've seen come out
-   at rev 25).  The BCM43455 (Pi 3 B+ / Pi 4) reports a different
-   chip_id entirely (43455) and needs its own firmware blob.
-
-   The original Pi 3B is an ARMv8 host with the older BCM43430-class
-   radio, so an ARMv8 image must retain a third 43430 firmware set. */
+/* The chip-family identifier (chip_id) 43430 is shared by the Pi 3 B's
+   BCM43430A1 and both Pi Zero 2 W radios.  socramrev separates them:
+   the Zero 2 W silicon adds RAM and SDIO controller revisions and
+   reports socramrev >= 23 (the real boards we've seen come out at rev
+   25), the Pi 3 B's < 23.  Between the two Zero 2 W radios
+   chip_revision decides: 1 wants 43436s, 2 and up 43436.  The BCM43455
+   (Pi 3 B+ / Pi 4) reports a different chip_id entirely (0x4345) and
+   needs its own firmware blob. */
 bool cyw43_select_chip_variant(uint16_t chip_id, uint8_t chip_revision, uint8_t socramrev)
 {
    bool need_alt = false;

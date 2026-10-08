@@ -218,7 +218,7 @@ static uint8_t g_runtime_max_seq;
 static uint8_t g_runtime_wlan_flow_control;
 static bool g_runtime_max_seq_valid;
 /* Credit-window stall tracking, for the desync recovery in
-   sdio_runtime_send_ethernet_frame(). */
+   sdio_runtime_tx_gate_pass(). */
 static bool g_runtime_tx_stalled;
 static uint32_t g_runtime_tx_stall_since_us;
 /* When ANY frame last arrived on ANY channel (data, control reply, event) -
@@ -482,6 +482,9 @@ static bool sdio_runtime_diag_readbacks(void)
 #define SDIO_CCCR_IO_ENABLE 0x02u
 #define SDIO_CCCR_IO_READY 0x03u
 #define SDIO_CCCR_INT_ENABLE 0x04u        /* bit 0 = master, bit n = function n */
+/* The SDIO core's intmask register: the same 0x24 as
+   SDIO_CORE_INT_HOST_MASK_OFFSET below.  Arming the RX gate writes it last,
+   replacing the CYW43_FRAME_INT_MASK that runtime boot finalize put there. */
 #define SDIO_CORE_HOST_INT_MASK_OFFSET 0x24u
 /* I_XMTDATA_AVAIL: "the chip has data to transmit to the host" = a frame is
    waiting.  Chosen by measurement (77597-poll intstatus split): it was the
@@ -3750,17 +3753,14 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
       }
       case WIFI_SDIO_TX_PROBE_COMMAND_COUNTRY:
       {
-         /* "country\0" followed by a 20-byte country structure, in the
-            same layout as the working PicoWi driver's country_data:
+         /* "country\0" followed by a 12-byte wl_country_t (the payload
+            length is set in sdio_tx_probe_payload_length - see the note
+            there on 12 vs PicoWi's 20 bytes):
               country_abbrev[4]  (e.g. "XX")
               rev (int32 LE)    = -1   (0xFFFFFFFF, "use firmware default")
               ccode[4]           (e.g. "XX")
-              + 8 trailing zero bytes
             The country code comes from the wifi_country Pi1MHz.cfg property
-            (config->country, default "XX" = worldwide / unrestricted).
-            PicoWi sends sizeof(country_data) = 20 bytes here and joins
-            successfully; the full 20-byte length matters - an earlier
-            12-byte struct drew BCME_BADARG from this firmware build. */
+            (config->country, default "XX" = worldwide / unrestricted). */
          const wifi_config_t *config = wifi_get_config();
          const char *country = "XX";
          size_t name_length = sizeof("country");
@@ -3780,7 +3780,6 @@ static void sdio_prepare_tx_control_payload(sdio_probe_result_t *probe_result,
             value[8 + i] = (uint8_t)country[i];   /* ccode */
          }
          sdio_store_u32_le(&value[4], 0xffffffffu); /* rev = -1 */
-         /* value[12..19] remain zero from the memset at function entry. */
          break;
       }
       default:
@@ -4617,12 +4616,13 @@ static bool sdio_probe_send_single_tx_control_template_timeout(sdio_host_t *dev,
    /* +HWEXT+4: room for the glom-form header (8 bytes wider) and its
       4-byte-alignment tail pad, both zero-filled by the memset below.
 
-      STATIC, not on the stack: the payload limit grew to hold the 848-byte
-      `statistics` reply buffer, and a ~900-byte frame built on the stack broke
-      the join outright (the board came up, USB enumerated, WiFi never
-      associated - bisected 2026-09-18).  This is the only control-frame sender
-      and it runs from the poll loop, never from FIQ, so a single shared buffer
-      is safe; it must not be called re-entrantly. */
+      STATIC, not on the stack: when the payload limit was raised for an
+      848-byte `statistics` GET (no longer sent; the limit is 164 again), a
+      ~900-byte frame built on the stack broke the join outright (the board
+      came up, USB enumerated, WiFi never associated - bisected 2026-09-18).
+      The other control-frame sender, sdio_runtime_clm_download_step, has
+      its own buffer.  This one runs from the poll loop, never from FIQ, so
+      a single shared buffer is safe; it must not be called re-entrantly. */
    _Alignas(4) static uint8_t tx_frame[SDPCM_CONTROL_EVENT_HEADER_LENGTH + SDPCM_HWEXT_LENGTH
                                 + CDC_HEADER_LENGTH + TX_CONTROL_TEMPLATE_MAX_PAYLOAD_LENGTH
                                 + 4u]; // drained by 32-bit EMMC PIO writes
@@ -7149,9 +7149,6 @@ bool sdio_runtime_link_is_up(void)
    return true;
 }
 
-/* Copy the chip's WiFi MAC into mac_out. A missed cur_etheraddr response
-   falls back to the desired board MAC that SET_MAC requested, so scan/join
-   is not disabled merely because diagnostic read-back was late. */
 bool sdio_runtime_fn2_diag(uint32_t *busy_us, uint32_t *bytes, uint32_t *ops)
 {
    if (!g_runtime_diag_enabled)
@@ -7246,6 +7243,9 @@ bool sdio_runtime_get_test_iovar_readback(const char **name, int32_t *value)
    return true;
 }
 
+/* Copy the chip's WiFi MAC into mac_out. A missed cur_etheraddr response
+   falls back to the desired board MAC that SET_MAC requested, so scan/join
+   is not disabled merely because diagnostic read-back was late. */
 bool sdio_runtime_get_chip_mac(uint8_t mac_out[6])
 {
    if (mac_out == NULL)

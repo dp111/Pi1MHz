@@ -118,10 +118,10 @@ static bool g_arasan_wifi_ready;
    silicon is not answering, and every further command would spin its own
    full timeout against it - the multiplier behind the observed 64 s and
    274 s single-pass poll stalls (32 firmware chunks in one tick, or a
-   32-segment TCP window, each command paying hundreds of ms; each also
-   paying the ~0.5-0.9 s lazy re-open below).  While the holdoff is armed,
-   commands fail instantly instead: one bounded real probe per window
-   keeps recovery alive, and any success disarms it.  Nonzero = armed. */
+   32-segment TCP window, each command paying hundreds of ms).  While the
+   holdoff is armed, commands fail instantly instead: one bounded real
+   probe per window keeps recovery alive, and any success disarms it.
+   Nonzero = armed. */
 #define SDIO_HOST_FAULT_HOLDOFF_US 100000u
 static uint32_t g_arasan_fault_holdoff_until_us;
 
@@ -831,12 +831,14 @@ static int sdio_host_submit_arasan_command(uint32_t command,
       return -1;
    }
 
+   /* Never taken today: sdio.c submits only after sdio_host_open() has
+      succeeded, and nothing clears g_arasan_wifi_ready after that.  Were it
+      taken, sdio_host_open_arasan_path() would drop WL_REG_ON and lose the
+      chip's firmware, so it is not a recovery path. */
    if (!g_arasan_wifi_ready && sdio_host_open_arasan_path() != 0) {
-      /* The re-open is itself a bus recovery attempt costing ~0.5-0.9 s;
-         arm the holdoff so a dead bus pays it once per window, not once
-         per command.  Stamp the same never-issued error state as above -
-         this path used to return with STALE last_error/last_cmd_success
-         from the previous command. */
+      /* Arm the holdoff and stamp the same never-issued error state as
+         above, rather than return the previous command's last_error and
+         last_cmd_success. */
       g_arasan_fault_holdoff_until_us =
          (RPI_GetSystemTime() + SDIO_HOST_FAULT_HOLDOFF_US) | 1u;
       g_arasan_wifi_dev.last_cmd_success = 0;

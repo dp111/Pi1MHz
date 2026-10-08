@@ -545,7 +545,8 @@ void aun_set_trace(aun_engine_t *e, aun_trace_fn fn, void *user);
 /* Host-executed immediates: when enabled, inbound immediate ops other
  * than machine peek are held (e->himm) for the host to execute;
  * aun_himm_reply() sends the IMM_REPLY and releases. While one is
- * held, further immediates are NAKed. */
+ * held, a retransmit of it is absorbed and any other immediate is
+ * NAKed (dropped silently when it arrived as 4-way DATA). */
 void aun_set_host_imm(aun_engine_t *e, bool enable);
 void aun_himm_reply(aun_engine_t *e, const uint8_t *data, uint32_t len);
 

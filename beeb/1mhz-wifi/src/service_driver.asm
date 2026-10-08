@@ -44,13 +44,11 @@ drv_net_unsupported = &27
 \ permitted in this delay because every such access posts a newer FIQ event.
 drv_svc_settle_iterations = 16
 
-\ `errorspace` is &0100 on the Electron, which is the CPU stack page. The
-\ general `heap` is &0900 and belongs to the current language or application.
-\ Neither is safe for an OSWORD driver entered by an arbitrary application.
-\ Reuse the original ElkWiFi network-printer workspace instead. PRINTER is not
-\ part of 1MHzWifi and the original ROM reserves &0D90-&0DAF for `netprt`.
-\ This gives the compatibility driver private transient state without writing
-\ into ElkChat code or its live return stack.
+\ The compatibility driver's private transient state reuses the original
+\ ElkWiFi network-printer workspace, `netprt` (PRINTER is not part of
+\ 1MHzWifi). That is 32 bytes of this ROM's own workspace in its sideways RAM
+\ bank (ws_base, machine.asm), no longer host RAM at &0D90, so an OSWORD
+\ entered by an arbitrary application writes nothing the host owns.
 drv_svc_workspace = netprt
 drv_svc_timeout_lo = drv_svc_workspace+0
 drv_svc_timeout_hi = drv_svc_workspace+1
@@ -270,11 +268,12 @@ drv_net_status = 54
  sec
  rts
 
-\ The active window generation must survive arbitrary cassette loaders. Some
-\ Electron loaders occupy &0900-&10FF, which includes the original netprt
-\ scratch allocation. Keep the authoritative copy next to the transactional
-\ WiCFS record in Pi-private JIM, outside host RAM. Every refill restores this
-\ copy before constructing its request, so overwriting netprt is harmless.
+\ The active window generation must survive arbitrary cassette loaders. netprt
+\ was once host RAM at &0D90, inside the &0900-&10FF some Electron loaders
+\ occupy; it is now in this ROM's bank, but the authoritative copy still lives
+\ next to the transactional WiCFS record in Pi-private JIM, outside host RAM.
+\ Every refill restores this copy before constructing its request, so
+\ overwriting netprt is harmless.
 .service_driver_uef_generation_load
  php
  sei

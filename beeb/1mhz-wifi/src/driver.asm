@@ -5,8 +5,8 @@
 \ Version 1.00
 
 \ AP5/Pi1MHz exposes &FCFF as a write-only JIM page selector. Keep the shadow
-\ and transient machine type in the service driver's private block. The stock
-\ `heap` at &0900 is ADFS/application workspace and is not safe during OSWORD.
+\ and transient machine type in the service driver's private block, not in
+\ `heap`, which is the command parameter block (machine.asm).
 driver_page_shadow = drv_svc_workspace+19
 driver_machine = drv_svc_workspace+20
 driver_function = drv_svc_workspace+21

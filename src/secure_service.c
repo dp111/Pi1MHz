@@ -36,8 +36,8 @@ _Static_assert(NTS_SEC_SFTP_CLOSE == SERVICE_CMD_SECURE_LAST,
                "secure service command exceeds reserved range");
 
 /* Real hardware bring-up trace: shares the net_service stage-marker byte
-   (fixed command page + 0xFF, beyond NET_IO_MAX so no command payload can
-   reach it) so an SSH capability-probe timeout, which waits via the same
+   (fixed command page + 0xFF, beyond every fixed command field - see
+   net_debug_mark) so an SSH capability-probe timeout, which waits via the same
    path, reports which of these two services last touched it.  0x8x
    distinguishes this service from net_service's 1-6 range.
 

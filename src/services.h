@@ -23,7 +23,7 @@
 #define SERVICE_CMD_AUN_FIRST   30u   /* Econet over AUN/UDP - AUN/        */
 #define SERVICE_CMD_AUN_LAST    44u
 #define SERVICE_CMD_NET_FIRST   45u   /* IP sockets / N: device - net_service.c */
-#define SERVICE_CMD_NET_LAST    79u   /* sockets 45-56, IRQ 57, N: dev 60-65   */
+#define SERVICE_CMD_NET_LAST    79u   /* sockets 45-56, IRQ 57, N: dev 60-64   */
 #define SERVICE_CMD_WIFI_FIRST 80u /* ElkWiFi compatibility service        */
 /* The UEF cluster is now in: 86 (guard image) sits inside the range and 93
    (UEF stream) is its top, both handled by uef_service.c. */

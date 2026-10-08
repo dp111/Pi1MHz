@@ -1,10 +1,10 @@
-/* aun_emulator.c - glue between the discaccess command interface and
+/* aun_emulator.c - glue between the services port (services.h) and
  * the AUN protocol engine (aun.c), plus the lwIP UDP transport.
  *
  * The Beeb drives this exactly like the disc commands: build a command
  * block in the top 64K of disc RAM, write the block's page number to
- * FRED &FCAA, then poll &FCAA for the result byte. Opcodes 30..41 are
- * routed here from discaccess_emulator_command()'s default case.
+ * FRED &FCAA, then poll &FCAA for the result byte. Opcodes 30..44 are
+ * claimed here with services_register().
  *
  * Execution context: the FRED write callback runs inside the FIQ
  * handler, so it must not touch lwIP or the SDIO bus (the main loop may
@@ -21,7 +21,8 @@
  *
  *  30 INIT        +1 station  +2 net  +4 u32 listen UDP port (0=32768)
  *                 +8 flags (bit0 raise nIRQ on rx, bit1 host-immediates)
- *  31 STATUS      fills +4 stn  +5 net  +6 network-ready  +8 ip[4]
+ *  31 STATUS      fills +4 stn  +5 net  +6 flags (bit0 network ready,
+ *                 bit1 engine initialised)  +8 ip[4]
  *                 +12 u32 counters x11 (tx_ok, tx_fail, rx_data, rx_bcast,
  *                 rx_imm, rx_dup, rx_no_block, rx_unknown_src, rx_too_big,
  *                 ack_sent, nak_sent)
@@ -373,7 +374,7 @@ void aun_status_text(char *buf, size_t size)
 
 /* ---- command dispatch ------------------------------------------------------*/
 
-/* FIQ context: queue only. The discaccess dispatcher has already echoed
+/* FIQ context: queue only. The services dispatcher has already echoed
  * the command page number to the FRED result register; the real result
  * (always < &E0) is written by aun_execute() from the main loop. */
 void aun_emulator_command(uint32_t cp, uint32_t addr, uint8_t data)

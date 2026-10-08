@@ -1,6 +1,7 @@
 /* Bare-metal Pi1MHz wolfSSH provider.
  *
- * This file is copied into the Pi1MHz source tree by install.sh.  It keeps
+ * Built only with PI1MHZ_SSH=ON, which needs wolfSSL and wolfSSH in
+ * src/third_party (see CMakeLists.txt).  It keeps
  * every lwIP, FatFs and crypto operation in the normal poll context; the FIQ
  * wrapper in secure_service.c only latches command bytes.
  */

@@ -393,8 +393,9 @@ jammed, &41 not listening, &43 no clock, &44 bad ctrl.
    set `tx_complete_flag`. Because completion is synchronous, every
    caller's poll loop (e.g. &98D9, `wait_net_tx_ack`'s &95F4) sees an
    instant result — no other call site needs touching. Worst-case
-   blocking = Pi-side retry budget (4×250 ms), comparable to real
-   Econet retry behaviour; fine in the IRQ-context OSWORD &10 path too.
+   blocking = Pi-side budget (~1 s of silence, AUN_NORESP_TIMEOUT_MS;
+   no engine retransmit on silence), comparable to real Econet retry
+   behaviour; fine in the IRQ-context OSWORD &10 path too.
 2. **Receive path** — RXCB slots live in NFS workspace via
    `net_rx_ptr`; slot markers: 0 empty, &3F pending, &C0 active, bit 7
    set = frame delivered. Today the NMI scout/data handlers

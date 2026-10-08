@@ -1,9 +1,10 @@
-/* startup.h */
+/* arm-start.h */
 
 #ifndef STARTUP_H
 #define STARTUP_H
 
-/* Found in the *start.S file, implemented in assembler */
+/* Interrupt and barrier helpers: inline asm here, except the ARMv6
+   _data_memory_barrier and _get_cpsr, which are in asm-helpers.c */
 
 #define _enable_interrupts() {__asm volatile ("CPSIE if" ::: "memory");}
 

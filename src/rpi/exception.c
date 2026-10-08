@@ -4,7 +4,7 @@
 #include "cache.h"
 
 /* Persistent crash record, sharing the .noinit boot-stage block
-   (rpi/mailbox.c, words 4-11): .noinit survives the watchdog reset that
+   (rpi/bootstage.c, words 4-11): .noinit survives the watchdog reset that
    ends dump_info and is untouched by the loader and BSS zeroing.  Read
    back by the /status page - the serial dump below needs a cable this Pi
    does not usually have attached.
@@ -119,8 +119,9 @@ _Noreturn void dump_info(unsigned int *context, int offset, const char *type) {
      wild pc (a common crash class) would make these reads fault again -
      recursing into dump_info in ABT mode and overwriting the crash
      record's pc with our own - or wedge the bus on a strongly-ordered
-     peripheral read. 512 MB is the largest SDRAM any supported Pi has;
-     the crash record above is already written and cache-cleaned. */
+     peripheral read.  The 512 MB bound is the Zero and Zero 2 W's SDRAM;
+     a 1 GB 3B+'s heap can reach above it, and a pc there just gets no
+     window.  The crash record above is already written and cache-cleaned. */
   if ((uint32_t)addr >= 0x8000u && (uint32_t)addr < 0x20000000u) {
     for (int i = -4; i <= 4; i++) {
       dump_string("  ");

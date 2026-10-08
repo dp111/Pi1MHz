@@ -56,12 +56,6 @@ static inline void jim_write32(uint32_t off, uint32_t v)
  * a multi-megabyte loop. */
 #define DISC_MAX_PATH 1024u
 
-/* Returns true if the data buffer [offset, offset+length) lies wholly inside
- * the disc RAM region. 'offset' is relative to base_addr. The subtraction
- * form cannot overflow because offset is bounded against DISC_RAM_SIZE
- * first. */
-
-
 /* ---- open-file tracking for the webserver's in-use interlock ------------
    The Beeb opens files here (FIQ context); the webserver asks from the main
    loop whether a path is one of them before overwriting, deleting or moving

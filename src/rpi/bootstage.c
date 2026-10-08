@@ -140,15 +140,17 @@ unsigned int RPI_BootDetailPrevious( void )
    return boot_detail_previous;
 }
 
-/* Reset reason from the PM block. RSTS bits 12..0: the "had watchdog reset"
-   flag is bit 5 on BCM2835 (0x20), "had power-on reset" bit 12 (0x1000);
-   power-on shows the full set.  The register survives until something
-   clears it. */
+/* The whole .noinit block: words 0-3 and 12 are the boot stage and detail,
+   words 4-11 the crash record (rpi/exception.c). */
 volatile unsigned int *RPI_BootStageBlock( void )
 {
    return (volatile unsigned int *)boot_stage_block;
 }
 
+/* Reset reason from the PM block. RSTS bits 12..0: the "had watchdog reset"
+   flag is bit 5 on BCM2835 (0x20), "had power-on reset" bit 12 (0x1000);
+   power-on shows the full set.  The register survives until something
+   clears it. */
 unsigned int RPI_ResetReason( void )
 {
    return (*(volatile unsigned int *)(PERIPHERAL_BASE + 0x00100020u)) & 0x1fffu;

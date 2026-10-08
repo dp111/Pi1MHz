@@ -8,7 +8,7 @@
    fn_store.h), and the answer is remembered for the re-run.
 
    The network is reached only through the fn_tnfs_io_* functions below,
-   which the platform provides - lwIP UDP on the Pi (src/fujibus_service.c),
+   which the platform provides - lwIP UDP on the Pi (src/fujinet_tnfs_io.c),
    an in-memory server in the host tests. */
 #ifndef FN_TNFS_H
 #define FN_TNFS_H
