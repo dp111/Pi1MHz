@@ -1200,6 +1200,13 @@ static void vdu23_15(const uint8_t *buf) {
    prim_set_ecf_simple(screen, 3, buf + 1);
 }
 
+/* VDU 23,17 (tints, ECF mode and origin, swap text colours) is RISC OS's;
+   the Master's MOS 3.20 ignores it, so the Pi does too and its picture keeps
+   matching the Beeb's (dp111, 2026-10-08: VDU 23,17,5 swapped the text
+   colours on the Pi but not on the Master).  The handler stays, behind
+   FB_VDU23_17_RISCOS, for a build that wants the RISC OS behaviour. */
+#define FB_VDU23_17_RISCOS 0
+#if FB_VDU23_17_RISCOS
 static void vdu23_17(const uint8_t *buf) {
    // vdu 23,17: Set subsidiary colour effects
    switch (buf[1]) {
@@ -1251,6 +1258,7 @@ static void vdu23_17(const uint8_t *buf) {
       break;
    }
 }
+#endif
 
 static void vdu23_19(const uint8_t *buf) {
    // Select Custom Font and/or Custom Font Metrics
@@ -1613,7 +1621,11 @@ static void vdu_23(const uint8_t *buf) {
       case 13: vdu23_13(buf + 1); break;
       case 14: vdu23_14(buf + 1); break;
       case 15: vdu23_15(buf + 1); break;
+#if FB_VDU23_17_RISCOS
       case 17: vdu23_17(buf + 1); break;
+#else
+      case 17: break;               /* ignored, as the Master's MOS does */
+#endif
       case 19: vdu23_19(buf + 1); break;
       case 22: vdu23_22(buf + 1); break;
       case 27: vdu23_27(buf + 1); break;
