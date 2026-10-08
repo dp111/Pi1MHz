@@ -417,6 +417,12 @@ uint32_t Pi1MHz_nIRQ_diag(void)
           ((RPI_GpioBase->GPLEV0 & NIRQ_MASK) ? (1u << 31) : 0u);
 }
 
+/* Every nIRQ source id is an emulator-table slot, so every slot needs its
+   own bit of the mask below bit 31, which Pi1MHz_nIRQ_diag uses for the pin
+   level.  (A uint8_t mask once made AUN's slot 11 a no-op.) */
+_Static_assert(NUM_EMULATORS < 8u * sizeof(Pi1MHz_nirq_mask),
+               "nIRQ mask has no bit for every emulator slot (bit 31 is the diag pin level)");
+
 inline static void Pi1MHz_SetnIRQ_src(uint8_t src, bool assert_irq)
 {
    unsigned int cpsr = _disable_interrupts_cspr();

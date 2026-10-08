@@ -40,7 +40,16 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion $I -o "$B/t2" "$B/test_aun_config.c" "
 "$B/t2"
 
 echo "== unit: nIRQ shared mask (slot-11 width regression) =="
-gcc -std=gnu2x -Wall -Wextra -Wconversion -o "$B/t3" "$B/test_irq_mask.c"
+# The mask and its three functions, verbatim from Pi1MHz.c (which cannot be
+# compiled whole on the host); fails loudly if Pi1MHz.c no longer has them.
+awk '/^static volatile [a-z0-9_]+ Pi1MHz_nirq_mask/ { print; mask = 1 }
+     /^inline static void Pi1MHz_SetnIRQ_src\(/   { on = 1 }
+     on                                          { print }
+     on && /^void Pi1MHz_nIRQ_CLEAR\(/            { last = 1 }
+     on && last && /^}/                          { on = 0; done = 1 }
+     END { if (!mask || !done) { print "nIRQ code not found in Pi1MHz.c" > "/dev/stderr"; exit 1 } }' \
+    "$AUN/../Pi1MHz.c" > "$B/nirq.inc"
+gcc -std=gnu2x -Wall -Wextra -Wconversion -I"$B" -o "$B/t3" "$B/test_irq_mask.c"
 "$B/t3"
 
 echo "== fuzz: engine (ASan/UBSan) =="
