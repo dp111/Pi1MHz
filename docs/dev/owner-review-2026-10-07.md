@@ -105,6 +105,9 @@ cut short on V1.39, complete now); explorer Escape clears the prompt; the
 menu's new sound option (both / left / right / off), the right mouse
 button and the help screen on a second visit (dp111).
 
+**Accepted** (2026-10-08): D11 - without wifi_diag the "802.11n state" /
+"AMPDU limits" /status rows are gone; that is fine (dp111).
+
 **Rejected or closed**: C2 (JIM RAM is never 0), C3, C5 (no FP in the
 IRQ), C8, F1, F4, S9 (only the Beeb's VFS can't write), A7 (a bank may
 hold a different ROM), D-dev4 (the VFS ROM never writes), L5 (DMB is
@@ -119,8 +122,6 @@ D9 (not real), D10, N9-N11 (real but harmless), R17, P7.
   ending at the card's last block (GUESSED, rare).
 - FujiNet: atomic file rewrite needs a new store primitive.
 - BSFATPATH has no short-transfer check.
-- D11: without wifi_diag the "802.11n state" / "AMPDU limits" /status rows
-  are gone.
 - U4 (reboot.now inside tud_task), L4, D4-D8, V9 (check against a Beeb),
   the tidy-ups.
 - WiFi on a 3B+ and the VP modes on Domesday (owner's hardware).
