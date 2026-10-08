@@ -1691,6 +1691,15 @@ static bool sdio_backplane_transfer_bytes(sdio_host_t *dev, bool write, uint32_t
          uint16_t block_count =
             (uint16_t)(block_chunk / SDIO_PROBE_FUNCTION1_BLOCK_SIZE);
 
+         /* CMD53's block count is 9 bits and 0 means "infinite", so 512
+            blocks (a 32 KB window-aligned run) would encode as 0.  No caller
+            does that today (firmware and core-scan chunks are 8 blocks); the
+            rest of a longer run goes round the loop again. */
+         if (block_count > 511u) {
+            block_count = 511u;
+            block_chunk = (uint32_t)block_count * SDIO_PROBE_FUNCTION1_BLOCK_SIZE;
+         }
+
          if (!sdio_cmd53_execute(dev, 1u, transfer_address, write, true, true,
                                  block_count, buffer,
                                  SDIO_PROBE_FUNCTION1_BLOCK_SIZE, NULL)) {

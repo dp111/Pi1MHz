@@ -682,12 +682,21 @@ static void sdio_host_issue_command_int(struct emmc_block_dev *dev, uint32_t cmd
       dev->last_interrupt = irpts;
       return;
    }
-   if (((irpts & 0x1u) == 0u) && ((g_rpi_emmc_base->EMMC_STATUS & 0x1u) != 0u)) {
-      dev->last_error = SD_ERR_MASK_CMD_TIMEOUT;
-      (void) sdio_host_reset_line(SD_RESET_CMD);
-      sdio_host_log_command_error("cmd wait fail");
-      dev->last_interrupt = irpts;
-      return;
+   if ((irpts & 0x1u) == 0u) {
+      /* No COMMAND_COMPLETE: the wait above ran to its deadline.  Accepting
+         it because CMD_INHIBIT has cleared is for emulators only, which may
+         never set INTERRUPT bits; on real hardware RESP0 would be the
+         previous command's, so fail it, as the data phase does. */
+      const wifi_config_t *cfg = wifi_get_config();
+
+      if ((g_rpi_emmc_base->EMMC_STATUS & 0x1u) != 0u ||
+          cfg == NULL || !cfg->allow_emulator_fallback) {
+         dev->last_error = SD_ERR_MASK_CMD_TIMEOUT;
+         (void) sdio_host_reset_line(SD_RESET_CMD);
+         sdio_host_log_command_error("cmd wait fail");
+         dev->last_interrupt = irpts;
+         return;
+      }
    }
 
    if (cmd_reg & SD_CMD_ISDATA) {
@@ -1056,9 +1065,11 @@ open_retry_or_fail:
       The escalation targets the case 20ms cannot fix: on a warm restart the
       chip is already powered, so REG_ON low has to discharge rails that a
       cold boot starts with empty. Only a longer low time helps there. */
-   if (host->open_attempt < SDIO_HOST_OPEN_MAX_ATTEMPTS) {
-      static const uint32_t low_us[SDIO_HOST_OPEN_MAX_ATTEMPTS] =
-         { 20000u, 100000u, 300000u };
+   if (host->open_attempt < SDIO_HOST_OPEN_MAX_RETRIES) {
+      /* The first attempt already held REG_ON low for 20 ms, so the retries
+         start above that. */
+      static const uint32_t low_us[SDIO_HOST_OPEN_MAX_RETRIES] =
+         { 100000u, 300000u, 300000u };
 
       WIFI_SDIO_LOG("WIFI-SDIO: host open failed, recovery reset (attempt %u)\n",
                     (unsigned)(host->open_attempt + 1u));

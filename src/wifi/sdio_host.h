@@ -35,7 +35,7 @@ typedef struct {
 } sdio_host_t;
 
 /* Attempts at bringing the SDIO host up before giving up on WiFi entirely. */
-#define SDIO_HOST_OPEN_MAX_ATTEMPTS 3u
+#define SDIO_HOST_OPEN_MAX_RETRIES 3u   /* after the first attempt */
 
 int sdio_host_open(sdio_host_t *host);
 int sdio_host_open_start(sdio_host_t *host);
