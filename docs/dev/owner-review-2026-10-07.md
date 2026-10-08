@@ -105,9 +105,12 @@ cut short on V1.39, complete now); explorer Escape clears the prompt; the
 menu's new sound option (both / left / right / off), the right mouse
 button and the help screen on a second visit (dp111).
 
-**V9** (2026-10-08): checked against the Master - MODE 7 held graphics,
-the re-render after an overwrite and VDU 23,17,5 all match it (no change);
-VDU 23,19,0 with a 0 scale fixed (80d0808, Pi-only command, host test).
+**V9** (2026-10-08): checked against the Master - MODE 7 held graphics and
+the re-render after an overwrite match it (no change).  VDU 23,17,5 did
+NOT: the Master ignores VDU 23,17, the Pi swapped the text colours - the
+Pi now ignores VDU 23,17 too (dp111's choice; handler kept behind
+FB_VDU23_17_RISCOS).  VDU 23,19,0 with a 0 scale fixed (80d0808, Pi-only
+command, host test).
 
 **Accepted** (2026-10-08): D11 - without wifi_diag the "802.11n state" /
 "AMPDU limits" /status rows are gone; that is fine (dp111).
