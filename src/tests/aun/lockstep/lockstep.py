@@ -328,7 +328,8 @@ IP10 = 0x0a01a8c0   # 192.168.1.10 network order in u32-le
 ok = 0
 def check(cond, what):
     global ok
-    assert cond, what
+    if not cond:   # not assert: "python -O" strips those and every check passes
+        raise AssertionError(what)
     ok += 1
     print(f'  ok: {what}')
 

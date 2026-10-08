@@ -109,7 +109,8 @@ class Explorer:
         """MOS 1.20 line input: Escape returns C=1 only while ESC is the
         Escape key (*FX229,0); otherwise it is code 27, outside the range
         and ignored, like any other out-of-range character."""
-        assert cpu.a == 0, f"OSWORD {cpu.a}"
+        if cpu.a != 0:     # not assert, which "python -O" strips
+            raise AssertionError(f"OSWORD {cpu.a} not modelled")
         blk = cpu.x | cpu.y << 8
         buf = self.mem[blk] | self.mem[blk + 1] << 8
         maxlen, lo, hi = self.mem[blk + 2], self.mem[blk + 3], self.mem[blk + 4]

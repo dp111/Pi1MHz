@@ -65,7 +65,8 @@ echo "== lockstep (ROM x C x AUN peer) =="
 
 # Optional: the real engine against a real PiEconetBridge. Skips itself
 # (exit 0) when no econet-hpbridge binary is present, so this stays a
-# nice-to-have rather than a dependency - see interop/run.sh.
+# nice-to-have rather than a dependency - see interop/run.sh.  Set
+# REQUIRE_INTEROP=1 to make that skip fail.
 echo "== interop (engine x real PiEconetBridge) =="
 "$HERE/interop/run.sh"
 

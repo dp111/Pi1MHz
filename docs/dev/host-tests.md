@@ -23,7 +23,8 @@ each push to master and each pull request against master, through `src/tests/run
   with the image checks that need the same tools.
 - aun's interop layer skips itself (exit 0) when no econet-hpbridge is
   installed, so in CI aun is the engine unit tests, the fuzzers and the
-  lockstep ROM checks only.
+  lockstep ROM checks only.  `REQUIRE_INTEROP=1` turns that skip into a
+  failure.
 - The services suite captures the callbacks the services hand to
   `filesystemRegisterEject` and calls them: fat_service's (closes the open
   files and directories, drops the locks and handle gates) and

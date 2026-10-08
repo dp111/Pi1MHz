@@ -4,6 +4,8 @@
 # OPTIONAL - it needs a compiled econet-hpbridge, which most machines will
 # not have. With no bridge binary this prints "skipped" and exits 0, so
 # run_tests.sh keeps working everywhere; it is never a hard dependency.
+# REQUIRE_INTEROP=1 makes that skip a failure, for a run that means to test
+# against the bridge and must not pass quietly because it was not found.
 #
 # Point it at a bridge with:   PEB_BRIDGE=/path/to/econet-hpbridge
 # otherwise the usual places are tried. Build one with:
@@ -36,6 +38,10 @@ find_bridge() {
 
 BRIDGE=$(find_bridge)
 if [ -z "$BRIDGE" ]; then
+   if [ "${REQUIRE_INTEROP:-0}" = 1 ]; then
+      echo "interop: FAIL - REQUIRE_INTEROP=1 but no econet-hpbridge binary (set PEB_BRIDGE=<path>)"
+      exit 1
+   fi
    echo "interop: skipped (no econet-hpbridge binary; set PEB_BRIDGE=<path>)"
    exit 0
 fi
