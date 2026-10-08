@@ -481,10 +481,15 @@ static void invert_cursor(int x_pos, int y_pos, int start, int end) {
    if (end >= font_height) {
       end = font_height - 1;
    }
+   /* The Beeb's cursor inverts the colour on the screen.  Where the palette
+      has an inverse half (fb_cursor_mirror) the cursor moves the pixel into
+      it; elsewhere - 256 colours, 16/32 bpp - XOR with white is the inverse
+      already, or the nearest there is. */
+   pixel_t flip = fb_cursor_mirror(screen) ? (pixel_t)0x80u : white_col;
    for (int i = start; i <= end; i++) {
       for (int j = 0; j < font_width; j++) {
          pixel_t col = screen->get_pixel(screen, x + j, y - i);
-         col ^= white_col;
+         col ^= flip;
          screen->set_pixel(screen, x + j, y - i, col);
       }
    }

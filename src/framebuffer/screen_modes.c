@@ -1024,6 +1024,18 @@ void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_wi
 }
 // cppcheck-suppress constParameterCallback
 void default_set_colour_8bpp(screen_mode_t *screen, colour_index_t index, uint32_t r, uint32_t g, uint32_t b) {
+   /* A mode with fewer than 128 colours only ever puts 0-127 in a pixel, so
+      the upper half of each palette bank holds the PHYSICAL inverse of the
+      lower: the cursor XORs a pixel with 0x80 (invert_cursor) and shows the
+      inverted colour, as the Beeb's cursor does (red -> cyan, yellow ->
+      blue), where XORing the logical colour gave red -> yellow.  Writes
+      straight into the upper half (the default palettes fill all 256
+      entries with repeats) are dropped, so they cannot clobber it. */
+   if (fb_cursor_mirror(screen)) {
+      if (index & 0x80u)
+         return;
+      screen_update_palette_entry( index | 0x80u, 0xffu - (r & 0xffu), 0xffu - (g & 0xffu), 0xffu - (b & 0xffu) );
+   }
    screen_update_palette_entry( index, r , g , b );
 }
 

@@ -1,6 +1,7 @@
 #ifndef _SCREEN_MODE_H
 #define _SCREEN_MODE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 // Default screen mode
@@ -116,6 +117,16 @@ typedef struct screen_mode {
    int            (*read_character)(struct screen_mode *screen,        int col, int row,                 pixel_t bg_col);
    void              (*unknown_vdu)(struct screen_mode *screen, const uint8_t *buf);
 } screen_mode_t;
+
+/* Does the palette's upper half hold the physical inverse of the lower, for
+   the cursor (default_set_colour_8bpp, invert_cursor)?  Yes in any 8 bpp
+   mode whose pixels stay below 128: fewer than 128 colours, or teletext
+   (its pixels are the 0-63 colour pairs). */
+static inline bool fb_cursor_mirror(const screen_mode_t *screen)
+{
+   return screen->log2bpp == 3 &&
+          (screen->ncolour < 128u || (screen->mode_flags & F_TELETEXT) != 0);
+}
 
 
 // ==========================================================================

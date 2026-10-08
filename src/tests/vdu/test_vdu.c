@@ -151,8 +151,9 @@ static void test_v1_cursor_vs_metrics(void)
    /* The text cursor on the bottom row of MODE 0, then double the cell. */
    mode(0);
    VDU(31, 0, 31);
-   /* The cursor is the cell's bottom pixel row: pixel row 0 at text row 31. */
-   CHECK(px(0, 0) == 1, "V1 setup: cursor not drawn at row 31 (px %u)", (unsigned)px(0, 0));
+   /* The cursor is the cell's bottom pixel row: pixel row 0 at text row 31.
+      It moves the pixel into the palette's inverse half: black 0 -> 0x80. */
+   CHECK(px(0, 0) == 0x80, "V1 setup: cursor not drawn at row 31 (px %u)", (unsigned)px(0, 0));
    VDU(23, 19, 1, 2, 2, 0, 0, 0, 0, 0);
    d = guard_damage();
    CHECK(d == 0, "V1: VDU 23,19,1,2,2 with the cursor on row 31 wrote %ld bytes outside the screen", d);
@@ -160,7 +161,7 @@ static void test_v1_cursor_vs_metrics(void)
       whose cursor is pixel rows 0-1, x 0-15.  It overlaps the old one, so
       an old cursor never un-drawn shows as a hole at x 0-7 of row 0. */
    CHECK(fb_get_cursor_y() == 15, "V1: cursor row %d, want 15", fb_get_cursor_y());
-   CHECK(px(0, 0) == 1 && px(7, 0) == 1 && px(15, 0) == 1 && px(0, 1) == 1 && px(16, 0) == 0 && px(0, 2) == 0,
+   CHECK(px(0, 0) == 0x80 && px(7, 0) == 0x80 && px(15, 0) == 0x80 && px(0, 1) == 0x80 && px(16, 0) == 0 && px(0, 2) == 0,
          "V1: the cursor is not exactly the bottom two rows of cell (0,15): the old one was never un-drawn");
    d = flash_damage(64);           /* let the flashing cursor toggle */
    CHECK(d == 0, "V1: cursor flash after VDU 23,19 wrote %ld bytes outside the screen", d);
