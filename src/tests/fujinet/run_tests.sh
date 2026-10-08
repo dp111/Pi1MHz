@@ -4,6 +4,7 @@
 # a temporary directory (fn_store_host.c).
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../cflags.sh"
 SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT

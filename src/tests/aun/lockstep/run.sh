@@ -6,6 +6,7 @@
 # is invoked as "sh run.sh".
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../../cflags.sh"
 AUN=${AUN_SRC:-$HERE/../../../AUN}
 B=$(mktemp -d)
 stubs() {

@@ -5,6 +5,7 @@
 # call it makes (--wrap) and requires zero.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../cflags.sh"
 SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT

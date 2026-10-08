@@ -3,6 +3,7 @@
 # NB: set -e here too - the shebang -e is ignored under "sh script.sh".
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../cflags.sh"
 SRC=${SRC:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT

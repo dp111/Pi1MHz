@@ -28,5 +28,9 @@ each push to master and each pull request against master, through `src/tests/run
   `filesystemRegisterEject` and calls them: fat_service's (closes the open
   files and directories, drops the locks and handle gates) and
   fujibus_service's (calls `fn_disk_drop_sd`).
+- Every runner that compiles C sources `src/tests/cflags.sh` right after
+  setting `HERE`; it wraps `gcc` so that an implicit function declaration or
+  implicit int is an error on every compiler (GCC 13, CI's, only warns).  A
+  new suite's runner should do the same.
 - Nothing here runs the ARM build.  CI does not compile the firmware, so a
   host suite passing says nothing about the kernel linking.

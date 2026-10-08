@@ -10,6 +10,7 @@
 # for the MTP class headers.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../cflags.sh"
 SRC=${SRC_DIR:-$HERE/../..}
 TUSB=$SRC/usb/tinyusb/src
 if [ ! -f "$TUSB/class/mtp/mtp.h" ]; then

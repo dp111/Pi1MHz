@@ -16,6 +16,7 @@
 # second half is the point of the layer: it is a third-party implementation
 # judging our wire format, not our own model of it.
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../../cflags.sh"
 AUN=${AUN_SRC:-$HERE/../../../AUN}
 
 find_bridge() {

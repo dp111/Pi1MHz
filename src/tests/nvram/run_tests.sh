@@ -10,6 +10,7 @@
 # write past it.
 set -e            # also when invoked as "bash run_tests.sh"
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../cflags.sh"
 SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT

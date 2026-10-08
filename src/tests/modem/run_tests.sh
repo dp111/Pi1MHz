@@ -4,6 +4,7 @@
 # escape, against fakes of the serial redirect and net_service's C API.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../cflags.sh"
 SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT

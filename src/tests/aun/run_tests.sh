@@ -8,6 +8,7 @@
 # layer slip through to the final "ALL TEST LAYERS PASSED".
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../cflags.sh"
 AUN=${AUN_SRC:-$HERE/../../AUN}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT

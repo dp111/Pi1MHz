@@ -6,6 +6,7 @@
 # vdutest stubs, with the screen buffer guarded and palette writes recorded.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../cflags.sh"
 SRC=${SRC_DIR:-$HERE/../..}
 ROOT=$SRC/..
 B=$(mktemp -d)

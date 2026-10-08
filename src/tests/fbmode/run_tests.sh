@@ -4,6 +4,7 @@
 # vdutest stubs, with screen_set_palette wrapped to record the bank.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../cflags.sh"
 SRC=${SRC_DIR:-$HERE/../..}
 ROOT=$SRC/..
 B=$(mktemp -d)
