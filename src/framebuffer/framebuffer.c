@@ -1296,12 +1296,15 @@ static void vdu23_19(const uint8_t *buf) {
       case 0:
          // Select the font by number
          initialize_font_by_number(buf[1], font);
-         if (buf[2] != 0 && buf[3] != 0) {
-            // Parse the extended form
-            if (buf[2] != 0xff) {
+         /* The extended form is any metric given at all; all zeros is the
+            short form, the font alone.  A scale of 0 is ignored on its own,
+            as VDU 23,19,1 does - it used to drop the spacing and rounding
+            given with it as well. */
+         if ((buf[2] | buf[3] | buf[4] | buf[5] | buf[6]) != 0) {
+            if (buf[2] != 0 && buf[2] != 0xff) {
                font->set_scale_w(font, buf[2]);
             }
-            if (buf[3] != 0xff) {
+            if (buf[3] != 0 && buf[3] != 0xff) {
                font->set_scale_h(font, buf[3]);
             }
             if (buf[4] != 0xff) {

@@ -249,6 +249,24 @@ static void test_v2_vdu20_keeps_font(void)
    VDU(23, 19, 2, 0xff, 0xff, 0, 0, 0, 0, 0);
 }
 
+// ---- V9: VDU 23,19,0 with a scale of 0 keeps the rest of the metrics -------
+
+static void test_v9_font_zero_scale(void)
+{
+   mode(1);
+   VDU(23, 19, 0, 0, 0, 0, 0, 0, 0, 0);      /* short form: font 0, its own metrics */
+   int h0 = fb_read_vdu_variable(V_TCHARSIZEY);
+   /* h scale 0 (ignored), v scale 2, no spacing: the cell is twice the
+      glyph height.  The old code dropped the whole extended form when
+      either scale was 0. */
+   VDU(23, 19, 0, 0, 0, 2, 0, 0, 0, 0);
+   int h2 = fb_read_vdu_variable(V_TCHARSIZEY);
+   CHECK(h2 == 16, "V9: VDU 23,19,0,0,0,2,0,0,0 gave a cell height of %d, want 16", h2);
+   VDU(23, 19, 0, 0, 0, 0, 0, 0, 0, 0);
+   int h3 = fb_read_vdu_variable(V_TCHARSIZEY);
+   CHECK(h3 == h0, "V9: the short form gave height %d after, %d before", h3, h0);
+}
+
 // ---- V3: a MODE change must leave a cell that fits ------------------------
 
 static void test_v3_mode_shrinks_below_cell(void)
@@ -422,6 +440,7 @@ int main(void)
    test_v6_vdu19_mask();
    test_v7_graphics_window();
    test_v8_vdu31_range();
+   test_v9_font_zero_scale();
 
    printf("%d checks, %d failed\n", checks, fails);
    if (fails)
