@@ -116,6 +116,11 @@ command, host test).
 with the card ejected; Windows reports an error as the device goes,
 accepted by dp111 (no longer wait).
 
+**L4** (2026-10-08): closed, no change (dp111) - a late property reply needs
+a VideoCore slower than the bound but not dead; a timeout in practice means
+it has stopped answering (RPI_MailboxSilent), and each write already drains
+a leftover reply.
+
 **Accepted** (2026-10-08): D11 - without wifi_diag the "802.11n state" /
 "AMPDU limits" /status rows are gone; that is fine (dp111).
 
@@ -133,5 +138,5 @@ D9 (not real), D10, N9-N11 (real but harmless), R17, P7.
   ending at the card's last block (GUESSED, rare).
 - FujiNet: atomic file rewrite needs a new store primitive.
 - BSFATPATH has no short-transfer check.
-- L4, D4-D8, the tidy-ups.
+- D4-D8, the tidy-ups.
 - WiFi on a 3B+ and the VP modes on Domesday (owner's hardware).
