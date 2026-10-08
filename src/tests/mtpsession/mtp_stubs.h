@@ -41,5 +41,6 @@ _Noreturn void reboot_now(void);
 bool chainboot_image_ok(const uint8_t *image, uint32_t length);
 const char *chainboot_refusal(void);
 bool chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity);
+void chainboot_reboot_request(void);
 
 #endif

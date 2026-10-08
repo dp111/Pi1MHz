@@ -12,6 +12,8 @@
 #include "videoplayer.h"
 #include "rpi/asm-helpers.h"
 #include "rpi/audio.h"
+#include "rpi/cache.h"
+#include "rpi/exceptions.h"
 #include "rpi/rpi.h"
 #include "rpi/systimer.h"
 #include "wifi/sdio.h"
@@ -60,6 +62,7 @@ static uint32_t s_length;
 static uint8_t  s_stage;         /* where chainboot_poll has got to with it */
 static bool     s_usb_off;       /* USB taken off the bus for the jump */
 static bool     s_took_card;     /* the eject was ours, so a give-up returns it */
+static bool     s_reboot;        /* a full reset, not a jump (chainboot_reboot_request) */
 
 /* Long enough for the sender's answer to get out: an MTP response on the
    wire, or an HTTP one through lwIP and the WiFi chip. */
@@ -79,6 +82,14 @@ bool chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity)
    s_stage = 0u;                  /* ...and waits a settle of its own, so its
                                      sender's answer gets out too */
    return true;
+}
+
+void chainboot_reboot_request(void)
+{
+   free(s_image);                 /* a reset makes any waiting jump moot */
+   s_image = NULL;
+   s_reboot = true;
+   s_stage = 0u;                  /* the settle lets the sender's answer out */
 }
 
 /* Give the image up and let the Pi carry on as it was: what this code took
@@ -108,11 +119,12 @@ void chainboot_poll(void)
 {
    static uint32_t settle_us;
 
-   if (s_image == NULL)
+   if (s_image == NULL && !s_reboot)
       return;
 
    /* Whatever a refusal guards against may start while this waits, and then
-      the image is given up.  The refusal is asked again before each step
+      the image is given up.  A reboot asks none of them: a full reset puts
+      the VideoCore back too, so there is nothing to protect.  The refusal is asked again before each step
       that would cost the Beeb something to undo. */
    if (s_stage == 0u) {
       settle_us = RPI_GetSystemTime() + CHAINBOOT_SETTLE_US;
@@ -122,7 +134,7 @@ void chainboot_poll(void)
    if (s_stage == 1u) {
       if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
          return;
-      if (chainboot_refusal() != NULL) {   /* nothing touched yet */
+      if (!s_reboot && chainboot_refusal() != NULL) {   /* nothing touched yet */
          chainboot_abandon();
          return;
       }
@@ -135,7 +147,7 @@ void chainboot_poll(void)
    if (s_stage == 2u) {
       if ((int32_t)(RPI_GetSystemTime() - settle_us) < 0)
          return;
-      if (chainboot_refusal() != NULL) {   /* free: at most USB comes back */
+      if (!s_reboot && chainboot_refusal() != NULL) {   /* free: at most USB comes back */
          chainboot_abandon();
          return;
       }
@@ -152,6 +164,16 @@ void chainboot_poll(void)
          its subsystem wait. */
       if (!filesystemEject())
          return;
+      if (s_reboot) {
+#ifdef DEBUG
+         RPI_BootDetail(0xFDu);  /* deliberate reboot - not a death */
+         {
+            const volatile unsigned int *blk = RPI_BootStageBlock();
+            _clean_cache_area((const void *)(uintptr_t)blk, 64); /* reboot_now never flushes */
+         }
+#endif
+         reboot_now();           /* never returns */
+      }
       s_stage = 4u;
       return;
    }

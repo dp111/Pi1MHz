@@ -138,6 +138,8 @@ _Noreturn void reboot_now(void) { printf("FAIL: reboot_now\n"); exit(1); }
 bool chainboot_image_ok(const uint8_t *i, uint32_t l) { (void)i; (void)l; return true; }
 const char *chainboot_refusal(void) { return NULL; }
 bool chainboot_request(uint8_t *i, uint32_t l, uint32_t c) { (void)l; (void)c; test_free(i); return true; }
+static bool reboot_requested;
+void chainboot_reboot_request(void) { reboot_requested = true; }
 
 /* ---- TinyUSB device stack, as far as mtp_fs.c calls it ------------------- */
 static bool usb_configured = true;          /* tud_mounted() */
@@ -517,6 +519,27 @@ static void test_kernel_buffer_freed(void)
    check("kernel.now: unplug frees the buffer", big_ptr == NULL, "%p still held", big_ptr);
 }
 
+/* Review 2026-10-06 U4: reboot.now reset the Pi inside SendObjectInfo,
+   unanswered.  Now both commands are answered, no file is made, and the
+   reset is requested (chainboot does it once the answer is out).  The
+   reboot_now stub fails the run if it is still called directly. */
+static void test_reboot_now_answered(void)
+{
+   static uint8_t body[4] = { 1, 2, 3, 4 };
+   fresh();
+   reboot_requested = false;
+   uint16_t r = op(MTP_OP_OPEN_SESSION, 1, 0, 0);
+   r = (r == MTP_RESP_OK) ? send_object_info("reboot.now", sizeof body) : r;
+   check("reboot.now: SendObjectInfo answered OK", r == MTP_RESP_OK, "response 0x%04x", r);
+   check("reboot.now: no reset requested before the data", !reboot_requested, "requested early");
+   r = 0xFFFF;
+   if (op(MTP_OP_SEND_OBJECT, 0, 0, 0) == 0 && data_out_armed)
+      r = data_out(body, sizeof body, (uint32_t)(sizeof(mtp_container_header_t) + sizeof body));
+   check("reboot.now: SendObject answered OK", r == MTP_RESP_OK, "response 0x%04x", r);
+   check("reboot.now: the reset is requested", reboot_requested, "not requested");
+   check("reboot.now: no file made", !exists("/reboot.now"), "/reboot.now exists");
+}
+
 /* Card A: old.txt, same.txt (1 byte).  Card B: new.txt, same.txt (5 bytes).
    *FX147 with a host attached: the eject takes the device off the bus; the
    card goes in; the device comes back and the host enumerates while the
@@ -612,6 +635,7 @@ int main(void)
    test_suspend_mid_upload();
    test_suspend_between_info_and_object();
    test_kernel_buffer_freed();
+   test_reboot_now_answered();
    test_card_swap();                        /* last two: they swap the cards */
    test_card_swap_query_before_walk();
 

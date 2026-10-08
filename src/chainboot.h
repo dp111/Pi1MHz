@@ -35,4 +35,10 @@ bool chainboot_request(uint8_t *image, uint32_t length, uint32_t capacity);
    in the poll table. */
 void chainboot_poll(void);
 
+/* Restart the Pi (a full reset, not a chain-boot) the same careful way:
+   after a moment for the sender's answer to get out, USB off the bus and the
+   card ejected so every open file is synced.  For MTP's reboot.now, whose
+   SendObject is answered first.  Replaces any image waiting to be jumped to. */
+void chainboot_reboot_request(void);
+
 #endif

@@ -140,6 +140,7 @@ typedef struct {
   bool active;
   bool is_dir;
   bool is_kernel_now;
+  bool is_reboot_now;    /* reboot.now: no file, a reset once answered */
   bool file_open;
   bool size_known;
   bool host_time_valid;
@@ -1463,6 +1464,12 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
         fs_release_write_state(); // closes the file, unlinks the partial upload
         break;
       }
+      if (g_write_state.is_reboot_now) {
+        chainboot_reboot_request();     /* after this answer gets out */
+        resp->header->code = MTP_RESP_OK;
+        fs_release_write_state();
+        break;
+      }
       if (g_write_state.is_kernel_now) {
         if (g_write_state.size_known && (g_write_state.transferred != g_write_state.size)) {
           resp->header->code = MTP_RESP_GENERAL_ERROR;
@@ -2009,10 +2016,6 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
       return MTP_RESP_INVALID_DATASET;
     }
 
-    if (strcmp(g_write_state.name, "reboot.now") == 0) {
-      reboot_now();
-    }
-
     g_write_state.active = true;
     g_write_state.file_open = false;
     g_write_state.transferred = 0;
@@ -2024,6 +2027,22 @@ static int32_t fs_send_object_info(tud_mtp_cb_data_t* cb_data) {
     g_write_state.size_known = (obj_info->object_compressed_size != 0xFFFFFFFFu) && (obj_info->object_compressed_size != 0u);
     g_write_state.size = g_write_state.size_known ? obj_info->object_compressed_size : 0u;
     g_write_state.is_kernel_now = (strcmp(g_write_state.name, "kernel.now") == 0);
+    g_write_state.is_reboot_now = (strcmp(g_write_state.name, "reboot.now") == 0);
+
+    /* reboot.now used to reset the Pi right here, inside tud_task, with
+       this command unanswered: the host saw the device vanish mid-copy, and
+       nothing was synced.  Now no file is made, the data is taken and
+       dropped, and the reset is requested once SendObject is answered
+       (chainboot_reboot_request: USB off, card ejected, then the reset). */
+    if (g_write_state.is_reboot_now) {
+      if (g_write_state.is_dir) {
+        fs_release_write_state();
+        return MTP_RESP_INVALID_OBJECT_FORMAT_CODE;
+      }
+      send_obj_parent = 0u;
+      send_obj_handle = fs_handle_from_path("/reboot.now");
+      return 0;
+    }
 
     if (g_write_state.is_kernel_now) {
       if (g_write_state.is_dir) {
@@ -2161,6 +2180,20 @@ static int32_t fs_send_object(tud_mtp_cb_data_t* cb_data) {
   mtp_container_info_t* io_container = &cb_data->io_container;
   if (!g_write_state.active) {
     return MTP_RESP_GENERAL_ERROR;
+  }
+
+  if (g_write_state.is_reboot_now) {
+    /* Whatever the host sends with reboot.now is taken and dropped. */
+    if (cb_data->phase == MTP_PHASE_COMMAND) {
+      io_container->header->len = g_write_state.size_known
+                                ? (uint32_t)sizeof(mtp_container_header_t) + g_write_state.size
+                                : UINT32_MAX;
+      tud_mtp_data_receive(io_container);
+    } else {
+      const uint32_t offset = cb_data->total_xferred_bytes - sizeof(mtp_container_header_t) - io_container->payload_bytes;
+      fs_write_rearm(cb_data, offset, io_container->payload_bytes);
+    }
+    return 0;
   }
 
   if (g_write_state.is_kernel_now) {

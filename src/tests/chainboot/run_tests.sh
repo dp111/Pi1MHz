@@ -22,7 +22,7 @@ mkdir -p "$B/usb" "$B/rpi" "$B/wifi" "$B/BeebSCSI"
 cp "$SRC"/chainboot.c "$SRC"/chainboot.h "$B/"
 cp "$HERE"/chainboot_stubs.h "$B/"
 for h in Pi1MHz.h videoplayer.h usb/mtp_fs.h rpi/asm-helpers.h rpi/cache.h \
-         rpi/rpi.h rpi/systimer.h rpi/h264dec.h rpi/audio.h wifi/sdio.h BeebSCSI/filesystem.h; do
+         rpi/rpi.h rpi/exceptions.h rpi/systimer.h rpi/h264dec.h rpi/audio.h wifi/sdio.h BeebSCSI/filesystem.h; do
    echo '#include "chainboot_stubs.h"' > "$B/$h"
 done
 

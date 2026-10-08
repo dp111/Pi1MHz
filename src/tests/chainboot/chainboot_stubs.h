@@ -10,6 +10,7 @@
 #define LOG_DEBUG(...)
 /* Pi1MHz.h */
 void _copyandreboot(void *src, int num_bytes);
+_Noreturn void reboot_now(void);
 /* rpi/asm-helpers.h, rpi/cache.h, rpi/rpi.h, rpi/systimer.h */
 void _disable_interrupts(void);
 void RPI_ChainBootMark(void);

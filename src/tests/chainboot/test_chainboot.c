@@ -105,6 +105,14 @@ void _copyandreboot(void *src, int num_bytes)
    longjmp(jumped, 1);
 }
 
+static uint32_t reboot_at;
+_Noreturn void reboot_now(void)
+{
+   ev('R');
+   reboot_at = now;
+   longjmp(jumped, 1);
+}
+
 void test_free(void *p);
 void test_free(void *p)
 {
@@ -439,6 +447,32 @@ static void case_second_request_resettles(void)
 }
 #endif
 
+#ifndef REFUSAL_HOOK
+/* Review 2026-10-06 U4: MTP's reboot.now is a full reset done the same
+   careful way - after the settle, USB off and the card ejected (open files
+   synced) - but no video shutdown and no jump. */
+static void case_reboot(void)
+{
+   uint32_t asked = now;
+   chainboot_reboot_request();
+   CHECK(run(2000u), "never reset");
+   CHECK(strcmp(events, "MeR") == 0, "steps \"%s\", want \"MeR\"", events);
+   CHECK(reboot_at - asked >= 200000u, "reset %u us after the request", (unsigned)(reboot_at - asked));
+}
+
+/* A reset requested while an image waits makes the jump moot: the image is
+   freed, and the Pi resets. */
+static void case_reboot_replaces_image(void)
+{
+   uint8_t *p = image(128u, 0xAA);
+   CHECK(req(p, 128u, 128u), "image not taken");
+   chainboot_reboot_request();
+   CHECK(nfreed == 1, "the waiting image was not freed (%d)", nfreed);
+   CHECK(run(2000u), "never reset");
+   CHECK(strchr(events, 'J') == NULL && strchr(events, 'R') != NULL, "steps \"%s\"", events);
+}
+#endif
+
 int main(void)
 {
 #ifndef REFUSAL_HOOK
@@ -452,6 +486,8 @@ int main(void)
    in_child(case_video_in_use_still_jumps, "video_in_use_still_jumps");
    in_child(case_video_opened_while_pending, "video_opened_while_pending");
    in_child(case_shutdown_fails_still_jumps, "shutdown_fails_still_jumps");
+   in_child(case_reboot, "reboot");
+   in_child(case_reboot_replaces_image, "reboot_replaces_image");
 #else
    in_child(case_refused_at_jump, "refused_at_jump");
    in_child(case_refused_in_settle, "refused_in_settle");
