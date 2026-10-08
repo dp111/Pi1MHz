@@ -105,6 +105,10 @@ cut short on V1.39, complete now); explorer Escape clears the prompt; the
 menu's new sound option (both / left / right / off), the right mouse
 button and the help screen on a second visit (dp111).
 
+**V9** (2026-10-08): checked against the Master - MODE 7 held graphics,
+the re-render after an overwrite and VDU 23,17,5 all match it (no change);
+VDU 23,19,0 with a 0 scale fixed (80d0808, Pi-only command, host test).
+
 **Accepted** (2026-10-08): D11 - without wifi_diag the "802.11n state" /
 "AMPDU limits" /status rows are gone; that is fine (dp111).
 
@@ -122,6 +126,5 @@ D9 (not real), D10, N9-N11 (real but harmless), R17, P7.
   ending at the card's last block (GUESSED, rare).
 - FujiNet: atomic file rewrite needs a new store primitive.
 - BSFATPATH has no short-transfer check.
-- U4 (reboot.now inside tud_task), L4, D4-D8, V9 (check against a Beeb),
-  the tidy-ups.
+- U4 (reboot.now inside tud_task), L4, D4-D8, the tidy-ups.
 - WiFi on a 3B+ and the VP modes on Domesday (owner's hardware).
