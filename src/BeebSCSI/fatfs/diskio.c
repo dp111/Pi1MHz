@@ -11,6 +11,7 @@
 #include <string.h>		/* memcpy for the read-ahead below */
 /* Definitions of physical drive number for each drive */
 #define DRV_SD    0  /* Example: Map MMC/SD card to physical drive 0 (default) */
+#define DRV_USB   1  /* A USB flash drive in host mode, read-only (usb_storage.c) */
 
 #include "diskio.h"		/* Declarations of disk functions */
 
@@ -18,6 +19,9 @@
 #ifdef DRV_SD
 #include "../../rpi/sdcard.h"
 #include "../../rpi/block.h"
+#endif
+#ifdef DRV_USB
+#include "../../usb_storage.h"
 #endif
 
 /*static unsigned int sd_status=STA_NOINIT;*/
@@ -98,6 +102,10 @@ DSTATUS disk_status (
    case DRV_SD :
    return sd_drive_initialized() ? 0 : STA_NOINIT;
 #endif
+#ifdef DRV_USB
+   case DRV_USB :
+      return usb_storage_usable() ? STA_PROTECT : STA_NOINIT | STA_NODISK;
+#endif
 
    }
    return STA_NOINIT;
@@ -127,6 +135,11 @@ DSTATUS disk_initialize (
    /* A re-init means a different card may be in the slot. */
    ra_invalidate();
    return sdhost_init_device(&sd_dev) == 0 ? 0 : STA_NOINIT;
+#endif
+#ifdef DRV_USB
+   /* Never waits for a drive: enumeration is the USB host's business. */
+   case DRV_USB :
+      return usb_storage_usable() ? STA_PROTECT : STA_NOINIT | STA_NODISK;
 #endif
    }
    return STA_NOINIT;
@@ -189,6 +202,10 @@ DRESULT disk_read (
       return result;
 
 #endif
+#ifdef DRV_USB
+   case DRV_USB :
+      return usb_storage_read(buff, (uint32_t)sector, count) ? RES_OK : RES_ERROR;
+#endif
    }
    return RES_PARERR;
 }
@@ -215,6 +232,10 @@ DRESULT disk_write (
    case DRV_SD :
    ra_note_write(pdrv, sector, count);
    return sd_write(sd_dev,buff,512*count,sector)?RES_OK:RES_ERROR;
+#endif
+#ifdef DRV_USB
+   case DRV_USB :
+      return RES_WRPRT;                /* read-only for now */
 #endif
    }
    return RES_PARERR;
@@ -248,6 +269,18 @@ DRESULT disk_ioctl (
          return RES_OK;
       case MMC_GET_TYPE:
          *(BYTE *)buff = disk_type();
+         return RES_OK;
+      default:
+         return RES_PARERR;
+      }
+#endif
+#ifdef DRV_USB
+   case DRV_USB :
+      switch (cmd) {
+      case CTRL_SYNC:
+         return RES_OK;
+      case GET_SECTOR_SIZE:
+         *(WORD *)buff = 512;
          return RES_OK;
       default:
          return RES_PARERR;

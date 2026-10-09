@@ -310,6 +310,13 @@ set(harddisc_emulator_files
    rpi/sdcard.c
 )
 include_directories(BeebSCSI)
+# FatFs is vendored: with two volumes (FF_VOLUMES 2, the USB drive) its
+# f_getcwd writes '0' + volume into a TCHAR, which -Warith-conversion flags.
+set_source_files_properties(
+   BeebSCSI/fatfs/ff.c
+   PROPERTIES
+   COMPILE_OPTIONS "-Wno-arith-conversion"
+)
 # TinyUSB is third-party - mark as SYSTEM so its headers (e.g. board_api.h)
 # do not trip our strict warnings such as -Warith-conversion / -Wconversion.
 include_directories(SYSTEM usb/tinyusb/src)

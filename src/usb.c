@@ -7,6 +7,7 @@
 #include "usb.h"
 #include "usb/mtp_fs.h"
 #include "chainboot.h"
+#include "usb_storage.h"
 #include "BeebSCSI/filesystem.h"
 #include <bsp/board_api.h>
 #include "rpi/interrupts.h"
@@ -307,6 +308,7 @@ static void usb_host_task(void) {
     last_us = Pi1MHz_now_us;
     tuh_int_handler(BOARD_TUH_RHPORT, false);
     tuh_task();
+    usb_storage_poll();    /* FatFs work for a drive that came or went */
     chainboot_poll();      /* a kernel.now PUT's restart (no MTP in host mode) */
 }
 
