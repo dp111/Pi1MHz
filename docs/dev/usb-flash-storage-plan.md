@@ -1,8 +1,9 @@
 # USB flash drive storage alongside a USB mouse - plan
 
-STATUS (2026-10-07): PLAN ONLY - nothing implemented.  Written from a
-read-only design study of master 0992048.  Claims are marked MEASURED (read
-in the code), INFERRED or GUESSED.
+STATUS (2026-10-09): stages 1 and 2 built on branch usb-msc (host-tested;
+not yet run with a drive), exFAT on.  Owner decisions taken - see the end.
+Written from a read-only design study of master 0992048.  Claims are marked
+MEASURED (read in the code), INFERRED or GUESSED.
 
 ## Goal
 
@@ -123,10 +124,12 @@ claims a fix or an equivalence.
 5. **The rest**, one small change each (30-80 lines): the FAT service,
    FujiNet, the video player (after measuring stalls), a WebDAV `/usb` folder.
 
-## Decisions for the owner
+## Decisions (dp111, 2026-10-09)
 
-- The config key's name and values (`storage=usb` / `sd`?).
-- Whether a drive arriving after the Beeb has already read the SD card
-  should swap at once (a disc swap under a running program) or only at the
-  next BREAK.
-- exFAT: enable it in FatFs (size, licence notes) or require FAT32 drives?
+- Config key: `storage=usb` (default `sd`).
+- A drive that arrives while the Beeb is running is used from the next
+  BREAK, never swapped in under a running program.
+- exFAT: on in FatFs (`FF_FS_EXFAT 1`, 29760a3), for the drive and the SD
+  card alike.  `FSIZE_t` is 64-bit; a file of 4 GB or more shows a wrapped
+  size wherever the firmware casts sizes to 32 bits (WebDAV, MTP, BeebSCSI
+  image size) - none of those files could exist on FAT32.
