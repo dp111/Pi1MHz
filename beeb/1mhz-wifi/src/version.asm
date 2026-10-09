@@ -4,7 +4,7 @@
 
 .version_cmd
   jsr printtext
- equs "1MHz-WiFi 0.1.67 (C) 2026 Peter Clarke",&0D
+ equs "1MHz-WiFi ", ROM_VERSION, " (C) 2026 Peter Clarke",&0D
   equs "Parts from ElkWiFi (C) 2020 Roland Leurs",&0D,&EA
 
   \ Print the Pi1MHz service version after the two ROM attribution lines.

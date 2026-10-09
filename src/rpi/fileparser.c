@@ -198,8 +198,11 @@ static void write_value(parse_state * st, const parserkey * key,
             len = parse_strlen(st->in, st->ptr, st->insize);
             outlen = (size_t) snprintf(st->out + st->outptr, remaining, "%d",
                                        *value->v.integer);
-            if (outlen > 0 && outlen < remaining)
+            if (outlen < remaining)
                 st->outptr += outlen;
+            else
+                st->overflow = true;    /* as emit() does: never write back a
+                                           rewrite with the value missing */
             break;
         }
     }

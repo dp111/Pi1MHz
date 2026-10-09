@@ -39,7 +39,8 @@ include "machine.asm"
                     equb &30                    \ binary version
 .romtitle           equs "1MHz-WiFi"
                     equb 0
-.romversion         equs "0.1.67"
+ROM_VERSION         = "0.1.67"              \ the one place the version is set
+.romversion         equs ROM_VERSION
 .copyright          equb 0
                     equs "(C)2026 Peter Clarke"
                     equb 0
@@ -257,7 +258,7 @@ include "machine.asm"
 .autorun_no_mux
 
                     jsr printtext
-                    equs "1MHz-WiFi 0.1.67",&EA
+                    equs "1MHz-WiFi ", ROM_VERSION, &EA
 
                     \ Say why, once, if the workspace is not there.  The
                     \ command entry only declines; without this the machine
