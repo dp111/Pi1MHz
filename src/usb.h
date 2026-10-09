@@ -6,3 +6,5 @@
 void usb_init(uint8_t instance , uint8_t address);
 /* The port was started as a host (usb_mode=), not as the MTP device. */
 bool usb_is_host(void);
+/* One step of USB host work for a wait outside the poll loop - see usb.c. */
+bool usb_service(void);

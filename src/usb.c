@@ -266,6 +266,8 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
      auto    host when the OTG ID pin is grounded - an OTG adapter - and
              device when it is not. */
 static bool s_usb_host;
+static bool s_usb_initialised;     /* usb_init has posted the power-up */
+static bool s_usb_started;         /* usb_boot_task has started the stack */
 
 bool usb_is_host(void)
 {
@@ -301,14 +303,18 @@ static bool usb_choose_host(void)
 #define GAHBCFG_GINT_BIT (1u << 0)
 
 #define USB_HOST_POLL_US 250u
+static void usb_host_work(void) {
+    tuh_int_handler(BOARD_TUH_RHPORT, false);
+    tuh_task();
+    usb_storage_poll();    /* FatFs work for a drive that came or went */
+}
+
 static void usb_host_task(void) {
     static uint32_t last_us;
     if ((uint32_t)(Pi1MHz_now_us - last_us) < USB_HOST_POLL_US)
         return;
     last_us = Pi1MHz_now_us;
-    tuh_int_handler(BOARD_TUH_RHPORT, false);
-    tuh_task();
-    usb_storage_poll();    /* FatFs work for a drive that came or went */
+    usb_host_work();
     chainboot_poll();      /* a kernel.now PUT's restart (no MTP in host mode) */
 }
 
@@ -363,6 +369,26 @@ static void usb_boot_task(void)
   /* Swap in the steady-state callback, in place: no later pass then tests
      whether start-up has finished. */
   Pi1MHz_Replace_Poll(usb_boot_task, s_usb_host ? usb_host_task : usb_task, "usb");
+  s_usb_started = true;
+}
+
+/* One step of USB work from inside a wait, outside the poll loop: the power-
+   on storage decision waiting for a flash drive (usb_storage_wait_for_drive).
+   The port is brought up first if the boot half has not run yet.  False when
+   there is nothing to wait for: USB never started, or the port is a device.
+   No chainboot_poll here: a restart must not begin inside another's wait. */
+bool usb_service(void)
+{
+  if (!s_usb_initialised)
+    return false;
+  if (!s_usb_started) {
+    usb_boot_task();
+    return true;
+  }
+  if (!s_usb_host)
+    return false;
+  usb_host_work();
+  return true;
 }
 
 void usb_init(uint8_t instance , uint8_t address) {
@@ -375,5 +401,6 @@ void usb_init(uint8_t instance , uint8_t address) {
   RPI_PropertySetWord(TAG_SET_POWER_STATE, POWER_DEVICE_USB_HCD, 0x00000003);
 
   Pi1MHz_Register_Poll(usb_boot_task, "usb-boot");
+  s_usb_initialised = true;
   filesystemRegisterEject(mtp_fs_eject, mtp_fs_inserted);
 }

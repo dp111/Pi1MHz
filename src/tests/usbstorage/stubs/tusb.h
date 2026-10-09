@@ -32,6 +32,8 @@ uint32_t tuh_msc_get_block_count(uint8_t dev_addr, uint8_t lun);
 uint32_t tuh_msc_get_block_size(uint8_t dev_addr, uint8_t lun);
 bool     tuh_msc_read10(uint8_t dev_addr, uint8_t lun, void *buffer, uint32_t lba,
                         uint16_t block_count, tuh_msc_complete_cb_t complete_cb, uintptr_t arg);
+bool     tuh_msc_write10(uint8_t dev_addr, uint8_t lun, void const *buffer, uint32_t lba,
+                         uint16_t block_count, tuh_msc_complete_cb_t complete_cb, uintptr_t arg);
 bool     tuh_vid_pid_get(uint8_t dev_addr, uint16_t *vid, uint16_t *pid);
 void     tuh_int_handler(uint8_t rhport, bool in_isr);
 void     tuh_task(void);

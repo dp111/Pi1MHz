@@ -11,6 +11,7 @@
 #include "BeebSCSI/fatfs/ff.h"
 #include "BeebSCSI/fatfs/diskio.h"
 #include "usb_storage.h"
+#include "watchdog.h"
 
 static int failures;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); failures++; } } while (0)
@@ -19,6 +20,11 @@ static int failures;
 
 static uint32_t now_us;
 uint32_t RPI_GetSystemTime(void) { return now_us += 1000u; }
+
+/* ---- The watchdog: fed from inside the waits ---------------------------- */
+
+static int feeds;
+void watchdog_feed(void) { feeds++; }
 
 /* ---- The SD card: never there ------------------------------------------- */
 
@@ -44,6 +50,7 @@ static drive_t drives[CFG_TUH_DEVICE_MAX + 1];
 
 static struct {
    bool busy;
+   bool write;
    uint8_t daddr;
    uint8_t *buf;
    uint32_t lba;
@@ -68,7 +75,21 @@ bool tuh_msc_read10(uint8_t a, uint8_t lun, void *buffer, uint32_t lba,
    read10_calls++;
    if (count > max_count)
       max_count = count;
-   cmd = (typeof(cmd)){ true, a, buffer, lba, count, cb, 3 };
+   cmd = (typeof(cmd)){ true, false, a, buffer, lba, count, cb, 3 };
+   return true;
+}
+
+static int write10_calls;
+bool tuh_msc_write10(uint8_t a, uint8_t lun, void const *buffer, uint32_t lba,
+                     uint16_t count, tuh_msc_complete_cb_t cb, uintptr_t arg)
+{
+   (void)lun; (void)arg;
+   if (!tuh_msc_mounted(a) || cmd.busy)
+      return false;
+   write10_calls++;
+   if (count > max_count)
+      max_count = count;
+   cmd = (typeof(cmd)){ true, true, a, (uint8_t *)(uintptr_t)buffer, lba, count, cb, 3 };
    return true;
 }
 
@@ -101,11 +122,32 @@ void tuh_task(void)
    }
    msc_cbw_t cbw = { 0, cmd.count * 512u };
    msc_csw_t csw = { 0, 0, 0, d->how == FAIL ? MSC_CSW_STATUS_FAILED : MSC_CSW_STATUS_PASSED };
-   if (d->how == ANSWER)
+   if (d->how == ANSWER && cmd.write)
+      memcpy(d->image + (size_t)cmd.lba * 512u, cmd.buf, cmd.count * 512u);
+   else if (d->how == ANSWER)
       memcpy(cmd.buf, d->image + (size_t)cmd.lba * 512u, cmd.count * 512u);
    tuh_msc_complete_data_t data = { &cbw, &csw, NULL, 0 };
    cmd.busy = false;
    cmd.cb(cmd.daddr, &data);
+}
+
+/* ---- usb.c's usb_service: the host's work, plus a drive arriving ------- */
+
+static int service_calls;
+static int arrive_after = -1;        /* usb_service calls before drive 2 mounts */
+static bool usb_is_device;
+bool usb_service(void)
+{
+   if (usb_is_device)
+      return false;
+   service_calls++;
+   tuh_task();
+   if (arrive_after >= 0 && service_calls == arrive_after) {
+      drives[2].mounted = true;
+      tuh_msc_mount_cb(2);
+   }
+   usb_storage_poll();
+   return true;
 }
 
 /* ---- A FAT12 1.44 MB image ------------------------------------------------
@@ -227,6 +269,7 @@ static void test_mount_and_read(void)
    CHECK(strstr(status(), "no volume") != NULL);   /* not until the poll */
    usb_storage_poll();
    CHECK(status_has("1234:0002 1 MB, FAT12, 4 in root"));
+   CHECK(usb_storage_mounted());
 
    FIL f;
    char buf[64] = {0};
@@ -235,11 +278,6 @@ static void test_mount_and_read(void)
    CHECK(f_read(&f, buf, sizeof buf, &got) == FR_OK);
    CHECK(got == sizeof hello - 1u && memcmp(buf, hello, got) == 0);
    f_close(&f);
-
-   /* Read-only: refused cleanly, nothing written. */
-   CHECK(f_open(&f, "1:/HELLO.TXT", FA_WRITE) == FR_WRITE_PROTECTED);
-   CHECK(f_open(&f, "1:/NEW.TXT", FA_WRITE | FA_CREATE_NEW) == FR_WRITE_PROTECTED);
-   CHECK(disk_write(1, (const BYTE *)buf, 0, 1) == RES_WRPRT);
 
    /* Un-prefixed paths are still the SD card's "0:", which has no volume
       here: the drive's mount did not register one or touch the card. */
@@ -265,6 +303,82 @@ static void test_chunks(void)
    CHECK(max_count == 32);
 }
 
+static void test_write(void)
+{
+   /* Writable: a new file through FatFs lands on the drive's image, in
+      pieces no bigger than the bounce buffer, and reads back. */
+   FIL f;
+   UINT n = 0;
+   static uint8_t data[40u * 512u];
+   for (unsigned i = 0; i < sizeof data; i++)
+      data[i] = (uint8_t)(i * 7u);
+   CHECK(f_open(&f, "1:/NEW.BIN", FA_WRITE | FA_CREATE_NEW) == FR_OK);
+   CHECK(f_write(&f, data, sizeof data, &n) == FR_OK && n == sizeof data);
+   CHECK(f_close(&f) == FR_OK);
+   static uint8_t back[sizeof data];
+   CHECK(f_open(&f, "1:/NEW.BIN", FA_READ) == FR_OK);
+   CHECK(f_read(&f, back, sizeof back, &n) == FR_OK && n == sizeof back);
+   f_close(&f);
+   CHECK(memcmp(back, data, sizeof data) == 0);
+   CHECK(f_unlink("1:/NEW.BIN") == FR_OK);
+
+   /* The raw path: 40 sectors in two commands, the image changed. */
+   max_count = 0;
+   int calls = write10_calls;
+   CHECK(disk_write(1, data, 2000u, 40u) == RES_OK);
+   CHECK(write10_calls - calls == 2 && max_count == 32);
+   CHECK(memcmp(image + 2000u * 512u, data, sizeof data) == 0);
+}
+
+static void test_write_timeout(void)
+{
+   /* A write that never completes is a timeout, as a read: the drive is
+      not used again until it is replugged. */
+   drives[2].how = NEVER;
+   uint8_t buf[512] = {0};
+   CHECK(usb_storage_write(buf, 2000u, 1) == false);
+   CHECK(!usb_storage_usable());
+   CHECK(disk_write(1, buf, 2000u, 1) == RES_ERROR);
+   drives[2].how = ANSWER;
+   pull(2);
+   cmd.busy = false;
+}
+
+static void test_wait_for_drive(void)
+{
+   /* Power-on: the drive turns up while the decision waits. */
+   CHECK(!usb_storage_mounted());
+   service_calls = 0;
+   arrive_after = 5;
+   uint32_t until = now_us + 5000000u;
+   CHECK(usb_storage_wait_for_drive(until) == true);
+   CHECK(service_calls == 5);
+   CHECK(usb_storage_mounted());
+   CHECK(status_has("FAT12"));
+   arrive_after = -1;
+
+   /* Already there: no waiting at all. */
+   service_calls = 0;
+   CHECK(usb_storage_wait_for_drive(now_us + 5000000u) == true && service_calls == 0);
+   pull(2);
+
+   /* No drive: until the time given, then no. */
+   uint32_t t0 = now_us;
+   CHECK(usb_storage_wait_for_drive(now_us + 200000u) == false);
+   CHECK(now_us - t0 >= 200000u && now_us - t0 < 300000u);
+
+   /* The time already past: no waiting. */
+   service_calls = 0;
+   CHECK(usb_storage_wait_for_drive(now_us - 1000u) == false && service_calls == 0);
+
+   /* USB a device, not a host: nothing to wait for. */
+   usb_is_device = true;
+   t0 = now_us;
+   CHECK(usb_storage_wait_for_drive(now_us + 5000000u) == false);
+   CHECK(now_us - t0 < 100000u);
+   usb_is_device = false;
+}
+
 static void test_failed_command(void)
 {
    /* A CHECK CONDITION is a read error, not a dead drive. */
@@ -283,6 +397,7 @@ static void test_timeout(void)
    uint32_t t0 = now_us;
    CHECK(usb_storage_read(buf, 0, 1) == false);
    CHECK(now_us - t0 >= 1500000u && now_us - t0 < 1600000u);
+   CHECK(feeds > 0);                          /* a short watchdog= survives it */
    CHECK(!usb_storage_usable());
    CHECK(status_has("timed out"));
    /* No more commands to it: it still holds the last. */
@@ -362,12 +477,17 @@ int main(void)
    test_no_drive();
    test_mount_and_read();
    test_chunks();
+   test_write();
    test_failed_command();
    test_timeout();
    test_unplug_mid_read();
    test_unplug_mid_read_other_taken();
    test_second_drive_waits();
    test_big_blocks();
+   plug(2, ANSWER, 512u);
+   usb_storage_poll();
+   test_write_timeout();
+   test_wait_for_drive();
    free(image);
    if (failures) {
       printf("usbstorage: %d failed\n", failures);

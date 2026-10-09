@@ -2,9 +2,9 @@
 
    TinyUSB's MSC host class enumerates the drive - TEST UNIT READY, then READ
    CAPACITY of LUN 0 - and reports it here from the main loop (tuh_task).
-   One drive is taken; any others are passed over until it goes.  Stage 2 of
-   docs/dev/usb-flash-storage-plan.md: the drive is FatFs volume "1:",
-   read-only, and only /status looks at it.
+   One drive is taken; any others are passed over until it goes.  The drive
+   is FatFs volume "1:" (docs/dev/usb-flash-storage-plan.md); with
+   storage=usb the Beeb's storage comes from it (filesystemStorageRoot).
 
    The callbacks run inside tuh_task: they only record.  FatFs work is done
    from usb_storage_poll, as a read (usb_storage_read) itself runs tuh_task
@@ -19,15 +19,17 @@
 
 #include "BeebSCSI/fatfs/ff.h"
 #include "rpi/systimer.h"
+#include "usb.h"
+#include "watchdog.h"
 #include "usb_storage.h"
 
 /* A drive's own housekeeping can hold a command for a second or more; the
-   Beeb has no timeouts, so a slow answer beats an error.  Kept below the
-   shortest watchdog= that is sensible with a drive (2 s and up). */
-#define READ_TIMEOUT_US 1500000u
+   Beeb has no timeouts, so a slow answer beats an error.  The wait feeds the
+   watchdog, so a short watchdog= cannot reset the Pi under it. */
+#define COMMAND_TIMEOUT_US 1500000u
 
-/* Reads land here, not in the caller's buffer: after a timeout the command
-   is still queued with this buffer, and nothing can take it back. */
+/* Transfers go through here, not the caller's buffer: after a timeout the
+   command is still queued with this buffer, and nothing can take it back. */
 #define BOUNCE_BLOCKS 32u
 static uint8_t s_bounce[BOUNCE_BLOCKS * 512u];
 
@@ -35,7 +37,7 @@ static bool     s_present;
 static uint8_t  s_addr;              /* the drive taken */
 static uint16_t s_vid, s_pid;
 static uint32_t s_blocks, s_block_size;
-static bool     s_wedged;            /* a read timed out: no more until it goes */
+static bool     s_wedged;            /* a command timed out: no more until it goes */
 static uint32_t s_generation;        /* counts drives taken */
 
 /* Set in the callbacks, acted on in usb_storage_poll. */
@@ -46,14 +48,15 @@ static FRESULT  s_mount_result = FR_NOT_READY;
 static bool     s_mounted;
 static uint32_t s_root_entries;
 
-/* One read at a time, waited for. */
+/* One command at a time, waited for. */
 static volatile bool s_done;
 static bool     s_ok;
+static uint32_t s_boot_wait_ms;      /* /status: the power-on wait, if any */
 
 static const char *fs_type_name(BYTE t)
 {
    return t == FS_FAT12 ? "FAT12" : t == FS_FAT16 ? "FAT16" :
-          t == FS_FAT32 ? "FAT32" : "?";
+          t == FS_FAT32 ? "FAT32" : t == FS_EXFAT ? "exFAT" : "?";
 }
 
 void usb_storage_status(char *buf, size_t len)
@@ -73,20 +76,26 @@ void usb_storage_status(char *buf, size_t len)
    else if (s_wedged)
       snprintf(buf + n, len - (size_t)n, ", timed out");
    else if (s_mounted)
-      snprintf(buf + n, len - (size_t)n, ", %s, %lu in root",
-               fs_type_name(s_fs.fs_type), (unsigned long)s_root_entries);
+      snprintf(buf + n, len - (size_t)n, ", %s, %lu in root, boot wait %lu ms",
+               fs_type_name(s_fs.fs_type), (unsigned long)s_root_entries,
+               (unsigned long)s_boot_wait_ms);
    else
       snprintf(buf + n, len - (size_t)n, ", no volume (%d)", (int)s_mount_result);
 }
 
-/* ---- Reading ------------------------------------------------------------ */
+/* ---- Reading and writing ----------------------------------------------- */
 
 bool usb_storage_usable(void)
 {
    return s_present && s_block_size == 512u && !s_wedged;
 }
 
-static bool read_complete(uint8_t dev_addr, tuh_msc_complete_data_t const *cb)
+bool usb_storage_mounted(void)
+{
+   return s_mounted && usb_storage_usable();
+}
+
+static bool command_complete(uint8_t dev_addr, tuh_msc_complete_data_t const *cb)
 {
    (void)dev_addr;
    s_ok = cb->csw->status == MSC_CSW_STATUS_PASSED && cb->csw->data_residue == 0u;
@@ -94,23 +103,21 @@ static bool read_complete(uint8_t dev_addr, tuh_msc_complete_data_t const *cb)
    return true;
 }
 
-static bool read_chunk(uint32_t lba, uint32_t count)
+/* Wait for the command just issued, running the USB host meanwhile. */
+static bool command_wait(void)
 {
-   s_done = false;
-   s_ok = false;
-   if (!tuh_msc_read10(s_addr, 0u, s_bounce, lba, (uint16_t)count, read_complete, 0))
-      return false;
    const uint32_t gen = s_generation;
    uint32_t t0 = RPI_GetSystemTime();
    while (!s_done) {
       if (!s_present || s_generation != gen)
          return false;                 /* unplugged: tuh_msc_umount_cb ran */
-      if (RPI_GetSystemTime() - t0 > READ_TIMEOUT_US) {
+      if (RPI_GetSystemTime() - t0 > COMMAND_TIMEOUT_US) {
          s_wedged = true;
          return false;
       }
       tuh_int_handler(BOARD_TUH_RHPORT, false);
       tuh_task();
+      watchdog_feed();
    }
    return s_ok;
 }
@@ -121,9 +128,29 @@ bool usb_storage_read(uint8_t *buf, uint32_t lba, uint32_t count)
       if (!usb_storage_usable())
          return false;
       uint32_t n = count < BOUNCE_BLOCKS ? count : BOUNCE_BLOCKS;
-      if (!read_chunk(lba, n))
+      s_done = false;
+      if (!tuh_msc_read10(s_addr, 0u, s_bounce, lba, (uint16_t)n, command_complete, 0) ||
+          !command_wait())
          return false;
       memcpy(buf, s_bounce, n * 512u);
+      buf += n * 512u;
+      lba += n;
+      count -= n;
+   }
+   return true;
+}
+
+bool usb_storage_write(const uint8_t *buf, uint32_t lba, uint32_t count)
+{
+   while (count != 0u) {
+      if (!usb_storage_usable())
+         return false;
+      uint32_t n = count < BOUNCE_BLOCKS ? count : BOUNCE_BLOCKS;
+      memcpy(s_bounce, buf, n * 512u);
+      s_done = false;
+      if (!tuh_msc_write10(s_addr, 0u, s_bounce, lba, (uint16_t)n, command_complete, 0) ||
+          !command_wait())
+         return false;
       buf += n * 512u;
       lba += n;
       count -= n;
@@ -163,6 +190,20 @@ void usb_storage_poll(void)
       if (usb_storage_usable())
          mount_volume();
    }
+}
+
+bool usb_storage_wait_for_drive(uint32_t until_us)
+{
+   uint32_t t0 = RPI_GetSystemTime();
+   while (!usb_storage_mounted()) {
+      if ((int32_t)(RPI_GetSystemTime() - until_us) >= 0)
+         break;
+      if (!usb_service())
+         break;                        /* USB is a device, not a host */
+      watchdog_feed();
+   }
+   s_boot_wait_ms = (RPI_GetSystemTime() - t0) / 1000u;
+   return usb_storage_mounted();
 }
 
 /* ---- TinyUSB MSC host callbacks (main loop, from tuh_task) -------------- */

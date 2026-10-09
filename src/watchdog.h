@@ -15,4 +15,8 @@ void watchdog_stop(void);
 void watchdog_boot_kick(void);
 void watchdog_init(uint8_t instance, uint8_t address);
 
+/* Re-arm from inside a bounded wait that holds the main loop - see
+   watchdog.c.  Nothing unless a watchdog is configured. */
+void watchdog_feed(void);
+
 #endif

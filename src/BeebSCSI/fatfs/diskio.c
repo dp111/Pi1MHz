@@ -11,7 +11,7 @@
 #include <string.h>		/* memcpy for the read-ahead below */
 /* Definitions of physical drive number for each drive */
 #define DRV_SD    0  /* Example: Map MMC/SD card to physical drive 0 (default) */
-#define DRV_USB   1  /* A USB flash drive in host mode, read-only (usb_storage.c) */
+#define DRV_USB   1  /* A USB flash drive in host mode (usb_storage.c) */
 
 #include "diskio.h"		/* Declarations of disk functions */
 
@@ -104,7 +104,7 @@ DSTATUS disk_status (
 #endif
 #ifdef DRV_USB
    case DRV_USB :
-      return usb_storage_usable() ? STA_PROTECT : STA_NOINIT | STA_NODISK;
+      return usb_storage_usable() ? 0 : STA_NOINIT | STA_NODISK;
 #endif
 
    }
@@ -139,7 +139,7 @@ DSTATUS disk_initialize (
 #ifdef DRV_USB
    /* Never waits for a drive: enumeration is the USB host's business. */
    case DRV_USB :
-      return usb_storage_usable() ? STA_PROTECT : STA_NOINIT | STA_NODISK;
+      return usb_storage_usable() ? 0 : STA_NOINIT | STA_NODISK;
 #endif
    }
    return STA_NOINIT;
@@ -235,7 +235,7 @@ DRESULT disk_write (
 #endif
 #ifdef DRV_USB
    case DRV_USB :
-      return RES_WRPRT;                /* read-only for now */
+      return usb_storage_write(buff, (uint32_t)sector, count) ? RES_OK : RES_ERROR;
 #endif
    }
    return RES_PARERR;

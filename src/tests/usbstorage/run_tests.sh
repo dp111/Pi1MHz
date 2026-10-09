@@ -1,8 +1,8 @@
 #!/bin/sh -e
 # Host tests for the USB flash drive (usb_storage.c): the drive taken, the
-# read path through the real diskio.c and FatFs as volume "1:" (read-only),
-# chunking, a drive that never answers, one pulled out mid-read, and block
-# sizes FatFs can't use.  Fake drives behind a stub TinyUSB MSC host; the SD
+# read and write paths through the real diskio.c and FatFs as volume "1:",
+# chunking, a drive that never answers, one pulled out mid-transfer, block
+# sizes FatFs can't use, and the power-on wait for a drive.  Fake drives behind a stub TinyUSB MSC host; the SD
 # card is a stub that is never there.  Under ASan/UBSan.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -20,7 +20,7 @@ cp "$SRC"/BeebSCSI/fatfs/*.c "$SRC"/BeebSCSI/fatfs/*.h "$B/BeebSCSI/fatfs/"
 cp "$SRC"/rpi/sdcard.h "$SRC"/rpi/block.h "$B/rpi/"
 cp "$HERE"/stubs/usb/tusb_config.h "$B/usb/"
 cp "$HERE"/stubs/rpi/systimer.h "$B/rpi/"
-cp "$HERE"/stubs/tusb.h "$B/"
+cp "$HERE"/stubs/tusb.h "$HERE"/stubs/usb.h "$HERE"/stubs/watchdog.h "$B/"
 
 gcc -std=gnu2x -Wall -Wextra -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \

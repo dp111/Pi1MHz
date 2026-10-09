@@ -111,6 +111,12 @@ void watchdog_stop(void)
    *PM_RSTC = PM_PASSWORD | (*PM_RSTC & PM_RSTC_WRCFG_CLR);
 }
 
+static void watchdog_rearm(void)
+{
+   *PM_WDOG = PM_PASSWORD | watchdog_ticks;
+   *PM_RSTC = PM_PASSWORD | ((*PM_RSTC & PM_RSTC_WRCFG_CLR) | PM_RSTC_WRCFG_FULL_RESET);
+}
+
 static void watchdog_poll(void)
 {
    /* Shared per-pass clock: a 250 ms interval does not need better. */
@@ -119,9 +125,22 @@ static void watchdog_poll(void)
    if ((uint32_t)(now - watchdog_last_kick_us) < WATCHDOG_KICK_INTERVAL_US)
       return;
    watchdog_last_kick_us = now;
+   watchdog_rearm();
+}
 
-   *PM_WDOG = PM_PASSWORD | watchdog_ticks;
-   *PM_RSTC = PM_PASSWORD | ((*PM_RSTC & PM_RSTC_WRCFG_CLR) | PM_RSTC_WRCFG_FULL_RESET);
+/* A bounded wait that holds the main loop (a USB flash drive's command, the
+   power-on wait for the drive - usb_storage.c) re-arms as the poll would, so
+   watchdog=1 does not reset the Pi under it.  Nothing when no watchdog is
+   configured; during boot the boot watchdog's maximum covers it. */
+void watchdog_feed(void)
+{
+   if (watchdog_ticks == 0u)
+      return;
+   uint32_t now = RPI_GetSystemTime();
+   if ((uint32_t)(now - watchdog_last_kick_us) < WATCHDOG_KICK_INTERVAL_US)
+      return;
+   watchdog_last_kick_us = now;
+   watchdog_rearm();
 }
 
 // cppcheck-suppress unusedFunction
