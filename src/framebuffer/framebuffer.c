@@ -2066,11 +2066,15 @@ void fb_destroy(void) {
 #endif
 void fb_custom_mode(int x_pixels, int y_pixels, unsigned int n_colours) {
    screen_mode_t *new_screen;
+#if 0 /* Unreachable (review 2026-10-06 V10): the only caller takes the colour
+         count from one byte of VDU 23,22, so it is at most 256. */
    if (n_colours > 0x10000) {
       new_screen = get_screen_mode(CUSTOM_32BPP_SCREEN_MODE);
    } else if (n_colours > 0x100) {
       new_screen = get_screen_mode(CUSTOM_16BPP_SCREEN_MODE);
-   } else {
+   } else
+#endif
+   {
       new_screen = get_screen_mode(CUSTOM_8BPP_SCREEN_MODE);
    }
    new_screen->width = x_pixels;

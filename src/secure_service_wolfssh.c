@@ -573,10 +573,6 @@ static uint8_t start_tcp(void)
     if (!wifi_lwip_get_context()->address_ready) return NTS_PENDING;
     client.pcb = altcp_new_ip_type(NULL, IPADDR_TYPE_V4);
     if (client.pcb == NULL) return NTS_ERR_CONN;
-#if !LWIP_ALTCP
-    client.pcb->rcv_wnd = SSH_RX_SIZE;
-    client.pcb->rcv_ann_wnd = SSH_RX_SIZE;
-#endif
     altcp_arg(client.pcb, &client);
     altcp_recv(client.pcb, nts_tcp_recv);
     altcp_err(client.pcb, nts_tcp_error);

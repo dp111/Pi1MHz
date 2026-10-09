@@ -153,15 +153,12 @@ static void sdio_host_set_error(const char *message);
 static uint32_t sdio_host_read_reg(uint32_t offset);
 static uint32_t sdio_host_get_base_clock_hz(void);
 static uint32_t sdio_host_get_clock_divider(uint32_t base_clock, uint32_t target_rate);
-static void sdio_host_power_wifi_chip(void);
 static void sdio_host_log_registers(const char *label);
 static void sdio_host_log_command_error(const char *label);
 static void sdio_host_log_capabilities(uint32_t base_clock, uint32_t divider);
 static int sdio_host_reset_line(uint32_t mask);
-static int sdio_host_open_arasan_path(void);
 static void sdio_host_force_recovery_reset(void);
 static void sdio_host_set_open_error(const char *message);
-static int sdio_host_apply_clock_rate(uint32_t target_rate, uint32_t *actual_rate);
 static int sdio_host_wait_status_clear(uint32_t mask, uint32_t timeout_us);
 static int sdio_host_submit_arasan_command(uint32_t command,
                                            uint32_t argument,
@@ -269,32 +266,6 @@ static uint32_t sdio_host_read_reg(uint32_t offset)
    const volatile uint32_t *reg = (const volatile uint32_t *) (EMMC_BASE + offset);
 
    return *reg;
-}
-
-static void sdio_host_power_wifi_chip(void)
-{
-   /* Board family is selected at compile time:
-        rpi.cmake  (ARMv6) -> Pi Zero W                     -> GPIO 41
-        rpi3.cmake (ARMv8) -> Pi 3 family / Pi Zero 2 W     -> drive both
-                              the GPIO expander path (Pi 3* WL_REG_ON)
-                              and GPIO 41 (Pi Zero 2 W WL_REG_ON, plus
-                              activity LED on Pi 3 - harmless). */
-   const uint32_t power_cycle_delay_us = 20000u;
-
-   /* Both lines, see sdio_host_set_wl_reg_on.  A cold boot finds the chip
-      unpowered anyway; a kernel.now chain-boot finds it running the previous
-      session's firmware, and only a real WL_REG_ON drop gives the bring-up
-      the fresh chip it assumes (the Zero 2 W came up with no network after
-      every chain-boot until GPIO 41 was driven here, 2026-09-11). */
-   sdio_host_set_wl_reg_on(false);
-   usleep(power_cycle_delay_us);
-   sdio_host_set_wl_reg_on(true);
-
-   WIFI_SDIO_LOG("WIFI-SDIO: WL_REG_ON asserted, settling 150ms\n");
-
-   /* CYW43438 needs ~150 ms after WL_REG_ON rises before its SDIO
-      interface is ready to answer CMD0/CMD5. */
-   usleep(150000u);
 }
 
 static uint32_t sdio_host_get_base_clock_hz(void)
@@ -414,69 +385,6 @@ static int sdio_host_reset_line(uint32_t mask)
    return (g_rpi_emmc_base->EMMC_CONTROL1 & mask) == 0u ? 0 : -1;
 }
 
-static int sdio_host_open_arasan_path(void)
-{
-   uint32_t control0;
-   uint32_t control1;
-
-   memset(&g_arasan_wifi_dev, 0, sizeof(g_arasan_wifi_dev));
-   g_arasan_wifi_dev.block_size = 512u;
-   g_arasan_wifi_dev.blocks_to_transfer = 1u;
-
-   /* Warm reboot recovery: fully power-cycle the Arasan block before
-      reinitializing clocks and resets so stale inhibit state is cleared. */
-   RPI_PropertySetWord(TAG_SET_POWER_STATE, 0u, 2u);
-   usleep(5000u);
-   RPI_PropertySetWord(TAG_SET_POWER_STATE, 0u, 3u);
-   sdio_host_power_wifi_chip();
-   sdio_host_prepare_wifi_pins();
-
-   g_rpi_emmc_base->EMMC_INTERRUPT = 0xffffffffu;
-   g_rpi_emmc_base->EMMC_IRPT_EN = 0u;
-
-   control1 = g_rpi_emmc_base->EMMC_CONTROL1;
-   control1 &= ~0x4u;
-   g_rpi_emmc_base->EMMC_CONTROL1 = control1;
-   usleep(2000u);
-
-   control1 = g_rpi_emmc_base->EMMC_CONTROL1;
-   control1 &= ~(1u << 2);
-   control1 &= ~(1u << 0);
-   g_rpi_emmc_base->EMMC_CONTROL1 = control1;
-
-   /* Host-controller reset first. We intentionally avoid requiring pre-clock
-      CMD/DAT reset completion here because some warm-reset states on BCM2835
-      leave SDHCI's CMD reset bit latched (0x02000000) until after clocking
-      and inhibit recovery. */
-   if (sdio_host_reset_line(1u << 24) != 0) {
-      sdio_host_set_open_error("Arasan EMMC WLAN host reset bit did not clear");
-      return -1;
-   }
-
-   g_rpi_emmc_base->EMMC_CONTROL2 = 0;
-   if (sdio_host_apply_clock_rate(SD_CLOCK_ID, NULL) != 0) {
-      sdio_host_set_open_error("Arasan EMMC WLAN clock setup failed");
-      return -1;
-   }
-
-   control0 = g_rpi_emmc_base->EMMC_CONTROL0;
-   control0 &= ~(1u << 1);
-   control0 &= ~(0x0Fu << 8);
-   control0 |= (0x0Fu << 8);
-   g_rpi_emmc_base->EMMC_CONTROL0 = control0;
-   usleep(5000);
-
-   g_rpi_emmc_base->EMMC_IRPT_EN = 0;
-   g_rpi_emmc_base->EMMC_INTERRUPT = 0xffffffffu;
-   g_rpi_emmc_base->EMMC_IRPT_MASK = ~SD_CARD_INTERRUPT;
-   usleep(2000u);
-
-   sdio_host_log_registers("host open");
-
-   g_arasan_wifi_ready = true;
-   return 0;
-}
-
 static void sdio_host_force_recovery_reset(void)
 {
    uint32_t control1 = g_rpi_emmc_base->EMMC_CONTROL1;
@@ -504,62 +412,6 @@ static void sdio_host_set_open_error(const char *message)
 {
    sdio_host_set_error(message);
    sdio_host_log_registers("host open error");
-}
-
-static int sdio_host_apply_clock_rate(uint32_t target_rate, uint32_t *actual_rate)
-{
-   uint32_t control1;
-   uint32_t base_clock;
-   uint32_t divider;
-   uint32_t raw_divider;
-   uint32_t computed_rate;
-
-   if (sdio_host_wait_status_clear((1u << 0) | (1u << 1), 100000u) != 0) {
-      /* Do not assert CMD/DAT reset bits before clock setup: on warm reset
-         some BCM2835 states latch those bits high (0x06000000) permanently
-         until after clocking. Keep going and let later command paths recover
-         inhibit state with clocks active. */
-      g_rpi_emmc_base->EMMC_INTERRUPT = 0xffffffffu;
-   }
-
-   control1 = g_rpi_emmc_base->EMMC_CONTROL1;
-   control1 &= ~(SD_RESET_CMD | SD_RESET_DAT);
-   control1 &= ~0x4u;
-   g_rpi_emmc_base->EMMC_CONTROL1 = control1;
-   usleep(2000u);
-
-   base_clock = sdio_host_get_base_clock_hz();
-   divider = sdio_host_get_clock_divider(base_clock, target_rate);
-   raw_divider = (((divider >> 6) & 0x3u) << 8) | ((divider >> 8) & 0xffu);
-   computed_rate = raw_divider == 0u ? base_clock : (base_clock / (raw_divider * 2u));
-
-   sdio_host_log_capabilities(base_clock, divider);
-
-   control1 = g_rpi_emmc_base->EMMC_CONTROL1;
-   control1 &= ~0xffe0u;
-   control1 |= 1u;
-   control1 |= divider;
-   control1 &= ~(0x0Fu << 16);
-   control1 |= (0x0Bu << 16);
-   g_rpi_emmc_base->EMMC_CONTROL1 = control1;
-   /* Wait for the SD-clock-stable bit; the previous 0x1000000 cap was
-      ~16 s on the 1 MHz delay path - long enough that a wedged
-      controller would freeze the whole system.  100 ms is comfortably
-      above the worst observed settle time and bounds the freeze
-      cleanly. */
-   TIMEOUT_WAIT((g_rpi_emmc_base->EMMC_CONTROL1 & 0x2u) != 0u, 100000u);
-   if ((g_rpi_emmc_base->EMMC_CONTROL1 & 0x2u) == 0u)
-      return -1;
-
-   control1 = g_rpi_emmc_base->EMMC_CONTROL1;
-   control1 |= 4u;
-   g_rpi_emmc_base->EMMC_CONTROL1 = control1;
-   usleep(2000u);
-
-   if (actual_rate != NULL)
-      *actual_rate = computed_rate;
-
-   return 0;
 }
 
 static int sdio_host_wait_status_clear(uint32_t mask, uint32_t timeout_us)
@@ -823,24 +675,6 @@ static int sdio_host_submit_arasan_command(uint32_t command,
       /* Fail exactly as a command-phase timeout would: the command was
          never put on the bus, so the card cannot have consumed anything
          and sdio_host_last_failure_precommand() must read true. */
-      g_arasan_wifi_dev.last_cmd_success = 0;
-      g_arasan_wifi_dev.last_error = SD_ERR_MASK_CMD_TIMEOUT;
-      g_arasan_wifi_dev.last_interrupt = 0u;
-      if (result != NULL)
-         result->error = SD_ERR_MASK_CMD_TIMEOUT;
-      return -1;
-   }
-
-   /* Never taken today: sdio.c submits only after sdio_host_open() has
-      succeeded, and nothing clears g_arasan_wifi_ready after that.  Were it
-      taken, sdio_host_open_arasan_path() would drop WL_REG_ON and lose the
-      chip's firmware, so it is not a recovery path. */
-   if (!g_arasan_wifi_ready && sdio_host_open_arasan_path() != 0) {
-      /* Arm the holdoff and stamp the same never-issued error state as
-         above, rather than return the previous command's last_error and
-         last_cmd_success. */
-      g_arasan_fault_holdoff_until_us =
-         (RPI_GetSystemTime() + SDIO_HOST_FAULT_HOLDOFF_US) | 1u;
       g_arasan_wifi_dev.last_cmd_success = 0;
       g_arasan_wifi_dev.last_error = SD_ERR_MASK_CMD_TIMEOUT;
       g_arasan_wifi_dev.last_interrupt = 0u;
@@ -1232,10 +1066,9 @@ int sdio_host_set_clock_poll(sdio_host_t *host, uint32_t *actual_rate_hz)
          }
 
          /* Tighten the clock-stable poll deadline from the original
-            ~16 s (0x1000000 us) to 100 ms; matches the matching
-            TIMEOUT_WAIT in the blocking sdio_host_apply_clock_rate
-            wrapper.  Without this cap a wedged controller would
-            freeze the per-tick state machine for 16 s in one go. */
+            ~16 s (0x1000000 us) to 100 ms.  Without this cap a wedged
+            controller would freeze the per-tick state machine for 16 s
+            in one go. */
          host->clock_deadline_us = now_us + 100000u;
          host->clock_phase = SDIO_HOST_CLOCK_PHASE_WAIT_INTERNAL_STABLE;
          return 0;

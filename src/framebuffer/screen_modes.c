@@ -954,11 +954,14 @@ void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_wi
    rectangle_t blank = r;
    if (dir == SCROLL_UP && is_full_screen(screen, &r)) {
       // Scroll the screen upwards one row, and clear the bottom text line to the background colour
+#if 0 /* Dead (review 2026-10-06 V10): the bottom line is blanked a pixel at
+         a time below, so a word-replicated bg_col has no effect. */
       if (screen->log2bpp == 3) {
          bg_col = bg_col | (bg_col << 8) | (bg_col << 16) | (bg_col << 24);
       } else if (screen->log2bpp == 4) {
          bg_col = bg_col | (bg_col << 16);
       }
+#endif
       LOG_DEBUG("Scrolling screen up by %d pixels\n\r", font_height);
       LOG_DEBUG("Screen: %d x %d, Pitch: %d\n\r", screen->width, screen->height, screen->pitch);
       LOG_DEBUG("fb : %p\r\n", fb);
