@@ -20,7 +20,7 @@ cp "$SRC"/M5000_emulator.c "$SRC"/M5000_emulator.h "$SRC"/config.h \
 cp "$SRC"/rpi/audio.h "$SRC"/rpi/gpio.h "$SRC"/rpi/info.h "$SRC"/rpi/byteorder.h \
    "$SRC"/rpi/base.h "$SRC"/rpi/mailbox.h "$SRC"/rpi/rpi.h "$SRC"/rpi/systimer.h \
    "$SRC"/rpi/fileparser.h "$SRC"/rpi/lowmem.h "$B/rpi/"
-cp "$SRC"/BeebSCSI/filesystem.c "$SRC"/BeebSCSI/filesystem.h "$SRC"/BeebSCSI/debug.h \
+cp "$SRC"/BeebSCSI/filesystem.c "$SRC"/BeebSCSI/filesystem_storage.c "$SRC"/BeebSCSI/filesystem.h "$SRC"/BeebSCSI/debug.h \
    "$SRC"/BeebSCSI/scsi.h "$SRC"/BeebSCSI/cpuspecific.h "$B/BeebSCSI/"
 cp "$SRC"/BeebSCSI/fatfs/ff.c "$SRC"/BeebSCSI/fatfs/ff.h "$SRC"/BeebSCSI/fatfs/ffunicode.c \
    "$SRC"/BeebSCSI/fatfs/diskio.h "$B/BeebSCSI/fatfs/"
@@ -39,6 +39,6 @@ cp "$HERE"/test_m5000rec.c "$B/"
 gcc -std=gnu2x -Wall -Wextra -Wno-unused-parameter -g -O1 \
     -fsanitize=address,undefined -fno-sanitize=shift-base -fno-sanitize-recover=all \
     -I"$B" -o "$B/t" \
-    "$B/test_m5000rec.c" "$B/M5000_emulator.c" "$B/BeebSCSI/filesystem.c" \
+    "$B/test_m5000rec.c" "$B/M5000_emulator.c" "$B/BeebSCSI/filesystem.c" "$B/BeebSCSI/filesystem_storage.c" \
     "$B/BeebSCSI/fatfs/ff.c" "$B/BeebSCSI/fatfs/ffunicode.c"
 "$B/t"

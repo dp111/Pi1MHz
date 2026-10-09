@@ -116,28 +116,12 @@ DRESULT disk_read(uint8_t d, uint8_t *b, uint32_t s, unsigned int c)
 DRESULT disk_write(uint8_t d, const uint8_t *b, uint32_t s, unsigned int c)
 { (void)b; (void)s; (void)c; last_disk_drive = d; disk_write_calls++; return d <= 1u ? RES_OK : RES_PARERR; }
 
-/* Where the Beeb's storage lives: "" the card, "1:" the USB drive. */
+/* Where the Beeb's storage lives: "" the card, "1:" the USB drive.  The
+   rule for a path is the real one (BeebSCSI/filesystem_storage.c). */
 static const char *storage_root = "";
 const char *filesystemStorageRoot(void) { return storage_root; }
 bool filesystemStorageOnUsb(void) { return storage_root[0] != '\0'; }
-bool filesystemPathOnCard(const char *path)
-{
-   const char *p = path;
-   while (*p == '/')
-      p++;
-   return storage_root[0] == '\0' || strncasecmp(p, "Pi1MHz/", 7) == 0;
-}
 
-bool filesystemStoragePath(const char *path, char *buf, size_t size)
-{
-   const char *p = path;
-   while (*p == '/')
-      p++;
-   const char *root = ((path[0] >= '0' && path[0] <= '9' && path[1] == ':') ||
-                       strncasecmp(p, "Pi1MHz/", 7) == 0) ? "" : storage_root;
-   int n = snprintf(buf, size, "%s%s", root, path);
-   return n >= 0 && (size_t)n < size;
-}
 unsigned char disk_type(void) { return 42; }
 
 bool filesystemMount(void) { return true; }

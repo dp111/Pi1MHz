@@ -70,23 +70,6 @@ unsigned char disk_type(void) { return 1; }
 static const char *storage_root = "";
 const char *filesystemStorageRoot(void) { return storage_root; }
 bool filesystemStorageOnUsb(void) { return storage_root[0] != '\0'; }
-bool filesystemStoragePath(const char *path, char *buf, size_t size)
-{
-   const char *p = path;
-   while (*p == '/')
-      p++;
-   const char *root = ((path[0] >= '0' && path[0] <= '9' && path[1] == ':') ||
-                       strncasecmp(p, "Pi1MHz/", 7) == 0) ? "" : storage_root;
-   int n = snprintf(buf, size, "%s%s", root, path);
-   return n >= 0 && (size_t)n < size;
-}
-bool filesystemPathOnCard(const char *path)
-{
-   const char *p = path;
-   while (*p == '/')
-      p++;
-   return storage_root[0] == '\0' || strncasecmp(p, "Pi1MHz/", 7) == 0;
-}
 FRESULT f_chdrive(const char *p) { touch_read(p, strlen(p) + 1); return FR_OK; }
 
 bool filesystemMount(void) { return true; }

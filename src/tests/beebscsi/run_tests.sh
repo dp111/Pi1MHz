@@ -21,7 +21,7 @@ cp "$SRC"/rpi/gpio.h "$SRC"/rpi/info.h "$SRC"/rpi/byteorder.h "$SRC"/rpi/base.h 
    "$SRC"/rpi/mailbox.h "$SRC"/rpi/rpi.h "$SRC"/rpi/systimer.h "$SRC"/rpi/lowmem.h \
    "$SRC"/rpi/fileparser.c "$SRC"/rpi/fileparser.h "$B/rpi/"
 cp "$SRC"/BeebSCSI/filesystem.c "$SRC"/BeebSCSI/filesystem.h "$SRC"/BeebSCSI/debug.h \
-   "$SRC"/BeebSCSI/filesystem_safewrite.c "$SRC"/BeebSCSI/scsi.c "$SRC"/BeebSCSI/scsi.h \
+   "$SRC"/BeebSCSI/filesystem_safewrite.c "$SRC"/BeebSCSI/filesystem_storage.c "$SRC"/BeebSCSI/scsi.c "$SRC"/BeebSCSI/scsi.h \
    "$SRC"/BeebSCSI/cpuspecific.h \
    "$SRC"/BeebSCSI/hostadapter.h "$SRC"/BeebSCSI/statusled.h "$SRC"/BeebSCSI/fcode.h \
    "$B/BeebSCSI/"
@@ -44,6 +44,6 @@ gcc -std=gnu2x -Wall -Wextra -Wno-unused-parameter -g -O1 \
     -Wl,--wrap=f_open -Wl,--wrap=f_close \
     -I"$B" -o "$B/t" \
     "$B/test_beebscsi.c" "$B/BeebSCSI/scsi.c" "$B/BeebSCSI/filesystem.c" \
-    "$B/BeebSCSI/filesystem_safewrite.c" "$B/rpi/fileparser.c" \
+    "$B/BeebSCSI/filesystem_safewrite.c" "$B/BeebSCSI/filesystem_storage.c" "$B/rpi/fileparser.c" \
     "$B/BeebSCSI/fatfs/ff.c" "$B/BeebSCSI/fatfs/ffunicode.c"
 "$B/t" "$B/defscsi.cfg"

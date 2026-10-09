@@ -1,7 +1,8 @@
 #!/bin/sh -e
 # Host tests for the services port and the FAT service interlock.
 # Mirrors the firmware layout in a temp tree (real services_emulator.c,
-# fat_service.c and services.h; stub Pi1MHz/FatFs headers) and runs the
+# fat_service.c, services.h and BeebSCSI/filesystem_storage.c; stub
+# Pi1MHz/FatFs headers) and runs the
 # suite under ASan/UBSan.
 set -e            # also when invoked as "bash run_tests.sh" (shebang flags are ignored then)
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -16,12 +17,14 @@ cp "$SRC"/fujibus_service.h "$B/"
 cp "$SRC"/config.c "$SRC"/config.h "$B/"
 cp "$HERE"/test_services.c "$HERE"/test_config.c "$HERE"/fuzz_fat.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"
+# The real rule for where a path lives; the stub filesystem.h beside it.
+cp "$SRC"/BeebSCSI/filesystem_storage.c "$B/BeebSCSI/"
 
 echo "== services port + FAT interlock =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/t" \
-    "$B/test_services.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/config.c"
+    "$B/test_services.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/BeebSCSI/filesystem_storage.c" "$B/config.c"
 "$B/t"
 
 echo "== FujiNet service latch =="
@@ -46,7 +49,7 @@ echo "== fuzz: FAT commands (ASan/UBSan) =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/f" \
-    "$B/fuzz_fat.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/config.c"
+    "$B/fuzz_fat.c" "$B/services_emulator.c" "$B/fat_service.c" "$B/BeebSCSI/filesystem_storage.c" "$B/config.c"
 "$B/f"
 
 echo "SERVICES TESTS PASSED"

@@ -68,7 +68,8 @@ bool filesystemEjected(void);
 void filesystemRegisterRemount(void (*closing)(void));
 bool filesystemMounted(void);
 
-/* Where the Beeb's storage lives - see filesystem.c: "" (the SD card) or
+/* Where the Beeb's storage lives - see filesystem.c (the choice) and
+   filesystem_storage.c (the rule for a path): "" (the SD card) or
    "1:" (the USB drive, storage=usb).  Decided at the first use after a BBC
    reset; main loop only.  filesystemStoragePath puts it in front of a path
    (one naming its own volume is left alone); false if it does not fit. */
