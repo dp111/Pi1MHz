@@ -3113,7 +3113,7 @@ static FRESULT follow_path (	/* FR_OK(0): successful, !=0: error code */
 {
 	FRESULT res;
 	BYTE ns;
-	const FATFS *fs = dp->obj.fs;
+	FATFS *fs = dp->obj.fs;	/* not const: exFAT writes fs->xcwds2 below */
 
 
 	/* Determines the start directory (current directory or forced root directory) */

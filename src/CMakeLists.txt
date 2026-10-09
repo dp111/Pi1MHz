@@ -311,11 +311,13 @@ set(harddisc_emulator_files
 )
 include_directories(BeebSCSI)
 # FatFs is vendored: with two volumes (FF_VOLUMES 2, the USB drive) its
-# f_getcwd writes '0' + volume into a TCHAR, which -Warith-conversion flags.
+# f_getcwd writes '0' + volume into a TCHAR, which -Warith-conversion flags,
+# and its exFAT code (FF_FS_EXFAT 1) trips the conversion and long-long
+# warnings.
 set_source_files_properties(
    BeebSCSI/fatfs/ff.c
    PROPERTIES
-   COMPILE_OPTIONS "-Wno-arith-conversion"
+   COMPILE_OPTIONS "-Wno-arith-conversion;-Wno-conversion;-Wno-sign-conversion;-Wno-long-long"
 )
 # TinyUSB is third-party - mark as SYSTEM so its headers (e.g. board_api.h)
 # do not trip our strict warnings such as -Warith-conversion / -Wconversion.

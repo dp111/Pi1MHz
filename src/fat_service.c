@@ -451,7 +451,10 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
             break;
         }
-        jim_write32(command_pointer + 8, f_size( &fileObject[data & 15] ));
+        /* 32 bits for the Beeb: an exFAT file of 4 GB or more reads as
+           &FFFFFFFF rather than wrapping to a small size. */
+        FSIZE_t size = f_size( &fileObject[data & 15] );
+        jim_write32(command_pointer + 8, size > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)size);
         Pi1MHz_MemoryWrite(addr, FR_OK);
         break;
     }

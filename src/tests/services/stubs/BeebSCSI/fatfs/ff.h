@@ -24,10 +24,11 @@ typedef enum {
 #define FA_OPEN_ALWAYS   0x10
 #define FA_OPEN_APPEND   0x30
 
-typedef struct { uint32_t fsize; } FIL;
+typedef uint64_t FSIZE_t;              /* 64-bit, as with FF_FS_EXFAT 1 */
+typedef struct { FSIZE_t fsize; } FIL;
 typedef struct { int dummy; } DIR;
 typedef struct {
-   uint32_t fsize;
+   FSIZE_t  fsize;
    uint16_t fdate, ftime;
    uint8_t  fattrib;
    char     fname[256];
