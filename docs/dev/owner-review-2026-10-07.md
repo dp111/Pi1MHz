@@ -124,6 +124,10 @@ a leftover reply.
 **D4, D7, D8** (2026-10-08): fixed; WiFi checked on the Zero 2 W from a cold
 boot and after kernel.now.  D5, D6 held (dp111).
 
+**Tidy-ups** (2026-10-09): comments fixed (L9, D10, D13, N12, F10, A10,
+A11); dead code - V10 behind #if 0, D10 and N12 removed (dp111); A12, L8.4,
+L8.5 fixed; CI/test quality T3, T4, T5, T7, T8 done.
+
 **Accepted** (2026-10-08): D11 - without wifi_diag the "802.11n state" /
 "AMPDU limits" /status rows are gone; that is fine (dp111).
 
@@ -142,6 +146,7 @@ D9 (not real), D10, N9-N11 (real but harmless), R17, P7.
 - FujiNet: atomic file rewrite needs a new store primitive.
 - BSFATPATH has no short-transfer check.
 - D5, D6 (held: they change the WiFi data path for conditions not seen;
-  would need a throughput and join test on the 3B+ and Zero 2 W), the
-  tidy-ups.
+  would need a throughput and join test on the 3B+ and Zero 2 W).
+- L8 parts 1-3 (redundant cache enable; BSS clear rounding - harmless while
+  .bss starts page-aligned; repeated mem_info) left as they are.
 - WiFi on a 3B+ and the VP modes on Domesday (owner's hardware).
