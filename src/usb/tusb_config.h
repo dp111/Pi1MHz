@@ -168,8 +168,8 @@
 //--------------------------------------------------------------------
 // HOST CONFIGURATION
 //--------------------------------------------------------------------
-/* The one port is a device (MTP) or a host (a USB mouse), chosen at boot by
-   usb_mode= in Pi1MHz.cfg - see usb.c.  Both stacks are built; only one is
+/* The one port is a device (MTP) or a host (a USB mouse and a flash drive),
+   chosen at boot by usb_mode= in Pi1MHz.cfg - see usb.c.  Both stacks are built; only one is
    started.  Slave mode, not DMA: a mouse's few bytes need no DMA, and the
    FIFOs need no cache maintenance. */
 #define CFG_TUH_ENABLED            1
@@ -189,6 +189,10 @@
 #define CFG_TUH_HID                4
 #define CFG_TUH_HID_EPIN_BUFSIZE   64
 #define CFG_TUH_HID_EPOUT_BUFSIZE  64
+/* A flash drive (usb_storage.c).  Only LUN 0 is ever used: TinyUSB's MSC
+   host reads the capacity of LUN 0 alone. */
+#define CFG_TUH_MSC                1
+#define CFG_TUH_MSC_MAXLUN         1
 
 #ifdef __cplusplus
  }

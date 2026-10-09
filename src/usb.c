@@ -258,7 +258,8 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 /* The port's role, chosen once at boot.  On a board whose port is behind
    its own hub (Pi 1/2/3 Model B) it can only be a host, whatever the config
    says.  Elsewhere usb_mode= in Pi1MHz.cfg picks:
-     host    a USB mouse for the Beeb (usb_mouse.c), directly or via a hub
+     host    a USB mouse for the Beeb (usb_mouse.c) and a flash drive
+             (usb_storage.c), directly or via a hub
              (the default)
      device  MTP to a computer
      auto    host when the OTG ID pin is grounded - an OTG adapter - and

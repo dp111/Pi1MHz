@@ -48,6 +48,7 @@
 #include "../chainboot.h"
 #include "../usb.h"
 #include "../usb_mouse.h"
+#include "../usb_storage.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
@@ -3281,9 +3282,10 @@ static bool route_status(ws_conn_t *c)
    modem_status(tmp, sizeof tmp);
    table_row(&b, "Modem", tmp);
    if (usb_is_host()) {
-      char m[64];
+      char m[48], d[56];
       usb_mouse_status(m, sizeof m);
-      snprintf(tmp, sizeof tmp, "host, mouse %s", m);
+      usb_storage_status(d, sizeof d);
+      snprintf(tmp, sizeof tmp, "host, mouse %s, drive %s", m, d);
       table_row(&b, "USB", tmp);
    } else {
       table_row(&b, "USB", "device (MTP)");

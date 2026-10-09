@@ -275,6 +275,7 @@ set(core_files
    helpers.c
    chainboot.c
    usb_mouse.c
+   usb_storage.c
    videoplayer.c
    rpi/fileparser.c
    usb.c
@@ -290,6 +291,7 @@ set(core_files
    usb/tinyusb/src/host/usbh.c
    usb/tinyusb/src/host/hub.c
    usb/tinyusb/src/class/hid/hid_host.c
+   usb/tinyusb/src/class/msc/msc_host.c
 )
 
 
@@ -501,6 +503,7 @@ set_source_files_properties(
    usb/tinyusb/src/host/usbh.c
    usb/tinyusb/src/host/hub.c
    usb/tinyusb/src/class/hid/hid_host.c
+   usb/tinyusb/src/class/msc/msc_host.c
    PROPERTIES
    COMPILE_OPTIONS "-Wno-arith-conversion;-Wno-strict-overflow;-Wno-attributes;-Wno-packed;-Wno-conversion;-Wno-sign-conversion;-Wno-switch-enum;-Wno-bad-function-cast"
 )
