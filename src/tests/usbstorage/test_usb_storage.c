@@ -396,7 +396,7 @@ static void test_timeout(void)
    uint8_t buf[512];
    uint32_t t0 = now_us;
    CHECK(usb_storage_read(buf, 0, 1) == false);
-   CHECK(now_us - t0 >= 1500000u && now_us - t0 < 1600000u);
+   CHECK(now_us - t0 >= 10000000u && now_us - t0 < 10100000u);
    CHECK(feeds > 0);                          /* a short watchdog= survives it */
    CHECK(!usb_storage_usable());
    CHECK(status_has("timed out"));

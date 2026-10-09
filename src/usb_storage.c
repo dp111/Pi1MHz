@@ -23,10 +23,12 @@
 #include "watchdog.h"
 #include "usb_storage.h"
 
-/* A drive's own housekeeping can hold a command for a second or more; the
-   Beeb has no timeouts, so a slow answer beats an error.  The wait feeds the
-   watchdog, so a short watchdog= cannot reset the Pi under it. */
-#define COMMAND_TIMEOUT_US 1500000u
+/* A drive's own housekeeping can hold a command for a second or more: a
+   Kingston DataTraveler (0951:1666) took up to 1665 ms for one 16 KB write,
+   22 of 42521 over 100 ms, while 330 MB was copied onto it (reads, 3 ms at
+   most).  The Beeb has no timeouts, so a slow answer beats an error, and the
+   wait feeds the watchdog: the limit is only for a drive that has stopped. */
+#define COMMAND_TIMEOUT_US 10000000u
 
 /* Transfers go through here, not the caller's buffer: after a timeout the
    command is still queued with this buffer, and nothing can take it back. */
