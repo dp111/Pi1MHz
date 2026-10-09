@@ -44,6 +44,7 @@ const char *config_get(const char *key)
 }
 bool config_beeb_write_protected(void) { return false; }
 uint32_t RPI_GetSystemTime(void) { return 0; }
+uint64_t RPI_GetSystemTime64(void) { return 0; }
 void videoplayer_media_changed(void) {}
 
 /* The USB drive (usb_storage.c): volume "1:" on the second RAM disk,
@@ -51,10 +52,10 @@ void videoplayer_media_changed(void) {}
    recorded; a drive can be made to turn up during it. */
 static bool     usb_mounted;
 static int      usb_waits;
-static uint32_t usb_wait_until;
+static uint64_t usb_wait_until;
 static bool     usb_arrives_in_wait;
 bool usb_storage_mounted(void) { return usb_mounted; }
-bool usb_storage_wait_for_drive(uint32_t until_us)
+bool usb_storage_wait_for_drive(uint64_t until_us)
 {
    usb_waits++;
    usb_wait_until = until_us;
@@ -854,6 +855,22 @@ static void test_storage(void)
             filesystemVFSDirType(3), fi, (const char *)info + 127);
    check("USB storage: VFS sides and the FAT transfer directory are the drive's",
          filesystemVFSDirType(3) == 2u && fi && !strcmp((const char *)info + 127, "USB.TXT"), why);
+
+   /* A BREAK puts the drive's current directory back at its root, as the
+      card's remount does for the card (the FAT service's record of it
+      starts at "/" again). */
+   {
+      char cwd[64] = "";
+      f_chdir("1:/Transfer");
+      stop_all();
+      filesystemReset();
+      f_chdrive("1:");
+      FRESULT r = f_getcwd(cwd, sizeof cwd);
+      f_chdrive("0:");
+      snprintf(why, sizeof why, "drive's directory after BREAK '%s' (%d)", cwd, r);
+      check("USB storage: a BREAK resets the drive's current directory",
+            r == FR_OK && !strcmp(cwd, "1:/"), why);
+   }
 
    /* No drive at the BREAK, after the power-on wait: the card - and a
       drive that turns up later is not swapped in until the next BREAK. */

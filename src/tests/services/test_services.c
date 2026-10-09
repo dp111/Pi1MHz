@@ -109,16 +109,25 @@ FRESULT f_getfree(const char *p, DWORD *n, FATFS **f)
 }
 FRESULT f_unlink(const char *p) { (void)p; f_unlink_calls++; return FR_OK; }
 
+/* As diskio: drives 0 (the card) and 1 (the USB drive), RES_PARERR else. */
 static int last_disk_drive = -1;
 DRESULT disk_read(uint8_t d, uint8_t *b, uint32_t s, unsigned int c)
-{ (void)b; (void)s; (void)c; last_disk_drive = d; return RES_OK; }
+{ (void)b; (void)s; (void)c; last_disk_drive = d; return d <= 1u ? RES_OK : RES_PARERR; }
 DRESULT disk_write(uint8_t d, const uint8_t *b, uint32_t s, unsigned int c)
-{ (void)b; (void)s; (void)c; last_disk_drive = d; disk_write_calls++; return RES_OK; }
+{ (void)b; (void)s; (void)c; last_disk_drive = d; disk_write_calls++; return d <= 1u ? RES_OK : RES_PARERR; }
 
 /* Where the Beeb's storage lives: "" the card, "1:" the USB drive. */
 static const char *storage_root = "";
 const char *filesystemStorageRoot(void) { return storage_root; }
 bool filesystemStorageOnUsb(void) { return storage_root[0] != '\0'; }
+bool filesystemPathOnCard(const char *path)
+{
+   const char *p = path;
+   while (*p == '/')
+      p++;
+   return storage_root[0] == '\0' || strncasecmp(p, "Pi1MHz/", 7) == 0;
+}
+
 bool filesystemStoragePath(const char *path, char *buf, size_t size)
 {
    const char *p = path;
@@ -515,12 +524,28 @@ int main(void)
          "a relative name is relative to the drive's current directory");
       ok(do_open(4, "Pi1MHz/SWMMFS.rom") == FR_OK && !strcmp(last_open_path, "Pi1MHz/SWMMFS.rom"),
          "a helper's ROM (the Pi's own folder) is opened on the card");
+      ok(fat_service_file_in_use("/Pi1MHz/SWMMFS.rom"),
+         "... and is busy for WebDAV/MTP, as the card's file it is");
       ok(do_open(3, "0:/card.ssd") == FR_OK && !strcmp(last_open_path, "0:/card.ssd")
          && fat_service_file_in_use("/card.ssd"),
          "a name with its own volume is left alone");
 
       (void)do_simple(0, 0);                   /* raw read, the Beeb's drive 0 */
       ok(last_disk_drive == 1, "MMFS's raw sectors come from the drive");
+      {
+         uint32_t c0 = cp_of(0xF0u);
+         memset(&Pi1MHz->JIM_ram[c0], 0, 64);
+         Pi1MHz->JIM_ram[c0] = 0;
+         Pi1MHz->JIM_ram[c0 + 1] = 1;          /* the Beeb names drive 1 */
+         ok(dispatch(0xF0u) == RES_PARERR && last_disk_drive != 1,
+            "a raw drive other than 0 is refused, never the USB drive");
+         storage_root = "";
+         Pi1MHz->JIM_ram[c0] = 0;
+         Pi1MHz->JIM_ram[c0 + 1] = 1;
+         ok(dispatch(0xF0u) == RES_PARERR && last_disk_drive != 1,
+            "... with the storage on the card too");
+         storage_root = "1:";
+      }
       ok(!fat_service_file_in_use("/BEEB.MMB"), "... and the card's BEEB.MMB is not busy");
       ok(do_simple(0, 20) == 1, "disk type: block addressed, as SDHC");
 
@@ -551,6 +576,7 @@ int main(void)
          drive, their files are not the card's. */
       m5000_busy = fuji_busy = true;
       ok(!beeb_path_busy("/Musics000.wav"), "a recording on the drive does not lock the card");
+      ok(beeb_path_busy("/Pi1MHz/fuji.img"), "... but a FujiNet file in the Pi's folder does");
       storage_root = "";
       ok(beeb_path_busy("/Musics000.wav"), "control: on the card it does");
       m5000_busy = fuji_busy = false;

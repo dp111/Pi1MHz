@@ -105,19 +105,27 @@ static void fat_open_record(unsigned int handle, const char *name)
    fat_open_valid[handle] = false;
    if (name[0] >= '0' && name[0] <= '9' && name[1] == ':') {
       /* names its own volume: recorded as it is */
-   } else if (name[0] != '/') {
-      int n;
-      if (!fat_cwd_known)
-         return;
-      n = snprintf(joined, sizeof joined, "%s%s/%s", filesystemStorageRoot(),
-                   (fat_cwd[0] == '/' && fat_cwd[1] == '\0') ? "" : fat_cwd,
-                   name);
+   } else if (!filesystemPathOnCard(name)) {
+      /* On the drive (as fat_beeb_path opened it): "1:" in front keeps it
+         from matching a card path.  fat_cwd is the drive's directory. */
+      int n = (name[0] == '/')
+            ? snprintf(joined, sizeof joined, "1:%s", name)
+            : !fat_cwd_known ? -1
+            : snprintf(joined, sizeof joined, "1:%s/%s",
+                       (fat_cwd[0] == '/' && fat_cwd[1] == '\0') ? "" : fat_cwd, name);
       if (n < 0 || (size_t)n >= sizeof joined)
          return;
       path = joined;
-   } else {
-      /* On the drive, "1:" keeps it from matching a card path. */
-      int n = snprintf(joined, sizeof joined, "%s%s", filesystemStorageRoot(), name);
+   } else if (name[0] != '/') {
+      /* On the card.  With the storage on the drive this is the Pi's own
+         folder ("Pi1MHz/<n>.rom"), relative to the card's directory, which
+         the Beeb's directory changes (all on the drive) leave at the root. */
+      int n;
+      const char *cwd = filesystemStorageOnUsb() ? "/" : fat_cwd;
+      if (!filesystemStorageOnUsb() && !fat_cwd_known)
+         return;
+      n = snprintf(joined, sizeof joined, "%s/%s",
+                   (cwd[0] == '/' && cwd[1] == '\0') ? "" : cwd, name);
       if (n < 0 || (size_t)n >= sizeof joined)
          return;
       path = joined;
@@ -187,11 +195,17 @@ static FRESULT fat_getcwd(char *buf, UINT len)
    return result;
 }
 
-/* Raw sectors (MMFS reading BEEB.MMB with its own FAT code): the Beeb asks
-   for drive 0, which is the drive when the storage is on it. */
+/* Raw sectors (MMFS reading BEEB.MMB with its own FAT code): the Beeb's
+   drive 0 is the storage - the card, or the USB drive when the storage is
+   on it.  No other drive is the Beeb's: diskio answers RES_PARERR for this
+   one, as it did for every drive but 0 before there was a second, so the
+   Beeb cannot write raw sectors under FatFs's mounted drive. */
+#define FAT_RAW_NO_DRIVE 0xFFu
 static BYTE fat_raw_drive(uint8_t beeb_drive)
 {
-   return (beeb_drive == 0u && fat_on_usb()) ? 1u : beeb_drive;
+   if (beeb_drive != 0u)
+      return FAT_RAW_NO_DRIVE;
+   return fat_on_usb() ? 1u : 0u;
 }
 
 bool fat_service_file_in_use(const char *host_path)
@@ -258,7 +272,7 @@ bool beeb_path_busy(const char *host_path)
 {
    /* Those two keep their paths without a volume: with the storage on the
       USB drive their files are not the card's. */
-   bool card = !filesystemStorageOnUsb();
+   bool card = filesystemPathOnCard(host_path);
    return filesystemHostPathBusy(host_path) || fat_service_file_in_use(host_path)
        || (card && M5000_recording_path_busy(host_path))   /* a WAV still being flushed */
        || (card && fujibus_service_path_busy(host_path));  /* a FujiNet-mounted image */

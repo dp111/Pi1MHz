@@ -26,9 +26,9 @@ bool usb_storage_write(const uint8_t *buf, uint32_t lba, uint32_t count);
 /* Volume "1:" is mounted and usable. */
 bool usb_storage_mounted(void);
 
-/* Run USB (usb_service) until volume "1:" is mounted or the system timer
-   reaches until_us; true if it is.  For the power-on decision only
+/* Run USB (usb_service) until volume "1:" is mounted or the 64-bit system
+   timer reaches until_us; true if it is.  For the power-on decision only
    (filesystemStorageRoot): main loop, outside FatFs and tuh_task. */
-bool usb_storage_wait_for_drive(uint32_t until_us);
+bool usb_storage_wait_for_drive(uint64_t until_us);
 
 #endif

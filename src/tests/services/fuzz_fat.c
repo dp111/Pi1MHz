@@ -80,6 +80,13 @@ bool filesystemStoragePath(const char *path, char *buf, size_t size)
    int n = snprintf(buf, size, "%s%s", root, path);
    return n >= 0 && (size_t)n < size;
 }
+bool filesystemPathOnCard(const char *path)
+{
+   const char *p = path;
+   while (*p == '/')
+      p++;
+   return storage_root[0] == '\0' || strncasecmp(p, "Pi1MHz/", 7) == 0;
+}
 FRESULT f_chdrive(const char *p) { touch_read(p, strlen(p) + 1); return FR_OK; }
 
 bool filesystemMount(void) { return true; }

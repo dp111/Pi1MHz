@@ -77,6 +77,9 @@ bool filesystemStoragePath(const char *path, char *buf, size_t size);
 /* The storage is on the drive (decided; never waits).  For host-side
    interlocks: their paths are on the card. */
 bool filesystemStorageOnUsb(void);
+/* A path as the Beeb names it is on the card: the storage is, or it is in
+   the Pi's own /Pi1MHz folder.  Never waits. */
+bool filesystemPathOnCard(const char *path);
 
 bool filesystemMount(void);
 bool filesystemDismount(void);

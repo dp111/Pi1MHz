@@ -194,11 +194,14 @@ void usb_storage_poll(void)
    }
 }
 
-bool usb_storage_wait_for_drive(uint32_t until_us)
+bool usb_storage_wait_for_drive(uint64_t until_us)
 {
+   /* 64-bit: a 32-bit deadline compared by difference comes back into the
+      window 2^31 us (35.8 min) after it passes, and a BREAK then would wait
+      up to that long for a drive that is not there. */
    uint32_t t0 = RPI_GetSystemTime();
    while (!usb_storage_mounted()) {
-      if ((int32_t)(RPI_GetSystemTime() - until_us) >= 0)
+      if (RPI_GetSystemTime64() >= until_us)
          break;
       if (!usb_service())
          break;                        /* USB is a device, not a host */

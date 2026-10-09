@@ -14,3 +14,4 @@ uint32_t filesystemReadFile(const char *filename, uint8_t **address, unsigned in
 const char *filesystemStorageRoot(void);
 bool filesystemStoragePath(const char *path, char *buf, size_t size);
 bool filesystemStorageOnUsb(void);
+bool filesystemPathOnCard(const char *path);

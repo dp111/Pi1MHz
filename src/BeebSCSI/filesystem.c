@@ -390,16 +390,20 @@ static void filesystemRemountNotify(void)
 
 static enum { ROOT_SD, ROOT_USB, ROOT_UNDECIDED } fsRoot;
 static bool     fsRootBooted;          /* the first reset has set the wait */
-static uint32_t fsRootWaitUntil;
+static uint64_t fsRootWaitUntil;     /* 64-bit: never wraps back into the window */
 
 static void filesystemStorageReset(void)
 {
    if (!fsRootBooted) {
       fsRootBooted = true;
-      fsRootWaitUntil = RPI_GetSystemTime() + STORAGE_POWER_ON_WAIT_US;
+      fsRootWaitUntil = RPI_GetSystemTime64() + STORAGE_POWER_ON_WAIT_US;
    }
    const char *storage = config_get("storage");
    fsRoot = (storage != NULL && strcasecmp(storage, "usb") == 0) ? ROOT_UNDECIDED : ROOT_SD;
+   /* The card's remount puts its current directory back at the root; the
+      drive is not remounted, so do the same for it (no drive: an at once
+      FR_NOT_ENABLED or FR_NOT_READY). */
+   (void)f_chdir("1:/");
 }
 
 const char *filesystemStorageRoot(void)
@@ -428,6 +432,15 @@ bool filesystemStoragePath(const char *path, char *buf, size_t size)
                     ? "" : filesystemStorageRoot();
    int n = snprintf(buf, size, "%s%s", root, path);
    return n >= 0 && (size_t)n < size;
+}
+
+/* Is this path, as the Beeb names it, on the card?  Yes unless the storage
+   is decided on the drive - and even then, the Pi's own folder is.  Never
+   decides, so never waits: undecided is the card, the cautious side for
+   the host-write interlocks. */
+bool filesystemPathOnCard(const char *path)
+{
+   return !filesystemStorageOnUsb() || fsPiFolder(path);
 }
 
 /* The drive is decided on: host paths (WebDAV, MTP) are on the card, so

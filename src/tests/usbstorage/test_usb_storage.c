@@ -18,8 +18,10 @@ static int failures;
 
 /* ---- The clock: every read of it moves it on 1 ms ----------------------- */
 
-static uint32_t now_us;
-uint32_t RPI_GetSystemTime(void) { return now_us += 1000u; }
+static uint64_t clock64;
+static uint32_t now_us;              /* its low half, as RPI_GetSystemTime */
+uint32_t RPI_GetSystemTime(void) { clock64 += 1000u; return now_us = (uint32_t)clock64; }
+uint64_t RPI_GetSystemTime64(void) { clock64 += 1000u; now_us = (uint32_t)clock64; return clock64; }
 
 /* ---- The watchdog: fed from inside the waits ---------------------------- */
 
@@ -350,8 +352,7 @@ static void test_wait_for_drive(void)
    CHECK(!usb_storage_mounted());
    service_calls = 0;
    arrive_after = 5;
-   uint32_t until = now_us + 5000000u;
-   CHECK(usb_storage_wait_for_drive(until) == true);
+   CHECK(usb_storage_wait_for_drive(clock64 + 5000000u) == true);
    CHECK(service_calls == 5);
    CHECK(usb_storage_mounted());
    CHECK(status_has("FAT12"));
@@ -359,22 +360,29 @@ static void test_wait_for_drive(void)
 
    /* Already there: no waiting at all. */
    service_calls = 0;
-   CHECK(usb_storage_wait_for_drive(now_us + 5000000u) == true && service_calls == 0);
+   CHECK(usb_storage_wait_for_drive(clock64 + 5000000u) == true && service_calls == 0);
    pull(2);
 
    /* No drive: until the time given, then no. */
    uint32_t t0 = now_us;
-   CHECK(usb_storage_wait_for_drive(now_us + 200000u) == false);
+   CHECK(usb_storage_wait_for_drive(clock64 + 200000u) == false);
    CHECK(now_us - t0 >= 200000u && now_us - t0 < 300000u);
 
    /* The time already past: no waiting. */
    service_calls = 0;
-   CHECK(usb_storage_wait_for_drive(now_us - 1000u) == false && service_calls == 0);
+   CHECK(usb_storage_wait_for_drive(clock64 - 1000u) == false && service_calls == 0);
+
+   /* Long past: 2^31 us and more after the deadline (a BREAK 36 minutes on).
+      A 32-bit difference sees that as before it again and waited. */
+   uint64_t deadline = clock64;
+   clock64 += 0x80000000ull + 5000u;
+   service_calls = 0;
+   CHECK(usb_storage_wait_for_drive(deadline) == false && service_calls == 0);
 
    /* USB a device, not a host: nothing to wait for. */
    usb_is_device = true;
    t0 = now_us;
-   CHECK(usb_storage_wait_for_drive(now_us + 5000000u) == false);
+   CHECK(usb_storage_wait_for_drive(clock64 + 5000000u) == false);
    CHECK(now_us - t0 < 100000u);
    usb_is_device = false;
 }
