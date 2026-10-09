@@ -1,6 +1,7 @@
 #!/bin/sh -e
 # Host tests for the BeebSCSI LUN layer (Review 2026-10-06 S1, S7): FORMAT
-# sizing and handle hygiene, and the jukebox's started-LUN guard.  Real
+# sizing and handle hygiene, the jukebox's started-LUN guard, and where the
+# Beeb's storage lives (storage=usb: a second RAM disk as the USB drive).  Real
 # BeebSCSI/scsi.c, BeebSCSI/filesystem.c, rpi/fileparser.c and real FatFs
 # on a RAM disk; only the bus, the F-code layer and the platform around
 # them are stubbed.  f_open/f_close are wrapped to count handles left open.
@@ -15,7 +16,7 @@ trap 'rm -rf "$B"' EXIT
 # Mirror the tree layout: filesystem.c and scsi.c include "../rpi/rpi.h",
 # "../videoplayer.h" and friends relative to themselves.
 mkdir -p "$B/rpi" "$B/BeebSCSI/fatfs"
-cp "$SRC"/config.h "$SRC"/videoplayer.h "$SRC"/harddisc_emulator.h "$B/"
+cp "$SRC"/config.h "$SRC"/videoplayer.h "$SRC"/harddisc_emulator.h "$SRC"/usb_storage.h "$B/"
 cp "$SRC"/rpi/gpio.h "$SRC"/rpi/info.h "$SRC"/rpi/byteorder.h "$SRC"/rpi/base.h \
    "$SRC"/rpi/mailbox.h "$SRC"/rpi/rpi.h "$SRC"/rpi/systimer.h "$SRC"/rpi/lowmem.h \
    "$SRC"/rpi/fileparser.c "$SRC"/rpi/fileparser.h "$B/rpi/"

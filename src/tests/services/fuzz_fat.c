@@ -65,6 +65,18 @@ DRESULT disk_write(uint8_t d, const uint8_t *b, uint32_t s, unsigned int c)
 { (void)d; (void)s; touch_read(b, (size_t)c * 512u); return RES_OK; }
 unsigned char disk_type(void) { return 1; }
 
+/* The storage moves between the card and the USB drive as the fuzz runs. */
+static const char *storage_root = "";
+const char *filesystemStorageRoot(void) { return storage_root; }
+bool filesystemStorageOnUsb(void) { return storage_root[0] != '\0'; }
+bool filesystemStoragePath(const char *path, char *buf, size_t size)
+{
+   const char *root = (path[0] >= '0' && path[0] <= '9' && path[1] == ':') ? "" : storage_root;
+   int n = snprintf(buf, size, "%s%s", root, path);
+   return n >= 0 && (size_t)n < size;
+}
+FRESULT f_chdrive(const char *p) { touch_read(p, strlen(p) + 1); return FR_OK; }
+
 bool filesystemMount(void) { return true; }
 bool filesystemDismount(void) { return true; }
 void filesystemRegisterEject(bool (*eject)(void), void (*inserted)(void)) { (void)eject; (void)inserted; }
@@ -89,6 +101,8 @@ int main(void)
 
    for (unsigned int iter = 0; iter < 300000u; iter++) {
       uint8_t page = (uint8_t)(0xF0u + (rnd() & 0x0Fu));
+      if ((rnd() & 0xFFu) == 0u)
+         storage_root = storage_root[0] ? "" : "1:";
       uint32_t cp = DISC_RAM_BASE | 0xFF0000u | ((uint32_t)page << 8);
 
       /* Hostile command block: random bytes, biased to huge offsets and

@@ -449,7 +449,8 @@ static uint32_t rec_flush_pos;
 static uint32_t rec_flush_end;
 static uint32_t rec_flush_name;     /* next Musics%03d to try - kept across recordings */
 static uint32_t rec_flush_probes;   /* names tried for this flush */
-static char     rec_flush_path[24]; /* "Musics%03d.wav" being written, root-relative */
+static char     rec_flush_path[24]; /* "Musics%03d.wav" being written, relative, with the
+                                       storage's volume ("1:" on the USB drive) */
 static uint32_t rec_flush_inits;    /* Pi1MHz_break.inits when this emulator last initialised */
 #define M5000_REC_FLUSH_SLICE  (64u * 1024u)   /* ~4 ms of card time per poll pass */
 #define M5000_REC_FLUSH_PROBES 8u              /* Musics%03d.wav names tried per pass */
@@ -493,10 +494,11 @@ static void music5000_rec_flush(void)
          scan, so the name counter carries over from one recording to the
          next (wrapping at 1000) instead of re-probing every earlier file. */
       for (uint32_t n = 0; n < M5000_REC_FLUSH_PROBES; n++) {
-         char fn[22];
+         char name[16], fn[sizeof rec_flush_path];
          if (rec_flush_name >= 1000u)
             rec_flush_name = 0;
-         sprintf(fn, "Musics%.3lu.wav", (unsigned long)rec_flush_name++);
+         sprintf(name, "Musics%.3lu.wav", (unsigned long)rec_flush_name++);
+         (void)filesystemStoragePath(name, fn, sizeof fn);   /* the card or the USB drive */
          rec_flush_probes++;
          FRESULT result = f_open(&music5000_rec_fp, fn, FA_CREATE_NEW | FA_WRITE);
          LOG_DEBUG("Music5000 Filename : %s\r\n", fn);

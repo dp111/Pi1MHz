@@ -3281,12 +3281,14 @@ static bool route_status(ws_conn_t *c)
    table_row(&b, "Serial", tmp);
    modem_status(tmp, sizeof tmp);
    table_row(&b, "Modem", tmp);
+   table_row(&b, "Beeb storage", filesystemStorageOnUsb() ? "USB drive" : "SD card");
    if (usb_is_host()) {
-      char m[48], d[56];
+      char m[64];
       usb_mouse_status(m, sizeof m);
-      usb_storage_status(d, sizeof d);
-      snprintf(tmp, sizeof tmp, "host, mouse %s, drive %s", m, d);
+      snprintf(tmp, sizeof tmp, "host, mouse %s", m);
       table_row(&b, "USB", tmp);
+      usb_storage_status(tmp, sizeof tmp);
+      table_row(&b, "USB drive", tmp);
    } else {
       table_row(&b, "USB", "device (MTP)");
    }

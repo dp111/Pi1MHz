@@ -54,7 +54,7 @@ static const char *vp_fail = "-";
 /* The video for the current VFS jukebox directory, same convention as
    the scsi0.dat LUN images: /BeebVFS<n>/video.pvf - and only there. */
 #define PVF_FILENAME "video.pvf"
-static char pvf_path[32];
+static char pvf_path[40];
 
 /* Where the GPU buffer handles are parked so the NEXT kernel can hand them
  * back over a kernel.now chain-boot - see the detailed rationale in git
@@ -1109,8 +1109,8 @@ void videoplayer_audio_enable(int channel, bool on)
 static bool pvf_open_file(void)
 {
     UINT n;
-    snprintf(pvf_path, sizeof(pvf_path), "/BeebVFS%d/" PVF_FILENAME,
-             filesystemGetLunDirectoryVFS());
+    snprintf(pvf_path, sizeof(pvf_path), "%s/BeebVFS%d/" PVF_FILENAME,
+             filesystemStorageRoot(), filesystemGetLunDirectoryVFS());
     /* Only the jukeboxed directory's own video: a jukebox to an empty
        directory must stay cheap - no SD work beyond this failed open. */
     if (f_open(&vp.file, pvf_path, FA_READ) != FR_OK) {

@@ -15,6 +15,7 @@
 #include "../Pi1MHz.h"
 #include "../config.h"
 #include "../BeebSCSI/fatfs/ff.h"
+#include "../BeebSCSI/filesystem.h"
 #include "fn_store_sd.h"
 
 #define HANDLES 12u
@@ -37,6 +38,14 @@ static bool live(fn_handle h)
    return h >= 0 && (unsigned)h < HANDLES && s_open[h];
 }
 
+/* The path on the Beeb's storage: the card, or the USB drive with
+   storage=usb (filesystemStoragePath puts "1:" in front).  Paths are kept
+   and compared without it; only the FatFs calls see it. */
+static const char *on_storage(const char *path, char *buf, size_t size)
+{
+   return filesystemStoragePath(path, buf, size) ? buf : path;
+}
+
 /* May the Beeb change this path on the card? */
 static bool protected_path(const char *path)
 {
@@ -56,7 +65,8 @@ fn_handle fn_sd_open(const char *path, fn_open_mode mode)
       if (!s_open[i]) {
          s_discard[i] = discard;
          s_stand_in[i] = false;
-         if (f_open(&s_fil[i], path, discard ? FA_READ : fa) != FR_OK) {
+         char p[FN_STORE_MAX_PATH + 2];
+         if (f_open(&s_fil[i], on_storage(path, p, sizeof p), discard ? FA_READ : fa) != FR_OK) {
             if (!discard || mode == FN_OPEN_UPDATE)
                return FN_NO_HANDLE;
             s_stand_in[i] = true;           /* a create: nothing to read */
@@ -134,7 +144,8 @@ bool fn_sd_is_dir(const char *path)
       return false;
    if (path[1] == '\0')
       return true;                      /* f_stat cannot stat the root */
-   return f_stat(path, &info) == FR_OK && (info.fattrib & AM_DIR);
+   char p[FN_STORE_MAX_PATH + 2];
+   return f_stat(on_storage(path, p, sizeof p), &info) == FR_OK && (info.fattrib & AM_DIR);
 }
 
 bool fn_sd_mkdirs(const char *path)
@@ -148,7 +159,8 @@ bool fn_sd_mkdirs(const char *path)
       if (*s == '/' || *s == '\0') {
          char c = *s;
          *s = '\0';
-         FRESULT r = f_mkdir(p);
+         char q[FN_STORE_MAX_PATH + 2];
+         FRESULT r = f_mkdir(on_storage(p, q, sizeof q));
          if (r != FR_OK && r != FR_EXIST)
             return false;
          *s = c;
@@ -162,7 +174,8 @@ bool fn_sd_delete(const char *path)
 {
    if (path[0] == '/' && protected_path(path))
       return true;                          /* protected: reported, not deleted */
-   return path[0] == '/' && f_unlink(path) == FR_OK;
+   char p[FN_STORE_MAX_PATH + 2];
+   return path[0] == '/' && f_unlink(on_storage(path, p, sizeof p)) == FR_OK;
 }
 
 /* FAT's local date and time, taken as UTC seconds since 1970. */
@@ -225,7 +238,8 @@ bool fn_sd_dir_entry(const char *path, uint32_t index, fn_dirent *out)
       return false;
    if (!s_walk_open || index != s_walk_next || strcmp(path, s_walk_path) != 0) {
       walk_close();
-      if (f_opendir(&s_walk_dir, path) != FR_OK)
+      char p[FN_STORE_MAX_PATH + 2];
+      if (f_opendir(&s_walk_dir, on_storage(path, p, sizeof p)) != FR_OK)
          return false;
       s_walk_open = true;
       s_walk_next = 0;

@@ -103,13 +103,21 @@ static void fat_open_record(unsigned int handle, const char *name)
    const char *path = name;
 
    fat_open_valid[handle] = false;
-   if (name[0] != '/') {
+   if (name[0] >= '0' && name[0] <= '9' && name[1] == ':') {
+      /* names its own volume: recorded as it is */
+   } else if (name[0] != '/') {
       int n;
       if (!fat_cwd_known)
          return;
-      n = snprintf(joined, sizeof joined, "%s/%s",
+      n = snprintf(joined, sizeof joined, "%s%s/%s", filesystemStorageRoot(),
                    (fat_cwd[0] == '/' && fat_cwd[1] == '\0') ? "" : fat_cwd,
                    name);
+      if (n < 0 || (size_t)n >= sizeof joined)
+         return;
+      path = joined;
+   } else {
+      /* On the drive, "1:" keeps it from matching a card path. */
+      int n = snprintf(joined, sizeof joined, "%s%s", filesystemStorageRoot(), name);
       if (n < 0 || (size_t)n >= sizeof joined)
          return;
       path = joined;
@@ -143,6 +151,47 @@ static const char *fat_path_norm(const char *p)
    while (*p == '/')
       p++;
    return p;
+}
+
+/* ---- The Beeb's storage: the SD card, or the USB drive (storage=usb) ----
+   Every name from the Beeb gets the storage root (filesystemStoragePath), so
+   with the drive in use "1:" is put in front: an absolute name is then on the
+   drive, and a relative one is relative to the drive's own current directory
+   (FatFs keeps one per volume).  A name with its own volume is left alone. */
+static char fat_path_a[DISC_MAX_PATH + 3], fat_path_b[DISC_MAX_PATH + 3];
+
+static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
+{
+   const char *name = (const char *)&Pi1MHz->JIM_ram[off];
+   return filesystemStoragePath(name, buf, size) ? buf : name;
+}
+
+static bool fat_on_usb(void)
+{
+   return filesystemStorageRoot()[0] != '\0';
+}
+
+/* The current directory of the Beeb's volume, without its "N:" prefix (as
+   the Beeb has always seen it).  f_getcwd reports the current drive's, so
+   the drive's is asked for with it made current just for the call. */
+static FRESULT fat_getcwd(char *buf, UINT len)
+{
+   bool usb = fat_on_usb();
+   if (usb)
+      (void)f_chdrive("1:");
+   FRESULT result = f_getcwd(buf, len);
+   if (usb)
+      (void)f_chdrive("0:");
+   if (result == FR_OK && buf[0] >= '0' && buf[0] <= '9' && buf[1] == ':')
+      memmove(buf, buf + 2, strlen(buf + 2) + 1u);
+   return result;
+}
+
+/* Raw sectors (MMFS reading BEEB.MMB with its own FAT code): the Beeb asks
+   for drive 0, which is the drive when the storage is on it. */
+static BYTE fat_raw_drive(uint8_t beeb_drive)
+{
+   return (beeb_drive == 0u && fat_on_usb()) ? 1u : beeb_drive;
 }
 
 bool fat_service_file_in_use(const char *host_path)
@@ -207,9 +256,12 @@ bool fat_service_file_in_use(const char *host_path)
    than being re-joined at each call site. */
 bool beeb_path_busy(const char *host_path)
 {
+   /* Those two keep their paths without a volume: with the storage on the
+      USB drive their files are not the card's. */
+   bool card = !filesystemStorageOnUsb();
    return filesystemHostPathBusy(host_path) || fat_service_file_in_use(host_path)
-       || M5000_recording_path_busy(host_path)     /* a WAV still being flushed */
-       || fujibus_service_path_busy(host_path);    /* a FujiNet-mounted image */
+       || (card && M5000_recording_path_busy(host_path))   /* a WAV still being flushed */
+       || (card && fujibus_service_path_busy(host_path));  /* a FujiNet-mounted image */
 }
 
 /* ---- readdir-ex (command 17) record ------------------------------------
@@ -242,15 +294,18 @@ static void fat_dirent_record(uint8_t *rec, const FILINFO *info)
    rec[6] = (uint8_t)(info->fsize >> 16);
    rec[7] = (uint8_t)(info->fsize >> 24);
 
-   /* Right-hand column: <DIR>, bytes, KB or MB - always fits 7 chars. */
+   /* Right-hand column: <DIR>, bytes, KB, MB or GB - always fits 7 chars
+      (each branch is under 1000000; the % only shows the compiler so). */
    if (info->fattrib & AM_DIR)
       strcpy(size_text, "<DIR>");
    else if (info->fsize < 1000000u)
-      sprintf(size_text, "%lu", (unsigned long)info->fsize);
+      snprintf(size_text, sizeof size_text, "%lu", (unsigned long)(info->fsize % 1000000u));
    else if ((info->fsize >> 10) < 1000000u)
-      sprintf(size_text, "%luK", (unsigned long)(info->fsize >> 10));
-   else
-      sprintf(size_text, "%luM", (unsigned long)(info->fsize >> 20));
+      snprintf(size_text, sizeof size_text, "%luK", (unsigned long)((info->fsize >> 10) % 1000000u));
+   else if ((info->fsize >> 20) < 1000000u)
+      snprintf(size_text, sizeof size_text, "%luM", (unsigned long)((info->fsize >> 20) % 1000000u));
+   else                       /* exFAT: a terabyte and up */
+      snprintf(size_text, sizeof size_text, "%luG", (unsigned long)((info->fsize >> 30) % 1000000u));
 
    /* Display name: truncate to the name column, mark directories with a
       trailing '/', and replace anything a teletext VDU stream would
@@ -290,7 +345,9 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
     {
         uint32_t buf_off = jim_read32(command_pointer+4);
         uint32_t sectors = jim_read32(command_pointer+12);
-        fat_raw_sector_seen = true;
+        BYTE pdrv = fat_raw_drive(Pi1MHz->JIM_ram[command_pointer+1]);
+        if (pdrv == 0u)
+            fat_raw_sector_seen = true;      /* the card's BEEB.MMB is in use */
         // disk_read transfers 'sectors' x 512-byte blocks into the buffer
         if ((sectors > (DISC_RAM_SIZE / DISC_SECTOR_SIZE)) ||
             !service_buffer_ok(buf_off, sectors * DISC_SECTOR_SIZE))
@@ -299,7 +356,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         Pi1MHz_MemoryWrite(addr,
-            disk_read( Pi1MHz->JIM_ram[command_pointer+1],
+            disk_read( pdrv,
                         &Pi1MHz->JIM_ram[buf_off+base_addr],
                         jim_read32(command_pointer+8),
                         sectors
@@ -310,7 +367,9 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
     {
         uint32_t buf_off = jim_read32(command_pointer+4);
         uint32_t sectors = jim_read32(command_pointer+12);
-        fat_raw_sector_seen = true;
+        BYTE pdrv = fat_raw_drive(Pi1MHz->JIM_ram[command_pointer+1]);
+        if (pdrv == 0u)
+            fat_raw_sector_seen = true;
         // disk_write transfers 'sectors' x 512-byte blocks from the buffer
         if (config_beeb_write_protected())      // Beeb writes ignored: report OK
         {
@@ -324,7 +383,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         Pi1MHz_MemoryWrite(addr,
-            disk_write( Pi1MHz->JIM_ram[command_pointer+1],
+            disk_write( pdrv,
                         &Pi1MHz->JIM_ram[buf_off+base_addr],
                         jim_read32(command_pointer+8) ,
                         sectors )
@@ -344,8 +403,9 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         BYTE mode = Pi1MHz->JIM_ram[command_pointer+2];
         if (config_beeb_write_protected())
             mode = FA_READ;                  /* strip write/create bits: read-only open */
-        result = f_open( &fileObject[data & 15], (char * )&Pi1MHz->JIM_ram[command_pointer+3]
-                    , mode );
+        result = f_open( &fileObject[data & 15],
+                         fat_beeb_path(command_pointer+3, fat_path_a, sizeof fat_path_a),
+                         mode );
         if (result == FR_OK) {
             fat_file_open[data & 15] = true;
             fat_open_record(data & 15, (char * )&Pi1MHz->JIM_ram[command_pointer+3]);
@@ -467,7 +527,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         }
         {
             FRESULT dresult = f_opendir( (DIR * )&dirObject[data & 15],
-                                         (char * )&Pi1MHz->JIM_ram[command_pointer + 1] );
+                                         fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) );
             if (dresult == FR_OK)
                 fat_dir_open[data & 15] = true;
             Pi1MHz_MemoryWrite(addr, dresult);
@@ -528,7 +588,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         Pi1MHz_MemoryWrite(addr, config_beeb_write_protected() ? FR_OK :
-             f_mkdir( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
+             f_mkdir( fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) ) );
         break;
 
     case 11 : // fchdir
@@ -539,9 +599,9 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
-        result = f_chdir( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] );
+        result = f_chdir( fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) );
         if (result == FR_OK)
-            fat_cwd_known = (f_getcwd(fat_cwd, sizeof fat_cwd) == FR_OK);
+            fat_cwd_known = (fat_getcwd(fat_cwd, sizeof fat_cwd) == FR_OK);
         Pi1MHz_MemoryWrite(addr, result);
         break;
     }
@@ -562,8 +622,8 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         Pi1MHz_MemoryWrite(addr, config_beeb_write_protected() ? FR_OK :
-             f_rename( (char * )&Pi1MHz->JIM_ram[name1] ,
-                       (char * )&Pi1MHz->JIM_ram[name2] ) );
+             f_rename( fat_beeb_path(name1, fat_path_a, sizeof fat_path_a),
+                       fat_beeb_path(name2, fat_path_b, sizeof fat_path_b) ) );
         break;
     }
 
@@ -578,7 +638,20 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
            can lag recent writes; it is advisory (a free-space display),
            and the alternative is a multi-second stall per query. */
         uint64_t total_bytes = 0, free_bytes = 0;
-        if (!webserver_sd_space_now(&total_bytes, &free_bytes))
+        if (fat_on_usb()) {
+            /* The drive has no background sweep: FatFs scans its FAT on the
+               first ask (a few seconds on a big drive), then keeps the
+               count up to date itself. */
+            DWORD free_clusters;
+            FATFS *fs;
+            FRESULT result = f_getfree("1:", &free_clusters, &fs);
+            if (result != FR_OK) {
+                Pi1MHz_MemoryWrite(addr, result);
+                break;
+            }
+            free_bytes = (uint64_t)free_clusters * fs->csize * 512u;
+        }
+        else if (!webserver_sd_space_now(&total_bytes, &free_bytes))
             {
                 Pi1MHz_MemoryWrite(addr, FR_DISK_ERR);
                 break;
@@ -622,7 +695,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         Pi1MHz_MemoryWrite(addr, config_beeb_write_protected() ? FR_OK :
-             f_unlink( (char * )&Pi1MHz->JIM_ram[command_pointer + 1] ) );
+             f_unlink( fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) ) );
         break;
 
     case 17 : // readdir-ex: next entry as a fixed 128-byte record in the buffer
@@ -666,7 +739,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
             break;
         }
-        result = f_getcwd(cwd, sizeof cwd);
+        result = fat_getcwd(cwd, sizeof cwd);
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
@@ -680,7 +753,8 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         break;
     }
 
-    case 20 : Pi1MHz_MemoryWrite(addr, disk_type()); break;
+    /* The card's type (SDHC: block addressed); the drive is block addressed too. */
+    case 20 : Pi1MHz_MemoryWrite(addr, fat_on_usb() ? 1u : disk_type()); break;
 
     default :
         /* 19 and 21-29 are reserved within the FAT range; ignored. */

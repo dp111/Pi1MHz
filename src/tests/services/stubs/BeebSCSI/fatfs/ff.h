@@ -52,6 +52,7 @@ FRESULT f_closedir(DIR *dp);
 FRESULT f_readdir(DIR *dp, FILINFO *fno);
 FRESULT f_mkdir(const char *path);
 FRESULT f_chdir(const char *path);
+FRESULT f_chdrive(const char *path);
 FRESULT f_getcwd(char *buff, UINT len);
 FRESULT f_rename(const char *path_old, const char *path_new);
 FRESULT f_getfree(const char *path, DWORD *nclst, FATFS **fatfs);

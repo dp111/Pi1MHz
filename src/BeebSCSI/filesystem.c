@@ -67,7 +67,8 @@
 #include "fatfs/diskio.h"
 #include "filesystem.h"
 #include "../videoplayer.h"
-#include "../config.h"			/* Beeb_write_protect */
+#include "../config.h"			/* Beeb_write_protect, storage= */
+#include "../usb_storage.h"
 #include "../rpi/rpi.h"
 #include "../rpi/systimer.h"
 #include "../rpi/fileparser.h"
@@ -371,6 +372,61 @@ static void filesystemRemountNotify(void)
       remount_hook[i]();
 }
 
+/* ---- Where the Beeb's storage lives ---------------------------------------
+   The SD card, or with storage=usb in Pi1MHz.cfg a USB flash drive (FatFs
+   volume "1:", usb_storage.c): the BeebSCSI and BeebVFS directories, the
+   FAT transfer directory and, through filesystemStoragePath, the FAT
+   service, FujiNet, Music 5000 recordings and the video.  Pi1MHz.cfg, the
+   ROMs and the kernel stay on the card, as do WebDAV and MTP.
+
+   Decided at each BBC reset, at the first use after it, and kept until the
+   next: a drive plugged in while a program runs is used from the next
+   BREAK, never swapped in under it.  At power-on the drive is still being
+   enumerated when the Beeb first asks, so until STORAGE_POWER_ON_WAIT_US
+   after the first reset the decision waits for it, running USB meanwhile:
+   the Beeb sees a slow answer inside a command - it has no timeouts - never
+   the SD card's discs in place of the drive's.  Never from the FIQ. */
+#define STORAGE_POWER_ON_WAIT_US 5000000u
+
+static enum { ROOT_SD, ROOT_USB, ROOT_UNDECIDED } fsRoot;
+static bool     fsRootBooted;          /* the first reset has set the wait */
+static uint32_t fsRootWaitUntil;
+
+static void filesystemStorageReset(void)
+{
+   if (!fsRootBooted) {
+      fsRootBooted = true;
+      fsRootWaitUntil = RPI_GetSystemTime() + STORAGE_POWER_ON_WAIT_US;
+   }
+   const char *storage = config_get("storage");
+   fsRoot = (storage != NULL && strcasecmp(storage, "usb") == 0) ? ROOT_UNDECIDED : ROOT_SD;
+}
+
+const char *filesystemStorageRoot(void)
+{
+   if (fsRoot == ROOT_UNDECIDED)
+      fsRoot = (usb_storage_mounted() || usb_storage_wait_for_drive(fsRootWaitUntil))
+             ? ROOT_USB : ROOT_SD;
+   return fsRoot == ROOT_USB ? "1:" : "";
+}
+
+bool filesystemStoragePath(const char *path, char *buf, size_t size)
+{
+   /* A path naming its own volume ("0:...") is left as it is. */
+   const char *root = (path[0] >= '0' && path[0] <= '9' && path[1] == ':')
+                    ? "" : filesystemStorageRoot();
+   int n = snprintf(buf, size, "%s%s", root, path);
+   return n >= 0 && (size_t)n < size;
+}
+
+/* The drive is decided on: host paths (WebDAV, MTP) are on the card, so
+   none of them is the Beeb's.  Never decides, so never waits: undecided
+   answers false, the cautious side for a host-write interlock. */
+bool filesystemStorageOnUsb(void)
+{
+   return fsRoot == ROOT_USB;
+}
+
 // Reset the file system (called when the host signals reset)
 void filesystemReset(void)
 {
@@ -380,6 +436,7 @@ void filesystemReset(void)
    snprintf(fatDirectory, sizeof(fatDirectory), "/Transfer");
    vfs_vol_cached_dir = -1;          /* re-stat the VFS volume marker */
    vfs_cfg_dir = -1;                 /* and re-parse the cached side's title: a card swap comes through here */
+   filesystemStorageReset();         /* SD card or USB drive: decided again at the next use */
 
    // ensure the file-system is closed on reset
    filesystemDismount();
@@ -527,27 +584,35 @@ static uint16_t hostRevokeMask;  // bit n set = the Beeb took LUN n back; abort 
 // /BeebVFS<n>/scsi<lun&7>.<ext> in the read-only VFS jukebox directory.
 // Every open of a .dat/.dsc/.cfg goes through here, so the VFS masking and
 // directory choice cannot be forgotten at a call site.
-static void fsLunDirPath(uint8_t lunNumber, char *buf, size_t size)
+// root is the volume prefix: filesystemStorageRoot() for the Beeb's own
+// access, "" for the host-side names (WebDAV and MTP see the SD card).
+static void fsLunDirPathOn(const char *root, uint8_t lunNumber, char *buf, size_t size)
 {
    if (lunNumber < 8)
-      snprintf(buf, size, "/BeebSCSI%d", filesystemState.lunDirectory);
+      snprintf(buf, size, "%s/BeebSCSI%d", root, filesystemState.lunDirectory);
    else
-      snprintf(buf, size, "/BeebVFS%d", filesystemState.lunDirectoryVFS);
+      snprintf(buf, size, "%s/BeebVFS%d", root, filesystemState.lunDirectoryVFS);
+}
+
+static void fsLunFilePathOn(const char *root, uint8_t lunNumber, const char *ext,
+                            char *buf, size_t size)
+{
+   if (lunNumber < 8)
+      snprintf(buf, size, "%s/BeebSCSI%d/scsi%d.%s", root, filesystemState.lunDirectory, lunNumber, ext);
+   else
+      snprintf(buf, size, "%s/BeebVFS%d/scsi%d.%s", root, filesystemState.lunDirectoryVFS, lunNumber & 7, ext);
 }
 
 static void fsLunFilePath(uint8_t lunNumber, const char *ext, char *buf, size_t size)
 {
-   if (lunNumber < 8)
-      snprintf(buf, size, "/BeebSCSI%d/scsi%d.%s", filesystemState.lunDirectory, lunNumber, ext);
-   else
-      snprintf(buf, size, "/BeebVFS%d/scsi%d.%s", filesystemState.lunDirectoryVFS, lunNumber & 7, ext);
+   fsLunFilePathOn(filesystemStorageRoot(), lunNumber, ext, buf, size);
 }
 
 static void fsHostLunNames(uint8_t lunNumber, char *dir, size_t dirSize,
                            char *stem, size_t stemSize)
 {
-   fsLunDirPath(lunNumber, dir, dirSize);
-   fsLunFilePath(lunNumber, "", stem, stemSize);    // "/BeebSCSI<n>/scsi<lun>."
+   fsLunDirPathOn("", lunNumber, dir, dirSize);
+   fsLunFilePathOn("", lunNumber, "", stem, stemSize);    // "/BeebSCSI<n>/scsi<lun>."
 }
 
 // True if `path` is a file of a started (or host-locked) LUN, or a directory
@@ -558,6 +623,7 @@ static void fsHostLunNames(uint8_t lunNumber, char *dir, size_t dirSize,
 bool filesystemHostPathBusy(const char *path)
 {
    if (path == NULL || path[0] == '\0') return false;
+   if (filesystemStorageOnUsb()) return false;   // the LUNs' files are on the drive
 
    size_t pathLen = strlen(path);
    while (pathLen > 1u && path[pathLen - 1u] == '/') pathLen--;   // ignore a trailing /
@@ -589,6 +655,7 @@ bool filesystemHostPathBusy(const char *path)
 int8_t filesystemLunFromHostPath(const char *path)
 {
    if (path == NULL) return -1;
+   if (filesystemStorageOnUsb()) return -1;      // the LUNs' files are on the drive
 
    for (uint8_t lunNumber = 0; lunNumber < MAX_LUNS; lunNumber++) {
       char dir[24];
@@ -802,11 +869,12 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
    // Does a directory exist for the currently selected LUN directory - if not, create it
    // (VFS is a read-only filesystem: check its directory but never create it)
    if (lunNumber < 8 )
-      snprintf(fileName, sizeof(fileName), "/BeebSCSI%d", lunDirectory);
+      snprintf(fileName, sizeof(fileName), "%s/BeebSCSI%d", filesystemStorageRoot(), lunDirectory);
    else
       // VFS LUNs live under the VFS jukebox directory (this must match
       // where filesystemCheckLunImage/CheckExtAttributes open the images)
-      snprintf(fileName, sizeof(fileName), "/BeebVFS%d", filesystemState.lunDirectoryVFS);
+      snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d", filesystemStorageRoot(),
+               filesystemState.lunDirectoryVFS);
 
    fsResult = f_opendir(&dirObject, fileName);
 
@@ -868,8 +936,8 @@ bool filesystemVFSVolumePresent(void)
    }
    if (stale) {
       FILINFO fno;
-      snprintf(fileName, sizeof(fileName), "/BeebVFS%d/video.pvf",
-               filesystemState.lunDirectoryVFS);
+      snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d/video.pvf",
+               filesystemStorageRoot(), filesystemState.lunDirectoryVFS);
       vfs_vol_present = (f_stat(fileName, &fno) == FR_OK);
       vfs_vol_cached_dir = (int16_t)filesystemState.lunDirectoryVFS;
    }
@@ -882,8 +950,8 @@ bool filesystemVFSVolumePresent(void)
 bool filesystemVFSDatPresent(void)
 {
    FILINFO fno;
-   snprintf(fileName, sizeof(fileName), "/BeebVFS%d/scsi0.dat",
-            filesystemState.lunDirectoryVFS);
+   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d/scsi0.dat",
+            filesystemStorageRoot(), filesystemState.lunDirectoryVFS);
    return f_stat(fileName, &fno) == FR_OK;
 }
 
@@ -894,10 +962,10 @@ bool filesystemVFSDatPresent(void)
 uint8_t filesystemVFSDirType(uint8_t dir)
 {
    FILINFO fno;
-   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/scsi0.dat", dir);
+   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.dat", filesystemStorageRoot(), dir);
    if (f_stat(fileName, &fno) == FR_OK)
       return 2;
-   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/video.pvf", dir);
+   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/video.pvf", filesystemStorageRoot(), dir);
    if (f_stat(fileName, &fno) == FR_OK)
       return 1;
    return 0;
@@ -1234,7 +1302,7 @@ bool filesystemReadVFSCfgIntDir(uint8_t dir, enum parserkeyvalueenum key, int *o
    }
    bool found = false;
    parserkeyvalue values[NUM_KEYS] = {0};
-   snprintf(fileName, sizeof(fileName), "/BeebVFS%u/scsi0.cfg", dir);
+   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.cfg", filesystemStorageRoot(), dir);
    if (parse_readfile(fileName, 0, scsiattributes, values)) {
       if (values[key].v.integer && values[key].length) {
          *out = *values[key].v.integer;
@@ -1284,7 +1352,7 @@ bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key,
       vfs_cfg_dir = (int16_t)dir;
       vfs_cfg_title[0] = '\0';
       vfs_cfg_desc[0]  = '\0';
-      snprintf(fileName, sizeof(fileName), "/BeebVFS%u/scsi0.cfg", dir);
+      snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.cfg", filesystemStorageRoot(), dir);
       if (parse_readfile(fileName, 0, scsiattributes, values)) {
          if (values[TITLE].v.string && values[TITLE].length) {
             uint32_t n = values[TITLE].length < sizeof(vfs_cfg_title) - 1 ?
@@ -2137,19 +2205,22 @@ bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer)
       return false;
    }
 
-   // Open the FAT transfer directory
-   fsResult = f_opendir(&dirObject, fatDirectory);
+   // Open the FAT transfer directory, on the Beeb's storage
+   char fatDir[sizeof fatDirectory + 2];
+   if (!filesystemStoragePath(fatDirectory, fatDir, sizeof fatDir))
+      return false;
+   fsResult = f_opendir(&dirObject, fatDir);
 
    // Did a directory exist?
    if (fsResult == FR_NO_PATH) {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckFatDirectory(): f_opendir returned FR_NO_PATH - Directory does not exist\r\n"));
       // Create the FAT transfer directory - it's not present on the SD card
       // Check the result
-      if (f_mkdir(fatDirectory) != FR_OK) {
+      if (f_mkdir(fatDir) != FR_OK) {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunDirectory(): ERROR: Unable to create FAT transfer directory\r\n"));
          return false;
       }
-      f_opendir(&dirObject, fatDirectory);
+      f_opendir(&dirObject, fatDir);
 
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckFatDirectory(): Created FAT transfer directory entry\r\n"));
    } else {
@@ -2244,8 +2315,11 @@ bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber)
       return false;
    }
 
-   // Open the FAT transfer directory
-   fsResult = f_opendir(&dirObject, fatDirectory);
+   // Open the FAT transfer directory, on the Beeb's storage
+   char fatDir[sizeof fatDirectory + 2];
+   if (!filesystemStoragePath(fatDirectory, fatDir, sizeof fatDir))
+      return false;
+   fsResult = f_opendir(&dirObject, fatDir);
 
    // Check the open directory action's result
    if (fsResult == FR_OK) {
@@ -2272,7 +2346,7 @@ bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber)
       } else {
          char tempfileName[514];
          // Assemble the full path name and file name for the requested file
-         snprintf(tempfileName, sizeof(tempfileName), "%s/%s", fatDirectory, fsInfo.fname);
+         snprintf(tempfileName, sizeof(tempfileName), "%s/%s", fatDir, fsInfo.fname);
          f_closedir(&dirObject);
 
          // Open the requested file for reading

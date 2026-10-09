@@ -84,16 +84,46 @@ FRESULT f_readdir(DIR *dp, FILINFO *fno)
 }
 FRESULT f_mkdir(const char *p) { (void)p; f_mkdir_calls++; return FR_OK; }
 FRESULT f_chdir(const char *p) { (void)p; return chdir_result; }
-FRESULT f_getcwd(char *buff, UINT len) { snprintf(buff, len, "%s", cwd_value); return getcwd_result; }
+/* As FatFs with two volumes: the current drive's directory, prefixed with
+   its number; f_chdrive changes which drive that is. */
+static int  cur_drive;
+static char usb_cwd_value[128] = "/";
+static int  chdrive_calls;
+FRESULT f_chdrive(const char *p) { cur_drive = p[0] - '0'; chdrive_calls++; return FR_OK; }
+FRESULT f_getcwd(char *buff, UINT len)
+{
+   snprintf(buff, len, "%d:%s", cur_drive, cur_drive ? usb_cwd_value : cwd_value);
+   return getcwd_result;
+}
 FRESULT f_rename(const char *a, const char *b) { (void)a; (void)b; f_rename_calls++; return FR_OK; }
 bool webserver_sd_space_now(uint64_t *t, uint64_t *f) { *t = 0; *f = 0; return false; }
-FRESULT f_getfree(const char *p, DWORD *n, FATFS **f) { (void)p; (void)n; (void)f; return FR_DISK_ERR; }
+static FATFS usb_fatfs = { 8 };
+FRESULT f_getfree(const char *p, DWORD *n, FATFS **f)
+{
+   if (strcmp(p, "1:") != 0)
+      return FR_DISK_ERR;
+   *n = 1000;                       /* 1000 clusters of 8 sectors */
+   *f = &usb_fatfs;
+   return FR_OK;
+}
 FRESULT f_unlink(const char *p) { (void)p; f_unlink_calls++; return FR_OK; }
 
+static int last_disk_drive = -1;
 DRESULT disk_read(uint8_t d, uint8_t *b, uint32_t s, unsigned int c)
-{ (void)d; (void)b; (void)s; (void)c; return RES_OK; }
+{ (void)b; (void)s; (void)c; last_disk_drive = d; return RES_OK; }
 DRESULT disk_write(uint8_t d, const uint8_t *b, uint32_t s, unsigned int c)
-{ (void)d; (void)b; (void)s; (void)c; disk_write_calls++; return RES_OK; }
+{ (void)b; (void)s; (void)c; last_disk_drive = d; disk_write_calls++; return RES_OK; }
+
+/* Where the Beeb's storage lives: "" the card, "1:" the USB drive. */
+static const char *storage_root = "";
+const char *filesystemStorageRoot(void) { return storage_root; }
+bool filesystemStorageOnUsb(void) { return storage_root[0] != '\0'; }
+bool filesystemStoragePath(const char *path, char *buf, size_t size)
+{
+   const char *root = (path[0] >= '0' && path[0] <= '9' && path[1] == ':') ? "" : storage_root;
+   int n = snprintf(buf, size, "%s%s", root, path);
+   return n >= 0 && (size_t)n < size;
+}
 unsigned char disk_type(void) { return 42; }
 
 bool filesystemMount(void) { return true; }
@@ -130,8 +160,9 @@ static uint8_t dispatch(uint8_t page)
    return pi.Memory[SVC_BASE + 4];
 }
 bool filesystemHostPathBusy(const char *path) { (void)path; return false; }
-bool M5000_recording_path_busy(const char *path) { (void)path; return false; }
-bool fujibus_service_path_busy(const char *path) { (void)path; return false; }
+static bool m5000_busy, fuji_busy;
+bool M5000_recording_path_busy(const char *path) { (void)path; return m5000_busy; }
+bool fujibus_service_path_busy(const char *path) { (void)path; return fuji_busy; }
 
 /* Issue FAT command 2 (open) for handle h on `name`; returns FRESULT byte. */
 static uint8_t do_open(uint8_t h, const char *name)
@@ -465,6 +496,66 @@ int main(void)
       ok(do_open(1, "/eject/new.dat") == FR_OK && fat_service_file_in_use("/eject/new.dat"),
          "a card inserted afterwards opens and tracks files again");
       (void)do_simple(1, 3);
+   }
+
+   puts("== storage on the USB drive (storage=usb) ==");
+   {
+      services_emulator_init(0, SVC_BASE);
+      storage_root = "1:";
+      ok(do_open(1, "/discs/game.ssd") == FR_OK && !strcmp(last_open_path, "1:/discs/game.ssd"),
+         "an absolute name is opened on the drive");
+      ok(!fat_service_file_in_use("/discs/game.ssd"),
+         "... and does not make the card's file of that name busy");
+      ok(do_open(2, "rel.ssd") == FR_OK && !strcmp(last_open_path, "1:rel.ssd"),
+         "a relative name is relative to the drive's current directory");
+      ok(do_open(3, "0:/card.ssd") == FR_OK && !strcmp(last_open_path, "0:/card.ssd")
+         && fat_service_file_in_use("/card.ssd"),
+         "a name with its own volume is left alone");
+
+      (void)do_simple(0, 0);                   /* raw read, the Beeb's drive 0 */
+      ok(last_disk_drive == 1, "MMFS's raw sectors come from the drive");
+      ok(!fat_service_file_in_use("/BEEB.MMB"), "... and the card's BEEB.MMB is not busy");
+      ok(do_simple(0, 20) == 1, "disk type: block addressed, as SDHC");
+
+      /* getcwd: the drive's directory, made current only for the call, and
+         given to the Beeb without the volume prefix. */
+      strcpy(usb_cwd_value, "/on/usb");
+      uint32_t cp = cp_of(0xFCu);
+      uint32_t dest = 0x00D80000u;
+      memset(&Pi1MHz->JIM_ram[cp], 0, 64);
+      Pi1MHz->JIM_ram[cp] = 18;
+      Pi1MHz->JIM_ram[cp + 6] = 0xD8;
+      ok(dispatch(0xFCu) == FR_OK && !strcmp((char *)&Pi1MHz->JIM_ram[dest], "/on/usb"),
+         "getcwd gives the drive's directory, without \"1:\"");
+      ok(cur_drive == 0, "... and leaves the card the current drive");
+
+      /* free space: the drive's own, 1000 clusters x 8 sectors x 512 / 256 */
+      memset(&Pi1MHz->JIM_ram[cp_of(0xF0u)], 0, 64);
+      ok(do_simple(0, 13) == FR_OK, "free space of the drive");
+      {
+         uint32_t c0 = cp_of(0xF0u) + 8u;
+         uint32_t v = Pi1MHz->JIM_ram[c0] | ((uint32_t)Pi1MHz->JIM_ram[c0 + 1] << 8)
+                    | ((uint32_t)Pi1MHz->JIM_ram[c0 + 2] << 16)
+                    | ((uint32_t)Pi1MHz->JIM_ram[c0 + 3] << 24);
+         ok(v == 16000u, "... in 256-byte units");
+      }
+
+      /* Music 5000 and FujiNet keep their paths without a volume: on the
+         drive, their files are not the card's. */
+      m5000_busy = fuji_busy = true;
+      ok(!beeb_path_busy("/Musics000.wav"), "a recording on the drive does not lock the card");
+      storage_root = "";
+      ok(beeb_path_busy("/Musics000.wav"), "control: on the card it does");
+      m5000_busy = fuji_busy = false;
+
+      /* On the card: the Beeb's drive 0 is drive 0, and getcwd strips the
+         "0:" FatFs gives it (two volumes: every cwd carries one). */
+      (void)do_simple(0, 0);
+      ok(last_disk_drive == 0, "control: on the card, raw sectors from the card");
+      strcpy(cwd_value, "/card");
+      ok(dispatch(0xFCu) == FR_OK && !strcmp((char *)&Pi1MHz->JIM_ram[dest], "/card"),
+         "getcwd on the card gives no \"0:\" either");
+      strcpy(cwd_value, "/");
    }
 
    /* KEEP THIS BLOCK LAST: it sets Beeb_write_protect in the shared config

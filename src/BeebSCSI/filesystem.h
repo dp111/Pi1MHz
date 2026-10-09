@@ -27,6 +27,8 @@
 #ifndef FILESYSTEM_H_
 #define FILESYSTEM_H_
 
+#include <stddef.h>
+
 // Read/Write sector buffer (must be 256 bytes minimum)
 // Testing shows that this is optimal when it matches the sector size of
 // the SD card (which is 512 bytes).
@@ -65,6 +67,16 @@ bool filesystemInsert(void);
 bool filesystemEjected(void);
 void filesystemRegisterRemount(void (*closing)(void));
 bool filesystemMounted(void);
+
+/* Where the Beeb's storage lives - see filesystem.c: "" (the SD card) or
+   "1:" (the USB drive, storage=usb).  Decided at the first use after a BBC
+   reset; main loop only.  filesystemStoragePath puts it in front of a path
+   (one naming its own volume is left alone); false if it does not fit. */
+const char *filesystemStorageRoot(void);
+bool filesystemStoragePath(const char *path, char *buf, size_t size);
+/* The storage is on the drive (decided; never waits).  For host-side
+   interlocks: their paths are on the card. */
+bool filesystemStorageOnUsb(void);
 
 bool filesystemMount(void);
 bool filesystemDismount(void);

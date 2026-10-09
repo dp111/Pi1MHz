@@ -2,6 +2,7 @@
 /* Host-test stub of BeebSCSI filesystem.h. */
 #include <stdbool.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 bool filesystemMount(void);
@@ -10,3 +11,6 @@ void filesystemRegisterEject(bool (*eject)(void), void (*inserted)(void));
 void filesystemRegisterRemount(void (*closing)(void));
 bool filesystemHostPathBusy(const char *path);
 uint32_t filesystemReadFile(const char *filename, uint8_t **address, unsigned int max_size);
+const char *filesystemStorageRoot(void);
+bool filesystemStoragePath(const char *path, char *buf, size_t size);
+bool filesystemStorageOnUsb(void);

@@ -16,7 +16,7 @@ trap 'rm -rf "$B"' EXIT
 # relative to itself.
 mkdir -p "$B/rpi" "$B/BeebSCSI/fatfs"
 cp "$SRC"/M5000_emulator.c "$SRC"/M5000_emulator.h "$SRC"/config.h \
-   "$SRC"/videoplayer.h "$B/"
+   "$SRC"/videoplayer.h "$SRC"/usb_storage.h "$B/"
 cp "$SRC"/rpi/audio.h "$SRC"/rpi/gpio.h "$SRC"/rpi/info.h "$SRC"/rpi/byteorder.h \
    "$SRC"/rpi/base.h "$SRC"/rpi/mailbox.h "$SRC"/rpi/rpi.h "$SRC"/rpi/systimer.h \
    "$SRC"/rpi/fileparser.h "$SRC"/rpi/lowmem.h "$B/rpi/"

@@ -56,6 +56,7 @@ Then one guide per feature:
 - [Teletext](teletext.md)
 - [USB file access (MTP)](usb-file-access.md)
 - [USB mouse](usb-mouse.md)
+- [USB flash drive](usb-flash-drive.md) - the Beeb's discs on a USB drive
 
 And when things go wrong:
 

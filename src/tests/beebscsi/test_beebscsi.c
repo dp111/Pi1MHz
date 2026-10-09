@@ -37,10 +37,31 @@ static Pi1MHz_t pi_struct;
 Pi1MHz_t * const Pi1MHz = &pi_struct;
 void Pi1MHz_LED(int led) { (void)led; }
 
-const char *config_get(const char *key) { (void)key; return NULL; }
+static const char *cfg_storage;        /* storage= in Pi1MHz.cfg */
+const char *config_get(const char *key)
+{
+   return strcmp(key, "storage") == 0 ? cfg_storage : NULL;
+}
 bool config_beeb_write_protected(void) { return false; }
 uint32_t RPI_GetSystemTime(void) { return 0; }
 void videoplayer_media_changed(void) {}
+
+/* The USB drive (usb_storage.c): volume "1:" on the second RAM disk,
+   mounted by the test as usb_storage_poll would.  The power-on wait is
+   recorded; a drive can be made to turn up during it. */
+static bool     usb_mounted;
+static int      usb_waits;
+static uint32_t usb_wait_until;
+static bool     usb_arrives_in_wait;
+bool usb_storage_mounted(void) { return usb_mounted; }
+bool usb_storage_wait_for_drive(uint32_t until_us)
+{
+   usb_waits++;
+   usb_wait_until = until_us;
+   if (usb_arrives_in_wait)
+      usb_mounted = true;
+   return usb_mounted;
+}
 
 /* The bus and the F-code layer: the tests call the LUN layer directly. */
 uint8_t scsiFcodeBuffer[256];
@@ -119,31 +140,34 @@ bool hostadapterReadSelectFlag(void) { return bus_sel; }
 /* ---- RAM disk ---------------------------------------------------------- */
 
 #define DISK_SECTORS (128u * 1024u * 2u)        /* 128 MB of 512-byte sectors */
-static uint8_t *disk;
+#define USB_SECTORS  (16u * 1024u * 2u)         /* the USB drive: 16 MB */
+static uint8_t *disk, *usbdisk;
+static int usb_reads, usb_writes;               /* disk_read/write calls on drive 1 */
 
 DSTATUS disk_initialize(BYTE pdrv) { (void)pdrv; return 0; }
 DSTATUS disk_status(BYTE pdrv) { (void)pdrv; return 0; }
 DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
 {
-   (void)pdrv;
+   uint8_t *d = pdrv ? usbdisk : disk;
+   usb_reads += pdrv != 0;
    if (disk_fail) return RES_ERROR;
-   if (sector + count > DISK_SECTORS) return RES_PARERR;
-   memcpy(buff, disk + (size_t)sector * 512u, (size_t)count * 512u);
+   if (sector + count > (pdrv ? USB_SECTORS : DISK_SECTORS)) return RES_PARERR;
+   memcpy(buff, d + (size_t)sector * 512u, (size_t)count * 512u);
    return RES_OK;
 }
 DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
 {
-   (void)pdrv;
-   if (sector + count > DISK_SECTORS) return RES_PARERR;
-   memcpy(disk + (size_t)sector * 512u, buff, (size_t)count * 512u);
+   uint8_t *d = pdrv ? usbdisk : disk;
+   usb_writes += pdrv != 0;
+   if (sector + count > (pdrv ? USB_SECTORS : DISK_SECTORS)) return RES_PARERR;
+   memcpy(d + (size_t)sector * 512u, buff, (size_t)count * 512u);
    return RES_OK;
 }
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff)
 {
-   (void)pdrv;
    switch (cmd) {
    case CTRL_SYNC:        return RES_OK;
-   case GET_SECTOR_COUNT: *(LBA_t *)buff = DISK_SECTORS; return RES_OK;
+   case GET_SECTOR_COUNT: *(LBA_t *)buff = pdrv ? USB_SECTORS : DISK_SECTORS; return RES_OK;
    case GET_SECTOR_SIZE:  *(WORD *)buff = 512; return RES_OK;
    case GET_BLOCK_SIZE:   *(DWORD *)buff = 1; return RES_OK;
    default:               return RES_PARERR;
@@ -743,6 +767,118 @@ static void test_title_cache(void)
    check("S10 the VFS title cache is dropped on a card change", r1 && r2 && !strcmp(t, "Bravo"), why);
 }
 
+/* ---- storage=usb: where the Beeb's storage lives ------------------------ */
+
+static void put_lun0(const char *root, const char *tag)
+{
+   static uint8_t img[10u * 2u * DEFAULT_SECTORS_PER_TRACK * DEFAULT_BLOCK_SIZE];
+   char path[48];
+   memset(img, 0, sizeof img);
+   memcpy(img, tag, strlen(tag));
+   snprintf(path, sizeof path, "%s/BeebSCSI0", root);
+   f_mkdir(path);
+   snprintf(path, sizeof path, "%s/BeebSCSI0/scsi0.cfg", root);
+   put_cfg(path, 10, 2);
+   snprintf(path, sizeof path, "%s/BeebSCSI0/scsi0.dat", root);
+   put_file(path, img, (UINT)sizeof img);
+}
+
+/* LUN 0 started: which image did it open? */
+static const char *lun0_volume(void)
+{
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   if (!filesystemSetLunStatus(0, true))
+      return "none";
+   const char *v = leaked_on("1:/BeebSCSI0/scsi0.dat") ? "usb"
+                 : leaked_on("/BeebSCSI0/scsi0.dat") ? "sd" : "?";
+   return v;
+}
+
+static void test_storage(void)
+{
+   static char why[200];
+   put_lun0("", "sd");
+   put_lun0("1:", "usb");
+
+   /* storage unset: the card, nothing waited for - even with a drive. */
+   cfg_storage = NULL;
+   usb_mounted = true;
+   filesystemReset();
+   const char *v = lun0_volume();
+   bool busy = filesystemHostPathBusy("/BeebSCSI0/scsi0.dat");
+   snprintf(why, sizeof why, "LUN 0 on %s (want sd), waits %d, card image busy %d", v, usb_waits, busy);
+   check("USB storage unset: the card", !strcmp(v, "sd") && usb_waits == 0 && busy &&
+         !filesystemStorageOnUsb(), why);
+
+   /* storage=usb, the drive there at the BREAK: decided at the first use,
+      without waiting; the card's image is free for WebDAV/MTP. */
+   cfg_storage = "usb";
+   stop_all();
+   filesystemReset();
+   bool undecided = !filesystemStorageOnUsb();
+   int reads = usb_reads;
+   v = lun0_volume();
+   busy = filesystemHostPathBusy("/BeebSCSI0/scsi0.dat");
+   int8_t lun = filesystemLunFromHostPath("/BeebSCSI0/scsi0.dat");
+   snprintf(why, sizeof why, "undecided after reset %d, LUN 0 on %s (want usb), drive reads %d, "
+            "waits %d, card image busy %d, LUN from host path %d",
+            undecided, v, usb_reads - reads, usb_waits, busy, lun);
+   check("USB storage: the drive's ADFS image, the card's left to the host",
+         undecided && !strcmp(v, "usb") && usb_reads > reads && usb_waits == 0 && !busy &&
+         lun == -1 && filesystemStorageOnUsb() && !strcmp(filesystemStorageRoot(), "1:"), why);
+
+   /* VFS sides and the FAT transfer directory follow it. */
+   f_mkdir("1:/BeebVFS3");
+   put_file("1:/BeebVFS3/scsi0.dat", "vfs", 3);
+   f_mkdir("1:/Transfer");
+   put_file("1:/Transfer/USB.TXT", "usb", 3);
+   uint8_t info[256] = {0};
+   filesystemSetFatDirectory((const uint8_t *)"/Transfer");
+   bool fi = filesystemGetFatFileInfo(0, info);
+   snprintf(why, sizeof why, "VFS side type %u (want 2), transfer entry %d '%s'",
+            filesystemVFSDirType(3), fi, (const char *)info + 127);
+   check("USB storage: VFS sides and the FAT transfer directory are the drive's",
+         filesystemVFSDirType(3) == 2u && fi && !strcmp((const char *)info + 127, "USB.TXT"), why);
+
+   /* No drive at the BREAK, after the power-on wait: the card - and a
+      drive that turns up later is not swapped in until the next BREAK. */
+   usb_mounted = false;
+   stop_all();
+   filesystemReset();
+   v = lun0_volume();
+   int waits = usb_waits;
+   snprintf(why, sizeof why, "LUN 0 on %s (want sd), waits %d (want 1), until %lu",
+            v, waits, (unsigned long)usb_wait_until);
+   check("USB storage, no drive: the card", !strcmp(v, "sd") && waits == 1 &&
+         usb_wait_until == 5000000u && filesystemVFSDirType(3) == 0u, why);
+   usb_mounted = true;
+   v = lun0_volume();
+   snprintf(why, sizeof why, "LUN 0 on %s (want sd), waits %d (want 1)", v, usb_waits);
+   check("USB storage: a drive arriving mid-session waits for the BREAK",
+         !strcmp(v, "sd") && usb_waits == 1 && !filesystemStorageOnUsb(), why);
+   stop_all();
+   filesystemReset();
+   v = lun0_volume();
+   snprintf(why, sizeof why, "LUN 0 on %s (want usb)", v);
+   check("USB storage: ... and is used from it", !strcmp(v, "usb"), why);
+
+   /* Power-on: the drive turns up during the wait. */
+   usb_mounted = false;
+   usb_arrives_in_wait = true;
+   stop_all();
+   filesystemReset();
+   v = lun0_volume();
+   snprintf(why, sizeof why, "LUN 0 on %s (want usb), waits %d (want 2)", v, usb_waits);
+   check("USB storage: a drive found by the power-on wait is used",
+         !strcmp(v, "usb") && usb_waits == 2, why);
+   usb_arrives_in_wait = false;
+
+   stop_all();
+   cfg_storage = NULL;
+   filesystemReset();
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -756,6 +892,14 @@ int main(int argc, char **argv)
       return 1;
    }
    f_mount(NULL, "", 0);
+   static FATFS usb_fs;
+   const MKFS_PARM usb_opt = { FM_ANY, 0, 0, 0, 0 };
+   usbdisk = calloc(USB_SECTORS, 512u);
+   f_mount(&usb_fs, "1:", 0);           /* as usb_storage.c does: its own FATFS */
+   if (!usbdisk || f_mkfs("1:", &usb_opt, work, sizeof work) != FR_OK) {
+      printf("FAIL: could not format the USB RAM disk\n");
+      return 1;
+   }
 
    filesystemInitialise(0);
    filesystemInitialiseVFS(0);
@@ -780,7 +924,8 @@ int main(int argc, char **argv)
    test_reset_abandons();
    test_readonly_image();
    test_stopped_geometry();
-   test_title_cache();                  /* last: it remounts the card */
+   test_title_cache();                  /* it remounts the card */
+   test_storage();                      /* last: it moves the storage */
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;

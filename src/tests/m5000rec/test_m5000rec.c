@@ -60,6 +60,9 @@ const char *config_get(const char *key) { (void)key; return NULL; }
 bool config_beeb_write_protected(void) { return false; }
 uint32_t RPI_GetSystemTime(void) { return 0; }
 void videoplayer_media_changed(void) {}
+/* storage= is unset: the card; no USB drive. */
+bool usb_storage_mounted(void) { return false; }
+bool usb_storage_wait_for_drive(uint32_t until_us) { (void)until_us; return false; }
 int parse_findindex(const char *k, const parserkey a[]) { (void)k; (void)a; return -1; }
 int parse_readfile(const char *f, const char *o, const parserkey k[], parserkeyvalue v[])
 { (void)f; (void)o; (void)k; (void)v; return 0; }
