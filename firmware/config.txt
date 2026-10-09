@@ -7,6 +7,12 @@
 [pi3]
 #kernel=debug/kernel7.img
 
+# Settings for Pi 2: its Cortex-A7 cannot run kernel7.img (built for the
+# Pi 3 / Zero 2 W's ARMv8 Cortex-A53), so it has its own ARMv7 kernel
+[pi2]
+kernel=kernel7a7.img
+#kernel=debug/kernel7a7.img
+
 # Global settings
 [all]
 force_turbo=1

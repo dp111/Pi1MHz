@@ -17,8 +17,14 @@
     {
       "name": "rpi3",
       "inherits": "base",
-      "displayName": "rpi3 (Pi 2/3, kernel7.img)",
+      "displayName": "rpi3 (Pi 3 / Zero 2 W, kernel7.img)",
       "toolchainFile": "${sourceDir}/scripts/rpi3.cmake"
+    },
+    {
+      "name": "rpi2",
+      "inherits": "base",
+      "displayName": "rpi2 (Pi 2 Cortex-A7, kernel7a7.img)",
+      "toolchainFile": "${sourceDir}/scripts/rpi2.cmake"
     },
     {
       "name": "rpi-debug",
@@ -31,12 +37,20 @@
       "inherits": "rpi3",
       "displayName": "rpi3 Debug",
       "cacheVariables": { "DEBUG": "1" }
+    },
+    {
+      "name": "rpi2-debug",
+      "inherits": "rpi2",
+      "displayName": "rpi2 Debug",
+      "cacheVariables": { "DEBUG": "1" }
     }
   ],
   "buildPresets": [
     { "name": "rpi",        "configurePreset": "rpi" },
     { "name": "rpi3",       "configurePreset": "rpi3" },
     { "name": "rpi-debug",  "configurePreset": "rpi-debug" },
-    { "name": "rpi3-debug", "configurePreset": "rpi3-debug" }
+    { "name": "rpi3-debug", "configurePreset": "rpi3-debug" },
+    { "name": "rpi2",       "configurePreset": "rpi2" },
+    { "name": "rpi2-debug", "configurePreset": "rpi2-debug" }
   ]
 }

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include "arm-start.h"
 #include "base.h"
 #include "cache.h"
@@ -76,10 +77,19 @@ static const unsigned int shareable = 1;
 #define L1_SETWAY_SET_SHIFT         6   /* Log2(L1_DATA_CACHE_LINE_LENGTH) */
 
 #if (__ARM_ARCH == 7 )
-/* 8 ways x 1024 sets x 64 bytes per line = 512KB */
-#define L2_CACHE_SETS            1024
-#define L2_CACHE_WAYS               8
-#define L2_SETWAY_WAY_SHIFT        29   /* 32-Log2(L2_CACHE_WAYS) */
+/* The ARMv7 kernel (kernel7a7.img, config.txt [pi2]) runs on the Pi 2's
+   Cortex-A7 (MIDR part 0xC07) - and on a Pi 2 v1.2, whose core is a
+   Cortex-A53.  So what differs between them is chosen at run time. */
+static bool cpu_is_cortex_a7(void)
+{
+   unsigned midr;
+   __asm volatile ("mrc p15, 0, %0, c0, c0, 0" : "=r" (midr));
+   return ((midr >> 4) & 0xFFFu) == 0xC07u;
+}
+/* A7: 8 ways x 1024 sets x 64 bytes per line = 512KB; A53 as below */
+#define L2_CACHE_SETS            (cpu_is_cortex_a7() ? 1024u : 512u)
+#define L2_CACHE_WAYS            (cpu_is_cortex_a7() ?    8u :  16u)
+#define L2_SETWAY_WAY_SHIFT      (cpu_is_cortex_a7() ?   29u :  28u)  /* 32-Log2(ways) */
 #else
 /* 16 ways x 512 sets x 64 bytes per line = 512KB */
 #define L2_CACHE_SETS             512
@@ -425,10 +435,14 @@ void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
   // RPI:  bit 6 of auxctrl is restrict cache size to 16K (no page coloring)
   // RPI2: bit 6 of auxctrl is set SMP bit, otherwise all caching disabled
 #if (__ARM_ARCH == 7 )
- unsigned auxctrl;
-  __asm volatile ("mrc p15, 0, %0, c1, c0,  1" : "=r" (auxctrl));
-  auxctrl |= 1 << 6;
-  __asm volatile ("mcr p15, 0, %0, c1, c0,  1" :: "r" (auxctrl));
+  // Only on a Cortex-A7: on a Pi 2 v1.2's Cortex-A53 bit 6 of this
+  // register is not the SMP bit (see cpu_is_cortex_a7).
+  if (cpu_is_cortex_a7()) {
+     unsigned auxctrl;
+     __asm volatile ("mrc p15, 0, %0, c1, c0,  1" : "=r" (auxctrl));
+     auxctrl |= 1 << 6;
+     __asm volatile ("mcr p15, 0, %0, c1, c0,  1" :: "r" (auxctrl));
+  }
  #endif
 #endif
 

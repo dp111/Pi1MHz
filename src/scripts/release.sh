@@ -20,7 +20,7 @@ mkdir -p "${REL}/debug"
 rm -rf build
 
 # debug kernels
-for P in rpi rpi3; do
+for P in rpi rpi2 rpi3; do
     cmake --preset "${P}-debug"
     cmake --build --preset "${P}-debug" -j"$NCPUS"
 done
@@ -28,7 +28,7 @@ cp -a ../firmware/kernel* "${REL}/debug"
 cp -a ../firmware/kernel* "../firmware/debug"
 
 # release kernels
-for P in rpi rpi3; do
+for P in rpi rpi2 rpi3; do
     cmake --preset "${P}"
     cmake --build --preset "${P}" -j"$NCPUS"
 done

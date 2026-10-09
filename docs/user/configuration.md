@@ -222,9 +222,12 @@ spaces.
 ## config.txt
 
 `config.txt` in the SD root is the standard Raspberry Pi firmware
-configuration and is already set up correctly. The only line you might
+configuration and is already set up correctly. Its `[pi2]` section makes
+a Pi 2 load `kernel7a7.img`: the Pi 2's Cortex-A7 cannot run
+`kernel7.img`, which is built for the Pi 3 and Zero 2 W. The only line you might
 ever change is near the top: un-commenting `kernel=debug/kernel.img`
-(or `kernel=debug/kernel7.img` in the `[pi3]` section) boots the debug
+(or `kernel=debug/kernel7.img` in the `[pi3]` section, and
+`kernel=debug/kernel7a7.img` in `[pi2]`) boots the debug
 build of Pi1MHz, which prints diagnostic messages on the serial port.
 See [Troubleshooting](troubleshooting.md). Leave `hdmi_muting=0x10001`
 in place: it lets the display mode switch at boot happen in a few tens

@@ -4,7 +4,7 @@
 
 - **Check the SD card.** The card root must contain `bootcode.bin`,
   `start.elf`, `fixup.dat`, `config.txt`, `kernel.img`,
-  `kernel7.img` and the `Pi1MHz` folder. A card with only some of
+  `kernel7.img`, `kernel7a7.img` (Pi 2) and the `Pi1MHz` folder. A card with only some of
   these will not boot. The card must be FAT formatted.
 - **Check the Pi's power/activity LED.** If it never flickers after
   power-on, the Pi is not booting - re-copy the firmware files, try
@@ -131,7 +131,8 @@ where they are; what each field means is written up for developers in
 
 For real diagnosis you need a debug build of the firmware (built from source
 with `DEBUG=1`, or included with some releases), placed on the card as
-`debug/kernel.img` (and/or `debug/kernel7.img`):
+`debug/kernel.img` (and/or `debug/kernel7.img`, or `debug/kernel7a7.img`
+on a Pi 2):
 
 1. Edit `config.txt` in the SD root and un-comment the
    `kernel=debug/kernel.img` line (for a Pi Zero; the equivalent line

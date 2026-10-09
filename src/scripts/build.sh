@@ -6,6 +6,7 @@
 #   ./build.sh rpi                # rpi,  release
 #   ./build.sh rpi3 debug         # rpi3, debug
 #   ./build.sh rpi  debug         # rpi,  debug
+#   ./build.sh rpi2               # rpi2, release (Pi 2 Cortex-A7, kernel7a7.img)
 #   ./build.sh clean              # remove all build dirs and exit
 #   ./build.sh rpi3 clean         # clean rebuild of rpi3 release
 #   ./build.sh rpi3 debug clean   # clean rebuild of rpi3 debug
@@ -34,8 +35,8 @@ PLATFORM=${1:-rpi3}
 MODE=${2:-release}
 
 case "$PLATFORM" in
-    rpi|rpi3) ;;
-    *) echo "usage: $0 [rpi|rpi3] [release|debug] [clean]  (or: $0 clean)"; exit 1 ;;
+    rpi|rpi2|rpi3) ;;
+    *) echo "usage: $0 [rpi|rpi2|rpi3] [release|debug] [clean]  (or: $0 clean)"; exit 1 ;;
 esac
 
 if [ "$MODE" = "debug" ]; then

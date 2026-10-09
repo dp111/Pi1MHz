@@ -85,7 +85,8 @@ changing the SD card - works over the network too, as it does over
 - from a command line: `curl -T kernel7.img http://pi1mhz.local/kernel.now`
   (add `--digest -u user:password` if the server has a password).
 
-Use `kernel7.img` on a Pi 2/3/Zero 2 and `kernel.img` on a Pi 1/Zero.
+Use `kernel7.img` on a Pi 3/Zero 2, `kernel7a7.img` on a Pi 2 and
+`kernel.img` on a Pi 1/Zero - the wrong one does not run.
 The image is held in memory, never saved; the Pi answers, then restarts
 into it. If the video player is running it is shut down first. Only a
 basic check is made - the image must start like an ARM kernel - so a

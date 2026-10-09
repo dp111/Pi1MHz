@@ -35,6 +35,7 @@ Zero 2 W or 3B+) and a 2.4GHz WPA2 network.
    fixup_cd.dat
    kernel.img          (used by Pi Zero / Zero W)
    kernel7.img         (used by Pi Zero 2 W / Pi 3)
+   kernel7a7.img       (used by Pi 2 - see config.txt's [pi2] section)
    Pi1MHz/             (ROMs, configuration, WiFi firmware)
    ```
 
