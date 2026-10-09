@@ -16,6 +16,7 @@ void wifi_service_command(uint32_t command_pointer, uint32_t address,
 /* For the /status page: the setting *DATE and *TIME use and where it came from,
    e.g. "192.168.0.1 (DHCP option 42)". */
 void wifi_service_ntp_server_text(char *out, size_t size);
+void wifi_service_time_offset_text(char *out, size_t size);
 
 #define WIFI_SVC_CMD_FIRST        80u
 #define WIFI_SVC_CMD_STATUS       WIFI_SVC_CMD_FIRST

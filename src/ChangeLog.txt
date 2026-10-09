@@ -323,3 +323,4 @@ Over 90 fixes from a whole-tree review: SCSI, SD card, WiFi, webserver, MTP, Fuj
 
 v.1.41
 WiFi time: *DATE/*TIME ask the NTP server in ntp_server, else the one in the DHCP lease (option 42), else pool.ntp.org. The status page shows which.
+WiFi time: ntp_offset shows another date (dd.mm.yyyy, mm.yyyy, y1990) or moves the clock (h2, -m30, d10).

@@ -586,6 +586,8 @@ set( Pi1MHz_sources
     ${wifi_files}
     ${lwip_files}
     wifi_service.c
+    wifi_time.c
+    wifi_time.h
     uef_repair.c
     uef_repair.h
 )

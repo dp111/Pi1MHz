@@ -209,6 +209,8 @@ int main(void)
       char text[64];
       wifi_service_ntp_server_text(text, sizeof text);
       CHECK(strcmp(text, "pool.ntp.org (default)") == 0, "no key, no lease: the default and where it came from (%s)", text);
+      wifi_service_time_offset_text(text, sizeof text);
+      CHECK(strcmp(text, "none") == 0, "no ntp_offset: none (%s)", text);
    }
 
    printf("%d checks, %d failures\n", checks, fails);

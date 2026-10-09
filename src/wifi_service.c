@@ -35,6 +35,7 @@
 #include "wifi/wifi.h"
 #include "wifi/wifi_lwip.h"
 #include "net_service.h"
+#include "wifi_time.h"
 #include "rpi/systimer.h"
 #include "rpi/asm-helpers.h"
 #include "rpi/fileparser.h"
@@ -105,6 +106,7 @@ static uint8_t scan_fields = 127u;
 #define NTP_UNIX_EPOCH 2208988800u
 static uint32_t network_time_seconds;
 static int16_t time_utc_offset_minutes;
+static wifi_time_shift_t time_shift;
 
 void response_string(uint32_t cp, const char *value);
 static void response_printf(uint32_t cp, const char *format, ...)
@@ -159,11 +161,6 @@ static uint8_t wifi_ping(uint32_t cp)
 
 
 
-static bool leap_year(uint32_t year)
-{
-   return (year % 4u == 0u && year % 100u != 0u) || year % 400u == 0u;
-}
-
 void wifi_service_ntp_server_text(char *out, size_t size)
 {
    static const char *const from[] = { "config ntp_server", "DHCP option 42",
@@ -171,6 +168,18 @@ void wifi_service_ntp_server_text(char *out, size_t size)
    const char *configured = config_get("ntp_server");
    snprintf(out, size, "%s (%s)", net_ntp_server(configured),
             from[net_ntp_server_source(configured)]);
+}
+
+void wifi_service_time_offset_text(char *out, size_t size)
+{
+   const char *configured = config_get("ntp_offset");
+   wifi_time_shift_t shift;
+   if (configured == NULL || configured[0] == '\0')
+      snprintf(out, size, "none");
+   else
+      snprintf(out, size, "%s (%s)", configured,
+               wifi_time_shift_parse(configured, &shift)
+                  ? "config ntp_offset" : "not understood, ignored");
 }
 
 static int16_t utc_offset_parse(const char *value)
@@ -194,31 +203,17 @@ static int16_t utc_offset_parse(const char *value)
 
 static void format_network_time(uint32_t cp, bool date)
 {
-   static const uint8_t month_days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-   int64_t adjusted = (int64_t)(network_time_seconds - NTP_UNIX_EPOCH)
-                    + (int64_t)time_utc_offset_minutes * 60;
-   uint32_t seconds = adjusted < 0 ? 0u : (uint32_t)adjusted;
-   uint32_t days = seconds / 86400u;
-   uint32_t year = 1970u;
-   uint32_t month = 0u;
-   while (days >= (leap_year(year) ? 366u : 365u))
-      days -= leap_year(year++) ? 366u : 365u;
-   while (month < 11u) {
-      uint32_t length = month_days[month] + ((month == 1u && leap_year(year)) ? 1u : 0u);
-      if (days < length) break;
-      days -= length;
-      month++;
-   }
+   int64_t local = (int64_t)(uint32_t)(network_time_seconds - NTP_UNIX_EPOCH)
+                 + (int64_t)time_utc_offset_minutes * 60;
+   wifi_time_fields_t t;
+   local += wifi_time_shift_seconds(&time_shift, local);
+   wifi_time_split(local, &t);
    if (date)
-      response_printf(cp, "%02lu-%02lu-%04lu\r\n", (unsigned long)(days + 1u),
-                      (unsigned long)(month + 1u), (unsigned long)year);
-   else {
-      seconds %= 86400u;
-      response_printf(cp, "%02lu:%02lu:%02lu\r\n",
-                      (unsigned long)(seconds / 3600u),
-                      (unsigned long)((seconds / 60u) % 60u),
-                      (unsigned long)(seconds % 60u));
-   }
+      response_printf(cp, "%02lu-%02lu-%04lu\r\n", (unsigned long)t.day,
+                      (unsigned long)t.month, (unsigned long)t.year);
+   else
+      response_printf(cp, "%02lu:%02lu:%02lu\r\n", (unsigned long)t.hour,
+                      (unsigned long)t.minute, (unsigned long)t.second);
 }
 
 static uint8_t wifi_datetime(uint32_t cp)
@@ -768,6 +763,8 @@ void wifi_service_init(uint8_t instance, uint8_t address)
       service_initialised = true;
       time_utc_offset_minutes = utc_offset_parse(
          config_get("wifi_service_utc_offset_minutes"));
+      (void)wifi_time_shift_parse(config_get("ntp_offset"),
+                                  &time_shift);
    }
    /* Re-read the saved profile on every host reset, but credentials_load
     * preserves an already-running association when the profile is unchanged. */
