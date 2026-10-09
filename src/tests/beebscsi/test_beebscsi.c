@@ -828,6 +828,20 @@ static void test_storage(void)
          undecided && !strcmp(v, "usb") && usb_reads > reads && usb_waits == 0 && !busy &&
          lun == -1 && filesystemStorageOnUsb() && !strcmp(filesystemStorageRoot(), "1:"), why);
 
+   /* Names: the Beeb's on the drive; the Pi's own folder, and a name with
+      its own volume, left alone (the helpers load "Pi1MHz/<n>.rom"). */
+   {
+      char a[64], b[64], c[64], d[64];
+      bool fits = filesystemStoragePath("/Games/x.ssd", a, sizeof a) &&
+                  filesystemStoragePath("Pi1MHz/SWMMFS.rom", b, sizeof b) &&
+                  filesystemStoragePath("/pi1mhz/Pi1MHz.cfg", c, sizeof c) &&
+                  filesystemStoragePath("0:/x", d, sizeof d);
+      snprintf(why, sizeof why, "'%s' '%s' '%s' '%s'", a, b, c, d);
+      check("USB storage: names on the drive, the Pi's folder on the card",
+            fits && !strcmp(a, "1:/Games/x.ssd") && !strcmp(b, "Pi1MHz/SWMMFS.rom") &&
+            !strcmp(c, "/pi1mhz/Pi1MHz.cfg") && !strcmp(d, "0:/x"), why);
+   }
+
    /* VFS sides and the FAT transfer directory follow it. */
    f_mkdir("1:/BeebVFS3");
    put_file("1:/BeebVFS3/scsi0.dat", "vfs", 3);

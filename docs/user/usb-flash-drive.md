@@ -10,7 +10,8 @@ the Pi's USB port, and the Beeb uses the drive for:
   the [SD explorer](sd-explorer.md) and the FAT transfer directory
 - [FujiNet](fujinet.md)'s files and Music 5000 recordings
 
-The SD card still holds `Pi1MHz.cfg`, the ROMs, the firmware and the
+The SD card still holds the `/Pi1MHz` folder (`Pi1MHz.cfg`, the helper
+ROMs), the firmware and the
 WiFi settings. The [web interface](web-interface.md) and
 [USB file access](usb-file-access.md) show the SD card, not the drive.
 

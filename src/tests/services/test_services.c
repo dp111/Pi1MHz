@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "Pi1MHz.h"
 #include "services.h"
@@ -120,7 +121,11 @@ const char *filesystemStorageRoot(void) { return storage_root; }
 bool filesystemStorageOnUsb(void) { return storage_root[0] != '\0'; }
 bool filesystemStoragePath(const char *path, char *buf, size_t size)
 {
-   const char *root = (path[0] >= '0' && path[0] <= '9' && path[1] == ':') ? "" : storage_root;
+   const char *p = path;
+   while (*p == '/')
+      p++;
+   const char *root = ((path[0] >= '0' && path[0] <= '9' && path[1] == ':') ||
+                       strncasecmp(p, "Pi1MHz/", 7) == 0) ? "" : storage_root;
    int n = snprintf(buf, size, "%s%s", root, path);
    return n >= 0 && (size_t)n < size;
 }
@@ -508,6 +513,8 @@ int main(void)
          "... and does not make the card's file of that name busy");
       ok(do_open(2, "rel.ssd") == FR_OK && !strcmp(last_open_path, "1:rel.ssd"),
          "a relative name is relative to the drive's current directory");
+      ok(do_open(4, "Pi1MHz/SWMMFS.rom") == FR_OK && !strcmp(last_open_path, "Pi1MHz/SWMMFS.rom"),
+         "a helper's ROM (the Pi's own folder) is opened on the card");
       ok(do_open(3, "0:/card.ssd") == FR_OK && !strcmp(last_open_path, "0:/card.ssd")
          && fat_service_file_in_use("/card.ssd"),
          "a name with its own volume is left alone");

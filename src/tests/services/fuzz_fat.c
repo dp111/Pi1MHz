@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "Pi1MHz.h"
 #include "services.h"
@@ -71,7 +72,11 @@ const char *filesystemStorageRoot(void) { return storage_root; }
 bool filesystemStorageOnUsb(void) { return storage_root[0] != '\0'; }
 bool filesystemStoragePath(const char *path, char *buf, size_t size)
 {
-   const char *root = (path[0] >= '0' && path[0] <= '9' && path[1] == ':') ? "" : storage_root;
+   const char *p = path;
+   while (*p == '/')
+      p++;
+   const char *root = ((path[0] >= '0' && path[0] <= '9' && path[1] == ':') ||
+                       strncasecmp(p, "Pi1MHz/", 7) == 0) ? "" : storage_root;
    int n = snprintf(buf, size, "%s%s", root, path);
    return n >= 0 && (size_t)n < size;
 }

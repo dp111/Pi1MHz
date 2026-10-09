@@ -410,10 +410,21 @@ const char *filesystemStorageRoot(void)
    return fsRoot == ROOT_USB ? "1:" : "";
 }
 
+/* /Pi1MHz is the Pi's own folder - Pi1MHz.cfg, the helpers' ROMs (which the
+   6502 helper code opens through the FAT service as "Pi1MHz/<name>.rom"),
+   6502code.bin - and stays on the card whatever storage= says. */
+static bool fsPiFolder(const char *path)
+{
+   while (*path == '/')
+      path++;
+   return strncasecmp(path, "Pi1MHz/", 7) == 0;
+}
+
 bool filesystemStoragePath(const char *path, char *buf, size_t size)
 {
-   /* A path naming its own volume ("0:...") is left as it is. */
-   const char *root = (path[0] >= '0' && path[0] <= '9' && path[1] == ':')
+   /* A path naming its own volume ("0:...") is left as it is, and so is
+      one in the Pi's own folder. */
+   const char *root = ((path[0] >= '0' && path[0] <= '9' && path[1] == ':') || fsPiFolder(path))
                     ? "" : filesystemStorageRoot();
    int n = snprintf(buf, size, "%s%s", root, path);
    return n >= 0 && (size_t)n < size;
