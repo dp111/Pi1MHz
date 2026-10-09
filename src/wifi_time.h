@@ -83,4 +83,42 @@ bool wifi_time_shift_parse(const char *text, wifi_time_shift_t *shift);
 int64_t wifi_time_shift_seconds(wifi_time_shift_t *shift,
                                 int64_t local_seconds);
 
+/* ---- Time zone with summer time: a POSIX TZ string ------------------------
+ *
+ * std offset [dst [offset] [,start[/time],end[/time]]], e.g.
+ *    GMT0BST,M3.5.0/1,M10.5.0        UK
+ *    CET-1CEST,M3.5.0,M10.5.0/3      central Europe
+ *    EST5EDT                         US east, the default US rules
+ *    <+0545>-5:45                    Nepal, a name in angle brackets
+ * An offset is hours[:minutes[:seconds]] WEST of Greenwich, so east of it
+ * is negative.  The dst offset defaults to one hour ahead of std.  Rules are
+ * Mm.w.d only (month 1-12, week 1-5 with 5 meaning the last, day 0-6 from
+ * Sunday); a time is in the local time in force before the change and
+ * defaults to 02:00.  Without rules, M3.2.0,M11.1.0 (the US ones) apply.
+
+ *
+ * The tz database's legacy zone IDs are accepted by name, as the POSIX strings
+ * they stand for: UTC, GMT, WET, CET, MET, EET, EST, MST, HST (exact case),
+ * and BST for the UK (GMT0BST,M3.5.0/1,M10.5.0).
+ */
+typedef struct {
+   uint8_t month;            /* 1-12 */
+   uint8_t week;             /* 1-5 */
+   uint8_t weekday;          /* 0 = Sunday */
+   int32_t time;             /* seconds after local midnight */
+} wifi_time_rule_t;
+
+typedef struct {
+   bool has_dst;
+   int32_t std_offset;       /* seconds EAST of UTC */
+   int32_t dst_offset;
+   wifi_time_rule_t start, end;
+} wifi_time_zone_t;
+
+/* false (and *zone cleared) for NULL, empty or anything not understood. */
+bool wifi_time_zone_parse(const char *text, wifi_time_zone_t *zone);
+
+/* Seconds to add to UTC for local time at `utc_seconds`. */
+int32_t wifi_time_zone_offset(const wifi_time_zone_t *zone, int64_t utc_seconds);
+
 #endif

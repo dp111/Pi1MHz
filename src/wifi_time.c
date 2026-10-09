@@ -172,3 +172,168 @@ int64_t wifi_time_shift_seconds(wifi_time_shift_t *shift,
    }
    return shift->kind == WIFI_TIME_SHIFT_NONE ? 0 : shift->seconds;
 }
+
+/* ---- POSIX TZ ----------------------------------------------------------- */
+
+/* A zone name: three or more letters, or anything but '>' in angle
+   brackets.  Only its length matters here; the Beeb is shown no name. */
+static bool skip_name(const char **text)
+{
+   const char *p = *text;
+   if (*p == '<') {
+      p++;
+      while (*p != '>' && *p != '\0') {
+         if (!((*p >= '0' && *p <= '9') || *p == '+' || *p == '-'
+               || (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')))
+            return false;
+         p++;
+      }
+      if (*p != '>' || p == *text + 1) return false;
+      *text = p + 1;
+      return true;
+   }
+   while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) p++;
+   if (p - *text < 3) return false;
+   *text = p;
+   return true;
+}
+
+/* [+-]hh[:mm[:ss]] as seconds; hours up to `max_hours`. */
+static bool parse_hms(const char **text, uint32_t max_hours, int32_t *seconds)
+{
+   uint32_t v, digits, total, mult = 3600u;
+   bool negative = false;
+   const char *p = *text;
+
+   if (*p == '+' || *p == '-') negative = *p++ == '-';
+   total = 0u;
+   for (int field = 0; field < 3; field++, mult /= 60u) {
+      if (!parse_number(&p, field == 0 ? max_hours : 59u, &v, &digits)
+          || digits > 2u + (field == 0 ? 1u : 0u))
+         return false;
+      total += v * mult;
+      if (*p != ':') break;
+      if (field == 2) return false;
+      p++;
+   }
+   *text = p;
+   *seconds = negative ? -(int32_t)total : (int32_t)total;
+   return true;
+}
+
+static bool parse_rule(const char **text, wifi_time_rule_t *rule)
+{
+   const char *p = *text;
+   uint32_t m, w, d, digits;
+
+   if (*p++ != 'M') return false;
+   if (!parse_number(&p, 12u, &m, &digits) || *p++ != '.'
+       || !parse_number(&p, 5u, &w, &digits) || *p++ != '.'
+       || !parse_number(&p, 6u, &d, &digits) || m < 1u || w < 1u)
+      return false;
+   rule->month = (uint8_t)m;
+   rule->week = (uint8_t)w;
+   rule->weekday = (uint8_t)d;
+   rule->time = 2 * 3600;
+   if (*p == '/') {
+      p++;
+      if (!parse_hms(&p, 167u, &rule->time)) return false;
+   }
+   *text = p;
+   return true;
+}
+
+static bool posix_zone_parse(const char *text, wifi_time_zone_t *zone)
+{
+   int32_t offset;
+
+   memset(zone, 0, sizeof *zone);
+   if (text == NULL || text[0] == '\0') return false;
+   /* The offset is west-positive in the string; the struct holds east. */
+   if (!skip_name(&text) || !parse_hms(&text, 24u, &offset)) goto bad;
+   zone->std_offset = -offset;
+   if (*text != '\0') {
+      if (!skip_name(&text)) goto bad;
+      zone->has_dst = true;
+      zone->dst_offset = zone->std_offset + 3600;
+      if (*text != ',' && *text != '\0') {
+         if (!parse_hms(&text, 24u, &offset)) goto bad;
+         zone->dst_offset = -offset;
+      }
+      if (*text == ',') {
+         text++;
+         if (!parse_rule(&text, &zone->start) || *text++ != ','
+             || !parse_rule(&text, &zone->end))
+            goto bad;
+      } else {
+         zone->start = (wifi_time_rule_t){3u, 2u, 0u, 2 * 3600};
+         zone->end = (wifi_time_rule_t){11u, 1u, 0u, 2 * 3600};
+      }
+   }
+   if (*text == '\0') return true;
+bad:
+   memset(zone, 0, sizeof *zone);
+   return false;
+}
+
+/* The day (since 1970) of "weekday `w` of week `week` of the month". */
+static int64_t rule_day(uint32_t year, const wifi_time_rule_t *rule)
+{
+   int64_t first = wifi_time_days_from_civil(year, rule->month, 1u);
+   uint32_t first_weekday = (uint32_t)((first + 4) % 7);       /* 1970-01-01: Thursday */
+   uint32_t day = 1u + (rule->weekday + 7u - first_weekday) % 7u
+                + (rule->week - 1u) * 7u;
+   while (day > month_length(year, rule->month)) day -= 7u;    /* week 5 = last */
+   return first + (int64_t)day - 1;
+}
+
+int32_t wifi_time_zone_offset(const wifi_time_zone_t *zone, int64_t utc_seconds)
+{
+   int64_t start, end, utc = utc_seconds;
+   uint32_t year, month, day;
+   bool dst;
+
+   if (!zone->has_dst) return zone->std_offset;
+   wifi_time_civil((utc + zone->std_offset) / SECONDS_PER_DAY,
+                   &year, &month, &day);
+   /* Each rule's time is on the clock then in force: standard time for the
+      start, summer time for the end. */
+   start = rule_day(year, &zone->start) * SECONDS_PER_DAY + zone->start.time
+         - zone->std_offset;
+   end = rule_day(year, &zone->end) * SECONDS_PER_DAY + zone->end.time
+       - zone->dst_offset;
+   dst = start <= end ? (utc >= start && utc < end)
+                      : !(utc >= end && utc < start);
+   return dst ? zone->dst_offset : zone->std_offset;
+}
+
+/* ---- tz database zone IDs ----------------------------------------------- */
+
+/* The legacy zone IDs of the tz database that are a time zone with its rules
+   and have no region in the name, so a person writes them as they would to
+   any Unix: CET, EET and so on.  Spelled out as the POSIX strings they stand
+   for.  (EST, MST and HST are fixed offsets in the current database.)  BST is
+   not one of them - it names the UK's summer time, not a zone - but so many
+   people need the UK that it is accepted too, as the UK's rules. */
+static const struct { const char *id, *posix; } zone_ids[] = {
+   { "UTC", "UTC0" },
+   { "GMT", "GMT0" },
+   { "BST", "GMT0BST,M3.5.0/1,M10.5.0" },
+   { "WET", "WET0WEST,M3.5.0/1,M10.5.0" },
+   { "CET", "CET-1CEST,M3.5.0,M10.5.0/3" },
+   { "MET", "MET-1MEST,M3.5.0,M10.5.0/3" },
+   { "EET", "EET-2EEST,M3.5.0/3,M10.5.0/4" },
+   { "EST", "EST5" },
+   { "MST", "MST7" },
+   { "HST", "HST10" },
+};
+
+bool wifi_time_zone_parse(const char *text, wifi_time_zone_t *zone)
+{
+   memset(zone, 0, sizeof *zone);
+   if (text == NULL || text[0] == '\0') return false;
+   for (size_t i = 0u; i < sizeof zone_ids / sizeof zone_ids[0]; i++)
+      if (strcmp(text, zone_ids[i].id) == 0)
+         return posix_zone_parse(zone_ids[i].posix, zone);
+   return posix_zone_parse(text, zone);
+}

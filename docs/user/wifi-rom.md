@@ -51,7 +51,7 @@ versions. See [Helpers and ROMs](helpers-and-roms.md).
 | `*MODE 1` / `*MODE ?` | Station mode, the only mode there is; `?` shows it. |
 | `*PING <host>` | Five pings to a host name or IP address. ESCAPE stops it. |
 | `*NSLOOK <host>` | Look up a host name's IPv4 address. |
-| `*DATE`, `*TIME`, `*WTIME` | The date and time from an NTP server (UTC; set by `ntp_server`, else the network's own, else `pool.ntp.org`), shifted by `wifi_service_utc_offset_minutes` (and, if set, `ntp_offset`) in `Pi1MHz.cfg` - e.g. `60` for British Summer Time. On a Master, `*TIME` is the MOS's own command and reads the Master's battery clock instead, so use `*WTIME` there; `*DATE` still comes from here. |
+| `*DATE`, `*TIME`, `*WTIME` | The date and time from an NTP server (UTC; set by `ntp_server`, else the network's own, else `pool.ntp.org`), moved to local time by `ntp_timezone` (summer time included), else the network's own time zone, else `wifi_service_utc_offset_minutes`, and shifted by `ntp_offset` if set in `Pi1MHz.cfg` - e.g. `60` for British Summer Time. On a Master, `*TIME` is the MOS's own command and reads the Master's battery clock instead, so use `*WTIME` there; `*DATE` still comes from here. |
 | `*DISCONNECT` | Close the ROM's raw network connection. |
 
 Most of the time none of these are needed: the Pi joins the network set in

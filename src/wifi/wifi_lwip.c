@@ -143,8 +143,32 @@ static void wifi_lwip_debug_log(const char *format, ...)
    dhcp_supplied_address() says the lease is still held. */
 static char g_wifi_lwip_dhcp_ntp[IP4ADDR_STRLEN_MAX];
 
+/* Option 100 likewise.  lwIP offers an unknown option to
+   wifi_lwip_dhcp_option() while it parses a reply, before it knows whether
+   the reply binds a lease, so the ACK's value waits in _pending and becomes
+   the lease's in dhcp_set_ntp_servers(), which lwIP calls on every bind
+   (hence LWIP_DHCP_GET_NTP_SRV above must stay on). */
+#if !LWIP_DHCP_GET_NTP_SRV
+#error "wifi_lwip.c takes the lease's time zone in dhcp_set_ntp_servers()"
+#endif
+static char g_wifi_lwip_dhcp_tz[64];
+static char g_wifi_lwip_dhcp_tz_pending[sizeof g_wifi_lwip_dhcp_tz];
+
+void wifi_lwip_dhcp_option(u8_t msg_type, u8_t option, u8_t len,
+                           struct pbuf *p, u16_t offset)
+{
+   if (option != 100u || msg_type != DHCP_ACK)
+      return;
+   g_wifi_lwip_dhcp_tz_pending[0] = '\0';
+   if (len > 0u && len < sizeof g_wifi_lwip_dhcp_tz_pending
+       && pbuf_copy_partial(p, g_wifi_lwip_dhcp_tz_pending, len, offset) == len)
+      g_wifi_lwip_dhcp_tz_pending[len] = '\0';
+}
+
 void dhcp_set_ntp_servers(u8_t num_ntp_servers, const ip4_addr_t *ntp_server_addrs)
 {
+   memcpy(g_wifi_lwip_dhcp_tz, g_wifi_lwip_dhcp_tz_pending, sizeof g_wifi_lwip_dhcp_tz);
+   g_wifi_lwip_dhcp_tz_pending[0] = '\0';
    g_wifi_lwip_dhcp_ntp[0] = '\0';
    if (num_ntp_servers > 0u && !ip4_addr_isany(&ntp_server_addrs[0]))
       (void)ip4addr_ntoa_r(&ntp_server_addrs[0], g_wifi_lwip_dhcp_ntp,
@@ -158,6 +182,15 @@ const char *wifi_lwip_dhcp_ntp_server(void)
        || g_wifi_lwip_dhcp_ntp[0] == '\0')
       return NULL;
    return g_wifi_lwip_dhcp_ntp;
+}
+
+const char *wifi_lwip_dhcp_timezone(void)
+{
+   if (!g_wifi_lwip_context.netif_added || !g_wifi_lwip_context.dhcp_started
+       || !dhcp_supplied_address(&g_wifi_lwip_context.netif)
+       || g_wifi_lwip_dhcp_tz[0] == '\0')
+      return NULL;
+   return g_wifi_lwip_dhcp_tz;
 }
 
 static bool wifi_lwip_address_ready(const struct netif *netif)

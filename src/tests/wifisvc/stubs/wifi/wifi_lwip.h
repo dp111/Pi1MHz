@@ -18,3 +18,4 @@ typedef struct {
 #define ip4_addr_isany_val(a) ((a).addr == 0u)
 const wifi_lwip_context_t *wifi_lwip_get_context(void);
 void wifi_lwip_rx_kick(void);
+const char *wifi_lwip_dhcp_timezone(void);

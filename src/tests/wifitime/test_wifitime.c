@@ -194,6 +194,96 @@ int main(void)
       CHECK(b != a, "a fresh shift (a reboot) is resolved again, from the new first use");
    }
 
+   printf("== time zone: POSIX TZ strings ==" "\n");
+   {
+      /* UTC instants: transitions in 2026 */
+      const int64_t mar_uk = at(2026, 3, 29, 1, 0, 0), oct_uk = at(2026, 10, 25, 1, 0, 0);
+      wifi_time_zone_t z;
+
+      CHECK(wifi_time_zone_parse("GMT0BST,M3.5.0/1,M10.5.0", &z) && z.has_dst
+            && z.std_offset == 0 && z.dst_offset == 3600, "UK zone parses");
+      CHECK(wifi_time_zone_offset(&z, mar_uk - 1u) == 0 && wifi_time_zone_offset(&z, mar_uk) == 3600,
+            "UK: summer time starts at 01:00 UTC on the last Sunday of March");
+      CHECK(wifi_time_zone_offset(&z, oct_uk - 1u) == 3600 && wifi_time_zone_offset(&z, oct_uk) == 0,
+            "UK: and ends at 01:00 UTC on the last Sunday of October");
+      CHECK(wifi_time_zone_offset(&z, at(2026, 1, 15, 12, 0, 0)) == 0
+            && wifi_time_zone_offset(&z, at(2026, 7, 1, 12, 0, 0)) == 3600, "UK: winter and summer");
+
+      CHECK(wifi_time_zone_parse("EST5EDT", &z) && z.std_offset == -18000 && z.dst_offset == -14400,
+            "EST5EDT parses with the default US rules");
+      CHECK(wifi_time_zone_offset(&z, at(2026, 3, 8, 6, 59, 59)) == -18000
+            && wifi_time_zone_offset(&z, at(2026, 3, 8, 7, 0, 0)) == -14400,
+            "US: starts at 02:00 EST on the second Sunday of March");
+      CHECK(wifi_time_zone_offset(&z, at(2026, 11, 1, 5, 59, 59)) == -14400
+            && wifi_time_zone_offset(&z, at(2026, 11, 1, 6, 0, 0)) == -18000,
+            "US: ends at 02:00 EDT on the first Sunday of November");
+
+      CHECK(wifi_time_zone_parse("AEST-10AEDT,M10.1.0,M4.1.0/3", &z) && z.std_offset == 36000,
+            "Sydney zone parses (east of Greenwich is negative)");
+      CHECK(wifi_time_zone_offset(&z, at(2026, 10, 3, 15, 59, 59)) == 36000
+            && wifi_time_zone_offset(&z, at(2026, 10, 3, 16, 0, 0)) == 39600,
+            "Sydney: summer time starts in October");
+      CHECK(wifi_time_zone_offset(&z, at(2026, 4, 4, 15, 59, 59)) == 39600
+            && wifi_time_zone_offset(&z, at(2026, 4, 4, 16, 0, 0)) == 36000,
+            "Sydney: ends in April, so the period runs across New Year");
+      CHECK(wifi_time_zone_offset(&z, at(2026, 1, 1, 0, 0, 0)) == 39600
+            && wifi_time_zone_offset(&z, at(2026, 7, 1, 0, 0, 0)) == 36000, "Sydney: January and July");
+
+      CHECK(wifi_time_zone_parse("CET-1CEST-2,M3.5.0,M10.5.0/3", &z) && z.dst_offset == 7200
+            && wifi_time_zone_offset(&z, at(2026, 3, 29, 1, 0, 0)) == 7200
+            && wifi_time_zone_offset(&z, at(2026, 10, 25, 0, 59, 59)) == 7200
+            && wifi_time_zone_offset(&z, at(2026, 10, 25, 1, 0, 0)) == 3600,
+            "central Europe, with a stated summer offset and a change at 03:00");
+      CHECK(wifi_time_zone_parse("<+0545>-5:45", &z) && !z.has_dst && z.std_offset == 20700
+            && wifi_time_zone_offset(&z, at(2026, 7, 1, 0, 0, 0)) == 20700, "Nepal: a quoted name, no summer time");
+      CHECK(wifi_time_zone_parse("<-03>3", &z) && z.std_offset == -10800, "a quoted name with a sign");
+      CHECK(wifi_time_zone_parse("UTC0", &z) && z.std_offset == 0 && !z.has_dst, "UTC0");
+
+      CHECK(wifi_time_zone_parse("CET", &z) && z.has_dst && z.std_offset == 3600 && z.dst_offset == 7200
+            && wifi_time_zone_offset(&z, at(2026, 3, 29, 0, 59, 59)) == 3600
+            && wifi_time_zone_offset(&z, at(2026, 3, 29, 1, 0, 0)) == 7200
+            && wifi_time_zone_offset(&z, at(2026, 10, 11, 10, 15, 41)) == 7200
+            && wifi_time_zone_offset(&z, at(2026, 10, 25, 1, 0, 0)) == 3600,
+            "CET, the tz database zone: CEST from the last Sunday of March to that of October");
+      CHECK(wifi_time_zone_parse("MET", &z) && z.std_offset == 3600 && z.dst_offset == 7200, "MET");
+      CHECK(wifi_time_zone_parse("BST", &z) && z.has_dst && z.std_offset == 0 && z.dst_offset == 3600
+            && wifi_time_zone_offset(&z, at(2026, 3, 29, 0, 59, 59)) == 0
+            && wifi_time_zone_offset(&z, at(2026, 3, 29, 1, 0, 0)) == 3600
+            && wifi_time_zone_offset(&z, at(2026, 10, 25, 0, 59, 59)) == 3600
+            && wifi_time_zone_offset(&z, at(2026, 10, 25, 1, 0, 0)) == 0,
+            "BST is the UK: GMT, and BST between the last Sundays of March and October");
+      CHECK(wifi_time_zone_parse("EET", &z) && z.std_offset == 7200 && z.dst_offset == 10800
+            && wifi_time_zone_offset(&z, at(2026, 3, 29, 0, 59, 59)) == 7200
+            && wifi_time_zone_offset(&z, at(2026, 3, 29, 1, 0, 0)) == 10800
+            && wifi_time_zone_offset(&z, at(2026, 10, 25, 0, 59, 59)) == 10800
+            && wifi_time_zone_offset(&z, at(2026, 10, 25, 1, 0, 0)) == 7200, "EET changes at 01:00 UTC");
+      CHECK(wifi_time_zone_parse("WET", &z) && z.std_offset == 0 && z.dst_offset == 3600
+            && wifi_time_zone_offset(&z, at(2026, 7, 1, 12, 0, 0)) == 3600, "WET");
+      CHECK(wifi_time_zone_parse("UTC", &z) && !z.has_dst && z.std_offset == 0
+            && wifi_time_zone_parse("GMT", &z) && !z.has_dst && z.std_offset == 0, "UTC and GMT");
+      CHECK(wifi_time_zone_parse("EST", &z) && !z.has_dst && z.std_offset == -18000
+            && wifi_time_zone_parse("MST", &z) && z.std_offset == -25200
+            && wifi_time_zone_parse("HST", &z) && z.std_offset == -36000, "EST, MST, HST are fixed offsets");
+      CHECK(!wifi_time_zone_parse("cet", &z) && !wifi_time_zone_parse("Cet", &z) && !wifi_time_zone_parse("CEST", &z)
+            && !wifi_time_zone_parse("PST", &z), "IDs are exact: not cet, not CEST, not PST (use PST8PDT)");
+      CHECK(wifi_time_zone_parse("GMT+8", &z) && z.std_offset == -28800
+            && wifi_time_zone_parse("GMT-7:30", &z) && z.std_offset == 27000
+            && wifi_time_zone_parse("UTC-3", &z) && z.std_offset == 10800
+            && wifi_time_zone_parse("<+08>-8", &z) && z.std_offset == 28800,
+            "POSIX signs: GMT+8 is 8 hours WEST (UTC-8), GMT-7:30 is east (UTC+7:30)");
+      CHECK(!wifi_time_zone_parse("GMT-7.5", &z) && !wifi_time_zone_parse("GMT+8.5", &z),
+            "decimal hours are not POSIX: write GMT-7:30");
+      CHECK(!wifi_time_zone_parse(NULL, &z) && !wifi_time_zone_parse("", &z), "no string: no zone");
+      CHECK(!wifi_time_zone_parse("GM0", &z) && !wifi_time_zone_parse("GMT+", &z)
+            && !wifi_time_zone_parse("GMT0BST,M3.5.0", &z) && !wifi_time_zone_parse("GMT0BST,M13.1.0,M10.5.0", &z)
+            && !wifi_time_zone_parse("GMT0BST,M3.0.0,M10.5.0", &z) && !wifi_time_zone_parse("GMT0BST,M3.5.7,M10.5.0", &z)
+            && !wifi_time_zone_parse("GMT0X", &z) && !wifi_time_zone_parse("GMT25", &z)
+            && !wifi_time_zone_parse("GMT0:60", &z) && !wifi_time_zone_parse("<>0", &z)
+            && !wifi_time_zone_parse("GMT0BST,M3.5.0/1,M10.5.0x", &z) && !wifi_time_zone_parse("GMT0BST,J60,J300", &z)
+            && !wifi_time_zone_parse("Europe/London", &z), "malformed strings and unsupported rule forms are refused");
+      CHECK(z.has_dst == false && z.std_offset == 0, "and leave no zone");
+   }
+
    printf("\n%d checks, %d failures\n", checks, fails);
    printf(fails ? "WIFITIME TESTS FAILED\n" : "WIFITIME TESTS PASSED\n");
    return fails ? 1 : 0;

@@ -2853,6 +2853,8 @@ static bool route_status(ws_conn_t *c)
       table_row(&b, "Gateway", ip);
       wifi_service_ntp_server_text(tmp, sizeof tmp);
       table_row(&b, "NTP server", tmp);
+      wifi_service_time_zone_text(tmp, sizeof tmp);
+      table_row(&b, "Time zone", tmp);
       wifi_service_time_offset_text(tmp, sizeof tmp);
       table_row(&b, "Time offset", tmp);
    }

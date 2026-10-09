@@ -36,6 +36,7 @@
 #include "wifi/wifi_lwip.h"
 #include "net_service.h"
 #include "wifi_time.h"
+#include "rpi/rpi.h"
 #include "rpi/systimer.h"
 #include "rpi/asm-helpers.h"
 #include "rpi/fileparser.h"
@@ -182,6 +183,40 @@ void wifi_service_time_offset_text(char *out, size_t size)
                   ? "config ntp_offset" : "not understood, ignored");
 }
 
+void wifi_service_time_zone_text(char *out, size_t size)
+{
+   const char *configured = config_get("ntp_timezone");
+   const char *leased = wifi_lwip_dhcp_timezone();
+   wifi_time_zone_t zone;
+   bool configured_ok = wifi_time_zone_parse(configured, &zone);
+
+   if (configured_ok)
+      snprintf(out, size, "%s (config ntp_timezone)", configured);
+   else if (wifi_time_zone_parse(leased, &zone))
+      snprintf(out, size, "%s (DHCP option 100)", leased);
+   else {
+      int minutes = time_utc_offset_minutes;
+      snprintf(out, size, "UTC%c%02d:%02d (wifi_service_utc_offset_minutes)",
+               minutes < 0 ? '-' : '+', (minutes < 0 ? -minutes : minutes) / 60,
+               (minutes < 0 ? -minutes : minutes) % 60);
+   }
+   if (!configured_ok && configured != NULL && configured[0] != '\0') {
+      size_t n = strlen(out);
+      if (n < size)
+         snprintf(out + n, size - n, " - ntp_timezone not understood");
+   }
+}
+
+/* The time zone rule: the config key wins, else the lease's option 100.  A
+   value that does not parse counts as absent, so a typo in the key falls
+   back to the lease, then to the fixed offset. */
+static bool time_zone_get(wifi_time_zone_t *zone)
+{
+   const char *configured = config_get("ntp_timezone");
+   return wifi_time_zone_parse(configured, zone)
+          || wifi_time_zone_parse(wifi_lwip_dhcp_timezone(), zone);
+}
+
 static int16_t utc_offset_parse(const char *value)
 {
    bool negative = false;
@@ -203,8 +238,11 @@ static int16_t utc_offset_parse(const char *value)
 
 static void format_network_time(uint32_t cp, bool date)
 {
-   int64_t local = (int64_t)(uint32_t)(network_time_seconds - NTP_UNIX_EPOCH)
-                 + (int64_t)time_utc_offset_minutes * 60;
+   uint32_t utc = network_time_seconds - NTP_UNIX_EPOCH;
+   wifi_time_zone_t zone;
+   int64_t local = (int64_t)utc + (time_zone_get(&zone)
+                 ? wifi_time_zone_offset(&zone, utc)
+                 : (int32_t)time_utc_offset_minutes * 60);
    wifi_time_fields_t t;
    local += wifi_time_shift_seconds(&time_shift, local);
    wifi_time_split(local, &t);
@@ -763,8 +801,14 @@ void wifi_service_init(uint8_t instance, uint8_t address)
       service_initialised = true;
       time_utc_offset_minutes = utc_offset_parse(
          config_get("wifi_service_utc_offset_minutes"));
-      (void)wifi_time_shift_parse(config_get("ntp_offset"),
-                                  &time_shift);
+      if (!wifi_time_shift_parse(config_get("ntp_offset"), &time_shift))
+         LOG_INFO("WiFi: ntp_offset not understood, ignored\r\n");
+      {
+         wifi_time_zone_t zone;
+         const char *tz = config_get("ntp_timezone");
+         if (tz != NULL && tz[0] != '\0' && !wifi_time_zone_parse(tz, &zone))
+            LOG_INFO("WiFi: ntp_timezone not understood, ignored\r\n");
+      }
    }
    /* Re-read the saved profile on every host reset, but credentials_load
     * preserves an already-running association when the profile is unchanged. */
