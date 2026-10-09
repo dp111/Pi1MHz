@@ -103,7 +103,6 @@ static uint8_t scan_fields = 127u;
    mechanism is IP, so it lives with lwIP.  Kept here: the reply the ROM
    expects, and the UTC offset, which is this service's configuration. */
 #define NTP_UNIX_EPOCH 2208988800u
-#define NTP_SERVER "pool.ntp.org"
 static uint32_t network_time_seconds;
 static int16_t time_utc_offset_minutes;
 
@@ -165,6 +164,15 @@ static bool leap_year(uint32_t year)
    return (year % 4u == 0u && year % 100u != 0u) || year % 400u == 0u;
 }
 
+void wifi_service_ntp_server_text(char *out, size_t size)
+{
+   static const char *const from[] = { "config ntp_server", "DHCP option 42",
+                                       "default" };
+   const char *configured = config_get("ntp_server");
+   snprintf(out, size, "%s (%s)", net_ntp_server(configured),
+            from[net_ntp_server_source(configured)]);
+}
+
 static int16_t utc_offset_parse(const char *value)
 {
    bool negative = false;
@@ -219,7 +227,8 @@ static uint8_t wifi_datetime(uint32_t cp)
 
    switch (net_time_poll(&network_time_seconds)) {
       case NET_UTIL_IDLE:
-         if (!sdio_runtime_link_is_up() || !net_time_start(NTP_SERVER))
+         if (!sdio_runtime_link_is_up() || !net_time_start(net_ntp_server(
+                                         config_get("ntp_server"))))
             return WIFI_SVC_ERR_NETWORK;
          return WIFI_SVC_BUSY;
       case NET_UTIL_DONE:

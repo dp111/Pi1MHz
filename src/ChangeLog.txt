@@ -320,3 +320,6 @@ VFS menu: the mouse scrolls the whole list, A cycles the video's sound (both, le
 Wifi ROM: *WTIME prints the internet time on a Master too; *JOIN's password prompt honours Escape.
 The text cursor inverts the colour under it, as the Beeb's does; VDU 23,17 is ignored, as on the Master.
 Over 90 fixes from a whole-tree review: SCSI, SD card, WiFi, webserver, MTP, FujiNet, AUN, teletext and the screen.
+
+v.1.41
+WiFi time: *DATE/*TIME ask the NTP server in ntp_server, else the one in the DHCP lease (option 42), else pool.ntp.org. The status page shows which.

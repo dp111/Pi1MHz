@@ -23,6 +23,7 @@
 #include "../BeebSCSI/filesystem.h"   /* filesystemHostPathBusy() - LUN interlock */
 #include "../BeebSCSI/fatfs/diskio.h"  /* disk_read - incremental FAT free scan */
 #include "../services.h"              /* fat_service_file_in_use() - MMFS/FAT interlock */
+#include "../wifi_service.h"        /* NTP server on /status */
 #include "../usb/mtp_fs.h"
 #include "../rpi/screen.h"
 #include "../rpi/display_mode.h"   /* Display mode row on /status */
@@ -2850,6 +2851,8 @@ static bool route_status(ws_conn_t *c)
       table_row(&b, "Netmask", ip);
       ws_ip_str(netif_ip4_gw(&lw->netif), ip, sizeof ip);
       table_row(&b, "Gateway", ip);
+      wifi_service_ntp_server_text(tmp, sizeof tmp);
+      table_row(&b, "NTP server", tmp);
    }
 
    /* Show the chip's actual transmit MAC (captured at boot via the

@@ -2258,6 +2258,23 @@ void net_time_cancel(void)
    netutil_time_stage = UTIL_IDLE;
 }
 
+net_ntp_source_t net_ntp_server_source(const char *configured)
+{
+   if (configured != NULL && configured[0] != '\0')
+      return NET_NTP_FROM_CONFIG;
+   return wifi_lwip_dhcp_ntp_server() != NULL ? NET_NTP_FROM_DHCP
+                                              : NET_NTP_FROM_DEFAULT;
+}
+
+const char *net_ntp_server(const char *configured)
+{
+   switch (net_ntp_server_source(configured)) {
+      case NET_NTP_FROM_CONFIG: return configured;
+      case NET_NTP_FROM_DHCP:   return wifi_lwip_dhcp_ntp_server();
+      default:                  return NET_NTP_DEFAULT_SERVER;
+   }
+}
+
 bool net_time_start(const char *server)
 {
    err_t result;

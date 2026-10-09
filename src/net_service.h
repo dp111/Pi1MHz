@@ -87,6 +87,18 @@ bool net_ping_start(const char *host);              /* false: could not start */
 net_util_state_t net_ping_poll(uint32_t *elapsed_ms);
 void net_ping_cancel(void);
 
+/* The SNTP server to ask: `configured` (the config key) if set and not empty,
+   else the NTP server of the current DHCP lease (option 42), else
+   NET_NTP_DEFAULT_SERVER.  The result is valid until the lease changes. */
+#define NET_NTP_DEFAULT_SERVER "pool.ntp.org"
+typedef enum {
+   NET_NTP_FROM_CONFIG,      /* the config key                     */
+   NET_NTP_FROM_DHCP,        /* DHCP option 42 of the current lease */
+   NET_NTP_FROM_DEFAULT      /* NET_NTP_DEFAULT_SERVER              */
+} net_ntp_source_t;
+net_ntp_source_t net_ntp_server_source(const char *configured);
+const char *net_ntp_server(const char *configured);
+
 bool net_time_start(const char *server);
 net_util_state_t net_time_poll(uint32_t *ntp_seconds);
 void net_time_cancel(void);

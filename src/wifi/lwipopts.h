@@ -32,6 +32,11 @@
    used and is redundant on a network whose DHCP server already hands
    out unique leases. */
 #define LWIP_DHCP_DOES_ACD_CHECK        0
+/* Ask for DHCP option 42 (NTP server).  lwIP reports it through
+   dhcp_set_ntp_servers(), implemented in wifi_lwip.c; one address is enough
+   for the SNTP client. */
+#define LWIP_DHCP_GET_NTP_SRV           1
+#define LWIP_DHCP_MAX_NTP_SERVERS       1
 #define LWIP_DNS                        1
 
 #define LWIP_IPV4                       1

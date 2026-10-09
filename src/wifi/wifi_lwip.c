@@ -138,6 +138,28 @@ static void wifi_lwip_debug_log(const char *format, ...)
    wifi_debug_printf("WIFI-LWIP: %s\r\n", line);
 }
 
+/* Option 42 of the last lease.  lwIP calls dhcp_set_ntp_servers() only when a
+   lease is bound, never when one ends, so the text is used only while
+   dhcp_supplied_address() says the lease is still held. */
+static char g_wifi_lwip_dhcp_ntp[IP4ADDR_STRLEN_MAX];
+
+void dhcp_set_ntp_servers(u8_t num_ntp_servers, const ip4_addr_t *ntp_server_addrs)
+{
+   g_wifi_lwip_dhcp_ntp[0] = '\0';
+   if (num_ntp_servers > 0u && !ip4_addr_isany(&ntp_server_addrs[0]))
+      (void)ip4addr_ntoa_r(&ntp_server_addrs[0], g_wifi_lwip_dhcp_ntp,
+                           sizeof g_wifi_lwip_dhcp_ntp);
+}
+
+const char *wifi_lwip_dhcp_ntp_server(void)
+{
+   if (!g_wifi_lwip_context.netif_added || !g_wifi_lwip_context.dhcp_started
+       || !dhcp_supplied_address(&g_wifi_lwip_context.netif)
+       || g_wifi_lwip_dhcp_ntp[0] == '\0')
+      return NULL;
+   return g_wifi_lwip_dhcp_ntp;
+}
+
 static bool wifi_lwip_address_ready(const struct netif *netif)
 {
    if (netif == NULL)

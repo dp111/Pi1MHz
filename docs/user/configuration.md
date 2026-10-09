@@ -162,6 +162,7 @@ are hardware-diagnostic switches for developers; leave them unset.
 |---|---|---|
 | `wifi_service_enable` | off | `1` answers the [1MHz-WiFi ROM](wifi-rom.md)'s WiFi commands (`*JOIN`, `*LAP`, `*PING`, `*DATE` ...) and its WiCFS tape filing system (`*UEF`). |
 | `wifi_service_utc_offset_minutes` | 0 | Time zone for the ROM's `*DATE`/`*TIME`, in minutes from UTC - e.g. `60` for British Summer Time. |
+| `ntp_server` | (none) | The time server for the ROM's `*DATE`/`*TIME`, as a name or an IPv4 address. If unset, the NTP server the network's DHCP lease names (option 42) is used, and if the lease has none, `pool.ntp.org`. The status page shows the server in use and where it came from. |
 | `wifi_service_uef_filev_repair` | on | `0` sends `*UEF` tapes exactly as stored. On, a cassette loader that writes FILEV itself (`?&212=&D6:?&213=&F1`, common on the Electron) has those two statements blanked, so it does not knock WiCFS off the filing vector. |
 | `net_enable` | off | `1` lets the Beeb use the Pi's network: the 1MHz-WiFi ROM's `*WGET`, `*NSLOOK` and `*DISCONNECT`, the N: device programs in `beeb/net/`, the [WiFi modem](serial-modem.md), and FujiNet's TNFS, `http://`, `https://` and `tcp://`. Needs WiFi set up. `https://` also needs `/cacert.pem` on the card - see [FujiNet](fujinet.md#https). |
 | `modem_phone_1` ... `modem_phone_99` | (none) | The [WiFi modem](serial-modem.md)'s phonebook: `modem_phone_1=bbs.example.com:6502` makes `ATDT1` dial that host and port (port 23 if none). |

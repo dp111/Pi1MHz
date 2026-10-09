@@ -124,6 +124,10 @@ void wifi_lwip_rx_kick(void) {}
 bool net_ping_start(const char *host) { (void)host; return false; }
 net_util_state_t net_ping_poll(uint32_t *ms) { (void)ms; return NET_UTIL_IDLE; }
 void net_ping_cancel(void) {}
+const char *net_ntp_server(const char *configured)
+{ return configured != NULL && configured[0] != '\0' ? configured : "pool.ntp.org"; }
+net_ntp_source_t net_ntp_server_source(const char *configured)
+{ return configured != NULL && configured[0] != '\0' ? NET_NTP_FROM_CONFIG : NET_NTP_FROM_DEFAULT; }
 bool net_time_start(const char *server) { (void)server; return false; }
 net_util_state_t net_time_poll(uint32_t *s) { (void)s; return NET_UTIL_IDLE; }
 void net_time_cancel(void) {}
@@ -200,6 +204,13 @@ int main(void)
    CHECK(writes == 0 && card_says("security=BOGUS"), "the file is left as it was");
 
    free(pi.JIM_ram);
+   printf("== /status: NTP server text ==\n");
+   {
+      char text[64];
+      wifi_service_ntp_server_text(text, sizeof text);
+      CHECK(strcmp(text, "pool.ntp.org (default)") == 0, "no key, no lease: the default and where it came from (%s)", text);
+   }
+
    printf("%d checks, %d failures\n", checks, fails);
    return fails ? 1 : 0;
 }
