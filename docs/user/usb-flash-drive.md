@@ -51,8 +51,14 @@ The Beeb can switch between the two itself, whatever `storage=` says:
 
 Every file is closed first, then the discs come from the other one - as
 a card swap. The choice holds through BREAK until the Pi is switched off
-or restarted. With no drive plugged in, `5` is refused: the register reads
-`&FF` (OSBYTE 146 with X=203 reads it) and nothing changes.
+or restarted. With no drive plugged in, `5` is refused and nothing
+changes. To see the result, select the register again and read it -
+`0` done, `&FF` refused:
+
+```
+*FX147,202,2
+A%=146:X%=203:PRINT ~(USR&FFF4 AND &FF0000) DIV &10000
+```
 
 The status page shows a **Beeb storage** row (`SD card` or
 `USB drive`) and a **USB drive** row: the drive's vendor:product ID,
