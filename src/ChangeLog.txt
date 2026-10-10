@@ -304,3 +304,19 @@ Pi 3B+ WiFi joins again: back to the 43455 firmware 7.45.241 (7.45.265 shipped s
 VFS ROM 2.02: the user port trackball works again with the USB mouse code; *POINTER 0 hides the Pi's pointer.
 The Pi's mouse pointer goes off at BREAK.
 USB mouse: movement is reported in whole steps of 4 graphics units, the VFS pointer's step; the remainder carries to the next read.
+
+v.1.40
+Upgrading from V1.39: copy the new kernels to the SD card - a kernel.now from V1.39 keeps running the old one.
+USB is a host by default (a USB mouse needs nothing set); MTP file access needs usb_mode=device.
+USB flash drive: storage=usb puts the Beeb's discs and files (ADFS, VFS and video, MMFS, FujiNet) on a USB drive.
+USB flash drive: used from power-on (waits up to 5 s for it) and from the next BREAK; see docs/user/usb-flash-drive.md.
+*FX147,202,2 then *FX147,203,4 or 5: the Beeb switches its storage to the SD card or the USB drive.
+FAT32, FAT16 and exFAT cards and drives (exFAT not yet tried on hardware).
+Pi 2: its own kernel, kernel7a7.img, loaded by config.txt's [pi2] section - kernel7.img does not run on its Cortex-A7.
+VP4 mixes 62% disc and 38% computer; VP5 dims the disc to 57% except under the computer's non-black image (player manual).
+kernel.now works with the video player running: the player shuts down and hands the VideoCore on.
+reboot.now over MTP restarts the Pi with its files synced.
+VFS menu: the mouse scrolls the whole list, A cycles the video's sound (both, left, right, off), the right button returns.
+Wifi ROM: *WTIME prints the internet time on a Master too; *JOIN's password prompt honours Escape.
+The text cursor inverts the colour under it, as the Beeb's does; VDU 23,17 is ignored, as on the Master.
+Over 90 fixes from a whole-tree review: SCSI, SD card, WiFi, webserver, MTP, FujiNet, AUN, teletext and the screen.
