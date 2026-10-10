@@ -1524,12 +1524,14 @@ static bool screen_highlight;
 #define PAL_KEYED_HL    (PAL_ENTRIES*3u)   /* banks 6,7 */
 
 /* VP4 *VOTRANSPARENT mixes the computer's colours over the video at this
-   level while its black stays fully clear. The mix lives in the PALETTE,
+   level while its black stays fully clear: the disc at 100% under black,
+   62% disc + 38% computer under any other colour (the player manual's mix
+   mode; 0x61 = 97/255 = 38.0%). The mix lives in the PALETTE,
    premultiplied, rather than in the plane's fixed-alpha stage: fixed alpha
    is applied after the lookup without scaling RGB, so the scaler would be
    interpolating non-premultiplied data and edge pixels would be dragged
    toward the key colour's black - a dark outline around every glyph. */
-#define VP4_MIX_ALPHA 0x80u
+#define VP4_MIX_ALPHA 0x61u
 
 static uint32_t palette_mixed_entry( uint32_t entry, uint32_t colour )
 {
