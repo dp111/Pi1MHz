@@ -37,6 +37,23 @@ WiFi settings. The [web interface](web-interface.md) and
   goes back to the SD card. Don't pull it out while the Beeb is writing
   to it.
 
+## Switching from the Beeb
+
+The Beeb can switch between the two itself, whatever `storage=` says:
+
+```
+*FX147,202,2
+*FX147,203,5        use the USB drive
+
+*FX147,202,2
+*FX147,203,4        use the SD card
+```
+
+Every file is closed first, then the discs come from the other one - as
+a card swap. The choice holds through BREAK until the Pi is switched off
+or restarted. With no drive plugged in, `5` is refused: the register reads
+`&FF` (OSBYTE 146 with X=203 reads it) and nothing changes.
+
 The status page shows a **Beeb storage** row (`SD card` or
 `USB drive`) and a **USB drive** row: the drive's vendor:product ID,
 its size and its file system, or `none`.

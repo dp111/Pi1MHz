@@ -279,6 +279,8 @@ void hd_juke_service(void)
 #define HD_CARD_EJECT   1u    /* close, flush and dismount: safe to pull the card */
 #define HD_CARD_INSERT  2u    /* mount whatever card is in the slot (as a BBC reset does) */
 #define HD_CARD_REBOOT  3u    /* eject, then restart the Pi */
+#define HD_CARD_USE_SD  4u    /* the Beeb's storage on the SD card, until the Pi restarts */
+#define HD_CARD_USE_USB 5u    /* ... on the USB flash drive (storage=usb's choice, made now) */
 #define HD_CARD_FAILED  0xFFu
 
 /* Report a request's result - unless the Beeb has written a newer request
@@ -306,6 +308,19 @@ void hd_card_service(void)
       /* An insert is a swap: finish letting go of the old card first (a
          no-op if it was ejected already), or a recording still being
          written out when the request came would be cut off by the remount. */
+      if (filesystemEject())
+         hd_card_done(request, filesystemInsert() ? 0u : HD_CARD_FAILED);
+      break;
+   case HD_CARD_USE_SD:
+   case HD_CARD_USE_USB:
+      /* A swap, as an insert is, with the storage chosen first: the choice
+         only takes effect at the remount, after every file is closed.  No
+         drive: refused before anything is closed.  Repeating the choice
+         while an eject takes several passes changes nothing. */
+      if (!filesystemChooseStorage(request == HD_CARD_USE_USB)) {
+         hd_card_done(request, HD_CARD_FAILED);
+         break;
+      }
       if (filesystemEject())
          hd_card_done(request, filesystemInsert() ? 0u : HD_CARD_FAILED);
       break;

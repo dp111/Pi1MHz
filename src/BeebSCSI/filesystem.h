@@ -78,6 +78,11 @@ bool filesystemStoragePath(const char *path, char *buf, size_t size);
 /* The storage is on the drive (decided; never waits).  For host-side
    interlocks: their paths are on the card. */
 bool filesystemStorageOnUsb(void);
+/* The Beeb chooses the storage itself (*FX147,203,4/5): the card, or the USB
+   drive, overriding storage= until the Pi restarts.  Takes effect at the
+   next filesystemReset (the caller's eject + insert).  False, choice
+   unchanged, for the drive when none is mounted. */
+bool filesystemChooseStorage(bool usb);
 /* A path as the Beeb names it is on the card: the storage is, or it is in
    the Pi's own /Pi1MHz folder.  Never waits. */
 bool filesystemPathOnCard(const char *path);

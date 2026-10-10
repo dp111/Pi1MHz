@@ -136,7 +136,9 @@ but tell it first, so nothing is half-written when the card comes out:
 ```
 
 `*FX147,203,3` (after `*FX147,202,2`) ejects and then restarts the Pi
-completely. Each `*FX` goes on a line of its own: BASIC passes everything
+completely. `*FX147,203,4` and `*FX147,203,5` switch the Beeb's discs to
+the SD card or to a [USB flash drive](usb-flash-drive.md). The help
+screen lists them as `203,1-5 out/in/rst/SD/USB`. Each `*FX` goes on a line of its own: BASIC passes everything
 after a `*` to the operating system, so a second command after a colon
 is never run.
 

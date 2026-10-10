@@ -381,7 +381,9 @@ static void filesystemRemountNotify(void)
 
    Decided at each BBC reset, at the first use after it, and kept until the
    next: a drive plugged in while a program runs is used from the next
-   BREAK, never swapped in under it.  At power-on the drive is still being
+   BREAK, never swapped in under it.  The Beeb can choose for itself
+   (*FX147,203,4 or 5 - filesystemChooseStorage), which overrides storage=
+   until the Pi restarts.  At power-on the drive is still being
    enumerated when the Beeb first asks, so until STORAGE_POWER_ON_WAIT_US
    after the first reset the decision waits for it, running USB meanwhile:
    the Beeb sees a slow answer inside a command - it has no timeouts - never
@@ -389,6 +391,9 @@ static void filesystemRemountNotify(void)
 #define STORAGE_POWER_ON_WAIT_US 5000000u
 
 static enum { ROOT_SD, ROOT_USB, ROOT_UNDECIDED } fsRoot;
+/* The Beeb's own choice (filesystemChooseStorage), in .bss: until the Pi
+   restarts - BREAK keeps it. */
+static enum { CHOICE_CONFIG, CHOICE_SD, CHOICE_USB } fsStorageChoice;
 static bool     fsRootBooted;          /* the first reset has set the wait */
 static uint64_t fsRootWaitUntil;     /* 64-bit: never wraps back into the window */
 
@@ -399,11 +404,27 @@ static void filesystemStorageReset(void)
       fsRootWaitUntil = RPI_GetSystemTime64() + STORAGE_POWER_ON_WAIT_US;
    }
    const char *storage = config_get("storage");
-   fsRoot = (storage != NULL && strcasecmp(storage, "usb") == 0) ? ROOT_UNDECIDED : ROOT_SD;
+   if (fsStorageChoice == CHOICE_SD)
+      fsRoot = ROOT_SD;
+   else if (fsStorageChoice == CHOICE_USB)
+      /* chosen on purpose, so no power-on wait: the drive, if it is there */
+      fsRoot = usb_storage_mounted() ? ROOT_USB : ROOT_SD;
+   else
+      fsRoot = (storage != NULL && strcasecmp(storage, "usb") == 0) ? ROOT_UNDECIDED : ROOT_SD;
    /* The card's remount puts its current directory back at the root; the
       drive is not remounted, so do the same for it (no drive: an at once
       FR_NOT_ENABLED or FR_NOT_READY). */
    (void)f_chdir("1:/");
+}
+
+bool filesystemChooseStorage(bool usb)
+{
+   /* A drive asked for but not there: refused, and the choice left as it
+      was - a later BREAK must not swap to a drive plugged in after. */
+   if (usb && !usb_storage_mounted())
+      return false;
+   fsStorageChoice = usb ? CHOICE_USB : CHOICE_SD;
+   return true;
 }
 
 const char *filesystemStorageRoot(void)

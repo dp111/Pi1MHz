@@ -91,7 +91,7 @@ static volatile uint32_t help_shown_us;
    "19  Serial redirector (modem)\r\n"                                   \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then 203,1/0 M5000 rec\r\n"                          \
-   "*FX147,202,%d 203,1/2/3 SD out/in/boot\r\n"
+   "*FX147,202,%d 203,1-5 out/in/rst/SD/USB\r\n"
 
 #define HELPERS_HELP_COLUMNS 40u
 #define HELPERS_HELP_ROWS    25u

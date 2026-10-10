@@ -910,6 +910,71 @@ static void test_storage(void)
    filesystemReset();
 }
 
+/* *FX147,203,4/5: the Beeb chooses the storage itself, over storage=, and
+   a BREAK keeps the choice.  Last: the choice lasts until the Pi restarts. */
+static void test_storage_choice(void)
+{
+   static char why[200];
+   const char *v;
+   int waits = usb_waits;
+
+   /* storage unset, the drive chosen: used at once, never waited for */
+   cfg_storage = NULL;
+   usb_mounted = true;
+   stop_all();
+   bool ok = filesystemChooseStorage(true);
+   filesystemReset();                        /* the insert after the eject */
+   v = lun0_volume();
+   snprintf(why, sizeof why, "chosen %d, LUN 0 on %s (want usb), waits %d (want %d)",
+            ok, v, usb_waits, waits);
+   check("*FX147,203,5: the drive, over storage=sd, without the power-on wait",
+         ok && !strcmp(v, "usb") && usb_waits == waits, why);
+
+   stop_all();
+   filesystemReset();                        /* BREAK */
+   v = lun0_volume();
+   snprintf(why, sizeof why, "LUN 0 on %s (want usb)", v);
+   check("*FX147,203,5: a BREAK keeps the choice", !strcmp(v, "usb"), why);
+
+   /* the card chosen, over storage=usb with the drive there */
+   cfg_storage = "usb";
+   stop_all();
+   ok = filesystemChooseStorage(false);
+   filesystemReset();
+   v = lun0_volume();
+   snprintf(why, sizeof why, "chosen %d, LUN 0 on %s (want sd), waits %d (want %d)",
+            ok, v, usb_waits, waits);
+   check("*FX147,203,4: the card, over storage=usb", ok && !strcmp(v, "sd") &&
+         usb_waits == waits, why);
+
+   /* the drive asked for, none there: refused, the card choice kept - a
+      later BREAK with a drive does not swap to it */
+   usb_mounted = false;
+   ok = filesystemChooseStorage(true);
+   usb_mounted = true;
+   stop_all();
+   filesystemReset();
+   v = lun0_volume();
+   snprintf(why, sizeof why, "chosen %d (want 0), LUN 0 after BREAK on %s (want sd)", ok, v);
+   check("*FX147,203,5 with no drive: refused, the choice unchanged", !ok && !strcmp(v, "sd"), why);
+
+   /* the drive chosen, then gone at a BREAK: the card; back at the next:
+      the drive */
+   ok = filesystemChooseStorage(true);
+   usb_mounted = false;
+   stop_all();
+   filesystemReset();
+   const char *gone = lun0_volume();
+   usb_mounted = true;
+   stop_all();
+   filesystemReset();
+   v = lun0_volume();
+   snprintf(why, sizeof why, "drive gone: %s (want sd), back: %s (want usb)", gone, v);
+   check("*FX147,203,5: the drive gone at a BREAK - the card, then the drive again",
+         ok && !strcmp(gone, "sd") && !strcmp(v, "usb"), why);
+   stop_all();
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -956,7 +1021,8 @@ int main(int argc, char **argv)
    test_readonly_image();
    test_stopped_geometry();
    test_title_cache();                  /* it remounts the card */
-   test_storage();                      /* last: it moves the storage */
+   test_storage();                      /* it moves the storage */
+   test_storage_choice();               /* last: the choice lasts till restart */
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;
