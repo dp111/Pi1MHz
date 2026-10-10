@@ -1503,11 +1503,12 @@ void screen_plane_enable( uint32_t planeno , bool enable )
    transparent (the video shows through at full brightness). */
 static bool screen_highlight;
 
-/* How far *VOHIGHLIGHT dims the video outside the computer's image, as the
-   alpha of the black it lays over it: 0x80 is a half-and-half mix (only a
-   2:1 brightup, which reads as "not very highlighted"), 0xC0 leaves a
-   quarter of the picture for a 4:1 contrast against the windows. */
-#define VP5_DIM_ALPHA 0xA0u
+/* How far VP5 (*VOHIGHLIGHT, the player manual's "enhanced mode": LV 100%,
+   57% in window) dims the disc picture wherever the computer's image is
+   black - and all round it, through the dim strips - as the alpha of the
+   black it lays over it: 0x6E leaves (255-110)/255 = 56.9% of the picture.
+   Where the computer's image is not black the disc shows at 100%. */
+#define VP5_DIM_ALPHA 0x6Eu
 
 /* Bank index bits: 0 = flash twin, 1 = keyed, 2 = VP5 highlight. So the
    keyed pair is banks 2/3 normally and 6/7 under highlight, and both are
