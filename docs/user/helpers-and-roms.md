@@ -65,6 +65,11 @@ system, for the BBC B, B+, Master and the Electron. It needs
 `wifi_service_enable=1` and `net_enable=1` in `Pi1MHz.cfg`. See
 [The 1MHz-WiFi ROM and WiCFS](wifi-rom.md) for every command.
 
+Loading it again, after CTRL-BREAK for instance, puts the new copy in the
+bank that already holds a ROM with the same title (`1MHz-WiFi`), whatever its
+version, so a rebuilt ROM replaces the old one instead of finding no free
+sideways RAM. A bank holding any other ROM is left alone.
+
 The image is **not** under Pi1MHz's GPL-3.0: WiCFS derives from Roland Leurs'
 ElkWiFi and carries his non-commercial licence, quoted in `CREDITS.md`. The
 WiFi half's sources are in `beeb/1mhz-wifi/` under the project's own licence;

@@ -285,10 +285,37 @@ NEXT
 
 ENDMACRO
 
-MACRO LOADFILETOSWR filename
+;; The loader behind helpers 3-16.  `mode` says how much of it this page holds:
+;;   0  all of it (every helper but 16)
+;;   1  the loading half, with `other` the page that finds the slot (helper 16)
+;;   2  the slot-finding half, with `other` the page to hand back to, and
+;;      `title`, if not empty, the title of a ROM already in sideways RAM that
+;;      is to be replaced rather than skipped
+;; One macro so that its labels share a scope.  The two halves run in the same
+;; &FD00 window and meet at fixed addresses, each reached by the page switch the
+;; other carries at its end (which lands one byte past &FD00 + Y):
+;;   the slot finder is entered at &FD01 (its first byte, a NOP, is skipped);
+;;   the loader is entered at &FD03, a JMP to where the slot has been found.
+MACRO SWRLOADER filename, mode, other, title
 {
+IF mode = 1
+    JMP     start               ; &FD00: helper 16 as the Beeb calls it
+    JMP     SWRfound            ; &FD03: the slot finder hands back here
+.start
     LDA     &F4
     PHA
+    LDA     #other
+    LDY     #0                  ; the slot finder's entry is &FD01
+    JMP     pageswitch
+ENDIF
+IF mode = 2
+    NOP
+ENDIF
+IF mode = 0
+    LDA     &F4
+    PHA
+ENDIF
+IF mode <> 1
     LDX     #15
 .romlp
     stx     &f4
@@ -310,6 +337,22 @@ MACRO LOADFILETOSWR filename
     cmp     #')'
     ; bne     testram
 
+IF LEN(title) > 0
+    bne     testram
+;; Step 2: a slot that holds this very ROM (the same title, whatever its
+;; version) is the one to load into, so loading again after CTRL-BREAK
+;; replaces the old copy, e.g. a test build with an unchanged version number,
+;; instead of finding no sideways RAM.  Any other ROM is left alone.
+    ldy     #0
+.titlelp
+    lda     &8009, Y
+    cmp     titletext, Y
+    bne     romnxt
+    iny
+    cmp     #0
+    bne     titlelp
+;; the same ROM: fall into the RAM test, which skips it if it is a real ROM
+ELSE
 ;; Step 2: Test if that pre-existing rom image is SWMMFS
 ;; so we reuse the same slot again and again
      ;   lda     &b5fe
@@ -319,6 +362,7 @@ MACRO LOADFILETOSWR filename
      ;   cmp     #MAGIC1
      ;   bne     romnxt
     beq     romnxt
+ENDIF
 ;; Step 3: Check if slot is RAM
 .testram
     lda     &8006
@@ -329,7 +373,9 @@ MACRO LOADFILETOSWR filename
 .romnxt
     dex
     bpl     romlp
+ENDIF
 
+IF mode <> 1
 ; no SWR found
 .noswr
     PLA
@@ -341,7 +387,16 @@ MACRO LOADFILETOSWR filename
    ; STX     &FC88   ; Restore JIM
     BRK
     EQUB 255: EQUS "No SWR":EQUB 0
+ENDIF
 
+IF mode = 2
+.SWRfound
+    LDA     #other
+    LDY     #2                  ; the loader's entry is &FD03
+    JMP     pageswitch
+ENDIF
+
+IF mode <> 2
 .fileerror
 
     PLA
@@ -424,11 +479,21 @@ MACRO LOADFILETOSWR filename
     EQUB 0, 0, &F0, 0
     EQUB 0, 0, 0, 0
     EQUB &FF
+ENDIF
+
+IF LEN(title) > 0
+.titletext
+    EQUS title : EQUB 0
+ENDIF
 
     PAGESWITCHORG
 .pageswitch
     PAGESWITCH
 }
+ENDMACRO
+
+MACRO LOADFILETOSWR filename
+    SWRLOADER filename, 0, 0, ""
 ENDMACRO
 
 ; As LOADFILETOSWR, but the file is chosen when it runs: the letter after
@@ -844,7 +909,7 @@ ORG &FD00
 ; see CREDITS.md).
 {
 ORG &FD00
-    LOADFILETOSWR "Pi1MHz/1mhz-wicfs.rom"
+    SWRLOADER "Pi1MHz/1mhz-wicfs.rom", 1, 20, ""
     ENDBLOCK &1000
 }
 
@@ -1014,19 +1079,30 @@ SER_CTRL  = &FC28
 }
 
 ; ---------------------------------------------------------------------------
-; Pages 20-30 : reserved for future helpers
+; Page 20 : helper 16's slot finder
+;
+; Helper 16 (page 16) is the 1MHz-WiFi ROM loader.  Finding the bank to load
+; it into is done here, so that the loader has room for the one thing the other
+; helpers do not do: a bank that already holds a ROM with this ROM's title is
+; the one to load into, whatever its version.  Loading again after CTRL-BREAK
+; therefore replaces the copy the last load left, instead of reporting that
+; there is no sideways RAM, and a test build with an unchanged version number
+; can be put in the same way.  A different ROM in a bank is never touched.
+; ---------------------------------------------------------------------------
+
+{
+    ORG &FD00
+    SWRLOADER "", 2, 16, "1MHz-WiFi"
+    ENDBLOCK &1400
+}
+
+; ---------------------------------------------------------------------------
+; Pages 21-30 : reserved for future helpers
 ;
 ; Free slots, so a new helper can be added without moving the explorer's
 ; pages and rewriting every GOTOPAGE in it.  Each answers like any finished
 ; helper page, so running one before it does anything simply returns.
 ; ---------------------------------------------------------------------------
-
-{
-    ORG &FD00
-    PAGERTS
-
-    ENDBLOCK &1400
-}
 
 {
     ORG &FD00

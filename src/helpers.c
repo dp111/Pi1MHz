@@ -20,8 +20,9 @@
    carries, so the bank select below rejects a helper number that has no
    page rather than running whatever follows.  17 is the SD card explorer,
    and 31-45 are the pages it chains through while it runs; 18 is FujiNet,
-   19 the serial redirector, and 20-30 are left free for future helpers,
-   answering with a bare return until one is written. */
+   19 the serial redirector, 20 is helper 16's slot finder (see
+   6502code.asm), and 21-30 are left free for future helpers, answering with
+   a bare return until one is written. */
 #define HELPER_PAGES 47u
 
 /* Helper 19 hooks the vectors into the serial stub; its LDY # at &FD06
