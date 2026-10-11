@@ -194,7 +194,9 @@ include "machine.asm"
                     bpl help_l1
                     jsr print_help
                     jmp call_claimed
-.help_l2            jsr help_version
+.help_l2            jsr printtext               \ newline, title, newline: the
+                    equb &D,&EA                 \ shape every ROM gives a plain
+                    jsr help_version            \ *HELP, so ours stands apart
                     jsr printtext
                     equb &D,&20,&20
                     equs "WIFI",&D,&EA
