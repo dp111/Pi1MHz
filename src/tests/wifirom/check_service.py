@@ -113,6 +113,9 @@ def check_help(label, image, writable, bank, names):
     if r is not None:
         check(r == (9, 5, 0), f"{what}: returned A,X,Y={r}, not passed on (9,5,0)")
         check("1MHz-WiFi" in b.text, f"{what}: no title in {b.text!r}")
+        # Every ROM that answers a plain *HELP starts with a newline, so it
+        # does not run on from the line the one before it ended.
+        check(b.text.startswith("\n1MHz-WiFi"), f"{what}: no blank line before the title in {b.text!r}")
 
     what = f"{label}, {bank}: *HELP WIFI"
     b, r = run(image, what, 9, writable, slot=5, y=0, line="WIFI")
