@@ -161,53 +161,14 @@ are hardware-diagnostic switches for developers; leave them unset.
 | Key | Default | Meaning |
 |---|---|---|
 | `wifi_service_enable` | off | `1` answers the [1MHz-WiFi ROM](wifi-rom.md)'s WiFi commands (`*JOIN`, `*LAP`, `*PING`, `*DATE` ...) and its WiCFS tape filing system (`*UEF`). |
-| `ntp_timezone` | (none) | Time zone, with summer time, for the ROM's `*DATE`/`*TIME`: a zone name - `CET`, `MET`, `EET`, `WET` (each with its summer time), `UTC`, `GMT`, or the fixed `EST`, `MST`, `HST` - or a POSIX TZ string such as `GMT0BST,M3.5.0/1,M10.5.0`; see [Time zone](#the-ntp_timezone-setting). If unset, the time zone the network's DHCP server hands out (option 100) is used, and if there is none, `wifi_service_utc_offset_minutes`. The status page shows the setting in use, and where it came from. A value that does not parse is ignored, and the serial log says so. |
-| `wifi_service_utc_offset_minutes` | 0 | Fixed time zone for the ROM's `*DATE`/`*TIME`, in minutes from UTC - e.g. `60` for British Summer Time all year. Used only when there is no `ntp_timezone` and no DHCP time zone. |
-| `ntp_server` | (none) | The time server for the ROM's `*DATE`/`*TIME`, as a name or an IPv4 address. If unset, the NTP server the network's DHCP lease names (option 42) is used, and if the lease has none, `pool.ntp.org`. The status page shows the server in use and where it came from. |
-| `ntp_offset` | (none) | Shifts the date and time `*DATE`/`*TIME` show, for software that expects another year. `dd.mm.yyyy`, `mm.yyyy` or `y` and a year (`y1990`) picks that date: parts you leave out come from today, a day the month lacks becomes its last day, and the time of day is kept. A letter and a number move the clock: `s` seconds, `m` minutes, `h` hours, `d` days, with a `-` in front for earlier - `h2`, `-m30`, `d10`. Plain digits are refused. A date is worked out once, at the first time the Pi gets the time after power-up, and kept, so the clock runs on from it; a reboot starts again from the date you set. A value that does not parse is ignored. The status page shows the setting. |
+| `ntp_timezone` | (none) | Your time zone with summer time for the ROM's `*DATE`/`*TIME`: a zone name such as `BST` (UK) or `CET`, or a POSIX string such as `PST8PDT`. If unset, the zone the network hands out (DHCP option 100), else `wifi_service_utc_offset_minutes`. See [Date and time](date-and-time.md#ntp_timezone). |
+| `wifi_service_utc_offset_minutes` | 0 | The older, fixed time zone for `*DATE`/`*TIME`, in minutes from UTC, with no summer time - e.g. `60`. Kept so existing `Pi1MHz.cfg` files go on working; prefer `ntp_timezone`. Used only when there is no `ntp_timezone` and the network gives none. See [Date and time](date-and-time.md). |
+| `ntp_server` | (none) | The time server for `*DATE`/`*TIME`, a name or an IPv4 address. If unset, the one the network hands out (DHCP option 42), else `pool.ntp.org`. See [Date and time](date-and-time.md#ntp_server). |
+| `ntp_offset` | (none) | Shows another date or moves the clock, for software that expects another year: `y1990`, `31.12.1999`, `h2`, `-d10`. See [Date and time](date-and-time.md#ntp_offset). |
 | `wifi_service_uef_filev_repair` | on | `0` sends `*UEF` tapes exactly as stored. On, a cassette loader that writes FILEV itself (`?&212=&D6:?&213=&F1`, common on the Electron) has those two statements blanked, so it does not knock WiCFS off the filing vector. |
 | `net_enable` | off | `1` lets the Beeb use the Pi's network: the 1MHz-WiFi ROM's `*WGET`, `*NSLOOK` and `*DISCONNECT`, the N: device programs in `beeb/net/`, the [WiFi modem](serial-modem.md), and FujiNet's TNFS, `http://`, `https://` and `tcp://`. Needs WiFi set up. `https://` also needs `/cacert.pem` on the card - see [FujiNet](fujinet.md#https). |
 | `modem_phone_1` ... `modem_phone_99` | (none) | The [WiFi modem](serial-modem.md)'s phonebook: `modem_phone_1=bbs.example.com:6502` makes `ATDT1` dial that host and port (port 23 if none). |
 | `fujinet_boot` | (none) | The disc image fn-rom's `*FBOOT` mounts, read only, as `sd0:/path` or a `tnfs://` URL - normally fn-rom's utilities disc, `sd0:/FujiNet/FN-BOOTB.ssd` (BBC B) or `sd0:/FujiNet/FN-BOOTM.ssd` (Master). See [FujiNet](fujinet.md#the-utilities-disc). |
-
-### The ntp_timezone setting
-
-Easiest is a zone name, written exactly as shown (capitals):
-
-| Write | Meaning |
-|---|---|
-| `CET` or `MET` | Central Europe: UTC+1, +2 in summer (last Sunday of March to last Sunday of October) |
-| `EET` | Eastern Europe: UTC+2, +3 in summer |
-| `WET` | Western Europe (Portugal, Canary Islands): UTC+0, +1 in summer |
-| `UTC` or `GMT` | UTC, no summer time (the UK in summer is not `GMT`: see below) |
-| `EST`, `MST`, `HST` | Fixed UTC-5, UTC-7, UTC-10, no summer time |
-
-Anything else is a POSIX TZ string, the form every Unix uses:
-
-    NAME offset                     a zone with no summer time       CET-1
-    NAME offset SUMMER ,start,end   a zone with summer time         GMT0BST,M3.5.0/1,M10.5.0
-
-* **NAME** is three or more letters (`GMT`, `CET`, `PST`), or any text in angle brackets for a zone that has only a number: `<+08>`.
-* **offset** is hours, or `hours:minutes`, **west** of Greenwich - so east of it is negative. `CET-1` is one hour *ahead* of UTC, `EST5` five hours *behind*, `GMT+8` is UTC-8, `GMT-7:30` is UTC+7:30, `<+0530>-5:30` is India. Decimals such as `7.5` are not allowed; write `7:30`.
-* **SUMMER** is the name of summer time (`BST`, `CEST`, `EDT`). Its offset is one hour ahead of NAME unless you give another after it.
-* **start** and **end** say when summer time begins and ends, as `Mm.w.d` optionally followed by `/hour`:
-  * `m` is the month, 1 to 12;
-  * `w` is the week of the month, 1 to 4, or `5` for the last;
-  * `d` is the day of the week, 0 for Sunday to 6 for Saturday;
-  * `/hour` is the hour of the day, in the clock that is showing *before* the change (default 2, meaning 02:00).
-
-  So `M3.5.0/1` is "the last (5) Sunday (0) of March (3), at 01:00", and `M10.5.0` is "the last Sunday of October, at 02:00 (summer time)". The UK clocks change at 01:00 UTC, which is 01:00 in March (GMT) and 02:00 in October (BST), which is why the two differ. Without start and end, the US dates (`M3.2.0,M11.1.0`) are used.
-
-| Place | Write |
-|---|---|
-| UK, Ireland | `GMT0BST,M3.5.0/1,M10.5.0` |
-| Germany, France, Spain... | `CET` (or `CET-1CEST,M3.5.0,M10.5.0/3`) |
-| US Eastern, Central, Mountain, Pacific | `EST5EDT`, `CST6CDT`, `MST7MDT`, `PST8PDT` |
-| Sydney | `AEST-10AEDT,M10.1.0,M4.1.0/3` |
-| China, Singapore (fixed UTC+8) | `<+08>-8` |
-| India | `<+0530>-5:30` |
-
-If the value cannot be understood it is ignored (with a line on the serial log) and the Pi falls back to the network's time zone, then to `wifi_service_utc_offset_minutes`.
 
 ## Web interface / WebDAV settings
 

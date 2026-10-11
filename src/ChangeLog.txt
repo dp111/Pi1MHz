@@ -323,5 +323,5 @@ Over 90 fixes from a whole-tree review: SCSI, SD card, WiFi, webserver, MTP, Fuj
 
 v.1.41
 WiFi time: *DATE/*TIME ask the NTP server in ntp_server, else the one in the DHCP lease (option 42), else pool.ntp.org. The status page shows which.
-WiFi time: ntp_offset shows another date (dd.mm.yyyy, mm.yyyy, y1990) or moves the clock (h2, -m30, d10).
-WiFi time: ntp_timezone takes a zone name (CET, MET, EET, WET, UTC, GMT, EST, MST, HST) or a POSIX TZ string with summer time (GMT0BST,M3.5.0/1,M10.5.0); else the DHCP lease's time zone (option 100); else wifi_service_utc_offset_minutes. A value that is not understood is ignored and logged.
+WiFi time: ntp_offset shows another date, any year 1-9999 (dd.mm.yyyy, mm.yyyy, y1990), or moves the clock (h2, -m30, d10).
+WiFi time: ntp_timezone takes a zone name (BST for the UK, CET, MET, EET, WET, UTC, GMT, EST, MST, HST) or a POSIX TZ string with summer time (GMT0BST,M3.5.0/1,M10.5.0); else the DHCP lease's time zone (option 100); else wifi_service_utc_offset_minutes. A value that is not understood is ignored and logged.
