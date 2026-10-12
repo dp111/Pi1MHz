@@ -135,8 +135,8 @@ with `DEBUG=1`, or included with some releases), placed on the card as
 on a Pi 2):
 
 1. Edit `config.txt` in the SD root and un-comment the
-   `kernel=debug/kernel.img` line (for a Pi Zero; the equivalent line
-   in the `[pi3]` section for a Pi 3/Zero 2 W).
+   `os_prefix=debug/` line near the top: every model of Pi then loads
+   its kernel from the `debug` folder.
 2. Connect a 3.3V serial lead to the Pi's GPIO 14/15 (TX/RX) pins and
    ground, at 115200 baud, 8N1.
 3. Boot; the debug build reports everything it does, including WiFi

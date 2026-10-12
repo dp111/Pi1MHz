@@ -1,17 +1,12 @@
 # config.txt for Pi1MHz (https://github.com/dp111/Pi1MHz)
-# Debug kernels (needs a 115200 serial connection)
-
-#kernel=debug/kernel.img
-
-# Settings for Pi 3
-[pi3]
-#kernel=debug/kernel7.img
+# Debug kernels (needs a 115200 serial connection): loads the debug build
+# of whichever kernel this Pi uses, from the debug folder
+#os_prefix=debug/
 
 # Settings for Pi 2: its Cortex-A7 cannot run kernel7.img (built for the
 # Pi 3 / Zero 2 W's ARMv8 Cortex-A53), so it has its own ARMv7 kernel
 [pi2]
 kernel=kernel7a7.img
-#kernel=debug/kernel7a7.img
 
 # Global settings
 [all]
