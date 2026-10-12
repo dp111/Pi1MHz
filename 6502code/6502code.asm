@@ -412,9 +412,8 @@ ORG &FD00
 ;;      than leaving two or finding no room;
 ;;   2. a RAM bank holding no ROM.
 ;; A bank holding any other ROM is never written, nor is one that is not RAM.
-.*swrinstall
-    LDA #&80 : STA pass             ; bit 7: the first pass
-.passlp
+.*swrinstall                         ; pass is &80 here: the Pi copies the
+.passlp                             ; page afresh on every select
     LDX #15
 .romlp
     stx     &f4
@@ -444,7 +443,7 @@ ORG &FD00
     cmp     &8009, Y
     bne     romnxt
     iny
-    cmp     #0
+    tax                             ; Z: the zero that ends the title
     bne     titlelp
     beq     testram                 ; the same ROM: replace it if it is RAM
 .noromhere
@@ -470,7 +469,24 @@ ORG &FD00
     BRK
     EQUB 255: EQUS "No SWR":EQUB 0
 
+;; The bank may hold a live copy of this ROM, known to the MOS and perhaps
+;; owning vectors or interrupts, so everything that calls the OS is done
+;; before it is overwritten, and the copy runs with interrupts off: nothing
+;; may enter the half-written bank.  C says which reset, and survives the
+;; copy and fclose (neither touches it).
 .SWRfound
+    LDA #0      ; get machine id
+    LDX #1
+    JSR OSBYTE
+    CPX #3      ; C clear: BEEB or B+
+    BCC copyrom
+    LDA #200    ; master
+    LDY #0
+    LDX #2
+    JSR OSBYTE
+    SEC
+.copyrom
+    SEI
     LDY #0   : STY discaccess
              : STY discaccess+1
     LDA #&F0 : STA discaccess+2
@@ -490,16 +506,7 @@ ORG &FD00
     DEX
     BNE copyswrloop;
     JSR fclose
-.*reboot
-    LDA #0      ; get machine id
-    LDX #1
-    JSR OSBYTE
-    CPX #3
-    BCC doviareset  ; jump for BEEB and B+
-    LDA #200        ; master
-    LDY #0
-    LDX #2
-    JSR OSBYTE
+    BCC doviareset  ; BEEB and B+
     JMP (&FFFC) ; Reset
 .doviareset
     LDA #&7F
@@ -517,7 +524,7 @@ ORG &FD00
 .copyright
     EQUB 0 : EQUS "(C)"
 .pass
-    EQUB 0      ; swrinstall's pass: bit 7 set on the first
+    EQUB &80    ; swrinstall's pass: bit 7 set on the first
 
   PAGESWITCHORG
   PAGESWITCH

@@ -64,6 +64,10 @@ class Memory:
         self.opened = []               # every name asked for
         self.closed = 0
         self.writes = {}               # RAM bank -> bytes written to it
+        self.cpu = None
+        self.irq_on_write = False      # a RAM bank was written with I clear
+        self.os_after_write = []       # OS calls after the first such write
+        self.busy = False              # the next status read says busy
 
     def show(self, page):
         self.ram[0xFD00:0xFE00] = self.image[page * 256:page * 256 + 256]
@@ -83,15 +87,17 @@ class Memory:
                 self.status = 4
         elif cmd == 4:                  # read 16K to &F00000
             assert self.open, "read with no file open"
-            for i, b in enumerate(self.files[self.open]):
+            data = self.files[self.open]
+            for i, b in enumerate(data[:0x4000]):
                 self.pi[BUFFER + i] = b
-            self.status = 0
+            self.status = 20 if len(data) < 0x4000 else 0   # as fat_service.c: EOF
         elif cmd == 3:                  # close
             self.open = None
             self.closed += 1
             self.status = 0
         else:
             raise AssertionError(f"unknown command {cmd}")
+        self.busy = True                # the Pi answers at its next poll
 
     def __getitem__(self, a):
         if 0x8000 <= a < 0xC000:
@@ -101,6 +107,9 @@ class Memory:
             self.ptr = (self.ptr + 1) & 0xFFFFFF
             return v
         if a == DISC + 4:
+            if self.busy:
+                self.busy = False
+                return 0x80
             return self.status
         return self.ram[a]
 
@@ -108,6 +117,8 @@ class Memory:
         if 0x8000 <= a < 0xC000:
             data, writable = self.banks[self.bank]
             if writable:               # a write to ROM changes nothing
+                if self.writes.get(self.bank, 0) >= 1 and not (self.cpu.p & 0x04):
+                    self.irq_on_write = True   # past the RAM probe: the copy
                 self.writes[self.bank] = self.writes.get(self.bank, 0) + 1
                 data[a - 0x8000] = v
         elif a == 0xFE30:
@@ -133,6 +144,7 @@ def run(image, page, banks, files, machine=1):
     """Call helper `page`; returns (result, mem, dots, stack depth)."""
     mem = Memory(image, banks, files)
     cpu = MPU(memory=mem)
+    mem.cpu = cpu
     mem.show(page)
     cpu.sp = 0xFF
     cpu.stPushWord(RETURN_TRAP - 1)
@@ -141,6 +153,8 @@ def run(image, page, banks, files, machine=1):
     try:
         for _ in range(2_000_000):
             pc = cpu.pc
+            if pc in (OSWRCH, OSBYTE) and any(n > 1 for n in mem.writes.values()):
+                mem.os_after_write.append(pc)
             if pc == OSWRCH:
                 dots += cpu.a == ord(".")
                 cpu.pc = (cpu.stPopWord() + 1) & 0xFFFF
@@ -237,6 +251,9 @@ def main(args):
         # two bytes are the harness's return address, one the saved ROM number
         check(depth == 3 and mem.ram[0x1FD] == SAVED_F4,
               f"{what}: the saved ROM number is on the stack once: {depth}")
+        check(not mem.irq_on_write and not mem.os_after_write,
+              f"{what}: the copy over a live ROM runs with interrupts off and "
+              f"calls no OS routine: {mem.irq_on_write} {mem.os_after_write}")
 
         # Another ROM in the only RAM is never replaced.
         b15 = ram(other)
@@ -265,6 +282,12 @@ def main(args):
     r, mem, dots, depth = run(image, page, banks_of(b12=b12), files)
     check(r == ("reset",) and b12[0] == new, "free RAM: the ROM is copied byte for byte")
     check(set(mem.writes) == {12}, f"free RAM: only that bank is written: {mem.writes}")
+
+    # An 8K ROM: the read ends early (status 20) and that is not an error.
+    short = bytes(new[:0x2000])
+    b12 = ram()
+    r, mem, dots, depth = run(image, page, banks_of(b12=b12), {loader_name(image, page): short})
+    check(r == ("reset",) and b12[0][:0x2000] == short, f"an 8K ROM loads: {r}")
 
     # Lower banks are looked at when the higher ones are real ROMs.
     b9 = ram(old)
