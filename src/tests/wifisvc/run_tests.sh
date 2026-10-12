@@ -18,7 +18,8 @@ cp "$SRC"/tests/net/stubs/rpi/systimer.h "$B/rpi/"
 cp "$SRC"/rpi/fileparser.c "$SRC"/rpi/fileparser.h "$B/rpi/"
 cp "$SRC"/wifi/wifi.h "$SRC"/wifi/sdio.h "$SRC"/wifi/sdio_host.h "$B/wifi/"
 cp "$SRC"/wifi_service.c "$SRC"/wifi_service.h "$SRC"/uef_service.h \
-   "$SRC"/services.h "$SRC"/config.h "$SRC"/net_service.h "$B/"
+   "$SRC"/services.h "$SRC"/config.h "$SRC"/net_service.h \
+   "$SRC"/wifi_time.c "$SRC"/wifi_time.h "$B/"
 cp -r "$HERE"/stubs/. "$B/"
 cp "$HERE"/test_wifisvc.c "$B/"
 
@@ -26,6 +27,6 @@ echo "== ElkWiFi service: WiFi.profile =="
 gcc -std=gnu2x -Wall -Wextra -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -I"$B" -o "$B/t" \
-    "$B/test_wifisvc.c" "$B/wifi_service.c" "$B/rpi/fileparser.c"
+    "$B/test_wifisvc.c" "$B/wifi_service.c" "$B/wifi_time.c" "$B/rpi/fileparser.c"
 "$B/t"
 echo "WIFISVC TESTS PASSED"

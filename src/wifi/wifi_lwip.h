@@ -34,6 +34,12 @@ void wifi_lwip_poll(void);
 const wifi_lwip_context_t *wifi_lwip_get_context(void);
 /* Drop the live lease and addresses while retaining the reusable lwIP core. */
 void wifi_lwip_disconnect(void);
+/* The NTP server (DHCP option 42) of the current lease as a dotted quad, or
+   NULL when the lease carries none or no lease is held. */
+const char *wifi_lwip_dhcp_ntp_server(void);
+/* The time zone (DHCP option 100, a POSIX TZ string) of the current lease, or
+   NULL when the lease carries none or no lease is held. */
+const char *wifi_lwip_dhcp_timezone(void);
 
 /* Drain the RX at full rate for a short window: call after transmitting a
  * datagram that expects a prompt reply, so the reply is not held by the

@@ -57,6 +57,8 @@ static wifi_lwip_context_t g_ctx;
 static int g_kicks;
 const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &g_ctx; }
 void wifi_lwip_rx_kick(void) { g_kicks++; }
+static const char *g_dhcp_ntp;        /* option 42 of the stub lease, or NULL */
+const char *wifi_lwip_dhcp_ntp_server(void) { return g_dhcp_ntp; }
 
 /* altcp stub machinery */
 static struct altcp_pcb *g_pcbs[1024];
@@ -1873,6 +1875,34 @@ int main(void)
       CHECK(net_time_start("pool.ntp.org") == true, "time request starts for the timeout");
       g_now_us += 5000000ull;
       CHECK(net_time_poll(&secs) == NET_UTIL_TIMEOUT, "an unanswered SNTP query times out");
+   }
+
+   /* ---- SNTP server choice: config key > DHCP option 42 > default ------- */
+   printf("== SNTP server selection ==\n");
+   {
+      g_dhcp_ntp = "192.168.0.1";
+      CHECK(strcmp(net_ntp_server("ntp.example.org"), "ntp.example.org") == 0,
+            "the config key wins over the lease's option 42");
+      CHECK(strcmp(net_ntp_server("10.1.2.3"), "10.1.2.3") == 0,
+            "the config key may be an IP literal");
+      CHECK(strcmp(net_ntp_server(NULL), "192.168.0.1") == 0,
+            "no config key: the lease's option 42");
+      CHECK(strcmp(net_ntp_server(""), "192.168.0.1") == 0,
+            "an empty config key counts as unset");
+      g_dhcp_ntp = NULL;
+      CHECK(strcmp(net_ntp_server(NULL), "pool.ntp.org") == 0,
+            "no key and no option 42: pool.ntp.org");
+      CHECK(strcmp(net_ntp_server(""), "pool.ntp.org") == 0,
+            "empty key and no option 42: pool.ntp.org");
+      CHECK(strcmp(net_ntp_server("ntp.example.org"), "ntp.example.org") == 0,
+            "the config key is used with no lease");
+      g_dhcp_ntp = "192.168.0.1";
+      CHECK(net_ntp_server_source("ntp.example.org") == NET_NTP_FROM_CONFIG
+            && net_ntp_server_source("") == NET_NTP_FROM_DHCP
+            && net_ntp_server_source(NULL) == NET_NTP_FROM_DHCP, "source: config key, else the lease");
+      g_dhcp_ntp = NULL;
+      CHECK(net_ntp_server_source(NULL) == NET_NTP_FROM_DEFAULT
+            && net_ntp_server_source("") == NET_NTP_FROM_DEFAULT, "source: else the default");
    }
 
    /* free the last test's pcbs so LSan is clean */
