@@ -110,6 +110,8 @@ static int kicks;
 static const wifi_lwip_context_t wifi_ctx = { .address_ready = true };
 const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &wifi_ctx; }
 void wifi_lwip_rx_kick(void) { kicks++; }
+const char *wifi_lwip_dhcp_domain(void) { return NULL; }   /* no search domain here */
+const char *config_get(const char *prop) { (void)prop; return NULL; }
 
 /* ---- lwIP: DNS answers when the test says, one pcb ------------------------- */
 #define MAX_DNS 4

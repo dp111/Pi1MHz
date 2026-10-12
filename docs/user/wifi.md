@@ -55,6 +55,11 @@ network:
 Change the name with `wifi_hostname=` if you have more than one, or if
 the name lookup is unreliable on your network.
 
+Give `wifi_hostname` the short name only (`beeb`), never a full
+domain name (`beeb.example.net`). It is the name the Pi announces
+to your router with DHCP, and the router adds your network's domain to
+it; it is also the `.local` name, in which dots are not allowed.
+
 ### Fixed address
 
 If you prefer a fixed address (recommended if you use Econet or
@@ -70,6 +75,27 @@ wifi_dns=192.168.1.1
 Pick an address outside your router's DHCP range. `wifi_gateway` and
 `wifi_dns` are only needed if the Pi must reach beyond your own network
 (for example internet teletext servers).
+
+### Name lookups and the DNS domain
+
+Names you give the Pi (`*NSLOOK`, `*PING`, `*WGET`, the time server and
+so on) are looked up by the DNS server your router hands out with DHCP
+(option 6). With a fixed address that is `wifi_dns`, and without it the
+Pi has no DNS server and only addresses work. `wifi_dns` is ignored when
+the Pi gets its address by DHCP.
+
+A name of one label, such as `nas`, is looked up as `nas.<domain>`, the
+way your PC does it, where `<domain>` is the domain your router hands out
+with DHCP (option 15, for example `home.arpa`). With a fixed address, or
+to use another domain, set it yourself:
+
+```
+wifi_domain=home.arpa
+```
+
+A name with a dot in it (`pool.ntp.org`) is looked up exactly as written;
+end a name with a dot to say it is complete. With no domain at all a
+one-label name is looked up as written.
 
 ## The WiFi chip firmware files
 

@@ -32,6 +32,18 @@
    used and is redundant on a network whose DHCP server already hands
    out unique leases. */
 #define LWIP_DHCP_DOES_ACD_CHECK        0
+/* Ask for DHCP option 15 (the DNS domain name), which net_dns.h appends to bare
+   names.  lwIP has no field for it, so wifi_lwip.c reads it through the parse
+   hook; lwip_hooks.h declares what the hook calls.  lwIP also calls
+   dhcp_set_ntp_servers() on every bind, which wifi_lwip.c uses to take the
+   lease's domain (it asks the server for option 42 as a side effect, unused). */
+#define LWIP_DHCP_GET_NTP_SRV           1
+#define LWIP_DHCP_MAX_NTP_SERVERS       1
+#define DHCP_ADD_EXTRA_REQUEST_OPTIONS  , 15
+#define LWIP_HOOK_FILENAME              "lwip_hooks.h"
+#define LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, offset) \
+   do { LWIP_UNUSED_ARG(msg); \
+        wifi_lwip_dhcp_option(msg_type, option, len, pbuf, offset); } while (0)
 #define LWIP_DNS                        1
 
 #define LWIP_IPV4                       1

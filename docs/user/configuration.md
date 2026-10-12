@@ -142,13 +142,14 @@ set.
 |---|---|---|
 | `wifi_ssid` | (none) | Name of the network to join. **Required** for any WiFi function. (`SSID` is accepted as an older alias.) |
 | `wifi_password` | (none) | WPA2 passphrase, 8-63 characters. (Alias: `SSIDpassword`.) |
-| `wifi_hostname` | `Pi1MHz` | Network name. Lets you browse to `http://Pi1MHz/` (Windows) or `http://Pi1MHz.local/` (Mac/Linux/iOS). |
+| `wifi_hostname` | `Pi1MHz` | Network name, one label (not a full domain name). Lets you browse to `http://Pi1MHz/` (Windows) or `http://Pi1MHz.local/` (Mac/Linux/iOS). |
 | `wifi_country` | `GB` | Two-letter ISO country code for radio regulations, e.g. `US`, `DE`. Set it to where the machine actually is. |
 | `wifi_ip` | `dhcp` | `dhcp` to get an address from your router (the default), or a literal address such as `192.168.1.40` for a fixed one. |
 | `static_ip` | (none) | Alternative way to give a fixed address: set this and leave `wifi_ip` unset. |
 | `wifi_netmask` | `255.255.255.0` | Only used with a fixed address. |
 | `wifi_gateway` | (none) | Only used with a fixed address. Needed for anything beyond your own network. |
-| `wifi_dns` | (none) | Only used with a fixed address. |
+| `wifi_dns` | (none) | Only used with a fixed address; with DHCP the router's DNS server (option 6) is used. |
+| `wifi_domain` | (none) | DNS domain added to one-label names (`*NSLOOK nas` looks up `nas.<domain>`). Unset: the one DHCP gives (option 15). |
 | `wifi_security` | auto | `open`, `wep`, `wpa` or `wpa2`. Unset (auto) joins with WPA2 when there is a password and as an open network when there is not. A WEP key is 5 or 13 characters, or 10 or 26 hex digits. |
 | `wifi_http_port` | `80` | TCP port for the built-in web server. |
 | `wifi_debug` | off | `1` prints verbose WiFi logging on the serial port. Only does anything on a debug build of the firmware - release builds print nothing. |

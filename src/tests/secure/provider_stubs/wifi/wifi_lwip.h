@@ -4,3 +4,4 @@
 typedef struct { bool address_ready; } wifi_lwip_context_t;
 const wifi_lwip_context_t *wifi_lwip_get_context(void);
 void wifi_lwip_rx_kick(void);
+const char *wifi_lwip_dhcp_domain(void);

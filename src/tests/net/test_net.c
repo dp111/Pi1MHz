@@ -13,6 +13,7 @@
 #include "ram_emulator.h"
 #include "services.h"
 #include "net_service.h"
+#include "net_dns.h"
 #include "net_tnfs.h"
 #include "net_telnet.h"
 #include "config.h"
@@ -47,8 +48,10 @@ void services_irq_set(uint8_t source, bool asserted)
 { (void)source; g_nirq_asserted = asserted ? 1 : 0; }
 
 static const char *g_net_enable = "1";
+static const char *g_wifi_domain;     /* wifi_domain config key, or NULL */
 const char *config_get(const char *prop)
-{ return (strcmp(prop, "net_enable") == 0) ? g_net_enable : NULL; }
+{ if (strcmp(prop, "wifi_domain") == 0) return g_wifi_domain;
+  return (strcmp(prop, "net_enable") == 0) ? g_net_enable : NULL; }
 bool config_get_bool(const char *key)
 { const char *v = config_get(key);
   return v && (v[0]=='1'||v[0]=='y'||v[0]=='Y'||v[0]=='t'||v[0]=='T'); }
@@ -57,6 +60,8 @@ static wifi_lwip_context_t g_ctx;
 static int g_kicks;
 const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &g_ctx; }
 void wifi_lwip_rx_kick(void) { g_kicks++; }
+static const char *g_dhcp_domain;     /* option 15 of the stub lease, or NULL */
+const char *wifi_lwip_dhcp_domain(void) { return g_dhcp_domain; }
 
 /* altcp stub machinery */
 static struct altcp_pcb *g_pcbs[1024];
@@ -183,12 +188,13 @@ u16_t inet_chksum(const void *dataptr, u16_t len) { (void)dataptr; (void)len; re
 static int       g_dns_sync;
 static ip_addr_t g_dns_result;
 static const char *g_dns_name;
+static char g_dns_buf[300];      /* the name, copied: callers pass a stack buffer */
 static dns_found_callback g_dns_cb;
 static void      *g_dns_arg;
 err_t dns_gethostbyname(const char *name, ip_addr_t *addr, dns_found_callback cb,
                         void *arg)
 {
-   g_dns_name = name; g_dns_cb = cb; g_dns_arg = arg;
+   snprintf(g_dns_buf, sizeof g_dns_buf, "%s", name); g_dns_name = g_dns_buf; g_dns_cb = cb; g_dns_arg = arg;
    if (g_dns_sync) { *addr = g_dns_result; return ERR_OK; }
    return ERR_INPROGRESS;
 }
@@ -1873,6 +1879,71 @@ int main(void)
       CHECK(net_time_start("pool.ntp.org") == true, "time request starts for the timeout");
       g_now_us += 5000000ull;
       CHECK(net_time_poll(&secs) == NET_UTIL_TIMEOUT, "an unanswered SNTP query times out");
+   }
+
+   /* net_dns.h: a bare name gets the DNS domain, as a stub resolver's search list does */
+   {
+      char out[NET_DNS_NAME_MAX];
+
+      CHECK(net_dns_search_name("nas", "example.net", out, sizeof out)
+            && strcmp(out, "nas.example.net") == 0,
+            "dns: a single label gets the domain");
+      CHECK(net_dns_search_name("host", ".lan.", out, sizeof out)
+            && strcmp(out, "host.lan") == 0, "dns: stray dots round the domain are dropped");
+      CHECK(!net_dns_search_name("pool.ntp.org", "lan", out, sizeof out)
+            && !net_dns_search_name("google.com.", "lan", out, sizeof out),
+            "dns: a name with a dot, or an absolute one, is left alone");
+      CHECK(!net_dns_search_name("host", NULL, out, sizeof out)
+            && !net_dns_search_name("host", "", out, sizeof out)
+            && !net_dns_search_name("host", "...", out, sizeof out)
+            && !net_dns_search_name("", "lan", out, sizeof out)
+            && !net_dns_search_name(NULL, "lan", out, sizeof out),
+            "dns: no domain, or no name: left alone");
+      CHECK(!net_dns_search_name("3232235521", "lan", out, sizeof out)
+            && !net_dns_search_name("fe80::1", "lan", out, sizeof out),
+            "dns: an address is not a name");
+      CHECK(!net_dns_search_name("host", "example.net", out, 10u),
+            "dns: a result that does not fit is refused, not cut");
+      {
+         char longdom[300];
+         memset(longdom, 'a', sizeof longdom - 1u); longdom[sizeof longdom - 1u] = '\0';
+         CHECK(!net_dns_search_name("host", longdom, out, sizeof out),
+               "dns: a name longer than DNS allows is refused");
+      }
+
+      g_dns_sync = 1; IP_ADDR4(&g_dns_result, 10, 0, 0, 1); g_dns_name = NULL;
+      g_dhcp_domain = "example.net"; g_wifi_domain = NULL;
+      CHECK(strcmp(net_dns_domain(), "example.net") == 0, "dns: the lease's option 15");
+      g_wifi_domain = "other.example.net";
+      CHECK(strcmp(net_dns_domain(), "other.example.net") == 0, "dns: wifi_domain wins over the lease");
+      g_wifi_domain = "";
+      CHECK(strcmp(net_dns_domain(), "example.net") == 0, "dns: an empty wifi_domain counts as unset");
+      g_dhcp_domain = NULL;
+      CHECK(net_dns_domain() == NULL, "dns: neither: no domain");
+
+      /* *NSLOOK end to end: what reaches lwIP's resolver */
+      g_wifi_domain = NULL; g_dhcp_domain = "example.net";
+      world_reset(); jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+      g_dns_sync = 1; IP_ADDR4(&g_dns_result, 10, 0, 0, 1); g_dns_name = NULL;
+      memcpy(&Pi1MHz->JIM_ram[CP(0)+1], "nas", 4);
+      (void)issue(NET_CMD_DNS, 0);
+      CHECK(g_dns_name != NULL && strcmp(g_dns_name, "nas.example.net") == 0,
+            "dns: *NSLOOK of a bare name asks for the full name");
+      g_dns_name = NULL; g_dhcp_domain = NULL;
+      world_reset(); jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+      g_dns_sync = 1; IP_ADDR4(&g_dns_result, 10, 0, 0, 1);
+      memcpy(&Pi1MHz->JIM_ram[CP(0)+1], "nas", 4);
+      (void)issue(NET_CMD_DNS, 0);
+      CHECK(g_dns_name != NULL && strcmp(g_dns_name, "nas") == 0,
+            "dns: without a domain the bare name goes out as before");
+      g_dns_name = NULL; g_dhcp_domain = "example.net";
+      world_reset(); jwr8(CP(0)+1, NET_TYPE_TCP); issue(NET_CMD_OPEN, 0);
+      g_dns_sync = 1; IP_ADDR4(&g_dns_result, 10, 0, 0, 1);
+      memcpy(&Pi1MHz->JIM_ram[CP(0)+1], "google.com", 11);
+      (void)issue(NET_CMD_DNS, 0);
+      CHECK(g_dns_name != NULL && strcmp(g_dns_name, "google.com") == 0,
+            "dns: a dotted name is not changed");
+      g_dhcp_domain = NULL; g_wifi_domain = NULL;
    }
 
    /* free the last test's pcbs so LSan is clean */

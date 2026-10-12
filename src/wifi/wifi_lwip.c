@@ -138,6 +138,54 @@ static void wifi_lwip_debug_log(const char *format, ...)
    wifi_debug_printf("WIFI-LWIP: %s\r\n", line);
 }
 
+/* Option 15 (domain name, RFC 2132 section 3.17) of the last lease.  lwIP decodes
+   neither it nor a search list, so without it a bare name such as "nas" went to
+   the DNS server as it was and never matched the network's zone.  lwIP offers an
+   unknown option to wifi_lwip_dhcp_option() while it parses a reply, before it
+   knows whether the reply binds a lease, so the ACK's value waits in _pending and
+   becomes the lease's in dhcp_set_ntp_servers(), which lwIP calls on every bind
+   (hence LWIP_DHCP_GET_NTP_SRV must stay on).  A bind whose reply had no option 15
+   therefore clears the domain instead of keeping the last lease's. */
+#if !LWIP_DHCP_GET_NTP_SRV
+#error "wifi_lwip.c takes the lease's domain in dhcp_set_ntp_servers()"
+#endif
+static char g_wifi_lwip_dhcp_domain[64];
+static char g_wifi_lwip_dhcp_domain_pending[sizeof g_wifi_lwip_dhcp_domain];
+
+void wifi_lwip_dhcp_option(u8_t msg_type, u8_t option, u8_t len,
+                           struct pbuf *p, u16_t offset)
+{
+   char *out = g_wifi_lwip_dhcp_domain_pending;
+
+   if (option != 15u || msg_type != DHCP_ACK)
+      return;
+   out[0] = '\0';
+   if (len > 0u && len < sizeof g_wifi_lwip_dhcp_domain_pending
+       && pbuf_copy_partial(p, out, len, offset) == len) {
+      out[len] = '\0';
+      /* Some servers send the option NUL-terminated (RFC 2132 section 2). */
+      out[strnlen(out, len)] = '\0';
+   }
+}
+
+void dhcp_set_ntp_servers(u8_t num_ntp_servers, const ip4_addr_t *ntp_server_addrs)
+{
+   LWIP_UNUSED_ARG(num_ntp_servers);
+   LWIP_UNUSED_ARG(ntp_server_addrs);
+   memcpy(g_wifi_lwip_dhcp_domain, g_wifi_lwip_dhcp_domain_pending,
+          sizeof g_wifi_lwip_dhcp_domain);
+   g_wifi_lwip_dhcp_domain_pending[0] = '\0';
+}
+
+const char *wifi_lwip_dhcp_domain(void)
+{
+   if (!g_wifi_lwip_context.netif_added || !g_wifi_lwip_context.dhcp_started
+       || !dhcp_supplied_address(&g_wifi_lwip_context.netif)
+       || g_wifi_lwip_dhcp_domain[0] == '\0')
+      return NULL;
+   return g_wifi_lwip_dhcp_domain;
+}
+
 static bool wifi_lwip_address_ready(const struct netif *netif)
 {
    if (netif == NULL)
