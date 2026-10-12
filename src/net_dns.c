@@ -47,11 +47,13 @@ const char *net_dns_domain(void)
    return wifi_lwip_dhcp_domain();
 }
 
-/* A lookup that was given the domain, while lwIP has it: the caller's
-   callback and name, kept so that a failure can be retried with the name as
-   typed and the answer handed back under that name.  lwIP calls back exactly
-   once per request (an answer, or NULL on failure or timeout), so a slot is
-   always freed.  When every slot is busy the name is looked up as typed. */
+/* A lookup while lwIP has it: the caller's callback and name, kept so that the
+   answer is handed back under the name as passed (lwIP's own copy drops a
+   trailing dot, and a duplicate request gets the first caller's spelling),
+   and so that a failed "<name>.<domain>" can be retried as typed.  lwIP calls
+   back exactly once per request it accepts (an answer, or NULL on failure or
+   timeout), so a slot is always freed.  When every slot is busy the lookup
+   goes straight to lwIP, without the domain. */
 #define NET_DNS_SLOTS 4u
 
 typedef struct {
@@ -85,11 +87,8 @@ static void net_dns_found_full(const char *lwip_name, const ip_addr_t *ipaddr,
 static void net_dns_found_bare(const char *lwip_name, const ip_addr_t *ipaddr,
                                void *arg)
 {
-   net_dns_slot_t *slot = arg;
-
    (void)lwip_name;
-   if (slot->used)
-      net_dns_answer(slot, ipaddr);
+   net_dns_answer(arg, ipaddr);
 }
 
 static void net_dns_found_full(const char *lwip_name, const ip_addr_t *ipaddr,
@@ -98,8 +97,6 @@ static void net_dns_found_full(const char *lwip_name, const ip_addr_t *ipaddr,
    net_dns_slot_t *slot = arg;
 
    (void)lwip_name;
-   if (!slot->used)
-      return;
    if (ipaddr == NULL) {
       err_t e = dns_gethostbyname(slot->name, &slot->ip, net_dns_found_bare, slot);
       if (e == ERR_INPROGRESS)
@@ -115,10 +112,11 @@ err_t net_dns_lookup(const char *name, ip_addr_t *addr,
 {
    char            full[NET_DNS_NAME_MAX];
    net_dns_slot_t *slot = NULL;
+   bool            expand;
    err_t           e;
 
-   if (!net_dns_search_name(name, net_dns_domain(), full, sizeof full))
-      return dns_gethostbyname(name, addr, found, arg);
+   if (name == NULL || strlen(name) >= NET_DNS_NAME_MAX)
+      return dns_gethostbyname(name, addr, found, arg);  /* lwIP refuses it */
    for (unsigned i = 0u; i < NET_DNS_SLOTS; i++)
       if (!s_slot[i].used) {
          slot = &s_slot[i];
@@ -130,14 +128,12 @@ err_t net_dns_lookup(const char *name, ip_addr_t *addr,
    slot->used  = true;
    slot->found = found;
    slot->arg   = arg;
-   strcpy(slot->name, name);            /* fits: shorter than full */
+   strcpy(slot->name, name);
    /* lwIP copies the name into its table, so full need not outlive this. */
-   e = dns_gethostbyname(full, addr, net_dns_found_full, slot);
-   if (e == ERR_INPROGRESS)
-      return e;
-   if (e != ERR_OK)                     /* refused outright: try as typed */
-      e = dns_gethostbyname(name, addr, net_dns_found_bare, slot);
+   expand = net_dns_search_name(name, net_dns_domain(), full, sizeof full);
+   e = expand ? dns_gethostbyname(full, addr, net_dns_found_full, slot)
+              : dns_gethostbyname(name, addr, net_dns_found_bare, slot);
    if (e != ERR_INPROGRESS)
-      slot->used = false;              /* answered now, or failed now */
+      slot->used = false;              /* answered now, or refused: no callback */
    return e;
 }

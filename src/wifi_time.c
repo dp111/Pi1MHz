@@ -72,7 +72,8 @@ void wifi_time_split(int64_t seconds, wifi_time_fields_t *fields)
    fields->second = (uint8_t)(rest % 60);
 }
 
-/* Digits at *text, at most `max` of them.  Advances past them. */
+/* A number at *text, of at most 10 digits and no more than `max`.  Advances
+   past it. */
 static bool parse_number(const char **text, uint32_t max, uint32_t *value,
                          uint32_t *digits)
 {

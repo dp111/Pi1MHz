@@ -160,7 +160,7 @@ static char g_wifi_lwip_dhcp_ntp[IP4ADDR_STRLEN_MAX];
 #endif
 static char g_wifi_lwip_dhcp_tz[64];
 static char g_wifi_lwip_dhcp_tz_pending[sizeof g_wifi_lwip_dhcp_tz];
-static char g_wifi_lwip_dhcp_domain[64];
+static char g_wifi_lwip_dhcp_domain[254];   /* a DNS name: 253 characters + NUL */
 static char g_wifi_lwip_dhcp_domain_pending[sizeof g_wifi_lwip_dhcp_domain];
 
 static void wifi_lwip_dhcp_pending_clear(void)
@@ -175,7 +175,7 @@ void wifi_lwip_dhcp_option(u8_t msg_type, u8_t option, u8_t len,
    char *out;
    size_t size;
 
-   (void)msg_type;
+   LWIP_UNUSED_ARG(msg_type);
    if (option == 100u) {
       out = g_wifi_lwip_dhcp_tz_pending;
       size = sizeof g_wifi_lwip_dhcp_tz_pending;

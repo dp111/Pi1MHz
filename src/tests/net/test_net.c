@@ -2020,8 +2020,24 @@ int main(void)
 
          dnsrec_reset();
          (void)net_dns_lookup("localhost", &out_ip, dnsrec_cb, &g_dnsrec);
-         CHECK(strcmp(g_dns_name, "localhost") == 0 && g_dns_cb == dnsrec_cb,
-               "dns lookup: localhost is not given the domain");
+         CHECK(strcmp(g_dns_name, "localhost") == 0, "dns lookup: localhost is not given the domain");
+         g_dns_cb("localhost", &ip, g_dns_arg);
+         CHECK(g_dnsrec.calls == 1 && strcmp(g_dnsrec.name, "localhost") == 0,
+               "dns lookup: and is answered");
+
+         /* lwIP answers "nas.lan." as "nas.lan": the caller still gets its own spelling */
+         dnsrec_reset();
+         (void)net_dns_lookup("nas.lan.", &out_ip, dnsrec_cb, &g_dnsrec);
+         CHECK(strcmp(g_dns_name, "nas.lan.") == 0, "dns lookup: an absolute name goes out as it is");
+         g_dns_cb("nas.lan", &ip, g_dns_arg);
+         CHECK(g_dnsrec.calls == 1 && strcmp(g_dnsrec.name, "nas.lan.") == 0,
+               "dns lookup: and comes back under the name asked for, trailing dot and all");
+         g_dhcp_domain = NULL; dnsrec_reset();
+         (void)net_dns_lookup("nas", &out_ip, dnsrec_cb, &g_dnsrec);
+         g_dns_cb("NAS", &ip, g_dns_arg);
+         CHECK(g_dnsrec.calls == 1 && strcmp(g_dnsrec.name, "nas") == 0,
+               "dns lookup: without a domain too");
+         g_dhcp_domain = "example.net";
 
          /* every slot busy: the fifth goes out as typed, straight to lwIP */
          {

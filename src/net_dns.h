@@ -39,7 +39,9 @@ const char *net_dns_domain(void);
 /* dns_gethostbyname() with the domain applied as above.  Returns as it does;
    on ERR_INPROGRESS found() is called once, later, with the name as it was
    passed here (not the one sent to the server), so a caller may compare it
-   with the name it asked for. */
+   with the name it asked for - except when more than four lookups are
+   outstanding, when the fifth goes to lwIP as it is and is answered under
+   lwIP's name for it.  found() must not start a lookup of the same name. */
 err_t net_dns_lookup(const char *name, ip_addr_t *addr,
                      dns_found_callback found, void *arg);
 

@@ -34,7 +34,9 @@
 #define LWIP_DHCP_DOES_ACD_CHECK        0
 /* Ask for DHCP option 42 (NTP server).  lwIP reports it through
    dhcp_set_ntp_servers(), implemented in wifi_lwip.c; one address is enough
-   for the SNTP client. */
+   for the SNTP client.  With this on, lwIP drops a whole reply whose option
+   42 is not a list of addresses (a length not a multiple of 4), as it always
+   has for option 6: a server sending a name there gives no lease. */
 #define LWIP_DHCP_GET_NTP_SRV           1
 #define LWIP_DHCP_MAX_NTP_SERVERS       1
 /* Also ask for options 15 (the DNS domain name, which net_dns.c appends to
