@@ -136,7 +136,8 @@ on a Pi 2):
 
 1. Edit `config.txt` in the SD root and un-comment the
    `kernel=debug/kernel.img` line (for a Pi Zero; the equivalent line
-   in the `[pi3]` section for a Pi 3/Zero 2 W).
+   in the `[pi3]` section for a Pi 3, or in the `[pi02]` section for a
+   Zero 2 W, which `[pi3]` does not match).
 2. Connect a 3.3V serial lead to the Pi's GPIO 14/15 (TX/RX) pins and
    ground, at 115200 baud, 8N1.
 3. Boot; the debug build reports everything it does, including WiFi

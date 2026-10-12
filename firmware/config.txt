@@ -3,6 +3,10 @@
 
 #kernel=debug/kernel.img
 
+# Settings for Pi Zero 2 W (neither [pi2] nor [pi3] matches it)
+[pi02]
+#kernel=debug/kernel7.img
+
 # Settings for Pi 3
 [pi3]
 #kernel=debug/kernel7.img
