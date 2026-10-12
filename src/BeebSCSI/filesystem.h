@@ -198,6 +198,7 @@ char * filesystemGetModeParamHeaderData(uint8_t lunNumber, size_t * length);
 char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length);
 char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * length);
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer);
+int filesystemMergeModePageData(uint8_t lunNumber, uint8_t page, uint8_t declared, uint8_t received, const uint8_t * Buffer);
 
 bool filesystemSetFatDirectory(const uint8_t * buffer);
 bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer);
