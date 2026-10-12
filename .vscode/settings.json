@@ -219,5 +219,6 @@
     "cSpell.enableFiletypes": [
         "beebasm"
     ],
-    "C_Cpp.default.compilerPath": "/usr/sbin/gcc"
+    "C_Cpp.default.compilerPath": "/usr/sbin/gcc",
+    "cmake.sourceDirectory": "C:/Archlinux/Pi1MHz/src"
 }
