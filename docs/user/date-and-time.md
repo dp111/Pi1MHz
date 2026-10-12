@@ -15,16 +15,15 @@ Each question is answered by the first line that applies:
 |---|---|---|
 | Which time server? | `ntp_server` | 1. the setting<br>2. the NTP server your network hands out with the Pi's address (DHCP option 42)<br>3. `pool.ntp.org` |
 | Which time zone? | `ntp_timezone` | 1. the setting<br>2. the time zone your network hands out (DHCP option 100)<br>3. `wifi_service_utc_offset_minutes`, which is 0 (UTC) if you set nothing |
-| Another date? | `ntp_offset` | the setting only; when not used the real date and time are shown |
+| Another date? | `time_shift` | the setting only; when not used the real date and time are shown |
 
 Few routers hand out a time zone (option 100), so you will usually set
 `ntp_timezone` yourself. The Pi's [status page](web-interface.md) shows the server and time zone in use and
 where each came from, for example `192.168.0.1 (DHCP option 42)` or
 `CET (config ntp_timezone)`.
 
-If a setting cannot be understood it is ignored, as if it were not there, and a
-line is printed on the serial port at start-up
-(`ntp_timezone not understood, ignored`). The Beeb then shows UTC (or your
+If a setting cannot be understood it is ignored, as if it were not there, and
+the status page says so (`ntp_timezone not understood`). The Beeb then shows UTC (or your
 `wifi_service_utc_offset_minutes`), which is the usual sign of a typo in
 `ntp_timezone`.
 
@@ -130,7 +129,7 @@ has summer time you have to change it by hand twice a year, which `ntp_timezone`
 does for you, so prefer `ntp_timezone`. It is used only when there is no
 `ntp_timezone` and the network gives none.
 
-## ntp_offset
+## time_shift
 
 Shows a different date or time to the Beeb, for software that expects another
 year or an earlier period. The real time is shifted; the Pi's clock is not
@@ -165,14 +164,13 @@ Any year from 1 to 9999 can be used, including years before 1970. A clock that
 would go past either end stops there.
 
 Summer time follows the real date, not the date you shift to. With
-`ntp_timezone=BST` and `ntp_offset=y1987` in July, the Beeb shows July 1987 an
+`ntp_timezone=BST` and `time_shift=y1987` in July, the Beeb shows July 1987 an
 hour ahead of UTC, because it is summer now.
 
 ## If it shows the wrong time
 
 * **UTC when you expected local time:** `ntp_timezone` was not understood and
-  was ignored. Look for `ntp_timezone not understood, ignored` on the serial
-  port, or at the status page, which says `UTC+00:00 (wifi_service_utc_offset_minutes)`
+  was ignored. The status page says `UTC+00:00 (wifi_service_utc_offset_minutes)`
   plus `ntp_timezone not understood`.
 * **An hour out in summer:** the rule dates are wrong, or the zone has no
   summer time written. Compare your string with the table above.

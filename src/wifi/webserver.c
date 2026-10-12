@@ -2861,7 +2861,7 @@ static bool route_status(ws_conn_t *c)
       wifi_service_time_zone_text(tmp, sizeof tmp);
       table_row(&b, "Time zone", tmp);
       wifi_service_time_offset_text(tmp, sizeof tmp);
-      table_row(&b, "Time offset", tmp);
+      table_row(&b, "Time shift", tmp);
    }
 
    /* Show the chip's actual transmit MAC (captured at boot via the

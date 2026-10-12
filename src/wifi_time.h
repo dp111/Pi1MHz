@@ -4,7 +4,7 @@
  * Pure functions, no I/O and no lwIP: wifi_service.c feeds them the seconds
  * from the network and the config strings, so they are host-testable.
  *
- * The shift (config key ntp_offset) moves the clock the Beeb is shown, for
+ * The shift (config key time_shift) moves the clock the Beeb is shown, for
  * a machine whose software expects another year or a period of time that
  * has long gone.  Accepted forms:
  *

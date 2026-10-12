@@ -173,14 +173,14 @@ void wifi_service_ntp_server_text(char *out, size_t size)
 
 void wifi_service_time_offset_text(char *out, size_t size)
 {
-   const char *configured = config_get("ntp_offset");
+   const char *configured = config_get("time_shift");
    wifi_time_shift_t shift;
    if (configured == NULL || configured[0] == '\0')
       snprintf(out, size, "none");
    else
       snprintf(out, size, "%s (%s)", configured,
                wifi_time_shift_parse(configured, &shift)
-                  ? "config ntp_offset" : "not understood, ignored");
+                  ? "config time_shift" : "not understood, ignored");
 }
 
 void wifi_service_time_zone_text(char *out, size_t size)
@@ -801,8 +801,8 @@ void wifi_service_init(uint8_t instance, uint8_t address)
       service_initialised = true;
       time_utc_offset_minutes = utc_offset_parse(
          config_get("wifi_service_utc_offset_minutes"));
-      if (!wifi_time_shift_parse(config_get("ntp_offset"), &time_shift)) {
-         LOG_DEBUG("WiFi: ntp_offset not understood, ignored\n");
+      if (!wifi_time_shift_parse(config_get("time_shift"), &time_shift)) {
+         LOG_DEBUG("WiFi: time_shift not understood, ignored\n");
       }
 #ifdef DEBUG
       {  /* /status says so too; this only tells the serial log */

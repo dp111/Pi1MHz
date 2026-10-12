@@ -1,5 +1,5 @@
 /* Host tests for wifi_time.c: the calendar conversion the WiFi ROM's *DATE
- * uses, and the ntp_offset shift. */
+ * uses, and the time_shift shift. */
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>

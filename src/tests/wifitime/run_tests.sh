@@ -1,6 +1,6 @@
 #!/bin/sh -e
 # Host tests for the WiFi ROM's clock arithmetic (wifi_time.c): calendar
-# conversion and the ntp_offset shift.  The real wifi_time.c,
+# conversion and the time_shift shift.  The real wifi_time.c,
 # under ASan/UBSan.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)

@@ -211,7 +211,7 @@ int main(void)
       wifi_service_ntp_server_text(text, sizeof text);
       CHECK(strcmp(text, "pool.ntp.org (default)") == 0, "no key, no lease: the default and where it came from (%s)", text);
       wifi_service_time_offset_text(text, sizeof text);
-      CHECK(strcmp(text, "none") == 0, "no ntp_offset: none (%s)", text);
+      CHECK(strcmp(text, "none") == 0, "no time_shift: none (%s)", text);
       wifi_service_time_zone_text(text, sizeof text);
       CHECK(strcmp(text, "UTC+00:00 (wifi_service_utc_offset_minutes)") == 0, "no zone anywhere: the fixed offset (%s)", text);
    }
