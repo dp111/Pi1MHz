@@ -135,7 +135,7 @@ static void wifi_lwip_debug_log(const char *format, ...)
    if (written <= 0)
       return;
 
-   wifi_debug_printf("WIFI-LWIP: %s\r\n", line);
+   wifi_debug_printf("WIFI-LWIP: %s\n", line);
 }
 
 static bool wifi_lwip_address_ready(const struct netif *netif)

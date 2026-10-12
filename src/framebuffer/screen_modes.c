@@ -962,9 +962,9 @@ void default_scroll_screen(screen_mode_t *screen, const t_clip_window_t *text_wi
          bg_col = bg_col | (bg_col << 16);
       }
 #endif
-      LOG_DEBUG("Scrolling screen up by %d pixels\n\r", font_height);
-      LOG_DEBUG("Screen: %d x %d, Pitch: %d\n\r", screen->width, screen->height, screen->pitch);
-      LOG_DEBUG("fb : %p\r\n", fb);
+      LOG_DEBUG("Scrolling screen up by %d pixels\n", font_height);
+      LOG_DEBUG("Screen: %d x %d, Pitch: %d\n", screen->width, screen->height, screen->pitch);
+      LOG_DEBUG("fb : %p\n", fb);
       _fast_scroll(fb, fb + font_height * screen->pitch, (screen->height - font_height) * screen->pitch);
       // Now blank the bottom line
       blank.y2 = r.y1 + (font_height - 1);

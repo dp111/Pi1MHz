@@ -114,7 +114,7 @@ static void handle_buffer_to_host(const mmal_worker_buffer_from_host_t *msg)
     /* client_context comes back off the wire; a garbled message must not
        be able to write through it to arbitrary ARM memory. */
     if (!inflight_known(buf)) {
-        LOG_DEBUG("mmal: buffer_to_host with unknown context\r\n");
+        LOG_DEBUG("mmal: buffer_to_host with unknown context\n");
         return;
     }
     /* Off the books before the callback, which may resubmit it. */
@@ -129,7 +129,7 @@ static void handle_buffer_to_host(const mmal_worker_buffer_from_host_t *msg)
     /* Written as two tests: offset + length would wrap. */
     if (msg->buffer_header.length > buf->alloc_size ||
         msg->buffer_header.offset > buf->alloc_size - msg->buffer_header.length) {
-        LOG_INFO("mmal: returned buffer too big (%"PRIu32")\r\n",
+        LOG_INFO("mmal: returned buffer too big (%"PRIu32")\n",
                  msg->buffer_header.length);
         buf->length = 0;
         buf->flags |= MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED;
@@ -148,7 +148,7 @@ static void on_data(const void *data, unsigned int size)
     const mmal_worker_msg_header_t *h = (const mmal_worker_msg_header_t *)data;
 
     if (size < sizeof(*h) || h->magic != MMAL_MAGIC) {
-        LOG_INFO("mmal: bad message (size %u)\r\n", size);
+        LOG_INFO("mmal: bad message (size %u)\n", size);
         return;
     }
 
@@ -161,7 +161,7 @@ static void on_data(const void *data, unsigned int size)
        the unused short_data tail, do not travel. */
     if (h->msgid == MMAL_WORKER_BUFFER_TO_HOST) {
         if (size < offsetof(mmal_worker_buffer_from_host_t, short_data)) {
-            LOG_DEBUG("mmal: short buffer_to_host (%u)\r\n", size);
+            LOG_DEBUG("mmal: short buffer_to_host (%u)\n", size);
             return;
         }
         handle_buffer_to_host((const mmal_worker_buffer_from_host_t *)data);
@@ -172,7 +172,7 @@ static void on_data(const void *data, unsigned int size)
         const mmal_worker_event_to_host_t *ev =
             (const mmal_worker_event_to_host_t *)data;
         if (size < offsetof(mmal_worker_event_to_host_t, data)) {
-            LOG_DEBUG("mmal: short event_to_host (%u)\r\n", size);
+            LOG_DEBUG("mmal: short event_to_host (%u)\n", size);
             return;
         }
         /* Events larger than the inline space are delivered by bulk, which
@@ -192,7 +192,7 @@ static void on_data(const void *data, unsigned int size)
         memcpy(client.reply, data, client.reply_size);
         client.reply_ready = true;
     } else {
-        LOG_DEBUG("mmal: unmatched reply msgid %"PRIu32"\r\n", h->msgid);
+        LOG_DEBUG("mmal: unmatched reply msgid %"PRIu32"\n", h->msgid);
     }
 }
 
@@ -235,7 +235,7 @@ static bool sendwait(mmal_worker_msg_header_t *msg, uint32_t size, uint32_t msgi
     while (!client.reply_ready) {
         vchiq_poll();
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
-            LOG_INFO("mmal: reply timeout (msgid %"PRIu32")\r\n", msgid);
+            LOG_INFO("mmal: reply timeout (msgid %"PRIu32")\n", msgid);
             client.wait_context = 0;
             client.dead = true;
             return false;
@@ -293,10 +293,10 @@ bool mmal_vc_init(const mmal_vc_client_callbacks_t *callbacks)
     memset(&ver, 0, sizeof(ver));
     if (sendwait(&ver.header, sizeof(ver),
                  MMAL_WORKER_GET_VERSION, &ver, sizeof(ver))) {
-        LOG_DEBUG("mmal: VC version %"PRIu32".%"PRIu32" (min %"PRIu32")\r\n",
+        LOG_DEBUG("mmal: VC version %"PRIu32".%"PRIu32" (min %"PRIu32")\n",
                   ver.major, ver.minor, ver.minimum);
         if (ver.major < 12) {
-            LOG_INFO("mmal: VC MMAL too old (%"PRIu32")\r\n", ver.major);
+            LOG_INFO("mmal: VC MMAL too old (%"PRIu32")\n", ver.major);
             client.inited = false;
             mmal_failed = true;
             return false;
@@ -324,7 +324,7 @@ bool mmal_vc_component_create(const char *name, uint32_t *handle,
                   &reply, sizeof(reply)))
         return false;
     if (reply.status != MMAL_STATUS_SUCCESS) {
-        LOG_INFO("mmal: create '%s' failed (%"PRIu32")\r\n", name, reply.status);
+        LOG_INFO("mmal: create '%s' failed (%"PRIu32")\n", name, reply.status);
         return false;
     }
     *handle = reply.component_handle;
@@ -378,7 +378,7 @@ bool mmal_vc_port_info_get(uint32_t component, uint32_t port_type,
        evidence: success status and a port of the requested type. */
     if (reply.status != MMAL_STATUS_SUCCESS ||
         (!reply.found && reply.port.type != port_type)) {
-        LOG_INFO("mmal: no port type %"PRIu32" index %"PRIu32"\r\n",
+        LOG_INFO("mmal: no port type %"PRIu32" index %"PRIu32"\n",
                  port_type, index);
         return false;
     }
@@ -441,7 +441,7 @@ static bool port_action(const mmal_vc_port_t *port, uint32_t action, bool with_p
                   &reply, sizeof(reply)))
         return false;
     if (reply.status != MMAL_STATUS_SUCCESS) {
-        LOG_INFO("mmal: port action %"PRIu32" failed (%"PRIu32")\r\n",
+        LOG_INFO("mmal: port action %"PRIu32" failed (%"PRIu32")\n",
                  action, reply.status);
         return false;
     }

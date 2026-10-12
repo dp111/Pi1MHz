@@ -263,7 +263,7 @@ static void wifi_debug_log(const char *format, ...)
    if (written <= 0)
       return;
 
-   LOG_DEBUG("WIFI: %s\r\n", line);
+   LOG_DEBUG("WIFI: %s\n", line);
 #else
    (void)format;
 #endif

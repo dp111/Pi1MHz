@@ -49,7 +49,7 @@ int parse_findindex( const char * searchkey, const parserkey array[])
         }
         i++;
     }
-    LOG_DEBUG("Key not found %s\n\r", searchkey);
+    LOG_DEBUG("Key not found %s\n", searchkey);
     return -1;
 }
 
@@ -220,7 +220,7 @@ static void store_numstring(parse_state * st, const parserkey * key,
 
     if (nonnumber < 0)
     {
-        LOG_DEBUG("Error in number format\n\r");
+        LOG_DEBUG("Error in number format\n");
         st->ptr += len;
         return;
     }
@@ -234,7 +234,7 @@ static void store_numstring(parse_state * st, const parserkey * key,
         /* Odd digit count: borrow the character before the value - the "="
            or a space, already copied out - and pad the number from the
            left, so A1B reads as 0x0A1B rather than being rejected. */
-        LOG_DEBUG("Error odd number of digits in hex string\n\r");
+        LOG_DEBUG("Error odd number of digits in hex string\n");
         len++;
         st->ptr--;
         st->in[st->ptr] = '0';
@@ -242,7 +242,7 @@ static void store_numstring(parse_state * st, const parserkey * key,
     nbytes = len / 2;
     if (nbytes > maxbytes)
     {
-        LOG_DEBUG("Value too long for key - truncated\n\r");
+        LOG_DEBUG("Value too long for key - truncated\n");
         nbytes = maxbytes;
     }
     /* The allocation is always max bytes and zero padded, so consumers that
@@ -251,7 +251,7 @@ static void store_numstring(parse_state * st, const parserkey * key,
     value->v.string = malloc(maxbytes);
     if (value->v.string == NULL)
     {
-        LOG_DEBUG("Error allocating memory for string\n\r");
+        LOG_DEBUG("Error allocating memory for string\n");
         st->ptr += len;
         return;
     }
@@ -272,7 +272,7 @@ static void store_numstring(parse_state * st, const parserkey * key,
     }
     value->length = nbytes;
     st->ptr += len - (nbytes * 2);      /* skip any truncated digits */
-    LOG_DEBUG("\r\n");
+    LOG_DEBUG("\n");
 }
 
 static void store_string(parse_state * st, const parserkey * key,
@@ -294,20 +294,20 @@ static void store_string(parse_state * st, const parserkey * key,
     copylen = valuelen;
     if (copylen > (size_t)key->max)
     {
-        LOG_DEBUG("Value too long for key - truncated\n\r");
+        LOG_DEBUG("Value too long for key - truncated\n");
         copylen = (size_t)key->max;
     }
     value->v.string = malloc(copylen + 1);
     if (value->v.string == NULL)
     {
-        LOG_DEBUG("Error allocating memory for string\n\r");
+        LOG_DEBUG("Error allocating memory for string\n");
         st->ptr += len;
         return;
     }
     memcpy(value->v.string, st->in + st->ptr, copylen);
     value->v.string[copylen] = 0;
     value->length = copylen;
-    LOG_DEBUG("string %s\n\r", value->v.string);
+    LOG_DEBUG("string %s\n", value->v.string);
     st->ptr += len;
 }
 
@@ -320,7 +320,7 @@ static void store_integer(parse_state * st, const parserkey * key,
     value->v.integer = malloc(sizeof(int));
     if (value->v.integer == NULL)
     {
-        LOG_DEBUG("Error allocating memory for integer\n\r");
+        LOG_DEBUG("Error allocating memory for integer\n");
         st->ptr += len;
         return;
     }
@@ -328,7 +328,7 @@ static void store_integer(parse_state * st, const parserkey * key,
     if (parsed < key->min) parsed = key->min;      /* clamp to the key's range */
     if (parsed > key->max) parsed = key->max;
     *value->v.integer = parsed;
-    LOG_DEBUG("number %d\n\r", *value->v.integer);
+    LOG_DEBUG("number %d\n", *value->v.integer);
     value->length = 1;
     st->ptr += len;
 }
@@ -381,11 +381,11 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
     // a size_t overflow, which would otherwise yield a tiny output buffer.
     if (filesize > PARSE_MAX_FILE_SIZE)
     {
-        LOG_DEBUG("Config file %s too large (%zu bytes) - not parsed\n\r", filename, filesize);
+        LOG_DEBUG("Config file %s too large (%zu bytes) - not parsed\n", filename, filesize);
         free(buffer);
         return 0;
     }
-    LOG_DEBUG("Parsing %s File size %zu\n\r",filename, filesize);
+    LOG_DEBUG("Parsing %s File size %zu\n",filename, filesize);
 
     st.in = buffer;
     st.insize = filesize;
@@ -429,18 +429,18 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
         keyindex = parse_findindex((const char *)(st.in + st.ptr), keyv);
         if (keyindex == -1)             // not a key we know - leave the line alone
         {
-            LOG_DEBUG("Key not found\n\r");
+            LOG_DEBUG("Key not found\n");
             copy_to_eol(&st);
             continue;
         }
 
-        LOG_DEBUG("Key found %s \r\n", keyv[keyindex].key);
+        LOG_DEBUG("Key found %s \n", keyv[keyindex].key);
         for (keylen = strlen(keyv[keyindex].key); keylen != 0; keylen--)
             emit(&st, st.in[st.ptr++]);
 
         if (!skip_to_value(&st))
         {
-            LOG_DEBUG("Key data not found \n\r");
+            LOG_DEBUG("Key data not found \n");
             continue;
         }
 
@@ -465,7 +465,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
            back again - and the write beneath us is a 9 KB write, a full
            readback and two renames with the Beeb waiting on the handshake.
            Comparing costs no I/O: we have both halves in hand. */
-        LOG_DEBUG("Rewrite of %s changes nothing - not written\n\r", outfile);
+        LOG_DEBUG("Rewrite of %s changes nothing - not written\n", outfile);
         free(buffer);
         free(st.out);
         return 1;
@@ -480,7 +480,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
            answer - the caller usually passes outfile == filename, and the
            verified write beneath us would faithfully replace a good file
            with a truncated one. */
-        LOG_DEBUG("Rewrite of %s did not fit - not written\n\r", outfile);
+        LOG_DEBUG("Rewrite of %s did not fit - not written\n", outfile);
         free(st.out);
         return 0;
     }
@@ -492,7 +492,7 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
            filename, i.e. rewriting the only copy in place. */
         if (!filesystemWriteFileSafe(outfile, ( uint8_t * ) st.out, st.outptr))
         {
-            LOG_DEBUG("Error writing file %s\n\r", outfile);
+            LOG_DEBUG("Error writing file %s\n", outfile);
             free(st.out);
             return 0;
         }

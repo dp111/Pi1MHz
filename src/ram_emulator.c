@@ -156,7 +156,7 @@ void rampage_emulator_init( uint8_t instance , uint8_t address)
 
    if (!Pi1MHz->JIM_ram || (Pi1MHz->JIM_ram_size < 2) )
    {
-      LOG_INFO("No RAM - disabling RAM page emulator\r\n");
+      LOG_INFO("No RAM - disabling RAM page emulator\n");
       Pi1MHz->JIM_ram_size = 0;
       fx_register[instance] = 0;
       return;

@@ -622,7 +622,7 @@ void prim_set_dot_pattern(screen_mode_t *screen, const uint8_t *pattern) {
 
 void prim_set_dot_pattern_len(screen_mode_t *screen, int len) {
 #ifdef DEBUG_VDU
-   printf("prim_set_dot_pattern_len = %d\r\n", len);
+   printf("prim_set_dot_pattern_len = %d\n", len);
 #endif
    if (len == 0) {
       prim_set_dot_pattern(screen, DEFAULT_DOT_PATTERN);
@@ -1023,7 +1023,7 @@ void prim_fill_area(screen_mode_t *screen, int x, int y, plotcol_t colour, fill_
 #ifdef DEBUG_VDU
       /* IRQ context via the plot dispatch - see framebuffer.c; no release
          printing from here. */
-      printf( "Unknown fill mode %d\r\n", mode);
+      printf( "Unknown fill mode %d\n", mode);
 #endif
       res->drawn = false;   // unknown mode: the caller leaves the cursors alone
       return;
@@ -1721,7 +1721,7 @@ void prim_define_sprite(screen_mode_t *screen, int n, int x1, int y1, int x2, in
    }
 
 #ifdef DEBUG_VDU
-   printf("defining sprite %d (%d,%d to %d,%d)\r\n", n, x1, y1, x2, y2);
+   printf("defining sprite %d (%d,%d to %d,%d)\n", n, x1, y1, x2, y2);
 #endif
 
    sprite_free(sprite->data);
@@ -1800,7 +1800,7 @@ void prim_draw_sprite(screen_mode_t *screen, int n, int x, int y) {
       return;
    }
 #ifdef DEBUG_VDU
-   printf("drawing sprite %d at %d,%d\r\n", n, x, y);
+   printf("drawing sprite %d at %d,%d\n", n, x, y);
 #endif
 
    // Write the sprite, allowing clipping to take care of off-screen pixels

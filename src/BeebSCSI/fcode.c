@@ -1029,7 +1029,7 @@ void fcodeWriteBuffer(uint8_t lunNumber)
 	printf("<FCODE>");
 	for (byteCounter = 0; byteCounter < fcodeLength; byteCounter++)
 		printf("%c", scsiFcodeBuffer[byteCounter]);
-	printf("</FCODE>\r\n");
+	printf("</FCODE>\n");
 #endif
 
 	fcode_hist_record();   /* tx and rx are both final here */

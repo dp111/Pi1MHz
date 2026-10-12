@@ -490,7 +490,7 @@ static void parse_message(volatile vchiq_header_t *h)
                Answering it again would start a close of its own. */
             vc.svc[s].closing = false;
         } else if (vc.svc[s].open) {
-            LOG_INFO("vchiq: service %d closed by VC\r\n", s);
+            LOG_INFO("vchiq: service %d closed by VC\n", s);
             /* complete the close handshake so the VC side can free the port */
             queue_message_raw(VCHIQ_MAKE_MSG(VCHIQ_MSG_CLOSE,
                                              VCHIQ_MSG_DSTPORT(msgid),
@@ -516,7 +516,7 @@ static void parse_message(volatile vchiq_header_t *h)
         if (!SVC_VALID(s))
             break;
         if (vc.bulk_tx.head == vc.bulk_tx.tail) {
-            LOG_INFO("vchiq: unexpected bulk done\r\n");
+            LOG_INFO("vchiq: unexpected bulk done\n");
             break;
         }
         void *user = vc.bulk_tx.user[vc.bulk_tx.head & (VCHIQ_BULK_DEPTH - 1u)];
@@ -564,7 +564,7 @@ void vchiq_poll(void)
         uint32_t stride = CALC_STRIDE(size);
         if (size > VCHIQ_SLOT_SIZE - VCHIQ_HEADER_SIZE ||
             stride > VCHIQ_SLOT_SIZE - (rx_pos & VCHIQ_SLOT_MASK)) {
-            LOG_INFO("vchiq: corrupt rx stream at %"PRIx32"\r\n", rx_pos);
+            LOG_INFO("vchiq: corrupt rx stream at %"PRIx32"\n", rx_pos);
             /* Fail safe: stop processing.  The VideoCore still holds the
                block and may write to it, so it is condemned as after a
                missing CONNECT - a later vchiq_init must not wipe it and
@@ -695,10 +695,10 @@ bool vchiq_init(void)
         uint32_t phys = adopt_phys;
         adopt_phys = 0;
         if (adopt_connection(phys)) {
-            LOG_DEBUG("vchiq: connection taken over from the previous kernel\r\n");
+            LOG_DEBUG("vchiq: connection taken over from the previous kernel\n");
             return true;
         }
-        LOG_DEBUG("vchiq: handed-over connection at %08"PRIx32" not usable\r\n", phys);
+        LOG_DEBUG("vchiq: handed-over connection at %08"PRIx32" not usable\n", phys);
     }
 
     /* Re-init (a Beeb reset re-runs the emulator inits) reuses the block
@@ -708,7 +708,7 @@ bool vchiq_init(void)
     if (!phys) {
         phys = vchiq_alloc_shared(SHARED_MEM_SIZE, &handle);
         if (!phys) {
-            LOG_INFO("vchiq: no shared memory\r\n");
+            LOG_INFO("vchiq: no shared memory\n");
             return false;
         }
         shared_phys = phys;
@@ -764,7 +764,7 @@ bool vchiq_init(void)
     RPI_PropertyProcess(true);
     mp = RPI_PropertyGet(TAG_VCHIQ_INIT);
     if (!mp || mp->data.buffer_32[0] != 0) {
-        LOG_INFO("vchiq: firmware rejected init (start_cd.elf? need full start.elf)\r\n");
+        LOG_INFO("vchiq: firmware rejected init (start_cd.elf? need full start.elf)\n");
         /* The firmware never took the address, so the block is ours to
            give back. Do not latch: a retry costs one mailbox round trip. */
         vchiq_free_shared(handle);
@@ -782,7 +782,7 @@ bool vchiq_init(void)
         vchiq_poll();
 
     if (!vc.connected) {
-        LOG_INFO("vchiq: no CONNECT from VideoCore\r\n");
+        LOG_INFO("vchiq: no CONNECT from VideoCore\n");
         vc.inited = false;
         /* TAG_VCHIQ_INIT succeeded, so the VideoCore holds slot_base_bus
            and may write to it at any time: the block must NOT be freed,
@@ -793,7 +793,7 @@ bool vchiq_init(void)
         return false;
     }
 
-    LOG_DEBUG("vchiq: connected\r\n");
+    LOG_DEBUG("vchiq: connected\n");
     return true;
 }
 
@@ -811,7 +811,7 @@ int vchiq_open_service(uint32_t fourcc, short version, short version_min,
         }
     }
     if (s < 0) {
-        LOG_INFO("vchiq: no free service slot\r\n");
+        LOG_INFO("vchiq: no free service slot\n");
         return -1;
     }
 
@@ -834,7 +834,7 @@ int vchiq_open_service(uint32_t fourcc, short version, short version_min,
         vchiq_poll();
 
     if (!vc.svc[s].open) {
-        LOG_INFO("vchiq: OPEN '%c%c%c%c' not acknowledged\r\n",
+        LOG_INFO("vchiq: OPEN '%c%c%c%c' not acknowledged\n",
                  (char)(fourcc >> 24), (char)(fourcc >> 16),
                  (char)(fourcc >> 8), (char)fourcc);
         /* The VideoCore may still open it: never reuse the port, so a late
@@ -873,7 +873,7 @@ bool vchiq_close_service(int service)
     bool answered = sent && !vc.svc[service].closing;
     vc.svc[service].open = false;
     if (!answered) {
-        LOG_DEBUG("vchiq: CLOSE of service %d %s\r\n", service,
+        LOG_DEBUG("vchiq: CLOSE of service %d %s\n", service,
                   sent ? "not answered" : "not sent");
         vc.svc[service].closing = false;
         vc.svc[service].stale = true;
@@ -906,7 +906,7 @@ uint32_t vchiq_handover(void)
     if (!vc.inited)
         return 0u;                   /* the stream went bad: nothing to pass on */
     if (vc.bulk_tx.head != vc.bulk_tx.tail) {
-        LOG_DEBUG("vchiq: bulk transfer outstanding - connection not handed on\r\n");
+        LOG_DEBUG("vchiq: bulk transfer outstanding - connection not handed on\n");
         return 0u;
     }
 

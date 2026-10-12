@@ -785,7 +785,7 @@ static void text_cursor_tab(const uint8_t *buf) {
    int x = buf[1];
    int y = buf[2];
 #ifdef DEBUG_VDU
-   printf("cursor move to %d %d\r\n", x, y);
+   printf("cursor move to %d %d\n", x, y);
 #endif
    // Take account of current text window, in int: a byte sum wraps (250
    // plus a window at column 10 is 4, left of the window) where the MOS's
@@ -872,7 +872,7 @@ static void graphics_cursor_tab(const uint8_t *buf) {
    int x = (int)buf[1];
    int y = (int)buf[2];
 #ifdef DEBUG_VDU
-   printf("cursor move to %d %d\r\n", x, y);
+   printf("cursor move to %d %d\n", x, y);
 #endif
    // Scale to absolute external coordinates: column x from the left edge of
    // the graphics window and row y down from its top, the cell's top-left
@@ -1007,7 +1007,7 @@ static void vdu23_8(const uint8_t *buf) {
    uint8_t y[2] = { buf[4], buf[6] };
 
 #ifdef DEBUG_VDU
-   printf("%d %d %d %d %d %d\r\n", t[0], t[1], x[0], y[0], x[1], y[1]);
+   printf("%d %d %d %d %d %d\n", t[0], t[1], x[0], y[0], x[1], y[1]);
 #endif
    // Cast everything to 8-bit so maths works out correctly
    uint8_t cx     = (uint8_t) ( c_x_pos - t_window.left );
@@ -1018,7 +1018,7 @@ static void vdu23_8(const uint8_t *buf) {
    uint8_t bottom = (uint8_t) (t_window.bottom - t_window.top);
 
 #ifdef DEBUG_VDU
-   printf("cx=%d, cy=%d, l=%d, t=%d, r=%d, b=%d\r\n", cx, cy, left, top, right, bottom);
+   printf("cx=%d, cy=%d, l=%d, t=%d, r=%d, b=%d\n", cx, cy, left, top, right, bottom);
 #endif
 
    // Calculate start position/end (in absolute characters cells)
@@ -1086,7 +1086,7 @@ static void vdu23_8(const uint8_t *buf) {
    }
 
 #ifdef DEBUG_VDU
-   printf("Clear %d,%d to %d,%d exclusive\r\n", x[0], y[0], x[1], y[1]);
+   printf("Clear %d,%d to %d,%d exclusive\n", x[0], y[0], x[1], y[1]);
 #endif
 
    // Check again if end point is before the start point
@@ -1370,11 +1370,11 @@ static void vdu23_19(const uint8_t *buf) {
 #ifdef DEBUG_VDU
    if (font != NULL)
    {
-   printf("    Font name: %s\r\n",    font->get_name(font));
-   printf("  Font number: %"PRId32"\r\n",    font->get_number(font));
-   printf("   Font scale: %d,%d\r\n", font->get_scale_w(font),   font->get_scale_h(font));
-   printf(" Font spacing: %d,%d\r\n", font->get_spacing_w(font), font->get_spacing_h(font));
-   printf("Font rounding: %d\r\n",    font->get_rounding(font));
+   printf("    Font name: %s\n",    font->get_name(font));
+   printf("  Font number: %"PRId32"\n",    font->get_number(font));
+   printf("   Font scale: %d,%d\n", font->get_scale_w(font),   font->get_scale_h(font));
+   printf(" Font spacing: %d,%d\n", font->get_spacing_w(font), font->get_spacing_h(font));
+   printf("Font rounding: %d\n",    font->get_rounding(font));
    }
 #endif
    // As the font metrics have changed, update text area
@@ -1505,13 +1505,13 @@ static void vdu_17(const uint8_t *buf) {
       c_bg_gcol = col;
       c_bg_col = calculate_colour(c_bg_gcol, c_bg_tint);
 #ifdef DEBUG_VDU
-      printf("bg = %"PRIx32"\r\n", c_bg_col);
+      printf("bg = %"PRIx32"\n", c_bg_col);
 #endif
    } else {
       c_fg_gcol = col;             ;
       c_fg_col = calculate_colour(c_fg_gcol, c_fg_tint);
 #ifdef DEBUG_VDU
-      printf("fg = %"PRIx32"\r\n", c_fg_col);
+      printf("fg = %"PRIx32"\n", c_fg_col);
 #endif
    }
 }
@@ -1603,7 +1603,7 @@ static void vdu_22(const uint8_t *buf) {
 
 static void vdu_23(const uint8_t *buf) {
 #ifdef DEBUG_VDU
-      printf("VDU %X %X %X %X %X %X %X %X %X %X\n\r", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]);
+      printf("VDU %X %X %X %X %X %X %X %X %X %X\n", buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9]);
 #endif
    // User defined characters
    if (buf[1] >= 32) {
@@ -1646,7 +1646,7 @@ static void vdu_24(const uint8_t *buf) {
    window.right  = (int16_t)(buf[5] + (buf[6] << 8));
    window.top    = (int16_t)(buf[7] + (buf[8] << 8));
 #ifdef DEBUG_VDU
-   printf("graphics area left:%d bottom:%d right:%d top:%d\r\n",
+   printf("graphics area left:%d bottom:%d right:%d top:%d\n",
           window.left, window.bottom, window.right, window.top);
 #endif
    // Transform to absolute external coordinates
@@ -1666,7 +1666,7 @@ static void vdu_25(const uint8_t *buf) {
    int16_t y = (int16_t)(buf[4] + (buf[5] << 8));
 
 #ifdef DEBUG_VDU
-   printf("plot %d %d %d\r\n", g_mode, x, y);
+   printf("plot %d %d %d\n", g_mode, x, y);
 #endif
 
    if (g_mode & 4) {
@@ -1821,7 +1821,7 @@ static void vdu_25(const uint8_t *buf) {
             IRQHandler_main), and printf blocks on the 115200-baud UART - so
             an unimplemented PLOT issued in a loop by the Beeb must not be
             allowed to print per call in release builds. */
-         printf("Unsupported plot code: %d\r\n", g_mode);
+         printf("Unsupported plot code: %d\n", g_mode);
 #endif
          break;
       }
@@ -1867,7 +1867,7 @@ static void vdu_28(const uint8_t *buf) {
    t_clip_window_t window = {buf[1], buf[2], buf[3], buf[4]};
    set_text_area(&window);
 #ifdef DEBUG_VDU
-   printf("text area left:%d bottom:%d right:%d top:%d\r\n",
+   printf("text area left:%d bottom:%d right:%d top:%d\n",
           window.left, window.bottom, window.right, window.top);
 #endif
 }
@@ -1876,7 +1876,7 @@ static void vdu_29(const uint8_t *buf) {
    g_x_origin = (int16_t)(buf[1] + (buf[2] << 8));
    g_y_origin = (int16_t)(buf[3] + (buf[4] << 8));
 #ifdef DEBUG_VDU
-   printf("graphics origin %d %d\r\n", g_x_origin, g_y_origin);
+   printf("graphics origin %d %d\n", g_x_origin, g_y_origin);
 #endif
 }
 
@@ -2658,7 +2658,7 @@ uint8_t fb_get_gcol_from_colnum(uint8_t colnum) {
 #ifdef DEBUG_VDU
       /* Any plausible caller is IRQ-context rendering code; keep the
          complaint out of release builds. */
-      printf("Illegal use of get_gcol_from_colnum()\n\r");
+      printf("Illegal use of get_gcol_from_colnum()\n");
 #endif
       return 0;
    }

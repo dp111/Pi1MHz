@@ -107,7 +107,7 @@ static void chainboot_abandon(void)
          stays off - it is only ever on the bus with a card behind it - and
          the Beeb's own insert, or a BBC reset, brings both back. */
       if (!filesystemInsert()) {
-         LOG_DEBUG("chainboot: card did not mount again - left ejected\r\n");
+         LOG_DEBUG("chainboot: card did not mount again - left ejected\n");
       }
    } else if (s_usb_off && !filesystemEjected())
       mtp_fs_inserted();                 /* USB back; the host enumerates afresh */

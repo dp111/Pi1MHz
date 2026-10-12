@@ -8,7 +8,7 @@ __attribute__ ((aligned (0x1000) )) __attribute__((used))  NOINIT_SECTION uint8_
 #if (__ARM_ARCH >= 7 )
 
 void start_core(int core, func_ptr func) {
-   LOG_DEBUG("starting core %d\r\n", core);
+   LOG_DEBUG("starting core %d\n", core);
    *(unsigned int *)(0x4000008C + 0x10 * core) = (unsigned int) func;
 }
 #endif

@@ -328,7 +328,7 @@ void audio_claim(const audio_producer_t *p)
             hdmi_rate = p->rate;
             active = &hdmi_sink;
          } else {
-            LOG_INFO("audio: HDMI unavailable, using the Beeb pin\r\n");
+            LOG_INFO("audio: HDMI unavailable, using the Beeb pin\n");
             sink = SINK_PWM;
          }
       }

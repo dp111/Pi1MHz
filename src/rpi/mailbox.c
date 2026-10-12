@@ -349,7 +349,7 @@ static unsigned int mailbox_collect( void )
 
 #if( PRINT_PROP_DEBUG == 1 )
     for ( int i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
-        LOG_INFO( "Response: %3d %8.8"PRIx32"\r\n", i, pt[i] );
+        LOG_INFO( "Response: %3d %8.8"PRIx32"\n", i, pt[i] );
 #endif
     return result;
 }
@@ -394,9 +394,9 @@ unsigned int RPI_PropertyProcess( bool wait )
     pt[pt_index] = 0;
 
 #if( PRINT_PROP_DEBUG == 1 )
-    LOG_INFO( "%s Length: %"PRIx32"\r\n", __func__, pt[PT_OSIZE] );
+    LOG_INFO( "%s Length: %"PRIx32"\n", __func__, pt[PT_OSIZE] );
     for ( int i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
-        LOG_INFO( "Request: %3d %8.8"PRIx32"\r\n", i, pt[i] );
+        LOG_INFO( "Request: %3d %8.8"PRIx32"\n", i, pt[i] );
 #endif
     RPI_Mailbox0Write( MB0_TAGS_ARM_TO_VC, pt );
 

@@ -261,7 +261,7 @@ static bool ttx_disconnect(ttx_chan_t *c, bool from_err)
 static void ttx_tcp_err(void *arg, err_t err)
 {
    if (arg != NULL) {
-      TTX_LOG("TELETEXT: connection error %d, will retry\r\n", (int)err);
+      TTX_LOG("TELETEXT: connection error %d, will retry\n", (int)err);
       (void)ttx_disconnect((ttx_chan_t *)arg, true);   /* pcb already freed by lwIP */
    }
 }
@@ -280,7 +280,7 @@ static err_t ttx_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
       ring_push(c, (const uint8_t *)q->payload, (uint32_t)q->len);
    if (!c->rx_seen) {
       c->rx_seen = true;
-      TTX_LOG("TELETEXT: receiving data (%u bytes)\r\n", (unsigned)p->tot_len);
+      TTX_LOG("TELETEXT: receiving data (%u bytes)\n", (unsigned)p->tot_len);
    }
    tcp_recved(tpcb, p->tot_len);
    pbuf_free(p);
@@ -296,7 +296,7 @@ static err_t ttx_tcp_connected(void *arg, struct tcp_pcb *tpcb, err_t err)
    if (err != ERR_OK)
       return err;                               /* err callback will fire */
    c->connected = true;
-   TTX_LOG("TELETEXT: channel connected\r\n");
+   TTX_LOG("TELETEXT: channel connected\n");
    return ERR_OK;
 }
 
@@ -304,7 +304,7 @@ static void ttx_connect(ttx_chan_t *c)
 {
    c->pcb = tcp_new();
    if (c->pcb == NULL) {
-      TTX_LOG("TELETEXT: tcp_new() failed\r\n");
+      TTX_LOG("TELETEXT: tcp_new() failed\n");
       c->reconnect_at_us = RPI_GetSystemTime() + TTX_US_RECONNECT;
       return;
    }
@@ -314,13 +314,13 @@ static void ttx_connect(ttx_chan_t *c)
 
    ip_addr_t ip;
    ip_addr_set_ip4_u32(&ip, c->ip_be);
-   TTX_LOG("TELETEXT: connecting to %u.%u.%u.%u:%u\r\n",
+   TTX_LOG("TELETEXT: connecting to %u.%u.%u.%u:%u\n",
            (unsigned)(c->ip_be & 0xffu), (unsigned)((c->ip_be >> 8) & 0xffu),
            (unsigned)((c->ip_be >> 16) & 0xffu), (unsigned)((c->ip_be >> 24) & 0xffu),
            (unsigned)c->port);
    err_t rc = tcp_connect(c->pcb, &ip, c->port, ttx_tcp_connected);
    if (rc != ERR_OK) {
-      TTX_LOG("TELETEXT: tcp_connect() failed rc=%d\r\n", (int)rc);
+      TTX_LOG("TELETEXT: tcp_connect() failed rc=%d\n", (int)rc);
       tcp_abort(c->pcb);                         /* err callback cleans up */
    }
 }
@@ -331,7 +331,7 @@ static void ttx_net_poll(void)
    if (net == NULL || !net->address_ready) {
       if (!ttx_net_waiting_logged) {
          ttx_net_waiting_logged = true;
-         TTX_LOG("TELETEXT: waiting for network address\r\n");
+         TTX_LOG("TELETEXT: waiting for network address\n");
       }
       return;
    }
@@ -521,7 +521,7 @@ static void ttx_configure(void)
       if (ttx_parse_endpoint(config_get(names[i]), &ip_be, &port)) {
          ttx_chan[i].ip_be = ip_be;
          ttx_chan[i].port  = port;
-         TTX_LOG("TELETEXT: channel %u -> %u.%u.%u.%u:%u\r\n",
+         TTX_LOG("TELETEXT: channel %u -> %u.%u.%u.%u:%u\n",
                  (unsigned)i,
                  (unsigned)(ip_be & 0xffu), (unsigned)((ip_be >> 8) & 0xffu),
                  (unsigned)((ip_be >> 16) & 0xffu), (unsigned)((ip_be >> 24) & 0xffu),

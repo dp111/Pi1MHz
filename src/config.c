@@ -135,7 +135,7 @@ void config_load(const char *filename)
    free(raw);
 
    config_parse(config_buf, (size_t)n);
-   LOG_DEBUG("CONFIG: %s parsed, %d key(s)\r\n", filename, config_count);
+   LOG_DEBUG("CONFIG: %s parsed, %d key(s)\n", filename, config_count);
 }
 
 bool config_get_bool(const char *key)

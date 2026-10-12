@@ -382,7 +382,7 @@ void Pi1MHz_Register_Poll( func_ptr function_ptr, const char *name )
    }
 
    if (Pi1MHz_polls_max >= NUM_EMULATORS) {
-      LOG_INFO("Poll registration ignored: table full (%u)\r\n",
+      LOG_INFO("Poll registration ignored: table full (%u)\n",
                (unsigned int)NUM_EMULATORS);
       return;
    }
@@ -532,7 +532,7 @@ void IRQHandler_main(void) {
 }
 
 static void init_emulator(void) {
-   LOG_INFO("\r\n\r\n**** Raspberry Pi 1MHz Emulator %s %s " BUILD_DATE " ****\r\n\r\n",RELEASENAME, GITVERSION);
+   LOG_INFO("\n\n**** Raspberry Pi 1MHz Emulator %s %s " BUILD_DATE " ****\n\n",RELEASENAME, GITVERSION);
 
    // Load Pi1MHz.cfg from the SD card before any emulator reads its config.
    // All emulator/option keys come from this file via config_get(); only the
@@ -558,7 +558,7 @@ static void init_emulator(void) {
    {
       boot_stage_t prev = RPI_BootStagePrevious();
       if (prev != 0u && prev != BOOT_STAGE_RUNNING)
-         LOG_WARN("PREVIOUS BOOT DIED AT STAGE %u\r\n", (unsigned int)prev);
+         LOG_WARN("PREVIOUS BOOT DIED AT STAGE %u\n", (unsigned int)prev);
    }
 
    RPI_IRQBase->Disable_IRQs_1 = 0x200; // Disable USB IRQ which can be left enabled
@@ -585,12 +585,12 @@ static void init_emulator(void) {
          int ov = config_emulator_override(emulator[i].name, &emulator[i].address);
          if (ov < 0)
             {
-               LOG_DEBUG("Disabling %s\r\n", emulator[i].name);
+               LOG_DEBUG("Disabling %s\n", emulator[i].name);
                emulator[i].enable = 0;
             }
          else if (ov > 0)
             {
-               LOG_DEBUG("%s address = 0x%02x\r\n", emulator[i].name, emulator[i].address);
+               LOG_DEBUG("%s address = 0x%02x\n", emulator[i].name, emulator[i].address);
                /* Config address enables emulators that default to off (e.g. BeebSID). */
                emulator[i].enable = 1;
             }
@@ -613,7 +613,7 @@ static void init_emulator(void) {
       if (beebsid_on) {
          for (uint8_t i = 0; i < NUM_EMULATORS; i++) {
             if (strcmp(emulator[i].name, "M5000") == 0 && emulator[i].enable == 1) {
-               LOG_INFO("BeebSID enabled: disabling M5000 (shared audio path)\r\n");
+               LOG_INFO("BeebSID enabled: disabling M5000 (shared audio path)\n");
                emulator[i].enable = 0;
             }
          }
@@ -771,7 +771,7 @@ static void init_emulator(void) {
 
    for( uint8_t i=0; i <NUM_EMULATORS; i++)
       {
-         LOG_DEBUG("Init %s at 0x%02x\r\n",emulator[i].name, emulator[i].address);
+         LOG_DEBUG("Init %s at 0x%02x\n",emulator[i].name, emulator[i].address);
          /* Each emulator's init is well under the boot timeout, but the
             sequence as a whole is not - so feed the dog between them. */
          watchdog_boot_kick();
@@ -819,7 +819,7 @@ static void init_hardware(void)
    else
       led_pin = 255;
 
-   LOG_DEBUG("LED pin %d\r\n",led_pin);
+   LOG_DEBUG("LED pin %d\n",led_pin);
 
    // Configure our pins as default state as inputs
    // Pins default to inputs so only setup Outputs and alternate modes
@@ -1012,15 +1012,15 @@ static void poll_prof_report(void)
    for (unsigned int i = 0; i < Pi1MHz_polls_max; i++)
       total += poll_prof_cycles[i];
 
-   LOG_INFO("POLL PROFILE over %lu passes, %u callbacks\r\n",
+   LOG_INFO("POLL PROFILE over %lu passes, %u callbacks\n",
             (unsigned long)poll_prof_passes, (unsigned int)Pi1MHz_polls_max);
    for (unsigned int i = 0; i < Pi1MHz_polls_max; i++)
-      LOG_INFO("  idx %2u @%08lx: %6lu cycles/pass\r\n", i,
+      LOG_INFO("  idx %2u @%08lx: %6lu cycles/pass\n", i,
                (unsigned long)(uintptr_t)Pi1MHz_poll_table[i],
                (unsigned long)(poll_prof_cycles[i] / poll_prof_passes));
-   LOG_INFO("  loop overhead: %6lu cycles/pass\r\n",
+   LOG_INFO("  loop overhead: %6lu cycles/pass\n",
             (unsigned long)(poll_prof_overhead / poll_prof_passes));
-   LOG_INFO("  TOTAL: %lu cycles/pass\r\n",
+   LOG_INFO("  TOTAL: %lu cycles/pass\n",
             (unsigned long)(total / poll_prof_passes));
 
    /* What does one system-timer read actually cost?  It is a
@@ -1031,7 +1031,7 @@ static void poll_prof_report(void)
       uint32_t sink = 0u;
       for (unsigned int i = 0; i < 1000u; i++)
          sink += RPI_GetSystemTime();
-      LOG_INFO("  RPI_GetSystemTime: %lu cycles each (sink %lu)\r\n",
+      LOG_INFO("  RPI_GetSystemTime: %lu cycles each (sink %lu)\n",
                (unsigned long)((poll_prof_ccnt() - t0) / 1000u),
                (unsigned long)(sink & 1u));
    }
@@ -1129,7 +1129,7 @@ _Noreturn void kernel_main(void)
       {
          if (oldreset == false)
          {
-            LOG_INFO("Reset detected\r\n");
+            LOG_INFO("Reset detected\n");
             RPI_BootDetail(0xFEu);  /* re-init pass marker: a death in config_load shows FE */
             Pi1MHz_break.init_start_us = RPI_GetSystemTime();
             /* The edge is latched in IRQ but the re-init runs from this
@@ -1213,7 +1213,7 @@ _Noreturn void kernel_main(void)
                if (duration_ticks > poll_max_ticks[i])
                   poll_max_ticks[i] = duration_ticks;
                if (duration_ticks > POLL_SLOW_TICKS) {
-               LOG_INFO("Slow poll callback idx=%u duration_us=%lu\r\n",
+               LOG_INFO("Slow poll callback idx=%u duration_us=%lu\n",
                         (unsigned int)i,
                         (unsigned long)poll_ticks_to_us(duration_ticks));
                }
@@ -1231,7 +1231,7 @@ _Noreturn void kernel_main(void)
       main_poll_loops++;
       if (--heartbeat_left == 0u) {     /* a countdown: a modulo is a multiply per pass */
          heartbeat_left = MAIN_POLL_HEARTBEAT_PASSES;
-         LOG_INFO("Main poll heartbeat loops=%lu callbacks=%u\r\n",
+         LOG_INFO("Main poll heartbeat loops=%lu callbacks=%u\n",
                   (unsigned long)main_poll_loops,
                   (unsigned int)Pi1MHz_polls_max);
       }

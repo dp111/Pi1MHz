@@ -185,7 +185,7 @@ void reset_performance_counters(perf_counters_t *pct) {
          /* Set the bit to enable the counter */
          cntenset |= (1u << i);
       } else {
-         printf("Event: %s not implemented\r\n", type_lookup(pct->type[i]));
+         printf("Event: %s not implemented\n", type_lookup(pct->type[i]));
       }
    }
    /* Write the control register */
@@ -238,8 +238,8 @@ void print_performance_counters(const perf_counters_t *pct) {
    cycle_counter *= 64;
    /* newlib-nano doesn't appear to support 64-bit printf/scanf on 32-bit systems
       printf("%26s = %"PRIu64"\r\n", "cycle counter", cycle_counter); */
-   printf("%26s = %s\r\n", "cycle counter", uint64ToDecimal(cycle_counter));
+   printf("%26s = %s\n", "cycle counter", uint64ToDecimal(cycle_counter));
    for (unsigned int i = 0; i < pct->num_counters; i++) {
-      printf("%26s = %u\r\n", type_lookup(pct->type[i]), pct->counter[i]);
+      printf("%26s = %u\n", type_lookup(pct->type[i]), pct->counter[i]);
    }
 }

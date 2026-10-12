@@ -213,7 +213,7 @@ static bool submit_au(uint32_t frame, bool with_audio, bool count)
         static bool said;                /* once: a corrupt file repeats this per frame */
         if (!said) {
             said = true;
-            LOG_INFO("videoplayer: bad record %"PRIu32"\r\n", frame);
+            LOG_INFO("videoplayer: bad record %"PRIu32"\n", frame);
         }
         h264dec_cancel_input();
         return false;
@@ -741,7 +741,7 @@ static void pvf_reopen(void)
         /* The decoder and the GPU frame buffers were sized at boot;
            decoding a different geometry into them corrupts GPU memory.
            A dimension change needs a Beeb reset (full re-init). */
-        LOG_INFO("videoplayer: %s is %"PRIu32"x%"PRIu32", player is %"PRIu32"x%"PRIu32" - reset to switch\r\n",
+        LOG_INFO("videoplayer: %s is %"PRIu32"x%"PRIu32", player is %"PRIu32"x%"PRIu32" - reset to switch\n",
                  pvf_path, vp.hdr.width, vp.hdr.height, old_w, old_h);
         f_close(&vp.file);
         free(vp.index);
@@ -1125,7 +1125,7 @@ static bool pvf_open_file(void)
     static DWORD *clmt;
     static uint32_t clmt_entries;
     if (!filesystemAttachLinkMap(&vp.file, &clmt, &clmt_entries))
-        LOG_INFO("videoplayer: %s: no cluster map; seeks will be slow\r\n", pvf_path);
+        LOG_INFO("videoplayer: %s: no cluster map; seeks will be slow\n", pvf_path);
     vp.clmt_entries = clmt_entries;
 
     if (f_read(&vp.file, &vp.hdr, sizeof(vp.hdr), &n) != FR_OK ||
@@ -1137,7 +1137,7 @@ static bool pvf_open_file(void)
         vp.hdr.audio_bytes_per_frame > 65536 ||
         vp.hdr.width == 0 || vp.hdr.width > 1920 ||
         vp.hdr.height == 0 || vp.hdr.height > 1088) {
-        LOG_INFO("videoplayer: bad " PVF_FILENAME " header\r\n");
+        LOG_INFO("videoplayer: bad " PVF_FILENAME " header\n");
         vp_fail = "header";
         f_close(&vp.file);
         return false;
@@ -1152,7 +1152,7 @@ static bool pvf_open_file(void)
     if (f_lseek(&vp.file, vp.hdr.index_offset) != FR_OK ||
         f_read(&vp.file, vp.index, vp.hdr.frame_count * sizeof(uint32_t), &n) != FR_OK ||
         n != vp.hdr.frame_count * sizeof(uint32_t)) {
-        LOG_INFO("videoplayer: bad " PVF_FILENAME " index\r\n");
+        LOG_INFO("videoplayer: bad " PVF_FILENAME " index\n");
         vp_fail = "index";
         free(vp.index);
         vp.index = NULL;
@@ -1330,7 +1330,7 @@ static void vp_bring_up(void)
     if (!pvf_open_file()) {
         /* No video file: leave the plane off, the Beeb display is all
            there is to show. */
-        LOG_DEBUG("videoplayer_init: no " PVF_FILENAME "\r\n");
+        LOG_DEBUG("videoplayer_init: no " PVF_FILENAME "\n");
         return;
     }
 
@@ -1341,7 +1341,7 @@ static void vp_bring_up(void)
     /* Start the hardware decoder first - if the firmware is start_cd.elf
        this fails cleanly and the video plane simply stays off. */
     if (!h264dec_init(vp.hdr.width, vp.hdr.height, frame_decoded)) {
-        LOG_INFO("videoplayer: no hardware decoder - check start.elf/gpu_mem\r\n");
+        LOG_INFO("videoplayer: no hardware decoder - check start.elf/gpu_mem\n");
         vp_fail = "decoder";
         free(vp.index);
         vp.index = NULL;
@@ -1355,7 +1355,7 @@ static void vp_bring_up(void)
     for (int i = 0; i < NUM_FRAME_BUFFERS; i++) {
         vp.buf_phys[i] = screen_allocate_buffer(vp.frame_bytes, &handles[i]);
         if (!vp.buf_phys[i]) {
-            LOG_INFO("videoplayer: no GPU memory for frames (gpu_mem too small?)\r\n");
+            LOG_INFO("videoplayer: no GPU memory for frames (gpu_mem too small?)\n");
             vp_fail = "gpumem";
             video_give_up(handles);
             return;
@@ -1369,7 +1369,7 @@ static void vp_bring_up(void)
             /* Without every output buffer the decoder can never produce a
                frame, so carrying on would leave the screen permanently
                black - give everything back instead. */
-            LOG_INFO("videoplayer: output buffer %d not registered\r\n", i);
+            LOG_INFO("videoplayer: output buffer %d not registered\n", i);
             video_give_up(handles);
             return;
         }
@@ -1416,7 +1416,7 @@ static void vp_bring_up(void)
 
     Pi1MHz_Register_Poll(videoplayer_poll, "video");
 
-    LOG_INFO("videoplayer: %s %"PRIu32"x%"PRIu32" %"PRIu32" frames%s\r\n",
+    LOG_INFO("videoplayer: %s %"PRIu32"x%"PRIu32" %"PRIu32" frames%s\n",
              pvf_path, vp.hdr.width, vp.hdr.height, vp.hdr.frame_count,
              vp.audio_present ? " + audio" : "");
 }

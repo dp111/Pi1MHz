@@ -459,7 +459,7 @@ static void sdio_debug_log(const char *format, ...)
    if (written <= 0)
       return;
 
-   wifi_debug_printf("WIFI-SDIO: %s\r\n", line);
+   wifi_debug_printf("WIFI-SDIO: %s\n", line);
 #else
    (void)format;                       /* wifi_debug_printf is empty in release */
 #endif

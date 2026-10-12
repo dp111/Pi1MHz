@@ -494,7 +494,7 @@ uint32_t screen_allocate_buffer(uint32_t buffer_size, uint32_t *handle) {
         RPI_PropertyAdd(*handle);
         RPI_PropertyProcess(true);
         if ((mp = RPI_PropertyGet(TAG_LOCK_MEMORY))) {
-            LOG_DEBUG("Allocated buffer at %" PRIx32 "\r\n", mp->data.buffer_32[0]);
+            LOG_DEBUG("Allocated buffer at %" PRIx32 "\n", mp->data.buffer_32[0]);
             return mp->data.buffer_32[0] & 0x3FFFFFFF;
         }
     }
@@ -727,7 +727,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     uint32_t h_display = ( RPI_hvs->ctrl1 >> 12 ) & 0xfff;
     uint32_t v_display = ( RPI_hvs->ctrl1       ) & 0xfff;
 #ifdef SCREEN_DEBUG
-    LOG_DEBUG("actual Display %"PRId32" x %"PRId32"\r\n", h_display, v_display);
+    LOG_DEBUG("actual Display %"PRId32" x %"PRId32"\n", h_display, v_display);
 #endif
    // TODO: this can be greatly improved!
     // It assumes you want to fill (or nearly fill) a 1280x1024 window on your physical display
@@ -757,7 +757,7 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
         }
     }
 #ifdef SCREEN_DEBUG
-    LOG_DEBUG("corrected %"PRId32" x %"PRId32"\r\n", h_corrected, v_corrected);
+    LOG_DEBUG("corrected %"PRId32" x %"PRId32"\n", h_corrected, v_corrected);
 #endif
     if (yuv)
     {
@@ -826,18 +826,18 @@ static uint32_t screen_scale ( uint32_t width, uint32_t height , float par, bool
     if (((uint32_t)(scale * (float)v_corrected)) >  v_display)
         scale = scale/2;
 #ifdef SCREEN_DEBUG
-    LOG_DEBUG("scale %f\r\n", (double) scale);
-    LOG_DEBUG("rgb_scale %f\r\n", (double) rgb_scale);
+    LOG_DEBUG("scale %f\n", (double) scale);
+    LOG_DEBUG("rgb_scale %f\n", (double) rgb_scale);
 #endif
     *scaled_width = grid_width(scale * rgb_hscale_par * (float)h_corrected);
     *scaled_height = (((uint32_t)(scale * (float)v_corrected)) & 0xfff);
 #ifdef SCREEN_DEBUG
-    LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", *scaled_width, *scaled_height);
+    LOG_DEBUG("scaled %"PRId32" x %"PRId32"\n", *scaled_width, *scaled_height);
 #endif
     uint32_t h_overscan = (h_display - *scaled_width) / 2;
     uint32_t v_overscan = (v_display - *scaled_height) / 2;
 #ifdef SCREEN_DEBUG
-    LOG_DEBUG("overscan %"PRId32" x %"PRId32"\r\n", h_overscan, v_overscan);
+    LOG_DEBUG("overscan %"PRId32" x %"PRId32"\n", h_overscan, v_overscan);
 #endif
     *startpos = ((v_overscan & 0xfff)<<12) + (h_overscan & 0xfff);
     return 0;
@@ -1049,7 +1049,7 @@ void screen_set_video_align( int x_beeb_pixels, int y_beeb_rows )
 
 void screen_create_YUV420_plane( uint32_t planeno, uint32_t width, uint32_t height, uint32_t buffer )
 {
-    LOG_DEBUG("plane %"PRIu32" (420)\r\n", planeno);
+    LOG_DEBUG("plane %"PRIu32" (420)\n", planeno);
     buffer |= 0xC0000000;
         uint32_t scaled_width;
         uint32_t scaled_height;
@@ -1270,24 +1270,24 @@ void screen_create_RGB_plane( uint32_t planeno, uint32_t width, uint32_t height,
                 k[2] = POLYPHASE_BASE | 0x80000000u;
             }
 #ifdef SCREEN_DEBUG
-            LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
-            LOG_DEBUG("scaled %"PRId32" x %"PRId32"\r\n", scaled_width, scaled_height);
+            LOG_DEBUG("plane %"PRIu32"\n", planeno);
+            LOG_DEBUG("scaled %"PRId32" x %"PRId32"\n", scaled_width, scaled_height);
 
-            LOG_DEBUG("startpos %"PRIx32"\r\n", startpos);
+            LOG_DEBUG("startpos %"PRIx32"\n", startpos);
           //  LOG_DEBUG("nsh %"PRId32"\r\n", nsh);
           //  LOG_DEBUG("nh %"PRId32"\r\n", nh);
-            LOG_DEBUG("ctrl %"PRIx32"\r\n", rgb->ctrl);
-            LOG_DEBUG("pos %"PRIx32"\r\n", rgb->pos);
-            LOG_DEBUG("scale %"PRIx32"\r\n", rgb->scale);
-            LOG_DEBUG("src_size %"PRIx32"\r\n", rgb->src_size);
-            LOG_DEBUG("y_ptr %"PRIx32"\r\n", rgb->y_ptr);
-            LOG_DEBUG("palette %"PRIx32"\r\n", rgb->palette);
-            LOG_DEBUG("pitch %"PRIx32"\r\n", rgb->pitch);
-            LOG_DEBUG("LBM %"PRIx32"\r\n", rgb->LBM);
-            LOG_DEBUG("hpf0 %"PRIx32"\r\n", rgb->hpf0);
-            LOG_DEBUG("vpf0 %"PRIx32"\r\n", rgb->vpf0);
-            LOG_DEBUG("pfkph0 %"PRIx32"\r\n", rgb->pfkph0);
-            LOG_DEBUG("pfkpv0 %"PRIx32"\r\n", rgb->pfkpv0);
+            LOG_DEBUG("ctrl %"PRIx32"\n", rgb->ctrl);
+            LOG_DEBUG("pos %"PRIx32"\n", rgb->pos);
+            LOG_DEBUG("scale %"PRIx32"\n", rgb->scale);
+            LOG_DEBUG("src_size %"PRIx32"\n", rgb->src_size);
+            LOG_DEBUG("y_ptr %"PRIx32"\n", rgb->y_ptr);
+            LOG_DEBUG("palette %"PRIx32"\n", rgb->palette);
+            LOG_DEBUG("pitch %"PRIx32"\n", rgb->pitch);
+            LOG_DEBUG("LBM %"PRIx32"\n", rgb->LBM);
+            LOG_DEBUG("hpf0 %"PRIx32"\n", rgb->hpf0);
+            LOG_DEBUG("vpf0 %"PRIx32"\n", rgb->vpf0);
+            LOG_DEBUG("pfkph0 %"PRIx32"\n", rgb->pfkph0);
+            LOG_DEBUG("pfkpv0 %"PRIx32"\n", rgb->pfkpv0);
 #endif
 
         }
@@ -1470,7 +1470,7 @@ static void plane_set_wanted( uint32_t planeno, bool enable )
 
 void screen_plane_enable( uint32_t planeno , bool enable )
 {
-    LOG_DEBUG("plane %"PRIu32" %s\r\n", planeno, enable ? "enable" : "disable");
+    LOG_DEBUG("plane %"PRIu32" %s\n", planeno, enable ? "enable" : "disable");
 
     if (planeno >= MAX_PLANES)
         return;
@@ -1479,19 +1479,19 @@ void screen_plane_enable( uint32_t planeno , bool enable )
         return;
 #ifdef SCREEN_DEBUG
     volatile rgb_8bit_t* rgb = (volatile rgb_8bit_t*) &context_memory[ (MAX_PLANES_SIZE >>2 ) * planeno + PLANE_BASE ];
-    LOG_DEBUG("plane %"PRIu32"\r\n", planeno);
-    LOG_DEBUG("ctrl %"PRIx32"\r\n", rgb->ctrl);
-    LOG_DEBUG("pos %"PRIx32"\r\n", rgb->pos);
-    LOG_DEBUG("scale %"PRIx32"\r\n", rgb->scale);
-    LOG_DEBUG("src_size %"PRIx32"\r\n", rgb->src_size);
-    LOG_DEBUG("y_ptr %"PRIx32"\r\n", rgb->y_ptr);
-    LOG_DEBUG("palette %"PRIx32"\r\n", rgb->palette);
-    LOG_DEBUG("pitch %"PRIx32"\r\n", rgb->pitch);
-    LOG_DEBUG("LBM %"PRIx32"\r\n", rgb->LBM);
-    LOG_DEBUG("hpf0 %"PRIx32"\r\n", rgb->hpf0);
-    LOG_DEBUG("vpf0 %"PRIx32"\r\n", rgb->vpf0);
-    LOG_DEBUG("pfkph0 %"PRIx32"\r\n", rgb->pfkph0);
-    LOG_DEBUG("pfkpv0 %"PRIx32"\r\n", rgb->pfkpv0);
+    LOG_DEBUG("plane %"PRIu32"\n", planeno);
+    LOG_DEBUG("ctrl %"PRIx32"\n", rgb->ctrl);
+    LOG_DEBUG("pos %"PRIx32"\n", rgb->pos);
+    LOG_DEBUG("scale %"PRIx32"\n", rgb->scale);
+    LOG_DEBUG("src_size %"PRIx32"\n", rgb->src_size);
+    LOG_DEBUG("y_ptr %"PRIx32"\n", rgb->y_ptr);
+    LOG_DEBUG("palette %"PRIx32"\n", rgb->palette);
+    LOG_DEBUG("pitch %"PRIx32"\n", rgb->pitch);
+    LOG_DEBUG("LBM %"PRIx32"\n", rgb->LBM);
+    LOG_DEBUG("hpf0 %"PRIx32"\n", rgb->hpf0);
+    LOG_DEBUG("vpf0 %"PRIx32"\n", rgb->vpf0);
+    LOG_DEBUG("pfkph0 %"PRIx32"\n", rgb->pfkph0);
+    LOG_DEBUG("pfkpv0 %"PRIx32"\n", rgb->pfkpv0);
 #endif
 }
 

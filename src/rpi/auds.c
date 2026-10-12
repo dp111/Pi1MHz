@@ -136,7 +136,7 @@ static bool send(const vc_audio_msg_t *m, bool wait)
     while (!au.result_ready) {
         vchiq_poll();
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
-            LOG_INFO("auds: no reply to msg %"PRId32"\r\n", m->type);
+            LOG_INFO("auds: no reply to msg %"PRId32"\n", m->type);
             au.dead = true;
             return false;
         }
@@ -168,7 +168,7 @@ bool auds_start(uint32_t rate, uint32_t channels, int dest)
         };
         au.service = vchiq_open_service(AUDS_FOURCC, AUDS_VER, AUDS_MIN_VER, &cbs);
         if (au.service < 0) {
-            LOG_INFO("auds: no AUDS service\r\n");
+            LOG_INFO("auds: no AUDS service\n");
             return false;
         }
         if (!au.buf_phys) {
@@ -188,7 +188,7 @@ bool auds_start(uint32_t rate, uint32_t channels, int dest)
     m.u.config.samplerate = rate;
     m.u.config.bps        = 16;
     if (!send(&m, true)) {
-        LOG_INFO("auds: CONFIG %"PRIu32" Hz refused\r\n", rate);
+        LOG_INFO("auds: CONFIG %"PRIu32" Hz refused\n", rate);
         return false;
     }
 
@@ -197,7 +197,7 @@ bool auds_start(uint32_t rate, uint32_t channels, int dest)
     m.u.control.volume = 0;          /* 0 dB: units are -dB * 256 */
     m.u.control.dest   = (uint32_t)dest;
     if (!send(&m, true)) {
-        LOG_INFO("auds: CONTROL dest %d refused\r\n", dest);
+        LOG_INFO("auds: CONTROL dest %d refused\n", dest);
         return false;
     }
 
@@ -210,7 +210,7 @@ bool auds_start(uint32_t rate, uint32_t channels, int dest)
     au.channels = channels;
     au.dest = dest;
     au.running = true;
-    LOG_INFO("auds: %"PRIu32" Hz x%"PRIu32" -> dest %d\r\n", rate, channels, dest);
+    LOG_INFO("auds: %"PRIu32" Hz x%"PRIu32" -> dest %d\n", rate, channels, dest);
     return true;
 }
 

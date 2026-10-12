@@ -134,7 +134,7 @@ static void on_buffer_done(mmal_vc_buffer_t *buf)
             static bool said;            /* once: this repeats per frame while the fault lasts */
             if (!said) {
                 said = true;
-                LOG_INFO("h264: short frame %"PRIu32"\r\n", buf->length);
+                LOG_INFO("h264: short frame %"PRIu32"\n", buf->length);
             }
         }
         return;
@@ -149,14 +149,14 @@ static void on_event(uint32_t port_type, uint32_t port_num, uint32_t cmd,
     (void)port_num;
 
     if (cmd == MMAL_EVENT_FORMAT_CHANGED && port_type == MMAL_PORT_TYPE_OUTPUT) {
-        LOG_DEBUG("h264: output format changed\r\n");
+        LOG_DEBUG("h264: output format changed\n");
         dec.reconfigure_pending = true;
     } else if (cmd == MMAL_EVENT_ERROR) {
         uint32_t status = length >= 4 ? *(const uint32_t *)(const void *)data : 0;
         static bool said;                /* once: an error storm arrives per frame */
         if (!said) {
             said = true;
-            LOG_INFO("h264: component error %"PRIu32"\r\n", status);
+            LOG_INFO("h264: component error %"PRIu32"\n", status);
         }
     }
 }
@@ -205,7 +205,7 @@ static bool reconfigure_output(void)
     /* Re-asserted on every reconfigure: port_info_get rebuilt our port
        struct, and the VC forgets the mode with it. */
     if (!mmal_vc_port_set_zero_copy(&dec.port_out)) {
-        LOG_INFO("h264: output zero-copy rejected\r\n");
+        LOG_INFO("h264: output zero-copy rejected\n");
         return false;
     }
 
@@ -223,7 +223,7 @@ static bool reconfigure_output(void)
     dec.port_out.port.buffer_size = dec.frame_bytes;
 
     if (!mmal_vc_port_set_format(&dec.port_out)) {
-        LOG_INFO("h264: output set_format failed\r\n");
+        LOG_INFO("h264: output set_format failed\n");
         return false;
     }
 
@@ -233,12 +233,12 @@ static bool reconfigure_output(void)
     dec.port_out.port.buffer_num = H264DEC_MAX_OUTPUT;
 
     if (!mmal_vc_port_enable(&dec.port_out)) {
-        LOG_INFO("h264: output enable failed\r\n");
+        LOG_INFO("h264: output enable failed\n");
         return false;
     }
 
     dec.output_enabled = true;
-    LOG_DEBUG("h264: output enabled %"PRIu32"x%"PRIu32"\r\n",
+    LOG_DEBUG("h264: output enabled %"PRIu32"x%"PRIu32"\n",
               dec.port_out.es.video.width, dec.port_out.es.video.height);
     arm_output_buffers();
     return true;
@@ -260,7 +260,7 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
        and the HVS pointer arithmetic in the player goes wrong. 768x576
        fits exactly. */
     if ((width & 31u) || (height & 15u)) {
-        LOG_INFO("h264: dimensions must be mod32 x mod16\r\n");
+        LOG_INFO("h264: dimensions must be mod32 x mod16\n");
         return false;
     }
 
@@ -282,7 +282,7 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
        service every submission would be rejected: fail here rather than
        start a decoder that can never produce a frame. */
     if (!vcsm_init()) {
-        LOG_INFO("h264: no SMEM service\r\n");
+        LOG_INFO("h264: no SMEM service\n");
         return false;
     }
 
@@ -291,7 +291,7 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
                                   &inputs, &outputs))
         return false;
     dec.created = true;
-    LOG_DEBUG("h264: video_decode created (%"PRIu32" in, %"PRIu32" out)\r\n",
+    LOG_DEBUG("h264: video_decode created (%"PRIu32" in, %"PRIu32" out)\n",
               inputs, outputs);
 
     /* Input staging buffers, uncached VC heap */
@@ -299,7 +299,7 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
         uint32_t handle;
         uint32_t phys = vchiq_alloc_shared(H264DEC_INPUT_BUF_SIZE, &handle);
         if (!phys) {
-            LOG_INFO("h264: no memory for input buffers\r\n");
+            LOG_INFO("h264: no memory for input buffers\n");
             init_failed = true;
             return false;
         }
@@ -314,7 +314,7 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
             vcsm_import(dec.in[i].buf.busaddr, H264DEC_INPUT_BUF_SIZE,
                         "pi1mhz-au");
         if (!dec.in[i].buf.vc_handle) {
-            LOG_INFO("h264: input buffer import refused\r\n");
+            LOG_INFO("h264: input buffer import refused\n");
             init_failed = true;
             return false;
         }
@@ -339,7 +339,7 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
     }
 
     if (!mmal_vc_port_set_zero_copy(&dec.port_in)) {
-        LOG_INFO("h264: input zero-copy rejected\r\n");
+        LOG_INFO("h264: input zero-copy rejected\n");
         init_failed = true;
         return false;
     }
@@ -358,7 +358,7 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
     dec.port_in.port.buffer_size = H264DEC_INPUT_BUF_SIZE;
 
     if (!mmal_vc_port_set_format(&dec.port_in)) {
-        LOG_INFO("h264: input set_format failed\r\n");
+        LOG_INFO("h264: input set_format failed\n");
         init_failed = true;
         return false;
     }
@@ -366,13 +366,13 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
     dec.port_in.port.buffer_size = H264DEC_INPUT_BUF_SIZE;
 
     if (!mmal_vc_component_enable(dec.component)) {
-        LOG_INFO("h264: component enable failed\r\n");
+        LOG_INFO("h264: component enable failed\n");
         init_failed = true;
         return false;
     }
 
     if (!mmal_vc_port_enable(&dec.port_in)) {
-        LOG_INFO("h264: input enable failed\r\n");
+        LOG_INFO("h264: input enable failed\n");
         init_failed = true;
         return false;
     }
@@ -385,13 +385,13 @@ bool h264dec_init(uint32_t width, uint32_t height, h264dec_frame_cb cb)
        until the port has buffers to say it with (hardware-observed; the
        ffmpeg MMAL decoder enables output up front for the same reason). */
     if (!reconfigure_output()) {
-        LOG_INFO("h264: initial output enable failed\r\n");
+        LOG_INFO("h264: initial output enable failed\n");
         init_failed = true;
         return false;
     }
 
     dec.running = true;
-    LOG_INFO("h264: hardware decoder ready (%"PRIu32"x%"PRIu32")\r\n",
+    LOG_INFO("h264: hardware decoder ready (%"PRIu32"x%"PRIu32")\n",
              width, height);
     return true;
 }
@@ -569,7 +569,7 @@ bool h264dec_reset(void)
             ok = false;
     }
     if (!ok) {
-        LOG_DEBUG("h264: reset: port disable failed - decoder left to the VideoCore\r\n");
+        LOG_DEBUG("h264: reset: port disable failed - decoder left to the VideoCore\n");
         dec.frame_cb = NULL;    /* as h264dec_shutdown: a late output buffer must
                                    not call into a player that has let go */
         dec.running = false;
@@ -643,18 +643,18 @@ bool h264dec_shutdown(void)
            port carries events only, no buffers of ours; the destroy takes
            it.) */
         if (dec.input_enabled && !mmal_vc_port_disable(&dec.port_in)) {
-            LOG_DEBUG("h264: shutdown: input port disable failed\r\n");
+            LOG_DEBUG("h264: shutdown: input port disable failed\n");
             ok = false;
         }
         if (output_was_enabled && !mmal_vc_port_disable(&dec.port_out)) {
-            LOG_DEBUG("h264: shutdown: output port disable failed\r\n");
+            LOG_DEBUG("h264: shutdown: output port disable failed\n");
             ok = false;
         }
         if (!mmal_vc_component_disable(dec.component)) {
-            LOG_DEBUG("h264: shutdown: component disable failed\r\n");
+            LOG_DEBUG("h264: shutdown: component disable failed\n");
         }
         if (!mmal_vc_component_destroy(dec.component)) {
-            LOG_DEBUG("h264: shutdown: component destroy failed\r\n");
+            LOG_DEBUG("h264: shutdown: component destroy failed\n");
             ok = false;
         }
     }
@@ -671,11 +671,11 @@ bool h264dec_shutdown(void)
        through it.  It answers the CLOSE after the FREEs before it - so no
        answer, no proof, and the memory stays where it is. */
     if (!vcsm_deinit()) {
-        LOG_DEBUG("h264: shutdown: SMEM service close not answered\r\n");
+        LOG_DEBUG("h264: shutdown: SMEM service close not answered\n");
         ok = false;
     }
     if (!ok) {
-        LOG_DEBUG("h264: shutdown incomplete - decoder memory left to the VideoCore\r\n");
+        LOG_DEBUG("h264: shutdown incomplete - decoder memory left to the VideoCore\n");
     }
 
     for (int i = 0; i < H264DEC_INPUT_BUFFERS; i++)
@@ -686,7 +686,7 @@ bool h264dec_shutdown(void)
        memory of ours: the next kernel takes the connection on from fresh
        ports (vchiq_handover). */
     if (!mmal_vc_deinit()) {
-        LOG_DEBUG("h264: shutdown: MMAL service close not answered\r\n");
+        LOG_DEBUG("h264: shutdown: MMAL service close not answered\n");
     }
 
     memset(&dec, 0, sizeof(dec));

@@ -1633,7 +1633,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
       filesystemState.keyvalues[lunNumber][index].v.string = malloc(10);
       if (!filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         LOG_INFO(PSTR("File system: filesystemLunToconfigGeometry(): ERROR: Unable to allocate memory for MODEPAGE0\r\n"));
+         LOG_INFO(PSTR("File system: filesystemLunToconfigGeometry(): ERROR: Unable to allocate memory for MODEPAGE0\n"));
          return;   /* alloc failed: do not dereference NULL below */
       }
       filesystemState.keyvalues[lunNumber][index].length = 10;
@@ -1658,7 +1658,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
       filesystemState.keyvalues[lunNumber][index].v.string = malloc(6);
       if (!filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         LOG_INFO(PSTR("File system: filesystemLunToconfigGeometry(): ERROR: Unable to allocate memory for MODEPAGE4\r\n"));
+         LOG_INFO(PSTR("File system: filesystemLunToconfigGeometry(): ERROR: Unable to allocate memory for MODEPAGE4\n"));
          return;   /* alloc failed: do not dereference NULL below */
       }
       filesystemState.keyvalues[lunNumber][index].length = 6;
@@ -1715,7 +1715,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
       filesystemState.keyvalues[lunNumber][index].v.string = malloc(4);
       if (!filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         LOG_INFO(PSTR("File system: filesystemConfigToLunGeometry(): ERROR: Unable to allocate memory for MODEPARAMHEADER\r\n"));
+         LOG_INFO(PSTR("File system: filesystemConfigToLunGeometry(): ERROR: Unable to allocate memory for MODEPARAMHEADER\n"));
          return;   /* alloc failed: do not dereference NULL below */
       }
       filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x00; // Reserved
@@ -1740,7 +1740,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].v.string = malloc(8);
          if (!filesystemState.keyvalues[lunNumber][index].v.string)
          {
-            LOG_INFO(PSTR("File system: filesystemConfigToLunGeometry(): ERROR: Unable to allocate memory for LBADescriptor\r\n"));
+            LOG_INFO(PSTR("File system: filesystemConfigToLunGeometry(): ERROR: Unable to allocate memory for LBADescriptor\n"));
             return;   /* alloc failed: do not dereference NULL below */
          }
          filesystemState.keyvalues[lunNumber][index].v.string[0] = 0x00; // Reserved
@@ -1912,7 +1912,7 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
          map_check_pending = false;
          uint8_t c0 = adfs_map_cksum(sectorBuffer);
          uint8_t c1 = adfs_map_cksum(sectorBuffer + 256);
-         LOG_INFO("MAPCHECK: s0 %02x/%02x s1 %02x/%02x %s\r\n",
+         LOG_INFO("MAPCHECK: s0 %02x/%02x s1 %02x/%02x %s\n",
                   sectorBuffer[255], c0, sectorBuffer[511], c1,
                   (sectorBuffer[255] == c0 && sectorBuffer[511] == c1) ? "OK" : "BAD");
       }
@@ -2177,7 +2177,7 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    filesystemState.keyvalues[lunNumber][index].v.string = malloc(alloc);
    if (filesystemState.keyvalues[lunNumber][index].v.string == NULL) {
       filesystemState.keyvalues[lunNumber][index].length = 0;
-      LOG_INFO(PSTR("File system: filesystemWriteModePageData(): ERROR: Unable to allocate memory for mode page data\r\n"));
+      LOG_INFO(PSTR("File system: filesystemWriteModePageData(): ERROR: Unable to allocate memory for mode page data\n"));
       return 0; /* allocation failed */
    }
    memset(filesystemState.keyvalues[lunNumber][index].v.string, 0, alloc);
@@ -2430,7 +2430,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
    UINT byteCounter;
    FRESULT fsResult;
    FIL fileObject;
-   LOG_DEBUG("filesystemReadFile: %s\n\r", filename);
+   LOG_DEBUG("filesystemReadFile: %s\n", filename);
    /* Through filesystemMount(), the one mount path: it tells the remount
       hooks first, and once mounted the next read (every BBC reset's
       config_load) leaves the volume alone. */
@@ -2451,7 +2451,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
             past the end of the allocation */
          *address = malloc((size_t)fileSize + 1u);
          if (*address == NULL) {
-            LOG_INFO(PSTR("File system: filesystemReadFile(): ERROR: Unable to allocate memory for file read\r\n"));
+            LOG_INFO(PSTR("File system: filesystemReadFile(): ERROR: Unable to allocate memory for file read\n"));
             f_close(&fileObject);
             return 0;
          }
@@ -2466,7 +2466,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
       fsResult = f_read(&fileObject, *address, read_len, &byteCounter);
       f_close(&fileObject);
       if (fsResult != FR_OK) {
-         LOG_DEBUG("filesystemReadFile: f_read failed %d\n\r", fsResult);
+         LOG_DEBUG("filesystemReadFile: f_read failed %d\n", fsResult);
          return 0;
       }
 

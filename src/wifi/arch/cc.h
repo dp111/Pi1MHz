@@ -41,7 +41,7 @@ typedef int sys_prot_t;
    stringification - that would add literal quotes around the message). */
 #define LWIP_PLATFORM_ASSERT(x) \
    do { \
-      LOG_INFO("lwIP assert: %s (%s:%d)\r\n", (x), __FILE__, __LINE__); \
+      LOG_INFO("lwIP assert: %s (%s:%d)\n", (x), __FILE__, __LINE__); \
       reboot_now(); \
    } while (0)
 

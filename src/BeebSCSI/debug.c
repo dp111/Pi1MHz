@@ -109,7 +109,7 @@ void debugStringInt8Hex_P(const char *addr, uint8_t integerValue, bool newLine)
    while ((c = pgm_read_byte(addr++))) uartWrite(c);
 
    // Output the integer
-   if (newLine) printf("0x%02x\r\n", integerValue);
+   if (newLine) printf("0x%02x\n", integerValue);
    else printf("0x%02x", integerValue);
 }
 
@@ -126,7 +126,7 @@ void debugStringInt16_P(const char *addr, uint16_t integerValue, bool newLine)
    while ((c = pgm_read_byte(addr++))) uartWrite(c);
 
    // Output the integer
-   if (newLine) printf("%u\r\n", integerValue);
+   if (newLine) printf("%u\n", integerValue);
    else printf("%u", integerValue);
 }
 
@@ -143,7 +143,7 @@ void debugStringInt32_P(const char *addr, uint32_t integerValue, bool newLine)
    while ((c = pgm_read_byte(addr++))) uartWrite(c);
 
    // Output the integer
-   if (newLine) printf("%"PRIu32"\r\n", integerValue);
+   if (newLine) printf("%"PRIu32"\n", integerValue);
    else printf("%"PRIu32, integerValue);
 }
 
@@ -168,10 +168,10 @@ void debugSectorBufferHex(const uint8_t *buffer, uint16_t numberOfBytes)
          else printf("%c", buffer[i + byteNumber]);
       }
 
-      printf("\r\n");
+      printf("\n");
    }
 
-   printf("\r\n");
+   printf("\n");
 }
 
 // This function decodes the contents of the LUN descriptor and outputs it to debug

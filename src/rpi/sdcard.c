@@ -234,7 +234,7 @@ static void sdhost_log_failure(const char *phase, uint32_t opcode, uint32_t argu
     printf(
         "SDHOST %s: cmd=%" PRIu32 " arg=%08" PRIx32 " err=%08" PRIx32
         " hsts=%08" PRIx32 " edm=%08" PRIx32 " hcfg=%08" PRIx32
-        " cdiv=%08" PRIx32 " blocks=%" PRIu32 " blksz=%u\r\n",
+        " cdiv=%08" PRIx32 " blocks=%" PRIu32 " blksz=%u\n",
         phase,
         opcode,
         argument,
@@ -603,12 +603,12 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
     {
         command &= 0xff;
 #ifdef EMMC_DEBUG
-        printf("SD: issuing command ACMD%"PRIu32"\r\n", command);
+        printf("SD: issuing command ACMD%"PRIu32"\n", command);
 #endif
 
         if(sd_acommands[command] == SD_CMD_RESERVED(0))
         {
-            printf("SD: invalid command ACMD%"PRIu32"\r\n", command);
+            printf("SD: invalid command ACMD%"PRIu32"\n", command);
             dev->last_cmd_success = 0;
             return;
         }
@@ -622,12 +622,12 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
     else
     {
 #ifdef EMMC_DEBUG
-        printf("SD: issuing command CMD%"PRIu32"\r\n", command);
+        printf("SD: issuing command CMD%"PRIu32"\n", command);
 #endif
 
         if(sd_commands[command] == SD_CMD_RESERVED(0))
         {
-            printf("SD: invalid command CMD%"PRIu32"\r\n", command);
+            printf("SD: invalid command CMD%"PRIu32"\n", command);
             dev->last_cmd_success = 0;
             return;
         }
@@ -652,10 +652,10 @@ static void sd_issue_command(struct emmc_block_dev *dev, uint32_t command, uint3
                 }
             }
         }
-      printf("\r\n");
+      printf("\n");
     }
     else
-        printf("SD: command completed successfully\r\n");
+        printf("SD: command completed successfully\n");
 #endif
 }
 
@@ -1132,7 +1132,7 @@ card_reinit:
         return -1;
 
 #ifdef EMMC_DEBUG
-   printf("EMMC: device structure created\r\n");
+   printf("EMMC: device structure created\n");
 #endif
 #ifdef RESET_CONTROLLER
    /* Abort whatever the card may still be doing before trying to reset it.
@@ -1160,7 +1160,7 @@ card_reinit:
    sd_issue_command(ret, GO_IDLE_STATE, 0, 500000);
    if(FAIL(ret))
    {
-        printf("SD: no CMD0 response\r\n");
+        printf("SD: no CMD0 response\n");
         return -1;
    }
 
@@ -1169,7 +1169,7 @@ card_reinit:
    // Check pattern = 10101010b (as per PLSS 4.3.13) = 0xAA
 #ifdef EMMC_DEBUG
     printf("SD: note a timeout error on the following command (CMD8) is normal "
-           "and expected if the SD card version is less than 2.0\r\n");
+           "and expected if the SD card version is less than 2.0\n");
 #endif
    sd_issue_command(ret, SEND_IF_COND, 0x1aa, 500000);
    int v2_later = 0;
@@ -1181,7 +1181,7 @@ card_reinit:
         {
             printf("SD: unusable card\n");
 #ifdef EMMC_DEBUG
-            printf("SD: CMD8 response %08"PRIx32"\r\n", ret->last_r0);
+            printf("SD: CMD8 response %08"PRIx32"\n", ret->last_r0);
 #endif
             return -1;
         }
@@ -1190,22 +1190,22 @@ card_reinit:
     }
     else if(!TIMEOUT(ret))
     {
-        printf("SD: failure sending CMD8 (%08"PRIx32")\r\n", ret->last_interrupt);
+        printf("SD: failure sending CMD8 (%08"PRIx32")\n", ret->last_interrupt);
         return -1;
     }
     // else: plain timeout - v2_later stays 0
     // Call an inquiry ACMD41 (voltage window = 0) to get the OCR
 #ifdef EMMC_DEBUG
-    printf("SD: sending inquiry ACMD41\r\n");
+    printf("SD: sending inquiry ACMD41\n");
 #endif
     sd_issue_command(ret, ACMD(41), 0, 500000);
     if(FAIL(ret))
     {
-        printf("SD: inquiry ACMD41 failed\r\n");
+        printf("SD: inquiry ACMD41 failed\n");
         return -1;
     }
 #ifdef EMMC_DEBUG
-    printf("SD: inquiry ACMD41 returned %08"PRIx32"\r\n", ret->last_r0);
+    printf("SD: inquiry ACMD41 returned %08"PRIx32"\n", ret->last_r0);
 #endif
 
    // Call initialization ACMD41
@@ -1235,7 +1235,7 @@ card_reinit:
 
        if(FAIL(ret))
        {
-           printf("SD: error issuing ACMD41\r\n");
+           printf("SD: error issuing ACMD41\n");
            return -1;
        }
 
@@ -1260,14 +1260,14 @@ card_reinit:
                return -1;
            }
 #ifdef EMMC_DEBUG
-            printf("SD: card is busy, retrying\r\n");
+            printf("SD: card is busy, retrying\n");
 #endif
             usleep(1000);
        }
    }
 
 #ifdef EMMC_DEBUG
-   printf("SD: card identified: OCR: %04"PRIx32", 1.8v support: %"PRIu32", SDHC support: %"PRIu32"\r\n",
+   printf("SD: card identified: OCR: %04"PRIx32", 1.8v support: %"PRIu32", SDHC support: %"PRIu32"\n",
        (ret->last_r0 >> 8) & 0xffff, (uint32_t)ret->card_supports_18v, (uint32_t)ret->card_supports_sdhc);
 #endif
 
@@ -1275,7 +1275,7 @@ card_reinit:
     sd_issue_command(ret, ALL_SEND_CID, 0, 500000);
     if(FAIL(ret))
     {
-          printf("SD: error sending ALL_SEND_CID\r\n");
+          printf("SD: error sending ALL_SEND_CID\n");
           return -1;
     }
 
@@ -1283,13 +1283,13 @@ card_reinit:
    sd_issue_command(ret, SEND_RELATIVE_ADDR, 0, 500000);
    if(FAIL(ret))
     {
-        printf("SD: error sending SEND_RELATIVE_ADDR\r\n");
+        printf("SD: error sending SEND_RELATIVE_ADDR\n");
         return -1;
     }
 
    uint32_t cmd3_resp = ret->last_r0;
 #ifdef EMMC_DEBUG
-   printf("SD: CMD3 response: %08"PRIu32"\r\n", cmd3_resp);
+   printf("SD: CMD3 response: %08"PRIu32"\n", cmd3_resp);
 #endif
 
    ret->card_rca = (cmd3_resp >> 16) & 0xffff;
@@ -1300,37 +1300,37 @@ card_reinit:
 
    if(crc_error)
    {
-      printf("SD: CRC error\r\n");
+      printf("SD: CRC error\n");
       return -1;
    }
 
    if(illegal_cmd)
    {
-      printf("SD: illegal command\r\n");
+      printf("SD: illegal command\n");
       return -1;
    }
 
    if(error)
    {
-      printf("SD: generic error\r\n");
+      printf("SD: generic error\n");
       return -1;
    }
 
    if(!ready)
    {
-      printf("SD: not ready for data\r\n");
+      printf("SD: not ready for data\n");
       return -1;
    }
 
 #ifdef EMMC_DEBUG
-   printf("SD: RCA: %04"PRIx32"\r\n", ret->card_rca);
+   printf("SD: RCA: %04"PRIx32"\n", ret->card_rca);
 #endif
 
    // Now select the card (toggles it to transfer state)
    sd_issue_command(ret, SELECT_CARD, ret->card_rca << 16, 500000);
    if(FAIL(ret))
    {
-       printf("SD: error sending CMD7\r\n");
+       printf("SD: error sending CMD7\n");
        return -1;
    }
 
@@ -1339,7 +1339,7 @@ card_reinit:
 
    if((status != 3) && (status != 4))
    {
-      printf("SD: invalid status (%"PRIu32")\r\n", status);
+      printf("SD: invalid status (%"PRIu32")\n", status);
       return -1;
    }
 
@@ -1349,7 +1349,7 @@ card_reinit:
        sd_issue_command(ret, SET_BLOCKLEN, 512, 500000);
        if(FAIL(ret))
        {
-           printf("SD: error sending SET_BLOCKLEN\r\n");
+           printf("SD: error sending SET_BLOCKLEN\n");
            return -1;
        }
    }
@@ -1365,12 +1365,12 @@ card_reinit:
    ret->block_size = 512;
    if(FAIL(ret))
    {
-       printf("SD: error sending SEND_SCR\r\n");
+       printf("SD: error sending SEND_SCR\n");
        if (++init_attempt < 3)
        {
-           printf("******************************************\r\n");
-           printf("* Reinitializing SD Card Driver          *\r\n");
-           printf("******************************************\r\n");
+           printf("******************************************\n");
+           printf("* Reinitializing SD Card Driver          *\n");
+           printf("******************************************\n");
            goto card_reinit;
        }
        return -1;
@@ -1383,8 +1383,8 @@ card_reinit:
    bool supports_switch_func = ((scr0 >> (56 - 32)) & 0xf) >= 1;
 
 #ifdef EMMC_DEBUG
-    printf("SD: SCR: %08"PRIx32"%08"PRIx32"\r\n", scr0, byte_swap(scr[1]));
-    printf("SD: SCR: SD_SPEC %01"PRIu32", bus_widths %01"PRIu32"\r\n",
+    printf("SD: SCR: %08"PRIx32"%08"PRIx32"\n", scr0, byte_swap(scr[1]));
+    printf("SD: SCR: SD_SPEC %01"PRIu32", bus_widths %01"PRIu32"\n",
            (scr0 >> (56 - 32)) & 0xf, sd_bus_widths);
 #endif
 
@@ -1398,21 +1398,21 @@ card_reinit:
         // See HCSS 3.4 for the algorithm
 #ifdef SD_4BIT_DATA
 #ifdef EMMC_DEBUG
-        printf("SD: switching to 4-bit data mode\r\n");
+        printf("SD: switching to 4-bit data mode\n");
 #endif
 
         // Disable card interrupt in host
         // Send ACMD6 to change the card's bit mode
         sd_issue_command(ret, SET_BUS_WIDTH, 0x2, 500000);
         if(FAIL(ret))
-            {printf("SD: switch to 4-bit data mode failed\r\n");}
+            {printf("SD: switch to 4-bit data mode failed\n");}
         else
         {
             g_sdhost_storage_hcfg |= SDHCFG_WIDE_EXT_BUS | SDHCFG_WIDE_INT_BUS | SDHCFG_SLOW_CARD;
             sdhost_write(SDHCFG, g_sdhost_storage_hcfg);
 
 #ifdef EMMC_DEBUG
-                printf("SD: switch to 4-bit complete\r\n");
+                printf("SD: switch to 4-bit complete\n");
 #endif
         }
 #endif
@@ -1443,7 +1443,7 @@ card_reinit:
          if (!FAIL(ret) && (switch_status[16] & 0x0f) == 0x1)
          {
 #ifdef EMMC_DEBUG
-            printf("SD: switched to High Speed mode\r\n");
+            printf("SD: switched to High Speed mode\n");
 #endif
             sdhost_switch_clock_rate(SD_CLOCK_HIGH);
          }
@@ -1451,7 +1451,7 @@ card_reinit:
       ret->block_size = 512;
    }
 #ifdef EMMC_DEBUG
-   printf("SD: setup successful (status %"PRIu32")\r\n", status);
+   printf("SD: setup successful (status %"PRIu32")\n", status);
 #endif
 #endif
    // Reset interrupt register
@@ -1492,7 +1492,7 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
     sd_issue_command(edev, SEND_STATUS, edev->card_rca << 16, 500000);
     if(FAIL(edev))
     {
-        printf("SD: ensure_data_mode() error sending CMD13\r\n");
+        printf("SD: ensure_data_mode() error sending CMD13\n");
         edev->card_rca = 0;
         return -1;
     }
@@ -1500,7 +1500,7 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
    uint32_t status = edev->last_r0;
    uint32_t cur_state = (status >> 9) & 0xf;
 #ifdef EMMC_DEBUG
-   printf("status %"PRIu32"\r\n", cur_state);
+   printf("status %"PRIu32"\n", cur_state);
 #endif
    if(cur_state == 3)
    {
@@ -1508,7 +1508,7 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
       sd_issue_command(edev, SELECT_CARD, edev->card_rca << 16, 500000);
       if(FAIL(edev))
       {
-         printf("SD: ensure_data_mode() no response from CMD7 (SELECT_CARD)\r\n");
+         printf("SD: ensure_data_mode() no response from CMD7 (SELECT_CARD)\n");
          edev->card_rca = 0;
          return -1;
       }
@@ -1519,7 +1519,7 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
       sd_issue_command(edev, STOP_TRANSMISSION, 0, 500000);
       if(FAIL(edev))
       {
-         printf("SD: ensure_data_mode() no response from CMD12\r\n");
+         printf("SD: ensure_data_mode() no response from CMD12\n");
          edev->card_rca = 0;
          return -1;
       }
@@ -1544,7 +1544,7 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
         sd_issue_command(edev, SEND_STATUS, edev->card_rca << 16, 500000);
         if(FAIL(edev))
       {
-         printf("SD: ensure_data_mode() no response from CMD13\r\n");
+         printf("SD: ensure_data_mode() no response from CMD13\n");
          edev->card_rca = 0;
          return -1;
       }
@@ -1552,13 +1552,13 @@ static int sd_ensure_data_mode(struct emmc_block_dev *edev)
       cur_state = (status >> 9) & 0xf;
 
 #ifdef EMMC_DEBUG
-      printf("%"PRIu32"\r\n", cur_state);
+      printf("%"PRIu32"\n", cur_state);
 #endif
 
       if(cur_state != 4)
       {
          printf("SD: unable to initialise SD card to "
-               "data mode (state %"PRIu32")\r\n", cur_state);
+               "data mode (state %"PRIu32")\n", cur_state);
          edev->card_rca = 0;
          return -1;
       }
@@ -1578,7 +1578,7 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
    if(buf_size < edev->block_size)
    {
        printf("SD: do_data_command() called with buffer size (%zu) less than "
-            "block size (%zu)\r\n", buf_size, edev->block_size);
+            "block size (%zu)\n", buf_size, edev->block_size);
         return -1;
    }
 
@@ -1586,7 +1586,7 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
    if(buf_size % edev->block_size)
    {
        printf("SD: do_data_command() called with buffer size (%zu) not an "
-            "exact multiple of block size (%zu)\r\n", buf_size, edev->block_size);
+            "exact multiple of block size (%zu)\n", buf_size, edev->block_size);
         return -1;
    }
    edev->buf = buf;
@@ -1625,7 +1625,7 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
                settled answer, and a second attempt just burns another 5 s. */
             if((edev->last_r0 & SD_R1_DATA_ERROR_MASK) != 0u)
             {
-                printf("SD: CMD%u refused by card, status = %08"PRIx32"\r\n",
+                printf("SD: CMD%u refused by card, status = %08"PRIx32"\n",
                        command, edev->last_r0);
                 return -1;
             }
@@ -1637,12 +1637,12 @@ static int sd_do_data_command(struct emmc_block_dev *edev, int is_write, uint8_t
             printf("error = %08"PRIu32".  ", edev->last_error);
             retry_count++;
             if(retry_count < max_retries)
-                {printf("Retrying...\r\n");}
+                {printf("Retrying...\n");}
         }
    }
    if(retry_count == max_retries)
     {
-        printf("Giving up.\r\n");
+        printf("Giving up.\n");
         edev->card_rca = 0;
         edev->in_transfer_state = false;
         return -1;
@@ -1660,14 +1660,14 @@ size_t sd_read(struct block_device *dev, uint8_t *buf, size_t buf_size, uint32_t
         return 0;
 
 #ifdef EMMC_DEBUG
-   printf("SD: read() card ready, reading from block %"PRIx32"\r\n", block_no);
+   printf("SD: read() card ready, reading from block %"PRIx32"\n", block_no);
 #endif
 
     if(sd_do_data_command(edev, 0, buf, buf_size, block_no) < 0)
         return 0;
 
 #ifdef EMMC_DEBUG
-   printf("SD: data read successful\r\n");
+   printf("SD: data read successful\n");
 #endif
 
    return buf_size;
@@ -1682,14 +1682,14 @@ size_t sd_write(struct block_device *dev, const uint8_t *buf, size_t buf_size, u
         return 0;
 
 #ifdef EMMC_DEBUG
-   printf("SD: write() card ready, writing to block %"PRIu32"\r\n", block_no);
+   printf("SD: write() card ready, writing to block %"PRIu32"\n", block_no);
 #endif
 
     if(sd_do_data_command(edev, 1, (uint8_t *)(uintptr_t)buf, buf_size, block_no) < 0)
         return 0;
 
 #ifdef EMMC_DEBUG
-    printf("SD: data write successful\r\n");
+    printf("SD: data write successful\n");
 #endif
 
    return buf_size;

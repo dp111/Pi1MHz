@@ -415,7 +415,7 @@ static void music5000_store_sample(int sl, int sr, int16_t *out)
       M5000_left_error = 0 ;
       M5000_right_error = 0 ;
       if (gain > 1) gain /= 2;
-      LOG_DEBUG("Music 5000 clipped, halving gain (multiplier now %i)\r\n", gain);
+      LOG_DEBUG("Music 5000 clipped, halving gain (multiplier now %i)\n", gain);
    }
 }
 
@@ -501,7 +501,7 @@ static void music5000_rec_flush(void)
          (void)filesystemStoragePath(name, fn, sizeof fn);   /* the card or the USB drive */
          rec_flush_probes++;
          FRESULT result = f_open(&music5000_rec_fp, fn, FA_CREATE_NEW | FA_WRITE);
-         LOG_DEBUG("Music5000 Filename : %s\r\n", fn);
+         LOG_DEBUG("Music5000 Filename : %s\n", fn);
          if (result == FR_OK) {
             strcpy(rec_flush_path, fn);        /* what beeb_path_busy() must refuse */
             rec_flush = REC_FLUSH_WRITE;
@@ -510,7 +510,7 @@ static void music5000_rec_flush(void)
          // Only a name clash is worth another probe; a missing card or a
          // full directory will not change between names.
          if (result != FR_EXIST || rec_flush_probes >= 1000u) {
-            LOG_DEBUG("Music5000 recording stopped as we could not create a file\r\n");
+            LOG_DEBUG("Music5000 recording stopped as we could not create a file\n");
             rec_flush = REC_FLUSH_IDLE;
             break;
          }
@@ -550,7 +550,7 @@ static void music5000_rec_flush(void)
       if (filesystemMounted())
          result = f_open(&music5000_rec_fp, rec_flush_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
       if (result != FR_OK) {
-         LOG_DEBUG("Music5000 recording cut short: %s could not be reopened\r\n", rec_flush_path);
+         LOG_DEBUG("Music5000 recording cut short: %s could not be reopened\n", rec_flush_path);
          rec_flush = REC_FLUSH_IDLE;
          break;
       }
@@ -558,7 +558,7 @@ static void music5000_rec_flush(void)
           f_read(&music5000_rec_fp, hdr, n, &got) != FR_OK || got != n ||
           memcmp(hdr, &Pi1MHz->JIM_ram[M5000_REC_BASE], n) != 0 ||
           f_lseek(&music5000_rec_fp, done) != FR_OK) {
-         LOG_DEBUG("Music5000 recording cut short: %s is not the file being written\r\n", rec_flush_path);
+         LOG_DEBUG("Music5000 recording cut short: %s is not the file being written\n", rec_flush_path);
          f_close(&music5000_rec_fp);
          rec_flush = REC_FLUSH_IDLE;
          break;
@@ -581,7 +581,7 @@ static void rec_flush_orphaned(void)
    if (rec_flush_inits == Pi1MHz_break.inits)
       return;
    if (record || rec_flush != REC_FLUSH_IDLE) {
-      LOG_DEBUG("Music5000 recording cut short: the emulator is no longer running\r\n");
+      LOG_DEBUG("Music5000 recording cut short: the emulator is no longer running\n");
    }
    record = false;
    if (rec_flush == REC_FLUSH_WRITE)
@@ -622,7 +622,7 @@ static void store_samples(int sl, int sr)
       sr = (vr > 32767) ? 32767 : (vr < -32768) ? -32768 : (int)vr;
       if ((Audio_Index+4) >= ram_max)
       {
-         LOG_INFO("Music 5000 recording stopped as we have run out of JIM RAM\r\n");
+         LOG_INFO("Music 5000 recording stopped as we have run out of JIM RAM\n");
          music5000_rec_stop();
          return;
       }

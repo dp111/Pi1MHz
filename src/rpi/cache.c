@@ -290,7 +290,7 @@ void map_4k_page(unsigned int logical, unsigned int physical) {
 void enable_MMU_and_IDCaches(unsigned int num_4k_pages)
 {
 
-  LOG_DEBUG("enable_MMU_and_IDCaches  L1TOP %x L2TOP %x PerTOP %"PRIx32" VCTOP %x\r\n", L1_CACHED_MEM_TOP, L2_CACHED_MEM_TOP, PERIPHERAL_BASE, VC_TOP);
+  LOG_DEBUG("enable_MMU_and_IDCaches  L1TOP %x L2TOP %x PerTOP %"PRIx32" VCTOP %x\n", L1_CACHED_MEM_TOP, L2_CACHED_MEM_TOP, PERIPHERAL_BASE, VC_TOP);
 
   unsigned int base=0;
   unsigned int end;

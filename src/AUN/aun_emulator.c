@@ -136,7 +136,7 @@ static void aun_diag_trace(void *user, uint32_t seq, uint8_t port,
    /* ackfail is the running count of ACK/NAKs the transport could not put
     * on the wire - if it climbs in step with the far end's retransmits,
     * our acknowledgements are being silently dropped. */
-   AUN_LOG("ECONET: rxdata seq %lu port %02X len %lu %s%s ackfail=%lu [%s]\r\n",
+   AUN_LOG("ECONET: rxdata seq %lu port %02X len %lu %s%s ackfail=%lu [%s]\n",
            (unsigned long)seq, port, (unsigned long)len,
            vname[verdict < 5u ? verdict : 4u], same_as_prev ? " =prev" : "",
            (unsigned long)aun.counters.ack_fail, hex);
@@ -467,7 +467,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
          if (aun_parse_machine(config_get("aun_machine"), mid))
             aun_set_machine_id(&aun, mid);
       }
-      AUN_LOG("ECONET: init stn %u.%u irq=%u imm=%u\r\n",
+      AUN_LOG("ECONET: init stn %u.%u irq=%u imm=%u\n",
               aun_net, aun_stn, aun_irq_enabled ? 1u : 0u,
               host_imm ? 1u : 0u);
       /* peer map from Pi1MHz.cfg (entries are also addable later via
@@ -528,7 +528,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       if (aun_debug) {
          char txhex[16 * 3 + 1];
          aun_hex16(txhex, &Pi1MHz->JIM_ram[base_addr + off], len);
-         AUN_LOG("ECONET: tx %u.%u port %02X ctrl %02X len %lu [%s]\r\n",
+         AUN_LOG("ECONET: tx %u.%u port %02X ctrl %02X len %lu [%s]\n",
                  Pi1MHz->JIM_ram[cp + 5], Pi1MHz->JIM_ram[cp + 4],
                  Pi1MHz->JIM_ram[cp + 3], Pi1MHz->JIM_ram[cp + 2],
                  (unsigned long)len, txhex);
@@ -576,7 +576,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
          Pi1MHz->JIM_ram[cp + 4] = info.src_stn;
          Pi1MHz->JIM_ram[cp + 5] = info.src_net;
          jim_write32(cp + 12, info.len);
-         AUN_LOG("ECONET: rx_poll h%u port %02X ctrl %02X src %u.%u len %lu\r\n",
+         AUN_LOG("ECONET: rx_poll h%u port %02X ctrl %02X src %u.%u len %lu\n",
                  rxh, info.port, info.ctrl, info.src_net, info.src_stn,
                  (unsigned long)info.len);
       }
@@ -621,7 +621,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
    }
 
    case AUN_CMD_RX_DONE:
-      AUN_LOG("ECONET: rx_done h%u %s\r\n", Pi1MHz->JIM_ram[cp + 1],
+      AUN_LOG("ECONET: rx_done h%u %s\n", Pi1MHz->JIM_ram[cp + 1],
               Pi1MHz->JIM_ram[cp + 2] == 0 ? "ack" : "rej");      /* host has copied the frame: re-arm.
                                  * +2 verdict: 0 = delivered (the engine
                                  * ACKs the sender now - ACK-on-collect),

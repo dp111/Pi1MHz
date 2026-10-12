@@ -96,7 +96,7 @@ static void on_data(const void *data, unsigned int size)
         memcpy(sm.reply, data, sm.reply_size);
         sm.reply_ready = true;
     } else {
-        LOG_DEBUG("vcsm: unmatched message trans=%"PRIu32"\r\n", w[0]);
+        LOG_DEBUG("vcsm: unmatched message trans=%"PRIu32"\n", w[0]);
     }
 }
 
@@ -133,7 +133,7 @@ static bool sendwait(vcsm_msg_hdr_t *msg, uint32_t size,
     while (!sm.reply_ready) {
         vchiq_poll();
         if ((RPI_GetSystemTime() - start) > REPLY_TIMEOUT_US) {
-            LOG_INFO("vcsm: reply timeout (type %"PRIu32")\r\n", msg->type);
+            LOG_INFO("vcsm: reply timeout (type %"PRIu32")\n", msg->type);
             sm.wait_trans = 0;
             sm.dead = true;
             return false;
@@ -169,7 +169,7 @@ bool vcsm_init(void)
     ver.version = VC_SM_PROTOCOL_VERSION;
     sendwait(&ver.hdr, sizeof(ver), NULL, 0);
 
-    LOG_DEBUG("vcsm: service open\r\n");
+    LOG_DEBUG("vcsm: service open\n");
     return true;
 }
 
@@ -197,11 +197,11 @@ uint32_t vcsm_import(uint32_t busaddr, uint32_t size, const char *name)
         return 0;
 
     if (!reply.res_handle) {
-        LOG_INFO("vcsm: import of %08"PRIx32" (%"PRIu32" bytes) refused\r\n",
+        LOG_INFO("vcsm: import of %08"PRIx32" (%"PRIu32" bytes) refused\n",
                  busaddr, size);
         return 0;
     }
-    LOG_DEBUG("vcsm: imported %08"PRIx32" -> handle %08"PRIx32"\r\n",
+    LOG_DEBUG("vcsm: imported %08"PRIx32" -> handle %08"PRIx32"\n",
               busaddr, reply.res_handle);
     return reply.res_handle;
 }

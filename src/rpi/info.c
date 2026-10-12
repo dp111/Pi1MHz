@@ -22,7 +22,7 @@ static void print_tag_value(const char *name, const rpi_mailbox_property_t *buf,
          }
       }
    }
-   LOG_INFO("\r\n");
+   LOG_INFO("\n");
 }
 
 /* 0 while unknown.  Kept once the VideoCore has answered - it never changes -
@@ -323,7 +323,7 @@ void dump_useful_info(void) {
 
    for (uint32_t i = MIN_CLK_ID; i <= MAX_CLK_ID; i++) {
       const clock_info_t *clk_info = get_clock_rates(i);
-      LOG_INFO("%15s_FREQ : %10.3f MHz %10.3f MHz %10.3f MHz\r\n",
+      LOG_INFO("%15s_FREQ : %10.3f MHz %10.3f MHz %10.3f MHz\n",
              clock_names[i],
              (double) (clk_info->rate)  / 1.0e6,
              (double) (clk_info->min_rate)  / 1.0e6,
@@ -331,12 +331,12 @@ void dump_useful_info(void) {
          );
    }
 
-   LOG_INFO("           CORE TEMP : %6.2f °C\r\n", (double)get_temp());
-   LOG_INFO("        CORE VOLTAGE : %6.2f V\r\n", (double)get_voltage(COMPONENT_CORE));
-   LOG_INFO("     SDRAM_C VOLTAGE : %6.2f V\r\n", (double)get_voltage(COMPONENT_SDRAM_C));
-   LOG_INFO("     SDRAM_P VOLTAGE : %6.2f V\r\n", (double)get_voltage(COMPONENT_SDRAM_P));
-   LOG_INFO("     SDRAM_I VOLTAGE : %6.2f V\r\n", (double)get_voltage(COMPONENT_SDRAM_I));
+   LOG_INFO("           CORE TEMP : %6.2f °C\n", (double)get_temp());
+   LOG_INFO("        CORE VOLTAGE : %6.2f V\n", (double)get_voltage(COMPONENT_CORE));
+   LOG_INFO("     SDRAM_C VOLTAGE : %6.2f V\n", (double)get_voltage(COMPONENT_SDRAM_C));
+   LOG_INFO("     SDRAM_P VOLTAGE : %6.2f V\n", (double)get_voltage(COMPONENT_SDRAM_P));
+   LOG_INFO("     SDRAM_I VOLTAGE : %6.2f V\n", (double)get_voltage(COMPONENT_SDRAM_I));
 
-   LOG_INFO("            CMD_LINE : %s\r\n", get_cmdline());
+   LOG_INFO("            CMD_LINE : %s\n", get_cmdline());
 
 }

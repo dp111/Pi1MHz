@@ -207,14 +207,14 @@ bool hdmi_audio_start(uint32_t rate)
        HDMI rather than DVI - with an EDID that claims audio, or
        hdmi_drive=2. Without packets there is no audio path at all. */
     if (!(HDMI_RAM_PACKET_CONFIG & RAM_PACKET_ENABLE)) {
-        LOG_INFO("hdmi audio: display is DVI / no HDMI packets (set hdmi_drive=2)\r\n");
+        LOG_INFO("hdmi audio: display is DVI / no HDMI packets (set hdmi_drive=2)\n");
         return false;
     }
 
     hd.hsm_hz = hsm_clock_hz();
     hd.pixel_hz = hdmi_pixel_clock_hz();
     if (!hd.hsm_hz || !hd.pixel_hz) {
-        LOG_INFO("hdmi audio: cannot read clocks (hsm %"PRIu32" pixel %"PRIu32")\r\n",
+        LOG_INFO("hdmi audio: cannot read clocks (hsm %"PRIu32" pixel %"PRIu32")\n",
                  hd.hsm_hz, hd.pixel_hz);
         return false;
     }
@@ -244,7 +244,7 @@ bool hdmi_audio_start(uint32_t rate)
         *writes[i].reg = writes[i].val;
 
     if (!set_audio_infoframe())
-        LOG_INFO("hdmi audio: audio infoframe not accepted\r\n");
+        LOG_INFO("hdmi audio: audio infoframe not accepted\n");
 
     /* IEC958 channel status: consumer, PCM, copy permitted, no
        pre-emphasis; general category; source 0; rate; 24-bit word */
@@ -261,7 +261,7 @@ bool hdmi_audio_start(uint32_t rate)
 
     hd.rate = rate;
     hd.running = true;
-    LOG_INFO("hdmi audio: %"PRIu32" Hz, hsm %"PRIu32" pixel %"PRIu32" smp %"PRIu32"/%"PRIu32" n %"PRIu32" cts %"PRIu32"\r\n",
+    LOG_INFO("hdmi audio: %"PRIu32" Hz, hsm %"PRIu32" pixel %"PRIu32" smp %"PRIu32"/%"PRIu32" n %"PRIu32" cts %"PRIu32"\n",
              rate, hd.hsm_hz, hd.pixel_hz, n, d, cts_n, cts);
     return true;
 }
