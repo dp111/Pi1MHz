@@ -748,6 +748,7 @@ static uint8_t scsiCommandFormat(void)
    // Format unit command parameters:
    uint8_t formatOptions;
    uint8_t dataPattern;
+   uint16_t interleave;
 
    if (debugFlag_scsiCommands) {
       debugString_P(PSTR("SCSI Commands: FORMAT command (0x04) received\r\n"));
@@ -783,7 +784,7 @@ static uint8_t scsiCommandFormat(void)
    // Interpret command parameters
    formatOptions = (commandDataBlock.data[1] & 0x1F);
    dataPattern = commandDataBlock.data[2]; // Default fill pattern is 0x6C (108)
-   //interleave = (commandDataBlock.data[3] << 8) + commandDataBlock.data[4];
+   interleave = (uint16_t)((commandDataBlock.data[3] << 8) + commandDataBlock.data[4]);
 
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Format option = "), formatOptions, true);
 
@@ -848,9 +849,14 @@ static uint8_t scsiCommandFormat(void)
    // the command is dead - abandon it rather than format the image
    if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 
+   // The interleave decides the sectors per track, as on the ACB-4000:
+   // 32 for 1:1, otherwise 33 (filesystemSetLunSectorsPerTrack)
+   if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Interleave = "), interleave, true);
+
    // Create/recreate the LUN data file according to the drive descriptor and fill
    // with the required data pattern byte:
-   if (!filesystemFormatLun(commandDataBlock.targetLUN, dataPattern)) {
+   if (!filesystemSetLunSectorsPerTrack(commandDataBlock.targetLUN, interleave == 1u ? 32u : 33u)
+       || !filesystemFormatLun(commandDataBlock.targetLUN, dataPattern)) {
       // Formatting failed...
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Format failed\r\n"));
 

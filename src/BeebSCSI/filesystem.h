@@ -175,6 +175,7 @@ bool filesystemCreateLunImage(uint8_t lunNumber);
 bool filesystemCreateLunDescriptor(uint8_t lunNumber);
 bool filesystemReadLunDescriptor(uint8_t lunNumber);
 bool filesystemWriteAttributes(uint8_t lunNumber);
+bool filesystemSetLunSectorsPerTrack(uint8_t lunNumber, uint16_t sectorsPerTrack);
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern);
 
 // Host-side (MTP / WebDAV) write interlock -- see filesystem.c

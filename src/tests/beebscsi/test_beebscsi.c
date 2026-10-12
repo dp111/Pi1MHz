@@ -679,6 +679,65 @@ static void test_reset_abandons(void)
    stop_all();
 }
 
+/* S9: FORMAT takes the sectors per track from the interleave, as the
+   ACB-4000 does (issue #2): 32 for 1:1, otherwise 33, kept in the LUN's
+   .cfg.  A LUN set to any other value keeps it. */
+static void put_cfg_spt(const char *path, unsigned int cylinders, unsigned int heads,
+                        unsigned int spt)
+{
+   char cfg[160];
+   int n = snprintf(cfg, sizeof cfg,
+                    "ModePage0=01%04X%02X008000800001\n"
+                    "ModePage3=03150132013200060006%04X0100000800000000800000\n",
+                    cylinders, heads, spt);
+   put_file(path, cfg, (UINT)n);
+}
+
+static void format_with(unsigned interleave, int *status, long *bytes, uint32_t *spt)
+{
+   const uint8_t fm[6] = { 0x04, 0, 0x6C, (uint8_t)(interleave >> 8), (uint8_t)interleave, 0 };
+   *status = run_cmd(1, fm, 6, NULL, 0);
+   *bytes = size_of("/BeebSCSI6/scsi0.dat");
+   stop_all();                          /* the next start reads the saved .cfg */
+   *spt = filesystemSetLunStatus(0, true) ? filesystemGetLunSPTSize(0) : 0u;
+   stop_all();
+}
+
+static void test_format_interleave(void)
+{
+   static char why[200];
+   int st; long got; uint32_t spt;
+   f_mkdir("/BeebSCSI6");
+   put_cfg_spt("/BeebSCSI6/scsi0.cfg", 10, 2, 33);
+   put_file("/BeebSCSI6/scsi0.dat", "old image", 9);
+   stop_all();
+   filesystemSetLunDirectory(1, 6);
+
+   format_with(1, &st, &got, &spt);
+   snprintf(why, sizeof why, "status %d, image %ld bytes (want %u), now %lu per track",
+            st, got, 10u * 2u * 32u * 256u, (unsigned long)spt);
+   check("S9 FORMAT with interleave 1 gives 32 sectors per track, kept in the .cfg",
+         st == 0 && got == 10L * 2 * 32 * 256 && spt == 32u, why);
+
+   format_with(2, &st, &got, &spt);
+   snprintf(why, sizeof why, "status %d, image %ld bytes (want %u), now %lu per track",
+            st, got, 10u * 2u * 33u * 256u, (unsigned long)spt);
+   check("S9 ... and with interleave 2, 33 again",
+         st == 0 && got == 10L * 2 * 33 * 256 && spt == 33u, why);
+
+   format_with(0, &st, &got, &spt);
+   check("S9 ... interleave 0 is not 1: 33", st == 0 && spt == 33u, "changed");
+
+   put_cfg_spt("/BeebSCSI6/scsi0.cfg", 10, 2, 17);
+   format_with(1, &st, &got, &spt);
+   snprintf(why, sizeof why, "status %d, image %ld bytes (want %u), now %lu per track",
+            st, got, 10u * 2u * 17u * 256u, (unsigned long)spt);
+   check("S9 ... a LUN set to another value (17) keeps it",
+         st == 0 && got == 10L * 2 * 17 * 256 && spt == 17u, why);
+
+   filesystemSetLunDirectory(1, 0);
+}
+
 /* S6: an ADFS image marked read-only starts, and writes to it are
    swallowed and reported as done. */
 static void test_readonly_image(void)
@@ -1019,6 +1078,7 @@ int main(int argc, char **argv)
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
    test_reset_abandons();
    test_readonly_image();
+   test_format_interleave();
    test_stopped_geometry();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */

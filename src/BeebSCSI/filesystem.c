@@ -1502,6 +1502,38 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
    return false;
 }
 
+// FORMAT on the ACB-4000 sets the sectors per track from the interleave it is
+// given: 32 for an interleave of 1, otherwise 33 (ACB-4000 manual p. 2-5).
+// Called before filesystemFormatLun, which sizes the image from the .cfg, so
+// the new value goes into the LUN's .cfg (ModePage3) first.  Only a LUN at one
+// of those two values follows the interleave: any other value set in its .cfg
+// is left alone, as is a write-protected or read-only image.  Returns false
+// only if the .cfg could not be written.
+bool filesystemSetLunSectorsPerTrack(uint8_t lunNumber, uint16_t sectorsPerTrack)
+{
+   bool ok = true;
+
+   if (config_beeb_write_protected() || lunNumber > 7)
+      return true;
+   // Start the LUN for its current .cfg; if it cannot start, FORMAT says so
+   if (!filesystemSetLunStatus(lunNumber, true))
+      return true;
+
+   char *page3 = filesystemState.keyvalues[lunNumber][MODEPAGE3].v.string;
+   uint16_t now = filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack;
+   if (!filesystemState.fsLunReadOnly[lunNumber] && page3 != NULL
+       && filesystemState.keyvalues[lunNumber][MODEPAGE3].length >= 12
+       && (now == 32u || now == 33u) && now != sectorsPerTrack)
+   {
+      page3[10] = (char)(sectorsPerTrack >> 8);
+      page3[11] = (char)sectorsPerTrack;
+      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = sectorsPerTrack;
+      ok = filesystemWriteAttributes(lunNumber);
+   }
+   filesystemSetLunStatus(lunNumber, false);
+   return ok;
+}
+
 // Function to format a LUN image
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 {

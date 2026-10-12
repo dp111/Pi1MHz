@@ -93,6 +93,13 @@ meanings:
 You can add or remove `ModePageNN` lines; they must keep the
 `ModePageNN` naming so Pi1MHz (and BeebEm) pick them up.
 
+Bytes 10-11 of `ModePage3` are the **sectors per track** (33, `0021`, by
+default). As on the Adaptec ACB-4000, a FORMAT with an interleave of 1 makes
+it 32 and any other interleave 33, and the new value is saved here, so the
+disc keeps it. SuperForm's 2:1 interleave keeps 33. At 32 sectors per track
+the largest ADFS disc (1024 cylinders by 64 heads) uses every sector ADFS can
+address. A value other than 32 or 33 set here is left alone by FORMAT.
+
 ### VFS / LaserDisc (Domesday)
 
 | Key | Type | Range | Meaning |
