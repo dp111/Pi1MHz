@@ -145,9 +145,14 @@ static char g_wifi_lwip_dhcp_ntp[IP4ADDR_STRLEN_MAX];
 
 /* Option 100 likewise.  lwIP offers an unknown option to
    wifi_lwip_dhcp_option() while it parses a reply, before it knows whether
-   the reply binds a lease, so the ACK's value waits in _pending and becomes
-   the lease's in dhcp_set_ntp_servers(), which lwIP calls on every bind
-   (hence LWIP_DHCP_GET_NTP_SRV above must stay on). */
+   the reply binds a lease, so the value waits in _pending and becomes the
+   lease's in dhcp_set_ntp_servers(), which lwIP calls for every ACK it acts
+   on, straight after parsing it (hence LWIP_DHCP_GET_NTP_SRV above must stay
+   on).  _pending is cleared as each received frame goes into lwIP
+   (wifi_lwip_deliver_rx_frame), so only the frame being handled can supply
+   it: never an OFFER, nor an ACK that was parsed and then not acted on.
+   The message type is not checked here, because a server may send option
+   100 before option 53 and lwIP then reports the type as 0. */
 #if !LWIP_DHCP_GET_NTP_SRV
 #error "wifi_lwip.c takes the lease's time zone in dhcp_set_ntp_servers()"
 #endif
@@ -157,7 +162,8 @@ static char g_wifi_lwip_dhcp_tz_pending[sizeof g_wifi_lwip_dhcp_tz];
 void wifi_lwip_dhcp_option(u8_t msg_type, u8_t option, u8_t len,
                            struct pbuf *p, u16_t offset)
 {
-   if (option != 100u || msg_type != DHCP_ACK)
+   (void)msg_type;
+   if (option != 100u)
       return;
    g_wifi_lwip_dhcp_tz_pending[0] = '\0';
    if (len > 0u && len < sizeof g_wifi_lwip_dhcp_tz_pending
@@ -1000,6 +1006,7 @@ static bool wifi_lwip_deliver_rx_frame(const uint8_t *frame,
       return true;
    }
 
+   g_wifi_lwip_dhcp_tz_pending[0] = '\0';   /* see wifi_lwip_dhcp_option() */
    if (g_wifi_lwip_context.netif.input(packet, &g_wifi_lwip_context.netif) != ERR_OK)
       pbuf_free(packet);
    return true;

@@ -132,6 +132,8 @@ int main(void)
             "d.m.yyyy without leading zeros");
       CHECK(wifi_time_shift_parse("04.2020", &s) && s.day == 0u && s.month == 4u && s.year == 2020u,
             "mm.yyyy");
+      CHECK(rejected("s4294967300") && rejected("d9999999999") && rejected("s9999999999"),
+            "a number too big for 32 bits is rejected, not wrapped");
       CHECK(rejected("3600") && rejected("2020") && rejected("1") && rejected("+2020") && rejected("-1"),
             "plain digits are refused: every number names its unit");
       CHECK(rejected("x1") && rejected("h") && rejected("+") && rejected("-") && rejected("h2h") && rejected("h2x")

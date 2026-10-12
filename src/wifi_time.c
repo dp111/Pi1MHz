@@ -79,8 +79,9 @@ static bool parse_number(const char **text, uint32_t max, uint32_t *value,
    uint32_t n = 0u, v = 0u;
    while (**text >= '0' && **text <= '9') {
       if (++n > 10u) return false;
-      v = v * 10u + (uint32_t)(**text - '0');
-      if (v > max) return false;
+      uint64_t next = (uint64_t)v * 10u + (uint32_t)(**text - '0');
+      if (next > max) return false;      /* before it can wrap */
+      v = (uint32_t)next;
       (*text)++;
    }
    *value = v;

@@ -801,14 +801,17 @@ void wifi_service_init(uint8_t instance, uint8_t address)
       service_initialised = true;
       time_utc_offset_minutes = utc_offset_parse(
          config_get("wifi_service_utc_offset_minutes"));
-      if (!wifi_time_shift_parse(config_get("ntp_offset"), &time_shift))
-         LOG_INFO("WiFi: ntp_offset not understood, ignored\r\n");
-      {
+      if (!wifi_time_shift_parse(config_get("ntp_offset"), &time_shift)) {
+         LOG_DEBUG("WiFi: ntp_offset not understood, ignored\n");
+      }
+#ifdef DEBUG
+      {  /* /status says so too; this only tells the serial log */
          wifi_time_zone_t zone;
          const char *tz = config_get("ntp_timezone");
          if (tz != NULL && tz[0] != '\0' && !wifi_time_zone_parse(tz, &zone))
-            LOG_INFO("WiFi: ntp_timezone not understood, ignored\r\n");
+            LOG_DEBUG("WiFi: ntp_timezone not understood, ignored\n");
       }
+#endif
    }
    /* Re-read the saved profile on every host reset, but credentials_load
     * preserves an already-running association when the profile is unchanged. */
