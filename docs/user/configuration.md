@@ -142,7 +142,7 @@ set.
 |---|---|---|
 | `wifi_ssid` | (none) | Name of the network to join. **Required** for any WiFi function. (`SSID` is accepted as an older alias.) |
 | `wifi_password` | (none) | WPA2 passphrase, 8-63 characters. (Alias: `SSIDpassword`.) |
-| `wifi_hostname` | `Pi1MHz` | Network name, one label (not a full domain name). Lets you browse to `http://Pi1MHz/` (Windows) or `http://Pi1MHz.local/` (Mac/Linux/iOS). |
+| `wifi_hostname` | `Pi1MHz` | Network name, one label (not a full domain name). Lets you browse to `http://Pi1MHz/` (Windows) or `http://Pi1MHz.local/` (Mac/Linux/iOS), and is shown at the top left of the web interface. |
 | `wifi_country` | `GB` | Two-letter ISO country code for radio regulations, e.g. `US`, `DE`. Set it to where the machine actually is. |
 | `wifi_ip` | `dhcp` | `dhcp` to get an address from your router (the default), or a literal address such as `192.168.1.40` for a fixed one. |
 | `static_ip` | (none) | Alternative way to give a fixed address: set this and leave `wifi_ip` unset. |

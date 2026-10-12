@@ -53,7 +53,9 @@ network:
   address directly.
 
 Change the name with `wifi_hostname=` if you have more than one, or if
-the name lookup is unreliable on your network.
+the name lookup is unreliable on your network. The name is shown at the
+top left of every page of the web interface, so several Pi1MHz on one
+network can be told apart.
 
 Give `wifi_hostname` the short name only (`beeb`), never a full
 domain name (`beeb.example.net`). It is the name the Pi announces

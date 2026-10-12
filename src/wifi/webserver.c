@@ -1977,7 +1977,12 @@ static void page_open(ws_strbuf_t *b, const char *title)
       ".err{color:#ff6b5e}"
       ".muted{color:#9a9aa5}"
       "}"
-      "</style></head><body><header>Pi1MHz"
+      "</style></head><body><header>");
+   /* The configured network name, so several Pi1MHz on one network can be
+      told apart; wifi.c defaults it to "Pi1MHz". */
+   sb_html(b, wifi_get_config()->hostname[0] != '\0'
+              ? wifi_get_config()->hostname : "Pi1MHz");
+   sb_puts(b,
       "<a href=\"/\">Home</a><a href=\"/files/\">Files</a>"
       "<a href=\"/framebuffer\">Screen</a><a href=\"/status\">Status</a>"
       "</header><main>");
