@@ -181,7 +181,7 @@ def build_filter(args, par, crop=None):
 
 
 def encode_video(args, par, h264_path):
-    src_w, src_h, sar = probe_source(args.input)
+    src_w, src_h, sar = probe_source(args.probe_from or args.input)
     crop = active_crop(args, src_w, src_h, sar)
     if crop:
         print(f"source {src_w}x{src_h}: cropping {crop[1]} padding samples each "
@@ -190,7 +190,11 @@ def encode_video(args, par, h264_path):
         print(f"source {src_w}x{src_h}: no crop (scaling the full width)")
     x264 = (
         "keyint=1:min-keyint=1:scenecut=0:repeat-headers=1:"
-        "bframes=0:ref=1:rc-lookahead=0:threads=auto"
+        "bframes=0:ref=1:rc-lookahead=0:threads=auto:"
+        # PAL is BT.601 (625-line) limited range; tag the VUI so the decoder
+        # never has to guess the YUV->RGB matrix. Set here rather than with
+        # ffmpeg's -color_* options, which lose primaries/transfer via libx264
+        "colorprim=bt470bg:transfer=bt470bg:colormatrix=bt470bg:range=tv"
     )
     # -ss BEFORE -i: input seeking, so ffmpeg jumps rather than decoding
     # (and, over a network drive, reading) everything before the start
@@ -346,6 +350,10 @@ def main():
                    help="the decode's .tbc.json, for the active window that "
                         "sets the crop (default: <input>.tbc.json if present, "
                         "else derived from the source's declared SAR)")
+    p.add_argument("--probe-from", default=None,
+                   help="read the source geometry (size, aspect) from this file "
+                        "instead of the input, so the input can be a pipe "
+                        "(e.g. stillweave.py's per-frame woven/deinterlaced stream)")
     p.add_argument("--no-crop", action="store_true",
                    help="scale the source's full width, padding included "
                         "(the pre-2026-09-07 behaviour, 0.65%% narrow)")
