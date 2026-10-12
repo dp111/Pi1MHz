@@ -95,6 +95,10 @@ to use another domain, set it yourself:
 wifi_domain=home.arpa
 ```
 
+If `nas.<domain>` is not found, `nas` is then looked up as written, so
+names your DNS server knows without the domain still work. `localhost`
+never has the domain added.
+
 A name with a dot in it (`pool.ntp.org`) is looked up exactly as written;
 end a name with a dot to say it is complete. With no domain at all a
 one-label name is looked up as written.

@@ -201,6 +201,18 @@ err_t dns_gethostbyname(const char *name, ip_addr_t *addr, dns_found_callback cb
    return ERR_INPROGRESS;
 }
 
+/* records what net_dns_lookup hands back to its caller */
+static struct { int calls; bool ok; ip_addr_t ip; char name[300]; } g_dnsrec;
+static void dnsrec_reset(void) { memset(&g_dnsrec, 0, sizeof g_dnsrec); }
+static void dnsrec_cb(const char *name, const ip_addr_t *ipaddr, void *arg)
+{
+   (void)arg;
+   g_dnsrec.calls++;
+   g_dnsrec.ok = ipaddr != NULL;
+   if (ipaddr) g_dnsrec.ip = *ipaddr;
+   snprintf(g_dnsrec.name, sizeof g_dnsrec.name, "%s", name);
+}
+
 /* pbuf stub */
 static int g_pbuf_live;
 static struct pbuf *make_pbuf(const void *data, u16_t len)
@@ -1973,6 +1985,73 @@ int main(void)
       (void)issue(NET_CMD_DNS, 0);
       CHECK(g_dns_name != NULL && strcmp(g_dns_name, "google.com") == 0,
             "dns: a dotted name is not changed");
+
+      /* net_dns_lookup: the caller's callback gets the name it asked for, a
+         failed "<name>.<domain>" is retried as typed, localhost is left
+         alone, and a full slot table falls back to the name as typed. */
+      {
+         ip_addr_t ip, out_ip;
+         IP_ADDR4(&ip, 10, 9, 8, 7);
+         g_dns_sync = 0; g_dhcp_domain = "example.net"; g_wifi_domain = NULL;
+
+         dnsrec_reset();
+         CHECK(net_dns_lookup("nas", &out_ip, dnsrec_cb, &g_dnsrec) == ERR_INPROGRESS
+               && strcmp(g_dns_name, "nas.example.net") == 0, "dns lookup: asks for the full name");
+         g_dns_cb(g_dns_name, &ip, g_dns_arg);
+         CHECK(g_dnsrec.calls == 1 && strcmp(g_dnsrec.name, "nas") == 0 && g_dnsrec.ok
+               && g_dnsrec.ip.addr == ip.addr,
+               "dns lookup: the answer comes back under the name asked for");
+
+         dnsrec_reset();
+         (void)net_dns_lookup("nas", &out_ip, dnsrec_cb, &g_dnsrec);
+         g_dns_cb(g_dns_name, NULL, g_dns_arg);          /* nas.example.net: NXDOMAIN */
+         CHECK(g_dnsrec.calls == 0 && strcmp(g_dns_name, "nas") == 0,
+               "dns lookup: a failed full name is retried as typed");
+         g_dns_cb(g_dns_name, &ip, g_dns_arg);
+         CHECK(g_dnsrec.calls == 1 && g_dnsrec.ok && strcmp(g_dnsrec.name, "nas") == 0,
+               "dns lookup: and the retry's answer is passed on, once");
+
+         dnsrec_reset();
+         (void)net_dns_lookup("nas", &out_ip, dnsrec_cb, &g_dnsrec);
+         g_dns_cb(g_dns_name, NULL, g_dns_arg);
+         g_dns_cb(g_dns_name, NULL, g_dns_arg);          /* "nas": no answer either */
+         CHECK(g_dnsrec.calls == 1 && !g_dnsrec.ok && strcmp(g_dnsrec.name, "nas") == 0,
+               "dns lookup: both failing reports one failure");
+
+         dnsrec_reset();
+         (void)net_dns_lookup("localhost", &out_ip, dnsrec_cb, &g_dnsrec);
+         CHECK(strcmp(g_dns_name, "localhost") == 0 && g_dns_cb == dnsrec_cb,
+               "dns lookup: localhost is not given the domain");
+
+         /* every slot busy: the fifth goes out as typed, straight to lwIP */
+         {
+            dns_found_callback cb[4]; void *arg[4];
+            for (int k = 0; k < 4; k++) {
+               (void)net_dns_lookup("nas", &out_ip, dnsrec_cb, &g_dnsrec);
+               cb[k] = g_dns_cb; arg[k] = g_dns_arg;
+            }
+            (void)net_dns_lookup("nas", &out_ip, dnsrec_cb, &g_dnsrec);
+            CHECK(strcmp(g_dns_name, "nas") == 0 && g_dns_cb == dnsrec_cb,
+                  "dns lookup: with every slot busy the name goes out as typed");
+            dnsrec_reset();
+            for (int k = 0; k < 4; k++) cb[k]("nas.example.net", &ip, arg[k]);
+            CHECK(g_dnsrec.calls == 4, "dns lookup: and the four busy ones still answer");
+            (void)net_dns_lookup("nas", &out_ip, dnsrec_cb, &g_dnsrec);
+            CHECK(strcmp(g_dns_name, "nas.example.net") == 0,
+                  "dns lookup: their slots are free again");
+            g_dns_cb(g_dns_name, &ip, g_dns_arg);
+         }
+
+         /* answered at once (lwIP's cache): no callback, the slot is free */
+         g_dns_sync = 1; IP_ADDR4(&g_dns_result, 10, 0, 0, 2); dnsrec_reset();
+         for (int k = 0; k < 5; k++)
+            CHECK(net_dns_lookup("nas", &out_ip, dnsrec_cb, &g_dnsrec) == ERR_OK && g_dnsrec.calls == 0,
+                  "dns lookup: a cached answer returns at once and frees its slot");
+         g_dns_sync = 0;
+         (void)net_dns_lookup("nas", &out_ip, dnsrec_cb, &g_dnsrec);
+         CHECK(strcmp(g_dns_name, "nas.example.net") == 0, "dns lookup: no slot leaked by cached answers");
+         g_dns_cb(g_dns_name, &ip, g_dns_arg);
+      }
       g_dhcp_domain = NULL; g_wifi_domain = NULL;
    }
 

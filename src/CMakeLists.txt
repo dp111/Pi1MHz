@@ -381,6 +381,7 @@ set(services_emulator_files
    services_emulator.c
    fat_service.c
    net_service.c
+   net_dns.c
    net_service.h
    net_tnfs.c
    fujibus_service.c
