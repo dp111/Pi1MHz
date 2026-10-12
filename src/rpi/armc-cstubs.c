@@ -210,9 +210,18 @@ int wait(const int *status __attribute__((unused)))
   return -1;
 }
 
+/* The serial line is a raw terminal and most of the firmware's messages end
+   in a bare "\n", which such a terminal shows as a line feed with no return:
+   every line starts under the end of the one before.  Send the carriage
+   return too, unless the message already put one in front of it. */
 void outbyte(char b)
 {
+  static char previous;
+
+  if (b == '\n' && previous != '\r')
+    RPI_AuxMiniUartWrite('\r');
   RPI_AuxMiniUartWrite(b);
+  previous = b;
 }
 // The following functions are marked __attribute__((used)) so that LTO
 // works correctly
