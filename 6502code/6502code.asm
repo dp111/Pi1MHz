@@ -285,224 +285,15 @@ NEXT
 
 ENDMACRO
 
-MACRO LOADFILETOSWR filename
-{
-    LDA     &F4
-    PHA
-    LDX     #15
-.romlp
-    stx     &f4
-    stx     &fe30
-    LDA     #'.'
-    JSR     OSWRCH
-;; Step 1: Test if candidate slot already contains a rom image
-;; so we don't clobber any pre-existing ROM images
-    ldy     &8007
-    lda     &8000, Y
-    bne     testram
-    lda     &8001, Y
-    cmp     #'('
-    bne     testram
-    lda     &8002, Y
-    cmp     #'C'
-    bne     testram
-    lda     &8003, Y
-    cmp     #')'
-    ; bne     testram
-
-;; Step 2: Test if that pre-existing rom image is SWMMFS
-;; so we reuse the same slot again and again
-     ;   lda     &b5fe
-     ;   cmp     #MAGIC0
-     ;   bne     romnxt
-     ;   lda     &b5ff
-     ;   cmp     #MAGIC1
-     ;   bne     romnxt
-    beq     romnxt
-;; Step 3: Check if slot is RAM
-.testram
-    lda     &8006
-    eor     #&FF
-    sta     &8006
-    cmp     &8006
-    beq     SWRfound
-.romnxt
-    dex
-    bpl     romlp
-
-; no SWR found
-.noswr
-    PLA
-    sta    &f4
-    sta    &fe30
-   ; should really put the error on the stack
-   ; and fake RTS on the stack
-   ; LDX     #255
-   ; STX     &FC88   ; Restore JIM
-    BRK
-    EQUB 255: EQUS "No SWR":EQUB 0
-
-.fileerror
-
-    PLA
-    sta    &f4
-    sta    &fe30
-   ; should really put the error on the stack
-   ; and fake RTS on the stack
-   ; LDX     #255
-   ; STX     &FC88   ; Restore JIM
-    BRK
-    EQUB &D6: EQUS "No ROM":EQUB 0
-
-.SWRfound
-
-    ; fopen
-    LDY #0   : STY discaccess
-    DEY      : STY discaccess+1
-               STY discaccess+2
-
-.fopenloop
-    INY
-    LDA fopenstring, Y: STA discaccess+3
-    BPL fopenloop
-    STA discaccess+4
-
-.fopencheckloop
-    LDA discaccess+4
-    BMI fopencheckloop
-    BNE fileerror ; file not found
-
-    LDY #0   : STY discaccess
-
-.freadsetuploop
-    LDA freaddata, Y: STA discaccess+3
-    INY
-    CMP #255
-    BNE freadsetuploop
-    STA discaccess+4
-
-.freadcheckloop
-    LDA discaccess+4
-    BEQ readdone
-    BMI freadcheckloop
-    CMP #20
-    BNE fileerror ; file open error
-
-.readdone
-    LDY #0   : STY discaccess
-             : STY discaccess+1
-    LDA #&F0 : STA discaccess+2
-
-             : STY swrpointer+1
-    LDA #&80 : STA swrpointer+2
-
-    LDX #&C0-&80
-.copyswrloop
-    LDA discaccess+3
-.swrpointer
-    STA &8000,Y
-    INY
-    BNE copyswrloop
-
-    INC swrpointer+2
-    DEX
-    BNE copyswrloop;
-    ; Y is zero
-           : STY discaccess
-    DEY    : STY discaccess+1
-             STY discaccess+2
-
-    LDY #fclose-&FD01
-    LDA #0
-    BEQ pageswitch
-
-.fopenstring
-    EQUB 2, 0, 1 : EQUS filename : EQUB 0, 255
-
-.freaddata
-    EQUB 4, 0, &40, 0
-    EQUB 0, 0, &F0, 0
-    EQUB 0, 0, 0, 0
-    EQUB &FF
-
-    PAGESWITCHORG
-.pageswitch
-    PAGESWITCH
-}
-ENDMACRO
-
-; As LOADFILETOSWR, but the file is chosen when it runs: the letter after
-; "prefix" is patched to 'M' on a Master family machine (OSBYTE 0 with X=1
-; gives 3 or more) and left 'B' otherwise.  For ROMs built separately for the
-; B and the Master (fn-rom: workspace addresses and 65C02 code are fixed at
-; build time), so one helper serves both.  The patch lasts only for this
-; run: the Pi copies the page afresh each time it is selected.  To fit one
-; page the two errors share one message.
-MACRO LOADFILETOSWR_BY_MACHINE prefix, suffix
-{
-    LDA     &F4
-    PHA
-    LDX     #15
-.romlp
-    stx     &f4
-    stx     &fe30
-    LDA     #'.'
-    JSR     OSWRCH
-;; Step 1: Test if candidate slot already contains a rom image
-;; so we don't clobber any pre-existing ROM images
-    ldy     &8007
-    lda     &8000, Y
-    bne     testram
-    lda     &8001, Y
-    cmp     #'('
-    bne     testram
-    lda     &8002, Y
-    cmp     #'C'
-    bne     testram
-    lda     &8003, Y
-    cmp     #')'
-    ; bne     testram
-
-;; Step 2: Test if that pre-existing rom image is SWMMFS
-;; so we reuse the same slot again and again
-     ;   lda     &b5fe
-     ;   cmp     #MAGIC0
-     ;   bne     romnxt
-     ;   lda     &b5ff
-     ;   cmp     #MAGIC1
-     ;   bne     romnxt
-    beq     romnxt
-;; Step 3: Check if slot is RAM
-.testram
-    lda     &8006
-    eor     #&FF
-    sta     &8006
-    cmp     &8006
-    beq     SWRfound
-.romnxt
-    dex
-    bpl     romlp
-
-; no SWR found, or no ROM file
-.fileerror
-    PLA
-    sta    &f4
-    sta    &fe30
-   ; should really put the error on the stack
-   ; and fake RTS on the stack
-   ; LDX     #255
-   ; STX     &FC88   ; Restore JIM
-    BRK
-    EQUB 255: EQUS "No SWR/ROM":EQUB 0
-
-.SWRfound
-
-    LDA #0 : LDX #1 : JSR OSBYTE    ; X = machine: 3+ is the Master family
-    CPX #3
-    BCC fopen                       ; B, B+: keep 'B'
-    LDA #'M' : STA machineletter
-
-.fopen
+;; The ROM loaders, helpers 3-16 and 18.  Each page opens its file and reads
+;; all of it into the Pi's buffer at &F00000, then hands over to swrinstall in
+;; page 0, which picks the bank, copies the buffer into it and resets the
+;; machine.  The loader page only names the file; finding the bank is shared,
+;; and can see the incoming ROM's title in the buffer: see swrinstall.
+;; The ROM number on entry is pushed first: swrinstall restores it if there is
+;; nowhere to load, and fileerror here if there is no file.
+;; Expanded inside the loader's own { } so the labels are its own.
+MACRO READROMFILE
     LDY #0   : STY discaccess
     DEY      : STY discaccess+1
                STY discaccess+2
@@ -535,43 +326,60 @@ MACRO LOADFILETOSWR_BY_MACHINE prefix, suffix
     BNE fileerror ; file open error
 
 .readdone
-    LDY #0   : STY discaccess
-             : STY discaccess+1
-    LDA #&F0 : STA discaccess+2
-
-             : STY swrpointer+1
-    LDA #&80 : STA swrpointer+2
-
-    LDX #&C0-&80
-.copyswrloop
-    LDA discaccess+3
-.swrpointer
-    STA &8000,Y
-    INY
-    BNE copyswrloop
-
-    INC swrpointer+2
-    DEX
-    BNE copyswrloop;
-    ; Y is zero
-           : STY discaccess
-    DEY    : STY discaccess+1
-             STY discaccess+2
-
-    LDY #fclose-&FD01
+    LDY #swrinstall-&FD01           ; on to page 0
     LDA #0
-    BEQ pageswitch
+    JMP pageswitch
 
-.fopenstring
-    EQUB 2, 0, 1 : EQUS prefix
-.machineletter
-    EQUS "B", suffix : EQUB 0, 255
+.fileerror
+    PLA
+    sta    &f4
+    sta    &fe30
+    BRK
+    EQUB &D6: EQUS "No ROM":EQUB 0
 
 .freaddata
     EQUB 4, 0, &40, 0
     EQUB 0, 0, &F0, 0
     EQUB 0, 0, 0, 0
     EQUB &FF
+ENDMACRO
+
+MACRO LOADFILETOSWR filename
+{
+    LDA     &F4
+    PHA
+    READROMFILE
+
+.fopenstring
+    EQUB 2, 0, 1 : EQUS filename : EQUB 0, 255
+
+    PAGESWITCHORG
+.pageswitch
+    PAGESWITCH
+}
+ENDMACRO
+
+; As LOADFILETOSWR, but the file is chosen when it runs: the letter after
+; "prefix" is patched to 'M' on a Master family machine (OSBYTE 0 with X=1
+; gives 3 or more) and left 'B' otherwise.  For ROMs built separately for the
+; B and the Master (fn-rom: workspace addresses and 65C02 code are fixed at
+; build time), so one helper serves both.  The patch lasts only for this
+; run: the Pi copies the page afresh each time it is selected.
+MACRO LOADFILETOSWR_BY_MACHINE prefix, suffix
+{
+    LDA     &F4
+    PHA
+    LDA #0 : LDX #1 : JSR OSBYTE    ; X = machine: 3+ is the Master family
+    CPX #3
+    BCC fopen                       ; B, B+: keep 'B'
+    LDA #'M' : STA machineletter
+.fopen
+    READROMFILE
+
+.fopenstring
+    EQUB 2, 0, 1 : EQUS prefix
+.machineletter
+    EQUS "B", suffix : EQUB 0, 255
 
     PAGESWITCHORG
 .pageswitch
@@ -595,11 +403,93 @@ ORG &FD00
     BNE stringloop
     PAGERTS
 
-.*fclose
-    LDA #3
-    STA discaccess+3
-    LDY #255
-    STY discaccess+4
+;; swrinstall: the second half of every ROM loader (see READROMFILE).  The
+;; ROM is in the Pi's buffer at &F00000 and the ROM number from before the
+;; loader ran is on the stack.  Two passes over the banks, 15 down to 0:
+;;   1. a RAM bank holding a ROM with the incoming ROM's title (compared up
+;;      to the zero that ends it, so the version does not matter): loading
+;;      again after CTRL-BREAK replaces the copy the last load left, rather
+;;      than leaving two or finding no room;
+;;   2. a RAM bank holding no ROM.
+;; A bank holding any other ROM is never written, nor is one that is not RAM.
+.*swrinstall
+    LDA #&80 : STA pass             ; bit 7: the first pass
+.passlp
+    LDX #15
+.romlp
+    stx     &f4
+    stx     &fe30
+    LDA     #'.'
+    JSR     OSWRCH
+    ldy     &8007                   ; is there a ROM here: a copyright string
+    ldx     #0                      ; (X is free: the bank is in &F4)
+.copylp
+    lda     &8000, Y
+    cmp     copyright, X
+    bne     noromhere
+    iny
+    inx
+    cpx     #4
+    bne     copylp
+    bit     pass                    ; a ROM: only the first pass looks closer
+    bpl     romnxt
+    ldy     #9                      ; its title against the incoming one, from
+    sty     discaccess              ; byte 9 of the buffer
+    ldy     #0
+    sty     discaccess+1
+    lda     #&F0
+    sta     discaccess+2
+.titlelp
+    lda     discaccess+3            ; auto increment register
+    cmp     &8009, Y
+    bne     romnxt
+    iny
+    cmp     #0
+    bne     titlelp
+    beq     testram                 ; the same ROM: replace it if it is RAM
+.noromhere
+    bit     pass                    ; no ROM: only the second pass takes it
+    bmi     romnxt
+.testram
+    lda     &8006
+    eor     #&FF
+    sta     &8006
+    cmp     &8006
+    beq     SWRfound
+.romnxt
+    ldx     &f4
+    dex
+    bpl     romlp
+    asl     pass                    ; C = it was the first pass
+    bcs     passlp
+
+    JSR     fclose                  ; nowhere to put it
+    PLA
+    sta    &f4
+    sta    &fe30
+    BRK
+    EQUB 255: EQUS "No SWR":EQUB 0
+
+.SWRfound
+    LDY #0   : STY discaccess
+             : STY discaccess+1
+    LDA #&F0 : STA discaccess+2
+
+             : STY swrpointer+1
+    LDA #&80 : STA swrpointer+2
+
+    LDX #&C0-&80
+.copyswrloop
+    LDA discaccess+3
+.swrpointer
+    STA &8000,Y
+    INY
+    BNE copyswrloop
+
+    INC swrpointer+2
+    DEX
+    BNE copyswrloop;
+    JSR fclose
 .*reboot
     LDA #0      ; get machine id
     LDX #1
@@ -615,6 +505,19 @@ ORG &FD00
     LDA #&7F
     STA &FE4E ; clear IER
     JMP (&FFFC) ; Reset
+
+.fclose
+    LDY #0   : STY discaccess
+    DEY      : STY discaccess+1
+               STY discaccess+2
+    LDA #3   : STA discaccess+3
+               STY discaccess+4
+    RTS
+
+.copyright
+    EQUB 0 : EQUS "(C)"
+.pass
+    EQUB 0      ; swrinstall's pass: bit 7 set on the first
 
   PAGESWITCHORG
   PAGESWITCH

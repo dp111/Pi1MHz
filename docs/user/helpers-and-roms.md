@@ -82,12 +82,17 @@ to try ROM software without hardware.
 - ROM loading needs writable sideways RAM in the target machine (a
   Master has it built in; a BBC B needs a sideways RAM board or
   fitted RAM).
-- The loader scans the sideways slots from 15 downwards, skips any that
-  already hold a ROM image, and loads into the first empty writable
-  slot it finds. `No SWR` means it found no free sideways RAM;
-  `No ROM` means the ROM file was missing from the SD card. Note that
-  loading the same ROM twice fills two slots.
-  Helper 18 reports both of these as `No SWR/ROM`.
+- The loader reads the ROM file first, then picks a sideways slot,
+  looking from 15 downwards:
+  1. a writable slot that already holds a ROM with the **same title** as
+     the one being loaded (the version does not matter). Loading the same
+     ROM again, after CTRL-BREAK or with a newer build on the SD card,
+     replaces the earlier copy rather than filling a second slot;
+  2. otherwise, the first empty writable slot.
+
+  A slot holding any other ROM is never written. `No SWR` means there was
+  nowhere to load; `No ROM` means the ROM file was missing from the SD
+  card.
 
 ## The VFS ROM
 
