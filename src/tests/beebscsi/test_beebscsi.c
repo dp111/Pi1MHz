@@ -1140,6 +1140,89 @@ static void test_storage_choice(void)
    stop_all();
 }
 
+/* Vendor mode pages longer than the parser's first limits (3, 4, 6 and 6
+   bytes for pages 35 to 38).  The Acorn FileStore sends MODE SENSE for pages
+   37 and 38, where it looks for "(C)Acorn", and these are a Rodime RO3000S's
+   own: 8 bytes each, with a length byte that matches.  Cut short, a page
+   went out with a length of 6 and only 4 bytes after it. */
+static void test_mode_pages_whole(void)
+{
+   static char why[160];
+   static const char cfg[] =
+      "ModeParamHeader=10000008\n"
+      "LBADescriptor=0003D86000000100\n"
+      "ModePage0=00020000\n"
+      "ModePage35=23020000\n"
+      "ModePage36=24020000\n"
+      "ModePage37=2506284329410D00\n"
+      "ModePage38=2606636F726E0D00\n";
+   static const uint8_t p35[] = { 0x23, 0x02, 0x00, 0x00 };
+   static const uint8_t p36[] = { 0x24, 0x02, 0x00, 0x00 };
+   static const uint8_t p37[] = { 0x25, 0x06, 0x28, 0x43, 0x29, 0x41, 0x0D, 0x00 };
+   static const uint8_t p38[] = { 0x26, 0x06, 0x63, 0x6F, 0x72, 0x6E, 0x0D, 0x00 };
+   const struct { uint8_t page; const uint8_t *want; size_t n; } pages[] = {
+      { 35, p35, sizeof p35 }, { 36, p36, sizeof p36 },
+      { 37, p37, sizeof p37 }, { 38, p38, sizeof p38 },
+   };
+
+   f_mkdir("/BeebSCSI0");
+   filesystemSetLunDirectory(1, 0);             /* earlier tests leave another directory selected */
+   put_file("/BeebSCSI0/scsi6.cfg", cfg, sizeof cfg - 1);
+   (void)filesystemReadLunDescriptor(6);        /* LUN 6: no other test uses it */
+   for (size_t i = 0; i < sizeof pages / sizeof pages[0]; i++) {
+      size_t len = 0;
+      const char *got = filesystemGetModePageData(6, pages[i].page, &len);
+      bool ok = got != NULL && len == pages[i].n && memcmp(got, pages[i].want, len) == 0;
+      snprintf(why, sizeof why, "page %u comes back %zu bytes long, want %zu",
+               (unsigned)pages[i].page, len, pages[i].n);
+      check("mode pages: a page of the length its own length byte says is kept whole", ok, why);
+   }
+}
+
+/* A MODE SELECT saves the whole .cfg again (filesystemWriteAttributes), so a
+   page the parser cut short on reading was cut short in the file for good.
+   The Acorn formatter's MODE SELECT on a Rodime RO3057S (an E40) did exactly
+   that to its pages 35, 37 and 38 (8 bytes each): the file came back with
+   230600, 250628432941 and 2606636F726E. */
+static void test_mode_select_keeps_vendor_pages(void)
+{
+   static char why[200];
+   static char text[8192];
+   static const char cfg[] =
+      "ModeParamHeader=10000008\n"
+      "LBADescriptor=00027D8000000100\n"
+      "ModePage1=0103200405\n"
+      "ModePage32=20083338313435323736\n"
+      "ModePage33=2106590B1B020000\n"
+      "ModePage35=2306000000000000\n"
+      "ModePage36=24020000\n"
+      "ModePage37=2506284329410D00\n"
+      "ModePage38=2606636F726E0D00\n";
+   static const char *const lines[] = {
+      "ModePage32=20083338313435323736", "ModePage33=2106590B1B020000", "ModePage35=2306000000000000",
+      "ModePage36=24020000", "ModePage37=2506284329410D00", "ModePage38=2606636F726E0D00",
+   };
+
+   stop_all();
+   f_mkdir("/BeebSCSI0");
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi6.cfg", cfg, sizeof cfg - 1);
+   put_file("/BeebSCSI0/scsi6.dat", "image", 5);
+
+   /* FSFormat writes page 1 back whole; any MODE SELECT saves the file */
+   const uint8_t ms[6] = { 0x15, 0xC1, 0, 0, 9, 0 };      /* LUN 6, SP */
+   const uint8_t d1[9] = { 0, 0, 0, 0,  1, 3, 0x20, 4, 5 };
+   int st = run_cmd(1, ms, 6, d1, sizeof d1);
+   read_file("/BeebSCSI0/scsi6.cfg", text, sizeof text - 1);
+   check("saved cfg: the MODE SELECT is accepted", st == 0, "status not GOOD");
+   for (size_t i = 0; i < sizeof lines / sizeof lines[0]; i++) {
+      snprintf(why, sizeof why, "the saved file lacks the line %s", lines[i]);
+      check("saved cfg: a vendor page the drive has is written back whole",
+            strstr(text, lines[i]) != NULL, why);
+   }
+   stop_all();
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -1177,6 +1260,8 @@ int main(int argc, char **argv)
    test_format_new_disc();
    test_jukebox();
    test_stop_directory_luns();
+   test_mode_pages_whole();
+   test_mode_select_keeps_vendor_pages();
 
    scsiReset(0);
    test_bsfatread_failure();

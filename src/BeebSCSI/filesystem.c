@@ -74,6 +74,9 @@
 #include "../rpi/fileparser.h"
 
 
+/* The longest a vendor mode page (32 to 38) may be, in bytes. */
+#define VENDOR_PAGE_MAX 32
+
 static const parserkey scsiattributes[] = {
    { "Title"           , 0 , 39 , STRING},
    { "Description"     , 0 ,255 , STRING },
@@ -85,12 +88,19 @@ static const parserkey scsiattributes[] = {
    { "ModePage3"       , 0 , 23 , NUMSTRING },
    { "WritPage3"       , 0 , 23 , NUMSTRING },
    { "ModePage4"       , 0 ,  6 , NUMSTRING},
-   { "ModePage32"      , 0 , 10 , NUMSTRING},
-   { "ModePage33"      , 0 ,  9 , NUMSTRING },
-   { "ModePage35"      , 0 ,  3 , NUMSTRING},
-   { "ModePage36"      , 0 ,  4 , NUMSTRING},
-   { "ModePage37"      , 0 ,  6 , NUMSTRING},
-   { "ModePage38"      , 0 ,  6 , NUMSTRING},
+   /* The vendor pages are whatever the drive's own .cfg says, and real
+      drives differ: a Rodime RO3000S's pages 35, 37 and 38 are 4, 8 and 8
+      bytes, which the old limits of 3, 6 and 6 cut short - a page then went
+      out with a length byte that promised more than it carried, and the
+      Acorn FileStore, which reads pages 37 and 38 for "(C)Acorn", turned the
+      drive down.  The page's own length is what is stored and sent, so a
+      larger limit costs only the zero-padded allocation. */
+   { "ModePage32"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "ModePage33"      , 0 , VENDOR_PAGE_MAX , NUMSTRING },
+   { "ModePage35"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "ModePage36"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "ModePage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "ModePage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    /* 5: the LaserVision user code carries the '=' (e.g. "1=986").
       At 4 the parser truncated it to "1=98", and filesystemReadLunUserCode
       read string[4] off the end of the 4-byte allocation. */
