@@ -12,6 +12,7 @@
 #include "config.h"
 #include "rpi/systimer.h"
 #include "wifi/wifi_lwip.h"        /* wifi_lwip_rx_kick */
+#include "net_dns.h"
 #include "lwip/udp.h"
 #include "lwip/dns.h"
 #include "lwip/pbuf.h"
@@ -102,7 +103,7 @@ fn_io fn_tnfs_io_resolve(const char *host, uint32_t *ip)
    strcpy(s_dns.name, host);
    s_dns.done = false;
    s_dns.busy = true;
-   err_t e = dns_gethostbyname(host, &s_dns.ip, tnfs_dns_found, NULL);
+   err_t e = net_dns_lookup(host, &s_dns.ip, tnfs_dns_found, NULL);
    if (e == ERR_OK) {                  /* cached */
       s_dns.busy = false;
       *ip = ip4_addr_get_u32(ip_2_ip4(&s_dns.ip));

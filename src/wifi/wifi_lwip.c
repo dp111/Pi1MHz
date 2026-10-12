@@ -143,60 +143,91 @@ static void wifi_lwip_debug_log(const char *format, ...)
    dhcp_supplied_address() says the lease is still held. */
 static char g_wifi_lwip_dhcp_ntp[IP4ADDR_STRLEN_MAX];
 
-/* Option 100 likewise.  lwIP offers an unknown option to
+/* Options 100 (time zone, RFC 4833) and 15 (domain name, RFC 2132 section
+   3.17), which lwIP does not decode.  lwIP offers an unknown option to
    wifi_lwip_dhcp_option() while it parses a reply, before it knows whether
-   the reply binds a lease, so the value waits in _pending and becomes the
+   the reply binds a lease, so the values wait in _pending and become the
    lease's in dhcp_set_ntp_servers(), which lwIP calls for every ACK it acts
-   on, straight after parsing it (hence LWIP_DHCP_GET_NTP_SRV above must stay
-   on).  _pending is cleared as each received frame goes into lwIP
-   (wifi_lwip_deliver_rx_frame), so only the frame being handled can supply
-   it: never an OFFER, nor an ACK that was parsed and then not acted on.
-   The message type is not checked here, because a server may send option
-   100 before option 53 and lwIP then reports the type as 0. */
+   on, straight after parsing it (hence LWIP_DHCP_GET_NTP_SRV must stay on).
+   A bind whose reply lacks an option therefore clears it rather than keeping
+   the last lease's.  _pending is cleared as each received frame goes into
+   lwIP (wifi_lwip_deliver_rx_frame), so only the frame being handled can
+   supply it: never an OFFER, nor an ACK that was parsed and then not acted
+   on.  The message type is not checked, because a server may send these
+   before option 53 and lwIP then reports the type as 0. */
 #if !LWIP_DHCP_GET_NTP_SRV
-#error "wifi_lwip.c takes the lease's time zone in dhcp_set_ntp_servers()"
+#error "wifi_lwip.c takes the lease's time zone and domain in dhcp_set_ntp_servers()"
 #endif
 static char g_wifi_lwip_dhcp_tz[64];
 static char g_wifi_lwip_dhcp_tz_pending[sizeof g_wifi_lwip_dhcp_tz];
+static char g_wifi_lwip_dhcp_domain[64];
+static char g_wifi_lwip_dhcp_domain_pending[sizeof g_wifi_lwip_dhcp_domain];
+
+static void wifi_lwip_dhcp_pending_clear(void)
+{
+   g_wifi_lwip_dhcp_tz_pending[0] = '\0';
+   g_wifi_lwip_dhcp_domain_pending[0] = '\0';
+}
 
 void wifi_lwip_dhcp_option(u8_t msg_type, u8_t option, u8_t len,
                            struct pbuf *p, u16_t offset)
 {
+   char *out;
+   size_t size;
+
    (void)msg_type;
-   if (option != 100u)
+   if (option == 100u) {
+      out = g_wifi_lwip_dhcp_tz_pending;
+      size = sizeof g_wifi_lwip_dhcp_tz_pending;
+   } else if (option == 15u) {
+      out = g_wifi_lwip_dhcp_domain_pending;
+      size = sizeof g_wifi_lwip_dhcp_domain_pending;
+   } else {
       return;
-   g_wifi_lwip_dhcp_tz_pending[0] = '\0';
-   if (len > 0u && len < sizeof g_wifi_lwip_dhcp_tz_pending
-       && pbuf_copy_partial(p, g_wifi_lwip_dhcp_tz_pending, len, offset) == len)
-      g_wifi_lwip_dhcp_tz_pending[len] = '\0';
+   }
+   out[0] = '\0';
+   if (len > 0u && len < size && pbuf_copy_partial(p, out, len, offset) == len) {
+      out[len] = '\0';
+      /* Some servers send the text NUL-terminated (RFC 2132 section 2). */
+      out[strnlen(out, len)] = '\0';
+   }
 }
 
 void dhcp_set_ntp_servers(u8_t num_ntp_servers, const ip4_addr_t *ntp_server_addrs)
 {
    memcpy(g_wifi_lwip_dhcp_tz, g_wifi_lwip_dhcp_tz_pending, sizeof g_wifi_lwip_dhcp_tz);
-   g_wifi_lwip_dhcp_tz_pending[0] = '\0';
+   memcpy(g_wifi_lwip_dhcp_domain, g_wifi_lwip_dhcp_domain_pending,
+          sizeof g_wifi_lwip_dhcp_domain);
+   wifi_lwip_dhcp_pending_clear();
    g_wifi_lwip_dhcp_ntp[0] = '\0';
    if (num_ntp_servers > 0u && !ip4_addr_isany(&ntp_server_addrs[0]))
       (void)ip4addr_ntoa_r(&ntp_server_addrs[0], g_wifi_lwip_dhcp_ntp,
                            sizeof g_wifi_lwip_dhcp_ntp);
 }
 
-const char *wifi_lwip_dhcp_ntp_server(void)
+/* The text of a lease option, or NULL while no lease is held. */
+static const char *wifi_lwip_dhcp_text(const char *text)
 {
    if (!g_wifi_lwip_context.netif_added || !g_wifi_lwip_context.dhcp_started
        || !dhcp_supplied_address(&g_wifi_lwip_context.netif)
-       || g_wifi_lwip_dhcp_ntp[0] == '\0')
+       || text[0] == '\0')
       return NULL;
-   return g_wifi_lwip_dhcp_ntp;
+   return text;
+}
+
+const char *wifi_lwip_dhcp_ntp_server(void)
+{
+   return wifi_lwip_dhcp_text(g_wifi_lwip_dhcp_ntp);
 }
 
 const char *wifi_lwip_dhcp_timezone(void)
 {
-   if (!g_wifi_lwip_context.netif_added || !g_wifi_lwip_context.dhcp_started
-       || !dhcp_supplied_address(&g_wifi_lwip_context.netif)
-       || g_wifi_lwip_dhcp_tz[0] == '\0')
-      return NULL;
-   return g_wifi_lwip_dhcp_tz;
+   return wifi_lwip_dhcp_text(g_wifi_lwip_dhcp_tz);
+}
+
+const char *wifi_lwip_dhcp_domain(void)
+{
+   return wifi_lwip_dhcp_text(g_wifi_lwip_dhcp_domain);
 }
 
 static bool wifi_lwip_address_ready(const struct netif *netif)
@@ -1006,7 +1037,7 @@ static bool wifi_lwip_deliver_rx_frame(const uint8_t *frame,
       return true;
    }
 
-   g_wifi_lwip_dhcp_tz_pending[0] = '\0';   /* see wifi_lwip_dhcp_option() */
+   wifi_lwip_dhcp_pending_clear();          /* see wifi_lwip_dhcp_option() */
    if (g_wifi_lwip_context.netif.input(packet, &g_wifi_lwip_context.netif) != ERR_OK)
       pbuf_free(packet);
    return true;

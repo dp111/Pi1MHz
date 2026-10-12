@@ -10,7 +10,7 @@ SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 
-cp "$SRC"/net_service.c "$SRC"/net_service.h "$SRC"/services.h "$B/"
+cp "$SRC"/net_service.c "$SRC"/net_service.h "$SRC"/net_dns.h "$SRC"/services.h "$B/"
 cp "$SRC"/net_tnfs.c "$SRC"/net_tnfs.h "$SRC"/net_telnet.c "$SRC"/net_telnet.h "$B/"
 cp "$HERE"/test_net.c "$HERE"/test_tnfs.c "$HERE"/test_telnet.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"

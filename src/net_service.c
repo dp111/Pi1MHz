@@ -26,6 +26,7 @@
 #include "net_tnfs.h"
 #include "net_telnet.h"
 #include "config.h"
+#include "net_dns.h"            /* net_dns_lookup: the DHCP domain on bare names */
 #include "rpi/systimer.h"          /* RPI_GetSystemTime64 (ms clock for TNFS) */
 #include "lwip/opt.h"               /* LWIP_ALTCP_TLS, from lwipopts.h         */
 #if defined(LWIP_ALTCP_TLS) && LWIP_ALTCP_TLS
@@ -871,7 +872,7 @@ static uint8_t do_dns(net_handle_t *h, uint32_t cp)
    {
       const char *name = (const char *)&Pi1MHz->JIM_ram[cp + 1u];
       h->dns_gen++;
-      err_t e = dns_gethostbyname(name, &h->dns_ip, net_dns_found,
+      err_t e = net_dns_lookup(name, &h->dns_ip, net_dns_found,
                                   (void *)(uintptr_t)(((uint32_t)(h - net_h) << 16)
                                                       | h->dns_gen));
       if (e == ERR_OK) {            /* cache hit, resolved synchronously */
@@ -1542,7 +1543,7 @@ static uint8_t url_open_core(net_handle_t *h, const char *url, uint8_t mode,
             return url_after_resolve(h);
          {
             h->dns_gen++;
-            err_t e = dns_gethostbyname(host, &h->dns_ip, net_dns_found,
+            err_t e = net_dns_lookup(host, &h->dns_ip, net_dns_found,
                                         (void *)(uintptr_t)(((uint32_t)(h - net_h) << 16)
                                                             | h->dns_gen));
             if (e == ERR_OK) {
@@ -2150,7 +2151,7 @@ bool net_ping_start(const char *host)
    strlcpy(netutil_ping_host, host, sizeof netutil_ping_host);
    netutil_ping_deadline_us = RPI_GetSystemTime() + NET_UTIL_TIMEOUT_US;
    netutil_ping_stage = UTIL_DNS;
-   result = dns_gethostbyname(netutil_ping_host, &netutil_ping_addr,
+   result = net_dns_lookup(netutil_ping_host, &netutil_ping_addr,
                               netutil_ping_dns_found,
                               (void *)(uintptr_t)netutil_ping_generation);
    if (result == ERR_OK)
@@ -2284,7 +2285,7 @@ bool net_time_start(const char *server)
    net_time_cancel();
    netutil_time_deadline_us = RPI_GetSystemTime() + NET_UTIL_TIMEOUT_US;
    netutil_time_stage = UTIL_DNS;
-   result = dns_gethostbyname(server, &netutil_time_addr,
+   result = net_dns_lookup(server, &netutil_time_addr,
                               netutil_time_dns_found,
                               (void *)(uintptr_t)netutil_time_generation);
    if (result == ERR_OK)

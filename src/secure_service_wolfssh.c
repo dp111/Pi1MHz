@@ -13,6 +13,7 @@
 #include "rpi/hwrng.h"
 #include "rpi/systimer.h"
 #include "wifi/wifi_lwip.h"
+#include "net_dns.h"
 #include "lwip/altcp.h"
 #include "lwip/dns.h"
 #include "lwip/err.h"
@@ -557,7 +558,7 @@ static uint8_t start_connection(const char *url, const char *username,
         if (client.password_size == 0u) return NTS_AUTH_FAILED;
     }
     client.dns_gen++;
-    result = dns_gethostbyname(client.host, &client.address, dns_found,
+    result = net_dns_lookup(client.host, &client.address, dns_found,
                                (void *)(uintptr_t)client.dns_gen);
     if (result == ERR_INPROGRESS) { client.stage = SSH_RESOLVING; return NTS_PENDING; }
     if (result != ERR_OK) return NTS_ERR_DNS;

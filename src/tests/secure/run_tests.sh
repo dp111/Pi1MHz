@@ -53,7 +53,7 @@ P=$B/provider
 mkdir -p "$P"
 cp -r "$HERE"/provider_stubs/. "$P/"
 cp -r "$SRC"/tests/net/stubs/lwip "$P/"
-cp "$SRC"/secure_service_wolfssh.c "$SRC"/secure_service_wolfssh.h \
+cp "$SRC"/secure_service_wolfssh.c "$SRC"/secure_service_wolfssh.h "$SRC"/net_dns.h \
    "$SRC"/secure_service_core.h "$HERE"/test_provider.c "$P/"
 gcc -std=gnu2x -Wall -Wextra -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
