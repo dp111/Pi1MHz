@@ -2285,11 +2285,11 @@ int filesystemMergeModePageData(uint8_t lunNumber, uint8_t page, uint8_t declare
    if (received > total)
       received = (uint8_t)total;
 
-   /* Page code, and the length byte unless the drive already has the page */
+   /* Page code, and a length byte that covers the whole stored page */
    if (received > 0)
       merged[0] = Buffer[0];
-   if (received > 1 && oldLength < 2)
-      merged[1] = Buffer[1];
+   if (total >= 2)
+      merged[1] = (uint8_t)(total - 2);
 
    for (uint8_t i = 2; i < received; i++) {
       bool inField = false;
