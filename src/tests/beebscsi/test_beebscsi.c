@@ -625,6 +625,112 @@ static void test_fcode_short(void)
    check("S8 WRITE F-code with a short transfer does not run", fcode_writes == 0, why);
 }
 
+/* The Acorn FileStore formatter (FServFmt / FSFormat) on a 3000-series drive
+   sends its MODE SELECT pages two bytes short (length+4, not length+6) and
+   zeroes most of page 3 first.  A real drive takes the bytes that arrive and
+   keeps the rest, and zero means "the drive's own value".  The payloads are
+   the ones a FileStore sent in a serial log of the RO3057S. */
+static int page_is(uint8_t lun, uint8_t page, const uint8_t *want, size_t n)
+{
+   size_t len = 0;
+   const char *got = filesystemGetModePageData(lun, page, &len);
+   return got != NULL && len == n && memcmp(got, want, n) == 0;
+}
+
+static void test_filestore_mode_select(void)
+{
+   static char why[200];
+   static const char cfg[] =
+      "ModeParamHeader=10000008\n"
+      "LBADescriptor=00027D8000000100\n"
+      "ModePage1=0103200405\n"
+      "ModePage3=031302A802A8000600060030010000080000000080\n"
+      "ModePage4=04040002A805\n";
+   static const uint8_t p1[]  = { 0x01, 0x03, 0x20, 0x04, 0x05 };
+   static const uint8_t p3[]  = { 0x03, 0x13, 0x02, 0xA8, 0x02, 0xA8, 0x00, 0x06, 0x00, 0x06,
+                                  0x00, 0x30, 0x01, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x80 };
+   static const uint8_t p4[]  = { 0x04, 0x04, 0x00, 0x02, 0xA8, 0x05 };
+
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi0.cfg", cfg, sizeof cfg - 1);
+   put_file("/BeebSCSI0/scsi0.dat", "image", 5);
+   bool started = filesystemSetLunStatus(0, true);
+   check("FS MODE SELECT: the test drive starts", started, "LUN 0 did not start");
+
+   /* FSFormat PROCromodesel, page 3: 23 bytes where 25 are needed */
+   const uint8_t ms23[6] = { 0x15, 0x01, 0, 0, 23, 0 };
+   const uint8_t d3[23] = { 0, 0, 0, 0,  3, 19,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  1, 0, 0, 0, 0, 0, 0 };
+   int st = run_cmd(1, ms23, 6, d3, sizeof d3);
+   snprintf(why, sizeof why, "status %d (want 0), page 3 %s", st,
+            page_is(0, 3, p3, sizeof p3) ? "kept" : "CHANGED");
+   check("FS MODE SELECT: page 3 two bytes short is accepted, sectors per track kept",
+         st == 0 && page_is(0, 3, p3, sizeof p3), why);
+
+   /* page 4: 8 bytes where 10 are needed.  Cylinders and heads must not change. */
+   const uint8_t ms8[6] = { 0x15, 0x01, 0, 0, 8, 0 };
+   const uint8_t d4[8] = { 0, 0, 0, 0,  4, 4, 0, 2 };
+   st = run_cmd(1, ms8, 6, d4, sizeof d4);
+   snprintf(why, sizeof why, "status %d (want 0), heads %u (want 5), page 4 %s", st,
+            (unsigned)filesystemGetheadspercylinder(0), page_is(0, 4, p4, sizeof p4) ? "kept" : "CHANGED");
+   check("FS MODE SELECT: page 4 two bytes short is accepted, the rest of the page kept",
+         st == 0 && page_is(0, 4, p4, sizeof p4) && filesystemGetheadspercylinder(0) == 5, why);
+
+   /* page 1: 7 bytes where 9 are needed.  The byte that arrived is applied, the rest kept. */
+   const uint8_t ms7[6] = { 0x15, 0x01, 0, 0, 7, 0 };
+   const uint8_t d1[7] = { 0, 0, 0, 0,  1, 3, 0x21 };
+   static const uint8_t p1new[] = { 0x01, 0x03, 0x21, 0x04, 0x05 };
+   st = run_cmd(1, ms7, 6, d1, sizeof d1);
+   snprintf(why, sizeof why, "status %d (want 0), page 1 %s", st, page_is(0, 1, p1new, sizeof p1new) ? "as wanted" : "WRONG");
+   check("FS MODE SELECT: a cut-short page changes only the bytes it carries",
+         st == 0 && page_is(0, 1, p1new, sizeof p1new), why);
+   (void)p1;
+
+   /* a whole page 4 is still honoured: the heads change */
+   const uint8_t ms10[6] = { 0x15, 0x01, 0, 0, 10, 0 };
+   const uint8_t d4full[10] = { 0, 0, 0, 0,  4, 4, 0, 2, 0xA8, 6 };
+   st = run_cmd(1, ms10, 6, d4full, sizeof d4full);
+   snprintf(why, sizeof why, "status %d (want 0), heads %u (want 6)", st, (unsigned)filesystemGetheadspercylinder(0));
+   check("FS MODE SELECT: a whole page 4 still sets the heads",
+         st == 0 && filesystemGetheadspercylinder(0) == 6, why);
+
+   /* a page 3 that does carry a new sectors per track sets it */
+   const uint8_t ms25[6] = { 0x15, 0x01, 0, 0, 25, 0 };
+   const uint8_t d3full[25] = { 0, 0, 0, 0,  3, 19,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0x31,  1, 0, 0, 8, 0, 0, 0, 0, 0 };
+   st = run_cmd(1, ms25, 6, d3full, sizeof d3full);
+   size_t l3 = 0;
+   const char *g3 = filesystemGetModePageData(0, 3, &l3);
+   snprintf(why, sizeof why, "status %d (want 0), sectors per track byte %02X (want 31)", st, g3 ? (unsigned)(uint8_t)g3[11] : 0u);
+   check("FS MODE SELECT: a page 3 with a non-zero sectors per track sets it",
+         st == 0 && g3 != NULL && (uint8_t)g3[11] == 0x31, why);
+
+   /* the (C)Acorn pages: both in one MODE SELECT, as a 3000-series drive gets them */
+   const uint8_t ms20[6] = { 0x15, 0x01, 0, 0, 20, 0 };
+   const uint8_t dc[20] = { 0, 0, 0, 0,  0x25, 6, '(', 'C', ')', 'A', 13, 0,  0x26, 6, 'c', 'o', 'r', 'n', 13, 0 };
+   static const uint8_t p37[] = { 0x25, 0x06, '(', 'C', ')', 'A', 13, 0 };
+   static const uint8_t p38[] = { 0x26, 0x06, 'c', 'o', 'r', 'n', 13, 0 };
+   st = run_cmd(1, ms20, 6, dc, sizeof dc);
+   snprintf(why, sizeof why, "status %d (want 0), page 37 %s, page 38 %s", st,
+            page_is(0, 37, p37, sizeof p37) ? "ok" : "WRONG", page_is(0, 38, p38, sizeof p38) ? "ok" : "WRONG");
+   check("FS MODE SELECT: the (C)Acorn pages are written",
+         st == 0 && page_is(0, 37, p37, sizeof p37) && page_is(0, 38, p38, sizeof p38), why);
+
+   /* a page header with no data at all changes nothing */
+   size_t before_len = 0;
+   uint8_t before[64];
+   const char *g = filesystemGetModePageData(0, 3, &before_len);
+   if (g == NULL || before_len > sizeof before) before_len = 0;
+   if (before_len) memcpy(before, g, before_len);
+   const uint8_t ms6[6] = { 0x15, 0x01, 0, 0, 6, 0 };
+   const uint8_t dhdr[6] = { 0, 0, 0, 0,  3, 19 };
+   st = run_cmd(1, ms6, 6, dhdr, sizeof dhdr);
+   snprintf(why, sizeof why, "status %d (want 0), page 3 %s", st,
+            before_len && page_is(0, 3, before, before_len) ? "unchanged" : "CHANGED");
+   check("FS MODE SELECT: a page header with no data changes nothing",
+         st == 0 && before_len && page_is(0, 3, before, before_len), why);
+   stop_all();
+}
+
 /* P8 (scsi.c side): a host reset or reselection part-way through a
    data-out phase abandons the command before anything is saved. */
 static void test_reset_abandons(void)
@@ -1034,6 +1140,89 @@ static void test_storage_choice(void)
    stop_all();
 }
 
+/* Vendor mode pages longer than the parser's first limits (3, 4, 6 and 6
+   bytes for pages 35 to 38).  The Acorn FileStore sends MODE SENSE for pages
+   37 and 38, where it looks for "(C)Acorn", and these are a Rodime RO3000S's
+   own: 8 bytes each, with a length byte that matches.  Cut short, a page
+   went out with a length of 6 and only 4 bytes after it. */
+static void test_mode_pages_whole(void)
+{
+   static char why[160];
+   static const char cfg[] =
+      "ModeParamHeader=10000008\n"
+      "LBADescriptor=0003D86000000100\n"
+      "ModePage0=00020000\n"
+      "ModePage35=23020000\n"
+      "ModePage36=24020000\n"
+      "ModePage37=2506284329410D00\n"
+      "ModePage38=2606636F726E0D00\n";
+   static const uint8_t p35[] = { 0x23, 0x02, 0x00, 0x00 };
+   static const uint8_t p36[] = { 0x24, 0x02, 0x00, 0x00 };
+   static const uint8_t p37[] = { 0x25, 0x06, 0x28, 0x43, 0x29, 0x41, 0x0D, 0x00 };
+   static const uint8_t p38[] = { 0x26, 0x06, 0x63, 0x6F, 0x72, 0x6E, 0x0D, 0x00 };
+   const struct { uint8_t page; const uint8_t *want; size_t n; } pages[] = {
+      { 35, p35, sizeof p35 }, { 36, p36, sizeof p36 },
+      { 37, p37, sizeof p37 }, { 38, p38, sizeof p38 },
+   };
+
+   f_mkdir("/BeebSCSI0");
+   filesystemSetLunDirectory(1, 0);             /* earlier tests leave another directory selected */
+   put_file("/BeebSCSI0/scsi6.cfg", cfg, sizeof cfg - 1);
+   (void)filesystemReadLunDescriptor(6);        /* LUN 6: no other test uses it */
+   for (size_t i = 0; i < sizeof pages / sizeof pages[0]; i++) {
+      size_t len = 0;
+      const char *got = filesystemGetModePageData(6, pages[i].page, &len);
+      bool ok = got != NULL && len == pages[i].n && memcmp(got, pages[i].want, len) == 0;
+      snprintf(why, sizeof why, "page %u comes back %zu bytes long, want %zu",
+               (unsigned)pages[i].page, len, pages[i].n);
+      check("mode pages: a page of the length its own length byte says is kept whole", ok, why);
+   }
+}
+
+/* A MODE SELECT saves the whole .cfg again (filesystemWriteAttributes), so a
+   page the parser cut short on reading was cut short in the file for good.
+   The Acorn formatter's MODE SELECT on a Rodime RO3057S (an E40) did exactly
+   that to its pages 35, 37 and 38 (8 bytes each): the file came back with
+   230600, 250628432941 and 2606636F726E. */
+static void test_mode_select_keeps_vendor_pages(void)
+{
+   static char why[200];
+   static char text[8192];
+   static const char cfg[] =
+      "ModeParamHeader=10000008\n"
+      "LBADescriptor=00027D8000000100\n"
+      "ModePage1=0103200405\n"
+      "ModePage32=20083338313435323736\n"
+      "ModePage33=2106590B1B020000\n"
+      "ModePage35=2306000000000000\n"
+      "ModePage36=24020000\n"
+      "ModePage37=2506284329410D00\n"
+      "ModePage38=2606636F726E0D00\n";
+   static const char *const lines[] = {
+      "ModePage32=20083338313435323736", "ModePage33=2106590B1B020000", "ModePage35=2306000000000000",
+      "ModePage36=24020000", "ModePage37=2506284329410D00", "ModePage38=2606636F726E0D00",
+   };
+
+   stop_all();
+   f_mkdir("/BeebSCSI0");
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi6.cfg", cfg, sizeof cfg - 1);
+   put_file("/BeebSCSI0/scsi6.dat", "image", 5);
+
+   /* FSFormat writes page 1 back whole; any MODE SELECT saves the file */
+   const uint8_t ms[6] = { 0x15, 0xC1, 0, 0, 9, 0 };      /* LUN 6, SP */
+   const uint8_t d1[9] = { 0, 0, 0, 0,  1, 3, 0x20, 4, 5 };
+   int st = run_cmd(1, ms, 6, d1, sizeof d1);
+   read_file("/BeebSCSI0/scsi6.cfg", text, sizeof text - 1);
+   check("saved cfg: the MODE SELECT is accepted", st == 0, "status not GOOD");
+   for (size_t i = 0; i < sizeof lines / sizeof lines[0]; i++) {
+      snprintf(why, sizeof why, "the saved file lacks the line %s", lines[i]);
+      check("saved cfg: a vendor page the drive has is written back whole",
+            strstr(text, lines[i]) != NULL, why);
+   }
+   stop_all();
+}
+
 int main(int argc, char **argv)
 {
    defscsi_path = argc > 1 ? argv[1] : "defscsi.cfg";
@@ -1071,12 +1260,15 @@ int main(int argc, char **argv)
    test_format_new_disc();
    test_jukebox();
    test_stop_directory_luns();
+   test_mode_pages_whole();
+   test_mode_select_keeps_vendor_pages();
 
    scsiReset(0);
    test_bsfatread_failure();
    test_sense_set();
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
    test_reset_abandons();
+   test_filestore_mode_select();
    test_readonly_image();
    test_format_interleave();
    test_stopped_geometry();

@@ -74,6 +74,9 @@
 #include "../rpi/fileparser.h"
 
 
+/* The longest a vendor mode page (32 to 38) may be, in bytes. */
+#define VENDOR_PAGE_MAX 32
+
 static const parserkey scsiattributes[] = {
    { "Title"           , 0 , 39 , STRING},
    { "Description"     , 0 ,255 , STRING },
@@ -85,12 +88,19 @@ static const parserkey scsiattributes[] = {
    { "ModePage3"       , 0 , 23 , NUMSTRING },
    { "WritPage3"       , 0 , 23 , NUMSTRING },
    { "ModePage4"       , 0 ,  6 , NUMSTRING},
-   { "ModePage32"      , 0 , 10 , NUMSTRING},
-   { "ModePage33"      , 0 ,  9 , NUMSTRING },
-   { "ModePage35"      , 0 ,  3 , NUMSTRING},
-   { "ModePage36"      , 0 ,  4 , NUMSTRING},
-   { "ModePage37"      , 0 ,  6 , NUMSTRING},
-   { "ModePage38"      , 0 ,  6 , NUMSTRING},
+   /* The vendor pages are whatever the drive's own .cfg says, and real
+      drives differ: a Rodime RO3000S's pages 35, 37 and 38 are 4, 8 and 8
+      bytes, which the old limits of 3, 6 and 6 cut short - a page then went
+      out with a length byte that promised more than it carried, and the
+      Acorn FileStore, which reads pages 37 and 38 for "(C)Acorn", turned the
+      drive down.  The page's own length is what is stored and sent, so a
+      larger limit costs only the zero-padded allocation. */
+   { "ModePage32"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "ModePage33"      , 0 , VENDOR_PAGE_MAX , NUMSTRING },
+   { "ModePage35"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "ModePage36"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "ModePage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "ModePage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    /* 5: the LaserVision user code carries the '=' (e.g. "1=986").
       At 4 the parser truncated it to "1=98", and filesystemReadLunUserCode
       read string[4] off the end of the 4-byte allocation. */
@@ -2215,6 +2225,96 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    memset(filesystemState.keyvalues[lunNumber][index].v.string, 0, alloc);
    memcpy(filesystemState.keyvalues[lunNumber][index].v.string, Buffer, len);
    return 1;
+}
+
+/* A numeric field of a mode page: where it starts (counting the page code and
+   length bytes) and how many bytes it takes. */
+typedef struct { uint8_t start; uint8_t size; } modePageField_t;
+
+/* Page 3 (format parameters) and page 4 (rigid drive geometry).  A host that
+   writes zero to one of these fields means "the drive's own value" (the Acorn
+   FileStore formatter zeroes most of page 3 before FORMAT). */
+static const modePageField_t modePage3Fields[] = {
+   {2, 2}, {4, 2}, {6, 2}, {8, 2}, {10, 2}, {12, 2}, {14, 2}, {16, 2}, {18, 2}
+};
+static const modePageField_t modePage4Fields[] = { {2, 3}, {5, 1} };
+
+static const modePageField_t * modePageFields(uint8_t page, size_t * count)
+{
+   if (page == 3) {
+      *count = sizeof modePage3Fields / sizeof modePage3Fields[0];
+      return modePage3Fields;
+   }
+   if (page == 4) {
+      *count = sizeof modePage4Fields / sizeof modePage4Fields[0];
+      return modePage4Fields;
+   }
+   *count = 0;
+   return NULL;
+}
+
+/* Store a mode page a host has sent, which may have been cut short.
+
+   Buffer is the page as received: the page code, the length byte, then the
+   data.  `declared` is the size the length byte promises (counting those two
+   bytes) and `received` how much of it actually arrived.  The Acorn FileStore
+   tools send a 3000-series drive its pages two bytes short, and a real drive
+   takes the bytes it is given and leaves the rest of the page as it was; so
+   does this.  A zero in a numeric field of page 3 or 4 keeps the stored
+   value, so formatting cannot wipe the drive's sectors per track, cylinders
+   or heads.  Any other page is stored as it arrived. */
+int filesystemMergeModePageData(uint8_t lunNumber, uint8_t page, uint8_t declared, uint8_t received, const uint8_t * Buffer)
+{
+   uint8_t merged[256];
+   size_t oldLength = 0;
+   const char * old = filesystemGetModePageData(lunNumber, page, &oldLength);
+   size_t total = declared;
+   size_t fieldCount;
+   const modePageField_t * fields = modePageFields(page, &fieldCount);
+
+   memset(merged, 0, sizeof merged);
+   if (old != NULL) {
+      if (oldLength > sizeof merged)
+         oldLength = sizeof merged;
+      memcpy(merged, old, oldLength);
+      if (oldLength > total)
+         total = oldLength;
+   }
+   if (total > sizeof merged)
+      total = sizeof merged;
+   if (received > total)
+      received = (uint8_t)total;
+
+   /* Page code, and a length byte that covers the whole stored page */
+   if (received > 0)
+      merged[0] = Buffer[0];
+   if (total >= 2)
+      merged[1] = (uint8_t)(total - 2);
+
+   for (uint8_t i = 2; i < received; i++) {
+      bool inField = false;
+      for (size_t f = 0; f < fieldCount; f++)
+         if (i >= fields[f].start && i < fields[f].start + fields[f].size)
+            inField = true;
+      if (!inField)
+         merged[i] = Buffer[i];
+   }
+
+   for (size_t f = 0; f < fieldCount; f++) {
+      if (fields[f].start >= received)
+         continue;
+      unsigned int have = (unsigned int)received - fields[f].start;
+      if (have > fields[f].size)
+         have = fields[f].size;
+      bool allZero = true;
+      for (unsigned int b = 0; b < have; b++)
+         if (Buffer[fields[f].start + b] != 0)
+            allZero = false;
+      if (!allZero)
+         memcpy(&merged[fields[f].start], &Buffer[fields[f].start], have);
+   }
+
+   return filesystemWriteModePageData(lunNumber, page, (uint8_t)total, merged);
 }
 
 // Functions for FAT Transfer support --------------

@@ -85,12 +85,12 @@ meanings:
 | `ModePage3` | 23 | Format Device |
 | `WritPage3` | 23 | The Format-Device bytes returned to a MODE SELECT (write) - the drive can report different values when written vs read. |
 | `ModePage4` | 6 | Rigid Disc Drive Geometry (cylinders / heads - mostly cosmetic to modern software) |
-| `ModePage32` | 10 | Vendor specific (serial number) |
-| `ModePage33` | 9 | Vendor specific |
-| `ModePage35` | 3 | Vendor specific |
-| `ModePage36` | 4 | Vendor specific |
-| `ModePage37` | 6 | Vendor specific - includes `(C)A` |
-| `ModePage38` | 6 | Vendor specific - includes `corn`, i.e. the Acorn copyright the FileStore ROM checks for |
+| `ModePage32` | up to 32 | Vendor specific (serial number) |
+| `ModePage33` | up to 32 | Vendor specific |
+| `ModePage35` | up to 32 | Vendor specific |
+| `ModePage36` | up to 32 | Vendor specific |
+| `ModePage37` | up to 32 | Vendor specific - includes `(C)A` |
+| `ModePage38` | up to 32 | Vendor specific - includes `corn`, i.e. the Acorn copyright the FileStore ROM checks for |
 
 You can add or remove `ModePageNN` lines; they must keep the
 `ModePageNN` naming so Pi1MHz (and BeebEm) pick them up.
@@ -112,9 +112,12 @@ address. A value other than 32 or 33 set here is left alone by FORMAT.
 
 ## Editing safely
 
-- Keep each hex value the **exact byte length** shown above - the parser
-  rejects the wrong length, and a broken descriptor makes the drive fail
-  to start.
+- Keep each of the other hex values the **exact byte length** shown above
+  - the parser rejects the wrong length, and a broken descriptor makes the
+  drive fail to start. The vendor pages (`ModePage32` to `ModePage38`) may be
+  any length up to 32 bytes, as real drives differ (a Rodime RO3000S's pages
+  37 and 38 are 8 bytes each: `2506284329410D00` and `2606636F726E0D00`); give
+  each the length its own second byte says.
 - The shipped `/Pi1MHz/defscsi.cfg` is the best starting point: it
   documents every byte of the INQUIRY data, the mode header and each mode
   page inline. Copy it and edit against those comments.

@@ -1640,21 +1640,15 @@ static uint8_t scsiCommandModeSelect6(void)
          uint8_t len = Buffer[start+1];
 
          if (debugFlag_scsiCommands)debugStringInt16_P(PSTR("SCSI commands: Writing MODE SELECT Page "), page, true);
-         if (start + len + 2  > length)
-            {
-            // No data found / bad page
-            if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT Bad Argument error\r\n"), DEBUG_ERROR);
-
-            // Indicate unsuccessful command in status and message
-            commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
-
-            // Set request sense error globals
-            requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // Bad argument
-            return SCSI_STATUS;
-            }
-
-         filesystemWriteModePageData(commandDataBlock.targetLUN, page, (uint8_t)(len+2), &Buffer[start] );
-         start = (uint8_t)(start + len + 2 );
+         /* The Acorn FileStore tools (FServFmt, FSFormat) send a 3000-series
+            drive its pages two bytes short.  A real drive takes what arrives
+            and keeps the rest of the page. */
+         unsigned int have = (unsigned int)length - start;
+         unsigned int want = (unsigned int)len + 2;
+         if (have > want)
+            have = want;
+         filesystemMergeModePageData(commandDataBlock.targetLUN, page, (uint8_t)want, (uint8_t)have, &Buffer[start] );
+         start = (uint8_t)(start + have );
          if ( page == 4 )
             {
             // update Page 0 NB we should do page 3 but that never changes
