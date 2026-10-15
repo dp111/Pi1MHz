@@ -176,7 +176,7 @@ static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
 
 static bool fat_on_usb(void)
 {
-   return filesystemStorageRoot()[0] != '\0';
+   return filesystemStorageFatRoot()[0] != '\0';
 }
 
 /* The current directory of the Beeb's volume, without its "N:" prefix (as

@@ -1,0 +1,360 @@
+/* Host test of storage=smb's file layer: fsroute.c, smb/smb_client.c,
+   smb/smb_crypto.c and libsmb2 itself, against a real Samba (run_tests.sh
+   starts one with signing mandatory, as Windows 11 has it).  Only the
+   socket shim is the test's (host_sock_shim.c, real sockets in place of
+   lwIP).  Every write is checked against the file on the server's disk. */
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/random.h>
+#include <time.h>
+#include <arpa/inet.h>
+
+#include "fsroute.h"
+#include "smb/smb_client.h"
+#include "config.h"
+#include "watchdog.h"
+#include "net_dns.h"
+#include "rpi/systimer.h"
+#include "rpi/hwrng.h"
+#include "wifi/wifi_lwip.h"
+
+static int passed, failed;
+
+static void check(const char *what, bool ok, const char *why)
+{
+   if (ok) {
+      passed++;
+      printf("PASS %s\n", what);
+   } else {
+      failed++;
+      printf("FAIL %s: %s\n", what, why ? why : "");
+   }
+}
+
+/* ---- the firmware around it --------------------------------------------- */
+
+static const char *cfg_server, *cfg_share = "Beeb", *cfg_user, *cfg_pass;
+
+const char *config_get(const char *key)
+{
+   if (strcmp(key, "smb_server") == 0)   return cfg_server;
+   if (strcmp(key, "smb_share") == 0)    return cfg_share;
+   if (strcmp(key, "smb_user") == 0)     return cfg_user;
+   if (strcmp(key, "smb_password") == 0) return cfg_pass;
+   return NULL;
+}
+
+void watchdog_feed(void) {}
+
+static uint64_t now_us(void)
+{
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+uint32_t RPI_GetSystemTime(void)   { return (uint32_t)now_us(); }
+uint64_t RPI_GetSystemTime64(void) { return now_us(); }
+
+void hwrng_start(void) {}
+int hwrng_word(uint32_t *out, uint32_t wait_us)
+{
+   (void)wait_us;
+   return getrandom(out, sizeof *out, 0) == (ssize_t)sizeof *out ? 0 : -1;
+}
+
+static bool in_poll;
+static unsigned net_polls;
+static wifi_lwip_context_t net_ctx = { true };
+void wifi_lwip_poll(void) { net_polls++; }
+bool wifi_lwip_in_poll(void) { return in_poll; }
+const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &net_ctx; }
+
+int ipaddr_aton(const char *cp, ip_addr_t *addr)
+{
+   struct in_addr a;
+   if (inet_aton(cp, &a) == 0)
+      return 0;
+   addr->addr = a.s_addr;
+   return 1;
+}
+char *ipaddr_ntoa(const ip_addr_t *addr)
+{
+   struct in_addr a = { addr->addr };
+   return inet_ntoa(a);
+}
+err_t net_dns_lookup(const char *name, ip_addr_t *addr, dns_found_callback found, void *arg)
+{
+   (void)name; (void)addr; (void)found; (void)arg;
+   return ERR_ARG;                     /* the tests use a dotted address */
+}
+
+/* FatFs: only the pass-through is checked - nothing on drive 2 reaches it */
+static unsigned fatfs_calls;
+#define FATFS_STUB(sig) sig { fatfs_calls++; return FR_INT_ERR; }
+FATFS_STUB(FRESULT f_open(FIL *fp, const TCHAR *path, BYTE mode))
+FATFS_STUB(FRESULT f_close(FIL *fp))
+FATFS_STUB(FRESULT f_read(FIL *fp, void *buff, UINT btr, UINT *br))
+FATFS_STUB(FRESULT f_write(FIL *fp, const void *buff, UINT btw, UINT *bw))
+FATFS_STUB(FRESULT f_lseek(FIL *fp, FSIZE_t ofs))
+FATFS_STUB(FRESULT f_truncate(FIL *fp))
+FATFS_STUB(FRESULT f_sync(FIL *fp))
+FATFS_STUB(FRESULT f_expand(FIL *fp, FSIZE_t fsz, BYTE opt))
+FATFS_STUB(FRESULT f_opendir(DIR *dp, const TCHAR *path))
+FATFS_STUB(FRESULT f_closedir(DIR *dp))
+FATFS_STUB(FRESULT f_readdir(DIR *dp, FILINFO *fno))
+FATFS_STUB(FRESULT f_mkdir(const TCHAR *path))
+FATFS_STUB(FRESULT f_unlink(const TCHAR *path))
+FATFS_STUB(FRESULT f_rename(const TCHAR *path_old, const TCHAR *path_new))
+FATFS_STUB(FRESULT f_stat(const TCHAR *path, FILINFO *fno))
+
+/* ---- helpers ------------------------------------------------------------ */
+
+static const char *share_dir;          /* the share's folder on this machine */
+
+static bool disk_read(const char *rel, uint8_t *buf, size_t n, long off)
+{
+   char p[512];
+   snprintf(p, sizeof p, "%s/%s", share_dir, rel);
+   FILE *f = fopen(p, "rb");
+   if (f == NULL)
+      return false;
+   bool ok = fseek(f, off, SEEK_SET) == 0 && fread(buf, 1, n, f) == n;
+   fclose(f);
+   return ok;
+}
+
+static long disk_size(const char *rel)
+{
+   char p[512];
+   struct stat st;
+   snprintf(p, sizeof p, "%s/%s", share_dir, rel);
+   return stat(p, &st) == 0 ? (long)st.st_size : -1;
+}
+
+static void pattern(uint8_t *b, size_t n, uint32_t seed)
+{
+   for (size_t i = 0; i < n; i++)
+      b[i] = (uint8_t)((i * 131u + seed * 7u + (i >> 8)) & 0xFFu);
+}
+
+/* ---- the tests ---------------------------------------------------------- */
+
+#define IMAGE_BYTES  (10u * 1024u * 1024u)
+
+static void test_image_lifecycle(void)
+{
+   static char why[200];
+   FIL f;
+   FRESULT r = fsr_mkdir("2:/BeebSCSI0");
+   check("mkdir on the share", r == FR_OK || r == FR_EXIST, "mkdir failed");
+
+   r = fsr_open(&f, "2:/BeebSCSI0/scsi0.dat", FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
+   snprintf(why, sizeof why, "FRESULT %d", (int)r);
+   check("create an image (FA_CREATE_ALWAYS)", r == FR_OK, why);
+   if (r != FR_OK)
+      return;
+
+   /* FORMAT: f_expand(..., 1) on the empty file sets its size */
+   r = fsr_expand(&f, IMAGE_BYTES, 1);
+   snprintf(why, sizeof why, "FRESULT %d, f_size %llu, on disk %ld", (int)r,
+            (unsigned long long)f_size(&f), disk_size("BeebSCSI0/scsi0.dat"));
+   check("f_expand sets the image's size (FORMAT)",
+         r == FR_OK && f_size(&f) == IMAGE_BYTES && disk_size("BeebSCSI0/scsi0.dat") == (long)IMAGE_BYTES, why);
+
+   /* ADFS-style 256-byte sector writes at scattered sectors */
+   static const uint32_t sectors[] = { 0, 1, 2, 7, 255, 4096, 40000 };
+   bool all = true;
+   for (size_t i = 0; i < sizeof sectors / sizeof sectors[0]; i++) {
+      uint8_t buf[256];
+      UINT bw;
+      pattern(buf, sizeof buf, sectors[i]);
+      if (fsr_lseek(&f, (FSIZE_t)sectors[i] * 256u) != FR_OK ||
+          fsr_write(&f, buf, sizeof buf, &bw) != FR_OK || bw != sizeof buf ||
+          f_tell(&f) != (FSIZE_t)(sectors[i] + 1u) * 256u)
+         all = false;
+   }
+   check("256-byte sector writes, f_tell follows", all, "a write or seek failed");
+
+   /* a big write (a 64 KB multi-chunk run) */
+   static uint8_t big[200000];
+   pattern(big, sizeof big, 99);
+   UINT bw = 0;
+   r = fsr_lseek(&f, 2000000u);           /* clear of the sectors above */
+   if (r == FR_OK)
+      r = fsr_write(&f, big, sizeof big, &bw);
+   snprintf(why, sizeof why, "FRESULT %d, wrote %u", (int)r, bw);
+   check("a 200 KB write in one call", r == FR_OK && bw == sizeof big, why);
+
+   r = fsr_close(&f);
+   check("close", r == FR_OK, "close failed");
+
+   /* what the server's disk has */
+   all = true;
+   for (size_t i = 0; i < sizeof sectors / sizeof sectors[0]; i++) {
+      uint8_t want[256], got[256];
+      pattern(want, sizeof want, sectors[i]);
+      if (!disk_read("BeebSCSI0/scsi0.dat", got, sizeof got, (long)sectors[i] * 256L) ||
+          memcmp(want, got, sizeof got) != 0)
+         all = false;
+   }
+   static uint8_t disk_big[sizeof big];
+   all = all && disk_read("BeebSCSI0/scsi0.dat", disk_big, sizeof disk_big, 2000000L) &&
+         memcmp(disk_big, big, sizeof big) == 0;
+   check("the server's file has every byte written", all, "content differs on disk");
+
+   /* read back through the share: small reads (the window), then big */
+   r = fsr_open(&f, "2:/BeebSCSI0/scsi0.dat", FA_READ);
+   check("reopen read-only", r == FR_OK && f_size(&f) == IMAGE_BYTES, "reopen failed");
+   if (r != FR_OK)
+      return;
+   all = true;
+   for (size_t i = 0; i < sizeof sectors / sizeof sectors[0]; i++) {
+      uint8_t want[256], got[256];
+      UINT br;
+      pattern(want, sizeof want, sectors[i]);
+      if (fsr_lseek(&f, (FSIZE_t)sectors[i] * 256u) != FR_OK ||
+          fsr_read(&f, got, sizeof got, &br) != FR_OK || br != sizeof got ||
+          memcmp(want, got, sizeof got) != 0)
+         all = false;
+   }
+   check("256-byte sector reads match", all, "a sector read back differs");
+
+   /* consecutive small reads are served from the window: count the waits */
+   unsigned before = net_polls;
+   uint8_t s[256];
+   UINT br;
+   fsr_lseek(&f, 0);
+   fsr_read(&f, s, sizeof s, &br);                  /* fills the window */
+   unsigned after_first = net_polls;
+   for (int i = 0; i < 60; i++)
+      fsr_read(&f, s, sizeof s, &br);               /* 60 more sectors, same 32 KB */
+   snprintf(why, sizeof why, "polls: first read %u, next 60 reads %u",
+            after_first - before, net_polls - after_first);
+   check("sectors within the read-ahead window need no network", net_polls == after_first, why);
+
+   static uint8_t rb[sizeof big];
+   r = fsr_lseek(&f, 2000000u);
+   if (r == FR_OK)
+      r = fsr_read(&f, rb, sizeof rb, &br);
+   check("a 200 KB read matches", r == FR_OK && br == sizeof rb && memcmp(rb, big, sizeof rb) == 0,
+         "big read differs");
+
+   /* read-only: a seek past the end is clipped, as FatFs does */
+   r = fsr_lseek(&f, IMAGE_BYTES + 5000u);
+   check("read-only seek past the end clips to the size", r == FR_OK && f_tell(&f) == IMAGE_BYTES, "not clipped");
+   r = fsr_read(&f, rb, 10, &br);
+   check("reading at the end gives 0 bytes", r == FR_OK && br == 0, "read past end");
+   uint8_t one = 0;
+   r = fsr_write(&f, &one, 1, &bw);
+   check("a write to a read-only open is refused", r == FR_DENIED, "write allowed");
+   fsr_close(&f);
+}
+
+static void test_names(void)
+{
+   static char why[200];
+   FILINFO fi;
+   FRESULT r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+   snprintf(why, sizeof why, "FRESULT %d size %llu name %s attr %02x", (int)r,
+            (unsigned long long)fi.fsize, fi.fname, fi.fattrib);
+   check("stat a file", r == FR_OK && fi.fsize == IMAGE_BYTES && strcmp(fi.fname, "scsi0.dat") == 0 &&
+         !(fi.fattrib & AM_DIR) && fi.fdate != 0, why);
+   r = fsr_stat("2:/BeebSCSI0", &fi);
+   check("stat a directory", r == FR_OK && (fi.fattrib & AM_DIR), "not a directory");
+   r = fsr_stat("2:/BeebSCSI0/nothing.dat", &fi);
+   check("stat a missing file is FR_NO_FILE", r == FR_NO_FILE, "wrong code");
+
+   /* a cfg next to it, then list the directory */
+   FIL f;
+   UINT bw;
+   const char cfg[] = "Title=Network disc\n";
+   r = fsr_open(&f, "2:/BeebSCSI0/scsi0.cfg", FA_WRITE | FA_CREATE_ALWAYS);
+   if (r == FR_OK) {
+      r = fsr_write(&f, cfg, sizeof cfg - 1, &bw);
+      fsr_close(&f);
+   }
+   check("write a small file", r == FR_OK, "cfg write failed");
+
+   DIR d;
+   r = fsr_opendir(&d, "2:/BeebSCSI0");
+   bool seen_dat = false, seen_cfg = false, seen_dot = false;
+   int n = 0;
+   while (r == FR_OK) {
+      r = fsr_readdir(&d, &fi);
+      if (r != FR_OK || fi.fname[0] == '\0')
+         break;
+      n++;
+      if (strcmp(fi.fname, "scsi0.dat") == 0) seen_dat = true;
+      if (strcmp(fi.fname, "scsi0.cfg") == 0) seen_cfg = fi.fsize == sizeof cfg - 1;
+      if (fi.fname[0] == '.') seen_dot = true;
+   }
+   fsr_closedir(&d);
+   snprintf(why, sizeof why, "%d entries, dat %d cfg %d dot %d", n, seen_dat, seen_cfg, seen_dot);
+   check("readdir lists the files, no dot entries", seen_dat && seen_cfg && !seen_dot, why);
+
+   r = fsr_opendir(&d, "2:/NoSuchDir");
+   check("opendir a missing directory is FR_NO_PATH", r == FR_NO_PATH, "wrong code");
+
+   /* safewrite's dance: rename, unlink */
+   r = fsr_rename("2:/BeebSCSI0/scsi0.cfg", "2:/BeebSCSI0/scsi0.bak");
+   check("rename", r == FR_OK && disk_size("BeebSCSI0/scsi0.bak") == (long)(sizeof cfg - 1), "rename failed");
+   r = fsr_rename("2:/BeebSCSI0/scsi0.bak", "/BeebSCSI0/scsi0.cfg");
+   check("rename with a driveless target (FatFs style)", r == FR_OK && disk_size("BeebSCSI0/scsi0.cfg") > 0,
+         "rename back failed");
+   r = fsr_unlink("2:/BeebSCSI0/scsi0.cfg");
+   check("unlink a file", r == FR_OK && disk_size("BeebSCSI0/scsi0.cfg") < 0, "still there");
+   r = fsr_mkdir("2:/BeebSCSI0/empty");
+   if (r == FR_OK)
+      r = fsr_unlink("2:/BeebSCSI0/empty");
+   check("unlink an empty directory", r == FR_OK, "rmdir failed");
+}
+
+static void test_routing(void)
+{
+   FIL f;
+   unsigned before = fatfs_calls;
+   (void)fsr_open(&f, "/BeebSCSI0/scsi0.dat", FA_READ);
+   (void)fsr_open(&f, "1:/BeebSCSI0/scsi0.dat", FA_READ);
+   FILINFO fi;
+   (void)fsr_stat("0:/x", &fi);
+   check("paths not on drive 2 go to FatFs", fatfs_calls == before + 3, "not passed through");
+
+   in_poll = true;
+   FRESULT r = fsr_open(&f, "2:/BeebSCSI0/scsi0.dat", FA_READ);
+   in_poll = false;
+   check("inside the network poll: refused at once (FR_TIMEOUT)", r == FR_TIMEOUT, "not refused");
+}
+
+int main(void)
+{
+   cfg_server = getenv("SMB_TEST_SERVER");
+   cfg_user   = getenv("SMB_TEST_USER");
+   cfg_pass   = getenv("SMB_TEST_PASS");
+   share_dir  = getenv("SMB_TEST_DIR");
+   if (cfg_server == NULL || share_dir == NULL) {
+      printf("SKIP: no SMB_TEST_SERVER / SMB_TEST_DIR\n");
+      return 0;
+   }
+   uint64_t t0 = now_us();
+   bool up = smb_client_connect();
+   char st[160];
+   smb_client_status(st, sizeof st);
+   check("log on to the share (signing mandatory)", up, st);
+   printf("     logon took %llu ms; %s\n", (unsigned long long)((now_us() - t0) / 1000u), st);
+   if (!up) {
+      printf("%d passed, %d failed\n", passed, failed);
+      return 1;
+   }
+   test_image_lifecycle();
+   test_names();
+   test_routing();
+
+   /* a wrong password: refused at logon, reported, and no hang */
+   fsr_reset();
+   printf("%d passed, %d failed\n", passed, failed);
+   return failed ? 1 : 0;
+}

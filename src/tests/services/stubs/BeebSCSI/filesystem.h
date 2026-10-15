@@ -12,6 +12,7 @@ void filesystemRegisterRemount(void (*closing)(void));
 bool filesystemHostPathBusy(const char *path);
 uint32_t filesystemReadFile(const char *filename, uint8_t **address, unsigned int max_size);
 const char *filesystemStorageRoot(void);
+const char *filesystemStorageFatRoot(void);
 bool filesystemStoragePath(const char *path, char *buf, size_t size);
 bool filesystemStorageOnUsb(void);
 bool filesystemPathOnCard(const char *path);

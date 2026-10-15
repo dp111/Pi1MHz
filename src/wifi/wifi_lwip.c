@@ -1579,7 +1579,7 @@ static void wifi_lwip_rejoin_service(void)
    wifi_lwip_schedule_next_rejoin(now_us);
 }
 
-void wifi_lwip_poll(void)
+static void wifi_lwip_poll_pass(void)
 {
    /* This must run BEFORE the timers_running gate: an ERROR latched during
       first bring-up (SDIO failure, netif_add) happens with timers_running
@@ -1735,4 +1735,20 @@ void wifi_lwip_poll(void)
 const wifi_lwip_context_t *wifi_lwip_get_context(void)
 {
    return &g_wifi_lwip_context;
+}
+
+/* How deep inside wifi_lwip_poll() we are: the lwIP callbacks it runs must
+   not wait on the network themselves (smb_client_can_wait). */
+static uint8_t poll_depth;
+
+void wifi_lwip_poll(void)
+{
+   poll_depth++;
+   wifi_lwip_poll_pass();
+   poll_depth--;
+}
+
+bool wifi_lwip_in_poll(void)
+{
+   return poll_depth != 0u;
 }

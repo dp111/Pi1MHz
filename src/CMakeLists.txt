@@ -214,6 +214,26 @@ add_library(pi1mhz_tls STATIC
 )
 target_compile_options(pi1mhz_tls PRIVATE -w -O2 -fno-lto)
 
+# libsmb2 (storage=smb, docs/dev/smb-network-storage-plan.md): the SMB2/3
+# client, a library of its own for the same reasons as mbedTLS above.  Its
+# AES and MD4 are replaced by smb/smb_crypto.c (speed; RSA's MD4 licence),
+# Kerberos, share enumeration and its platform compat file are not used.
+# smb/port/smb_port.h renames the POSIX calls it makes to the socket shim
+# (smb/smb_socket.c); defined here, before the global include directories,
+# so only smb/port/include supplies its <sys/socket.h> and friends.
+# -ffunction-sections: the link's --gc-sections then drops what we never
+# call (the sync API, the server side).
+set(LIBSMB2_DIR ${CMAKE_CURRENT_SOURCE_DIR}/smb/libsmb2)
+file(GLOB libsmb2_files ${LIBSMB2_DIR}/lib/*.c)
+list(FILTER libsmb2_files EXCLUDE REGEX "/(aes|aes_reference|aes_apple|md4c|krb5-wrapper|compat)\\.c$")
+add_library(pi1mhz_smb STATIC ${libsmb2_files})
+target_include_directories(pi1mhz_smb PRIVATE
+   ${CMAKE_CURRENT_SOURCE_DIR}/smb/port/include
+   ${LIBSMB2_DIR}/include ${LIBSMB2_DIR}/include/smb2 ${LIBSMB2_DIR}/lib)
+target_compile_definitions(pi1mhz_smb PRIVATE HAVE_CONFIG_H _U_= _GNU_SOURCE)
+target_compile_options(pi1mhz_smb PRIVATE -w -O2 -fno-lto -ffunction-sections -fdata-sections
+   -include ${CMAKE_CURRENT_SOURCE_DIR}/smb/port/smb_port.h)
+
 set(core_files
    # Architecture-optimised string routines, built with our real -mcpu flags.
    # The prebuilt libc.a is compiled -Os for a weaker multilib than either
@@ -382,6 +402,10 @@ set(services_emulator_files
    fat_service.c
    net_service.c
    net_dns.c
+   fsroute.c
+   smb/smb_client.c
+   smb/smb_crypto.c
+   smb/smb_socket.c
    net_service.h
    net_tnfs.c
    fujibus_service.c
@@ -650,7 +674,11 @@ endif()
 
 add_executable( Pi1MHz ${Pi1MHz_sources} )
 
-target_link_libraries( Pi1MHz PRIVATE pi1mhz_tls m )
+target_link_libraries( Pi1MHz PRIVATE pi1mhz_tls pi1mhz_smb m )
+target_include_directories( Pi1MHz SYSTEM PRIVATE ${LIBSMB2_DIR}/include )
+# the shim implements the port headers' prototypes (only it, not the firmware)
+set_source_files_properties(smb/smb_socket.c PROPERTIES
+   INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/smb/port/include)
 if(PI1MHZ_SSH)
    target_compile_definitions(Pi1MHz PRIVATE WOLFSSL_USER_SETTINGS PI1MHZ_SSH)
    target_link_libraries( Pi1MHz PRIVATE nettools_wolfssh wolfssl )

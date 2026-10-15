@@ -78,6 +78,11 @@ bool filesystemStoragePath(const char *path, char *buf, size_t size);
 /* The storage is on the drive (decided; never waits).  For host-side
    interlocks: their paths are on the card. */
 bool filesystemStorageOnUsb(void);
+/* storage=smb is decided on: the Beeb's discs are on the network share. */
+bool filesystemStorageOnSmb(void);
+/* The storage root for the FAT service, FujiNet and Music 5000 recordings:
+   filesystemStorageRoot(), except that storage=smb leaves them on the card. */
+const char *filesystemStorageFatRoot(void);
 /* The Beeb chooses the storage itself (*FX147,203,4/5): the card, or the USB
    drive, overriding storage= until the Pi restarts.  Takes effect at the
    next filesystemReset (the caller's eject + insert).  False, choice

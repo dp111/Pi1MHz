@@ -50,6 +50,7 @@
 #include "../usb.h"
 #include "../usb_mouse.h"
 #include "../usb_storage.h"
+#include "../smb/smb_client.h"
 
 #include "lwip/err.h"
 #include "lwip/tcp.h"
@@ -3293,7 +3294,12 @@ static bool route_status(ws_conn_t *c)
    table_row(&b, "Serial", tmp);
    modem_status(tmp, sizeof tmp);
    table_row(&b, "Modem", tmp);
-   table_row(&b, "Beeb storage", filesystemStorageOnUsb() ? "USB drive" : "SD card");
+   table_row(&b, "Beeb storage", filesystemStorageOnUsb() ? "USB drive"
+                               : filesystemStorageOnSmb() ? "SMB share" : "SD card");
+   if (smb_client_configured()) {
+      smb_client_status(tmp, sizeof tmp);
+      table_row(&b, "SMB share", tmp);
+   }
    if (usb_is_host()) {
       char m[64];
       usb_mouse_status(m, sizeof m);

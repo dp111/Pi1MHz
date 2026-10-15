@@ -16,6 +16,8 @@ trap 'rm -rf "$B"' EXIT
 # Mirror the tree layout: filesystem.c and scsi.c include "../rpi/rpi.h",
 # "../videoplayer.h" and friends relative to themselves.
 mkdir -p "$B/rpi" "$B/BeebSCSI/fatfs"
+# storage=smb is not under test here: every fsr_* call is FatFs's own
+cp "$HERE"/../fsroute_passthrough.h "$B/fsroute.h"
 cp "$SRC"/config.h "$SRC"/videoplayer.h "$SRC"/harddisc_emulator.h "$SRC"/usb_storage.h "$B/"
 cp "$SRC"/rpi/gpio.h "$SRC"/rpi/info.h "$SRC"/rpi/byteorder.h "$SRC"/rpi/base.h \
    "$SRC"/rpi/mailbox.h "$SRC"/rpi/rpi.h "$SRC"/rpi/systimer.h "$SRC"/rpi/lowmem.h \

@@ -12,6 +12,8 @@ trap 'rm -rf "$B"' EXIT
 # Mirror the tree layout: the file includes "fatfs/ff.h" and "../rpi/rpi.h"
 # relative to itself.
 mkdir -p "$B/BeebSCSI/fatfs" "$B/rpi"
+# storage=smb is not under test here: every fsr_* call is FatFs's own
+cp "$HERE"/../fsroute_passthrough.h "$B/fsroute.h"
 cp "$SRC"/BeebSCSI/filesystem_safewrite.c "$B/BeebSCSI/"
 cp "$HERE"/stubs/fatfs/ff.h      "$B/BeebSCSI/fatfs/"
 cp "$HERE"/stubs/filesystem.h    "$B/BeebSCSI/"

@@ -44,6 +44,7 @@
 #include "Pi1MHz.h"
 #include "pvf.h"
 #include "videoplayer.h"
+#include "fsroute.h"
 
 #define YUV_PLANE 0
 
@@ -183,7 +184,7 @@ static bool read_chunked(void *dst, uint32_t len)
     UINT n;
     while (len) {
         uint32_t piece = len < 4096u ? len : 4096u;
-        if (f_read(&vp.file, p, piece, &n) != FR_OK || n != piece)
+        if (fsr_read(&vp.file, p, piece, &n) != FR_OK || n != piece)
             return false;
         p += piece;
         len -= piece;
@@ -207,8 +208,8 @@ static bool submit_au(uint32_t frame, bool with_audio, bool count)
 
     pvf_record_t rec;
     UINT n;
-    if (f_lseek(&vp.file, vp.index[frame]) != FR_OK ||
-        f_read(&vp.file, &rec, sizeof(rec), &n) != FR_OK || n != sizeof(rec) ||
+    if (fsr_lseek(&vp.file, vp.index[frame]) != FR_OK ||
+        fsr_read(&vp.file, &rec, sizeof(rec), &n) != FR_OK || n != sizeof(rec) ||
         rec.video_len > max) {
         static bool said;                /* once: a corrupt file repeats this per frame */
         if (!said) {
@@ -239,7 +240,7 @@ static bool submit_au(uint32_t frame, bool with_audio, bool count)
                     break;
                 if (contig > frames)
                     contig = frames;
-                if (f_read(&vp.file, dst, contig * 4u, &n) != FR_OK || n != contig * 4u)
+                if (fsr_read(&vp.file, dst, contig * 4u, &n) != FR_OK || n != contig * 4u)
                     break;
                 audio_commit(contig);
                 frames -= contig;
@@ -703,7 +704,7 @@ static void pvf_reopen(void)
         vp.in_flight = 0;
         vp.dup_owed = 0;             /* the old file's owed still is void */
         audio_flush();
-        f_close(&vp.file);
+        fsr_close(&vp.file);
         free(vp.index);
         vp.index = NULL;
         vp.open = false;
@@ -743,7 +744,7 @@ static void pvf_reopen(void)
            A dimension change needs a Beeb reset (full re-init). */
         LOG_INFO("videoplayer: %s is %"PRIu32"x%"PRIu32", player is %"PRIu32"x%"PRIu32" - reset to switch\n",
                  pvf_path, vp.hdr.width, vp.hdr.height, old_w, old_h);
-        f_close(&vp.file);
+        fsr_close(&vp.file);
         free(vp.index);
         vp.index = NULL;
         vp.hdr.width = old_w;
@@ -1113,7 +1114,7 @@ static bool pvf_open_file(void)
              filesystemStorageRoot(), filesystemGetLunDirectoryVFS());
     /* Only the jukeboxed directory's own video: a jukebox to an empty
        directory must stay cheap - no SD work beyond this failed open. */
-    if (f_open(&vp.file, pvf_path, FA_READ) != FR_OK) {
+    if (fsr_open(&vp.file, pvf_path, FA_READ) != FR_OK) {
         vp_fail = "open";
         return false;
     }
@@ -1128,7 +1129,7 @@ static bool pvf_open_file(void)
         LOG_INFO("videoplayer: %s: no cluster map; seeks will be slow\n", pvf_path);
     vp.clmt_entries = clmt_entries;
 
-    if (f_read(&vp.file, &vp.hdr, sizeof(vp.hdr), &n) != FR_OK ||
+    if (fsr_read(&vp.file, &vp.hdr, sizeof(vp.hdr), &n) != FR_OK ||
         n != sizeof(vp.hdr) ||
         vp.hdr.magic != PVF_MAGIC || vp.hdr.version != PVF_VERSION ||
         vp.hdr.frame_count == 0 ||
@@ -1139,24 +1140,24 @@ static bool pvf_open_file(void)
         vp.hdr.height == 0 || vp.hdr.height > 1088) {
         LOG_INFO("videoplayer: bad " PVF_FILENAME " header\n");
         vp_fail = "header";
-        f_close(&vp.file);
+        fsr_close(&vp.file);
         return false;
     }
 
     vp.index = malloc(vp.hdr.frame_count * sizeof(uint32_t));
     if (!vp.index) {
         vp_fail = "nomem";
-        f_close(&vp.file);
+        fsr_close(&vp.file);
         return false;
     }
-    if (f_lseek(&vp.file, vp.hdr.index_offset) != FR_OK ||
-        f_read(&vp.file, vp.index, vp.hdr.frame_count * sizeof(uint32_t), &n) != FR_OK ||
+    if (fsr_lseek(&vp.file, vp.hdr.index_offset) != FR_OK ||
+        fsr_read(&vp.file, vp.index, vp.hdr.frame_count * sizeof(uint32_t), &n) != FR_OK ||
         n != vp.hdr.frame_count * sizeof(uint32_t)) {
         LOG_INFO("videoplayer: bad " PVF_FILENAME " index\n");
         vp_fail = "index";
         free(vp.index);
         vp.index = NULL;
-        f_close(&vp.file);
+        fsr_close(&vp.file);
         return false;
     }
 
@@ -1192,7 +1193,7 @@ static void video_give_up(uint32_t handles[NUM_FRAME_BUFFERS])
         }
     free(vp.index);
     vp.index = NULL;
-    f_close(&vp.file);
+    fsr_close(&vp.file);
     vp.open = false;
     screen_plane_enable(YUV_PLANE, false);
     vp.plane_on = false;
@@ -1218,7 +1219,7 @@ void videoplayer_init(uint8_t instance, uint8_t address)
     if (h264dec_running() && !h264dec_reset())
         videobuf_magic2 = 0u;        /* leaked: the VC may still decode into them */
     if (vp.open) {
-        f_close(&vp.file);
+        fsr_close(&vp.file);
         audio_release(&vp.producer);
     }
     free(vp.index);
@@ -1303,7 +1304,7 @@ bool videoplayer_shutdown(void)
     screen_plane_enable(YUV_PLANE, false);
     vp.plane_on = false;
     if (vp.open) {
-        f_close(&vp.file);
+        fsr_close(&vp.file);
         if (vp.audio_present)
             audio_release(&vp.producer);
         vp.audio_present = false;
@@ -1345,7 +1346,7 @@ static void vp_bring_up(void)
         vp_fail = "decoder";
         free(vp.index);
         vp.index = NULL;
-        f_close(&vp.file);
+        fsr_close(&vp.file);
         return;
     }
 

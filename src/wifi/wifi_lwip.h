@@ -31,6 +31,8 @@ typedef struct {
 void wifi_lwip_prepare(void);
 void wifi_lwip_init_stack(void);
 void wifi_lwip_poll(void);
+/* Inside wifi_lwip_poll() - in an lwIP callback - right now. */
+bool wifi_lwip_in_poll(void);
 const wifi_lwip_context_t *wifi_lwip_get_context(void);
 /* Drop the live lease and addresses while retaining the reusable lwIP core. */
 void wifi_lwip_disconnect(void);

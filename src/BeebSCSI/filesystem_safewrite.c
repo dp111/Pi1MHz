@@ -12,6 +12,7 @@
 
 #include "fatfs/ff.h"
 #include "filesystem.h"
+#include "../fsroute.h"
 #include "../rpi/rpi.h"
 
 /* Read a file back and compare it with what was meant to be written. */
@@ -22,7 +23,7 @@ static bool filesystemFileMatches(const char * filename, const uint8_t *address,
    uint32_t offset = 0;
    bool ok;
 
-   if (f_open(&fileObject, filename, FA_READ) != FR_OK)
+   if (fsr_open(&fileObject, filename, FA_READ) != FR_OK)
       return false;
    ok = (f_size(&fileObject) == length);
    while (ok && offset < length) {
@@ -30,13 +31,13 @@ static bool filesystemFileMatches(const char * filename, const uint8_t *address,
       UINT got;
       UINT want = (length - offset) > sizeof buffer
                 ? (UINT)sizeof buffer : (UINT)(length - offset);
-      if (f_read(&fileObject, buffer, want, &got) != FR_OK || got != want
+      if (fsr_read(&fileObject, buffer, want, &got) != FR_OK || got != want
           || memcmp(buffer, address + offset, want) != 0)
          ok = false;
       else
          offset += got;
    }
-   f_close(&fileObject);
+   fsr_close(&fileObject);
    return ok;
 }
 
@@ -76,21 +77,21 @@ bool filesystemWriteFileSafe(const char * filename, const uint8_t *address, uint
        || !filesystemFileMatches(newname, address, length))
       goto fail;
 
-   if (f_stat(filename, &fno) == FR_OK) {
-      (void)f_unlink(bakname);                 /* may not exist - do not care */
-      if (f_rename(filename, bakname) != FR_OK)
+   if (fsr_stat(filename, &fno) == FR_OK) {
+      (void)fsr_unlink(bakname);                 /* may not exist - do not care */
+      if (fsr_rename(filename, bakname) != FR_OK)
          goto fail;
       moved_old = true;
    }
-   if (f_rename(newname, filename) != FR_OK)
+   if (fsr_rename(newname, filename) != FR_OK)
       goto fail;
    if (moved_old)
-      (void)f_unlink(bakname);
+      (void)fsr_unlink(bakname);
    return true;
 
 fail:
-   (void)f_unlink(newname);
+   (void)fsr_unlink(newname);
    if (moved_old)
-      (void)f_rename(bakname, filename);       /* put the original back */
+      (void)fsr_rename(bakname, filename);       /* put the original back */
    return false;
 }

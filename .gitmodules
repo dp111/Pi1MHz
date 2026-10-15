@@ -11,3 +11,6 @@
 [submodule "src/wifi/mbedtls"]
 	path = src/wifi/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "src/smb/libsmb2"]
+	path = src/smb/libsmb2
+	url = https://github.com/sahlberg/libsmb2.git

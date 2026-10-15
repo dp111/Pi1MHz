@@ -72,6 +72,7 @@
 #include "../rpi/rpi.h"
 #include "../rpi/systimer.h"
 #include "../rpi/fileparser.h"
+#include "../fsroute.h"		/* f_* by path: the card, the USB drive or the SMB share */
 
 
 /* The longest a vendor mode page (32 to 38) may be, in bytes. */
@@ -400,7 +401,7 @@ static void filesystemRemountNotify(void)
    the SD card's discs in place of the drive's.  Never from the FIQ. */
 #define STORAGE_POWER_ON_WAIT_US 5000000u
 
-static enum { ROOT_SD, ROOT_USB, ROOT_UNDECIDED } fsRoot;
+static enum { ROOT_SD, ROOT_USB, ROOT_SMB, ROOT_UNDECIDED, ROOT_UNDECIDED_SMB } fsRoot;
 /* The Beeb's own choice (filesystemChooseStorage), in .bss: until the Pi
    restarts - BREAK keeps it. */
 static enum { CHOICE_CONFIG, CHOICE_SD, CHOICE_USB } fsStorageChoice;
@@ -419,8 +420,12 @@ static void filesystemStorageReset(void)
    else if (fsStorageChoice == CHOICE_USB)
       /* chosen on purpose, so no power-on wait: the drive, if it is there */
       fsRoot = usb_storage_mounted() ? ROOT_USB : ROOT_SD;
+   else if (storage != NULL && strcasecmp(storage, "smb") == 0)
+      fsRoot = ROOT_UNDECIDED_SMB;
    else
       fsRoot = (storage != NULL && strcasecmp(storage, "usb") == 0) ? ROOT_UNDECIDED : ROOT_SD;
+   /* storage=smb: after a lost link, the next use reconnects */
+   fsr_reset();
    /* The card's remount puts its current directory back at the root; the
       drive is not remounted, so do the same for it (no drive: an at once
       FR_NOT_ENABLED or FR_NOT_READY). */
@@ -442,7 +447,21 @@ const char *filesystemStorageRoot(void)
    if (fsRoot == ROOT_UNDECIDED)
       fsRoot = (usb_storage_mounted() || usb_storage_wait_for_drive(fsRootWaitUntil))
              ? ROOT_USB : ROOT_SD;
-   return fsRoot == ROOT_USB ? "1:" : "";
+   /* storage=smb (fsroute.c, smb/smb_client.c): log on to the share, waiting at
+      power-on for the WiFi.  A share that cannot be reached leaves the
+      Beeb on the card until the next BREAK, as a missing drive does. */
+   if (fsRoot == ROOT_UNDECIDED_SMB)
+      fsRoot = fsr_net_connect() ? ROOT_SMB : ROOT_SD;
+   return fsRoot == ROOT_USB ? "1:" : fsRoot == ROOT_SMB ? "2:" : "";
+}
+
+/* The root for the FAT service, FujiNet's store and Music 5000 recordings:
+   they work through FatFs directly and are not routed to the share yet, so
+   under storage=smb they stay on the card. */
+const char *filesystemStorageFatRoot(void)
+{
+   const char *root = filesystemStorageRoot();
+   return root[0] == '2' ? "" : root;
 }
 
 /* The drive is decided on: host paths (WebDAV, MTP) are on the card, so
@@ -451,6 +470,18 @@ const char *filesystemStorageRoot(void)
 bool filesystemStorageOnUsb(void)
 {
    return fsRoot == ROOT_USB;
+}
+
+bool filesystemStorageOnSmb(void)
+{
+   return fsRoot == ROOT_SMB;
+}
+
+/* The LUNs' files are not on the card (the drive or the share): the host
+   interlocks, which compare card paths, have nothing of theirs to guard. */
+static bool filesystemLunsOffCard(void)
+{
+   return fsRoot == ROOT_USB || fsRoot == ROOT_SMB;
 }
 
 // Reset the file system (called when the host signals reset)
@@ -649,7 +680,7 @@ static void fsHostLunNames(uint8_t lunNumber, char *dir, size_t dirSize,
 bool filesystemHostPathBusy(const char *path)
 {
    if (path == NULL || path[0] == '\0') return false;
-   if (filesystemStorageOnUsb()) return false;   // the LUNs' files are on the drive
+   if (filesystemLunsOffCard()) return false;    // the LUNs' files are on the drive or share
 
    size_t pathLen = strlen(path);
    while (pathLen > 1u && path[pathLen - 1u] == '/') pathLen--;   // ignore a trailing /
@@ -681,7 +712,7 @@ bool filesystemHostPathBusy(const char *path)
 int8_t filesystemLunFromHostPath(const char *path)
 {
    if (path == NULL) return -1;
-   if (filesystemStorageOnUsb()) return -1;      // the LUNs' files are on the drive
+   if (filesystemLunsOffCard()) return -1;       // the LUNs' files are on the drive or share
 
    for (uint8_t lunNumber = 0; lunNumber < MAX_LUNS; lunNumber++) {
       char dir[24];
@@ -793,7 +824,7 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
    }
 
    // Transitioning from started to stopped
-   f_close(&filesystemState.fileObject[lunNumber]);
+   fsr_close(&filesystemState.fileObject[lunNumber]);
    parse_releasekeyvalues(filesystemState.keyvalues[lunNumber], NUM_KEYS);
    filesystemState.fsLunStatus[lunNumber] = false;
 
@@ -902,7 +933,7 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
       snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d", filesystemStorageRoot(),
                filesystemState.lunDirectoryVFS);
 
-   fsResult = f_opendir(&dirObject, fileName);
+   fsResult = fsr_opendir(&dirObject, fileName);
 
    // Did a directory exist?
    if (fsResult == FR_NO_PATH) {
@@ -912,7 +943,7 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
          return false;                        // no LUN-dir auto-create under write-protect
       // Create the LUN image directory - it's not present on the SD card
       // Check the result
-      if (f_mkdir(fileName) != FR_OK) {
+      if (fsr_mkdir(fileName) != FR_OK) {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunDirectory(): ERROR: Unable to create LUN directory\r\n"));
          return false;
       }
@@ -922,7 +953,7 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
 
    }
 
-   f_closedir(&dirObject);
+   fsr_closedir(&dirObject);
    // Check the result from f_opendir
    if (fsResult != FR_OK) {
       if (debugFlag_filesystem) {
@@ -964,7 +995,7 @@ bool filesystemVFSVolumePresent(void)
       FILINFO fno;
       snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d/video.pvf",
                filesystemStorageRoot(), filesystemState.lunDirectoryVFS);
-      vfs_vol_present = (f_stat(fileName, &fno) == FR_OK);
+      vfs_vol_present = (fsr_stat(fileName, &fno) == FR_OK);
       vfs_vol_cached_dir = (int16_t)filesystemState.lunDirectoryVFS;
    }
    return vfs_vol_present;
@@ -978,7 +1009,7 @@ bool filesystemVFSDatPresent(void)
    FILINFO fno;
    snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d/scsi0.dat",
             filesystemStorageRoot(), filesystemState.lunDirectoryVFS);
-   return f_stat(fileName, &fno) == FR_OK;
+   return fsr_stat(fileName, &fno) == FR_OK;
 }
 
 /* What /BeebVFS<dir> holds, without jukeboxing to it: 2 = full disc
@@ -989,10 +1020,10 @@ uint8_t filesystemVFSDirType(uint8_t dir)
 {
    FILINFO fno;
    snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.dat", filesystemStorageRoot(), dir);
-   if (f_stat(fileName, &fno) == FR_OK)
+   if (fsr_stat(fileName, &fno) == FR_OK)
       return 2;
    snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/video.pvf", filesystemStorageRoot(), dir);
-   if (f_stat(fileName, &fno) == FR_OK)
+   if (fsr_stat(fileName, &fno) == FR_OK)
       return 1;
    return 0;
 }
@@ -1041,7 +1072,7 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
       LUN at all, and READ6's auto-start handed BAD_FORMAT to a host with no
       timeout.  This is only the Beeb-facing LUN handle; MTP and WebDAV write
       these files through their own paths and are unaffected. */
-   fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName,
+   fsResult = fsr_open(&filesystemState.fileObject[lunNumber], fileName,
                      (lunNumber >= 8) ? FA_READ : (FA_READ | FA_WRITE));
 
    /* The same FR_DENIED for an ADFS image marked read-only: start it FA_READ
@@ -1049,7 +1080,7 @@ bool filesystemCheckLunImage(uint8_t lunNumber)
       reported as done, as under Beeb_write_protect (fsLunReadOnly). */
    filesystemState.fsLunReadOnly[lunNumber] = false;
    if (fsResult == FR_DENIED && lunNumber < 8) {
-      fsResult = f_open(&filesystemState.fileObject[lunNumber], fileName, FA_READ);
+      fsResult = fsr_open(&filesystemState.fileObject[lunNumber], fileName, FA_READ);
       filesystemState.fsLunReadOnly[lunNumber] = (fsResult == FR_OK);
    }
 
@@ -1233,21 +1264,21 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
       // open the image and load its descriptor for a LUN that stays stopped,
       // breaking "fileObject open iff started" for the FORMAT path.
       FILINFO fno;
-      if (f_stat(fileName, &fno) == FR_OK) {
+      if (fsr_stat(fileName, &fno) == FR_OK) {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunImage(): .dat already exists - ignoring request to create a new .dat\r\n"));
          return true;
       }
    }
 
    // Create a new .dat file
-   fsResult = f_open(&fileObject, fileName, FA_CREATE_NEW | FA_READ | FA_WRITE);
+   fsResult = fsr_open(&fileObject, fileName, FA_CREATE_NEW | FA_READ | FA_WRITE);
    if (fsResult != FR_OK) {
       // Create .dat file failed
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunImage(): ERROR: Could not create new .dat file!\r\n"));
       return false;
    }
 
-   f_close(&fileObject);
+   fsr_close(&fileObject);
    // LUN .dat file created successfully
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunImage(): Successful\r\n"));
@@ -1283,7 +1314,7 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 }
 
 /* Attach a fast-seek cluster link map, growing it to the size FatFs asks
-   for. FatFs's protocol: cltbl[0] = table size in entries; f_lseek(fp,
+   for. FatFs's protocol: cltbl[0] = table size in entries; fsr_lseek(fp,
    CREATE_LINKMAP) builds the map, or fails with FR_NOT_ENOUGH_CORE after
    writing the REQUIRED size into cltbl[0]. Without a map every f_lseek on
    a fragmented file walks the FAT chain from the start - tens of ms. */
@@ -1297,7 +1328,7 @@ bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries)
    for (int attempt = 0; *map && attempt < 2; attempt++) {
       (*map)[0] = *entries;
       file->cltbl = *map;
-      FRESULT r = f_lseek(file, CREATE_LINKMAP);
+      FRESULT r = fsr_lseek(file, CREATE_LINKMAP);
       if (r == FR_OK)
          return true;
       file->cltbl = NULL;
@@ -1419,7 +1450,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
       fsLunFilePath(lunNumber, "dsc", fileName, sizeof(fileName));
 
       if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemReadLunDescriptor(): Checking for (.dsc) LUN descriptor "), (uint16_t)lunNumber, 1);
-      fsResult = f_open(&fileObject, fileName, FA_READ);
+      fsResult = fsr_open(&fileObject, fileName, FA_READ);
 
       if (fsResult != FR_OK) {
          // LUN descriptor file is not found
@@ -1436,13 +1467,13 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
 
          uint8_t Buffer[22];
          // Read the DSC data
-         fsResult = f_read(&fileObject, Buffer, 22, &fsCounter);
+         fsResult = fsr_read(&fileObject, Buffer, 22, &fsCounter);
 
          // Check that the file was read OK and is the correct length
          if (fsResult != FR_OK  || fsCounter != 22) {
             // Something went wrong
             if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReadLunDescriptor(): ERROR: Could not read .dsc file\r\n"));
-            f_close(&fileObject);
+            fsr_close(&fileObject);
 
             return false;
          }
@@ -1472,7 +1503,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
          // track (F-2 in the ACB-4000 manual))
          // bytes = sectors * block size (block size is always 256 bytes
          filesystemLunToconfigGeometry(lunNumber);
-         f_close(&fileObject);
+         fsr_close(&fileObject);
       }
       return true;
    }
@@ -1592,7 +1623,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 
    // Create the .dat file (the old .dat file, if present, will be unlinked (i.e. gone forever))
 
-   fsResult = f_open(&fileObject, fileName, FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
+   fsResult = fsr_open(&fileObject, fileName, FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
    if (fsResult == FR_OK) {
       // Write the required number of sectors to the DAT file
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): Performing format...\r\n"));
@@ -1610,7 +1641,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
       //
       // This ignores the data pattern (since the file is only allocated - not
       // actually written).
-      fsResult = f_expand(&fileObject /*&filesystemState.fileObject[lunNumber]*/, (FSIZE_t)(filesystemGetLunTotalBytes(lunNumber)), 1);
+      fsResult = fsr_expand(&fileObject /*&filesystemState.fileObject[lunNumber]*/, (FSIZE_t)(filesystemGetLunTotalBytes(lunNumber)), 1);
 
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): Format complete\r\n"));
 
@@ -1618,7 +1649,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
       if (fsResult != FR_OK) {
          // Something went wrong writing to the .dat
          if (debugFlag_filesystem) debugStringInt8Hex_P(PSTR("File system: filesystemFormatLun(): ERROR: Could not write .dat : \r\n"),fsResult,1);
-         f_close(&fileObject);
+         fsr_close(&fileObject);
          return false;
       }
    } else {
@@ -1628,7 +1659,7 @@ bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
    }
 
    // Formatting successful
-   f_close(&fileObject);
+   fsr_close(&fileObject);
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemFormatLun(): Successful\r\n"));
    return true;
 }
@@ -1728,7 +1759,7 @@ void filesytemdattoconfigGeometry(uint8_t lunNumber)
          char datName[48];
          FILINFO fno;
          fsLunFilePath(lunNumber, "dat", datName, sizeof(datName));
-         if (f_stat(datName, &fno) == FR_OK)
+         if (fsr_stat(datName, &fno) == FR_OK)
             lunFileSize = (uint32_t)fno.fsize;
       }
 
@@ -1902,7 +1933,7 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    if (seekPoint > f_size(&filesystemState.fileObject[lunNumber]))
       seekPoint = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
 
-   if (f_lseek(&filesystemState.fileObject[lunNumber], seekPoint) != FR_OK) {
+   if (fsr_lseek(&filesystemState.fileObject[lunNumber], seekPoint) != FR_OK) {
       // Something went wrong with seeking, do not retry
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForRead(): ERROR: Unable to seek to required sector in LUN image file!\r\n"));
       return false;
@@ -1930,7 +1961,7 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
       if (sectorsToRead > SECTOR_BUFFER_LENGTH) sectorsToRead = SECTOR_BUFFER_LENGTH;
 
       // Read the required data into the sector buffer
-      fsResult = f_read(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToRead * 256, &fsCounter);
+      fsResult = fsr_read(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToRead * 256, &fsCounter);
 
       // Check that the file was read OK
       if (fsResult != FR_OK) {
@@ -2004,7 +2035,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
       FRESULT fsResult;
 
       fp->cltbl = 0;
-      fsResult = f_lseek(fp, startSector * 256);
+      fsResult = fsr_lseek(fp, startSector * 256);
 
       if (!filesystemAttachLinkMap(fp, &filesystemState.clmt[lunNumber],
                                    &filesystemState.clmtEntries[lunNumber])) {
@@ -2023,7 +2054,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 
    // Move to the correct point in the DAT file
    // Check that the file seek was OK
-   if (f_lseek(&filesystemState.fileObject[lunNumber], startSector * 256) != FR_OK) {
+   if (fsr_lseek(&filesystemState.fileObject[lunNumber], startSector * 256) != FR_OK) {
       // Something went wrong with seeking, do not retry
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): ERROR: Unable to seek to required sector in LUN image file!\r\n"));
       return false;
@@ -2059,7 +2090,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
          sectorsToWrite = sectorsRemaining;
 
       // Write the required data
-      fsResult = f_write(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToWrite * 256, &fsCounter);
+      fsResult = fsr_write(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToWrite * 256, &fsCounter);
 
 #if FF_USE_FASTSEEK
       if (fsResult == FR_OK && fsCounter != sectorsToWrite * 256 &&
@@ -2072,7 +2103,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
          UINT fsExtended = 0;
 
          fp->cltbl = 0;
-         fsResult = f_write(fp, sectorBuffer + fsCounter, (sectorsToWrite * 256) - fsCounter, &fsExtended);
+         fsResult = fsr_write(fp, sectorBuffer + fsCounter, (sectorsToWrite * 256) - fsCounter, &fsExtended);
          fsCounter += fsExtended;
 
          if (!filesystemAttachLinkMap(fp, &filesystemState.clmt[lunNumber],
@@ -2095,7 +2126,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
       sectorsRemaining -= sectorsToWrite;
 
       if (sectorsRemaining == 0)
-         f_sync(&filesystemState.fileObject[lunNumber]);
+         fsr_sync(&filesystemState.fileObject[lunNumber]);
    }
    // Exit with success
    return true;
@@ -2357,18 +2388,18 @@ bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer)
    char fatDir[sizeof fatDirectory + 2];
    if (!filesystemStoragePath(fatDirectory, fatDir, sizeof fatDir))
       return false;
-   fsResult = f_opendir(&dirObject, fatDir);
+   fsResult = fsr_opendir(&dirObject, fatDir);
 
    // Did a directory exist?
    if (fsResult == FR_NO_PATH) {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckFatDirectory(): f_opendir returned FR_NO_PATH - Directory does not exist\r\n"));
       // Create the FAT transfer directory - it's not present on the SD card
       // Check the result
-      if (f_mkdir(fatDir) != FR_OK) {
+      if (fsr_mkdir(fatDir) != FR_OK) {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckLunDirectory(): ERROR: Unable to create FAT transfer directory\r\n"));
          return false;
       }
-      f_opendir(&dirObject, fatDir);
+      fsr_opendir(&dirObject, fatDir);
 
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckFatDirectory(): Created FAT transfer directory entry\r\n"));
    } else {
@@ -2384,14 +2415,14 @@ bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer)
 
    // Get the requested file entry number object
    for (fileEntryNumber = 0; fileEntryNumber <= fileNumber; fileEntryNumber++) {
-      fsResult = f_readdir(&dirObject, &fsInfo);
+      fsResult = fsr_readdir(&dirObject, &fsInfo);
 
       // Exit on error or end of directory object entries
       if (fsResult != FR_OK || fsInfo.fname[0] == 0) {
          // The requested directory entry does not exist
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemGetFatFileInfo(): Requested directory entry does not exist\r\n"));
          buffer[0] = 0; // file does not exist
-         f_closedir(&dirObject);
+         fsr_closedir(&dirObject);
          return true; // This is a valid (successful) return condition
       }
    }
@@ -2445,7 +2476,7 @@ bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer)
    strlcpy((char*)buffer+127, fsInfo.fname, 127);
 
    // Close the directory object
-   f_closedir(&dirObject);
+   fsr_closedir(&dirObject);
 
    return true;
 }
@@ -2467,20 +2498,20 @@ bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber)
    char fatDir[sizeof fatDirectory + 2];
    if (!filesystemStoragePath(fatDirectory, fatDir, sizeof fatDir))
       return false;
-   fsResult = f_opendir(&dirObject, fatDir);
+   fsResult = fsr_opendir(&dirObject, fatDir);
 
    // Check the open directory action's result
    if (fsResult == FR_OK) {
       uint32_t fileEntryNumber;
 
       for (fileEntryNumber = 0; fileEntryNumber <= fileNumber; fileEntryNumber++) {
-         fsResult = f_readdir(&dirObject, &fsInfo);
+         fsResult = fsr_readdir(&dirObject, &fsInfo);
 
          // Exit on error or end of directory object entries
          if (fsResult != FR_OK || fsInfo.fname[0] == 0) {
             // The requested directory entry does not exist
             if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenFatForRead(): Requested directory entry does not exist\r\n"));
-            f_closedir(&dirObject);
+            fsr_closedir(&dirObject);
             return false;
          }
       }
@@ -2489,16 +2520,16 @@ bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber)
       if (fsInfo.fattrib & AM_DIR) {
          // Directory
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenFatForRead(): Requested directory entry was a directory - can not read!\r\n"));
-         f_closedir(&dirObject);
+         fsr_closedir(&dirObject);
          return false;
       } else {
          char tempfileName[514];
          // Assemble the full path name and file name for the requested file
          snprintf(tempfileName, sizeof(tempfileName), "%s/%s", fatDir, fsInfo.fname);
-         f_closedir(&dirObject);
+         fsr_closedir(&dirObject);
 
          // Open the requested file for reading
-         fsResult = f_open(&fileObjectFAT, tempfileName, FA_READ);
+         fsResult = fsr_open(&fileObjectFAT, tempfileName, FA_READ);
          if (fsResult != FR_OK) {
             if (debugFlag_filesystem) {
                debugString_P(PSTR("File system: filesystemOpenFatForRead(): ERROR: f_open on FAT file returned "));
@@ -2508,10 +2539,10 @@ bool filesystemOpenFatForRead(uint32_t fileNumber, uint32_t blockNumber)
          }
 
          // Seek to the correct point in the file
-         fsResult  = f_lseek(&fileObjectFAT, blockNumber * 256);
+         fsResult  = fsr_lseek(&fileObjectFAT, blockNumber * 256);
          if (fsResult != FR_OK) {
             if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenFatForRead(): Could not seek to required block number!\r\n"));
-            f_close(&fileObjectFAT);
+            fsr_close(&fileObjectFAT);
             return false;
          }
       }
@@ -2532,7 +2563,7 @@ bool filesystemReadNextFatBlock(uint8_t *buffer)
    FRESULT fsResult;
 
    // Read 256 bytes of data into the buffer
-   fsResult  = f_read(&fileObjectFAT, buffer, 256, &byteCounter);
+   fsResult  = fsr_read(&fileObjectFAT, buffer, 256, &byteCounter);
    if (fsResult != FR_OK) {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemReadNextFatBlock(): Could not read data from the target file!\r\n"));
       return false;
@@ -2551,7 +2582,7 @@ bool filesystemReadNextFatBlock(uint8_t *buffer)
 // Close a FAT file previously opened for reading
 bool filesystemCloseFatForRead(void)
 {
-   f_close(&fileObjectFAT);
+   fsr_close(&fileObjectFAT);
    return true;
 }
 
@@ -2568,7 +2599,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
       config_load) leaves the volume alone. */
    if (!filesystemMount())
       return 0;
-   fsResult = f_open(&fileObject, filename, FA_READ);
+   fsResult = fsr_open(&fileObject, filename, FA_READ);
    if (fsResult != FR_OK) {
       return 0;
    }
@@ -2584,7 +2615,7 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
          *address = malloc((size_t)fileSize + 1u);
          if (*address == NULL) {
             LOG_INFO(PSTR("File system: filesystemReadFile(): ERROR: Unable to allocate memory for file read\n"));
-            f_close(&fileObject);
+            fsr_close(&fileObject);
             return 0;
          }
          (*address)[fileSize] = 0;
@@ -2595,8 +2626,8 @@ uint32_t filesystemReadFile(const char * filename, uint8_t **address, unsigned i
          if ((FSIZE_t)read_len > fileSize) read_len = (size_t)fileSize;
       }
 
-      fsResult = f_read(&fileObject, *address, read_len, &byteCounter);
-      f_close(&fileObject);
+      fsResult = fsr_read(&fileObject, *address, read_len, &byteCounter);
+      fsr_close(&fileObject);
       if (fsResult != FR_OK) {
          LOG_DEBUG("filesystemReadFile: f_read failed %d\n", fsResult);
          return 0;
@@ -2615,11 +2646,11 @@ uint32_t filesystemWriteFile(const char * filename, const uint8_t *address, uint
    FRESULT fsResult;
    FIL fileObject;
 
-   fsResult = f_open(&fileObject, filename, FA_CREATE_ALWAYS |FA_WRITE);
+   fsResult = fsr_open(&fileObject, filename, FA_CREATE_ALWAYS |FA_WRITE);
    if (fsResult != FR_OK)
       return 0;
 
-   f_write(&fileObject, address, max_size, &byteCounter);
-   f_close(&fileObject);
+   fsr_write(&fileObject, address, max_size, &byteCounter);
+   fsr_close(&fileObject);
    return byteCounter;
 }

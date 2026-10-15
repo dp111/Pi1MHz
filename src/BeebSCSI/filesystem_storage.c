@@ -27,7 +27,7 @@ bool filesystemStoragePath(const char *path, char *buf, size_t size)
       one in the Pi's own folder - without asking for the root, so neither
       ever waits for the power-on decision. */
    const char *root = ((path[0] >= '0' && path[0] <= '9' && path[1] == ':') || fsPiFolder(path))
-                    ? "" : filesystemStorageRoot();
+                    ? "" : filesystemStorageFatRoot();
    int n = snprintf(buf, size, "%s%s", root, path);
    return n >= 0 && (size_t)n < size;
 }
