@@ -89,4 +89,8 @@ gcc -std=gnu11 -g -Wall -Wextra -I"$M" -I"$L/include" -c "$HERE/test_smb.c" -o "
 gcc -g -Wl,--gc-sections -o "$B/t" "$B"/obj/*.o
 
 echo "== storage=smb: fsroute + libsmb2 against Samba (signing mandatory) =="
+SMB_TEST_STOP="kill \$(cat $S/pid/smbd.pid); sleep 0.5" \
+SMB_TEST_START="smbd -D --configfile=$S/smb.conf; sleep 1" \
+SMB_TEST_FREEZE="pkill -STOP -P \$(cat $S/pid/smbd.pid); kill -STOP \$(cat $S/pid/smbd.pid)" \
+SMB_TEST_THAW="kill -CONT \$(cat $S/pid/smbd.pid); pkill -CONT -P \$(cat $S/pid/smbd.pid)" \
 SMB_TEST_SERVER=127.0.0.1:$PORT SMB_TEST_USER=root SMB_TEST_PASS=beebpass SMB_TEST_DIR=$S/share "$B/t"

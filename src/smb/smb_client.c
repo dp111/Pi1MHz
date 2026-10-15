@@ -55,6 +55,10 @@ static void note_error(const char *what)
             ctx ? ": " : "", ctx ? smb2_get_error(ctx) : "");
 }
 
+static bool connecting;                     /* inside smb_client_connect */
+static volatile bool connect_done;
+static int           connect_status;
+
 bool smb_client_configured(void)
 {
    const char *server = config_get("smb_server");
@@ -82,8 +86,12 @@ static void pump(void)
       return;
    int rev = smbp_revents(fd, smb2_which_events(ctx));
    if (rev != 0 && smb2_service(ctx, rev) < 0) {
-      note_error("connection");
-      link_lost = true;
+      /* during the logon this is the logon failing, not a link lost; a
+         reason the logon callback already gave is kept */
+      if (!(connecting && connect_done))
+         note_error(connecting ? "logon" : "connection");
+      if (!connecting)
+         link_lost = true;
       drop();
    }
 }
@@ -109,7 +117,10 @@ bool smb_client_wait(volatile bool *done)
 {
    if (!smb_client_can_wait())
       return false;
-   if (!wait_until(done, SMB_COMMAND_TIMEOUT_US)) {
+   /* A dropped connection also completes the operation - libsmb2 cancels
+      what was outstanding when the context goes - so link_lost, not *done,
+      says whether it really finished. */
+   if (!wait_until(done, SMB_COMMAND_TIMEOUT_US) || link_lost) {
       if (!link_lost)
          snprintf(last_error, sizeof last_error, "no answer in %u s",
                   (unsigned)(SMB_COMMAND_TIMEOUT_US / 1000000u));
@@ -173,14 +184,14 @@ static bool resolve(const char *server_port)
    return true;
 }
 
-static volatile bool connect_done;
-static int           connect_status;
 
 static void connected(struct smb2_context *smb2, int status, void *data, void *arg)
 {
    (void)smb2; (void)data; (void)arg;
    connect_status = status;
    connect_done = true;
+   if (status != 0)
+      note_error("logon");             /* now: later socket errors would replace the reason */
 }
 
 static void drop(void)
@@ -253,10 +264,12 @@ bool smb_client_connect(void)
       drop();
       return false;
    }
-   if (!wait_until(&connect_done, SMB_COMMAND_TIMEOUT_US) || connect_status != 0) {
-      if (connect_done)
-         note_error("logon");
-      else if (!link_lost)
+   connecting = true;
+   bool ok = wait_until(&connect_done, SMB_COMMAND_TIMEOUT_US) && connect_status == 0 &&
+             ctx != NULL;
+   connecting = false;
+   if (!ok) {
+      if (!connect_done)
          snprintf(last_error, sizeof last_error, "no answer from %s", server_ip);
       drop();
       return false;
@@ -283,7 +296,7 @@ void smb_client_status(char *out, size_t size)
       snprintf(out, size, "\\\\%s\\%s connected (%s)", config_get("smb_server"),
                config_get("smb_share"), server_ip);
    else
-      snprintf(out, size, "\\\\%s\\%s %s%s", config_get("smb_server"),
-               config_get("smb_share"), link_lost ? "link lost: " : "not connected",
-               last_error[0] ? last_error : "");
+      snprintf(out, size, "\\\\%s\\%s %s%s%s", config_get("smb_server"),
+               config_get("smb_share"), link_lost ? "link lost" : "not connected",
+               last_error[0] ? ": " : "", last_error);
 }

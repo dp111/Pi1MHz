@@ -329,6 +329,93 @@ static void test_routing(void)
    check("inside the network poll: refused at once (FR_TIMEOUT)", r == FR_TIMEOUT, "not refused");
 }
 
+/* The server going away mid-session, a wrong password, a dead server: every
+   call fails promptly with FR_NOT_READY (a disc error on the Beeb, never a
+   hang), and a BBC reset (fsr_reset) lets the next call log on again. */
+static void test_failures(void)
+{
+   static char why[200];
+   FIL f;
+   FRESULT r = fsr_open(&f, "2:/BeebSCSI0/scsi0.dat", FA_READ);
+   check("open before the server stops", r == FR_OK, "open failed");
+   const char *stop = getenv("SMB_TEST_STOP");    /* stops smbd */
+   const char *start = getenv("SMB_TEST_START");  /* starts it again */
+   if (stop == NULL || start == NULL || r != FR_OK)
+      return;
+   if (system(stop) != 0)
+      printf("     (stop command failed)\n");
+
+   uint8_t buf[256];
+   UINT br;
+   uint64_t t0 = now_us();
+   fsr_lseek(&f, 300000u);                        /* outside the read-ahead window */
+   r = fsr_read(&f, buf, sizeof buf, &br);
+   uint64_t ms = (now_us() - t0) / 1000u;
+   snprintf(why, sizeof why, "FRESULT %d after %llu ms", (int)r, (unsigned long long)ms);
+   check("server gone: a read fails with FR_NOT_READY within the 10 s limit",
+         r == FR_NOT_READY && ms <= 10500u, why);
+   printf("     %s\n", why);
+
+   t0 = now_us();
+   FILINFO fi;
+   r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+   ms = (now_us() - t0) / 1000u;
+   snprintf(why, sizeof why, "FRESULT %d after %llu ms", (int)r, (unsigned long long)ms);
+   check("after the link is lost, the next call fails at once", r == FR_NOT_READY && ms < 50u, why);
+   r = fsr_close(&f);
+   check("closing a handle of the lost session does not touch the network", r == FR_OK, "close failed");
+
+   if (system(start) != 0)
+      printf("     (start command failed)\n");
+   fsr_reset();                                   /* a BBC reset */
+   r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+   char st[160];
+   smb_client_status(st, sizeof st);
+   check("after a reset the next call logs on again", r == FR_OK && fi.fsize == IMAGE_BYTES, st);
+
+   /* a server that stops answering (a pulled cable): the 10 s limit, then
+      every call fails at once; the late reply, if any, lands nowhere */
+   const char *freeze = getenv("SMB_TEST_FREEZE"), *thaw = getenv("SMB_TEST_THAW");
+   if (freeze != NULL && thaw != NULL && fsr_open(&f, "2:/BeebSCSI0/scsi0.dat", FA_READ) == FR_OK) {
+      if (system(freeze) != 0)
+         printf("     (freeze command failed)\n");
+      t0 = now_us();
+      fsr_lseek(&f, 600000u);
+      r = fsr_read(&f, buf, sizeof buf, &br);
+      ms = (now_us() - t0) / 1000u;
+      snprintf(why, sizeof why, "FRESULT %d after %llu ms", (int)r, (unsigned long long)ms);
+      check("server silent: the read gives up at the 10 s limit with FR_NOT_READY",
+            r == FR_NOT_READY && ms >= 9900u && ms <= 11000u, why);
+      printf("     %s\n", why);
+      if (system(thaw) != 0)
+         printf("     (thaw command failed)\n");
+      fsr_close(&f);
+      fsr_reset();
+      r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+      check("... and after the reset it works again", r == FR_OK, "no reconnect");
+   }
+
+   /* a wrong password: refused at logon, reported, no hang */
+   const char *good = cfg_pass;
+   cfg_pass = "wrong";
+   if (system(stop) == 0 && system(start) == 0) {
+      fsr_reset();
+      (void)fsr_stat("2:/x", &fi);                /* the old session is dead: log on again */
+      fsr_reset();
+      t0 = now_us();
+      r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+      ms = (now_us() - t0) / 1000u;
+      smb_client_status(st, sizeof st);
+      snprintf(why, sizeof why, "FRESULT %d after %llu ms: %s", (int)r, (unsigned long long)ms, st);
+      check("a wrong password: FR_NOT_READY, promptly, with the reason on /status",
+            r == FR_NOT_READY && ms < 2000u && strstr(st, "not connected") != NULL &&
+            strstr(st, "logon") != NULL, why);
+      printf("     %s\n", why);
+   }
+   cfg_pass = good;
+   fsr_reset();
+}
+
 int main(void)
 {
    cfg_server = getenv("SMB_TEST_SERVER");
@@ -353,8 +440,7 @@ int main(void)
    test_names();
    test_routing();
 
-   /* a wrong password: refused at logon, reported, and no hang */
-   fsr_reset();
+   test_failures();
    printf("%d passed, %d failed\n", passed, failed);
    return failed ? 1 : 0;
 }
