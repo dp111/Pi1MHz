@@ -12,10 +12,14 @@
    libsmb2 is asynchronous; the firmware's file calls are not.  fsroute.c
    starts an operation and then waits here, running the WiFi stack and
    libsmb2's event pump until the callback fires - the pattern of the USB
-   drive's command_wait(), with the same 10 s limit, and the watchdog fed.
+   drive's command_wait(), with the same 10 s limit, the watchdog fed and
+   the audio pumped (the video player's sound would run dry in a long wait).
    A timeout or a dropped connection marks the link lost: every later call
    fails at once (the Beeb sees a disc error, never a hang) until the next
-   BBC reset reconnects.  Main loop only, never FIQ. */
+   BBC reset reconnects.  A BBC reset during a wait ends it at once: the
+   poll loop re-initialises only while nRST is still low (~210 ms), and a
+   wait that sat it out left the Pi un-reset for that BREAK.  Main loop
+   only, never FIQ. */
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -32,8 +36,10 @@
 #include "smb_client.h"
 #include "smb_socket.h"
 #include "../config.h"
+#include "../Pi1MHz.h"                 /* Pi1MHz_break: the nRST edges */
 #include "../net_dns.h"
 #include "../watchdog.h"
+#include "../rpi/audio.h"
 #include "../rpi/systimer.h"
 #include "../wifi/wifi_lwip.h"
 
@@ -44,6 +50,8 @@ static struct smb2_context *ctx;
 static uint32_t session;                    /* bumped by every logon */
 static bool     link_lost;
 static bool     network_waited;             /* the power-on wait is used once */
+static bool     reset_cut;                  /* the last wait ended for a BBC reset */
+static uint32_t resets_known;               /* nRST edges the BBC-reset path has seen */
 static char     last_error[96];
 static char     server_ip[24];          /* dotted, and ":port" if given */
 
@@ -56,6 +64,7 @@ static void note_error(const char *what)
 }
 
 static bool connecting;                     /* inside smb_client_connect */
+static bool dropping;                       /* inside drop() */
 static volatile bool connect_done;
 static int           connect_status;
 
@@ -93,24 +102,56 @@ static void pump(void)
       if (!connecting)
          link_lost = true;
       drop();
+      if (connecting && !connect_done) {
+         connect_status = -ECONNRESET;   /* the logon is over: end its wait */
+         connect_done = true;
+      }
    }
 }
 
-static bool wait_until(volatile bool *done, uint32_t limit_us)
+/* Run libsmb2, the network and the audio until done(arg) holds: false on
+   a lost link, after limit_us, or once the nRST IRQ has counted a reset
+   the re-init has not yet handled (reset_cut) - also for a wait that
+   starts after the edge, inside the same poll callback. */
+static bool wait_for(bool (*done)(const volatile void *), const volatile void *arg,
+                     uint32_t limit_us)
 {
    uint32_t t0 = RPI_GetSystemTime();
-   while (!*done) {
+   reset_cut = false;
+   while (!done(arg)) {
+      if (Pi1MHz_break.edges != resets_known) {
+         reset_cut = true;
+         return false;
+      }
       pump();
-      if (*done)
+      if (done(arg))
          break;
       if (link_lost)
          return false;
       if (RPI_GetSystemTime() - t0 > limit_us)
          return false;
       wifi_lwip_poll();
+      audio_pump();
       watchdog_feed();
    }
    return true;
+}
+
+static bool flag_set(const volatile void *flag)
+{
+   return *(const volatile bool *)flag;
+}
+
+static bool wait_until(volatile bool *done, uint32_t limit_us)
+{
+   return wait_for(flag_set, done, limit_us);
+}
+
+static bool have_address(const volatile void *unused)
+{
+   (void)unused;
+   const wifi_lwip_context_t *net = wifi_lwip_get_context();
+   return net != NULL && net->address_ready;
 }
 
 bool smb_client_wait(volatile bool *done)
@@ -121,7 +162,9 @@ bool smb_client_wait(volatile bool *done)
       what was outstanding when the context goes - so link_lost, not *done,
       says whether it really finished. */
    if (!wait_until(done, SMB_COMMAND_TIMEOUT_US) || link_lost) {
-      if (!link_lost)
+      if (reset_cut)
+         snprintf(last_error, sizeof last_error, "BBC reset during a request");
+      else if (!link_lost)
          snprintf(last_error, sizeof last_error, "no answer in %u s",
                   (unsigned)(SMB_COMMAND_TIMEOUT_US / 1000000u));
       link_lost = true;
@@ -132,6 +175,12 @@ bool smb_client_wait(volatile bool *done)
       return false;
    }
    return true;
+}
+
+void smb_client_kick(void)
+{
+   if (smb_client_can_wait())
+      pump();
 }
 
 uint32_t smb_client_session(void)
@@ -188,6 +237,10 @@ static bool resolve(const char *server_port)
 static void connected(struct smb2_context *smb2, int status, void *data, void *arg)
 {
    (void)smb2; (void)data; (void)arg;
+   /* drop() destroying a context still logging on calls this with
+      "cancelled": the reason already recorded is the real one */
+   if (dropping)
+      return;
    connect_status = status;
    connect_done = true;
    if (status != 0)
@@ -196,44 +249,37 @@ static void connected(struct smb2_context *smb2, int status, void *data, void *a
 
 static void drop(void)
 {
+   dropping = true;
    if (ctx != NULL)
       smb2_destroy_context(ctx);     /* closes its socket through the shim */
+   dropping = false;
    ctx = NULL;
    smbp_close_all();
 }
 
-static volatile bool network_up;
-
 bool smb_client_connect(void)
 {
+   /* A lost link stays lost until the BBC reset (smb_client_reset): a
+      reconnect now would leave the open LUNs dead while new opens worked,
+      and every use would wait out a logon against a server that is gone. */
+   if (link_lost)
+      return false;
    if (ctx != NULL)
-      return !link_lost;
+      return true;
    if (!smb_client_configured() || !smb_client_can_wait())
       return false;
+   resets_known = Pi1MHz_break.edges;     /* a reset before the share was in use is none of ours */
 
    /* At power-on the WiFi is still joining when the Beeb first asks: wait
       for an address, once.  Later a missing network fails at once. */
-   const wifi_lwip_context_t *net = wifi_lwip_get_context();
-   if (net == NULL || !net->address_ready) {
-      if (network_waited) {
-         snprintf(last_error, sizeof last_error, "no network");
-         return false;
-      }
-      network_waited = true;
-      uint32_t t0 = RPI_GetSystemTime();
-      for (;;) {
-         net = wifi_lwip_get_context();
-         if (net != NULL && net->address_ready)
-            break;
-         if (RPI_GetSystemTime() - t0 > SMB_NETWORK_WAIT_US) {
-            snprintf(last_error, sizeof last_error, "no network");
-            return false;
-         }
-         wifi_lwip_poll();
-         watchdog_feed();
-      }
-   }
+   bool first = !network_waited;
    network_waited = true;
+   if (!have_address(NULL) && (!first || !wait_for(have_address, NULL, SMB_NETWORK_WAIT_US))) {
+      if (reset_cut)
+         network_waited = false;       /* cut short: the next try waits again */
+      snprintf(last_error, sizeof last_error, reset_cut ? "BBC reset" : "no network");
+      return false;
+   }
 
    if (!resolve(config_get("smb_server")))
       return false;
@@ -269,7 +315,9 @@ bool smb_client_connect(void)
              ctx != NULL;
    connecting = false;
    if (!ok) {
-      if (!connect_done)
+      if (reset_cut)
+         snprintf(last_error, sizeof last_error, "BBC reset during the logon");
+      else if (!connect_done)
          snprintf(last_error, sizeof last_error, "no answer from %s", server_ip);
       drop();
       return false;
@@ -286,6 +334,7 @@ void smb_client_reset(void)
    if (link_lost)
       drop();
    link_lost = false;
+   resets_known = Pi1MHz_break.edges;
 }
 
 void smb_client_status(char *out, size_t size)

@@ -260,8 +260,10 @@ ssize_t smbp_writev(int fd, const struct iovec *iov, int iovcnt)
       size_t off = 0;
       while (off < n) {
          u16_t chunk = (u16_t)((n - off) > 0xFFFFu ? 0xFFFFu : (n - off));
+         /* PSH on the request's last segment: MORE only while more follows */
+         bool last = off + chunk == n && (i == iovcnt - 1 || n < iov[i].iov_len || room == n);
          err_t rc = tcp_write(s->pcb, (const uint8_t *)iov[i].iov_base + off, chunk,
-                              TCP_WRITE_FLAG_COPY | TCP_WRITE_FLAG_MORE);
+                              TCP_WRITE_FLAG_COPY | (last ? 0u : TCP_WRITE_FLAG_MORE));
          if (rc != ERR_OK)
             goto out;                  /* out of segments: send what went in */
          off += chunk;
@@ -371,7 +373,8 @@ int smbp_revents(int fd, int events)
    smbp_sock_t *s = sock_of(fd);
    if (s == NULL)
       return 0;
-   if (s->state == SK_FAILED)
+   /* bytes that arrived before the error are still the server's reply */
+   if (s->state == SK_FAILED && s->rx == NULL)
       return POLLERR;
    int r = 0;
    if ((events & POLLIN) && (s->rx != NULL || s->peer_closed))

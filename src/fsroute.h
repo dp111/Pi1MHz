@@ -39,6 +39,10 @@ FRESULT fsr_unlink(const TCHAR *path);
 FRESULT fsr_rename(const TCHAR *path_old, const TCHAR *path_new);
 FRESULT fsr_stat(const TCHAR *path, FILINFO *fno);
 
+/* A file on the share whose connection has gone (a lost link): every call
+   on it fails until it is closed.  False for a card or drive file. */
+bool fsr_lost(FIL *fp);
+
 /* Log on to the share (storage=smb), connecting if need be: false when it
    cannot be reached.  Main loop only; may wait (see smb_client_connect). */
 bool fsr_net_connect(void);

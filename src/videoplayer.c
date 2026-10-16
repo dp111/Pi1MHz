@@ -466,6 +466,10 @@ static void reset_speed(void);
 
 static void videoplayer_poll(void)
 {
+    /* The share holding the video went (storage=smb link loss): as a
+       jukebox to an empty drive - the reopen fails, the plane goes black. */
+    if (vp.open && fsr_lost(&vp.file))
+        vp.reopen = true;
     if (vp.reopen) {
         vp.reopen = false;
         if (vp.open)

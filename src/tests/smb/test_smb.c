@@ -21,6 +21,7 @@
 #include "rpi/systimer.h"
 #include "rpi/hwrng.h"
 #include "wifi/wifi_lwip.h"
+#include "Pi1MHz.h"
 
 static int passed, failed;
 
@@ -49,6 +50,7 @@ const char *config_get(const char *key)
 }
 
 void watchdog_feed(void) {}
+void audio_pump(void) {}
 
 static uint64_t now_us(void)
 {
@@ -69,7 +71,14 @@ int hwrng_word(uint32_t *out, uint32_t wait_us)
 static bool in_poll;
 static unsigned net_polls;
 static wifi_lwip_context_t net_ctx = { true };
-void wifi_lwip_poll(void) { net_polls++; }
+volatile Pi1MHz_break_t Pi1MHz_break;
+static unsigned break_after;           /* a BBC reset (nRST edge) after this many polls */
+void wifi_lwip_poll(void)
+{
+   net_polls++;
+   if (break_after != 0u && --break_after == 0u)
+      Pi1MHz_break.edges++;            /* as the nRST IRQ does */
+}
 bool wifi_lwip_in_poll(void) { return in_poll; }
 const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &net_ctx; }
 
@@ -243,6 +252,36 @@ static void test_image_lifecycle(void)
    check("a 200 KB read matches", r == FR_OK && br == sizeof rb && memcmp(rb, big, sizeof rb) == 0,
          "big read differs");
 
+   /* a read of many IO chunks, and one cut short by the end of the file */
+   static uint8_t huge[700000], disk_huge[sizeof huge];
+   r = fsr_lseek(&f, 1700000u);
+   if (r == FR_OK)
+      r = fsr_read(&f, huge, sizeof huge, &br);
+   all = r == FR_OK && br == sizeof huge &&
+         disk_read("BeebSCSI0/scsi0.dat", disk_huge, sizeof disk_huge, 1700000L) &&
+         memcmp(huge, disk_huge, sizeof huge) == 0;
+   check("a 700 KB read (many IO chunks) matches", all, "content differs");
+   r = fsr_lseek(&f, IMAGE_BYTES - 100000u);
+   if (r == FR_OK)
+      r = fsr_read(&f, huge, 300000u, &br);
+   all = r == FR_OK && br == 100000u &&
+         disk_read("BeebSCSI0/scsi0.dat", disk_huge, 100000u, (long)(IMAGE_BYTES - 100000u)) &&
+         memcmp(huge, disk_huge, 100000u) == 0;
+   snprintf(why, sizeof why, "FRESULT %d, %u bytes", (int)r, (unsigned)br);
+   check("a read past the end stops at it", all, why);
+
+   /* straight-on small reads as the video player does (4 KB pieces) */
+   r = fsr_lseek(&f, 1500000u);
+   all = r == FR_OK;
+   for (UINT done = 0; all && done < 1200000u; done += 4096u) {
+      UINT bp;
+      uint8_t piece[4096];
+      all = fsr_read(&f, piece, sizeof piece, &bp) == FR_OK && bp == sizeof piece &&
+            disk_read("BeebSCSI0/scsi0.dat", disk_huge, sizeof piece, 1500000L + (long)done) &&
+            memcmp(piece, disk_huge, sizeof piece) == 0;
+   }
+   check("1.2 MB of straight-on 4 KB reads match", all, "a piece differs");
+
    /* read-only: a seek past the end is clipped, as FatFs does */
    r = fsr_lseek(&f, IMAGE_BYTES + 5000u);
    check("read-only seek past the end clips to the size", r == FR_OK && f_tell(&f) == IMAGE_BYTES, "not clipped");
@@ -278,6 +317,19 @@ static void test_names(void)
       fsr_close(&f);
    }
    check("write a small file", r == FR_OK, "cfg write failed");
+   r = fsr_open(&f, "2:/BeebSCSI0/scsi0.cfg", FA_WRITE | FA_OPEN_EXISTING);
+   snprintf(why, sizeof why, "FRESULT %d, size %lu", (int)r, (unsigned long)f_size(&f));
+   check("a write-only open knows the file's size", r == FR_OK && f_size(&f) == sizeof cfg - 1, why);
+   if (r == FR_OK)
+      fsr_close(&f);
+
+   static char long_name[400];
+   memset(long_name, 'x', sizeof long_name - 1u);
+   memcpy(long_name, "2:/", 3);
+   unsigned polls = net_polls;
+   r = fsr_stat(long_name, &fi);
+   check("a path too long for the share is refused, not cut short",
+         r == FR_INVALID_NAME && net_polls == polls, "accepted");
 
    DIR d;
    r = fsr_opendir(&d, "2:/BeebSCSI0");
@@ -367,6 +419,12 @@ static void test_failures(void)
 
    if (system(start) != 0)
       printf("     (start command failed)\n");
+   t0 = now_us();
+   r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+   ms = (now_us() - t0) / 1000u;
+   snprintf(why, sizeof why, "FRESULT %d after %llu ms", (int)r, (unsigned long long)ms);
+   check("server back, no BBC reset yet: the link stays lost (no logon)",
+         r == FR_NOT_READY && ms < 50u, why);
    fsr_reset();                                   /* a BBC reset */
    r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
    char st[160];
@@ -393,7 +451,60 @@ static void test_failures(void)
       fsr_reset();
       r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
       check("... and after the reset it works again", r == FR_OK, "no reconnect");
+
+      /* a close is sent, not waited for: a BBC reset closes every started
+         LUN while the Beeb is held in reset */
+      if (fsr_open(&f, "2:/BeebSCSI0/scsi0.dat", FA_READ) == FR_OK) {
+         if (system(freeze) != 0)
+            printf("     (freeze command failed)\n");
+         t0 = now_us();
+         r = fsr_close(&f);
+         ms = (now_us() - t0) / 1000u;
+         if (system(thaw) != 0)
+            printf("     (thaw command failed)\n");
+         snprintf(why, sizeof why, "FRESULT %d after %llu ms", (int)r, (unsigned long long)ms);
+         check("a close does not wait for the server", r == FR_OK && ms < 50u, why);
+         r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+         smb_client_status(st, sizeof st);
+         check("... and its late answer leaves the session working", r == FR_OK, st);
+      }
+
+      /* a BREAK while a request waits on that silent server: the wait ends
+         at once, so the poll loop re-initialises while nRST is still low */
+      if (fsr_open(&f, "2:/BeebSCSI0/scsi0.dat", FA_READ) == FR_OK) {
+         if (system(freeze) != 0)
+            printf("     (freeze command failed)\n");
+         break_after = 200u;
+         t0 = now_us();
+         fsr_lseek(&f, 900000u);
+         r = fsr_read(&f, buf, sizeof buf, &br);
+         ms = (now_us() - t0) / 1000u;
+         break_after = 0u;
+         smb_client_status(st, sizeof st);
+         snprintf(why, sizeof why, "FRESULT %d after %llu ms: %s", (int)r, (unsigned long long)ms, st);
+         check("a BBC reset during a wait ends it at once", r == FR_NOT_READY && ms < 1000u &&
+               strstr(st, "BBC reset") != NULL, why);
+         printf("     %s\n", why);
+         if (system(thaw) != 0)
+            printf("     (thaw command failed)\n");
+         fsr_close(&f);
+         fsr_reset();                             /* the BREAK's re-init */
+         r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+         check("... and the re-init's reset logs on again", r == FR_OK, "no reconnect");
+      }
    }
+
+   /* an edge counted but not yet handled (a call after the edge, inside the
+      same poll callback): no wait at all until the re-init has run */
+   Pi1MHz_break.edges++;
+   t0 = now_us();
+   r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+   ms = (now_us() - t0) / 1000u;
+   snprintf(why, sizeof why, "FRESULT %d after %llu ms", (int)r, (unsigned long long)ms);
+   check("after an unhandled nRST edge a call ends at once", r == FR_NOT_READY && ms < 50u, why);
+   fsr_reset();
+   r = fsr_stat("2:/BeebSCSI0/scsi0.dat", &fi);
+   check("... and works once the re-init has run", r == FR_OK, "no reconnect");
 
    /* a wrong password: refused at logon, reported, no hang */
    const char *good = cfg_pass;

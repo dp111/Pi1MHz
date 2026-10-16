@@ -457,11 +457,15 @@ const char *filesystemStorageRoot(void)
 
 /* The root for the FAT service, FujiNet's store and Music 5000 recordings:
    they work through FatFs directly and are not routed to the share yet, so
-   under storage=smb they stay on the card. */
+   under storage=smb they stay on the card - without deciding the share:
+   a decision forced from here would log on for a path that never uses it,
+   and from inside the network poll (FujiNet) it would fail and leave the
+   Beeb's discs on the card for the session. */
 const char *filesystemStorageFatRoot(void)
 {
-   const char *root = filesystemStorageRoot();
-   return root[0] == '2' ? "" : root;
+   if (fsRoot == ROOT_SMB || fsRoot == ROOT_UNDECIDED_SMB)
+      return "";
+   return filesystemStorageRoot();
 }
 
 /* The drive is decided on: host paths (WebDAV, MTP) are on the card, so

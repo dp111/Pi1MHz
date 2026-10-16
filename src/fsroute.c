@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdio.h>                     /* SEEK_END */
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -20,6 +21,8 @@ static FATFS net_fs;
 
 #define NET_FILES      12              /* LUN images, the VFS side, its video, cfgs */
 #define NET_DIRS       4
+/* Measured 2026-10-16 (video over WiFi from Windows): a window grown to
+   256 KB, and 4 READs in flight, each made playback SLOWER than this. */
 #define CACHE_SIZE     32768u          /* read-ahead window per file */
 #define IO_CHUNK       65536u          /* one READ/WRITE: a single credit */
 
@@ -49,6 +52,11 @@ static struct {
    void         *data;
    uintptr_t     gen;                  /* a late callback of an older op is ignored */
 } op;
+
+static void forget_cb(struct smb2_context *smb2, int status, void *data, void *arg)
+{
+   (void)smb2; (void)status; (void)data; (void)arg;
+}
 
 static void op_cb(struct smb2_context *smb2, int status, void *data, void *arg)
 {
@@ -119,8 +127,10 @@ bool fsr_is_net_path(const TCHAR *path)
 }
 
 /* "2:/BeebSCSI0/scsi0.dat" -> "BeebSCSI0\scsi0.dat" (share-relative).  A
-   path with no drive (FatFs's rename target) is taken as on the share. */
-static char path_a[256], path_b[256];
+   path with no drive (FatFs's rename target) is taken as on the share.
+   NULL when it does not fit: cut short it would name another file. */
+#define PATH_MAX_LEN   255u
+static char path_a[PATH_MAX_LEN + 1u], path_b[PATH_MAX_LEN + 1u];
 
 static const char *share_path(const TCHAR *path, char *buf)
 {
@@ -133,8 +143,11 @@ static const char *share_path(const TCHAR *path, char *buf)
    while (*path == '/' || *path == '\\')
       path++;
    size_t n = 0;
-   for (; *path != '\0' && n < 255u; path++)
+   for (; *path != '\0'; path++) {
+      if (n == PATH_MAX_LEN)
+         return NULL;
       buf[n++] = (*path == '/') ? '\\' : *path;
+   }
    while (n > 0u && buf[n - 1u] == '\\')
       n--;                             /* "2:/dir/" names the directory */
    buf[n] = '\0';
@@ -186,6 +199,20 @@ static bool live(const net_file_t *f)
    return f->session != 0u && f->session == smb_client_session();
 }
 
+/* What every call on an open share file checks first: its connection is
+   the one in force, its mode allows the call (need 0: any), and the caller
+   can wait for the network. */
+static FRESULT usable(const FIL *fp, const net_file_t *f, BYTE need)
+{
+   if (!live(f))
+      return FR_NOT_READY;
+   if (need != 0u && !(fp->flag & need))
+      return FR_DENIED;
+   if (!smb_client_can_wait())
+      return FR_TIMEOUT;
+   return FR_OK;
+}
+
 static void release(net_file_t *f)
 {
    free(f->cache);
@@ -205,6 +232,9 @@ FRESULT fsr_open(FIL *fp, const TCHAR *path, BYTE mode)
    if (fp == NULL)
       return FR_INVALID_OBJECT;
    fp->obj.fs = NULL;
+   const char *p = share_path(path, path_a);
+   if (p == NULL)
+      return FR_INVALID_NAME;
    FRESULT r = ready();
    if (r != FR_OK)
       return r;
@@ -217,10 +247,7 @@ FRESULT fsr_open(FIL *fp, const TCHAR *path, BYTE mode)
    if (f == NULL)
       return FR_TOO_MANY_OPEN_FILES;
 
-   /* Writable opens are read-write on the share: libsmb2's O_WRONLY asks for
-      no read-attributes access, so the fstat below would be refused.  FatFs's
-      own mode still rules (fp->flag). */
-   int flags = (mode & FA_WRITE) ? O_RDWR : O_RDONLY;
+   int flags = (mode & FA_WRITE) ? ((mode & FA_READ) ? O_RDWR : O_WRONLY) : O_RDONLY;
    if (mode & FA_CREATE_NEW)
       flags |= O_CREAT | O_EXCL;
    else if (mode & FA_CREATE_ALWAYS)
@@ -229,16 +256,13 @@ FRESULT fsr_open(FIL *fp, const TCHAR *path, BYTE mode)
       flags |= O_CREAT;
 
    struct smb2_context *smb2 = smb_client_context();
-   int s = op_finish(smb2_open_async(smb2, share_path(path, path_a), flags, op_cb, op_start()));
+   int s = op_finish(smb2_open_async(smb2, p, flags, op_cb, op_start()));
    if (s < 0)
       return fr_of(s);
    struct smb2fh *fh = (struct smb2fh *)op.data;
-   s = op_finish(smb2_fstat_async(smb2, fh, &st_buf, op_cb, op_start()));
-   if (s < 0) {
-      if (s != LINK_LOST && smb_client_context() != NULL)
-         (void)op_finish(smb2_close_async(smb_client_context(), fh, op_cb, op_start()));
-      return fr_of(s);
-   }
+   /* The size came with the CREATE reply: libsmb2 hands it out locally. */
+   uint64_t size = 0;
+   (void)smb2_lseek(smb2, fh, 0, SEEK_END, &size);
 
    memset(f, 0, sizeof *f);
    f->fp = fp;
@@ -246,7 +270,7 @@ FRESULT fsr_open(FIL *fp, const TCHAR *path, BYTE mode)
    f->session = smb_client_session();
    fp->obj.fs = &net_fs;
    fp->obj.id = (WORD)((f - files) + 1);
-   fp->obj.objsize = (FSIZE_t)st_buf.smb2_size;
+   fp->obj.objsize = (FSIZE_t)size;
    fp->flag = (BYTE)(mode & (FA_READ | FA_WRITE));
    fp->err = 0;
    fp->fptr = (mode & FA_OPEN_APPEND) ? fp->obj.objsize : 0;
@@ -261,11 +285,17 @@ FRESULT fsr_close(FIL *fp)
    net_file_t *f = net_file(fp);
    if (f == NULL)
       return (fp != NULL && fp->obj.fs == &net_fs) ? FR_INVALID_OBJECT : f_close(fp);
-   int s = 0;
-   if (live(f) && smb_client_can_wait())
-      s = op_finish(smb2_close_async(smb_client_context(), f->fh, op_cb, op_start()));
+   /* Sent, not waited for: every write was answered when it was made, and
+      the server takes requests in order, so a reopen cannot overtake it.
+      A BBC reset closes each started LUN, and waiting a round trip per
+      close there held the Beeb's re-init up past its reset (1.4 s measured,
+      2026-10-16); inside the poll a wait is not allowed at all. */
+   if (live(f)) {
+      (void)smb2_close_async(smb_client_context(), f->fh, forget_cb, NULL);
+      smb_client_kick();
+   }
    release(f);
-   return fr_of(s);
+   return FR_OK;
 }
 
 /* Read [off, off+n) into buf: chunks of IO_CHUNK, short at end of file. */
@@ -294,12 +324,9 @@ FRESULT fsr_read(FIL *fp, void *buff, UINT btr, UINT *br)
    if (f == NULL)
       return f_read(fp, buff, btr, br);
    *br = 0;
-   if (!live(f))
-      return FR_NOT_READY;
-   if (!(fp->flag & FA_READ))
-      return FR_DENIED;
-   if (!smb_client_can_wait())
-      return FR_TIMEOUT;
+   FRESULT r = usable(fp, f, FA_READ);
+   if (r != FR_OK)
+      return r;
    FSIZE_t left = fp->obj.objsize > fp->fptr ? fp->obj.objsize - fp->fptr : 0;
    if ((FSIZE_t)btr > left)
       btr = (UINT)left;
@@ -352,12 +379,9 @@ FRESULT fsr_write(FIL *fp, const void *buff, UINT btw, UINT *bw)
    if (f == NULL)
       return f_write(fp, buff, btw, bw);
    *bw = 0;
-   if (!live(f))
-      return FR_NOT_READY;
-   if (!(fp->flag & FA_WRITE))
-      return FR_DENIED;
-   if (!smb_client_can_wait())
-      return FR_TIMEOUT;
+   FRESULT r = usable(fp, f, FA_WRITE);
+   if (r != FR_OK)
+      return r;
    /* the window no longer matches the file where they overlap */
    if (f->cache_len != 0u && fp->fptr < f->cache_off + f->cache_len &&
        fp->fptr + btw > f->cache_off)
@@ -421,12 +445,9 @@ FRESULT fsr_truncate(FIL *fp)
    net_file_t *f = net_file(fp);
    if (f == NULL)
       return f_truncate(fp);
-   if (!live(f))
-      return FR_NOT_READY;
-   if (!(fp->flag & FA_WRITE))
-      return FR_DENIED;
-   if (!smb_client_can_wait())
-      return FR_TIMEOUT;
+   FRESULT r = usable(fp, f, FA_WRITE);
+   if (r != FR_OK)
+      return r;
    return fr_of(set_size(f, fp->fptr));
 }
 
@@ -482,6 +503,9 @@ FRESULT fsr_opendir(DIR *dp, const TCHAR *path)
    if (dp == NULL)
       return FR_INVALID_OBJECT;
    dp->obj.fs = NULL;
+   const char *p = share_path(path, path_a);
+   if (p == NULL)
+      return FR_INVALID_NAME;
    FRESULT r = ready();
    if (r != FR_OK)
       return r;
@@ -493,8 +517,7 @@ FRESULT fsr_opendir(DIR *dp, const TCHAR *path)
       }
    if (d == NULL)
       return FR_TOO_MANY_OPEN_FILES;
-   int s = op_finish(smb2_opendir_async(smb_client_context(), share_path(path, path_a),
-                                        op_cb, op_start()));
+   int s = op_finish(smb2_opendir_async(smb_client_context(), p, op_cb, op_start()));
    if (s < 0)
       return (s == -ENOENT) ? FR_NO_PATH : fr_of(s);
    d->dp = dp;
@@ -550,10 +573,12 @@ FRESULT fsr_stat(const TCHAR *path, FILINFO *fno)
 {
    if (!fsr_is_net_path(path))
       return f_stat(path, fno);
+   const char *p = share_path(path, path_a);
+   if (p == NULL)
+      return FR_INVALID_NAME;
    FRESULT r = ready();
    if (r != FR_OK)
       return r;
-   const char *p = share_path(path, path_a);
    if (p[0] == '\0')
       return FR_INVALID_NAME;          /* as FatFs: the root has no entry */
    int s = op_finish(smb2_stat_async(smb_client_context(), p, &st_buf, op_cb, op_start()));
@@ -570,11 +595,13 @@ FRESULT fsr_mkdir(const TCHAR *path)
 {
    if (!fsr_is_net_path(path))
       return f_mkdir(path);
+   const char *p = share_path(path, path_a);
+   if (p == NULL)
+      return FR_INVALID_NAME;
    FRESULT r = ready();
    if (r != FR_OK)
       return r;
-   return fr_of(op_finish(smb2_mkdir_async(smb_client_context(), share_path(path, path_a),
-                                           op_cb, op_start())));
+   return fr_of(op_finish(smb2_mkdir_async(smb_client_context(), p, op_cb, op_start())));
 }
 
 /* FatFs's f_unlink removes a file or an empty directory. */
@@ -582,10 +609,12 @@ FRESULT fsr_unlink(const TCHAR *path)
 {
    if (!fsr_is_net_path(path))
       return f_unlink(path);
+   const char *p = share_path(path, path_a);
+   if (p == NULL)
+      return FR_INVALID_NAME;
    FRESULT r = ready();
    if (r != FR_OK)
       return r;
-   const char *p = share_path(path, path_a);
    int s = op_finish(smb2_stat_async(smb_client_context(), p, &st_buf, op_cb, op_start()));
    if (s < 0)
       return fr_of(s);
@@ -601,13 +630,23 @@ FRESULT fsr_rename(const TCHAR *path_old, const TCHAR *path_new)
 {
    if (!fsr_is_net_path(path_old))
       return f_rename(path_old, path_new);
+   const char *p_old = share_path(path_old, path_a);
+   const char *p_new = share_path(path_new, path_b);
+   if (p_old == NULL || p_new == NULL)
+      return FR_INVALID_NAME;
    FRESULT r = ready();
    if (r != FR_OK)
       return r;
    /* SMB renames onto an existing name are refused; FatFs refuses too
       (FR_EXIST), so no replace is asked for */
-   return fr_of(op_finish(smb2_rename_async(smb_client_context(), share_path(path_old, path_a),
-                                            share_path(path_new, path_b), op_cb, op_start())));
+   return fr_of(op_finish(smb2_rename_async(smb_client_context(), p_old, p_new,
+                                            op_cb, op_start())));
+}
+
+bool fsr_lost(FIL *fp)
+{
+   net_file_t *f = net_file(fp);
+   return f != NULL && !live(f);
 }
 
 bool fsr_net_connect(void)
