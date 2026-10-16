@@ -24,6 +24,7 @@ uint32_t filesystemReadFile(const char *f, uint8_t **a, unsigned int m)
 /* ---- Pi1MHz stubs ---- */
 static Pi1MHz_t pi;
 Pi1MHz_t *const Pi1MHz = &pi;
+uint32_t Pi1MHz_now_us;
 
 #define SVC_BASE 0xA6u
 static callback_func_ptr write_cb[256];
@@ -108,6 +109,8 @@ FRESULT f_getfree(const char *p, DWORD *n, FATFS **f)
    return FR_OK;
 }
 FRESULT f_unlink(const char *p) { (void)p; f_unlink_calls++; return FR_OK; }
+FRESULT f_stat(const char *p, FILINFO *fno) { (void)p; memset(fno, 0, sizeof *fno); return FR_NO_FILE; }
+FRESULT f_chmod(const char *p, BYTE a, BYTE m) { (void)p; (void)a; (void)m; return FR_OK; }
 
 /* As diskio: drives 0 (the card) and 1 (the USB drive), RES_PARERR else. */
 static int last_disk_drive = -1;
