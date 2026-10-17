@@ -1723,9 +1723,8 @@ static uint8_t scsiCommandModeSense6(void)
 
    headerptr = filesystemGetModeParamHeaderData(commandDataBlock.targetLUN, &headerlen_sz);
    LBAptr = filesystemGetLBADescriptorData(commandDataBlock.targetLUN, &LBAlen_sz);
-   modeptr = filesystemGetModePageData(commandDataBlock.targetLUN, commandDataBlock.data[2], &modelen_sz);
 
-   if ( (headerptr == NULL) || (LBAptr == NULL) || (modeptr == NULL)) {
+   if ( (headerptr == NULL) || (LBAptr == NULL)) {
       // Unable to read drive descriptor! Exit with error status
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
 
@@ -1735,6 +1734,34 @@ static uint8_t scsiCommandModeSense6(void)
       debugString_P(PSTR("SCSI Commands: ERROR: Could not read geometry from LUN descriptor\r\n"));
 
       // Transition to the STATUS state
+      return SCSI_STATUS;
+   }
+
+   // Page code 0x3F asks for every page: send all the pages the descriptor
+   // holds, in page order, as a drive does.
+   static char allPages[256];
+   if ((commandDataBlock.data[2] & 0x3F) == 0x3F) {
+      size_t total = 0;
+      for (uint8_t page = 0x01; page < 0x3F; page++) {
+         size_t pagelen = 0;
+         const char * pageptr = filesystemGetModePageData(commandDataBlock.targetLUN, page, &pagelen);
+         if ((pageptr != NULL) && (pagelen > 0) && (total + pagelen <= sizeof allPages)) {
+            memcpy(&allPages[total], pageptr, pagelen);
+            total += pagelen;
+         }
+      }
+      modeptr = allPages;
+      modelen_sz = total;
+   } else {
+      modeptr = filesystemGetModePageData(commandDataBlock.targetLUN, commandDataBlock.data[2], &modelen_sz);
+   }
+
+   if (modeptr == NULL) {
+      // A page this drive does not have: the request is invalid, the drive
+      // is not "not ready" (a host would wait for it to become ready).
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+      requestSenseData[commandDataBlock.targetLUN] = BAD_ARG; // 0x24 Bad argument
+      if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: MODESENSE6: page not held\r\n"));
       return SCSI_STATUS;
    }
 
