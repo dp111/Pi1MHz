@@ -122,6 +122,13 @@ Beeb writes anyway.
 
 - Both shipped ROMs are BBC Model B sideways-RAM builds; they need
   writable sideways RAM (see [Loading ROMs](helpers-and-roms.md)).
+- They are built from hoglet67/MMFS master with the Pi1MHz file mode
+  and a set of MMFS fixes (`*DRENAME`, `*DBASE`, `*DDRIVE`, `*FORM`,
+  `*CAT` while spooling, `*LOAD` to co-processor addresses above
+  64K, `*DONBOOT` discs outside the MMB, `*DFREE`, OSGBPB to read-only
+  files and others), all
+  offered upstream; until they are merged the source is branch
+  `pi1mhz-roms` of <https://github.com/dp111/MMFS>.
 - MMFS and the [hard disc emulation](hard-discs.md) coexist happily:
   DFS software from MMFS images, ADFS on the hard discs.
 - The MMFS project documents the full command set, MMB management and
