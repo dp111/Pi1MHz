@@ -57,6 +57,7 @@ Then one guide per feature:
 - [USB file access (MTP)](usb-file-access.md)
 - [USB mouse](usb-mouse.md)
 - [USB flash drive](usb-flash-drive.md) - the Beeb's discs on a USB drive
+- [Network share (SMB)](network-share.md) - the Beeb's discs in a shared folder on another computer
 
 And when things go wrong:
 

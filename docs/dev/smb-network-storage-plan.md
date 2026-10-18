@@ -1,6 +1,12 @@
-STATUS (2026-10-15): design only, for owner review - nothing built.  Written
-from master 3711645 and libsmb2 4cce769 (2026-10-14).  Claims are marked
-MEASURED, INFERRED or GUESSED.
+STATUS (2026-10-18): BUILT and hardware-tested on branch smb-mmfs (Zero W,
+Zero 2 W; Samba and Windows shares).  Beyond this plan, everything the Beeb
+reads through the Pi goes to the share - the FAT service (MMFS/MMFS2 in file
+mode), FujiNet and Music 5000 recordings too - and *FX147,203,6 chooses it.
+Open: video only ~11-14 fps over WiFi (bigger and pipelined reads were
+measured slower, so not stop-and-wait); FujiNet/M5000 on the share untested
+on hardware.  User docs: docs/user/network-share.md.  The body below is the
+original design (2026-10-15, from master 3711645 and libsmb2 4cce769);
+claims are marked MEASURED, INFERRED or GUESSED.
 
 # The Beeb's storage on a network share (`storage=smb`)
 

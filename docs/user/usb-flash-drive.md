@@ -39,7 +39,8 @@ WiFi settings. The [web interface](web-interface.md) and
 
 ## Switching from the Beeb
 
-The Beeb can switch between the two itself, whatever `storage=` says:
+The Beeb can switch between the two itself, whatever `storage=` says
+(`*FX147,203,6` picks a [network share](network-share.md)):
 
 ```
 *FX147,202,2
