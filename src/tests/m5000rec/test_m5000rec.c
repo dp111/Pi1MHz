@@ -62,6 +62,7 @@ uint32_t RPI_GetSystemTime(void) { return 0; }
 void videoplayer_media_changed(void) {}
 /* BeebSCSI's controller setting lives in scsi.c, which is not linked here. */
 scsiController_t scsiGetController(void) { return SCSI_CONTROLLER_ACB4000; }
+bool scsiGeometryFromCfgOnly(void) { return false; }
 /* storage= is unset: the card; no USB drive. */
 bool usb_storage_mounted(void) { return false; }
 bool usb_storage_wait_for_drive(uint64_t until_us) { (void)until_us; return false; }
