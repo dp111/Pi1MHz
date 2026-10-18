@@ -917,6 +917,60 @@ static void test_stopped_geometry(void)
    filesystemSetLunDirectory(1, 0);
 }
 
+/* MODE SENSE: a page the descriptor does not hold is refused at once with
+   CHECK CONDITION and BAD ARGUMENT (a real drive's ILLEGAL REQUEST), not
+   DRIVE NOT READY - a FileStore waited and retried on "not ready" until the
+   command seemed hung; and page 0x3F returns every page the descriptor
+   holds, in page order (measured against a real RO652). */
+static void test_mode_sense(void)
+{
+   static char why[200];
+   static const char cfg[] =
+      "ModeParamHeader=00000008\n"
+      "LBADescriptor=0000000000000100\n"
+      "ModePage1=0103200405\n"
+      "ModePage4=040400013204\n"
+      "ModePage37=250428432941\n";
+   static const uint8_t p1[]  = { 0x01, 0x03, 0x20, 0x04, 0x05 };
+   static const uint8_t all[] = { 0x01, 0x03, 0x20, 0x04, 0x05,
+                                  0x04, 0x04, 0x00, 0x01, 0x32, 0x04,
+                                  0x25, 0x04, 0x28, 0x43, 0x29, 0x41 };
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi3.cfg", cfg, sizeof cfg - 1);
+
+   const uint8_t ms1[6] = { 0x1A, 3 << 5, 0x01, 0, 255, 0 };
+   int st = run_cmd(1, ms1, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes, length byte %d, page at 12: %02X %02X",
+            st, bus_out_len, bus_out_len ? bus_out[0] : -1, bus_out[12], bus_out[13]);
+   check("MS1 MODE SENSE of a page the descriptor holds",
+         st == 0 && bus_out_len >= 17 && bus_out[0] == 4 + 8 + 5 - 1 && bus_out[3] == 8 &&
+         memcmp(&bus_out[12], p1, sizeof p1) == 0, why);
+
+   const uint8_t ms2[6] = { 0x1A, 3 << 5, 0x02, 0, 255, 0 };
+   st = run_cmd(1, ms2, 6, NULL, 0);
+   int sense = sense_of(3);
+   snprintf(why, sizeof why, "status %d, sense 0x%02X (want 2, 0x24)", st, sense);
+   check("MS2 a page it does not hold: CHECK CONDITION, BAD ARGUMENT (not NOT READY)",
+         st == 2 && sense == 0x24, why);
+
+   const uint8_t ms3f[6] = { 0x1A, 3 << 5, 0x3F, 0, 255, 0 };
+   st = run_cmd(1, ms3f, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, length byte %d (want %d)", st,
+            bus_out_len ? bus_out[0] : -1, (int)(4 + 8 + sizeof all - 1));
+   check("MS3 page 0x3F returns every page held, in page order",
+         st == 0 && bus_out_len >= 12 + sizeof all && bus_out[0] == 4 + 8 + sizeof all - 1 &&
+         memcmp(&bus_out[12], all, sizeof all) == 0, why);
+
+   const uint8_t ms3f_short[6] = { 0x1A, 3 << 5, 0x3F, 0, 14, 0 };
+   st = run_cmd(1, ms3f_short, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes (want 14)", st, bus_out_len);
+   check("MS4 page 0x3F keeps to the allocation length", st == 0 && bus_out_len == 14, why);
+
+   f_unlink("/BeebSCSI0/scsi3.cfg");
+   stop_all();
+}
+
 /* S10: the VFS title cache does not survive a card change. */
 static void test_title_cache(void)
 {
@@ -1272,6 +1326,7 @@ int main(int argc, char **argv)
    test_readonly_image();
    test_format_interleave();
    test_stopped_geometry();
+   test_mode_sense();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */
