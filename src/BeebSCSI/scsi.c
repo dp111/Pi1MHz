@@ -119,6 +119,34 @@ scsiController_t scsiGetController(void)
    return scsiController;
 }
 
+// DriveGeometry= (read at power-on): false = Auto, true = CFG
+static bool scsiGeometryCfgOnly = false;
+
+void scsiSetGeometryFromCfgOnly(bool cfgOnly)
+{
+   scsiGeometryCfgOnly = cfgOnly;
+   filesystemSetGeometryFromCfgOnly(cfgOnly);
+}
+
+bool scsiGeometryFromCfgOnly(void)
+{
+   return scsiGeometryCfgOnly;
+}
+
+// DriveGeometry=Auto or CFG, any case.  No value is Auto; an unknown one is
+// Auto too, and the caller is told (false) so it can say so.
+bool scsiSetGeometryName(const char *name)
+{
+   scsiSetGeometryFromCfgOnly(false);
+   if ((name == NULL) || (name[0] == '\0') || (strcasecmp(name, "Auto") == 0))
+      return true;
+   if (strcasecmp(name, "CFG") == 0) {
+      scsiSetGeometryFromCfgOnly(true);
+      return true;
+   }
+   return false;
+}
+
 // DriveController=<name>: Mixed, ACB-4000, ACB-4070, SASI or SCSI, any
 // case.  No value is the default, Mixed; an unknown one is Mixed too, and
 // the caller is told (false) so it can say so.
@@ -2374,6 +2402,12 @@ static uint8_t scsiAdaptecModeSense(const char *header, size_t headerLength,
    memcpy(&list[4], extent, (extentLength < 8) ? extentLength : 8);
    if ((drive != NULL) && (pageLength > 0)) {
       memcpy(&list[12], drive, (pageLength < 10) ? pageLength : 10);
+   } else if (scsiGeometryFromCfgOnly()) {
+      // DriveGeometry=CFG and no list in the .cfg: as a disc without the
+      // board's parameters on cylinder 0 ("blown format", OEM manual App. A)
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+      requestSenseData[lun] = BAD_FORMAT;
+      return SCSI_STATUS;
    } else {
       // No list in the .cfg: the geometry it was given (the defaults of
       // filesystemLunToconfigGeometry)

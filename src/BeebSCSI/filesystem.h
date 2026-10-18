@@ -258,6 +258,8 @@ const modePageField_t * filesystemModePageFields(uint8_t page, size_t * count);
    ordinary page with the geometry in page 4 alone (a drive with its own
    controller); set by scsi.c from DriveController=. */
 void filesystemSetPage0IsDriveList(bool driveList);
+/* DriveGeometry=CFG (true) or Auto: set by scsi.c */
+void filesystemSetGeometryFromCfgOnly(bool cfgOnly);
 
 bool filesystemSetFatDirectory(const uint8_t * buffer);
 bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer);

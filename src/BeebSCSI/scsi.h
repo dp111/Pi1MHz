@@ -113,6 +113,12 @@ bool scsiSetControllerName(const char *name);
 // for FORMAT: the page as FORMAT will make it, and dropping what waits
 void scsiClearPendingPages(uint8_t lun);
 const char * scsiGetPendingModePageData(uint8_t lun, uint8_t page, size_t * length);
+// DriveGeometry= in Pi1MHz.cfg: what to do with a drive .cfg that has no
+// geometry page.  Auto (the default) deduces it from the image size and
+// publishes it; CFG takes the geometry from the .cfg only.
+void scsiSetGeometryFromCfgOnly(bool cfgOnly);
+bool scsiGeometryFromCfgOnly(void);
+bool scsiSetGeometryName(const char *name);
 void scsiReset(uint8_t scsiid);
 
 void scsiJukeboxSwap(uint8_t lun);

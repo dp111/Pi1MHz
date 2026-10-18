@@ -130,6 +130,7 @@ See [Hard discs](hard-discs.md) for what these mean in practice.
 | `SCSIID` | `0` | SCSI ID the emulation answers to. `0` (default) answers every ID. Only relevant if you run more than one SCSI adapter on a Master. |
 | `Beeb_write_protect` | off | `1` stops the Beeb changing anything on the SD card: every write it makes is silently ignored and reported as a success. Writes over USB and the web interface still work. See [MMFS](mmfs.md). |
 | `DriveController` | `Mixed` | The controller behind the Acorn 1MHz-bus SCSI host adaptor (a BBC/Master, the FileStore E01's adaptor board, the E01S main board), one for all drives. The default, `Mixed`, is Pi1MHz's own behaviour as it has always been; the other values are strict emulations of one kind of hardware, which decide the commands the drives answer, their error (sense) format and how FORMAT lays out a track - see [Drive controllers](#drive-controllers) below. |
+| `DriveGeometry` | `Auto` | What to do with a drive `.cfg` that has no geometry page (page 4; on an Adaptec or SASI board page 0 or 4). `Auto`: the geometry is deduced from the image size and published as the page. `CFG`: nothing is invented - MODE SENSE refuses the page as a drive without it would, and an Adaptec board answers 1C (not formatted by the board). Either way the log names the drive and the missing page. |
 
 ### Drive controllers
 
