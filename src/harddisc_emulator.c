@@ -442,6 +442,10 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       if (!scsiSetControllerName(config_get("DriveController")))
          LOG_WARN("HD: DriveController=%s not known - using ACB-4000\n",
                   config_get("DriveController"));
+      // A drive .cfg without its geometry page: deduce it (Auto) or not (CFG)
+      if (!scsiSetGeometryName(config_get("DriveGeometry")))
+         LOG_WARN("HD: DriveGeometry=%s not known - using Auto\n",
+                  config_get("DriveGeometry"));
 
       PowerOn = 1;
       scsiReset(scsiid);         /* only now is the engine there to reset */

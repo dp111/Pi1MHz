@@ -106,6 +106,12 @@ void scsiInitialise(void);
 void scsiSetController(scsiController_t controller);
 scsiController_t scsiGetController(void);
 bool scsiSetControllerName(const char *name);
+// DriveGeometry= in Pi1MHz.cfg: what to do with a drive .cfg that has no
+// geometry page.  Auto (the default) deduces it from the image size and
+// publishes it; CFG takes the geometry from the .cfg only.
+void scsiSetGeometryFromCfgOnly(bool cfgOnly);
+bool scsiGeometryFromCfgOnly(void);
+bool scsiSetGeometryName(const char *name);
 void scsiReset(uint8_t scsiid);
 
 void scsiJukeboxSwap(uint8_t lun);

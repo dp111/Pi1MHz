@@ -1877,7 +1877,10 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
       filesystemState.keyvalues[lunNumber][index].length = 6;
 }
 
-void filesytemdattoconfigGeometry(uint8_t lunNumber)
+/* The geometry from the image's size alone: sectors per track from page 3
+   (or the default), heads the largest divisor up to 16, cylinders the rest.
+   A guess, not the drive's: only for a .cfg without its geometry page. */
+static void filesystemGeometryFromImage(uint8_t lunNumber)
 {
       /* f_size() is only the image's size while the LUN holds it open.  A
          stopped LUN's FIL is closed and still reports the last image it
@@ -1902,8 +1905,12 @@ void filesytemdattoconfigGeometry(uint8_t lunNumber)
 
       filesystemState.fsLunGeometry[lunNumber].Cylinders = cylinders;
       filesystemState.fsLunGeometry[lunNumber].Heads = heads;
+}
 
-      filesystemLunToconfigGeometry(lunNumber);
+void filesytemdattoconfigGeometry(uint8_t lunNumber)
+{
+   filesystemGeometryFromImage(lunNumber);
+   filesystemLunToconfigGeometry(lunNumber);
 }
 
 
@@ -1997,8 +2004,18 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
                filesystemCopyPage4toPage0(lunNumber);
       } else
       {
-         // set to default values
-         filesytemdattoconfigGeometry(lunNumber);
+         // The .cfg has no geometry page (page 4; on an Adaptec or SASI
+         // board page 0 or 4).  DriveGeometry=Auto: deduce it from the
+         // image size and publish it as the page; CFG: invent nothing, a
+         // host asking for the page is refused as by a drive without it.
+         filesystemGeometryFromImage(lunNumber);
+         const struct HDGeometry *g = &filesystemState.fsLunGeometry[lunNumber];
+         LOG_WARN("BeebSCSI: LUN %u: the .cfg has no page 4%s - %s %lu x %u x %u from the image size\n",
+                  (unsigned)lunNumber, filesystemPage0IsDriveList() ? " or page 0" : "",
+                  scsiGeometryFromCfgOnly() ? "DriveGeometry=CFG: no page made; capacity" : "geometry deduced:",
+                  (unsigned long)g->Cylinders, (unsigned)g->Heads, (unsigned)g->SectorsPerTrack);
+         if (!scsiGeometryFromCfgOnly())
+            filesystemLunToconfigGeometry(lunNumber);
       }
    }
 }

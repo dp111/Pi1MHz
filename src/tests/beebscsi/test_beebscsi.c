@@ -676,6 +676,72 @@ static void test_sense_kept(void)
    stop_all();
 }
 
+/* DriveGeometry=: a drive .cfg without its geometry
+   page.  Auto deduces the geometry from the image size and publishes it as
+   page 4 (with a warning in the log); CFG invents nothing, so MODE SENSE
+   refuses page 4 as from a drive without it, and an Adaptec board without
+   its parameter list answers 1C (not formatted by the board). */
+static void test_drive_geometry_setting(void)
+{
+   static char why[200];
+   static char image[33 * 256 * 12];             /* 396 blocks: 1 x 12 x 33 */
+   static const char nopage4[] =
+      "ModeParamHeader=10000008\n"
+      "LBADescriptor=0000000000000100\n"
+      "ModePage1=0103200405\n";
+   const uint8_t ms4[6] = { 0x1A, 0, 0x04, 0, 255, 0 };
+   bool okName = scsiSetGeometryName("auto") && !scsiGeometryFromCfgOnly() &&
+                 scsiSetGeometryName("CFG") && scsiGeometryFromCfgOnly() &&
+                 !scsiSetGeometryName("sometimes") && !scsiGeometryFromCfgOnly() &&
+                 scsiSetGeometryName(NULL) && !scsiGeometryFromCfgOnly();
+   check("DriveGeometry= names: Auto, CFG (any case), absent = Auto, unknown = Auto and reported", okName,
+         "name parsing wrong");
+
+   /* Auto, a SCSI drive without page 4: page 4 deduced and published */
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   scsiSetGeometryFromCfgOnly(false);
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi0.cfg", nopage4, sizeof nopage4 - 1);
+   put_file("/BeebSCSI0/scsi0.dat", image, sizeof image);
+   filesystemClearPendingPages(0);
+   filesystemSetLunStatus(0, true);
+   int st = run_cmd(1, ms4, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes, page %02X, heads %d (want 12)", st, bus_out_len,
+            bus_out_len > 12 ? bus_out[12] : 0, bus_out_len > 17 ? bus_out[17] : -1);
+   check("DriveGeometry=Auto: a SCSI drive without page 4 gets one deduced from the image (1 x 12 x 33)",
+         st == 0 && bus_out_len >= 18 && bus_out[12] == 0x04 && bus_out[17] == 12, why);
+
+   /* CFG: nothing invented; page 4 refused, the image still readable */
+   scsiSetGeometryFromCfgOnly(true);
+   stop_all();
+   put_file("/BeebSCSI0/scsi0.cfg", nopage4, sizeof nopage4 - 1);
+   filesystemSetLunStatus(0, true);
+   st = run_cmd(1, ms4, 6, NULL, 0);
+   int sense = sense_of(0);
+   size_t l4 = 0;
+   const char *p4 = filesystemGetModePageData(0, 4, &l4);
+   snprintf(why, sizeof why, "status %d sense %02X (want 2, 24), page 4 %s, capacity %lu blocks (want 396)",
+            st, sense, p4 ? "INVENTED" : "absent", (unsigned long)filesystemGetLunTotalSectors(0));
+   check("DriveGeometry=CFG: no page 4 is invented; MODE SENSE refuses it; capacity from the image",
+         st == 2 && sense == 0x24 && p4 == NULL && filesystemGetLunTotalSectors(0) == 396, why);
+
+   /* CFG on an Adaptec board without its parameter list: 1C, as a disc the board never formatted */
+   scsiSetController(SCSI_CONTROLLER_ACB4000);
+   stop_all();
+   put_file("/BeebSCSI0/scsi0.cfg", nopage4, sizeof nopage4 - 1);
+   filesystemSetLunStatus(0, true);
+   const uint8_t sf[6] = { 0x1A, 0, 0, 0, 0x16, 0 };
+   st = run_cmd(1, sf, 6, NULL, 0);
+   sense = sense_of(0);
+   snprintf(why, sizeof why, "status %d sense %02X (want 2, 1C)", st, sense);
+   check("DriveGeometry=CFG: an Adaptec board with no list in the .cfg answers MODE SENSE with 1C", st == 2 && sense == 0x1C, why);
+
+   scsiSetGeometryFromCfgOnly(false);
+   f_unlink("/BeebSCSI0/scsi0.cfg");
+   stop_all();
+}
+
 /* An RO3085S as a real one answers (stardot t=30215, Dec 2024): page 0 is
    held (80 02 00 00, the Unit Attention page), the geometry is page 4, every
    reply has a block descriptor, and the PS bit stays set after FServFmt
@@ -2195,6 +2261,7 @@ int main(int argc, char **argv)
    test_filestore_mode_select();
    test_fservfmt_page3_masked();
    test_scsi_page0_ps();
+   test_drive_geometry_setting();
    test_sense_kept();
    test_write_mask_page1();
    test_readonly_image();
