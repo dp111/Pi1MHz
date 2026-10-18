@@ -134,6 +134,8 @@ second).
 
 - **Calls only go out.** The modem does not answer incoming calls
   (`RING` / `ATA`).
+  To call *in* to the Beeb, use the [telnet daemon](telnetd.md) (helper 20)
+  instead: it shares this redirector, so only one of the two is active.
 - The Pi's web status page has a **Modem** row: the modem's state and
   the last network error, useful when a dial fails.
 - The redirector's stub sits at `&FCCC`-`&FCF8`. `Serial_addr=-1` in

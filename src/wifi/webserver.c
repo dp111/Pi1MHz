@@ -46,6 +46,7 @@
 #include "../AUN/aun_emulator.h"
 #include "../serial_redirect.h"
 #include "../serial_modem.h"
+#include "../telnetd.h"
 #include "../chainboot.h"
 #include "../usb.h"
 #include "../usb_mouse.h"
@@ -2800,7 +2801,7 @@ static bool route_status(ws_conn_t *c)
    const wifi_lwip_context_t   *lw  = wifi_lwip_get_context();
    sdio_runtime_status_t        rs  = sdio_runtime_get_status();
    ws_strbuf_t                  b;
-   char                         tmp[144];   /* the Bus diag row peaks ~120 chars with 10-digit counters */
+   char                         tmp[256];   /* the Bus diag row peaks ~120 chars with 10-digit counters; the Telnetd row ~200 */
    uint8_t                      mac[6];
 
    sb_init(&b);
@@ -3291,9 +3292,23 @@ static bool route_status(ws_conn_t *c)
    table_row(&b, "Audio", tmp);
    serial_redirect_status(tmp, sizeof tmp);
    table_row(&b, "Serial", tmp);
+#ifdef DEBUG
+   {
+      static char sl[6200];
+      serial_redirect_log(sl, sizeof sl);
+      table_row(&b, "Serial log", sl);
+   }
+#endif
    modem_status(tmp, sizeof tmp);
    table_row(&b, "Modem", tmp);
    table_row(&b, "Beeb storage", filesystemStorageOnUsb() ? "USB drive" : "SD card");
+   telnetd_status(tmp, sizeof tmp);
+   table_row(&b, "Telnetd", tmp);
+   {
+      char tt[192];
+      telnetd_tcp_status(tt, sizeof tt);
+      table_row(&b, "Telnetd TCP", tt);
+   }
    if (usb_is_host()) {
       char m[64];
       usb_mouse_status(m, sizeof m);

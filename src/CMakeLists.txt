@@ -452,6 +452,10 @@ set(mouse_redirect_files
    mouseredirect.c
    serial_redirect.c
    serial_modem.c
+   telnetd.c
+   telnetd.h
+   telnetd_proto.c
+   telnetd_proto.h
 )
 
 set(wifi_files

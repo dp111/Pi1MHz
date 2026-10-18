@@ -8,14 +8,15 @@
 #   sh src/tests/run_all.sh services net just those
 #
 # SKIP is a space-separated list of suites left out of the default run.  It
-# defaults to wifirom: that suite needs beebasm and py65 and refuses to run
-# without beebasm under CI, so beeb-roms.yml runs it where they are installed.
+# defaults to wifirom and telnetdrom: those suites need beebasm and py65 and
+# refuse to run without beebasm under CI, so beeb-roms.yml runs them where they
+# are installed.
 #
 # fujinet needs the cJSON submodule (git submodule update --init
 # src/fujinet/cJSON), mtpsession the TinyUSB one (src/usb/tinyusb, for its
 # MTP class headers); no other suite reads a submodule.
 HERE=$(cd "$(dirname "$0")" && pwd)
-SKIP=${SKIP-wifirom}
+SKIP=${SKIP-wifirom telnetdrom}
 
 if [ $# -gt 0 ]; then
    suites=$*

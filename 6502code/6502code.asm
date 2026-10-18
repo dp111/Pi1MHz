@@ -924,19 +924,123 @@ SER_CTRL  = &FC28
 }
 
 ; ---------------------------------------------------------------------------
-; Pages 20-30 : reserved for future helpers
+; Page 20 : telnet daemon - the keyboard and the screen, over the network
+;
+; The same stub as helper 19 (src/serial_redirect.c), hooked the same way, but
+; it tells the Pi "telnet mode" (2 in the control port, where helper 19 says 1):
+; what the Pi sends then goes into the MOS keyboard buffer, not the RS423 input
+; buffer, so the real keyboard keeps working beside it and nothing needs
+; *FX2.  It also sets *FX3,1, which copies everything the Beeb prints to RS423
+; and so to the Pi (src/telnetd.c has the network end).  Only OSBYTEs and the
+; MOS vectors the BBC B, B+ and Master 128 share are used.  Entry &FD03 undoes
+; both, *FX3,0 included; BREAK undoes the hooks, and *FX3 with them.  The stub's
+; FRED offset is patched into &FD07 by the Pi, as in page 19.
+; ---------------------------------------------------------------------------
+{
+ORG &FD00
+INSV  = &022A
+IRQ1V = &0204
+SER_TXOLD = &FC0A       ; stub offsets, indexed by Y = the stub base
+SER_RXOLD = &FC0D
+SER_EXOLD = &FC2B
+SER_CTRL  = &FC28
+    JMP telinstall          ; &FD00: hook the vectors, start the copy of the screen
+    JMP telremove           ; &FD03: unhook them
+.telbase
+    LDY #0                  ; &FD07: stub offset, patched by the Pi (0 = none)
+    RTS
+    ASSERT telbase = &FD06
+
+; out: Y = stub offset, Z=1 if INSV already points at it.  No stub: reports it
+; and leaves the helper.
+.telprobe
+    JSR telbase
+    BEQ telnone
+    LDA &FC00,Y : CMP #&E0 : BNE telnone     ; the stub's CPX #2
+    LDA INSV+1 : CMP #&FC : BNE telprobed
+    CPY INSV
+.telprobed
+    RTS
+.telnone
+    PLA : PLA
+    LDX #msgnone-&FD00
+    JMP telprint
+
+.telinstall
+    JSR telprobe : BEQ telhooked             ; already in: just re-arm the Pi
+    LDX #msgbusy-&FD00
+    LDA IRQ1V+1 : AND #&FE : CMP #&FC : BNE telgo : JMP telprint
+.telgo
+    LDA INSV    : STA SER_TXOLD,Y            ; stash first: nothing runs the
+    LDA INSV+1  : STA SER_TXOLD+1,Y          ; stub until the vectors move
+    LDA IRQ1V   : STA SER_RXOLD,Y : STA SER_EXOLD,Y
+    LDA IRQ1V+1 : STA SER_RXOLD+1,Y : STA SER_EXOLD+1,Y
+    PHP : SEI                                ; both vectors are used in IRQs
+    STY INSV
+    LDA #&FC : STA INSV+1 : STA IRQ1V+1
+    TYA : CLC : ADC #&0C : STA IRQ1V
+    PLP
+.telhooked
+    LDA #135 : JSR OSBYTE                    ; the screen MODE (Y) ...
+    TYA : AND #7 : ORA #&10 : PHA
+    LDA #134 : JSR OSBYTE                    ; ... and the cursor (X = column, Y = row)
+    TYA : ORA #&E0 : PHA
+    TXA : ORA #&80 : PHA
+    JSR telbase                              ; Y = the stub offset again
+    PLA : STA SER_CTRL,Y                     ; &80 + column
+    PLA : STA SER_CTRL,Y                     ; &E0 + row
+    PLA : STA SER_CTRL,Y                     ; &10 + MODE: telnet mode (the Pi may raise nIRQ, into the keyboard
+                                             ; buffer) and the end of the report
+    LDA #156 : LDX #&40 : LDY #&1F : JSR OSBYTE  ; 6850: RTS high, no IRQs; keep format and divider
+    LDX #1 : JSR telfx3                      ; *FX3,1: the VDU stream to RS423 as well
+    LDX #msgon-&FD00
+    BNE telprint
+
+.telremove
+    JSR telprobe
+    BEQ telunhook
+    LDX #msgnotin-&FD00                      ; Z=0: not ours
+    BNE telprint
+.telunhook
+    PHP : SEI
+    LDA #0 : STA SER_CTRL,Y                  ; the Pi drops nIRQ first, and the stub goes back to RS423
+    LDA SER_TXOLD,Y   : STA INSV
+    LDA SER_TXOLD+1,Y : STA INSV+1
+    LDA SER_RXOLD,Y   : STA IRQ1V
+    LDA SER_RXOLD+1,Y : STA IRQ1V+1
+    PLP
+    LDX #0 : JSR telfx3                      ; *FX3,0: the screen only
+    LDX #msgoff-&FD00
+.telprint
+    LDA &FD00,X : BEQ telexit
+    JSR OSWRCH
+    INX
+    BNE telprint
+.telexit
+    JSR OSNEWL                              ; (the messages share this end of line)
+    PAGERTS
+
+.telfx3
+    LDA #3 : LDY #0 : JMP OSBYTE
+
+.msgon    EQUS "TelnetD", 0
+.msgoff   EQUS " Off", 0
+.msgnotin                              ; one text for the three ways it can fail:
+.msgbusy                               ; not hooked in, the vector busy, no stub
+.msgnone  EQUS " ?", 0
+
+    PRINT "helper 20 spare bytes:", &FE00-P%
+    ENDBLOCK &1400
+}
+
+; ---------------------------------------------------------------------------
+; Pages 21-30 : reserved for future helpers
 ;
 ; Free slots, so a new helper can be added without moving the explorer's
 ; pages and rewriting every GOTOPAGE in it.  Each answers like any finished
 ; helper page, so running one before it does anything simply returns.
+; (The telnet auto-start ROM, telnetd.rom, is loaded like any other ROM: no helper.)
 ; ---------------------------------------------------------------------------
-
-{
-    ORG &FD00
-    PAGERTS
-
-    ENDBLOCK &1400
-}
 
 {
     ORG &FD00

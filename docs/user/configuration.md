@@ -182,6 +182,19 @@ See [The web interface](web-interface.md).
 | `webdav_realm` | `Pi1MHz` | The name shown in the login prompt. Rarely needs changing. |
 | `webdav_utc_offset_minutes` | `0` | Your timezone as minutes east of UTC (e.g. `60` for BST, `-300` for US Eastern). Used so file dates shown over WebDAV come out in local time. |
 
+## Telnet daemon settings
+
+See [The telnet daemon](telnetd.md).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `telnetd_port` | (off) | TCP port the daemon listens on (`23` is telnet). Absent or `0` turns it off. Helper 20 on the Beeb connects it. |
+| `telnetd_login` | `1` | `0` skips the login even when `webdav_user` and `webdav_password` are set. |
+| `telnetd_ansi` | `1` | `0` sends the Beeb's output as it is, with no ANSI translation. |
+| `telnetd_utf8` | `1` | The pound sign as UTF-8; `0` sends Latin-1. |
+| `telnetd_mode` | `7` | The Beeb's screen mode (0-7) until it sends a `MODE`. |
+| `telnetd_copycursor` | `1` | `0` does not mark the copy cursor in the terminal. |
+
 ## Econet (AUN) settings
 
 See [Econet over WiFi](econet-aun.md).

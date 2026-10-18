@@ -176,7 +176,7 @@ static emulator_list emulator[] = {
    {"secure",secure_service_init, 0x00, 1 },
 #endif
    {"Teletext",teletext_emulator_init, 0x10, 1 },  // Acorn Teletext Adapter at &FC10
-   /* RS423 redirected to the Pi: a stub at &FCCC-&FCF8 that helper 19 hooks
+   /* RS423 redirected to the Pi: a stub at &FCCC-&FCFC that helper 19 hooks
       INSV and IRQ1V into.  Before Helpers, which patches its base into that
       helper's page. */
    {"Serial",serial_redirect_init, 0xCC, 1 },
