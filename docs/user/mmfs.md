@@ -13,8 +13,8 @@ Two generations are included, loaded with helper 4 or 5
 
 | Helper | File on the SD card | What it is |
 |---|---|---|
-| 4 | `/Pi1MHz/SWMMFS.rom` | MMFS 1.60, Model B sideways-RAM build. Serves discs from a `BEEB.MMB` image store. |
-| 5 | `/Pi1MHz/SWMMFS2.rom` | MMFS2 1.60, Model B sideways-RAM build. Serves individual `.ssd`/`.dsd` disc-image files - no MMB container. |
+| 4 | `/Pi1MHz/SWMMFS.rom` | MMFS 1.61, Model B sideways-RAM build. Serves discs from a `BEEB.MMB` image store. |
+| 5 | `/Pi1MHz/SWMMFS2.rom` | MMFS2 1.61, Model B sideways-RAM build. Serves individual `.ssd`/`.dsd` disc-image files - no MMB container. |
 
 Load one, press **CTRL-BREAK**, and select it with `*MMFS` (or
 `*DISC`/`*CARD` - see the MMFS documentation for the full command
