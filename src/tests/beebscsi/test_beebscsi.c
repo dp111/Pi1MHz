@@ -1180,6 +1180,23 @@ static void test_block_sizes(void)
    snprintf(why, sizeof why, "status %d (want -1), block 1 %s", st, back[512] == 0xAB ? "WRITTEN" : "untouched");
    check("data path: a 512-byte block cut at 256 bytes is a short DMA", st == -1 && back[512] != 0xAB, why);
    stop_all();
+
+   /* A size the data path cannot take (4096): 256-byte blocks, and READ
+      CAPACITY says so - it must not report one size and move another */
+   put_lun8(2, "ModeParamHeader=00000008\nLBADescriptor=0000000000001000\n"
+            "ModePage0=01000A02008000800001\n", 16u * 256u);
+   memset(data, 0x5A, 256);
+   const uint8_t wr2[6] = { 0x0A, 2 << 5, 0, 2, 1, 0 };
+   st = run_cmd(1, wr2, 6, data, 256);
+   read_file("/BeebSCSI8/scsi2.dat", back, 16u * 256u);
+   const uint8_t rc2[10] = { 0x25, 2 << 5, 0, 0, 0, 0, 0, 0, 0, 0 };
+   int st3 = run_cmd(1, rc2, 10, NULL, 0);
+   uint32_t rcbs = ((uint32_t)bus_out[4] << 24) | ((uint32_t)bus_out[5] << 16) | ((uint32_t)bus_out[6] << 8) | bus_out[7];
+   snprintf(why, sizeof why, "write %d at 512 %s, capacity %d block %lu",
+            st, back[512] == 0x5A ? "yes" : "no", st3, (unsigned long)rcbs);
+   check("data path: a 4096 .cfg moves 256-byte blocks and READ CAPACITY says 256",
+         st == 0 && back[512] == 0x5A && st3 == 0 && rcbs == 256u, why);
+   stop_all();
    filesystemSetLunDirectory(1, 0);
 }
 
