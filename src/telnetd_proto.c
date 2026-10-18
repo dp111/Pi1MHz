@@ -65,6 +65,39 @@ size_t tnd_greeting(uint8_t *out)
    return sizeof g;
 }
 
+/* A character above 127 from the terminal, as the Beeb's byte: the inverse of what the daemon
+   prints.  The pound sign is the Beeb's 96 (as before); in MODE 7 teletext's glyphs are their
+   codes (an up arrow is &5E); otherwise U+0080-U+00FF is the byte of that value, which goes to the
+   Beeb behind TND_KEY_LIT when its ROM can read it as it is (build 13), and is dropped when not. */
+static size_t char_key(const tnd_in_t *s, uint32_t cp, uint8_t *keys)
+{
+   if (cp == 0xA3u) {
+      keys[0] = 96u;
+      return 1u;
+   }
+   if (s->tele) {
+      uint8_t b = 0u;
+      switch (cp) {
+      case 0x2190u: b = 0x5Bu; break;  case 0xBDu:   b = 0x5Cu; break;
+      case 0x2192u: b = 0x5Du; break;  case 0x2191u: b = 0x5Eu; break;
+      case 0x2015u: b = 0x60u; break;  case 0xBCu:   b = 0x7Bu; break;
+      case 0x2016u: b = 0x7Cu; break;  case 0xBEu:   b = 0x7Du; break;
+      case 0xF7u:   b = 0x7Eu; break;  case 0x25A0u: b = 0x7Fu; break;
+      default: break;
+      }
+      if (b != 0u) {
+         keys[0] = b;
+         return 1u;
+      }
+   }
+   if (cp >= 0x80u && cp <= 0xFFu && s->lit_ok) {
+      keys[0] = TND_KEY_LIT;
+      keys[1] = (uint8_t)cp;
+      return 2u;
+   }
+   return 0u;
+}
+
 /* A byte that is not part of a command or an escape sequence. */
 static size_t plain_byte(tnd_in_t *s, uint8_t c, uint8_t *keys)
 {
@@ -72,13 +105,22 @@ static size_t plain_byte(tnd_in_t *s, uint8_t c, uint8_t *keys)
       s->state = I_NORMAL;
       if (c == 0u || c == '\n')                 /* the second half of CR NUL / CR LF */
          return 0u;
-   } else if (s->state == I_C2) {
-      s->state = I_NORMAL;
-      if (c == 0xA3u) {                         /* UTF-8 pound sign */
-         keys[0] = 96u;
-         return 1u;
+   }
+
+   if (s->u8_need != 0u) {                      /* inside a UTF-8 character */
+      if ((c & 0xC0u) == 0x80u) {
+         s->u8_cp = (s->u8_cp << 6) | (c & 0x3Fu);
+         s->u8_lead = 0u;
+         if (--s->u8_need != 0u)
+            return 0u;
+         return char_key(s, s->u8_cp, keys);
       }
-      return 0u;                                /* any other two-byte character */
+      s->u8_need = 0u;                          /* broken: this byte read afresh */
+      if (s->u8_lead != 0u) {                   /* a lone lead byte was a Latin-1 client's character (&E9) */
+         size_t n = char_key(s, s->u8_lead, keys);
+         s->u8_lead = 0u;
+         return n + plain_byte(s, c, keys + n);
+      }
    }
 
    if (c == TN_IAC) {
@@ -108,17 +150,14 @@ static size_t plain_byte(tnd_in_t *s, uint8_t c, uint8_t *keys)
       keys[0] = 127u;
       return 1u;
    }
-   if (c == 0xC2u) {
-      s->state = I_C2;
+   if (c >= 0xC2u && c <= 0xF4u) {              /* the start of a UTF-8 character */
+      s->u8_cp = c & (c >= 0xF0u ? 0x07u : c >= 0xE0u ? 0x0Fu : 0x1Fu);
+      s->u8_need = (uint8_t)(c >= 0xF0u ? 3u : c >= 0xE0u ? 2u : 1u);
+      s->u8_lead = c;
       return 0u;
    }
-   if (c >= 0x80u) {
-      if (c == 0xA3u) {                         /* Latin-1 pound sign */
-         keys[0] = 96u;
-         return 1u;
-      }
-      return 0u;
-   }
+   if (c >= 0x80u)                              /* not UTF-8: a Latin-1 client's byte */
+      return char_key(s, c, keys);
    keys[0] = c;
    return 1u;
 }
@@ -1194,6 +1233,7 @@ static size_t ttx_glyph(tnd_out_t *s, uint8_t c, uint8_t *dst)
    size_t   n;
 
    s->ch[s->cy][s->cx] = b;
+   s->drawn++;
    s->at[s->cy][s->cx] = AT_KNOWN | AT_DEF;
    if (ctl || (old != b && ttx_row_hold(s, s->cy))) {   /* the rest of the row, as far as it shows anything */
       int after = ttx_row_end(s, s->cy);
@@ -1244,7 +1284,7 @@ static size_t tek_leave(tnd_out_t *s, uint8_t *dst)
       return 0u;
    s->tek_on = false;
    s->tsgr = 0xFFu;
-   return put_str(dst, "\x1b\x03");
+   return put_str(dst, "\x1f\x1b\x03");         /* US first: xterm drops the vectors not yet drawn otherwise */
 }
 
 static size_t tek_xy(uint8_t *dst, int x, int y)
@@ -1288,7 +1328,15 @@ static size_t tek_plot(tnd_out_t *s, uint8_t *dst)
    if (s->tek && how == 1u) {                   /* drawn in the foreground: the only kind a tube shows */
       if (type < 64u) {                         /* the lines (solid, dotted, dashed, with or without the end) */
          int16_t v[4] = { s->gx, s->gy, x, y };
-         n = tek_lines(s, dst, v, 2u);
+         if (type == 16u || type == 24u) {      /* PLOT 16-31: dotted, in the tube's dotted style */
+            n = tek_enter(s, dst);
+            n += put_str(dst + n, "\x1b" "a\x1d");
+            n += tek_xy(dst + n, v[0], v[1]);
+            n += tek_xy(dst + n, v[2], v[3]);
+            n += put_str(dst + n, "\x1b`");
+         } else {
+            n = tek_lines(s, dst, v, 2u);
+         }
       } else if (type == 64u) {                 /* a point */
          int16_t v[4] = { x, y, x, y };
          n = tek_lines(s, dst, v, 2u);
@@ -1599,6 +1647,7 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
       old = s->ch[s->cy][s->cx];
       before = ttx_row_end(s, s->cy);
       s->ch[s->cy][s->cx] = ' ';
+      s->drawn++;
       s->at[s->cy][s->cx] = AT_KNOWN | AT_DEF;
       end = s->cx;
       if (old >= 0x80u && old < 0xA0u && before > (int)end)
@@ -1620,6 +1669,7 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
          s->cx = s->wr;
          s->cy--;
          s->ch[s->cy][s->cx] = ' ';
+         s->drawn++;
          s->at[s->cy][s->cx] = AT_KNOWN | cur_attr(s);
          if (s->sync && s->origin_ok) {
             n += put_pos(dst + n, s->cx, s->cy);
@@ -1631,6 +1681,7 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
          return 3u;
       }
       s->ch[s->cy][s->cx] = ' ';
+      s->drawn++;
       s->at[s->cy][s->cx] = AT_KNOWN | cur_attr(s);
       dst[0] = 8u; dst[1] = ' '; dst[2] = 8u;
       return 3u;
@@ -1645,6 +1696,7 @@ static size_t out_byte(tnd_out_t *s, uint8_t c, uint8_t *dst)
 
       n = glyph(s, c, dst, &stored, &newfg);
       s->ch[s->cy][s->cx] = stored;
+      s->drawn++;
       s->at[s->cy][s->cx] = AT_KNOWN | at;
       if (newfg >= 0) {
          s->fg = (uint8_t)newfg;

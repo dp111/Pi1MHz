@@ -449,6 +449,83 @@ def run_mos_page_wait(rom, mos, buf, shift_after=None):
     return False, mem._subject[0x02D8] != mem._subject[0x02E1], mem._subject[SHIFTFLAG]
 
 
+RDCHV_TABLE_OFF = 0x10          # RDCHV's place in the MOS's table of default vectors
+MOS_RDCHV = 0x0600              # a stand-in for the MOS's RDCHV routine: A=&EE, C set, counted at &0610
+RDCHVOLD = 0x0D9F + 75
+
+
+def run_rdchv(rom, buf, escape=False):
+    """Call the RDCHV handler as the MOS's extended vector entry does, with REMV a buffer of the bytes
+    in buf (look: A = the next, take: Y = it; C set when empty) and the MOS's RDCHV a stand-in."""
+    boot = call(rom, 1, 6, 0, pi_after=0, reset_type=2,
+                pokes={**keyv_pokes(), KEYV_TABLE + RDCHV_TABLE_OFF: 0x00, KEYV_TABLE + RDCHV_TABLE_OFF + 1: 0x06,
+                       0x0210: 0x00, 0x0211: 0x06})
+    bm = boot["mem"]._subject
+    handler = bm[0x0D9F + 24] | (bm[0x0D9F + 25] << 8)
+    mem = ObservableMemory()
+    for i, b in enumerate(rom):
+        mem[ROM_BASE + i] = b
+    mem._subject[RDCHVOLD], mem._subject[RDCHVOLD + 1] = MOS_RDCHV & 0xFF, MOS_RDCHV >> 8
+    asm(mem, MOS_RDCHV, """
+        INC $0610
+        LDA #$EE
+        SEC
+        RTS
+    """)
+    # REMV: a buffer at &0700 (count at &06FF), V set looks (A = byte, Y = junk), V clear takes (Y = byte)
+    mem._subject[0x022C], mem._subject[0x022D] = 0x00, 0x05
+    asm(mem, 0x0500, """
+        BVS $0520
+        LDA $06FF
+        BEQ $0540
+        LDY $0700
+        LDX #$00
+        LDA $0701
+        STA $0700
+        LDA $0702
+        STA $0701
+        DEC $06FF
+        LDX #$00
+        TYA
+        CLC
+        RTS
+    """)
+    asm(mem, 0x0520, """
+        LDA $06FF
+        BEQ $0540
+        LDA $0700
+        LDY #$E5
+        CLC
+        RTS
+    """)
+    asm(mem, 0x0540, """
+        SEC
+        RTS
+    """)
+    for i, b in enumerate(buf):
+        mem._subject[0x0700 + i] = b
+    mem._subject[0x06FF] = len(buf)
+    mem._subject[0xFF] = 0x80 if escape else 0
+    mem._subject[RETURN_TRAP] = 0xEA
+    mpu = MPU(memory=mem, pc=handler)
+    mpu.a, mpu.x, mpu.y = 0x11, 0x22, 0x33
+    mpu.sp = 0xF0
+    ret = RETURN_TRAP - 1
+    mem._subject[0x100 + mpu.sp] = ret >> 8
+    mem._subject[0x100 + mpu.sp - 1] = ret & 0xFF
+    mpu.sp -= 2
+    sp_before = mpu.sp + 2
+    for _ in range(100_000):
+        if mpu.pc == RETURN_TRAP:
+            break
+        mpu.step()
+    else:
+        raise RuntimeError("the RDCHV handler did not return")
+    m = mem._subject
+    return {"a": mpu.a, "x": mpu.x, "y": mpu.y, "c": mpu.p & 1, "sp_after": mpu.sp, "sp_before": sp_before,
+            "mos": m[0x0610], "left": m[0x06FF], "boot": boot}
+
+
 def main(path):
     rom = open(path, "rb").read()
 
@@ -490,7 +567,7 @@ def main(path):
     r = call(rom, 1, 4, 0, pi_after=0, reset_type=0, pokes={0x0204: 0x00, 0x0205: 0xD0}, watch=(0x0204, 0x0205))
     check(r["writes"] == [], f"an ordinary vector is left alone: {r['writes']}")
     r = call(rom, 1, 4, 0, pi_after=0, reset_type=0, pokes={0x022A: 0xCC, 0x022B: 0xFC}, watch=(0xFCF4,))
-    check(r["writes"] == [(0xFCF4, 0x23)], f"a hooked-in stub is told: the reset marker, &23 'can be asked for the screen, tells the keys taken', goes to its control port: {r['writes']}")
+    check(r["writes"] == [(0xFCF4, 0x26)], f"a hooked-in stub is told: the reset marker, &26 'can be asked for the screen, tells every key taken, reads LITKEY bytes as they are', goes to its control port: {r['writes']}")
     r = call(rom, 1, 4, 0, pi_after=0, reset_type=0, pokes={0x022A: 0xCC, 0x022B: 0xFC, 0x022D: 0xFF}, watch=(0xFCF4,))
     check(r["writes"] == [(0xFCF4, 0x20)], f"REMV already somebody's extended vector: the marker says it cannot: {r['writes']}")
 
@@ -525,7 +602,7 @@ def main(path):
         check((m[STUBA + 0x0A], m[STUBA + 0x0B], m[STUBA + 0x0D], m[STUBA + 0x0E], m[STUBA + 0x2B], m[STUBA + 0x2C])
               == (0x34, 0x12, 0x78, 0x56, 0x78, 0x56), "... the old vectors kept in the stub first")
         ctl = [v for a_, v in r["writes"]]
-        check(ctl[:3] == [0x80 + 5, 0xE0 + 9, 0x10 + 7] and ctl[3:] == [0x23],
+        check(ctl[:3] == [0x80 + 5, 0xE0 + 9, 0x10 + 7] and ctl[3:] == [0x26],
               f"... the Pi told column, row, MODE (telnet), then the reset marker: got {[hex(v) for v in ctl]}")
         ob = [o[0] for o in r["osbytes"]]
         check(156 in ob and (3, 1, 0) in r["osbytes"], f"... the 6850 quietened and *FX3,1: {r['osbytes']}")
@@ -641,6 +718,10 @@ def main(path):
     r = run_remv(rom, 0, 0, 0, 0xFF, 0, screen={(0, 0): 0x41, (5, 2): 0x42}, cur=(3, 1), flaky=fl)
     check(0x41 in r["pi"] and 0x42 not in r["pi"] and r["sp_after"] == r["sp_before"],
           "a cell read as nothing is read again (2 misses: sent; more than the tries: left out), stack balanced")
+    r = run_remv(rom, 0, 0, 0, 0xFF, 0, screen={(0, 14): 0x01, (1, 14): 0x45, (2, 14): 0x83}, cur=(3, 1), mode=7)
+    cells = [r["pi"][i + 3] for i in range(len(r["pi"]) - 3) if r["pi"][i] == 31 and r["pi"][i + 2] == 14]
+    check(cells == [0x81, 0x45, 0x83],
+          f"MODE 7: a control code stored below 32 (WordWise-Plus's &01) is sent as &81, never as a VDU code ({cells})")
     r = run_remv(rom, 0, 1, 0, 0xFF, 0, screen=scr)
     check(r["y"] == 0xFF and r["c"] == 0 and r["pi"] == [] and r["old_calls"] == 1, "looking at the byte (V set) leaves it, and sends nothing")
     # A keyboard read gives the 6850 back from the ROM filing system (&EA = 1 with &247 = 2),
@@ -661,8 +742,8 @@ def main(path):
           f"lost vectors are hooked in again on a keyboard read: INSV &{m[0x22B]:02X}{m[0x22A]:02X} IRQ1V &{m[0x205]:02X}{m[0x204]:02X}")
     check((m[ST + 0x0A], m[ST + 0x0B], m[ST + 0x0D], m[ST + 0x0E]) == (0x43, 0xEA, 0xFF, 0xE5),
           "... the MOS's vectors kept in the stub to chain to")
-    check(m[ST + 0x28] == 0 and r["y"] == 0x41 and r["a"] == 0x5A and r["x"] == 0 and r["sp_after"] == r["sp_before"],
-          "... nothing told to the Pi, and the key, A, X and the stack as they were")
+    check(m[ST + 0x28] == 0x25 and r["y"] == 0x41 and r["a"] == 0x5A and r["x"] == 0 and r["sp_after"] == r["sp_before"],
+          "... the Pi told only the key taken (&25, build 13), and the key, A, X and the stack as they were")
     off = dict(lost)
     off[ST + 0x16] = 0x01                       # the modem's buffer: telnet is off (unhooked on purpose)
     r = run_remv(rom, 0, 0, 0, 0x41, 0, hooked=False, pokes=off)
@@ -697,9 +778,10 @@ def main(path):
         check(r["ctl"] == [0x24] and r["y"] == key and r["c"] == 0 and r["a"] == 0x5A and r["x"] == 0
               and r["sp_after"] == r["sp_before"],
               f"key &{key:02X} taken: the Pi told (&24) once, Y, C, A, X kept: ctl {r['ctl']} Y={r['y']:#x} C={r['c']}")
-    for key in (0x41, 0x8A, 0x90, 0x80, 0x7F, 0xFC):
+    for key in (0x41, 0x8A, 0x90, 0x80, 0x7F, 0xFC, 0xFB):
         r = run_remv(rom, 0, 0, 0, key, 0)
-        check(r["ctl"] == [] and r["y"] == key and r["c"] == 0, f"key &{key:02X} taken: nothing told")
+        check(r["ctl"] == [0x25] and r["y"] == key and r["c"] == 0 and r["a"] == 0x5A and r["x"] == 0,
+              f"key &{key:02X} taken: told as any other key (&25), Y, C, A, X kept: {r['ctl']}")
     r = run_remv(rom, 0, 1, 0, 0x8B, 0)
     check(r["ctl"] == [], "looking at a COPY (V set) is not taking it: nothing told")
     r = run_remv(rom, 2, 0, 0, 0x8B, 0)
@@ -708,6 +790,27 @@ def main(path):
     check(r["ctl"] == [] and r["c"] == 1, "an empty buffer: nothing told")
     r = run_remv(rom, 0, 0, 0, 0x8B, 0, hooked=False)
     check(r["ctl"] == [] and r["y"] == 0x8B, "no stub hooked in: nothing told, the key given as it is")
+
+    # 9. ROM build 13: RDCHV claimed (while the MOS's own), so a byte after LITKEY is read as it is
+    r = run_rdchv(rom, [])
+    bm = r["boot"]["mem"]._subject
+    check((bm[0x0210], bm[0x0211]) == (0x18, 0xFF), f"RDCHV points at the MOS's extended entry for vector 8 (&FF18): &{bm[0x0211]:02X}{bm[0x0210]:02X}")
+    check((bm[RDCHVOLD], bm[RDCHVOLD + 1]) == (0x00, 0x06), "... the MOS's RDCHV kept in IND2V's slot")
+    for byte in (0xC5, 0x8B, 0xFF, 0x81, 0xFB):
+        r = run_rdchv(rom, [0xFB, byte])
+        check(r["a"] == byte and r["c"] == 0 and (r["x"], r["y"]) == (0x22, 0x33) and r["mos"] == 0 and r["left"] == 0
+              and r["sp_after"] == r["sp_before"],
+              f"LITKEY then &{byte:02X}: read as it is (A={r['a']:#04x} C={r['c']}), X and Y kept, both taken, the MOS's read not used")
+    for buf in ([], [0x41], [0xC5], [0x41, 0xFB, 0xC5]):
+        r = run_rdchv(rom, buf)
+        check(r["mos"] == 1 and r["a"] == 0xEE and r["left"] == len(buf) and (r["x"], r["y"]) == (0x22, 0x33)
+              and r["sp_after"] == r["sp_before"],
+              f"buffer {[hex(b) for b in buf]}: the MOS's read as usual, nothing taken here")
+    r = run_rdchv(rom, [0xFB], escape=True)
+    check(r["mos"] == 1 and r["sp_after"] == r["sp_before"], "LITKEY with no byte after it and ESCAPE pending: the MOS's read (which reports the ESCAPE)")
+    r = call(rom, 1, 6, 0, pi_after=0, reset_type=2, pokes={**keyv_pokes(), KEYV_TABLE + RDCHV_TABLE_OFF: 0x00,
+             KEYV_TABLE + RDCHV_TABLE_OFF + 1: 0x06, 0x0210: 0x34, 0x0211: 0x12}, watch=(0x0210, 0x0211))
+    check(r["writes"] == [], f"RDCHV somebody else's: left alone {r['writes']}")
 
     # 7. SHIFT for paged mode: KEYV is claimed through the MOS's extended entry for vector 20
     # (&FF3C) while it is the MOS's own routine (the default table at &FFB7 says which)

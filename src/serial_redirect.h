@@ -22,6 +22,10 @@ uint32_t serial_redirect_mode_gen(void);
 bool serial_redirect_scan_ok(void);        /* the ROM can send the Beeb's screen when a byte &FF is put in the keyboard buffer */
 bool serial_redirect_keys_told(void);       /* the ROM (build 11) tells each cursor key, COPY or RETURN a program takes */
 uint32_t serial_redirect_key_gen(void);     /* ... counted */
+uint32_t serial_redirect_key_other_gen(void); /* every other byte taken (build 13) */
+bool serial_redirect_lit_ok(void);          /* the ROM reads a byte after LITKEY (&FB) as it is (build 13) */
+uint32_t serial_redirect_rx_count(void);    /* bytes put into the Beeb's buffer */
+uint32_t serial_redirect_tx_count(void);    /* bytes the Beeb has sent */
 uint32_t serial_redirect_reset_gen(void);   /* ... and one that counts the BBC's resets */
 uint32_t serial_redirect_unseen_gen(void);  /* ... and the ROM filing system operations, whose output RS423 never sees */
 uint8_t  serial_redirect_beeb_mode(void);

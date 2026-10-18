@@ -114,9 +114,38 @@ static void test_pound_and_high_bytes(void)
    FEED(&s, "a\xe2\x82\xacz");
    CHECK(KEYS("az"), "a three-byte character is dropped whole"); if (!KEYS("az")) dump();
 
+   /* T-18: with a ROM that reads bytes as they are (build 13), characters above 127 go through */
+   tnd_in_reset(&s); s.lit_ok = true; in_reset();
+   FEED(&s, "a\xc3\xa9z");
+   CHECK(nkeys == 4 && keys[0] == 'a' && keys[1] == TND_KEY_LIT && keys[2] == 0xE9 && keys[3] == 'z',
+         "lit_ok: UTF-8 e-acute is LIT and &E9"); if (nkeys != 4) dump();
    in_reset();
+   FEED(&s, "\xc2\x81\xc2\x9d");
+   CHECK(nkeys == 4 && keys[0] == TND_KEY_LIT && keys[1] == 0x81 && keys[2] == TND_KEY_LIT && keys[3] == 0x9D,
+         "lit_ok: U+0081 and U+009D (teletext red, new background) are their bytes"); if (nkeys != 4) dump();
+   in_reset();
+   FEED(&s, "\xc2\xa3");
+   CHECK(nkeys == 1 && keys[0] == 96, "lit_ok: the pound sign is still the Beeb's 96");
+   in_reset();
+   FEED(&s, "x\xe9y");
+   CHECK(nkeys == 4 && keys[1] == TND_KEY_LIT && keys[2] == 0xE9, "lit_ok: a Latin-1 client's byte &E9 too"); if (nkeys != 4) dump();
+   in_reset();
+   FEED(&s, "\xe2\x86\x91");
+   CHECK(nkeys == 0, "not MODE 7: an up arrow is no Beeb byte");
+   s.tele = true; in_reset();
+   FEED(&s, "\xe2\x86\x91\xc2\xbd\xc3\xb7\xe2\x80\x95");
+   CHECK(KEYS("^\\~`"), "MODE 7: the glyphs the daemon prints come back as their codes (up arrow, 1/2, divide, dash)");
+   if (!KEYS("^\\~`")) dump();
+   in_reset();
+   FEED(&s, "\xc3\xa9");
+   CHECK(nkeys == 2 && keys[0] == TND_KEY_LIT && keys[1] == 0xE9, "MODE 7: other characters as their bytes");
+   in_reset();
+   FEED(&s, "\xf0\x9f\x98\x80" "q");
+   CHECK(KEYS("q"), "a four-byte character (emoji) is dropped whole"); if (!KEYS("q")) dump();
+
+   tnd_in_reset(&s); in_reset();
    FEED(&s, "\xc2" "a");
-   CHECK(nkeys == 0, "a lead byte then ASCII: the ASCII is lost with it, no crash");
+   CHECK(KEYS("a"), "a lead byte then ASCII: the ASCII kept (the lone byte, without lit_ok, dropped)");
 }
 
 static void test_cursor_and_function_keys(void)
@@ -999,6 +1028,16 @@ static void test_tek(void)
          "MOVE 0,0 DRAW 1279,1023: the Tek window, one vector corner to corner (0,0 to 1023,779)");
    if (!strstr(out, "\x1b[?38h\x1d")) printf("    got [%s]\n", out);
    CHECK(strstr(out, "\x1b\x03" "A") != NULL, "text afterwards goes back to the text screen");
+   CHECK(strstr(out, "\x3f\x5f" "\x1f\x1b\x03") != NULL,
+         "... with US before ESC ETX, or xterm drops the last vector (T-19, seen in a real xterm)");
+
+   /* PLOT 21 (dotted): the line in the tube's dotted style, and solid again after */
+   static const char dot[] = "\x16\x04" "\x19\x04\x00\x00\x00\x00" "\x19\x15\xff\x04\x00\x00";
+   tnd_out_reset(&s, true);
+   tnd_out_tek(&s, true);
+   feed_out(&s, dot, sizeof dot - 1, out, sizeof out);
+   CHECK(strstr(out, "\x1b[?38h\x1b" "a\x1d" "\x20\x60\x20\x40" "\x20\x60\x3f\x5f" "\x1b`") != NULL,
+         "PLOT 21: ESC a (dotted), the vector, ESC ` (solid)");
 
    /* relative moves follow the graphics cursor; the origin applies to absolute ones */
    static const char rel[] = "\x16\x04" "\x1d\x80\x02\x00\x02" "\x19\x04\x00\x00\x00\x00" "\x19\x01\x00\x00\x80\x00";

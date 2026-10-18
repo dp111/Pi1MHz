@@ -91,7 +91,7 @@ session is back.
   itself, exactly as helper 20 does, so it works without the helper pages
   (`6502code.bin`) and without paging anything into JIM. Only if `Serial_addr=` has
   moved the stub does it run helper 20 instead, which knows where.
-- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b12` (the build number
+- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b14` (the build number
   goes up with every image).
 - **It claims nothing.** Every service call is passed on with A, X and Y as they
   came, so it sits happily beside filing systems and other ROMs in any bank.
@@ -108,6 +108,21 @@ session is back.
   the keyboard vector (KEYV, only while it is the MOS's own) and, when the MOS asks
   whether SHIFT is pressed (paged mode's wait at the end of a page), answers yes once
   if the flag is set, and clears it.
+- **It tells the Pi every key a program takes** (build 13). From that the Pi knows how
+  many keys are waiting in the Beeb's buffer and when the Beeb last took one; the Status
+  page's Telnetd line shows `keys waiting N, last taken S s ago`, and adds
+  `BBC NOT TAKING KEYS` when keys have waited 5 seconds with none taken (a hung program,
+  or one that does not read the keyboard). And when a program takes a key and draws no
+  character, as WordWise-Plus's editor does (it writes the screen memory itself), the Pi
+  reads the screen quietly and draws only what changed, so what you type shows without F11.
+- **Characters above 127 can be typed and pasted** (build 13). The MOS's own key read
+  turns a byte &80-&FF in the keyboard buffer into a function key or a cursor key, so the
+  Pi sends such a character behind a marker byte, and the ROM (on the read-character
+  vector, RDCHV) hands the program the byte as it is. UTF-8 from the terminal is decoded
+  (e-acute arrives as 233); in MODE 7 the terminal's teletext glyphs map back to their codes.
+- **MODE 7 control codes stored below 32** (WordWise-Plus writes its colours as &01-&07,
+  which the teletext chip treats as &81-&87) are sent in a screen read as &81-&87
+  (build 14), so F11 shows them in the right place.
 
 **The ROM does not survive switching the Beeb off.** Ordinary sideways RAM is
 cleared when the power goes, so after a power-on the ROM is simply not there, and
@@ -126,7 +141,7 @@ whole boot until the Pi is up, which should also give the Pi's emulated hard dis
 time to be ready before ADFS looks for it. **That last effect is expected, not yet
 measured:** without the ROM, a power-on boot from a Pi-served disc was seen to fail
 about as often as it worked (below). Read the chip back after programming; the
-image's MD5 (build 12) is `D4160216BB72D17F7033802E8C7E4A9C`.
+image's MD5 (build 14) is `2C925F9AF28EDDA748B054EE18A604E0`.
 
 **On a Master 128 also `*INSERT` the bank** (`*ROMS` shows which one `TelnetD`
 went into): the Master only starts ROMs marked as inserted, and a ROM loaded after
@@ -224,11 +239,14 @@ asks the client for its terminal type (telnet TTYPE), and only if that says xter
 asks the terminal itself what it is (`CSI > q`, which a terminal that does not know
 it may print, as Windows telnet would); if it answers that it is xterm, the
 Beeb's graphics are drawn in xterm's Tek window: lines, points, triangles and the
-Master's rectangles (outlined), with `VDU 29` moving the origin and `CLG` and
-`MODE` clearing the page. The Beeb's 1280 x 1024 is mapped onto the Tek's
+Master's rectangles (outlined), dotted lines (PLOT 16-31) in the tube's dotted style,
+with `VDU 29` moving the origin and `CLG` and `MODE` clearing the page. The Beeb's 1280 x 1024 is mapped onto the Tek's
 1024 x 780. A storage tube cannot rub out, so drawing in the background colour
 or inverting only moves the graphics cursor. Text goes back to xterm's text
-window. Nothing changes for any other terminal, and `telnetd_tek=0` turns it off.
+window, and xterm then brings its text window to the front: the Tek window keeps
+its picture behind it (place the two side by side with
+`xterm -xrm 'XTerm*tekGeometry: +620+0'`). Tested in a real xterm (2026-10-18).
+Nothing changes for any other terminal, and `telnetd_tek=0` turns it off.
 
 ### The daemon keeps a picture of the Beeb's text screen
 

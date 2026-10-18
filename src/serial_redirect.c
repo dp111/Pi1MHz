@@ -205,6 +205,8 @@ static volatile uint32_t ser_reset_gen;   /* counts the resets of the BBC */
 static volatile bool     ser_scan_ok;     /* the auto-start ROM has taken REMV: the screen can be asked for */
 static volatile bool     ser_keys_told;   /* ... and tells each cursor key, COPY or RETURN a program takes (&24) */
 static volatile uint32_t ser_key_gen;     /* counts those */
+static volatile uint32_t ser_key_other_gen; /* ... and every other byte a program takes (&25, build 13) */
+static volatile bool     ser_lit_ok;      /* the ROM reads a byte after LITKEY as it is (build 13, &26) */
 static volatile uint32_t ser_unseen_gen;  /* counts the ROM's "printed where RS423 could not see" (&22) */
 #ifdef DEBUG
 /* Per-byte cost of the IRQ path: the gap between consecutive consumes while
@@ -456,10 +458,15 @@ static void ser_control(unsigned int gpio)
       ser_key_gen++;
       return;
    }
-   if (v == 0x20u || v == 0x21u || v == 0x23u) {   /* the auto-start ROM: a reset, seen or not on the reset line */
+   if (v == 0x25u) {                          /* ... or any other byte (build 13) */
+      ser_key_other_gen++;
+      return;
+   }
+   if (v == 0x20u || v == 0x21u || v == 0x23u || v == 0x26u) {   /* the auto-start ROM: a reset, seen or not on the reset line */
       ser_after_break();                         /* a soft reset leaves the screen as it was: not a new screen */
-      ser_scan_ok = (v != 0x20u);                /* &21, &23: and it can be asked for the screen */
-      ser_keys_told = (v == 0x23u);              /* &23 (build 11): and it tells the keys taken */
+      ser_scan_ok = (v != 0x20u);                /* &21, &23, &26: and it can be asked for the screen */
+      ser_keys_told = (v == 0x23u || v == 0x26u);   /* &23 (build 11): and it tells the keys taken */
+      ser_lit_ok = (v == 0x26u);                 /* &26 (build 13): every key taken, and LITKEY bytes as they are */
       return;
    }
    if (v >= 0x80u) {
@@ -529,6 +536,26 @@ bool serial_redirect_keys_told(void)
 uint32_t serial_redirect_key_gen(void)
 {
    return ser_key_gen;
+}
+
+uint32_t serial_redirect_key_other_gen(void)
+{
+   return ser_key_other_gen;
+}
+
+bool serial_redirect_lit_ok(void)
+{
+   return ser_lit_ok;
+}
+
+uint32_t serial_redirect_rx_count(void)
+{
+   return ser_rx_count;
+}
+
+uint32_t serial_redirect_tx_count(void)
+{
+   return ser_tx_count;
 }
 
 /* Counts the auto-start ROM's reports of a ROM filing system operation (service
@@ -693,6 +720,7 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    SER_LOG('R', address);
    ser_scan_ok = false;                          /* the MOS has put its vectors back: the ROM says again if it can */
    ser_keys_told = false;
+   ser_lit_ok = false;
    ser_brk_req = false;
    static const uint8_t stub[SER_STUB_LEN] = {
       0xE0, 0x02,             /* +00 CPX #2      */

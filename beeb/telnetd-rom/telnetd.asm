@@ -54,13 +54,17 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 12           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 14           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
 EXTVEC = &0D9F              \ the extended vector table: 3 bytes per vector (address, ROM number)
 REMV_ENTRY = &FF42          \ the MOS's entry for vector 22 as an extended vector (&FF00 + 3*22)
 SCANKEY = &FF               \ the byte the Pi puts in the keyboard buffer to ask for the screen
+LITKEY = &FB                \ ... and before a byte to be read as it is (above 127: no soft or cursor key)
+RDCHV = &0210               \ the read-character vector, vector 8
+RDCHV_ENTRY = &FF18         \ the MOS's entry for vector 8 as an extended vector (&FF00 + 3*8)
+RDCHVOLD = EXTVEC+75        \ the MOS's RDCHV routine, kept in IND2V's slot (vector 25, reserved as IND3V's)
 SHIFTFLAG = &0DA1           \ the Pi's SHIFT request: USERV's unused ROM byte in the extended vector table
 KEYVOLD = EXTVEC+78         \ the MOS's KEYV routine, kept in IND3V's slot of the table (vector 26,
                             \ reserved by Acorn and never claimed, as USERV's is)
@@ -160,6 +164,7 @@ GUARD &C000
 .hooked         tsx
                 lda &102,x                  \ this ROM's slot, as the MOS gave it in X
                 jsr claimkeyv               \ A is kept
+                jsr claimrdchv              \ A is kept
                 jsr claimremv               \ A = what to tell the Pi: &21 if it can ask for the screen
                 jsr marker
 .nopi           pla
@@ -371,19 +376,120 @@ GUARD &C000
                 rts
 
 \ Tell the Pi a program has taken a key it follows (see remvh).  A, X and Y are kept.
-.keytold        pha
+.keyother       pha                         \ &25: any other key
+                lda #&25
+                bne ktgo
+.keytold        pha                         \ &24: a cursor key, COPY or RETURN
+                lda #&24
+.ktgo           pha                         \ the code
+                txa
+                pha
+                tya
+                pha                         \ &101,x Y  &102,x X  &103,x the code  &104,x A
                 lda INSV+1
                 cmp #STUBPAGE
                 bne ktx
-                tya
-                pha
                 ldy INSV
-                lda #&24
+                tsx
+                lda &103,x
                 sta &FC28,y
+.ktx            pla
+                tay
+                pla
+                tax
+                pla
+                pla
+                rts
+
+\ RDCHV (build 13): a byte above 127 cannot be typed - the MOS's read turns &80-&FF into a soft
+\ key or, with a low nibble &B-&F, a cursor key (OS 1.20 &E554) - so the Pi sends such a character
+\ as LITKEY and the byte, and this, ahead of the MOS's routine, reads the byte after LITKEY as it
+\ is.  OSWORD 0 (BASIC's line input) and GET read through RDCHV (OS 1.20 &E924).  Anything else
+\ goes to the MOS's routine untouched.  Claimed only while RDCHV is the MOS's own.
+\ In: A = this ROM's slot, kept.  X and Y are not.
+.claimrdchv     pha
+                lda ZPTMP
+                pha
+                lda ZPTMP+1
+                pha
+                lda DEFVEC
+                sta ZPTMP
+                lda DEFVEC+1
+                sta ZPTMP+1
+                ldy #&10
+                lda (ZPTMP),y
+                cmp RDCHV
+                bne crno
+                iny
+                lda (ZPTMP),y
+                cmp RDCHV+1
+                bne crno
+                lda RDCHV
+                sta RDCHVOLD
+                lda RDCHV+1
+                sta RDCHVOLD+1
+                lda #<rdchvh
+                sta EXTVEC+24
+                lda #>rdchvh
+                sta EXTVEC+25
+                tsx
+                lda &103,x
+                sta EXTVEC+26
+                php
+                sei
+                lda #<RDCHV_ENTRY
+                sta RDCHV
+                lda #>RDCHV_ENTRY
+                sta RDCHV+1
+                plp
+.crno           pla
+                sta ZPTMP+1
+                pla
+                sta ZPTMP
+                pla
+                rts
+
+.rdchvh         php
+                pha
+                txa
+                pha
+                tya
+                pha                         \ &101,x Y  &102,x X  &103,x A  &104,x P
+                ldx #0
+                bit rdvset                  \ V set: look at the next keyboard byte
+                jsr rdremv
+                bcs rdold                   \ none
+                cmp #LITKEY                 \ a look gives the byte in A (OS 1.20 &E472, &E491)
+                bne rdold
+                ldx #0
+                clv
+                jsr rdremv                  \ take LITKEY ...
+.rdwait         ldx #0
+                clv
+                jsr rdremv                  \ ... and the byte after it (the Pi sends both)
+                bcc rdgot
+                bit &FF
+                bpl rdwait                  \ not there yet; ESCAPE: let the MOS's routine say so
+.rdold          pla
+                tay
+                pla
+                tax
+                pla
+                plp
+                jmp (RDCHVOLD)
+.rdgot          tya
+                tsx
+                sta &103,x                  \ the byte is what comes back in A
                 pla
                 tay
-.ktx            pla
+                pla
+                tax
+                pla
+                plp
+                clc
                 rts
+.rdremv         jmp (REMV)
+.rdvset         equb &40
 
 \ Tell the Pi this was a reset: its reset line is not touched by a software BREAK.
 \ The stub's control port is at +28, and INSV points at the stub once it is hooked in.
@@ -421,7 +527,8 @@ GUARD &C000
                 sta REMV
                 lda #>REMV_ENTRY
                 sta REMV+1
-                lda #&23                    \ &23: the screen can be asked for, and keys taken are told (build 11)
+                lda #&26                    \ &26: the screen can be asked for, every key taken is told, and
+                                            \ LITKEY bytes are read as they are (build 13)
                 rts
 .notours        lda #&20
                 rts
@@ -431,10 +538,11 @@ GUARD &C000
 \ for a key, so this is called over and over while the Beeb is idle at a prompt, outside any
 \ interrupt.  A byte of SCANKEY is the Pi asking for the screen: it is not given to the
 \ program, the screen is read and sent (nothing shown), and the buffer is reported empty.
-\ A cursor key, COPY or RETURN that a program takes out (the MOS's line input, OSWORD 0, takes
-\ them as they are typed; a listing waiting in paged mode for SHIFT takes none) is told to the
-\ Pi (&24 to the stub's control port), so the copy cursor the Pi draws moves only when the
-\ Beeb's does, whatever is on the screen.
+\ Every byte a program takes out is told to the Pi: a cursor key, COPY or RETURN with &24 (the
+\ MOS's line input takes them as they are typed; a listing waiting in paged mode for SHIFT takes
+\ none), so the copy cursor the Pi draws moves only when the Beeb's does; any other with &25, so
+\ the Pi knows the keys waiting, sees a Beeb that has stopped taking them, and can read the
+\ screen after a key that printed nothing (a program that writes the screen directly).
 .remvh          php
                 cpx #0
                 bne remvold
@@ -449,13 +557,17 @@ GUARD &C000
                 cpy #13
                 beq remvtell
                 cpy #&8B                    \ COPY and the cursor keys, as the buffer holds them: &8B-&8F
-                bcc remvok
+                bcc remvother
                 cpy #&90
-                bcs remvok
+                bcs remvother
 .remvtell       jsr keytold
 .remvok         clc
 .remvret        rts
-.remvscan       pha
+.remvother      jsr keyother
+                clc
+                rts
+.remvscan       jsr keyother                \ counted as taken too
+                pha
                 txa
                 pha
                 jsr scan
@@ -656,7 +768,9 @@ VDUVARS = &0300
                 beq scanskip                \ 0: not a character the MOS knows
                 cmp #32
                 beq scanskip
-                pha
+                bcs scanchr
+                ora #&80                    \ MODE 7: a control code stored as &00-&1F (WordWise-Plus's
+.scanchr        pha                         \ colours) is sent as &80-&9F, the same to the chip, not VDU codes
                 jsr topi
                 tsx
                 lda &102,x                  \ column and row are one deeper with the character pushed

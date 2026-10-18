@@ -41,6 +41,10 @@
    each page.  A terminal cannot send SHIFT on its own; the daemon puts SHIFTKEY in the keyboard
    buffer and the auto-start ROM answers the MOS's "is SHIFT pressed" with it (KEYV). */
 #define TND_KEY_SHIFT  0xFCu
+
+/* The next key is a byte for the Beeb to read as it is (a character above 127): the daemon sends it
+   behind the ROM's LITKEY (ROM build 13), which reads it past the MOS's soft and cursor keys. */
+#define TND_KEY_LIT    0xFAu
 #define TND_IN_REPLY   6u      /* most negotiation bytes one input byte needs (IAC SB TTYPE SEND IAC SE) */
 #define TND_GREETING_LEN 15u
 #define TND_OPT_TTYPE  24u     /* telnet option 24: the client's terminal type (RFC 1091) */
@@ -69,6 +73,11 @@ typedef struct {
    uint16_t win_rows;
    uint8_t  win_gen;            /* counts the window sizes received: a change shows as a new count */
    bool     naws_no;            /* the client will not send its window size (WONT NAWS) */
+   uint32_t u8_cp;              /* a UTF-8 character being read */
+   uint8_t  u8_need;            /* ... and its continuation bytes still to come */
+   uint8_t  u8_lead;            /* its first byte, while nothing has followed it */
+   bool     lit_ok;             /* set by the daemon: the Beeb can take bytes above 127 (TND_KEY_LIT) */
+   bool     tele;               /* set by the daemon: MODE 7, so teletext's glyphs map back to its codes */
 } tnd_in_t;
 
 void   tnd_in_reset(tnd_in_t *s);
@@ -132,6 +141,7 @@ typedef struct {
    uint8_t  pend[8];            /* cursor keys waiting for the Beeb to be quiet */
    uint8_t  npend;
    uint32_t last_us;            /* when the Beeb last printed something */
+   uint32_t drawn;              /* characters written to the model: a key that drew none wrote the screen itself */
    bool     dirty;              /* a rectangle the terminal shows wrong (a narrow window scrolled or cleared) */
    uint8_t  dl, dt, dr, db;     /* ... left, top (the next row to draw), right, bottom */
    uint8_t  ch[TND_ROWS_MAX][TND_COLS_MAX];   /* what is on each cell */
