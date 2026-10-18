@@ -41,6 +41,7 @@
 #include "../watchdog.h"
 #include "../rpi/audio.h"
 #include "../rpi/systimer.h"
+#include "../wifi/wifi.h"
 #include "../wifi/wifi_lwip.h"
 
 #define SMB_COMMAND_TIMEOUT_US  10000000u   /* as the USB drive's command limit */
@@ -112,7 +113,11 @@ static void pump(void)
 /* Run libsmb2, the network and the audio until done(arg) holds: false on
    a lost link, after limit_us, or once the nRST IRQ has counted a reset
    the re-init has not yet handled (reset_cut) - also for a wait that
-   starts after the edge, inside the same poll callback. */
+   starts after the edge, inside the same poll callback.  The WiFi boot
+   ladder is stepped too: at power-on the Beeb asks before it has joined,
+   and only wifi_boot() brings up the SDIO, the join and lwIP - without it
+   the address wait spins for nothing.  Once the boot is complete it
+   returns at once. */
 static bool wait_for(bool (*done)(const volatile void *), const volatile void *arg,
                      uint32_t limit_us)
 {
@@ -130,6 +135,7 @@ static bool wait_for(bool (*done)(const volatile void *), const volatile void *a
          return false;
       if (RPI_GetSystemTime() - t0 > limit_us)
          return false;
+      wifi_boot();
       wifi_lwip_poll();
       audio_pump();
       watchdog_feed();

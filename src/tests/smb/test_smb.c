@@ -21,6 +21,7 @@
 #include "net_dns.h"
 #include "rpi/systimer.h"
 #include "rpi/hwrng.h"
+#include "wifi/wifi.h"
 #include "wifi/wifi_lwip.h"
 #include "Pi1MHz.h"
 
@@ -71,7 +72,15 @@ int hwrng_word(uint32_t *out, uint32_t wait_us)
 
 static bool in_poll;
 static unsigned net_polls;
-static wifi_lwip_context_t net_ctx = { true };
+/* At power-on there is no address until the WiFi boot ladder has run:
+   only wifi_boot() brings one, as on the Pi (SDIO, join, lwIP). */
+static wifi_lwip_context_t net_ctx = { false };
+static unsigned boot_steps;
+void wifi_boot(void)
+{
+   if (++boot_steps == 3u)
+      net_ctx.address_ready = true;
+}
 volatile Pi1MHz_break_t Pi1MHz_break;
 static unsigned break_after;           /* a BBC reset (nRST edge) after this many polls */
 void wifi_lwip_poll(void)
@@ -633,6 +642,8 @@ int main(void)
    char st[160];
    smb_client_status(st, sizeof st);
    check("log on to the share (signing mandatory)", up, st);
+   check("at power-on the wait steps the WiFi boot until there is an address",
+         net_ctx.address_ready, "wifi_boot never called");
    printf("     logon took %llu ms; %s\n", (unsigned long long)((now_us() - t0) / 1000u), st);
    if (!up) {
       printf("%d passed, %d failed\n", passed, failed);
