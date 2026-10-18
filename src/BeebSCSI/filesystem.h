@@ -39,6 +39,12 @@
 // Calculate the length of the sector buffer in 256 byte sectors
 #define SECTOR_BUFFER_LENGTH	(SECTOR_BUFFER_SIZE / 256)
 
+// The block sizes the data path takes: an Adaptec board has 256, 512 or
+// 1024, a drive with its own controller 128 to 2047
+// (filesystemGetLunDataBlockSize)
+#define MIN_BLOCK_SIZE 128
+#define MAX_BLOCK_SIZE 2048
+
 // The default '33' is from the ACB-4000 which uses MFM encoding. The later
 // ACB-4070 which Acorn used in the FileStore product uses RLL encoding and
 // allows for a higher density of sectors per track.
@@ -186,6 +192,7 @@ void filesystemCopyPage4toPage0(uint8_t lunNumber);
 void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf);
 #endif
 uint32_t filesystemGetLunBlockSize(uint8_t lunNumber);
+uint32_t filesystemGetLunDataBlockSize(uint8_t lunNumber);
 uint32_t filesystemGetheadspercylinder(uint8_t lunNumber);
 uint32_t filesystemGetLunSPTSize( uint8_t lunNumber);
 uint32_t filesystemGetLunTotalSectors(uint8_t lunNumber);

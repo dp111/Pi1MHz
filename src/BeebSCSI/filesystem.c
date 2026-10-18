@@ -1145,6 +1145,17 @@ uint32_t filesystemGetLunBlockSize( uint8_t lunNumber)
 	return filesystemState.fsLunGeometry[lunNumber].BlockSize;
 }
 
+// The size of the blocks READ and WRITE move for a LUN: its block size, as
+// FORMAT laid it down.  The VFS LUNs are LaserVision's 256-byte blocks
+// whatever their .cfg says, and so is a size the data path cannot take.
+uint32_t filesystemGetLunDataBlockSize( uint8_t lunNumber)
+{
+   uint32_t blockSize = filesystemState.fsLunGeometry[lunNumber].BlockSize;
+   if ((lunNumber >= 8) || (blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
+      return 256;
+   return blockSize;
+}
+
 // Function to return the LUN image heads per cylinder
 //
 uint32_t filesystemGetheadspercylinder( uint8_t lunNumber)
@@ -1923,9 +1934,9 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    // Reads past the end of a growing image must not extend it (a plain
    // f_lseek on a write-mode file allocates clusters): clamp the seek to the
    // file size and let the short read return zeros for the unwritten sectors
-   uint32_t seekPoint = startSector * 256;
+   FSIZE_t seekPoint = (FSIZE_t)startSector * filesystemGetLunDataBlockSize(lunNumber);
    if (seekPoint > f_size(&filesystemState.fileObject[lunNumber]))
-      seekPoint = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+      seekPoint = f_size(&filesystemState.fileObject[lunNumber]);
 
    if (f_lseek(&filesystemState.fileObject[lunNumber], seekPoint) != FR_OK) {
       // Something went wrong with seeking, do not retry
@@ -1935,7 +1946,8 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    sectorsRemaining = requiredNumberOfSectors;
    sectorsInBuffer = 0;
 #ifdef DEBUG
-   map_check_pending = (startSector == 0 && lunNumber < 8);
+   map_check_pending = (startSector == 0 && lunNumber < 8 &&
+                        filesystemGetLunDataBlockSize(lunNumber) == 256);
 #endif
 
    // Exit with success
@@ -1947,15 +1959,18 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
 // Function to read next sector from a LUN
 bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
 {
+   // The LUN's block size: as many whole blocks as the buffer holds
+   uint32_t blockSize = filesystemGetLunDataBlockSize(lunNumber);
+
    if (sectorsInBuffer == 0)
    {
       uint32_t sectorsToRead = sectorsRemaining;
       FRESULT fsResult;
       UINT fsCounter;
-      if (sectorsToRead > SECTOR_BUFFER_LENGTH) sectorsToRead = SECTOR_BUFFER_LENGTH;
+      if (sectorsToRead > SECTOR_BUFFER_SIZE / blockSize) sectorsToRead = SECTOR_BUFFER_SIZE / blockSize;
 
       // Read the required data into the sector buffer
-      fsResult = f_read(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToRead * 256, &fsCounter);
+      fsResult = f_read(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToRead * blockSize, &fsCounter);
 
       // Check that the file was read OK
       if (fsResult != FR_OK) {
@@ -1967,8 +1982,8 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
       // A short read means the host is reading past the end of an image that
       // has not been grown to full geometry yet - unwritten sectors read as
       // zeros rather than whatever the buffer last held
-      if (fsCounter < sectorsToRead * 256) {
-         memset(sectorBuffer + fsCounter, 0, (sectorsToRead * 256) - fsCounter);
+      if (fsCounter < sectorsToRead * blockSize) {
+         memset(sectorBuffer + fsCounter, 0, (sectorsToRead * blockSize) - fsCounter);
       }
 
       sectorsInBuffer = (uint8_t)sectorsToRead;
@@ -1986,7 +2001,7 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
 #endif
    }
    // return pointer to buffer with sector
-   *buffer = sectorBuffer + (currentBufferSector * 256);
+   *buffer = sectorBuffer + (currentBufferSector * blockSize);
    currentBufferSector++;
    sectorsInBuffer--;
 
@@ -2018,10 +2033,12 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
    if (filesystemState.fsLunReadOnly[lunNumber])
       return true;
 
+   FSIZE_t seekPoint = (FSIZE_t)startSector * filesystemGetLunDataBlockSize(lunNumber);
+
 #if FF_USE_FASTSEEK
    FIL *fp = &filesystemState.fileObject[lunNumber];
 
-   if (fp->cltbl != 0 && startSector * 256 > f_size(fp)) {
+   if (fp->cltbl != 0 && seekPoint > f_size(fp)) {
       // Fast seek clips seeks at the current file size and cannot allocate
       // clusters, so a write starting beyond the end of a growing image
       // would land at the wrong offset. Extend the file with fast seek
@@ -2029,7 +2046,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
       FRESULT fsResult;
 
       fp->cltbl = 0;
-      fsResult = f_lseek(fp, startSector * 256);
+      fsResult = f_lseek(fp, seekPoint);
 
       if (!filesystemAttachLinkMap(fp, &filesystemState.clmt[lunNumber],
                                    &filesystemState.clmtEntries[lunNumber])) {
@@ -2039,7 +2056,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 
       // A seek that stopped short of the target means the SD card filled up
       // while the image was being extended
-      if (fsResult != FR_OK || f_tell(fp) != startSector * 256) {
+      if (fsResult != FR_OK || f_tell(fp) != seekPoint) {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): ERROR: Unable to grow LUN image file!\r\n"));
          return false;
       }
@@ -2048,7 +2065,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 
    // Move to the correct point in the DAT file
    // Check that the file seek was OK
-   if (f_lseek(&filesystemState.fileObject[lunNumber], startSector * 256) != FR_OK) {
+   if (f_lseek(&filesystemState.fileObject[lunNumber], seekPoint) != FR_OK) {
       // Something went wrong with seeking, do not retry
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): ERROR: Unable to seek to required sector in LUN image file!\r\n"));
       return false;
@@ -2070,24 +2087,28 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
    // A read-only image (fsLunReadOnly) is treated the same way.
    if (config_beeb_write_protected() || filesystemState.fsLunReadOnly[lunNumber]) return true;
 
-   memcpy(sectorBuffer + (currentBufferSector * 256), buffer , 256 );
+   // The LUN's block size: as many whole blocks as the buffer holds
+   uint32_t blockSize = filesystemGetLunDataBlockSize(lunNumber);
+   uint32_t bufferSectors = SECTOR_BUFFER_SIZE / blockSize;
+
+   memcpy(sectorBuffer + (currentBufferSector * blockSize), buffer , blockSize );
    currentBufferSector++;
 
-   if ( (currentBufferSector == SECTOR_BUFFER_LENGTH) || ( currentBufferSector == sectorsRemaining)) {
+   if ( (currentBufferSector == bufferSectors) || ( currentBufferSector == sectorsRemaining)) {
       FRESULT fsResult;
       UINT fsCounter;
       uint32_t sectorsToWrite;
 
-      if (currentBufferSector == SECTOR_BUFFER_LENGTH)
-         sectorsToWrite = SECTOR_BUFFER_LENGTH;
+      if (currentBufferSector == bufferSectors)
+         sectorsToWrite = bufferSectors;
       else
          sectorsToWrite = sectorsRemaining;
 
       // Write the required data
-      fsResult = f_write(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToWrite * 256, &fsCounter);
+      fsResult = f_write(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToWrite * blockSize, &fsCounter);
 
 #if FF_USE_FASTSEEK
-      if (fsResult == FR_OK && fsCounter != sectorsToWrite * 256 &&
+      if (fsResult == FR_OK && fsCounter != sectorsToWrite * blockSize &&
           filesystemState.fileObject[lunNumber].cltbl != 0) {
          // In fast seek mode f_write cannot allocate new clusters, so a write
          // that grows the image stops at the end of the mapped cluster chain
@@ -2097,7 +2118,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
          UINT fsExtended = 0;
 
          fp->cltbl = 0;
-         fsResult = f_write(fp, sectorBuffer + fsCounter, (sectorsToWrite * 256) - fsCounter, &fsExtended);
+         fsResult = f_write(fp, sectorBuffer + fsCounter, (sectorsToWrite * blockSize) - fsCounter, &fsExtended);
          fsCounter += fsExtended;
 
          if (!filesystemAttachLinkMap(fp, &filesystemState.clmt[lunNumber],
@@ -2110,7 +2131,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
 
       // Check that the file was written OK and in full (a short transfer
       // here means the SD card is full)
-      if (fsResult != FR_OK || fsCounter != sectorsToWrite * 256) {
+      if (fsResult != FR_OK || fsCounter != sectorsToWrite * blockSize) {
          // Something went wrong
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): ERROR: Cannot write to LUN image!\r\n"));
          return false;
