@@ -335,6 +335,33 @@ def check_read_buffer(label, image):
           f"{len(data) >> 8} X=&{len(data) & 0xFF:02X}")
 
 
+def check_rdrun(label, image):
+    """*RDRUN runs a program from the RAM disc inside the command's service
+    call: one that ends with RTS must come back to the ROM, which then
+    claims the call with the stack as the MOS left it."""
+    what = f"{label}: *RDRUN of a program ending in RTS"
+    if b"RDRUN" not in image:
+        return                             # built without the RAM disc
+    pi = SimPi()
+    cat = 0x000100                         # the catalogue: JIM page 1
+    for i, v in enumerate(b"RD\x01\x03"):
+        pi.jim[cat + i] = v
+    entry = b"PROG   " + bytes([0x00, 0x20, 0x00, 0x20, 0x01, 0x00, 0x02])
+    for i, v in enumerate(entry):
+        pi.jim[cat + 16 + i] = v
+    pi.jim[0x000200] = 0x60                # page 2: the program, an RTS
+    b = Beeb(image, writable=True, pi=pi)
+    try:
+        b.service(1, slot=5)
+        r = b.service(4, slot=5, y=0, line="RDRUN PROG")
+    except (RomError, Unmodelled) as e:
+        check(False, f"{what}: {e}")
+        return
+    check(b.mem.ram[0x2000] == 0x60, f"{what}: the program was not loaded")
+    check(r == (0, 5, 0), f"{what}: returned A,X,Y={r}, not claimed (0,5,0)")
+    check(b.sp == 0xFF, f"{what}: returned with SP=&{b.sp:02X}, not &FF")
+
+
 def main(args):
     if not args:
         print(__doc__)
@@ -353,6 +380,7 @@ def main(args):
         check_word_boundary(label, image)
         check_join(label, image)
         check_read_buffer(label, image)
+        check_rdrun(label, image)
     print(f"\n{checks} checks, {fails} failures")
     print("WIFI ROM SERVICE TESTS FAILED" if fails else "WIFI ROM SERVICE TESTS PASSED")
     return 1 if fails else 0

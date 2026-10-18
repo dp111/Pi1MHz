@@ -637,7 +637,9 @@ rd_hold          = heap+&D9     \ byte held across a Y restore
                     sta zp
                     lda rd_exec+1
                     sta zp+1
-                    jmp (zp)
+                    jsr rd_run_go               \ a program's RTS comes back
+                    jmp call_claimed            \ here, to pull our X and Y
+.rd_run_go          jmp (zp)
 
 .rd_usage_run       jsr printtext
                     equs "Usage: RDRUN <name>",&0D,&EA
