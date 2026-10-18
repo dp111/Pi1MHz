@@ -17,6 +17,7 @@ cp "$SRC"/fujibus_service.h "$B/"
 cp "$SRC"/config.c "$SRC"/config.h "$B/"
 cp "$HERE"/test_services.c "$HERE"/test_config.c "$HERE"/fuzz_fat.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"
+cp "$HERE"/../fsroute_passthrough.h "$B/fsroute.h"   # no share: fsr_* are FatFs's
 # The real rule for where a path lives; the stub filesystem.h beside it.
 cp "$SRC"/BeebSCSI/filesystem_storage.c "$B/BeebSCSI/"
 

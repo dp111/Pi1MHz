@@ -3,9 +3,7 @@
    operation and waits for it in smb_client_wait(); one operation at a time
    (the firmware's file calls are synchronous), so its state is static. */
 #include <errno.h>
-#include <fcntl.h>
 #include <stdint.h>
-#include <stdio.h>                     /* SEEK_END */
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -14,13 +12,16 @@
 #include "smb/smb_client.h"
 #include <smb2/smb2.h>
 #include <smb2/libsmb2.h>
+#include <smb2/libsmb2-raw.h>
 
 /* The mark on a FIL or DIR that lives on the share.  fs_type 0, so FatFs's
    validate() refuses it (FR_INVALID_OBJECT) if one ever reaches FatFs. */
 static FATFS net_fs;
 
-#define NET_FILES      12              /* LUN images, the VFS side, its video, cfgs */
-#define NET_DIRS       4
+/* LUN images, the VFS side, its video, cfgs; the FAT service's 16 handles
+   (MMFS), FujiNet's 12 and a Music 5000 recording */
+#define NET_FILES      48
+#define NET_DIRS       24              /* the FAT service's 16, FujiNet's walk, lookups */
 /* Measured 2026-10-16 (video over WiFi from Windows): a window grown to
    256 KB, and 4 READs in flight, each made playback SLOWER than this. */
 #define CACHE_SIZE     32768u          /* read-ahead window per file */
@@ -225,6 +226,27 @@ static void release(net_file_t *f)
 
 static struct smb2_stat_64 st_buf;
 
+/* The CREATE of an open: its reply's handle and size, for the op it ends. */
+static smb2_file_id open_fid;
+static uint64_t open_size;
+
+static void open_cb(struct smb2_context *smb2, int status, void *data, void *arg)
+{
+   if ((uintptr_t)arg != op.gen)
+      return;
+   if (status == SMB2_STATUS_SUCCESS) {
+      const struct smb2_create_reply *rep = (const struct smb2_create_reply *)data;
+      memcpy(open_fid, rep->file_id, SMB2_FD_SIZE);
+      open_size = rep->end_of_file;
+   }
+   op_cb(smb2, status == SMB2_STATUS_SUCCESS ? 0 : -nterror_to_errno((uint32_t)status), NULL, arg);
+}
+
+/* The CREATE is this file's own, not smb2_open's: that one shares the file
+   for reading and writing only, so while the Beeb held an image open (a
+   disc in an MMFS2 drive) the server refused to rename it - which FatFs
+   does.  Sharing it for delete too allows that.  The size comes with the
+   reply. */
 FRESULT fsr_open(FIL *fp, const TCHAR *path, BYTE mode)
 {
    if (!fsr_is_net_path(path))
@@ -247,22 +269,43 @@ FRESULT fsr_open(FIL *fp, const TCHAR *path, BYTE mode)
    if (f == NULL)
       return FR_TOO_MANY_OPEN_FILES;
 
-   int flags = (mode & FA_WRITE) ? ((mode & FA_READ) ? O_RDWR : O_WRONLY) : O_RDONLY;
-   if (mode & FA_CREATE_NEW)
-      flags |= O_CREAT | O_EXCL;
-   else if (mode & FA_CREATE_ALWAYS)
-      flags |= O_CREAT | O_TRUNC;
-   else if (mode & (FA_OPEN_ALWAYS | FA_OPEN_APPEND))
-      flags |= O_CREAT;
+   struct smb2_create_request cr;
+   memset(&cr, 0, sizeof cr);
+   cr.requested_oplock_level = SMB2_OPLOCK_LEVEL_NONE;
+   cr.impersonation_level = SMB2_IMPERSONATION_IMPERSONATION;
+   cr.desired_access = SMB2_FILE_READ_ATTRIBUTES;
+   if (mode & FA_READ)
+      cr.desired_access |= SMB2_FILE_READ_DATA | SMB2_FILE_READ_EA;
+   if (mode & FA_WRITE)
+      cr.desired_access |= SMB2_FILE_WRITE_DATA | SMB2_FILE_WRITE_EA | SMB2_FILE_WRITE_ATTRIBUTES;
+   cr.share_access = SMB2_FILE_SHARE_READ | SMB2_FILE_SHARE_WRITE | SMB2_FILE_SHARE_DELETE;
+   cr.create_disposition = (mode & FA_CREATE_NEW) ? SMB2_FILE_CREATE
+                         : (mode & FA_CREATE_ALWAYS) ? SMB2_FILE_OVERWRITE_IF
+                         : (mode & (FA_OPEN_ALWAYS | FA_OPEN_APPEND)) ? SMB2_FILE_OPEN_IF
+                         : SMB2_FILE_OPEN;
+   cr.create_options = SMB2_FILE_NON_DIRECTORY_FILE;
+   cr.name = p;
 
    struct smb2_context *smb2 = smb_client_context();
-   int s = op_finish(smb2_open_async(smb2, p, flags, op_cb, op_start()));
+   struct smb2_pdu *pdu = smb2_cmd_create_async(smb2, &cr, open_cb, op_start());
+   if (pdu == NULL)
+      return FR_NOT_ENOUGH_CORE;
+   smb2_queue_pdu(smb2, pdu);
+   int s = op_finish(0);
    if (s < 0)
       return fr_of(s);
-   struct smb2fh *fh = (struct smb2fh *)op.data;
-   /* The size came with the CREATE reply: libsmb2 hands it out locally. */
-   uint64_t size = 0;
-   (void)smb2_lseek(smb2, fh, 0, SEEK_END, &size);
+   struct smb2fh *fh = smb2_fh_from_file_id(smb2, &open_fid);
+   if (fh == NULL) {
+      struct smb2_close_request cl;
+      memset(&cl, 0, sizeof cl);
+      memcpy(cl.file_id, open_fid, SMB2_FD_SIZE);
+      pdu = smb2_cmd_close_async(smb2, &cl, forget_cb, NULL);
+      if (pdu != NULL) {
+         smb2_queue_pdu(smb2, pdu);
+         smb_client_kick();
+      }
+      return FR_NOT_ENOUGH_CORE;
+   }
 
    memset(f, 0, sizeof *f);
    f->fp = fp;
@@ -270,7 +313,7 @@ FRESULT fsr_open(FIL *fp, const TCHAR *path, BYTE mode)
    f->session = smb_client_session();
    fp->obj.fs = &net_fs;
    fp->obj.id = (WORD)((f - files) + 1);
-   fp->obj.objsize = (FSIZE_t)size;
+   fp->obj.objsize = (FSIZE_t)open_size;
    fp->flag = (BYTE)(mode & (FA_READ | FA_WRITE));
    fp->err = 0;
    fp->fptr = (mode & FA_OPEN_APPEND) ? fp->obj.objsize : 0;
@@ -625,6 +668,122 @@ FRESULT fsr_unlink(const TCHAR *path)
    return fr_of(s);
 }
 
+/* FatFs: attr's bits named in mask (read-only, hidden, system, archive)
+   are set or cleared.  On the share: CREATE for the attributes alone (which
+   no share mode refuses, so a file the Beeb holds open is changed too),
+   SET_INFO of FileBasicInformation - times 0, "leave as they are" - and
+   CLOSE, sent as one compound.  The share's own bits (directory and the
+   rest) are kept. */
+static const uint8_t compound_fid[SMB2_FD_SIZE] = {
+   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+};
+static uint32_t chmod_status;          /* the compound's first failure */
+
+static void chmod_step_cb(struct smb2_context *smb2, int status, void *data, void *arg)
+{
+   (void)smb2; (void)data;
+   if ((uintptr_t)arg == op.gen && chmod_status == 0u)
+      chmod_status = (uint32_t)status;
+}
+
+static void chmod_last_cb(struct smb2_context *smb2, int status, void *data, void *arg)
+{
+   chmod_step_cb(smb2, status, data, arg);
+   op_cb(smb2, -nterror_to_errno(chmod_status), NULL, arg);
+}
+
+FRESULT fsr_chmod(const TCHAR *path, BYTE attr, BYTE mask)
+{
+   if (!fsr_is_net_path(path))
+      return f_chmod(path, attr, mask);
+   const char *p = share_path(path, path_a);
+   if (p == NULL)
+      return FR_INVALID_NAME;
+   FRESULT r = ready();
+   if (r != FR_OK)
+      return r;
+   if (p[0] == '\0')
+      return FR_INVALID_NAME;          /* as FatFs: the root has no entry */
+   struct smb2_context *smb2 = smb_client_context();
+   int s = op_finish(smb2_stat_async(smb2, p, &st_buf, op_cb, op_start()));
+   if (s < 0)
+      return fr_of(s);
+   mask &= (BYTE)(AM_RDO | AM_HID | AM_SYS | AM_ARC);
+   uint32_t attrs = (st_buf.smb2_attributes & ~(uint32_t)mask) | (uint32_t)(attr & mask);
+   if (st_buf.smb2_type == SMB2_TYPE_DIRECTORY)
+      attrs |= SMB2_FILE_ATTRIBUTE_DIRECTORY;
+   attrs &= ~(uint32_t)SMB2_FILE_ATTRIBUTE_NORMAL;
+   if (attrs == 0u)
+      attrs = SMB2_FILE_ATTRIBUTE_NORMAL;   /* 0 would mean "leave as they are" */
+
+   struct smb2_create_request cr;
+   memset(&cr, 0, sizeof cr);
+   cr.requested_oplock_level = SMB2_OPLOCK_LEVEL_NONE;
+   cr.impersonation_level = SMB2_IMPERSONATION_IMPERSONATION;
+   cr.desired_access = SMB2_FILE_READ_ATTRIBUTES | SMB2_FILE_WRITE_ATTRIBUTES;
+   cr.share_access = SMB2_FILE_SHARE_READ | SMB2_FILE_SHARE_WRITE | SMB2_FILE_SHARE_DELETE;
+   cr.create_disposition = SMB2_FILE_OPEN;
+   cr.name = p;
+   struct smb2_file_basic_info bi;
+   memset(&bi, 0, sizeof bi);
+   bi.file_attributes = attrs;
+   struct smb2_set_info_request si;
+   memset(&si, 0, sizeof si);
+   si.info_type = SMB2_0_INFO_FILE;
+   si.file_info_class = SMB2_FILE_BASIC_INFORMATION;
+   memcpy(si.file_id, compound_fid, SMB2_FD_SIZE);
+   si.input_data = &bi;
+   struct smb2_close_request cl;
+   memset(&cl, 0, sizeof cl);
+   memcpy(cl.file_id, compound_fid, SMB2_FD_SIZE);
+
+   void *gen = op_start();
+   chmod_status = 0u;
+   struct smb2_pdu *pdu = smb2_cmd_create_async(smb2, &cr, chmod_step_cb, gen);
+   if (pdu == NULL)
+      return FR_NOT_ENOUGH_CORE;
+   struct smb2_pdu *next = smb2_cmd_set_info_async(smb2, &si, chmod_step_cb, gen);
+   if (next == NULL) {
+      smb2_free_pdu(smb2, pdu);
+      return FR_NOT_ENOUGH_CORE;
+   }
+   smb2_add_compound_pdu(smb2, pdu, next);
+   next = smb2_cmd_close_async(smb2, &cl, chmod_last_cb, gen);
+   if (next == NULL) {
+      smb2_free_pdu(smb2, pdu);
+      return FR_NOT_ENOUGH_CORE;
+   }
+   smb2_add_compound_pdu(smb2, pdu, next);
+   smb2_queue_pdu(smb2, pdu);
+   return fr_of(op_finish(0));
+}
+
+static struct smb2_statvfs vfs_buf;
+
+FRESULT fsr_free_bytes(const TCHAR *path, uint64_t *free_bytes)
+{
+   if (!fsr_is_net_path(path)) {
+      DWORD clusters;
+      FATFS *fs;
+      FRESULT r = f_getfree(path, &clusters, &fs);
+      if (r == FR_OK)
+         *free_bytes = (uint64_t)clusters * fs->csize * 512u;
+      return r;
+   }
+   const char *p = share_path(path, path_a);
+   if (p == NULL)
+      return FR_INVALID_NAME;
+   FRESULT r = ready();
+   if (r != FR_OK)
+      return r;
+   int s = op_finish(smb2_statvfs_async(smb_client_context(), p, &vfs_buf, op_cb, op_start()));
+   if (s < 0)
+      return fr_of(s);
+   *free_bytes = vfs_buf.f_bavail * (uint64_t)vfs_buf.f_bsize;
+   return FR_OK;
+}
+
 /* FatFs: the new name is on the old one's drive, with or without "2:". */
 FRESULT fsr_rename(const TCHAR *path_old, const TCHAR *path_new)
 {
@@ -652,6 +811,16 @@ bool fsr_lost(FIL *fp)
 bool fsr_net_connect(void)
 {
    return smb_client_can_wait() && smb_client_connect();
+}
+
+bool fsr_net_configured(void)
+{
+   return smb_client_configured();
+}
+
+bool fsr_net_can_wait(void)
+{
+   return smb_client_can_wait();
 }
 
 void fsr_reset(void)

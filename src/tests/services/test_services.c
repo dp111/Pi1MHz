@@ -123,8 +123,9 @@ DRESULT disk_write(uint8_t d, const uint8_t *b, uint32_t s, unsigned int c)
    rule for a path is the real one (BeebSCSI/filesystem_storage.c). */
 static const char *storage_root = "";
 const char *filesystemStorageRoot(void) { return storage_root; }
-const char *filesystemStorageFatRoot(void) { return storage_root; }
-bool filesystemStorageOnUsb(void) { return storage_root[0] != '\0'; }
+bool filesystemStorageOnUsb(void) { return storage_root[0] == '1'; }
+bool filesystemStorageOnSmb(void) { return storage_root[0] == '2'; }
+bool filesystemStorageOffCard(void) { return storage_root[0] != '\0'; }
 
 unsigned char disk_type(void) { return 42; }
 

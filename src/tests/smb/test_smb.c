@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/random.h>
 #include <time.h>
 #include <arpa/inet.h>
@@ -119,6 +120,8 @@ FATFS_STUB(FRESULT f_mkdir(const TCHAR *path))
 FATFS_STUB(FRESULT f_unlink(const TCHAR *path))
 FATFS_STUB(FRESULT f_rename(const TCHAR *path_old, const TCHAR *path_new))
 FATFS_STUB(FRESULT f_stat(const TCHAR *path, FILINFO *fno))
+FATFS_STUB(FRESULT f_chmod(const TCHAR *path, BYTE attr, BYTE mask))
+FATFS_STUB(FRESULT f_getfree(const TCHAR *path, DWORD *nclst, FATFS **fatfs))
 
 /* ---- helpers ------------------------------------------------------------ */
 
@@ -365,6 +368,94 @@ static void test_names(void)
    check("unlink an empty directory", r == FR_OK, "rmdir failed");
 }
 
+/* fsr_chmod and fsr_free_bytes: the FAT service's set-attributes (MMFS2
+   *DACCESS) and free space on the share */
+static void test_attributes_and_space(void)
+{
+   static char why[200];
+   FIL f, g;
+   FILINFO fi;
+   UINT bw;
+   uint8_t b[512];
+   pattern(b, sizeof b, 3);
+   FRESULT r = fsr_open(&f, "2:/attr.ssd", FA_WRITE | FA_CREATE_ALWAYS);
+   if (r == FR_OK) {
+      r = fsr_write(&f, b, sizeof b, &bw);
+      fsr_close(&f);
+   }
+   check("make a file to lock", r == FR_OK, "write failed");
+
+   r = fsr_chmod("2:/attr.ssd", AM_RDO, AM_RDO);
+   FRESULT s = fsr_stat("2:/attr.ssd", &fi);
+   snprintf(why, sizeof why, "chmod %d stat %d attr %02x", (int)r, (int)s, fi.fattrib);
+   check("lock: read-only set", r == FR_OK && s == FR_OK && (fi.fattrib & AM_RDO), why);
+   r = fsr_open(&f, "2:/attr.ssd", FA_READ | FA_WRITE);
+   snprintf(why, sizeof why, "FRESULT %d", (int)r);
+   check("...a read-write open is refused (FR_DENIED)", r == FR_DENIED, why);
+   if (r == FR_OK)
+      fsr_close(&f);
+   r = fsr_open(&f, "2:/attr.ssd", FA_READ);
+   check("...a read-only open is not", r == FR_OK, "refused");
+   if (r == FR_OK)
+      fsr_close(&f);
+
+   r = fsr_chmod("2:/attr.ssd", 0, AM_RDO);
+   s = fsr_stat("2:/attr.ssd", &fi);
+   snprintf(why, sizeof why, "chmod %d stat %d attr %02x", (int)r, (int)s, fi.fattrib);
+   check("unlock: read-only cleared", r == FR_OK && s == FR_OK && !(fi.fattrib & AM_RDO), why);
+
+   r = fsr_open(&g, "2:/attr.ssd", FA_READ | FA_WRITE);
+   FRESULT c = fsr_chmod("2:/attr.ssd", AM_RDO, AM_RDO);
+   s = fsr_stat("2:/attr.ssd", &fi);
+   snprintf(why, sizeof why, "open %d chmod %d attr %02x", (int)r, (int)c, fi.fattrib);
+   check("lock a file held open read-write (a mounted disc)", r == FR_OK && c == FR_OK &&
+         (fi.fattrib & AM_RDO), why);
+   if (r == FR_OK)
+      fsr_close(&g);
+   (void)fsr_chmod("2:/attr.ssd", 0, AM_RDO);
+
+   r = fsr_chmod("2:/attr.ssd", AM_DIR, AM_DIR);
+   s = fsr_stat("2:/attr.ssd", &fi);
+   check("the directory bit cannot be set", r == FR_OK && s == FR_OK && !(fi.fattrib & AM_DIR),
+         "it was");
+   r = fsr_chmod("2:/BeebSCSI0", AM_HID, AM_HID);
+   s = fsr_stat("2:/BeebSCSI0", &fi);
+   snprintf(why, sizeof why, "chmod %d attr %02x", (int)r, fi.fattrib);
+   check("a directory's attributes: still a directory", r == FR_OK && s == FR_OK &&
+         (fi.fattrib & AM_DIR) && (fi.fattrib & AM_HID), why);
+   (void)fsr_chmod("2:/BeebSCSI0", 0, AM_HID);
+   r = fsr_chmod("2:/nothing.ssd", AM_RDO, AM_RDO);
+   snprintf(why, sizeof why, "FRESULT %d", (int)r);
+   check("chmod of a missing file is FR_NO_FILE", r == FR_NO_FILE, why);
+   check("chmod of the root is refused, as FatFs", fsr_chmod("2:/", AM_RDO, AM_RDO) == FR_INVALID_NAME,
+         "accepted");
+
+   /* FatFs renames a file that is open; so must the share (an MMFS2 disc
+      renamed while it is in a drive) */
+   r = fsr_open(&g, "2:/attr.ssd", FA_READ | FA_WRITE);
+   c = fsr_rename("2:/attr.ssd", "2:/attr2.ssd");
+   UINT br = 0;
+   uint8_t rb[16];
+   FRESULT rd = (r == FR_OK) ? fsr_read(&g, rb, sizeof rb, &br) : r;
+   snprintf(why, sizeof why, "open %d rename %d read %d", (int)r, (int)c, (int)rd);
+   check("rename a file held open; the handle still reads it", r == FR_OK && c == FR_OK &&
+         rd == FR_OK && br == sizeof rb && memcmp(rb, b, sizeof rb) == 0, why);
+   if (r == FR_OK)
+      fsr_close(&g);
+   (void)fsr_unlink("2:/attr2.ssd");
+   (void)fsr_unlink("2:/attr.ssd");
+
+   uint64_t free_bytes = 0;
+   struct statvfs v;
+   r = fsr_free_bytes("2:/", &free_bytes);
+   uint64_t host = (statvfs(share_dir, &v) == 0) ? (uint64_t)v.f_bavail * v.f_frsize : 0;
+   uint64_t diff = free_bytes > host ? free_bytes - host : host - free_bytes;
+   snprintf(why, sizeof why, "FRESULT %d, %llu bytes, host says %llu", (int)r,
+            (unsigned long long)free_bytes, (unsigned long long)host);
+   check("free space on the share (within 1% of the server's disc)", r == FR_OK && free_bytes > 0 &&
+         diff <= host / 100u + 65536u, why);
+}
+
 static void test_routing(void)
 {
    FIL f;
@@ -549,6 +640,7 @@ int main(void)
    }
    test_image_lifecycle();
    test_names();
+   test_attributes_and_space();
    test_routing();
 
    test_failures();

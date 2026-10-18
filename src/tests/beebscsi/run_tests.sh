@@ -16,7 +16,8 @@ trap 'rm -rf "$B"' EXIT
 # Mirror the tree layout: filesystem.c and scsi.c include "../rpi/rpi.h",
 # "../videoplayer.h" and friends relative to themselves.
 mkdir -p "$B/rpi" "$B/BeebSCSI/fatfs"
-# storage=smb is not under test here: every fsr_* call is FatFs's own
+# storage=smb: every fsr_* call is FatFs's own; the test plays the share's
+# logon (FSR_NET_HOOKS) for the storage choice
 cp "$HERE"/../fsroute_passthrough.h "$B/fsroute.h"
 cp "$SRC"/config.h "$SRC"/videoplayer.h "$SRC"/harddisc_emulator.h "$SRC"/usb_storage.h "$B/"
 cp "$SRC"/rpi/gpio.h "$SRC"/rpi/info.h "$SRC"/rpi/byteorder.h "$SRC"/rpi/base.h \
@@ -41,7 +42,7 @@ cp "$HERE"/test_beebscsi.c "$B/"
 # The shipped default descriptor, for the new-disc MODE SELECT case.
 cp "$SRC"/../firmware/Pi1MHz/defscsi.cfg "$B/"
 
-gcc -std=gnu2x -Wall -Wextra -Wno-unused-parameter -g -O1 \
+gcc -std=gnu2x -Wall -Wextra -Wno-unused-parameter -g -O1 -DFSR_NET_HOOKS \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     -Wl,--wrap=f_open -Wl,--wrap=f_close \
     -I"$B" -o "$B/t" \

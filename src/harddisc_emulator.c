@@ -281,6 +281,7 @@ void hd_juke_service(void)
 #define HD_CARD_REBOOT  3u    /* eject, then restart the Pi */
 #define HD_CARD_USE_SD  4u    /* the Beeb's storage on the SD card, until the Pi restarts */
 #define HD_CARD_USE_USB 5u    /* ... on the USB flash drive (storage=usb's choice, made now) */
+#define HD_CARD_USE_SMB 6u    /* ... on the network share (storage=smb's choice, made now) */
 #define HD_CARD_FAILED  0xFFu
 
 /* Report a request's result - unless the Beeb has written a newer request
@@ -313,16 +314,28 @@ void hd_card_service(void)
       break;
    case HD_CARD_USE_SD:
    case HD_CARD_USE_USB:
+   case HD_CARD_USE_SMB:
       /* A swap, as an insert is, with the storage chosen first: the choice
          only takes effect at the remount, after every file is closed.  No
-         drive: refused before anything is closed.  Repeating the choice
-         while an eject takes several passes changes nothing. */
-      if (!filesystemChooseStorage(request == HD_CARD_USE_USB)) {
+         drive, or no share set up: refused before anything is closed.
+         Repeating the choice while an eject takes several passes changes
+         nothing. */
+      if (!filesystemChooseStorage(request == HD_CARD_USE_USB ? STORAGE_USB
+                                   : request == HD_CARD_USE_SMB ? STORAGE_SMB : STORAGE_SD)) {
          hd_card_done(request, HD_CARD_FAILED);
          break;
       }
-      if (filesystemEject())
-         hd_card_done(request, filesystemInsert() ? 0u : HD_CARD_FAILED);
+      if (filesystemEject()) {
+         bool ok = filesystemInsert();
+         /* The share: log on now, so the Beeb's poll learns whether it
+            could.  One that cannot be reached stays chosen - the Beeb is
+            on the card until a BREAK tries it again. */
+         if (ok && request == HD_CARD_USE_SMB) {
+            (void)filesystemStorageRoot();     /* decides it: logs on */
+            ok = filesystemStorageOnSmb();
+         }
+         hd_card_done(request, ok ? 0u : HD_CARD_FAILED);
+      }
       break;
    case HD_CARD_REBOOT:
       if (filesystemEject()) {

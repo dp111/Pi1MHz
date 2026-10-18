@@ -384,27 +384,30 @@ static void filesystemRemountNotify(void)
 }
 
 /* ---- Where the Beeb's storage lives ---------------------------------------
-   The SD card, or with storage=usb in Pi1MHz.cfg a USB flash drive (FatFs
-   volume "1:", usb_storage.c): the BeebSCSI and BeebVFS directories, the
-   FAT transfer directory and, through filesystemStoragePath, the FAT
-   service, FujiNet, Music 5000 recordings and the video.  Pi1MHz.cfg, the
-   ROMs and the kernel stay on the card, as do WebDAV and MTP.
+   The SD card, a USB flash drive (storage=usb: FatFs volume "1:",
+   usb_storage.c) or a network share (storage=smb: "2:", fsroute.c): every
+   file the Beeb reaches - the BeebSCSI and BeebVFS directories, the video,
+   the FAT transfer directory and, through filesystemStoragePath, the FAT
+   service (MMFS), FujiNet and Music 5000 recordings.  Pi1MHz.cfg, the ROMs
+   and the kernel stay on the card (the Pi's own /Pi1MHz folder), as do
+   WebDAV and MTP.
 
    Decided at each BBC reset, at the first use after it, and kept until the
    next: a drive plugged in while a program runs is used from the next
    BREAK, never swapped in under it.  The Beeb can choose for itself
-   (*FX147,203,4 or 5 - filesystemChooseStorage), which overrides storage=
-   until the Pi restarts.  At power-on the drive is still being
+   (*FX147,203,4, 5 or 6 - filesystemChooseStorage), which overrides
+   storage= until the Pi restarts.  At power-on the drive is still being
    enumerated when the Beeb first asks, so until STORAGE_POWER_ON_WAIT_US
    after the first reset the decision waits for it, running USB meanwhile:
    the Beeb sees a slow answer inside a command - it has no timeouts - never
-   the SD card's discs in place of the drive's.  Never from the FIQ. */
+   the SD card's discs in place of the drive's.  The share waits for the
+   WiFi in the same way (smb_client_connect).  Never from the FIQ. */
 #define STORAGE_POWER_ON_WAIT_US 5000000u
 
 static enum { ROOT_SD, ROOT_USB, ROOT_SMB, ROOT_UNDECIDED, ROOT_UNDECIDED_SMB } fsRoot;
 /* The Beeb's own choice (filesystemChooseStorage), in .bss: until the Pi
    restarts - BREAK keeps it. */
-static enum { CHOICE_CONFIG, CHOICE_SD, CHOICE_USB } fsStorageChoice;
+static enum { CHOICE_CONFIG, CHOICE_SD, CHOICE_USB, CHOICE_SMB } fsStorageChoice;
 static bool     fsRootBooted;          /* the first reset has set the wait */
 static uint64_t fsRootWaitUntil;     /* 64-bit: never wraps back into the window */
 
@@ -420,7 +423,9 @@ static void filesystemStorageReset(void)
    else if (fsStorageChoice == CHOICE_USB)
       /* chosen on purpose, so no power-on wait: the drive, if it is there */
       fsRoot = usb_storage_mounted() ? ROOT_USB : ROOT_SD;
-   else if (storage != NULL && strcasecmp(storage, "smb") == 0)
+   else if (fsStorageChoice == CHOICE_SMB ||
+            (storage != NULL && strcasecmp(storage, "smb") == 0))
+      /* a logon that failed is tried again here, at every BREAK */
       fsRoot = ROOT_UNDECIDED_SMB;
    else
       fsRoot = (storage != NULL && strcasecmp(storage, "usb") == 0) ? ROOT_UNDECIDED : ROOT_SD;
@@ -432,13 +437,18 @@ static void filesystemStorageReset(void)
    (void)f_chdir("1:/");
 }
 
-bool filesystemChooseStorage(bool usb)
+bool filesystemChooseStorage(filesystem_storage_t storage)
 {
-   /* A drive asked for but not there: refused, and the choice left as it
-      was - a later BREAK must not swap to a drive plugged in after. */
-   if (usb && !usb_storage_mounted())
+   /* A drive asked for but not there, or a share with no server set:
+      refused, and the choice left as it was - a later BREAK must not swap
+      to a drive plugged in after.  A share that is set up but cannot be
+      reached is chosen all the same (filesystemStorageRoot). */
+   if (storage == STORAGE_USB && !usb_storage_mounted())
       return false;
-   fsStorageChoice = usb ? CHOICE_USB : CHOICE_SD;
+   if (storage == STORAGE_SMB && !fsr_net_configured())
+      return false;
+   fsStorageChoice = storage == STORAGE_USB ? CHOICE_USB
+                   : storage == STORAGE_SMB ? CHOICE_SMB : CHOICE_SD;
    return true;
 }
 
@@ -447,30 +457,19 @@ const char *filesystemStorageRoot(void)
    if (fsRoot == ROOT_UNDECIDED)
       fsRoot = (usb_storage_mounted() || usb_storage_wait_for_drive(fsRootWaitUntil))
              ? ROOT_USB : ROOT_SD;
-   /* storage=smb (fsroute.c, smb/smb_client.c): log on to the share, waiting at
-      power-on for the WiFi.  A share that cannot be reached leaves the
-      Beeb on the card until the next BREAK, as a missing drive does. */
-   if (fsRoot == ROOT_UNDECIDED_SMB)
+   /* The share (fsroute.c, smb/smb_client.c): log on, waiting at power-on
+      for the WiFi.  One that cannot be reached leaves the Beeb on the card
+      until the next BREAK, which tries again, as a missing drive does.  A
+      caller inside the network poll cannot wait for the logon: the share
+      stays undecided and that one call fails on it - deciding there would
+      leave the Beeb on the card for the whole session. */
+   if (fsRoot == ROOT_UNDECIDED_SMB && fsr_net_can_wait())
       fsRoot = fsr_net_connect() ? ROOT_SMB : ROOT_SD;
-   return fsRoot == ROOT_USB ? "1:" : fsRoot == ROOT_SMB ? "2:" : "";
+   return fsRoot == ROOT_USB ? "1:"
+        : (fsRoot == ROOT_SMB || fsRoot == ROOT_UNDECIDED_SMB) ? "2:" : "";
 }
 
-/* The root for the FAT service, FujiNet's store and Music 5000 recordings:
-   they work through FatFs directly and are not routed to the share yet, so
-   under storage=smb they stay on the card - without deciding the share:
-   a decision forced from here would log on for a path that never uses it,
-   and from inside the network poll (FujiNet) it would fail and leave the
-   Beeb's discs on the card for the session. */
-const char *filesystemStorageFatRoot(void)
-{
-   if (fsRoot == ROOT_SMB || fsRoot == ROOT_UNDECIDED_SMB)
-      return "";
-   return filesystemStorageRoot();
-}
-
-/* The drive is decided on: host paths (WebDAV, MTP) are on the card, so
-   none of them is the Beeb's.  Never decides, so never waits: undecided
-   answers false, the cautious side for a host-write interlock. */
+/* The drive is decided on.  Never decides, so never waits. */
 bool filesystemStorageOnUsb(void)
 {
    return fsRoot == ROOT_USB;
@@ -481,9 +480,11 @@ bool filesystemStorageOnSmb(void)
    return fsRoot == ROOT_SMB;
 }
 
-/* The LUNs' files are not on the card (the drive or the share): the host
-   interlocks, which compare card paths, have nothing of theirs to guard. */
-static bool filesystemLunsOffCard(void)
+/* The Beeb's files are not on the card (the drive or the share): the host
+   interlocks (WebDAV, MTP), which compare card paths, have nothing of
+   theirs to guard.  Never decides, so never waits: undecided answers false,
+   the cautious side for a host-write interlock. */
+bool filesystemStorageOffCard(void)
 {
    return fsRoot == ROOT_USB || fsRoot == ROOT_SMB;
 }
@@ -684,7 +685,7 @@ static void fsHostLunNames(uint8_t lunNumber, char *dir, size_t dirSize,
 bool filesystemHostPathBusy(const char *path)
 {
    if (path == NULL || path[0] == '\0') return false;
-   if (filesystemLunsOffCard()) return false;    // the LUNs' files are on the drive or share
+   if (filesystemStorageOffCard()) return false;    // the LUNs' files are on the drive or share
 
    size_t pathLen = strlen(path);
    while (pathLen > 1u && path[pathLen - 1u] == '/') pathLen--;   // ignore a trailing /
@@ -716,7 +717,7 @@ bool filesystemHostPathBusy(const char *path)
 int8_t filesystemLunFromHostPath(const char *path)
 {
    if (path == NULL) return -1;
-   if (filesystemLunsOffCard()) return -1;       // the LUNs' files are on the drive or share
+   if (filesystemStorageOffCard()) return -1;       // the LUNs' files are on the drive or share
 
    for (uint8_t lunNumber = 0; lunNumber < MAX_LUNS; lunNumber++) {
       char dir[24];

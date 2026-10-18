@@ -1087,7 +1087,7 @@ static void test_storage_choice(void)
    cfg_storage = NULL;
    usb_mounted = true;
    stop_all();
-   bool ok = filesystemChooseStorage(true);
+   bool ok = filesystemChooseStorage(STORAGE_USB);
    filesystemReset();                        /* the insert after the eject */
    v = lun0_volume();
    snprintf(why, sizeof why, "chosen %d, LUN 0 on %s (want usb), waits %d (want %d)",
@@ -1104,7 +1104,7 @@ static void test_storage_choice(void)
    /* the card chosen, over storage=usb with the drive there */
    cfg_storage = "usb";
    stop_all();
-   ok = filesystemChooseStorage(false);
+   ok = filesystemChooseStorage(STORAGE_SD);
    filesystemReset();
    v = lun0_volume();
    snprintf(why, sizeof why, "chosen %d, LUN 0 on %s (want sd), waits %d (want %d)",
@@ -1115,7 +1115,7 @@ static void test_storage_choice(void)
    /* the drive asked for, none there: refused, the card choice kept - a
       later BREAK with a drive does not swap to it */
    usb_mounted = false;
-   ok = filesystemChooseStorage(true);
+   ok = filesystemChooseStorage(STORAGE_USB);
    usb_mounted = true;
    stop_all();
    filesystemReset();
@@ -1125,7 +1125,7 @@ static void test_storage_choice(void)
 
    /* the drive chosen, then gone at a BREAK: the card; back at the next:
       the drive */
-   ok = filesystemChooseStorage(true);
+   ok = filesystemChooseStorage(STORAGE_USB);
    usb_mounted = false;
    stop_all();
    filesystemReset();
@@ -1137,6 +1137,82 @@ static void test_storage_choice(void)
    snprintf(why, sizeof why, "drive gone: %s (want sd), back: %s (want usb)", gone, v);
    check("*FX147,203,5: the drive gone at a BREAK - the card, then the drive again",
          ok && !strcmp(gone, "sd") && !strcmp(v, "usb"), why);
+   stop_all();
+}
+
+/* *FX147,203,6 and storage=smb's decision (filesystem.c), the share played
+   by the fsr_net_* hooks: set up or not, reachable or not, and whether the
+   caller may wait (not from inside the network poll). */
+static bool net_configured, net_reachable, net_can_wait = true;
+static int  net_connects;
+bool fsr_net_configured(void) { return net_configured; }
+bool fsr_net_can_wait(void) { return net_can_wait; }
+bool fsr_net_connect(void) { net_connects++; return net_reachable; }
+
+static void test_storage_choice_smb(void)
+{
+   static char why[200];
+
+   /* no share set up: refused, the choice left as it was */
+   stop_all();
+   filesystemReset();
+   char before[4];
+   snprintf(before, sizeof before, "%s", filesystemStorageRoot());
+   net_configured = false;
+   bool ok = filesystemChooseStorage(STORAGE_SMB);
+   stop_all();
+   filesystemReset();
+   const char *r = filesystemStorageRoot();
+   snprintf(why, sizeof why, "chosen %d (want 0), root \"%s\" (want \"%s\")", ok, r, before);
+   check("*FX147,203,6 with no share set up: refused, the choice unchanged",
+         !ok && !strcmp(r, before) && net_connects == 0, why);
+
+   /* set up, not reachable: chosen all the same, the card meanwhile */
+   net_configured = true;
+   net_reachable = false;
+   ok = filesystemChooseStorage(STORAGE_SMB);
+   stop_all();
+   filesystemReset();
+   r = filesystemStorageRoot();
+   r = filesystemStorageRoot();              /* decided: not asked again */
+   snprintf(why, sizeof why, "chosen %d, root \"%s\" (want \"\"), on share %d, logons %d (want 1)",
+            ok, r, filesystemStorageOnSmb(), net_connects);
+   check("*FX147,203,6, share unreachable: chosen, the card until the next BREAK",
+         ok && !strcmp(r, "") && !filesystemStorageOnSmb() && net_connects == 1, why);
+
+   /* the next BREAK tries again - and now it answers */
+   net_reachable = true;
+   stop_all();
+   filesystemReset();
+   r = filesystemStorageRoot();
+   snprintf(why, sizeof why, "root \"%s\" (want \"2:\"), on share %d, logons %d (want 2)",
+            r, filesystemStorageOnSmb(), net_connects);
+   check("*FX147,203,6: a BREAK logs on again, and the share is used",
+         !strcmp(r, "2:") && filesystemStorageOnSmb() && filesystemStorageOffCard() &&
+         net_connects == 2, why);
+
+   /* first use from inside the network poll: left undecided, never the card */
+   stop_all();
+   filesystemReset();
+   net_can_wait = false;
+   r = filesystemStorageRoot();
+   bool undecided = !filesystemStorageOnSmb() && !filesystemStorageOffCard();
+   int logons = net_connects;
+   net_can_wait = true;
+   const char *r2 = filesystemStorageRoot();
+   snprintf(why, sizeof why, "in the poll: \"%s\" undecided %d logons %d (want 2); after: \"%s\" logons %d (want 3)",
+            r, undecided, logons, r2, net_connects);
+   check("storage=smb first asked inside the poll: undecided (the call fails on the share), "
+         "decided at the next use", !strcmp(r, "2:") && undecided && logons == 2 &&
+         !strcmp(r2, "2:") && filesystemStorageOnSmb() && net_connects == 3, why);
+
+   /* the card chosen back */
+   ok = filesystemChooseStorage(STORAGE_SD);
+   stop_all();
+   filesystemReset();
+   r = filesystemStorageRoot();
+   check("*FX147,203,4 after 6: the card", ok && !strcmp(r, "") && !filesystemStorageOnSmb(),
+         r);
    stop_all();
 }
 
@@ -1275,6 +1351,7 @@ int main(int argc, char **argv)
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */
+   test_storage_choice_smb();
 
    printf("%d passed, %d failed\n", passes, failures);
    return failures ? 1 : 0;

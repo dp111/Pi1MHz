@@ -73,7 +73,6 @@ static volatile uint32_t help_shown_us;
    "\r\n"                                                                \
    "Run helper n:  X%%=n:CALL &FC%X\r\n"                                 \
    "  or *FX147,%d,n then *GO/GOIO FD00\r\n"                             \
-   "\r\n"                                                                \
    " n  Helper    (CTRL-BREAK after a ROM)\r\n"                          \
    " 0  This help\r\n"                                                   \
    " 2  Screen redirector\r\n"                                           \
@@ -91,7 +90,8 @@ static volatile uint32_t help_shown_us;
    "19  Serial redirector (modem)\r\n"                                   \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then 203,1/0 M5000 rec\r\n"                          \
-   "*FX147,202,%d 203,1-5 out/in/rst/SD/USB\r\n"
+   "*FX147,202,%d 203,1-3 out/in/restart\r\n"                          \
+   "  then 203,4/5/6 discs on SD/USB/SMB\r\n"
 
 #define HELPERS_HELP_COLUMNS 40u
 #define HELPERS_HELP_ROWS    25u

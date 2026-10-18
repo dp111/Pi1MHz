@@ -56,18 +56,18 @@ L=$SRC/smb/libsmb2
 LIBSMB2_SRCS=$(cd "$L/lib" && ls *.c | grep -vxE 'aes\.c|aes_reference\.c|aes_apple\.c|md4c\.c|krb5-wrapper\.c|smb2-share-enum\.c|compat\.c' )
 # On the host libsmb2 builds against glibc's own socket headers - only the
 # firmware's config.h and the smbp_* renames are kept.
-mkdir -p "$B/obj" "$B/hostcfg"
+mkdir -p "$B/obj" "$B/lib" "$B/hostcfg"
 cp "$SRC/smb/port/include/config.h" "$B/hostcfg/"
 for f in $LIBSMB2_SRCS; do
    gcc -std=gnu11 -g -w -ffunction-sections -fdata-sections -DHAVE_CONFIG_H -D_U_= \
        -I"$B/hostcfg" -I"$L/include" -I"$L/include/smb2" -I"$L/lib" \
-       -include "$SRC/smb/port/smb_port.h" -c "$L/lib/$f" -o "$B/obj/${f%.c}.o"
+       -include "$SRC/smb/port/smb_port.h" -c "$L/lib/$f" -o "$B/lib/${f%.c}.o"
 done
 MB=$SRC/wifi/mbedtls
 gcc -std=gnu11 -g -w -I"$SRC/wifi" -I"$MB/include" '-DMBEDTLS_CONFIG_FILE="mbedtls_config_pi1mhz.h"' \
-    -c "$MB/library/aes.c" -o "$B/obj/mb_aes.o"
+    -c "$MB/library/aes.c" -o "$B/lib/mb_aes.o"
 gcc -std=gnu11 -g -w -I"$SRC/wifi" -I"$MB/include" '-DMBEDTLS_CONFIG_FILE="mbedtls_config_pi1mhz.h"' \
-    -c "$MB/library/platform_util.c" -o "$B/obj/mb_util.o"
+    -c "$MB/library/platform_util.c" -o "$B/lib/mb_util.o"
 
 # the firmware's own files, in a mirror of the tree with the test's stubs
 # where the headers around them would be (they include "../config.h" etc.)
@@ -83,10 +83,42 @@ MBF="-I$SRC/wifi -I$MB/include -DMBEDTLS_CONFIG_FILE=\"mbedtls_config_pi1mhz.h\"
 gcc -std=gnu11 -g -Wall -Wextra -I"$M" $MBF -I"$L/include" -c "$M/smb/smb_crypto.c" -o "$B/obj/smb_crypto.o"
 gcc -std=gnu11 -g -Wall -Wextra -I"$M" -I"$L/include" -c "$M/smb/smb_client.c" -o "$B/obj/smb_client.o"
 gcc -std=gnu11 -g -Wall -Wextra -I"$M" -I"$L/include" -c "$M/fsroute.c" -o "$B/obj/fsroute.o"
-gcc -std=gnu11 -g -Wall -I"$M/smb" -I"$HERE" -c "$HERE/host_sock_shim.c" -o "$B/obj/host_sock_shim.o"
-gcc -std=gnu11 -g -Wall -c "$HERE/host_sock_real.c" -o "$B/obj/host_sock_real.o"
+gcc -std=gnu11 -g -Wall -I"$M/smb" -I"$HERE" -c "$HERE/host_sock_shim.c" -o "$B/lib/host_sock_shim.o"
+gcc -std=gnu11 -g -Wall -c "$HERE/host_sock_real.c" -o "$B/lib/host_sock_real.o"
 gcc -std=gnu11 -g -Wall -Wextra -I"$M" -I"$L/include" -c "$HERE/test_smb.c" -o "$B/obj/test_smb.o"
-gcc -g -Wl,--gc-sections -o "$B/t" "$B"/obj/*.o
+gcc -g -Wl,--gc-sections -o "$B/t" "$B"/obj/*.o "$B"/lib/*.o
+
+# The FAT service on the share (test_fatsmb.c): its own tree - the services
+# suite's stubs for the bus, real FatFs on a RAM disk for the card (with
+# f_mkfs), the config parser fed the share's logon.
+F=$B/fattree
+mkdir -p "$F/smb" "$F/BeebSCSI/fatfs" "$B/fobj"
+cp -r "$HERE"/stubs/. "$F/"
+cp -r "$HERE"/../services/stubs/. "$F/"
+rm -f "$F/BeebSCSI/fatfs/ff.h" "$F/config.h"
+cat >> "$F/Pi1MHz.h" <<'STUB'
+/* the one field smb_client.c reads: nRST edges counted by the IRQ */
+typedef struct { uint32_t edges; } Pi1MHz_break_t;
+extern volatile Pi1MHz_break_t Pi1MHz_break;
+STUB
+cp "$SRC"/net_dns.h "$SRC"/fsroute.c "$SRC"/fsroute.h "$SRC"/services_emulator.c "$SRC"/fat_service.c \
+   "$SRC"/services.h "$SRC"/M5000_emulator.h "$SRC"/fujibus_service.h "$SRC"/config.c "$SRC"/config.h "$F/"
+cp "$SRC"/smb/smb_client.c "$SRC"/smb/smb_client.h "$SRC"/smb/smb_crypto.c "$SRC"/smb/smb_socket.h "$F/smb/"
+ln -s "$SRC/smb/port" "$F/smb/port"
+ln -s "$L" "$F/smb/libsmb2"
+cp "$SRC"/BeebSCSI/filesystem_storage.c "$F/BeebSCSI/"
+cp "$SRC"/BeebSCSI/fatfs/ff.c "$SRC"/BeebSCSI/fatfs/ff.h "$SRC"/BeebSCSI/fatfs/ffunicode.c \
+   "$SRC"/BeebSCSI/fatfs/diskio.h "$F/BeebSCSI/fatfs/"
+sed 's/^#define FF_USE_MKFS[[:space:]]*0/#define FF_USE_MKFS 1/' \
+   "$SRC"/BeebSCSI/fatfs/ffconf.h > "$F/BeebSCSI/fatfs/ffconf.h"
+cp "$HERE"/test_fatsmb.c "$F/"
+FW="-std=gnu11 -g -Wall -Wextra -Wno-unused-parameter -I$F -I$L/include"
+gcc $FW $MBF -c "$F/smb/smb_crypto.c" -o "$B/fobj/smb_crypto.o"
+for f in smb/smb_client fsroute services_emulator fat_service config BeebSCSI/filesystem_storage \
+         BeebSCSI/fatfs/ff BeebSCSI/fatfs/ffunicode test_fatsmb; do
+   gcc $FW -c "$F/$f.c" -o "$B/fobj/$(basename $f).o"
+done
+gcc -g -Wl,--gc-sections -o "$B/tf" "$B"/fobj/*.o "$B"/lib/*.o
 
 echo "== storage=smb: fsroute + libsmb2 against Samba (signing mandatory) =="
 SMB_TEST_STOP="kill \$(cat $S/pid/smbd.pid); sleep 0.5" \
@@ -94,3 +126,6 @@ SMB_TEST_START="smbd -D --configfile=$S/smb.conf; sleep 1" \
 SMB_TEST_FREEZE="pkill -STOP -P \$(cat $S/pid/smbd.pid); kill -STOP \$(cat $S/pid/smbd.pid)" \
 SMB_TEST_THAW="kill -CONT \$(cat $S/pid/smbd.pid); pkill -CONT -P \$(cat $S/pid/smbd.pid)" \
 SMB_TEST_SERVER=127.0.0.1:$PORT SMB_TEST_USER=root SMB_TEST_PASS=beebpass SMB_TEST_DIR=$S/share "$B/t"
+
+echo "== the FAT service (MMFS) on the share =="
+SMB_TEST_SERVER=127.0.0.1:$PORT SMB_TEST_USER=root SMB_TEST_PASS=beebpass SMB_TEST_DIR=$S/share "$B/tf"

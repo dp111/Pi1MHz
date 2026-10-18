@@ -28,6 +28,7 @@ cp "$SRC"/BeebSCSI/fatfs/ff.c "$SRC"/BeebSCSI/fatfs/ff.h "$SRC"/BeebSCSI/fatfs/f
 sed 's/^#define FF_USE_MKFS[[:space:]]*0/#define FF_USE_MKFS 1/' \
    "$SRC"/BeebSCSI/fatfs/ffconf.h > "$B/BeebSCSI/fatfs/ffconf.h"
 cp "$HERE"/test_fatfiles.c "$B/"
+cp "$HERE"/../fsroute_passthrough.h "$B/fsroute.h"   # no share: fsr_* are FatFs's
 
 gcc -std=gnu2x -Wall -Wextra -Wno-unused-parameter -g -O1 \
     -fsanitize=address,undefined -fno-sanitize-recover=all \

@@ -41,9 +41,11 @@ void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data)
 void Pi1MHz_nIRQ_ASSERT(uint8_t src) { (void)src; }
 void Pi1MHz_nIRQ_CLEAR(uint8_t src) { (void)src; }
 
-const char *filesystemStorageRoot(void) { return ""; }
 static bool on_usb;                       /* the storage decided at a reset */
+const char *filesystemStorageRoot(void) { return on_usb ? "1:" : ""; }
 bool filesystemStorageOnUsb(void) { return on_usb; }
+bool filesystemStorageOnSmb(void) { return false; }
+bool filesystemStorageOffCard(void) { return on_usb; }
 bool filesystemMount(void) { return true; }
 bool filesystemDismount(void) { return true; }
 static bool (*eject_cb)(void);

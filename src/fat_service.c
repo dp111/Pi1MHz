@@ -20,6 +20,7 @@
 #include "BeebSCSI/fatfs/ff.h"			/* Obtains integer types */
 #include "BeebSCSI/fatfs/diskio.h"
 #include "BeebSCSI/filesystem.h"
+#include "fsroute.h"			/* f_* by path: the card, the USB drive or the share */
 #include "wifi/webserver.h"			/* cached SD free space - see case 13 */
 
 NOINIT_SECTION static FIL fileObject[16];
@@ -108,23 +109,26 @@ static void fat_open_record(unsigned int handle, const char *name)
    if (name[0] >= '0' && name[0] <= '9' && name[1] == ':') {
       /* names its own volume: recorded as it is */
    } else if (!filesystemPathOnCard(name)) {
-      /* On the drive (as fat_beeb_path opened it): "1:" in front keeps it
-         from matching a card path.  fat_cwd is the drive's directory. */
+      /* On the drive or the share (as fat_beeb_path opened it): its volume
+         in front keeps it from matching a card path.  fat_cwd is that
+         volume's directory. */
+      const char *vol = filesystemStorageOnSmb() ? "2:" : "1:";
       int n = (name[0] == '/')
-            ? snprintf(joined, sizeof joined, "1:%s", name)
+            ? snprintf(joined, sizeof joined, "%s%s", vol, name)
             : !fat_cwd_known ? -1
-            : snprintf(joined, sizeof joined, "1:%s/%s",
+            : snprintf(joined, sizeof joined, "%s%s/%s", vol,
                        (fat_cwd[0] == '/' && fat_cwd[1] == '\0') ? "" : fat_cwd, name);
       if (n < 0 || (size_t)n >= sizeof joined)
          return;
       path = joined;
    } else if (name[0] != '/') {
-      /* On the card.  With the storage on the drive this is the Pi's own
-         folder ("Pi1MHz/<n>.rom"), relative to the card's directory, which
-         the Beeb's directory changes (all on the drive) leave at the root. */
+      /* On the card.  With the storage on the drive or the share this is
+         the Pi's own folder ("Pi1MHz/<n>.rom"), relative to the card's
+         directory, which the Beeb's directory changes (all on the other
+         volume) leave at the root. */
       int n;
-      const char *cwd = filesystemStorageOnUsb() ? "/" : fat_cwd;
-      if (!filesystemStorageOnUsb() && !fat_cwd_known)
+      const char *cwd = filesystemStorageOffCard() ? "/" : fat_cwd;
+      if (!filesystemStorageOffCard() && !fat_cwd_known)
          return;
       n = snprintf(joined, sizeof joined, "%s/%s",
                    (cwd[0] == '/' && cwd[1] == '\0') ? "" : cwd, name);
@@ -163,30 +167,61 @@ static const char *fat_path_norm(const char *p)
    return p;
 }
 
-/* ---- The Beeb's storage: the SD card, or the USB drive (storage=usb) ----
+/* ---- The Beeb's storage: the SD card, the USB drive (storage=usb) or the
+   network share (storage=smb) ----
    Every name from the Beeb gets the storage root (filesystemStoragePath), so
    with the drive in use "1:" is put in front: an absolute name is then on the
    drive, and a relative one is relative to the drive's own current directory
-   (FatFs keeps one per volume).  A name with its own volume is left alone. */
+   (FatFs keeps one per volume).  The share has no current directory of its
+   own: this service keeps it (fat_cwd) and joins relative names to it.  A
+   name with its own volume, or in the Pi's own folder, is left alone. */
 static char fat_path_a[DISC_MAX_PATH + 3], fat_path_b[DISC_MAX_PATH + 3];
+
+static bool fat_join(char *out, size_t size, const char *dir, const char *name);
+
+/* Which volume the Beeb's storage is on: deciding it, if this is the first
+   use since a BBC reset. */
+static bool fat_on_share(void)
+{
+   return filesystemStorageRoot()[0] == '2';
+}
+
+static bool fat_off_card(void)
+{
+   return filesystemStorageRoot()[0] != '\0';
+}
+
+static bool fat_names_volume(const char *name)
+{
+   return name[0] >= '0' && name[0] <= '9' && name[1] == ':';
+}
 
 static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
 {
    const char *name = (const char *)&Pi1MHz->JIM_ram[off];
+   if (fat_on_share() && name[0] != '/' && !fat_names_volume(name) &&
+       !filesystemPiFolder(name)) {
+      char abs[DISC_MAX_PATH + 3];
+      if (!fat_join(abs, sizeof abs, fat_cwd, name))
+         return name;                    /* too long: fails on the card's FatFs */
+      return filesystemStoragePath(abs, buf, size) ? buf : name;
+   }
    return filesystemStoragePath(name, buf, size) ? buf : name;
-}
-
-static bool fat_on_usb(void)
-{
-   return filesystemStorageFatRoot()[0] != '\0';
 }
 
 /* The current directory of the Beeb's volume, without its "N:" prefix (as
    the Beeb has always seen it).  f_getcwd reports the current drive's, so
-   the drive's is asked for with it made current just for the call. */
+   the drive's is asked for with it made current just for the call; the
+   share's is this service's own. */
 static FRESULT fat_getcwd(char *buf, UINT len)
 {
-   bool usb = fat_on_usb();
+   if (fat_on_share()) {
+      if (strlen(fat_cwd) >= len)
+         return FR_NOT_ENOUGH_CORE;
+      strcpy(buf, fat_cwd);
+      return FR_OK;
+   }
+   bool usb = fat_off_card();
    if (usb)
       (void)f_chdrive("1:");
    FRESULT result = f_getcwd(buf, len);
@@ -197,17 +232,40 @@ static FRESULT fat_getcwd(char *buf, UINT len)
    return result;
 }
 
+/* chdir on the share: name joined to fat_cwd, and it must be a directory. */
+static FRESULT fat_share_chdir(const char *name)
+{
+   char abs[FAT_OPEN_PATH_MAX];
+   char path[FAT_OPEN_PATH_MAX + 3];
+   FILINFO fi;
+   if (!fat_join(abs, sizeof abs, fat_cwd, name))
+      return FR_INVALID_NAME;
+   if (strcmp(abs, "/") != 0) {
+      FRESULT r = fsr_stat(filesystemStoragePath(abs, path, sizeof path) ? path : abs, &fi);
+      if (r == FR_NO_FILE)
+         r = FR_NO_PATH;
+      if (r != FR_OK)
+         return r;
+      if (!(fi.fattrib & AM_DIR))
+         return FR_NO_PATH;
+   }
+   strcpy(fat_cwd, abs);
+   fat_cwd_known = true;
+   return FR_OK;
+}
+
 /* Raw sectors (MMFS reading BEEB.MMB with its own FAT code): the Beeb's
    drive 0 is the storage - the card, or the USB drive when the storage is
    on it.  No other drive is the Beeb's: diskio answers RES_PARERR for this
    one, as it did for every drive but 0 before there was a second, so the
-   Beeb cannot write raw sectors under FatFs's mounted drive. */
+   Beeb cannot write raw sectors under FatFs's mounted drive.  A share has
+   no sectors: the ROMs built for the Pi1MHz use files (commands 2-6). */
 #define FAT_RAW_NO_DRIVE 0xFFu
 static BYTE fat_raw_drive(uint8_t beeb_drive)
 {
-   if (beeb_drive != 0u)
+   if (beeb_drive != 0u || fat_on_share())
       return FAT_RAW_NO_DRIVE;
-   return fat_on_usb() ? 1u : 0u;
+   return fat_off_card() ? 1u : 0u;
 }
 
 bool fat_service_file_in_use(const char *host_path)
@@ -362,7 +420,8 @@ static void fat_dirent_record(uint8_t *rec, const FILINFO *info)
    releases the host-write interlock), but the slot's next read, write or
    size reopens it by that path: the Beeb's filing system keeps its drives
    over a soft BREAK, as with a real card.  A file gone meanwhile, or on
-   storage that has changed (the card or the USB drive), fails the request.
+   storage that has changed (the card, the USB drive or the share), fails
+   the request.
    A rename here follows it (fat_rename_follow).  Both live in .bss: a Pi
    boot forgets them, and so do an eject and the Beeb's own mount or
    unmount (fat_forget_kept); the boot id (command 20) changes with them. */
@@ -370,7 +429,8 @@ static void fat_dirent_record(uint8_t *rec, const FILINFO *info)
 static char fat_slot_dir[16][FAT_OPEN_PATH_MAX];
 static char fat_keep_path[16][FAT_OPEN_PATH_MAX];
 static BYTE fat_keep_mode[16];          /* 0 = nothing kept (FA_READ is 1) */
-static bool fat_keep_usb[16];           /* the storage it was opened on */
+static char fat_keep_vol[16];           /* the storage it was opened on: its root's
+                                           first character ('\0' the card) */
 static uint16_t fat_id;                 /* the boot id; 0 = not taken yet */
 
 /* The directory a slot's relative names are resolved against. */
@@ -532,9 +592,9 @@ static bool fat_slot_find(const char *dir, const char *short83, char *name, size
    FILINFO fi;
    char buf[FAT_OPEN_PATH_MAX + 3];
    bool found = false;
-   if (f_opendir(&d, fat_storage(dir, buf, sizeof buf)) != FR_OK)
+   if (fsr_opendir(&d, fat_storage(dir, buf, sizeof buf)) != FR_OK)
       return false;
-   while (f_readdir(&d, &fi) == FR_OK && fi.fname[0] != '\0') {
+   while (fsr_readdir(&d, &fi) == FR_OK && fi.fname[0] != '\0') {
       char sn[13];
       fat_short_name(&fi, sn);
       if (strcasecmp(sn, short83) == 0 && strlen(fi.fname) < size) {
@@ -543,7 +603,7 @@ static bool fat_slot_find(const char *dir, const char *short83, char *name, size
          break;
       }
    }
-   (void)f_closedir(&d);
+   (void)fsr_closedir(&d);
    return found;
 }
 
@@ -555,7 +615,7 @@ static bool fat_slot_resolve(unsigned int slot, const char *name, char *abs, siz
    FILINFO fi;
    if (!fat_join(abs, size, fat_slot_base(slot), name))
       return false;
-   if (strcmp(abs, "/") == 0 || f_stat(fat_storage(abs, buf, sizeof buf), &fi) == FR_OK)
+   if (strcmp(abs, "/") == 0 || fsr_stat(fat_storage(abs, buf, sizeof buf), &fi) == FR_OK)
       return true;
    char *last = strrchr(abs, '/');
    char parent[FAT_OPEN_PATH_MAX], real[FAT_OPEN_PATH_MAX];
@@ -576,12 +636,12 @@ static FRESULT fat_slot_reopen(unsigned int slot)
    char buf[FAT_OPEN_PATH_MAX + 3];
    if (fat_file_open[slot] || fat_keep_mode[slot] == 0u)
       return fat_file_open[slot] ? FR_OK : FR_INVALID_OBJECT;
-   if (fat_keep_usb[slot] != filesystemStorageOnUsb())
+   if (fat_keep_vol[slot] != filesystemStorageRoot()[0])
       return FR_NO_FILE;                /* not the storage it was opened on */
    const char *path = fat_storage(fat_keep_path[slot], buf, sizeof buf);
-   FRESULT r = f_open(&fileObject[slot], path, fat_keep_mode[slot]);
+   FRESULT r = fsr_open(&fileObject[slot], path, fat_keep_mode[slot]);
    if (r == FR_DENIED && (fat_keep_mode[slot] & FA_WRITE))
-      r = f_open(&fileObject[slot], path, FA_READ);   /* locked since: read only */
+      r = fsr_open(&fileObject[slot], path, FA_READ);   /* locked since: read only */
    if (r == FR_OK) {
       fat_file_open[slot] = true;
       fat_open_record(slot, fat_keep_path[slot]);
@@ -654,7 +714,7 @@ static FRESULT fat_dir_block(unsigned int slot, uint32_t block, uint8_t *out)
    FILINFO fi;
 
    memset(out, 0, 512);
-   FRESULT r = f_opendir(&d, fat_storage(dir, buf, sizeof buf));
+   FRESULT r = fsr_opendir(&d, fat_storage(dir, buf, sizeof buf));
    if (r != FR_OK)
       return r;
    if (!root) {
@@ -666,7 +726,7 @@ static FRESULT fat_dir_block(unsigned int slot, uint32_t block, uint8_t *out)
                            k == 0 ? fat_name_id(dir, "")
                                   : (strcmp(parent, "/") == 0 ? 0u : fat_name_id(parent, "")));
    }
-   while (index < first + 16u && (r = f_readdir(&d, &fi)) == FR_OK && fi.fname[0] != '\0') {
+   while (index < first + 16u && (r = fsr_readdir(&d, &fi)) == FR_OK && fi.fname[0] != '\0') {
       if (fi.fname[0] == '.')
          continue;
       if (index >= first) {
@@ -678,7 +738,7 @@ static FRESULT fat_dir_block(unsigned int slot, uint32_t block, uint8_t *out)
       }
       index++;
    }
-   (void)f_closedir(&d);
+   (void)fsr_closedir(&d);
    return r;
 }
 
@@ -762,14 +822,14 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             char abs[FAT_OPEN_PATH_MAX];
             if (fat_file_open[data & 15]) {
                 fat_file_open[data & 15] = false;
-                (void)f_close(&fileObject[data & 15]);
+                (void)fsr_close(&fileObject[data & 15]);
             }
             if (!fat_slot_resolve(data & 15, (char *)&Pi1MHz->JIM_ram[command_pointer+3],
                                   abs, sizeof abs)) {
                 Pi1MHz_MemoryWrite(addr, FR_INVALID_NAME);
                 break;
             }
-            result = f_open(&fileObject[data & 15], fat_storage(abs, fat_path_a, sizeof fat_path_a),
+            result = fsr_open(&fileObject[data & 15], fat_storage(abs, fat_path_a, sizeof fat_path_a),
                             mode);
             if (result == FR_OK) {
                 fat_file_open[data & 15] = true;
@@ -777,13 +837,13 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
                 if (keep) {
                     strcpy(fat_keep_path[data & 15], abs);
                     fat_keep_mode[data & 15] = mode & (BYTE)(FA_READ | FA_WRITE);
-                    fat_keep_usb[data & 15] = filesystemStorageOnUsb();
+                    fat_keep_vol[data & 15] = filesystemStorageRoot()[0];
                 }
             }
             Pi1MHz_MemoryWrite(addr, result);
             break;
         }
-        result = f_open( &fileObject[data & 15],
+        result = fsr_open( &fileObject[data & 15],
                          fat_beeb_path(command_pointer+3, fat_path_a, sizeof fat_path_a),
                          mode );
         if (result == FR_OK) {
@@ -809,7 +869,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         fat_open_valid[data & 15] = false;
         fat_file_open[data & 15] = false;
         Pi1MHz_MemoryWrite(addr,
-             f_close( &fileObject[data & 15] ) );
+             fsr_close( &fileObject[data & 15] ) );
         break;
     case 4 :
     {
@@ -829,13 +889,13 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
             break;
         }
-        result = f_lseek( &fileObject[data & 15], jim_read32(command_pointer+8) );
+        result = fsr_lseek( &fileObject[data & 15], jim_read32(command_pointer+8) );
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
                 break;
             }
-        result = f_read( &fileObject[data & 15], &Pi1MHz->JIM_ram[buf_off+base_addr] , buf_len , &length);
+        result = fsr_read( &fileObject[data & 15], &Pi1MHz->JIM_ram[buf_off+base_addr] , buf_len , &length);
         if (result == FR_OK && length < buf_len)   /* past the end: zeros, not stale bytes */
             memset(&Pi1MHz->JIM_ram[buf_off + base_addr + length], 0, buf_len - length);
         jim_write32(command_pointer, (length << 8 ) | Pi1MHz->JIM_ram[command_pointer]);
@@ -876,13 +936,13 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_OK);
             break;
         }
-        result = f_lseek( &fileObject[data & 15], jim_read32(command_pointer+8) );
+        result = fsr_lseek( &fileObject[data & 15], jim_read32(command_pointer+8) );
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
                 break;
             }
-        result = f_write( &fileObject[data & 15], &Pi1MHz->JIM_ram[buf_off+base_addr] , buf_len , &length);
+        result = fsr_write( &fileObject[data & 15], &Pi1MHz->JIM_ram[buf_off+base_addr] , buf_len , &length);
         jim_write32(command_pointer, (length << 8 ) | Pi1MHz->JIM_ram[command_pointer]);
         if (result)
             {
@@ -921,7 +981,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         {
-            FRESULT dresult = f_opendir( (DIR * )&dirObject[data & 15],
+            FRESULT dresult = fsr_opendir( (DIR * )&dirObject[data & 15],
                                          fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) );
             if (dresult == FR_OK)
                 fat_dir_open[data & 15] = true;
@@ -938,7 +998,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         }
         fat_dir_open[data & 15] = false;
         Pi1MHz_MemoryWrite(addr,
-             f_closedir( (DIR * )&dirObject[data & 15] ) );
+             fsr_closedir( (DIR * )&dirObject[data & 15] ) );
         break;
 
 
@@ -951,7 +1011,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
             break;
         }
-        result = f_readdir( (DIR * )&dirObject[data & 15], &fileInfo );
+        result = fsr_readdir( (DIR * )&dirObject[data & 15], &fileInfo );
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
@@ -983,7 +1043,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         Pi1MHz_MemoryWrite(addr, config_beeb_write_protected() ? FR_OK :
-             f_mkdir( fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) ) );
+             fsr_mkdir( fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) ) );
         break;
 
     case 11 : // fchdir
@@ -992,6 +1052,11 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         if (!service_string_ok(command_pointer + 1, DISC_MAX_PATH))
         {
             Pi1MHz_MemoryWrite(addr, FR_INVALID_PARAMETER);
+            break;
+        }
+        const char *name = (const char *)&Pi1MHz->JIM_ram[command_pointer + 1];
+        if (fat_on_share() && !fat_names_volume(name)) {
+            Pi1MHz_MemoryWrite(addr, fat_share_chdir(name));
             break;
         }
         result = f_chdir( fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) );
@@ -1028,7 +1093,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
                 Pi1MHz_MemoryWrite(addr, FR_OK);
                 break;
             }
-            FRESULT r = f_rename(fat_storage(from, fat_path_a, sizeof fat_path_a),
+            FRESULT r = fsr_rename(fat_storage(from, fat_path_a, sizeof fat_path_a),
                                  fat_storage(to, fat_path_b, sizeof fat_path_b));
             if (r == FR_OK)
                 fat_rename_follow(from, to);
@@ -1036,7 +1101,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         Pi1MHz_MemoryWrite(addr, config_beeb_write_protected() ? FR_OK :
-             f_rename( fat_beeb_path(name1, fat_path_a, sizeof fat_path_a),
+             fsr_rename( fat_beeb_path(name1, fat_path_a, sizeof fat_path_a),
                        fat_beeb_path(name2, fat_path_b, sizeof fat_path_b) ) );
         break;
     }
@@ -1052,18 +1117,15 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
            can lag recent writes; it is advisory (a free-space display),
            and the alternative is a multi-second stall per query. */
         uint64_t total_bytes = 0, free_bytes = 0;
-        if (fat_on_usb()) {
+        if (fat_off_card()) {
             /* The drive has no background sweep: FatFs scans its FAT on the
                first ask (a few seconds on a big drive), then keeps the
-               count up to date itself. */
-            DWORD free_clusters;
-            FATFS *fs;
-            FRESULT result = f_getfree("1:", &free_clusters, &fs);
+               count up to date itself.  The share's server answers. */
+            FRESULT result = fsr_free_bytes(filesystemStorageRoot(), &free_bytes);
             if (result != FR_OK) {
                 Pi1MHz_MemoryWrite(addr, result);
                 break;
             }
-            free_bytes = (uint64_t)free_clusters * fs->csize * 512u;
         }
         else if (!webserver_sd_space_now(&total_bytes, &free_bytes))
             {
@@ -1110,7 +1172,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         Pi1MHz_MemoryWrite(addr, config_beeb_write_protected() ? FR_OK :
-             f_unlink( fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) ) );
+             fsr_unlink( fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) ) );
         break;
 
     case 17 : // readdir-ex: next entry as a fixed 128-byte record in the buffer
@@ -1128,7 +1190,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, FR_INVALID_OBJECT);
             break;
         }
-        result = f_readdir( (DIR * )&dirObject[data & 15], &fileInfo );
+        result = fsr_readdir( (DIR * )&dirObject[data & 15], &fileInfo );
         if (result)
             {
                 Pi1MHz_MemoryWrite(addr, result);
@@ -1189,19 +1251,19 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         } else
             path = fat_beeb_path(command_pointer + 3, fat_path_a, sizeof fat_path_a);
         Pi1MHz_MemoryWrite(addr, (uint8_t)(config_beeb_write_protected() ? FR_OK :
-                                           f_chmod(path, attr, mask)));
+                                           fsr_chmod(path, attr, mask)));
         break;
     }
 
     /* The card's type (SDHC: block addressed); the drive is block addressed
-       too.  +1,+2 of the block get this boot's id, so a client that keeps
+       too, and so is the share as far as the Beeb can tell.  +1,+2 of the block get this boot's id, so a client that keeps
        its own state over a BBC reset (MMFS2's drives and directory, held
        here by slot) can tell when the Pi has restarted and forgotten them.
        An older Pi leaves +1,+2 as the client wrote them. */
     case 20 :
         Pi1MHz->JIM_ram[command_pointer + 1] = (uint8_t)fat_boot_id();
         Pi1MHz->JIM_ram[command_pointer + 2] = (uint8_t)(fat_boot_id() >> 8);
-        Pi1MHz_MemoryWrite(addr, fat_on_usb() ? 1u : disk_type());
+        Pi1MHz_MemoryWrite(addr, fat_off_card() ? 1u : disk_type());
         break;
 
     case 21 : // directory block: +4 buffer (512 bytes), +8 block number
@@ -1235,7 +1297,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
         }
         FRESULT r = FR_OK;
         if (strcmp(abs, "/") != 0) {
-            r = f_stat(fat_storage(abs, fat_path_a, sizeof fat_path_a), &fi);
+            r = fsr_stat(fat_storage(abs, fat_path_a, sizeof fat_path_a), &fi);
             if (r == FR_OK && !(fi.fattrib & AM_DIR))
                 r = FR_NO_PATH;
             if (r == FR_NO_FILE)
@@ -1298,9 +1360,9 @@ static void fat_close_all(void)
 {
    for (unsigned int i = 0; i < 16u; i++) {
       if (fat_file_open[i])
-         (void)f_close(&fileObject[i]);
+         (void)fsr_close(&fileObject[i]);
       if (fat_dir_open[i])
-         (void)f_closedir(&dirObject[i]);
+         (void)fsr_closedir(&dirObject[i]);
    }
    fat_open_clear_all();
 }

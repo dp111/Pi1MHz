@@ -76,8 +76,9 @@ unsigned char disk_type(void) { return 1; }
 /* The storage moves between the card and the USB drive as the fuzz runs. */
 static const char *storage_root = "";
 const char *filesystemStorageRoot(void) { return storage_root; }
-const char *filesystemStorageFatRoot(void) { return storage_root; }
-bool filesystemStorageOnUsb(void) { return storage_root[0] != '\0'; }
+bool filesystemStorageOnUsb(void) { return storage_root[0] == '1'; }
+bool filesystemStorageOnSmb(void) { return storage_root[0] == '2'; }
+bool filesystemStorageOffCard(void) { return storage_root[0] != '\0'; }
 FRESULT f_chdrive(const char *p) { touch_read(p, strlen(p) + 1); return FR_OK; }
 
 bool filesystemMount(void) { return true; }

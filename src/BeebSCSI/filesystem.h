@@ -69,28 +69,33 @@ void filesystemRegisterRemount(void (*closing)(void));
 bool filesystemMounted(void);
 
 /* Where the Beeb's storage lives - see filesystem.c (the choice) and
-   filesystem_storage.c (the rule for a path): "" (the SD card) or
-   "1:" (the USB drive, storage=usb).  Decided at the first use after a BBC
-   reset; main loop only.  filesystemStoragePath puts it in front of a path
-   (one naming its own volume is left alone); false if it does not fit. */
+   filesystem_storage.c (the rule for a path): "" (the SD card), "1:" (the
+   USB drive, storage=usb) or "2:" (the network share, storage=smb).
+   Decided at the first use after a BBC reset; main loop only.
+   filesystemStoragePath puts it in front of a path (one naming its own
+   volume, or in the Pi's own /Pi1MHz folder, is left alone); false if it
+   does not fit. */
 const char *filesystemStorageRoot(void);
 bool filesystemStoragePath(const char *path, char *buf, size_t size);
-/* The storage is on the drive (decided; never waits).  For host-side
-   interlocks: their paths are on the card. */
+/* The storage is decided on the drive / on the share.  Never wait. */
 bool filesystemStorageOnUsb(void);
-/* storage=smb is decided on: the Beeb's discs are on the network share. */
 bool filesystemStorageOnSmb(void);
-/* The storage root for the FAT service, FujiNet and Music 5000 recordings:
-   filesystemStorageRoot(), except that storage=smb leaves them on the card. */
-const char *filesystemStorageFatRoot(void);
-/* The Beeb chooses the storage itself (*FX147,203,4/5): the card, or the USB
-   drive, overriding storage= until the Pi restarts.  Takes effect at the
-   next filesystemReset (the caller's eject + insert).  False, choice
-   unchanged, for the drive when none is mounted. */
-bool filesystemChooseStorage(bool usb);
+/* ... on either: the Beeb's files are not on the card, so the host-side
+   interlocks (whose paths are on the card) have none of them to guard. */
+bool filesystemStorageOffCard(void);
+/* The Beeb chooses the storage itself (*FX147,203,4/5/6): the card, the USB
+   drive or the share, overriding storage= until the Pi restarts.  Takes
+   effect at the next filesystemReset (the caller's eject + insert).  False,
+   choice unchanged, for the drive when none is mounted and for the share
+   when none is set up (smb_server, smb_share). */
+typedef enum { STORAGE_SD, STORAGE_USB, STORAGE_SMB } filesystem_storage_t;
+bool filesystemChooseStorage(filesystem_storage_t storage);
 /* A path as the Beeb names it is on the card: the storage is, or it is in
    the Pi's own /Pi1MHz folder.  Never waits. */
 bool filesystemPathOnCard(const char *path);
+/* The path ("Pi1MHz/...", leading '/'s or none) is in the Pi's own folder,
+   which stays on the card whatever the storage. */
+bool filesystemPiFolder(const char *path);
 
 bool filesystemMount(void);
 bool filesystemDismount(void);

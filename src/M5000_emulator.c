@@ -86,6 +86,7 @@ Use https://wavedrom.com/editor.html
 #include "rpi/info.h"
 #include "config.h"
 #include "BeebSCSI/filesystem.h"
+#include "fsroute.h"			/* the WAV on the card, the USB drive or the share */
 #include "M5000_emulator.h"
 #include "rpi/byteorder.h"
 #include "BeebSCSI/fatfs/ff.h"
@@ -450,7 +451,7 @@ static uint32_t rec_flush_end;
 static uint32_t rec_flush_name;     /* next Musics%03d to try - kept across recordings */
 static uint32_t rec_flush_probes;   /* names tried for this flush */
 static char     rec_flush_path[24]; /* "Musics%03d.wav" being written, relative, with the
-                                       storage's volume ("1:" on the USB drive) */
+                                       storage's volume ("1:" the drive, "2:" the share) */
 static uint32_t rec_flush_inits;    /* Pi1MHz_break.inits when this emulator last initialised */
 #define M5000_REC_FLUSH_SLICE  (64u * 1024u)   /* ~4 ms of card time per poll pass */
 #define M5000_REC_FLUSH_PROBES 8u              /* Musics%03d.wav names tried per pass */
@@ -498,9 +499,9 @@ static void music5000_rec_flush(void)
          if (rec_flush_name >= 1000u)
             rec_flush_name = 0;
          sprintf(name, "Musics%.3lu.wav", (unsigned long)rec_flush_name++);
-         (void)filesystemStoragePath(name, fn, sizeof fn);   /* the card or the USB drive */
+         (void)filesystemStoragePath(name, fn, sizeof fn);   /* the card, the drive or the share */
          rec_flush_probes++;
-         FRESULT result = f_open(&music5000_rec_fp, fn, FA_CREATE_NEW | FA_WRITE);
+         FRESULT result = fsr_open(&music5000_rec_fp, fn, FA_CREATE_NEW | FA_WRITE);
          LOG_DEBUG("Music5000 Filename : %s\n", fn);
          if (result == FR_OK) {
             strcpy(rec_flush_path, fn);        /* what beeb_path_busy() must refuse */
@@ -522,10 +523,10 @@ static void music5000_rec_flush(void)
       if (n > M5000_REC_FLUSH_SLICE)
          n = M5000_REC_FLUSH_SLICE;
       UINT written = 0;
-      FRESULT result = f_write(&music5000_rec_fp, &Pi1MHz->JIM_ram[rec_flush_pos], n, &written);
+      FRESULT result = fsr_write(&music5000_rec_fp, &Pi1MHz->JIM_ram[rec_flush_pos], n, &written);
       rec_flush_pos += written;
       if (result != FR_OK || written != n || rec_flush_pos >= rec_flush_end) {
-         f_close(&music5000_rec_fp);
+         fsr_close(&music5000_rec_fp);
          rec_flush = REC_FLUSH_IDLE;
       }
       break;
@@ -548,18 +549,18 @@ static void music5000_rec_flush(void)
       UINT got = 0;
       FRESULT result = FR_NOT_READY;
       if (filesystemMounted())
-         result = f_open(&music5000_rec_fp, rec_flush_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
+         result = fsr_open(&music5000_rec_fp, rec_flush_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
       if (result != FR_OK) {
          LOG_DEBUG("Music5000 recording cut short: %s could not be reopened\n", rec_flush_path);
          rec_flush = REC_FLUSH_IDLE;
          break;
       }
       if (f_size(&music5000_rec_fp) != done ||
-          f_read(&music5000_rec_fp, hdr, n, &got) != FR_OK || got != n ||
+          fsr_read(&music5000_rec_fp, hdr, n, &got) != FR_OK || got != n ||
           memcmp(hdr, &Pi1MHz->JIM_ram[M5000_REC_BASE], n) != 0 ||
-          f_lseek(&music5000_rec_fp, done) != FR_OK) {
+          fsr_lseek(&music5000_rec_fp, done) != FR_OK) {
          LOG_DEBUG("Music5000 recording cut short: %s is not the file being written\n", rec_flush_path);
-         f_close(&music5000_rec_fp);
+         fsr_close(&music5000_rec_fp);
          rec_flush = REC_FLUSH_IDLE;
          break;
       }
@@ -585,7 +586,7 @@ static void rec_flush_orphaned(void)
    }
    record = false;
    if (rec_flush == REC_FLUSH_WRITE)
-      f_close(&music5000_rec_fp);
+      fsr_close(&music5000_rec_fp);
    rec_flush = REC_FLUSH_IDLE;
 }
 
@@ -714,7 +715,7 @@ static bool M5000_eject(void)
 static void M5000_remount(void)
 {
    if (rec_flush == REC_FLUSH_WRITE) {
-      f_close(&music5000_rec_fp);
+      fsr_close(&music5000_rec_fp);
       rec_flush = REC_FLUSH_REOPEN;
    }
 }
