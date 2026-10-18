@@ -5,9 +5,11 @@ Each emulated hard-disc drive has a small text file that gives it its
 sees, the block size, and the SCSI "mode pages" a period drive would
 report. It replaces the old `.dsc` geometry descriptor files.
 
-**Most people never touch this.** The shipped default emulates a 21 MB
-Rodime RO652 (the drive in an Acorn FileStore E20), which is what almost
-all BeebSCSI/ADFS software expects. You only need this page if you want to
+**Most people never touch this.** The shipped default is a 10 MB drive
+with the geometry of a Rodime RO652 (306 cylinders, 4 heads) at 33 sectors
+per track, the shape Adaptec ACB-4000 and Acorn SuperForm software expects.
+A real RO652 (the drive in an Acorn FileStore E20) has 61 sectors per track
+and is 21 MB; formatting tools set that through MODE SELECT page 3. You only need this page if you want to
 make a drive *identify* as something specific, change its title, or adjust
 its geometry. How much of it a host sees depends on the controller set by
 `DriveController=` in `Pi1MHz.cfg`: behind the default Adaptec ACB-4000 only
