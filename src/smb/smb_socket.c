@@ -212,7 +212,10 @@ ssize_t smbp_readv(int fd, const struct iovec *iov, int iovcnt)
       size_t want = iov[i].iov_len;
       uint8_t *dst = (uint8_t *)iov[i].iov_base;
       while (want > 0u && s->rx != NULL) {
-         uint16_t avail = (uint16_t)(s->rx->tot_len - s->rx_off);
+         /* the head pbuf only: the chain's tot_len is a u16 that
+            pbuf_cat lets wrap - a full window (64240) behind a head
+            still partly read is more than 65535 */
+         uint16_t avail = (uint16_t)(s->rx->len - s->rx_off);
          uint16_t n = (want < avail) ? (uint16_t)want : avail;
          pbuf_copy_partial(s->rx, dst, n, s->rx_off);
          dst += n;
@@ -230,8 +233,11 @@ ssize_t smbp_readv(int fd, const struct iovec *iov, int iovcnt)
          }
       }
    }
-   if (s->pcb != NULL && done > 0u)
-      tcp_recved(s->pcb, (u16_t)done);
+   for (size_t left = done; s->pcb != NULL && left > 0u; ) {
+      u16_t step = (left > 0xFFFFu) ? (u16_t)0xFFFFu : (u16_t)left;
+      tcp_recved(s->pcb, step);
+      left -= step;
+   }
    return (ssize_t)done;
 }
 
