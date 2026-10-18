@@ -39,6 +39,12 @@
 // Calculate the length of the sector buffer in 256 byte sectors
 #define SECTOR_BUFFER_LENGTH	(SECTOR_BUFFER_SIZE / 256)
 
+// The block sizes the data path takes: an Adaptec board has 256, 512 or
+// 1024, a drive with its own controller 128 to 2048
+// (filesystemGetLunDataBlockSize)
+#define MIN_BLOCK_SIZE 128
+#define MAX_BLOCK_SIZE 2048
+
 // The default '33' is from the ACB-4000 which uses MFM encoding. The later
 // ACB-4070 which Acorn used in the FileStore product uses RLL encoding and
 // allows for a higher density of sectors per track.
@@ -117,6 +123,7 @@ enum parserkeyvalueenum {
     LBADESCRIPTOR,
     MODEPAGE0,
     MODEPAGE1,
+    WRITPAGE1,
     MODEPAGE3,
     WRITPAGE3,
     MODEPAGE4,
@@ -126,6 +133,25 @@ enum parserkeyvalueenum {
     MODEPAGE36,
     MODEPAGE37,
     MODEPAGE38,
+    MASKPAGE1,
+    MASKPAGE3,
+    MASKPAGE4,
+    MASKPAGE32,
+    MASKPAGE33,
+    MASKPAGE35,
+    MASKPAGE36,
+    MASKPAGE37,
+    MASKPAGE38,
+    FDEFPAGE1,
+    FDEFPAGE3,
+    FDEFPAGE4,
+    FDEFPAGE32,
+    FDEFPAGE33,
+    FDEFPAGE35,
+    FDEFPAGE36,
+    FDEFPAGE37,
+    FDEFPAGE38,
+    PAGECONTROL,
     LDUSERCODE,
     LDVIDEOXOFFSET,
     LDVIDEOYOFFSET
@@ -176,6 +202,7 @@ void filesystemCopyPage4toPage0(uint8_t lunNumber);
 void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf);
 #endif
 uint32_t filesystemGetLunBlockSize(uint8_t lunNumber);
+uint32_t filesystemGetLunDataBlockSize(uint8_t lunNumber);
 uint32_t filesystemGetheadspercylinder(uint8_t lunNumber);
 uint32_t filesystemGetLunSPTSize( uint8_t lunNumber);
 uint32_t filesystemGetLunTotalSectors(uint8_t lunNumber);
@@ -207,6 +234,9 @@ char * filesystemGetInquiryData(uint8_t lunNumber, size_t * length);
 char * filesystemGetModeParamHeaderData(uint8_t lunNumber, size_t * length);
 char * filesystemGetLBADescriptorData(uint8_t lunNumber, size_t * length);
 char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * length);
+char * filesystemGetMaskPageData(uint8_t lunNumber, uint8_t page, size_t * length);
+char * filesystemGetFDefPageData(uint8_t lunNumber, uint8_t page, size_t * length);
+bool filesystemPageControlCCS(uint8_t lunNumber);
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer);
 int filesystemMergeModePageData(uint8_t lunNumber, uint8_t page, uint8_t declared, uint8_t received, const uint8_t * Buffer);
 

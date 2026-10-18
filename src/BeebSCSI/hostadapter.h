@@ -51,6 +51,10 @@ void hostadapterDatabusOutput(void);
 uint8_t hostadapterReadByte(void);
 void hostadapterWriteByte(uint8_t databusValue);
 
+// One block of `length` bytes (the LUN's block size); the plain forms move
+// the 256-byte block of the VFS LUNs, the F-codes and the FAT transfer
+uint32_t hostadapterPerformReadDMALen(const uint8_t *dataBuffer, uint32_t length);
+uint32_t hostadapterPerformWriteDMALen(uint8_t *dataBuffer, uint32_t length);
 uint32_t hostadapterPerformReadDMA(const uint8_t *dataBuffer);
 uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer);
 

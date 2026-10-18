@@ -1071,6 +1071,9 @@ static uint8_t scsiCommandRead6(void)
       debugStringInt32_P(PSTR(", Blocks = "), numberOfBlocks, true);
    }
 
+   // The LUN's block size (256 unless FORMAT laid down another)
+   uint32_t blockSize = filesystemGetLunDataBlockSize(commandDataBlock.targetLUN);
+
    // Set up the control signals ready for the data in phase
    scsiInformationTransferPhase(ITPHASE_DATAIN);
 
@@ -1110,7 +1113,7 @@ static uint8_t scsiCommandRead6(void)
 
       // Send the data to the host
       cli();
-      DEBUG_bytesTransferred(hostadapterPerformReadDMA(sectorPtr));
+      DEBUG_bytesTransferred(hostadapterPerformReadDMALen(sectorPtr, blockSize));
       sei();
       hd_audio_service();              // between sectors only
 
@@ -1134,7 +1137,7 @@ static uint8_t scsiCommandRead6(void)
          whole cooperative loop stopped: no 1MHz bus service, no WiFi/AUN,
          no USB.  Bail so the per-sector timeout composes into a
          per-command bound, exactly as scsiCommandReassignBlocks does. */
-      if (bytesTransferred < 256) {
+      if (bytesTransferred < blockSize) {
          filesystemCloseLunForRead(commandDataBlock.targetLUN);
          return SCSI_BUSFREE;
       }
@@ -1147,7 +1150,7 @@ static uint8_t scsiCommandRead6(void)
          }
       } else {
          debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
-         debugSectorBufferHex(sectorPtr, 256);
+         debugSectorBufferHex(sectorPtr, (uint16_t)blockSize);
       }
    }
    if (debugFlag_scsiCommands || debugFlag_scsiBlocks) debugString_P(PSTR("\r\n"));
@@ -1243,6 +1246,9 @@ static uint8_t scsiCommandWrite6(void)
       debugStringInt32_P(PSTR(", Blocks = "), numberOfBlocks, true);
    }
 
+   // The LUN's block size (256 unless FORMAT laid down another)
+   uint32_t blockSize = filesystemGetLunDataBlockSize(commandDataBlock.targetLUN);
+
    // Set up the control signals ready for the data out phase
    scsiInformationTransferPhase(ITPHASE_DATAOUT);
 
@@ -1264,10 +1270,10 @@ static uint8_t scsiCommandWrite6(void)
    // Transfer the requested blocks from the host to the LUN image
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Transferring requested blocks from the host...\r\n"));
    for (currentBlock = 0; currentBlock < numberOfBlocks; currentBlock++) {
-      uint8_t Buffer[256];
+      static uint8_t Buffer[MAX_BLOCK_SIZE];
       // Get the data from the host
       cli();
-      DEBUG_bytesTransferred(hostadapterPerformWriteDMA(Buffer));
+      DEBUG_bytesTransferred(hostadapterPerformWriteDMALen(Buffer, blockSize));
       sei();
       hd_audio_service();              // between sectors only
 
@@ -1290,7 +1296,7 @@ static uint8_t scsiCommandWrite6(void)
          whole cooperative loop stopped: no 1MHz bus service, no WiFi/AUN,
          no USB.  Bail so the per-sector timeout composes into a
          per-command bound, exactly as scsiCommandReassignBlocks does. */
-      if (bytesTransferred < 256) {
+      if (bytesTransferred < blockSize) {
          filesystemCloseLunForWrite(commandDataBlock.targetLUN);
          return SCSI_BUSFREE;
       }
@@ -1319,7 +1325,7 @@ static uint8_t scsiCommandWrite6(void)
          }
       } else {
          debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
-         debugSectorBufferHex(Buffer, 256);
+         debugSectorBufferHex(Buffer, (uint16_t)blockSize);
       }
    }
    if (debugFlag_scsiCommands || debugFlag_scsiBlocks) debugString_P(PSTR("\r\n"));
@@ -1679,6 +1685,37 @@ static uint8_t scsiCommandModeSelect6(void)
    return SCSI_STATUS;
 }
 
+// One mode page's bytes of one kind (0 current, 1 changeable, 2 factory)
+// into out; 0 if the drive does not hold the page or it does not fit.
+// No MaskPage line: a full-length all-zero mask.  No FDefPage line: the
+// current values.  Page 0 (the ACB-4000 parameter list) has current values only.
+static size_t scsiModePageOfKind(uint8_t lun, uint8_t page, int kind, char * out, size_t room)
+{
+   size_t len = 0, alt = 0;
+   const char * cur = filesystemGetModePageData(lun, page, &len);
+   if ((cur == NULL) || (len == 0) || (len > room))
+      return 0;
+   if (page == 0 && kind != 0)
+      return 0;
+   const char * src = cur;
+   if (kind == 2) {
+      const char * f = filesystemGetFDefPageData(lun, page, &alt);
+      if ((f != NULL) && (alt > 0) && (alt <= room)) { src = f; len = alt; }
+   } else if (kind == 1) {
+      // The mask over the page's own length; the page code and length bytes
+      // are the page's own (a MaskPage mask may hold 00 00 there).
+      const char * w = filesystemGetMaskPageData(lun, page, &alt);
+      memset(out, 0, len);
+      if ((w != NULL) && (alt > 0))
+         memcpy(out, w, (alt < len) ? alt : len);
+      out[0] = cur[0];
+      if (len > 1) out[1] = cur[1];
+      return len;
+   }
+   memcpy(out, src, len);
+   return len;
+}
+
 // SCSI Command (0x1A) ModeSense6
 //
 // Adaptec ACB-4000 Manual notes:
@@ -1723,9 +1760,8 @@ static uint8_t scsiCommandModeSense6(void)
 
    headerptr = filesystemGetModeParamHeaderData(commandDataBlock.targetLUN, &headerlen_sz);
    LBAptr = filesystemGetLBADescriptorData(commandDataBlock.targetLUN, &LBAlen_sz);
-   modeptr = filesystemGetModePageData(commandDataBlock.targetLUN, commandDataBlock.data[2], &modelen_sz);
 
-   if ( (headerptr == NULL) || (LBAptr == NULL) || (modeptr == NULL)) {
+   if ( (headerptr == NULL) || (LBAptr == NULL)) {
       // Unable to read drive descriptor! Exit with error status
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
 
@@ -1735,6 +1771,54 @@ static uint8_t scsiCommandModeSense6(void)
       debugString_P(PSTR("SCSI Commands: ERROR: Could not read geometry from LUN descriptor\r\n"));
 
       // Transition to the STATUS state
+      return SCSI_STATUS;
+   }
+
+   // Which values, and which pages.  An early CCS drive (PageControl=CCS)
+   // has no page control field: it refuses page control 1-3,
+   // and pages 3D, 3E and 3F give every page's factory, changeable and
+   // current values.  Otherwise page control 1 is the changeable mask, 2 the
+   // factory values, 3 the saved (= current) values, and page 3F every page.
+   uint8_t lun = commandDataBlock.targetLUN;
+   uint8_t pageControl = (uint8_t)(commandDataBlock.data[2] >> 6);
+   uint8_t pageCode = (uint8_t)(commandDataBlock.data[2] & 0x3F);
+   bool ccs = filesystemPageControlCCS(lun);
+   int kind = 0;                          // 0 current, 1 changeable, 2 factory
+   bool allPagesWanted = false;
+   if (ccs) {
+      if (pageControl != 0) {
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+         requestSenseData[lun] = BAD_ARG; // 0x24 Bad argument
+         return SCSI_STATUS;
+      }
+      if (pageCode >= 0x3D) {
+         allPagesWanted = true;
+         kind = (pageCode == 0x3D) ? 2 : (pageCode == 0x3E) ? 1 : 0;
+      }
+   } else {
+      kind = (pageControl == 1) ? 1 : (pageControl == 2) ? 2 : 0;
+      allPagesWanted = (pageCode == 0x3F);
+   }
+
+   static char modeReply[256];
+   size_t total = 0;
+   if (allPagesWanted) {
+      uint8_t last = ccs ? 0x3C : 0x3E;
+      for (uint8_t page = 0x01; page <= last; page++)
+         total += scsiModePageOfKind(lun, page, kind, &modeReply[total], sizeof modeReply - total);
+      modeptr = modeReply;
+   } else {
+      total = scsiModePageOfKind(lun, pageCode, kind, modeReply, sizeof modeReply);
+      modeptr = total ? modeReply : NULL;
+   }
+   modelen_sz = total;
+
+   if (modeptr == NULL) {
+      // A page this drive does not have: the request is invalid, the drive
+      // is not "not ready" (a host would wait for it to become ready).
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
+      requestSenseData[lun] = BAD_ARG; // 0x24 Bad argument
+      if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: MODESENSE6: page not held\r\n"));
       return SCSI_STATUS;
    }
 
@@ -1752,6 +1836,10 @@ static uint8_t scsiCommandModeSense6(void)
    // works in int (values are a handful of bytes, so the narrowing is safe).
    int headerlen = (int)headerlen_sz;
    int LBAlen = (int)LBAlen_sz;
+   // The block descriptor goes out only when the header says it does (byte 3,
+   // the descriptor length): a drive without one sends 0.
+   if ((headerlen > 3) && ((uint8_t)headerptr[3] < LBAlen))
+      LBAlen = (uint8_t)headerptr[3];
    int modelen = (int)modelen_sz;
    int length = headerlen+LBAlen+modelen;
 
@@ -2088,8 +2176,10 @@ static uint8_t scsiCommandInquiry(void)
 		scsiInformationTransferPhase(ITPHASE_DATAIN);
 
 		// send back the inquiry data
-		for (uint8_t i = 0; i < commandDataBlock.data[4]; i++)
-			hostadapterWriteByte((i < inqLen) ? buf[i] : 0 );
+		// The data the descriptor holds, cut to the allocation length: a drive
+		// stops when its data ends (SCSI-1 7.1.3 "whichever is less"), no padding.
+		for (size_t i = 0; (i < commandDataBlock.data[4]) && (i < inqLen); i++)
+			hostadapterWriteByte((uint8_t)buf[i]);
 
 		// Indicate successful command in status and message
 		commandDataBlock.status = SCSI_STATUS_OK; // 0x00 = Good

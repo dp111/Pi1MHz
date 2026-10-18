@@ -55,7 +55,7 @@ VFS / Domesday volumes (`/BeebVFSn`) are read-only and do not get writable
 
 | Key | Bytes | Meaning |
 |---|---|---|
-| `Inquiry` | up to 101 | The full SCSI **INQUIRY** response: device type, vendor/product identification (`BEEBSCSI` / `GENERIC HD`), revision, version descriptors and the copyright notice. |
+| `Inquiry` | up to 101 | The full SCSI **INQUIRY** response: device type, vendor/product identification (`BEEBSCSI` / `GENERIC HD`), revision, version descriptors and the copyright notice. Only the bytes given are sent (cut to the host's allocation length, never padded), as a drive stops when its data ends. |
 
 The shipped `defscsi.cfg` carries a byte-by-byte map of this field in its
 comments - the easiest way to change the vendor/product strings is to edit
@@ -83,14 +83,45 @@ meanings:
 | `ModePage0` | 10 | Vendor-unique / unit attention parameters |
 | `ModePage1` | 5 | Read/Write Error Recovery |
 | `ModePage3` | 23 | Format Device |
-| `WritPage3` | 23 | The Format-Device bytes returned to a MODE SELECT (write) - the drive can report different values when written vs read. |
 | `ModePage4` | 6 | Rigid Disc Drive Geometry (cylinders / heads - mostly cosmetic to modern software) |
+| `MaskPage1`, `3`, `4`, `32` ... `38` | as the page | Which bits of that page a MODE SELECT may change (see below); `WritPage1` and `WritPage3` are the old names, still read when there is no `MaskPage` line |
+| `FDefPage1`, `3`, `4`, `32` ... `38` | as the page | The page's factory default values |
 | `ModePage32` | up to 32 | Vendor specific (serial number) |
 | `ModePage33` | up to 32 | Vendor specific |
 | `ModePage35` | up to 32 | Vendor specific |
 | `ModePage36` | up to 32 | Vendor specific |
 | `ModePage37` | up to 32 | Vendor specific - includes `(C)A` |
 | `ModePage38` | up to 32 | Vendor specific - includes `corn`, i.e. the Acorn copyright the FileStore ROM checks for |
+
+**Write masks** (`MaskPageNN`). Without one, a MODE SELECT replaces the page it names. With one, each bit set
+in the mask may be changed by the host and each bit clear keeps its stored value, byte for byte, counting the page code
+and length bytes. `MaskPage1=0000000000` makes page 1 read-only, which is what the Acorn FileStore formatter needs: it
+sends page 1 back with its last byte zero, which would otherwise change the error-correction span the formatter
+checks for. The MODE SELECT still answers GOOD.
+
+**Current, changeable and factory values.** A host can ask MODE SENSE for three kinds of values. The current values are
+the `ModePageNN` lines (a MODE SELECT updates them). The changeable values are the `MaskPageNN` mask; a page without one
+reports a full-length all-zero mask (nothing changeable), with the page code and length the page's own. The factory
+values are the `FDefPageNN` lines; a page without one reports its current values. Saved values are the current
+values, since the `.cfg` is where they are kept.
+
+**`PageControl`** says how a host asks for them:
+
+| Value | MODE SENSE | Drives |
+|---|---|---|
+| `SCSI` (or no line) | page control 1 = changeable, 2 = factory, 3 = saved; page 3F = every page | CCS rev 4 and later, SCSI-2 |
+| `CCS` | page control 1-3 refused; page 3D = every page's factory values, 3E = every page's mask, 3F = every page's current values | early CCS drives with no page control field, e.g. the Rodime RO652 (firmware 5.46, measured) |
+
+A page the drive does not hold is refused at once (CHECK CONDITION, sense 24h, invalid argument). Page 0 is never part
+of an all-pages reply.
+
+**Block descriptor.** It is sent only when byte 3 of `ModeParamHeader` (the descriptor length) asks for it: a drive that
+sends none, such as the RO652, has `ModeParamHeader=00000000`. `LBADescriptor` still sets the block size either way.
+
+Each page's three lines sit together, in the order `FDefPageNN`, `MaskPageNN`, `ModePageNN`, above the
+comment that describes the page's bytes. All three hold the whole page as the drive sends it, page code and
+length bytes included, so a line can be compared directly with what MODE SENSE returns; in a mask those two
+bytes are ignored (the page's own are used).
 
 You can add or remove `ModePageNN` lines; they must keep the
 `ModePageNN` naming so Pi1MHz (and BeebEm) pick them up.

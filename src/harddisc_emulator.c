@@ -637,9 +637,10 @@ void hostadapterWriteByte(uint8_t databusValue)
 
 // Host DMA transfer functions ----------------------------------------------------------
 
-// Host reads data from SCSI device using DMA transfer (reads a 256 byte block)
+// Host reads data from SCSI device using DMA transfer (reads a block of
+// length bytes: the LUN's block size, 128 to 2048)
 // Returns number of bytes transferred (for debug in case of DMA failure)
-uint32_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
+uint32_t hostadapterPerformReadDMALen(const uint8_t *dataBuffer, uint32_t length)
 {
    uint32_t currentByte = 0;
 
@@ -658,14 +659,21 @@ uint32_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
 
       // Clear the REQuest signal
       hostadapterWriteRequestFlag(CLEAR);
-   } while (currentByte < 256 );
+   } while (currentByte < length );
 
    return currentByte;
 }
 
-// Host writes data to SCSI device using DMA transfer (writes a 256 byte block)
+// The 256-byte block of the VFS LUNs, the F-codes and the FAT transfer
+uint32_t hostadapterPerformReadDMA(const uint8_t *dataBuffer)
+{
+   return hostadapterPerformReadDMALen(dataBuffer, 256);
+}
+
+// Host writes data to SCSI device using DMA transfer (writes a block of
+// length bytes)
 // Returns number of bytes transferred (for debug in case of DMA failure)
-uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
+uint32_t hostadapterPerformWriteDMALen(uint8_t *dataBuffer, uint32_t length)
 {
    uint32_t currentByte = 0;
 
@@ -683,9 +691,14 @@ uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
       dataBuffer[currentByte++] = HD_DATA;
       // Clear the REQuest signal
       hostadapterWriteRequestFlag(CLEAR);
-   } while (currentByte < 256 );
+   } while (currentByte < length );
 
    return currentByte;
+}
+
+uint32_t hostadapterPerformWriteDMA(uint8_t *dataBuffer)
+{
+   return hostadapterPerformWriteDMALen(dataBuffer, 256);
 }
 
 // Host adapter signal control and detection functions ------------------------------------

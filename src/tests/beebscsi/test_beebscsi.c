@@ -85,9 +85,9 @@ void hd_card_service(void) {}
    FREE by hostadapterWriteResetFlag(false). */
 static bool     bus_sel;
 static uint8_t  bus_host = 1;          /* 1 = ADFS drive 0, 16 = VFS */
-static uint8_t  bus_in[1024];
+static uint8_t  bus_in[32768];
 static unsigned bus_in_len, bus_in_pos;
-static uint8_t  bus_out[4096];
+static uint8_t  bus_out[32768];
 static unsigned bus_out_len;
 static int      bus_status = -1;       /* -1: no status phase (BUS FREE) */
 static bool     ph_msg, ph_cd, ph_io;
@@ -114,23 +114,25 @@ void hostadapterWriteByte(uint8_t v)
    if (ph_cd && ph_io && !ph_msg) bus_status = v;
    else if (!ph_cd && ph_io && bus_out_len < sizeof bus_out) bus_out[bus_out_len++] = v;
 }
-uint32_t hostadapterPerformReadDMA(const uint8_t *b)
+uint32_t hostadapterPerformReadDMALen(const uint8_t *b, uint32_t len)
 {
-   for (unsigned i = 0; i < 256u && bus_out_len < sizeof bus_out; i++)
+   for (unsigned i = 0; i < len && bus_out_len < sizeof bus_out; i++)
       bus_out[bus_out_len++] = b[i];
    read_dmas++;
    if (fail_disk_after_dma >= 0 && read_dmas >= (unsigned)fail_disk_after_dma)
       disk_fail = true;
-   return 256;
+   return len;
 }
-uint32_t hostadapterPerformWriteDMA(uint8_t *b)
+uint32_t hostadapterPerformWriteDMALen(uint8_t *b, uint32_t len)
 {
-   unsigned n = dma_short ? dma_short : 256u;
+   unsigned n = dma_short ? dma_short : len;
    dma_short = 0;
    for (unsigned i = 0; i < n; i++)
       b[i] = bus_in_next();
    return n;
 }
+uint32_t hostadapterPerformReadDMA(const uint8_t *b) { return hostadapterPerformReadDMALen(b, 256); }
+uint32_t hostadapterPerformWriteDMA(uint8_t *b) { return hostadapterPerformWriteDMALen(b, 256); }
 void hostadapterWriteResetFlag(bool f) { bus_reset = f; }
 bool hostadapterReadResetFlag(void) { return bus_reset; }
 void hostadapterWriteDataPhaseFlags(bool m, bool c, bool i) { ph_msg = m; ph_cd = c; ph_io = i; }
@@ -731,6 +733,41 @@ static void test_filestore_mode_select(void)
    stop_all();
 }
 
+/* The Acorn FileStore formatter writes page 1 back with its last byte zero (a
+   650-series drive gets all 9 bytes).  A WritPage1 mask of zeros keeps the
+   page as it is; without one the page changes. */
+static void test_write_mask_page1(void)
+{
+   static char why[200];
+   static const uint8_t p1[]     = { 0x01, 0x03, 0x20, 0x04, 0x05 };
+   static const uint8_t p1zero[] = { 0x01, 0x03, 0x20, 0x04, 0x00 };
+   const uint8_t ms9[6] = { 0x15, 0x00, 0, 0, 9, 0 };
+   const uint8_t d1[9] = { 0, 0, 0, 0,  1, 3, 0x20, 4, 0 };
+   static const char plain[] = "ModePage1=0103200405\n";
+   static const char masked[] = "ModePage1=0103200405\nWritPage1=0000000000\n";
+
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi0.dat", "image", 5);
+   put_file("/BeebSCSI0/scsi0.cfg", plain, sizeof plain - 1);
+   bool started = filesystemSetLunStatus(0, true);
+   int st = run_cmd(1, ms9, 6, d1, sizeof d1);
+   snprintf(why, sizeof why, "start %d, status %d (want 0), page 1 %s", started, st,
+            page_is(0, 1, p1zero, sizeof p1zero) ? "changed as the tool writes it" : "NOT as expected");
+   check("FS WritPage1: without a mask the formatter's page 1 write changes the page",
+         started && st == 0 && page_is(0, 1, p1zero, sizeof p1zero), why);
+
+   stop_all();
+   put_file("/BeebSCSI0/scsi0.cfg", masked, sizeof masked - 1);
+   started = filesystemSetLunStatus(0, true);
+   st = run_cmd(1, ms9, 6, d1, sizeof d1);
+   snprintf(why, sizeof why, "start %d, status %d (want 0), page 1 %s", started, st,
+            page_is(0, 1, p1, sizeof p1) ? "kept" : "CHANGED");
+   check("FS WritPage1: with WritPage1=0000000000 the page is kept and the command is GOOD",
+         started && st == 0 && page_is(0, 1, p1, sizeof p1), why);
+   stop_all();
+}
+
 /* P8 (scsi.c side): a host reset or reselection part-way through a
    data-out phase abandons the command before anything is saved. */
 static void test_reset_abandons(void)
@@ -914,6 +951,235 @@ static void test_stopped_geometry(void)
             (unsigned long)filesystemGetLunTotalBytes(2), (unsigned long)sizeof img);
    check("S11 a stopped LUN's geometry comes from its own image",
          s && filesystemGetLunTotalBytes(2) == sizeof img, why);
+   filesystemSetLunDirectory(1, 0);
+}
+
+/* MODE SENSE: a page the descriptor does not hold is refused at once with
+   CHECK CONDITION and BAD ARGUMENT (a real drive's ILLEGAL REQUEST), not
+   DRIVE NOT READY - a FileStore waited and retried on "not ready" until the
+   command seemed hung; and page 0x3F returns every page the descriptor
+   holds, in page order (measured against a real RO652). */
+static void test_mode_sense(void)
+{
+   static char why[200];
+   static const char cfg[] =
+      "ModeParamHeader=00000008\n"
+      "LBADescriptor=0000000000000100\n"
+      "ModePage1=0103200405\n"
+      "ModePage4=040400013204\n"
+      "ModePage37=250428432941\n";
+   static const uint8_t p1[]  = { 0x01, 0x03, 0x20, 0x04, 0x05 };
+   static const uint8_t all[] = { 0x01, 0x03, 0x20, 0x04, 0x05,
+                                  0x04, 0x04, 0x00, 0x01, 0x32, 0x04,
+                                  0x25, 0x04, 0x28, 0x43, 0x29, 0x41 };
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi3.cfg", cfg, sizeof cfg - 1);
+
+   const uint8_t ms1[6] = { 0x1A, 3 << 5, 0x01, 0, 255, 0 };
+   int st = run_cmd(1, ms1, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes, length byte %d, page at 12: %02X %02X",
+            st, bus_out_len, bus_out_len ? bus_out[0] : -1, bus_out[12], bus_out[13]);
+   check("MS1 MODE SENSE of a page the descriptor holds",
+         st == 0 && bus_out_len >= 17 && bus_out[0] == 4 + 8 + 5 - 1 && bus_out[3] == 8 &&
+         memcmp(&bus_out[12], p1, sizeof p1) == 0, why);
+
+   const uint8_t ms2[6] = { 0x1A, 3 << 5, 0x02, 0, 255, 0 };
+   st = run_cmd(1, ms2, 6, NULL, 0);
+   int sense = sense_of(3);
+   snprintf(why, sizeof why, "status %d, sense 0x%02X (want 2, 0x24)", st, sense);
+   check("MS2 a page it does not hold: CHECK CONDITION, BAD ARGUMENT (not NOT READY)",
+         st == 2 && sense == 0x24, why);
+
+   const uint8_t ms3f[6] = { 0x1A, 3 << 5, 0x3F, 0, 255, 0 };
+   st = run_cmd(1, ms3f, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, length byte %d (want %d)", st,
+            bus_out_len ? bus_out[0] : -1, (int)(4 + 8 + sizeof all - 1));
+   check("MS3 page 0x3F returns every page held, in page order",
+         st == 0 && bus_out_len >= 12 + sizeof all && bus_out[0] == 4 + 8 + sizeof all - 1 &&
+         memcmp(&bus_out[12], all, sizeof all) == 0, why);
+
+   const uint8_t ms3f_short[6] = { 0x1A, 3 << 5, 0x3F, 0, 14, 0 };
+   st = run_cmd(1, ms3f_short, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes (want 14)", st, bus_out_len);
+   check("MS4 page 0x3F keeps to the allocation length", st == 0 && bus_out_len == 14, why);
+
+   f_unlink("/BeebSCSI0/scsi3.cfg");
+   stop_all();
+}
+
+/* CCS-era mode pages, as a real Rodime RO652 (firmware 5.46) answers them
+   (measured): PageControl=CCS refuses page control 1-3 and gives
+   every page's factory values for page 3D and changeable masks for 3E; a
+   SCSI drive gives them for page control 2 and 1.  A page with no MaskPage
+   line has a full-length zero mask, one with no FDefPage line its current
+   values.  A header with descriptor length 0 sends no block descriptor, and
+   INQUIRY sends only the data held, without padding. */
+static void test_ccs_pages(void)
+{
+   static char why[200];
+   static const char ccs[] =
+      "PageControl=CCS\n"
+      "Inquiry=000000003141424344\n"
+      "ModeParamHeader=00000000\n"
+      "LBADescriptor=0000000000000100\n"
+      "ModePage1=0103200405\n"
+      "MaskPage1=010327FF0F\n"
+      "FDefPage1=0103200100\n"
+      "ModePage4=040400013204\n"
+      "MaskPage4=04040007FF0F\n"
+      "FDefPage4=040400013204\n"
+      "ModePage35=230100\n"
+      "ModePage37=250428432941\n"
+      "MaskPage37=2504FFFFFFFF\n"
+      "FDefPage37=250400000000\n";
+   static const uint8_t masks[]   = { 0x01, 0x03, 0x27, 0xFF, 0x0F,  0x04, 0x04, 0x00, 0x07, 0xFF, 0x0F,
+                                      0x23, 0x01, 0x00,
+                                      0x25, 0x04, 0xFF, 0xFF, 0xFF, 0xFF };
+   static const uint8_t factory[] = { 0x01, 0x03, 0x20, 0x01, 0x00,  0x04, 0x04, 0x00, 0x01, 0x32, 0x04,
+                                      0x23, 0x01, 0x00,
+                                      0x25, 0x04, 0x00, 0x00, 0x00, 0x00 };
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi4.cfg", ccs, sizeof ccs - 1);
+
+   const uint8_t pc1[6] = { 0x1A, 4 << 5, 0x41, 0, 255, 0 };     /* page 1, page control 1 */
+   int st = run_cmd(1, pc1, 6, NULL, 0);
+   int sense = sense_of(4);
+   snprintf(why, sizeof why, "status %d, sense 0x%02X (want 2, 0x24)", st, sense);
+   check("MS5 CCS drive: page control 1 is refused", st == 2 && sense == 0x24, why);
+
+   const uint8_t p3e[6] = { 0x1A, 4 << 5, 0x3E, 0, 255, 0 };
+   st = run_cmd(1, p3e, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes, length byte %d, BD length %d", st, bus_out_len,
+            bus_out_len ? bus_out[0] : -1, bus_out_len > 3 ? bus_out[3] : -1);
+   check("MS6 CCS drive: page 3E gives every page's mask (a page with no MaskPage: zeros)",
+         st == 0 && bus_out_len == 4 + sizeof masks && bus_out[0] == 3 + sizeof masks &&
+         bus_out[3] == 0 && memcmp(&bus_out[4], masks, sizeof masks) == 0, why);
+
+   const uint8_t p3d[6] = { 0x1A, 4 << 5, 0x3D, 0, 255, 0 };
+   st = run_cmd(1, p3d, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes", st, bus_out_len);
+   check("MS7 CCS drive: page 3D gives every page's factory values (none given: current)",
+         st == 0 && bus_out_len == 4 + sizeof factory && memcmp(&bus_out[4], factory, sizeof factory) == 0, why);
+
+   const uint8_t inq[6] = { 0x12, 4 << 5, 0, 0, 255, 0 };
+   st = run_cmd(1, inq, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes (want 9)", st, bus_out_len);
+   check("MS10 INQUIRY sends only the data held, not padded to the allocation length",
+         st == 0 && bus_out_len == 9 && bus_out[5] == 0x41, why);
+
+   /* the same pages on a SCSI drive (no PageControl line), with a block descriptor */
+   static const char scsi[] =
+      "ModeParamHeader=00000008\n"
+      "LBADescriptor=0000000000000100\n"
+      "ModePage1=0103200405\n"
+      "WritPage1=010327FF0F\n"
+      "FDefPage1=0103200100\n"
+      "ModePage35=230100\n"
+      "MaskPage35=0000FF\n";
+   stop_all();
+   put_file("/BeebSCSI0/scsi4.cfg", scsi, sizeof scsi - 1);
+   const uint8_t s1[6] = { 0x1A, 4 << 5, 0x41, 0, 255, 0 };
+   const uint8_t s2[6] = { 0x1A, 4 << 5, 0x81, 0, 255, 0 };
+   const uint8_t s3[6] = { 0x1A, 4 << 5, 0xC1, 0, 255, 0 };
+   const uint8_t s35[6] = { 0x1A, 4 << 5, 0x63, 0, 255, 0 };    /* page 35, page control 1 */
+   int a = run_cmd(1, s1, 6, NULL, 0);
+   bool m1 = a == 0 && bus_out_len == 17 && bus_out[3] == 8 && memcmp(&bus_out[12], masks, 5) == 0;
+   int b = run_cmd(1, s2, 6, NULL, 0);
+   bool m2 = b == 0 && bus_out_len == 17 && memcmp(&bus_out[12], factory, 5) == 0;
+   int c = run_cmd(1, s3, 6, NULL, 0);
+   static const uint8_t cur1[] = { 0x01, 0x03, 0x20, 0x04, 0x05 };
+   bool m3 = c == 0 && bus_out_len == 17 && memcmp(&bus_out[12], cur1, 5) == 0;
+   int d = run_cmd(1, s35, 6, NULL, 0);
+   static const uint8_t zero35[] = { 0x23, 0x01, 0xFF };   /* MaskPage35 holds 00 00 for code and length */
+   bool m4 = d == 0 && bus_out_len == 15 && memcmp(&bus_out[12], zero35, 3) == 0;
+   snprintf(why, sizeof why, "mask %d, factory %d, saved %d, no-mask page %d", m1, m2, m3, m4);
+   check("MS8 SCSI drive: page control 1 mask (code and length the page's own), 2 factory, 3 saved",
+         m1 && m2 && m3 && m4, why);
+   const uint8_t s3d[6] = { 0x1A, 4 << 5, 0x3D, 0, 255, 0 };
+   st = run_cmd(1, s3d, 6, NULL, 0);
+   sense = sense_of(4);
+   snprintf(why, sizeof why, "status %d, sense 0x%02X (want 2, 0x24)", st, sense);
+   check("MS9 SCSI drive: page 3D is an ordinary page it does not hold", st == 2 && sense == 0x24, why);
+
+   f_unlink("/BeebSCSI0/scsi4.cfg");
+   stop_all();
+}
+
+/* A LUN image of `bytes` bytes in /BeebSCSI8, its .cfg `cfg`. */
+static void put_lun8(uint8_t lun, const char *cfg, uint32_t bytes)
+{
+   static uint8_t zero[4096];
+   char path[40];
+   FIL f;
+   UINT done;
+   f_mkdir("/BeebSCSI8");
+   snprintf(path, sizeof path, "/BeebSCSI8/scsi%u.cfg", lun);
+   put_file(path, cfg, (UINT)strlen(cfg));
+   snprintf(path, sizeof path, "/BeebSCSI8/scsi%u.dat", lun);
+   if (__real_f_open(&f, path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+      printf("FAIL setup: could not write %s\n", path);
+      exit(1);
+   }
+   for (uint32_t n = 0; n < bytes; n += sizeof zero)
+      f_write(&f, zero, (bytes - n) < sizeof zero ? (UINT)(bytes - n) : (UINT)sizeof zero, &done);
+   __real_f_close(&f);
+}
+
+/* The data path in the LUN's block size: READ6 and WRITE6 move whole blocks
+   of it, at the right offsets in the image, and a 256-byte LUN is as before. */
+static void test_block_sizes(void)
+{
+   static char why[200];
+   static uint8_t data[10 * 2047], back[16 * 2047];
+   /* 2047 (the RO652's largest) over 10 blocks: more than the 16 KB
+      sector buffer holds */
+   const uint32_t sizes[] = { 128, 512, 1024, 2047, 256 };
+   stop_all();
+   filesystemSetLunDirectory(1, 8);
+   for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+      uint32_t bs = sizes[i];
+      uint8_t n = (bs == 2047) ? 10 : 3;
+      char cfg[200];
+      snprintf(cfg, sizeof cfg, "ModeParamHeader=00000008\nLBADescriptor=0000000000%06X\n"
+               "ModePage0=01000A02008000800001\n", (unsigned)bs);
+      put_lun8(2, cfg, 16u * bs);
+      for (uint32_t b = 0; b < n * bs; b++)
+         data[b] = (uint8_t)(b / bs * 0x40 + b % 251);
+      /* WRITE6 3 blocks at LBA 2, then READ6 them back */
+      const uint8_t wr[6] = { 0x0A, 2 << 5, 0, 2, n, 0 };
+      int st = run_cmd(1, wr, 6, data, n * bs);
+      read_file("/BeebSCSI8/scsi2.dat", back, 16u * bs);
+      bool placed = memcmp(back + 2u * bs, data, n * bs) == 0 && back[2u * bs - 1u] == 0 &&
+                    back[(2u + n) * bs] == 0;
+      const uint8_t rd[6] = { 0x08, 2 << 5, 0, 2, n, 0 };
+      int st2 = run_cmd(1, rd, 6, NULL, 0);
+      bool readback = bus_out_len == n * bs && memcmp(bus_out, data, n * bs) == 0;
+      /* READ CAPACITY gives the block size */
+      const uint8_t rc[10] = { 0x25, 2 << 5, 0, 0, 0, 0, 0, 0, 0, 0 };
+      int st3 = run_cmd(1, rc, 10, NULL, 0);
+      uint32_t rcbs = ((uint32_t)bus_out[4] << 24) | ((uint32_t)bus_out[5] << 16) | ((uint32_t)bus_out[6] << 8) | bus_out[7];
+      snprintf(why, sizeof why, "%lu bytes: write %d placed %d, read %d %u bytes back %d, capacity %d block %lu",
+               (unsigned long)bs, st, placed, st2, bus_out_len, readback, st3, (unsigned long)rcbs);
+      char t[96];
+      snprintf(t, sizeof t, "data path: %lu-byte blocks round-trip at offset LBA x %lu",
+               (unsigned long)bs, (unsigned long)bs);
+      check(t, st == 0 && placed && st2 == 0 && readback && st3 == 0 && rcbs == bs, why);
+      stop_all();
+   }
+
+   /* A short write DMA (the host stopped) at 512 bytes: BUS FREE, not run */
+   put_lun8(2, "ModeParamHeader=00000008\nLBADescriptor=0000000000000200\n"
+            "ModePage0=01000A02008000800001\n", 8u * 512u);
+   memset(data, 0xAB, 512);
+   const uint8_t wr1[6] = { 0x0A, 2 << 5, 0, 1, 1, 0 };
+   dma_short = 256;
+   int st = run_cmd(1, wr1, 6, data, 512);
+   read_file("/BeebSCSI8/scsi2.dat", back, 8u * 512u);
+   snprintf(why, sizeof why, "status %d (want -1), block 1 %s", st, back[512] == 0xAB ? "WRITTEN" : "untouched");
+   check("data path: a 512-byte block cut at 256 bytes is a short DMA", st == -1 && back[512] != 0xAB, why);
+   stop_all();
    filesystemSetLunDirectory(1, 0);
 }
 
@@ -1345,9 +1611,13 @@ int main(int argc, char **argv)
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
    test_reset_abandons();
    test_filestore_mode_select();
+   test_write_mask_page1();
    test_readonly_image();
    test_format_interleave();
    test_stopped_geometry();
+   test_mode_sense();
+   test_ccs_pages();
+   test_block_sizes();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */

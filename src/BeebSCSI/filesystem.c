@@ -86,6 +86,7 @@ static const parserkey scsiattributes[] = {
    { "LBADescriptor"   , 0 ,  8 , NUMSTRING },
    { "ModePage0"       , 0 ,  10 , NUMSTRING},
    { "ModePage1"       , 0 ,  5 , NUMSTRING},
+   { "WritPage1"       , 0 ,  5 , NUMSTRING },
    { "ModePage3"       , 0 , 23 , NUMSTRING },
    { "WritPage3"       , 0 , 23 , NUMSTRING },
    { "ModePage4"       , 0 ,  6 , NUMSTRING},
@@ -102,6 +103,30 @@ static const parserkey scsiattributes[] = {
    { "ModePage36"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "ModePage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "ModePage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   /* Each page's changeable mask (MaskPageN: a set bit may be changed by MODE SELECT; WritPage1
+      and WritPage3 are the old names, read when there is no MaskPage line) and factory defaults
+      (FDefPageN), and how a host asks for them: PageControl=CCS for a drive with no page control
+      field (an early CCS drive answers pages 3D/3E/3F with every page's factory, changeable
+      and current values), SCSI (or absent) for page control 1-3. */
+   { "MaskPage1"       , 0 , 5 , NUMSTRING},
+   { "MaskPage3"       , 0 , 23 , NUMSTRING},
+   { "MaskPage4"       , 0 , 6 , NUMSTRING},
+   { "MaskPage32"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage33"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage35"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage36"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage1"       , 0 , 5 , NUMSTRING},
+   { "FDefPage3"       , 0 , 23 , NUMSTRING},
+   { "FDefPage4"       , 0 , 6 , NUMSTRING},
+   { "FDefPage32"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage33"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage35"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage36"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "PageControl"     , 0 ,  4 , STRING },
    /* 5: the LaserVision user code carries the '=' (e.g. "1=986").
       At 4 the parser truncated it to "1=98", and filesystemReadLunUserCode
       read string[4] off the end of the 4-byte allocation. */
@@ -1156,6 +1181,17 @@ uint32_t filesystemGetLunBlockSize( uint8_t lunNumber)
 	return filesystemState.fsLunGeometry[lunNumber].BlockSize;
 }
 
+// The size of the blocks READ and WRITE move for a LUN: its block size, as
+// FORMAT laid it down.  The VFS LUNs are LaserVision's 256-byte blocks
+// whatever their .cfg says, and so is a size the data path cannot take.
+uint32_t filesystemGetLunDataBlockSize( uint8_t lunNumber)
+{
+   uint32_t blockSize = filesystemState.fsLunGeometry[lunNumber].BlockSize;
+   if ((lunNumber >= 8) || (blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
+      return 256;
+   return blockSize;
+}
+
 // Function to return the LUN image heads per cylinder
 //
 uint32_t filesystemGetheadspercylinder( uint8_t lunNumber)
@@ -1934,9 +1970,9 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    // Reads past the end of a growing image must not extend it (a plain
    // f_lseek on a write-mode file allocates clusters): clamp the seek to the
    // file size and let the short read return zeros for the unwritten sectors
-   uint32_t seekPoint = startSector * 256;
+   FSIZE_t seekPoint = (FSIZE_t)startSector * filesystemGetLunDataBlockSize(lunNumber);
    if (seekPoint > f_size(&filesystemState.fileObject[lunNumber]))
-      seekPoint = (uint32_t)f_size(&filesystemState.fileObject[lunNumber]);
+      seekPoint = f_size(&filesystemState.fileObject[lunNumber]);
 
    if (fsr_lseek(&filesystemState.fileObject[lunNumber], seekPoint) != FR_OK) {
       // Something went wrong with seeking, do not retry
@@ -1946,7 +1982,8 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
    sectorsRemaining = requiredNumberOfSectors;
    sectorsInBuffer = 0;
 #ifdef DEBUG
-   map_check_pending = (startSector == 0 && lunNumber < 8);
+   map_check_pending = (startSector == 0 && lunNumber < 8 &&
+                        filesystemGetLunDataBlockSize(lunNumber) == 256);
 #endif
 
    // Exit with success
@@ -1958,15 +1995,18 @@ bool filesystemOpenLunForRead(uint8_t lunNumber, uint32_t startSector, uint32_t 
 // Function to read next sector from a LUN
 bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
 {
+   // The LUN's block size: as many whole blocks as the buffer holds
+   uint32_t blockSize = filesystemGetLunDataBlockSize(lunNumber);
+
    if (sectorsInBuffer == 0)
    {
       uint32_t sectorsToRead = sectorsRemaining;
       FRESULT fsResult;
       UINT fsCounter;
-      if (sectorsToRead > SECTOR_BUFFER_LENGTH) sectorsToRead = SECTOR_BUFFER_LENGTH;
+      if (sectorsToRead > SECTOR_BUFFER_SIZE / blockSize) sectorsToRead = SECTOR_BUFFER_SIZE / blockSize;
 
       // Read the required data into the sector buffer
-      fsResult = fsr_read(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToRead * 256, &fsCounter);
+      fsResult = fsr_read(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToRead * blockSize, &fsCounter);
 
       // Check that the file was read OK
       if (fsResult != FR_OK) {
@@ -1978,8 +2018,8 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
       // A short read means the host is reading past the end of an image that
       // has not been grown to full geometry yet - unwritten sectors read as
       // zeros rather than whatever the buffer last held
-      if (fsCounter < sectorsToRead * 256) {
-         memset(sectorBuffer + fsCounter, 0, (sectorsToRead * 256) - fsCounter);
+      if (fsCounter < sectorsToRead * blockSize) {
+         memset(sectorBuffer + fsCounter, 0, (sectorsToRead * blockSize) - fsCounter);
       }
 
       sectorsInBuffer = (uint8_t)sectorsToRead;
@@ -1997,7 +2037,7 @@ bool filesystemReadNextSector(uint8_t lunNumber, uint8_t **buffer)
 #endif
    }
    // return pointer to buffer with sector
-   *buffer = sectorBuffer + (currentBufferSector * 256);
+   *buffer = sectorBuffer + (currentBufferSector * blockSize);
    currentBufferSector++;
    sectorsInBuffer--;
 
@@ -2029,10 +2069,12 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
    if (filesystemState.fsLunReadOnly[lunNumber])
       return true;
 
+   FSIZE_t seekPoint = (FSIZE_t)startSector * filesystemGetLunDataBlockSize(lunNumber);
+
 #if FF_USE_FASTSEEK
    FIL *fp = &filesystemState.fileObject[lunNumber];
 
-   if (fp->cltbl != 0 && startSector * 256 > f_size(fp)) {
+   if (fp->cltbl != 0 && seekPoint > f_size(fp)) {
       // Fast seek clips seeks at the current file size and cannot allocate
       // clusters, so a write starting beyond the end of a growing image
       // would land at the wrong offset. Extend the file with fast seek
@@ -2040,7 +2082,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
       FRESULT fsResult;
 
       fp->cltbl = 0;
-      fsResult = fsr_lseek(fp, startSector * 256);
+      fsResult = fsr_lseek(fp, seekPoint);
 
       if (!filesystemAttachLinkMap(fp, &filesystemState.clmt[lunNumber],
                                    &filesystemState.clmtEntries[lunNumber])) {
@@ -2050,7 +2092,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 
       // A seek that stopped short of the target means the SD card filled up
       // while the image was being extended
-      if (fsResult != FR_OK || f_tell(fp) != startSector * 256) {
+      if (fsResult != FR_OK || f_tell(fp) != seekPoint) {
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): ERROR: Unable to grow LUN image file!\r\n"));
          return false;
       }
@@ -2059,7 +2101,7 @@ bool filesystemOpenLunForWrite(uint8_t lunNumber, uint32_t startSector, uint32_t
 
    // Move to the correct point in the DAT file
    // Check that the file seek was OK
-   if (fsr_lseek(&filesystemState.fileObject[lunNumber], startSector * 256) != FR_OK) {
+   if (fsr_lseek(&filesystemState.fileObject[lunNumber], seekPoint) != FR_OK) {
       // Something went wrong with seeking, do not retry
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemOpenLunForWrite(): ERROR: Unable to seek to required sector in LUN image file!\r\n"));
       return false;
@@ -2081,24 +2123,28 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
    // A read-only image (fsLunReadOnly) is treated the same way.
    if (config_beeb_write_protected() || filesystemState.fsLunReadOnly[lunNumber]) return true;
 
-   memcpy(sectorBuffer + (currentBufferSector * 256), buffer , 256 );
+   // The LUN's block size: as many whole blocks as the buffer holds
+   uint32_t blockSize = filesystemGetLunDataBlockSize(lunNumber);
+   uint32_t bufferSectors = SECTOR_BUFFER_SIZE / blockSize;
+
+   memcpy(sectorBuffer + (currentBufferSector * blockSize), buffer , blockSize );
    currentBufferSector++;
 
-   if ( (currentBufferSector == SECTOR_BUFFER_LENGTH) || ( currentBufferSector == sectorsRemaining)) {
+   if ( (currentBufferSector == bufferSectors) || ( currentBufferSector == sectorsRemaining)) {
       FRESULT fsResult;
       UINT fsCounter;
       uint32_t sectorsToWrite;
 
-      if (currentBufferSector == SECTOR_BUFFER_LENGTH)
-         sectorsToWrite = SECTOR_BUFFER_LENGTH;
+      if (currentBufferSector == bufferSectors)
+         sectorsToWrite = bufferSectors;
       else
          sectorsToWrite = sectorsRemaining;
 
       // Write the required data
-      fsResult = fsr_write(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToWrite * 256, &fsCounter);
+      fsResult = fsr_write(&filesystemState.fileObject[lunNumber], sectorBuffer, sectorsToWrite * blockSize, &fsCounter);
 
 #if FF_USE_FASTSEEK
-      if (fsResult == FR_OK && fsCounter != sectorsToWrite * 256 &&
+      if (fsResult == FR_OK && fsCounter != sectorsToWrite * blockSize &&
           filesystemState.fileObject[lunNumber].cltbl != 0) {
          // In fast seek mode f_write cannot allocate new clusters, so a write
          // that grows the image stops at the end of the mapped cluster chain
@@ -2108,7 +2154,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
          UINT fsExtended = 0;
 
          fp->cltbl = 0;
-         fsResult = fsr_write(fp, sectorBuffer + fsCounter, (sectorsToWrite * 256) - fsCounter, &fsExtended);
+         fsResult = fsr_write(fp, sectorBuffer + fsCounter, (sectorsToWrite * blockSize) - fsCounter, &fsExtended);
          fsCounter += fsExtended;
 
          if (!filesystemAttachLinkMap(fp, &filesystemState.clmt[lunNumber],
@@ -2121,7 +2167,7 @@ bool filesystemWriteNextSector(uint8_t lunNumber, uint8_t const buffer[])
 
       // Check that the file was written OK and in full (a short transfer
       // here means the SD card is full)
-      if (fsResult != FR_OK || fsCounter != sectorsToWrite * 256) {
+      if (fsResult != FR_OK || fsCounter != sectorsToWrite * blockSize) {
          // Something went wrong
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteNextSector(): ERROR: Cannot write to LUN image!\r\n"));
          return false;
@@ -2189,23 +2235,23 @@ static int filesystemPagetoIndex( uint8_t page)
    return parse_findindex(mode,scsiattributes);
 }
 
-static int filesystemWritetoIndex( uint8_t page)
+/* The index of the key PREFIX + page number (e.g. "MaskPage3"), or -1. */
+static int filesystemPageKeyIndex(const char * prefix, uint8_t page)
 {
-   page = page & 0x3f;
-   char page1 , page2;
-   if (page >= 10)
-   {
-      page1 = (char) ( (page/10)+'0');
-      page2 = (char) ( (page%10)+'0');
-   }
-   else
-      {
-      page1 = (char) (page+'0');
-      page2 = 0;
-      }
+   char key[16];
+   snprintf(key, sizeof key, "%s%u", prefix, (unsigned)(page & 0x3f));
+   return parse_findindex(key, scsiattributes);
+}
 
-   const char mode[] = {'W','r','i','t','P','a','g','e',page1,page2,0};
-   return parse_findindex(mode,scsiattributes);
+/* A page's changeable mask: MaskPageN, or the old name WritPageN when the
+   .cfg has no MaskPage line for it; -1 if there is neither key. */
+static int filesystemMaskIndex(uint8_t lunNumber, uint8_t page)
+{
+   int index = filesystemPageKeyIndex("MaskPage", page);
+   if (index != -1 && filesystemState.keyvalues[lunNumber][index].v.string != NULL)
+      return index;
+   int old = filesystemPageKeyIndex("WritPage", page);
+   return (old != -1) ? old : index;
 }
 
 // returns the mode page data for a given page
@@ -2222,13 +2268,42 @@ char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * lengt
 
 // Writes the mode page data for a given page
 
+/* A page's changeable mask (MaskPageN, the page as a drive returns it for
+   "changeable values": page code, length, then 1 = changeable), or NULL. */
+char * filesystemGetMaskPageData(uint8_t lunNumber, uint8_t page, size_t * length)
+{
+   int index = filesystemMaskIndex(lunNumber, page);
+   if (index == -1)
+      return 0;
+   *length = filesystemState.keyvalues[lunNumber][index].length;
+   return filesystemState.keyvalues[lunNumber][index].v.string;
+}
+
+/* A page's factory defaults (FDefPageN), or NULL. */
+char * filesystemGetFDefPageData(uint8_t lunNumber, uint8_t page, size_t * length)
+{
+   int index = filesystemPageKeyIndex("FDefPage", page);
+   if (index == -1)
+      return 0;
+   *length = filesystemState.keyvalues[lunNumber][index].length;
+   return filesystemState.keyvalues[lunNumber][index].v.string;
+}
+
+/* PageControl=CCS: the drive has no page control field (MODE SENSE pages
+   3D/3E/3F give factory, changeable and current values). */
+bool filesystemPageControlCCS(uint8_t lunNumber)
+{
+   const char * s = filesystemState.keyvalues[lunNumber][PAGECONTROL].v.string;
+   return (s != NULL) && (strncasecmp(s, "CCS", 3) == 0);
+}
+
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer)
 {
    int index = filesystemPagetoIndex(page);
    if (index == -1)
       return 0;
 
-   int windex = filesystemWritetoIndex(page);
+   int windex = filesystemMaskIndex(lunNumber, page);
    if (windex != -1 && filesystemState.keyvalues[lunNumber][index].v.string != NULL
                     && filesystemState.keyvalues[lunNumber][windex].v.string != NULL)
       {
