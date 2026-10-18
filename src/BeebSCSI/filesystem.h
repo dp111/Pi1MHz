@@ -40,7 +40,7 @@
 #define SECTOR_BUFFER_LENGTH	(SECTOR_BUFFER_SIZE / 256)
 
 // The block sizes the data path takes: an Adaptec board has 256, 512 or
-// 1024, a drive with its own controller 128 to 2047
+// 1024, a drive with its own controller 128 to 2048
 // (filesystemGetLunDataBlockSize)
 #define MIN_BLOCK_SIZE 128
 #define MAX_BLOCK_SIZE 2048
