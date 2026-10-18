@@ -731,6 +731,41 @@ static void test_filestore_mode_select(void)
    stop_all();
 }
 
+/* The Acorn FileStore formatter writes page 1 back with its last byte zero (a
+   650-series drive gets all 9 bytes).  A WritPage1 mask of zeros keeps the
+   page as it is; without one the page changes. */
+static void test_write_mask_page1(void)
+{
+   static char why[200];
+   static const uint8_t p1[]     = { 0x01, 0x03, 0x20, 0x04, 0x05 };
+   static const uint8_t p1zero[] = { 0x01, 0x03, 0x20, 0x04, 0x00 };
+   const uint8_t ms9[6] = { 0x15, 0x00, 0, 0, 9, 0 };
+   const uint8_t d1[9] = { 0, 0, 0, 0,  1, 3, 0x20, 4, 0 };
+   static const char plain[] = "ModePage1=0103200405\n";
+   static const char masked[] = "ModePage1=0103200405\nWritPage1=0000000000\n";
+
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi0.dat", "image", 5);
+   put_file("/BeebSCSI0/scsi0.cfg", plain, sizeof plain - 1);
+   bool started = filesystemSetLunStatus(0, true);
+   int st = run_cmd(1, ms9, 6, d1, sizeof d1);
+   snprintf(why, sizeof why, "start %d, status %d (want 0), page 1 %s", started, st,
+            page_is(0, 1, p1zero, sizeof p1zero) ? "changed as the tool writes it" : "NOT as expected");
+   check("FS WritPage1: without a mask the formatter's page 1 write changes the page",
+         started && st == 0 && page_is(0, 1, p1zero, sizeof p1zero), why);
+
+   stop_all();
+   put_file("/BeebSCSI0/scsi0.cfg", masked, sizeof masked - 1);
+   started = filesystemSetLunStatus(0, true);
+   st = run_cmd(1, ms9, 6, d1, sizeof d1);
+   snprintf(why, sizeof why, "start %d, status %d (want 0), page 1 %s", started, st,
+            page_is(0, 1, p1, sizeof p1) ? "kept" : "CHANGED");
+   check("FS WritPage1: with WritPage1=0000000000 the page is kept and the command is GOOD",
+         started && st == 0 && page_is(0, 1, p1, sizeof p1), why);
+   stop_all();
+}
+
 /* P8 (scsi.c side): a host reset or reselection part-way through a
    data-out phase abandons the command before anything is saved. */
 static void test_reset_abandons(void)
@@ -968,6 +1003,105 @@ static void test_mode_sense(void)
    check("MS4 page 0x3F keeps to the allocation length", st == 0 && bus_out_len == 14, why);
 
    f_unlink("/BeebSCSI0/scsi3.cfg");
+   stop_all();
+}
+
+/* CCS-era mode pages, as a real Rodime RO652 (firmware 5.46) answers them
+   (measured): PageControl=CCS refuses page control 1-3 and gives
+   every page's factory values for page 3D and changeable masks for 3E; a
+   SCSI drive gives them for page control 2 and 1.  A page with no MaskPage
+   line has a full-length zero mask, one with no FDefPage line its current
+   values.  A header with descriptor length 0 sends no block descriptor, and
+   INQUIRY sends only the data held, without padding. */
+static void test_ccs_pages(void)
+{
+   static char why[200];
+   static const char ccs[] =
+      "PageControl=CCS\n"
+      "Inquiry=000000003141424344\n"
+      "ModeParamHeader=00000000\n"
+      "LBADescriptor=0000000000000100\n"
+      "ModePage1=0103200405\n"
+      "MaskPage1=010327FF0F\n"
+      "FDefPage1=0103200100\n"
+      "ModePage4=040400013204\n"
+      "MaskPage4=04040007FF0F\n"
+      "FDefPage4=040400013204\n"
+      "ModePage35=230100\n"
+      "ModePage37=250428432941\n"
+      "MaskPage37=2504FFFFFFFF\n"
+      "FDefPage37=250400000000\n";
+   static const uint8_t masks[]   = { 0x01, 0x03, 0x27, 0xFF, 0x0F,  0x04, 0x04, 0x00, 0x07, 0xFF, 0x0F,
+                                      0x23, 0x01, 0x00,
+                                      0x25, 0x04, 0xFF, 0xFF, 0xFF, 0xFF };
+   static const uint8_t factory[] = { 0x01, 0x03, 0x20, 0x01, 0x00,  0x04, 0x04, 0x00, 0x01, 0x32, 0x04,
+                                      0x23, 0x01, 0x00,
+                                      0x25, 0x04, 0x00, 0x00, 0x00, 0x00 };
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi4.cfg", ccs, sizeof ccs - 1);
+
+   const uint8_t pc1[6] = { 0x1A, 4 << 5, 0x41, 0, 255, 0 };     /* page 1, page control 1 */
+   int st = run_cmd(1, pc1, 6, NULL, 0);
+   int sense = sense_of(4);
+   snprintf(why, sizeof why, "status %d, sense 0x%02X (want 2, 0x24)", st, sense);
+   check("MS5 CCS drive: page control 1 is refused", st == 2 && sense == 0x24, why);
+
+   const uint8_t p3e[6] = { 0x1A, 4 << 5, 0x3E, 0, 255, 0 };
+   st = run_cmd(1, p3e, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes, length byte %d, BD length %d", st, bus_out_len,
+            bus_out_len ? bus_out[0] : -1, bus_out_len > 3 ? bus_out[3] : -1);
+   check("MS6 CCS drive: page 3E gives every page's mask (a page with no MaskPage: zeros)",
+         st == 0 && bus_out_len == 4 + sizeof masks && bus_out[0] == 3 + sizeof masks &&
+         bus_out[3] == 0 && memcmp(&bus_out[4], masks, sizeof masks) == 0, why);
+
+   const uint8_t p3d[6] = { 0x1A, 4 << 5, 0x3D, 0, 255, 0 };
+   st = run_cmd(1, p3d, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes", st, bus_out_len);
+   check("MS7 CCS drive: page 3D gives every page's factory values (none given: current)",
+         st == 0 && bus_out_len == 4 + sizeof factory && memcmp(&bus_out[4], factory, sizeof factory) == 0, why);
+
+   const uint8_t inq[6] = { 0x12, 4 << 5, 0, 0, 255, 0 };
+   st = run_cmd(1, inq, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes (want 9)", st, bus_out_len);
+   check("MS10 INQUIRY sends only the data held, not padded to the allocation length",
+         st == 0 && bus_out_len == 9 && bus_out[5] == 0x41, why);
+
+   /* the same pages on a SCSI drive (no PageControl line), with a block descriptor */
+   static const char scsi[] =
+      "ModeParamHeader=00000008\n"
+      "LBADescriptor=0000000000000100\n"
+      "ModePage1=0103200405\n"
+      "WritPage1=010327FF0F\n"
+      "FDefPage1=0103200100\n"
+      "ModePage35=230100\n"
+      "MaskPage35=0000FF\n";
+   stop_all();
+   put_file("/BeebSCSI0/scsi4.cfg", scsi, sizeof scsi - 1);
+   const uint8_t s1[6] = { 0x1A, 4 << 5, 0x41, 0, 255, 0 };
+   const uint8_t s2[6] = { 0x1A, 4 << 5, 0x81, 0, 255, 0 };
+   const uint8_t s3[6] = { 0x1A, 4 << 5, 0xC1, 0, 255, 0 };
+   const uint8_t s35[6] = { 0x1A, 4 << 5, 0x63, 0, 255, 0 };    /* page 35, page control 1 */
+   int a = run_cmd(1, s1, 6, NULL, 0);
+   bool m1 = a == 0 && bus_out_len == 17 && bus_out[3] == 8 && memcmp(&bus_out[12], masks, 5) == 0;
+   int b = run_cmd(1, s2, 6, NULL, 0);
+   bool m2 = b == 0 && bus_out_len == 17 && memcmp(&bus_out[12], factory, 5) == 0;
+   int c = run_cmd(1, s3, 6, NULL, 0);
+   static const uint8_t cur1[] = { 0x01, 0x03, 0x20, 0x04, 0x05 };
+   bool m3 = c == 0 && bus_out_len == 17 && memcmp(&bus_out[12], cur1, 5) == 0;
+   int d = run_cmd(1, s35, 6, NULL, 0);
+   static const uint8_t zero35[] = { 0x23, 0x01, 0xFF };   /* MaskPage35 holds 00 00 for code and length */
+   bool m4 = d == 0 && bus_out_len == 15 && memcmp(&bus_out[12], zero35, 3) == 0;
+   snprintf(why, sizeof why, "mask %d, factory %d, saved %d, no-mask page %d", m1, m2, m3, m4);
+   check("MS8 SCSI drive: page control 1 mask (code and length the page's own), 2 factory, 3 saved",
+         m1 && m2 && m3 && m4, why);
+   const uint8_t s3d[6] = { 0x1A, 4 << 5, 0x3D, 0, 255, 0 };
+   st = run_cmd(1, s3d, 6, NULL, 0);
+   sense = sense_of(4);
+   snprintf(why, sizeof why, "status %d, sense 0x%02X (want 2, 0x24)", st, sense);
+   check("MS9 SCSI drive: page 3D is an ordinary page it does not hold", st == 2 && sense == 0x24, why);
+
+   f_unlink("/BeebSCSI0/scsi4.cfg");
    stop_all();
 }
 
@@ -1323,10 +1457,12 @@ int main(int argc, char **argv)
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
    test_reset_abandons();
    test_filestore_mode_select();
+   test_write_mask_page1();
    test_readonly_image();
    test_format_interleave();
    test_stopped_geometry();
    test_mode_sense();
+   test_ccs_pages();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */
