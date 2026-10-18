@@ -1182,14 +1182,12 @@ uint32_t filesystemGetLunBlockSize( uint8_t lunNumber)
 }
 
 // The size of the blocks READ and WRITE move for a LUN: its block size, as
-// FORMAT laid it down.  The VFS LUNs are LaserVision's 256-byte blocks
-// whatever their .cfg says, and so is a size the data path cannot take.
+// FORMAT laid it down.  filesystemConfigToLunGeometry has already made it
+// one the data path can take (256 on the VFS LUNs), so it is the size READ
+// CAPACITY reports too.
 uint32_t filesystemGetLunDataBlockSize( uint8_t lunNumber)
 {
-   uint32_t blockSize = filesystemState.fsLunGeometry[lunNumber].BlockSize;
-   if ((lunNumber >= 8) || (blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
-      return 256;
-   return blockSize;
+   return filesystemState.fsLunGeometry[lunNumber].BlockSize;
 }
 
 // Function to return the LUN image heads per cylinder
@@ -1868,10 +1866,22 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].length = 8;
       }
 
-   // A short or hand-edited cfg value decodes as zero - avoid a divide by
-   // zero in the geometry calculations
-   if (filesystemState.fsLunGeometry[lunNumber].BlockSize == 0)
+   // A short or hand-edited cfg value can decode as zero (a divide by zero
+   // in the geometry calculations) or as a size the data path cannot move,
+   // and the VFS LUNs are LaserVision's 256-byte blocks whatever their .cfg
+   // says.  Use 256 then, and say so in the LBA descriptor too, so READ
+   // CAPACITY, MODE SENSE, FORMAT and the data path all agree.
+   uint32_t blockSize = filesystemState.fsLunGeometry[lunNumber].BlockSize;
+   if ((lunNumber >= 8) || (blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
+   {
       filesystemState.fsLunGeometry[lunNumber].BlockSize = DEFAULT_BLOCK_SIZE;
+      if (filesystemState.keyvalues[lunNumber][index].length >= 8)
+      {
+         filesystemState.keyvalues[lunNumber][index].v.string[5] = (char)(DEFAULT_BLOCK_SIZE >>16);
+         filesystemState.keyvalues[lunNumber][index].v.string[6] = (char)(DEFAULT_BLOCK_SIZE >>8);
+         filesystemState.keyvalues[lunNumber][index].v.string[7] = (char)(DEFAULT_BLOCK_SIZE);
+      }
+   }
 
    index = MODEPAGE3;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
