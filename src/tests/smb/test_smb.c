@@ -369,6 +369,14 @@ static void test_names(void)
    r = fsr_rename("2:/BeebSCSI0/scsi0.bak", "/BeebSCSI0/scsi0.cfg");
    check("rename with a driveless target (FatFs style)", r == FR_OK && disk_size("BeebSCSI0/scsi0.cfg") > 0,
          "rename back failed");
+   unsigned calls = fatfs_calls;
+   r = fsr_rename("2:/BeebSCSI0/scsi0.cfg", "0:/scsi0.cfg");
+   check("rename from the share to the card: refused, the file left alone",
+         r == FR_INVALID_DRIVE && disk_size("BeebSCSI0/scsi0.cfg") > 0 &&
+         disk_size("0:") < 0 && disk_size("BeebSCSI0/0:") < 0, "renamed");
+   r = fsr_rename("0:/BeebSCSI0/scsi0.cfg", "2:/scsi0.cfg");
+   check("rename from the card to the share: refused before FatFs",
+         r == FR_INVALID_DRIVE && fatfs_calls == calls, "passed on");
    r = fsr_unlink("2:/BeebSCSI0/scsi0.cfg");
    check("unlink a file", r == FR_OK && disk_size("BeebSCSI0/scsi0.cfg") < 0, "still there");
    r = fsr_mkdir("2:/BeebSCSI0/empty");

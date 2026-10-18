@@ -807,6 +807,13 @@ FRESULT fsr_free_bytes(const TCHAR *path, uint64_t *free_bytes)
 /* FatFs: the new name is on the old one's drive, with or without "2:". */
 FRESULT fsr_rename(const TCHAR *path_old, const TCHAR *path_new)
 {
+   /* A rename stays on one volume.  FatFs drops a drive on the new name,
+      and share_path takes a name without one as on the share, so a new
+      name on the other side of the share would quietly rename the file
+      in place under another name: refused instead. */
+   if (path_new != NULL && path_new[0] >= '0' && path_new[0] <= '9' && path_new[1] == ':' &&
+       fsr_is_net_path(path_new) != fsr_is_net_path(path_old))
+      return FR_INVALID_DRIVE;
    if (!fsr_is_net_path(path_old))
       return f_rename(path_old, path_new);
    const char *p_old = share_path(path_old, path_a);
