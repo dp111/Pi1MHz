@@ -60,6 +60,8 @@ const char *config_get(const char *key) { (void)key; return NULL; }
 bool config_beeb_write_protected(void) { return false; }
 uint32_t RPI_GetSystemTime(void) { return 0; }
 void videoplayer_media_changed(void) {}
+/* BeebSCSI's controller setting lives in scsi.c, which is not linked here. */
+scsiController_t scsiGetController(void) { return SCSI_CONTROLLER_ACB4000; }
 /* storage= is unset: the card; no USB drive. */
 bool usb_storage_mounted(void) { return false; }
 bool usb_storage_wait_for_drive(uint64_t until_us) { (void)until_us; return false; }
