@@ -119,8 +119,11 @@ u32_t sys_jiffies(void)
    return RPI_GetSystemTime();
 }
 
+/* DEBUG-only body, as its siblings in wifi.c: wifi_debug_printf prints
+   nothing in release, so formatting the line there would be wasted. */
 static void wifi_lwip_debug_log(const char *format, ...)
 {
+#ifdef DEBUG
    va_list args;
    char line[192];
    int written;
@@ -136,6 +139,9 @@ static void wifi_lwip_debug_log(const char *format, ...)
       return;
 
    wifi_debug_printf("WIFI-LWIP: %s\n", line);
+#else
+   (void)format;
+#endif
 }
 
 /* Option 42 of the last lease.  lwIP calls dhcp_set_ntp_servers() only when a

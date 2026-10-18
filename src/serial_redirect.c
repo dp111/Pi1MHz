@@ -119,7 +119,14 @@ static volatile uint32_t ser_gate_us;     /* gate opened, or last consume */
 static volatile bool     ser_backoff;     /* the Beeb said buffer 1 is full */
 static volatile uint32_t ser_backoff_us;
 
-static volatile uint32_t ser_tx_count, ser_rx_count, ser_tx_drops, ser_fulls, ser_stalls;
+static volatile uint32_t ser_rx_count;      /* functional: paces the IRQ chaining */
+#ifdef DEBUG
+/* Bring-up counters for the /status row: DEBUG only, off the release FIQ. */
+static volatile uint32_t ser_tx_count, ser_tx_drops, ser_fulls, ser_stalls;
+#define SER_COUNT(c) ((c)++)
+#else
+#define SER_COUNT(c) ((void)0)
+#endif
 #ifdef DEBUG
 /* Per-byte cost of the IRQ path: the gap between consecutive consumes while
    the gate stays open, i.e. one whole trip through the stub and back. */
@@ -146,12 +153,12 @@ static void ser_gate_close(void)
 static void ser_tx_byte(unsigned int gpio)
 {
    if (fifo_used(&tx) >= SER_FIFO_SIZE) {    /* the flag said full: C=1, the MOS retries */
-      ser_tx_drops++;
+      SER_COUNT(ser_tx_drops);
       return;
    }
    tx.buf[tx.tail & SER_FIFO_MASK] = (uint8_t)GET_DATA(gpio);
    tx.tail++;
-   ser_tx_count++;
+   SER_COUNT(ser_tx_count);
    if (fifo_used(&tx) >= SER_FIFO_SIZE)
       ser_write(SER_TX_FLAG, OP_SEC);
 }
@@ -192,7 +199,7 @@ static void ser_rx_consume(unsigned int gpio)
 static void ser_rx_full(unsigned int gpio)
 {
    (void)gpio;
-   ser_fulls++;
+   SER_COUNT(ser_fulls);
    ser_gate_close();
    ser_backoff = true;
    ser_backoff_us = Pi1MHz_now_us;
@@ -255,7 +262,7 @@ static void serial_redirect_poll(void)
       if ((Pi1MHz_now_us - ser_gate_us) > SER_STALL_US) {
          unsigned int cpsr = _disable_interrupts_cspr();
          if (ser_gate_open && (Pi1MHz_now_us - ser_gate_us) > SER_STALL_US) {
-            ser_stalls++;
+            SER_COUNT(ser_stalls);
             ser_gate_close();
             ser_backoff = true;
             ser_backoff_us = Pi1MHz_now_us;
@@ -357,15 +364,18 @@ void serial_redirect_status(char *buf, size_t len)
       snprintf(buf, len, "off");
       return;
    }
-   snprintf(buf, len, "&FC%02X %s gate %s tx %lu rx %lu drop %lu full %lu stall %lu q %lu/%lu",
+   snprintf(buf, len, "&FC%02X %s gate %s q %lu/%lu",
             (unsigned int)ser_base, ser_hooked ? "hooked" : "not hooked",
             ser_gate_open ? "open" : "shut",
-            (unsigned long)ser_tx_count, (unsigned long)ser_rx_count,
-            (unsigned long)ser_tx_drops, (unsigned long)ser_fulls,
-            (unsigned long)ser_stalls,
             (unsigned long)fifo_used(&tx), (unsigned long)fifo_used(&rx));
 #ifdef DEBUG
    size_t n = strlen(buf);
+   if (n < len)
+      snprintf(buf + n, len - n, " tx %lu rx %lu drop %lu full %lu stall %lu",
+               (unsigned long)ser_tx_count, (unsigned long)ser_rx_count,
+               (unsigned long)ser_tx_drops, (unsigned long)ser_fulls,
+               (unsigned long)ser_stalls);
+   n = strlen(buf);
    if (n < len && ser_gap_n != 0u)
       snprintf(buf + n, len - n, " gap us %lu/%lu/%lu n%lu",
                (unsigned long)ser_gap_min, (unsigned long)(ser_gap_sum / ser_gap_n),
