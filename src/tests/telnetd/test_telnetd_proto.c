@@ -1180,6 +1180,16 @@ static void test_scan_merge(void)
             "... which shows HI and X and no longer YO");
    }
 
+   /* An inverse heading (COLOUR 0 on COLOUR 129): OSBYTE 135 cannot read text on a background, so
+      the read has blanks there; the model's heading stands (such headings went blank). */
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x00" "\x1f\x03\x02" "\x11\x00\x11\x81" "HEAD" "\x11\x01\x11\x80" "\x1f\x00\x05", out);
+   tnd_out_scan_merge(&s);
+   n = FEED_OUT(&s, "\x1a\x0c" "\x1f\x05\x08" "X" "\x1c\x00\x1f\x4f\x00" "\x1f\x06\x08", out);
+   CHECK(s.ch[2][3] == 'H' && s.ch[2][6] == 'D' && (s.at[2][3] & 0x40u) == 0u,
+         "a heading on a background, read as blanks, stays in the model with its colours");
+   CHECK(s.ch[8][5] == 'X', "... while what the read found elsewhere is taken");
+
    /* Not a read at all: the program printed first. */
    tnd_out_reset(&s, true);
    FEED_OUT(&s, "\x16\x01" "HI", out);

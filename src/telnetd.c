@@ -165,6 +165,26 @@ static u16_t     g_pqoff;                /* ... and how far into that segment */
 
 static tnd_in_t  g_in;
 static tnd_out_t g_out;
+
+/* The model's MODE changes, for the status page: how many, the last one (from, to, and how: 'v' a VDU 22
+   in what the Beeb printed, 'h' a hook or reset report), and the Beeb's last bytes before it.  A model
+   in the wrong MODE draws everything at the wrong width (seen once: 20 columns while the Beeb was in
+   MODE 0). */
+#define MC_RING 24u
+static uint8_t  g_mc_ring[MC_RING], g_mc_last[MC_RING];
+static uint32_t g_mc_n, g_mc_count, g_mc_us;
+static uint8_t  g_mc_mode, g_mc_from, g_mc_how;
+
+static void mode_changed(uint8_t how)
+{
+   for (unsigned i = 0u; i < MC_RING; i++)      /* oldest first */
+      g_mc_last[i] = g_mc_ring[(g_mc_n + i) % MC_RING];
+   g_mc_from = g_mc_mode;
+   g_mc_mode = g_out.mode;
+   g_mc_how = how;
+   g_mc_count++;
+   g_mc_us = Pi1MHz_now_us;
+}
 static uint8_t   g_kring[KRING_SIZE];    /* keys for the Beeb */
 static uint32_t  g_khead, g_ktail;
 static uint8_t   g_obuf[OBUF_SIZE];      /* bytes for the client */
@@ -726,6 +746,8 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
          g_break_asked = false;
       if (reset || serial_redirect_beeb_mode() != g_out.mode)
          tnd_out_assume_mode(&g_out, serial_redirect_beeb_mode());
+      if (g_out.mode != g_mc_mode)
+         mode_changed('h');
       serial_redirect_beeb_cursor(&col, &row);
       tnd_out_at(&g_out, col, row);
       if (reset) {
@@ -755,10 +777,13 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
             break;
          if (serial_redirect_read(&c, 1u) == 0u)
             break;
+         g_mc_ring[g_mc_n++ % MC_RING] = c;
          if (live)
             beeb_byte(c);
          else
             beeb_follow(c);
+         if (g_out.mode != g_mc_mode)
+            mode_changed('v');
       }
    }
 
@@ -1053,6 +1078,7 @@ void telnetd_init(void)
       long mode = (m != NULL && m[0] != '\0') ? strtol(m, NULL, 10) : 7;
       g_mode = (uint8_t)((mode >= 0 && mode <= 7) ? mode : 7);
       tnd_out_assume_mode(&g_out, g_mode);
+      g_mc_mode = g_out.mode;                   /* the MODE changes count from here */
    }
 
    l = tcp_new_ip_type(IPADDR_TYPE_V4);
@@ -1081,6 +1107,19 @@ void telnetd_status(char *buf, size_t len)
    {                                            /* hooks and resets seen: a hook report comes from helper 20 */
       size_t used = (size_t)snprintf(buf, len, "hooks %lu, resets %lu; ",
                                      (unsigned long)serial_redirect_mode_gen(), (unsigned long)serial_redirect_reset_gen());
+      if (used >= len)
+         return;
+      buf += used;
+      len -= used;
+   }
+   if (g_mc_count != 0u) {                       /* the model's MODE changes, the last with what led up to it */
+      char   hex[MC_RING * 3u + 1u];
+      size_t used;
+      for (unsigned i = 0u; i < MC_RING; i++)
+         snprintf(hex + 3u * i, 4u, "%02x ", g_mc_last[i]);
+      used = (size_t)snprintf(buf, len, "MODE changes %lu, last %u to %u by %s %lu s ago after %s; ",
+                              (unsigned long)g_mc_count, (unsigned)g_mc_from, (unsigned)g_mc_mode,
+                              g_mc_how == 'v' ? "VDU 22" : "hook", (unsigned long)((Pi1MHz_now_us - g_mc_us) / 1000000u), hex);
       if (used >= len)
          return;
       buf += used;

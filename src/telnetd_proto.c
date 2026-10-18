@@ -1744,6 +1744,15 @@ static uint8_t model_char(const tnd_out_t *s, unsigned x, unsigned y)
    return c == 0u ? (uint8_t)' ' : c;
 }
 
+/* The read reports a blank where the model has a character on a coloured background: OSBYTE 135
+   matches a cell's pixels against the font in the foreground colour, so text on a background (an
+   inverse heading, COLOUR 0 on COLOUR 129) reads as nothing.  The model's cell stands. */
+static bool merge_unreadable(const tnd_out_t *s, uint8_t ch, uint8_t at, uint8_t want)
+{
+   return !s->tele && want == ' ' && ch != 0u && ch != ' ' && (at & AT_KNOWN) != 0u
+          && (at & AT_DEF) == 0u && ((at >> 3) & 7u) != 0u;
+}
+
 static size_t merge_end(tnd_out_t *s, uint8_t *dst)
 {
    static uint8_t och[TND_ROWS_MAX][TND_COLS_MAX], oat[TND_ROWS_MAX][TND_COLS_MAX];
@@ -1752,7 +1761,8 @@ static size_t merge_end(tnd_out_t *s, uint8_t *dst)
 
    for (unsigned y = 0u; y < s->rows && !differ; y++)
       for (unsigned x = 0u; x < s->cols; x++)
-         if (model_char(s, x, y) != merge_char(s, s->sh[y][x])) {
+         if (model_char(s, x, y) != merge_char(s, s->sh[y][x])
+             && !merge_unreadable(s, s->ch[y][x], s->at[y][x], merge_char(s, s->sh[y][x]))) {
             differ = true;
             break;
          }
@@ -1769,7 +1779,7 @@ static size_t merge_end(tnd_out_t *s, uint8_t *dst)
    for (unsigned y = 0u; y < s->rows; y++)
       for (unsigned x = 0u; x < s->cols; x++) {
          uint8_t want = merge_char(s, s->sh[y][x]);
-         if ((och[y][x] == 0u ? (uint8_t)' ' : och[y][x]) == want) {
+         if ((och[y][x] == 0u ? (uint8_t)' ' : och[y][x]) == want || merge_unreadable(s, och[y][x], oat[y][x], want)) {
             s->ch[y][x] = och[y][x];
             s->at[y][x] = oat[y][x];
          } else {
