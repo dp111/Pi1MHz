@@ -44,6 +44,13 @@ _Alignas(4) NOINIT_SECTION uint8_t helper_ram[HELPER_PAGES * 256u];
 static uint8_t helper_address;
 static volatile bool     help_shown_pending;   /* a help screen was shown: reformat it later */
 static volatile uint32_t help_shown_us;
+/* The formatted help screen, two copies: the poll formats the one the FIQ
+   is not showing, then flips help_front, so a select arriving mid-format
+   copies a whole screen. */
+_Alignas(4) static char  help_text[2][1024];
+static volatile uint16_t help_len[2];
+static volatile uint8_t  help_front;
+#define HELP_JIM (DISC_RAM_BASE + 0x00FFE000u)  /* where the page-0 code prints from */
 
 /* The help screen (helper 0, and the Pi's boot splash).
 
@@ -195,7 +202,17 @@ static void helpers_bank_select(unsigned int gpio)
         ram_emulator_window_helper();    /* its writes stay out of the user's JIM RAM */
         if (data==0)
         {
-            Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);   /* screen already formatted: release the waitloop */
+            /* &FFE000 is also the MMFS/MMFS2 sector buffer, so the screen
+               goes there only now, when the Beeb has asked for it - a copy,
+               not the 1 KB format, which is too long for the FIQ.  Words,
+               with its terminating zero; a plain loop, not memcpy, because
+               the FIQ saves no VFP state. */
+            uint8_t f = help_front;
+            const uint32_t *src = (const uint32_t *)(const void *)help_text[f];
+            uint32_t *dst = (uint32_t *)(void *)&Pi1MHz->JIM_ram[HELP_JIM];
+            for (unsigned int w = (help_len[f] + 4u) / 4u; w != 0u; w--)
+                *dst++ = *src++;
+            Pi1MHz_MemoryWrite_FIQ(Pi1MHz_MEM_PAGE+1, 0x03);   /* screen in place: release the waitloop */
             help_shown_us = Pi1MHz_now_us;
             help_shown_pending = true;                          /* reformat for next time, once printed */
         }
@@ -208,16 +225,19 @@ static void helpers_bank_select(unsigned int gpio)
    only while the player is idle: a mailbox exchange can block the poll loop
    (bounded only by the 3 s mailbox timeout) and stalling it mid-playback
    starves the Beeb's SCSI handshake. */
-/* The help screen in JIM is formatted ahead of time, so the page-0 switch
-   in FIQ only releases the Beeb (formatting there took tens of
-   microseconds, long enough for the bus post ring to overrun while the
-   Beeb fetched its waitloop from JIM).  It is formatted once at init and
-   again two seconds after each showing - by then the Beeb has printed it,
-   so nothing tears - which keeps the temperature one showing old at most
-   without touching the screen on every poll. */
+/* The help screen is formatted ahead of time, so the page-0 switch in FIQ
+   only copies it into JIM and releases the Beeb (formatting there took
+   tens of microseconds, long enough for the bus post ring to overrun while
+   the Beeb fetched its waitloop from JIM).  It is formatted once at init
+   and again two seconds after each showing, which keeps the temperature
+   one showing old at most.  It is formatted here, not into JIM: that is
+   the MMFS sector buffer, and two seconds on a filing system may be
+   reading or writing through it. */
 static void helpers_screen_refresh(void)
 {
-   helpers_screen_setup((char *)&Pi1MHz->JIM_ram[DISC_RAM_BASE + 0x00FFE000], 1024);
+   uint8_t back = (uint8_t)(help_front ^ 1u);
+   help_len[back] = (uint16_t)helpers_screen_setup(help_text[back], sizeof help_text[back]);
+   help_front = back;
 }
 
 static void helpers_poll(void)
