@@ -224,6 +224,21 @@ static void release(net_file_t *f)
    memset(f, 0, sizeof *f);
 }
 
+/* Close a share file and free its slot.  The CLOSE is sent, not waited
+   for: every write was answered when it was made, and the server takes
+   requests in order, so a reopen cannot overtake it.  A BBC reset closes
+   each started LUN, and waiting a round trip per close there held the
+   Beeb's re-init up past its reset (1.4 s measured, 2026-10-16); inside
+   the poll a wait is not allowed at all. */
+static void close_file(net_file_t *f)
+{
+   if (live(f)) {
+      (void)smb2_close_async(smb_client_context(), f->fh, forget_cb, NULL);
+      smb_client_kick();
+   }
+   release(f);
+}
+
 static struct smb2_stat_64 st_buf;
 
 /* The CREATE of an open: its reply's handle and size, for the op it ends. */
@@ -249,6 +264,13 @@ static void open_cb(struct smb2_context *smb2, int status, void *data, void *arg
    reply. */
 FRESULT fsr_open(FIL *fp, const TCHAR *path, BYTE mode)
 {
+   /* FatFs lets an open FIL be opened again, and the FAT service does
+      that.  A share file's slot (its server handle and read cache) would
+      then be lost with nothing to free it, so close it first - before
+      either kind of open, which each overwrite the FIL. */
+   for (int i = 0; i < NET_FILES; i++)
+      if (fp != NULL && files[i].fp == fp)
+         close_file(&files[i]);
    if (!fsr_is_net_path(path))
       return f_open(fp, path, mode);
    if (fp == NULL)
@@ -328,16 +350,7 @@ FRESULT fsr_close(FIL *fp)
    net_file_t *f = net_file(fp);
    if (f == NULL)
       return (fp != NULL && fp->obj.fs == &net_fs) ? FR_INVALID_OBJECT : f_close(fp);
-   /* Sent, not waited for: every write was answered when it was made, and
-      the server takes requests in order, so a reopen cannot overtake it.
-      A BBC reset closes each started LUN, and waiting a round trip per
-      close there held the Beeb's re-init up past its reset (1.4 s measured,
-      2026-10-16); inside the poll a wait is not allowed at all. */
-   if (live(f)) {
-      (void)smb2_close_async(smb_client_context(), f->fh, forget_cb, NULL);
-      smb_client_kick();
-   }
-   release(f);
+   close_file(f);
    return FR_OK;
 }
 
@@ -541,6 +554,13 @@ static net_dir_t *net_dir(DIR *dp)
 
 FRESULT fsr_opendir(DIR *dp, const TCHAR *path)
 {
+   /* as fsr_open: a DIR opened again gives up its listing first */
+   for (int i = 0; i < NET_DIRS; i++)
+      if (dp != NULL && dirs[i].dp == dp) {
+         if (dirs[i].session == smb_client_session() && smb_client_context() != NULL)
+            smb2_closedir(smb_client_context(), dirs[i].dir);
+         memset(&dirs[i], 0, sizeof dirs[i]);
+      }
    if (!fsr_is_net_path(path))
       return f_opendir(dp, path);
    if (dp == NULL)

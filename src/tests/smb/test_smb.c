@@ -479,6 +479,27 @@ static void test_routing(void)
    FRESULT r = fsr_open(&f, "2:/BeebSCSI0/scsi0.dat", FA_READ);
    in_poll = false;
    check("inside the network poll: refused at once (FR_TIMEOUT)", r == FR_TIMEOUT, "not refused");
+
+   /* opened again without a close, as the FAT service does: more times
+      than there are slots, so a lost slot would show */
+   static char why[80];
+   FIL g;
+   memset(&g, 0, sizeof g);
+   int i;
+   for (i = 0; i < 60; i++)
+      if ((r = fsr_open(&g, "2:/BeebSCSI0/scsi0.dat", FA_READ)) != FR_OK)
+         break;
+   snprintf(why, sizeof why, "open %d gave FRESULT %d", i + 1, (int)r);
+   check("a file opened again 60 times without a close: no slot lost", i == 60, why);
+   (void)fsr_close(&g);
+   DIR d;
+   memset(&d, 0, sizeof d);
+   for (i = 0; i < 30; i++)
+      if ((r = fsr_opendir(&d, "2:/BeebSCSI0")) != FR_OK)
+         break;
+   snprintf(why, sizeof why, "opendir %d gave FRESULT %d", i + 1, (int)r);
+   check("a directory opened again 30 times without a close: no slot lost", i == 30, why);
+   (void)fsr_closedir(&d);
 }
 
 /* The server going away mid-session, a wrong password, a dead server: every
