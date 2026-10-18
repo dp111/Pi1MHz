@@ -32,3 +32,4 @@ void Pi1MHz_MemoryWrite(uint32_t addr, uint8_t data);
 void Pi1MHz_MemoryWrite16(uint32_t addr, uint32_t data);
 void Pi1MHz_nIRQ_ASSERT(uint8_t src);
 void Pi1MHz_nIRQ_CLEAR(uint8_t src);
+extern uint32_t Pi1MHz_now_us;

@@ -128,9 +128,28 @@ into the JIM buffer; the top byte must be zero.
               FA_OPEN_ALWAYS 0x10, FA_OPEN_APPEND 0x30
     +3...     filename (zero terminated)
 
+Mode bit **0x80 (keep)** asks the Pi to remember the file for this
+slot. A BBC reset still closes it - so the web server, WebDAV and USB
+may change it again - but the next fread, fwrite or fsize on the slot
+opens it again by name, in the same mode (read only if it has been
+made read-only since), without the client noticing. If the file has
+gone, or the storage has changed (the card or the USB drive), those
+commands fail (FR_NO_FILE or FR_NO_PATH). A rename through command 12
+moves the kept name with it. A Pi restart, an eject and commands 14/15
+forget kept files and slot directories, and change command 20's boot
+id.
+
+Once a slot has its own directory (command 22), the name is relative to
+it; otherwise to the shared current directory (command 11). An 8.3
+name that does not exist as given is looked up as one of the made-up
+short names of command 21, so a name a client read from a directory
+block always opens.
+
 **3 - fclose**
 
     +0        3
+
+Also forgets a kept file.
 
 **4 - fread** (with implicit lseek)
 
@@ -139,6 +158,10 @@ into the JIM buffer; the top byte must be zero.
               (command register = 20 if the read was short)
     +4..7     destination address in buffer
     +8..11    file offset to read from
+
+A read that runs past the end of the file fills the rest of the
+requested length with zeros (and returns 20), so a cut-down disc image
+reads as a full one.
 
 **5 - fwrite** (with implicit lseek + fsync)
 
@@ -184,6 +207,9 @@ are no more entries. Only the name is returned (not size/dates/attributes).
 
     +0        12
     +1...     old name (zero terminated), then new name (zero terminated)
+
+With a slot directory (command 22), both names are in it, and the old
+name may be a made-up short name.
 
 **13 - fgetfree**
 
@@ -232,10 +258,66 @@ explorer (helper 17) uses.
 Writes the current directory as a NUL-terminated string (up to 128
 bytes, control characters replaced with '?') at the given offset.
 
+**19 - set attributes**
+
+    +0        19
+    +1        the attribute bits to change (AM_RDO 0x01, AM_HID 0x02,
+              AM_SYS 0x04, AM_ARC 0x20; others are ignored)
+    +2        their new values
+    +3...     name (zero terminated), as for fopen
+
+MMFS2's `*DACCESS` uses this: a locked disc image is a read-only file.
+Ignored (and reported as success) under `Beeb_write_protect`.
+
 **20 - SD card type**
 
     +0        20
+    +1..2     (returned) this boot's id, never 0
     Base+4    (returned) 0 or 1 depending on card type
+
+The id stays the same over a BBC reset and changes when the Pi restarts
+(or forgets the slots' state: an eject, commands 14/15),
+so a client that keeps its own state over a BBC reset can tell when the
+Pi has forgotten its side of it (MMFS2 empties its drives). Firmware
+before the id leaves +1..2 as the client wrote them: write zeros first,
+and zeros back mean an older Pi.
+
+**21 - directory block**
+
+    +0        21
+    +4..7     destination offset in the buffer (512 bytes)
+    +8..11    block number (0 = the first)
+
+The slot's directory (command 22; else the shared current directory)
+as a FAT directory would hold it, 16 entries of 32 bytes per block, so
+a client written for raw FAT directory sectors can read it unchanged.
+A subdirectory starts with "." and ".."; names starting with "." are
+left out; the entries end with a zero byte. Each entry is:
+
+    +0..10    8.3 name: the volume's short name, else the long name
+              itself when it is a valid 8.3 name, else a made-up one
+              (first 4 characters, "~" and 3 hex digits) - exFAT has no
+              short names
+    +11       attributes
+    +14..19,
+    +22..25   times and dates (all the modification time)
+    +20..21,
+    +26..27   the entry's id, where FAT keeps the first cluster: a
+              20-bit hash of its path, never 0, except ".." of a
+              first-level directory, which is 0 (FAT's root)
+    +28..31   size
+
+**22 - slot directory**
+
+    +0        22
+    +1...     directory name, relative to the slot's directory
+              ("" or "/" = the root; ".." goes up)
+
+Gives the slot (the low nibble of the command-block page) a current
+directory of its own, which commands 2, 12, 19 and 21 then use, so
+several clients - MMFS2's two drives, the SD explorer - no longer share
+one. The first use starts from the root. A BBC reset keeps it; a Pi
+restart, an eject and commands 14/15 forget it.
 
 ## Internal status and control (`&FCCA`)
 
