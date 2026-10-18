@@ -1071,6 +1071,9 @@ static uint8_t scsiCommandRead6(void)
       debugStringInt32_P(PSTR(", Blocks = "), numberOfBlocks, true);
    }
 
+   // The LUN's block size (256 unless FORMAT laid down another)
+   uint32_t blockSize = filesystemGetLunDataBlockSize(commandDataBlock.targetLUN);
+
    // Set up the control signals ready for the data in phase
    scsiInformationTransferPhase(ITPHASE_DATAIN);
 
@@ -1110,7 +1113,7 @@ static uint8_t scsiCommandRead6(void)
 
       // Send the data to the host
       cli();
-      DEBUG_bytesTransferred(hostadapterPerformReadDMA(sectorPtr));
+      DEBUG_bytesTransferred(hostadapterPerformReadDMALen(sectorPtr, blockSize));
       sei();
       hd_audio_service();              // between sectors only
 
@@ -1134,7 +1137,7 @@ static uint8_t scsiCommandRead6(void)
          whole cooperative loop stopped: no 1MHz bus service, no WiFi/AUN,
          no USB.  Bail so the per-sector timeout composes into a
          per-command bound, exactly as scsiCommandReassignBlocks does. */
-      if (bytesTransferred < 256) {
+      if (bytesTransferred < blockSize) {
          filesystemCloseLunForRead(commandDataBlock.targetLUN);
          return SCSI_BUSFREE;
       }
@@ -1147,7 +1150,7 @@ static uint8_t scsiCommandRead6(void)
          }
       } else {
          debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
-         debugSectorBufferHex(sectorPtr, 256);
+         debugSectorBufferHex(sectorPtr, (uint16_t)blockSize);
       }
    }
    if (debugFlag_scsiCommands || debugFlag_scsiBlocks) debugString_P(PSTR("\r\n"));
@@ -1243,6 +1246,9 @@ static uint8_t scsiCommandWrite6(void)
       debugStringInt32_P(PSTR(", Blocks = "), numberOfBlocks, true);
    }
 
+   // The LUN's block size (256 unless FORMAT laid down another)
+   uint32_t blockSize = filesystemGetLunDataBlockSize(commandDataBlock.targetLUN);
+
    // Set up the control signals ready for the data out phase
    scsiInformationTransferPhase(ITPHASE_DATAOUT);
 
@@ -1264,10 +1270,10 @@ static uint8_t scsiCommandWrite6(void)
    // Transfer the requested blocks from the host to the LUN image
    if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Transferring requested blocks from the host...\r\n"));
    for (currentBlock = 0; currentBlock < numberOfBlocks; currentBlock++) {
-      uint8_t Buffer[256];
+      static uint8_t Buffer[MAX_BLOCK_SIZE];
       // Get the data from the host
       cli();
-      DEBUG_bytesTransferred(hostadapterPerformWriteDMA(Buffer));
+      DEBUG_bytesTransferred(hostadapterPerformWriteDMALen(Buffer, blockSize));
       sei();
       hd_audio_service();              // between sectors only
 
@@ -1290,7 +1296,7 @@ static uint8_t scsiCommandWrite6(void)
          whole cooperative loop stopped: no 1MHz bus service, no WiFi/AUN,
          no USB.  Bail so the per-sector timeout composes into a
          per-command bound, exactly as scsiCommandReassignBlocks does. */
-      if (bytesTransferred < 256) {
+      if (bytesTransferred < blockSize) {
          filesystemCloseLunForWrite(commandDataBlock.targetLUN);
          return SCSI_BUSFREE;
       }
@@ -1319,7 +1325,7 @@ static uint8_t scsiCommandWrite6(void)
          }
       } else {
          debugStringInt32_P(PSTR("Hex dump for block #"), currentBlock, true);
-         debugSectorBufferHex(Buffer, 256);
+         debugSectorBufferHex(Buffer, (uint16_t)blockSize);
       }
    }
    if (debugFlag_scsiCommands || debugFlag_scsiBlocks) debugString_P(PSTR("\r\n"));

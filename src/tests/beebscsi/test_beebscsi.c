@@ -85,9 +85,9 @@ void hd_card_service(void) {}
    FREE by hostadapterWriteResetFlag(false). */
 static bool     bus_sel;
 static uint8_t  bus_host = 1;          /* 1 = ADFS drive 0, 16 = VFS */
-static uint8_t  bus_in[1024];
+static uint8_t  bus_in[32768];
 static unsigned bus_in_len, bus_in_pos;
-static uint8_t  bus_out[4096];
+static uint8_t  bus_out[32768];
 static unsigned bus_out_len;
 static int      bus_status = -1;       /* -1: no status phase (BUS FREE) */
 static bool     ph_msg, ph_cd, ph_io;
@@ -114,23 +114,25 @@ void hostadapterWriteByte(uint8_t v)
    if (ph_cd && ph_io && !ph_msg) bus_status = v;
    else if (!ph_cd && ph_io && bus_out_len < sizeof bus_out) bus_out[bus_out_len++] = v;
 }
-uint32_t hostadapterPerformReadDMA(const uint8_t *b)
+uint32_t hostadapterPerformReadDMALen(const uint8_t *b, uint32_t len)
 {
-   for (unsigned i = 0; i < 256u && bus_out_len < sizeof bus_out; i++)
+   for (unsigned i = 0; i < len && bus_out_len < sizeof bus_out; i++)
       bus_out[bus_out_len++] = b[i];
    read_dmas++;
    if (fail_disk_after_dma >= 0 && read_dmas >= (unsigned)fail_disk_after_dma)
       disk_fail = true;
-   return 256;
+   return len;
 }
-uint32_t hostadapterPerformWriteDMA(uint8_t *b)
+uint32_t hostadapterPerformWriteDMALen(uint8_t *b, uint32_t len)
 {
-   unsigned n = dma_short ? dma_short : 256u;
+   unsigned n = dma_short ? dma_short : len;
    dma_short = 0;
    for (unsigned i = 0; i < n; i++)
       b[i] = bus_in_next();
    return n;
 }
+uint32_t hostadapterPerformReadDMA(const uint8_t *b) { return hostadapterPerformReadDMALen(b, 256); }
+uint32_t hostadapterPerformWriteDMA(uint8_t *b) { return hostadapterPerformWriteDMALen(b, 256); }
 void hostadapterWriteResetFlag(bool f) { bus_reset = f; }
 bool hostadapterReadResetFlag(void) { return bus_reset; }
 void hostadapterWriteDataPhaseFlags(bool m, bool c, bool i) { ph_msg = m; ph_cd = c; ph_io = i; }
@@ -1105,6 +1107,82 @@ static void test_ccs_pages(void)
    stop_all();
 }
 
+/* A LUN image of `bytes` bytes in /BeebSCSI8, its .cfg `cfg`. */
+static void put_lun8(uint8_t lun, const char *cfg, uint32_t bytes)
+{
+   static uint8_t zero[4096];
+   char path[40];
+   FIL f;
+   UINT done;
+   f_mkdir("/BeebSCSI8");
+   snprintf(path, sizeof path, "/BeebSCSI8/scsi%u.cfg", lun);
+   put_file(path, cfg, (UINT)strlen(cfg));
+   snprintf(path, sizeof path, "/BeebSCSI8/scsi%u.dat", lun);
+   if (__real_f_open(&f, path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+      printf("FAIL setup: could not write %s\n", path);
+      exit(1);
+   }
+   for (uint32_t n = 0; n < bytes; n += sizeof zero)
+      f_write(&f, zero, (bytes - n) < sizeof zero ? (UINT)(bytes - n) : (UINT)sizeof zero, &done);
+   __real_f_close(&f);
+}
+
+/* The data path in the LUN's block size: READ6 and WRITE6 move whole blocks
+   of it, at the right offsets in the image, and a 256-byte LUN is as before. */
+static void test_block_sizes(void)
+{
+   static char why[200];
+   static uint8_t data[10 * 2047], back[16 * 2047];
+   /* 2047 (the RO652's largest) over 10 blocks: more than the 16 KB
+      sector buffer holds */
+   const uint32_t sizes[] = { 128, 512, 1024, 2047, 256 };
+   stop_all();
+   filesystemSetLunDirectory(1, 8);
+   for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+      uint32_t bs = sizes[i];
+      uint8_t n = (bs == 2047) ? 10 : 3;
+      char cfg[200];
+      snprintf(cfg, sizeof cfg, "ModeParamHeader=00000008\nLBADescriptor=0000000000%06X\n"
+               "ModePage0=01000A02008000800001\n", (unsigned)bs);
+      put_lun8(2, cfg, 16u * bs);
+      for (uint32_t b = 0; b < n * bs; b++)
+         data[b] = (uint8_t)(b / bs * 0x40 + b % 251);
+      /* WRITE6 3 blocks at LBA 2, then READ6 them back */
+      const uint8_t wr[6] = { 0x0A, 2 << 5, 0, 2, n, 0 };
+      int st = run_cmd(1, wr, 6, data, n * bs);
+      read_file("/BeebSCSI8/scsi2.dat", back, 16u * bs);
+      bool placed = memcmp(back + 2u * bs, data, n * bs) == 0 && back[2u * bs - 1u] == 0 &&
+                    back[(2u + n) * bs] == 0;
+      const uint8_t rd[6] = { 0x08, 2 << 5, 0, 2, n, 0 };
+      int st2 = run_cmd(1, rd, 6, NULL, 0);
+      bool readback = bus_out_len == n * bs && memcmp(bus_out, data, n * bs) == 0;
+      /* READ CAPACITY gives the block size */
+      const uint8_t rc[10] = { 0x25, 2 << 5, 0, 0, 0, 0, 0, 0, 0, 0 };
+      int st3 = run_cmd(1, rc, 10, NULL, 0);
+      uint32_t rcbs = ((uint32_t)bus_out[4] << 24) | ((uint32_t)bus_out[5] << 16) | ((uint32_t)bus_out[6] << 8) | bus_out[7];
+      snprintf(why, sizeof why, "%lu bytes: write %d placed %d, read %d %u bytes back %d, capacity %d block %lu",
+               (unsigned long)bs, st, placed, st2, bus_out_len, readback, st3, (unsigned long)rcbs);
+      char t[96];
+      snprintf(t, sizeof t, "data path: %lu-byte blocks round-trip at offset LBA x %lu",
+               (unsigned long)bs, (unsigned long)bs);
+      check(t, st == 0 && placed && st2 == 0 && readback && st3 == 0 && rcbs == bs, why);
+      stop_all();
+   }
+
+   /* A short write DMA (the host stopped) at 512 bytes: BUS FREE, not run */
+   put_lun8(2, "ModeParamHeader=00000008\nLBADescriptor=0000000000000200\n"
+            "ModePage0=01000A02008000800001\n", 8u * 512u);
+   memset(data, 0xAB, 512);
+   const uint8_t wr1[6] = { 0x0A, 2 << 5, 0, 1, 1, 0 };
+   dma_short = 256;
+   int st = run_cmd(1, wr1, 6, data, 512);
+   read_file("/BeebSCSI8/scsi2.dat", back, 8u * 512u);
+   snprintf(why, sizeof why, "status %d (want -1), block 1 %s", st, back[512] == 0xAB ? "WRITTEN" : "untouched");
+   check("data path: a 512-byte block cut at 256 bytes is a short DMA", st == -1 && back[512] != 0xAB, why);
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+}
+
 /* S10: the VFS title cache does not survive a card change. */
 static void test_title_cache(void)
 {
@@ -1463,6 +1541,7 @@ int main(int argc, char **argv)
    test_stopped_geometry();
    test_mode_sense();
    test_ccs_pages();
+   test_block_sizes();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */
