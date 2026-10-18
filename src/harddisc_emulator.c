@@ -451,6 +451,11 @@ void harddisc_emulator_init( uint8_t instance , uint8_t address)
       // Initialise the SCSI emulation
       scsiInitialise();
 
+      // Which controller sits behind the host adaptor (absent: ACB-4000)
+      if (!scsiSetControllerName(config_get("DriveController")))
+         LOG_WARN("HD: DriveController=%s not known - using ACB-4000\n",
+                  config_get("DriveController"));
+
       PowerOn = 1;
       scsiReset(scsiid);         /* only now is the engine there to reset */
    }

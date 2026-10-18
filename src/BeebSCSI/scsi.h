@@ -27,6 +27,9 @@
 #ifndef SCSI_H_
 #define SCSI_H_
 
+#include <stdbool.h>
+#include <stdint.h>
+
 // Global for the emulation mode (fixed or removable drive)
 // Note: The fixed mode emulates SCSI-1 compliant hard drives for the Beeb
 // The removable mode emulates the Laser Video Disc Player (LV-DOS) for Domesday
@@ -86,8 +89,23 @@
 #define FIXED_EMULATION		0
 #define LVDOS_EMULATION		1
 
+// The controller behind the Acorn host adaptor (DriveController= in
+// Pi1MHz.cfg, one for all drives).  It decides the commands a drive
+// answers, its sense format and its FORMAT rules; Pi1MHz's own extensions
+// (LUNs 2-7, the VFS LUNs, the group 6 commands, the jukebox) work under
+// every type.
+typedef enum {
+   SCSI_CONTROLLER_ACB4000 = 0,   // Adaptec ACB-4000/4000A/4010 (MFM), the default
+   SCSI_CONTROLLER_ACB4070,       // Adaptec ACB-4070 (RLL)
+   SCSI_CONTROLLER_SASI,          // Xebec/DTC/OMTI-style boards (for now ACB-4000 rules)
+   SCSI_CONTROLLER_SCSI           // a drive with its own controller (CCS-era SCSI)
+} scsiController_t;
+
 // Function prototypes
 void scsiInitialise(void);
+void scsiSetController(scsiController_t controller);
+scsiController_t scsiGetController(void);
+bool scsiSetControllerName(const char *name);
 void scsiReset(uint8_t scsiid);
 
 void scsiJukeboxSwap(uint8_t lun);

@@ -129,6 +129,30 @@ See [Hard discs](hard-discs.md) for what these mean in practice.
 | `VFSJUKE` | `0` | Which `/BeebVFSn` directory to use for VFS volumes at power-on. |
 | `SCSIID` | `0` | SCSI ID the emulation answers to. `0` (default) answers every ID. Only relevant if you run more than one SCSI adapter on a Master. |
 | `Beeb_write_protect` | off | `1` stops the Beeb changing anything on the SD card: every write it makes is silently ignored and reported as a success. Writes over USB and the web interface still work. See [MMFS](mmfs.md). |
+| `DriveController` | `ACB-4000` | The controller behind the Acorn 1MHz-bus SCSI host adaptor (a BBC/Master, the FileStore E01's adaptor board, the E01S main board), one for all drives. It decides which commands the drives answer, their error (sense) format and how FORMAT lays out a track - see [Drive controllers](#drive-controllers) below. **A FileStore needs `DriveController=SCSI`.** |
+| `DriveGeometry` | `Auto` | What to do with a drive `.cfg` that has no geometry page (page 4; on an Adaptec or SASI board page 0 or 4). `Auto`: the geometry is deduced from the image size and published as the page. `CFG`: nothing is invented - MODE SENSE refuses the page as a drive without it would, and an Adaptec board answers 1C (not formatted by the board). Either way the log names the drive and the missing page. |
+
+### Drive controllers
+
+`DriveController=` takes one of these (any case). No line, or a value not in
+the list, means `ACB-4000`; an unknown value is reported on the debug output.
+
+| Value | Hardware | Behaviour |
+|---|---|---|
+| `ACB-4000` (default) | Adaptec ACB-4000/4000A/4010 SASI board to an MFM drive: Acorn Winchester 110/120/130, Level 3 file server | No INQUIRY, REASSIGN BLOCKS, READ DEFECT DATA or CERTIFY (error 20). 4-byte sense; "not ready" is 04. MODE SENSE and MODE SELECT use the Adaptec's flat 22-byte list (header, block size, drive parameters) whatever page is asked for. FORMAT lays down the board's sectors per track: 32 (interleave 1) or 33 at 256 bytes, 17/18 at 512, 9 at 1024; an interleave above that - 1 is error 24. |
+| `ACB-4070` | Adaptec RLL board: Viglen, Technomatic, Watford 30 MB | As `ACB-4000`, with the RLL table: 46/47 at 256 bytes, 25/26 at 512, 14 at 1024; the interleave error is 1A. |
+| `SASI` | Xebec S1410, DTC 510/520, OMTI 5x00, WD1002-SHD | For now as `ACB-4000`, but FORMAT keeps the sectors per track the drive's `.cfg` gives (geometry and sectors per track from the drive `.cfg`, as the patched EPROMs of the BBC kits did). |
+| `SCSI` | Drives with their own controller, e.g. the Rodime RO652 in the FileStore E20 | INQUIRY, extended sense (70h: the FileStore reads byte 12, ADFS byte 0, so ADFS shows other error numbers), mode pages as the drive's `.cfg` gives them, pages 3 and 4 taking effect at FORMAT, and the drive's own sectors per track (`TrackFormat=`). No TRANSLATE. See [SCSI drive descriptors](scsi-cfg.md). |
+
+Pi1MHz's own extensions work under every value: drives (LUNs) 2-7, the VFS /
+Domesday volumes, `*SCSIJUKE` and BSSELECT, the FAT transfer commands and the
+VFS F-codes. STOP/START UNIT is accepted by every type on purpose, as an
+extension: `*FSSTOP` and card work stop the drives with it before the card is
+changed. Some real drives refuse it (a Rodime RO652 answers "invalid
+command").
+
+A FileStore behind `ACB-4000` sees what it would see behind a real ACB-4000:
+no INQUIRY, no mode pages, so its drive slots stay empty.
 
 ## Sound settings
 
