@@ -42,10 +42,17 @@ single discs trivial to add, rename or back up - they are just files.
 See the MMFS project's documentation for its disc-selection commands
 and where it looks for the image files.
 
-MMFS2 reads those files by name through the Pi1MHz FAT service, so the
-Pi's **SD card must be formatted FAT32** (as it must be for Pi1MHz in
-general - see [Getting started](getting-started.md)). exFAT or NTFS
-cards are not read, and MMFS2 will find no disc images on one.
+MMFS2 opens those files by name through the Pi1MHz FAT service. Each
+drive has its own directory on the Pi (`*DDIR`), and `*DCAT` lists it.
+MMFS2 shows 8.3 names: a long name appears as its short name, the way
+DOS shows it (`Long Name Game.ssd` as `LONGNA~1.SSD`), and that name
+works in `*DIN`. On an exFAT volume, which has no short names, the Pi
+makes them up from the first four characters, a `~` and three hex
+digits.
+
+`*DACCESS <image> L` locks a disc image by making the file read-only, so
+a PC sees the lock too; `*SAVE` to a locked disc gives "Disc read only".
+`*DRENAME` renames the file.
 
 ## Changing images from another computer
 
@@ -59,46 +66,47 @@ whole `BEEB.MMB`) can be added and replaced over
 removing the card - but do it carefully. The web server, WebDAV and
 USB/MTP all refuse to overwrite, delete or move a file the Beeb
 currently holds open through the FAT service (the same protection the
-hard disc images have), so the worst accidents are blocked. `BEEB.MMB`
-gets extra protection: MMFS reads it by raw sector number, not through
-a file handle, so once MMFS has touched the card the MMB is treated as
-in use - replacing it mid-session would corrupt it even with nothing
-formally "open".
+hard disc images have): `BEEB.MMB` while MMFS uses it, and each disc
+image MMFS2 has in a drive.
 
-The Pi releases these locks when MMFS lets go: it drops all of them on
-a filing-system re-mount, on a **Beeb reset** (BREAK restarts the
-firmware's services and clears the tracking), or on a Pi reboot. The
-catch is that MMFS *also* restarts on BREAK and re-reads `BEEB.MMB` the
-moment you next touch the card from the Beeb, which re-locks it. So the
-rule is: leave the filing system down while you upload.
+A **BREAK** closes them, which lets an upload through, while MMFS keeps
+its drives: the next disc access opens the file again by name. So:
 
-The procedure that works:
-
-1. **On the Beeb, finish with the disc first.** Close any open files
-   (`*CLOSE`), then press CTRL-BREAK and select another filing system
-   (`*TAPE` is always there). BREAK clears the Pi's lock; selecting
-   another filing system keeps MMFS from immediately re-taking it.
-2. Upload or replace the image / `BEEB.MMB` now, while MMFS is down.
-3. **Then go back into MMFS** (`*MMFS`, re-mount the disc). It re-reads
-   everything from the card - which is exactly what you want, because a
-   catalogue cached from before the upload would otherwise write old
-   sector maps over your new image.
+1. **On the Beeb, finish with the disc.** Close any open files
+   (`*CLOSE`), then press BREAK.
+2. Upload or replace the image / `BEEB.MMB`.
+3. **Re-mount the disc** (`*DIN` again, or `*MMFS`) before you write to
+   it, so MMFS reads the new catalogue rather than writing one cached
+   from before the upload over your new image.
 
 Adding a *new* image file (rather than replacing one in use) is safe
 at any time; the Beeb just cannot see it until the disc/catalogue is
 re-read.
 
-If an upload keeps being refused with "in use by the Beeb" and nothing
-on the Beeb seems to be using the file, MMFS is still holding it (it
-re-locks on any card access). Drop to another filing system as in step 1
-and try again; a Pi reboot from the web interface clears everything as a
-last resort.
+If an upload keeps being refused with "in use by the Beeb", MMFS has
+used the disc again since the BREAK. BREAK and try again; a Pi reboot
+from the web interface clears everything as a last resort.
+
+## When the Pi restarts
+
+A Pi restart (a reboot, a firmware update, a power cut to the Pi alone)
+closes everything the Beeb had open. Press BREAK once the Pi is back.
+MMFS then carries on, reopening `BEEB.MMB`. MMFS2 finds the Pi has
+forgotten its drives and directories and starts again as after a
+CTRL-BREAK: both drives empty, the root directory, so `*DDIR` and
+`*DIN` your discs again.
+
+The MMFS2 ROM and the Pi firmware go together: the ROM on the card
+comes with the firmware. MMFS2 from a newer release on an older Pi
+firmware stops with "Pi1MHz too old" rather than use commands the Pi
+does not have; update the firmware (or use the ROM it came with).
 
 ## Write-protecting the card from the Beeb
 
 Add **`Beeb_write_protect=1`** to `/Pi1MHz/Pi1MHz.cfg` to stop the Beeb
-changing anything on the SD card. Every write the Beeb makes - MMFS/MMFS2
-`*SAVE`/`*DELETE`, ADFS writes to the [hard disc images](hard-discs.md),
+changing anything on the SD card (the Pi reads the file when it starts,
+so restart the Pi after changing it - a BREAK is not enough). Every write the Beeb makes - MMFS/MMFS2
+`*SAVE`/`*DELETE`, `*DACCESS`, `*DRENAME`, ADFS writes to the [hard disc images](hard-discs.md),
 even a `*FORM`/format - is silently ignored and reported back as success,
 so nothing on the card changes and the Beeb sees no error. Reads are
 unaffected, so all your discs still load normally.
@@ -114,6 +122,13 @@ Beeb writes anyway.
 
 - Both shipped ROMs are BBC Model B sideways-RAM builds; they need
   writable sideways RAM (see [Loading ROMs](helpers-and-roms.md)).
+- They are built from hoglet67/MMFS master with the Pi1MHz file mode
+  and a set of MMFS fixes (`*DRENAME`, `*DBASE`, `*DDRIVE`, `*FORM`,
+  `*CAT` while spooling, `*LOAD` to co-processor addresses above
+  64K, `*DONBOOT` discs outside the MMB, `*DFREE`, OSGBPB to read-only
+  files and others), all
+  offered upstream; until they are merged the source is branch
+  `pi1mhz-roms` of <https://github.com/dp111/MMFS>.
 - MMFS and the [hard disc emulation](hard-discs.md) coexist happily:
   DFS software from MMFS images, ADFS on the hard discs.
 - The MMFS project documents the full command set, MMB management and

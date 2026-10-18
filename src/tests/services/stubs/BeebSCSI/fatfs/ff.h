@@ -31,6 +31,7 @@ typedef struct {
    FSIZE_t  fsize;
    uint16_t fdate, ftime;
    uint8_t  fattrib;
+   char     altname[13];
    char     fname[256];
 } FILINFO;
 typedef struct { uint32_t csize; } FATFS;
@@ -57,5 +58,7 @@ FRESULT f_getcwd(char *buff, UINT len);
 FRESULT f_rename(const char *path_old, const char *path_new);
 FRESULT f_getfree(const char *path, DWORD *nclst, FATFS **fatfs);
 FRESULT f_unlink(const char *path);
+FRESULT f_stat(const char *path, FILINFO *fno);
+FRESULT f_chmod(const char *path, BYTE attr, BYTE mask);
 
 #define f_size(fp) ((fp)->fsize)

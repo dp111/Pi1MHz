@@ -19,6 +19,7 @@
 
 static Pi1MHz_t pi;
 Pi1MHz_t *const Pi1MHz = &pi;
+uint32_t Pi1MHz_now_us;
 
 #define SVC_BASE 0xA6u
 static callback_func_ptr write_cb[256];
@@ -45,12 +46,18 @@ FRESULT f_read(FIL *fp, void *b, UINT n, UINT *r)
 FRESULT f_write(FIL *fp, const void *b, UINT n, UINT *w)
 { (void)fp; touch_read(b, n); *w = n; return FR_OK; }
 FRESULT f_lseek(FIL *fp, uint32_t ofs) { (void)fp; return (ofs & 0x10000u) ? FR_DISK_ERR : FR_OK; }
-FRESULT f_opendir(DIR *dp, const char *p) { (void)dp; touch_read(p, strlen(p) + 1); return FR_OK; }
+/* A listing ends after a few entries, as a real one does: the slot code
+   scans a directory to its end. */
+static int dir_left;
+FRESULT f_opendir(DIR *dp, const char *p) { (void)dp; touch_read(p, strlen(p) + 1); dir_left = 3; return FR_OK; }
 FRESULT f_closedir(DIR *dp) { (void)dp; return FR_OK; }
 FRESULT f_readdir(DIR *dp, FILINFO *fno)
-{ (void)dp; memset(fno, 0, sizeof *fno); memset(fno->fname, 'x', 200); fno->fname[200] = 0;
+{ (void)dp; memset(fno, 0, sizeof *fno); if (dir_left-- <= 0) return FR_OK;
+  memset(fno->fname, 'x', 200); fno->fname[200] = 0;
   fno->fsize = 123456789u; fno->fattrib = AM_ARC; return FR_OK; }
 FRESULT f_mkdir(const char *p) { touch_read(p, strlen(p) + 1); return FR_OK; }
+FRESULT f_stat(const char *p, FILINFO *fno) { touch_read(p, strlen(p) + 1); memset(fno, 0, sizeof *fno); return (p[0] & 1) ? FR_NO_FILE : FR_OK; }
+FRESULT f_chmod(const char *p, BYTE a, BYTE m) { (void)a; (void)m; touch_read(p, strlen(p) + 1); return FR_OK; }
 FRESULT f_chdir(const char *p) { touch_read(p, strlen(p) + 1); return (p[0] & 1) ? FR_NO_PATH : FR_OK; }
 FRESULT f_getcwd(char *buff, UINT len) { snprintf(buff, len, "/fuzzdir"); return FR_OK; }
 FRESULT f_rename(const char *a, const char *b)
