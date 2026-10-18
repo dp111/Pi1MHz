@@ -85,6 +85,7 @@ static const parserkey scsiattributes[] = {
    { "LBADescriptor"   , 0 ,  8 , NUMSTRING },
    { "ModePage0"       , 0 ,  10 , NUMSTRING},
    { "ModePage1"       , 0 ,  5 , NUMSTRING},
+   { "WritPage1"       , 0 ,  5 , NUMSTRING },
    { "ModePage3"       , 0 , 23 , NUMSTRING },
    { "WritPage3"       , 0 , 23 , NUMSTRING },
    { "ModePage4"       , 0 ,  6 , NUMSTRING},
@@ -101,6 +102,30 @@ static const parserkey scsiattributes[] = {
    { "ModePage36"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "ModePage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "ModePage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   /* Each page's changeable mask (MaskPageN: a set bit may be changed by MODE SELECT; WritPage1
+      and WritPage3 are the old names, read when there is no MaskPage line) and factory defaults
+      (FDefPageN), and how a host asks for them: PageControl=CCS for a drive with no page control
+      field (an early CCS drive answers pages 3D/3E/3F with every page's factory, changeable
+      and current values), SCSI (or absent) for page control 1-3. */
+   { "MaskPage1"       , 0 , 5 , NUMSTRING},
+   { "MaskPage3"       , 0 , 23 , NUMSTRING},
+   { "MaskPage4"       , 0 , 6 , NUMSTRING},
+   { "MaskPage32"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage33"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage35"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage36"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "MaskPage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage1"       , 0 , 5 , NUMSTRING},
+   { "FDefPage3"       , 0 , 23 , NUMSTRING},
+   { "FDefPage4"       , 0 , 6 , NUMSTRING},
+   { "FDefPage32"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage33"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage35"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage36"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "FDefPage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
+   { "PageControl"     , 0 ,  4 , STRING },
    /* 5: the LaserVision user code carries the '=' (e.g. "1=986").
       At 4 the parser truncated it to "1=98", and filesystemReadLunUserCode
       read string[4] off the end of the 4-byte allocation. */
@@ -2153,23 +2178,23 @@ static int filesystemPagetoIndex( uint8_t page)
    return parse_findindex(mode,scsiattributes);
 }
 
-static int filesystemWritetoIndex( uint8_t page)
+/* The index of the key PREFIX + page number (e.g. "MaskPage3"), or -1. */
+static int filesystemPageKeyIndex(const char * prefix, uint8_t page)
 {
-   page = page & 0x3f;
-   char page1 , page2;
-   if (page >= 10)
-   {
-      page1 = (char) ( (page/10)+'0');
-      page2 = (char) ( (page%10)+'0');
-   }
-   else
-      {
-      page1 = (char) (page+'0');
-      page2 = 0;
-      }
+   char key[16];
+   snprintf(key, sizeof key, "%s%u", prefix, (unsigned)(page & 0x3f));
+   return parse_findindex(key, scsiattributes);
+}
 
-   const char mode[] = {'W','r','i','t','P','a','g','e',page1,page2,0};
-   return parse_findindex(mode,scsiattributes);
+/* A page's changeable mask: MaskPageN, or the old name WritPageN when the
+   .cfg has no MaskPage line for it; -1 if there is neither key. */
+static int filesystemMaskIndex(uint8_t lunNumber, uint8_t page)
+{
+   int index = filesystemPageKeyIndex("MaskPage", page);
+   if (index != -1 && filesystemState.keyvalues[lunNumber][index].v.string != NULL)
+      return index;
+   int old = filesystemPageKeyIndex("WritPage", page);
+   return (old != -1) ? old : index;
 }
 
 // returns the mode page data for a given page
@@ -2186,13 +2211,42 @@ char * filesystemGetModePageData(uint8_t lunNumber, uint8_t page, size_t * lengt
 
 // Writes the mode page data for a given page
 
+/* A page's changeable mask (MaskPageN, the page as a drive returns it for
+   "changeable values": page code, length, then 1 = changeable), or NULL. */
+char * filesystemGetMaskPageData(uint8_t lunNumber, uint8_t page, size_t * length)
+{
+   int index = filesystemMaskIndex(lunNumber, page);
+   if (index == -1)
+      return 0;
+   *length = filesystemState.keyvalues[lunNumber][index].length;
+   return filesystemState.keyvalues[lunNumber][index].v.string;
+}
+
+/* A page's factory defaults (FDefPageN), or NULL. */
+char * filesystemGetFDefPageData(uint8_t lunNumber, uint8_t page, size_t * length)
+{
+   int index = filesystemPageKeyIndex("FDefPage", page);
+   if (index == -1)
+      return 0;
+   *length = filesystemState.keyvalues[lunNumber][index].length;
+   return filesystemState.keyvalues[lunNumber][index].v.string;
+}
+
+/* PageControl=CCS: the drive has no page control field (MODE SENSE pages
+   3D/3E/3F give factory, changeable and current values). */
+bool filesystemPageControlCCS(uint8_t lunNumber)
+{
+   const char * s = filesystemState.keyvalues[lunNumber][PAGECONTROL].v.string;
+   return (s != NULL) && (strncasecmp(s, "CCS", 3) == 0);
+}
+
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer)
 {
    int index = filesystemPagetoIndex(page);
    if (index == -1)
       return 0;
 
-   int windex = filesystemWritetoIndex(page);
+   int windex = filesystemMaskIndex(lunNumber, page);
    if (windex != -1 && filesystemState.keyvalues[lunNumber][index].v.string != NULL
                     && filesystemState.keyvalues[lunNumber][windex].v.string != NULL)
       {
