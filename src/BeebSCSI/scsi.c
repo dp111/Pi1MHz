@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 
 // Local includes
@@ -84,19 +85,66 @@
 // static uint8_t emulationMode = FIXED_EMULATION;
 
 
-// Request sense error codes
+// Request sense error codes: the ACB-4000's 4-byte sense (OEM manual
+// 500504-00 section 6.3.1.3), byte 0 = address valid (bit 7) + class + code,
+// bytes 1-3 = LBA.  A SCSI-type drive reports them as extended sense
+// (scsiExtendedSense maps each to a sense key and additional sense code).
 #define NO_ERROR        (0x00u<<24)
-#define UNIT_NOT_READY  (0x02u<<24)
-#define DRIVE_NOT_READY (0x04u<<24)
+#define VFS_NOT_READY   (0x02u<<24)   // what the VFS LUNs have always reported
+#define DRIVE_NOT_READY (0x04u<<24)   // class 0 code 4: drive not ready
 #define BAD_FORMAT      (0x1Cu<<24)
 #define WRITE_FAULT     (0x03u<<24)
 #define ILLEGAL_ADDR    (0xA1u<<24)
 #define BAD_ARG         (0x24u<<24)
 #define INTERLEAVE_ERROR (0x1Au<<24)
 #define INVALID_COMMAND (0x20u<<24)   // ACB-4000 class 2 code 0: invalid command
+#define ILLEGAL_FUNCTION (0x22u<<24)  // SCSI type: MODE SELECT list refused (ASC 22h)
+#define BAD_PARAM_FIELD (0x26u<<24)   // SCSI type: invalid field in the parameter list
 
 // REQUEST SENSE command error reporting structure
 static uint32_t requestSenseData[MAX_LUNS];
+
+// The controller behind the host adaptor (DriveController=, read at power-on)
+static scsiController_t scsiController = SCSI_CONTROLLER_ACB4000;
+
+void scsiSetController(scsiController_t controller)
+{
+   scsiController = controller;
+}
+
+scsiController_t scsiGetController(void)
+{
+   return scsiController;
+}
+
+// DriveController=<name>: ACB-4000, ACB-4070, SASI or SCSI, any case.  No
+// value is the default, ACB-4000; an unknown one is ACB-4000 too, and the
+// caller is told (false) so it can say so.
+bool scsiSetControllerName(const char *name)
+{
+   static const struct { const char *name; scsiController_t type; } names[] = {
+      { "ACB-4000", SCSI_CONTROLLER_ACB4000 },
+      { "ACB-4070", SCSI_CONTROLLER_ACB4070 },
+      { "SASI",     SCSI_CONTROLLER_SASI },
+      { "SCSI",     SCSI_CONTROLLER_SCSI },
+   };
+   scsiController = SCSI_CONTROLLER_ACB4000;
+   if ((name == NULL) || (name[0] == '\0'))
+      return true;
+   for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+      if (strcasecmp(name, names[i].name) == 0) {
+         scsiController = names[i].type;
+         return true;
+      }
+   }
+   return false;
+}
+
+// The Adaptec boards: the ACB-4000 rules (SASI too, until it has its own)
+static bool scsiControllerIsAdaptec(void)
+{
+   return scsiController != SCSI_CONTROLLER_SCSI;
+}
 
 // Global structure for storing SCSI CDBs
 static struct commandDataBlockStruct
@@ -105,6 +153,41 @@ static struct commandDataBlockStruct
    uint8_t targetLUN;
    uint8_t status;
 } commandDataBlock;
+
+// "Not ready" for the LUN addressed.  The Adaptec's code is 04: its 02 is
+// "no seek complete" (OEM manual, class 0 codes), which Pi1MHz used to send.
+// The VFS LUNs keep the 02 their host has always been given.
+static uint32_t scsiUnitNotReady(void)
+{
+   return (commandDataBlock.targetLUN >= 8) ? VFS_NOT_READY : DRIVE_NOT_READY;
+}
+
+// Does the controller have this command (CDB byte 0, groups 0, 1 and 7)?
+// Only the commands Pi1MHz implements are listed; any other is refused at
+// command phase anyway.  The Adaptec boards have no INQUIRY, REASSIGN
+// BLOCKS, READ DEFECT DATA or CERTIFY (OEM manual Table 6-5; ACB-4000A
+// Users Manual Table 5-1), so they answer those "invalid command" (20).  A
+// SCSI drive has no TRANSLATE (the Adaptec's own, not in a SCSI drive's
+// INQUIRY command list); it keeps CERTIFY, which some drives run although
+// their list leaves it out.  STOP/START UNIT is accepted under every type on
+// purpose, as a Pi1MHz extension: *FSSTOP and card work stop the drives
+// with it before the card is changed.  Some real drives refuse it with
+// invalid command &20 (measured on a real drive).
+static bool scsiControllerHasCommand(uint8_t opcode)
+{
+   switch (opcode) {
+      case 0x00: case 0x01: case 0x03: case 0x04: case 0x08: case 0x0A:
+      case 0x0B: case 0x15: case 0x1A: case 0x1B: case 0x1D: case 0x25:
+      case 0x2F:
+         return true;
+      case 0x0F:
+         return scsiControllerIsAdaptec();
+      case 0x07: case 0x12: case 0x37: case 0xE2:
+         return !scsiControllerIsAdaptec();
+      default:
+         return true;     // not one of ours: the decoder refuses it
+   }
+}
 
 // SCSI STATUS phase results
 
@@ -501,6 +584,24 @@ uint8_t scsiEmulationCommand(void)
    // Decode the target LUN
    commandDataBlock.targetLUN = ((newLUN & 0x1E0) >> 5);
 
+   // A drive with its own controller keeps its sense data until the next
+   // command that is not REQUEST SENSE (measured on a real drive: a second
+   // REQUEST SENSE still gives the same sense key); the Adaptec boards clear
+   // it when it has been sent (below).
+   if (!scsiControllerIsAdaptec() && (commandDataBlock.targetLUN < 8) && (commandDataBlock.data[0] != 0x03))
+      requestSenseData[commandDataBlock.targetLUN] = NO_ERROR;
+
+   // Only the commands the controller has, for the drives behind it (LUNs
+   // 0-7).  Pi1MHz's own group 6 commands and the VFS LUNs are not the
+   // controller's, so they are never refused here.
+   if ((commandDataBlock.targetLUN < 8) && (group != 6)
+       && !scsiControllerHasCommand(commandDataBlock.data[0])) {
+      if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: not a command of this controller\r\n"));
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+      requestSenseData[commandDataBlock.targetLUN] = INVALID_COMMAND;
+      return SCSI_STATUS;
+   }
+
    // Transition to command based on received opCode (group 0 commands)
    if (group == 0) {
       // Select group 0 command type
@@ -630,7 +731,7 @@ uint8_t scsiCommandTestUnitReady(void)
 
       // Set request sense error globals
 
-      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
+      requestSenseData[commandDataBlock.targetLUN] = scsiUnitNotReady(); // Unit not ready
 
       return SCSI_STATUS;
    }
@@ -662,7 +763,7 @@ static uint8_t scsiCommandRezeroUnit(void)
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Failed
       // Set request sense error globals
-      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
+      requestSenseData[commandDataBlock.targetLUN] = scsiUnitNotReady(); // Unit not ready
 
       return SCSI_STATUS;
    }
@@ -683,6 +784,48 @@ static uint8_t scsiCommandRezeroUnit(void)
 // Note: This command is used by the host after another command returns
 // a 'bad' status (0x02).  It is a request for a more detailed error code.
 // If the command is incorrectly handled it will cause ADFS to hang...
+// The 4-byte (ACB-4000) error held for a LUN as SCSI extended sense: 70h
+// (F0h with the address valid, the LBA in bytes 3-6), the sense key in byte
+// 2, 0Ah more bytes, the additional sense code in byte 12.  ADFS reads byte 0
+// as its error number, the FileStore byte 12.
+static void scsiExtendedSense(uint32_t error, uint8_t sense[18])
+{
+   static const struct { uint8_t code, key, asc; } map[] = {
+      { 0x00, 0x0, 0x00 },   // no error
+      { 0x02, 0x2, 0x04 },   // not ready
+      { 0x04, 0x2, 0x04 },
+      { 0x03, 0x4, 0x03 },   // write fault
+      { 0x1C, 0x3, 0x31 },   // bad format: medium format corrupted
+      { 0x1A, 0x5, 0x24 },   // interleave error: invalid field in CDB
+      { 0x20, 0x5, 0x20 },   // invalid command operation code
+      { 0x21, 0x5, 0x21 },   // logical block address out of range
+      { 0x22, 0x5, 0x22 },   // illegal function
+      { 0x24, 0x5, 0x24 },   // invalid field in CDB
+      { 0x25, 0x5, 0x25 },   // logical unit not supported
+      { 0x26, 0x5, 0x26 },   // invalid field in parameter list
+   };
+   uint8_t code = (uint8_t)((error >> 24) & 0x7F);
+   bool addressValid = (error & 0x80000000u) != 0;
+   uint8_t key = 0x4, asc = code;       // anything else: hardware error
+   for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
+      if (map[i].code == code) {
+         key = map[i].key;
+         asc = map[i].asc;
+         break;
+      }
+   }
+   memset(sense, 0, 18);
+   sense[0] = addressValid ? 0xF0 : 0x70;
+   sense[2] = key;
+   if (addressValid) {
+      sense[4] = (uint8_t)((error >> 16) & 0x1F);
+      sense[5] = (uint8_t)(error >> 8);
+      sense[6] = (uint8_t)error;
+   }
+   sense[7] = 0x0A;                     // additional sense length
+   sense[12] = asc;
+}
+
 static uint8_t scsiCommandRequestSense(void)
 {
    if (debugFlag_scsiCommands) {
@@ -715,13 +858,26 @@ static uint8_t scsiCommandRequestSense(void)
 #endif
 	// TO DO - should this section be in the preceding if ... else ? or is all the data always output
 
+   if (!scsiControllerIsAdaptec() && (commandDataBlock.targetLUN < 8)) {
+      // A drive with its own controller sends extended sense
+      uint8_t sense[18];
+      scsiExtendedSense(requestSenseData[commandDataBlock.targetLUN], sense);
+      // Cut to the allocation length; 0 means 4 bytes (as a CCS drive's
+      // specification gives REQUEST SENSE)
+      uint8_t length = commandDataBlock.data[4] ? commandDataBlock.data[4] : 4;
+      for (uint8_t i = 0; (i < length) && (i < sizeof sense); i++)
+         hostadapterWriteByte(sense[i]);
+   } else {
    hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0xFF000000) >> 24)); // Error code
    hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0x1F0000) >> 16)); // LBA
    hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0x00FF00) >> 8)); // LBA
    hostadapterWriteByte((uint8_t)((requestSenseData[commandDataBlock.targetLUN] & 0x0000FF))); // LBA
+   }
 
-   // Clear the request sense error reporting globals
-   requestSenseData[commandDataBlock.targetLUN] = NO_ERROR;
+   // Clear the request sense error reporting globals - on an Adaptec board;
+   // a drive with its own controller keeps them for the next command
+   if (scsiControllerIsAdaptec() || (commandDataBlock.targetLUN >= 8))
+      requestSenseData[commandDataBlock.targetLUN] = NO_ERROR;
 
    // Indicate successful command in status and message
    commandDataBlock.status =  0x00; // 0x00 = Good
@@ -763,6 +919,32 @@ static uint8_t scsiCommandFormat(void)
       return SCSI_STATUS;
    }
 
+   // Interpret command parameters
+   formatOptions = (commandDataBlock.data[1] & 0x1F);
+   interleave = (uint16_t)((commandDataBlock.data[3] << 8) + commandDataBlock.data[4]);
+
+   if (scsiControllerIsAdaptec()) {
+      // The Adaptec takes no defect list, or the cylinder/head/bytes-from-
+      // index list (with or without its own fill byte): byte 1 00, 02, 1C or
+      // 1E; "all other combinations ... rejected" (OEM manual 6-8)
+      if ((formatOptions != 0x00) && (formatOptions != 0x02) &&
+          (formatOptions != 0x1C) && (formatOptions != 0x1E)) {
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+         requestSenseData[commandDataBlock.targetLUN] = BAD_ARG;
+         return SCSI_STATUS;
+      }
+      // The fill byte is CDB byte 2 when bit 1 says so, else 6C
+      dataPattern = (formatOptions & 0x02) ? commandDataBlock.data[2] : 0x6C;
+   } else {
+      // As a drive's own firmware does: the control byte must be 0
+      if (commandDataBlock.data[5] != 0) {
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+         requestSenseData[commandDataBlock.targetLUN] = BAD_ARG;
+         return SCSI_STATUS;
+      }
+      dataPattern = commandDataBlock.data[2];
+   }
+
    // Make sure the target LUN is started
    if (!filesystemReadLunStatus(commandDataBlock.targetLUN)) {
       // If the LUN is unavailable we need to create the LUN image on the file system
@@ -781,27 +963,10 @@ static uint8_t scsiCommandFormat(void)
       }
    }
 
-   // Interpret command parameters
-   formatOptions = (commandDataBlock.data[1] & 0x1F);
-   dataPattern = commandDataBlock.data[2]; // Default fill pattern is 0x6C (108)
-   interleave = (uint16_t)((commandDataBlock.data[3] << 8) + commandDataBlock.data[4]);
-
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Format option = "), formatOptions, true);
 
-   // Interleave cannot be greater than the number of sectors per track minus one, or we
-   // should send a 1A error code (Interleave Error)
-   // We don't really care about the interleave... you could uncomment this for a more
-   // exact emulation...
-   //if (interleave > 32)
-   //{
-   //// Indicate unsuccessful command in status and message
-   //commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
-   //
-   //// Set request sense error globals
-   //requestSenseData[commandDataBlock.targetLUN] = INTERLEAVE_ERROR; // Interleave Error
-   //
-   //return SCSI_STATUS;
-   //}
+   // The interleave limit (sectors per track - 1, error 24 or 1A) is the
+   // controller's: filesystemFormatGeometry below checks it.
 
    // Note: The defect list is ignored by the emulation since it does not apply
    // to the emulated file system; this code is included for debug completion.
@@ -849,14 +1014,21 @@ static uint8_t scsiCommandFormat(void)
    // the command is dead - abandon it rather than format the image
    if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 
-   // The interleave decides the sectors per track, as on the ACB-4000:
-   // 32 for 1:1, otherwise 33 (filesystemSetLunSectorsPerTrack)
+   // The controller decides the sectors per track (on the ACB-4000 from the
+   // block size and interleave: filesystemFormatGeometry)
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Interleave = "), interleave, true);
+
+   uint8_t error = filesystemFormatGeometry(commandDataBlock.targetLUN, scsiController, interleave);
+   if ((error != 0) && (error != 0x1C)) {
+      // A parameter the controller refuses: nothing has been changed
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+      requestSenseData[commandDataBlock.targetLUN] = (uint32_t)error << 24;
+      return SCSI_STATUS;
+   }
 
    // Create/recreate the LUN data file according to the drive descriptor and fill
    // with the required data pattern byte:
-   if (!filesystemSetLunSectorsPerTrack(commandDataBlock.targetLUN, interleave == 1u ? 32u : 33u)
-       || !filesystemFormatLun(commandDataBlock.targetLUN, dataPattern)) {
+   if ((error != 0) || !filesystemFormatLun(commandDataBlock.targetLUN, dataPattern)) {
       // Formatting failed...
       if (debugFlag_scsiCommands) debugString_P(PSTR("SCSI Commands: Format failed\r\n"));
 
@@ -1535,6 +1707,171 @@ static uint8_t scsiCommandTranslate(void)
    return SCSI_STATUS;
 }
 
+// MODE SELECT on an Adaptec board: the flat parameter list of OEM manual
+// 6.3.1.11 - a 4-byte header (byte 3 = 8), the 8-byte extent descriptor
+// (density 0, block size 256, 512 or 1024) and the 10-byte drive parameter
+// list (list format 01, cylinders, heads, reduced write current, write
+// precompensation, landing zone, step rate); 24 bytes with list format 02
+// (hard-sectored), and 12 with no drive parameters at all.  Anything else
+// is error 24.  The block size goes into LBADescriptor: it is the size the
+// next FORMAT lays down, and the data path uses it from now on.
+static uint32_t scsiAdaptecModeSelect(const uint8_t *list, uint8_t length)
+{
+   uint8_t lun = commandDataBlock.targetLUN;
+
+   if (((length != 12) && (length != 22) && (length != 24)) || (list[3] != 8))
+      return BAD_ARG;
+   uint32_t blockSize = ((uint32_t)list[9] << 16) | ((uint32_t)list[10] << 8) | list[11];
+   if ((list[4] != 0) || ((blockSize != 256) && (blockSize != 512) && (blockSize != 1024)))
+      return BAD_ARG;
+   if (length > 12) {
+      uint16_t cylinders = (uint16_t)((list[13] << 8) | list[14]);
+      bool format = (list[12] == 0x01) ? (length == 22) : (list[12] == 0x02) && (length == 24);
+      if (!format || (cylinders == 0) || (cylinders > 2048) || (list[15] == 0) || (list[15] > 16))
+         return BAD_ARG;
+   }
+
+   if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT cfg\r\n"), DEBUG_SUCCESS);
+   filesystemSetLunBlockSize(lun, blockSize);
+   if (length > 12) {
+      // the drive parameter list is page 0 (the hard-sector bytes of a
+      // 24-byte list are not kept: Pi1MHz has no hard-sectored drive)
+      filesystemWriteModePageData(lun, 0, 10, &list[12]);
+      // update Page 4 NB we should do page 3 but that never changes
+      filesystemCopyPage0toPage4(lun);
+   }
+   return NO_ERROR;
+}
+
+// MODE SELECT on a drive with its own controller, as a CCS drive's own
+// firmware takes it:
+// - The 4-byte header.  A drive with no block descriptor (ModeParamHeader
+//   byte 3 = 0) wants it all zero: anything in bytes 1-3 is
+//   refused, ASC 22h.  A drive with one takes a descriptor of 8 bytes, whose
+//   block length FORMAT lays down.
+// - Then the pages.  A page code with bit 6 set, a page the drive does not
+//   hold, or one sent longer than the drive's own: ASC 26h.  Bit 7 with a
+//   page length of 0 puts the page back to its factory values (FDefPage).
+//   Otherwise the page is merged in under its mask (a cut-short page keeps
+//   the rest; with no mask, a zero numeric field of page 3 or 4 keeps the
+//   drive's value).
+// - Pages 3 and 4 are checked (filesystemCheckModePage) and wait for FORMAT;
+//   the other pages take effect at once.
+// The whole list is checked before any of it is used.
+static uint32_t scsiDriveModeSelect(uint8_t *list, uint8_t length)
+{
+   uint8_t lun = commandDataBlock.targetLUN;
+   size_t headerLength = 0;
+   const char *header = filesystemGetModeParamHeaderData(lun, &headerLength);
+   bool hasDescriptor = (header != NULL) && (headerLength > 3) && ((uint8_t)header[3] != 0);
+   uint32_t descriptorBlockSize = 0;
+   uint8_t start = 4;
+
+   if (!hasDescriptor) {
+      if ((list[1] | list[2] | list[3]) != 0)
+         return ILLEGAL_FUNCTION;
+   } else if (list[3] != 0) {
+      if ((list[3] != 8) || (length < 12))
+         return BAD_PARAM_FIELD;
+      // block length 0: the drive's own
+      descriptorBlockSize = ((uint32_t)list[9] << 16) | ((uint32_t)list[10] << 8) | list[11];
+      if ((descriptorBlockSize != 0) &&
+          ((descriptorBlockSize < MIN_BLOCK_SIZE) || (descriptorBlockSize >= MAX_BLOCK_SIZE)))
+         return ILLEGAL_FUNCTION;
+      start = 12;
+   }
+
+   // Pass 1: check every page, and work out pages 3 and 4 as they will be
+   static uint8_t pending[2][256];
+   size_t pendingLength[2] = { 0, 0 };
+   bool pendingSet[2] = { false, false };
+   for (unsigned int at = start; at + 2u <= length; ) {
+      uint8_t code = list[at];
+      uint8_t page = code & 0x3F;
+      uint8_t sent = list[at + 1];
+      size_t storedLength = 0;
+      const char *stored = filesystemGetModePageData(lun, page, &storedLength);
+      if ((code & 0x40) || (stored == NULL) || (storedLength < 2))
+         return BAD_PARAM_FIELD;
+      if ((code & 0x80) && (sent == 0)) {
+         if ((page == 3) || (page == 4)) {
+            // back to the factory values (none given: the current ones)
+            size_t factoryLength = 0;
+            const char *factory = filesystemGetFDefPageData(lun, page, &factoryLength);
+            if ((factory == NULL) || (factoryLength == 0)) {
+               factory = stored;
+               factoryLength = storedLength;
+            }
+            memcpy(pending[page == 4], factory, factoryLength);
+            pendingLength[page == 4] = factoryLength;
+            pendingSet[page == 4] = true;
+         }
+         at += 2u;
+         continue;
+      }
+      if (sent > (uint8_t)stored[1])
+         return BAD_PARAM_FIELD;
+      /* A page may arrive shorter than its length byte says: FServFmt sends
+         len+4 bytes where a whole page needs len+6.  The drive takes what
+         arrives and keeps the rest, as a real drive's firmware does. */
+      unsigned int have = (unsigned int)length - at;
+      unsigned int want = (unsigned int)sent + 2u;
+      if (have > want)
+         have = want;
+      if ((page == 3) || (page == 4)) {
+         int i = (page == 4);
+         size_t baseLength = 0;
+         const char *base = pendingSet[i] ? (const char *)pending[i]
+                                          : filesystemGetPendingModePageData(lun, page, &baseLength);
+         if (pendingSet[i])
+            baseLength = pendingLength[i];
+         uint8_t after[256];
+         list[at] = page;
+         size_t afterLength = filesystemModePageAfterSelect(lun, page, base, baseLength,
+                                                            (uint8_t)want, (uint8_t)have, &list[at], after);
+         uint8_t check = filesystemCheckModePage(lun, page, &list[at], (uint8_t)have, after, afterLength);
+         if (check != 0)
+            return (uint32_t)check << 24;
+         memcpy(pending[i], after, afterLength);
+         pendingLength[i] = afterLength;
+         pendingSet[i] = true;
+      }
+      at += have;
+   }
+
+   // Pass 2: the other pages take effect now
+   for (unsigned int at = start; at + 2u <= length; ) {
+      uint8_t code = list[at];
+      uint8_t page = code & 0x3F;
+      uint8_t sent = list[at + 1];
+      if ((code & 0x80) && (sent == 0)) {
+         size_t factoryLength = 0;
+         const char *factory = filesystemGetFDefPageData(lun, page, &factoryLength);
+         if ((page != 3) && (page != 4) && (factory != NULL) && (factoryLength != 0))
+            filesystemSetModePageRaw(lun, page, (const uint8_t *)factory, factoryLength);
+         at += 2u;
+         continue;
+      }
+      unsigned int have = (unsigned int)length - at;
+      unsigned int want = (unsigned int)sent + 2u;
+      if (have > want)
+         have = want;
+      if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI commands: Writing MODE SELECT Page "), page, true);
+      // a page header with no data changes nothing
+      if ((page != 3) && (page != 4) && (have > 2u)) {
+         list[at] = page;
+         filesystemMergeModePageData(lun, page, (uint8_t)want, (uint8_t)have, &list[at]);
+      }
+      at += have;
+   }
+   for (int i = 0; i < 2; i++)
+      if (pendingSet[i])
+         filesystemSetPendingModePageData(lun, (uint8_t)(3 + i), pending[i], pendingLength[i]);
+   if (descriptorBlockSize != 0)
+      filesystemSetPendingBlockSize(lun, descriptorBlockSize);
+   return NO_ERROR;
+}
+
 // SCSI Command (0x15) ModeSelect6
 //
 // Adaptec ACB-4000 Manual notes:
@@ -1615,52 +1952,14 @@ static uint8_t scsiCommandModeSelect6(void)
    // Buffer: abandon the command rather than save them to the .cfg
    if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 
-   // we skip the 4 byte header
-   uint8_t start = 4;
-
-
-   // if the length is 22 and byte is 8 then the drive descriptor is being written
-   if ((length == 22) && Buffer[3]== 8 )
-   {
-     if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT cfg\r\n"), DEBUG_SUCCESS);
-     // we can skip LBADescriptor 8 bytes
-     start = (uint8_t)(start + 8);
-     // update  ModePage0
-     filesystemWriteModePageData(commandDataBlock.targetLUN, 0, 22-4-8, &Buffer[start] );
-     // update  Page 4 NB we should do page 3 but that never changes
-     filesystemCopyPage0toPage4(commandDataBlock.targetLUN);
-   }
-   else
-   {
-      // MODE SELECT Parameters : 0 0 0 0 37 6 40  67  41  65 13 30
-      //                                  38 6 99 111 114 110 13  0
-
-      // we are updating a standard page here
-
-      // then we have page number and length
-      // we might have more that one page so loop if there is more data
-      while ( start+2 < length )
-      {
-         uint8_t page = Buffer[start] & 0x3F ; //
-         Buffer[start] &= 0x3F ;
-         uint8_t len = Buffer[start+1];
-
-         if (debugFlag_scsiCommands)debugStringInt16_P(PSTR("SCSI commands: Writing MODE SELECT Page "), page, true);
-         /* The Acorn FileStore tools (FServFmt, FSFormat) send a 3000-series
-            drive its pages two bytes short.  A real drive takes what arrives
-            and keeps the rest of the page. */
-         unsigned int have = (unsigned int)length - start;
-         unsigned int want = (unsigned int)len + 2;
-         if (have > want)
-            have = want;
-         filesystemMergeModePageData(commandDataBlock.targetLUN, page, (uint8_t)want, (uint8_t)have, &Buffer[start] );
-         start = (uint8_t)(start + have );
-         if ( page == 4 )
-            {
-            // update Page 0 NB we should do page 3 but that never changes
-            filesystemCopyPage4toPage0(commandDataBlock.targetLUN);
-            }
-      }
+   // The list is the controller's: the Adaptec's flat list, or a SCSI
+   // drive's header, block descriptor and pages
+   uint32_t error = scsiControllerIsAdaptec() ? scsiAdaptecModeSelect(Buffer, length)
+                                              : scsiDriveModeSelect(Buffer, length);
+   if (error != NO_ERROR) {
+      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+      requestSenseData[commandDataBlock.targetLUN] = error;
+      return SCSI_STATUS;
    }
 
    filesystemConfigToLunGeometry(commandDataBlock.targetLUN);
@@ -1695,8 +1994,8 @@ static size_t scsiModePageOfKind(uint8_t lun, uint8_t page, int kind, char * out
    const char * cur = filesystemGetModePageData(lun, page, &len);
    if ((cur == NULL) || (len == 0) || (len > room))
       return 0;
-   if (page == 0 && kind != 0)
-      return 0;
+   if (page == 0 && kind != 0 && scsiGetController() != SCSI_CONTROLLER_SCSI)
+      return 0;      // the Adaptec list has current values only
    const char * src = cur;
    if (kind == 2) {
       const char * f = filesystemGetFDefPageData(lun, page, &alt);
@@ -1714,6 +2013,53 @@ static size_t scsiModePageOfKind(uint8_t lun, uint8_t page, int kind, char * out
    }
    memcpy(out, src, len);
    return len;
+}
+
+// MODE SENSE on an Adaptec board: the same flat list MODE SELECT takes,
+// whatever page is asked for - the 4-byte header (byte 3 = 8), the 8-byte
+// extent descriptor with the block size, and the 10-byte drive parameter
+// list (OEM manual 6.3.1.11; ACB-4000A Users Manual 5.3.13): 22 bytes, cut
+// to the allocation length.  SuperForm asks for it on LUN 0 with
+// 1A 00 00 00 16 00.  These are the bytes Pi1MHz has always sent for page 0.
+static uint8_t scsiAdaptecModeSense(const char *header, size_t headerLength,
+                                    const char *extent, size_t extentLength)
+{
+   uint8_t lun = commandDataBlock.targetLUN;
+   uint8_t list[22];
+   size_t pageLength = 0;
+   const char *drive = filesystemGetModePageData(lun, 0, &pageLength);
+
+   memset(list, 0, sizeof list);
+   // Byte 0 is reserved (the mode data length of later SCSI is not sent)
+   if (headerLength > 1) list[1] = (uint8_t)header[1];
+   if (headerLength > 2) list[2] = (uint8_t)header[2];
+   list[3] = 8;                         // the extent descriptor's length
+   memcpy(&list[4], extent, (extentLength < 8) ? extentLength : 8);
+   if ((drive != NULL) && (pageLength > 0)) {
+      memcpy(&list[12], drive, (pageLength < 10) ? pageLength : 10);
+   } else {
+      // No list in the .cfg: the geometry it was given (the defaults of
+      // filesystemLunToconfigGeometry)
+      uint32_t cylinders = filesystemGetLunCylinders(lun);
+      list[12] = 0x01;
+      list[13] = (uint8_t)(cylinders >> 8);
+      list[14] = (uint8_t)cylinders;
+      list[15] = (uint8_t)filesystemGetheadspercylinder(lun);
+      list[17] = 0x80;
+      list[19] = 0x80;
+      list[21] = 0x01;
+   }
+
+   uint8_t length = commandDataBlock.data[4];
+   if (length > sizeof list)
+      length = sizeof list;
+   if (length != 0) {
+      scsiInformationTransferPhase(ITPHASE_DATAIN);
+      for (uint8_t i = 0; i < length; i++)
+         hostadapterWriteByte(list[i]);
+   }
+   commandDataBlock.status = SCSI_STATUS_OK;
+   return SCSI_STATUS;
 }
 
 // SCSI Command (0x1A) ModeSense6
@@ -1774,6 +2120,19 @@ static uint8_t scsiCommandModeSense6(void)
       return SCSI_STATUS;
    }
 
+   if (scsiControllerIsAdaptec() && (commandDataBlock.targetLUN < 8)) {
+      // The board has no page codes: bytes 1 (bits 4-0), 2, 3 and 5 of the
+      // CDB are reserved and must be 0 (OEM manual 6.2.1, 6.3.1.12), so a
+      // host asking for a page gets bad argument, as from the real board.
+      if (((commandDataBlock.data[1] & 0x1F) | commandDataBlock.data[2] |
+           commandDataBlock.data[3] | commandDataBlock.data[5]) != 0) {
+         commandDataBlock.status = SCSI_STATUS_CHECK_COND;
+         requestSenseData[commandDataBlock.targetLUN] = BAD_ARG;
+         return SCSI_STATUS;
+      }
+      return scsiAdaptecModeSense(headerptr, headerlen_sz, LBAptr, LBAlen_sz);
+   }
+
    // Which values, and which pages.  An early CCS drive (PageControl=CCS)
    // has no page control field: it refuses page control 1-3,
    // and pages 3D, 3E and 3F give every page's factory, changeable and
@@ -1802,6 +2161,9 @@ static uint8_t scsiCommandModeSense6(void)
 
    static char modeReply[256];
    size_t total = 0;
+   // Page 0 is an ordinary page here (some drives hold it, others do not,
+   // and a page not held is refused below); the all-pages reply leaves it
+   // out, as a CCS drive's specification says
    if (allPagesWanted) {
       uint8_t last = ccs ? 0x3C : 0x3E;
       for (uint8_t page = 0x01; page <= last; page++)
@@ -1994,7 +2356,7 @@ static uint8_t scsiCommandVerify(void)
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
-      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // as READ6 reports it
+      requestSenseData[commandDataBlock.targetLUN] = scsiUnitNotReady(); // not ready
 
       return SCSI_STATUS;
    }
@@ -2012,13 +2374,16 @@ static uint8_t scsiCommandVerify(void)
       // Get the requested number of blocks
       // Get the requested number of blocks from the CDB
 
-      // If the number of blocks is 0, set to the maximum of 65536
+      // A length of 0 verifies nothing: only the start address is checked
       debugStringInt32_P(PSTR(", LBA = "), logicalBlockAddress, false);
       debugStringInt32_P(PSTR(", number of blocks = "),
-      ((((uint32_t)commandDataBlock.data[7] << 8) | ((uint32_t)commandDataBlock.data[8]))==0)?65536:
         ((uint32_t)commandDataBlock.data[7] << 8) | ((uint32_t)commandDataBlock.data[8])
       , true);
    }
+
+   // A start address at or past the end is error 21 with the address valid
+   // (A1, the address in the sense bytes) - SuperForm verifies with length
+   // 0 in steps of &10000 blocks and stops only on error 21 or 23.
 
 	// Read the cached parameters
 	lunSizeInSectors = filesystemGetLunTotalSectors(commandDataBlock.targetLUN);
@@ -2075,7 +2440,7 @@ static uint8_t scsiCommandReadCapacity(void)
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
-      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // as READ6 reports it
+      requestSenseData[commandDataBlock.targetLUN] = scsiUnitNotReady(); // not ready
       return SCSI_STATUS;
    }
 
@@ -2130,7 +2495,7 @@ static uint8_t scsiCommandReadDefectData10(void)
       // LUN unavailable... return with error status
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("\r\nSCSI Commands: Unavailable LUN #"), commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
-      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // as READ6 reports it
+      requestSenseData[commandDataBlock.targetLUN] = scsiUnitNotReady(); // not ready
 
       return SCSI_STATUS;
    }
@@ -2192,7 +2557,7 @@ static uint8_t scsiCommandInquiry(void)
 
 		// Set request sense error globals: no descriptor loaded means the
 		// LUN was never started - as TEST UNIT READY reports it
-		requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
+		requestSenseData[commandDataBlock.targetLUN] = scsiUnitNotReady(); // Unit not ready
 	}
 
    return SCSI_STATUS;
@@ -2524,7 +2889,7 @@ static uint8_t scsiBeebScsiSelect(void)
       commandDataBlock.status = SCSI_STATUS_CHECK_COND; // 0x02 = Bad
 
       // Set request sense error globals
-      requestSenseData[commandDataBlock.targetLUN] = UNIT_NOT_READY; // Unit not ready
+      requestSenseData[commandDataBlock.targetLUN] = scsiUnitNotReady(); // Unit not ready
 
       return SCSI_STATUS;
    }
@@ -2786,12 +3151,14 @@ static uint8_t scsiBeebScsiFatRead(void)
 
 // SCSI Command Certify (group 7 - command 0xE2)
 //
-// This is a RODIME vendor specific command.
-//
-// No information what this does on the RODIME drives. A 6 byte cmd block is
-// passed,  &E2, LUN , 0 , cycles , 0 , 0
-// FServFMt says this command needs increased timeout.
-// moretime%=cycles*60*18*cyl%*heads%*sects_trk%/&3D850
+// This is a RODIME vendor specific command: the drive's own surface test, run
+// by its firmware on the platters.  A 6 byte cmd block is passed,
+// &E2, LUN , 0 , cycles , 0 , 0
+// Some drives implement it although their INQUIRY command list leaves it
+// out; such a drive ignores a non-zero byte 2, and cycles 0 still runs
+// (measured on a real drive).  An emulated disc has no surface and no defects, so it is
+// answered GOOD at once and the image is not touched.  FServFmt only sizes
+// its timeout from it: moretime%=cycles*60*18*cyl%*heads%*sects_trk%/&3D850
 static uint8_t scsiCommandCertify(void)
 {
 

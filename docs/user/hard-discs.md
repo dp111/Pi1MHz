@@ -29,9 +29,8 @@ ADFS drives 0-7 come from a directory in the SD card root called
   Formatting tools create it; ready-made image sets include it.
 - The `.cfg` file is optional and overrides low-level SCSI details for
   that one drive. Defaults for all drives come from
-  `/Pi1MHz/defscsi.cfg`, a 10MB drive with the geometry of a Rodime
-  RO652 at 33 sectors per track (a real RO652, as in an Acorn FileStore E20,
-  has 61 and is 21MB: formatting tools set that). Most people never touch either file - if
+  `/Pi1MHz/defscsi.cfg`, which emulates a 21MB Rodime RO652 (the drive
+  in an Acorn FileStore E20). Most people never touch either file - if
   you want to, see [SCSI drive descriptors](scsi-cfg.md).
 
 You only need the drives you actually use - a single `scsi0.dat` is a
@@ -145,6 +144,16 @@ the disc (send with `*FCODE`, read the reply as usual):
 |---|---|---|
 | `?T` | Title of the mounted disc (`Title=` in its `scsi0.cfg`) | `T<title>`, `X` if absent |
 | `?Y` | Synopsis of the mounted disc (`Description=`) | `Y<text>`, `X` if absent |
+
+## Which controller: `DriveController=`
+
+`DriveController=` in `Pi1MHz.cfg` says what sits behind the Acorn host
+adaptor, and the drives behave as that hardware does. The default,
+`ACB-4000`, is the Adaptec board of the Acorn Winchester: ADFS and SuperForm
+work as on the real thing, and the drives do not answer INQUIRY. **An Acorn
+FileStore needs `DriveController=SCSI`** (its E20 drive, a Rodime RO652, has
+its own controller); without it the FileStore finds no drive. See
+[Configuration](configuration.md#drive-controllers) for every value.
 
 ## Two adapters on a Master
 

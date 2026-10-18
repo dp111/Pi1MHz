@@ -28,6 +28,7 @@
 #define FILESYSTEM_H_
 
 #include <stddef.h>
+#include "scsi.h"        /* scsiController_t */
 
 // Read/Write sector buffer (must be 256 bytes minimum)
 // Testing shows that this is optimal when it matches the sector size of
@@ -142,6 +143,7 @@ enum parserkeyvalueenum {
     FDEFPAGE37,
     FDEFPAGE38,
     PAGECONTROL,
+    TRACKFORMAT,
     LDUSERCODE,
     LDVIDEOXOFFSET,
     LDVIDEOYOFFSET
@@ -185,6 +187,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber);
 void filesytemdattoconfigGeometry(uint8_t lunNumber);
 void filesystemLunToconfigGeometry(uint8_t lunNumber);
 
+void filesystemSetLunBlockSize(uint8_t lunNumber, uint32_t blockSize);
 void filesystemCopyPage0toPage4(uint8_t lunNumber);
 void filesystemCopyPage4toPage0(uint8_t lunNumber);
 
@@ -194,6 +197,7 @@ void filesystemGetCylHeads( uint8_t lunNumber, uint8_t *returnbuf);
 uint32_t filesystemGetLunBlockSize(uint8_t lunNumber);
 uint32_t filesystemGetLunDataBlockSize(uint8_t lunNumber);
 uint32_t filesystemGetheadspercylinder(uint8_t lunNumber);
+uint32_t filesystemGetLunCylinders(uint8_t lunNumber);
 uint32_t filesystemGetLunSPTSize( uint8_t lunNumber);
 uint32_t filesystemGetLunTotalSectors(uint8_t lunNumber);
 uint32_t filesystemGetLunTotalBytes(uint8_t lunNumber);
@@ -202,7 +206,7 @@ bool filesystemCreateLunImage(uint8_t lunNumber);
 bool filesystemCreateLunDescriptor(uint8_t lunNumber);
 bool filesystemReadLunDescriptor(uint8_t lunNumber);
 bool filesystemWriteAttributes(uint8_t lunNumber);
-bool filesystemSetLunSectorsPerTrack(uint8_t lunNumber, uint16_t sectorsPerTrack);
+uint8_t filesystemFormatGeometry(uint8_t lunNumber, scsiController_t controller, uint16_t interleave);
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern);
 
 // Host-side (MTP / WebDAV) write interlock -- see filesystem.c
@@ -229,6 +233,16 @@ char * filesystemGetFDefPageData(uint8_t lunNumber, uint8_t page, size_t * lengt
 bool filesystemPageControlCCS(uint8_t lunNumber);
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer);
 int filesystemMergeModePageData(uint8_t lunNumber, uint8_t page, uint8_t declared, uint8_t received, const uint8_t * Buffer);
+/* A SCSI drive's pages 3 and 4 wait for FORMAT (see filesystem.c) */
+void filesystemClearPendingPages(uint8_t lunNumber);
+const char * filesystemGetPendingModePageData(uint8_t lunNumber, uint8_t page, size_t * length);
+void filesystemSetPendingModePageData(uint8_t lunNumber, uint8_t page, const uint8_t * data, size_t length);
+void filesystemSetPendingBlockSize(uint8_t lunNumber, uint32_t blockSize);
+size_t filesystemModePageAfterSelect(uint8_t lunNumber, uint8_t page, const char * base, size_t baseLength,
+                                     uint8_t declared, uint8_t received, const uint8_t * Buffer, uint8_t out[256]);
+uint8_t filesystemCheckModePage(uint8_t lunNumber, uint8_t pageCode, const uint8_t * sent, uint8_t received,
+                                const uint8_t * page, size_t length);
+void filesystemSetModePageRaw(uint8_t lunNumber, uint8_t page, const uint8_t * data, size_t length);
 
 bool filesystemSetFatDirectory(const uint8_t * buffer);
 bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer);
