@@ -1992,12 +1992,18 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          // board page 0 or 4).  DriveGeometry=Auto: deduce it from the
          // image size and publish it as the page; CFG: invent nothing, a
          // host asking for the page is refused as by a drive without it.
+         // Said once per LUN until the drives change (a remount or another
+         // ADFS directory), not at every start, MODE SENSE or TRANSLATE.
+         static uint32_t warned[MAX_LUNS];     // drive generation + 1 when said
          filesystemGeometryFromImage(lunNumber);
-         const struct HDGeometry *g = &filesystemState.fsLunGeometry[lunNumber];
-         LOG_WARN("BeebSCSI: LUN %u: the .cfg has no page 4%s - %s %lu x %u x %u from the image size\n",
-                  (unsigned)lunNumber, filesystemPage0IsDriveList() ? " or page 0" : "",
-                  geometryFromCfgOnly ? "DriveGeometry=CFG: no page made; capacity" : "geometry deduced:",
-                  (unsigned long)g->Cylinders, (unsigned)g->Heads, (unsigned)g->SectorsPerTrack);
+         if (warned[lunNumber] != filesystemState.driveGeneration + 1u) {
+            const struct HDGeometry *g = &filesystemState.fsLunGeometry[lunNumber];
+            warned[lunNumber] = filesystemState.driveGeneration + 1u;
+            LOG_WARN("BeebSCSI: LUN %u: the .cfg has no page 4%s - %s %lu x %u x %u from the image size\n",
+                     (unsigned)lunNumber, filesystemPage0IsDriveList() ? " or page 0" : "",
+                     geometryFromCfgOnly ? "DriveGeometry=CFG: no page made; capacity" : "geometry deduced:",
+                     (unsigned long)g->Cylinders, (unsigned)g->Heads, (unsigned)g->SectorsPerTrack);
+         }
          if (!geometryFromCfgOnly)
             filesystemLunToconfigGeometry(lunNumber);
       }
