@@ -12,9 +12,9 @@ A real RO652 (the drive in an Acorn FileStore E20) has 61 sectors per track
 and is 21 MB; formatting tools set that through MODE SELECT page 3. You only need this page if you want to
 make a drive *identify* as something specific, change its title, or adjust
 its geometry. How much of it a host sees depends on the controller set by
-`DriveController=` in `Pi1MHz.cfg`: behind the default Adaptec ACB-4000 only
-the geometry, block size and title matter; the INQUIRY data and mode pages are
-answered with `DriveController=SCSI` (a FileStore).
+`DriveController=` in `Pi1MHz.cfg`: the default (`Mixed`) and `SCSI` answer
+the INQUIRY data and mode pages; behind an Adaptec ACB-4000 only the geometry,
+block size and title matter.
 
 ## Where the files live, and which wins
 
@@ -130,14 +130,17 @@ You can add or remove `ModePageNN` lines; they must keep the
 `ModePageNN` naming so Pi1MHz (and BeebEm) pick them up.
 
 **Which of this a host sees depends on `DriveController=`** in `Pi1MHz.cfg`
-(see [Configuration](configuration.md#drive-controllers)). Behind an Adaptec
-board (`ACB-4000`, the default, or `ACB-4070`) there are no mode pages and no
-INQUIRY: MODE SENSE returns the Adaptec's flat list - `ModeParamHeader` bytes
-1-2 with byte 3 = 8, the 8-byte `LBADescriptor` and the 10-byte `ModePage0` -
-whatever page is asked for, and MODE SELECT takes only that list (22 bytes,
-or 12 with no drive parameters; density 0, block size 256, 512 or 1024,
-cylinders 1-2048, heads 1-16). The pages, `MaskPageNN`, `FDefPageNN` and
-`PageControl` are for `DriveController=SCSI`.
+(see [Configuration](configuration.md#drive-controllers)). Under the default,
+`Mixed`, the pages work as they always have: MODE SENSE answers them, MODE
+SELECT merges them in (a 22-byte list with a block descriptor is the
+Adaptec's drive parameter list, `ModePage0`), and they take effect at once.
+Behind an Adaptec board (`ACB-4000` or `ACB-4070`) there are no mode pages and
+no INQUIRY: MODE SENSE returns the Adaptec's flat list - `ModeParamHeader`
+bytes 1-2 with byte 3 = 8, the 8-byte `LBADescriptor` and the 10-byte
+`ModePage0` - whatever page is asked for, and MODE SELECT takes only that list
+(22 bytes, or 12 with no drive parameters; density 0, block size 256, 512 or
+1024, cylinders 1-2048, heads 1-16); its block size is laid down at the next
+FORMAT.
 
 ### MODE SELECT on a SCSI drive
 
@@ -165,7 +168,7 @@ firmware (ROM 5.02) does:
   and the FORMAT drops them). They are checked
   first: a field the mask lets the host change must fit in the mask (the
   RO652's bytes-per-sector mask `07FF` refuses 2048 and 4096), and the block
-  size must be 128-2047 bytes; otherwise ASC 22h. Other pages take effect at
+  size must be 128-2048 bytes; otherwise ASC 22h. Other pages take effect at
   once.
 - The whole list is checked before any of it is used.
 - **Page 0** is an ordinary page on a SCSI drive (the RO650 spec's Unit
@@ -180,8 +183,8 @@ of `ModePage3` on a SCSI drive. READ, WRITE, VERIFY, READ CAPACITY and the
 image size all use it: an image holds cylinders x heads x sectors per track
 x block size bytes, block n at byte n x block size. It is set the way the
 controller sets it - the Adaptec's MODE SELECT list (256, 512 or 1024), or a
-SCSI drive's page 3 or block descriptor (128-2047, from the next FORMAT). The
-VFS / Domesday volumes always use 256-byte blocks.
+SCSI drive's page 3 or block descriptor (128-2048); either from the next
+FORMAT. The VFS / Domesday volumes always use 256-byte blocks.
 
 ### Sectors per track
 
@@ -192,13 +195,13 @@ the disc keeps them (a `.cfg` without a `ModePage3` line keeps the default
 
 | `DriveController=` | Sectors per track at 256 / 512 / 1024 bytes |
 |---|---|
-| `ACB-4000` | 32 (interleave 1) or 33, 17 or 18, 9 - whatever the `.cfg` had |
-| `ACB-4070` | 46 or 47, 25 or 26, 14 |
+| `Mixed` | 32 (interleave 1) or 33 if the `.cfg` has 32 or 33; any other value is kept |
+| `ACB-4000` | 32 (interleave 1) or 33, 17 or 18, 9 - if the `.cfg` has one of these for its block size (or 32/33); a value set by hand (17 or 63 at 256 bytes, say) is kept |
+| `ACB-4070` | 46 or 47, 25 or 26, 14 - the same rule |
 | `SASI` | as the `.cfg` says |
 | `SCSI` | from `TrackFormat=` below; without one, as the `.cfg` says |
 
-FORMAT's interleave 0 means 2. SuperForm's interleave keeps 33 on an
-ACB-4000. At 32 sectors per track the largest ADFS disc (1024 cylinders by 64
+FORMAT's interleave 0 means 2. SuperForm's interleave keeps 33. At 32 sectors per track the largest ADFS disc (1024 cylinders by 64
 heads) uses every sector ADFS can address. A SCSI drive also keeps the
 interleave in `ModePage3` bytes 14-15.
 

@@ -149,12 +149,14 @@ the disc (send with `*FCODE`, read the reply as usual):
 ## Which controller: `DriveController=`
 
 `DriveController=` in `Pi1MHz.cfg` says what sits behind the Acorn host
-adaptor, and the drives behave as that hardware does. The default,
-`ACB-4000`, is the Adaptec board of the Acorn Winchester: ADFS and SuperForm
-work as on the real thing, and the drives do not answer INQUIRY. **An Acorn
-FileStore needs `DriveController=SCSI`** (its E20 drive, a Rodime RO652, has
-its own controller); without it the FileStore finds no drive. See
-[Configuration](configuration.md#drive-controllers) for every value.
+adaptor. The default, `Mixed`, is Pi1MHz's behaviour as it has always been:
+ADFS, SuperForm and the Acorn FileStore all work, and discs over about 276 MB
+too. The other values make the drives behave strictly as one kind of
+hardware: `ACB-4000` (the Adaptec board of the Acorn Winchester: no INQUIRY,
+the Adaptec's own MODE SENSE list and FORMAT table), `ACB-4070`, `SASI`, or
+`SCSI` (a drive with its own controller, such as the Rodime RO652 in a
+FileStore E20). See [Configuration](configuration.md#drive-controllers) for
+every value.
 
 ## Two adapters on a Master
 
