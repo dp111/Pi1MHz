@@ -36,6 +36,7 @@
      telnetd_mode=7       the Beeb's screen mode (0-7) until it sends a MODE: its size
                           cannot be read, and the daemon needs it to follow the text
      telnetd_copycursor=1 0: do not mark the copy cursor in the terminal
+     telnetd_debug=0      1: the diagnostics on the status page (keys, MODE changes, TCP)
      telnetd_tek=1        draw the Beeb's graphics (VDU 25) in the terminal's Tektronix 4014
                           window when it says it is xterm (asked by CSI > q); 0: never
 */
@@ -83,6 +84,7 @@ static struct tcp_pcb *g_pcb;            /* the one session */
 static uint16_t        g_port;
 static bool            g_ansi = true;
 static bool            g_tek = true;          /* telnetd_tek: graphics to an xterm's Tek window */
+static bool            g_debug;               /* telnetd_debug=1: the diagnostics on the status page */
 static bool            g_utf8 = true;
 static bool            g_copy = true;         /* show the copy cursor */
 
@@ -161,12 +163,10 @@ static char      g_peer[20];
 static uint32_t  g_sessions, g_refused, g_replaced, g_dropped;
 static const char *g_why = "none";       /* why the last session ended, for the status page */
 static int       g_why_err;              /* lwIP's error code when it was lwIP's doing */
-#ifdef DEBUG
 static uint32_t  g_wmem, g_room0;        /* tcp_write said ERR_MEM; there was output and no send room */
 static unsigned  g_drop_sndq, g_drop_sndbuf, g_drop_wnd;   /* the TCP state when a session was dropped as stalled */
 static unsigned long g_drop_obuf;
 static int       g_drop_rxblk;
-#endif
 static uint32_t  g_prog_us;              /* the last time the session moved, or began to wait */
 static bool      g_rx_blocked;           /* the key ring is full and client data is waiting for room */
 static struct pbuf *g_pend;              /* client data taken from lwIP but not yet turned into keys */
@@ -176,8 +176,7 @@ static u16_t     g_pqoff;                /* ... and how far into that segment */
 static tnd_in_t  g_in;
 static tnd_out_t g_out;
 
-#ifdef DEBUG
-/* The model's MODE changes, for the status page (debug builds): how many, the last one (from, to, and
+/* The model's MODE changes, for the status page (telnetd_debug=1): how many, the last one (from, to, and
    how: 'v' a VDU 22 in what the Beeb printed, 'h' a hook or reset report), and the Beeb's last bytes
    before it.  A model in the wrong MODE draws everything at the wrong width (seen once: 20 columns
    while the Beeb was in MODE 0). */
@@ -196,7 +195,6 @@ static void mode_changed(uint8_t how)
    g_mc_count++;
    g_mc_us = Pi1MHz_now_us;
 }
-#endif
 static uint8_t   g_kring[KRING_SIZE];    /* keys for the Beeb */
 static uint32_t  g_khead, g_ktail;
 static uint8_t   g_obuf[OBUF_SIZE];      /* bytes for the client */
@@ -743,10 +741,8 @@ static void pump(void)
                            || (uint32_t)(Pi1MHz_now_us - g_obuf_us) >= OUT_HOLD_US)) {
       size_t want = g_olen - g_opos;
       size_t room = tcp_sndbuf(g_pcb);
-#ifdef DEBUG
       if (room == 0u)
          g_room0++;
-#endif
       if (want > room)
          want = room;
       if (want != 0u) {
@@ -759,9 +755,7 @@ static void pump(void)
                g_prog_us = g_tx_us;              /* the wait for the first ACK starts now */
             (void)tcp_output(g_pcb);
          } else if (e == ERR_MEM) {             /* ERR_MEM: the heap is busy, try again */
-#ifdef DEBUG
             g_wmem++;
-#endif
          } else {
             g_why = "write error";
             g_why_err = (int)e;
@@ -812,10 +806,8 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
          g_break_asked = false;
       if (reset || serial_redirect_beeb_mode() != g_out.mode)
          tnd_out_assume_mode(&g_out, serial_redirect_beeb_mode());
-#ifdef DEBUG
       if (g_out.mode != g_mc_mode)
          mode_changed('h');
-#endif
       serial_redirect_beeb_cursor(&col, &row);
       tnd_out_at(&g_out, col, row);
       if (reset) {
@@ -845,17 +837,13 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
             break;
          if (serial_redirect_read(&c, 1u) == 0u)
             break;
-#ifdef DEBUG
          g_mc_ring[g_mc_n++ % MC_RING] = c;
-#endif
          if (live)
             beeb_byte(c);
          else
             beeb_follow(c);
-#ifdef DEBUG
          if (g_out.mode != g_mc_mode)
             mode_changed('v');
-#endif
       }
    }
 
@@ -923,13 +911,11 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       ABORT_US is dropped, so a client that died mid-output cannot hold the one
       session slot. */
    if (tnd_stalled(session_pending(), now_us, g_prog_us, ABORT_US)) {
-#ifdef DEBUG
       g_drop_sndq = g_pcb->snd_queuelen;
       g_drop_sndbuf = tcp_sndbuf(g_pcb);
       g_drop_wnd = g_pcb->snd_wnd;
       g_drop_obuf = (unsigned long)(g_olen - g_opos);
       g_drop_rxblk = g_rx_blocked;
-#endif
       g_dropped++;
       g_why = "stalled";
       (void)session_close(true);
@@ -1167,15 +1153,14 @@ void telnetd_init(void)
    g_utf8 = cfg_flag("telnetd_utf8", true);
    g_copy = cfg_flag("telnetd_copycursor", true);
    g_tek = cfg_flag("telnetd_tek", true);
+   g_debug = cfg_flag("telnetd_debug", false);
    tnd_out_reset(&g_out, g_utf8);
    {
       const char *m = config_get("telnetd_mode");
       long mode = (m != NULL && m[0] != '\0') ? strtol(m, NULL, 10) : 7;
       g_mode = (uint8_t)((mode >= 0 && mode <= 7) ? mode : 7);
       tnd_out_assume_mode(&g_out, g_mode);
-#ifdef DEBUG
       g_mc_mode = g_out.mode;                   /* the MODE changes count from here */
-#endif
    }
 
    l = tcp_new_ip_type(IPADDR_TYPE_V4);
@@ -1197,67 +1182,76 @@ void telnetd_init(void)
 
 void telnetd_status(char *buf, size_t len)
 {
+   size_t used;
+
    if (g_port == 0u) {
       snprintf(buf, len, "off");
       return;
    }
-   {                                            /* hooks and resets seen: a hook report comes from helper 20 */
-      size_t used = (size_t)snprintf(buf, len, "hooks %lu, resets %lu; ",
-                                     (unsigned long)serial_redirect_mode_gen(), (unsigned long)serial_redirect_reset_gen());
+   /* The diagnostics (telnetd_debug=1 in Pi1MHz.cfg): hooks and resets seen, the model's MODE changes
+      with what led up to the last, the keys waiting and when one was last taken, the TCP state. */
+   if (g_debug) {
+      used = (size_t)snprintf(buf, len, "hooks %lu, resets %lu; ",
+                              (unsigned long)serial_redirect_mode_gen(), (unsigned long)serial_redirect_reset_gen());
       if (used >= len)
          return;
       buf += used;
       len -= used;
+      if (g_mc_count != 0u) {
+         char hex[MC_RING * 3u + 1u];
+         for (unsigned i = 0u; i < MC_RING; i++)
+            snprintf(hex + 3u * i, 4u, "%02x ", g_mc_last[i]);
+         used = (size_t)snprintf(buf, len, "MODE changes %lu, last %u to %u by %s %lu s ago after %s; ",
+                                 (unsigned long)g_mc_count, (unsigned)g_mc_from, (unsigned)g_mc_mode,
+                                 g_mc_how == 'v' ? "VDU 22" : "hook", (unsigned long)((Pi1MHz_now_us - g_mc_us) / 1000000u), hex);
+         if (used >= len)
+            return;
+         buf += used;
+         len -= used;
+      }
    }
-#ifdef DEBUG
-   if (g_mc_count != 0u) {                       /* the model's MODE changes, the last with what led up to it */
-      char   hex[MC_RING * 3u + 1u];
-      size_t used;
-      for (unsigned i = 0u; i < MC_RING; i++)
-         snprintf(hex + 3u * i, 4u, "%02x ", g_mc_last[i]);
-      used = (size_t)snprintf(buf, len, "MODE changes %lu, last %u to %u by %s %lu s ago after %s; ",
-                              (unsigned long)g_mc_count, (unsigned)g_mc_from, (unsigned)g_mc_mode,
-                              g_mc_how == 'v' ? "VDU 22" : "hook", (unsigned long)((Pi1MHz_now_us - g_mc_us) / 1000000u), hex);
-      if (used >= len)
-         return;
-      buf += used;
-      len -= used;
-   }
-#endif
    if (serial_redirect_lit_ok()) {              /* ROM build 13: the keys waiting, and a Beeb not taking them */
       uint32_t w = keys_waiting();
-      uint32_t age = (Pi1MHz_now_us - g_taken_us) / 1000000u;
-      size_t used = (size_t)snprintf(buf, len, "keys waiting %lu, last taken %lu s ago%s; ", (unsigned long)w,
-                                     (unsigned long)age,
-                                     (w != 0u && (Pi1MHz_now_us - g_taken_us) >= KEYS_HUNG_US) ? " - BBC NOT TAKING KEYS" : "");
+      bool     hung = w != 0u && (Pi1MHz_now_us - g_taken_us) >= KEYS_HUNG_US;
+      used = 0u;
+      if (g_debug)
+         used = (size_t)snprintf(buf, len, "keys waiting %lu, last taken %lu s ago%s; ", (unsigned long)w,
+                                 (unsigned long)((Pi1MHz_now_us - g_taken_us) / 1000000u), hung ? " - BBC NOT TAKING KEYS" : "");
+      else if (hung)                            /* otherwise only when it matters */
+         used = (size_t)snprintf(buf, len, "BBC NOT TAKING KEYS (%lu waiting); ", (unsigned long)w);
       if (used >= len)
          return;
       buf += used;
       len -= used;
    }
    if (g_pcb != NULL)
-#ifdef DEBUG
-      snprintf(buf, len, "port %u, %s from %s, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s (%d); ring %lu, rx %s, rcvwnd %u, tcp state %d, sndq %u",
-               (unsigned int)g_port, g_stage == S_LIVE ? "live" : "login", g_peer,
-               (unsigned long)g_sessions, (unsigned long)g_refused,
-               (unsigned long)g_replaced, (unsigned long)g_dropped, g_why, g_why_err,
-               (unsigned long)(g_ktail - g_khead), g_rx_blocked ? "refused" : "ok",
-               (unsigned int)g_pcb->rcv_wnd, (int)g_pcb->state, (unsigned int)g_pcb->snd_queuelen);
-#else
-      snprintf(buf, len, "port %u, %s from %s, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s",
-               (unsigned int)g_port, g_stage == S_LIVE ? "live" : "login", g_peer,
-               (unsigned long)g_sessions, (unsigned long)g_refused,
-               (unsigned long)g_replaced, (unsigned long)g_dropped, g_why);
-#endif
+      used = (size_t)snprintf(buf, len, "port %u, %s from %s, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s",
+                              (unsigned int)g_port, g_stage == S_LIVE ? "live" : "login", g_peer,
+                              (unsigned long)g_sessions, (unsigned long)g_refused,
+                              (unsigned long)g_replaced, (unsigned long)g_dropped, g_why);
    else
-      snprintf(buf, len, "port %u, listening, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s (%d)",
-               (unsigned int)g_port, (unsigned long)g_sessions, (unsigned long)g_refused,
-               (unsigned long)g_replaced, (unsigned long)g_dropped, g_why, g_why_err);
+      used = (size_t)snprintf(buf, len, "port %u, listening, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s",
+                              (unsigned int)g_port, (unsigned long)g_sessions, (unsigned long)g_refused,
+                              (unsigned long)g_replaced, (unsigned long)g_dropped, g_why);
+   if (g_debug && used < len) {
+      buf += used;
+      len -= used;
+      if (g_pcb != NULL)
+         snprintf(buf, len, " (%d); ring %lu, rx %s, rcvwnd %u, tcp state %d, sndq %u", g_why_err,
+                  (unsigned long)(g_ktail - g_khead), g_rx_blocked ? "refused" : "ok",
+                  (unsigned int)g_pcb->rcv_wnd, (int)g_pcb->state, (unsigned int)g_pcb->snd_queuelen);
+      else
+         snprintf(buf, len, " (%d)", g_why_err);
+   }
 }
 
-#ifdef DEBUG
-/* The TCP side, for /status (debug builds): tcp_write refused for memory, output waiting with no send room, and
-   the session's state when one was last dropped as stalled. */
+bool telnetd_debug(void)
+{
+   return g_debug;
+}
+
+/* The TCP side, for /status (telnetd_debug=1): tcp_write refused for memory, output waiting with no send
+   room, and the session's state when one was last dropped as stalled. */
 void telnetd_tcp_status(char *buf, size_t len)
 {
    snprintf(buf, len, "wmem %lu, room0 %lu; last drop: sndq %u sndbuf %u wnd %u obuf %lu rxblk %d; now: obuf %lu sndq %u sndbuf %u",
@@ -1266,4 +1260,3 @@ void telnetd_tcp_status(char *buf, size_t len)
             g_pcb != NULL ? (unsigned int)g_pcb->snd_queuelen : 0u,
             g_pcb != NULL ? (unsigned int)tcp_sndbuf(g_pcb) : 0u);
 }
-#endif

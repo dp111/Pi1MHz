@@ -531,6 +531,7 @@ nowhere else, and keep telnet to a network you trust.
 | `telnetd_mode` | `7` | The Beeb's screen mode (0-7) until it sends a `MODE`. Its size cannot be read, and the daemon needs it to follow the text. |
 | `telnetd_copycursor` | `1` | `0` does not mark the copy cursor in the terminal. |
 | `telnetd_tek` | `1` | Draw the Beeb's graphics in xterm's Tektronix window when the terminal says it is xterm; `0`: never. |
+| `telnetd_debug` | `0` | `1` shows TelnetD's diagnostics on the status page (keys waiting, the MODE it follows and why it last changed, the TCP state). Without it the status shows the port, the sessions and, only when it happens, BBC NOT TAKING KEYS. |
 
 `/status` on the web interface has a **Telnetd** row (the port, whether a
 session is live, who from) and the **Serial** row says `hooked (telnet)`

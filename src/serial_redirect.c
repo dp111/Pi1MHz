@@ -767,10 +767,16 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    for (unsigned int i = 0u; i < sizeof stash; i++)
       Pi1MHz_Register_Memory(WRITE_FRED, (unsigned int)address + stash[i], Pi1MHz_EmulatedMemoryByte);
    if (address >= SER_WS_OFF) {                 /* the auto-start ROM's workspace (see SER_WS_OFF) */
+      /* Cleared only at the first init after the Pi starts.  This runs again on every Beeb reset,
+         up to a poll pass after it, by when the ROM may already have kept the MOS's routines here:
+         clearing them then sent REMV to &0000. */
+      static bool ws_cleared;
       for (unsigned int i = 0u; i < SER_WS_LEN; i++) {
-         Pi1MHz_MemoryWrite((uint32_t)address - SER_WS_OFF + i, 0u);
+         if (!ws_cleared)
+            Pi1MHz_MemoryWrite((uint32_t)address - SER_WS_OFF + i, 0u);
          Pi1MHz_Register_Memory(WRITE_FRED, (unsigned int)address - SER_WS_OFF + i, Pi1MHz_EmulatedMemoryByte);
       }
+      ws_cleared = true;
       Pi1MHz_MemoryWrite((uint32_t)address - SER_WS_OFF + SER_WS_TELNET,   /* telnetd on: the ROM may hook in */
                          telnetd_enabled() ? 1u : 0u);
    }

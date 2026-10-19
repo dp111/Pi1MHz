@@ -198,6 +198,7 @@ See [The telnet daemon](telnetd.md).
 | `telnetd_mode` | `7` | The Beeb's screen mode (0-7) until it sends a `MODE`. |
 | `telnetd_copycursor` | `1` | `0` does not mark the copy cursor in the terminal. |
 | `telnetd_tek` | `1` | Draw the Beeb's graphics in xterm's Tektronix window when the terminal says it is xterm; `0`: never. |
+| `telnetd_debug` | `0` | `1` shows TelnetD's diagnostics on the status page (keys waiting, the screen MODE it follows and why it last changed, the TCP state) and the Telnetd TCP row. |
 
 ## Econet (AUN) settings
 

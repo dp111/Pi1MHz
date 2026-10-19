@@ -3302,15 +3302,16 @@ static bool route_status(ws_conn_t *c)
    modem_status(tmp, sizeof tmp);
    table_row(&b, "Modem", tmp);
    table_row(&b, "Beeb storage", filesystemStorageOnUsb() ? "USB drive" : "SD card");
-   telnetd_status(tmp, sizeof tmp);
-   table_row(&b, "Telnetd", tmp);
-#ifdef DEBUG
    {
+      static char tl[640];                     /* with telnetd_debug=1 the row runs well past tmp's 256 */
+      telnetd_status(tl, sizeof tl);
+      table_row(&b, "Telnetd", tl);
+   }
+   if (telnetd_debug()) {                      /* telnetd_debug=1 in Pi1MHz.cfg */
       char tt[192];
       telnetd_tcp_status(tt, sizeof tt);
       table_row(&b, "Telnetd TCP", tt);
    }
-#endif
    if (usb_is_host()) {
       char m[64];
       usb_mouse_status(m, sizeof m);
