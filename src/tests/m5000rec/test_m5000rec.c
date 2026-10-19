@@ -23,7 +23,6 @@
 #include "BeebSCSI/fatfs/ff.h"
 #include "BeebSCSI/fatfs/diskio.h"
 #include "BeebSCSI/filesystem.h"
-#include "BeebSCSI/scsi.h"
 #include "M5000_emulator.h"
 
 /* ---- platform stubs ---------------------------------------------------- */
@@ -59,8 +58,6 @@ bool rpi_audio_beeb_muted(void) { return false; }
 
 const char *config_get(const char *key) { (void)key; return NULL; }
 bool config_beeb_write_protected(void) { return false; }
-/* filesystem.c asks which controller the drives are behind */
-scsiController_t scsiGetController(void) { return SCSI_CONTROLLER_ACB4000; }
 uint32_t RPI_GetSystemTime(void) { return 0; }
 void videoplayer_media_changed(void) {}
 /* storage= is unset: the card; no USB drive. */

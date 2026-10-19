@@ -29,6 +29,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 // Global for the emulation mode (fixed or removable drive)
 // Note: The fixed mode emulates SCSI-1 compliant hard drives for the Beeb
@@ -93,9 +94,11 @@
 // Pi1MHz.cfg, one for all drives).  It decides the commands a drive
 // answers, its sense format and its FORMAT rules; Pi1MHz's own extensions
 // (LUNs 2-7, the VFS LUNs, the group 6 commands, the jukebox) work under
-// every type.
+// every type.  The default, Mixed, is Pi1MHz's own set as it has always
+// been; the others are opt-in strict emulations.
 typedef enum {
-   SCSI_CONTROLLER_ACB4000 = 0,   // Adaptec ACB-4000/4000A/4010 (MFM), the default
+   SCSI_CONTROLLER_MIXED = 0,     // Pi1MHz's own mixed set, the default
+   SCSI_CONTROLLER_ACB4000,       // Adaptec ACB-4000/4000A/4010 (MFM)
    SCSI_CONTROLLER_ACB4070,       // Adaptec ACB-4070 (RLL)
    SCSI_CONTROLLER_SASI,          // Xebec/DTC/OMTI-style boards (for now ACB-4000 rules)
    SCSI_CONTROLLER_SCSI           // a drive with its own controller (CCS-era SCSI)
@@ -106,6 +109,10 @@ void scsiInitialise(void);
 void scsiSetController(scsiController_t controller);
 scsiController_t scsiGetController(void);
 bool scsiSetControllerName(const char *name);
+// A SCSI drive's pages 3 and 4 (and an Adaptec board's block size) wait
+// for FORMAT: the page as FORMAT will make it, and dropping what waits
+void scsiClearPendingPages(uint8_t lun);
+const char * scsiGetPendingModePageData(uint8_t lun, uint8_t page, size_t * length);
 void scsiReset(uint8_t scsiid);
 
 void scsiJukeboxSwap(uint8_t lun);

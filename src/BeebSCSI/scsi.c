@@ -90,7 +90,7 @@
 // bytes 1-3 = LBA.  A SCSI-type drive reports them as extended sense
 // (scsiExtendedSense maps each to a sense key and additional sense code).
 #define NO_ERROR        (0x00u<<24)
-#define VFS_NOT_READY   (0x02u<<24)   // what the VFS LUNs have always reported
+#define UNIT_NOT_READY  (0x02u<<24)   // what the VFS LUNs and Mixed have always reported
 #define DRIVE_NOT_READY (0x04u<<24)   // class 0 code 4: drive not ready
 #define BAD_FORMAT      (0x1Cu<<24)
 #define WRITE_FAULT     (0x03u<<24)
@@ -105,11 +105,13 @@
 static uint32_t requestSenseData[MAX_LUNS];
 
 // The controller behind the host adaptor (DriveController=, read at power-on)
-static scsiController_t scsiController = SCSI_CONTROLLER_ACB4000;
+static scsiController_t scsiController = SCSI_CONTROLLER_MIXED;
 
 void scsiSetController(scsiController_t controller)
 {
    scsiController = controller;
+   // page 0 is the Adaptec drive list everywhere but on a SCSI drive
+   filesystemSetPage0IsDriveList(controller != SCSI_CONTROLLER_SCSI);
 }
 
 scsiController_t scsiGetController(void)
@@ -117,23 +119,24 @@ scsiController_t scsiGetController(void)
    return scsiController;
 }
 
-// DriveController=<name>: ACB-4000, ACB-4070, SASI or SCSI, any case.  No
-// value is the default, ACB-4000; an unknown one is ACB-4000 too, and the
-// caller is told (false) so it can say so.
+// DriveController=<name>: Mixed, ACB-4000, ACB-4070, SASI or SCSI, any
+// case.  No value is the default, Mixed; an unknown one is Mixed too, and
+// the caller is told (false) so it can say so.
 bool scsiSetControllerName(const char *name)
 {
    static const struct { const char *name; scsiController_t type; } names[] = {
+      { "Mixed",    SCSI_CONTROLLER_MIXED },
       { "ACB-4000", SCSI_CONTROLLER_ACB4000 },
       { "ACB-4070", SCSI_CONTROLLER_ACB4070 },
       { "SASI",     SCSI_CONTROLLER_SASI },
       { "SCSI",     SCSI_CONTROLLER_SCSI },
    };
-   scsiController = SCSI_CONTROLLER_ACB4000;
+   scsiSetController(SCSI_CONTROLLER_MIXED);
    if ((name == NULL) || (name[0] == '\0'))
       return true;
    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
       if (strcasecmp(name, names[i].name) == 0) {
-         scsiController = names[i].type;
+         scsiSetController(names[i].type);
          return true;
       }
    }
@@ -143,7 +146,14 @@ bool scsiSetControllerName(const char *name)
 // The Adaptec boards: the ACB-4000 rules (SASI too, until it has its own)
 static bool scsiControllerIsAdaptec(void)
 {
-   return scsiController != SCSI_CONTROLLER_SCSI;
+   return (scsiController == SCSI_CONTROLLER_ACB4000) || (scsiController == SCSI_CONTROLLER_ACB4070) ||
+          (scsiController == SCSI_CONTROLLER_SASI);
+}
+
+// A drive with its own controller
+static bool scsiControllerIsDrive(void)
+{
+   return scsiController == SCSI_CONTROLLER_SCSI;
 }
 
 // Global structure for storing SCSI CDBs
@@ -155,11 +165,12 @@ static struct commandDataBlockStruct
 } commandDataBlock;
 
 // "Not ready" for the LUN addressed.  The Adaptec's code is 04: its 02 is
-// "no seek complete" (OEM manual, class 0 codes), which Pi1MHz used to send.
-// The VFS LUNs keep the 02 their host has always been given.
+// "no seek complete" (OEM manual, class 0 codes).  The VFS LUNs, and every
+// LUN under Mixed, keep the 02 their hosts have always been given.
 static uint32_t scsiUnitNotReady(void)
 {
-   return (commandDataBlock.targetLUN >= 8) ? VFS_NOT_READY : DRIVE_NOT_READY;
+   return ((commandDataBlock.targetLUN >= 8) || (scsiController == SCSI_CONTROLLER_MIXED))
+          ? UNIT_NOT_READY : DRIVE_NOT_READY;
 }
 
 // Does the controller have this command (CDB byte 0, groups 0, 1 and 7)?
@@ -172,9 +183,11 @@ static uint32_t scsiUnitNotReady(void)
 // their list leaves it out.  STOP/START UNIT is accepted under every type on
 // purpose, as a Pi1MHz extension: *FSSTOP and card work stop the drives
 // with it before the card is changed.  Some real drives refuse it with
-// invalid command &20 (measured on a real drive).
+// invalid command &20 (measured on a real drive).  Mixed has them all.
 static bool scsiControllerHasCommand(uint8_t opcode)
 {
+   if (scsiController == SCSI_CONTROLLER_MIXED)
+      return true;
    switch (opcode) {
       case 0x00: case 0x01: case 0x03: case 0x04: case 0x08: case 0x0A:
       case 0x0B: case 0x15: case 0x1A: case 0x1B: case 0x1D: case 0x25:
@@ -183,10 +196,266 @@ static bool scsiControllerHasCommand(uint8_t opcode)
       case 0x0F:
          return scsiControllerIsAdaptec();
       case 0x07: case 0x12: case 0x37: case 0xE2:
-         return !scsiControllerIsAdaptec();
+         return scsiControllerIsDrive();
       default:
          return true;     // not one of ours: the decoder refuses it
    }
+}
+
+// A drive with its own controller (DriveController=SCSI) holds the pages 3
+// and 4 a MODE SELECT sends, and a block descriptor's block size, pending
+// until FORMAT makes them current (as a real drive does: MODE SENSE and
+// READ CAPACITY show the new values only after FORMAT).  An Adaptec or SASI
+// board holds the block size of its MODE SELECT list the same way, so an
+// abandoned format leaves the image read in the block size it was laid
+// down in.  A real drive keeps the pending image on the disc; here it is
+// RAM, dropped when LUNs 0-7 stop being the same drives (a remount, or a
+// jukebox of the ADFS directory: filesystemGetDriveGeneration).
+static struct {
+   uint32_t generation;                 // filesystemGetDriveGeneration() it belongs to
+   bool     valid[2];                   // [0] page 3, [1] page 4
+   uint8_t  length[2];
+   uint8_t  data[2][32];
+   uint32_t blockSize;                  // 0 = none
+} scsiPending[8];
+
+void scsiClearPendingPages(uint8_t lun)
+{
+   if (lun < 8) {
+      memset(&scsiPending[lun], 0, sizeof scsiPending[lun]);
+      scsiPending[lun].generation = filesystemGetDriveGeneration();
+   }
+}
+
+// Empty a LUN's pending state if it belongs to other drives
+static void scsiPendingCheck(uint8_t lun)
+{
+   if (scsiPending[lun].generation != filesystemGetDriveGeneration())
+      scsiClearPendingPages(lun);
+}
+
+/* Page 3 or 4 as FORMAT will make it: the pending page, else the current */
+const char * scsiGetPendingModePageData(uint8_t lun, uint8_t page, size_t * length)
+{
+   int i = (page == 4);
+   if ((lun < 8) && ((page == 3) || (page == 4))) {
+      scsiPendingCheck(lun);
+      if (scsiPending[lun].valid[i]) {
+         *length = scsiPending[lun].length[i];
+         return (const char *)scsiPending[lun].data[i];
+      }
+   }
+   return filesystemGetModePageData(lun, page, length);
+}
+
+static void scsiSetPendingModePageData(uint8_t lun, uint8_t page, const uint8_t * data, size_t length)
+{
+   int i = (page == 4);
+   if ((lun >= 8) || ((page != 3) && (page != 4)))
+      return;
+   scsiPendingCheck(lun);
+   if (length > sizeof scsiPending[lun].data[i])
+      length = sizeof scsiPending[lun].data[i];
+   memcpy(scsiPending[lun].data[i], data, length);
+   scsiPending[lun].length[i] = (uint8_t)length;
+   scsiPending[lun].valid[i] = true;
+}
+
+static void scsiSetPendingBlockSize(uint8_t lun, uint32_t blockSize)
+{
+   if (lun >= 8)
+      return;
+   scsiPendingCheck(lun);
+   scsiPending[lun].blockSize = blockSize;
+}
+
+/* FORMAT on a SCSI drive: the pending pages 3 and 4 (and block descriptor
+   block size) become current, in memory; scsiFormatGeometry saves them. */
+static void scsiApplyPendingPages(uint8_t lun)
+{
+   scsiPendingCheck(lun);
+   for (int i = 0; i < 2; i++)
+      if (scsiPending[lun].valid[i])
+         filesystemSetModePageRaw(lun, (uint8_t)(3 + i), scsiPending[lun].data[i], scsiPending[lun].length[i]);
+   uint32_t blockSize = scsiPending[lun].blockSize;
+   if (blockSize == 0)
+      return;
+   size_t length = 0;
+   const char *page3 = filesystemGetModePageData(lun, 3, &length);
+   if ((page3 != NULL) && (length >= 14) && (length <= 256)) {
+      uint8_t page[256];
+      memcpy(page, page3, length);
+      page[12] = (uint8_t)(blockSize >> 8);
+      page[13] = (uint8_t)blockSize;
+      filesystemSetModePageRaw(lun, 3, page, length);
+   }
+   filesystemSetLunBlockSize(lun, blockSize);
+}
+
+/* A SCSI drive checks a new page 3 or 4 before it takes it.  The limits come
+   from the page's mask, not from the drive's model: a numeric field the mask
+   lets the host change must fit in the mask (a bytes per sector mask of
+   07FF refuses 2048 and 4096; a heads mask of 0F 16 heads), and a block
+   size must be 128 to 2048 (MIN_BLOCK_SIZE to MAX_BLOCK_SIZE), which the
+   data path takes.  A zero in a field the mask protects is ignored.  Sent
+   is the page as received, `received` bytes of it; page the result.
+   Returns 0 or 0x22, a SCSI drive's "illegal" for such a list. */
+static uint8_t scsiCheckModePage(uint8_t lun, uint8_t pageCode, const uint8_t * sent, uint8_t received,
+                                 const uint8_t * page, size_t length)
+{
+   size_t fieldCount, maskLength = 0;
+   const modePageField_t * fields = filesystemModePageFields(pageCode, &fieldCount);
+   const char * mask = filesystemGetMaskPageData(lun, pageCode, &maskLength);
+
+   for (size_t f = 0; (mask != NULL) && (f < fieldCount); f++) {
+      bool changeable = false, nonZero = false, fits = true;
+      for (unsigned int b = fields[f].start; b < (unsigned int)fields[f].start + fields[f].size; b++) {
+         uint8_t m = (b < maskLength) ? (uint8_t)mask[b] : 0u;
+         uint8_t v = (b < received) ? sent[b] : 0u;
+         changeable = changeable || (m != 0);
+         nonZero = nonZero || (v != 0);
+         fits = fits && ((v & (uint8_t)~m) == 0);
+      }
+      if (changeable && nonZero && !fits)
+         return 0x22;
+   }
+   if ((pageCode == 3) && (length >= 14)) {
+      uint32_t blockSize = ((uint32_t)page[12] << 8) | page[13];
+      if ((blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
+         return 0x22;
+   }
+   return 0;
+}
+
+// Sectors per track an Adaptec board lays down at FORMAT, by block size
+// (256, 512, 1024) and interleave (1, more than 1): ACB-4000 OEM manual
+// Table A-1 (MFM) and ACB-4000A Users Manual Tables 2-1 and 2-2 (the
+// ACB-4070's RLL).
+static const uint8_t acbSectorsPerTrack[2][3][2] = {
+   { { 32, 33 }, { 17, 18 }, {  9,  9 } },     // ACB-4000 (MFM)
+   { { 46, 47 }, { 25, 26 }, { 14, 14 } },     // ACB-4070 (RLL)
+};
+
+static int scsiAcbRow(uint32_t blockSize)
+{
+   return (blockSize == 256u) ? 0 : (blockSize == 512u) ? 1 : (blockSize == 1024u) ? 2 : -1;
+}
+
+// FORMAT's sectors per track and block size, by controller (ACB-4000 FORMAT,
+// OEM manual 6.3.1.5).  Called before filesystemFormatLun, which sizes the
+// image from the .cfg, so the new values go into the LUN's .cfg first
+// (filesystemSaveFormatGeometry).  Interleave 0 means 2.
+//   Mixed (the default), as Pi1MHz has always done: a LUN at 32 or 33
+//     sectors per track follows the interleave, 32 for 1 and 33 otherwise;
+//     any other value is kept.
+//   ACB-4000 / ACB-4070: a MODE SELECT's block size is laid down now.  The
+//     board's table gives the sectors per track, but only where the board
+//     chose them: when the LUN's value is the table's for the block size it
+//     has now (or the 32/33 Pi1MHz has always given 256-byte LUNs).  Any
+//     other value was set in the .cfg by hand (17 or 63 at 256 bytes, say)
+//     and is kept.  An interleave above sectors per track - 1 is error 24
+//     on the ACB-4000 (OEM 6-7) and 1A on the ACB-4070 (Users Manual 5.3.3).
+//   SASI: a MODE SELECT's block size, and the .cfg's sectors per track
+//     (TODO: the board's own, 32 or 33 by jumper); interleave as the ACB-4000.
+//   SCSI (as a drive's own firmware does it): the pending pages 3 and 4 become
+//     current; the block size is page 3's (bytes 12-13); with a TrackFormat
+//     the drive works out its sectors per track: N = T / (block size + O)
+//     physical, N - S used, and the interleave must be below N - 1; without
+//     one, page 3's sectors per track stay and the interleave must be below
+//     them.  The interleave (0 kept as 2) goes into page 3 bytes 14-15.
+// A write-protected or read-only image is left alone.  Returns 0, or the
+// ACB-4000 error code FORMAT is to report (1C if the .cfg cannot be saved).
+static uint8_t scsiFormatGeometry(uint8_t lun, uint16_t interleave)
+{
+   if (!filesystemStartLunForFormat(lun))
+      return 0;
+
+   uint32_t oldBlockSize = filesystemGetLunBlockSize(lun);
+   uint32_t blockSize = oldBlockSize;
+   uint32_t newBlockSize = 0;                 // 0: as it is
+   uint16_t now = (uint16_t)filesystemGetLunSPTSize(lun);
+   uint16_t sectorsPerTrack = now;
+   uint16_t interleaveUsed = interleave ? interleave : 2u;
+   uint16_t pageInterleave = 0;               // SCSI: kept in page 3
+   uint8_t error = 0;
+
+   switch (scsiController) {
+      case SCSI_CONTROLLER_MIXED: {
+         size_t length = 0;
+         const char *page3 = filesystemGetModePageData(lun, 3, &length);
+         if ((page3 != NULL) && (length >= 12) && ((now == 32u) || (now == 33u)))
+            sectorsPerTrack = (interleave == 1u) ? 32u : 33u;
+         break;
+      }
+      case SCSI_CONTROLLER_ACB4000:
+      case SCSI_CONTROLLER_ACB4070:
+      case SCSI_CONTROLLER_SASI: {
+         scsiPendingCheck(lun);
+         if (scsiPending[lun].blockSize != 0)
+            blockSize = newBlockSize = scsiPending[lun].blockSize;
+         if (scsiController == SCSI_CONTROLLER_SASI) {
+            if (interleaveUsed > sectorsPerTrack - 1u)
+               error = 0x24;
+            break;
+         }
+         int board = (scsiController == SCSI_CONTROLLER_ACB4070);
+         int row = scsiAcbRow(blockSize), oldRow = scsiAcbRow(oldBlockSize);
+         if (row < 0) {
+            error = 0x24;                // a block size the board cannot have
+            break;
+         }
+         bool boardChose = ((oldBlockSize == 256u) && ((now == 32u) || (now == 33u))) ||
+                           ((oldRow >= 0) && ((now == acbSectorsPerTrack[board][oldRow][0]) ||
+                                              (now == acbSectorsPerTrack[board][oldRow][1])));
+         if (boardChose)
+            sectorsPerTrack = acbSectorsPerTrack[board][row][interleaveUsed > 1u];
+         if (interleaveUsed > sectorsPerTrack - 1u)
+            error = board ? 0x1A : 0x24;
+         break;
+      }
+      case SCSI_CONTROLLER_SCSI: {
+         uint32_t track, overhead, spare, limit;
+         size_t length = 0;
+         scsiApplyPendingPages(lun);
+         filesystemConfigToLunGeometry(lun);
+         blockSize = filesystemGetLunBlockSize(lun);
+         const char *page3 = filesystemGetModePageData(lun, 3, &length);
+         if ((page3 != NULL) && (length >= 14)) {
+            uint32_t pageBlockSize = ((uint32_t)(uint8_t)page3[12] << 8) | (uint8_t)page3[13];
+            if (pageBlockSize != 0)
+               blockSize = pageBlockSize;
+         }
+         newBlockSize = blockSize;
+         pageInterleave = interleaveUsed;
+         sectorsPerTrack = (uint16_t)filesystemGetLunSPTSize(lun);
+         limit = sectorsPerTrack;
+         if ((blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE)) {
+            error = 0x24;
+            break;
+         }
+         if (filesystemGetLunTrackFormat(lun, &track, &overhead, &spare)) {
+            uint32_t physical = track / (blockSize + overhead);
+            if ((physical <= spare) || (physical < 2u)) {
+               error = 0x24;
+               break;
+            }
+            sectorsPerTrack = (uint16_t)(physical - spare);
+            limit = physical - 1u;
+         }
+         if (interleaveUsed >= limit)
+            error = 0x24;
+         break;
+      }
+   }
+
+   // Mixed saves the .cfg only when the sectors per track change, as before
+   if ((error == 0) && ((scsiController != SCSI_CONTROLLER_MIXED) || (sectorsPerTrack != now))) {
+      error = filesystemSaveFormatGeometry(lun, sectorsPerTrack, newBlockSize, pageInterleave);
+      if (error == 0)
+         scsiClearPendingPages(lun);
+   }
+   filesystemSetLunStatus(lun, false);
+   return error;
 }
 
 // SCSI STATUS phase results
@@ -588,7 +857,7 @@ uint8_t scsiEmulationCommand(void)
    // command that is not REQUEST SENSE (measured on a real drive: a second
    // REQUEST SENSE still gives the same sense key); the Adaptec boards clear
    // it when it has been sent (below).
-   if (!scsiControllerIsAdaptec() && (commandDataBlock.targetLUN < 8) && (commandDataBlock.data[0] != 0x03))
+   if (scsiControllerIsDrive() && (commandDataBlock.targetLUN < 8) && (commandDataBlock.data[0] != 0x03))
       requestSenseData[commandDataBlock.targetLUN] = NO_ERROR;
 
    // Only the commands the controller has, for the drives behind it (LUNs
@@ -858,7 +1127,7 @@ static uint8_t scsiCommandRequestSense(void)
 #endif
 	// TO DO - should this section be in the preceding if ... else ? or is all the data always output
 
-   if (!scsiControllerIsAdaptec() && (commandDataBlock.targetLUN < 8)) {
+   if (scsiControllerIsDrive() && (commandDataBlock.targetLUN < 8)) {
       // A drive with its own controller sends extended sense
       uint8_t sense[18];
       scsiExtendedSense(requestSenseData[commandDataBlock.targetLUN], sense);
@@ -876,7 +1145,7 @@ static uint8_t scsiCommandRequestSense(void)
 
    // Clear the request sense error reporting globals - on an Adaptec board;
    // a drive with its own controller keeps them for the next command
-   if (scsiControllerIsAdaptec() || (commandDataBlock.targetLUN >= 8))
+   if (!scsiControllerIsDrive() || (commandDataBlock.targetLUN >= 8))
       requestSenseData[commandDataBlock.targetLUN] = NO_ERROR;
 
    // Indicate successful command in status and message
@@ -935,7 +1204,7 @@ static uint8_t scsiCommandFormat(void)
       }
       // The fill byte is CDB byte 2 when bit 1 says so, else 6C
       dataPattern = (formatOptions & 0x02) ? commandDataBlock.data[2] : 0x6C;
-   } else {
+   } else if (scsiControllerIsDrive()) {
       // As a drive's own firmware does: the control byte must be 0
       if (commandDataBlock.data[5] != 0) {
          commandDataBlock.status = SCSI_STATUS_CHECK_COND;
@@ -943,6 +1212,8 @@ static uint8_t scsiCommandFormat(void)
          return SCSI_STATUS;
       }
       dataPattern = commandDataBlock.data[2];
+   } else {
+      dataPattern = commandDataBlock.data[2];     // Mixed: as it always was
    }
 
    // Make sure the target LUN is started
@@ -966,7 +1237,7 @@ static uint8_t scsiCommandFormat(void)
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Format option = "), formatOptions, true);
 
    // The interleave limit (sectors per track - 1, error 24 or 1A) is the
-   // controller's: filesystemFormatGeometry below checks it.
+   // controller's: scsiFormatGeometry below checks it.
 
    // Note: The defect list is ignored by the emulation since it does not apply
    // to the emulated file system; this code is included for debug completion.
@@ -1015,10 +1286,10 @@ static uint8_t scsiCommandFormat(void)
    if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 
    // The controller decides the sectors per track (on the ACB-4000 from the
-   // block size and interleave: filesystemFormatGeometry)
+   // block size and interleave: scsiFormatGeometry)
    if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI Commands: Interleave = "), interleave, true);
 
-   uint8_t error = filesystemFormatGeometry(commandDataBlock.targetLUN, scsiController, interleave);
+   uint8_t error = scsiFormatGeometry(commandDataBlock.targetLUN, interleave);
    if ((error != 0) && (error != 0x1C)) {
       // A parameter the controller refuses: nothing has been changed
       commandDataBlock.status = SCSI_STATUS_CHECK_COND;
@@ -1713,8 +1984,8 @@ static uint8_t scsiCommandTranslate(void)
 // list (list format 01, cylinders, heads, reduced write current, write
 // precompensation, landing zone, step rate); 24 bytes with list format 02
 // (hard-sectored), and 12 with no drive parameters at all.  Anything else
-// is error 24.  The block size goes into LBADescriptor: it is the size the
-// next FORMAT lays down, and the data path uses it from now on.
+// is error 24.  The block size waits for FORMAT (scsiFormatGeometry lays it
+// down); until then the data path keeps the image's own block size.
 static uint32_t scsiAdaptecModeSelect(const uint8_t *list, uint8_t length)
 {
    uint8_t lun = commandDataBlock.targetLUN;
@@ -1732,7 +2003,7 @@ static uint32_t scsiAdaptecModeSelect(const uint8_t *list, uint8_t length)
    }
 
    if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT cfg\r\n"), DEBUG_SUCCESS);
-   filesystemSetLunBlockSize(lun, blockSize);
+   scsiSetPendingBlockSize(lun, blockSize);
    if (length > 12) {
       // the drive parameter list is page 0 (the hard-sector bytes of a
       // 24-byte list are not kept: Pi1MHz has no hard-sectored drive)
@@ -1755,7 +2026,7 @@ static uint32_t scsiAdaptecModeSelect(const uint8_t *list, uint8_t length)
 //   Otherwise the page is merged in under its mask (a cut-short page keeps
 //   the rest; with no mask, a zero numeric field of page 3 or 4 keeps the
 //   drive's value).
-// - Pages 3 and 4 are checked (filesystemCheckModePage) and wait for FORMAT;
+// - Pages 3 and 4 are checked (scsiCheckModePage) and wait for FORMAT;
 //   the other pages take effect at once.
 // The whole list is checked before any of it is used.
 static uint32_t scsiDriveModeSelect(uint8_t *list, uint8_t length)
@@ -1776,7 +2047,7 @@ static uint32_t scsiDriveModeSelect(uint8_t *list, uint8_t length)
       // block length 0: the drive's own
       descriptorBlockSize = ((uint32_t)list[9] << 16) | ((uint32_t)list[10] << 8) | list[11];
       if ((descriptorBlockSize != 0) &&
-          ((descriptorBlockSize < MIN_BLOCK_SIZE) || (descriptorBlockSize >= MAX_BLOCK_SIZE)))
+          ((descriptorBlockSize < MIN_BLOCK_SIZE) || (descriptorBlockSize > MAX_BLOCK_SIZE)))
          return ILLEGAL_FUNCTION;
       start = 12;
    }
@@ -1822,14 +2093,14 @@ static uint32_t scsiDriveModeSelect(uint8_t *list, uint8_t length)
          int i = (page == 4);
          size_t baseLength = 0;
          const char *base = pendingSet[i] ? (const char *)pending[i]
-                                          : filesystemGetPendingModePageData(lun, page, &baseLength);
+                                          : scsiGetPendingModePageData(lun, page, &baseLength);
          if (pendingSet[i])
             baseLength = pendingLength[i];
          uint8_t after[256];
          list[at] = page;
          size_t afterLength = filesystemModePageAfterSelect(lun, page, base, baseLength,
                                                             (uint8_t)want, (uint8_t)have, &list[at], after);
-         uint8_t check = filesystemCheckModePage(lun, page, &list[at], (uint8_t)have, after, afterLength);
+         uint8_t check = scsiCheckModePage(lun, page, &list[at], (uint8_t)have, after, afterLength);
          if (check != 0)
             return (uint32_t)check << 24;
          memcpy(pending[i], after, afterLength);
@@ -1860,15 +2131,70 @@ static uint32_t scsiDriveModeSelect(uint8_t *list, uint8_t length)
       // a page header with no data changes nothing
       if ((page != 3) && (page != 4) && (have > 2u)) {
          list[at] = page;
-         filesystemMergeModePageData(lun, page, (uint8_t)want, (uint8_t)have, &list[at]);
+         filesystemMergeModePageData(lun, page, (uint8_t)want, (uint8_t)have, &list[at], true);
       }
       at += have;
    }
    for (int i = 0; i < 2; i++)
       if (pendingSet[i])
-         filesystemSetPendingModePageData(lun, (uint8_t)(3 + i), pending[i], pendingLength[i]);
+         scsiSetPendingModePageData(lun, (uint8_t)(3 + i), pending[i], pendingLength[i]);
    if (descriptorBlockSize != 0)
-      filesystemSetPendingBlockSize(lun, descriptorBlockSize);
+      scsiSetPendingBlockSize(lun, descriptorBlockSize);
+   return NO_ERROR;
+}
+
+// MODE SELECT under Mixed (the default), as Pi1MHz has always taken it: a
+// 22-byte list with an 8-byte block descriptor is the Adaptec's, whose drive
+// parameter list goes into page 0 (and page 4); any other list is pages,
+// each merged into the page the drive holds.
+static uint32_t scsiMixedModeSelect(uint8_t *Buffer, uint8_t length)
+{
+   // we skip the 4 byte header
+   uint8_t start = 4;
+
+   // if the length is 22 and byte is 8 then the drive descriptor is being written
+   if ((length == 22) && Buffer[3]== 8 )
+   {
+     if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT cfg\r\n"), DEBUG_SUCCESS);
+     // we can skip LBADescriptor 8 bytes
+     start = (uint8_t)(start + 8);
+     // update  ModePage0
+     filesystemWriteModePageData(commandDataBlock.targetLUN, 0, 22-4-8, &Buffer[start] );
+     // update  Page 4 NB we should do page 3 but that never changes
+     filesystemCopyPage0toPage4(commandDataBlock.targetLUN);
+   }
+   else
+   {
+      // MODE SELECT Parameters : 0 0 0 0 37 6 40  67  41  65 13 30
+      //                                  38 6 99 111 114 110 13  0
+
+      // we are updating a standard page here
+
+      // then we have page number and length
+      // we might have more that one page so loop if there is more data
+      while ( start+2 < length )
+      {
+         uint8_t page = Buffer[start] & 0x3F ; //
+         Buffer[start] &= 0x3F ;
+         uint8_t len = Buffer[start+1];
+
+         if (debugFlag_scsiCommands)debugStringInt16_P(PSTR("SCSI commands: Writing MODE SELECT Page "), page, true);
+         /* The Acorn FileStore tools (FServFmt, FSFormat) send a 3000-series
+            drive its pages two bytes short.  A real drive takes what arrives
+            and keeps the rest of the page. */
+         unsigned int have = (unsigned int)length - start;
+         unsigned int want = (unsigned int)len + 2;
+         if (have > want)
+            have = want;
+         filesystemMergeModePageData(commandDataBlock.targetLUN, page, (uint8_t)want, (uint8_t)have, &Buffer[start], false);
+         start = (uint8_t)(start + have );
+         if ( page == 4 )
+            {
+            // update Page 0 NB we should do page 3 but that never changes
+            filesystemCopyPage4toPage0(commandDataBlock.targetLUN);
+            }
+      }
+   }
    return NO_ERROR;
 }
 
@@ -1952,10 +2278,11 @@ static uint8_t scsiCommandModeSelect6(void)
    // Buffer: abandon the command rather than save them to the .cfg
    if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
 
-   // The list is the controller's: the Adaptec's flat list, or a SCSI
-   // drive's header, block descriptor and pages
+   // The list is the controller's: the Adaptec's flat list, a SCSI drive's
+   // header, block descriptor and pages, or Pi1MHz's own mixed list
    uint32_t error = scsiControllerIsAdaptec() ? scsiAdaptecModeSelect(Buffer, length)
-                                              : scsiDriveModeSelect(Buffer, length);
+                  : scsiControllerIsDrive()   ? scsiDriveModeSelect(Buffer, length)
+                                              : scsiMixedModeSelect(Buffer, length);
    if (error != NO_ERROR) {
       commandDataBlock.status = SCSI_STATUS_CHECK_COND;
       requestSenseData[commandDataBlock.targetLUN] = error;
