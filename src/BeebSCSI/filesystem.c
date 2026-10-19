@@ -1639,14 +1639,14 @@ bool filesystemStartLunForFormat(uint8_t lunNumber)
 // next start), and a block size other than 0 (LBADescriptor).  An
 // interleave other than 0 also goes into page 3 with the block size (bytes
 // 12-15), as a drive with its own controller keeps them.  A read-only
-// image is left alone.  Returns 0, or 1C if the .cfg cannot be saved.
-uint8_t filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, uint32_t blockSize,
-                                     uint16_t interleave)
+// image is left alone.  Returns false if the .cfg cannot be saved.
+bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, uint32_t blockSize,
+                                  uint16_t interleave)
 {
    parserkeyvalue *page3 = &filesystemState.keyvalues[lunNumber][MODEPAGE3];
 
    if (filesystemState.fsLunReadOnly[lunNumber])
-      return 0;
+      return true;
    if ((page3->v.string != NULL) && (page3->length >= 12)) {
       page3->v.string[10] = (char)(sectorsPerTrack >> 8);
       page3->v.string[11] = (char)sectorsPerTrack;
@@ -1660,7 +1660,7 @@ uint8_t filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack
    if (blockSize != 0)
       filesystemSetLunBlockSize(lunNumber, blockSize);
    filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = sectorsPerTrack;
-   return filesystemWriteAttributes(lunNumber) ? 0 : 0x1C;
+   return filesystemWriteAttributes(lunNumber);
 }
 
 // Function to format a LUN image
@@ -2427,9 +2427,9 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    length bytes) and how many bytes it takes. */
 
 /* Page 3 (format parameters) and page 4 (rigid drive geometry).  The Acorn
-   FileStore formatter zeroes most of page 3 before FORMAT (FServFmt
-   PROCromodesel, as the drive specification asks for read-only fields).  With a mask
-   the drive simply ignores those bytes; without one a zero in these fields
+   FileStore formatter zeroes most of page 3 before FORMAT, as a drive's
+   specification asks for read-only fields.  With a mask the drive simply
+   ignores those bytes; without one a zero in these fields
    is taken as "the drive's own value". */
 static const modePageField_t modePage3Fields[] = {
    {2, 2}, {4, 2}, {6, 2}, {8, 2}, {10, 2}, {12, 2}, {14, 2}, {16, 2}, {18, 2}

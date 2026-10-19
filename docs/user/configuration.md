@@ -134,7 +134,7 @@ See [Hard discs](hard-discs.md) for what these mean in practice.
 ### Drive controllers
 
 `DriveController=` takes one of these (any case). No line, or a value not in
-the list, means `Mixed`; an unknown value is reported on the debug output.
+the list, means `Mixed`; an unknown value is reported in the log.
 Only `Mixed` is the behaviour of earlier releases: the others are opt-in.
 
 | Value | Hardware | Behaviour |
@@ -148,8 +148,8 @@ Only `Mixed` is the behaviour of earlier releases: the others are opt-in.
 Pi1MHz's own extensions work under every value: drives (LUNs) 2-7, the VFS /
 Domesday volumes, `*SCSIJUKE` and BSSELECT, the FAT transfer commands and the
 VFS F-codes. STOP/START UNIT is accepted by every type on purpose, as an
-extension: `*FSSTOP` and card work stop the drives with it before the card is
-changed. Some real drives refuse it (a Rodime RO652 answers "invalid
+extension: a host stops the drives with it before the SD card is changed.
+Some real drives refuse it (a Rodime RO652 answers "invalid
 command").
 
 A FileStore behind `ACB-4000` sees what it would see behind a real ACB-4000:

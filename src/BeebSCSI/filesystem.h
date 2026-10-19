@@ -217,8 +217,8 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber);
 bool filesystemReadLunDescriptor(uint8_t lunNumber);
 bool filesystemWriteAttributes(uint8_t lunNumber);
 bool filesystemStartLunForFormat(uint8_t lunNumber);
-uint8_t filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, uint32_t blockSize,
-                                     uint16_t interleave);
+bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, uint32_t blockSize,
+                                  uint16_t interleave);
 bool filesystemGetLunTrackFormat(uint8_t lunNumber, uint32_t *track, uint32_t *overhead, uint32_t *spare);
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern);
 

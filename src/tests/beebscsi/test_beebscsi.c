@@ -681,10 +681,10 @@ static void test_sense_kept(void)
    stop_all();
 }
 
-/* An RO3085S as a real one answers (stardot t=30215, Dec 2024): page 0 is
+/* A drive that holds page 0 (an RO3085S, as a real one answers): page 0 is
    held (80 02 00 00, the Unit Attention page), the geometry is page 4, every
-   reply has a block descriptor, and the PS bit stays set after FServFmt
-   writes (C)Acorn with page codes 25/26 (F-10 was the PS bit lost). */
+   reply has a block descriptor, and the PS bit stays set after the FileStore
+   formatter writes (C)Acorn with page codes 25/26 (without PS). */
 static void test_scsi_page0_ps(void)
 {
    static char why[200];
@@ -751,8 +751,8 @@ static void test_scsi_page0_ps(void)
    stop_all();
 }
 
-/* FServFmt PROCromodesel on an RO652 with the drive's real page 3 mask
-   (MaskPage3, measured 17 Oct 2026): the page is read, bytes 2-11 and 14-17
+/* The FileStore formatter's page 3 on a drive with its real page 3 mask (an
+   RO652's MaskPage3, as measured on one): the page is read, bytes 2-11 and 14-17
    zeroed, bytes per sector set to 256, and sent with len+4 bytes, two short.
    On the drive the mask decides: the zeros in read-only fields (sectors per
    track, interleave) are ignored, a zero in a changeable one (track skew)
@@ -908,7 +908,6 @@ static void test_filestore_mode_select(void)
          st == 0 && before_len && page_is(0, 3, before, before_len), why);
    stop_all();
    scsiSetController(SCSI_CONTROLLER_MIXED);
-
 }
 
 /* The Acorn FileStore formatter writes page 1 back with its last byte zero (a
@@ -946,7 +945,6 @@ static void test_write_mask_page1(void)
          started && st == 0 && page_is(0, 1, p1, sizeof p1), why);
    stop_all();
    scsiSetController(SCSI_CONTROLLER_MIXED);
-
 }
 
 /* P8 (scsi.c side): a host reset or reselection part-way through a
@@ -1072,7 +1070,7 @@ static void test_format_interleave(void)
             st == 0 && got == 10L * 2 * (long)kept[i] * 256 && spt == kept[i], why);
    }
 
-   /* SASI keeps the .cfg's value (the patched EPROM's) */
+   /* SASI keeps the .cfg's value */
    scsiSetController(SCSI_CONTROLLER_SASI);
    put_cfg_spt("/BeebSCSI6/scsi0.cfg", 10, 2, 17);
    format_with(1, &st, &got, &spt);
@@ -1352,7 +1350,6 @@ static void test_mode_sense(void)
    f_unlink("/BeebSCSI0/scsi3.cfg");
    stop_all();
    scsiSetController(SCSI_CONTROLLER_MIXED);
-
 }
 
 /* CCS-era mode pages, as a real Rodime RO652 (firmware 5.46) answers them
@@ -1454,7 +1451,6 @@ static void test_ccs_pages(void)
    f_unlink("/BeebSCSI0/scsi4.cfg");
    stop_all();
    scsiSetController(SCSI_CONTROLLER_MIXED);
-
 }
 
 /* ---- DriveController= ----------------------------------------------------- */
@@ -1466,8 +1462,7 @@ static int sense_raw(uint8_t lun, uint8_t alloc)
    return run_cmd(1, rs, 6, NULL, 0);
 }
 
-/* A LUN image of `blocks` blocks of `bs` bytes in /BeebSCSI8, its .cfg
-   `cfg`. */
+/* A LUN image of `bytes` bytes in /BeebSCSI8, its .cfg `cfg`. */
 static void put_lun8(uint8_t lun, const char *cfg, uint32_t bytes)
 {
    static uint8_t zero[4096];
@@ -1577,7 +1572,7 @@ static void test_controller_gating(void)
    check("ACB-4000: ... and VERIFY inside the disc is GOOD", st == 0, "not GOOD");
    stop_all();
 
-   /* SCSI: TRANSLATE is the Adaptec's; STOP UNIT stays (FSSTOP) */
+   /* SCSI: TRANSLATE is the Adaptec's; STOP UNIT stays (a Pi1MHz extension) */
    scsiSetController(SCSI_CONTROLLER_SCSI);
    const uint8_t tr[6] = { 0x0F, 3 << 5, 0, 0, 0, 0 };
    st = run_cmd(1, tr, 6, NULL, 0);
@@ -1858,6 +1853,52 @@ static void test_scsi_drive(void)
    st = run_cmd(1, ms0, 6, NULL, 0);
    sense = sense_of(0);
    check("SCSI MODE SENSE: page 0 refused (ASC 24)", st == 2 && sense == 0x24, "answered");
+
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   filesystemSetLunDirectory(1, 0);
+}
+
+/* A SCSI drive's pending pages (MODE SELECT before FORMAT) last while the
+   drives are the same ones: a STOP/START UNIT keeps them; a jukebox to
+   another ADFS directory and back, or a remount (a BREAK), drops them, so a
+   FORMAT after it lays down the block size the .cfg has. */
+static void test_pending_pages_lifetime(void)
+{
+   static char why[240];
+   uint32_t bs, spt, il, rcbs, blocks;
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   put_file("/BeebSCSI9/scsi0.cfg", ro652_cfg, sizeof ro652_cfg - 1);
+   put_file("/BeebSCSI9/scsi0.dat", "image", 5);
+   filesystemSetLunDirectory(1, 9);
+   scsiClearPendingPages(0);
+
+   const uint8_t stop[6] = { 0x1B, 0, 0, 0, 0, 0 }, start[6] = { 0x1B, 0, 0, 0, 1, 0 };
+   int sel = scsi_select_block_size(512);
+   int s1 = run_cmd(1, stop, 6, NULL, 0), s2 = run_cmd(1, start, 6, NULL, 0);
+   int fs = scsi_format(0);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   snprintf(why, sizeof why, "select %d, STOP %d, START %d, FORMAT %d: %lu bytes (want 512)", sel, s1, s2, fs,
+            (unsigned long)rcbs);
+   check("SCSI: pending pages survive STOP/START UNIT; FORMAT lays them down",
+         sel == 0 && s1 == 0 && s2 == 0 && fs == 0 && rcbs == 512 && bs == 512, why);
+
+   sel = scsi_select_block_size(1024);
+   filesystemSetLunDirectory(1, 8);
+   filesystemSetLunDirectory(1, 9);
+   fs = scsi_format(0);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   snprintf(why, sizeof why, "select %d, FORMAT %d: %lu bytes (want 512)", sel, fs, (unsigned long)rcbs);
+   check("SCSI: a jukebox to another ADFS directory drops the pending pages",
+         sel == 0 && fs == 0 && rcbs == 512 && bs == 512, why);
+
+   sel = scsi_select_block_size(128);
+   filesystemReset();
+   fs = scsi_format(0);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   snprintf(why, sizeof why, "select %d, FORMAT %d: %lu bytes (want 512)", sel, fs, (unsigned long)rcbs);
+   check("SCSI: a remount drops the pending pages", sel == 0 && fs == 0 && rcbs == 512 && bs == 512, why);
 
    stop_all();
    scsiSetController(SCSI_CONTROLLER_MIXED);
@@ -2417,7 +2458,6 @@ static void test_mode_select_keeps_vendor_pages(void)
    }
    stop_all();
    scsiSetController(SCSI_CONTROLLER_MIXED);
-
 }
 
 int main(int argc, char **argv)
@@ -2481,6 +2521,7 @@ int main(int argc, char **argv)
    test_extended_sense();
    test_block_sizes();
    test_scsi_drive();
+   test_pending_pages_lifetime();
    test_upgrade_legacy_cfg();
    test_block_size_2048();
    test_title_cache();                  /* it remounts the card */
