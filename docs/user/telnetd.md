@@ -98,7 +98,7 @@ session is back.
   request for paged mode are kept in 8 bytes the Pi provides in its own page,
   `&FCB7-&FCBE` (just below the serial stub), so nothing in the Beeb's RAM or the
   MOS's tables that belongs to anything else is used.
-- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b15` (the build number
+- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b16` (the build number
   goes up with every image).
 - **It claims nothing.** Every service call is passed on with A, X and Y as they
   came, so it sits happily beside filing systems and other ROMs in any bank.
@@ -148,7 +148,7 @@ whole boot until the Pi is up, which should also give the Pi's emulated hard dis
 time to be ready before ADFS looks for it. **That last effect is expected, not yet
 measured:** without the ROM, a power-on boot from a Pi-served disc was seen to fail
 about as often as it worked (below). Read the chip back after programming; the
-image's MD5 (build 15) is `7E4C87DF4A6CAB43497A6D37B61AF4C3`.
+image's MD5 (build 16) is `F15EDF048A4968E84CB6550673106A5F`.
 
 **On a Master 128 also `*INSERT` the bank** (`*ROMS` shows which one `TelnetD`
 went into): the Master only starts ROMs marked as inserted, and a ROM loaded after
@@ -350,8 +350,8 @@ about).
   and closed. The exception is a session that has died: if the client's machine
   crashed or the client was killed, the old session may still be holding the
   slot. When the same address connects again and the old session has made no
-  progress for 10 seconds while something was waiting on it (output not
-  acknowledged, or typing it could not pass on), the old session is dropped and the
+  progress for 10 seconds while output was waiting on it (sent and not
+  acknowledged), the old session is dropped and the
   new one takes over. A session that is only quiet is never replaced, nor is one
   from another address. After 30 seconds with no progress a session is dropped
   anyway. The Status page's Telnetd line counts the `replaced` and `dropped`.
@@ -509,12 +509,17 @@ nowhere else, and keep telnet to a network you trust.
 - Without `telnetd_user` and a `telnetd_password` line every connection is refused
   with a message saying so. `telnetd_login=0` opens the daemon to everyone on the network
   instead, with no login.
-- Each wrong password holds that session for 2 seconds. Every third wrong password,
-  on whichever connections they came (they are forgotten after 10 minutes without
-  one), closes the session and refuses new ones for a minute.
-- A connection still at the login prompt is closed after 30 seconds, and a new
-  connection takes its place at once, so nobody can keep you out by connecting and
-  waiting.
+- Wrong passwords are counted for each address they come from, so nobody can lock
+  you out from another machine. Every third from an address closes the session and
+  refuses that address for a minute, twice as long each time it happens again (up
+  to 64 minutes); a right login clears its count, and they are forgotten after 10
+  minutes without one.
+- After any wrong password every login prompt ignores what is typed for 2 seconds,
+  however many connections are made.
+- A connection still at the login prompt is closed after 30 seconds. A new
+  connection from the same address takes its place at once, and one from another
+  address does when nothing has been typed at that prompt for 10 seconds, so nobody
+  can keep you out by connecting and waiting, nor by reconnecting over and over.
 - The Beeb's boot banners and screen are sent only after a login.
 
 ## Settings

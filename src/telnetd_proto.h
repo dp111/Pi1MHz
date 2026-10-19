@@ -20,7 +20,10 @@
 
 /* ---- client -> Beeb ---------------------------------------------------- */
 
-#define TND_IN_KEYS    3u      /* most keys one input byte can release (Alt-P, then a key) */
+/* Most keys one input byte can release: Alt-P ended by a character above 127 is ESCAPE, P, then
+   TND_KEY_LIT and its byte.  (A UTF-8 or Latin-1 lead byte pending when ESC comes is given at the
+   ESC, so it never adds to these; the host tests check every call against this bound.) */
+#define TND_IN_KEYS    4u
 
 /* Not a key but a request: the client pressed ESC (a lone ESC, once it is clear
    no sequence follows) or Ctrl-C.  The Beeb's ESCAPE is a condition the keyboard
@@ -252,5 +255,44 @@ size_t tnd_out_redraw(tnd_out_t *s, uint8_t dst[TND_COPY_MAX]);
    limit_us.  An idle but healthy session has nothing pending, so is never stalled.
    The clock is the 32-bit microsecond counter, so it may wrap. */
 bool tnd_stalled(bool pending, uint32_t now_us, uint32_t progress_us, uint32_t limit_us);
+
+/* ---- the login's rules ------------------------------------------------------- */
+
+/* Wrong passwords are counted per source address, so nobody can lock the owner out from another
+   machine.  Every third from an address locks that address out, for TND_LOCK_US the first time and
+   twice as long each time after (to TND_LOCK_MAX_US); a right login clears its count.  After any
+   wrong password every login prompt ignores what is typed for TND_HOLD_US, whichever connection.
+   An address's failures are forgotten after TND_FAIL_DECAY_US without one.  The timers count the
+   time left down in tnd_login_tick (every main-loop pass), so the 32-bit microsecond clock wrapping
+   cannot make an old failure look recent. */
+#define TND_LOGIN_ADDRS    8u
+#define TND_HOLD_US        2000000u
+#define TND_LOCK_US        60000000u
+#define TND_LOCK_MAX_US    3840000000u          /* 64 minutes */
+#define TND_FAIL_DECAY_US  600000000u           /* 10 minutes */
+#define TND_REPLACE_IDLE_US 10000000u           /* a session at the prompt with no typing this long may be replaced */
+typedef struct {
+   uint32_t addr;
+   uint8_t  fails, lockouts;
+   uint32_t lock_left_us, decay_left_us;        /* counted down; 0 = not locked / forgotten */
+   bool     used;
+} tnd_login_addr_t;
+typedef struct {
+   tnd_login_addr_t a[TND_LOGIN_ADDRS];
+   uint32_t         hold_left_us;
+   uint32_t         last_us;
+   bool             started;
+} tnd_login_t;
+
+void tnd_login_reset(tnd_login_t *l);
+void tnd_login_tick(tnd_login_t *l, uint32_t now_us);
+bool tnd_login_locked(const tnd_login_t *l, uint32_t addr);      /* a connection from addr is refused */
+bool tnd_login_held(const tnd_login_t *l);                       /* typing at a login prompt is ignored */
+/* A wrong password from addr: true if that one locks addr out (the session is then closed). */
+bool tnd_login_fail(tnd_login_t *l, uint32_t addr);
+void tnd_login_ok(tnd_login_t *l, uint32_t addr);
+/* May a new connection from new_addr take the place of a session still at the login prompt, from
+   old_addr, with nothing typed for idle_us?  Only the same address, or one left idle. */
+bool tnd_login_may_replace(uint32_t old_addr, uint32_t new_addr, uint32_t idle_us);
 
 #endif /* TELNETD_PROTO_H */

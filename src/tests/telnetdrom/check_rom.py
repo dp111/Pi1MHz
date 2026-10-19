@@ -282,6 +282,7 @@ def run_remv(rom, x, v, c, old_y, old_c, screen=None, cur=(3, 4), hooked=True, a
             elif mpu.a == 160:
                 mpu.x, mpu.y = mem._subject[0x300 + mpu.x], 0
             elif mpu.a == 3:
+                st.setdefault("fx3", []).append(mpu.x)
                 old_stream = st["stream"]
                 st["stream"] = mpu.x
                 mpu.x = old_stream
@@ -474,9 +475,11 @@ RDCHV_TABLE_OFF = 0x10          # RDCHV's place in the MOS's table of default ve
 MOS_RDCHV = 0x0600              # a stand-in for the MOS's RDCHV routine: A=&EE, C set, counted at &0610
 
 
-def run_rdchv(rom, buf, escape=False):
+def run_rdchv(rom, buf, escape=False, through_remvh=False):
     """Call the RDCHV handler as the MOS's extended vector entry does, with REMV a buffer of the bytes
-    in buf (look: A = the next, take: Y = it; C set when empty) and the MOS's RDCHV a stand-in."""
+    in buf (look: A = the next, take: Y = it; C set when empty) and the MOS's RDCHV a stand-in.
+    through_remvh: REMV is the ROM's own handler, as on a Beeb with both claimed, and the buffer is the
+    MOS routine it goes on to (REMVOLD); what it tells the Pi is in "ctl"."""
     boot = call(rom, 1, 6, 0, pi_after=0, reset_type=2,
                 pokes={**keyv_pokes(), KEYV_TABLE + RDCHV_TABLE_OFF: 0x00, KEYV_TABLE + RDCHV_TABLE_OFF + 1: 0x06,
                        0x0210: 0x00, 0x0211: 0x06})
@@ -527,6 +530,18 @@ def run_rdchv(rom, buf, escape=False):
     mem._subject[0x06FF] = len(buf)
     mem._subject[0xFF] = 0x80 if escape else 0
     mem._subject[RETURN_TRAP] = 0xEA
+    ctl, wrch = [], []
+    if through_remvh:
+        remvh = bm[0x0D9F + 66] | (bm[0x0D9F + 67] << 8)
+        mem._subject[0x022C], mem._subject[0x022D] = remvh & 0xFF, remvh >> 8
+        mem._subject[REMVOLD], mem._subject[REMVOLD + 1] = 0x00, 0x05     # the buffer above: the MOS's REMV
+        mem._subject[TELNETON] = 1
+        mem._subject[0x022A], mem._subject[0x022B] = 0xCC, 0xFC           # INSV and IRQ1V in the stub: no rehook
+        mem._subject[0x0204], mem._subject[0x0205] = 0xD8, 0xFC
+        for addr in (OSBYTE, 0xFFEE):
+            mem._subject[addr] = 0x60
+        mem.subscribe_to_write([0xFCF4], lambda addr, value: ctl.append(value))
+        mem.subscribe_to_write([0xFFEE], lambda addr, value: None)
     mpu = MPU(memory=mem, pc=handler)
     mpu.a, mpu.x, mpu.y = 0x11, 0x22, 0x33
     mpu.sp = 0xF0
@@ -538,12 +553,14 @@ def run_rdchv(rom, buf, escape=False):
     for _ in range(100_000):
         if mpu.pc == RETURN_TRAP:
             break
+        if mpu.pc == 0xFFEE:
+            wrch.append(mpu.a)
         mpu.step()
     else:
         raise RuntimeError("the RDCHV handler did not return")
     m = mem._subject
     return {"a": mpu.a, "x": mpu.x, "y": mpu.y, "c": mpu.p & 1, "sp_after": mpu.sp, "sp_before": sp_before,
-            "mos": m[0x0610], "left": m[0x06FF], "boot": boot}
+            "mos": m[0x0610], "left": m[0x06FF], "boot": boot, "ctl": ctl, "wrch": wrch, "telneton": m[TELNETON]}
 
 
 def main(path):
@@ -580,6 +597,9 @@ def main(path):
         check(r["writes"] == [] and r["osbytes"] == [(0xFD, 0, 0xFF)] and r["helper_writes"] == [] and not r.get("jumped"),
               f"{what}: no vector, no *FX3 or *FX156, no helper: {r['writes']} {r['osbytes']}")
         check(r["regs"] == (1, 9, 2) and r["sp_after"] == r["sp_before"], f"{what}: registers and stack given back")
+    for rt in (0, 1, 2):                         # PR review: not even the second processor's reset pulse
+        r = call(rom, 1, 9, 2, pi_after=0, reset_type=rt, telnet_on=0, watch=(0xFEE0,))
+        check(r["writes"] == [], f"telnetd off, reset type {rt}: the Tube ULA is not touched: {r['writes']}")
 
     # 1b. a software BREAK can leave the interrupt vector at the stub the helper installed
     # before it: a stub is recognised and the vector it replaced put back, so the helper
@@ -747,6 +767,9 @@ def main(path):
     check(r["pi"][:2] == [26, 12] and 31 in r["pi"] and 0x41 in r["pi"] and 0x42 in r["pi"] and r["pi"][-3:] == [31, 3, 1],
           f"... and the screen is sent: CLS, the characters, the cursor back ({len(r['pi'])} bytes)")
     check(r["stream"] == 1 and (r["cx"], r["cy"]) == (3, 1) and r["sp_after"] == r["sp_before"], "... with the output streams and the cursor as they were, and the stack balanced")
+    fx3 = r.get("fx3", [])
+    check(0x17 in fx3 and 0x14 in fx3 and not any(x & 0x14 != 0x14 for x in fx3[1:-1]),   # first: reads the old; last: puts it back
+          f"PR review: during the scan the printer and *SPOOL are off (*FX3 &17 to the Pi, &14 to the screen): {[hex(x) for x in fx3]}")
     fl = {(0, 0): 2, (5, 2): 9}
     r = run_remv(rom, 0, 0, 0, 0xFF, 0, screen={(0, 0): 0x41, (5, 2): 0x42}, cur=(3, 1), flaky=fl)
     check(0x41 in r["pi"] and 0x42 not in r["pi"] and r["sp_after"] == r["sp_before"],
@@ -841,6 +864,17 @@ def main(path):
               f"buffer {[hex(b) for b in buf]}: the MOS's read as usual, nothing taken here")
     r = run_rdchv(rom, [0xFB], escape=True)
     check(r["mos"] == 1 and r["sp_after"] == r["sp_before"], "LITKEY with no byte after it and ESCAPE pending: the MOS's read (which reports the ESCAPE)")
+    # PR review: the byte after LITKEY goes through the ROM's own REMV handler too, where &FF is the
+    # Pi's SCANKEY and &8B-&8F copy keys; after LITKEY each must be a character (build 16)
+    for byte in (0xFF, 0x8B, 0x8C, 0x8F, 0xC5):
+        r = run_rdchv(rom, [0xFB, byte], through_remvh=True)
+        check(r["a"] == byte and r["c"] == 0 and r["left"] == 0 and r["mos"] == 0 and r["sp_after"] == r["sp_before"],
+              f"through the ROM's REMV: LITKEY then &{byte:02X} comes back as it is (A={r['a']:#04x} C={r['c']} left {r['left']})")
+        check(r["ctl"] == [0x25, 0x25] and r["wrch"] == [],
+              f"... both told as other keys (&25), no screen sent: ctl {[hex(v) for v in r['ctl']]}, {len(r['wrch'])} bytes printed")
+        check(r["telneton"] == 1, f"... and the literal flag cleared (TELNETON {r['telneton']:#04x})")
+    r = run_rdchv(rom, [0xFB], escape=True, through_remvh=True)
+    check(r["mos"] == 1 and r["telneton"] == 1, f"LITKEY, then ESCAPE before its byte: the flag is not left set ({r['telneton']:#04x})")
     r = call(rom, 1, 6, 0, pi_after=0, reset_type=2, pokes={**keyv_pokes(), KEYV_TABLE + RDCHV_TABLE_OFF: 0x00,
              KEYV_TABLE + RDCHV_TABLE_OFF + 1: 0x06, 0x0210: 0x34, 0x0211: 0x12}, watch=(0x0210, 0x0211))
     check(r["writes"] == [], f"RDCHV somebody else's: left alone {r['writes']}")

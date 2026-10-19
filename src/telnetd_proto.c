@@ -395,9 +395,14 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
 
    default:
       if (c == 27u) {
+         size_t n = 0u;
+         if (s->u8_need != 0u && s->u8_lead != 0u)   /* a lone lead byte before it was a Latin-1 character: */
+            n = char_key(s, s->u8_lead, keys);       /* given now, so nothing is left over for the escape paths */
+         s->u8_need = 0u;
+         s->u8_lead = 0u;
          s->state = I_ESC;
          s->esc_us = now_us;
-         return 0u;
+         return n;
       }
       return plain_byte(s, c, keys);
    }
@@ -2186,4 +2191,111 @@ size_t tnd_out_copyflush(tnd_out_t *s, uint32_t now_us, uint8_t dst[TND_COPY_MAX
 bool tnd_stalled(bool pending, uint32_t now_us, uint32_t progress_us, uint32_t limit_us)
 {
    return pending && (uint32_t)(now_us - progress_us) >= limit_us;
+}
+
+/* ---- the login's rules (see telnetd_proto.h) --------------------------------- */
+
+void tnd_login_reset(tnd_login_t *l)
+{
+   memset(l, 0, sizeof *l);
+}
+
+static uint32_t count_down(uint32_t left, uint32_t dt)
+{
+   return left > dt ? left - dt : 0u;
+}
+
+void tnd_login_tick(tnd_login_t *l, uint32_t now_us)
+{
+   uint32_t dt = l->started ? now_us - l->last_us : 0u;   /* unsigned: right across the clock's wrap */
+   l->started = true;
+   l->last_us = now_us;
+   if (dt == 0u)
+      return;
+   l->hold_left_us = count_down(l->hold_left_us, dt);
+   for (unsigned i = 0u; i < TND_LOGIN_ADDRS; i++) {
+      tnd_login_addr_t *e = &l->a[i];
+      if (!e->used)
+         continue;
+      e->lock_left_us = count_down(e->lock_left_us, dt);
+      e->decay_left_us = count_down(e->decay_left_us, dt);
+      if (e->lock_left_us == 0u && e->decay_left_us == 0u)
+         e->used = false;                       /* forgotten: nothing against it any more */
+   }
+}
+
+static tnd_login_addr_t *login_find(tnd_login_t *l, uint32_t addr, bool make)
+{
+   tnd_login_addr_t *spare = NULL;
+   for (unsigned i = 0u; i < TND_LOGIN_ADDRS; i++) {
+      tnd_login_addr_t *e = &l->a[i];
+      if (e->used && e->addr == addr)
+         return e;
+      if (!e->used && spare == NULL)
+         spare = e;
+   }
+   if (!make)
+      return NULL;
+   if (spare == NULL) {                         /* full: the one closest to being forgotten, never a locked one if avoidable */
+      spare = &l->a[0];
+      for (unsigned i = 1u; i < TND_LOGIN_ADDRS; i++) {
+         tnd_login_addr_t *e = &l->a[i];
+         if ((e->lock_left_us == 0u) > (spare->lock_left_us == 0u)
+             || ((e->lock_left_us == 0u) == (spare->lock_left_us == 0u) && e->decay_left_us < spare->decay_left_us))
+            spare = e;
+      }
+   }
+   memset(spare, 0, sizeof *spare);
+   spare->used = true;
+   spare->addr = addr;
+   return spare;
+}
+
+bool tnd_login_locked(const tnd_login_t *l, uint32_t addr)
+{
+   for (unsigned i = 0u; i < TND_LOGIN_ADDRS; i++)
+      if (l->a[i].used && l->a[i].addr == addr)
+         return l->a[i].lock_left_us != 0u;
+   return false;
+}
+
+bool tnd_login_held(const tnd_login_t *l)
+{
+   return l->hold_left_us != 0u;
+}
+
+bool tnd_login_fail(tnd_login_t *l, uint32_t addr)
+{
+   tnd_login_addr_t *e = login_find(l, addr, true);
+   l->hold_left_us = TND_HOLD_US;
+   e->decay_left_us = TND_FAIL_DECAY_US;
+   if (e->fails < 255u)
+      e->fails++;
+   if (e->fails % 3u != 0u)
+      return false;
+   {
+      uint32_t lock = TND_LOCK_US;
+      for (unsigned i = 0u; i < e->lockouts && lock <= TND_LOCK_MAX_US / 2u; i++)
+         lock *= 2u;                            /* longer each time: 1, 2, 4 ... 64 minutes */
+      if (lock > TND_LOCK_MAX_US)
+         lock = TND_LOCK_MAX_US;
+      if (e->lockouts < 255u)
+         e->lockouts++;
+      e->lock_left_us = lock;
+      if (e->decay_left_us < lock)
+         e->decay_left_us = lock;               /* the count outlives the lock */
+   }
+   return true;
+}
+
+void tnd_login_ok(tnd_login_t *l, uint32_t addr)
+{
+   tnd_login_addr_t *e = login_find(l, addr, false);
+   if (e != NULL)
+      memset(e, 0, sizeof *e);
+}
+
+bool tnd_login_may_replace(uint32_t old_addr, uint32_t new_addr, uint32_t idle_us)
+{
+   return old_addr == new_addr || idle_us >= TND_REPLACE_IDLE_US;
 }

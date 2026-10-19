@@ -2801,7 +2801,7 @@ static bool route_status(ws_conn_t *c)
    const wifi_lwip_context_t   *lw  = wifi_lwip_get_context();
    sdio_runtime_status_t        rs  = sdio_runtime_get_status();
    ws_strbuf_t                  b;
-   char                         tmp[256];   /* the Bus diag row peaks ~120 chars with 10-digit counters; the Telnetd row ~200 */
+   char                         tmp[256];   /* the Bus diag row peaks ~120 chars with 10-digit counters (the Telnetd row has its own) */
    uint8_t                      mac[6];
 
    sb_init(&b);

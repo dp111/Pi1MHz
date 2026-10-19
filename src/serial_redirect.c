@@ -433,41 +433,42 @@ static void ser_control(unsigned int gpio)
    /* Helper 20 says where the Beeb's cursor and what screen MODE it has, in three
       bytes sent ahead of the mode value that also means "telnet": &80 + column
       and &E0 + row, then &10 + MODE.  They are information, not a change of mode. */
-   if (v == 0x22u) {                          /* the ROM: a ROM filing system operation, whose output the MOS keeps from RS423 */
+   if (v == SER_CTL_ROMFS) {                  /* the ROM: a ROM filing system operation, whose output the MOS keeps from RS423 */
       ser_unseen_gen++;
       return;
    }
-   if (v == 0x24u) {                          /* the ROM: a program took a cursor key, COPY or RETURN */
+   if (v == SER_CTL_KEY_TOLD) {               /* the ROM: a program took a cursor key, COPY or RETURN */
       ser_key_gen++;
       return;
    }
-   if (v == 0x25u) {                          /* ... or any other byte (build 13) */
+   if (v == SER_CTL_KEY_OTHER) {              /* ... or any other byte (build 13) */
       ser_key_other_gen++;
       return;
    }
-   if (v == 0x20u || v == 0x21u || v == 0x23u || v == 0x26u) {   /* the auto-start ROM: a reset, seen or not on the reset line */
+   if (v == SER_CTL_RESET || v == SER_CTL_RESET_SCAN || v == SER_CTL_RESET_TELL || v == SER_CTL_RESET_LIT) {
+      /* the auto-start ROM: a reset, seen or not on the reset line */
       ser_after_break();                         /* a soft reset leaves the screen as it was: not a new screen */
-      ser_scan_ok = (v != 0x20u);                /* &21, &23, &26: and it can be asked for the screen */
-      ser_keys_told = (v == 0x23u || v == 0x26u);   /* &23 (build 11): and it tells the keys taken */
-      ser_lit_ok = (v == 0x26u);                 /* &26 (build 13): every key taken, and LITKEY bytes as they are */
+      ser_scan_ok = (v != SER_CTL_RESET);        /* and it can be asked for the screen */
+      ser_keys_told = (v == SER_CTL_RESET_TELL || v == SER_CTL_RESET_LIT);   /* build 11: it tells the keys taken */
+      ser_lit_ok = (v == SER_CTL_RESET_LIT);     /* build 13: every key taken, and LITKEY bytes as they are */
       return;
    }
-   if (v >= 0x80u) {
-      if (v >= 0xE0u)
+   if (v >= SER_CTL_COLUMN) {
+      if (v >= SER_CTL_ROW)
          ser_beeb_row = (uint8_t)(v & 0x1Fu);
       else
          ser_beeb_col = (uint8_t)(v & 0x7Fu);
       return;
    }
-   bool telnet = (v == 2u) || ((v & 0xF8u) == 0x10u);   /* 2, or &10 + the Beeb's screen MODE (helper 20) */
+   bool telnet = (v == SER_CTL_TELNET_OLD) || ((v & 0xF8u) == SER_CTL_TELNET);   /* or TELNET + the Beeb's MODE */
 
-   if ((v & 0xF8u) == 0x10u) {
+   if ((v & 0xF8u) == SER_CTL_TELNET) {
       ser_after_break();                        /* a helper has just hooked in: nothing before it is in flight */
       ser_beeb_mode = (uint8_t)(v & 7u);
       ser_mode_gen++;                           /* the report is complete */
    }
 
-   ser_hooked = (v != 0u);
+   ser_hooked = (v != SER_CTL_UNHOOK);
    if (telnet != ser_telnet) {
       /* Which MOS buffer the stub inserts into: 0 the keyboard, 1 RS423 input.
          What is queued for the other one goes with the change. */

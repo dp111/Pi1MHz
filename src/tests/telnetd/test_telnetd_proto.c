@@ -28,6 +28,9 @@ static void feed(tnd_in_t *s, const void *data, size_t len)
    for (size_t i = 0; i < len; i++) {
       uint8_t k[TND_IN_KEYS], r[TND_IN_REPLY];
       size_t rl, n = tnd_in_byte(s, p[i], now, k, r, &rl);
+      CHECK(n <= TND_IN_KEYS, "one byte released %u keys, more than TND_IN_KEYS", (unsigned)n);
+      if (n > TND_IN_KEYS || nkeys + n > sizeof keys)
+         n = 0;
       memcpy(keys + nkeys, k, n);         nkeys += n;
       memcpy(reply + nreply, r, rl);      nreply += rl;
    }
@@ -39,8 +42,113 @@ static void tick(tnd_in_t *s, uint32_t advance_us)
    uint8_t k[TND_IN_KEYS];
    now += advance_us;
    size_t n = tnd_in_tick(s, now, k);
+   CHECK(n <= TND_IN_KEYS, "a tick released %u keys, more than TND_IN_KEYS", (unsigned)n);
+   if (n > TND_IN_KEYS || nkeys + n > sizeof keys)
+      n = 0;
    memcpy(keys + nkeys, k, n);
    nkeys += n;
+}
+
+/* The login's rules (PR review): per address, a hold after every failure, longer lockouts, and
+   timers that survive the 32-bit microsecond clock wrapping. */
+static void test_login(void)
+{
+   tnd_login_t l;
+   const uint32_t A = 0x0A00000Au, B = 0x0B00000Bu;
+   uint32_t t = 0xFFFFFF00u;                    /* just before the clock wraps */
+
+   tnd_login_reset(&l);
+   tnd_login_tick(&l, t);
+   CHECK(!tnd_login_locked(&l, A) && !tnd_login_held(&l), "login: nothing against anybody at the start");
+   CHECK(!tnd_login_fail(&l, A) && tnd_login_held(&l), "login: a wrong password holds every prompt ...");
+   tnd_login_tick(&l, t += TND_HOLD_US - 1u);
+   CHECK(tnd_login_held(&l), "... until TND_HOLD_US has gone ...");
+   tnd_login_tick(&l, t += 2u);
+   CHECK(!tnd_login_held(&l) && !tnd_login_locked(&l, A), "... and then not, across the clock's wrap");
+   CHECK(!tnd_login_fail(&l, A) && tnd_login_fail(&l, A), "login: the third wrong password from an address locks it");
+   CHECK(tnd_login_locked(&l, A) && !tnd_login_locked(&l, B), "login: ... that address only: another can still log in");
+   tnd_login_tick(&l, t += TND_LOCK_US - 1u);
+   CHECK(tnd_login_locked(&l, A), "login: locked for TND_LOCK_US ...");
+   tnd_login_tick(&l, t += 2u);
+   CHECK(!tnd_login_locked(&l, A), "login: ... then free");
+   tnd_login_fail(&l, A); tnd_login_fail(&l, A);
+   CHECK(tnd_login_fail(&l, A), "login: three more: locked again ...");
+   tnd_login_tick(&l, t += TND_LOCK_US + 1u);
+   CHECK(tnd_login_locked(&l, A), "... for twice as long the second time");
+   tnd_login_tick(&l, t += TND_LOCK_US);
+   CHECK(!tnd_login_locked(&l, A), "... and then free");
+   tnd_login_ok(&l, A);
+   tnd_login_fail(&l, A);
+   tnd_login_fail(&l, A);
+   CHECK(!tnd_login_locked(&l, A), "login: a right login clears the count (two after it do not lock)");
+   tnd_login_tick(&l, t += TND_FAIL_DECAY_US + 1u);
+   CHECK(!tnd_login_fail(&l, A), "login: failures are forgotten after TND_FAIL_DECAY_US (one more does not lock)");
+   for (int i = 0; i < 30; i++) {               /* the lockout stops growing at TND_LOCK_MAX_US */
+      tnd_login_fail(&l, A); tnd_login_fail(&l, A); tnd_login_fail(&l, A);
+   }
+   tnd_login_tick(&l, t += TND_LOCK_MAX_US - 1u);
+   CHECK(tnd_login_locked(&l, A), "login: a much repeated lockout lasts TND_LOCK_MAX_US ...");
+   tnd_login_tick(&l, t += 2u);
+   CHECK(!tnd_login_locked(&l, A), "login: ... and no longer");
+   tnd_login_reset(&l);                         /* more addresses than the table holds: a lock is kept */
+   tnd_login_tick(&l, t);
+   tnd_login_fail(&l, A); tnd_login_fail(&l, A); tnd_login_fail(&l, A);
+   for (uint32_t i = 1u; i <= 3u * TND_LOGIN_ADDRS; i++)
+      tnd_login_fail(&l, 0x0C000000u + i);
+   CHECK(tnd_login_locked(&l, A), "login: many other addresses do not push a locked one out of the table");
+   CHECK(tnd_login_may_replace(A, A, 0u) && !tnd_login_may_replace(A, B, TND_REPLACE_IDLE_US - 1u)
+         && tnd_login_may_replace(A, B, TND_REPLACE_IDLE_US),
+         "login: a session at the prompt is replaced by its own address, or by another once idle");
+}
+
+/* PR review: one input byte released up to 5 keys into a 3-key array (a lone Latin-1 lead byte, ESC,
+   then a high byte; or ESC P after one), before any login.  Every call, on random input and on the
+   worst cases found, stays within TND_IN_KEYS, with the array exactly that size (ASan sees past it). */
+static void test_input_key_bound(void)
+{
+   tnd_in_t s;
+   uint32_t seed = 12345u, worst = 0u, t = 1000u;
+   static const uint8_t worst_cases[][4] = {
+      { 0xE9, 0xF5, 0, 0 }, { 0xE9, 0x1B, 0xF5, 0 }, { 0xE9, 0x1B, 'P', 0xF5 }, { 0xC3, 0x1B, 'P', 0xE9 },
+      { 0x1B, 'P', 0xC0, 0 }, { 0x1B, 0xFE, 0, 0 }, { 0xF0, 0x9F, 0x1B, 0xFF },
+   };
+   for (int lit = 0; lit < 2; lit++)
+      for (int tele = 0; tele < 2; tele++) {
+         for (size_t w = 0; w < sizeof worst_cases / sizeof worst_cases[0]; w++) {
+            tnd_in_reset(&s);
+            s.lit_ok = lit != 0;
+            s.tele = tele != 0;
+            for (size_t i = 0; i < 4 && (i == 0 || worst_cases[w][i] != 0); i++) {
+               uint8_t k[TND_IN_KEYS], r[TND_IN_REPLY];
+               size_t  rl, n = tnd_in_byte(&s, worst_cases[w][i], t, k, r, &rl);
+               if (n > worst) worst = (uint32_t)n;
+               CHECK(n <= TND_IN_KEYS, "case %u byte %u: %u keys", (unsigned)w, (unsigned)i, (unsigned)n);
+            }
+            {
+               uint8_t k[TND_IN_KEYS];
+               size_t  n = tnd_in_tick(&s, t + 1000000u, k);  /* whatever was left waiting, timed out */
+               CHECK(n <= TND_IN_KEYS, "case %u tick: %u keys", (unsigned)w, (unsigned)n);
+            }
+         }
+         tnd_in_reset(&s);
+         s.lit_ok = lit != 0;
+         s.tele = tele != 0;
+         for (unsigned i = 0; i < 2000000u; i++) {
+            uint8_t k[TND_IN_KEYS], r[TND_IN_REPLY], c;
+            size_t  rl, n;
+            seed = seed * 1103515245u + 12345u;
+            c = (uint8_t)(seed >> 16);
+            if ((seed >> 8 & 7u) == 0u) c = 0x1B;              /* plenty of ESCs, Ps and high bytes */
+            else if ((seed >> 8 & 7u) == 1u) c = 'P';
+            t += (seed >> 24 & 3u) == 0u ? 300000u : 10u;      /* now and then long enough to time out */
+            n = tnd_in_byte(&s, c, t, k, r, &rl);
+            if (n > worst) worst = (uint32_t)n;
+            if (n > TND_IN_KEYS) { CHECK(0, "random input: %u keys from one byte", (unsigned)n); break; }
+            n = tnd_in_tick(&s, t, k);
+            if (n > TND_IN_KEYS) { CHECK(0, "random input: %u keys from one tick", (unsigned)n); break; }
+         }
+      }
+   CHECK(worst <= TND_IN_KEYS, "the most keys from one byte: %u (TND_IN_KEYS %u)", (unsigned)worst, (unsigned)TND_IN_KEYS);
 }
 
 static bool keys_are(const char *expect, size_t len)
@@ -1275,6 +1383,8 @@ int main(void)
    test_blank();
    test_narrow_window();
    test_input_robustness();
+   test_input_key_bound();
+   test_login();
    test_output_text();
    test_output_params();
    test_output_vdu21();

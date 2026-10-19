@@ -23,9 +23,10 @@
   Login: a session asks for telnetd_user and telnetd_password first, telnet's own
   (never the web interface's WebDAV ones: telnet is not encrypted, so the password
   crosses the network in the clear).  Without them every connection is refused,
-  unless telnetd_login=0 opens the daemon to the whole network.  Three wrong
-  passwords, on any connections within FAIL_DECAY_US of each other, lock it for
-  LOCKOUT_US, and each wrong one holds its session for FAIL_DELAY_US.
+  unless telnetd_login=0 opens the daemon to the whole network.  The rules
+  (tnd_login_*, telnetd_proto.h): wrong passwords counted per address, every third
+  locking that address out for longer each time, every one holding all login
+  prompts for a moment.
 
      telnetd_port=23      listen here; absent or 0: off
      telnetd_user=        the login: a user name, and a telnetd_password line (which may be
@@ -65,11 +66,9 @@
    bytes, are what the link runs out of (a stream from the Beeb reached the client at ~350 bytes/s). */
 #define OUT_BATCH    1024u
 #define OUT_HOLD_US  8000u
+#define HOOK_SAME_BOOT_US 30000000u     /* hooks within this of each other are one boot (the ROM, then HELPERS) */
 #define LOGIN_MAX    64u                 /* as the web interface's user name and password may be */
 #define LOGIN_US     30000000u           /* a session must be logged in by then */
-#define LOCKOUT_US   60000000u           /* after every third wrong password, whichever connections they came on */
-#define FAIL_DECAY_US 600000000u         /* wrong passwords are forgotten after this long without one */
-#define FAIL_DELAY_US 2000000u           /* and each one holds the session this long before it can try again */
 #define BEEB_PER_POLL 256u               /* Beeb bytes translated per main-loop pass */
 #define KEEPALIVE_US 30000000u           /* a telnet NOP this often when idle, see telnetd_poll */
 #define STALE_US     10000000u           /* a session that has not moved for this long, with
@@ -148,15 +147,12 @@ static uint32_t g_dot_us;                        /* the last dot */
 static uint32_t g_warn_until;                    /* a warning is being shown until then */
 static bool     g_warned;
 static uint32_t  g_tx_us;                /* the last time bytes went to the client */
-static uint32_t  g_lockout_us;           /* no sessions until then, 0 = none */
-static bool      g_locked;
 static char      g_line[LOGIN_MAX + 1u];
 static char      g_user[LOGIN_MAX + 1u];
 static unsigned  g_len;
-static unsigned  g_fails;                /* wrong passwords, kept across connections (FAIL_DECAY_US) */
-static uint32_t  g_fail_us;              /* the last one */
-static uint32_t  g_hold_until;           /* after a wrong password nothing is read until then */
-static bool      g_hold;
+static tnd_login_t g_login;              /* wrong passwords per address, lockouts, the hold: kept across sessions */
+static uint32_t  g_peer_addr;            /* the session's address, for those */
+static uint32_t  g_login_input_us;       /* when the session at the login prompt last had a key */
 static bool      g_close_after;          /* close once the output has gone */
 static bool      g_att_known, g_att;     /* last attachment told to the client */
 static char      g_peer[20];
@@ -217,20 +213,23 @@ static size_t o_room(void)
    return OBUF_SIZE - g_olen + g_opos;
 }
 
-static void o_put(const void *p, size_t n)
+/* All of it or none (PR review): a piece cut short by a full buffer could end in the middle of an
+   escape sequence and leave the terminal in a wrong state.  False if it did not fit. */
+static bool o_put(const void *p, size_t n)
 {
    if (n > o_room())
-      n = o_room();
+      return false;
    if (g_olen == g_opos && n != 0u)
       g_obuf_us = Pi1MHz_now_us;
    o_compact();
    memcpy(g_obuf + g_olen, p, n);
    g_olen += n;
+   return true;
 }
 
-static void o_str(const char *s)
+static bool o_str(const char *s)
 {
-   o_put(s, strlen(s));
+   return o_put(s, strlen(s));
 }
 
 /* The byte the Pi puts in the Beeb's keyboard buffer to ask for the screen: the auto-start
@@ -240,9 +239,11 @@ static void o_str(const char *s)
 
 static uint32_t g_scan_keys;                       /* scan keys queued and not yet told taken: not silent keys */
 
-static void k_push(uint8_t k)
+/* A byte for the Beeb's keyboard buffer.  literal: the byte after LIT_KEY, a character whatever its
+   value (&FF there is a typed y-diaeresis, not the Pi's own SCAN_KEY). */
+static void k_put(uint8_t k, bool literal)
 {
-   if (k != SCAN_KEY)
+   if (literal || k != SCAN_KEY)
       g_banner_until = Pi1MHz_now_us;              /* somebody is typing: the start-up is over */
    else
       g_scan_keys++;
@@ -250,6 +251,11 @@ static void k_push(uint8_t k)
       g_kring[g_ktail & KRING_MASK] = k;
       g_ktail++;
    }
+}
+
+static void k_push(uint8_t k)
+{
+   k_put(k, false);
 }
 
 /* ---- the session -------------------------------------------------------- */
@@ -314,11 +320,19 @@ static void session_reset(void)
    g_khead = g_ktail = 0u;
    g_olen = g_opos = 0u;
    g_len = 0u;
-   g_hold = false;                               /* g_fails is not reset: a reconnect must not clear it */
    g_close_after = false;
    g_att_known = false;
    g_rx_blocked = false;
    g_stage = S_LIVE;
+   /* and nothing of the last session's keys carries over (PR review): a byte after LIT_KEY still
+      to come, a key being watched for a silent screen, a scan key counted in the ring just emptied */
+   g_lit_next = false;
+   g_silent_wait = false;
+   g_scan_keys = 0u;
+   g_scan_pending = false;
+   g_scan_merge = false;
+   memset(g_user, 0, sizeof g_user);             /* the login typed, not kept after the session */
+   memset(g_line, 0, sizeof g_line);
 }
 
 /* Something is waiting on the client: output it has not acknowledged.  Keys refused because the
@@ -374,11 +388,9 @@ static void send_banners(void)                   /* what came up when the Beeb s
 
 static void login_key(uint8_t k)
 {
-   if (g_hold) {                                 /* after a wrong password: typing is ignored for a while */
-      if ((int32_t)(Pi1MHz_now_us - g_hold_until) < 0)
-         return;
-      g_hold = false;
-   }
+   if (tnd_login_held(&g_login))                 /* after a wrong password, on any connection: ignored a while */
+      return;
+   g_login_input_us = Pi1MHz_now_us;
    if (k == 13u) {
       if (g_stage == S_LOGIN_USER) {
          g_line[g_len] = '\0';
@@ -390,24 +402,17 @@ static void login_key(uint8_t k)
       }
       g_line[g_len] = '\0';
       g_len = 0u;
-      if (g_fails != 0u && (Pi1MHz_now_us - g_fail_us) >= FAIL_DECAY_US)
-         g_fails = 0u;                           /* long enough since the last wrong one */
       if (credentials_ok()) {
-         g_fails = 0u;
+         tnd_login_ok(&g_login, g_peer_addr);
          g_stage = S_LIVE;
          g_att_known = false;
          o_str("\r\n");
          send_banners();                         /* only now: nothing of the Beeb's before a login */
          connect_start();
       } else {
-         g_fail_us = Pi1MHz_now_us;
-         g_hold = true;                          /* every wrong one costs FAIL_DELAY_US */
-         g_hold_until = Pi1MHz_now_us + FAIL_DELAY_US;
-         if (++g_fails % 3u == 0u) {             /* every third, on whichever connections: locked out */
+         if (tnd_login_fail(&g_login, g_peer_addr)) {   /* the third from this address: it is locked out */
             o_str("\r\nLogin incorrect\r\n");
             g_close_after = true;
-            g_locked = true;
-            g_lockout_us = Pi1MHz_now_us;
          } else {
             o_str("\r\nLogin incorrect\r\n\r\nlogin: ");
             g_stage = S_LOGIN_USER;
@@ -454,7 +459,7 @@ static void deliver_key(uint8_t k)
       g_lit_next = false;
       if (g_stage == S_LIVE && serial_redirect_lit_ok()) {
          k_push(LIT_KEY);
-         k_push(k);
+         k_put(k, true);
       }
       return;
    }
@@ -653,30 +658,32 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    if (err != ERR_OK || newpcb == NULL)
       return ERR_VAL;
 
-   if (g_locked && (Pi1MHz_now_us - g_lockout_us) >= LOCKOUT_US)
-      g_locked = false;
+   uint32_t addr = ip4_addr_get_u32(ip_2_ip4(&newpcb->remote_ip));
+   bool     locked = tnd_login_locked(&g_login, addr);
    /* The one session is a dead one, and this is the same machine calling again
       (it gave up on the old connection, as a client that crashed or was killed
       does): the old one goes.  Only when it has really stopped moving - a session
       that is merely quiet or slow is not replaced. */
-   if (g_pcb != NULL && !g_locked && ip_addr_cmp(&g_pcb->remote_ip, &newpcb->remote_ip)
+   if (g_pcb != NULL && !locked && ip_addr_cmp(&g_pcb->remote_ip, &newpcb->remote_ip)
        && tnd_stalled(session_pending(), Pi1MHz_now_us, g_prog_us, STALE_US)) {
       g_replaced++;
       g_why = "replaced";
       (void)session_close(true);
    }
-   /* A session still at the login prompt holds nothing yet: a new connection takes its place, so
-      nobody can keep the owner out by connecting and waiting. */
-   if (g_pcb != NULL && !g_locked && g_stage != S_LIVE) {
+   /* A session still at the login prompt holds nothing yet: a new connection from the same address
+      takes its place, or from another once nothing has been typed there for a while, so nobody can
+      keep the owner out by connecting and waiting, nor by reconnecting over and over. */
+   if (g_pcb != NULL && !locked && g_stage != S_LIVE
+       && tnd_login_may_replace(g_peer_addr, addr, Pi1MHz_now_us - g_login_input_us)) {
       g_replaced++;
       g_why = "replaced at login";
       (void)session_close(true);
    }
-   if (g_pcb != NULL || g_locked || (!login_open() && !login_configured())) {
+   if (g_pcb != NULL || locked || (!login_open() && !login_configured())) {
       static const char busy[]   = "Pi1MHz: the BBC is in use by another session.\r\n";
-      static const char locked[] = "Pi1MHz: too many wrong passwords, try later.\r\n";
+      static const char locked_msg[] = "Pi1MHz: too many wrong passwords from here, try later.\r\n";
       static const char unset[]  = "Pi1MHz: telnet has no login set up (telnetd_user and telnetd_password).\r\n";
-      const char *m = g_locked ? locked : g_pcb != NULL ? busy : unset;
+      const char *m = locked ? locked_msg : g_pcb != NULL ? busy : unset;
       g_refused++;
       (void)tcp_write(newpcb, m, (u16_t)strlen(m), TCP_WRITE_FLAG_COPY);
       (void)tcp_output(newpcb);
@@ -692,6 +699,8 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    session_reset();
    g_start_us = g_tx_us = g_prog_us = Pi1MHz_now_us;
    snprintf(g_peer, sizeof g_peer, "%s", ip4addr_ntoa(ip_2_ip4(&newpcb->remote_ip)));
+   g_peer_addr = addr;
+   g_login_input_us = Pi1MHz_now_us;
    tcp_nagle_disable(newpcb);                   /* keys and echoes must not wait */
    tcp_arg(newpcb, NULL);
    tcp_recv(newpcb, td_recv);
@@ -783,15 +792,21 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       hook finds the cursor in the corner of the screen. */
    static uint32_t reset_seen;
    bool            hooked = serial_redirect_mode_gen() != mode_seen;
-   static uint32_t last_hook_us;
+   static uint32_t hook_recent_us, hook_last_poll_us;   /* counted down: no wrap of the 32-bit clock */
    /* A hook that comes with F12 or well after the last one (the ROM and then HELPERS
       hook within seconds of each other in one boot, a disc being slow) follows a reset
       the Pi never saw on the reset line, such as CALL !-4: the Beeb has a new screen. */
    bool            hw_reset = serial_redirect_reset_gen() != reset_seen;
+   {
+      uint32_t dt = now_us - hook_last_poll_us;
+      hook_last_poll_us = now_us;
+      hook_recent_us = hook_recent_us > dt ? hook_recent_us - dt : 0u;
+   }
+   tnd_login_tick(&g_login, now_us);             /* the login's timers: lockouts, failures forgotten, the hold */
    bool            reset = hw_reset
-                           || (hooked && (g_break_asked || (Pi1MHz_now_us - last_hook_us) > 30000000u));
+                           || (hooked && (g_break_asked || hook_recent_us == 0u));
    if (hooked || hw_reset)
-      last_hook_us = Pi1MHz_now_us;
+      hook_recent_us = HOOK_SAME_BOOT_US;
    if (hooked && !reset) {
       uint8_t rc, rr;
       serial_redirect_beeb_cursor(&rc, &rr);
@@ -934,8 +949,9 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
 
    {
       uint8_t k[TND_IN_KEYS];
-      if (tnd_in_tick(&g_in, now_us, k) != 0u)
-         deliver_key(k[0]);
+      size_t  n = tnd_in_tick(&g_in, now_us, k);   /* Alt-P with nothing after it is two keys: ESCAPE and P */
+      for (size_t i = 0u; i < n; i++)
+         deliver_key(k[i]);
    }
 
    if (g_pend != NULL)

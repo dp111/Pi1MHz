@@ -16,13 +16,16 @@
 \ the program, reads every character cell of the screen (OSBYTE 135) and sends the ones
 \ that are not blank to the Pi as VDU 31,x,y,char with the screen drivers switched off,
 \ so nothing shows on the Beeb, and puts the cursor back.  It runs on the host, so it
-\ works with a second processor on.  Nothing is kept in zero page, which the MOS's
-\ OSBYTE and VDU routines use: only the stack.  No workspace, no commands, no language.
+\ works with a second processor on.  The scan keeps nothing in zero page, which the MOS's
+\ OSBYTE and VDU routines use: only the stack (claiming KEYV and RDCHV borrows &A8-&A9,
+\ saved on the stack and put back).  No Beeb RAM of its own (its 8 bytes are in the Pi's
+\ page, see WS), no commands, no language.
 \
 \ Put it in a ROM socket (an EPROM), or load it into sideways RAM like any other
 \ ROM image.  On a BBC B press BREAK; on a Master 128 also *INSERT its bank, which
 \ the MOS needs for a ROM that appeared after the last reset (*ROMS shows the bank).  The same image works on
-\ a B, B+ and Master 128: plain 6502, and the only OS call is OSBYTE &FD.
+\ a B, B+ and Master 128: plain 6502 and documented OS calls (OSBYTE 3, 134, 135, 156,
+\ 160, 236, &79 and &FD, OSWRCH and OSNEWL).
 \
 \ POWER-ON.  The Pi is usually powered from the Beeb, so at power-on it is
 \ booting while the Beeb runs its ROM scan, and its window at &FC88 does not
@@ -54,7 +57,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 15           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 16           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -69,6 +72,15 @@ KEYV_ENTRY = &FF3C          \ the MOS's entry for vector 20 as an extended vecto
 DEFVEC = &FFB7              \ the MOS: where its table of the default vectors is (OS 1.20 &D940)
 ZPTMP = &A8                 \ two bytes of the OS commands' workspace, kept on the stack while used
 STUBPAGE = &FC              \ the stub's page (FRED); only a test build, in RAM, changes it
+\ The stub's control port codes (+&28), as SER_CTL_* in src/serial_redirect.h
+SER_CTL_TELNET = &10         \ + MODE: telnet mode, the end of a hook report
+SER_CTL_RESET = &20          \ a reset (the reset line may not have moved), the screen not readable
+SER_CTL_ROMFS = &22          \ a ROM filing system operation: output RS423 did not carry
+SER_CTL_KEY_TOLD = &24       \ a program took a cursor key, COPY or RETURN
+SER_CTL_KEY_OTHER = &25      \ ... or any other byte
+SER_CTL_RESET_LIT = &26      \ a reset; the screen can be read, every key is told, LITKEY bytes read as they are
+SER_CTL_COLUMN = &80         \ + the cursor's column, ahead of SER_CTL_TELNET
+SER_CTL_ROW = &E0            \ + the cursor's row
 STUB = &FCCC                \ the Pi's serial stub at its default place (src/serial_redirect.c)
 \ The ROM's workspace: 8 bytes the Pi keeps in FRED just below the stub's escape routine
 \ (SER_WS_OFF in src/serial_redirect.c), so the ROM owns no Beeb RAM.  They are there only
@@ -78,7 +90,8 @@ REMVOLD = WS                \ the MOS's REMV routine (the claim goes on to it)
 KEYVOLD = WS+2              \ ... its KEYV routine
 RDCHVOLD = WS+4             \ ... its RDCHV routine
 SHIFTFLAG = WS+6            \ the Pi's SHIFT request for paged mode: set by the Pi, cleared here
-TELNETON = WS+7             \ 1 when telnetd is on (telnetd_port): only then is the Beeb hooked in
+TELNETON = WS+7             \ bit 0 set when telnetd is on (telnetd_port): only then is the Beeb hooked in;
+LITNEXT = &80               \ ... bit 7 (the ROM's): the next keyboard byte follows LITKEY, a character
 POWER_ON = 1                \ OSBYTE &FD: 0 soft BREAK, 1 power-on, 2 CTRL-BREAK
 SOFT_BREAK = 0              \ OSBYTE &FD: a soft reset (the BREAK key, or a jump through the reset vector)
 TUBE_ULA = &FEE0            \ the Tube ULA's status register: write &80+flags to set, flags to clear
@@ -112,7 +125,7 @@ GUARD &C000
                 pha                         \ a ROM filing system operation: tell the Pi, and pass it on
                 tya
                 pha
-                lda #&22
+                lda #SER_CTL_ROMFS
                 jsr marker
                 pla
                 tay
@@ -129,13 +142,7 @@ GUARD &C000
                 ldx #0
                 ldy #&FF
                 jsr OSBYTE                  \ X = 0, 1 or 2
-                cpx #SOFT_BREAK
-                bne notsoft
-                lda #&A0                    \ a reset in software (CALL !-4, the telnet F12) did not
-                sta TUBE_ULA                \ reset a second processor as the BREAK key does, and the
-                lda #&20                    \ Tube's start would wait for it for ever: the Tube ULA's
-                sta TUBE_ULA                \ parasite reset (flag P) on and off.  No Tube: nothing there
-.notsoft        cpx #POWER_ON
+                cpx #POWER_ON
                 bne probe                   \ the Pi is already up
                 lda #WAIT_TURNS
                 pha                         \ turns left, on the stack: nothing else is ours
@@ -161,9 +168,19 @@ GUARD &C000
                 jsr stubok                  \ the Pi's stub where it always is: hook it in here,
                 bne nopi                    \ and only if telnetd is on.  Moved (Serial_addr=) or
                 lda TELNETON                \ telnetd off: nothing is touched (helper 20 can still
-                cmp #1                      \ hook a moved stub by hand: X%=20:CALL &FC88)
-                bne nopi
-                jsr install
+                and #1                      \ hook a moved stub by hand: X%=20:CALL &FC88)
+                beq nopi
+                lda #&FD                    \ telnetd on: was this reset started in software?
+                ldx #0
+                ldy #&FF
+                jsr OSBYTE
+                cpx #SOFT_BREAK
+                bne notsoft
+                lda #&A0                    \ a reset in software (CALL !-4, the telnet F12) did not
+                sta TUBE_ULA                \ reset a second processor as the BREAK key does, and the
+                lda #&20                    \ Tube's start would wait for it for ever: the Tube ULA's
+                sta TUBE_ULA                \ parasite reset (flag P) on and off.  No Tube: nothing there
+.notsoft        jsr install
 .hooked         tsx
                 lda &102,x                  \ this ROM's slot, as the MOS gave it in X
                 jsr claimkeyv               \ A is kept
@@ -247,15 +264,15 @@ GUARD &C000
                 jsr OSBYTE
                 tya
                 and #7
-                ora #&10
+                ora #SER_CTL_TELNET
                 pha
                 lda #134                    \ ... and the cursor: X column, Y row
                 jsr OSBYTE
                 tya
-                ora #&E0
+                ora #SER_CTL_ROW
                 pha
                 txa
-                ora #&80
+                ora #SER_CTL_COLUMN
                 sta STUB+&28                \ &80 + column
                 pla
                 sta STUB+&28                \ &E0 + row
@@ -380,10 +397,10 @@ GUARD &C000
 
 \ Tell the Pi a program has taken a key it follows (see remvh).  A, X and Y are kept.
 .keyother       pha                         \ &25: any other key
-                lda #&25
+                lda #SER_CTL_KEY_OTHER
                 bne ktgo
 .keytold        pha                         \ &24: a cursor key, COPY or RETURN
-                lda #&24
+                lda #SER_CTL_KEY_TOLD
 .ktgo           pha                         \ the code
                 txa
                 pha
@@ -467,13 +484,19 @@ GUARD &C000
                 ldx #0
                 clv
                 jsr rdremv                  \ take LITKEY ...
+                lda TELNETON                \ ... and say the next byte is a character, whatever it is
+                ora #LITNEXT                \ (&FF is not SCANKEY, &8B-&8F not copy keys): remvh
+                sta TELNETON                \ passes it through as it is and clears this
 .rdwait         ldx #0
                 clv
                 jsr rdremv                  \ ... and the byte after it (the Pi sends both)
                 bcc rdgot
                 bit &FF
                 bpl rdwait                  \ not there yet; ESCAPE: let the MOS's routine say so
-.rdold          pla
+.rdold          lda TELNETON                \ never left set for a later key (an ESCAPE in the wait)
+                and #&FF-LITNEXT
+                sta TELNETON
+                pla
                 tay
                 pla
                 tax
@@ -530,10 +553,10 @@ GUARD &C000
                 sta REMV
                 lda #>REMV_ENTRY
                 sta REMV+1
-                lda #&26                    \ &26: the screen can be asked for, every key taken is told, and
+                lda #SER_CTL_RESET_LIT      \ &26: the screen can be asked for, every key taken is told, and
                                             \ LITKEY bytes are read as they are (build 13)
                 rts
-.notours        lda #&20
+.notours        lda #SER_CTL_RESET
                 rts
 
 \ REMV: X = the buffer, V clear to remove a byte, set to look at it; on return Y is the byte
@@ -555,6 +578,8 @@ GUARD &C000
                 plp
                 jsr remvcall
                 bcs remvret
+                bit TELNETON                \ the byte after LITKEY: a character, told as such
+                bmi remvlit
                 cpy #SCANKEY
                 beq remvscan
                 cpy #13
@@ -582,6 +607,14 @@ GUARD &C000
                 rts
 .remvold        plp
 .remvcall       jmp (REMVOLD)
+.remvlit        pha                         \ A as the MOS gave it
+                lda TELNETON
+                and #&FF-LITNEXT
+                sta TELNETON
+                pla
+                jsr keyother
+                clc
+                rts
 
 \ The ROM filing system takes the 6850 for each operation (&EA = 1, OS 1.2 &FB3D) and
 \ leaves it taken, so nothing reaches RS423 again until another filing system is
@@ -843,11 +876,11 @@ VDUVARS = &0300
                 jsr OSWRCH
                 tya
                 jmp OSWRCH
-.topi           lda #3                      \ output to RS423 only
-                ldx #3
-                jmp OSBYTE
-.toscr          lda #3                      \ output to the screen only
-                ldx #0
+.topi           lda #3                      \ output to RS423 only: the screen (bit 1), the printer
+                ldx #&17                    \ (bit 2) and a *SPOOL file (bit 4) off, so a scan never
+                jmp OSBYTE                  \ lands in an open spool file or on paper
+.toscr          lda #3                      \ output to the screen only: RS423, printer and spool off
+                ldx #&14
                 jmp OSBYTE
 
 \ *HELP with nothing after it: the title, version and build, so it is easy to see which
