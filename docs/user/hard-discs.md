@@ -146,6 +146,18 @@ the disc (send with `*FCODE`, read the reply as usual):
 | `?T` | Title of the mounted disc (`Title=` in its `scsi0.cfg`) | `T<title>`, `X` if absent |
 | `?Y` | Synopsis of the mounted disc (`Description=`) | `Y<text>`, `X` if absent |
 
+## Which controller: `DriveController=`
+
+`DriveController=` in `Pi1MHz.cfg` says what sits behind the Acorn host
+adaptor. The default, `Mixed`, is Pi1MHz's behaviour as it has always been:
+ADFS, SuperForm and the Acorn FileStore all work, and discs over about 276 MB
+too. The other values make the drives behave strictly as one kind of
+hardware: `ACB-4000` (the Adaptec board of the Acorn Winchester: no INQUIRY,
+the Adaptec's own MODE SENSE list and FORMAT table), `ACB-4070`, `SASI`, or
+`SCSI` (a drive with its own controller, such as the Rodime RO652 in a
+FileStore E20). See [Configuration](configuration.md#drive-controllers) for
+every value.
+
 ## Two adapters on a Master
 
 `SCSIID=n` in `Pi1MHz.cfg` makes the emulation answer only that SCSI

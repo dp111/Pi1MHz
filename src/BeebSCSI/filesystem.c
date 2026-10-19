@@ -91,7 +91,7 @@ static const parserkey scsiattributes[] = {
    { "WritPage3"       , 0 , 23 , NUMSTRING },
    { "ModePage4"       , 0 ,  6 , NUMSTRING},
    /* The vendor pages are whatever the drive's own .cfg says, and real
-      drives differ: a Rodime RO3000S's pages 35, 37 and 38 are 4, 8 and 8
+      drives differ: some drives' pages 35, 37 and 38 are 4, 8 and 8
       bytes, which the old limits of 3, 6 and 6 cut short - a page then went
       out with a length byte that promised more than it carried, and the
       Acorn FileStore, which reads pages 37 and 38 for "(C)Acorn", turned the
@@ -127,6 +127,23 @@ static const parserkey scsiattributes[] = {
    { "FDefPage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "FDefPage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "PageControl"     , 0 ,  4 , STRING },
+   /* A SCSI drive's track layout, TrackFormat=T,O,S in decimal, used by
+      FORMAT under DriveController=SCSI (an example drive: 20384,70,1):
+        physical sectors per track = T / (bytes per sector + O), rounded
+        down; sectors per track = physical - S.
+        T, track bytes: usable bytes on one track (the example has 20,484 raw
+          bytes per revolution; its firmware keeps the gap at the index
+          pulse and a margin for speed variation).
+        O, overhead: bytes each sector takes on the disc besides its data -
+          sync field, address mark, ID field (cylinder, head, sector, check
+          bytes), gap, data sync and address mark, the 4-byte ECC, closing gap.
+        S, spare sectors: kept in reserve on every track so a bad sector can
+          be remapped on the same track; formatted but never given a block
+          number.
+      The example: 128/256/512/1024 bytes -> 101/61/34/17 (256: 20384/326 = 62
+      physical, 61 used, 306 x 4 x 61 = 74,664 blocks).  No TrackFormat
+      line: sectors per track stay as page 3 says. */
+   { "TrackFormat"     , 0 , 24 , STRING },
    /* 5: the LaserVision user code carries the '=' (e.g. "1=986").
       At 4 the parser truncated it to "1=98", and filesystemReadLunUserCode
       read string[4] off the end of the 4-byte allocation. */
@@ -172,6 +189,7 @@ static struct filesystemStateStruct
    bool fsLunReadOnly[MAX_LUNS];       // ADFS image is AM_RDO, opened FA_READ: Beeb writes to it are swallowed
 	struct HDGeometry fsLunGeometry[MAX_LUNS];   // Keep the geometry details for each LUN
    parserkeyvalue keyvalues[MAX_LUNS][NUM_KEYS];   // keys from .cfg file for each LUN
+   uint32_t driveGeneration;           // changes when LUNs 0-7 are no longer the same drives
 } filesystemState;
 
 NOINIT_SECTION static char fileName[256];       // String for storing LFN filename
@@ -620,6 +638,7 @@ bool filesystemDismount(void)
       filesystemSetLunStatus(i, false);
       parse_releasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
    }
+   filesystemState.driveGeneration++;
    // Dismount the SD card
      FRESULT fsResult;
    filesystemRemountNotify();
@@ -879,6 +898,8 @@ void filesystemStopDirectoryLuns(uint8_t firstLun)
       filesystemSetLunStatus(i, false);
       parse_releasekeyvalues(filesystemState.keyvalues[i], NUM_KEYS);
    }
+   if (firstLun < 8)
+      filesystemState.driveGeneration++;
 }
 
 // Function to read the status of a LUN image
@@ -1198,6 +1219,21 @@ uint32_t filesystemGetheadspercylinder( uint8_t lunNumber)
 }
 
 
+// Function to return the LUN image cylinders
+//
+uint32_t filesystemGetLunCylinders( uint8_t lunNumber)
+{
+   return filesystemState.fsLunGeometry[lunNumber].Cylinders;
+}
+
+// Changes whenever LUNs 0-7 stop being the same drives: the card is
+// dismounted, or the ADFS directory is changed or stopped (the jukebox).
+// Anything kept for a drive (scsi.c's pending pages) is stale after it.
+uint32_t filesystemGetDriveGeneration(void)
+{
+   return filesystemState.driveGeneration;
+}
+
 // Function to return the LUN image sectors per track size in bytes from the stored geometry
 //
 uint32_t filesystemGetLunSPTSize( uint8_t lunNumber)
@@ -1258,9 +1294,12 @@ void filesystemSetLunDirectory(uint8_t hostID, uint8_t lunDirectoryNumber)
    if (debugFlag_filesystem) debugStringInt16_P(PSTR("File system: filesystemSetLunDirectory(): setting scsihostid directory\r\n"), hostID, 0);
 
    // Change the current LUN directory number
-   if (hostID < 16)
+   if (hostID < 16) {
+      // LUNs 0-7 are now another directory's drives
+      if (filesystemState.lunDirectory != lunDirectoryNumber)
+         filesystemState.driveGeneration++;
       filesystemState.lunDirectory = lunDirectoryNumber;
-   else
+   } else
       filesystemState.lunDirectoryVFS = lunDirectoryNumber;
 }
 
@@ -1582,36 +1621,44 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
    return false;
 }
 
-// FORMAT on the ACB-4000 sets the sectors per track from the interleave it is
-// given: 32 for an interleave of 1, otherwise 33 (ACB-4000 manual p. 2-5).
-// Called before filesystemFormatLun, which sizes the image from the .cfg, so
-// the new value goes into the LUN's .cfg (ModePage3) first.  Only a LUN at one
-// of those two values follows the interleave: any other value set in its .cfg
-// is left alone, as is a write-protected or read-only image.  Returns false
-// only if the .cfg could not be written.
-bool filesystemSetLunSectorsPerTrack(uint8_t lunNumber, uint16_t sectorsPerTrack)
+// FORMAT's geometry (the controller's rules are in scsi.c).  Start the LUN
+// for its current .cfg first; false: leave it alone (write-protected,
+// a VFS LUN, or it cannot start - FORMAT then says so).
+bool filesystemStartLunForFormat(uint8_t lunNumber)
 {
-   bool ok = true;
-
    if (config_beeb_write_protected() || lunNumber > 7)
-      return true;
-   // Start the LUN for its current .cfg; if it cannot start, FORMAT says so
-   if (!filesystemSetLunStatus(lunNumber, true))
-      return true;
+      return false;
+   return filesystemSetLunStatus(lunNumber, true);
+}
 
-   char *page3 = filesystemState.keyvalues[lunNumber][MODEPAGE3].v.string;
-   uint16_t now = filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack;
-   if (!filesystemState.fsLunReadOnly[lunNumber] && page3 != NULL
-       && filesystemState.keyvalues[lunNumber][MODEPAGE3].length >= 12
-       && (now == 32u || now == 33u) && now != sectorsPerTrack)
-   {
-      page3[10] = (char)(sectorsPerTrack >> 8);
-      page3[11] = (char)sectorsPerTrack;
-      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = sectorsPerTrack;
-      ok = filesystemWriteAttributes(lunNumber);
+// Save the geometry FORMAT lays down into the LUN's .cfg, before
+// filesystemFormatLun sizes the image from it: sectors per track (ModePage3
+// bytes 10-11; a .cfg without a ModePage3 line keeps the default 33 at its
+// next start), and a block size other than 0 (LBADescriptor).  An
+// interleave other than 0 also goes into page 3 with the block size (bytes
+// 12-15), as a drive with its own controller keeps them.  A read-only
+// image is left alone.  Returns false if the .cfg cannot be saved.
+bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, uint32_t blockSize,
+                                  uint16_t interleave)
+{
+   parserkeyvalue *page3 = &filesystemState.keyvalues[lunNumber][MODEPAGE3];
+
+   if (filesystemState.fsLunReadOnly[lunNumber])
+      return true;
+   if ((page3->v.string != NULL) && (page3->length >= 12)) {
+      page3->v.string[10] = (char)(sectorsPerTrack >> 8);
+      page3->v.string[11] = (char)sectorsPerTrack;
+      if ((interleave != 0) && (page3->length >= 16)) {
+         page3->v.string[12] = (char)(blockSize >> 8);
+         page3->v.string[13] = (char)blockSize;
+         page3->v.string[14] = (char)(interleave >> 8);
+         page3->v.string[15] = (char)interleave;
+      }
    }
-   filesystemSetLunStatus(lunNumber, false);
-   return ok;
+   if (blockSize != 0)
+      filesystemSetLunBlockSize(lunNumber, blockSize);
+   filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = sectorsPerTrack;
+   return filesystemWriteAttributes(lunNumber);
 }
 
 // Function to format a LUN image
@@ -1735,11 +1782,37 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
 
 // takes lun geometry and updates the keyvalues
 
+/* ModePage0 is the Adaptec's drive parameter list on an ACB or SASI board,
+   and carries the geometry.  On a drive with its own controller page 0 is
+   an ordinary mode page (a CCS drive's Unit Attention page: some drives
+   hold 80 02 00 00, others have none) and the geometry is page 4 alone. */
+static bool page0IsDriveList = true;
+
+/* DriveGeometry=CFG (true): a .cfg without its geometry page gets none
+   made up; Auto (false, the default) deduces it.  Set by scsi.c. */
+static bool geometryFromCfgOnly = false;
+
+void filesystemSetGeometryFromCfgOnly(bool cfgOnly)
+{
+   geometryFromCfgOnly = cfgOnly;
+}
+
+void filesystemSetPage0IsDriveList(bool driveList)
+{
+   page0IsDriveList = driveList;
+}
+
+static bool filesystemPage0IsDriveList(void)
+{
+   return page0IsDriveList;
+}
+
 void filesystemLunToconfigGeometry(uint8_t lunNumber)
 {
    int index;
    // Update the extended attributes from the cached geometry for this LUN
    index = MODEPAGE0;
+   if (filesystemPage0IsDriveList()) {
    if  (!filesystemState.keyvalues[lunNumber][index].v.string)
    {
       filesystemState.keyvalues[lunNumber][index].v.string = malloc(10);
@@ -1763,6 +1836,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    filesystemState.keyvalues[lunNumber][index].v.string[9] = 0x01; // Step pulse count
    if (filesystemState.keyvalues[lunNumber][index].length < 10)
       filesystemState.keyvalues[lunNumber][index].length = 10;
+   }
 
    index = MODEPAGE4;
    if  (!filesystemState.keyvalues[lunNumber][index].v.string)
@@ -1785,7 +1859,10 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
       filesystemState.keyvalues[lunNumber][index].length = 6;
 }
 
-void filesytemdattoconfigGeometry(uint8_t lunNumber)
+/* The geometry from the image's size alone: sectors per track from page 3
+   (or the default), heads the largest divisor up to 16, cylinders the rest.
+   A guess, not the drive's: only for a .cfg without its geometry page. */
+static void filesystemGeometryFromImage(uint8_t lunNumber)
 {
       /* f_size() is only the image's size while the LUN holds it open.  A
          stopped LUN's FIL is closed and still reports the last image it
@@ -1810,8 +1887,12 @@ void filesytemdattoconfigGeometry(uint8_t lunNumber)
 
       filesystemState.fsLunGeometry[lunNumber].Cylinders = cylinders;
       filesystemState.fsLunGeometry[lunNumber].Heads = heads;
+}
 
-      filesystemLunToconfigGeometry(lunNumber);
+void filesytemdattoconfigGeometry(uint8_t lunNumber)
+{
+   filesystemGeometryFromImage(lunNumber);
+   filesystemLunToconfigGeometry(lunNumber);
 }
 
 
@@ -1897,7 +1978,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
       filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;
 
    index = MODEPAGE0;
-   if  (filesystemState.keyvalues[lunNumber][index].v.string)
+   if  (filesystemPage0IsDriveList() && filesystemState.keyvalues[lunNumber][index].v.string)
    {
       filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
                                                                         (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[2]));
@@ -1917,15 +1998,53 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
                filesystemCopyPage4toPage0(lunNumber);
       } else
       {
-         // set to default values
-         filesytemdattoconfigGeometry(lunNumber);
+         // The .cfg has no geometry page (page 4 on a drive with its own
+         // controller, page 0 or 4 otherwise).  DriveGeometry=Auto: deduce
+         // it from the image size and publish it as the page; CFG: invent
+         // nothing, a host asking for the page is refused as by a drive
+         // without it.  A debug build says so once per LUN until the drives
+         // change (a remount or another ADFS directory), not at every start,
+         // MODE SENSE or TRANSLATE; a release build prints nothing here, on
+         // the SCSI command path.
+         filesystemGeometryFromImage(lunNumber);
+#ifdef DEBUG
+         static uint32_t warned[MAX_LUNS];     // drive generation + 1 when said
+         if (warned[lunNumber] != filesystemState.driveGeneration + 1u) {
+            const struct HDGeometry *g = &filesystemState.fsLunGeometry[lunNumber];
+            warned[lunNumber] = filesystemState.driveGeneration + 1u;
+            LOG_DEBUG("BeebSCSI: LUN %u: the .cfg has no page 4%s - %s %lu x %u x %u from the image size\n",
+                      (unsigned)lunNumber, filesystemPage0IsDriveList() ? " or page 0" : "",
+                      geometryFromCfgOnly ? "DriveGeometry=CFG: no page made; capacity" : "geometry deduced:",
+                      (unsigned long)g->Cylinders, (unsigned)g->Heads, (unsigned)g->SectorsPerTrack);
+         }
+#endif
+         if (!geometryFromCfgOnly)
+            filesystemLunToconfigGeometry(lunNumber);
       }
    }
 }
 
 
+// The LUN's block size, into LBADescriptor (bytes 5-7) and the geometry
+void filesystemSetLunBlockSize(uint8_t lunNumber, uint32_t blockSize)
+{
+   char *lba = filesystemState.keyvalues[lunNumber][LBADESCRIPTOR].v.string;
+   if (lba == NULL) {
+      filesystemConfigToLunGeometry(lunNumber);   // makes a default one
+      lba = filesystemState.keyvalues[lunNumber][LBADESCRIPTOR].v.string;
+      if (lba == NULL)
+         return;
+   }
+   lba[5] = (char)(blockSize >> 16);
+   lba[6] = (char)(blockSize >> 8);
+   lba[7] = (char)blockSize;
+   filesystemState.fsLunGeometry[lunNumber].BlockSize = blockSize;
+}
+
 void filesystemCopyPage0toPage4(uint8_t lunNumber)
 {
+   if (!filesystemPage0IsDriveList())
+      return;
    int index = MODEPAGE0;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
@@ -1948,6 +2067,8 @@ void filesystemCopyPage0toPage4(uint8_t lunNumber)
 
 void filesystemCopyPage4toPage0(uint8_t lunNumber)
 {
+   if (!filesystemPage0IsDriveList())
+      return;
    int index = MODEPAGE4;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
@@ -2350,17 +2471,18 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
 
 /* A numeric field of a mode page: where it starts (counting the page code and
    length bytes) and how many bytes it takes. */
-typedef struct { uint8_t start; uint8_t size; } modePageField_t;
 
-/* Page 3 (format parameters) and page 4 (rigid drive geometry).  A host that
-   writes zero to one of these fields means "the drive's own value" (the Acorn
-   FileStore formatter zeroes most of page 3 before FORMAT). */
+/* Page 3 (format parameters) and page 4 (rigid drive geometry).  The Acorn
+   FileStore formatter zeroes most of page 3 before FORMAT, as a drive's
+   specification asks for read-only fields.  With a mask the drive simply
+   ignores those bytes; without one a zero in these fields
+   is taken as "the drive's own value". */
 static const modePageField_t modePage3Fields[] = {
    {2, 2}, {4, 2}, {6, 2}, {8, 2}, {10, 2}, {12, 2}, {14, 2}, {16, 2}, {18, 2}
 };
 static const modePageField_t modePage4Fields[] = { {2, 3}, {5, 1} };
 
-static const modePageField_t * modePageFields(uint8_t page, size_t * count)
+const modePageField_t * filesystemModePageFields(uint8_t page, size_t * count)
 {
    if (page == 3) {
       *count = sizeof modePage3Fields / sizeof modePage3Fields[0];
@@ -2378,36 +2500,40 @@ static const modePageField_t * modePageFields(uint8_t page, size_t * count)
 
    Buffer is the page as received: the page code, the length byte, then the
    data.  `declared` is the size the length byte promises (counting those two
-   bytes) and `received` how much of it actually arrived.  The Acorn FileStore
-   tools send a 3000-series drive its pages two bytes short, and a real drive
-   takes the bytes it is given and leaves the rest of the page as it was; so
-   does this.  A zero in a numeric field of page 3 or 4 keeps the stored
-   value, so formatting cannot wipe the drive's sectors per track, cylinders
-   or heads.  Any other page is stored as it arrived. */
-int filesystemMergeModePageData(uint8_t lunNumber, uint8_t page, uint8_t declared, uint8_t received, const uint8_t * Buffer)
+   bytes) and `received` how much of it actually arrived.  A drive takes the
+   bytes it is given and leaves the rest of the page as it was (as a drive's
+   own firmware does: a page may be sent shorter than stored, never longer);
+   the Acorn formatter relies on it, sending len+4 bytes where a whole page
+   needs len+6 (FServFmt: page 3 always, pages 1 and 4 on some drives).
+   zeroKeeps: a zero in a numeric field of page 3 or 4 keeps the stored
+   value, so formatting cannot wipe the sectors per track, cylinders or
+   heads.  keepCode: a page already held keeps its own code byte. */
+static size_t filesystemMergeOnto(uint8_t page, const char * old, size_t oldLength, uint8_t declared,
+                                  uint8_t received, const uint8_t * Buffer, uint8_t merged[256],
+                                  bool zeroKeeps, bool keepCode)
 {
-   uint8_t merged[256];
-   size_t oldLength = 0;
-   const char * old = filesystemGetModePageData(lunNumber, page, &oldLength);
    size_t total = declared;
-   size_t fieldCount;
-   const modePageField_t * fields = modePageFields(page, &fieldCount);
+   size_t fieldCount = 0;
+   const modePageField_t * fields = zeroKeeps ? filesystemModePageFields(page, &fieldCount) : NULL;
 
-   memset(merged, 0, sizeof merged);
+   memset(merged, 0, (size_t)256u);
    if (old != NULL) {
-      if (oldLength > sizeof merged)
-         oldLength = sizeof merged;
+      if (oldLength > (size_t)256u)
+         oldLength = (size_t)256u;
       memcpy(merged, old, oldLength);
       if (oldLength > total)
          total = oldLength;
    }
-   if (total > sizeof merged)
-      total = sizeof merged;
+   if (total > (size_t)256u)
+      total = (size_t)256u;
    if (received > total)
       received = (uint8_t)total;
 
-   /* Page code, and a length byte that covers the whole stored page */
-   if (received > 0)
+   /* The page code, unless the drive already has the page: then its own
+      code byte stays, PS bit included (a host's MODE SELECT sends the page
+      code without PS; the drive still reports it).  The length byte covers
+      the whole stored page. */
+   if (received > 0 && (!keepCode || oldLength < 1))
       merged[0] = Buffer[0];
    if (total >= 2)
       merged[1] = (uint8_t)(total - 2);
@@ -2435,7 +2561,84 @@ int filesystemMergeModePageData(uint8_t lunNumber, uint8_t page, uint8_t declare
          memcpy(&merged[fields[f].start], &Buffer[fields[f].start], have);
    }
 
+   return total;
+}
+
+/* driveRules (a drive with its own controller): the stored code byte stays
+   (PS bit included), and a page with a mask is decided by the mask alone.
+   Without them a zero field of page 3 or 4 always keeps the stored value
+   and the code byte is the host's, as Pi1MHz has always done. */
+int filesystemMergeModePageData(uint8_t lunNumber, uint8_t page, uint8_t declared, uint8_t received,
+                                const uint8_t * Buffer, bool driveRules)
+{
+   uint8_t merged[256];
+   size_t oldLength = 0;
+   const char * old = filesystemGetModePageData(lunNumber, page, &oldLength);
+   size_t maskLength = 0;
+   bool zeroKeeps = !driveRules || (filesystemGetMaskPageData(lunNumber, page, &maskLength) == NULL);
+   size_t total = filesystemMergeOnto(page, old, oldLength, declared, received, Buffer, merged, zeroKeeps,
+                                      driveRules);
+
    return filesystemWriteModePageData(lunNumber, page, (uint8_t)total, merged);
+}
+
+/* What a page becomes when a host sends Buffer onto `base` (the pending
+   page): the merge above, then the page's mask as filesystemWriteModePageData
+   applies it.  Returns its length; out holds 256 bytes. */
+size_t filesystemModePageAfterSelect(uint8_t lunNumber, uint8_t page, const char * base, size_t baseLength,
+                                     uint8_t declared, uint8_t received, const uint8_t * Buffer, uint8_t out[256])
+{
+   uint8_t merged[256];
+   size_t maskLength = 0;
+   const char * mask = filesystemGetMaskPageData(lunNumber, page, &maskLength);
+   size_t total = filesystemMergeOnto(page, base, baseLength, declared, received, Buffer, merged, mask == NULL, true);
+
+   memcpy(out, merged, 256);
+   if ((mask != NULL) && (base != NULL))
+      for (size_t i = 0; (i < total) && (i < maskLength); i++)
+         out[i] = (uint8_t)((merged[i] & (uint8_t)mask[i]) | ((i < baseLength ? (uint8_t)base[i] : 0u) & (uint8_t)~mask[i]));
+   return total;
+}
+
+/* Store a whole page as given, no mask (FORMAT making the pending page
+   current, or a reset to the factory values). */
+void filesystemSetModePageRaw(uint8_t lunNumber, uint8_t page, const uint8_t * data, size_t length)
+{
+   int index = filesystemPagetoIndex(page);
+   if ((index == -1) || (length == 0))
+      return;
+   parserkeyvalue *kv = &filesystemState.keyvalues[lunNumber][index];
+   size_t alloc = ((size_t)scsiattributes[index].max > length) ? (size_t)scsiattributes[index].max : length;
+   if ((kv->v.string == NULL) || (kv->length < length)) {
+      char *grown = malloc(alloc);
+      if (grown == NULL)
+         return;
+      memset(grown, 0, alloc);
+      if (kv->v.string != NULL) {
+         memcpy(grown, kv->v.string, kv->length);
+         free(kv->v.string);
+      }
+      kv->v.string = grown;
+   }
+   memcpy(kv->v.string, data, length);
+   kv->length = length;                 // a shorter page leaves no old tail behind
+}
+
+/* TrackFormat=T,O,S of a LUN; false if it has none (or a broken one) */
+bool filesystemGetLunTrackFormat(uint8_t lunNumber, uint32_t *track, uint32_t *overhead, uint32_t *spare)
+{
+   const char *s = filesystemState.keyvalues[lunNumber][TRACKFORMAT].v.string;
+   char *end;
+   if (s == NULL)
+      return false;
+   *track = (uint32_t)strtoul(s, &end, 10);
+   if (*end != ',')
+      return false;
+   *overhead = (uint32_t)strtoul(end + 1, &end, 10);
+   if (*end != ',')
+      return false;
+   *spare = (uint32_t)strtoul(end + 1, &end, 10);
+   return *track != 0;
 }
 
 // Functions for FAT Transfer support --------------

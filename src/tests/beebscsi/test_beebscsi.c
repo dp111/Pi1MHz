@@ -541,12 +541,18 @@ static int run_cmd(uint8_t host, const uint8_t *cdb, unsigned cdblen,
    return bus_status;
 }
 
-/* REQUEST SENSE on `lun` (host 1): the error code byte. */
+/* REQUEST SENSE on `lun` (host 1): the error code byte - byte 0 of the
+   Adaptec's 4-byte sense, or the additional sense code (byte 12) of a SCSI
+   drive's extended sense, which the FileStore reads as its error number. */
 static int sense_of(uint8_t lun)
 {
-   const uint8_t rs[6] = { 0x03, (uint8_t)(lun << 5), 0, 0, 4, 0 };
+   const uint8_t rs[6] = { 0x03, (uint8_t)(lun << 5), 0, 0, 18, 0 };
    int st = run_cmd(1, rs, 6, NULL, 0);
-   return (st == 0 && bus_out_len >= 4) ? bus_out[0] : -1;
+   if (st != 0 || bus_out_len < 4)
+      return -1;
+   if ((bus_out[0] & 0x7F) == 0x70)
+      return bus_out_len >= 13 ? bus_out[12] : -1;
+   return bus_out[0];
 }
 
 static void read_file(const char *path, void *buf, UINT len)
@@ -605,6 +611,16 @@ static void test_sense_set(void)
    snprintf(why, sizeof why, "status %d, sense %d (want 2, 2)", st, sense);
    check("S5 INQUIRY of a never-started LUN gives UNIT NOT READY sense",
          st == 2 && sense == 0x02, why);
+
+   /* A SCSI drive: not ready as extended sense, additional sense code 04.
+      An Adaptec board refuses INQUIRY outright (see test_controller_gating). */
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   st = run_cmd(1, inq, 6, NULL, 0);
+   sense = sense_of(5);
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   snprintf(why, sizeof why, "status %d, sense %d (want 2, 4)", st, sense);
+   check("S5 ... and a SCSI drive's gives NOT READY, ASC 04",
+         st == 2 && sense == 0x04, why);
 }
 
 /* S8: a short WRITE F-code transfer must not run. */
@@ -627,10 +643,229 @@ static void test_fcode_short(void)
    check("S8 WRITE F-code with a short transfer does not run", fcode_writes == 0, why);
 }
 
+/* A drive with its own controller keeps its sense across REQUEST SENSE:
+   the FileStore MOS asks for it after a CHECK CONDITION, then a tool asks
+   again and still sees sense key 5 (measured on a real drive).  The next
+   other command clears it. */
+static void test_sense_kept(void)
+{
+   static char why[200];
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   static const char cfg[] =
+      "PageControl=CCS\n"
+      "ModeParamHeader=10000000\n"
+      "LBADescriptor=000123A800000100\n"
+      "ModePage3=03130132013200060006003D010000080000000080\n"
+      "ModePage4=040400013204\n";
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi0.cfg", cfg, sizeof cfg - 1);
+   put_file("/BeebSCSI0/scsi0.dat", "image", 5);
+   scsiClearPendingPages(0);
+   filesystemSetLunStatus(0, true);
+   const uint8_t ms7[6] = { 0x1A, 0, 0x07, 0, 255, 0 };      /* a page it does not hold */
+   int st = run_cmd(1, ms7, 6, NULL, 0);
+   const uint8_t rs[6] = { 0x03, 0, 0, 0, 18, 0 };
+   run_cmd(1, rs, 6, NULL, 0);
+   int k1 = bus_out_len > 2 ? bus_out[2] : -1;
+   run_cmd(1, rs, 6, NULL, 0);
+   int k2 = bus_out_len > 2 ? bus_out[2] : -1, a2 = bus_out_len > 12 ? bus_out[12] : -1;
+   const uint8_t tur[6] = { 0x00, 0, 0, 0, 0, 0 };
+   run_cmd(1, tur, 6, NULL, 0);
+   run_cmd(1, rs, 6, NULL, 0);
+   int k3 = bus_out_len > 2 ? bus_out[2] : -1;
+   snprintf(why, sizeof why, "status %d; keys %d, %d (ASC %02X), after TUR %d (want 5, 5, 24, 0)", st, k1, k2, a2, k3);
+   check("SCSI drive: REQUEST SENSE keeps the sense; the next other command clears it",
+         st == 2 && k1 == 5 && k2 == 5 && a2 == 0x24 && k3 == 0, why);
+   f_unlink("/BeebSCSI0/scsi0.cfg");
+   stop_all();
+}
+
+/* DriveGeometry=: a drive .cfg without its geometry page.  Auto deduces the
+   geometry from the image size and publishes it as page 4 (a debug build logs
+   it); CFG invents nothing, so MODE SENSE
+   refuses page 4 as from a drive without it, and an Adaptec board without
+   its parameter list answers 1C (not formatted by the board). */
+static void test_drive_geometry_setting(void)
+{
+   static char why[200];
+   static char image[33 * 256 * 12];             /* 396 blocks: 1 x 12 x 33 */
+   static const char nopage4[] =
+      "ModeParamHeader=10000008\n"
+      "LBADescriptor=0000000000000100\n"
+      "ModePage1=0103200405\n";
+   const uint8_t ms4[6] = { 0x1A, 0, 0x04, 0, 255, 0 };
+   bool okName = scsiSetGeometryName("auto") && !scsiGeometryFromCfgOnly() &&
+                 scsiSetGeometryName("CFG") && scsiGeometryFromCfgOnly() &&
+                 !scsiSetGeometryName("sometimes") && !scsiGeometryFromCfgOnly() &&
+                 scsiSetGeometryName(NULL) && !scsiGeometryFromCfgOnly();
+   check("DriveGeometry= names: Auto, CFG (any case), absent = Auto, unknown = Auto and reported", okName,
+         "name parsing wrong");
+
+   /* Auto, a SCSI drive without page 4: page 4 deduced and published */
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   scsiSetGeometryFromCfgOnly(false);
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi0.cfg", nopage4, sizeof nopage4 - 1);
+   put_file("/BeebSCSI0/scsi0.dat", image, sizeof image);
+   scsiClearPendingPages(0);
+   filesystemSetLunStatus(0, true);
+   int st = run_cmd(1, ms4, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes, page %02X, heads %d (want 12)", st, bus_out_len,
+            bus_out_len > 12 ? bus_out[12] : 0, bus_out_len > 17 ? bus_out[17] : -1);
+   check("DriveGeometry=Auto: a SCSI drive without page 4 gets one deduced from the image (1 x 12 x 33)",
+         st == 0 && bus_out_len >= 18 && bus_out[12] == 0x04 && bus_out[17] == 12, why);
+
+   /* CFG: nothing invented; page 4 refused, the image still readable */
+   scsiSetGeometryFromCfgOnly(true);
+   stop_all();
+   put_file("/BeebSCSI0/scsi0.cfg", nopage4, sizeof nopage4 - 1);
+   filesystemSetLunStatus(0, true);
+   st = run_cmd(1, ms4, 6, NULL, 0);
+   int sense = sense_of(0);
+   size_t l4 = 0;
+   const char *p4 = filesystemGetModePageData(0, 4, &l4);
+   snprintf(why, sizeof why, "status %d sense %02X (want 2, 24), page 4 %s, capacity %lu blocks (want 396)",
+            st, sense, p4 ? "INVENTED" : "absent", (unsigned long)filesystemGetLunTotalSectors(0));
+   check("DriveGeometry=CFG: no page 4 is invented; MODE SENSE refuses it; capacity from the image",
+         st == 2 && sense == 0x24 && p4 == NULL && filesystemGetLunTotalSectors(0) == 396, why);
+
+   /* CFG on an Adaptec board without its parameter list: 1C, as a disc the board never formatted */
+   scsiSetController(SCSI_CONTROLLER_ACB4000);
+   stop_all();
+   put_file("/BeebSCSI0/scsi0.cfg", nopage4, sizeof nopage4 - 1);
+   filesystemSetLunStatus(0, true);
+   const uint8_t sf[6] = { 0x1A, 0, 0, 0, 0x16, 0 };
+   st = run_cmd(1, sf, 6, NULL, 0);
+   sense = sense_of(0);
+   snprintf(why, sizeof why, "status %d sense %02X (want 2, 1C)", st, sense);
+   check("DriveGeometry=CFG: an Adaptec board with no list in the .cfg answers MODE SENSE with 1C", st == 2 && sense == 0x1C, why);
+
+   scsiSetGeometryFromCfgOnly(false);
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   f_unlink("/BeebSCSI0/scsi0.cfg");
+   stop_all();
+}
+
+/* A drive that holds page 0 (an RO3085S, as a real one answers): page 0 is
+   held (80 02 00 00, the Unit Attention page), the geometry is page 4, every
+   reply has a block descriptor, and the PS bit stays set after the FileStore
+   formatter writes (C)Acorn with page codes 25/26 (without PS). */
+static void test_scsi_page0_ps(void)
+{
+   static char why[200];
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   static const char cfg[] =
+      "ModeParamHeader=10000008\n"
+      "LBADescriptor=0003D86000000100\n"
+      "ModePage0=80020000\n"
+      "ModePage3=031302EE02EE000600060030010000080000000080\n"
+      "ModePage4=04040002EE07\n"
+      "ModePage37=A506000000000000\n"
+      "ModePage38=A606000000000000\n";
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi0.cfg", cfg, sizeof cfg - 1);
+   put_file("/BeebSCSI0/scsi0.dat", "image", 5);
+   scsiClearPendingPages(0);
+   filesystemSetLunStatus(0, true);
+
+   const uint8_t ms0[6] = { 0x1A, 0, 0x00, 0, 255, 0 };
+   int st = run_cmd(1, ms0, 6, NULL, 0);
+   snprintf(why, sizeof why, "status %d, %u bytes, BD length %d, page %02X %02X %02X %02X; cylinders %u heads %u",
+            st, bus_out_len, bus_out_len > 3 ? bus_out[3] : -1,
+            bus_out_len > 12 ? bus_out[12] : 0, bus_out_len > 13 ? bus_out[13] : 0,
+            bus_out_len > 14 ? bus_out[14] : 0, bus_out_len > 15 ? bus_out[15] : 0,
+            (unsigned)filesystemGetLunCylinders(0), (unsigned)filesystemGetheadspercylinder(0));
+   check("SCSI drive: page 0 is an ordinary page (80 02 00 00), the geometry is page 4 (750 x 7)",
+         st == 0 && bus_out_len == 16 && bus_out[3] == 8 && bus_out[12] == 0x80 && bus_out[13] == 0x02 &&
+         filesystemGetLunCylinders(0) == 750 && filesystemGetheadspercylinder(0) == 7, why);
+
+   /* FServFmt's RO3000 path: both user pages in one MODE SELECT, SP set, codes without PS */
+   const uint8_t sel[6] = { 0x15, 0x01, 0, 0, 20, 0 };
+   const uint8_t d[20] = { 0, 0, 0, 0,  0x25, 6, '(', 'C', ')', 'A', 0x0D, 0,  0x26, 6, 'c', 'o', 'r', 'n', 0x0D, 0 };
+   st = run_cmd(1, sel, 6, d, sizeof d);
+   size_t l37 = 0, l38 = 0;
+   const char *p37 = filesystemGetModePageData(0, 37, &l37);
+   const char *p38 = filesystemGetModePageData(0, 38, &l38);
+   snprintf(why, sizeof why, "status %d (want 0), page 37 code %02X (want A5) text %s, page 38 code %02X (want A6)", st,
+            p37 ? (uint8_t)p37[0] : 0, (p37 && l37 >= 6 && memcmp(&p37[2], "(C)A", 4) == 0) ? "ok" : "WRONG",
+            p38 ? (uint8_t)p38[0] : 0);
+   check("SCSI drive: the PS bit stays after a MODE SELECT of the (C)Acorn pages",
+         st == 0 && p37 && p38 && (uint8_t)p37[0] == 0xA5 && (uint8_t)p38[0] == 0xA6 && memcmp(&p37[2], "(C)A", 4) == 0, why);
+
+   /* an RO652-style drive (no ModePage0): page 0 refused, none invented */
+   static const char cfg652[] =
+      "PageControl=CCS\n"
+      "ModeParamHeader=10000000\n"
+      "LBADescriptor=000123A800000100\n"
+      "ModePage3=03130132013200060006003D010000080000000080\n"
+      "ModePage4=040400013204\n";
+   stop_all();
+   put_file("/BeebSCSI0/scsi0.cfg", cfg652, sizeof cfg652 - 1);
+   filesystemSetLunStatus(0, true);
+   st = run_cmd(1, ms0, 6, NULL, 0);
+   int sense = sense_of(0);
+   size_t l0 = 0;
+   const char *p0 = filesystemGetModePageData(0, 0, &l0);
+   snprintf(why, sizeof why, "status %d sense %02X (want 2, 24), page 0 %s, cylinders %u", st, sense,
+            p0 ? "INVENTED" : "absent", (unsigned)filesystemGetLunCylinders(0));
+   check("SCSI drive without page 0: refused (24h), none invented, geometry from page 4 (306)",
+         st == 2 && sense == 0x24 && p0 == NULL && filesystemGetLunCylinders(0) == 306, why);
+
+   f_unlink("/BeebSCSI0/scsi0.cfg");
+   stop_all();
+}
+
+/* The FileStore formatter's page 3 on a drive with its real page 3 mask (an
+   RO652's MaskPage3, as measured on one): the page is read, bytes 2-11 and 14-17
+   zeroed, bytes per sector set to 256, and sent with len+4 bytes, two short.
+   On the drive the mask decides: the zeros in read-only fields (sectors per
+   track, interleave) are ignored, a zero in a changeable one (track skew)
+   is taken, and the two missing bytes keep their values (RO652 ROM 5.02). */
+static void test_fservfmt_page3_masked(void)
+{
+   static char why[200];
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   static const char cfg[] =
+      "PageControl=CCS\n"
+      "ModeParamHeader=10000000\n"
+      "LBADescriptor=000123A800000100\n"
+      "ModePage3=03130132013200060006003D010000080005000080\n"
+      "MaskPage3=03130000000000000000000007FF0000007F007F00\n"
+      "ModePage4=040400013204\n";
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+   put_file("/BeebSCSI0/scsi0.cfg", cfg, sizeof cfg - 1);
+   put_file("/BeebSCSI0/scsi0.dat", "image", 5);
+   scsiClearPendingPages(0);     /* the test before left a pending page 3 on LUN 0 */
+   filesystemSetLunStatus(0, true);
+
+   /* header all zero (the RO652 takes no block descriptor), then 19 of page 3's 21 bytes */
+   const uint8_t ms23[6] = { 0x15, 0x00, 0, 0, 23, 0 };
+   const uint8_t d3[23] = { 0, 0, 0, 0,  3, 0x13,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  1, 0,  0, 0, 0, 0,  0 };
+   int st = run_cmd(1, ms23, 6, d3, sizeof d3);
+   static const uint8_t want[] = { 0x03, 0x13, 0x01, 0x32, 0x01, 0x32, 0x00, 0x06, 0x00, 0x06,
+                                   0x00, 0x3D, 0x01, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x80 };
+   size_t l3 = 0;
+   const char *g3 = scsiGetPendingModePageData(0, 3, &l3);
+   snprintf(why, sizeof why, "status %d (want 0), pending sectors/track %02X%02X (want 003D), interleave %02X (want 08), "
+            "track skew %02X (want 00), drive type %02X (want 80)", st,
+            g3 ? (uint8_t)g3[10] : 0, g3 ? (uint8_t)g3[11] : 0, g3 ? (uint8_t)g3[15] : 0,
+            g3 ? (uint8_t)g3[17] : 0, g3 ? (uint8_t)g3[20] : 0);
+   check("FServFmt page 3 on an RO652 with its mask: read-only zeros ignored, track skew 0 taken, tail kept",
+         st == 0 && g3 != NULL && l3 == sizeof want && memcmp(g3, want, sizeof want) == 0, why);
+
+   f_unlink("/BeebSCSI0/scsi0.cfg");
+   stop_all();
+}
+
 /* The Acorn FileStore formatter (FServFmt / FSFormat) on a 3000-series drive
    sends its MODE SELECT pages two bytes short (length+4, not length+6) and
    zeroes most of page 3 first.  A real drive takes the bytes that arrive and
-   keeps the rest, and zero means "the drive's own value".  The payloads are
+   keeps the rest; with no mask in the .cfg (as here) zero means "the drive's
+   own value".  The payloads are
    the ones a FileStore sent in a serial log of the RO3057S. */
 static int page_is(uint8_t lun, uint8_t page, const uint8_t *want, size_t n)
 {
@@ -642,12 +877,15 @@ static int page_is(uint8_t lun, uint8_t page, const uint8_t *want, size_t n)
 static void test_filestore_mode_select(void)
 {
    static char why[200];
+   scsiSetController(SCSI_CONTROLLER_SCSI);   /* a drive with its own controller */
    static const char cfg[] =
       "ModeParamHeader=10000008\n"
       "LBADescriptor=00027D8000000100\n"
       "ModePage1=0103200405\n"
       "ModePage3=031302A802A8000600060030010000080000000080\n"
-      "ModePage4=04040002A805\n";
+      "ModePage4=04040002A805\n"
+      "ModePage37=2506000000000000\n"
+      "ModePage38=2606000000000000\n";
    static const uint8_t p1[]  = { 0x01, 0x03, 0x20, 0x04, 0x05 };
    static const uint8_t p3[]  = { 0x03, 0x13, 0x02, 0xA8, 0x02, 0xA8, 0x00, 0x06, 0x00, 0x06,
                                   0x00, 0x30, 0x01, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x80 };
@@ -688,23 +926,28 @@ static void test_filestore_mode_select(void)
          st == 0 && page_is(0, 1, p1new, sizeof p1new), why);
    (void)p1;
 
-   /* a whole page 4 is still honoured: the heads change */
+   /* a whole page 4 is still honoured: the heads change - at FORMAT (a SCSI
+      drive's pages 3 and 4 wait for it), so for now only in the pending page */
    const uint8_t ms10[6] = { 0x15, 0x01, 0, 0, 10, 0 };
    const uint8_t d4full[10] = { 0, 0, 0, 0,  4, 4, 0, 2, 0xA8, 6 };
    st = run_cmd(1, ms10, 6, d4full, sizeof d4full);
-   snprintf(why, sizeof why, "status %d (want 0), heads %u (want 6)", st, (unsigned)filesystemGetheadspercylinder(0));
-   check("FS MODE SELECT: a whole page 4 still sets the heads",
-         st == 0 && filesystemGetheadspercylinder(0) == 6, why);
+   size_t l4 = 0;
+   const char *g4 = scsiGetPendingModePageData(0, 4, &l4);
+   snprintf(why, sizeof why, "status %d (want 0), heads %u (want 5 until FORMAT), pending heads %d (want 6)", st,
+            (unsigned)filesystemGetheadspercylinder(0), g4 && l4 > 5 ? g4[5] : -1);
+   check("FS MODE SELECT: a whole page 4 still sets the heads (pending until FORMAT)",
+         st == 0 && filesystemGetheadspercylinder(0) == 5 && g4 != NULL && l4 > 5 && g4[5] == 6, why);
 
-   /* a page 3 that does carry a new sectors per track sets it */
+   /* a page 3 that does carry a new sectors per track sets it (pending too) */
    const uint8_t ms25[6] = { 0x15, 0x01, 0, 0, 25, 0 };
    const uint8_t d3full[25] = { 0, 0, 0, 0,  3, 19,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0x31,  1, 0, 0, 8, 0, 0, 0, 0, 0 };
    st = run_cmd(1, ms25, 6, d3full, sizeof d3full);
    size_t l3 = 0;
-   const char *g3 = filesystemGetModePageData(0, 3, &l3);
-   snprintf(why, sizeof why, "status %d (want 0), sectors per track byte %02X (want 31)", st, g3 ? (unsigned)(uint8_t)g3[11] : 0u);
-   check("FS MODE SELECT: a page 3 with a non-zero sectors per track sets it",
-         st == 0 && g3 != NULL && (uint8_t)g3[11] == 0x31, why);
+   const char *g3 = scsiGetPendingModePageData(0, 3, &l3);
+   snprintf(why, sizeof why, "status %d (want 0), pending sectors per track byte %02X (want 31), current %s", st,
+            g3 ? (unsigned)(uint8_t)g3[11] : 0u, page_is(0, 3, p3, sizeof p3) ? "kept" : "CHANGED");
+   check("FS MODE SELECT: a page 3 with a non-zero sectors per track sets it (pending until FORMAT)",
+         st == 0 && g3 != NULL && (uint8_t)g3[11] == 0x31 && page_is(0, 3, p3, sizeof p3), why);
 
    /* the (C)Acorn pages: both in one MODE SELECT, as a 3000-series drive gets them */
    const uint8_t ms20[6] = { 0x15, 0x01, 0, 0, 20, 0 };
@@ -731,6 +974,7 @@ static void test_filestore_mode_select(void)
    check("FS MODE SELECT: a page header with no data changes nothing",
          st == 0 && before_len && page_is(0, 3, before, before_len), why);
    stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
 }
 
 /* The Acorn FileStore formatter writes page 1 back with its last byte zero (a
@@ -739,6 +983,7 @@ static void test_filestore_mode_select(void)
 static void test_write_mask_page1(void)
 {
    static char why[200];
+   scsiSetController(SCSI_CONTROLLER_SCSI);   /* a drive with its own controller */
    static const uint8_t p1[]     = { 0x01, 0x03, 0x20, 0x04, 0x05 };
    static const uint8_t p1zero[] = { 0x01, 0x03, 0x20, 0x04, 0x00 };
    const uint8_t ms9[6] = { 0x15, 0x00, 0, 0, 9, 0 };
@@ -766,6 +1011,7 @@ static void test_write_mask_page1(void)
    check("FS WritPage1: with WritPage1=0000000000 the page is kept and the command is GOOD",
          started && st == 0 && page_is(0, 1, p1, sizeof p1), why);
    stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
 }
 
 /* P8 (scsi.c side): a host reset or reselection part-way through a
@@ -878,6 +1124,169 @@ static void test_format_interleave(void)
    check("S9 ... a LUN set to another value (17) keeps it",
          st == 0 && got == 10L * 2 * 17 * 256 && spt == 17u, why);
 
+   /* The ACB-4000 lays down its table only where the board chose the value
+      (32/33 at 256 bytes): a LUN set to 17 or 63 in its .cfg keeps it */
+   scsiSetController(SCSI_CONTROLLER_ACB4000);
+   const unsigned kept[] = { 17, 63 };
+   for (size_t i = 0; i < sizeof kept / sizeof kept[0]; i++) {
+      put_cfg_spt("/BeebSCSI6/scsi0.cfg", 10, 2, kept[i]);
+      format_with(2, &st, &got, &spt);
+      snprintf(why, sizeof why, "%u: status %d, image %ld bytes (want %u), now %lu per track", kept[i],
+               st, got, 10u * 2u * kept[i] * 256u, (unsigned long)spt);
+      check("S9 ... an ACB-4000 LUN set to 17 or 63 keeps it",
+            st == 0 && got == 10L * 2 * (long)kept[i] * 256 && spt == kept[i], why);
+   }
+
+   /* SASI keeps the .cfg's value */
+   scsiSetController(SCSI_CONTROLLER_SASI);
+   put_cfg_spt("/BeebSCSI6/scsi0.cfg", 10, 2, 17);
+   format_with(1, &st, &got, &spt);
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   snprintf(why, sizeof why, "status %d, image %ld bytes (want %u), now %lu per track",
+            st, got, 10u * 2u * 17u * 256u, (unsigned long)spt);
+   check("S9 ... a SASI LUN set to another value (17) keeps it",
+         st == 0 && got == 10L * 2 * 17 * 256 && spt == 17u, why);
+
+   filesystemSetLunDirectory(1, 0);
+}
+
+/* The Adaptec boards' MODE SENSE and SELECT list, and their FORMAT table. */
+static void test_acb_mode_and_format(void)
+{
+   static char why[240];
+   int st; long got; uint32_t spt;
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_ACB4000);
+   f_mkdir("/BeebSCSI6");
+   {
+      static const char cfg[] =
+         "ModeParamHeader=10000008\nLBADescriptor=0000000000000100\n"
+         "ModePage0=01000A02008000800001\n"
+         "ModePage3=0315013201320006000600210100000800000000800000\n"
+         "ModePage4=0406000A02040000\n";
+      put_file("/BeebSCSI6/scsi0.cfg", cfg, sizeof cfg - 1);
+   }
+   put_file("/BeebSCSI6/scsi0.dat", "old image", 9);
+   filesystemSetLunDirectory(1, 6);
+
+   /* SuperForm's MODE SENSE: 22 bytes.  The board has no page codes: CDB
+      byte 2 is reserved, so a page asked for is a bad argument (24). */
+   static const uint8_t flat[22] = { 0, 0, 0, 8,  0, 0, 0, 0, 0, 0, 1, 0,
+                                     1, 0, 10, 2, 0, 0x80, 0, 0x80, 0, 1 };
+   const uint8_t sf[6] = { 0x1A, 0, 0, 0, 0x16, 0 };
+   st = run_cmd(1, sf, 6, NULL, 0);
+   bool a = st == 0 && bus_out_len == 22 && memcmp(bus_out, flat, 22) == 0;
+   const uint8_t p3[6] = { 0x1A, 0, 0x03, 0, 0xFF, 0 };
+   st = run_cmd(1, p3, 6, NULL, 0);
+   bool b = st == 2 && sense_of(0) == 0x24;
+   const uint8_t cut[6] = { 0x1A, 0, 0x00, 0, 12, 0 };
+   st = run_cmd(1, cut, 6, NULL, 0);
+   bool c = st == 0 && bus_out_len == 12 && memcmp(bus_out, flat, 12) == 0;
+   snprintf(why, sizeof why, "list %d, page 3 refused %d, allocation 12 %d", a, b, c);
+   check("ACB MODE SENSE: the flat 22-byte list, cut to the allocation length; a page code is refused (24)",
+         a && b && c, why);
+
+   /* MODE SELECT: refused lists (each 24) */
+   static const uint8_t good[22] = { 0, 0, 0, 8,  0, 0, 0, 0, 0, 0, 2, 0,
+                                     1, 0, 10, 2, 0, 0x80, 0, 0x80, 0, 1 };
+   uint8_t bad[24];
+   const uint8_t ms22[6] = { 0x15, 0, 0, 0, 22, 0 };
+   struct { int at; uint8_t value; const char *what; } cases[] = {
+      { 4, 1, "density 1" }, { 10, 3, "block size 768" }, { 12, 2, "list format 02 in 22 bytes" },
+      { 13, 0x09, "2304 cylinders" }, { 15, 0, "0 heads" }, { 15, 17, "17 heads" }, { 3, 0, "no extent" },
+   };
+   bool refused = true;
+   for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+      memcpy(bad, good, 22);
+      bad[cases[i].at] = cases[i].value;
+      st = run_cmd(1, ms22, 6, bad, 22);
+      int sense = sense_of(0);
+      if (st != 2 || sense != 0x24) {
+         refused = false;
+         snprintf(why, sizeof why, "%s: status %d sense %02X", cases[i].what, st, sense);
+      }
+   }
+   const uint8_t ms20[6] = { 0x15, 0, 0, 0, 20, 0 };
+   st = run_cmd(1, ms20, 6, good, 20);
+   refused = refused && st == 2 && sense_of(0) == 0x24;
+   check("ACB MODE SELECT: density, block size, list format, cylinders, heads and length checked (24)",
+         refused, why);
+
+   /* a 12-byte list (no drive parameters) is legal; its block size (512)
+      waits for FORMAT, so a format abandoned after it (SuperForm stopped)
+      leaves the 256-byte image read in 256-byte blocks */
+   const uint8_t ms12[6] = { 0x15, 0, 0, 0, 12, 0 };
+   st = run_cmd(1, ms12, 6, good, 12);
+   stop_all();
+   bool s = filesystemSetLunStatus(0, true);
+   const uint8_t rc[10] = { 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+   int rcst = run_cmd(1, rc, 10, NULL, 0);
+   uint32_t rcbs = ((uint32_t)bus_out[4] << 24) | ((uint32_t)bus_out[5] << 16) | ((uint32_t)bus_out[6] << 8) | bus_out[7];
+   snprintf(why, sizeof why, "status %d, start %d, block size %lu (want 256 until FORMAT), data path %lu, "
+            "READ CAPACITY %d %lu, heads %lu (want 2)", st, s, (unsigned long)filesystemGetLunBlockSize(0),
+            (unsigned long)filesystemGetLunDataBlockSize(0), rcst, (unsigned long)rcbs,
+            (unsigned long)filesystemGetheadspercylinder(0));
+   check("ACB MODE SELECT: a 12-byte list is legal; its block size waits for FORMAT",
+         st == 0 && s && filesystemGetLunBlockSize(0) == 256 && filesystemGetLunDataBlockSize(0) == 256 &&
+         rcst == 0 && rcbs == 256 && filesystemGetheadspercylinder(0) == 2, why);
+   stop_all();
+
+   /* FORMAT at 512 bytes: 17 for interleave 1, 18 otherwise */
+   format_with(1, &st, &got, &spt);
+   snprintf(why, sizeof why, "status %d, image %ld (want %u), %lu per track", st, got, 10u * 2u * 17u * 512u,
+            (unsigned long)spt);
+   check("ACB FORMAT: 512-byte blocks, interleave 1: 17 per track", st == 0 && spt == 17 &&
+         got == 10L * 2 * 17 * 512, why);
+   format_with(5, &st, &got, &spt);
+   check("ACB FORMAT: ... interleave 5: 18", st == 0 && spt == 18 && got == 10L * 2 * 18 * 512, "wrong");
+
+   /* back to 256 with the whole list: interleave 0 is 2 (33), 1 is 32 */
+   memcpy(bad, good, 22);
+   bad[10] = 1;
+   st = run_cmd(1, ms22, 6, bad, 22);
+   format_with(0, &st, &got, &spt);
+   bool i0 = st == 0 && spt == 33;
+   format_with(1, &st, &got, &spt);
+   snprintf(why, sizeof why, "interleave 0: %d, interleave 1: status %d spt %lu", i0, st, (unsigned long)spt);
+   check("ACB FORMAT: 256 bytes, interleave 0 (= 2) gives 33, 1 gives 32", i0 && st == 0 && spt == 32, why);
+
+   /* interleave limit: 32 at 256 (33 per track) is fine, 33 is error 24;
+      a high byte is an interleave over the limit too */
+   format_with(32, &st, &got, &spt);
+   int ok32 = st;
+   format_with(33, &st, &got, &spt);
+   int sense = sense_of(0);
+   format_with(0x100, &st, &got, &spt);
+   int sense2 = sense_of(0);
+   snprintf(why, sizeof why, "interleave 32 %d, 33 %d sense %02X, 256 sense %02X", ok32, st, sense, sense2);
+   check("ACB-4000 FORMAT: an interleave above sectors per track - 1 is error 24",
+         ok32 == 0 && st == 2 && sense == 0x24 && sense2 == 0x24, why);
+
+   /* ACB-4070: 46 / 47, and its interleave error is 1A */
+   scsiSetController(SCSI_CONTROLLER_ACB4070);
+   format_with(1, &st, &got, &spt);
+   bool r1 = st == 0 && spt == 46;
+   format_with(2, &st, &got, &spt);
+   bool r2 = st == 0 && spt == 47 && got == 10L * 2 * 47 * 256;
+   format_with(47, &st, &got, &spt);
+   sense = sense_of(0);
+   snprintf(why, sizeof why, "interleave 1: %d, 2: %d, 47: status %d sense %02X (want 2, 1A)", r1, r2, st, sense);
+   check("ACB-4070 FORMAT: 46 / 47 per track at 256 bytes, interleave error 1A", r1 && r2 && st == 2 && sense == 0x1A, why);
+   scsiSetController(SCSI_CONTROLLER_ACB4000);
+
+   /* FORMAT byte 1: 00 02 1C 1E only */
+   const uint8_t f1[6] = { 0x04, 0x08, 0x6C, 0, 2, 0 };
+   st = run_cmd(1, f1, 6, NULL, 0);
+   sense = sense_of(0);
+   const uint8_t f1e[6] = { 0x04, 0x1E, 0x6C, 0, 2, 0 };
+   const uint8_t emptylist[4] = { 0, 0, 0, 0 };
+   int st2 = run_cmd(1, f1e, 6, emptylist, 4);
+   snprintf(why, sizeof why, "byte 1 08: status %d sense %02X (want 2, 24); 1E with an empty list: %d", st, sense, st2);
+   check("ACB FORMAT: byte 1 other than 00 02 1C 1E is error 24; 1E with an empty defect list is GOOD",
+         st == 2 && sense == 0x24 && st2 == 0, why);
+
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   stop_all();
    filesystemSetLunDirectory(1, 0);
 }
 
@@ -962,6 +1371,7 @@ static void test_stopped_geometry(void)
 static void test_mode_sense(void)
 {
    static char why[200];
+   scsiSetController(SCSI_CONTROLLER_SCSI);   /* a drive with its own controller */
    static const char cfg[] =
       "ModeParamHeader=00000008\n"
       "LBADescriptor=0000000000000100\n"
@@ -1006,6 +1416,7 @@ static void test_mode_sense(void)
 
    f_unlink("/BeebSCSI0/scsi3.cfg");
    stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
 }
 
 /* CCS-era mode pages, as a real Rodime RO652 (firmware 5.46) answers them
@@ -1018,6 +1429,7 @@ static void test_mode_sense(void)
 static void test_ccs_pages(void)
 {
    static char why[200];
+   scsiSetController(SCSI_CONTROLLER_SCSI);   /* a drive with its own controller */
    static const char ccs[] =
       "PageControl=CCS\n"
       "Inquiry=000000003141424344\n"
@@ -1105,6 +1517,16 @@ static void test_ccs_pages(void)
 
    f_unlink("/BeebSCSI0/scsi4.cfg");
    stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+}
+
+/* ---- DriveController= ----------------------------------------------------- */
+
+/* The raw REQUEST SENSE reply on `lun` with allocation length `alloc`. */
+static int sense_raw(uint8_t lun, uint8_t alloc)
+{
+   const uint8_t rs[6] = { 0x03, (uint8_t)(lun << 5), 0, 0, alloc, 0 };
+   return run_cmd(1, rs, 6, NULL, 0);
 }
 
 /* A LUN image of `bytes` bytes in /BeebSCSI8, its .cfg `cfg`. */
@@ -1125,6 +1547,155 @@ static void put_lun8(uint8_t lun, const char *cfg, uint32_t bytes)
    for (uint32_t n = 0; n < bytes; n += sizeof zero)
       f_write(&f, zero, (bytes - n) < sizeof zero ? (UINT)(bytes - n) : (UINT)sizeof zero, &done);
    __real_f_close(&f);
+}
+
+static void test_controller_name(void)
+{
+   static char why[160];
+   bool a = scsiSetControllerName(NULL) && scsiGetController() == SCSI_CONTROLLER_MIXED;
+   bool b = scsiSetControllerName("acb-4070") && scsiGetController() == SCSI_CONTROLLER_ACB4070;
+   bool c = scsiSetControllerName("Sasi") && scsiGetController() == SCSI_CONTROLLER_SASI;
+   bool d = scsiSetControllerName("SCSI") && scsiGetController() == SCSI_CONTROLLER_SCSI;
+   bool e = !scsiSetControllerName("ACB4000") && scsiGetController() == SCSI_CONTROLLER_MIXED;
+   bool f = scsiSetControllerName("ACB-4000") && scsiGetController() == SCSI_CONTROLLER_ACB4000;
+   bool g = scsiSetControllerName("mixed") && scsiGetController() == SCSI_CONTROLLER_MIXED;
+   snprintf(why, sizeof why, "absent %d, acb-4070 %d, Sasi %d, SCSI %d, unknown %d, ACB-4000 %d, mixed %d",
+            a, b, c, d, e, f, g);
+   check("DriveController=: names in any case, absent and unknown are Mixed", a && b && c && d && e && f && g, why);
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+}
+
+/* ACB-4000 (opt-in): only the Adaptec's commands, its 4-byte sense
+   and its "drive not ready" 04; Pi1MHz's own commands still work. */
+static void test_controller_gating(void)
+{
+   static char why[200];
+   static const char cfg[] = "ModePage0=01001402008000800001\n"
+                             "ModeParamHeader=00000008\nLBADescriptor=0000000000000100\n";
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_ACB4000);
+   put_lun8(3, cfg, 20u * 2u * 33u * 256u);
+   filesystemSetLunDirectory(1, 8);
+
+   const uint8_t inq[6] = { 0x12, 3 << 5, 0, 0, 36, 0 };
+   int st = run_cmd(1, inq, 6, NULL, 0);
+   unsigned sent = bus_out_len;
+   int rs = sense_raw(3, 18);
+   snprintf(why, sizeof why, "status %d, %u bytes sent, sense status %d, %u bytes, code %02X (want 2, 0, 0, 4, 20)",
+            st, sent, rs, bus_out_len, bus_out[0]);
+   check("ACB-4000: INQUIRY is refused, 4-byte sense 20 whatever the allocation length",
+         st == 2 && sent == 0 && rs == 0 && bus_out_len == 4 && bus_out[0] == 0x20, why);
+
+   const uint8_t others[][6] = {
+      { 0x07, 3 << 5, 0, 0, 0, 0 }, { 0xE2, 3 << 5, 0, 1, 0, 0 },
+      { 0x37, 3 << 5, 0, 0, 0, 0 },
+   };
+   bool refused = true;
+   for (size_t i = 0; i < sizeof others / sizeof others[0]; i++) {
+      unsigned len = (others[i][0] >> 5) == 1 ? 10u : 6u;
+      uint8_t cdb[10] = {0};
+      memcpy(cdb, others[i], 6);
+      st = run_cmd(1, cdb, len, NULL, 0);
+      refused = refused && st == 2 && sense_of(3) == 0x20;
+   }
+   check("ACB-4000: REASSIGN BLOCKS, CERTIFY and READ DEFECT DATA are refused (20)", refused,
+         "one was answered");
+
+   const uint8_t tur7[6] = { 0x00, 7 << 5, 0, 0, 0, 0 };     /* LUN 7: no image */
+   st = run_cmd(1, tur7, 6, NULL, 0);
+   int sense = sense_of(7);
+   snprintf(why, sizeof why, "status %d, sense %02X (want 2, 04)", st, sense);
+   check("ACB-4000: a drive that is not there is not ready, 04 (02 is no seek complete)",
+         st == 2 && sense == 0x04, why);
+
+   /* Pi1MHz's own commands: BSSENSE and BSSELECT on LUN 3 */
+   const uint8_t bss[6] = { 0xD0, 3 << 5, 0, 0, 8, 0 };
+   st = run_cmd(1, bss, 6, NULL, 0);
+   bool sensed = st == 0 && bus_out_len == 8 && bus_out[1] == 8;
+   const uint8_t bsel[6] = { 0xD1, 3 << 5, 0, 0, 8, 0 };
+   const uint8_t bseld[8] = { 9, 0, 0, 0, 0, 0, 0, 0 };
+   stop_all();
+   int st2 = run_cmd(1, bsel, 6, bseld, sizeof bseld);
+   snprintf(why, sizeof why, "BSSENSE %d (dir %d), BSSELECT %d, directory %u (want 9)",
+            st, bus_out_len > 1 ? bus_out[1] : -1, st2, filesystemGetLunDirectory());
+   check("ACB-4000: BSSENSE and BSSELECT (Pi1MHz's own) still work on LUN 3",
+         sensed && st2 == 0 && filesystemGetLunDirectory() == 9, why);
+   filesystemSetLunDirectory(1, 8);
+
+   /* VERIFY from the end of the disc: 21 with the address valid (A1), the
+      address in bytes 1-3 - SuperForm's verify loop ends on it */
+   uint32_t end = 20u * 2u * 33u;
+   const uint8_t vfy[10] = { 0x2F, 3 << 5, 0, (uint8_t)(end >> 16), (uint8_t)(end >> 8), (uint8_t)end, 0, 0, 0, 0 };
+   filesystemSetLunStatus(3, true);
+   st = run_cmd(1, vfy, 10, NULL, 0);
+   rs = sense_raw(3, 4);
+   snprintf(why, sizeof why, "status %d, sense %02X %02X %02X %02X (want 2, A1 00 05 28)",
+            st, bus_out[0], bus_out[1], bus_out[2], bus_out[3]);
+   check("ACB-4000: VERIFY length 0 at the end of the disc is A1 with the address",
+         st == 2 && rs == 0 && bus_out[0] == 0xA1 && bus_out[1] == 0x00 &&
+         bus_out[2] == (uint8_t)(end >> 8) && bus_out[3] == (uint8_t)end, why);
+   const uint8_t vfy0[10] = { 0x2F, 3 << 5, 0, 0, 0, 0, 0, 0, 0, 0 };
+   st = run_cmd(1, vfy0, 10, NULL, 0);
+   check("ACB-4000: ... and VERIFY inside the disc is GOOD", st == 0, "not GOOD");
+   stop_all();
+
+   /* SCSI: TRANSLATE is the Adaptec's; STOP UNIT stays (a Pi1MHz extension) */
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   const uint8_t tr[6] = { 0x0F, 3 << 5, 0, 0, 0, 0 };
+   st = run_cmd(1, tr, 6, NULL, 0);
+   sense = sense_of(3);
+   const uint8_t stop[6] = { 0x1B, 3 << 5, 0, 0, 0, 0 };
+   st2 = run_cmd(1, stop, 6, NULL, 0);
+   snprintf(why, sizeof why, "TRANSLATE %d sense %02X (want 2, 20), STOP UNIT %d (want 0)", st, sense, st2);
+   check("SCSI: TRANSLATE refused, STOP UNIT kept", st == 2 && sense == 0x20 && st2 == 0, why);
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   stop_all();
+}
+
+/* SCSI: extended sense, as a Rodime RO652 sent it after a MODE SENSE of a
+   page it does not hold (measured): 70 00 05 00 ... 0A ... 24. */
+static void test_extended_sense(void)
+{
+   static char why[200];
+   static const char cfg[] = "PageControl=CCS\nModeParamHeader=00000000\n"
+                             "LBADescriptor=0000000000000100\nModePage1=0103200405\n";
+   static const uint8_t want[18] = { 0x70, 0, 0x05, 0, 0, 0, 0, 0x0A, 0, 0, 0, 0, 0x24, 0, 0, 0, 0, 0 };
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   put_lun8(3, cfg, 20u * 2u * 33u * 256u);
+   filesystemSetLunDirectory(1, 8);
+
+   const uint8_t ms[6] = { 0x1A, 3 << 5, 0x02, 0, 255, 0 };
+   int st = run_cmd(1, ms, 6, NULL, 0);
+   int rs = sense_raw(3, 18);
+   snprintf(why, sizeof why, "status %d, sense %d, %u bytes: %02X %02X %02X .. %02X %02X", st, rs, bus_out_len,
+            bus_out[0], bus_out[1], bus_out[2], bus_out[7], bus_out[12]);
+   check("SCSI: a refused MODE SENSE page gives extended sense 70 00 05 .. 0A .. 24 (RO652, measured)",
+         st == 2 && rs == 0 && bus_out_len == 18 && memcmp(bus_out, want, 18) == 0, why);
+
+   run_cmd(1, ms, 6, NULL, 0);
+   rs = sense_raw(3, 0);
+   unsigned n0 = bus_out_len;
+   bool head0 = bus_out[0] == 0x70 && bus_out[2] == 0x05;
+   run_cmd(1, ms, 6, NULL, 0);
+   rs = sense_raw(3, 8);
+   snprintf(why, sizeof why, "allocation 0: %u bytes (want 4), allocation 8: %u bytes", n0, bus_out_len);
+   check("SCSI: extended sense keeps to the allocation length, 0 meaning 4 bytes",
+         n0 == 4 && head0 && bus_out_len == 8, why);
+
+   /* VERIFY past the end: key 5, ASC 21, the address valid and in bytes 3-6 */
+   uint32_t end = 20u * 2u * 33u;
+   const uint8_t vfy[10] = { 0x2F, 3 << 5, 0, (uint8_t)(end >> 16), (uint8_t)(end >> 8), (uint8_t)end, 0, 0, 0, 0 };
+   filesystemSetLunStatus(3, true);
+   st = run_cmd(1, vfy, 10, NULL, 0);
+   rs = sense_raw(3, 18);
+   snprintf(why, sizeof why, "status %d, %02X key %02X info %02X%02X%02X%02X ASC %02X", st, bus_out[0], bus_out[2],
+            bus_out[3], bus_out[4], bus_out[5], bus_out[6], bus_out[12]);
+   check("SCSI: VERIFY past the end is F0, key 5, the LBA in bytes 3-6, ASC 21",
+         st == 2 && bus_out[0] == 0xF0 && bus_out[2] == 5 && bus_out[3] == 0 && bus_out[4] == 0 &&
+         bus_out[5] == (uint8_t)(end >> 8) && bus_out[6] == (uint8_t)end && bus_out[12] == 0x21, why);
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   stop_all();
 }
 
 /* The data path in the LUN's block size: READ6 and WRITE6 move whole blocks
@@ -1197,6 +1768,395 @@ static void test_block_sizes(void)
    check("data path: a 4096 .cfg moves 256-byte blocks and READ CAPACITY says 256",
          st == 0 && back[512] == 0x5A && st3 == 0 && rcbs == 256u, why);
    stop_all();
+   filesystemSetLunDirectory(1, 0);
+}
+
+/* SCSI: a drive with its own controller, as the Rodime RO652's ROM 5.02
+   takes MODE SELECT and FORMAT.  The drive's .cfg (no block descriptor,
+   CCS pages, page 3 mask 07FF on bytes per sector, page 4 mask 0007FF / 0F)
+   and TrackFormat=20384,70,1:
+     physical sectors per track = track bytes / (bytes per sector +
+     overhead), rounded down; sectors per track = physical - spare sectors.
+     Track bytes (20384): usable bytes on one track - the drive has 20,484
+     raw bytes per revolution; the firmware keeps the gap at the index pulse
+     and a margin for speed variation.  Overhead (70): bytes each sector
+     takes on the disc besides its data - sync field, address mark, ID field
+     (cylinder, head, sector, check bytes), gap, data sync and address mark,
+     the 4-byte ECC, closing gap.  Spare sectors (1): kept in reserve on
+     every track so a bad sector can be remapped on the same track;
+     formatted but never given a block number.
+     128/256/512/1024 -> 101/61/34/17; 256: 20384/326 = 62 physical, 61 used. */
+static const char ro652_cfg[] =
+   "# TrackFormat=track bytes,overhead,spare sectors (see the comment above)\n"
+   "TrackFormat=20384,70,1\n"
+   "PageControl=CCS\n"
+   "ModeParamHeader=00000000\n"
+   "LBADescriptor=0000000000000100\n"
+   "FDefPage1=0103200100\n"
+   "ModePage1=0103200405\n"
+   "FDefPage3=0315000100000000000000220100000100000000400000\n"
+   "MaskPage3=03150000000000000000000007FF0000007F007F000000\n"
+   "ModePage3=0315000100000000000000220100000800000000400000\n"
+   "FDefPage4=040400001402\n"
+   "MaskPage4=04040007FF0F\n"
+   "ModePage4=040400001402\n";
+
+static int scsi_format(uint16_t interleave)
+{
+   const uint8_t fm[6] = { 0x04, 0, 0, (uint8_t)(interleave >> 8), (uint8_t)interleave, 0 };
+   int st = run_cmd(1, fm, 6, NULL, 0);
+   stop_all();
+   return st;
+}
+
+/* Page 3 with only bytes per sector (the rest zero: the drive's own) */
+static int scsi_select_block_size(uint32_t bs)
+{
+   const uint8_t ms[6] = { 0x15, 0, 0, 0, 4 + 23, 0 };
+   uint8_t d[27] = { 0, 0, 0, 0,  3, 0x15 };
+   d[4 + 12] = (uint8_t)(bs >> 8);
+   d[4 + 13] = (uint8_t)bs;
+   return run_cmd(1, ms, 6, d, sizeof d);
+}
+
+/* MODE SENSE page 3 (current) and READ CAPACITY: block size, sectors per
+   track, interleave, capacity */
+static void scsi_sense3(uint32_t *bs, uint32_t *spt, uint32_t *il, uint32_t *rcbs, uint32_t *blocks)
+{
+   const uint8_t ms[6] = { 0x1A, 0, 0x03, 0, 0xFF, 0 };
+   run_cmd(1, ms, 6, NULL, 0);
+   const uint8_t *p = &bus_out[4];          /* no block descriptor */
+   *spt = ((uint32_t)p[10] << 8) | p[11];
+   *bs = ((uint32_t)p[12] << 8) | p[13];
+   *il = ((uint32_t)p[14] << 8) | p[15];
+   filesystemSetLunStatus(0, true);
+   const uint8_t rc[10] = { 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+   run_cmd(1, rc, 10, NULL, 0);
+   *blocks = (((uint32_t)bus_out[0] << 24) | ((uint32_t)bus_out[1] << 16) | ((uint32_t)bus_out[2] << 8) | bus_out[3]) + 1u;
+   *rcbs = ((uint32_t)bus_out[4] << 24) | ((uint32_t)bus_out[5] << 16) | ((uint32_t)bus_out[6] << 8) | bus_out[7];
+   stop_all();
+}
+
+static void test_scsi_drive(void)
+{
+   static char why[240];
+   int st, sense;
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   f_mkdir("/BeebSCSI9");
+   put_file("/BeebSCSI9/scsi0.cfg", ro652_cfg, sizeof ro652_cfg - 1);
+   put_file("/BeebSCSI9/scsi0.dat", "image", 5);
+   filesystemSetLunDirectory(1, 9);
+
+   /* a block descriptor (header byte 3 = 8) to a drive with none: ASC 22 */
+   const uint8_t ms12[6] = { 0x15, 0, 0, 0, 12, 0 };
+   const uint8_t bd[12] = { 0, 0, 0, 8,  0, 0, 0, 0, 0, 0, 2, 0 };
+   st = run_cmd(1, ms12, 6, bd, sizeof bd);
+   sense = sense_of(0);
+   snprintf(why, sizeof why, "status %d sense %02X (want 2, 22)", st, sense);
+   check("SCSI MODE SELECT: a block descriptor to a drive without one is refused (ASC 22)",
+         st == 2 && sense == 0x22, why);
+
+   /* page code bit 6, a page sent longer than the drive's, a page it does not hold: ASC 26 */
+   const uint8_t ms9[6] = { 0x15, 0, 0, 0, 9, 0 };
+   const uint8_t b6[9] = { 0, 0, 0, 0,  0x41, 3, 0x20, 4, 5 };
+   const uint8_t lng[9] = { 0, 0, 0, 0,  0x01, 5, 0x20, 4, 5 };
+   const uint8_t p2[9] = { 0, 0, 0, 0,  0x02, 3, 0, 0, 0 };
+   int s1 = run_cmd(1, ms9, 6, b6, 9), e1 = sense_of(0);
+   int s2 = run_cmd(1, ms9, 6, lng, 9), e2 = sense_of(0);
+   int s3 = run_cmd(1, ms9, 6, p2, 9), e3 = sense_of(0);
+   snprintf(why, sizeof why, "bit 6 %d/%02X, too long %d/%02X, not held %d/%02X (want 2/26 each)", s1, e1, s2, e2, s3, e3);
+   check("SCSI MODE SELECT: page bit 6, a page longer than stored, a page not held: ASC 26",
+         s1 == 2 && e1 == 0x26 && s2 == 2 && e2 == 0x26 && s3 == 2 && e3 == 0x26, why);
+
+   /* page bit 7 with length 0: back to the factory values */
+   const uint8_t chg[9] = { 0, 0, 0, 0,  0x01, 3, 0x27, 9, 9 };
+   static const uint8_t p1chg[] = { 0x01, 0x03, 0x27, 0x09, 0x09 };
+   static const uint8_t p1fdef[] = { 0x01, 0x03, 0x20, 0x01, 0x00 };
+   st = run_cmd(1, ms9, 6, chg, 9);
+   bool changed = st == 0 && page_is(0, 1, p1chg, sizeof p1chg);
+   const uint8_t ms6[6] = { 0x15, 0, 0, 0, 6, 0 };
+   const uint8_t rst[6] = { 0, 0, 0, 0,  0x81, 0 };
+   st = run_cmd(1, ms6, 6, rst, 6);
+   snprintf(why, sizeof why, "changed %d, reset status %d, page 1 %s", changed, st,
+            page_is(0, 1, p1fdef, sizeof p1fdef) ? "factory" : "NOT factory");
+   check("SCSI MODE SELECT: page code bit 7 with length 0 resets the page to FDefPage",
+         changed && st == 0 && page_is(0, 1, p1fdef, sizeof p1fdef), why);
+
+   /* bytes per sector 512: pending until FORMAT */
+   uint32_t bs, spt, il, rcbs, blocks;
+   st = scsi_select_block_size(512);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   snprintf(why, sizeof why, "status %d; before FORMAT page 3 %lu bytes, READ CAPACITY %lu bytes (want 256, 256)",
+            st, (unsigned long)bs, (unsigned long)rcbs);
+   check("SCSI: a page 3 block size change waits for FORMAT (MODE SENSE, READ CAPACITY unchanged)",
+         st == 0 && bs == 256 && rcbs == 256, why);
+   st = scsi_format(0);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   snprintf(why, sizeof why, "FORMAT %d; page 3 %lu bytes %lu per track interleave %lu, READ CAPACITY %lu x %lu bytes",
+            st, (unsigned long)bs, (unsigned long)spt, (unsigned long)il, (unsigned long)blocks, (unsigned long)rcbs);
+   check("SCSI: ... FORMAT makes it current: 512 bytes, 34 per track (TrackFormat 20384,70,1), interleave 0 kept as 2",
+         st == 0 && bs == 512 && spt == 34 && il == 2 && rcbs == 512 && blocks == 20u * 2u * 34u &&
+         size_of("/BeebSCSI9/scsi0.dat") == 20L * 2 * 34 * 512, why);
+
+   const struct { uint32_t bs, spt; } tf[] = { { 128, 101 }, { 1024, 17 }, { 256, 61 } };
+   for (size_t i = 0; i < sizeof tf / sizeof tf[0]; i++) {
+      st = scsi_select_block_size(tf[i].bs);
+      int fs = scsi_format(5);
+      scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+      snprintf(why, sizeof why, "select %d FORMAT %d: %lu bytes, %lu per track (want %lu), interleave %lu, capacity %lu",
+               st, fs, (unsigned long)bs, (unsigned long)spt, (unsigned long)tf[i].spt, (unsigned long)il,
+               (unsigned long)blocks);
+      char t[96];
+      snprintf(t, sizeof t, "SCSI: TrackFormat 20384,70,1 at %lu bytes gives %lu per track",
+               (unsigned long)tf[i].bs, (unsigned long)tf[i].spt);
+      check(t, st == 0 && fs == 0 && bs == tf[i].bs && spt == tf[i].spt && il == 5 && rcbs == tf[i].bs &&
+            blocks == 20u * 2u * tf[i].spt, why);
+   }
+
+   /* 2048 bytes per sector: outside the mask 07FF, refused (ASC 22) */
+   st = scsi_select_block_size(2048);
+   sense = sense_of(0);
+   snprintf(why, sizeof why, "status %d sense %02X (want 2, 22)", st, sense);
+   check("SCSI MODE SELECT: 2048 bytes per sector is refused", st == 2 && sense == 0x22, why);
+
+   /* interleave: must be below physical - 1 (62 - 1 = 61 at 256 bytes) */
+   st = scsi_format(61);
+   sense = sense_of(0);
+   int ok60 = scsi_format(60);
+   const uint8_t fm5[6] = { 0x04, 0, 0, 0, 2, 1 };
+   int bad5 = run_cmd(1, fm5, 6, NULL, 0);
+   int sense5 = sense_of(0);
+   snprintf(why, sizeof why, "interleave 61: %d %02X (want 2, 24); 60: %d; CDB byte 5 set: %d %02X",
+            st, sense, ok60, bad5, sense5);
+   check("SCSI FORMAT: interleave 61 at 256 bytes refused (ASC 24), 60 taken; CDB byte 5 must be 0",
+         st == 2 && sense == 0x24 && ok60 == 0 && bad5 == 2 && sense5 == 0x24, why);
+
+   /* page 0 is the Adaptec's: a SCSI drive refuses it */
+   const uint8_t ms0[6] = { 0x1A, 0, 0, 0, 0xFF, 0 };
+   st = run_cmd(1, ms0, 6, NULL, 0);
+   sense = sense_of(0);
+   check("SCSI MODE SENSE: page 0 refused (ASC 24)", st == 2 && sense == 0x24, "answered");
+
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   filesystemSetLunDirectory(1, 0);
+}
+
+/* A SCSI drive's pending pages (MODE SELECT before FORMAT) last while the
+   drives are the same ones: a STOP/START UNIT keeps them; a jukebox to
+   another ADFS directory and back, or a remount (a BREAK), drops them, so a
+   FORMAT after it lays down the block size the .cfg has. */
+static void test_pending_pages_lifetime(void)
+{
+   static char why[240];
+   uint32_t bs, spt, il, rcbs, blocks;
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   put_file("/BeebSCSI9/scsi0.cfg", ro652_cfg, sizeof ro652_cfg - 1);
+   put_file("/BeebSCSI9/scsi0.dat", "image", 5);
+   filesystemSetLunDirectory(1, 9);
+   scsiClearPendingPages(0);
+
+   const uint8_t stop[6] = { 0x1B, 0, 0, 0, 0, 0 }, start[6] = { 0x1B, 0, 0, 0, 1, 0 };
+   int sel = scsi_select_block_size(512);
+   int s1 = run_cmd(1, stop, 6, NULL, 0), s2 = run_cmd(1, start, 6, NULL, 0);
+   int fs = scsi_format(0);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   snprintf(why, sizeof why, "select %d, STOP %d, START %d, FORMAT %d: %lu bytes (want 512)", sel, s1, s2, fs,
+            (unsigned long)rcbs);
+   check("SCSI: pending pages survive STOP/START UNIT; FORMAT lays them down",
+         sel == 0 && s1 == 0 && s2 == 0 && fs == 0 && rcbs == 512 && bs == 512, why);
+
+   sel = scsi_select_block_size(1024);
+   filesystemSetLunDirectory(1, 8);
+   filesystemSetLunDirectory(1, 9);
+   fs = scsi_format(0);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   snprintf(why, sizeof why, "select %d, FORMAT %d: %lu bytes (want 512)", sel, fs, (unsigned long)rcbs);
+   check("SCSI: a jukebox to another ADFS directory drops the pending pages",
+         sel == 0 && fs == 0 && rcbs == 512 && bs == 512, why);
+
+   sel = scsi_select_block_size(128);
+   filesystemReset();
+   fs = scsi_format(0);
+   scsi_sense3(&bs, &spt, &il, &rcbs, &blocks);
+   snprintf(why, sizeof why, "select %d, FORMAT %d: %lu bytes (want 512)", sel, fs, (unsigned long)rcbs);
+   check("SCSI: a remount drops the pending pages", sel == 0 && fs == 0 && rcbs == 512 && bs == 512, why);
+
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   filesystemSetLunDirectory(1, 0);
+}
+
+/* An existing user's .cfg from before the mode pages had their true
+   lengths: the shipped default of then, pages 1, 3 and 4 two bytes longer
+   than their length byte says and WritPage3 as page 3's mask.  The Acorn
+   FileStore formatter's MODE SELECT of page 3 (bytes per sector set, the
+   rest zero, sent two bytes short), then FORMAT with interleave 8: under
+   Mixed exactly as before; under SCSI the page waits for FORMAT, which
+   lays the new block size down. */
+static const char legacy_cfg[] =
+   "ModeParamHeader=00000000\n"
+   "LBADescriptor=0000000000000100\n"
+   "ModePage0=01001404008000800001\n"
+   "ModePage1=01052004050000\n"
+   "ModePage3=0315013201320006000600210100000800000000800000\n"
+   "WritPage3=000000000000000000000000FFFF000000000000000000\n"
+   "ModePage4=0406000014040000\n";
+
+/* MODE SELECT page 3 with bytes per sector `bs`, as FServFmt sends it:
+   its own length byte, then only len bytes of the page (len+4 with the
+   header, where the whole page needs len+6) */
+static int select_page3_short(uint8_t len, uint32_t bs)
+{
+   uint8_t d[4 + 256] = { 0, 0, 0, 0,  3, len };
+   uint8_t n = (uint8_t)(4u + len);
+   d[4 + 12] = (uint8_t)(bs >> 8);
+   d[4 + 13] = (uint8_t)bs;
+   const uint8_t ms[6] = { 0x15, 0, 0, 0, n, 0 };
+   return run_cmd(1, ms, 6, d, n);
+}
+
+static uint32_t capacity_block_size(void)
+{
+   const uint8_t rc[10] = { 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+   if (run_cmd(1, rc, 10, NULL, 0) != 0 || bus_out_len < 8)
+      return 0;
+   return ((uint32_t)bus_out[4] << 24) | ((uint32_t)bus_out[5] << 16) | ((uint32_t)bus_out[6] << 8) | bus_out[7];
+}
+
+static void test_upgrade_legacy_cfg(void)
+{
+   static char why[240];
+   const uint8_t fm8[6] = { 0x04, 0, 0, 0, 8, 0 };
+   size_t l3 = 0;
+   const char *g3;
+   stop_all();
+   filesystemSetLunDirectory(1, 8);
+
+   /* Mixed: page 3 keeps its 23 bytes, the image its 256-byte blocks */
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   put_lun8(0, legacy_cfg, 4096);
+   int st = select_page3_short(0x15, 256);
+   int fs = run_cmd(1, fm8, 6, NULL, 0);
+   long sz = size_of("/BeebSCSI8/scsi0.dat");
+   uint32_t rcbs = capacity_block_size();
+   g3 = filesystemGetModePageData(0, 3, &l3);
+   snprintf(why, sizeof why, "select %d, FORMAT %d, image %ld (want %u), page 3 %u bytes, %02X per track, block %lu",
+            st, fs, sz, 20u * 4u * 33u * 256u, (unsigned)l3, g3 && l3 > 11 ? (uint8_t)g3[11] : 0,
+            (unsigned long)rcbs);
+   check("legacy .cfg (23-byte pages, WritPage3), Mixed: MODE SELECT then FORMAT as before",
+         st == 0 && fs == 0 && sz == 20L * 4 * 33 * 256 && g3 != NULL && l3 == 23 && (uint8_t)g3[1] == 0x15 &&
+         (uint8_t)g3[11] == 0x21 && rcbs == 256, why);
+   stop_all();
+
+   /* SCSI: 512 bytes per sector, pending until FORMAT */
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   put_lun8(0, legacy_cfg, 4096);
+   scsiClearPendingPages(0);
+   st = select_page3_short(0x15, 512);
+   filesystemSetLunStatus(0, true);
+   uint32_t before = capacity_block_size();
+   fs = run_cmd(1, fm8, 6, NULL, 0);
+   sz = size_of("/BeebSCSI8/scsi0.dat");
+   stop_all();                          /* the next start reads the saved .cfg */
+   filesystemSetLunStatus(0, true);
+   rcbs = capacity_block_size();
+   g3 = filesystemGetModePageData(0, 3, &l3);
+   snprintf(why, sizeof why, "select %d, block before FORMAT %lu, FORMAT %d, image %ld (want %u), block %lu, "
+            "page 3 %u bytes, bytes per sector %02X%02X, interleave %02X",
+            st, (unsigned long)before, fs, sz, 20u * 4u * 33u * 512u, (unsigned long)rcbs, (unsigned)l3,
+            g3 && l3 > 13 ? (uint8_t)g3[12] : 0, g3 && l3 > 13 ? (uint8_t)g3[13] : 0,
+            g3 && l3 > 15 ? (uint8_t)g3[15] : 0);
+   check("legacy .cfg (23-byte pages, WritPage3), SCSI: MODE SELECT waits, FORMAT lays down 512-byte blocks",
+         st == 0 && before == 256 && fs == 0 && sz == 20L * 4 * 33 * 512 && rcbs == 512 && g3 != NULL &&
+         l3 == 23 && (uint8_t)g3[12] == 0x02 && (uint8_t)g3[13] == 0x00 && (uint8_t)g3[15] == 8, why);
+   stop_all();
+
+   /* SCSI: page 3 back to its factory values, a 21-byte FDefPage3 over the
+      23-byte page: after FORMAT the page is 21 bytes, no old tail kept */
+   char cfg[sizeof legacy_cfg + 64];
+   snprintf(cfg, sizeof cfg, "%sFDefPage3=031301320132000600060021010000080000000080\n", legacy_cfg);
+   put_lun8(0, cfg, 4096);
+   scsiClearPendingPages(0);
+   const uint8_t ms6[6] = { 0x15, 0, 0, 0, 6, 0 };
+   const uint8_t rst[6] = { 0, 0, 0, 0,  0x83, 0 };
+   st = run_cmd(1, ms6, 6, rst, sizeof rst);
+   fs = run_cmd(1, fm8, 6, NULL, 0);
+   g3 = filesystemGetModePageData(0, 3, &l3);
+   size_t now = l3;
+   stop_all();
+   filesystemSetLunStatus(0, true);
+   const uint8_t ms3[6] = { 0x1A, 0, 0x03, 0, 0xFF, 0 };
+   int ss = run_cmd(1, ms3, 6, NULL, 0);
+   g3 = filesystemGetModePageData(0, 3, &l3);
+   snprintf(why, sizeof why, "reset %d, FORMAT %d, page 3 %u bytes, %u after a restart (want 21), "
+            "MODE SENSE %d %u bytes (want 25), length byte %02X",
+            st, fs, (unsigned)now, (unsigned)l3, ss, bus_out_len, bus_out_len > 5 ? bus_out[5] : 0);
+   check("SCSI: a factory reset to a shorter FDefPage3 leaves page 3 at its length (21), no old tail",
+         st == 0 && fs == 0 && now == 21 && l3 == 21 && g3 != NULL && (uint8_t)g3[1] == 0x13 &&
+         ss == 0 && bus_out_len == 4 + 21 && bus_out[5] == 0x13, why);
+
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   filesystemSetLunDirectory(1, 0);
+}
+
+/* 2048 bytes, MAX_BLOCK_SIZE, on every path of a SCSI drive: the block
+   descriptor and page 3 of MODE SELECT, FORMAT, READ CAPACITY and the data
+   path; 2049 is refused (ASC 22). */
+static void test_block_size_2048(void)
+{
+   static char why[240];
+   static uint8_t data[2 * 2048];
+   static const char cfg[] =
+      "ModeParamHeader=00000008\n"
+      "LBADescriptor=0000000000000100\n"
+      "ModePage3=031300020002000000000011010000080000000080\n"
+      "MaskPage3=0313000000000000000000000FFF00000000000000\n"
+      "ModePage4=040400001402\n";
+   const uint8_t ms12[6] = { 0x15, 0, 0, 0, 12, 0 };
+   uint8_t bd[12] = { 0, 0, 0, 8,  0, 0, 0, 0, 0, 0x00, 0x08, 0x01 };
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_SCSI);
+   put_lun8(0, cfg, 4096);
+   filesystemSetLunDirectory(1, 8);
+   scsiClearPendingPages(0);
+
+   int s1 = run_cmd(1, ms12, 6, bd, sizeof bd), e1 = sense_of(0);
+   int s2 = select_page3_short(0x13, 2049), e2 = sense_of(0);
+   bd[11] = 0x00;                       /* 2048 */
+   int s3 = run_cmd(1, ms12, 6, bd, sizeof bd);
+   int s4 = select_page3_short(0x13, 2048);
+   const uint8_t fm[6] = { 0x04, 0, 0, 0, 2, 0 };
+   int fs = run_cmd(1, fm, 6, NULL, 0);
+   long sz = size_of("/BeebSCSI8/scsi0.dat");
+   filesystemSetLunStatus(0, true);
+   uint32_t rcbs = capacity_block_size();
+   snprintf(why, sizeof why, "2049: descriptor %d/%02X, page 3 %d/%02X (want 2/22); 2048: descriptor %d, page 3 %d, "
+            "FORMAT %d, image %ld (want %u), READ CAPACITY %lu", s1, e1, s2, e2, s3, s4, fs, sz,
+            20u * 2u * 17u * 2048u, (unsigned long)rcbs);
+   check("2048-byte blocks: MODE SELECT and FORMAT take 2048 (MAX_BLOCK_SIZE), refuse 2049",
+         s1 == 2 && e1 == 0x22 && s2 == 2 && e2 == 0x22 && s3 == 0 && s4 == 0 && fs == 0 &&
+         sz == 20L * 2 * 17 * 2048 && rcbs == 2048, why);
+
+   for (uint32_t b = 0; b < sizeof data; b++)
+      data[b] = (uint8_t)(b / 2048u * 0x40 + b % 251);
+   const uint8_t wr[6] = { 0x0A, 0, 0, 3, 2, 0 };
+   int sw = run_cmd(1, wr, 6, data, sizeof data);
+   const uint8_t rd[6] = { 0x08, 0, 0, 3, 2, 0 };
+   int sr = run_cmd(1, rd, 6, NULL, 0);
+   bool back = bus_out_len == sizeof data && memcmp(bus_out, data, sizeof data) == 0;
+   static uint8_t img[6 * 2048];
+   read_file("/BeebSCSI8/scsi0.dat", img, sizeof img);
+   bool placed = memcmp(img + 3u * 2048u, data, sizeof data) == 0;
+   snprintf(why, sizeof why, "WRITE6 %d, placed %d, READ6 %d %u bytes, same %d", sw, placed, sr, bus_out_len, back);
+   check("2048-byte blocks: WRITE6 and READ6 of two blocks round-trip at LBA x 2048",
+         sw == 0 && placed && sr == 0 && back, why);
+
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
    filesystemSetLunDirectory(1, 0);
 }
 
@@ -1546,6 +2506,7 @@ static void test_mode_pages_whole(void)
 static void test_mode_select_keeps_vendor_pages(void)
 {
    static char why[200];
+   scsiSetController(SCSI_CONTROLLER_SCSI);   /* a drive with its own controller */
    static char text[8192];
    static const char cfg[] =
       "ModeParamHeader=10000008\n"
@@ -1580,6 +2541,7 @@ static void test_mode_select_keeps_vendor_pages(void)
             strstr(text, lines[i]) != NULL, why);
    }
    stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
 }
 
 int main(int argc, char **argv)
@@ -1628,13 +2590,25 @@ int main(int argc, char **argv)
    test_fcode_short();                  /* after test_jukebox: a VFS side with data */
    test_reset_abandons();
    test_filestore_mode_select();
+   test_fservfmt_page3_masked();
+   test_scsi_page0_ps();
+   test_drive_geometry_setting();
+   test_sense_kept();
    test_write_mask_page1();
    test_readonly_image();
    test_format_interleave();
+   test_acb_mode_and_format();
    test_stopped_geometry();
    test_mode_sense();
    test_ccs_pages();
+   test_controller_name();
+   test_controller_gating();
+   test_extended_sense();
    test_block_sizes();
+   test_scsi_drive();
+   test_pending_pages_lifetime();
+   test_upgrade_legacy_cfg();
+   test_block_size_2048();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */
