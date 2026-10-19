@@ -54,7 +54,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 14           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 15           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -64,16 +64,21 @@ SCANKEY = &FF               \ the byte the Pi puts in the keyboard buffer to ask
 LITKEY = &FB                \ ... and before a byte to be read as it is (above 127: no soft or cursor key)
 RDCHV = &0210               \ the read-character vector, vector 8
 RDCHV_ENTRY = &FF18         \ the MOS's entry for vector 8 as an extended vector (&FF00 + 3*8)
-RDCHVOLD = EXTVEC+75        \ the MOS's RDCHV routine, kept in IND2V's slot (vector 25, reserved as IND3V's)
-SHIFTFLAG = &0DA1           \ the Pi's SHIFT request: USERV's unused ROM byte in the extended vector table
-KEYVOLD = EXTVEC+78         \ the MOS's KEYV routine, kept in IND3V's slot of the table (vector 26,
-                            \ reserved by Acorn and never claimed, as USERV's is)
 KEYV = &0228                \ the keyboard vector, vector 20
 KEYV_ENTRY = &FF3C          \ the MOS's entry for vector 20 as an extended vector (&FF00 + 3*20)
 DEFVEC = &FFB7              \ the MOS: where its table of the default vectors is (OS 1.20 &D940)
 ZPTMP = &A8                 \ two bytes of the OS commands' workspace, kept on the stack while used
 STUBPAGE = &FC              \ the stub's page (FRED); only a test build, in RAM, changes it
 STUB = &FCCC                \ the Pi's serial stub at its default place (src/serial_redirect.c)
+\ The ROM's workspace: 8 bytes the Pi keeps in FRED just below the stub's escape routine
+\ (SER_WS_OFF in src/serial_redirect.c), so the ROM owns no Beeb RAM.  They are there only
+\ with the Pi, and the ROM hooks the Beeb in only with the Pi, the stub where it always is.
+WS = STUB - 21
+REMVOLD = WS                \ the MOS's REMV routine (the claim goes on to it)
+KEYVOLD = WS+2              \ ... its KEYV routine
+RDCHVOLD = WS+4             \ ... its RDCHV routine
+SHIFTFLAG = WS+6            \ the Pi's SHIFT request for paged mode: set by the Pi, cleared here
+TELNETON = WS+7             \ 1 when telnetd is on (telnetd_port): only then is the Beeb hooked in
 POWER_ON = 1                \ OSBYTE &FD: 0 soft BREAK, 1 power-on, 2 CTRL-BREAK
 SOFT_BREAK = 0              \ OSBYTE &FD: a soft reset (the BREAK key, or a jump through the reset vector)
 TUBE_ULA = &FEE0            \ the Tube ULA's status register: write &80+flags to set, flags to clear
@@ -153,14 +158,12 @@ GUARD &C000
 .settle         jsr pause                   \ the Pi is still setting the stub up: give it a moment
 .ready          pla                         \ the turns left
 .probe          jsr unstale
-                jsr stubok                  \ the Pi's stub where it always is: hook it in here
-                bne viahelper
+                jsr stubok                  \ the Pi's stub where it always is: hook it in here,
+                bne nopi                    \ and only if telnetd is on.  Moved (Serial_addr=) or
+                lda TELNETON                \ telnetd off: nothing is touched (helper 20 can still
+                cmp #1                      \ hook a moved stub by hand: X%=20:CALL &FC88)
+                bne nopi
                 jsr install
-                jmp hooked
-.viahelper      jsr helperok                \ moved (Serial_addr=): helper 20 knows where.  No
-                bne nopi                    \ helper either (no 6502code.bin): nothing to hook
-                ldx #TELNET_HELPER
-                jsr HELPER_ENTRY            \ the helper hooks the vectors and sets *FX3,1
 .hooked         tsx
                 lda &102,x                  \ this ROM's slot, as the MOS gave it in X
                 jsr claimkeyv               \ A is kept
@@ -506,17 +509,17 @@ GUARD &C000
 
 \ Claim REMV, as a ROM does: the vector points at the MOS's extended vector entry for
 \ it, and the extended vector table says where in which ROM the routine is.  The MOS's
-\ own routine is kept in the table slot of vector 0 (USERV), which a ROM never claims.
-\ In: A = this ROM's slot.  Out: A = &21 if claimed, &20 if not (the vector is
+\ own routine is kept in the ROM's workspace (REMVOLD, in the Pi's FRED page).
+\ In: A = this ROM's slot.  Out: A = &26 if claimed, &20 if not (the vector is
 \ somebody's extended vector already, or the MOS has no extended vectors).
 .claimremv      ldx REMV+1
                 cpx #&FF
                 beq notours
                 pha
                 lda REMV
-                sta EXTVEC
+                sta REMVOLD
                 lda REMV+1
-                sta EXTVEC+1
+                sta REMVOLD+1
                 lda #<remvh
                 sta EXTVEC+66
                 lda #>remvh
@@ -578,7 +581,7 @@ GUARD &C000
                 sec
                 rts
 .remvold        plp
-.remvcall       jmp (EXTVEC)
+.remvcall       jmp (REMVOLD)
 
 \ The ROM filing system takes the 6850 for each operation (&EA = 1, OS 1.2 &FB3D) and
 \ leaves it taken, so nothing reaches RS423 again until another filing system is
@@ -603,7 +606,7 @@ ACIAUSE = &EA               \ 1..&7F: the cassette or ROM filing system has the 
 \ clear, which answers in A: bit 7 CTRL, bit 6 SHIFT (OS 1.20 &EEEB).  SHIFT is a key of the
 \ matrix, not a byte in the buffer, so nothing typed ahead (a COPY pressed during the wait)
 \ may hold it up.  A telnet client cannot send it on its own: for its Page Down key the Pi
-\ stores 1 in SHIFTFLAG with an interrupt "trip" (src/serial_redirect.c), and this ROM, which
+\ sets SHIFTFLAG in the ROM's workspace (src/serial_redirect.c), and this ROM, which
 \ claims KEYV, answers that question SHIFT pressed once when it finds the flag set, and clears
 \ it.  Every other KEYV call (the keyboard interrupt and scan) goes straight on to the MOS's
 \ routine, whose address is in the MOS's own table of default vectors, so KEYV is claimed only

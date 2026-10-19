@@ -20,15 +20,19 @@
   on a full RS423 buffer, so something has to keep emptying it.  Unlike the
   modem, nothing is echoed back, since what the Pi sends is typed on the Beeb.
 
-  Login: when Pi1MHz.cfg has webdav_user and webdav_password, a session asks for
-  them first (telnetd_login=0 turns that off).  Telnet is not encrypted: the
-  password crosses the network in the clear.  Without them the daemon is open
-  to the whole network, as the web interface is.
+  Login: a session asks for telnetd_user and telnetd_password first, telnet's own
+  (never the web interface's WebDAV ones: telnet is not encrypted, so the password
+  crosses the network in the clear).  Without them every connection is refused,
+  unless telnetd_login=0 opens the daemon to the whole network.  Three wrong
+  passwords, on any connections within FAIL_DECAY_US of each other, lock it for
+  LOCKOUT_US, and each wrong one holds its session for FAIL_DELAY_US.
 
      telnetd_port=23      listen here; absent or 0: off
+     telnetd_user=        the login: a user name, and a telnetd_password line (which may be
+     telnetd_password=    empty: the password is then just RETURN); up to 64 characters each
      telnetd_ansi=1       0: the Beeb's bytes as they are, no ANSI
      telnetd_utf8=1       the pound sign as UTF-8; 0: Latin-1
-     telnetd_login=1      0: no login even if webdav_user is set
+     telnetd_login=1      0: no login at all, open to the network
      telnetd_mode=7       the Beeb's screen mode (0-7) until it sends a MODE: its size
                           cannot be read, and the daemon needs it to follow the text
      telnetd_copycursor=1 0: do not mark the copy cursor in the terminal
@@ -51,7 +55,6 @@
 #include "serial_redirect.h"
 #include "telnetd.h"
 #include "telnetd_proto.h"
-#include "wifi/wifi.h"
 
 #define KRING_SIZE   4096u               /* power of two */
 #define KRING_MASK   (KRING_SIZE - 1u)
@@ -61,9 +64,11 @@
    bytes, are what the link runs out of (a stream from the Beeb reached the client at ~350 bytes/s). */
 #define OUT_BATCH    1024u
 #define OUT_HOLD_US  8000u
-#define LOGIN_MAX    32u
-#define LOGIN_US     60000000u           /* a session must be logged in by then */
-#define LOCKOUT_US   10000000u           /* after three wrong passwords */
+#define LOGIN_MAX    64u                 /* as the web interface's user name and password may be */
+#define LOGIN_US     30000000u           /* a session must be logged in by then */
+#define LOCKOUT_US   60000000u           /* after every third wrong password, whichever connections they came on */
+#define FAIL_DECAY_US 600000000u         /* wrong passwords are forgotten after this long without one */
+#define FAIL_DELAY_US 2000000u           /* and each one holds the session this long before it can try again */
 #define BEEB_PER_POLL 256u               /* Beeb bytes translated per main-loop pass */
 #define KEEPALIVE_US 30000000u           /* a telnet NOP this often when idle, see telnetd_poll */
 #define STALE_US     10000000u           /* a session that has not moved for this long, with
@@ -146,17 +151,22 @@ static bool      g_locked;
 static char      g_line[LOGIN_MAX + 1u];
 static char      g_user[LOGIN_MAX + 1u];
 static unsigned  g_len;
-static unsigned  g_fails;
+static unsigned  g_fails;                /* wrong passwords, kept across connections (FAIL_DECAY_US) */
+static uint32_t  g_fail_us;              /* the last one */
+static uint32_t  g_hold_until;           /* after a wrong password nothing is read until then */
+static bool      g_hold;
 static bool      g_close_after;          /* close once the output has gone */
 static bool      g_att_known, g_att;     /* last attachment told to the client */
 static char      g_peer[20];
 static uint32_t  g_sessions, g_refused, g_replaced, g_dropped;
 static const char *g_why = "none";       /* why the last session ended, for the status page */
 static int       g_why_err;              /* lwIP's error code when it was lwIP's doing */
+#ifdef DEBUG
 static uint32_t  g_wmem, g_room0;        /* tcp_write said ERR_MEM; there was output and no send room */
 static unsigned  g_drop_sndq, g_drop_sndbuf, g_drop_wnd;   /* the TCP state when a session was dropped as stalled */
 static unsigned long g_drop_obuf;
 static int       g_drop_rxblk;
+#endif
 static uint32_t  g_prog_us;              /* the last time the session moved, or began to wait */
 static bool      g_rx_blocked;           /* the key ring is full and client data is waiting for room */
 static struct pbuf *g_pend;              /* client data taken from lwIP but not yet turned into keys */
@@ -166,10 +176,11 @@ static u16_t     g_pqoff;                /* ... and how far into that segment */
 static tnd_in_t  g_in;
 static tnd_out_t g_out;
 
-/* The model's MODE changes, for the status page: how many, the last one (from, to, and how: 'v' a VDU 22
-   in what the Beeb printed, 'h' a hook or reset report), and the Beeb's last bytes before it.  A model
-   in the wrong MODE draws everything at the wrong width (seen once: 20 columns while the Beeb was in
-   MODE 0). */
+#ifdef DEBUG
+/* The model's MODE changes, for the status page (debug builds): how many, the last one (from, to, and
+   how: 'v' a VDU 22 in what the Beeb printed, 'h' a hook or reset report), and the Beeb's last bytes
+   before it.  A model in the wrong MODE draws everything at the wrong width (seen once: 20 columns
+   while the Beeb was in MODE 0). */
 #define MC_RING 24u
 static uint8_t  g_mc_ring[MC_RING], g_mc_last[MC_RING];
 static uint32_t g_mc_n, g_mc_count, g_mc_us;
@@ -185,6 +196,7 @@ static void mode_changed(uint8_t how)
    g_mc_count++;
    g_mc_us = Pi1MHz_now_us;
 }
+#endif
 static uint8_t   g_kring[KRING_SIZE];    /* keys for the Beeb */
 static uint32_t  g_khead, g_ktail;
 static uint8_t   g_obuf[OBUF_SIZE];      /* bytes for the client */
@@ -252,18 +264,40 @@ static bool cfg_flag(const char *key, bool dflt)
    return !(v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F');
 }
 
-static bool login_required(void)
+/* Telnet has its own user name and password (telnetd_user, telnetd_password), never the web
+   interface's: telnet sends them in the clear.  Without them a session is refused, unless
+   telnetd_login=0 says the daemon is to be open to the network. */
+static bool login_open(void)
 {
-   const wifi_config_t *c = wifi_get_config();
-   return cfg_flag("telnetd_login", true) && c != NULL
-          && c->webdav_user[0] != '\0' && c->webdav_password[0] != '\0';
+   return !cfg_flag("telnetd_login", true);
+}
+
+/* A user name, and a telnetd_password line, which may be empty: then the password is RETURN. */
+static bool login_configured(void)
+{
+   const char *u = config_get("telnetd_user"), *p = config_get("telnetd_password");
+   return u != NULL && u[0] != '\0' && p != NULL;
+}
+
+/* Equal strings, in a time that depends only on the attempt's length, not on where they differ. */
+static bool same_secret(const char *got, const char *want)
+{
+   size_t   gl = strlen(got), wl = strlen(want);
+   unsigned diff = (unsigned)(gl != wl);
+   for (size_t i = 0u; i < gl; i++)
+      diff |= (unsigned)((uint8_t)got[i] ^ (uint8_t)(i < wl ? want[i] : 0u));
+   return diff == 0u;
 }
 
 static bool credentials_ok(void)
 {
-   const wifi_config_t *c = wifi_get_config();
-   return c != NULL && strcmp(g_user, c->webdav_user) == 0
-          && strcmp(g_line, c->webdav_password) == 0;
+   const char *u = config_get("telnetd_user"), *p = config_get("telnetd_password");
+   bool user_ok, pass_ok;
+   if (u == NULL || p == NULL)
+      return false;
+   user_ok = same_secret(g_user, u);
+   pass_ok = same_secret(g_line, p);            /* both compared, whichever is wrong */
+   return user_ok && pass_ok;
 }
 
 static void pend_free(void)
@@ -282,17 +316,18 @@ static void session_reset(void)
    g_khead = g_ktail = 0u;
    g_olen = g_opos = 0u;
    g_len = 0u;
-   g_fails = 0u;
+   g_hold = false;                               /* g_fails is not reset: a reconnect must not clear it */
    g_close_after = false;
    g_att_known = false;
    g_rx_blocked = false;
    g_stage = S_LIVE;
 }
 
-/* Something is waiting on the client: unacknowledged output, or its keys refused. */
+/* Something is waiting on the client: output it has not acknowledged.  Keys refused because the
+   ring is full are not: that is the Beeb being slow to take them, with the client alive. */
 static bool session_pending(void)
 {
-   return g_pcb != NULL && (g_pcb->snd_queuelen != 0u || g_rx_blocked);
+   return g_pcb != NULL && g_pcb->snd_queuelen != 0u;
 }
 
 /* Returns true if it had to abort: a callback that does must return ERR_ABRT. */
@@ -329,8 +364,23 @@ static void connect_start(void)
    o_str("\r\nPi1MHz telnet - connecting");
 }
 
+static void send_banners(void)                   /* what came up when the Beeb started */
+{
+   for (unsigned i = 0u; i < g_ban.len; i++) {
+      if (g_ban.text[i] == '\n')
+         o_str("\r\n");
+      else
+         o_put(&g_ban.text[i], 1u);
+   }
+}
+
 static void login_key(uint8_t k)
 {
+   if (g_hold) {                                 /* after a wrong password: typing is ignored for a while */
+      if ((int32_t)(Pi1MHz_now_us - g_hold_until) < 0)
+         return;
+      g_hold = false;
+   }
    if (k == 13u) {
       if (g_stage == S_LOGIN_USER) {
          g_line[g_len] = '\0';
@@ -342,19 +392,28 @@ static void login_key(uint8_t k)
       }
       g_line[g_len] = '\0';
       g_len = 0u;
+      if (g_fails != 0u && (Pi1MHz_now_us - g_fail_us) >= FAIL_DECAY_US)
+         g_fails = 0u;                           /* long enough since the last wrong one */
       if (credentials_ok()) {
+         g_fails = 0u;
          g_stage = S_LIVE;
          g_att_known = false;
          o_str("\r\n");
+         send_banners();                         /* only now: nothing of the Beeb's before a login */
          connect_start();
-      } else if (++g_fails >= 3u) {
-         o_str("\r\nLogin incorrect\r\n");
-         g_close_after = true;
-         g_locked = true;
-         g_lockout_us = Pi1MHz_now_us;
       } else {
-         o_str("\r\nLogin incorrect\r\n\r\nlogin: ");
-         g_stage = S_LOGIN_USER;
+         g_fail_us = Pi1MHz_now_us;
+         g_hold = true;                          /* every wrong one costs FAIL_DELAY_US */
+         g_hold_until = Pi1MHz_now_us + FAIL_DELAY_US;
+         if (++g_fails % 3u == 0u) {             /* every third, on whichever connections: locked out */
+            o_str("\r\nLogin incorrect\r\n");
+            g_close_after = true;
+            g_locked = true;
+            g_lockout_us = Pi1MHz_now_us;
+         } else {
+            o_str("\r\nLogin incorrect\r\n\r\nlogin: ");
+            g_stage = S_LOGIN_USER;
+         }
       }
       return;
    }
@@ -608,10 +667,18 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
       g_why = "replaced";
       (void)session_close(true);
    }
-   if (g_pcb != NULL || g_locked) {
+   /* A session still at the login prompt holds nothing yet: a new connection takes its place, so
+      nobody can keep the owner out by connecting and waiting. */
+   if (g_pcb != NULL && !g_locked && g_stage != S_LIVE) {
+      g_replaced++;
+      g_why = "replaced at login";
+      (void)session_close(true);
+   }
+   if (g_pcb != NULL || g_locked || (!login_open() && !login_configured())) {
       static const char busy[]   = "Pi1MHz: the BBC is in use by another session.\r\n";
       static const char locked[] = "Pi1MHz: too many wrong passwords, try later.\r\n";
-      const char *m = g_locked ? locked : busy;
+      static const char unset[]  = "Pi1MHz: telnet has no login set up (telnetd_user and telnetd_password).\r\n";
+      const char *m = g_locked ? locked : g_pcb != NULL ? busy : unset;
       g_refused++;
       (void)tcp_write(newpcb, m, (u16_t)strlen(m), TCP_WRITE_FLAG_COPY);
       (void)tcp_output(newpcb);
@@ -656,16 +723,11 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    }
    if (g_ansi)
       o_str("\x1b[0m");
-   for (unsigned i = 0u; i < g_ban.len; i++) {  /* what came up when the Beeb started: the banners */
-      if (g_ban.text[i] == '\n')
-         o_str("\r\n");
-      else
-         o_put(&g_ban.text[i], 1u);
-   }
-   if (login_required()) {
+   if (!login_open()) {                         /* the banners come after the login */
       g_stage = S_LOGIN_USER;
       o_str("\r\nPi1MHz telnet\r\n\r\nlogin: ");
    } else {
+      send_banners();
       connect_start();
    }
    return ERR_OK;
@@ -681,8 +743,10 @@ static void pump(void)
                            || (uint32_t)(Pi1MHz_now_us - g_obuf_us) >= OUT_HOLD_US)) {
       size_t want = g_olen - g_opos;
       size_t room = tcp_sndbuf(g_pcb);
+#ifdef DEBUG
       if (room == 0u)
          g_room0++;
+#endif
       if (want > room)
          want = room;
       if (want != 0u) {
@@ -695,7 +759,9 @@ static void pump(void)
                g_prog_us = g_tx_us;              /* the wait for the first ACK starts now */
             (void)tcp_output(g_pcb);
          } else if (e == ERR_MEM) {             /* ERR_MEM: the heap is busy, try again */
+#ifdef DEBUG
             g_wmem++;
+#endif
          } else {
             g_why = "write error";
             g_why_err = (int)e;
@@ -746,8 +812,10 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
          g_break_asked = false;
       if (reset || serial_redirect_beeb_mode() != g_out.mode)
          tnd_out_assume_mode(&g_out, serial_redirect_beeb_mode());
+#ifdef DEBUG
       if (g_out.mode != g_mc_mode)
          mode_changed('h');
+#endif
       serial_redirect_beeb_cursor(&col, &row);
       tnd_out_at(&g_out, col, row);
       if (reset) {
@@ -777,13 +845,17 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
             break;
          if (serial_redirect_read(&c, 1u) == 0u)
             break;
+#ifdef DEBUG
          g_mc_ring[g_mc_n++ % MC_RING] = c;
+#endif
          if (live)
             beeb_byte(c);
          else
             beeb_follow(c);
+#ifdef DEBUG
          if (g_out.mode != g_mc_mode)
             mode_changed('v');
+#endif
       }
    }
 
@@ -841,8 +913,8 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       }
    }
 
-   if (g_stage != S_LIVE && (now_us - g_start_us) >= LOGIN_US) {
-      o_str("\r\nLogin timed out\r\n");
+   if (g_stage != S_LIVE && !g_close_after && (now_us - g_start_us) >= LOGIN_US) {
+      o_str("\r\nLogin timed out\r\n");          /* once: the session closes when it has gone */
       g_close_after = true;
    }
 
@@ -851,11 +923,13 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       ABORT_US is dropped, so a client that died mid-output cannot hold the one
       session slot. */
    if (tnd_stalled(session_pending(), now_us, g_prog_us, ABORT_US)) {
+#ifdef DEBUG
       g_drop_sndq = g_pcb->snd_queuelen;
       g_drop_sndbuf = tcp_sndbuf(g_pcb);
       g_drop_wnd = g_pcb->snd_wnd;
       g_drop_obuf = (unsigned long)(g_olen - g_opos);
       g_drop_rxblk = g_rx_blocked;
+#endif
       g_dropped++;
       g_why = "stalled";
       (void)session_close(true);
@@ -908,16 +982,21 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
          if (g_ansi && g_win_first && g_in.win_rows != 0u && g_in.win_cols != 0u
              && (g_in.win_rows < g_out.rows || g_in.win_cols < g_out.cols)) {
             char w[160];
+            /* A client that reports a resize has the screen drawn again by itself; Windows telnet
+               (terminal type ANSI) reports its size only when it connects, so it needs F11. */
+            bool no_naws_change = g_in.ttype_got && strncmp(g_in.ttype, "ANSI", 4) == 0;
             snprintf(w, sizeof w, "\r\nThis window is %u x %u, smaller than the Beeb's MODE %u (%u x %u):\r\n"
-                     "make it bigger, then press F11.\r\n",
+                     "%s\r\n",
                      (unsigned)g_in.win_cols, (unsigned)g_in.win_rows, (unsigned)g_out.mode,
-                     (unsigned)g_out.cols, (unsigned)g_out.rows);
+                     (unsigned)g_out.cols, (unsigned)g_out.rows,
+                     no_naws_change ? "make it bigger, then press F11." : "make it bigger and the screen is drawn again.");
             o_str(w);
             g_warn_until = now_us + CONNECT_WARN_US;
             if (g_warn_until == 0u)
                g_warn_until = 1u;
          }
-      } else if (ready && (g_warn_until == 0u || (int32_t)(now_us - g_warn_until) >= 0)) {
+      } else if (ready && (g_warn_until == 0u || (int32_t)(now_us - g_warn_until) >= 0
+                           || (g_in.win_rows >= g_out.rows && g_in.win_cols >= g_out.cols))) {   /* made big enough */
          g_connecting = false;
          if (g_ansi && g_tek && g_in.ttype_got
              && (strncmp(g_in.ttype, "XTERM", 5) == 0 || strncmp(g_in.ttype, "xterm", 5) == 0))
@@ -1078,7 +1157,9 @@ void telnetd_init(void)
       long mode = (m != NULL && m[0] != '\0') ? strtol(m, NULL, 10) : 7;
       g_mode = (uint8_t)((mode >= 0 && mode <= 7) ? mode : 7);
       tnd_out_assume_mode(&g_out, g_mode);
+#ifdef DEBUG
       g_mc_mode = g_out.mode;                   /* the MODE changes count from here */
+#endif
    }
 
    l = tcp_new_ip_type(IPADDR_TYPE_V4);
@@ -1112,6 +1193,7 @@ void telnetd_status(char *buf, size_t len)
       buf += used;
       len -= used;
    }
+#ifdef DEBUG
    if (g_mc_count != 0u) {                       /* the model's MODE changes, the last with what led up to it */
       char   hex[MC_RING * 3u + 1u];
       size_t used;
@@ -1125,6 +1207,7 @@ void telnetd_status(char *buf, size_t len)
       buf += used;
       len -= used;
    }
+#endif
    if (serial_redirect_lit_ok()) {              /* ROM build 13: the keys waiting, and a Beeb not taking them */
       uint32_t w = keys_waiting();
       uint32_t age = (Pi1MHz_now_us - g_taken_us) / 1000000u;
@@ -1137,19 +1220,27 @@ void telnetd_status(char *buf, size_t len)
       len -= used;
    }
    if (g_pcb != NULL)
+#ifdef DEBUG
       snprintf(buf, len, "port %u, %s from %s, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s (%d); ring %lu, rx %s, rcvwnd %u, tcp state %d, sndq %u",
                (unsigned int)g_port, g_stage == S_LIVE ? "live" : "login", g_peer,
                (unsigned long)g_sessions, (unsigned long)g_refused,
                (unsigned long)g_replaced, (unsigned long)g_dropped, g_why, g_why_err,
                (unsigned long)(g_ktail - g_khead), g_rx_blocked ? "refused" : "ok",
                (unsigned int)g_pcb->rcv_wnd, (int)g_pcb->state, (unsigned int)g_pcb->snd_queuelen);
+#else
+      snprintf(buf, len, "port %u, %s from %s, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s",
+               (unsigned int)g_port, g_stage == S_LIVE ? "live" : "login", g_peer,
+               (unsigned long)g_sessions, (unsigned long)g_refused,
+               (unsigned long)g_replaced, (unsigned long)g_dropped, g_why);
+#endif
    else
       snprintf(buf, len, "port %u, listening, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s (%d)",
                (unsigned int)g_port, (unsigned long)g_sessions, (unsigned long)g_refused,
                (unsigned long)g_replaced, (unsigned long)g_dropped, g_why, g_why_err);
 }
 
-/* The TCP side, for /status: tcp_write refused for memory, output waiting with no send room, and
+#ifdef DEBUG
+/* The TCP side, for /status (debug builds): tcp_write refused for memory, output waiting with no send room, and
    the session's state when one was last dropped as stalled. */
 void telnetd_tcp_status(char *buf, size_t len)
 {
@@ -1159,3 +1250,4 @@ void telnetd_tcp_status(char *buf, size_t len)
             g_pcb != NULL ? (unsigned int)g_pcb->snd_queuelen : 0u,
             g_pcb != NULL ? (unsigned int)tcp_sndbuf(g_pcb) : 0u);
 }
+#endif

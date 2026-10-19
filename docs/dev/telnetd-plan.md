@@ -1,10 +1,17 @@
 # Telnet daemon - design record
 
+> **STATUS 2026-10-19: built, host-tested, and run on a BBC Model B (MOS 1.20, 6502
+> second processor) with the auto-start ROM build 14 in a flash bank; every hardware QA
+> suite passes, including WordWise-Plus. Graphics are checked in a real xterm (398). The
+> ROM boots on a Master 128 from an EPROM, with and without a Pi1MHz (build 12). Open:
+> PR review changes (own telnet login, lockout across connections, modem mode
+> unchanged, the ROM's workspace, the Pi telling the ROM whether telnetd is on); a B+
+> is untested.**
+>
 > **STATUS 2026-10-14: built, host-tested (206,751 translator checks, 186 ROM
 > checks), and run on a BBC Model B with the auto-start ROM build 7 in a flash bank,
 > with and without a 6502 second processor: every hardware QA suite passes (section
-> 15). One intermittent second-processor hang is open (section 15). Graphics in a
-> real xterm and a B+ are still to do.**
+> 15).**
 >
 > **Earlier STATUS 2026-10-13: built, host-tested, and run on hardware with a Pi Zero W
 > (debug kernel). The machine the early runs used was recorded as a BBC B and is
@@ -46,7 +53,9 @@ telnet client                      Pi (this firmware)                         Be
   MODE, TAB, COLOUR, teletext colours, DELETE; parameter bytes of VDU codes
   swallowed; VDU 21 hides everything until VDU 6).
 - **`telnetd.c/.h`** - lwIP raw API (as the web server): one session, a login
-  against `webdav_user`/`webdav_password`, a key ring that backs the client off
+  against telnet's own `telnetd_user`/`telnetd_password` (constant-time compare,
+  failures counted across connections; before the PR review it used the WebDAV
+  credentials), a key ring that backs the client off
   with `ERR_MEM`, an output buffer pumped with `tcp_write`, and a poll called
   from `serial_redirect_poll`.
 - **`serial_redirect.c`** - *telnet mode*: the control port (+28) takes 2 as
@@ -247,7 +256,14 @@ call 1, and the ROM:
 4. claims REMV (the screen read, the keys taken) and KEYV (SHIFT for paged mode) as
    extended vectors while they are the MOS's own, and tells the Pi it can be asked
    for the screen and tells the keys taken (&23 to the stub's control port).
-The turn counter lives on the stack, the ROM owning no workspace.
+The turn counter lives on the stack, the ROM owning no Beeb RAM. Since build 15 (PR
+review) the step above is taken only when the stub is at &FCCC and the Pi has set
+"telnetd on" (`telnetd_port`) in the ROM's workspace, and with a moved stub the ROM no
+longer runs helper 20. The workspace is 8 bytes the Pi keeps in FRED below the stub's
+escape routine (`SER_WS_OFF`, &FCB7-&FCBE): the MOS's REMV, KEYV and RDCHV routines the
+claims go on to (builds 11-14 kept them in the extended vector table's USERV, IND2V and
+IND3V slots), the SHIFT request (was &0DA1, set by an interrupt trip; now written by the
+Pi directly), and the telnetd flag.
 
 `src/tests/telnetdrom` (not in the default `run_all.sh`; it needs beebasm and
 py65, and `beeb-roms.yml` runs it): the image rebuilds identically from source,
@@ -441,8 +457,8 @@ and are deliberately not in it.
   cleared; cause unknown.
 - **Vectors reset without a BREAK** on the Master after helper 21 loaded the ROM
   (IRQ and INSV read back as &E5FF and &EA43, the Pi stalling): unexplained.
-- **The login** (webdav_user and webdav_password) has not been exercised: the test
-  Pi has none set.
+- **The login** (then webdav_user and webdav_password; since the PR review
+  telnetd_user and telnetd_password) had not been exercised: the test Pi had none set.
 - **A release kernel** has been built for both boards but only the Pi Zero W debug
   kernel has run on hardware. A Zero 2 W (`kernel7.img`) has not been run at all.
 - **Which machine each measurement was taken on is not certain.** The early

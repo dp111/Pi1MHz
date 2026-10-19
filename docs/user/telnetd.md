@@ -89,9 +89,16 @@ session is back.
 - **It needs nothing from the SD card.** The ROM finds the Pi's serial stub at its
   usual place (`&FCCC`) and hooks the Beeb's keyboard and RS423 output into it
   itself, exactly as helper 20 does, so it works without the helper pages
-  (`6502code.bin`) and without paging anything into JIM. Only if `Serial_addr=` has
-  moved the stub does it run helper 20 instead, which knows where.
-- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b14` (the build number
+  (`6502code.bin`) and without paging anything into JIM.
+- **It does nothing unless telnetd is on.** The Pi tells the ROM whether
+  `telnetd_port` is set; without it (or with no Pi1MHz, or with `Serial_addr=`
+  moving the stub) the ROM touches nothing: no vectors, no `*FX3`, no `*FX156`. With
+  a moved stub, helper 20 still hooks the Beeb in by hand (`X%=20:CALL &FC88`).
+- **It uses no Beeb memory.** The three MOS routines it goes on to and the SHIFT
+  request for paged mode are kept in 8 bytes the Pi provides in its own page,
+  `&FCB7-&FCBE` (just below the serial stub), so nothing in the Beeb's RAM or the
+  MOS's tables that belongs to anything else is used.
+- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b15` (the build number
   goes up with every image).
 - **It claims nothing.** Every service call is passed on with A, X and Y as they
   came, so it sits happily beside filing systems and other ROMs in any bank.
@@ -102,8 +109,8 @@ session is back.
   second entry) is left alone.
 - **It presses SHIFT for paged mode** (build 10). A telnet client cannot send SHIFT on
   its own. SHIFT is a key the MOS reads from the keyboard itself, not from the buffer,
-  so for Page Down the Pi sets a flag in the Beeb's memory with one of the stub's
-  interrupt "trips" (as for ESCAPE), never a byte in the keyboard buffer: nothing typed
+  so for Page Down the Pi sets a flag in the ROM's workspace in its own page (build 15;
+  before that, Beeb memory by an interrupt "trip"), never a byte in the keyboard buffer: nothing typed
   ahead, not even a COPY pressed while the page waits, can hold it up. The ROM claims
   the keyboard vector (KEYV, only while it is the MOS's own) and, when the MOS asks
   whether SHIFT is pressed (paged mode's wait at the end of a page), answers yes once
@@ -141,7 +148,7 @@ whole boot until the Pi is up, which should also give the Pi's emulated hard dis
 time to be ready before ADFS looks for it. **That last effect is expected, not yet
 measured:** without the ROM, a power-on boot from a Pi-served disc was seen to fail
 about as often as it worked (below). Read the chip back after programming; the
-image's MD5 (build 14) is `2C925F9AF28EDDA748B054EE18A604E0`.
+image's MD5 (build 15) is `7E4C87DF4A6CAB43497A6D37B61AF4C3`.
 
 **On a Master 128 also `*INSERT` the bank** (`*ROMS` shows which one `TelnetD`
 went into): the Master only starts ROMs marked as inserted, and a ROM loaded after
@@ -327,8 +334,9 @@ about).
   `wt --size 100,40 telnet 192.168.1.20`. The daemon asks the client for its window
   size (telnet NAWS) and, if the window is smaller than the Beeb's mode, says so in
   one line before the screen is drawn. A client that reports a resize (Debian's
-  telnet does) has its screen drawn again by the daemon; Windows telnet reports its
-  size only when it connects, so after resizing it press F11.
+  telnet does) has its screen drawn again by the daemon, at once: no key is needed.
+  Windows telnet reports its size only when it connects, so after resizing it press
+  F11 (the message says so only to Windows telnet).
 
 - **ESC and Ctrl-C raise the Beeb's ESCAPE**, so they stop a running BASIC
   program (error 17, "Escape") as the real key does, even when the Beeb is busy
@@ -490,19 +498,33 @@ but wait for the Pi first; a floppy is slow enough that the wait is rarely neede
 
 ## Security
 
-Telnet is not encrypted, and the daemon is as open as the web interface. If
-`webdav_user` and `webdav_password` are both set in `Pi1MHz.cfg`, a session
-asks for them first (`login:` and `Password:`; three wrong answers close the
-session and refuse new ones for ten seconds). **The password crosses your
-network in the clear**, so keep this to a network you trust. With no
-password set the daemon lets anyone on the network type on your Beeb.
+Telnet is not encrypted. The daemon has its own login, `telnetd_user` and
+`telnetd_password` in `Pi1MHz.cfg`, and asks for them first (`login:` and
+`Password:`). It never uses the web interface's WebDAV user name and password:
+**the telnet password crosses your network in the clear**, so give it one you use
+nowhere else, and keep telnet to a network you trust.
+
+- `telnetd_password` may be empty (`telnetd_password=` on its own line): the password
+  is then just RETURN.
+- Without `telnetd_user` and a `telnetd_password` line every connection is refused
+  with a message saying so. `telnetd_login=0` opens the daemon to everyone on the network
+  instead, with no login.
+- Each wrong password holds that session for 2 seconds. Every third wrong password,
+  on whichever connections they came (they are forgotten after 10 minutes without
+  one), closes the session and refuses new ones for a minute.
+- A connection still at the login prompt is closed after 30 seconds, and a new
+  connection takes its place at once, so nobody can keep you out by connecting and
+  waiting.
+- The Beeb's boot banners and screen are sent only after a login.
 
 ## Settings
 
 | Key | Default | Meaning |
 |---|---|---|
 | `telnetd_port` | (off) | TCP port to listen on. `23` is the telnet port. Absent or `0` turns the daemon off. |
-| `telnetd_login` | `1` | `0` skips the login even when `webdav_user` and `webdav_password` are set. |
+| `telnetd_user` | (none) | The login's user name (up to 64 characters). |
+| `telnetd_password` | (none) | The login's password (up to 64 characters). It may be empty (`telnetd_password=` on its own): the password is then just RETURN. Without a user name and this line, connections are refused unless `telnetd_login=0`. |
+| `telnetd_login` | `1` | `0`: no login at all, open to the network. |
 | `telnetd_ansi` | `1` | `0` sends the Beeb's output exactly as it is, with no ANSI. For a program that does its own VDU handling. |
 | `telnetd_utf8` | `1` | The pound sign as UTF-8; `0` sends it as Latin-1. |
 | `telnetd_mode` | `7` | The Beeb's screen mode (0-7) until it sends a `MODE`. Its size cannot be read, and the daemon needs it to follow the text. |

@@ -7,6 +7,7 @@
 # stop assembling.  Needs beebasm and py65, so it is left out of the default
 # run_all.sh list (SKIP), as wifirom is.
 set -e
+skipped=0
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd)
 PY=${PYTHON:-python3}
@@ -26,7 +27,18 @@ if command -v "$beebasm" >/dev/null 2>&1; then
 else
     echo "beebasm not found (set BEEBASM): skipped the ROM assembly check"
     [ -z "$CI" ] || exit 1
+    skipped=1
 fi
 
-"$PY" "$HERE/check_rom.py" "$ROOT/firmware/Pi1MHz/telnetd.rom"
-echo "TELNETD ROM TESTS PASSED"
+if "$PY" -c "import py65" 2>/dev/null; then
+    "$PY" "$HERE/check_rom.py" "$ROOT/firmware/Pi1MHz/telnetd.rom"
+else
+    echo "py65 not found (pip install py65): skipped the 6502 checks"
+    [ -z "$CI" ] || exit 1
+    skipped=$((skipped + 2))
+fi
+case $skipped in
+    0) echo "TELNETD ROM TESTS PASSED" ;;
+    3) echo "TELNETD ROM TESTS SKIPPED (no beebasm, no py65): nothing was checked" ;;
+    *) echo "TELNETD ROM TESTS PASSED, PARTLY: some checks were skipped (see above)" ;;
+esac

@@ -15,6 +15,8 @@ void telnetd_init(void);
 void telnetd_poll(uint32_t now_us, bool beeb_attached);
 
 void telnetd_status(char *buf, size_t len);   /* for /status */
-void telnetd_tcp_status(char *buf, size_t len);   /* ... and its TCP side */
+#ifdef DEBUG
+void telnetd_tcp_status(char *buf, size_t len);   /* ... and its TCP side (debug builds) */
+#endif
 
 #endif

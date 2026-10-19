@@ -189,11 +189,14 @@ See [The telnet daemon](telnetd.md).
 | Key | Default | Meaning |
 |---|---|---|
 | `telnetd_port` | (off) | TCP port the daemon listens on (`23` is telnet). Absent or `0` turns it off. Helper 20 on the Beeb connects it. |
-| `telnetd_login` | `1` | `0` skips the login even when `webdav_user` and `webdav_password` are set. |
+| `telnetd_user` | (none) | The telnet login's user name (up to 64 characters). Telnet's own, never the web interface's. |
+| `telnetd_password` | (none) | The telnet login's password (up to 64 characters). It may be empty (`telnetd_password=` on its own): the password is then just RETURN. Without `telnetd_user` and a `telnetd_password` line every connection is refused, unless `telnetd_login=0`. |
+| `telnetd_login` | `1` | `0`: no login at all, the daemon is open to the network. |
 | `telnetd_ansi` | `1` | `0` sends the Beeb's output as it is, with no ANSI translation. |
 | `telnetd_utf8` | `1` | The pound sign as UTF-8; `0` sends Latin-1. |
 | `telnetd_mode` | `7` | The Beeb's screen mode (0-7) until it sends a `MODE`. |
 | `telnetd_copycursor` | `1` | `0` does not mark the copy cursor in the terminal. |
+| `telnetd_tek` | `1` | Draw the Beeb's graphics in xterm's Tektronix window when the terminal says it is xterm; `0`: never. |
 
 ## Econet (AUN) settings
 

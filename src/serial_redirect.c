@@ -99,16 +99,17 @@
   SHIFT in telnet mode.  Paged mode (VDU 14) waits at the end of each page until SHIFT is
   pressed, and the MOS reads SHIFT from the key matrix through KEYV, never from the buffer,
   so a waiting COPY or anything typed ahead cannot hold it up - nor can a byte stand for it.
-  serial_redirect_shift() makes a "shift trip", as the idle one but storing 1 in &0DA1 (the
-  third byte of USERV's slot in the extended vector table, which no ROM uses: USERV is never
-  an extended vector); the auto-start ROM's KEYV handler answers the MOS's "is SHIFT
-  pressed" yes once when it finds it set, and clears it.
+  serial_redirect_shift() sets the SHIFT byte of the auto-start ROM's workspace, which the Pi
+  keeps in FRED below the stub (SER_WS_OFF): the ROM's KEYV handler answers the MOS's "is
+  SHIFT pressed" yes once when it finds it set, and clears it.  No Beeb RAM is written.
 */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "Pi1MHz.h"
+#include "config.h"
 #include "rpi/asm-helpers.h"
 #include "rpi/systimer.h"
 #include "serial_redirect.h"
@@ -134,7 +135,15 @@
 #define SER_MOS_ESCFLAG 0x00FFu
 #define SER_MOS_RSBUSY  0x024Fu  /* bit 7 set: RS423 output idle (what the idle trip stores: &80) */
 #define SER_IDLE_US      2000u   /* output quiet this long: the idle trip */
-#define SER_MOS_SHIFTFLAG 0x0DA1u /* the auto-start ROM's SHIFT request (see the top) */
+/* The auto-start ROM's workspace, 8 bytes kept by the Pi just below the stub's escape routine
+   (&FCB7-&FCBE with the stub at &FCCC): the ROM owns no Beeb RAM.  +0 the MOS's REMV routine,
+   +2 its KEYV, +4 its RDCHV (the ROM's claims go on to them), +6 SHIFT for paged mode (set
+   here, read and cleared by the ROM), +7 1 when telnetd is on (the ROM hooks the Beeb in only
+   then). */
+#define SER_WS_OFF     21u
+#define SER_WS_LEN     8u
+#define SER_WS_SHIFT   6u
+#define SER_WS_TELNET  7u
 
 /* The escape trip's routine, just below the stub (FRED, which the Pi serves): the MOS's own way
    of raising ESCAPE (OS 1.2 &E674), which also tells a second processor - the escape flag lives
@@ -162,7 +171,8 @@ static const uint8_t ser_escr[11] = { 0x85, 0xFF, 0x2C, 0x7A, 0x02, 0x10, 0x03, 
    stub is not being run (interrupts off, or the vectors reset behind our
    back without a BREAK): close it rather than hold nIRQ indefinitely. */
 #define SER_STALL_US    100000u
-#define SER_BACKOFF_US    2000u       /* was 20 ms: with the keyboard buffer holding 32 bytes that capped the stream at ~1.3 kB/s */
+#define SER_BACKOFF_US    2000u       /* telnet: 20 ms, with the keyboard buffer holding 32 bytes, capped a paste at ~1.3 kB/s */
+#define SER_BACKOFF_MODEM_US 20000u   /* the modem (helper 19): as it always was */
 
 #define SER_FIFO_SIZE   1024u      /* power of two */
 #define SER_FIFO_MASK   (SER_FIFO_SIZE - 1u)
@@ -188,8 +198,6 @@ static volatile bool     ser_esc_active;  /* the trip in progress is the escape 
 static volatile bool     ser_idle_req;    /* the Beeb's RS423 busy flag wants setting: an idle trip is waiting */
 static volatile bool     ser_idle_active; /* the trip in progress is the idle one */
 static volatile uint32_t ser_idle_tx;     /* ser_tx_count when the last idle trip was armed */
-static volatile bool     ser_shift_req;   /* SHIFT for the Beeb is waiting for a trip */
-static volatile bool     ser_shift_active; /* the trip in progress is the shift one */
 static volatile uint32_t ser_shifts;
 static volatile uint32_t ser_tx_us;       /* the last byte the Beeb sent */
 static volatile bool     ser_gate_open;   /* +0C is BIT: nIRQ asserted, byte at +14 */
@@ -257,11 +265,6 @@ static void ser_gate_close(void)
       ser_idle_req = true;
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
    }
-   if (ser_shift_active) {                   /* ... and a shift trip */
-      ser_shift_active = false;
-      ser_shift_req = true;
-      ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
-   }
 }
 
 /* Point the stub's JSR at its trip routine, storing byte at addr. */
@@ -280,14 +283,6 @@ static void ser_idle_arm(void)
    ser_idle_active = true;
    ser_idle_tx = ser_tx_count;
    ser_trip_arm(SER_MOS_RSBUSY, 0x80u);
-}
-
-/* Make the next trip through the stub the shift one (the ROM's SHIFT flag). */
-static void ser_shift_arm(void)
-{
-   ser_shift_req = false;
-   ser_shift_active = true;
-   ser_trip_arm(SER_MOS_SHIFTFLAG, 1u);
 }
 
 /* What the next trip through an open gate is: a trip first, then a byte.
@@ -320,12 +315,9 @@ static bool ser_arm_next(void)
    if (ser_esc_req) {
       ser_esc_arm();
       SER_LOG('E', 0);
-   } else if (ser_idle_req) {
+   } else if (ser_idle_req && ser_telnet) {    /* telnet mode only: the modem (helper 19) runs as it always did */
       ser_idle_arm();
       SER_LOG('I', 0);
-   } else if (ser_shift_req) {
-      ser_shift_arm();
-      SER_LOG('H', 0);
    } else if (fifo_used(&rx) != 0u) {
       ser_write(SER_RX_BYTE, rx.buf[rx.head & SER_FIFO_MASK]);
       SER_LOG('K', rx.buf[rx.head & SER_FIFO_MASK]);
@@ -354,8 +346,7 @@ static void ser_tx_byte(unsigned int gpio)
 static void ser_rx_consume(unsigned int gpio)
 {
    (void)gpio;
-   SER_LOG('c', (ser_gate_open ? 1u : 0u) | (ser_esc_active ? 2u : 0u) | (ser_idle_active ? 4u : 0u)
-                | (ser_shift_active ? 8u : 0u));
+   SER_LOG('c', (ser_gate_open ? 1u : 0u) | (ser_esc_active ? 2u : 0u) | (ser_idle_active ? 4u : 0u));
    if (!ser_gate_open)
       return;
    if (ser_esc_active) {                     /* that trip was the escape one: no byte left the FIFO */
@@ -365,10 +356,6 @@ static void ser_rx_consume(unsigned int gpio)
    } else if (ser_idle_active) {             /* ... the idle one: nor here */
       ser_idle_active = false;
       ser_idles++;
-      ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
-   } else if (ser_shift_active) {            /* ... the shift one: nor here */
-      ser_shift_active = false;
-      ser_shifts++;
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
    } else {
       if (fifo_used(&rx) == 0u)
@@ -411,7 +398,7 @@ static void ser_rx_consume(unsigned int gpio)
 static void ser_rx_full(unsigned int gpio)
 {
    SER_LOG('f', (ser_esc_active ? 2u : 0u) | (ser_idle_active ? 4u : 0u));
-   if (ser_esc_active || ser_idle_active || ser_shift_active) {  /* a trip's routine returns the carry it came with */
+   if (ser_esc_active || ser_idle_active) {  /* a trip's routine returns the carry it came with */
       ser_rx_consume(gpio);
       return;
    }
@@ -432,8 +419,6 @@ static void ser_after_break(void)
    ser_esc_req = false;
    ser_idle_active = false;
    ser_idle_req = true;                         /* whatever was sent before, the busy flag starts right */
-   ser_shift_active = false;
-   ser_shift_req = false;
    ser_brk_req = false;
    ser_backoff = false;
    ser_brk_trip = false;
@@ -498,7 +483,6 @@ static void ser_control(unsigned int gpio)
       ser_gate_close();
       ser_esc_req = false;
       ser_idle_req = false;
-      ser_shift_req = false;
    }
 }
 
@@ -620,16 +604,15 @@ void serial_redirect_escape(void)
    _restore_cpsr(cpsr);
 }
 
-/* SHIFT for the Beeb, pressed once: a shift trip (see the top).  Telnet mode only, and only
-   useful with the auto-start ROM (serial_redirect_scan_ok), whose KEYV handler reads it. */
+/* SHIFT for the Beeb, pressed once: the ROM's SHIFT byte in its workspace, which its KEYV
+   handler reads and clears (see the top).  Telnet mode only, and only useful with the
+   auto-start ROM (serial_redirect_scan_ok). */
 void serial_redirect_shift(void)
 {
-   if (!ser_hooked || !ser_telnet)
+   if (!ser_hooked || !ser_telnet || ser_base < SER_WS_OFF)
       return;
-   unsigned int cpsr = _disable_interrupts_cspr();
-   ser_shift_req = true;
-   ser_backoff = false;            /* the trip never touches the keyboard buffer */
-   _restore_cpsr(cpsr);
+   Pi1MHz_MemoryWrite((uint32_t)ser_base - SER_WS_OFF + SER_WS_SHIFT, 1u);
+   ser_shifts++;
 }
 
 /* BREAK the Beeb, as its BREAK key does (a soft reset: memory kept, the language
@@ -669,8 +652,8 @@ static void serial_redirect_poll(void)
       _restore_cpsr(cpsr);
    }
 
-   /* Output has stopped: give the Beeb its RS423 idle flag back (see the top). */
-   if (ser_hooked && !ser_idle_req && !ser_idle_active && ser_tx_count != ser_idle_tx
+   /* Output has stopped: give the Beeb its RS423 idle flag back (see the top; telnet mode only). */
+   if (telnet && !ser_idle_req && !ser_idle_active && ser_tx_count != ser_idle_tx
        && (Pi1MHz_now_us - ser_tx_us) > SER_IDLE_US)
       ser_idle_req = true;
 
@@ -694,12 +677,12 @@ static void serial_redirect_poll(void)
    }
 
    if (ser_backoff) {
-      if ((Pi1MHz_now_us - ser_backoff_us) < SER_BACKOFF_US)
+      if ((Pi1MHz_now_us - ser_backoff_us) < (ser_telnet ? SER_BACKOFF_US : SER_BACKOFF_MODEM_US))
          return;
       ser_backoff = false;
    }
 
-   if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || ser_idle_req || ser_shift_req)) {
+   if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || ser_idle_req)) {
       unsigned int cpsr = _disable_interrupts_cspr();
       if (ser_hooked && !ser_gate_open && ser_arm_next()) {      /* the trip or byte first ... */
          ser_write(SER_GATE, OP_BIT);                              /* ... then the gate */
@@ -760,8 +743,6 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    ser_esc_active = false;
    ser_idle_req = false;
    ser_idle_active = false;
-   ser_shift_req = false;
-   ser_shift_active = false;
    ser_backoff = false;
    ser_gate_open = false;
    Pi1MHz_nIRQ_CLEAR(ser_irq_src);
@@ -787,6 +768,15 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
                                     SER_EXIT_OLD, SER_EXIT_OLD + 1u };
    for (unsigned int i = 0u; i < sizeof stash; i++)
       Pi1MHz_Register_Memory(WRITE_FRED, (unsigned int)address + stash[i], Pi1MHz_EmulatedMemoryByte);
+   if (address >= SER_WS_OFF) {                 /* the auto-start ROM's workspace (see SER_WS_OFF) */
+      const char *port = config_get("telnetd_port");
+      for (unsigned int i = 0u; i < SER_WS_LEN; i++) {
+         Pi1MHz_MemoryWrite((uint32_t)address - SER_WS_OFF + i, 0u);
+         Pi1MHz_Register_Memory(WRITE_FRED, (unsigned int)address - SER_WS_OFF + i, Pi1MHz_EmulatedMemoryByte);
+      }
+      Pi1MHz_MemoryWrite((uint32_t)address - SER_WS_OFF + SER_WS_TELNET,   /* telnetd on: the ROM may hook in */
+                         (port != NULL && strtol(port, NULL, 10) > 0) ? 1u : 0u);
+   }
 
    Pi1MHz_Register_Poll(serial_redirect_poll, "serial");
    ser_enabled = true;

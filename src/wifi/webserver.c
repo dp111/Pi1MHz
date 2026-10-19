@@ -3304,11 +3304,13 @@ static bool route_status(ws_conn_t *c)
    table_row(&b, "Beeb storage", filesystemStorageOnUsb() ? "USB drive" : "SD card");
    telnetd_status(tmp, sizeof tmp);
    table_row(&b, "Telnetd", tmp);
+#ifdef DEBUG
    {
       char tt[192];
       telnetd_tcp_status(tt, sizeof tt);
       table_row(&b, "Telnetd TCP", tt);
    }
+#endif
    if (usb_is_host()) {
       char m[64];
       usb_mouse_status(m, sizeof m);
