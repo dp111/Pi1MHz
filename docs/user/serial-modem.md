@@ -138,6 +138,8 @@ second).
   instead: it shares this redirector, so only one of the two is active.
 - The Pi's web status page has a **Modem** row: the modem's state and
   the last network error, useful when a dial fails.
-- The redirector's stub sits at `&FCCC`-`&FCF8`. `Serial_addr=-1` in
+- The redirector uses `&FCB7`-`&FCFC`: its stub at `&FCCC`-`&FCFC`, the
+  stub's escape routine below it and the TelnetD ROM's 8-byte workspace
+  (`&FCB7`-`&FCBE`). Keep other devices out of that block. `Serial_addr=-1` in
   `Pi1MHz.cfg` switches it off, or moves it with another address - see
   [Configuration](configuration.md).

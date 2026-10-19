@@ -177,7 +177,8 @@ static emulator_list emulator[] = {
 #endif
    {"Teletext",teletext_emulator_init, 0x10, 1 },  // Acorn Teletext Adapter at &FC10
    /* RS423 redirected to the Pi: a stub at &FCCC-&FCFC that helper 19 hooks
-      INSV and IRQ1V into.  Before Helpers, which patches its base into that
+      INSV and IRQ1V into, with its escape routine (&FCBF-&FCC9) and the TelnetD
+      ROM's workspace (&FCB7-&FCBE) below it: the block is base-0x15 to base+0x30.  Before Helpers, which patches its base into that
       helper's page. */
    {"Serial",serial_redirect_init, 0xCC, 1 },
    /* After every emulator it reports on (the help screen is formatted at init

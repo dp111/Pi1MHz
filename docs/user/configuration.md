@@ -76,7 +76,7 @@ plus `_addr`:
 | `fujinet_addr` | (none) | The FujiNet device for fn-rom |
 | `Teletext_addr` | `0x10` | Acorn Teletext Adapter at `&FC10-&FC13` |
 | `Telnetd_addr` | (none), **off by default** | The telnet daemon (no FRED address): on when `telnetd_port` is set; `Telnetd_addr=-1` turns it off whatever else is set |
-| `Serial_addr` | `0xCC` | The serial redirector's stub at `&FCCC-&FCF8` (helper 19) |
+| `Serial_addr` | `0xCC` | The serial redirector (helper 19, and TelnetD) at `&FCB7-&FCFC`: its stub at `&FCCC-&FCFC`, the stub's escape routine at `&FCBF-&FCC9` and the TelnetD ROM's workspace at `&FCB7-&FCBE`. The whole block moves with the base (base-&15 to base+&30). The TelnetD ROM needs it at `0xCC` |
 | `Watchdog_addr` | (none) | Watchdog (use the `watchdog` key below instead) |
 
 **Two bases you should not move:** `Framebuffer_addr` (default `&FCA0`)
