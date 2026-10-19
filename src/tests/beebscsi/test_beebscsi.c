@@ -682,8 +682,8 @@ static void test_sense_kept(void)
 }
 
 /* DriveGeometry=: a drive .cfg without its geometry page.  Auto deduces the
-   geometry from the image size and publishes it as page 4 (with a warning in
-   the log); CFG invents nothing, so MODE SENSE
+   geometry from the image size and publishes it as page 4 (a debug build logs
+   it); CFG invents nothing, so MODE SENSE
    refuses page 4 as from a drive without it, and an Adaptec board without
    its parameter list answers 1C (not formatted by the board). */
 static void test_drive_geometry_setting(void)
