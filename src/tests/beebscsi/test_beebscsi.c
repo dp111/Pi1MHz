@@ -2161,6 +2161,122 @@ static void test_block_size_2048(void)
 }
 
 /* S10: the VFS title cache does not survive a card change. */
+/* Review fixes for #40/#41: a refused FORMAT, FORMAT values a .cfg has no
+   line for, a whole drive page 4, DriveGeometry=CFG with no .cfg. */
+static bool cfg_has(const char *path, const char *text)
+{
+   static char buf[2048];
+   read_file(path, buf, sizeof buf - 1);
+   return strstr(buf, text) != NULL;
+}
+
+static void test_review_fixes_40_41(void)
+{
+   static char why[240];
+   int st; long got; uint32_t spt;
+   const char *cfgp = "/BeebSCSI6/scsi0.cfg";
+   stop_all();
+   f_mkdir("/BeebSCSI6");
+   filesystemSetLunDirectory(1, 6);
+
+   /* ACB-4000, a .cfg made from a .dsc: no ModePage3 line (CRLF lines) */
+   static const char nopage3[] =
+      "ModeParamHeader=10000008\r\nLBADescriptor=0000000000000100\r\n"
+      "ModePage0=01000A02008000800001\r\n";
+   scsiSetController(SCSI_CONTROLLER_ACB4000);
+   put_file(cfgp, nopage3, sizeof nopage3 - 1);
+   put_file("/BeebSCSI6/scsi0.dat", "old image", 9);
+
+   /* a refused FORMAT (interleave 33 at 33 per track: 24) leaves the drive ready */
+   filesystemSetLunStatus(0, true);
+   const uint8_t fm33[6] = { 0x04, 0, 0x6C, 0, 33, 0 };
+   st = run_cmd(1, fm33, 6, NULL, 0);
+   int sense = sense_of(0);
+   const uint8_t tur[6] = { 0x00, 0, 0, 0, 0, 0 };
+   int ready = run_cmd(1, tur, 6, NULL, 0);
+   snprintf(why, sizeof why, "FORMAT %d sense %02X, then TEST UNIT READY %d (want 2, 24, 0)", st, sense, ready);
+   check("ACB FORMAT refused (24): the drive is still ready, not stopped", st == 2 && sense == 0x24 && ready == 0, why);
+   stop_all();
+
+   /* interleave 1 lays down 32 per track: kept although the .cfg had no page 3 */
+   format_with(1, &st, &got, &spt);
+   snprintf(why, sizeof why, "status %d, image %ld, spt after restart %lu, ModePage3 line %d, CRLF %d",
+            st, got, (unsigned long)spt, cfg_has(cfgp, "ModePage3="), cfg_has(cfgp, "\r\nModePage3="));
+   check("ACB FORMAT, .cfg with no ModePage3: 32 per track reaches the .cfg (a CRLF line added)",
+         st == 0 && got == 10L * 2 * 32 * 256 && spt == 32 && cfg_has(cfgp, "\r\nModePage3="), why);
+
+   /* a new block size with no LBADescriptor line: kept, and page 3 says it too */
+   static const char nolba[] =
+      "ModeParamHeader=10000008\nModePage0=01000A02008000800001\n"
+      "ModePage3=0315013201320006000600210100000800000000800000\n";
+   put_file(cfgp, nolba, sizeof nolba - 1);
+   static const uint8_t list512[22] = { 0, 0, 0, 8,  0, 0, 0, 0, 0, 0, 2, 0,
+                                        1, 0, 10, 2, 0, 0x80, 0, 0x80, 0, 1 };
+   const uint8_t ms22[6] = { 0x15, 0, 0, 0, 22, 0 };
+   int sel = run_cmd(1, ms22, 6, list512, 22);
+   format_with(1, &st, &got, &spt);
+   filesystemSetLunStatus(0, true);
+   uint32_t bs = filesystemGetLunBlockSize(0);
+   size_t len3 = 0;
+   const char *p3 = filesystemGetModePageData(0, 3, &len3);
+   uint32_t p3bs = (p3 != NULL && len3 >= 14) ? (((uint32_t)(uint8_t)p3[12] << 8) | (uint8_t)p3[13]) : 0u;
+   stop_all();
+   snprintf(why, sizeof why, "select %d format %d, image %ld, spt %lu, block size %lu, page 3 says %lu",
+            sel, st, got, (unsigned long)spt, (unsigned long)bs, (unsigned long)p3bs);
+   check("ACB FORMAT at 512, .cfg with no LBADescriptor: 512 and 17 per track kept, page 3 bytes 12-13 512",
+         sel == 0 && st == 0 && got == 10L * 2 * 17 * 512 && spt == 17 && bs == 512 && p3bs == 512, why);
+
+   /* Mixed: a FORMAT adds no LBADescriptor line (the .cfg is written as before) */
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   put_file(cfgp, nolba, sizeof nolba - 1);
+   format_with(1, &st, &got, &spt);
+   snprintf(why, sizeof why, "status %d spt %lu, LBADescriptor line %d", st, (unsigned long)spt,
+            cfg_has(cfgp, "LBADescriptor="));
+   check("Mixed FORMAT: 32 per track saved, no LBADescriptor line added", st == 0 && spt == 32 &&
+         !cfg_has(cfgp, "LBADescriptor="), why);
+
+   /* a drive's whole page 4 (24 bytes) in the .cfg is sent whole */
+   static const char longp4[] =
+      "ModeParamHeader=00000000\nLBADescriptor=0000000000000100\n"
+      "ModePage4=0416000A0200000000000000000000000000000000000000\n";
+   put_file(cfgp, longp4, sizeof longp4 - 1);
+   filesystemSetLunStatus(0, true);
+   const uint8_t ms4[6] = { 0x1A, 0, 0x04, 0, 0xFF, 0 };
+   st = run_cmd(1, ms4, 6, NULL, 0);
+   int at = -1;
+   for (unsigned i = 0; i + 1 < bus_out_len; i++)
+      if (bus_out[i] == 0x04 && bus_out[i + 1] == 0x16) { at = (int)i; break; }
+   stop_all();
+   snprintf(why, sizeof why, "status %d, %u bytes, page 4 at %d", st, (unsigned)bus_out_len, at);
+   check("MODE SENSE: a 24-byte page 4 from the .cfg goes out whole, as its length byte says",
+         st == 0 && at >= 0 && (unsigned)at + 24u <= bus_out_len, why);
+
+   /* DriveGeometry=CFG, neither .cfg nor .dsc (nor a defscsi.cfg template
+      to make one from): no page 0 or 4 made up */
+   static char tmpl[8192];
+   long tlen = size_of("/Pi1MHz/defscsi.cfg");
+   if (tlen > 0 && tlen < (long)sizeof tmpl)
+      read_file("/Pi1MHz/defscsi.cfg", tmpl, (UINT)tlen);
+   (void)f_unlink("/Pi1MHz/defscsi.cfg");
+   (void)f_unlink(cfgp);
+   (void)f_unlink("/BeebSCSI6/scsi0.dsc");
+   scsiSetGeometryName("CFG");
+   filesystemSetLunStatus(0, true);
+   size_t l0 = 0, l4 = 0;
+   const char *pg0 = filesystemGetModePageData(0, 0, &l0);
+   const char *pg4 = filesystemGetModePageData(0, 4, &l4);
+   stop_all();
+   scsiSetGeometryName(NULL);
+   if (tlen > 0 && tlen < (long)sizeof tmpl)
+      put_file("/Pi1MHz/defscsi.cfg", tmpl, (UINT)tlen);
+   snprintf(why, sizeof why, "page 0 %s, page 4 %s", pg0 ? "made" : "none", pg4 ? "made" : "none");
+   check("DriveGeometry=CFG with no .cfg or .dsc: no geometry page invented", pg0 == NULL && pg4 == NULL, why);
+
+   (void)f_unlink(cfgp);
+   stop_all();
+   filesystemSetLunDirectory(1, 0);
+}
+
 static void test_title_cache(void)
 {
    static char why[160];
@@ -2609,6 +2725,7 @@ int main(int argc, char **argv)
    test_pending_pages_lifetime();
    test_upgrade_legacy_cfg();
    test_block_size_2048();
+   test_review_fixes_40_41();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */

@@ -213,6 +213,30 @@ int main(void)
       ok(strstr(written(), "Size=20") != NULL, "a key with no supplied value keeps its own");
       ok(strstr(written(), "Old") == NULL, "the replaced value is gone");
    }
+   puts("== rewriting, adding missing keys ==");
+   {
+      parserkeyvalue v[K_COUNT] = {0};
+      char title[] = "New";
+      char inq[] = { (char)0xDE, (char)0xAD };
+      bool append[K_COUNT] = { false };
+      set_file("Title=Old\nSize=20");               /* no final newline */
+      v[K_TITLE].v.string = title;   v[K_TITLE].length = 3;
+      v[K_INQUIRY].v.string = inq;   v[K_INQUIRY].length = 2;
+      append[K_TITLE] = true;
+      ok(parse_rewritefile_adding("f", "f", keys, v, append) != 0, "a rewrite adding keys succeeds");
+      ok(strstr(written(), "Inquiry") == NULL, "a key not asked for is not added");
+      append[K_INQUIRY] = true;
+      set_file("Title=Old\nSize=20");
+      ok(parse_rewritefile_adding("f", "f", keys, v, append) != 0, "and again, asking for Inquiry");
+      ok(strcmp(written(), "Title=New\nSize=20\nInquiry=DEAD\n") == 0,
+         "the missing key goes on a new line at the end; the one present is replaced, not added");
+      set_file("Title=Old\r\n");
+      (void)parse_rewritefile_adding("f", "f", keys, v, append);
+      ok(strcmp(written(), "Title=New\r\nInquiry=DEAD\r\n") == 0, "in the file's own CRLF line ending");
+      set_file("Title=Old\n");
+      (void)parse_rewritefile_adding("f", "f", keys, v, NULL);
+      ok(strcmp(written(), "Title=New\n") == 0, "no list: as parse_readfile");
+   }
    {
       parserkeyvalue v[K_COUNT] = {0};
       set_file("Title=Old\n");

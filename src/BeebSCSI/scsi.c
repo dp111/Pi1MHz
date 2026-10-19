@@ -1328,7 +1328,10 @@ static uint8_t scsiCommandFormat(void)
    uint32_t error = scsiFormatGeometry(commandDataBlock.targetLUN, interleave);
    if ((error != NO_ERROR) && (error != BAD_FORMAT)) {
       // A parameter the controller refuses: the .cfg and the image are left
-      // as they were (the next start reads the .cfg again)
+      // as they were, and so is the drive - scsiFormatGeometry stopped it,
+      // and the restart reads its .cfg afresh (pending MODE SELECT pages
+      // stay pending) rather than leaving it "not ready" until START UNIT
+      filesystemSetLunStatus(commandDataBlock.targetLUN, true);
       commandDataBlock.status = SCSI_STATUS_CHECK_COND;
       requestSenseData[commandDataBlock.targetLUN] = error;
       return SCSI_STATUS;

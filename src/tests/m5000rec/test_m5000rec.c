@@ -67,6 +67,9 @@ uint64_t RPI_GetSystemTime64(void) { return 0; }
 int parse_findindex(const char *k, const parserkey a[]) { (void)k; (void)a; return -1; }
 int parse_readfile(const char *f, const char *o, const parserkey k[], parserkeyvalue v[])
 { (void)f; (void)o; (void)k; (void)v; return 0; }
+int parse_rewritefile_adding(const char *f, const char *o, const parserkey k[], parserkeyvalue v[],
+                             const bool a[])
+{ (void)f; (void)o; (void)k; (void)v; (void)a; return 0; }
 void parse_releasekeyvalues(parserkeyvalue v[], int n) { (void)v; (void)n; }
 
 /* ---- RAM disk ---------------------------------------------------------- */

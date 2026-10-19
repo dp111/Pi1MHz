@@ -167,37 +167,28 @@ static bool skip_to_value(parse_state * st)
     return false;
 }
 
-/* Rewrite path: put the caller's value where the file's one was. */
-static void write_value(parse_state * st, const parserkey * key,
-                        const parserkeyvalue * value)
+/* The caller's value, as the file spells it. */
+static void emit_value(parse_state * st, const parserkey * key,
+                       const parserkeyvalue * value)
 {
-    size_t len = 0;
-
     switch (key->type)
     {
         case NUMSTRING:
-        {
-            int nonnumber;
-            len = parse_numstrlen(st->in, st->ptr, st->insize, &nonnumber);
             for (size_t i = 0; i < value->length; i++)
             {
                 emit_nibble(st, (value->v.string[i] >> 4) & 0x0F);
                 emit_nibble(st, value->v.string[i] & 0x0F);
             }
             break;
-        }
         case STRING:
-            len = parse_strlen(st->in, st->ptr, st->insize);
             for (size_t i = 0; i < value->length; i++)
                 emit(st, value->v.string[i]);
             break;
         case INTEGER:
         {
             size_t remaining = st->outcap - st->outptr;
-            size_t outlen;
-            len = parse_strlen(st->in, st->ptr, st->insize);
-            outlen = (size_t) snprintf(st->out + st->outptr, remaining, "%d",
-                                       *value->v.integer);
+            size_t outlen = (size_t) snprintf(st->out + st->outptr, remaining, "%d",
+                                              *value->v.integer);
             if (outlen < remaining)
                 st->outptr += outlen;
             else
@@ -206,6 +197,22 @@ static void write_value(parse_state * st, const parserkey * key,
             break;
         }
     }
+}
+
+/* Rewrite path: put the caller's value where the file's one was. */
+static void write_value(parse_state * st, const parserkey * key,
+                        const parserkeyvalue * value)
+{
+    size_t len;
+
+    if (key->type == NUMSTRING)
+    {
+        int nonnumber;
+        len = parse_numstrlen(st->in, st->ptr, st->insize, &nonnumber);
+    }
+    else
+        len = parse_strlen(st->in, st->ptr, st->insize);
+    emit_value(st, key, value);
     st->ptr += len;                     /* skip the value the file had */
 }
 
@@ -363,7 +370,10 @@ static void store_value(parse_state * st, const parserkey * key,
 // Note that a rewrite does not read values back out: with an outfile the
 // values array is an input, not an output.
 
-int parse_readfile( const char * filename , const char * outfile, const parserkey keyv[], parserkeyvalue values[])
+#define PARSE_APPEND_KEYS 128   /* keys a rewrite can add; scsiattributes has fewer */
+
+static int parse_file( const char * filename , const char * outfile, const parserkey keyv[],
+                       parserkeyvalue values[], const bool append[])
 {
     parse_state st = {0};
     uint8_t * buffer = 0;
@@ -399,7 +409,8 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
         size_t extra = 0;
         for (int k = 0; keyv[k].key != NULL; k++)
             if (values[k].length && (extra < PARSE_MAX_FILE_SIZE))
-                extra += values[k].length * 2u;
+                extra += values[k].length * 2u
+                       + ((append != NULL) && append[k] ? strlen(keyv[k].key) + 3u : 0u);
         st.outcap += extra + 64u;
     }
     st.out = malloc(st.outcap);
@@ -408,6 +419,8 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
         free(buffer);
         return 0;
     }
+
+    bool seen[PARSE_APPEND_KEYS] = { false };   /* keys the file has a line for */
 
     while (st.ptr < st.insize)
     {
@@ -435,6 +448,8 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
         }
 
         LOG_DEBUG("Key found %s \n", keyv[keyindex].key);
+        if (keyindex < PARSE_APPEND_KEYS)
+            seen[keyindex] = true;
         for (keylen = strlen(keyv[keyindex].key); keylen != 0; keylen--)
             emit(&st, st.in[st.ptr++]);
 
@@ -454,6 +469,31 @@ int parse_readfile( const char * filename , const char * outfile, const parserke
             store_value(&st, &keyv[keyindex], &values[keyindex]);
         }
         copy_to_eol(&st);
+    }
+
+    if ((outfile != NULL) && (append != NULL))
+    {
+        /* Keys the caller must not lose that the file has no line for: a
+           line each at the end, in the file's own line ending. */
+        bool crlf = memchr(buffer, '\r', filesize) != NULL;
+        bool started = (st.outptr == 0) || (st.out[st.outptr - 1] == '\n');
+        for (int k = 0; (k < PARSE_APPEND_KEYS) && (keyv[k].key != NULL); k++)
+        {
+            if (!append[k] || seen[k] || (values[k].length == 0))
+                continue;
+            if (!started)
+            {
+                if (crlf) emit(&st, '\r');
+                emit(&st, '\n');
+                started = true;
+            }
+            for (const char *c = keyv[k].key; *c != '\0'; c++)
+                emit(&st, *c);
+            emit(&st, '=');
+            emit_value(&st, &keyv[k], &values[k]);
+            if (crlf) emit(&st, '\r');
+            emit(&st, '\n');
+        }
     }
 
     if (outfile != NULL && filename != NULL && strcmp(filename, outfile) == 0
@@ -514,4 +554,15 @@ void parse_releasekeyvalues( parserkeyvalue values[], int numberofkeys )
             
         }
     }
+}
+
+int parse_readfile( const char * filename , const char * outfile, const parserkey keyv[], parserkeyvalue values[])
+{
+    return parse_file(filename, outfile, keyv, values, NULL);
+}
+
+int parse_rewritefile_adding( const char * filename , const char * outfile, const parserkey keyv[],
+                              parserkeyvalue values[], const bool append[])
+{
+    return parse_file(filename, outfile, keyv, values, append);
 }

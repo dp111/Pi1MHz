@@ -77,6 +77,12 @@
 
 /* The longest a vendor mode page (32 to 38) may be, in bytes. */
 #define VENDOR_PAGE_MAX 32
+/* Pages 3 and 4 as a SCSI drive has them: up to 24 bytes (code, length,
+   22 of data), and FORMAT under DriveController=SCSI stores the page a
+   host sent (up to 32 bytes, scsi.c) - a smaller limit cut it short at the
+   next start, under a length byte that promised the rest.  The old .cfg
+   pages (23 and 6 bytes) keep their own length. */
+#define DRIVE_PAGE_MAX 32
 
 static const parserkey scsiattributes[] = {
    { "Title"           , 0 , 39 , STRING},
@@ -87,9 +93,9 @@ static const parserkey scsiattributes[] = {
    { "ModePage0"       , 0 ,  10 , NUMSTRING},
    { "ModePage1"       , 0 ,  5 , NUMSTRING},
    { "WritPage1"       , 0 ,  5 , NUMSTRING },
-   { "ModePage3"       , 0 , 23 , NUMSTRING },
-   { "WritPage3"       , 0 , 23 , NUMSTRING },
-   { "ModePage4"       , 0 ,  6 , NUMSTRING},
+   { "ModePage3"       , 0 , DRIVE_PAGE_MAX , NUMSTRING },
+   { "WritPage3"       , 0 , DRIVE_PAGE_MAX , NUMSTRING },
+   { "ModePage4"       , 0 , DRIVE_PAGE_MAX , NUMSTRING},
    /* The vendor pages are whatever the drive's own .cfg says, and real
       drives differ: some drives' pages 35, 37 and 38 are 4, 8 and 8
       bytes, which the old limits of 3, 6 and 6 cut short - a page then went
@@ -109,8 +115,8 @@ static const parserkey scsiattributes[] = {
       field (an early CCS drive answers pages 3D/3E/3F with every page's factory, changeable
       and current values), SCSI (or absent) for page control 1-3. */
    { "MaskPage1"       , 0 , 5 , NUMSTRING},
-   { "MaskPage3"       , 0 , 23 , NUMSTRING},
-   { "MaskPage4"       , 0 , 6 , NUMSTRING},
+   { "MaskPage3"       , 0 , DRIVE_PAGE_MAX , NUMSTRING},
+   { "MaskPage4"       , 0 , DRIVE_PAGE_MAX , NUMSTRING},
    { "MaskPage32"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "MaskPage33"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "MaskPage35"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
@@ -118,8 +124,8 @@ static const parserkey scsiattributes[] = {
    { "MaskPage37"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "MaskPage38"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "FDefPage1"       , 0 , 5 , NUMSTRING},
-   { "FDefPage3"       , 0 , 23 , NUMSTRING},
-   { "FDefPage4"       , 0 , 6 , NUMSTRING},
+   { "FDefPage3"       , 0 , DRIVE_PAGE_MAX , NUMSTRING},
+   { "FDefPage4"       , 0 , DRIVE_PAGE_MAX , NUMSTRING},
    { "FDefPage32"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "FDefPage33"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
    { "FDefPage35"      , 0 , VENDOR_PAGE_MAX , NUMSTRING},
@@ -1589,7 +1595,16 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
 }
 
 // Function to write a LUN descriptor
+static bool filesystemWriteAttributesAdding(uint8_t lunNumber, const bool append[]);
+
 bool filesystemWriteAttributes(uint8_t lunNumber)
+{
+   return filesystemWriteAttributesAdding(lunNumber, NULL);
+}
+
+// The .cfg rewrite, also adding a line for each append[] key the file has no
+// line for (NULL: none) - a rewrite otherwise only replaces the lines it finds.
+static bool filesystemWriteAttributesAdding(uint8_t lunNumber, const bool append[])
 {
    // Write-protect: ignore the .cfg overwrite but report success (true, NOT
    // the VFS branch's false) so a mounted ADFS never sees a CHECK_COND.
@@ -1603,7 +1618,7 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
    // Assemble the .cfg file name
    fsLunFilePath(lunNumber, "cfg", fileName, sizeof(fileName));
 
-   if (parse_readfile(fileName, fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
+   if (parse_rewritefile_adding(fileName, fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append))
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg overwritten Successful\r\n"));
       return true;
@@ -1611,7 +1626,7 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
 
    // assume no cfg file so create one
 
-   if (parse_readfile("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
+   if (parse_rewritefile_adding("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append))
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg created Successful\r\n"));
       return true;
@@ -1633,32 +1648,55 @@ bool filesystemStartLunForFormat(uint8_t lunNumber)
 
 // Save the geometry FORMAT lays down into the LUN's .cfg, before
 // filesystemFormatLun sizes the image from it: sectors per track (ModePage3
-// bytes 10-11; a .cfg without a ModePage3 line keeps the default 33 at its
-// next start), and a block size other than 0 (LBADescriptor).  An
-// interleave other than 0 also goes into page 3 with the block size (bytes
-// 12-15), as a drive with its own controller keeps them.  A read-only
-// image is left alone.  Returns false if the .cfg cannot be saved.
+// bytes 10-11), and a block size other than 0 (LBADescriptor, and page 3
+// bytes 12-13).  An interleave other than 0 also goes into page 3 (bytes
+// 14-15), as a drive with its own controller keeps it.  Both reach the
+// file even when it has no line for them (a .cfg made from a .dsc has no
+// page 3 at all: one is made here), or the next start would bring the LUN
+// back at 33 sectors and 256 bytes under an image laid down otherwise.
+// Mixed comes here only with a page 3 and no block size, as before.  A
+// read-only image is left alone.  Returns false if the .cfg cannot be
+// saved.
 bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, uint32_t blockSize,
                                   uint16_t interleave)
 {
    parserkeyvalue *page3 = &filesystemState.keyvalues[lunNumber][MODEPAGE3];
+   bool append[sizeof scsiattributes / sizeof scsiattributes[0]] = { false };
 
    if (filesystemState.fsLunReadOnly[lunNumber])
       return true;
-   if ((page3->v.string != NULL) && (page3->length >= 12)) {
+   if (page3->v.string == NULL) {
+      // A drive's page 3 (format parameters): code, length 22, then zeros
+      // but for the fields set below
+      page3->v.string = calloc(1, DRIVE_PAGE_MAX);
+      if (page3->v.string == NULL)
+         return false;
+      page3->v.string[0] = 0x03;
+      page3->v.string[1] = 0x16;
+      page3->length = 24;
+      uint32_t now = filesystemState.fsLunGeometry[lunNumber].BlockSize;
+      page3->v.string[12] = (char)(now >> 8);
+      page3->v.string[13] = (char)now;
+   }
+   if (page3->length >= 12) {
       page3->v.string[10] = (char)(sectorsPerTrack >> 8);
       page3->v.string[11] = (char)sectorsPerTrack;
-      if ((interleave != 0) && (page3->length >= 16)) {
+      if ((blockSize != 0) && (page3->length >= 14)) {
          page3->v.string[12] = (char)(blockSize >> 8);
          page3->v.string[13] = (char)blockSize;
+      }
+      if ((interleave != 0) && (page3->length >= 16)) {
          page3->v.string[14] = (char)(interleave >> 8);
          page3->v.string[15] = (char)interleave;
       }
+      append[MODEPAGE3] = true;
    }
-   if (blockSize != 0)
+   if (blockSize != 0) {
       filesystemSetLunBlockSize(lunNumber, blockSize);
+      append[LBADESCRIPTOR] = true;
+   }
    filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = sectorsPerTrack;
-   return filesystemWriteAttributes(lunNumber);
+   return filesystemWriteAttributesAdding(lunNumber, append);
 }
 
 // Function to format a LUN image
@@ -1892,7 +1930,8 @@ static void filesystemGeometryFromImage(uint8_t lunNumber)
 void filesytemdattoconfigGeometry(uint8_t lunNumber)
 {
    filesystemGeometryFromImage(lunNumber);
-   filesystemLunToconfigGeometry(lunNumber);
+   if (!geometryFromCfgOnly)            // DriveGeometry=CFG: no page invented
+      filesystemLunToconfigGeometry(lunNumber);
 }
 
 
