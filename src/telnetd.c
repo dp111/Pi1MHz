@@ -1129,10 +1129,26 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
 
 /* ---- setup and status ------------------------------------------------------- */
 
-void telnetd_init(void)
+/* TelnetD is off until telnetd_port is set, and Telnetd_addr=-1 turns it off whatever else is set,
+   as <name>_addr=-1 does for every other device (it has no FRED address of its own). */
+static long telnetd_port_cfg(void)
 {
    const char *v = config_get("telnetd_port");
-   long port = (v != NULL) ? strtol(v, NULL, 10) : 0;
+   uint8_t     unused = 0u;
+   long        port = (v != NULL) ? strtol(v, NULL, 10) : 0;
+   if (config_emulator_override("Telnetd", &unused) < 0)
+      return 0;
+   return (port > 0 && port <= 65535) ? port : 0;
+}
+
+bool telnetd_enabled(void)
+{
+   return telnetd_port_cfg() != 0;
+}
+
+void telnetd_init(void)
+{
+   long port = telnetd_port_cfg();
    struct tcp_pcb *l;
 
    if (g_listener != NULL) {

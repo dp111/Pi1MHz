@@ -521,7 +521,8 @@ nowhere else, and keep telnet to a network you trust.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `telnetd_port` | (off) | TCP port to listen on. `23` is the telnet port. Absent or `0` turns the daemon off. |
+| `telnetd_port` | (off) | TCP port to listen on. `23` is the telnet port. Setting it turns TelnetD on; absent or `0` turns it off. |
+| `Telnetd_addr` | (none) | `-1` turns TelnetD off whatever else is set, as `<name>_addr=-1` does for the other devices (Teletext, Harddisc ...). |
 | `telnetd_user` | (none) | The login's user name (up to 64 characters). |
 | `telnetd_password` | (none) | The login's password (up to 64 characters). It may be empty (`telnetd_password=` on its own): the password is then just RETURN. Without a user name and this line, connections are refused unless `telnetd_login=0`. |
 | `telnetd_login` | `1` | `0`: no login at all, open to the network. |

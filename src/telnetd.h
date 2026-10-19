@@ -15,6 +15,7 @@ void telnetd_init(void);
 void telnetd_poll(uint32_t now_us, bool beeb_attached);
 
 void telnetd_status(char *buf, size_t len);   /* for /status */
+bool telnetd_enabled(void);   /* telnetd_port set and not Telnetd_addr=-1: the auto-start ROM may hook the Beeb in */
 #ifdef DEBUG
 void telnetd_tcp_status(char *buf, size_t len);   /* ... and its TCP side (debug builds) */
 #endif

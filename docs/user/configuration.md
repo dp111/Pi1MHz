@@ -75,6 +75,7 @@ plus `_addr`:
 | `WiFiSvc_addr` | (none) | The 1MHz-WiFi ROM's service (also needs `wifi_service_enable`) |
 | `fujinet_addr` | (none) | The FujiNet device for fn-rom |
 | `Teletext_addr` | `0x10` | Acorn Teletext Adapter at `&FC10-&FC13` |
+| `Telnetd_addr` | (none), **off by default** | The telnet daemon (no FRED address): on when `telnetd_port` is set; `Telnetd_addr=-1` turns it off whatever else is set |
 | `Serial_addr` | `0xCC` | The serial redirector's stub at `&FCCC-&FCF8` (helper 19) |
 | `Watchdog_addr` | (none) | Watchdog (use the `watchdog` key below instead) |
 
@@ -188,7 +189,7 @@ See [The telnet daemon](telnetd.md).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `telnetd_port` | (off) | TCP port the daemon listens on (`23` is telnet). Absent or `0` turns it off. Helper 20 on the Beeb connects it. |
+| `telnetd_port` | (off) | TCP port the daemon listens on (`23` is telnet): setting it turns TelnetD on. Absent or `0`, or `Telnetd_addr=-1`, turns it off, and then the auto-start ROM does not touch the Beeb. Helper 20 on the Beeb connects it. |
 | `telnetd_user` | (none) | The telnet login's user name (up to 64 characters). Telnet's own, never the web interface's. |
 | `telnetd_password` | (none) | The telnet login's password (up to 64 characters). It may be empty (`telnetd_password=` on its own): the password is then just RETURN. Without `telnetd_user` and a `telnetd_password` line every connection is refused, unless `telnetd_login=0`. |
 | `telnetd_login` | `1` | `0`: no login at all, the daemon is open to the network. |

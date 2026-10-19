@@ -106,10 +106,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "Pi1MHz.h"
-#include "config.h"
 #include "rpi/asm-helpers.h"
 #include "rpi/systimer.h"
 #include "serial_redirect.h"
@@ -769,13 +767,12 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    for (unsigned int i = 0u; i < sizeof stash; i++)
       Pi1MHz_Register_Memory(WRITE_FRED, (unsigned int)address + stash[i], Pi1MHz_EmulatedMemoryByte);
    if (address >= SER_WS_OFF) {                 /* the auto-start ROM's workspace (see SER_WS_OFF) */
-      const char *port = config_get("telnetd_port");
       for (unsigned int i = 0u; i < SER_WS_LEN; i++) {
          Pi1MHz_MemoryWrite((uint32_t)address - SER_WS_OFF + i, 0u);
          Pi1MHz_Register_Memory(WRITE_FRED, (unsigned int)address - SER_WS_OFF + i, Pi1MHz_EmulatedMemoryByte);
       }
       Pi1MHz_MemoryWrite((uint32_t)address - SER_WS_OFF + SER_WS_TELNET,   /* telnetd on: the ROM may hook in */
-                         (port != NULL && strtol(port, NULL, 10) > 0) ? 1u : 0u);
+                         telnetd_enabled() ? 1u : 0u);
    }
 
    Pi1MHz_Register_Poll(serial_redirect_poll, "serial");
