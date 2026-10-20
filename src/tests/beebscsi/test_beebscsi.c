@@ -2236,6 +2236,55 @@ static void test_block_size_fallback(void)
    filesystemSetLunDirectory(1, 0);
 }
 
+/* Full review 2026-10-20: a block size used in memory only is never saved
+   by MODE SELECT, and a page 4 made up by the firmware takes a masked MODE
+   SELECT as long as its mask (MaskPage4 up to DRIVE_PAGE_MAX). */
+static bool cfg_has(const char *path, const char *text);
+static void test_review_fixes_full(void)
+{
+   static char why[240];
+   stop_all();
+   scsiSetController(SCSI_CONTROLLER_MIXED);
+   filesystemSetLunDirectory(1, 8);
+
+   /* 4096 in the .cfg: 256 in memory.  ADFS's MODE SELECT (header, block
+      descriptor, page 0) must not write the 256 back. */
+   put_lun8(2, "ModeParamHeader=00000008\nLBADescriptor=0000000000001000\n"
+               "ModePage0=01000A02008000800001\n", 8u * 256u);
+   bool started = filesystemSetLunStatus(2, true);
+   const uint8_t ms22[6] = { 0x15, 2 << 5, 0, 0, 22, 0 };
+   const uint8_t d22[22] = { 0, 0, 0, 8,  0, 0, 0, 0, 0, 0, 1, 0,
+                             1, 0, 0x0A, 2, 0, 0x80, 0, 0x80, 0, 1 };
+   int st = run_cmd(1, ms22, 6, d22, sizeof d22);
+   bool kept = cfg_has("/BeebSCSI8/scsi2.cfg", "LBADescriptor=0000000000001000");
+   uint32_t rcbs = lun_capacity_block_size(2);
+   snprintf(why, sizeof why, "started %d, status %d (want 0), .cfg LBADescriptor %s, READ CAPACITY %lu (want 256)",
+            started, st, kept ? "kept" : "REWRITTEN", (unsigned long)rcbs);
+   check("MODE SELECT keeps a .cfg's unusable block size line (256 in memory only)",
+         started && st == 0 && kept && rcbs == 256u, why);
+   stop_all();
+
+   f_unlink("/BeebSCSI8/scsi2.cfg");
+   f_unlink("/BeebSCSI8/scsi2.dat");
+
+   /* No page 0 or 4 (Auto deduces page 4, 6 bytes), MaskPage4 24 bytes: a
+      page 4 of 24 bytes through the mask.  Before the fix: a heap overflow. */
+   put_lun8(2, "ModeParamHeader=00000008\nLBADescriptor=0000000000000100\n"
+               "MaskPage4=FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\n", 8u * 256u);
+   started = filesystemSetLunStatus(2, true);
+   const uint8_t ms28[6] = { 0x15, 2 << 5, 0, 0, 28, 0 };
+   uint8_t d28[28] = { 0, 0, 0, 0,  4, 0x16,  0, 1, 0, 2 };
+   st = run_cmd(1, ms28, 6, d28, sizeof d28);
+   snprintf(why, sizeof why, "started %d, status %d (want 0, and no heap overflow), heads %u (want 2)",
+            started, st, (unsigned)filesystemGetheadspercylinder(2));
+   check("masked MODE SELECT of a made-up page 4 longer than 6 bytes stays in its allocation",
+         started && st == 0 && filesystemGetheadspercylinder(2) == 2u, why);
+   stop_all();
+   f_unlink("/BeebSCSI8/scsi2.cfg");
+   f_unlink("/BeebSCSI8/scsi2.dat");
+   filesystemSetLunDirectory(1, 0);
+}
+
 /* S10: the VFS title cache does not survive a card change. */
 /* Review fixes for #40/#41: a refused FORMAT, FORMAT values a .cfg has no
    line for, a whole drive page 4, DriveGeometry=CFG with no .cfg. */
@@ -2803,6 +2852,7 @@ int main(int argc, char **argv)
    test_block_size_2048();
    test_review_fixes_40_41();
    test_block_size_fallback();
+   test_review_fixes_full();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */

@@ -193,6 +193,7 @@ static struct filesystemStateStruct
    uint8_t lunDirectoryVFS;            // Current LUN directory ID for VFS
    bool fsLunStatus[MAX_LUNS];         // LUN image availability flags for the currently selected LUN directory (true = started, false = stopped)
    bool fsLunReadOnly[MAX_LUNS];       // ADFS image is AM_RDO, opened FA_READ: Beeb writes to it are swallowed
+   bool fsLunBlockSizeInMemory[MAX_LUNS]; // the file's block size cannot be used: 256 is, in memory only
 	struct HDGeometry fsLunGeometry[MAX_LUNS];   // Keep the geometry details for each LUN
    parserkeyvalue keyvalues[MAX_LUNS][NUM_KEYS];   // keys from .cfg file for each LUN
    uint32_t driveGeneration;           // changes when LUNs 0-7 are no longer the same drives
@@ -1224,8 +1225,11 @@ uint32_t filesystemGetLunDataBlockSize( uint8_t lunNumber)
 static void filesystemUseUsableBlockSize(uint8_t lunNumber)
 {
    uint32_t blockSize = filesystemState.fsLunGeometry[lunNumber].BlockSize;
-   if ((lunNumber >= 8) || (blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
+   if ((lunNumber >= 8) || (blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE)) {
+      if (blockSize != DEFAULT_BLOCK_SIZE)
+         filesystemState.fsLunBlockSizeInMemory[lunNumber] = true;   // never saved: see filesystemWriteAttributesAdding
       blockSize = filesystemState.fsLunGeometry[lunNumber].BlockSize = DEFAULT_BLOCK_SIZE;
+   }
    if (filesystemState.keyvalues[lunNumber][LBADESCRIPTOR].length >= 8)
    {
       filesystemState.keyvalues[lunNumber][LBADESCRIPTOR].v.string[5] = (char)(blockSize >>16);
@@ -1541,6 +1545,7 @@ bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key,
 // Function to read a LUN descriptor
 bool filesystemReadLunDescriptor(uint8_t lunNumber)
 {
+   filesystemState.fsLunBlockSizeInMemory[lunNumber] = false;   // the files say again
    if (lunNumber >= 8 && !filesystemVFSVolumePresent() && !filesystemVFSDatPresent())
       return false;                  /* drive empty: no cfg churn */
    if (!filesystemCheckExtAttributes(lunNumber))
@@ -1639,19 +1644,25 @@ static bool filesystemWriteAttributesAdding(uint8_t lunNumber, const bool append
    // Assemble the .cfg file name
    fsLunFilePath(lunNumber, "cfg", fileName, sizeof(fileName));
 
-   if (parse_rewritefile_adding(fileName, fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append))
-   {
+   // A block size the data path cannot take is 256 in memory only: the
+   // file's LBADescriptor line is left as it is (a rewrite keeps the line of
+   // a key with no value), unless FORMAT has set a block size of its own.
+   parserkeyvalue *lba = &filesystemState.keyvalues[lunNumber][LBADESCRIPTOR];
+   size_t lbaLength = lba->length;
+   if (filesystemState.fsLunBlockSizeInMemory[lunNumber] && !((append != NULL) && append[LBADESCRIPTOR]))
+      lba->length = 0;
+
+   bool written = parse_rewritefile_adding(fileName, fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append);
+   if (written) {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg overwritten Successful\r\n"));
-      return true;
+   } else {
+      // assume no cfg file so create one
+      written = parse_rewritefile_adding("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append);
+      if (written && debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg created Successful\r\n"));
    }
-
-   // assume no cfg file so create one
-
-   if (parse_rewritefile_adding("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append))
-   {
-      if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg created Successful\r\n"));
+   lba->length = lbaLength;
+   if (written)
       return true;
-   }
 
    if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): ERROR: Could not create new .cfg file!\r\n"));
    return false;
@@ -1900,7 +1911,10 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    index = MODEPAGE4;
    if  (!filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.keyvalues[lunNumber][index].v.string = malloc(6);
+      // The key's whole size, zero filled, as the parser allocates every page:
+      // a masked MODE SELECT writes up to the mask's length (MaskPage4 up to
+      // DRIVE_PAGE_MAX), not just the 6 bytes made here
+      filesystemState.keyvalues[lunNumber][index].v.string = calloc(1, (size_t)scsiattributes[index].max);
       if (!filesystemState.keyvalues[lunNumber][index].v.string)
       {
          LOG_INFO(PSTR("File system: filesystemLunToconfigGeometry(): ERROR: Unable to allocate memory for MODEPAGE4\n"));
@@ -2088,6 +2102,7 @@ void filesystemSetLunBlockSize(uint8_t lunNumber, uint32_t blockSize)
    lba[6] = (char)(blockSize >> 8);
    lba[7] = (char)blockSize;
    filesystemState.fsLunGeometry[lunNumber].BlockSize = blockSize;
+   filesystemState.fsLunBlockSizeInMemory[lunNumber] = false;   // FORMAT's own: saved with it
 }
 
 void filesystemCopyPage0toPage4(uint8_t lunNumber)
