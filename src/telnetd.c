@@ -687,6 +687,8 @@ again:
       }
       g_pq = g_pq->next;
       g_pqoff = 0u;
+      if (g_pq != NULL)                         /* the head is read: free it now, not when the chain is */
+         g_pend = pbuf_free_header(g_pend, g_pend->len);
    }
    pend_free();                                 /* all of it read */
    g_rx_blocked = false;
