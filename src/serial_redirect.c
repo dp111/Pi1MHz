@@ -190,6 +190,11 @@ static bool              ser_enabled;
 static volatile bool     ser_hooked;      /* the install code says INSV/IRQ1V are ours */
 static volatile bool     ser_telnet;      /* ... and by helper 20: keyboard buffer, telnetd's */
 static volatile bool     ser_esc_req;     /* an ESCAPE for the Beeb is waiting for a trip */
+static volatile bool     ser_brk_armed;   /* the stub's exit is JMP (&FFFC): a reset is due (F12) */
+static volatile bool     ser_brk_done;    /* ... and the Beeb has taken that trip: no nIRQ until it is hooked again */
+static volatile uint32_t ser_brk_us;      /* ... since then */
+static uint8_t           ser_chain_lo, ser_chain_hi;   /* the exit's chain operand, put back if no reset comes */
+static volatile uint32_t ser_brk_lost;    /* BREAKs that no reset followed (telnetd_debug) */
 static volatile bool     ser_brk_req;     /* ... and it is a BREAK: the trip's routine jumps through the reset vector */
 static volatile bool     ser_brk_trip;    /* ... and the exit of the stub, after it, is JMP (&FFFC) */
 static volatile bool     ser_esc_active;  /* the trip in progress is the escape one */
@@ -300,6 +305,19 @@ static void ser_esc_arm(void)
       left asserted (a reset taken inside the trip itself leaves nIRQ low and hangs it). */
    ser_brk_trip = ser_brk_req;               /* the consume that ends this trip sets the exit */
    ser_brk_req = false;
+   if (ser_brk_trip) {
+      /* The exit is made JMP (&FFFC) now, while the gate is shut and no interrupt can be in the
+         stub, and not when the trip's consume comes: written then it raced the 6502 to the exit
+         (about 15 us), and a late write lost the BREAK and left &FFFC as the chain operand, so a
+         later chained exit jumped into the vector's bytes and hung the Beeb (qa_edit, F12). */
+      ser_chain_lo = Pi1MHz_MemoryRead((uint32_t)ser_base + SER_EXIT_OLD);
+      ser_chain_hi = Pi1MHz_MemoryRead((uint32_t)ser_base + SER_EXIT_OLD + 1u);
+      ser_write(SER_EXIT_OLD, 0xFCu);
+      ser_write(SER_EXIT_OLD + 1u, 0xFFu);
+      ser_write(SER_EXIT, 0x6Cu);
+      ser_brk_armed = true;
+      ser_brk_us = Pi1MHz_now_us;
+   }
    if (ser_base >= SER_ESCR_OFF) {           /* the MOS's way, the Tube told too */
       ser_write(SER_JSR, (uint8_t)(ser_base - SER_ESCR_OFF));
       ser_write(SER_RX_BYTE, SER_ESC_BYTE);
@@ -380,8 +398,9 @@ static void ser_rx_consume(unsigned int gpio)
    }
 #endif
    ser_gate_us = Pi1MHz_now_us;
-   if (ser_brk_trip) {                       /* nIRQ goes low below, then the Beeb jumps to its reset */
+   if (ser_brk_trip) {                       /* nIRQ goes high below, then the Beeb jumps to its reset */
       ser_brk_trip = false;
+      ser_brk_done = true;
       ser_write(SER_EXIT, 0x6Cu);
       ser_write(SER_EXIT_OLD, 0xFCu);
       ser_write(SER_EXIT_OLD + 1u, 0xFFu);
@@ -389,7 +408,10 @@ static void ser_rx_consume(unsigned int gpio)
       ser_write(SER_EXIT, (ser_rx_count % SER_CHAIN_EVERY) == 0u ? OP_JMP : OP_RTI);
       SER_LOG('j', (ser_rx_count % SER_CHAIN_EVERY) == 0u);
    }
-   if (!ser_arm_next())                      /* a trip or a byte: the gate stays open */
+   /* After the BREAK trip nothing more: the Beeb is resetting, its interrupt vector the MOS's
+      own, and an nIRQ that nobody clears would hang it (the F12 hang: the idle trip was armed
+      1.7 ms later).  The gate stays shut until the reset is reported or the ROM hooks in. */
+   if (ser_brk_done || !ser_arm_next())      /* a trip or a byte: the gate stays open */
       ser_gate_close();
 }
 
@@ -420,6 +442,8 @@ static void ser_after_break(void)
    ser_brk_req = false;
    ser_backoff = false;
    ser_brk_trip = false;
+   ser_brk_armed = false;
+   ser_brk_done = false;
    ser_write(SER_EXIT, OP_RTI);                 /* the chain operand is the Beeb's, written when it hooked in */
    ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
    rx.head = rx.tail;
@@ -643,6 +667,21 @@ static void serial_redirect_poll(void)
       modem_poll(Pi1MHz_now_us);
    telnetd_poll(Pi1MHz_now_us, telnet);
 
+   /* A BREAK that no reset followed (3 s): the stub's exit and chain operand back as they were, so a
+      later chained exit does not jump through &FFFC's bytes. */
+   if (ser_brk_armed && (Pi1MHz_now_us - ser_brk_us) > 3000000u) {
+      unsigned int cpsr = _disable_interrupts_cspr();
+      if (ser_brk_armed) {
+         ser_brk_armed = false;
+         ser_brk_done = false;
+         ser_write(SER_EXIT, OP_RTI);
+         ser_write(SER_EXIT_OLD, ser_chain_lo);
+         ser_write(SER_EXIT_OLD + 1u, ser_chain_hi);
+         ser_brk_lost++;
+      }
+      _restore_cpsr(cpsr);
+   }
+
    if (ser_tx_drained) {
       ser_tx_drained = false;
       unsigned int cpsr = _disable_interrupts_cspr();   /* against a FIQ refilling it */
@@ -683,7 +722,7 @@ static void serial_redirect_poll(void)
 
    if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || ser_idle_req)) {
       unsigned int cpsr = _disable_interrupts_cspr();
-      if (ser_hooked && !ser_gate_open && ser_arm_next()) {      /* the trip or byte first ... */
+      if (ser_hooked && !ser_gate_open && !ser_brk_done && ser_arm_next()) {      /* the trip or byte first ... */
          ser_write(SER_GATE, OP_BIT);                              /* ... then the gate */
          SER_LOG('o', 0);
          ser_gate_open = true;

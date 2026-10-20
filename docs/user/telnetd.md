@@ -98,7 +98,7 @@ session is back.
   request for paged mode are kept in 8 bytes the Pi provides in its own page,
   `&FCB7-&FCBE` (just below the serial stub), so nothing in the Beeb's RAM or the
   MOS's tables that belongs to anything else is used.
-- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b17` (the build number
+- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b18` (the build number
   goes up with every image).
 - **It claims nothing.** Every service call is passed on with A, X and Y as they
   came, so it sits happily beside filing systems and other ROMs in any bank.
@@ -148,7 +148,7 @@ whole boot until the Pi is up, which should also give the Pi's emulated hard dis
 time to be ready before ADFS looks for it. **That last effect is expected, not yet
 measured:** without the ROM, a power-on boot from a Pi-served disc was seen to fail
 about as often as it worked (below). Read the chip back after programming; the
-image's MD5 (build 17) is `607858EE2845484BDBE6EF35C8F07C36`.
+image's MD5 (build 18) is `105B49F888A46D49131BABE1027204FA`.
 
 **On a Master 128 also `*INSERT` the bank** (`*ROMS` shows which one `TelnetD`
 went into): the Master only starts ROMs marked as inserted, and a ROM loaded after

@@ -57,7 +57,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 17           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 18           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -178,10 +178,13 @@ GUARD &C000
                 jsr OSBYTE
                 cpx #SOFT_BREAK
                 bne notsoft
-                lda #&A0                    \ a reset in software (CALL !-4, the telnet F12) did not
+                lda #&E0                    \ a reset in software (CALL !-4, the telnet F12) did not
                 sta TUBE_ULA                \ reset a second processor as the BREAK key does, and the
-                lda #&20                    \ Tube's start would wait for it for ever: the Tube ULA's
-                sta TUBE_ULA                \ parasite reset (flag P) on and off.  No Tube: nothing there
+                lda #&60                    \ Tube's start would wait for it for ever: the Tube ULA's
+                sta TUBE_ULA                \ parasite reset (flag P) and register clear (flag T) on and
+                                            \ off - the clear too, or what the second processor was
+                                            \ sending when it stopped is still there for the Tube's
+                                            \ start to read (a B with a co-processor hung).  No Tube: nothing there
 .notsoft        jsr install
 .hooked         tsx
                 lda &102,x                  \ this ROM's slot, as the MOS gave it in X
