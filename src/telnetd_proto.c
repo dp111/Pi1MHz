@@ -222,11 +222,38 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
 {
    *replen = 0u;
 
+   if (s->raw && (s->notelnet || s->state == I_NORMAL || s->state == I_CR) && !(c == TN_IAC && !s->notelnet)) {
+      bool after_cr = (s->state == I_CR);
+      s->state = I_NORMAL;
+      if (after_cr && !s->bin_in && !s->notelnet && (c == 0u || c == '\n'))
+         return 0u;                             /* telnet's CR NUL / CR LF: the CR was the key */
+      if (c == 13u && !s->bin_in && !s->notelnet)
+         s->state = I_CR;
+      if (c == 27u) {
+         keys[0] = TND_KEY_ESCAPE;              /* the Beeb's own ESCAPE key */
+         return 1u;
+      }
+      if (c < 128u && c != 0u) {
+         keys[0] = c;
+         return 1u;
+      }
+      if (!s->lit_ok)
+         return 0u;
+      keys[0] = TND_KEY_LIT;                    /* above 127, and NUL (0 is TND_KEY_ESCAPE): as it is, behind the marker */
+      keys[1] = c;
+      return 2u;
+   }
+
    switch (s->state) {
    case I_IAC:
       switch (c) {
-      case TN_IAC:                              /* a literal 0xFF: not a Beeb key */
+      case TN_IAC:                              /* a literal 0xFF: not a Beeb key ... */
          s->state = I_NORMAL;
+         if (s->raw && s->lit_ok) {             /* ... except in teletype mode: the byte 255 */
+            keys[0] = TND_KEY_LIT;
+            keys[1] = 0xFFu;
+            return 2u;
+         }
          break;
       case TN_WILL: case TN_WONT: case TN_DO: case TN_DONT:
          s->cmd = c;
@@ -244,6 +271,18 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
 
    case I_OPT:
       s->state = I_NORMAL;
+      if (c == TND_OPT_BINARY) {                /* teletype mode asked for (or ended): an 8-bit path */
+         bool on = (s->cmd == TN_DO || s->cmd == TN_WILL);
+         bool *f = (s->cmd == TN_DO || s->cmd == TN_DONT) ? &s->bin_out : &s->bin_in;
+         if (*f != on) {
+            *f = on;
+            rep[0] = TN_IAC;
+            rep[1] = (s->cmd == TN_DO) ? TN_WILL : (s->cmd == TN_DONT) ? TN_WONT : (s->cmd == TN_WILL) ? TN_DO : TN_DONT;
+            rep[2] = TND_OPT_BINARY;
+            *replen = 3u;
+         }
+         return 0u;
+      }
       if (s->cmd == TN_DO) {
          if (c != TN_OPT_ECHO && c != TN_OPT_SGA && !seen(s->seen_do, c)) {
             mark(s->seen_do, c);

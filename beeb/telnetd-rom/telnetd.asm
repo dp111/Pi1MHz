@@ -57,7 +57,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 16           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 17           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -81,6 +81,8 @@ SER_CTL_KEY_OTHER = &25      \ ... or any other byte
 SER_CTL_RESET_LIT = &26      \ a reset; the screen can be read, every key is told, LITKEY bytes read as they are
 SER_CTL_COLUMN = &80         \ + the cursor's column, ahead of SER_CTL_TELNET
 SER_CTL_ROW = &E0            \ + the cursor's row
+SPOOLH = &0257              \ the MOS: the *SPOOL file's handle, 0 = none
+VDUSTAT = &D0               \ the MOS's VDU status: bit 0 the printer on (VDU 2)
 STUB = &FCCC                \ the Pi's serial stub at its default place (src/serial_redirect.c)
 \ The ROM's workspace: 8 bytes the Pi keeps in FRED just below the stub's escape routine
 \ (SER_WS_OFF in src/serial_redirect.c), so the ROM owns no Beeb RAM.  They are there only
@@ -729,8 +731,13 @@ ACIAUSE = &EA               \ 1..&7F: the cassette or ROM filing system has the 
 VDUVARS = &0300
 .scan           lda INSV+1                  \ the Pi is hooked in when the keyboard vector is its stub
                 cmp #STUBPAGE
-                beq scango
-                rts
+                bne scanno
+                lda SPOOLH                  \ not while a *SPOOL file is open or the printer is on
+                bne scanno                  \ (VDU 2): what is sent to the Pi would go there too.
+                lda VDUSTAT                 \ (Build 16 turned them off with *FX3 &17/&14 instead,
+                and #1                      \ and the Beeb then stalled now and then after a read,
+                beq scango                  \ for reasons not found: build 17 is back to *FX3 3/0.)
+.scanno         rts
 .scango         ldx #8                      \ the text window: left, bottom, right, top
                 jsr rdvdu
                 pha
@@ -876,11 +883,11 @@ VDUVARS = &0300
                 jsr OSWRCH
                 tya
                 jmp OSWRCH
-.topi           lda #3                      \ output to RS423 only: the screen (bit 1), the printer
-                ldx #&17                    \ (bit 2) and a *SPOOL file (bit 4) off, so a scan never
-                jmp OSBYTE                  \ lands in an open spool file or on paper
-.toscr          lda #3                      \ output to the screen only: RS423, printer and spool off
-                ldx #&14
+.topi           lda #3                      \ output to RS423 only (no screen); a spool file and the
+                ldx #3                      \ printer cannot be on: scango does not read the screen then
+                jmp OSBYTE
+.toscr          lda #3                      \ output to the screen only
+                ldx #0
                 jmp OSBYTE
 
 \ *HELP with nothing after it: the title, version and build, so it is easy to see which

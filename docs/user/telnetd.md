@@ -324,6 +324,40 @@ line that was on the screen before the daemon saw it. `telnetd_copycursor=0`
 turns it off (a game that reads the arrow keys would otherwise move a mark
 about).
 
+## Teletype mode: the Beeb as a serial line
+
+Everything above is **terminal mode**: the daemon translates the Beeb's screen for an ANSI
+terminal. **Teletype mode** does none of that. The session is a plain serial line, both ways:
+
+- every byte the Beeb prints (to RS423) goes to your client exactly as it is: VDU codes, control
+  characters, MODE changes, all 256 values;
+- every byte you send is typed on the Beeb as it is, including bytes above 127 (through the
+  ROM, build 13 or later). ESC is the Beeb's ESCAPE key, as on its keyboard;
+- there is no screen model drawn, no copy cursor, no F11 redraw and no screen reads. What you
+  see is what came down the line.
+
+**How to ask for it.** A client asks for teletype mode with telnet's BINARY option (an 8-bit
+path, RFC 856):
+
+```
+telnet -8 192.168.1.20
+```
+
+(or `set binary` at the `telnet>` prompt, in Debian's and most Unix telnets). The daemon agrees,
+and the session is in teletype mode from then on. Turning BINARY off again (`unset binary`) goes
+back to terminal mode, and the Beeb's screen is read and drawn.
+
+PuTTY and Windows telnet cannot ask for BINARY. For them, and for `nc` or a script, set a raw port
+in `Pi1MHz.cfg`:
+
+```
+telnetd_raw_port=2323
+```
+
+A connection to that port is teletype mode from the start, with no telnet negotiation at all:
+use PuTTY's connection type **Raw**, or `nc 192.168.1.20 2323`. The login, the lockout rules and
+the one-session rule are the same on both ports.
+
 ## Things to know
 
 - **Make the terminal at least as big as the Beeb's screen**: 80 columns by 32
@@ -531,6 +565,7 @@ nowhere else, and keep telnet to a network you trust.
 | `telnetd_user` | (none) | The login's user name (up to 64 characters). |
 | `telnetd_password` | (none) | The login's password (up to 64 characters). It may be empty (`telnetd_password=` on its own): the password is then just RETURN. Without a user name and this line, connections are refused unless `telnetd_login=0`. |
 | `telnetd_login` | `1` | `0`: no login at all, open to the network. |
+| `telnetd_raw_port` | (none) | A second port for teletype mode with no telnet (PuTTY's Raw, `nc`): bytes as they are, both ways. |
 | `telnetd_ansi` | `1` | `0` sends the Beeb's output exactly as it is, with no ANSI. For a program that does its own VDU handling. |
 | `telnetd_utf8` | `1` | The pound sign as UTF-8; `0` sends it as Latin-1. |
 | `telnetd_mode` | `7` | The Beeb's screen mode (0-7) until it sends a `MODE`. Its size cannot be read, and the daemon needs it to follow the text. |

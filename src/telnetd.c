@@ -81,7 +81,11 @@ enum { S_LOGIN_USER, S_LOGIN_PASS, S_LIVE };
 static struct tcp_pcb *g_listener;
 static struct tcp_pcb *g_pcb;            /* the one session */
 static uint16_t        g_port;
-static bool            g_ansi = true;
+static bool            g_ansi = true;          /* this session: ANSI translation (telnetd_ansi, and not teletype mode) */
+static bool            g_ansi_cfg = true;      /* telnetd_ansi */
+static struct tcp_pcb *g_raw_listener;         /* telnetd_raw_port: sessions there are teletype mode from the start */
+static uint16_t        g_raw_port;
+static bool            g_sess_rawport;         /* this session came on the raw port: no telnet at all */
 static bool            g_tek = true;          /* telnetd_tek: graphics to an xterm's Tek window */
 static bool            g_debug;               /* telnetd_debug=1: the diagnostics on the status page */
 static bool            g_utf8 = true;
@@ -545,11 +549,18 @@ static void beeb_byte(uint8_t c)
       tnd_out_touch(&g_out, Pi1MHz_now_us);
       if (n != 0u)
          o_put(d, n);
-   } else if (c == 0xFFu) {                     /* IAC must be doubled */
-      static const uint8_t ff[2] = { 0xFF, 0xFF };
-      o_put(ff, 2u);
    } else {
-      o_put(&c, 1u);
+      if (g_ansi_cfg) {                         /* teletype mode: the model follows quietly, for a later terminal */
+         uint8_t d[TND_OUT_MAX];
+         (void)tnd_out_byte(&g_out, c, d);
+         tnd_out_touch(&g_out, Pi1MHz_now_us);
+      }
+      if (c == 0xFFu && !g_sess_rawport) {      /* IAC must be doubled (not on the raw port: no telnet there) */
+         static const uint8_t ff[2] = { 0xFF, 0xFF };
+         o_put(ff, 2u);
+      } else {
+         o_put(&c, 1u);
+      }
    }
 }
 
@@ -653,7 +664,7 @@ static void td_err(void *arg, err_t err)
 
 static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
 {
-   (void)arg;
+   bool rawport = (arg != NULL);                /* the raw port's listener carries a marker */
 
    if (err != ERR_OK || newpcb == NULL)
       return ERR_VAL;
@@ -708,6 +719,10 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    tcp_err(newpcb, td_err);
 
    tnd_in_reset(&g_in);
+   g_sess_rawport = rawport;
+   g_in.raw = rawport;                          /* teletype mode from the start on the raw port ... */
+   g_in.notelnet = rawport;                     /* ... and no telnet at all there */
+   g_ansi = g_ansi_cfg && !rawport;
    g_ckq_head = g_ckq_tail;                     /* a new terminal: no copy keys waiting */
    g_kgen_seen = serial_redirect_key_gen();
    g_win_gen = 0u;
@@ -724,7 +739,7 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    g_repaint = false;                           /* drawn in place once connected (connect_done) */
    g_repaint_row = 0u;
    g_connecting = false;
-   {
+   if (!rawport) {                              /* the raw port: no negotiation, nothing but text */
       uint8_t g[TND_GREETING_LEN];
       o_put(g, tnd_greeting(g));
    }
@@ -842,6 +857,21 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       }
    }
    bool    live = g_pcb != NULL && g_stage == S_LIVE && !g_close_after;
+
+   /* Teletype mode: the raw port, or a client that asked for an 8-bit path (telnet BINARY, either way).
+      Then the Beeb's bytes go out as they are and the client's go in as they are: no translation, no
+      screen reads, no copy cursor.  Back to a terminal (BINARY off): its screen is read and drawn. */
+   if (g_pcb != NULL) {
+      bool raw = g_sess_rawport || g_in.bin_in || g_in.bin_out;
+      if (raw != g_in.raw) {
+         g_in.raw = raw;
+         if (!raw && g_ansi_cfg && g_stage == S_LIVE) {
+            g_scan_pending = true;
+            g_scan_merge = false;
+         }
+      }
+      g_ansi = g_ansi_cfg && !raw;
+   }
 
    /* What the Beeb printed.  With a client to show it to it is translated, and
       the rest waits in the Beeb's buffer while the output buffer is full;
@@ -1063,7 +1093,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       g_out.rescan = false;
       g_scan_pending = true;
    }
-   if (g_scan_pending && g_stage == S_LIVE && !g_repaint && !g_connecting && !naws_wait && g_pcb != NULL && beeb_attached
+   if (g_scan_pending && g_ansi && g_stage == S_LIVE && !g_repaint && !g_connecting && !naws_wait && g_pcb != NULL && beeb_attached
        && serial_redirect_scan_ok() && g_khead == g_ktail) {
       g_scan_pending = false;
       if (g_scan_merge) {
@@ -1159,13 +1189,21 @@ void telnetd_init(void)
       tcp_close(g_listener);
       g_listener = NULL;
    }
+   if (g_raw_listener != NULL) {
+      tcp_arg(g_raw_listener, NULL);
+      tcp_accept(g_raw_listener, NULL);
+      tcp_close(g_raw_listener);
+      g_raw_listener = NULL;
+   }
+   g_raw_port = 0u;
    g_port = 0u;
    if (port <= 0 || port > 65535)
       return;
    if (serial_redirect_address() == 0u)      /* Serial_addr=-1: nothing to attach to, and no poll */
       return;
 
-   g_ansi = cfg_flag("telnetd_ansi", true);
+   g_ansi_cfg = cfg_flag("telnetd_ansi", true);
+   g_ansi = g_ansi_cfg;
    g_utf8 = cfg_flag("telnetd_utf8", true);
    g_copy = cfg_flag("telnetd_copycursor", true);
    g_tek = cfg_flag("telnetd_tek", true);
@@ -1194,6 +1232,26 @@ void telnetd_init(void)
    tcp_arg(g_listener, NULL);
    tcp_accept(g_listener, td_accept);
    g_port = (uint16_t)port;
+
+   {                                            /* telnetd_raw_port: teletype mode, no telnet (nc, PuTTY "Raw") */
+      const char *v = config_get("telnetd_raw_port");
+      long rp = (v != NULL) ? strtol(v, NULL, 10) : 0;
+      if (rp > 0 && rp <= 65535 && rp != port) {
+         struct tcp_pcb *rl = tcp_new_ip_type(IPADDR_TYPE_V4);
+         if (rl != NULL && tcp_bind(rl, IP_ADDR_ANY, (u16_t)rp) == ERR_OK) {
+            g_raw_listener = tcp_listen_with_backlog(rl, 2u);
+            if (g_raw_listener != NULL) {
+               tcp_arg(g_raw_listener, &g_raw_port);   /* the marker td_accept looks for */
+               tcp_accept(g_raw_listener, td_accept);
+               g_raw_port = (uint16_t)rp;
+            } else {
+               tcp_close(rl);
+            }
+         } else if (rl != NULL) {
+            tcp_close(rl);
+         }
+      }
+   }
 }
 
 void telnetd_status(char *buf, size_t len)
@@ -1241,8 +1299,8 @@ void telnetd_status(char *buf, size_t len)
       len -= used;
    }
    if (g_pcb != NULL)
-      used = (size_t)snprintf(buf, len, "port %u, %s from %s, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s",
-                              (unsigned int)g_port, g_stage == S_LIVE ? "live" : "login", g_peer,
+      used = (size_t)snprintf(buf, len, "port %u, %s%s from %s, %lu sessions, %lu refused, %lu replaced, %lu dropped, last end: %s",
+                              (unsigned int)g_port, g_stage == S_LIVE ? "live" : "login", g_in.raw ? " (teletype)" : "", g_peer,
                               (unsigned long)g_sessions, (unsigned long)g_refused,
                               (unsigned long)g_replaced, (unsigned long)g_dropped, g_why);
    else

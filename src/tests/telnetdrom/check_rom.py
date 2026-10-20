@@ -768,8 +768,14 @@ def main(path):
           f"... and the screen is sent: CLS, the characters, the cursor back ({len(r['pi'])} bytes)")
     check(r["stream"] == 1 and (r["cx"], r["cy"]) == (3, 1) and r["sp_after"] == r["sp_before"], "... with the output streams and the cursor as they were, and the stack balanced")
     fx3 = r.get("fx3", [])
-    check(0x17 in fx3 and 0x14 in fx3 and not any(x & 0x14 != 0x14 for x in fx3[1:-1]),   # first: reads the old; last: puts it back
-          f"PR review: during the scan the printer and *SPOOL are off (*FX3 &17 to the Pi, &14 to the screen): {[hex(x) for x in fx3]}")
+    check(set(fx3[1:-1]) <= {3, 0} and 3 in fx3,   # first: reads the old; last: puts it back
+          f"the scan switches *FX3 3 (to the Pi) and 0 (the screen), as before build 16: {[hex(x) for x in fx3]}")
+    # PR review: a scan must not go into an open *SPOOL file or to the printer; build 17 does not read
+    # the screen at all then (build 16's *FX3 &17/&14 made the Beeb stall now and then)
+    for what, pk in (("a *SPOOL file open", {0x0257: 0x41}), ("the printer on (VDU 2)", {0xD0: 0x01})):
+        r = run_remv(rom, 0, 0, 0, 0xFF, 0, screen=scr, cur=(3, 1), pokes=pk)
+        check(r["pi"] == [] and r["c"] == 1 and r["sp_after"] == r["sp_before"],
+              f"{what}: the request is swallowed and nothing is sent ({len(r['pi'])} bytes)")
     fl = {(0, 0): 2, (5, 2): 9}
     r = run_remv(rom, 0, 0, 0, 0xFF, 0, screen={(0, 0): 0x41, (5, 2): 0x42}, cur=(3, 1), flaky=fl)
     check(0x41 in r["pi"] and 0x42 not in r["pi"] and r["sp_after"] == r["sp_before"],

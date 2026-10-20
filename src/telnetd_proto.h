@@ -50,6 +50,7 @@
 #define TND_KEY_LIT    0xFAu
 #define TND_IN_REPLY   6u      /* most negotiation bytes one input byte needs (IAC SB TTYPE SEND IAC SE) */
 #define TND_GREETING_LEN 15u
+#define TND_OPT_BINARY 0u      /* telnet option 0: an 8-bit path (RFC 856), how a client asks for teletype mode */
 #define TND_OPT_TTYPE  24u     /* telnet option 24: the client's terminal type (RFC 1091) */
 #define TND_OPT_NAWS   31u     /* telnet option 31: the client's window size (RFC 1073) */
 
@@ -81,6 +82,13 @@ typedef struct {
    uint8_t  u8_lead;            /* its first byte, while nothing has followed it */
    bool     lit_ok;             /* set by the daemon: the Beeb can take bytes above 127 (TND_KEY_LIT) */
    bool     tele;               /* set by the daemon: MODE 7, so teletext's glyphs map back to its codes */
+   /* Teletype mode: every byte is a key as it is, no escape sequences or UTF-8 decoded: ESC (27) is the
+      Beeb's ESCAPE key, a byte above 127 goes behind TND_KEY_LIT (or is dropped if !lit_ok), and only
+      telnet's IAC commands are read, unless notelnet (a raw TCP port: no telnet at all). */
+   bool     raw;                /* set by the daemon */
+   bool     notelnet;           /* set by the daemon: not even IAC */
+   bool     bin_in;             /* the client will send binary (it said WILL BINARY, we said DO) */
+   bool     bin_out;            /* the client asked us to send binary (DO BINARY, we said WILL) */
 } tnd_in_t;
 
 void   tnd_in_reset(tnd_in_t *s);

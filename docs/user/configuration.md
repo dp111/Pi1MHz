@@ -193,6 +193,7 @@ See [The telnet daemon](telnetd.md).
 | `telnetd_user` | (none) | The telnet login's user name (up to 64 characters). Telnet's own, never the web interface's. |
 | `telnetd_password` | (none) | The telnet login's password (up to 64 characters). It may be empty (`telnetd_password=` on its own): the password is then just RETURN. Without `telnetd_user` and a `telnetd_password` line every connection is refused, unless `telnetd_login=0`. |
 | `telnetd_login` | `1` | `0`: no login at all, the daemon is open to the network. |
+| `telnetd_raw_port` | (none) | A second port for teletype mode: no telnet, the Beeb's bytes as they are both ways (PuTTY's Raw connection, `nc`). A telnet client on the main port gets the same by asking for BINARY (`telnet -8`). |
 | `telnetd_ansi` | `1` | `0` sends the Beeb's output as it is, with no ANSI translation. |
 | `telnetd_utf8` | `1` | The pound sign as UTF-8; `0` sends Latin-1. |
 | `telnetd_mode` | `7` | The Beeb's screen mode (0-7) until it sends a `MODE`. |

@@ -1372,6 +1372,59 @@ static void test_banner(void)
    CHECK(strcmp(b.text, "KEPT\n") == 0, "a real VDU 21 block after them is still kept");
 }
 
+/* Teletype mode (raw): the client asks with telnet BINARY; then every byte is a key as it is. */
+static void test_teletype(void)
+{
+   tnd_in_t s;
+
+   tnd_in_reset(&s); in_reset();
+   FEED(&s, "\xff\xfd\x00");                    /* DO BINARY */
+   CHECK(s.bin_out && nreply == 3 && memcmp(reply, "\xff\xfb\x00", 3) == 0, "teletype: DO BINARY is agreed (WILL BINARY)");
+   in_reset();
+   FEED(&s, "\xff\xfb\x00");                    /* WILL BINARY */
+   CHECK(s.bin_in && nreply == 3 && memcmp(reply, "\xff\xfd\x00", 3) == 0, "teletype: WILL BINARY is agreed (DO BINARY)");
+   in_reset();
+   FEED(&s, "\xff\xfb\x00");
+   CHECK(nreply == 0, "teletype: asked again, no answer (no negotiation loop)");
+
+   tnd_in_reset(&s); in_reset();
+   s.raw = true; s.lit_ok = true;
+   FEED(&s, "A\x1b[A\x01");                    /* a cursor-key sequence is just bytes: ESC, [, A */
+   CHECK(KEYS("A\x00[A\x01"), "teletype: bytes are keys as they are, ESC is the ESCAPE key"); if (!KEYS("A\x00[A\x01")) dump();
+   in_reset();
+   FEED(&s, "\xe9\xff\xff");                    /* e-acute (Latin-1), and IAC IAC: the byte 255 */
+   CHECK(KEYS("\xfa\xe9\xfa\xff"), "teletype: bytes above 127 go behind TND_KEY_LIT, IAC IAC is 255"); if (!KEYS("\xfa\xe9\xfa\xff")) dump();
+   in_reset();
+   {
+      static const uint8_t nul[1] = { 0 };
+      feed(&s, nul, 1);
+   }
+   CHECK(nkeys == 2 && keys[0] == 0xFA && keys[1] == 0, "teletype: NUL is a byte (behind LIT), not ESCAPE");
+   in_reset();
+   FEED(&s, "\r\n\r");
+   {
+      static const uint8_t z[1] = { 0 };
+      feed(&s, z, 1);
+   }
+   CHECK(KEYS("\r\r"), "teletype: telnet's CR LF and CR NUL are one RETURN each"); if (!KEYS("\r\r")) dump();
+   in_reset();
+   s.bin_in = true;
+   FEED(&s, "\r\n");
+   CHECK(KEYS("\r\n"), "teletype, binary: CR and LF are both bytes"); if (!KEYS("\r\n")) dump();
+   in_reset();
+   s.lit_ok = false;
+   FEED(&s, "x\xe9y");
+   CHECK(KEYS("xy"), "teletype: without the ROM's LITKEY a byte above 127 is dropped"); if (!KEYS("xy")) dump();
+
+   tnd_in_reset(&s); in_reset();                /* a raw TCP port: not even IAC */
+   s.raw = true; s.notelnet = true; s.lit_ok = true;
+   FEED(&s, "\xff\xfd\x00\r\n");
+   CHECK(nreply == 0 && nkeys == 8, "teletype, raw port: IAC is a byte like any other, no answer (%u keys)", (unsigned)nkeys);
+   CHECK(keys[0] == 0xFA && keys[1] == 0xFF && keys[2] == 0xFA && keys[3] == 0xFD && keys[4] == 0xFA && keys[5] == 0x00
+         && keys[6] == '\r' && keys[7] == '\n', "teletype, raw port: ... behind LIT, NUL too, CR and LF as they are");
+   if (nkeys != 8) dump();
+}
+
 int main(void)
 {
    test_plain_keys();
@@ -1385,6 +1438,7 @@ int main(void)
    test_input_robustness();
    test_input_key_bound();
    test_login();
+   test_teletype();
    test_output_text();
    test_output_params();
    test_output_vdu21();
