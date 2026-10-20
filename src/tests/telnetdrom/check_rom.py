@@ -797,7 +797,10 @@ def main(path):
     # the old ones kept, and *FX3 bit 0 set again; nothing is reported to the Pi.
     ST = 0xFCCC
     lost = {ST: 0xE0, ST + 1: 0x02, ST + 2: 0xD0, ST + 0x30: 0x60, ST + 0x15: 0xA2, ST + 0x16: 0x00,
-            0x22A: 0x43, 0x22B: 0xEA, 0x204: 0xFF, 0x205: 0xE5}
+            0x22A: 0x43, 0x22B: 0xEA, 0x204: 0xFF, 0x205: 0xE5,
+            # the MOS's table of default vectors says &EA43 and &E5FF are its own (build 19)
+            0xFFB7: KEYV_TABLE & 0xFF, 0xFFB8: KEYV_TABLE >> 8,
+            KEYV_TABLE + 0x2A: 0x43, KEYV_TABLE + 0x2B: 0xEA, KEYV_TABLE + 0x04: 0xFF, KEYV_TABLE + 0x05: 0xE5}
     r = run_remv(rom, 0, 0, 0, 0x41, 0, hooked=False, pokes=lost)
     m = r["mem"]._subject
     check((m[0x22A], m[0x22B], m[0x204], m[0x205]) == (0xCC, 0xFC, 0xD8, 0xFC),
@@ -822,6 +825,22 @@ def main(path):
     m = r["mem"]._subject
     check((m[ST + 0x0A], m[ST + 0x0B]) == (0x43, 0xEA) and (m[0x204], m[0x205]) == (0xD8, 0xFC),
           "only IRQ1V lost: it is hooked in again and INSV's kept vector is not overwritten with the stub")
+    # A program has hooked IRQ1V in front of the stub, and goes on to it: not the MOS's vector, so
+    # left alone - hooked in again, the stub would go on to the program and it to the stub, for ever.
+    prog = dict(lost)
+    prog.update({0x22A: 0xCC, 0x22B: 0xFC, ST + 0x0A: 0x43, ST + 0x0B: 0xEA, 0x204: 0x00, 0x205: 0x09,
+                 ST + 0x0D: 0xFF, ST + 0x0E: 0xE5, ST + 0x2B: 0xFF, ST + 0x2C: 0xE5})
+    r = run_remv(rom, 0, 0, 0, 0x41, 0, hooked=False, pokes=prog)
+    m = r["mem"]._subject
+    check((m[0x204], m[0x205]) == (0x00, 0x09) and (m[ST + 0x0D], m[ST + 0x0E], m[ST + 0x2B], m[ST + 0x2C]) == (0xFF, 0xE5, 0xFF, 0xE5)
+          and r["y"] == 0x41 and r["sp_after"] == r["sp_before"],
+          f"a program's IRQ1V in front of the stub is left alone (no loop): IRQ1V &{m[0x205]:02X}{m[0x204]:02X}, the stub still chains to &{m[ST + 0x0E]:02X}{m[ST + 0x0D]:02X}")
+    insvp = dict(lost)
+    insvp.update({0x22A: 0x00, 0x22B: 0x0A})        # ... and the same for a program's INSV
+    r = run_remv(rom, 0, 0, 0, 0x41, 0, hooked=False, pokes=insvp)
+    m = r["mem"]._subject
+    check((m[0x22A], m[0x22B], m[0x204], m[0x205]) == (0x00, 0x0A, 0xFF, 0xE5),
+          "a program's INSV: the vectors are left alone")
     for x in (1, 2, 3, 9):
         r = run_remv(rom, x, 0, 0, 0xFF, 0, screen=scr)
         check(r["y"] == 0xFF and r["c"] == 0 and r["pi"] == [] and r["old_calls"] == 1 and r["x"] == x,

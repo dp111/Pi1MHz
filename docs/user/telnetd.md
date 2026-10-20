@@ -98,7 +98,7 @@ session is back.
   request for paged mode are kept in 8 bytes the Pi provides in its own page,
   `&FCB7-&FCBE` (just below the serial stub), so nothing in the Beeb's RAM or the
   MOS's tables that belongs to anything else is used.
-- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b18` (the build number
+- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b19` (the build number
   goes up with every image).
 - **It claims nothing.** Every service call is passed on with A, X and Y as they
   came, so it sits happily beside filing systems and other ROMs in any bank.

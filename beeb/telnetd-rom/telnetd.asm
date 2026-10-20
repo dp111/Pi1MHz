@@ -57,7 +57,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 18           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 19           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -357,6 +357,9 @@ GUARD &C000
 \ LDX # at +15 says the keyboard buffer, 0).  Called on a read of the keyboard, which is
 \ in the foreground on the host whichever processor runs the program.  No report: the
 \ Pi's state has not changed, only the Beeb's vectors.  A, X and Y are kept.
+\ Only over the MOS's own vectors (build 19): a program that has hooked one in front of
+\ the stub, and goes on to it, is left alone - hooked in again, the stub would go on to
+\ the program and the program to the stub, for ever.
 .rehook         pha
                 txa
                 pha
@@ -381,7 +384,25 @@ GUARD &C000
                 lda IRQ1V
                 cmp #<(STUB+&0C)
                 beq rehx
-.reh1           jsr hookin
+.reh1           lda INSV+1                  \ each vector the stub's, or the MOS's own
+                cmp #>STUB
+                bne reh2
+                lda INSV
+                cmp #<STUB
+                beq reh3
+.reh2           ldy #INSV-&200
+                jsr vecdef
+                bne rehx                    \ somebody else's
+.reh3           lda IRQ1V+1
+                cmp #>STUB
+                bne reh4
+                lda IRQ1V
+                cmp #<(STUB+&0C)
+                beq reh5
+.reh4           ldy #IRQ1V-&200
+                jsr vecdef
+                bne rehx
+.reh5           jsr hookin
                 bcs rehx
                 lda #236                    \ *FX3: what is printed still goes to RS423 (bit 0)?
                 ldx #0
@@ -398,6 +419,33 @@ GUARD &C000
                 pla
                 tax
                 pla
+                rts
+
+\ Z set if the vector at &200+Y is the MOS's own, from its table of the defaults (DEFVEC).
+\ Borrows ZPTMP, kept on the stack and put back.  A and X are not kept; Y is.
+.vecdef         lda ZPTMP
+                pha
+                lda ZPTMP+1
+                pha
+                lda DEFVEC
+                sta ZPTMP
+                lda DEFVEC+1
+                sta ZPTMP+1
+                ldx #1                      \ not the default
+                lda (ZPTMP),y
+                cmp &200,y
+                bne vdx
+                iny
+                lda (ZPTMP),y
+                dey
+                cmp &201,y
+                bne vdx
+                ldx #0
+.vdx            pla
+                sta ZPTMP+1
+                pla
+                sta ZPTMP
+                cpx #0
                 rts
 
 \ Tell the Pi a program has taken a key it follows (see remvh).  A, X and Y are kept.
