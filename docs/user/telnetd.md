@@ -98,7 +98,7 @@ session is back.
   request for paged mode are kept in 8 bytes the Pi provides in its own page,
   `&FCB7-&FCBE` (just below the serial stub), so nothing in the Beeb's RAM or the
   MOS's tables that belongs to anything else is used.
-- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b16` (the build number
+- **`*HELP` shows which image is fitted**, as `TelnetD 0.2 b17` (the build number
   goes up with every image).
 - **It claims nothing.** Every service call is passed on with A, X and Y as they
   came, so it sits happily beside filing systems and other ROMs in any bank.
@@ -148,7 +148,7 @@ whole boot until the Pi is up, which should also give the Pi's emulated hard dis
 time to be ready before ADFS looks for it. **That last effect is expected, not yet
 measured:** without the ROM, a power-on boot from a Pi-served disc was seen to fail
 about as often as it worked (below). Read the chip back after programming; the
-image's MD5 (build 16) is `F15EDF048A4968E84CB6550673106A5F`.
+image's MD5 (build 17) is `607858EE2845484BDBE6EF35C8F07C36`.
 
 **On a Master 128 also `*INSERT` the bank** (`*ROMS` shows which one `TelnetD`
 went into): the Master only starts ROMs marked as inserted, and a ROM loaded after
@@ -334,7 +334,8 @@ terminal. **Teletype mode** does none of that. The session is a plain serial lin
 - every byte you send is typed on the Beeb as it is, including bytes above 127 (through the
   ROM, build 13 or later). ESC is the Beeb's ESCAPE key, as on its keyboard;
 - there is no screen model drawn, no copy cursor, no F11 redraw and no screen reads. What you
-  see is what came down the line.
+  see is what came down the line. So after the login nothing more shows until the Beeb prints:
+  press RETURN for its prompt.
 
 **How to ask for it.** A client asks for teletype mode with telnet's BINARY option (an 8-bit
 path, RFC 856):

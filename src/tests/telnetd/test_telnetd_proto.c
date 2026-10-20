@@ -1312,6 +1312,21 @@ static void test_scan_merge(void)
    FEED_OUT(&s, "\x1a\x0c\x1f\x05" "Z", out);                 /* a row number of 90 */
    CHECK(!s.smerge && s.rescan, "a read cut short asks for an ordinary read");
 
+   /* MODE 7: the read gives each character's code as printed (OSBYTE 135); # _ and the pound are
+      stored swapped and from &A0 without bit 7, as printing them stores them.  Connecting showed
+      a REM with e-acute (233) as a space where the Beeb shows i. */
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x07" "#_`\xe9" "A", out);
+   tnd_out_scan_merge(&s);
+   n = FEED_OUT(&s, "\x1a\x0c" "\x1f\x00\x00" "#" "\x1f\x01\x00" "_" "\x1f\x02\x00" "`" "\x1f\x03\x00" "\xe9"
+                    "\x1f\x04\x00" "A" "\x1c\x00\x18\x27\x00" "\x1f\x05\x00", out);
+   CHECK(n == 0u, "MODE 7: a read of # _ pound and &E9 agrees with the model: nothing drawn");
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x07", out);
+   tnd_out_scan_merge(&s);
+   n = FEED_OUT(&s, "\x1a\x0c" "\x1f\x00\x00" "\xe9" "\x1f\x01\x00" "#" "\x1c\x00\x18\x27\x00" "\x1f\x02\x00", out);
+   CHECK(s.ch[0][0] == 'i' && s.ch[0][1] == 0x5Fu, "MODE 7: a read's &E9 is stored as i, its # as printing stores it");
+
    /* MODE 7: colour codes compared as they are stored. */
    tnd_out_reset(&s, true);
    FEED_OUT(&s, "\x16\x07" "\x81" "RED", out);

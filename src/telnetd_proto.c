@@ -1774,7 +1774,9 @@ static uint8_t merge_char(const tnd_out_t *s, uint8_t c)
 {
    if (c == 0u)
       return ' ';
-   if (s->tele || c < 127u)
+   if (s->tele)                                 /* the read gives the code printed: stored as printing stores it */
+      return ttx_store(c);
+   if (c < 127u)
       return c;
    if (c < 0xA0u)
       return ' ';
