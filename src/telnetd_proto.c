@@ -563,6 +563,9 @@ void tnd_out_set_mode(tnd_out_t *s, uint8_t mode)
 void tnd_out_assume_mode(tnd_out_t *s, uint8_t mode)
 {
    tnd_out_set_mode(s, mode);
+   s->code = 0u;                                 /* a reset ends a VDU sequence half collected ... */
+   s->got = 0u;
+   s->disabled = false;                          /* ... and a VDU 21, as the MOS's does */
    memset(s->at, AT_DEF, sizeof s->at);          /* nothing on the screen is known yet */
    s->sync = false;
    s->paged = false;                             /* a reset ends paged mode, as the MOS's does */
@@ -1509,12 +1512,13 @@ static size_t glyph(tnd_out_t *s, uint8_t c, uint8_t *dst, uint8_t *stored, int 
       return put_glyph(s, dst, c);
    }
    /* 128 and up.  Mode 7: 0x81-0x87 and 0x91-0x97 are colour codes, shown as a
-      space; the other controls are spaces too.  From 0xA0 the teletext chip
+      space; the other controls are spaces too (and in the other modes all of them:
+      there they are the user-defined characters, with no colour of their own).  From 0xA0 the teletext chip
       ignores bit 7 and shows the character. */
    if (c < 0xA0u) {
       uint8_t colour = (uint8_t)(c & 0x0Fu);   /* 0x81-0x87 alpha, 0x91-0x97 graphics */
       n = 0u;
-      if (colour >= 1u && colour <= 7u && (c == (0x80u | colour) || c == (0x90u | colour))) {
+      if (s->tele && colour >= 1u && colour <= 7u && (c == (0x80u | colour) || c == (0x90u | colour))) {
          n = sgr(dst, '3', colour);
          *newfg = colour;
       }

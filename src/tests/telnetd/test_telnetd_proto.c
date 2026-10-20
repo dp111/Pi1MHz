@@ -1006,6 +1006,28 @@ static void test_repaint(void)
    CHECK(tnd_out_repaint(&s, 0u, d) == 0u, "an unsynced model draws nothing");
 }
 
+/* Full review 2026-10-20: teletext colour codes only in MODE 7, and a reset ends a VDU 21 or a
+   VDU sequence half collected. */
+static void test_review_fixes_full(void)
+{
+   tnd_out_t s;
+   char out[2048];
+   const char *r = RENDER("\x16\x04\x81Hi");
+   CHECK(strstr(r, "\x1b[31m") == NULL && strstr(r, " Hi") != NULL, "MODE 4: 0x81 is a space, not red"); if (strstr(r, "\x1b[31m")) printf("    got [%s]\n", r);
+
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x15", out);                    /* VDU 21, then a BREAK */
+   tnd_out_assume_mode(&s, 7u);
+   FEED_OUT(&s, "ok", out);
+   CHECK(strstr(out, "ok") != NULL, "a reset ends VDU 21: what is printed after it shows"); if (!strstr(out, "ok")) printf("    got [%s]\n", out);
+
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x1f\x05", out);                /* VDU 31 with one of its two parameters, then a BREAK */
+   tnd_out_assume_mode(&s, 7u);
+   FEED_OUT(&s, "ok", out);
+   CHECK(strstr(out, "ok") != NULL, "a reset ends a VDU sequence half collected"); if (!strstr(out, "ok")) printf("    got [%s]\n", out);
+}
+
 static void test_output_vdu21(void)
 {
    tnd_out_t s; tnd_out_reset(&s, true);
@@ -1477,6 +1499,7 @@ int main(void)
    test_output_params();
    test_output_vdu21();
    test_output_teletext();
+   test_review_fixes_full();
    test_output_teletext_chip();
    test_tek();
    test_output_robustness();
