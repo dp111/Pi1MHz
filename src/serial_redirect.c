@@ -171,6 +171,8 @@ static const uint8_t ser_escr[11] = { 0x85, 0xFF, 0x2C, 0x7A, 0x02, 0x10, 0x03, 
 #define SER_STALL_US    100000u
 #define SER_BACKOFF_US    2000u       /* telnet: 20 ms, with the keyboard buffer holding 32 bytes, capped a paste at ~1.3 kB/s */
 #define SER_BACKOFF_MODEM_US 20000u   /* the modem (helper 19): as it always was */
+#define SER_BACKOFF_STALL_US 500000u  /* telnet, after a stall: the vectors may have been reset behind
+                                         our back, and nIRQ held 100 ms in every 102 would hang the Beeb */
 
 #define SER_FIFO_SIZE   1024u      /* power of two */
 #define SER_FIFO_MASK   (SER_FIFO_SIZE - 1u)
@@ -206,6 +208,7 @@ static volatile bool     ser_gate_open;   /* +0C is BIT: nIRQ asserted, byte at 
 static volatile uint32_t ser_gate_us;     /* gate opened, or last consume */
 static volatile bool     ser_backoff;     /* the Beeb said buffer 1 is full */
 static volatile uint32_t ser_backoff_us;
+static volatile bool     ser_backoff_stall; /* ... or the gate stalled */
 
 static volatile uint32_t ser_rx_count;      /* functional: paces the IRQ chaining */
 static volatile uint32_t ser_tx_count;      /* functional: the idle trip and telnetd's backlog */
@@ -268,6 +271,10 @@ static void ser_gate_close(void)
    if (ser_esc_active) {                     /* an escape trip that never finished: INSV again, ask again */
       ser_esc_active = false;
       ser_esc_req = true;
+      if (ser_brk_trip) {                    /* ... a BREAK as a BREAK: the exit is JMP (&FFFC) already */
+         ser_brk_trip = false;
+         ser_brk_req = true;
+      }
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
    }
    if (ser_idle_active) {                    /* ... and the same for an idle trip */
@@ -317,8 +324,10 @@ static void ser_esc_arm(void)
          stub, and not when the trip's consume comes: written then it raced the 6502 to the exit
          (about 15 us), and a late write lost the BREAK and left &FFFC as the chain operand, so a
          later chained exit jumped into the vector's bytes and hung the Beeb (qa_edit, F12). */
-      ser_chain_lo = Pi1MHz_MemoryRead((uint32_t)ser_base + SER_EXIT_OLD);
-      ser_chain_hi = Pi1MHz_MemoryRead((uint32_t)ser_base + SER_EXIT_OLD + 1u);
+      if (!ser_brk_armed) {                  /* armed again (a stall, a second F12): it is &FFFC now */
+         ser_chain_lo = Pi1MHz_MemoryRead((uint32_t)ser_base + SER_EXIT_OLD);
+         ser_chain_hi = Pi1MHz_MemoryRead((uint32_t)ser_base + SER_EXIT_OLD + 1u);
+      }
       ser_write(SER_EXIT_OLD, 0xFCu);
       ser_write(SER_EXIT_OLD + 1u, 0xFFu);
       ser_write(SER_EXIT, 0x6Cu);
@@ -432,6 +441,7 @@ static void ser_rx_full(unsigned int gpio)
    SER_COUNT(ser_fulls);
    ser_gate_close();
    ser_backoff = true;
+   ser_backoff_stall = false;
    ser_backoff_us = Pi1MHz_now_us;
 }
 
@@ -630,6 +640,8 @@ void serial_redirect_escape(void)
    ser_gate_close();               /* a byte may be in flight; the FIFO is about to go */
    rx.head = rx.tail;
    ser_esc_req = true;
+   if (ser_brk_armed)              /* a BREAK is due and the exit is JMP (&FFFC): it stays a BREAK */
+      ser_brk_req = true;
    ser_backoff = false;            /* the escape trip never touches the keyboard buffer */
    _restore_cpsr(cpsr);
 }
@@ -693,6 +705,8 @@ static void serial_redirect_poll(void)
    if (ser_brk_armed && (Pi1MHz_now_us - ser_brk_us) > 3000000u) {
       unsigned int cpsr = _disable_interrupts_cspr();
       if (ser_brk_armed) {
+         if (ser_brk_done)       /* the Beeb took the trip and reset, and nothing hooked it in again */
+            ser_hooked = false;  /* (no ROM): its vectors are the MOS's, so no nIRQ for the stub */
          ser_brk_armed = false;
          ser_brk_done = false;
          ser_write(SER_EXIT, OP_RTI);
@@ -728,6 +742,7 @@ static void serial_redirect_poll(void)
             SER_LOG('S', 0);
             ser_gate_close();
             ser_backoff = true;
+            ser_backoff_stall = true;
             ser_backoff_us = Pi1MHz_now_us;
          }
          _restore_cpsr(cpsr);
@@ -736,9 +751,12 @@ static void serial_redirect_poll(void)
    }
 
    if (ser_backoff) {
-      if ((Pi1MHz_now_us - ser_backoff_us) < (ser_telnet ? SER_BACKOFF_US : SER_BACKOFF_MODEM_US))
+      uint32_t wait = !ser_telnet ? SER_BACKOFF_MODEM_US
+                    : ser_backoff_stall ? SER_BACKOFF_STALL_US : SER_BACKOFF_US;
+      if ((Pi1MHz_now_us - ser_backoff_us) < wait)
          return;
       ser_backoff = false;
+      ser_backoff_stall = false;
    }
 
    if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || ser_idle_req)) {
@@ -810,8 +828,25 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    ser_tx_drained = false;
    modem_reset();                  /* a BBC reset hangs up, as a DTR drop would */
 
-   for (uint8_t i = 0u; i < SER_STUB_LEN; i++)
-      Pi1MHz_MemoryWrite((uint32_t)address + i, stub[i]);
+   /* The vectors the stub replaced (+0A, +0D, +2B) are written as 0 only by the first init after
+      the Pi starts.  This runs again on every Beeb reset, up to a poll pass after it, by when the
+      auto-start ROM may already have hooked the Beeb in and kept the MOS's vectors there: zeroing
+      them then sent the next interrupt to &0000. */
+   static uint8_t stub_at;                      /* where the stub was written, 0 = not yet */
+   for (uint8_t i = 0u; i < SER_STUB_LEN; i++) {
+      bool kept = (i == SER_INSV_OLD || i == SER_INSV_OLD + 1u || i == SER_IRQ1V_OLD || i == SER_IRQ1V_OLD + 1u
+                   || i == SER_EXIT_OLD || i == SER_EXIT_OLD + 1u);
+      if (!kept || stub_at != address)
+         Pi1MHz_MemoryWrite((uint32_t)address + i, stub[i]);
+   }
+   if (stub_at == address && ser_brk_armed) {    /* a BREAK was due: the chain operand was &FFFC */
+      Pi1MHz_MemoryWrite((uint32_t)address + SER_EXIT_OLD, ser_chain_lo);
+      Pi1MHz_MemoryWrite((uint32_t)address + SER_EXIT_OLD + 1u, ser_chain_hi);
+   }
+   ser_brk_armed = false;
+   ser_brk_done = false;
+   ser_brk_trip = false;
+   stub_at = address;
    if (address >= SER_ESCR_OFF)
       for (unsigned int i = 0u; i < sizeof ser_escr; i++)
          Pi1MHz_MemoryWrite((uint32_t)address - SER_ESCR_OFF + i, ser_escr[i]);
