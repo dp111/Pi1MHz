@@ -158,6 +158,7 @@ static unsigned  g_len;
 static tnd_login_t g_login;              /* wrong passwords per address, lockouts, the hold: kept across sessions */
 static uint32_t  g_peer_addr;            /* the session's address, for those */
 static uint32_t  g_login_input_us;       /* when the session at the login prompt last had a key */
+static bool      g_login_cr;             /* ... and that key was CR (a LF after it is the same RETURN) */
 static bool      g_close_after;          /* close once the output has gone */
 static bool      g_att_known, g_att;     /* last attachment told to the client */
 static char      g_peer[20];
@@ -322,6 +323,7 @@ static void pend_free(void)
 static void session_reset(void)
 {
    g_repaint = false;
+   g_login_cr = false;
    g_connecting = false;
    pend_free();
    g_khead = g_ktail = 0u;
@@ -399,6 +401,15 @@ static void login_key(uint8_t k)
    if (tnd_login_held(&g_login))                 /* after a wrong password, on any connection: ignored a while */
       return;
    g_login_input_us = Pi1MHz_now_us;
+   if (k == 10u) {                               /* LF ends the line too (nc on the raw port sends it */
+      bool after_cr = g_login_cr;                /* alone); straight after a CR it is the same RETURN */
+      g_login_cr = false;
+      if (after_cr)
+         return;
+      k = 13u;
+   } else {
+      g_login_cr = (k == 13u);
+   }
    if (k == 13u) {
       if (g_stage == S_LOGIN_USER) {
          g_line[g_len] = '\0';
@@ -1152,8 +1163,9 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       the only session for ever, and lwIP's own keepalive is not compiled in.
       An idle session is sent a telnet NOP (IAC NOP, which every client ignores)
       now and then: a client that is gone does not acknowledge it, and lwIP
-      aborts the connection after its retransmissions. */
-   if (g_olen == g_opos && (now_us - g_tx_us) >= KEEPALIVE_US) {
+      aborts the connection after its retransmissions.  Not on the raw port: no
+      telnet there, so the NOP would arrive as two characters of text. */
+   if (!g_sess_rawport && g_olen == g_opos && (now_us - g_tx_us) >= KEEPALIVE_US) {
       static const uint8_t nop[2] = { 255u, 241u };
       o_put(nop, 2u);
    }
