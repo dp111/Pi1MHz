@@ -66,7 +66,7 @@ those ASCII bytes in place.
 | Key | Bytes | Meaning |
 |---|---|---|
 | `ModeParamHeader` | 4 | SCSI MODE SENSE (6) parameter header. The mode-data-length byte is recalculated by the firmware. |
-| `LBADescriptor` | 8 | Block descriptor. The **block size** is the last three bytes (`…000100` = 256 bytes, the ADFS standard). |
+| `LBADescriptor` | 8 | Block descriptor. The **block size** is the last three bytes (`…000100` = 256 bytes, the ADFS standard), 128 to 2048 bytes. A size outside that is used as 256 (READ CAPACITY, MODE SENSE and the data all use 256); the `.cfg` itself is not changed. A `.dsc` block size is treated the same way. The VFS / Domesday volumes always use 256. |
 
 The drive's **total capacity is taken from the size of its `.dat` image
 file**, not from this descriptor - so to make a bigger drive you make a

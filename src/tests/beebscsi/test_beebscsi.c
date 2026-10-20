@@ -1200,6 +1200,82 @@ static void test_block_sizes(void)
    filesystemSetLunDirectory(1, 0);
 }
 
+/* READ CAPACITY's block size on a LUN (host 1, started first), 0 if it fails */
+static uint32_t capacity_block_size(uint8_t lun)
+{
+   const uint8_t rc[10] = { 0x25, (uint8_t)(lun << 5), 0, 0, 0, 0, 0, 0, 0, 0 };
+   if (!filesystemSetLunStatus(lun, true) || run_cmd(1, rc, 10, NULL, 0) != 0 || bus_out_len < 8)
+      return 0;
+   return ((uint32_t)bus_out[4] << 24) | ((uint32_t)bus_out[5] << 16) | ((uint32_t)bus_out[6] << 8) | bus_out[7];
+}
+
+/* MODE SENSE page 0 on a LUN: the block descriptor's block size, 0 if it fails */
+static uint32_t sense_block_size(uint8_t lun)
+{
+   const uint8_t ms[6] = { 0x1A, (uint8_t)(lun << 5), 0x00, 0, 255, 0 };
+   if (run_cmd(1, ms, 6, NULL, 0) != 0 || bus_out_len < 12 || bus_out[3] != 8)
+      return 0;
+   return ((uint32_t)bus_out[9] << 16) | ((uint32_t)bus_out[10] << 8) | bus_out[11];
+}
+
+/* A block size the data path cannot move (outside 128-2048) is used as 256
+   by READ CAPACITY, MODE SENSE and READ/WRITE alike; 128 and 2048 are
+   kept.  The same for a .dsc's block size (no .cfg), where a size of 0 used
+   to divide READ by zero and a usable one was not what MODE SENSE gave. */
+static void test_block_size_fallback(void)
+{
+   static char why[200];
+   char cfg[200], t[120];
+   stop_all();
+   filesystemSetLunDirectory(1, 8);
+
+   const struct { uint32_t bs; bool kept; } sizes[] = {
+      { 4096, false }, { 2049, false }, { 127, false }, { 0, false }, { 2048, true }, { 128, true },
+   };
+   for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+      uint32_t bs = sizes[i].bs, want = sizes[i].kept ? bs : 256u;
+      snprintf(cfg, sizeof cfg, "ModeParamHeader=00000008\nLBADescriptor=0000000000%06X\n"
+               "ModePage0=01000A02008000800001\n", (unsigned)bs);
+      put_lun8(2, cfg, 8u * 256u);
+      uint32_t rcbs = capacity_block_size(2), msbs = sense_block_size(2);
+      uint32_t data_bs = filesystemGetLunDataBlockSize(2);
+      snprintf(why, sizeof why, "READ CAPACITY %lu, MODE SENSE %lu, data path %lu (want %lu each)",
+               (unsigned long)rcbs, (unsigned long)msbs, (unsigned long)data_bs, (unsigned long)want);
+      snprintf(t, sizeof t, "block size %lu in the .cfg: %s", (unsigned long)bs,
+               sizes[i].kept ? "kept" : "256 used everywhere");
+      check(t, rcbs == want && msbs == want && data_bs == want, why);
+      stop_all();
+   }
+   f_unlink("/BeebSCSI8/scsi2.cfg");
+   f_unlink("/BeebSCSI8/scsi2.dat");
+
+   /* A .dsc drive: block size in bytes 9-11, cylinders 13-14, heads 15 */
+   const struct { uint32_t bs; bool kept; } dscsizes[] = { { 0, false }, { 4096, false }, { 512, true } };
+   for (size_t i = 0; i < sizeof dscsizes / sizeof dscsizes[0]; i++) {
+      uint32_t bs = dscsizes[i].bs, want = dscsizes[i].kept ? bs : 256u;
+      uint8_t dsc[22] = { 0 };
+      dsc[9] = (uint8_t)(bs >> 16); dsc[10] = (uint8_t)(bs >> 8); dsc[11] = (uint8_t)bs;
+      dsc[14] = 1; dsc[15] = 1;
+      put_lun8(3, "", 8u * 512u);
+      f_unlink("/BeebSCSI8/scsi3.cfg");
+      put_file("/BeebSCSI8/scsi3.dsc", dsc, sizeof dsc);
+      uint32_t rcbs = capacity_block_size(3), msbs = sense_block_size(3);
+      uint32_t data_bs = filesystemGetLunDataBlockSize(3);
+      const uint8_t rd[6] = { 0x08, 3 << 5, 0, 1, 1, 0 };
+      int sr = run_cmd(1, rd, 6, NULL, 0);
+      snprintf(why, sizeof why, "READ CAPACITY %lu, MODE SENSE %lu, data path %lu (want %lu each), READ6 %d %u bytes",
+               (unsigned long)rcbs, (unsigned long)msbs, (unsigned long)data_bs, (unsigned long)want, sr, bus_out_len);
+      snprintf(t, sizeof t, "block size %lu in a .dsc: %s", (unsigned long)bs,
+               dscsizes[i].kept ? "kept, and MODE SENSE gives it" : "256 used everywhere, READ6 works");
+      check(t, rcbs == want && msbs == want && data_bs == want && sr == 0 && bus_out_len == want, why);
+      stop_all();
+   }
+   f_unlink("/BeebSCSI8/scsi3.dsc");
+   f_unlink("/BeebSCSI8/scsi3.cfg");
+   f_unlink("/BeebSCSI8/scsi3.dat");
+   filesystemSetLunDirectory(1, 0);
+}
+
 /* S10: the VFS title cache does not survive a card change. */
 static void test_title_cache(void)
 {
@@ -1635,6 +1711,7 @@ int main(int argc, char **argv)
    test_mode_sense();
    test_ccs_pages();
    test_block_sizes();
+   test_block_size_fallback();
    test_title_cache();                  /* it remounts the card */
    test_storage();                      /* it moves the storage */
    test_storage_choice();               /* last: the choice lasts till restart */
