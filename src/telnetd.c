@@ -170,6 +170,8 @@ static unsigned long g_drop_obuf;
 static int       g_drop_rxblk;
 static uint32_t  g_prog_us;              /* the last time the session moved, or began to wait */
 static bool      g_rx_blocked;           /* the key ring is full and client data is waiting for room */
+static bool      g_esc_cut;              /* a lone ESC is waiting behind the backlog: the keys before it go */
+static uint32_t  g_recv_us;              /* when client data last came */
 static struct pbuf *g_pend;              /* client data taken from lwIP but not yet turned into keys */
 static struct pbuf *g_pq;                /* ... the segment of it being read */
 static u16_t     g_pqoff;                /* ... and how far into that segment */
@@ -332,6 +334,7 @@ static void session_reset(void)
    /* and nothing of the last session's keys carries over (PR review): a byte after LIT_KEY still
       to come, a key being watched for a silent screen, a scan key counted in the ring just emptied */
    g_lit_next = false;
+   g_esc_cut = false;
    g_silent_wait = false;
    g_scan_keys = 0u;
    g_scan_pending = false;
@@ -509,6 +512,20 @@ static void deliver_key(uint8_t k)
    }
 }
 
+/* A key from the client.  While a lone ESC is cut through the backlog (pend_consume) the keys
+   before it are thrown away; the ESC itself is delivered, which empties the ring and the Beeb's
+   buffer as ESCAPE does. */
+static void take_key(uint8_t k)
+{
+   if (g_esc_cut) {
+      if (k != TND_KEY_ESCAPE)
+         return;
+      g_esc_cut = false;
+      g_lit_next = false;
+   }
+   deliver_key(k);
+}
+
 static void client_byte(uint8_t c, uint32_t now_us)
 {
    uint8_t keys[TND_IN_KEYS], rep[TND_IN_REPLY];
@@ -518,7 +535,46 @@ static void client_byte(uint8_t c, uint32_t now_us)
    if (rl != 0u)
       o_put(rep, rl);
    for (size_t i = 0u; i < n; i++)
-      deliver_key(keys[i]);
+      take_key(keys[i]);
+}
+
+/* Is a lone ESC (the ESCAPE key, not the start of a cursor key's ESC [ or ESC O) waiting in the
+   client data not yet read?  ESCAPE is meant to cut through type-ahead, but what is still in TCP
+   waits behind a full key ring: a client sending faster than the Beeb takes keys (a paste, a
+   stream to TERM) had its ESC held for as long as the backlog, and lost when it left.  Telnet
+   commands are skipped; an ESC that ends the data counts once nothing more has come for 300 ms. */
+static bool esc_ahead(uint32_t now_us)
+{
+   unsigned st = 0u;
+   const struct pbuf *q = g_pq;
+   u16_t off = g_pqoff;
+
+   while (q != NULL) {
+      const uint8_t *d = (const uint8_t *)q->payload;
+      for (; off < q->len; off++) {
+         uint8_t c = d[off];
+         switch (st) {
+         case 0:
+            if (c == 0xFFu && !g_in.notelnet) st = 1u;
+            else if (c == 27u) st = 4u;
+            break;
+         case 1:                                  /* after IAC */
+            st = (c == 250u) ? 2u : (c >= 251u && c <= 254u) ? 3u : 0u;
+            break;
+         case 2: if (c == 0xFFu) st = 5u; break;  /* in a subnegotiation */
+         case 5: st = (c == 240u) ? 0u : 2u; break;
+         case 3: st = 0u; break;                  /* the option of WILL, WONT, DO, DONT */
+         default:                                 /* after ESC */
+            if (c != '[' && c != 'O' && c != 'P')   /* CSI, SS3, DCS: sequences, not the ESCAPE key */
+               return true;
+            st = 0u;
+            break;
+         }
+      }
+      q = q->next;
+      off = 0u;
+   }
+   return st == 4u && (now_us - g_recv_us) > 300000u;
 }
 
 /* The boot banners (tnd_banner_byte): read for the first few seconds after a start, and kept for
@@ -620,10 +676,11 @@ static void pend_consume(void)
    uint32_t now = Pi1MHz_now_us;
    u32_t    n = 0u;
 
+again:
    while (g_pq != NULL && g_pcb != NULL) {
       const uint8_t *d = (const uint8_t *)g_pq->payload;
       while (g_pqoff < g_pq->len) {
-         if (KRING_SIZE - (g_ktail - g_khead) < TND_IN_KEYS)
+         if (!g_esc_cut && KRING_SIZE - (g_ktail - g_khead) < TND_IN_KEYS)
             goto full;                          /* a byte releases at most TND_IN_KEYS keys */
          client_byte(d[g_pqoff++], now);
          n++;
@@ -640,6 +697,10 @@ static void pend_consume(void)
    return;
 
 full:
+   if (g_stage == S_LIVE && esc_ahead(now)) {   /* a lone ESC behind the backlog: cut through to it */
+      g_esc_cut = true;
+      goto again;
+   }
    if (n != 0u) {
       tcp_recved(g_pcb, (u16_t)(n > 0xFFFFu ? 0xFFFFu : n));
       g_prog_us = now;
@@ -678,6 +739,7 @@ static err_t td_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
       read, which is what holds the client back.  (Refusing the packet with
       ERR_MEM instead does not work: lwIP can hand over several queued segments
       as one chain, and one longer than half the ring would never fit.) */
+   g_recv_us = Pi1MHz_now_us;
    if (g_pend == NULL) {
       g_pend = g_pq = p;
       g_pqoff = 0u;
@@ -755,6 +817,7 @@ static err_t td_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
    g_pcb = newpcb;
    g_sessions++;
    session_reset();
+   serial_redirect_drop_keys();                 /* nothing the last client typed ahead is typed into this one */
    g_start_us = g_tx_us = g_prog_us = Pi1MHz_now_us;
    snprintf(g_peer, sizeof g_peer, "%s", ip4addr_ntoa(ip_2_ip4(&newpcb->remote_ip)));
    g_peer_addr = addr;
@@ -1097,7 +1160,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
       uint8_t k[TND_IN_KEYS];
       size_t  n = tnd_in_tick(&g_in, now_us, k);   /* Alt-P with nothing after it is two keys: ESCAPE and P */
       for (size_t i = 0u; i < n; i++)
-         deliver_key(k[i]);
+         take_key(k[i]);
    }
 
    if (g_pend != NULL)

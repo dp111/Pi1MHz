@@ -627,6 +627,20 @@ void serial_redirect_escape(void)
    _restore_cpsr(cpsr);
 }
 
+/* Throw away the keys not yet given to the Beeb, without an ESCAPE: a new session must not
+   have the last one's type-ahead typed into it (a client that left with a backlog). */
+void serial_redirect_drop_keys(void)
+{
+   if (!ser_hooked || !ser_telnet)
+      return;
+   unsigned int cpsr = _disable_interrupts_cspr();
+   if (!ser_esc_active && !ser_idle_active && !ser_brk_done)   /* a trip in flight finishes as it is */
+      ser_gate_close();
+   rx.head = rx.tail;
+   ser_backoff = false;
+   _restore_cpsr(cpsr);
+}
+
 /* SHIFT for the Beeb, pressed once: the ROM's SHIFT byte in its workspace, which its KEYV
    handler reads and clears (see the top).  Telnet mode only, and only useful with the
    auto-start ROM (serial_redirect_scan_ok). */

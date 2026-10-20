@@ -53,6 +53,7 @@ size_t serial_redirect_write(const uint8_t *src, size_t len);
 /* Telnet mode (helper 20) only, main loop only: raise the Beeb's ESCAPE
    condition and discard what is queued for its keyboard.  A no-op otherwise. */
 void serial_redirect_escape(void);
+void serial_redirect_drop_keys(void);      /* the keys not yet given to the Beeb go (a new session) */
 void serial_redirect_shift(void);           /* SHIFT pressed once (paged mode), read by the auto-start ROM's KEYV */
 void serial_redirect_break(void);       /* a BREAK, as the BREAK key: see the .c */
 

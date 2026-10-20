@@ -376,7 +376,9 @@ the one-session rule are the same on both ports.
 - **ESC and Ctrl-C raise the Beeb's ESCAPE**, so they stop a running BASIC
   program (error 17, "Escape") as the real key does, even when the Beeb is busy
   and its keyboard buffer is full of type-ahead, and they discard what was typed
-  ahead. A lone ESC is told from the start of an arrow or function key by waiting
+  ahead - also what is still on its way from your client, when you have sent
+  faster than the Beeb takes keys (a long paste): ESC cuts through it. A new
+  session never gets what the last one typed ahead. A lone ESC is told from the start of an arrow or function key by waiting
   a tenth of a second. The catch: a program that has set `*FX229,1` so that ESC
   is an ordinary key (a few games) never gets the character 27 from telnet, only
   the ESCAPE condition. The daemon writes the MOS's escape flag directly (bit 7 of
