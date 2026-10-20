@@ -13,6 +13,7 @@ on:
       - '6502code/**'
       - 'firmware/Pi1MHz/6502code.bin'
       - 'firmware/Pi1MHz/1mhz-wicfs.rom'
+      - 'firmware/Pi1MHz/telnetd.rom'
       - 'src/wifi_service.h'
       - 'src/net_service.h'
       - 'src/tests/wifirom/**'
@@ -22,6 +23,7 @@ on:
       - 'src/tests/helpers/**'
       - 'src/tests/webserver/extract.awk'
       - 'src/tests/cflags.sh'
+      - 'src/tests/telnetdrom/**'
       - '.github/workflows/beeb-roms.yml'
   pull_request:
     branches: [master]
@@ -49,6 +51,9 @@ jobs:
 
       - name: ROM interface and assembly
         run: sh src/tests/wifirom/run_tests.sh
+
+      - name: The telnet auto-start ROM
+        run: sh src/tests/telnetdrom/run_tests.sh
 
       - name: The shipped 6502code.bin matches its source
         working-directory: 6502code

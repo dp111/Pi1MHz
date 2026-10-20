@@ -10,6 +10,7 @@
 #include "../rpi/info.h"
 #include "../rpi/rpi.h"
 #include "../config.h"
+#include "../telnetd.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -881,6 +882,7 @@ void wifi_boot(void)
       case WIFI_BOOT_STAGE_INIT_WEBSERVER:
          wifi_debug_log("initialising webserver");
          webserver_init();
+         telnetd_init();        /* off unless telnetd_port is set */
          wifi_debug_log("boot complete state=%s", wifi_state_name(g_wifi_state));
          g_wifi_boot_stage = WIFI_BOOT_STAGE_COMPLETE;
          return;

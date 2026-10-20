@@ -20,13 +20,16 @@
    carries, so the bank select below rejects a helper number that has no
    page rather than running whatever follows.  17 is the SD card explorer,
    and 31-45 are the pages it chains through while it runs; 18 is FujiNet,
-   19 the serial redirector, and 20-30 are left free for future helpers,
+   19 the serial redirector, 20 the telnet daemon, and 21-30 are left free
+   for future helpers,
    answering with a bare return until one is written. */
 #define HELPER_PAGES 47u
 
-/* Helper 19 hooks the vectors into the serial stub; its LDY # at &FD06
-   carries the stub's FRED offset, which only the Pi knows (Serial_addr). */
+/* Helpers 19 and 20 hook the vectors into the serial stub (19 for the modem,
+   20 for the telnet daemon); the LDY # at &FD06 of each carries the stub's FRED
+   offset, which only the Pi knows (Serial_addr). */
 #define SERIAL_HELPER_PAGE  19u
+#define TELNET_HELPER_PAGE  20u
 #define SERIAL_HELPER_LDY   0x06u
 
 /* &FC88 = HELPER_XFER shows the helper transfer page in the JIM window
@@ -94,7 +97,7 @@ static volatile uint8_t  help_front;
    "16  1MHz-WiFi+WiCFS    1mhz-wicfs.rom\r\n"                           \
    "17  SD card explorer (file transfer)\r\n"                            \
    "18  FujiNet            fujinetB/M.rom\r\n"                           \
-   "19  Serial redirector (modem)\r\n"                                   \
+   "19  Serial modem    20  Telnet daemon\r\n"                           \
    "*FX147,%d,n     SCSIJUKE box n\r\n"                                  \
    "*FX147,202,%d then 203,1/0 M5000 rec\r\n"                          \
    "*FX147,202,%d 203,1-3 out/in/restart\r\n"                          \
@@ -267,9 +270,12 @@ void helpers_init( uint8_t instance , uint8_t address)
    memset(helper_ram, 0x60, sizeof helper_ram);
    if (filesystemReadFile("Pi1MHz/6502code.bin",&helper,sizeof(helper_ram)))
     {
-        uint8_t *ser = &helper_ram[SERIAL_HELPER_PAGE * 256u + SERIAL_HELPER_LDY];
-        if (ser[0] == 0xA0)           /* LDY #: an older 6502code.bin has no such page */
-            ser[1] = serial_redirect_address();
+        static const uint8_t stub_pages[] = { SERIAL_HELPER_PAGE, TELNET_HELPER_PAGE };
+        for (unsigned int i = 0u; i < sizeof stub_pages; i++) {
+            uint8_t *ser = &helper_ram[stub_pages[i] * 256u + SERIAL_HELPER_LDY];
+            if (ser[0] == 0xA0)       /* LDY #: an older 6502code.bin has no such page */
+                ser[1] = serial_redirect_address();
+        }
 
         // register call backs
         Pi1MHz_Register_Memory(WRITE_FRED, address, helpers_bank_select );

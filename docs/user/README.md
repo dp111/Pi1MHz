@@ -46,6 +46,7 @@ Then one guide per feature:
 - [FujiNet: disc images, TNFS, http/https and JSON with fn-rom](fujinet.md)
 - [The 1MHz-WiFi ROM and WiCFS: *WGET, UEF tape games, the RAM disc](wifi-rom.md)
 - [The serial redirector and the WiFi modem (RS423, AT commands)](serial-modem.md)
+- [The telnet daemon: the Beeb's keyboard and screen over the network](telnetd.md)
 - [Sound: Music 5000/3000 and BeebSID](sound.md)
 - [RAM expansion (JIM)](ram-expansion.md)
 - [HDMI screen, mouse pointer and video](screen-and-video.md)
