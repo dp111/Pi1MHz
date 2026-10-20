@@ -51,6 +51,7 @@
 #include "lwip/ip4_addr.h"
 #include "lwip/pbuf.h"
 #include "lwip/tcp.h"
+#include "lwip/priv/tcp_priv.h"   /* tcp_rexmit_rto: the loss probe (tcp_probe) */
 
 #include "Pi1MHz.h"
 #include "config.h"
@@ -530,8 +531,48 @@ static void banner_byte(uint8_t c)
 }
 
 /* With nobody connected, or before the login, the Beeb's output is only followed. */
+/* Diagnostics (telnetd_debug): a printable byte the Beeb printed that sent the client nothing,
+   with the model's state, and the bytes followed with nobody shown them while a client is on. */
+#define SIL_RING 12u
+static struct { uint8_t c, code, sm, fl, x, y; } g_sil[SIL_RING];
+static uint32_t g_sil_n, g_follow_on, g_oput_fail;
+
+static void sil_note(uint8_t c)
+{
+   unsigned i = g_sil_n++ % SIL_RING;
+   g_sil[i].c = c;
+   g_sil[i].code = g_out.code;
+   g_sil[i].sm = g_out.sm_st;
+   g_sil[i].fl = (uint8_t)((g_out.disabled ? 1u : 0u) | (g_out.smerge ? 2u : 0u) | (g_out.tele ? 4u : 0u)
+                           | (g_out.sync ? 8u : 0u) | (g_out.origin_ok ? 16u : 0u) | (g_out.tek_on ? 32u : 0u)
+                           | (g_out.dirty ? 64u : 0u));
+   g_sil[i].x = g_out.cx;
+   g_sil[i].y = g_out.cy;
+}
+
+/* What the Beeb printed since its last line end, as plain text: what a teletype joining now
+   would show of the line (a prompt such as ">"), for when the model does not know the cursor's
+   row (no CLS or MODE seen since the Pi started).  A VDU code's parameters are not text. */
+static char    g_tline[TND_COLS_MAX + 1u];
+static uint8_t g_tlen;
+
+static void tline_byte(uint8_t c)
+{
+   if (g_out.code != 0u)
+      return;
+   if (c >= 32u && c < 127u) {
+      if (g_tlen < TND_COLS_MAX)
+         g_tline[g_tlen++] = (char)c;
+   } else if (c != 7u) {
+      g_tlen = 0u;
+   }
+}
+
 static void beeb_follow(uint8_t c)
 {
+   tline_byte(c);
+   if (g_debug && g_pcb != NULL)
+      g_follow_on++;
    banner_byte(c);
    if (g_ansi) {
       uint8_t d[TND_OUT_MAX];
@@ -542,13 +583,19 @@ static void beeb_follow(uint8_t c)
 
 static void beeb_byte(uint8_t c)
 {
+   tline_byte(c);
    banner_byte(c);
    if (g_ansi) {
       uint8_t d[TND_OUT_MAX];
+      uint8_t pre = 0u;
+      if (g_debug && c >= 32u && c < 127u && g_out.code == 0u && !g_out.disabled && !g_out.smerge)
+         pre = 1u;                              /* a character to print, not a parameter or a read */
       size_t  n = tnd_out_byte(&g_out, c, d);
       tnd_out_touch(&g_out, Pi1MHz_now_us);
-      if (n != 0u)
-         o_put(d, n);
+      if (n != 0u && !o_put(d, n) && g_debug)
+         g_oput_fail++;
+      if (pre && n == 0u)
+         sil_note(c);
    } else {
       if (g_ansi_cfg) {                         /* teletype mode: the model follows quietly, for a later terminal */
          uint8_t d[TND_OUT_MAX];
@@ -796,8 +843,77 @@ static void pump(void)
    }
 }
 
+/* Diagnostics (telnetd_debug): retransmissions on the session, and the longest time sent data
+   waited for its ACK.  A lost segment on WiFi is resent only when lwIP's timer runs out. */
+static uint32_t g_rtx_events, g_rtx_max, g_unack_max_ms, g_unack_since_us;
+static bool     g_unack_on;
+
+static void tcp_watch(uint32_t now_us)
+{
+   static uint8_t last_nrtx;
+   if (!g_debug || g_pcb == NULL)
+      return;
+   if (g_pcb->nrtx > last_nrtx)
+      g_rtx_events++;
+   if (g_pcb->nrtx > g_rtx_max)
+      g_rtx_max = g_pcb->nrtx;
+   last_nrtx = g_pcb->nrtx;
+   if (g_pcb->unacked != NULL) {
+      if (!g_unack_on) {
+         g_unack_on = true;
+         g_unack_since_us = now_us;
+      } else {
+         uint32_t ms = (now_us - g_unack_since_us) / 1000u;
+         if (ms > g_unack_max_ms)
+            g_unack_max_ms = ms;
+      }
+   } else {
+      g_unack_on = false;
+   }
+}
+
+/* The loss probe.  On WiFi a segment is lost now and then; lwIP resends it only when its
+   retransmission timer runs out, in 500 ms ticks from its round-trip estimate and doubled at
+   once, so an interactive session (too little traffic for a fast retransmit) froze for 2 to 10
+   seconds with everything after the lost segment held by the client's TCP.  So once sent data
+   has waited PROBE_FIRST_MS for its ACK (more than a delayed ACK takes), what is unacknowledged
+   is sent again, and again after twice as long while the same data waits, up to PROBE_MAX_MS.
+   A resend that was not needed costs the client a duplicate it throws away. */
+#define PROBE_FIRST_MS 400u
+#define PROBE_MAX_MS   3200u
+static uint32_t g_probes;                  /* resends made (telnetd_debug) */
+
+static void tcp_probe(uint32_t now_us)
+{
+   static bool     on;
+   static u32_t    ack;
+   static uint32_t since_us, wait_ms;
+
+   if (g_pcb == NULL || g_pcb->unacked == NULL || g_pcb->state != ESTABLISHED) {
+      on = false;
+      return;
+   }
+   if (!on || g_pcb->lastack != ack) {          /* new data waiting, or an ACK came: start again */
+      on = true;
+      ack = g_pcb->lastack;
+      since_us = now_us;
+      wait_ms = PROBE_FIRST_MS;
+      return;
+   }
+   if ((now_us - since_us) / 1000u < wait_ms)
+      return;
+   tcp_rexmit_rto(g_pcb);                       /* the unacknowledged segments, sent again */
+   g_pcb->rtime = 0;                            /* lwIP's own timer starts again from here */
+   g_probes++;
+   since_us = now_us;
+   if (wait_ms < PROBE_MAX_MS)
+      wait_ms *= 2u;
+}
+
 void telnetd_poll(uint32_t now_us, bool beeb_attached)
 {
+   tcp_watch(now_us);
+   tcp_probe(now_us);
    static uint32_t mode_seen;
    uint8_t c;
 
@@ -1049,7 +1165,16 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
                g_att = true;
             }
          } else {
+            /* Teletype mode: the line the Beeb is on, from the model (usually its prompt), so the
+               session does not start blank; no key is sent to the Beeb for it. */
+            char cl[TND_COLS_MAX + 1u];
             o_str("\r\n");
+            if (tnd_out_cursor_line(&g_out, cl, sizeof cl) != 0u) {
+               o_str(cl);
+            } else if (g_tlen != 0u) {           /* the model does not know the row: the text since the line end */
+               g_tline[g_tlen] = 0;
+               o_str(g_tline);
+            }
          }
       }
    }
@@ -1284,6 +1409,21 @@ void telnetd_status(char *buf, size_t len)
          len -= used;
       }
    }
+   if (g_debug) {                               /* printable bytes that sent nothing (see sil_note) */
+      used = (size_t)snprintf(buf, len, "silent %lu, followed %lu, put fails %lu:", (unsigned long)g_sil_n,
+                              (unsigned long)g_follow_on, (unsigned long)g_oput_fail);
+      for (unsigned k = 0u; k < SIL_RING && k < g_sil_n && used < len; k++) {
+         unsigned i = (g_sil_n - 1u - k) % SIL_RING;
+         used += (size_t)snprintf(buf + used, len - used, " %02x/%02x/%u/%02x@%u,%u", g_sil[i].c, g_sil[i].code,
+                                  g_sil[i].sm, g_sil[i].fl, g_sil[i].x, g_sil[i].y);
+      }
+      if (used < len)
+         used += (size_t)snprintf(buf + used, len - used, "; ");
+      if (used >= len)
+         return;
+      buf += used;
+      len -= used;
+   }
    if (serial_redirect_lit_ok()) {              /* ROM build 13: the keys waiting, and a Beeb not taking them */
       uint32_t w = keys_waiting();
       bool     hung = w != 0u && (Pi1MHz_now_us - g_taken_us) >= KEYS_HUNG_US;
@@ -1311,9 +1451,12 @@ void telnetd_status(char *buf, size_t len)
       buf += used;
       len -= used;
       if (g_pcb != NULL)
-         snprintf(buf, len, " (%d); ring %lu, rx %s, rcvwnd %u, tcp state %d, sndq %u", g_why_err,
+         snprintf(buf, len, " (%d); ring %lu, rx %s, rcvwnd %u, tcp state %d, sndq %u; rtx %lu (most %lu), rto %d ticks,"
+                  " unacked longest %lu ms, probes %lu", g_why_err,
                   (unsigned long)(g_ktail - g_khead), g_rx_blocked ? "refused" : "ok",
-                  (unsigned int)g_pcb->rcv_wnd, (int)g_pcb->state, (unsigned int)g_pcb->snd_queuelen);
+                  (unsigned int)g_pcb->rcv_wnd, (int)g_pcb->state, (unsigned int)g_pcb->snd_queuelen,
+                  (unsigned long)g_rtx_events, (unsigned long)g_rtx_max, (int)g_pcb->rto, (unsigned long)g_unack_max_ms,
+                  (unsigned long)g_probes);
       else
          snprintf(buf, len, " (%d)", g_why_err);
    }

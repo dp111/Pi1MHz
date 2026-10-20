@@ -1914,6 +1914,31 @@ bool tnd_out_blank(const tnd_out_t *s)
    return true;
 }
 
+size_t tnd_out_cursor_line(const tnd_out_t *s, char *dst, size_t max)
+{
+   size_t n = 0u;
+   bool   any = false;
+
+   if (!s->sync || s->cy >= s->rows || s->cx > s->cols)
+      return 0u;
+   for (unsigned x = s->wl; x < s->cx && n + 1u < max; x++) {
+      uint8_t c = s->ch[s->cy][x];
+      if ((s->at[s->cy][x] & AT_KNOWN) == 0u)
+         return 0u;
+      if (s->tele)
+         c = (c >= 0x80u && c < 0xA0u) ? (uint8_t)' ' : (uint8_t)(c & 0x7Fu);
+      if (c < 32u || c >= 127u)
+         c = ' ';
+      if (c != ' ')
+         any = true;
+      dst[n++] = (char)c;
+   }
+   if (!any)
+      return 0u;
+   dst[n] = 0;
+   return n;
+}
+
 bool tnd_out_has_line(const tnd_out_t *s, const char *text, size_t len)
 {
    if (len == 0u || len > s->cols)

@@ -3303,7 +3303,7 @@ static bool route_status(ws_conn_t *c)
    table_row(&b, "Modem", tmp);
    table_row(&b, "Beeb storage", filesystemStorageOnUsb() ? "USB drive" : "SD card");
    {
-      static char tl[640];                     /* with telnetd_debug=1 the row runs well past tmp's 256 */
+      static char tl[1024];                     /* with telnetd_debug=1 the row runs well past tmp's 256 */
       telnetd_status(tl, sizeof tl);
       table_row(&b, "Telnetd", tl);
    }

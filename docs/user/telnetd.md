@@ -334,8 +334,8 @@ terminal. **Teletype mode** does none of that. The session is a plain serial lin
 - every byte you send is typed on the Beeb as it is, including bytes above 127 (through the
   ROM, build 13 or later). ESC is the Beeb's ESCAPE key, as on its keyboard;
 - there is no screen model drawn, no copy cursor, no F11 redraw and no screen reads. What you
-  see is what came down the line. So after the login nothing more shows until the Beeb prints:
-  press RETURN for its prompt.
+  see is what came down the line. When the session starts, the daemon shows the line the Beeb
+  is on (usually its prompt, from what it has followed of the screen); no key is sent for it.
 
 **How to ask for it.** A client asks for teletype mode with telnet's BINARY option (an 8-bit
 path, RFC 856):

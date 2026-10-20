@@ -234,6 +234,10 @@ void   tnd_out_origin_lost(tnd_out_t *s);
 /* Is a row of the screen exactly this text (and blanks after it)? */
 bool   tnd_out_has_line(const tnd_out_t *s, const char *text, size_t len);
 bool   tnd_out_blank(const tnd_out_t *s);   /* the model knows of no character on the screen */
+/* The cursor's row from the window's left edge up to the cursor, as plain text (what a teletype
+   joining now would have seen of the line it is on, a prompt such as ">"): 0 if the model does
+   not know every cell of it, or there is nothing to show. */
+size_t tnd_out_cursor_line(const tnd_out_t *s, char *dst, size_t max);
 size_t tnd_out_colours(const tnd_out_t *s, uint8_t dst[16]);
 size_t tnd_out_repaint(const tnd_out_t *s, unsigned row, uint8_t dst[TND_REPAINT_MAX]);
 

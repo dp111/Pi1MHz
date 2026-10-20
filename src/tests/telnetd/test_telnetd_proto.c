@@ -1244,6 +1244,25 @@ static void test_stalled(void)
    CHECK(!tnd_stalled(true, 4000u, 0xFFFFF000u, 9000u), "wrapped, and not yet");
 }
 
+/* Teletype mode joins with the Beeb's current line (its prompt) from the model. */
+static void test_cursor_line(void)
+{
+   tnd_out_t s;
+   char out[4096], cl[TND_COLS_MAX + 1];
+
+   tnd_out_reset(&s, true);
+   CHECK(tnd_out_cursor_line(&s, cl, sizeof cl) == 0u, "nothing known: no line");
+   FEED_OUT(&s, "\x16\x07" "BASIC\r\n\r\n>", out);
+   CHECK(tnd_out_cursor_line(&s, cl, sizeof cl) == 1u && strcmp(cl, ">") == 0, "MODE 7, the prompt: >");
+   FEED_OUT(&s, "\r\nName? ", out);
+   CHECK(tnd_out_cursor_line(&s, cl, sizeof cl) == 6u && strcmp(cl, "Name? ") == 0, "an INPUT prompt, up to the cursor");
+   FEED_OUT(&s, "\r\n", out);
+   CHECK(tnd_out_cursor_line(&s, cl, sizeof cl) == 0u, "the start of a line: nothing to show");
+   tnd_out_reset(&s, true);
+   FEED_OUT(&s, "\x16\x01" "\x81" ">", out);
+   CHECK(tnd_out_cursor_line(&s, cl, sizeof cl) == 2u && cl[0] == ' ' && cl[1] == '>', "MODE 1: a byte above 127 shows as a space");
+}
+
 /* A new session's screen read, compared with the model (tnd_out_scan_merge). */
 static void test_scan_merge(void)
 {
@@ -1465,6 +1484,7 @@ int main(void)
    test_copy_cursor();
    test_repaint();
    test_scan_merge();
+   test_cursor_line();
    test_banner();
    test_stalled();
 
