@@ -1217,6 +1217,23 @@ uint32_t filesystemGetLunDataBlockSize( uint8_t lunNumber)
    return filesystemState.fsLunGeometry[lunNumber].BlockSize;
 }
 
+// A block size the data path cannot move (outside 128-2048, or anything on
+// a VFS LUN, which are LaserVision's 256-byte blocks) becomes 256, and the
+// size used goes into the LBA descriptor too, so READ CAPACITY, MODE SENSE,
+// FORMAT and the data path all agree.
+static void filesystemUseUsableBlockSize(uint8_t lunNumber)
+{
+   uint32_t blockSize = filesystemState.fsLunGeometry[lunNumber].BlockSize;
+   if ((lunNumber >= 8) || (blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
+      blockSize = filesystemState.fsLunGeometry[lunNumber].BlockSize = DEFAULT_BLOCK_SIZE;
+   if (filesystemState.keyvalues[lunNumber][LBADESCRIPTOR].length >= 8)
+   {
+      filesystemState.keyvalues[lunNumber][LBADESCRIPTOR].v.string[5] = (char)(blockSize >>16);
+      filesystemState.keyvalues[lunNumber][LBADESCRIPTOR].v.string[6] = (char)(blockSize >>8);
+      filesystemState.keyvalues[lunNumber][LBADESCRIPTOR].v.string[7] = (char)(blockSize);
+   }
+}
+
 // Function to return the LUN image heads per cylinder
 //
 uint32_t filesystemGetheadspercylinder( uint8_t lunNumber)
@@ -1576,6 +1593,10 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
          (*ptr).Heads 		=  (uint8_t)Buffer[15];
 
          (*ptr).SectorsPerTrack = DEFAULT_SECTORS_PER_TRACK;			// .dsc files don't contain sectors per track, always assume the default
+
+         // The .dsc's block size (256 if the data path cannot move it) also
+         // into LBADescriptor (from defscsi.cfg until now), for MODE SENSE
+         filesystemUseUsableBlockSize(lunNumber);
 
          // Note:
          //
@@ -1989,19 +2010,8 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
    // A short or hand-edited cfg value can decode as zero (a divide by zero
    // in the geometry calculations) or as a size the data path cannot move,
    // and the VFS LUNs are LaserVision's 256-byte blocks whatever their .cfg
-   // says.  Use 256 then, and say so in the LBA descriptor too, so READ
-   // CAPACITY, MODE SENSE, FORMAT and the data path all agree.
-   uint32_t blockSize = filesystemState.fsLunGeometry[lunNumber].BlockSize;
-   if ((lunNumber >= 8) || (blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
-   {
-      filesystemState.fsLunGeometry[lunNumber].BlockSize = DEFAULT_BLOCK_SIZE;
-      if (filesystemState.keyvalues[lunNumber][index].length >= 8)
-      {
-         filesystemState.keyvalues[lunNumber][index].v.string[5] = (char)(DEFAULT_BLOCK_SIZE >>16);
-         filesystemState.keyvalues[lunNumber][index].v.string[6] = (char)(DEFAULT_BLOCK_SIZE >>8);
-         filesystemState.keyvalues[lunNumber][index].v.string[7] = (char)(DEFAULT_BLOCK_SIZE);
-      }
-   }
+   // says.  Use 256 then, and say so in the LBA descriptor too.
+   filesystemUseUsableBlockSize(lunNumber);
 
    index = MODEPAGE3;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
