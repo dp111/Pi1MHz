@@ -18,3 +18,4 @@ bool filesystemStorageOnSmb(void);
 bool filesystemStorageOffCard(void);
 bool filesystemPathOnCard(const char *path);
 bool filesystemPiFolder(const char *path);
+bool filesystemNamesVolume(const char *path);

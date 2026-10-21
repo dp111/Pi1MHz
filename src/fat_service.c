@@ -106,7 +106,7 @@ static void fat_open_record(unsigned int handle, const char *name)
    const char *path = name;
 
    fat_open_valid[handle] = false;
-   if (name[0] >= '0' && name[0] <= '9' && name[1] == ':') {
+   if (filesystemNamesVolume(name)) {
       /* names its own volume: recorded as it is */
    } else if (!filesystemPathOnCard(name)) {
       /* On the drive or the share (as fat_beeb_path opened it): its volume
@@ -210,15 +210,10 @@ static bool fat_off_card(void)
    return filesystemStorageRoot()[0] != '\0';
 }
 
-static bool fat_names_volume(const char *name)
-{
-   return name[0] >= '0' && name[0] <= '9' && name[1] == ':';
-}
-
 static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
 {
    const char *name = (const char *)&Pi1MHz->JIM_ram[off];
-   if (fat_on_share() && name[0] != '/' && !fat_names_volume(name) &&
+   if (fat_on_share() && name[0] != '/' && !filesystemNamesVolume(name) &&
        !filesystemPiFolder(name)) {
       char abs[DISC_MAX_PATH + 3];
       if (!fat_join(abs, sizeof abs, fat_cwd, name))
@@ -246,7 +241,7 @@ static FRESULT fat_getcwd(char *buf, UINT len)
    FRESULT result = f_getcwd(buf, len);
    if (usb)
       (void)f_chdrive("0:");
-   if (result == FR_OK && buf[0] >= '0' && buf[0] <= '9' && buf[1] == ':')
+   if (result == FR_OK && filesystemNamesVolume(buf))
       memmove(buf, buf + 2, strlen(buf + 2) + 1u);
    return result;
 }
@@ -1078,7 +1073,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         const char *name = (const char *)&Pi1MHz->JIM_ram[command_pointer + 1];
-        if (fat_on_share() && !fat_names_volume(name)) {
+        if (fat_on_share() && !filesystemNamesVolume(name)) {
             Pi1MHz_MemoryWrite(addr, fat_share_chdir(name));
             break;
         }
