@@ -160,6 +160,10 @@ static const uint8_t ser_escr[11] = { 0x85, 0xFF, 0x2C, 0x7A, 0x02, 0x10, 0x03, 
 #define OP_JMP  0x4Cu
 #define OP_BIT  0x2Cu
 #define OP_RTI  0x40u
+#define OP_STA  0x8Du      /* the trips' routine: STA addr / RTS */
+#define OP_LDA  0xADu      /* ... a read trip: LDA addr / RTS, the byte comes back in the stub's port write */
+#define OP_LDX  0xA2u      /* +15: LDX #buffer */
+#define OP_LDY  0xA0u      /* ... LDY #6 for the escape event's trip */
 
 /* Every this many bytes the stub chains to the MOS instead of RTI, so other
    interrupts wait at most this many fast trips (~1.7 ms at 105 us each). */
@@ -169,6 +173,7 @@ static const uint8_t ser_escr[11] = { 0x85, 0xFF, 0x2C, 0x7A, 0x02, 0x10, 0x03, 
    stub is not being run (interrupts off, or the vectors reset behind our
    back without a BREAK): close it rather than hold nIRQ indefinitely. */
 #define SER_STALL_US    100000u
+#define SER_PROBE_US    400000u   /* an ESCAPE key's reads not back in this long: ESCAPE anyway */
 #define SER_BACKOFF_US    2000u       /* telnet: 20 ms, with the keyboard buffer holding 32 bytes, capped a paste at ~1.3 kB/s */
 #define SER_BACKOFF_MODEM_US 20000u   /* the modem (helper 19): as it always was */
 
@@ -219,6 +224,22 @@ static volatile bool     ser_tube_brk;    /* a BREAK's trip (hold, then the rese
 static volatile bool     ser_tube_held;   /* ... it was taken: the release is due once the ROM hooks in again */
 static volatile bool     ser_tube_rel;    /* ... and its trip is to come */
 static volatile bool     ser_tube_active; /* the trip in progress is one of them */
+/* The ESCAPE key as the keyboard's (OS 1.20 OSBYTE 153, &E4F3): the character becomes ESCAPE only
+   if it is the escape character (*FX220, &026C) and *FX229 (&0275) is 0, else it goes into the
+   buffer as it is; *FX200 bit 0 (&0258) ignores it; with escape event 6 enabled (&02BF+6) the
+   event is raised (OSEVEN, &FFBF) and the flag is not set; else the escape trip.  The Pi cannot
+   read the Beeb's memory, so four read trips do (the trips' routine made LDA addr: the stub's
+   port write that ends the trip carries the byte), then this decides.  OSBYTE variables are at
+   the same place on every MOS (OSBYTE n's at &0190+n). */
+static const uint16_t    ser_probe_addr[4] = { 0x026Cu, 0x0275u, 0x0258u, 0x02C5u };
+static volatile uint8_t  ser_probe_step;  /* 0 none; 1-4 the read to come; 5 read, the decision is due */
+static volatile uint8_t  ser_probe_val[4];
+static volatile bool     ser_read_active; /* the trip in progress is a read */
+static volatile uint32_t ser_probe_us;
+static volatile bool     ser_event_req;   /* the escape event's trip is to come */
+static volatile bool     ser_event_active;
+static volatile bool     ser_event_full;  /* ... and it ended at the full port */
+static volatile uint8_t  ser_esc_result;  /* SER_ESC_*: how the last ESCAPE key went, 0 while it is going */
 static volatile uint32_t ser_idle_tx;     /* ser_tx_count when the last idle trip was armed */
 static volatile uint32_t ser_tx_us;       /* the last byte the Beeb sent */
 static volatile bool     ser_gate_open;   /* +0C is BIT: nIRQ asserted, byte at +14 */
@@ -294,6 +315,19 @@ static void ser_gate_close(void)
       ser_idle_req = true;
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
    }
+   if (ser_read_active) {                    /* ... a read: again */
+      ser_read_active = false;
+      ser_write(SER_ESC_ROUTINE, OP_STA);
+      ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
+   }
+   if (ser_event_active) {                   /* ... the escape event's: again */
+      ser_event_active = false;
+      ser_event_req = true;
+      ser_write(SER_INBUF - 1u, OP_LDX);
+      ser_write(SER_INBUF, 0u);
+      ser_write(SER_ESC_ROUTINE, OP_STA);
+      ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
+   }
    if (ser_tube_active) {                    /* ... and a Tube trip: that store again */
       ser_tube_active = false;
       if (ser_brk_trip) {                    /* the BREAK's, with its exit: asked again */
@@ -310,6 +344,7 @@ static void ser_gate_close(void)
 /* Point the stub's JSR at its trip routine, storing byte at addr. */
 static void ser_trip_arm(uint16_t addr, uint8_t byte)
 {
+   ser_write(SER_ESC_ROUTINE, OP_STA);
    ser_write(SER_TRIP_ADDR, (uint8_t)addr);
    ser_write(SER_TRIP_ADDR + 1u, (uint8_t)(addr >> 8));
    ser_write(SER_JSR, (uint8_t)(ser_base + SER_ESC_ROUTINE));
@@ -391,6 +426,19 @@ static bool ser_arm_next(void)
          return false;                       /* the BREAK's, with its exit: armed by the poll, gate shut */
       SER_LOG('T', ser_tube_rel);
       ser_tube_arm();
+   } else if (ser_probe_step >= 1u && ser_probe_step <= 4u) {
+      ser_read_active = true;                /* read the next OSBYTE variable */
+      ser_trip_arm(ser_probe_addr[ser_probe_step - 1u], 0u);
+      ser_write(SER_ESC_ROUTINE, OP_LDA);
+      SER_LOG('P', ser_probe_step);
+   } else if (ser_event_req) {
+      ser_event_req = false;                 /* the escape event: LDY #6 / JSR to JMP OSEVEN, A = 27 */
+      ser_event_active = true;
+      ser_trip_arm(0xFFBFu, 27u);
+      ser_write(SER_ESC_ROUTINE, OP_JMP);
+      ser_write(SER_INBUF - 1u, OP_LDY);
+      ser_write(SER_INBUF, 6u);
+      SER_LOG('V', 0);
    } else if (ser_esc_req) {
       ser_esc_arm();
       SER_LOG('E', 0);
@@ -447,6 +495,7 @@ static void ser_rx_consume(unsigned int gpio)
    SER_LOG('c', (ser_gate_open ? 1u : 0u) | (ser_esc_active ? 2u : 0u) | (ser_idle_active ? 4u : 0u));
    if (!ser_gate_open)
       return;
+
    if (ser_esc_active) {                     /* that trip was the escape one: no byte left the FIFO */
       ser_esc_active = false;
       SER_COUNT(ser_escapes);
@@ -455,6 +504,26 @@ static void ser_rx_consume(unsigned int gpio)
       ser_idle_active = false;
       SER_COUNT(ser_idles);
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
+   } else if (ser_read_active) {             /* ... a read: the byte is what the port was written */
+      ser_read_active = false;
+      ser_probe_val[ser_probe_step - 1u] = (uint8_t)GET_DATA(gpio);
+      ser_probe_step++;
+      ser_write(SER_ESC_ROUTINE, OP_STA);
+      ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
+   } else if (ser_event_active) {            /* ... the escape event's (C clear: taken) */
+      ser_event_active = false;
+      ser_write(SER_INBUF - 1u, OP_LDX);
+      ser_write(SER_INBUF, 0u);
+      ser_write(SER_ESC_ROUTINE, OP_STA);
+      ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
+      if (ser_event_full) {                  /* C set: no handler took it after all - the flag */
+         ser_event_full = false;
+         rx.head = rx.tail;
+         ser_esc_req = true;
+         ser_esc_result = SER_ESC_RAISED;
+      } else {
+         ser_esc_result = SER_ESC_EVENT;
+      }
    } else if (ser_tube_active) {             /* ... a Tube one: nor here */
       ser_tube_active = false;
       if (ser_brk_trip)
@@ -505,7 +574,9 @@ static void ser_rx_consume(unsigned int gpio)
 static void ser_rx_full(unsigned int gpio)
 {
    SER_LOG('f', (ser_esc_active ? 2u : 0u) | (ser_idle_active ? 4u : 0u));
-   if (ser_esc_active || ser_idle_active || ser_tube_active) {  /* a trip's routine returns the carry it came with */
+   if (ser_event_active)
+      ser_event_full = true;                 /* OSEVEN's C set: no event handler took it */
+   if (ser_esc_active || ser_idle_active || ser_tube_active || ser_read_active || ser_event_active) {  /* a trip's routine returns the carry it came with */
       ser_rx_consume(gpio);
       return;
    }
@@ -529,6 +600,13 @@ static void ser_after_break(void)
    ser_tube_brk = false;                        /* (ser_tube_held stays: the release is still due) */
    ser_tube_rel = false;
    ser_tube_active = false;
+   if (ser_probe_step != 0u || ser_event_req || ser_event_active || ser_read_active)
+      ser_esc_result = SER_ESC_OFF;             /* an ESCAPE key in flight: the reset took it */
+   ser_probe_step = 0u;
+   ser_read_active = false;
+   ser_event_req = false;
+   ser_event_active = false;
+   ser_event_full = false;
    ser_brk_req = false;
    ser_backoff = false;
    ser_brk_trip = false;
@@ -721,6 +799,32 @@ void serial_redirect_escape(void)
    _restore_cpsr(cpsr);
 }
 
+/* The ESCAPE key, as the keyboard's (see ser_probe_addr): serial_redirect_escape_result says how
+   it went.  Telnet mode only. */
+void serial_redirect_escape_key(void)
+{
+   if (!ser_hooked || !ser_telnet) {
+      ser_esc_result = SER_ESC_OFF;
+      return;
+   }
+   unsigned int cpsr = _disable_interrupts_cspr();
+   ser_esc_result = 0u;
+   ser_event_req = false;
+   ser_probe_us = Pi1MHz_now_us;
+   ser_probe_step = 1u;
+   _restore_cpsr(cpsr);
+}
+
+/* 0 while an ESCAPE key is still going, else SER_ESC_*, once. */
+uint8_t serial_redirect_escape_result(void)
+{
+   unsigned int cpsr = _disable_interrupts_cspr();
+   uint8_t r = ser_esc_result;
+   ser_esc_result = 0u;
+   _restore_cpsr(cpsr);
+   return r;
+}
+
 /* Throw away the keys not yet given to the Beeb, without an ESCAPE: a new session must not
    have the last one's type-ahead typed into it (a client that left with a backlog). */
 void serial_redirect_drop_keys(void)
@@ -798,6 +902,34 @@ static void serial_redirect_poll(void)
        && (Pi1MHz_now_us - ser_tx_us) > SER_IDLE_US)
       ser_idle_req = true;
 
+   if (ser_probe_step != 0u) {                 /* an ESCAPE key: read, decide (see ser_probe_addr) */
+      unsigned int cpsr = _disable_interrupts_cspr();
+      if (ser_probe_step == 5u) {
+         ser_probe_step = 0u;
+         if (((27u ^ ser_probe_val[0]) | ser_probe_val[1]) != 0u) {
+            ser_esc_result = SER_ESC_CHAR;      /* not the escape character, or *FX229: a key */
+         } else if ((ser_probe_val[2] & 1u) != 0u) {
+            ser_esc_result = SER_ESC_OFF;       /* *FX200 bit 0: ignored */
+         } else if (ser_probe_val[3] != 0u) {
+            ser_event_req = true;               /* escape event 6: the result when its trip ends */
+         } else {
+            ser_gate_close();
+            rx.head = rx.tail;
+            ser_esc_req = true;
+            ser_backoff = false;
+            ser_esc_result = SER_ESC_RAISED;
+         }
+      } else if ((Pi1MHz_now_us - ser_probe_us) > SER_PROBE_US && !ser_read_active) {
+         ser_probe_step = 0u;                  /* the reads never came back: ESCAPE as before */
+         ser_gate_close();
+         rx.head = rx.tail;
+         ser_esc_req = true;
+         ser_backoff = false;
+         ser_esc_result = SER_ESC_RAISED;
+      }
+      _restore_cpsr(cpsr);
+   }
+
    if (ser_gate_open) {
       if ((Pi1MHz_now_us - ser_gate_us) > SER_STALL_US) {
          unsigned int cpsr = _disable_interrupts_cspr();
@@ -823,7 +955,8 @@ static void serial_redirect_poll(void)
       ser_backoff = false;
    }
 
-   if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || ser_idle_req || ser_tube_rel || ser_tube_brk)) {
+   if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || ser_idle_req || ser_tube_rel || ser_tube_brk
+                      || (ser_probe_step >= 1u && ser_probe_step <= 4u) || ser_event_req)) {
       unsigned int cpsr = _disable_interrupts_cspr();
       if (ser_hooked && !ser_gate_open && !ser_brk_done && ser_arm_next()) {      /* the trip or byte first ... */
          ser_write(SER_GATE, OP_BIT);                              /* ... then the gate */
@@ -887,6 +1020,11 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    ser_tube_brk = false;           /* (ser_tube_held stays: the release is still due) */
    ser_tube_rel = false;
    ser_tube_active = false;
+   ser_probe_step = 0u;
+   ser_read_active = false;
+   ser_event_req = false;
+   ser_event_active = false;
+   ser_event_full = false;
    ser_backoff = false;
    ser_gate_open = false;
    Pi1MHz_nIRQ_CLEAR(ser_irq_src);

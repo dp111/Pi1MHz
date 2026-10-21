@@ -173,6 +173,10 @@ static int       g_drop_rxblk;
 static uint32_t  g_prog_us;              /* the last time the session moved, or began to wait */
 static bool      g_rx_blocked;           /* the key ring is full and client data is waiting for room */
 static bool      g_esc_cut;              /* an ESCAPE or BREAK is waiting behind the backlog: the keys before it go */
+static bool      g_esc_wait;             /* an ESCAPE key is being decided on the Beeb (serial_redirect_escape_key):
+                                            the keys behind it wait in the ring */
+static uint32_t  g_esc_wait_us;
+#define ESC_WAIT_US  600000u             /* no answer in this long: carry on */
 static uint32_t  g_recv_us;              /* when client data last came */
 /* Client data taken from lwIP but not yet turned into keys, copied out of its pbufs as it comes.
    Holding the pbufs themselves held lwIP's receive pool: the window is 64 KB, but a client sending
@@ -341,6 +345,7 @@ static void session_reset(void)
       to come, a key being watched for a silent screen, a scan key counted in the ring just emptied */
    g_lit_next = false;
    g_esc_cut = false;
+   g_esc_wait = false;
    g_silent_wait = false;
    g_scan_keys = 0u;
    g_scan_pending = false;
@@ -504,15 +509,12 @@ static void deliver_key(uint8_t k)
       if (serial_redirect_scan_ok())
          serial_redirect_shift();                     /* a trip, not a key: nothing queued can hold it up */
    } else if (k == TND_KEY_ESCAPE) {
-      g_khead = g_ktail;
-      g_ckq_head = g_ckq_tail;                      /* the escape flushes the Beeb's buffer too */
-      serial_redirect_escape();
-      keys_emptied();
-      g_silent_wait = true;                      /* and a screen the ESCAPE changed without printing is read */
-      g_silent_us = Pi1MHz_now_us;
-      g_silent_tx = g_out.drawn;
-      if (g_copy && g_ansi)
-         tnd_out_copykey(&g_out, 27u);
+      /* As the keyboard's ESCAPE key: the Beeb's settings decide (escape_settled) */
+      if (!g_esc_wait) {
+         serial_redirect_escape_key();
+         g_esc_wait = true;
+         g_esc_wait_us = Pi1MHz_now_us;
+      }
    } else {
       k_push(k);
       if (g_copy && g_ansi && ((k >= 139u && k <= 143u) || k == 13u)) {
@@ -523,6 +525,27 @@ static void deliver_key(uint8_t k)
             tnd_out_copykey(&g_out, k);            /* cursor keys, COPY, RETURN: the copy cursor */
          }
       }
+   }
+}
+
+/* How the Beeb took an ESCAPE key (serial_redirect_escape_key): as ESCAPE the keys behind it go with
+   the Beeb's buffer, as at the keyboard; as a character (*FX229, or another escape character) it goes
+   into the buffer ahead of the keys typed after it; ignored (*FX200) or an escape event: nothing. */
+static void escape_settled(uint8_t r)
+{
+   g_esc_wait = false;
+   if (r == SER_ESC_RAISED) {
+      g_khead = g_ktail;
+      g_ckq_head = g_ckq_tail;                      /* the escape flushed the Beeb's buffer too */
+      keys_emptied();
+      g_silent_wait = true;                      /* and a screen the ESCAPE changed without printing is read */
+      g_silent_us = Pi1MHz_now_us;
+      g_silent_tx = g_out.drawn;
+      if (g_copy && g_ansi)
+         tnd_out_copykey(&g_out, 27u);
+   } else if (r == SER_ESC_CHAR && g_ktail - g_khead < KRING_SIZE) {
+      g_khead--;
+      g_kring[g_khead & KRING_MASK] = 27u;
    }
 }
 
@@ -1389,7 +1412,14 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
 
    /* The keys, as far as the Beeb's keyboard buffer has room (the redirect's
       own FIFO, and behind it the stub's retry when the MOS buffer is full). */
-   if (beeb_attached && g_stage == S_LIVE) {
+   if (g_esc_wait) {
+      uint8_t r = serial_redirect_escape_result();
+      if (r != 0u)
+         escape_settled(r);
+      else if ((now_us - g_esc_wait_us) > ESC_WAIT_US)
+         escape_settled(SER_ESC_OFF);
+   }
+   if (beeb_attached && g_stage == S_LIVE && !g_esc_wait) {
       while (g_khead != g_ktail) {
          size_t room = serial_redirect_room();
          uint32_t idx = g_khead & KRING_MASK;
