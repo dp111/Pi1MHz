@@ -340,6 +340,10 @@ void wifi_debug_printf(const char *format, ...) __attribute__((format(printf, 1,
 void wifi_emulator_init(uint8_t instance, uint8_t address);
 void wifi_init(void);
 void wifi_boot(void);
+/* One step of the boot ladder for a caller blocked waiting for an address (the SMB client at
+   power-on, inside a SCSI command): false when none can come - the WiFi off or not set up, or
+   its boot failed. */
+bool wifi_boot_step(void);
 void wifi_note_sdio_ready(void);
 void wifi_note_firmware_ready(void);
 void wifi_note_network_ready(void);

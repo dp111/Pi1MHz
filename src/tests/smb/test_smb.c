@@ -76,10 +76,16 @@ static unsigned net_polls;
    only wifi_boot() brings one, as on the Pi (SDIO, join, lwIP). */
 static wifi_lwip_context_t net_ctx = { false };
 static unsigned boot_steps;
+static bool wifi_off;                  /* SMB_TEST_WIFI_OFF: the WiFi not set up (DISABLED) */
 void wifi_boot(void)
 {
-   if (++boot_steps == 3u)
+   if (!wifi_off && ++boot_steps == 3u)
       net_ctx.address_ready = true;
+}
+bool wifi_boot_step(void)
+{
+   wifi_boot();
+   return !wifi_off;
 }
 volatile Pi1MHz_break_t Pi1MHz_break;
 static unsigned break_after;           /* a BBC reset (nRST edge) after this many polls */
@@ -377,6 +383,9 @@ static void test_names(void)
    r = fsr_rename("0:/BeebSCSI0/scsi0.cfg", "2:/scsi0.cfg");
    check("rename from the card to the share: refused before FatFs",
          r == FR_INVALID_DRIVE && fatfs_calls == calls, "passed on");
+   r = fsr_rename("0:/BeebSCSI0/scsi0.cfg", "1:/scsi0.cfg");
+   check("rename from the card to a USB drive: refused before FatFs (it would rename in place)",
+         r == FR_INVALID_DRIVE && fatfs_calls == calls, "passed on");
    r = fsr_unlink("2:/BeebSCSI0/scsi0.cfg");
    check("unlink a file", r == FR_OK && disk_size("BeebSCSI0/scsi0.cfg") < 0, "still there");
    r = fsr_mkdir("2:/BeebSCSI0/empty");
@@ -658,6 +667,20 @@ static void test_failures(void)
 
 int main(void)
 {
+   if (getenv("SMB_TEST_WIFI_OFF") != NULL) {   /* its own run: the power-on wait happens once */
+      wifi_off = true;
+      cfg_server = "192.0.2.1"; cfg_user = "u"; cfg_pass = "p";
+      share_dir = "/";
+      uint64_t t0 = now_us();
+      bool up = smb_client_connect();
+      uint64_t ms = (now_us() - t0) / 1000u;
+      char st[160];
+      snprintf(st, sizeof st, "connect %d after %llu ms (want 0, at once - not the %u s wait)", up,
+               (unsigned long long)ms, 20u);
+      check("storage=smb with the WiFi off: the power-on wait gives up at once", !up && ms < 1000u, st);
+      printf("%d passed, %d failed\n", passed, failed);
+      return failed != 0;
+   }
    cfg_server = getenv("SMB_TEST_SERVER");
    cfg_user   = getenv("SMB_TEST_USER");
    cfg_pass   = getenv("SMB_TEST_PASS");

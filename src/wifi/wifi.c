@@ -767,6 +767,12 @@ void wifi_init(void)
    wifi_debug_log("boot scheduled");
 }
 
+bool wifi_boot_step(void)
+{
+   wifi_boot();
+   return g_wifi_state != WIFI_STATE_DISABLED && g_wifi_state != WIFI_STATE_ERROR;
+}
+
 void wifi_boot(void)
 {
    if (g_wifi_state == WIFI_STATE_DISABLED || g_wifi_state == WIFI_STATE_ERROR)

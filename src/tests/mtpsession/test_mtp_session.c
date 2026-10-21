@@ -110,6 +110,7 @@ void filesystemHostLockLun(int8_t lun, bool lock)
 bool filesystemHostLunRevoked(uint8_t lun) { (void)lun; return false; }
 bool fat_service_file_in_use(const char *p) { (void)p; return false; }
 bool beeb_path_busy(const char *p) { (void)p; return false; }
+bool beeb_path_busy_besides_lun(const char *p) { (void)p; return false; }
 
 /* filesystemEject / filesystemInsert, as far as MTP sees them: the eject
    hook first, then the volume goes; a mount of the next card, then the

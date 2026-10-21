@@ -142,6 +142,25 @@ static void fat_open_record(unsigned int handle, const char *name)
    fat_open_valid[handle] = true;
 }
 
+/* A slot opened again without a close (an error path that skipped it) is closed first, on
+   every route: f_open over a FIL still open drops its unwritten sector and its size, so the
+   file's tail was lost on the card and a USB drive (fsroute only guarded the share). */
+static void fat_slot_close(unsigned int slot)
+{
+   if (fat_file_open[slot]) {
+      fat_file_open[slot] = false;
+      (void)fsr_close(&fileObject[slot]);
+   }
+}
+
+static void fat_slot_closedir(unsigned int slot)
+{
+   if (fat_dir_open[slot]) {
+      fat_dir_open[slot] = false;
+      (void)fsr_closedir(&dirObject[slot]);
+   }
+}
+
 static void fat_open_clear_all(void)
 {
    for (unsigned int i = 0; i < 16u; i++) {
@@ -328,14 +347,19 @@ bool fat_service_file_in_use(const char *host_path)
    through this service, or the WAV the Music 5000 is still writing out.  A host write that lands on a running LUN's cluster
    chain is silent corruption, so the two halves live together here rather
    than being re-joined at each call site. */
-bool beeb_path_busy(const char *host_path)
+bool beeb_path_busy_besides_lun(const char *host_path)
 {
    /* Those two keep their paths without a volume: with the storage on the
       USB drive their files are not the card's. */
    bool card = filesystemPathOnCard(host_path);
-   return filesystemHostPathBusy(host_path) || fat_service_file_in_use(host_path)
+   return fat_service_file_in_use(host_path)
        || (card && M5000_recording_path_busy(host_path))   /* a WAV still being flushed */
        || (card && fujibus_service_path_busy(host_path));  /* a FujiNet-mounted image */
+}
+
+bool beeb_path_busy(const char *host_path)
+{
+   return filesystemHostPathBusy(host_path) || beeb_path_busy_besides_lun(host_path);
 }
 
 /* ---- readdir-ex (command 17) record ------------------------------------
@@ -820,10 +844,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             /* by absolute path: the slot's own directory, a made-up 8.3
                name resolved, and the path kept to reopen after a reset */
             char abs[FAT_OPEN_PATH_MAX];
-            if (fat_file_open[data & 15]) {
-                fat_file_open[data & 15] = false;
-                (void)fsr_close(&fileObject[data & 15]);
-            }
+            fat_slot_close(data & 15);
             if (!fat_slot_resolve(data & 15, (char *)&Pi1MHz->JIM_ram[command_pointer+3],
                                   abs, sizeof abs)) {
                 Pi1MHz_MemoryWrite(addr, FR_INVALID_NAME);
@@ -843,6 +864,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             Pi1MHz_MemoryWrite(addr, result);
             break;
         }
+        fat_slot_close(data & 15);
         result = fsr_open( &fileObject[data & 15],
                          fat_beeb_path(command_pointer+3, fat_path_a, sizeof fat_path_a),
                          mode );
@@ -981,6 +1003,7 @@ static void fat_service_execute(uint32_t command_pointer, uint32_t addr, uint8_t
             break;
         }
         {
+            fat_slot_closedir(data & 15);
             FRESULT dresult = fsr_opendir( (DIR * )&dirObject[data & 15],
                                          fat_beeb_path(command_pointer + 1, fat_path_a, sizeof fat_path_a) );
             if (dresult == FR_OK)
@@ -1359,10 +1382,8 @@ static void fat_service_poll(void)
 static void fat_close_all(void)
 {
    for (unsigned int i = 0; i < 16u; i++) {
-      if (fat_file_open[i])
-         (void)fsr_close(&fileObject[i]);
-      if (fat_dir_open[i])
-         (void)fsr_closedir(&dirObject[i]);
+      fat_slot_close(i);
+      fat_slot_closedir(i);
    }
    fat_open_clear_all();
 }

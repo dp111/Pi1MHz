@@ -113,11 +113,15 @@ static void pump(void)
 /* Run libsmb2, the network and the audio until done(arg) holds: false on
    a lost link, after limit_us, or once the nRST IRQ has counted a reset
    the re-init has not yet handled (reset_cut) - also for a wait that
-   starts after the edge, inside the same poll callback.  The WiFi boot
-   ladder is stepped too: at power-on the Beeb asks before it has joined,
-   and only wifi_boot() brings up the SDIO, the join and lwIP - without it
-   the address wait spins for nothing.  Once the boot is complete it
-   returns at once. */
+   starts after the edge, inside the same poll callback.  For the power-on
+   address wait (boot_wait) the WiFi boot ladder is stepped too: the Beeb
+   asks before it has joined, and only wifi_boot() brings up the SDIO, the
+   join and lwIP - without it the wait spins for nothing; with the WiFi off
+   or failed it ends at once instead of after SMB_NETWORK_WAIT_US.  Not in
+   later waits: a boot restarted after a lost link (SDIO start, firmware
+   preload from the card) is the main loop's, not a SCSI command's. */
+static bool boot_wait;
+
 static bool wait_for(bool (*done)(const volatile void *), const volatile void *arg,
                      uint32_t limit_us)
 {
@@ -135,7 +139,8 @@ static bool wait_for(bool (*done)(const volatile void *), const volatile void *a
          return false;
       if (RPI_GetSystemTime() - t0 > limit_us)
          return false;
-      wifi_boot();
+      if (boot_wait && !wifi_boot_step())
+         return false;
       wifi_lwip_poll();
       audio_pump();
       watchdog_feed();
@@ -280,7 +285,13 @@ bool smb_client_connect(void)
       for an address, once.  Later a missing network fails at once. */
    bool first = !network_waited;
    network_waited = true;
-   if (!have_address(NULL) && (!first || !wait_for(have_address, NULL, SMB_NETWORK_WAIT_US))) {
+   bool got = have_address(NULL);
+   if (!got && first) {
+      boot_wait = true;
+      got = wait_for(have_address, NULL, SMB_NETWORK_WAIT_US);
+      boot_wait = false;
+   }
+   if (!got) {
       if (reset_cut)
          network_waited = false;       /* cut short: the next try waits again */
       snprintf(last_error, sizeof last_error, reset_cut ? "BBC reset" : "no network");

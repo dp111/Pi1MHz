@@ -127,5 +127,8 @@ SMB_TEST_FREEZE="pkill -STOP -P \$(cat $S/pid/smbd.pid); kill -STOP \$(cat $S/pi
 SMB_TEST_THAW="kill -CONT \$(cat $S/pid/smbd.pid); pkill -CONT -P \$(cat $S/pid/smbd.pid)" \
 SMB_TEST_SERVER=127.0.0.1:$PORT SMB_TEST_USER=root SMB_TEST_PASS=beebpass SMB_TEST_DIR=$S/share "$B/t"
 
+echo "== storage=smb with the WiFi off =="
+SMB_TEST_WIFI_OFF=1 "$B/t"
+
 echo "== the FAT service (MMFS) on the share =="
 SMB_TEST_SERVER=127.0.0.1:$PORT SMB_TEST_USER=root SMB_TEST_PASS=beebpass SMB_TEST_DIR=$S/share "$B/tf"

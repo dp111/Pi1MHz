@@ -117,6 +117,7 @@ static wifi_lwip_context_t net_ctx = { true };
 volatile Pi1MHz_break_t Pi1MHz_break;
 void wifi_lwip_poll(void) {}
 void wifi_boot(void) {}
+bool wifi_boot_step(void) { return true; }
 bool wifi_lwip_in_poll(void) { return false; }
 const wifi_lwip_context_t *wifi_lwip_get_context(void) { return &net_ctx; }
 int ipaddr_aton(const char *cp, ip_addr_t *addr)

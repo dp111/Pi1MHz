@@ -155,5 +155,8 @@ bool fat_service_file_in_use(const char *host_path);
    image (filesystemHostPathBusy) or a file open through the FAT service
    (fat_service_file_in_use).  Host-side writers ask this, not the halves. */
 bool beeb_path_busy(const char *host_path);
+/* The same but for the hard disc's LUN interlock: for a writer holding a LUN's host lock
+   itself, which asks the LUN its own questions (revoked, started). */
+bool beeb_path_busy_besides_lun(const char *host_path);
 
 #endif

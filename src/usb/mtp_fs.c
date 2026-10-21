@@ -1540,7 +1540,7 @@ int32_t tud_mtp_data_complete_cb(tud_mtp_cb_data_t* cb_data) {
         } else {
           promote_busy = filesystemHostPathBusy(g_write_state.path);
         }
-        if (promote_busy || fat_service_file_in_use(g_write_state.path)) {
+        if (promote_busy || beeb_path_busy_besides_lun(g_write_state.path)) {
           g_write_state.failed_resp = MTP_RESP_DEVICE_BUSY;
         } else {
           (void) f_unlink(g_write_state.path);        /* f_rename needs it free */

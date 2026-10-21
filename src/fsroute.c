@@ -809,10 +809,14 @@ FRESULT fsr_rename(const TCHAR *path_old, const TCHAR *path_new)
 {
    /* A rename stays on one volume.  FatFs drops a drive on the new name,
       and share_path takes a name without one as on the share, so a new
-      name on the other side of the share would quietly rename the file
-      in place under another name: refused instead. */
-   if (path_new != NULL && path_new[0] >= '0' && path_new[0] <= '9' && path_new[1] == ':' &&
-       fsr_is_net_path(path_new) != fsr_is_net_path(path_old))
+      name on another volume - the other side of the share, or the card
+      against a USB drive - would quietly rename the file in place under
+      another name: refused instead. */
+   int d_new = (path_new != NULL && path_new[0] >= '0' && path_new[0] <= '9' && path_new[1] == ':')
+             ? path_new[0] : -1;
+   int d_old = (path_old != NULL && path_old[0] >= '0' && path_old[0] <= '9' && path_old[1] == ':')
+             ? path_old[0] : -1;
+   if (d_new >= 0 && ((d_old >= 0 && d_new != d_old) || fsr_is_net_path(path_new) != fsr_is_net_path(path_old)))
       return FR_INVALID_DRIVE;
    if (!fsr_is_net_path(path_old))
       return f_rename(path_old, path_new);

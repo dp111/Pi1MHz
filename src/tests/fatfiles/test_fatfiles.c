@@ -382,6 +382,19 @@ int main(void)
       }
    }
 
+   puts("-- a slot opened again without a close (an error path that skipped it)");
+   {
+      FILINFO fi;
+      shared_chdir("/");
+      ok(f_open_cmd(7, "TAIL.TXT", FA_WRITE | FA_CREATE_ALWAYS) == FR_OK, "slot 7 opened for write");
+      memset(buf(), 0x5A, 100);
+      ok(rw_cmd(7, 5, 0, 100) == FR_OK, "100 bytes written (less than a sector: still in the FIL's buffer)");
+      ok(f_open_cmd(7, "TAIL2.TXT", FA_WRITE | FA_CREATE_ALWAYS) == FR_OK, "slot 7 opened again, on another file, with no close");
+      ok(f_stat("/TAIL.TXT", &fi) == FR_OK && fi.fsize == 100u,
+         "the first file was closed first: its 100 bytes and its size are on the card");
+      f_close_cmd(7);
+   }
+
    printf("%d checks, %d failures\n", checks, fails);
    if (fails == 0) puts("FATFILES TESTS PASSED");
    return fails ? 1 : 0;

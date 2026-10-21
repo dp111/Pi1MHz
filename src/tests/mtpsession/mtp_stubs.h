@@ -23,6 +23,7 @@ bool   filesystemHostLunRevoked(uint8_t lunNumber);
 /* services.h */
 bool fat_service_file_in_use(const char *host_path);
 bool beeb_path_busy(const char *host_path);
+bool beeb_path_busy_besides_lun(const char *host_path);
 
 /* rpi/systimer.h */
 uint32_t RPI_GetSystemTime(void);
