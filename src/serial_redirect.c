@@ -200,6 +200,25 @@ static volatile bool     ser_brk_trip;    /* ... and the exit of the stub, after
 static volatile bool     ser_esc_active;  /* the trip in progress is the escape one */
 static volatile bool     ser_idle_req;    /* the Beeb's RS423 busy flag wants setting: an idle trip is waiting */
 static volatile bool     ser_idle_active; /* the trip in progress is the idle one */
+/* A BREAK resets a second processor too, as the BREAK key does through the Tube's reset line,
+   which a jump through the reset vector never touches: left running (a program, or in the middle
+   of reporting an Escape), it did not answer the host's start-up and the Beeb hung after "BASIC",
+   about one BREAK in three on a 6502 second processor.  The BREAK's trip stores &A0 in the Tube
+   ULA's control register (&FEE0: bit 7 set or clear the flags in bits 0-5; bit 5 P holds the second
+   processor in reset; b-em and PiTubeDirect implement it so), and its exit is the JMP (&FFFC); once
+   the Beeb has been reset and the ROM has hooked it in again - before the second processor's
+   banner - a trip stores &20, which clears P alone and lets it start, as at the BREAK key.  Held
+   for longer with the host running, the host stopped taking interrupts (it waits on the second
+   processor inside them), so the hold and the jump are one trip.  Bit 6 T, clear the Tube's
+   registers, is left alone: after it, too, the Beeb took no more interrupts.  Without a Tube
+   nothing answers at &FEE0. */
+#define SER_TUBE_CTL   0xFEE0u
+#define SER_TUBE_HOLD  0xA0u
+#define SER_TUBE_GO    0x20u
+static volatile bool     ser_tube_brk;    /* a BREAK's trip (hold, then the reset) is to come */
+static volatile bool     ser_tube_held;   /* ... it was taken: the release is due once the ROM hooks in again */
+static volatile bool     ser_tube_rel;    /* ... and its trip is to come */
+static volatile bool     ser_tube_active; /* the trip in progress is one of them */
 static volatile uint32_t ser_idle_tx;     /* ser_tx_count when the last idle trip was armed */
 static volatile uint32_t ser_tx_us;       /* the last byte the Beeb sent */
 static volatile bool     ser_gate_open;   /* +0C is BIT: nIRQ asserted, byte at +14 */
@@ -275,6 +294,17 @@ static void ser_gate_close(void)
       ser_idle_req = true;
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
    }
+   if (ser_tube_active) {                    /* ... and a Tube trip: that store again */
+      ser_tube_active = false;
+      if (ser_brk_trip) {                    /* the BREAK's, with its exit: asked again */
+         ser_brk_trip = false;
+         ser_brk_req = true;
+         ser_tube_brk = true;
+      } else {
+         ser_tube_rel = true;
+      }
+      ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
+   }
 }
 
 /* Point the stub's JSR at its trip routine, storing byte at addr. */
@@ -299,20 +329,16 @@ static void ser_idle_arm(void)
    False when there is nothing to send. */
 static bool ser_arm_next(void);
 
-/* Make the next trip through the stub the ESCAPE one.  The call target and the
-   byte are both written before the gate opens, or while it is open and the
-   consume that ended the last trip is being answered. */
-static void ser_esc_arm(void)
+/* A BREAK turns the stub's last jump, which hands the interrupt on to the MOS, into JMP (&FFFC)
+   at the end of the trip being armed: the Beeb is reset with nothing left asserted (a reset taken
+   inside the trip itself leaves nIRQ low and hangs it). */
+static void ser_brk_exit_arm(void)
 {
-   ser_esc_req = false;
-   ser_esc_active = true;
-   /* The routine stores &80 in &FF, and the trip ends as any other: the Beeb's consume
-      (or full) write clears our nIRQ.  A BREAK instead turns the stub's last jump, which
-      hands the interrupt on to the MOS, into JMP (&FFFC): the Beeb is reset with nothing
-      left asserted (a reset taken inside the trip itself leaves nIRQ low and hangs it). */
    ser_brk_trip = ser_brk_req;               /* the consume that ends this trip sets the exit */
    ser_brk_req = false;
-   if (ser_brk_trip) {
+   if (ser_brk_trip && ser_brk_armed) {     /* armed again (its trip was cut short): the exit is set */
+      ser_brk_us = Pi1MHz_now_us;
+   } else if (ser_brk_trip) {
       /* The exit is made JMP (&FFFC) now, while the gate is shut and no interrupt can be in the
          stub, and not when the trip's consume comes: written then it raced the 6502 to the exit
          (about 15 us), and a late write lost the BREAK and left &FFFC as the chain operand, so a
@@ -325,6 +351,31 @@ static void ser_esc_arm(void)
       ser_brk_armed = true;
       ser_brk_us = Pi1MHz_now_us;
    }
+}
+
+/* A Tube trip (see SER_TUBE_CTL): the release after a BREAK, or the BREAK's own, which ends in it. */
+static void ser_tube_arm(void)
+{
+   ser_tube_active = true;
+   if (ser_tube_rel) {
+      ser_tube_rel = false;
+      ser_trip_arm(SER_TUBE_CTL, SER_TUBE_GO);
+   } else {
+      ser_tube_brk = false;
+      ser_brk_exit_arm();
+      ser_trip_arm(SER_TUBE_CTL, SER_TUBE_HOLD);
+   }
+}
+
+/* Make the next trip through the stub the ESCAPE one.  The call target and the
+   byte are both written before the gate opens, or while it is open and the
+   consume that ended the last trip is being answered. */
+static void ser_esc_arm(void)
+{
+   ser_esc_req = false;
+   ser_esc_active = true;
+   /* The routine stores &80 in &FF, and the trip ends as any other: the Beeb's consume
+      (or full) write clears our nIRQ. */
    if (ser_base >= SER_ESCR_OFF) {           /* the MOS's way, the Tube told too */
       ser_write(SER_JSR, (uint8_t)(ser_base - SER_ESCR_OFF));
       ser_write(SER_RX_BYTE, SER_ESC_BYTE);
@@ -335,7 +386,12 @@ static void ser_esc_arm(void)
 
 static bool ser_arm_next(void)
 {
-   if (ser_esc_req) {
+   if (ser_tube_rel || ser_tube_brk) {
+      if (!ser_tube_rel && ser_gate_open)
+         return false;                       /* the BREAK's, with its exit: armed by the poll, gate shut */
+      SER_LOG('T', ser_tube_rel);
+      ser_tube_arm();
+   } else if (ser_esc_req) {
       ser_esc_arm();
       SER_LOG('E', 0);
    } else if (ser_idle_req && ser_telnet) {    /* telnet mode only: the modem (helper 19) runs as it always did */
@@ -399,6 +455,11 @@ static void ser_rx_consume(unsigned int gpio)
       ser_idle_active = false;
       SER_COUNT(ser_idles);
       ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
+   } else if (ser_tube_active) {             /* ... a Tube one: nor here */
+      ser_tube_active = false;
+      if (ser_brk_trip)
+         ser_tube_held = true;               /* the BREAK's: the release follows the reset */
+      ser_write(SER_JSR, (uint8_t)(ser_base + SER_INSV_TRAMP));
    } else {
       if (fifo_used(&rx) == 0u)
          return;
@@ -444,7 +505,7 @@ static void ser_rx_consume(unsigned int gpio)
 static void ser_rx_full(unsigned int gpio)
 {
    SER_LOG('f', (ser_esc_active ? 2u : 0u) | (ser_idle_active ? 4u : 0u));
-   if (ser_esc_active || ser_idle_active) {  /* a trip's routine returns the carry it came with */
+   if (ser_esc_active || ser_idle_active || ser_tube_active) {  /* a trip's routine returns the carry it came with */
       ser_rx_consume(gpio);
       return;
    }
@@ -465,6 +526,9 @@ static void ser_after_break(void)
    ser_esc_req = false;
    ser_idle_active = false;
    ser_idle_req = true;                         /* whatever was sent before, the busy flag starts right */
+   ser_tube_brk = false;                        /* (ser_tube_held stays: the release is still due) */
+   ser_tube_rel = false;
+   ser_tube_active = false;
    ser_brk_req = false;
    ser_backoff = false;
    ser_brk_trip = false;
@@ -519,6 +583,10 @@ static void ser_control(unsigned int gpio)
    }
 
    ser_hooked = (v != SER_CTL_UNHOOK);
+   if (ser_hooked && ser_tube_held) {           /* hooked in again after our BREAK: let the second processor go */
+      ser_tube_held = false;
+      ser_tube_rel = true;
+   }
    if (telnet != ser_telnet) {
       /* Which MOS buffer the stub inserts into: 0 the keyboard, 1 RS423 input.
          What is queued for the other one goes with the change. */
@@ -660,7 +728,7 @@ void serial_redirect_drop_keys(void)
    if (!ser_hooked || !ser_telnet)
       return;
    unsigned int cpsr = _disable_interrupts_cspr();
-   if (!ser_esc_active && !ser_idle_active && !ser_brk_done)   /* a trip in flight finishes as it is */
+   if (!ser_esc_active && !ser_idle_active && !ser_tube_active && !ser_brk_done)   /* a trip in flight finishes as it is */
       ser_gate_close();
    rx.head = rx.tail;
    ser_backoff = false;
@@ -691,7 +759,8 @@ void serial_redirect_break(void)
    ser_gate_close();
    rx.head = rx.tail;
    ser_brk_req = true;
-   ser_esc_req = true;
+   ser_esc_req = false;                       /* no ESCAPE first: the Tube host code would tell it across */
+   ser_tube_brk = true;
    ser_backoff = false;
    _restore_cpsr(cpsr);
 }
@@ -754,7 +823,7 @@ static void serial_redirect_poll(void)
       ser_backoff = false;
    }
 
-   if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || ser_idle_req)) {
+   if (ser_hooked && (fifo_used(&rx) != 0u || ser_esc_req || ser_idle_req || ser_tube_rel || ser_tube_brk)) {
       unsigned int cpsr = _disable_interrupts_cspr();
       if (ser_hooked && !ser_gate_open && !ser_brk_done && ser_arm_next()) {      /* the trip or byte first ... */
          ser_write(SER_GATE, OP_BIT);                              /* ... then the gate */
@@ -815,6 +884,9 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    ser_esc_active = false;
    ser_idle_req = false;
    ser_idle_active = false;
+   ser_tube_brk = false;           /* (ser_tube_held stays: the release is still due) */
+   ser_tube_rel = false;
+   ser_tube_active = false;
    ser_backoff = false;
    ser_gate_open = false;
    Pi1MHz_nIRQ_CLEAR(ser_irq_src);
