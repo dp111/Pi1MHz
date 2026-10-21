@@ -370,6 +370,26 @@ static void test_break_key(void)
    in_reset();
    FEED(&s, "ab\xff\xf4" "c");
    CHECK(nkeys == 4 && keys[2] == TND_KEY_ESCAPE && keys[3] == 'c', "IAC IP (Ctrl-C in line mode) is ESCAPE"); if (nkeys != 4) dump();
+   /* A line-mode client's ESC is IAC IP (its interrupt character, set by us): read as the ESC byte. */
+   in_reset();
+   FEED(&s, "\xff\xf4");
+   CHECK(nkeys == 0, "IAC IP alone: an ESC, waiting");
+   tick(&s, TND_ESC_US + 1000u);
+   CHECK(nkeys == 1 && keys[0] == TND_KEY_ESCAPE, "IAC IP alone: ESCAPE once nothing follows");
+   in_reset();
+   FEED(&s, "\xff\xf4\xff\xfd\x06" "[24~");
+   static const uint8_t wont_tm[] = { 255, 252, 6 };
+   CHECK(nkeys == 1 && keys[0] == TND_KEY_BREAK && nreply == 3 && memcmp(reply, wont_tm, 3) == 0,
+         "IAC IP, DO TM, [24~ (F12 from a line-mode client): BREAK, and the TM answered"); if (nkeys != 1) dump();
+   in_reset();
+   FEED(&s, "\xff\xf4" "[6~");
+   CHECK(nkeys == 1 && keys[0] == TND_KEY_SHIFT, "IAC IP [6~ (Page Down from a line-mode client): SHIFT"); if (nkeys != 1) dump();
+   in_reset();
+   FEED(&s, "\xff\xee" "x");
+   CHECK(nkeys == 2 && keys[0] == TND_KEY_ESCAPE && keys[1] == 'x', "IAC ABORT (Ctrl-C in line mode): ESCAPE at once");
+   in_reset();
+   FEED(&s, "\x1b[2\xff\xf1" "4~");
+   CHECK(nkeys == 1 && keys[0] == TND_KEY_BREAK, "a NOP inside a CSI sequence: the sequence goes on"); if (nkeys != 1) dump();
    in_reset();
    FEED(&s, "\x1b[6~");
    CHECK(nkeys == 1 && keys[0] == TND_KEY_SHIFT, "Page Down is SHIFT, for paged mode");
@@ -452,6 +472,20 @@ static void test_negotiation(void)
    FEED(&s, "\xff\xfb\x01");
    static const uint8_t dont1[] = { 255, 254, 1 };
    CHECK(nreply == 3 && memcmp(reply, dont1, 3) == 0, "WILL ECHO from the client: refused (DONT)");
+
+   /* LINEMODE taken: DO, MODE EDIT|TRAPSIG, and the special characters ESC, Ctrl-C and "~"; once. */
+   in_reset();
+   FEED(&s, "\xff\xfb\x22");
+   static const uint8_t lm[] = { 255, 253, 34, 255, 250, 34, 1, 3, 255, 240,
+                                 255, 250, 34, 3, 3, 0x42, 27, 7, 0x42, 3, 17, 2, '~', 255, 240 };
+   CHECK(nreply == sizeof lm && memcmp(reply, lm, sizeof lm) == 0 && s.lm, "WILL LINEMODE: DO, MODE, SLC (%u bytes)", (unsigned)nreply);
+   CHECK(sizeof lm <= TND_IN_REPLY, "the LINEMODE answer fits TND_IN_REPLY");
+   FEED(&s, "\xff\xfb\x22\xff\xfa\x22\x01\x07\xff\xf0\xff\xfa\x22\x03\x03\xc2\x1b\xff\xf0" "k");
+   CHECK(nreply == sizeof lm && nkeys == 1 && keys[0] == 'k', "WILL again, the client's MODE ack and SLC: no reply, nothing leaks");
+   in_reset();
+   FEED(&s, "\xff\xfc\x22");
+   static const uint8_t dont34[] = { 255, 254, 34 };
+   CHECK(nreply == 3 && memcmp(reply, dont34, 3) == 0 && !s.lm, "WONT LINEMODE (mode character): DONT");
 
    /* After IP a client flushes its output until DO TIMING-MARK is answered: every time. */
    in_reset();

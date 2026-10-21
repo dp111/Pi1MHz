@@ -33,6 +33,7 @@
 #define TN_WILL       251u
 #define TN_SB         250u
 #define TN_SE         240u
+#define TN_ABORT      238u
 #define TN_BRK        243u
 #define TN_IP         244u
 /* options we accept */

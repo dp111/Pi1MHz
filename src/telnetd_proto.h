@@ -48,8 +48,9 @@
 /* The next key is a byte for the Beeb to read as it is (a character above 127): the daemon sends it
    behind the ROM's LITKEY (ROM build 13), which reads it past the MOS's soft and cursor keys. */
 #define TND_KEY_LIT    0xFAu
-#define TND_IN_REPLY   6u      /* most negotiation bytes one input byte needs (IAC SB TTYPE SEND IAC SE) */
+#define TND_IN_REPLY   32u     /* most negotiation bytes one input byte needs (WILL LINEMODE's answer) */
 #define TND_GREETING_LEN 15u
+#define TND_OPT_LINEMODE 34u  /* telnet option 34: the client edits lines itself (RFC 1184) */
 #define TND_OPT_TM     6u      /* telnet option 6: timing mark (RFC 860), asked for after an IP to end a flush */
 #define TND_OPT_BINARY 0u      /* telnet option 0: an 8-bit path (RFC 856), how a client asks for teletype mode */
 #define TND_OPT_TTYPE  24u     /* telnet option 24: the client's terminal type (RFC 1091) */
@@ -96,6 +97,12 @@ typedef struct {
    bool     echo_off;           /* the client said DONT ECHO, we said WONT */
    bool     sga_off;            /* the client said DONT SGA, we said WONT */
    uint8_t  mode_gen;
+   /* LINEMODE (RFC 1184), which Linux telnet offers at "mode line": taken, so the client's special
+      characters are ours to set - ESC its interrupt (sent at once as IAC IP, read as the ESC byte),
+      Ctrl-C its abort (IAC ABORT, ESCAPE) and "~" a forwarding character, so the rest of F12
+      (ESC [ 2 4 ~) or Page Down (ESC [ 6 ~) follows the IP at once instead of waiting for RETURN. */
+   bool     lm;                 /* the client said WILL LINEMODE, we said DO */
+   uint8_t  resume;             /* the state a telnet command inside an escape sequence goes back to */
 } tnd_in_t;
 
 void   tnd_in_reset(tnd_in_t *s);

@@ -23,7 +23,7 @@
   WILL ECHO/SGA and DO ECHO/SGA are ours; anything else is refused.  DONT ECHO
   or DONT SGA (a client's line mode) is answered WONT, and DO again WILL; DO
   TIMING-MARK, which a client sends after an IP and flushes until answered, is
-  answered WONT every time.
+  answered WONT every time.  WILL LINEMODE is taken (see tnd_in_t's lm).
 
   Beeb -> terminal.  The Beeb's RS423 output (*FX3,1) is the VDU byte stream:
   text, plus control codes some of which take parameter bytes.  A terminal gets
@@ -37,6 +37,18 @@
 /* ---- client -> Beeb ---------------------------------------------------- */
 
 enum { I_NORMAL, I_CR, I_IAC, I_OPT, I_SB, I_SBIAC, I_ESC, I_CSI, I_SS3, I_C2, I_DCS0, I_DCS, I_DCSESC };
+
+/* The end of a telnet command: back to the escape sequence it came inside, if any. */
+#define IAC_DONE(s) ((s)->state = (s)->resume, (s)->resume = I_NORMAL)
+
+/* The answer to WILL LINEMODE: DO, the client to edit and trap signals (MODE EDIT|TRAPSIG), and its
+   special characters (SLC, function / level / value; level 2 is a value, &40 flush its input):
+   interrupt (3) ESC, abort (7) Ctrl-C, forward (17) "~". */
+static const uint8_t lm_on[] = {
+   TN_IAC, TN_DO, TND_OPT_LINEMODE,
+   TN_IAC, TN_SB, TND_OPT_LINEMODE, 1u, 3u, TN_IAC, TN_SE,
+   TN_IAC, TN_SB, TND_OPT_LINEMODE, 3u, 3u, 0x42u, 27u, 7u, 0x42u, 3u, 17u, 2u, '~', TN_IAC, TN_SE
+};
 
 #define ESC_STUCK_US  500000u    /* an escape sequence that never finished */
 
@@ -225,6 +237,14 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
 {
    *replen = 0u;
 
+   /* A telnet command inside an escape sequence (the IP that is a line-mode client's ESC, then its DO
+      TIMING-MARK, before the rest of F12 or Page Down) is read, and the sequence goes on after it. */
+   if (c == TN_IAC && !s->notelnet && (s->state == I_ESC || s->state == I_CSI || s->state == I_SS3)) {
+      s->resume = s->state;
+      s->state = I_IAC;
+      return 0u;
+   }
+
    if (s->raw && (s->notelnet || s->state == I_NORMAL || s->state == I_CR) && !(c == TN_IAC && !s->notelnet)) {
       bool after_cr = (s->state == I_CR);
       s->state = I_NORMAL;
@@ -252,6 +272,7 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
       switch (c) {
       case TN_IAC:                              /* a literal 0xFF: not a Beeb key ... */
          s->state = I_NORMAL;
+         s->resume = I_NORMAL;
          if (s->raw && s->lit_ok) {             /* ... except in teletype mode: the byte 255 */
             keys[0] = TND_KEY_LIT;
             keys[1] = 0xFFu;
@@ -266,22 +287,42 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
          s->state = I_SB;
          s->nsb = 0u;
          break;
-      case TN_IP:                               /* Interrupt Process: the client's Ctrl-C in its line mode */
-         s->state = I_NORMAL;
+      case TN_IP: {                             /* Interrupt Process: a line-mode client's ESC (or Ctrl-C) */
+         uint8_t r[TND_IN_REPLY];               /* read as the ESC byte: alone it is ESCAPE, IP [ 2 4 ~ is F12 */
+         size_t  rl;
+         IAC_DONE(s);
+         return tnd_in_byte(s, 27u, now_us, keys, r, &rl);
+      }
+      case TN_ABORT:                            /* a line-mode client's Ctrl-C */
+         IAC_DONE(s);
          keys[0] = TND_KEY_ESCAPE;
          return 1u;
       case TN_BRK:                              /* "send brk": the BREAK key */
-         s->state = I_NORMAL;
+         IAC_DONE(s);
          keys[0] = TND_KEY_BREAK;
          return 1u;
       default:                                  /* NOP, AYT, GA, ... */
-         s->state = I_NORMAL;
+         IAC_DONE(s);
          break;
       }
       return 0u;
 
    case I_OPT:
-      s->state = I_NORMAL;
+      IAC_DONE(s);
+      if (c == TND_OPT_LINEMODE && (s->cmd == TN_WILL || s->cmd == TN_WONT)) {
+         bool on = (s->cmd == TN_WILL);
+         if (on != s->lm) {
+            s->lm = on;
+            if (on) {
+               memcpy(rep, lm_on, sizeof lm_on);
+               *replen = sizeof lm_on;
+            } else {
+               rep[0] = TN_IAC; rep[1] = TN_DONT; rep[2] = c;
+               *replen = 3u;
+            }
+         }
+         return 0u;
+      }
       if (c == TND_OPT_BINARY) {                /* teletype mode asked for (or ended): an 8-bit path */
          bool on = (s->cmd == TN_DO || s->cmd == TN_WILL);
          bool *f = (s->cmd == TN_DO || s->cmd == TN_DONT) ? &s->bin_out : &s->bin_in;
@@ -341,7 +382,7 @@ size_t tnd_in_byte(tnd_in_t *s, uint8_t c, uint32_t now_us,
 
    case I_SBIAC:
       if (c == TN_SE) {
-         s->state = I_NORMAL;
+         IAC_DONE(s);
          if (s->nsb == 5u && s->sb[0] == TND_OPT_NAWS) {   /* NAWS: width and height, high byte first */
             s->win_cols = (uint16_t)((s->sb[1] << 8) | s->sb[2]);
             s->win_rows = (uint16_t)((s->sb[3] << 8) | s->sb[4]);

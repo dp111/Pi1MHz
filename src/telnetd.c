@@ -557,8 +557,9 @@ static void client_byte(uint8_t c, uint32_t now_us)
    waits behind a full key ring: a client sending faster than the Beeb takes keys (a paste, a
    stream to TERM) had its ESC held for as long as the backlog, and lost when it left.  Telnet
    commands are skipped; an ESC that ends the data counts once nothing more has come for 300 ms.
-   The same for BREAK (F12, ESC [ 2 4 ~, or IAC BRK) and IAC IP (ESCAPE): a Beeb stuck in a
-   program that reads no keys has a full ring, and they are how it is got back. */
+   The same for BREAK (F12, ESC [ 2 4 ~, or IAC BRK) and IAC ABORT (ESCAPE), and IAC IP, a line-mode
+   client's ESC: a Beeb stuck in a program that reads no keys has a full ring, and they are how it
+   is got back. */
 static bool esc_ahead(uint32_t now_us)
 {
    unsigned st = 0u;
@@ -572,8 +573,12 @@ static bool esc_ahead(uint32_t now_us)
             else if (c == 27u) st = 4u;
             break;
          case 1:                                  /* after IAC */
-            if (c == 244u || c == 243u)           /* IP, BRK */
+            if (c == 243u || c == 238u)           /* BRK, ABORT */
                return true;
+            if (c == 244u) {                      /* IP: a line-mode client's ESC */
+               st = 4u;
+               break;
+            }
             st = (c == 250u) ? 2u : (c >= 251u && c <= 254u) ? 3u : 0u;
             break;
          case 2: if (c == 0xFFu) st = 5u; break;  /* in a subnegotiation */
@@ -586,7 +591,13 @@ static bool esc_ahead(uint32_t now_us)
                return true;
             st = 0u;
             break;
+         case 9: st = (c >= 251u && c <= 254u) ? 10u : 4u; break;   /* a telnet command inside the ESC ... */
+         case 10: st = 4u; break;                 /* ... and its option */
          default:                                 /* after ESC */
+            if (c == 0xFFu && !g_in.notelnet) {
+               st = 9u;
+               break;
+            }
             if (c != '[' && c != 'O' && c != 'P')   /* CSI, SS3, DCS: sequences, not the ESCAPE key */
                return true;
             st = (c == '[' && !g_in.raw) ? 6u : 0u;
