@@ -58,5 +58,10 @@ the VideoCore's bus code needs a cold boot from the SD card - kernel.now
 keeps the code it started with (see
 [the web interface](web-interface.md#kernelnow-over-the-network)).
 
+Press CTRL-BREAK on the Beeb once the Pi has restarted. The Beeb runs on
+through the restart, but whatever it had hooked into the Pi (the serial
+redirect, the TelnetD ROM, a helper) loses its state on the Pi, and the
+keyboard may not respond until then.
+
 If you never touch firmware updates you can ignore this entirely -
 just avoid naming any of your own files `kernel.now`.

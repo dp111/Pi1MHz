@@ -96,6 +96,11 @@ A power cycle always goes back to the card's kernel. The first install
 of a build with the current kernel.now layout has to go on the SD card
 (see `docs/dev/chainboot-kernel-now.md`); after that kernel.now works.
 
+Press CTRL-BREAK on the Beeb once the Pi has restarted. The Beeb runs on
+through the restart, but whatever it had hooked into the Pi (the serial
+redirect, the TelnetD ROM, a helper) loses its state on the Pi, and the
+keyboard may not respond until then.
+
 kernel.now never changes the program the Pi's VideoCore runs to serve
 the 1MHz bus: that is loaded only at a cold boot. A build whose
 VideoCore code (`vidcore/Pi1MHzvc.s`) has changed must be copied to the
