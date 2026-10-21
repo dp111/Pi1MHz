@@ -211,6 +211,13 @@ static bool fat_off_card(void)
    return filesystemStorageRoot()[0] != '\0';
 }
 
+/* The storage-rooted name FatFs opens for a Beeb path (the path itself
+   if that does not fit). */
+static const char *fat_storage(const char *path, char *buf, size_t size)
+{
+   return filesystemStoragePath(path, buf, size) ? buf : path;
+}
+
 static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
 {
    const char *name = (const char *)&Pi1MHz->JIM_ram[off];
@@ -219,9 +226,10 @@ static const char *fat_beeb_path(uint32_t off, char *buf, size_t size)
       char abs[DISC_MAX_PATH + 3];
       if (!fat_join(abs, sizeof abs, fat_cwd, name))
          return name;                    /* too long: fails on the card's FatFs */
+      /* not fat_storage: its fallback would be abs, which is this frame's */
       return filesystemStoragePath(abs, buf, size) ? buf : name;
    }
-   return filesystemStoragePath(name, buf, size) ? buf : name;
+   return fat_storage(name, buf, size);
 }
 
 /* The current directory of the Beeb's volume, without its "N:" prefix (as
@@ -499,12 +507,6 @@ static bool fat_join(char *out, size_t size, const char *dir, const char *name)
    if (len == 0u)
       strcpy(out, "/");
    return true;
-}
-
-/* The storage-rooted name FatFs opens for an absolute Beeb path. */
-static const char *fat_storage(const char *abs, char *buf, size_t size)
-{
-   return filesystemStoragePath(abs, buf, size) ? buf : abs;
 }
 
 /* The 8.3 name the Beeb's filing system sees for an entry, "NAME.EXT":
