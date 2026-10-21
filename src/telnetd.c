@@ -995,7 +995,13 @@ static void telnetd_poll(uint32_t now_us, bool beeb_attached)
       hook_last_poll_us = now_us;
       hook_recent_us = hook_recent_us > dt ? hook_recent_us - dt : 0u;
    }
-   tnd_login_tick(&g_login, now_us);             /* the login's timers: lockouts, failures forgotten, the hold */
+   {                                             /* the login's timers: lockouts, failures forgotten, the hold */
+      static uint32_t login_tick_us;             /* counted in elapsed time, so ticked every 10 ms, not each pass */
+      if ((uint32_t)(now_us - login_tick_us) >= 10000u) {
+         login_tick_us = now_us;
+         tnd_login_tick(&g_login, now_us);
+      }
+   }
    bool            reset = hw_reset
                            || (hooked && (g_break_asked || hook_recent_us == 0u));
    if (hooked || hw_reset)

@@ -319,7 +319,11 @@ static void usb_host_task(void) {
 }
 
 static void usb_task(void) {
-    tud_task();
+    /* tud_task() masks and unmasks the USB interrupt around every queue read, even an empty
+       one: two interrupt-controller writes a pass.  The empty test needs no lock (one ISR
+       producer), so an idle pass skips the call. */
+    if (tud_task_event_ready())
+        tud_task();
     /* A received kernel.now is flashed from here rather than from inside the
        MTP callback - see chainboot.c. */
     chainboot_poll();

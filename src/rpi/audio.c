@@ -298,6 +298,8 @@ uint32_t audio_queued_frames(void)
    return ring_wr - ring_rd;
 }
 
+static void audio_poll(void);
+
 void audio_flush(void)
 {
    ring_rd = ring_wr;
@@ -346,7 +348,7 @@ void audio_claim(const audio_producer_t *p)
       active = &pwm_sink;
    /* The core drains the ring from the idle loop itself, whoever the
       producer is (registration is idempotent). */
-   Pi1MHz_Register_Poll(audio_pump, "audio");
+   Pi1MHz_Register_Poll(audio_poll, "audio");
 }
 
 void audio_release(const audio_producer_t *p)
@@ -544,6 +546,20 @@ void audio_pump_until(volatile const bool *abort)
 
 void audio_pump(void)
 {
+   audio_pump_until(NULL);
+}
+
+/* The main loop's call: a block lasts milliseconds, so a look every AUDIO_POLL_US is
+   plenty, and the passes between cost a compare instead of a read of the DMA's SRC_ADR (a
+   peripheral load the core waits for).  Callers inside a long wait (SMB, a SCSI transfer,
+   the player) call audio_pump() itself: Pi1MHz_now_us stands still while they run. */
+#define AUDIO_POLL_US 100u
+static void audio_poll(void)
+{
+   static uint32_t last_us;
+   if ((uint32_t)(Pi1MHz_now_us - last_us) < AUDIO_POLL_US)
+      return;
+   last_us = Pi1MHz_now_us;
    audio_pump_until(NULL);
 }
 

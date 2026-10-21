@@ -1446,9 +1446,9 @@ static void wifi_lwip_schedule_next_rejoin(uint32_t now_us)
 /* Drive association retries.  Called from wifi_lwip_poll() on every service,
    in both the never-joined and lost-the-link cases - they differ only in
    which timestamp starts the clock. */
-static void wifi_lwip_rejoin_service(void)
+static void wifi_lwip_rejoin_service(uint32_t now_us)
 {
-   uint32_t now_us = RPI_GetSystemTime();
+   static uint32_t s_health_last_us;
 
    /* A full restart in flight owns the state machine outright: drive it to
       DONE or ERROR.  The tick itself is the progress test - NOT
@@ -1492,6 +1492,13 @@ static void wifi_lwip_rejoin_service(void)
       (void)sdio_runtime_tick();
       return;
    }
+
+   /* Everything below works in seconds (silence limits, the rejoin schedule, the health
+      dwell): looked at every 10 ms, not on every pass - the health test alone reads the
+      timer twice more. */
+   if ((uint32_t)(now_us - s_health_last_us) < 10000u)
+      return;
+   s_health_last_us = now_us;
 
    if (g_wifi_lwip_context.link_up
        && sdio_runtime_rx_idle_us() < WIFI_LWIP_RX_SILENCE_LIMIT_US
@@ -1598,9 +1605,13 @@ static void wifi_lwip_poll_pass(void)
       same thing from a timer instead: retry the whole init on a doubling
       backoff (1 min .. 10 min).  Genuine config errors (bad SSID) refail
       fast and just idle in ERROR between attempts. */
+   /* One timer read for the pass.  Not Pi1MHz_now_us: SMB's waits call this from inside a
+      SCSI command, while the main loop - and so that stamp - stands still. */
+   const uint32_t pass_us = RPI_GetSystemTime();
+
    if (wifi_get_state() == WIFI_STATE_ERROR) {
       static uint32_t err_since_us;
-      uint32_t now = RPI_GetSystemTime();
+      uint32_t now = pass_us;
       if (s_err_backoff_us == 0u)
          s_err_backoff_us = 60000000u;
       if (err_since_us == 0u) {
@@ -1636,7 +1647,7 @@ static void wifi_lwip_poll_pass(void)
       the same schedule covers a link lost long after boot.  The backoff is
       what keeps a hopeless retry (no AP in range at all) from hammering the
       SDIO bus: attempts start a few seconds apart and stretch to a minute. */
-   wifi_lwip_rejoin_service();
+   wifi_lwip_rejoin_service(pass_us);
 
    /* Drain inbound frames and hand them to lwIP.  sdio_runtime_poll_-
       ethernet_frame() also processes the chip's async events (WLC_E_LINK,
@@ -1656,7 +1667,7 @@ static void wifi_lwip_poll_pass(void)
       changes are picked up within one idle interval. */
    {
       static uint32_t s_rx_next_us;   /* 0 on first call -> drains immediately */
-      uint32_t now_us = RPI_GetSystemTime();
+      uint32_t now_us = pass_us;
 
       /* full-rate while a transmit expects a reply (see wifi_lwip_rx_kick) */
       bool aggressive = (int32_t)(now_us - s_rx_aggressive_until_us) < 0;
@@ -1730,12 +1741,22 @@ static void wifi_lwip_poll_pass(void)
    if (s_blast_remaining != 0u)
       wifi_lwip_udpblast_poll();
 #endif
-   sys_check_timeouts();
-   wifi_lwip_log_dhcp_state();
    wifi_lwip_pass_diag_fold();
-   g_wifi_lwip_context.last_service_time_us = RPI_GetSystemTime();
+   g_wifi_lwip_context.last_service_time_us = pass_us;
    g_wifi_lwip_context.service_calls++;
-   wifi_lwip_update_runtime_state();
+
+   /* lwIP's timers have millisecond resolution, and sys_now() reads the 64-bit timer and
+      divides it: once a millisecond, not on every pass.  The link and address state that
+      follow are the chip's events, which a millisecond does not delay to any purpose. */
+   {
+      static uint32_t s_timers_us;
+      if ((uint32_t)(pass_us - s_timers_us) >= 1000u) {
+         s_timers_us = pass_us;
+         sys_check_timeouts();
+         wifi_lwip_log_dhcp_state();
+         wifi_lwip_update_runtime_state();
+      }
+   }
 }
 
 const wifi_lwip_context_t *wifi_lwip_get_context(void)

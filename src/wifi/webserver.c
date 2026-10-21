@@ -3467,6 +3467,22 @@ static bool route_status(ws_conn_t *c)
          }
       }
    }
+   {
+      /* Main-loop passes a second since the last /status read: how much time the pollers'
+         idle paths take (fewer passes = more spent each pass).  Read it twice, the Pi idle. */
+      static uint32_t last_passes, last_us;
+      uint32_t passes = Pi1MHz_poll_passes, now = RPI_GetSystemTime();
+      uint32_t dus = now - last_us;
+      if (last_us != 0u && dus != 0u)
+         snprintf(tmp, sizeof tmp, "%lu passes/s over %lu ms",
+                  (unsigned long)((uint64_t)(passes - last_passes) * 1000000u / dus),
+                  (unsigned long)(dus / 1000u));
+      else
+         snprintf(tmp, sizeof tmp, "read again for the rate");
+      last_passes = passes;
+      last_us = now;
+      table_row(&b, "Main loop", tmp);
+   }
 #ifdef DEBUG
    {
       /* max run per poll slot, reset on read.  Named, not numbered: the row

@@ -212,6 +212,7 @@ NOINIT_SECTION static func_ptr Pi1MHz_poll_table[POLL_SLOTS];
 NOINIT_SECTION static const char *Pi1MHz_poll_names[POLL_SLOTS];
 // holds the total number of polling functions to call
 static uint8_t  Pi1MHz_polls_max;
+uint32_t Pi1MHz_poll_passes;        /* main-loop passes since boot: /status shows the rate */
 
 /* Boot timing, captured once during init and read on demand by /status.
    The BCM system timer free-runs from the GPU's own start, so the value
@@ -804,10 +805,14 @@ static void init_emulator(void) {
 
 static uint8_t led_pin;
 
+/* Called by the SCSI emulation on every pass: the pin is written only when the state changes. */
 void Pi1MHz_LED(int led)
 {
-   if (led_pin!=255)
+   static int shown = -1;
+   if (led_pin != 255 && led != shown) {
+      shown = led;
       RPI_SetGpioValue(led_pin , led);
+   }
 }
 
 static void init_hardware(void)
@@ -1126,7 +1131,6 @@ _Noreturn void kernel_main(void)
    RPI_BootStage(BOOT_STAGE_RUNNING);
 
    bool oldreset = Pi1MHz_is_rst_active();
-   uint32_t main_poll_loops = 0u;
    uint32_t heartbeat_left = MAIN_POLL_HEARTBEAT_PASSES;
    do {
       if ( Pi1MHz_is_rst_active() )
@@ -1232,11 +1236,11 @@ _Noreturn void kernel_main(void)
          init markers, so this store would be a dead one in the hot loop. */
       RPI_BootDetail(0u);
 #endif
-      main_poll_loops++;
+      Pi1MHz_poll_passes++;
       if (--heartbeat_left == 0u) {     /* a countdown: a modulo is a multiply per pass */
          heartbeat_left = MAIN_POLL_HEARTBEAT_PASSES;
          LOG_INFO("Main poll heartbeat loops=%lu callbacks=%u\n",
-                  (unsigned long)main_poll_loops,
+                  (unsigned long)Pi1MHz_poll_passes,
                   (unsigned int)Pi1MHz_polls_max);
       }
    } while (1);

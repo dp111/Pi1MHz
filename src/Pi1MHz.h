@@ -316,6 +316,7 @@ extern void _copyandreboot(void *src, int num_bytes);
    costing ~47 cycles, and a dozen of them per pass was a fifth of the idle
    loop spent discovering nothing was due.  Stale by at most one pass. */
 extern uint32_t Pi1MHz_now_us;
+extern uint32_t Pi1MHz_poll_passes;   /* main-loop passes since boot (wraps) */
 #endif
 
 #endif
