@@ -28,6 +28,7 @@
 #define FILESYSTEM_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 // Read/Write sector buffer (must be 256 bytes minimum)
 // Testing shows that this is optimal when it matches the sector size of
@@ -259,6 +260,42 @@ void filesystemSetModePageRaw(uint8_t lunNumber, uint8_t page, const uint8_t * d
    code and length bytes); NULL and 0 for any other page. */
 typedef struct { uint8_t start; uint8_t size; } modePageField_t;
 const modePageField_t * filesystemModePageFields(uint8_t page, size_t * count);
+
+/* A big-endian number of `size` bytes at `start` in a mode page or the
+   block descriptor (a .cfg's page is char *, a bus buffer uint8_t *). */
+static inline uint32_t modePageGetField(const void *page, unsigned int start, unsigned int size)
+{
+   const uint8_t *p = (const uint8_t *)page;
+   uint32_t value = 0;
+   for (unsigned int i = 0; i < size; i++)
+      value = (value << 8) | p[start + i];
+   return value;
+}
+
+static inline void modePagePutField(void *page, unsigned int start, unsigned int size, uint32_t value)
+{
+   uint8_t *p = (uint8_t *)page;
+   for (unsigned int i = size; i-- > 0; value >>= 8)
+      p[start + i] = (uint8_t)value;
+}
+
+/* Page 3 (format parameters): its 16-bit fields used here */
+#define MODEPAGE3_SECTORS_PER_TRACK 10   /* bytes 10-11 */
+#define MODEPAGE3_BLOCK_SIZE        12   /* bytes 12-13: data bytes per sector */
+#define MODEPAGE3_INTERLEAVE        14   /* bytes 14-15 */
+
+static inline uint16_t modePage3Get(const void *page3, unsigned int field)
+{
+   return (uint16_t)modePageGetField(page3, field, 2);
+}
+
+static inline void modePage3Put(void *page3, unsigned int field, uint16_t value)
+{
+   modePagePutField(page3, field, 2, value);
+}
+
+/* The block descriptor's block length: bytes 5-7 */
+#define LBADESCRIPTOR_BLOCK_SIZE 5
 /* ModePage0 is the Adaptec's drive parameter list (true, the default), or an
    ordinary page with the geometry in page 4 alone (a drive with its own
    controller); set by scsi.c from DriveController=. */

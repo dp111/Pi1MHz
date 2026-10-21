@@ -1731,21 +1731,15 @@ bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, u
       page3->v.string[0] = 0x03;
       page3->v.string[1] = 0x16;
       page3->length = 24;
-      uint32_t now = filesystemState.fsLunGeometry[lunNumber].BlockSize;
-      page3->v.string[12] = (char)(now >> 8);
-      page3->v.string[13] = (char)now;
+      modePage3Put(page3->v.string, MODEPAGE3_BLOCK_SIZE,
+                   (uint16_t)filesystemState.fsLunGeometry[lunNumber].BlockSize);
    }
    if (page3->length >= 12) {
-      page3->v.string[10] = (char)(sectorsPerTrack >> 8);
-      page3->v.string[11] = (char)sectorsPerTrack;
-      if ((blockSize != 0) && (page3->length >= 14)) {
-         page3->v.string[12] = (char)(blockSize >> 8);
-         page3->v.string[13] = (char)blockSize;
-      }
-      if ((interleave != 0) && (page3->length >= 16)) {
-         page3->v.string[14] = (char)(interleave >> 8);
-         page3->v.string[15] = (char)interleave;
-      }
+      modePage3Put(page3->v.string, MODEPAGE3_SECTORS_PER_TRACK, sectorsPerTrack);
+      if ((blockSize != 0) && (page3->length >= 14))
+         modePage3Put(page3->v.string, MODEPAGE3_BLOCK_SIZE, (uint16_t)blockSize);
+      if ((interleave != 0) && (page3->length >= 16))
+         modePage3Put(page3->v.string, MODEPAGE3_INTERLEAVE, interleave);
       append[MODEPAGE3] = true;
    }
    if (blockSize != 0) {
@@ -1906,6 +1900,37 @@ static bool filesystemPage0IsDriveList(void)
    return page0IsDriveList;
 }
 
+/* The geometry fields of page 0, the Adaptec drive list (cylinders bytes
+   1-2, heads byte 3), and of page 4 (cylinders bytes 2-4, of which 16 bits
+   are kept, heads byte 5). */
+#define MODEPAGE0_CYLINDERS 1
+#define MODEPAGE4_CYLINDERS 3
+
+static unsigned int filesystemPageCylindersAt(uint8_t page)
+{
+   return (page == 0) ? MODEPAGE0_CYLINDERS : MODEPAGE4_CYLINDERS;
+}
+
+// The LUN's cylinders and heads from page 0 or 4 (which must be held)
+static void filesystemGeometryFromPage(uint8_t lunNumber, uint8_t page)
+{
+   const char *data = filesystemState.keyvalues[lunNumber][(page == 0) ? MODEPAGE0 : MODEPAGE4].v.string;
+   unsigned int at = filesystemPageCylindersAt(page);
+   filesystemState.fsLunGeometry[lunNumber].Cylinders = modePageGetField(data, at, 2);
+   filesystemState.fsLunGeometry[lunNumber].Heads = (uint8_t)data[at + 2];
+}
+
+// The LUN's cylinders and heads into page 0 or 4 (which must be held)
+static void filesystemGeometryToPage(uint8_t lunNumber, uint8_t page)
+{
+   char *data = filesystemState.keyvalues[lunNumber][(page == 0) ? MODEPAGE0 : MODEPAGE4].v.string;
+   unsigned int at = filesystemPageCylindersAt(page);
+   if (page == 4)
+      data[2] = 0;                                  // cylinder count bits 16-23
+   modePagePutField(data, at, 2, filesystemState.fsLunGeometry[lunNumber].Cylinders);
+   data[at + 2] = (char)filesystemState.fsLunGeometry[lunNumber].Heads;
+}
+
 void filesystemLunToconfigGeometry(uint8_t lunNumber)
 {
    int index;
@@ -1924,9 +1949,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    }
 
    filesystemState.keyvalues[lunNumber][index].v.string[0] = 1 ;
-   filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
-   filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
-   filesystemState.keyvalues[lunNumber][index].v.string[3] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+   filesystemGeometryToPage(lunNumber, 0);
    filesystemState.keyvalues[lunNumber][index].v.string[4] = 0x00; // Reduced write current MSB
    filesystemState.keyvalues[lunNumber][index].v.string[5] = 0x80; // Reduced write current LSB
    filesystemState.keyvalues[lunNumber][index].v.string[6] = 0x00; // Write precompensation MSB
@@ -1953,10 +1976,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    }
    filesystemState.keyvalues[lunNumber][index].v.string[0] = 04 ;
    filesystemState.keyvalues[lunNumber][index].v.string[1] = 04 ;
-   filesystemState.keyvalues[lunNumber][index].v.string[2] = 0 ;
-   filesystemState.keyvalues[lunNumber][index].v.string[3] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
-   filesystemState.keyvalues[lunNumber][index].v.string[4] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
-   filesystemState.keyvalues[lunNumber][index].v.string[5] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+   filesystemGeometryToPage(lunNumber, 4);
    if (filesystemState.keyvalues[lunNumber][index].length < 6)
       filesystemState.keyvalues[lunNumber][index].length = 6;
 }
@@ -2025,9 +2045,8 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
    index = LBADESCRIPTOR;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         filesystemState.fsLunGeometry[lunNumber].BlockSize = (uint32_t)(((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[5] << 16) +
-                                                                         ((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[6] << 8) +
-                                                                          (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[7]);
+         filesystemState.fsLunGeometry[lunNumber].BlockSize =
+            modePageGetField(filesystemState.keyvalues[lunNumber][index].v.string, LBADESCRIPTOR_BLOCK_SIZE, 3);
       }
       else
       {
@@ -2044,9 +2063,8 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].v.string[2] = 0x00; // Reserved
          filesystemState.keyvalues[lunNumber][index].v.string[3] = 0x00; // Reserved
          filesystemState.keyvalues[lunNumber][index].v.string[4] = 0x00; // Reserved
-         filesystemState.keyvalues[lunNumber][index].v.string[5] = (char)(DEFAULT_BLOCK_SIZE >>16); // block size MSB
-         filesystemState.keyvalues[lunNumber][index].v.string[6] = (char)(DEFAULT_BLOCK_SIZE >>8); // block size
-         filesystemState.keyvalues[lunNumber][index].v.string[7] = (char)(DEFAULT_BLOCK_SIZE); // block size LSB
+         modePagePutField(filesystemState.keyvalues[lunNumber][index].v.string, LBADESCRIPTOR_BLOCK_SIZE, 3,
+                          DEFAULT_BLOCK_SIZE);
          filesystemState.keyvalues[lunNumber][index].length = 8;
       }
 
@@ -2059,8 +2077,8 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
    index = MODEPAGE3;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
-                                                                              (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[11]));
+      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack =
+         modePage3Get(filesystemState.keyvalues[lunNumber][index].v.string, MODEPAGE3_SECTORS_PER_TRACK);
    }
    else
    {
@@ -2072,9 +2090,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
    index = MODEPAGE0;
    if  (filesystemPage0IsDriveList() && filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
-                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[2]));
-      filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
+      filesystemGeometryFromPage(lunNumber, 0);
 
    }
    else
@@ -2083,9 +2099,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
       index = MODEPAGE4;
       if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
-               filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
-                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[4]));
-               filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[5]);
+               filesystemGeometryFromPage(lunNumber, 4);
 
                filesystemCopyPage4toPage0(lunNumber);
       } else
@@ -2127,9 +2141,7 @@ void filesystemSetLunBlockSize(uint8_t lunNumber, uint32_t blockSize)
       if (lba == NULL)
          return;
    }
-   lba[5] = (char)(blockSize >> 16);
-   lba[6] = (char)(blockSize >> 8);
-   lba[7] = (char)blockSize;
+   modePagePutField(lba, LBADESCRIPTOR_BLOCK_SIZE, 3, blockSize);
    filesystemState.fsLunGeometry[lunNumber].BlockSize = blockSize;
    filesystemState.fsLunBlockSizeInMemory[lunNumber] = false;   // FORMAT's own: saved with it
 }
@@ -2141,17 +2153,12 @@ void filesystemCopyPage0toPage4(uint8_t lunNumber)
    int index = MODEPAGE0;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
-                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[2]));
-      filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
+      filesystemGeometryFromPage(lunNumber, 0);
       // now recreate Page4
       index = MODEPAGE4;
       if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         filesystemState.keyvalues[lunNumber][index].v.string[2] = 0 ;
-         filesystemState.keyvalues[lunNumber][index].v.string[3] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
-         filesystemState.keyvalues[lunNumber][index].v.string[4] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
-         filesystemState.keyvalues[lunNumber][index].v.string[5] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+         filesystemGeometryToPage(lunNumber, 4);
          if (filesystemState.keyvalues[lunNumber][index].length < 6)
             filesystemState.keyvalues[lunNumber][index].length = 6;
       }
@@ -2165,16 +2172,12 @@ void filesystemCopyPage4toPage0(uint8_t lunNumber)
    int index = MODEPAGE4;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
-                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[4]));
-      filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[5]);
+      filesystemGeometryFromPage(lunNumber, 4);
       // now recreate Page0
       index = MODEPAGE0;
       if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
-         filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
-         filesystemState.keyvalues[lunNumber][index].v.string[3] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+         filesystemGeometryToPage(lunNumber, 0);
          if (filesystemState.keyvalues[lunNumber][index].length < 4)
             filesystemState.keyvalues[lunNumber][index].length = 4;
       }

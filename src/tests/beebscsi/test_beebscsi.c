@@ -698,6 +698,28 @@ static void test_cq_helpers(void)
          !strcmp(path, "/BeebVFS3/scsi0.cfg"), why);
    filesystemVFSFilePath(12, VFS_VIDEO_FILENAME, path, sizeof path);
    check("CQ-S1 ... any side, the video too", !strcmp(path, "/BeebVFS12/video.pvf"), path);
+
+   /* Big-endian fields, on a .cfg's char page and a bus buffer alike */
+   char page3[24];
+   memset(page3, 0x55, sizeof page3);
+   modePage3Put(page3, MODEPAGE3_SECTORS_PER_TRACK, 0x0121);
+   modePage3Put(page3, MODEPAGE3_BLOCK_SIZE, 0x0800);
+   modePage3Put(page3, MODEPAGE3_INTERLEAVE, 0xFFFE);
+   static const uint8_t want3[8] = { 0x55, 0x55, 0x01, 0x21, 0x08, 0x00, 0xFF, 0xFE };
+   snprintf(why, sizeof why, "bytes 8-15 %02X%02X%02X%02X%02X%02X%02X%02X", (uint8_t)page3[8], (uint8_t)page3[9],
+            (uint8_t)page3[10], (uint8_t)page3[11], (uint8_t)page3[12], (uint8_t)page3[13], (uint8_t)page3[14],
+            (uint8_t)page3[15]);
+   check("CQ-S3 modePage3Put: sectors per track 10-11, block size 12-13, interleave 14-15, nothing else",
+         !memcmp(&page3[8], want3, sizeof want3) && page3[16] == 0x55, why);
+   check("CQ-S3 modePage3Get reads them back, high bytes unsigned",
+         modePage3Get(page3, MODEPAGE3_SECTORS_PER_TRACK) == 0x0121 &&
+         modePage3Get(page3, MODEPAGE3_BLOCK_SIZE) == 0x0800 &&
+         modePage3Get(page3, MODEPAGE3_INTERLEAVE) == 0xFFFE, "wrong value");
+   uint8_t lba[8] = { 0 };
+   modePagePutField(lba, LBADESCRIPTOR_BLOCK_SIZE, 3, 0x12F3A4);
+   check("CQ-S4 the block descriptor's block length is bytes 5-7",
+         lba[4] == 0 && lba[5] == 0x12 && lba[6] == 0xF3 && lba[7] == 0xA4 &&
+         modePageGetField(lba, LBADESCRIPTOR_BLOCK_SIZE, 3) == 0x12F3A4u, "wrong bytes");
 }
 
 /* A drive with its own controller keeps its sense across REQUEST SENSE:

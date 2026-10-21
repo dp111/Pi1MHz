@@ -313,8 +313,7 @@ static void scsiApplyPendingPages(uint8_t lun)
    if ((page3 != NULL) && (length >= 14) && (length <= 256)) {
       uint8_t page[256];
       memcpy(page, page3, length);
-      page[12] = (uint8_t)(blockSize >> 8);
-      page[13] = (uint8_t)blockSize;
+      modePage3Put(page, MODEPAGE3_BLOCK_SIZE, (uint16_t)blockSize);
       filesystemSetModePageRaw(lun, 3, page, length);
    }
    filesystemSetLunBlockSize(lun, blockSize);
@@ -349,7 +348,7 @@ static uint32_t scsiCheckModePage(uint8_t lun, uint8_t pageCode, const uint8_t *
          return ILLEGAL_FUNCTION;
    }
    if ((pageCode == 3) && (length >= 14)) {
-      uint32_t blockSize = ((uint32_t)page[12] << 8) | page[13];
+      uint32_t blockSize = modePage3Get(page, MODEPAGE3_BLOCK_SIZE);
       if ((blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
          return ILLEGAL_FUNCTION;
    }
@@ -462,7 +461,7 @@ static uint32_t scsiFormatGeometry(uint8_t lun, uint16_t interleave)
          // with a hand-set LBADescriptor, which wins (page 3 is then saved to match)
          const char *page3 = filesystemGetModePageData(lun, 3, &length);
          if (hostPage3 && (page3 != NULL) && (length >= 14)) {
-            uint32_t pageBlockSize = ((uint32_t)(uint8_t)page3[12] << 8) | (uint8_t)page3[13];
+            uint32_t pageBlockSize = modePage3Get(page3, MODEPAGE3_BLOCK_SIZE);
             if (pageBlockSize != 0)
                blockSize = pageBlockSize;
          }
