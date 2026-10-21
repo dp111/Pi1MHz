@@ -487,11 +487,18 @@ int main(int argc, char **argv)
       tick(2100000u);
       csend(c4, "beeb\r");
       tick(20000u);
-      csend(c4, "nope\r");
+      mark_at(c4);
+      csend(c4, i < 2 ? "nope\r" : "nope\rbeeb\rnope\r");   /* the third with more typed behind it */
       tick(20000u);
    }
    tick(100000u);
    CHECK(c4->closed, "the third closes the session");
+   {
+      unsigned n = 0u;
+      for (size_t i = mark; i + 15u <= c4->got_len; i++)
+         n += memcmp(c4->got + i, "Login incorrect", 15u) == 0;
+      CHECK(n == 1u, "what was typed after the third is not taken as another login (%u)", n);
+   }
    struct tcp_pcb *c5 = connect_from(23u, IP(10, 0, 0, 5));
    CHECK(c5->closed && strstr(c5->got, "too many wrong passwords") != NULL, "and the address is refused");
 
