@@ -112,7 +112,8 @@ session is back.
   so for Page Down the Pi sets a flag in the ROM's workspace in its own page (build 15;
   before that, Beeb memory by an interrupt "trip"), never a byte in the keyboard buffer: nothing typed
   ahead, not even a COPY pressed while the page waits, can hold it up. The ROM claims
-  the keyboard vector (KEYV, only while it is the MOS's own) and, when the MOS asks
+  the keyboard vector (KEYV: whatever was there, the MOS's routine or another ROM's, is
+  kept and gone on to; since build 22) and, when the MOS asks
   whether SHIFT is pressed (paged mode's wait at the end of a page), answers yes once
   if the flag is set, and clears it.
 - **It tells the Pi every key a program takes** (build 13). From that the Pi knows how

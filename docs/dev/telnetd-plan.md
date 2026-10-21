@@ -254,13 +254,15 @@ call 1, and the ROM:
    `STX &FC88` (8E 88 FC) read back, so an empty bus, or another device in FRED, is
    never jumped into. With neither, nothing is hooked and the Beeb boots on;
 4. claims REMV (the screen read, the keys taken) and KEYV (SHIFT for paged mode) as
-   extended vectors while they are the MOS's own, and tells the Pi it can be asked
+   extended vectors over whatever is in them, the routine there kept and gone on to
+   (build 22; before it KEYV and RDCHV only while they were the MOS's own, which a ROM
+   that claimed them first defeated), never over another extended vector entry, and tells the Pi it can be asked
    for the screen and tells the keys taken (&23 to the stub's control port).
 The turn counter lives on the stack, the ROM owning no Beeb RAM. Since build 15 (PR
 review) the step above is taken only when the stub is at &FCCC and the Pi has set
 "telnetd on" (`telnetd_port`) in the ROM's workspace, and with a moved stub the ROM no
 longer runs helper 20. The workspace is 8 bytes the Pi keeps in FRED below the stub's
-escape routine (`SER_WS_OFF`, &FCB7-&FCBE): the MOS's REMV, KEYV and RDCHV routines the
+escape routine (`SER_WS_OFF`, &FCB7-&FCBE): the REMV, KEYV and RDCHV routines the
 claims go on to (builds 11-14 kept them in the extended vector table's USERV, IND2V and
 IND3V slots), the SHIFT request (was &0DA1, set by an interrupt trip; now written by the
 Pi directly), and the telnetd flag.

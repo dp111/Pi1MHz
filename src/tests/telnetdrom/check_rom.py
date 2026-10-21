@@ -835,6 +835,22 @@ def main(path):
     check((m[0x204], m[0x205]) == (0x00, 0x09) and (m[ST + 0x0D], m[ST + 0x0E], m[ST + 0x2B], m[ST + 0x2C]) == (0xFF, 0xE5, 0xFF, 0xE5)
           and r["y"] == 0x41 and r["sp_after"] == r["sp_before"],
           f"a program's IRQ1V in front of the stub is left alone (no loop): IRQ1V &{m[0x205]:02X}{m[0x204]:02X}, the stub still chains to &{m[ST + 0x0E]:02X}{m[ST + 0x0D]:02X}")
+    # build 22: the vector the stub already goes on to, put back (a ROM such as VFS claimed IRQ1V
+    # before the stub was hooked in, and the stub keeps its &0D99): hooked in again over it
+    kept = dict(lost)
+    kept.update({0x22A: 0xCC, 0x22B: 0xFC, ST + 0x0A: 0x43, ST + 0x0B: 0xEA, 0x204: 0x99, 0x205: 0x0D,
+                 ST + 0x0D: 0x99, ST + 0x0E: 0x0D, ST + 0x2B: 0x99, ST + 0x2C: 0x0D})
+    r = run_remv(rom, 0, 0, 0, 0x41, 0, hooked=False, pokes=kept)
+    m = r["mem"]._subject
+    check((m[0x204], m[0x205]) == (0xD8, 0xFC) and (m[ST + 0x0D], m[ST + 0x0E]) == (0x99, 0x0D)
+          and r["y"] == 0x41 and r["sp_after"] == r["sp_before"],
+          f"IRQ1V put back to the vector the stub keeps (&0D99): hooked in again, still going on to it: IRQ1V &{m[0x205]:02X}{m[0x204]:02X}, kept &{m[ST + 0x0E]:02X}{m[ST + 0x0D]:02X}")
+    keptins = dict(lost)
+    keptins.update({0x22A: 0x00, 0x22B: 0x0B, ST + 0x0A: 0x00, ST + 0x0B: 0x0B})
+    r = run_remv(rom, 0, 0, 0, 0x41, 0, hooked=False, pokes=keptins)
+    m = r["mem"]._subject
+    check((m[0x22A], m[0x22B]) == (0xCC, 0xFC) and (m[ST + 0x0A], m[ST + 0x0B]) == (0x00, 0x0B),
+          f"INSV put back to the vector the stub keeps (&0B00): hooked in again: INSV &{m[0x22B]:02X}{m[0x22A]:02X}")
     insvp = dict(lost)
     insvp.update({0x22A: 0x00, 0x22B: 0x0A})        # ... and the same for a program's INSV
     r = run_remv(rom, 0, 0, 0, 0x41, 0, hooked=False, pokes=insvp)
@@ -911,9 +927,19 @@ def main(path):
         check(r["telneton"] == 1, f"... and the literal flag cleared (TELNETON {r['telneton']:#04x})")
     r = run_rdchv(rom, [0xFB], escape=True, through_remvh=True)
     check(r["mos"] == 1 and r["telneton"] == 1, f"LITKEY, then ESCAPE before its byte: the flag is not left set ({r['telneton']:#04x})")
+    # build 22: claimed over whatever is there - another ROM may have claimed it first and go on to
+    # the MOS - with that routine kept and gone on to; never over an extended vector entry (&FFxx),
+    # this ROM's own already or another ROM's, which it could not go on to
     r = call(rom, 1, 6, 0, pi_after=0, reset_type=2, pokes={**keyv_pokes(), KEYV_TABLE + RDCHV_TABLE_OFF: 0x00,
              KEYV_TABLE + RDCHV_TABLE_OFF + 1: 0x06, 0x0210: 0x34, 0x0211: 0x12}, watch=(0x0210, 0x0211))
-    check(r["writes"] == [], f"RDCHV somebody else's: left alone {r['writes']}")
+    m = r["mem"]._subject
+    check((m[0x0210], m[0x0211]) == (0x18, 0xFF) and (m[RDCHVOLD], m[RDCHVOLD + 1]) == (0x34, 0x12),
+          f"RDCHV somebody else's (&1234): claimed, and &1234 kept to go on to: RDCHV &{m[0x0211]:02X}{m[0x0210]:02X}, kept &{m[RDCHVOLD + 1]:02X}{m[RDCHVOLD]:02X}")
+    check(r["regs"] == (1, 6, 0) and r["sp_after"] == r["sp_before"], "... A, X, Y and the stack given back")
+    for rv in ((0x18, 0xFF), (0x21, 0xFF)):
+        r = call(rom, 1, 6, 0, pi_after=0, reset_type=2, pokes={**keyv_pokes(), 0x0210: rv[0], 0x0211: rv[1]},
+                 watch=(0x0210, 0x0211, RDCHVOLD, RDCHVOLD + 1, 0x0D9F + 24, 0x0D9F + 25, 0x0D9F + 26))
+        check(r["writes"] == [], f"RDCHV &{rv[1]:02X}{rv[0]:02X}, an extended vector entry: left alone {r['writes']}")
 
     # 7. SHIFT for paged mode: KEYV is claimed through the MOS's extended entry for vector 20
     # (&FF3C) while it is the MOS's own routine (the default table at &FFB7 says which)
@@ -927,9 +953,15 @@ def main(path):
     check(r["mem"]._subject[0xA8] == 0 and r["mem"]._subject[0xA9] == 0, "... &A8 and &A9 put back")
     m = r["mem"]._subject
     check((m[KEYVOLD], m[KEYVOLD + 1]) == (0x02, 0xEF), f"... the MOS's KEYV (&EF02) kept in the workspace: &{m[KEYVOLD + 1]:02X}{m[KEYVOLD]:02X}")
-    for kv in ((0x3C, 0xFF), (0x00, 0x90)):
-        r = call(rom, 1, 6, 0, pi_after=0, reset_type=2, pokes=keyv_pokes(kv), watch=(0x0228, 0x0229, 0x0D9F + 60))
-        check(r["writes"] == [], f"KEYV &{kv[1]:02X}{kv[0]:02X}, not the MOS's: left alone, {r['writes']}")
+    for kv in ((0x3C, 0xFF), (0x30, 0xFF)):
+        r = call(rom, 1, 6, 0, pi_after=0, reset_type=2, pokes=keyv_pokes(kv),
+                 watch=(0x0228, 0x0229, 0x0D9F + 60, 0x0D9F + 61, 0x0D9F + 62, KEYVOLD, KEYVOLD + 1))
+        check(r["writes"] == [], f"KEYV &{kv[1]:02X}{kv[0]:02X}, an extended vector entry: left alone, {r['writes']}")
+    r = call(rom, 1, 6, 0, pi_after=0, reset_type=2, pokes=keyv_pokes((0x00, 0x90)), watch=(0x0228, 0x0229))
+    m = r["mem"]._subject
+    check((m[0x0228], m[0x0229]) == (0x3C, 0xFF) and (m[KEYVOLD], m[KEYVOLD + 1]) == (0x00, 0x90)
+          and m[0x0D9F + 62] == 6 and r["regs"] == (1, 6, 0) and r["sp_after"] == r["sp_before"],
+          f"KEYV &9000, another claimant's (build 22): claimed, &9000 kept to go on to: KEYV &{m[0x0229]:02X}{m[0x0228]:02X}, kept &{m[KEYVOLD + 1]:02X}{m[KEYVOLD]:02X}")
     r = call(rom, 1, 6, 0, pi_after=None, reset_type=2, pokes=keyv_pokes(), watch=(0x0228, 0x0229))
     check(r["writes"] == [], "no Pi: KEYV is not touched")
 

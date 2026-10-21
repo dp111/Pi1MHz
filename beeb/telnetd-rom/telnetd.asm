@@ -17,7 +17,7 @@
 \ that are not blank to the Pi as VDU 31,x,y,char with the screen drivers switched off,
 \ so nothing shows on the Beeb, and puts the cursor back.  It runs on the host, so it
 \ works with a second processor on.  The scan keeps nothing in zero page, which the MOS's
-\ OSBYTE and VDU routines use: only the stack (claiming KEYV and RDCHV borrows &A8-&A9,
+\ OSBYTE and VDU routines use: only the stack (the check before hooking in again borrows &A8-&A9,
 \ saved on the stack and put back).  No Beeb RAM of its own (its 8 bytes are in the Pi's
 \ page, see WS), no commands, no language.
 \
@@ -57,7 +57,7 @@ CMDPTR = &F2                \ service call 4: the command line, and Y its offset
 HELPER_ENTRY = &FC88        \ the helper window: STX &FC88 / NOP / JMP &FD00
 HELPER_OPCODE = &8E         \ the Pi writes STX abs here, so it is there only if a Pi1MHz answers
 TELNET_HELPER = 20
-BUILD = 21           \ the build number in the version string, so *HELP says which image is fitted
+BUILD = 22           \ the build number in the version string, so *HELP says which image is fitted
 INSV = &022A                \ the MOS vectors: keyboard buffer insertion ...
 IRQ1V = &0204               \ ... and the interrupt
 REMV = &022C                \ buffer remove, vector 22: foreground code polls it while it waits for a key
@@ -88,9 +88,9 @@ STUB = &FCCC                \ the Pi's serial stub at its default place (src/ser
 \ (SER_WS_OFF in src/serial_redirect.c), so the ROM owns no Beeb RAM.  They are there only
 \ with the Pi, and the ROM hooks the Beeb in only with the Pi, the stub where it always is.
 WS = STUB - 21
-REMVOLD = WS                \ the MOS's REMV routine (the claim goes on to it)
-KEYVOLD = WS+2              \ ... its KEYV routine
-RDCHVOLD = WS+4             \ ... its RDCHV routine
+REMVOLD = WS                \ the REMV routine the claim goes on to
+KEYVOLD = WS+2              \ the KEYV routine the claim goes on to (the MOS's or a claimant's)
+RDCHVOLD = WS+4             \ ... and the RDCHV one
 SHIFTFLAG = WS+6            \ the Pi's SHIFT request for paged mode: set by the Pi, cleared here
 TELNETON = WS+7             \ bit 0 set when telnetd is on (telnetd_port): only then is the Beeb hooked in;
 LITNEXT = &80               \ ... bit 7 (the ROM's): the next keyboard byte follows LITKEY, a character
@@ -365,9 +365,11 @@ GUARD &C000
 \ LDX # at +15 says the keyboard buffer, 0).  Called on a read of the keyboard, which is
 \ in the foreground on the host whichever processor runs the program.  No report: the
 \ Pi's state has not changed, only the Beeb's vectors.  A, X and Y are kept.
-\ Only over the MOS's own vectors (build 19): a program that has hooked one in front of
-\ the stub, and goes on to it, is left alone - hooked in again, the stub would go on to
-\ the program and the program to the stub, for ever.
+\ Only over a vector that cannot go on to the stub (build 19): a program that has hooked
+\ one in front of the stub, and goes on to it, is left alone - hooked in again, the stub
+\ would go on to the program and the program to the stub, for ever.  Two are known not to:
+\ the one the stub already goes on to, put back (build 22: a ROM that claimed the vector
+\ before the stub was hooked in, such as VFS's trackerball handler), and the MOS's own.
 .rehook         pha
                 txa
                 pha
@@ -392,13 +394,16 @@ GUARD &C000
                 lda IRQ1V
                 cmp #<(STUB+&0C)
                 beq rehx
-.reh1           lda INSV+1                  \ each vector the stub's, or the MOS's own
+.reh1           lda INSV+1                  \ each vector the stub's, the one it goes on to, or the MOS's own
                 cmp #>STUB
                 bne reh2
                 lda INSV
                 cmp #<STUB
                 beq reh3
 .reh2           ldy #INSV-&200
+                ldx #&0A
+                jsr kept
+                beq reh3                    \ the stub's kept vector, put back
                 jsr vecdef
                 bne rehx                    \ somebody else's
 .reh3           lda IRQ1V+1
@@ -408,6 +413,9 @@ GUARD &C000
                 cmp #<(STUB+&0C)
                 beq reh5
 .reh4           ldy #IRQ1V-&200
+                ldx #&0D
+                jsr kept
+                beq reh5                    \ the stub's kept vector, put back
                 jsr vecdef
                 bne rehx
 .reh5           jsr hookin
@@ -428,6 +436,15 @@ GUARD &C000
                 tax
                 pla
                 rts
+
+\ Z set if the vector at &200+Y is the one the stub keeps at STUB+X to go on to.  A is not
+\ kept; X and Y are.
+.kept           lda &200,y
+                cmp STUB,x
+                bne keptx
+                lda &201,y
+                cmp STUB+1,x
+.keptx          rts
 
 \ Z set if the vector at &200+Y is the MOS's own, from its table of the defaults (DEFVEC).
 \ Borrows ZPTMP, kept on the stack and put back.  A and X are not kept; Y is.
@@ -486,25 +503,16 @@ GUARD &C000
 \ key or, with a low nibble &B-&F, a cursor key (OS 1.20 &E554) - so the Pi sends such a character
 \ as LITKEY and the byte, and this, ahead of the MOS's routine, reads the byte after LITKEY as it
 \ is.  OSWORD 0 (BASIC's line input) and GET read through RDCHV (OS 1.20 &E924).  Anything else
-\ goes to the MOS's routine untouched.  Claimed only while RDCHV is the MOS's own.
+\ goes on to the routine that was in RDCHV untouched.  Claimed over whatever is there (build 22):
+\ the MOS's routine or anybody else's is kept and gone on to - another ROM may have claimed the
+\ vector first and go on to the MOS itself.  Not over an extended vector entry (&FFxx): that is
+\ this ROM's claim already, or another ROM's, which this cannot go on to without RAM of its own,
+\ and taking its table entry would send the MOS's entry round to this for ever.
 \ In: A = this ROM's slot, kept.  X and Y are not.
 .claimrdchv     pha
-                lda ZPTMP
-                pha
-                lda ZPTMP+1
-                pha
-                lda DEFVEC
-                sta ZPTMP
-                lda DEFVEC+1
-                sta ZPTMP+1
-                ldy #&10
-                lda (ZPTMP),y
-                cmp RDCHV
-                bne crno
-                iny
-                lda (ZPTMP),y
-                cmp RDCHV+1
-                bne crno
+                lda RDCHV+1
+                cmp #&FF
+                beq crno                    \ an extended vector: ours already, or another ROM's
                 lda RDCHV
                 sta RDCHVOLD
                 lda RDCHV+1
@@ -514,7 +522,7 @@ GUARD &C000
                 lda #>rdchvh
                 sta EXTVEC+25
                 tsx
-                lda &103,x
+                lda &101,x                  \ this ROM's slot, as it came in A
                 sta EXTVEC+26
                 php
                 sei
@@ -524,10 +532,6 @@ GUARD &C000
                 sta RDCHV+1
                 plp
 .crno           pla
-                sta ZPTMP+1
-                pla
-                sta ZPTMP
-                pla
                 rts
 
 .rdchvh         php
@@ -709,29 +713,16 @@ ACIAUSE = &EA               \ 1..&7F: the cassette or ROM filing system has the 
 \ may hold it up.  A telnet client cannot send it on its own: for its Page Down key the Pi
 \ sets SHIFTFLAG in the ROM's workspace (src/serial_redirect.c), and this ROM, which
 \ claims KEYV, answers that question SHIFT pressed once when it finds the flag set, and clears
-\ it.  Every other KEYV call (the keyboard interrupt and scan) goes straight on to the MOS's
-\ routine, whose address is in the MOS's own table of default vectors, so KEYV is claimed only
-\ while it is the MOS's.  (Build 9 put a byte, &FC, in the keyboard buffer instead, and a COPY
-\ in front of it kept it from being seen.)
+\ it.  Every other KEYV call (the keyboard interrupt and scan) goes straight on to the routine
+\ that was in KEYV, the MOS's or another claimant's: claimed over whatever is there but an
+\ extended vector entry, for the reasons RDCHV gives (build 22).  (Build 9 put a byte, &FC, in
+\ the keyboard buffer instead, and a COPY in front of it kept it from being seen.)
 \ In: A = this ROM's slot, kept.  X and Y are not.
 .claimkeyv      pha
-                lda ZPTMP
-                pha
-                lda ZPTMP+1
-                pha
-                lda DEFVEC
-                sta ZPTMP
-                lda DEFVEC+1
-                sta ZPTMP+1
-                ldy #&28
-                lda (ZPTMP),y
-                cmp KEYV
-                bne ckno
-                iny
-                lda (ZPTMP),y
-                cmp KEYV+1
-                bne ckno                    \ somebody's already, or an extended vector
-                lda KEYV                    \ the MOS's routine, for keymos
+                lda KEYV+1
+                cmp #&FF
+                beq ckno                    \ an extended vector: ours already, or another ROM's
+                lda KEYV                    \ the routine there, for keymos
                 sta KEYVOLD
                 lda KEYV+1
                 sta KEYVOLD+1
@@ -740,7 +731,7 @@ ACIAUSE = &EA               \ 1..&7F: the cassette or ROM filing system has the 
                 lda #>keyvh
                 sta EXTVEC+61
                 tsx
-                lda &103,x
+                lda &101,x                  \ this ROM's slot, as it came in A
                 sta EXTVEC+62
                 php
                 sei                         \ the keyboard interrupt goes through KEYV
@@ -752,10 +743,6 @@ ACIAUSE = &EA               \ 1..&7F: the cassette or ROM filing system has the 
                 sta SHIFTFLAG               \ no SHIFT left over from before the reset
                 plp
 .ckno           pla
-                sta ZPTMP+1
-                pla
-                sta ZPTMP
-                pla
                 rts
 
 .keyvh          bvs keymos                  \ the interrupt and the scans: the MOS's, untouched
@@ -772,7 +759,7 @@ ACIAUSE = &EA               \ 1..&7F: the cassette or ROM filing system has the 
 .keyvno         pla
                 rts
 
-\ Go on to the MOS's KEYV routine with A, X, Y and the flags as they came.  This runs on
+\ Go on to the KEYV routine kept at the claim with A, X, Y and the flags as they came.  This runs on
 \ every keyboard interrupt too, so it touches nothing but the address kept at the claim: no
 \ zero page, which an NMI (Econet) could find changed.
 .keymos         jmp (KEYVOLD)
