@@ -211,38 +211,6 @@ void _invalidate_cache_area(const void * start, unsigned int length)
    _data_memory_barrier();
 }
 
-#if 0
-static void _invalidate_icache()
-{
-   __asm volatile ("mcr p15, 0, %0, c7, c5, 0" : : "r" (0));
-}
-
-static void _invalidate_dcache()
-{
-   __asm volatile ("mcr p15, 0, %0, c7, c6, 0" : : "r" (0));
-}
-
-static void _clean_invalidate_dcache()
-{
-   __asm volatile ("mcr p15, 0, %0, c7, c14, 0" : : "r" (0));
-}
-
-static void _invalidate_dcache_mva(void *address)
-{
-   __asm volatile ("mcr p15, 0, %0, c7, c6, 1" : : "r" (address));
-}
-
-static void _clean_invalidate_dcache_mva(void *address)
-{
-   __asm volatile ("mcr p15, 0, %0, c7, c14, 1" : : "r" (address));
-}
-
-static void _invalidate_dtlb()
-{
-   __asm volatile ("mcr p15, 0, %0, c8, c6, 0" : : "r" (0));
-}
-#endif
-
 // TLB 4KB Section Descriptor format
 // 31..12 Section Base Address
 // 11..9        - unused, set to zero
