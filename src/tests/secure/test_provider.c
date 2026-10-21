@@ -163,6 +163,10 @@ err_t altcp_connect(struct altcp_pcb *c, const ip_addr_t *ip, u16_t port, altcp_
    return ERR_OK;
 }
 u16_t altcp_sndbuf(struct altcp_pcb *c) { return c->t_sndbuf; }
+/* lwip_util.c's raw-TCP sender is linked in but the provider never uses it. */
+u16_t tcp_sndbuf(const struct tcp_pcb *pcb) { (void)pcb; abort(); }
+err_t tcp_write(struct tcp_pcb *pcb, const void *d, u16_t len, u8_t f)
+{ (void)pcb; (void)d; (void)len; (void)f; abort(); }
 err_t altcp_write(struct altcp_pcb *c, const void *d, u16_t len, u8_t f)
 { (void)c; (void)d; (void)len; (void)f; return ERR_OK; }
 void altcp_output(struct altcp_pcb *c) { (void)c; }

@@ -3,7 +3,7 @@
  * (review 2026-10-06 W2, W3).
  *
  * Extracted VERBATIM from a copy of webserver.c by extract.awk (see
- * run_tests.sh): conn_pump with its tcp_write wrapper, and
+ * run_tests.sh): conn_pump with lwip_util.c's tcp_write wrapper, and
  * route_dav_move_or_copy with the path parsers it calls.  lwIP, FatFs and
  * the rest of webserver.c are stubbed below to record what happened.
  */
@@ -40,6 +40,9 @@ static err_t tcp_write(struct tcp_pcb *p, const void *d, u16_t n, int f)
    return ERR_OK;
 }
 static err_t tcp_output(struct tcp_pcb *p) { (void)p; return ERR_OK; }
+err_t lwip_tcp_write_some(struct tcp_pcb *pcb, const void *data, size_t len,
+                          u16_t *queued);
+#include "ws_lwip_util.inc"
 
 /* ---- FatFs ---- */
 typedef unsigned int UINT;

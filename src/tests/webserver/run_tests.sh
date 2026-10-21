@@ -15,7 +15,7 @@ SRC=${SRC_DIR:-$HERE/../..}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 
-cp "$SRC"/wifi/webserver.c "$SRC"/wifi/md5.h "$B/"
+cp "$SRC"/wifi/webserver.c "$SRC"/wifi/md5.h "$SRC"/wifi/lwip_util.c "$B/"
 cp "$HERE"/test_parsers.c "$HERE"/test_chunked.c "$HERE"/fuzz_parsers.c \
    "$HERE"/test_kn_lifecycle.c "$HERE"/test_routes.c "$B/"
 cp -r "$HERE"/stubs/. "$B/"
@@ -54,10 +54,14 @@ awk -v fns="$KN_FNS" \
 # with the path parsers those run through.
 ROUTE_FNS="ws_prefix_ci,ws_prefix_ci_str,ws_hexval,ws_url_decode,\
 ws_find_header,ws_find_header_end,ws_path_is_safe,ws_fat_name_len,ws_normalize_path,ws_resolve_aliases,ws_is_root,\
-dav_url_to_sdpath,dav_destination_sdpath,ws_write_best_effort,conn_pump,\
+dav_url_to_sdpath,dav_destination_sdpath,conn_pump,\
 route_dav_move_or_copy"
 awk -v fns="$ROUTE_FNS" \
     -f "$HERE/extract.awk" "$B/webserver.c" > "$B/ws_routes.inc"
+# conn_pump queues through lwip_util.c's lwip_tcp_write_some (a plain
+# extern function, which extract.awk does not look for): cut it out whole.
+sed -n '/^err_t lwip_tcp_write_some(/,/^}/p' "$B/lwip_util.c" > "$B/ws_lwip_util.inc"
+grep -q 'lwip_tcp_write_some' "$B/ws_lwip_util.inc"
 
 echo "== unit: HTTP / path / digest / date parsers =="
 gcc -std=gnu2x -Wall -Wextra -Wconversion -g \

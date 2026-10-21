@@ -42,6 +42,7 @@
 #endif
 
 #include "wifi/wifi_lwip.h"        /* wifi_lwip_get_context, wifi_lwip_rx_kick */
+#include "wifi/lwip_util.h"        /* lwip_altcp_write_some, byte_ring_put */
 #include "lwip/altcp.h"
 #include "lwip/def.h"              /* lwip_htons (ICMP echo sequence)        */
 #include "lwip/inet_chksum.h"      /* inet_chksum (ICMP echo)                */
@@ -243,16 +244,8 @@ static inline uint32_t ring_free(const net_handle_t *h)
 /* Copy a whole pbuf chain into the ring.  Caller guarantees it fits. */
 static void ring_put_pbuf(net_handle_t *h, const struct pbuf *p)
 {
-   uint8_t *ring = ring_buf(h);
-   for (const struct pbuf *q = p; q != NULL; q = q->next) {
-      const uint8_t *src = (const uint8_t *)q->payload;
-      uint16_t n = q->len;
-      for (uint16_t i = 0; i < n; i++) {
-         ring[h->rx_head] = src[i];
-         h->rx_head = (h->rx_head + 1u) & ring_mask(h);
-      }
-      h->rx_count += n;
-   }
+   h->rx_head = byte_ring_put_pbuf(ring_buf(h), ring_mask(h), h->rx_head, p);
+   h->rx_count += p->tot_len;
 }
 /* Drain up to max bytes from the ring into a JIM destination. */
 static uint32_t ring_get_to(net_handle_t *h, uint8_t *dst, uint32_t max)
@@ -275,11 +268,7 @@ static uint32_t ring_get(net_handle_t *h, uint32_t jim_dst, uint32_t max)
 /* Append raw bytes to the ring (UDP record framing).  Caller ensures fit. */
 static void ring_put_mem(net_handle_t *h, const uint8_t *src, uint16_t len)
 {
-   uint8_t *ring = ring_buf(h);
-   for (uint16_t i = 0; i < len; i++) {
-      ring[h->rx_head] = src[i];
-      h->rx_head = (h->rx_head + 1u) & ring_mask(h);
-   }
+   h->rx_head = byte_ring_put(ring_buf(h), ring_mask(h), h->rx_head, src, len);
    h->rx_count += len;
 }
 /* Read len bytes from the ring into a local buffer (UDP record header). */
@@ -990,8 +979,7 @@ static uint8_t do_connect(net_handle_t *h, uint32_t cp)
    check always was.  *sent is set only on NET_OK. */
 static uint8_t send_core(net_handle_t *h, const uint8_t *src, uint32_t len, uint32_t *sent)
 {
-   uint32_t want;
-   u16_t    avail;
+   u16_t    queued;
 
    if (h->state != NET_ST_CONNECTED)
       return NET_ERR_NOTOPEN;
@@ -1018,25 +1006,18 @@ static uint8_t send_core(net_handle_t *h, const uint8_t *src, uint32_t len, uint
    if (h->type != NET_TYPE_TCP || h->tpcb == NULL)
       return NET_ERR_NOTOPEN;
 
-   avail = altcp_sndbuf(h->tpcb);
-   want  = len;
-   if (want > avail) want = avail;
-   if (want == 0u) {                /* send buffer full - retry later */
-      *sent = 0u;
-      return NET_OK;
-   }
    {
-      err_t e = altcp_write(h->tpcb, src, (u16_t)want, TCP_WRITE_FLAG_COPY);
-      if (e == ERR_MEM) {           /* heap shortfall despite sndbuf - retry */
-         *sent = 0u;
-         return NET_OK;
-      }
-      if (e != ERR_OK)
+      err_t e = lwip_altcp_write_some(h->tpcb, src, len, &queued);
+      if (e == ERR_MEM)             /* heap shortfall despite sndbuf - retry */
+         queued = 0u;
+      else if (e != ERR_OK)
          return NET_ERR_CONN;
-      altcp_output(h->tpcb);
-      wifi_lwip_rx_kick();          /* a send usually precedes a reply */
+      if (queued != 0u) {           /* 0: send buffer full - retry later */
+         altcp_output(h->tpcb);
+         wifi_lwip_rx_kick();       /* a send usually precedes a reply */
+      }
    }
-   *sent = want;
+   *sent = queued;
    return NET_OK;
 }
 

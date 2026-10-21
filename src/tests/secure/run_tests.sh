@@ -55,11 +55,12 @@ cp -r "$HERE"/provider_stubs/. "$P/"
 cp -r "$SRC"/tests/net/stubs/lwip "$P/"
 mkdir -p "$P/lib"
 cp "$SRC"/lib/textparse.c "$SRC"/lib/textparse.h "$P/lib/"
+cp "$SRC"/wifi/lwip_util.c "$SRC"/wifi/lwip_util.h "$P/wifi/"
 cp "$SRC"/secure_service_wolfssh.c "$SRC"/secure_service_wolfssh.h "$SRC"/net_dns.h "$SRC"/net_dns.c \
    "$SRC"/secure_service_core.h "$HERE"/test_provider.c "$P/"
 gcc -std=gnu2x -Wall -Wextra -g \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
-    -I"$P" -o "$P/t" "$P/test_provider.c" "$P/secure_service_wolfssh.c" "$P/net_dns.c" "$P/lib/textparse.c"
+    -I"$P" -o "$P/t" "$P/test_provider.c" "$P/secure_service_wolfssh.c" "$P/net_dns.c" "$P/lib/textparse.c" "$P/wifi/lwip_util.c"
 "$P/t"
 
 echo "SECURE TESTS PASSED"

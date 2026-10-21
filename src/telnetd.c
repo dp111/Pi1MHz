@@ -56,6 +56,7 @@
 #include "Pi1MHz.h"
 #include "config.h"
 #include "lib/textparse.h"
+#include "wifi/lwip_util.h"
 #include "serial_redirect.h"
 #include "telnetd.h"
 #include "telnetd_proto.h"
@@ -873,29 +874,24 @@ static void pump(void)
       return;
    if (g_opos < g_olen && (g_olen - g_opos >= OUT_BATCH || g_close_after
                            || (uint32_t)(Pi1MHz_now_us - g_obuf_us) >= OUT_HOLD_US)) {
-      size_t want = g_olen - g_opos;
-      size_t room = tcp_sndbuf(g_pcb);
-      if (room == 0u)
+      bool  was_idle = g_pcb->snd_queuelen == 0u;
+      u16_t sent = 0u;
+      err_t e = lwip_tcp_write_some(g_pcb, g_obuf + g_opos, g_olen - g_opos, &sent);
+      if (e == ERR_OK && sent != 0u) {
+         g_opos += sent;
+         g_tx_us = Pi1MHz_now_us;
+         if (was_idle)
+            g_prog_us = g_tx_us;                 /* the wait for the first ACK starts now */
+         (void)tcp_output(g_pcb);
+      } else if (e == ERR_OK) {                  /* the send buffer is full */
          g_room0++;
-      if (want > room)
-         want = room;
-      if (want != 0u) {
-         bool  was_idle = g_pcb->snd_queuelen == 0u;
-         err_t e = tcp_write(g_pcb, g_obuf + g_opos, (u16_t)want, TCP_WRITE_FLAG_COPY);
-         if (e == ERR_OK) {
-            g_opos += want;
-            g_tx_us = Pi1MHz_now_us;
-            if (was_idle)
-               g_prog_us = g_tx_us;              /* the wait for the first ACK starts now */
-            (void)tcp_output(g_pcb);
-         } else if (e == ERR_MEM) {             /* ERR_MEM: the heap is busy, try again */
-            g_wmem++;
-         } else {
-            g_why = "write error";
-            g_why_err = (int)e;
-            (void)session_close(true);
-            return;
-         }
+      } else if (e == ERR_MEM) {                 /* ERR_MEM: the heap is busy, try again */
+         g_wmem++;
+      } else {
+         g_why = "write error";
+         g_why_err = (int)e;
+         (void)session_close(true);
+         return;
       }
       if (g_opos == g_olen)
          g_opos = g_olen = 0u;

@@ -492,6 +492,7 @@ set(wifi_files
    wifi/sdio_host.c
    wifi/wifi.c
    wifi/wifi_lwip.c
+   wifi/lwip_util.c
    wifi/wifi.h
    wifi/wifi_lwip.h
    wifi/webserver.c

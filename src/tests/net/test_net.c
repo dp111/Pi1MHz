@@ -16,6 +16,7 @@
 #include "net_dns.h"
 #include "net_tnfs.h"
 #include "net_telnet.h"
+#include "wifi/lwip_util.h"
 #include "config.h"
 #include "wifi/wifi_lwip.h"
 #include "lwip/altcp.h"
@@ -99,6 +100,10 @@ err_t altcp_bind(struct altcp_pcb *c, const ip_addr_t *ip, u16_t port)
 struct altcp_pcb *altcp_listen(struct altcp_pcb *c) { c->listening = 1; return c; }
 void altcp_accept(struct altcp_pcb *c, altcp_accept_fn f) { c->accept = f; }
 u16_t altcp_sndbuf(struct altcp_pcb *c) { return c->t_sndbuf; }
+/* lwip_util.c's raw-TCP sender is linked in but net_service never uses it. */
+u16_t tcp_sndbuf(const struct tcp_pcb *pcb) { (void)pcb; abort(); }
+err_t tcp_write(struct tcp_pcb *pcb, const void *d, u16_t len, u8_t fl)
+{ (void)pcb; (void)d; (void)len; (void)fl; abort(); }
 err_t altcp_get_tcp_addrinfo(struct altcp_pcb *c, int local, ip_addr_t *addr, u16_t *port)
 {
    if (local) return ERR_VAL;           /* only the peer is ever asked for */
@@ -110,6 +115,7 @@ err_t altcp_write(struct altcp_pcb *c, const void *d, u16_t len, u8_t fl)
 {
    (void)fl;
    if (c->t_write_err != ERR_OK) return c->t_write_err;
+   if (c->t_write_max != 0u && len > c->t_write_max) return ERR_MEM;   /* heap short */
    if (g_tx_len + len <= sizeof g_tx) { memcpy(g_tx + g_tx_len, d, len); g_tx_len += len; }
    return ERR_OK;
 }
@@ -514,6 +520,36 @@ int main(void)
    jwr24(CP(0)+1, 10); jwr32(CP(0)+4, 0x8000);
    issue(NET_CMD_SEND, 0);
    CHECK(jrd24(CP(0)+1) == 0, "send with full sndbuf reports 0 queued");
+   /* The heap cannot take what sndbuf allows: settle for one segment
+      (lwip_altcp_write_some) rather than queue nothing every time. */
+   g_last_pcb->t_sndbuf = 4096u;
+   g_last_pcb->t_write_max = 2000u;
+   g_tx_len = 0u;
+   jwr24(CP(0)+1, 3000); jwr32(CP(0)+4, 0x8000);
+   CHECK(issue(NET_CMD_SEND, 0) == NET_OK, "send on a short heap -> OK");
+   CHECK(jrd24(CP(0)+1) == 1460u && g_tx_len == 1460u,
+         "send on a short heap queues one segment");
+   g_last_pcb->t_write_max = 1000u;
+   jwr24(CP(0)+1, 3000); jwr32(CP(0)+4, 0x8000);
+   CHECK(issue(NET_CMD_SEND, 0) == NET_OK && jrd24(CP(0)+1) == 0,
+         "send with no heap at all reports 0 queued");
+   g_last_pcb->t_write_max = 0u;
+
+   printf("== byte ring copy (wifi/lwip_util.c) ==\n");
+   {
+      uint8_t ring[16];
+      uint8_t a[5] = { 1, 2, 3, 4, 5 }, b[3] = { 6, 7, 8 };
+      struct pbuf pb = { NULL, b, 3u, 3u };
+      struct pbuf pa = { &pb, a, 8u, 5u };
+      uint32_t head;
+      memset(ring, 0, sizeof ring);
+      head = byte_ring_put_pbuf(ring, 15u, 12u, &pa);   /* wraps after 4 bytes */
+      CHECK(head == 4u, "ring head wraps to 4");
+      CHECK(ring[12] == 1 && ring[15] == 4 && ring[0] == 5 && ring[1] == 6
+            && ring[3] == 8 && ring[4] == 0, "pbuf chain lands across the wrap in order");
+      head = byte_ring_put(ring, 15u, 0u, a, 0u);
+      CHECK(head == 0u, "an empty put leaves the head");
+   }
 
    printf("== recv + ring ==\n");
    world_reset();

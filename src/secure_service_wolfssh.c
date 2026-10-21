@@ -13,6 +13,7 @@
 #include "rpi/hwrng.h"
 #include "rpi/systimer.h"
 #include "wifi/wifi_lwip.h"
+#include "wifi/lwip_util.h"
 #include "net_dns.h"
 #include "lib/textparse.h"
 #include "lwip/altcp.h"
@@ -369,15 +370,9 @@ static err_t nts_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p,
     }
     if (p == NULL) { state->eof = true; return ERR_OK; }
     if (p->tot_len > ring_free()) return ERR_MEM;
-    for (struct pbuf *q = p; q != NULL; q = q->next) {
-        const uint8_t *source = q->payload;
-        for (uint16_t i = 0; i < q->len; i++) {
-            rx_ring[state->rx_head] = source[i];
-            state->rx_head = (uint16_t)((state->rx_head + 1u) &
-                                        (SSH_RX_SIZE - 1u));
-        }
-        state->rx_count = (uint16_t)(state->rx_count + q->len);
-    }
+    state->rx_head = (uint16_t)byte_ring_put_pbuf(rx_ring, SSH_RX_SIZE - 1u,
+                                                  state->rx_head, p);
+    state->rx_count = (uint16_t)(state->rx_count + p->tot_len);
     altcp_recved(pcb, p->tot_len);
     pbuf_free(p);
     return ERR_OK;
@@ -424,18 +419,15 @@ static int io_recv(WOLFSSH *ssh, void *out, word32 size, void *opaque)
 static int io_send(WOLFSSH *ssh, void *data, word32 size, void *opaque)
 {
     pi_ssh *state = opaque;
-    u16_t available;
-    word32 count;
+    u16_t count;
     err_t result;
     (void)ssh;
     if (state->pcb == NULL || state->transport_error)
         return WS_CBIO_ERR_CONN_RST;
-    available = altcp_sndbuf(state->pcb);
-    count = size < available ? size : available;
-    if (count == 0u) return WS_CBIO_ERR_WANT_WRITE;
-    result = altcp_write(state->pcb, data, (u16_t)count, TCP_WRITE_FLAG_COPY);
+    result = lwip_altcp_write_some(state->pcb, data, size, &count);
     if (result == ERR_MEM) return WS_CBIO_ERR_WANT_WRITE;
     if (result != ERR_OK) return WS_CBIO_ERR_CONN_RST;
+    if (count == 0u) return WS_CBIO_ERR_WANT_WRITE;   /* send buffer full */
     (void)altcp_output(state->pcb);
     wifi_lwip_rx_kick();
     return (int)count;

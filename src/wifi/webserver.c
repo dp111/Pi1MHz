@@ -17,6 +17,7 @@
 #include "md5.h"
 #include "wifi.h"
 #include "wifi_lwip.h"
+#include "lwip_util.h"
 #include "sdio.h"
 #include "framebuffer_export.h"
 #include "../BeebSCSI/fatfs/ff.h"
@@ -2174,37 +2175,6 @@ static void fb_render_row(const framebuffer_export_info_t *info,
       dst[x] = 0u;
 }
 
-/* Queue up to want bytes, settling for less rather than nothing.
-   tcp_write() is transactional: it queues the whole chunk or it queues
-   nothing, and it allocates from the same MEM_SIZE heap that every other
-   connection's unacked data is sitting in.  tcp_sndbuf() does not see that
-   heap - it reports TCP window space - so on a busy server the sizes it
-   blesses routinely fail to allocate.
-
-   Retrying at one segment is what stops that becoming starvation.  With
-   several concurrent downloads, two saturated senders own nearly all of the
-   32 KB heap; the rest asked for 8 KB, got ERR_MEM every time, queued not
-   one byte, and were killed ~30 s later by the idle watchdog - the client
-   seeing a 200 with an empty body.  A 1460-byte write fits in what is left,
-   and any progress at all re-arms the watchdog (ws_sent clears poll_count),
-   so the slow connections finish instead of dying.  Deliberately not fixed
-   by enlarging MEM_SIZE: 64 KB was measured to make all four streams crawl,
-   because the heap is also what limits how far the SDIO transmit path can
-   be oversubscribed. */
-static err_t ws_write_best_effort(struct tcp_pcb *pcb, const void *data,
-                                  u16_t want, u16_t *written)
-{
-   err_t err = tcp_write(pcb, data, want, TCP_WRITE_FLAG_COPY);
-
-   if (err == ERR_MEM && want > TCP_MSS) {
-      want = TCP_MSS;
-      err = tcp_write(pcb, data, want, TCP_WRITE_FLAG_COPY);
-   }
-
-   *written = (err == ERR_OK) ? want : 0u;
-   return err;
-}
-
 static bool conn_pump(ws_conn_t *c)
 {
    err_t err = ERR_OK;
@@ -2224,17 +2194,15 @@ static bool conn_pump(ws_conn_t *c)
    }
 
    /* in-memory portion (HTML body, or the HTTP header of a download) */
+   /* lwip_tcp_write_some settles for one segment when the heap is short:
+      its comment says why that matters with several downloads at once.
+      Any progress at all re-arms the idle watchdog (ws_sent clears
+      poll_count). */
    while (c->out != NULL && c->out_sent < c->out_len) {
-      u16_t  avail = tcp_sndbuf(c->pcb);
-      size_t want  = c->out_len - c->out_sent;
       u16_t  wrote = 0u;
-      if (avail == 0u)
-         break;
-      if (want > avail)
-         want = avail;
-      err = ws_write_best_effort(c->pcb, c->out + c->out_sent, (u16_t)want,
-                                 &wrote);
-      if (err != ERR_OK)
+      err = lwip_tcp_write_some(c->pcb, c->out + c->out_sent,
+                                c->out_len - c->out_sent, &wrote);
+      if (err != ERR_OK || wrote == 0u)
          break;
       c->out_sent += wrote;
       c->bytes_queued += (uint32_t)wrote;
@@ -2257,8 +2225,6 @@ static bool conn_pump(ws_conn_t *c)
       bool did_card_read = false;
 
       while (1) {
-         u16_t  avail;
-         size_t want;
          u16_t  wrote = 0u;
 
          if (c->dl_buf_sent >= c->dl_buf_len) {
@@ -2296,15 +2262,9 @@ static bool conn_pump(ws_conn_t *c)
             c->dl_remaining -= br;
          }
 
-         avail = tcp_sndbuf(c->pcb);
-         if (avail == 0u)
-            break;
-         want = c->dl_buf_len - c->dl_buf_sent;
-         if (want > avail)
-            want = avail;
-         err = ws_write_best_effort(c->pcb, c->dl_buf + c->dl_buf_sent,
-                                    (u16_t)want, &wrote);
-         if (err != ERR_OK)
+         err = lwip_tcp_write_some(c->pcb, c->dl_buf + c->dl_buf_sent,
+                                   c->dl_buf_len - c->dl_buf_sent, &wrote);
+         if (err != ERR_OK || wrote == 0u)
             break;
          c->dl_buf_sent += wrote;
          c->bytes_queued += (uint32_t)wrote;
@@ -2321,8 +2281,6 @@ static bool conn_pump(ws_conn_t *c)
       uint32_t row_padded = (c->fb_info.width * 3u + 3u) & ~3u;
 
       while (1) {
-         u16_t  avail;
-         size_t want;
          u16_t  wrote = 0u;
 
          if (c->dl_buf_sent >= c->dl_buf_len) {
@@ -2366,15 +2324,9 @@ static bool conn_pump(ws_conn_t *c)
             c->dl_buf_sent = 0u;
          }
 
-         avail = tcp_sndbuf(c->pcb);
-         if (avail == 0u)
-            break;
-         want = c->dl_buf_len - c->dl_buf_sent;
-         if (want > avail)
-            want = avail;
-         err = ws_write_best_effort(c->pcb, c->dl_buf + c->dl_buf_sent,
-                                    (u16_t)want, &wrote);
-         if (err != ERR_OK)
+         err = lwip_tcp_write_some(c->pcb, c->dl_buf + c->dl_buf_sent,
+                                   c->dl_buf_len - c->dl_buf_sent, &wrote);
+         if (err != ERR_OK || wrote == 0u)
             break;
          c->dl_buf_sent += wrote;
          c->bytes_queued += (uint32_t)wrote;
