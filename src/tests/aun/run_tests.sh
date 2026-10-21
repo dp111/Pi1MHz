@@ -23,6 +23,8 @@ stubs() {   # populate $1 with the lockstep stub headers
 }
 mkdir -p "$B/AUN"
 cp "$AUN"/aun*.c "$AUN"/aun*.h "$B/AUN/"
+mkdir -p "$B/lib"
+cp "$AUN"/../lib/textparse.c "$AUN"/../lib/textparse.h "$B/lib/"
 cp "$HERE"/test_aun.c "$HERE"/test_aun_config.c "$HERE"/test_irq_mask.c "$HERE"/fuzz_engine.c "$HERE"/fuzz_cmd.c "$B/"
 # services.h is real (the command-range map), not a stub: aun_emulator.c
 # includes it as ../services.h for the range registration.
@@ -36,7 +38,7 @@ gcc -std=gnu2x -Wall -Wextra -Wconversion $I -o "$B/t1" "$B/test_aun.c" "$B/AUN/
 "$B/t1"
 
 echo "== unit: cmdline parsers =="
-gcc -std=gnu2x -Wall -Wextra -Wconversion $I -o "$B/t2" "$B/test_aun_config.c" "$B/AUN/aun_config.c"
+gcc -std=gnu2x -Wall -Wextra -Wconversion $I -o "$B/t2" "$B/test_aun_config.c" "$B/AUN/aun_config.c" "$B/lib/textparse.c"
 "$B/t2"
 
 echo "== unit: nIRQ shared mask (slot-11 width regression) =="
@@ -57,7 +59,7 @@ gcc -std=gnu2x -g -fsanitize=address,undefined -fno-sanitize-recover=all $I -o "
 "$B/f1"
 
 echo "== fuzz: command interface (ASan/UBSan) =="
-gcc -std=gnu2x -g -fsanitize=address,undefined -fno-sanitize-recover=all $I -o "$B/f2" "$B/fuzz_cmd.c" "$B/AUN/aun_emulator.c" "$B/AUN/aun.c" "$B/AUN/aun_config.c"
+gcc -std=gnu2x -g -fsanitize=address,undefined -fno-sanitize-recover=all $I -o "$B/f2" "$B/fuzz_cmd.c" "$B/AUN/aun_emulator.c" "$B/AUN/aun.c" "$B/AUN/aun_config.c" "$B/lib/textparse.c"
 "$B/f2"
 
 echo "== lockstep (ROM x C x AUN peer) =="

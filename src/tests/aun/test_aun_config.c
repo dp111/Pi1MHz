@@ -10,7 +10,7 @@ static bool add(void *u, uint8_t net, uint8_t stn, uint32_t ip, uint16_t port)
 
 int main(void)
 {
-    uint8_t net, stn; uint16_t port;
+    uint8_t net, stn, id[4];
 
     /* station */
     assert(aun_parse_station("1.32", &net, &stn) && net==1 && stn==32);
@@ -41,11 +41,12 @@ int main(void)
     assert(!aun_station_is_ip(NULL, &net, &from_ip));
     assert(!aun_parse_station("ip", &net, &stn));
 
-    /* port */
-    assert(aun_parse_port("32768", &port) && port==32768);
-    assert(!aun_parse_port("0", &port));
-    assert(!aun_parse_port("65536", &port));
-    assert(!aun_parse_port(NULL, &port));
+    /* machine (aun_port= is text_parse_port_str: tests/textparse) */
+    assert(aun_parse_machine("0a0B10ff", id) && id[0]==0x0A && id[1]==0x0B && id[2]==0x10 && id[3]==0xFF);
+    assert(!aun_parse_machine("0a0b10f", id));          /* 7 digits */
+    assert(!aun_parse_machine("0a0b10fff", id));        /* 9 digits */
+    assert(!aun_parse_machine("0a0b10fg", id));         /* not hex */
+    assert(!aun_parse_machine(NULL, id));
 
     /* map */
     n = 0;
@@ -61,6 +62,10 @@ int main(void)
     assert(aun_parse_map("1.254=192.168.1", add, NULL) == -1);      /* short ip */
     assert(aun_parse_map("1.0=10.0.0.1", add, NULL) == -1);         /* station 0 */
     assert(aun_parse_map("1.254=10.0.0.1:0", add, NULL) == -1);     /* port 0 */
+    assert(aun_parse_map("1.254=10.0.0.1:65536", add, NULL) == -1); /* port too big */
+    assert(aun_parse_map("1.254=10.0.0.1:", add, NULL) == -1);      /* no port digits */
+    assert(aun_parse_map("1.254=10.0.0.0001", add, NULL) == -1);    /* octet of 4 digits */
+    assert(aun_parse_map("1.254=10.0.0.256", add, NULL) == -1);     /* octet over 255 */
     assert(aun_parse_map("garbage", add, NULL) == -1);
 
     printf("all aun_config tests passed\n");

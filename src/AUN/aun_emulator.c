@@ -58,6 +58,7 @@
 #include "aun.h"
 #include "aun_config.h"
 #include "aun_emulator.h"
+#include "../lib/textparse.h"
 
 /* The AUN_CMD_* numbers are ABI with the AUNFS ROMs; the services port's
    allocation map must agree with them. */
@@ -401,7 +402,7 @@ static void aun_execute(uint32_t cp, uint32_t addr)
       }
       uint16_t listen = (uint16_t)jim_read32(cp + 4);
       if (listen == 0 &&
-          !aun_parse_port(config_get("aun_port"), &listen))
+          !text_parse_port_str(config_get("aun_port"), &listen))
          listen = (uint16_t)AUN_DEFAULT_UDP_PORT;
 
       if (aun_pcb != NULL) {

@@ -32,9 +32,6 @@ bool aun_parse_net(const char *s, uint8_t *net);
  * (machine type lo, hi, NFS version minor, major). */
 bool aun_parse_machine(const char *s, uint8_t id[4]);
 
-/* Parse a decimal UDP port (1-65535). */
-bool aun_parse_port(const char *s, uint16_t *port);
-
 /* Callback invoked for each parsed map entry. ip_be is the IPv4
  * address as a u32 in network byte order ('a' in the lowest-addressed
  * byte). Return false to abort parsing. */

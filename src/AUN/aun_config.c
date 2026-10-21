@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include "aun_config.h"
+#include "../lib/textparse.h"
 
 /* Parse an unsigned decimal number, advancing *s. Returns false if no
  * digits are present or the value exceeds 'max'. */
@@ -101,46 +102,28 @@ bool aun_parse_machine(const char *s, uint8_t id[4])
    if (s == NULL)
       return false;
    for (int i = 0; i < 4; i++) {
-      uint32_t v = 0;
-      for (int n = 0; n < 2; n++) {
-         char ch = *s++;
-         if (ch >= '0' && ch <= '9') v = (v << 4) | (uint32_t)(ch - '0');
-         else if (ch >= 'a' && ch <= 'f') v = (v << 4) | (uint32_t)(ch - 'a' + 10);
-         else if (ch >= 'A' && ch <= 'F') v = (v << 4) | (uint32_t)(ch - 'A' + 10);
-         else return false;
-      }
-      id[i] = (uint8_t)v;
+      int hi = text_hex_nibble(*s++);
+      if (hi < 0)
+         return false;
+      int lo = text_hex_nibble(*s++);
+      if (lo < 0)
+         return false;
+      id[i] = (uint8_t)((hi << 4) | lo);
    }
    return *s == '\0';
-}
-
-bool aun_parse_port(const char *s, uint16_t *port)
-{
-   uint32_t v;
-
-   if (s == NULL || !parse_num(&s, 65535, &v) || *s != '\0' || v == 0)
-      return false;
-   *port = (uint16_t)v;
-   return true;
 }
 
 /* Parse "a.b.c.d" into a network-byte-order u32, advancing *s. */
 static bool parse_ip(const char **s, uint32_t *ip_be)
 {
-   uint32_t v = 0;
+   uint8_t oct[4];
+   const char *end = text_parse_ipv4(*s, oct);
 
-   for (int i = 0; i < 4; i++) {
-      uint32_t octet;
-      if (!parse_num(s, 255, &octet))
-         return false;
-      v |= octet << (8 * i);          /* first octet in the low byte */
-      if (i < 3) {
-         if (**s != '.')
-            return false;
-         (*s)++;
-      }
-   }
-   *ip_be = v;
+   if (end == NULL)
+      return false;
+   *ip_be = (uint32_t)oct[0] | (uint32_t)oct[1] << 8 |        /* first octet in the low byte */
+            (uint32_t)oct[2] << 16 | (uint32_t)oct[3] << 24;
+   *s = end;
    return true;
 }
 
@@ -152,7 +135,8 @@ int aun_parse_map(const char *s, aun_map_add_fn add, void *user)
       return 0;
 
    while (*s != '\0') {
-      uint32_t net, stn, ip_be, port = 0;
+      uint32_t net, stn, ip_be;
+      uint16_t port = 0;
 
       if (!parse_num(&s, 254, &net) || *s != '.')
          return -1;
@@ -163,11 +147,15 @@ int aun_parse_map(const char *s, aun_map_add_fn add, void *user)
       if (!parse_ip(&s, &ip_be))
          return -1;
       if (*s == ':') {
+         size_t len = 0;
          s++;
-         if (!parse_num(&s, 65535, &port) || port == 0)
+         while (s[len] >= '0' && s[len] <= '9')
+            len++;
+         if (!text_parse_port(s, len, &port))
             return -1;
+         s += len;
       }
-      if (!add(user, (uint8_t)net, (uint8_t)stn, ip_be, (uint16_t)port))
+      if (!add(user, (uint8_t)net, (uint8_t)stn, ip_be, port))
          return -1;
       count++;
 
