@@ -351,9 +351,26 @@ static bool ser_arm_next(void)
 
 /* ---- FIQ: bus writes to the stub ------------------------------------- */
 
+/* The TX flag says what the 6502 read at +04, and only this FIQ changes it: to SEC in the write
+   that fills the FIFO, back to CLC in the first write refused after there is room again - both
+   just after the 6502's STA, so its next look at +04 (the MOS's retry, or its next byte) is a
+   whole INSV call away.  The poll once put CLC back as soon as it had read from the FIFO: a 6502
+   that had read SEC then had its byte taken here although it was told no, and sent it again - a
+   byte twice in what the Pi saw (not on the Beeb's screen), which put the screen model out of
+   step and left the terminal waiting for a screen read to put it right. */
+static volatile bool ser_tx_full;    /* the stub's TX flag is SEC */
+
 static void ser_tx_byte(unsigned int gpio)
 {
-   if (fifo_used(&tx) >= SER_FIFO_SIZE) {    /* the flag said full: C=1, the MOS retries */
+   if (ser_tx_full) {                       /* the 6502 read SEC: C=1, the MOS sends it again */
+      SER_COUNT(ser_tx_drops);
+      if (fifo_used(&tx) < SER_FIFO_SIZE) { /* room now: the retry is taken */
+         ser_write(SER_TX_FLAG, OP_CLC);
+         ser_tx_full = false;
+      }
+      return;
+   }
+   if (fifo_used(&tx) >= SER_FIFO_SIZE) {   /* (cannot be: the flag is SEC once it fills) */
       SER_COUNT(ser_tx_drops);
       return;
    }
@@ -362,8 +379,10 @@ static void ser_tx_byte(unsigned int gpio)
    ser_tx_count++;
    ser_tx_us = Pi1MHz_now_us;
    SER_LOG('t', GET_DATA(gpio));
-   if (fifo_used(&tx) >= SER_FIFO_SIZE)
+   if (fifo_used(&tx) >= SER_FIFO_SIZE) {
       ser_write(SER_TX_FLAG, OP_SEC);
+      ser_tx_full = true;
+   }
 }
 
 static void ser_rx_consume(unsigned int gpio)
@@ -703,13 +722,7 @@ static void serial_redirect_poll(void)
       _restore_cpsr(cpsr);
    }
 
-   if (ser_tx_drained) {
-      ser_tx_drained = false;
-      unsigned int cpsr = _disable_interrupts_cspr();   /* against a FIQ refilling it */
-      if (fifo_used(&tx) < SER_FIFO_SIZE)
-         ser_write(SER_TX_FLAG, OP_CLC);
-      _restore_cpsr(cpsr);
-   }
+   ser_tx_drained = false;            /* the TX flag goes back to CLC in the FIQ (ser_tx_byte), not here */
 
    /* Output has stopped: give the Beeb its RS423 idle flag back (see the top; telnet mode only). */
    if (telnet && !ser_idle_req && !ser_idle_active && ser_tx_count != ser_idle_tx
@@ -808,6 +821,7 @@ void serial_redirect_init(uint8_t instance, uint8_t address)
    tx.head = tx.tail = 0u;
    rx.head = rx.tail = 0u;
    ser_tx_drained = false;
+   ser_tx_full = false;            /* the stub below starts with CLC at +04 */
    modem_reset();                  /* a BBC reset hangs up, as a DTR drop would */
 
    for (uint8_t i = 0u; i < SER_STUB_LEN; i++)

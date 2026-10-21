@@ -67,6 +67,7 @@
    bytes, are what the link runs out of (a stream from the Beeb reached the client at ~350 bytes/s). */
 #define OUT_BATCH    1024u
 #define OUT_HOLD_US  8000u
+#define OUT_HOLD_BUSY_US 50000u          /* ... and the longest wait for a whole segment while much is in flight */
 #define HOOK_SAME_BOOT_US 30000000u     /* hooks within this of each other are one boot (the ROM, then HELPERS) */
 #define LOGIN_MAX    64u                 /* as the web interface's user name and password may be */
 #define LOGIN_US     30000000u           /* a session must be logged in by then */
@@ -172,9 +173,16 @@ static uint32_t  g_prog_us;              /* the last time the session moved, or 
 static bool      g_rx_blocked;           /* the key ring is full and client data is waiting for room */
 static bool      g_esc_cut;              /* a lone ESC is waiting behind the backlog: the keys before it go */
 static uint32_t  g_recv_us;              /* when client data last came */
-static struct pbuf *g_pend;              /* client data taken from lwIP but not yet turned into keys */
-static struct pbuf *g_pq;                /* ... the segment of it being read */
-static u16_t     g_pqoff;                /* ... and how far into that segment */
+/* Client data taken from lwIP but not yet turned into keys, copied out of its pbufs as it comes.
+   Holding the pbufs themselves held lwIP's receive pool: the window is 64 KB, but a client sending
+   small segments (a stream to TERM, a fast paste) pins a pool pbuf for each, and the 96 ran out -
+   the driver could then receive nothing, not even the ACKs for our output, which retransmitted
+   until lwIP gave up, and keys typed meanwhile never came in.  The window is still opened only for
+   what has been read (tcp_recved), and it is smaller than this buffer, so the client cannot overrun it. */
+#define INBUF_SIZE 65536u                /* power of two, more than TCP_WND */
+static uint8_t   g_inbuf[INBUF_SIZE];
+static uint32_t  g_in_head, g_in_tail;   /* read, write */
+static uint32_t  g_in_drops;             /* bytes that did not fit (should never be; telnetd_debug) */
 
 static tnd_in_t  g_in;
 static tnd_out_t g_out;
@@ -313,10 +321,7 @@ static bool credentials_ok(void)
 
 static void pend_free(void)
 {
-   if (g_pend != NULL)
-      pbuf_free(g_pend);
-   g_pend = g_pq = NULL;
-   g_pqoff = 0u;
+   g_in_head = g_in_tail;
 }
 
 static void session_reset(void)
@@ -452,7 +457,15 @@ static uint32_t keys_waiting(void)
 {
    uint32_t taken = serial_redirect_key_gen() + serial_redirect_key_other_gen();
    uint32_t w = serial_redirect_rx_count() - taken - g_keys_base;
-   return w > 0x80000000u ? 0u : w;
+   if (w > 0x80000000u) {
+      /* More taken than put in since the buffer was last counted empty: the ESCAPE that set the
+         base had not emptied the Beeb's buffer yet (the program empties it when it acknowledges
+         the ESCAPE, and can take a key before that).  Counted again from here, or every count
+         after would be that many short (T-17's "3 waiting" read 2 after an earlier ESCAPE). */
+      g_keys_base = serial_redirect_rx_count() - taken;
+      return 0u;
+   }
+   return w;
 }
 
 static void keys_emptied(void)                   /* the Beeb's buffer emptied (ESCAPE, a reset) */
@@ -546,13 +559,10 @@ static void client_byte(uint8_t c, uint32_t now_us)
 static bool esc_ahead(uint32_t now_us)
 {
    unsigned st = 0u;
-   const struct pbuf *q = g_pq;
-   u16_t off = g_pqoff;
 
-   while (q != NULL) {
-      const uint8_t *d = (const uint8_t *)q->payload;
-      for (; off < q->len; off++) {
-         uint8_t c = d[off];
+   for (uint32_t i = g_in_head; i != g_in_tail; i++) {
+      {
+         uint8_t c = g_inbuf[i & (INBUF_SIZE - 1u)];
          switch (st) {
          case 0:
             if (c == 0xFFu && !g_in.notelnet) st = 1u;
@@ -571,8 +581,6 @@ static bool esc_ahead(uint32_t now_us)
             break;
          }
       }
-      q = q->next;
-      off = 0u;
    }
    return st == 4u && (now_us - g_recv_us) > 300000u;
 }
@@ -677,18 +685,12 @@ static void pend_consume(void)
    u32_t    n = 0u;
 
 again:
-   while (g_pq != NULL && g_pcb != NULL) {
-      const uint8_t *d = (const uint8_t *)g_pq->payload;
-      while (g_pqoff < g_pq->len) {
-         if (!g_esc_cut && KRING_SIZE - (g_ktail - g_khead) < TND_IN_KEYS)
-            goto full;                          /* a byte releases at most TND_IN_KEYS keys */
-         client_byte(d[g_pqoff++], now);
-         n++;
-      }
-      g_pq = g_pq->next;
-      g_pqoff = 0u;
+   while (g_in_head != g_in_tail && g_pcb != NULL) {
+      if (!g_esc_cut && KRING_SIZE - (g_ktail - g_khead) < TND_IN_KEYS)
+         goto full;                             /* a byte releases at most TND_IN_KEYS keys */
+      client_byte(g_inbuf[g_in_head++ & (INBUF_SIZE - 1u)], now);
+      n++;
    }
-   pend_free();                                 /* all of it read */
    g_rx_blocked = false;
    if (n != 0u && g_pcb != NULL)
       tcp_recved(g_pcb, (u16_t)(n > 0xFFFFu ? 0xFFFFu : n));
@@ -734,20 +736,21 @@ static err_t td_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
       return session_close(false) ? ERR_ABRT : ERR_OK;
    }
 
-   /* The data is ours now.  It is read into the key ring as fast as the Beeb
-      empties it and the window stays closed (tcp_recved) for what has not been
-      read, which is what holds the client back.  (Refusing the packet with
-      ERR_MEM instead does not work: lwIP can hand over several queued segments
-      as one chain, and one longer than half the ring would never fit.) */
+   /* The data is ours now: copied out (see g_inbuf) and the pbufs given back at once.  It is read
+      into the key ring as fast as the Beeb empties it and the window stays closed (tcp_recved) for
+      what has not been read, which is what holds the client back.  (Refusing the packet with
+      ERR_MEM instead does not work: lwIP can hand over several queued segments as one chain.) */
    g_recv_us = Pi1MHz_now_us;
-   if (g_pend == NULL) {
-      g_pend = g_pq = p;
-      g_pqoff = 0u;
-   } else {
-      pbuf_cat(g_pend, p);
-      if (g_pq == NULL)
-         g_pq = p;
+   for (const struct pbuf *q = p; q != NULL; q = q->next) {
+      const uint8_t *d = (const uint8_t *)q->payload;
+      for (u16_t i = 0u; i < q->len; i++) {
+         if (g_in_tail - g_in_head < INBUF_SIZE)
+            g_inbuf[g_in_tail++ & (INBUF_SIZE - 1u)] = d[i];
+         else
+            g_in_drops++;
+      }
    }
+   pbuf_free(p);
    pend_consume();
    return ERR_OK;
 }
@@ -871,8 +874,17 @@ static void pump(void)
 {
    if (g_pcb == NULL)
       return;
-   if (g_opos < g_olen && (g_olen - g_opos >= OUT_BATCH || g_close_after
-                           || (uint32_t)(Pi1MHz_now_us - g_obuf_us) >= OUT_HOLD_US)) {
+   /* While much is in flight, whole segments: lwIP queues at most TCP_SND_QUEUELEN segments
+      whatever their size, and a Beeb printing fast gave one of ~80 bytes every OUT_HOLD_US, so
+      with ACKs slow (WiFi, a busy client) the queue filled long before the send buffer, every
+      write after was ERR_MEM, and the output crawled at a few hundred bytes a second while the
+      Beeb sat in OSWRCH, deaf even to ESCAPE.  With little in flight it is as before, for echoes. */
+   size_t   have = g_olen - g_opos;
+   uint32_t held = (uint32_t)(Pi1MHz_now_us - g_obuf_us);
+   bool     busy = g_pcb->snd_queuelen >= TCP_SND_QUEUELEN / 4u;
+   bool     go = busy ? (have >= TCP_MSS || have >= OBUF_SIZE / 2u || held >= OUT_HOLD_BUSY_US)
+                      : (have >= OUT_BATCH || held >= OUT_HOLD_US);
+   if (g_opos < g_olen && (go || g_close_after)) {
       size_t want = g_olen - g_opos;
       size_t room = tcp_sndbuf(g_pcb);
       if (room == 0u)
@@ -1163,7 +1175,7 @@ void telnetd_poll(uint32_t now_us, bool beeb_attached)
          take_key(k[i]);
    }
 
-   if (g_pend != NULL)
+   if (g_in_head != g_in_tail)
       pend_consume();                           /* client data waiting for room in the ring */
 
    /* The client's window size: the first one before the screen is drawn, a change after it. */
@@ -1534,9 +1546,10 @@ bool telnetd_debug(void)
    room, and the session's state when one was last dropped as stalled. */
 void telnetd_tcp_status(char *buf, size_t len)
 {
-   snprintf(buf, len, "wmem %lu, room0 %lu; last drop: sndq %u sndbuf %u wnd %u obuf %lu rxblk %d; now: obuf %lu sndq %u sndbuf %u",
+   snprintf(buf, len, "wmem %lu, room0 %lu; last drop: sndq %u sndbuf %u wnd %u obuf %lu rxblk %d; now: obuf %lu sndq %u sndbuf %u; in %lu, in drops %lu",
             (unsigned long)g_wmem, (unsigned long)g_room0, g_drop_sndq, g_drop_sndbuf, g_drop_wnd,
             g_drop_obuf, g_drop_rxblk, (unsigned long)(g_olen - g_opos),
             g_pcb != NULL ? (unsigned int)g_pcb->snd_queuelen : 0u,
-            g_pcb != NULL ? (unsigned int)tcp_sndbuf(g_pcb) : 0u);
+            g_pcb != NULL ? (unsigned int)tcp_sndbuf(g_pcb) : 0u, (unsigned long)(g_in_tail - g_in_head),
+            (unsigned long)g_in_drops);
 }
