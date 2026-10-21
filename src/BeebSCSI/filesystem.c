@@ -199,7 +199,12 @@ static struct filesystemStateStruct
    uint32_t driveGeneration;           // changes when LUNs 0-7 are no longer the same drives
 } filesystemState;
 
-NOINIT_SECTION static char fileName[256];       // String for storing LFN filename
+
+// The shipped default descriptor, for a LUN whose .cfg is missing: a create
+// (filesystemCreateLunDescriptor, filesystemWriteAttributesAdding) copies it
+// to the LUN's .cfg; a start or MODE SENSE (filesystemCheckExtAttributes)
+// only parses it into memory - mounting never writes.
+static const char defaultLunDescriptor[] = "/Pi1MHz/defscsi.cfg";
 NOINIT_SECTION static char fatDirectory[256];      // String for storing FAT directory (for FAT transfer operations)
 
 NOINIT_SECTION static uint8_t sectorBuffer[SECTOR_BUFFER_SIZE];   // Buffer for reading sectors
@@ -227,7 +232,7 @@ static uint8_t adfs_map_cksum(const uint8_t *sec)
 
 NOINIT_SECTION static FIL fileObjectFAT;
 
-static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber);
+static bool filesystemCheckLunDirectory(uint8_t lunNumber);
 
 static void filesystemPrintfserror(FRESULT fsResult)
 {
@@ -618,11 +623,6 @@ void filesystemReset(void)
    // one-shot flag would be spent).
    videoplayer_media_changed();
 
-   // Note: ADFS does not send a SCSI STARTSTOP command on reboot... it assumes that LUN 0 is already started.
-   // This is theoretically incorrect... the host should not assume anything about the state of a SCSI LUN.
-   // However, in order to support this buggy implementation we have to start LUN 0 here.
-  // filesystemSetLunStatus(0, true);
-
    return true;
 }
 
@@ -696,7 +696,8 @@ static uint16_t hostRevokeMask;  // bit n set = the Beeb took LUN n back; abort 
 // /BeebSCSI<n>/scsi<lun>.<ext> in the SCSI jukebox directory, LUN 8-15 are
 // /BeebVFS<n>/scsi<lun&7>.<ext> in the read-only VFS jukebox directory.
 // Every open of a .dat/.dsc/.cfg goes through here, so the VFS masking and
-// directory choice cannot be forgotten at a call site.
+// directory choice cannot be forgotten at a call site.  A look into a VFS
+// side by its directory number (not a LUN) goes through filesystemVFSFilePath.
 // root is the volume prefix: filesystemStorageRoot() for the Beeb's own
 // access, "" for the host-side names (WebDAV and MTP see the SD card).
 static void fsLunDirPathOn(const char *root, uint8_t lunNumber, char *buf, size_t size)
@@ -719,6 +720,13 @@ static void fsLunFilePathOn(const char *root, uint8_t lunNumber, const char *ext
 static void fsLunFilePath(uint8_t lunNumber, const char *ext, char *buf, size_t size)
 {
    fsLunFilePathOn(filesystemStorageRoot(), lunNumber, ext, buf, size);
+}
+
+// A named file in /BeebVFS<dir> - any side, not only the jukeboxed one: the
+// disc menu and the video player look into a side without mounting it.
+void filesystemVFSFilePath(uint8_t dir, const char *name, char *buf, size_t size)
+{
+   snprintf(buf, size, "%s/BeebVFS%u/%s", filesystemStorageRoot(), dir, name);
 }
 
 static void fsHostLunNames(uint8_t lunNumber, char *dir, size_t dirSize,
@@ -855,7 +863,7 @@ bool filesystemSetLunStatus(uint8_t lunNumber, bool lunStatus)
       // descriptor to ensure everything is up to date
 
       // Check that the currently selected LUN directory exists (and, if not, create it)
-      if (!filesystemCheckLunDirectory(filesystemState.lunDirectory, lunNumber)) {
+      if (!filesystemCheckLunDirectory(lunNumber)) {
          // Failed!
          if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemSetLunStatus(): ERROR: Could not access LUN image directory!\r\n"));
          return false;
@@ -971,8 +979,9 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5])
 }
 
 // Check that the currently selected LUN directory exists (and, if not, create it)
-static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
+static bool filesystemCheckLunDirectory(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FRESULT fsResult;
    DIR dirObject;
    // Is the file system mounted?
@@ -983,13 +992,7 @@ static bool filesystemCheckLunDirectory(uint8_t lunDirectory, uint8_t lunNumber)
 
    // Does a directory exist for the currently selected LUN directory - if not, create it
    // (VFS is a read-only filesystem: check its directory but never create it)
-   if (lunNumber < 8 )
-      snprintf(fileName, sizeof(fileName), "%s/BeebSCSI%d", filesystemStorageRoot(), lunDirectory);
-   else
-      // VFS LUNs live under the VFS jukebox directory (this must match
-      // where filesystemCheckLunImage/CheckExtAttributes open the images)
-      snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d", filesystemStorageRoot(),
-               filesystemState.lunDirectoryVFS);
+   fsLunDirPathOn(filesystemStorageRoot(), lunNumber, fileName, sizeof(fileName));
 
    fsResult = fsr_opendir(&dirObject, fileName);
 
@@ -1051,8 +1054,8 @@ bool filesystemVFSVolumePresent(void)
    }
    if (stale) {
       FILINFO fno;
-      snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d/video.pvf",
-               filesystemStorageRoot(), filesystemState.lunDirectoryVFS);
+      char fileName[256];
+      filesystemVFSFilePath(filesystemState.lunDirectoryVFS, VFS_VIDEO_FILENAME, fileName, sizeof(fileName));
       vfs_vol_present = (fsr_stat(fileName, &fno) == FR_OK);
       vfs_vol_cached_dir = (int16_t)filesystemState.lunDirectoryVFS;
    }
@@ -1064,9 +1067,9 @@ bool filesystemVFSVolumePresent(void)
    only the menu scan asks, once per directory. */
 bool filesystemVFSDatPresent(void)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FILINFO fno;
-   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%d/scsi0.dat",
-            filesystemStorageRoot(), filesystemState.lunDirectoryVFS);
+   filesystemVFSFilePath(filesystemState.lunDirectoryVFS, "scsi0.dat", fileName, sizeof(fileName));
    return fsr_stat(fileName, &fno) == FR_OK;
 }
 
@@ -1076,11 +1079,12 @@ bool filesystemVFSDatPresent(void)
    lets it stop remounting each one just to look. */
 uint8_t filesystemVFSDirType(uint8_t dir)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FILINFO fno;
-   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.dat", filesystemStorageRoot(), dir);
+   filesystemVFSFilePath(dir, "scsi0.dat", fileName, sizeof(fileName));
    if (fsr_stat(fileName, &fno) == FR_OK)
       return 2;
-   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/video.pvf", filesystemStorageRoot(), dir);
+   filesystemVFSFilePath(dir, VFS_VIDEO_FILENAME, fileName, sizeof(fileName));
    if (fsr_stat(fileName, &fno) == FR_OK)
       return 1;
    return 0;
@@ -1104,6 +1108,7 @@ bool filesystemVFSDirPresent(uint8_t dir)
 
 bool filesystemCheckLunImage(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    uint32_t lunFileSize;
    FRESULT fsResult;
    if (filesystemState.fsLunStatus[lunNumber])
@@ -1351,6 +1356,7 @@ uint8_t filesystemGetLunDirectoryVFS(void)
 // Function to create a new LUN image (makes an empty .dat file)
 bool filesystemCreateLunImage(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FRESULT fsResult;
    FIL fileObject;
 
@@ -1394,6 +1400,7 @@ bool filesystemCreateLunImage(uint8_t lunNumber)
 // goes again, so a refused command leaves nothing behind.  Only an empty one is removed.
 void filesystemRemoveEmptyLunImage(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FILINFO fno;
 
    if (lunNumber >= 8 || config_beeb_write_protected())
@@ -1406,6 +1413,7 @@ void filesystemRemoveEmptyLunImage(uint8_t lunNumber)
 // Function to create a new LUN descriptor (makes an default .cfg file)
 bool filesystemCreateLunDescriptor(uint8_t lunNumber)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    if (lunNumber >7 || config_beeb_write_protected())
    {
       // VFS never creates .cfg; write-protect blocks .cfg auto-create too
@@ -1419,7 +1427,7 @@ bool filesystemCreateLunDescriptor(uint8_t lunNumber)
    if(parse_readfile(fileName, 0, scsiattributes, filesystemState.keyvalues[lunNumber] ))
       return true;
 
-   if (parse_readfile("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
+   if (parse_readfile(defaultLunDescriptor, fileName, scsiattributes, filesystemState.keyvalues[lunNumber] ))
    {
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCreateLunDescriptor(): Successful\r\n"));
       // now parse the new file
@@ -1468,6 +1476,7 @@ bool filesystemAttachLinkMap(FIL *file, DWORD **map, uint32_t *entries)
    open and media change, so this is rare and a fresh parse is fine. */
 bool filesystemReadVFSCfgIntDir(uint8_t dir, enum parserkeyvalueenum key, int *out)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    if (dir == (uint8_t)filesystemState.lunDirectoryVFS) {
       const parserkeyvalue *v = &filesystemState.keyvalues[8][key];
       if (v->v.integer && v->length) {
@@ -1477,7 +1486,7 @@ bool filesystemReadVFSCfgIntDir(uint8_t dir, enum parserkeyvalueenum key, int *o
    }
    bool found = false;
    parserkeyvalue values[NUM_KEYS] = {0};
-   snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.cfg", filesystemStorageRoot(), dir);
+   filesystemVFSFilePath(dir, "scsi0.cfg", fileName, sizeof(fileName));
    if (parse_readfile(fileName, 0, scsiattributes, values)) {
       if (values[key].v.integer && values[key].length) {
          *out = *values[key].v.integer;
@@ -1524,10 +1533,11 @@ bool filesystemReadVFSCfgTextDir(uint8_t dir, enum parserkeyvalueenum key,
       more than the side currently being asked about. */
    if ((int16_t)dir != vfs_cfg_dir) {
       parserkeyvalue values[NUM_KEYS] = {0};
+      char fileName[256];
       vfs_cfg_dir = (int16_t)dir;
       vfs_cfg_title[0] = '\0';
       vfs_cfg_desc[0]  = '\0';
-      snprintf(fileName, sizeof(fileName), "%s/BeebVFS%u/scsi0.cfg", filesystemStorageRoot(), dir);
+      filesystemVFSFilePath(dir, "scsi0.cfg", fileName, sizeof(fileName));
       if (parse_readfile(fileName, 0, scsiattributes, values)) {
          if (values[TITLE].v.string && values[TITLE].length) {
             uint32_t n = values[TITLE].length < sizeof(vfs_cfg_title) - 1 ?
@@ -1563,6 +1573,7 @@ bool filesystemReadLunDescriptor(uint8_t lunNumber)
       return false;                  /* drive empty: no cfg churn */
    if (!filesystemCheckExtAttributes(lunNumber))
    {
+      char fileName[256];
       FIL fileObject;
       FRESULT fsResult;
       // Check if the LUN descriptor file (.dsc) is present
@@ -1645,6 +1656,7 @@ bool filesystemWriteAttributes(uint8_t lunNumber)
 // line for (NULL: none) - a rewrite otherwise only replaces the lines it finds.
 static bool filesystemWriteAttributesAdding(uint8_t lunNumber, const bool append[])
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    // Write-protect: ignore the .cfg overwrite but report success (true, NOT
    // the VFS branch's false) so a mounted ADFS never sees a CHECK_COND.
    if (config_beeb_write_protected()) return true;
@@ -1670,7 +1682,7 @@ static bool filesystemWriteAttributesAdding(uint8_t lunNumber, const bool append
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg overwritten Successful\r\n"));
    } else {
       // assume no cfg file so create one
-      written = parse_rewritefile_adding("/Pi1MHz/defscsi.cfg",fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append);
+      written = parse_rewritefile_adding(defaultLunDescriptor, fileName, scsiattributes, filesystemState.keyvalues[lunNumber], append);
       if (written && debugFlag_filesystem) debugString_P(PSTR("File system: filesystemWriteAttributes(): .cfg created Successful\r\n"));
    }
    lba->length = lbaLength;
@@ -1719,21 +1731,15 @@ bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, u
       page3->v.string[0] = 0x03;
       page3->v.string[1] = 0x16;
       page3->length = 24;
-      uint32_t now = filesystemState.fsLunGeometry[lunNumber].BlockSize;
-      page3->v.string[12] = (char)(now >> 8);
-      page3->v.string[13] = (char)now;
+      modePage3Put(page3->v.string, MODEPAGE3_BLOCK_SIZE,
+                   (uint16_t)filesystemState.fsLunGeometry[lunNumber].BlockSize);
    }
    if (page3->length >= 12) {
-      page3->v.string[10] = (char)(sectorsPerTrack >> 8);
-      page3->v.string[11] = (char)sectorsPerTrack;
-      if ((blockSize != 0) && (page3->length >= 14)) {
-         page3->v.string[12] = (char)(blockSize >> 8);
-         page3->v.string[13] = (char)blockSize;
-      }
-      if ((interleave != 0) && (page3->length >= 16)) {
-         page3->v.string[14] = (char)(interleave >> 8);
-         page3->v.string[15] = (char)interleave;
-      }
+      modePage3Put(page3->v.string, MODEPAGE3_SECTORS_PER_TRACK, sectorsPerTrack);
+      if ((blockSize != 0) && (page3->length >= 14))
+         modePage3Put(page3->v.string, MODEPAGE3_BLOCK_SIZE, (uint16_t)blockSize);
+      if ((interleave != 0) && (page3->length >= 16))
+         modePage3Put(page3->v.string, MODEPAGE3_INTERLEAVE, interleave);
       append[MODEPAGE3] = true;
    }
    if (blockSize != 0) {
@@ -1751,6 +1757,7 @@ bool filesystemSaveFormatGeometry(uint8_t lunNumber, uint16_t sectorsPerTrack, u
 // Function to format a LUN image
 bool filesystemFormatLun(uint8_t lunNumber, uint8_t dataPattern)
 {
+   char fileName[256];                 // a LUN or side file's name (LFN)
    FIL fileObject;
    FRESULT fsResult;
 
@@ -1856,8 +1863,7 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
    }
    else
    {
-      snprintf(fileName, sizeof(fileName), "/Pi1MHz/defscsi.cfg");
-      parse_readfile(fileName,0, scsiattributes, filesystemState.keyvalues[lunNumber]);
+      parse_readfile(defaultLunDescriptor, 0, scsiattributes, filesystemState.keyvalues[lunNumber]);
 
       // LUN extended attributes file is not present
       if (debugFlag_filesystem) debugString_P(PSTR("File system: filesystemCheckExtAttributes: LUN extended attributes file not found\r\n"));
@@ -1869,29 +1875,59 @@ bool filesystemCheckExtAttributes( uint8_t lunNumber)
 
 // takes lun geometry and updates the keyvalues
 
-/* ModePage0 is the Adaptec's drive parameter list on an ACB or SASI board,
-   and carries the geometry.  On a drive with its own controller page 0 is
-   an ordinary mode page (a CCS drive's Unit Attention page: some drives
-   hold 80 02 00 00, others have none) and the geometry is page 4 alone. */
-static bool page0IsDriveList = true;
+/* The controller's rules are scsi.c's (DriveController=, DriveGeometry=,
+   read at power-on): it lends them once, and this layer reads them there
+   rather than keep a copy.  Until it does (or with no scsi.c at all, as in
+   a host test of this layer alone), Mixed and Auto. */
+static const filesystemDrivePolicy_t filesystemDefaultPolicy = {
+   .page0IsDriveList = true, .geometryFromCfgOnly = false
+};
+static const filesystemDrivePolicy_t *drivePolicy = &filesystemDefaultPolicy;
 
-/* DriveGeometry=CFG (true): a .cfg without its geometry page gets none
-   made up; Auto (false, the default) deduces it.  Set by scsi.c. */
-static bool geometryFromCfgOnly = false;
-
-void filesystemSetGeometryFromCfgOnly(bool cfgOnly)
+void filesystemSetDrivePolicy(const filesystemDrivePolicy_t *policy)
 {
-   geometryFromCfgOnly = cfgOnly;
-}
-
-void filesystemSetPage0IsDriveList(bool driveList)
-{
-   page0IsDriveList = driveList;
+   drivePolicy = (policy != NULL) ? policy : &filesystemDefaultPolicy;
 }
 
 static bool filesystemPage0IsDriveList(void)
 {
-   return page0IsDriveList;
+   return drivePolicy->page0IsDriveList;
+}
+
+static bool filesystemGeometryFromCfgOnly(void)
+{
+   return drivePolicy->geometryFromCfgOnly;
+}
+
+/* The geometry fields of page 0, the Adaptec drive list (cylinders bytes
+   1-2, heads byte 3), and of page 4 (cylinders bytes 2-4, of which 16 bits
+   are kept, heads byte 5). */
+#define MODEPAGE0_CYLINDERS 1
+#define MODEPAGE4_CYLINDERS 3
+
+static unsigned int filesystemPageCylindersAt(uint8_t page)
+{
+   return (page == 0) ? MODEPAGE0_CYLINDERS : MODEPAGE4_CYLINDERS;
+}
+
+// The LUN's cylinders and heads from page 0 or 4 (which must be held)
+static void filesystemGeometryFromPage(uint8_t lunNumber, uint8_t page)
+{
+   const char *data = filesystemState.keyvalues[lunNumber][(page == 0) ? MODEPAGE0 : MODEPAGE4].v.string;
+   unsigned int at = filesystemPageCylindersAt(page);
+   filesystemState.fsLunGeometry[lunNumber].Cylinders = modePageGetField(data, at, 2);
+   filesystemState.fsLunGeometry[lunNumber].Heads = (uint8_t)data[at + 2];
+}
+
+// The LUN's cylinders and heads into page 0 or 4 (which must be held)
+static void filesystemGeometryToPage(uint8_t lunNumber, uint8_t page)
+{
+   char *data = filesystemState.keyvalues[lunNumber][(page == 0) ? MODEPAGE0 : MODEPAGE4].v.string;
+   unsigned int at = filesystemPageCylindersAt(page);
+   if (page == 4)
+      data[2] = 0;                                  // cylinder count bits 16-23
+   modePagePutField(data, at, 2, filesystemState.fsLunGeometry[lunNumber].Cylinders);
+   data[at + 2] = (char)filesystemState.fsLunGeometry[lunNumber].Heads;
 }
 
 void filesystemLunToconfigGeometry(uint8_t lunNumber)
@@ -1912,9 +1948,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    }
 
    filesystemState.keyvalues[lunNumber][index].v.string[0] = 1 ;
-   filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
-   filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
-   filesystemState.keyvalues[lunNumber][index].v.string[3] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+   filesystemGeometryToPage(lunNumber, 0);
    filesystemState.keyvalues[lunNumber][index].v.string[4] = 0x00; // Reduced write current MSB
    filesystemState.keyvalues[lunNumber][index].v.string[5] = 0x80; // Reduced write current LSB
    filesystemState.keyvalues[lunNumber][index].v.string[6] = 0x00; // Write precompensation MSB
@@ -1941,10 +1975,7 @@ void filesystemLunToconfigGeometry(uint8_t lunNumber)
    }
    filesystemState.keyvalues[lunNumber][index].v.string[0] = 04 ;
    filesystemState.keyvalues[lunNumber][index].v.string[1] = 04 ;
-   filesystemState.keyvalues[lunNumber][index].v.string[2] = 0 ;
-   filesystemState.keyvalues[lunNumber][index].v.string[3] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
-   filesystemState.keyvalues[lunNumber][index].v.string[4] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
-   filesystemState.keyvalues[lunNumber][index].v.string[5] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+   filesystemGeometryToPage(lunNumber, 4);
    if (filesystemState.keyvalues[lunNumber][index].length < 6)
       filesystemState.keyvalues[lunNumber][index].length = 6;
 }
@@ -1982,7 +2013,7 @@ static void filesystemGeometryFromImage(uint8_t lunNumber)
 void filesytemdattoconfigGeometry(uint8_t lunNumber)
 {
    filesystemGeometryFromImage(lunNumber);
-   if (!geometryFromCfgOnly)            // DriveGeometry=CFG: no page invented
+   if (!filesystemGeometryFromCfgOnly())  // DriveGeometry=CFG: no page invented
       filesystemLunToconfigGeometry(lunNumber);
 }
 
@@ -2013,9 +2044,8 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
    index = LBADESCRIPTOR;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         filesystemState.fsLunGeometry[lunNumber].BlockSize = (uint32_t)(((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[5] << 16) +
-                                                                         ((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[6] << 8) +
-                                                                          (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[7]);
+         filesystemState.fsLunGeometry[lunNumber].BlockSize =
+            modePageGetField(filesystemState.keyvalues[lunNumber][index].v.string, LBADESCRIPTOR_BLOCK_SIZE, 3);
       }
       else
       {
@@ -2032,9 +2062,8 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          filesystemState.keyvalues[lunNumber][index].v.string[2] = 0x00; // Reserved
          filesystemState.keyvalues[lunNumber][index].v.string[3] = 0x00; // Reserved
          filesystemState.keyvalues[lunNumber][index].v.string[4] = 0x00; // Reserved
-         filesystemState.keyvalues[lunNumber][index].v.string[5] = (char)(DEFAULT_BLOCK_SIZE >>16); // block size MSB
-         filesystemState.keyvalues[lunNumber][index].v.string[6] = (char)(DEFAULT_BLOCK_SIZE >>8); // block size
-         filesystemState.keyvalues[lunNumber][index].v.string[7] = (char)(DEFAULT_BLOCK_SIZE); // block size LSB
+         modePagePutField(filesystemState.keyvalues[lunNumber][index].v.string, LBADESCRIPTOR_BLOCK_SIZE, 3,
+                          DEFAULT_BLOCK_SIZE);
          filesystemState.keyvalues[lunNumber][index].length = 8;
       }
 
@@ -2047,8 +2076,8 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
    index = MODEPAGE3;
    if  (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack = (uint16_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[10] << 8) +
-                                                                              (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[11]));
+      filesystemState.fsLunGeometry[lunNumber].SectorsPerTrack =
+         modePage3Get(filesystemState.keyvalues[lunNumber][index].v.string, MODEPAGE3_SECTORS_PER_TRACK);
    }
    else
    {
@@ -2060,9 +2089,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
    index = MODEPAGE0;
    if  (filesystemPage0IsDriveList() && filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
-                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[2]));
-      filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
+      filesystemGeometryFromPage(lunNumber, 0);
 
    }
    else
@@ -2071,9 +2098,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
       index = MODEPAGE4;
       if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
-               filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
-                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[4]));
-               filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[5]);
+               filesystemGeometryFromPage(lunNumber, 4);
 
                filesystemCopyPage4toPage0(lunNumber);
       } else
@@ -2086,7 +2111,7 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
          // change (a remount or another ADFS directory), not at every start,
          // MODE SENSE or TRANSLATE; a release build prints nothing here, on
          // the SCSI command path.
-         filesystemGeometryFromImage(lunNumber);
+         filesytemdattoconfigGeometry(lunNumber);
 #ifdef DEBUG
          static uint32_t warned[MAX_LUNS];     // drive generation + 1 when said
          if (warned[lunNumber] != filesystemState.driveGeneration + 1u) {
@@ -2094,12 +2119,10 @@ void filesystemConfigToLunGeometry(uint8_t lunNumber)
             warned[lunNumber] = filesystemState.driveGeneration + 1u;
             LOG_DEBUG("BeebSCSI: LUN %u: the .cfg has no page 4%s - %s %lu x %u x %u from the image size\n",
                       (unsigned)lunNumber, filesystemPage0IsDriveList() ? " or page 0" : "",
-                      geometryFromCfgOnly ? "DriveGeometry=CFG: no page made; capacity" : "geometry deduced:",
+                      filesystemGeometryFromCfgOnly() ? "DriveGeometry=CFG: no page made; capacity" : "geometry deduced:",
                       (unsigned long)g->Cylinders, (unsigned)g->Heads, (unsigned)g->SectorsPerTrack);
          }
 #endif
-         if (!geometryFromCfgOnly)
-            filesystemLunToconfigGeometry(lunNumber);
       }
    }
 }
@@ -2115,9 +2138,7 @@ void filesystemSetLunBlockSize(uint8_t lunNumber, uint32_t blockSize)
       if (lba == NULL)
          return;
    }
-   lba[5] = (char)(blockSize >> 16);
-   lba[6] = (char)(blockSize >> 8);
-   lba[7] = (char)blockSize;
+   modePagePutField(lba, LBADESCRIPTOR_BLOCK_SIZE, 3, blockSize);
    filesystemState.fsLunGeometry[lunNumber].BlockSize = blockSize;
    filesystemState.fsLunBlockSizeInMemory[lunNumber] = false;   // FORMAT's own: saved with it
 }
@@ -2129,17 +2150,12 @@ void filesystemCopyPage0toPage4(uint8_t lunNumber)
    int index = MODEPAGE0;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[1] << 8) +
-                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[2]));
-      filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[3]);
+      filesystemGeometryFromPage(lunNumber, 0);
       // now recreate Page4
       index = MODEPAGE4;
       if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         filesystemState.keyvalues[lunNumber][index].v.string[2] = 0 ;
-         filesystemState.keyvalues[lunNumber][index].v.string[3] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
-         filesystemState.keyvalues[lunNumber][index].v.string[4] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
-         filesystemState.keyvalues[lunNumber][index].v.string[5] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+         filesystemGeometryToPage(lunNumber, 4);
          if (filesystemState.keyvalues[lunNumber][index].length < 6)
             filesystemState.keyvalues[lunNumber][index].length = 6;
       }
@@ -2153,16 +2169,12 @@ void filesystemCopyPage4toPage0(uint8_t lunNumber)
    int index = MODEPAGE4;
    if (filesystemState.keyvalues[lunNumber][index].v.string)
    {
-      filesystemState.fsLunGeometry[lunNumber].Cylinders = (uint32_t)((((uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[3] << 8) +
-                                                                        (uint8_t)filesystemState.keyvalues[lunNumber][index].v.string[4]));
-      filesystemState.fsLunGeometry[lunNumber].Heads =     (uint8_t)   (filesystemState.keyvalues[lunNumber][index].v.string[5]);
+      filesystemGeometryFromPage(lunNumber, 4);
       // now recreate Page0
       index = MODEPAGE0;
       if  (filesystemState.keyvalues[lunNumber][index].v.string)
       {
-         filesystemState.keyvalues[lunNumber][index].v.string[1] = (char)(filesystemState.fsLunGeometry[lunNumber].Cylinders>>8); // cylinder count MSB
-         filesystemState.keyvalues[lunNumber][index].v.string[2] = (char)filesystemState.fsLunGeometry[lunNumber].Cylinders; // cylinder count LSB
-         filesystemState.keyvalues[lunNumber][index].v.string[3] = filesystemState.fsLunGeometry[lunNumber].Heads; // Heads
+         filesystemGeometryToPage(lunNumber, 0);
          if (filesystemState.keyvalues[lunNumber][index].length < 4)
             filesystemState.keyvalues[lunNumber][index].length = 4;
       }
@@ -2509,6 +2521,20 @@ bool filesystemPageControlCCS(uint8_t lunNumber)
    return (s != NULL) && (strncasecmp(s, "CCS", 3) == 0);
 }
 
+/* A page's mask applied: out[i] takes the sent byte's changeable bits and
+   the old byte's others, for the first `count` bytes (the caller's bound:
+   what was sent and what the mask covers).  An old byte past oldLength is
+   0.  out may be old (a page updated in place).  Returns count. */
+static size_t filesystemApplyMask(char * out, const uint8_t * sent, const char * old, size_t oldLength,
+                                  const char * mask, size_t count)
+{
+   for (size_t i = 0; i < count; i++) {
+      uint8_t was = (i < oldLength) ? (uint8_t)old[i] : 0u;
+      out[i] = (char)((sent[i] & (uint8_t)mask[i]) | (was & (uint8_t)~mask[i]));
+   }
+   return count;
+}
+
 int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, const uint8_t * Buffer)
 {
    int index = filesystemPagetoIndex(page);
@@ -2519,14 +2545,13 @@ int filesystemWriteModePageData(uint8_t lunNumber, uint8_t page, uint8_t len, co
    if (windex != -1 && filesystemState.keyvalues[lunNumber][index].v.string != NULL
                     && filesystemState.keyvalues[lunNumber][windex].v.string != NULL)
       {
-         unsigned int i;
-         for ( i=0; (i< len) && (i < filesystemState.keyvalues[lunNumber][windex].length ); i++)
-         {
-            filesystemState.keyvalues[lunNumber][index].v.string[i] = (char) ( (Buffer[i] & filesystemState.keyvalues[lunNumber][windex].v.string[i]) |
-                      ((filesystemState.keyvalues[lunNumber][index].v.string[i] & ~filesystemState.keyvalues[lunNumber][windex].v.string[i])));
-         }
-         if (filesystemState.keyvalues[lunNumber][index].length < i)
-            filesystemState.keyvalues[lunNumber][index].length = i;
+         // onto the stored page, in place: the key is allocated to its maximum
+         parserkeyvalue *kv = &filesystemState.keyvalues[lunNumber][index];
+         const parserkeyvalue *mask = &filesystemState.keyvalues[lunNumber][windex];
+         size_t count = (len < mask->length) ? len : mask->length;
+         size_t i = filesystemApplyMask(kv->v.string, Buffer, kv->v.string, SIZE_MAX, mask->v.string, count);
+         if (kv->length < i)
+            kv->length = i;
          return 1;
       }
 
@@ -2675,9 +2700,9 @@ size_t filesystemModePageAfterSelect(uint8_t lunNumber, uint8_t page, const char
    size_t total = filesystemMergeOnto(page, base, baseLength, declared, received, Buffer, merged, mask == NULL, true);
 
    memcpy(out, merged, 256);
+   // onto the pending base, which may be shorter than the page
    if ((mask != NULL) && (base != NULL))
-      for (size_t i = 0; (i < total) && (i < maskLength); i++)
-         out[i] = (uint8_t)((merged[i] & (uint8_t)mask[i]) | ((i < baseLength ? (uint8_t)base[i] : 0u) & (uint8_t)~mask[i]));
+      filesystemApplyMask((char *)out, merged, base, baseLength, mask, (total < maskLength) ? total : maskLength);
    return total;
 }
 

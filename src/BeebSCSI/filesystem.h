@@ -28,6 +28,8 @@
 #define FILESYSTEM_H_
 
 #include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 // Read/Write sector buffer (must be 256 bytes minimum)
 // Testing shows that this is optimal when it matches the sector size of
@@ -193,6 +195,10 @@ void filesystemReadLunUserCode(uint8_t lunNumber, uint8_t userCode[5]);
 #if BEEBSCSI_UCD_USER_CODE
 void filesystemGetUserCodeFromUcd(uint8_t lunDirectoryNumber, uint8_t lunNumber);
 #endif
+/* A side's LaserDisc video: its presence marks a VFS volume */
+#define VFS_VIDEO_FILENAME "video.pvf"
+/* /BeebVFS<dir>/<name> on the Beeb's storage, for any side */
+void filesystemVFSFilePath(uint8_t dir, const char *name, char *buf, size_t size);
 bool filesystemCheckExtAttributes( uint8_t lunNumber);
 void filesystemConfigToLunGeometry(uint8_t lunNumber);
 void filesytemdattoconfigGeometry(uint8_t lunNumber);
@@ -257,12 +263,55 @@ void filesystemSetModePageRaw(uint8_t lunNumber, uint8_t page, const uint8_t * d
    code and length bytes); NULL and 0 for any other page. */
 typedef struct { uint8_t start; uint8_t size; } modePageField_t;
 const modePageField_t * filesystemModePageFields(uint8_t page, size_t * count);
-/* ModePage0 is the Adaptec's drive parameter list (true, the default), or an
-   ordinary page with the geometry in page 4 alone (a drive with its own
-   controller); set by scsi.c from DriveController=. */
-void filesystemSetPage0IsDriveList(bool driveList);
-/* DriveGeometry=CFG (true) or Auto: set by scsi.c */
-void filesystemSetGeometryFromCfgOnly(bool cfgOnly);
+
+/* The controller's rules this layer follows, owned by scsi.c, which lends
+   them with filesystemSetDrivePolicy (NULL: the defaults, Mixed and Auto).
+   page0IsDriveList: ModePage0 is the Adaptec's drive parameter list and
+   carries the geometry (ACB, SASI, Mixed); false on a drive with its own
+   controller, where page 0 is an ordinary page and the geometry is page 4
+   alone.  geometryFromCfgOnly: DriveGeometry=CFG, a .cfg without its
+   geometry page gets none made up; false (Auto) deduces it. */
+typedef struct {
+   bool page0IsDriveList;
+   bool geometryFromCfgOnly;
+} filesystemDrivePolicy_t;
+void filesystemSetDrivePolicy(const filesystemDrivePolicy_t *policy);
+
+/* A big-endian number of `size` bytes at `start` in a mode page or the
+   block descriptor (a .cfg's page is char *, a bus buffer uint8_t *). */
+static inline uint32_t modePageGetField(const void *page, unsigned int start, unsigned int size)
+{
+   const uint8_t *p = (const uint8_t *)page;
+   uint32_t value = 0;
+   for (unsigned int i = 0; i < size; i++)
+      value = (value << 8) | p[start + i];
+   return value;
+}
+
+static inline void modePagePutField(void *page, unsigned int start, unsigned int size, uint32_t value)
+{
+   uint8_t *p = (uint8_t *)page;
+   for (unsigned int i = size; i-- > 0; value >>= 8)
+      p[start + i] = (uint8_t)value;
+}
+
+/* Page 3 (format parameters): its 16-bit fields used here */
+#define MODEPAGE3_SECTORS_PER_TRACK 10   /* bytes 10-11 */
+#define MODEPAGE3_BLOCK_SIZE        12   /* bytes 12-13: data bytes per sector */
+#define MODEPAGE3_INTERLEAVE        14   /* bytes 14-15 */
+
+static inline uint16_t modePage3Get(const void *page3, unsigned int field)
+{
+   return (uint16_t)modePageGetField(page3, field, 2);
+}
+
+static inline void modePage3Put(void *page3, unsigned int field, uint16_t value)
+{
+   modePagePutField(page3, field, 2, value);
+}
+
+/* The block descriptor's block length: bytes 5-7 */
+#define LBADESCRIPTOR_BLOCK_SIZE 5
 
 bool filesystemSetFatDirectory(const uint8_t * buffer);
 bool filesystemGetFatFileInfo(uint32_t fileNumber, uint8_t *buffer);

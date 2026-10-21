@@ -107,11 +107,17 @@ static uint32_t requestSenseData[MAX_LUNS];
 // The controller behind the host adaptor (DriveController=, read at power-on)
 static scsiController_t scsiController = SCSI_CONTROLLER_MIXED;
 
+// What the LUN layer follows of it (and DriveGeometry=): lent to filesystem.c
+static filesystemDrivePolicy_t scsiDrivePolicy = {
+   .page0IsDriveList = true, .geometryFromCfgOnly = false
+};
+
 void scsiSetController(scsiController_t controller)
 {
    scsiController = controller;
    // page 0 is the Adaptec drive list everywhere but on a SCSI drive
-   filesystemSetPage0IsDriveList(controller != SCSI_CONTROLLER_SCSI);
+   scsiDrivePolicy.page0IsDriveList = (controller != SCSI_CONTROLLER_SCSI);
+   filesystemSetDrivePolicy(&scsiDrivePolicy);
 }
 
 scsiController_t scsiGetController(void)
@@ -120,17 +126,15 @@ scsiController_t scsiGetController(void)
 }
 
 // DriveGeometry= (read at power-on): false = Auto, true = CFG
-static bool scsiGeometryCfgOnly = false;
-
 void scsiSetGeometryFromCfgOnly(bool cfgOnly)
 {
-   scsiGeometryCfgOnly = cfgOnly;
-   filesystemSetGeometryFromCfgOnly(cfgOnly);
+   scsiDrivePolicy.geometryFromCfgOnly = cfgOnly;
+   filesystemSetDrivePolicy(&scsiDrivePolicy);
 }
 
 bool scsiGeometryFromCfgOnly(void)
 {
-   return scsiGeometryCfgOnly;
+   return scsiDrivePolicy.geometryFromCfgOnly;
 }
 
 // DriveGeometry=Auto or CFG, any case.  No value is Auto; an unknown one is
@@ -313,8 +317,7 @@ static void scsiApplyPendingPages(uint8_t lun)
    if ((page3 != NULL) && (length >= 14) && (length <= 256)) {
       uint8_t page[256];
       memcpy(page, page3, length);
-      page[12] = (uint8_t)(blockSize >> 8);
-      page[13] = (uint8_t)blockSize;
+      modePage3Put(page, MODEPAGE3_BLOCK_SIZE, (uint16_t)blockSize);
       filesystemSetModePageRaw(lun, 3, page, length);
    }
    filesystemSetLunBlockSize(lun, blockSize);
@@ -349,7 +352,7 @@ static uint32_t scsiCheckModePage(uint8_t lun, uint8_t pageCode, const uint8_t *
          return ILLEGAL_FUNCTION;
    }
    if ((pageCode == 3) && (length >= 14)) {
-      uint32_t blockSize = ((uint32_t)page[12] << 8) | page[13];
+      uint32_t blockSize = modePage3Get(page, MODEPAGE3_BLOCK_SIZE);
       if ((blockSize < MIN_BLOCK_SIZE) || (blockSize > MAX_BLOCK_SIZE))
          return ILLEGAL_FUNCTION;
    }
@@ -462,7 +465,7 @@ static uint32_t scsiFormatGeometry(uint8_t lun, uint16_t interleave)
          // with a hand-set LBADescriptor, which wins (page 3 is then saved to match)
          const char *page3 = filesystemGetModePageData(lun, 3, &length);
          if (hostPage3 && (page3 != NULL) && (length >= 14)) {
-            uint32_t pageBlockSize = ((uint32_t)(uint8_t)page3[12] << 8) | (uint8_t)page3[13];
+            uint32_t pageBlockSize = modePage3Get(page3, MODEPAGE3_BLOCK_SIZE);
             if (pageBlockSize != 0)
                blockSize = pageBlockSize;
          }
@@ -2030,6 +2033,25 @@ static uint8_t scsiCommandTranslate(void)
    return SCSI_STATUS;
 }
 
+// The Adaptec's 10-byte drive parameter list (list format, cylinders, heads,
+// ...) is page 0; page 4 is made to match (page 3 never changes here)
+static void scsiWriteDriveParameterList(uint8_t lun, const uint8_t *list)
+{
+   filesystemWriteModePageData(lun, 0, 10, list);
+   filesystemCopyPage0toPage4(lun);
+}
+
+// How much of a MODE SELECT page starting at `at` arrived: its code and
+// length bytes and `sent` more, or as far as the list goes.  The Acorn
+// FileStore tools (FServFmt, FSFormat) send a page two bytes short: a drive
+// takes what arrives and keeps the rest of the page.
+static unsigned int scsiModePageBytesArrived(uint8_t length, unsigned int at, uint8_t sent)
+{
+   unsigned int have = (unsigned int)length - at;
+   unsigned int want = (unsigned int)sent + 2u;
+   return (have > want) ? want : have;
+}
+
 // MODE SELECT on an Adaptec board: the flat parameter list of OEM manual
 // 6.3.1.11 - a 4-byte header (byte 3 = 8), the 8-byte extent descriptor
 // (density 0, block size 256, 512 or 1024) and the 10-byte drive parameter
@@ -2060,9 +2082,7 @@ static uint32_t scsiAdaptecModeSelect(const uint8_t *list, uint8_t length)
    if (length > 12) {
       // the drive parameter list is page 0 (the hard-sector bytes of a
       // 24-byte list are not kept: Pi1MHz has no hard-sectored drive)
-      filesystemWriteModePageData(lun, 0, 10, &list[12]);
-      // update Page 4 NB we should do page 3 but that never changes
-      filesystemCopyPage0toPage4(lun);
+      scsiWriteDriveParameterList(lun, &list[12]);
    }
    return NO_ERROR;
 }
@@ -2138,10 +2158,8 @@ static uint32_t scsiDriveModeSelect(uint8_t *list, uint8_t length)
       /* A page may arrive shorter than its length byte says: FServFmt sends
          len+4 bytes where a whole page needs len+6.  The drive takes what
          arrives and keeps the rest, as a real drive's firmware does. */
-      unsigned int have = (unsigned int)length - at;
       unsigned int want = (unsigned int)sent + 2u;
-      if (have > want)
-         have = want;
+      unsigned int have = scsiModePageBytesArrived(length, at, sent);
       if ((page == 3) || (page == 4)) {
          int i = (page == 4);
          size_t baseLength = 0;
@@ -2176,10 +2194,8 @@ static uint32_t scsiDriveModeSelect(uint8_t *list, uint8_t length)
          at += 2u;
          continue;
       }
-      unsigned int have = (unsigned int)length - at;
       unsigned int want = (unsigned int)sent + 2u;
-      if (have > want)
-         have = want;
+      unsigned int have = scsiModePageBytesArrived(length, at, sent);
       if (debugFlag_scsiCommands) debugStringInt16_P(PSTR("SCSI commands: Writing MODE SELECT Page "), page, true);
       // a page header with no data changes nothing
       if ((page != 3) && (page != 4) && (have > 2u)) {
@@ -2211,10 +2227,7 @@ static uint32_t scsiMixedModeSelect(uint8_t *Buffer, uint8_t length)
      if (debugFlag_scsiCommands) debugString_C(PSTR("SCSI Commands: Writing MODE SELECT cfg\r\n"), DEBUG_SUCCESS);
      // we can skip LBADescriptor 8 bytes
      start = (uint8_t)(start + 8);
-     // update  ModePage0
-     filesystemWriteModePageData(commandDataBlock.targetLUN, 0, 22-4-8, &Buffer[start] );
-     // update  Page 4 NB we should do page 3 but that never changes
-     filesystemCopyPage0toPage4(commandDataBlock.targetLUN);
+     scsiWriteDriveParameterList(commandDataBlock.targetLUN, &Buffer[start]);
    }
    else
    {
@@ -2232,13 +2245,8 @@ static uint32_t scsiMixedModeSelect(uint8_t *Buffer, uint8_t length)
          uint8_t len = Buffer[start+1];
 
          if (debugFlag_scsiCommands)debugStringInt16_P(PSTR("SCSI commands: Writing MODE SELECT Page "), page, true);
-         /* The Acorn FileStore tools (FServFmt, FSFormat) send a 3000-series
-            drive its pages two bytes short.  A real drive takes what arrives
-            and keeps the rest of the page. */
-         unsigned int have = (unsigned int)length - start;
          unsigned int want = (unsigned int)len + 2;
-         if (have > want)
-            have = want;
+         unsigned int have = scsiModePageBytesArrived(length, start, len);
          filesystemMergeModePageData(commandDataBlock.targetLUN, page, (uint8_t)want, (uint8_t)have, &Buffer[start], false);
          start = (uint8_t)(start + have );
          if ( page == 4 )
@@ -2284,18 +2292,11 @@ static uint8_t scsiCommandModeSelect6(void)
 
    uint8_t Buffer[256]; // length is a uint8_t so 256 always suffices (avoids a VLA)
 
-   /* VFS write-protect: never create a descriptor or store parameters for
-      LUN >= 8. The VFS ROM never issues MODESELECT6 - refuse (tripwire). */
-   if (commandDataBlock.targetLUN >= 8) {
-      commandDataBlock.status = SCSI_STATUS_CHECK_COND;
-      requestSenseData[commandDataBlock.targetLUN] = WRITE_FAULT;
-      return SCSI_STATUS;
-   }
-
    // Make sure the target LUN is started (the state owner, not the image
    // check it delegates to - a MODE SELECT with no MOUNT before it must leave
-   // the LUN in exactly the state a START would)
-   if (!filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
+   // the LUN in exactly the state a START would).  Not a VFS LUN (>= 8): its
+   // list is read below and discarded.
+   if ((commandDataBlock.targetLUN < 8) && !filesystemSetLunStatus(commandDataBlock.targetLUN, true)) {
       // If the target LUN is unavailable then the host is probably attempting to MODESELECT
       // a LUN for which no descriptor exists.  So here we create the LUN descriptor
       if(!filesystemCreateLunDescriptor(commandDataBlock.targetLUN)) {
@@ -2330,6 +2331,14 @@ static uint8_t scsiCommandModeSelect6(void)
    // A host reset or reselection mid-transfer leaves stale bus bytes in
    // Buffer: abandon the command rather than save them to the .cfg
    if (hostadapterReadResetFlag()) return SCSI_BUSFREE;
+
+   /* A VFS LUN (>= 8) is read-only media: the list is accepted and dropped -
+      no descriptor made, nothing stored - and the host gets GOOD, never an
+      error its handshake could hang on. */
+   if (commandDataBlock.targetLUN >= 8) {
+      commandDataBlock.status = SCSI_STATUS_OK;
+      return SCSI_STATUS;
+   }
 
    // The list is the controller's: the Adaptec's flat list, a SCSI drive's
    // header, block descriptor and pages, or Pi1MHz's own mixed list
