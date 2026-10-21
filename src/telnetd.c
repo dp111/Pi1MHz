@@ -60,6 +60,7 @@
 #include "serial_redirect.h"
 #include "telnetd.h"
 #include "telnetd_proto.h"
+#include "net_telnet.h"           /* telnet_escape */
 
 #define KRING_SIZE   4096u               /* power of two */
 #define KRING_MASK   (KRING_SIZE - 1u)
@@ -656,11 +657,12 @@ static void beeb_byte(uint8_t c)
          (void)tnd_out_byte(&g_out, c, d);
          tnd_out_touch(&g_out, Pi1MHz_now_us);
       }
-      if (c == 0xFFu && !g_sess_rawport) {      /* IAC must be doubled (not on the raw port: no telnet there) */
-         static const uint8_t ff[2] = { 0xFF, 0xFF };
-         o_put(ff, 2u);
-      } else {
+      if (g_sess_rawport) {                     /* the raw port: no telnet there, so no escaping */
          o_put(&c, 1u);
+      } else {                                  /* IAC must be doubled */
+         uint8_t esc[2];
+         size_t  used;
+         o_put(esc, telnet_escape(&c, 1u, esc, sizeof esc, &used));
       }
    }
 }
